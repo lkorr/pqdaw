@@ -31,10 +31,12 @@ else()
 endif()
 option(PQ_ALLOC_TRAP_IN_APPS "Link the RtScope allocation trap into pq_add_executable targets" ${_pq_trap_default})
 
+# Every app executable gets the startup CPU baseline check (pq/core/cpu_baseline.h): it exits with a
+# message instead of crashing on a CPU without AVX2/FMA.
 function(pq_add_executable name)
   cmake_parse_arguments(A "" "" "SOURCES;DEPS" ${ARGN})
   add_executable(${name} ${A_SOURCES})
-  target_link_libraries(${name} PRIVATE ${A_DEPS})
+  target_link_libraries(${name} PRIVATE pq_cpu_check ${A_DEPS})
   if(PQ_ALLOC_TRAP_IN_APPS)
     target_link_libraries(${name} PRIVATE pq_alloc_trap)
     target_compile_definitions(${name} PRIVATE PQ_ALLOC_TRAP=1)

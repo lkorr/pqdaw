@@ -1,5 +1,7 @@
 #include "pq/core/cpu.h"
 
+#include "pq/core/cpu_baseline.h"
+
 #include <array>
 #include <cstring>
 #include <intrin.h>
@@ -9,6 +11,10 @@ namespace {
 
 CpuFeatures detect() {
   CpuFeatures f;
+  // AVX2/FMA from the baseline query, so the PQ_TEST_CPU_DISABLE hook (pq/core/cpu_baseline.h) reaches them.
+  const PqCpuBaseline base = pq_query_cpu_baseline();
+  f.avx2 = base.avx2;
+  f.fma = base.fma;
   std::array<int, 4> r{};
 
   __cpuid(r.data(), 0);
@@ -17,23 +23,20 @@ CpuFeatures detect() {
   if (maxLeaf >= 1) {
     __cpuid(r.data(), 1);
     f.sse41 = (r[2] & (1 << 19)) != 0;
-    f.fma = (r[2] & (1 << 12)) != 0;
     const bool osxsave = (r[2] & (1 << 27)) != 0;
-    // AVX state must be enabled by the OS (XCR0 bits 1-2), AVX-512 additionally needs bits 5-7.
+    // AVX-512 state must be enabled by the OS (XCR0 bits 1-2 and 5-7).
     const unsigned long long xcr0 = osxsave ? _xgetbv(0) : 0;
-    const bool osAvx = (xcr0 & 0x6) == 0x6;
     const bool osAvx512 = (xcr0 & 0xE6) == 0xE6;
 
     if (maxLeaf >= 7) {
       __cpuidex(r.data(), 7, 0);
-      f.avx2 = osAvx && (r[1] & (1 << 5)) != 0;
       f.avx512f = osAvx512 && (r[1] & (1 << 16)) != 0;
       f.avx512dq = osAvx512 && (r[1] & (1 << 17)) != 0;
       f.avx512bw = osAvx512 && (r[1] & (1 << 30)) != 0;
       f.avx512vl = osAvx512 && (r[1] & (1 << 31)) != 0;
     }
-    f.fma = f.fma && osAvx;
   }
+  if (!f.avx2) f.avx512f = f.avx512dq = f.avx512bw = f.avx512vl = false;  // AVX-512 implies AVX2 (and the hook)
 
   __cpuid(r.data(), 0x80000000);
   if (static_cast<unsigned>(r[0]) >= 0x80000004u) {

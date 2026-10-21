@@ -1,6 +1,6 @@
 # Toolchain smoke tests: prove the compiler, CRT, and LLVM ORC JIT link and run.
 pq_add_test(pq_tests_smoke
-  SOURCES smoke/test_toolchain.cpp smoke/test_llvm_jit.cpp
+  SOURCES smoke/test_toolchain.cpp smoke/test_llvm_jit.cpp smoke/test_cpu_baseline.cpp
   DEPS pq_core pq_llvm)
 
 # Module test suites are added below as modules appear, e.g.
@@ -64,7 +64,7 @@ pq_add_test(pq_tests_ui
     ui/test_hidpi.cpp
     ui/test_controls.cpp
     ui/test_partial_redraw.cpp
-  DEPS pq_ui)
+  DEPS pq_ui pq_ui_scenes)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 
 # app: CLI parsing (window, --screenshot, --list-devices, --sine, --play), the --screenshot command, the --play compile path.
@@ -80,6 +80,11 @@ add_test(NAME pqdaw_screenshot
   COMMAND pqdaw --screenshot test-pattern ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot.png --size 400x240)
 add_test(NAME pqdaw_screenshot_text   # the executable finds the bundled fonts (pq::ui::assetsDir)
   COMMAND pqdaw --screenshot text ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_text.png)
+# T0.1-fix1: the startup CPU baseline check on an emulated CPU without AVX2 (and without FMA): message, exit 1.
+add_test(NAME pqdaw_cpu_check_no_avx2 COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:pqdaw> -DDISABLE=avx2
+  -DEXPECT=AVX2 -P ${CMAKE_CURRENT_SOURCE_DIR}/app/cpu_baseline_check.cmake)
+add_test(NAME pqdaw_cpu_check_no_avx2_fma COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:pqdaw> -DDISABLE=fma,avx2
+  "-DEXPECT=AVX2, FMA" -P ${CMAKE_CURRENT_SOURCE_DIR}/app/cpu_baseline_check.cmake)
 add_test(NAME pqdaw_window_selftest COMMAND pqdaw --window-selftest)
 set_tests_properties(pqdaw_window_selftest PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 # Same run with the live widget tree (T3.1): SDL window loop → UiTree layout/paint at every size.

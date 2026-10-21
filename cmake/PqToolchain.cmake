@@ -35,3 +35,11 @@ function(pq_target_defaults target)
   target_compile_options(${target} PRIVATE ${PQ_CXX_FLAGS})
   target_compile_definitions(${target} PRIVATE ${PQ_CXX_DEFS})
 endfunction()
+
+# The CPU baseline check (pq/core/cpu_baseline.h) runs before any AVX2 code may. Its sources are C: plain
+# x86-64 (no /arch, i.e. SSE2), and the C flags carry no /GL in any preset, so link-time code generation
+# cannot inline or re-target them.
+function(pq_target_baseline_defaults target)
+  target_compile_options(${target} PRIVATE /W4 /WX /utf-8)
+  target_compile_definitions(${target} PRIVATE ${PQ_CXX_DEFS})
+endfunction()

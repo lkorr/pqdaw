@@ -5,7 +5,8 @@
 namespace pq {
 
 // Host CPU capabilities, queried once at startup (not RT-relevant).
-// The prebuilt binaries require AVX2; the JIT may use AVX-512 when present.
+// The prebuilt binaries require AVX2 + FMA (the x86-64-v3 baseline, checked at startup before any AVX2 code
+// runs: pq/core/cpu_baseline.h); the JIT may use AVX-512 when present.
 struct CpuFeatures {
   bool sse41 = false;
   bool avx2 = false;
