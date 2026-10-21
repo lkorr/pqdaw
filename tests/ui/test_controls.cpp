@@ -155,7 +155,7 @@ TEST_CASE("theme: a missing, unknown or malformed token fails with its name") {
     CHECK_MESSAGE(r.error().message.find("missing token \"" + name + "\"") != std::string::npos, r.error().message);
     ++checked;
   }
-  CHECK(checked == 57 + 16 + 5 + 14);  // + the 16 arrangement.* colours (T3.8)
+  CHECK(checked == 57 + 16 + 12 + 5 + 14);  // + the 16 arrangement.* (T3.8) and 12 roll.* (T3.11) colours
   {
     auto r = parseTheme(removeLine("\"name\":"));
     REQUIRE_FALSE(r.ok());
