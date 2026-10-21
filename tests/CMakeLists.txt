@@ -28,7 +28,10 @@ pq_add_test(pq_tests_tuning
     tuning/test_monzo.cpp
     tuning/test_edo.cpp
     tuning/test_resolve.cpp
-  DEPS pq_tuning)
+    tuning/test_mos.cpp
+    tuning/test_mos_fixtures.cpp
+    tuning/test_tuning_rt.cpp
+  DEPS pq_tuning nlohmann_json::nlohmann_json)
 
 # Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.
 add_executable(pq_alloc_trap_abort_probe core/alloc_trap_abort_probe.cpp)
