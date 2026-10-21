@@ -74,6 +74,20 @@ colors = [
  ("arrangement.playhead", "#B0B5A3"),
  ("arrangement.startMarker", "#00CCB7"),
  ("arrangement.overviewFrame", "#82918F"),
+ # Roll tokens follow the blue-grey palette of the Live 12 reference screenshot (Q47); the chrome keeps
+ # the neutral greys until the retheme.
+ ("roll.keyWhite", "#BCC6CA"),
+ ("roll.keyBlack", "#16282E"),
+ ("roll.keyText", "#141B1F"),
+ ("roll.rowNatural", "#26383F"),
+ ("roll.rowAccidental", "#1F3036"),
+ ("roll.rowScale", "#33474E"),
+ ("roll.rowLine", "#0000003A"),
+ ("roll.equave", "#0D1317C8"),
+ ("roll.outside", "#0000004D"),
+ ("roll.offGrid", "#62D4E8"),
+ ("roll.fundamental", "#62D4E88C"),
+ ("roll.harmonic", "#62D4E826"),
 ]
 fonts = [("small","regular",12,False),("body","regular",13,False),("bodyStrong","semibold",13,False),("title","semibold",14,False),("numeric","regular",12,False)]
 metrics = [("spacing.xs",2),("spacing.sm",4),("spacing.md",8),("spacing.lg",12),

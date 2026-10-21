@@ -107,7 +107,7 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   CHECK(t->fonts.body.px == 13);
   CHECK(t->fonts.title.px == 14);
   CHECK(alphaOf(t->surface.panel) == 255);
-  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 5 + 14 + 1);  // + arrangement.* (T3.8)
+  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 12 + 5 + 14 + 1);  // + arrangement.* (T3.8), roll.* (T3.11)
 }
 
 TEST_CASE("theme: the file round-trips (struct and bytes)") {

@@ -51,6 +51,9 @@ const ColorToken kColors[] = {
     PQ_COLOR(arrangement, separator), PQ_COLOR(arrangement, background), PQ_COLOR(arrangement, header), PQ_COLOR(arrangement, ruler),
     PQ_COLOR(arrangement, rulerText), PQ_COLOR(arrangement, loopFill), PQ_COLOR(arrangement, loopEdge), PQ_COLOR(arrangement, loopOffFill),
     PQ_COLOR(arrangement, loopOffEdge), PQ_COLOR(arrangement, playhead), PQ_COLOR(arrangement, startMarker), PQ_COLOR(arrangement, overviewFrame),
+    PQ_COLOR(roll, keyWhite), PQ_COLOR(roll, keyBlack), PQ_COLOR(roll, keyText), PQ_COLOR(roll, rowNatural),
+    PQ_COLOR(roll, rowAccidental), PQ_COLOR(roll, rowScale), PQ_COLOR(roll, rowLine), PQ_COLOR(roll, equave),
+    PQ_COLOR(roll, outside), PQ_COLOR(roll, offGrid), PQ_COLOR(roll, fundamental), PQ_COLOR(roll, harmonic),
 };
 #undef PQ_COLOR
 

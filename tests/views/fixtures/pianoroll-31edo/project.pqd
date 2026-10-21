@@ -1,0 +1,336 @@
+{
+  "schemaVersion": 1,
+  "timeline": {
+    "tempo": [
+      {
+        "tick": 0,
+        "bpm": 120.0,
+        "curve": "step"
+      }
+    ],
+    "signatures": [
+      {
+        "bar": 0,
+        "numerator": 4,
+        "denominator": 4
+      }
+    ]
+  },
+  "loop": {
+    "start": 0,
+    "end": 443520,
+    "enabled": false
+  },
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "31-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 31,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 3,
+      "kind": "midi",
+      "name": "1 MIDI",
+      "colour": "#46A5E8",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "arm": false,
+        "sends": [],
+        "output": "default"
+      },
+      "lanes": [],
+      "clips": [
+        {
+          "id": 4,
+          "name": "Septimal",
+          "colour": "#46A5E8",
+          "start": 0,
+          "length": 221760,
+          "contentStart": 0,
+          "loop": {
+            "enabled": true,
+            "start": 0,
+            "end": 221760
+          },
+          "signature": {
+            "numerator": 4,
+            "denominator": 4
+          },
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {
+              "id": 200,
+              "start": 0,
+              "length": 55440,
+              "pitch": {
+                "degree": 0,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 201,
+              "start": 0,
+              "length": 55440,
+              "pitch": {
+                "degree": 10,
+                "equave": 0
+              },
+              "velocity": 92.0
+            },
+            {
+              "id": 202,
+              "start": 0,
+              "length": 55440,
+              "pitch": {
+                "degree": 18,
+                "equave": 0
+              },
+              "velocity": 84.0
+            },
+            {
+              "id": 203,
+              "start": 0,
+              "length": 55440,
+              "pitch": {
+                "degree": 25,
+                "equave": 0
+              },
+              "velocity": 76.0
+            },
+            {
+              "id": 208,
+              "start": 0,
+              "length": 13860,
+              "pitch": {
+                "degree": 0,
+                "equave": 1
+              },
+              "velocity": 110.0
+            },
+            {
+              "id": 209,
+              "start": 13860,
+              "length": 13860,
+              "pitch": {
+                "degree": 5,
+                "equave": 1
+              },
+              "velocity": 74.0
+            },
+            {
+              "id": 210,
+              "start": 27720,
+              "length": 13860,
+              "pitch": {
+                "degree": 9,
+                "equave": 1
+              },
+              "velocity": 96.0
+            },
+            {
+              "id": 211,
+              "start": 41580,
+              "length": 13860,
+              "pitch": {
+                "degree": 10,
+                "equave": 1
+              },
+              "velocity": 66.0
+            },
+            {
+              "id": 204,
+              "start": 55440,
+              "length": 55440,
+              "pitch": {
+                "degree": 18,
+                "equave": -1
+              },
+              "velocity": 96.0
+            },
+            {
+              "id": 205,
+              "start": 55440,
+              "length": 55440,
+              "pitch": {
+                "degree": 5,
+                "equave": 0
+              },
+              "velocity": 88.0
+            },
+            {
+              "id": 206,
+              "start": 55440,
+              "length": 55440,
+              "pitch": {
+                "degree": 13,
+                "equave": 0
+              },
+              "velocity": 80.0
+            },
+            {
+              "id": 207,
+              "start": 55440,
+              "length": 55440,
+              "pitch": {
+                "degree": 23,
+                "equave": 0
+              },
+              "velocity": 72.0
+            },
+            {
+              "id": 212,
+              "start": 55440,
+              "length": 13860,
+              "pitch": {
+                "degree": 13,
+                "equave": 1
+              },
+              "velocity": 120.0
+            },
+            {
+              "id": 213,
+              "start": 83160,
+              "length": 13860,
+              "pitch": {
+                "degree": 18,
+                "equave": 1
+              },
+              "velocity": 80.0
+            },
+            {
+              "id": 214,
+              "start": 110880,
+              "length": 13860,
+              "pitch": {
+                "degree": 17,
+                "equave": 1
+              },
+              "velocity": 104.0
+            },
+            {
+              "id": 218,
+              "start": 110880,
+              "length": 83160,
+              "pitch": {
+                "degree": 0,
+                "equave": -1
+              },
+              "velocity": 88.0
+            },
+            {
+              "id": 219,
+              "start": 110880,
+              "length": 83160,
+              "pitch": {
+                "degree": 18,
+                "equave": -1
+              },
+              "velocity": 82.0
+            },
+            {
+              "id": 220,
+              "start": 110880,
+              "length": 83160,
+              "pitch": {
+                "degree": 0,
+                "equave": 0
+              },
+              "velocity": 76.0
+            },
+            {
+              "id": 215,
+              "start": 138600,
+              "length": 13860,
+              "pitch": {
+                "degree": 13,
+                "equave": 1
+              },
+              "velocity": 90.0
+            },
+            {
+              "id": 223,
+              "start": 152460,
+              "length": 13860,
+              "pitch": {
+                "cents": 1500.0
+              },
+              "velocity": 84.0
+            },
+            {
+              "id": 216,
+              "start": 166320,
+              "length": 13860,
+              "pitch": {
+                "degree": 9,
+                "equave": 1
+              },
+              "velocity": 70.0
+            },
+            {
+              "id": 221,
+              "start": 166320,
+              "length": 27720,
+              "pitch": {
+                "ratio": "7/4"
+              },
+              "velocity": 112.0
+            },
+            {
+              "id": 217,
+              "start": 194040,
+              "length": 13860,
+              "pitch": {
+                "degree": 0,
+                "equave": 1
+              },
+              "velocity": 127.0
+            },
+            {
+              "id": 222,
+              "start": 194040,
+              "length": 27720,
+              "pitch": {
+                "ratio": "11/8"
+              },
+              "velocity": 100.0
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {
+      "volumeDb": 0.0,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "arm": false,
+      "sends": [],
+      "output": "default"
+    }
+  }
+}

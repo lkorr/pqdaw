@@ -29,6 +29,8 @@ public:
   void locate(Ticks tick) override;
   void setLoop(const views::TransportLoop& loop) override;
   views::PlayheadSnapshot playhead() override;
+  // Nothing sounds before T3.17 puts the port over the engine: auditions are ignored.
+  void auditionHz(float, float, float) override {}
 
 private:
   Ticks currentTick() const;
