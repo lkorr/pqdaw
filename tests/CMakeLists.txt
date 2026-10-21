@@ -32,6 +32,8 @@ pq_add_test(pq_tests_tuning
     tuning/test_mos.cpp
     tuning/test_mos_fixtures.cpp
     tuning/test_tuning_rt.cpp
+    tuning/test_scala.cpp
+    tuning/test_scale_tuning.cpp
   DEPS pq_tuning nlohmann_json::nlohmann_json)
 
 # Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.

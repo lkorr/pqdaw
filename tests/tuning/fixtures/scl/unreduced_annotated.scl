@@ -1,0 +1,14 @@
+! unreduced_annotated.scl
+!
+Pythagorean diatonic written with unreduced ratios
+7
+!
+! degree 1 is 1/1
+18/16 ! whole tone (9/8)
+162/128 ! ditone (81/64)
+! the fourth
+8/6 ! 4/3
+6/4 ! fifth
+54/32 ! 27/16
+486/256 ! 243/128
+4/2 ! octave

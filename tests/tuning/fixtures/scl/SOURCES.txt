@@ -1,0 +1,40 @@
+Scala .scl fixtures used by tests/tuning/test_scala.cpp and test_scale_tuning.cpp (T2.4).
+
+All 28 files were authored for pqdaw and are written by tools/fixtures/gen_scl_fixtures.mjs (re-running it reproduces
+them byte for byte). No file is copied from the Scala scale archive or anywhere else. The pitch sets are mathematical
+facts (equal divisions, harmonic series, chains of pure intervals, temperaments computed from their definitions) or
+plain published ratio lists; the descriptions and comments are our own text. Each file is laid out to cover .scl
+edge cases seen in real files; .gitattributes marks *.scl -text so git keeps the exact bytes.
+
+File                      Pitch set (source)                                  Format feature covered
+big_ratios.scl            3^12/2^19, 3^40/2^63, 2^65/3^41, 3^53/2^84 (math)   ratios beyond int64 (up to 26 digits)
+bp_equal.scl              13 equal divisions of 3/1 (Bohlen-Pierce ET, math)   tritave equave, cents + ratio
+bp_just.scl               Bohlen-Pierce just ratios (published list)           tritave equave, ratios
+cents_units.scl           major scale in 12-EDO cents (math)                   "200.000 cents" trailing words
+descending.scl            8/9 4/5 1/2                                          formal octave below 1/1
+edo12.scl                 12-EDO (math)                                        canonical CRLF layout
+edo15_trailing_dot.scl    15-EDO, 80-cent steps (math)                         cents written "80." (no decimals)
+edo19_lf.scl              19-EDO (math)                                        LF-only line ends
+edo22.scl                 22-EDO (math)                                        mixed space/tab indentation
+edo31_tabs.scl            31-EDO (math)                                        tabs around values, whitespace-only comments
+edo53_annotated.scl       53-EDO (math)                                        "! k\53" annotations after every value
+edo7_nofinalnl.scl        7-EDO (math)                                         no final newline; commented-out pitches after
+empty_description.scl     3/2 2/1                                              empty description line
+fifth_by_nine.scl         3/2 divided into 9 equal steps, 18 steps (math)      non-octave cents scale, equave 1403.91 cents
+harm_subharm16.scl        harmonics 2..16, subharmonics 1/2..1/15, then 1/1    formal octave 1/1
+harmonics16_32.scl        harmonics 17..32 over 16 (math)                      unreduced ratios (18/16 … 32/16)
+hexany_raw.scl            pair products of {1,3,5,7} over 3 (math)             comment before count, "6 " count, bare integers
+just5_12.scl              5-limit 12-tone just scale (published ratios)        note names after values, comments between pitches
+latin1.scl                12-EDO (math)                                        Latin-1 description bytes (0xE9, 0xE0)
+meantone_qc.scl           quarter-comma meantone, fifth = 5^(1/4) (computed)   mixed cents and exact ratios (5/4, 25/16)
+negative.scl              ±120, ±240 cents, 1200 cents                         negative cents
+partch43.scl              Harry Partch's 43-tone ratios (published list)        43 pitches, "! n" annotations
+powers_10_9.scl           (10/9)^k, k = 1..14 (math)                           ratios up to 10^14 that fit int64
+ptolemy_diatonic.scl      Ptolemy's intense diatonic (published ratios)        bare-integer equave "2"
+pythagorean12.scl         chain of pure fifths Eb..G# (math)                   3-limit ratios up to 6561/4096
+stretched10.scl           10 equal steps of 1202.5 cents (math)                cents only, no leading spaces, stretched equave
+tetrachord.scl            Ptolemy's diatonic tetrachord 16/15 9/8 10/9         4/3 equave, trailing spaces in description
+unreduced_annotated.scl   Pythagorean diatonic (math)                          unreduced ratios with "!" comments after values
+
+As separate evidence (not committed), the parser was run once locally over all 5401 files of the Scala scale archive
+(https://www.huygens-fokker.org/docs/scales.zip, version 94): every file parsed, round-tripped and built a Scale.

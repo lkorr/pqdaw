@@ -11,17 +11,30 @@ Result<Tuning> Tuning::make(const System& system, double referenceHz) {
   return Tuning(system, referenceHz);
 }
 
+Result<Tuning> makeScalaTuning(const Scale& scale, const KeyboardMapping& kbm) {
+  auto bad = [](const char* why) { return Error{ErrorCode::InvalidArgument, why, {}}; };
+  const std::optional<int64_t> refDegree = mapKeyToDegree(kbm, kbm.referenceKey);
+  if (!refDegree) return bad("the keyboard mapping's reference key is unmapped or outside the retuned range");
+  if (!std::isfinite(kbm.referenceHz) || !(kbm.referenceHz > 0.0))
+    return bad("the keyboard mapping's reference frequency must be a finite positive number");
+  // Hz(reference key) = referenceHz, and the reference key plays absolute degree refDegree, so degree 0 sits
+  // centsOfDegree(refDegree) below it.
+  const double degree0Hz = kbm.referenceHz * std::exp2(-scale.centsOfDegree(*refDegree) * (1.0 / 1200.0));
+  return Tuning::make(scale, degree0Hz);
+}
+
 std::optional<double> resolveHzDouble(const PitchId& pitch, const Tuning& tuning,
                                       const ResolveContext& ctx) noexcept {  // RT-safe
   double hz = 0.0;
   switch (pitch.kind()) {
     case PitchKind::Degree: {
-      // Scale (T2.4) adds its case here.
       if (const Edo* edo = tuning.edo()) {
         const int64_t step = static_cast<int64_t>(pitch.equave()) * static_cast<int64_t>(edo->n()) + pitch.degree();
         hz = tuning.referenceHz() * std::exp2(edo->log2OfStep(step));
       } else if (const Mos* mos = tuning.mos()) {
         hz = tuning.referenceHz() * std::exp2(mos->centsOf(pitch.degree(), pitch.equave()) * (1.0 / 1200.0));
+      } else if (const Scale* scale = tuning.scale()) {
+        hz = tuning.referenceHz() * std::exp2(scale->centsOf(pitch.degree(), pitch.equave()) * (1.0 / 1200.0));
       } else {
         return std::nullopt;
       }

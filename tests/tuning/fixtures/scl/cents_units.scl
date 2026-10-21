@@ -1,0 +1,12 @@
+! cents_units.scl
+!
+Major scale in 12-EDO cents with units
+ 7
+!
+ 200.000 cents
+ 400.000 cents
+ 500.000 cents
+ 700.000 cents
+ 900.000 cents
+ 1100.000 cents
+ 2/1

@@ -1,0 +1,19 @@
+! just5_12.scl
+!
+5-limit just chromatic scale on C
+ 12
+!
+! lower tetrachord
+ 16/15   Db
+ 9/8   D
+ 6/5   Eb
+ 5/4   E
+ 4/3   F
+ 45/32   F#
+! upper tetrachord
+ 3/2   G
+ 8/5   Ab
+ 5/3   A
+ 9/5   Bb
+ 15/8   B
+ 2/1   C

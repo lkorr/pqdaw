@@ -5,3 +5,5 @@
 *.wav binary
 *.ttf binary
 *.otf binary
+# Scala archive fixtures: keep the original bytes (CRLF, LF-only, Latin-1, no final newline are test cases)
+tests/tuning/fixtures/scl/*.scl -text

@@ -10,5 +10,7 @@ pq_add_module(pq_tuning
     src/mos_data.cpp
     src/mos_data_tables.cpp
     src/mos_tuning.cpp
+    src/scala.cpp
+    src/scale_tuning.cpp
   DEPS pq_core
 )
