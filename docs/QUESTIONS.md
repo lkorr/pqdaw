@@ -289,19 +289,19 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options: A) plain reuse, caller contract "never draw a destroyed id" (now); B) generation bits in `TextureId` checked by `record()` (stale ids fall back to the white texel).
 - Provisional choice: A (zero cost, ids stay small and dense). B is a local change to `TextureId` packing in renderer.cpp/draw_list.h if T3.x lifetimes get hard to reason about.
 
-## Q?-T3.6-a · 2026-10-21 · T3.6 · Automation curve law (needed before T3.15/T3.16 define it)
+## Q39 · 2026-10-21 · T3.6 · Automation curve law (needed before T3.15/T3.16 define it)
 - Context: `Breakpoint::curve` ∈ [−1, 1] had no law ("T3.15/T3.16"). Insert/delete/duplicate time, shapes and lock-envelope moves must cut segments without changing the envelope, which needs the law now.
 - Options: A) exponential family `v = va + (vb − va)·(e^{k·x} − 1)/(e^k − 1)`, k = 6·curve: closed under cutting (the part [0, x0] is the same family with curve·x0, [x0, 1] with curve·(1 − x0)), so every cut is exact; B) a power curve x^p (Ableton-like look, not closed under cutting: cuts would need extra points and still be approximate); C) leave curves to T3.16 and make time edits cut only linear segments exactly.
 - Provisional choice: A, in `pq/document/automation_curve.h` (header-only, noexcept). T3.16's `evalAutomation` must use the same law: move the header to `core` then (the engine cannot include `document`). K = 6 is a look choice (at curve 1 the midpoint is at 4.7 % of the rise).
 - Status: open
 
-## Q?-T3.6-b · 2026-10-21 · T3.6 · Up/Down on reduced ratios, Harmonic notes, and non-ratio equaves
+## Q40 · 2026-10-21 · T3.6 · Up/Down on reduced ratios, Harmonic notes, and non-ratio equaves
 - Context: SPEC §6.1 says Ratio/Harmonic notes move to `(n ± 1)/d`, and TASKS asks for 5/4 → 6/4. A `PitchId` ratio is stored reduced, so 6/4 is 3/2, and the next Up from 3/2 is 4/2 = 2/1, not 7/4: the fundamental 1/4 is lost.
 - Options: A) step on the reduced ratio's own denominator, with an optional shared denominator D from the caller (`harmonicDenominator`: the step uses lcm(d, D)), so a view can keep a chord's fundamental (e.g. D = lcm of the selection's denominators, or a value remembered during a key-repeat gesture); B) store unreduced ratios (changes PitchId's canonical form and equality); C) a per-note "fundamental denominator" field (Note is at its 64-byte budget).
 - Provisional choice: A (`ops::stepPitch`). Also: Harmonic notes step voiceIndex ± 1 (≥ 0; the upper bound needs the JI object, which the model does not have yet) and do not move by equave; Ratio Shift multiplies by the tuning's equave ratio when it is exact (EDO ratio equave, Scala ratio equave) or, for a cents equave (MOS, EDO in cents), by p/q with p, q ≤ 64 within 0.001 ¢ of it (2/1, 3/1…); otherwise the note does not move. Cents notes step to the next line of the tuning's degree lattice (all degrees in all equaves, MOS stretch included; a line within 1e-6 ¢ counts as "on" it) or of an EDO display grid when the view passes one.
 - Status: open
 
-## Q?-T3.6-c · 2026-10-21 · T3.6 · Clip and time-edit semantics not fixed by SPEC/TASKS
+## Q41 · 2026-10-21 · T3.6 · Clip and time-edit semantics not fixed by SPEC/TASKS
 - Context: Live's manual describes these operations but not every edge; T3.6 had to pick.
 - Provisional choices (all in `pq/document/edit_ops.h`, pure functions over snapshots, nothing persisted depends on them):
   1. Clips on a track never overlap: inserting, moving, copying, duplicating or growing a clip overwrites what is under it (covered clips removed, partly covered ones trimmed or split). Trimmed clips keep their hidden notes (Q15 "kept").

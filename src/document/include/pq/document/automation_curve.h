@@ -1,6 +1,6 @@
 #pragma once
 
-// Automation envelope evaluation (T3.6; provisional curve law, docs/QUESTIONS.md "Q?-T3.6-a").
+// Automation envelope evaluation (T3.6; provisional curve law, docs/QUESTIONS.md "Q39").
 //
 // A lane's breakpoints are sorted by (tick, id). Before the first point the envelope holds the first value, after the
 // last point the last value. Between consecutive points a = (ta, va, curve c) and b = (tb, vb):
