@@ -29,7 +29,34 @@ struct Z1 {
   }
 };
 
+// z1 split for feedback loops scheduled per sample: read (emit the stored value) at the start of the sample,
+// write (store the input) at the end.
+struct Z1Read {
+  static constexpr uint32_t kSpec = 0;
+  template <class S, uint32_t SM>
+  static void run(const KernelArgs& a) noexcept {  // RT-safe
+    const auto& st = *static_cast<const Z1State*>(a.state);
+    for (uint32_t f = 0; f < a.frames; ++f) std::memcpy(a.out[0] + f * S::kW, st.last, S::kW * sizeof(float));
+  }
+};
+struct Z1Write {
+  static constexpr uint32_t kSpec = 1;
+  template <class S, uint32_t SM>
+  static void run(const KernelArgs& a) noexcept {  // RT-safe
+    if (a.frames == 0) return;
+    auto& st = *static_cast<Z1State*>(a.state);
+    const float* x = splBit(SM, 0) ? a.in[0] : a.in[0] + static_cast<size_t>(a.frames - 1) * S::kW;
+    std::memcpy(st.last, x, S::kW * sizeof(float));
+  }
+};
+
 enum class Interp { Linear, Cubic, Allpass };
+
+// Minimum delay per read type: every tap must be at least one sample old (so `x` is a delayed input and a
+// feedback loop through a delay line is legal): linear ≥ 1, cubic ≥ 2 (its newest tap is one sample newer than
+// the interpolated pair), allpass ≥ 1.5 (fraction kept in [0.5, 1.5) with the newest tap ≥ 1 sample old).
+template <Interp K>
+constexpr float kMinDelay = K == Interp::Linear ? 1.0f : K == Interp::Cubic ? 2.0f : 1.5f;
 
 // Ring-buffer offsets: frame `pos` (wrapped by mask) of this lane. The ring is frame-major with L lanes.
 template <class S>
@@ -49,101 +76,105 @@ inline typename S::F hermite(typename S::F xm1, typename S::F x0, typename S::F 
   return S::fma(S::fma(S::fma(c3, t, c2), t, c1), t, x0);
 }
 
-template <Interp K>
+// One delayed read. `pos` = ring frame of the sample being produced (its own input is never read); `rix`
+// maps a frame position to a ring float index (lane-interleaved for voice groups, plain for mono).
+template <class S, Interp K, class RingIndex>
+inline typename S::F delayTap(const float* ring, typename S::I pos, typename S::F dIn, float maxDelay,
+                              RingIndex rix, typename S::F& y1) noexcept {  // RT-safe
+  const auto one = S::seti(1);
+  // max(d, min) returns min for NaN.
+  const auto d = S::min(S::max(dIn, S::set(kMinDelay<K>)), S::set(maxDelay));
+  const auto fl = S::floor(d);
+  auto fr = S::sub(d, fl);
+  auto n = S::truncToInt(fl);
+  if constexpr (K == Interp::Linear) {
+    const auto p0 = S::subi(pos, n);
+    const auto x0 = S::gather(ring, rix(p0));
+    const auto x1 = S::gather(ring, rix(S::subi(p0, one)));
+    return S::fma(fr, S::sub(x1, x0), x0);
+  } else if constexpr (K == Interp::Cubic) {
+    const auto p0 = S::subi(pos, n);
+    const auto xm1 = S::gather(ring, rix(S::addi(p0, one)));
+    const auto x0 = S::gather(ring, rix(p0));
+    const auto x1 = S::gather(ring, rix(S::subi(p0, one)));
+    const auto x2 = S::gather(ring, rix(S::subi(p0, S::seti(2))));
+    return hermite<S>(xm1, x0, x1, x2, fr);
+  } else {
+    // First-order allpass y = c·(x0 − y1) + x1, c = (1 − Δ)/(1 + Δ), with Δ kept in [0.5, 1.5): if fr < 0.5,
+    // borrow one sample from the integer part.
+    const auto low = S::lt(fr, S::set(0.5f));
+    fr = S::add(fr, S::band(low, S::set(1.0f)));
+    n = S::addi(n, S::asI(low));  // −1 where low
+    const auto p0 = S::subi(pos, n);
+    const auto x0 = S::gather(ring, rix(p0));
+    const auto x1 = S::gather(ring, rix(S::subi(p0, one)));
+    const auto c = S::div(S::sub(S::set(1.0f), fr), S::add(S::set(1.0f), fr));
+    const auto y = S::fma(c, S::sub(x0, y1), x1);
+    y1 = y;
+    return y;
+  }
+}
+
+// Delay line kernels. The atom (kRead && kWrite) writes then reads each frame; the split kernels, for feedback
+// loops scheduled per sample (atoms.h), do one each. Inputs: atom (x, delay); read (delay); write (x).
+template <Interp K, bool kRead, bool kWrite>
 struct Delay {
-  static constexpr uint32_t kSpec = 2;  // x, delay
+  static constexpr uint32_t kSpec = kRead && kWrite ? 2 : 1;
   template <class S, uint32_t SM>
   static void run(const KernelArgs& a) noexcept {  // RT-safe
     auto& st = *static_cast<DelayState*>(a.state);
     constexpr uint32_t L = S::kW;
-    float* out = a.out[0];
+    constexpr uint32_t kD = kWrite ? 1 : 0;  // input index of the delay time
     if (st.lanes != L) {  // state initialised for the other lane count: never touch the ring
-      std::memset(out, 0, static_cast<size_t>(a.frames) * L * sizeof(float));
+      if constexpr (kRead) std::memset(a.out[0], 0, static_cast<size_t>(a.frames) * L * sizeof(float));
       return;
     }
     float* ring = st.ring();
-    const In<S, splBit(SM, 0)> x(a.in[0]);
-    const In<S, splBit(SM, 1)> delay(a.in[1]);
-    const float minDelay = K == Interp::Linear ? 0.0f : K == Interp::Cubic ? 1.0f : 0.5f;
-    const auto dMin = S::set(minDelay);
-    const auto dMax = S::set(st.maxDelay);
-    const auto mask = S::seti(static_cast<int32_t>(st.mask));
-    const auto lane = S::laneIndex();
-    const auto one = S::seti(1);
     uint32_t w = st.writePos;
-    auto y1 = S::load(st.apY1);
     uint32_t f = 0;
-    if constexpr (S::kW == 1 && K != Interp::Allpass) {
-      // Mono linear/cubic reads have no recurrence: every read is at or before its own sample, so a chunk of 8
-      // inputs can be written first and the 8 outputs read with gathers (the ring has 10 frames of headroom for
-      // the samples written ahead). Allpass keeps its per-sample recurrence (y1) and stays scalar.
-      const auto dMin8 = S8::set(minDelay);
-      const auto dMax8 = S8::set(st.maxDelay);
-      const auto mask8 = S8::seti(static_cast<int32_t>(st.mask));
-      const auto one8 = S8::seti(1);
-      for (; f + 8 <= a.frames; f += 8, w += 8) {
-        const uint32_t wpos = w & st.mask;
-        if constexpr (splBit(SM, 0)) {
-          const auto xv = S8::set(a.in[0][0]);
-          if (wpos + 8 <= st.capacity) S8::store(ring + wpos, xv);
-          else for (uint32_t k = 0; k < 8; ++k) ring[(w + k) & st.mask] = a.in[0][0];
-        } else {
-          if (wpos + 8 <= st.capacity) S8::store(ring + wpos, S8::load(a.in[0] + f));
-          else for (uint32_t k = 0; k < 8; ++k) ring[(w + k) & st.mask] = a.in[0][f + k];
-        }
-        const auto dIn = splBit(SM, 1) ? S8::set(a.in[1][0]) : S8::load(a.in[1] + f);
-        const auto d = S8::min(S8::max(dIn, dMin8), dMax8);
-        const auto fl = S8::floor(d);
-        const auto fr = S8::sub(d, fl);
-        const auto p0 = S8::subi(S8::addi(S8::seti(static_cast<int32_t>(w)), S8::laneIndex()), S8::truncToInt(fl));
-        const auto x0 = S8::gather(ring, S8::andi(p0, mask8));
-        const auto x1 = S8::gather(ring, S8::andi(S8::subi(p0, one8), mask8));
-        if constexpr (K == Interp::Linear) {
-          S8::store(out + f, S8::fma(fr, S8::sub(x1, x0), x0));
-        } else {
-          const auto xm1 = S8::gather(ring, S8::andi(S8::addi(p0, one8), mask8));
-          const auto x2 = S8::gather(ring, S8::andi(S8::subi(p0, S8::seti(2)), mask8));
-          S8::store(out + f, hermite<S8>(xm1, x0, x1, x2, fr));
+    if constexpr (!kRead) {
+      const In<S, splBit(SM, 0)> x(a.in[0]);
+      for (; f < a.frames; ++f, ++w) S::store(ring + static_cast<size_t>(w & st.mask) * L, x.at(f));
+      st.writePos = w;
+    } else {
+      float* out = a.out[0];
+      auto y1 = S::load(st.apY1);
+      if constexpr (S::kW == 1 && kWrite && K != Interp::Allpass) {
+        // Mono linear/cubic reads have no recurrence and every tap is ≥ 1 sample old, so a chunk of 8 inputs
+        // can be written first and the 8 outputs read with gathers, one frame per AVX2 lane (the ring has 10
+        // frames of headroom for the samples written ahead). Allpass keeps its per-sample recurrence (y1).
+        const auto mask8 = S8::seti(static_cast<int32_t>(st.mask));
+        const auto rix8 = [mask8](S8::I p) noexcept { return S8::andi(p, mask8); };
+        S8::F unusedY1 = S8::zero();
+        for (; f + 8 <= a.frames; f += 8, w += 8) {
+          const uint32_t wpos = w & st.mask;
+          if constexpr (splBit(SM, 0)) {
+            if (wpos + 8 <= st.capacity) S8::store(ring + wpos, S8::set(a.in[0][0]));
+            else for (uint32_t k = 0; k < 8; ++k) ring[(w + k) & st.mask] = a.in[0][0];
+          } else {
+            if (wpos + 8 <= st.capacity) S8::store(ring + wpos, S8::load(a.in[0] + f));
+            else for (uint32_t k = 0; k < 8; ++k) ring[(w + k) & st.mask] = a.in[0][f + k];
+          }
+          const auto dIn = splBit(SM, kD) ? S8::set(a.in[kD][0]) : S8::load(a.in[kD] + f);
+          const auto pos = S8::addi(S8::seti(static_cast<int32_t>(w)), S8::laneIndex());
+          S8::store(out + f, delayTap<S8, K>(ring, pos, dIn, st.maxDelay, rix8, unusedY1));
         }
       }
-    }
-    for (; f < a.frames; ++f, ++w) {
-      S::store(ring + static_cast<size_t>(w & st.mask) * L, x.at(f));
-      // max(d, dMin) returns dMin for NaN.
-      const auto d = S::min(S::max(delay.at(f), dMin), dMax);
-      const auto fl = S::floor(d);
-      auto fr = S::sub(d, fl);
-      auto n = S::truncToInt(fl);
-      const auto wv = S::seti(static_cast<int32_t>(w));
-      typename S::F y;
-      if constexpr (K == Interp::Linear) {
-        const auto p0 = S::subi(wv, n);
-        const auto x0 = S::gather(ring, ringIndex<S>(p0, mask, lane));
-        const auto x1 = S::gather(ring, ringIndex<S>(S::subi(p0, one), mask, lane));
-        y = S::fma(fr, S::sub(x1, x0), x0);
-      } else if constexpr (K == Interp::Cubic) {
-        const auto p0 = S::subi(wv, n);
-        const auto xm1 = S::gather(ring, ringIndex<S>(S::addi(p0, one), mask, lane));
-        const auto x0 = S::gather(ring, ringIndex<S>(p0, mask, lane));
-        const auto x1 = S::gather(ring, ringIndex<S>(S::subi(p0, one), mask, lane));
-        const auto x2 = S::gather(ring, ringIndex<S>(S::subi(p0, S::seti(2)), mask, lane));
-        y = hermite<S>(xm1, x0, x1, x2, fr);
-      } else {
-        // Keep the allpass fraction in [0.5, 1.5): if fr < 0.5, borrow one sample from the integer part.
-        const auto low = S::lt(fr, S::set(0.5f));
-        fr = S::add(fr, S::band(low, S::set(1.0f)));
-        n = S::addi(n, S::asI(low));  // −1 where low
-        const auto p0 = S::subi(wv, n);
-        const auto x0 = S::gather(ring, ringIndex<S>(p0, mask, lane));
-        const auto x1 = S::gather(ring, ringIndex<S>(S::subi(p0, one), mask, lane));
-        const auto c = S::div(S::sub(S::set(1.0f), fr), S::add(S::set(1.0f), fr));
-        y = S::fma(c, S::sub(x0, y1), x1);
-        y1 = y;
+      const auto mask = S::seti(static_cast<int32_t>(st.mask));
+      const auto lane = S::laneIndex();
+      const auto rix = [mask, lane](typename S::I p) noexcept { return ringIndex<S>(p, mask, lane); };
+      const In<S, splBit(SM, kD)> delay(a.in[kD]);
+      for (; f < a.frames; ++f, ++w) {
+        if constexpr (kWrite) {
+          const In<S, splBit(SM, 0)> x(a.in[0]);
+          S::store(ring + static_cast<size_t>(w & st.mask) * L, x.at(f));
+        }
+        const auto pos = S::seti(static_cast<int32_t>(w));
+        S::store(out + f * L, delayTap<S, K>(ring, pos, delay.at(f), st.maxDelay, rix, y1));
       }
-      S::store(out + f * L, y);
+      if constexpr (kWrite) st.writePos = w;
+      S::store(st.apY1, y1);
     }
-    st.writePos = w;
-    S::store(st.apY1, y1);
   }
 };
 
@@ -190,9 +221,15 @@ struct Latch {
 KernelFn findMemoryKernel(Atom a, uint32_t lanes, uint32_t m) noexcept {
   switch (a) {
     case Atom::Z1: return pick<Z1>(lanes, m);
-    case Atom::DelayLinear: return pick<Delay<Interp::Linear>>(lanes, m);
-    case Atom::DelayCubic: return pick<Delay<Interp::Cubic>>(lanes, m);
-    case Atom::DelayAllpass: return pick<Delay<Interp::Allpass>>(lanes, m);
+    case Atom::Z1Read: return pick<Z1Read>(lanes, m);
+    case Atom::Z1Write: return pick<Z1Write>(lanes, m);
+    case Atom::DelayLinear: return pick<Delay<Interp::Linear, true, true>>(lanes, m);
+    case Atom::DelayCubic: return pick<Delay<Interp::Cubic, true, true>>(lanes, m);
+    case Atom::DelayAllpass: return pick<Delay<Interp::Allpass, true, true>>(lanes, m);
+    case Atom::DelayReadLinear: return pick<Delay<Interp::Linear, true, false>>(lanes, m);
+    case Atom::DelayReadCubic: return pick<Delay<Interp::Cubic, true, false>>(lanes, m);
+    case Atom::DelayReadAllpass: return pick<Delay<Interp::Allpass, true, false>>(lanes, m);
+    case Atom::DelayWrite: return pick<Delay<Interp::Linear, false, true>>(lanes, m);
     case Atom::SampleHold: return pick<SampleHold>(lanes, m);
     case Atom::Latch: return pick<Latch>(lanes, m);
     default: return nullptr;

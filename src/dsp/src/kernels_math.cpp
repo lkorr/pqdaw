@@ -103,6 +103,7 @@ KernelFn findMathKernel(Atom a, uint32_t lanes, uint32_t m) noexcept {
     case Atom::Floor: return pick<Ew<FloorOp>>(lanes, m);
     case Atom::Frac: return pick<Ew<FracOp>>(lanes, m);
     case Atom::Sqrt: return pick<Ew<SqrtOp>>(lanes, m);
+    case Atom::SqrtFast: return pick<Ew<SqrtOp>>(lanes, m);
     case Atom::Exp: return pick<Ew<ExpOp>>(lanes, m);
     case Atom::ExpFast: return pick<Ew<ExpFastOp>>(lanes, m);
     case Atom::Log: return pick<Ew<LogOp>>(lanes, m);

@@ -65,6 +65,8 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
   switch (a) {
     case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass:
       return i == 1 ? 10.0f + 40.0f * r : r;
+    case Atom::DelayReadLinear: case Atom::DelayReadCubic: case Atom::DelayReadAllpass:
+      return 10.0f + 40.0f * r;
     case Atom::Phasor: case Atom::SineHz:
       return 100.0f + 1000.0f * r;
     case Atom::Wavetable:

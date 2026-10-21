@@ -41,7 +41,7 @@ RefFn delayRef(int kind, double maxDelay) {
     std::vector<double> h;
     auto at = [&](int64_t n) { return n >= 0 ? h[static_cast<size_t>(n)] : 0.0; };
     double y1 = 0;
-    const double dMin = kind == 0 ? 0.0 : kind == 1 ? 1.0 : 0.5;
+    const double dMin = kind == 0 ? 1.0 : kind == 1 ? 2.0 : 1.5;
     for (size_t t = 0; t < in[0].size(); ++t) {
       h.push_back(in[0][t]);
       const int64_t n = static_cast<int64_t>(t);
@@ -349,4 +349,113 @@ TEST_CASE("dsp atoms: sample_pos and sample_read against a double playhead") {
     checkAtom(r, 71);
   }
   CHECK(!pq::dsp::SampleData::build(std::vector<float>{}).ok());
+}
+
+namespace {
+
+// Runs a kernel for one block with Blk inputs (layout [t*lanes + lane]).
+void runBlock(Atom a, uint32_t lanes, void* state, std::vector<const float*> ins, std::vector<float*> outs,
+              uint32_t frames) {
+  pq::dsp::KernelArgs args{ins.data(), outs.data(), state, nullptr, frames, static_cast<uint16_t>(ins.size()),
+                           static_cast<uint16_t>(outs.size()), 0};
+  pq::dsp::findKernel(a, lanes, 0)(args);
+}
+
+}  // namespace
+
+TEST_CASE("dsp atoms: delay and z1 split kernels (per-sample feedback) match the atoms bit for bit") {
+  constexpr uint32_t T = 600;
+  const Atom atoms[] = {Atom::DelayLinear, Atom::DelayCubic, Atom::DelayAllpass};
+  const Atom reads[] = {Atom::DelayReadLinear, Atom::DelayReadCubic, Atom::DelayReadAllpass};
+  for (uint32_t lanes : {1u, 8u}) {
+    std::mt19937 rng(90 + lanes);
+    std::uniform_real_distribution<float> ux(-1, 1), ud(-1, 70);
+    std::vector<float> x(T * lanes), d(T * lanes);
+    for (auto& v : x) v = ux(rng);
+    for (auto& v : d) v = ud(rng);
+    pq::dsp::StateInit init;
+    init.lanes = lanes;
+    init.maxDelayFrames = 64;
+    const uint32_t bytes = pq::dsp::stateBytes(Atom::DelayLinear, init);
+    CHECK(pq::dsp::stateBytes(Atom::DelayWrite, init) == bytes);
+    for (int k = 0; k < 3; ++k) {
+      pq::AlignedBuffer<float> s1(bytes / 4), s2(bytes / 4);
+      pq::dsp::initState(atoms[k], s1.data(), init);
+      pq::dsp::initState(reads[k], s2.data(), init);
+      std::vector<float> fused(T * lanes), split(T * lanes);
+      const auto blocks = randomBlocks(rng, T, 67);
+      uint32_t t0 = 0;
+      for (uint32_t b : blocks) {
+        runBlock(atoms[k], lanes, s1.data(), {x.data() + t0 * lanes, d.data() + t0 * lanes}, {fused.data() + t0 * lanes}, b);
+        t0 += b;
+      }
+      for (uint32_t t = 0; t < T; ++t) {
+        runBlock(reads[k], lanes, s2.data(), {d.data() + t * lanes}, {split.data() + t * lanes}, 1);
+        runBlock(Atom::DelayWrite, lanes, s2.data(), {x.data() + t * lanes}, {}, 1);
+      }
+      for (uint32_t i = 0; i < T * lanes; ++i) REQUIRE(std::bit_cast<uint32_t>(fused[i]) == std::bit_cast<uint32_t>(split[i]));
+    }
+    // z1
+    pq::dsp::Z1State z1a{}, z1b{};
+    std::vector<float> fused(T * lanes), split(T * lanes);
+    runBlock(Atom::Z1, lanes, &z1a, {x.data()}, {fused.data()}, T);
+    for (uint32_t t = 0; t < T; ++t) {
+      runBlock(Atom::Z1Read, lanes, &z1b, {}, {split.data() + t * lanes}, 1);
+      runBlock(Atom::Z1Write, lanes, &z1b, {x.data() + t * lanes}, {}, 1);
+    }
+    CHECK(fused == split);
+  }
+}
+
+TEST_CASE("dsp atoms: a feedback comb filter through the split delay kernels matches a double reference") {
+  // y[n] = x[n] + g·delay(y)[n], delay modulated around 20.5 samples; per-sample read → math → write.
+  constexpr uint32_t T = 3000;
+  constexpr float g = 0.7f;
+  for (int k = 0; k < 3; ++k) {
+    const Atom read = k == 0 ? Atom::DelayReadLinear : k == 1 ? Atom::DelayReadCubic : Atom::DelayReadAllpass;
+    pq::dsp::StateInit init;
+    init.lanes = 1;
+    init.maxDelayFrames = 32;
+    pq::AlignedBuffer<float> st(pq::dsp::stateBytes(read, init) / 4);
+    pq::dsp::initState(read, st.data(), init);
+    std::vector<float> x(T), d(T), y(T);
+    for (uint32_t t = 0; t < T; ++t) {
+      x[t] = t < 5 ? 1.0f : static_cast<float>(0.1 * std::sin(0.05 * t));
+      d[t] = static_cast<float>(20.5 + 3.0 * std::sin(0.002 * t));
+    }
+    for (uint32_t t = 0; t < T; ++t) {
+      float r = 0;
+      runBlock(read, 1, st.data(), {&d[t]}, {&r}, 1);
+      y[t] = x[t] + g * r;
+      runBlock(Atom::DelayWrite, 1, st.data(), {&y[t]}, {}, 1);
+    }
+    // Reference: same recursion in double.
+    std::vector<double> yr(T);
+    double y1 = 0;
+    auto at = [&](int64_t n) { return n >= 0 ? yr[static_cast<size_t>(n)] : 0.0; };
+    double worst = 0;
+    for (uint32_t t = 0; t < T; ++t) {
+      const int64_t n = t;
+      double dd = d[t];
+      int64_t i = static_cast<int64_t>(std::floor(dd));
+      double f = dd - std::floor(dd);
+      double r;
+      if (k == 0) {
+        r = at(n - i) + f * (at(n - i - 1) - at(n - i));
+      } else if (k == 1) {
+        r = hermiteRef(at(n - i + 1), at(n - i), at(n - i - 1), at(n - i - 2), f);
+      } else {
+        if (f < 0.5) {
+          f += 1;
+          i -= 1;
+        }
+        const double c = (1 - f) / (1 + f);
+        r = c * (at(n - i) - y1) + at(n - i - 1);
+        y1 = r;
+      }
+      yr[t] = static_cast<double>(x[t]) + static_cast<double>(g) * r;
+      worst = std::max(worst, std::abs(yr[t] - static_cast<double>(y[t])));
+    }
+    CHECK(worst < 1e-5);
+  }
 }

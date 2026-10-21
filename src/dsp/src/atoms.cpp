@@ -32,7 +32,7 @@ constexpr KernelInfo st(const char* n, uint8_t nin, uint32_t boolIn, uint32_t bo
 constexpr KernelInfo kInfo[kAtomCount] = {
     bin("add"), bin("sub"), bin("mul"), bin("div"), bin("min"), bin("max"), bin("mod"), bin("pow"),
     bin("fast_pow"), bin("cents_to_hz"), bin("fast_cents_to_hz"), bin("hz_to_cents"), bin("fast_hz_to_cents"),
-    un("neg"), un("abs"), un("sign"), un("floor"), un("frac"), un("sqrt"), un("exp"), un("fast_exp"), un("log"),
+    un("neg"), un("abs"), un("sign"), un("floor"), un("frac"), un("sqrt"), un("fast_sqrt"), un("exp"), un("fast_exp"), un("log"),
     un("fast_log"), un("sin"), un("fast_sin"), un("tan"), un("fast_tan"), un("tanh"), un("fast_tanh"),
     un("db_to_gain"), un("fast_db_to_gain"), un("gain_to_db"), un("fast_gain_to_db"), un("const"),
     ter("clip"), ter("lerp"), ter("select", kB0), ter("muladd"),
@@ -46,19 +46,25 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     st("rise", 1, kB0, kB0, sizeof(EdgeState), kB0),
     st("fall", 1, kB0, kB0, sizeof(EdgeState), kB0),
     st("change", 1, kB0, kB0, sizeof(EdgeState), kB0),
-    st("sr", 2, kB0 | kB1, kB0, sizeof(FlipFlopState), kB0 | kB1),
-    st("d", 2, kB0 | kB1, kB0, sizeof(FlipFlopState), kB0 | kB1),
-    st("t", 2, kB0 | kB1, kB0, sizeof(FlipFlopState), kB0 | kB1),
+    st("srff", 2, kB0 | kB1, kB0, sizeof(FlipFlopState), kB0 | kB1),
+    st("dff", 2, kB0 | kB1, kB0, sizeof(FlipFlopState), kB0 | kB1),
+    st("tff", 2, kB0 | kB1, kB0, sizeof(FlipFlopState), kB0 | kB1),
     st("counter", 4, kB0 | kB1 | kB2, 0, sizeof(CounterState), kB0 | kB1 | kB2 | kB3),
     st("clockdiv", 2, kB0, kB0, sizeof(ClockDivState), kB0 | kB1),
     st("pulse", 1, 0, kB0, sizeof(PulseState), kB0),
     st("timer", 2, kB0, kB0, sizeof(TimerState), kB0 | kB1),
     st("z1", 1, 0, 0, sizeof(Z1State), kB0),
-    st("delay_linear", 2, 0, 0, sizeof(DelayState), kB0 | kB1),
+    st("delay", 2, 0, 0, sizeof(DelayState), kB0 | kB1),
     st("delay_cubic", 2, 0, 0, sizeof(DelayState), kB0 | kB1),
     st("delay_allpass", 2, 0, 0, sizeof(DelayState), kB0 | kB1),
-    st("sample_hold", 2, kB1, 0, sizeof(SampleHoldState), kB0 | kB1),
+    st("samplehold", 2, kB1, 0, sizeof(SampleHoldState), kB0 | kB1),
     st("latch", 2, kB1, 0, sizeof(LatchState), kB0 | kB1),
+    {"z1:read", 0, 1, false, false, 0, 0, 0, 0, sizeof(Z1State), Resource::None, false},
+    {"z1:write", 1, 0, false, false, 0, 0, kB0, 0, sizeof(Z1State), Resource::None, false},
+    {"delay:read", 1, 1, false, false, 0, 0, kB0, 0, sizeof(DelayState), Resource::None, false},
+    {"delay_cubic:read", 1, 1, false, false, 0, 0, kB0, 0, sizeof(DelayState), Resource::None, false},
+    {"delay_allpass:read", 1, 1, false, false, 0, 0, kB0, 0, sizeof(DelayState), Resource::None, false},
+    {"delay:write", 1, 0, false, false, 0, 0, kB0, 0, sizeof(DelayState), Resource::None, false},
     st("phasor", 2, kB1, 0, sizeof(PhasorState), kB0 | kB1),
     {"sine", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::None, true},
     st("sine_hz", 2, kB1, 0, sizeof(PhasorState), kB0 | kB1),
@@ -74,7 +80,13 @@ constexpr KernelInfo kInfo[kAtomCount] = {
 };
 
 bool isDelay(Atom a) noexcept {
-  return a == Atom::DelayLinear || a == Atom::DelayCubic || a == Atom::DelayAllpass;
+  switch (a) {
+    case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass: case Atom::DelayReadLinear:
+    case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite:
+      return true;
+    default:
+      return false;
+  }
 }
 
 // Max delay clamped to [2, 2^30]: ≥ 2 keeps every interpolator's minimum delay (≤ 1) below the maximum.
@@ -149,7 +161,11 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     }
     case Atom::DelayLinear:
     case Atom::DelayCubic:
-    case Atom::DelayAllpass: {
+    case Atom::DelayAllpass:
+    case Atom::DelayReadLinear:
+    case Atom::DelayReadCubic:
+    case Atom::DelayReadAllpass:
+    case Atom::DelayWrite: {
       auto& s = *static_cast<DelayState*>(state);
       const uint32_t maxDelay = clampMaxDelay(init.maxDelayFrames);
       s.capacity = delayCapacity(maxDelay);

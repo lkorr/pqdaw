@@ -19,6 +19,8 @@
 //   floor (x)                         floor
 //   frac (x)                          x − floor(x), clamped to the largest float below 1
 //   sqrt exp log sin tan tanh (x)     exact: CRT / SVML (verified ≤ a few ulp against double)
+//   fast_sqrt (x)                     = sqrt: the hardware square root is exact and already cheaper
+//                                     than an rsqrt + Newton step with zero/inf fix-ups
 //   fast_exp fast_log fast_sin fast_tan fast_tanh   pq/core/fast_math.h (error bounds documented there)
 //   db_to_gain gain_to_db (x)         exact in double; fast_ variants from pq/core/units.h
 //   clip (x, lo, hi)                  min(max(x, lo), hi) in that order (NaN x → lo)
@@ -34,9 +36,9 @@
 //   demux (index, x) → out0 … out{n−1}  out_k = (k == clamp(floor(index), 0, n−1)) ? x : 0; numOut = n
 //   schmitt (x, lo, hi)               q = x > hi ? true : x < lo ? false : q
 //   rise fall change (b)              b∧¬prev, ¬b∧prev, b⊕prev
-//   sr (s, r)                         q = r ? false : s ? true : q (reset wins)
-//   d (d, clk)                        on clk edge q = d; output q (the updated value at the edge sample)
-//   t (t, clk)                        on clk edge, if t then q = ¬q
+//   srff (s, r)                       q = r ? false : s ? true : q (reset wins)
+//   dff (d, clk)                      on clk edge q = d; output q (the updated value at the edge sample)
+//   tff (t, clk)                      on clk edge, if t then q = ¬q
 //   counter (up, down, reset, n) → real   edges of up/down step ±1 (both at once: no change); reset (level)
 //                                     forces 0 and wins. If n ≥ 1 the count wraps within [0, n−1] (stepping
 //                                     past n−1 → 0, below 0 → n−1; a count left ≥ n by shrinking n → 0).
@@ -50,13 +52,20 @@
 //                                     sample (retriggerable; N ≤ 0 or NaN: no output; N ≤ 2147483520)
 // Memory:
 //   z1 (x)                            x delayed by one sample (initially 0)
-//   delay_linear/_cubic/_allpass (x, delay)  delay in samples, fractional. The input is written before the
-//                                     read, so delay 0 (linear) returns the current input. Clamped to
-//                                     [0, max] linear, [1, max] cubic (4-point Hermite), [0.5, max] allpass
-//                                     (first-order Thiran-style allpass with fractional part kept in
-//                                     [0.5, 1.5) by moving one sample into the integer part). NaN → minimum.
-//                                     max = StateInit::maxDelayFrames.
-//   sample_hold (x, trig)             on trig edge held = x; output held (initially 0)
+//   delay / delay_cubic / delay_allpass (x, delay)  delay in SAMPLES (the compiler multiplies a time in
+//                                     seconds by sr), fractional, clamped to [1, max] linear, [2, max] cubic
+//                                     (4-point Hermite), [1.5, max] allpass (first-order allpass, fractional
+//                                     part kept in [0.5, 1.5) by moving one sample into the integer part);
+//                                     NaN → the minimum. Every tap is ≥ 1 sample old, so x is a DELAYED input
+//                                     (a feedback loop through a delay line is legal). max =
+//                                     StateInit::maxDelayFrames.
+//   Split kernels for feedback loops scheduled per sample (same state block as the atom; not atoms):
+//     z1:read () → out, z1:write (x): read emits the stored value, write stores x (last frame).
+//     delay:read / delay_cubic:read / delay_allpass:read (delay) → out, and delay:write (x).
+//     Per sample: read at the start, write at the end; read(frames = k) requires delay ≥ k (it reads frames
+//     not yet written otherwise — memory-safe, but stale). Reading then writing frame by frame produces
+//     exactly the atom's output (tested bit-for-bit).
+//   samplehold (x, trig)             on trig edge held = x; output held (initially 0)
 //   latch (x, enable)                 while enable is high held = x; output held (initially 0)
 // Generators:
 //   phasor (hz, reset)                uint32 phase; output phase/2^32 in [0, 1) (top 24 bits, truncated);
@@ -95,7 +104,7 @@ enum class Atom : uint16_t {
   // math, binary
   Add, Sub, Mul, Div, Min, Max, Mod, Pow, PowFast, CentsToHz, CentsToHzFast, HzToCents, HzToCentsFast,
   // math, unary
-  Neg, Abs, Sign, Floor, Frac, Sqrt, Exp, ExpFast, Log, LogFast, Sin, SinFast, Tan, TanFast, Tanh, TanhFast,
+  Neg, Abs, Sign, Floor, Frac, Sqrt, SqrtFast, Exp, ExpFast, Log, LogFast, Sin, SinFast, Tan, TanFast, Tanh, TanhFast,
   DbToGain, DbToGainFast, GainToDb, GainToDbFast, Const,
   // math, ternary
   Clip, Lerp, Select, MulAdd,
@@ -105,6 +114,8 @@ enum class Atom : uint16_t {
   Schmitt, Rise, Fall, Change, SrFlipFlop, DFlipFlop, TFlipFlop, Counter, ClockDiv, Pulse, Timer,
   // memory
   Z1, DelayLinear, DelayCubic, DelayAllpass, SampleHold, Latch,
+  // split kernels for per-sample feedback scheduling (not atoms; see above)
+  Z1Read, Z1Write, DelayReadLinear, DelayReadCubic, DelayReadAllpass, DelayWrite,
   // generators
   Phasor, SinePhase, SineHz, Wavetable, Noise,
   // tables
