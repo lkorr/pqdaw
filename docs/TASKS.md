@@ -20,19 +20,19 @@ Every task also carries these **standing criteria**, which aren't repeated below
 
 - [x] **T0.1 Build system and toolchain.** CMake + Ninja + MSVC presets, LLVM 23.1.3 prebuilt linked (/MT), doctest, a smoke test proving that ORC JIT runs, CPU feature detection. *(Done during setup; dev + release green; release smoke exe with full JIT = 29 MB.)*
 
-- [ ] **T0.2 RT primitives** (`core`). Depends on: T0.1.
+- [~] **T0.2 RT primitives** *(worker A, branch task/T0.2-T0.3-rt-core)* (`core`). Depends on: T0.1.
   - `SpscRing<T>` (power-of-two, cache-line-padded indices, acquire/release only). `MpscQueue<T>` (bounded). `FixedPool<T>`. `Arena` (bump allocator with 64-byte alignment). `EpochReclaimer` (the audio thread marks quiescent states; reclamation runs off the audio thread). `DenormalGuard` (RAII FTZ/DAZ). `AlignedBuffer<T>`.
   - Accept: unit tests for each. A two-thread stress test pushes 10⁷ items through the SPSC and MPSC queues with no loss, duplication or reordering. A benchmark records the SPSC push+pop cost in ns.
 
-- [ ] **T0.3 Allocation trap** (`core`). Depends on: T0.1.
+- [~] **T0.3 Allocation trap** *(worker A, branch task/T0.2-T0.3-rt-core)* (`core`). Depends on: T0.1.
   - Replace global `operator new/delete` (all overloads) in test binaries and dev builds, with a thread-local "realtime" flag set by `RtScope`. Any allocation or free inside an RtScope fails loudly: test failure, or abort with a stack trace in the app.
   - Accept: a test shows that allocating inside an RtScope is caught and that allocating outside it is fine. The trap compiles out of release builds of the app.
 
-- [ ] **T0.4 Fast math** (`core`). Depends on: T0.1.
+- [~] **T0.4 Fast math** *(worker B, branch task/T0.4-T0.5-math-time)* (`core`). Depends on: T0.1.
   - `fastTan`, `fastExp2`, `fastLog2`, `fastTanh`, `fastSin` (scalar + AVX2 8-wide), with error bounds documented in their headers. `centsToHz`/`hzToCents`, `dbToGain`/`gainToDb`.
   - Accept: tests sweep every function over its stated domain against `double` std:: references and check the documented error bounds (max relative error and max absolute error in cents where relevant). A benchmark compares each against the std:: version.
 
-- [ ] **T0.5 Time types** (`core`). Depends on: T0.1.
+- [~] **T0.5 Time types** *(worker B, branch task/T0.4-T0.5-math-time)* (`core`). Depends on: T0.1.
   - `Ticks` (int64, PPQ 27720), a tempo map (with ramps) converting ticks↔seconds↔samples exactly or within ½ sample, and time signatures.
   - Accept: tests include round trips over a 10-hour session at 192 kHz with tempo ramps, staying within ½ sample, and exact tuplet positions for 3/5/7/11.
 
@@ -41,7 +41,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - `pqdaw --list-devices` and `pqdaw --sine 440 --seconds 3 [--device N] [--asio]`.
   - Accept: NullDevice tests cover the callback cadence and buffer sizes. `--list-devices` output is pasted into PROGRESS.md. A `--sine` run on the default WASAPI device reports 0 xruns over 3 s (no one is listening, so log the callback stats).
 
-- [ ] **T0.7 Window + Vulkan renderer** (`ui`). Depends on: T0.1. 👁
+- [~] **T0.7 Window + Vulkan renderer** *(worker D, branch task/T0.7-vulkan-renderer)* (`ui`). Depends on: T0.1. 👁
   - SDL3 window, Vulkan instance/device/swapchain (VMA), and a draw list with the `{float2 pos, float2 uv, u32 rgba8}` vertex format and **32-bit indices**. Pipelines for alpha, additive and textured drawing. Damage-driven redraw, and `DwmFlush` frame pacing.
   - An **offscreen render path**: `pqdaw --screenshot <scene> <out.png> [--size WxH]` renders a named test scene to a PNG with no window.
   - Accept: the `test-pattern` scene (rects, rounded rects, gradients, additive blobs) matches a committed golden PNG within a per-pixel tolerance. The resize and minimise paths don't crash (scripted test).
@@ -128,11 +128,11 @@ Every task also carries these **standing criteria**, which aren't repeated below
 
 ## M2: Tuning
 
-- [ ] **T2.1 Pitch identities + resolution** (`tuning`). Depends on: T0.1.
+- [~] **T2.1 Pitch identities + resolution** *(worker C, branch task/T2.1-T2.2-pitch-edo)* (`tuning`). Depends on: T0.1.
   - `PitchId` (Degree/Ratio/Cents/Harmonic), a rational type (int64 n/d, overflow-checked) with monzo conversion up to a prime limit, and `resolveHz`. Reference pitch defaults to C3 = 261.626 Hz.
   - Accept: tests; ratio composition of 50 random intervals stays exact; the float32 Hz result is within 0.001 ¢ of a `double` reference.
 
-- [ ] **T2.2 EDO** (`tuning`). Depends on: T2.1.
+- [~] **T2.2 EDO** *(worker C, branch task/T2.1-T2.2-pitch-edo)* (`tuning`). Depends on: T2.1.
   - Any n, any equave. Patent val for primes up to 31. Step labels `k\n`.
   - Accept: tests against known vals (12, 19, 22, 31, 41, 53, 72).
 
