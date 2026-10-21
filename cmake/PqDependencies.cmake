@@ -128,3 +128,45 @@ block()
 endblock()
 # Third-party code: silence its warnings instead of patching it.
 target_compile_options(rtaudio PRIVATE /w)
+
+# --- FreeType (FTL, chosen over GPLv2) : hinted glyph rasterisation for ui text ----------------------------
+# Built static with no optional dependencies: TrueType/CFF hinting and grayscale rendering need none of
+# zlib/bzip2/png/brotli/harfbuzz (those cover compressed fonts, colour emoji and FreeType's own autohinter
+# shaping, none of which pqdaw uses).
+FetchContent_Declare(freetype
+  GIT_REPOSITORY https://github.com/freetype/freetype.git
+  GIT_TAG        VER-2-14-3
+  GIT_SHALLOW    TRUE
+  GIT_SUBMODULES ""
+  EXCLUDE_FROM_ALL)
+set(FT_DISABLE_ZLIB ON)
+set(FT_DISABLE_BZIP2 ON)
+set(FT_DISABLE_PNG ON)
+set(FT_DISABLE_HARFBUZZ ON)
+set(FT_DISABLE_BROTLI ON)
+set(FT_ENABLE_ERROR_STRINGS OFF)
+set(SKIP_INSTALL_ALL ON)
+FetchContent_MakeAvailable(freetype)
+set_target_properties(freetype PROPERTIES SYSTEM ON)  # its headers are consumed as external (no /W4 /WX)
+# FreeType adds a Windows version resource (ftver.rc) even to the static library, where it is useless, and
+# rc.exe rejects the command line Ninja generates for it here (RC1107). Drop it.
+get_target_property(_pq_ft_srcs freetype SOURCES)
+list(FILTER _pq_ft_srcs EXCLUDE REGEX "[.]rc$")
+set_target_properties(freetype PROPERTIES SOURCES "${_pq_ft_srcs}")
+
+# --- HarfBuzz (MIT): text shaping (kerning, ligatures, contextual alternates) for ui text ---------------------
+# Compiled from the single-file amalgamation (src/harfbuzz.cc) rather than through HarfBuzz's own build: no
+# ICU, glib, graphite, subsetter or FreeType integration (shaping uses HarfBuzz's own OpenType functions and
+# linear advances; FreeType only rasterises, see src/ui/src/text.cpp).
+FetchContent_Declare(harfbuzz
+  GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz.git
+  GIT_TAG        14.5.1
+  GIT_SHALLOW    TRUE
+  GIT_SUBMODULES ""
+  SOURCE_SUBDIR  pq-no-cmake   # populate only; the target is defined below
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(harfbuzz)
+add_library(pq_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
+target_include_directories(pq_harfbuzz SYSTEM PUBLIC ${harfbuzz_SOURCE_DIR}/src)
+target_compile_definitions(pq_harfbuzz PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(pq_harfbuzz PRIVATE /bigobj /W0 /utf-8)
