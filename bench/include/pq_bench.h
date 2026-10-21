@@ -1,10 +1,25 @@
 #pragma once
 
-// Minimal benchmark helper shared by all bench executables until T1.11 replaces or extends it.
+// Benchmark helpers shared by all bench executables.
 // Usage:
 //   auto s = pq::bench::measure([&] { kernel(buf, n); }, n);   // n = ops (samples, items…) per call
 //   pq::bench::report("fastExp2/avx2", s, "ns/sample");
 // Prints one machine-readable line: BENCH <name> <median> <min> <unit>. Copy results into bench/RESULTS.md (release only).
+//
+// Runner (T1.11): named benchmarks, a regex filter, warmup/repeats/median/p99, CSV output, and
+// tools/bench/append_results.py to turn the CSV into RESULTS.md rows (date, commit, machine). Usage and how to
+// migrate a bench: tools/README.md "Benchmarks".
+//   int main(int argc, char** argv) {
+//     pq::bench::Runner r("pq_bench_dsp");
+//     r.add("atom/add", [&](pq::bench::Context& c) {
+//       c.measure([&] { kernel(args); }, 64, "ns/sample", "L1");     // row "atom/add L1"
+//     });
+//     return r.main(argc, argv);   // --filter REGEX --list --repeats N --warmup N --min-time MS --csv FILE --no-pin
+//   }
+// A benchmark runs only when the filter matches its name; everything it reports — through Context::measure /
+// record, and through report()/reportStats() while it runs (so existing code migrates by wrapping it in add()) —
+// becomes a row: printed as a BENCH line and written to the CSV with the CPU, build type and system load.
+// Median and p99 are over the timed repeats (nearest rank: with < 100 repeats p99 is the maximum).
 //
 // Cross-thread benchmarks (T0.2-fix1): pin each thread to its own physical core and raise its priority so
 // the result doesn't depend on where the scheduler puts the threads or whether two land on SMT siblings,
@@ -20,6 +35,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -76,15 +94,96 @@ Stats measure(F&& f, uint64_t opsPerCall, int repeats = 15, int warmup = 3, doub
   return summarize(std::move(perOp));
 }
 
+namespace detail {
+// Adds a row to the Runner benchmark running on this thread (a no-op outside a Runner).
+void recordRow(const char* name, const Stats& s, const char* unit);
+}  // namespace detail
+
 inline void report(const char* name, const Stats& s, const char* unit = "ns/op") {
   std::printf("BENCH %-40s median %10.4f  min %10.4f  %s\n", name, s.medianNs, s.minNs, unit);
+  detail::recordRow(name, s, unit);
 }
 
 // Like report(), with p99, max and the sample count.
 inline void reportStats(const char* name, const Stats& s, const char* unit = "ns/op") {
   std::printf("BENCH %-52s median %9.3f  min %9.3f  p99 %9.3f  max %9.3f  (n=%zu)  %s\n", name, s.medianNs,
               s.minNs, s.p99Ns, s.maxNs, s.samples, unit);
+  detail::recordRow(name, s, unit);
 }
+
+// ---- Runner (T1.11) ---------------------------------------------------------------------------------------------
+
+struct RunOptions {
+  std::string filter;        // ECMAScript regex searched in benchmark names; empty = all
+  int repeats = 15;          // timed rounds per Context::measure
+  int warmup = 3;            // untimed rounds first
+  double minRoundNs = 2e6;   // each round repeats the call until it lasts this long
+  std::string csvPath;       // empty: no CSV
+  bool list = false;         // print the names and exit
+  bool pin = true;           // pin the main thread to physical core 1 and raise its priority
+};
+
+// One row of results.
+struct Row {
+  std::string benchmark;     // the add() name
+  std::string name;          // the reported name (benchmark name + suffix, or report()'s label)
+  std::string unit;
+  Stats stats;
+  double loadPercent = -1;   // system busy % while its benchmark ran (all logical CPUs; -1 unknown)
+};
+
+class Context {
+public:
+  Context(const std::string& name, const RunOptions& o) : name_(name), opt_(o) {}
+  const std::string& name() const noexcept { return name_; }
+  const RunOptions& options() const noexcept { return opt_; }
+
+  // measure() with the runner's warmup / repeats / round length; reported as `name suffix`.
+  template <class F>
+  Stats measure(F&& f, uint64_t opsPerCall, const char* unit, std::string_view suffix = {}) {
+    const Stats s = pq::bench::measure(std::forward<F>(f), opsPerCall, opt_.repeats, opt_.warmup, opt_.minRoundNs);
+    record(s, unit, suffix);
+    return s;
+  }
+  // A result measured some other way (cross-thread samples, derived figures).
+  void record(const Stats& s, const char* unit, std::string_view suffix = {}) {
+    const std::string label = suffix.empty() ? name_ : name_ + " " + std::string(suffix);
+    reportStats(label.c_str(), s, unit);
+  }
+
+private:
+  const std::string& name_;
+  const RunOptions& opt_;
+};
+
+class Runner {
+public:
+  explicit Runner(std::string suite) : suite_(std::move(suite)) {}
+  // Benchmarks run in the order added. '/' groups names (`atom/add`, `spsc/round trip`).
+  void add(std::string name, std::function<void(Context&)> fn) { benches_.push_back({std::move(name), std::move(fn)}); }
+  // Parses the options (usage on --help), runs the matching benchmarks, writes the CSV. Exit code: 0; 1 when the
+  // filter matched nothing or the CSV could not be written; 2 for bad options.
+  int main(int argc, char** argv);
+  int run(const RunOptions& options);
+  const std::vector<Row>& rows() const noexcept { return rows_; }
+  const std::string& suite() const noexcept { return suite_; }
+
+private:
+  struct Bench {
+    std::string name;
+    std::function<void(Context&)> fn;
+  };
+  std::string suite_;
+  std::vector<Bench> benches_;
+  std::vector<Row> rows_;
+};
+
+// The CSV the runner writes: a header, then one line per row: suite, benchmark, name, unit, median, min, p99, max,
+// samples, load_percent, cpu, build (fields quoted when they contain a comma or a quote).
+bool writeCsv(const std::string& path, const std::string& suite, const std::vector<Row>& rows);
+// The CPU brand string (cpuid) and "release" / "dev" (whether NDEBUG was set for the bench support library).
+std::string cpuBrand();
+const char* buildType();
 
 // ---- Thread placement (Windows; elsewhere the queries return empty / false and pinning is a no-op).
 

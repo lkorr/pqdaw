@@ -148,7 +148,20 @@ pq_add_test(pq_tests_engine
     engine/test_interpreter.cpp
     engine/test_voices.cpp
     engine/test_hot_swap.cpp
+    engine/test_offline_render.cpp
   DEPS pq_engine)
+
+# T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on
+# both backends, and the pqc CLI (in-process, plus the real pqc.exe once).
+pq_add_test(pq_tests_render
+  SOURCES
+    golden/golden_audio.cpp
+    golden/test_golden_audio.cpp
+    golden/test_golden_render.cpp
+    tools/test_pqc.cpp
+  DEPS pq_pqc)
+add_dependencies(pq_tests_render pqc)
+target_compile_definitions(pq_tests_render PRIVATE PQC_EXE="$<TARGET_FILE:pqc>")
 
 # jit (T1b.1): the LLVM backend against the interpreter and the reference evaluator over the T1.7 corpus, plus the
 # ProgramImage contract cases and compile times.

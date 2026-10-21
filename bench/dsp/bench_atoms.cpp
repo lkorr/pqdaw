@@ -2,11 +2,13 @@
 // all inputs audio rate (Blk), 64-frame blocks, called through the KernelFn pointer exactly as the interpreter
 // will. Also buffer ⊗ param (Blk ⊗ Spl) for the hot binary atoms.
 //   L1: ns per sample.  L8: ns per frame (8 voices) and ns per voice-sample (= frame / 8).
-// Prints BENCH lines and a markdown table for bench/RESULTS.md.
+// Prints BENCH lines and a markdown table for bench/RESULTS.md. T1.11: one runner benchmark per atom variant
+// (`atom/<name>[ (spl…)]`, rows `… L1` / `… L8`): pq_bench_dsp [--filter REGEX] [--csv FILE] [--pad N] (pq_bench.h).
 
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -89,12 +91,12 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
   }
 }
 
-struct Row {
+struct TableRow {
   std::string name;
   double l1 = 0, l8 = 0;
 };
 
-Row benchAtom(Fixture& fx, Atom a, uint32_t splMask, const char* suffix) {
+TableRow benchAtom(pq::bench::Context& ctx, Fixture& fx, Atom a, uint32_t splMask, const char* suffix) {
   const auto& info = pq::dsp::kernelInfo(a);
   const uint32_t nIn = info.variadicIn ? 4u : info.numIn;
   const uint32_t nOut = info.variadicOut ? 4u : info.numOut;
@@ -102,7 +104,7 @@ Row benchAtom(Fixture& fx, Atom a, uint32_t splMask, const char* suffix) {
                          : info.resource == pq::dsp::Resource::Shaper  ? static_cast<const void*>(&fx.sh.view())
                          : info.resource == pq::dsp::Resource::Sample  ? static_cast<const void*>(&fx.sd.view())
                                                                        : nullptr;
-  Row row;
+  TableRow row;
   row.name = std::string(info.name) + suffix;
   for (uint32_t lanes : {1u, 8u}) {
     const uint32_t mask = splMask | info.splRequired;
@@ -130,20 +132,11 @@ Row benchAtom(Fixture& fx, Atom a, uint32_t splMask, const char* suffix) {
     const pq::dsp::KernelFn fn = pq::dsp::findKernel(a, lanes, mask);
     pq::dsp::KernelArgs args{fx.inPtrs, fx.outPtrs, fx.state.data(), resource, kFrames,
                              static_cast<uint16_t>(nIn), static_cast<uint16_t>(nOut), mask};
-    const auto s = pq::bench::measure([&] {
+    const auto s = ctx.measure([&] {
       fn(args);
       pq::bench::doNotOptimize(fx.out[0][0]);
-    }, kFrames, 9, 2, 1e6);
-    char label[96];
-    if (lanes == 1) {
-      row.l1 = s.medianNs;
-      std::snprintf(label, sizeof label, "%s/L1", row.name.c_str());
-      pq::bench::report(label, s, "ns/sample");
-    } else {
-      row.l8 = s.medianNs;
-      std::snprintf(label, sizeof label, "%s/L8", row.name.c_str());
-      pq::bench::report(label, s, "ns/frame(8 voices)");
-    }
+    }, kFrames, lanes == 1 ? "ns/sample" : "ns/frame(8 voices)", lanes == 1 ? "L1" : "L8");
+    (lanes == 1 ? row.l1 : row.l8) = s.medianNs;
   }
   return row;
 }
@@ -152,24 +145,38 @@ Row benchAtom(Fixture& fx, Atom a, uint32_t splMask, const char* suffix) {
 
 int main(int argc, char** argv) {
   pq::DenormalGuard dg;
-  // Optional argument: padding (floats) between block buffers; default 16 (64 bytes), see Fixture.
-  const uint32_t pad = argc > 1 ? static_cast<uint32_t>(std::atoi(argv[1])) : 16u;
+  // --pad N: padding (floats) between block buffers; default 16 (64 bytes), see Fixture. The other options are the
+  // runner's (pq_bench.h).
+  uint32_t pad = 16;
+  std::vector<char*> args{argv[0]};
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--pad") == 0 && i + 1 < argc) pad = static_cast<uint32_t>(std::atoi(argv[++i]));
+    else args.push_back(argv[i]);
+  }
   std::printf("CPU: %s, buffer pad %u floats\n", pq::cpuFeatures().brand.c_str(), pad);
   Fixture fx(pad);
-  std::vector<Row> rows;
-  for (uint32_t ai = 0; ai < pq::dsp::kAtomCount; ++ai) rows.push_back(benchAtom(fx, static_cast<Atom>(ai), 0, ""));
+  std::vector<TableRow> rows;
+  pq::bench::Runner runner("pq_bench_dsp");
+  auto add = [&](Atom a, uint32_t splMask, const char* suffix) {
+    runner.add(std::string("atom/") + pq::dsp::kernelInfo(a).name + suffix,
+               [&fx, &rows, a, splMask, suffix](pq::bench::Context& c) {
+                 rows.push_back(benchAtom(c, fx, a, splMask, suffix));
+               });
+  };
+  for (uint32_t ai = 0; ai < pq::dsp::kAtomCount; ++ai) add(static_cast<Atom>(ai), 0, "");
   // Buffer ⊗ param: the second input is a Spl pattern (one vector load per block).
-  for (Atom a : {Atom::Add, Atom::Mul, Atom::Div, Atom::Gt, Atom::CentsToHzFast})
-    rows.push_back(benchAtom(fx, a, 0b10, " (blk,spl)"));
-  rows.push_back(benchAtom(fx, Atom::MulAdd, 0b110, " (blk,spl,spl)"));
-  rows.push_back(benchAtom(fx, Atom::Phasor, 0b11, " (spl hz, spl reset)"));
-  rows.push_back(benchAtom(fx, Atom::Phasor, 0b10, " (blk hz, spl reset)"));
-  rows.push_back(benchAtom(fx, Atom::SineHz, 0b10, " (blk hz, spl reset)"));
-  rows.push_back(benchAtom(fx, Atom::SineHz, 0b11, " (spl hz, spl reset)"));
-  rows.push_back(benchAtom(fx, Atom::DelayLinear, 0b10, " (spl delay)"));
-  rows.push_back(benchAtom(fx, Atom::SampleReadCubic, 0b11, " (spl rate, spl reset)"));
+  for (Atom a : {Atom::Add, Atom::Mul, Atom::Div, Atom::Gt, Atom::CentsToHzFast}) add(a, 0b10, " (blk,spl)");
+  add(Atom::MulAdd, 0b110, " (blk,spl,spl)");
+  add(Atom::Phasor, 0b11, " (spl hz, spl reset)");
+  add(Atom::Phasor, 0b10, " (blk hz, spl reset)");
+  add(Atom::SineHz, 0b10, " (blk hz, spl reset)");
+  add(Atom::SineHz, 0b11, " (spl hz, spl reset)");
+  add(Atom::DelayLinear, 0b10, " (spl delay)");
+  add(Atom::SampleReadCubic, 0b11, " (spl rate, spl reset)");
+  const int code = runner.main(static_cast<int>(args.size()), args.data());
+  if (code != 0 || rows.empty()) return code;
 
   std::printf("\n| Atom | L1 ns/sample | L8 ns/frame | L8 ns/voice-sample |\n|---|---|---|---|\n");
-  for (const Row& r : rows) std::printf("| %s | %.3f | %.3f | %.3f |\n", r.name.c_str(), r.l1, r.l8, r.l8 / 8.0);
+  for (const TableRow& r : rows) std::printf("| %s | %.3f | %.3f | %.3f |\n", r.name.c_str(), r.l1, r.l8, r.l8 / 8.0);
   return 0;
 }

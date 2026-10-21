@@ -1,0 +1,21 @@
+// Golden render (T1.10): a driven saw through a nonlinear zero-delay-feedback one-pole (per-sample Newton solve),
+// its cutoff swept by an LFO. Global patch, no notes.
+
+patch DriveZdf {
+  param cutoff = 1200Hz [20Hz..20kHz]
+  param drive  = 3.0    [0.1..10]
+  out   y : audio
+
+  saw = phasor(110Hz) * 2 - 1
+  lfo = sine(phasor(3Hz))
+  fc  = cutoff * (1 + 0.5 * lfo)
+  g   = tan(3.141592653589793 * fc / sr)
+  x   = saw * drive
+  s   = z1(s2)
+  solve(iterations: 6) {
+    unknown v = s
+    v == s + g * (tanh(x) - tanh(v))
+  }
+  s2 = 2 * v - s
+  y  = v * 0.5
+}

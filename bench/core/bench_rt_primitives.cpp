@@ -1,6 +1,9 @@
 // T0.2 benchmarks: queue push+pop cost, pool/arena/epoch RT-side operations; T0.2-fix1: pinned
 // cross-thread throughput and round-trip latency, 64 vs 128-byte index separation.
 // Run from the release build: build/release/bench/pq_bench_core.exe [cross [runs]]  (runs >= 5, default 11)
+// T1.11: the same benchmarks as runner entries (pq_bench.h): pq_bench_core [--filter REGEX] [--csv FILE] [--runs N]
+// (`spsc/...`, `mpsc/...`, `rtlog/...`, `baseline/...`, `cross/...` with N runs per variant, `pool/...`, `arena/...`,
+// `epoch/...`). The SMT-sibling / unpinned placement comparisons stay in the `cross` command line only.
 
 #include <algorithm>
 #include <atomic>
@@ -321,113 +324,171 @@ void crossThreadBenchmarks(int runs) {
 
 }  // namespace
 
+// Placement line for the cross-thread rows, printed once per process.
+static void crossThreadPrologue(int runs) {
+  static bool printed = false;
+  if (printed) return;
+  printed = true;
+  const auto& topo = pq::bench::cpuTopology();
+  std::printf("METHOD pinned: consumer/ping physical core 1 (cpu %d), producer/pong core 2 (cpu %d), extra producers "
+              "cores 3-5; priority raised: %s; TSC %.3f ticks/ns; %d runs per variant, interleaved\n",
+              std::countr_zero(topo.coreMask(1)), std::countr_zero(topo.coreMask(2)),
+              pq::bench::raisePriority() ? "yes" : "NO", pq::bench::tscTicksPerNs(), runs);
+}
+
 int main(int argc, char** argv) {
-  if (argc > 1 && std::strcmp(argv[1], "cross") == 0) {
+  if (argc > 1 && std::strcmp(argv[1], "cross") == 0) {  // the T0.2-fix1 command line, kept
     if (argc > 3) gFilter = argv[3];
     crossThreadBenchmarks(argc > 2 ? std::max(5, std::atoi(argv[2])) : 11);
     return 0;
   }
-  // Single-thread rows: main thread pinned to physical core 1 at raised priority.
-  pq::bench::pinCurrentThread(pq::bench::cpuTopology().coreMask(1));
-  pq::bench::raisePriority();
-  // --- Single thread: push+pop pair, both sides warm in L1. The cost of the operations themselves.
-  {
-    pq::SpscRing<uint64_t> r(1024);
-    uint64_t v = 0;
-    pq::bench::reportStats("spsc push+pop (1 thread, batch 64)", measure([&] {
-             for (int i = 0; i < kBatch; ++i) r.tryPush(static_cast<uint64_t>(i));
-             for (int i = 0; i < kBatch; ++i) r.tryPop(v);
-             doNotOptimize(v);
-           }, kBatch), "ns/push+pop");
-    pq::bench::reportStats("spsc push+pop (1 thread, alternating)", measure([&] {
-             r.tryPush(v);
-             r.tryPop(v);
-             doNotOptimize(v);
-           }, 1), "ns/push+pop");
+  int runs = 11;  // cross-thread runs per variant
+  std::vector<char*> args{argv[0]};
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--runs") == 0 && i + 1 < argc) runs = std::max(5, std::atoi(argv[++i]));
+    else args.push_back(argv[i]);
   }
+  // Single-thread rows: the runner pins the main thread to physical core 1 at raised priority.
+  pq::bench::Runner r("pq_bench_core");
+  // --- Single thread: push+pop pair, both sides warm in L1. The cost of the operations themselves.
+  r.add("spsc/push+pop (1 thread, batch 64)", [](pq::bench::Context& c) {
+    pq::SpscRing<uint64_t> q(1024);
+    uint64_t v = 0;
+    c.measure([&] {
+      for (int i = 0; i < kBatch; ++i) q.tryPush(static_cast<uint64_t>(i));
+      for (int i = 0; i < kBatch; ++i) q.tryPop(v);
+      doNotOptimize(v);
+    }, kBatch, "ns/push+pop");
+  });
+  r.add("spsc/push+pop (1 thread, alternating)", [](pq::bench::Context& c) {
+    pq::SpscRing<uint64_t> q(1024);
+    uint64_t v = 0;
+    c.measure([&] {
+      q.tryPush(v);
+      q.tryPop(v);
+      doNotOptimize(v);
+    }, 1, "ns/push+pop");
+  });
   // RtLog (T0.2-fix2): push of a 2-argument record (format pointer, code, 2 typed args, rdtsc) and the
   // consumer's drain without formatting; formatting cost is the logger thread's.
-  {
+  r.add("rtlog/push 2 args + drain (1 thread, batch 64)", [](pq::bench::Context& c) {
     pq::RtLog log(4096);
     uint64_t seen = 0;
-    report("rtlog push 2 args + drain (1 thread, batch 64)", measure([&] {
-             for (int i = 0; i < kBatch; ++i) log.log(3, "wake {} late {}", static_cast<uint64_t>(i), 0.25 * i);
-             log.drain([&](const pq::RtLogRecord& r) { seen += r.sequence; });
-             doNotOptimize(seen);
-           }, kBatch), "ns/record");
-    pq::RtLogRecord r;
-    r.format = "wake {} late {}";
-    r.argc = 2;
-    r.kinds[0] = pq::RtLogRecord::Kind::UInt;
-    r.kinds[1] = pq::RtLogRecord::Kind::Float;
-    r.args[0].u = 123456;
-    r.args[1].d = 0.25;
+    c.measure([&] {
+      for (int i = 0; i < kBatch; ++i) log.log(3, "wake {} late {}", static_cast<uint64_t>(i), 0.25 * i);
+      log.drain([&](const pq::RtLogRecord& rec) { seen += rec.sequence; });
+      doNotOptimize(seen);
+    }, kBatch, "ns/record");
+  });
+  r.add("rtlog/format one record (logger thread)", [](pq::bench::Context& c) {
+    pq::RtLogRecord rec;
+    rec.format = "wake {} late {}";
+    rec.argc = 2;
+    rec.kinds[0] = pq::RtLogRecord::Kind::UInt;
+    rec.kinds[1] = pq::RtLogRecord::Kind::Float;
+    rec.args[0].u = 123456;
+    rec.args[1].d = 0.25;
     std::string text;
-    report("rtlog format one record (logger thread)", measure([&] {
-             text = pq::formatRtLogRecord(r);
-             doNotOptimize(text[0]);
-           }, 1), "ns/record");
-  }
-  {
+    c.measure([&] {
+      text = pq::formatRtLogRecord(rec);
+      doNotOptimize(text[0]);
+    }, 1, "ns/record");
+  });
+  r.add("mpsc/push+pop (1 thread, batch 64)", [](pq::bench::Context& c) {
     pq::MpscQueue<uint64_t> q(1024);
     uint64_t v = 0;
-    pq::bench::reportStats("mpsc push+pop (1 thread, batch 64)", measure([&] {
-             for (int i = 0; i < kBatch; ++i) q.tryPush(static_cast<uint64_t>(i));
-             for (int i = 0; i < kBatch; ++i) q.tryPop(v);
-             doNotOptimize(v);
-           }, kBatch), "ns/push+pop");
-  }
-  {
-    // Baseline for scale: what the lock-free queues replace.
+    c.measure([&] {
+      for (int i = 0; i < kBatch; ++i) q.tryPush(static_cast<uint64_t>(i));
+      for (int i = 0; i < kBatch; ++i) q.tryPop(v);
+      doNotOptimize(v);
+    }, kBatch, "ns/push+pop");
+  });
+  // Baseline for scale: what the lock-free queues replace.
+  r.add("baseline/mutex+deque push+pop (1 thread, batch 64)", [](pq::bench::Context& c) {
     std::mutex m;
     std::deque<uint64_t> d;
     uint64_t v = 0;
-    report("mutex+deque push+pop (1 thread, batch 64)", measure([&] {
-             for (int i = 0; i < kBatch; ++i) {
-               std::lock_guard l(m);
-               d.push_back(static_cast<uint64_t>(i));
-             }
-             for (int i = 0; i < kBatch; ++i) {
-               std::lock_guard l(m);
-               v = d.front();
-               d.pop_front();
-             }
-             doNotOptimize(v);
-           }, kBatch), "ns/push+pop");
+    c.measure([&] {
+      for (int i = 0; i < kBatch; ++i) {
+        std::lock_guard l(m);
+        d.push_back(static_cast<uint64_t>(i));
+      }
+      for (int i = 0; i < kBatch; ++i) {
+        std::lock_guard l(m);
+        v = d.front();
+        d.pop_front();
+      }
+      doNotOptimize(v);
+    }, kBatch, "ns/push+pop");
+  });
+
+  // --- Cross thread (T0.2-fix1): pinned throughput, round-trip latency, 64 vs 128-byte separation. The rows are
+  // runInterleaved's reportStats lines (the runner records them).
+  constexpr uint64_t kItems = 10'000'000;
+  constexpr uint32_t kTrips = 200'000;
+  const bool cores = pq::bench::cpuTopology().physicalCores.size() >= 6;
+  if (cores) {
+    r.add("cross/spsc 1P/1C throughput", [runs](pq::bench::Context&) {
+      crossThreadPrologue(runs);
+      auto vs = throughputLayouts<pq::SpscRing>("spsc 1P/1C throughput", 1, kItems);
+      runInterleaved(vs, runs, kItems / kChunk + 1, "64k items", "ns/item", 2);
+    });
+    r.add("cross/mpsc 1P/1C throughput", [runs](pq::bench::Context&) {
+      crossThreadPrologue(runs);
+      auto vs = throughputLayouts<pq::MpscQueue>("mpsc 1P/1C throughput", 1, kItems);
+      runInterleaved(vs, runs, kItems / kChunk + 1, "64k items", "ns/item", 2);
+    });
+    r.add("cross/mpsc 4P/1C throughput", [runs](pq::bench::Context&) {
+      crossThreadPrologue(runs);
+      auto vs = throughputLayouts<pq::MpscQueue>("mpsc 4P/1C throughput", 4, kItems / 2);
+      runInterleaved(vs, runs, kItems / kChunk + 1, "64k items", "ns/item", 5);
+    });
+    r.add("cross/spsc round trip u64", [runs](pq::bench::Context&) {
+      crossThreadPrologue(runs);
+      uint64_t errors = 0;
+      auto vs = roundTripLayouts<uint64_t>("spsc round trip u64", kTrips, errors);
+      runInterleaved(vs, runs, kTrips, "trip", "ns/round trip", 2);
+      if (errors) std::printf("ERROR  %llu round-trip payload mismatches\n", static_cast<unsigned long long>(errors));
+    });
+    r.add("cross/spsc round trip 64B cmd", [runs](pq::bench::Context&) {
+      crossThreadPrologue(runs);
+      uint64_t errors = 0;
+      auto vs = roundTripLayouts<Cmd64>("spsc round trip 64B cmd", kTrips, errors);
+      runInterleaved(vs, runs, kTrips, "trip", "ns/round trip", 2);
+      if (errors) std::printf("ERROR  %llu round-trip payload mismatches\n", static_cast<unsigned long long>(errors));
+    });
+  } else {
+    std::printf("SKIP   cross-thread benchmarks need 6 physical cores\n");
   }
 
-  // --- Cross thread (T0.2-fix1): pinned throughput, round-trip latency, 64 vs 128-byte separation.
-  // "pq_bench_core cross" runs only this part.
-  crossThreadBenchmarks(11);
-
   // --- Pool, arena, epoch: RT-side operations.
-  {
+  r.add("pool/fixed pool create+destroy (batch 64)", [](pq::bench::Context& c) {
     struct Voice {
       float state[16];
     };
     pq::FixedPool<Voice> pool(256);
     Voice* vs[kBatch];
-    report("fixed pool create+destroy (batch 64)", measure([&] {
-             for (int i = 0; i < kBatch; ++i) vs[i] = pool.create();
-             for (int i = kBatch - 1; i >= 0; --i) pool.destroy(vs[i]);
-             doNotOptimize(vs[0]);
-           }, kBatch), "ns/create+destroy");
-  }
-  {
+    c.measure([&] {
+      for (int i = 0; i < kBatch; ++i) vs[i] = pool.create();
+      for (int i = kBatch - 1; i >= 0; --i) pool.destroy(vs[i]);
+      doNotOptimize(vs[0]);
+    }, kBatch, "ns/create+destroy");
+  });
+  r.add("arena/allocate 64B-aligned (batch 64, reset)", [](pq::bench::Context& c) {
     pq::Arena arena(1 << 20);
-    report("arena allocate 64B-aligned (batch 64, reset)", measure([&] {
-             void* p = nullptr;
-             for (int i = 0; i < kBatch; ++i) p = arena.allocate(48);
-             doNotOptimize(p);
-             arena.reset();
-           }, kBatch), "ns/alloc");
-  }
-  {
+    c.measure([&] {
+      void* p = nullptr;
+      for (int i = 0; i < kBatch; ++i) p = arena.allocate(48);
+      doNotOptimize(p);
+      arena.reset();
+    }, kBatch, "ns/alloc");
+  });
+  r.add("epoch/quiescent (reader side)", [](pq::bench::Context& c) {
     pq::EpochReclaimer rec(1);
-    const auto r = rec.registerReader();
-    pq::bench::reportStats("epoch quiescent (reader side)", measure([&] {
-             for (int i = 0; i < kBatch; ++i) rec.quiescent(*r);
-           }, kBatch), "ns/call");
-  }
-  return 0;
+    const auto reader = rec.registerReader();
+    c.measure([&] {
+      for (int i = 0; i < kBatch; ++i) rec.quiescent(*reader);
+    }, kBatch, "ns/call");
+  });
+  return r.main(static_cast<int>(args.size()), args.data());
 }

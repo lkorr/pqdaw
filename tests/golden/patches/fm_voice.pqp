@@ -1,0 +1,31 @@
+// Golden render (T1.10): PATCH_LANGUAGE §4 FmVoice with an adsr built from atoms, played through the VoiceEngine.
+// Self-contained on purpose: golden patches must not change when other test fixtures do.
+
+patch FmVoice {
+  param ratio = 2.0 [0.25..16]
+  param index = 1.0 [0..20]
+  param attack  = 5ms   [0ms..10s]
+  param release = 120ms [1ms..30s]
+  out   out : audio voice mono
+
+  mod = sine(phasor(voice.hz * ratio))
+  car = sine(phasor(voice.hz + mod * index * voice.hz))
+  env = adsr(voice.gate, a: attack, d: 200ms, s: 0.7, r: release)
+  out = car * env * voice.velocity
+}
+
+patch adsr {
+  in    gate : bool audio voice mono
+  param a = 5ms   [0ms..10s]
+  param d = 200ms [1ms..10s]
+  param s = 0.7   [0..1]
+  param r = 300ms [1ms..30s]
+  out   out : audio voice mono
+
+  attacking = srff(rise(gate), level >= 0.999 || !gate)
+  target    = attacking ? 1.0 : gate ? s : 0.0
+  time      = attacking ? a : gate ? d : r
+  coef      = 1 - exp(-1 / max(time * sr, 1))
+  level     = z1(level + (target - level) * coef)
+  out = level
+}

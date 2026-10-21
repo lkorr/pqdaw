@@ -47,10 +47,10 @@ Arrows point at dependencies. A module may only include headers from modules bel
 | `src/ui/scenes` | `pq_ui_scenes` | `pq::ui` | Named test scenes (`pq/ui/scenes.h`: `--screenshot`, goldens, ui benchmarks, `renderSceneImage`). Linked by `pq_app`, tests and benches; not part of the toolkit. The fonts, theme and textures they paint with (`pq/ui/scene_textures.h`) stay in `pq_ui` |
 | `src/views` | `pq_views` | `pq::views` | The DAW's views (T3.7+): `ViewContext` (owns the `DocumentStore`, global actions, view state), `TransportPort`, the main-window shell (control bar, track-area/detail/browser slots, info view, status line), arrangement, mixer, piano roll, MOS wheel (one subtree each), view scenes for screenshots |
 | `src/app` | `pq_app` (lib) + `pqdaw` (exe: `main.cpp` only, so tests can link the CLI/commands) | `pq::app` | Main, CLI, the window loop, `ShellApp` (views in the window: SDL file dialogs, text input, title, idle/first-frame measurement), `TransportPort` implementations, later the engine link (T3.17) |
-| `tools/` | `pqc` (exe) | – | Patch compiler CLI: parse/check/dump IR/schedule, offline render, AOT |
+| `tools/` | `pqc` (exe) + `pq_pqc` (lib: everything but `main`, for tests) | `pq::pqc` | Patch compiler CLI (T1.10, `tools/README.md`): check / dump-ir / dump-schedule / render (interpreter or JIT), later AOT. Depends on `engine` + `jit` |
 | `stdlib/` | – | – | Stock subcircuits and devices as `.pqp` text (filters, envelopes, devices) |
 | `tests/` | `pq_tests_<module>` | – | doctest unit tests per module, golden renders in `tests/golden/` |
-| `bench/` | `pq_bench` | – | Benchmarks; results appended to `bench/RESULTS.md` |
+| `bench/` | `pq_bench_<suite>` + `pq_bench_support` | `pq::bench` | Benchmarks; the T1.11 runner (`pq_bench.h`: named benchmarks, regex filter, warmup/repeats/median/p99, CSV) and `tools/bench/append_results.py` append results to `bench/RESULTS.md` |
 
 ## 2. Threads
 
@@ -175,6 +175,10 @@ namespace pq::engine {
     bool poll(EngineReport&);                                 // audio → UI
     void renderOffline(const RenderRequest&, AudioSink&);     // same Program, deterministic
   };
+  // T1.10 (pq/engine/offline_render.h): the free function the Engine will wrap. Runs any image through ImageRunner
+  // (+ VoiceEngine + an EventSource such as NoteListSource, pq/engine/note_list.h) at a fixed block, chunk by chunk
+  // into an AudioSink (BufferSink, or a WavWriter-backed sink), FTZ/DAZ + an RtScope around each chunk's block loop.
+  Result<RenderStats> renderOffline(const RenderRequest&, AudioSink&);
 }
 ```
 
@@ -281,7 +285,7 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 ## 4. Data and file formats
 - **Project**: a directory: `project.pqd` (JSON, UTF-8, `"schemaVersion"` first; layout in `pq/document/serialize.h` and the golden `tests/document/fixtures/full/project.pqd`: ticks and ids as integers, rationals as `"n/d"`, floating point as shortest round-trip numbers, embedded tuning definitions), `patches/*.pqp`, `samples/`, `cache/`.
 - **Patches**: `.pqp` text in the patch language ([PATCH_LANGUAGE.md](PATCH_LANGUAGE.md)). The visual layout is stored in the same file in a `layout { }` block.
-- **Golden audio** for tests: 32-bit float mono/stereo WAV, compared with a tolerance per test (absolute error and spectral error).
+- **Golden audio** for tests: 32-bit float mono/stereo WAV (`pq/engine/wav_file.h` writes and reads them), 48 kHz, ≤ 1 MB each, in `tests/golden/audio/` from the patches in `tests/golden/patches/`, compared by `tests/golden/golden_audio.h` with a tolerance per test: absolute (max |Δ|, default 1e-4) AND spectral (Hann STFT of 4096, semitone bands from 20 Hz, dB re a full-scale sine floored at −80 dB, default 0.2 dB). Both backends must match the same goldens (T1.10; regeneration and pqc commands in `tools/README.md`).
 
 ## 5. Build configurations
 - **Generator**: Ninja via `CMakePresets.json`. **Compiler**: MSVC v143 (cl.exe), x64. **Language**: C++20 (`/std:c++20`).

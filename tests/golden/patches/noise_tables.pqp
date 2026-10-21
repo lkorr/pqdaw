@@ -1,0 +1,13 @@
+// Golden render (T1.10): seeded noise (deterministic: the seed is mixed with the node's state key at compile time)
+// through a z1 low-pass, plus a wavetable oscillator (the built-in sine table) and the default shaper (identity on
+// [−1, 1], clamping outside): noise, table resources and a per-sample loop in one global patch.
+
+patch NoiseTables {
+  param tone = 0.08 [0.001..1]
+  out   y : audio
+
+  n  = noise(seed: 11)
+  lp = z1(lp + (n - lp) * tone)
+  wt = wavetable(phasor(220Hz))
+  y  = shaper(lp * 2 + wt * 0.3) * 0.5
+}

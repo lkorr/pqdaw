@@ -1,0 +1,16 @@
+// Golden render (T1.10): a stereo patch (two global outs → a 2-channel WAV). Pings every 0.3 s (pulse), a decaying
+// envelope through a z1 loop, and a ping-pong echo through two cross-coupled delay lines (loop in sub-blocks).
+
+patch StereoEcho {
+  param fb = 0.45 [0..0.9]
+  out   l : audio
+  out   r : audio
+
+  trig  = pulse(0.3)
+  env   = z1(max(env * 0.9993, gate_to_real(trig)))
+  tone  = sine_hz(660Hz) * env
+  left  = delay(tone + right * fb, 180ms, 500ms)
+  right = delay(left * fb, 270ms, 500ms)
+  l = tone * 0.6 + left * 0.5
+  r = tone * 0.4 + right * 0.5
+}

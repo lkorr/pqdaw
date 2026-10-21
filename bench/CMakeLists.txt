@@ -1,7 +1,10 @@
-# Benchmark executables. Not registered with CTest; run them from the release build and record results in RESULTS.md.
+# Benchmark executables. Not registered with CTest (except the runner smoke test at the end); run them from the
+# release build and record results in RESULTS.md (runner benches: --csv + tools/bench/append_results.py).
 #   pq_add_bench(pq_bench_core SOURCES core/bench_spsc.cpp DEPS pq_core)
 
-add_library(pq_bench_support STATIC support/pq_bench_support.cpp)  # thread pinning, TSC, system load
+add_library(pq_bench_support STATIC  # thread pinning, TSC, system load; the T1.11 runner (filter, CSV)
+  support/pq_bench_support.cpp
+  support/pq_bench_runner.cpp)
 target_include_directories(pq_bench_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 pq_target_defaults(pq_bench_support)
 
@@ -42,3 +45,11 @@ pq_add_bench(pq_bench_voices SOURCES engine/bench_voices.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_jit SOURCES jit/bench_jit.cpp DEPS pq_jit)
 pq_add_bench(pq_bench_hot_swap SOURCES engine/bench_hot_swap.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_arrangement SOURCES views/bench_arrangement.cpp DEPS pq_views)
+# T1.11: the 32-op voice patch at 1/8/64 voices (interpreter, JIT) and the golden offline renders (T1.10).
+pq_add_bench(pq_bench_render SOURCES engine/bench_render.cpp DEPS pq_pqc)
+target_compile_definitions(pq_bench_render PRIVATE PQ_SOURCE_DIR="${PQ_SOURCE_DIR}")
+
+# The one bench test: the T1.11 runner's options and CSV output (a few ms of measuring, any build).
+add_test(NAME pq_bench_runner_smoke
+  COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:pq_bench_dsp> -DCSV=${CMAKE_CURRENT_BINARY_DIR}/runner_smoke.csv
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/runner_smoke.cmake)

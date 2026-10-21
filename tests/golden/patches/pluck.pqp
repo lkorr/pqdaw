@@ -1,0 +1,15 @@
+// Golden render (T1.10): a Karplus–Strong string per voice. A seeded noise burst (5 ms after each trigger) excites
+// a delay line tuned to 1 / voice.hz whose output is low-passed by a z1 loop and fed back: a per-sample feedback
+// loop through a delay with an audio-rate time, inside the voice stage.
+
+patch Pluck {
+  param damp  = 0.5   [0.01..1]
+  param decay = 0.996 [0.9..0.9999]
+  out   out : audio voice mono
+
+  burst  = noise(seed: 3) * gate_to_real(timer(voice.trigger, 5ms)) * voice.velocity
+  period = 1 / max(voice.hz, 20)
+  string = delay(burst + lp * decay, period, 50ms)
+  lp     = z1(lp + (string - lp) * damp)
+  out    = string * 0.6
+}

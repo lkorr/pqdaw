@@ -525,3 +525,30 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - The stream uses the driver's first N inputs/outputs (no channel offset in `StreamConfig` yet; T3.18 adds channel selection). `kDefaultDevice` = the first registered driver that loads.
 - Missed buffers: a sample position that jumps by ≥ 1.5 buffers between switches counts as an output underflow; resync requests and overload messages are counted separately (`AsioEvents`) and make `--sine` exit 3.
 - Status: open
+
+## Q?-T1.10-a · 2026-10-21 · T1.10 · `pqc render --notes` syntax: seconds and 12-TET key numbers for now
+- Context: the task asks for a compact timed note syntax compatible with `pqdaw --play --notes "60 64 67"`.
+- Chosen: `pitch[@start][:length][*velocity]` (tools/README.md "Notes"). A plain list keeps the `--play` meaning exactly (a 0.25 s arpeggio repeated to the end), any timing makes a one-shot list; times in seconds (`ms` suffix allowed); pitches are 12-TET key numbers (fractional allowed) or `<f>hz`.
+- Options for later: A) as now; B) times in beats/ticks (PPQ 27720) with a `--bpm`, closer to the sequencer (T3.16); C) pitch identities in a tuning (`5/4`, `7\31`, `+386c`) via `tuning::resolveHz`, so goldens can exercise microtonal pitch directly. B and C are additive (new token forms), so nothing written now breaks.
+- Provisional: A; add C when a golden needs it.
+- Status: open
+
+## Q?-T1.10-b · 2026-10-21 · T1.10 · The file → Schedule pipeline exists twice (pqdaw --play and pqc)
+- Context: `compilePatchFile` and its import loader live in `src/app/src/play_command.cpp` (anonymous namespace); pqc needs the same (plus every diagnostic, warnings, the intermediate stages), and `tools/` must not depend on `app` (SDL, views).
+- Chosen: `pq::pqc::SourceFile` + `compilePatch` in `pq_pqc` (tools/pqc/src/compile.cpp), a copy of the loader; `app` untouched (another worker is editing its CLI).
+- Options: A) keep both; B) move the loader + pipeline into a small library both link (e.g. `engine` or a new `pq_compile` above graph/engine/jit), and make `--play` use it (it would also get `--backend jit` and the timed notes for free).
+- Provisional: A until T3.17 touches the app's compile path; B then.
+- Status: open
+
+## Q?-T1.10-c · 2026-10-21 · T1.10 · Golden tolerances, and where goldens come from
+- Goldens are written from the interpreter (`PQ_UPDATE_GOLDENS=1`), and both backends must match them. Today the JIT renders all six bit-identically (the muladd fusion is the optimiser's, so contraction finds nothing left to fuse in these patches); the tolerance is there for patches where it does (≤ 5.4e-7, Q64), other CPUs (CRT/SVML transcendentals may differ in the last ulp) and harmless future changes.
+- Tolerance: absolute 1e-4 (−80 dBFS) AND spectral 0.2 dB per semitone band (4096-point Hann STFT, levels floored at −80 dB re full scale). Measured margins: a parameter change of 2–6 % (ratio 2 → 2.05, cutoff +4 %, echo +2 ms, release −17 %, damping −10 %), one different note, a velocity 0.9 → 0.8, a one-sample delay, −0.3 dB, and a dropped 64-frame block all fail; ±1e-6 noise passes with ~0.01 dB spectral difference; a pure phase change passes spectral (0.06 dB) and fails absolute.
+- Options: A) as now; B) per-golden tolerances in kCases (the helper already takes one); C) a perceptual measure (loudness-weighted) for long renders.
+- Provisional: A (B is a one-field change when a golden needs it).
+- Status: open
+
+## Q?-T1.11-a · 2026-10-21 · T1.11 · Runner statistics: p99 over timed rounds, not over individual calls
+- Context: `Context::measure` times rounds (a round repeats the call until ≥ `--min-time`), so median/p99 describe round averages; with the default 15 repeats the "p99" is the maximum. Per-call timing would show tail latency of single blocks but adds timer overhead to sub-µs calls.
+- Options: A) rounds (as now; `--repeats 101` for a real p99 of rounds); B) a per-call sample mode for benches whose call is ≥ ~1 µs (a block of audio), reporting the distribution of single calls; C) both.
+- Provisional: A; benches that need tail latency (cross-thread round trips) already collect their own samples and report them with `ctx.record` / `reportStats`.
+- Status: open
