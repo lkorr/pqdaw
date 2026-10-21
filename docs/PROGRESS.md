@@ -244,3 +244,16 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: tokens are struct fields; value text formatted per change; meter damage only on pixel change; menus painted by one widget; caret timer only while focused; idle = 0 frames; non-tabular digits chosen to keep one atlas page per scale (measured); rounded corners cost 38 % of gallery paint (Q11).
 - Notes/blockers: info-view panel and IME are T3.7. Ctrl+CapsLock not bindable (M8).
 - Orchestrator verification: fast-forward onto 12e74eb; build.ps1 dev + release: 0 warnings, 15/15. Viewed widgets.png: reads as an Ableton-like dark grey UI. Assigned Q47–Q49.
+
+## 2026-10-21 · T0.7-fix5 · worker AA / task/T0.7-fix5-test-fidelity
+- Did: Golden rule (M0 review M5): ≤ 2/255 per channel; outliers only if ≤ 24/255, isolated (no 8-neighbour outlier) and ≤ 100 ppm (GoldenTolerance / passesGolden; compareImages keeps its signature). Failures write <name>.actual.png + <name>.diff.png with a bounding box. Shared tests/ui/golden_check.h (test_render and T3.2's widgets goldens). Mutation tests: every glyph of the `text` scene deleted in turn must fail; scope trace shifted ±1 px must fail. Q50.
+- Verified: build.ps1 dev + release: 0 warnings, 16/16. All goldens max diff 0 under the new rule. Glyph deletions 854/854 visible detected (11 clipped change nothing), weakest 50/255; trace shifts 1977–2512 clustered outliers.
+- Perf: glyph sweep 1.06 s dev (identical rows skipped via memcmp; was 11.9 s).
+- CPU-efficiency check: test-only; neighbour pass only over outliers' bounding box.
+- Notes/blockers: tolerance unmeasured on other GPUs (Q50).
+
+## 2026-10-21 · T0.9-fix1 · worker AA / task/T0.7-fix5-test-fidelity
+- Did: PQ Meter licence is proprietary ("All rights reserved"), so no PQ Meter source is copied into the repo: tests/ui/pqmeter_diff.cmake compiles smooth_line.h from the original tree and cuts the spectrum.cpp helper block into the build dir at configure time, against a minimal ImGui shim; skipped (exit 77) when the tree is absent. test_pqmeter_diff.cpp compares counts, indices, colours, uvs and positions on fixed inputs. lines.h fidelity claim corrected. Q51 (reciprocals vs divisions).
+- Verified: build.ps1 dev + release: 0 warnings, 16/16 (pq_tests_pqmeter_diff 11 cases / 10,207 assertions); skip path checked. Bit-identical: colour helpers, catmullRom, smoothBand, gradientBand. All geometry: identical counts, indices, colours, uvs; positions within float rounding (≤ 1.8e-3 px measured, ≤ 1/256 px asserted); 96–100 % of coordinates bit-identical. Documented differences asserted (skipped α=0 glow pass; flat fill colour).
+- Notes/blockers: scope/spectrum layer order lives in PQ Meter module members, so it is written out in the test (calling PQ Meter's compiled helpers).
+- Orchestrator verification (both): fast-forward onto 8e4dc79; build.ps1 dev + release: 0 warnings, 16/16. Assigned Q50/Q51.

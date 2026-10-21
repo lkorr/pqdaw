@@ -85,11 +85,11 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - `updateTexture(id, rect, data)` (async), `destroyTexture(id)` deferred by frame fence, slot reuse.
   - Accept: a 1024×512 spectrogram scrolling one column per frame at 144 Hz with no CPU wait on the GPU. Creating and destroying 10k textures doesn't leak (validation layer clean, VMA stats back to baseline).
 
-- [~] **T0.7-fix5 Tighter golden comparison** *(worker AA, branch task/T0.7-fix5-test-fidelity)* (`tests`). Depends on: —.
+- [x] **T0.7-fix5 Tighter golden comparison** *(6e2e49c)* (`tests`). Depends on: —.
   - Outlier magnitude cap and isolation rule (M5). Failure output: diff PNG plus bounding box.
   - Accept: deleting one glyph from the `text` scene, or moving the scope trace by 1 px, fails the test (mutation checks committed as test cases that render a perturbed scene).
 
-- [~] **T0.9-fix1 Differential test against PQ Meter** *(worker AA, branch task/T0.7-fix5-test-fidelity)* (`tests`). Depends on: T0.9.
+- [x] **T0.9-fix1 Differential test against PQ Meter** *(59c34ae)* (`tests`). Depends on: T0.9.
   - Compile PQ Meter's `smooth_line.h` and the `spectrum.cpp`/`oscilloscope.cpp` helper functions against a minimal `ImDrawList` shim; compare vertex/index buffers with `pq::ui` for fixed inputs.
   - Accept: bit-identical output (or each documented difference, such as the skipped α=0 pass, asserted explicitly).
 
