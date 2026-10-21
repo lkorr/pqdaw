@@ -160,8 +160,6 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
   if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
     return usageError("--asio only applies to --sine, --play and --list-devices");
-  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
-    return usageError("--asio only applies to --sine and --list-devices");
   // T3.7: the DAW shell. --project picks the shell in the window unless another view scene is named.
   if (!o.project.empty() || o.idleCheckSeconds > 0.0) {
     if (o.mode == Mode::Window && !sceneFlag) o.scene = "shell";
