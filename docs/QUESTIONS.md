@@ -52,3 +52,34 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options: A) geometric: convex outline + 1 px feathered fringe (ImGui/PQ Meter style), one shader, one 20-byte vertex format, 2·4·(segments+1) vertices per rect. B) SDF: 4 vertices per rect with coverage computed per pixel in the fragment shader, but the rect/radius parameters don't fit the fixed `{pos, uv, rgba8}` vertex, so it needs a second vertex/instance format, pipeline and command type.
 - Provisional choice: A. One pipeline and format (fewer state switches, PQ Meter code ports as-is), zero extra fragment cost. Measured (release): 145 ns to build an r=3 rounded rect (32 vertices + 138 indices). It's the more reversible choice: `addRoundedRectFilled`'s signature wouldn't change if an SDF path is added later. If widget-heavy frames show the build/upload cost matters (B would be ≈15 ns and 4 vertices per rect), add B as an instanced pipeline behind the same API.
 - Status: open
+
+## Q7 · 2026-10-20 · T1.1 · `out` is both a keyword and the example's output name
+- Context: PATCH_LANGUAGE §1 lists `in` and `out` as keywords, but the §4 example (and SPEC §7.3) declares `out out : audio voice mono` and binds `out = car * env`. Atom ports are also called `in`/`out`.
+- Options: A) `in`/`out` are contextual: they start a declaration only when followed by an identifier and `:`, and are otherwise ordinary names; B) keep them reserved and rename the example's output (e.g. `out y : audio`).
+- Provisional choice: A. `pq::graph::isKeywordNotName()` rejects every keyword as a name except `in` and `out`; the parser (T1.2) needs one token of lookahead after `in`/`out`. Switching to B is a one-line change in that function plus the example.
+- Status: open
+
+## Q8 · 2026-10-20 · T1.1 · Atom names and semantics not fixed by SPEC §7.2
+- Context: the atom registry (`src/graph/src/atoms.cpp`) needs exact names and port lists; §7.2 names some atoms only loosely.
+- Choices made (all data in one table, so each is a one-line change before T1.2 starts parsing stdlib):
+  1. Flip-flops are `srff`, `dff`, `tff` (outputs `q`), because `sr` is the sample-rate constant (PATCH_LANGUAGE §3).
+  2. Operators map to atoms: `+ − * / %` → `add sub mul div mod`, unary `−` → `neg`, `! && || ^^` → `not and or xor`, comparisons → `lt le gt ge eq ne`, `c ? a : b` → `select`, `x[i]` → `channel(x, i)` (i const), a tuple `(a, b, …)` → `pack`.
+  3. "sine (from phase or frequency)": `sine(phase)` (0..1 phase) and `sine_hz(hz, reset)` (own uint32 phase).
+  4. `delayline` with linear/allpass/cubic reads: three atoms `delay`, `delay_allpass`, `delay_cubic`, inputs `(x, time, max)`, time in seconds, `max` const (sizes the buffer); the read is clamped to ≥ 1 sample.
+  5. `pulse`: no inputs, true on the first sample the instance runs. `timer(trig, dur)`: dur in seconds. `counter(up, down, reset, wrap)`: counts rising edges, wraps at `wrap` when > 0.
+  6. `cents_to_hz(cents, ref = 261.626)` / `hz_to_cents(hz, ref = 261.626)` (SPEC §15 reference).
+  7. `sample&hold` is `samplehold(x, trig)`; `gate→real` is `gate_to_real` (as in PATCH_LANGUAGE §3); exact/fast variants are `tan`/`fast_tan` etc.
+  8. `track.in`, `sidechain.in`, `send(x, bus)`, `clipPlayer(clip)` are the I/O atoms; a patch's own outputs are `out` declarations, not an atom. `track.in` ends in a keyword after the dot (see Q7); so the T1.2 parser must accept a keyword after `.`.
+  9. `oversample { }`, `voicechain { }` and `fft` are not in patch language v0, so they have no IR form yet.
+- Status: open
+
+## Q9 · 2026-10-20 · T1.1 · Which stateful atoms break a delay-free cycle?
+- Context: PATCH_LANGUAGE §3 says "a cycle that goes through `z1(…)`, `delay(…)` or a stateful atom is ordinary feedback". But some stateful atoms pass their input through in the same sample (`latch`, `samplehold`, `counter`, `schmitt`), so a cycle through them has no delay.
+- Options: A) per-input `delayed` flag: a cycle is ordinary feedback only if it passes through an input whose effect on the output waits a sample (`z1.x`, `delay*.x`, `phasor.hz`, `sine_hz.hz`); B) any stateful atom breaks the cycle (the sentence as written), with the scheduler inventing a sample of delay inside latch/samplehold.
+- Provisional choice: A (`PortSpec::delayed` in the registry); T1.5 reads it. B would only need the scheduler to check `kStateful` instead.
+- Status: open
+
+## Q10 · 2026-10-20 · T1.1 · Attribute arguments, param defaults and ranges
+- Context: the grammar's `attr` takes `argList` (expressions), but the examples pass a string (`@label("Cutoff")`) and bare words (`@unit(Hz)`, `@curve(exp)`), which are not expressions. Param defaults and ranges are `expr`.
+- Choices: attribute arguments are literals only: number (with unit), bool, string, or identifier (optionally named, `@steps(n: 4)`). Param defaults and range ends are constant literals; the parser folds constant expressions such as `3/2` or `2 * 5ms` to a number (the unit suffix is kept only for a plain literal), and rejects non-constant ones. Literals keep their written unit (`5ms` stays 5 + ms, normalised on use), so printing reproduces them exactly.
+- Status: open

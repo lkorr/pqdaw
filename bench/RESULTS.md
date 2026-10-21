@@ -52,3 +52,9 @@ Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 | 2026-10-20 | 8faacb9 | pqdaw window idle (test pattern, no animation) | release | 0.0 ms CPU / 10 s | blocked in SDL_WaitEvent |
 | 2026-10-20 | 8faacb9 | pqdaw --animate, 100 Hz display | release | 58–70 ms CPU/s (≈0.6 ms/frame) | MAILBOX 62.5, IMMEDIATE 65.6, FIFO 70.3 ms/s; nearly all driver acquire/submit/present, scene build is 4 µs |
 | 2026-10-20 | 8faacb9 | pqdaw first frame | release | 189 ms after process start | from --window-selftest; SPEC target < 300 ms |
+| 2026-10-20 | 938038b | patch IR build, 1010 nodes / 1501 wires | release, pq_bench_graph | 70.9 µs median (70 ns/node) | 8 params with attrs, 101 named + placed nodes; includes all vector growth (no reserve) |
+| 2026-10-20 | 938038b | patch IR validateAll (valid graph) | release, pq_bench_graph | 21.3 µs median (min 19.1) | messages built lazily, so a valid graph allocates only the driver count + name sort arrays |
+| 2026-10-20 | 938038b | patch IR adjacency (CSR) | release, pq_bench_graph | 7.1 µs median | driver per input port + out-wire CSR |
+| 2026-10-20 | 938038b | patch IR operator== (structural) | release, pq_bench_graph | 121 µs median | canonical order (DFS) ×2 + sorted wire keys ×2; used by round-trip tests, not on the edit path |
+| 2026-10-20 | 938038b | patch IR copy / copy + eraseNodes(10) | release, pq_bench_graph | 10.5 / 32.6 µs median | in-place compaction; the first version rebuilt into a new Patch: 77 µs |
+| 2026-10-20 | 938038b | patch IR indexOf(NodeId) no erases / after an erase | release, pq_bench_graph | 2.0 / 12.3 ns/lookup median | one-probe guess (id − first id), else binary search bounded by the guess; plain binary search was 29 ns |

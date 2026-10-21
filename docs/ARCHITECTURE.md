@@ -82,9 +82,13 @@ namespace pq::tuning {
 
 // graph: the compiler pipeline
 namespace pq::graph {
-  struct Patch;                                    // IR: nodes, ports, wires, params, exports, layout
-  Result<Patch> parse(std::string_view source, std::string_view fileName);
-  std::string print(const Patch&);                 // parse(print(p)) == p
+  class Patch;          // IR (pq/graph/patch.h): flat node/port/wire arrays, dense NodeIndex + stable NodeId,
+                        // params with attrs, in/out/export declarations, subcircuit nodes, solve blocks, layout;
+                        // validate() for structure + declared types; operator== is structural (ignores NodeIds/order)
+  struct PatchFile;     // a .pqp file: imports + patches (pq/graph/patch_file.h)
+  class AtomRegistry;   // leaf atoms + operators: name → signature (pq/graph/atoms.h)
+  Result<PatchFile> parse(std::string_view source, std::string_view fileName);  // a file holds several patches
+  std::string print(const PatchFile&);             // parse(print(f)) == f
   Result<TypedPatch> infer(const Patch&, const InferOptions&);
   TypedPatch optimise(TypedPatch);
   Schedule schedule(const TypedPatch&, const ScheduleOptions&);   // SCCs, blocks, buffer liveness, state layout keyed by NodeId
