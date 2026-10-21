@@ -2,6 +2,8 @@
 # Add new dependencies here (not ad hoc in module CMakeLists) so versions stay in one place.
 
 include(FetchContent)
+# Git dependencies that need no submodules set GIT_SUBMODULES "": with the Git-for-Windows mingw64 git.exe that
+# FindGit can pick, `git submodule update` fails ("unknown subcommand: update-clone").
 set(FETCHCONTENT_QUIET ON)
 
 # --- doctest (MIT): unit tests --------------------------------------------------------------
@@ -63,6 +65,7 @@ FetchContent_Declare(SDL3
   GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
   GIT_TAG        release-3.4.18
   GIT_SHALLOW    TRUE
+  GIT_SUBMODULES ""   # none needed; also avoids a mismatched-git `submodule--helper` failure on this machine
   EXCLUDE_FROM_ALL)
 set(SDL_SHARED OFF)
 set(SDL_STATIC ON)
@@ -86,6 +89,7 @@ FetchContent_Declare(VulkanMemoryAllocator
   GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
   GIT_TAG        v3.4.0
   GIT_SHALLOW    TRUE
+  GIT_SUBMODULES ""
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(VulkanMemoryAllocator)
 add_library(pq_vma INTERFACE)
