@@ -140,7 +140,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Constant folding (never `param`), DCE, CSE, algebraic simplification (×1, +0, ×0 when the other side is finite), and hoisting param-rate subexpressions out of audio-rate paths.
   - Accept: tests on before/after IR. A test proves `tan(π·cutoff/sr)` is hoisted to param rate when cutoff is unmodulated, and stays audio-rate when it is modulated.
 
-- [x] **T1.5 Scheduler** *(346999c)* (`graph`). Depends on: T1.4.
+- [~] **T1.5 Scheduler** *(346999c; reopened as partial by the M1 review — see T1.5-fix1)* (`graph`). Depends on: T1.4.
   - Topological order, Tarjan SCCs, explicit-delay feedback handled, a zero-delay cycle outside `solve` rejected (text) or given an inserted `z1` plus a warning (visual mode flag). Block regions: per-sample for feedback SCCs, blocks elsewhere. Buffer liveness and reuse. State layout keyed by NodeId with type tags.
   - Accept: tests on schedule structure. The scratch-buffer count for a 100-node chain is ≤ 3. The state layout for an unchanged node is identical across reschedules.
 
@@ -152,7 +152,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Flat op list, parameter block, `ProcessContext`, and the state arena.
   - Accept: the interpreted output of the patches in `tests/graph/cases/` matches a slow reference evaluator (sample-by-sample graph walk in `double`) within 1e-5. RtScope tests show process() never allocates.
 
-- [x] **T1.8 Voices** *(039fdea)* (`engine`). Depends on: T1.7.
+- [~] **T1.8 Voices** *(039fdea; reopened as partial by the M1 review — see T1.8-fix1)* (`engine`). Depends on: T1.7.
   - Voice allocator (max voices, stealing policy), the event list, voice lanes (8 per AVX2 group), the `voice.*` namespace, voice end on silence/envelope.
   - Accept: tests cover allocation and stealing, note on/off sample accuracy (an event at sample k takes effect at k), and 64 voices with no allocation.
 
@@ -168,9 +168,87 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - A Google Benchmark-style runner (or a hand-rolled one with warmup/repeats/median), with CSV output and an append-to-`bench/RESULTS.md` script.
   - Accept: benchmarks exist for SPSC, the atoms, and an interpreted 32-node patch at 1/8/64 voices.
 
+## M1 follow-ups (from the M1 review, docs/reviews/M1.md)
+```
+- [~] **T1.5-fix1 Scheduler buffer liveness: solve reads, voice outputs, multichannel delay loops** *(worker AP, branch task/T1.5-fix1-liveness)* (`graph`). Depends on: T1.5.
+  - Pin every SolveEquation lhs/rhs and every unknown value (pin test `v.def <= b.firstOp`); pin every voice OutputRef/export
+    value; build the delay-loop read list once per node (schedule.cpp:1482). checkStructure asserts op.numIn == kernel inputs.
+    Delay-loop sub-block bound computed in float32 like the runtime (M10).
+  - Accept: docs/reviews/M1/probes solve_inplace (y = √2 ± 1e-6), voice_out (o1 peak 1.0), stereo_fb (JIT compiles, matches
+    interp bit for bit), delay_lb (block 1/64/1024 bit-identical) pass on both backends. A schedule-replay aliasing checker
+    (2 voice groups, 2 sub-block iterations, 3 Newton evaluations, after-solve and end-of-stage reads) runs over the corpus and
+    500 random patches WITH voices, multiple outputs, multichannel delays and solve blocks; reverting any one fix fails it.
+
+- [~] **T1.8-fix1 Voice semantics: NaN-safe mix, retrigger, unison, voice_last, overflow** *(worker AQ, branch task/T1.8-fix1-voices)* (`engine`). Depends on: T1.8.
+  - Mix and monitor with a lane-active select (no gain multiply on idle lanes); free lanes read a finite hz (referenceHz).
+    Retrigger only Released voices not started this block, with ≥ 1 low gate frame (or an explicit producer flag); never
+    merge two held notes. voice_last re-points to the newest live lane when its lane frees. Pitch/NoteOff lookup prefers
+    Held, then newest. EventBuffer/maxEventsPerBlock overflow drops the newest NoteOn, never an off; oversize blocks still
+    allocate. Ring moves/resets budgeted (lazy reset or ≤ one ring-heavy lane per block). Raised-cosine steal fade.
+  - Accept: idle_lane_nan.pqp and nan_lane.pqp render finite on both backends; "60@0:0.5 60@0.5:0.5" re-attacks (peak ≥
+    0.69 after 0.5 s); "60@0:1 60@0:1" = 2 lanes, 2× the single-note level; last.pqp holds 220 Hz after 0.42 s; overflow test
+    leaves 0 stuck notes; a per-voice 2 s delay at 64 voices with note-on/compaction traffic stays under 25 % of the block
+    period on the audio thread (bench row).
+
+- [ ] **T1.6-fix1 Kernel edge cases** (`dsp`). Depends on: T1.6.
+  - stateBytes in size_t + scheduler cap on ring bytes (error); sample_read tiny-negative rate and modulo loop wrap; timer NaN
+    clamp (Q55); mod never returns b; NaN hz → 0 Hz; wavetable prevPhase at reset; fast_sin range reduction (or documented
+    clamp) and remove it from the optimiser's finite facts; wavetable crossfade between adjacent mip levels.
+  - Accept: dsp_probes.pqp DelayBig is a compile error (no crash); SrTiny keeps playing; LoopFast loops at rate 2/64 on a
+    1-sample loop; TimerNan outputs 0; the saw wavetable's top harmonic stays ≥ 16 kHz through every octave boundary (spectral
+    test); tests use independent references (no copied level/wrap rules).
+
+- [ ] **T1b.1-fix1 JIT determinism, Newton, compile time** (`jit` + `engine`). Depends on: T1b.1.
+  - contract off by default (Q64 reversed; optional optimiser `mulsub` fusion); Newton step relative with a 1e-6 floor and a
+    fallback on non-finite J (both backends); forward-mode AD for inlined solve bodies (or correct Q53/RESULTS); interleave
+    capped by code size; CodeGenOptLevel measured; per-call-site scratch arrays (no __chkstk frames); canonical bool masks.
+  - Accept: chaos.pqp JIT == interp bit for bit; solve_scale.pqp converges to 0.002; zdf_tanh ≥ 2× faster with AD (or the
+    claim removed); mux1200 compiles ≤ 300 ms; a compile-time test asserts 100-node ≤ 100 ms (release, idle); chaos/edge
+    probes added to the JIT corpus.
+
+- [ ] **T1.x-arch1 Compile granularity decision** (`graph` + `engine` + docs). Depends on: T1.9, T1b.1. Before T3.17.
+  - Write the options into QUESTIONS for the user (whole-project program vs per-track/per-device-chain images chained by
+    buffers vs per-instance code sharing), with the measured numbers (JIT ≈ 0.5 ms/op, interp ≈ 5× JIT, crossfade ×2).
+    Prototype the chosen unit: recompile and crossfade only the changed unit; compile cache keyed per unit.
+  - Accept: a 30-track fixture (≈ 20k ops) — one device edit: audible change ≤ 200 ms, peak audio-thread CPU during the edit
+    ≤ 1.3× steady state, unchanged tracks bit-identical through the swap.
+
+- [ ] **T1.x-arch2 Shared image host + one compile pipeline** (`engine`, `jit`, `tools`, `app`). Depends on: T1b.1.
+  - Extract interpreter/JIT host code (layout, params, inputs, reducers/sends/broadcast, Newton) into one engine-internal
+    layer; `pq_compile` library for file → Schedule used by pqc and `pqdaw --play` (Q73 B, gives --play the JIT); renderOffline
+    through ProgramHost.
+  - Accept: jit_image.cpp/runtime.cpp shrink to codegen-specific code; all interpreter, JIT, voice, hot-swap and golden tests
+    pass unchanged; `pqdaw --play --backend jit` works.
+
+- [ ] **T1.x-silence Silence and sleep (SPEC §7.7)** (`graph` + `engine` + `jit`). Depends on: T1.x-arch1.
+  - Per-node tail declarations; per-region silent-input detection at block boundaries; constant-output kernels while asleep;
+    ABI field reporting output silence; voice end via the same mechanism.
+  - Accept: an idle 30-track project with reverbs/delays costs ≤ 1 % of a core after tails end; waking is sample-accurate
+    (golden); interpreter and JIT identical.
+
+- [ ] **T1.4-fix1 Optimiser: select hoisting, bit-exact folding, units** (`graph`). Depends on: T1.4.
+  - Sink pure ops below select/mux when it lowers the rate; fold with the 8-lane kernel (lane 0); `smp` rejected in params and
+    arithmetic reaching seconds inputs; units in the CSE key.
+  - Accept: FmVoice's adsr has no audio-rate exp after optimise (IR test) and the JIT fm_voice bench improves (RESULTS row);
+    folded == unfolded bit for bit for every exact transcendental over 10^4 arguments; smp_param.pqp is an error.
+
+- [ ] **T1.x-text-ids Keep state keys across text edits (Q68)** (`graph`). Depends on: T1.2. Before M4.
+  - Structural diff mapping re-parsed nodes to previous NodeIds before scheduling.
+  - Accept: adding an `export`, renaming a binding, or inserting a line in a .pqp keeps ≥ 99 % of state entries matched in
+    the transfer plan; hot swap after a text edit is click-free on an unchanged path.
+
+- [ ] **T1.11-fix1 Benchmark hygiene** (`bench`, `tools`). Depends on: T1.11.
+  - append_results.py refuses dirty trees and load > 25 % (or labels "indicative"); higher-is-better units summarised
+    correctly; per-block sample mode for process() benches (p99 of single blocks); proto-Operator 64-voice bench (interp, JIT)
+    as the §13 calibration row.
+  - Accept: M1 rows re-recorded on an idle machine; the §13 Operator row present with interp/JIT and crossfade numbers.
+```
+
+Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are QUESTIONS answers rather than tasks.
+
 ## M1b: JIT
 
-- [x] **T1b.1 LLVM codegen** *(6562fdb)* (`jit`). Depends on: T1.7.
+- [~] **T1b.1 LLVM codegen** *(6562fdb; reopened as partial by the M1 review — see T1b.1-fix1)* (`jit`). Depends on: T1.7.
   - Lowers a Schedule to LLVM IR with the same ProgramImage ABI. Scalar first. Host CPU features and target machine options. Fast-math flags policy: `contract` and `afn` allowed; no `nnan`/`ninf`; denormals FTZ.
   - Accept: every interpreter test passes with the JIT backend producing output identical within 1e-6. Compile time for a 100-node patch is recorded.
 
