@@ -47,11 +47,6 @@ Agents: add questions here instead of guessing on anything important. Use this f
   4. `chainSafeGen` reads the UI selection (`S.selected`), so the pitches of a degenerate generator depend on which region is selected. The C++ takes it as an explicit `RegionHint` parameter.
 - Options: A) keep the port bit-faithful and fix in the JS first (then regenerate fixtures); B) fix in pqdaw and diverge from the fixtures.
 - Provisional choice: A. For tuning-as-signal (T2.6), MODMOS cannot use the linear form exactly because of 2; T2.6 should decide whether audio uses the exact chroma (L − s unrounded).
-## Q11 · 2026-10-20 · T0.7 · Rounded rects: geometric AA vs SDF
-- Context: SPEC §11 says "Antialiasing is geometric, as in PQ Meter" and, under other primitives, "SDF rounded rects/borders". T0.7 had to pick one for `addRoundedRectFilled`.
-- Options: A) geometric: convex outline + 1 px feathered fringe (ImGui/PQ Meter style), one shader, one 20-byte vertex format, 2·4·(segments+1) vertices per rect. B) SDF: 4 vertices per rect with coverage computed per pixel in the fragment shader, but the rect/radius parameters don't fit the fixed `{pos, uv, rgba8}` vertex, so it needs a second vertex/instance format, pipeline and command type.
-- Provisional choice: A. One pipeline and format (fewer state switches, PQ Meter code ports as-is), zero extra fragment cost. Measured (release): 145 ns to build an r=3 rounded rect (32 vertices + 138 indices). It's the more reversible choice: `addRoundedRectFilled`'s signature wouldn't change if an SDF path is added later. If widget-heavy frames show the build/upload cost matters (B would be ≈15 ns and 4 vertices per rect), add B as an instanced pipeline behind the same API.
-- Status: open
 
 ## Q7 · 2026-10-20 · T1.1 · `out` is both a keyword and the example's output name
 - Context: PATCH_LANGUAGE §1 lists `in` and `out` as keywords, but the §4 example (and SPEC §7.3) declares `out out : audio voice mono` and binds `out = car * env`. Atom ports are also called `in`/`out`.
@@ -82,4 +77,10 @@ Agents: add questions here instead of guessing on anything important. Use this f
 ## Q10 · 2026-10-20 · T1.1 · Attribute arguments, param defaults and ranges
 - Context: the grammar's `attr` takes `argList` (expressions), but the examples pass a string (`@label("Cutoff")`) and bare words (`@unit(Hz)`, `@curve(exp)`), which are not expressions. Param defaults and ranges are `expr`.
 - Choices: attribute arguments are literals only: number (with unit), bool, string, or identifier (optionally named, `@steps(n: 4)`). Param defaults and range ends are constant literals; the parser folds constant expressions such as `3/2` or `2 * 5ms` to a number (the unit suffix is kept only for a plain literal), and rejects non-constant ones. Literals keep their written unit (`5ms` stays 5 + ms, normalised on use), so printing reproduces them exactly.
+- Status: open
+
+## Q11 · 2026-10-20 · T0.7 · Rounded rects: geometric AA vs SDF
+- Context: SPEC §11 says "Antialiasing is geometric, as in PQ Meter" and, under other primitives, "SDF rounded rects/borders". T0.7 had to pick one for `addRoundedRectFilled`.
+- Options: A) geometric: convex outline + 1 px feathered fringe (ImGui/PQ Meter style), one shader, one 20-byte vertex format, 2·4·(segments+1) vertices per rect. B) SDF: 4 vertices per rect with coverage computed per pixel in the fragment shader, but the rect/radius parameters don't fit the fixed `{pos, uv, rgba8}` vertex, so it needs a second vertex/instance format, pipeline and command type.
+- Provisional choice: A. One pipeline and format (fewer state switches, PQ Meter code ports as-is), zero extra fragment cost. Measured (release): 145 ns to build an r=3 rounded rect (32 vertices + 138 indices). It's the more reversible choice: `addRoundedRectFilled`'s signature wouldn't change if an SDF path is added later. If widget-heavy frames show the build/upload cost matters (B would be ≈15 ns and 4 vertices per rect), add B as an instanced pipeline behind the same API.
 - Status: open
