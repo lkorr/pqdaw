@@ -73,7 +73,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Option B: clean-room IASIO COM host (driver enumeration from the registry, `ASIOInit`, buffer switch callback) under our licence; or keep opt-in.
   - Accept: per the decision. If B: Focusrite USB ASIO 64 frames, 60 s, 0 resync requests, RtScope-clean callback.
 
-- [ ] **T0.7-fix2 Widget-grade draw-list primitives** (`ui`). Depends on: T0.7. Before T3.2.
+- [~] **T0.7-fix2 Widget-grade draw-list primitives** *(worker O, branch task/T0.7-fix2-primitives)* (`ui`). Depends on: T0.7. Before T3.2.
   - `addRectStroke`, `addRoundedRectStroke`, public `addConvexPolyFilled`, `addCircleFilled/Stroke`, `addArcStroke` (knob rings), `addTriangleFilled`, snapped `addHLine/addVLine`. Fix `addRectFilledMultiColor` to be bilinear (centre vertex or N×N), or correct its doc.
   - Accept: `primitives` golden scene. Unit tests: a 1 px stroke at integer coordinates touches exactly one pixel column at full alpha; arc tessellation chord error ≤ 0.2 px; the 4-corner gradient's centre pixel is within 2/255 of the bilinear value. Benchmarks recorded.
 
