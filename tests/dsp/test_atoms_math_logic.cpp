@@ -98,8 +98,13 @@ TEST_CASE("dsp atoms: arithmetic") {
   checkAtom(spec(Atom::Abs, {uniform(-4, 4)}, ew1([](double x) { return std::abs(x); }), exact));
   checkAtom(spec(Atom::Sign, {grid(-2, 0.5f, 9)}, ew1([](double x) { return x > 0 ? 1.0 : x < 0 ? -1.0 : 0.0; }), exact));
   checkAtom(spec(Atom::Floor, {uniform(-10, 10)}, ew1([](double x) { return std::floor(x); }), exact));
-  checkAtom(spec(Atom::Frac, {uniform(-10, 10)},
-                 ew1([](double x) { return std::min(x - std::floor(x), 0.99999994039535522); }), exact));
+  const auto fracRef = ew1([](double x) {
+    // The kernel computes x − floor(x) in float, where a tiny negative x rounds up to exactly 1; the clamp keeps
+    // the documented range [0, 1).
+    return std::min(static_cast<double>(static_cast<float>(x - std::floor(x))), 0.99999994039535522);
+  });
+  checkAtom(spec(Atom::Frac, {uniform(-10, 10)}, fracRef, exact));
+  checkAtom(spec(Atom::Frac, {pickFrom({-1e-9f, -1e-30f, -0.0f, 0.0f, -2.5f, 3.0f, -1e-7f})}, fracRef, exact));
   checkAtom(spec(Atom::Sqrt, {uniform(0, 100)}, ew1([](double x) { return std::sqrt(x); }), Tol{0, kF / 2}));
   checkAtom(spec(Atom::Const, {uniform(-4, 4)}, ew1([](double x) { return x; }), exact));
 }

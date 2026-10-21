@@ -80,8 +80,10 @@ bool isDelay(Atom a) noexcept {
 // Max delay clamped to [2, 2^30]: ≥ 2 keeps every interpolator's minimum delay (≤ 1) below the maximum.
 uint32_t clampMaxDelay(uint32_t d) noexcept { return d < 2u ? 2u : d > (1u << 30) ? (1u << 30) : d; }
 
+// Ring frames: the 4-point read reaches maxDelay + 2 back, and the 1-lane kernel writes 8 frames ahead of its
+// reads (vectorised over time), so 10 frames of headroom.
 uint32_t delayCapacity(uint32_t maxDelay) noexcept {
-  const uint64_t need = static_cast<uint64_t>(maxDelay) + 3;
+  const uint64_t need = static_cast<uint64_t>(maxDelay) + 10;
   return static_cast<uint32_t>(std::bit_ceil(need));
 }
 

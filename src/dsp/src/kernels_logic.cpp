@@ -126,22 +126,40 @@ enum class EdgeKind { Rise, Fall, Change };
 template <EdgeKind K>
 struct Edge {
   static constexpr uint32_t kSpec = 1;
+  template <class S>
+  static typename S::F edge(typename S::F prev, typename S::F v) noexcept {
+    if constexpr (K == EdgeKind::Rise) return S::andnot(prev, v);
+    else if constexpr (K == EdgeKind::Fall) return S::andnot(v, prev);
+    else return S::bxor(v, prev);
+  }
   template <class S, uint32_t SM>
   static void run(const KernelArgs& a) noexcept {  // RT-safe
     auto& st = *static_cast<EdgeState*>(a.state);
-    const In<S, splBit(SM, 0)> b(a.in[0]);
     float* out = a.out[0];
-    auto prev = S::load(st.prev);
-    for (uint32_t f = 0; f < a.frames; ++f) {
-      const auto v = b.at(f);
-      typename S::F r;
-      if constexpr (K == EdgeKind::Rise) r = S::andnot(prev, v);
-      else if constexpr (K == EdgeKind::Fall) r = S::andnot(v, prev);
-      else r = S::bxor(v, prev);
-      S::store(out + f * S::kW, r);
-      prev = v;
+    if constexpr (S::kW == 1 && !splBit(SM, 0)) {
+      // Mono: "prev" is just the previous input sample, so vectorise over time with a shifted load.
+      const float* p = a.in[0];
+      const uint32_t vecEnd = a.frames & ~7u;
+      if (vecEnd > 0) {
+        alignas(32) float first[8];
+        first[0] = st.prev[0];
+        for (uint32_t k = 1; k < 8; ++k) first[k] = p[k - 1];
+        S8::store(out, edge<S8>(S8::load(first), S8::load(p)));
+        for (uint32_t i = 8; i < vecEnd; i += 8) S8::store(out + i, edge<S8>(S8::load(p + i - 1), S8::load(p + i)));
+      }
+      for (uint32_t i = vecEnd; i < a.frames; ++i)
+        S1::store(out + i, edge<S1>(i == 0 ? S1::load(st.prev) : S1::load(p + i - 1), S1::load(p + i)));
+      if (a.frames > 0) st.prev[0] = p[a.frames - 1];
+    } else {
+      const In<S, splBit(SM, 0)> b(a.in[0]);
+      auto prev = S::load(st.prev);
+      for (uint32_t f = 0; f < a.frames; ++f) {
+        const auto v = b.at(f);
+        S::store(out + f * S::kW, edge<S>(prev, v));
+        prev = v;
+      }
+      S::store(st.prev, prev);
     }
-    S::store(st.prev, prev);
   }
 };
 

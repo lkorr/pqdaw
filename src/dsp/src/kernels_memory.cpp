@@ -72,7 +72,42 @@ struct Delay {
     const auto one = S::seti(1);
     uint32_t w = st.writePos;
     auto y1 = S::load(st.apY1);
-    for (uint32_t f = 0; f < a.frames; ++f, ++w) {
+    uint32_t f = 0;
+    if constexpr (S::kW == 1 && K != Interp::Allpass) {
+      // Mono linear/cubic reads have no recurrence: every read is at or before its own sample, so a chunk of 8
+      // inputs can be written first and the 8 outputs read with gathers (the ring has 10 frames of headroom for
+      // the samples written ahead). Allpass keeps its per-sample recurrence (y1) and stays scalar.
+      const auto dMin8 = S8::set(minDelay);
+      const auto dMax8 = S8::set(st.maxDelay);
+      const auto mask8 = S8::seti(static_cast<int32_t>(st.mask));
+      const auto one8 = S8::seti(1);
+      for (; f + 8 <= a.frames; f += 8, w += 8) {
+        const uint32_t wpos = w & st.mask;
+        if constexpr (splBit(SM, 0)) {
+          const auto xv = S8::set(a.in[0][0]);
+          if (wpos + 8 <= st.capacity) S8::store(ring + wpos, xv);
+          else for (uint32_t k = 0; k < 8; ++k) ring[(w + k) & st.mask] = a.in[0][0];
+        } else {
+          if (wpos + 8 <= st.capacity) S8::store(ring + wpos, S8::load(a.in[0] + f));
+          else for (uint32_t k = 0; k < 8; ++k) ring[(w + k) & st.mask] = a.in[0][f + k];
+        }
+        const auto dIn = splBit(SM, 1) ? S8::set(a.in[1][0]) : S8::load(a.in[1] + f);
+        const auto d = S8::min(S8::max(dIn, dMin8), dMax8);
+        const auto fl = S8::floor(d);
+        const auto fr = S8::sub(d, fl);
+        const auto p0 = S8::subi(S8::addi(S8::seti(static_cast<int32_t>(w)), S8::laneIndex()), S8::truncToInt(fl));
+        const auto x0 = S8::gather(ring, S8::andi(p0, mask8));
+        const auto x1 = S8::gather(ring, S8::andi(S8::subi(p0, one8), mask8));
+        if constexpr (K == Interp::Linear) {
+          S8::store(out + f, S8::fma(fr, S8::sub(x1, x0), x0));
+        } else {
+          const auto xm1 = S8::gather(ring, S8::andi(S8::addi(p0, one8), mask8));
+          const auto x2 = S8::gather(ring, S8::andi(S8::subi(p0, S8::seti(2)), mask8));
+          S8::store(out + f, hermite<S8>(xm1, x0, x1, x2, fr));
+        }
+      }
+    }
+    for (; f < a.frames; ++f, ++w) {
       S::store(ring + static_cast<size_t>(w & st.mask) * L, x.at(f));
       // max(d, dMin) returns dMin for NaN.
       const auto d = S::min(S::max(delay.at(f), dMin), dMax);

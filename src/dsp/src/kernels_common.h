@@ -4,6 +4,7 @@
 // template-instantiation tables behind findKernel.
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -19,6 +20,17 @@ using simd::S1;
 using simd::S8;
 
 constexpr bool splBit(uint32_t mask, uint32_t i) noexcept { return ((mask >> i) & 1u) != 0; }
+
+// True if any bool mask in p[0 .. count) is set (OR-reduction, 8 floats per step). Lets a kernel with a Blk
+// bool input (reset, sync) take its no-event fast path for blocks where the input never fires. RT-safe.
+inline bool blockAny(const float* p, uint32_t count) noexcept {
+  const uint32_t vecEnd = count & ~7u;
+  __m256 acc = _mm256_setzero_ps();
+  for (uint32_t i = 0; i < vecEnd; i += 8) acc = _mm256_or_ps(acc, _mm256_loadu_ps(p + i));
+  bool any = _mm256_movemask_ps(acc) != 0;
+  for (uint32_t i = vecEnd; i < count; ++i) any |= std::bit_cast<uint32_t>(p[i]) != 0;
+  return any;
+}
 
 // ---- Element-wise driver ----------------------------------------------------------------------------------
 // Stateless atoms do not care how lanes are laid out, so one loop serves both lane counts: `count` = frames·L
@@ -38,7 +50,14 @@ inline void elementwise(const KernelArgs& a, uint32_t count) noexcept {  // RT-s
   } else if constexpr (Op::kArity == 2) {
     const In<S8, splBit(SM, 0)> x(a.in[0]);
     const In<S8, splBit(SM, 1)> y(a.in[1]);
-    for (uint32_t i = 0; i < vecEnd; i += 8) S8::store(out + i, Op::template f<S8>(x.at(i >> 3), y.at(i >> 3)));
+    uint32_t i0 = 0;
+    for (; i0 + 16 <= vecEnd; i0 += 16) {
+      const auto r0 = Op::template f<S8>(x.at(i0 >> 3), y.at(i0 >> 3));
+      const auto r1 = Op::template f<S8>(x.at((i0 >> 3) + 1), y.at((i0 >> 3) + 1));
+      S8::store(out + i0, r0);
+      S8::store(out + i0 + 8, r1);
+    }
+    for (uint32_t i = i0; i < vecEnd; i += 8) S8::store(out + i, Op::template f<S8>(x.at(i >> 3), y.at(i >> 3)));
     for (uint32_t i = vecEnd; i < count; ++i) {
       const float* px = splBit(SM, 0) ? a.in[0] : a.in[0] + i;
       const float* py = splBit(SM, 1) ? a.in[1] : a.in[1] + i;

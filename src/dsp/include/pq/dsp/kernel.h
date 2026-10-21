@@ -27,7 +27,7 @@
 // in both the 1-lane and 8-lane forms, so `and/or/xor/not` are plain bitwise ops and `select` is one blendv.
 // Kernels only produce canonical masks; bool inputs must be canonical masks (voice.gate etc. included).
 // `gate_to_real` turns a mask into 0.0f / 1.0f. (SPEC §7.1 mentions a packed one-bit-per-voice form: see
-// docs/QUESTIONS.md Q5 for why the block buffers use 32-bit masks.)
+// docs/QUESTIONS.md Q13 for why the block buffers use 32-bit masks.)
 //
 // ---- Outputs, aliasing, state -------------------------------------------------------------------------------
 // Outputs are Blk buffers of `frames * L` floats. An output may alias an input of the same op only for

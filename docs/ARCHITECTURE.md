@@ -141,6 +141,15 @@ The engine's process entry will be an `AudioCallback` behind a `BlockAdapter`; `
 - All Program state lives in **one arena** allocated when the image is built. The state layout maps `NodeId → (offset, size, type tag)`. Hot swap copies state for every NodeId whose type tag matches (SPEC §7.5).
 - Parameter values live in a double-buffered block written by the engine from `EngineCommand`s. Programs read them and never write them.
 
+### Leaf-atom kernel ABI (`pq/dsp/kernel.h`, `pq/dsp/atoms.h`; T1.6)
+The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the same semantics inline.
+- `using KernelFn = void (*)(const KernelArgs&) noexcept;` with `KernelArgs { const float* const* in; float* const* out; void* state; const void* resource; uint32_t frames; uint16_t numIn, numOut; uint32_t splMask; }`.
+- **Lanes**: each kernel is compiled for L = 1 (global signal) or L = 8 (one voice group). A block buffer holds `frames · L` floats, frame-major with voices interleaved (`[s·8 + v]`, one frame = one `__m256`). Global stateless kernels are vectorised over time.
+- **Rates**: an input is a block buffer (audio rate) or a Spl pattern of 8 floats constant over the block (param rate; per-voice values for L = 8, 8 copies of the value for L = 1). The Spl mask is a template specialisation chosen by `findKernel(atom, lanes, splMask)`, so unmodulated inputs cost one vector load per block and no per-sample branch.
+- **Bools** are 32-bit lane masks (all ones / zero) in float slots, for both L.
+- **State**: one POD block per stateful node (`atom_state.h`, 32-byte aligned, 8 lanes even for L = 1), sized by `stateBytes(atom, StateInit)` and written by `initState` (no allocation). Its type tag for hot swap is the `Atom` id (plus the lane count for delay lines, whose ring follows the header).
+- **Resources** (wavetables, shaper curves, sample data) are immutable tables built off-thread (`tables.h`) and passed by pointer.
+
 ## 4. Data and file formats
 - **Project**: a directory: `project.pqd` (JSON, `"schemaVersion"` field, UTF-8), `patches/*.pqp`, `samples/`, `cache/`.
 - **Patches**: `.pqp` text in the patch language ([PATCH_LANGUAGE.md](PATCH_LANGUAGE.md)). The visual layout is stored in the same file in a `layout { }` block.

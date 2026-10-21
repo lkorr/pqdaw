@@ -47,7 +47,7 @@
 //                                     samples. P < 1, NaN or ≥ 2^31: a single pulse on the first sample.
 //                                     A new period takes effect after the next pulse.
 //   timer (trig, duration)            on trig edge: high for N = round(duration) samples, starting at the edge
-//                                     sample (retriggerable; N ≤ 0 or NaN: no output; N clamped to 2^31−1)
+//                                     sample (retriggerable; N ≤ 0 or NaN: no output; N ≤ 2147483520)
 // Memory:
 //   z1 (x)                            x delayed by one sample (initially 0)
 //   delay_linear/_cubic/_allpass (x, delay)  delay in samples, fractional. The input is written before the

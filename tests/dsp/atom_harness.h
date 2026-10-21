@@ -271,7 +271,7 @@ inline double checkAtom(const AtomSpec& s, uint32_t seed = 1) {
               if (!ok) {
                 std::string inputs;
                 for (uint32_t i = 0; i < nIn; ++i) inputs += " in" + std::to_string(i) + "=" + std::to_string(rin[i][t]);
-                FAIL_CHECK(info.name << " lanes=" << lanes << " spl=" << splMask << " lane=" << l << " t=" << t
+                FAIL_CHECK(std::string(info.name) << " lanes=" << lanes << " spl=" << splMask << " lane=" << l << " t=" << t
                                      << " out" << o << ": got " << got << " ref " << ref << inputs);
                 return worst;
               }

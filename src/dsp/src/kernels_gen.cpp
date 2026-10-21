@@ -45,7 +45,7 @@ struct PhasorK {
     const In<S, splBit(SM, 0)> hz(a.in[0]);
     const In<S, splBit(SM, 1)> reset(a.in[1]);
     float* out = a.out[0];
-    const bool resetActive = !splBit(SM, 1) || S::any(reset.at(0));
+    const bool resetActive = splBit(SM, 1) ? S::any(reset.at(0)) : blockAny(a.in[1], a.frames * S::kW);
 
     if constexpr (S::kW == 1 && splBit(SM, 0)) {
       if (!resetActive) {
@@ -64,6 +64,32 @@ struct PhasorK {
         for (uint32_t i = vecEnd; i < a.frames; ++i)
           S1::store(out + i, emit<S1>(S1::seti(static_cast<int32_t>(ph0 + inc * i))));
         st.phase[0] = ph0 + inc * a.frames;
+        return;
+      }
+    }
+
+    if constexpr (S::kW == 1 && !splBit(SM, 0)) {
+      if (!resetActive) {
+        // Mono, audio-rate frequency, no reset: 8 increments at once, then an in-register exclusive prefix sum
+        // gives the 8 phases (still exact integer arithmetic, mod 2^32).
+        uint32_t ph0 = st.phase[0];
+        const uint32_t vecEnd = a.frames & ~7u;
+        for (uint32_t i = 0; i < vecEnd; i += 8) {
+          const auto inc = increment<S8>(S8::load(a.in[0] + i), st);
+          // Inclusive scan within each 128-bit half, then carry the low half's total into the high half.
+          auto scan = _mm256_add_epi32(inc, _mm256_slli_si256(inc, 4));
+          scan = _mm256_add_epi32(scan, _mm256_slli_si256(scan, 8));
+          const auto lowTotal = _mm256_permutevar8x32_epi32(scan, _mm256_set1_epi32(3));
+          scan = _mm256_add_epi32(scan, _mm256_blend_epi32(_mm256_setzero_si256(), lowTotal, 0xF0));
+          const auto phases = _mm256_add_epi32(S8::seti(static_cast<int32_t>(ph0)), _mm256_sub_epi32(scan, inc));
+          S8::store(out + i, emit<S8>(phases));
+          ph0 += static_cast<uint32_t>(_mm256_extract_epi32(scan, 7));
+        }
+        for (uint32_t i = vecEnd; i < a.frames; ++i) {
+          S1::store(out + i, emit<S1>(S1::seti(static_cast<int32_t>(ph0))));
+          ph0 += static_cast<uint32_t>(_mm_cvtsi128_si32(increment<S1>(S1::load(a.in[0] + i), st)));
+        }
+        st.phase[0] = ph0;
         return;
       }
     }
@@ -319,7 +345,7 @@ struct SampleReadK {
     const I lastIndex = S::seti(v.length - 1);
     const I signBit = S::seti(static_cast<int32_t>(0x80000000u));
     const auto startValid = S::band(S::asF(S::gti(startHi, S::seti(-1))), S::asF(S::gti(length, startHi)));
-    const bool resetActive = !splBit(SM, 1) || S::any(reset.at(0));
+    const bool resetActive = splBit(SM, 1) ? S::any(reset.at(0)) : blockAny(a.in[1], a.frames * S::kW);
 
     I index = S::loadi(st.index);
     I frac = S::loadu32(st.frac);

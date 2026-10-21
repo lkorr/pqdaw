@@ -84,7 +84,7 @@ struct alignas(32) WavetableState {  // wavetable: previous phase (to estimate t
 
 // delayline: header, then `capacity * lanes` floats of ring buffer (frame-major, lanes interleaved).
 struct alignas(32) DelayState {
-  uint32_t capacity;  // frames, power of two ≥ maxDelay + 3
+  uint32_t capacity;  // frames, power of two ≥ maxDelay + 10
   uint32_t mask;      // capacity − 1
   uint32_t writePos;  // next frame to write (wraps through mask)
   uint32_t lanes;     // 1 or 8: the ring layout this state was initialised for

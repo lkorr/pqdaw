@@ -22,8 +22,9 @@ int64_t exactIncrement(float hz, uint32_t sr) {
   const double mant = std::frexp(std::abs(static_cast<double>(hz)), &exp);  // |hz| = mant·2^exp, mant in [0.5, 1)
   const uint64_t m = static_cast<uint64_t>(std::ldexp(mant, 24));            // exact: float has 24 bits
   const int shift = exp - 24 + 32;                                           // |hz|·2^32 = m·2^shift
-  REQUIRE(shift >= 0);
-  REQUIRE(shift <= 39);  // m·2^shift < 2^63
+  if (shift < 0 || shift > 39) {  // m·2^shift must stay below 2^63
+    FAIL("frequency outside the exact-increment helper's range");
+  }
   const uint64_t num = m << shift;
   uint64_t q = num / sr;
   const uint64_t r = num % sr;

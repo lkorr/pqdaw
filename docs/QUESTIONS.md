@@ -90,4 +90,20 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options (exclusive + underruns): A) our own WASAPI backend (event-driven, exclusive and shared, `GetCurrentPadding`-based underrun detection, no extra ring buffer: also lower latency than RtAudio's ring) behind the existing `AudioDevice` interface; B) patch RtAudio (vendored fork); C) another library (PortAudio has WASAPI exclusive, MIT-style, but also bundles ASIO SDK for its ASIO host).
 - Options (ASIO): A) keep it opt-in (`-DPQ_WITH_ASIO=ON`) and let the user accept Steinberg's licence for their own builds; B) a clean-room ASIO host header (the IASIO COM vtable is small) so ASIO ships under our licence; C) drop ASIO.
 - Provisional choice: RtAudio WASAPI shared only, honestly reported: `ShareMode::Exclusive` / `--exclusive` return `ErrorCode::Unsupported`; ASIO compiled only with `PQ_WITH_ASIO=ON` (default OFF; `--asio` explains why when off); the stream defaults to the device's mix rate to avoid the resampler and `StreamInfo::backendResampling` flags it otherwise; `--sine` adds a backend-independent check (frames delivered vs. the span between first and last callback) and a deadline-miss counter. All reversible: backends sit behind `AudioDevice` + `CallbackRunner`, so option A replaces only `rtaudio_device.cpp`. I'd recommend A (own WASAPI) as a later task, and asking the user about ASIO B vs A.
+
+## Q13 · 2026-10-20 · T1.6 · Bool storage: 32-bit lane masks instead of packed bits
+- Context: SPEC §7.1 says bools are "stored as SIMD lane masks: one bit per voice per sample in packed form, expanded to 0/1 floats only where a real-valued input consumes them".
+- Options: A) block buffers hold 32-bit masks (0 / 0xFFFFFFFF) in float slots, the form AVX2 compares produce and `blendv`/`and` consume directly; B) packed bits (1 byte per frame for 8 voices), with a `movemask` to pack after every compare and a shuffle/compare to expand before every select or logic op.
+- Provisional choice: A. Packing and unpacking would cost more instructions per bool op than the logic itself, and a 64-frame × 8-voice bool buffer is only 2 KB. Logic stays "nearly free" (0.06–0.09 ns per voice-sample measured). Reversible: only the bool kernels and the interpreter's buffer sizing depend on it; packed bits can still be used for storage outside the block loop (e.g. event/state snapshots).
+- Status: open
+
+## Q14 · 2026-10-20 · T1.6 · Underspecified logic/memory atom semantics
+- Context: SPEC §7.2 names these atoms without fixing their exact behaviour. Provisional semantics (documented in `src/dsp/include/pq/dsp/atoms.h`, tested):
+  - `pulse(period)`: high on the first sample, then every round(period) samples (a clock source); an invalid period gives a single pulse on the first sample. Alternative: a one-sample trigger on an input edge (that is what `rise` already does).
+  - `sample_hold(x, trig)` samples on the rising edge of `trig`; `latch(x, enable)` is level-sensitive (transparent while high).
+  - `phasor`/`sine_hz` `reset` and `sample_read` `reset` are level-sensitive (phase/playhead held at the start while high); use `rise()` for edge behaviour.
+  - `clockdiv(clk, n)` passes every n-th input pulse (keeps the pulse width) rather than producing a 50 % square wave.
+  - `counter` wraps within [0, n−1]; reset wins over simultaneous edges.
+  - `sr` flip-flop: reset wins when both inputs are high.
+- Provisional choice: as listed: each is the cheapest primitive from which the alternatives can be built as subcircuits. Reversible: kernel semantics only; nothing persisted.
 - Status: open

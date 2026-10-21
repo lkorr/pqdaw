@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <string>
 #include <vector>
 
 #include "pq/core/aligned_buffer.h"
@@ -66,14 +67,19 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
         REQUIRE(fn != nullptr);
         pq::dsp::KernelArgs args{inPtrs, outPtrs, state.data(), resource, kFrames, static_cast<uint16_t>(nIn),
                                  static_cast<uint16_t>(nOut), splMask};
+        bool lookupsOk = false;
         const uint64_t violations = countRtViolations([&] {
+          // Lookups are RT-safe too (table reads), so a voice or region can switch kernels at a block boundary.
+          lookupsOk = pq::dsp::findKernel(a, lanes, splMask) == fn && pq::dsp::kernelInfo(a).name == info.name &&
+                      (pq::dsp::stateBytes(a, init) != 0) == (info.stateSize != 0);
           pq::dsp::initState(a, state.data(), init);
           fn(args);
           fn(args);
           args.frames = 0;
           fn(args);
         });
-        CHECK_MESSAGE(violations == 0, info.name << " lanes=" << lanes << " spl=" << splMask);
+        CHECK(lookupsOk);
+        CHECK_MESSAGE(violations == 0, std::string(info.name) << " lanes=" << lanes << " spl=" << splMask);
         ++kernelsRun;
       }
     }
