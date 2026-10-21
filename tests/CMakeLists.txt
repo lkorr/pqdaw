@@ -19,6 +19,7 @@ pq_add_test(pq_tests_core
     core/test_denormal_guard.cpp
     core/test_fast_math.cpp
     core/test_time.cpp
+    core/test_math_time_rt.cpp
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning
