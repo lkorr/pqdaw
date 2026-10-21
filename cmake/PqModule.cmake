@@ -47,14 +47,21 @@ endfunction()
 # pq_add_test(pq_tests_core SOURCES test_x.cpp DEPS pq_core)
 # Every test executable links doctest with a shared main, the allocation trap (an allocation inside an
 # RtScope fails the running test case), and registers with CTest.
+# Wall-clock performance checks that depend on machine load live in doctest cases decorated with
+# `* doctest::test_suite("perf")` (T0.x-flake). The default CTest entry excludes that suite; with PERF, a second
+# entry `<name>_perf` runs only it, labelled `perf`, which the test presets exclude (run: ctest -L perf).
 function(pq_add_test name)
-  cmake_parse_arguments(A "" "" "SOURCES;DEPS" ${ARGN})
+  cmake_parse_arguments(A "PERF" "" "SOURCES;DEPS" ${ARGN})
   add_executable(${name} ${A_SOURCES} ${PQ_SOURCE_DIR}/tests/doctest_main.cpp)
   target_link_libraries(${name} PRIVATE doctest::doctest pq_alloc_trap ${A_DEPS})
   target_compile_definitions(${name} PRIVATE PQ_ALLOC_TRAP=1)
   target_compile_definitions(${name} PRIVATE PQ_TEST_DATA_DIR="${PQ_SOURCE_DIR}/tests")
   pq_target_defaults(${name})
-  add_test(NAME ${name} COMMAND ${name} --no-intro=true)
+  add_test(NAME ${name} COMMAND ${name} --no-intro=true --test-suite-exclude=perf)
+  if(A_PERF)
+    add_test(NAME ${name}_perf COMMAND ${name} --no-intro=true --test-suite=perf)
+    set_tests_properties(${name}_perf PROPERTIES LABELS perf RUN_SERIAL TRUE)
+  endif()
 endfunction()
 
 set(PQ_SOURCE_DIR ${CMAKE_SOURCE_DIR} CACHE INTERNAL "")

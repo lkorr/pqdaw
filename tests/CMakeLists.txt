@@ -50,7 +50,7 @@ target_compile_definitions(pq_tests_core PRIVATE
 include(${CMAKE_CURRENT_SOURCE_DIR}/core/queue_mutation.cmake)
 # ui: draw list, PNG, damage, text, line primitives, colormaps (CPU) and the offscreen Vulkan path incl. the
 # test-pattern / text / lines goldens (GPU). PQ_ASSETS_DIR: the bundled fonts.
-pq_add_test(pq_tests_ui
+pq_add_test(pq_tests_ui PERF
   SOURCES
     ui/test_draw_list.cpp
     ui/test_primitives.cpp
@@ -64,6 +64,7 @@ pq_add_test(pq_tests_ui
     ui/test_hidpi.cpp
     ui/test_controls.cpp
     ui/test_partial_redraw.cpp
+    ui/thread_cpu.cpp
   DEPS pq_ui pq_ui_scenes)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 
@@ -137,7 +138,7 @@ pq_add_test(pq_tests_graph
 # WASAPI backend (conversion, underrun tracker, opt-in device runs with PQ_TEST_AUDIO_DEVICE=1), the ASIO host
 # (fake driver; opt-in real drivers), the interpreter
 # backend vs the reference evaluator (T1.7).
-pq_add_test(pq_tests_engine
+pq_add_test(pq_tests_engine PERF
   SOURCES
     engine/test_block_adapter.cpp
     engine/test_null_device.cpp
@@ -197,3 +198,9 @@ pq_add_test(pq_tests_document
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it
 # exists on this machine (skipped otherwise). See the file for how and why.
 include(ui/pqmeter_diff.cmake)
+
+# T0.x-flake: wall-clock checks that depend on machine load are opt-in under the `perf` label (the test presets
+# exclude it; run with ctest -L perf or scripts/build.ps1 -Perf). See tests/README.md.
+add_test(NAME pqdaw_window_selftest_perf COMMAND pqdaw --window-selftest --scene lines-playhead)
+set_tests_properties(pqdaw_window_selftest_perf PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS perf RUN_SERIAL TRUE
+  ENVIRONMENT PQ_PERF_CHECKS=1)

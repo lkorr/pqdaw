@@ -7,12 +7,16 @@
   ./scripts/build.ps1 -Preset release
   ./scripts/build.ps1 -Target pq_tests_core -TestRegex core
   ./scripts/build.ps1 -NoTests
+  ./scripts/build.ps1 -Preset release -Perf  # only the opt-in wall-clock perf checks (ctest label `perf`)
+
+  The default test run (the test presets) excludes the `perf` label: those checks depend on machine load.
 #>
 param(
   [ValidateSet('dev', 'release')] [string] $Preset = 'dev',
   [string] $Target = '',
   [string] $TestRegex = '',
   [switch] $NoTests,
+  [switch] $Perf,
   [switch] $Reconfigure
 )
 
@@ -34,7 +38,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE)" }
 
   if (-not $NoTests) {
-    $testArgs = @('--preset', $Preset)
+    # -Perf: the perf label only (the preset's label filter would exclude it, so run from the build dir).
+    $testArgs = if ($Perf) { @('--test-dir', $buildDir, '-L', 'perf', '--output-on-failure') } else { @('--preset', $Preset) }
     if ($TestRegex) { $testArgs += @('-R', $TestRegex) }
     ctest @testArgs
     if ($LASTEXITCODE -ne 0) { throw "tests failed ($LASTEXITCODE)" }

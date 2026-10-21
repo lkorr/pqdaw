@@ -1,11 +1,13 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
 #include <thread>
+#include <vector>
 
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
@@ -29,10 +31,14 @@ struct Probe {
   std::atomic<uint32_t> threadId{0};
   int64_t nextTime = 0;
   bool allocate = false;
+  // Optional: the TSC at the start of each callback, for the first `stampCap` callbacks (preallocated by the test).
+  uint64_t* stamps = nullptr;
+  uint64_t stampCap = 0;
 
   static void process(void* user, const AudioBlock& b) noexcept {
     auto& p = *static_cast<Probe*>(user);
-    p.calls.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t k = p.calls.fetch_add(1, std::memory_order_relaxed);
+    if (k < p.stampCap) p.stamps[k] = readTsc();
     p.frames.fetch_add(b.frames, std::memory_order_relaxed);
     p.lastFrames.store(b.frames, std::memory_order_relaxed);
     p.threadId.store(GetCurrentThreadIdForTest(), std::memory_order_relaxed);
@@ -240,31 +246,76 @@ TEST_CASE("null device + block adapter: odd device buffers reach the engine as f
   }
 }
 
+namespace {
+
+// One threaded run of ~600 ms (T0.x-flake). The test thread's sleep and the device thread's wake-ups are up to
+// the OS scheduler, which on a shared machine can be late by many milliseconds; the per-callback TSC stamps let
+// the checks be stated in terms that late scheduling cannot break.
+struct ThreadedRun {
+  double elapsedS = 0;  // test thread: start() to stop() returned
+  std::vector<uint64_t> stamps;
+  uint64_t stamped = 0;  // valid entries of `stamps`
+};
+
+ThreadedRun runThreaded(NullDevice& dev, Probe& probe) {
+  ThreadedRun r;
+  r.stamps.assign(1u << 16, 0);  // 87 s of 64-frame callbacks: every callback of the run is stamped
+  probe.stamps = r.stamps.data();
+  probe.stampCap = r.stamps.size();
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(dev.start().ok());
+  CHECK(dev.isRunning());
+  CHECK(dev.start().error().code == pq::ErrorCode::InvalidArgument);  // already running
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));
+  REQUIRE(dev.stop().ok());  // joins the device thread: its writes to `stamps` are visible below
+  r.elapsedS = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  probe.stamps = nullptr;
+  probe.stampCap = 0;
+  r.stamped = std::min<uint64_t>(probe.calls.load(), r.stamps.size());
+  return r;
+}
+
+}  // namespace
+
 TEST_CASE("null device: threaded mode keeps the buffer cadence") {
-  // Generous tolerance: the machine may be shared and the timer is not realtime. Absolute deadlines mean the
-  // count tracks elapsed time even when single wake-ups are late.
+  // Load-independent (T0.x-flake): a late wake-up delays callbacks but can never make them early, and the device
+  // thread waits only when it is less than one period behind its absolute deadlines (otherwise it catches up at
+  // once). So (1) no callback runs ahead of real time, and (2) in the second half of the run some callback is
+  // within 2 periods of its deadline: the thread caught up at least once. A thread that sleeps a relative period
+  // instead drifts further behind with every callback. The wall-clock rate check (calls ≈ elapsed / period, which
+  // needs the thread to be scheduled on time) is the perf-labelled case below.
   for (uint32_t bufferFrames : {64u, 480u}) {
     CAPTURE(bufferFrames);
     NullDevice dev;
     Probe probe;
     REQUIRE(dev.open(config(bufferFrames, 0, 2), {&Probe::process, &probe}).ok());
     const uint64_t violationsBefore = pq::alloc_trap::violationCount();
-    const auto t0 = std::chrono::steady_clock::now();
-    REQUIRE(dev.start().ok());
-    CHECK(dev.isRunning());
-    CHECK(dev.start().error().code == pq::ErrorCode::InvalidArgument);  // already running
-    std::this_thread::sleep_for(std::chrono::milliseconds(600));
-    REQUIRE(dev.stop().ok());
-    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const ThreadedRun run = runThreaded(dev, probe);
     CHECK_FALSE(dev.isRunning());
 
     const double period = bufferFrames / 48000.0;
-    const double expected = elapsed / period;
+    const double expected = run.elapsedS / period;
     const auto calls = static_cast<double>(probe.calls.load());
     CAPTURE(expected);
     CAPTURE(calls);
-    CHECK(calls >= expected * 0.8 - 3);
+    REQUIRE(run.stamped >= 2);
+    REQUIRE(run.stamped == probe.calls.load());
     CHECK(calls <= expected * 1.05 + 3);  // never ahead of real time (plus the first, immediate callback)
+    // Lag of callback k behind its deadline k·period, in periods, measured from the first callback.
+    const double ticksPerPeriod = tscFrequencyHz() * period;
+    auto lag = [&](uint64_t k) {
+      return static_cast<double>(run.stamps[k] - run.stamps[0]) / ticksPerPeriod - static_cast<double>(k);
+    };
+    double minLag = 0, minLagLateHalf = 1e300;
+    for (uint64_t k = 1; k < run.stamped; ++k) {
+      minLag = std::min(minLag, lag(k));
+      if (k >= run.stamped / 2) minLagLateHalf = std::min(minLagLateHalf, lag(k));
+    }
+    MESSAGE(bufferFrames << " frames: " << calls << " callbacks in " << run.elapsedS << " s (" << expected
+                         << " periods); lag behind deadline (periods): min " << minLag << ", min in the second half "
+                         << minLagLateHalf);
+    CHECK(minLag >= -1.0);         // no callback a period or more ahead of its deadline
+    CHECK(minLagLateHalf <= 2.0);  // caught up in the second half
     CHECK(probe.frames.load() == probe.calls.load() * bufferFrames);
     CHECK(probe.wrongTime.load() == 0);
     CHECK(probe.notRt.load() == 0);
@@ -273,12 +324,33 @@ TEST_CASE("null device: threaded mode keeps the buffer cadence") {
     CHECK(pq::alloc_trap::violationCount() == violationsBefore);
     CHECK(dev.stats().snapshot().callbacks == probe.calls.load());
 
-    // Restart works and continues the stream's frame time.
+    // Restart works and continues the stream's frame time. "Eventually" (T0.x-flake): the new thread's first
+    // callback is immediate, but on a loaded machine the thread may not be scheduled for a while: up to 10 s.
     const uint64_t before = probe.calls.load();
     REQUIRE(dev.start().ok());
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (probe.calls.load() == before && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     REQUIRE(dev.stop().ok());
     CHECK(probe.calls.load() > before);
     CHECK(probe.wrongTime.load() == 0);
+  }
+}
+
+TEST_CASE("null device (perf): threaded callback count tracks wall time" * doctest::test_suite("perf")) {
+  // Moved out of the default suite (T0.x-flake): needs the device thread to be scheduled on time for most of the
+  // 600 ms, which a machine busy with parallel builds does not guarantee. ctest -L perf.
+  for (uint32_t bufferFrames : {64u, 480u}) {
+    CAPTURE(bufferFrames);
+    NullDevice dev;
+    Probe probe;
+    REQUIRE(dev.open(config(bufferFrames, 0, 2), {&Probe::process, &probe}).ok());
+    const ThreadedRun run = runThreaded(dev, probe);
+    const double expected = run.elapsedS / (bufferFrames / 48000.0);
+    const auto calls = static_cast<double>(probe.calls.load());
+    CAPTURE(expected);
+    CAPTURE(calls);
+    CHECK(calls >= expected * 0.8 - 3);
+    CHECK(calls <= expected * 1.05 + 3);
   }
 }

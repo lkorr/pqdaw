@@ -221,6 +221,7 @@ GpuContext::MemoryStats GpuContext::memoryStats() const noexcept {
 }
 
 Status GpuContext::submitAndWaitImpl(void (*fn)(VkCommandBuffer, void*), void* user) {
+  ++blockingSubmits_;
   VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
   ai.commandPool = oneShotPool_;
   ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;

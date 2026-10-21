@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
@@ -478,6 +479,11 @@ int interactive(WindowApp& app) {
 // pumps events and renders through the same path as the interactive loop, then checks the outcome.
 int selfTest(WindowApp& app, Clock::time_point processStart) {
   int failures = 0;
+  // T0.x-flake: wall-clock criteria that depend on machine load (frame-interval hitch, partial-redraw CPU ratio)
+  // are enforced only with PQ_PERF_CHECKS=1 (ctest -L perf: pqdaw_window_selftest_perf); otherwise they are
+  // measured and printed, and load-independent counts stand in for them.
+  const char* perfEnv = std::getenv("PQ_PERF_CHECKS");
+  const bool perfChecks = perfEnv && *perfEnv && *perfEnv != '0';
   auto check = [&](bool ok, const char* what) {
     std::printf("  %-58s %s\n", what, ok ? "ok" : "FAILED");
     if (!ok) ++failures;
@@ -520,7 +526,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
 
   SDL_MinimizeWindow(app.window->sdl());
   settle();
-  for (int i = 0; i < 50 && !app.window->minimized(); ++i) {  // minimise animation may lag
+  for (int i = 0; i < 500 && !app.window->minimized(); ++i) {  // minimise animation may lag (up to 5 s under load)
     SDL_Delay(10);
     pump(app);
   }
@@ -534,7 +540,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
 
   SDL_RestoreWindow(app.window->sdl());
   settle();
-  for (int i = 0; i < 50 && app.window->minimized(); ++i) {
+  for (int i = 0; i < 500 && app.window->minimized(); ++i) {
     SDL_Delay(10);
     pump(app);
   }
@@ -562,17 +568,21 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
   // FreeType rasterisation itself (~15 us per glyph in release) is CPU work inside the frame. Up to 3 attempts,
   // each with 200 fresh glyphs (a new font size), because the machine may be shared with other work. The
   // timing is a release-build criterion: the dev preset compiles FreeType and HarfBuzz at /Od (~75 us per
-  // glyph), so there it is measured and printed but not enforced.
+  // glyph), so there it is measured and printed but not enforced. T0.x-flake: the interval criterion needs the
+  // UI thread and the compositor to be scheduled on time, so it is enforced only with PQ_PERF_CHECKS=1; the
+  // default run checks the load-independent part: the glyphs were rasterised in that one frame and the frame
+  // loop made no blocking GPU submit (the pre-T0.8-fix1 path waited for the device and submitted the upload
+  // separately).
   {
 #ifdef NDEBUG
-    constexpr bool kEnforceTiming = true;
+    const bool enforceTiming = perfChecks;
 #else
-    constexpr bool kEnforceTiming = false;
+    const bool enforceTiming = false;
 #endif
     TextSystem& ts = *app.textures.text;
-    bool ok = false;
+    bool ok = false, functionalOk = false;
     double medianMs = 0, worstMs = 0, glyphFrameMs = 0;
-    uint64_t rasterised = 0;
+    uint64_t rasterised = 0, blocking = 0;
     int attempt = 0;
     for (; attempt < 3 && !ok; ++attempt) {
       auto font = ts.font(app.textures.regular, 19 + 2 * static_cast<uint32_t>(attempt));  // ASCII warmed now, not in a frame
@@ -596,6 +606,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
       app.damage.setAnimating(true);
       auto prev = Clock::now();
       const uint64_t before = ts.stats().glyphsRasterised;
+      const uint64_t blockingBefore = app.gpu->blockingSubmits();
       bool framesOk = true;
       for (int i = 0; i < kFrames; ++i) {
         if (i == kGlyphFrame) {
@@ -615,19 +626,24 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
       app.extraFont = kNoFont;
       app.extraLines.clear();
       rasterised = ts.stats().glyphsRasterised - before;
+      blocking = app.gpu->blockingSubmits() - blockingBefore;
       intervals.erase(intervals.begin());  // the first interval includes the setup above
       glyphFrameMs = intervals[kGlyphFrame - 1];
       std::vector<double> sorted = intervals;
       std::sort(sorted.begin(), sorted.end());
       medianMs = sorted[sorted.size() / 2];
       worstMs = sorted.back();
-      ok = framesOk && rasterised >= 200 && (worstMs <= 1.5 * medianMs || !kEnforceTiming);
-      std::printf("  glyph hitch attempt %d: %llu glyphs rasterised in one frame (drawFrame %.2f ms); frame interval median "
-                  "%.2f ms, that frame %.2f ms, worst %.2f ms\n",
-                  attempt + 1, static_cast<unsigned long long>(rasterised), glyphFrameWorkMs, medianMs, glyphFrameMs, worstMs);
+      functionalOk = framesOk && rasterised >= 200 && blocking == 0;
+      ok = functionalOk && (worstMs <= 1.5 * medianMs || !enforceTiming);
+      std::printf("  glyph hitch attempt %d: %llu glyphs rasterised in one frame (drawFrame %.2f ms), %llu blocking GPU "
+                  "submits; frame interval median %.2f ms, that frame %.2f ms, worst %.2f ms\n",
+                  attempt + 1, static_cast<unsigned long long>(rasterised), glyphFrameWorkMs,
+                  static_cast<unsigned long long>(blocking), medianMs, glyphFrameMs, worstMs);
+      if (!functionalOk) break;  // counts do not change with load: no retry
     }
-    check(ok, kEnforceTiming ? "200 new glyphs mid-run: no frame interval > 1.5x the median"
-                             : "200 new glyphs mid-run present (timing: release builds only)");
+    check(functionalOk, "200 new glyphs mid-run present, no blocking GPU submit");
+    if (enforceTiming) check(ok, "200 new glyphs mid-run: no frame interval > 1.5x the median (perf)");
+    else std::printf("  (glyph-hitch frame interval: measured, enforced with PQ_PERF_CHECKS=1 in release builds)\n");
   }
 
   // T0.7-fix3: a display-scale change at runtime re-renders without a restart. The OS event is faked: the
@@ -697,6 +713,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
     settle();
     struct Run {
       std::vector<double> wallMs, cycles, beginMs, buildMs, endMs, drawMs, copyMs, fragments;
+      uint64_t vertexBytes = 0;  // draw-list bytes the run uploaded (Renderer::Stats): deterministic CPU work
       uint32_t partial = 0;
       bool ok = true;
     };
@@ -711,6 +728,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
       app.forceFull = forceFull;
       app.overlayAnimating = true;
       const uint32_t partialBefore = app.partialFrames;
+      const uint64_t bytesBefore = app.renderer->stats().vertexBytesUploaded;
       for (int i = 0; i < kFrames; ++i) {
         pump(app);
         const auto c0 = Clock::now();
@@ -734,6 +752,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
         app.pacer.wait();
       }
       r.partial = app.partialFrames - partialBefore;
+      r.vertexBytes = app.renderer->stats().vertexBytesUploaded - bytesBefore;
       app.overlayAnimating = false;
       app.forceFull = false;
       return r;
@@ -741,8 +760,13 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
     uint32_t w = 0, h = 0;
     app.window->pixelSize(w, h);
     const double pixels = static_cast<double>(w) * h;
+    // T0.x-flake: thread CPU cycles exclude preemption but not what load does to the fixed submit/present cost
+    // (Q52: 21 % idle, up to 28 % with parallel builds), so the < 25 % ratio is enforced only with
+    // PQ_PERF_CHECKS=1 (3 attempts). The default run checks the deterministic part of the same claim: a playhead
+    // frame uploads under 25 % of the draw-list bytes a full redraw uploads (it rebuilds only the overlay).
     bool cpuOk = false;
-    for (int attempt = 0; attempt < 3 && !cpuOk; ++attempt) {  // the machine may be shared with other work
+    const int attempts = perfChecks ? 3 : 1;
+    for (int attempt = 0; attempt < attempts && !cpuOk; ++attempt) {  // the machine may be shared with other work
       const Run partial = run(false);
       const Run full = run(true);
       const double cycP = median(partial.cycles), cycF = median(full.cycles);
@@ -756,14 +780,23 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
                   "%.3f\n",
                   median(partial.beginMs), median(partial.buildMs), median(partial.endMs), median(full.beginMs),
                   median(full.buildMs), median(full.endMs));
-      if (attempt == 0) check(partial.ok && partial.partial >= kFrames - 2, "playhead frames are partial (damage = its old + new columns)");
+      if (attempt == 0) {
+        check(partial.ok && partial.partial >= kFrames - 2, "playhead frames are partial (damage = its old + new columns)");
+        std::printf("    draw-list bytes uploaded per frame: %.0f partial vs %.0f full (%.2f %%)\n",
+                    static_cast<double>(partial.vertexBytes) / kFrames, static_cast<double>(full.vertexBytes) / kFrames,
+                    100.0 * static_cast<double>(partial.vertexBytes) / std::max<double>(1.0, static_cast<double>(full.vertexBytes)));
+        check(full.vertexBytes > 0 && partial.vertexBytes * 4 < full.vertexBytes,
+              "playhead frames upload < 25 % of a full redraw's draw-list bytes");
+      }
     }
     // The validation layer adds CPU to every Vulkan call, i.e. mostly to the fixed submit/present cost both
     // sides pay: with it on, the ratio is printed but not enforced (it measures the layer, not pqdaw).
     if (app.gpu->validationEnabled())
       check(true, "playhead frame UI-thread CPU (validation on: measured, not enforced)");
+    else if (perfChecks)
+      check(cpuOk, "playhead frame UI-thread CPU < 25 % of a full redraw (median cycles, perf)");
     else
-      check(cpuOk, "playhead frame UI-thread CPU < 25 % of a full redraw (median cycles)");
+      std::printf("  (UI-thread CPU ratio: measured, enforced with PQ_PERF_CHECKS=1)\n");
 
     if (Status s = app.swapchain->setProfiling(true); !s) {
       std::printf("    GPU profiling unavailable: %s\n", s.error().message.c_str());

@@ -39,7 +39,9 @@
     { "name": "release", "configurePreset": "release" }
   ],
   "testPresets": [
-    { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" } },
-    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" } }
+    { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" },
+      "filter": { "exclude": { "label": "perf" } } },
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" },
+      "filter": { "exclude": { "label": "perf" } } }
   ]
 }

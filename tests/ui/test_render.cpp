@@ -24,6 +24,7 @@
 #include "pq/ui/text.h"
 
 #include "golden_check.h"
+#include "thread_cpu.h"
 
 using namespace pq::ui;
 using namespace pq::ui::test;
@@ -727,67 +728,112 @@ TEST_CASE("render: creating and destroying 10k textures leaks nothing") {
   CHECK(after.bytes == base.bytes);
 }
 
-TEST_CASE("render: a 1024x512 spectrogram scrolls one column per frame at 144 Hz without the CPU waiting") {
+namespace {
+
+// A 1024x512 spectrogram texture that scrolls one column per frame, paced at 144 Hz for 2 s, 2 frames in flight.
+struct SpectrogramRun {
+  uint32_t stalls = 0;           // submits that found their slot's previous frame still on the GPU
+  uint64_t blockingSubmits = 0;  // GpuContext::submitAndWait calls made by the frame loop
+  double medianWallUs = 0, maxWallUs = 0;  // column update + submit, wall time
+  double medianCpuUs = 0, maxCpuUs = 0;    // the same, this thread's CPU time (preemption and waits excluded)
+  bool contentOk = false;
+};
+
+SpectrogramRun runSpectrogram() {
   using Clock = std::chrono::steady_clock;
   constexpr uint32_t kW = 1024, kH = 512, kFrames = 288;  // 2 s at 144 Hz
   auto texel = [](uint32_t x, uint32_t y) {
     return std::array<uint8_t, 4>{static_cast<uint8_t>(x * 7), static_cast<uint8_t>(y), static_cast<uint8_t>(x + y), 255};
   };
-  uint32_t stalls = 0;
-  double medianUs = 0, maxUs = 0;
-  bool contentOk = false;
-  for (int attempt = 0; attempt < 2; ++attempt) {  // one retry: the machine is shared with other builds
-    auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 2);
-    REQUIRE(r.ok());
-    Renderer& rr = **r;
-    auto target = OffscreenTarget::create(*gpu().ctx, kW, kH, 2);
-    REQUIRE(target.ok());
-    Image black;
-    black.width = kW;
-    black.height = kH;
-    black.rgba.assign(size_t(kW) * kH * 4, 0);
-    for (size_t i = 3; i < black.rgba.size(); i += 4) black.rgba[i] = 255;
-    auto tex = rr.createTexture(black, TextureFilter::Nearest);
-    REQUIRE(tex.ok());
-    DrawList dl;
-    dl.reset(kW, kH);
-    dl.addImage(*tex, {0, 0, static_cast<float>(kW), static_cast<float>(kH)}, {0, 0}, {1, 1});
-    std::vector<uint8_t> column(kH * 4);
-    std::vector<double> cpuUs;
-    const auto period = std::chrono::nanoseconds(1'000'000'000 / 144);
-    auto next = Clock::now();
-    for (uint32_t f = 0; f < kFrames; ++f) {
-      for (uint32_t y = 0; y < kH; ++y) std::memcpy(&column[y * 4], texel(f, y).data(), 4);
-      const auto t0 = Clock::now();
-      REQUIRE(rr.updateTexture(*tex, {f, 0, 1, kH}, column).ok());
-      REQUIRE((*target)->submit(rr, dl, rgba(0, 0, 0)).ok());
-      cpuUs.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count());
-      next += period;
-      while (Clock::now() < next) std::this_thread::yield();
-    }
-    stalls = (*target)->slotStalls();
-    std::sort(cpuUs.begin(), cpuUs.end());
-    medianUs = cpuUs[cpuUs.size() / 2];
-    maxUs = cpuUs.back();
-    auto img = (*target)->read();
-    REQUIRE(img.ok());
-    contentOk = true;
-    for (uint32_t x = 0; x < kW && contentOk; x += (x < kFrames ? 1 : 37))
-      for (uint32_t y = 0; y < kH; y += 13) {
-        const uint8_t* p = img->pixel(x, y);
-        const auto want = x < kFrames ? texel(x, y) : std::array<uint8_t, 4>{0, 0, 0, 255};
-        if (p[0] != want[0] || p[1] != want[1] || p[2] != want[2]) {
-          contentOk = false;
-          break;
-        }
-      }
-    if (stalls == 0) break;
+  SpectrogramRun out;
+  auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 2);
+  REQUIRE(r.ok());
+  Renderer& rr = **r;
+  auto target = OffscreenTarget::create(*gpu().ctx, kW, kH, 2);
+  REQUIRE(target.ok());
+  Image black;
+  black.width = kW;
+  black.height = kH;
+  black.rgba.assign(size_t(kW) * kH * 4, 0);
+  for (size_t i = 3; i < black.rgba.size(); i += 4) black.rgba[i] = 255;
+  auto tex = rr.createTexture(black, TextureFilter::Nearest);
+  REQUIRE(tex.ok());
+  DrawList dl;
+  dl.reset(kW, kH);
+  dl.addImage(*tex, {0, 0, static_cast<float>(kW), static_cast<float>(kH)}, {0, 0}, {1, 1});
+  std::vector<uint8_t> column(kH * 4);
+  std::vector<double> wallUs, cpuUs;
+  const auto period = std::chrono::nanoseconds(1'000'000'000 / 144);
+  const uint64_t blockingBefore = gpu().ctx->blockingSubmits();
+  (void)::pq::test::tscTicksPerUs();  // calibrates once (20 ms): not inside the paced loop
+  auto next = Clock::now();
+  for (uint32_t f = 0; f < kFrames; ++f) {
+    for (uint32_t y = 0; y < kH; ++y) std::memcpy(&column[y * 4], texel(f, y).data(), 4);
+    const auto t0 = Clock::now();
+    const double c0 = ::pq::test::threadCpuUs();
+    REQUIRE(rr.updateTexture(*tex, {f, 0, 1, kH}, column).ok());
+    REQUIRE((*target)->submit(rr, dl, rgba(0, 0, 0)).ok());
+    cpuUs.push_back(::pq::test::threadCpuUs() - c0);
+    wallUs.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count());
+    next += period;
+    while (Clock::now() < next) std::this_thread::yield();
   }
-  MESSAGE("spectrogram column update + frame submit: median " << medianUs << " us, max " << maxUs << " us per frame; "
-                                                              << stalls << " frames waited for the GPU");
-  CHECK(contentOk);
-  CHECK(stalls == 0);
-  CHECK(medianUs < 1000.0);  // a small fraction of the 6.9 ms frame
+  out.blockingSubmits = gpu().ctx->blockingSubmits() - blockingBefore;  // before read(), which waits by design
+  out.stalls = (*target)->slotStalls();
+  std::sort(wallUs.begin(), wallUs.end());
+  std::sort(cpuUs.begin(), cpuUs.end());
+  out.medianWallUs = wallUs[wallUs.size() / 2];
+  out.maxWallUs = wallUs.back();
+  out.medianCpuUs = cpuUs[cpuUs.size() / 2];
+  out.maxCpuUs = cpuUs.back();
+  auto img = (*target)->read();
+  REQUIRE(img.ok());
+  out.contentOk = true;
+  for (uint32_t x = 0; x < kW && out.contentOk; x += (x < kFrames ? 1 : 37))
+    for (uint32_t y = 0; y < kH; y += 13) {
+      const uint8_t* p = img->pixel(x, y);
+      const auto want = x < kFrames ? texel(x, y) : std::array<uint8_t, 4>{0, 0, 0, 255};
+      if (p[0] != want[0] || p[1] != want[1] || p[2] != want[2]) {
+        out.contentOk = false;
+        break;
+      }
+    }
+  return out;
+}
+
+void report(const SpectrogramRun& s) {
+  MESSAGE("spectrogram column update + frame submit per frame: CPU median " << s.medianCpuUs << " us, max " << s.maxCpuUs
+                                                                          << " us; wall median " << s.medianWallUs
+                                                                          << " us, max " << s.maxWallUs << " us; "
+                                                                          << s.stalls << " frames waited for the GPU");
+}
+
+}  // namespace
+
+TEST_CASE("render: a 1024x512 spectrogram scrolls one column per frame at 144 Hz without the CPU waiting") {
+  // Load-independent (T0.x-flake): the update path never makes the CPU wait for the GPU by itself (no blocking
+  // submit; the only wait in the loop is the frame slot's fence), and its cost is this thread's CPU time, which
+  // preemption by other processes does not inflate. Whether the slot fence was ever still pending at 144 Hz
+  // depends on the scheduler and the GPU driver's threads: perf case below.
+  const SpectrogramRun s = runSpectrogram();
+  report(s);
+  CHECK(s.contentOk);
+  CHECK(s.blockingSubmits == 0);
+  CHECK(s.medianCpuUs < 1000.0);  // a small fraction of the 6.9 ms frame
+}
+
+TEST_CASE("render (perf): the 144 Hz spectrogram never waits for a frame slot" * doctest::test_suite("perf")) {
+  // Moved out of the default suite (T0.x-flake): "no submit found its slot busy" and the wall-time median need
+  // this thread and the driver to be scheduled on time; parallel builds break that. ctest -L perf.
+  SpectrogramRun s;
+  for (int attempt = 0; attempt < 2; ++attempt) {  // one retry: the machine may still be shared
+    s = runSpectrogram();
+    report(s);
+    if (s.stalls == 0) break;
+  }
+  CHECK(s.contentOk);
+  CHECK(s.stalls == 0);
+  CHECK(s.medianWallUs < 1000.0);
 }
 
 TEST_CASE("render: no Vulkan validation errors") {

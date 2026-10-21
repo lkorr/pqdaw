@@ -53,6 +53,9 @@ public:
     uint64_t bytes = 0;
   };
   MemoryStats memoryStats() const noexcept;
+  // submitAndWait() calls so far. Tests assert that per-frame paths (texture updates, glyph uploads) make none:
+  // a load-independent stand-in for "the CPU never waits for the GPU" (T0.x-flake).
+  uint64_t blockingSubmits() const noexcept { return blockingSubmits_; }
 
   // Records a one-off command buffer with `record`, submits it and waits for completion. For uploads and
   // readback (not per-frame work).
@@ -81,6 +84,7 @@ private:
   VkFence oneShotFence_ = VK_NULL_HANDLE;
   std::string deviceName_;
   uint32_t validationErrors_ = 0;
+  uint64_t blockingSubmits_ = 0;
   bool pipelineStatistics_ = false;
   float timestampPeriodNs_ = 0.0f;
 };
