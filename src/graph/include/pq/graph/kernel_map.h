@@ -10,7 +10,8 @@
 //   marks as Input / InputSeconds, in registry order; the other registry inputs are consts consumed when the
 //   program is built (state init, resource choice) and never reach the kernel.
 // - Durations are seconds in the language and samples in the kernels. The conversion is ordinary const/param-rate
-//   math the compiler inserts (`x · sr`), which the optimiser hoists or folds, so kernels never multiply per sample.
+//   math that optimise() inserts (`x · sr`, then folded or kept at the duration's rate), so kernels never multiply
+//   per sample. InitMaxDelaySeconds stays seconds (the builder computes ceil(max · sr)).
 // - eq/ne on bools: infer() rewrites them to not(xor(a, b)) / xor(a, b), so the dsp comparators (real-only, a bool
 //   mask is a NaN as a float) only see reals.
 
@@ -27,7 +28,8 @@ namespace pq::graph {
 // What becomes of one registry input.
 enum class ArgUse : uint8_t {
   Input,                // kernel input `kernelInput`, as is
-  InputSeconds,         // kernel input `kernelInput` = value · sr (seconds → samples), inserted by the compiler
+  InputSeconds,         // kernel input `kernelInput` = value · sr (seconds → samples), inserted by optimise()
+                        // (TypedPatch::durationsInSamples; an `smp` literal is wired as is)
   Resource,             // const naming a table / sample buffer → KernelArgs::resource
   InitSeed,             // const → dsp::StateInit::seed (mixed with the NodeId by the builder)
   InitMaxDelaySeconds,  // const seconds → dsp::StateInit::maxDelayFrames = ceil(value · sr)

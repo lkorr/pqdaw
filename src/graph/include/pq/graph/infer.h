@@ -122,6 +122,9 @@ struct TypedPatch {
   std::vector<uint64_t> stateKey;
   std::vector<NodeOrigin> origin;     // per node
   std::vector<InstanceInfo> instances;
+  // false (as inferred): duration inputs (kernel_map.h ArgUse::InputSeconds) carry seconds. optimise() inserts the
+  // `· sr` conversions and sets this: those inputs then carry samples, exactly what the kernels take.
+  bool durationsInSamples = false;
 
   const PortType& inputType(NodeIndex n, uint32_t i) const noexcept { return types[patch.flatInput(n, i)]; }
   const PortType& outputType(NodeIndex n, uint32_t i) const noexcept { return types[patch.flatOutput(n, i)]; }

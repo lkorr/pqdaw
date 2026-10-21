@@ -12,5 +12,6 @@ pq_add_module(pq_graph
     src/parse.cpp
     src/print.cpp
     src/infer.cpp
+    src/optimise.cpp
   DEPS pq_core pq_dsp
 )
