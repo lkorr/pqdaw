@@ -110,6 +110,7 @@ double MosChart::reduce(double cents) const noexcept {
 void MosChart::setConfig(const MosChartConfig& config) {
   if (config == config_) return;
   config_ = config;
+  hideCard();  // its text and region index refer to the old regions
   rebuild();
   setView(viewMin_, viewMax_);
   invalidate();
@@ -341,7 +342,7 @@ void MosChart::ensureLayout() const {
 }
 
 void MosChart::layoutNow() const {
-  ++const_cast<Stats&>(stats_).layouts;
+  ++stats_.layouts;
   layoutDirty_ = false;
   layoutRect_ = rect();
   layoutScale_ = tree() ? tree()->scale() : 1.0f;
@@ -839,11 +840,9 @@ void MosChart::buildCard(int32_t region, Vec2 p) {
   x = std::clamp(x, R.x + s.px(4.0f), std::max(R.x, R.right() - w - s.px(4.0f)));
   y = std::clamp(y, R.y + s.px(4.0f), std::max(R.y, R.bottom() - h - s.px(4.0f)));
   card_.rect = {x, y, w, h};
-  card_.anchor = p;
 }
 
 void MosChart::updateHover(Vec2 p, bool force) {
-  lastPointer_ = p;
   const int32_t hit = regionAt(p);
   if (hit != hovered_) {
     if (selected_ < 0) {  // the hover highlight shows only with nothing selected
