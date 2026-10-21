@@ -3,7 +3,13 @@ pq_add_module(pq_doc
     src/note_seq.cpp
     src/model.cpp
     src/change_set.cpp
+    src/checks.cpp
     src/apply.cpp
     src/store.cpp
-  DEPS pq_tuning pq_core
+    src/json_io.cpp
+    src/serialize.cpp
+    src/project_io.cpp
+  # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
+  # nlohmann::json in MigrationFn.
+  DEPS pq_tuning pq_core nlohmann_json::nlohmann_json
 )

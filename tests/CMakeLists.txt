@@ -118,4 +118,7 @@ pq_add_test(pq_tests_document
     document/test_note_seq.cpp
     document/test_commands.cpp
     document/test_store.cpp
+    document/test_serialize.cpp
+    document/test_serialize_errors.cpp
+    document/test_project_io.cpp
   DEPS pq_doc)

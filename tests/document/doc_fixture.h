@@ -6,7 +6,7 @@
 //   tracks:  Lead (MIDI, clip "A" with 300 notes in 31-EDO degrees, clip "B" with 3 notes)
 //            Drums (group) > Kick (MIDI, clip "K", 4 notes)
 //            Bass (MIDI, no clips)
-//   tunings: 12-EDO (default), 31-EDO, 5L2s (MOS)
+//   tunings: 12-EDO (default), 31-EDO, 5L2s (MOS), a Scala scale with a .kbm mapping (kScaleScl / kScaleKbm)
 //   Lead has a volume lane with 3 breakpoints; Bass a lane on 5L2s's generator.
 
 #include <doctest/doctest.h>
@@ -18,6 +18,7 @@
 
 #include "pq/document/commands.h"
 #include "pq/document/store.h"
+#include "pq/tuning/scala.h"
 
 // CHECK(a == b) on string_views and shared_ptrs (doctest cannot print either by itself here; std's operator<< does
 // not compile for shared_ptr<T[]>).
@@ -39,6 +40,27 @@ struct StringMaker<std::shared_ptr<T>> {
 namespace doctest_fixture {
 
 using namespace pq::doc;
+
+// Exact ratios, cents, and a ratio beyond int64 (Q23), so files must carry all three pitch forms.
+inline constexpr std::string_view kScaleScl =
+    "! fixture.scl\n"
+    "Fixture scale: just major third, a cents step and a huge ratio\n"
+    " 4\n"
+    " 9/8\n"
+    " 386.31371386\n"
+    " 123456789012345678901234/98765432109876543210\n"
+    " 2/1\n";
+inline constexpr std::string_view kScaleKbm = "4\n0\n127\n60\n69\n440.0\n4\n0\n1\nx\n3\n";
+
+inline TuningDef fixtureScaleDef() {
+  auto scl = pq::tuning::parseScl(kScaleScl);
+  REQUIRE(scl.ok());
+  auto kbm = pq::tuning::parseKbm(kScaleKbm);
+  REQUIRE(kbm.ok());
+  auto d = makeScaleDef(std::move(scl).value(), std::move(kbm).value());
+  REQUIRE_MESSAGE(d.ok(), (d.ok() ? std::string() : d.error().message));
+  return std::move(d).value();
+}
 
 inline Note makeNote(IdSource& ids, pq::Ticks start, int32_t degree, pq::Ticks length = pq::kPpq / 2) {
   Note n;
@@ -70,7 +92,7 @@ struct Fixture {
   DocumentStore store;
   TrackId master, reverb, lead, drums, kick, bass;
   ClipId clipA, clipB, clipK;
-  TuningId t12, t31, tMos;
+  TuningId t12, t31, tMos, tScale;
   LaneId leadVolLane, bassGenLane;
   BreakpointId bp0, bp1, bp2;
   std::vector<Note> notesA;  // as added (unsorted order = sorted here)
@@ -88,6 +110,7 @@ struct Fixture {
     bass = ids.track();
     t31 = ids.tuning();
     tMos = ids.tuning();
+    tScale = ids.tuning();
 
     Batch b{"setup", {}};
     TuningSlot s31{t31, "31-EDO", Colour{0x22AA44}, {}};
@@ -96,6 +119,7 @@ struct Fixture {
     TuningSlot sMos{tMos, "5L2s", Colour{0xAA4422}, {}};
     sMos.def.system = pq::tuning::MosParams{};
     b.commands.push_back(AddTuning{sMos});
+    b.commands.push_back(AddTuning{TuningSlot{tScale, "Scala", Colour{0x4422AA}, fixtureScaleDef()}});
     b.commands.push_back(AddTrack{makeTrackPtr(reverb, TrackKind::Return, "Reverb"), {}, kAppend});
     b.commands.push_back(AddTrack{makeTrackPtr(lead, TrackKind::Midi, "Lead"), {}, kAppend});
     b.commands.push_back(AddTrack{makeTrackPtr(drums, TrackKind::Group, "Drums"), {}, kAppend});

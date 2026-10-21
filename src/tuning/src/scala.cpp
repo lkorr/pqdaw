@@ -472,13 +472,31 @@ Result<KeyboardMapping> parseKbm(std::string_view text, std::string_view fileNam
   return k;
 }
 
-Result<std::string> writeKbm(const KeyboardMapping& k) {
+Status validateKbm(const KeyboardMapping& k) {
   auto bad = [](const char* why) { return Error{ErrorCode::InvalidArgument, why, {}}; };
   if (k.mapSize < 0) return bad("map size must be >= 0");
   if (k.mapping.size() > static_cast<size_t>(k.mapSize)) return bad("more mapping entries than the map size");
   if (k.firstKey > k.lastKey) return bad("first key to retune is above the last key");
   if (!std::isfinite(k.referenceHz) || !(k.referenceHz > 0.0)) return bad("reference frequency must be positive");
   if (referenceUnmapped(k)) return bad("the reference key is unmapped");
+  return Ok{};
+}
+
+Result<ScalaPitch> parseScalaRatio(std::string_view text) {
+  auto bad = [](std::string why) { return Error{ErrorCode::Parse, std::move(why), {}}; };
+  const size_t slash = text.find('/');
+  const std::string_view num = text.substr(0, slash);
+  const std::string_view den = slash == std::string_view::npos ? std::string_view("1") : text.substr(slash + 1);
+  if (num.empty() || den.empty() || !allDigits(num) || !allDigits(den))
+    return bad("expected a ratio of decimal digits like 5/4");
+  // parsePitchLine accepts exactly these forms (it stops at the first character that cannot continue the value).
+  PitchParse p = parsePitchLine(text);
+  if (!p.message.empty()) return bad(std::move(p.message));
+  return std::move(p.pitch);
+}
+
+Result<std::string> writeKbm(const KeyboardMapping& k) {
+  if (Status v = validateKbm(k); !v) return std::move(v).error();
 
   auto line = [](std::string& out, const char* comment, const std::string& value) {
     out += comment;

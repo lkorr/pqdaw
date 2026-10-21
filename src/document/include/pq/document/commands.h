@@ -119,8 +119,9 @@ struct RenameTuning { TuningId tuning; std::string name; };        // Meta
 struct SetTuningColour { TuningId tuning; Colour colour; };        // Meta
 // Classified by what changed: only continuous parameters (reference, EDO equave, MOS generator/period/stretch,
 // MOS region hint) → Param with their ParamRefs (T3.17 must not recompile while a generator is dragged, SPEC §3.3);
-// anything discrete (kind, EDO size, MOS n/periods/rotation/MODMOS/generator sequence) → Structural. Lanes that no
-// longer apply to the new kind are removed.
+// anything discrete (kind, EDO size, MOS n/periods/rotation/MODMOS/generator sequence, Scale pitches or key
+// mapping) → Structural. A Scale's description alone is Meta. Lanes that no longer apply to the new kind are
+// removed.
 struct SetTuningDef { TuningId tuning; TuningDef def; };
 // Param. Sets one continuous parameter (the ParamKind must be a tuning param that applies to the tuning's kind).
 struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningReference; double value = 0.0; };

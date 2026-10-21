@@ -38,18 +38,36 @@ struct Colour {
 
 // ---- Tunings (SPEC §3.2) ---------------------------------------------------------------------------------------
 
-// A tuning definition as data: the system plus its reference pitch. Scale (Scala, T2.4) and JI contexts join the
-// variant when they exist in pq::tuning; T3.4 does not stub them.
+// A Scala scale tuning as data (T2.4, embedded in the project so it is self-contained, T3.5): the .scl scale and,
+// if one was imported, the .kbm keyboard mapping. The mapping only decides which degree a MIDI key plays (and is
+// kept for export); the pitch of degree 0 is always TuningDef::referenceHz, which an import derives from the
+// mapping's reference key and frequency (makeScaleDef), so the reference stays one continuous parameter for every
+// tuning kind.
+struct ScaleDef {
+  tuning::ScalaScale scale;  // description must be valid UTF-8 (convert with descriptionUtf8() on import)
+  std::optional<tuning::KeyboardMapping> mapping;
+  friend bool operator==(const ScaleDef&, const ScaleDef&) = default;
+};
+
+// A tuning definition as data: the system plus its reference pitch (the Hz of degree 0, equave 0). A JI context
+// joins the variant when pq::tuning has one (tuning.h).
 struct TuningDef {
-  std::variant<tuning::Edo, tuning::MosParams> system = tuning::Edo::standard12();
+  std::variant<tuning::Edo, tuning::MosParams, ScaleDef> system = tuning::Edo::standard12();
   double referenceHz = tuning::kDefaultReferenceHz;
 
   const tuning::Edo* edo() const noexcept { return std::get_if<tuning::Edo>(&system); }
   const tuning::MosParams* mos() const noexcept { return std::get_if<tuning::MosParams>(&system); }
+  const ScaleDef* scale() const noexcept { return std::get_if<ScaleDef>(&system); }
 };
 bool operator==(const TuningDef& a, const TuningDef& b) noexcept;
-// Builds the resolvable tuning (validates the definition: Mos::make, reference > 0). Allocates for MOS.
+// Builds the resolvable tuning (validates the definition: Mos::make / Scale::make, a valid .kbm, a UTF-8 scale
+// description, reference > 0). Allocates for MOS and Scale.
 Result<tuning::Tuning> buildTuning(const TuningDef& def);
+// A Scale definition from an imported .scl (+ optional .kbm). Without a mapping the reference is `referenceHz`;
+// with one it is derived from the mapping (tuning::makeScalaTuning), so key → Hz matches Scala. The description
+// is converted to UTF-8 (descriptionUtf8). Errors: as buildTuning / makeScalaTuning.
+Result<TuningDef> makeScaleDef(tuning::ScalaScale scale, std::optional<tuning::KeyboardMapping> mapping,
+                               double referenceHz = tuning::kDefaultReferenceHz);
 
 // A named main tuning (SPEC §3.2). Its automation lanes live on tracks (ParamRef with a Tuning* kind).
 struct TuningSlot {

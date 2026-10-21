@@ -150,3 +150,13 @@ TEST_CASE("edo: step labels and rows") {
   CHECK(row.degree == 14);
   CHECK(pq::tuning::stepLabel(pq::tuning::edoRow(45, 31).degree, 31) == "14\\31");
 }
+
+TEST_CASE("edo: a cents equave is kept exactly, so makeCents(n, e.equaveCents()) == e (project files, T3.5)") {
+  for (double c : {1200.0, 1201.0, 1901.955000865, 0.1, 1.0 / 3.0, 1e-300, 1234.5678901234567}) {
+    CAPTURE(c);
+    const Edo e = Edo::makeCents(19, c).value();
+    CHECK(e.equaveCents() == c);
+    CHECK(Edo::makeCents(19, e.equaveCents()).value() == e);
+    CHECK(e.log2Equave() == c / 1200.0);
+  }
+}

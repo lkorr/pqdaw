@@ -72,14 +72,43 @@ bool findIn(const std::vector<TrackPtr>& list, TrackId id, TrackPath& path, uint
 bool operator==(const TuningDef& a, const TuningDef& b) noexcept {
   if (a.referenceHz != b.referenceHz || a.system.index() != b.system.index()) return false;
   if (const auto* e = a.edo()) return *e == *b.edo();
-  return mosEq(*a.mos(), *b.mos());
+  if (const auto* m = a.mos()) return mosEq(*m, *b.mos());
+  return *a.scale() == *b.scale();
 }
 
 Result<tuning::Tuning> buildTuning(const TuningDef& def) {
   if (const tuning::Edo* e = def.edo()) return tuning::Tuning::make(*e, def.referenceHz);
-  Result<tuning::Mos> mos = tuning::Mos::make(*def.mos());
-  if (!mos) return std::move(mos).error();
-  return tuning::Tuning::make(std::move(mos).value(), def.referenceHz);
+  if (const tuning::MosParams* m = def.mos()) {
+    Result<tuning::Mos> mos = tuning::Mos::make(*m);
+    if (!mos) return std::move(mos).error();
+    return tuning::Tuning::make(std::move(mos).value(), def.referenceHz);
+  }
+  const ScaleDef& sd = *def.scale();
+  if (sd.scale.descriptionUtf8() != sd.scale.description)
+    return Error{ErrorCode::InvalidArgument, "scale description must be valid UTF-8", {}};
+  if (sd.mapping)
+    if (Status k = tuning::validateKbm(*sd.mapping); !k) return std::move(k).error();
+  Result<tuning::Scale> scale = tuning::Scale::make(sd.scale);
+  if (!scale) return std::move(scale).error();
+  return tuning::Tuning::make(std::move(scale).value(), def.referenceHz);
+}
+
+Result<TuningDef> makeScaleDef(tuning::ScalaScale scale, std::optional<tuning::KeyboardMapping> mapping,
+                               double referenceHz) {
+  scale.description = scale.descriptionUtf8();
+  TuningDef d;
+  d.referenceHz = referenceHz;
+  if (mapping) {
+    if (Status k = tuning::validateKbm(*mapping); !k) return std::move(k).error();
+    Result<tuning::Scale> s = tuning::Scale::make(scale);
+    if (!s) return std::move(s).error();
+    Result<tuning::Tuning> t = tuning::makeScalaTuning(*s, *mapping);
+    if (!t) return std::move(t).error();
+    d.referenceHz = t->referenceHz();
+  }
+  d.system = ScaleDef{std::move(scale), std::move(mapping)};
+  if (Result<tuning::Tuning> t = buildTuning(d); !t) return std::move(t).error();
+  return d;
 }
 
 bool operator==(const TuningSlot& a, const TuningSlot& b) noexcept {

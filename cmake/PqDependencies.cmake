@@ -43,7 +43,7 @@ if(NOT TARGET zstd::libzstd_static)
   add_library(zstd::libzstd_static ALIAS libzstd_static)
 endif()
 
-# --- nlohmann/json (MIT): JSON reading in tests (fixtures); later project files --------------------------------
+# --- nlohmann/json (MIT): pq_doc project-file schema migrations; JSON reading in tests (fixtures) --------------
 # The release's source tarball (single include tree, ~110 KB) instead of a git clone of the full repository.
 FetchContent_Declare(nlohmann_json
   URL      https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz

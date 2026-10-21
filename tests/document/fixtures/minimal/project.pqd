@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "timeline": {
+    "tempo": [{"tick": 0, "bpm": 120.0, "curve": "step"}],
+    "signatures": [{"bar": 0, "numerator": 4, "denominator": 4}]
+  },
+  "loop": {"start": 0, "end": 443520, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {"id": 1, "name": "12-EDO", "colour": "#5E9BD6",
+     "def": {"kind": "edo", "n": 12, "equave": "2/1", "referenceHz": 261.626}}
+  ],
+  "tracks": [],
+  "returns": [],
+  "master": {
+    "id": 2, "kind": "master", "name": "Master", "colour": "#808080", "active": true, "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"}
+  }
+}

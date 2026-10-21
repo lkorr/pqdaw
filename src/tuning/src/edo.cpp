@@ -5,28 +5,30 @@
 
 namespace pq::tuning {
 
-Edo::Edo(uint32_t n, double log2Equave, std::optional<Rational> ratio) noexcept
+Edo::Edo(uint32_t n, double log2Equave, std::optional<Rational> ratio, double equaveCents) noexcept
     : n_(n),
       hasEquaveRatio_(ratio.has_value()),
       equaveRatio_(ratio.value_or(Rational{})),
       log2Equave_(log2Equave),
-      equaveCents_(1200.0 * log2Equave),
+      equaveCents_(equaveCents),
       log2Step_(log2Equave / static_cast<double>(n)) {}
 
 Result<Edo> Edo::make(uint32_t n, const Rational& equave) {
   if (n == 0) return Error{ErrorCode::InvalidArgument, "EDO needs at least one step", {}};
   if (equave <= Rational{1}) return Error{ErrorCode::InvalidArgument, "EDO equave must be greater than 1/1", {}};
-  return Edo(n, cents(equave) / 1200.0, equave);
+  return Edo(n, cents(equave) / 1200.0, equave, 1200.0 * (cents(equave) / 1200.0));
 }
 
 Result<Edo> Edo::makeCents(uint32_t n, double equaveCents) {
   if (n == 0) return Error{ErrorCode::InvalidArgument, "EDO needs at least one step", {}};
   if (!std::isfinite(equaveCents) || !(equaveCents > 0.0))
     return Error{ErrorCode::InvalidArgument, "EDO equave must be a finite positive number of cents", {}};
-  return Edo(n, equaveCents / 1200.0, std::nullopt);
+  // Keep the given cents exactly (not 1200 · (c / 1200), which can differ in the last bit), so equaveCents()
+  // reproduces the input and makeCents(n, e.equaveCents()) == e: project files store it (T3.5).
+  return Edo(n, equaveCents / 1200.0, std::nullopt, equaveCents);
 }
 
-Edo Edo::standard12() noexcept { return Edo(12, 1.0, Rational{2}); }
+Edo Edo::standard12() noexcept { return Edo(12, 1.0, Rational{2}, 1200.0); }
 
 Val patentVal(const Edo& edo) noexcept {  // RT-safe
   Val v;

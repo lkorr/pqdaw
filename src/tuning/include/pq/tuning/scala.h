@@ -110,6 +110,14 @@ Result<KeyboardMapping> parseKbm(std::string_view text, std::string_view fileNam
 // unmapped reference key).
 Result<std::string> writeKbm(const KeyboardMapping& kbm);
 
+// The checks writeKbm makes, without writing: Ok if the mapping would read back. Errors: InvalidArgument.
+Status validateKbm(const KeyboardMapping& kbm);
+
+// One ratio pitch in Scala notation as the whole text: digits[/digits], no sign, no spaces. As parseScl reads a pitch
+// line: a numerator and denominator that both fit int64 give Kind::Ratio (reduced), larger ones Kind::LargeRatio
+// (digits kept without leading zeros, cents computed). Used by project files (T3.5). Errors: Parse.
+Result<ScalaPitch> parseScalaRatio(std::string_view text);
+
 // Absolute scale degree of `key` (degree 0 at middleKey, octave repetition by formalOctaveDegree), or nullopt if the
 // key is outside [firstKey, lastKey] or unmapped. Computed in int64, so any int32 inputs are safe. RT-safe.
 std::optional<int64_t> mapKeyToDegree(const KeyboardMapping& kbm, int32_t key) noexcept;

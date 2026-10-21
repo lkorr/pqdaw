@@ -162,12 +162,13 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - **Feedback**: `z1` and the delay lines also have split kernels (`z1:read`/`z1:write`, `delay*:read`/`delay:write`) sharing the atom's state, so a feedback SCC scheduled per sample can read at the start of the sample and write at the end.
 
 ### Document model (`pq/document/*.h`, T3.4)
-- `Snapshot = shared_ptr<const Project>`. `Project`: timeline (tempo + time-signature points and their built maps), main tunings (`TuningSlot`: name, colour, `TuningDef` = EDO | MOS params + reference Hz), locators, loop, track tree (`tracks`, Midi + nested Group), `returns`, `master`. `Track`: kind, name, colour, `TuningAssignment` (Inherit | Main | Private), `Mixer` (volume dB, pan, mute, solo, arm, non-default sends, output), active, children, clips (`ClipSlot {id, ClipPtr}` sorted by start), automation lanes (`ParamRef` + breakpoints). `NoteClip`: start, length, content start, loop, signature, tuning, active, `NoteSeq`. `Note`: 64 bytes (start, length, `PitchId`, id, velocity, release, chance, velocity range, flags).
+- `Snapshot = shared_ptr<const Project>`. `Project`: timeline (tempo + time-signature points and their built maps), main tunings (`TuningSlot`: name, colour, `TuningDef` = EDO | MOS params | `ScaleDef` (Scala .scl + optional .kbm) + reference Hz), locators, loop, track tree (`tracks`, Midi + nested Group), `returns`, `master`. `Track`: kind, name, colour, `TuningAssignment` (Inherit | Main | Private), `Mixer` (volume dB, pan, mute, solo, arm, non-default sends, output), active, children, clips (`ClipSlot {id, ClipPtr}` sorted by start), automation lanes (`ParamRef` + breakpoints). `NoteClip`: start, length, content start, loop, signature, tuning, active, `NoteSeq`. `Note`: 64 bytes (start, length, `PitchId`, id, velocity, release, chance, velocity range, flags).
 - Every shareable node is `shared_ptr<const T>`; an edit path-copies from the changed node to the root, everything else stays pointer-equal. `NoteSeq` stores notes sorted by `(start, id)` in immutable chunks of ≤ 128 notes, so a one-note edit copies one chunk.
 - `Command` = variant of ~50 primitive structs + `Batch`; `apply(snapshot, command, ChangeSet&) → Result<Snapshot>` is pure (ids pre-allocated from the store's `IdSource`), returns the input pointer for a no-op. T3.6 builds higher-level edits as Batches.
 - `ChangeSet`: touched ids + class flags `Meta | Param | Sequence | Automation | Timeline | Structural` (`paramOnly()`, `sequenceOnly()`, …) and the changed `ParamRef`s; drives T3.17 (recompile only on Structural).
 - `DocumentStore` (UI thread): current snapshot, `dispatch`, `History` (snapshot pairs; undo/redo swap pointers), gestures (`begin/commit/cancelGesture`: live notifications, one history entry), listeners (`StoreEvent`), and `ViewState` (fold/heights, not undoable; Q26).
-- `document` depends on `tuning` and `core` only. The audio thread never sees it.
+- Project files (`pq/document/serialize.h`, T3.5): `serializeProject`/`parseProject` (text) and `saveProject`/`loadProject`/`openProject` (directory, UTF-8 paths, atomic temp + flush + `MoveFileExW`). Snapshot + `ViewState`, ids preserved; strict reader with JSON-path errors; `Migration` table (n → n+1) on an nlohmann DOM for old files.
+- `document` depends on `tuning`, `core` and nlohmann/json (migrations only). The audio thread never sees it.
 
 ### Widget toolkit (ui, T3.1: `pq/ui/widget.h`, `input.h`, `actions.h`, `test_driver.h`)
 - **Tree**: `UiTree` owns one root `Widget`; widgets own their children (`add<W>(...)`). Ids are paths of names (`arrangement/track[3]/header/mute`; unnamed widgets are transparent). Override `paint`/`paintOver`, `onPointer`/`onKey`/`onText`, `onHoverChanged`/`onFocusChanged`/`onCaptureLost`, `onFrame`/`onTimer`, `contentExtent`, `arrange`.
@@ -179,7 +180,7 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - **Tests**: `TestDriver` builds a tree at a size and scale, injects events, runs a fake clock through update → paint, and renders through `OffscreenTarget`.
 
 ## 4. Data and file formats
-- **Project**: a directory: `project.pqd` (JSON, `"schemaVersion"` field, UTF-8), `patches/*.pqp`, `samples/`, `cache/`.
+- **Project**: a directory: `project.pqd` (JSON, UTF-8, `"schemaVersion"` first; layout in `pq/document/serialize.h` and the golden `tests/document/fixtures/full/project.pqd`: ticks and ids as integers, rationals as `"n/d"`, floating point as shortest round-trip numbers, embedded tuning definitions), `patches/*.pqp`, `samples/`, `cache/`.
 - **Patches**: `.pqp` text in the patch language ([PATCH_LANGUAGE.md](PATCH_LANGUAGE.md)). The visual layout is stored in the same file in a `layout { }` block.
 - **Golden audio** for tests: 32-bit float mono/stereo WAV, compared with a tolerance per test (absolute error and spectral error).
 

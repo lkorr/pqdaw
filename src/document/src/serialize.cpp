@@ -1,0 +1,1700 @@
+// Project file encoding and decoding (T3.5). File format: see serialize.h; the layout written here is the schema
+// (version kSchemaVersion). File I/O and the atomic save live in project_io.cpp.
+
+#include "pq/document/serialize.h"
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cmath>
+#include <limits>
+#include <set>
+#include <span>
+#include <string>
+#include <system_error>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "checks.h"
+#include "json_io.h"
+
+namespace pq::doc {
+
+namespace {
+
+using json::PathSeg;
+using json::Reader;
+using json::Writer;
+
+// ---- Names -------------------------------------------------------------------------------------------------------
+
+constexpr std::array<std::string_view, 5> kTrackKindNames = {"midi", "group", "return", "master", "audio"};
+constexpr std::array<std::string_view, 10> kParamKindNames = {
+    "trackVolume", "trackPan", "trackMute", "trackSolo", "trackSend",
+    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch"};
+constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
+constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
+
+template <size_t N>
+int indexOf(const std::array<std::string_view, N>& names, std::string_view v) {
+  for (size_t i = 0; i < N; ++i)
+    if (names[i] == v) return static_cast<int>(i);
+  return -1;
+}
+
+template <size_t N>
+std::string choices(const std::array<std::string_view, N>& names) {
+  std::string out;
+  for (size_t i = 0; i < N; ++i) {
+    if (i) out += i + 1 == N ? " or " : ", ";
+    out += '"';
+    out += names[i];
+    out += '"';
+  }
+  return out;
+}
+
+std::string colourText(Colour c) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  std::string s = "#";
+  for (int shift = 20; shift >= 0; shift -= 4) s += kHex[(c.rgb >> shift) & 0xF];
+  return s;
+}
+
+std::string ratioText(int64_t n, int64_t d) {
+  char buf[48];
+  auto r = std::to_chars(buf, buf + sizeof buf, n);
+  *r.ptr++ = '/';
+  r = std::to_chars(r.ptr, buf + sizeof buf, d);
+  return std::string(buf, r.ptr);
+}
+
+std::string scalaPitchText(const tuning::ScalaPitch& p) {
+  if (p.kind == tuning::ScalaPitch::Kind::Ratio) return ratioText(p.ratio.num(), p.ratio.den());
+  return p.largeNum + "/" + p.largeDen;
+}
+
+// "n/d": two runs of decimal digits; reduced on read. nullopt if malformed, out of int64, or d == 0.
+std::optional<tuning::Rational> parseRatioText(std::string_view t) {
+  const size_t slash = t.find('/');
+  if (slash == std::string_view::npos || slash == 0 || slash + 1 == t.size()) return std::nullopt;
+  int64_t n = 0, d = 0;
+  for (char c : t.substr(0, slash))
+    if (c < '0' || c > '9') return std::nullopt;
+  for (char c : t.substr(slash + 1))
+    if (c < '0' || c > '9') return std::nullopt;
+  if (std::from_chars(t.data(), t.data() + slash, n).ec != std::errc{}) return std::nullopt;
+  if (std::from_chars(t.data() + slash + 1, t.data() + t.size(), d).ec != std::errc{}) return std::nullopt;
+  return tuning::Rational::tryMake(n, d);
+}
+
+// ==== Encoder =====================================================================================================
+
+class Encoder {
+public:
+  explicit Encoder(std::string& out) : out_(out), w_(out) {}
+
+  void project(const Project& p, const ViewState& view) {
+    const PathSeg root;
+    w_.beginObject(true);
+    w_.key("schemaVersion");
+    w_.integer(kSchemaVersion);
+    timeline(PathSeg(&root, "timeline"), *p.timeline);
+    w_.key("loop");
+    w_.beginObject(false);
+    w_.key("start");
+    w_.integer(p.loop.start);
+    w_.key("end");
+    w_.integer(p.loop.end);
+    w_.key("enabled");
+    w_.boolean(p.loop.enabled);
+    w_.endObject();
+
+    const PathSeg locs(&root, "locators");
+    w_.key("locators");
+    w_.beginArray(true);
+    for (size_t i = 0; i < p.locators->size(); ++i) {
+      const Locator& l = (*p.locators)[i];
+      const PathSeg at(&locs, i);
+      w_.beginObject(false);
+      w_.key("id");
+      w_.integer(l.id.value);
+      w_.key("tick");
+      w_.integer(l.tick);
+      w_.key("name");
+      w_.string(PathSeg(&at, "name"), l.name);
+      w_.endObject();
+    }
+    w_.endArray();
+
+    const PathSeg tuns(&root, "tunings");
+    w_.key("tunings");
+    w_.beginArray(true);
+    for (size_t i = 0; i < p.tunings->size(); ++i) {
+      const TuningSlot& s = *(*p.tunings)[i];
+      const PathSeg at(&tuns, i);
+      w_.beginObject(true);
+      w_.key("id");
+      w_.integer(s.id.value);
+      w_.key("name");
+      w_.string(PathSeg(&at, "name"), s.name);
+      w_.key("colour");
+      w_.string(at, colourText(s.colour));
+      w_.key("def");
+      tuningDef(PathSeg(&at, "def"), s.def);
+      w_.endObject();
+    }
+    w_.endArray();
+
+    trackList(PathSeg(&root, "tracks"), "tracks", p.tracks);
+    trackList(PathSeg(&root, "returns"), "returns", p.returns);
+    w_.key("master");
+    track(PathSeg(&root, "master"), *p.master);
+    viewState(p, view);
+    w_.endObject();
+    out_ += "\n";
+  }
+
+private:
+  void timeline(const PathSeg& at, const Timeline& t) {
+    w_.key("timeline");
+    w_.beginObject(true);
+    const PathSeg tempo(&at, "tempo");
+    w_.key("tempo");
+    w_.beginArray(true);
+    for (size_t i = 0; i < t.tempo.size(); ++i) {
+      const TempoPoint& tp = t.tempo[i];
+      const PathSeg pt(&tempo, i);
+      w_.beginObject(false);
+      w_.key("tick");
+      w_.integer(tp.tick);
+      w_.key("bpm");
+      w_.number(PathSeg(&pt, "bpm"), tp.bpm);
+      w_.key("curve");
+      w_.string(pt, kTempoCurveNames[static_cast<size_t>(tp.curve)]);
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.key("signatures");
+    w_.beginArray(true);
+    for (const TimeSigChange& c : t.signatures) {
+      w_.beginObject(false);
+      w_.key("bar");
+      w_.integer(c.bar);
+      w_.key("numerator");
+      w_.integer(c.sig.numerator);
+      w_.key("denominator");
+      w_.integer(c.sig.denominator);
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.endObject();
+  }
+
+  void doubles(const PathSeg& at, const std::vector<double>& v) {
+    w_.beginArray(false);
+    for (size_t i = 0; i < v.size(); ++i) w_.number(PathSeg(&at, i), v[i]);
+    w_.endArray();
+  }
+
+  void tuningDef(const PathSeg& at, const TuningDef& d) {
+    w_.beginObject(true);
+    if (const tuning::Edo* e = d.edo()) {
+      w_.key("kind");
+      w_.string(at, "edo");
+      w_.key("n");
+      w_.integer(e->n());
+      if (const auto r = e->equaveRatio()) {
+        w_.key("equave");
+        w_.string(at, ratioText(r->num(), r->den()));
+      } else {
+        w_.key("equaveCents");
+        w_.number(PathSeg(&at, "equaveCents"), e->equaveCents());
+      }
+    } else if (const tuning::MosParams* m = d.mos()) {
+      w_.key("kind");
+      w_.string(at, "mos");
+      w_.key("generator");
+      w_.number(PathSeg(&at, "generator"), m->generator);
+      w_.key("n");
+      w_.integer(m->n);
+      w_.key("period");
+      w_.number(PathSeg(&at, "period"), m->period);
+      w_.key("periodsPerEquave");
+      w_.integer(m->periodsPerEquave);
+      w_.key("rotation");
+      w_.integer(m->rotation);
+      w_.key("modmos");
+      doubles(PathSeg(&at, "modmos"), m->modmos);
+      w_.key("genSequence");
+      doubles(PathSeg(&at, "genSequence"), m->genSequence);
+      w_.key("octaveStretch");
+      w_.number(PathSeg(&at, "octaveStretch"), m->octaveStretch);
+      if (m->region) {
+        const PathSeg rg(&at, "region");
+        w_.key("region");
+        w_.beginObject(false);
+        w_.key("perPeriodSize");
+        w_.integer(m->region->perPeriodSize);
+        w_.key("lowCents");
+        w_.number(PathSeg(&rg, "lowCents"), m->region->lowCents);
+        w_.key("highCents");
+        w_.number(PathSeg(&rg, "highCents"), m->region->highCents);
+        w_.endObject();
+      }
+    } else {
+      const ScaleDef& s = *d.scale();
+      w_.key("kind");
+      w_.string(at, "scale");
+      w_.key("description");
+      w_.string(PathSeg(&at, "description"), s.scale.description);
+      const PathSeg ps(&at, "pitches");
+      w_.key("pitches");
+      w_.beginArray(false);
+      for (size_t i = 0; i < s.scale.pitches.size(); ++i) {
+        const tuning::ScalaPitch& p = s.scale.pitches[i];
+        if (p.kind == tuning::ScalaPitch::Kind::Cents)
+          w_.number(PathSeg(&ps, i), p.cents);
+        else
+          w_.string(PathSeg(&ps, i), scalaPitchText(p));
+      }
+      w_.endArray();
+      if (s.mapping) {
+        const tuning::KeyboardMapping& k = *s.mapping;
+        const PathSeg mp(&at, "mapping");
+        w_.key("mapping");
+        w_.beginObject(true);
+        w_.key("mapSize");
+        w_.integer(k.mapSize);
+        w_.key("firstKey");
+        w_.integer(k.firstKey);
+        w_.key("lastKey");
+        w_.integer(k.lastKey);
+        w_.key("middleKey");
+        w_.integer(k.middleKey);
+        w_.key("referenceKey");
+        w_.integer(k.referenceKey);
+        w_.key("referenceHz");
+        w_.number(PathSeg(&mp, "referenceHz"), k.referenceHz);
+        w_.key("formalOctaveDegree");
+        w_.integer(k.formalOctaveDegree);
+        w_.key("mapping");
+        w_.beginArray(false);
+        for (int32_t entry : k.mapping) {
+          if (entry == tuning::kUnmappedKey)
+            w_.null();
+          else
+            w_.integer(entry);
+        }
+        w_.endArray();
+        w_.endObject();
+      }
+    }
+    w_.key("referenceHz");
+    w_.number(PathSeg(&at, "referenceHz"), d.referenceHz);
+    w_.endObject();
+  }
+
+  void assignment(const PathSeg& at, const TuningAssignment& a) {
+    switch (a.mode) {
+      case TuningMode::Inherit:
+        w_.string(at, "inherit");
+        return;
+      case TuningMode::Main:
+        w_.beginObject(false);
+        w_.key("main");
+        w_.integer(a.main.value);
+        w_.endObject();
+        return;
+      case TuningMode::Private:
+        if (!a.privateDef) json::fail(at, "private tuning without a definition");
+        w_.beginObject(true);
+        w_.key("private");
+        tuningDef(PathSeg(&at, "private"), *a.privateDef);
+        w_.endObject();
+        return;
+    }
+  }
+
+  void trackList(const PathSeg& at, std::string_view key, const std::vector<TrackPtr>& list) {
+    w_.key(key);
+    w_.beginArray(true);
+    for (size_t i = 0; i < list.size(); ++i) track(PathSeg(&at, i), *list[i]);
+    w_.endArray();
+  }
+
+  void track(const PathSeg& at, const Track& t) {
+    w_.beginObject(true);
+    w_.key("id");
+    w_.integer(t.id.value);
+    w_.key("kind");
+    w_.string(at, kTrackKindNames[static_cast<size_t>(t.kind)]);
+    w_.key("name");
+    w_.string(PathSeg(&at, "name"), t.name);
+    w_.key("colour");
+    w_.string(at, colourText(t.colour));
+    w_.key("active");
+    w_.boolean(t.active);
+    w_.key("tuning");
+    assignment(PathSeg(&at, "tuning"), t.tuning);
+
+    const PathSeg mx(&at, "mixer");
+    const Mixer& m = t.mixer;
+    w_.key("mixer");
+    w_.beginObject(false);
+    w_.key("volumeDb");
+    w_.number(PathSeg(&mx, "volumeDb"), m.volumeDb);
+    w_.key("pan");
+    w_.number(PathSeg(&mx, "pan"), m.pan);
+    w_.key("mute");
+    w_.boolean(m.mute);
+    w_.key("solo");
+    w_.boolean(m.solo);
+    w_.key("arm");
+    w_.boolean(m.arm);
+    const PathSeg sends(&mx, "sends");
+    w_.key("sends");
+    w_.beginArray(false);
+    for (size_t i = 0; i < m.sends.size(); ++i) {
+      w_.beginObject(false);
+      w_.key("target");
+      w_.integer(m.sends[i].target.value);
+      w_.key("levelDb");
+      w_.number(PathSeg(&sends, i), m.sends[i].levelDb);
+      w_.key("preFader");
+      w_.boolean(m.sends[i].preFader);
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.key("output");
+    switch (m.output.kind) {
+      case OutputKind::Default: w_.string(mx, "default"); break;
+      case OutputKind::Master: w_.string(mx, "master"); break;
+      case OutputKind::None: w_.string(mx, "none"); break;
+      case OutputKind::Track:
+        w_.beginObject(false);
+        w_.key("track");
+        w_.integer(m.output.track.value);
+        w_.endObject();
+        break;
+    }
+    w_.endObject();
+
+    const PathSeg lanes(&at, "lanes");
+    w_.key("lanes");
+    w_.beginArray(true);
+    for (size_t i = 0; i < t.lanes.size(); ++i) lane(PathSeg(&lanes, i), *t.lanes[i]);
+    w_.endArray();
+
+    if (t.kind == TrackKind::Midi || !t.clips.empty()) {
+      const PathSeg clips(&at, "clips");
+      w_.key("clips");
+      w_.beginArray(true);
+      for (size_t i = 0; i < t.clips.size(); ++i) clip(PathSeg(&clips, i), *t.clips[i].clip);
+      w_.endArray();
+    }
+    if (t.kind == TrackKind::Group || !t.children.empty()) trackList(PathSeg(&at, "children"), "children", t.children);
+    w_.endObject();
+  }
+
+  void lane(const PathSeg& at, const AutomationLane& l) {
+    w_.beginObject(true);
+    w_.key("id");
+    w_.integer(l.id.value);
+    w_.key("param");
+    w_.beginObject(false);
+    w_.key("kind");
+    w_.string(at, kParamKindNames[static_cast<size_t>(l.param.kind)]);
+    w_.key("owner");
+    w_.integer(l.param.owner);
+    if (l.param.kind == ParamKind::TrackSend || l.param.target != 0) {
+      w_.key("target");
+      w_.integer(l.param.target);
+    }
+    w_.endObject();
+    const PathSeg pts(&at, "points");
+    w_.key("points");
+    w_.beginArray(true);
+    for (size_t i = 0; i < l.points.size(); ++i) {
+      const Breakpoint& b = l.points[i];
+      const PathSeg pt(&pts, i);
+      w_.beginObject(false);
+      w_.key("id");
+      w_.integer(b.id.value);
+      w_.key("tick");
+      w_.integer(b.tick);
+      w_.key("value");
+      w_.number(PathSeg(&pt, "value"), b.value);
+      w_.key("curve");
+      w_.number(PathSeg(&pt, "curve"), b.curve);
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.endObject();
+  }
+
+  void clip(const PathSeg& at, const NoteClip& c) {
+    w_.beginObject(true);
+    w_.key("id");
+    w_.integer(c.id.value);
+    w_.key("name");
+    w_.string(PathSeg(&at, "name"), c.name);
+    w_.key("colour");
+    w_.string(at, colourText(c.colour));
+    w_.key("start");
+    w_.integer(c.start);
+    w_.key("length");
+    w_.integer(c.length);
+    w_.key("contentStart");
+    w_.integer(c.contentStart);
+    w_.key("loop");
+    w_.beginObject(false);
+    w_.key("enabled");
+    w_.boolean(c.loop.enabled);
+    w_.key("start");
+    w_.integer(c.loop.start);
+    w_.key("end");
+    w_.integer(c.loop.end);
+    w_.endObject();
+    w_.key("signature");
+    w_.beginObject(false);
+    w_.key("numerator");
+    w_.integer(c.signature.numerator);
+    w_.key("denominator");
+    w_.integer(c.signature.denominator);
+    w_.endObject();
+    w_.key("tuning");
+    assignment(PathSeg(&at, "tuning"), c.tuning);
+    w_.key("active");
+    w_.boolean(c.active);
+    const PathSeg notes(&at, "notes");
+    w_.key("notes");
+    w_.beginArray(true);
+    size_t i = 0;
+    for (const Note& n : c.notes) note(PathSeg(&notes, i++), n);
+    w_.endArray();
+    w_.endObject();
+  }
+
+  // One line per note; fields at their default (release 64, chance 1, range 0, enabled) are omitted.
+  void note(const PathSeg& at, const Note& n) {
+    w_.beginObject(false);
+    w_.key("id");
+    w_.integer(n.id.value);
+    w_.key("start");
+    w_.integer(n.start);
+    w_.key("length");
+    w_.integer(n.length);
+    w_.key("pitch");
+    w_.beginObject(false);
+    const tuning::PitchId& p = n.pitch;
+    switch (p.kind()) {
+      case tuning::PitchKind::Degree:
+        w_.key("degree");
+        w_.integer(p.degree());
+        w_.key("equave");
+        w_.integer(p.equave());
+        break;
+      case tuning::PitchKind::Ratio:
+        w_.key("ratio");
+        w_.string(at, ratioText(p.rawNum(), p.rawDen()));
+        if (p.anchorKind() != tuning::AnchorKind::Reference) {
+          w_.key("anchor");
+          w_.string(at, kAnchorNames[static_cast<size_t>(p.anchorKind())]);
+        }
+        if (p.anchorId() != 0) {
+          w_.key("anchorId");
+          w_.integer(p.anchorId());
+        }
+        break;
+      case tuning::PitchKind::Cents:
+        w_.key("cents");
+        w_.number(PathSeg(&at, "pitch"), p.cents());
+        break;
+      case tuning::PitchKind::Harmonic:
+        w_.key("jiObject");
+        w_.integer(p.jiObject());
+        w_.key("voice");
+        w_.integer(p.voiceIndex());
+        break;
+    }
+    w_.endObject();
+    w_.key("velocity");
+    w_.number(PathSeg(&at, "velocity"), n.velocity);
+    if (n.releaseVelocity != 64.0f || std::signbit(n.releaseVelocity)) {
+      w_.key("releaseVelocity");
+      w_.number(PathSeg(&at, "releaseVelocity"), n.releaseVelocity);
+    }
+    if (n.chance != 1.0f) {
+      w_.key("chance");
+      w_.number(PathSeg(&at, "chance"), n.chance);
+    }
+    if (n.velocityRange != 0.0f || std::signbit(n.velocityRange)) {
+      w_.key("velocityRange");
+      w_.number(PathSeg(&at, "velocityRange"), n.velocityRange);
+    }
+    if (n.flags & kNoteDisabled) {
+      w_.key("disabled");
+      w_.boolean(true);
+    }
+    if (n.flags & ~static_cast<uint32_t>(kNoteDisabled)) json::fail(at, "unknown note flags");
+    w_.endObject();
+  }
+
+  void viewState(const Project& p, const ViewState& v) {
+    std::vector<uint32_t> trackIds, laneIds;
+    forEachTrack(p, [&](const Track& t, const Track*) {
+      trackIds.push_back(t.id.value);
+      for (const LanePtr& l : t.lanes) laneIds.push_back(l->id.value);
+    });
+    std::sort(trackIds.begin(), trackIds.end());
+    std::sort(laneIds.begin(), laneIds.end());
+    auto live = [](const std::vector<uint32_t>& ids, uint32_t id) { return std::binary_search(ids.begin(), ids.end(), id); };
+
+    std::vector<std::pair<uint32_t, TrackView>> tv;
+    for (const auto& [id, view] : v.tracks)
+      if (live(trackIds, id.value)) tv.emplace_back(id.value, view);
+    std::vector<std::pair<uint32_t, LaneView>> lv;
+    for (const auto& [id, view] : v.lanes)
+      if (live(laneIds, id.value)) lv.emplace_back(id.value, view);
+    std::sort(tv.begin(), tv.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::sort(lv.begin(), lv.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    w_.key("view");
+    w_.beginObject(true);
+    w_.key("tracks");
+    w_.beginArray(true);
+    for (const auto& [id, view] : tv) {
+      w_.beginObject(false);
+      w_.key("id");
+      w_.integer(id);
+      w_.key("folded");
+      w_.boolean(view.folded);
+      w_.key("height");
+      w_.integer(view.height);
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.key("lanes");
+    w_.beginArray(true);
+    for (const auto& [id, view] : lv) {
+      w_.beginObject(false);
+      w_.key("id");
+      w_.integer(id);
+      w_.key("visible");
+      w_.boolean(view.visible);
+      w_.key("height");
+      w_.integer(view.height);
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.endObject();
+  }
+
+  std::string& out_;
+  Writer w_;
+};
+
+// ==== Decoder =====================================================================================================
+
+// Iterates the members of an object whose allowed keys are `names`: unknown and duplicate keys are errors.
+class Members {
+public:
+  Members(Reader& r, const PathSeg& at, std::span<const std::string_view> names) : r_(r), at_(at), names_(names) {
+    r_.beginObject(at_);
+    start_ = r_.valueStart();
+  }
+  // Index of the next key in `names`, or −1 at the end of the object.
+  int next() {
+    std::string_view k;
+    if (!r_.nextKey(at_, k)) return -1;
+    for (size_t i = 0; i < names_.size(); ++i) {
+      if (names_[i] == k) {
+        if (seen_ & (uint64_t{1} << i)) r_.failHere(PathSeg(&at_, names_[i]), "duplicate key");
+        seen_ |= uint64_t{1} << i;
+        return static_cast<int>(i);
+      }
+    }
+    const std::string key(k);
+    r_.failHere(PathSeg(&at_, key), "unknown key", ErrorCode::InvalidArgument);
+  }
+  bool has(int i) const noexcept { return (seen_ & (uint64_t{1} << i)) != 0; }
+  // Errors for the first of `required` that did not appear.
+  void require(std::initializer_list<int> required) const {
+    for (int i : required)
+      if (!has(i))
+        json::fail(at_, "missing key \"" + std::string(names_[static_cast<size_t>(i)]) + "\"",
+                   ErrorCode::InvalidArgument, start_);
+  }
+  size_t start() const noexcept { return start_; }
+
+private:
+  Reader& r_;
+  const PathSeg& at_;
+  std::span<const std::string_view> names_;
+  uint64_t seen_ = 0;
+  size_t start_ = 0;
+};
+
+constexpr uint32_t kMaxId = 0xFFFFFFFEu;  // so IdSource::reserveThrough(maxEntityId) never wraps to 0
+
+class Decoder {
+public:
+  explicit Decoder(std::string_view text) : r_(text) {}
+
+  LoadedProject project() {
+    const PathSeg root;
+    static constexpr std::string_view K[] = {"schemaVersion", "timeline", "loop",    "locators", "tunings",
+                                             "tracks",        "returns",  "master",  "view"};
+    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView };
+    auto np = std::make_shared<Project>();
+    LoadedProject out;
+    Members m(r_, root, K);
+    RawView rawView;
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg at(&root, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case kVer: {
+          const int64_t v = r_.readInt(at);
+          if (v != kSchemaVersion) r_.failValue(at, "unexpected schema version " + std::to_string(v));
+          break;
+        }
+        case kTimeline: np->timeline = timeline(at); break;
+        case kLoop: np->loop = loop(at); break;
+        case kLocators: np->locators = locators(at); break;
+        case kTunings: np->tunings = tunings(at); break;
+        case kTracks: np->tracks = trackArray(at, TrackList::Main, 1); break;
+        case kReturns: np->returns = trackArray(at, TrackList::Returns, 1); break;
+        case kMaster: np->master = track(at, TrackList::Master, 1); break;
+        case kView: rawView = view(at); break;
+      }
+    }
+    m.require({kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster});
+    r_.expectEnd(root);
+
+    validate(root, *np);
+    out.project = np;
+    out.view = resolveView(PathSeg(&root, "view"), rawView, *np);
+    return out;
+  }
+
+private:
+  // ---- Scalars ----
+  uint32_t defineId(const PathSeg& at) {
+    const uint32_t id = ref(at);
+    ids_.push_back(id);
+    return id;
+  }
+  uint32_t ref(const PathSeg& at) {
+    const int64_t v = r_.readInt(at);
+    if (v < 1 || v > kMaxId) r_.failValue(at, "id must be in [1, 4294967294]");
+    return static_cast<uint32_t>(v);
+  }
+  uint32_t u32(const PathSeg& at) {
+    const int64_t v = r_.readInt(at);
+    if (v < 0 || v > std::numeric_limits<uint32_t>::max()) r_.failValue(at, "must be in [0, 4294967295]");
+    return static_cast<uint32_t>(v);
+  }
+  int32_t i32(const PathSeg& at) {
+    const int64_t v = r_.readInt(at);
+    if (v < std::numeric_limits<int32_t>::min() || v > std::numeric_limits<int32_t>::max())
+      r_.failValue(at, "must be a 32-bit integer");
+    return static_cast<int32_t>(v);
+  }
+  Ticks tick(const PathSeg& at) {
+    const Ticks t = r_.readInt(at);
+    check(at, detail::checkTick(t, "tick"));
+    return t;
+  }
+  Ticks length(const PathSeg& at) {
+    const Ticks t = r_.readInt(at);
+    check(at, detail::checkLength(t, "length"));
+    return t;
+  }
+  std::string str(const PathSeg& at) {
+    std::string s;
+    r_.readString(at, s);
+    return s;
+  }
+  Colour colour(const PathSeg& at) {
+    std::string s;
+    r_.readString(at, s);
+    uint32_t v = 0;
+    bool ok = s.size() == 7 && s[0] == '#';
+    for (size_t i = 1; ok && i < 7; ++i) {
+      const char c = s[i];
+      const int h = (c >= '0' && c <= '9') ? c - '0' : (c >= 'A' && c <= 'F') ? c - 'A' + 10
+                                                       : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : -1;
+      if (h < 0) ok = false;
+      v = (v << 4) | static_cast<uint32_t>(h < 0 ? 0 : h);
+    }
+    if (!ok) r_.failValue(at, "colour must be \"#RRGGBB\"");
+    return Colour{v};
+  }
+  template <size_t N>
+  int name(const PathSeg& at, const std::array<std::string_view, N>& names, const char* what) {
+    std::string s;
+    r_.readString(at, s);
+    const int i = indexOf(names, s);
+    if (i < 0) r_.failValue(at, std::string(what) + " must be " + choices(names));
+    return i;
+  }
+  // Turns a failed model check into an error at `at` (the last value read).
+  void check(const PathSeg& at, const Status& s) {
+    if (!s) r_.failValue(at, s.error().message);
+  }
+  void checkAt(const PathSeg& at, size_t pos, const Status& s) {
+    if (!s) json::fail(at, s.error().message, ErrorCode::InvalidArgument, pos);
+  }
+
+  // ---- Timeline ----
+  std::shared_ptr<const Timeline> timeline(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"tempo", "signatures"};
+    auto t = std::make_shared<Timeline>();
+    t->tempo.clear();
+    t->signatures.clear();
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg list(&at, K[static_cast<size_t>(k)]);
+      r_.beginArray(list);
+      const size_t listStart = r_.valueStart();
+      for (size_t i = 0; r_.nextElement(list); ++i) {
+        const PathSeg el(&list, i);
+        if (k == 0) {
+          static constexpr std::string_view P[] = {"tick", "bpm", "curve"};
+          TempoPoint tp;
+          Members pm(r_, el, P);
+          for (int q; (q = pm.next()) >= 0;) {
+            const PathSeg f(&el, P[static_cast<size_t>(q)]);
+            if (q == 0) tp.tick = tick(f);
+            if (q == 1) tp.bpm = r_.readDouble(f);
+            if (q == 2) tp.curve = static_cast<TempoCurve>(name(f, kTempoCurveNames, "curve"));
+          }
+          pm.require({0, 1, 2});
+          t->tempo.push_back(tp);
+        } else {
+          static constexpr std::string_view P[] = {"bar", "numerator", "denominator"};
+          TimeSigChange c;
+          Members pm(r_, el, P);
+          for (int q; (q = pm.next()) >= 0;) {
+            const PathSeg f(&el, P[static_cast<size_t>(q)]);
+            if (q == 0) c.bar = r_.readInt(f);
+            if (q == 1) c.sig.numerator = i32(f);
+            if (q == 2) c.sig.denominator = i32(f);
+          }
+          pm.require({0, 1, 2});
+          t->signatures.push_back(c);
+        }
+      }
+      if (k == 0) {
+        Result<TempoMap> map = TempoMap::create(t->tempo);
+        checkAt(list, listStart, map ? Status(Ok{}) : Status(map.error()));
+        t->tempoMap = std::move(map).value();
+      } else {
+        Result<TimeSigMap> map = TimeSigMap::create(t->signatures);
+        checkAt(list, listStart, map ? Status(Ok{}) : Status(map.error()));
+        t->sigMap = std::move(map).value();
+      }
+    }
+    m.require({0, 1});
+    return t;
+  }
+
+  LoopRegion loop(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"start", "end", "enabled"};
+    LoopRegion l;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) l.start = tick(f);
+      if (k == 1) l.end = tick(f);
+      if (k == 2) l.enabled = r_.readBool(f);
+    }
+    m.require({0, 1, 2});
+    if (l.end <= l.start) json::fail(at, "loop end must be after loop start", ErrorCode::InvalidArgument, m.start());
+    return l;
+  }
+
+  std::shared_ptr<const LocatorList> locators(const PathSeg& at) {
+    auto list = std::make_shared<LocatorList>();
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "tick", "name"};
+      Locator l;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) l.id = LocatorId{defineId(f)};
+        if (k == 1) l.tick = tick(f);
+        if (k == 2) l.name = str(f);
+      }
+      m.require({0, 1, 2});
+      if (!list->empty() && std::pair(list->back().tick, list->back().id) >= std::pair(l.tick, l.id))
+        json::fail(el, "locators must be sorted by (tick, id)", ErrorCode::InvalidArgument, m.start());
+      list->push_back(std::move(l));
+    }
+    return list;
+  }
+
+  // ---- Tunings ----
+  std::shared_ptr<const TuningList> tunings(const PathSeg& at) {
+    auto list = std::make_shared<TuningList>();
+    r_.beginArray(at);
+    const size_t start = r_.valueStart();
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "name", "colour", "def"};
+      TuningSlot s;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) s.id = TuningId{defineId(f)};
+        if (k == 1) s.name = str(f);
+        if (k == 2) s.colour = colour(f);
+        if (k == 3) s.def = tuningDef(f);
+      }
+      m.require({0, 1, 2, 3});
+      list->push_back(std::make_shared<const TuningSlot>(std::move(s)));
+    }
+    if (list->empty()) json::fail(at, "a project needs at least one main tuning", ErrorCode::InvalidArgument, start);
+    return list;
+  }
+
+  std::vector<double> doubleArray(const PathSeg& at) {
+    std::vector<double> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) v.push_back(r_.readDouble(PathSeg(&at, i)));
+    return v;
+  }
+
+  TuningDef tuningDef(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"kind",          "referenceHz", "n",           "equave",
+                                             "equaveCents",   "generator",   "period",      "periodsPerEquave",
+                                             "rotation",      "modmos",      "genSequence", "octaveStretch",
+                                             "region",        "description", "pitches",     "mapping"};
+    enum {
+      kKind, kRef, kN, kEquave, kEquaveCents, kGen, kPeriod, kPpe, kRot, kModmos, kGenSeq, kStretch, kRegion,
+      kDesc, kPitches, kMapping
+    };
+    constexpr std::array<std::string_view, 3> kKinds = {"edo", "mos", "scale"};
+    int kind = -1;
+    TuningDef d;
+    int64_t n = 0;
+    std::optional<tuning::Rational> equave;
+    double equaveCents = 0.0;
+    tuning::MosParams mos;
+    ScaleDef scale;
+    std::array<size_t, 16> pos{};
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case kKind: kind = name(f, kKinds, "kind"); break;
+        case kRef: d.referenceHz = r_.readDouble(f); break;
+        case kN: n = r_.readInt(f); break;
+        case kEquave: {
+          const std::string s = str(f);
+          equave = parseRatioText(s);
+          if (!equave) r_.failValue(f, "equave must be a ratio \"n/d\" of positive integers");
+          break;
+        }
+        case kEquaveCents: equaveCents = r_.readDouble(f); break;
+        case kGen: mos.generator = r_.readDouble(f); break;
+        case kPeriod: mos.period = r_.readDouble(f); break;
+        case kPpe: mos.periodsPerEquave = i32(f); break;
+        case kRot: mos.rotation = i32(f); break;
+        case kModmos: mos.modmos = doubleArray(f); break;
+        case kGenSeq: mos.genSequence = doubleArray(f); break;
+        case kStretch: mos.octaveStretch = r_.readDouble(f); break;
+        case kRegion: mos.region = region(f); break;
+        case kDesc: scale.scale.description = str(f); break;
+        case kPitches: scale.scale.pitches = scalaPitches(f); break;
+        case kMapping: scale.mapping = mapping(f); break;
+      }
+      pos[static_cast<size_t>(k)] = r_.valueStart();
+    }
+    m.require({kKind, kRef});
+    // Keys that belong to another kind.
+    static constexpr std::array<uint32_t, 3> kAllowed = {
+        (1u << kKind) | (1u << kRef) | (1u << kN) | (1u << kEquave) | (1u << kEquaveCents),
+        (1u << kKind) | (1u << kRef) | (1u << kN) | (1u << kGen) | (1u << kPeriod) | (1u << kPpe) | (1u << kRot) |
+            (1u << kModmos) | (1u << kGenSeq) | (1u << kStretch) | (1u << kRegion),
+        (1u << kKind) | (1u << kRef) | (1u << kDesc) | (1u << kPitches) | (1u << kMapping)};
+    for (int k = 0; k < 16; ++k)
+      if (m.has(k) && !(kAllowed[static_cast<size_t>(kind)] & (1u << k)))
+        json::fail(PathSeg(&at, K[static_cast<size_t>(k)]),
+                   "does not apply to a tuning of kind \"" + std::string(kKinds[static_cast<size_t>(kind)]) + "\"",
+                   ErrorCode::InvalidArgument, pos[static_cast<size_t>(k)]);
+    switch (kind) {
+      case 0: {
+        m.require({kN});
+        const PathSeg nAt(&at, "n");
+        if (n < 1 || n > std::numeric_limits<uint32_t>::max())
+          json::fail(nAt, "EDO size must be in [1, 4294967295]", ErrorCode::InvalidArgument, pos[kN]);
+        if (m.has(kEquave) == m.has(kEquaveCents))
+          json::fail(at, "an EDO needs exactly one of \"equave\" and \"equaveCents\"", ErrorCode::InvalidArgument,
+                     m.start());
+        const int ek = m.has(kEquave) ? kEquave : kEquaveCents;
+        Result<tuning::Edo> e = m.has(kEquave) ? tuning::Edo::make(static_cast<uint32_t>(n), *equave)
+                                               : tuning::Edo::makeCents(static_cast<uint32_t>(n), equaveCents);
+        if (!e) json::fail(PathSeg(&at, K[ek]), e.error().message, ErrorCode::InvalidArgument, pos[static_cast<size_t>(ek)]);
+        d.system = std::move(e).value();
+        break;
+      }
+      case 1:
+        m.require({kGen, kN, kPeriod, kPpe, kRot, kModmos, kGenSeq, kStretch});
+        if (n < std::numeric_limits<int32_t>::min() || n > std::numeric_limits<int32_t>::max())
+          json::fail(PathSeg(&at, "n"), "must be a 32-bit integer", ErrorCode::InvalidArgument, pos[kN]);
+        mos.n = static_cast<int32_t>(n);
+        d.system = std::move(mos);
+        break;
+      default:
+        m.require({kDesc, kPitches});
+        d.system = std::move(scale);
+        break;
+    }
+    checkAt(at, m.start(), detail::checkTuningDef(d));
+    return d;
+  }
+
+  tuning::RegionHint region(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"perPeriodSize", "lowCents", "highCents"};
+    tuning::RegionHint h;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) h.perPeriodSize = i32(f);
+      if (k == 1) h.lowCents = r_.readDouble(f);
+      if (k == 2) h.highCents = r_.readDouble(f);
+    }
+    m.require({0, 1, 2});
+    return h;
+  }
+
+  std::vector<tuning::ScalaPitch> scalaPitches(const PathSeg& at) {
+    std::vector<tuning::ScalaPitch> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      const Reader::Kind k = r_.peek();
+      if (k == Reader::Kind::String) {
+        const std::string s = str(el);
+        Result<tuning::ScalaPitch> p = tuning::parseScalaRatio(s);
+        if (!p) r_.failValue(el, "scale pitch: " + p.error().message);
+        v.push_back(std::move(p).value());
+      } else if (k == Reader::Kind::Number) {
+        v.push_back(tuning::ScalaPitch::fromCents(r_.readDouble(el)));
+      } else {
+        r_.failHere(el, "expected a ratio string like \"5/4\" or a number of cents", ErrorCode::Type);
+      }
+    }
+    return v;
+  }
+
+  tuning::KeyboardMapping mapping(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"mapSize",      "firstKey",    "lastKey",            "middleKey",
+                                             "referenceKey", "referenceHz", "formalOctaveDegree", "mapping"};
+    tuning::KeyboardMapping k;
+    Members m(r_, at, K);
+    for (int q; (q = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(q)]);
+      switch (q) {
+        case 0: k.mapSize = i32(f); break;
+        case 1: k.firstKey = i32(f); break;
+        case 2: k.lastKey = i32(f); break;
+        case 3: k.middleKey = i32(f); break;
+        case 4: k.referenceKey = i32(f); break;
+        case 5: k.referenceHz = r_.readDouble(f); break;
+        case 6: k.formalOctaveDegree = i32(f); break;
+        case 7:
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            if (r_.peek() == Reader::Kind::Null) {
+              r_.readNull(el);
+              k.mapping.push_back(tuning::kUnmappedKey);
+            } else {
+              const int32_t e = i32(el);
+              if (e == tuning::kUnmappedKey) r_.failValue(el, "degree out of range (use null for an unmapped key)");
+              k.mapping.push_back(e);
+            }
+          }
+          break;
+      }
+    }
+    m.require({0, 1, 2, 3, 4, 5, 6, 7});
+    checkAt(at, m.start(), tuning::validateKbm(k));
+    return k;
+  }
+
+  TuningAssignment assignment(const PathSeg& at) {
+    if (r_.peek() == Reader::Kind::String) {
+      if (str(at) != "inherit") r_.failValue(at, "tuning must be \"inherit\", {\"main\": id} or {\"private\": {...}}");
+      return TuningAssignment::inherit();
+    }
+    static constexpr std::string_view K[] = {"main", "private"};
+    TuningAssignment a;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) a = TuningAssignment::mainTuning(TuningId{ref(f)});
+      if (k == 1) a = TuningAssignment::privateTuning(tuningDef(f));
+    }
+    if (m.has(0) == m.has(1))
+      json::fail(at, "needs exactly one of \"main\" and \"private\"", ErrorCode::InvalidArgument, m.start());
+    return a;
+  }
+
+  // ---- Tracks ----
+  std::vector<TrackPtr> trackArray(const PathSeg& at, TrackList list, uint32_t depth) {
+    std::vector<TrackPtr> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) v.push_back(track(PathSeg(&at, i), list, depth));
+    return v;
+  }
+
+  TrackPtr track(const PathSeg& at, TrackList list, uint32_t depth) {
+    static constexpr std::string_view K[] = {"id",     "kind",  "name",  "colour", "active",
+                                             "tuning", "mixer", "lanes", "clips",  "children"};
+    enum { kId, kKind, kName, kColour, kActive, kTuning, kMixer, kLanes, kClips, kChildren };
+    auto t = std::make_shared<Track>();
+    std::array<size_t, 10> pos{};
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case kId: t->id = TrackId{defineId(f)}; break;
+        case kKind: t->kind = static_cast<TrackKind>(name(f, kTrackKindNames, "track kind")); break;
+        case kName: t->name = str(f); break;
+        case kColour: t->colour = colour(f); break;
+        case kActive: t->active = r_.readBool(f); break;
+        case kTuning: t->tuning = assignment(f); break;
+        case kMixer: t->mixer = mixer(f); break;
+        case kLanes: t->lanes = lanes(f); break;
+        case kClips: t->clips = clips(f); break;
+        case kChildren:
+          if (depth + 1 > kMaxTrackDepth)
+            r_.failHere(f, "groups nested more than " + std::to_string(kMaxTrackDepth) + " levels deep",
+                        ErrorCode::InvalidArgument);
+          t->children = trackArray(f, TrackList::Main, depth + 1);
+          break;
+      }
+      pos[static_cast<size_t>(k)] = r_.valueStart();
+    }
+    m.require({kId, kKind, kName, kColour, kActive, kTuning, kMixer});
+    auto failKey = [&](int k, std::string msg) {
+      json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), std::move(msg), ErrorCode::InvalidArgument,
+                 pos[static_cast<size_t>(k)]);
+    };
+    const TrackKind kind = t->kind;
+    if (kind == TrackKind::Audio)
+      json::fail(PathSeg(&at, "kind"), "audio tracks are not supported yet (M6)", ErrorCode::Unsupported, pos[kKind]);
+    switch (list) {
+      case TrackList::Main:
+        if (kind != TrackKind::Midi && kind != TrackKind::Group) failKey(kKind, "must be \"midi\" or \"group\" here");
+        break;
+      case TrackList::Returns:
+        if (kind != TrackKind::Return) failKey(kKind, "must be \"return\" here");
+        break;
+      case TrackList::Master:
+        if (kind != TrackKind::Master) failKey(kKind, "must be \"master\" here");
+        break;
+    }
+    if (m.has(kChildren) && kind != TrackKind::Group) failKey(kChildren, "only groups have child tracks");
+    if (m.has(kClips) && kind != TrackKind::Midi) failKey(kClips, "only MIDI tracks hold note clips");
+    if (t->tuning.mode != TuningMode::Inherit && kind != TrackKind::Midi && kind != TrackKind::Group)
+      failKey(kTuning, "only MIDI and group tracks have a tuning");
+    const Mixer& mx = t->mixer;
+    if (mx.arm && kind != TrackKind::Midi) failKey(kMixer, "only MIDI tracks can be armed");
+    if (!mx.sends.empty() && !detail::trackHasSends(kind)) failKey(kMixer, "this track has no sends");
+    if (kind == TrackKind::Master) {
+      if (!t->active) failKey(kActive, "the master track cannot be deactivated");
+      if (mx.mute || mx.solo) failKey(kMixer, "the master track has no mute or solo");
+      if (mx.output.kind != OutputKind::Default) failKey(kMixer, "the master's output is the device (\"default\")");
+    }
+    return t;
+  }
+
+  Mixer mixer(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"volumeDb", "pan", "mute", "solo", "arm", "sends", "output"};
+    Mixer mx;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0:
+          mx.volumeDb = r_.readFloat(f);
+          check(f, detail::checkVolume(mx.volumeDb));
+          break;
+        case 1:
+          mx.pan = r_.readFloat(f);
+          check(f, detail::checkParamValue(ParamKind::TrackPan, mx.pan));
+          break;
+        case 2: mx.mute = r_.readBool(f); break;
+        case 3: mx.solo = r_.readBool(f); break;
+        case 4: mx.arm = r_.readBool(f); break;
+        case 5: mx.sends = sends(f); break;
+        case 6: mx.output = output(f); break;
+      }
+    }
+    m.require({0, 1, 2, 3, 4, 5, 6});
+    return mx;
+  }
+
+  std::vector<Send> sends(const PathSeg& at) {
+    std::vector<Send> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"target", "levelDb", "preFader"};
+      Send s;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) s.target = TrackId{ref(f)};
+        if (k == 1) {
+          s.levelDb = r_.readFloat(f);
+          check(f, detail::checkVolume(s.levelDb));
+        }
+        if (k == 2) s.preFader = r_.readBool(f);
+      }
+      m.require({0, 1, 2});
+      if (s.levelDb == kMinVolumeDb && !s.preFader)
+        json::fail(el, "a send at the default (-70 dB, post-fader) is implicit and must not be stored",
+                   ErrorCode::InvalidArgument, m.start());
+      if (!v.empty() && v.back().target >= s.target)
+        json::fail(el, "sends must be sorted by target id, one per target", ErrorCode::InvalidArgument, m.start());
+      v.push_back(s);
+    }
+    return v;
+  }
+
+  Output output(const PathSeg& at) {
+    if (r_.peek() == Reader::Kind::String) {
+      const std::string s = str(at);
+      if (s == "default") return Output{OutputKind::Default, {}};
+      if (s == "master") return Output{OutputKind::Master, {}};
+      if (s == "none") return Output{OutputKind::None, {}};
+      r_.failValue(at, "output must be \"default\", \"master\", \"none\" or {\"track\": id}");
+    }
+    static constexpr std::string_view K[] = {"track"};
+    Output o{OutputKind::Track, {}};
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) o.track = TrackId{ref(PathSeg(&at, "track"))};
+    m.require({0});
+    return o;
+  }
+
+  std::vector<LanePtr> lanes(const PathSeg& at) {
+    std::vector<LanePtr> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "param", "points"};
+      auto l = std::make_shared<AutomationLane>();
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) l->id = LaneId{defineId(f)};
+        if (k == 1) l->param = param(f);
+        if (k == 2) l->points = points(f, l->param, m.has(1));
+      }
+      m.require({0, 1, 2});
+      v.push_back(std::move(l));
+    }
+    return v;
+  }
+
+  ParamRef param(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"kind", "owner", "target"};
+    ParamRef r;
+    Members m(r_, at, K);
+    size_t targetPos = 0;
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) r.kind = static_cast<ParamKind>(name(f, kParamKindNames, "parameter kind"));
+      if (k == 1) r.owner = ref(f);
+      if (k == 2) {
+        r.target = ref(f);
+        targetPos = r_.valueStart();
+      }
+    }
+    m.require({0, 1});
+    if (r.kind == ParamKind::TrackSend) m.require({2});
+    else if (m.has(2))
+      json::fail(PathSeg(&at, "target"), "only sends have a target", ErrorCode::InvalidArgument, targetPos);
+    return r;
+  }
+
+  // Breakpoints are validated against the lane's parameter range, so "param" must come before "points".
+  std::vector<Breakpoint> points(const PathSeg& at, const ParamRef& param, bool haveParam) {
+    if (!haveParam) r_.failHere(at, "\"param\" must come before \"points\"", ErrorCode::InvalidArgument);
+    const ParamRange range = paramRange(param.kind);
+    std::vector<Breakpoint> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "tick", "value", "curve"};
+      Breakpoint b;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) b.id = BreakpointId{defineId(f)};
+        if (k == 1) b.tick = tick(f);
+        if (k == 2) {
+          b.value = r_.readFloat(f);
+          if (!detail::finiteIn(b.value, range.min, range.max)) r_.failValue(f, "value out of the parameter's range");
+        }
+        if (k == 3) {
+          b.curve = r_.readFloat(f);
+          if (!detail::finiteIn(b.curve, -1.0, 1.0)) r_.failValue(f, "curve must be in [-1, 1]");
+        }
+      }
+      m.require({0, 1, 2, 3});
+      if (!v.empty() && !detail::pointLess(v.back(), b))
+        json::fail(el, "breakpoints must be sorted by (tick, id)", ErrorCode::InvalidArgument, m.start());
+      v.push_back(b);
+    }
+    return v;
+  }
+
+  // ---- Clips and notes ----
+  std::vector<ClipSlot> clips(const PathSeg& at) {
+    std::vector<ClipSlot> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      const size_t start = r_.pos();
+      ClipPtr c = clip(el);
+      if (!v.empty() && std::pair(v.back().clip->start, v.back().id) >= std::pair(c->start, c->id))
+        json::fail(el, "clips must be sorted by (start, id)", ErrorCode::InvalidArgument, start);
+      v.push_back(ClipSlot{c->id, std::move(c)});
+    }
+    return v;
+  }
+
+  ClipPtr clip(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"id",        "name",   "colour", "start",  "length", "contentStart",
+                                             "loop",      "signature", "tuning", "active", "notes"};
+    auto c = std::make_shared<NoteClip>();
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: c->id = ClipId{defineId(f)}; break;
+        case 1: c->name = str(f); break;
+        case 2: c->colour = colour(f); break;
+        case 3: c->start = tick(f); break;
+        case 4: c->length = length(f); break;
+        case 5: c->contentStart = tick(f); break;
+        case 6: {
+          static constexpr std::string_view L[] = {"enabled", "start", "end"};
+          Members lm(r_, f, L);
+          for (int q; (q = lm.next()) >= 0;) {
+            const PathSeg g(&f, L[static_cast<size_t>(q)]);
+            if (q == 0) c->loop.enabled = r_.readBool(g);
+            if (q == 1) c->loop.start = tick(g);
+            if (q == 2) c->loop.end = tick(g);
+          }
+          lm.require({0, 1, 2});
+          checkAt(f, lm.start(), detail::checkLoop(c->loop));
+          break;
+        }
+        case 7: {
+          static constexpr std::string_view S[] = {"numerator", "denominator"};
+          Members sm(r_, f, S);
+          for (int q; (q = sm.next()) >= 0;) {
+            const PathSeg g(&f, S[static_cast<size_t>(q)]);
+            if (q == 0) c->signature.numerator = i32(g);
+            if (q == 1) c->signature.denominator = i32(g);
+          }
+          sm.require({0, 1});
+          checkAt(f, sm.start(), detail::checkSignature(c->signature));
+          break;
+        }
+        case 8: c->tuning = assignment(f); break;
+        case 9: c->active = r_.readBool(f); break;
+        case 10: c->notes = notes(f); break;
+      }
+    }
+    m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+    return c;
+  }
+
+  NoteSeq notes(const PathSeg& at) {
+    std::vector<Note> v;
+    r_.beginArray(at);
+    const size_t start = r_.valueStart();
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      const size_t noteStart = r_.pos();
+      const Note n = note(el);
+      if (Status s = validateNote(n); !s) json::fail(el, s.error().message, ErrorCode::InvalidArgument, noteStart);
+      ids_.push_back(n.id.value);
+      v.push_back(n);
+    }
+    Result<NoteSeq> seq = NoteSeq::fromNotes(std::move(v));
+    if (!seq) json::fail(at, seq.error().message, ErrorCode::InvalidArgument, start);
+    return std::move(seq).value();
+  }
+
+  Note note(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"id",       "start",           "length", "pitch",        "velocity",
+                                             "releaseVelocity", "chance", "velocityRange", "disabled"};
+    Note n;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: n.id = NoteId{ref(f)}; break;  // collected by notes() after validation
+        case 1: n.start = r_.readInt(f); break;
+        case 2: n.length = r_.readInt(f); break;
+        case 3: n.pitch = pitch(f); break;
+        case 4: n.velocity = r_.readFloat(f); break;
+        case 5: n.releaseVelocity = r_.readFloat(f); break;
+        case 6: n.chance = r_.readFloat(f); break;
+        case 7: n.velocityRange = r_.readFloat(f); break;
+        case 8:
+          if (r_.readBool(f)) n.flags |= kNoteDisabled;
+          break;
+      }
+    }
+    m.require({0, 1, 2, 3, 4});
+    return n;
+  }
+
+  tuning::PitchId pitch(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"degree", "equave", "ratio", "anchor", "anchorId", "cents", "jiObject",
+                                             "voice"};
+    enum { kDegree, kEquave, kRatio, kAnchor, kAnchorId, kCents, kJi, kVoice };
+    int32_t degree = 0, equave = 0;
+    std::optional<tuning::Rational> ratio;
+    int anchor = 0;
+    uint32_t anchorId = 0, ji = 0, voice = 0;
+    double cents = 0.0;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case kDegree: degree = i32(f); break;
+        case kEquave: equave = i32(f); break;
+        case kRatio: {
+          std::string s;
+          r_.readString(f, s);
+          ratio = parseRatioText(s);
+          if (!ratio || !ratio->isPositive()) r_.failValue(f, "ratio must be \"n/d\" with positive integers n, d");
+          break;
+        }
+        case kAnchor: anchor = name(f, kAnchorNames, "anchor"); break;
+        case kAnchorId: anchorId = u32(f); break;
+        case kCents: cents = r_.readDouble(f); break;
+        case kJi: ji = u32(f); break;
+        case kVoice: voice = u32(f); break;
+      }
+    }
+    const int kinds = int(m.has(kDegree)) + int(m.has(kRatio)) + int(m.has(kCents)) + int(m.has(kJi));
+    if (kinds != 1)
+      json::fail(at, "a pitch needs exactly one of \"degree\", \"ratio\", \"cents\" and \"jiObject\"",
+                 ErrorCode::InvalidArgument, m.start());
+    auto only = [&](int key, bool allowed, const char* owner) {
+      if (m.has(key) && !allowed)
+        json::fail(PathSeg(&at, K[static_cast<size_t>(key)]), std::string("only allowed with \"") + owner + "\"",
+                   ErrorCode::InvalidArgument, m.start());
+    };
+    only(kEquave, m.has(kDegree), "degree");
+    only(kAnchor, m.has(kRatio), "ratio");
+    only(kAnchorId, m.has(kRatio), "ratio");
+    only(kVoice, m.has(kJi), "jiObject");
+    if (m.has(kDegree)) return tuning::PitchId::fromDegree(degree, equave);
+    if (m.has(kRatio)) return tuning::PitchId::fromRatio(*ratio, static_cast<tuning::AnchorKind>(anchor), anchorId);
+    if (m.has(kCents)) return tuning::PitchId::fromCents(cents);
+    m.require({kVoice});
+    return tuning::PitchId::fromHarmonic(ji, voice);
+  }
+
+  // ---- Cross-references (after the whole project is read) ----
+  void validate(const PathSeg& root, const Project& p) {
+    std::set<ParamRef> automated;
+    auto walk = [&](auto& self, const PathSeg& listAt, const std::vector<TrackPtr>& list) -> void {
+      for (size_t i = 0; i < list.size(); ++i) {
+        const PathSeg at(&listAt, i);
+        validateTrack(at, p, *list[i], automated);
+        if (!list[i]->children.empty()) self(self, PathSeg(&at, "children"), list[i]->children);
+      }
+    };
+    walk(walk, PathSeg(&root, "tracks"), p.tracks);
+    walk(walk, PathSeg(&root, "returns"), p.returns);
+    validateTrack(PathSeg(&root, "master"), p, *p.master, automated);
+    if (Status s = detail::checkRouting(p); !s) json::fail(root, s.error().message);
+
+    std::sort(ids_.begin(), ids_.end());
+    const auto dup = std::adjacent_find(ids_.begin(), ids_.end());
+    if (dup != ids_.end()) duplicateId(root, p, *dup);
+  }
+
+  void validateTrack(const PathSeg& at, const Project& p, const Track& t, std::set<ParamRef>& automated) {
+    if (Status s = detail::checkAssignment(p, t.tuning); !s) json::fail(PathSeg(&at, "tuning"), s.error().message);
+    const PathSeg mx(&at, "mixer");
+    const PathSeg sends(&mx, "sends");
+    for (size_t i = 0; i < t.mixer.sends.size(); ++i) {
+      const Track* target = findTrackPtr(p, t.mixer.sends[i].target);
+      if (!target || target->kind != TrackKind::Return || target->id == t.id) {
+        const PathSeg el(&sends, i);
+        json::fail(PathSeg(&el, "target"), "send target must be another return track");
+      }
+    }
+    if (t.mixer.output.kind == OutputKind::Track) {
+      const Track* g = findTrackPtr(p, t.mixer.output.track);
+      if (!g || g->kind != TrackKind::Group || g->id == t.id)
+        json::fail(PathSeg(&mx, "output"), "output target must be another group track");
+    }
+    const PathSeg lanes(&at, "lanes");
+    for (size_t i = 0; i < t.lanes.size(); ++i) {
+      const PathSeg la(&lanes, i);
+      const AutomationLane& l = *t.lanes[i];
+      if (Status s = detail::checkLaneParam(p, t, l.param); !s) json::fail(PathSeg(&la, "param"), s.error().message);
+      if (!automated.insert(l.param).second)
+        json::fail(PathSeg(&la, "param"), "this parameter already has an automation lane");
+    }
+    const PathSeg clips(&at, "clips");
+    for (size_t i = 0; i < t.clips.size(); ++i) {
+      if (Status s = detail::checkAssignment(p, t.clips[i].clip->tuning); !s) {
+        const PathSeg cl(&clips, i);
+        json::fail(PathSeg(&cl, "tuning"), s.error().message);
+      }
+    }
+  }
+
+  [[noreturn]] void duplicateId(const PathSeg& root, const Project& p, uint32_t id) {
+    // Find where it is used (file order of the containers); notes are reported by their clip.
+    std::vector<std::string> where;
+    auto see = [&](uint32_t v, const PathSeg& at) {
+      if (v == id && where.size() < 2) where.push_back(json::renderPath(at));
+    };
+    const PathSeg tuns(&root, "tunings");
+    for (size_t i = 0; i < p.tunings->size(); ++i) see((*p.tunings)[i]->id.value, PathSeg(&tuns, i));
+    const PathSeg locs(&root, "locators");
+    for (size_t i = 0; i < p.locators->size(); ++i) see((*p.locators)[i].id.value, PathSeg(&locs, i));
+    auto walkTrack = [&](auto& self, const PathSeg& at, const Track& t) -> void {
+      see(t.id.value, at);
+      const PathSeg lanes(&at, "lanes");
+      for (size_t i = 0; i < t.lanes.size(); ++i) {
+        const PathSeg la(&lanes, i);
+        see(t.lanes[i]->id.value, la);
+        const PathSeg pts(&la, "points");
+        for (size_t j = 0; j < t.lanes[i]->points.size(); ++j) see(t.lanes[i]->points[j].id.value, PathSeg(&pts, j));
+      }
+      const PathSeg clips(&at, "clips");
+      for (size_t i = 0; i < t.clips.size(); ++i) {
+        const PathSeg cl(&clips, i);
+        see(t.clips[i].id.value, cl);
+        const PathSeg notes(&cl, "notes");
+        for (const Note& n : t.clips[i].clip->notes) see(n.id.value, notes);
+      }
+      const PathSeg kids(&at, "children");
+      for (size_t i = 0; i < t.children.size(); ++i) self(self, PathSeg(&kids, i), *t.children[i]);
+    };
+    const PathSeg tracks(&root, "tracks");
+    for (size_t i = 0; i < p.tracks.size(); ++i) walkTrack(walkTrack, PathSeg(&tracks, i), *p.tracks[i]);
+    const PathSeg rets(&root, "returns");
+    for (size_t i = 0; i < p.returns.size(); ++i) walkTrack(walkTrack, PathSeg(&rets, i), *p.returns[i]);
+    walkTrack(walkTrack, PathSeg(&root, "master"), *p.master);
+    std::string msg = "id " + std::to_string(id) + " is used by more than one entity";
+    if (where.size() == 2) msg = where[1] + ": " + msg + " (also " + where[0] + ")";
+    else if (!where.empty()) msg = where[0] + ": " + msg;
+    throw json::JsonFail{ErrorCode::InvalidArgument, "", std::move(msg), std::string_view::npos};
+  }
+
+  // ---- View state ----
+  // Read during the main pass; ids are checked against the finished project afterwards.
+  struct RawViewEntry {
+    uint32_t id;
+    bool flag;
+    int32_t height;
+    size_t pos;
+  };
+  struct RawView {
+    std::vector<RawViewEntry> tracks, lanes;
+  };
+
+  RawView view(const PathSeg& at) {
+    RawView v;
+    static constexpr std::string_view K[] = {"tracks", "lanes"};
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg list(&at, K[static_cast<size_t>(k)]);
+      std::vector<RawViewEntry>& out = k == 0 ? v.tracks : v.lanes;
+      r_.beginArray(list);
+      for (size_t i = 0; r_.nextElement(list); ++i) {
+        const PathSeg el(&list, i);
+        static constexpr std::string_view T[] = {"id", "folded", "height"};
+        static constexpr std::string_view L[] = {"id", "visible", "height"};
+        const std::span<const std::string_view> names = k == 0 ? std::span<const std::string_view>(T)
+                                                               : std::span<const std::string_view>(L);
+        RawViewEntry e{0, false, 0, r_.pos()};
+        Members em(r_, el, names);
+        for (int q; (q = em.next()) >= 0;) {
+          const PathSeg f(&el, names[static_cast<size_t>(q)]);
+          if (q == 0) e.id = ref(f);
+          if (q == 1) e.flag = r_.readBool(f);
+          if (q == 2) {
+            e.height = i32(f);
+            if (e.height < 0) r_.failValue(f, "height must be >= 0 (0 = the theme's default)");
+          }
+        }
+        em.require({0, 1, 2});
+        out.push_back(e);
+      }
+    }
+    m.require({0, 1});
+    return v;
+  }
+
+  ViewState resolveView(const PathSeg& at, const RawView& raw, const Project& p) {
+    std::vector<uint32_t> trackIds, laneIds;
+    forEachTrack(p, [&](const Track& t, const Track*) {
+      trackIds.push_back(t.id.value);
+      for (const LanePtr& l : t.lanes) laneIds.push_back(l->id.value);
+    });
+    std::sort(trackIds.begin(), trackIds.end());
+    std::sort(laneIds.begin(), laneIds.end());
+    ViewState v;
+    for (int k = 0; k < 2; ++k) {
+      const PathSeg list(&at, k == 0 ? "tracks" : "lanes");
+      const std::vector<RawViewEntry>& entries = k == 0 ? raw.tracks : raw.lanes;
+      const std::vector<uint32_t>& ids = k == 0 ? trackIds : laneIds;
+      for (size_t i = 0; i < entries.size(); ++i) {
+        const RawViewEntry& e = entries[i];
+        const PathSeg el(&list, i);
+        if (!std::binary_search(ids.begin(), ids.end(), e.id))
+          json::fail(PathSeg(&el, "id"), k == 0 ? "no track has this id" : "no automation lane has this id",
+                     ErrorCode::InvalidArgument, e.pos);
+        const bool fresh = k == 0 ? v.tracks.emplace(TrackId{e.id}, TrackView{e.flag, e.height}).second
+                                  : v.lanes.emplace(LaneId{e.id}, LaneView{e.flag, e.height}).second;
+        if (!fresh) json::fail(el, "duplicate view entry for this id", ErrorCode::InvalidArgument, e.pos);
+      }
+    }
+    return v;
+  }
+
+  Reader r_;
+  std::vector<uint32_t> ids_;
+};
+
+// ---- Errors ------------------------------------------------------------------------------------------------------
+
+Error toError(const json::JsonFail& f, std::string_view text, std::string_view fileName, bool positionsValid) {
+  Error e;
+  e.code = f.code;
+  e.message = f.path.empty() ? f.message : f.path + ": " + f.message;
+  e.location.file = std::string(fileName);
+  if (positionsValid && f.pos != std::string_view::npos && f.pos <= text.size()) {
+    uint32_t line = 1, col = 1;
+    for (size_t i = 0; i < f.pos; ++i) {
+      if (text[i] == '\n') {
+        ++line;
+        col = 1;
+      } else if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) {
+        ++col;  // count code points, not UTF-8 continuation bytes
+      }
+    }
+    e.location.line = line;
+    e.location.col = col;
+  }
+  return e;
+}
+
+// schemaVersion: the first member in files we write; otherwise found by skipping the other members.
+int64_t readSchemaVersion(std::string_view text) {
+  Reader r(text);
+  const PathSeg root;
+  r.beginObject(root);
+  std::string_view k;
+  while (r.nextKey(root, k)) {
+    if (k == "schemaVersion") return r.readInt(PathSeg(&root, "schemaVersion"));
+    const std::string key(k);
+    r.skipValue(PathSeg(&root, key));
+  }
+  json::fail(root, "missing key \"schemaVersion\"", ErrorCode::InvalidArgument, 0);
+}
+
+}  // namespace
+
+std::span<const Migration> builtinMigrations() noexcept { return {}; }
+
+Result<std::string> serializeProject(const Project& p, const ViewState& view) {
+  std::string out;
+  size_t notes = 0;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const ClipSlot& c : t.clips) notes += c.clip->notes.size();
+  });
+  out.reserve(4096 + notes * 112);
+  try {
+    Encoder e(out);
+    e.project(p, view);
+  } catch (const json::JsonFail& f) {
+    return Error{f.code, f.path + ": " + f.message, {}};
+  } catch (const std::bad_alloc&) {
+    return Error{ErrorCode::Unknown, "out of memory while saving the project", {}};
+  }
+  return out;
+}
+
+Result<LoadedProject> parseProject(std::string_view text, const LoadOptions& options) {
+  if (text.size() >= 3 && text.substr(0, 3) == "\xEF\xBB\xBF") text.remove_prefix(3);
+  std::string migrated;
+  int64_t version = 0;
+  try {
+    version = readSchemaVersion(text);
+    if (version > kSchemaVersion) {
+      return Error{ErrorCode::Unsupported,
+                   "$.schemaVersion: the project was saved by a newer pqdaw (schema " + std::to_string(version) +
+                       "; this build reads up to " + std::to_string(kSchemaVersion) + ")",
+                   {std::string(options.fileName), 0, 0}};
+    }
+    if (version < kSchemaVersion) {
+      // Precise syntax errors first (positions in the original text), then the generic DOM migration.
+      Reader syntax(text);
+      const PathSeg root;
+      syntax.skipValue(root);
+      syntax.expectEnd(root);
+      nlohmann::json doc = nlohmann::json::parse(text.begin(), text.end());
+      for (int64_t v = version; v < kSchemaVersion; ++v) {
+        const Migration* step = nullptr;
+        for (const Migration& m : options.migrations)
+          if (m.from == v && m.fn) step = &m;
+        if (!step)
+          return Error{ErrorCode::Unsupported, "$.schemaVersion: no migration from schema version " + std::to_string(v),
+                       {std::string(options.fileName), 0, 0}};
+        if (Status s = step->fn(doc); !s)
+          return Error{s.error().code,
+                       "$: migrating schema " + std::to_string(v) + " to " + std::to_string(v + 1) + " failed: " +
+                           s.error().message,
+                       {std::string(options.fileName), 0, 0}};
+        doc["schemaVersion"] = v + 1;
+      }
+      migrated = doc.dump(2);
+    }
+  } catch (const json::JsonFail& f) {
+    return toError(f, text, options.fileName, true);
+  } catch (const std::exception& e) {
+    return Error{ErrorCode::Parse, std::string("$: ") + e.what(), {std::string(options.fileName), 0, 0}};
+  }
+
+  const bool wasMigrated = version < kSchemaVersion;
+  const std::string_view body = wasMigrated ? std::string_view(migrated) : text;
+  try {
+    Decoder d(body);
+    LoadedProject out = d.project();
+    out.fileSchemaVersion = static_cast<int32_t>(version);
+    return out;
+  } catch (const json::JsonFail& f) {
+    return toError(f, body, options.fileName, !wasMigrated);
+  } catch (const std::bad_alloc&) {
+    return Error{ErrorCode::Unknown, "out of memory while loading the project", {std::string(options.fileName), 0, 0}};
+  }
+}
+
+}  // namespace pq::doc

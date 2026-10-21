@@ -271,7 +271,7 @@ std::vector<Case> cases() {
                  TuningSlot s{f.store.ids().tuning(), "22-EDO", {}, {}};
                  s.def.system = pq::tuning::Edo::make(22).value();
                  return AddTuning{s};
-               }, S, [](Fixture& f, const ChangeSet&) { CHECK(f.doc().tunings->size() == 4); }});
+               }, S, [](Fixture& f, const ChangeSet&) { CHECK(f.doc().tunings->size() == 5); }});
   c.push_back({"RemoveTuning (drops its lanes)", [](Fixture& f) -> Command { return RemoveTuning{f.tMos}; }, S,
                [](Fixture& f, const ChangeSet& cs) {
                  CHECK(contains(cs.lanes, f.bassGenLane));
@@ -304,6 +304,53 @@ std::vector<Case> cases() {
                }, S, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(contains(cs.lanes, f.bassGenLane));
                  CHECK(f.track(f.bass).lanes.empty());
+               }});
+  // Scale (T3.5): reference = Param; pitches / key mapping = discrete shape (Structural); description = Meta.
+  c.push_back({"SetTuningDef scale reference (param)", [](Fixture& f) -> Command {
+                 TuningDef d = findTuning(f.doc(), f.tScale)->def;
+                 d.referenceHz = 300.0;
+                 return SetTuningDef{f.tScale, d};
+               }, P, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::tuning(ParamKind::TuningReference, f.tScale)});
+                 CHECK(cs.paramOnly());
+               }});
+  c.push_back({"SetTuningDef scale pitches (structural)", [](Fixture& f) -> Command {
+                 TuningDef d = findTuning(f.doc(), f.tScale)->def;
+                 std::get<ScaleDef>(d.system).scale.pitches[0] = pq::tuning::ScalaPitch::fromRatio({10, 9});
+                 return SetTuningDef{f.tScale, d};
+               }, S, noCheck});
+  c.push_back({"SetTuningDef scale size (structural)", [](Fixture& f) -> Command {
+                 TuningDef d = findTuning(f.doc(), f.tScale)->def;
+                 auto& p = std::get<ScaleDef>(d.system).scale.pitches;
+                 p.erase(p.begin());
+                 return SetTuningDef{f.tScale, d};
+               }, S, noCheck});
+  c.push_back({"SetTuningDef scale key mapping (structural)", [](Fixture& f) -> Command {
+                 TuningDef d = findTuning(f.doc(), f.tScale)->def;
+                 std::get<ScaleDef>(d.system).mapping.reset();
+                 return SetTuningDef{f.tScale, d};
+               }, S, noCheck});
+  c.push_back({"SetTuningDef scale description (meta)", [](Fixture& f) -> Command {
+                 TuningDef d = findTuning(f.doc(), f.tScale)->def;
+                 std::get<ScaleDef>(d.system).scale.description = "renamed";
+                 return SetTuningDef{f.tScale, d};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params.empty());
+                 CHECK(cs.tunings == std::vector<TuningId>{f.tScale});
+               }});
+  c.push_back({"SetTuningDef scale description + reference (meta + param)", [](Fixture& f) -> Command {
+                 TuningDef d = findTuning(f.doc(), f.tScale)->def;
+                 std::get<ScaleDef>(d.system).scale.description = "renamed";
+                 d.referenceHz = 300.0;
+                 return SetTuningDef{f.tScale, d};
+               }, static_cast<uint8_t>(M | P), noCheck});
+  c.push_back({"SetTuningDef EDO -> scale (kind change, structural)", [](Fixture& f) -> Command {
+                 return SetTuningDef{f.t31, doctest_fixture::fixtureScaleDef()};
+               }, S, noCheck});
+  c.push_back({"SetTuningParam scale reference", [](Fixture& f) -> Command {
+                 return SetTuningParam{f.tScale, ParamKind::TuningReference, 330.0};
+               }, P, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::tuning(ParamKind::TuningReference, f.tScale)});
                }});
   c.push_back({"SetTuningParam reference", [](Fixture& f) -> Command {
                  return SetTuningParam{f.t31, ParamKind::TuningReference, 440.0};
@@ -460,6 +507,21 @@ TEST_CASE("commands: invalid commands fail and leave the document untouched") {
     bad.push_back(AddAutomationLane{f.bass, std::make_shared<const AutomationLane>(l)});
     l.param = ParamRef::track(ParamKind::TrackSolo, f.lead);  // not automatable
     bad.push_back(AddAutomationLane{f.lead, std::make_shared<const AutomationLane>(l)});
+  }
+  {
+    // Scale definitions: not an EDO (no equave param), invalid UTF-8 description, no pitches, unmapped .kbm
+    // reference key.
+    bad.push_back(SetTuningParam{f.tScale, ParamKind::TuningEquave, 1201.0});
+    const TuningDef good = findTuning(f.doc(), f.tScale)->def;
+    TuningDef d = good;
+    std::get<ScaleDef>(d.system).scale.description = "caf\xE9";  // Latin-1, not UTF-8
+    bad.push_back(SetTuningDef{f.tScale, d});
+    d = good;
+    std::get<ScaleDef>(d.system).scale.pitches.clear();
+    bad.push_back(SetTuningDef{f.tScale, d});
+    d = good;
+    std::get<ScaleDef>(d.system).mapping->mapping[1] = pq::tuning::kUnmappedKey;  // the entry key 69 uses
+    bad.push_back(SetTuningDef{f.tScale, d});
   }
   for (const Command& c : bad) {
     CAPTURE(std::string(label(c)));

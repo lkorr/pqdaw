@@ -18,7 +18,8 @@ class Edo {
 public:
   // n ≥ 1, equave > 1. Errors: InvalidArgument.
   static Result<Edo> make(uint32_t n, const Rational& equave = Rational{2});
-  // Equave given in cents (> 0, finite), e.g. a stretched octave. Errors: InvalidArgument.
+  // Equave given in cents (> 0, finite), e.g. a stretched octave. equaveCents() returns exactly this value.
+  // Errors: InvalidArgument.
   static Result<Edo> makeCents(uint32_t n, double equaveCents);
   // 12-EDO of 2/1, the default tuning.
   static Edo standard12() noexcept;
@@ -40,7 +41,7 @@ public:
   friend bool operator==(const Edo&, const Edo&) noexcept = default;
 
 private:
-  Edo(uint32_t n, double log2Equave, std::optional<Rational> ratio) noexcept;
+  Edo(uint32_t n, double log2Equave, std::optional<Rational> ratio, double equaveCents) noexcept;
 
   uint32_t n_ = 12;
   bool hasEquaveRatio_ = true;

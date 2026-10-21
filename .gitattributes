@@ -7,3 +7,5 @@
 *.otf binary
 # Scala archive fixtures: keep the original bytes (CRLF, LF-only, Latin-1, no final newline are test cases)
 tests/tuning/fixtures/scl/*.scl -text
+# Project-file fixtures: byte-exact goldens (and a CRLF hand-edited file)
+tests/document/fixtures/**/*.pqd -text

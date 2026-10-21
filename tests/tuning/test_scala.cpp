@@ -450,3 +450,43 @@ TEST_CASE("kbm: errors and round trip") {
   bad.mapping[9] = kUnmappedKey;  // reference key 69 = entry 9
   CHECK_FALSE(writeKbm(bad).ok());
 }
+
+TEST_CASE("scala: parseScalaRatio reads one ratio exactly like a .scl pitch line (T3.5)") {
+  auto r = parseScalaRatio("10/8");
+  REQUIRE(r.ok());
+  CHECK(r->kind == ScalaPitch::Kind::Ratio);
+  CHECK(r->ratio == Rational(5, 4));
+  r = parseScalaRatio("3");
+  REQUIRE(r.ok());
+  CHECK(r->ratio == Rational(3));
+  r = parseScalaRatio("00123456789012345678901234/98765432109876543210");
+  REQUIRE(r.ok());
+  CHECK(r->kind == ScalaPitch::Kind::LargeRatio);
+  CHECK(r->largeNum == "123456789012345678901234");
+  CHECK(r->largeDen == "98765432109876543210");
+  const auto parsed = parseScl("x\n1\n123456789012345678901234/98765432109876543210\n");
+  REQUIRE(parsed.ok());
+  CHECK(*r == parsed->pitches[0]);
+  CHECK(r->cents == parsed->pitches[0].cents);
+  for (const char* bad : {"", "/", "5/", "/4", "-5/4", "+5/4", "5/4 ", " 5/4", "5.0", "5/4/3", "0/1", "1/0", "a/b"}) {
+    CAPTURE(bad);
+    CHECK_FALSE(parseScalaRatio(bad).ok());
+  }
+}
+
+TEST_CASE("scala: validateKbm makes the checks writeKbm makes") {
+  KeyboardMapping k = KeyboardMapping::linear();
+  CHECK(validateKbm(k).ok());
+  k.firstKey = 100;
+  k.lastKey = 10;
+  CHECK_FALSE(validateKbm(k).ok());
+  CHECK_FALSE(writeKbm(k).ok());
+  k = KeyboardMapping::linear();
+  k.mapSize = 2;
+  k.mapping = {0, kUnmappedKey};
+  k.middleKey = 60;
+  k.referenceKey = 61;
+  CHECK_FALSE(validateKbm(k).ok());
+  k.referenceKey = 62;
+  CHECK(validateKbm(k).ok());
+}
