@@ -14,7 +14,7 @@ This document fixes the module layout and the interfaces between modules so that
    │  views  │ (T3.7)    │            │  engine  │   │  io    │ (inside engine/ for now: audio + MIDI devices)
    └──┬───┬──┘           │            └────┬─────┘   └────────┘
       │   └──────────┐   │                 ├────────────┐
-      ▼              ▼   ▼                 │            ▼
+      ▼              ▼   ▼                 │            ▲
    ┌─────────┐     ┌──────────┐            │        ┌───────┐
    │   ui    │     │ document │            │        │  jit  │
    └────┬────┘     └────┬─────┘            ▼        └───┬───┘
@@ -32,7 +32,7 @@ This document fixes the module layout and the interfaces between modules so that
    └──────────────────────────────────────────────────────┘
 ```
 
-Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (a wall-clock `SimulatedTransport` until T3.17 puts it over the engine). `app` depends on `views` + `engine`.
+Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `jit` sits above `engine` (T1b.1): it produces `engine::ProgramImage`s, so it includes engine headers; the engine never includes `jit` — whoever owns the compiler worker (the app) hands compiled images to the engine (QUESTIONS Q?-T1b.1-a). `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (a wall-clock `SimulatedTransport` until T3.17 puts it over the engine). `app` depends on `views` + `engine`.
 
 | Module | CMake target | Namespace | Contents |
 |---|---|---|---|
@@ -40,7 +40,7 @@ Arrows point at dependencies. A module may only include headers from modules bel
 | `src/tuning` | `pq_tuning` | `pq::tuning` | EDO, MOS (port of mos-explorer), Scala, JI (ratios, monzos, naming), pitch identities, resolution to Hz, the tuning-as-signal coefficient form |
 | `src/dsp` | `pq_dsp` | `pq::dsp` | Native leaf-atom kernels (scalar + SIMD), FFT, analysers ported from PQ Meter (spectrum grid, NSDF pitch, LUFS…), sample-rate conversion, warp engines later |
 | `src/graph` | `pq_graph` | `pq::graph` | Patch IR, patch-language parser/printer, inference (rate/kind/poly/width), optimiser, scheduler, `Program` description (the interpreter backend is in `engine`: it builds a ProgramImage) |
-| `src/jit` | `pq_jit` | `pq::jit` | LLVM IR generation from a schedule, ORC LLJIT, AOT compilation of `stdlib/`, compile cache |
+| `src/jit` | `pq_jit` | `pq::jit` | LLVM IR generation from a schedule into an `engine::ProgramImage` (depends on `engine`), ORC LLJIT, AOT compilation of `stdlib/`, compile cache |
 | `src/engine` | `pq_engine` | `pq::engine` | Audio thread runtime: ProgramImage ABI, interpreter backend, Program execution, voice allocation, transport, hot swap + state transfer, parameter blocks, taps for meters, audio device I/O (RtAudio), MIDI I/O, offline renderer |
 | `src/document` (headers `pq/document/`) | `pq_doc` | `pq::doc` | Immutable project model (tracks, clips, notes, devices, tunings, automation), commands, undo/redo, serialization (JSON + `.pqp`), project → graph lowering |
 | `src/ui` | `pq_ui` | `pq::ui` | Window (SDL3), Vulkan renderer, draw lists (ImDrawVert-compatible), text (FreeType/HarfBuzz), widget toolkit, theme tokens, offscreen screenshot path |
@@ -131,11 +131,19 @@ namespace pq::graph {
   Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
 }
 
-// jit
+// jit (pq/jit/compiler.h, T1b.1): the LLVM backend: same ProgramImage ABI and results as the interpreter (bit-identical
+// with CompileOptions::contract off; ≤ 5.4e-7 on the corpus with fmul+fadd contraction on, the default). One generated
+// function per stage; element-wise runs fused into loops (8 frames per <8 x float> for global ops, one frame of 8 voices
+// for voice ops; long runs interleave 8 independent chunks per iteration); per-sample loops, Control regions and solve
+// bodies inline, including the simple stateful atoms; delay lines, wavetable, noise, shaper, sample_* and stateful
+// atoms in block regions call the dsp kernels; exact transcendentals call the kernels' own CRT/SVML functions.
+// Host CPU target (AVX-512 where present), a light IR pipeline by default (src/jit/src/codegen.h, compiler.cpp).
 namespace pq::jit {
-  class Compiler {                                 // one per process; owns LLJIT
+  class Compiler {                                 // one per process; owns LLJIT; images may outlive it
   public:
-    Result<std::unique_ptr<ProgramImage>> compile(const graph::Schedule&, const CompileOptions&);
+    static Result<std::unique_ptr<Compiler>> create();
+    Result<std::unique_ptr<engine::ProgramImage>> compile(const graph::Schedule&, const CompileOptions& = {},
+                                                          CompileStats* = nullptr);  // not RT-safe
   };
 }
 

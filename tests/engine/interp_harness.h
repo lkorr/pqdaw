@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -353,15 +354,19 @@ struct InterpRun {
   std::string error;
 };
 
-// Interpreter streams for `frames` samples in blocks of `block`.
-inline InterpRun runInterp(const Setup& st, uint32_t frames, uint32_t block, uint32_t maxBlock = 1024) {
+// Builds the image a run drives: the interpreter by default; T1b's JIT tests pass their compiler here.
+using ImageBuilder = std::function<pq::Result<std::unique_ptr<eng::ProgramImage>>(const Schedule&, const eng::InterpretOptions&)>;
+
+// Interpreter (or `build`'s) streams for `frames` samples in blocks of `block`.
+inline InterpRun runInterp(const Setup& st, uint32_t frames, uint32_t block, uint32_t maxBlock = 1024,
+                           const ImageBuilder& build = {}) {
   const Compiled& c = *st.c;
   InterpRun res;
   eng::InterpretOptions io;
   io.maxBlockFrames = maxBlock;
   io.maxVoiceGroups = std::max<uint32_t>(1, (st.voices + 7) / 8);
   io.resources = &tables().resources;
-  auto built = eng::buildInterpreted(c.sched, io);
+  auto built = build ? build(c.sched, io) : eng::buildInterpreted(c.sched, io);
   if (!built.ok()) {
     res.error = built.error().message;
     return res;

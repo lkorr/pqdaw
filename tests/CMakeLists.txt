@@ -143,6 +143,13 @@ pq_add_test(pq_tests_engine
     engine/test_voices.cpp
   DEPS pq_engine)
 
+# jit (T1b.1): the LLVM backend against the interpreter and the reference evaluator over the T1.7 corpus, plus the
+# ProgramImage contract cases and compile times.
+pq_add_test(pq_tests_jit
+  SOURCES
+    jit/test_jit.cpp
+  DEPS pq_jit)
+
 pq_add_test(pq_tests_dsp
   SOURCES
     dsp/test_atoms_math_logic.cpp
