@@ -61,7 +61,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - `UiScale` from `SDL_GetWindowDisplayScale`, updated on `DISPLAY_SCALE_CHANGED`. Layout units are logical px snapped to device px. Font roles resolve to `round(role·scale)` integer-px hinted fonts. Line widths and feathers stay in device px. Screenshot `--scale`.
   - Accept: `text` and `test-pattern` goldens at scale 1.0/1.25/1.5/2.0. A scale change at runtime re-renders without restart (scripted window test). No blurry glyphs: every glyph quad lands on integer device pixels (test).
 
-- [~] **T0.7-fix1 Partial redraw** *(worker Y, branch task/T0.7-fix1-partial-redraw)* (`ui`, `app`). Depends on: T0.7. Before T3.1's damage test is relied on.
+- [x] **T0.7-fix1 Partial redraw** *(partial redraw; see PROGRESS)* (`ui`, `app`). Depends on: T0.7. Before T3.1's damage test is relied on.
   - Persistent colour target (LOAD); damage rects → scissored re-record of intersecting commands → copy to swapchain image (or `VK_KHR_incremental_present`). Draw-list chunks per damage region so unchanged regions aren't rebuilt.
   - Accept: a 2 px-wide animated playhead over the `lines` scene redraws ≤ 2% of the pixels per frame (GPU timestamp or fragment count). UI-thread CPU per frame < 25% of a full redraw. Golden identical to the full-redraw path after 100 random damage sequences.
 
