@@ -222,7 +222,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   3. A mono signal into a wider declared bound stays mono (broadcast is free); `channel(x, i)` of a mono x is x. A root `out … stereo` may therefore be typed mono: the engine broadcasts.
   4. Callee `param`s accept any rate and poly (they are modulation targets) but keep their declared kind and mono width: a stereo signal into a mono param is an error rather than making the instance stereo.
   5. Every stateful atom outputs audio, even `samplehold`/`latch` of param-rate inputs (which could stay param); cheap to refine later.
-  6. Units vs durations: durations are seconds in the language (Q14), but a literal `5smp` is normalised to the number 5 (samples), so `delay(x, 5smp, 1s)` would mean 5 s. T1.4 should convert `smp` literals to seconds (`/ sr`) where they meet a seconds input, or reject them there. → Handled by T1.4: Q?-T1.4-b.
+  6. Units vs durations: durations are seconds in the language (Q14), but a literal `5smp` is normalised to the number 5 (samples), so `delay(x, 5smp, 1s)` would mean 5 s. T1.4 should convert `smp` literals to seconds (`/ sr`) where they meet a seconds input, or reject them there. → Handled by T1.4: Q35.
 
 ## Q32 · 2026-10-21 · T3.5 · Project file choices (Scale in TuningDef, reader, strictness)
 - Context: T3.5 adds Scale to `TuningDef` and fixes the `project.pqd` format (schemaVersion 1). These choices are not settled by SPEC §12 or TASKS; each is local to `src/document` (and one small `tuning` change), and every format change from here on needs a schema bump plus a migration.
@@ -254,7 +254,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: as listed (most reversible: pure functions, no stored data depends on them).
 - Status: open
 
-## Q?-T1.4-a · 2026-10-21 · T1.4 · How exact must the optimiser be? (signed zeros, NaN order, voice reducers)
+## Q34 · 2026-10-21 · T1.4 · How exact must the optimiser be? (signed zeros, NaN order, voice reducers)
 - Context: TASKS T1.4 lists "×1, +0, ×0 when the other side is finite"; the JIT policy (TASKS T1b) allows `contract` and `afn` but not `nnan`/`ninf`, and says nothing about `nsz` (no signed zeros).
 - Choices (all in `src/graph/src/optimise.cpp`, documented in `pq/graph/optimise.h`):
   1. **No nsz.** `x + (−0) → x` and `x − (+0) → x` always; `x + (+0)` / `x − (−0)` only when x can never be −0 (a small fact analysis: literals, phasor, gate_to_real, abs, clip with non-negative literal bounds, sums/products of such values). So `param + 0` stays an add (it is param rate, so it costs one op per block). `x · (±0) → ±0` only when x is provably finite AND ≥ +0 (otherwise the zero's sign, or NaN for an infinite x, would change).
@@ -266,7 +266,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: A (reversible: adding nsz is a few lines in `simplify()` behind an option).
 - Status: open
 
-## Q?-T1.4-b · 2026-10-21 · T1.4 · Where durations become samples, and `smp` literals (resolves Q30.6)
+## Q35 · 2026-10-21 · T1.4 · Where durations become samples, and `smp` literals (resolves Q30.6)
 - Context: kernel_map.h marks delay `time`, timer `dur` and pulse `period` as `InputSeconds` ("· sr inserted by the compiler"); Q30.6 asked T1.4 to convert or reject `smp` literals meeting a seconds input.
 - Choice: `optimise()` inserts the conversion as an ordinary `mul(x, sr)` node in front of every InputSeconds input and sets `TypedPatch::durationsInSamples`; folding then turns a const duration into a sample count (with a known sample rate), and a param duration stays a param-rate multiply (once per block). A literal written in `smp` that feeds such an input directly is already in samples and is wired as is (exact; no `/ sr · sr` round trip). An `smp` literal into a delay's `max` (InitMaxDelaySeconds, consumed by the builder as ceil(max · sr)) becomes seconds (n / sr) when the sample rate is known; the builder's ceil can then only round up by one frame. Without a known sample rate it stays as written and T1.7 must read its unit. An `smp` literal that goes through arithmetic first (`5smp * 2`) has lost its unit (the language has no dimensions) and is read as seconds.
 - Options: A) as above; B) reject `smp` literals at seconds inputs (simpler, but `delay(x, 1smp, …)` is a natural way to write a one-sample delay line); C) T1.7 does the lowering (then nothing folds or hoists it).

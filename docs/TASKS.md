@@ -123,11 +123,11 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Rate, kind, poly and width inference with the upper-bound semantics. Poly→global defaults to sum. Explicit conversions are required.
   - Accept: table-driven tests (inputs → inferred types) for 40+ cases, including modulation wires raising an unmodulated `param` input to `audio`, and poly→global summing.
 
-- [~] **T1.4 Optimiser** *(worker R, branch task/T1.4-optimiser)* (`graph`). Depends on: T1.3.
+- [x] **T1.4 Optimiser** *(399395f)* (`graph`). Depends on: T1.3.
   - Constant folding (never `param`), DCE, CSE, algebraic simplification (×1, +0, ×0 when the other side is finite), and hoisting param-rate subexpressions out of audio-rate paths.
   - Accept: tests on before/after IR. A test proves `tan(π·cutoff/sr)` is hoisted to param rate when cutoff is unmodulated, and stays audio-rate when it is modulated.
 
-- [ ] **T1.5 Scheduler** (`graph`). Depends on: T1.4.
+- [~] **T1.5 Scheduler** *(worker W, branch task/T1.5-scheduler)* (`graph`). Depends on: T1.4.
   - Topological order, Tarjan SCCs, explicit-delay feedback handled, a zero-delay cycle outside `solve` rejected (text) or given an inserted `z1` plus a warning (visual mode flag). Block regions: per-sample for feedback SCCs, blocks elsewhere. Buffer liveness and reuse. State layout keyed by NodeId with type tags.
   - Accept: tests on schedule structure. The scratch-buffer count for a 100-node chain is ≤ 3. The state layout for an unchanged node is identical across reschedules.
 
