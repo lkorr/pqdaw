@@ -174,14 +174,19 @@ public:
   std::span<const DrawCmd> commands() const noexcept { return cmd_.span(); }
   bool empty() const noexcept { return idx_.size() == 0; }
 
-private:
-  struct Span {
+  // Same as primReserve, but hands back raw write pointers and the base vertex index instead of going through
+  // primWriteVtx/primWriteIdx. Hot primitives (lines.h, text.h) write through these locals: MSVC does no
+  // type-based alias analysis, so every store through the member write pointers forces a reload of the
+  // pointer itself and the writes serialise through store-to-load forwarding (measured ~3x slower).
+  struct PrimSpan {
     Vertex* v;
     uint32_t* i;
     uint32_t base;  // index of v[0]
   };
+  PrimSpan primReserveSpan(uint32_t idxCount, uint32_t vtxCount);
+
+private:
   void beginCmd();
-  Span reserve(uint32_t idxCount, uint32_t vtxCount);
   // Axis-aligned quad p0 (top-left) → p2 (bottom-right); colours clockwise from top-left.
   void addQuad(Vec2 p0, Vec2 p2, Vec2 uv0, Vec2 uv2, Rgba c0, Rgba c1, Rgba c2, Rgba c3);
   void addConvexAA(const Vec2* pts, const Rgba* cols, uint32_t n);

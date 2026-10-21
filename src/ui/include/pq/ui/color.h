@@ -34,6 +34,28 @@ inline Rgba mulAlpha(Rgba c, float k) noexcept {
   return withAlpha(c, static_cast<uint32_t>(a + 0.5f));
 }
 
+// The signal-display colour helpers below are PQ Meter's (src/modules/spectrum.cpp), with its exact rounding.
+
+// Alpha replaced by a in [0, 1] (rounded), rather than scaled (spectrum.cpp setAlpha).
+inline Rgba setAlpha(Rgba c, float a) noexcept {
+  return withAlpha(c, static_cast<uint32_t>(std::clamp(a, 0.0f, 1.0f) * 255.0f + 0.5f));
+}
+
+// RGB multiplied by k (truncated, clamped to 0..255); alpha unchanged (spectrum.cpp scaleRgb).
+inline Rgba scaleRgb(Rgba c, float k) noexcept {
+  auto ch = [k](uint32_t v) { return static_cast<uint32_t>(std::clamp(static_cast<float>(v) * k, 0.0f, 255.0f)); };
+  return rgba(ch(redOf(c)), ch(greenOf(c)), ch(blueOf(c)), alphaOf(c));
+}
+
+// RGB moved toward white by amt (truncated); alpha unchanged (spectrum.cpp brighten: the curve's bright core).
+inline Rgba brighten(Rgba c, float amt) noexcept {
+  auto up = [amt](uint32_t v) {
+    const float f = static_cast<float>(v);
+    return static_cast<uint32_t>(std::min(255.0f, f + (255.0f - f) * amt));
+  };
+  return rgba(up(redOf(c)), up(greenOf(c)), up(blueOf(c)), alphaOf(c));
+}
+
 // Per-channel linear interpolation, t in [0, 1]. Used for gradient vertex colours.
 inline Rgba lerp(Rgba a, Rgba b, float t) noexcept {
   t = std::clamp(t, 0.0f, 1.0f);

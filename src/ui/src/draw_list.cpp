@@ -78,19 +78,17 @@ void DrawList::primReserve(uint32_t idxCount, uint32_t vtxCount) {
   idxWrite_ = idx_.grow(idxCount);
 }
 
-// Internal primitives write through local pointers rather than primWriteVtx/primWriteIdx: MSVC does no
-// type-based alias analysis, so every store through the member write pointers forces a reload of the
-// pointer itself and the writes serialise through store-to-load forwarding (measured ~3× slower).
-DrawList::Span DrawList::reserve(uint32_t idxCount, uint32_t vtxCount) {
+// Internal primitives write through local pointers rather than primWriteVtx/primWriteIdx (see draw_list.h).
+DrawList::PrimSpan DrawList::primReserveSpan(uint32_t idxCount, uint32_t vtxCount) {
   primReserve(idxCount, vtxCount);
-  const Span s{vtxWrite_, idxWrite_, vtxCurrentIdx()};
+  const PrimSpan s{vtxWrite_, idxWrite_, vtxCurrentIdx()};
   vtxWrite_ += vtxCount;
   idxWrite_ += idxCount;
   return s;
 }
 
 void DrawList::addQuad(Vec2 p0, Vec2 p2, Vec2 uv0, Vec2 uv2, Rgba c0, Rgba c1, Rgba c2, Rgba c3) {
-  const Span s = reserve(6, 4);
+  const PrimSpan s = primReserveSpan(6, 4);
   s.v[0] = {{p0.x, p0.y}, {uv0.x, uv0.y}, c0};
   s.v[1] = {{p2.x, p0.y}, {uv2.x, uv0.y}, c1};
   s.v[2] = {{p2.x, p2.y}, {uv2.x, uv2.y}, c2};
@@ -198,7 +196,7 @@ void DrawList::addConvexAA(const Vec2* pts, const Rgba* cols, uint32_t n) {
     en[i] = {dy, -dx};
   }
 
-  const Span s = reserve(3 * (n - 2) + 6 * n, 2 * n);
+  const PrimSpan s = primReserveSpan(3 * (n - 2) + 6 * n, 2 * n);
   const uint32_t base = s.base;
   const Vec2 uv = atlas_.white;
   Vertex* v = s.v;
