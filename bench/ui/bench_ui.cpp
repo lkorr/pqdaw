@@ -1,7 +1,12 @@
 // ui benchmarks: draw-list build cost per primitive, and offscreen frame cost (upload + record + submit +
-// GPU wait) for the test pattern and a dense frame. Run from the release build; results → bench/RESULTS.md.
+// GPU wait) for the test pattern and a dense frame; streaming texture updates, texture create/destroy and
+// glyph uploads (T0.8-fix1 / T0.7-fix4). Run from the release build; results → bench/RESULTS.md.
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "pq/ui/color.h"
 #include "pq/ui/draw_list.h"
@@ -9,6 +14,7 @@
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
 #include "pq/ui/scenes.h"
+#include "pq/ui/text.h"
 #include "pq_bench.h"
 
 using namespace pq::ui;
@@ -170,6 +176,121 @@ int main() {
     pq::bench::report("offscreen/10k rounded rects 1920x1080", s, "ns/frame (upload+record+submit+GPU wait)");
     s = pq::bench::measure([&] { (void)(*renderer)->upload(0, dl); }, 1);
     pq::bench::report("renderer/upload 10k rounded rects", s, "ns/frame");
+  }
+
+  // --- T0.7-fix4: streaming updates and texture lifetime ------------------------------------------------
+  {
+    auto r2 = Renderer::create(**gpu, OffscreenTarget::kFormat, 2);
+    auto target = OffscreenTarget::create(**gpu, 1024, 512, 2);
+    if (!r2 || !target) return 1;
+    Image spec;
+    spec.width = 1024;
+    spec.height = 512;
+    spec.rgba.assign(size_t(1024) * 512 * 4, 0);
+    auto specTex = (*r2)->createTexture(spec, TextureFilter::Nearest);
+    if (!specTex) return 1;
+    std::vector<uint8_t> column(512 * 4, 200);
+    uint32_t x = 0;
+    // 256 column updates, then a frame boundary (upload) that binds them and recycles the slot's chunks, as
+    // a frame loop would; without frames the staging ring would only grow.
+    DrawList none;
+    none.reset(1024, 512);
+    s = pq::bench::measure(
+        [&] {
+          for (int i = 0; i < 256; ++i) (void)(*r2)->updateTexture(*specTex, {x++ & 1023u, 0, 1, 512}, column);
+          (void)(*r2)->upload(0, none);
+        },
+        256);
+    pq::bench::report("renderer/updateTexture 1x512 column (staging)", s, "ns/update");
+    dl.reset(1024, 512);
+    dl.addImage(*specTex, {0, 0, 1024, 512}, {0, 0}, {1, 1});
+    s = pq::bench::measure(
+        [&] {
+          (void)(*r2)->updateTexture(*specTex, {x++ & 1023u, 0, 1, 512}, column);
+          (void)(*target)->submit(**r2, dl, kSceneClearColor);
+        },
+        1, 15, 3, 2e7);
+    pq::bench::report("offscreen/spectrogram column frame, 2 in flight", s, "ns/frame (update+upload+record+submit)");
+    std::printf("  (unpaced: %u of the frames above waited for their slot; at 144 Hz the test sees 0)\n", (*target)->slotStalls());
+    (void)(*target)->finish();
+
+    DrawList empty;
+    empty.reset(1024, 512);
+    Image small;
+    small.width = small.height = 64;
+    small.rgba.assign(size_t(64) * 64 * 4, 99);
+    std::vector<TextureId> ids;
+    s = pq::bench::measure(
+        [&] {
+          for (int i = 0; i < 64; ++i) ids.push_back(*(*r2)->createTexture(small, TextureFilter::Linear));
+          (void)(*target)->submit(**r2, empty, kSceneClearColor);
+          for (TextureId id : ids) (void)(*r2)->destroyTexture(id);
+          ids.clear();
+          (void)(*target)->submit(**r2, empty, kSceneClearColor);
+          (void)(*target)->submit(**r2, empty, kSceneClearColor);
+        },
+        64);
+    pq::bench::report("renderer/create+destroy 64x64 texture", s, "ns/texture (incl. 3 frames per 64)");
+    (void)(*target)->finish();
+  }
+
+  // --- T0.8-fix1: a frame that introduces 200 new glyphs ------------------------------------------------
+  {
+    using Clock = std::chrono::steady_clock;
+    auto target = OffscreenTarget::create(**gpu, kDefaultSceneWidth, kDefaultSceneHeight);
+    if (!target) return 1;
+    TextSystem& ts = *textures->text;
+    // 200 Latin-1 / Latin Extended code points Inter has.
+    std::vector<std::string> lines(4);
+    {
+      auto probe = ts.font(textures->regular, 13);
+      uint32_t found = 0;
+      for (uint32_t c = 0xC0; c < 0x250 && found < 200; ++c) {
+        std::string u;
+        u += static_cast<char>(0xC0 | (c >> 6));
+        u += static_cast<char>(0x80 | (c & 0x3F));
+        const auto g = ts.shapeGlyphs(*probe, u);
+        if (g.size() != 1 || g[0].glyphId == 0) continue;
+        lines[found / 50] += u;
+        ++found;
+      }
+    }
+    std::vector<double> rasterMs, frameMs, warmMs;
+    std::vector<uint64_t> staged, ink;
+    for (uint32_t size = 15; size < 35; ++size) {
+      auto font = ts.font(textures->regular, size, {TextHinting::Light, false});  // fresh glyphs every round
+      if (!font) return 1;
+      ts.beginFrame();
+      dl.reset(kDefaultSceneWidth, kDefaultSceneHeight);
+      buildScene("text", dl, *textures, 0.0);
+      (void)(*target)->draw(**renderer, dl, kSceneClearColor);  // uploads the new font's ASCII (and any eviction)
+      ts.beginFrame();
+      uint64_t inkTexels = 0;
+      const auto t0 = Clock::now();
+      for (size_t i = 0; i < lines.size(); ++i) ts.draw(dl, *font, {8, 40.0f + 30.0f * static_cast<float>(i)}, lines[i], 0xFFFFFFFFu);
+      const auto t1 = Clock::now();
+      for (const std::string& l : lines)
+        for (const GlyphQuad& q : ts.shape(*font, l).glyphs) inkTexels += uint64_t(q.w) * q.h;
+      const uint64_t before = (*renderer)->stats().atlasBytesStaged;
+      (void)(*target)->draw(**renderer, dl, kSceneClearColor);
+      const auto t2 = Clock::now();
+      staged.push_back((*renderer)->stats().atlasBytesStaged - before);
+      ink.push_back(inkTexels);
+      (void)(*target)->draw(**renderer, dl, kSceneClearColor);  // same frame again, glyphs already resident
+      const auto t3 = Clock::now();
+      rasterMs.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+      frameMs.push_back(std::chrono::duration<double, std::milli>(t2 - t1).count());
+      warmMs.push_back(std::chrono::duration<double, std::milli>(t3 - t2).count());
+    }
+    auto med = [](std::vector<double> v) {
+      std::sort(v.begin(), v.end());
+      return v[v.size() / 2];
+    };
+    std::sort(staged.begin(), staged.end());
+    std::sort(ink.begin(), ink.end());
+    std::printf("BENCH %-40s median %10.4f  ms rasterise (FreeType+HarfBuzz) | frame with uploads %.4f ms | same frame warm %.4f ms | %llu atlas bytes staged for %llu glyph texels\n",
+                "text/200 new glyphs in one frame", med(rasterMs), med(frameMs), med(warmMs),
+                static_cast<unsigned long long>(staged[staged.size() / 2]), static_cast<unsigned long long>(ink[ink.size() / 2]));
   }
   return 0;
 }
