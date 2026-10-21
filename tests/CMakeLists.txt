@@ -79,3 +79,12 @@ pq_add_test(pq_tests_engine
     engine/test_null_device.cpp
     engine/test_rtaudio_device.cpp
   DEPS pq_engine)
+
+pq_add_test(pq_tests_dsp
+  SOURCES
+    dsp/test_atoms_math_logic.cpp
+    dsp/test_atoms_memory_gen.cpp
+    dsp/test_phasor_drift.cpp
+    dsp/test_tables.cpp
+    dsp/test_dsp_rt.cpp
+  DEPS pq_dsp)
