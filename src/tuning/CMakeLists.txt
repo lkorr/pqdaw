@@ -12,5 +12,9 @@ pq_add_module(pq_tuning
     src/mos_tuning.cpp
     src/scala.cpp
     src/scale_tuning.cpp
+    src/ji.cpp
+    src/fewest_keypress.cpp
+    src/interval_names.cpp
+    src/interval_names_tables.cpp
   DEPS pq_core
 )
