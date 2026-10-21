@@ -206,13 +206,9 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     claim removed); mux1200 compiles ≤ 300 ms; a compile-time test asserts 100-node ≤ 100 ms (release, idle); chaos/edge
     probes added to the JIT corpus.
 
-- [ ] **T1.x-arch1 Compile granularity decision** (`graph` + `engine` + docs). Depends on: T1.9, T1b.1. Before T3.17.
-  - Write the options into QUESTIONS for the user (whole-project program vs per-track/per-device-chain images chained by
-    buffers vs per-instance code sharing), with the measured numbers (JIT ≈ 0.5 ms/op, interp ≈ 5× JIT, crossfade ×2).
-    Prototype the chosen unit: recompile and crossfade only the changed unit; compile cache keyed per unit.
-  - Accept: a 30-track fixture (≈ 20k ops) — one device edit: audible change ≤ 200 ms, peak audio-thread CPU during the edit
-    ≤ 1.3× steady state, unchanged tracks bit-identical through the swap.
-
+- [ ] **T1.x-arch1 Per-track compilation units** (`graph` + `engine` + `jit` + docs). Depends on: T1.5-fix1, T1.8-fix1, T1.9, T1b.1. Before T3.17. (User decision 2026-10-21: per-track units now; whole-project re-optimisation on idle later, M12.)
+  - Each track's device chain is one compile unit (own Schedule/ProgramImage/state arena/compile-cache key); a project-level runner executes units in dependency order each block, passing audio between units through preallocated buffers (no added latency for feed-forward paths); tracks connected by cross-track modulation/sidechain wires are merged into one unit; group/return/master summing as units too. Hot swap (T1.9) per unit: an edit recompiles and crossfades only the changed unit.
+  - Accept: a 30-track fixture (≈ 20k ops) — one device edit: audible change ≤ 200 ms, peak audio-thread CPU during the edit ≤ 1.3× steady state, unchanged tracks bit-identical through the swap; output of the per-unit project identical (≤ 1e-6) to a single whole-project program of the same graph; cross-track modulation wire merges units and stays sample-accurate.
 - [ ] **T1.x-arch2 Shared image host + one compile pipeline** (`engine`, `jit`, `tools`, `app`). Depends on: T1b.1.
   - Extract interpreter/JIT host code (layout, params, inputs, reducers/sends/broadcast, Newton) into one engine-internal
     layer; `pq_compile` library for file → Schedule used by pqc and `pqdaw --play` (Q73 B, gives --play the JIT); renderOffline
@@ -414,4 +410,4 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 - **M9 (RMSC)**: RMSC per SPEC §8.1. Validate against the original by rendering Borrasca in Live 12 (user-supplied renders) with identical settings; the original's known bugs (RM pre-fade step, NaN, Padé clipper) are expected differences.
 - **M10**: groove, transformations, export, freeze, bounce, collect.
 - **M11**: interop (MIDI files, MTS-ESP, MPE).
-- **M12**: background re-optimisation, multithreaded scheduling.
+- **M12**: background re-optimisation (incl. whole-project compilation when editing pauses, user decision 2026-10-21), multithreaded scheduling.

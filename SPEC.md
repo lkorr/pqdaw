@@ -603,5 +603,6 @@ All signal displays reuse PQ Meter's DSP, ballistics and look, which the owner h
   - Ratio notes share a virtual fundamental derived from what's entered; it updates as notes change (Q40).
   - Default project is empty; mute/deactivate as in Ableton: the track activator mutes, `0` toggles activator on tracks and deactivates clips (Q15).
   - Theme reference: the user's Live 12 Arrangement screenshot (Q47; kept out of the repo).
+- 2026-10-21 (user, M1 review H6): compile granularity is **per track**: each track's device chain is compiled and optimised as its own unit; an edit recompiles and crossfades only that unit. Units are executed in dependency order within each block (no added latency); tracks joined by cross-track modulation/sidechain wires are merged into one unit (as §7.4 already says for cross-track SCCs). A whole-project re-optimisation pass when the user pauses editing (§7.5 background optimisation) is planned for later (M12), out of scope for now.
 
 No open questions remain for draft 1.
