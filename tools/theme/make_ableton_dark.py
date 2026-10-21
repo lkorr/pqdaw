@@ -74,6 +74,28 @@ colors = [
  ("arrangement.playhead", "#B0B5A3"),
  ("arrangement.startMarker", "#00CCB7"),
  ("arrangement.overviewFrame", "#82918F"),
+ # MOS wheel region chart (T3.13): surfaces from the Live 12 screenshot (arrangement.*), data colours from
+ # mos-explorer (EDO blue, hardness amber, generator marker red).
+ ("mosChart.background", "#16282E"),
+ ("mosChart.grid", "#1E3238"),
+ ("mosChart.axis", "#26383F"),
+ ("mosChart.axisBorder", "#3D4F55"),
+ ("mosChart.axisText", "#B0B5A3"),
+ ("mosChart.axisTick", "#82918F"),
+ ("mosChart.axisSubTick", "#52666B"),
+ ("mosChart.periodLine", "#FFA33D66"),
+ ("mosChart.edoLine", "#6EB5FF66"),
+ ("mosChart.edoText", "#6EB5FF"),
+ ("mosChart.edoCents", "#82918F"),
+ ("mosChart.edoHardness", "#F5A623"),
+ ("mosChart.marker", "#F0566E"),
+ ("mosChart.markerText", "#16282E"),
+ ("mosChart.sizeText", "#82918F"),
+ ("mosChart.bandText", "#FFFFFF"),
+ ("mosChart.bandSubText", "#D3D8CF"),
+ ("mosChart.bandTextDim", "#5D6E73"),
+ ("mosChart.bandGrayed", "#7F8F94"),
+ ("mosChart.bandActive", "#FFFFFF"),
 ]
 fonts = [("small","regular",12,False),("body","regular",13,False),("bodyStrong","semibold",13,False),("title","semibold",14,False),("numeric","regular",12,False)]
 metrics = [("spacing.xs",2),("spacing.sm",4),("spacing.md",8),("spacing.lg",12),

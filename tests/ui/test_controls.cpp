@@ -107,7 +107,7 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   CHECK(t->fonts.body.px == 13);
   CHECK(t->fonts.title.px == 14);
   CHECK(alphaOf(t->surface.panel) == 255);
-  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 5 + 14 + 1);  // + arrangement.* (T3.8)
+  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 20 + 5 + 14 + 1);  // + arrangement.* (T3.8), mosChart.* (T3.13)
 }
 
 TEST_CASE("theme: the file round-trips (struct and bytes)") {
@@ -155,7 +155,7 @@ TEST_CASE("theme: a missing, unknown or malformed token fails with its name") {
     CHECK_MESSAGE(r.error().message.find("missing token \"" + name + "\"") != std::string::npos, r.error().message);
     ++checked;
   }
-  CHECK(checked == 57 + 16 + 5 + 14);  // + the 16 arrangement.* colours (T3.8)
+  CHECK(checked == 57 + 16 + 20 + 5 + 14);  // + the 16 arrangement.* colours (T3.8), 20 mosChart.* (T3.13)
   {
     auto r = parseTheme(removeLine("\"name\":"));
     REQUIRE_FALSE(r.ok());
