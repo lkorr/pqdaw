@@ -370,3 +370,16 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options: per item, as above or Live's behaviour where it differs (to be checked against Live 12).
 - Provisional choice: as above.
 - Status: open
+
+## Q?-T0.7-fix5-a · 2026-10-21 · T0.7-fix5 · Golden tolerance: cap 24/255, isolated outliers, 100 per million
+- Context: M5 (the old rule let 0.1 % of pixels differ by any amount). The goldens were generated on this machine (RTX 3060 Ti) and all match at max diff 0, so the allowance only matters on another GPU/driver, which we have never measured.
+- Choice: ≤ 2/255 per channel everywhere; outliers (> 2) allowed only if ≤ 24/255, isolated (no other outlier among the 8 neighbours, i.e. diagonal contact counts) and ≤ 100 per million pixels (38 at 800×480). `pq::ui::GoldenTolerance` / `passesGolden`. The mutation tests show the margin: deleting any glyph of the `text` scene changes ≥ 50/255 (854 of 854 visible deletions rejected); a 1 px scope-trace shift gives ~2000 clustered outliers up to 204/255.
+- Options: A) this; B) 4-neighbour isolation (tolerates diagonal staircases of outliers along a rasterisation edge; weaker against thin diagonal strokes); C) per-vendor goldens instead of a shared tolerance once a second GPU is in CI.
+- Provisional choice: A. If CI on another vendor fails on isolated-but-adjacent edge pixels, prefer C over loosening.
+- Status: open
+
+## Q?-T0.9-fix1-a · 2026-10-21 · T0.9-fix1 · Port vs PQ Meter: same topology and colours, positions equal up to float rounding
+- Context: the differential test (tests/ui/test_pqmeter_diff.cpp) compiles PQ Meter's smooth_line.h and spectrum.cpp helpers from its source tree. Counts, index buffers, colours and uvs are identical for every input; vertex positions differ by ≤ 1.2e-4 px for single calls on identical input and ≤ 1.8e-3 px through splinePath + scopeTrace, because the port multiplies by 1/len, 1/target, 1/steps where PQ Meter divides (the arithmetic reorganisation described in lines.cpp's port notes). The scope's i = 3 glow pass (alpha 0) is skipped.
+- Options: A) keep the reciprocals, assert |Δ| ≤ 1/256 px (one rasteriser sub-pixel step) — current; B) switch the port back to divisions for bit-identical positions (2–6 extra divides per segment; would need re-measuring the ribbon benchmarks).
+- Provisional choice: A (no visible difference is possible below a sub-pixel step; B is a local change in lines.cpp if exact equality is wanted).
+- Status: open
