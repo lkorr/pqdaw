@@ -148,6 +148,7 @@ pq_add_test(pq_tests_engine
 pq_add_test(pq_tests_jit
   SOURCES
     jit/test_jit.cpp
+    engine/test_voices.cpp  # the T1.8 voice suite again, on JIT images (rigImageBuilder, set in test_jit.cpp)
   DEPS pq_jit)
 
 pq_add_test(pq_tests_dsp

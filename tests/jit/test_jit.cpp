@@ -19,7 +19,9 @@
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/image_runner.h"
 #include "pq/engine/interpreter.h"
+#include "pq/engine/note_events.h"
 #include "pq/engine/null_device.h"
+#include "pq/engine/voices.h"
 #include "pq/jit/compiler.h"
 
 using namespace interp_test;
@@ -54,6 +56,9 @@ ImageBuilder jitBuilder(jit::CompileOptions base = {}) {
     return compiler().compile(s, o);
   };
 }
+
+// test_voices.cpp (compiled into this executable too) builds its VoiceEngine images with the JIT here.
+const bool kVoiceRigsUseJit = (rigImageBuilder() = jitBuilder(), true);
 
 pq::Result<std::unique_ptr<eng::ProgramImage>> compileJit(const Schedule& s, jit::CompileOptions o = {}) {
   return compiler().compile(s, o);
@@ -245,6 +250,75 @@ TEST_CASE("jit: every simple stateful atom inside a per-sample loop (inline per-
     exact.contract = false;
     checkPatch(c, voices, 0, exact, cs, true, kBlocks, std::size(kBlocks));
     MESSAGE(c.name << ": max error vs interpreter " << cs.maxVsInterp << ", vs reference " << cs.maxVsRef);
+  }
+}
+
+TEST_CASE("jit: VoiceEngine-driven FmVoice / echo / probe (note traffic, steals, voice moves) match the interpreter") {
+  std::vector<std::string> skipped;
+  std::vector<Compiled> patches = compileFile(fs::path(PQ_TEST_DATA_DIR) / "graph" / "cases" / "fm_voice.pqp", 48000.0, skipped);
+  REQUIRE(patches.size() == 1);
+  patches.push_back(compileText(R"(patch Echo {
+  out y : audio voice
+  x = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.2
+  e = delay(x + e * 0.6, 3ms, 10ms)
+  y = x + e * voice.velocity
+})"));
+  for (const Compiled& c : patches) {
+    std::vector<float> outs[2];
+    for (int backend = 0; backend < 2; ++backend) {
+      eng::InterpretOptions io;
+      io.maxBlockFrames = 64;
+      io.maxVoiceGroups = 4;
+      auto img = backend == 0 ? eng::buildInterpreted(c.sched, io) : jitBuilder({.contract = false})(c.sched, io);
+      REQUIRE(img.ok());
+      eng::VoiceEngine ve;
+      eng::VoiceConfig cfg;
+      cfg.maxVoices = 32;
+      cfg.compact = true;
+      REQUIRE(ve.prepare(img->get(), cfg).ok());
+      REQUIRE(ve.numMixes() >= 1);
+      eng::EventBuffer buf(256);
+      uint32_t rng = 77, id = 1;
+      std::vector<uint32_t> held;
+      for (int b = 0; b < 400; ++b) {
+        buf.clear();
+        for (int k = 0; k < 3; ++k) {
+          rng = rng * 1664525u + 1013904223u;
+          const uint32_t frame = (rng >> 8) % 64;
+          if ((rng >> 20) % 3 != 0 || held.empty()) {
+            buf.push(eng::noteOn(frame, id, 60.0f * std::exp2(static_cast<float>((rng >> 4) % 4000) / 1200.0f), 0.6f));
+            held.push_back(id++);
+          } else {
+            buf.push(eng::noteOff(frame, held.front()));
+            held.erase(held.begin());
+          }
+        }
+        // events must be in frame order
+        std::vector<eng::NoteEvent> evs(buf.list().events, buf.list().events + buf.list().count);
+        std::stable_sort(evs.begin(), evs.end(), [](const eng::NoteEvent& a, const eng::NoteEvent& z) { return a.frame < z.frame; });
+        buf.clear();
+        for (const auto& e : evs) buf.push(e);
+        eng::ProcessContext ctx;
+        ctx.frames = 64;
+        ctx.sampleRate = 48000.0;
+        ctx.sampleTime = static_cast<int64_t>(b) * 64;
+        ctx.events = &buf.list();
+        CHECK(pq::alloc_trap::countRtViolations([&] {
+                pq::DenormalGuard dg;
+                ve.process(ctx);
+              }) == 0);
+        outs[backend].insert(outs[backend].end(), ve.mix(0), ve.mix(0) + 64);
+      }
+    }
+    uint64_t diff = 0;
+    double energy = 0;
+    for (size_t t = 0; t < outs[0].size(); ++t) {
+      diff += std::memcmp(&outs[0][t], &outs[1][t], sizeof(float)) != 0;
+      energy += outs[0][t] * outs[0][t];
+    }
+    INFO(c.name);
+    CHECK(energy > 1.0);
+    CHECK(diff == 0);  // contraction off: bit-identical
   }
 }
 

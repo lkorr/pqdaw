@@ -357,6 +357,16 @@ struct InterpRun {
 // Builds the image a run drives: the interpreter by default; T1b's JIT tests pass their compiler here.
 using ImageBuilder = std::function<pq::Result<std::unique_ptr<eng::ProgramImage>>(const Schedule&, const eng::InterpretOptions&)>;
 
+// The builder test rigs use for VoiceEngine images (test_voices.cpp): empty = the interpreter. pq_tests_jit compiles
+// test_voices.cpp too and sets this to the JIT, so the T1.8 voice suite also runs on JIT-compiled images.
+inline ImageBuilder& rigImageBuilder() {
+  static ImageBuilder b;
+  return b;
+}
+inline pq::Result<std::unique_ptr<eng::ProgramImage>> buildRigImage(const Schedule& s, const eng::InterpretOptions& io) {
+  return rigImageBuilder() ? rigImageBuilder()(s, io) : eng::buildInterpreted(s, io);
+}
+
 // Interpreter (or `build`'s) streams for `frames` samples in blocks of `block`.
 inline InterpRun runInterp(const Setup& st, uint32_t frames, uint32_t block, uint32_t maxBlock = 1024,
                            const ImageBuilder& build = {}) {

@@ -96,7 +96,7 @@ struct Rig {
     eng::InterpretOptions io;
     io.maxBlockFrames = maxBlock;
     io.maxVoiceGroups = groups;
-    auto built = eng::buildInterpreted(c.sched, io);
+    auto built = buildRigImage(c.sched, io);
     REQUIRE_MESSAGE(built.ok(), (built.ok() ? "" : built.error().message));
     img = std::move(built.value());
     if (useDone) cfg.doneSlot = eng::findVoiceSlot(img->io(), schedPatch(c), "done");
@@ -511,7 +511,7 @@ TEST_CASE("voices: the image skips voice groups without voices (their state hold
   eng::InterpretOptions io;
   io.maxBlockFrames = 16;
   io.maxVoiceGroups = 2;
-  auto img = eng::buildInterpreted(c.sched, io);
+  auto img = buildRigImage(c.sched, io);
   REQUIRE(img.ok());
   std::vector<float> hz(16 * 8, 1000.0f), outs[2];
   const float* sig[eng::kVoiceSignalCount] = {};
@@ -656,7 +656,7 @@ TEST_CASE("voices: prepare rejects bad configurations") {
   eng::InterpretOptions io;
   io.maxBlockFrames = 64;
   io.maxVoiceGroups = 1;
-  auto img = eng::buildInterpreted(c.sched, io);
+  auto img = buildRigImage(c.sched, io);
   REQUIRE(img.ok());
   eng::VoiceEngine ve;
   VoiceConfig cfg;
@@ -668,7 +668,7 @@ TEST_CASE("voices: prepare rejects bad configurations") {
   CHECK(ve.prepare(img->get(), cfg).ok());
   CHECK_FALSE(ve.prepare(nullptr, cfg).ok());
   Compiled global = compileText("patch G {\n  out y : audio\n  y = 1\n}\n", kSr);
-  auto gimg = eng::buildInterpreted(global.sched, io);
+  auto gimg = buildRigImage(global.sched, io);
   REQUIRE(gimg.ok());
   CHECK_FALSE(ve.prepare(gimg->get(), cfg).ok());
 }
