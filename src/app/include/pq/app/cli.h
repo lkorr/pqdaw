@@ -18,8 +18,16 @@ enum class Mode {
   Screenshot,      // --screenshot <scene> <out.png> [--size WxH] [--scale S]
   WindowSelfTest,  // --window-selftest: scripted resize/minimise/restore run, exit code = result
   Help,            // --help
-  ListDevices,     // --list-devices [--asio]
-  Sine,            // --sine <hz> [--seconds <s>] [--device <id>] [--asio] [--rate <hz>] [--buffer <n>] [--block <n>] [--exclusive]
+  ListDevices,     // --list-devices [--backend wasapi|rtaudio] [--asio]
+  Sine,            // --sine <hz> [--seconds <s>] [--device <id|endpoint>] [--backend wasapi|rtaudio] [--asio] [--rate <hz>]
+                   //   [--buffer <n>] [--block <n>] [--exclusive] [--level <dBFS>] [--inject-stall <wake>]
+  LatencyTest,     // --latency-test [--seconds <s>] [--device <id|endpoint>] [--buffer <n>] [--level <dBFS>]
+};
+
+// Which WASAPI implementation --sine / --list-devices use (--asio overrides both with RtAudio ASIO).
+enum class WasapiImpl : uint8_t {
+  Own,      // --backend wasapi (default): pq::engine::WasapiDevice
+  RtAudio,  // --backend rtaudio: RtAudio's WASAPI backend
 };
 
 struct CliOptions {
@@ -35,7 +43,11 @@ struct CliOptions {
   double sineHz = 440.0;
   double seconds = 3.0;
   uint32_t device = 0xFFFFFFFFu;  // pq::engine::kDefaultDevice
+  std::string deviceEndpoint;     // --device {endpoint id} (WASAPI); overrides device when non-empty
+  WasapiImpl wasapi = WasapiImpl::Own;
   bool asio = false;
+  double levelDb = -24.0;         // test signal level, dBFS
+  uint64_t stallAfterWake = 0;    // --inject-stall: WasapiDevice test hook (0 = off)
   bool exclusive = false;
   uint32_t sampleRate = 0;      // 0 = the device's preferred rate
   uint32_t bufferFrames = 256;  // device buffer request

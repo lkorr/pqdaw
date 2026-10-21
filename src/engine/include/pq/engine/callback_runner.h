@@ -12,7 +12,7 @@ namespace pq::engine {
 // The per-callback path shared by every AudioDevice backend: the backend's own callback converts its buffers to
 // planar float pointers and calls run(), which is the only thing that touches the engine. Keeping it in one
 // place means the NullDevice tests (RtScope allocation trap, denormal mode, stats) cover exactly the code the
-// RtAudio backend runs on the real audio thread.
+// WASAPI and RtAudio backends run on the real audio thread.
 class CallbackRunner {
 public:
   // Off the audio thread, before the stream starts.
@@ -36,6 +36,14 @@ public:
     frameTime_ += frames;
     stats_.record(t0, readTsc(), frames, inputOverflow, outputUnderflow);
   }
+
+  // A device wake-up (backends that wait on a device clock): see CallbackStats::recordWake. RT-safe.
+  void recordWake(int64_t latenessFrames, int64_t queueFrames, bool timedOut) noexcept {  // RT-safe
+    stats_.recordWake(latenessFrames, queueFrames, timedOut);
+  }
+
+  // The backend restarted the device stream to recover from an underrun. RT-safe.
+  void recordRestart() noexcept { stats_.recordRestart(); }  // RT-safe
 
   const CallbackStats& stats() const noexcept { return stats_; }
   uint32_t numIn() const noexcept { return numIn_; }

@@ -5,6 +5,8 @@ pq_add_module(pq_engine
     src/callback_stats.cpp
     src/null_device.cpp
     src/rtaudio_device.cpp
+    src/sample_convert.cpp
+    src/wasapi_device.cpp
   DEPS pq_core
-  PRIVATE_DEPS rtaudio
+  PRIVATE_DEPS rtaudio ole32 avrt
 )

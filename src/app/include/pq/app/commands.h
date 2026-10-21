@@ -11,7 +11,11 @@ int runScreenshot(const CliOptions& options);
 int runWindow(const CliOptions& options, bool selfTest);
 // --list-devices: prints every device of each compiled audio backend (audio_commands.cpp).
 int runListDevices(const CliOptions& options);
-// --sine: plays a test tone through the device + BlockAdapter path and prints callback stats; exit 3 on xruns.
+// --sine: plays a test tone through the device + BlockAdapter path and prints callback stats; exit 3 on xruns
+// (with --inject-stall: exit 0 iff exactly one underrun was reported).
 int runSine(const CliOptions& options);
+// --latency-test: shared-mode WASAPI output latency, impulses vs a loopback capture of the endpoint; exit 3 if the
+// reported latency is off by more than one period.
+int runLatencyTest(const CliOptions& options);
 
 }  // namespace pq::app

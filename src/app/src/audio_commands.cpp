@@ -1,18 +1,23 @@
-// Audio commands of pqdaw (T0.6): --list-devices and --sine. Parsing lives in cli.cpp.
+// Audio commands of pqdaw (T0.6, T0.6-fix1): --list-devices, --sine and --latency-test. Parsing lives in cli.cpp.
 #include <cstdint>
 
 #include "pq/app/commands.h"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "pq/core/fast_math.h"
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/rtaudio_device.h"
+#include "pq/engine/wasapi_device.h"
 
 namespace pq::app {
 
@@ -43,63 +48,99 @@ struct SineEngine {
   }
 };
 
+Backend chosenBackend(const CliOptions& o) {
+  if (o.asio) return Backend::Asio;
+  return o.wasapi == WasapiImpl::Own ? Backend::Wasapi : Backend::RtAudioWasapi;
+}
+
 void printRates(const engine::DeviceInfo& d) {
   std::printf("        rates:");
   for (uint32_t r : d.sampleRates) std::printf(" %u", r);
   std::printf("\n");
 }
 
+const char* defaultMark(const engine::DeviceInfo& d) {
+  return d.isDefaultOutput && d.isDefaultInput ? "out+in" : d.isDefaultOutput ? "out" : d.isDefaultInput ? "in" : "";
+}
+
+int listOwnWasapi() {
+  engine::WasapiDevice dev;
+  auto list = dev.enumerate();
+  if (!list) {
+    std::printf("WASAPI: %s\n", list.error().message.c_str());
+    return 1;
+  }
+  std::printf("WASAPI (pqdaw backend: event-driven exclusive + shared, output only): %zu endpoint(s)\n", list->size());
+  std::printf("  %5s %4s %4s %7s  %-8s %s\n", "id", "out", "in", "rate", "default", "name");
+  for (const engine::DeviceInfo& d : *list) {
+    std::printf("  %5u %4u %4u %7u  %-8s %s\n", d.id, d.outputChannels, d.inputChannels, d.preferredSampleRate,
+                defaultMark(d), d.name.c_str());
+    std::printf("        endpoint: %s\n", d.endpointId.c_str());
+    if (d.outputChannels) {
+      std::printf("        exclusive at %u Hz:", d.preferredSampleRate);
+      if (d.exclusiveFormats.empty()) std::printf(" (no format accepted)");
+      for (engine::SampleFormat f : d.exclusiveFormats) std::printf(" %s", engine::sampleFormatName(f));
+      std::printf("; min period %u frames; shared engine period %u..%u frames\n", d.minPeriodFrames,
+                  d.sharedMinPeriodFrames, d.sharedMaxPeriodFrames);
+      printRates(d);
+    }
+  }
+  return 0;
+}
+
+int listRtAudio(Backend b) {
+  auto dev = engine::RtAudioDevice::create(b);
+  if (!dev) {
+    std::printf("%s: %s\n", engine::backendName(b), dev.error().message.c_str());
+    return 1;
+  }
+  auto list = (*dev)->enumerate();
+  if (!list) {
+    std::printf("%s: %s\n", engine::backendName(b), list.error().message.c_str());
+    return 1;
+  }
+  std::printf("%s%s: %zu device(s)\n", engine::backendName(b),
+              b == Backend::RtAudioWasapi ? " (shared mode only, docs/QUESTIONS.md Q12)" : "", list->size());
+  std::printf("  %5s %4s %4s %7s  %-8s %s\n", "id", "out", "in", "rate", "default", "name");
+  for (const engine::DeviceInfo& d : *list) {
+    std::printf("  %5u %4u %4u %7u  %-8s %s\n", d.id, d.outputChannels, d.inputChannels, d.preferredSampleRate,
+                defaultMark(d), d.name.c_str());
+    printRates(d);
+  }
+  const std::string msg = (*dev)->lastBackendMessage();
+  if (!msg.empty()) std::printf("  (backend message: %s)\n", msg.c_str());
+  return 0;
+}
+
 }  // namespace
 
 int runListDevices(const CliOptions& options) {
-  int failures = 0;
-  for (Backend b : {Backend::Wasapi, Backend::Asio}) {
-    if (b == Backend::Asio && !options.asio && !engine::backendCompiled(Backend::Asio)) {
-      std::printf("ASIO: not compiled in (PQ_WITH_ASIO=OFF; see docs/QUESTIONS.md, T0.6)\n");
-      continue;
-    }
-    auto dev = engine::RtAudioDevice::create(b);
-    if (!dev) {
-      std::printf("%s: %s\n", engine::backendName(b), dev.error().message.c_str());
-      ++failures;
-      continue;
-    }
-    auto list = (*dev)->enumerate();
-    if (!list) {
-      std::printf("%s: %s\n", engine::backendName(b), list.error().message.c_str());
-      ++failures;
-      continue;
-    }
-    std::printf("%s%s: %zu device(s)\n", engine::backendName(b),
-                b == Backend::Wasapi ? " (shared mode; exclusive mode is not available, docs/QUESTIONS.md, T0.6)" : "",
-                list->size());
-    std::printf("  %5s %4s %4s %7s  %-8s %s\n", "id", "out", "in", "rate", "default", "name");
-    for (const engine::DeviceInfo& d : *list) {
-      const char* def = d.isDefaultOutput && d.isDefaultInput ? "out+in"
-                        : d.isDefaultOutput                   ? "out"
-                        : d.isDefaultInput                    ? "in"
-                                                              : "";
-      std::printf("  %5u %4u %4u %7u  %-8s %s\n", d.id, d.outputChannels, d.inputChannels, d.preferredSampleRate,
-                  def, d.name.c_str());
-      printRates(d);
-    }
-    const std::string msg = (*dev)->lastBackendMessage();
-    if (!msg.empty()) std::printf("  (backend message: %s)\n", msg.c_str());
-  }
+  int failures = options.wasapi == WasapiImpl::Own ? listOwnWasapi() : listRtAudio(Backend::RtAudioWasapi);
+  if (!options.asio && !engine::backendCompiled(Backend::Asio))
+    std::printf("ASIO: not compiled in (PQ_WITH_ASIO=OFF; see docs/QUESTIONS.md Q12)\n");
+  else
+    failures += listRtAudio(Backend::Asio);
   return failures ? 1 : 0;
 }
 
 int runSine(const CliOptions& options) {
-  const Backend backend = options.asio ? Backend::Asio : Backend::Wasapi;
-  auto created = engine::RtAudioDevice::create(backend);
+  const Backend backend = chosenBackend(options);
+  if (!options.deviceEndpoint.empty() && backend != Backend::Wasapi) {
+    std::fprintf(stderr, "pqdaw: endpoint ids select devices on --backend wasapi only\n");
+    return 1;
+  }
+  auto created = engine::createAudioDevice(backend);
   if (!created) {
     std::fprintf(stderr, "pqdaw: %s\n", created.error().message.c_str());
     return 1;
   }
-  engine::RtAudioDevice& dev = **created;
+  engine::AudioDevice& dev = **created;
+  auto* wasapi = backend == Backend::Wasapi ? static_cast<engine::WasapiDevice*>(&dev) : nullptr;
+  if (wasapi && options.stallAfterWake) wasapi->injectStallAfterWake(options.stallAfterWake);
 
   engine::StreamConfig config;
   config.outputDevice = options.device;
+  config.outputEndpointId = options.deviceEndpoint;
   config.outputChannels = 2;
   config.inputChannels = 0;
   config.sampleRate = options.sampleRate;
@@ -121,16 +162,26 @@ int runSine(const CliOptions& options) {
     return 1;
   }
   sine.increment = static_cast<uint32_t>(std::llround(options.sineHz / info.sampleRate * 4294967296.0) & 0xFFFFFFFFll);
-  sine.amplitude = static_cast<float>(std::pow(10.0, -12.0 / 20.0));
+  sine.amplitude = static_cast<float>(std::pow(10.0, options.levelDb / 20.0));
+  const double periodUs = 1e6 * info.bufferFrames / info.sampleRate;
 
-  std::printf("device:   %s [%s, id %s]\n", info.outputDeviceName.c_str(), engine::backendName(info.backend),
-              options.device == engine::kDefaultDevice ? "default" : std::to_string(options.device).c_str());
-  std::printf("stream:   %u Hz, %u ch out, device buffer %u frames (%.3f ms), backend latency %u frames\n",
-              info.sampleRate, info.outputChannels, info.bufferFrames, 1e3 * info.bufferFrames / info.sampleRate,
-              info.latencyFrames);
+  std::printf("device:   %s [%s, %s]\n", info.outputDeviceName.c_str(), engine::backendName(info.backend),
+              !options.deviceEndpoint.empty()           ? options.deviceEndpoint.c_str()
+              : options.device == engine::kDefaultDevice ? "default"
+                                                         : ("id " + std::to_string(options.device)).c_str());
+  std::printf("stream:   %u Hz, %u ch out, device buffer %u frames (%.3f ms), open-time latency estimate %u frames "
+              "(%.3f ms)\n",
+              info.sampleRate, info.outputChannels, info.bufferFrames, periodUs / 1e3, info.latencyFrames,
+              1e3 * info.latencyFrames / info.sampleRate);
+  if (backend == Backend::Wasapi)
+    std::printf("wasapi:   %s mode, device format %s x %u ch, endpoint buffer %u frames%s\n",
+                info.shareMode == engine::ShareMode::Exclusive ? "exclusive" : "shared",
+                engine::sampleFormatName(info.deviceFormat), info.deviceChannels, info.endpointBufferFrames,
+                info.bufferFrames != options.bufferFrames ? " (requested buffer adjusted to the device's period)" : "");
   std::printf("engine:   internal block %u frames, adapter %s (+%u frames latency)\n", adapter.blockFrames(),
               adapter.directMode() ? "direct" : "FIFO", adapter.latencyFrames());
-  std::printf("signal:   %.3f Hz sine at -12 dBFS for %.3f s\n", options.sineHz, options.seconds);
+  std::printf("signal:   %.3f Hz sine at %.1f dBFS for %.3f s%s\n", options.sineHz, options.levelDb, options.seconds,
+              options.stallAfterWake ? (" (test: 3-period stall after wake " + std::to_string(options.stallAfterWake) + ")").c_str() : "");
   if (info.backendResampling)
     std::printf("warning:  %u Hz differs from the device mix rate: RtAudio resamples on the audio thread "
                 "(allocates; not RT-safe)\n",
@@ -164,14 +215,157 @@ int runSine(const CliOptions& options) {
   std::printf("xruns:    %llu (input overflows %llu, output underflows %llu, as reported by the backend)\n",
               static_cast<unsigned long long>(st.xruns()), static_cast<unsigned long long>(st.inputOverflows),
               static_cast<unsigned long long>(st.outputUnderflows));
+  if (backend == Backend::Wasapi) {
+    std::printf("wakes:    %llu device events, %llu wait timeouts; max lateness %lld frames (%.1f us) vs the "
+                "device schedule; %llu stream restart(s) after underruns\n",
+                static_cast<unsigned long long>(st.wakes), static_cast<unsigned long long>(st.waitTimeouts),
+                static_cast<long long>(st.maxLatenessFrames), st.maxLatenessUs,
+                static_cast<unsigned long long>(st.restarts));
+    std::printf("latency:  device clock (frames written ahead of the IAudioClock position at a wake): mean %.1f "
+                "frames (%.3f ms), min %lld, max %lld\n",
+                st.meanQueueFrames, 1e3 * st.meanQueueFrames / info.sampleRate,
+                static_cast<long long>(st.minQueueFrames), static_cast<long long>(st.maxQueueFrames));
+  }
   std::printf("deadline misses: %llu (callbacks longer than the %.1f us buffer period)\n",
               static_cast<unsigned long long>(st.deadlineMisses), st.periodUs);
   std::printf("callback time: mean %.2f us, max %.2f us; max interval between callbacks %.1f us%s\n",
               st.meanDurationUs, st.maxDurationUs, st.maxIntervalUs,
               st.timingReliable ? "" : " (TSC not invariant: timing approximate)");
-  if (info.backend == Backend::Wasapi)
-    std::printf("note:     RtAudio's WASAPI backend never reports output underflows (docs/QUESTIONS.md, T0.6)\n");
+  const bool intervalOk = st.maxIntervalUs <= 1.5 * periodUs;
+  std::printf("interval check: max %.1f us vs 1.5 x period = %.1f us: %s\n", st.maxIntervalUs, 1.5 * periodUs,
+              intervalOk ? "PASS" : "FAIL");
+  if (backend == Backend::RtAudioWasapi)
+    std::printf("note:     RtAudio's WASAPI backend never reports output underflows (docs/QUESTIONS.md Q12)\n");
+  if (options.stallAfterWake) {
+    const bool one = st.outputUnderflows == 1;
+    std::printf("stall check: %llu underrun(s) reported for one injected stall: %s\n",
+                static_cast<unsigned long long>(st.outputUnderflows), one ? "PASS" : "FAIL");
+    return (one && st.inputOverflows == 0 && stopStatus) ? 0 : 3;
+  }
   return (st.xruns() || st.deadlineMisses || !stopStatus) ? 3 : 0;
+}
+
+namespace {
+
+// Emits a single-sample impulse on every channel at the start of every `every`-th callback (after `first`
+// callbacks), and records the QPC time of each emitting callback. Silence otherwise.
+struct ImpulseEngine {
+  static constexpr uint32_t kMax = 64;
+  float amplitude = 0;
+  uint64_t first = 0;
+  uint64_t every = 1;
+  uint64_t blocks = 0;
+  uint64_t emitQpc[kMax] = {};
+  std::atomic<uint32_t> emitted{0};
+
+  static void process(void* user, const engine::AudioBlock& b) noexcept {  // RT-safe
+    auto& e = *static_cast<ImpulseEngine*>(user);
+    for (uint32_t c = 0; c < b.numOut; ++c) std::memset(b.out[c], 0, sizeof(float) * b.frames);
+    const uint32_t n = e.emitted.load(std::memory_order_relaxed);
+    if (e.blocks >= e.first && (e.blocks - e.first) % e.every == 0 && n < kMax) {
+      e.emitQpc[n] = engine::qpcNow100ns();  // measurement-only engine: a user-mode counter read
+      for (uint32_t c = 0; c < b.numOut; ++c) b.out[c][0] = e.amplitude;
+      e.emitted.store(n + 1, std::memory_order_release);
+    }
+    ++e.blocks;
+  }
+};
+
+}  // namespace
+
+int runLatencyTest(const CliOptions& options) {
+  engine::WasapiDevice dev;
+  engine::StreamConfig config;
+  config.outputDevice = options.device;
+  config.outputEndpointId = options.deviceEndpoint;
+  config.outputChannels = 2;
+  config.bufferFrames = options.bufferFrames;
+  config.shareMode = engine::ShareMode::Shared;  // loopback capture exists for shared-mode streams only
+
+  ImpulseEngine imp;
+  auto opened = dev.open(config, {&ImpulseEngine::process, &imp});
+  if (!opened) {
+    std::fprintf(stderr, "pqdaw: %s\n", opened.error().message.c_str());
+    return 1;
+  }
+  const engine::StreamInfo info = *opened;
+  const double rate = info.sampleRate;
+  imp.amplitude = static_cast<float>(std::pow(10.0, options.levelDb / 20.0));
+  imp.first = static_cast<uint64_t>(0.3 * rate / info.bufferFrames) + 1;
+  imp.every = std::max<uint64_t>(1, static_cast<uint64_t>(0.2 * rate / info.bufferFrames));
+
+  engine::LoopbackCapture cap;
+  if (auto s = cap.start(info.outputEndpointId, options.seconds + 2.0); !s) {
+    std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
+    return 1;
+  }
+  std::printf("device:   %s [WASAPI shared, %s]\n", info.outputDeviceName.c_str(), info.outputEndpointId.c_str());
+  std::printf("stream:   %u Hz, period %u frames (%.3f ms), endpoint buffer %u frames, %s x %u ch; loopback %u Hz\n",
+              info.sampleRate, info.bufferFrames, 1e3 * info.bufferFrames / rate, info.endpointBufferFrames,
+              engine::sampleFormatName(info.deviceFormat), info.deviceChannels, cap.sampleRate());
+  if (auto s = dev.start(); !s) {
+    std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
+    (void)cap.stop();
+    return 1;
+  }
+  std::this_thread::sleep_for(std::chrono::duration<double>(options.seconds));
+  const auto stopStatus = dev.stop();
+  const engine::CallbackStats::Snapshot st = dev.stats().snapshot();
+  dev.close();
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  const auto capStatus = cap.stop();
+  if (!stopStatus || !capStatus) {
+    std::fprintf(stderr, "pqdaw: %s\n", (!stopStatus ? stopStatus : capStatus).error().message.c_str());
+    return 1;
+  }
+
+  // Impulse arrival times in the loopback stream (QPC of the packet's first frame + offset).
+  const std::vector<float>& x = cap.samples();
+  const float threshold = imp.amplitude * 0.5f;
+  const uint64_t refractory = static_cast<uint64_t>(cap.sampleRate() / 10);
+  std::vector<double> arrivals;  // 100 ns units
+  uint64_t lastHit = 0;
+  bool any = false;
+  uint32_t discontinuities = 0;
+  for (const engine::LoopbackCapture::Packet& p : cap.packets()) {
+    if (p.flags & 0x1) ++discontinuities;  // AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY
+    for (uint64_t i = p.firstFrame; i < p.firstFrame + p.frames; ++i) {
+      if (std::fabs(x[i]) < threshold || (any && i - lastHit < refractory)) continue;
+      arrivals.push_back(static_cast<double>(p.qpc100ns) + 1e7 * static_cast<double>(i - p.firstFrame) / cap.sampleRate());
+      lastHit = i;
+      any = true;
+    }
+  }
+  const uint32_t emitted = imp.emitted.load(std::memory_order_acquire);
+  std::printf("impulses: %u emitted at %.1f dBFS, %zu found in the loopback capture (%zu frames, %u discontinuities)\n",
+              emitted, options.levelDb, arrivals.size(), x.size(), discontinuities);
+  if (arrivals.size() != emitted || emitted == 0) {
+    std::printf("result:   FAIL (could not pair every impulse; other audio on the endpoint?)\n");
+    return 3;
+  }
+  double sum = 0, mn = 1e30, mx = -1e30;
+  for (uint32_t i = 0; i < emitted; ++i) {
+    const double frames = (arrivals[i] - static_cast<double>(imp.emitQpc[i])) * rate / 1e7;
+    sum += frames;
+    mn = std::min(mn, frames);
+    mx = std::max(mx, frames);
+  }
+  const double mean = sum / emitted;
+  std::printf("measured: callback start -> loopback capture: mean %.1f frames (%.3f ms), min %.1f, max %.1f\n", mean,
+              1e3 * mean / rate, mn, mx);
+  // The backend's latency report: frames written ahead of the IAudioClock position at each wake (mean after
+  // warm-up). The impulse starts the block written at a wake, so that queue is exactly the audio ahead of it.
+  std::printf("reported: device-clock latency (frames written - IAudioClock position at a wake) mean %.1f frames "
+              "(%.3f ms), range %lld..%lld; open-time estimate (StreamInfo) %u frames\n",
+              st.meanQueueFrames, 1e3 * st.meanQueueFrames / rate, static_cast<long long>(st.minQueueFrames),
+              static_cast<long long>(st.maxQueueFrames), info.latencyFrames);
+  const double diff = st.meanQueueFrames - mean;
+  const bool ok = st.meanQueueFrames >= 0 && std::fabs(diff) <= info.bufferFrames;
+  std::printf("result:   reported - measured = %+.1f frames vs 1 period = %u frames: %s\n", diff, info.bufferFrames,
+              ok ? "PASS" : "FAIL");
+  std::printf("note:     loopback is the Windows audio engine's digital mix for the endpoint, time-stamped on the "
+              "endpoint clock; the driver's USB transfer and the converters after it are not included\n");
+  return ok ? 0 : 3;
 }
 
 }  // namespace pq::app

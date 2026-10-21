@@ -153,4 +153,38 @@ TEST_CASE("cli: audio flag errors") {
   CHECK_FALSE(parse({"--device", "3"}).ok());
   CHECK_FALSE(parse({"--asio"}).ok());
   CHECK_FALSE(parse({"--screenshot", "a", "b.png", "--asio"}).ok());
+  CHECK_FALSE(parse({"--sine", "440", "--backend", "asio"}).ok());
+  CHECK_FALSE(parse({"--sine", "440", "--level", "3"}).ok());
+  CHECK_FALSE(parse({"--sine", "440", "--inject-stall", "0"}).ok());
+  CHECK_FALSE(parse({"--sine", "440", "--inject-stall", "5", "--backend", "rtaudio"}).ok());
+  CHECK_FALSE(parse({"--latency-test", "--exclusive"}).ok());       // --sine-only flag
+  CHECK_FALSE(parse({"--latency-test", "--backend", "wasapi"}).ok());
+  CHECK_FALSE(parse({"--list-devices", "--level", "-20"}).ok());
+}
+
+TEST_CASE("cli: WASAPI backend selection, endpoint ids, level, stall injection, latency test") {
+  auto o = parse({"--sine", "440"});
+  REQUIRE(o.ok());
+  CHECK(o->wasapi == WasapiImpl::Own);
+  CHECK(o->levelDb == -24.0);
+  CHECK(o->stallAfterWake == 0);
+  CHECK(o->deviceEndpoint.empty());
+  o = parse({"--sine", "440", "--backend", "rtaudio", "--level", "-60"});
+  REQUIRE(o.ok());
+  CHECK(o->wasapi == WasapiImpl::RtAudio);
+  CHECK(o->levelDb == -60.0);
+  o = parse({"--list-devices", "--backend", "wasapi"});
+  REQUIRE(o.ok());
+  CHECK(o->wasapi == WasapiImpl::Own);
+  o = parse({"--sine", "440", "--exclusive", "--buffer", "144", "--inject-stall", "100", "--device",
+             "{0.0.0.00000000}.{d1260fc0-59d5-4f42-8c39-81326683797d}"});
+  REQUIRE(o.ok());
+  CHECK(o->stallAfterWake == 100);
+  CHECK(o->deviceEndpoint == "{0.0.0.00000000}.{d1260fc0-59d5-4f42-8c39-81326683797d}");
+  CHECK(o->device == 0xFFFFFFFFu);
+  o = parse({"--latency-test", "--seconds", "2", "--buffer", "480", "--device", "3"});
+  REQUIRE(o.ok());
+  CHECK(o->mode == Mode::LatencyTest);
+  CHECK(o->seconds == 2.0);
+  CHECK(o->device == 3);
 }

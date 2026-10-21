@@ -97,12 +97,14 @@ pq_add_test(pq_tests_graph
     graph/test_optimise.cpp
   DEPS pq_graph)
 
-# engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks.
+# engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
+# WASAPI backend (conversion, underrun tracker, opt-in device runs with PQ_TEST_AUDIO_DEVICE=1).
 pq_add_test(pq_tests_engine
   SOURCES
     engine/test_block_adapter.cpp
     engine/test_null_device.cpp
     engine/test_rtaudio_device.cpp
+    engine/test_wasapi.cpp
   DEPS pq_engine)
 
 pq_add_test(pq_tests_dsp

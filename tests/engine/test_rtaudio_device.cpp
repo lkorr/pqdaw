@@ -17,15 +17,17 @@ void silent(void*, const AudioBlock&) noexcept {}
 TEST_CASE("rtaudio: backends compiled into this build") {
   CHECK(backendCompiled(Backend::Null));
   CHECK(backendCompiled(Backend::Wasapi));
+  CHECK(backendCompiled(Backend::RtAudioWasapi));
   CHECK(std::string(backendName(Backend::Wasapi)) == "WASAPI");
+  CHECK(std::string(backendName(Backend::RtAudioWasapi)) == "RtAudio WASAPI");
   CHECK(std::string(backendName(Backend::Asio)) == "ASIO");
   CHECK(std::string(backendName(Backend::Null)) == "Null");
 }
 
 TEST_CASE("rtaudio: WASAPI device creation and enumeration") {
-  auto dev = createAudioDevice(Backend::Wasapi);
+  auto dev = createAudioDevice(Backend::RtAudioWasapi);
   REQUIRE(dev.ok());
-  CHECK((*dev)->backend() == Backend::Wasapi);
+  CHECK((*dev)->backend() == Backend::RtAudioWasapi);
   CHECK_FALSE((*dev)->isOpen());
   CHECK_FALSE((*dev)->isRunning());
   auto list = (*dev)->enumerate();
@@ -40,7 +42,7 @@ TEST_CASE("rtaudio: WASAPI device creation and enumeration") {
 }
 
 TEST_CASE("rtaudio: exclusive mode is reported as unsupported, not faked") {
-  auto dev = createAudioDevice(Backend::Wasapi);
+  auto dev = createAudioDevice(Backend::RtAudioWasapi);
   REQUIRE(dev.ok());
   StreamConfig c;
   c.shareMode = ShareMode::Exclusive;
@@ -51,7 +53,7 @@ TEST_CASE("rtaudio: exclusive mode is reported as unsupported, not faked") {
 }
 
 TEST_CASE("rtaudio: invalid stream requests fail cleanly") {
-  auto dev = createAudioDevice(Backend::Wasapi);
+  auto dev = createAudioDevice(Backend::RtAudioWasapi);
   REQUIRE(dev.ok());
   StreamConfig c;
   c.outputDevice = 0x7FFFFFF0u;  // no such id

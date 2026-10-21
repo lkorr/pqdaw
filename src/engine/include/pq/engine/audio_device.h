@@ -8,25 +8,27 @@
 #include "pq/core/result.h"
 #include "pq/engine/audio_block.h"
 #include "pq/engine/callback_stats.h"
+#include "pq/engine/sample_convert.h"
 
 namespace pq::engine {
 
 enum class Backend : uint8_t {
-  Null,    // NullDevice: no hardware; driven manually or by a timer thread (tests, offline use)
-  Wasapi,  // RtAudio WASAPI (shared mode only, see ShareMode)
-  Asio,    // RtAudio ASIO (only when built with PQ_WITH_ASIO=ON)
+  Null,           // NullDevice: no hardware; driven manually or by a timer thread (tests, offline use)
+  Wasapi,         // our WASAPI backend (WasapiDevice): event-driven, exclusive and shared, output only
+  RtAudioWasapi,  // RtAudio WASAPI (shared mode only; kept for comparison and for input streams)
+  Asio,           // RtAudio ASIO (only when built with PQ_WITH_ASIO=ON)
 };
 
 const char* backendName(Backend b) noexcept;
 
-// True if this binary can open devices on the backend (Null and Wasapi always; Asio only with PQ_WITH_ASIO).
+// True if this binary can open devices on the backend (Null, Wasapi and RtAudioWasapi always; Asio only with
+// PQ_WITH_ASIO).
 bool backendCompiled(Backend b) noexcept;
 
 enum class ShareMode : uint8_t {
   Shared,
-  // WASAPI exclusive mode. Not available: RtAudio 6.0.1 (and its master branch) initialises WASAPI streams in
-  // shared mode only. open() returns ErrorCode::Unsupported rather than silently opening a shared stream.
-  // docs/QUESTIONS.md, T0.6 lists the options.
+  // WASAPI exclusive mode: Backend::Wasapi only. RtAudio 6.0.1 initialises WASAPI streams in shared mode only, so
+  // RtAudioDevice::open() returns ErrorCode::Unsupported for it rather than silently opening a shared stream (Q12).
   Exclusive,
 };
 
@@ -42,10 +44,17 @@ struct DeviceInfo {
   bool isDefaultInput = false;
   uint32_t preferredSampleRate = 0;  // WASAPI: the shared-mode mix rate
   std::vector<uint32_t> sampleRates;
+  // Backend::Wasapi only (empty / 0 otherwise):
+  std::string endpointId;                      // IMMDevice id: stable across processes and reboots
+  std::vector<SampleFormat> exclusiveFormats;  // exclusive-mode formats accepted at preferredSampleRate
+  uint32_t minPeriodFrames = 0;                // exclusive-mode minimum period at preferredSampleRate
+  uint32_t sharedMinPeriodFrames = 0;          // shared-mode (IAudioClient3) period range at the mix rate
+  uint32_t sharedMaxPeriodFrames = 0;
 };
 
 struct StreamConfig {
   uint32_t outputDevice = kDefaultDevice;
+  std::string outputEndpointId;  // Backend::Wasapi: when non-empty, selects the device instead of outputDevice
   uint32_t outputChannels = 2;
   uint32_t inputDevice = kDefaultDevice;
   uint32_t inputChannels = 0;  // 0 = output-only stream
@@ -53,6 +62,7 @@ struct StreamConfig {
   // Media Foundation on the audio thread, which allocates per callback: StreamInfo::backendResampling says so.
   uint32_t sampleRate = 0;
   uint32_t bufferFrames = 256;  // frames per device callback (SPEC §2: 64–256 typical); the backend may adjust
+                                // (WASAPI: rounded up to the device's minimum period and alignment)
   ShareMode shareMode = ShareMode::Shared;
 };
 
@@ -63,8 +73,15 @@ struct StreamInfo {
   uint32_t bufferFrames = 0;  // actual frames per callback
   uint32_t inputChannels = 0;
   uint32_t outputChannels = 0;
-  uint32_t latencyFrames = 0;      // as reported by the backend (0 if it does not report)
+  uint32_t latencyFrames = 0;      // output latency as the backend can tell before running (0 if unknown);
+                                   // WASAPI measures the real figure while running: CallbackStats meanQueueFrames
   bool backendResampling = false;  // the backend converts sample rate on the audio thread (not RT-safe)
+  // Backend::Wasapi only:
+  ShareMode shareMode = ShareMode::Shared;
+  SampleFormat deviceFormat = SampleFormat::Float32;  // the device buffer's interleaved format
+  uint32_t deviceChannels = 0;                        // channels in the device buffer (≥ outputChannels)
+  uint32_t endpointBufferFrames = 0;                  // endpoint buffer capacity (shared) or one period (exclusive)
+  std::string outputEndpointId;
 };
 
 // An audio device backend. open/start/stop/enumerate are non-RT virtuals called from a control thread.

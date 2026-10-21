@@ -39,6 +39,16 @@ public:
     double maxIntervalUs = 0;       // longest gap between the starts of consecutive callbacks
     double activeSeconds = 0;       // from the start of the first callback to the start of the last one
     bool timingReliable = false;    // false if the TSC is not invariant
+    // Device wake-ups, recorded by backends that wait on a device clock (WASAPI; zero for the others).
+    // outputUnderflows above then counts underrun episodes found by UnderrunTracker.
+    uint64_t wakes = 0;
+    uint64_t waitTimeouts = 0;      // device event waits that timed out
+    int64_t maxLatenessFrames = 0;  // worst wake-up lateness vs the device schedule (UnderrunTracker)
+    double maxLatenessUs = 0;
+    int64_t minQueueFrames = -1;    // frames written ahead of the device clock position at a wake (-1: unknown)
+    int64_t maxQueueFrames = -1;
+    double meanQueueFrames = -1;    // mean of the above: the output latency measured on the device clock
+    uint64_t restarts = 0;          // stream restarts to recover from an underrun (WASAPI exclusive)
     uint64_t xruns() const noexcept { return inputOverflows + outputUnderflows; }
   };
 
@@ -66,6 +76,24 @@ public:
     }
   }
 
+  // One device wake-up (before its write): lateness from UnderrunTracker, queue = frames written minus the
+  // device clock position (-1 if unknown). RT-safe.
+  void recordWake(int64_t latenessFrames, int64_t queueFrames, bool timedOut) noexcept {  // RT-safe
+    bump(wakes_);
+    if (timedOut) bump(waitTimeouts_);
+    if (latenessFrames > maxLateness_.load(std::memory_order_relaxed))
+      maxLateness_.store(latenessFrames, std::memory_order_relaxed);
+    if (queueFrames >= 0) {
+      const int64_t mn = minQueue_.load(std::memory_order_relaxed);
+      if (mn < 0 || queueFrames < mn) minQueue_.store(queueFrames, std::memory_order_relaxed);
+      if (queueFrames > maxQueue_.load(std::memory_order_relaxed)) maxQueue_.store(queueFrames, std::memory_order_relaxed);
+      queueSum_.store(queueSum_.load(std::memory_order_relaxed) + queueFrames, std::memory_order_relaxed);
+      bump(queueCount_);
+    }
+  }
+
+  void recordRestart() noexcept { bump(restarts_); }  // RT-safe
+
   // Any thread. Converts ticks to microseconds.
   Snapshot snapshot() const;
 
@@ -78,6 +106,7 @@ private:
   uint64_t periodTicks_ = ~0ull;
   double periodUs_ = 0;
   double ticksPerUs_ = 1;
+  double usPerFrame_ = 0;
   bool reliable_ = false;
   // Shared counters on their own cache line, away from whatever owns this object.
   alignas(kCacheLineSize) std::atomic<uint64_t> callbacks_{0};
@@ -90,6 +119,14 @@ private:
   std::atomic<uint64_t> maxGapTicks_{0};
   std::atomic<uint64_t> firstStartAtomic_{0};
   std::atomic<uint64_t> lastStartAtomic_{0};
+  std::atomic<uint64_t> wakes_{0};
+  std::atomic<uint64_t> waitTimeouts_{0};
+  std::atomic<int64_t> maxLateness_{0};
+  std::atomic<int64_t> minQueue_{-1};
+  std::atomic<int64_t> maxQueue_{-1};
+  std::atomic<uint64_t> restarts_{0};
+  std::atomic<int64_t> queueSum_{0};
+  std::atomic<uint64_t> queueCount_{0};
 };
 
 }  // namespace pq::engine

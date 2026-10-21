@@ -139,15 +139,20 @@ namespace pq::engine {
 namespace pq::engine {
   struct AudioBlock { const float* const* in; uint32_t numIn; float* const* out; uint32_t numOut; uint32_t frames; int64_t frameTime; };
   using AudioCallbackFn = void (*)(void* user, const AudioBlock&) noexcept;    // once per block, planar float
-  class AudioDevice {                       // NullDevice (tests/headless), RtAudioDevice (WASAPI shared; ASIO opt-in)
+  class AudioDevice {                       // NullDevice (tests/headless), WasapiDevice (own WASAPI: exclusive + shared,
+                                            // output only), RtAudioDevice (RtAudio WASAPI shared; ASIO opt-in)
     virtual Result<std::vector<DeviceInfo>> enumerate();                       // non-RT virtuals
     virtual Result<StreamInfo> open(const StreamConfig&, AudioCallback);
     virtual Status start(); virtual Status stop(); virtual const CallbackStats& stats() const noexcept;
   };
   class CallbackRunner;   // the one per-callback path every backend calls: RtScope + DenormalGuard + rdtsc stats
   class BlockAdapter;     // device buffer of any size → engine at a fixed internal block (direct when divisible, else FIFO +block latency)
+  class UnderrunTracker;  // per device wake: lateness vs the wall-clock schedule, empty shared buffer, device clock past
+                          // frames written → CallbackStats::outputUnderflows (one per episode) + recordWake (lateness, queue)
+  void planarToInterleaved(...);  // planar float → interleaved float32/int32/24-in-32/int24/int16 (AVX2 mono/stereo)
 }
 ```
+`Backend::Wasapi` is our WasapiDevice (the default); `Backend::RtAudioWasapi` keeps RtAudio's WASAPI for comparison and input. WasapiDevice's audio thread joins MMCSS "Pro Audio" once, waits on the device event, and per event runs the callback once per period on planar scratch, then converts once into the device buffer (no ring).
 The engine's process entry will be an `AudioCallback` behind a `BlockAdapter`; `ProcessContext` frame counts are therefore always the fixed internal block on the realtime path.
 
 ### ProgramImage ABI (shared by interpreter and JIT)

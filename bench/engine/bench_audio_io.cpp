@@ -2,12 +2,14 @@
 // BlockAdapter in direct and FIFO modes. The engine is a minimal kernel (copy in → out) so the numbers are the
 // path's own cost. Run from the release build.
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
 #include "pq_bench.h"
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/null_device.h"
+#include "pq/engine/sample_convert.h"
 
 using namespace pq::engine;
 
@@ -38,6 +40,29 @@ void benchDevice(const char* name, uint32_t deviceFrames, uint32_t blockFrames, 
   pq::bench::report(name, perFrame, "ns/frame");
 }
 
+// WASAPI device-buffer conversion (T0.6-fix1): planar float → interleaved device format, one pass per period.
+// Stereo uses the AVX2 path; 3 channels uses the scalar generic path (for comparison).
+void benchConvert(SampleFormat f, uint32_t channels, uint32_t frames) {
+  std::vector<std::vector<float>> in(channels, std::vector<float>(frames));
+  std::vector<const float*> ptrs;
+  for (uint32_t c = 0; c < channels; ++c) {
+    for (uint32_t i = 0; i < frames; ++i) in[c][i] = 0.9f * static_cast<float>((i * 7 + c * 13) % 101) / 101.0f - 0.45f;
+    ptrs.push_back(in[c].data());
+  }
+  std::vector<uint8_t> out(static_cast<size_t>(frames) * channels * 4 + 64);
+  const auto s = pq::bench::measure(
+      [&] {
+        planarToInterleaved(ptrs.data(), channels, channels, frames, f, out.data());
+        pq::bench::doNotOptimize(out[5]);
+      },
+      1);
+  char name[96];
+  std::snprintf(name, sizeof name, "convert %s %uch %u frames", sampleFormatName(f), channels, frames);
+  pq::bench::report(name, s, "ns/call");
+  const pq::bench::Stats perFrame{s.medianNs / frames, s.minNs / frames};
+  pq::bench::report(name, perFrame, "ns/frame");
+}
+
 }  // namespace
 
 int main() {
@@ -57,5 +82,11 @@ int main() {
   benchDevice("runner+adapter 480/64 (FIFO)", 480, 64, true);
   benchDevice("runner+adapter 37/32 (FIFO)", 37, 32, true);
   benchDevice("runner+adapter 1/32 (FIFO)", 1, 32, true);
+  for (SampleFormat f : {SampleFormat::Float32, SampleFormat::Int32, SampleFormat::Int24In32, SampleFormat::Int24,
+                         SampleFormat::Int16})
+    benchConvert(f, 2, 144);
+  benchConvert(SampleFormat::Int24, 2, 480);
+  benchConvert(SampleFormat::Int24, 3, 144);
+  benchConvert(SampleFormat::Float32, 3, 144);
   return 0;
 }

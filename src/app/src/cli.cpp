@@ -35,7 +35,9 @@ bool parseSize(std::string_view s, uint32_t& w, uint32_t& h) noexcept {
 Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   CliOptions o;
   bool modeSet = false;
-  std::string_view sineOnly;  // last flag seen that only --sine accepts
+  std::string_view sineOnly;    // last flag seen that only --sine accepts
+  std::string_view streamOnly;  // last flag seen that only the stream modes (--sine, --latency-test) accept
+  bool backendFlag = false;
   auto setMode = [&](Mode m, std::string_view flag) -> Status {
     if (modeSet) return usageError("only one mode flag may be given (got another: " + std::string(flag) + ")");
     o.mode = m;
@@ -73,11 +75,15 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--seconds") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.seconds) || !(o.seconds > 0.0) || o.seconds > 86400.0)
         return usageError("--seconds needs a duration in (0, 86400]");
-      sineOnly = a;
+      streamOnly = a;
     } else if (a == "--device") {
-      if (i + 1 >= args.size() || !parseNumber(args[++i], o.device))
-        return usageError("--device needs a device id from --list-devices");
-      sineOnly = a;
+      if (i + 1 >= args.size()) return usageError("--device needs a device id or endpoint id from --list-devices");
+      const std::string_view d = args[++i];
+      if (!d.empty() && d.front() == '{')
+        o.deviceEndpoint = std::string(d);
+      else if (!parseNumber(d, o.device))
+        return usageError("--device needs a device id or endpoint id ({...}) from --list-devices");
+      streamOnly = a;
     } else if (a == "--rate") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.sampleRate) || o.sampleRate == 0)
         return usageError("--rate needs a sample rate in Hz");
@@ -85,7 +91,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--buffer") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.bufferFrames) || o.bufferFrames == 0)
         return usageError("--buffer needs a frame count >= 1");
-      sineOnly = a;
+      streamOnly = a;
     } else if (a == "--block") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.blockFrames) || o.blockFrames == 0 ||
           o.blockFrames > 4096)
@@ -94,6 +100,26 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--exclusive") {
       o.exclusive = true;
       sineOnly = a;
+    } else if (a == "--level") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.levelDb) || !(o.levelDb >= -120.0 && o.levelDb <= 0.0))
+        return usageError("--level needs a level in dBFS in [-120, 0]");
+      streamOnly = a;
+    } else if (a == "--inject-stall") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.stallAfterWake) || o.stallAfterWake == 0)
+        return usageError("--inject-stall needs a device wake-up number >= 1");
+      sineOnly = a;
+    } else if (a == "--backend") {
+      if (i + 1 >= args.size()) return usageError("--backend needs wasapi or rtaudio");
+      const std::string_view b = args[++i];
+      if (b == "wasapi")
+        o.wasapi = WasapiImpl::Own;
+      else if (b == "rtaudio")
+        o.wasapi = WasapiImpl::RtAudio;
+      else
+        return usageError("--backend needs wasapi or rtaudio");
+      backendFlag = true;
+    } else if (a == "--latency-test") {
+      if (Status s = setMode(Mode::LatencyTest, a); !s) return std::move(s).error();
     } else if (a == "--asio") {
       o.asio = true;
     } else {
@@ -105,6 +131,12 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   if (o.mode != Mode::Screenshot && o.mode != Mode::Window && o.scale != 0.0f)
     return usageError("--scale only applies to --screenshot and the window");
   if (!sineOnly.empty() && o.mode != Mode::Sine) return usageError(std::string(sineOnly) + " only applies to --sine");
+  if (!streamOnly.empty() && o.mode != Mode::Sine && o.mode != Mode::LatencyTest)
+    return usageError(std::string(streamOnly) + " only applies to --sine and --latency-test");
+  if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
+    return usageError("--backend only applies to --sine and --list-devices");
+  if (o.stallAfterWake && (o.asio || o.wasapi != WasapiImpl::Own))
+    return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
   if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
     return usageError("--asio only applies to --sine and --list-devices");
   return o;
@@ -122,7 +154,15 @@ std::string usage() {
          "                                           (default 800x480) at UI scale S (default 1), i.e.\n"
          "                                           round(W*S) x round(H*S) device px\n"
          "  --window-selftest                        scripted resize/minimise/restore run (exit 77 = no display)\n"
-         "  --help                                   this text\n";
+         "  --list-devices [--backend wasapi|rtaudio] [--asio]\n"
+         "                                           list audio devices (WASAPI ids and endpoint ids)\n"
+         "  --sine <hz> [options]                    play a test tone and print callback/underrun stats:\n"
+         "      --seconds S, --device <id|{endpoint}>, --backend wasapi|rtaudio, --asio, --exclusive,\n"
+         "      --rate HZ, --buffer N (device frames), --block N (engine block), --level DBFS (default -24),\n"
+         "      --inject-stall W (test: stall 3 periods after device wake-up W; expects 1 underrun)\n"
+         "  --latency-test [--seconds S] [--device ..] [--buffer N] [--level DBFS]\n"
+         "                                           shared-mode output latency vs WASAPI loopback capture\n"
+         "  --help                                  this text\n";
 }
 
 }  // namespace pq::app

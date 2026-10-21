@@ -40,9 +40,15 @@ void CallbackStats::reset(uint32_t bufferFrames, uint32_t sampleRate) {
   reliable_ = tscIsInvariant();
   periodUs_ = sampleRate ? 1e6 * bufferFrames / sampleRate : 0.0;
   periodTicks_ = sampleRate ? static_cast<uint64_t>(periodUs_ * ticksPerUs_) : ~0ull;
+  usPerFrame_ = sampleRate ? 1e6 / sampleRate : 0.0;
   for (auto* a : {&callbacks_, &frames_, &inputOverflows_, &outputUnderflows_, &deadlineMisses_, &totalTicks_,
                   &maxTicks_, &maxGapTicks_, &firstStartAtomic_, &lastStartAtomic_})
     a->store(0, std::memory_order_relaxed);
+  for (auto* a : {&wakes_, &waitTimeouts_, &restarts_, &queueCount_}) a->store(0, std::memory_order_relaxed);
+  queueSum_.store(0, std::memory_order_relaxed);
+  maxLateness_.store(0, std::memory_order_relaxed);
+  minQueue_.store(-1, std::memory_order_relaxed);
+  maxQueue_.store(-1, std::memory_order_relaxed);
 }
 
 CallbackStats::Snapshot CallbackStats::snapshot() const {
@@ -61,6 +67,15 @@ CallbackStats::Snapshot CallbackStats::snapshot() const {
                                         firstStartAtomic_.load(std::memory_order_relaxed)) /
                     (ticksPerUs_ * 1e6);
   s.timingReliable = reliable_;
+  s.wakes = wakes_.load(std::memory_order_relaxed);
+  s.waitTimeouts = waitTimeouts_.load(std::memory_order_relaxed);
+  s.maxLatenessFrames = maxLateness_.load(std::memory_order_relaxed);
+  s.maxLatenessUs = static_cast<double>(s.maxLatenessFrames) * usPerFrame_;
+  s.minQueueFrames = minQueue_.load(std::memory_order_relaxed);
+  s.maxQueueFrames = maxQueue_.load(std::memory_order_relaxed);
+  s.restarts = restarts_.load(std::memory_order_relaxed);
+  const uint64_t qn = queueCount_.load(std::memory_order_relaxed);
+  if (qn) s.meanQueueFrames = static_cast<double>(queueSum_.load(std::memory_order_relaxed)) / static_cast<double>(qn);
   return s;
 }
 

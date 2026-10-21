@@ -12,7 +12,7 @@
 namespace pq::engine {
 
 struct RtAudioDevice::Impl {
-  Backend backend = Backend::Wasapi;
+  Backend backend = Backend::RtAudioWasapi;
   RtAudio::Api api = RtAudio::WINDOWS_WASAPI;
   std::unique_ptr<RtAudio> rt;
   CallbackRunner runner;
@@ -37,9 +37,10 @@ namespace {
 
 RtAudio::Api toApi(Backend b) noexcept {
   switch (b) {
-    case Backend::Wasapi: return RtAudio::WINDOWS_WASAPI;
+    case Backend::RtAudioWasapi: return RtAudio::WINDOWS_WASAPI;
     case Backend::Asio: return RtAudio::WINDOWS_ASIO;
-    case Backend::Null: break;
+    case Backend::Null:
+    case Backend::Wasapi: break;
   }
   return RtAudio::UNSPECIFIED;
 }
@@ -51,7 +52,9 @@ bool apiCompiled(RtAudio::Api api) {
 }
 
 // RtAudio's callback, on its audio thread. With RTAUDIO_NONINTERLEAVED the buffers hold each channel's nFrames
-// samples back to back, so the planar pointers are base + c · nFrames: no conversion, no copy.
+// samples back to back, so the planar pointers are base + c · nFrames: no conversion or copy of ours. RtAudio
+// itself still converts and copies around this call (WASAPI: interleave, resampler pass-through, its own ring
+// buffer; review M0 H1/L1, docs/QUESTIONS.md Q12): Backend::Wasapi (WasapiDevice) avoids all of that.
 int rtAudioCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames, double /*streamTime*/,
                     RtAudioStreamStatus status, void* user) noexcept {  // RT-safe
   auto* impl = static_cast<RtAudioDevice::Impl*>(user);
@@ -69,14 +72,14 @@ int rtAudioCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames,
 }  // namespace
 
 bool backendCompiled(Backend b) noexcept {
-  if (b == Backend::Null) return true;
+  if (b == Backend::Null || b == Backend::Wasapi) return true;
   return apiCompiled(toApi(b));
 }
 
 Result<std::unique_ptr<RtAudioDevice>> RtAudioDevice::create(Backend backend) {
   const RtAudio::Api api = toApi(backend);
   if (api == RtAudio::UNSPECIFIED)
-    return Error{ErrorCode::InvalidArgument, "RtAudioDevice: backend must be WASAPI or ASIO"};
+    return Error{ErrorCode::InvalidArgument, "RtAudioDevice: backend must be RtAudioWasapi or Asio"};
   if (!apiCompiled(api)) {
     if (backend == Backend::Asio)
       return Error{ErrorCode::Unsupported,
@@ -130,8 +133,8 @@ Result<StreamInfo> RtAudioDevice::open(const StreamConfig& config, AudioCallback
   if (!cb) return Error{ErrorCode::InvalidArgument, "RtAudioDevice: no callback"};
   if (config.shareMode == ShareMode::Exclusive)
     return Error{ErrorCode::Unsupported,
-                 "WASAPI exclusive mode is not available: RtAudio 6.0.1 opens WASAPI streams in shared mode only "
-                 "(docs/QUESTIONS.md, T0.6)"};
+                 "WASAPI exclusive mode is not available through RtAudio 6.0.1 (shared mode only); use "
+                 "Backend::Wasapi (--backend wasapi) for exclusive mode"};
   if (config.outputChannels == 0 && config.inputChannels == 0)
     return Error{ErrorCode::InvalidArgument, "RtAudioDevice: a stream needs input or output channels"};
   if (config.outputChannels > kMaxChannels || config.inputChannels > kMaxChannels)
@@ -189,7 +192,7 @@ Result<StreamInfo> RtAudioDevice::open(const StreamConfig& config, AudioCallback
   info.outputChannels = config.outputChannels;
   info.latencyFrames = static_cast<uint32_t>(std::max(0L, rt.getStreamLatency()));
   // WASAPI shared mode runs at the engine mix rate; RtAudio converts anything else with Media Foundation.
-  info.backendResampling = impl_->backend == Backend::Wasapi && deviceRate != 0 && info.sampleRate != deviceRate;
+  info.backendResampling = impl_->backend == Backend::RtAudioWasapi && deviceRate != 0 && info.sampleRate != deviceRate;
   // Callbacks begin only after startStream(), so preparing the runner now (with the actual buffer size) is safe.
   impl_->runner.prepare(cb, config.inputChannels, config.outputChannels, frames, info.sampleRate);
   return info;

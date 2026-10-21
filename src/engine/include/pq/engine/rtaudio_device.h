@@ -22,7 +22,7 @@ namespace pq::engine {
 // compares frames delivered against the device clock. See docs/QUESTIONS.md, T0.6.
 class RtAudioDevice final : public AudioDevice {
 public:
-  // backend must be Wasapi or Asio. Errors: Unsupported if not compiled in.
+  // backend must be RtAudioWasapi or Asio. Errors: Unsupported if not compiled in.
   static Result<std::unique_ptr<RtAudioDevice>> create(Backend backend);
   ~RtAudioDevice() override;
 
