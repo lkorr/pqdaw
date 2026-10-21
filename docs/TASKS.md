@@ -57,7 +57,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
 ## M0 follow-ups (from the M0 review, docs/reviews/M0.md)
 In TASKS.md format, for the orchestrator to schedule. The order is my priority: H-items first, and before T3.1/T3.2 merge where noted.
 
-- [~] **T0.7-fix3 HiDPI content scale** *(worker Q, branch task/T0.7-fix3-hidpi)* (`ui`, `app`). Depends on: T0.7, T0.8. **Before T3.1/T3.2 merge.**
+- [x] **T0.7-fix3 HiDPI content scale** *(dcb5a0a)* (`ui`, `app`). Depends on: T0.7, T0.8. **Before T3.1/T3.2 merge.**
   - `UiScale` from `SDL_GetWindowDisplayScale`, updated on `DISPLAY_SCALE_CHANGED`. Layout units are logical px snapped to device px. Font roles resolve to `round(role·scale)` integer-px hinted fonts. Line widths and feathers stay in device px. Screenshot `--scale`.
   - Accept: `text` and `test-pattern` goldens at scale 1.0/1.25/1.5/2.0. A scale change at runtime re-renders without restart (scripted window test). No blurry glyphs: every glyph quad lands on integer device pixels (test).
 
@@ -77,7 +77,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - `addRectStroke`, `addRoundedRectStroke`, public `addConvexPolyFilled`, `addCircleFilled/Stroke`, `addArcStroke` (knob rings), `addTriangleFilled`, snapped `addHLine/addVLine`. Fix `addRectFilledMultiColor` to be bilinear (centre vertex or N×N), or correct its doc.
   - Accept: `primitives` golden scene. Unit tests: a 1 px stroke at integer coordinates touches exactly one pixel column at full alpha; arc tessellation chord error ≤ 0.2 px; the 4-corner gradient's centre pixel is within 2/255 of the bilinear value. Benchmarks recorded.
 
-- [ ] **T0.8-fix1 Non-blocking glyph uploads, R8 glyph pages, stable runs** (`ui`). Depends on: T0.8.
+- [~] **T0.8-fix1 Non-blocking glyph uploads, R8 glyph pages, stable runs** *(worker T, branch task/T0.8-fix1-glyph-atlas)* (`ui`). Depends on: T0.8.
   - Per-frame staging ring; atlas copies recorded in the frame's command buffer (no `vkDeviceWaitIdle`). R8 glyph pages separate from the RGBA sprite page; multi-page with eviction; loud (once) failure when full. Run-cache flush only at frame start (M8). Ellipsis truncation and per-cluster caret x-positions in `TextRun` (needed by T3.2 text edit).
   - Accept: rasterising 200 new glyphs during an animated run causes no frame > 1.5× the median frame time. A test that shapes 20k distinct strings within one frame keeps every earlier run valid. Atlas memory ≤ 1/4 of today's for the same glyph set.
 

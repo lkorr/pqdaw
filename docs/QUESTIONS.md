@@ -225,7 +225,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   6. Units vs durations: durations are seconds in the language (Q14), but a literal `5smp` is normalised to the number 5 (samples), so `delay(x, 5smp, 1s)` would mean 5 s. T1.4 should convert `smp` literals to seconds (`/ sr`) where they meet a seconds input, or reject them there.
 - Status: open
 
-## Q?-T0.7-fix3-a · 2026-10-21 · T0.7-fix3 · HiDPI: font-role rounding at fractional scales, hairlines, atlas capacity
+## Q31 · 2026-10-21 · T0.7-fix3 · HiDPI: font-role rounding at fractional scales, hairlines, atlas capacity
 - Context: font roles render at `round(role px × scale)` (the task text). At 125 % that gives section 12 → 15, body 13 → 16, title 14 → 18 (17.5 rounds away from zero), so title is 2 px above body instead of 1. At 150 %: 18 / 20 (19.5) / 21. Separately, "line widths and feathers stay in device px" means 1 px grid lines and dividers become physically thinner at 150–200 %.
 - Options (rounding): A) round half away from zero (now); B) round half down (125 %: 15 / 16 / 17, keeps the 1 px steps); C) a per-scale size table in the theme (T3.2), e.g. tuned by eye per scale.
 - Options (hairlines): A) always 1 device px (now, per the review); B) `max(1, floor(scale))` device px, so 200 % gets 2 px lines while 125–175 % stay 1 px.

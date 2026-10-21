@@ -165,3 +165,11 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: crisp primitives are unfeathered quads; no trig per shape (tables); per-point division replaced by incremental quadrant walk (knob arc 379→256 ns, ring 209→162, disc 110→86); gradient grid only when the corners twist.
 - Notes/blockers: none.
 - Orchestrator verification: rebased onto 5002d40 (RESULTS.md conflict); build.ps1 dev + release: 0 warnings, 13/13. Viewed primitives.png.
+
+## 2026-10-21 · T0.7-fix3 · worker Q / task/T0.7-fix3-hidpi
+- Did: HiDPI content scale. `UiScale` (pq/ui/ui_scale.h) is the single logical→device conversion (edge-snapped px/rect, fontPx = round(role·scale), clamped 0.5–4). App reads SDL_GetWindowDisplayScale at startup and on DISPLAY_SCALE_CHANGED/DISPLAY_CHANGED (or --scale) and pushes it to UiTree::setViewport (T3.1 plumbing reused) and setSceneScale (FontRole → integer-px hinted fonts, created on the event, never in paint). text/widgets-core scenes lay out in logical px; test-pattern/lines stretch to the device target; hairlines/line widths/feathers stay device px. `--scale` for --screenshot and the window. Goldens text/test-pattern @1.25/1.5/2.0x. Q31 (round-half rounding at 125 %, device-px hairlines, atlas capacity). ARCHITECTURE HiDPI contract.
+- Verified: build.ps1 dev + release: 0 warnings, 13/13 (pq_tests_ui incl. scaled goldens + test_hidpi: every glyph quad on integer device px with 1:1 texels at 1.0/1.25/1.5/1.75/2.0, runtime scale change via TestDriver; window self-test with injected DISPLAY_SCALE_CHANGED, validation-clean). 1.0 goldens bit-identical.
+- Perf: new-scale change 7.67 ms (once per scale, on the event); seen-scale change 79 ns; relayout 2.6 µs; cached label draw @1.5x 86.9 ns (= 1.0).
+- CPU-efficiency check: scale resolved once per change; no per-glyph/per-vertex scale math; fonts per size cached.
+- Notes/blockers: glyph atlas at 967/1024 rows with 7 fonts × 5 scales → T0.8-fix1 (multi-page + eviction) needed before T3.2 adds roles. The `primitives` scene lays out in fixed device px, so at --scale ≠ 1 only its labels scale (scene is a sampler; fix when T3.2 replaces it).
+- Orchestrator verification: fast-forward onto 009c08d; build.ps1 dev + release: 0 warnings, 13/13. Assigned Q31.
