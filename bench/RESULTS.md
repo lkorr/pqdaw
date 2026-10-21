@@ -21,3 +21,15 @@ Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 | 2026-10-20 | 240390d | fixed pool create+destroy | release, pq_bench_core | 2.4 ns median | 64-byte objects, batch 64 |
 | 2026-10-20 | 240390d | arena allocate (64-byte aligned) | release, pq_bench_core | 1.25 ns/alloc median | batch 64 then reset |
 | 2026-10-20 | 240390d | epoch quiescent (reader side) | release, pq_bench_core | 0.72 ns/call median | one acquire load + one release store |
+| 2026-10-20 | ac48462 | exp2: std / fast / fast8 | release, pq_bench_fast_math | 2.03 / 1.53 / 0.219 ns/elem median | 4096-elem buffer, x in [-20,20]; the std loop is auto-vectorised by MSVC |
+| 2026-10-20 | ac48462 | log2: std / fast / fast8 | release, pq_bench_fast_math | 2.25 / 2.08 / 0.301 ns/elem median | x in [1e-3,1e5]; includes special-value blends |
+| 2026-10-20 | ac48462 | sin: std / fast / fast8 | release, pq_bench_fast_math | 5.35 / 1.49 / 0.208 ns/elem median | x in [-10,10] |
+| 2026-10-20 | ac48462 | tan: std / fast / fast8 | release, pq_bench_fast_math | 3.39 / 1.62 / 0.223 ns/elem median | x in [0,1.57]; one division |
+| 2026-10-20 | ac48462 | tanh: std / fast / fast8 | release, pq_bench_fast_math | 7.20 / 1.60 / 0.246 ns/elem median | x in [-5,5]; one division |
+| 2026-10-20 | ac48462 | centsToHz: precise(double) / fast / fast8 | release, pq_bench_fast_math | 3.36 / 1.84 / 0.261 ns/elem median | cents in [-6000,6000] |
+| 2026-10-20 | ac48462 | hzToCents: precise(double) / fast / fast8 | release, pq_bench_fast_math | 8.81 / 2.53 / 0.359 ns/elem median | hz in [20,20000] |
+| 2026-10-20 | ac48462 | dbToGain: precise(double) / fast / fast8 | release, pq_bench_fast_math | 11.0 / 1.80 / 0.249 ns/elem median | dB in [-100,24] |
+| 2026-10-20 | ac48462 | gainToDb: precise(double) / fast / fast8 | release, pq_bench_fast_math | 4.07 / 2.26 / 0.323 ns/elem median | gain in [1e-5,4] |
+| 2026-10-20 | ac48462 | tempo ticksToSamples (1000 segs / constant) | release, pq_bench_time | 44.5 / 3.43 ns/call median | random ticks; a ramp segment costs one log1p |
+| 2026-10-20 | ac48462 | tempo samplesToTicks / firstTickAtOrAfterSample | release, pq_bench_time | 54.3 / 148 ns/call median | 1000 segments, random samples; per block/event, not per sample |
+| 2026-10-20 | ac48462 | timesig ticksToBarBeat | release, pq_bench_time | 8.32 ns/call median | 5 changes |
