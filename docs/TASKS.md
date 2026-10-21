@@ -109,6 +109,10 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - `RtLog`: fixed-size POD records (code, args) pushed from RT threads into an SPSC ring, formatted and written by a logger thread (ARCHITECTURE §1 promises it).
   - Accept: RtScope-clean push. 10⁶ records from the NullDevice callback lose none at 4096 capacity when drained at 100 Hz, and report drops exactly when overfilled.
 
+- [~] **T0.x-flake Timing tests robust under load** (`tests`, `ui`, `engine`). Depends on: —. *(worker AG, branch task/T0.x-flake)*
+  - Several timing/perf assertions fail intermittently while other builds run (seen: `pq_tests_ui` test_render.cpp "stalls == 0", `pq_tests_engine` test_null_device.cpp:281 callback within 50 ms, `pqdaw_window_selftest_partial` CPU ratio < 25 %, glyph-upload frame-interval check). `main` must always pass.
+  - Accept: each timing assertion either measures something load-independent (thread CPU cycles, counts, deterministic fake clocks) or moves to an opt-in perf label (`ctest -L perf`) that the standard build doesn't run; the functional part of each test stays in the default suite. 10 consecutive full release `ctest` runs pass while a parallel `cmake --build` of the other preset runs.
+
 ## M1: Engine core
 
 - [x] **T1.1 Patch IR** *(1c5ad8d)* (`graph`). Depends on: T0.2.
