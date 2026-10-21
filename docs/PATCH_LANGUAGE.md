@@ -95,7 +95,7 @@ Decided while implementing the parser; the open ones are tracked in [QUESTIONS.m
 - **Cycles**:
   - A cycle that goes through `z1(…)`, `delay(…)` or a stateful atom is ordinary feedback.
   - A cycle with no delay is an **error** in text, unless it is inside `solve`. The visual editor inserts an explicit `z1` and shows a warning instead.
-  - For now a cycle whose only delay is `phasor`'s or `sine_hz`'s `hz` (or a sample player's `rate`) is reported the same way: those atoms have no split kernel yet, so put a `z1` into such a loop (QUESTIONS Q?-T1.5-a). Loops through `z1` and delay lines are scheduled per sample, or in sub-blocks as long as the shortest delay allows (T1.5).
+  - For now a cycle whose only delay is `phasor`'s or `sine_hz`'s `hz` (or a sample player's `rate`) is reported the same way: those atoms have no split kernel yet, so put a `z1` into such a loop (QUESTIONS Q43). Loops through `z1` and delay lines are scheduled per sample, or in sub-blocks as long as the shortest delay allows (T1.5).
   - Zero-delay-feedback filters write their solved form explicitly (see `stdlib/filters/svf.pqp` once it exists).
 - **Calls** go to a leaf atom (SPEC §7.2), a patch in the same file, or a patch from an `import`ed file. Calling a patch instantiates it as a subcircuit. Named arguments bind its `in`s and `param`s; anything not bound uses its default.
 - **Multi-output nodes** return a record, accessed with `.name` (e.g. `svf(x, cutoff: c, res: r).lp`).

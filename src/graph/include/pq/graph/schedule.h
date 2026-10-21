@@ -15,7 +15,7 @@
 //      located at a node of the cycle) or, with ScheduleOptions::visualMode, a z1 is inserted on one of its wires
 //      and a warning is recorded (Schedule::warnings, insertedDelays). A cycle whose only delay is a delayed input
 //      without a split kernel (phasor.hz, sine_hz.hz, sample_read rate) is reported the same way (QUESTIONS
-//      Q?-T1.5-a);
+//      Q43);
 //    - each solve block's BODY (the nodes on a path from its unknowns to its equations) must not hold stateful
 //      fused atoms (they would advance once per Newton iteration) and must not depend on another block that depends
 //      on it within the same sample.

@@ -127,7 +127,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Constant folding (never `param`), DCE, CSE, algebraic simplification (×1, +0, ×0 when the other side is finite), and hoisting param-rate subexpressions out of audio-rate paths.
   - Accept: tests on before/after IR. A test proves `tan(π·cutoff/sr)` is hoisted to param rate when cutoff is unmodulated, and stays audio-rate when it is modulated.
 
-- [~] **T1.5 Scheduler** *(worker W, branch task/T1.5-scheduler)* (`graph`). Depends on: T1.4.
+- [x] **T1.5 Scheduler** *(346999c)* (`graph`). Depends on: T1.4.
   - Topological order, Tarjan SCCs, explicit-delay feedback handled, a zero-delay cycle outside `solve` rejected (text) or given an inserted `z1` plus a warning (visual mode flag). Block regions: per-sample for feedback SCCs, blocks elsewhere. Buffer liveness and reuse. State layout keyed by NodeId with type tags.
   - Accept: tests on schedule structure. The scratch-buffer count for a 100-node chain is ≤ 3. The state layout for an unchanged node is identical across reschedules.
 
@@ -135,7 +135,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Every leaf atom in SPEC §7.2: math, logic (bool lanes as masks), memory (`z1`, `delayline` with linear/allpass/cubic reads), generators (`phasor` with a **uint32 phase accumulator**, `sine`, `wavetable` with band-limited mipmaps, `noise`), `shaper`, `sampleRead`. Each has a scalar and an AVX2 path, block-wise.
   - Accept: each kernel is tested against a naive `double` reference. A phasor test shows zero drift over 10⁹ samples, with its frequency exact to the uint32 resolution. Benchmarks are recorded per atom (ns/sample, 1 and 8 lanes).
 
-- [ ] **T1.7 Interpreter backend + ProgramImage** (`graph` + `engine`). Depends on: T1.5, T1.6.
+- [~] **T1.7 Interpreter backend + ProgramImage** *(worker Z, branch task/T1.7-interpreter)* (`graph` + `engine`). Depends on: T1.5, T1.6.
   - Flat op list, parameter block, `ProcessContext`, and the state arena.
   - Accept: the interpreted output of the patches in `tests/graph/cases/` matches a slow reference evaluator (sample-by-sample graph walk in `double`) within 1e-5. RtScope tests show process() never allocates.
 
