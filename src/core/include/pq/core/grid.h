@@ -234,6 +234,7 @@ private:
   Ticks groupStart_ = 0;
   Ticks groupEnd_ = 0;
   int64_t j_ = 0;
+  int64_t jInTuplet_ = 0;  // j_ % L_.tuplet, kept incrementally
   Ticks to_ = 0;
   bool done_ = true;
 };

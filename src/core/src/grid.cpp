@@ -24,8 +24,9 @@ constexpr int64_t roundDivPos(int64_t a, int64_t b) noexcept { return (2 * a + b
 constexpr int64_t roundDiv(int64_t a, int64_t b) noexcept { return floorDiv(2 * a + b, 2 * b); }  // RT-safe
 
 // Lines of the group starting at gs: gs + round(j · num / den).
+// Every tuplet grid of PPQ 27720 has den == 1 (exact cells): skip the division there.
 constexpr Ticks linePos(const detail::GridLayout& L, Ticks gs, int64_t j) noexcept {  // RT-safe
-  return gs + roundDivPos(j * L.num, L.den);
+  return L.den == 1 ? gs + j * L.num : gs + roundDivPos(j * L.num, L.den);
 }
 
 // Appends text to out at pos; false if it does not fit.
@@ -291,6 +292,7 @@ GridLineCursor Grid::lines(Ticks from, Ticks to) const noexcept {
   c.groupEnd_ = std::min(c.groupStart_ + L.groupLen, L.segEndTick);
   const Ticks off = from - c.groupStart_;
   c.j_ = off == 0 ? 0 : ceilDivPos((2 * off - 1) * L.den, 2 * L.num);
+  c.jInTuplet_ = c.j_ % L.tuplet;
   c.to_ = to;
   c.done_ = false;
   return c;
@@ -309,6 +311,7 @@ void GridLineCursor::advanceGroup() noexcept {
   }
   groupEnd_ = std::min(groupStart_ + L_.groupLen, L_.segEndTick);
   j_ = 0;
+  jInTuplet_ = 0;
 }
 
 bool GridLineCursor::next(GridLine& out) noexcept {
@@ -333,11 +336,14 @@ bool GridLineCursor::next(GridLine& out) noexcept {
   out.bar = groupBar_ + barsIn;
   out.tickInBar = inBar;
   out.sig = L_.sig;
+  // 0 ≤ inBar < barLen ≤ 1024 whole notes < 2^32: a 32-bit modulo is enough (and cheaper than 64-bit).
+  const bool onBeat = static_cast<uint32_t>(inBar) % static_cast<uint32_t>(L_.beatLen) == 0;
   out.strength = inBar == 0                ? GridStrength::Bar
-                 : inBar % L_.beatLen == 0 ? GridStrength::Beat
-                 : j_ % L_.tuplet == 0     ? GridStrength::Subdivision
+                 : onBeat                  ? GridStrength::Beat
+                 : jInTuplet_ == 0         ? GridStrength::Subdivision
                                            : GridStrength::Tuplet;
   ++j_;
+  if (++jInTuplet_ == L_.tuplet) jInTuplet_ = 0;
   return true;
 }
 
