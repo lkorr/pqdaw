@@ -12,3 +12,5 @@ function(pq_add_bench name)
 endfunction()
 
 # Benchmarks are added below as modules appear.
+
+pq_add_bench(pq_bench_tuning SOURCES tuning/bench_resolve.cpp DEPS pq_tuning)
