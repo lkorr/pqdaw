@@ -240,4 +240,16 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options (hairlines): A) always 1 device px (now, per the review); B) `max(1, floor(scale))` device px, so 200 % gets 2 px lines while 125–175 % stay 1 px.
 - Provisional choice: A and A. Both are one-line changes (`UiScale::fontPx`, the scenes' hairline rects) and T3.2's theme can switch to a table without touching callers, since every caller goes through `UiScale`/`FontRole`.
 - Atlas note: the single 1024² glyph page holds the 7 scene font roles at 5 scales (1.0–2.0) with ASCII warmed in 967 of 1024 rows (test_hidpi). A window that visits many scales, or T3.2 adding roles, will fill it; multi-page atlas with eviction is already T0.8-fix1. Until then a full atlas drops new glyphs (counted in `TextSystem::Stats::atlasFull`).
+
+## Q?-T3.3-a · 2026-10-21 · T3.3 · Grid details not fixed by SPEC §9.2 / Live's manual
+- Context: SPEC §9.2 and TASKS T3.3 fix the grid's menu and keys, not its geometry in odd meters, the adaptive thresholds, or the exact relative-snap/quantize arithmetic. Live's manual doesn't document these either.
+- Options / provisional choices (all in `pq/core/grid.h`; each is one function to change, nothing is persisted except `GridSpec`):
+  1. Adaptive density: 7 levels −3…+3 (Narrowest, Narrower, Narrow, Medium, Wide, Wider, Widest) as TASKS says, vs Live's 5. Minimum cell = 24·2^level logical px (3…192 px). Alternative: 5 levels mapped onto −2…+2.
+  2. Note cells restart at every bar line (7/8 on 1/4: three quarters + one eighth). Adaptive skips note values longer than a beat that don't tile the bar (3/4 goes 1/4 → 1 bar, never 1/2); fixed values are honoured as chosen. Alternative: cells continuous across bars (lines drift off bar lines in odd meters).
+  3. Zoomed-out multi-bar cells (1, 2, 4, 8… bars) count from the first bar of each time-signature segment, so a signature change starts a new cell. Alternative: count from bar 1 globally (a cell could straddle a signature change).
+  4. Tuplet groups that don't fit the rest of the bar are cut off by the bar line (e.g. 5-tuplet 1/2 = 5 lines per 2 whole notes in a 4/4 bar shows 3 lines, then the bar). Alternative: groups flow across bar lines.
+  5. Relative snap (`snapDelta`): anchor = last grid line ≤ origin; delta = nearestLine(anchor + raw) − anchor. On-grid objects snap to lines; off-grid objects move in whole cells keeping their offset. Ties go to the later line everywhere.
+  6. Quantize: start-only keeps the length (moves the note, Live's default); start+end quantizes the end to its nearest line, or the line after the quantized start if it would collapse. Amount rounds half up in ticks. Quantize ignores the snap toggle; an Off grid quantizes nothing (T3.6 may pass a fixed grid instead).
+  7. Ruler labels: bar numbers are 1-based and skip 0 (pre-roll is −1, −2…); "17" / "17.3" / "17.3.2"; the tick remainder inside a sixteenth (tuplets, 1/32) is returned but not printed.
+- Provisional choice: as listed (most reversible: pure functions, no stored data depends on them).
 - Status: open

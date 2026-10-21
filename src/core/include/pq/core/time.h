@@ -164,6 +164,13 @@ public:
   Ticks barBeatToTicks(const BarBeatTick& p) const noexcept; // RT-safe
 
   std::size_t changeCount() const noexcept { return bar_.size(); }
+  // Segment access (RT-safe): change i starts at bar changeBar(i) = tick changeStartTick(i) with signature
+  // changeSignature(i) and lasts until change i + 1 (the last one forever). changeIndexAt(t) is the segment
+  // containing t (0 for t before tick 0).
+  std::size_t changeIndexAt(Ticks t) const noexcept { return changeForTick(t); }   // RT-safe
+  int64_t changeBar(std::size_t i) const noexcept { return bar_[i]; }               // RT-safe
+  Ticks changeStartTick(std::size_t i) const noexcept { return startTick_[i]; }     // RT-safe
+  TimeSignature changeSignature(std::size_t i) const noexcept { return sig_[i]; }   // RT-safe
 
 private:
   std::size_t changeForBar(int64_t bar) const noexcept;

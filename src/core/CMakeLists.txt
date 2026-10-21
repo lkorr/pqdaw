@@ -4,6 +4,7 @@ pq_add_module(pq_core
     src/alloc_trap.cpp
     src/epoch_reclaimer.cpp
     src/time.cpp
+    src/grid.cpp
 )
 # DbgHelp: symbolised stack traces when the allocation trap aborts (system library).
 target_link_libraries(pq_core PRIVATE Dbghelp)
