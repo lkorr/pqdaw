@@ -52,7 +52,9 @@ struct RenderRequest {
   EventSource events;                // with `voices`: the note events (e.g. NoteListSource)
   uint32_t eventCapacity = 1024;     // events per engine block (more are dropped and counted by the EventBuffer)
   std::span<const float> params;     // empty: the declared defaults; else one value per io().params slot
-  TransportSnapshot transport;       // at frame 0 (advances by beatsPerFrame while playing)
+  TransportSnapshot transport;       // at frame 0 (advances by beatsPerFrame while playing; ignored with a hook)
+  BlockHook hook;                    // per block before the events (T3.16: Timeline::blockHook drives transport,
+                                     // params and, through `events`, the notes)
   uint32_t chunkFrames = 8192;       // frames per sink write (rounded up to whole blocks)
 };
 

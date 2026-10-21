@@ -271,6 +271,7 @@ void ProgramHost::process(const AudioBlock& block) noexcept {  // RT-safe
     const uint32_t n = std::min(maxBlock, block.frames - off);
     const int64_t time = block.frameTime + off;
     if (fadeFrom_ == nullptr) trySwap();
+    if (cfg_.hook.fn != nullptr) cfg_.hook.fn(cfg_.hook.user, time, n, transport_, params());
     for (uint32_t c = 0; c < numIn; ++c) in[c] = block.in[c] + off;
     if (cur_ == nullptr) {
       for (uint32_t c = 0; c < numOut; ++c) std::memset(block.out[c] + off, 0, sizeof(float) * n);
@@ -311,7 +312,8 @@ void ProgramHost::process(const AudioBlock& block) noexcept {  // RT-safe
       }
       ++stats_.blocks;
     }
-    if (transport_.playing) transport_.beat += static_cast<double>(n) * transport_.beatsPerFrame;
+    if (cfg_.hook.fn == nullptr && transport_.playing)
+      transport_.beat += static_cast<double>(n) * transport_.beatsPerFrame;
     lastFrames_ = n;
   }
   reclaimer_.quiescent(reader_);

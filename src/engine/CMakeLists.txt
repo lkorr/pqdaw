@@ -3,6 +3,7 @@ pq_add_module(pq_engine
     src/asio_convert.cpp
     src/asio_device.cpp
     src/audio_device.cpp
+    src/automation.cpp
     src/block_adapter.cpp
     src/callback_stats.cpp
     src/image_runner.cpp
@@ -13,7 +14,9 @@ pq_add_module(pq_engine
     src/program_host.cpp
     src/rtaudio_device.cpp
     src/sample_convert.cpp
+    src/sequence.cpp
     src/state_transfer.cpp
+    src/timeline.cpp
     src/voices.cpp
     src/wasapi_device.cpp
     src/wav_file.cpp

@@ -87,6 +87,8 @@ struct HostConfig {
   bool voices = false;             // run images through a VoiceEngine (prepared with the first image's geometry)
   VoiceConfig voice;               // doneSlot / monitorMask are per image (VoiceSlots)
   EventSource events;              // note events per image block (voices only)
+  BlockHook hook;                  // per image block, before the events (T3.16: Timeline::blockHook writes the
+                                   // transport and the current image's automated params)
   uint32_t eventCapacity = 1024;
 };
 

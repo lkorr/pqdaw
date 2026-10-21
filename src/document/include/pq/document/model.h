@@ -139,7 +139,7 @@ inline constexpr float kMaxVolumeDb = 6.0f;
 struct Breakpoint {
   Ticks tick = 0;
   float value = 0.0f;  // in the parameter's own unit (ParamRange)
-  float curve = 0.0f;  // [−1, 1] curvature of the segment to the next breakpoint; 0 = linear (law: T3.15/T3.16)
+  float curve = 0.0f;  // [−1, 1] curvature of the segment to the next point; 0 = linear (pq/core/automation_curve.h)
   BreakpointId id;
   friend bool operator==(const Breakpoint&, const Breakpoint&) noexcept = default;
 };
