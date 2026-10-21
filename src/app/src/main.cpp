@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
     case pq::app::Mode::ListDevices: return pq::app::runListDevices(*opts);
     case pq::app::Mode::Sine: return pq::app::runSine(*opts);
     case pq::app::Mode::LatencyTest: return pq::app::runLatencyTest(*opts);
+    case pq::app::Mode::Play: return pq::app::runPlay(*opts);
   }
   return 1;
 }

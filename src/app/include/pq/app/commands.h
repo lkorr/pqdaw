@@ -17,5 +17,7 @@ int runSine(const CliOptions& options);
 // --latency-test: shared-mode WASAPI output latency, impulses vs a loopback capture of the endpoint; exit 3 if the
 // reported latency is off by more than one period.
 int runLatencyTest(const CliOptions& options);
+// --play (T1.7, play_command.cpp): compile a .pqp patch with the interpreter and play its global outputs.
+int runPlay(const CliOptions& options);
 
 }  // namespace pq::app

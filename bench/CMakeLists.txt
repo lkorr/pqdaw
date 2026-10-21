@@ -35,3 +35,4 @@ pq_add_bench(pq_bench_serialize SOURCES document/bench_serialize.cpp DEPS pq_doc
 pq_add_bench(pq_bench_optimise SOURCES graph/bench_optimise.cpp DEPS pq_graph)
 pq_add_bench(pq_bench_edit_ops SOURCES document/bench_edit_ops.cpp DEPS pq_doc)
 pq_add_bench(pq_bench_schedule SOURCES graph/bench_schedule.cpp DEPS pq_graph)
+pq_add_bench(pq_bench_interpreter SOURCES engine/bench_interpreter.cpp DEPS pq_engine)

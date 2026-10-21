@@ -36,9 +36,9 @@ Arrows point at dependencies. A module may only include headers from modules bel
 | `src/core` | `pq_core` | `pq` | RT-safe primitives: SPSC/MPSC queues, pools, arena, epoch reclamation, allocation trap, denormal guard, aligned buffers, fast math approximations, `Ticks`/time types, stable IDs, non-RT logging plus an RT log ring |
 | `src/tuning` | `pq_tuning` | `pq::tuning` | EDO, MOS (port of mos-explorer), Scala, JI (ratios, monzos, naming), pitch identities, resolution to Hz, the tuning-as-signal coefficient form |
 | `src/dsp` | `pq_dsp` | `pq::dsp` | Native leaf-atom kernels (scalar + SIMD), FFT, analysers ported from PQ Meter (spectrum grid, NSDF pitch, LUFS…), sample-rate conversion, warp engines later |
-| `src/graph` | `pq_graph` | `pq::graph` | Patch IR, patch-language parser/printer, inference (rate/kind/poly/width), optimiser, scheduler, interpreter backend, `Program` description |
+| `src/graph` | `pq_graph` | `pq::graph` | Patch IR, patch-language parser/printer, inference (rate/kind/poly/width), optimiser, scheduler, `Program` description (the interpreter backend is in `engine`: it builds a ProgramImage) |
 | `src/jit` | `pq_jit` | `pq::jit` | LLVM IR generation from a schedule, ORC LLJIT, AOT compilation of `stdlib/`, compile cache |
-| `src/engine` | `pq_engine` | `pq::engine` | Audio thread runtime: Program execution, voice allocation, transport, hot swap + state transfer, parameter blocks, taps for meters, audio device I/O (RtAudio), MIDI I/O, offline renderer |
+| `src/engine` | `pq_engine` | `pq::engine` | Audio thread runtime: ProgramImage ABI, interpreter backend, Program execution, voice allocation, transport, hot swap + state transfer, parameter blocks, taps for meters, audio device I/O (RtAudio), MIDI I/O, offline renderer |
 | `src/document` (headers `pq/document/`) | `pq_doc` | `pq::doc` | Immutable project model (tracks, clips, notes, devices, tunings, automation), commands, undo/redo, serialization (JSON + `.pqp`), project → graph lowering |
 | `src/ui` | `pq_ui` | `pq::ui` | Window (SDL3), Vulkan renderer, draw lists (ImDrawVert-compatible), text (FreeType/HarfBuzz), widget toolkit, theme tokens, offscreen screenshot path |
 | `src/app` | `pq_app` (lib) + `pqdaw` (exe: `main.cpp` only, so tests can link the CLI/commands) | `pq::app` | Main, CLI, views (arrangement, piano roll, devices, circuit editor, browser) composed from `ui` + `document` + `engine` |
@@ -123,7 +123,6 @@ namespace pq::graph {
   // the `pqc dump-schedule` text.
   ScheduleResult scheduleDetailed(const TypedPatch&, const ScheduleOptions& = {});  // + warnings in the Schedule
   Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
-  std::unique_ptr<ProgramImage> buildInterpreted(const Schedule&); // allocation happens here, never on the audio thread
 }
 
 // jit
@@ -134,13 +133,20 @@ namespace pq::jit {
   };
 }
 
-// engine: what the audio thread runs
+// engine: what the audio thread runs (pq/engine/program_image.h, interpreter.h, image_runner.h; T1.7)
 namespace pq::engine {
   class ProgramImage {                             // interpreted or JIT-compiled, same ABI
   public:
     virtual void process(ProcessContext&) noexcept = 0;   // one block; no allocation, no locks
     virtual StateLayout const& stateLayout() const noexcept = 0;  // for state transfer by NodeId
+    virtual const ImageInterface& io() const noexcept = 0;  // slots: root ins, outs/exports (global, voice), params
+    virtual StateArena stateArena() noexcept = 0;            // global arena + one block per voice group
+    virtual uint64_t rejectedBlocks() const noexcept = 0;    // blocks above io().maxBlockFrames (outputs zeroed)
   };
+  // The interpreter backend lives in engine (graph may not include engine): flat records {KernelFn, KernelArgs}
+  // with every pointer resolved here (allocation happens here, never on the audio thread).
+  Result<std::unique_ptr<ProgramImage>> buildInterpreted(const graph::Schedule&, const InterpretOptions& = {});
+  class ImageRunner;  // AudioCallback (BlockAdapter's engine side) → ProgramImage::process, for one global patch
   class Engine {
   public:
     void publish(std::unique_ptr<ProgramImage>, SwapPolicy);  // non-RT thread; RT side swaps at block boundary
@@ -174,6 +180,7 @@ The engine's process entry will be an `AudioCallback` behind a `BlockAdapter`; `
 
 ### ProgramImage ABI (shared by interpreter and JIT)
 - `ProcessContext` carries: frame count (≤ max block), sample rate, transport snapshot, pointers to input/output channel buffers, the parameter block (`float*`, indexed by `ParamSlot`), the event list for this block (sorted, preallocated), and the voice table.
+- Concretely (pq/engine/program_image.h, T1.7): global signals planar (`frames` floats per slot: root `in`s, `out`s/`export`s, track.in, sidechain.in, send bus channels); voice signals per 8-lane group in the kernel layout (`frames · 8`, voices interleaved): `VoiceGroupIO { laneMask, signals[VoiceSignal] (voice.*), in[], out[] }`, `VoiceTable { groups, numGroups, lastGroup/lastLane }`. Bools are lane masks everywhere. Param-rate inputs are read at frame 0. The image clamps params to their declared ranges every block (Q44). Slot meanings come from `io()` (`ImageInterface`: global/voice in and out slots with node, channel, rate; `ParamSlot`s; sample rate; maxBlockFrames; maxVoiceGroups). process() runs global stages once and voice stages once per group (`numGroups`); reducers combine the groups' active lanes; callers run it under `DenormalGuard` (CallbackRunner does).
 - All Program state lives in **one arena** allocated when the image is built (plus one block per voice group for voice state). The state layout (`graph::StateLayout`, T1.5) maps `(TypedPatch::stateKey, channel, arena) → (offset, size, type tag, StateInit)`; the tag is (kernel, lanes, ring frames for delay lines). Hot swap copies state for every key whose tag and size match (SPEC §7.5). Given the previous layout, `schedule()` keeps every unchanged entry at its old offset (new entries fill holes, then append; compacted when holes exceed 2× the live size + 4 KiB), so the transfer is a few coalesced memcpys.
 - Parameter values live in a double-buffered block written by the engine from `EngineCommand`s. Programs read them and never write them.
 

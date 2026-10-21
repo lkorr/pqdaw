@@ -118,6 +118,13 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       else
         return usageError("--backend needs wasapi or rtaudio");
       backendFlag = true;
+    } else if (a == "--play") {
+      if (Status s = setMode(Mode::Play, a); !s) return std::move(s).error();
+      if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--play needs a .pqp file");
+      o.playPath = std::string(args[++i]);
+    } else if (a == "--patch") {
+      if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--patch needs a patch name");
+      o.patchName = std::string(args[++i]);
     } else if (a == "--latency-test") {
       if (Status s = setMode(Mode::LatencyTest, a); !s) return std::move(s).error();
     } else if (a == "--asio") {
@@ -130,15 +137,18 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     return usageError("--size only applies to --screenshot and the window");
   if (o.mode != Mode::Screenshot && o.mode != Mode::Window && o.scale != 0.0f)
     return usageError("--scale only applies to --screenshot and the window");
-  if (!sineOnly.empty() && o.mode != Mode::Sine) return usageError(std::string(sineOnly) + " only applies to --sine");
-  if (!streamOnly.empty() && o.mode != Mode::Sine && o.mode != Mode::LatencyTest)
-    return usageError(std::string(streamOnly) + " only applies to --sine and --latency-test");
-  if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
-    return usageError("--backend only applies to --sine and --list-devices");
+  const bool play = o.mode == Mode::Play;
+  if (!sineOnly.empty() && o.mode != Mode::Sine && !(play && sineOnly != "--inject-stall"))
+    return usageError(std::string(sineOnly) + " only applies to --sine");
+  if (!streamOnly.empty() && o.mode != Mode::Sine && o.mode != Mode::LatencyTest && !play)
+    return usageError(std::string(streamOnly) + " only applies to --sine, --play and --latency-test");
+  if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
+    return usageError("--backend only applies to --sine, --play and --list-devices");
+  if (!o.patchName.empty() && !play) return usageError("--patch only applies to --play");
   if (o.stallAfterWake && (o.asio || o.wasapi != WasapiImpl::Own))
     return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
-  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
-    return usageError("--asio only applies to --sine and --list-devices");
+  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
+    return usageError("--asio only applies to --sine, --play and --list-devices");
   return o;
 }
 
@@ -160,6 +170,10 @@ std::string usage() {
          "      --seconds S, --device <id|{endpoint}>, --backend wasapi|rtaudio, --asio, --exclusive,\n"
          "      --rate HZ, --buffer N (device frames), --block N (engine block), --level DBFS (default -24),\n"
          "      --inject-stall W (test: stall 3 periods after device wake-up W; expects 1 underrun)\n"
+         "  --play <file.pqp> [--patch NAME] [options]\n"
+         "                                           compile a patch (interpreter) and play its global outs on\n"
+         "                                           the device at --level DBFS (default -24), clipped to\n"
+         "                                           [-1, 1]; same stream options as --sine\n"
          "  --latency-test [--seconds S] [--device ..] [--buffer N] [--level DBFS]\n"
          "                                           shared-mode output latency vs WASAPI loopback capture\n"
          "  --help                                  this text\n";

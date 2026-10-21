@@ -42,7 +42,8 @@
 // 5. Buffers. Every op output is a virtual value; values get physical buffers by interval reuse (linear scan in op
 //    order, LIFO free lists per class: 8-float pattern, block × 1 lane, block × 8 lanes). Element-wise ops
 //    (dsp::KernelInfo::inPlaceOk) write over an input that dies at that op. A value read inside a loop (Loop region,
-//    solve body, or the per-group loop of a voice stage) but defined before it stays live to the loop's end. A voice
+//    solve body, or the per-group loop of a voice stage) but defined before it stays live to the loop's end and is
+//    never overwritten in place (the next iteration reads it again). A voice
 //    value read in a later voice stage gets a per-group buffer (Buffer::perGroup).
 // 6. State layout (StateLayout): one entry per (state key, channel) of every stateful kernel node (and per
 //    unknown without an initial guess: its previous solution). Keys are TypedPatch::stateKey (call-path hashes, stable
@@ -109,6 +110,8 @@ struct Op {
   uint32_t resource = kNone;            // Kernel: resource index (dsp::kernelInfo(kernel).resource says which
                                         // table kind); Send: bus index
   NodeIndex node = kNone;               // the node it computes (in Schedule::patch(): see `rewritten`)
+  Kind valueKind = Kind::Real;          // Reduce: kind of the reduced value (bool reducers combine lane masks:
+                                        // sum/highest/loudest = any, lowest = all)
 };
 
 enum class RegionKind : uint8_t { Control, Block, Loop };

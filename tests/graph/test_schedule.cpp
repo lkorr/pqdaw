@@ -488,11 +488,12 @@ state voice (64 B per group):
   s0 @0 +64 phasor/8 phasor#6 ch0
 )");
   // v is read again after the reducer (stage 3): it needs one buffer per voice group; the reduced sum is
-  // broadcast in the global stage between.
-  CHECK(dumpOf(kPerGroup) == R"(schedule 'G': 3 stages, 3 regions, 5 ops; buffers: 3 block, 0 pattern; state: 0 B global, 64 B per voice group
+  // broadcast in the global stage between. The broadcast copy b0 is read by every voice group of stage 3, so the
+  // mul cannot write over it in place (T1.7: it did, and voice group 1 read group 0's product).
+  CHECK(dumpOf(kPerGroup) == R"(schedule 'G': 3 stages, 3 regions, 5 ops; buffers: 4 block, 0 pattern; state: 0 B global, 64 B per voice group
 externals:
   e0 voice.hz ch0 audio voice
-buffers: b0=blk8 b1=blk1 b2=blk8/group
+buffers: b0=blk8 b1=blk1 b2=blk8/group b3=blk8
 stage 1 voice
   region 0 block
     #0 phasor/8 (e0, ~false) -> b0 [s0]  phasor#3
@@ -503,9 +504,9 @@ stage 2 global
     #3 broadcast/8 (b1) -> b0  's'
 stage 3 voice
   region 2 block
-    #4 mul/8 (b2, b0) -> b0  mul#5
+    #4 mul/8 (b2, b0) -> b3  mul#5
 outputs:
-  out 'y' ch0 <- b0 (voice, end of stage 3)
+  out 'y' ch0 <- b3 (voice, end of stage 3)
 state voice (64 B per group):
   s0 @0 +64 phasor/8 phasor#3 ch0
 )");

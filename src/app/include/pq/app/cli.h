@@ -22,6 +22,7 @@ enum class Mode {
   Sine,            // --sine <hz> [--seconds <s>] [--device <id|endpoint>] [--backend wasapi|rtaudio] [--asio] [--rate <hz>]
                    //   [--buffer <n>] [--block <n>] [--exclusive] [--level <dBFS>] [--inject-stall <wake>]
   LatencyTest,     // --latency-test [--seconds <s>] [--device <id|endpoint>] [--buffer <n>] [--level <dBFS>]
+  Play,            // --play <file.pqp> [--patch <name>] [--seconds <s>] [--level <dBFS>] + the --sine stream flags
 };
 
 // Which WASAPI implementation --sine / --list-devices use (--asio overrides both with RtAudio ASIO).
@@ -52,6 +53,10 @@ struct CliOptions {
   uint32_t sampleRate = 0;      // 0 = the device's preferred rate
   uint32_t bufferFrames = 256;  // device buffer request
   uint32_t blockFrames = 32;    // internal engine block (pq::engine::BlockAdapter)
+
+  // --play (T1.7): the patch file and the patch in it (empty: the first one).
+  std::string playPath;
+  std::string patchName;
 };
 
 // Exit code a test runner treats as "skipped" (CTest SKIP_RETURN_CODE), e.g. no display for the window test.

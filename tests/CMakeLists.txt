@@ -66,10 +66,11 @@ pq_add_test(pq_tests_ui
   DEPS pq_ui)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 
-# app: CLI parsing (window, --screenshot, --list-devices, --sine) and the --screenshot command.
+# app: CLI parsing (window, --screenshot, --list-devices, --sine, --play), the --screenshot command, the --play compile path.
 pq_add_test(pq_tests_app
   SOURCES
     app/test_cli.cpp
+    app/test_play.cpp
   DEPS pq_app pq_ui)
 
 # The real executable: headless screenshot, and the scripted window resize/minimise/restore run
@@ -109,7 +110,8 @@ pq_add_test(pq_tests_graph
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
-# WASAPI backend (conversion, underrun tracker, opt-in device runs with PQ_TEST_AUDIO_DEVICE=1).
+# WASAPI backend (conversion, underrun tracker, opt-in device runs with PQ_TEST_AUDIO_DEVICE=1), the interpreter
+# backend vs the reference evaluator (T1.7).
 pq_add_test(pq_tests_engine
   SOURCES
     engine/test_block_adapter.cpp
@@ -117,6 +119,7 @@ pq_add_test(pq_tests_engine
     engine/test_rtaudio_device.cpp
     engine/test_wasapi.cpp
     engine/test_rt_log_device.cpp
+    engine/test_interpreter.cpp
   DEPS pq_engine)
 
 pq_add_test(pq_tests_dsp

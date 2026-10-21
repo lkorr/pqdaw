@@ -73,6 +73,8 @@ struct Val {
   uint32_t def = kNone;   // op position
   uint32_t last = 0;      // last use position (after loop extension)
   uint32_t buffer = kNone;
+  bool pinned = false;    // read inside a loop (voice group loop, Loop region, solve body) that it was defined
+                          // before: its last use is not its death (the next iteration reads it again)
   NodeIndex node = kNone; // the node whose op defines it (for dumps)
 };
 
@@ -1560,6 +1562,7 @@ private:
         op.channel = static_cast<uint16_t>(ch);
         op.splMask = isPatternLike(in) && !control ? 1u : 0u;
         op.node = n;
+        op.valueKind = tp_->inputType(n, 0).kind == Kind::Bool ? Kind::Bool : Kind::Real;
         pushOp(op, {&in, 1}, {&out, 1});
         reduceVals_.push_back(out.index);
       }
@@ -1776,11 +1779,20 @@ private:
       uint32_t q = u.pos;
       const Region& r = s.regions[u.region];
       const Stage& sg = s.stages[regionStage_[u.region]];
-      if (sg.poly == Poly::Voice && v.def < sg.firstOp && sg.numOps) q = std::max(q, sg.firstOp + sg.numOps - 1);
-      if (r.kind == RegionKind::Loop && v.def < r.firstOp && r.numOps) q = std::max(q, r.firstOp + r.numOps - 1);
+      if (sg.poly == Poly::Voice && v.def < sg.firstOp && sg.numOps) {
+        q = std::max(q, sg.firstOp + sg.numOps - 1);
+        v.pinned = true;
+      }
+      if (r.kind == RegionKind::Loop && v.def < r.firstOp && r.numOps) {
+        q = std::max(q, r.firstOp + r.numOps - 1);
+        v.pinned = true;
+      }
       if (u.solve != kNone) {
         const SolveBlock& b = s.solves[u.solve];
-        if (v.def < b.firstOp && b.numOps) q = std::max(q, b.firstOp + b.numOps - 1);
+        if (v.def < b.firstOp && b.numOps) {
+          q = std::max(q, b.firstOp + b.numOps - 1);
+          v.pinned = true;
+        }
       }
       if (v.poly == Poly::Voice && r.stage != v.defStage) v.perGroup = true;
       v.last = std::max(v.last, q);
@@ -1839,7 +1851,10 @@ private:
               const Operand in = s.operands[op.firstOperand + j];
               if (in.kind != Operand::Kind::Buffer || in.index == out0.index) continue;
               Val& iv = vals_[in.index];
-              if (iv.last != p || iv.perGroup || iv.buffer == kNone || handed[in.index] || cls(iv) != cls(o))
+              // A pinned input does not die here: the next voice group / sub-block / Newton evaluation reads it
+              // again (T1.7 found an op at the end of a voice stage overwriting a broadcast buffer in place).
+              if (iv.last != p || iv.perGroup || iv.pinned || iv.buffer == kNone || handed[in.index] ||
+                  cls(iv) != cls(o))
                 continue;
               o.buffer = iv.buffer;
               handed[in.index] = 1;

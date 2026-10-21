@@ -1,0 +1,95 @@
+// Patches for the interpreter tests (T1.7): what tests/graph/cases/ does not exercise numerically — voice stages
+// with every reducer, global → voice broadcasts, per-group buffers, sends, solve blocks per sample (global and per
+// voice, inside feedback loops) and once per block (param rate), delay-only feedback in sub-blocks.
+
+// Nonlinear zero-delay-feedback one-pole (TPT form, tanh in the loop), solved per sample inside a z1 loop.
+patch TanhOnePole {
+  in x : audio
+  param cutoff = 3kHz [20Hz..20kHz]
+  param drive = 2 [0.1..10]
+  out y : audio
+  g = tan(3.141592653589793 * cutoff / sr)
+  s = z1(s2)
+  solve(iterations: 6) {
+    unknown v = s
+    v == s + g * (tanh(drive * x) - tanh(drive * v)) / drive
+  }
+  s2 = 2 * v - s
+  y = v
+}
+
+// The same filter per voice (8-lane Newton), summed.
+patch VoiceZdf {
+  param cutoff = 1kHz [20Hz..20kHz]
+  out y : audio voice
+  out mix : audio global
+  x = sine(phasor(voice.hz)) * 2
+  g = tan(3.141592653589793 * cutoff / sr)
+  s = z1(s2)
+  solve(iterations: 5) {
+    unknown v = s
+    v == s + g * (tanh(x) - tanh(v))
+  }
+  s2 = 2 * v - s
+  y = v
+  mix = voice_sum(v)
+}
+
+// A param-rate solve (once per block, Control region) whose unknown starts from the previous block's solution.
+patch ParamSolve {
+  param k = 2 [0.5..4]
+  in x : audio
+  out y : audio
+  out root : real
+  solve(iterations: 8) {
+    unknown c
+    c + tanh(c) * k == 1
+  }
+  y = x * c
+  root = c
+}
+
+// Every reducer, a global audio signal broadcast into the voices, a param-rate voice reducer, a voice stage after a
+// reducer (the voice value is read again: per-group buffers), bool reducers and a send from the voices.
+patch VoiceMix {
+  in lfo : audio
+  param depth = 0.5 [0..1]
+  out sum : audio global
+  out hi : audio global
+  out lo : audio global
+  out loud : audio global
+  out last : audio global
+  out vel : real global
+  out anyGate : bool global
+  out allGate : bool global
+  out shaped : audio voice
+  osc = sine(phasor(voice.hz)) * (1 + depth * lfo) * gate_to_real(voice.gate)
+  total = voice_sum(osc)
+  hi = voice_highest(osc)
+  lo = voice_lowest(osc)
+  loud = voice_loudest(osc)
+  last = voice_last(osc)
+  vel = voice_sum(voice.velocity)
+  anyGate = voice_sum(voice.gate)
+  allGate = voice_lowest(voice.gate)
+  shaped = osc / (1 + abs(total))
+  sent = send(osc * 0.5, 1)
+  sum = total
+}
+
+// Feedback comb through a delay line: the loop runs in sub-blocks of the shortest tap age.
+patch Comb {
+  in x : audio
+  param fb = 0.7 [0..0.95]
+  out y : audio
+  c = delay(x + c * fb, 2.5ms, 10ms)
+  y = c
+}
+
+// A per-sample loop through z1 with a global → voice broadcast of its output.
+patch LoopBroadcast {
+  in x : audio
+  out y : audio voice
+  lp = z1(lp * 0.9 + x * 0.1)
+  y = lp * voice.velocity + sine(phasor(voice.hz)) * 0.1
+}
