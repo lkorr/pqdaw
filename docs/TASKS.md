@@ -119,11 +119,11 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Implements `docs/PATCH_LANGUAGE.md` v0 exactly: units, imports, layout, solve blocks. Errors carry file:line:col plus a caret snippet.
   - Accept: a round-trip test (`parse(print(p)) == p`) over every file in `stdlib/` and `tests/graph/cases/`. At least 30 error-case tests with expected messages. A fuzz-ish test runs 10⁴ random token streams with no crashes.
 
-- [~] **T1.3 Inference** *(worker N, branch task/T1.3-inference)* (`graph`). Depends on: T1.2.
+- [x] **T1.3 Inference** *(cc7c8e4)* (`graph`). Depends on: T1.2.
   - Rate, kind, poly and width inference with the upper-bound semantics. Poly→global defaults to sum. Explicit conversions are required.
   - Accept: table-driven tests (inputs → inferred types) for 40+ cases, including modulation wires raising an unmodulated `param` input to `audio`, and poly→global summing.
 
-- [ ] **T1.4 Optimiser** (`graph`). Depends on: T1.3.
+- [~] **T1.4 Optimiser** *(worker R, branch task/T1.4-optimiser)* (`graph`). Depends on: T1.3.
   - Constant folding (never `param`), DCE, CSE, algebraic simplification (×1, +0, ×0 when the other side is finite), and hoisting param-rate subexpressions out of audio-rate paths.
   - Accept: tests on before/after IR. A test proves `tan(π·cutoff/sr)` is hoisted to param rate when cutoff is unmodulated, and stays audio-rate when it is modulated.
 
