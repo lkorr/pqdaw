@@ -217,7 +217,7 @@ New module (proposed by the M3 plan): `src/views` = `pq_views` (`pq::views`), de
 Parallel waves: A: T3.1 (`ui`), T3.3 (`core`), T3.4 (`document`), T3.16 (`engine`, once T1.8 is done) · B: T3.2 (`ui`), T3.5, T3.6 (`document`, separate files) · C: T3.7 · D: T3.8→T3.9/T3.10, T3.11→T3.12, T3.13→T3.14 (separate `views/` subtrees) · E: T3.15, T3.17.
 Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 
-- [~] **T3.1 Widget toolkit core** *(worker M, branch task/T3.1-widget-toolkit)* (`ui`). Depends on: T0.7, T0.8.
+- [x] **T3.1 Widget toolkit core** *(63e25e1)* (`ui`). Depends on: T0.7, T0.8.
   - Retained widget tree; stable path-addressable widget ids (e.g. `arrangement/track[3]/header/mute`); per-widget dirty flags feed `Damage` with the widget's rect.
   - Layout: fixed/flex rows and columns, stack/overlay, splitter (draggable, min/max), scroll view with a virtualisation hook (child reports content extent and draws only the visible range). Integer-pixel snapping.
   - Input model independent of SDL: `PointerEvent` (move/down/up/wheel, modifiers, click count), `KeyEvent` (scancode + key + modifiers, repeat), `TextEvent`; an SDL adapter in `ui/window`. Hit testing, hover enter/leave, pointer capture during drags, focus with Tab traversal.
