@@ -137,3 +137,7 @@ pq_add_test(pq_tests_document
     document/test_edit_pitch.cpp
     document/test_edit_time.cpp
   DEPS pq_doc)
+
+# T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it
+# exists on this machine (skipped otherwise). See the file for how and why.
+include(ui/pqmeter_diff.cmake)

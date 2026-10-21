@@ -11,8 +11,10 @@
 //
 // The numbers are PQ Meter's: 0.75 px feather, miter clamped at 2.5× (smoothPolyline), bevel past a 120° turn
 // with a 2× miter otherwise (smoothPolylineCols), Catmull-Rom subdivision at ≤ 1.5 px chords, ≤ 24 steps
-// per segment, ≤ 6000 output points. The geometry each function emits is identical to the original
-// (vertex for vertex); only the arithmetic is reorganised where that was cheaper (see lines.cpp).
+// per segment, ≤ 6000 output points. Verified against PQ Meter's own code by tests/ui/test_pqmeter_diff.cpp
+// (T0.9-fix1): identical vertex/index counts, index buffers, colours and uvs; positions equal up to float
+// rounding (≤ 1/256 px asserted, ≤ 2e-3 px measured), because the port multiplies by reciprocals where PQ
+// Meter divides (see lines.cpp); the scope's alpha-0 glow pass is skipped (see scopeTrace).
 //
 // UI thread only (functions with internal scratch keep it thread_local, growing once to the largest trace).
 
