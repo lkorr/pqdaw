@@ -342,3 +342,31 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Choice (provisional): on an underrun in exclusive mode where the device has taken every frame written, `WasapiDevice` restarts the stream with one extra period queued (Stop, GetBuffer/ReleaseBuffer, Start: ~0.4 ms of driver calls on the audio thread, only after an underrun, counted in `CallbackStats::restarts`). Stop no longer calls Reset; the next `start()` does. Options: A) this (recover, latency stays one period); B) never restart (the stream stays degraded); C) an exclusive *push* mode (no event callback, buffer of 2–3 periods topped up on a timer from `GetCurrentPadding`), which keeps a reserve by design at the cost of timer wake-ups; worth trying if A proves insufficient on other drivers.
 - Also open: `WasapiDevice` is output-only (input streams return `Unsupported`; `--backend rtaudio` still does input). Duplex WASAPI (capture client driven from the render event) is a follow-up if the engine needs input before ASIO lands (T0.6-fix2).
 - Status: open
+
+## Q?-T3.2-a · 2026-10-21 · T3.2 · Theme values: authored by eye, which way to lean
+- Context: Q15 says "Dark Neutral Medium approximated by hand". No Live install or screenshots were available to the worker, so every token in `assets/themes/ableton-dark.json` is our own value chosen from memory of Live's dark themes plus the M0 review's contrast targets (M10, enforced by `tests/ui/test_controls.cpp`: panel steps ≥ 1.15:1, small text ≥ 4.5:1, disabled text ≥ 3:1, clip names ≥ 4.5:1 on every palette colour).
+- Choices made (all data, one edit away): mid/dark neutral greys (window #1E1E1E, panel #2E2E2E, raised #3A3A3A, field #232323); orange (#FFA33D) for "on" toggles, value arcs/fills, focus; yellow (#F2C03A) track activator, blue (#5DA9E6) solo, red (#E8544B) arm; steel blue (#3D6787) for highlighted menu rows and (#375E7C) text selection; 1 device-px borders; radius 2 for controls, 3 for panels/menus; clip palette = 13 hues + greys in 5 rows with a target luminance per row (generator: `tools/theme/make_ableton_dark.py`), not Live's palette; dark rows take light clip text (`clipTextFor`). Knob value arcs are orange; the modulation ring uses PQ Meter's accent blue (signal display, SPEC §11.1).
+- Two cost-driven choices: (1) `fonts.numeric` is not tabular by default: a tabular role is another font per UI scale (≈95 more glyphs per scale) and pushed the 5-scale atlas test past one R8 page; numbers in a centred drag box may shift by a pixel while dragging. Set `"tabular": true` to trade atlas space for steady digits. (2) Rounded corners at radius 2 cost ≈ 40 % of the gallery's paint time (bench: 47 µs vs 29 µs square); an SDF/instanced path (Q11 B) would remove that if views need it.
+- Options: A) keep these and tune by eye in the design review; B) sample colours from your Live 12 install (screenshots) and replace the values; C) a lighter "Medium" variant as a second theme file.
+- Provisional choice: A (values are data; hot reload in dev builds makes B/C quick).
+- Status: open
+
+## Q?-T3.2-b · 2026-10-21 · T3.2 · Keymap details: manual sections, action ids, unbindable chords
+- Context: `docs/HOTKEYS.md` must cite the Live 12 manual section of each shortcut; the worker had no copy of the manual, so the subsection names (Transport, Editing, Showing and Hiding Views, Arrangement View Commands, Commands for Tracks, MIDI Note Editor, …) are from memory of the Live 11/12 *Live Keyboard Shortcuts* chapter. Action ids are per scope where the same chord means different things in different views (`arrangement.duplicate` vs `pianoroll.duplicate`), global otherwise (`grid.narrow` acts on the focused editor). Every binding is `deferred:M<n>` for now: no view actions exist before T3.7.
+- Also: `Ctrl+CapsLock` (macro mode, SPEC §6.2) cannot be a keymap chord because T3.1 treats CapsLock as a modifier/lock key; left to M8's macro scope. Live's Session View shortcuts are not listed. `Ctrl+Shift+X` (cut time) and `Ctrl+Shift+U` are bound but deferred to M10 since T3.9/T3.11 do not list them.
+- Options: A) as above; B) one global action per verb dispatching to the focused view.
+- Provisional choice: A (explicit, and the keymap test catches collisions per scope). Please check the section names against your Live 12 manual.
+- Status: open
+
+## Q?-T3.2-c · 2026-10-21 · T3.2 · Control behaviours not fixed by the spec
+- Context: Live's exact control feel is not documented; these are the choices in `pq/ui/controls.h` / `overlay.h` (each a local change):
+  1. Toggles (mute/solo/arm style) flip on press, buttons fire on release inside.
+  2. Number box / knob: vertical drag; `ValueSpec::dragPixels` (default 200 logical px) sweeps the whole range; Shift = ×0.1; the drag accumulates unquantised and clamped, so turning back after hitting an end responds at once. Faders: the thumb follows the pointer 1:1; pressing the track elsewhere jumps there first. Up/Down step by `keyStep` (default range/100, at least one quantum); Delete or Backspace = default.
+  3. Number box type-in: double-click or Enter; the number without its unit, all selected; Enter commits, Esc cancels, focus loss commits, unparsable input reverts. Typing a digit on a focused (not editing) box does not start a type-in, because then every printable hotkey (B, Z, 0…) would be swallowed after clicking a knob.
+  4. The mouse wheel does not change values (it scrolls the containing view).
+  5. Focus ring: value controls and text fields show it whenever focused (they take keys, like Live's selected parameter); buttons, toggles and dropdowns only after keyboard focus.
+  6. Text field: Enter commits and keeps focus; Esc reverts to the last committed text and keeps focus; focus loss commits; Tab-focus selects all; the caret blinks on a 0.53 s timer only while focused.
+  7. Menus are modal while open (all keys stay in the menu); a press outside any popup closes them and is consumed (does not reach the widget below); a submenu opens after the pointer rests 0.25 s on its item, or at once with Right/Enter.
+- Options: per item, as above or Live's behaviour where it differs (to be checked against Live 12).
+- Provisional choice: as above.
+- Status: open

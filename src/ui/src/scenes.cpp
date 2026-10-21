@@ -10,7 +10,7 @@ namespace pq::ui {
 
 namespace {
 
-constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core", "primitives"};
+constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core", "primitives", "widgets"};
 
 Image magmaRampImage() {
   using signal_theme::kMagma;
@@ -175,6 +175,8 @@ Result<SceneTextures> createSceneTextures(Renderer& renderer, UiScale scale) {
   t.semiBold = text->semiBold;
   t.scale = text->scale;
   t.fonts = text->fonts;
+  t.theme = std::move(text->theme);
+  t.uiFonts = text->uiFonts;
   return t;
 }
 
@@ -190,8 +192,31 @@ Result<SceneTextures> createSceneText(std::shared_ptr<Atlas> atlas, UiScale scal
   if (!semi) return std::move(semi).error();
   t.regular = *regular;
   t.semiBold = *semi;
+  auto theme = loadTheme(defaultThemePath());
+  if (!theme) return std::move(theme).error();
+  t.theme = std::make_shared<const Theme>(std::move(*theme));
   if (Status s = setSceneScale(t, scale); !s) return std::move(s).error();
   return t;
+}
+
+Status setSceneTheme(SceneTextures& t, std::shared_ptr<const Theme> theme) {
+  if (!theme) return Error{ErrorCode::InvalidArgument, "setSceneTheme: null theme", {}};
+  if (t.text) {
+    auto f = resolveThemeFonts(*t.text, t.regular, t.semiBold, *theme, t.scale);
+    if (!f) return std::move(f).error();
+    t.uiFonts = *f;
+  }
+  t.theme = std::move(theme);
+  return Ok{};
+}
+
+PaintResources paintResources(const SceneTextures& t) noexcept {
+  PaintResources r;
+  r.text = t.text.get();
+  r.fonts = &t.fonts;
+  r.theme = t.theme.get();
+  r.uiFonts = &t.uiFonts;
+  return r;
 }
 
 Status setSceneScale(SceneTextures& t, UiScale scale) {
@@ -219,9 +244,33 @@ Status setSceneScale(SceneTextures& t, UiScale scale) {
     if (!f) return std::move(f).error();
     resolved.*w.id = *f;
   }
+  ThemeFonts ui = t.uiFonts;
+  if (t.theme) {
+    auto f = resolveThemeFonts(*t.text, t.regular, t.semiBold, *t.theme, scale);
+    if (!f) return std::move(f).error();
+    ui = *f;
+  }
   t.fonts = resolved;
+  t.uiFonts = ui;
   t.scale = scale;
   return Ok{};
+}
+
+void sceneDefaultSize(std::string_view name, uint32_t& width, uint32_t& height) noexcept {
+  if (name == "widgets") {
+    width = 1040;
+    height = 720;
+    return;
+  }
+  width = kDefaultSceneWidth;
+  height = kDefaultSceneHeight;
+}
+
+bool isWidgetScene(std::string_view scene) noexcept { return scene == "widgets-core" || scene == "widgets"; }
+
+void buildWidgetScene(std::string_view scene, UiTree& tree) {
+  if (scene == "widgets") buildWidgetsGallery(tree);
+  else if (scene == "widgets-core") tree.setRoot(makeWidgetsCoreDemo());
 }
 
 std::span<const std::string_view> sceneNames() noexcept { return kNames; }
@@ -247,6 +296,10 @@ bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textur
   }
   if (name == "primitives") {
     detail::primitivesScene(dl, textures, timeSeconds);
+    return true;
+  }
+  if (name == "widgets") {
+    detail::controlsScene(dl, textures, timeSeconds);
     return true;
   }
   return false;

@@ -21,6 +21,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
 #include "pq/ui/ui_scale.h"
+#include "pq/ui/widget.h"
 
 namespace pq::ui {
 
@@ -51,22 +52,32 @@ struct SceneTextures {
   FaceId regular = 0, semiBold = 0;     // the loaded Inter faces (valid when `text` is set)
   UiScale scale{};                      // logical → device px for the scenes; `fonts` are resolved at it
   SceneFonts fonts;
+  // The chrome theme (T3.2; assets/themes/ableton-dark.json) and its font roles resolved at `scale`.
+  std::shared_ptr<const Theme> theme;
+  ThemeFonts uiFonts;
 };
 
-// Creates the textures and a text system on the renderer's atlas, loading the fonts from assetsDir() and
-// resolving the font roles at `scale`.
+// Creates the textures and a text system on the renderer's atlas, loading the fonts and the default theme
+// from assetsDir() and resolving the font roles at `scale`.
 Result<SceneTextures> createSceneTextures(Renderer& renderer, UiScale scale = {});
-// Text only (no GPU): a text system on `atlas` with the fonts loaded and resolved at `scale`; the texture ids
-// stay kAtlasTexture. For CPU tests and benchmarks of the text paths.
+// Text only (no GPU): a text system on `atlas` with the fonts and theme loaded and resolved at `scale`; the
+// texture ids stay kAtlasTexture. For CPU tests and benchmarks of the text paths.
 Result<SceneTextures> createSceneText(std::shared_ptr<Atlas> atlas, UiScale scale = {});
-// Sets `t.scale` and re-resolves `t.fonts` at it. Fonts at a device size not seen before are created now
-// (FreeType face + printable-ASCII rasterisation, ≈1–2 ms each): call it when the scale changes (display-scale
-// event, --scale), never from paint. Returning to a scale seen before is a lookup per role. On failure t is
-// unchanged.
+// Sets `t.scale` and re-resolves `t.fonts` and `t.uiFonts` at it. Fonts at a device size not seen before are
+// created now (FreeType face + printable-ASCII rasterisation, ≈1–2 ms each): call it when the scale changes
+// (display-scale event, --scale), never from paint. Returning to a scale seen before is a lookup per role. On
+// failure t is unchanged.
 Status setSceneScale(SceneTextures& t, UiScale scale);
+// Replaces the theme (hot reload) and resolves its font roles at t.scale. On failure t is unchanged.
+Status setSceneTheme(SceneTextures& t, std::shared_ptr<const Theme> theme);
+// What a widget tree paints with, pointing into `t` (valid while t lives and is not moved).
+PaintResources paintResources(const SceneTextures& t) noexcept;
 
 std::span<const std::string_view> sceneNames() noexcept;
 bool hasScene(std::string_view name) noexcept;
+// The scene's logical size for --screenshot without --size and for its goldens: 800×480, except `widgets`
+// (the T3.2 control gallery), which needs more room.
+void sceneDefaultSize(std::string_view name, uint32_t& width, uint32_t& height) noexcept;
 
 // Appends the scene to `dl`, which must already be reset to the target size in device px. The scene draws at
 // `textures.scale`. `timeSeconds` animates the scene for the interactive window (0 = the golden frame).
@@ -74,8 +85,18 @@ bool hasScene(std::string_view name) noexcept;
 bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textures, double timeSeconds);
 
 class Widget;
+class UiTree;
 // The widget tree behind the `widgets-core` scene (T3.1 demo: rows/columns, nested splitters, a scroll view
 // over virtualised content). The interactive window runs it live.
 std::unique_ptr<Widget> makeWidgetsCoreDemo();
+
+// The `widgets` scene (T3.2): every base control in normal / hover / pressed / focused / disabled, an
+// interactive column, a meter strip, and an open context menu with a submenu, a popover and a tooltip.
+// Builds the gallery as the tree's root; the tree must already have its viewport and resources (the menus
+// measure their text when they open).
+void buildWidgetsGallery(UiTree& tree);
+// Whether `scene` is a live widget tree (the window runs it interactively), and its builder.
+bool isWidgetScene(std::string_view scene) noexcept;
+void buildWidgetScene(std::string_view scene, UiTree& tree);
 
 }  // namespace pq::ui

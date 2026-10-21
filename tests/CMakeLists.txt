@@ -61,6 +61,7 @@ pq_add_test(pq_tests_ui
     ui/test_layout.cpp
     ui/test_widgets.cpp
     ui/test_hidpi.cpp
+    ui/test_controls.cpp
   DEPS pq_ui)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 
@@ -81,6 +82,10 @@ set_tests_properties(pqdaw_window_selftest PROPERTIES SKIP_RETURN_CODE 77 TIMEOU
 # Same run with the live widget tree (T3.1): SDL window loop → UiTree layout/paint at every size.
 add_test(NAME pqdaw_window_selftest_widgets COMMAND pqdaw --window-selftest --scene widgets-core)
 set_tests_properties(pqdaw_window_selftest_widgets PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+# T3.2: the control gallery live (themed controls, overlays, SDL text input and clipboard) through the same run.
+add_test(NAME pqdaw_window_selftest_gallery COMMAND pqdaw --window-selftest --scene widgets)
+set_tests_properties(pqdaw_window_selftest_gallery PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+add_test(NAME pqdaw_screenshot_widgets COMMAND pqdaw --screenshot widgets ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_widgets.png)
 
 pq_add_test(pq_tests_graph
   SOURCES

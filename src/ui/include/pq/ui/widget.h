@@ -44,6 +44,8 @@ namespace pq::ui {
 
 class TextSystem;
 struct SceneFonts;
+struct Theme;
+struct ThemeFonts;
 class UiTree;
 class Widget;
 
@@ -105,10 +107,41 @@ struct Insets {
 };
 
 // --- painting -------------------------------------------------------------------------------------------
-// What widgets draw with. T3.2 adds the theme here.
+// What widgets draw with. The tree also hands these to widgets outside paint (UiTree::resources()), e.g. a
+// menu measuring its items when it opens.
 struct PaintResources {
   TextSystem* text = nullptr;         // null: no text (draw-list-only tests); widgets skip their glyphs
   const SceneFonts* fonts = nullptr;  // font roles resolved at the tree's UiScale (pq/ui/scenes.h setSceneScale)
+  const Theme* theme = nullptr;       // chrome tokens (pq/ui/theme.h); null: themed controls draw nothing
+  const ThemeFonts* uiFonts = nullptr;  // the theme's font roles resolved at the tree's UiScale
+};
+
+// Info-view text (SPEC §9: Live's help text for whatever is under the pointer). A widget provides it by
+// overriding Widget::info(); the views point into storage the widget owns and stay valid until the widget
+// changes or is destroyed. The info view itself (T3.7) shows infoFor(tree.hovered()).
+struct InfoText {
+  std::string_view title;
+  std::string_view body;
+  bool empty() const noexcept { return title.empty() && body.empty(); }
+};
+
+// Clipboard text (UTF-8). The SDL implementation lives in pq/ui/window.h; UiTree falls back to an in-process
+// one, so tests run without a desktop clipboard.
+class Clipboard {
+public:
+  virtual ~Clipboard() = default;
+  virtual std::string text() = 0;
+  virtual void setText(std::string_view utf8) = 0;
+};
+
+// Tree-wide notifications for things that are not one widget's business: the overlay layer (tooltips) and
+// the info view. Called on the UI thread from dispatch; observers must not add or remove observers from the
+// callback.
+class TreeObserver {
+public:
+  virtual ~TreeObserver() = default;
+  virtual void onHoverChanged(Widget* /*hovered*/) {}
+  virtual void onPointerDown(Vec2 /*pos*/) {}
 };
 
 struct PaintContext {
@@ -241,6 +274,10 @@ public:
   virtual ISize contentExtent(ISize viewport) const;
   // LayoutKind::Custom: place every visible child with pass.place().
   virtual void arrange(LayoutPass& /*pass*/) {}
+  // Info-view text for this widget (empty: ask the parent, see infoFor()).
+  virtual InfoText info() const { return {}; }
+  // Tooltip text shown after a hover delay by the OverlayLayer (pq/ui/overlay.h). Empty: none.
+  virtual std::string_view tooltip() const { return {}; }
 
 protected:
   enum Flag : uint32_t {
@@ -323,6 +360,9 @@ private:
   int32_t anchoredPx_ = 0;   // from the last layout
 };
 
+// The info text of `w` or its nearest ancestor that has one (empty if none). For the info view (T3.7).
+InfoText infoFor(const Widget* w);
+
 // --- scroll view ----------------------------------------------------------------------------------------
 // Viewport onto its first child (the content). The content's size comes from content->contentExtent(); its
 // rect is offset by the scroll position and painted with the viewport as clip, so a virtualised content
@@ -330,6 +370,7 @@ private:
 class ScrollView : public Widget {
 public:
   ScrollView(std::string name, bool horizontal = true, bool vertical = true);
+  ~ScrollView() override;
   Widget* content() const noexcept { return childCount() ? &child(0) : nullptr; }
   int32_t scrollX() const noexcept { return scrollX_; }
   int32_t scrollY() const noexcept { return scrollY_; }
@@ -337,11 +378,25 @@ public:
   void scrollTo(int32_t x, int32_t y);
   ISize contentSize() const noexcept { return content_; }
   void setWheelStep(float logicalPx) noexcept { wheelStep_ = logicalPx; }
+  bool scrollsHorizontally() const noexcept { return horizontal_; }
+  bool scrollsVertically() const noexcept { return vertical_; }
+  // Something that follows the scroll state (Scrollbar in pq/ui/controls.h): told when the scroll position,
+  // viewport or content size changes, and when the ScrollView is destroyed. At most 2 per ScrollView; a
+  // dependent unlinks itself before it is destroyed.
+  struct Dependent {
+    virtual ~Dependent() = default;
+    virtual void onScrollChanged() noexcept = 0;
+    virtual void onScrollViewGone() noexcept = 0;
+  };
+  bool linkDependent(Dependent* d) noexcept;
+  void unlinkDependent(Dependent* d) noexcept;
 
   void arrange(LayoutPass& pass) override;
   bool onPointer(const PointerEvent& e) override;
 
 private:
+  void notifyDependents() noexcept;
+  Dependent* dependents_[2] = {};
   bool horizontal_, vertical_;
   int32_t scrollX_ = 0, scrollY_ = 0;
   ISize content_{};
@@ -409,7 +464,12 @@ public:
   Widget* hovered() const noexcept { return hovered_; }
   Widget* captured() const noexcept { return captured_; }
   Widget* focus() const noexcept { return focus_; }
-  void setFocus(Widget* w);
+  // `keyboard`: focus moved by the keyboard (Tab, menu navigation), so controls show a focus ring
+  // (focusVisible()); focus from a pointer press does not.
+  void setFocus(Widget* w, bool keyboard = false);
+  bool focusVisible() const noexcept { return focusVisible_; }
+  // Last pointer position seen by dispatch (device px).
+  Vec2 pointerPos() const noexcept { return pointer_; }
   // Moves focus to the next (or previous) visible, enabled, focusable widget in tree order, wrapping.
   bool focusNext(bool backwards = false);
   // Ends a capture without a button release (calls onCaptureLost).
@@ -422,6 +482,18 @@ public:
   // Modal scopes (macro mode, a modal dialog) are consulted before the focus chain, newest first.
   void pushModalScope(ScopeId s) noexcept;
   void removeModalScope(ScopeId s) noexcept;
+  const ActionRegistry* actions() const noexcept { return actions_; }
+
+  // --- services for widgets ---
+  // What the tree is painted with (the frame loop / TestDriver sets it; must outlive the tree or be reset).
+  // Widgets use it to measure text outside paint.
+  void setResources(const PaintResources* res) noexcept { resources_ = res; }
+  const PaintResources* resources() const noexcept { return resources_; }
+  // The clipboard text fields use (null: an in-process clipboard).
+  void setClipboard(Clipboard* c) noexcept { clipboard_ = c; }
+  Clipboard& clipboard();
+  void addObserver(TreeObserver* o);
+  void removeObserver(TreeObserver* o) noexcept;
 
   struct Stats {
     uint64_t framesPainted = 0;
@@ -460,6 +532,11 @@ private:
   Widget* hovered_ = nullptr;
   Widget* captured_ = nullptr;
   Widget* focus_ = nullptr;
+  bool focusVisible_ = false;
+  const PaintResources* resources_ = nullptr;
+  Clipboard* clipboard_ = nullptr;
+  std::unique_ptr<Clipboard> localClipboard_;
+  std::vector<TreeObserver*> observers_;
   uint8_t buttonsHeld_ = 0;  // bit (button - 1)
   Vec2 pointer_{-1e9f, -1e9f};
   bool pointerInside_ = false;

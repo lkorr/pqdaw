@@ -1,0 +1,94 @@
+# pqdaw hotkeys
+
+The default keymap is data: [`assets/keymaps/ableton.json`](../assets/keymaps/ableton.json) (format in `src/ui/include/pq/ui/keymap_file.h`). It copies Ableton Live 12's shortcuts (SPEC §6.1) onto pqdaw action ids. A binding is either `implemented` (its action must be registered when the keymap is applied, or loading fails) or `deferred:M<n>` (the chord is reserved for the milestone that implements it and does nothing until then). `tests/ui/test_controls.cpp` checks that every chord parses, that no chord is bound twice in one scope, that every implemented action resolves, and that every binding is listed below.
+
+Scopes: `global` (always active, consulted last), `arrangement` (focus inside the arrangement view), `pianoroll` (focus inside the clip view's note editor). A focused text field takes printable keys first (Q27), so `B` while renaming types a "b". Chords match the layout key (Q27). Windows key names; on macOS Ctrl would read Cmd.
+
+The "Live 12 manual section" column names the subsection of the Live Reference Manual's *Live Keyboard Shortcuts* chapter that lists the shortcut. The subsection names follow that chapter's layout as of Live 11/12 and were written from memory: check them against the installed Live 12 manual (QUESTIONS.md, Q?-T3.2-b).
+
+| Action | Keys | Scope | Live 12 manual section | Status |
+|---|---|---|---|---|
+| `transport.playStop` | `Space` | global | Transport | M3 (T3.7) |
+| `transport.continue` | `Shift+Space` | global | Transport | M3 (T3.7) |
+| `transport.record` | `F9` | global | Transport | M6 (recording) |
+| `edit.undo` | `Ctrl+Z` | global | Editing | M3 (T3.7) |
+| `edit.redo` | `Ctrl+Shift+Z` | global | Editing | M3 (T3.7) |
+| `edit.redo` | `Ctrl+Y` | global | Editing | M3 (T3.7) |
+| `file.new` | `Ctrl+N` | global | Accessing Menus (File) | M3 (T3.7) |
+| `file.open` | `Ctrl+O` | global | Accessing Menus (File) | M3 (T3.7) |
+| `file.save` | `Ctrl+S` | global | Accessing Menus (File) | M3 (T3.7) |
+| `file.saveAs` | `Ctrl+Shift+S` | global | Accessing Menus (File) | M3 (T3.7) |
+| `file.exportAudio` | `Ctrl+Shift+R` | global | Accessing Menus (File) | M10 (export) |
+| `view.toggleClipDevice` | `Shift+Tab` | global | Showing and Hiding Views | M3 (T3.7) |
+| `view.toggleDetail` | `Ctrl+Alt+L` | global | Showing and Hiding Views | M3 (T3.7) |
+| `view.toggleBrowser` | `Ctrl+Alt+B` | global | Showing and Hiding Views | M5 (browser) |
+| `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | M3 (T3.10) |
+| `view.zoomToSelection` | `Z` | global | Arrangement View Commands | M3 (T3.8) |
+| `view.zoomBack` | `X` | global | Arrangement View Commands | M3 (T3.8) |
+| `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | M3 (T3.8) |
+| `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
+| `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
+| `grid.toggleTriplet` | `Ctrl+3` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
+| `grid.toggleSnap` | `Ctrl+4` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
+| `grid.toggleFixed` | `Ctrl+5` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
+| `edit.toggleDrawMode` | `B` | global | Editing | M3 (T3.11) |
+| `track.newMidi` | `Ctrl+T` | global | Commands for Tracks | M3 (T3.10) |
+| `track.newAudio` | `Ctrl+Shift+T` | global | Commands for Tracks | M6 (audio tracks) |
+| `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | M3 (T3.10) |
+| `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | M3 (T3.14) |
+| `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | M8 (Q15) |
+| `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
+| `mapping.toggleKeyMap` | `Ctrl+K` | global | Key/MIDI Map Commands | M8 |
+| `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | M3 (T3.10) |
+| `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | M3 (T3.10) |
+| `arrangement.rename` | `Ctrl+R` | arrangement | Editing | M3 (T3.10) |
+| `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | M3 (T3.10) |
+| `arrangement.toggleAutomationMode` | `A` | arrangement | Commands for Breakpoint Envelopes | M3 (T3.15) |
+| `arrangement.selectAll` | `Ctrl+A` | arrangement | Editing | M3 (T3.9) |
+| `arrangement.copy` | `Ctrl+C` | arrangement | Editing | M3 (T3.9) |
+| `arrangement.cut` | `Ctrl+X` | arrangement | Editing | M3 (T3.9) |
+| `arrangement.paste` | `Ctrl+V` | arrangement | Editing | M3 (T3.9) |
+| `arrangement.duplicate` | `Ctrl+D` | arrangement | Editing | M3 (T3.9) |
+| `arrangement.delete` | `Delete` | arrangement | Editing | M3 (T3.9) |
+| `arrangement.split` | `Ctrl+E` | arrangement | Arrangement View Commands | M3 (T3.9) |
+| `arrangement.consolidate` | `Ctrl+J` | arrangement | Arrangement View Commands | M3 (T3.9) |
+| `arrangement.loopSelection` | `Ctrl+L` | arrangement | Loop Brace and Start/End Markers | M3 (T3.9) |
+| `arrangement.insertMidiClip` | `Ctrl+Shift+M` | arrangement | Arrangement View Commands | M3 (T3.9) |
+| `arrangement.insertTime` | `Ctrl+I` | arrangement | Arrangement View Commands | M3 (T3.9) |
+| `arrangement.duplicateTime` | `Ctrl+Shift+D` | arrangement | Arrangement View Commands | M3 (T3.9) |
+| `arrangement.deleteTime` | `Ctrl+Shift+Delete` | arrangement | Arrangement View Commands | M3 (T3.9) |
+| `arrangement.cutTime` | `Ctrl+Shift+X` | arrangement | Arrangement View Commands | M10 (not in T3.9) |
+| `pianoroll.selectAll` | `Ctrl+A` | pianoroll | MIDI Note Editor | M3 (T3.11) |
+| `pianoroll.copy` | `Ctrl+C` | pianoroll | Editing | M3 (T3.11) |
+| `pianoroll.cut` | `Ctrl+X` | pianoroll | Editing | M3 (T3.11) |
+| `pianoroll.paste` | `Ctrl+V` | pianoroll | Editing | M3 (T3.11) |
+| `pianoroll.duplicate` | `Ctrl+D` | pianoroll | Editing | M3 (T3.11) |
+| `pianoroll.delete` | `Delete` | pianoroll | Editing | M3 (T3.11) |
+| `pianoroll.quantize` | `Ctrl+U` | pianoroll | MIDI Note Editor | M3 (T3.11) |
+| `pianoroll.quantizeSettings` | `Ctrl+Shift+U` | pianoroll | MIDI Note Editor | M10 (quantize settings) |
+| `pianoroll.stepUp` | `Up` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | M3 (T3.11) |
+| `pianoroll.stepDown` | `Down` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | M3 (T3.11) |
+| `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | M3 (T3.11) |
+| `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | M3 (T3.11) |
+| `pianoroll.toggleActive` | `0` | pianoroll | MIDI Note Editor | M3 (T3.11) |
+
+## Handled by controls, not the keymap (T3.2, implemented)
+
+These keys belong to the focused control and never reach a keymap while it has focus:
+
+| Control | Keys | Effect |
+|---|---|---|
+| Number box (drag box), knob, fader | `Up` / `Down` (`Shift`: fine) | step the value (Live: Adjusting Values) |
+| Number box, knob, fader | `Delete` / `Backspace` | return to the default value |
+| Number box | `Enter`, double-click | type a value; `Enter` commits, `Esc` cancels, focus loss commits |
+| Text field | `Left` / `Right` (`Ctrl`: by word, `Shift`: select), `Home` / `End`, `Backspace` / `Delete` (`Ctrl`: word), `Ctrl+A` / `C` / `X` / `V` | editing; `Enter` commits, `Esc` reverts |
+| Button, toggle | `Space` / `Enter` | press / flip |
+| Dropdown | `Up` / `Down` change the item; `Space` / `Enter` open the list | |
+| Menu | `Up` / `Down` / `Home` / `End` move, `Right` / `Enter` open a submenu, `Left` / `Esc` close one level, `Enter` / `Space` choose | modal while open |
+| Popover | `Esc` | dismiss |
+| any | `Tab` / `Shift+Tab` | focus traversal (T3.1) when no binding takes the chord |
+
+## Not bound yet
+
+- Macro mode toggle `Ctrl+CapsLock` (SPEC §6.2): CapsLock is a lock key, which a keymap chord cannot use as its key (T3.1); M8 handles it in the macro-mode scope.
+- Live shortcuts outside M3–M10 scope (Session View, racks, plug-in windows) are not listed.

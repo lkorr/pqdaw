@@ -35,7 +35,10 @@ Scancode scancodeForKey(Key k) noexcept {
   }
 }
 
-TestDriver::TestDriver(uint32_t width, uint32_t height, float scale) { tree_.setViewport(width, height, scale); }
+TestDriver::TestDriver(uint32_t width, uint32_t height, float scale) {
+  tree_.setViewport(width, height, scale);
+  tree_.setResources(&res_);  // widgets measure text outside paint (menus)
+}
 
 TestDriver::~TestDriver() = default;
 
@@ -222,8 +225,7 @@ Status TestDriver::enableGpu() {
   if (!t) return std::move(t).error();
   g->textures = std::move(*t);
   gpu_ = std::move(g);
-  res_.text = gpu_->textures.text.get();
-  res_.fonts = &gpu_->textures.fonts;
+  res_ = paintResources(gpu_->textures);
   tree_.damage().addAll();  // anything painted before had no text
   return Ok{};
 }

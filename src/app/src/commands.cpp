@@ -27,8 +27,8 @@ namespace pq::app {
 using namespace pq::ui;
 
 int runScreenshot(const CliOptions& o) {
-  const uint32_t w = o.width ? o.width : kDefaultSceneWidth;
-  const uint32_t h = o.height ? o.height : kDefaultSceneHeight;
+  uint32_t w = o.width, h = o.height;
+  if (!w || !h) sceneDefaultSize(o.scene, w, h);
   const UiScale scale(o.scale > 0.0f ? o.scale : 1.0f);
   auto img = renderSceneImage(o.scene, w, h, {}, scale);
   if (!img) {
@@ -65,9 +65,14 @@ struct WindowApp {
   uint32_t framesPresented = 0;
   uint32_t framesSkipped = 0;
   std::string error;
-  // Widget scenes (widgets-core) run a live UiTree: SDL input → translateEvent → the tree; its damage and
-  // timers drive frames; layout is in logical px × the display scale.
+  // Widget scenes (widgets-core, widgets) run a live UiTree: SDL input → translateEvent → the tree; its
+  // damage and timers drive frames; layout is in logical px × the display scale.
   std::unique_ptr<UiTree> ui;
+  PaintResources res;  // what the tree paints and measures with (points into `textures`)
+  SdlClipboard clipboard;
+  // Dev builds: theme hot reload (T3.2). The loop wakes every 0.5 s for one file-time query; nothing redraws
+  // unless the file changed.
+  std::unique_ptr<ThemeFileWatcher> themeWatch;
   // The UI scale (pq/ui/ui_scale.h): the one value the tree's layout, the scene fonts and the scenes read.
   // Read from the window's display at startup and on SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED; scaleOverride
   // (> 0: --scale, or the self-test's injected change) replaces the display's value.
@@ -130,9 +135,7 @@ struct WindowApp {
       if (ui) {
         ui->setViewport(ext.width, ext.height, scale);
         dl.addRectFilled({0, 0, static_cast<float>(ext.width), static_cast<float>(ext.height)}, kSceneClearColor);
-        PaintResources res;
-        res.text = textures.text.get();
-        res.fonts = &textures.fonts;
+        res = paintResources(textures);
         ui->paint(dl, res, t);
       } else {
         buildScene(scene, dl, textures, damage.animating() ? t : 0.0);
@@ -155,11 +158,34 @@ struct WindowApp {
     return ok;
   }
 
+  // Dev theme hot reload: re-resolves the theme's fonts, relayouts and redraws when the file changed.
+  void pollTheme() {
+    if (!themeWatch) return;
+    Theme t;
+    std::string err;
+    switch (themeWatch->poll(now(), t, err)) {
+      case ThemeFileWatcher::Poll::Reloaded:
+        if (Status s = setSceneTheme(textures, std::make_shared<const Theme>(std::move(t))); !s) {
+          std::fprintf(stderr, "pqdaw: theme reload failed: %s\n", s.error().message.c_str());
+          break;
+        }
+        res = paintResources(textures);
+        if (ui) ui->invalidateAll();
+        damage.addAll();
+        std::printf("pqdaw: theme reloaded from %s\n", themeWatch->path().c_str());
+        break;
+      case ThemeFileWatcher::Poll::Failed: std::fprintf(stderr, "pqdaw: theme not reloaded: %s\n", err.c_str()); break;
+      default: break;
+    }
+  }
+
   void handle(const SDL_Event& e) {
+    bool consumed = false;
     if (ui) {
       InputEvent in;
-      if (translateEvent(e, window->pixelDensity(), in)) ui->dispatch(in);
+      if (translateEvent(e, window->pixelDensity(), in)) consumed = ui->dispatch(in);
     }
+    if (consumed && e.type == SDL_EVENT_KEY_DOWN) return;  // e.g. Esc closed a menu, 'a' typed into a field
     switch (e.type) {
       case SDL_EVENT_QUIT:
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED: quit = true; break;
@@ -235,13 +261,20 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
   app->textures = *tex;
   app->damage.setAnimating(o.animate);
   app->damage.addAll();
-  if (o.scene == "widgets-core") {
+  app->res = paintResources(app->textures);
+  if (isWidgetScene(o.scene)) {
     app->ui = std::make_unique<UiTree>();
     uint32_t w = 0, h = 0;
     app->window->pixelSize(w, h);
     app->ui->setViewport(w, h, app->scale);
-    app->ui->setRoot(makeWidgetsCoreDemo());
+    app->ui->setResources(&app->res);
+    app->ui->setClipboard(&app->clipboard);
+    buildWidgetScene(o.scene, *app->ui);
+    SDL_StartTextInput(app->window->sdl());  // text fields get TEXT_INPUT events (IME handling: T3.7)
   }
+#ifndef NDEBUG
+  if (!hidden) app->themeWatch = std::make_unique<ThemeFileWatcher>(defaultThemePath());
+#endif
   return app;
 }
 
@@ -259,8 +292,9 @@ int interactive(WindowApp& app) {
     const bool uiBusy = app.ui && app.ui->needsFrame();  // widget animation frames pending
     if ((!app.damage.needsFrame() && !uiBusy) || app.window->minimized()) {
       SDL_Event e;
-      // Sleep until the next event, or the widget tree's next timer.
-      const double wake = app.ui ? app.ui->nextWakeTime() : std::numeric_limits<double>::infinity();
+      // Sleep until the next event, the widget tree's next timer or the next theme-file check (dev).
+      double wake = app.ui ? app.ui->nextWakeTime() : std::numeric_limits<double>::infinity();
+      if (app.themeWatch) wake = std::min(wake, app.themeWatch->nextCheck());
       const bool got = std::isfinite(wake)
                            ? SDL_WaitEventTimeout(&e, static_cast<Sint32>(std::clamp(std::ceil((wake - app.now()) * 1000.0), 0.0, 1e6)))
                            : SDL_WaitEvent(&e);
@@ -268,6 +302,7 @@ int interactive(WindowApp& app) {
     }
     pump(app);
     if (app.quit) break;
+    app.pollTheme();
     app.updateUi();
     if (app.damage.needsFrame() && !app.window->minimized()) {
       if (!app.drawFrame()) {
@@ -469,12 +504,16 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
           "font roles re-resolved at round(role x scale) px");
     check(app.damage.needsFrame(), "scale change requests a redraw");
     app.updateUi();
-    if (app.ui) {
+    if (app.ui && app.scene == "widgets-core") {
       const Widget* header = app.ui->find("header");
       const Widget* browserItem = app.ui->find("body/browser/item[0]");
       check(app.ui->scale() == target && header && header->rect().h == s.px(28) && browserItem &&
                 browserItem->rect().h == s.px(22),
             "widget tree relaid out in logical px x new scale");
+    } else if (app.ui) {  // the T3.2 gallery: header 30 logical px, overlays still open
+      const Widget* header = app.ui->find("header");
+      check(app.ui->scale() == target && header && header->rect().h == s.px(30) && app.ui->find("overlay/context-menu"),
+            "gallery relaid out in logical px x new scale, menus open");
     }
     frame("frame at the new scale presents");
     check(app.lastFrameScale == s, "that frame was drawn at the new scale");

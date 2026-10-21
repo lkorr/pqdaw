@@ -89,6 +89,15 @@ Mods modsFromSdl(SDL_Keymod m) noexcept {
 
 }  // namespace
 
+std::string SdlClipboard::text() {
+  char* t = SDL_GetClipboardText();  // "" (never null) when empty or on error
+  std::string out = t ? t : "";
+  SDL_free(t);
+  return out;
+}
+
+void SdlClipboard::setText(std::string_view utf8) { SDL_SetClipboardText(std::string(utf8).c_str()); }
+
 bool translateEvent(const SDL_Event& e, float density, InputEvent& out) noexcept {
   out = InputEvent{};
   PointerEvent& p = out.pointer;

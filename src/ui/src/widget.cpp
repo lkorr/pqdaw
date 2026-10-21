@@ -228,6 +228,14 @@ ISize Widget::contentExtent(ISize viewport) const {
   return {axis(width_, viewport.w), axis(height_, viewport.h)};
 }
 
+InfoText infoFor(const Widget* w) {
+  for (; w; w = w->parent()) {
+    const InfoText t = w->info();
+    if (!t.empty()) return t;
+  }
+  return {};
+}
+
 // --- Splitter -------------------------------------------------------------------------------------------
 
 Splitter::Splitter(std::string name, Axis axis, float position, Anchor anchor)
@@ -332,6 +340,36 @@ ScrollView::ScrollView(std::string name, bool horizontal, bool vertical)
   setClipChildren(true);
 }
 
+ScrollView::~ScrollView() {
+  for (Dependent*& d : dependents_)
+    if (d) {
+      Dependent* x = d;
+      d = nullptr;
+      x->onScrollViewGone();
+    }
+}
+
+bool ScrollView::linkDependent(Dependent* d) noexcept {
+  for (Dependent*& s : dependents_)
+    if (s == d) return true;
+  for (Dependent*& s : dependents_)
+    if (!s) {
+      s = d;
+      return true;
+    }
+  return false;
+}
+
+void ScrollView::unlinkDependent(Dependent* d) noexcept {
+  for (Dependent*& s : dependents_)
+    if (s == d) s = nullptr;
+}
+
+void ScrollView::notifyDependents() noexcept {
+  for (Dependent* d : dependents_)
+    if (d) d->onScrollChanged();
+}
+
 void ScrollView::scrollTo(int32_t x, int32_t y) {
   const IRect v = rect();
   x = std::clamp(x, 0, std::max(0, content_.w - v.w));
@@ -343,6 +381,7 @@ void ScrollView::scrollTo(int32_t x, int32_t y) {
   scrollY_ = y;
   invalidateArrange();
   markDirty();
+  notifyDependents();
 }
 
 void ScrollView::arrange(LayoutPass& pass) {
@@ -356,6 +395,8 @@ void ScrollView::arrange(LayoutPass& pass) {
   scrollX_ = std::clamp(scrollX_, 0, std::max(0, ext.w - v.w));
   scrollY_ = std::clamp(scrollY_, 0, std::max(0, ext.h - v.h));
   pass.place(*c, {v.x - scrollX_, v.y - scrollY_, ext.w, ext.h});
+  // Arrange runs only when the viewport moved/resized or the content/scroll changed: scrollbars follow.
+  notifyDependents();
 }
 
 bool ScrollView::onPointer(const PointerEvent& e) {

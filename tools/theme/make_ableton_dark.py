@@ -1,0 +1,105 @@
+import colorsys, sys
+colors = [
+ ("surface.background", "#1E1E1E"),
+ ("surface.panel", "#2E2E2E"),
+ ("surface.raised", "#3A3A3A"),
+ ("surface.sunken", "#222222"),
+ ("surface.divider", "#141414"),
+ ("surface.highlight", "#444444"),
+ ("control.fill", "#4A4A4A"),
+ ("control.fillHover", "#565656"),
+ ("control.fillPressed", "#3D3D3D"),
+ ("control.fillDisabled", "#363636"),
+ ("control.border", "#151515"),
+ ("control.track", "#555555"),
+ ("control.value", "#FFA33D"),
+ ("control.valueDisabled", "#6A6A6A"),
+ ("control.thumb", "#A8A8A8"),
+ ("control.thumbHover", "#C6C6C6"),
+ ("control.needle", "#E2E2E2"),
+ ("field.fill", "#232323"),
+ ("field.fillHover", "#292929"),
+ ("field.border", "#151515"),
+ ("field.borderFocus", "#FFA33D"),
+ ("text.primary", "#DCDCDC"),
+ ("text.secondary", "#A6A6A6"),
+ ("text.disabled", "#808080"),
+ ("text.onAccent", "#121212"),
+ ("text.selection", "#375E7C"),
+ ("text.caret", "#F2F2F2"),
+ ("accent.primary", "#FFA33D"),
+ ("accent.activator", "#F2C03A"),
+ ("accent.solo", "#5DA9E6"),
+ ("accent.arm", "#E8544B"),
+ ("accent.focus", "#FFA33D"),
+ ("selection.fill", "#3D6787"),
+ ("selection.text", "#FFFFFF"),
+ ("menu.fill", "#333333"),
+ ("menu.border", "#151515"),
+ ("menu.separator", "#484848"),
+ ("menu.shadow", "#00000059"),
+ ("tooltip.fill", "#474747"),
+ ("tooltip.border", "#151515"),
+ ("tooltip.text", "#EEEEEE"),
+ ("track.header", "#3A3A3A"),
+ ("track.headerSelected", "#4E4E4E"),
+ ("track.lane", "#343434"),
+ ("track.laneAlt", "#303030"),
+ ("track.laneSelected", "#3E3E3E"),
+ ("clip.text", "#121212"),
+ ("clip.textLight", "#F2F2F2"),
+ ("clip.border", "#151515"),
+ ("clip.selectedBorder", "#F2F2F2"),
+ ("grid.bar", "#00000070"),
+ ("grid.beat", "#00000040"),
+ ("grid.sub", "#00000024"),
+ ("grid.shade", "#00000014"),
+ ("scrollbar.track", "#262626"),
+ ("scrollbar.thumb", "#5C5C5C"),
+ ("scrollbar.thumbHover", "#747474"),
+]
+fonts = [("small","regular",12,False),("body","regular",13,False),("bodyStrong","semibold",13,False),("title","semibold",14,False),("numeric","regular",12,False)]
+metrics = [("spacing.xs",2),("spacing.sm",4),("spacing.md",8),("spacing.lg",12),
+ ("radius.control",2),("radius.panel",3),("radius.menu",3),("radius.clip",2),
+ ("size.control",18),("size.row",20),("size.menuItem",20),("size.scrollbar",10),("size.knob",34),("size.meter",14)]
+
+# Clip palette: 13 hues + a grey column, 5 rows (vivid, light, mid, muted, dark). Own values: each row has a
+# target relative luminance, so a clip name is readable on every colour with dark text (rows 0-3) or light
+# text (row 4) at >= 4.5:1.
+def lin(c): return c/12.92 if c<=0.04045 else ((c+0.055)/1.055)**2.4
+def lum_rgb(r,g,b): return 0.2126*lin(r)+0.7152*lin(g)+0.0722*lin(b)
+def hexc(r,g,b): return "#%02X%02X%02X" % (round(r*255), round(g*255), round(b*255))
+def for_lum(h, s, target):
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        m = (lo+hi)/2
+        r,g,b = colorsys.hls_to_rgb(h/360, m, s)
+        if lum_rgb(r,g,b) < target: lo = m
+        else: hi = m
+    r,g,b = colorsys.hls_to_rgb(h/360, (lo+hi)/2, s)
+    return hexc(r,g,b)
+hues = [0, 14, 28, 40, 52, 70, 100, 140, 168, 188, 205, 228, 270]
+rows = [(0.78, 0.34), (0.70, 0.62), (0.48, 0.23), (0.30, 0.44), (0.50, 0.075)]
+greys = [0.55, 0.80, 0.25, 0.40, 0.06]
+pal = []
+for r,(s,t) in enumerate(rows):
+    for h in hues: pal.append(for_lum(h, s, t))
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        m=(lo+hi)/2
+        if lum_rgb(m,m,m) < greys[r]: lo=m
+        else: hi=m
+    pal.append(hexc(m,m,m))
+o = []
+o.append('{\n  "name": "Ableton Dark (pqdaw approximation)",\n  "colors": {\n')
+o.append(",\n".join('    "%s": "%s"' % kv for kv in colors) + "\n")
+o.append('  },\n  "fonts": {\n')
+o.append(",\n".join('    "%s": {"face": "%s", "px": %d, "tabular": %s}' % (n,f,p,"true" if t else "false") for n,f,p,t in fonts) + "\n")
+o.append('  },\n  "metrics": {\n')
+o.append(",\n".join('    "%s": %s' % (n, v) for n,v in metrics) + "\n")
+o.append('  },\n  "clipPalette": [\n')
+lines = []
+for r in range(5):
+    lines.append("    " + ", ".join('"%s"' % c for c in pal[r*14:(r+1)*14]))
+o.append(",\n".join(lines) + "\n  ]\n}\n")
+sys.stdout.write("".join(o))

@@ -14,6 +14,7 @@
 #include "pq/ui/gpu.h"
 #include "pq/ui/input.h"
 #include "pq/ui/renderer.h"
+#include "pq/ui/widget.h"
 
 struct SDL_Window;
 union SDL_Event;
@@ -59,6 +60,13 @@ private:
 // coordinates × pixelDensity). Returns false (out.kind = None) for events that are not input. Text events
 // only arrive between SDL_StartTextInput / SDL_StopTextInput (the app toggles that with text focus).
 bool translateEvent(const SDL_Event& e, float pixelDensity, InputEvent& out) noexcept;
+
+// The desktop clipboard through SDL (UiTree::setClipboard). Needs SDL's video subsystem (a Window).
+class SdlClipboard final : public Clipboard {
+public:
+  std::string text() override;
+  void setText(std::string_view utf8) override;
+};
 
 class Swapchain {
 public:

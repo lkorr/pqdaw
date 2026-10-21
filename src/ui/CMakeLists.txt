@@ -19,14 +19,18 @@ pq_add_module(pq_ui
     src/actions.cpp
     src/atlas.cpp
     src/colormap.cpp
+    src/controls.cpp
     src/draw_list.cpp
     src/frame_pacer.cpp
     src/gpu.cpp
     src/image.cpp
     src/input.cpp
+    src/keymap_file.cpp
     src/lines.cpp
     src/offscreen.cpp
+    src/overlay.cpp
     src/renderer.cpp
+    src/scene_controls.cpp
     src/scene_lines.cpp
     src/scene_primitives.cpp
     src/scene_text.cpp
@@ -34,13 +38,15 @@ pq_add_module(pq_ui
     src/scenes.cpp
     src/test_driver.cpp
     src/text.cpp
+    src/text_edit.cpp
+    src/theme.cpp
     src/ui_tree.cpp
     src/vma_impl.cpp
     src/widget.cpp
     src/window.cpp
     ${_pq_ui_spv}
   DEPS pq_core Vulkan::Vulkan
-  PRIVATE_DEPS pq_vma SDL3::SDL3-static ZLIB::ZLIB dwmapi pq_harfbuzz freetype)
+  PRIVATE_DEPS pq_vma SDL3::SDL3-static ZLIB::ZLIB dwmapi pq_harfbuzz freetype nlohmann_json::nlohmann_json)
 target_include_directories(pq_ui PRIVATE ${_pq_ui_gen})
 # Fallback location of the bundled fonts for dev builds and tests (see pq::ui::assetsDir()).
 target_compile_definitions(pq_ui PRIVATE PQ_SOURCE_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")

@@ -144,7 +144,7 @@ void UiTree::place(Widget& w, const IRect& r) {
 void UiTree::arrangeChildren(Widget& w) {
   w.flags_ &= ~(Widget::kArrangeDirty | Widget::kDescendantDirty);
   ++stats_.widgetsArranged;
-  if (w.children_.empty()) return;
+  if (w.children_.empty() && w.layout_ != LayoutKind::Custom) return;  // Custom: arrange() may track state (overlay layer)
   switch (w.layout_) {
     case LayoutKind::Stack: arrangeStack(w); break;
     case LayoutKind::Row: arrangeLinear(w, true); break;
@@ -409,6 +409,7 @@ void UiTree::updateHover(Vec2 p) {
     h->set(Widget::kHovered, true);
     h->onHoverChanged(true);
   }
+  for (TreeObserver* o : observers_) o->onHoverChanged(hovered_);
 }
 
 bool UiTree::bubblePointer(Widget* from, const PointerEvent& e) {
@@ -442,7 +443,10 @@ bool UiTree::dispatchPointer(const PointerEvent& e) {
   layoutNow();  // hit testing needs current rects
   pointer_ = e.pos;
   pointerInside_ = true;
-  if (e.type == PointerType::Down) buttonsHeld_ |= buttonBit(e.button);
+  if (e.type == PointerType::Down) {
+    buttonsHeld_ |= buttonBit(e.button);
+    for (TreeObserver* o : observers_) o->onPointerDown(e.pos);
+  }
   if (e.type == PointerType::Up) buttonsHeld_ &= static_cast<uint8_t>(~buttonBit(e.button));
 
   if (captured_ && e.type != PointerType::Wheel) {
@@ -547,6 +551,31 @@ void UiTree::removeModalScope(ScopeId s) noexcept {
   modalCount_ = o;
 }
 
+namespace {
+class MemoryClipboard final : public Clipboard {
+public:
+  std::string text() override { return text_; }
+  void setText(std::string_view utf8) override { text_.assign(utf8); }
+
+private:
+  std::string text_;
+};
+}  // namespace
+
+Clipboard& UiTree::clipboard() {
+  if (clipboard_) return *clipboard_;
+  if (!localClipboard_) localClipboard_ = std::make_unique<MemoryClipboard>();
+  return *localClipboard_;
+}
+
+void UiTree::addObserver(TreeObserver* o) {
+  if (o && std::find(observers_.begin(), observers_.end(), o) == observers_.end()) observers_.push_back(o);
+}
+
+void UiTree::removeObserver(TreeObserver* o) noexcept {
+  observers_.erase(std::remove(observers_.begin(), observers_.end(), o), observers_.end());
+}
+
 void UiTree::releaseCapture() {
   if (!captured_) return;
   Widget* c = captured_;
@@ -559,7 +588,8 @@ void UiTree::releaseCapture() {
 
 // --- focus ----------------------------------------------------------------------------------------------
 
-void UiTree::setFocus(Widget* w) {
+void UiTree::setFocus(Widget* w, bool keyboard) {
+  focusVisible_ = keyboard && w != nullptr;
   if (w == focus_) return;
   Widget* old = focus_;
   focus_ = w;
@@ -614,7 +644,7 @@ bool UiTree::focusNext(bool backwards) {
   do {
     w = backwards ? prevPreorder(w, root_.get()) : nextPreorder(w, root_.get());
     if (w && w != start && canFocus(*w)) {
-      setFocus(w);
+      setFocus(w, true);
       return true;
     }
   } while (w != start);
