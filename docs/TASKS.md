@@ -76,7 +76,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - Topological order, Tarjan SCCs, explicit-delay feedback handled, a zero-delay cycle outside `solve` rejected (text) or given an inserted `z1` plus a warning (visual mode flag). Block regions: per-sample for feedback SCCs, blocks elsewhere. Buffer liveness and reuse. State layout keyed by NodeId with type tags.
   - Accept: tests on schedule structure. The scratch-buffer count for a 100-node chain is ≤ 3. The state layout for an unchanged node is identical across reschedules.
 
-- [~] **T1.6 Leaf atom kernels** *(worker G, branch task/T1.6-leaf-atoms)* (`dsp`). Depends on: T0.4.
+- [x] **T1.6 Leaf atom kernels** *(5a0bdec..4138a25)* (`dsp`). Depends on: T0.4.
   - Every leaf atom in SPEC §7.2: math, logic (bool lanes as masks), memory (`z1`, `delayline` with linear/allpass/cubic reads), generators (`phasor` with a **uint32 phase accumulator**, `sine`, `wavetable` with band-limited mipmaps, `noise`), `shaper`, `sampleRead`. Each has a scalar and an AVX2 path, block-wise.
   - Accept: each kernel is tested against a naive `double` reference. A phasor test shows zero drift over 10⁹ samples, with its frequency exact to the uint32 resolution. Benchmarks are recorded per atom (ns/sample, 1 and 8 lanes).
 
