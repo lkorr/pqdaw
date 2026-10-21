@@ -6,6 +6,7 @@
 //   split/*        the rejected alternative: running the image in sub-blocks split at event frames
 //   packing/*      groups run vs ceil(live / 8) under random traffic, best fit alone vs with compaction, and the
 //                  time per block (null image: engine only; FmVoice: engine + image)
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -301,9 +302,79 @@ void packing(const char* name, e::ProgramImage* img, double burstsPerSecond, boo
               static_cast<unsigned long long>(d.ve.stats().steals));
 }
 
+// T1.8-fix1 (M1 review M9): per-voice delay lines with 2 s of ring (131072 frames, 4 MiB per voice group) under note
+// traffic with steals and compaction. Note-on lane resets and compaction moves touch a lane's ring; the audio thread
+// must stay well inside the block period (acceptance: < 25 %). Per-block wall time of VoiceEngine::process
+// (engine + interpreted image), distribution over `blocks` blocks after a warm-up.
+const char* kRingVoice = R"(patch RingVoice {
+  out y : audio voice mono
+  x = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.1
+  e = delay(x + e * 0.5, 300ms, 2s)
+  y = x + e
+})";
+
+void ringTraffic(double burstsPerSecond, int blocks) {
+  auto img = compile(kRingVoice, e::voiceGroupsFor(64), kBlock);
+  e::VoiceConfig cfg;
+  cfg.maxVoices = 64;
+  cfg.silenceDb = -60.0f;
+  cfg.retriggerSameNote = false;
+  Driver d(img.get(), cfg);
+  DenormalGuard dg;
+  uint32_t rng = 4242;
+  auto rnd01 = [&] {
+    rng = rng * 1664525u + 1013904223u;
+    return static_cast<double>(rng >> 8) / 16777216.0;
+  };
+  std::vector<std::pair<int64_t, uint32_t>> offs;
+  std::vector<double> us;
+  us.reserve(static_cast<size_t>(blocks));
+  int64_t t = 0;
+  uint32_t id = 1;
+  uint64_t ons = 0;
+  const int warm = 2000;
+  for (int b = 0; b < warm + blocks; ++b, t += kBlock) {
+    if (rnd01() < burstsPerSecond * kBlock / 48000.0) {
+      const uint32_t n = 1 + static_cast<uint32_t>(rnd01() * 4.0);
+      for (uint32_t k = 0; k < n; ++k) {
+        d.buf.push(e::noteOn(static_cast<uint32_t>(rnd01() * kBlock), id, pitch(id), 0.8f));
+        offs.push_back({t + static_cast<int64_t>(-std::log(1.0 - rnd01()) * 0.5 * 48000.0), id});
+        ++id;
+        if (b >= warm) ++ons;
+      }
+    }
+    for (size_t i = 0; i < offs.size();) {
+      if (offs[i].first < t + kBlock) {
+        d.buf.push(e::noteOff(static_cast<uint32_t>(std::max<int64_t>(0, offs[i].first - t)), offs[i].second));
+        offs[i] = offs.back();
+        offs.pop_back();
+      } else {
+        ++i;
+      }
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    d.block();
+    const double dt = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    if (b >= warm) us.push_back(dt);
+  }
+  std::vector<double> s = us;
+  std::sort(s.begin(), s.end());
+  const double period = 1e6 * kBlock / 48000.0;
+  const double med = s[s.size() / 2], p99 = s[s.size() * 99 / 100], p999 = s[s.size() * 999 / 1000], mx = s.back();
+  std::printf("BENCH ring/2 s voice delay x64, %3.0f bursts/s: per block median %.1f us, p99 %.1f us, p99.9 %.1f us, "
+              "max %.1f us (%.1f %% of the %.0f us period); %llu note-ons, %llu moves, %llu steals, %llu ended\n",
+              burstsPerSecond, med, p99, p999, mx, 100.0 * mx / period, period, static_cast<unsigned long long>(ons),
+              static_cast<unsigned long long>(d.ve.stats().voiceMoves), static_cast<unsigned long long>(d.ve.stats().steals),
+              static_cast<unsigned long long>(d.ve.stats().voicesEnded));
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1 && std::string(argv[1]) == "ring") {  // only the T1.8-fix1 ring rows
+    for (double rate : {4.0, 16.0}) ringTraffic(rate, 20000);
+    return 0;
+  }
   std::printf("T1.8 voices, block %u frames, 48 kHz\n", kBlock);
   overhead("overhead/no voices (9 groups)", 0, e::voiceGroupsFor(64));
   overhead("overhead/8 voices held (2 groups)", 8, e::voiceGroupsFor(8));
