@@ -7,6 +7,10 @@
 
 #include "pq/engine/audio_device.h"
 
+namespace pq {
+class RtLog;
+}
+
 namespace pq::engine {
 
 // Our own WASAPI output backend (T0.6-fix1, review finding H1). <windows.h>/COM headers stay in the .cpp.
@@ -62,6 +66,13 @@ public:
   // Test hook for underrun detection: once, right after the wake number `wake` (1-based) has written its data,
   // the audio thread sleeps for 3 device periods (outside its RtScope). 0 disables. Call before start().
   void injectStallAfterWake(uint64_t wake) noexcept;
+
+  // Optional diagnostics: the audio thread pushes one record per underrun episode (code kLogUnderrun) and per
+  // recovery restart (kLogRestart) into `log` (one producer: this device's audio thread). Call before start();
+  // the log must outlive the stream.
+  static constexpr uint32_t kLogUnderrun = 0x57A1;
+  static constexpr uint32_t kLogRestart = 0x57A2;
+  void setRtLog(RtLog* log) noexcept;
 
   // The error that ended the audio thread early (e.g. the device was removed), empty if none.
   std::string threadError() const;

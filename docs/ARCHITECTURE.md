@@ -71,6 +71,12 @@ public:
 // core: allocation trap. In tests and debug builds, any heap allocation while an RtScope is active fails the test.
 struct RtScope { RtScope() noexcept; ~RtScope() noexcept; };   // marks the current thread "realtime"
 
+// core: RT log ring. One RtLog per realtime thread (SPSC of POD records: static "{}" format, code, ≤ 4 numeric
+// args, rdtsc, sequence); RtLogger drains every 10 ms on its own thread, formats, writes lines; drops are counted
+// exactly and reported as a line plus a sequence gap.
+class RtLog { public: explicit RtLog(uint32_t capacityPow2); template <class... A> bool log(uint32_t code, const char* fmt, A...) noexcept; };
+class RtLogger { public: void add(RtLog&, std::string name); void start(); void stop(); size_t drainOnce(); };
+
 // tuning: everything resolves to float32 Hz in the end
 namespace pq::tuning {
   struct PitchId;                                  // Degree | Ratio | Cents | Harmonic (SPEC §3.1)

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "pq/core/epoch_reclaimer.h"
 #include "pq/core/fixed_pool.h"
 #include "pq/core/mpsc_queue.h"
+#include "pq/core/rt_log.h"
 #include "pq/core/spsc_ring.h"
 #include "pq_bench.h"
 
@@ -75,6 +77,29 @@ int main() {
              r.tryPop(v);
              doNotOptimize(v);
            }, 1), "ns/push+pop");
+  }
+  // RtLog (T0.2-fix2): push of a 2-argument record (format pointer, code, 2 typed args, rdtsc) and the
+  // consumer's drain without formatting; formatting cost is the logger thread's.
+  {
+    pq::RtLog log(4096);
+    uint64_t seen = 0;
+    report("rtlog push 2 args + drain (1 thread, batch 64)", measure([&] {
+             for (int i = 0; i < kBatch; ++i) log.log(3, "wake {} late {}", static_cast<uint64_t>(i), 0.25 * i);
+             log.drain([&](const pq::RtLogRecord& r) { seen += r.sequence; });
+             doNotOptimize(seen);
+           }, kBatch), "ns/record");
+    pq::RtLogRecord r;
+    r.format = "wake {} late {}";
+    r.argc = 2;
+    r.kinds[0] = pq::RtLogRecord::Kind::UInt;
+    r.kinds[1] = pq::RtLogRecord::Kind::Float;
+    r.args[0].u = 123456;
+    r.args[1].d = 0.25;
+    std::string text;
+    report("rtlog format one record (logger thread)", measure([&] {
+             text = pq::formatRtLogRecord(r);
+             doNotOptimize(text[0]);
+           }, 1), "ns/record");
   }
   {
     pq::MpscQueue<uint64_t> q(1024);

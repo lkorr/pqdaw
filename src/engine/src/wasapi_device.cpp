@@ -20,6 +20,7 @@
 #include <wrl/client.h>
 
 #include "pq/core/aligned_buffer.h"
+#include "pq/core/rt_log.h"
 #include "pq/core/rt_scope.h"
 #include "pq/engine/callback_runner.h"
 #include "pq/engine/sample_convert.h"
@@ -234,6 +235,7 @@ struct WasapiDevice::Impl {
   std::atomic<bool> running{false};
   std::atomic<bool> threadAlive{false};
   std::atomic<uint64_t> stallAfterWake{0};
+  RtLog* rtLog = nullptr;  // optional diagnostics ring (set before start())
 
   void threadMain() noexcept;
   void renderPeriods(BYTE* data, uint32_t periods, bool& pendingUnderrun) noexcept;
@@ -261,6 +263,8 @@ WasapiDevice::~WasapiDevice() { close(); }
 bool WasapiDevice::isOpen() const noexcept { return impl_->open; }
 bool WasapiDevice::isRunning() const noexcept { return impl_->threadAlive.load(std::memory_order_acquire); }
 const CallbackStats& WasapiDevice::stats() const noexcept { return impl_->runner.stats(); }
+void WasapiDevice::setRtLog(RtLog* log) noexcept { impl_->rtLog = log; }
+
 void WasapiDevice::injectStallAfterWake(uint64_t wake) noexcept {
   impl_->stallAfterWake.store(wake, std::memory_order_relaxed);
 }
@@ -616,6 +620,9 @@ void WasapiDevice::Impl::threadMain() noexcept {
       // written): then it has lost its reserve. With data still queued the reserve is intact and a restart
       // would only add a period of latency.
       restart = exclusive && o.newEpisode && !timedOut && (w.position < 0 || w.position >= written);
+      if (o.newEpisode && rtLog)
+        rtLog->log(kLogUnderrun, "underrun at wake {}: {} frames late, queue {} frames, padding {}", wake,
+                 o.latenessFrames, o.queueFrames, w.padding);
 
       const uint32_t frames = exclusive ? (timedOut ? 0 : period) : (endpointFrames - pad) / period * period;
       if (frames) {
@@ -660,6 +667,8 @@ void WasapiDevice::Impl::threadMain() noexcept {
         break;
       }
       runner.recordRestart();
+      if (rtLog)
+        rtLog->log(kLogRestart, "stream restarted after wake {} with one period ({} frames) in reserve", wake, period);
     }
     if (const uint64_t s = stallAfterWake.load(std::memory_order_relaxed); s != 0 && s == wake && stallTimer) {
       // Test hook (not part of normal operation): sleep for 3 periods on a high-resolution timer. A sleep, not a

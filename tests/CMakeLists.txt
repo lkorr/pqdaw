@@ -22,6 +22,7 @@ pq_add_test(pq_tests_core
     core/test_grid.cpp
     core/test_math_time_rt.cpp
     core/test_stable_id.cpp
+    core/test_rt_log.cpp
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning
@@ -105,6 +106,7 @@ pq_add_test(pq_tests_engine
     engine/test_null_device.cpp
     engine/test_rtaudio_device.cpp
     engine/test_wasapi.cpp
+    engine/test_rt_log_device.cpp
   DEPS pq_engine)
 
 pq_add_test(pq_tests_dsp

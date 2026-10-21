@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "pq/core/fast_math.h"
+#include "pq/core/rt_log.h"
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/rtaudio_device.h"
 #include "pq/engine/wasapi_device.h"
@@ -137,6 +138,13 @@ int runSine(const CliOptions& options) {
   engine::AudioDevice& dev = **created;
   auto* wasapi = backend == Backend::Wasapi ? static_cast<engine::WasapiDevice*>(&dev) : nullptr;
   if (wasapi && options.stallAfterWake) wasapi->injectStallAfterWake(options.stallAfterWake);
+  // Audio-thread diagnostics (underrun episodes, recovery restarts) through the RT log ring, printed as they come.
+  pq::RtLog rtLog(1024);
+  pq::RtLogger logger([](void*, const std::string& line) { std::printf("log:      %s\n", line.c_str()); }, nullptr, 50);
+  if (wasapi) {
+    wasapi->setRtLog(&rtLog);
+    logger.add(rtLog, "wasapi");
+  }
 
   engine::StreamConfig config;
   config.outputDevice = options.device;
@@ -187,6 +195,7 @@ int runSine(const CliOptions& options) {
                 "(allocates; not RT-safe)\n",
                 info.sampleRate);
 
+  logger.start();
   if (auto s = dev.start(); !s) {
     std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
     return 1;
@@ -194,6 +203,7 @@ int runSine(const CliOptions& options) {
   const auto t0 = std::chrono::steady_clock::now();
   std::this_thread::sleep_for(std::chrono::duration<double>(options.seconds));
   const auto stopStatus = dev.stop();
+  logger.stop();
   const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   const engine::CallbackStats::Snapshot st = dev.stats().snapshot();
   dev.close();
