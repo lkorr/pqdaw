@@ -128,11 +128,11 @@ Every task also carries these **standing criteria**, which aren't repeated below
 
 ## M2: Tuning
 
-- [~] **T2.1 Pitch identities + resolution** *(worker C, branch task/T2.1-T2.2-pitch-edo)* (`tuning`). Depends on: T0.1.
+- [x] **T2.1 Pitch identities + resolution** *(4f3b5c1)* (`tuning`). Depends on: T0.1.
   - `PitchId` (Degree/Ratio/Cents/Harmonic), a rational type (int64 n/d, overflow-checked) with monzo conversion up to a prime limit, and `resolveHz`. Reference pitch defaults to C3 = 261.626 Hz.
   - Accept: tests; ratio composition of 50 random intervals stays exact; the float32 Hz result is within 0.001 ¢ of a `double` reference.
 
-- [~] **T2.2 EDO** *(worker C, branch task/T2.1-T2.2-pitch-edo)* (`tuning`). Depends on: T2.1.
+- [x] **T2.2 EDO** *(4f3b5c1)* (`tuning`). Depends on: T2.1.
   - Any n, any equave. Patent val for primes up to 31. Step labels `k\n`.
   - Accept: tests against known vals (12, 19, 22, 31, 41, 53, 72).
 
