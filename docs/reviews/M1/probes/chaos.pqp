@@ -1,0 +1,7 @@
+patch Chaos {
+  out y : audio
+  fb = z1(v, init: 0.3)
+  r = fb * 3.99
+  v = r - r * fb
+  y = v
+}

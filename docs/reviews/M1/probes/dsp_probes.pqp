@@ -1,0 +1,29 @@
+patch SrTiny {
+  out y : audio
+  out z : audio
+  rst = pulse(100)
+  z0 = phasor(0Hz)
+  a = sample_read_linear(1, z0 - 0.000000001, rst, start: 0.5)
+  b = sample_read_linear(1, z0 - 0.000001, rst, start: 0.5)
+  y = gate_to_real(a.playing)
+  z = gate_to_real(b.playing)
+}
+patch ModTiny {
+  out y : audio
+  y = mod(phasor(0Hz) - 0.000000001, 1)
+}
+patch TimerNan {
+  out y : audio
+  t = pulse(100)
+  y = gate_to_real(timer(t, sqrt(phasor(0Hz) - 1)))
+}
+patch PhNan {
+  out y : audio
+  out z : audio
+  y = phasor(sqrt(phasor(0Hz) - 1))
+  z = sine_hz(sqrt(phasor(0Hz) - 1))
+}
+patch DelayBig {
+  out y : audio
+  y = delay(sine_hz(100Hz), 1smp, 12000)
+}

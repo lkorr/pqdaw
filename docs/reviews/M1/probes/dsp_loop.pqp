@@ -1,0 +1,9 @@
+patch LoopFast {
+  out y : audio
+  out z : audio
+  rst = pulse(100)
+  a = sample_read_linear(1, 2, rst, start: 0, loopStart: 0, loopEnd: 1)
+  b = sample_read_linear(1, 1, rst, start: 0, loopStart: 0, loopEnd: 1)
+  y = gate_to_real(a.playing)
+  z = gate_to_real(b.playing)
+}

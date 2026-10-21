@@ -1,0 +1,12 @@
+patch NanLane {
+  out   out : audio voice mono
+  // per-sample period-length normalisation (gain ∝ period): 0 · inf in free / pre-onset lanes
+  env = gate_to_real(voice.gate)
+  out = sine(phasor(voice.hz)) * env * (100 / voice.hz)
+}
+
+patch NanSum {
+  out   y : audio
+  v = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * (100 / voice.hz)
+  y = voice_sum(v) * 0.1
+}

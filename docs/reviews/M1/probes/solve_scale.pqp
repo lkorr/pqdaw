@@ -1,0 +1,12 @@
+patch SolveScale {
+  param tg = 0.002 [0.000001..10]
+  param u0 = 0.001 [0.000001..10]
+  out y : audio
+  target = tg + 0 * sine(phasor(1Hz))
+  init = u0 + 0 * sine(phasor(1Hz))
+  solve(iterations: 8) {
+    unknown u = init
+    log(u) == log(target)
+  }
+  y = u
+}

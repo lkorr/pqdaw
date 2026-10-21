@@ -1,0 +1,13 @@
+patch solveunk {
+
+  out z : audio
+  x = noise() * 0.0001 + 4
+  solve(iterations: 8) {
+    unknown a = 1
+    unknown b = 1
+    a * 2 == b
+    a + b == x
+  }
+
+  z = b
+}

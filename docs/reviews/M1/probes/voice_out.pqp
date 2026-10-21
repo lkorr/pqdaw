@@ -1,0 +1,7 @@
+patch VoiceOut {
+  out o1 : audio voice
+  out o2 : audio voice
+  a = sine(phasor(voice.hz))
+  o1 = a
+  o2 = a * 0.5
+}

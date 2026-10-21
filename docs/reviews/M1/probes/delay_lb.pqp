@@ -1,0 +1,7 @@
+patch delaylb {
+  param t = 20.75ms [20.75ms..1s]
+  out y : audio
+  src = noise() * 0.1
+  fb = src + delay(fb * 0.5, t, 1s)
+  y = fb
+}

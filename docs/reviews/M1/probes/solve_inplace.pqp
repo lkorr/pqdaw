@@ -1,0 +1,9 @@
+patch solveprobe {
+  out y : audio
+  x = noise() * 0.0001 + 4
+  solve(iterations: 8) {
+    unknown u = 1
+    u * u == x - u * u
+  }
+  y = u
+}

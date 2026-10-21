@@ -1,0 +1,6 @@
+patch Last {
+  out o : audio voice
+  out y : audio
+  o = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.1
+  y = voice_last(voice.hz) / 1000
+}

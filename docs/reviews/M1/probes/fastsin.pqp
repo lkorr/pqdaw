@@ -1,0 +1,7 @@
+patch fastsin {
+  param p = 1
+  param z = 0
+  out y : audio ch(2)
+  a = clip(p, 0, 1e30)
+  y = (abs(fast_sin(a)) * 0, abs(fast_sin(a)) * z)
+}

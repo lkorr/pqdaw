@@ -1,0 +1,7 @@
+// M1 review evidence: a stateless voice patch whose idle lanes (voice.hz = 0) compute 0 · inf = NaN.
+// The VoiceEngine mix is Σ gain · out with gain 0 for idle lanes, so one played note renders NaN throughout.
+//   pqc render idle_lane_nan.pqp --notes "60@0:0.5" --seconds 0.5 -o out.wav   (interp and jit)
+patch IdleLaneNan {
+  out out : audio voice mono
+  out = sine(phasor(voice.hz)) * (100 / voice.hz)
+}

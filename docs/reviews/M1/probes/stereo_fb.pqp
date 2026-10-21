@@ -1,0 +1,6 @@
+patch stereofb {
+  out y : audio stereo
+  src = (noise() * 0.1, noise(seed: 3) * 0.1)
+  fb = src + delay(fb * 0.5, 2ms, 1s)
+  y = fb
+}

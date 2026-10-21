@@ -1,0 +1,5 @@
+patch smpparam {
+  param t = 100smp [10smp..1000smp]
+  out y : audio
+  y = delay(noise(), t, 1s)
+}
