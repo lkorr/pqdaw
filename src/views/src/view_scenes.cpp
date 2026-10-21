@@ -109,11 +109,21 @@ Result<ui::Image> renderViewScene(std::string_view scene, std::string_view proje
   tree.setResources(&res);
   auto shell = buildViewScene(scene, tree, ctx);
   if (!shell) return std::move(shell).error();
-  tree.update(0.0);
+  // Settle before the screenshot: run the frames and timers that change what is drawn (progressive work such as the
+  // arrangement's note previews, a zoom settling), as the window would within its first frames.
+  double now = 0.0;
+  tree.update(now);
   ui::DrawList dl;
+  for (int i = 0; i < 256 && (tree.needsFrame() || tree.nextWakeTime() <= now + 1.0); ++i) {
+    dl.reset(dw, dh);
+    textures->text->beginFrame();
+    tree.paint(dl, res, now);
+    now = std::max(now + 1.0 / 60.0, std::min(tree.nextWakeTime(), now + 1.0));
+    tree.update(now);
+  }
   dl.reset(dw, dh);
   textures->text->beginFrame();
-  tree.paint(dl, res, 0.0);
+  tree.paint(dl, res, now);
   if (Status s = (*target)->draw(**renderer, dl, ui::kSceneClearColor); !s) return std::move(s).error();
   auto img = (*target)->read();
   if (img && (*gpu)->validationErrorCount() != 0)

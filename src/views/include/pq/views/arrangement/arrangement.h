@@ -96,6 +96,18 @@ inline constexpr float kRulerLabelMinPx = 44.0f;  // minimum spacing of ruler la
 inline constexpr double kMinPxPerTick = 1.0 / (16.0 * static_cast<double>(kTicksPerWhole));
 inline constexpr double kMaxPxPerTick = 2000.0 / (static_cast<double>(kTicksPerWhole) / 16.0);
 inline constexpr double kDefaultPxPerTick = 96.0 / static_cast<double>(kTicksPerWhole);  // a 4/4 bar = 96 px (1/4 grid)
+// Progressive note previews (frame-time bounds, see LaneCanvas::paint):
+// - at most this many preview notes are built per lanes paint (at least one clip); the rest of the clips draw their
+//   bodies and get their previews over the next frames;
+inline constexpr uint32_t kPreviewBuildNotesPerPaint = 4096;
+// - while the zoom is changing (and until kZoomSettleSeconds after the last change) a clip whose notes are denser
+//   than this many device px per note draws no preview; the lanes repaint once the zoom settles;
+inline constexpr float kZoomPreviewMinPxPerNote = 1.5f;
+inline constexpr double kZoomSettleSeconds = 0.15;
+// - the preview cache holds up to this many notes (24 bytes each: 12 MiB), or 3 × the most one paint drew; beyond
+//   that, previews not drawn in the last kPreviewMaxAgePaints lanes paints are dropped.
+inline constexpr size_t kPreviewCacheNotes = size_t{1} << 19;
+inline constexpr uint64_t kPreviewMaxAgePaints = 120;
 }  // namespace arrangement_metrics
 
 // One visible track row (flattened track tree; members of folded groups are not rows).
@@ -230,9 +242,16 @@ public:
     uint32_t clipsPainted = 0;
     uint32_t noteRectsEmitted = 0;
     uint64_t playheadReads = 0;      // TransportPort::playhead() calls made by the view
+    uint32_t previewsDeferred = 0;   // last lanes paint: clips drawn without a preview (build budget / zooming)
+    uint64_t previewsEvicted = 0;
   };
   const Stats& stats() const noexcept;
   size_t previewCacheSize() const noexcept;
+  // True from a zoom change until kZoomSettleSeconds after the last one (dense clips skip their previews).
+  bool zooming() const noexcept { return zooming_; }
+  void dropPreviews();  // empties the preview cache (benchmarks, tests)
+  size_t previewCacheNotes() const noexcept;
+  void setPreviewCacheLimit(size_t notes);  // default kPreviewCacheNotes (tests)
 
   // ---- widget ------------------------------------------------------------------------------------------------
   void arrange(ui::LayoutPass& pass) override;
@@ -286,6 +305,8 @@ private:
   bool follow_ = true;
   std::optional<Ticks> playhead_;
   uint32_t playheadTimer_ = 0;
+  bool zooming_ = false;
+  uint32_t settleTimer_ = 0;
 };
 
 // Installs the arrangement into ShellSlot::TrackArea (called from installDefaultContent), registers its actions and

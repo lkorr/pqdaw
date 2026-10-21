@@ -45,6 +45,7 @@ struct Preview {
   std::vector<PreviewNote> notes;          // sorted by start
   Ticks maxLength = 0;                     // longest note (range lookups back off by it)
   float rowFraction = 0.25f;               // note height as a fraction of the body height
+  uint64_t lastUsed = 0;                   // Model::paintSerial of the last paint that drew it
 };
 
 class Model {
@@ -57,13 +58,25 @@ public:
 
   // The clip index of a track (by id; rebuilt when the track pointer changed).
   const ClipIndex& clips(const doc::Track& t);
-  // The preview of a clip resolved in `tuning` (cached by clip pointer + tuning).
-  const Preview& preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning);
+  // The preview of a clip resolved in `tuning` (cached by clip pointer + tuning), or nullptr when it is not cached and
+  // this paint's build budget is spent (buildsDeferred is then set).
+  const Preview* preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning);
+  // Per lanes paint: resets the build budget (0 = unlimited); after it, drops old previews beyond the cache bound.
+  void beginPaint(uint32_t buildBudgetNotes) noexcept;
+  void endPaint();
+  bool buildsDeferred = false;    // a preview was not built for lack of budget (paint again)
+  bool skippedForZoom = false;    // a dense clip skipped its preview while zooming (repaint when the zoom settles)
   // After a document change: drops tuning objects and, when the caches outgrew the project, entries for clips and
   // tracks that are gone.
   void afterDocumentChange(size_t clipsInProject);
   void clear();
   size_t previewCount() const noexcept { return previews_.size(); }
+  void dropPreviews() noexcept {
+    previews_.clear();
+    cachedNotes_ = 0;
+  }
+  size_t cachedNotes() const noexcept { return cachedNotes_; }
+  void setCacheLimit(size_t notes) noexcept { cacheLimitNotes_ = notes; }
 
   // Clip-name colour per clip colour (clipTextFor is not for per-frame use).
   ui::Rgba clipTextColour(const ui::Theme& th, ui::Rgba fill);
@@ -74,6 +87,11 @@ public:
     bool open = false;
   };
   std::vector<Pending> pending;     // per pixel row of a clip body
+  struct RectOut {
+    float x0, y0, x1, y1;
+    ui::Rgba col;
+  };
+  std::vector<RectOut> rects;  // a clip's preview rects, emitted in one reservation
   std::vector<uint16_t> usedRows;
   std::vector<const doc::Track*> members;  // a group's member tracks (group summaries)
 
@@ -82,6 +100,15 @@ private:
 
   std::unordered_map<uint32_t, ClipIndex> clipIndex_;            // by raw track id
   std::unordered_map<const doc::NoteClip*, Preview> previews_;
+  uint64_t paintSerial_ = 0;
+  uint32_t budgetLeft_ = 0;
+  bool unlimited_ = true;
+  bool builtThisPaint_ = false;
+  void recountNotes() noexcept;
+  size_t cachedNotes_ = 0;    // notes held by previews_
+  size_t cacheLimitNotes_ = arrangement_metrics::kPreviewCacheNotes;
+  size_t peakNotes_ = 0;      // most note rects one paint drew since the last trim
+  uint64_t nextTrim_ = 0;
   std::unordered_map<const doc::TuningDef*, std::optional<tuning::Tuning>> tunings_;
   std::vector<double> centsScratch_;
   struct TextColour {
@@ -110,9 +137,15 @@ public:
   explicit LaneCanvas(ArrangementView& view);
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
+  void onFrame(double now) override;
+  // Builds missing previews of the visible clips within one paint's budget; true when none is missing.
+  bool buildAhead();
+  // Preview notes built per paint (0 = unlimited).
+  void setPreviewBudget(uint32_t notes) noexcept { previewBudget_ = notes; }
 
 private:
   ArrangementView& view_;
+  uint32_t previewBudget_ = arrangement_metrics::kPreviewBuildNotesPerPaint;
 };
 
 // Loop brace, bar numbers, ticks, locators, tempo / signature markers, start marker, playhead. Click locates,

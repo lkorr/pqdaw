@@ -69,16 +69,31 @@ double pitchCents(const tuning::PitchId& p, const tuning::Tuning* t, double refH
 
 }  // namespace
 
-const Preview& Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDef) {
-  Preview& pv = previews_[clip.get()];
-  if (pv.clip == clip && pv.tuning == tuningDef) return pv;  // same immutable clip, same tuning: still valid
+const Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDef) {
+  auto found = previews_.find(clip.get());
+  if (found != previews_.end() && found->second.clip == clip && found->second.tuning == tuningDef) {
+    found->second.lastUsed = paintSerial_;
+    return &found->second;  // same immutable clip, same tuning: still valid
+  }
+  // Not cached: build within this paint's budget (always at least one clip per paint, so previews keep coming).
+  const auto cost = static_cast<uint32_t>(std::min<size_t>(clip->notes.size(), UINT32_MAX));
+  if (!unlimited_ && builtThisPaint_ && cost > budgetLeft_) {
+    buildsDeferred = true;
+    return nullptr;
+  }
+  builtThisPaint_ = true;
+  budgetLeft_ -= std::min(budgetLeft_, cost);
+  Preview& pv = found != previews_.end() ? found->second : previews_[clip.get()];
+  pv.lastUsed = paintSerial_;
   ++stats.previewBuilds;
+  cachedNotes_ += clip->notes.size();
+  cachedNotes_ -= pv.notes.size();
   pv.clip = clip;
   pv.tuning = tuningDef;
   pv.notes.clear();
   pv.maxLength = 0;
   const doc::NoteSeq& seq = clip->notes;
-  if (seq.empty()) return pv;
+  if (seq.empty()) return &pv;
   const tuning::Tuning* t = tuningFor(tuningDef);
   const double refHz = tuningDef ? tuningDef->referenceHz : tuning::kDefaultReferenceHz;
 
@@ -113,7 +128,36 @@ const Preview& Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tu
     pv.maxLength = std::max(pv.maxLength, n.length);
     ++i;
   }
-  return pv;
+  return &pv;
+}
+
+void Model::beginPaint(uint32_t buildBudgetNotes) noexcept {
+  ++paintSerial_;
+  unlimited_ = buildBudgetNotes == 0;
+  budgetLeft_ = buildBudgetNotes;
+  builtThisPaint_ = false;
+  buildsDeferred = false;
+}
+
+void Model::endPaint() {
+  // Bound the cache by what the view shows: once it holds more notes than the limit (or 3 × the most notes one paint
+  // drew), previews not drawn in the last kPreviewMaxAgePaints paints go. The sweep is O(cache), at most every 64
+  // paints.
+  peakNotes_ = std::max<size_t>(peakNotes_, stats.noteRectsEmitted);
+  if (paintSerial_ < nextTrim_) return;
+  nextTrim_ = paintSerial_ + 64;
+  const size_t cap = std::max(cacheLimitNotes_, 3 * peakNotes_);
+  peakNotes_ = stats.noteRectsEmitted;
+  if (cachedNotes_ <= cap) return;
+  const uint64_t keepFrom =
+      paintSerial_ > arrangement_metrics::kPreviewMaxAgePaints ? paintSerial_ - arrangement_metrics::kPreviewMaxAgePaints : 0;
+  stats.previewsEvicted += std::erase_if(previews_, [&](const auto& kv) { return kv.second.lastUsed < keepFrom; });
+  recountNotes();
+}
+
+void Model::recountNotes() noexcept {
+  cachedNotes_ = 0;
+  for (const auto& kv : previews_) cachedNotes_ += kv.second.notes.size();
 }
 
 void Model::afterDocumentChange(size_t clipsInProject) {
@@ -133,6 +177,7 @@ void Model::afterDocumentChange(size_t clipsInProject) {
       for (const doc::ClipSlot& s : tr.clips) live.insert(s.clip.get());
     });
     std::erase_if(previews_, [&](const auto& kv) { return !live.contains(kv.first); });
+    recountNotes();
     std::erase_if(clipIndex_, [&](const auto& kv) { return !liveTracks.contains(kv.first); });
   }
 }
@@ -140,6 +185,7 @@ void Model::afterDocumentChange(size_t clipsInProject) {
 void Model::clear() {
   clipIndex_.clear();
   previews_.clear();
+  cachedNotes_ = 0;
   tunings_.clear();
 }
 

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <span>
 
 #include "internal.h"
 
@@ -24,6 +25,45 @@ double cellTicks(const GridDivision& d, TimeSignature sig) noexcept {
                         : (d.denominator > 0 ? static_cast<double>(kTicksPerWhole) / d.denominator : 0.0);
   if (d.tuplet > 1) t *= static_cast<double>(std::bit_floor(static_cast<uint32_t>(d.tuplet))) / d.tuplet;
   return t;
+}
+
+// The tuning a clip's notes resolve in: its override, else the track's.
+const doc::TuningDef* clipTuning(const ArrangementRow& row, const doc::NoteClip& clip, const doc::Project& p) {
+  if (clip.tuning.mode == doc::TuningMode::Private && clip.tuning.privateDef) return clip.tuning.privateDef.get();
+  if (clip.tuning.mode != doc::TuningMode::Inherit)
+    if (const doc::TuningSlot* s = doc::findTuning(p, clip.tuning.main)) return &s->def;
+  return row.tuning;
+}
+
+// round() for pixel positions without the CRT call (positions here are ≥ −2 device px; ties round up).
+inline float roundPx(float v) noexcept { return std::floor(v + 0.5f); }
+
+// Solid rects in one reservation (the note preview: thousands per frame when zoomed out).
+void emitRects(DrawList& dl, std::span<const Model::RectOut> rs) {
+  size_t n = 0;
+  for (const Model::RectOut& r : rs) n += (r.x1 > r.x0 && r.y1 > r.y0) ? 1 : 0;
+  if (n == 0) return;
+  const DrawList::PrimSpan sp = dl.primReserveSpan(static_cast<uint32_t>(6 * n), static_cast<uint32_t>(4 * n));
+  const Vec2 uv = dl.whiteUv();
+  Vertex* v = sp.v;
+  uint32_t* ix = sp.i;
+  uint32_t base = sp.base;
+  for (const Model::RectOut& r : rs) {
+    if (!(r.x1 > r.x0 && r.y1 > r.y0)) continue;
+    v[0] = {{r.x0, r.y0}, uv, r.col};
+    v[1] = {{r.x1, r.y0}, uv, r.col};
+    v[2] = {{r.x1, r.y1}, uv, r.col};
+    v[3] = {{r.x0, r.y1}, uv, r.col};
+    ix[0] = base;
+    ix[1] = base + 1;
+    ix[2] = base + 2;
+    ix[3] = base;
+    ix[4] = base + 2;
+    ix[5] = base + 3;
+    v += 4;
+    ix += 6;
+    base += 4;
+  }
 }
 
 }  // namespace
@@ -79,6 +119,49 @@ void TrackStack::paint(PaintContext& ctx) {
 // --- LaneCanvas -----------------------------------------------------------------------------------------
 
 LaneCanvas::LaneCanvas(ArrangementView& view) : Widget("lanes"), view_(view) {}
+
+// Previews still missing (over a paint's build budget, or skipped while zooming): build them for the visible clips,
+// a budget per frame, without painting; repaint once they are all there (one repaint instead of one per frame).
+void LaneCanvas::onFrame(double /*now*/) {
+  if (buildAhead()) markDirty();
+  else requestFrame();
+}
+
+bool LaneCanvas::buildAhead() {
+  Model& m = view_.model();
+  const IRect r = rect();
+  const IRect c = intersect(r, view_.lanesViewport());
+  if (c.empty() || !m.shown) return true;
+  const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+  const double k = view_.devicePxPerTick();
+  const double origin = view_.originTick();
+  auto X = [&](Ticks t) { return std::round(static_cast<float>(static_cast<double>(r.x) + (static_cast<double>(t) - origin) * k)); };
+  const auto from = static_cast<Ticks>(std::floor(origin + (static_cast<double>(c.x - r.x) - 1.0) / k));
+  const auto to = static_cast<Ticks>(std::ceil(origin + (static_cast<double>(c.right() - r.x) + 1.0) / k));
+  const int32_t titleH = s.px(am::kClipTitleHeight);
+  const float minW = static_cast<float>(s.px(12.0f));
+  const auto rows = view_.rows();
+  const int32_t localTop = c.y - r.y, localBottom = c.bottom() - r.y;
+  auto it = std::upper_bound(rows.begin(), rows.end(), localTop,
+                             [](int32_t y, const ArrangementRow& row) { return y < row.y + row.h; });
+  m.beginPaint(previewBudget_);
+  for (; it != rows.end() && it->y < localBottom; ++it) {
+    if (it->group || it->h - 3 - titleH < 3) continue;
+    const doc::Track& t = *it->track;
+    if (t.clips.empty()) continue;
+    const ClipIndex& ix = m.clips(t);
+    const auto [a, b] = ix.visible(from, to);
+    for (size_t j = a; j < b; ++j) {
+      const doc::ClipPtr& clip = t.clips[j].clip;
+      if (clip->notes.empty()) continue;
+      const float w = X(ix.end[j]) - X(ix.start[j]);
+      if (w < minW) continue;
+      if (view_.zooming() && w < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip->notes.size())) continue;
+      if (!m.preview(clip, clipTuning(*it, *clip, *m.shown))) return false;
+    }
+  }
+  return true;
+}
 
 bool LaneCanvas::onPointer(const PointerEvent& e) {
   if (e.type != PointerType::Wheel) return false;
@@ -228,13 +311,21 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
   // Level of detail: a clip narrower than 12 logical px shows only its colours (a preview there is a few unreadable
   // pixels, and at whole-song zoom it would cost tens of thousands of rects per frame).
   const bool detailed = cx1 - cx0 >= static_cast<float>(lp.ctx.scale.px(12.0f));
-  if (detailed && bodyH >= 3 && !clip.notes.empty()) {
-    const doc::TuningDef* tuning = row.tuning;
-    if (clip.tuning.mode != doc::TuningMode::Inherit) {
-      if (clip.tuning.mode == doc::TuningMode::Private && clip.tuning.privateDef) tuning = clip.tuning.privateDef.get();
-      else if (const doc::TuningSlot* s = doc::findTuning(lp.p, clip.tuning.main)) tuning = &s->def;
-    }
-    const Preview& pv = lp.m.preview(clipPtr, tuning);
+  // While the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw only their bodies (their notes are a few
+  // pixels each there; the frame stays cheap however far out the zoom goes); the lanes repaint once it settles.
+  const bool dense = lp.view.zooming() &&
+                     cx1 - cx0 < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip.notes.size());
+  if (detailed && dense && bodyH >= 3) {
+    lp.m.skippedForZoom = true;
+    ++lp.m.stats.previewsDeferred;
+  }
+  const Preview* pvp = nullptr;
+  if (detailed && !dense && bodyH >= 3 && !clip.notes.empty()) {
+    pvp = lp.m.preview(clipPtr, clipTuning(row, clip, lp.p));  // nullptr: over this paint's build budget, built in a later frame
+    if (!pvp) ++lp.m.stats.previewsDeferred;
+  }
+  if (pvp) {
+    const Preview& pv = *pvp;
     const int32_t noteH = std::clamp(static_cast<int32_t>(std::lround(static_cast<float>(bodyH) * pv.rowFraction)), 1, bodyH);
     const uint32_t span = static_cast<uint32_t>(bodyH - noteH);
     const Rgba noteCol = clipNoteColour(colour);
@@ -242,15 +333,17 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
     const Rgba seamCol = withAlpha(noteCol, 70);
     auto& pending = lp.m.pending;
     auto& used = lp.m.usedRows;
+    auto& out = lp.m.rects;  // written to the draw list in one reservation at the end (same order as drawn)
     if (pending.size() < static_cast<size_t>(bodyH) + 1) pending.resize(static_cast<size_t>(bodyH) + 1);
     used.clear();
+    out.clear();
     uint32_t emitted = 0;
     auto flush = [&](uint16_t px) {
       Model::Pending& pr = pending[px];
       if (!pr.open) return;
       pr.open = false;
       const float y = by0 + static_cast<float>(px);
-      dl.addRectFilled({pr.x0, y, pr.x1, y + static_cast<float>(noteH)}, noteCol);
+      out.push_back({pr.x0, y, pr.x1, y + static_cast<float>(noteH), noteCol});
       ++emitted;
     };
     const Ticks clipEnd = clip.start + clip.length;
@@ -264,7 +357,7 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
       firstSeg = false;
       if (segEnd < lp.from) return;
       const float segX0 = lp.X(static_cast<double>(seg.at));
-      if (seam && segX0 >= vx0 && segX0 < vx1) dl.addRectFilled({std::floor(segX0), by0, std::floor(segX0) + 1.0f, by1}, seamCol);
+      if (seam && segX0 >= vx0 && segX0 < vx1) out.push_back({std::floor(segX0), by0, std::floor(segX0) + 1.0f, by1, seamCol});
       const Ticks visFrom = seg.contentFrom + std::max<Ticks>(0, lp.from - seg.at);
       const Ticks lookFrom = std::max(seg.contentFrom, visFrom - pv.maxLength);
       const Ticks visTo = std::min(seg.contentTo, seg.contentFrom + (lp.to - seg.at));
@@ -272,8 +365,8 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
                                  [](const PreviewNote& n, Ticks t) { return n.start < t; });
       for (; it != pv.notes.end() && it->start < visTo; ++it) {
         const Ticks nEnd = std::min(it->end, seg.contentTo);
-        float x0 = std::round(segX0 + static_cast<float>(static_cast<double>(it->start - seg.contentFrom) * k));
-        float x1 = std::round(segX0 + static_cast<float>(static_cast<double>(nEnd - seg.contentFrom) * k));
+        float x0 = roundPx(segX0 + static_cast<float>(static_cast<double>(it->start - seg.contentFrom) * k));
+        float x1 = roundPx(segX0 + static_cast<float>(static_cast<double>(nEnd - seg.contentFrom) * k));
         if (x1 - x0 >= 3.0f) x1 -= 1.0f;  // a pixel gap between notes that are wide enough
         x0 = std::max(x0, cx0);
         x1 = std::min(std::max(x1, x0 + 1.0f), cx1);
@@ -281,7 +374,7 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
         const auto rowPx = static_cast<uint16_t>((static_cast<uint32_t>(it->y) * span + 32767u) / 65535u);
         if (it->flags & kPreviewDisabled) {
           const float y = by0 + static_cast<float>(rowPx);
-          dl.addRectFilled({x0, y, x1, y + static_cast<float>(noteH)}, offCol);
+          out.push_back({x0, y, x1, y + static_cast<float>(noteH), offCol});
           ++emitted;
           continue;
         }
@@ -296,6 +389,7 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
       }
     });
     for (uint16_t pr : used) flush(pr);
+    emitRects(dl, out);
     lp.m.stats.noteRectsEmitted += emitted;
   }
   // Border: dark edges separate adjacent clips (Live draws clips with a thin dark outline).
@@ -354,7 +448,9 @@ void LaneCanvas::paint(PaintContext& ctx) {
   m.stats.rowsPainted = 0;
   m.stats.clipsPainted = 0;
   m.stats.noteRectsEmitted = 0;
+  m.stats.previewsDeferred = 0;
   if (c.empty()) return;
+  m.beginPaint(previewBudget_);
   const double k = view_.devicePxPerTick();
   const double origin = view_.originTick();
   LanePaint lp{ctx, th, m, view_, *m.shown, r, c, k, origin,
@@ -400,6 +496,10 @@ void LaneCanvas::paint(PaintContext& ctx) {
     for (int32_t p = it->parent; p >= 0 && active; p = rows[static_cast<size_t>(p)].parent) active = rows[static_cast<size_t>(p)].track->active;
     for (size_t j = a; j < b; ++j) paintClip(lp, *it, t.clips[j].clip, y0 + 1.0f, y1 - 1.0f, active);
   }
+
+  // Previews left for later frames: paint again next frame (onFrame damages the lanes) until all are built.
+  m.endPaint();
+  if (m.buildsDeferred) requestFrame();
 
   // 4. The editing overlay (T3.9), then the playhead on top.
   if (view_.onPaintOverlay) view_.onPaintOverlay(ctx);

@@ -81,6 +81,14 @@ std::span<const ArrangementRow> ArrangementView::rows() const noexcept { return 
 const ArrangementView::Stats& ArrangementView::stats() const noexcept { return model_->stats; }
 size_t ArrangementView::previewCacheSize() const noexcept { return model_->previewCount(); }
 
+size_t ArrangementView::previewCacheNotes() const noexcept { return model_->cachedNotes(); }
+void ArrangementView::setPreviewCacheLimit(size_t notes) { model_->setCacheLimit(notes); }
+
+void ArrangementView::dropPreviews() {
+  model_->dropPreviews();
+  lanes_->markDirty();
+}
+
 void ArrangementView::registerActions() {
   ActionRegistry& a = ctx_.actions();
   auto set = [&](std::string_view id, ActionRegistry::Handler h) {
@@ -300,7 +308,15 @@ void ArrangementView::setTimeView(double origin, double pxPerTick) {
   originTick_ = origin;
   pxPerTick_ = pxPerTick;
   markAxisDirty();
-  if (zoomChanged) reportResolvedGrid();
+  if (zoomChanged) {
+    reportResolvedGrid();
+    // A zoom gesture lasts until kZoomSettleSeconds after its last step (dense clips skip their previews meanwhile).
+    if (tree()) {
+      zooming_ = true;
+      if (settleTimer_) cancelTimer(settleTimer_);
+      settleTimer_ = requestTimer(am::kZoomSettleSeconds);
+    }
+  }
 }
 
 void ArrangementView::markAxisDirty() {
@@ -447,6 +463,15 @@ void ArrangementView::schedulePlayhead() {
 }
 
 void ArrangementView::onTimer(uint32_t id) {
+  if (id == settleTimer_) {
+    settleTimer_ = 0;
+    zooming_ = false;
+    if (model_->skippedForZoom) {
+      model_->skippedForZoom = false;
+      lanes_->requestFrame();  // builds the dense clips' previews, then repaints the lanes once
+    }
+    return;
+  }
   if (id != playheadTimer_) return;
   playheadTimer_ = 0;
   readPlayhead();

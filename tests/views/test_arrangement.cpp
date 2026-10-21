@@ -373,6 +373,58 @@ TEST_CASE("arrangement: only visible clips emit geometry; previews rebuild only 
   CHECK(st.previewBuilds == builds + 1);
 }
 
+TEST_CASE("arrangement: previews are built progressively, skipped while zooming, and the cache is bounded") {
+  Fixture f(false, 2560, 1440);  // 16 rows × ~12 clips × 50 notes in view: more than one build budget
+  constexpr int kTracksN = 16, kClipsN = 200, kNotesN = 50;
+  views::test::buildLargeArrangement(f.ctx.store(), kTracksN, kClipsN, kNotesN);
+  REQUIRE(f.d.enableGpu().ok());
+  const auto& st = f.arr->stats();
+  namespace am = arrangement_metrics;
+
+  // Cold cache: the first paint builds at most one budget of notes (plus the clip that crosses it); the other clips
+  // draw their bodies and are built over the next frames without painting; one repaint shows them all.
+  f.d.tree().invalidateAll();
+  f.d.step();
+  CHECK(st.previewBuilds <= am::kPreviewBuildNotesPerPaint / kNotesN + 1);
+  CHECK(st.previewsDeferred > 0);
+  const uint64_t framesBefore = f.d.framesDrawn();
+  int frames = 0;
+  while (f.d.tree().needsFrame() && frames < 100) {
+    f.d.advance(1.0 / 144.0);
+    ++frames;
+  }
+  CHECK(frames > 1);
+  CHECK(f.d.framesDrawn() - framesBefore == 1);  // build-only frames paint nothing; then one repaint
+  CHECK(st.previewsDeferred == 0);
+  const uint32_t visibleNotes = st.noteRectsEmitted;
+  CHECK(visibleNotes > 0);
+
+  // Zooming out: while the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw no notes; after the
+  // settle time the lanes repaint with every preview.
+  const Vec2 mid = f.lanePoint(0.5f, 0.5f);
+  for (int i = 0; i < 8; ++i) f.arr->zoomAt(mid.x, 0.8);
+  f.d.step();
+  CHECK(f.arr->zooming());
+  CHECK(st.previewsDeferred > 0);
+  CHECK(st.noteRectsEmitted == 0);  // 50 notes in a bar of ~16 px: all dense
+  f.d.advance(0.5);
+  CHECK_FALSE(f.arr->zooming());
+  CHECK(st.previewsDeferred == 0);
+  CHECK(st.noteRectsEmitted > visibleNotes);
+  CHECK_FALSE(f.d.tree().needsFrame());  // idle again
+
+  // The cache stays bounded while scrolling over the whole song (with a small limit to see the bound act).
+  f.arr->setTimeView(0.0, am::kDefaultPxPerTick);
+  f.d.advance(0.5);
+  f.arr->setPreviewCacheLimit(2000);
+  for (int i = 0; i < 2000; ++i) {
+    f.arr->scrollByPx(40.0);
+    f.d.advance(1.0 / 144.0);
+  }
+  CHECK(st.previewsEvicted > 0);
+  CHECK(f.arr->previewCacheNotes() < static_cast<size_t>(kTracksN * kClipsN * kNotesN) / 4);
+}
+
 TEST_CASE("arrangement: rows only paint where the clip region is (partial redraw)") {
   Fixture f;
   REQUIRE(f.d.enableGpu().ok());

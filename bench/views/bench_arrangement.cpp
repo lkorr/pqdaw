@@ -5,14 +5,17 @@
 // Run from the release build; results → bench/RESULTS.md.
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdio>
 #include <memory>
 #include <tuple>
+#include <vector>
 
 #include <windows.h>
 #include <psapi.h>
+#include <intrin.h>
 
 #include "pq/ui/atlas.h"
 #include "pq/ui/draw_list.h"
@@ -31,6 +34,24 @@ using namespace pq::ui;
 using namespace pq::views;
 
 namespace {
+
+// Cycles the calling thread has run (blocked or preempted time excluded).
+uint64_t threadCycles() {
+  ULONG64 c = 0;
+  QueryThreadCycleTime(GetCurrentThread(), &c);
+  return c;
+}
+
+// The TSC rate (the unit of QueryThreadCycleTime), calibrated against steady_clock over 200 ms.
+double tscNsPerCycle() {
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+  const uint64_t c0 = __rdtsc();
+  while (clock::now() - t0 < std::chrono::milliseconds(200)) {
+  }
+  const uint64_t c1 = __rdtsc();
+  return std::chrono::duration<double, std::nano>(clock::now() - t0).count() / static_cast<double>(c1 - c0);
+}
 
 double privateMib() {
   PROCESS_MEMORY_COUNTERS_EX pmc{};
@@ -55,6 +76,7 @@ IRect damageBox(UiTree& tree) {
 }  // namespace
 
 int main() {
+  const double nsPerCycle = tscNsPerCycle();
   constexpr int kTracks = 64, kClips = 200, kNotes = 50;
   for (const auto [lw, lh, scale] : {std::tuple{2560u, 1440u, 1.0f}, std::tuple{1280u, 720u, 2.0f}}) {
     auto tex = createSceneText(std::make_shared<Atlas>(), UiScale(scale));
@@ -151,8 +173,7 @@ int main() {
     arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
     frame();
 
-    // Zoom frames: one Ctrl+wheel notch out and back in around the middle of the default view (the interaction the
-    // criterion is about), then a sweep over 8 notches out (default … 0.17×, i.e. up to ~150 bars in view).
+    // Zoom frames: one Ctrl+wheel notch out and back in around the middle of the default view.
     const IRect lv = arr->lanesViewport();
     const float cx = static_cast<float>(lv.x) + static_cast<float>(lv.w) * 0.5f;
     int z = 0;
@@ -162,14 +183,67 @@ int main() {
     };
     std::snprintf(name, sizeof name, "arrangement.zoom frame %ux%u@%.0fx", w, h, static_cast<double>(scale));
     pq::bench::reportStats(name, pq::bench::measure(zoomFrame, 1), "ns/frame");
-    arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
-    z = 0;
-    auto sweepFrame = [&] {
-      arr->zoomAt(cx, (z++ / 8) % 2 ? 1.25 : 0.8);
+
+    // Every frame timed on its own (input → update → partial paint), at 144 Hz of fake time.
+    // Per-frame cost as the UI thread's own CPU time (QueryThreadCycleTime / the TSC rate): the machine is shared,
+    // and wall time would count the time other processes hold the core.
+    auto timed = [&](auto&& input) {
+      const uint64_t c0 = threadCycles();
+      input();
       frame();
+      return static_cast<double>(threadCycles() - c0) * nsPerCycle;
     };
-    std::snprintf(name, sizeof name, "arrangement.zoom sweep frame (1x..0.17x) %ux%u@%.0fx", w, h, static_cast<double>(scale));
-    pq::bench::reportStats(name, pq::bench::measure(sweepFrame, 1), "ns/frame");
+    auto settle = [&] {  // past the zoom settle time, previews complete
+      for (int i = 0; i < 400 && (arr->zooming() || tree.needsFrame()); ++i) frame();
+    };
+
+    // Zoom sweep as a user does it, from a cold preview cache: 8 Ctrl+wheel notches out (default … 0.17×, up to
+    // ~150 bars in view) and 8 back in, one notch per frame, 20 times; the frames that build deferred previews count.
+    arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
+    settle();
+    arr->dropPreviews();
+    std::vector<double> sweep;
+    uint64_t deferredFrames = 0;
+    for (int rep = 0; rep < 20; ++rep)
+      for (int j = 0; j < 16; ++j) {
+        sweep.push_back(timed([&] { arr->zoomAt(cx, j < 8 ? 0.8 : 1.25); }));
+        deferredFrames += st.previewsDeferred > 0 ? 1 : 0;
+      }
+    std::snprintf(name, sizeof name, "arrangement.zoom sweep frame (1x..0.17x, cold) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+    pq::bench::reportStats(name, pq::bench::summarize(sweep), "ns CPU/frame");
+    std::printf("  sweep: %zu frames, %llu with previews deferred (dense while zooming, or over the build budget)\n",
+                sweep.size(), static_cast<unsigned long long>(deferredFrames));
+
+    // After the gesture: the frames until every preview is drawn (the settle repaint at the far end of the sweep).
+    for (int j = 0; j < 8; ++j) arr->zoomAt(cx, 0.8);
+    frame();
+    std::vector<double> after;
+    for (int i = 0; i < 60; ++i) after.push_back(timed([] {}));
+    std::snprintf(name, sizeof name, "arrangement.after-zoom frames (0.17x, 60 frames) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+    pq::bench::reportStats(name, pq::bench::summarize(after), "ns CPU/frame");
+
+    // Cold start at the default zoom: frames until every visible preview is built.
+    arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
+    settle();
+    arr->dropPreviews();
+    std::vector<double> cold;
+    for (int i = 0; i < 200 && (cold.empty() || tree.needsFrame()); ++i) cold.push_back(timed([] {}));
+    std::snprintf(name, sizeof name, "arrangement.cold-cache frames (default zoom) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+    pq::bench::reportStats(name, pq::bench::summarize(cold), "ns CPU/frame");
+    std::printf("  cold cache: %zu frames to build every visible preview\n", cold.size());
+
+    // Per zoom level, settled (previews drawn): the full paint and what it emits.
+    for (int step = 0; step <= 8; ++step) {
+      settle();
+      paintFull();
+      const auto s2 = pq::bench::measure(paintFull, 1, 5, 1);
+      std::printf("  settled zoom %.3fx: %u clips, %u note rects, %u vertices, full paint median %.0f ns\n",
+                  std::pow(0.8, step), st.clipsPainted, st.noteRectsEmitted, static_cast<unsigned>(dl.vertices().size()),
+                  s2.medianNs);
+      arr->zoomAt(cx, 0.8);
+    }
+    arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
+    settle();
 
     // The whole song in view (every visible track's 200 clips, 10,000 notes per row).
     arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
@@ -206,20 +280,24 @@ int main() {
     ctx.togglePlay();
     tree.update(now += 0.2);
 
-    // Memory over 1000 scroll frames (after a warm-up pass over the whole song, so every preview is cached).
+    // Memory over scroll frames: after a 1000-frame warm-up (more than one pass over the song, so the bounded preview
+    // cache is at its working size), 10,000 frames sampled every 1000 (the criterion asks for 1000 flat).
     arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
     for (int i = 0; i < 1000; ++i) scrollFrame();
     const double mem0 = privateMib();
     uint32_t maxVerts = 0, maxIdx = 0;
-    for (int i = 0; i < 1000; ++i) {
+    std::printf("  memory over scroll frames (private MiB):");
+    for (int i = 1; i <= 10000; ++i) {
       scrollFrame();
       maxVerts = std::max(maxVerts, static_cast<uint32_t>(dl.vertices().size()));
       maxIdx = std::max(maxIdx, static_cast<uint32_t>(dl.indices().size()));
+      if (i % 1000 == 0) std::printf(" %d:%.3f", i, privateMib());
     }
     const double mem1 = privateMib();
-    std::printf("  1000 scroll frames: private bytes %.2f -> %.2f MiB (%+.3f MiB), max %u vertices / %u indices per "
-                "frame, %zu previews cached\n",
-                mem0, mem1, mem1 - mem0, maxVerts, maxIdx, arr->previewCacheSize());
+    std::printf("\n  10000 scroll frames: private bytes %.2f -> %.2f MiB (%+.3f MiB), max %u vertices / %u indices per "
+                "frame, %zu previews cached, %llu evicted\n",
+                mem0, mem1, mem1 - mem0, maxVerts, maxIdx, arr->previewCacheSize(),
+                static_cast<unsigned long long>(st.previewsEvicted));
     tree.setRoot(std::make_unique<Widget>());
   }
   return 0;
