@@ -156,7 +156,7 @@ const GoldenCase& caseNamed(const char* name) {
 
 }  // namespace
 
-TEST_CASE("golden renders: changed patches, notes and engine behaviour fail the comparison") {
+TEST_CASE("golden renders: changed patches, notes and engine behaviour fail the comparison" * doctest::test_suite("slow")) {
   struct Mutation {
     const char* golden;
     const char* from;

@@ -1079,7 +1079,7 @@ TEST_CASE("schedule: block-wise execution with shared buffers matches a naive pe
   }
 }
 
-TEST_CASE("schedule: random feedback patches: structure and numerical equivalence") {
+TEST_CASE("schedule: random feedback patches: structure and numerical equivalence" * doctest::test_suite("slow")) {
   std::mt19937 rng(0x7155u);
   auto pick = [&](uint32_t n) { return static_cast<uint32_t>(rng() % n); };
   uint32_t compared = 0;

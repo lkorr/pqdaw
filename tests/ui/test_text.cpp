@@ -223,7 +223,7 @@ TEST_CASE("text: runs are cached; a cached draw writes 4 vertices per inked glyp
   CHECK(dl.vertices().size() == nv);
 }
 
-TEST_CASE("text: 20k distinct strings shaped in one frame keep every earlier run valid (M8)") {
+TEST_CASE("text: 20k distinct strings shaped in one frame keep every earlier run valid (M8)" * doctest::test_suite("slow")) {
   Fixture fx;
   constexpr uint32_t kCount = 20000;  // > kMaxCachedRuns: the old cache flushed inside shape() here
   static_assert(kCount > TextSystem::kMaxCachedRuns);

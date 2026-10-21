@@ -257,7 +257,7 @@ bool sameUv(Vec2 a, Vec2 b) { return a.x == b.x && a.y == b.y; }
 
 }  // namespace
 
-TEST_CASE("render: golden mutation: deleting any one glyph from the text scene fails the comparison") {
+TEST_CASE("render: golden mutation: deleting any one glyph from the text scene fails the comparison" * doctest::test_suite("slow")) {
   SceneRender s = buildGoldenScene("text");
   const Image golden = loadGolden("text");
   {

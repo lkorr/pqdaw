@@ -849,7 +849,7 @@ std::string randomPatch(std::mt19937& rng, int count) {
 
 }  // namespace
 
-TEST_CASE("optimise: random patches evaluate the same before and after") {
+TEST_CASE("optimise: random patches evaluate the same before and after" * doctest::test_suite("slow")) {
   std::mt19937 rng(1234);
   int changed = 0;
   for (int k = 0; k < 150; ++k) {
