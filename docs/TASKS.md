@@ -20,11 +20,11 @@ Every task also carries these **standing criteria**, which aren't repeated below
 
 - [x] **T0.1 Build system and toolchain.** CMake + Ninja + MSVC presets, LLVM 23.1.3 prebuilt linked (/MT), doctest, a smoke test proving that ORC JIT runs, CPU feature detection. *(Done during setup; dev + release green; release smoke exe with full JIT = 29 MB.)*
 
-- [~] **T0.2 RT primitives** *(worker A, branch task/T0.2-T0.3-rt-core)* (`core`). Depends on: T0.1.
+- [x] **T0.2 RT primitives** *(90951f1)* (`core`). Depends on: T0.1.
   - `SpscRing<T>` (power-of-two, cache-line-padded indices, acquire/release only). `MpscQueue<T>` (bounded). `FixedPool<T>`. `Arena` (bump allocator with 64-byte alignment). `EpochReclaimer` (the audio thread marks quiescent states; reclamation runs off the audio thread). `DenormalGuard` (RAII FTZ/DAZ). `AlignedBuffer<T>`.
   - Accept: unit tests for each. A two-thread stress test pushes 10⁷ items through the SPSC and MPSC queues with no loss, duplication or reordering. A benchmark records the SPSC push+pop cost in ns.
 
-- [~] **T0.3 Allocation trap** *(worker A, branch task/T0.2-T0.3-rt-core)* (`core`). Depends on: T0.1.
+- [x] **T0.3 Allocation trap** *(5dd615d)* (`core`). Depends on: T0.1.
   - Replace global `operator new/delete` (all overloads) in test binaries and dev builds, with a thread-local "realtime" flag set by `RtScope`. Any allocation or free inside an RtScope fails loudly: test failure, or abort with a stack trace in the app.
   - Accept: a test shows that allocating inside an RtScope is caught and that allocating outside it is fine. The trap compiles out of release builds of the app.
 
@@ -56,7 +56,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
 
 ## M1: Engine core
 
-- [ ] **T1.1 Patch IR** (`graph`). Depends on: T0.2.
+- [~] **T1.1 Patch IR** *(worker F, branch task/T1.1-patch-ir)* (`graph`). Depends on: T0.2.
   - Nodes, ports (kind/rate/poly/width), wires, params (with attrs), exports, stable `NodeId`s, and layout data. Atom registry: name → signature (inputs, outputs, state size, default rates).
   - Accept: tests construct graphs programmatically and validate structure, including rejecting dangling ports and type-mismatched wires.
 
