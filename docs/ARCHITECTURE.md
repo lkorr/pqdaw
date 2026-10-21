@@ -99,7 +99,12 @@ namespace pq::graph {
   // stateKey[] (per node: hash of the NodeId call path, the hot-swap key), origin[], instances[] }. inferDetailed()
   // returns every Diagnostic, located at root-patch nodes via ParseResult::nodeSpans.
   Result<TypedPatch> infer(const Patch&, const InferOptions&);
-  TypedPatch optimise(TypedPatch);
+  // pq/graph/optimise.h (T1.4). Durations → samples (`· sr` inserted, TypedPatch::durationsInSamples), then a
+  // fixpoint of constant folding (by the atom's own dsp kernel, never params), exact algebraic simplification, CSE
+  // and DCE; then rate refinement (pure atoms = max of their inputs' rates) and a·b + c → muladd fusion at equal
+  // rates. Stateful nodes keep stateKey, atom and types; replacements never change kind/width/poly. Error only for a
+  // folded channel index out of range. OptimiseOptions: sampleRate (sr folds when known), maxPasses, fuseMulAdd.
+  Result<TypedPatch> optimise(TypedPatch, const OptimiseOptions& = {}, OptimiseStats* = nullptr);
   Schedule schedule(const TypedPatch&, const ScheduleOptions&);   // SCCs, blocks, buffer liveness, state layout keyed by NodeId
   std::unique_ptr<ProgramImage> buildInterpreted(const Schedule&); // allocation happens here, never on the audio thread
 }
@@ -158,7 +163,7 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - **Bools** are 32-bit lane masks (all ones / zero) in float slots, for both L.
 - **State**: one POD block per stateful node (`atom_state.h`, 32-byte aligned, 8 lanes even for L = 1), sized by `stateBytes(atom, StateInit)` and written by `initState` (no allocation). Its type tag for hot swap is the `Atom` id (plus the lane count for delay lines, whose ring follows the header).
 - **Resources** (wavetables, shaper curves, sample data) are immutable tables built off-thread (`tables.h`) and passed by pointer.
-- **Registry ↔ kernel**: `pq/graph/kernel_map.h` (`kernelMapping(AtomId)`) is the one mapping from language atoms to kernels: the kernel, and per registry input whether it is a kernel input (durations: `· sr` inserted by the compiler), a resource, or a state-init const (`seed`, `max` delay, z1 `init`). Atoms without a kernel are marked Structural (`channel`, `pack`), Constant (`sr`) or Engine (`voice.*`, `transport.*`, I/O, `voice_*` reducers). Registry `stateBytes` = the kernel's state block. Tested against both tables (QUESTIONS Q14).
+- **Registry ↔ kernel**: `pq/graph/kernel_map.h` (`kernelMapping(AtomId)`) is the one mapping from language atoms to kernels: the kernel, and per registry input whether it is a kernel input (durations: `· sr` inserted by `optimise()`, after which `TypedPatch::durationsInSamples` is set), a resource, or a state-init const (`seed`, `max` delay, z1 `init`). Atoms without a kernel are marked Structural (`channel`, `pack`), Constant (`sr`) or Engine (`voice.*`, `transport.*`, I/O, `voice_*` reducers). Registry `stateBytes` = the kernel's state block. Tested against both tables (QUESTIONS Q14).
 - **Feedback**: `z1` and the delay lines also have split kernels (`z1:read`/`z1:write`, `delay*:read`/`delay:write`) sharing the atom's state, so a feedback SCC scheduled per sample can read at the start of the sample and write at the end.
 
 ### Document model (`pq/document/*.h`, T3.4)
