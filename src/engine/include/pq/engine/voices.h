@@ -36,7 +36,7 @@
 // The engine mixes every voice `out` slot (not exports) into one global buffer per slot: Σ lanes gain · out, with
 // gain per lane and sample: 0 before the onset and while free, 1 while sounding, a linear ramp to 0 over
 // stealFadeMs when the voice is stolen. Voice→global reductions INSIDE the patch (voice_sum …) see the lane mask
-// only (block granular): they get neither the pre-onset zero nor the steal fade (docs/QUESTIONS.md Q?-T1.8-a).
+// only (block granular): they get neither the pre-onset zero nor the steal fade (docs/QUESTIONS.md Q61).
 // Stealing (live voices ≥ maxVoices): released voices are taken before held ones; among them the oldest
 // (StealPolicy::Oldest) or the quietest (StealPolicy::Quietest: lowest peak of the monitored outputs over the last
 // block; ties → oldest). The victim fades in its lane; the new note starts in a free lane at its frame. Without a

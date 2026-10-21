@@ -143,7 +143,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Flat op list, parameter block, `ProcessContext`, and the state arena.
   - Accept: the interpreted output of the patches in `tests/graph/cases/` matches a slow reference evaluator (sample-by-sample graph walk in `double`) within 1e-5. RtScope tests show process() never allocates.
 
-- [~] **T1.8 Voices** *(worker AE, branch task/T1.8-voices)* (`engine`). Depends on: T1.7.
+- [x] **T1.8 Voices** *(039fdea)* (`engine`). Depends on: T1.7.
   - Voice allocator (max voices, stealing policy), the event list, voice lanes (8 per AVX2 group), the `voice.*` namespace, voice end on silence/envelope.
   - Accept: tests cover allocation and stealing, note on/off sample accuracy (an event at sample k takes effect at k), and 64 voices with no allocation.
 
