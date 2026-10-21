@@ -68,6 +68,11 @@ private:
   uint64_t cyclesAtStart_ = 0, tscAtStart_ = 0, uiCyclesAtStart_ = 0;
   std::vector<ThreadCycles> threadsAtStart_;
   int idleVerdict_ = -1;
+  // T0.x-flake: the measurement starts only after 1 s without frames or events (settle), and a window that SDL
+  // events reached (another program's windows taking focus or covering ours) is measured again.
+  uint32_t settleFrames_ = 0;
+  uint64_t settleEvents_ = 0;
+  int settleTries_ = 0, idleAttempts_ = 0;
   friend class SdlFileDialogs;
 };
 

@@ -179,6 +179,15 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
     switch (e.user.code) {
       case kDialogResult: dialogs_->deliver(e.user); break;
       case kIdleStart:
+        // Settle: on a loaded machine the show/expose/focus events of a new window can arrive well after the first
+        // frame. Measure only once a whole second passed without a frame or an event (other than this timer's),
+        // checked for up to 30 s.
+        if ((frames_ != settleFrames_ || events_ != settleEvents_ + 1) && ++settleTries_ < 30) {
+          settleFrames_ = frames_;
+          settleEvents_ = events_;
+          startTimer(userEvent_, kIdleStart, 1.0);
+          break;
+        }
         threadsAtStart_ = threadCycles();  // first: the snapshot itself costs UI-thread time
         framesAtStart_ = frames_;
         eventsAtStart_ = events_;
@@ -226,9 +235,21 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
         for (size_t i = 0; i < threads.size() && i < 6; ++i)
           std::printf("  thread %u [%ls]%s%ls: %.3f ms\n", threads[i].threadId, threads[i].module.c_str(),
                       threads[i].description.empty() ? "" : " ", threads[i].description.c_str(), ms(threads[i].cycles));
+        const uint64_t outsideEvents = events_ - eventsAtStart_ - 1;  // minus this timer's
         std::printf("  %llu SDL events reached the shell during the measurement\n",
-                    static_cast<unsigned long long>(events_ - eventsAtStart_ - 1));
+                    static_cast<unsigned long long>(outsideEvents));
         std::fflush(stdout);
+        // An event means something outside pqdaw acted on the window (focus, occlusion, input): what followed was a
+        // response, not idling. Measure again (up to 3 windows); the last window is judged whatever happened in it.
+        if (outsideEvents != 0 && ++idleAttempts_ < 3) {
+          std::printf("  (window disturbed by outside events: measuring again)\n");
+          std::fflush(stdout);
+          settleFrames_ = frames_;
+          settleEvents_ = events_;
+          settleTries_ = 0;
+          startTimer(userEvent_, kIdleStart, 1.0);
+          break;
+        }
         idleVerdict_ = ok ? 0 : 1;
         pushUser(SDL_EVENT_QUIT, 0);
         break;
@@ -259,7 +280,11 @@ void ShellApp::onFramePresented() {
   if (frames_ != 1) return;
   std::printf("pqdaw: %s\n", firstFrameReport().c_str());
   std::fflush(stdout);
-  if (idleSeconds_ > 0) startTimer(userEvent_, kIdleStart, 1.0);  // settle (show/expose) before measuring
+  if (idleSeconds_ > 0) {  // settle (show/expose) before measuring
+    settleFrames_ = frames_;
+    settleEvents_ = events_;
+    startTimer(userEvent_, kIdleStart, 1.0);
+  }
 }
 
 }  // namespace pq::app

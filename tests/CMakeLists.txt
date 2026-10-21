@@ -86,7 +86,8 @@ pq_add_test(pq_tests_views
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
   COMMAND pqdaw --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty --idle-check 10)
-set_tests_properties(pqdaw_idle_shell PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+# T0.x-flake: up to 30 s of settling and 3 measurement windows when outside events disturb one.
+set_tests_properties(pqdaw_idle_shell PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 add_test(NAME pqdaw_screenshot_shell
   COMMAND pqdaw --screenshot shell ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_shell.png --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty)
 # T3.8: the arrangement scene through the real executable.
