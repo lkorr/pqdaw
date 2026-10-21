@@ -6,5 +6,9 @@ pq_add_module(pq_graph
     src/validate.cpp
     src/patch_equal.cpp
     src/patch_file.cpp
+    src/lexer.cpp
+    src/text_common.cpp
+    src/parse.cpp
+    src/print.cpp
   DEPS pq_core
 )
