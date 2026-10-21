@@ -102,3 +102,11 @@ pq_add_test(pq_tests_dsp
     dsp/test_tables.cpp
     dsp/test_dsp_rt.cpp
   DEPS pq_dsp)
+
+# document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.
+pq_add_test(pq_tests_document
+  SOURCES
+    document/test_note_seq.cpp
+    document/test_commands.cpp
+    document/test_store.cpp
+  DEPS pq_doc)

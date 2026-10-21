@@ -1,0 +1,143 @@
+#include "pq/document/store.h"
+
+#include <algorithm>
+
+#include "pq/document/history.h"
+
+namespace pq::doc {
+
+// ---- History ---------------------------------------------------------------------------------------------------
+
+void History::push(Entry e) {
+  entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(cursor_), entries_.end());
+  entries_.push_back(std::move(e));
+  cursor_ = entries_.size();
+}
+
+void History::clear() noexcept {
+  entries_.clear();
+  cursor_ = 0;
+}
+
+// ---- DocumentStore ---------------------------------------------------------------------------------------------
+
+DocumentStore::DocumentStore() : current_(makeDefaultProject(ids_)) {}
+
+DocumentStore::DocumentStore(Snapshot initial) : current_(std::move(initial)) {
+  ids_.reserveThrough(maxEntityId(*current_));
+}
+
+Status DocumentStore::dispatch(const Command& c) {
+  step_.clear();
+  last_ = &empty_;
+  Result<Snapshot> r = apply(current_, c, step_);
+  if (!r) return std::move(r).error();
+  Snapshot next = std::move(r).value();
+  if (next == current_) return Ok{};
+  Snapshot before = std::move(current_);
+  current_ = std::move(next);
+  if (gesture_) {
+    if (gesture_->label.empty()) gesture_->label = std::string(label(c));
+    gesture_->changes.merge(step_);
+    last_ = &step_;
+    notify(StoreEventKind::Dispatch, before, current_, step_);
+  } else {
+    history_.push(History::Entry{std::string(label(c)), before, current_, std::move(step_)});
+    step_.clear();  // moved-from: make it a valid empty set again
+    last_ = &history_.entries().back().changes;
+    notify(StoreEventKind::Dispatch, before, current_, *last_);
+  }
+  return Ok{};
+}
+
+Status DocumentStore::beginGesture(std::string label) {
+  if (gesture_) return Error{ErrorCode::InvalidArgument, "a gesture is already in progress", {}};
+  gesture_ = Gesture{std::move(label), current_, {}};
+  return Ok{};
+}
+
+Status DocumentStore::commitGesture() {
+  if (!gesture_) return Error{ErrorCode::InvalidArgument, "no gesture in progress", {}};
+  Gesture g = std::move(*gesture_);
+  gesture_.reset();
+  last_ = &empty_;
+  if (current_ == g.base) return Ok{};  // nothing changed (or changed and changed back to the same pointer)
+  g.changes.normalize();
+  history_.push(History::Entry{g.label.empty() ? std::string("Edit") : std::move(g.label), g.base, current_,
+                               std::move(g.changes)});
+  last_ = &history_.entries().back().changes;
+  notify(StoreEventKind::GestureCommit, current_, current_, *last_);
+  return Ok{};
+}
+
+Status DocumentStore::cancelGesture() {
+  if (!gesture_) return Error{ErrorCode::InvalidArgument, "no gesture in progress", {}};
+  Gesture g = std::move(*gesture_);
+  gesture_.reset();
+  last_ = &empty_;
+  if (current_ == g.base) return Ok{};
+  g.changes.normalize();
+  step_ = std::move(g.changes);
+  last_ = &step_;
+  Snapshot before = std::move(current_);
+  current_ = std::move(g.base);
+  notify(StoreEventKind::GestureCancel, before, current_, step_);
+  return Ok{};
+}
+
+bool DocumentStore::undo() {
+  if (gesture_) return false;
+  const History::Entry* e = history_.stepBack();
+  if (!e) return false;
+  Snapshot before = std::move(current_);
+  current_ = e->before;
+  last_ = &e->changes;
+  notify(StoreEventKind::Undo, before, current_, e->changes);
+  return true;
+}
+
+bool DocumentStore::redo() {
+  if (gesture_) return false;
+  const History::Entry* e = history_.stepForward();
+  if (!e) return false;
+  Snapshot before = std::move(current_);
+  current_ = e->after;
+  last_ = &e->changes;
+  notify(StoreEventKind::Redo, before, current_, e->changes);
+  return true;
+}
+
+void DocumentStore::reset(Snapshot s) {
+  gesture_.reset();
+  history_.clear();
+  last_ = &empty_;
+  ids_.reserveThrough(maxEntityId(*s));
+  Snapshot before = std::move(current_);
+  current_ = std::move(s);
+  notify(StoreEventKind::Reset, before, current_, empty_);
+}
+
+ListenerId DocumentStore::subscribe(Listener l) {
+  std::erase_if(listeners_, [](const auto& p) { return !p.second; });
+  const ListenerId id = nextListener_++;
+  listeners_.emplace_back(id, std::move(l));
+  return id;
+}
+
+void DocumentStore::unsubscribe(ListenerId id) noexcept {
+  for (auto& [lid, fn] : listeners_)
+    if (lid == id) fn = nullptr;  // compacted on the next subscribe (safe during notification)
+}
+
+void DocumentStore::notify(StoreEventKind kind, const Snapshot& before, const Snapshot& after,
+                           const ChangeSet& changes) {
+  if (listeners_.empty()) return;
+  const StoreEvent ev{kind, before, after, changes};
+  for (size_t i = 0; i < listeners_.size(); ++i)
+    if (listeners_[i].second) {
+      Listener fn = listeners_[i].second;  // a copy: the listener may subscribe (reallocating the vector)
+      fn(ev);
+    }
+}
+
+}  // namespace pq::doc
