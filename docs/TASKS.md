@@ -56,7 +56,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
 
 ## M1: Engine core
 
-- [~] **T1.1 Patch IR** *(worker F, branch task/T1.1-patch-ir)* (`graph`). Depends on: T0.2.
+- [x] **T1.1 Patch IR** *(1c5ad8d)* (`graph`). Depends on: T0.2.
   - Nodes, ports (kind/rate/poly/width), wires, params (with attrs), exports, stable `NodeId`s, and layout data. Atom registry: name → signature (inputs, outputs, state size, default rates).
   - Accept: tests construct graphs programmatically and validate structure, including rejecting dangling ports and type-mismatched wires.
 
