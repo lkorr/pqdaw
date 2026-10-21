@@ -101,7 +101,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - All FetchContent deps via release tarballs + `URL_HASH`. `BUILD_SHARED_LIBS OFF CACHE … FORCE` at the top. Clean up DEPENDENCIES.md. AVX2/FMA startup check with a clear message (L9). Move test scenes out of `pq_ui` (L10).
   - Accept: a fresh configure with `git` removed from PATH succeeds. DEPENDENCIES.md lists every dep exactly once with its hash. Running on a CPU without AVX2 (emulated via a test hook that forces `cpuFeatures().avx2 = false`) prints the message and exits 1.
 
-- [~] **T0.2-fix1 Queue and benchmark hardening** *(worker AD, branch task/T0.2-fix1-queue-bench)* (`core`, `bench`). Depends on: —.
+- [x] **T0.2-fix1 Queue and benchmark hardening** *(7a3b10f; idle re-measurement pending)* (`core`, `bench`). Depends on: —.
   - 64-byte multi-word payload stress tests (L5). 128-byte separation for cross-thread hot lines, kept only if pinned benchmarks show a gain (L3). Benchmarks pin threads to separate physical cores and report min/median/p99 over ≥ 5 runs. SPSC round-trip latency benchmark. Fix stale commit refs in RESULTS.md (L4).
   - Accept: RESULTS.md rows re-recorded on an idle machine with the method stated. Mutation check: replacing `acquire` with `relaxed` in `tryPop` is caught by at least the compiler-reordering variant under `/O2` (or documented as undetectable on x86 if it isn't).
 
