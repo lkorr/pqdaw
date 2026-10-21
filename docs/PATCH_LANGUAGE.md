@@ -66,10 +66,29 @@ arg         = [ Ident ":" ] expr ;                         (* positional args fi
 tuple       = "(" expr "," expr { "," expr } ")" ;          (* stereo/multichannel literal *)
 
 layout      = "layout" "{" { layoutItem } "}" ;
-layoutItem  = "node" Ident "at" "(" Number "," Number ")" [ "rot" Int ] [ "flip" ]
+layoutItem  = "node" Ident "at" point [ "rot" Int ] [ "flip" ]
             | "wire" Ident "." Ident "->" Ident "." Ident [ "via" "(" pointList ")" ]
-            | "comment" string "at" "(" Number "," Number ")" ;
+            | "comment" string "at" point ;
+pointList   = point { "," point } ;
+point       = "(" coord "," coord ")" ;
+coord       = [ "-" ] Number ;                             (* no unit; read as float32 *)
 ```
+
+`unknown` (in solve blocks) and the layout words `node at rot flip wire via comment` are contextual: they are only special in those positions. So are the port-type words (`real bool audio const global voice mono stereo ch`).
+
+### 2.1 Clarifications (v0, implemented by the T1.2 parser)
+Decided while implementing the parser; the open ones are tracked in [QUESTIONS.md](QUESTIONS.md) (Q7–Q10, Q18–Q22).
+
+- **Line breaks** are insignificant except in three places: a port type ends at the end of its line (so `in x : real` followed by a line `mono = 1` or `param y = 2` is not read as one type, Q21); inside a `solve` block each `unknown` or equation is one line, unless it is inside brackets (an equation may start with `(`, `-` or `!`, Q21); and an `@attr(` must open its arguments on the attribute's line.
+- **Numbers**: `%` directly after a number is the percent unit (`50%`); with a space it is the modulo operator (`a % 2`). A unit suffix is any identifier glued to a number, and must be one of the table above. `-` followed directly by a number literal is a negative literal (`-3dB` is the literal −3 dB); `-(3)` is the negation of a literal. Only one prefix operator is allowed per operand (`-(-x)`, not `--x`). Comparisons do not chain (`a < b < c` is an error).
+- **Params**: the default and the range ends are constant expressions, folded by the parser (QUESTIONS Q10): a plain literal keeps its unit, arithmetic gives the normalised number. Without `: kind`, the kind follows the default (`true`/`false` → bool). A `[` after the default always starts the range. Attribute arguments are literals: a number (with unit, optionally negative), `true`/`false`, a string, or a word; `@hidden` and `@hidden()` are the same.
+- **Names**: one namespace per patch for params, ins, outs, exports, unknowns and bindings. `in`/`out` can be names (Q7). The built-in names `voice`, `transport`, `track`, `sidechain` and `sr` cannot be redefined. A plain name that is not bound in the patch may name a built-in atom without inputs (`sr`); others are called (`pulse()`). `voice.hz`, `transport.bpm`, `track.in` etc. are always the built-ins.
+- **Bindings**: `y = x` (a name, optionally with `.output`) is an alias with no node of its own; any other right-hand side is a node, and the binding names it. `out = expr` drives the output `out`; an `out` or an `export` cannot be read as a value (bind the value to a name and use that). `node.input = expr` (the `Ident "." Ident` target) connects `expr` to an unconnected input of a named computed node, e.g. `h = samplehold(x)` then `h.trig = rise(g)`; a call's required inputs may be supplied this way (Q20).
+- **Calls** resolve to a patch of the same file, then an external patch (imported, or a prelude given by the compiler), then a leaf atom; a patch may not have the name of an atom (Q18). Positional arguments come first and fill inputs in order (a subcircuit's inputs are its `in`s, then its `param`s); named arguments name an input. A call used as a value gives its first output; `.name` selects another. Repeated ports of variadic atoms are numbered in text: `mux(i, a, b, c)` has inputs `index, in0, in1, in2`; `demux(i, x)` has outputs `out0, out1` (v0 cannot express more, Q19).
+- **Solve blocks**: an equation is an expression whose top-level operator is `==`; each side is a real expression.
+- **Imports**: the string is recorded as written and resolved relative to the importing file by the compiler's loader (the parser does no file I/O); calls may use any patch of an imported file. `;` after an import is optional. Reading an `out` and negative literals: Q22.
+- **Limits**: an expression may be at most 128 levels deep (a sum of 128 terms) and nest at most 129 levels of brackets/arguments; deeper text is an error, never a crash.
+- **Printing**: `print` writes a canonical form (declarations, bindings, outputs, exports, solve blocks, layout), inlining every unnamed node that has exactly one consumer. `parse(print(f)) == f` for every parsed file, and `print` is stable under a second round trip.
 
 ## 3. Semantics
 - **Bindings are a dataflow graph, not statements.** Order doesn't matter, and a name may be used before it is bound. Each binding is one node (or a subgraph of nodes).

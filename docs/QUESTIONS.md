@@ -124,7 +124,6 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Expression lanes in M3: velocity + chance only; per-note pitch/gain/timbre curves deferred to M7. Provisional: yes.
 - Note-clip loop semantics: notes outside the loop brace kept and hidden (Ableton) vs cropped. Provisional: kept.
 - Also now relevant: Q2 (EDO row labels), Q3 (PPQ vs straight 1/64), Q4 (tempo ramp law).
-- Status: open
 
 ## Q16 · 2026-10-20 · T0.8 · Inter has no ♯ ♭ ♮ glyphs
 - Context: SPEC §15 picks Inter (or IBM Plex Sans) for UI text. Inter 4.1 has no U+266F ♯, U+266D ♭ or U+266E ♮ (checked in its cmap; ¢, −, ∞, ×, ≈, arrows and super/subscript digits are present). A microtonal DAW prints accidentals everywhere (note names, MOS degree names, JI labels); missing glyphs render as .notdef boxes.
@@ -136,3 +135,32 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: the T0.9 brief says the glow passes go through the additive pipeline; PQ Meter's spectrum bloom (`spectrum.cpp` 1360–1378) and scope glow underlay (`oscilloscope.cpp` 860–880) are drawn through ImGui, i.e. straight alpha blending, and "keep PQ Meter's numbers and look" is also a requirement. Additive changes the look: overlapping passes and crossing traces brighten toward white instead of converging on the trace colour.
 - Choice: `scopeTrace`, `scopeEnvelope` and `spectrumCurve` take the glow blend mode as a parameter, defaulting to `BlendMode::Alpha` (PQ Meter's look). The `lines` scene shows both: the green scope trace and the spectrum use alpha glow, the orange Catmull-Rom trace uses additive glow.
 - Status: open (a design-review call; switching the default is one line in `pq/ui/lines.h`)
+
+## Q18 · 2026-10-20 · T1.2 · How calls resolve, and where the §4 example's `adsr` comes from
+- Context: PATCH_LANGUAGE §3 says a call goes to "a leaf atom, a patch in the same file, or a patch from an imported file", without an order. The §4 example (and SPEC §7.3) call `adsr` without importing anything, and `adsr` is a stdlib composite (SPEC §7.2), not an atom.
+- Options: A) atoms first (patches cannot shadow them); B) the file's patches first, then imports, then atoms (patches shadow atoms); C) B, but a patch named like an atom is an error.
+- Provisional choice: C. Resolution is file → externals → atom, and `patch sine { }` is rejected, so no call is ambiguous and either A or B stays possible later. For the stdlib, `ParseOptions::externals` takes the signatures of patches that are visible without an import (a prelude); the compiler decides what goes in it. The test corpus imports `adsr` explicitly (`tests/graph/cases/lib/envelopes.pqp`) so the §4 text parses unchanged apart from that import line.
+- Status: open
+
+## Q19 · 2026-10-20 · T1.2 · Variadic ports in text (mux, pack, demux)
+- Context: the IR gives every repeated port of a variadic atom the same name (`in`, `out`), and a call can only infer the count of repeated *inputs* (from its arguments). `demux`'s output count cannot be written in v0.
+- Choices: repeated ports are numbered in text (`in0, in1, …`, `out0, out1, …`), for `.out1` selection and layout `wire` lines; repeated inputs are positional only. A parsed `demux` has `minRepeat` (2) outputs.
+- Options for demux later: a const argument giving the count (`demux(i, x, n: 4)`), or counting the highest `.outK` used. Either is additive.
+- Status: open
+
+## Q20 · 2026-10-20 · T1.2 · What does a binding target `Ident "." Ident` mean?
+- Context: the grammar has `target = Ident | Ident "." Ident (* output name, or local *)` but no semantics for the dotted form.
+- Options: A) connect to an input of a named node (`h.trig = rise(g)`); B) bind one output of a multi-output local; C) reject it.
+- Provisional choice: A, limited to computed nodes (not params/ins/outs/exports, whose meaning would change the callee signature), and only into an input that is still unconnected; a call's required inputs may be supplied this way. The printer never writes it (it writes the argument in the call), so dropping or changing it later affects only hand-written text.
+- Status: open
+
+## Q21 · 2026-10-20 · T1.2 · Places where the grammar needs a line break to be unambiguous
+- Context: v0 has no statement separator. Two constructs are ambiguous without one: a port type followed by a member that starts with a type word (`in x : real` / `param y = 1` — `param` is also a rate; or a local named `mono`), and solve-block items, where an equation may start with `(`, `-` or `!` and would continue the previous item (`unknown d = c` / `(d - 1) == 0` reads as the call `c(d - 1)`).
+- Options: A) line rules: a port type ends at its line end; in a solve block each item is one line unless inside brackets; B) require `;` or newlines everywhere; C) make the type words reserved.
+- Provisional choice: A (the smallest rule that removes the ambiguity; every other line break stays insignificant, and the printer writes one member per line). `%` glued to a number is the percent unit (`50%`), with a space it is modulo, as PATCH_LANGUAGE §1 implies ("no space allowed").
+- Status: open
+
+## Q22 · 2026-10-20 · T1.2 · Reading an `out`, and the meaning of `-literal`
+- Context: (1) an `out` has no output port in the IR; reading its name (`y = out * 2`) needs an alias to its driver, which text could not print back without inventing a name. (2) `-3` must parse to the same IR that a negative constant prints as.
+- Choices: (1) reading an `out` or an `export` is an error with a hint to bind the value to a name. (2) `-` directly followed by a number literal is a negative literal; `-(3)` is `neg(3)`; the printer writes `-(3)` for a negated literal. Only one prefix operator per operand (`-(-x)`), as in the grammar.
+- Status: open

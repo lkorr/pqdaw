@@ -134,7 +134,7 @@ TEST_CASE("fuzz: the printer turns random graphs into text that parses back to t
       const AtomId id = atomId(atoms[rng() % std::size(atoms)]);
       const AtomSignature& sig = atomSignature(id);
       // Variadic inputs take any count (one argument each); a variadic output count is not expressible in text v0
-      // (QUESTIONS Q13), so those atoms keep the minimum.
+      // (QUESTIONS Q19), so those atoms keep the minimum.
       const bool variadic = sig.has(atom_flags::kVariadicInputs);
       const NodeIndex n = p.addAtom(id, variadic ? static_cast<uint16_t>(2 + rng() % 2) : 0);
       if (rng() % 4 == 0) p.setNodeName(n, "n" + std::to_string(i));

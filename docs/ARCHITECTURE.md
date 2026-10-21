@@ -87,7 +87,11 @@ namespace pq::graph {
                         // validate() for structure + declared types; operator== is structural (ignores NodeIds/order)
   struct PatchFile;     // a .pqp file: imports + patches (pq/graph/patch_file.h)
   class AtomRegistry;   // leaf atoms + operators: name → signature (pq/graph/atoms.h)
-  Result<PatchFile> parse(std::string_view source, std::string_view fileName);  // a file holds several patches
+  // pq/graph/parse.h. A file holds several patches. Options: externals (prelude signatures), an ImportLoader for
+  // `import`s (graph does no file I/O), validate. parseDetailed() returns every Diagnostic (message, file:line:col,
+  // byte span); parse() formats them `file:line:col: error: …` + source line + caret into the Error.
+  Result<PatchFile> parse(std::string_view source, std::string_view fileName, const ParseOptions& = {});
+  ParseResult parseDetailed(std::string_view source, std::string_view fileName, const ParseOptions& = {});
   std::string print(const PatchFile&);             // parse(print(f)) == f
   Result<TypedPatch> infer(const Patch&, const InferOptions&);
   TypedPatch optimise(TypedPatch);
