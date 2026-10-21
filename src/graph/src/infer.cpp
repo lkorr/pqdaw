@@ -256,6 +256,12 @@ private:
     root.info = &calleeInfo(root_);
     insts_.push_back(std::move(root));
     active_.push_back(&root_);
+    // Capacity for the root alone (the common case of a flat patch); instances grow the arrays from there.
+    fnodes_.reserve(root_.nodeCount());
+    inBound_.reserve(root_.portCount());
+    inDrv_.reserve(root_.portCount());
+    outDecl_.reserve(root_.portCount());
+    outOwner_.reserve(root_.portCount());
     instantiate(0);
     failed_.assign(fnodes_.size(), 0);
   }
