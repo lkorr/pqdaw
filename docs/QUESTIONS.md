@@ -310,6 +310,30 @@ Agents: add questions here instead of guessing on anything important. Use this f
   4. Time edits act on all tracks. Insert time holds the envelope's value through the gap; delete time leaves a jump at the seam where the two sides differ; duplicate time copies the envelope exactly. Locators inside a deleted range are removed; duplicate time does not duplicate locators. A loop that a deletion collapses keeps its length from the seam. Tempo follows exactly except a jump right after a ramp (not representable in `TempoPoint`, the ramp then ends on the new value). Time-signature changes move with the edit and snap to the next bar line when they no longer land on one. Tempo and signature edits before tick 0 act from tick 0.
   5. Lock envelopes off (`moveAutomation`): only for clips that stay on their track; the vacated range holds the value on its left; the destination range is overwritten. Copies copy the envelope.
   6. Breakpoints on one tick are ordered by id (T3.4); when an edit needs a created point before an existing one on the same tick, the existing one gets a fresh id (rare: jumps at edit seams).
+
+## Q?-T1.5-a · 2026-10-21 · T1.5 · Feedback whose only delay is `phasor.hz` (no split kernel)
+- Context: the registry marks `phasor.hz`, `sine_hz.hz` and `sample_read_*` `rate` as delayed inputs (Q9), so `car = sine(phasor(220Hz + car * 100))` is legal feedback. A per-sample loop must read such a node's output before its input is known; dsp has split read/write kernels only for z1 and the delay lines (the fused phasor kernel needs `hz[t]` in the same call that outputs `phase[t]`).
+- Options: A) report it (text: error with location; visual mode: insert a z1 + warning, one extra sample in the loop); B) add `phasor:read`/`phasor:write` (and sine_hz, sample_read) split kernels to dsp, after which the scheduler cuts those edges like z1's; C) insert a z1 silently in text mode too.
+- Provisional choice: A (`schedule()` says "put a z1(…) into the loop"); a loop that also contains a z1 or delay line is fine (the phasor stays fused). B is a dsp addition plus a two-line change in `isSplittable`/`readKernel` in `src/graph/src/schedule.cpp`.
+- Status: open
+
+## Q?-T1.5-b · 2026-10-21 · T1.5 · Loop sub-blocks rely on params staying inside their declared range
+- Context: a feedback loop whose only cuts are delay lines can run in sub-blocks as long as every read tap is older than the sub-block (linear ⌊D⌋, cubic ⌊D⌋ − 1, allpass ⌊D − 0.5⌋ samples). A 250 ms echo then runs block-wise instead of per sample (one kernel call per block instead of per sample in the interpreter). The scheduler takes a lower bound of the delay from literals, `sr`, non-negative products/sums and a param's declared range minimum (`time` in `[1ms..2s]` → 48 samples at 48 kHz).
+- Options: A) trust param ranges (`ScheduleOptions::trustParamRanges`, default on); the engine (T1.7/T1.9/T3.17) must clamp every param write to its declared range, or a smaller delay would read frames that were not written yet (memory-safe, stale values); B) use literals only (a param-controlled delay loop runs per sample).
+- Provisional choice: A, because clamping params to their ranges is cheap and expected anyway; B is one option flag away.
+- Status: open
+
+## Q?-T1.5-c · 2026-10-21 · T1.5 · Voice/global stages: crossing feedback, voice outputs, broadcast copies
+- Context: SPEC §7.4 step 5 runs voice code in 8-lane groups. The scheduler splits a patch into alternating global (once per block) and voice (once per group) stages; a voice reducer accumulates inside the voice stage of its input.
+- Choices: (1) a feedback loop through a reducer (voice → global → voice within one sample) is an error: it would need every group and the global part to alternate per sample; write the loop per voice or reduce outside it. (2) A voice-poly `out`/`export` is read by the engine at the end of the stage that computes it, per group (OutputRef::stage); a voice value read again after a reducer (a later voice stage) gets one buffer per group (`Buffer::perGroup`). (3) A global audio-rate value read by voice ops is copied into an 8-lane buffer once per block (`broadcast`), because the 8-lane kernels take 8-lane block buffers. In the 16-instance bench this means 32 extra 8-lane buffers (modulated SVF coefficients). A dsp input variant "1-lane block read by an 8-lane kernel" (one vbroadcastss per frame, as cheap as a load) would remove those copies; the JIT (T1b) can do it inline.
+- Provisional choice: as above (all reversible inside the scheduler).
+- Status: open
+
+## Q?-T1.5-d · 2026-10-21 · T1.5 · Solve blocks: what the scheduler fixes and what it leaves to the backend
+- Context: PATCH_LANGUAGE §2 `solve(iterations: n)`: Newton on implicit per-sample equations.
+- Choices: the dependency graph gets an implicit edge from every equation to every unknown of its block, so a block is an SCC; its body (nodes on same-sample paths from its unknowns to its equations) is contiguous in the op list (SolveBlock). An audio-rate block runs per sample inside a Loop region (also when a z1 feeds back around it: z1:read before, z1:write after); a param-rate block is solved once per block in the Control region. Errors: an unknown no equation reads, an equation that reads no unknown, a stateful fused atom in a body (it would advance once per iteration), an initial guess that depends on its own block, two blocks that need each other within one sample. An unknown without an initial guess starts from the previous frame's solution (a 32-byte state entry tagged `guess`). The Jacobian is the backend's choice (finite differences in the interpreter, forward AD in the JIT); after the last update the body is evaluated once more so that body values read after the solve match the solution.
+- Options: symbolic derivatives in the scheduler (an extra derivative op list per body) instead of leaving J to the backend.
+- Provisional choice: leave J to the backend (T1.7/T1b) — the schedule carries everything either method needs.
 - Status: open
 
 ## Q42 · 2026-10-21 · T0.6-fix1 · WASAPI exclusive on the Focusrite: 64/128 frames impossible, event grid, recovery restart

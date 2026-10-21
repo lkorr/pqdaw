@@ -111,7 +111,18 @@ namespace pq::graph {
   // rates. Stateful nodes keep stateKey, atom and types; replacements never change kind/width/poly. Error only for a
   // folded channel index out of range. OptimiseOptions: sampleRate (sr folds when known), maxPasses, fuseMulAdd.
   Result<TypedPatch> optimise(TypedPatch, const OptimiseOptions& = {}, OptimiseStats* = nullptr);
-  Schedule schedule(const TypedPatch&, const ScheduleOptions&);   // SCCs, blocks, buffer liveness, state layout keyed by NodeId
+  // pq/graph/schedule.h (T1.5). Tarjan SCCs on wires + implicit equation→unknown edges of solve blocks; feedback SCCs
+  // become Loop regions with z1/delay split into read (in place) + write (loop end), run per sample or, when every
+  // cut is a delay line with a constant lower bound, in sub-blocks of the shortest tap age; a delay-free cycle is an
+  // error (text) or gets a z1 + warning (ScheduleOptions::visualMode, Schedule::rewritten). Stages alternate global
+  // (even, lanes 1) / voice (odd, lanes 8, run per voice group); a stage = Control region (param/const ops once per
+  // block on 8-float patterns, param-rate solves) + Block/Loop regions. Global audio read by voice ops is broadcast;
+  // voice reducers accumulate in the voice stage. Flat output: ops {kind, dsp kernel, lanes, Spl mask, operands
+  // (Buffer | Param slot | Const | External), state entry, resource}, regions, stages, solve blocks, buffers (interval
+  // reuse, in-place element-wise ops; the 100-node test chains need 1–2), params, externals, outputs, StateLayout. dump() is
+  // the `pqc dump-schedule` text.
+  ScheduleResult scheduleDetailed(const TypedPatch&, const ScheduleOptions& = {});  // + warnings in the Schedule
+  Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
   std::unique_ptr<ProgramImage> buildInterpreted(const Schedule&); // allocation happens here, never on the audio thread
 }
 
@@ -163,7 +174,7 @@ The engine's process entry will be an `AudioCallback` behind a `BlockAdapter`; `
 
 ### ProgramImage ABI (shared by interpreter and JIT)
 - `ProcessContext` carries: frame count (≤ max block), sample rate, transport snapshot, pointers to input/output channel buffers, the parameter block (`float*`, indexed by `ParamSlot`), the event list for this block (sorted, preallocated), and the voice table.
-- All Program state lives in **one arena** allocated when the image is built. The state layout maps `NodeId → (offset, size, type tag)`. Hot swap copies state for every NodeId whose type tag matches (SPEC §7.5).
+- All Program state lives in **one arena** allocated when the image is built (plus one block per voice group for voice state). The state layout (`graph::StateLayout`, T1.5) maps `(TypedPatch::stateKey, channel, arena) → (offset, size, type tag, StateInit)`; the tag is (kernel, lanes, ring frames for delay lines). Hot swap copies state for every key whose tag and size match (SPEC §7.5). Given the previous layout, `schedule()` keeps every unchanged entry at its old offset (new entries fill holes, then append; compacted when holes exceed 2× the live size + 4 KiB), so the transfer is a few coalesced memcpys.
 - Parameter values live in a double-buffered block written by the engine from `EngineCommand`s. Programs read them and never write them.
 
 ### Leaf-atom kernel ABI (`pq/dsp/kernel.h`, `pq/dsp/atoms.h`; T1.6)

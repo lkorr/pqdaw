@@ -13,5 +13,7 @@ pq_add_module(pq_graph
     src/print.cpp
     src/infer.cpp
     src/optimise.cpp
+    src/schedule.cpp
+    src/schedule_dump.cpp
   DEPS pq_core pq_dsp
 )
