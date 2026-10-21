@@ -5,6 +5,9 @@
 // "Textured drawing" is any command whose texture is not the atlas; it uses the same pipelines with a
 // different descriptor set, so a frame's pipeline binds are bounded by its blend-mode switches.
 //
+// The renderer owns the atlas page (texture 0, pq/ui/atlas.h). Glyphs added to it by the text system between
+// frames are uploaded by upload() (only the changed rows, and only when something changed).
+//
 // The renderer does not own a render target: callers (OffscreenTarget, Swapchain) begin dynamic rendering
 // on an image of colorFormat() and call record().
 
@@ -16,6 +19,7 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/ui/atlas.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -37,6 +41,8 @@ public:
   Renderer& operator=(const Renderer&) = delete;
 
   VkFormat colorFormat() const noexcept { return colorFormat_; }
+  // The atlas page behind kAtlasTexture. The text system packs glyphs into it (UI thread).
+  const std::shared_ptr<Atlas>& atlas() const noexcept { return atlas_; }
   uint32_t framesInFlight() const noexcept { return framesInFlight_; }
 
   // Uploads an RGBA8 texture (blocking: staging copy + wait). Not for per-frame use.
@@ -44,6 +50,9 @@ public:
 
   // Copies the draw list's vertices and indices into frame slot `slot` (growing its buffers if needed).
   // The GPU must be done with the slot's previous frame (the caller's per-slot fence guarantees it).
+  // If the atlas changed since the last upload, its changed rows are copied to texture 0 first; that waits for
+  // the device to go idle (other frames in flight may be sampling the page), which only happens on the frames
+  // that introduce new glyphs.
   Status upload(uint32_t slot, const DrawList& dl);
 
   // Records the draw list into `cb`, which must be inside vkCmdBeginRendering on a colorFormat() target of
@@ -54,6 +63,7 @@ public:
 private:
   Renderer() = default;
   Status createPipelines();
+  Status uploadAtlasRows(uint32_t y0, uint32_t y1);
 
   struct Buffer {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -79,6 +89,8 @@ private:
   std::array<VkPipeline, kBlendModeCount> pipelines_{};
   VkSampler samplers_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
   std::vector<Texture> textures_;
+  std::shared_ptr<Atlas> atlas_;
+  uint64_t atlasUploadedVersion_ = 0;
   std::array<Buffer, kMaxFramesInFlight> vertexBuffers_{};
   std::array<Buffer, kMaxFramesInFlight> indexBuffers_{};
 };

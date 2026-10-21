@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstring>
 
-#include "pq/ui/atlas.h"
 
 namespace pq::ui {
 
@@ -83,8 +82,10 @@ Result<std::unique_ptr<Renderer>> Renderer::create(GpuContext& gpu, VkFormat col
 
   if (Status s = r->createPipelines(); !s) return std::move(s).error();
 
-  auto atlas = r->createTexture(buildBaseAtlas(), TextureFilter::Linear);
+  r->atlas_ = std::make_shared<Atlas>();
+  auto atlas = r->createTexture(r->atlas_->image(), TextureFilter::Linear);
   if (!atlas) return std::move(atlas).error();
+  r->atlasUploadedVersion_ = r->atlas_->version();
   return r;
 }
 
@@ -320,8 +321,70 @@ void Renderer::destroyBuffer(Buffer& b) noexcept {
   b = Buffer{};
 }
 
+Status Renderer::uploadAtlasRows(uint32_t y0, uint32_t y1) {
+  const Image& img = atlas_->image();
+  const VkDevice dev = gpu_->device();
+  VmaAllocator alloc = gpu_->allocator();
+  // Frames still in flight may be sampling the page. New glyphs are rare (a warm UI introduces none), so a
+  // full wait here is cheaper overall than double-buffering a 4 MB texture.
+  if (VkResult e = vkDeviceWaitIdle(dev); e != VK_SUCCESS) return vkError("vkDeviceWaitIdle", e);
+  const size_t rowBytes = size_t(img.width) * 4;
+  const size_t bytes = rowBytes * (y1 - y0);
+  VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bci.size = bytes;
+  bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  VmaAllocationCreateInfo sci{};
+  sci.usage = VMA_MEMORY_USAGE_AUTO;
+  sci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  VkBuffer staging = VK_NULL_HANDLE;
+  VmaAllocation stagingAlloc = nullptr;
+  VmaAllocationInfo info{};
+  if (VkResult e = vmaCreateBuffer(alloc, &bci, &sci, &staging, &stagingAlloc, &info); e != VK_SUCCESS)
+    return vkError("vmaCreateBuffer(atlas staging)", e);
+  std::memcpy(info.pMappedData, img.rgba.data() + rowBytes * y0, bytes);
+  vmaFlushAllocation(alloc, stagingAlloc, 0, VK_WHOLE_SIZE);
+  const VkImage image = textures_[kAtlasTexture].image;
+  const uint32_t w = img.width;
+  Status s = gpu_->submitAndWait([&](VkCommandBuffer cb) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cb, &di);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageOffset = {0, static_cast<int32_t>(y0), 0};
+    region.imageExtent = {w, y1 - y0, 1};
+    vkCmdCopyBufferToImage(cb, staging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(cb, &di);
+  });
+  vmaDestroyBuffer(alloc, staging, stagingAlloc);
+  return s;
+}
+
 Status Renderer::upload(uint32_t slot, const DrawList& dl) {
   if (slot >= framesInFlight_) return Error{ErrorCode::InvalidArgument, "Renderer::upload: bad frame slot", {}};
+  if (atlas_->version() != atlasUploadedVersion_) {
+    const Atlas::RowRange rows = atlas_->dirtyRowsSince(atlasUploadedVersion_);
+    if (rows.y1 > rows.y0)
+      if (Status s = uploadAtlasRows(rows.y0, rows.y1); !s) return s;
+    atlasUploadedVersion_ = atlas_->version();
+  }
   const auto v = dl.vertices();
   const auto i = dl.indices();
   if (i.empty()) return Ok{};
