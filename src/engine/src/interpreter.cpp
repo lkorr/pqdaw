@@ -652,6 +652,7 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
     bool any = false;
     for (uint32_t gi = 0; gi < groups; ++gi) {
       const VoiceGroupIO& gr = vt->groups[gi];
+      if ((gr.laneMask & 0xFFu) == 0) continue;  // no voice in this group: not run (T1.8; its state holds)
       run_.laneMask = gr.laneMask & 0xFFu;
       run_.lastLane = vt->lastGroup == gi && vt->lastLane < 8 && ((gr.laneMask >> vt->lastLane) & 1u) ? vt->lastLane
                                                                                                     : kNoVoice;

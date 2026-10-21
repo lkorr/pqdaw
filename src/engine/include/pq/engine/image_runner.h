@@ -9,6 +9,9 @@
 //   - the output is multiplied by `gain` and, with `limit`, clamped to [−1, 1] (a safety net for test playback);
 //   - the param block holds the declared defaults (writable before start through params());
 //   - the transport is stopped at beat 0 unless set before start (it then advances by beatsPerFrame).
+// With setVoices (T1.8) the image runs through a VoiceEngine: before each image block the event source fills the
+// block's events (frame offsets relative to that block), and when the image has no global `out` the VoiceEngine's
+// mixed voice `out`s are played instead (channel c ← mix c; a single mix on every channel).
 
 #include <cstdint>
 #include <span>
@@ -16,14 +19,27 @@
 
 #include "pq/core/aligned_buffer.h"
 #include "pq/engine/audio_block.h"
+#include "pq/engine/note_events.h"
 #include "pq/engine/program_image.h"
+#include "pq/engine/voices.h"
 
 namespace pq::engine {
+
+// Produces the note events of [sampleTime, sampleTime + frames) into `out` (already cleared), frames relative to
+// sampleTime. Called on the audio thread: must be RT-safe.
+struct EventSource {
+  void (*fn)(void* user, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept = nullptr;
+  void* user = nullptr;
+};
 
 class ImageRunner {
 public:
   // Off the audio thread; the image must outlive the stream. Returns false for channel counts above kMaxChannels.
   bool prepare(ProgramImage* image, uint32_t numIn, uint32_t numOut, float gain = 1.0f, bool limit = false);
+
+  // After prepare, before start: run the image through `voices` (prepared for the same image) with events from
+  // `source`. Allocates the event buffer (eventCapacity events per image block).
+  void setVoices(VoiceEngine* voices, EventSource source, uint32_t eventCapacity = 1024);
 
   AudioCallback callback() noexcept { return {&ImageRunner::onBlock, this}; }
   // One engine block (any frame count: blocks above the image's maxBlockFrames are split). RT-safe.
@@ -49,6 +65,10 @@ private:
   AlignedBuffer<float> scratch_;    // one maxBlock buffer per global output slot
   std::vector<float*> slotPtrs_;
   uint32_t chanSlot_[kMaxChannels] = {};
+  VoiceEngine* voices_ = nullptr;
+  EventSource source_;
+  EventBuffer events_;
+  bool playMixes_ = false;          // channels play VoiceEngine mixes (chanSlot_ indexes mixes)
   uint64_t blocks_ = 0;
 };
 

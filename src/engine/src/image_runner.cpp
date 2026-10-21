@@ -13,6 +13,9 @@ bool ImageRunner::prepare(ProgramImage* image, uint32_t numIn, uint32_t numOut, 
   gain_ = gain;
   limit_ = limit;
   blocks_ = 0;
+  voices_ = nullptr;
+  source_ = {};
+  playMixes_ = false;
   const ImageInterface& io = image->io();
   params_.clear();
   for (const graph::ParamSlot& p : io.params) params_.push_back(p.defaultValue);
@@ -27,6 +30,18 @@ bool ImageRunner::prepare(ProgramImage* image, uint32_t numIn, uint32_t numOut, 
   for (uint32_t c = 0; c < kMaxChannels; ++c)
     chanSlot_[c] = played.empty() ? graph::kNone : played.size() == 1 ? played[0] : c < played.size() ? played[c] : graph::kNone;
   return true;
+}
+
+void ImageRunner::setVoices(VoiceEngine* voices, EventSource source, uint32_t eventCapacity) {
+  voices_ = voices;
+  source_ = source;
+  events_ = EventBuffer(std::max(eventCapacity, 1u));
+  bool anyOut = false;
+  for (const IoSlot& s : image_->io().globalOut) anyOut = anyOut || !s.isExport;
+  playMixes_ = voices != nullptr && !anyOut && voices->numMixes() > 0;
+  if (!playMixes_) return;
+  const uint32_t mixes = voices->numMixes();
+  for (uint32_t c = 0; c < kMaxChannels; ++c) chanSlot_[c] = mixes == 1 ? 0u : c < mixes ? c : graph::kNone;
 }
 
 void ImageRunner::process(const AudioBlock& block) noexcept {  // RT-safe
@@ -46,7 +61,14 @@ void ImageRunner::process(const AudioBlock& block) noexcept {  // RT-safe
     ctx.frames = n;
     ctx.sampleTime = block.frameTime + off;
     ctx.transport = transport_;
-    image_->process(ctx);
+    if (voices_ != nullptr) {
+      events_.clear();
+      if (source_.fn != nullptr) source_.fn(source_.user, ctx.sampleTime, n, events_);
+      ctx.events = &events_.list();
+      voices_->process(ctx);
+    } else {
+      image_->process(ctx);
+    }
     if (transport_.playing) transport_.beat += static_cast<double>(n) * transport_.beatsPerFrame;
     for (uint32_t c = 0; c < std::min(numOut_, block.numOut); ++c) {
       float* dst = block.out[c] + off;
@@ -55,7 +77,7 @@ void ImageRunner::process(const AudioBlock& block) noexcept {  // RT-safe
         std::memset(dst, 0, sizeof(float) * n);
         continue;
       }
-      const float* src = slotPtrs_[s];
+      const float* src = playMixes_ ? voices_->mix(s) : slotPtrs_[s];
       if (limit_) {
         for (uint32_t f = 0; f < n; ++f) {
           const float v = gain_ * src[f];

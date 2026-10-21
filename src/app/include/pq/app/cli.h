@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "pq/core/result.h"
 
@@ -22,7 +23,8 @@ enum class Mode {
   Sine,            // --sine <hz> [--seconds <s>] [--device <id|endpoint>] [--backend wasapi|rtaudio] [--asio] [--rate <hz>]
                    //   [--buffer <n>] [--block <n>] [--exclusive] [--level <dBFS>] [--inject-stall <wake>]
   LatencyTest,     // --latency-test [--seconds <s>] [--device <id|endpoint>] [--buffer <n>] [--level <dBFS>]
-  Play,            // --play <file.pqp> [--patch <name>] [--seconds <s>] [--level <dBFS>] + the --sine stream flags
+  Play,            // --play <file.pqp> [--patch <name>] [--notes "<keys>"] [--seconds <s>] [--level <dBFS>] + the
+                   //   --sine stream flags
 };
 
 // Which WASAPI implementation --sine / --list-devices use (--asio overrides both with RtAudio ASIO).
@@ -62,6 +64,8 @@ struct CliOptions {
   // --play (T1.7): the patch file and the patch in it (empty: the first one).
   std::string playPath;
   std::string patchName;
+  // --notes (T1.8): the arpeggio a voice patch plays (parsePlayNotes); empty = the default "60 64 67 72".
+  std::string notes;
 };
 
 // Exit code a test runner treats as "skipped" (CTest SKIP_RETURN_CODE), e.g. no display for the window test.
@@ -71,6 +75,9 @@ inline constexpr int kExitSkipped = 77;
 Result<CliOptions> parseCli(std::span<const std::string_view> args);
 // Parses "WxH" (both 1..16384).
 bool parseSize(std::string_view s, uint32_t& w, uint32_t& h) noexcept;
+// --notes: whitespace-separated pitches, each a 12-edo key number (60 = C3 = 261.626 Hz, A 69 = 440 Hz; decimals
+// allowed) or a frequency with an `hz` suffix (e.g. `330hz`). Every pitch must be in [1 Hz, 20 kHz].
+Result<std::vector<float>> parsePlayNotes(std::string_view notes);
 std::string usage();
 
 }  // namespace pq::app

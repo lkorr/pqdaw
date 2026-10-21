@@ -52,9 +52,13 @@ struct TransportSnapshot {
   bool playing = false;
 };
 
-// One voice group (8 lanes) for this block. T1.8's allocator fills these; for T1.7 the caller does.
+// One voice group (8 lanes) for this block, filled by the VoiceEngine (voices.h, T1.8) or a test harness.
+// A group whose laneMask is 0 is NOT run (T1.8): its state does not advance, its voice outputs are not written and
+// it contributes nothing to reducers, so the cost of the voice stages is per occupied group, whatever numGroups is.
+// voice.* buffers as the VoiceEngine provides them: Hz, Cents (float), Gate, Trigger (lane masks) audio rate
+// (frames · 8); Velocity, Release, Ratio, Harmonic, UnisonCount, Index param rate (8 floats: only frame 0 exists).
 struct VoiceGroupIO {
-  uint32_t laneMask = 0;                // bit v: lane v holds a sounding voice (reducers and sends read only these)
+  uint32_t laneMask = 0;                // bit v: lane v holds a voice (reducers and sends read only these); 0: skip
   const float* const* signals = nullptr;  // [kVoiceSignalCount] voice.* buffers (frames · 8), or null entries
   const float* const* in = nullptr;     // voice root `in` slots (io().voiceIn), frames · 8 each
   uint32_t numIn = 0;
@@ -77,7 +81,8 @@ struct SendBus {
   uint32_t numChannels = 0;
 };
 
-struct EventList;  // T1.8: the sorted note events of the block (the interpreter does not read them)
+struct EventList;  // pq/engine/note_events.h (T1.8): the block's sorted note events; read by the VoiceEngine,
+                   // never by a ProgramImage
 
 struct ProcessContext {
   uint32_t frames = 0;

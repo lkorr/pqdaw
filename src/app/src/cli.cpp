@@ -1,6 +1,7 @@
 #include "pq/app/cli.h"
 
 #include <charconv>
+#include <cmath>
 
 #include "pq/views/view_scenes.h"
 
@@ -126,6 +127,10 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       if (Status s = setMode(Mode::Play, a); !s) return std::move(s).error();
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--play needs a .pqp file");
       o.playPath = std::string(args[++i]);
+    } else if (a == "--notes") {
+      if (i + 1 >= args.size()) return usageError("--notes needs a list of pitches, e.g. \"60 64 67\"");
+      o.notes = std::string(args[++i]);
+      if (auto n = parsePlayNotes(o.notes); !n) return n.error();
     } else if (a == "--patch") {
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--patch needs a patch name");
       o.patchName = std::string(args[++i]);
@@ -156,6 +161,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
     return usageError("--backend only applies to --sine, --play and --list-devices");
   if (!o.patchName.empty() && !play) return usageError("--patch only applies to --play");
+  if (!o.notes.empty() && !play) return usageError("--notes only applies to --play");
   if (o.stallAfterWake && (o.asio || o.wasapi != WasapiImpl::Own))
     return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
   if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
@@ -170,6 +176,29 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       return usageError("--project and --idle-check need a view scene (e.g. shell), not '" + o.scene + "'");
   }
   return o;
+}
+
+Result<std::vector<float>> parsePlayNotes(std::string_view notes) {
+  std::vector<float> hz;
+  size_t i = 0;
+  auto sep = [](char c) { return c == ' ' || c == '\t' || c == ','; };
+  while (i < notes.size()) {
+    while (i < notes.size() && sep(notes[i])) ++i;
+    if (i >= notes.size()) break;
+    size_t j = i;
+    while (j < notes.size() && !sep(notes[j])) ++j;
+    std::string_view tok = notes.substr(i, j - i);
+    i = j;
+    const bool isHz = tok.size() > 2 && (tok.substr(tok.size() - 2) == "hz" || tok.substr(tok.size() - 2) == "Hz");
+    if (isHz) tok.remove_suffix(2);
+    double v = 0.0;
+    if (!parseNumber(tok, v)) return usageError("--notes: bad pitch '" + std::string(tok) + "' (want a key number or <f>hz)");
+    const double f = isHz ? v : 440.0 * std::exp2((v - 69.0) / 12.0);
+    if (!(f >= 1.0 && f <= 20000.0)) return usageError("--notes: pitch '" + std::string(tok) + "' is outside 1 Hz .. 20 kHz");
+    hz.push_back(static_cast<float>(f));
+  }
+  if (hz.empty()) return usageError("--notes needs at least one pitch");
+  return hz;
 }
 
 std::string usage() {
@@ -198,7 +227,9 @@ std::string usage() {
          "  --play <file.pqp> [--patch NAME] [options]\n"
          "                                           compile a patch (interpreter) and play its global outs on\n"
          "                                           the device at --level DBFS (default -24), clipped to\n"
-         "                                           [-1, 1]; same stream options as --sine\n"
+         "                                           [-1, 1]; same stream options as --sine. A patch with only\n"
+         "                                           voice outs plays an arpeggio through the voice engine:\n"
+         "      --notes \"60 64 67\"                     12-edo keys (60 = C3) or <f>hz, one per 0.25 s\n"
          "  --latency-test [--seconds S] [--device ..] [--buffer N] [--level DBFS]\n"
          "                                           shared-mode output latency vs WASAPI loopback capture\n"
          "  --help                                  this text\n";

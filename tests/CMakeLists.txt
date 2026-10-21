@@ -140,6 +140,7 @@ pq_add_test(pq_tests_engine
     engine/test_wasapi.cpp
     engine/test_rt_log_device.cpp
     engine/test_interpreter.cpp
+    engine/test_voices.cpp
   DEPS pq_engine)
 
 pq_add_test(pq_tests_dsp
