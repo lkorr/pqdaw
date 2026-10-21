@@ -184,3 +184,9 @@ Agents: add questions here instead of guessing on anything important. Use this f
   9. **Scale (T2.4) is not yet in `TuningDef`**: `pq::tuning::Tuning` on main has only EDO and MOS; Scale joins the variant when T2.4 lands (no stub).
   10. **Note chunks hold ≤ 128 notes**, not 256: a full 256-note chunk is 16 KB, the whole per-edit budget.
 - Status: open
+
+## Q27 · 2026-10-21 · T3.1 · Keymap chords: layout key or physical key? And what a disabled action does
+- Context: SPEC §6.1 copies Ableton's shortcuts, which follow the printed key (layout-dependent: Ctrl+Z is the key labelled Z, wherever it sits). SPEC §6.2's macro mode copies an AHK macro whose number row and `qwerty`/`asdf` rows are positional, so on AZERTY or Dvorak they would move if they matched the layout key.
+- Options: A) every chord matches the layout key; B) every chord matches the scancode; C) per-binding choice (a `@scancode` flag in the keymap file).
+- Provisional choice: A for T3.1. `KeyEvent` carries both `key` and `scancode`, so C can be added in M8 without touching dispatch (the binding table key just gets a bit). Also provisional: a chord whose action is disabled (enabled predicate false) falls through to the next scope instead of being swallowed, and auto-repeat fires only actions registered as `repeatable` (nudges yes, toggles like `B` no).
+- Status: open

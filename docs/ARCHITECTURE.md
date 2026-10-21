@@ -163,6 +163,14 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - `DocumentStore` (UI thread): current snapshot, `dispatch`, `History` (snapshot pairs; undo/redo swap pointers), gestures (`begin/commit/cancelGesture`: live notifications, one history entry), listeners (`StoreEvent`), and `ViewState` (fold/heights, not undoable; Q26).
 - `document` depends on `tuning` and `core` only. The audio thread never sees it.
 
+### Widget toolkit (ui, T3.1: `pq/ui/widget.h`, `input.h`, `actions.h`, `test_driver.h`)
+- **Tree**: `UiTree` owns one root `Widget`; widgets own their children (`add<W>(...)`). Ids are paths of names (`arrangement/track[3]/header/mute`; unnamed widgets are transparent). Override `paint`/`paintOver`, `onPointer`/`onKey`/`onText`, `onHoverChanged`/`onFocusChanged`/`onCaptureLost`, `onFrame`/`onTimer`, `contentExtent`, `arrange`.
+- **Layout**: one top-down pass, no measure pass. `Length` = Fixed px | Flex weight, with min/max; containers are Row / Column / Stack / Custom (`Splitter`, `ScrollView`, views). Lengths are **logical px**; rects are **device px** = round(logical × `UiTree::scale()`), so text stays at integer pixel sizes. Only dirty subtrees are revisited.
+- **Dense content** (clips, notes, grid) is drawn by one widget inside a `ScrollView`: it reports `contentExtent()` and paints only `PaintContext::clip`. Never one widget per note.
+- **Redraw**: `markDirty()` adds the widget's clipped rect to the tree's `Damage`; layout adds the old and new rects of whatever moved. `requestFrame()` / `requestTimer()` are the only ways to animate; idle means no requests, and the loop blocks until the next event or `nextWakeTime()`.
+- **Input**: SDL-free `PointerEvent` / `KeyEvent` / `TextEvent` (`translateEvent` in `pq/ui/window.h` adapts SDL). A handled Down captures the pointer until every button is released; hover is frozen while captured. Keys go: focused widget → its ancestors (a focused text-entry widget swallows printable keys) → modal scopes (newest first; `ScopeRules` passthrough modifiers / swallow unbound, which is how macro mode works) → `keyScope`s of the focus chain → global → Tab traversal. `ActionRegistry` holds string ids → handler + enabled predicate; a `Keymap` is data (scope, chord → action id) and is resolved to indices in `UiTree::setKeymap`. Dispatch does not allocate.
+- **Tests**: `TestDriver` builds a tree at a size and scale, injects events, runs a fake clock through update → paint, and renders through `OffscreenTarget`.
+
 ## 4. Data and file formats
 - **Project**: a directory: `project.pqd` (JSON, `"schemaVersion"` field, UTF-8), `patches/*.pqp`, `samples/`, `cache/`.
 - **Patches**: `.pqp` text in the patch language ([PATCH_LANGUAGE.md](PATCH_LANGUAGE.md)). The visual layout is stored in the same file in a `layout { }` block.

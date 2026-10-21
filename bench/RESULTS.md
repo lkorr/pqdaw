@@ -196,3 +196,11 @@ Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 | 2026-10-21 | f180bb6 | doc: undo / redo | release, pq_bench_document, mean over 10,000 each | undo 33–47 ns, redo 24–35 ns, worst single step 0.3–0.5 µs | pointer swap + cursor; no listeners attached |
 | 2026-10-21 | f180bb6 | doc: set volume on a nested track (with history) | release, pq_bench_document | 1.7–2.0 µs; in a 60-step gesture 1.6–1.8 µs/step | path copy group → track |
 | 2026-10-21 | f180bb6 | doc: move one note in a 100,000-note clip | release, pq_bench_document | median 12.4–16.8 µs, 30 KiB retained | outside the criterion's config: the single-level chunk directory (782 × 24 B) is copied per edit; a two-level directory would fix it if T3.11 needs it |
+| 2026-10-21 | T3.1 | ui/layout 10k-widget tree, full (window resize: every rect changes) | release, pq_bench_widgets | 222 µs median (min 219) = 21.9 ns/widget | 100 rows × 100 cells (10 101 widgets), fixed / flex / flex-with-min-max mix, padding + gap every 10th row; criterion < 1 ms |
+| 2026-10-21 | T3.1 | ui/layout 10k-widget tree, full (invalidateAll, same size) | release | 302 µs median (min 299) | includes the invalidateAll flag walk; rects unchanged so no damage work |
+| 2026-10-21 | T3.1 | ui/layout incremental, one cell's width | release | 2.1 µs median | re-arranges that row only (101 widgets); unchanged subtrees are not visited |
+| 2026-10-21 | T3.1 | ui/hitTest, 10k-widget tree, random points | release | 277 ns median (min 265) | linear reverse scan per level (100 + 100 rect tests); criterion < 2 µs |
+| 2026-10-21 | T3.1 | ui/dispatch pointer move with hover change | release | 253 ns/event median | hit test + leave/enter + bubbling; 0 allocations (alloc-trap test) |
+| 2026-10-21 | T3.1 | ui/dispatch click (down + up) | release | 518 ns/click median | focus walk, capture, release, hover update |
+| 2026-10-21 | T3.1 | ui/dispatch key → global action (200 bindings) | release | 24.9 ns/key median | focus chain + scope binary search + global; string ids resolved once in setKeymap |
+| 2026-10-21 | T3.1 | ui/paint 10k-widget tree into the draw list | release | 167 µs/frame median | one virtual paint + addRectFilled per widget, clip culling |
