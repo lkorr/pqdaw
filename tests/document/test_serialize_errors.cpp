@@ -265,7 +265,7 @@ void collect(json& j, std::vector<json*>& out) {
 
 }  // namespace
 
-TEST_CASE("serialize errors: 10^4 mutated files never crash, hang or fail without a JSON path") {
+TEST_CASE("serialize errors: 10^4 mutated files never crash, hang or fail without a JSON path" * doctest::test_suite("slow")) {
   // A smaller rich project (clip A trimmed) keeps the fuzz fast in the /Od dev build.
   json base = richDom();
   auto& notesA = base["tracks"][0]["clips"][0]["notes"];

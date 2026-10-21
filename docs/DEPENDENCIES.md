@@ -2,7 +2,7 @@
 
 All are pinned. Permissive licences only. Add new ones in `cmake/PqDependencies.cmake` and list them here.
 
-**Fetched at configure time** (FetchContent) as release archives pinned by SHA-256 (`URL_HASH`), never by git tag: a tag can be moved, the hash can't, and configuring needs no git. Where a project publishes its own release archive, that is what we use. Otherwise we use GitHub's tag archive (marked "tag archive" below). To bump a dependency, change the URL, download the archive, `sha256sum` it, and update the hash in both places. All are built statically with `/MT`. `BUILD_SHARED_LIBS` is forced OFF in the cache before the first dependency is declared.
+**Fetched at configure time** (FetchContent) as release archives pinned by SHA-256 (`URL_HASH`), never by git tag: a tag can be moved, the hash can't, and configuring needs no git. Where a project publishes its own release archive, that is what we use. Otherwise we use GitHub's tag archive (marked "tag archive" below). To bump a dependency, change the URL, download the archive, `sha256sum` it, and update the hash in both places. All are built statically with `/MT`. `BUILD_SHARED_LIBS` is forced OFF in the cache before the first dependency is declared. Declare them with `pq_fetch_declare` (same arguments as `FetchContent_Declare`): each verified archive is downloaded once per machine into `%LOCALAPPDATA%\pqdaw\downloads\<sha256>\` (`PQ_DOWNLOAD_CACHE`), written under a temporary name and renamed into place, so concurrent configures in several worktrees share it safely; extraction and builds stay per build tree.
 
 | Name | Version | Archive (SHA-256) | Licence | Used by | Purpose |
 |---|---|---|---|---|---|
@@ -30,6 +30,12 @@ All are pinned. Permissive licences only. Add new ones in `cmake/PqDependencies.
 |---|---|---|---|---|---|
 | LLVM (prebuilt) | 23.1.3 `clang+llvm-23.1.3-x86_64-pc-windows-msvc` | `C:\dev\llvm-23.1.3` (`PQ_LLVM_DIR`) | Apache-2.0 WITH LLVM-exception | jit, tests | ORC JIT + AOT codegen |
 | Vulkan SDK (LunarG) | 1.4.357.0 | `$VULKAN_SDK` (`find_package(Vulkan 1.3 COMPONENTS glslc)`) | Apache-2.0 (headers, loader), glslc Apache-2.0 | ui | Vulkan headers + `vulkan-1` loader import lib. `glslc` compiles the UI shaders to SPIR-V at build time (embedded, no runtime files). Validation layer optional (`PQ_VK_VALIDATION=1`) |
+
+**Build tools** (optional, fetched by a script into `%LOCALAPPDATA%\pqdaw\tools`, never linked; builds work without them):
+
+| Name | Version | Archive (SHA-256) | Licence | Used by | Purpose |
+|---|---|---|---|---|---|
+| sccache | v0.17.0 (2026-07-29) | release asset `sccache-v0.17.0-x86_64-pc-windows-msvc.zip` (`e94cfc5b58cbe439302f586c1d1bd7980c2cd371d47bdf385ade657411e6f3ac`, matches the release's `.sha256`) | Apache-2.0 | build (`scripts/get-sccache.ps1`, `cmake/PqCompilerCache.cmake`, `scripts/build.ps1`) | compiler cache: C/C++ compiler launcher when installed. One cache directory for every checkout and worktree (`%LOCALAPPDATA%\pqdaw\sccache`, 20 GB cap), one server per checkout with that checkout as its base directory. Caches `/Z7` and `/GL` objects; LTCG link steps are not cached |
 
 **Committed** (in the repository):
 

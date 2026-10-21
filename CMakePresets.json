@@ -14,11 +14,11 @@
     {
       "name": "dev",
       "inherits": "base",
-      "displayName": "dev: unoptimised, debug info, asserts on (static release CRT)",
+      "displayName": "dev: unoptimised, debug info (/Z7), asserts on (static release CRT)",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_C_FLAGS_RELWITHDEBINFO": "/Zi /Od /Ob0",
-        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "/Zi /Od /Ob0"
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "/Od /Ob0",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "/Od /Ob0"
       }
     },
     {
@@ -40,8 +40,8 @@
   ],
   "testPresets": [
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" },
-      "filter": { "exclude": { "label": "perf" } } },
+      "filter": { "exclude": { "label": "^(perf|slow)$" } } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" },
-      "filter": { "exclude": { "label": "perf" } } }
+      "filter": { "exclude": { "label": "^(perf|slow)$" } } }
   ]
 }

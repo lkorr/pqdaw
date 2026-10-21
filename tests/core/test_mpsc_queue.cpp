@@ -59,7 +59,7 @@ TEST_CASE("mpsc: tryPush/tryPop do not allocate (RtScope)") {
   CHECK(ok);
 }
 
-TEST_CASE("mpsc stress: 4 producers x 2.5*10^6 items, no loss, duplication or per-producer reordering") {
+TEST_CASE("mpsc stress: 4 producers x 2.5*10^6 items, no loss, duplication or per-producer reordering" * doctest::test_suite("slow")) {
   constexpr uint32_t kProducers = 4;
   constexpr uint64_t kPerProducer = 2'500'000;  // 10^7 items in total
   struct Item {
@@ -119,7 +119,7 @@ TEST_CASE("mpsc stress: 4 producers x 2.5*10^6 items, no loss, duplication or pe
 
 // T0.2-fix1 (review L5): 64-byte payloads (producer, sequence and word index in every word) through a
 // small queue, checked on pop for torn slots and per-producer order.
-TEST_CASE("mpsc stress: 64-byte payloads, 4 producers x 10^6 items, no torn or stale slots") {
+TEST_CASE("mpsc stress: 64-byte payloads, 4 producers x 10^6 items, no torn or stale slots" * doctest::test_suite("slow")) {
   pq::MpscQueue<pq::test::WidePayload> q(16);
   const auto res = pq::test::mpscWideStress(q, 4, 1'000'000);
   CHECK(res.received == 4'000'000);

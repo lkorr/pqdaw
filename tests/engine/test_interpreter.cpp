@@ -66,7 +66,7 @@ double checkAgainstReference(const Compiled& c, uint32_t voices, int paramSet, s
 
 }  // namespace
 
-TEST_CASE("interpreter: every patch in tests/graph/cases and tests/engine/patches matches the reference evaluator") {
+TEST_CASE("interpreter: every patch in tests/graph/cases and tests/engine/patches matches the reference evaluator" * doctest::test_suite("slow")) {
   uint32_t compared = 0, files = 0, voicePatches = 0;
   double maxErr = 0.0;
   std::string worst;

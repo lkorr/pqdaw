@@ -81,7 +81,7 @@ TEST_CASE("spsc: tryPush/tryPop/front/popFront do not allocate (RtScope)") {
   CHECK(ok);
 }
 
-TEST_CASE("spsc stress: 10^7 items across two threads, no loss, duplication or reordering") {
+TEST_CASE("spsc stress: 10^7 items across two threads, no loss, duplication or reordering" * doctest::test_suite("slow")) {
   constexpr uint64_t kItems = 10'000'000;
   pq::SpscRing<uint64_t> r(1024);  // small ring: forces many full/empty transitions
   std::atomic<bool> go{false};
@@ -131,7 +131,7 @@ TEST_CASE("spsc stress: 10^7 items across two threads, no loss, duplication or r
 // torn slots and payload/index reordering that a one-word payload can't show. Small rings force a
 // full/empty transition every few items. The mutation check (tests/core/queue_mutation_main.cpp) runs
 // these drivers against a tryPop whose acquire is weakened to relaxed.
-TEST_CASE("spsc stress: 64-byte payloads, 4*10^6 items, tryPop, no torn or stale slots") {
+TEST_CASE("spsc stress: 64-byte payloads, 4*10^6 items, tryPop, no torn or stale slots" * doctest::test_suite("slow")) {
   pq::SpscRing<pq::test::WidePayload> r(16);
   const auto res = pq::test::spscWideStress(r, 4'000'000, false);
   CHECK(res.received == 4'000'000);
@@ -139,7 +139,7 @@ TEST_CASE("spsc stress: 64-byte payloads, 4*10^6 items, tryPop, no torn or stale
   CHECK(res.seqErrors == 0);
 }
 
-TEST_CASE("spsc stress: 64-byte payloads, 4*10^6 items, tryPop alternating with front/popFront") {
+TEST_CASE("spsc stress: 64-byte payloads, 4*10^6 items, tryPop alternating with front/popFront" * doctest::test_suite("slow")) {
   pq::SpscRing<pq::test::WidePayload> r(16);
   const auto res = pq::test::spscWideStress(r, 4'000'000, true);
   CHECK(res.received == 4'000'000);

@@ -53,7 +53,8 @@ pq_add_bench(pq_bench_mos_wheel SOURCES views/bench_mos_wheel.cpp DEPS pq_views)
 pq_add_bench(pq_bench_mixer SOURCES views/bench_mixer.cpp DEPS pq_views)
 # T1.11: the 32-op voice patch at 1/8/64 voices (interpreter, JIT) and the golden offline renders (T1.10).
 pq_add_bench(pq_bench_render SOURCES engine/bench_render.cpp DEPS pq_pqc)
-target_compile_definitions(pq_bench_render PRIVATE PQ_SOURCE_DIR="${PQ_SOURCE_DIR}")
+pq_use_build_paths(pq_bench_render)
+target_compile_definitions(pq_bench_render PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
 
 # The one bench test: the T1.11 runner's options and CSV output (a few ms of measuring, any build).
 add_test(NAME pq_bench_runner_smoke

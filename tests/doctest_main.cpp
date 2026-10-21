@@ -22,6 +22,10 @@ TEST_CASE("alloc trap is linked into this test executable") {
 
 int main(int argc, char** argv) {
   pq::alloc_trap::setHandler(&failRunningTest);
-  doctest::Context context(argc, argv);
+  doctest::Context context;
+  // File names without directories in reports: with the shared compiler cache (cmake/PqCompilerCache.cmake)
+  // an object may come from another worktree, and its __FILE__ would name that worktree's copy.
+  context.setOption("no-path-filenames", true);
+  context.applyCommandLine(argc, argv);
   return context.run();
 }

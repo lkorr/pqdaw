@@ -44,7 +44,8 @@ pq_add_module(pq_ui
   PRIVATE_DEPS pq_vma SDL3::SDL3-static ZLIB::ZLIB dwmapi pq_harfbuzz freetype nlohmann_json::nlohmann_json)
 target_include_directories(pq_ui PRIVATE ${_pq_ui_gen})
 # Fallback location of the bundled fonts for dev builds and tests (see pq::ui::assetsDir()).
-target_compile_definitions(pq_ui PRIVATE PQ_SOURCE_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
+pq_use_build_paths(pq_ui)
+target_compile_definitions(pq_ui PRIVATE PQ_SOURCE_ASSETS_DIR=pq_build_source_assets_dir)
 # Third-party headers (VMA, SDL, zlib, Vulkan, FreeType, HarfBuzz) are SYSTEM includes: keep their warnings out of /W4 /WX.
 target_compile_options(pq_ui PRIVATE /external:W0)
 
