@@ -241,7 +241,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: A and A. Both are one-line changes (`UiScale::fontPx`, the scenes' hairline rects) and T3.2's theme can switch to a table without touching callers, since every caller goes through `UiScale`/`FontRole`.
 - Atlas note: the single 1024² glyph page holds the 7 scene font roles at 5 scales (1.0–2.0) with ASCII warmed in 967 of 1024 rows (test_hidpi). A window that visits many scales, or T3.2 adding roles, will fill it; multi-page atlas with eviction is already T0.8-fix1. Until then a full atlas drops new glyphs (counted in `TextSystem::Stats::atlasFull`).
 
-## Q?-T3.3-a · 2026-10-21 · T3.3 · Grid details not fixed by SPEC §9.2 / Live's manual
+## Q33 · 2026-10-21 · T3.3 · Grid details not fixed by SPEC §9.2 / Live's manual
 - Context: SPEC §9.2 and TASKS T3.3 fix the grid's menu and keys, not its geometry in odd meters, the adaptive thresholds, or the exact relative-snap/quantize arithmetic. Live's manual doesn't document these either.
 - Options / provisional choices (all in `pq/core/grid.h`; each is one function to change, nothing is persisted except `GridSpec`):
   1. Adaptive density: 7 levels −3…+3 (Narrowest, Narrower, Narrow, Medium, Wide, Wider, Widest) as TASKS says, vs Live's 5. Minimum cell = 24·2^level logical px (3…192 px). Alternative: 5 levels mapped onto −2…+2.
