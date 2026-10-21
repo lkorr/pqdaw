@@ -28,11 +28,11 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - Replace global `operator new/delete` (all overloads) in test binaries and dev builds, with a thread-local "realtime" flag set by `RtScope`. Any allocation or free inside an RtScope fails loudly: test failure, or abort with a stack trace in the app.
   - Accept: a test shows that allocating inside an RtScope is caught and that allocating outside it is fine. The trap compiles out of release builds of the app.
 
-- [~] **T0.4 Fast math** *(worker B, branch task/T0.4-T0.5-math-time)* (`core`). Depends on: T0.1.
+- [x] **T0.4 Fast math** *(a0dd5ef)* (`core`). Depends on: T0.1.
   - `fastTan`, `fastExp2`, `fastLog2`, `fastTanh`, `fastSin` (scalar + AVX2 8-wide), with error bounds documented in their headers. `centsToHz`/`hzToCents`, `dbToGain`/`gainToDb`.
   - Accept: tests sweep every function over its stated domain against `double` std:: references and check the documented error bounds (max relative error and max absolute error in cents where relevant). A benchmark compares each against the std:: version.
 
-- [~] **T0.5 Time types** *(worker B, branch task/T0.4-T0.5-math-time)* (`core`). Depends on: T0.1.
+- [x] **T0.5 Time types** *(ac48462)* (`core`). Depends on: T0.1.
   - `Ticks` (int64, PPQ 27720), a tempo map (with ramps) converting ticks↔seconds↔samples exactly or within ½ sample, and time signatures.
   - Accept: tests include round trips over a 10-hour session at 192 kHz with tempo ramps, staying within ½ sample, and exact tuplet positions for 3/5/7/11.
 
@@ -76,7 +76,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - Topological order, Tarjan SCCs, explicit-delay feedback handled, a zero-delay cycle outside `solve` rejected (text) or given an inserted `z1` plus a warning (visual mode flag). Block regions: per-sample for feedback SCCs, blocks elsewhere. Buffer liveness and reuse. State layout keyed by NodeId with type tags.
   - Accept: tests on schedule structure. The scratch-buffer count for a 100-node chain is ≤ 3. The state layout for an unchanged node is identical across reschedules.
 
-- [ ] **T1.6 Leaf atom kernels** (`dsp`). Depends on: T0.4.
+- [~] **T1.6 Leaf atom kernels** *(worker G, branch task/T1.6-leaf-atoms)* (`dsp`). Depends on: T0.4.
   - Every leaf atom in SPEC §7.2: math, logic (bool lanes as masks), memory (`z1`, `delayline` with linear/allpass/cubic reads), generators (`phasor` with a **uint32 phase accumulator**, `sine`, `wavetable` with band-limited mipmaps, `noise`), `shaper`, `sampleRead`. Each has a scalar and an AVX2 path, block-wise.
   - Accept: each kernel is tested against a naive `double` reference. A phasor test shows zero drift over 10⁹ samples, with its frequency exact to the uint32 resolution. Benchmarks are recorded per atom (ns/sample, 1 and 8 lanes).
 
