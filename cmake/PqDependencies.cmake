@@ -1,25 +1,32 @@
-# Third-party dependencies. Every entry is pinned to an exact tag/commit and listed in docs/DEPENDENCIES.md.
-# Add new dependencies here (not ad hoc in module CMakeLists) so versions stay in one place.
+# Third-party dependencies. Add new ones here (not ad hoc in module CMakeLists) so versions stay in one place,
+# and list each in docs/DEPENDENCIES.md with its archive hash.
+#
+# Every dependency is a release archive (the project's own release asset where it publishes one, else GitHub's
+# tag archive) pinned by a SHA-256 URL_HASH: a tag can move, a hash cannot, and a configure needs neither git
+# nor a clone (T0.1-fix1). To bump one: change the URL, download it, sha256sum it, and update the hash here
+# and in docs/DEPENDENCIES.md.
 
 include(FetchContent)
-# Git dependencies that need no submodules set GIT_SUBMODULES "": with the Git-for-Windows mingw64 git.exe that
-# FindGit can pick, `git submodule update` fails ("unknown subcommand: update-clone").
 set(FETCHCONTENT_QUIET ON)
+# Every third-party library is linked statically. Forced into the cache before any dependency is declared:
+# RtAudio's CMakeLists declares option(BUILD_SHARED_LIBS ... ON), which would otherwise put ON in the cache
+# for every dependency configured after it.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "pqdaw links every third-party library statically" FORCE)
 
 # --- doctest (MIT): unit tests --------------------------------------------------------------
 FetchContent_Declare(doctest
-  GIT_REPOSITORY https://github.com/doctest/doctest.git
-  GIT_TAG        v2.4.11
-  GIT_SHALLOW    TRUE)
+  URL      https://github.com/doctest/doctest/archive/refs/tags/v2.4.11.tar.gz
+  URL_HASH SHA256=632ed2c05a7f53fa961381497bf8069093f0d6628c5f26286161fbd32a560186
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 set(DOCTEST_NO_INSTALL ON)
 FetchContent_MakeAvailable(doctest)
 
 # --- zlib (zlib) + zstd (BSD): required by the prebuilt LLVM's Support library ----------------
 # LLVM's exported targets reference ZLIB::ZLIB and zstd::libzstd_static; we provide them.
 FetchContent_Declare(zlib
-  GIT_REPOSITORY https://github.com/madler/zlib.git
-  GIT_TAG        v1.3.1
-  GIT_SHALLOW    TRUE
+  URL      https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.xz
+  URL_HASH SHA256=38ef96b8dfe510d42707d9c781877914792541133e1870841463bfa73f883e32
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   EXCLUDE_FROM_ALL)
 set(ZLIB_BUILD_EXAMPLES OFF)
 FetchContent_MakeAvailable(zlib)
@@ -28,9 +35,9 @@ if(NOT TARGET ZLIB::ZLIB)
 endif()
 
 FetchContent_Declare(zstd
-  GIT_REPOSITORY https://github.com/facebook/zstd.git
-  GIT_TAG        v1.5.7
-  GIT_SHALLOW    TRUE
+  URL      https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+  URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_SUBDIR  build/cmake
   EXCLUDE_FROM_ALL)
 set(ZSTD_BUILD_PROGRAMS OFF)
@@ -62,10 +69,9 @@ find_package(Vulkan 1.3 REQUIRED COMPONENTS glslc)
 
 # --- SDL3 (zlib): window, events, Vulkan surface ---------------------------------------------
 FetchContent_Declare(SDL3
-  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-  GIT_TAG        release-3.4.18
-  GIT_SHALLOW    TRUE
-  GIT_SUBMODULES ""   # none needed; also avoids a mismatched-git `submodule--helper` failure on this machine
+  URL      https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+  URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   EXCLUDE_FROM_ALL)
 set(SDL_SHARED OFF)
 set(SDL_STATIC ON)
@@ -86,10 +92,9 @@ FetchContent_MakeAvailable(SDL3)
 
 # --- VulkanMemoryAllocator (MIT): GPU memory for the ui renderer ------------------------------
 FetchContent_Declare(VulkanMemoryAllocator
-  GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-  GIT_TAG        v3.4.0
-  GIT_SHALLOW    TRUE
-  GIT_SUBMODULES ""
+  URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
+  URL_HASH SHA256=822aa850c6ce77346ae96a8a1d351d52e77e85929f35363849a0a4e638e0a2a1
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(VulkanMemoryAllocator)
 add_library(pq_vma INTERFACE)
@@ -133,15 +138,13 @@ target_compile_options(rtaudio PRIVATE /w)
 # Built static with no optional dependencies: TrueType/CFF hinting and grayscale rendering need none of
 # zlib/bzip2/png/brotli/harfbuzz (those cover compressed fonts, colour emoji and FreeType's own autohinter
 # shaping, none of which pqdaw uses).
+# The official release tarball: savannah, with the SourceForge mirror as a fallback (identical bytes).
 FetchContent_Declare(freetype
-  GIT_REPOSITORY https://github.com/freetype/freetype.git
-  GIT_TAG        VER-2-14-3
-  GIT_SHALLOW    TRUE
-  GIT_SUBMODULES ""
+  URL      https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz
+           https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.xz
+  URL_HASH SHA256=36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   EXCLUDE_FROM_ALL)
-# RtAudio's CMakeLists declares option(BUILD_SHARED_LIBS ... ON), which leaks into the cache; shadow it so
-# FreeType (and anything after it) builds static.
-set(BUILD_SHARED_LIBS OFF)
 set(FT_DISABLE_ZLIB ON)
 set(FT_DISABLE_BZIP2 ON)
 set(FT_DISABLE_PNG ON)
@@ -162,10 +165,9 @@ set_target_properties(freetype PROPERTIES SOURCES "${_pq_ft_srcs}")
 # ICU, glib, graphite, subsetter or FreeType integration (shaping uses HarfBuzz's own OpenType functions and
 # linear advances; FreeType only rasterises, see src/ui/src/text.cpp).
 FetchContent_Declare(harfbuzz
-  GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz.git
-  GIT_TAG        14.5.1
-  GIT_SHALLOW    TRUE
-  GIT_SUBMODULES ""
+  URL      https://github.com/harfbuzz/harfbuzz/releases/download/14.5.1/harfbuzz-14.5.1.tar.xz
+  URL_HASH SHA256=7e2fa4e8c7c98e8d8140671f5772542afaaa6acccfbd746506886b6d85f7f8d6
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_SUBDIR  pq-no-cmake   # populate only; the target is defined below
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(harfbuzz)
