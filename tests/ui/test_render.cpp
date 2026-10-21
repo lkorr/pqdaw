@@ -166,30 +166,55 @@ TEST_CASE("render: glow blob peaks at its centre and falls to the background") {
 
 namespace {
 
+std::string describe(const ImageDiff& d) {
+  std::string s = "max channel diff " + std::to_string(d.maxChannelDiff) + ", " + std::to_string(d.pixelsOverTolerance) +
+                  " px over tolerance (" + std::to_string(d.clusteredOutliers) + " clustered)";
+  if (d.boxX1 > d.boxX0)
+    s += ", bounding box x [" + std::to_string(d.boxX0) + ", " + std::to_string(d.boxX1) + ") y [" + std::to_string(d.boxY0) +
+         ", " + std::to_string(d.boxY1) + ")";
+  return s;
+}
+
+// The golden comparison (T0.7-fix5, M0 review M5): GoldenTolerance's defaults, i.e. ≤ 2/255 per channel
+// everywhere except ≤ 100 isolated pixels per million, none over 24/255. On failure writes <name>.actual.png
+// and <name>.diff.png (pq::ui::diffImage: outliers red/yellow, bounding box outlined) into the test's working
+// directory (build/<preset>/tests) and reports the bounding box.
+bool matchesGolden(const std::string& name, const Image& actual, const Image& golden, bool writeOnFailure = true,
+                   ImageDiff* diffOut = nullptr) {
+  const GoldenTolerance tol;
+  const ImageDiff d = compareImages(actual, golden, tol.channel);
+  if (diffOut) *diffOut = d;
+  const bool pass = passesGolden(d, tol);
+  if (!pass && writeOnFailure) {
+    const std::string out = name + ".actual.png", diff = name + ".diff.png";
+    (void)writePng(out, actual);
+    if (d.sameSize) (void)writePng(diff, diffImage(actual, golden, tol.channel, tol.outlierCap));
+    MESSAGE(name << " FAILED: " << (d.sameSize ? describe(d) : std::string("size differs")) << "; wrote " << out
+                 << (d.sameSize ? " and " + diff : std::string()) << " for inspection");
+  }
+  return pass;
+}
+
+Image loadGolden(const std::string& file) {
+  auto ref = readPng(std::string(PQ_TEST_DATA_DIR) + "/ui/golden/" + file + ".png");
+  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+  return std::move(*ref);
+}
+
 // Renders `scene` at the default logical size and UI scale `scale` and compares it with
 // tests/ui/golden/<scene>.png (scale 1) or <scene>@<scaleName>x.png (T0.7-fix3 HiDPI goldens).
 void checkGolden(const std::string& scene, float scale = 1.0f, const char* scaleName = nullptr) {
   const std::string file = scaleName ? scene + "@" + scaleName + "x" : scene;
-  const std::string golden = std::string(PQ_TEST_DATA_DIR) + "/ui/golden/" + file + ".png";
   GpuOptions o;
   o.validation = true;
   auto img = renderSceneImage(scene, kDefaultSceneWidth, kDefaultSceneHeight, o, UiScale(scale));
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
-  auto ref = readPng(golden);
-  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
-
-  // ≤ 2/255 per channel everywhere except ≤ 0.1 % of pixels, which may differ more: rasterisation rules
-  // and texture filtering precision legitimately vary a little between GPU vendors and drivers.
-  const ImageDiff d = compareImages(*img, *ref, 2);
-  const uint64_t allowedOutliers = d.pixelCount / 1000;
-  if (!d.sameSize || d.pixelsOverTolerance > allowedOutliers) {
-    const std::string out = file + ".actual.png";  // in the test's working directory (build/<preset>/tests)
-    (void)writePng(out, *img);
-    MESSAGE("wrote " << out << " for inspection");
-  }
+  const Image ref = loadGolden(file);
+  ImageDiff d;
+  const bool pass = matchesGolden(file, *img, ref, true, &d);
   REQUIRE(d.sameSize);
-  MESSAGE(file << ": max channel diff " << d.maxChannelDiff << ", " << d.pixelsOverTolerance << " px over tolerance");
-  CHECK(d.pixelsOverTolerance <= allowedOutliers);
+  MESSAGE(file << ": " << describe(d));
+  CHECK(pass);
 }
 
 }  // namespace
@@ -223,6 +248,140 @@ TEST_CASE("render: widgets-core matches the golden image") { checkGolden("widget
 
 // T0.7-fix2: widget-grade primitives (crisp strokes, separators, arcs, circles, triangles, bilinear gradient).
 TEST_CASE("render: primitives matches the golden image") { checkGolden("primitives"); }
+
+// --- T0.7-fix5 mutation checks: the golden comparison must catch small, real regressions -------------------
+//
+// Each renders a golden scene (scale 1, shared renderer) with a perturbed draw list and asserts the golden
+// comparison rejects it. A control render of the unperturbed list must pass first, so a failure is caused by
+// the perturbation alone.
+
+namespace {
+
+// The draw list's own vertex storage, for test-only perturbation after the scene is built. The DrawList is a
+// non-const local, so writing through the span's pointer is well defined.
+Vertex* mutableVertices(DrawList& dl) { return const_cast<Vertex*>(dl.vertices().data()); }
+
+struct SceneRender {
+  DrawList dl;
+  std::unique_ptr<OffscreenTarget> target;
+  Image render() {
+    REQUIRE(target->draw(*gpu().renderer, dl, kSceneClearColor).ok());
+    auto img = target->read();
+    REQUIRE(img.ok());
+    return std::move(*img);
+  }
+};
+
+SceneRender buildGoldenScene(const char* scene) {
+  SceneRender s;
+  REQUIRE(gpu().textures.scale.factor == 1.0f);
+  gpu().textures.text->beginFrame();
+  s.dl.reset(kDefaultSceneWidth, kDefaultSceneHeight);
+  REQUIRE(buildScene(scene, s.dl, gpu().textures, 0.0));
+  auto t = OffscreenTarget::create(*gpu().ctx, kDefaultSceneWidth, kDefaultSceneHeight);
+  REQUIRE(t.ok());
+  s.target = std::move(*t);
+  return s;
+}
+
+bool sameUv(Vec2 a, Vec2 b) { return a.x == b.x && a.y == b.y; }
+
+}  // namespace
+
+TEST_CASE("render: golden mutation: deleting any one glyph from the text scene fails the comparison") {
+  SceneRender s = buildGoldenScene("text");
+  const Image golden = loadGolden("text");
+  {
+    const Image control = s.render();
+    CHECK(compareImages(control, golden, 0).maxChannelDiff == 0);
+    REQUIRE(matchesGolden("text.control", control, golden));
+  }
+  // Glyph quads as TextSystem emits them: 4 vertices (x0,y0) (x1,y0) (x1,y1) (x0,y1) with atlas uvs (not the
+  // white texel). The text scene has no other textured quads.
+  Vertex* v = mutableVertices(s.dl);
+  const uint32_t nv = static_cast<uint32_t>(s.dl.vertices().size());
+  const Vec2 white = s.dl.whiteUv();
+  std::vector<uint32_t> glyphs;
+  for (uint32_t i = 0; i + 4 <= nv;) {
+    const bool quad = !sameUv(v[i].uv, white) && v[i + 1].pos.y == v[i].pos.y && v[i + 3].pos.x == v[i].pos.x &&
+                      v[i + 2].pos.x == v[i + 1].pos.x && v[i + 2].pos.y == v[i + 3].pos.y &&
+                      v[i + 1].uv.y == v[i].uv.y && v[i + 3].uv.x == v[i].uv.x;
+    if (quad) {
+      glyphs.push_back(i);
+      i += 4;
+    } else {
+      ++i;
+    }
+  }
+  MESSAGE("text scene: " << glyphs.size() << " glyph quads");
+  REQUIRE(glyphs.size() > 500);
+  // Delete each glyph in turn (alpha 0: under alpha blending the quad leaves the target untouched, exactly as
+  // if it were not drawn). Every deletion that changes the image at all must fail the comparison; the ones
+  // that change nothing are glyphs entirely outside their clip rect (the clipped run in the scene's last row).
+  uint32_t detected = 0, invisible = 0, missed = 0;
+  uint32_t weakest = 255;  // smallest max channel diff among the detected deletions
+  for (uint32_t g : glyphs) {
+    Rgba saved[4];
+    for (uint32_t k = 0; k < 4; ++k) {
+      saved[k] = v[g + k].col;
+      v[g + k].col = withAlpha(saved[k], 0);
+    }
+    const Image img = s.render();
+    for (uint32_t k = 0; k < 4; ++k) v[g + k].col = saved[k];
+    ImageDiff d;
+    const bool pass = matchesGolden("text.glyph-deleted", img, golden, false, &d);
+    if (d.maxChannelDiff == 0) {
+      ++invisible;
+      continue;
+    }
+    if (pass) {
+      ++missed;
+      MESSAGE("glyph quad at vertex " << g << " (" << v[g].pos.x << ", " << v[g].pos.y << ") deleted but passed: " << describe(d));
+    } else {
+      ++detected;
+      weakest = std::min(weakest, d.maxChannelDiff);
+    }
+  }
+  MESSAGE("glyph deletions: " << detected << " detected, " << missed << " missed, " << invisible
+                              << " invisible (outside the clip); weakest detected max diff " << weakest);
+  CHECK(missed == 0);
+  CHECK(detected + invisible == glyphs.size());
+  CHECK(invisible < 40);  // only the clipped tail of "A long device name that does not fit its box"
+}
+
+TEST_CASE("render: golden mutation: moving the scope trace by 1 px fails the comparison") {
+  SceneRender s = buildGoldenScene("lines");
+  const Image golden = loadGolden("lines");
+  {
+    const Image control = s.render();
+    CHECK(compareImages(control, golden, 0).maxChannelDiff == 0);
+    REQUIRE(matchesGolden("lines.control", control, golden));
+  }
+  // The oscilloscope's sine trace (scopeTrace: two glow passes + core, every vertex in kWaveform's rgb at
+  // some alpha) is the only geometry in the scene with that colour.
+  Vertex* v = mutableVertices(s.dl);
+  const uint32_t nv = static_cast<uint32_t>(s.dl.vertices().size());
+  std::vector<uint32_t> trace;
+  for (uint32_t i = 0; i < nv; ++i)
+    if ((v[i].col & 0x00FFFFFFu) == (signal_theme::kWaveform & 0x00FFFFFFu)) trace.push_back(i);
+  MESSAGE("scope trace: " << trace.size() << " vertices");
+  REQUIRE(trace.size() >= 3 * 8 * 300);  // 3 ribbons × 8 vertices × ≥ 300 segments
+  CHECK(trace.size() % 8 == 0);
+  for (const Vec2 shift : {Vec2{1, 0}, Vec2{0, 1}, Vec2{-1, 0}, Vec2{0, -1}}) {
+    CAPTURE(shift.x);
+    CAPTURE(shift.y);
+    std::vector<Vec2> saved;
+    for (uint32_t i : trace) {
+      saved.push_back(v[i].pos);
+      v[i].pos = {v[i].pos.x + shift.x, v[i].pos.y + shift.y};
+    }
+    const Image img = s.render();
+    for (size_t k = 0; k < trace.size(); ++k) v[trace[k]].pos = saved[k];
+    ImageDiff d;
+    CHECK_FALSE(matchesGolden("lines.trace-shifted", img, golden, false, &d));
+    MESSAGE("trace shifted by (" << shift.x << ", " << shift.y << "): " << describe(d));
+  }
+}
 
 TEST_CASE("render: a 1 px crisp stroke at integer coordinates is exactly one pixel column at full alpha") {
   // White on black; columns either side must be untouched, the stroke column fully white along its length.

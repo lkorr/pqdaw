@@ -2,6 +2,7 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -244,21 +245,127 @@ Result<Image> readPng(const std::string& path) {
   return img;
 }
 
+namespace {
+
+uint32_t worstChannelDiff(const uint8_t* p, const uint8_t* q) noexcept {
+  uint32_t worst = 0;
+  for (size_t c = 0; c < 4; ++c) {
+    const uint32_t diff = static_cast<uint32_t>(std::abs(int(p[c]) - int(q[c])));
+    worst = diff > worst ? diff : worst;
+  }
+  return worst;
+}
+
+}  // namespace
+
 ImageDiff compareImages(const Image& a, const Image& b, uint32_t channelTolerance) {
   ImageDiff d;
-  d.sameSize = a.width == b.width && a.height == b.height && a.rgba.size() == b.rgba.size();
+  d.channelTolerance = channelTolerance;
+  d.sameSize = a.width == b.width && a.height == b.height && a.rgba.size() == b.rgba.size() &&
+               a.rgba.size() == size_t(a.width) * a.height * 4;
   if (!d.sameSize) return d;
   d.pixelCount = uint64_t(a.width) * a.height;
-  for (size_t i = 0; i < a.rgba.size(); i += 4) {
-    uint32_t worst = 0;
-    for (size_t c = 0; c < 4; ++c) {
-      const uint32_t diff = static_cast<uint32_t>(std::abs(int(a.rgba[i + c]) - int(b.rgba[i + c])));
-      worst = diff > worst ? diff : worst;
+  uint32_t x0 = a.width, y0 = a.height, x1 = 0, y1 = 0;
+  const size_t stride = size_t(a.width) * 4;
+  for (uint32_t y = 0; y < a.height; ++y) {
+    const uint8_t* ra = a.rgba.data() + y * stride;
+    const uint8_t* rb = b.rgba.data() + y * stride;
+    if (std::memcmp(ra, rb, stride) == 0) continue;  // identical rows: the bulk of a golden comparison
+    for (uint32_t x = 0; x < a.width; ++x) {
+      const uint32_t worst = worstChannelDiff(ra + size_t(x) * 4, rb + size_t(x) * 4);
+      if (worst > d.maxChannelDiff) d.maxChannelDiff = worst;
+      if (worst > channelTolerance) {
+        ++d.pixelsOverTolerance;
+        x0 = std::min(x0, x);
+        y0 = std::min(y0, y);
+        x1 = std::max(x1, x + 1);
+        y1 = std::max(y1, y + 1);
+      }
     }
-    if (worst > d.maxChannelDiff) d.maxChannelDiff = worst;
-    if (worst > channelTolerance) ++d.pixelsOverTolerance;
   }
+  if (d.pixelsOverTolerance == 0) return d;  // the common case: no second pass
+  d.boxX0 = x0;
+  d.boxY0 = y0;
+  d.boxX1 = x1;
+  d.boxY1 = y1;
+  // Outlier mask over the bounding box only, then an 8-neighbour test per outlier.
+  const uint32_t bw = x1 - x0, bh = y1 - y0;
+  std::vector<uint8_t> mask(size_t(bw) * bh);
+  for (uint32_t y = y0; y < y1; ++y)
+    for (uint32_t x = x0; x < x1; ++x)
+      mask[size_t(y - y0) * bw + (x - x0)] = worstChannelDiff(a.pixel(x, y), b.pixel(x, y)) > channelTolerance;
+  for (uint32_t y = 0; y < bh; ++y)
+    for (uint32_t x = 0; x < bw; ++x) {
+      if (!mask[size_t(y) * bw + x]) continue;
+      bool neighbour = false;
+      for (uint32_t ny = y ? y - 1 : 0; ny <= std::min(bh - 1, y + 1) && !neighbour; ++ny)
+        for (uint32_t nx = x ? x - 1 : 0; nx <= std::min(bw - 1, x + 1); ++nx)
+          if ((nx != x || ny != y) && mask[size_t(ny) * bw + nx]) {
+            neighbour = true;
+            break;
+          }
+      d.clusteredOutliers += neighbour ? 1u : 0u;
+    }
   return d;
+}
+
+bool passesGolden(const ImageDiff& d, const GoldenTolerance& t) noexcept {
+  if (!d.sameSize || d.channelTolerance != t.channel) return false;
+  const uint64_t allowed = d.pixelCount * t.outliersPerMillion / 1'000'000;
+  return d.maxChannelDiff <= t.outlierCap && d.pixelsOverTolerance <= allowed && d.clusteredOutliers == 0;
+}
+
+Image diffImage(const Image& actual, const Image& expected, uint32_t channelTolerance, uint32_t outlierCap) {
+  Image out;
+  if (actual.width != expected.width || actual.height != expected.height ||
+      actual.rgba.size() != size_t(actual.width) * actual.height * 4 || expected.rgba.size() != actual.rgba.size())
+    return out;
+  out.width = actual.width;
+  out.height = actual.height;
+  out.rgba.resize(actual.rgba.size());
+  uint32_t x0 = out.width, y0 = out.height, x1 = 0, y1 = 0;
+  for (uint32_t y = 0; y < out.height; ++y)
+    for (uint32_t x = 0; x < out.width; ++x) {
+      const uint8_t* e = expected.pixel(x, y);
+      uint8_t* o = out.pixel(x, y);
+      const uint32_t worst = worstChannelDiff(actual.pixel(x, y), e);
+      const uint8_t lum = static_cast<uint8_t>((uint32_t(e[0]) * 54 + uint32_t(e[1]) * 183 + uint32_t(e[2]) * 19) >> 10);
+      const uint8_t bright = static_cast<uint8_t>(std::min<uint32_t>(255, 128 + worst / 2));
+      if (worst == 0) {
+        o[0] = o[1] = o[2] = lum;
+      } else if (worst <= channelTolerance) {
+        o[0] = o[1] = lum;
+        o[2] = 200;
+      } else {
+        o[0] = bright;
+        o[1] = worst <= outlierCap ? bright : 0;
+        o[2] = 0;
+        x0 = std::min(x0, x);
+        y0 = std::min(y0, y);
+        x1 = std::max(x1, x + 1);
+        y1 = std::max(y1, y + 1);
+      }
+      o[3] = 255;
+    }
+  if (x1 > x0) {  // box outline one pixel outside the outliers (clamped to the image)
+    const int64_t bx0 = int64_t(x0) - 1, by0 = int64_t(y0) - 1, bx1 = int64_t(x1), by1 = int64_t(y1);
+    auto put = [&](int64_t x, int64_t y) {
+      if (x < 0 || y < 0 || x >= int64_t(out.width) || y >= int64_t(out.height)) return;
+      uint8_t* o = out.pixel(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+      o[0] = 255;
+      o[1] = 0;
+      o[2] = 255;
+    };
+    for (int64_t x = bx0; x <= bx1; ++x) {
+      put(x, by0);
+      put(x, by1);
+    }
+    for (int64_t y = by0; y <= by1; ++y) {
+      put(bx0, y);
+      put(bx1, y);
+    }
+  }
+  return out;
 }
 
 }  // namespace pq::ui
