@@ -1,0 +1,34 @@
+// Solve blocks: implicit per-sample equations with fixed iteration counts.
+
+// Diode clipper: v = x − k·tanh(v), solved with the input as the initial guess.
+patch DiodeClipper {
+  in x : audio
+  param drive = 4 [1..20]
+  out y : audio
+  solve(iterations: 8) {
+    unknown v = x
+    v == x - drive * tanh(v) * 0.1
+  }
+  y = v
+}
+
+// Two blocks, two unknowns in one of them, and an unknown read by the other block.
+patch TwoUnknowns {
+  in x : real
+  out o : real
+  solve(iterations: 4) {
+    unknown a
+    unknown b = 0
+    a + b == x
+    a - b == (x > 0 ? 1 : -1) * tanh(a)
+  }
+  solve(iterations: 1) {
+    unknown c
+    c * 2 == a
+  }
+  solve(iterations: 64) {
+    unknown d = c
+    (tanh(d) - 1) * -2 == c
+  }
+  o = a * b + c + d
+}

@@ -77,6 +77,9 @@ pq_add_test(pq_tests_graph
     graph/test_validate.cpp
     graph/test_patch_equal.cpp
     graph/test_patch_file.cpp
+    graph/test_parse_roundtrip.cpp
+    graph/test_parse_errors.cpp
+    graph/test_parse_fuzz.cpp
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks.

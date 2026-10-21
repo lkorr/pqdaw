@@ -1,0 +1,25 @@
+// The example of PATCH_LANGUAGE.md §4. Its `adsr` comes from lib/envelopes.pqp here.
+import "lib/envelopes.pqp"
+
+// stdlib/examples/fm_voice.pqp
+patch FmVoice {
+  param ratio = 2.0 [0.25..16]        @label("Ratio")
+  param index = 1.0 [0..20]           @label("Index")
+  param attack  = 5ms   [0ms..10s]    @curve(exp)
+  param release = 300ms [1ms..30s]    @curve(exp)
+  out   out : audio voice mono
+
+  mod = sine(phasor(voice.hz * ratio))
+  car = sine(phasor(voice.hz + mod * index * voice.hz))
+  env = adsr(voice.gate, a: attack, d: 200ms, s: 0.7, r: release)
+  out = car * env
+
+  export modulator = mod              // wire this to any parameter anywhere
+  export envelope  = env
+
+  layout {
+    node mod at (40, 60)
+    node car at (200, 60)
+    node env at (200, 160)
+  }
+}

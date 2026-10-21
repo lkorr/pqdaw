@@ -1,0 +1,13 @@
+// Every unit suffix, scientific notation, negative literals and ratios.
+patch Units {
+  out y : audio
+
+  freqs = 440Hz + 1.5kHz + 2e3Hz + 1e-3kHz
+  times = 5ms + 0.25s + 1e2ms + 48000smp / sr
+  gains = -6dB * 0dB + 3dB
+  pitch = 700c + 12st + -50c + 3/2 + 1200c / 2
+  mix   = 50% + 12.5% * 2 + 100%
+  plain = 0.5 + 1e-3 + 1E6 + 2.5e+2 + 0 + 007 + -0.0 + 123456789.125
+  tiny  = 1e-300 * 4.9e-324 + 1.7976931348623157e308 * 0
+  y = freqs * times * gains * pitch * mix * plain + tiny
+}

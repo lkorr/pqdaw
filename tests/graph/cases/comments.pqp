@@ -1,0 +1,13 @@
+/* A block comment at the top,
+   spanning lines. */
+import "lib/envelopes.pqp";   // a trailing semicolon is allowed
+import "multi_patch.pqp"
+
+// Comments may appear between and inside every construct.
+patch /* inline */ Commented { // after the brace
+  param p = 1 /* between */ [0..2] // after the range
+  out y : real // after a type
+  /* before a binding */ y = /* inside an expression */ Osc(110Hz).square * p * ar(voice.gate) // calls into imports
+  /* before the closing brace */
+}
+/* between patches */ patch Second{out y:real y=1}// no whitespace needed between tokens of different kinds

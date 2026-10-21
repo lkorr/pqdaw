@@ -1,0 +1,41 @@
+// Several patches in one file: calls before definitions, multi-output subcircuits (`.name`), named and positional
+// arguments, outputs named like atoms.
+patch Voice {
+  param detune = 0.1 [0..1]
+  out out : audio voice
+
+  osc  = Osc(voice.hz, shape: 0.5)       // Osc is defined further down
+  sub  = Osc(voice.hz / 2).saw           // `sub` names the call's `saw` output
+  both = Osc(voice.hz * (1 + detune))
+  sq   = both.square                     // an alias: no node of its own
+  out  = Mix(osc, sub, amount: detune) + sq * 0.1 + both.phase * 0
+  export saw = both.saw
+  export subSquare = sub.square
+}
+
+patch Osc {
+  in hz : audio
+  param shape = 0.5 [0..1]
+  out sine   : audio
+  out saw    : audio
+  out square : audio
+  ph     = phasor(hz)
+  sine   = sine(ph)                      // the output `sine` is bound to the atom `sine`
+  saw    = ph * 2 - 1
+  square = ph < shape ? 1 : -1
+  export phase = ph
+}
+
+patch Mix {
+  in a : audio
+  in b : audio = 0
+  param amount = 0.5 [0..1]
+  out out : audio
+  out = lerp(a, b, amount)
+}
+
+// Positional params, and a call with every argument named.
+patch Stack {
+  out out : audio
+  out = Mix(Osc(110Hz, 0.25), Osc(220Hz).square, 0.3) + Mix(amount: 1, b: 0.5, a: 0)
+}

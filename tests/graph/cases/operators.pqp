@@ -1,0 +1,26 @@
+// Every operator, precedence and associativity, ternaries, channel select and tuples.
+patch Operators {
+  in a  : real
+  in b  : real
+  in g  : bool
+  in st : audio stereo
+  out o    : real
+  out flag : bool
+  out wide : real stereo
+
+  sum     = a + b - a * b / (a - b) % 2
+  grouped = (a + b) * (a - (b - a)) / (a / b) - (a - b)
+  neg     = -a + -(a * b) - -3 * -b
+  cmp     = a < b && a <= b || a > b ^^ a >= b && a == b || a != b
+  bools   = (g == true) != (false || g) && !(a < b)
+  notted  = !g && !(a < b) ^^ !(!g)
+  pick    = g ? a : b > 0 ? b : -1
+  nested  = (g ? a : b) * 2 + (g ? 1 : 0)
+  inner   = (g ? a : b) > 0 ? (a > 0 ? a : b) : (a < 0 ? -a : -b)
+  chan    = st[0] + st[1] + (st * 2)[0] + st[3 - 2]
+  tup     = (a, b * 2)
+  chained = ((a + b) + (a + b)) * ((a)) - (-(-a))
+  o    = sum + grouped + neg + pick + nested + chan + inner + chained
+  flag = cmp ^^ notted ^^ bools
+  wide = tup * 0.5 + st
+}

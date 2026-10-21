@@ -1,0 +1,30 @@
+// Port declarations: every port-type form, input defaults, several outputs, exports, `in`/`out` as names.
+patch Ports {
+  in x   : real
+  in y   : real const global mono = 0.25
+  in z   : real param voice = voice.velocity
+  in w   : audio global stereo
+  in g   : bool audio voice
+  in m   : real ch(4)
+  in in  : real = 1
+  in k   : bool = transport.playing
+  out out  : audio voice mono
+  out wide : audio stereo
+  out flag : bool param global
+  out many : real ch(4)
+  out ch3  : real ch(3)
+  out one  : real ch(1)
+  out two  : bool ch(2)
+
+  out  = x * y * z + in
+  wide = w * gate_to_real(g)
+  flag = y > 0 && k
+  many = m
+  ch3  = (x, y, z)
+  one  = x
+  two  = (g, k)
+
+  export peak    = abs(x)
+  export gateOut = g
+  export stereo  = w
+}

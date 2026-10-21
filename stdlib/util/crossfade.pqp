@@ -1,0 +1,8 @@
+// Linear crossfade between two signals.
+patch Crossfade {
+  in    a   : audio
+  in    b   : audio
+  param mix = 50% [0%..100%] @label("Mix")
+  out   out : audio
+  out = lerp(a, b, mix)
+}

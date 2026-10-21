@@ -1,0 +1,15 @@
+// The text-form sketch of SPEC.md §7.3, verbatim apart from the import of `adsr`.
+import "lib/envelopes.pqp"
+
+patch SimpleFM {
+  param ratio  = 2.0   [0.25..16]
+  param index  = 1.0   [0..20]
+  in    hz     : audio voice          // from voice.hz
+  in    gate   : bool  voice          // from voice.gate
+  out   out    : audio voice
+
+  mod   = sine(phasor(hz * ratio))
+  osc   = sine(phasor(hz + mod * index * hz))
+  env   = adsr(gate, a: 5ms, d: 200ms, s: 0.7, r: 300ms)
+  out   = osc * env
+}

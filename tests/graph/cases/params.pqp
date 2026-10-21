@@ -1,0 +1,17 @@
+// Params: kinds, ranges, folded constant defaults, and attributes with every kind of argument.
+patch Params {
+  param cutoff = 1kHz [20Hz..20kHz] @unit(Hz) @curve(exp) @label("Cutoff")
+  param res : real = 0.5 [0..1] @label("Res \"Q\"") @steps(n: 4) @hidden
+  param on : bool = true @label("On")
+  param off = false
+  param ratio = 3/2 [1/2..4]
+  param fold = 2 * 5ms [0s..1s]
+  param neg = -12dB [-60dB..0dB] @default(-12dB) @flags(true, false, path: "x\\y", 1e-3, -2.5c)
+  param quiet = 0 @hidden()
+  param wide = 0 [-1e3..1e3] @rate(param) @scale(in)
+  param pct = 25% [0%..100%]
+  param pitch = 7st [-24st..24st] @snap(100c)
+  out y : real
+
+  y = cutoff * res * ratio * fold * neg * quiet * wide * pct * pitch * gate_to_real(on && !off)
+}

@@ -1,0 +1,31 @@
+// Layout blocks: placement with rotation and flip, wire routing points, comments.
+patch Layout {
+  in x : audio
+  param gain = 0.5
+  out y : audio
+  amp = x * gain
+  sat = tanh(amp)
+  y = sat
+  layout {
+    node x at (0, 0)
+    node gain at (0, 40) rot 180
+    node amp at (120.5, -40) rot 90
+    node sat at (240, 1e3) rot 270 flip
+    node y at (-10.25, 0.1) flip
+    wire amp.out -> sat.x via ((150, -40), (150, 20.75))
+    wire sat.out -> y.in via ((300, 0))
+    wire x.out -> amp.a via ((60, 0), (60, -40), (-1.5e-3, 3.4e38))
+    comment "saturation \"stage\" \\ v1" at (100, -80)
+    comment "" at (0, 0)
+    comment "ünïcödé → ok" at (1, 2)
+  }
+}
+
+// A layout block with only a comment.
+patch OnlyComment {
+  out y : real
+  y = 1
+  layout {
+    comment "nothing placed" at (0, 0)
+  }
+}

@@ -1,0 +1,31 @@
+// Feedback through z1 and delay lines, names used before they are bound, aliases, and `node.input = …`.
+patch Feedback {
+  in x : audio
+  in gate : bool
+  param fb   = 0.5   [0..0.99]
+  param time = 250ms [1ms..2s]
+  out y : audio
+
+  echo   = delay(x + echo * fb, time, 2s)        // reads its own output: feedback through the delay
+  smooth = z1(smooth * 0.9 + x * 0.1)
+  dry    = x                                     // aliases have no node of their own
+  wet    = echo2
+  echo2  = echo
+  lp     = z1(lp + (wet - lp) * 0.2)
+  held   = samplehold(dry)
+  held.trig = rise(gate)                         // completes the call above
+  osc    = phasor(220Hz)
+  osc.reset = rise(gate)                         // an optional input
+  y = dry * 0.5 + lp * 0.5 + smooth + held + osc * 0
+}
+
+// A two-node loop where each stage names the other.
+patch PingPong {
+  in x : audio
+  out l : audio
+  out r : audio
+  left  = delay(x + right * 0.5, 300ms, 1s)
+  right = delay(left * 0.5, 450ms, 1s)
+  l = left
+  r = right
+}

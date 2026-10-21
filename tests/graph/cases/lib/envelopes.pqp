@@ -1,0 +1,30 @@
+// Envelopes for the test cases (stand-ins for the stdlib's, which arrive with T1b).
+
+// ADSR from leaf atoms: a one-pole follower whose target and time constant switch with the stage.
+patch adsr {
+  in    gate : bool audio voice mono
+  param a = 5ms   [0ms..10s]  @curve(exp) @label("Attack")
+  param d = 200ms [1ms..10s]  @curve(exp) @label("Decay")
+  param s = 0.7   [0..1]      @label("Sustain")
+  param r = 300ms [1ms..30s]  @curve(exp) @label("Release")
+  out   out : audio voice mono
+
+  // Attack runs from note-on until the level first reaches 1.
+  attacking = srff(rise(gate), level >= 0.999 || !gate)
+  target    = attacking ? 1.0 : gate ? s : 0.0
+  time      = attacking ? a : gate ? d : r
+  coef      = 1 - exp(-1 / max(time * sr, 1))
+  level     = z1(level + (target - level) * coef)
+  out = level
+}
+
+// Attack/release only.
+patch ar {
+  in    gate : bool audio voice mono
+  param a = 10ms  [0ms..10s]
+  param r = 100ms [0ms..10s]
+  out   out : audio voice mono
+  rate  = gate ? 1 / max(a * sr, 1) : -1 / max(r * sr, 1)
+  level = z1(clip(level + rate, 0, 1))
+  out = level
+}

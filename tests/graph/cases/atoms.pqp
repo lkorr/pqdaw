@@ -1,0 +1,31 @@
+// A tour of the leaf atoms: variadic mux/demux, named arguments, built-in sources, logic, memory and I/O.
+patch Atoms {
+  in gate : bool audio voice
+  out o     : audio
+  out logic : bool
+  out mixd  : audio stereo
+
+  sel   = mux(counter(rise(gate), wrap: 4), 0.1, 0.2, 0.3, 0.4)
+  parts = demux(sel > 0.2 ? 1 : 0, sel)
+  hi    = parts.out1
+  lo    = parts.out0
+  w     = wavetable(phasor(voice.hz), hz: voice.hz)
+  n     = noise(seed: 7)
+  sh    = samplehold(n, transport.playing && rise(gate))
+  cl    = clip(sh, -1, 1) + lerp(lo, hi, 0.5) + sign(w) + floor(w) + frac(w) + abs(w)
+  m     = min(cl, 1) + max(cl, -1) + pow(2, cl) + sqrt(abs(cl)) + log(1 + abs(cl)) + exp(-cl) + sin(cl) + tan(cl * 0.1)
+  f     = fast_tanh(m) + fast_sin(m) + fast_exp(-abs(m)) + fast_pow(2, 0.5) + fast_sqrt(4) + fast_log(2) + fast_tan(0.1)
+  conv  = cents_to_hz(voice.cents) + hz_to_cents(440, ref: 432) + db_to_gain(-6) + gain_to_db(0.5)
+  mem   = shaper(f) + latch(f, gate) + z1(f, init: 0) + delay_cubic(f, 10ms, 1s) + delay_allpass(f, 1ms, 10ms) + sine_hz(110)
+  tempo = transport.bpm / 60 + transport.beat + transport.barPhase + sr / 48000
+  vs    = voice.velocity + voice.release + voice.ratio + voice.harmonic + voice.unisonCount + voice.index
+          + gate_to_real(voice.trigger) + voice.hz
+  logic = schmitt(f, -0.1, 0.1) && fall(gate) || change(gate) ^^ tff(gate, pulse()) || dff(gate, rise(gate))
+          && nand(gate, gate) || nor(gate, timer(gate, 50ms)) || clockdiv(gate, 3) || srff(gate, !gate)
+  played = sampleRead(1, voice.hz * 0.01, loopStart: 0, loopEnd: 100)
+  io    = track.in + sidechain.in + clipPlayer(0)
+  sent  = send(f, 2)
+  ops   = add(1, 2) * mul(3, 4) - select(gate, 1, 0) + channel(pack(1, 2), 1) + neg(f)
+  o     = conv * 0 + mem + tempo + vs + played + f + ops
+  mixd  = io * 0.5
+}
