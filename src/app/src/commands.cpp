@@ -32,6 +32,7 @@
 #include "pq/ui/widget.h"
 #include "pq/ui/window.h"
 #include "pq/views/view_scenes.h"
+#include "file_watch.h"
 #include "shell_app.h"
 
 namespace pq::app {
@@ -100,6 +101,10 @@ struct WindowApp {
   // Dev builds: theme hot reload (T3.2). The loop wakes every 0.5 s for one file-time query; nothing redraws
   // unless the file changed.
   std::unique_ptr<ThemeFileWatcher> themeWatch;
+  // Change notifications for the theme's directory (an SDL user event from a blocked helper thread): the theme is
+  // re-checked only when the directory changed, so an idle window does no periodic work in dev builds either.
+  std::unique_ptr<FileChangeNotifier> themeNotify;
+  bool themeCheckDue = true;  // check once at startup, then on each notification
   // The UI scale (pq/ui/ui_scale.h): the one value the tree's layout, the scene fonts and the scenes read.
   // Read from the window's display at startup and on SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED; scaleOverride
   // (> 0: --scale, or the self-test's injected change) replaces the display's value.
@@ -286,10 +291,11 @@ struct WindowApp {
 
   // Dev theme hot reload: re-resolves the theme's fonts, relayouts and redraws when the file changed.
   void pollTheme() {
-    if (!themeWatch) return;
+    if (!themeWatch || !themeCheckDue) return;
+    themeCheckDue = false;
     Theme t;
     std::string err;
-    switch (themeWatch->poll(now(), t, err)) {
+    switch (themeWatch->poll(themeWatch->nextCheck(), t, err)) {  // always due: a notification asked for it
       case ThemeFileWatcher::Poll::Reloaded:
         if (Status s = setSceneTheme(textures, std::make_shared<const Theme>(std::move(t))); !s) {
           std::fprintf(stderr, "pqdaw: theme reload failed: %s\n", s.error().message.c_str());
@@ -306,6 +312,11 @@ struct WindowApp {
   }
 
   void handle(const SDL_Event& e) {
+    if (themeNotify && e.type == themeNotify->eventType()) {
+      themeNotify->acknowledge();
+      themeCheckDue = true;
+      return;
+    }
     bool consumed = false;
     if (ui) {
       InputEvent in;
@@ -416,7 +427,11 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
     app->shell = std::move(*shell);
   }
 #ifndef NDEBUG
-  if (!hidden) app->themeWatch = std::make_unique<ThemeFileWatcher>(defaultThemePath());
+  if (!hidden) {
+    app->themeWatch = std::make_unique<ThemeFileWatcher>(defaultThemePath());
+    app->themeNotify = FileChangeNotifier::create(defaultThemePath(), SDL_RegisterEvents(1));
+    if (!app->themeNotify) std::fprintf(stderr, "pqdaw: no change notifications for the theme file; hot reload off\n");
+  }
 #endif
   return app;
 }
@@ -435,9 +450,8 @@ int interactive(WindowApp& app) {
     const bool uiBusy = app.ui && app.ui->needsFrame();  // widget animation frames pending
     if ((!app.frameDue() && !uiBusy) || app.window->minimized()) {
       SDL_Event e;
-      // Sleep until the next event, the widget tree's next timer or the next theme-file check (dev).
-      double wake = app.ui ? app.ui->nextWakeTime() : std::numeric_limits<double>::infinity();
-      if (app.themeWatch) wake = std::min(wake, app.themeWatch->nextCheck());
+      // Sleep until the next event (theme-file changes arrive as one, dev) or the widget tree's next timer.
+      const double wake = app.ui ? app.ui->nextWakeTime() : std::numeric_limits<double>::infinity();
       const bool got = std::isfinite(wake)
                            ? SDL_WaitEventTimeout(&e, static_cast<Sint32>(std::clamp(std::ceil((wake - app.now()) * 1000.0), 0.0, 1e6)))
                            : SDL_WaitEvent(&e);

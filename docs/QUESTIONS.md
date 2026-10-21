@@ -422,7 +422,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: measured precisely (QueryProcessCycleTime/QueryThreadCycleTime in TSC ticks; GetProcessTimes only moves in 15.6 ms steps), an idle shell window over the empty project uses 0.009 % of a core in pqdaw's own threads (UI thread ≈ 0.07–0.12 ms per 10 s, the SDL timer thread of the measurement itself ≈ 0.9 ms) but 0.12–0.14 % for the whole process, because the NVIDIA Vulkan driver's own threads (start module nvoglv64.dll) spend ≈ 12 ms per 10 s on housekeeping. The same driver load shows up for the T0.7 test-pattern window, so it is a property of any Vulkan swapchain on this machine, not of the shell.
 - Options: A) the criterion is about pqdaw's threads (the check `pqdaw --idle-check 10` enforces 0 frames and < 0.1 % for the UI thread + threads started in pqdaw.exe/ntdll/kernel32, and prints the whole-process figure and the per-thread split); B) the whole process (fails until the driver's housekeeping is understood: present mode, threaded optimisation settings, or a vkDeviceWaitIdle/swapchain teardown while idle); C) GetProcessTimes as T0.7 did (reads 0.0–15.6 ms per 10 s: too coarse to decide).
 - Provisional choice: A, reported honestly in PROGRESS with both numbers; B is worth a look in T0.7-fix6 (startup/idle).
-- Status: open
+- Status: answered (orchestrator, 2026-10-21: A, the criterion targets pqdaw's own threads; keep printing the whole-process figure)
 
 ## Q?-T3.7-b · 2026-10-21 · T3.7 · Control bar and transport details not fixed by SPEC/TASKS
 - Choices (all local to src/views/src/shell and ViewContext):

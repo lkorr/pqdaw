@@ -6,7 +6,7 @@
 #include "pq/ui/draw_list.h"
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
-#include "pq/ui/scenes.h"
+#include "pq/ui/scene_textures.h"
 #include "pq/views/fake_transport.h"
 
 namespace pq::views {
