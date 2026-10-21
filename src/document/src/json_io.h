@@ -3,8 +3,8 @@
 // A specialised JSON pull reader and streaming writer for project files (T3.5). Private to pq_doc.
 //
 // Why not nlohmann/json here (pq_bench_serialize, release, 14 MB / 100k-note project): its SAX parser with a no-op
-// handler takes ~114 ms and its DOM parse 239–360 ms (over the whole 250 ms load budget), while this reader loads,
-// validates and builds the snapshot in ~54 ms. It decodes straight into the model (no DOM), validates UTF-8 and the
+// handler takes 114–133 ms and its DOM parse 239–373 ms (over the whole 250 ms load budget), while this reader loads,
+// validates and builds the snapshot in ~54–65 ms. It decodes straight into the model (no DOM), validates UTF-8 and the
 // JSON grammar, and converts numbers with std::from_chars (exact; floats parsed as float, no double rounding). Errors are
 // thrown as JsonFail (exceptions are allowed at parsing boundaries, ARCHITECTURE §6) and caught by
 // parseProject/serializeProject, which turn them into pq::Error.

@@ -21,8 +21,8 @@
 // the file; notes may be in any order.
 //
 // Performance: the writer streams straight into one string and the reader is a specialised pull parser that
-// decodes into the model without an intermediate DOM: 100k notes save in ~42 ms and load in ~54 ms, where
-// nlohmann/json alone needs ~114 ms (SAX, no-op handler) or 239–360 ms (DOM) to parse the same 14 MB file
+// decodes into the model without an intermediate DOM: 100k notes save in ~42–50 ms and load in ~54–65 ms, where
+// nlohmann/json alone needs ~114 ms (SAX, no-op handler) or 239–373 ms (DOM) to parse the same 14 MB file
 // (bench/RESULTS.md). nlohmann/json is used for schema migrations,
 // which are generic DOM transforms of old files (rare, never on the current-version path).
 //
