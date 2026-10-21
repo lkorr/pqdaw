@@ -135,7 +135,7 @@ TEST_CASE("fast_math: fastExp2 special values") {
   CHECK(pq::fastExp2(-126.0f) == std::ldexp(1.0f, -126));
 }
 
-TEST_CASE("fast_math: fastLog2 absolute error over all positive normal floats") {
+TEST_CASE("fast_math: fastLog2 absolute error over all positive normal floats" * doctest::test_suite("slow")) {
   std::vector<float> xs = bitSweep(std::numeric_limits<float>::min(), std::numeric_limits<float>::max(), 401);
   const auto s = sweep(xs, [](float x) { return pq::fastLog2(x); }, wLog2,
                        [](float x, float y) { return absRel(y, std::log2(static_cast<double>(x))); });
@@ -154,7 +154,7 @@ TEST_CASE("fast_math: fastLog2 absolute error over all positive normal floats") 
   for (int n = -126; n <= 127; ++n) CHECK(pq::fastLog2(std::ldexp(1.0f, n)) == static_cast<float>(n));
 }
 
-TEST_CASE("fast_math: fastLog2 relative error near 1 ([0.5, 2], every 3rd float)") {
+TEST_CASE("fast_math: fastLog2 relative error near 1 ([0.5, 2], every 3rd float)" * doctest::test_suite("slow")) {
   std::vector<float> xs = bitSweep(0.5f, 2.0f, 3);
   const auto s = sweep(xs, [](float x) { return pq::fastLog2(x); }, wLog2,
                        [](float x, float y) { return absRel(y, std::log2(static_cast<double>(x))); });
@@ -180,7 +180,7 @@ TEST_CASE("fast_math: fastLog2 special values") {
   CHECK(wide1(wLog2, kInf) == kInf);
 }
 
-TEST_CASE("fast_math: fastSin absolute error over |x| <= kFastSinMaxArg") {
+TEST_CASE("fast_math: fastSin absolute error over |x| <= kFastSinMaxArg" * doctest::test_suite("slow")) {
   std::vector<float> xs = linspace(-pq::kFastSinMaxArg, pq::kFastSinMaxArg, 3'000'000);
   append(xs, linspace(-7.0f, 7.0f, 1'000'000));
   append(xs, withNegatives(bitSweep(1e-30f, 7.0f, 1009)));
@@ -202,7 +202,7 @@ TEST_CASE("fast_math: fastSin special values and small-argument exactness") {
   CHECK(std::isnan(wide1(wSin, kInf)));
 }
 
-TEST_CASE("fast_math: fastTan relative error over |x| < pi/2, including the pole") {
+TEST_CASE("fast_math: fastTan relative error over |x| < pi/2, including the pole" * doctest::test_suite("slow")) {
   std::vector<float> xs = linspace(-pq::kFastTanMaxArg, pq::kFastTanMaxArg, 3'000'000);
   append(xs, withNegatives(bitSweep(1e-30f, 1.0f, 1013)));
   // The last 200k floats below pi/2 on both sides: tan from ~1.3e7 down to ~80.
@@ -235,7 +235,7 @@ TEST_CASE("fast_math: fastTan prewarp use and out-of-domain clamping") {
   CHECK(pq::fastTan(0.0f) == 0.0f);
 }
 
-TEST_CASE("fast_math: fastTanh absolute and relative error over the reals") {
+TEST_CASE("fast_math: fastTanh absolute and relative error over the reals" * doctest::test_suite("slow")) {
   std::vector<float> xs = linspace(-20.0f, 20.0f, 3'000'000);
   append(xs, withNegatives(bitSweep(1e-30f, 20.0f, 1019)));
   const auto s = sweep(xs, [](float x) { return pq::fastTanh(x); }, wTanh,
@@ -282,7 +282,7 @@ TEST_CASE("units: precise conversions") {
   for (double db = -200.0; db <= 200.0; db += 0.13) REQUIRE(std::abs(pq::gainToDb(pq::dbToGain(db)) - db) < 1e-11);
 }
 
-TEST_CASE("units: fastCentsToHz error in cents over +-10 octaves") {
+TEST_CASE("units: fastCentsToHz error in cents over +-10 octaves" * doctest::test_suite("slow")) {
   const float refs[] = {261.626f, 440.0f, 1.0f, 8.1757989f};
   double worst = 0;
   std::size_t mismatches = 0;
@@ -304,7 +304,7 @@ TEST_CASE("units: fastCentsToHz error in cents over +-10 octaves") {
   CHECK(pq::fastCentsToHz(0.0f, 261.626f) == 261.626f);
 }
 
-TEST_CASE("units: fastHzToCents absolute error over hz/ref in [2^-20, 2^20]") {
+TEST_CASE("units: fastHzToCents absolute error over hz/ref in [2^-20, 2^20]" * doctest::test_suite("slow")) {
   const float refs[] = {261.626f, 440.0f, 1.0f};
   double worst = 0;
   std::size_t mismatches = 0;
@@ -325,7 +325,7 @@ TEST_CASE("units: fastHzToCents absolute error over hz/ref in [2^-20, 2^20]") {
   CHECK(pq::fastHzToCents(0.0f, 440.0f) == -kInf);
 }
 
-TEST_CASE("units: fastDbToGain and fastGainToDb") {
+TEST_CASE("units: fastDbToGain and fastGainToDb" * doctest::test_suite("slow")) {
   double worstRel = 0;
   for (const float db : linspace(-300.0f, 300.0f, 2'000'000)) {
     const float g = pq::fastDbToGain(db);

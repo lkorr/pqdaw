@@ -45,8 +45,7 @@ add_executable(pq_alloc_trap_abort_probe core/alloc_trap_abort_probe.cpp)
 target_link_libraries(pq_alloc_trap_abort_probe PRIVATE pq_alloc_trap)
 pq_target_defaults(pq_alloc_trap_abort_probe)
 add_dependencies(pq_tests_core pq_alloc_trap_abort_probe)
-target_compile_definitions(pq_tests_core PRIVATE
-  PQ_ALLOC_TRAP_PROBE="$<TARGET_FILE:pq_alloc_trap_abort_probe>")
+target_compile_definitions(pq_tests_core PRIVATE PQ_ALLOC_TRAP_PROBE=pq_build_alloc_trap_probe)
 include(${CMAKE_CURRENT_SOURCE_DIR}/core/queue_mutation.cmake)
 # ui: draw list, PNG, damage, text, line primitives, colormaps (CPU) and the offscreen Vulkan path incl. the
 # test-pattern / text / lines goldens (GPU). PQ_ASSETS_DIR: the bundled fonts.
@@ -66,7 +65,7 @@ pq_add_test(pq_tests_ui PERF
     ui/test_partial_redraw.cpp
     ui/thread_cpu.cpp
   DEPS pq_ui pq_ui_scenes)
-target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
+target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR=pq_build_source_assets_dir)
 
 # app: CLI parsing (window, --screenshot, --list-devices, --sine, --play), the --screenshot command, the --play compile path.
 pq_add_test(pq_tests_app
@@ -163,7 +162,7 @@ pq_add_test(pq_tests_render
     tools/test_pqc.cpp
   DEPS pq_pqc)
 add_dependencies(pq_tests_render pqc)
-target_compile_definitions(pq_tests_render PRIVATE PQC_EXE="$<TARGET_FILE:pqc>")
+target_compile_definitions(pq_tests_render PRIVATE PQC_EXE=pq_build_pqc_exe)
 
 # jit (T1b.1): the LLVM backend against the interpreter and the reference evaluator over the T1.7 corpus, plus the
 # ProgramImage contract cases and compile times.

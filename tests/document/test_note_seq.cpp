@@ -134,7 +134,7 @@ TEST_CASE("note_seq: small chunks merge, empty chunks disappear") {
   CHECK(s.begin() == s.end());
 }
 
-TEST_CASE("note_seq: random edits match a reference model") {
+TEST_CASE("note_seq: random edits match a reference model" * doctest::test_suite("slow")) {
   std::mt19937 rng(1234);
   std::vector<Note> ref;
   NoteSeq s;

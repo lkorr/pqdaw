@@ -186,7 +186,7 @@ TEST_CASE("jit: host CPU and features") {
   CHECK(compiler().hostFeatures().find("+fma") != std::string::npos);
 }
 
-TEST_CASE("jit: every corpus patch matches the interpreter (1e-6) and the reference evaluator (1e-5)") {
+TEST_CASE("jit: every corpus patch matches the interpreter (1e-6) and the reference evaluator (1e-5)" * doctest::test_suite("slow")) {
   const CorpusStats cs = runCorpus({}, false, kBlocks, std::size(kBlocks));
   MESSAGE("JIT (default pipeline, contract): compared " << cs.patches << " patches from " << cs.files << " files (" << cs.voicePatches
                                           << " with voice stages, 11 voices) × 2 param sets × blocks 1/37/64/1024 = "
@@ -197,7 +197,7 @@ TEST_CASE("jit: every corpus patch matches the interpreter (1e-6) and the refere
   CHECK(cs.voicePatches >= 6);
 }
 
-TEST_CASE("jit: without contraction the JIT is bit-identical to the interpreter on the whole corpus") {
+TEST_CASE("jit: without contraction the JIT is bit-identical to the interpreter on the whole corpus" * doctest::test_suite("slow")) {
   jit::CompileOptions jo;
   jo.contract = false;
   const CorpusStats cs = runCorpus(jo, true, kBlocks, std::size(kBlocks));
@@ -206,7 +206,7 @@ TEST_CASE("jit: without contraction the JIT is bit-identical to the interpreter 
   CHECK(cs.maxVsInterp == 0.0);
 }
 
-TEST_CASE("jit: every optimisation level is correct") {
+TEST_CASE("jit: every optimisation level is correct" * doctest::test_suite("slow")) {
   const uint32_t blocks[] = {37};
   for (uint32_t level : {0u, 2u, 3u}) {  // 1 (the default) is the corpus test above
     jit::CompileOptions jo;
@@ -641,7 +641,7 @@ TEST_CASE("ImageRunner on NullDevice: device → CallbackRunner → BlockAdapter
   dev.close();
 }
 
-TEST_CASE("jit: compile time of 100- and 1000-node patches (and they match the interpreter)") {
+TEST_CASE("jit: compile time of 100- and 1000-node patches (and they match the interpreter)" * doctest::test_suite("slow")) {
   for (int n : {100, 1000}) {
     const Compiled c = compileText(mixedChain(n));
     uint32_t nodes = 0;

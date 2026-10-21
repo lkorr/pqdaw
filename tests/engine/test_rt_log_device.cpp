@@ -57,7 +57,7 @@ struct CountingSink {
 
 }  // namespace
 
-TEST_CASE("rt log device: 10^6 records from NullDevice callbacks, 4096 ring drained every 10 ms of audio, none lost") {
+TEST_CASE("rt log device: 10^6 records from NullDevice callbacks, 4096 ring drained every 10 ms of audio, none lost" * doctest::test_suite("slow")) {
   // Manual device clock: 48 kHz, 48-frame callbacks = 1 ms each, so 10 callbacks are 10 ms; 400 records per
   // callback = 4000 per drain interval (97.7 % of the ring) and 2500 callbacks for 10^6 records.
   RtLog log(4096);
@@ -100,7 +100,7 @@ TEST_CASE("rt log device: 10^6 records from NullDevice callbacks, 4096 ring drai
   CHECK(sink.droppedReported == 904);
 }
 
-TEST_CASE("rt log device: threaded NullDevice and RtLogger thread at 100 Hz, 10^6 records") {
+TEST_CASE("rt log device: threaded NullDevice and RtLogger thread at 100 Hz, 10^6 records" * doctest::test_suite("slow")) {
   // Real threads: the NullDevice timer thread runs 1000 callbacks/s (48 frames at 48 kHz) pushing 200 records each
   // (200 000/s, 2000 per 10 ms drain: half the ring); the logger drains every 10 ms on its own thread. ~5 s.
   // Whether a drain is ever late is up to the OS scheduler (this machine is often shared with parallel builds),

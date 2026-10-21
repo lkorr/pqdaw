@@ -37,11 +37,18 @@ A task is done only when every acceptance criterion in `docs/TASKS.md` and every
 ## Build and test
 
 ```powershell
-./scripts/build.ps1                                   # dev: RelWithDebInfo, /Od, asserts on
+./scripts/build.ps1                                   # dev: RelWithDebInfo, /Od, /Z7, asserts on; default test tier
 ./scripts/build.ps1 -Preset release                   # optimised
+./scripts/build.ps1 -Full                             # default + `slow` tiers (everything except `perf`)
+./scripts/build.ps1 -Preset release -Perf             # only the opt-in, load-sensitive `perf` label
 ./scripts/build.ps1 -Target pq_tests_core -TestRegex core
+./scripts/get-sccache.ps1                             # once per machine: the shared compiler cache
 ```
 From Git Bash: `scripts/build.sh -Preset release` (forwards to pwsh).
+
+Test tiers and caches:
+- The default `build.ps1` run skips the ctest labels `slow` (heavy sweeps: doctest cases tagged `* doctest::test_suite("slow")`, run by the `<exe>_slow` entry `pq_add_test` registers) and `perf` (load-sensitive wall-clock checks, T0.x-flake). Iterate with the default tier; **run `-Full` for dev and release before reporting a task done and before merging to main**: that is what "all tests pass" means in the definition of done. `perf` is not part of `-Full` (it depends on machine load); run `-Perf` when your task touches what it measures. Tag a new case `slow` when it takes over ~1 s in dev and is a sweep (fuzzing, exhaustive ranges, whole corpora, long stress runs); its coverage must not be needed by the default tier.
+- With sccache installed, every checkout and worktree shares one compiler cache (`%LOCALAPPDATA%\pqdaw\sccache`) and one archive download cache (`%LOCALAPPDATA%\pqdaw\downloads`); `build.ps1` sets the environment and prints the hit rate. Use `build.ps1`, not a bare `cmake --build`, so the cache settings apply. A cached object may come from another worktree, so never bake an absolute path into a compile definition or source: use `pq_use_build_paths` (`cmake/PqCompilerCache.cmake`). doctest reports file names without directories for the same reason.
 
 Toolchain facts (verified during setup):
 - MSVC (VS 2022, latest 17.x) via `scripts/vsenv.ps1`. CMake + Ninja. C++20.

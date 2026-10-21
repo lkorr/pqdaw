@@ -44,6 +44,14 @@ function(pq_add_executable name)
   pq_target_defaults(${name})
 endfunction()
 
+# Absolute paths of this checkout at run time (cmake/pq_build_paths.h): links pq_build_paths and force-includes
+# its header. Never bake a path into a compile definition instead: the compiler cache would hand that object
+# to other worktrees (cmake/PqCompilerCache.cmake).
+function(pq_use_build_paths target)
+  target_link_libraries(${target} PRIVATE pq_build_paths)
+  target_compile_options(${target} PRIVATE /FIpq_build_paths.h)
+endfunction()
+
 # pq_add_test(pq_tests_core SOURCES test_x.cpp DEPS pq_core)
 # Every test executable links doctest with a shared main, the allocation trap (an allocation inside an
 # RtScope fails the running test case), and registers with CTest.
@@ -55,9 +63,16 @@ function(pq_add_test name)
   add_executable(${name} ${A_SOURCES} ${PQ_SOURCE_DIR}/tests/doctest_main.cpp)
   target_link_libraries(${name} PRIVATE doctest::doctest pq_alloc_trap ${A_DEPS})
   target_compile_definitions(${name} PRIVATE PQ_ALLOC_TRAP=1)
-  target_compile_definitions(${name} PRIVATE PQ_TEST_DATA_DIR="${PQ_SOURCE_DIR}/tests")
+  pq_use_build_paths(${name})
+  target_compile_definitions(${name} PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
   pq_target_defaults(${name})
-  add_test(NAME ${name} COMMAND ${name} --no-intro=true --test-suite-exclude=perf)
+  # Test tiers (T0.x-buildspeed): heavy sweeps are tagged `* doctest::test_suite("slow")` and run as a second
+  # CTest entry `<name>_slow` labelled `slow`, which the test presets (and so scripts/build.ps1) skip unless
+  # -Full. Registered for every executable (it runs nothing where no case is tagged), so tagging a case can never
+  # drop it from the full run.
+  add_test(NAME ${name} COMMAND ${name} --no-intro=true --test-suite-exclude=perf,slow)
+  add_test(NAME ${name}_slow COMMAND ${name} --no-intro=true --test-suite=slow)
+  set_tests_properties(${name}_slow PROPERTIES LABELS slow)
   if(A_PERF)
     add_test(NAME ${name}_perf COMMAND ${name} --no-intro=true --test-suite=perf)
     set_tests_properties(${name}_perf PROPERTIES LABELS perf RUN_SERIAL TRUE)

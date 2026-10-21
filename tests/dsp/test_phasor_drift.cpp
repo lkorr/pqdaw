@@ -36,7 +36,7 @@ float unitPhase(uint32_t ph) { return static_cast<float>(ph >> 8) * 5.9604644775
 
 }  // namespace
 
-TEST_CASE("phasor: zero drift over 10^9 samples, frequency exact to uint32 resolution") {
+TEST_CASE("phasor: zero drift over 10^9 samples, frequency exact to uint32 resolution" * doctest::test_suite("slow")) {
   constexpr uint32_t kSr = 48000;
   constexpr uint64_t kTotal = 1000000000ull;
   constexpr uint32_t kBlock = 4096;

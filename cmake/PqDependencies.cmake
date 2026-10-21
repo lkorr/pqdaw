@@ -13,8 +13,80 @@ set(FETCHCONTENT_QUIET ON)
 # for every dependency configured after it.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "pqdaw links every third-party library statically" FORCE)
 
+# Downloaded archives are kept in one directory shared by every checkout and worktree (T0.x-buildspeed), keyed
+# by their SHA-256, so a fresh worktree does not download them again. Each archive is downloaded to a unique
+# temporary name, hash-checked, then renamed into place: concurrent configures never see a partial file. What
+# is shared is only the verified archive; extraction and builds stay in each build tree (_deps). The compiler
+# cache shares the compiled objects.
+set(PQ_DOWNLOAD_CACHE "" CACHE PATH
+  "Dependency archives shared by every checkout (empty: %LOCALAPPDATA%/pqdaw/downloads, else <build>/_downloads)")
+if(PQ_DOWNLOAD_CACHE)
+  set(_pq_download_cache "${PQ_DOWNLOAD_CACHE}")
+elseif(DEFINED ENV{LOCALAPPDATA})
+  file(TO_CMAKE_PATH "$ENV{LOCALAPPDATA}/pqdaw/downloads" _pq_download_cache)
+else()
+  set(_pq_download_cache "${CMAKE_BINARY_DIR}/_downloads")
+endif()
+
+# pq_fetch_declare(<name> URL <url> [<mirror>...] URL_HASH SHA256=<hash> <other FetchContent_Declare args>)
+# FetchContent_Declare with the archive fetched through the shared download cache.
+function(pq_fetch_declare name)
+  set(_urls "")
+  set(_hash "")
+  set(_rest "")
+  set(_mode "")
+  foreach(_arg IN LISTS ARGN)
+    if(_arg STREQUAL "URL" OR _arg STREQUAL "URL_HASH")
+      set(_mode "${_arg}")
+    elseif(_mode STREQUAL "URL" AND NOT _arg MATCHES "^[A-Z_]+$")
+      list(APPEND _urls "${_arg}")
+    elseif(_mode STREQUAL "URL_HASH")
+      if(NOT _arg MATCHES "^SHA256=([0-9a-f]+)$")
+        message(FATAL_ERROR "pq_fetch_declare(${name}): URL_HASH must be SHA256=<lowercase hex>")
+      endif()
+      set(_hash "${CMAKE_MATCH_1}")
+      set(_mode "")
+    else()
+      set(_mode "")
+      list(APPEND _rest "${_arg}")
+    endif()
+  endforeach()
+  if(NOT _urls OR NOT _hash)
+    message(FATAL_ERROR "pq_fetch_declare(${name}): URL and URL_HASH SHA256=... are required")
+  endif()
+  list(GET _urls 0 _first)
+  get_filename_component(_fname "${_first}" NAME)
+  set(_file "${_pq_download_cache}/${_hash}/${_fname}")
+  if(NOT EXISTS "${_file}")
+    file(MAKE_DIRECTORY "${_pq_download_cache}/${_hash}")
+    string(RANDOM LENGTH 16 _tag)
+    set(_part "${_file}.${_tag}.part")
+    foreach(_url IN LISTS _urls)
+      message(STATUS "pqdaw: downloading ${_url}")
+      file(DOWNLOAD "${_url}" "${_part}" STATUS _status TLS_VERIFY ON)
+      list(GET _status 0 _code)
+      if(_code EQUAL 0)
+        file(SHA256 "${_part}" _got)
+        if(_got STREQUAL _hash)
+          file(RENAME "${_part}" "${_file}" RESULT _renamed)
+          break()  # a failed rename means a concurrent configure put the same bytes there first
+        endif()
+        message(WARNING "pqdaw: ${_url}: SHA-256 ${_got}, expected ${_hash}")
+      else()
+        message(WARNING "pqdaw: ${_url}: download failed: ${_status}")
+      endif()
+    endforeach()
+    file(REMOVE "${_part}")
+    if(NOT EXISTS "${_file}")
+      message(FATAL_ERROR "pq_fetch_declare(${name}): could not download a verified archive from: ${_urls}")
+    endif()
+  endif()
+  # FetchContent checks the hash of the local file again before extracting it.
+  FetchContent_Declare(${name} URL "${_file}" URL_HASH SHA256=${_hash} ${_rest})
+endfunction()
+
 # --- doctest (MIT): unit tests --------------------------------------------------------------
-FetchContent_Declare(doctest
+pq_fetch_declare(doctest
   URL      https://github.com/doctest/doctest/archive/refs/tags/v2.4.11.tar.gz
   URL_HASH SHA256=632ed2c05a7f53fa961381497bf8069093f0d6628c5f26286161fbd32a560186
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
@@ -23,7 +95,7 @@ FetchContent_MakeAvailable(doctest)
 
 # --- zlib (zlib) + zstd (BSD): required by the prebuilt LLVM's Support library ----------------
 # LLVM's exported targets reference ZLIB::ZLIB and zstd::libzstd_static; we provide them.
-FetchContent_Declare(zlib
+pq_fetch_declare(zlib
   URL      https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.xz
   URL_HASH SHA256=38ef96b8dfe510d42707d9c781877914792541133e1870841463bfa73f883e32
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -34,7 +106,7 @@ if(NOT TARGET ZLIB::ZLIB)
   add_library(ZLIB::ZLIB ALIAS zlibstatic)
 endif()
 
-FetchContent_Declare(zstd
+pq_fetch_declare(zstd
   URL      https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
   URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -52,7 +124,7 @@ endif()
 
 # --- nlohmann/json (MIT): pq_doc project-file schema migrations; JSON reading in tests (fixtures) --------------
 # The release's source tarball (single include tree, ~110 KB) instead of a git clone of the full repository.
-FetchContent_Declare(nlohmann_json
+pq_fetch_declare(nlohmann_json
   URL      https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
   URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
@@ -68,7 +140,7 @@ target_include_directories(zlibstatic SYSTEM INTERFACE ${zlib_SOURCE_DIR} ${zlib
 find_package(Vulkan 1.3 REQUIRED COMPONENTS glslc)
 
 # --- SDL3 (zlib): window, events, Vulkan surface ---------------------------------------------
-FetchContent_Declare(SDL3
+pq_fetch_declare(SDL3
   URL      https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
   URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -91,7 +163,7 @@ set(SDL_SENSOR OFF)
 FetchContent_MakeAvailable(SDL3)
 
 # --- VulkanMemoryAllocator (MIT): GPU memory for the ui renderer ------------------------------
-FetchContent_Declare(VulkanMemoryAllocator
+pq_fetch_declare(VulkanMemoryAllocator
   URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
   URL_HASH SHA256=822aa850c6ce77346ae96a8a1d351d52e77e85929f35363849a0a4e638e0a2a1
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -107,7 +179,7 @@ target_link_libraries(pq_vma INTERFACE Vulkan::Vulkan)
 # WASAPI only. RtAudio's ASIO backend is never built: it compiles the Steinberg ASIO SDK files RtAudio bundles,
 # which are not permissively licensed; pqdaw has its own clean-room ASIO host (pq_engine AsioDevice, T0.6-fix2).
 # SYSTEM: RtAudio's headers are third-party and must not see our /W4 /WX.
-FetchContent_Declare(rtaudio
+pq_fetch_declare(rtaudio
   URL      https://github.com/thestk/rtaudio/archive/refs/tags/6.0.1.tar.gz
   URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -138,7 +210,7 @@ target_compile_options(rtaudio PRIVATE /w)
 # zlib/bzip2/png/brotli/harfbuzz (those cover compressed fonts, colour emoji and FreeType's own autohinter
 # shaping, none of which pqdaw uses).
 # The official release tarball: savannah, with the SourceForge mirror as a fallback (identical bytes).
-FetchContent_Declare(freetype
+pq_fetch_declare(freetype
   URL      https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz
            https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.xz
   URL_HASH SHA256=36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f
@@ -163,7 +235,7 @@ set_target_properties(freetype PROPERTIES SOURCES "${_pq_ft_srcs}")
 # Compiled from the single-file amalgamation (src/harfbuzz.cc) rather than through HarfBuzz's own build: no
 # ICU, glib, graphite, subsetter or FreeType integration (shaping uses HarfBuzz's own OpenType functions and
 # linear advances; FreeType only rasterises, see src/ui/src/text.cpp).
-FetchContent_Declare(harfbuzz
+pq_fetch_declare(harfbuzz
   URL      https://github.com/harfbuzz/harfbuzz/releases/download/14.5.1/harfbuzz-14.5.1.tar.xz
   URL_HASH SHA256=7e2fa4e8c7c98e8d8140671f5772542afaaa6acccfbd746506886b6d85f7f8d6
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
