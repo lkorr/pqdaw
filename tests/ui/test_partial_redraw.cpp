@@ -499,6 +499,18 @@ private:
   std::string label_;
 };
 
+// A box with a drop shadow outside its rect (like T3.2's popups), declared with setVisualOverflow.
+class ShadowBox : public Box {
+public:
+  using Box::Box;
+  explicit ShadowBox(std::string name, Rgba col) : Box(std::move(name), col) { setVisualOverflow({1, 1, 1, 3}); }
+  void paint(PaintContext& ctx) override {
+    const Rect r = rect().toRect();
+    ctx.dl.addRoundedRectFilled({r.x0 - 1.0f, r.y0 + 1.0f, r.x1 + 1.0f, r.y1 + 3.0f}, 3.0f, rgba(0, 0, 0, 110));
+    Box::paint(ctx);
+  }
+};
+
 // Virtualised content: a large grid that paints only the cells inside PaintContext::clip.
 class Grid : public Widget {
 public:
@@ -549,6 +561,7 @@ TEST_CASE("partial redraw: a widget tree painted with the damage as clip equals 
   std::vector<Box*> boxes;
   for (int i = 0; i < 6; ++i)
     boxes.push_back(&header.add<Box>("h" + std::to_string(i), rgba(60 + 20 * i, 70, 90), i % 2 ? "Track" : ""));
+  for (int i = 0; i < 2; ++i) boxes.push_back(&header.add<ShadowBox>("s" + std::to_string(i), rgba(120, 90, 160)));
   for (Box* b : boxes) b->setWidth(Length::fixed(60));
   auto& split = root.add<Splitter>("split", Splitter::Axis::Horizontal, 160.0f);
   split.setLimits(40, 400, 40);
@@ -636,5 +649,111 @@ TEST_CASE("partial redraw: a widget tree painted with the damage as clip equals 
   MESSAGE(frames << " partial frames (" << fullFrames << " full), widgets painted per partial frame "
                  << static_cast<double>(painted) / static_cast<double>(frames) << " vs " << static_cast<double>(paintedFull) / 100.0
                  << " in a full repaint");
+  CHECK(gpu().ctx->validationErrorCount() == 0);
+}
+
+TEST_CASE("partial redraw: the T3.2 control gallery under random input equals a full repaint (100 random sequences)") {
+  uint32_t W = 0, H = 0;
+  sceneDefaultSize("widgets", W, H);
+  Renderer& renderer = *gpu().renderer;
+  const SceneTextures& tex = gpu().textures;
+  const PaintResources res = paintResources(tex);
+  UiTree tree;
+  tree.setViewport(W, H, tex.scale);
+  tree.setResources(&res);
+  buildWidgetsGallery(tree);  // opens a context menu + submenu, a popover and a tooltip (drop shadows)
+
+  auto partialTarget = makeTarget(W, H);
+  auto fullTarget = makeTarget(W, H);
+  DrawList dl;
+  const DrawLayer layer{&dl, kTransientLayer, 0};
+  double now = 0.0;
+  tree.update(now);
+  tex.text->beginFrame();
+  dl.reset(W, H);
+  tree.paint(dl, res, now);
+  REQUIRE(partialTarget->draw(renderer, fullFrame({&layer, 1})).ok());
+
+  Rng rng(2026);
+  auto pointer = [&](PointerType type, Vec2 p, PointerButton b = PointerButton::None) {
+    PointerEvent e;
+    e.type = type;
+    e.pos = p;
+    e.button = b;
+    e.clickCount = b == PointerButton::None ? 0 : 1;
+    if (type == PointerType::Wheel) e.wheel = {0, rng.chance(50) ? 1.0f : -1.0f};
+    tree.dispatchPointer(e);
+  };
+  auto key = [&](Key k) {
+    KeyEvent e;
+    e.key = k;
+    tree.dispatchKey(e);
+    e.down = false;
+    tree.dispatchKey(e);
+  };
+  const Key keys[] = {key::kTab, key::kEscape, key::kUp, key::kDown, key::kLeft, key::kRight, key::kReturn, key::kSpace};
+  uint64_t frames = 0, fullFrames = 0, events = 0;
+  for (int seq = 0; seq < 100; ++seq) {
+    const int steps = 1 + rng.below(6);
+    for (int s = 0; s < steps; ++s) {
+      const int n = 1 + rng.below(3);
+      for (int i = 0; i < n; ++i, ++events) {
+        const Vec2 p{rng.uni(0, static_cast<float>(W)), rng.uni(0, static_cast<float>(H))};
+        switch (rng.below(7)) {
+          case 0:
+          case 1: pointer(PointerType::Move, p); break;
+          case 2:
+            pointer(PointerType::Move, p);
+            pointer(PointerType::Down, p, PointerButton::Left);
+            pointer(PointerType::Up, p, PointerButton::Left);
+            break;
+          case 3: {  // drag (faders, knobs, scrollbars, drag boxes)
+            pointer(PointerType::Move, p);
+            pointer(PointerType::Down, p, PointerButton::Left);
+            const Vec2 q{p.x + rng.uni(-60, 60), p.y + rng.uni(-60, 60)};
+            pointer(PointerType::Move, q);
+            pointer(PointerType::Up, q, PointerButton::Left);
+            break;
+          }
+          case 4: pointer(PointerType::Wheel, p); break;
+          case 5:
+            pointer(PointerType::Down, p, PointerButton::Right);
+            pointer(PointerType::Up, p, PointerButton::Right);
+            break;
+          default: key(keys[rng.below(static_cast<int>(std::size(keys)))]); break;
+        }
+      }
+      // Sometimes long enough for hover tooltips and caret blinks to fire.
+      now += rng.chance(25) ? static_cast<double>(rng.uni(0.3f, 1.2f)) : 1.0 / 144.0;
+      tree.update(now);
+      if (!tree.needsPaint()) continue;
+      tex.text->beginFrame();
+      dl.reset(W, H);
+      const Damage& d = tree.damage();
+      if (d.full()) {
+        tree.paint(dl, res, now);
+        REQUIRE(partialTarget->draw(renderer, fullFrame({&layer, 1})).ok());
+        ++fullFrames;
+        continue;
+      }
+      ClipRect rects[Damage::kMaxRects];
+      uint32_t nr = 0;
+      ClipRect box{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
+      for (const ClipRect& r : d.rects()) {
+        rects[nr++] = r;
+        box = Damage::unite(box, r);
+      }
+      tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+      REQUIRE(partialTarget->draw(renderer, partialFrame({&layer, 1}, {rects, nr})).ok());
+      ++frames;
+    }
+    tex.text->beginFrame();
+    dl.reset(W, H);
+    tree.paint(dl, res, now);
+    REQUIRE(fullTarget->draw(renderer, fullFrame({&layer, 1})).ok());
+    requireIdentical(readBack(*partialTarget), readBack(*fullTarget), "partial-gallery-seq" + std::to_string(seq));
+  }
+  MESSAGE(events << " random input events, " << frames << " partial frames, " << fullFrames << " full");
+  CHECK(frames > 0);
   CHECK(gpu().ctx->validationErrorCount() == 0);
 }

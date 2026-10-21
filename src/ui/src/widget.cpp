@@ -31,6 +31,7 @@ Widget::~Widget() = default;
 void Widget::attach(UiTree* tree) noexcept {
   tree_ = tree;
   flags_ |= kDescendantDirty;  // a (re)attached subtree is fully revisited by the next layout
+  if (tree) tree->noteOverflow(overflow_);
   for (auto& c : children_) c->attach(tree);
 }
 
@@ -194,6 +195,11 @@ void Widget::setEnabled(bool e) {
   set(kEnabled, e);
   if (!e && tree_) tree_->clearInteraction(*this);
   markDirty();
+}
+
+void Widget::setVisualOverflow(Insets logicalPx) noexcept {
+  overflow_ = logicalPx;
+  if (tree_) tree_->noteOverflow(logicalPx);
 }
 
 void Widget::markDirty() noexcept {

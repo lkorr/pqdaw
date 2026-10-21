@@ -30,6 +30,12 @@ inline int32_t alignOffset(Align a, int32_t slack) noexcept {
 inline uint64_t bindingKey(ScopeId scope, Chord c) noexcept {
   return (uint64_t(scope) << 48) | (uint64_t(c.mods) << 32) | uint64_t(c.key);
 }
+// What a widget's paint can touch: its rect grown by its visual overflow (logical px → device, +1 px for AA).
+inline IRect paintBounds(const IRect& r, const Insets& o, float s) noexcept {
+  if (r.empty() || (o.left | o.top | o.right | o.bottom) == 0) return r;
+  auto g = [s](int16_t v) { return v > 0 ? static_cast<int32_t>(std::ceil(static_cast<float>(v) * s)) + 1 : 0; };
+  return {r.x - g(o.left), r.y - g(o.top), r.w + g(o.left) + g(o.right), r.h + g(o.top) + g(o.bottom)};
+}
 inline uint8_t buttonBit(PointerButton b) noexcept {
   return b == PointerButton::None ? 0 : static_cast<uint8_t>(1u << (static_cast<uint32_t>(b) - 1));
 }
@@ -122,7 +128,8 @@ void UiTree::place(Widget& w, const IRect& r) {
   if (moved) {
     // Old and new area, as far as they are visible through the clipping ancestors (clip_).
     if (!damage_.full() && w.visible()) {
-      const IRect o = intersect(w.rect_, clip_), n = intersect(r, clip_);
+      const IRect o = intersect(paintBounds(w.rect_, w.overflow_, scale_.factor), clip_);
+      const IRect n = intersect(paintBounds(r, w.overflow_, scale_.factor), clip_);
       if (!o.empty()) damage_.add(o.toRect());
       if (!n.empty()) damage_.add(n.toRect());
     }
@@ -326,10 +333,20 @@ void UiTree::paint(DrawList& dl, const PaintResources& res, double now, const IR
 
 void UiTree::paintWidget(Widget& w, PaintContext& ctx) {
   if (!w.visible() || w.rect_.empty()) return;
+  // Its own paint runs when what it paints (its rect, or its declared visual overflow) reaches the clip.
+  const bool own = !intersect(paintBounds(w.rect_, w.overflow_, scale_.factor), ctx.clip).empty();
+  if (!own) {
+    // By layout containment its children lie inside its rect, so they are invisible too, unless a descendant's
+    // overflow reaches out of it (bounded by the tree-wide maximum overflow; a clipping widget cuts it off).
+    if (maxOverflow_ == 0 || w.children_.empty() || w.clipsChildren()) return;
+    const int32_t g = static_cast<int32_t>(std::ceil(static_cast<float>(maxOverflow_) * scale_.factor)) + 1;
+    if (intersect({w.rect_.x - g, w.rect_.y - g, w.rect_.w + 2 * g, w.rect_.h + 2 * g}, ctx.clip).empty()) return;
+  }
   const IRect vis = intersect(w.rect_, ctx.clip);
-  if (vis.empty()) return;  // culled: nothing of it (or, by layout containment, its children) is visible
-  ++stats_.widgetsPainted;
-  w.paint(ctx);
+  if (own) {
+    ++stats_.widgetsPainted;
+    w.paint(ctx);
+  }
   if (!w.children_.empty()) {
     if (w.clipsChildren()) {
       const IRect saved = ctx.clip;
@@ -342,12 +359,16 @@ void UiTree::paintWidget(Widget& w, PaintContext& ctx) {
       for (auto& c : w.children_) paintWidget(*c, ctx);
     }
   }
-  w.paintOver(ctx);
+  if (own) w.paintOver(ctx);
+}
+
+void UiTree::noteOverflow(const Insets& o) noexcept {
+  maxOverflow_ = std::max({maxOverflow_, o.left, o.top, o.right, o.bottom});
 }
 
 void UiTree::damageWidget(const Widget& w) noexcept {
   if (!w.visible()) return;
-  IRect r = w.rect_;
+  IRect r = paintBounds(w.rect_, w.overflow_, scale_.factor);
   for (const Widget* p = w.parent_; p; p = p->parent_) {
     if (!p->visible()) return;
     if (p->clipsChildren()) r = intersect(r, p->rect_);

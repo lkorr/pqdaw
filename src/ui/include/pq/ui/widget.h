@@ -248,6 +248,12 @@ public:
   // --- redraw / time ---
   // Damages this widget's rect (clipped by clipping ancestors). Call when its appearance changed.
   void markDirty() noexcept;
+  // Paint that deliberately reaches outside the rect (a popup's drop shadow), in logical px per side. Damage
+  // (markDirty, layout moves, removal) and paint culling then use the rect grown by ceil(overflow × scale) + 1
+  // device px (the +1 covers AA feathers), so partial redraw (T0.7-fix1) neither leaves the overflow stale nor
+  // skips repainting it. Default: none; everything else must paint inside its rect.
+  void setVisualOverflow(Insets logicalPx) noexcept;
+  const Insets& visualOverflow() const noexcept { return overflow_; }
   // onFrame(now) is called once at the next frame. Re-request from onFrame to animate; stop requesting and
   // the UI is idle again.
   void requestFrame();
@@ -312,6 +318,7 @@ private:
   Length width_{};
   Length height_{};
   Insets padding_{};
+  Insets overflow_{};  // setVisualOverflow
   int16_t gap_ = 0;
   LayoutKind layout_ = LayoutKind::Stack;
   Align mainAlign_ = Align::Start;
@@ -520,6 +527,7 @@ private:
   void detachSubtree(Widget& w) noexcept;
   void clearInteraction(Widget& w) noexcept;  // hover / capture / focus inside w end (hidden, disabled, removed)
   void damageWidget(const Widget& w) noexcept;
+  void noteOverflow(const Insets& o) noexcept;
   void paintWidget(Widget& w, PaintContext& ctx);
   Widget* hitRec(Widget& w, Vec2 p) const noexcept;
   void updateHover(Vec2 p);
@@ -533,6 +541,7 @@ private:
   uint32_t width_ = 0, height_ = 0;
   UiScale scale_{};
   bool layoutPending_ = true;
+  int16_t maxOverflow_ = 0;  // largest visual overflow (logical px) any widget of the tree has declared
   IRect clip_{};  // during layout: the visible area through the clipping ancestors of the widget being placed
 
   Widget* hovered_ = nullptr;

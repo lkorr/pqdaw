@@ -21,7 +21,9 @@ const Widget* rootOf(const Widget& w) noexcept {
   return r;
 }
 
-// Drop shadow + fill + border shared by menus, popovers and tooltips.
+// Drop shadow + fill + border shared by menus, popovers and tooltips. The shadow reaches 1 px left/right and
+// 2 logical px + 1 below the rect: popups declare it (kPopupOverflow) so partial redraw damages and repaints it.
+constexpr Insets kPopupOverflow{1, 1, 1, 3};
 void popupFrame(PaintContext& ctx, const IRect& r, const Theme& th, Rgba fill, Rgba border) {
   const float rad = ctx.scale.exact(th.radius.menu);
   const float d = ctx.scale.exact(2.0f);
@@ -36,7 +38,10 @@ void popupFrame(PaintContext& ctx, const IRect& r, const Theme& th, Rgba fill, R
 // The tooltip popup: one line of small text on the tooltip fill. Never hit.
 class TooltipWidget : public Widget {
 public:
-  explicit TooltipWidget(std::string text) : Widget("tooltip"), text_(std::move(text)) { setHittable(false); }
+  explicit TooltipWidget(std::string text) : Widget("tooltip"), text_(std::move(text)) {
+    setHittable(false);
+    setVisualOverflow(kPopupOverflow);
+  }
   ISize contentExtent(ISize) const override {
     const UiScale s = tree() ? tree()->uiScale() : UiScale{};
     const PaintResources* res = tree() ? tree()->resources() : nullptr;
@@ -290,7 +295,10 @@ MenuMetrics menuMetrics(const UiScale& s, const Theme* th) {
 }
 }  // namespace
 
-Menu::Menu(std::vector<MenuItem> items, std::string name) : Control(std::move(name)), items_(std::move(items)) { setFocusable(true); }
+Menu::Menu(std::vector<MenuItem> items, std::string name) : Control(std::move(name)), items_(std::move(items)) {
+  setFocusable(true);
+  setVisualOverflow(kPopupOverflow);
+}
 
 void Menu::setMinWidthPx(int32_t w) {
   minWidth_ = std::max(0, w);
@@ -543,6 +551,7 @@ Menu* openContextMenu(Widget& from, Vec2 at, std::vector<MenuItem> items) {
 
 Popover::Popover(std::string name) : Control(std::move(name)) {
   setFocusable(true);
+  setVisualOverflow(kPopupOverflow);
   setLayout(LayoutKind::Column);
   setPadding(Insets::all(8));
   setGap(6);
