@@ -41,7 +41,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - `pqdaw --list-devices` and `pqdaw --sine 440 --seconds 3 [--device N] [--asio]`.
   - Accept: NullDevice tests cover the callback cadence and buffer sizes. `--list-devices` output is pasted into PROGRESS.md. A `--sine` run on the default WASAPI device reports 0 xruns over 3 s (no one is listening, so log the callback stats).
 
-- [~] **T0.7 Window + Vulkan renderer** *(worker D, branch task/T0.7-vulkan-renderer)* (`ui`). Depends on: T0.1. 👁
+- [x] **T0.7 Window + Vulkan renderer** *(b15670c)* (`ui`). Depends on: T0.1. 👁
   - SDL3 window, Vulkan instance/device/swapchain (VMA), and a draw list with the `{float2 pos, float2 uv, u32 rgba8}` vertex format and **32-bit indices**. Pipelines for alpha, additive and textured drawing. Damage-driven redraw, and `DwmFlush` frame pacing.
   - An **offscreen render path**: `pqdaw --screenshot <scene> <out.png> [--size WxH]` renders a named test scene to a PNG with no window.
   - Accept: the `test-pattern` scene (rects, rounded rects, gradients, additive blobs) matches a committed golden PNG within a per-pixel tolerance. The resize and minimise paths don't crash (scripted test).
