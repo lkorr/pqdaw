@@ -16,11 +16,15 @@ std::optional<double> resolveHzDouble(const PitchId& pitch, const Tuning& tuning
   double hz = 0.0;
   switch (pitch.kind()) {
     case PitchKind::Degree: {
-      // Only EDO exists so far; MOS (T2.3) and Scale (T2.4) add their cases here.
-      const Edo* edo = tuning.edo();
-      if (edo == nullptr) return std::nullopt;
-      const int64_t step = static_cast<int64_t>(pitch.equave()) * static_cast<int64_t>(edo->n()) + pitch.degree();
-      hz = tuning.referenceHz() * std::exp2(edo->log2OfStep(step));
+      // Scale (T2.4) adds its case here.
+      if (const Edo* edo = tuning.edo()) {
+        const int64_t step = static_cast<int64_t>(pitch.equave()) * static_cast<int64_t>(edo->n()) + pitch.degree();
+        hz = tuning.referenceHz() * std::exp2(edo->log2OfStep(step));
+      } else if (const Mos* mos = tuning.mos()) {
+        hz = tuning.referenceHz() * std::exp2(mos->centsOf(pitch.degree(), pitch.equave()) * (1.0 / 1200.0));
+      } else {
+        return std::nullopt;
+      }
       break;
     }
     case PitchKind::Ratio: {

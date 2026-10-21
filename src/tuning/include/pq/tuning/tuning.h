@@ -3,8 +3,9 @@
 // A tuning context and resolution of pitch identities to Hz (SPEC §3.1, §3.2).
 //
 // Tuning holds the tuning system plus its reference pitch (default C3 = 261.626 Hz, per project/tuning/clip).
-// The system is a std::variant so the remaining kinds slot in as their tasks land: MOS (T2.3), Scale (T2.4),
-// JI context (T2.5). Only EDO exists today.
+// The system is a std::variant so the remaining kinds slot in as their tasks land: Scale (T2.4), JI context (T2.5).
+// EDO and MOS (T2.3) exist today. A Mos holds its degree table on the heap: copy Tunings off the audio thread
+// (resolving only reads).
 //
 // resolveHz does all arithmetic in double and converts to float32 once at the end, so the float32 result is within
 // float rounding (≈ 0.0001 ¢) of the exact pitch.
@@ -15,6 +16,7 @@
 
 #include "pq/core/result.h"
 #include "pq/tuning/edo.h"
+#include "pq/tuning/mos_tuning.h"
 #include "pq/tuning/pitch_id.h"
 
 namespace pq::tuning {
@@ -23,7 +25,7 @@ inline constexpr double kDefaultReferenceHz = 261.626;  // C3 in Ableton naming 
 
 class Tuning {
 public:
-  using System = std::variant<Edo>;
+  using System = std::variant<Edo, Mos>;
 
   // 12-EDO at C3 = 261.626 Hz.
   Tuning() noexcept : system_(Edo::standard12()) {}
@@ -36,9 +38,11 @@ public:
 
   // The EDO, or nullptr if this tuning is another kind. RT-safe.
   const Edo* edo() const noexcept { return std::get_if<Edo>(&system_); }
+  // The MOS, or nullptr if this tuning is another kind. RT-safe.
+  const Mos* mos() const noexcept { return std::get_if<Mos>(&system_); }
 
 private:
-  Tuning(const System& system, double referenceHz) noexcept : system_(system), referenceHz_(referenceHz) {}
+  Tuning(const System& system, double referenceHz) : system_(system), referenceHz_(referenceHz) {}
 
   System system_;
   double referenceHz_ = kDefaultReferenceHz;
@@ -65,6 +69,7 @@ struct ResolveContext {
 // context, a voice index out of range, harmonic number 0, or a result that is not a finite positive float32.
 // Rules:
 //   Degree   EDO: referenceHz · 2^((equave·n + degree) · log2(equave ratio) / n)
+//            MOS: referenceHz · 2^(Mos::centsOfDegree(equave·size + degree) / 1200)  (stretch included)
 //   Ratio    anchorHz · n/d, where anchorHz = referenceHz for AnchorKind::Reference
 //   Cents    referenceHz · 2^(cents/1200)
 //   Harmonic fundamentalHz · h  (undertone: fundamentalHz / h), h = harmonics[voiceIndex]
