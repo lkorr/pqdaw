@@ -365,3 +365,9 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
   - T3.16 engine timeline — `task/T3.16-timeline` (WIP). T3.13 MOS chart — `task/T3.13-mos-chart` (WIP). T0.x-buildspeed (sccache, shared downloads, slow tier) — `task/T0.x-buildspeed`.
 - Next after those: T1.x-arch1 (per-track compile units, user decision), T0.5-fix1 (PPQ 221,760), T3.2-fix1 (retheme from the user's Live screenshot), T3.6-fix1, T3.8-fix1, T1.6-fix1, T1b.1-fix1, T3.9/T3.10/T3.12/T3.14/T3.15/T3.17/T3.18, M1b T1b.2–T1b.6, M2 T2.6/T2.7; M2 and M3 reviews when those milestones complete.
 - Open issues: intermittent NVIDIA-driver-thread crash in pq_tests_ui (not reproduced since the disk-full period); manual ASIO driver-event check for the user in docs/REVIEW.md; ~37 agent worktrees under .claude/worktrees (build dirs of finished ones deleted; worktrees themselves can be pruned with `git worktree prune` after removing the folders).
+
+## 2026-10-21 · T3.11 · worker AI / task/T3.11-piano-roll
+- Did: clip view (piano roll) in ShellSlot::ClipDetail: EDO rows (Q2 labels, equave markers, scale highlight, fold), Ratio/Cents notes at true pitch marked off-grid, draw mode B, select/rubber band/move/resize/Alt-copy/delete, velocity/chance lane, Ctrl+U, identity-aware Up/Down, Q40 virtual fundamental (lcm of ratio denominators, drawn per SPEC §4.3), TransportPort::auditionHz; every gesture one undo step; 18 keymap bindings; goldens pianoroll-12edo/-31edo/-velocity. Q77/Q78.
+- Verified: worker dev + release 27/27; orchestrator: rebased onto origin/main, release build + views/app tests 2/2, 0 warnings.
+- Perf: 100k-note clip full paint 0.33–0.58 ms (< 1.5), drag frame 0.04–0.59 ms (< 1).
+- Notes: the roll shows a clip only once arrangement selection (T3.9) calls setDetailClip.

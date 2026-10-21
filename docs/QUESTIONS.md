@@ -551,7 +551,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: `Context::measure` times rounds (a round repeats the call until ≥ `--min-time`), so median/p99 describe round averages; with the default 15 repeats the "p99" is the maximum. Per-call timing would show tail latency of single blocks but adds timer overhead to sub-µs calls.
 - Options: A) rounds (as now; `--repeats 101` for a real p99 of rounds); B) a per-call sample mode for benches whose call is ≥ ~1 µs (a block of audio), reporting the distribution of single calls; C) both.
 - Provisional: A; benches that need tail latency (cross-thread round trips) already collect their own samples and report them with `ctx.record` / `reportStats`.
-## Q?-T3.11-a · 2026-10-21 · T3.11 · Piano-roll labels, off-grid marking, scale highlight and fold
+## Q77 · 2026-10-21 · T3.11 · Piano-roll labels, off-grid marking, scale highlight and fold
 - Context: SPEC §4.1 / Q2 fix "one row per step, equave markers labelled" but not the exact labels, how off-grid notes are marked, which scale "scale highlighting" uses for an EDO, or how fold combines with it.
 - Choices (all in `src/views/src/piano_roll/`, display only, nothing persisted):
   1. Labels (Q2 option A): 12edo-compatible EDOs (n a multiple of 12, octave equave) name the 12edo rows Ableton-style (`C3` = degree 0 of equave 0 = the reference; `C#3`… with ASCII `#`, Q16); only C rows are labelled until rows are ≥ the font size + 6 px. Other EDOs label rows `k\n` (every row when tall enough, else the white keys) and put the equave number on degree 0 on a white tab at the left: octave EDOs count like Live's octaves (3 = the reference's equave), other equaves count from 0. MOS / Scala (until T3.12) label the degree index.
@@ -563,7 +563,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: as above (local, reversible: labels/flags are computed in `RowModel::build`).
 - Status: open
 
-## Q?-T3.11-b · 2026-10-21 · T3.11 · Live behaviours chosen without the manual
+## Q78 · 2026-10-21 · T3.11 · Live behaviours chosen without the manual
 - Choices: double-click empty space adds a note in the grid cell, double-click / draw-mode click on a note deletes it; draw-mode drag adds a note in every grid cell crossed (row under the pointer per cell), one undo step; a click on a note of a multiple selection selects just it on release; Shift / Ctrl click toggles; rubber band from empty space (Shift adds); moves snap relatively (T3.3 `snapDelta` from the note's start, from its end for a resize); Alt-drag copies (Live on Windows also uses Ctrl-drag); no snap bypass key yet (Ctrl+4 turns snapping off); Ctrl+wheel zooms time, Ctrl+Alt+wheel and a horizontal drag on the keys zoom rows, a vertical drag in the ruler zooms time (×2 per 60 logical px) and a horizontal one scrolls; clicking a key auditions it and selects its row's notes; paste goes to the last empty-space click (snapped), else right after the copied notes; velocity / chance drags move every selected note by the same amount (Shift = fine). Every gesture is dispatched on release (live preview, no document change while dragging; Esc cancels), so the engine (T3.17) hears an edit only when the drag ends.
 - Status: open
 
