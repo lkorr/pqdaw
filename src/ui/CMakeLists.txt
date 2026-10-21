@@ -16,20 +16,26 @@ endforeach()
 
 pq_add_module(pq_ui
   SOURCES
+    src/actions.cpp
     src/atlas.cpp
     src/colormap.cpp
     src/draw_list.cpp
     src/frame_pacer.cpp
     src/gpu.cpp
     src/image.cpp
+    src/input.cpp
     src/lines.cpp
     src/offscreen.cpp
     src/renderer.cpp
     src/scene_lines.cpp
     src/scene_text.cpp
+    src/scene_widgets.cpp
     src/scenes.cpp
+    src/test_driver.cpp
     src/text.cpp
+    src/ui_tree.cpp
     src/vma_impl.cpp
+    src/widget.cpp
     src/window.cpp
     ${_pq_ui_spv}
   DEPS pq_core Vulkan::Vulkan

@@ -48,4 +48,9 @@ bool hasScene(std::string_view name) noexcept;
 // scene for the interactive window (0 = the golden frame). Returns false for unknown names.
 bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textures, double timeSeconds);
 
+class Widget;
+// The widget tree behind the `widgets-core` scene (T3.1 demo: rows/columns, nested splitters, a scroll view
+// over virtualised content). The interactive window runs it live.
+std::unique_ptr<Widget> makeWidgetsCoreDemo();
+
 }  // namespace pq::ui

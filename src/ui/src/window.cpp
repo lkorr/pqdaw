@@ -52,6 +52,92 @@ void Window::pixelSize(uint32_t& w, uint32_t& h) const noexcept {
 
 bool Window::minimized() const noexcept { return (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0; }
 
+float Window::pixelDensity() const noexcept {
+  const float d = SDL_GetWindowPixelDensity(window_);
+  return d > 0.0f ? d : 1.0f;
+}
+
+float Window::displayScale() const noexcept {
+  const float s = SDL_GetWindowDisplayScale(window_);
+  return s > 0.0f ? s : 1.0f;
+}
+
+// --- SDL input adapter -----------------------------------------------------------------------------------
+
+// pq::ui::Key / Scancode / PointerButton use SDL3's numbering, so they translate by copying.
+static_assert(SDLK_A == 'a' && SDLK_0 == '0' && SDLK_GRAVE == '`' && SDLK_SPACE == key::kSpace);
+static_assert(SDLK_RETURN == key::kReturn && SDLK_ESCAPE == key::kEscape && SDLK_BACKSPACE == key::kBackspace);
+static_assert(SDLK_TAB == key::kTab && SDLK_DELETE == key::kDelete && SDLK_CAPSLOCK == key::kCapsLock);
+static_assert(SDLK_F1 == key::kF1 && SDLK_F12 == key::kF1 + 11 && SDLK_UP == key::kUp && SDLK_PAGEDOWN == key::kPageDown);
+static_assert(SDLK_LCTRL == key::kLCtrl && SDLK_RGUI == key::kRSuper && SDLK_HOME == key::kHome);
+static_assert(SDL_SCANCODE_A == static_cast<int>(Scancode::A) && SDL_SCANCODE_0 == static_cast<int>(Scancode::Num0));
+static_assert(SDL_SCANCODE_F1 == static_cast<int>(Scancode::F1) && SDL_SCANCODE_UP == static_cast<int>(Scancode::Up));
+static_assert(SDL_SCANCODE_LCTRL == static_cast<int>(Scancode::LCtrl) && SDL_SCANCODE_RGUI == static_cast<int>(Scancode::RSuper));
+static_assert(SDL_BUTTON_LEFT == 1 && SDL_BUTTON_MIDDLE == 2 && SDL_BUTTON_RIGHT == 3 && SDL_BUTTON_X2 == 5);
+
+namespace {
+
+Mods modsFromSdl(SDL_Keymod m) noexcept {
+  uint32_t r = mod::kNone;
+  if (m & SDL_KMOD_SHIFT) r |= mod::kShift;
+  if (m & SDL_KMOD_CTRL) r |= mod::kCtrl;
+  if (m & SDL_KMOD_ALT) r |= mod::kAlt;
+  if (m & SDL_KMOD_GUI) r |= mod::kSuper;
+  if (m & SDL_KMOD_CAPS) r |= mod::kCapsLock;
+  return static_cast<Mods>(r);
+}
+
+}  // namespace
+
+bool translateEvent(const SDL_Event& e, float density, InputEvent& out) noexcept {
+  out = InputEvent{};
+  PointerEvent& p = out.pointer;
+  switch (e.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+      out.kind = InputKind::Pointer;
+      p.type = PointerType::Move;
+      p.pos = {e.motion.x * density, e.motion.y * density};
+      p.mods = modsFromSdl(SDL_GetModState());
+      return true;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+      out.kind = InputKind::Pointer;
+      p.type = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? PointerType::Down : PointerType::Up;
+      p.button = e.button.button <= SDL_BUTTON_X2 ? static_cast<PointerButton>(e.button.button) : PointerButton::None;
+      p.clickCount = e.button.clicks;
+      p.pos = {e.button.x * density, e.button.y * density};
+      p.mods = modsFromSdl(SDL_GetModState());
+      return true;
+    case SDL_EVENT_MOUSE_WHEEL: {
+      out.kind = InputKind::Pointer;
+      p.type = PointerType::Wheel;
+      const float flip = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
+      p.wheel = {e.wheel.x * flip, e.wheel.y * flip};
+      p.pos = {e.wheel.mouse_x * density, e.wheel.mouse_y * density};
+      p.mods = modsFromSdl(SDL_GetModState());
+      return true;
+    }
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+      out.kind = InputKind::Pointer;
+      p.type = PointerType::Leave;
+      return true;
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
+      out.kind = InputKind::Key;
+      out.key.down = e.type == SDL_EVENT_KEY_DOWN;
+      out.key.repeat = e.key.repeat;
+      out.key.mods = modsFromSdl(e.key.mod);
+      out.key.scancode = static_cast<Scancode>(e.key.scancode);
+      out.key.key = static_cast<Key>(e.key.key);
+      return true;
+    case SDL_EVENT_TEXT_INPUT:
+      out.kind = InputKind::Text;
+      out.text = makeTextEvent(e.text.text ? e.text.text : "");
+      return true;
+    default: return false;
+  }
+}
+
 // --- Swapchain -----------------------------------------------------------------------------------------
 
 Result<std::unique_ptr<Swapchain>> Swapchain::create(GpuContext& gpu, Window& window, uint32_t framesInFlight) {

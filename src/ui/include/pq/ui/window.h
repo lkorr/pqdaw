@@ -12,9 +12,11 @@
 #include "pq/core/result.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/gpu.h"
+#include "pq/ui/input.h"
 #include "pq/ui/renderer.h"
 
 struct SDL_Window;
+union SDL_Event;
 
 namespace pq::ui {
 
@@ -41,11 +43,22 @@ public:
   // Drawable size in pixels (0×0 while minimised on Windows).
   void pixelSize(uint32_t& w, uint32_t& h) const noexcept;
   bool minimized() const noexcept;
+  // Device pixels per SDL window coordinate (mouse positions arrive in window coordinates).
+  float pixelDensity() const noexcept;
+  // The UI scale of this window's display (Windows per-monitor DPI: 1.0 at 100 %, 1.5 at 150 %); the widget
+  // tree's logical → device scale (UiTree::setViewport).
+  float displayScale() const noexcept;
 
 private:
   Window() = default;
   SDL_Window* window_ = nullptr;
 };
+
+// SDL adapter for the widget toolkit's input model (pq/ui/input.h): mouse motion / buttons / wheel, window
+// mouse-leave, key down/up and text input become an InputEvent with positions in device pixels (window
+// coordinates × pixelDensity). Returns false (out.kind = None) for events that are not input. Text events
+// only arrive between SDL_StartTextInput / SDL_StopTextInput (the app toggles that with text focus).
+bool translateEvent(const SDL_Event& e, float pixelDensity, InputEvent& out) noexcept;
 
 class Swapchain {
 public:
