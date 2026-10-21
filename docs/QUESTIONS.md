@@ -273,18 +273,18 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: A.
 - Status: open
 
-## Q?-T0.8-fix1-a · 2026-10-21 · T0.8-fix1 · Where the shared sprites live once glyph pages are R8
+## Q36 · 2026-10-21 · T0.8-fix1 · Where the shared sprites live once glyph pages are R8
 - Context: the task says "R8 glyph pages separate from the RGBA sprite page". Today's "sprite page" holds only the white texel and the glow blob, and both are pure coverage (white with alpha). A separate RGBA sprite texture would split every widget's fill and its label into two draw commands (the reason T0.8 shared one page).
 - Options: A) put the white block + blob into every R8 glyph page (64×128 texels per page) and give the draw list a texture id `kAtlasTexture` that is compatible with any page, so fills merge with text; B) a separate RGBA sprite texture plus a two-texture shader (or a per-draw flag), keeping fills and text in one command at the cost of a second sampler per fragment; C) a separate RGBA sprite page and accept a draw-command split per label.
 - Provisional choice: A. One pipeline, one sampler, no command splits (the text scene is still 3 commands; a test checks fills between labels stay in one command), glyph atlas memory exactly 1/4 of the RGBA page. Colour sprites (icons) can be added later as ordinary RGBA textures (`createTexture`) or as a dedicated RGBA atlas page id when T3.x needs them.
 - Status: open
 
-## Q?-T0.8-fix1-b · 2026-10-21 · T0.8-fix1 · Reading "no frame > 1.5× the median frame time" for 200 new glyphs
+## Q37 · 2026-10-21 · T0.8-fix1 · Reading "no frame > 1.5× the median frame time" for 200 new glyphs
 - Context: rasterising 200 hinted glyphs with FreeType costs ≈ 3–4 ms of CPU in release (≈ 15–20 µs each, unchanged by this task) and ≈ 15 ms in the dev preset (/Od dependencies). The median *CPU work* of a frame is ≈ 0.1 ms, so no implementation that rasterises within the frame could meet 1.5× of that; the criterion is met for the *frame interval* of a paced animated run (what the user sees), where the old blocking path added a device-idle wait plus a second blocking submit.
 - Choice: the window self-test runs a paced animated run, introduces 200 new glyphs in one frame and checks every present-to-present interval ≤ 1.5× the run's median (3 attempts on a shared machine). Enforced in release builds; in the dev preset (unoptimised FreeType) it is measured and printed only. Spreading rasterisation over several frames (showing glyphs late) or a rasterisation thread would be the next step if 240 Hz displays need it.
 - Status: open
 
-## Q?-T0.8-fix1-c · 2026-10-21 · T0.7-fix4 · Texture ids are reused without a generation
+## Q38 · 2026-10-21 · T0.7-fix4 · Texture ids are reused without a generation
 - Context: `destroyTexture` frees the slot once the frames that may sample it are done, and `createTexture` hands the id out again (the table has 256 slots). A draw list that still names the old id would sample the new texture.
 - Options: A) plain reuse, caller contract "never draw a destroyed id" (now); B) generation bits in `TextureId` checked by `record()` (stale ids fall back to the white texel).
 - Provisional choice: A (zero cost, ids stay small and dense). B is a local change to `TextureId` packing in renderer.cpp/draw_list.h if T3.x lifetimes get hard to reason about.
