@@ -10,6 +10,13 @@ pq_add_test(pq_tests_core
   SOURCES
     core/test_result.cpp
     core/test_alloc_trap.cpp
+    core/test_aligned_buffer.cpp
+    core/test_spsc_ring.cpp
+    core/test_mpsc_queue.cpp
+    core/test_fixed_pool.cpp
+    core/test_arena.cpp
+    core/test_epoch_reclaimer.cpp
+    core/test_denormal_guard.cpp
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning
