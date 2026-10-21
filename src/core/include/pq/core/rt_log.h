@@ -157,6 +157,9 @@ public:
 
   uint64_t linesWritten() const noexcept { return lines_.load(std::memory_order_relaxed); }
   uint64_t drains() const noexcept { return drains_.load(std::memory_order_relaxed); }
+  // Longest time between the starts of two drains by the logger thread (its health: a ring of capacity C fed at
+  // R records/s overflows only if this exceeds C / R). 0 before two drains.
+  double maxDrainIntervalMs() const noexcept { return maxIntervalUs_.load(std::memory_order_relaxed) / 1000.0; }
 
 private:
   struct Source {
@@ -174,6 +177,7 @@ private:
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> lines_{0};
   std::atomic<uint64_t> drains_{0};
+  std::atomic<double> maxIntervalUs_{0};
 };
 
 }  // namespace pq

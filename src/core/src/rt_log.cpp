@@ -116,7 +116,14 @@ void RtLogger::run() {
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&start);
   uint64_t k = 0;
+  LARGE_INTEGER last{};
   while (running_.load(std::memory_order_acquire)) {
+    QueryPerformanceCounter(&now);
+    if (last.QuadPart) {
+      const double us = 1e6 * static_cast<double>(now.QuadPart - last.QuadPart) / static_cast<double>(freq.QuadPart);
+      if (us > maxIntervalUs_.load(std::memory_order_relaxed)) maxIntervalUs_.store(us, std::memory_order_relaxed);
+    }
+    last = now;
     drainOnce();
     ++k;
     const int64_t deadline = start.QuadPart + static_cast<int64_t>(k * periodMs_ * freq.QuadPart / 1000);

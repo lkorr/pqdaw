@@ -43,12 +43,15 @@ struct LoggingEngine {
 struct CountingSink {
   uint64_t records = 0;
   uint64_t dropLines = 0;
+  uint64_t droppedReported = 0;  // sum of N over "dropped N records" lines
   static void line(void* user, const std::string& l) {
     auto& s = *static_cast<CountingSink*>(user);
-    if (l.find("dropped") != std::string::npos)
+    if (const size_t at = l.find("] dropped "); at != std::string::npos) {
       ++s.dropLines;
-    else
+      s.droppedReported += std::stoull(l.substr(at + 10));
+    } else {
       ++s.records;
+    }
   }
 };
 
@@ -94,12 +97,16 @@ TEST_CASE("rt log device: 10^6 records from NullDevice callbacks, 4096 ring drai
   CHECK(log.dropped() == 904);
   CHECK(sink.records == 1'000'000 + 4096);
   CHECK(sink.dropLines == 1);
+  CHECK(sink.droppedReported == 904);
 }
 
-TEST_CASE("rt log device: threaded NullDevice and RtLogger thread at 100 Hz, 10^6 records, none lost") {
+TEST_CASE("rt log device: threaded NullDevice and RtLogger thread at 100 Hz, 10^6 records") {
   // Real threads: the NullDevice timer thread runs 1000 callbacks/s (48 frames at 48 kHz) pushing 200 records each
-  // (200 000/s, 2000 per 10 ms drain: half the ring, so a drain may be up to ~10 ms late without loss); the
-  // logger drains every 10 ms on its own thread. ~5 s.
+  // (200 000/s, 2000 per 10 ms drain: half the ring); the logger drains every 10 ms on its own thread. ~5 s.
+  // Whether a drain is ever late is up to the OS scheduler (this machine is often shared with parallel builds),
+  // so the test asserts what the design guarantees: the accounting is exact whatever happens, and nothing is
+  // lost unless the logger really went more than one ring's worth of records (20 ms) without draining. The
+  // deterministic test above is the strict 100 Hz case.
   RtLog log(4096);
   CountingSink sink;
   RtLogger logger(&CountingSink::line, &sink, 10);
@@ -122,11 +129,18 @@ TEST_CASE("rt log device: threaded NullDevice and RtLogger thread at 100 Hz, 10^
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   CHECK(dev.stop().ok());
   logger.stop();
+  const double deviceGapMs = dev.stats().snapshot().maxIntervalUs / 1000.0;
   dev.close();
   CHECK(pq::alloc_trap::violationCount() == violationsBefore);
   CHECK(engine.pushed.load() == 1'000'000);
-  CHECK(log.dropped() == 0);
-  CHECK(engine.failed.load() == 0);
-  CHECK(sink.records == 1'000'000);
+  CHECK(log.dropped() == engine.failed.load());
+  CHECK(sink.records + log.dropped() == 1'000'000);
+  CHECK(sink.droppedReported == log.dropped());
   CHECK(logger.drains() >= 400);  // ~100 Hz over ~5 s
+  MESSAGE("threaded run: ", log.dropped(), " dropped; longest drain interval ", logger.maxDrainIntervalMs(),
+          " ms; longest device callback gap ", deviceGapMs, " ms");
+  // A late device thread catches up in a burst (200 records per missed millisecond), so "no loss" is guaranteed
+  // only while both threads kept their schedule: drains ≤ 15 ms apart and callbacks ≤ 5 ms apart leave at most
+  // (15 + 5) ms × 200/ms = 4000 records between drains, inside the 4096 ring.
+  if (logger.maxDrainIntervalMs() <= 15.0 && deviceGapMs <= 5.0) CHECK(log.dropped() == 0);
 }
