@@ -88,6 +88,11 @@ Status OffscreenTarget::draw(Renderer& renderer, const DrawList& dl, Rgba clear)
   return finish();
 }
 
+Status OffscreenTarget::draw(Renderer& renderer, const FrameDesc& frame) {
+  if (Status s = submit(renderer, frame); !s) return s;
+  return finish();
+}
+
 Status OffscreenTarget::finish() {
   for (uint32_t i = 0; i < framesInFlight_; ++i) {
     if (!pending_[i]) continue;
@@ -99,12 +104,53 @@ Status OffscreenTarget::finish() {
   return Ok{};
 }
 
+Status OffscreenTarget::enableProfiling() {
+  if (profiler_) return Ok{};
+  auto p = GpuProfiler::create(*gpu_, framesInFlight_);
+  if (!p) return std::move(p).error();
+  profiler_ = std::move(*p);
+  return Ok{};
+}
+
+Result<GpuFrameStats> OffscreenTarget::lastFrameStats() {
+  if (!profiler_ || !drawn_) return Error{ErrorCode::InvalidArgument, "lastFrameStats: profiling off or no frame drawn", {}};
+  if (Status s = finish(); !s) return std::move(s).error();
+  GpuFrameStats st;
+  if (!profiler_->read(lastSlot_, st)) return Error{ErrorCode::Device, "lastFrameStats: query results unavailable", {}};
+  return st;
+}
+
 Status OffscreenTarget::submit(Renderer& renderer, const DrawList& dl, Rgba clear) {
+  const DrawLayer layer{&dl, kTransientLayer, 0};
+  FrameDesc f;
+  f.layers = std::span<const DrawLayer>(&layer, 1);
+  f.clear = clear;
+  return submit(renderer, f);
+}
+
+Status OffscreenTarget::submit(Renderer& renderer, const FrameDesc& frame) {
   if (renderer.colorFormat() != kFormat) return Error{ErrorCode::InvalidArgument, "renderer format does not match offscreen target", {}};
   if (renderer.framesInFlight() < framesInFlight_)
     return Error{ErrorCode::InvalidArgument, "renderer has fewer frame slots than the offscreen target", {}};
-  if (dl.targetWidth() != width_ || dl.targetHeight() != height_)
-    return Error{ErrorCode::InvalidArgument, "draw list target size does not match offscreen target", {}};
+  if (frame.layers.empty()) return Error{ErrorCode::InvalidArgument, "offscreen frame without layers", {}};
+  for (const DrawLayer& l : frame.layers)
+    if (!l.list || l.list->targetWidth() != width_ || l.list->targetHeight() != height_)
+      return Error{ErrorCode::InvalidArgument, "draw list target size does not match offscreen target", {}};
+  const bool partial = !frame.full;
+  if (partial && !drawn_) return Error{ErrorCode::InvalidArgument, "partial offscreen frame before a full one", {}};
+  // Render area of a partial frame: the bounding box of its damage inside the target (nothing → no pass).
+  ClipRect area{0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)};
+  if (partial) {
+    ClipRect b{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
+    for (const ClipRect& d : frame.damage) {
+      const ClipRect c{std::max(d.x0, 0), std::max(d.y0, 0), std::min(d.x1, area.x1), std::min(d.y1, area.y1)};
+      if (c.x1 <= c.x0 || c.y1 <= c.y0) continue;
+      b = {std::min(b.x0, c.x0), std::min(b.y0, c.y0), std::max(b.x1, c.x1), std::max(b.y1, c.y1)};
+    }
+    area = b;
+  }
+  const bool render = area.x1 > area.x0 && area.y1 > area.y0;
+
   const uint32_t slot = slot_;
   if (pending_[slot]) {
     // The slot's previous frame must be finished before its command buffer and the renderer's slot are reused.
@@ -114,52 +160,62 @@ Status OffscreenTarget::submit(Renderer& renderer, const DrawList& dl, Rgba clea
     pending_[slot] = false;
     if (r != VK_SUCCESS) return vkError("offscreen frame wait", r);
   }
-  if (Status s = renderer.upload(slot, dl); !s) return s;
+  if (Status s = renderer.upload(slot, frame.layers); !s) return s;
 
   VkCommandBuffer cb = cmd_[slot];
   vkResetCommandBuffer(cb, 0);
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cb, &bi);
+  if (profiler_) profiler_->begin(cb, slot);
   renderer.recordTransfers(cb, slot);
 
-  VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;  // the previous frame's readback copy
-  b.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-  b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-  b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;  // contents are cleared anyway
-  b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image = image_;
-  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-  di.imageMemoryBarrierCount = 1;
-  di.pImageMemoryBarriers = &b;
-  vkCmdPipelineBarrier2(cb, &di);
+  if (render) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;  // the previous frame's readback copy
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | (partial ? VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT : 0);
+    // A full frame clears: the old contents can go. A partial frame loads them (the image sits in
+    // TRANSFER_SRC_OPTIMAL since the previous frame).
+    b.oldLayout = partial ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image_;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cb, &di);
 
-  VkRenderingAttachmentInfo att{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  att.imageView = view_;
-  att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  att.clearValue.color = {{redOf(clear) / 255.0f, greenOf(clear) / 255.0f, blueOf(clear) / 255.0f, alphaOf(clear) / 255.0f}};
-  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  ri.renderArea = {{0, 0}, {width_, height_}};
-  ri.layerCount = 1;
-  ri.colorAttachmentCount = 1;
-  ri.pColorAttachments = &att;
-  vkCmdBeginRendering(cb, &ri);
-  renderer.record(cb, slot, dl);
-  vkCmdEndRendering(cb);
+    VkRenderingAttachmentInfo att{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    att.imageView = view_;
+    att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    att.loadOp = partial ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att.clearValue.color = {{redOf(frame.clear) / 255.0f, greenOf(frame.clear) / 255.0f, blueOf(frame.clear) / 255.0f,
+                             alphaOf(frame.clear) / 255.0f}};
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{area.x0, area.y0}, {static_cast<uint32_t>(area.x1 - area.x0), static_cast<uint32_t>(area.y1 - area.y0)}};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &att;
+    vkCmdBeginRendering(cb, &ri);
+    renderer.record(cb, slot, frame);
+    vkCmdEndRendering(cb);
 
-  b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-  b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-  b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  vkCmdPipelineBarrier2(cb, &di);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    vkCmdPipelineBarrier2(cb, &di);
+  }
+  if (profiler_) {
+    profiler_->drawn(cb, slot);
+    profiler_->end(cb, slot);
+  }
   vkEndCommandBuffer(cb);
 
   VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -169,6 +225,7 @@ Status OffscreenTarget::submit(Renderer& renderer, const DrawList& dl, Rgba clea
   si.pCommandBufferInfos = &cbi;
   if (VkResult r = vkQueueSubmit2(gpu_->queue(), 1, &si, fence_[slot]); r != VK_SUCCESS) return vkError("offscreen submit", r);
   pending_[slot] = true;
+  lastSlot_ = slot;
   slot_ = (slot + 1) % framesInFlight_;
   drawn_ = true;
   return Ok{};

@@ -149,8 +149,8 @@ struct PaintContext {
   const PaintResources& res;
   double time;    // seconds (the clock passed to UiTree::update)
   UiScale scale;  // logical → device px: the tree's scale (res.fonts are resolved at it)
-  IRect clip;    // the scissor in effect: the visible part of the target. Virtualised widgets draw only
-                 // what intersects it (see ScrollView).
+  IRect clip;    // the scissor in effect: the visible part of the target (∩ the damage region in a partial
+                 // redraw, UiTree::paint). Virtualised widgets draw only what intersects it (see ScrollView).
 };
 
 // Places children inside a Custom layout (Widget::arrange). place() assigns a rect and lays the child out.
@@ -448,6 +448,12 @@ public:
   double nextWakeTime() const noexcept;
   // Draws the whole tree into `dl` (already reset to width()×height()) and clears the damage.
   void paint(DrawList& dl, const PaintResources& res, double now);
+  // Partial redraw (T0.7-fix1): paints only the widgets that intersect `region` (PaintContext::clip starts as
+  // region ∩ target, so virtualised widgets draw only that range) and clears the damage. Pass the bounding box
+  // of damage().rects() (read after update()/layoutNow()) and render the list with those rects as the frame's
+  // damage (pq/ui/renderer.h FrameDesc): unchanged pixels stay in the persistent target, so the list needs only
+  // what touches the rects. Contract: a widget's paint() / paintOver() stays inside its rect.
+  void paint(DrawList& dl, const PaintResources& res, double now, const IRect& region);
   Damage& damage() noexcept { return damage_; }
   // Forces a full relayout at the next update() (benchmarks, theme changes).
   void invalidateAll() noexcept;

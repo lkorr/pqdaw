@@ -18,6 +18,7 @@
 
 struct SDL_Window;
 union SDL_Event;
+struct VmaAllocation_T;
 
 namespace pq::ui {
 
@@ -68,6 +69,11 @@ public:
   void setText(std::string_view utf8) override;
 };
 
+// Partial redraw (T0.7-fix1): frames render into a persistent colour image owned by the swapchain (the
+// swapchain images themselves are not guaranteed to keep their contents), which keeps the previous frame, so a
+// frame may redraw only its damage (FrameDesc::full = false). The whole persistent image is then copied into
+// the acquired swapchain image (one vkCmdCopyImage; measured in bench/RESULTS.md) and presented. A recreate
+// (resize, out of date) discards the persistent image: preserved() is false until the next full frame.
 class Swapchain {
 public:
   static Result<std::unique_ptr<Swapchain>> create(GpuContext& gpu, Window& window, uint32_t framesInFlight = 2);
@@ -85,8 +91,17 @@ public:
   // size changed or it went out of date. Skipped = nothing to draw into (minimised / zero-size); the caller
   // just goes back to waiting for events. On Ready, `extent` is the size to build the draw list for.
   Result<FrameStatus> beginFrame(VkExtent2D& extent);
-  // Uploads, records (clear + draw list), submits and presents the frame begun by beginFrame().
+  // Uploads, records, submits and presents the frame begun by beginFrame(). A partial frame needs preserved().
+  Status endFrame(Renderer& renderer, const FrameDesc& frame);
+  // A full frame of one transient draw list.
   Status endFrame(Renderer& renderer, const DrawList& dl, Rgba clear);
+  // The persistent image holds the last frame at the current extent, so the next frame may be partial.
+  // Check after beginFrame() (which may recreate the swapchain).
+  bool preserved() const noexcept { return preserved_; }
+  // GPU timestamps / fragment counts per frame (see GpuProfiler) while on; lastFrameStats() is the most recent
+  // profiled frame whose slot has been waited for (updated in beginFrame, no extra waits).
+  Status setProfiling(bool on);
+  const GpuFrameStats& lastFrameStats() const noexcept { return lastStats_; }
   // Forces a recreate at the next beginFrame (e.g. after a resize event).
   void invalidate() noexcept { dirty_ = true; }
 
@@ -94,6 +109,7 @@ private:
   Swapchain() = default;
   Status recreate(VkExtent2D extent);
   void destroyImages() noexcept;
+  Status createPersistent();
 
   GpuContext* gpu_ = nullptr;
   Window* window_ = nullptr;
@@ -118,6 +134,14 @@ private:
   VkCommandBuffer cmd_[kMaxSlots] = {};
   VkFence inFlight_[kMaxSlots] = {};
   VkSemaphore acquired_[kMaxSlots] = {};
+  // The persistent colour image frames render into (format_, extent_).
+  VkImage persistent_ = VK_NULL_HANDLE;
+  VmaAllocation_T* persistentAlloc_ = nullptr;
+  VkImageView persistentView_ = VK_NULL_HANDLE;
+  bool preserved_ = false;
+  std::unique_ptr<GpuProfiler> profiler_;
+  bool profiling_ = false;
+  GpuFrameStats lastStats_{};
 };
 
 }  // namespace pq::ui

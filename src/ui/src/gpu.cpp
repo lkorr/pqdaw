@@ -152,6 +152,8 @@ Result<std::unique_ptr<GpuContext>> GpuContext::create(const GpuOptions& options
       ctx->physical_ = pd;
       ctx->queueFamily_ = family;
       ctx->deviceName_ = props.deviceName;
+      ctx->pipelineStatistics_ = f2.features.pipelineStatisticsQuery == VK_TRUE;
+      ctx->timestampPeriodNs_ = qf[family].timestampValidBits != 0 ? props.limits.timestampPeriod : 0.0f;
     }
   }
   if (!ctx->physical_) return Error{ErrorCode::Unsupported, "no Vulkan 1.3 device with dynamic rendering and a graphics queue", {}};
@@ -164,9 +166,14 @@ Result<std::unique_ptr<GpuContext>> GpuContext::create(const GpuOptions& options
   VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   f13.dynamicRendering = VK_TRUE;
   f13.synchronization2 = VK_TRUE;
+  // Pipeline statistics queries (fragment-shader invocation counts for the partial-redraw measurements,
+  // GpuProfiler) when the device has them: enabling the feature costs nothing until a query is used.
+  VkPhysicalDeviceFeatures2 enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  enabled.pNext = &f13;
+  enabled.features.pipelineStatisticsQuery = ctx->pipelineStatistics_ ? VK_TRUE : VK_FALSE;
   const char* devExts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
   VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-  dci.pNext = &f13;
+  dci.pNext = &enabled;
   dci.queueCreateInfoCount = 1;
   dci.pQueueCreateInfos = &qci;
   dci.enabledExtensionCount = options.swapchain ? 1u : 0u;
@@ -236,6 +243,85 @@ Status GpuContext::submitAndWaitImpl(void (*fn)(VkCommandBuffer, void*), void* u
   vkFreeCommandBuffers(device_, oneShotPool_, 1, &cb);
   if (r != VK_SUCCESS) return vkError("one-shot submit", r);
   return Ok{};
+}
+
+// --- GpuProfiler ------------------------------------------------------------------------------------------
+
+Result<std::unique_ptr<GpuProfiler>> GpuProfiler::create(GpuContext& gpu, uint32_t slots) {
+  if (slots == 0 || slots > 4) return Error{ErrorCode::InvalidArgument, "GpuProfiler: 1..4 slots", {}};
+  std::unique_ptr<GpuProfiler> p(new GpuProfiler());
+  p->gpu_ = &gpu;
+  p->slots_ = slots;
+  if (gpu.timestampPeriodNs() > 0.0f) {
+    VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    ci.queryCount = 3 * slots;
+    if (VkResult e = vkCreateQueryPool(gpu.device(), &ci, nullptr, &p->stamps_); e != VK_SUCCESS)
+      return vkError("vkCreateQueryPool(timestamps)", e);
+  }
+  if (gpu.pipelineStatistics()) {
+    VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    ci.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+    ci.queryCount = slots;
+    ci.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+    if (VkResult e = vkCreateQueryPool(gpu.device(), &ci, nullptr, &p->stats_); e != VK_SUCCESS)
+      return vkError("vkCreateQueryPool(pipeline statistics)", e);
+  }
+  return p;
+}
+
+GpuProfiler::~GpuProfiler() {
+  if (!gpu_) return;
+  if (stamps_) vkDestroyQueryPool(gpu_->device(), stamps_, nullptr);
+  if (stats_) vkDestroyQueryPool(gpu_->device(), stats_, nullptr);
+}
+
+void GpuProfiler::begin(VkCommandBuffer cb, uint32_t slot) noexcept {
+  if (slot >= slots_) return;
+  if (stamps_) {
+    vkCmdResetQueryPool(cb, stamps_, 3 * slot, 3);
+    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, stamps_, 3 * slot);
+  }
+  if (stats_) {
+    vkCmdResetQueryPool(cb, stats_, slot, 1);
+    vkCmdBeginQuery(cb, stats_, slot, 0);
+  }
+  recorded_[slot] = true;
+}
+
+void GpuProfiler::drawn(VkCommandBuffer cb, uint32_t slot) noexcept {
+  if (slot >= slots_) return;
+  if (stats_) vkCmdEndQuery(cb, stats_, slot);
+  if (stamps_) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, stamps_, 3 * slot + 1);
+}
+
+void GpuProfiler::end(VkCommandBuffer cb, uint32_t slot) noexcept {
+  if (slot >= slots_) return;
+  if (stamps_) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, stamps_, 3 * slot + 2);
+}
+
+bool GpuProfiler::read(uint32_t slot, GpuFrameStats& out) noexcept {
+  if (slot >= slots_ || !recorded_[slot]) return false;
+  GpuFrameStats s;
+  if (stamps_) {
+    uint64_t t[3] = {};
+    if (vkGetQueryPoolResults(gpu_->device(), stamps_, 3 * slot, 3, sizeof t, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) !=
+        VK_SUCCESS)
+      return false;
+    const double ns = gpu_->timestampPeriodNs();
+    s.drawMs = static_cast<double>(t[1] - t[0]) * ns * 1e-6;
+    s.copyMs = static_cast<double>(t[2] - t[1]) * ns * 1e-6;
+    s.hasTimes = true;
+  }
+  if (stats_) {
+    uint64_t f = 0;
+    if (vkGetQueryPoolResults(gpu_->device(), stats_, slot, 1, sizeof f, &f, sizeof f, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+      return false;
+    s.fragments = f;
+    s.hasFragments = true;
+  }
+  out = s;
+  return true;
 }
 
 }  // namespace pq::ui

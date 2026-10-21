@@ -202,6 +202,10 @@ Renderer::~Renderer() {
     if (c.buffer) vmaDestroyBuffer(gpu_->allocator(), c.buffer, c.alloc);
   for (Buffer& b : vertexBuffers_) destroyBuffer(b);
   for (Buffer& b : indexBuffers_) destroyBuffer(b);
+  for (Retained& r : retained_) {
+    for (Buffer& b : r.vertices) destroyBuffer(b);
+    for (Buffer& b : r.indices) destroyBuffer(b);
+  }
   for (VkPipeline p : pipelines_)
     if (p) vkDestroyPipeline(dev, p, nullptr);
   for (VkSampler s : samplers_)
@@ -514,9 +518,19 @@ void Renderer::destroyBuffer(Buffer& b) noexcept {
 }
 
 Status Renderer::upload(uint32_t slot, const DrawList& dl) {
+  const DrawLayer layer{&dl, kTransientLayer, 0};
+  return upload(slot, std::span<const DrawLayer>(&layer, 1));
+}
+
+Status Renderer::upload(uint32_t slot, std::span<const DrawLayer> layers) {
   if (slot >= framesInFlight_) return Error{ErrorCode::InvalidArgument, "Renderer::upload: bad frame slot", {}};
+  if (layers.size() > kMaxFrameLayers) return Error{ErrorCode::InvalidArgument, "Renderer::upload: too many layers", {}};
+  for (const DrawLayer& l : layers)
+    if (!l.list || (l.retained != kTransientLayer && l.retained >= kMaxRetainedLayers))
+      return Error{ErrorCode::InvalidArgument, "Renderer::upload: null list or bad retained-layer id", {}};
   retireSlot(slot);
   ++stats_.framesUploaded;
+  bindingCount_[slot] = 0;
   if (Status s = stageAtlas(); !s) return s;
   // Bind every queued upload (and the chunks holding its bytes) to this frame. Swaps keep the capacities.
   for (uint32_t c : openChunks_) vmaFlushAllocation(gpu_->allocator(), chunks_[c].alloc, 0, chunks_[c].used);
@@ -528,17 +542,81 @@ Status Renderer::upload(uint32_t slot, const DrawList& dl) {
     return a.buffer < b.buffer;
   });
 
-  const auto v = dl.vertices();
-  const auto i = dl.indices();
-  if (i.empty()) return Ok{};
-  const VkDeviceSize vBytes = v.size_bytes(), iBytes = i.size_bytes();
-  if (Status s = ensureBuffer(vertexBuffers_[slot], vBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); !s) return s;
-  if (Status s = ensureBuffer(indexBuffers_[slot], iBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT); !s) return s;
-  std::memcpy(vertexBuffers_[slot].mapped, v.data(), vBytes);
-  std::memcpy(indexBuffers_[slot].mapped, i.data(), iBytes);
+  // Transient layers go back to back into the slot's buffers (each draws with its own vertex base).
+  VkDeviceSize vBytes = 0, iBytes = 0;
+  for (const DrawLayer& l : layers)
+    if (l.retained == kTransientLayer) {
+      vBytes += l.list->vertices().size_bytes();
+      iBytes += l.list->indices().size_bytes();
+    }
+  if (iBytes) {
+    if (Status s = ensureBuffer(vertexBuffers_[slot], vBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); !s) return s;
+    if (Status s = ensureBuffer(indexBuffers_[slot], iBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT); !s) return s;
+  }
+  uint32_t vtxBase = 0, idxBase = 0;
+  for (size_t k = 0; k < layers.size(); ++k) {
+    const DrawLayer& l = layers[k];
+    const auto v = l.list->vertices();
+    const auto i = l.list->indices();
+    LayerBinding& b = bindings_[slot][k];
+    if (l.retained == kTransientLayer) {
+      b = {vertexBuffers_[slot].buffer, indexBuffers_[slot].buffer, static_cast<int32_t>(vtxBase), idxBase};
+      if (!i.empty()) {
+        std::memcpy(static_cast<Vertex*>(vertexBuffers_[slot].mapped) + vtxBase, v.data(), v.size_bytes());
+        std::memcpy(static_cast<uint32_t*>(indexBuffers_[slot].mapped) + idxBase, i.data(), i.size_bytes());
+        stats_.vertexBytesUploaded += v.size_bytes() + i.size_bytes();
+      }
+      vtxBase += static_cast<uint32_t>(v.size());
+      idxBase += static_cast<uint32_t>(i.size());
+      continue;
+    }
+    Retained& r = retained_[l.retained];
+    if (!r.valid[slot] || r.version[slot] != l.version) {
+      r.valid[slot] = false;
+      if (!i.empty()) {
+        if (Status s = ensureBuffer(r.vertices[slot], v.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); !s) return s;
+        if (Status s = ensureBuffer(r.indices[slot], i.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT); !s) return s;
+        std::memcpy(r.vertices[slot].mapped, v.data(), v.size_bytes());
+        std::memcpy(r.indices[slot].mapped, i.data(), i.size_bytes());
+        vmaFlushAllocation(gpu_->allocator(), r.vertices[slot].alloc, 0, v.size_bytes());
+        vmaFlushAllocation(gpu_->allocator(), r.indices[slot].alloc, 0, i.size_bytes());
+        stats_.vertexBytesUploaded += v.size_bytes() + i.size_bytes();
+      }
+      r.version[slot] = l.version;
+      r.valid[slot] = true;
+      ++stats_.retainedUploads;
+    }
+    if (!r.runsValid || r.runsVersion != l.version) {
+      // Once per content version: split every command into runs of kRunIndices indices with their bounds.
+      r.runs.clear();
+      r.cmdRuns.clear();
+      for (const DrawCmd& c : l.list->commands()) {
+        r.cmdRuns.push_back(static_cast<uint32_t>(r.runs.size()));
+        for (uint32_t at = c.idxOffset, end = c.idxOffset + c.idxCount; at < end; at += kRunIndices) {
+          const uint32_t n = std::min(kRunIndices, end - at);
+          IndexRun run{at, n, 3.0e38f, 3.0e38f, -3.0e38f, -3.0e38f};
+          for (uint32_t j = at; j < at + n; ++j) {
+            const Vec2 p = v[i[j]].pos;
+            run.x0 = std::min(run.x0, p.x);
+            run.y0 = std::min(run.y0, p.y);
+            run.x1 = std::max(run.x1, p.x);
+            run.y1 = std::max(run.y1, p.y);
+          }
+          r.runs.push_back(run);
+        }
+      }
+      r.cmdRuns.push_back(static_cast<uint32_t>(r.runs.size()));
+      r.runsVersion = l.version;
+      r.runsValid = true;
+    }
+    b = {r.vertices[slot].buffer, r.indices[slot].buffer, 0, 0, &r};
+  }
+  bindingCount_[slot] = static_cast<uint32_t>(layers.size());
   // No-ops on HOST_COHERENT memory (the usual case); required for correctness otherwise.
-  vmaFlushAllocation(gpu_->allocator(), vertexBuffers_[slot].alloc, 0, vBytes);
-  vmaFlushAllocation(gpu_->allocator(), indexBuffers_[slot].alloc, 0, iBytes);
+  if (iBytes) {
+    vmaFlushAllocation(gpu_->allocator(), vertexBuffers_[slot].alloc, 0, vBytes);
+    vmaFlushAllocation(gpu_->allocator(), indexBuffers_[slot].alloc, 0, iBytes);
+  }
   return Ok{};
 }
 
@@ -635,44 +713,118 @@ VkDeviceSize Renderer::atlasGpuBytes() const noexcept {
 }
 
 void Renderer::record(VkCommandBuffer cb, uint32_t slot, const DrawList& dl) const noexcept {
-  if (dl.empty() || slot >= framesInFlight_ || !vertexBuffers_[slot].buffer) return;
-  const float w = static_cast<float>(dl.targetWidth()), h = static_cast<float>(dl.targetHeight());
-  if (w <= 0.0f || h <= 0.0f) return;
+  const DrawLayer layer{&dl, kTransientLayer, 0};
+  FrameDesc f;
+  f.layers = std::span<const DrawLayer>(&layer, 1);
+  record(cb, slot, f);
+}
 
-  const VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cb, 0, 1, &vertexBuffers_[slot].buffer, &zero);
-  vkCmdBindIndexBuffer(cb, indexBuffers_[slot].buffer, 0, VK_INDEX_TYPE_UINT32);
-  const VkViewport viewport{0.0f, 0.0f, w, h, 0.0f, 1.0f};
+// RT-safe in the sense of the UI thread's frame path: no allocation, no waits.
+void Renderer::record(VkCommandBuffer cb, uint32_t slot, const FrameDesc& frame) const noexcept {
+  if (slot >= framesInFlight_ || frame.layers.empty() || frame.layers.size() != bindingCount_[slot]) return;
+  const DrawList& first = *frame.layers[0].list;
+  const int32_t tw = static_cast<int32_t>(first.targetWidth()), th = static_cast<int32_t>(first.targetHeight());
+  if (tw <= 0 || th <= 0) return;
+
+  // Partial frame: the damage rects (clamped to the target) are cleared, then every draw is scissored to them.
+  constexpr uint32_t kMaxDamage = 64;
+  ClipRect damage[kMaxDamage];
+  uint32_t nDamage = 0;
+  if (!frame.full) {
+    VkClearRect clears[kMaxDamage];
+    for (const ClipRect& d : frame.damage) {
+      if (nDamage == kMaxDamage) break;
+      const ClipRect c{std::max(d.x0, 0), std::max(d.y0, 0), std::min(d.x1, tw), std::min(d.y1, th)};
+      if (c.x1 <= c.x0 || c.y1 <= c.y0) continue;
+      clears[nDamage] = {{{c.x0, c.y0}, {static_cast<uint32_t>(c.x1 - c.x0), static_cast<uint32_t>(c.y1 - c.y0)}}, 0, 1};
+      damage[nDamage++] = c;
+    }
+    if (nDamage == 0) return;
+    VkClearAttachment att{};
+    att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    att.colorAttachment = 0;
+    att.clearValue.color = {{redOf(frame.clear) / 255.0f, greenOf(frame.clear) / 255.0f, blueOf(frame.clear) / 255.0f,
+                             alphaOf(frame.clear) / 255.0f}};
+    vkCmdClearAttachments(cb, 1, &att, nDamage, clears);
+  }
+
+  const VkViewport viewport{0.0f, 0.0f, static_cast<float>(tw), static_cast<float>(th), 0.0f, 1.0f};
   vkCmdSetViewport(cb, 0, 1, &viewport);
-  const PushConstants pc{{2.0f / w, 2.0f / h}, {-1.0f, -1.0f}};
+  const PushConstants pc{{2.0f / static_cast<float>(tw), 2.0f / static_cast<float>(th)}, {-1.0f, -1.0f}};
   vkCmdPushConstants(cb, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc, &pc);
 
-  const int32_t tw = static_cast<int32_t>(dl.targetWidth()), th = static_cast<int32_t>(dl.targetHeight());
   uint32_t boundBlend = UINT32_MAX;
   VkDescriptorSet boundSet = VK_NULL_HANDLE;
+  VkBuffer boundVb = VK_NULL_HANDLE, boundIb = VK_NULL_HANDLE;
   ClipRect boundClip{-1, -1, -1, -1};
-  for (const DrawCmd& c : dl.commands()) {
-    if (c.idxCount == 0) continue;
-    ClipRect clip{std::max(c.clip.x0, 0), std::max(c.clip.y0, 0), std::min(c.clip.x1, tw), std::min(c.clip.y1, th)};
-    if (clip.x1 <= clip.x0 || clip.y1 <= clip.y0) continue;
-    if (static_cast<uint32_t>(c.blend) != boundBlend) {
-      boundBlend = static_cast<uint32_t>(c.blend);
-      vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines_[boundBlend]);
+  const VkDeviceSize zero = 0;
+  for (size_t k = 0; k < frame.layers.size(); ++k) {
+    const DrawList& dl = *frame.layers[k].list;
+    const LayerBinding& b = bindings_[slot][k];
+    if (dl.empty() || !b.vertices || !b.indices) continue;
+    if (b.vertices != boundVb) {
+      boundVb = b.vertices;
+      vkCmdBindVertexBuffers(cb, 0, 1, &b.vertices, &zero);
     }
-    // Unknown or destroyed ids fall back to the shared sprites (page 0). kAtlasTexture and page 0 share a
-    // set, so switching between them binds nothing.
-    const TextureId tex = c.texture < kMaxTextures && textures_[c.texture].state != TexState::Free ? c.texture : kAtlasTexture;
-    const VkDescriptorSet set = textures_[tex].set;
-    if (set != boundSet) {
-      boundSet = set;
-      vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0, nullptr);
+    if (b.indices != boundIb) {
+      boundIb = b.indices;
+      vkCmdBindIndexBuffer(cb, b.indices, 0, VK_INDEX_TYPE_UINT32);
     }
-    if (!(clip == boundClip)) {
-      boundClip = clip;
-      const VkRect2D sc{{clip.x0, clip.y0}, {static_cast<uint32_t>(clip.x1 - clip.x0), static_cast<uint32_t>(clip.y1 - clip.y0)}};
-      vkCmdSetScissor(cb, 0, 1, &sc);
+    const auto cmds = dl.commands();
+    for (size_t ci = 0; ci < cmds.size(); ++ci) {
+      const DrawCmd& c = cmds[ci];
+      if (c.idxCount == 0) continue;
+      const ClipRect clip{std::max(c.clip.x0, 0), std::max(c.clip.y0, 0), std::min(c.clip.x1, tw), std::min(c.clip.y1, th)};
+      if (clip.x1 <= clip.x0 || clip.y1 <= clip.y0) continue;
+      // Full frame: one draw. Partial: one draw per damage rect it reaches (the rects are disjoint, so each
+      // pixel still sees every primitive exactly once).
+      const uint32_t passes = frame.full ? 1 : nDamage;
+      for (uint32_t r = 0; r < passes; ++r) {
+        ClipRect sc = clip;
+        if (!frame.full) {
+          const ClipRect& d = damage[r];
+          sc = {std::max(clip.x0, d.x0), std::max(clip.y0, d.y0), std::min(clip.x1, d.x1), std::min(clip.y1, d.y1)};
+          if (sc.x1 <= sc.x0 || sc.y1 <= sc.y0) continue;
+        }
+        if (static_cast<uint32_t>(c.blend) != boundBlend) {
+          boundBlend = static_cast<uint32_t>(c.blend);
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines_[boundBlend]);
+        }
+        // Unknown or destroyed ids fall back to the shared sprites (page 0). kAtlasTexture and page 0 share a
+        // set, so switching between them binds nothing.
+        const TextureId tex = c.texture < kMaxTextures && textures_[c.texture].state != TexState::Free ? c.texture : kAtlasTexture;
+        const VkDescriptorSet set = textures_[tex].set;
+        if (set != boundSet) {
+          boundSet = set;
+          vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0, nullptr);
+        }
+        if (!(sc == boundClip)) {
+          boundClip = sc;
+          const VkRect2D r2{{sc.x0, sc.y0}, {static_cast<uint32_t>(sc.x1 - sc.x0), static_cast<uint32_t>(sc.y1 - sc.y0)}};
+          vkCmdSetScissor(cb, 0, 1, &r2);
+        }
+        if (frame.full || !b.retained) {
+          vkCmdDrawIndexed(cb, c.idxCount, 1, b.indexBase + c.idxOffset, b.vertexBase, 0);
+          continue;
+        }
+        // Retained layer, partial frame: only the runs whose vertices reach the scissor (a pixel is covered only
+        // if its centre is inside a triangle, so inside the triangle's vertex bounds). Consecutive runs merge.
+        const float sx0 = static_cast<float>(sc.x0), sy0 = static_cast<float>(sc.y0);
+        const float sx1 = static_cast<float>(sc.x1), sy1 = static_cast<float>(sc.y1);
+        uint32_t runFirst = 0, count = 0;
+        for (uint32_t ri = b.retained->cmdRuns[ci], re = b.retained->cmdRuns[ci + 1]; ri < re; ++ri) {
+          const IndexRun& run = b.retained->runs[ri];
+          if (run.x1 >= sx0 && run.x0 <= sx1 && run.y1 >= sy0 && run.y0 <= sy1) {
+            if (count == 0) runFirst = run.first;
+            count += run.count;
+          } else if (count) {
+            vkCmdDrawIndexed(cb, count, 1, b.indexBase + runFirst, b.vertexBase, 0);
+            count = 0;
+          }
+        }
+        if (count) vkCmdDrawIndexed(cb, count, 1, b.indexBase + runFirst, b.vertexBase, 0);
+      }
     }
-    vkCmdDrawIndexed(cb, c.idxCount, 1, c.idxOffset, 0, 0);
   }
 }
 

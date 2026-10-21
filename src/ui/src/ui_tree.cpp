@@ -312,8 +312,12 @@ double UiTree::nextWakeTime() const noexcept {
 }
 
 void UiTree::paint(DrawList& dl, const PaintResources& res, double now) {
+  paint(dl, res, now, {0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)});
+}
+
+void UiTree::paint(DrawList& dl, const PaintResources& res, double now, const IRect& region) {
   layoutNow();
-  PaintContext ctx{dl, res, now, scale_, {0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)}};
+  PaintContext ctx{dl, res, now, scale_, intersect(region, {0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)})};
   stats_.widgetsPainted = 0;
   if (root_) paintWidget(*root_, ctx);
   damage_.clear();

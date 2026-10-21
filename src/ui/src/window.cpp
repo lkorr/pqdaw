@@ -2,6 +2,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <vk_mem_alloc.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -250,6 +251,37 @@ void Swapchain::destroyImages() noexcept {
   views_.clear();
   renderDone_.clear();
   images_.clear();
+  if (persistentView_) vkDestroyImageView(dev, persistentView_, nullptr);
+  if (persistent_) vmaDestroyImage(gpu_->allocator(), persistent_, persistentAlloc_);
+  persistentView_ = VK_NULL_HANDLE;
+  persistent_ = VK_NULL_HANDLE;
+  persistentAlloc_ = nullptr;
+  preserved_ = false;
+}
+
+Status Swapchain::createPersistent() {
+  VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  ici.imageType = VK_IMAGE_TYPE_2D;
+  ici.format = format_;
+  ici.extent = {extent_.width, extent_.height, 1};
+  ici.mipLevels = 1;
+  ici.arrayLayers = 1;
+  ici.samples = VK_SAMPLE_COUNT_1_BIT;
+  ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  VmaAllocationCreateInfo aci{};
+  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  if (VkResult e = vmaCreateImage(gpu_->allocator(), &ici, &aci, &persistent_, &persistentAlloc_, nullptr); e != VK_SUCCESS)
+    return vkError("vmaCreateImage(persistent target)", e);
+  VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  vci.image = persistent_;
+  vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vci.format = format_;
+  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  if (VkResult e = vkCreateImageView(gpu_->device(), &vci, nullptr, &persistentView_); e != VK_SUCCESS)
+    return vkError("vkCreateImageView(persistent target)", e);
+  preserved_ = false;  // new contents: the next frame must be full
+  return Ok{};
 }
 
 Status Swapchain::recreate(VkExtent2D extent) {
@@ -267,7 +299,10 @@ Status Swapchain::recreate(VkExtent2D extent) {
   ci.imageColorSpace = colorSpace_;
   ci.imageExtent = extent;
   ci.imageArrayLayers = 1;
-  ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  // Frames reach the swapchain image by a copy from the persistent target (T0.7-fix1).
+  if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+    return Error{ErrorCode::Unsupported, "swapchain images cannot be transfer destinations", {}};
+  ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   ci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
                                                                                        : caps.currentTransform;
@@ -305,6 +340,7 @@ Status Swapchain::recreate(VkExtent2D extent) {
     VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     if (VkResult e = vkCreateSemaphore(dev, &sci, nullptr, &renderDone_[i]); e != VK_SUCCESS) return vkError("vkCreateSemaphore", e);
   }
+  if (Status st = createPersistent(); !st) return st;
   dirty_ = false;
   ++recreateCount_;
   return Ok{};
@@ -333,6 +369,7 @@ Result<Swapchain::FrameStatus> Swapchain::beginFrame(VkExtent2D& extent) {
 
     if (VkResult e = vkWaitForFences(dev, 1, &inFlight_[slot_], VK_TRUE, UINT64_MAX); e != VK_SUCCESS)
       return vkError("vkWaitForFences", e);
+    if (profiling_) profiler_->read(slot_, lastStats_);  // that slot's previous frame has finished
     const VkResult r = vkAcquireNextImageKHR(dev, swapchain_, UINT64_MAX, acquired_[slot_], VK_NULL_HANDLE, &imageIndex_);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
       dirty_ = true;  // retry once with a fresh swapchain
@@ -350,28 +387,112 @@ Result<Swapchain::FrameStatus> Swapchain::beginFrame(VkExtent2D& extent) {
   return FrameStatus::Skipped;  // still out of date after a recreate (mid-resize): try again next event
 }
 
+Status Swapchain::setProfiling(bool on) {
+  if (on && !profiler_) {
+    auto p = GpuProfiler::create(*gpu_, framesInFlight_);
+    if (!p) return std::move(p).error();
+    profiler_ = std::move(*p);
+  }
+  profiling_ = on;
+  return Ok{};
+}
+
 Status Swapchain::endFrame(Renderer& renderer, const DrawList& dl, Rgba clear) {
+  const DrawLayer layer{&dl, kTransientLayer, 0};
+  FrameDesc f;
+  f.layers = std::span<const DrawLayer>(&layer, 1);
+  f.clear = clear;
+  return endFrame(renderer, f);
+}
+
+Status Swapchain::endFrame(Renderer& renderer, const FrameDesc& frame) {
   if (!frameOpen_) return Error{ErrorCode::InvalidArgument, "endFrame without a successful beginFrame", {}};
   frameOpen_ = false;
   if (renderer.colorFormat() != format_ || renderer.framesInFlight() < framesInFlight_)
     return Error{ErrorCode::InvalidArgument, "renderer format / frame slots do not match the swapchain", {}};
-  if (dl.targetWidth() != extent_.width || dl.targetHeight() != extent_.height)
-    return Error{ErrorCode::InvalidArgument, "draw list size does not match the swapchain extent", {}};
+  if (frame.layers.empty()) return Error{ErrorCode::InvalidArgument, "frame without layers", {}};
+  for (const DrawLayer& l : frame.layers)
+    if (!l.list || l.list->targetWidth() != extent_.width || l.list->targetHeight() != extent_.height)
+      return Error{ErrorCode::InvalidArgument, "draw list size does not match the swapchain extent", {}};
+  const bool partial = !frame.full;
+  if (partial && !preserved_) return Error{ErrorCode::InvalidArgument, "partial frame without a preserved image", {}};
+  // Render area of a partial frame: the bounding box of its damage inside the target (nothing → no pass).
+  ClipRect area{0, 0, static_cast<int32_t>(extent_.width), static_cast<int32_t>(extent_.height)};
+  if (partial) {
+    ClipRect b{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
+    for (const ClipRect& d : frame.damage) {
+      const ClipRect c{std::max(d.x0, 0), std::max(d.y0, 0), std::min(d.x1, area.x1), std::min(d.y1, area.y1)};
+      if (c.x1 <= c.x0 || c.y1 <= c.y0) continue;
+      b = {std::min(b.x0, c.x0), std::min(b.y0, c.y0), std::max(b.x1, c.x1), std::max(b.y1, c.y1)};
+    }
+    area = b;
+  }
+  const bool render = area.x1 > area.x0 && area.y1 > area.y0;
   const VkDevice dev = gpu_->device();
-  if (Status s = renderer.upload(slot_, dl); !s) return s;
+  if (Status s = renderer.upload(slot_, frame.layers); !s) return s;
 
   VkCommandBuffer cb = cmd_[slot_];
   vkResetCommandBuffer(cb, 0);
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cb, &bi);
+  if (profiling_) {
+    profiler_->begin(cb, slot_);
+  } else if (profiler_) {
+    profiler_->forget(slot_);  // this slot's queries hold an older frame's results
+  }
   renderer.recordTransfers(cb, slot_);  // texture / glyph uploads of this frame, ahead of the render pass
+
+  VkImageMemoryBarrier2 pb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  pb.srcQueueFamilyIndex = pb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  pb.image = persistent_;
+  pb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  VkDependencyInfo pdi{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  pdi.imageMemoryBarrierCount = 1;
+  pdi.pImageMemoryBarriers = &pb;
+  if (render) {
+    // The previous frame's copy-out read the image (write-after-read). A partial frame keeps its contents.
+    pb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    pb.srcAccessMask = VK_ACCESS_2_NONE;
+    pb.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    pb.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | (partial ? VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT : 0);
+    pb.oldLayout = partial ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    pb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier2(cb, &pdi);
+
+    VkRenderingAttachmentInfo att{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    att.imageView = persistentView_;
+    att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    att.loadOp = partial ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att.clearValue.color = {{redOf(frame.clear) / 255.0f, greenOf(frame.clear) / 255.0f, blueOf(frame.clear) / 255.0f,
+                             alphaOf(frame.clear) / 255.0f}};
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{area.x0, area.y0}, {static_cast<uint32_t>(area.x1 - area.x0), static_cast<uint32_t>(area.y1 - area.y0)}};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &att;
+    vkCmdBeginRendering(cb, &ri);
+    renderer.record(cb, slot_, frame);
+    vkCmdEndRendering(cb);
+
+    pb.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    pb.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    pb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    pb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    pb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    pb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    vkCmdPipelineBarrier2(cb, &pdi);
+  }
+  if (profiling_) profiler_->drawn(cb, slot_);
+
+  // Persistent image → the acquired swapchain image (whose old contents are discarded), then present.
   VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;  // chained to the acquire semaphore wait
-  b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-  b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;  // chained to the acquire semaphore wait (COPY stage)
+  b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.image = images_[imageIndex_];
   b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -379,34 +500,25 @@ Status Swapchain::endFrame(Renderer& renderer, const DrawList& dl, Rgba clear) {
   di.imageMemoryBarrierCount = 1;
   di.pImageMemoryBarriers = &b;
   vkCmdPipelineBarrier2(cb, &di);
-
-  VkRenderingAttachmentInfo att{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  att.imageView = views_[imageIndex_];
-  att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  att.clearValue.color = {{redOf(clear) / 255.0f, greenOf(clear) / 255.0f, blueOf(clear) / 255.0f, alphaOf(clear) / 255.0f}};
-  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  ri.renderArea = {{0, 0}, extent_};
-  ri.layerCount = 1;
-  ri.colorAttachmentCount = 1;
-  ri.pColorAttachments = &att;
-  vkCmdBeginRendering(cb, &ri);
-  renderer.record(cb, slot_, dl);
-  vkCmdEndRendering(cb);
-
-  b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-  b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  VkImageCopy region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.extent = {extent_.width, extent_.height, 1};
+  vkCmdCopyImage(cb, persistent_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images_[imageIndex_], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                 &region);
+  b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   b.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
   b.dstAccessMask = VK_ACCESS_2_NONE;
-  b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   vkCmdPipelineBarrier2(cb, &di);
+  if (profiling_) profiler_->end(cb, slot_);
   vkEndCommandBuffer(cb);
 
   VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
   wait.semaphore = acquired_[slot_];
-  wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  wait.stageMask = VK_PIPELINE_STAGE_2_COPY_BIT;  // only the copy-out touches the swapchain image
   VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
   signal.semaphore = renderDone_[imageIndex_];
   signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -421,6 +533,7 @@ Status Swapchain::endFrame(Renderer& renderer, const DrawList& dl, Rgba clear) {
   si.pSignalSemaphoreInfos = &signal;
   vkResetFences(dev, 1, &inFlight_[slot_]);  // only now: an aborted frame must leave the fence signalled
   if (VkResult e = vkQueueSubmit2(gpu_->queue(), 1, &si, inFlight_[slot_]); e != VK_SUCCESS) return vkError("vkQueueSubmit2", e);
+  preserved_ = true;  // the persistent image now holds this frame (submitted work is ordered on the queue)
 
   VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   pi.waitSemaphoreCount = 1;

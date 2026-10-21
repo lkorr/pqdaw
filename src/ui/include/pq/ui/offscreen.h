@@ -39,15 +39,25 @@ public:
   // Clears to `clear`, draws `dl` (its target size must equal this target's), submits and waits.
   // `renderer` must have been created with kFormat.
   Status draw(Renderer& renderer, const DrawList& dl, Rgba clear);
+  // Draws a frame (pq/ui/renderer.h FrameDesc), submits and waits. The image keeps its contents between
+  // frames, so a partial frame (frame.full = false) redraws only its damage over the previous frame; the
+  // first frame must be full.
+  Status draw(Renderer& renderer, const FrameDesc& frame);
   // Like draw() but does not wait for the frame: it waits only for the frame slot it reuses (submitted
   // framesInFlight frames ago), as a swapchain frame loop does.
   Status submit(Renderer& renderer, const DrawList& dl, Rgba clear);
+  Status submit(Renderer& renderer, const FrameDesc& frame);
   // Waits for every submitted frame.
   Status finish();
   // Copies the most recent frame back to the CPU (finishes first).
   Result<Image> read();
   // submit() calls that found their slot's previous frame still running (the CPU had to wait for the GPU).
   uint32_t slotStalls() const noexcept { return slotStalls_; }
+
+  // GPU timestamps and fragment-shader invocation counts per frame (T0.7-fix1 measurements). After
+  // enableProfiling(), lastFrameStats() finishes and returns the most recent frame's numbers.
+  Status enableProfiling();
+  Result<GpuFrameStats> lastFrameStats();
 
 private:
   OffscreenTarget() = default;
@@ -67,7 +77,9 @@ private:
   VkFence fence_[kMaxSlots] = {};
   bool pending_[kMaxSlots] = {};  // a submitted frame whose fence has not been waited for
   uint32_t slotStalls_ = 0;
+  uint32_t lastSlot_ = 0;
   bool drawn_ = false;
+  std::unique_ptr<GpuProfiler> profiler_;
 };
 
 // One-call headless screenshot: creates a GPU context, renderer and target, builds `scene` (see scenes.h)

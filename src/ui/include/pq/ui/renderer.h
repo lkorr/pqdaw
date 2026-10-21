@@ -15,12 +15,24 @@
 // its id reused, once every frame slot that might still sample it has been recycled.
 //
 // Frame protocol (Swapchain::endFrame, OffscreenTarget::submit):
-//   wait slot fence → upload(slot, dl) → begin cb → recordTransfers(cb, slot) → begin rendering →
-//   record(cb, slot, dl) → end rendering → submit (signals the slot fence).
+//   wait slot fence → upload(slot, layers) → begin cb → recordTransfers(cb, slot) → begin rendering →
+//   record(cb, slot, frame) → end rendering → submit (signals the slot fence).
 // Slots must be used round-robin with the same framesInFlight for the renderer's lifetime.
 //
 // The renderer does not own a render target: callers (OffscreenTarget, Swapchain) begin dynamic rendering
 // on an image of colorFormat() and call record().
+//
+// Partial redraw (T0.7-fix1). Targets keep their colour image between frames (LOAD), so a frame may redraw
+// only its damage: FrameDesc::full = false with disjoint damage rects. record() then clears each rect to the
+// frame's clear colour and draws every command of every layer once per rect it intersects, scissored to
+// (command clip ∩ rect). Every pixel of a rect therefore sees the clear and then exactly the primitives that
+// cover it, in draw-list order: the same blend sequence as a full redraw, so the result is bit-identical as
+// long as the layers hold everything that touches the rects (a culled list may leave out what does not).
+// A frame is an ordered list of layers (DrawLayer). Transient layers are copied into the slot's buffers every
+// frame (the usual case: what changed this frame, e.g. widgets painted with the damage as clip). A retained
+// layer keeps its vertices on the GPU between frames (per frame slot, re-copied only when its `version`
+// changes), so expensive static content (a scene's background, a view's grid) is neither rebuilt nor
+// re-uploaded while an overlay animates over it.
 
 #include <vulkan/vulkan.h>
 
@@ -47,12 +59,35 @@ struct TextureRect {
   uint32_t x = 0, y = 0, w = 0, h = 0;
 };
 
+inline constexpr uint32_t kTransientLayer = UINT32_MAX;
+
+// One draw list of a frame. Layers draw in order; all have the target's size.
+struct DrawLayer {
+  const DrawList* list = nullptr;
+  // kTransientLayer: copied every frame. Otherwise an id < Renderer::kMaxRetainedLayers whose GPU copy is kept
+  // and refreshed (per frame slot) only when `version` differs from the version last uploaded under that id.
+  uint32_t retained = kTransientLayer;
+  uint64_t version = 0;
+};
+
+// What a frame draws.
+struct FrameDesc {
+  std::span<const DrawLayer> layers;
+  // true: clear the whole target and draw the layers. false: redraw only `damage` (the rest of the target
+  // keeps the previous frame); an empty damage list redraws nothing (the target is presented unchanged).
+  bool full = true;
+  std::span<const ClipRect> damage;  // disjoint, whole pixels; clamped to the target
+  Rgba clear = 0;
+};
+
 class Renderer {
 public:
   static constexpr uint32_t kMaxFramesInFlight = 3;
   static constexpr uint32_t kMaxTextures = 256;  // table size, including kAtlasTexture and the atlas pages
   static constexpr uint32_t kMaxUserTextures = kMaxTextures - kFirstUserTexture;
   static constexpr VkDeviceSize kStagingChunkBytes = VkDeviceSize(1) << 20;  // larger uploads get their own chunk
+  static constexpr uint32_t kMaxRetainedLayers = 4;
+  static constexpr uint32_t kMaxFrameLayers = 8;
 
   static Result<std::unique_ptr<Renderer>> create(GpuContext& gpu, VkFormat colorFormat, uint32_t framesInFlight);
   ~Renderer();
@@ -80,19 +115,28 @@ public:
 
   // Starts frame slot `slot`. The GPU must be done with the slot's previous frame (the caller's per-slot fence
   // guarantees it). Recycles that frame's staging chunks and finished deferred destroys, stages the atlas's
-  // changed rectangles, binds every queued upload to this frame, and copies the draw list's vertices and indices
-  // into the slot's buffers (growing them if needed).
+  // changed rectangles, binds every queued upload to this frame, and copies the transient layers' vertices and
+  // indices into the slot's buffers (growing them if needed) and every retained layer whose version changed
+  // into its own buffers for this slot. At most kMaxFrameLayers layers.
+  Status upload(uint32_t slot, std::span<const DrawLayer> layers);
+  // One transient layer.
   Status upload(uint32_t slot, const DrawList& dl);
   // Records the texture uploads bound by upload(slot): one batched barrier to TRANSFER_DST, the buffer → image
   // copies, one batched barrier back to SHADER_READ_ONLY. Call it outside rendering, before record().
   void recordTransfers(VkCommandBuffer cb, uint32_t slot) noexcept;
-  // Records the draw list into `cb`, which must be inside vkCmdBeginRendering on a colorFormat() target of
-  // the draw list's target size, using the buffers filled by upload(slot). Pipeline / descriptor / scissor
-  // binds are issued only when the command's state actually changes.
+  // Records the frame into `cb`, which must be inside vkCmdBeginRendering on a colorFormat() target of the
+  // layers' target size, using the buffers filled by upload(slot, frame.layers) (same layers, same order).
+  // Full frames rely on the target's LOAD_OP_CLEAR; partial frames clear their damage rects here
+  // (vkCmdClearAttachments) and scissor every draw to them. Pipeline / descriptor / buffer / scissor binds are
+  // issued only when the state actually changes.
+  void record(VkCommandBuffer cb, uint32_t slot, const FrameDesc& frame) const noexcept;
+  // A full frame of one transient layer (after upload(slot, dl)).
   void record(VkCommandBuffer cb, uint32_t slot, const DrawList& dl) const noexcept;
 
   struct Stats {
     uint64_t framesUploaded = 0;
+    uint64_t vertexBytesUploaded = 0;    // draw-list vertices + indices copied into GPU buffers (all layers)
+    uint64_t retainedUploads = 0;        // retained layers (re)copied for a slot
     uint64_t copiesRecorded = 0;   // buffer → image regions
     uint64_t bytesStaged = 0;      // through the staging ring
     uint64_t atlasBytesStaged = 0; // ... of which glyph atlas pages
@@ -182,8 +226,35 @@ private:
   uint64_t serial_ = 0;
   std::array<uint64_t, kMaxFramesInFlight> slotSerial_{};
 
-  std::array<Buffer, kMaxFramesInFlight> vertexBuffers_{};
+  std::array<Buffer, kMaxFramesInFlight> vertexBuffers_{};  // transient layers, concatenated
   std::array<Buffer, kMaxFramesInFlight> indexBuffers_{};
+  // A run of up to kRunIndices consecutive indices of one command and the bounding box of its vertices: partial
+  // frames draw only the runs of a retained layer that reach a damage rect (in order, consecutive runs merged
+  // into one draw), so a 2 px playhead over a 77k-vertex static scene does not re-process the whole scene.
+  static constexpr uint32_t kRunIndices = 3 * 64;
+  struct IndexRun {
+    uint32_t first, count;
+    float x0, y0, x1, y1;
+  };
+  struct Retained {
+    std::array<Buffer, kMaxFramesInFlight> vertices{}, indices{};
+    std::array<uint64_t, kMaxFramesInFlight> version{};
+    std::array<bool, kMaxFramesInFlight> valid{};
+    uint64_t runsVersion = 0;
+    bool runsValid = false;
+    std::vector<IndexRun> runs;
+    std::vector<uint32_t> cmdRuns;  // command k's runs: [cmdRuns[k], cmdRuns[k + 1])
+  };
+  std::array<Retained, kMaxRetainedLayers> retained_{};
+  // Where upload(slot) put each layer: the record() side of the frame.
+  struct LayerBinding {
+    VkBuffer vertices = VK_NULL_HANDLE, indices = VK_NULL_HANDLE;
+    int32_t vertexBase = 0;
+    uint32_t indexBase = 0;
+    const Retained* retained = nullptr;  // retained layers: the run index for partial frames
+  };
+  std::array<std::array<LayerBinding, kMaxFrameLayers>, kMaxFramesInFlight> bindings_{};
+  std::array<uint32_t, kMaxFramesInFlight> bindingCount_{};
   Stats stats_;
 };
 

@@ -41,6 +41,10 @@ public:
   const std::string& deviceName() const noexcept { return deviceName_; }
   bool validationEnabled() const noexcept { return debugMessenger_ != VK_NULL_HANDLE; }
   uint32_t validationErrorCount() const noexcept { return validationErrors_; }
+  // Pipeline statistics queries are enabled (GpuProfiler counts fragment-shader invocations).
+  bool pipelineStatistics() const noexcept { return pipelineStatistics_; }
+  // Nanoseconds per timestamp tick on the graphics queue; 0 when it has no timestamps.
+  float timestampPeriodNs() const noexcept { return timestampPeriodNs_; }
 
   // Live VMA allocations (every buffer and image the UI allocated through the allocator) and their bytes.
   // For leak tests; walks the allocator's blocks, so not for per-frame use.
@@ -77,6 +81,46 @@ private:
   VkFence oneShotFence_ = VK_NULL_HANDLE;
   std::string deviceName_;
   uint32_t validationErrors_ = 0;
+  bool pipelineStatistics_ = false;
+  float timestampPeriodNs_ = 0.0f;
+};
+
+// GPU cost of a frame (T0.7-fix1 measurements): timestamps around the drawing and around the copy of the
+// persistent target to the swapchain image, and the fragment-shader invocations of the drawing.
+struct GpuFrameStats {
+  double drawMs = 0;           // transfers + render pass (clears and draws)
+  double copyMs = 0;           // persistent target → swapchain image (0 offscreen)
+  uint64_t fragments = 0;      // fragment-shader invocations while drawing
+  bool hasTimes = false;       // the queue has timestamps
+  bool hasFragments = false;   // the device has pipeline statistics queries
+};
+
+// Per-frame-slot query pools for GpuFrameStats. A target calls begin() at the start of a slot's command
+// buffer, drawn() after its render pass, end() after its present copy (or right after drawn()), and read()
+// once the slot's fence has signalled (non-blocking; false when the results are not available).
+class GpuProfiler {
+public:
+  static Result<std::unique_ptr<GpuProfiler>> create(GpuContext& gpu, uint32_t slots);
+  ~GpuProfiler();
+  GpuProfiler(const GpuProfiler&) = delete;
+  GpuProfiler& operator=(const GpuProfiler&) = delete;
+
+  void begin(VkCommandBuffer cb, uint32_t slot) noexcept;
+  void drawn(VkCommandBuffer cb, uint32_t slot) noexcept;
+  void end(VkCommandBuffer cb, uint32_t slot) noexcept;
+  bool read(uint32_t slot, GpuFrameStats& out) noexcept;
+  // The slot's next frame is recorded without queries: read() returns false for it.
+  void forget(uint32_t slot) noexcept {
+    if (slot < slots_) recorded_[slot] = false;
+  }
+
+private:
+  GpuProfiler() = default;
+  GpuContext* gpu_ = nullptr;
+  VkQueryPool stamps_ = VK_NULL_HANDLE;  // 3 per slot
+  VkQueryPool stats_ = VK_NULL_HANDLE;   // 1 per slot
+  uint32_t slots_ = 0;
+  bool recorded_[4] = {};
 };
 
 // Human-readable name for a VkResult (error messages).
