@@ -57,7 +57,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
 ## M0 follow-ups (from the M0 review, docs/reviews/M0.md)
 In TASKS.md format, for the orchestrator to schedule. The order is my priority: H-items first, and before T3.1/T3.2 merge where noted.
 
-- [ ] **T0.7-fix3 HiDPI content scale** (`ui`, `app`). Depends on: T0.7, T0.8. **Before T3.1/T3.2 merge.**
+- [~] **T0.7-fix3 HiDPI content scale** *(worker Q, branch task/T0.7-fix3-hidpi)* (`ui`, `app`). Depends on: T0.7, T0.8. **Before T3.1/T3.2 merge.**
   - `UiScale` from `SDL_GetWindowDisplayScale`, updated on `DISPLAY_SCALE_CHANGED`. Layout units are logical px snapped to device px. Font roles resolve to `round(role·scale)` integer-px hinted fonts. Line widths and feathers stay in device px. Screenshot `--scale`.
   - Accept: `text` and `test-pattern` goldens at scale 1.0/1.25/1.5/2.0. A scale change at runtime re-renders without restart (scripted window test). No blurry glyphs: every glyph quad lands on integer device pixels (test).
 
