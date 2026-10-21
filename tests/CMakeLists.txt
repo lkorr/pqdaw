@@ -9,6 +9,7 @@ pq_add_test(pq_tests_smoke
 pq_add_test(pq_tests_core
   SOURCES
     core/test_result.cpp
+    core/test_alloc_trap.cpp
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning
@@ -18,3 +19,11 @@ pq_add_test(pq_tests_tuning
     tuning/test_edo.cpp
     tuning/test_resolve.cpp
   DEPS pq_tuning)
+
+# Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.
+add_executable(pq_alloc_trap_abort_probe core/alloc_trap_abort_probe.cpp)
+target_link_libraries(pq_alloc_trap_abort_probe PRIVATE pq_alloc_trap)
+pq_target_defaults(pq_alloc_trap_abort_probe)
+add_dependencies(pq_tests_core pq_alloc_trap_abort_probe)
+target_compile_definitions(pq_tests_core PRIVATE
+  PQ_ALLOC_TRAP_PROBE="$<TARGET_FILE:pq_alloc_trap_abort_probe>")
