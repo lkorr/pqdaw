@@ -40,3 +40,15 @@ Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 | 2026-10-20 | 344dccf | lookup + evaluateLinearForm n=7 / n=24 | release, pq_bench_mos | 1.44 / 1.19 ns/degree median | per degree incl. amortised lookup; evaluation alone is one FMA-shaped expression per degree |
 | 2026-10-20 | 344dccf | buildMosRegions maxSize=18 | release, pq_bench_mos | 7.7 µs/build median | region chart rebuild (UI) |
 | 2026-10-20 | 344dccf | resolveHz/degree (MOS 5L 2s) | release, pq_bench_mos | 7.3 ns/pitch median (min 7.2) | table read + exp2; first version divided by n (10.2 ns), in-range fast path added |
+| 2026-10-20 | 8faacb9 | drawlist/addRectFilled (10k) | release, pq_bench_ui | 12.1 ns/rect | 4 vtx + 6 idx; machine shared with 3 parallel builds, ±20 % noise |
+| 2026-10-20 | 8faacb9 | drawlist/addRoundedRectFilled r=3 (10k) | release | 152 ns/rect | 32 vtx + 138 idx; was 309 before local write pointers + radius memo |
+| 2026-10-20 | 8faacb9 | drawlist/addRoundedRectFilled r=3 (500, in cache) | release | 141 ns/rect | compute-bound, not bandwidth |
+| 2026-10-20 | 8faacb9 | drawlist/addBlob (10k) | release | 13.4 ns/blob | textured glow sprite quad |
+| 2026-10-20 | 8faacb9 | drawlist/test-pattern build 800×480 | release | 3.7 µs/frame | 804 vtx, 2574 idx |
+| 2026-10-20 | 8faacb9 | renderer/upload test-pattern | release, RTX 3060 Ti | 0.64 µs/frame | system-RAM buffers; 4.0 µs with ReBAR device-local memory |
+| 2026-10-20 | 8faacb9 | renderer/upload 10k rounded rects (12 MB) | release, RTX 3060 Ti | 0.44 ms/frame | 1.79 ms with ReBAR device-local memory |
+| 2026-10-20 | 8faacb9 | offscreen/test-pattern 800×480 frame | release, RTX 3060 Ti | 71 µs/frame | upload + record + submit + fence wait (latency-bound) |
+| 2026-10-20 | 8faacb9 | offscreen/10k rounded rects 1920×1080 frame | release, RTX 3060 Ti | 1.25 ms/frame | 2.04 ms with ReBAR device-local draw buffers |
+| 2026-10-20 | 8faacb9 | pqdaw window idle (test pattern, no animation) | release | 0.0 ms CPU / 10 s | blocked in SDL_WaitEvent |
+| 2026-10-20 | 8faacb9 | pqdaw --animate, 100 Hz display | release | 58–70 ms CPU/s (≈0.6 ms/frame) | MAILBOX 62.5, IMMEDIATE 65.6, FIFO 70.3 ms/s; nearly all driver acquire/submit/present, scene build is 4 µs |
+| 2026-10-20 | 8faacb9 | pqdaw first frame | release | 189 ms after process start | from --window-selftest; SPEC target < 300 ms |
