@@ -113,7 +113,7 @@ Every note has exactly one **pitch identity**, which decides how it behaves when
   - *Ratio identities*: stored as integers (n/d), so composition never piles up rounding error. They become Hz only at the final step.
 - Notes can be converted between identities explicitly (snap ratio→degree, freeze degree→cents, and so on).
 - Each note also carries per-note expression curves: pitch offset (cents), gain, pan, timbre. These are curves, so a pitch glide is part of the note, not a separate pitch-bend stream.
-- Time: int64 ticks, PPQ = 27,720 (lcm 1..11, exact for tuplets up to 11), plus a tempo map.
+- Time: int64 ticks, PPQ = 221,760 (2⁶·3²·5·7·11: straight notes exact down to 1/256, tuplets up to 11 exact; decided 2026-10-21, was 27,720), plus a tempo map.
 - No note-count limit. Pitch range is unbounded (MIDI's 128 is irrelevant internally).
 
 ### 3.2 Tunings: named, shared, independently automatable
@@ -432,7 +432,7 @@ Ableton's layout: control bar (top), browser (left), track area (centre), detail
   - **Adaptive** (grid density follows zoom; Ctrl+1 narrow / Ctrl+2 widen) or **fixed** (1/1 … 1/64). Ctrl+3 triplet, Ctrl+4 snap on/off, Ctrl+5 fixed/adaptive.
   - **Right-click grid menu**: Adaptive (Narrowest…Widest) / Fixed (values) / **Straight, Triplet (3), 5-tuplet, 7-tuplet, 11-tuplet** / Snap / Off.
   - Tuplet *n* divides each straight grid cell's parent span into *n* (e.g. 7-tuplet at 1/16 = 7 notes per quarter).
-  - All of 3, 5, 7, 11 and their products land exactly on integer ticks (PPQ 27,720 = 2³·3²·5·7·11). Unsupported primes (13+) still work, with sub-tick rounding.
+  - All of 3, 5, 7, 11 and their products land exactly on integer ticks, as do straight notes down to 1/256 (PPQ 221,760 = 2⁶·3²·5·7·11). Unsupported primes (13+) still work, with sub-tick rounding.
 - **Quantize** (Ctrl+U) to the current grid, including tuplet grids, with amount %, start/end, and quantize to groove.
 - **Groove pool**: extract grooves from audio/MIDI clips, a stock groove library, per-clip groove with base/quantize/timing/random/velocity amounts, a global groove amount, and "commit groove".
 
@@ -596,5 +596,12 @@ All signal displays reuse PQ Meter's DSP, ballistics and look, which the owner h
 - Take lanes/comping, Capture MIDI, groove pool, MIDI/key mapping, full export/freeze/bounce/collect are v1.
 - RMSC: full port of Borrasca Sidechainer 3 (1-band), rectified RM only, multiband later. Compressor has sidechain (any source, tap point, EQ) and lookahead 0/1/10 ms.
 - The low-level language is a circuit diagram (schematic symbols, orthogonal wires, boolean logic atoms).
+
+- 2026-10-21 (user answers to docs/QUESTIONS.md):
+  - PPQ = 221,760 (Q3): exact straight notes to 1/256 plus 3/5/7/9/11-tuplets.
+  - ASIO is required (Q12): own clean-room ASIO host; audio preferences let the user choose driver type (ASIO / WASAPI shared / exclusive), device, sample rate, buffer size and I/O channels, as in every DAW.
+  - Ratio notes share a virtual fundamental derived from what's entered; it updates as notes change (Q40).
+  - Default project is empty; mute/deactivate as in Ableton: the track activator mutes, `0` toggles activator on tracks and deactivates clips (Q15).
+  - Theme reference: the user's Live 12 Arrangement screenshot (Q47; kept out of the repo).
 
 No open questions remain for draft 1.

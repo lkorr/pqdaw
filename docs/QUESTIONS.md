@@ -25,7 +25,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: PPQ 27720 = 2³·3²·5·7·11, so a whole note is 110880 ticks and 1/64 = 1732.5 ticks. SPEC §9.2 lists fixed grids down to 1/64. All 3/5/7/11-tuplets of 1/64 are exact (they span 1/32, 1/16 or 1/8), only the straight 1/64 is not.
 - Options: A) keep PPQ 27720; straight 1/64 grid lines are computed from the whole note and rounded per line (alternating 1732/1733, no drift), time signatures with denominator 64 are rejected. B) double PPQ to 55440 (1/64 exact; still lcm-friendly; int64 range is no issue).
 - Provisional choice: A (`noteValueIsExact(64) == false`, `noteValueTicks(64)` rounds, `TimeSigMap` rejects x/64). Reversible: PPQ is one constant, nothing is persisted yet.
-- Status: open
+- Status: answered (2026-10-21, user: solve it the way DAWs do / the best way). Decision: PPQ becomes 221,760 = 2^6·3^2·5·7·11 (8 × the old value), so straight notes are exact down to 1/256 and 3/5/7/9/11-tuplets (and products) stay exact at every value; x/64 signatures become legal. Task T0.5-fix1.
 
 ## Q4 · 2026-10-20 · T0.5 · Tempo ramp law
 - Context: SPEC §9.2 asks for tempo ramps but not their shape.
@@ -90,6 +90,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options (exclusive + underruns): A) our own WASAPI backend (event-driven, exclusive and shared, `GetCurrentPadding`-based underrun detection, no extra ring buffer: also lower latency than RtAudio's ring) behind the existing `AudioDevice` interface; B) patch RtAudio (vendored fork); C) another library (PortAudio has WASAPI exclusive, MIT-style, but also bundles ASIO SDK for its ASIO host).
 - Options (ASIO): A) keep it opt-in (`-DPQ_WITH_ASIO=ON`) and let the user accept Steinberg's licence for their own builds; B) a clean-room ASIO host header (the IASIO COM vtable is small) so ASIO ships under our licence; C) drop ASIO.
 - Provisional choice: RtAudio WASAPI shared only, honestly reported: `ShareMode::Exclusive` / `--exclusive` return `ErrorCode::Unsupported`; ASIO compiled only with `PQ_WITH_ASIO=ON` (default OFF; `--asio` explains why when off); the stream defaults to the device's mix rate to avoid the resampler and `StreamInfo::backendResampling` flags it otherwise; `--sine` adds a backend-independent check (frames delivered vs. the span between first and last callback) and a deadline-miss counter. All reversible: backends sit behind `AudioDevice` + `CallbackRunner`, so option A replaces only `rtaudio_device.cpp`. I'd recommend A (own WASAPI) as a later task, and asking the user about ASIO B vs A.
+- Status: answered (2026-10-21, user: yes we need ASIO; it must work like every DAW, with the ability to choose audio drivers). Decision: our own clean-room ASIO host (no Steinberg SDK files), plus an audio device manager + preferences (driver type ASIO / WASAPI shared / WASAPI exclusive, device, rate, buffer, I/O channels). Tasks T0.6-fix2, T3.18.
 
 ## Q13 · 2026-10-20 · T1.6 · Bool storage: 32-bit lane masks instead of packed bits
 - Context: SPEC §7.1 says bools are "stored as SIMD lane masks: one bit per voice per sample in packed form, expanded to 0/1 floats only where a real-valued input consumes them".
@@ -136,6 +137,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Expression lanes in M3: velocity + chance only; per-note pitch/gain/timbre curves deferred to M7. Provisional: yes.
 - Note-clip loop semantics: notes outside the loop brace kept and hidden (Ableton) vs cropped. Provisional: kept.
 - Also now relevant: Q2 (EDO row labels), Q3 (PPQ vs straight 1/64), Q4 (tempo ramp law).
+- Status: answered in part (2026-10-21, user): the default project is empty; mute/deactivate work exactly like Ableton — the track activator button mutes the track, and the same hotkey (`0`) toggles the activator for selected tracks and deactivates/reactivates selected clips (audio and note clips). Mute is a param (no recompile). Other items stay provisional.
 
 ## Q16 · 2026-10-20 · T0.8 · Inter has no ♯ ♭ ♮ glyphs
 - Context: SPEC §15 picks Inter (or IBM Plex Sans) for UI text. Inter 4.1 has no U+266F ♯, U+266D ♭ or U+266E ♮ (checked in its cmap; ¢, −, ∞, ×, ≈, arrows and super/subscript digits are present). A microtonal DAW prints accidentals everywhere (note names, MOS degree names, JI labels); missing glyphs render as .notdef boxes.
@@ -299,7 +301,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: SPEC §6.1 says Ratio/Harmonic notes move to `(n ± 1)/d`, and TASKS asks for 5/4 → 6/4. A `PitchId` ratio is stored reduced, so 6/4 is 3/2, and the next Up from 3/2 is 4/2 = 2/1, not 7/4: the fundamental 1/4 is lost.
 - Options: A) step on the reduced ratio's own denominator, with an optional shared denominator D from the caller (`harmonicDenominator`: the step uses lcm(d, D)), so a view can keep a chord's fundamental (e.g. D = lcm of the selection's denominators, or a value remembered during a key-repeat gesture); B) store unreduced ratios (changes PitchId's canonical form and equality); C) a per-note "fundamental denominator" field (Note is at its 64-byte budget).
 - Provisional choice: A (`ops::stepPitch`). Also: Harmonic notes step voiceIndex ± 1 (≥ 0; the upper bound needs the JI object, which the model does not have yet) and do not move by equave; Ratio Shift multiplies by the tuning's equave ratio when it is exact (EDO ratio equave, Scala ratio equave) or, for a cents equave (MOS, EDO in cents), by p/q with p, q ≤ 64 within 0.001 ¢ of it (2/1, 3/1…); otherwise the note does not move. Cents notes step to the next line of the tuning's degree lattice (all degrees in all equaves, MOS stretch included; a line within 1e-6 ¢ counts as "on" it) or of an EDO display grid when the view passes one.
-- Status: open
+- Status: answered (2026-10-21, user: the virtual fundamental should change and update based on what's entered). Decision: Ratio notes in a clip share a virtual fundamental derived from the ratios entered (1/lcm of their denominators relative to the anchor); Up/Down moves to the next harmonic of the current fundamental; the fundamental updates live as notes change and is drawn per SPEC §4.3. Task T3.6-fix1 (model) + T3.11 (roll).
 
 ## Q41 · 2026-10-21 · T3.6 · Clip and time-edit semantics not fixed by SPEC/TASKS
 - Context: Live's manual describes these operations but not every edge; T3.6 had to pick.
@@ -349,7 +351,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Two cost-driven choices: (1) `fonts.numeric` is not tabular by default: a tabular role is another font per UI scale (≈95 more glyphs per scale) and pushed the 5-scale atlas test past one R8 page; numbers in a centred drag box may shift by a pixel while dragging. Set `"tabular": true` to trade atlas space for steady digits. (2) Rounded corners at radius 2 cost ≈ 38 % of the gallery's paint time (bench: 52.5 µs vs 32.3 µs square); an SDF/instanced path (Q11 B) would remove that if views need it.
 - Options: A) keep these and tune by eye in the design review; B) sample colours from your Live 12 install (screenshots) and replace the values; C) a lighter "Medium" variant as a second theme file.
 - Provisional choice: A (values are data; hot reload in dev builds makes B/C quick).
-- Status: open
+- Status: answered (2026-10-21, user supplied a screenshot of their Live 12 Arrangement View; kept git-ignored at reference/inspiration/live12/arrangement.png). Decision: the theme is re-derived from that screenshot (dark blue-grey/teal-grey surfaces, orange accents, track headers on the right). Task T3.2-fix1.
 
 ## Q48 · 2026-10-21 · T3.2 · Keymap details: manual sections, action ids, unbindable chords
 - Context: `docs/HOTKEYS.md` must cite the Live 12 manual section of each shortcut; the worker had no copy of the manual, so the subsection names (Transport, Editing, Showing and Hiding Views, Arrangement View Commands, Commands for Tracks, MIDI Note Editor, …) are from memory of the Live 11/12 *Live Keyboard Shortcuts* chapter. Action ids are per scope where the same chord means different things in different views (`arrangement.duplicate` vs `pianoroll.duplicate`), global otherwise (`grid.narrow` acts on the focused editor). Every binding is `deferred:M<n>` for now: no view actions exist before T3.7.

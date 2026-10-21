@@ -69,10 +69,9 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Event-driven `IAudioClient`/`IAudioClient3`: exclusive + shared (low-latency shared periods), float32 or int32/24 exclusive formats, no extra ring, MMCSS "Pro Audio". Underruns detected via `GetCurrentPadding` before each write plus `IAudioClock` position vs frames written. Lateness metric (L2).
   - Accept: exclusive 64- and 128-frame streams open on the Focusrite. 60 s `--sine` with max callback interval ≤ 1.5× period. An injected stall (test flag: sleep 3× period once) is reported as exactly 1 underrun. RtScope/alloc-trap clean. Latency reported in frames and matches a loopback measurement within 1 period. RtAudio stays for ASIO until T0.6-fix2.
 
-- [ ] **T0.6-fix2 ASIO decision + host** (`engine`). Depends on: user answer to Q12. 👁 (decision)
-  - Option B: clean-room IASIO COM host (driver enumeration from the registry, `ASIOInit`, buffer switch callback) under our licence; or keep opt-in.
-  - Accept: per the decision. If B: Focusrite USB ASIO 64 frames, 60 s, 0 resync requests, RtScope-clean callback.
-
+- [ ] **T0.6-fix2 Own ASIO host** (`engine`). Depends on: T0.6-fix1. (User decision Q12: ASIO is required.)
+  - Clean-room IASIO COM host under our licence (no Steinberg SDK files): driver enumeration from the registry (HKLM\SOFTWARE\ASIO), CoCreateInstance, init, channel/format queries (Int32LSB, Int24LSB, Float32LSB, Int16LSB at least), createBuffers + bufferSwitch/bufferSwitchTimeInfo callbacks, sample-rate set/query, latency query, reset/resync messages, control panel launch. Same `AudioDevice` interface and CallbackRunner as the WASAPI backend; replaces RtAudio's ASIO (RtAudio can be dropped if nothing else needs it — measure).
+  - Accept: Focusrite USB ASIO at 64 frames / 48 kHz: 60 s `--sine` with 0 resync/xrun and callback interval ≤ 1.5× period; ASIO4ALL and Voicemeeter ASIO open and play; device change / sample-rate change / reset request from the driver handled without crash; RtScope-clean callback; latency reported (input/output) from the driver.
 - [x] **T0.7-fix2 Widget-grade draw-list primitives** *(e30b7d0)* (`ui`). Depends on: T0.7. Before T3.2.
   - `addRectStroke`, `addRoundedRectStroke`, public `addConvexPolyFilled`, `addCircleFilled/Stroke`, `addArcStroke` (knob rings), `addTriangleFilled`, snapped `addHLine/addVLine`. Fix `addRectFilledMultiColor` to be bilinear (centre vertex or N×N), or correct its doc.
   - Accept: `primitives` golden scene. Unit tests: a 1 px stroke at integer coordinates touches exactly one pixel column at full alpha; arc tessellation chord error ≤ 0.2 px; the 4-corner gradient's centre pixel is within 2/255 of the bilinear value. Benchmarks recorded.
@@ -112,6 +111,10 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
 - [~] **T0.x-flake Timing tests robust under load** (`tests`, `ui`, `engine`). Depends on: —. *(worker AG, branch task/T0.x-flake)*
   - Several timing/perf assertions fail intermittently while other builds run (seen: `pq_tests_ui` test_render.cpp "stalls == 0", `pq_tests_engine` test_null_device.cpp:281 callback within 50 ms, `pqdaw_window_selftest_partial` CPU ratio < 25 %, glyph-upload frame-interval check). `main` must always pass.
   - Accept: each timing assertion either measures something load-independent (thread CPU cycles, counts, deterministic fake clocks) or moves to an opt-in perf label (`ctest -L perf`) that the standard build doesn't run; the functional part of each test stays in the default suite. 10 consecutive full release `ctest` runs pass while a parallel `cmake --build` of the other preset runs.
+
+- [ ] **T0.5-fix1 PPQ 221,760** (`core`, all users). Depends on: T0.5. (User decision Q3.)
+  - Change PPQ from 27,720 to 221,760 (2⁶·3²·5·7·11) everywhere: core time.h constant, grid (T3.3: straight values down to 1/256, x/64 signatures legal), document/serialization (schemaVersion bump + migration multiplying stored ticks by 8; existing fixtures migrated), tests/goldens/benchmarks that hard-code tick values.
+  - Accept: all tests pass with the new constant; every straight note value 1/1…1/256 and every 3/5/7/9/11-tuplet of them is an exact integer tick count; a schema-1 project loads, migrates and re-saves as schema 2 with all positions × 8; the 10 h @ 192 kHz tempo round-trip test still holds within ½ sample.
 
 ## M1: Engine core
 
@@ -270,7 +273,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Accept: scripted tests asserting the resulting document plus exactly one undo step: drag-move with snap on a 7-tuplet grid lands on exact ticks; Alt-drag copy; resize; split; duplicate; consolidate; Ctrl+Shift+D; every grid menu item and Ctrl+1–5. A 60-frame drag = one undo entry. Golden `arrangement-selection` (clip + time selection, drag ghost).
 
 - [ ] **T3.10 Track headers, groups and mixer section** (`views`). Depends on: T3.8, T3.6. 👁
-  - Header mixer section: volume, pan, mute (activator), solo, arm, sends per return, output routing dropdown, tuning chip coloured per main tuning. Ctrl+T, Ctrl+R, Ctrl+G, ungroup, colour menu, height resize, fold. Returns and master at the bottom. PQ Meter-style meters fed by a plain-data `MeterSource`. Ableton solo semantics (exclusive; Ctrl-click additive; group solo solos members; member solo keeps parents audible) as a pure function `effectiveAudible(track)` shared with T3.17. Basic mixer view (Ctrl+Alt+M) from the same strips. Knob/fader drags coalesce to one undo step.
+  - Header mixer section (on the right of the lanes, as in Live): volume, pan, track activator = mute (button and `0`, a param — no recompile; Q15), solo, arm, sends per return, output routing dropdown, tuning chip coloured per main tuning. Ctrl+T, Ctrl+R, Ctrl+G, ungroup, colour menu, height resize, fold. Returns and master at the bottom. PQ Meter-style meters fed by a plain-data `MeterSource`. Ableton solo semantics (exclusive; Ctrl-click additive; group solo solos members; member solo keeps parents audible) as a pure function `effectiveAudible(track)` shared with T3.17. Basic mixer view (Ctrl+Alt+M) from the same strips. Knob/fader drags coalesce to one undo step.
   - Accept: goldens `tracks-mixer`, `mixer-view`; 20+ table tests for `effectiveAudible`; scripted Ctrl+T inserts after the selection, Ctrl+G across nested groups, rename via Ctrl+R + Enter, a volume drag is one undo step with a `paramOnly` ChangeSet.
 
 - [~] **T3.11 Piano roll: EDO mode and note editing** *(worker AI, branch task/T3.11-piano-roll)* (`views`). Depends on: T3.7, T3.6, T3.3, T2.2. 👁
@@ -300,6 +303,18 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 - [ ] **T3.17 Project lowering and playback link** (`document`, `app`). Depends on: T3.16, T3.4, T3.7, T3.10, T1.9, T1.10 (T2.6 for tuning automation).
   - `doc::lower(Snapshot)` → graph Patch + param map + sequence/automation descriptions: per MIDI track an instrument (M3 default instrument, Q15) → volume/pan → send taps → parent group sum → master; returns; mute/solo via `effectiveAudible`; param slots keyed by stable `ParamRef`. App controller per ChangeSet: `structural` → debounced recompile + T1.9 hot swap; `sequenceOnly` → publish a new SequenceImage; `paramOnly` → `EngineCommand` param writes. `TransportPort` over the engine; playhead and meters fed back; audition on click. `pqdaw --project <dir> --render out.wav [--seconds N]`.
   - Accept: golden offline renders (T1.10 helper) of a fixture with 2 MIDI tracks in 31edo and 5L2s, a group with volume automation, a return with a send, a muted track. Compile-count hooks: moving a note or changing velocity → 0 recompiles, effective at the next block; volume change → 0 recompiles; adding a track → exactly 1 recompile, click-free swap (T1.9 criteria). Solo/mute renders match `effectiveAudible`. Idle stopped app ≈ 0% CPU. End-to-end with NullDevice: open fixture, Space, after 1 s of blocks the playhead reported to views is within one block of 1 s.
+
+- [ ] **T3.2-fix1 Retheme from the user's Live 12 screenshot** (`ui`, assets). Depends on: T3.2. 👁 (User decision Q47.)
+  - Re-derive `assets/themes/ableton-dark.json` (and its generator) from the user's Live 12 Arrangement screenshot at `reference/inspiration/live12/arrangement.png` (git-ignored: never commit it or crops of it): sample surface/panel/track-lane/header/ruler/grid/text/accent/selection colours, compare control proportions (button heights, header widths, font sizes). Keep the contrast test passing (adjust targets only with justification).
+  - Accept: a side-by-side comparison image (our `widgets`/`shell`/arrangement scenes vs the screenshot regions, generated locally, not committed) checked by eye and listed in REVIEW.md with the sampled values; all goldens regenerated deliberately.
+
+- [ ] **T3.6-fix1 Virtual fundamental in the model** (`document`, `tuning`). Depends on: T3.6, T3.11. (User decision Q40.)
+  - Ratio notes in a clip share a virtual fundamental derived from what is entered (1/lcm of their denominators relative to the anchor), updated as notes are added, moved or deleted; Up/Down = next harmonic of the current fundamental; explicit fundamental lock (`b`+index, SPEC §6.2) can override. Decide whether the fundamental is stored (with its update rule) or derived on read; keep reduced ratios exact either way.
+  - Accept: 5/4 → 6/4 → 7/4 by Up; adding 4/3 moves the fundamental to 1/12; deleting it moves it back; undo restores it; serialization round-trips; the piano roll draws it (SPEC §4.3).
+
+- [ ] **T3.18 Audio preferences + device manager** (`engine`, `views`, `app`). Depends on: T0.6-fix1, T0.6-fix2, T3.7. 👁 (User decision Q12.)
+  - Preferences window (Ableton "Audio" tab equivalent): driver type (ASIO / WASAPI shared / WASAPI exclusive), input/output device, sample rate, buffer size, input/output channel configuration, latency readout, test tone, CPU meter; persisted in user settings; device hot-plug and driver reset handled (stop → reopen → resume, Program kept).
+  - Accept: switching driver type/device/rate/buffer while playing reopens the stream without crash or allocation on the audio thread; settings persist across restarts; scripted test with NullDevice + fake device list; golden of the preferences window.
 
 ## M4 onward (outline: refine into tasks before starting; most need user review)
 - **M4**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator. 👁
