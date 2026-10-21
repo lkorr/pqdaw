@@ -7,6 +7,7 @@
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
 #include "pq/ui/scene_textures.h"
+#include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
 
 namespace pq::views {
@@ -20,9 +21,31 @@ struct SceneEntry {
   Status (*setup)(Shell& shell);
 };
 
+ArrangementView* arrangementOf(Shell& shell) {
+  ui::Widget* w = shell.slot(ShellSlot::TrackArea).find("arrangement");
+  return dynamic_cast<ArrangementView*>(w);
+}
+
+// T3.8: the arrangement at its default zoom, the start marker at bar 5 (tests/views/fixtures/arrangement).
+Status setupArrangementBasic(Shell& shell) {
+  if (!arrangementOf(shell)) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  shell.context().setStartMarker(4 * kTicksPerWhole);
+  return Ok{};
+}
+
+// T3.8: zoomed out to 14 logical px per 4/4 bar (adaptive grid and previews at a coarse level).
+Status setupArrangementZoomedOut(Shell& shell) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  a->setTimeView(0.0, 14.0 / static_cast<double>(kTicksPerWhole));
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
+    {"arrangement-basic", 1280, 800, setupArrangementBasic},
+    {"arrangement-zoomed-out", 1280, 800, setupArrangementZoomedOut},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

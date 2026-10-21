@@ -12,6 +12,17 @@ Result<ActionIndex> ActionRegistry::add(std::string id, Handler handler, Enabled
   return static_cast<ActionIndex>(actions_.size() - 1);
 }
 
+Result<ActionIndex> ActionRegistry::set(std::string id, Handler handler, Enabled enabled, ActionOptions options) {
+  const ActionIndex existing = find(id);
+  if (existing == kNoAction) return add(std::move(id), std::move(handler), std::move(enabled), options);
+  if (!handler) return Error{ErrorCode::InvalidArgument, "action '" + id + "' has no handler", {}};
+  Action& a = actions_[existing];
+  a.handler = std::move(handler);
+  a.enabledFn = std::move(enabled);
+  a.options = options;
+  return existing;
+}
+
 ActionIndex ActionRegistry::find(std::string_view id) const noexcept {
   for (size_t i = 0; i < actions_.size(); ++i)
     if (actions_[i].id == id) return static_cast<ActionIndex>(i);

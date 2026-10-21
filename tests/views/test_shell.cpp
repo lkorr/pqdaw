@@ -12,6 +12,7 @@
 #include "pq/ui/controls.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
+#include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
@@ -313,23 +314,36 @@ TEST_CASE("shell: the position display reads the playhead only while playing; id
   CHECK(std::isinf(f.d.tree().nextWakeTime()));
 }
 
-TEST_CASE("shell: while playing, a position change damages only the position display (partial redraw)") {
+TEST_CASE("shell: while playing, a position change damages only the position display and the playhead (partial redraw)") {
   Fixture f;
   f.d.advance(0.1);
   f.d.press("Space");
   f.d.advance(0.05);  // the play button's lit state is painted
   f.port.setPlayheadTick(5 * kTicksPerWhole);
-  f.d.tree().update(f.d.now() + 0.2);  // the position timer fires
+  f.d.tree().update(f.d.now() + 0.2);  // the position timer fires (and the arrangement's playhead timer, T3.8)
   const IRect pos = f.d.rect(kPosition);
+  // Since T3.8 the arrangement's playhead line also moves: its old and new columns (a pixel either side, from the
+  // ruler down through the lanes) may be damaged too, nothing else.
+  auto* arr = dynamic_cast<ArrangementView*>(f.d.find("main/body/top/track-area/arrangement"));
+  REQUIRE(arr != nullptr);
+  const IRect ruler = f.d.rect("main/body/top/track-area/arrangement/ruler");
+  const IRect lanes = arr->lanesViewport();
+  auto column = [&](Ticks t) {
+    const auto x = static_cast<int32_t>(std::floor(arr->xOfTick(static_cast<double>(t))));
+    return IRect{x - 1, ruler.y, 3, lanes.bottom() - ruler.y};
+  };
+  const IRect allowed[] = {pos, column(0), column(5 * kTicksPerWhole)};
   const auto rects = f.d.tree().damage().rects();
   REQUIRE_FALSE(rects.empty());
   CHECK_FALSE(f.d.tree().damage().full());
+  bool sawPosition = false;
   for (const ClipRect& r : rects) {
-    CHECK(r.x0 >= pos.x);
-    CHECK(r.y0 >= pos.y);
-    CHECK(r.x1 <= pos.right());
-    CHECK(r.y1 <= pos.bottom());
+    bool inside = false;
+    for (const IRect& a : allowed) inside |= r.x0 >= a.x && r.y0 >= a.y && r.x1 <= a.right() && r.y1 <= a.bottom();
+    CHECK_MESSAGE(inside, "damage " << r.x0 << "," << r.y0 << " to " << r.x1 << "," << r.y1);
+    sawPosition |= r.x0 >= pos.x && r.x1 <= pos.right() && r.y0 >= pos.y && r.y1 <= pos.bottom();
   }
+  CHECK(sawPosition);
   CHECK(f.shell->positionText() == "6. 1. 1");
 }
 

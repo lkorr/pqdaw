@@ -8,6 +8,7 @@
 #include <string>
 
 #include "pq/document/serialize.h"
+#include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/view_context.h"
 #include "views_test_util.h"
@@ -324,7 +325,12 @@ TEST_CASE("view context: the default keymap binds every implemented action; scop
   FakeTransport port;
   ViewContext ctx(port);
   const ui::ScopeId arr = ctx.scope("arrangement");
+  // Views register their actions before the keymap is applied (the shell installs them first): since T3.8 the
+  // arrangement's (Z / X / zoom / follow) are implemented bindings, so a bare context cannot bind the default file.
+  CHECK_FALSE(ctx.applyDefaultKeymap().ok());
+  ArrangementView arrangement(ctx);
   REQUIRE(ctx.applyDefaultKeymap().ok());
+  CHECK(ctx.keymap().lookup(arr, *ui::parseChord("Z")) == "arrangement.zoomToSelection");
   CHECK(ctx.scope("arrangement") == arr);
   for (std::string_view id : ViewContext::kGlobalActions) CHECK_MESSAGE(ctx.actions().find(id) != ui::kNoAction, id);
   auto chord = [](std::string_view c) { return *ui::parseChord(c); };

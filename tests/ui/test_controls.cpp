@@ -107,7 +107,7 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   CHECK(t->fonts.body.px == 13);
   CHECK(t->fonts.title.px == 14);
   CHECK(alphaOf(t->surface.panel) == 255);
-  CHECK(themeTokenNames().size() == 1 + 57 + 5 + 14 + 1);
+  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 5 + 14 + 1);  // + arrangement.* (T3.8)
 }
 
 TEST_CASE("theme: the file round-trips (struct and bytes)") {
@@ -346,8 +346,9 @@ TEST_CASE("keymap: the default file parses, chords are unique per scope, actions
     CHECK(std::any_of(k->entries.begin(), k->entries.end(), [&](const KeymapEntry& e) { return e.keys == g; }));
   CHECK(has("global", "B", "edit.toggleDrawMode"));
   CHECK(has("arrangement", "A", "arrangement.toggleAutomationMode"));
-  CHECK(has("global", "Z", "view.zoomToSelection"));
-  CHECK(has("global", "X", "view.zoomBack"));
+  // T3.8: Z / X act on the focused editor, so they live in its scope (the piano roll binds its own).
+  CHECK(has("arrangement", "Z", "arrangement.zoomToSelection"));
+  CHECK(has("arrangement", "X", "arrangement.zoomBack"));
   CHECK(has("global", "Ctrl+Alt+B", "view.toggleBrowser"));
   CHECK(has("global", "Shift+Tab", "view.toggleClipDevice"));
   CHECK(has("arrangement", "Ctrl+Shift+M", "arrangement.insertMidiClip"));

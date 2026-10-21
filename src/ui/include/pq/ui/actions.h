@@ -35,6 +35,11 @@ public:
 
   // Registers an action. Fails (InvalidArgument) on an empty or duplicate id or a null handler.
   Result<ActionIndex> add(std::string id, Handler handler, Enabled enabled = {}, ActionOptions options = {});
+  // Registers the action, or replaces the handler, predicate and options of an already registered one (its index
+  // stays the same, so resolved keymaps keep working). For views that can be rebuilt over the same registry: the
+  // newest instance takes the action over, and a destroyed one parks it with a disabled predicate (T3.8).
+  // Fails like add() on an empty id or a null handler.
+  Result<ActionIndex> set(std::string id, Handler handler, Enabled enabled = {}, ActionOptions options = {});
   ActionIndex find(std::string_view id) const noexcept;  // kNoAction when unknown
   size_t size() const noexcept { return actions_.size(); }
   std::string_view id(ActionIndex a) const noexcept { return actions_[a].id; }

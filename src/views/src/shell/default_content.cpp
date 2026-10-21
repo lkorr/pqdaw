@@ -6,12 +6,14 @@
 //   T3.14 installMosWheel(shell);      → shell.overlay() (popover), the tuning.openMosWheel action
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
+#include "pq/views/arrangement/arrangement.h"
 #include "pq/views/shell/shell.h"
 #include "shell_widgets.h"
 
 namespace pq::views {
 
 void installDefaultContent(Shell& shell) {
+  installArrangement(shell);
   static_cast<shell::SlotHost&>(shell.slot(ShellSlot::ClipDetail)).setHint("No clip selected");
   static_cast<shell::SlotHost&>(shell.slot(ShellSlot::DeviceDetail)).setHint("No devices");
 }

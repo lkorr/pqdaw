@@ -23,9 +23,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `view.toggleDetail` | `Ctrl+Alt+L` | global | Showing and Hiding Views | implemented (T3.7) |
 | `view.toggleBrowser` | `Ctrl+Alt+B` | global | Showing and Hiding Views | M5 (browser) |
 | `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | M3 (T3.10) |
-| `view.zoomToSelection` | `Z` | global | Arrangement View Commands | M3 (T3.8) |
-| `view.zoomBack` | `X` | global | Arrangement View Commands | M3 (T3.8) |
-| `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | M3 (T3.8) |
+| `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | implemented (T3.8; the arrangement owns the switch until the piano roll follows too) |
 | `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
 | `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
 | `grid.toggleTriplet` | `Ctrl+3` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
@@ -39,6 +37,10 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | M8 (Q15) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
 | `mapping.toggleKeyMap` | `Ctrl+K` | global | Key/MIDI Map Commands | M8 |
+| `arrangement.zoomToSelection` | `Z` | arrangement | Arrangement View Commands | implemented (T3.8; no time selection until T3.9: fits the whole arrangement) |
+| `arrangement.zoomBack` | `X` | arrangement | Arrangement View Commands | implemented (T3.8) |
+| `arrangement.zoomIn` | `=` | arrangement | Zooming, Display and Selection | implemented (T3.8; Live's `+`, unshifted) |
+| `arrangement.zoomOut` | `-` | arrangement | Zooming, Display and Selection | implemented (T3.8) |
 | `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | M3 (T3.10) |
 | `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | M3 (T3.10) |
 | `arrangement.rename` | `Ctrl+R` | arrangement | Editing | M3 (T3.10) |

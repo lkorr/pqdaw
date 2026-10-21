@@ -57,6 +57,23 @@ colors = [
  ("scrollbar.track", "#262626"),
  ("scrollbar.thumb", "#5C5C5C"),
  ("scrollbar.thumbHover", "#747474"),
+ # Arrangement view (T3.8): sampled from the user's Live 12 arrangement screenshot.
+ ("arrangement.lane", "#26383F"),
+ ("arrangement.laneShade", "#223339"),
+ ("arrangement.laneSelected", "#3D4F55"),
+ ("arrangement.gridLine", "#0D1317"),
+ ("arrangement.separator", "#0F2026"),
+ ("arrangement.background", "#16282E"),
+ ("arrangement.header", "#26383F"),
+ ("arrangement.ruler", "#26383F"),
+ ("arrangement.rulerText", "#B0B5A3"),
+ ("arrangement.loopFill", "#607175"),
+ ("arrangement.loopEdge", "#B0B5A3"),
+ ("arrangement.loopOffFill", "#37474D"),
+ ("arrangement.loopOffEdge", "#607175"),
+ ("arrangement.playhead", "#B0B5A3"),
+ ("arrangement.startMarker", "#00CCB7"),
+ ("arrangement.overviewFrame", "#82918F"),
 ]
 fonts = [("small","regular",12,False),("body","regular",13,False),("bodyStrong","semibold",13,False),("title","semibold",14,False),("numeric","regular",12,False)]
 metrics = [("spacing.xs",2),("spacing.sm",4),("spacing.md",8),("spacing.lg",12),

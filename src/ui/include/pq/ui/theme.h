@@ -96,6 +96,11 @@ struct Theme {
     Rgba track, thumb, thumbHover;
     bool operator==(const Scrollbar&) const = default;
   } scrollbar{};
+  struct Arrangement {  // arrangement view (T3.8), sampled from Live 12's arrangement (Q47)
+    Rgba lane, laneShade, laneSelected, gridLine, separator, background, header, ruler,
+        rulerText, loopFill, loopEdge, loopOffFill, loopOffEdge, playhead, startMarker, overviewFrame;
+    bool operator==(const Arrangement&) const = default;
+  } arrangement{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;
