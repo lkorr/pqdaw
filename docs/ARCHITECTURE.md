@@ -76,7 +76,8 @@ namespace pq::tuning {
   struct PitchId;                                  // Degree | Ratio | Cents | Harmonic (SPEC §3.1)
   class Tuning;                                    // EDO | MOS | Scale | JI, with reference pitch (default C3 = 261.626 Hz)
   float resolveHz(const PitchId&, const Tuning&, const ResolveContext&) noexcept;
-  struct LinearForm { float k, m; int equave; };   // cents = k·g − m·P + equave·P within a MOS region (SPEC §3.3)
+  class MosLinearTable;                            // per chain length n: (k_i, m_i) for every constant-order interval of g
+  MosLinearSpan MosLinearTable::lookup(double g, double P) const noexcept;  // cents_i = k_i·g − m_i·P (+ equave·P), SPEC §3.3
 }
 
 // graph: the compiler pipeline

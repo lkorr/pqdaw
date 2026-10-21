@@ -32,3 +32,19 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options: A) BPM linear in ticks (musical time), like tempo automation drawn on a beat-based arrangement (Ableton-style); seconds = closed-form log integral. B) BPM linear in seconds; ticks = quadratic in time.
 - Provisional choice: A, implemented with log1p/expm1 so it stays accurate for tiny slopes. A ramp drawn as a straight line on the beat grid is then really straight. Reversible: `TempoCurve` is an enum, so a `LinearInTime` curve can be added beside it.
 - Status: open
+
+## Q5 · 2026-10-20 · T2.3 · mos-explorer: the CLI (mos-calc.js) and the app (index.html) disagree
+- Context: mos-calc.js says it "mirrors index.html logic exactly", but its copies differ: `buildMOSScale` has no `chainSafeGen` nudge and sets s = 0 (not L) for an equalized scale; `computeHardness` returns a 4-digit string and no "1.00" case; `computeUDP` ignores brightness (always `n−1−root|root`). `generatorForHardness` exists only in the CLI and is built on its versions.
+- Options: A) port both, the app's as the main API and the CLI's under `pq::tuning::mos_calc` (only what `generatorForHardness` needs); B) port only the app's and rebuild `generatorForHardness` on it (fixtures would then not come from the original code).
+- Provisional choice: A, so every fixture is produced by the original JS. Switching `generatorForHardness` to the app functions later is a one-line change plus a fixture regeneration.
+- Status: open
+
+## Q6 · 2026-10-20 · T2.3 · Suspected mos-explorer bugs kept for fidelity
+- Context: the C++ must match the JS exactly (T2.3 acceptance), so these are ported as-is:
+  1. `rotateMOSScale` sets s = 0 when all steps are equal, while `buildMOSScale` sets s = L. `applyMODMOS` uses chroma = L − s, so on an equalized scale an alteration moves a note by a whole step for rotation ≠ 0 and by nothing for rotation 0.
+  2. L and s are rounded to 0.01 ¢ before use, so the MODMOS chroma (and every hardness ratio, and therefore `generatorForHardness`'s bisection) is quantised to 0.01 ¢. MODMOS pitches are consequently not exactly linear in the generator.
+  3. `updatePanel()` calls `updateHeldNotes()` before it transfers the mode rotation to a new MOS, so when a generator drag crosses into a region of a different size the held notes are re-mapped against a scale built with the stale rotation; on the next frame the size is unchanged, the cheap path runs, and the notes move to the transferred rotation's pitches (a jump). Read from the code, not reproduced in a browser.
+  4. `chainSafeGen` reads the UI selection (`S.selected`), so the pitches of a degenerate generator depend on which region is selected. The C++ takes it as an explicit `RegionHint` parameter.
+- Options: A) keep the port bit-faithful and fix in the JS first (then regenerate fixtures); B) fix in pqdaw and diverge from the fixtures.
+- Provisional choice: A. For tuning-as-signal (T2.6), MODMOS cannot use the linear form exactly because of 2; T2.6 should decide whether audio uses the exact chroma (L − s unrounded).
+- Status: open
