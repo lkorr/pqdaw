@@ -150,7 +150,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Voice allocator (max voices, stealing policy), the event list, voice lanes (8 per AVX2 group), the `voice.*` namespace, voice end on silence/envelope.
   - Accept: tests cover allocation and stealing, note on/off sample accuracy (an event at sample k takes effect at k), and 64 voices with no allocation.
 
-- [~] **T1.9 Hot swap** *(worker AJ, branch task/T1.9-hot-swap)* (`engine`). Depends on: T1.8.
+- [x] **T1.9 Hot swap** *(2938291)* (`engine`). Depends on: T1.8.
   - Publishing a ProgramImage from a worker thread. Swap at a block boundary. State transfer by NodeId+type tag. Crossfade (5–20 ms) when audible, instant when silent. Epoch reclamation of old images.
   - Accept: an offline test swaps a modified patch mid-render. Phase continuity of an unchanged oscillator is exact. There is no discontinuity above −90 dBFS at the swap point for an unchanged signal path. RtScope clean.
 
