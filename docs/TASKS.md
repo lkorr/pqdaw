@@ -60,7 +60,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - Nodes, ports (kind/rate/poly/width), wires, params (with attrs), exports, stable `NodeId`s, and layout data. Atom registry: name → signature (inputs, outputs, state size, default rates).
   - Accept: tests construct graphs programmatically and validate structure, including rejecting dangling ports and type-mismatched wires.
 
-- [~] **T1.2 Parser + printer** *(worker I, branch task/T1.2-parser-printer)* (`graph`). Depends on: T1.1.
+- [x] **T1.2 Parser + printer** *(3b54e02)* (`graph`). Depends on: T1.1.
   - Implements `docs/PATCH_LANGUAGE.md` v0 exactly: units, imports, layout, solve blocks. Errors carry file:line:col plus a caret snippet.
   - Accept: a round-trip test (`parse(print(p)) == p`) over every file in `stdlib/` and `tests/graph/cases/`. At least 30 error-case tests with expected messages. A fuzz-ish test runs 10⁴ random token streams with no crashes.
 
