@@ -224,7 +224,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   5. Every stateful atom outputs audio, even `samplehold`/`latch` of param-rate inputs (which could stay param); cheap to refine later.
   6. Units vs durations: durations are seconds in the language (Q14), but a literal `5smp` is normalised to the number 5 (samples), so `delay(x, 5smp, 1s)` would mean 5 s. T1.4 should convert `smp` literals to seconds (`/ sr`) where they meet a seconds input, or reject them there.
 
-## Q?-T3.5-a · 2026-10-21 · T3.5 · Project file choices (Scale in TuningDef, reader, strictness)
+## Q32 · 2026-10-21 · T3.5 · Project file choices (Scale in TuningDef, reader, strictness)
 - Context: T3.5 adds Scale to `TuningDef` and fixes the `project.pqd` format (schemaVersion 1). These choices are not settled by SPEC §12 or TASKS; each is local to `src/document` (and one small `tuning` change), and every format change from here on needs a schema bump plus a migration.
 - Choices (provisional):
   1. **Scale tunings store the .scl and the optional .kbm** (`ScaleDef`), and `TuningDef::referenceHz` stays the single reference pitch (the Hz of degree 0) for every kind. Importing with a .kbm derives it once (`makeScaleDef` → `makeScalaTuning`); after that the mapping only decides key → degree (and is kept for export). Alternative: let the .kbm's reference key/frequency drive the pitch, which would make `TuningReference` automation meaningless for mapped scales. Classification: reference = `Param`; pitches or mapping = `Structural` (discrete shape, as Q26.2); description alone = `Meta`. The description must be valid UTF-8 (JSON); `makeScaleDef` converts Latin-1 descriptions with `descriptionUtf8()`.
