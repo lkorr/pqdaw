@@ -96,6 +96,7 @@ pq_add_test(pq_tests_graph
     graph/test_kernel_map.cpp
     graph/test_infer.cpp
     graph/test_optimise.cpp
+    graph/test_schedule.cpp
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
