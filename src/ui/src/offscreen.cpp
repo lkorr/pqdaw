@@ -10,11 +10,15 @@
 
 namespace pq::ui {
 
-Result<std::unique_ptr<OffscreenTarget>> OffscreenTarget::create(GpuContext& gpu, uint32_t width, uint32_t height) {
+Result<std::unique_ptr<OffscreenTarget>> OffscreenTarget::create(GpuContext& gpu, uint32_t width, uint32_t height,
+                                                                 uint32_t framesInFlight) {
   if (width == 0 || height == 0 || width > 16384 || height > 16384)
     return Error{ErrorCode::InvalidArgument, "offscreen target size must be 1..16384 per side", {}};
+  if (framesInFlight == 0 || framesInFlight > kMaxSlots)
+    return Error{ErrorCode::InvalidArgument, "offscreen target: framesInFlight must be 1..3", {}};
   std::unique_ptr<OffscreenTarget> t(new OffscreenTarget());
   t->gpu_ = &gpu;
+  t->framesInFlight_ = framesInFlight;
   t->width_ = width;
   t->height_ = height;
   const VkDevice dev = gpu.device();
@@ -58,10 +62,12 @@ Result<std::unique_ptr<OffscreenTarget>> OffscreenTarget::create(GpuContext& gpu
   VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
   cai.commandPool = t->pool_;
   cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  cai.commandBufferCount = 1;
-  if (VkResult e = vkAllocateCommandBuffers(dev, &cai, &t->cmd_); e != VK_SUCCESS) return vkError("vkAllocateCommandBuffers", e);
-  VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  if (VkResult e = vkCreateFence(dev, &fci, nullptr, &t->fence_); e != VK_SUCCESS) return vkError("vkCreateFence", e);
+  cai.commandBufferCount = framesInFlight;
+  if (VkResult e = vkAllocateCommandBuffers(dev, &cai, t->cmd_); e != VK_SUCCESS) return vkError("vkAllocateCommandBuffers", e);
+  for (uint32_t i = 0; i < framesInFlight; ++i) {
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (VkResult e = vkCreateFence(dev, &fci, nullptr, &t->fence_[i]); e != VK_SUCCESS) return vkError("vkCreateFence", e);
+  }
   return t;
 }
 
@@ -69,7 +75,8 @@ OffscreenTarget::~OffscreenTarget() {
   if (!gpu_) return;
   const VkDevice dev = gpu_->device();
   vkDeviceWaitIdle(dev);
-  if (fence_) vkDestroyFence(dev, fence_, nullptr);
+  for (VkFence f : fence_)
+    if (f) vkDestroyFence(dev, f, nullptr);
   if (pool_) vkDestroyCommandPool(dev, pool_, nullptr);
   if (readback_) vmaDestroyBuffer(gpu_->allocator(), readback_, readbackAlloc_);
   if (view_) vkDestroyImageView(dev, view_, nullptr);
@@ -77,16 +84,44 @@ OffscreenTarget::~OffscreenTarget() {
 }
 
 Status OffscreenTarget::draw(Renderer& renderer, const DrawList& dl, Rgba clear) {
+  if (Status s = submit(renderer, dl, clear); !s) return s;
+  return finish();
+}
+
+Status OffscreenTarget::finish() {
+  for (uint32_t i = 0; i < framesInFlight_; ++i) {
+    if (!pending_[i]) continue;
+    const VkResult r = vkWaitForFences(gpu_->device(), 1, &fence_[i], VK_TRUE, UINT64_MAX);
+    vkResetFences(gpu_->device(), 1, &fence_[i]);
+    pending_[i] = false;
+    if (r != VK_SUCCESS) return vkError("offscreen frame wait", r);
+  }
+  return Ok{};
+}
+
+Status OffscreenTarget::submit(Renderer& renderer, const DrawList& dl, Rgba clear) {
   if (renderer.colorFormat() != kFormat) return Error{ErrorCode::InvalidArgument, "renderer format does not match offscreen target", {}};
+  if (renderer.framesInFlight() < framesInFlight_)
+    return Error{ErrorCode::InvalidArgument, "renderer has fewer frame slots than the offscreen target", {}};
   if (dl.targetWidth() != width_ || dl.targetHeight() != height_)
     return Error{ErrorCode::InvalidArgument, "draw list target size does not match offscreen target", {}};
-  if (Status s = renderer.upload(0, dl); !s) return s;
+  const uint32_t slot = slot_;
+  if (pending_[slot]) {
+    // The slot's previous frame must be finished before its command buffer and the renderer's slot are reused.
+    if (vkGetFenceStatus(gpu_->device(), fence_[slot]) != VK_SUCCESS) ++slotStalls_;
+    const VkResult r = vkWaitForFences(gpu_->device(), 1, &fence_[slot], VK_TRUE, UINT64_MAX);
+    vkResetFences(gpu_->device(), 1, &fence_[slot]);
+    pending_[slot] = false;
+    if (r != VK_SUCCESS) return vkError("offscreen frame wait", r);
+  }
+  if (Status s = renderer.upload(slot, dl); !s) return s;
 
-  VkCommandBuffer cb = cmd_;
+  VkCommandBuffer cb = cmd_[slot];
   vkResetCommandBuffer(cb, 0);
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cb, &bi);
+  renderer.recordTransfers(cb, slot);
 
   VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;  // the previous frame's readback copy
@@ -115,7 +150,7 @@ Status OffscreenTarget::draw(Renderer& renderer, const DrawList& dl, Rgba clear)
   ri.colorAttachmentCount = 1;
   ri.pColorAttachments = &att;
   vkCmdBeginRendering(cb, &ri);
-  renderer.record(cb, 0, dl);
+  renderer.record(cb, slot, dl);
   vkCmdEndRendering(cb);
 
   b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -132,16 +167,16 @@ Status OffscreenTarget::draw(Renderer& renderer, const DrawList& dl, Rgba clear)
   VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   si.commandBufferInfoCount = 1;
   si.pCommandBufferInfos = &cbi;
-  VkResult r = vkQueueSubmit2(gpu_->queue(), 1, &si, fence_);
-  if (r == VK_SUCCESS) r = vkWaitForFences(gpu_->device(), 1, &fence_, VK_TRUE, UINT64_MAX);
-  vkResetFences(gpu_->device(), 1, &fence_);
-  if (r != VK_SUCCESS) return vkError("offscreen submit", r);
+  if (VkResult r = vkQueueSubmit2(gpu_->queue(), 1, &si, fence_[slot]); r != VK_SUCCESS) return vkError("offscreen submit", r);
+  pending_[slot] = true;
+  slot_ = (slot + 1) % framesInFlight_;
   drawn_ = true;
   return Ok{};
 }
 
 Result<Image> OffscreenTarget::read() {
   if (!drawn_) return Error{ErrorCode::InvalidArgument, "OffscreenTarget::read before draw", {}};
+  if (Status s = finish(); !s) return std::move(s).error();
   const VkImage image = image_;
   const VkBuffer buffer = readback_;
   const uint32_t w = width_, h = height_;

@@ -3,11 +3,17 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <numbers>
+#include <span>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "pq/ui/draw_list.h"
 #include "pq/ui/gpu.h"
@@ -366,6 +372,295 @@ TEST_CASE("render: offscreen output is deterministic and any size works") {
   CHECK(compareImages(*a, *b, 0).maxChannelDiff == 0);
   CHECK_FALSE(renderSceneImage("no-such-scene", 64, 64).ok());
   CHECK_FALSE(renderSceneImage("test-pattern", 0, 64).ok());
+}
+
+TEST_CASE("render: glyphs on every atlas page sample their R8 coverage exactly (swizzle 1,1,1,R)") {
+  // A large font overflows page 0 while warming ASCII, so some glyphs land on page 1.
+  auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 1);
+  REQUIRE(r.ok());
+  Renderer& rr = **r;
+  auto text = TextSystem::create(rr.atlas());
+  REQUIRE(text.ok());
+  auto face = (*text)->loadFace(assetsDir() + "/fonts/Inter-Regular.ttf");
+  REQUIRE(face.ok());
+  auto font = (*text)->font(*face, 180);
+  REQUIRE(font.ok());
+  REQUIRE(rr.atlas()->pageCount() >= 2);
+  // One glyph from page 0 and one from the last page, each drawn white on black: pixel = coverage.
+  const uint32_t last = rr.atlas()->pageCount() - 1;
+  std::string onFirst, onLast;
+  for (char c = '!'; c <= '~'; ++c) {
+    const TextRun g = (*text)->shape(*font, std::string(1, c));
+    if (g.glyphs.size() != 1) continue;
+    if (g.glyphs[0].page == 0 && onFirst.empty()) onFirst = std::string(1, c);
+    if (g.glyphs[0].page == last && onLast.empty()) onLast = std::string(1, c);
+  }
+  REQUIRE_FALSE(onFirst.empty());
+  REQUIRE_FALSE(onLast.empty());
+  for (const std::string& s : {onFirst, onLast}) {
+    CAPTURE(s);
+    const TextRun run = (*text)->shape(*font, s);
+    const GlyphQuad& q = run.glyphs[0];
+    DrawList dl;
+    dl.reset(256, 256);
+    dl.addRectFilled({0, 0, 2, 2}, rgba(0, 0, 0));  // a fill first: the glyph joins its command
+    const Vec2 origin{static_cast<float>(16 - q.x0), static_cast<float>(16 - q.y0)};
+    TextSystem::drawRun(dl, run, origin, rgba(255, 255, 255));
+    CHECK(dl.commands().size() == 1);
+    CHECK(dl.commands()[0].texture == atlasPageTexture(q.page));
+    auto target = OffscreenTarget::create(*gpu().ctx, 256, 256);
+    REQUIRE(target.ok());
+    REQUIRE((*target)->draw(rr, dl, rgba(0, 0, 0)).ok());
+    auto img = (*target)->read();
+    REQUIRE(img.ok());
+    const uint32_t ax = static_cast<uint32_t>(q.uv0.x * kAtlasWidth + 0.5f), ay = static_cast<uint32_t>(q.uv0.y * kAtlasHeight + 0.5f);
+    int worst = 0;
+    uint32_t lit = 0;
+    for (uint32_t y = 0; y < q.h; ++y)
+      for (uint32_t x = 0; x < q.w; ++x) {
+        const int cov = *rr.atlas()->pageImage(q.page).at(ax + x, ay + y);
+        const int px = img->pixel(16 + x, 16 + y)[0];
+        worst = std::max(worst, std::abs(cov - px));
+        lit += cov > 128 ? 1u : 0u;
+      }
+    CHECK(lit > 100);
+    CHECK(worst <= 1);
+  }
+}
+
+TEST_CASE("render: the scene fonts at 5 scales fit one R8 page: atlas memory 1/4 of the old RGBA page") {
+  auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 1);
+  REQUIRE(r.ok());
+  Renderer& rr = **r;
+  auto t = createSceneTextures(rr);
+  REQUIRE(t.ok());
+  for (float f : {1.0f, 1.25f, 1.5f, 1.75f, 2.0f}) {
+    REQUIRE(setSceneScale(*t, UiScale(f)).ok());
+    t->text->beginFrame();
+    const UiScale s(f);
+    DrawList dl;
+    const uint32_t w = static_cast<uint32_t>(s.px(800)), h = static_cast<uint32_t>(s.px(480));
+    dl.reset(w, h);
+    REQUIRE(buildScene("text", dl, *t, 0.0));
+    auto target = OffscreenTarget::create(*gpu().ctx, w, h);
+    REQUIRE(target.ok());
+    REQUIRE((*target)->draw(rr, dl, kSceneClearColor).ok());
+  }
+  CHECK(t->text->stats().atlasFull == 0);
+  CHECK(rr.atlas()->pageCount() == 1);
+  constexpr VkDeviceSize kOldRgbaPage = VkDeviceSize(kAtlasWidth) * kAtlasHeight * 4;  // T0.8: one RGBA8 page
+  const VkDeviceSize gpuBytes = rr.atlasGpuBytes();
+  MESSAGE("glyph atlas GPU memory for 7 roles x 5 scales: " << gpuBytes << " bytes (old RGBA page: " << kOldRgbaPage << ")");
+  CHECK(gpuBytes > 0);
+  CHECK(gpuBytes * 4 <= kOldRgbaPage);
+  CHECK(rr.atlas()->memoryBytes() * 4 <= kOldRgbaPage);
+  // A new glyph uploads only its own rect (one byte per texel), not whole rows.
+  const uint64_t before = rr.stats().atlasBytesStaged;
+  const TextRun inf = t->text->shape(t->fonts.body, "\xE2\x88\x9E");  // ∞
+  REQUIRE(inf.glyphs.size() == 1);
+  DrawList dl;
+  dl.reset(64, 64);
+  TextSystem::drawRun(dl, inf, {10, 40}, rgba(255, 255, 255));
+  auto target = OffscreenTarget::create(*gpu().ctx, 64, 64);
+  REQUIRE(target.ok());
+  REQUIRE((*target)->draw(rr, dl, rgba(0, 0, 0)).ok());
+  CHECK(rr.stats().atlasBytesStaged - before == uint64_t(inf.glyphs[0].w) * inf.glyphs[0].h);
+}
+
+TEST_CASE("render: updateTexture lands in the next frame; overlapping updates apply in order") {
+  auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 1);
+  REQUIRE(r.ok());
+  Renderer& rr = **r;
+  auto solid = [](uint32_t w, uint32_t h, Rgba c) {
+    Image img;
+    img.width = w;
+    img.height = h;
+    img.rgba.resize(size_t(w) * h * 4);
+    for (size_t i = 0; i < img.rgba.size(); i += 4) {
+      img.rgba[i] = static_cast<uint8_t>(redOf(c));
+      img.rgba[i + 1] = static_cast<uint8_t>(greenOf(c));
+      img.rgba[i + 2] = static_cast<uint8_t>(blueOf(c));
+      img.rgba[i + 3] = static_cast<uint8_t>(alphaOf(c));
+    }
+    return img;
+  };
+  auto id = rr.createTexture(solid(4, 4, rgba(255, 0, 0)), TextureFilter::Nearest);
+  REQUIRE(id.ok());
+  CHECK(*id >= kFirstUserTexture);
+  DrawList dl;
+  dl.reset(8, 8);
+  dl.addImage(*id, {0, 0, 8, 8}, {0, 0}, {1, 1});  // texel (i, j) → pixels [2i, 2i+2) × [2j, 2j+2)
+  auto target = OffscreenTarget::create(*gpu().ctx, 8, 8);
+  REQUIRE(target.ok());
+  auto frame = [&] {
+    REQUIRE((*target)->draw(rr, dl, rgba(0, 0, 0)).ok());
+    auto img = (*target)->read();
+    REQUIRE(img.ok());
+    return std::move(*img);
+  };
+  auto is = [](const Image& img, uint32_t x, uint32_t y, Rgba c) {
+    const uint8_t* p = img.pixel(x, y);
+    return p[0] == redOf(c) && p[1] == greenOf(c) && p[2] == blueOf(c);
+  };
+  Image img = frame();
+  CHECK(is(img, 1, 1, rgba(255, 0, 0)));
+  // 2×2 green at texel (2, 2).
+  const Image green = solid(2, 2, rgba(0, 255, 0));
+  REQUIRE(rr.updateTexture(*id, {2, 2, 2, 2}, green.rgba).ok());
+  img = frame();
+  CHECK(is(img, 1, 1, rgba(255, 0, 0)));
+  CHECK(is(img, 5, 5, rgba(0, 255, 0)));
+  CHECK(is(img, 7, 7, rgba(0, 255, 0)));
+  // Same frame: whole texture blue, then texel (1,1) white (overlap → ordered by a barrier), then a 1×1
+  // update read from a padded row (rowPitch).
+  REQUIRE(rr.updateTexture(*id, {0, 0, 4, 4}, solid(4, 4, rgba(0, 0, 255)).rgba).ok());
+  REQUIRE(rr.updateTexture(*id, {1, 1, 1, 1}, solid(1, 1, rgba(255, 255, 255)).rgba).ok());
+  const std::vector<uint8_t> padded = {9, 9, 9, 9, 0, 255, 255, 255, 9, 9, 9, 9, 0, 0, 0, 0};
+  REQUIRE(rr.updateTexture(*id, {3, 0, 1, 1}, std::span<const uint8_t>(padded).subspan(4), 12).ok());
+  img = frame();
+  CHECK(is(img, 0, 0, rgba(0, 0, 255)));
+  CHECK(is(img, 2, 2, rgba(255, 255, 255)));
+  CHECK(is(img, 3, 3, rgba(255, 255, 255)));
+  CHECK(is(img, 5, 5, rgba(0, 0, 255)));
+  CHECK(is(img, 6, 0, rgba(0, 255, 255)));
+  // Errors: not a user texture, outside the texture, too little data.
+  CHECK_FALSE(rr.updateTexture(kAtlasTexture, {0, 0, 1, 1}, green.rgba).ok());
+  CHECK_FALSE(rr.updateTexture(atlasPageTexture(0), {0, 0, 1, 1}, green.rgba).ok());
+  CHECK_FALSE(rr.updateTexture(*id, {3, 3, 2, 2}, green.rgba).ok());
+  CHECK_FALSE(rr.updateTexture(*id, {0, 0, 4, 4}, green.rgba).ok());
+  // Destroy is deferred to the end of the frames that may use it; the id is then reused.
+  CHECK(rr.liveTextures() == 1);
+  REQUIRE(rr.destroyTexture(*id).ok());
+  CHECK_FALSE(rr.destroyTexture(*id).ok());
+  CHECK_FALSE(rr.updateTexture(*id, {0, 0, 1, 1}, green.rgba).ok());
+  CHECK(rr.liveTextures() == 0);
+  CHECK(rr.retiringTextures() == 1);
+  DrawList empty;
+  empty.reset(8, 8);
+  REQUIRE((*target)->draw(rr, empty, rgba(0, 0, 0)).ok());
+  CHECK(rr.retiringTextures() == 0);
+  auto again = rr.createTexture(solid(2, 2, rgba(1, 2, 3)), TextureFilter::Linear);
+  REQUIRE(again.ok());
+  CHECK(*again == *id);
+}
+
+TEST_CASE("render: creating and destroying 10k textures leaks nothing") {
+  auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 2);
+  REQUIRE(r.ok());
+  Renderer& rr = **r;
+  auto target = OffscreenTarget::create(*gpu().ctx, 64, 64, 2);
+  REQUIRE(target.ok());
+  // 80 per round: with two frames in flight a round's textures retire two frames after it, so at most three
+  // rounds' ids (240) are taken at once (the table holds Renderer::kMaxUserTextures).
+  constexpr uint32_t kPerRound = 80, kRounds = 125;
+  static_assert(3 * kPerRound <= Renderer::kMaxUserTextures);
+  uint32_t created = 0, maxId = 0;
+  auto round = [&](uint32_t seed) {
+    std::vector<TextureId> ids;
+    DrawList dl;
+    dl.reset(64, 64);
+    for (uint32_t i = 0; i < kPerRound; ++i) {
+      Image img;
+      img.width = 1 + (seed + i) % 9;
+      img.height = 1 + (seed * 3 + i) % 7;
+      img.rgba.assign(size_t(img.width) * img.height * 4, static_cast<uint8_t>(seed + i));
+      auto id = rr.createTexture(img, (i & 1) ? TextureFilter::Linear : TextureFilter::Nearest);
+      REQUIRE(id.ok());
+      maxId = std::max(maxId, *id);
+      ids.push_back(*id);
+      dl.addImage(*id, {static_cast<float>(i % 8) * 8, static_cast<float>(i / 8 % 8) * 8, static_cast<float>(i % 8) * 8 + 8,
+                        static_cast<float>(i / 8 % 8) * 8 + 8},
+                  {0, 0}, {1, 1});
+      ++created;
+    }
+    REQUIRE((*target)->submit(rr, dl, rgba(0, 0, 0)).ok());
+    for (TextureId id : ids) REQUIRE(rr.destroyTexture(id).ok());
+  };
+  DrawList empty;
+  empty.reset(64, 64);
+  auto drain = [&] {
+    for (uint32_t i = 0; i < 2; ++i) REQUIRE((*target)->submit(rr, empty, rgba(0, 0, 0)).ok());
+    REQUIRE((*target)->finish().ok());
+  };
+  // Baseline after a few rounds, so the staging ring and draw buffers have reached their working size.
+  for (uint32_t k = 0; k < 3; ++k) round(k);
+  drain();
+  const GpuContext::MemoryStats base = gpu().ctx->memoryStats();
+  REQUIRE(rr.liveTextures() == 0);
+  for (uint32_t k = 3; k < 3 + kRounds; ++k) round(k);
+  drain();
+  const GpuContext::MemoryStats after = gpu().ctx->memoryStats();
+  MESSAGE(created << " textures created and destroyed; highest id " << maxId << "; VMA " << base.allocations << " allocations / "
+                  << base.bytes << " bytes before, " << after.allocations << " / " << after.bytes << " after");
+  CHECK(created - 3 * kPerRound == 10000);
+  CHECK(rr.liveTextures() == 0);
+  CHECK(rr.retiringTextures() == 0);
+  CHECK(maxId < Renderer::kMaxTextures);
+  CHECK(after.allocations == base.allocations);
+  CHECK(after.bytes == base.bytes);
+}
+
+TEST_CASE("render: a 1024x512 spectrogram scrolls one column per frame at 144 Hz without the CPU waiting") {
+  using Clock = std::chrono::steady_clock;
+  constexpr uint32_t kW = 1024, kH = 512, kFrames = 288;  // 2 s at 144 Hz
+  auto texel = [](uint32_t x, uint32_t y) {
+    return std::array<uint8_t, 4>{static_cast<uint8_t>(x * 7), static_cast<uint8_t>(y), static_cast<uint8_t>(x + y), 255};
+  };
+  uint32_t stalls = 0;
+  double medianUs = 0, maxUs = 0;
+  bool contentOk = false;
+  for (int attempt = 0; attempt < 2; ++attempt) {  // one retry: the machine is shared with other builds
+    auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 2);
+    REQUIRE(r.ok());
+    Renderer& rr = **r;
+    auto target = OffscreenTarget::create(*gpu().ctx, kW, kH, 2);
+    REQUIRE(target.ok());
+    Image black;
+    black.width = kW;
+    black.height = kH;
+    black.rgba.assign(size_t(kW) * kH * 4, 0);
+    for (size_t i = 3; i < black.rgba.size(); i += 4) black.rgba[i] = 255;
+    auto tex = rr.createTexture(black, TextureFilter::Nearest);
+    REQUIRE(tex.ok());
+    DrawList dl;
+    dl.reset(kW, kH);
+    dl.addImage(*tex, {0, 0, static_cast<float>(kW), static_cast<float>(kH)}, {0, 0}, {1, 1});
+    std::vector<uint8_t> column(kH * 4);
+    std::vector<double> cpuUs;
+    const auto period = std::chrono::nanoseconds(1'000'000'000 / 144);
+    auto next = Clock::now();
+    for (uint32_t f = 0; f < kFrames; ++f) {
+      for (uint32_t y = 0; y < kH; ++y) std::memcpy(&column[y * 4], texel(f, y).data(), 4);
+      const auto t0 = Clock::now();
+      REQUIRE(rr.updateTexture(*tex, {f, 0, 1, kH}, column).ok());
+      REQUIRE((*target)->submit(rr, dl, rgba(0, 0, 0)).ok());
+      cpuUs.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count());
+      next += period;
+      while (Clock::now() < next) std::this_thread::yield();
+    }
+    stalls = (*target)->slotStalls();
+    std::sort(cpuUs.begin(), cpuUs.end());
+    medianUs = cpuUs[cpuUs.size() / 2];
+    maxUs = cpuUs.back();
+    auto img = (*target)->read();
+    REQUIRE(img.ok());
+    contentOk = true;
+    for (uint32_t x = 0; x < kW && contentOk; x += (x < kFrames ? 1 : 37))
+      for (uint32_t y = 0; y < kH; y += 13) {
+        const uint8_t* p = img->pixel(x, y);
+        const auto want = x < kFrames ? texel(x, y) : std::array<uint8_t, 4>{0, 0, 0, 255};
+        if (p[0] != want[0] || p[1] != want[1] || p[2] != want[2]) {
+          contentOk = false;
+          break;
+        }
+      }
+    if (stalls == 0) break;
+  }
+  MESSAGE("spectrogram column update + frame submit: median " << medianUs << " us, max " << maxUs << " us per frame; "
+                                                              << stalls << " frames waited for the GPU");
+  CHECK(contentOk);
+  CHECK(stalls == 0);
+  CHECK(medianUs < 1000.0);  // a small fraction of the 6.9 ms frame
 }
 
 TEST_CASE("render: no Vulkan validation errors") {

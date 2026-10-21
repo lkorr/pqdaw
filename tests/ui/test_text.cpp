@@ -9,6 +9,7 @@
 #include <memory>
 #include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pq/core/alloc_trap.h"
@@ -137,36 +138,38 @@ TEST_CASE("text: glyphs are rasterised into the atlas once, ASCII up front") {
   const uint64_t warm = fx.ts->stats().glyphsRasterised;
   CHECK(warm >= 90);
   CHECK(fx.atlas->version() > 0);
-  const auto rows = fx.atlas->dirtyRowsSince(0);
-  CHECK(rows.y1 > rows.y0);
-  // ASCII text rasterises nothing new; a non-ASCII glyph is rasterised once.
+  CHECK_FALSE(fx.atlas->dirty(0).empty());
+  fx.atlas->takeDirty(0);  // as the renderer does once per frame
+  CHECK(fx.atlas->dirty(0).empty());
+  // ASCII text rasterises nothing new; a non-ASCII glyph is rasterised once and dirties just its rect.
   fx.ts->shape(fx.body, "Hello, World");
   CHECK(fx.ts->stats().glyphsRasterised == warm);
+  CHECK(fx.atlas->dirty(0).empty());
   const uint64_t v0 = fx.atlas->version();
-  fx.ts->shape(fx.body, "\xE2\x88\x9E");  // ∞
+  const TextRun inf = fx.ts->shape(fx.body, "\xE2\x88\x9E");  // ∞
   CHECK(fx.ts->stats().glyphsRasterised == warm + 1);
   CHECK(fx.atlas->version() > v0);
-  const auto r = fx.atlas->dirtyRowsSince(v0);
-  CHECK(r.y1 > r.y0);
+  REQUIRE(inf.glyphs.size() == 1);
+  const Atlas::DirtyRect d = fx.atlas->takeDirty(0);
+  CHECK(d.x1 - d.x0 == inf.glyphs[0].w);
+  CHECK(d.y1 - d.y0 == inf.glyphs[0].h);
+  CHECK(static_cast<float>(d.x0) / kAtlasWidth == doctest::Approx(inf.glyphs[0].uv0.x));
   fx.ts->shape(fx.body, "x\xE2\x88\x9E");
   CHECK(fx.ts->stats().glyphsRasterised == warm + 1);
-  CHECK(fx.atlas->dirtyRowsSince(fx.atlas->version()).y1 == fx.atlas->dirtyRowsSince(fx.atlas->version()).y0);
-  // Glyph texels are white with coverage in alpha. The 'H' crossbar is hinted onto whole pixel rows, so some
-  // row of the bitmap is fully covered across the counter.
+  CHECK(fx.atlas->dirty(0).empty());
+  // Glyph texels are 8-bit coverage. The 'H' crossbar is hinted onto whole pixel rows, so some row of the
+  // bitmap is fully covered across the counter.
   const TextRun h = fx.ts->shape(fx.body, "H");
   REQUIRE(h.glyphs.size() == 1);
   const GlyphQuad& q = h.glyphs[0];
+  CHECK(q.page == 0);
   const uint32_t ax = static_cast<uint32_t>(q.uv0.x * kAtlasWidth + 0.5f);
   const uint32_t ay = static_cast<uint32_t>(q.uv0.y * kAtlasHeight + 0.5f);
   CHECK(static_cast<float>(ax + q.w) / kAtlasWidth == doctest::Approx(q.uv1.x));
   uint32_t bestRow = 0;
   for (uint32_t y = 0; y < q.h; ++y) {
     uint32_t sum = 0;
-    for (uint32_t x = 0; x < q.w; ++x) {
-      const uint8_t* p = fx.atlas->image().pixel(ax + x, ay + y);
-      CHECK(p[0] == 255);
-      sum += p[3];
-    }
+    for (uint32_t x = 0; x < q.w; ++x) sum += *fx.atlas->pageImage(0).at(ax + x, ay + y);
     bestRow = std::max(bestRow, sum);
   }
   CHECK(bestRow >= 255u * (q.w - 2));
@@ -186,7 +189,7 @@ TEST_CASE("text: runs are cached; a cached draw writes 4 vertices per inked glyp
   CHECK(dl.vertices().size() == 7 * 4);
   CHECK(dl.indices().size() == 7 * 6);
   REQUIRE(dl.commands().size() == 1);
-  CHECK(dl.commands()[0].texture == kAtlasTexture);
+  CHECK(dl.commands()[0].texture == atlasPageTexture(0));
   for (const Vertex& v : dl.vertices()) {
     // Origin snapped to (10, 31): every corner on a whole pixel, so texels map 1:1 onto pixels.
     CHECK(v.pos.x == std::floor(v.pos.x));
@@ -201,14 +204,18 @@ TEST_CASE("text: runs are cached; a cached draw writes 4 vertices per inked glyp
   const uint64_t hits = fx.ts->stats().cacheHits;
   const uint64_t allocs = pq::alloc_trap::countRtViolations([&] {
     for (int i = 0; i < 4; ++i) fx.ts->draw(dl, fx.body, {10.0f, 30.0f + 14.0f * static_cast<float>(i)}, "Hi there", rgba(255, 255, 255));
+    // Fills between labels stay in the same command (the shared sprites are on every atlas page).
+    dl.addRectFilled({0, 0, 4, 4}, rgba(1, 2, 3));
+    fx.ts->draw(dl, fx.body, {0, 90}, "Hi there", rgba(255, 255, 255));
   });
   CHECK(allocs == 0);
-  CHECK(fx.ts->stats().cacheHits == hits + 4);
+  CHECK(fx.ts->stats().cacheHits == hits + 5);
+  CHECK(dl.commands().size() == 1);
   // A draw restores a non-atlas texture binding.
-  dl.setTexture(7);
+  dl.setTexture(kFirstUserTexture);
   fx.ts->draw(dl, fx.body, {0, 60}, "x", rgba(255, 255, 255));
-  CHECK(dl.texture() == 7);
-  CHECK(dl.commands().back().texture == kAtlasTexture);
+  CHECK(dl.texture() == kFirstUserTexture);
+  CHECK(dl.commands().back().texture == atlasPageTexture(0));
   // Empty and unknown-font input draw nothing.
   const size_t nv = dl.vertices().size();
   CHECK(fx.ts->draw(dl, fx.body, {0, 0}, "", rgba(255, 255, 255)) == 0);
@@ -216,27 +223,240 @@ TEST_CASE("text: runs are cached; a cached draw writes 4 vertices per inked glyp
   CHECK(dl.vertices().size() == nv);
 }
 
-TEST_CASE("text: the run cache flushes wholesale at its cap and keeps working") {
+TEST_CASE("text: 20k distinct strings shaped in one frame keep every earlier run valid (M8)") {
   Fixture fx;
-  for (uint32_t i = 0; i < TextSystem::kMaxCachedRuns + 10; ++i) fx.ts->shape(fx.body, std::to_string(i));
+  constexpr uint32_t kCount = 20000;  // > kMaxCachedRuns: the old cache flushed inside shape() here
+  static_assert(kCount > TextSystem::kMaxCachedRuns);
+  fx.ts->beginFrame();
+  struct Kept {
+    TextRun run;
+    std::vector<GlyphQuad> glyphs;  // copies taken when the run was returned
+    std::vector<CaretStop> carets;
+  };
+  std::vector<Kept> kept;
+  kept.reserve(kCount);
+  for (uint32_t i = 0; i < kCount; ++i) {
+    const std::string s = "v" + std::to_string(i * 7919u) + (i % 3 == 0 ? " dB" : " Hz");
+    const TextRun r = fx.ts->shape(fx.body, s);
+    kept.push_back({r, {r.glyphs.begin(), r.glyphs.end()}, {r.carets.begin(), r.carets.end()}});
+  }
+  CHECK(fx.ts->stats().cacheFlushes == 0);
+  CHECK(fx.ts->stats().cachedRuns >= kCount);
+  // Every span still points at the same, unchanged data.
+  uint32_t bad = 0;
+  for (const Kept& k : kept) {
+    const bool same = k.run.glyphs.size() == k.glyphs.size() && k.run.carets.size() == k.carets.size() &&
+                      std::equal(k.glyphs.begin(), k.glyphs.end(), k.run.glyphs.begin(),
+                                 [](const GlyphQuad& a, const GlyphQuad& b) {
+                                   return a.x0 == b.x0 && a.y0 == b.y0 && a.w == b.w && a.h == b.h && a.page == b.page &&
+                                          a.uv0.x == b.uv0.x && a.uv0.y == b.uv0.y;
+                                 }) &&
+                      std::equal(k.carets.begin(), k.carets.end(), k.run.carets.begin(),
+                                 [](const CaretStop& a, const CaretStop& b) { return a.byte == b.byte && a.x == b.x; });
+    bad += same ? 0u : 1u;
+  }
+  CHECK(bad == 0);
+  // The frame boundary trims the cache (wholesale), and shaping keeps working afterwards.
+  fx.ts->beginFrame();
   CHECK(fx.ts->stats().cacheFlushes == 1);
-  CHECK(fx.ts->stats().cachedRuns <= TextSystem::kMaxCachedRuns);
+  CHECK(fx.ts->stats().cachedRuns == 0);
   CHECK(fx.ts->measure(fx.body, "12345") > 0);
+  fx.ts->beginFrame();
+  CHECK(fx.ts->stats().cacheFlushes == 1);  // under the cap: kept
   fx.ts->clearRunCache();
   CHECK(fx.ts->stats().cachedRuns == 0);
 }
 
+TEST_CASE("text: caret stops per cluster, caretX and hitTest") {
+  Fixture fx;
+  // "aé z": clusters at bytes 0, 1 (é is 2 bytes), 3 (space), 4; end stop at 5.
+  const TextRun r = fx.ts->shape(fx.body, "a\xC3\xA9 z");
+  REQUIRE(r.carets.size() == 5);
+  const uint32_t bytes[] = {0, 1, 3, 4, 5};
+  for (size_t i = 0; i < 5; ++i) CHECK(r.carets[i].byte == bytes[i]);
+  CHECK(r.carets[0].x == 0);
+  CHECK(r.carets.back().x == r.advance);
+  for (size_t i = 1; i < r.carets.size(); ++i) CHECK(r.carets[i].x > r.carets[i - 1].x);
+  CHECK(r.visibleBytes == 5);
+  CHECK_FALSE(r.truncated);
+  // Stops are the pen positions HarfBuzz reports, rounded like the glyph origins.
+  const auto g = fx.ts->shapeGlyphs(fx.body, "a\xC3\xA9 z");
+  int32_t pen = 0;
+  for (size_t i = 0; i < g.size(); ++i) {
+    CHECK(r.carets[i].x == (pen + 32) >> 6);
+    pen += g[i].xAdvance;
+  }
+  // caretX: the stop at or before the byte (inside é → its start); past the end → the advance.
+  CHECK(r.caretX(0) == 0);
+  CHECK(r.caretX(2) == r.carets[1].x);
+  CHECK(r.caretX(4) == r.carets[3].x);
+  CHECK(r.caretX(99) == r.advance);
+  // hitTest: nearest stop; ties go left.
+  CHECK(r.hitTest(-5) == 0);
+  CHECK(r.hitTest(r.carets[2].x) == 3);
+  CHECK(r.hitTest(r.carets[2].x + 1) == 3);
+  CHECK(r.hitTest(r.advance + 50) == 5);
+  const int32_t mid = (r.carets[3].x + r.carets[4].x) / 2;
+  const uint32_t at = r.hitTest(mid);
+  CHECK((at == 4 || at == 5));
+  CHECK(TextRun{}.caretX(3) == 0);
+  CHECK(TextRun{}.hitTest(3) == 0);
+}
+
+TEST_CASE("text: ellipsis truncation fits the width at a cluster boundary") {
+  Fixture fx;
+  const std::string s = "Master bus compressor";
+  const int32_t full = fx.ts->measure(fx.body, s);
+  const int32_t ell = fx.ts->measure(fx.body, "\xE2\x80\xA6");
+  REQUIRE(ell > 0);
+  // Fits: the plain run, not truncated.
+  TextRun r = fx.ts->shapeTruncated(fx.body, s, full);
+  CHECK_FALSE(r.truncated);
+  CHECK(r.advance == full);
+  CHECK(r.visibleBytes == s.size());
+  // Every width below the full one: fits, ends in "…", and keeps the longest prefix that does.
+  for (int32_t w = full - 1; w >= 0; --w) {
+    CAPTURE(w);
+    r = fx.ts->shapeTruncated(fx.body, s, w);
+    CHECK(r.truncated);
+    CHECK(r.advance <= w);
+    if (w < ell) {
+      CHECK(r.advance == 0);
+      CHECK(r.glyphs.empty());
+      continue;
+    }
+    REQUIRE(r.carets.size() >= 2);
+    CHECK(r.carets.back().byte == r.visibleBytes + 3);
+    CHECK(r.carets[r.carets.size() - 2].byte == r.visibleBytes);  // the ellipsis's own stop
+    CHECK(r.visibleBytes < s.size());
+    if (r.visibleBytes > 0) CHECK(s[r.visibleBytes - 1] != ' ');  // no space before the ellipsis
+    // Same as shaping prefix + "…" directly.
+    const std::string expect = s.substr(0, r.visibleBytes) + "\xE2\x80\xA6";
+    CHECK(r.advance == fx.ts->measure(fx.body, expect));
+    // One more (non-space) cluster would not have fit.
+    uint32_t next = r.visibleBytes;
+    while (next < s.size() && s[next] == ' ') ++next;
+    if (next < s.size()) CHECK(fx.ts->measure(fx.body, s.substr(0, next + 1) + "\xE2\x80\xA6") > w);
+  }
+  // Cached per (string, width): a repeat is a hit and returns the same storage.
+  const TextRun a = fx.ts->shapeTruncated(fx.body, s, 60);
+  const uint64_t hits = fx.ts->stats().cacheHits;
+  const TextRun b = fx.ts->shapeTruncated(fx.body, s, 60);
+  CHECK(fx.ts->stats().cacheHits > hits);
+  CHECK(a.glyphs.data() == b.glyphs.data());
+  // drawTruncated draws exactly the truncated run.
+  DrawList dl;
+  dl.reset(200, 40);
+  CHECK(fx.ts->drawTruncated(dl, fx.body, {0, 20}, s, 60, rgba(255, 255, 255)) == a.advance);
+  CHECK(dl.vertices().size() == a.glyphs.size() * 4);
+  // Empty input.
+  CHECK(fx.ts->shapeTruncated(fx.body, "", 10).advance == 0);
+  CHECK_FALSE(fx.ts->shapeTruncated(fx.body, "", 10).truncated);
+}
+
+TEST_CASE("text: atlas eviction is LRU by page and never touches a page the current frame uses") {
+  // Two pages at a large size: a few hundred glyphs overflow them, forcing eviction across frames.
+  auto atlas = std::make_shared<Atlas>(2);
+  auto t = TextSystem::create(atlas);
+  REQUIRE(t.ok());
+  TextSystem& ts = **t;
+  auto face = ts.loadFace(std::string(PQ_ASSETS_DIR) + "/fonts/Inter-Regular.ttf");
+  REQUIRE(face.ok());
+  auto font = ts.font(*face, 128);
+  REQUIRE(font.ok());
+  // Strings of 16 distinct non-ASCII letters each (Latin-1 Supplement, Latin Extended-A/B, Greek, Cyrillic).
+  auto block = [](uint32_t first) {
+    std::string s;
+    for (uint32_t c = first; c < first + 16; ++c) {
+      s += static_cast<char>(0xC0 | (c >> 6));
+      s += static_cast<char>(0x80 | (c & 0x3F));
+    }
+    return s;
+  };
+  const uint32_t starts[] = {0xC0, 0xD8, 0xE8, 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160, 0x170,
+                             0x180, 0x190, 0x1A0, 0x1B0, 0x1C4, 0x1D4, 0x1E4, 0x1F4, 0x204, 0x214, 0x224,
+                             0x391, 0x3A3, 0x3B1, 0x3C1, 0x410, 0x420, 0x430, 0x440, 0x450, 0x460};
+  // Frame 1: "ABC" (ASCII, page 0). Keep its texels to compare after it has been evicted and rebuilt.
+  ts.beginFrame();
+  auto texelsOf = [&](const TextRun& r) {
+    std::vector<uint8_t> out;
+    for (const GlyphQuad& q : r.glyphs) {
+      const uint32_t ax = static_cast<uint32_t>(q.uv0.x * kAtlasWidth + 0.5f), ay = static_cast<uint32_t>(q.uv0.y * kAtlasHeight + 0.5f);
+      for (uint32_t y = 0; y < q.h; ++y)
+        for (uint32_t x = 0; x < q.w; ++x) out.push_back(*atlas->pageImage(q.page).at(ax + x, ay + y));
+    }
+    return out;
+  };
+  const std::vector<uint8_t> abc = texelsOf(ts.shape(*font, "ABC"));
+  // Each later frame shapes one block. Within a frame, every page referenced by a run returned in that frame
+  // must keep its generation (no eviction under a live run).
+  uint32_t frames = 0;
+  for (uint32_t start : starts) {
+    ts.beginFrame();
+    ++frames;
+    const TextRun r = ts.shape(*font, block(start));
+    std::vector<std::pair<uint32_t, uint32_t>> used;
+    for (const GlyphQuad& q : r.glyphs) used.push_back({q.page, atlas->generation(q.page)});
+    const TextRun again = ts.shape(*font, block(start));  // same frame: a hit, same storage
+    CHECK(again.glyphs.data() == r.glyphs.data());
+    for (auto [page, gen] : used) CHECK(atlas->generation(page) == gen);
+    if (atlas->evictions() >= 2) break;
+  }
+  MESSAGE("evictions after " << frames << " frames: " << atlas->evictions() << ", glyphs dropped: " << ts.stats().atlasFull);
+  REQUIRE(atlas->evictions() >= 1);
+  CHECK(atlas->pageCount() == 2);
+  CHECK(atlas->memoryBytes() == 2 * kAtlasPageBytes);
+  CHECK(ts.stats().atlasFull == 0);  // only one block per frame: there was always an unused page to evict
+  // "ABC" was built in frame 1; its page has been evicted since, so the next shape rebuilds it (re-rasterised,
+  // texel-identical).
+  ts.beginFrame();
+  const uint64_t rebuilt = ts.stats().runsRebuilt;
+  const TextRun abc2 = ts.shape(*font, "ABC");
+  CHECK(ts.stats().runsRebuilt == rebuilt + 1);
+  CHECK(texelsOf(abc2) == abc);
+  for (const GlyphQuad& q : abc2.glyphs) CHECK(q.page < atlas->pageCount());
+}
+
+TEST_CASE("text: a full atlas drops glyphs (counted, not cached) and the run recovers on a later frame") {
+  auto atlas = std::make_shared<Atlas>(1);
+  auto t = TextSystem::create(atlas);
+  REQUIRE(t.ok());
+  TextSystem& ts = **t;
+  auto face = ts.loadFace(std::string(PQ_ASSETS_DIR) + "/fonts/Inter-Regular.ttf");
+  REQUIRE(face.ok());
+  auto font = ts.font(*face, 120);
+  REQUIRE(font.ok());
+  // One frame asks for far more ink than one page holds: everything is in use by this frame, nothing can go.
+  ts.beginFrame();
+  std::string many;
+  for (uint32_t c = 0x100; c < 0x180; ++c) {
+    many += static_cast<char>(0xC0 | (c >> 6));
+    many += static_cast<char>(0x80 | (c & 0x3F));
+  }
+  const TextRun r = ts.shape(*font, many);
+  CHECK(ts.stats().atlasFull > 0);
+  CHECK(r.glyphs.size() < 128);
+  CHECK(atlas->evictions() == 0);
+  // Next frame: the incomplete run is rebuilt (the page is now evictable, so its glyphs fit again or are
+  // dropped again; either way it is rebuilt rather than served stale).
+  ts.beginFrame();
+  const uint64_t rebuilt = ts.stats().runsRebuilt;
+  ts.shape(*font, many);
+  CHECK(ts.stats().runsRebuilt == rebuilt + 1);
+}
+
 TEST_CASE("atlas: shelf packing keeps rects disjoint, inside the page and clear of the built-ins") {
-  Atlas a;
+  Atlas a(1);
   struct R {
     uint32_t x, y, w, h;
   };
   std::vector<R> got;
   for (uint32_t i = 0; i < 400; ++i) {
     const uint32_t w = 3 + (i * 7) % 17, h = 4 + (i * 5) % 19;
-    uint32_t x = 0, y = 0;
-    REQUIRE(a.allocate(w, h, x, y));
-    got.push_back({x, y, w, h});
+    Atlas::Slot s;
+    REQUIRE(a.allocate(w, h, s));
+    CHECK(s.page == 0);
+    got.push_back({s.x, s.y, w, h});
   }
   for (size_t i = 0; i < got.size(); ++i) {
     const R& r = got[i];
@@ -251,36 +471,71 @@ TEST_CASE("atlas: shelf packing keeps rects disjoint, inside the page and clear 
       CHECK(apart);
     }
   }
-  // Exhaustion is reported, not overrun.
-  uint32_t x = 0, y = 0;
+  // Exhaustion within one frame (every page in use) is reported, not overrun.
+  Atlas::Slot s;
   bool full = false;
-  for (int i = 0; i < 100000 && !full; ++i) full = !a.allocate(60, 60, x, y);
+  for (int i = 0; i < 100000 && !full; ++i) full = !a.allocate(60, 60, s);
   CHECK(full);
-  CHECK_FALSE(a.allocate(kAtlasWidth, 10, x, y));
+  CHECK(a.evictions() == 0);
+  CHECK_FALSE(a.allocate(kAtlasWidth, 10, s));
+  // After a frame boundary the page is evictable: it is cleared back to the base layout and reused.
+  a.beginFrame();
+  const uint32_t gen = a.generation(0);
+  REQUIRE(a.allocate(60, 60, s));
+  CHECK(a.generation(0) == gen + 1);
+  CHECK(a.evictions() == 1);
+  CHECK(a.evictedAt(0) == 1);
+  CHECK(s.y == 1);  // first shelf again
+  CHECK(*a.pageImage(0).at(1, 1) == 255);  // the white block survives
+  CHECK(*a.pageImage(0).at(500, 500) == 0);
 }
 
-TEST_CASE("atlas: change tracking reports the union of rows changed since a version") {
-  Atlas a;
-  const uint64_t v0 = a.version();
-  a.markDirty(10, 20);
-  const uint64_t v1 = a.version();
-  a.markDirty(100, 110);
-  auto r = a.dirtyRowsSince(v0);
-  CHECK(r.y0 == 10);
-  CHECK(r.y1 == 110);
-  r = a.dirtyRowsSince(v1);
-  CHECK(r.y0 == 100);
-  CHECK(r.y1 == 110);
-  r = a.dirtyRowsSince(a.version());
-  CHECK(r.y0 == r.y1);
-  // Past the change-list limit, old changes fold into a conservative union, never lost.
-  for (uint32_t i = 0; i < 200; ++i) a.markDirty(300 + i, 301 + i);
-  r = a.dirtyRowsSince(v0);
-  CHECK(r.y0 == 10);
-  CHECK(r.y1 == 500);
-  r = a.dirtyRowsSince(a.version() - 1);
-  CHECK(r.y0 == 499);
-  CHECK(r.y1 == 500);
+TEST_CASE("atlas: pages open on demand, up to the limit, and change tracking is one rect per page") {
+  Atlas a(3);
+  CHECK(a.pageCount() == 1);
+  CHECK(a.memoryBytes() == kAtlasPageBytes);
+  // A new page starts fully dirty (its first upload is the whole page), as does page 0.
+  CHECK(a.takeDirty(0).x1 == kAtlasWidth);
+  CHECK(a.dirty(0).empty());
+  Atlas::Slot s;
+  uint32_t maxPage = 0, placed = 0;
+  while (placed < 2000 && a.allocate(100, 100, s)) {
+    maxPage = std::max(maxPage, s.page);
+    ++placed;
+  }
+  CHECK(placed < 2000);  // 3 pages, all used this frame: the next one fails
+  CHECK(placed >= 3 * 70);  // 7 shelves (101 + 1/4 slack rows) × 10 cells (101 texels incl. the gutter) per page
+  CHECK(a.pageCount() == 3);
+  CHECK(maxPage == 2);
+  CHECK(a.evictions() == 0);
+  // Dirty rects are the union of what was written since the last take.
+  Atlas b(1);
+  b.takeDirty(0);
+  const uint64_t v = b.version();
+  b.markDirty(0, 200, 10, 210, 20);
+  b.markDirty(0, 211, 10, 215, 30);  // next glyph on the shelf: merges
+  b.markDirty(0, 150, 100, 160, 110);
+  CHECK(b.version() > v);
+  REQUIRE(b.dirtyRects(0).size() == 2);
+  CHECK(b.dirtyRects(0)[0].x0 == 200);
+  CHECK(b.dirtyRects(0)[0].x1 == 215);
+  CHECK(b.dirtyRects(0)[0].y1 == 30);
+  CHECK(b.dirtyRects(0)[1].x0 == 150);
+  const Atlas::DirtyRect d = b.takeDirty(0);
+  CHECK(d.x0 == 150);
+  CHECK(d.y0 == 10);
+  CHECK(d.x1 == 215);
+  CHECK(d.y1 == 110);
+  CHECK(b.takeDirty(0).empty());
+  CHECK(b.dirtyRects(0).empty());
+  // Past kMaxDirtyRects the page falls back to the bounding rect.
+  for (uint32_t i = 0; i <= Atlas::kMaxDirtyRects; ++i) b.markDirty(0, 10, 100 + 3 * i, 12, 101 + 3 * i);
+  REQUIRE(b.dirtyRects(0).size() == 1);
+  CHECK(b.dirtyRects(0)[0].y0 == 100);
+  CHECK(b.dirtyRects(0)[0].y1 == 101 + 3 * Atlas::kMaxDirtyRects);
+  b.takeDirty(0);
+  b.markDirty(0, 5, 5, 5, 9);  // empty rects are ignored
+  CHECK(b.dirty(0).empty());
 }
 
 TEST_CASE("text: assetsDir finds the bundled fonts") {

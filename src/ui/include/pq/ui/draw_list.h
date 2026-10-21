@@ -7,8 +7,9 @@
 // PrimWriteVtx / PrimWriteIdx / _VtxCurrentIdx with primReserve / primWriteVtx / primWriteIdx / vtxCurrentIdx.
 //
 // Every vertex samples a texture; untextured geometry points its uv at a white texel of the atlas
-// (whiteUv()), so solid fills, gradients, glow sprites and (later) glyphs share one pipeline and one
-// texture binding. Commands only split when blend mode, texture or clip rect changes.
+// (whiteUv()), so solid fills, gradients, glow sprites and glyphs share one pipeline and one texture
+// binding. Commands only split when blend mode, texture or clip rect changes (kAtlasTexture is compatible
+// with every glyph atlas page, so fills never split a run of text).
 //
 // Antialiasing is geometric (PQ Meter house style, SPEC §11): filled shapes get a 1 px alpha ramp centred on
 // the true edge (0.5 px inside, 0.5 px outside), which is a box-filter coverage estimate for straight
@@ -64,10 +65,19 @@ inline constexpr uint32_t kBlendModeCount = 2;
 // way). Round: a half-disc of the stroke's half-width beyond the end.
 enum class LineCap : uint8_t { Butt, Round };
 
-// Index into the renderer's texture table. kAtlasTexture holds the white texel and the glow sprite
-// (and, from T0.8, glyphs).
+// Index into the renderer's texture table (T0.8-fix1 / T0.7-fix4 layout):
+//   - kAtlasTexture (0): "the shared sprites", i.e. the white texel and the glow sprite. Every glyph atlas page
+//     carries them at the same uv (pq/ui/atlas.h), so geometry drawn with kAtlasTexture is valid on any page.
+//   - atlasPageTexture(p) (1 .. kMaxAtlasPages): glyph atlas page p (R8 coverage, sampled as white × coverage).
+//   - kFirstUserTexture and up: Renderer::createTexture.
+// The draw list merges kAtlasTexture with any atlas page (see DrawList::beginCmd), so a widget's fills and its
+// label stay in one draw command as long as the label's glyphs sit on one page.
 using TextureId = uint32_t;
 inline constexpr TextureId kAtlasTexture = 0;
+inline constexpr uint32_t kMaxAtlasPages = 4;
+constexpr TextureId atlasPageTexture(uint32_t page) noexcept { return 1 + page; }
+constexpr bool isAtlasPageTexture(TextureId t) noexcept { return t - 1u < kMaxAtlasPages; }
+inline constexpr TextureId kFirstUserTexture = 1 + kMaxAtlasPages;
 
 // Where the built-in sprites live in the atlas texture, in normalised uv.
 struct AtlasUv {

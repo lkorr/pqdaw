@@ -92,12 +92,13 @@ TEST_CASE("draw list: commands split only on state changes") {
 TEST_CASE("draw list: images switch texture for the quad and restore it") {
   DrawList dl;
   dl.reset(64, 64);
+  constexpr TextureId kImage = kFirstUserTexture + 2;
   dl.addRectFilled({0, 0, 4, 4}, 0xFFFFFFFFu);
-  dl.addImage(3, {0, 0, 8, 8}, {0, 0}, {1, 1});
-  dl.addImage(3, {8, 0, 16, 8}, {0, 0}, {1, 1});
+  dl.addImage(kImage, {0, 0, 8, 8}, {0, 0}, {1, 1});
+  dl.addImage(kImage, {8, 0, 16, 8}, {0, 0}, {1, 1});
   dl.addRectFilled({0, 0, 4, 4}, 0xFFFFFFFFu);
   REQUIRE(dl.commands().size() == 3);
-  CHECK(dl.commands()[1].texture == 3);
+  CHECK(dl.commands()[1].texture == kImage);
   CHECK(dl.commands()[1].idxCount == 12);  // consecutive images on one texture merge
   CHECK(dl.commands()[2].texture == kAtlasTexture);
   CHECK(dl.texture() == kAtlasTexture);
@@ -266,19 +267,54 @@ TEST_CASE("draw list: reset keeps capacity (steady-state frames do not reallocat
   CHECK(dl.vertices().size() == nv);
 }
 
+TEST_CASE("draw list: the shared sprites merge with any glyph atlas page, never with user textures") {
+  DrawList dl;
+  dl.reset(64, 64);
+  // fill → text on page 1 → fill → text on page 1: one command, adopting page 1.
+  dl.addRectFilled({0, 0, 4, 4}, 0xFFFFFFFFu);
+  dl.setTexture(atlasPageTexture(1));
+  dl.addRectFilled({4, 0, 8, 4}, 0xFFFFFFFFu);  // stands in for glyph quads
+  dl.setTexture(kAtlasTexture);
+  dl.addRectFilled({8, 0, 12, 4}, 0xFFFFFFFFu);
+  dl.setTexture(atlasPageTexture(1));
+  dl.addRectFilled({12, 0, 16, 4}, 0xFFFFFFFFu);
+  REQUIRE(dl.commands().size() == 1);
+  CHECK(dl.commands()[0].texture == atlasPageTexture(1));
+  CHECK(dl.commands()[0].idxCount == 24);
+  // Another page needs its own command; fills after it join it.
+  dl.setTexture(atlasPageTexture(2));
+  dl.addRectFilled({0, 4, 4, 8}, 0xFFFFFFFFu);
+  dl.setTexture(kAtlasTexture);
+  dl.addRectFilled({4, 4, 8, 8}, 0xFFFFFFFFu);
+  REQUIRE(dl.commands().size() == 2);
+  CHECK(dl.commands()[1].texture == atlasPageTexture(2));
+  CHECK(dl.commands()[1].idxCount == 12);
+  // A user texture always splits.
+  dl.addImage(kFirstUserTexture, {0, 8, 8, 16}, {0, 0}, {1, 1});
+  dl.addRectFilled({8, 8, 12, 12}, 0xFFFFFFFFu);
+  REQUIRE(dl.commands().size() == 4);
+  CHECK(dl.commands()[2].texture == kFirstUserTexture);
+  CHECK(dl.commands()[3].texture == kAtlasTexture);
+  CHECK(isAtlasPageTexture(atlasPageTexture(0)));
+  CHECK(isAtlasPageTexture(atlasPageTexture(kMaxAtlasPages - 1)));
+  CHECK_FALSE(isAtlasPageTexture(kAtlasTexture));
+  CHECK_FALSE(isAtlasPageTexture(kFirstUserTexture));
+}
+
 TEST_CASE("atlas: white block and blob sprite") {
-  const Image a = buildBaseAtlas();
+  const CoverageImage a = buildBaseAtlas();
   REQUIRE(a.width == kAtlasWidth);
   REQUIRE(a.height == kAtlasHeight);
+  REQUIRE(a.texels.size() == kAtlasPageBytes);  // 8-bit coverage: a quarter of the old RGBA page
   for (uint32_t y = 0; y < 4; ++y)
-    for (uint32_t x = 0; x < 4; ++x) CHECK(a.pixel(x, y)[3] == 255);
+    for (uint32_t x = 0; x < 4; ++x) CHECK(*a.at(x, y) == 255);
   const AtlasUv uv = baseAtlasUv();
   CHECK(uv.white.x * kAtlasWidth == doctest::Approx(2.0f));
   // Blob: opaque-ish centre, zero rim, monotone falloff along a radius.
   const uint32_t bx = static_cast<uint32_t>(uv.blob.x0 * kAtlasWidth);
   const uint32_t c = kAtlasBlobSize / 2;
-  CHECK(a.pixel(bx + c, c)[3] > 240);
-  CHECK(a.pixel(bx, c)[3] <= 1);
-  CHECK(a.pixel(bx, 0)[3] == 0);
-  for (uint32_t x = c; x + 1 < kAtlasBlobSize; ++x) CHECK(a.pixel(bx + x + 1, c)[3] <= a.pixel(bx + x, c)[3]);
+  CHECK(*a.at(bx + c, c) > 240);
+  CHECK(*a.at(bx, c) <= 1);
+  CHECK(*a.at(bx, 0) == 0);
+  for (uint32_t x = c; x + 1 < kAtlasBlobSize; ++x) CHECK(*a.at(bx + x + 1, c) <= *a.at(bx + x, c));
 }

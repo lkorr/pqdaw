@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "pq/ui/damage.h"
 #include "pq/ui/draw_list.h"
@@ -73,6 +75,9 @@ struct WindowApp {
   float scaleOverride = 0.0f;
   UiScale lastFrameScale{};  // the scale the last presented frame was drawn at (self-test)
   uint32_t scaleChanges = 0;
+  // Self-test hook: lines of text drawn over the scene (the glyph-upload hitch check rasterises them mid-run).
+  FontId extraFont = kNoFont;
+  std::vector<std::string> extraLines;
 
   // Re-reads the scale; on a change re-resolves the font roles (new sizes are created here, on the event,
   // never inside paint), relayouts the tree and requests a full redraw. Returns false on a hard error.
@@ -119,6 +124,7 @@ struct WindowApp {
     } else if (*st == Swapchain::FrameStatus::Skipped) {
       ++framesSkipped;
     } else {
+      if (textures.text) textures.text->beginFrame();  // frame boundary: run cache trim, atlas LRU stamp
       dl.reset(ext.width, ext.height);
       const double t = now();
       if (ui) {
@@ -130,6 +136,11 @@ struct WindowApp {
         ui->paint(dl, res, t);
       } else {
         buildScene(scene, dl, textures, damage.animating() ? t : 0.0);
+      }
+      if (textures.text && extraFont != kNoFont) {
+        const float lh = static_cast<float>(textures.text->metrics(extraFont).lineHeight);
+        for (size_t i = 0; i < extraLines.size(); ++i)
+          textures.text->draw(dl, extraFont, {8.0f, lh * static_cast<float>(i + 1)}, extraLines[i], rgba(255, 255, 255));
       }
       if (Status s = swapchain->endFrame(*renderer, dl, kSceneClearColor); !s) {
         error = s.error().message;
@@ -353,6 +364,79 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
   check(burstOk, "60 animated paced frames present");
   std::printf("  60 paced frames: %.1f ms (%.2f ms/frame), pacer %s, %u pacer timeouts\n", burstMs, burstMs / 60.0,
               app.pacer.available() ? "DwmFlush" : "unavailable", app.pacer.timeouts() - timeoutsBefore);
+
+  // T0.8-fix1: 200 glyphs rasterised in the middle of an animated, paced run: no frame interval may exceed
+  // 1.5x the run's median (uploads go through the frame's own command buffer; nothing waits for the GPU).
+  // FreeType rasterisation itself (~15 us per glyph in release) is CPU work inside the frame. Up to 3 attempts,
+  // each with 200 fresh glyphs (a new font size), because the machine may be shared with other work. The
+  // timing is a release-build criterion: the dev preset compiles FreeType and HarfBuzz at /Od (~75 us per
+  // glyph), so there it is measured and printed but not enforced.
+  {
+#ifdef NDEBUG
+    constexpr bool kEnforceTiming = true;
+#else
+    constexpr bool kEnforceTiming = false;
+#endif
+    TextSystem& ts = *app.textures.text;
+    bool ok = false;
+    double medianMs = 0, worstMs = 0, glyphFrameMs = 0;
+    uint64_t rasterised = 0;
+    int attempt = 0;
+    for (; attempt < 3 && !ok; ++attempt) {
+      auto font = ts.font(app.textures.regular, 19 + 2 * static_cast<uint32_t>(attempt));  // ASCII warmed now, not in a frame
+      if (!font) break;
+      // 200 code points from Latin-1 Supplement / Latin Extended-A/B that Inter has (glyph id != 0).
+      std::vector<std::string> lines(4);
+      uint32_t found = 0;
+      for (uint32_t c = 0xC0; c < 0x250 && found < 200; ++c) {
+        std::string u;
+        u += static_cast<char>(0xC0 | (c >> 6));
+        u += static_cast<char>(0x80 | (c & 0x3F));
+        const auto g = ts.shapeGlyphs(*font, u);
+        if (g.size() != 1 || g[0].glyphId == 0) continue;
+        lines[found / 50] += u;
+        ++found;
+      }
+      if (found < 200) break;
+      constexpr int kFrames = 61, kGlyphFrame = 30;
+      std::vector<double> intervals;
+      double glyphFrameWorkMs = 0;
+      app.damage.setAnimating(true);
+      auto prev = Clock::now();
+      const uint64_t before = ts.stats().glyphsRasterised;
+      bool framesOk = true;
+      for (int i = 0; i < kFrames; ++i) {
+        if (i == kGlyphFrame) {
+          app.extraFont = *font;
+          app.extraLines = lines;
+        }
+        pump(app);
+        const auto w0 = Clock::now();
+        framesOk = app.drawFrame() && framesOk;
+        if (i == kGlyphFrame) glyphFrameWorkMs = std::chrono::duration<double, std::milli>(Clock::now() - w0).count();
+        app.pacer.wait();
+        const auto now = Clock::now();
+        intervals.push_back(std::chrono::duration<double, std::milli>(now - prev).count());
+        prev = now;
+      }
+      app.damage.setAnimating(false);
+      app.extraFont = kNoFont;
+      app.extraLines.clear();
+      rasterised = ts.stats().glyphsRasterised - before;
+      intervals.erase(intervals.begin());  // the first interval includes the setup above
+      glyphFrameMs = intervals[kGlyphFrame - 1];
+      std::vector<double> sorted = intervals;
+      std::sort(sorted.begin(), sorted.end());
+      medianMs = sorted[sorted.size() / 2];
+      worstMs = sorted.back();
+      ok = framesOk && rasterised >= 200 && (worstMs <= 1.5 * medianMs || !kEnforceTiming);
+      std::printf("  glyph hitch attempt %d: %llu glyphs rasterised in one frame (drawFrame %.2f ms); frame interval median "
+                  "%.2f ms, that frame %.2f ms, worst %.2f ms\n",
+                  attempt + 1, static_cast<unsigned long long>(rasterised), glyphFrameWorkMs, medianMs, glyphFrameMs, worstMs);
+    }
+    check(ok, kEnforceTiming ? "200 new glyphs mid-run: no frame interval > 1.5x the median"
+                             : "200 new glyphs mid-run present (timing: release builds only)");
+  }
 
   // T0.7-fix3: a display-scale change at runtime re-renders without a restart. The OS event is faked: the
   // override hook stands in for SDL_GetWindowDisplayScale and a DISPLAY_SCALE_CHANGED event goes through the

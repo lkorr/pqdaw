@@ -161,9 +161,21 @@ void DrawList::popClip() noexcept {
 // Opens a command for the current state, or keeps appending to the last one when the state matches.
 // An empty trailing command (state changed but nothing drawn) is replaced, and merges back into the
 // command before it when the state flipped back, so A→B→A with nothing drawn under B stays one command.
+// Texture compatibility: kAtlasTexture (shared sprites only) runs on any glyph atlas page, so a command on page
+// p absorbs following fills, and a fills-only command adopts the page of the glyphs appended to it.
 void DrawList::beginCmd() {
   const ClipRect clip = clipStack_[clipDepth_];
-  auto same = [&](const DrawCmd& c) { return c.clip == clip && c.texture == texture_ && c.blend == blend_; };
+  const TextureId tex = texture_;
+  auto same = [&](DrawCmd& c) {
+    if (!(c.clip == clip) || c.blend != blend_) return false;
+    if (c.texture == tex) return true;
+    if (tex == kAtlasTexture && isAtlasPageTexture(c.texture)) return true;
+    if (c.texture == kAtlasTexture && isAtlasPageTexture(tex)) {
+      c.texture = tex;
+      return true;
+    }
+    return false;
+  };
   if (cmd_.size() != 0) {
     if (same(cmd_.back())) return;
     if (cmd_.back().idxCount == 0) {
@@ -171,7 +183,7 @@ void DrawList::beginCmd() {
       if (cmd_.size() != 0 && same(cmd_.back())) return;
     }
   }
-  *cmd_.grow(1) = DrawCmd{idx_.size(), 0, clip, texture_, blend_};
+  *cmd_.grow(1) = DrawCmd{idx_.size(), 0, clip, tex, blend_};
 }
 
 

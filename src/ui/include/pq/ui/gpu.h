@@ -42,6 +42,14 @@ public:
   bool validationEnabled() const noexcept { return debugMessenger_ != VK_NULL_HANDLE; }
   uint32_t validationErrorCount() const noexcept { return validationErrors_; }
 
+  // Live VMA allocations (every buffer and image the UI allocated through the allocator) and their bytes.
+  // For leak tests; walks the allocator's blocks, so not for per-frame use.
+  struct MemoryStats {
+    uint32_t allocations = 0;
+    uint64_t bytes = 0;
+  };
+  MemoryStats memoryStats() const noexcept;
+
   // Records a one-off command buffer with `record`, submits it and waits for completion. For uploads and
   // readback (not per-frame work).
   template <class F>

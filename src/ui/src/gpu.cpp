@@ -207,6 +207,12 @@ GpuContext::~GpuContext() {
   if (instance_) vkDestroyInstance(instance_, nullptr);
 }
 
+GpuContext::MemoryStats GpuContext::memoryStats() const noexcept {
+  VmaTotalStatistics st{};
+  vmaCalculateStatistics(allocator_, &st);
+  return {st.total.statistics.allocationCount, st.total.statistics.allocationBytes};
+}
+
 Status GpuContext::submitAndWaitImpl(void (*fn)(VkCommandBuffer, void*), void* user) {
   VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
   ai.commandPool = oneShotPool_;

@@ -52,6 +52,7 @@ void TestDriver::resize(uint32_t width, uint32_t height, float scale) {
 bool TestDriver::step() {
   tree_.update(now_);
   if (!tree_.needsPaint()) return false;
+  if (res_.text) res_.text->beginFrame();  // frame boundary for the run cache and atlas LRU
   dl_.reset(tree_.width(), tree_.height());
   tree_.paint(dl_, res_, now_);
   ++frames_;
@@ -230,6 +231,7 @@ Status TestDriver::enableGpu() {
 Result<Image> TestDriver::render() {
   if (Status s = enableGpu(); !s) return std::move(s).error();
   tree_.update(now_);
+  if (res_.text) res_.text->beginFrame();
   dl_.reset(tree_.width(), tree_.height());
   tree_.paint(dl_, res_, now_);
   auto target = OffscreenTarget::create(*gpu_->ctx, tree_.width(), tree_.height());

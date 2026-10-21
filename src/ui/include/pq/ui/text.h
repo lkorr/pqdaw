@@ -1,12 +1,18 @@
 #pragma once
 
-// Text: FreeType (hinted, integer pixel sizes) + HarfBuzz shaping, glyph bitmaps in the shared atlas page
+// Text: FreeType (hinted, integer pixel sizes) + HarfBuzz shaping, glyph bitmaps in the glyph atlas
 // (SPEC §11: crisp hinted bitmap glyphs, never MSDF or unhinted vector text).
 //
 //   - A face is a font file in memory (loadFace). A font is a face at an integer pixel size with options
 //     (font()); each font has its own FT_Face + hb_font so sizes never fight over FT_Activate_Size.
-//   - Glyphs are rasterised on first use (grayscale, hinted) into the Atlas (white, coverage in alpha) and
-//     stay there; printable ASCII is rasterised when a font is created so a warm UI never touches FreeType.
+//   - Glyphs are rasterised on first use (grayscale, hinted) into the Atlas (8-bit coverage pages, see
+//     pq/ui/atlas.h); printable ASCII is rasterised when a font is created so a warm UI never touches
+//     FreeType. When every page is full the least recently used page not touched this frame is cleared and
+//     glyphs on it are re-rasterised on their next use. If every page was used this frame the glyph is dropped
+//     (Stats::atlasFull; reported once on stderr) and its run is rebuilt on a later frame.
+//   - Frames: call beginFrame() once per frame before any shape/draw. Runs returned by shape() stay valid until
+//     the next beginFrame() (or clearRunCache()): the cache is only flushed there, and the atlas never evicts a
+//     page the current frame has used.
 //   - HarfBuzz shapes with the font's linear (unhinted) advances; each glyph origin and the baseline are then
 //     snapped to whole pixels, so every texel lands on exactly one pixel (no resampling blur) and no glyph is
 //     more than half a pixel from its ideal position (rounding hinted advances one by one accumulates error
@@ -76,15 +82,36 @@ struct FontMetrics {
 struct GlyphQuad {
   int16_t x0, y0;  // top-left in px
   uint16_t w, h;   // bitmap size in px
+  uint32_t page;   // atlas page (drawn with atlasPageTexture(page))
   Vec2 uv0, uv1;
 };
 
-// A shaped run. `glyphs` holds only glyphs with ink (spaces have none). Valid until the next shape()/draw*
-// call on the same TextSystem (a cache flush may free it).
+// A caret stop: the pen x (px, pixel-snapped like the glyph origins) at the start of the cluster that begins
+// at UTF-8 byte offset `byte`. A run's stops are in logical order and end with {byte count, advance}.
+struct CaretStop {
+  uint32_t byte;
+  int32_t x;
+};
+
+// A shaped run. `glyphs` holds only glyphs with ink (spaces have none). Valid until the next
+// TextSystem::beginFrame() / clearRunCache() (M8: later shape() calls in the same frame never invalidate it).
 struct TextRun {
   int32_t advance = 0;  // px from the origin to the pen position after the last glyph
   std::span<const GlyphQuad> glyphs;
-  // Per-cluster pen positions are not kept; advances of individual glyphs are available via shapeGlyphs().
+  // One stop per cluster (a cluster is the unit HarfBuzz will not split: a character with its combining marks,
+  // a ligature) plus the end stop. Left-to-right text (all UI scripts in scope). A caret can sit at any stop.
+  std::span<const CaretStop> carets;
+  // shapeTruncated(): true when the text did not fit and was cut, with "…" appended. visibleBytes is the
+  // length of the source prefix shown (the whole string when not truncated); the ellipsis's stop has
+  // byte == visibleBytes and the end stop byte == visibleBytes + 3.
+  bool truncated = false;
+  uint32_t visibleBytes = 0;
+  uint32_t pageMask = 0;  // bit p set: some glyph sits on atlas page p (one bit: drawn as one span)
+
+  // x of the caret at byte offset `byte` (the last stop at or before it; past the end → advance).
+  int32_t caretX(uint32_t byte) const noexcept;
+  // Byte offset of the caret stop nearest to x (ties go to the earlier stop): a click → caret position.
+  uint32_t hitTest(int32_t x) const noexcept;
 };
 
 // Shaping output of one glyph, before rasterisation (for tests and layout code that needs per-glyph data).
@@ -101,13 +128,16 @@ public:
     uint64_t shapeCalls = 0;      // shape()/draw() lookups
     uint64_t cacheHits = 0;       // ... served from the run cache
     uint64_t glyphsRasterised = 0;
-    uint64_t atlasFull = 0;       // glyphs dropped because the atlas page was full
+    uint64_t atlasFull = 0;       // glyphs dropped because every atlas page was in use this frame
+    uint64_t runsRebuilt = 0;     // cached runs rebuilt after their atlas page was evicted (or a glyph dropped)
     uint64_t cacheFlushes = 0;
     uint32_t cachedRuns = 0;
   };
-  static constexpr uint32_t kMaxCachedRuns = 16384;  // the run cache is flushed when it would exceed this
+  // beginFrame() flushes the run cache when it holds more than this (wholesale: a UI's working set of labels
+  // is far below it, so it only triggers under churn, e.g. a readout printing a new number every frame).
+  static constexpr uint32_t kMaxCachedRuns = 16384;
 
-  // `atlas` is normally Renderer::atlas(); glyphs packed into it reach the GPU on the renderer's next upload.
+  // `atlas` is normally Renderer::atlas(); glyphs packed into it reach the GPU with the renderer's next frame.
   static Result<std::unique_ptr<TextSystem>> create(std::shared_ptr<Atlas> atlas);
   ~TextSystem();
   TextSystem(const TextSystem&) = delete;
@@ -125,19 +155,30 @@ public:
   }
   const FontMetrics& metrics(FontId font) const noexcept;
 
+  // Frame boundary: flushes the run cache if it is over kMaxCachedRuns and lets the atlas evict pages that
+  // earlier frames used. Runs returned before this call are invalid after it.
+  void beginFrame();
+
   // Shaped, rasterised run for `utf8` in `font` (cached). Invalid UTF-8 shapes as U+FFFD.
   TextRun shape(FontId font, std::string_view utf8);
-  int32_t measure(FontId font, std::string_view utf8) { return shape(font, utf8).advance; }
+  int32_t measure(FontId font, std::string_view utf8);  // shape(font, utf8).advance
+  // Like shape(), but when the run is wider than maxWidth px it is cut at a cluster boundary and "…" (U+2026)
+  // is appended so that the result fits (spaces before the ellipsis are dropped). If not even "…" fits, the
+  // run is empty (advance 0, truncated). Cached per (font, string, maxWidth).
+  TextRun shapeTruncated(FontId font, std::string_view utf8, int32_t maxWidth);
 
   // Draws `utf8` with its baseline origin at `baseline` (rounded to whole pixels). Returns the advance in px.
   int32_t draw(DrawList& dl, FontId font, Vec2 baseline, std::string_view utf8, Rgba col);
-  // Draws a run returned by shape() (same origin rule).
+  // draw() of shapeTruncated(): never wider than maxWidth px.
+  int32_t drawTruncated(DrawList& dl, FontId font, Vec2 baseline, std::string_view utf8, int32_t maxWidth, Rgba col);
+  // Draws a run returned by shape() (same origin rule). Restores the draw list's texture binding.
   static void drawRun(DrawList& dl, const TextRun& run, Vec2 baseline, Rgba col);
 
   // Uncached HarfBuzz output (no rasterisation): what shape() builds its runs from.
   std::vector<ShapedGlyph> shapeGlyphs(FontId font, std::string_view utf8);
 
   const Stats& stats() const noexcept;
+  // Drops every cached run now (invalidates all TextRuns handed out): call it at a frame boundary only.
   void clearRunCache() noexcept;
   const std::shared_ptr<Atlas>& atlas() const noexcept;
 
