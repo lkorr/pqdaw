@@ -62,6 +62,7 @@ pq_add_test(pq_tests_ui
     ui/test_widgets.cpp
     ui/test_hidpi.cpp
     ui/test_controls.cpp
+    ui/test_partial_redraw.cpp
   DEPS pq_ui)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 
@@ -86,6 +87,9 @@ set_tests_properties(pqdaw_window_selftest_widgets PROPERTIES SKIP_RETURN_CODE 7
 add_test(NAME pqdaw_window_selftest_gallery COMMAND pqdaw --window-selftest --scene widgets)
 set_tests_properties(pqdaw_window_selftest_gallery PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 add_test(NAME pqdaw_screenshot_widgets COMMAND pqdaw --screenshot widgets ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_widgets.png)
+# T0.7-fix1: partial redraw through the swapchain (2 px playhead over `lines`: pixels shaded, CPU vs full).
+add_test(NAME pqdaw_window_selftest_partial COMMAND pqdaw --window-selftest --scene lines-playhead)
+set_tests_properties(pqdaw_window_selftest_partial PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
 
 pq_add_test(pq_tests_graph
   SOURCES

@@ -10,7 +10,7 @@ namespace pq::ui {
 
 namespace {
 
-constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core", "primitives", "widgets"};
+constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core", "primitives", "widgets", kPlayheadScene};
 
 Image magmaRampImage() {
   using signal_theme::kMagma;
@@ -302,7 +302,35 @@ bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textur
     detail::controlsScene(dl, textures, timeSeconds);
     return true;
   }
+  if (sceneIsLayered(name)) {
+    buildSceneStatic(name, dl, textures);
+    buildSceneOverlay(name, dl, textures, timeSeconds);
+    return true;
+  }
   return false;
+}
+
+ClipRect playheadRect(uint32_t w, uint32_t h, double t) noexcept {
+  const double phase = t / kPlayheadPeriodSeconds - std::floor(t / kPlayheadPeriodSeconds);
+  const int32_t span = std::max(0, static_cast<int32_t>(w) - kPlayheadWidth);
+  const int32_t x = std::min(span, static_cast<int32_t>(phase * static_cast<double>(span + 1)));
+  return {x, 0, x + kPlayheadWidth, static_cast<int32_t>(h)};
+}
+
+bool sceneIsLayered(std::string_view name) noexcept { return name == kPlayheadScene; }
+
+bool buildSceneStatic(std::string_view name, DrawList& dl, const SceneTextures& textures) {
+  if (!sceneIsLayered(name)) return false;
+  detail::linesScene(dl, textures, 0.0);
+  return true;
+}
+
+bool buildSceneOverlay(std::string_view name, DrawList& dl, const SceneTextures& /*textures*/, double timeSeconds) {
+  if (!sceneIsLayered(name)) return false;
+  const ClipRect r = playheadRect(dl.targetWidth(), dl.targetHeight(), timeSeconds);
+  dl.addRectFilled({static_cast<float>(r.x0), static_cast<float>(r.y0), static_cast<float>(r.x1), static_cast<float>(r.y1)},
+                   rgba(235, 240, 255, 225));
+  return true;
 }
 
 }  // namespace pq::ui

@@ -2,6 +2,16 @@
 
 #include <SDL3/SDL.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>  // QueryThreadCycleTime (self-test CPU measurement)
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -48,6 +58,17 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// CPU cycles this thread has run (excludes time blocked in waits); 0 where unavailable.
+uint64_t threadCycles() noexcept {
+#ifdef _WIN32
+  ULONG64 c = 0;
+  QueryThreadCycleTime(GetCurrentThread(), &c);
+  return c;
+#else
+  return 0;
+#endif
+}
+
 // Everything the frame loop needs. Lives on the UI thread only.
 struct WindowApp {
   std::unique_ptr<Window> window;
@@ -84,6 +105,38 @@ struct WindowApp {
   FontId extraFont = kNoFont;
   std::vector<std::string> extraLines;
 
+  // T0.7-fix1 partial redraw. A frame redraws only the damage rects of the swapchain's persistent image when
+  // the scene can say what changed: widget trees (painted with the damage as clip) and layered scenes (a
+  // retained static layer + a transient overlay). Other scenes, resizes and whole-target animation draw in full.
+  bool layered = false;            // sceneIsLayered(scene)
+  DrawList staticLayer;            // layered scenes: the static part (retained layer 0 on the GPU)
+  uint64_t staticVersion = 0;      // bumped on every rebuild
+  uint32_t staticW = 0, staticH = 0;
+  UiScale staticScale{};
+  bool overlayAnimating = false;   // layered scenes: the overlay moves (A toggles, --animate starts it)
+  ClipRect lastOverlay{};          // the overlay's pixels in the last presented frame
+  bool forceFull = false;          // self-test A/B: every frame a full rebuild + redraw (the pre-T0.7-fix1 path)
+  uint32_t partialFrames = 0, fullFrames = 0;
+  double lastPartialArea = 0;      // damaged fraction of the target in the last partial frame
+  struct FrameTiming {
+    double beginMs = 0;  // beginFrame: slot fence wait + acquire
+    double buildMs = 0;  // damage, draw-list build
+    double endMs = 0;    // endFrame: upload, record, submit, present
+  } lastTiming;
+  // A frame larger than this fraction of the target is drawn in full (no per-rect clears / scissor passes).
+  static constexpr int64_t kPartialMaxPercent = 50;
+
+  bool frameDue() const noexcept { return damage.needsFrame() || overlayAnimating; }
+  // The tree's damage → the frame's damage (both kept as disjoint whole-pixel rects).
+  void takeUiDamage() {
+    if (!ui || !ui->needsPaint()) return;
+    if (ui->damage().full()) {
+      damage.addAll();
+      return;
+    }
+    for (const ClipRect& r : ui->damage().rects()) damage.addPixels(r);
+  }
+
   // Re-reads the scale; on a change re-resolves the font roles (new sizes are created here, on the event,
   // never inside paint), relayouts the tree and requests a full redraw. Returns false on a hard error.
   bool refreshScale() {
@@ -113,7 +166,7 @@ struct WindowApp {
     window->pixelSize(w, h);
     if (w && h) ui->setViewport(w, h, scale);
     ui->update(now());
-    if (ui->needsPaint()) damage.addAll();  // swapchain images are not preserved: a damaged frame is drawn whole
+    takeUiDamage();
   }
 
   // Draws and presents one frame if the window has a drawable surface. Returns false on a hard error.
@@ -121,7 +174,9 @@ struct WindowApp {
     if (inFrame) return true;
     inFrame = true;
     VkExtent2D ext{};
+    const auto f0 = Clock::now();
     auto st = swapchain->beginFrame(ext);
+    const auto f1 = Clock::now();
     bool ok = true;
     if (!st) {
       error = st.error().message;
@@ -130,27 +185,89 @@ struct WindowApp {
       ++framesSkipped;
     } else {
       if (textures.text) textures.text->beginFrame();  // frame boundary: run cache trim, atlas LRU stamp
-      dl.reset(ext.width, ext.height);
+      const uint32_t W = ext.width, H = ext.height;
       const double t = now();
+      // --- what changed: the tree's layout/damage, the layered scene's static layer and overlay ---
       if (ui) {
-        ui->setViewport(ext.width, ext.height, scale);
-        dl.addRectFilled({0, 0, static_cast<float>(ext.width), static_cast<float>(ext.height)}, kSceneClearColor);
+        ui->setViewport(W, H, scale);
+        ui->layoutNow();
+        takeUiDamage();
+      }
+      const double overlayT = overlayAnimating ? t : 0.0;
+      ClipRect overlay{};
+      if (layered) {
+        if (!forceFull && (staticW != W || staticH != H || !(staticScale == textures.scale))) {
+          staticLayer.reset(W, H);
+          buildSceneStatic(scene, staticLayer, textures);
+          staticW = W;
+          staticH = H;
+          staticScale = textures.scale;
+          ++staticVersion;
+          damage.addAll();
+        }
+        overlay = playheadRect(W, H, overlayT);
+        if (!(overlay == lastOverlay)) {
+          damage.addPixels(lastOverlay);
+          damage.addPixels(overlay);
+        }
+      }
+      // --- full or partial ---
+      ClipRect rects[Damage::kMaxRects];
+      uint32_t nRects = 0;
+      int64_t area = 0;
+      ClipRect box{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
+      for (const ClipRect& r : damage.rects()) {
+        const ClipRect c{std::max(r.x0, 0), std::max(r.y0, 0), std::min(r.x1, static_cast<int32_t>(W)), std::min(r.y1, static_cast<int32_t>(H))};
+        if (c.x1 <= c.x0 || c.y1 <= c.y0) continue;
+        rects[nRects++] = c;
+        area += Damage::area(c);
+        box = Damage::unite(box, c);
+      }
+      const bool full = forceFull || damage.full() || !swapchain->preserved() || (!ui && !layered) || extraFont != kNoFont ||
+                        area * 100 > int64_t(W) * H * kPartialMaxPercent;
+      // --- build ---
+      DrawLayer layers[2];
+      uint32_t nLayers = 0;
+      dl.reset(W, H);
+      if (ui) {
         res = paintResources(textures);
-        ui->paint(dl, res, t);
+        if (full) {
+          dl.addRectFilled({0, 0, static_cast<float>(W), static_cast<float>(H)}, kSceneClearColor);
+          ui->paint(dl, res, t);
+        } else {
+          // The background is the damage rects' clear; only widgets touching the damage are painted.
+          ui->paint(dl, res, t, nRects ? IRect{box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0} : IRect{});
+        }
+      } else if (layered && !forceFull) {
+        layers[nLayers++] = {&staticLayer, 0, staticVersion};
+        buildSceneOverlay(scene, dl, textures, overlayT);
       } else {
-        buildScene(scene, dl, textures, damage.animating() ? t : 0.0);
+        buildScene(scene, dl, textures, layered ? overlayT : damage.animating() ? t : 0.0);
       }
       if (textures.text && extraFont != kNoFont) {
         const float lh = static_cast<float>(textures.text->metrics(extraFont).lineHeight);
         for (size_t i = 0; i < extraLines.size(); ++i)
           textures.text->draw(dl, extraFont, {8.0f, lh * static_cast<float>(i + 1)}, extraLines[i], rgba(255, 255, 255));
       }
-      if (Status s = swapchain->endFrame(*renderer, dl, kSceneClearColor); !s) {
+      layers[nLayers++] = {&dl, kTransientLayer, 0};
+      FrameDesc frame;
+      frame.layers = std::span<const DrawLayer>(layers, nLayers);
+      frame.full = full;
+      frame.damage = std::span<const ClipRect>(rects, full ? 0 : nRects);
+      frame.clear = kSceneClearColor;
+      const auto f2 = Clock::now();
+      Status ended = swapchain->endFrame(*renderer, frame);
+      using Ms = std::chrono::duration<double, std::milli>;
+      lastTiming = {Ms(f1 - f0).count(), Ms(f2 - f1).count(), Ms(Clock::now() - f2).count()};
+      if (Status s = std::move(ended); !s) {
         error = s.error().message;
         ok = false;
       } else {
         ++framesPresented;
+        ++(full ? fullFrames : partialFrames);
+        if (!full) lastPartialArea = static_cast<double>(area) / (static_cast<double>(W) * H);
         lastFrameScale = textures.scale;
+        lastOverlay = overlay;
       }
     }
     damage.clear();
@@ -206,8 +323,12 @@ struct WindowApp {
       case SDL_EVENT_KEY_DOWN:
         if (e.key.key == SDLK_ESCAPE) quit = true;
         if (e.key.key == SDLK_A) {
-          damage.setAnimating(!damage.animating());
-          damage.addAll();
+          if (layered) {
+            overlayAnimating = !overlayAnimating;  // the playhead's columns are the only damage
+          } else {
+            damage.setAnimating(!damage.animating());
+            damage.addAll();
+          }
         }
         break;
       default: break;
@@ -259,7 +380,9 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
   auto tex = createSceneTextures(*app->renderer, app->scale);
   if (!tex) return std::move(tex).error();
   app->textures = *tex;
-  app->damage.setAnimating(o.animate);
+  app->layered = sceneIsLayered(o.scene);
+  app->overlayAnimating = app->layered && o.animate;
+  app->damage.setAnimating(!app->layered && o.animate);
   app->damage.addAll();
   app->res = paintResources(app->textures);
   if (isWidgetScene(o.scene)) {
@@ -290,7 +413,7 @@ int interactive(WindowApp& app) {
     // Idle = blocked in the OS wait: no frames, no timers, ≈0% CPU. A minimised window never draws, so
     // pending damage or animation must not turn this into a spin either.
     const bool uiBusy = app.ui && app.ui->needsFrame();  // widget animation frames pending
-    if ((!app.damage.needsFrame() && !uiBusy) || app.window->minimized()) {
+    if ((!app.frameDue() && !uiBusy) || app.window->minimized()) {
       SDL_Event e;
       // Sleep until the next event, the widget tree's next timer or the next theme-file check (dev).
       double wake = app.ui ? app.ui->nextWakeTime() : std::numeric_limits<double>::infinity();
@@ -304,7 +427,7 @@ int interactive(WindowApp& app) {
     if (app.quit) break;
     app.pollTheme();
     app.updateUi();
-    if (app.damage.needsFrame() && !app.window->minimized()) {
+    if (app.frameDue() && !app.window->minimized()) {
       if (!app.drawFrame()) {
         std::fprintf(stderr, "pqdaw: frame failed: %s\n", app.error.c_str());
         SDL_RemoveEventWatch(&WindowApp::liveResizeWatch, &app);
@@ -526,6 +649,103 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
     check(app.lastFrameScale == app.scale && (!app.ui || app.ui->scale() == app.scale.factor),
           "that frame was drawn at the display scale");
   }
+
+  // T0.7-fix1: a 2 px playhead animating over `lines` (scene lines-playhead) redraws only its old and new
+  // columns of the persistent image; the same frames through the full-redraw path (rebuild + upload + draw the
+  // whole scene, as before T0.7-fix1) for comparison, at the scene's 800×480 design size. UI-thread CPU is
+  // measured as the thread's own CPU cycles in drawFrame (QueryThreadCycleTime: blocking excluded) and as wall
+  // time; the pacer leaves a compositor interval between frames, so drawFrame does not wait for the GPU. The
+  // CPU runs have the GPU profiler off (its query commands would add the same cost to both sides); a separate
+  // profiled pass gives the GPU times and fragment counts (read for the slot waited for in beginFrame, i.e. two
+  // frames late, so the first frames of each run are skipped).
+  if (app.layered) {
+    SDL_SetWindowSize(app.window->sdl(), 800, 480);
+    settle();
+    struct Run {
+      std::vector<double> wallMs, cycles, beginMs, buildMs, endMs, drawMs, copyMs, fragments;
+      uint32_t partial = 0;
+      bool ok = true;
+    };
+    constexpr int kFrames = 90, kSkip = 6;
+    auto median = [](std::vector<double> v) {
+      if (v.empty()) return 0.0;
+      std::sort(v.begin(), v.end());
+      return v[v.size() / 2];
+    };
+    auto run = [&](bool forceFull) {
+      Run r;
+      app.forceFull = forceFull;
+      app.overlayAnimating = true;
+      const uint32_t partialBefore = app.partialFrames;
+      for (int i = 0; i < kFrames; ++i) {
+        pump(app);
+        const auto c0 = Clock::now();
+        const uint64_t k0 = threadCycles();
+        r.ok = app.drawFrame() && r.ok;
+        const uint64_t k1 = threadCycles();
+        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - c0).count();
+        if (i >= kSkip) {
+          r.wallMs.push_back(ms);
+          r.cycles.push_back(static_cast<double>(k1 - k0));
+          r.beginMs.push_back(app.lastTiming.beginMs);
+          r.buildMs.push_back(app.lastTiming.buildMs);
+          r.endMs.push_back(app.lastTiming.endMs);
+          const GpuFrameStats& g = app.swapchain->lastFrameStats();
+          if (g.hasTimes) {
+            r.drawMs.push_back(g.drawMs);
+            r.copyMs.push_back(g.copyMs);
+          }
+          if (g.hasFragments) r.fragments.push_back(static_cast<double>(g.fragments));
+        }
+        app.pacer.wait();
+      }
+      r.partial = app.partialFrames - partialBefore;
+      app.overlayAnimating = false;
+      app.forceFull = false;
+      return r;
+    };
+    uint32_t w = 0, h = 0;
+    app.window->pixelSize(w, h);
+    const double pixels = static_cast<double>(w) * h;
+    bool cpuOk = false;
+    for (int attempt = 0; attempt < 3 && !cpuOk; ++attempt) {  // the machine may be shared with other work
+      const Run partial = run(false);
+      const Run full = run(true);
+      const double cycP = median(partial.cycles), cycF = median(full.cycles);
+      const double wallP = median(partial.wallMs), wallF = median(full.wallMs);
+      cpuOk = partial.ok && full.ok && partial.partial >= kFrames - 2 && cycP < 0.25 * cycF;
+      std::printf("  partial redraw attempt %d (%ux%u px): %u/%d frames partial, damage %.3f %% of the target; UI-thread CPU per "
+                  "frame (median): %.0fk cycles partial vs %.0fk full (%.1f %%), wall %.3f vs %.3f ms (%.1f %%)\n",
+                  attempt + 1, w, h, partial.partial, kFrames, 100.0 * app.lastPartialArea, cycP / 1e3, cycF / 1e3,
+                  100.0 * cycP / std::max(1.0, cycF), wallP, wallF, 100.0 * wallP / wallF);
+      std::printf("    wall breakdown (median ms) beginFrame / build / endFrame: partial %.3f / %.3f / %.3f, full %.3f / %.3f / "
+                  "%.3f\n",
+                  median(partial.beginMs), median(partial.buildMs), median(partial.endMs), median(full.beginMs),
+                  median(full.buildMs), median(full.endMs));
+      if (attempt == 0) check(partial.ok && partial.partial >= kFrames - 2, "playhead frames are partial (damage = its old + new columns)");
+    }
+    check(cpuOk, "playhead frame UI-thread CPU < 25 % of a full redraw (median cycles)");
+
+    if (Status s = app.swapchain->setProfiling(true); !s) {
+      std::printf("    GPU profiling unavailable: %s\n", s.error().message.c_str());
+    } else {
+      const Run partial = run(false);
+      const Run full = run(true);
+      (void)app.swapchain->setProfiling(false);
+      if (!partial.drawMs.empty() && !full.drawMs.empty())
+        std::printf("    GPU per frame (median): draw %.4f ms partial vs %.4f ms full; copy to the swapchain image %.4f ms\n",
+                    median(partial.drawMs), median(full.drawMs), median(partial.copyMs));
+      if (!partial.fragments.empty() && !full.fragments.empty()) {
+        const double fragP = median(partial.fragments), fragF = median(full.fragments);
+        std::printf("    fragment-shader invocations per frame (median): %.0f partial = %.3f %% of the pixels; full %.0f = %.1f %%\n",
+                    fragP, 100.0 * fragP / pixels, fragF, 100.0 * fragF / pixels);
+        check(fragP <= 0.02 * pixels, "playhead frames shade <= 2 % of the target's pixels");
+      } else {
+        std::printf("    (no pipeline statistics on this device: fragment count not measured)\n");
+      }
+    }
+  }
+  std::printf("  frames: %u partial, %u full\n", app.partialFrames, app.fullFrames);
 
   if (app.gpu->validationEnabled())
     check(app.gpu->validationErrorCount() == 0, "no Vulkan validation errors");

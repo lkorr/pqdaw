@@ -84,6 +84,23 @@ void sceneDefaultSize(std::string_view name, uint32_t& width, uint32_t& height) 
 // Returns false for unknown names.
 bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textures, double timeSeconds);
 
+// --- layered scenes (T0.7-fix1 partial redraw) ----------------------------------------------------------
+// `lines-playhead`: the `lines` scene, static (drawn at time 0), under a 2 device-px playhead that sweeps the
+// target's width every kPlayheadPeriodSeconds. buildScene() draws both; the window draws the static part once
+// into a retained layer and only the playhead per frame, damaging the playhead's old and new columns
+// (pq/ui/renderer.h FrameDesc), which is the partial-redraw acceptance case.
+inline constexpr std::string_view kPlayheadScene = "lines-playhead";
+inline constexpr double kPlayheadPeriodSeconds = 4.0;
+inline constexpr int32_t kPlayheadWidth = 2;  // device px
+// The playhead's pixels at time t on a w×h target: [x, x + 2) × [0, h) with x a whole pixel.
+ClipRect playheadRect(uint32_t w, uint32_t h, double t) noexcept;
+// True for scenes with a static layer + animated overlay split.
+bool sceneIsLayered(std::string_view name) noexcept;
+// The static layer / the overlay at time t of a layered scene (appended to `dl`, already reset). False for
+// other scenes.
+bool buildSceneStatic(std::string_view name, DrawList& dl, const SceneTextures& textures);
+bool buildSceneOverlay(std::string_view name, DrawList& dl, const SceneTextures& textures, double timeSeconds);
+
 class Widget;
 class UiTree;
 // The widget tree behind the `widgets-core` scene (T3.1 demo: rows/columns, nested splitters, a scroll view
