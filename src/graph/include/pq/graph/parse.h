@@ -33,8 +33,19 @@ struct Diagnostic {
   uint32_t length = 0;
 };
 
+// A byte range of a source file (offset kNone = unknown).
+struct SourceSpan {
+  uint32_t offset = kNone;
+  uint32_t length = 0;
+};
+
 // `file:line:col: error: message`, the source line, and a caret line (`^~~~` under the span).
 std::string formatDiagnostic(std::string_view source, const Diagnostic& d);
+
+// A diagnostic at `span` of `source` with line/column filled in (for later phases that report against the text,
+// e.g. inference through ParseResult::nodeSpans). An unknown span reports at the start of the file.
+Diagnostic makeDiagnostic(std::string_view source, std::string_view fileName, SourceSpan span, std::string message,
+                          ErrorCode code);
 
 // Supplies the patches of an imported file. `path` is the import string as written; `importer` is the file name
 // passed to parse() (for relative paths). Returns the signatures (subcircuitSignature) of the file's patches.
@@ -56,6 +67,9 @@ struct ParseOptions {
 struct ParseResult {
   PatchFile file;                        // complete only when diagnostics is empty
   std::vector<Diagnostic> diagnostics;   // in source order within each phase (syntax, names, validation)
+  // [patch][node]: the source span of every node of every lowered patch (offset kNone for nodes without one), so
+  // later phases (infer()) can report file:line:col. Empty when lowering did not run.
+  std::vector<std::vector<SourceSpan>> nodeSpans;
   bool ok() const noexcept { return diagnostics.empty(); }
 };
 

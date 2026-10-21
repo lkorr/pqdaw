@@ -53,10 +53,7 @@ struct Diags {
 struct SyntaxError {};
 
 // A byte range of the source (for diagnostics about a node).
-struct Span {
-  uint32_t offset = kNone;
-  uint32_t length = 0;
-};
+using Span = SourceSpan;
 
 // ---- AST --------------------------------------------------------------------------------------------------------
 
@@ -1832,6 +1829,9 @@ ParseResult parseDetailed(std::string_view source, std::string_view fileName, co
                 e.code == ErrorCode::Type ? ErrorCode::Type : ErrorCode::Parse);
     }
   }
+  // Node spans for later phases (inference reports at the node, T1.3).
+  for (size_t i = 0; i < nodeSpan.size(); ++i) nodeSpan[i].resize(result.file.patches[i].nodeCount());
+  result.nodeSpans = std::move(nodeSpan);
   return finish();
 }
 
@@ -1865,6 +1865,17 @@ std::string formatDiagnostic(std::string_view source, const Diagnostic& d) {
   for (size_t i = off + 1; i < spanEnd; ++i)
     if ((static_cast<unsigned char>(source[i]) & 0xC0) != 0x80) s += '~';
   return s;
+}
+
+Diagnostic makeDiagnostic(std::string_view source, std::string_view fileName, SourceSpan span, std::string message,
+                          ErrorCode code) {
+  std::vector<Diagnostic> one(1);
+  one[0].message = std::move(message);
+  one[0].code = code;
+  one[0].offset = span.offset == kNone ? 0 : std::min<uint32_t>(span.offset, static_cast<uint32_t>(source.size()));
+  one[0].length = span.offset == kNone ? 0 : span.length;
+  computeLocations(source, fileName, one);
+  return std::move(one[0]);
 }
 
 Result<PatchFile> parse(std::string_view source, std::string_view fileName, const ParseOptions& options) {
