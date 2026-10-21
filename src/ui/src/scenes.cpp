@@ -4,11 +4,13 @@
 #include <cmath>
 #include <iterator>
 
+#include "scenes_internal.h"
+
 namespace pq::ui {
 
 namespace {
 
-constexpr std::string_view kNames[] = {"test-pattern"};
+constexpr std::string_view kNames[] = {"test-pattern", "text", "lines"};
 
 Image magmaRampImage() {
   using signal_theme::kMagma;
@@ -161,6 +163,35 @@ Result<SceneTextures> createSceneTextures(Renderer& renderer) {
   auto linear = renderer.createTexture(checker, TextureFilter::Linear);
   if (!linear) return std::move(linear).error();
   t.checkerLinear = *linear;
+
+  auto text = TextSystem::create(renderer.atlas());
+  if (!text) return std::move(text).error();
+  t.text = std::move(*text);
+  const std::string fonts = assetsDir() + "/fonts/";
+  auto regular = t.text->loadFace(fonts + "Inter-Regular.ttf");
+  if (!regular) return std::move(regular).error();
+  auto semi = t.text->loadFace(fonts + "Inter-SemiBold.ttf");
+  if (!semi) return std::move(semi).error();
+  struct Want {
+    FontId* id;
+    FaceId face;
+    uint32_t px;
+    FontOptions opt;
+  };
+  const Want wants[] = {
+      {&t.fonts.section, *regular, text_size::kSection, {}},
+      {&t.fonts.body, *regular, text_size::kBody, {}},
+      {&t.fonts.title, *regular, text_size::kTitle, {}},
+      {&t.fonts.bodySemi, *semi, text_size::kBody, {}},
+      {&t.fonts.titleSemi, *semi, text_size::kTitle, {}},
+      {&t.fonts.meter, *semi, text_size::kMeter, {TextHinting::Full, true}},
+      {&t.fonts.bodyLight, *regular, text_size::kBody, {TextHinting::Light, false}},
+  };
+  for (const Want& w : wants) {
+    auto f = t.text->font(w.face, w.px, w.opt);
+    if (!f) return std::move(f).error();
+    *w.id = *f;
+  }
   return t;
 }
 
@@ -171,6 +202,14 @@ bool hasScene(std::string_view name) noexcept { return std::find(std::begin(kNam
 bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textures, double timeSeconds) {
   if (name == "test-pattern") {
     testPattern(dl, textures, timeSeconds);
+    return true;
+  }
+  if (name == "text") {
+    detail::textScene(dl, textures, timeSeconds);
+    return true;
+  }
+  if (name == "lines") {
+    detail::linesScene(dl, textures, timeSeconds);
     return true;
   }
   return false;

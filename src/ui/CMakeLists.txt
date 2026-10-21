@@ -17,18 +17,25 @@ endforeach()
 pq_add_module(pq_ui
   SOURCES
     src/atlas.cpp
+    src/colormap.cpp
     src/draw_list.cpp
     src/frame_pacer.cpp
     src/gpu.cpp
     src/image.cpp
+    src/lines.cpp
     src/offscreen.cpp
     src/renderer.cpp
+    src/scene_lines.cpp
+    src/scene_text.cpp
     src/scenes.cpp
+    src/text.cpp
     src/vma_impl.cpp
     src/window.cpp
     ${_pq_ui_spv}
   DEPS pq_core Vulkan::Vulkan
-  PRIVATE_DEPS pq_vma SDL3::SDL3-static ZLIB::ZLIB dwmapi)
+  PRIVATE_DEPS pq_vma SDL3::SDL3-static ZLIB::ZLIB dwmapi pq_harfbuzz freetype)
 target_include_directories(pq_ui PRIVATE ${_pq_ui_gen})
-# Third-party headers (VMA, SDL, zlib, Vulkan) are SYSTEM includes: keep their warnings out of /W4 /WX.
+# Fallback location of the bundled fonts for dev builds and tests (see pq::ui::assetsDir()).
+target_compile_definitions(pq_ui PRIVATE PQ_SOURCE_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
+# Third-party headers (VMA, SDL, zlib, Vulkan, FreeType, HarfBuzz) are SYSTEM includes: keep their warnings out of /W4 /WX.
 target_compile_options(pq_ui PRIVATE /external:W0)

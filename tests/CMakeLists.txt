@@ -47,7 +47,11 @@ pq_add_test(pq_tests_ui
     ui/test_draw_list.cpp
     ui/test_image.cpp
     ui/test_render.cpp
+    ui/test_text.cpp
+    ui/test_lines.cpp
+    ui/test_colormap.cpp
   DEPS pq_ui)
+target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 
 # app: CLI parsing (window, --screenshot, --list-devices, --sine) and the --screenshot command.
 pq_add_test(pq_tests_app
@@ -59,6 +63,8 @@ pq_add_test(pq_tests_app
 # (exit 77 = no display available → reported as skipped, not passed).
 add_test(NAME pqdaw_screenshot
   COMMAND pqdaw --screenshot test-pattern ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot.png --size 400x240)
+add_test(NAME pqdaw_screenshot_text   # the executable finds the bundled fonts (pq::ui::assetsDir)
+  COMMAND pqdaw --screenshot text ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_text.png)
 add_test(NAME pqdaw_window_selftest COMMAND pqdaw --window-selftest)
 set_tests_properties(pqdaw_window_selftest PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 

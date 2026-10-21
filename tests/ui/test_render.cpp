@@ -12,6 +12,7 @@
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
 #include "pq/ui/scenes.h"
+#include "pq/ui/text.h"
 
 using namespace pq::ui;
 
@@ -154,11 +155,14 @@ TEST_CASE("render: glow blob peaks at its centre and falls to the background") {
   CHECK(img.pixel(2, 2)[0] == 0);
 }
 
-TEST_CASE("render: test-pattern matches the golden image") {
-  const std::string golden = std::string(PQ_TEST_DATA_DIR) + "/ui/golden/test-pattern.png";
+namespace {
+
+// Renders `scene` at the default size and compares it with tests/ui/golden/<scene>.png.
+void checkGolden(const std::string& scene) {
+  const std::string golden = std::string(PQ_TEST_DATA_DIR) + "/ui/golden/" + scene + ".png";
   GpuOptions o;
   o.validation = true;
-  auto img = renderSceneImage("test-pattern", kDefaultSceneWidth, kDefaultSceneHeight, o);
+  auto img = renderSceneImage(scene, kDefaultSceneWidth, kDefaultSceneHeight, o);
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
   auto ref = readPng(golden);
   REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
@@ -168,13 +172,45 @@ TEST_CASE("render: test-pattern matches the golden image") {
   const ImageDiff d = compareImages(*img, *ref, 2);
   const uint64_t allowedOutliers = d.pixelCount / 1000;
   if (!d.sameSize || d.pixelsOverTolerance > allowedOutliers) {
-    const char* out = "test-pattern.actual.png";  // in the test's working directory (build/<preset>/tests)
+    const std::string out = scene + ".actual.png";  // in the test's working directory (build/<preset>/tests)
     (void)writePng(out, *img);
     MESSAGE("wrote " << out << " for inspection");
   }
   REQUIRE(d.sameSize);
-  MESSAGE("max channel diff " << d.maxChannelDiff << ", " << d.pixelsOverTolerance << " px over tolerance");
+  MESSAGE(scene << ": max channel diff " << d.maxChannelDiff << ", " << d.pixelsOverTolerance << " px over tolerance");
   CHECK(d.pixelsOverTolerance <= allowedOutliers);
+}
+
+}  // namespace
+
+TEST_CASE("render: test-pattern matches the golden image") { checkGolden("test-pattern"); }
+
+// T0.8: Inter through FreeType + HarfBuzz, glyphs uploaded into the atlas page by Renderer::upload.
+TEST_CASE("render: text matches the golden image") { checkGolden("text"); }
+
+// T0.9: PQ Meter's line primitives (ribbons, glow passes incl. additive, spectrum layering, colormaps).
+TEST_CASE("render: lines matches the golden image") { checkGolden("lines"); }
+
+TEST_CASE("render: glyphs added after the first frame reach the GPU") {
+  // The atlas page starts with ASCII only; a new glyph must be uploaded by the next draw.
+  auto text = TextSystem::create(gpu().renderer->atlas());
+  REQUIRE(text.ok());
+  auto face = (*text)->loadFace(assetsDir() + "/fonts/Inter-Regular.ttf");
+  REQUIRE(face.ok());
+  auto font = (*text)->font(*face, 40);
+  REQUIRE(font.ok());
+  for (int frame = 0; frame < 2; ++frame) {
+    DrawList dl;
+    dl.reset(64, 64);
+    // Frame 0: ASCII 'I' (rasterised when the font was created). Frame 1: '∞', rasterised now.
+    (*text)->draw(dl, *font, {8, 48}, frame == 0 ? "I" : "\xE2\x88\x9E", rgba(255, 255, 255));
+    const Image img = draw(dl, rgba(0, 0, 0));
+    uint32_t lit = 0;
+    for (uint32_t y = 0; y < 64; ++y)
+      for (uint32_t x = 0; x < 64; ++x) lit += img.pixel(x, y)[0] > 128 ? 1u : 0u;
+    CAPTURE(frame);
+    CHECK(lit > 40);
+  }
 }
 
 TEST_CASE("render: offscreen output is deterministic and any size works") {

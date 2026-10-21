@@ -125,3 +125,14 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Note-clip loop semantics: notes outside the loop brace kept and hidden (Ableton) vs cropped. Provisional: kept.
 - Also now relevant: Q2 (EDO row labels), Q3 (PPQ vs straight 1/64), Q4 (tempo ramp law).
 - Status: open
+
+## Q16 · 2026-10-20 · T0.8 · Inter has no ♯ ♭ ♮ glyphs
+- Context: SPEC §15 picks Inter (or IBM Plex Sans) for UI text. Inter 4.1 has no U+266F ♯, U+266D ♭ or U+266E ♮ (checked in its cmap; ¢, −, ∞, ×, ≈, arrows and super/subscript digits are present). A microtonal DAW prints accidentals everywhere (note names, MOS degree names, JI labels); missing glyphs render as .notdef boxes.
+- Options: A) a fallback face for a small symbol set (e.g. a subset of Noto Music or Bravura Text, both OFL), chosen per code point at shaping time; B) draw accidentals as small vector glyphs/sprites in the atlas; C) spell them `#`/`b` in UI text.
+- Provisional choice: none implemented yet (the T0.8 scene avoids them). A is the most general and stays within the text system (shape runs per face); it needs a fallback chain in `TextSystem::shape`. To be decided when note-name UI (T3.x) lands.
+- Status: open
+
+## Q17 · 2026-10-20 · T0.9 · Glow passes: alpha (PQ Meter) or additive blending?
+- Context: the T0.9 brief says the glow passes go through the additive pipeline; PQ Meter's spectrum bloom (`spectrum.cpp` 1360–1378) and scope glow underlay (`oscilloscope.cpp` 860–880) are drawn through ImGui, i.e. straight alpha blending, and "keep PQ Meter's numbers and look" is also a requirement. Additive changes the look: overlapping passes and crossing traces brighten toward white instead of converging on the trace colour.
+- Choice: `scopeTrace`, `scopeEnvelope` and `spectrumCurve` take the glow blend mode as a parameter, defaulting to `BlendMode::Alpha` (PQ Meter's look). The `lines` scene shows both: the green scope trace and the spectrum use alpha glow, the orange Catmull-Rom trace uses additive glow.
+- Status: open (a design-review call; switching the default is one line in `pq/ui/lines.h`)
