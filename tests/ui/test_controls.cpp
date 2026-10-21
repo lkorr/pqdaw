@@ -355,11 +355,22 @@ TEST_CASE("keymap: the default file parses, chords are unique per scope, actions
   CHECK(has("pianoroll", "Up", "pianoroll.stepUp"));
   CHECK(has("pianoroll", "Shift+Up", "pianoroll.equaveUp"));
 
-  // Applying it: with no actions registered yet (T3.2), every entry must be deferred.
+  // Applying it: since T3.7 the global shell actions are implemented, so an empty registry fails (naming one) and
+  // a registry with exactly the implemented ids binds exactly the implemented entries (the rest stay deferred).
   ActionRegistry none;
   Keymap km;
-  REQUIRE(applyKeymapFile(*k, none, km).ok());
-  CHECK(km.bindings().empty());
+  CHECK_FALSE(applyKeymapFile(*k, none, km).ok());
+  ActionRegistry some;
+  size_t implemented = 0;
+  for (const KeymapEntry& e : k->entries) {
+    if (e.deferred()) continue;
+    ++implemented;
+    if (some.find(e.action) == kNoAction) REQUIRE(some.add(e.action, [] {}).ok());
+  }
+  CHECK(implemented >= 11);
+  Keymap km2;
+  REQUIRE(applyKeymapFile(*k, some, km2).ok());
+  CHECK(km2.bindings().size() == implemented);
 }
 
 TEST_CASE("keymap: implemented entries must resolve; bad files fail with a precise error") {

@@ -1,0 +1,239 @@
+#pragma once
+
+// ViewContext (T3.7): the controller every view works through. It owns the DocumentStore (the project), routes
+// global actions (undo/redo, new/open/save, transport, detail view), keeps the view state that is not part of the
+// document (start marker, grid, which panels are shown) and tells views when that state changes.
+//
+//   ViewContext ctx(transport);           // a new default project
+//   ui::UiTree tree; ...
+//   Shell shell(tree, ctx);               // the main window layout (pq/views/shell/shell.h)
+//
+// Views read the document from ctx.doc() / ctx.store(), edit it only through commands (pq::doc::ops builders,
+// store().dispatch or begin/commitGesture for drags: one undo step per gesture), subscribe to document changes with
+// ctx.subscribe(...) and to view-state changes with ctx.observe(...). Both return RAII handles that unsubscribe.
+//
+// Actions: views register their actions in ctx.actions() (string id → handler, before the keymap is applied) and
+// set a keymap scope (ctx.scope("arrangement")) on their root widget. The keymap file (assets/keymaps/ableton.json)
+// binds chords to action ids; a binding marked "implemented" whose action is not registered fails applyKeymap.
+//
+// Project I/O: newProject / openProject / saveProject / saveProjectAs take explicit directories (tests, CLI); the
+// file.* actions ask the FileDialogs the app installs (SDL dialogs; asynchronous, the callback runs on the UI
+// thread). Without dialogs, file.open / file.saveAs are disabled and file.save of an untitled project reports an
+// error in the status line.
+//
+// UI thread only. Nothing here is RT-safe.
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "pq/core/grid.h"
+#include "pq/core/result.h"
+#include "pq/document/model.h"
+#include "pq/document/store.h"
+#include "pq/ui/actions.h"
+#include "pq/ui/keymap_file.h"
+#include "pq/views/transport_port.h"
+
+namespace pq::views {
+
+// Bits passed to ctx.observe() callbacks: which part of the view state changed.
+namespace view_change {
+inline constexpr uint32_t kTransport = 1u << 0;  // play state requested, start marker moved
+inline constexpr uint32_t kGrid = 1u << 1;       // grid spec or the focused editor's resolved division
+inline constexpr uint32_t kLayout = 1u << 2;     // detail view shown/hidden or switched clip ↔ device, browser
+inline constexpr uint32_t kProject = 1u << 3;    // project directory, name or unsaved-changes state
+inline constexpr uint32_t kStatus = 1u << 4;     // status line text
+}  // namespace view_change
+
+enum class DetailMode : uint8_t { Clip, Device };
+
+// Asked before discarding unsaved changes (new / open / quit).
+enum class SaveChoice : uint8_t { Save, Discard, Cancel };
+
+// Platform dialogs (the app implements them with SDL3's file dialogs and message boxes). Callbacks must be invoked
+// on the UI thread (the SDL implementation marshals them through the event queue). An empty path = cancelled.
+class FileDialogs {
+public:
+  using PathCallback = std::function<void(std::string pathUtf8)>;
+  virtual ~FileDialogs() = default;
+  // A project to open: the path of its project.pqd or its directory (see projectDirFromPickedPath).
+  virtual void chooseProjectToOpen(PathCallback done) = 0;
+  // Where to save: a new project name/directory (see projectDirFromPickedPath).
+  virtual void chooseProjectToSave(std::string_view suggestedName, PathCallback done) = 0;
+  // Unsaved changes in `projectName`: save them first, discard them, or cancel the operation. Synchronous.
+  virtual SaveChoice askSaveChanges(std::string_view projectName) = 0;
+};
+
+// What a file dialog returned → the project directory: "…/X/project.pqd" → "…/X"; "…/Song.pqd" → "…/Song" (a save
+// dialog with a .pqd filter appends the extension to a new name); anything else is the directory itself. Trailing
+// separators are dropped. Pure string work, '/' and '\\' both accepted.
+std::string projectDirFromPickedPath(std::string_view picked);
+// The display name of a project directory: its last path component ("Untitled" for an empty path).
+std::string projectNameOf(std::string_view dirUtf8);
+
+class ViewContext {
+public:
+  // A new default project (doc::makeDefaultProject). `transport` must outlive the context.
+  explicit ViewContext(TransportPort& transport);
+  ~ViewContext();
+  ViewContext(const ViewContext&) = delete;
+  ViewContext& operator=(const ViewContext&) = delete;
+
+  // --- document ---
+  doc::DocumentStore& store() noexcept { return store_; }
+  const doc::DocumentStore& store() const noexcept { return store_; }
+  const doc::Snapshot& doc() const noexcept { return store_.current(); }
+
+  // Document change notifications (StoreEvent: Dispatch / Undo / Redo / Gesture* / Reset). The context's own
+  // listener runs first, so dirty() and the transport loop are current when views are called.
+  class Subscription {
+  public:
+    Subscription() = default;
+    Subscription(Subscription&& o) noexcept : fn_(std::exchange(o.fn_, nullptr)) {}
+    Subscription& operator=(Subscription&& o) noexcept {
+      if (this != &o) {
+        reset();
+        fn_ = std::exchange(o.fn_, nullptr);
+      }
+      return *this;
+    }
+    ~Subscription() { reset(); }
+    void reset() noexcept {
+      if (fn_) fn_();
+      fn_ = nullptr;
+    }
+
+  private:
+    friend class ViewContext;
+    explicit Subscription(std::function<void()> unsubscribe) : fn_(std::move(unsubscribe)) {}
+    std::function<void()> fn_;
+  };
+  [[nodiscard]] Subscription subscribe(doc::Listener listener);
+  // View-state notifications: `fn(bits)` with view_change bits.
+  [[nodiscard]] Subscription observe(std::function<void(uint32_t)> fn);
+
+  // --- project I/O (explicit paths) ---
+  // New default project; history cleared; the project becomes untitled. Stops the transport.
+  void newProject();
+  // Loads `dirUtf8` (doc::openProject: history cleared, view state from the file). On failure nothing changes and
+  // the error is returned (and shown in the status line). Stops the transport.
+  Status openProject(std::string_view dirUtf8);
+  // Saves to projectDir(). Fails for an untitled project (use saveProjectAs).
+  Status saveProject();
+  // Saves to `dirUtf8` (created if needed); the project is then titled `dirUtf8`.
+  Status saveProjectAs(std::string_view dirUtf8);
+  const std::string& projectDir() const noexcept { return projectDir_; }
+  std::string projectName() const { return projectNameOf(projectDir_); }
+  // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again).
+  bool dirty() const noexcept { return store_.current() != saved_; }
+
+  // --- dialogs (the action layer) ---
+  void setFileDialogs(FileDialogs* d) noexcept { dialogs_ = d; }
+  FileDialogs* fileDialogs() const noexcept { return dialogs_; }
+  // What file.new / file.open / file.save / file.saveAs do: ask about unsaved changes, pick a path, then call the
+  // explicit-path functions above. `then` runs after a successful operation (e.g. quit after "save and quit").
+  void requestNew();
+  void requestOpen();
+  void requestSave(std::function<void()> then = {});
+  void requestSaveAs(std::function<void()> then = {});
+  // Before quitting: true = go ahead (saved, discarded or nothing to save). With unsaved changes in an untitled
+  // project and "Save", the save-as dialog runs and `quitAfterSave` is called once it succeeds; returns false.
+  bool confirmQuit(std::function<void()> quitAfterSave);
+
+  // --- undo ---
+  bool undo();  // store().undo(); false when there is nothing to undo or a gesture is running
+  bool redo();
+
+  // --- transport ---
+  TransportPort& transport() noexcept { return transport_; }
+  bool playing() { return transport_.playhead().playing; }
+  // Space: stop if playing, else play from the start marker. Shift+Space: continue from the stop position.
+  void togglePlay();
+  void continuePlayback();
+  // The stop button: stops; when already stopped, returns the start marker to the beginning (Live).
+  void stopButton();
+  Ticks startMarker() const noexcept { return startMarker_; }
+  void setStartMarker(Ticks t);
+
+  // --- grid (shared by the arrangement and the piano roll; Ctrl+1–5 and the grid menu edit it, T3.9/T3.11) ---
+  const GridSpec& grid() const noexcept { return grid_; }
+  void setGrid(const GridSpec& g);
+  // The focused editor reports the division its adaptive grid resolves to at its zoom (nullopt: no editor).
+  void setResolvedGrid(std::optional<GridDivision> d);
+  const std::optional<GridDivision>& resolvedGrid() const noexcept { return resolvedGrid_; }
+  // Control-bar text: the resolved division ("1/16", "1/8T"), else the spec ("Fixed 1/8", "Adaptive (Medium)"),
+  // "Off" for an off grid; " · Snap off" appended when snapping is off.
+  std::string gridLabel() const;
+
+  // --- layout state ---
+  bool detailVisible() const noexcept { return detailVisible_; }
+  void setDetailVisible(bool v);
+  DetailMode detailMode() const noexcept { return detailMode_; }
+  void setDetailMode(DetailMode m);
+  // Shift+Tab: switch clip ↔ device (and show the detail view if hidden).
+  void toggleClipDevice();
+  bool browserVisible() const noexcept { return browserVisible_; }
+  void setBrowserVisible(bool v);
+
+  // --- status line ---
+  void setStatus(std::string text);
+  const std::string& status() const noexcept { return status_; }
+
+  // --- actions and keymap ---
+  ui::ActionRegistry& actions() noexcept { return actions_; }
+  const ui::ActionRegistry& actions() const noexcept { return actions_; }
+  const ui::Keymap& keymap() const noexcept { return keymap_; }
+  // A keymap scope id ("arrangement", "pianoroll", …): stable for the context's lifetime, also across applyKeymap.
+  ui::ScopeId scope(std::string_view name);
+  // Rebinds the keymap from `file` (every "implemented" action must be registered by now). Replaces any previous
+  // bindings, so it can be called again after more views registered their actions.
+  Status applyKeymap(const ui::KeymapFile& file);
+  // applyKeymap(assets/keymaps/ableton.json).
+  Status applyDefaultKeymap();
+  // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
+  static constexpr std::string_view kGlobalActions[] = {
+      "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",
+      "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail"};
+
+private:
+  void notify(uint32_t bits);
+  void onStoreEvent(const doc::StoreEvent& e);
+  void syncLoop();
+  void afterLoad();
+  void registerGlobalActions();
+  // Asks about unsaved changes; runs `proceed` when it may go ahead (possibly after an asynchronous save-as).
+  void guardUnsaved(std::function<void()> proceed);
+
+  TransportPort& transport_;
+  doc::DocumentStore store_;
+  doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)
+  std::string projectDir_;
+  bool lastDirty_ = false;
+  doc::ListenerId storeListener_ = 0;
+
+  FileDialogs* dialogs_ = nullptr;
+  Ticks startMarker_ = 0;
+  GridSpec grid_{};
+  std::optional<GridDivision> resolvedGrid_;
+  bool detailVisible_ = true;
+  DetailMode detailMode_ = DetailMode::Clip;
+  bool browserVisible_ = false;
+  std::string status_;
+  TransportLoop loopSent_{};
+  bool loopSentValid_ = false;
+
+  ui::ActionRegistry actions_;
+  ui::Keymap keymap_;
+  std::vector<std::string> scopes_;  // interned in this order (stable ScopeIds across applyKeymap)
+
+  uint32_t nextObserver_ = 1;
+  int notifyDepth_ = 0;
+  std::vector<std::pair<uint32_t, std::function<void(uint32_t)>>> observers_;
+};
+
+}  // namespace pq::views

@@ -72,7 +72,21 @@ pq_add_test(pq_tests_app
   SOURCES
     app/test_cli.cpp
     app/test_play.cpp
+    app/test_shell_app.cpp
   DEPS pq_app pq_ui)
+
+# views (T3.7): ViewContext (project I/O, undo, transport routing), the shell (layout, hotkeys, control bar), goldens.
+pq_add_test(pq_tests_views
+  SOURCES
+    views/test_view_context.cpp
+    views/test_shell.cpp
+  DEPS pq_views)
+# T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
+add_test(NAME pqdaw_idle_shell
+  COMMAND pqdaw --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty --idle-check 10)
+set_tests_properties(pqdaw_idle_shell PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+add_test(NAME pqdaw_screenshot_shell
+  COMMAND pqdaw --screenshot shell ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_shell.png --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty)
 
 # The real executable: headless screenshot, and the scripted window resize/minimise/restore run
 # (exit 77 = no display available → reported as skipped, not passed).

@@ -31,6 +31,8 @@
 #include "pq/ui/scenes.h"
 #include "pq/ui/widget.h"
 #include "pq/ui/window.h"
+#include "pq/views/view_scenes.h"
+#include "shell_app.h"
 
 namespace pq::app {
 
@@ -38,9 +40,13 @@ using namespace pq::ui;
 
 int runScreenshot(const CliOptions& o) {
   uint32_t w = o.width, h = o.height;
-  if (!w || !h) sceneDefaultSize(o.scene, w, h);
+  const bool view = views::isViewScene(o.scene);  // T3.7: the DAW's views over --project
+  if (!w || !h) {
+    if (view) views::viewSceneDefaultSize(o.scene, w, h);
+    else sceneDefaultSize(o.scene, w, h);
+  }
   const UiScale scale(o.scale > 0.0f ? o.scale : 1.0f);
-  auto img = renderSceneImage(o.scene, w, h, {}, scale);
+  auto img = view ? views::renderViewScene(o.scene, o.project, w, h, scale) : renderSceneImage(o.scene, w, h, {}, scale);
   if (!img) {
     std::fprintf(stderr, "pqdaw: screenshot failed: %s\n", img.error().message.c_str());
     return 1;
@@ -104,6 +110,8 @@ struct WindowApp {
   // Self-test hook: lines of text drawn over the scene (the glyph-upload hitch check rasterises them mid-run).
   FontId extraFont = kNoFont;
   std::vector<std::string> extraLines;
+  // T3.7: the DAW shell (view scenes) runs in `ui`; declared last so it is destroyed before the tree.
+  std::unique_ptr<ShellApp> shell;
 
   // T0.7-fix1 partial redraw. A frame redraws only the damage rects of the swapchain's persistent image when
   // the scene can say what changed: widget trees (painted with the damage as clip) and layered scenes (a
@@ -266,6 +274,7 @@ struct WindowApp {
         ++framesPresented;
         ++(full ? fullFrames : partialFrames);
         if (!full) lastPartialArea = static_cast<double>(area) / (static_cast<double>(W) * H);
+        if (shell) shell->onFramePresented();
         lastFrameScale = textures.scale;
         lastOverlay = overlay;
       }
@@ -302,6 +311,7 @@ struct WindowApp {
       InputEvent in;
       if (translateEvent(e, window->pixelDensity(), in)) consumed = ui->dispatch(in);
     }
+    if (shell && shell->handleEvent(e, consumed)) return;
     if (consumed && e.type == SDL_EVENT_KEY_DOWN) return;  // e.g. Esc closed a menu, 'a' typed into a field
     switch (e.type) {
       case SDL_EVENT_QUIT:
@@ -351,7 +361,7 @@ struct WindowApp {
 Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidden) {
   auto app = std::make_unique<WindowApp>();
   app->scene = o.scene;
-  if (!hasScene(o.scene)) return Error{ErrorCode::NotFound, "unknown scene '" + o.scene + "'", {}};
+  if (!hasScene(o.scene) && !views::isViewScene(o.scene)) return Error{ErrorCode::NotFound, "unknown scene '" + o.scene + "'", {}};
   WindowOptions wo;
   wo.title = "pqdaw";
   if (o.width) {
@@ -394,6 +404,16 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
     app->ui->setClipboard(&app->clipboard);
     buildWidgetScene(o.scene, *app->ui);
     SDL_StartTextInput(app->window->sdl());  // text fields get TEXT_INPUT events (IME handling: T3.7)
+  } else if (views::isViewScene(o.scene)) {  // T3.7: the DAW shell over --project (text input follows focus)
+    app->ui = std::make_unique<UiTree>();
+    uint32_t w = 0, h = 0;
+    app->window->pixelSize(w, h);
+    app->ui->setViewport(w, h, app->scale);
+    app->ui->setResources(&app->res);
+    app->ui->setClipboard(&app->clipboard);
+    auto shell = ShellApp::create(*app->ui, app->window->sdl(), o);
+    if (!shell) return std::move(shell).error();
+    app->shell = std::move(*shell);
   }
 #ifndef NDEBUG
   if (!hidden) app->themeWatch = std::make_unique<ThemeFileWatcher>(defaultThemePath());
@@ -437,7 +457,7 @@ int interactive(WindowApp& app) {
     }
   }
   SDL_RemoveEventWatch(&WindowApp::liveResizeWatch, &app);
-  return 0;
+  return app.shell ? app.shell->exitCode(0) : 0;
 }
 
 // Scripted check that resize, minimise and restore are handled (acceptance: they don't crash). Each step
@@ -767,7 +787,7 @@ int runWindow(const CliOptions& o, bool selfTestMode) {
   const auto processStart = Clock::now();
   auto app = openWindowApp(o, selfTestMode);
   if (!app) {
-    if (selfTestMode && app.error().code == ErrorCode::Unsupported && app.error().message.rfind("no display", 0) == 0) {
+    if ((selfTestMode || o.idleCheckSeconds > 0.0) && app.error().code == ErrorCode::Unsupported && app.error().message.rfind("no display", 0) == 0) {
       std::printf("SKIPPED: %s\n", app.error().message.c_str());
       return kExitSkipped;
     }

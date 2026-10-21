@@ -2,6 +2,8 @@
 
 #include <charconv>
 
+#include "pq/views/view_scenes.h"
+
 namespace pq::app {
 
 namespace {
@@ -38,6 +40,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   std::string_view sineOnly;    // last flag seen that only --sine accepts
   std::string_view streamOnly;  // last flag seen that only the stream modes (--sine, --latency-test) accept
   bool backendFlag = false;
+  bool sceneFlag = false;
   auto setMode = [&](Mode m, std::string_view flag) -> Status {
     if (modeSet) return usageError("only one mode flag may be given (got another: " + std::string(flag) + ")");
     o.mode = m;
@@ -61,6 +64,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--scene") {
       if (i + 1 >= args.size()) return usageError("--scene needs a name");
       o.scene = std::string(args[++i]);
+      sceneFlag = true;
     } else if (a == "--scale") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.scale) || !(o.scale >= 0.5f && o.scale <= 4.0f))
         return usageError("--scale needs a UI scale in [0.5, 4] (e.g. 1.25 for 125 %)");
@@ -129,6 +133,13 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       if (Status s = setMode(Mode::LatencyTest, a); !s) return std::move(s).error();
     } else if (a == "--asio") {
       o.asio = true;
+    } else if (a == "--project") {
+      if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--project needs a project directory");
+      o.project = std::string(args[++i]);
+    } else if (a == "--idle-check") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.idleCheckSeconds) || !(o.idleCheckSeconds > 0.0) ||
+          o.idleCheckSeconds > 3600.0)
+        return usageError("--idle-check needs a duration in seconds in (0, 3600]");
     } else {
       return usageError("unknown argument '" + std::string(a) + "'");
     }
@@ -149,20 +160,36 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
   if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
     return usageError("--asio only applies to --sine, --play and --list-devices");
+  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
+    return usageError("--asio only applies to --sine and --list-devices");
+  // T3.7: the DAW shell. --project picks the shell in the window unless another view scene is named.
+  if (!o.project.empty() || o.idleCheckSeconds > 0.0) {
+    if (o.mode == Mode::Window && !sceneFlag) o.scene = "shell";
+    if (!o.project.empty() && o.mode != Mode::Window && o.mode != Mode::Screenshot)
+      return usageError("--project only applies to the window and --screenshot");
+    if (o.idleCheckSeconds > 0.0 && o.mode != Mode::Window) return usageError("--idle-check only applies to the window");
+    if ((o.mode == Mode::Window || o.mode == Mode::Screenshot) && !pq::views::isViewScene(o.scene))
+      return usageError("--project and --idle-check need a view scene (e.g. shell), not '" + o.scene + "'");
+  }
   return o;
 }
 
 std::string usage() {
   return "usage: pqdaw [options]\n"
          "  (no mode)                                open the window (test pattern for now)\n"
-         "      --scene <name>                       scene to show (default test-pattern)\n"
+         "      --project <dir>                      open the DAW (scene shell) with this project\n"
+         "      --scene <name>                       scene to show (default test-pattern; shell = the DAW with\n"
+         "                                           a new project unless --project is given)\n"
+         "      --idle-check S                       shell: measure frames and CPU over S idle seconds; exit 0\n"
+         "                                           only for 0 frames at < 0.1 % CPU\n"
          "      --size WxH                           initial window size\n"
          "      --scale S                            UI scale override (default: the display's scale)\n"
          "      --animate                            redraw continuously (frame pacing demo); key A toggles\n"
-         "  --screenshot <scene> <out.png> [--size WxH] [--scale S]\n"
+         "  --screenshot <scene> <out.png> [--size WxH] [--scale S] [--project <dir>]\n"
          "                                           render a scene headless to a PNG: WxH logical px\n"
-         "                                           (default 800x480) at UI scale S (default 1), i.e.\n"
-         "                                           round(W*S) x round(H*S) device px\n"
+         "                                           (default 800x480; view scenes such as shell 1280x800,\n"
+         "                                           over --project or a new project) at UI scale S\n"
+         "                                           (default 1), i.e. round(W*S) x round(H*S) device px\n"
          "  --window-selftest                        scripted resize/minimise/restore run (exit 77 = no display)\n"
          "  --list-devices [--backend wasapi|rtaudio] [--asio]\n"
          "                                           list audio devices (WASAPI ids and endpoint ids)\n"

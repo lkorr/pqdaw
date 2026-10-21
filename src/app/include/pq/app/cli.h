@@ -39,6 +39,11 @@ struct CliOptions {
   uint32_t height = 0;
   bool animate = false;  // --animate: continuous redraw (exercises frame pacing)
   float scale = 0.0f;    // --scale: UI scale (0 = default: 1.0 for --screenshot, the display scale for the window)
+  // T3.7: --project <dir>: the project the DAW shell opens (window: the scene defaults to "shell"; --screenshot of a
+  // view scene renders it). --idle-check <s>: the shell window measures frames and process CPU over s seconds of
+  // idling (after a 1 s settle), prints them and exits 0 only for 0 frames at < 0.1 % CPU.
+  std::string project;
+  double idleCheckSeconds = 0.0;
 
   // Audio (--list-devices, --sine).
   double sineHz = 440.0;

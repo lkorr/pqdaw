@@ -4,8 +4,10 @@
 
 #include "pq/app/cli.h"
 #include "pq/app/commands.h"
+#include "pq/app/startup.h"
 
 int main(int argc, char** argv) {
+  pq::app::markProcessStart();  // first-frame timing (T3.7)
   const std::vector<std::string_view> args(argv + 1, argv + argc);
   auto opts = pq::app::parseCli(args);
   if (!opts) {

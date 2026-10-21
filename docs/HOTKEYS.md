@@ -8,19 +8,19 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 
 | Action | Keys | Scope | Live 12 manual section | Status |
 |---|---|---|---|---|
-| `transport.playStop` | `Space` | global | Transport | M3 (T3.7) |
-| `transport.continue` | `Shift+Space` | global | Transport | M3 (T3.7) |
+| `transport.playStop` | `Space` | global | Transport | implemented (T3.7) |
+| `transport.continue` | `Shift+Space` | global | Transport | implemented (T3.7) |
 | `transport.record` | `F9` | global | Transport | M6 (recording) |
-| `edit.undo` | `Ctrl+Z` | global | Editing | M3 (T3.7) |
-| `edit.redo` | `Ctrl+Shift+Z` | global | Editing | M3 (T3.7) |
-| `edit.redo` | `Ctrl+Y` | global | Editing | M3 (T3.7) |
-| `file.new` | `Ctrl+N` | global | Accessing Menus (File) | M3 (T3.7) |
-| `file.open` | `Ctrl+O` | global | Accessing Menus (File) | M3 (T3.7) |
-| `file.save` | `Ctrl+S` | global | Accessing Menus (File) | M3 (T3.7) |
-| `file.saveAs` | `Ctrl+Shift+S` | global | Accessing Menus (File) | M3 (T3.7) |
+| `edit.undo` | `Ctrl+Z` | global | Editing | implemented (T3.7) |
+| `edit.redo` | `Ctrl+Shift+Z` | global | Editing | implemented (T3.7) |
+| `edit.redo` | `Ctrl+Y` | global | Editing | implemented (T3.7) |
+| `file.new` | `Ctrl+N` | global | Accessing Menus (File) | implemented (T3.7) |
+| `file.open` | `Ctrl+O` | global | Accessing Menus (File) | implemented (T3.7) |
+| `file.save` | `Ctrl+S` | global | Accessing Menus (File) | implemented (T3.7) |
+| `file.saveAs` | `Ctrl+Shift+S` | global | Accessing Menus (File) | implemented (T3.7) |
 | `file.exportAudio` | `Ctrl+Shift+R` | global | Accessing Menus (File) | M10 (export) |
-| `view.toggleClipDevice` | `Shift+Tab` | global | Showing and Hiding Views | M3 (T3.7) |
-| `view.toggleDetail` | `Ctrl+Alt+L` | global | Showing and Hiding Views | M3 (T3.7) |
+| `view.toggleClipDevice` | `Shift+Tab` | global | Showing and Hiding Views | implemented (T3.7) |
+| `view.toggleDetail` | `Ctrl+Alt+L` | global | Showing and Hiding Views | implemented (T3.7) |
 | `view.toggleBrowser` | `Ctrl+Alt+B` | global | Showing and Hiding Views | M5 (browser) |
 | `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | M3 (T3.10) |
 | `view.zoomToSelection` | `Z` | global | Arrangement View Commands | M3 (T3.8) |

@@ -6,30 +6,33 @@ This document fixes the module layout and the interfaces between modules so that
 
 ```
                     ┌──────────┐
-                    │   app    │  pqdaw.exe: wires everything together, CLI flags, main loop
+                    │   app    │  pqdaw.exe: wires everything together, CLI flags, main loop, TransportPort impl
                     └────┬─────┘
         ┌────────────────┼──────────────────┬─────────────┐
-        ▼                ▼                  ▼             ▼
-   ┌─────────┐     ┌──────────┐       ┌──────────┐   ┌────────┐
-   │   ui    │     │ document │       │  engine  │   │  io    │ (inside engine/ for now: audio + MIDI devices)
-   └────┬────┘     └────┬─────┘       └────┬─────┘   └────────┘
-        │               │       ┌──────────┤
-        │               │       ▼          ▼
-        │               │   ┌───────┐  ┌───────┐
-        │               └──▶│ graph │◀─│  jit  │
-        │                   └───┬───┘  └───────┘
-        │               ┌───────┴────────┐
-        │               ▼                ▼
-        │          ┌────────┐       ┌────────┐
-        │          │ tuning │       │  dsp   │
-        │          └───┬────┘       └───┬────┘
-        ▼              ▼                ▼
-   ┌───────────────────────────────────────────┐
-   │                   core                    │
-   └───────────────────────────────────────────┘
+        ▼                │                  ▼             ▼
+   ┌─────────┐           │            ┌──────────┐   ┌────────┐
+   │  views  │ (T3.7)    │            │  engine  │   │  io    │ (inside engine/ for now: audio + MIDI devices)
+   └──┬───┬──┘           │            └────┬─────┘   └────────┘
+      │   └──────────┐   │                 ├────────────┐
+      ▼              ▼   ▼                 │            ▼
+   ┌─────────┐     ┌──────────┐            │        ┌───────┐
+   │   ui    │     │ document │            │        │  jit  │
+   └────┬────┘     └────┬─────┘            ▼        └───┬───┘
+        │               │              ┌───────┐        │
+        │               └─────────────▶│ graph │◀───────┘
+        │                              └───┬───┘
+        │                      ┌───────────┴────────┐
+        │                      ▼                    ▼
+        │                 ┌────────┐           ┌────────┐
+        │                 │ tuning │           │  dsp   │
+        │                 └───┬────┘           └───┬────┘
+        ▼                     ▼                    ▼
+   ┌──────────────────────────────────────────────────────┐
+   │                         core                         │
+   └──────────────────────────────────────────────────────┘
 ```
 
-Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `ui` does not depend on `document` or `engine`. Views that need both live in `app/` (or a future `views/` module that sits above `ui` and `document`).
+Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (a wall-clock `SimulatedTransport` until T3.17 puts it over the engine). `app` depends on `views` + `engine`.
 
 | Module | CMake target | Namespace | Contents |
 |---|---|---|---|
@@ -42,7 +45,8 @@ Arrows point at dependencies. A module may only include headers from modules bel
 | `src/document` (headers `pq/document/`) | `pq_doc` | `pq::doc` | Immutable project model (tracks, clips, notes, devices, tunings, automation), commands, undo/redo, serialization (JSON + `.pqp`), project → graph lowering |
 | `src/ui` | `pq_ui` | `pq::ui` | Window (SDL3), Vulkan renderer, draw lists (ImDrawVert-compatible), text (FreeType/HarfBuzz), widget toolkit, theme tokens, offscreen screenshot path |
 | `src/ui/scenes` | `pq_ui_scenes` | `pq::ui` | Named test scenes (`pq/ui/scenes.h`: `--screenshot`, goldens, ui benchmarks, `renderSceneImage`). Linked by `pq_app`, tests and benches; not part of the toolkit. The fonts, theme and textures they paint with (`pq/ui/scene_textures.h`) stay in `pq_ui` |
-| `src/app` | `pq_app` (lib) + `pqdaw` (exe: `main.cpp` only, so tests can link the CLI/commands) | `pq::app` | Main, CLI, views (arrangement, piano roll, devices, circuit editor, browser) composed from `ui` + `document` + `engine` |
+| `src/views` | `pq_views` | `pq::views` | The DAW's views (T3.7+): `ViewContext` (owns the `DocumentStore`, global actions, view state), `TransportPort`, the main-window shell (control bar, track-area/detail/browser slots, info view, status line), arrangement, mixer, piano roll, MOS wheel (one subtree each), view scenes for screenshots |
+| `src/app` | `pq_app` (lib) + `pqdaw` (exe: `main.cpp` only, so tests can link the CLI/commands) | `pq::app` | Main, CLI, the window loop, `ShellApp` (views in the window: SDL file dialogs, text input, title, idle/first-frame measurement), `TransportPort` implementations, later the engine link (T3.17) |
 | `tools/` | `pqc` (exe) | – | Patch compiler CLI: parse/check/dump IR/schedule, offline render, AOT |
 | `stdlib/` | – | – | Stock subcircuits and devices as `.pqp` text (filters, envelopes, devices) |
 | `tests/` | `pq_tests_<module>` | – | doctest unit tests per module, golden renders in `tests/golden/` |
@@ -222,6 +226,15 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - **Overlays**: an `OverlayLayer` as the root's last child hosts popups (`Menu` with nested submenus and keyboard navigation, `Popover`, tooltips); it is hittable only while a dismissable popup is open, so a press outside closes them and is consumed. Popups take and restore focus; closed popups are destroyed at the next frame.
 - **Tree services** (`UiTree`): `setResources` (what widgets measure text with outside paint), `clipboard()` (`SdlClipboard` in the app, in-process otherwise), `TreeObserver`s (hover changes, presses: tooltips, the T3.7 info view via `infoFor(hovered)`), `focusVisible()` (focus came from the keyboard), `actions()`. Widgets expose `info()` / `tooltip()`. Custom layouts are arranged even without children.
 - **Keymaps**: `assets/keymaps/ableton.json` (scope, keys, action id, status `implemented` | `deferred:M<n>`); `applyKeymapFile` binds implemented entries and fails on an unregistered one. `docs/HOTKEYS.md` lists every binding.
+
+### Views and the app shell (views, T3.7: `pq/views/view_context.h`, `transport_port.h`, `shell/shell.h`, `view_scenes.h`)
+- **Directory layout** (one subtree per view family so parallel tasks do not collide): `include/pq/views/` shared API; `shell/` (T3.7), `arrangement/` (T3.8–T3.10, T3.15), `mixer/` (T3.10), `piano_roll/` (T3.11–T3.12), `mos_wheel/` (T3.13–T3.14) under both `include/pq/views/` and `src/`; `src/common/paint.h` private drawing helpers. A subtree lists its sources in `src/<subtree>/sources.cmake` (`set(PQ_VIEWS_<SUBTREE>_SOURCES …)`), included by `src/views/CMakeLists.txt` when present.
+- **`ViewContext`** (UI thread): owns the `DocumentStore`; views edit only through commands (`pq::doc::ops` builders, `dispatch`, `begin/commitGesture` for drags = one undo step) and subscribe with `ctx.subscribe(listener)` (document `StoreEvent`s; the context's own listener runs first) and `ctx.observe(fn)` (`view_change` bits: transport, grid, layout, project, status); both return RAII `Subscription`s, and the context must outlive every widget holding one. It also holds the view state outside the document: start marker, the shared `GridSpec` (+ the focused editor's resolved division for the grid display), detail view visible/mode, browser visibility, status line. Project I/O: `newProject` / `openProject(dir)` / `saveProject` / `saveProjectAs(dir)`; `dirty()` compares the current snapshot pointer with the last saved/loaded one (undo back to it is clean). The `file.*` actions go through `FileDialogs` (the app's SDL dialogs; tests script it), with save/discard/cancel on unsaved changes.
+- **Actions and keymap**: the context registers the global actions (`transport.playStop`, `transport.continue`, `edit.undo`, `edit.redo`, `file.new/open/save/saveAs`, `view.toggleClipDevice`, `view.toggleDetail`); views register theirs in `ctx.actions()` when installed and set `ctx.scope("arrangement")`-style key scopes (ids stable for the context's lifetime). `applyKeymap` rebinds from the keymap file and can be repeated.
+- **`TransportPort`**: `play(from)`, `stop()`, `continuePlayback()`, `locate(t)`, `setLoop({start, end, enabled})`, `playhead()` → `PlayheadSnapshot {playing, tick, sequence}`. Plain data; views read the playhead only while playing (the control bar's position readout wakes on a timer at the next sixteenth, 4–100 ms, and damages only its own rect). The context keeps the port's loop equal to the document's `LoopRegion`. `FakeTransport` (views, header-only) records calls for tests.
+- **Shell** (`Shell::create(tree, ctx)`): root = backdrop + `main` (Column: `control-bar`, `body` splitter [`top`: `browser` slot (hidden until M5), `track-area` slot (+ hidden `mixer` slot); `bottom` splitter: `info` view | `detail` (`clip` / `device` slots)], `status-bar`) + `overlay` (last child). `ShellSlot` names the hosts; `installDefaultContent(shell)` (src/views/src/shell/default_content.cpp) is where each view installs itself (one line per view). The shell binds the keymap to the tree and feeds the info view from a `TreeObserver` (`infoFor(hovered)`). Every shell widget paints inside its rect and reports changes through `markDirty`/layout, so the window redraws only damage (T0.7-fix1).
+- **View scenes** (`view_scenes.h`): a table of named scenes (`shell`, later `arrangement-basic`, …) = the shell over a project plus optional setup; `renderViewScene(scene, projectDir, w, h, scale)` renders one headless (`pqdaw --screenshot <scene> out.png --project <dir>`, the goldens in `tests/views/golden/`).
+- **App** (`src/app/src/shell_app.*`): the window loop treats the shell as a widget tree and calls `ShellApp::handleEvent` (SDL file-dialog results marshalled through a user event, quit confirmation, `SDL_StartTextInput`/`StopTextInput` following text focus; Esc does not quit), `onFramePresented` (first-frame log against `main()` entry and process creation; `--idle-check`) and `exitCode`. `pqdaw --project <dir>` opens it; `--scene shell` starts with a new project.
 
 ### Renderer, textures and glyph atlas (ui, T0.7 / T0.8; T0.8-fix1, T0.7-fix4: `pq/ui/renderer.h`, `atlas.h`, `text.h`)
 - **Frame protocol** (Swapchain::endFrame, OffscreenTarget::submit): wait the slot's fence → `Renderer::upload(slot, layers)` → begin the command buffer → `recordTransfers(cb, slot)` → begin rendering → `record(cb, slot, frame)` → submit. Slots are used round-robin. Nothing in the renderer waits for the GPU (no `vkDeviceWaitIdle`, no `submitAndWait`); the slot fence wait is the only CPU–GPU sync.
