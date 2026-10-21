@@ -20,6 +20,7 @@ pq_add_test(pq_tests_core
     core/test_fast_math.cpp
     core/test_time.cpp
     core/test_math_time_rt.cpp
+    core/test_stable_id.cpp
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning
@@ -60,3 +61,13 @@ add_test(NAME pqdaw_screenshot
   COMMAND pqdaw --screenshot test-pattern ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot.png --size 400x240)
 add_test(NAME pqdaw_window_selftest COMMAND pqdaw --window-selftest)
 set_tests_properties(pqdaw_window_selftest PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+
+pq_add_test(pq_tests_graph
+  SOURCES
+    graph/test_types.cpp
+    graph/test_atoms.cpp
+    graph/test_patch_build.cpp
+    graph/test_validate.cpp
+    graph/test_patch_equal.cpp
+    graph/test_patch_file.cpp
+  DEPS pq_graph)
