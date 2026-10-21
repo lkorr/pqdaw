@@ -498,7 +498,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Swap cost: executeTransfer is a memcpy of the matched state (coalesced: with T1.5's stable offsets, one range per arena); 875 KiB for the 64-voice patch above takes 33–50 µs (17–27 GB/s), and the swap block costs +121 µs over an ordinary block (copy + the new image's cold caches). An O(1) alternative needs an ABI addition (`ProgramImage::adoptState(ProgramImage& old)` swapping arena pointers when the layouts agree): the interpreter resolves state pointers into its records at build time, so it cannot take it without a relocation pass; a JIT image addressing state from a base pointer could. Not worth it before measurements show swaps of multi-MB state (long delay lines × voices) in practice.
 - Provisional: A for text; memcpy transfer.
 
-## Q?-T3.8-a · 2026-10-21 · T3.8 · Arrangement view choices not fixed by SPEC/TASKS
+## Q71 · 2026-10-21 · T3.8 · Arrangement view choices not fixed by SPEC/TASKS
 - Context: T3.8 had to settle these to build the arrangement; all are local to `src/views/src/arrangement` (pure view behaviour, nothing persisted).
 - Choices (provisional):
   1. **Look from the user's Live 12 screenshot** (orchestrator, Q47): headers right of the lanes (name strip in the track colour + a 180 px mixer section reserved for T3.10, empty until then), overview strip above the ruler, bar numbers on top with the loop brace under them, a min:sec time ruler under the tracks, blue-grey lanes with alternate-bar shading and dashed grid lines. New theme group `arrangement.*` (16 colours sampled from the screenshot); the global tokens are left for the retheme.

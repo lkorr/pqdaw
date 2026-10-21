@@ -270,9 +270,13 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - `--screenshot <scene> --project <dir>` renders views scenes from fixture projects; `pqdaw --project <dir>` opens a window; idle loop does not redraw.
   - Accept: `--screenshot shell --project tests/views/fixtures/empty` matches its golden; Ctrl+S then reopen gives an identical document; undo/redo hotkeys go through `History`; Space calls the port; Shift+Tab toggles the detail view; idle window draws 0 frames in 10 s at < 0.1% CPU; first frame with an empty project < 300 ms (release, logged).
 
-- [~] **T3.8 Arrangement view: display and navigation** *(worker AH, branch task/T3.8-arrangement)* (`views`). Depends on: T3.7, T3.3. 👁
+- [x] **T3.8 Arrangement view: display and navigation** *(1fc93f2; far-zoom settle repaint → T3.8-fix1)* (`views`). Depends on: T3.7, T3.3. 👁
   - Ruler (bars/beats; time-signature and tempo markers), locators, loop brace, playhead (reads `TransportPort` only while playing). Track lanes with headers (name, colour, fold), group indentation. Note clips as Ableton clip bodies with a cached note preview rebuilt only when the clip snapshot pointer changes. Adaptive grid shading; scroll; Ctrl+wheel and ruler-drag zoom; Z / X; follow mode; overview strip. Virtualisation: per-track sorted clips + binary search; only visible tracks/clips emit geometry.
   - Accept: goldens `arrangement-basic` (8 tracks incl. a nested and a folded group, loop, locators) and `arrangement-zoomed-out`. Scripted: Ctrl+wheel zoom keeps the tick under the cursor fixed (±1 px); Z/X round-trip; ruler click locates via the port. Perf (release, 2560×1440, 64 tracks × 200 clips × 50 notes): full redraw < 2 ms CPU; scroll/zoom frame < 2 ms; draw-list memory flat over 1000 scroll frames.
+
+- [ ] **T3.8-fix1 Cached clip preview textures** (`views`, `ui`). Depends on: T3.8, T0.7-fix4.
+  - Render each clip's note preview into a texture (per clip snapshot + zoom bucket) and draw it as one textured quad, so far-zoom settled repaints don't emit tens of thousands of note rects. Rebuild off the paint path within a budget.
+  - Accept: at 2560×1440, 64 × 200 × 50, settled full repaint < 2 ms at every zoom down to the minimum, including the first repaint after a zoom settles; goldens unchanged (or deliberately regenerated and reviewed); texture memory bounded.
 
 - [ ] **T3.9 Arrangement editing** (`views`). Depends on: T3.8, T3.6. 👁
   - Selection (clip select, Shift/Ctrl add, rubber band, time selection, Ctrl+A). Clip drag-move with relative snap, Alt+drag copy, edge resize, cross-track drag, Ctrl+Shift+M, Ctrl+E, Ctrl+D, Ctrl+J, Delete, Ctrl+L. Clipboard Ctrl+C/X/V (in-process document fragments). Ctrl+I, Ctrl+Shift+D, delete time. Right-click grid menu (Adaptive Narrowest…Widest / Fixed / Straight, Triplet, 5-, 7-, 11-tuplet / Snap / Off) and Ctrl+1–5. Double-click opens the clip in the detail view.
