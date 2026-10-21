@@ -27,7 +27,8 @@ using namespace pq::ui;
 int runScreenshot(const CliOptions& o) {
   const uint32_t w = o.width ? o.width : kDefaultSceneWidth;
   const uint32_t h = o.height ? o.height : kDefaultSceneHeight;
-  auto img = renderSceneImage(o.scene, w, h);
+  const UiScale scale(o.scale > 0.0f ? o.scale : 1.0f);
+  auto img = renderSceneImage(o.scene, w, h, {}, scale);
   if (!img) {
     std::fprintf(stderr, "pqdaw: screenshot failed: %s\n", img.error().message.c_str());
     return 1;
@@ -36,7 +37,8 @@ int runScreenshot(const CliOptions& o) {
     std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
     return 1;
   }
-  std::printf("wrote %s (%ux%u, scene %s)\n", o.outPath.c_str(), w, h, o.scene.c_str());
+  std::printf("wrote %s (%ux%u px = %ux%u logical at scale %g, scene %s)\n", o.outPath.c_str(), img->width, img->height, w, h,
+              static_cast<double>(scale.factor), o.scene.c_str());
   return 0;
 }
 
@@ -64,6 +66,33 @@ struct WindowApp {
   // Widget scenes (widgets-core) run a live UiTree: SDL input → translateEvent → the tree; its damage and
   // timers drive frames; layout is in logical px × the display scale.
   std::unique_ptr<UiTree> ui;
+  // The UI scale (pq/ui/ui_scale.h): the one value the tree's layout, the scene fonts and the scenes read.
+  // Read from the window's display at startup and on SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED; scaleOverride
+  // (> 0: --scale, or the self-test's injected change) replaces the display's value.
+  UiScale scale{};
+  float scaleOverride = 0.0f;
+  UiScale lastFrameScale{};  // the scale the last presented frame was drawn at (self-test)
+  uint32_t scaleChanges = 0;
+
+  // Re-reads the scale; on a change re-resolves the font roles (new sizes are created here, on the event,
+  // never inside paint), relayouts the tree and requests a full redraw. Returns false on a hard error.
+  bool refreshScale() {
+    const UiScale s(scaleOverride > 0.0f ? scaleOverride : window->displayScale());
+    if (s == scale) return true;
+    if (Status st = setSceneScale(textures, s); !st) {
+      error = st.error().message;
+      return false;
+    }
+    scale = s;
+    ++scaleChanges;
+    if (ui) {
+      uint32_t w = 0, h = 0;
+      window->pixelSize(w, h);
+      ui->setViewport(w ? w : ui->width(), h ? h : ui->height(), scale);
+    }
+    damage.addAll();
+    return true;
+  }
 
   double now() const { return std::chrono::duration<double>(Clock::now() - start).count(); }
 
@@ -72,7 +101,7 @@ struct WindowApp {
     if (!ui) return;
     uint32_t w = 0, h = 0;
     window->pixelSize(w, h);
-    if (w && h) ui->setViewport(w, h, window->displayScale());
+    if (w && h) ui->setViewport(w, h, scale);
     ui->update(now());
     if (ui->needsPaint()) damage.addAll();  // swapchain images are not preserved: a damaged frame is drawn whole
   }
@@ -93,7 +122,7 @@ struct WindowApp {
       dl.reset(ext.width, ext.height);
       const double t = now();
       if (ui) {
-        ui->setViewport(ext.width, ext.height, window->displayScale());
+        ui->setViewport(ext.width, ext.height, scale);
         dl.addRectFilled({0, 0, static_cast<float>(ext.width), static_cast<float>(ext.height)}, kSceneClearColor);
         PaintResources res;
         res.text = textures.text.get();
@@ -107,6 +136,7 @@ struct WindowApp {
         ok = false;
       } else {
         ++framesPresented;
+        lastFrameScale = textures.scale;
       }
     }
     damage.clear();
@@ -130,8 +160,12 @@ struct WindowApp {
       case SDL_EVENT_WINDOW_EXPOSED:
       case SDL_EVENT_WINDOW_RESTORED:
       case SDL_EVENT_WINDOW_MAXIMIZED:
-      case SDL_EVENT_WINDOW_SHOWN:
-      case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: damage.addAll(); break;
+      case SDL_EVENT_WINDOW_SHOWN: damage.addAll(); break;
+      case SDL_EVENT_WINDOW_DISPLAY_CHANGED:  // moved to another monitor
+      case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+        if (!refreshScale()) std::fprintf(stderr, "pqdaw: UI scale change failed: %s\n", error.c_str());
+        damage.addAll();
+        break;
       case SDL_EVENT_KEY_DOWN:
         if (e.key.key == SDLK_ESCAPE) quit = true;
         if (e.key.key == SDLK_A) {
@@ -183,13 +217,18 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
   auto renderer = Renderer::create(*app->gpu, app->swapchain->format(), 2);
   if (!renderer) return std::move(renderer).error();
   app->renderer = std::move(*renderer);
-  auto tex = createSceneTextures(*app->renderer);
+  app->scaleOverride = o.scale;
+  app->scale = UiScale(o.scale > 0.0f ? o.scale : app->window->displayScale());
+  auto tex = createSceneTextures(*app->renderer, app->scale);
   if (!tex) return std::move(tex).error();
   app->textures = *tex;
   app->damage.setAnimating(o.animate);
   app->damage.addAll();
   if (o.scene == "widgets-core") {
     app->ui = std::make_unique<UiTree>();
+    uint32_t w = 0, h = 0;
+    app->window->pixelSize(w, h);
+    app->ui->setViewport(w, h, app->scale);
     app->ui->setRoot(makeWidgetsCoreDemo());
   }
   return app;
@@ -314,6 +353,56 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
   check(burstOk, "60 animated paced frames present");
   std::printf("  60 paced frames: %.1f ms (%.2f ms/frame), pacer %s, %u pacer timeouts\n", burstMs, burstMs / 60.0,
               app.pacer.available() ? "DwmFlush" : "unavailable", app.pacer.timeouts() - timeoutsBefore);
+
+  // T0.7-fix3: a display-scale change at runtime re-renders without a restart. The OS event is faked: the
+  // override hook stands in for SDL_GetWindowDisplayScale and a DISPLAY_SCALE_CHANGED event goes through the
+  // real queue and handler.
+  {
+    auto injectScale = [&](float override) {
+      app.scaleOverride = override;
+      app.damage.clear();
+      SDL_Event ev{};
+      ev.type = SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED;
+      ev.window.windowID = app.window->id();
+      ev.window.timestamp = SDL_GetTicksNS();
+      return SDL_PushEvent(&ev);
+    };
+    const float initial = app.scale.factor;
+    const float target = initial == 1.5f ? 2.0f : 1.5f;
+    const uint32_t changesBefore = app.scaleChanges;
+    check(injectScale(target), "fake DISPLAY_SCALE_CHANGED event queued");
+    pump(app);
+    char what[96];
+    std::snprintf(what, sizeof what, "UI scale follows the event (%.2f -> %.2f)", static_cast<double>(initial),
+                  static_cast<double>(target));
+    check(app.scale.factor == target && app.scaleChanges == changesBefore + 1, what);
+    const TextSystem& ts = *app.textures.text;
+    const UiScale s = app.scale;
+    check(ts.metrics(app.textures.fonts.section).pixelSize == s.fontPx(text_size::kSection) &&
+              ts.metrics(app.textures.fonts.body).pixelSize == s.fontPx(text_size::kBody) &&
+              ts.metrics(app.textures.fonts.title).pixelSize == s.fontPx(text_size::kTitle) &&
+              ts.metrics(app.textures.fonts.meter).pixelSize == s.fontPx(text_size::kMeter),
+          "font roles re-resolved at round(role x scale) px");
+    check(app.damage.needsFrame(), "scale change requests a redraw");
+    app.updateUi();
+    if (app.ui) {
+      const Widget* header = app.ui->find("header");
+      const Widget* browserItem = app.ui->find("body/browser/item[0]");
+      check(app.ui->scale() == target && header && header->rect().h == s.px(28) && browserItem &&
+                browserItem->rect().h == s.px(22),
+            "widget tree relaid out in logical px x new scale");
+    }
+    frame("frame at the new scale presents");
+    check(app.lastFrameScale == s, "that frame was drawn at the new scale");
+    // Back to the display's own scale (override cleared), as when the window returns to its monitor.
+    check(injectScale(0.0f), "second fake DISPLAY_SCALE_CHANGED queued");
+    pump(app);
+    check(app.scale == UiScale(app.window->displayScale()), "scale returns to the display's value");
+    app.updateUi();
+    frame("frame back at the display scale presents");
+    check(app.lastFrameScale == app.scale && (!app.ui || app.ui->scale() == app.scale.factor),
+          "that frame was drawn at the display scale");
+  }
 
   if (app.gpu->validationEnabled())
     check(app.gpu->validationErrorCount() == 0, "no Vulkan validation errors");

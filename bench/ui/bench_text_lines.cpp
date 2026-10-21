@@ -17,6 +17,8 @@
 #include "pq/ui/renderer.h"
 #include "pq/ui/scenes.h"
 #include "pq/ui/text.h"
+#include "pq/ui/ui_scale.h"
+#include "pq/ui/widget.h"
 #include "pq_bench.h"
 
 using namespace pq::ui;
@@ -156,6 +158,89 @@ void benchLines() {
   pq::bench::report("lines/splineSmooth 1024 knotStep 8", s, "ns/pt");
 }
 
+// T0.7-fix3: cost of a UI scale change (font roles re-resolved + widget relayout) and of text at 1.5×.
+void benchHiDpi() {
+  using Clock = std::chrono::steady_clock;
+  // Scale change to a scale not seen before: the 7 scene font roles are created at the new device sizes
+  // (FreeType face + size + hb font + printable-ASCII rasterisation each), then the widgets-core tree relays
+  // out at the new scale. Fresh text system per repetition (a first visit is the expensive case).
+  {
+    std::vector<double> fontsMs, layoutUs;
+    for (int rep = 0; rep < 7; ++rep) {
+      auto t = createSceneText(std::make_shared<Atlas>(), UiScale(1.0f));
+      if (!t) {
+        std::printf("hidpi benchmarks skipped: %s\n", t.error().message.c_str());
+        return;
+      }
+      UiTree tree;
+      tree.setViewport(1280, 800, UiScale(1.0f));
+      tree.setRoot(makeWidgetsCoreDemo());
+      tree.layoutNow();
+      const auto t0 = Clock::now();
+      if (!setSceneScale(*t, UiScale(1.5f)).ok()) return;
+      const auto t1 = Clock::now();
+      tree.setViewport(1920, 1200, UiScale(1.5f));
+      tree.layoutNow();
+      const auto t2 = Clock::now();
+      fontsMs.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+      layoutUs.push_back(std::chrono::duration<double, std::micro>(t2 - t1).count());
+      pq::bench::doNotOptimize(tree.root()->rect().w);
+    }
+    std::sort(fontsMs.begin(), fontsMs.end());
+    std::sort(layoutUs.begin(), layoutUs.end());
+    std::printf("BENCH %-40s median %10.4f  min %10.4f  %s\n", "hidpi/scale change 1.0->1.5 new: fonts", fontsMs[3], fontsMs[0],
+                "ms (7 roles created + ASCII rasterised)");
+    std::printf("BENCH %-40s median %10.4f  min %10.4f  %s\n", "hidpi/scale change: widgets-core relayout", layoutUs[3],
+                layoutUs[0], "us (setViewport + layoutNow)");
+  }
+  auto t = createSceneText(std::make_shared<Atlas>(), UiScale(1.0f));
+  if (!t) return;
+  if (!setSceneScale(*t, UiScale(1.5f)).ok()) return;
+  // Scale change back to a scale seen before: 7 font lookups, no rasterisation.
+  {
+    bool flip = false;
+    auto s = pq::bench::measure(
+        [&] {
+          flip = !flip;
+          pq::bench::doNotOptimize(setSceneScale(*t, UiScale(flip ? 1.0f : 1.5f)).ok());
+        },
+        1);
+    pq::bench::report("hidpi/scale change to a seen scale: fonts", s, "ns (7 role lookups)");
+  }
+  // Cached label drawing at 1.5× (Regular 13 role → 20 px font) vs the 1.0 row above.
+  if (!setSceneScale(*t, UiScale(1.5f)).ok()) return;
+  TextSystem& ts = *t->text;
+  std::vector<std::string> labels;
+  for (int i = 0; i < 64; ++i) labels.push_back("Param " + std::to_string(1000 + i * 37) + " Hz");
+  for (const std::string& l : labels) ts.shape(t->fonts.body, l);
+  DrawList dl;
+  auto s = pq::bench::measure(
+      [&] {
+        dl.reset(2880, 1620);
+        for (int rep = 0; rep < 16; ++rep)
+          for (size_t i = 0; i < labels.size(); ++i)
+            ts.draw(dl, t->fonts.body, {static_cast<float>(rep * 165), static_cast<float>(i * 24 + 20)}, labels[i], 0xFFE0E0E0u);
+        pq::bench::doNotOptimize(dl.indices().size());
+      },
+      16 * 64);
+  pq::bench::report("text/draw cached @1.5x, 12-char label", s, "ns/label");
+  // The text scene at each scale (CPU build only: shaping cached after the first frame).
+  for (float f : {1.0f, 1.5f, 2.0f}) {
+    if (!setSceneScale(*t, UiScale(f)).ok()) return;
+    const UiScale sc(f);
+    auto sb = pq::bench::measure(
+        [&] {
+          dl.reset(static_cast<uint32_t>(sc.px(800)), static_cast<uint32_t>(sc.px(480)));
+          buildScene("text", dl, *t, 0.0);
+          pq::bench::doNotOptimize(dl.indices().size());
+        },
+        1);
+    char name[64];
+    std::snprintf(name, sizeof name, "scene/text build @%.2gx", static_cast<double>(f));
+    pq::bench::report(name, sb, "ns/frame");
+  }
+}
+
 void benchScenes() {
   auto gpu = GpuContext::create({});
   if (!gpu) {
@@ -195,6 +280,7 @@ void benchScenes() {
 int main() {
   benchText();
   benchLines();
+  benchHiDpi();
   benchScenes();
   return 0;
 }

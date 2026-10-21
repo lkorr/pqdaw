@@ -160,12 +160,14 @@ TEST_CASE("render: glow blob peaks at its centre and falls to the background") {
 
 namespace {
 
-// Renders `scene` at the default size and compares it with tests/ui/golden/<scene>.png.
-void checkGolden(const std::string& scene) {
-  const std::string golden = std::string(PQ_TEST_DATA_DIR) + "/ui/golden/" + scene + ".png";
+// Renders `scene` at the default logical size and UI scale `scale` and compares it with
+// tests/ui/golden/<scene>.png (scale 1) or <scene>@<scaleName>x.png (T0.7-fix3 HiDPI goldens).
+void checkGolden(const std::string& scene, float scale = 1.0f, const char* scaleName = nullptr) {
+  const std::string file = scaleName ? scene + "@" + scaleName + "x" : scene;
+  const std::string golden = std::string(PQ_TEST_DATA_DIR) + "/ui/golden/" + file + ".png";
   GpuOptions o;
   o.validation = true;
-  auto img = renderSceneImage(scene, kDefaultSceneWidth, kDefaultSceneHeight, o);
+  auto img = renderSceneImage(scene, kDefaultSceneWidth, kDefaultSceneHeight, o, UiScale(scale));
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
   auto ref = readPng(golden);
   REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
@@ -175,12 +177,12 @@ void checkGolden(const std::string& scene) {
   const ImageDiff d = compareImages(*img, *ref, 2);
   const uint64_t allowedOutliers = d.pixelCount / 1000;
   if (!d.sameSize || d.pixelsOverTolerance > allowedOutliers) {
-    const std::string out = scene + ".actual.png";  // in the test's working directory (build/<preset>/tests)
+    const std::string out = file + ".actual.png";  // in the test's working directory (build/<preset>/tests)
     (void)writePng(out, *img);
     MESSAGE("wrote " << out << " for inspection");
   }
   REQUIRE(d.sameSize);
-  MESSAGE(scene << ": max channel diff " << d.maxChannelDiff << ", " << d.pixelsOverTolerance << " px over tolerance");
+  MESSAGE(file << ": max channel diff " << d.maxChannelDiff << ", " << d.pixelsOverTolerance << " px over tolerance");
   CHECK(d.pixelsOverTolerance <= allowedOutliers);
 }
 
@@ -190,6 +192,22 @@ TEST_CASE("render: test-pattern matches the golden image") { checkGolden("test-p
 
 // T0.8: Inter through FreeType + HarfBuzz, glyphs uploaded into the atlas page by Renderer::upload.
 TEST_CASE("render: text matches the golden image") { checkGolden("text"); }
+
+// T0.7-fix3: the same scenes at Windows' common display scales. Device size = 800×480 logical × scale; text
+// at round(role · scale) px hinted fonts, hairlines and AA feathers 1 device px.
+TEST_CASE("render: text matches the golden image at UI scale 1.25") { checkGolden("text", 1.25f, "1.25"); }
+TEST_CASE("render: text matches the golden image at UI scale 1.5") { checkGolden("text", 1.5f, "1.5"); }
+TEST_CASE("render: text matches the golden image at UI scale 2.0") { checkGolden("text", 2.0f, "2.0"); }
+TEST_CASE("render: test-pattern matches the golden image at UI scale 1.25") { checkGolden("test-pattern", 1.25f, "1.25"); }
+TEST_CASE("render: test-pattern matches the golden image at UI scale 1.5") { checkGolden("test-pattern", 1.5f, "1.5"); }
+TEST_CASE("render: test-pattern matches the golden image at UI scale 2.0") { checkGolden("test-pattern", 2.0f, "2.0"); }
+
+TEST_CASE("render: scaled screenshots have the scaled device size") {
+  auto img = renderSceneImage("text", 333, 217, {}, UiScale(1.5f));
+  REQUIRE(img.ok());
+  CHECK(img->width == 500);  // 499.5 rounds up
+  CHECK(img->height == 326);  // 325.5
+}
 
 // T0.9: PQ Meter's line primitives (ribbons, glow passes incl. additive, spectrum layering, colormaps).
 TEST_CASE("render: lines matches the golden image") { checkGolden("lines"); }

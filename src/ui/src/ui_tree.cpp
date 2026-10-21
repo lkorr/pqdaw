@@ -60,12 +60,12 @@ Widget& UiTree::setRoot(std::unique_ptr<Widget> root) {
 
 Widget* UiTree::find(std::string_view path) const noexcept { return root_ ? root_->find(path) : nullptr; }
 
-void UiTree::setViewport(uint32_t width, uint32_t height, float scale) {
+void UiTree::setViewport(uint32_t width, uint32_t height, UiScale scale) {
   if (width == width_ && height == height_ && scale == scale_) return;
   const bool rescaled = scale != scale_;
   width_ = width;
   height_ = height;
-  scale_ = scale > 0.0f ? scale : 1.0f;
+  scale_ = scale;
   damage_.addAll();
   if (rescaled) {
     invalidateAll();
@@ -151,7 +151,7 @@ void UiTree::arrangeChildren(Widget& w) {
     case LayoutKind::Column: arrangeLinear(w, false); break;
     case LayoutKind::Custom: {
       LayoutPass pass(*this);
-      pass.scale_ = scale_;
+      pass.scale_ = scale_.factor;
       w.arrange(pass);
       break;
     }
@@ -166,7 +166,7 @@ IRect contentRect(const IRect& r, const Insets& p, float s) noexcept {
 }  // namespace
 
 void UiTree::arrangeStack(Widget& w) {
-  const float s = scale_;
+  const float s = scale_.factor;
   const IRect in = contentRect(w.rect_, w.padding_, s);
   for (auto& cp : w.children_) {
     Widget& c = *cp;
@@ -178,7 +178,7 @@ void UiTree::arrangeStack(Widget& w) {
 }
 
 void UiTree::arrangeLinear(Widget& w, bool row) {
-  const float s = scale_;
+  const float s = scale_.factor;
   const IRect in = contentRect(w.rect_, w.padding_, s);
   const int32_t innerMain = row ? in.w : in.h;
   const int32_t innerCross = row ? in.h : in.w;

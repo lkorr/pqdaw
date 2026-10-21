@@ -14,8 +14,9 @@
 //     their content changes. A child whose rect did not change and that has nothing dirty below it is not
 //     visited, so relayout costs O(what changed).
 //   - All rects are integer device pixels. Length values (sizes, min/max, padding, gaps, splitter positions)
-//     are logical pixels, multiplied by UiTree::scale() (the window's display scale, e.g. 1.5 at 150 %) and
-//     rounded when the layout runs. Text stays at integer pixel sizes (no resampling), so scaled UIs are crisp.
+//     are logical pixels, multiplied by UiTree::uiScale() (the window's display scale, e.g. 1.5 at 150 %;
+//     pq/ui/ui_scale.h) and rounded when the layout runs. Text uses font roles resolved at the same scale
+//     (round(role px × scale), hinted, never resampled), so scaled UIs are crisp.
 //   - markDirty() reports the widget's rect (clipped by its clipping ancestors) to the tree's Damage; layout
 //     reports old and new rects of every widget that moved. The frame loop draws only when something is
 //     damaged or a widget asked for a frame (idle = no work at all).
@@ -37,6 +38,7 @@
 #include "pq/ui/damage.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/input.h"
+#include "pq/ui/ui_scale.h"
 
 namespace pq::ui {
 
@@ -106,14 +108,14 @@ struct Insets {
 // What widgets draw with. T3.2 adds the theme here.
 struct PaintResources {
   TextSystem* text = nullptr;         // null: no text (draw-list-only tests); widgets skip their glyphs
-  const SceneFonts* fonts = nullptr;
+  const SceneFonts* fonts = nullptr;  // font roles resolved at the tree's UiScale (pq/ui/scenes.h setSceneScale)
 };
 
 struct PaintContext {
   DrawList& dl;
   const PaintResources& res;
-  double time;   // seconds (the clock passed to UiTree::update)
-  float scale;   // logical → device px
+  double time;    // seconds (the clock passed to UiTree::update)
+  UiScale scale;  // logical → device px: the tree's scale (res.fonts are resolved at it)
   IRect clip;    // the scissor in effect: the visible part of the target. Virtualised widgets draw only
                  // what intersects it (see ScrollView).
 };
@@ -372,11 +374,13 @@ public:
   // Path from the root ("" = root). nullptr when absent.
   Widget* find(std::string_view path) const noexcept;
 
-  // Target size in device px and the logical → device scale. Damages everything.
-  void setViewport(uint32_t width, uint32_t height, float scale = 1.0f);
+  // Target size in device px and the logical → device scale. Damages everything; a scale change also
+  // invalidates every widget's layout (every logical length maps to a new device size).
+  void setViewport(uint32_t width, uint32_t height, UiScale scale = {});
   uint32_t width() const noexcept { return width_; }
   uint32_t height() const noexcept { return height_; }
-  float scale() const noexcept { return scale_; }
+  const UiScale& uiScale() const noexcept { return scale_; }
+  float scale() const noexcept { return scale_.factor; }
 
   // --- frame ---
   // Runs due timers, frame requests and layout. Call once per loop iteration with the current time (s).
@@ -449,7 +453,7 @@ private:
   std::unique_ptr<Widget> root_;
   Damage damage_;
   uint32_t width_ = 0, height_ = 0;
-  float scale_ = 1.0f;
+  UiScale scale_{};
   bool layoutPending_ = true;
   IRect clip_{};  // during layout: the visible area through the clipping ancestors of the widget being placed
 

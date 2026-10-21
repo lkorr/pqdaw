@@ -59,6 +59,9 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--scene") {
       if (i + 1 >= args.size()) return usageError("--scene needs a name");
       o.scene = std::string(args[++i]);
+    } else if (a == "--scale") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.scale) || !(o.scale >= 0.5f && o.scale <= 4.0f))
+        return usageError("--scale needs a UI scale in [0.5, 4] (e.g. 1.25 for 125 %)");
     } else if (a == "--animate") {
       o.animate = true;
     } else if (a == "--list-devices") {
@@ -99,6 +102,8 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   }
   if (o.mode != Mode::Screenshot && o.mode != Mode::Window && (o.width != 0))
     return usageError("--size only applies to --screenshot and the window");
+  if (o.mode != Mode::Screenshot && o.mode != Mode::Window && o.scale != 0.0f)
+    return usageError("--scale only applies to --screenshot and the window");
   if (!sineOnly.empty() && o.mode != Mode::Sine) return usageError(std::string(sineOnly) + " only applies to --sine");
   if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
     return usageError("--asio only applies to --sine and --list-devices");
@@ -110,8 +115,12 @@ std::string usage() {
          "  (no mode)                                open the window (test pattern for now)\n"
          "      --scene <name>                       scene to show (default test-pattern)\n"
          "      --size WxH                           initial window size\n"
+         "      --scale S                            UI scale override (default: the display's scale)\n"
          "      --animate                            redraw continuously (frame pacing demo); key A toggles\n"
-         "  --screenshot <scene> <out.png> [--size WxH]  render a scene headless to a PNG (default 800x480)\n"
+         "  --screenshot <scene> <out.png> [--size WxH] [--scale S]\n"
+         "                                           render a scene headless to a PNG: WxH logical px\n"
+         "                                           (default 800x480) at UI scale S (default 1), i.e.\n"
+         "                                           round(W*S) x round(H*S) device px\n"
          "  --window-selftest                        scripted resize/minimise/restore run (exit 77 = no display)\n"
          "  --help                                   this text\n";
 }

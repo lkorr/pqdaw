@@ -2,6 +2,7 @@
 
 #include <vk_mem_alloc.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -172,18 +173,23 @@ Result<Image> OffscreenTarget::read() {
   return img;
 }
 
-Result<Image> renderSceneImage(std::string_view scene, uint32_t width, uint32_t height, const GpuOptions& options) {
+Result<Image> renderSceneImage(std::string_view scene, uint32_t width, uint32_t height, const GpuOptions& options,
+                               UiScale scale) {
   if (!hasScene(scene)) return Error{ErrorCode::NotFound, "unknown scene '" + std::string(scene) + "'", {}};
   auto gpu = GpuContext::create(options);
   if (!gpu) return std::move(gpu).error();
   auto renderer = Renderer::create(**gpu, OffscreenTarget::kFormat, 1);
   if (!renderer) return std::move(renderer).error();
-  auto target = OffscreenTarget::create(**gpu, width, height);
+  if (width == 0 || height == 0) return Error{ErrorCode::InvalidArgument, "renderSceneImage: zero size", {}};
+  // Logical size → device px (at least 1 × 1).
+  const uint32_t dw = static_cast<uint32_t>(std::max(1, scale.px(static_cast<float>(width))));
+  const uint32_t dh = static_cast<uint32_t>(std::max(1, scale.px(static_cast<float>(height))));
+  auto target = OffscreenTarget::create(**gpu, dw, dh);
   if (!target) return std::move(target).error();
-  auto textures = createSceneTextures(**renderer);
+  auto textures = createSceneTextures(**renderer, scale);
   if (!textures) return std::move(textures).error();
   DrawList dl;
-  dl.reset(width, height);
+  dl.reset(dw, dh);
   buildScene(scene, dl, *textures, 0.0);
   if (Status s = (*target)->draw(**renderer, dl, kSceneClearColor); !s) return std::move(s).error();
   auto img = (*target)->read();

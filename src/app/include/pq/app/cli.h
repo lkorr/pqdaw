@@ -15,7 +15,7 @@ namespace pq::app {
 
 enum class Mode {
   Window,          // default: open the main window (currently the test pattern)
-  Screenshot,      // --screenshot <scene> <out.png> [--size WxH]
+  Screenshot,      // --screenshot <scene> <out.png> [--size WxH] [--scale S]
   WindowSelfTest,  // --window-selftest: scripted resize/minimise/restore run, exit code = result
   Help,            // --help
   ListDevices,     // --list-devices [--asio]
@@ -29,6 +29,7 @@ struct CliOptions {
   uint32_t width = 0;   // 0 = mode default
   uint32_t height = 0;
   bool animate = false;  // --animate: continuous redraw (exercises frame pacing)
+  float scale = 0.0f;    // --scale: UI scale (0 = default: 1.0 for --screenshot, the display scale for the window)
 
   // Audio (--list-devices, --sine).
   double sineHz = 440.0;

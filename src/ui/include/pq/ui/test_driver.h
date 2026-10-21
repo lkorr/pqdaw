@@ -43,6 +43,8 @@ public:
     tree_.layoutNow();
     return w;
   }
+  // New size and UI scale (like a window resize or a display-scale change): relayout, and with the GPU
+  // enabled the scene font roles re-resolve at the new scale (pq/ui/scenes.h setSceneScale).
   void resize(uint32_t width, uint32_t height, float scale = 1.0f);
 
   // --- fake clock and frames ---

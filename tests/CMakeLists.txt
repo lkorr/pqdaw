@@ -58,6 +58,7 @@ pq_add_test(pq_tests_ui
     ui/test_colormap.cpp
     ui/test_layout.cpp
     ui/test_widgets.cpp
+    ui/test_hidpi.cpp
   DEPS pq_ui)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 

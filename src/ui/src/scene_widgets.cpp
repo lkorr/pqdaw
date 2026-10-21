@@ -28,8 +28,8 @@ public:
     if (alphaOf(fill_)) ctx.dl.addRectFilled(rect().toRect(), fill_);
     if (label_.empty() || !ctx.res.text || !ctx.res.fonts) return;
     const IRect r = rect();
-    const float baseline = static_cast<float>(r.y + r.h / 2 + 4);
-    ctx.res.text->draw(ctx.dl, ctx.res.fonts->section, {static_cast<float>(r.x + 8), baseline}, label_, text_);
+    const float baseline = static_cast<float>(r.y + r.h / 2 + ctx.scale.px(4));
+    ctx.res.text->draw(ctx.dl, ctx.res.fonts->section, {static_cast<float>(r.x + ctx.scale.px(8)), baseline}, label_, text_);
   }
 
 private:
@@ -46,15 +46,15 @@ public:
   explicit LaneGrid(std::string name) : Widget(std::move(name)) {}
 
   ISize contentExtent(ISize) const override {
-    const float s = tree() ? tree()->scale() : 1.0f;
-    return {static_cast<int32_t>(kBarW * kBars * s), static_cast<int32_t>(kLaneH * kLanes * s)};
+    const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+    return {s.px(kBarW) * kBars, s.px(kLaneH) * kLanes};  // the lane/bar pitch paint() uses
   }
 
   void paint(PaintContext& ctx) override {
     const IRect r = rect();
     const IRect vis = intersect(r, ctx.clip);
     if (vis.empty()) return;
-    const int32_t laneH = static_cast<int32_t>(kLaneH * ctx.scale), barW = static_cast<int32_t>(kBarW * ctx.scale);
+    const int32_t laneH = ctx.scale.px(kLaneH), barW = ctx.scale.px(kBarW);
     const int32_t lane0 = (vis.y - r.y) / laneH, lane1 = std::min(kLanes - 1, (vis.bottom() - 1 - r.y) / laneH);
     const int32_t bar0 = (vis.x - r.x) / barW, bar1 = std::min(kBars - 1, (vis.right() - 1 - r.x) / barW);
     for (int32_t l = lane0; l <= lane1; ++l) {
@@ -64,7 +64,7 @@ public:
         const uint32_t h = static_cast<uint32_t>(l * 73856093) ^ static_cast<uint32_t>(b * 19349663);
         if (h % 5 >= 2) continue;
         const float x0 = static_cast<float>(r.x + b * barW) + 1, x1 = x0 + static_cast<float>(barW) - 2;
-        ctx.dl.addRoundedRectFilled({x0, y0 + 2, x1, y1 - 3}, 3.0f * ctx.scale, withAlpha(kBands[l % 6], 200));
+        ctx.dl.addRoundedRectFilled({x0, y0 + 2, x1, y1 - 3}, ctx.scale.exact(3.0f), withAlpha(kBands[l % 6], 200));
       }
     }
     for (int32_t b = bar0; b <= bar1 + 1; ++b)
@@ -133,11 +133,11 @@ namespace detail {
 
 void widgetsScene(DrawList& dl, const SceneTextures& tex, double time) {
   UiTree tree;
-  tree.setViewport(dl.targetWidth(), dl.targetHeight(), 1.0f);
+  tree.setViewport(dl.targetWidth(), dl.targetHeight(), tex.scale);
   tree.setRoot(makeWidgetsCoreDemo());
   tree.layoutNow();
   if (auto* tracks = dynamic_cast<ScrollView*>(tree.find("body/main/arrangement/tracks"))) {
-    tracks->scrollTo(130, 40);  // show that the content is offset and clipped
+    tracks->scrollTo(tex.scale.px(130), tex.scale.px(40));  // show that the content is offset and clipped
     tree.layoutNow();
   }
   dl.addRectFilled({0, 0, static_cast<float>(dl.targetWidth()), static_cast<float>(dl.targetHeight())}, kBackground);

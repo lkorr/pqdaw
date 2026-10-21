@@ -28,11 +28,12 @@
 #include "pq/ui/atlas.h"
 #include "pq/ui/color.h"
 #include "pq/ui/draw_list.h"
+#include "pq/ui/ui_scale.h"
 
 namespace pq::ui {
 
-// Theme text sizes in pixels (SPEC §11 / PQ Meter settings_theme.h: section 12, body 13, title 14) plus a
-// large size for meter readouts.
+// Theme text sizes in logical pixels (SPEC §11 / PQ Meter settings_theme.h: section 12, body 13, title 14)
+// plus a large size for meter readouts. At a UiScale they render as round(size × scale) px fonts (FontRole).
 namespace text_size {
 inline constexpr uint32_t kSection = 12;
 inline constexpr uint32_t kBody = 13;
@@ -53,6 +54,15 @@ struct FontOptions {
   TextHinting hinting = TextHinting::Full;
   bool tabularFigures = false;  // OpenType 'tnum': equal-width digits, for readouts that update in place
   bool operator==(const FontOptions&) const = default;
+};
+
+// A font role: a face at a logical pixel size (a theme size) with options. TextSystem::font(role, scale)
+// resolves it to the hinted integer-pixel font of size scale.fontPx(logicalPx) (HiDPI: a 13 px body role is
+// a 20 px font at 150 %; glyphs are rasterised at that size, never resampled).
+struct FontRole {
+  FaceId face = 0;
+  uint32_t logicalPx = 13;
+  FontOptions options{};
 };
 
 struct FontMetrics {
@@ -108,6 +118,11 @@ public:
 
   // The font for (face, pixel size, options), created on first request. pixelSize in 4..256.
   Result<FontId> font(FaceId face, uint32_t pixelSize, const FontOptions& options = {});
+  // The font for `role` at `scale` (created on first request, like font(); later requests for the same
+  // device size are a lookup, so switching back to a scale seen before costs no rasterisation).
+  Result<FontId> font(const FontRole& role, UiScale scale) {
+    return font(role.face, scale.fontPx(role.logicalPx), role.options);
+  }
   const FontMetrics& metrics(FontId font) const noexcept;
 
   // Shaped, rasterised run for `utf8` in `font` (cached). Invalid UTF-8 shapes as U+FFFD.

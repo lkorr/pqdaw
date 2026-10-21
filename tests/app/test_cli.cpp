@@ -40,6 +40,22 @@ TEST_CASE("cli: --screenshot with and without --size") {
   CHECK(o->width == 1024);
 }
 
+TEST_CASE("cli: --scale for --screenshot and the window") {
+  auto o = parse({"--screenshot", "text", "t.png", "--scale", "1.5"});
+  REQUIRE(o.ok());
+  CHECK(o->scale == 1.5f);
+  o = parse({"--scale", "1.25", "--scene", "widgets-core"});
+  REQUIRE(o.ok());
+  CHECK(o->mode == Mode::Window);
+  CHECK(o->scale == 1.25f);
+  CHECK(parse({})->scale == 0.0f);  // default: 1.0 for screenshots, the display scale for the window
+  CHECK_FALSE(parse({"--scale"}).ok());
+  CHECK_FALSE(parse({"--scale", "0.25"}).ok());
+  CHECK_FALSE(parse({"--scale", "5"}).ok());
+  CHECK_FALSE(parse({"--scale", "abc"}).ok());
+  CHECK_FALSE(parse({"--window-selftest", "--scale", "2"}).ok());
+}
+
 TEST_CASE("cli: errors") {
   CHECK_FALSE(parse({"--screenshot", "x"}).ok());
   CHECK_FALSE(parse({"--screenshot", "a", "b.png", "--size"}).ok());
@@ -68,6 +84,15 @@ TEST_CASE("cli: --screenshot writes a PNG of the requested size") {
   REQUIRE(img.ok());
   CHECK(img->width == 160);
   CHECK(img->height == 96);
+  std::remove(o.outPath.c_str());
+
+  // --scale: --size is logical px, the PNG is device px.
+  o.scale = 1.5f;
+  REQUIRE(runScreenshot(o) == 0);
+  img = pq::ui::readPng(o.outPath);
+  REQUIRE(img.ok());
+  CHECK(img->width == 240);
+  CHECK(img->height == 144);
   std::remove(o.outPath.c_str());
 
   o.scene = "nope";

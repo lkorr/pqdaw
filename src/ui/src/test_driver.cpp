@@ -41,6 +41,11 @@ TestDriver::~TestDriver() = default;
 
 void TestDriver::resize(uint32_t width, uint32_t height, float scale) {
   tree_.setViewport(width, height, scale);
+  if (gpu_ && !(gpu_->textures.scale == tree_.uiScale())) {
+    // Same order as the window loop: font roles re-resolve at the new scale before anything paints.
+    [[maybe_unused]] const Status s = setSceneScale(gpu_->textures, tree_.uiScale());
+    assert(s.ok() && "TestDriver::resize: font roles failed to resolve at the new scale");
+  }
   tree_.layoutNow();
 }
 
@@ -212,7 +217,7 @@ Status TestDriver::enableGpu() {
   auto r = Renderer::create(*g->ctx, OffscreenTarget::kFormat, 1);
   if (!r) return std::move(r).error();
   g->renderer = std::move(*r);
-  auto t = createSceneTextures(*g->renderer);
+  auto t = createSceneTextures(*g->renderer, tree_.uiScale());
   if (!t) return std::move(t).error();
   g->textures = std::move(*t);
   gpu_ = std::move(g);

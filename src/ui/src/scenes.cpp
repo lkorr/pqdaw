@@ -52,6 +52,9 @@ Image checkerImage() {
 
 // The T0.7 acceptance scene: every primitive and pipeline the renderer offers, laid out in an 800×480 design
 // space and scaled to the target. Colours are PQ Meter's signal-display tokens.
+// HiDPI: the design space is stretched over the logical target (W/scale × H/scale) and then mapped to device
+// px by the scale, which is the same as stretching it over the device target, so the scene does not read the
+// scale. Hairlines (header divider, grid) and AA feathers are 1 device px at every scale.
 void testPattern(DrawList& dl, const SceneTextures& tex, double time) {
   using namespace signal_theme;
   const float W = static_cast<float>(dl.targetWidth()), H = static_cast<float>(dl.targetHeight());
@@ -61,12 +64,13 @@ void testPattern(DrawList& dl, const SceneTextures& tex, double time) {
   auto snap = [](Rect r) { return Rect{std::round(r.x0), std::round(r.y0), std::round(r.x1), std::round(r.y1)}; };
   auto P = [&](float x, float y) { return Vec2{x * sx, y * sy}; };
 
-  // Header strip and grid (1 px lines at the grid token's α14).
+  // Header strip, a 1 device-px divider and grid (1 px lines at the grid token's α14).
   dl.addRectFilled(snap(R(0, 0, 800, 28)), kHeader);
-  dl.addRectFilled(snap(R(0, 28, 800, 29)), withAlpha(kAccent, 90));
+  const float divider = std::round(28 * sy);
+  dl.addRectFilled({0, divider, W, divider + 1}, withAlpha(kAccent, 90));
   for (int x = 40; x < 800; x += 40) {
     const float px = std::round(static_cast<float>(x) * sx);
-    dl.addRectFilled({px, std::round(29 * sy), px + 1, H}, kGrid);
+    dl.addRectFilled({px, divider + 1, px + 1, H}, kGrid);
   }
   for (int y = 60; y < 480; y += 40) {
     const float py = std::round(static_cast<float>(y) * sy);
@@ -151,7 +155,7 @@ void testPattern(DrawList& dl, const SceneTextures& tex, double time) {
 
 }  // namespace
 
-Result<SceneTextures> createSceneTextures(Renderer& renderer) {
+Result<SceneTextures> createSceneTextures(Renderer& renderer, UiScale scale) {
   SceneTextures t;
   auto magma = renderer.createTexture(magmaRampImage(), TextureFilter::Linear);
   if (!magma) return std::move(magma).error();
@@ -164,7 +168,19 @@ Result<SceneTextures> createSceneTextures(Renderer& renderer) {
   if (!linear) return std::move(linear).error();
   t.checkerLinear = *linear;
 
-  auto text = TextSystem::create(renderer.atlas());
+  auto text = createSceneText(renderer.atlas(), scale);
+  if (!text) return std::move(text).error();
+  t.text = std::move(text->text);
+  t.regular = text->regular;
+  t.semiBold = text->semiBold;
+  t.scale = text->scale;
+  t.fonts = text->fonts;
+  return t;
+}
+
+Result<SceneTextures> createSceneText(std::shared_ptr<Atlas> atlas, UiScale scale) {
+  SceneTextures t;
+  auto text = TextSystem::create(std::move(atlas));
   if (!text) return std::move(text).error();
   t.text = std::move(*text);
   const std::string fonts = assetsDir() + "/fonts/";
@@ -172,27 +188,40 @@ Result<SceneTextures> createSceneTextures(Renderer& renderer) {
   if (!regular) return std::move(regular).error();
   auto semi = t.text->loadFace(fonts + "Inter-SemiBold.ttf");
   if (!semi) return std::move(semi).error();
-  struct Want {
-    FontId* id;
-    FaceId face;
-    uint32_t px;
-    FontOptions opt;
-  };
-  const Want wants[] = {
-      {&t.fonts.section, *regular, text_size::kSection, {}},
-      {&t.fonts.body, *regular, text_size::kBody, {}},
-      {&t.fonts.title, *regular, text_size::kTitle, {}},
-      {&t.fonts.bodySemi, *semi, text_size::kBody, {}},
-      {&t.fonts.titleSemi, *semi, text_size::kTitle, {}},
-      {&t.fonts.meter, *semi, text_size::kMeter, {TextHinting::Full, true}},
-      {&t.fonts.bodyLight, *regular, text_size::kBody, {TextHinting::Light, false}},
-  };
-  for (const Want& w : wants) {
-    auto f = t.text->font(w.face, w.px, w.opt);
-    if (!f) return std::move(f).error();
-    *w.id = *f;
-  }
+  t.regular = *regular;
+  t.semiBold = *semi;
+  if (Status s = setSceneScale(t, scale); !s) return std::move(s).error();
   return t;
+}
+
+Status setSceneScale(SceneTextures& t, UiScale scale) {
+  if (!t.text) {
+    t.scale = scale;
+    return Ok{};
+  }
+  // The scene's font roles (logical px), in a fixed order so atlas packing is deterministic.
+  struct Want {
+    FontId SceneFonts::*id;
+    FontRole role;
+  };
+  const Want wants[kSceneFontRoleCount] = {
+      {&SceneFonts::section, {t.regular, text_size::kSection, {}}},
+      {&SceneFonts::body, {t.regular, text_size::kBody, {}}},
+      {&SceneFonts::title, {t.regular, text_size::kTitle, {}}},
+      {&SceneFonts::bodySemi, {t.semiBold, text_size::kBody, {}}},
+      {&SceneFonts::titleSemi, {t.semiBold, text_size::kTitle, {}}},
+      {&SceneFonts::meter, {t.semiBold, text_size::kMeter, {TextHinting::Full, true}}},
+      {&SceneFonts::bodyLight, {t.regular, text_size::kBody, {TextHinting::Light, false}}},
+  };
+  SceneFonts resolved;
+  for (const Want& w : wants) {
+    auto f = t.text->font(w.role, scale);
+    if (!f) return std::move(f).error();
+    resolved.*w.id = *f;
+  }
+  t.fonts = resolved;
+  t.scale = scale;
+  return Ok{};
 }
 
 std::span<const std::string_view> sceneNames() noexcept { return kNames; }
