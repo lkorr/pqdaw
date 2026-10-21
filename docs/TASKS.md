@@ -46,11 +46,11 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - An **offscreen render path**: `pqdaw --screenshot <scene> <out.png> [--size WxH]` renders a named test scene to a PNG with no window.
   - Accept: the `test-pattern` scene (rects, rounded rects, gradients, additive blobs) matches a committed golden PNG within a per-pixel tolerance. The resize and minimise paths don't crash (scripted test).
 
-- [ ] **T0.8 Text** (`ui`). Depends on: T0.7. 👁
+- [~] **T0.8 Text** *(worker J, branch task/T0.8-T0.9-text-lines)* (`ui`). Depends on: T0.7. 👁
   - FreeType (hinted) + HarfBuzz, a glyph atlas at integer pixel sizes (12/13/14 px plus a large size for meters), Inter (OFL) bundled under `assets/fonts/`.
   - Accept: a `text` screenshot scene matches its golden image. A test checks the shaped advance widths of a known string.
 
-- [ ] **T0.9 PQ Meter line primitives** (`ui`). Depends on: T0.7. 👁
+- [~] **T0.9 PQ Meter line primitives** *(worker J, branch task/T0.8-T0.9-text-lines)* (`ui`). Depends on: T0.7. 👁
   - Port `smooth_line.h` (feathered ribbons: 0.75 px feather, 2.5× miter clamp, bevel past 120°, Catmull-Rom subdivision capped at 6000 points), `gradientPolyline`, `gradientBand`, `splineSmooth`, `gradient.h` and `palette_track.h` from `C:\Users\Luke\Desktop\programming\pq meter\src\ui\` and `src\modules\spectrum.cpp:200-325` into the draw-list API.
   - Accept: a `lines` screenshot scene (sine, noise trace, glow passes) matches its golden image, and the PROGRESS.md note says which PQ Meter files the port came from.
 
@@ -60,7 +60,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - Nodes, ports (kind/rate/poly/width), wires, params (with attrs), exports, stable `NodeId`s, and layout data. Atom registry: name → signature (inputs, outputs, state size, default rates).
   - Accept: tests construct graphs programmatically and validate structure, including rejecting dangling ports and type-mismatched wires.
 
-- [ ] **T1.2 Parser + printer** (`graph`). Depends on: T1.1.
+- [~] **T1.2 Parser + printer** *(worker I, branch task/T1.2-parser-printer)* (`graph`). Depends on: T1.1.
   - Implements `docs/PATCH_LANGUAGE.md` v0 exactly: units, imports, layout, solve blocks. Errors carry file:line:col plus a caret snippet.
   - Accept: a round-trip test (`parse(print(p)) == p`) over every file in `stdlib/` and `tests/graph/cases/`. At least 30 error-case tests with expected messages. A fuzz-ish test runs 10⁴ random token streams with no crashes.
 
