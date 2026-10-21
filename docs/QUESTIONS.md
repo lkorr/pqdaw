@@ -343,7 +343,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Also open: `WasapiDevice` is output-only (input streams return `Unsupported`; `--backend rtaudio` still does input). Duplex WASAPI (capture client driven from the render event) is a follow-up if the engine needs input before ASIO lands (T0.6-fix2).
 - Status: open
 
-## Q?-T3.2-a · 2026-10-21 · T3.2 · Theme values: authored by eye, which way to lean
+## Q47 · 2026-10-21 · T3.2 · Theme values: authored by eye, which way to lean
 - Context: Q15 says "Dark Neutral Medium approximated by hand". No Live install or screenshots were available to the worker, so every token in `assets/themes/ableton-dark.json` is our own value chosen from memory of Live's dark themes plus the M0 review's contrast targets (M10, enforced by `tests/ui/test_controls.cpp`: panel steps ≥ 1.15:1, small text ≥ 4.5:1, disabled text ≥ 3:1, clip names ≥ 4.5:1 on every palette colour).
 - Choices made (all data, one edit away): mid/dark neutral greys (window #1E1E1E, panel #2E2E2E, raised #3A3A3A, field #232323); orange (#FFA33D) for "on" toggles, value arcs/fills, focus; yellow (#F2C03A) track activator, blue (#5DA9E6) solo, red (#E8544B) arm; steel blue (#3D6787) for highlighted menu rows and (#375E7C) text selection; 1 device-px borders; radius 2 for controls, 3 for panels/menus; clip palette = 13 hues + greys in 5 rows with a target luminance per row (generator: `tools/theme/make_ableton_dark.py`), not Live's palette; dark rows take light clip text (`clipTextFor`). Knob value arcs are orange; the modulation ring uses PQ Meter's accent blue (signal display, SPEC §11.1).
 - Two cost-driven choices: (1) `fonts.numeric` is not tabular by default: a tabular role is another font per UI scale (≈95 more glyphs per scale) and pushed the 5-scale atlas test past one R8 page; numbers in a centred drag box may shift by a pixel while dragging. Set `"tabular": true` to trade atlas space for steady digits. (2) Rounded corners at radius 2 cost ≈ 38 % of the gallery's paint time (bench: 52.5 µs vs 32.3 µs square); an SDF/instanced path (Q11 B) would remove that if views need it.
@@ -351,14 +351,14 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: A (values are data; hot reload in dev builds makes B/C quick).
 - Status: open
 
-## Q?-T3.2-b · 2026-10-21 · T3.2 · Keymap details: manual sections, action ids, unbindable chords
+## Q48 · 2026-10-21 · T3.2 · Keymap details: manual sections, action ids, unbindable chords
 - Context: `docs/HOTKEYS.md` must cite the Live 12 manual section of each shortcut; the worker had no copy of the manual, so the subsection names (Transport, Editing, Showing and Hiding Views, Arrangement View Commands, Commands for Tracks, MIDI Note Editor, …) are from memory of the Live 11/12 *Live Keyboard Shortcuts* chapter. Action ids are per scope where the same chord means different things in different views (`arrangement.duplicate` vs `pianoroll.duplicate`), global otherwise (`grid.narrow` acts on the focused editor). Every binding is `deferred:M<n>` for now: no view actions exist before T3.7.
 - Also: `Ctrl+CapsLock` (macro mode, SPEC §6.2) cannot be a keymap chord because T3.1 treats CapsLock as a modifier/lock key; left to M8's macro scope. Live's Session View shortcuts are not listed. `Ctrl+Shift+X` (cut time) and `Ctrl+Shift+U` are bound but deferred to M10 since T3.9/T3.11 do not list them.
 - Options: A) as above; B) one global action per verb dispatching to the focused view.
 - Provisional choice: A (explicit, and the keymap test catches collisions per scope). Please check the section names against your Live 12 manual.
 - Status: open
 
-## Q?-T3.2-c · 2026-10-21 · T3.2 · Control behaviours not fixed by the spec
+## Q49 · 2026-10-21 · T3.2 · Control behaviours not fixed by the spec
 - Context: Live's exact control feel is not documented; these are the choices in `pq/ui/controls.h` / `overlay.h` (each a local change):
   1. Toggles (mute/solo/arm style) flip on press, buttons fire on release inside.
   2. Number box / knob: vertical drag; `ValueSpec::dragPixels` (default 200 logical px) sweeps the whole range; Shift = ×0.1; the drag accumulates unquantised and clamped, so turning back after hitting an end responds at once. Faders: the thumb follows the pointer 1:1; pressing the track elsewhere jumps there first. Up/Down step by `keyStep` (default range/100, at least one quantum); Delete or Backspace = default.
