@@ -18,6 +18,8 @@ enum class Mode {
   Screenshot,      // --screenshot <scene> <out.png> [--size WxH]
   WindowSelfTest,  // --window-selftest: scripted resize/minimise/restore run, exit code = result
   Help,            // --help
+  ListDevices,     // --list-devices [--asio]
+  Sine,            // --sine <hz> [--seconds <s>] [--device <id>] [--asio] [--rate <hz>] [--buffer <n>] [--block <n>] [--exclusive]
 };
 
 struct CliOptions {
@@ -27,6 +29,16 @@ struct CliOptions {
   uint32_t width = 0;   // 0 = mode default
   uint32_t height = 0;
   bool animate = false;  // --animate: continuous redraw (exercises frame pacing)
+
+  // Audio (--list-devices, --sine).
+  double sineHz = 440.0;
+  double seconds = 3.0;
+  uint32_t device = 0xFFFFFFFFu;  // pq::engine::kDefaultDevice
+  bool asio = false;
+  bool exclusive = false;
+  uint32_t sampleRate = 0;      // 0 = the device's preferred rate
+  uint32_t bufferFrames = 256;  // device buffer request
+  uint32_t blockFrames = 32;    // internal engine block (pq::engine::BlockAdapter)
 };
 
 // Exit code a test runner treats as "skipped" (CTest SKIP_RETURN_CODE), e.g. no display for the window test.

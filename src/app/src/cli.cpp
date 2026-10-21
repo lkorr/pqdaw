@@ -6,6 +6,15 @@ namespace pq::app {
 
 namespace {
 Error usageError(std::string msg) { return Error{ErrorCode::InvalidArgument, std::move(msg), {}}; }
+
+template <class T>
+bool parseNumber(std::string_view s, T& out) noexcept {
+  T v{};
+  const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
+  if (s.empty() || r.ec != std::errc{} || r.ptr != s.data() + s.size()) return false;
+  out = v;
+  return true;
+}
 }  // namespace
 
 bool parseSize(std::string_view s, uint32_t& w, uint32_t& h) noexcept {
@@ -26,6 +35,7 @@ bool parseSize(std::string_view s, uint32_t& w, uint32_t& h) noexcept {
 Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   CliOptions o;
   bool modeSet = false;
+  std::string_view sineOnly;  // last flag seen that only --sine accepts
   auto setMode = [&](Mode m, std::string_view flag) -> Status {
     if (modeSet) return usageError("only one mode flag may be given (got another: " + std::string(flag) + ")");
     o.mode = m;
@@ -51,12 +61,47 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       o.scene = std::string(args[++i]);
     } else if (a == "--animate") {
       o.animate = true;
+    } else if (a == "--list-devices") {
+      if (Status s = setMode(Mode::ListDevices, a); !s) return std::move(s).error();
+    } else if (a == "--sine") {
+      if (Status s = setMode(Mode::Sine, a); !s) return std::move(s).error();
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.sineHz) || !(o.sineHz > 0.0))
+        return usageError("--sine needs a frequency in Hz > 0");
+    } else if (a == "--seconds") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.seconds) || !(o.seconds > 0.0) || o.seconds > 86400.0)
+        return usageError("--seconds needs a duration in (0, 86400]");
+      sineOnly = a;
+    } else if (a == "--device") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.device))
+        return usageError("--device needs a device id from --list-devices");
+      sineOnly = a;
+    } else if (a == "--rate") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.sampleRate) || o.sampleRate == 0)
+        return usageError("--rate needs a sample rate in Hz");
+      sineOnly = a;
+    } else if (a == "--buffer") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.bufferFrames) || o.bufferFrames == 0)
+        return usageError("--buffer needs a frame count >= 1");
+      sineOnly = a;
+    } else if (a == "--block") {
+      if (i + 1 >= args.size() || !parseNumber(args[++i], o.blockFrames) || o.blockFrames == 0 ||
+          o.blockFrames > 4096)
+        return usageError("--block needs a frame count in [1, 4096]");
+      sineOnly = a;
+    } else if (a == "--exclusive") {
+      o.exclusive = true;
+      sineOnly = a;
+    } else if (a == "--asio") {
+      o.asio = true;
     } else {
       return usageError("unknown argument '" + std::string(a) + "'");
     }
   }
   if (o.mode != Mode::Screenshot && o.mode != Mode::Window && (o.width != 0))
     return usageError("--size only applies to --screenshot and the window");
+  if (!sineOnly.empty() && o.mode != Mode::Sine) return usageError(std::string(sineOnly) + " only applies to --sine");
+  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices)
+    return usageError("--asio only applies to --sine and --list-devices");
   return o;
 }
 

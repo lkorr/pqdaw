@@ -17,6 +17,8 @@ int main(int argc, char** argv) {
     case pq::app::Mode::Screenshot: return pq::app::runScreenshot(*opts);
     case pq::app::Mode::WindowSelfTest: return pq::app::runWindow(*opts, true);
     case pq::app::Mode::Window: return pq::app::runWindow(*opts, false);
+    case pq::app::Mode::ListDevices: return pq::app::runListDevices(*opts);
+    case pq::app::Mode::Sine: return pq::app::runSine(*opts);
   }
   return 1;
 }

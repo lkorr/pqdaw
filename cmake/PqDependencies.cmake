@@ -95,3 +95,36 @@ FetchContent_MakeAvailable(VulkanMemoryAllocator)
 add_library(pq_vma INTERFACE)
 target_include_directories(pq_vma SYSTEM INTERFACE ${vulkanmemoryallocator_SOURCE_DIR}/include)
 target_link_libraries(pq_vma INTERFACE Vulkan::Vulkan)
+
+
+# --- RtAudio (MIT-style, see docs/DEPENDENCIES.md): audio device I/O for pq_engine --------------------------
+# Release tarball of tag 6.0.1 (2023-08-01), SHA-256 pinned. Static library, /MT via CMAKE_MSVC_RUNTIME_LIBRARY.
+# WASAPI only by default. RtAudio's ASIO backend compiles the Steinberg ASIO SDK files that RtAudio bundles,
+# which are not under a permissive licence (docs/QUESTIONS.md, T0.6), so it is opt-in: -DPQ_WITH_ASIO=ON.
+# SYSTEM: RtAudio's headers are third-party and must not see our /W4 /WX.
+option(PQ_WITH_ASIO "Build RtAudio's ASIO backend (Steinberg ASIO SDK files; not permissively licensed, see docs/QUESTIONS.md)" OFF)
+FetchContent_Declare(rtaudio
+  URL      https://github.com/thestk/rtaudio/archive/refs/tags/6.0.1.tar.gz
+  URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SYSTEM
+  EXCLUDE_FROM_ALL)
+block()
+  set(RTAUDIO_BUILD_SHARED_LIBS OFF)
+  set(RTAUDIO_BUILD_TESTING OFF)
+  set(RTAUDIO_BUILD_PYTHON OFF)
+  set(RTAUDIO_API_WASAPI ON)
+  set(RTAUDIO_API_ASIO ${PQ_WITH_ASIO})
+  set(RTAUDIO_API_DS OFF)
+  set(RTAUDIO_API_JACK OFF)
+  set(RTAUDIO_API_PULSE OFF)
+  set(RTAUDIO_API_ALSA OFF)
+  set(RTAUDIO_API_OSS OFF)
+  set(RTAUDIO_API_CORE OFF)
+  # RtAudio's "uninstall" target would collide with SDL3's.
+  set(RTAUDIO_TARGETNAME_UNINSTALL rtaudio_uninstall CACHE STRING "Name of RtAudio's uninstall target" FORCE)
+  set(CMAKE_POLICY_DEFAULT_CMP0090 NEW)  # export(PACKAGE) must not write to the user's package registry
+  FetchContent_MakeAvailable(rtaudio)
+endblock()
+# Third-party code: silence its warnings instead of patching it.
+target_compile_options(rtaudio PRIVATE /w)

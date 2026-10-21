@@ -49,7 +49,7 @@ pq_add_test(pq_tests_ui
     ui/test_render.cpp
   DEPS pq_ui)
 
-# app: CLI parsing and the --screenshot command.
+# app: CLI parsing (window, --screenshot, --list-devices, --sine) and the --screenshot command.
 pq_add_test(pq_tests_app
   SOURCES
     app/test_cli.cpp
@@ -71,3 +71,11 @@ pq_add_test(pq_tests_graph
     graph/test_patch_equal.cpp
     graph/test_patch_file.cpp
   DEPS pq_graph)
+
+# engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks.
+pq_add_test(pq_tests_engine
+  SOURCES
+    engine/test_block_adapter.cpp
+    engine/test_null_device.cpp
+    engine/test_rtaudio_device.cpp
+  DEPS pq_engine)

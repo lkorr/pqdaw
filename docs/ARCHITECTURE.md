@@ -120,6 +120,22 @@ namespace pq::engine {
 }
 ```
 
+### Audio device I/O (engine, T0.6)
+```cpp
+namespace pq::engine {
+  struct AudioBlock { const float* const* in; uint32_t numIn; float* const* out; uint32_t numOut; uint32_t frames; int64_t frameTime; };
+  using AudioCallbackFn = void (*)(void* user, const AudioBlock&) noexcept;    // once per block, planar float
+  class AudioDevice {                       // NullDevice (tests/headless), RtAudioDevice (WASAPI shared; ASIO opt-in)
+    virtual Result<std::vector<DeviceInfo>> enumerate();                       // non-RT virtuals
+    virtual Result<StreamInfo> open(const StreamConfig&, AudioCallback);
+    virtual Status start(); virtual Status stop(); virtual const CallbackStats& stats() const noexcept;
+  };
+  class CallbackRunner;   // the one per-callback path every backend calls: RtScope + DenormalGuard + rdtsc stats
+  class BlockAdapter;     // device buffer of any size → engine at a fixed internal block (direct when divisible, else FIFO +block latency)
+}
+```
+The engine's process entry will be an `AudioCallback` behind a `BlockAdapter`; `ProcessContext` frame counts are therefore always the fixed internal block on the realtime path.
+
 ### ProgramImage ABI (shared by interpreter and JIT)
 - `ProcessContext` carries: frame count (≤ max block), sample rate, transport snapshot, pointers to input/output channel buffers, the parameter block (`float*`, indexed by `ParamSlot`), the event list for this block (sorted, preallocated), and the voice table.
 - All Program state lives in **one arena** allocated when the image is built. The state layout maps `NodeId → (offset, size, type tag)`. Hot swap copies state for every NodeId whose type tag matches (SPEC §7.5).
