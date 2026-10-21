@@ -418,13 +418,13 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: every prebuilt binary is compiled `/arch:AVX2`, which lets MSVC use the whole x86-64-v3 set (AVX, AVX2, FMA, BMI1/2, LZCNT, F16C, MOVBE) in any function. There is no SSE4.1 build and no per-function dispatch. Since T0.1-fix1, a startup check (`pq/core/cpu_baseline.h`) runs before any of that code and exits with a message on a CPU without the set (review M0 L9).
 - Options: A) drop "w/ SSE4.1 fallback" from SPEC §2: x86-64-v3 is the hard requirement (Intel Haswell 2013+, AMD Excavator 2015 / Zen or later; the JIT can still use AVX-512 at runtime). B) keep it and plan a second SSE4.1 build of the whole program (doubles build and test time, and every SIMD kernel needs an SSE path) or per-kernel dispatch (all hot paths become indirect calls or multiversioned).
 - Provisional choice: A. It's what the code does now, and what the check enforces. B is additive later, if a target user ever has a pre-2013 CPU. SPEC.md was not edited.
-## Q?-T3.7-a · 2026-10-21 · T3.7 · "Idle at < 0.1 % CPU": whose CPU?
+## Q58 · 2026-10-21 · T3.7 · "Idle at < 0.1 % CPU": whose CPU?
 - Context: measured precisely (QueryProcessCycleTime/QueryThreadCycleTime in TSC ticks; GetProcessTimes only moves in 15.6 ms steps), an idle shell window over the empty project uses 0.009 % of a core in pqdaw's own threads (UI thread ≈ 0.07–0.12 ms per 10 s, the SDL timer thread of the measurement itself ≈ 0.9 ms) but 0.12–0.14 % for the whole process, because the NVIDIA Vulkan driver's own threads (start module nvoglv64.dll) spend ≈ 12 ms per 10 s on housekeeping. The same driver load shows up for the T0.7 test-pattern window, so it is a property of any Vulkan swapchain on this machine, not of the shell.
 - Options: A) the criterion is about pqdaw's threads (the check `pqdaw --idle-check 10` enforces 0 frames and < 0.1 % for the UI thread + threads started in pqdaw.exe/ntdll/kernel32, and prints the whole-process figure and the per-thread split); B) the whole process (fails until the driver's housekeeping is understood: present mode, threaded optimisation settings, or a vkDeviceWaitIdle/swapchain teardown while idle); C) GetProcessTimes as T0.7 did (reads 0.0–15.6 ms per 10 s: too coarse to decide).
 - Provisional choice: A, reported honestly in PROGRESS with both numbers; B is worth a look in T0.7-fix6 (startup/idle).
 - Status: answered (orchestrator, 2026-10-21: A, the criterion targets pqdaw's own threads; keep printing the whole-process figure)
 
-## Q?-T3.7-b · 2026-10-21 · T3.7 · Control bar and transport details not fixed by SPEC/TASKS
+## Q59 · 2026-10-21 · T3.7 · Control bar and transport details not fixed by SPEC/TASKS
 - Choices (all local to src/views/src/shell and ViewContext):
   1. The tempo box and the time-signature boxes edit the **first** tempo point / signature change (Live shows the tempo at the playhead and greys the box under tempo automation; we have no tempo automation UI yet). Each drag / type-in / Delete is one undo step ("Change Tempo", "Change Time Signature"); range 20–999 BPM (Live's), 1 BPM per logical px, Shift fine. The denominator box steps through 1, 2, 4, 8, 16.
   2. Loop start / length boxes work in sixteenths (one per logical px of drag; Up/Down = a beat of 4/4) and display Live's "bar. beat. sixteenth" (length as a duration in the signature at the loop start); type-in accepts "3.2.1", "3.2", "3". Moving the start keeps the length. The loop switch is an undoable document edit ("Loop").
@@ -434,7 +434,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options: per item, as above or Live's behaviour where it differs.
 - Status: open
 
-## Q?-T3.7-c · 2026-10-21 · T3.7 · Shell layout, file dialogs and startup
+## Q60 · 2026-10-21 · T3.7 · Shell layout, file dialogs and startup
 - Choices:
   1. Layout: control bar (32 px), track area, a 240 px detail view under a splitter, the info view (200 px) left of the detail view under the (hidden, M5) browser column, a 22 px status line with the project name and Live's Clip / Device selectors (clicking the active one hides the detail view). Ctrl+Alt+L hides the whole bottom row (info view included); Shift+Tab switches clip ↔ device and shows it again.
   2. Projects are directories: Ctrl+O is a file dialog filtered to `project.pqd` (its folder is opened); Save As is a save-file dialog whose name becomes the project folder ("Song" or "Song.pqd" → folder "Song"). Unsaved changes on New / Open / quitting ask Save / Don't Save / Cancel (SDL message box); saving an untitled project on quit runs Save As first.
