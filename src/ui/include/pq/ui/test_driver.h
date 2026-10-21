@@ -44,7 +44,7 @@ public:
     return w;
   }
   // New size and UI scale (like a window resize or a display-scale change): relayout, and with the GPU
-  // enabled the scene font roles re-resolve at the new scale (pq/ui/scenes.h setSceneScale).
+  // enabled the scene font roles re-resolve at the new scale (pq/ui/scene_textures.h setSceneScale).
   void resize(uint32_t width, uint32_t height, float scale = 1.0f);
 
   // --- fake clock and frames ---
@@ -84,7 +84,7 @@ public:
   bool type(std::string_view utf8);         // one TextEvent
 
   // --- rendering ---
-  // GPU context + renderer + the scene fonts/textures (pq/ui/scenes.h). Idempotent.
+  // GPU context + renderer + the scene fonts/textures (pq/ui/scene_textures.h). Idempotent.
   Status enableGpu();
   const PaintResources& resources() const noexcept { return res_; }
   // Paints the tree and reads it back through OffscreenTarget (creates the GPU on first use).

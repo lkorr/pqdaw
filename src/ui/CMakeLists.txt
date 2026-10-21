@@ -30,12 +30,7 @@ pq_add_module(pq_ui
     src/offscreen.cpp
     src/overlay.cpp
     src/renderer.cpp
-    src/scene_controls.cpp
-    src/scene_lines.cpp
-    src/scene_primitives.cpp
-    src/scene_text.cpp
-    src/scene_widgets.cpp
-    src/scenes.cpp
+    src/scene_textures.cpp
     src/test_driver.cpp
     src/text.cpp
     src/text_edit.cpp
@@ -52,3 +47,6 @@ target_include_directories(pq_ui PRIVATE ${_pq_ui_gen})
 target_compile_definitions(pq_ui PRIVATE PQ_SOURCE_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 # Third-party headers (VMA, SDL, zlib, Vulkan, FreeType, HarfBuzz) are SYSTEM includes: keep their warnings out of /W4 /WX.
 target_compile_options(pq_ui PRIVATE /external:W0)
+
+# Test scenes (--screenshot, goldens, benchmarks): a separate library so they are not part of pq_ui.
+add_subdirectory(scenes)

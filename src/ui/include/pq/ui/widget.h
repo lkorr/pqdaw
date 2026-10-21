@@ -111,7 +111,7 @@ struct Insets {
 // menu measuring its items when it opens.
 struct PaintResources {
   TextSystem* text = nullptr;         // null: no text (draw-list-only tests); widgets skip their glyphs
-  const SceneFonts* fonts = nullptr;  // font roles resolved at the tree's UiScale (pq/ui/scenes.h setSceneScale)
+  const SceneFonts* fonts = nullptr;  // font roles resolved at the tree's UiScale (pq/ui/scene_textures.h setSceneScale)
   const Theme* theme = nullptr;       // chrome tokens (pq/ui/theme.h); null: themed controls draw nothing
   const ThemeFonts* uiFonts = nullptr;  // the theme's font roles resolved at the tree's UiScale
 };

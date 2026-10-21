@@ -82,11 +82,4 @@ private:
   std::unique_ptr<GpuProfiler> profiler_;
 };
 
-// One-call headless screenshot: creates a GPU context, renderer and target, builds `scene` (see scenes.h)
-// at width×height logical px and UI scale `scale` (device size round(width·scale) × round(height·scale), fonts
-// at round(role·scale) px; see scenes.h) and returns the pixels. Fails for unknown scene names, a zero size or
-// if no Vulkan 1.3 device exists.
-Result<Image> renderSceneImage(std::string_view scene, uint32_t width, uint32_t height, const GpuOptions& options = {},
-                               UiScale scale = {});
-
 }  // namespace pq::ui

@@ -5,7 +5,7 @@ pq_add_module(pq_app
     src/commands.cpp
     src/audio_commands.cpp
     src/play_command.cpp
-  DEPS pq_core pq_ui pq_engine
+  DEPS pq_core pq_ui pq_ui_scenes pq_engine
   PRIVATE_DEPS SDL3::SDL3-static)
 target_compile_options(pq_app PRIVATE /external:W0)
 

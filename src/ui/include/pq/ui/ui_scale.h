@@ -15,7 +15,7 @@
 //
 // Source of truth: the app reads SDL_GetWindowDisplayScale at startup and on
 // SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED and pushes the new value to UiTree::setViewport and
-// setSceneScale (pq/ui/scenes.h); everything else reads it from there (UiTree::uiScale(), PaintContext::scale,
+// setSceneScale (pq/ui/scene_textures.h); everything else reads it from there (UiTree::uiScale(), PaintContext::scale,
 // SceneTextures::scale). Nothing caches a device-px value derived from an old scale across a change.
 
 #include <cmath>
