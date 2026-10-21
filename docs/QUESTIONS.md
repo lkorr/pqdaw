@@ -108,3 +108,20 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: as listed: each is the cheapest primitive from which the alternatives can be built as subcircuits. Reversible: kernel semantics only; nothing persisted.
 - Differences from the T1.1 registry (Q8), for reconciliation: kernel names follow the registry (`srff dff tff samplehold delay delay_cubic delay_allpass fast_sqrt`); the kernels additionally have `fast_cents_to_hz`, `fast_hz_to_cents`, `fast_db_to_gain`, `fast_gain_to_db`, `muladd`, `const`. Delay and timer durations are in **samples** in the kernels (the compiler multiplies seconds by `sr`); delay minimums are 1 (linear), 2 (cubic), 1.5 (allpass) samples, not 1 for all, because the newest interpolation tap must be ≥ 1 sample old for `x` to be a delayed input. `pulse` takes an optional `period` input (a constant 0 gives the registry's "true on the first sample"). `z1` has no `init` input (state starts at 0; initState could take one). The registry's stateless `sampleRead(sample, pos, loopStart, loopEnd)` corresponds to `sample_pos_*` (no loop wrap yet) and the stateful 32.32 playhead `sample_read_*(rate, reset, start, loopStart, loopEnd)`; a float `pos` input loses sub-sample precision beyond 2^24 samples, which is why the playhead form exists. `phasor`/`sine_hz` have no split kernels yet, so an FM feedback loop through `hz` needs an explicit `z1` until T1.5/T1.7 decide how delayed inputs are scheduled.
 - Status: open
+
+## Q15 · 2026-10-20 · M3 planning · Decisions needed before/while building M3
+- Context: the M3 task breakdown (TASKS.md T3.1–T3.17) hits these spec gaps. Provisional choices are what workers will use unless you decide otherwise.
+- Default instrument before Operator (M4): A) tiny stdlib `basic_synth.pqp` from leaf atoms per MIDI track; B) wait for T1b.3 `adsr`; C) M3 silent. Provisional: A.
+- T2.7 vs T3.4 ownership of main tunings: A) T3.4 owns tuning slots/assignment/serialization, T2.7 shrinks to binding tunings to graph signal nodes; B) block T3.4 on T2.7. Provisional: A.
+- Mute vs deactivate cost: mute = gain param (no recompile, still costs CPU, like Ableton); deactivate (`0`) = structural (DCE + recompile + crossfade). Provisional: that split.
+- Pan law / volume taper: match Ableton's (measure against Live renders) or a documented own law. Provisional: constant-power pan, Live-like fader curve −inf…+6 dB, to be measured.
+- Undo scope: selection/zoom/scroll/fold not in undo history (Ableton). Provisional: not in history.
+- Ratio/Cents notes in equidistant scale layout: A) interpolated between degree rows; B) nearest row with an offset badge. Provisional: A.
+- MOS wheel hotkey (SPEC §4.2 TBD): `W`, Ctrl+Shift+W, or chip-only in M3. Provisional: chip-only + Ctrl+Shift+W.
+- Ableton theme reference: which Live 12 theme (Default Dark Neutral Medium?) and may colours be sampled from your Live install/screenshots; font Inter vs IBM Plex Sans (T0.8 bundles Inter). Provisional: Dark Neutral Medium approximated by hand, Inter.
+- Computer keyboard as instrument (`M`): M3 or M8. Provisional: M8.
+- Live morph following the audio-rate tuning signal during playback: needs T2.6 + engine reports. Provisional: M3 does UI-driven morph only.
+- Expression lanes in M3: velocity + chance only; per-note pitch/gain/timbre curves deferred to M7. Provisional: yes.
+- Note-clip loop semantics: notes outside the loop brace kept and hidden (Ableton) vs cropped. Provisional: kept.
+- Also now relevant: Q2 (EDO row labels), Q3 (PPQ vs straight 1/64), Q4 (tempo ramp law).
+- Status: open
