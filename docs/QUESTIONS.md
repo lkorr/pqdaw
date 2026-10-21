@@ -499,14 +499,14 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional: A for text; memcpy transfer.
 - Status: open
 
-## Q?-T0.6-fix2-a · 2026-10-21 · T0.6-fix2 · Licensing position of the own ASIO host
+## Q69 · 2026-10-21 · T0.6-fix2 · Licensing position of the own ASIO host
 - Context: Q12 (answered): ASIO is required, without Steinberg SDK files (their licence is proprietary, or GPLv3 for the 2025 SDK; neither is allowed in this public, permissively licensed repo).
 - What was done: `pq/engine/asio_abi.h` declares the host side of the driver ABI from first principles: the COM-style vtable (IUnknown + 21 methods in the order every driver implements), the host callback table, the POD structs (buffer info, channel info, clock source, time info / time code) and the numeric constants (result codes, sample types, message selectors). No SDK file was copied, downloaded or read; names are our own; the layout is checked by `static_assert`s and validated against the installed drivers (Focusrite USB ASIO, ASIO4ALL v2, FL Studio ASIO and Voicemeeter Virtual ASIO enumerate, open and play). The header says it is an independent reimplementation for interoperability. RtAudio's ASIO backend (which compiles the SDK files) can no longer be built (`PQ_WITH_ASIO` removed).
 - Position: the interface layouts and constants needed for interoperability are functional facts, not the SDK's expressive code; reimplementing an ABI to talk to existing drivers is what e.g. Wine and several open-source hosts do. "ASIO" is Steinberg's trademark: we use it only to name the interface ("ASIO driver"), never as a product name or with their logo, and claim no certification. The SDK licence's trademark-notice requirement does not bind us (we do not use the SDK), but an About box line "ASIO is a trademark of Steinberg Media Technologies GmbH" costs nothing.
 - Risk: this is not legal advice. If Steinberg objected, the fallback is Q12 option A (opt-in build with the user's own SDK copy): the host code stays, only the ABI header would be swapped.
 - Status: open (for the user's information; nothing to decide unless they want the trademark line or a different stance)
 
-## Q?-T0.6-fix2-b · 2026-10-21 · T0.6-fix2 · ASIO host behaviour choices
+## Q70 · 2026-10-21 · T0.6-fix2 · ASIO host behaviour choices
 - Reset requests, buffer-size-change messages and sample-rate changes are handled on the device's control thread by a full cycle: stop → disposeBuffers → Release → CoCreateInstance + init → createBuffers → start if it was running. After a driver-side rate change the stream adopts the driver's new rate (like DAWs following an external clock) instead of forcing the requested rate back; the owner gets `AsioDevice::setStreamChangedCallback` to re-prepare. Alternative: re-apply the requested rate (would fight a word-clock master).
 - Driver messages only set flags and bump counters (RT-safe); the control thread polls the flags every 50 ms while a driver is loaded (≈ 20 wake-ups/s of a few µs) rather than being signalled, because signalling an event from the driver's audio thread would be a syscall there.
 - The stream uses the driver's first N inputs/outputs (no channel offset in `StreamConfig` yet; T3.18 adds channel selection). `kDefaultDevice` = the first registered driver that loads.

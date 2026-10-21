@@ -746,7 +746,7 @@ struct AsioDevice::Impl {
     if (!s) return fail(s.error().message);
     if (s->sampleRate != before.sampleRate || s->bufferFrames != before.bufferFrames)
       runner.prepare(cb, numIn, numOut, s->bufferFrames, s->sampleRate);
-    if (newRate) config.sampleRate = newRate;  // follow the driver's clock from now on (Q?-T0.6-fix2-b)
+    if (newRate) config.sampleRate = newRate;  // follow the driver's clock from now on (Q70)
     ++reopens;
     if (changedFn) changedFn(changedUser, *s);
     if (wasRunning)

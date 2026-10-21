@@ -7,7 +7,7 @@
 // contains no part of, Steinberg's ASIO SDK (no SDK file was copied, downloaded or consulted): names here are
 // our own, and only the binary layout (vtable slot order, struct layouts, numeric constants), which every ASIO
 // driver must implement to work with any host, is reproduced. ASIO is a trademark of Steinberg Media
-// Technologies GmbH. Licensing position: docs/QUESTIONS.md (Q?-T0.6-fix2-a), docs/DEPENDENCIES.md.
+// Technologies GmbH. Licensing position: docs/QUESTIONS.md (Q69), docs/DEPENDENCIES.md.
 //
 // The layout is the 64-bit Windows one only (MSVC x64): there, the C++ member functions of the driver object
 // use the one x64 calling convention, so a COM-style class with virtual functions in the right order is the

@@ -22,7 +22,7 @@ All are pinned. Permissive licences only. Add new ones in `cmake/PqDependencies.
 
 | Interface | Where | Position |
 |---|---|---|
-| ASIO host ABI | `src/engine/include/pq/engine/asio_abi.h`, `asio_device.*` (T0.6-fix2) | Clean-room: written from the publicly known binary layout every ASIO driver implements (COM-style vtable order, struct layouts, numeric constants), without copying, downloading or consulting Steinberg's ASIO SDK. Names are our own. Drivers are found in `HKLM\SOFTWARE\ASIO` and loaded with `CoCreateInstance`. "ASIO" is a Steinberg trademark, used only to name the interface. See docs/QUESTIONS.md Q?-T0.6-fix2-a |
+| ASIO host ABI | `src/engine/include/pq/engine/asio_abi.h`, `asio_device.*` (T0.6-fix2) | Clean-room: written from the publicly known binary layout every ASIO driver implements (COM-style vtable order, struct layouts, numeric constants), without copying, downloading or consulting Steinberg's ASIO SDK. Names are our own. Drivers are found in `HKLM\SOFTWARE\ASIO` and loaded with `CoCreateInstance`. "ASIO" is a Steinberg trademark, used only to name the interface. See docs/QUESTIONS.md Q69 |
 
 **External** (installed on the machine, not fetched):
 
