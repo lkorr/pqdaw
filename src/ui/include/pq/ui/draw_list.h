@@ -14,6 +14,15 @@
 // the true edge (0.5 px inside, 0.5 px outside), which is a box-filter coverage estimate for straight
 // edges. No MSAA, no SDF fragment work: fill cost is one vertex-colour * texel multiply per pixel.
 //
+// Units: every coordinate, radius and thickness is in target (device) pixels. Two families of primitives:
+//   - crisp (addRectFilled, addHLine/addVLine, addRectStroke, the straight sides of addRoundedRectStroke):
+//     edges are snapped to whole device pixels and drawn as solid quads, so a 1 px border is exactly one
+//     pixel row/column at full alpha. Thickness snaps to max(1, round(t)) device px.
+//   - antialiased (rounded rects, circles, arcs, triangles, convex polygons): unsnapped, 1 px feather.
+// HiDPI contract (T0.7-fix3 adds UiScale): callers convert logical px to device px before calling, with
+// edges/positions at round(logical·scale) and border thickness max(1, round(logical·scale)); the 1 px AA
+// feather and the ≤ 0.2 px tessellation tolerance stay in device px at every scale.
+//
 // Not thread-safe; owned by the UI thread. Building does not allocate once capacity has grown to the
 // frame's size (reset() keeps capacity).
 
@@ -50,6 +59,10 @@ enum class BlendMode : uint8_t {
   Additive,  // dst = src*srcA + dst            (glow sprites, heat dots; PQ Meter face.cpp blendAdditive)
 };
 inline constexpr uint32_t kBlendModeCount = 2;
+
+// Ends of an open stroke (addArcStroke). Butt: square end exactly at the end angle (feathered 0.5 px each
+// way). Round: a half-disc of the stroke's half-width beyond the end.
+enum class LineCap : uint8_t { Butt, Round };
 
 // Index into the renderer's texture table. kAtlasTexture holds the white texel and the glow sprite
 // (and, from T0.8, glyphs).
@@ -154,8 +167,46 @@ public:
   // --- primitives ---------------------------------------------------------------------------------
   // Axis-aligned, no AA: intended for pixel-aligned rects (crisp edges). 4 vertices.
   void addRectFilled(const Rect& r, Rgba col);
-  // Bilinear 4-corner gradient (linear gradients are the special cases tl=bl,tr=br or tl=tr,bl=br).
+  // Bilinear 4-corner gradient (per channel incl. alpha), within 1/255 of the exact bilinear value plus
+  // vertex rounding. Linear gradients (tl−tr−bl+br = 0 in every channel, e.g. tl=bl,tr=br or tl=tr,bl=br)
+  // are one exact quad. Otherwise the rect is split into N×N cells, each a 4-triangle fan around a centre
+  // vertex (whose colour is exact), with N = ceil(sqrt(max|twist|/16)) ≤ 8: the fan's worst error is
+  // twist/(16·N²). Not snapped.
   void addRectFilledMultiColor(const Rect& r, Rgba tl, Rgba tr, Rgba br, Rgba bl);
+
+  // Crisp 1-device-px-grid lines (no AA): a solid quad covering whole pixels. The line is centred on y (x):
+  // rows [floor(y − t/2 + 0.5), +t) with t = snapThickness(thickness), so for t = 1 both y = 10 and y = 10.5
+  // select row 10. Ends are rounded to whole pixels; [x0, x1) like a rect. Swapped ends are accepted.
+  void addHLine(float x0, float x1, float y, Rgba col, float thickness = 1.0f);
+  void addVLine(float x, float y0, float y1, Rgba col, float thickness = 1.0f);
+  // Crisp border drawn inside r (r's edges rounded to whole pixels; Ableton-style: the stroke never grows
+  // the rect). Four non-overlapping trapezoids (8 vertices / 24 indices), so translucent borders blend once.
+  // A stroke that fills the rect becomes addRectFilled.
+  void addRectStroke(const Rect& r, Rgba col, float thickness = 1.0f);
+  // Rounded border drawn inside r (edges and thickness snapped like addRectStroke, so the straight sides are
+  // crisp), corners antialiased with the same feather as addRoundedRectFilled. Inner corner radius is
+  // radius − t (≥ 0.5). Radius < 0.5 → addRectStroke; a stroke that fills the rect → addRoundedRectFilled.
+  // 16·(segments+1) vertices, 72·(segments+1) indices.
+  void addRoundedRectStroke(const Rect& r, float radius, Rgba col, float thickness = 1.0f);
+
+  // Antialiased convex polygon (either winding; ≥ 3 points; not checked for convexity). 2n vertices.
+  void addConvexPolyFilled(std::span<const Vec2> pts, Rgba col);
+  // Antialiased triangle (either winding), e.g. disclosure arrows and transport buttons.
+  void addTriangleFilled(Vec2 a, Vec2 b, Vec2 c, Rgba col);
+  // Antialiased disc: centre fan + 1 px feather ring, circleSegments(radius) points from a cached unit-circle
+  // table (no trig per call). Circles and arcs scale their tessellation radius so the polygon has the true
+  // circle's area: the ≤ 0.2 px chord error is split between vertices slightly outside and chord midpoints
+  // slightly inside, instead of every chord cutting inside (which made a 10 px disc ~2.5 % too light).
+  void addCircleFilled(Vec2 c, float radius, Rgba col);
+  // Antialiased ring centred on `radius` (path-stroke semantics: half the thickness each side). Strokes
+  // thinner than 1 px keep their coverage by lowering alpha (2t/(1+t)) instead of thinning below the feather.
+  void addCircleStroke(Vec2 c, float radius, Rgba col, float thickness = 1.0f);
+  // Antialiased arc centred on `radius` from angle a0 to a1 (radians; screen space, so angles increase
+  // clockwise: 0 = +x, π/2 = +y = down). Order of a0/a1 does not matter; a sweep ≥ 2π draws a full ring.
+  // Tessellation: interior points at multiples of the cached step π/(2·cornerSegments(radius + t/2)) plus
+  // the exact end angles, so chord error ≤ 0.2 px at the outer edge and only two sin/cos per call.
+  void addArcStroke(Vec2 c, float radius, float a0, float a1, Rgba col, float thickness = 1.0f,
+                    LineCap cap = LineCap::Butt);
   // Antialiased rounded rect (radius 0 = antialiased plain rect, for fractional coordinates).
   void addRoundedRectFilled(const Rect& r, float radius, Rgba col);
   // Same, with a vertical linear gradient from top to bottom colour.
@@ -167,6 +218,10 @@ public:
 
   // Segments per quarter circle used for a corner of the given radius (max chord error ≈ 0.2 px).
   static uint32_t cornerSegments(float radius) noexcept;
+  // Points around a full circle of the given radius (4 · cornerSegments).
+  static uint32_t circleSegments(float radius) noexcept { return 4 * cornerSegments(radius); }
+  // Device-pixel thickness used by the crisp primitives: max(1, round(t)).
+  static float snapThickness(float t) noexcept;
 
   // --- output -------------------------------------------------------------------------------------
   std::span<const Vertex> vertices() const noexcept { return {vtx_.data(), vtxCurrentIdx()}; }
@@ -189,7 +244,11 @@ private:
   void beginCmd();
   // Axis-aligned quad p0 (top-left) → p2 (bottom-right); colours clockwise from top-left.
   void addQuad(Vec2 p0, Vec2 p2, Vec2 uv0, Vec2 uv2, Rgba c0, Rgba c1, Rgba c2, Rgba c3);
-  void addConvexAA(const Vec2* pts, const Rgba* cols, uint32_t n);
+  // cols[i * colStride] is point i's colour (stride 0 = one colour). `orient` is +1 for clockwise in screen
+  // space (y down), −1 for counter-clockwise.
+  void addConvexAA(const Vec2* pts, const Rgba* cols, uint32_t colStride, uint32_t n, float orient = 1.0f);
+  // Stroke of `thickness` centred on radius r around c: an open arc a0 < a1 with caps, or a closed ring.
+  void addRing(Vec2 c, float r, float thickness, float a0, float a1, bool closed, LineCap cap, Rgba col);
   void addRoundedRect(const Rect& r, float radius, Rgba top, Rgba bottom);
 
   AtlasUv atlas_;

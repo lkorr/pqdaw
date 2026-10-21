@@ -50,6 +50,7 @@ target_compile_definitions(pq_tests_core PRIVATE
 pq_add_test(pq_tests_ui
   SOURCES
     ui/test_draw_list.cpp
+    ui/test_primitives.cpp
     ui/test_image.cpp
     ui/test_render.cpp
     ui/test_text.cpp

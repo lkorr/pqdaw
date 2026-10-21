@@ -10,7 +10,7 @@ namespace pq::ui {
 
 namespace {
 
-constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core"};
+constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core", "primitives"};
 
 Image magmaRampImage() {
   using signal_theme::kMagma;
@@ -214,6 +214,10 @@ bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textur
   }
   if (name == "widgets-core") {
     detail::widgetsScene(dl, textures, timeSeconds);
+    return true;
+  }
+  if (name == "primitives") {
+    detail::primitivesScene(dl, textures, timeSeconds);
     return true;
   }
   return false;

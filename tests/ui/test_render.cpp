@@ -2,8 +2,11 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <memory>
+#include <numbers>
 #include <string>
 
 #include "pq/ui/draw_list.h"
@@ -193,6 +196,125 @@ TEST_CASE("render: lines matches the golden image") { checkGolden("lines"); }
 
 // T3.1: widget tree (rows/columns, splitters, scroll view over virtualised content) painted by UiTree.
 TEST_CASE("render: widgets-core matches the golden image") { checkGolden("widgets-core"); }
+
+// T0.7-fix2: widget-grade primitives (crisp strokes, separators, arcs, circles, triangles, bilinear gradient).
+TEST_CASE("render: primitives matches the golden image") { checkGolden("primitives"); }
+
+TEST_CASE("render: a 1 px crisp stroke at integer coordinates is exactly one pixel column at full alpha") {
+  // White on black; columns either side must be untouched, the stroke column fully white along its length.
+  const Rgba white = rgba(255, 255, 255);
+  auto checkColumn = [](const Image& img, uint32_t x, uint32_t y0, uint32_t y1) {
+    for (uint32_t y = y0; y < y1; ++y) {
+      CAPTURE(x);
+      CAPTURE(y);
+      CHECK(img.pixel(x, y)[0] == 255);
+      CHECK(img.pixel(x - 1, y)[0] == 0);
+      CHECK(img.pixel(x + 1, y)[0] == 0);
+    }
+  };
+  {
+    DrawList dl;
+    dl.reset(64, 64);
+    dl.addVLine(10.0f, 4.0f, 60.0f, white);  // integer x: column 10
+    dl.addVLine(20.5f, 4.0f, 60.0f, white);  // pixel-centre x: column 20 as well
+    const Image img = draw(dl, rgba(0, 0, 0));
+    checkColumn(img, 10, 4, 60);
+    checkColumn(img, 20, 4, 60);
+    CHECK(img.pixel(10, 3)[0] == 0);
+    CHECK(img.pixel(10, 60)[0] == 0);
+  }
+  {
+    // Rect border: the left side is column 8 only; the interior next to it stays background.
+    DrawList dl;
+    dl.reset(64, 64);
+    dl.addRectStroke({8, 8, 40, 40}, white);
+    const Image img = draw(dl, rgba(0, 0, 0));
+    checkColumn(img, 8, 9, 39);  // rows 8 and 39 belong to the horizontal sides
+    checkColumn(img, 39, 9, 39);
+    for (uint32_t x = 8; x < 40; ++x) {
+      CHECK(img.pixel(x, 7)[0] == 0);
+      CHECK(img.pixel(x, 8)[0] == 255);
+      CHECK(img.pixel(x, 39)[0] == 255);
+      CHECK(img.pixel(x, 40)[0] == 0);
+    }
+    for (uint32_t x = 9; x < 39; ++x) {
+      CHECK(img.pixel(x, 9)[0] == 0);
+      CHECK(img.pixel(x, 38)[0] == 0);
+    }
+  }
+  {
+    // Rounded border: along its straight sides it is just as crisp (the AA ramp only shows at the corners).
+    DrawList dl;
+    dl.reset(64, 64);
+    dl.addRoundedRectStroke({8, 8, 48, 48}, 6.0f, white);
+    const Image img = draw(dl, rgba(0, 0, 0));
+    checkColumn(img, 8, 8 + 6, 48 - 6);
+    checkColumn(img, 47, 8 + 6, 48 - 6);
+    for (uint32_t x = 8 + 6; x < 48 - 6; ++x) {
+      CHECK(img.pixel(x, 8)[0] == 255);
+      CHECK(img.pixel(x, 7)[0] == 0);
+      CHECK(img.pixel(x, 9)[0] == 0);
+    }
+    // ... and the corner is antialiased: some partially covered pixels around the arc.
+    uint32_t partial = 0;
+    for (uint32_t y = 8; y < 14; ++y)
+      for (uint32_t x = 8; x < 14; ++x) partial += (img.pixel(x, y)[0] > 0 && img.pixel(x, y)[0] < 255) ? 1u : 0u;
+    CHECK(partial >= 4);
+  }
+}
+
+TEST_CASE("render: the 4-corner gradient is bilinear (centre pixel within 2/255)") {
+  // Corners chosen for a large twist in every channel (red/green/blue/alpha-free): the old two-triangle
+  // quad was off by up to twist/4 ≈ 60/255 at the centre.
+  const Rgba tl = rgba(240, 20, 30), tr = rgba(20, 230, 40), br = rgba(250, 10, 220), bl = rgba(10, 240, 200);
+  DrawList dl;
+  dl.reset(64, 64);
+  dl.addRectFilledMultiColor({0, 0, 64, 64}, tl, tr, br, bl);
+  const Image img = draw(dl, rgba(0, 0, 0));
+  auto bilinear = [&](float u, float v, uint32_t ch) {
+    auto c = [ch](Rgba x) { return static_cast<float>((x >> (8 * ch)) & 0xFFu); };
+    const float top = c(tl) + (c(tr) - c(tl)) * u, bot = c(bl) + (c(br) - c(bl)) * u;
+    return top + (bot - top) * v;
+  };
+  // Centre pixel (32, 32): its sample point is (32.5, 32.5).
+  for (uint32_t ch = 0; ch < 3; ++ch) {
+    CAPTURE(ch);
+    CHECK(std::fabs(static_cast<float>(img.pixel(32, 32)[ch]) - bilinear(32.5f / 64, 32.5f / 64, ch)) <= 2.0f);
+  }
+  // Everywhere else as well (the fan grid's bound is 1/255 + vertex rounding).
+  float worst = 0.0f;
+  for (uint32_t y = 0; y < 64; ++y)
+    for (uint32_t x = 0; x < 64; ++x)
+      for (uint32_t ch = 0; ch < 3; ++ch) {
+        const float want = bilinear((static_cast<float>(x) + 0.5f) / 64, (static_cast<float>(y) + 0.5f) / 64, ch);
+        worst = std::max(worst, std::fabs(static_cast<float>(img.pixel(x, y)[ch]) - want));
+      }
+  MESSAGE("4-corner gradient: worst channel error " << worst);
+  CHECK(worst <= 2.0f);
+}
+
+TEST_CASE("render: circles, arcs and triangles cover their area") {
+  DrawList dl;
+  dl.reset(64, 64);
+  dl.addCircleFilled({16, 16}, 10, rgba(255, 255, 255));
+  dl.addArcStroke({48, 16}, 10, 0.0f, std::numbers::pi_v<float>, rgba(255, 255, 255), 4.0f);  // lower half
+  dl.addTriangleFilled({8, 40}, {24, 40}, {16, 56}, rgba(255, 255, 255));
+  const Image img = draw(dl, rgba(0, 0, 0));
+  // Total coverage ≈ area (box-filter AA keeps it within a few % of the analytic value).
+  auto coverage = [&](uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) {
+    double s = 0;
+    for (uint32_t y = y0; y < y1; ++y)
+      for (uint32_t x = x0; x < x1; ++x) s += img.pixel(x, y)[0] / 255.0;
+    return s;
+  };
+  const double pi = std::numbers::pi;
+  CHECK(coverage(0, 0, 32, 32) == doctest::Approx(pi * 100.0).epsilon(0.02));
+  CHECK(coverage(32, 0, 64, 32) == doctest::Approx(0.5 * pi * (144.0 - 64.0)).epsilon(0.03));
+  CHECK(coverage(0, 32, 32, 64) == doctest::Approx(0.5 * 16.0 * 16.0).epsilon(0.03));
+  CHECK(img.pixel(16, 16)[0] == 255);
+  CHECK(img.pixel(48, 26)[0] == 255);  // bottom of the arc, on its mid-line
+  CHECK(img.pixel(48, 6)[0] == 0);     // top half not drawn
+}
 
 TEST_CASE("render: glyphs added after the first frame reach the GPU") {
   // The atlas page starts with ASCII only; a new glyph must be uploaded by the next draw.

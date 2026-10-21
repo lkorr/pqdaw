@@ -28,6 +28,7 @@ pq_add_module(pq_ui
     src/offscreen.cpp
     src/renderer.cpp
     src/scene_lines.cpp
+    src/scene_primitives.cpp
     src/scene_text.cpp
     src/scene_widgets.cpp
     src/scenes.cpp
