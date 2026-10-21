@@ -59,10 +59,124 @@ uint32_t findVoiceSlot(const ImageInterface& io, const graph::Patch& patch, std:
   return kNoSlot;
 }
 
+namespace {
+Error voiceError(const char* m) { return Error{ErrorCode::InvalidArgument, std::string("voices: ") + m, {}}; }
+}  // namespace
+
 Status VoiceEngine::prepare(ProgramImage* image, const VoiceConfig& config) {
-  auto bad = [](const char* m) { return Error{ErrorCode::InvalidArgument, std::string("voices: ") + m, {}}; };
+  if (image == nullptr) return voiceError("no image");
+  if (Status st = prepareLanes(image->io(), config); !st.ok()) return st;
+  auto b = makeBinding(image, config.doneSlot, config.monitorMask);
+  if (!b.ok()) return b.error();
+  own_ = std::move(b.value());
+  attach(own_.get(), nullptr);
+  return Ok{};
+}
+
+Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* image, uint32_t doneSlot,
+                                                               uint32_t monitorMask) const {
+  auto bad = voiceError;
   if (image == nullptr) return bad("no image");
+  if (lanes_ == 0) return bad("prepareLanes first");
   const ImageInterface& io = image->io();
+  if (!io.hasVoiceStages) return bad("the patch has no voice stages");
+  if (io.maxVoiceGroups != groups_ || io.maxBlockFrames != maxBlock_ ||
+      (io.sampleRate > 0.0 ? io.sampleRate : 48000.0) != sampleRate_)
+    return bad("the image's voice groups / block size / sample rate differ from the prepared lanes");
+  if (doneSlot != kNoSlot && doneSlot >= io.voiceOut.size()) return bad("doneSlot out of range");
+  auto bp = std::make_unique<VoiceBinding>();
+  VoiceBinding& B = *bp;
+  B.image = image;
+  B.doneSlot = doneSlot;
+
+  // Voice out slots: `out`s are mixed and monitored; the done slot is read; other exports are not requested.
+  const uint32_t numOutSlots = static_cast<uint32_t>(io.voiceOut.size());
+  B.numOutSlots = numOutSlots;
+  std::vector<uint8_t> requested(numOutSlots, 0);
+  for (uint32_t s = 0; s < numOutSlots; ++s)
+    if (!io.voiceOut[s].isExport && s != doneSlot) {
+      B.mixSlots.push_back(s);
+      requested[s] = 1;
+    }
+  if (monitorMask == 0) {
+    B.monitorSlots = B.mixSlots;
+  } else {
+    for (uint32_t s = 0; s < numOutSlots && s < 32; ++s)
+      if ((monitorMask >> s) & 1u) {
+        B.monitorSlots.push_back(s);
+        requested[s] = 1;
+      }
+    if (B.monitorSlots.empty()) return bad("monitorMask names no voice output slot");
+  }
+  if (doneSlot != kNoSlot) requested[doneSlot] = 1;
+  uint32_t numRequested = 0;
+  std::vector<uint32_t> outIndex(numOutSlots, 0);
+  for (uint32_t s = 0; s < numOutSlots; ++s)
+    if (requested[s]) outIndex[s] = numRequested++;
+  B.outBuf = AlignedBuffer<float>(std::max<size_t>(1, static_cast<size_t>(groups_) * numRequested * groupStride_));
+  B.mixBuf = AlignedBuffer<float>(std::max<size_t>(1, B.mixSlots.size() * stride_));
+  B.outPtr.assign(std::max<size_t>(1, static_cast<size_t>(groups_) * numOutSlots), nullptr);
+  B.gio.assign(groups_, VoiceGroupIO{});
+  for (uint32_t g = 0; g < groups_; ++g) {
+    for (uint32_t s = 0; s < numOutSlots; ++s)
+      if (requested[s])
+        B.outPtr[static_cast<size_t>(g) * numOutSlots + s] =
+            B.outBuf.data() + (static_cast<size_t>(g) * numRequested + outIndex[s]) * groupStride_;
+    VoiceGroupIO& gi = B.gio[g];
+    gi.signals = sigPtr_.data() + static_cast<size_t>(g) * kVoiceSignalCount;
+    gi.out = numOutSlots ? B.outPtr.data() + static_cast<size_t>(g) * numOutSlots : nullptr;
+    gi.numOut = numOutSlots;
+  }
+  B.table = VoiceTable{};
+  B.table.groups = B.gio.data();
+
+  // Lane reset: per voice state entry, the words that belong to one lane (word index ≡ lane mod 8 inside the
+  // 32-byte-aligned entry), minus shared mutable words (noise counter, delay-line header). Template = StateInit.
+  const graph::StateLayout& layout = image->stateLayout();
+  const StateArena arena = image->stateArena();
+  B.stateTemplate = AlignedBuffer<uint32_t>(std::max<size_t>(8, arena.voiceStride / 4));
+  B.voiceState = arena.voice;  // fixed for the image's lifetime (allocated when it was built)
+  B.voiceStateStride = arena.voiceStride;
+  for (const graph::StateEntry& e : layout.entries) {
+    if (e.arena != graph::Poly::Voice || e.size == 0 || e.tag.lanes != 8) continue;
+    if (e.offset + e.size > arena.voiceStride) return bad("state entry outside the voice block");
+    // Which words are per lane (pq/dsp/atom_state.h): every field is an [8] array except the noise counter, the
+    // delay-line header and the phasor's incScale/halfSr (shared by the group's lanes).
+    uint32_t skip = 0, size = e.size;
+    if (e.tag.kernel != graph::StateTag::kSolveGuess) {
+      const auto atom = static_cast<dsp::Atom>(e.tag.kernel);
+      dsp::initState(atom, reinterpret_cast<std::byte*>(B.stateTemplate.data()) + e.offset, e.init);
+      if (atom == dsp::Atom::Noise) continue;  // per-lane seeds are constant; the counter is shared
+      if (isDelayAtom(atom)) skip = 32;        // capacity, mask, writePos, lanes, maxDelay: shared
+      if (atom == dsp::Atom::Phasor || atom == dsp::Atom::SineHz) size = 32;  // phase[8] only
+    }
+    if (size <= skip) continue;
+    auto addSpan = [](std::vector<VoiceBinding::Span>& v, VoiceBinding::Span sp) {
+      if (!v.empty() && v.back().firstWord + v.back().numWords == sp.firstWord)
+        v.back().numWords += sp.numWords;
+      else
+        v.push_back(sp);
+    };
+    addSpan(B.resetSpans, {(e.offset + skip) / 4, (size - skip) / 4});
+    if (skip == 0) {
+      addSpan(B.moveSpans, {e.offset / 4, size / 4});
+    } else {  // a delay line: moving a voice re-aligns its ring to the destination group's write position
+      const uint32_t* h = B.stateTemplate.data() + e.offset / 4;
+      if (h[3] != 8 || h[0] == 0 || (h[0] & (h[0] - 1)) != 0 || e.size < 64 + h[0] * 32)
+        return bad("unexpected voice delay-line state layout");
+      B.delays.push_back({e.offset / 4, h[0]});
+    }
+  }
+  return bp;
+}
+
+void VoiceEngine::attach(VoiceBinding* current, VoiceBinding* fadingOut) noexcept {  // RT-safe
+  b_ = current;
+  fade_ = fadingOut;
+}
+
+Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& config) {
+  auto bad = voiceError;
   if (!io.hasVoiceStages) return bad("the patch has no voice stages");
   if (io.maxVoiceGroups == 0 || io.maxBlockFrames == 0) return bad("the image has no voice groups");
   const uint32_t lanes = io.maxVoiceGroups * 8;
@@ -70,7 +184,9 @@ Status VoiceEngine::prepare(ProgramImage* image, const VoiceConfig& config) {
   if (config.doneSlot != kNoSlot && config.doneSlot >= io.voiceOut.size()) return bad("doneSlot out of range");
   if (!(config.referenceHz > 0.0) || config.maxEventsPerBlock == 0) return bad("invalid referenceHz / maxEventsPerBlock");
 
-  image_ = image;
+  b_ = nullptr;
+  fade_ = nullptr;
+  own_.reset();
   cfg_ = config;
   groups_ = io.maxVoiceGroups;
   lanes_ = lanes;
@@ -83,40 +199,10 @@ Status VoiceEngine::prepare(ProgramImage* image, const VoiceConfig& config) {
   releaseTimeoutFrames_ = std::max<int64_t>(0, std::llround(cfg_.releaseTimeoutMs * 0.001 * sampleRate_));
   silenceLevel_ = static_cast<float>(std::pow(10.0, cfg_.silenceDb / 20.0));
 
-  // Voice out slots: `out`s are mixed and monitored; the done slot is read; other exports are not requested.
-  numOutSlots_ = static_cast<uint32_t>(io.voiceOut.size());
-  mixSlots_.clear();
-  std::vector<uint8_t> requested(numOutSlots_, 0);
-  for (uint32_t s = 0; s < numOutSlots_; ++s)
-    if (!io.voiceOut[s].isExport && s != cfg_.doneSlot) {
-      mixSlots_.push_back(s);
-      requested[s] = 1;
-    }
-  monitorSlots_.clear();
-  if (cfg_.monitorMask == 0) {
-    monitorSlots_ = mixSlots_;
-  } else {
-    for (uint32_t s = 0; s < numOutSlots_ && s < 32; ++s)
-      if ((cfg_.monitorMask >> s) & 1u) {
-        monitorSlots_.push_back(s);
-        requested[s] = 1;
-      }
-    if (monitorSlots_.empty()) return bad("monitorMask names no voice output slot");
-  }
-  if (cfg_.doneSlot != kNoSlot) requested[cfg_.doneSlot] = 1;
-  uint32_t numRequested = 0;
-  std::vector<uint32_t> outIndex(numOutSlots_, 0);
-  for (uint32_t s = 0; s < numOutSlots_; ++s)
-    if (requested[s]) outIndex[s] = numRequested++;
-
   audioSig_ = AlignedBuffer<float>(static_cast<size_t>(groups_) * kAudioSignals * groupStride_);
   paramSig_ = AlignedBuffer<float>(static_cast<size_t>(groups_) * kParamSignals * 8);
   gainBuf_ = AlignedBuffer<float>(static_cast<size_t>(groups_) * groupStride_);
-  outBuf_ = AlignedBuffer<float>(std::max<size_t>(1, static_cast<size_t>(groups_) * numRequested * groupStride_));
-  mixBuf_ = AlignedBuffer<float>(std::max<size_t>(1, mixSlots_.size() * stride_));
   sigPtr_.assign(static_cast<size_t>(groups_) * kVoiceSignalCount, nullptr);
-  outPtr_.assign(std::max<size_t>(1, static_cast<size_t>(groups_) * numOutSlots_), nullptr);
-  gio_.assign(groups_, VoiceGroupIO{});
   for (uint32_t g = 0; g < groups_; ++g) {
     float* a = audioSig_.data() + static_cast<size_t>(g) * kAudioSignals * groupStride_;
     float* p = paramSig_.data() + static_cast<size_t>(g) * kParamSignals * 8;
@@ -131,57 +217,6 @@ Status VoiceEngine::prepare(ProgramImage* image, const VoiceConfig& config) {
     sp[static_cast<uint32_t>(VoiceSignal::Harmonic)] = p + 24;
     sp[static_cast<uint32_t>(VoiceSignal::UnisonCount)] = p + 32;
     sp[static_cast<uint32_t>(VoiceSignal::Index)] = p + 40;
-    for (uint32_t s = 0; s < numOutSlots_; ++s)
-      if (requested[s])
-        outPtr_[static_cast<size_t>(g) * numOutSlots_ + s] =
-            outBuf_.data() + (static_cast<size_t>(g) * numRequested + outIndex[s]) * groupStride_;
-    VoiceGroupIO& gi = gio_[g];
-    gi.signals = sp;
-    gi.out = numOutSlots_ ? outPtr_.data() + static_cast<size_t>(g) * numOutSlots_ : nullptr;
-    gi.numOut = numOutSlots_;
-  }
-  table_ = VoiceTable{};
-  table_.groups = gio_.data();
-
-  // Lane reset: per voice state entry, the words that belong to one lane (word index ≡ lane mod 8 inside the
-  // 32-byte-aligned entry), minus shared mutable words (noise counter, delay-line header). Template = StateInit.
-  const graph::StateLayout& layout = image->stateLayout();
-  const StateArena arena = image->stateArena();
-  stateTemplate_ = AlignedBuffer<uint32_t>(std::max<size_t>(8, arena.voiceStride / 4));
-  voiceState_ = arena.voice;  // fixed for the image's lifetime (allocated when it was built)
-  voiceStateStride_ = arena.voiceStride;
-  resetSpans_.clear();
-  moveSpans_.clear();
-  delays_.clear();
-  for (const graph::StateEntry& e : layout.entries) {
-    if (e.arena != graph::Poly::Voice || e.size == 0 || e.tag.lanes != 8) continue;
-    if (e.offset + e.size > arena.voiceStride) return bad("state entry outside the voice block");
-    // Which words are per lane (pq/dsp/atom_state.h): every field is an [8] array except the noise counter, the
-    // delay-line header and the phasor's incScale/halfSr (shared by the group's lanes).
-    uint32_t skip = 0, size = e.size;
-    if (e.tag.kernel != graph::StateTag::kSolveGuess) {
-      const auto atom = static_cast<dsp::Atom>(e.tag.kernel);
-      dsp::initState(atom, reinterpret_cast<std::byte*>(stateTemplate_.data()) + e.offset, e.init);
-      if (atom == dsp::Atom::Noise) continue;  // per-lane seeds are constant; the counter is shared
-      if (isDelayAtom(atom)) skip = 32;        // capacity, mask, writePos, lanes, maxDelay: shared
-      if (atom == dsp::Atom::Phasor || atom == dsp::Atom::SineHz) size = 32;  // phase[8] only
-    }
-    if (size <= skip) continue;
-    auto addSpan = [](std::vector<ResetSpan>& v, ResetSpan sp) {
-      if (!v.empty() && v.back().firstWord + v.back().numWords == sp.firstWord)
-        v.back().numWords += sp.numWords;
-      else
-        v.push_back(sp);
-    };
-    addSpan(resetSpans_, {(e.offset + skip) / 4, (size - skip) / 4});
-    if (skip == 0) {
-      addSpan(moveSpans_, {e.offset / 4, size / 4});
-    } else {  // a delay line: moving a voice re-aligns its ring to the destination group's write position
-      const uint32_t* h = stateTemplate_.data() + e.offset / 4;
-      if (h[3] != 8 || h[0] == 0 || (h[0] & (h[0] - 1)) != 0 || e.size < 64 + h[0] * 32)
-        return bad("unexpected voice delay-line state layout");
-      delays_.push_back({e.offset / 4, h[0]});
-    }
   }
 
   // Per lane and group state.
@@ -491,12 +526,15 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
 }
 
 void VoiceEngine::resetLaneState(uint32_t lane) noexcept {  // RT-safe
-  if (voiceState_ == nullptr) return;
-  uint32_t* block = reinterpret_cast<uint32_t*>(voiceState_ + static_cast<size_t>(lane >> 3) * voiceStateStride_);
-  const uint32_t* tmpl = stateTemplate_.data();
-  const uint32_t l = lane & 7u;
-  for (const ResetSpan& sp : resetSpans_)
-    for (uint32_t w = sp.firstWord + l; w < sp.firstWord + sp.numWords; w += 8) block[w] = tmpl[w];
+  VoiceBinding* const bs[2] = {b_, fade_};  // both images while a hot-swap crossfade runs
+  for (VoiceBinding* b : bs) {
+    if (b == nullptr || b->voiceState == nullptr) continue;
+    uint32_t* block = reinterpret_cast<uint32_t*>(b->voiceState + static_cast<size_t>(lane >> 3) * b->voiceStateStride);
+    const uint32_t* tmpl = b->stateTemplate.data();
+    const uint32_t l = lane & 7u;
+    for (const VoiceBinding::Span& sp : b->resetSpans)
+      for (uint32_t w = sp.firstWord + l; w < sp.firstWord + sp.numWords; w += 8) block[w] = tmpl[w];
+  }
 }
 
 // Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides and fades. A constant
@@ -664,12 +702,14 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
 // Noise state stays with the group (the voice continues with the destination group's noise stream).
 void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   const uint32_t la = a & 7u, lb = b & 7u;
-  if (voiceState_ != nullptr) {
-    const uint32_t* src = reinterpret_cast<const uint32_t*>(voiceState_ + static_cast<size_t>(a >> 3) * voiceStateStride_);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(voiceState_ + static_cast<size_t>(b >> 3) * voiceStateStride_);
-    for (const ResetSpan& sp : moveSpans_)
+  VoiceBinding* const bs[2] = {b_, fade_};  // both images while a hot-swap crossfade runs
+  for (VoiceBinding* bd : bs) {
+    if (bd == nullptr || bd->voiceState == nullptr) continue;
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(bd->voiceState + static_cast<size_t>(a >> 3) * bd->voiceStateStride);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(bd->voiceState + static_cast<size_t>(b >> 3) * bd->voiceStateStride);
+    for (const VoiceBinding::Span& sp : bd->moveSpans)
       for (uint32_t w = sp.firstWord; w < sp.firstWord + sp.numWords; w += 8) dst[w + lb] = src[w + la];
-    for (const DelaySpan& d : delays_) {  // DelayState: header (writePos = word 2), apY1[8], ring[capacity][8]
+    for (const VoiceBinding::DelaySpan& d : bd->delays) {  // DelayState: header (writePos = word 2), apY1[8], ring[capacity][8]
       const uint32_t* s = src + d.firstWord;
       uint32_t* t = dst + d.firstWord;
       t[8 + lb] = s[8 + la];
@@ -760,21 +800,19 @@ void VoiceEngine::freeLane(uint32_t lane) noexcept {  // RT-safe
   carryDirty_[lane >> 3] = 1;
 }
 
-void VoiceEngine::mixAndMeasure(uint32_t frames) noexcept {  // RT-safe
-  uint32_t* act = activeList_.data();
-  uint32_t na = 0;
-  for (uint32_t g = 0; g < groups_; ++g)
-    if (laneMask_[g] != 0) act[na++] = g;
-  groupsRun_ = na;
-  for (uint32_t i = 0; i < mixSlots_.size(); ++i) {
-    float* dst = mixBuf_.data() + static_cast<size_t>(i) * stride_;
-    const uint32_t slot = mixSlots_[i];
+// Σ lanes gain · out for every mixed slot of binding b, over the occupied groups (activeList_, groupsRun_).
+void VoiceEngine::mixOutputs(VoiceBinding& b, uint32_t frames) noexcept {  // RT-safe
+  const uint32_t* act = activeList_.data();
+  const uint32_t na = groupsRun_;
+  for (uint32_t i = 0; i < b.mixSlots.size(); ++i) {
+    float* dst = b.mixBuf.data() + static_cast<size_t>(i) * stride_;
+    const uint32_t slot = b.mixSlots[i];
     if (na == 0) {
       std::memset(dst, 0, sizeof(float) * frames);
       continue;
     }
     for (uint32_t k = 0; k < na; ++k) {
-      mixOut_[k] = outPtr_[static_cast<size_t>(act[k]) * numOutSlots_ + slot];
+      mixOut_[k] = b.outPtr[static_cast<size_t>(act[k]) * b.numOutSlots + slot];
       mixGain_[k] = gainBuf_.data() + static_cast<size_t>(act[k]) * groupStride_;
     }
     uint32_t f = 0;
@@ -799,9 +837,15 @@ void VoiceEngine::mixAndMeasure(uint32_t frames) noexcept {  // RT-safe
       dst[f] = horizontalSum(acc);
     }
   }
-  // Per-lane peaks of the monitored outputs: for silence detection (groups with a released voice) and quietest
-  // stealing (every group).
-  if (monitorSlots_.empty()) return;
+}
+
+// Per-lane peaks of the current binding's monitored outputs: for silence detection (groups with a released voice)
+// and quietest stealing (every group).
+void VoiceEngine::measure(uint32_t frames) noexcept {  // RT-safe
+  const VoiceBinding& b = *b_;
+  if (b.monitorSlots.empty()) return;
+  const uint32_t* act = activeList_.data();
+  const uint32_t na = groupsRun_;
   const __m256 absMask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
   const bool all = cfg_.steal == StealPolicy::Quietest;
   for (uint32_t k = 0; k < na; ++k) {
@@ -810,8 +854,8 @@ void VoiceEngine::mixAndMeasure(uint32_t frames) noexcept {  // RT-safe
     for (uint32_t l = 0; l < 8 && !released; ++l) released = status_[g * 8 + l] == LaneStatus::Released;
     if (!released) continue;
     __m256 peak = _mm256_setzero_ps();
-    for (uint32_t slot : monitorSlots_) {
-      const float* o = outPtr_[static_cast<size_t>(g) * numOutSlots_ + slot];
+    for (uint32_t slot : b.monitorSlots) {
+      const float* o = b.outPtr[static_cast<size_t>(g) * b.numOutSlots + slot];
       for (uint32_t f = 0; f < frames; ++f) peak = _mm256_max_ps(peak, _mm256_and_ps(_mm256_load_ps(o + f * 8), absMask));
     }
     _mm256_storeu_ps(level_.data() + g * 8, peak);
@@ -820,10 +864,11 @@ void VoiceEngine::mixAndMeasure(uint32_t frames) noexcept {  // RT-safe
 
 void VoiceEngine::endVoices(uint32_t frames) noexcept {  // RT-safe
   const int64_t end = clock_ + frames;
-  const bool monitored = !monitorSlots_.empty();
+  const VoiceBinding& b = *b_;
+  const bool monitored = !b.monitorSlots.empty();
   for (uint32_t g = 0; g < groups_; ++g) {
     if (laneMask_[g] == 0) continue;
-    const float* done = cfg_.doneSlot != kNoSlot ? outPtr_[static_cast<size_t>(g) * numOutSlots_ + cfg_.doneSlot] : nullptr;
+    const float* done = b.doneSlot != kNoSlot ? b.outPtr[static_cast<size_t>(g) * b.numOutSlots + b.doneSlot] : nullptr;
     for (uint32_t l = 0; l < 8; ++l) {
       const uint32_t lane = g * 8 + l;
       const LaneStatus s = status_[lane];
@@ -852,13 +897,16 @@ void VoiceEngine::endVoices(uint32_t frames) noexcept {  // RT-safe
   }
 }
 
-void VoiceEngine::process(ProcessContext& ctx) noexcept {  // RT-safe
+void VoiceEngine::process(ProcessContext& ctx, ProcessContext* fadeCtx) noexcept {  // RT-safe
   const uint32_t frames = ctx.frames;
-  if (image_ == nullptr || frames == 0) return;
+  if (b_ == nullptr || frames == 0) return;
+  VoiceBinding* const fade = fadeCtx != nullptr ? fade_ : nullptr;
   if (frames > maxBlock_) {  // the image refuses it (zeroed outputs, rejectedBlocks)
     ctx.voices = nullptr;
-    image_->process(ctx);
-    for (uint32_t i = 0; i < mixSlots_.size(); ++i) std::memset(mixBuf_.data() + static_cast<size_t>(i) * stride_, 0, sizeof(float) * maxBlock_);
+    b_->image->process(ctx);
+    for (uint32_t i = 0; i < b_->mixSlots.size(); ++i) std::memset(b_->mixBuf.data() + static_cast<size_t>(i) * stride_, 0, sizeof(float) * maxBlock_);
+    if (fade != nullptr)
+      for (uint32_t i = 0; i < fade->mixSlots.size(); ++i) std::memset(fade->mixBuf.data() + static_cast<size_t>(i) * stride_, 0, sizeof(float) * maxBlock_);
     return;
   }
   numOps_ = 0;
@@ -877,22 +925,39 @@ void VoiceEngine::process(ProcessContext& ctx) noexcept {  // RT-safe
     opBegin_[0] = 0;
     opsLastBlock_ = numOps_ > 0;
   }
-  uint32_t numGroups = 0;
+  uint32_t numGroups = 0, na = 0;
   for (uint32_t g = 0; g < groups_; ++g) {
     if (laneMask_[g] == 0 && !groupDirty_[g]) {
       validFrames_[g] = 0;  // not run: its buffers are irrelevant until a voice starts (which makes it dirty)
     } else if (groupDirty_[g] || validFrames_[g] < frames) {
       renderGroup(g, frames);
     }
-    gio_[g].laneMask = laneMask_[g];
-    if (laneMask_[g] != 0) numGroups = g + 1;
+    b_->gio[g].laneMask = laneMask_[g];
+    if (fade != nullptr) fade->gio[g].laneMask = laneMask_[g];
+    if (laneMask_[g] != 0) {
+      numGroups = g + 1;
+      activeList_[na++] = g;
+    }
   }
-  table_.numGroups = numGroups;
-  table_.lastGroup = lastLane_ != kNoVoice ? lastLane_ >> 3 : kNoVoice;
-  table_.lastLane = lastLane_ != kNoVoice ? lastLane_ & 7u : 0u;
-  ctx.voices = &table_;
-  image_->process(ctx);
-  mixAndMeasure(frames);
+  groupsRun_ = na;
+  VoiceTable& table = b_->table;
+  table.numGroups = numGroups;
+  table.lastGroup = lastLane_ != kNoVoice ? lastLane_ >> 3 : kNoVoice;
+  table.lastLane = lastLane_ != kNoVoice ? lastLane_ & 7u : 0u;
+  ctx.voices = &table;
+  b_->image->process(ctx);
+  mixOutputs(*b_, frames);
+  if (fade != nullptr) {  // hot-swap crossfade: the old image on the same voice table
+    fade->table.numGroups = table.numGroups;
+    fade->table.lastGroup = table.lastGroup;
+    fade->table.lastLane = table.lastLane;
+    fadeCtx->frames = frames;
+    fadeCtx->events = ctx.events;
+    fadeCtx->voices = &fade->table;
+    fade->image->process(*fadeCtx);
+    mixOutputs(*fade, frames);
+  }
+  measure(frames);
   endVoices(frames);
   if (cfg_.compact) compact();
   clock_ += frames;

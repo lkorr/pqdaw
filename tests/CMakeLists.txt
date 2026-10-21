@@ -141,6 +141,7 @@ pq_add_test(pq_tests_engine
     engine/test_rt_log_device.cpp
     engine/test_interpreter.cpp
     engine/test_voices.cpp
+    engine/test_hot_swap.cpp
   DEPS pq_engine)
 
 # jit (T1b.1): the LLVM backend against the interpreter and the reference evaluator over the T1.7 corpus, plus the

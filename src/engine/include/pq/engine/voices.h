@@ -54,8 +54,21 @@
 //      below silenceDb for silenceMs (block-peak granular). Held voices never end on silence;
 //   3. with neither monitored slots nor a done slot: releaseTimeoutMs after note-off.
 // A stolen voice ends when its fade is over.
+//
+// ---- Hot swap (T1.9) -----------------------------------------------------------------------------------------
+// Everything that depends on the image (its output slots, mix buffers, the lane reset/move spans of its state
+// layout, its voice state blocks) is a VoiceBinding. prepareLanes() sets up the image-independent part (lanes,
+// voice.* buffers, allocator state) from an ImageInterface; makeBinding() builds a binding for any image with the
+// same geometry (maxVoiceGroups, maxBlockFrames, sample rate) off the audio thread; attach() switches bindings on
+// the audio thread at a block boundary (RT-safe). Lane assignments, the voice.* render state and the allocator
+// survive the switch, so voices keep sounding through a program swap (their state words are carried by the swap's
+// state transfer, state_transfer.h). While a crossfade runs, attach(new, old) keeps the old image running on the
+// same voice table: process(ctx, fadeCtx) runs both, lane resets and compaction moves apply to both images'
+// state, and fadeMix(i) holds the old image's mixes. Voice end and levels follow the current (new) binding.
+// prepare(image, config) = prepareLanes + makeBinding(config.doneSlot, config.monitorMask) + attach.
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -98,6 +111,34 @@ uint32_t findVoiceSlot(const ImageInterface& io, const graph::Patch& patch, std:
 
 enum class LaneStatus : uint8_t { Free, Held, Released, Fading, Pending };
 
+// The image-dependent part of a VoiceEngine (see "Hot swap" above). Built by VoiceEngine::makeBinding off the audio
+// thread; owned by the caller (or by the engine for prepare()); must outlive its attachment.
+struct VoiceBinding {
+  struct Span {
+    uint32_t firstWord, numWords;     // relative to the group's state block; numWords a multiple of 8
+  };
+  struct DelaySpan {
+    uint32_t firstWord, capacity;     // a voice delay line's DelayState (8 lanes)
+  };
+  ProgramImage* image = nullptr;
+  uint32_t numOutSlots = 0;
+  uint32_t doneSlot = kNoSlot;        // index into io().voiceOut, or kNoSlot
+  std::vector<uint32_t> mixSlots;     // io().voiceOut index per mix
+  std::vector<uint32_t> monitorSlots;
+  AlignedBuffer<float> outBuf;        // per group and requested voice out slot: groupStride floats
+  AlignedBuffer<float> mixBuf;        // per mix: stride floats
+  std::vector<float*> outPtr;         // [g · numOutSlots + slot] (null: not requested)
+  std::vector<VoiceGroupIO> gio;
+  VoiceTable table;
+  // Lane reset: spans of per-lane words in a voice group's state block, and the StateInit template.
+  std::vector<Span> resetSpans;
+  std::vector<Span> moveSpans;        // per-lane words moved as they are (everything but noise and delay lines)
+  std::vector<DelaySpan> delays;
+  AlignedBuffer<uint32_t> stateTemplate;
+  std::byte* voiceState = nullptr;    // the image's voice state blocks (StateArena), voiceStateStride apart
+  uint32_t voiceStateStride = 0;
+};
+
 struct VoiceStats {
   uint64_t noteOns = 0, noteOffs = 0, pitchEvents = 0;
   uint64_t retriggers = 0;      // same-note retriggers
@@ -122,16 +163,35 @@ public:
   // engine's use; maxVoices must be in [1, lanes]. Allocates every buffer. Clears all voices.
   Status prepare(ProgramImage* image, const VoiceConfig& config);
 
+  // Hot swap (T1.9). Off the audio thread: lanes, voice.* buffers and allocator state for images with this
+  // interface's geometry (no binding is attached: process() does nothing until attach()). Clears all voices.
+  Status prepareLanes(const ImageInterface& io, const VoiceConfig& config);
+  // Off the audio thread, any time after prepareLanes (reads only fields that stay fixed until the next prepare):
+  // a binding for `image`, whose io() must match the prepared geometry. doneSlot / monitorMask as in VoiceConfig,
+  // for this image's slots.
+  Result<std::unique_ptr<VoiceBinding>> makeBinding(ProgramImage* image, uint32_t doneSlot = kNoSlot,
+                                                    uint32_t monitorMask = 0) const;
+  // At a block boundary on the audio thread: run `current` from the next block on; `fadingOut` (or null) keeps
+  // running beside it (process(ctx, fadeCtx)) until the next attach. RT-safe.
+  void attach(VoiceBinding* current, VoiceBinding* fadingOut = nullptr) noexcept;
+
   // One block: ctx.frames ≤ io().maxBlockFrames, ctx.events (may be null) as in note_events.h. Fills ctx.voices
   // (the caller's global I/O, params, transport and sends pass through), runs the image, mixes the voice outs and
-  // ends finished voices. RT-safe.
-  void process(ProcessContext& ctx) noexcept;
+  // ends finished voices. With a fading-out binding attached and fadeCtx given, also runs the old image with
+  // *fadeCtx (its own global I/O and params; frames, events and voices are taken from ctx) and mixes its voice
+  // outs into fadeMix(). RT-safe.
+  void process(ProcessContext& ctx, ProcessContext* fadeCtx = nullptr) noexcept;
 
   // The mixed voice `out` slots of the last block (frames floats each), in io().voiceOut order of the non-export
-  // slots; mixSlot(i) is the io().voiceOut index of mix i.
-  uint32_t numMixes() const noexcept { return static_cast<uint32_t>(mixSlots_.size()); }
-  const float* mix(uint32_t i) const noexcept { return mixBuf_.data() + static_cast<size_t>(i) * stride_; }
-  uint32_t mixSlot(uint32_t i) const noexcept { return mixSlots_[i]; }
+  // slots; mixSlot(i) is the io().voiceOut index of mix i. fadeMix: the same for the fading-out binding.
+  uint32_t numMixes() const noexcept { return b_ ? static_cast<uint32_t>(b_->mixSlots.size()) : 0u; }
+  const float* mix(uint32_t i) const noexcept { return b_->mixBuf.data() + static_cast<size_t>(i) * stride_; }
+  uint32_t mixSlot(uint32_t i) const noexcept { return b_->mixSlots[i]; }
+  const VoiceBinding* binding() const noexcept { return b_; }
+  const VoiceBinding* fadingBinding() const noexcept { return fade_; }
+  const float* fadeMix(uint32_t i) const noexcept { return fade_->mixBuf.data() + static_cast<size_t>(i) * stride_; }
+  // Per group: bit l = lane l holds a voice (groups() entries). RT-safe.
+  const uint32_t* laneMasks() const noexcept { return laneMask_.data(); }
 
   // Inspection (tests, UI reports). RT-safe.
   uint32_t lanes() const noexcept { return lanes_; }
@@ -147,7 +207,7 @@ public:
   // the per-lane gain (frames · 8), and voice out slot s of group g (frames · 8, null if not requested).
   const float* signal(uint32_t g, VoiceSignal s) const noexcept { return sigPtr_[g * kVoiceSignalCount + static_cast<uint32_t>(s)]; }
   const float* gain(uint32_t g) const noexcept { return gainBuf_.data() + static_cast<size_t>(g) * groupStride_; }
-  const float* voiceOut(uint32_t g, uint32_t slot) const noexcept { return outPtr_[g * numOutSlots_ + slot]; }
+  const float* voiceOut(uint32_t g, uint32_t slot) const noexcept { return b_->outPtr[g * b_->numOutSlots + slot]; }
   float laneLevel(uint32_t lane) const noexcept { return level_[lane]; }
   const VoiceStats& stats() const noexcept { return stats_; }
   const VoiceConfig& config() const noexcept { return cfg_; }
@@ -178,13 +238,15 @@ private:
   void compact() noexcept;
   void resetLaneState(uint32_t lane) noexcept;
   // After the image.
-  void mixAndMeasure(uint32_t frames) noexcept;
+  void mixOutputs(VoiceBinding& b, uint32_t frames) noexcept;
+  void measure(uint32_t frames) noexcept;
   void endVoices(uint32_t frames) noexcept;
 
-  ProgramImage* image_ = nullptr;
+  std::unique_ptr<VoiceBinding> own_;  // prepare()'s binding
+  VoiceBinding* b_ = nullptr;          // current
+  VoiceBinding* fade_ = nullptr;       // fading out (hot swap crossfade), or null
   VoiceConfig cfg_;
   uint32_t groups_ = 0, lanes_ = 0, maxBlock_ = 0, stride_ = 0, groupStride_ = 0;
-  uint32_t numOutSlots_ = 0;
   uint32_t fadeFrames_ = 1, silenceFrames_ = 1;
   int64_t releaseTimeoutFrames_ = 0;
   float silenceLevel_ = 0.0f;
@@ -194,14 +256,7 @@ private:
   AlignedBuffer<float> audioSig_;   // per group: hz, cents, gate, trigger (groupStride_ floats each)
   AlignedBuffer<float> paramSig_;   // per group: velocity, release, ratio, harmonic, unisonCount, index (8 each)
   AlignedBuffer<float> gainBuf_;    // per group: groupStride_
-  AlignedBuffer<float> outBuf_;     // per group and requested voice out slot: groupStride_
-  AlignedBuffer<float> mixBuf_;     // per mix: stride_
   std::vector<const float*> sigPtr_;  // [g · kVoiceSignalCount + s]
-  std::vector<float*> outPtr_;        // [g · numOutSlots_ + slot] (null: not requested)
-  std::vector<VoiceGroupIO> gio_;
-  VoiceTable table_;
-  std::vector<uint32_t> mixSlots_;    // io().voiceOut index per mix
-  std::vector<uint32_t> monitorSlots_;
   std::vector<uint32_t> validFrames_; // per group: frames for which the buffers hold the steady state
   std::vector<uint8_t> groupDirty_;   // per group: re-render this block
   std::vector<uint8_t> carryDirty_;   // per group: re-render next block (pulses, onsets, fades, glides)
@@ -234,19 +289,6 @@ private:
   std::vector<LaneOp> ops_, sortedOps_;
   std::vector<uint32_t> opBegin_;     // per lane + 1 (counting sort)
   uint32_t numOps_ = 0;
-  // Lane reset: spans of per-lane words in a voice group's state block, and the StateInit template.
-  struct ResetSpan {
-    uint32_t firstWord, numWords;  // relative to the group's block; numWords a multiple of 8
-  };
-  std::vector<ResetSpan> resetSpans_;
-  std::vector<ResetSpan> moveSpans_;  // per-lane words moved as they are (everything but noise and delay lines)
-  struct DelaySpan {
-    uint32_t firstWord, capacity;     // a voice delay line's DelayState (8 lanes)
-  };
-  std::vector<DelaySpan> delays_;
-  AlignedBuffer<uint32_t> stateTemplate_;
-  std::byte* voiceState_ = nullptr;   // the image's voice state blocks (StateArena), voiceStateStride_ apart
-  uint32_t voiceStateStride_ = 0;
   uint32_t numReady_ = 0;             // lanes in status Pending (start at the next block)
   bool opsLastBlock_ = true;          // opBegin_ holds non-zero offsets from the last block
   int64_t clock_ = 0;                 // engine frames before frame 0 of the current block (ages, timeouts)

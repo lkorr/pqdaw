@@ -40,3 +40,4 @@ pq_add_bench(pq_bench_interpreter SOURCES engine/bench_interpreter.cpp DEPS pq_e
 pq_add_bench(pq_bench_shell SOURCES views/bench_shell.cpp DEPS pq_views)
 pq_add_bench(pq_bench_voices SOURCES engine/bench_voices.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_jit SOURCES jit/bench_jit.cpp DEPS pq_jit)
+pq_add_bench(pq_bench_hot_swap SOURCES engine/bench_hot_swap.cpp DEPS pq_engine)

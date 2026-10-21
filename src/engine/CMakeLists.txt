@@ -6,8 +6,10 @@ pq_add_module(pq_engine
     src/image_runner.cpp
     src/interpreter.cpp
     src/null_device.cpp
+    src/program_host.cpp
     src/rtaudio_device.cpp
     src/sample_convert.cpp
+    src/state_transfer.cpp
     src/voices.cpp
     src/wasapi_device.cpp
   DEPS pq_core pq_dsp pq_graph
