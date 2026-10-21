@@ -36,7 +36,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - `Ticks` (int64, PPQ 27720), a tempo map (with ramps) converting ticks↔seconds↔samples exactly or within ½ sample, and time signatures.
   - Accept: tests include round trips over a 10-hour session at 192 kHz with tempo ramps, staying within ½ sample, and exact tuplet positions for 3/5/7/11.
 
-- [x] **T0.6 Audio device I/O** *(1d54a68)* (`engine`). Depends on: T0.2.
+- [x] **T0.6 Audio device I/O** *(1d54a68; partial: WASAPI exclusive unsupported by RtAudio, ASIO opt-in — see T0.6-fix1/fix2, Q12)* (`engine`). Depends on: T0.2.
   - RtAudio (pinned) with WASAPI (shared and exclusive) and ASIO. Device enumeration, open/start/stop, an xrun counter, and a `NullDevice` backend for tests (driven by a thread, or manually from a test).
   - `pqdaw --list-devices` and `pqdaw --sine 440 --seconds 3 [--device N] [--asio]`.
   - Accept: NullDevice tests cover the callback cadence and buffer sizes. `--list-devices` output is pasted into PROGRESS.md. A `--sine` run on the default WASAPI device reports 0 xruns over 3 s (no one is listening, so log the callback stats).
@@ -53,6 +53,61 @@ Every task also carries these **standing criteria**, which aren't repeated below
 - [x] **T0.9 PQ Meter line primitives** *(18a6a19)* (`ui`). Depends on: T0.7. 👁
   - Port `smooth_line.h` (feathered ribbons: 0.75 px feather, 2.5× miter clamp, bevel past 120°, Catmull-Rom subdivision capped at 6000 points), `gradientPolyline`, `gradientBand`, `splineSmooth`, `gradient.h` and `palette_track.h` from `C:\Users\Luke\Desktop\programming\pq meter\src\ui\` and `src\modules\spectrum.cpp:200-325` into the draw-list API.
   - Accept: a `lines` screenshot scene (sine, noise trace, glow passes) matches its golden image, and the PROGRESS.md note says which PQ Meter files the port came from.
+
+## M0 follow-ups (from the M0 review, docs/reviews/M0.md)
+In TASKS.md format, for the orchestrator to schedule. The order is my priority: H-items first, and before T3.1/T3.2 merge where noted.
+
+- [ ] **T0.7-fix3 HiDPI content scale** (`ui`, `app`). Depends on: T0.7, T0.8. **Before T3.1/T3.2 merge.**
+  - `UiScale` from `SDL_GetWindowDisplayScale`, updated on `DISPLAY_SCALE_CHANGED`. Layout units are logical px snapped to device px. Font roles resolve to `round(role·scale)` integer-px hinted fonts. Line widths and feathers stay in device px. Screenshot `--scale`.
+  - Accept: `text` and `test-pattern` goldens at scale 1.0/1.25/1.5/2.0. A scale change at runtime re-renders without restart (scripted window test). No blurry glyphs: every glyph quad lands on integer device pixels (test).
+
+- [ ] **T0.7-fix1 Partial redraw** (`ui`, `app`). Depends on: T0.7. Before T3.1's damage test is relied on.
+  - Persistent colour target (LOAD); damage rects → scissored re-record of intersecting commands → copy to swapchain image (or `VK_KHR_incremental_present`). Draw-list chunks per damage region so unchanged regions aren't rebuilt.
+  - Accept: a 2 px-wide animated playhead over the `lines` scene redraws ≤ 2% of the pixels per frame (GPU timestamp or fragment count). UI-thread CPU per frame < 25% of a full redraw. Golden identical to the full-redraw path after 100 random damage sequences.
+
+- [ ] **T0.6-fix1 Own WASAPI backend** (`engine`). Depends on: T0.6.
+  - Event-driven `IAudioClient`/`IAudioClient3`: exclusive + shared (low-latency shared periods), float32 or int32/24 exclusive formats, no extra ring, MMCSS "Pro Audio". Underruns detected via `GetCurrentPadding` before each write plus `IAudioClock` position vs frames written. Lateness metric (L2).
+  - Accept: exclusive 64- and 128-frame streams open on the Focusrite. 60 s `--sine` with max callback interval ≤ 1.5× period. An injected stall (test flag: sleep 3× period once) is reported as exactly 1 underrun. RtScope/alloc-trap clean. Latency reported in frames and matches a loopback measurement within 1 period. RtAudio stays for ASIO until T0.6-fix2.
+
+- [ ] **T0.6-fix2 ASIO decision + host** (`engine`). Depends on: user answer to Q12. 👁 (decision)
+  - Option B: clean-room IASIO COM host (driver enumeration from the registry, `ASIOInit`, buffer switch callback) under our licence; or keep opt-in.
+  - Accept: per the decision. If B: Focusrite USB ASIO 64 frames, 60 s, 0 resync requests, RtScope-clean callback.
+
+- [ ] **T0.7-fix2 Widget-grade draw-list primitives** (`ui`). Depends on: T0.7. Before T3.2.
+  - `addRectStroke`, `addRoundedRectStroke`, public `addConvexPolyFilled`, `addCircleFilled/Stroke`, `addArcStroke` (knob rings), `addTriangleFilled`, snapped `addHLine/addVLine`. Fix `addRectFilledMultiColor` to be bilinear (centre vertex or N×N), or correct its doc.
+  - Accept: `primitives` golden scene. Unit tests: a 1 px stroke at integer coordinates touches exactly one pixel column at full alpha; arc tessellation chord error ≤ 0.2 px; the 4-corner gradient's centre pixel is within 2/255 of the bilinear value. Benchmarks recorded.
+
+- [ ] **T0.8-fix1 Non-blocking glyph uploads, R8 glyph pages, stable runs** (`ui`). Depends on: T0.8.
+  - Per-frame staging ring; atlas copies recorded in the frame's command buffer (no `vkDeviceWaitIdle`). R8 glyph pages separate from the RGBA sprite page; multi-page with eviction; loud (once) failure when full. Run-cache flush only at frame start (M8). Ellipsis truncation and per-cluster caret x-positions in `TextRun` (needed by T3.2 text edit).
+  - Accept: rasterising 200 new glyphs during an animated run causes no frame > 1.5× the median frame time. A test that shapes 20k distinct strings within one frame keeps every earlier run valid. Atlas memory ≤ 1/4 of today's for the same glyph set.
+
+- [ ] **T0.7-fix4 Texture update/destroy** (`ui`). Depends on: T0.8-fix1 (shares the staging ring).
+  - `updateTexture(id, rect, data)` (async), `destroyTexture(id)` deferred by frame fence, slot reuse.
+  - Accept: a 1024×512 spectrogram scrolling one column per frame at 144 Hz with no CPU wait on the GPU. Creating and destroying 10k textures doesn't leak (validation layer clean, VMA stats back to baseline).
+
+- [ ] **T0.7-fix5 Tighter golden comparison** (`tests`). Depends on: —.
+  - Outlier magnitude cap and isolation rule (M5). Failure output: diff PNG plus bounding box.
+  - Accept: deleting one glyph from the `text` scene, or moving the scope trace by 1 px, fails the test (mutation checks committed as test cases that render a perturbed scene).
+
+- [ ] **T0.9-fix1 Differential test against PQ Meter** (`tests`). Depends on: T0.9.
+  - Compile PQ Meter's `smooth_line.h` and the `spectrum.cpp`/`oscilloscope.cpp` helper functions against a minimal `ImDrawList` shim; compare vertex/index buffers with `pq::ui` for fixed inputs.
+  - Accept: bit-identical output (or each documented difference, such as the skipped α=0 pass, asserted explicitly).
+
+- [ ] **T0.7-fix6 Startup time** (`app`). Depends on: T0.7.
+  - Measure from process creation; log per-phase times; on-disk `VkPipelineCache`; overlap font loading with device creation.
+  - Accept: first frame < 300 ms from process creation on an idle machine, median of 10 cold-ish starts, recorded in RESULTS.md.
+
+- [ ] **T0.1-fix1 Build hardening** (`cmake`, docs). Depends on: —.
+  - All FetchContent deps via release tarballs + `URL_HASH`. `BUILD_SHARED_LIBS OFF CACHE … FORCE` at the top. Clean up DEPENDENCIES.md. AVX2/FMA startup check with a clear message (L9). Move test scenes out of `pq_ui` (L10).
+  - Accept: a fresh configure with `git` removed from PATH succeeds. DEPENDENCIES.md lists every dep exactly once with its hash. Running on a CPU without AVX2 (emulated via a test hook that forces `cpuFeatures().avx2 = false`) prints the message and exits 1.
+
+- [ ] **T0.2-fix1 Queue and benchmark hardening** (`core`, `bench`). Depends on: —.
+  - 64-byte multi-word payload stress tests (L5). 128-byte separation for cross-thread hot lines, kept only if pinned benchmarks show a gain (L3). Benchmarks pin threads to separate physical cores and report min/median/p99 over ≥ 5 runs. SPSC round-trip latency benchmark. Fix stale commit refs in RESULTS.md (L4).
+  - Accept: RESULTS.md rows re-recorded on an idle machine with the method stated. Mutation check: replacing `acquire` with `relaxed` in `tryPop` is caught by at least the compiler-reordering variant under `/O2` (or documented as undetectable on x86 if it isn't).
+
+- [ ] **T0.2-fix2 RT log ring** (`core`). Depends on: T0.2.
+  - `RtLog`: fixed-size POD records (code, args) pushed from RT threads into an SPSC ring, formatted and written by a logger thread (ARCHITECTURE §1 promises it).
+  - Accept: RtScope-clean push. 10⁶ records from the NullDevice callback lose none at 4096 capacity when drained at 100 Hz, and report drops exactly when overfilled.
 
 ## M1: Engine core
 
