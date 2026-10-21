@@ -29,6 +29,8 @@
 #include "pq/ui/theme.h"
 #include "pq/ui/widget.h"
 
+#include "golden_check.h"
+
 using namespace pq::ui;
 
 namespace {
@@ -1118,15 +1120,12 @@ void checkWidgetsGolden(float scale, const char* scaleName) {
   auto ref = readPng(std::string(PQ_TEST_DATA_DIR) + "/ui/golden/" + file + ".png");
   if (!ref) (void)writePng(file + ".actual.png", *img);
   REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
-  const ImageDiff d = compareImages(*img, *ref, 2);
-  const uint64_t allowed = d.pixelCount / 1000;
-  if (!d.sameSize || d.pixelsOverTolerance > allowed) {
-    (void)writePng(file + ".actual.png", *img);
-    MESSAGE("wrote " << file << ".actual.png for inspection");
-  }
+  // T0.7-fix5: the shared golden rule (tests/ui/golden_check.h).
+  ImageDiff d;
+  const bool pass = pq::ui::test::matchesGolden(file, *img, *ref, true, &d);
   REQUIRE(d.sameSize);
-  MESSAGE(file << ": max channel diff " << d.maxChannelDiff << ", " << d.pixelsOverTolerance << " px over tolerance");
-  CHECK(d.pixelsOverTolerance <= allowed);
+  MESSAGE(file << ": " << pq::ui::test::describe(d));
+  CHECK(pass);
 }
 }  // namespace
 
