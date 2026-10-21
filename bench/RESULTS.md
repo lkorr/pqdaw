@@ -33,3 +33,10 @@ Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 | 2026-10-20 | ac48462 | tempo ticksToSamples (1000 segs / constant) | release, pq_bench_time | 44.5 / 3.43 ns/call median | random ticks; a ramp segment costs one log1p |
 | 2026-10-20 | ac48462 | tempo samplesToTicks / firstTickAtOrAfterSample | release, pq_bench_time | 54.3 / 148 ns/call median | 1000 segments, random samples; per block/event, not per sample |
 | 2026-10-20 | ac48462 | timesig ticksToBarBeat | release, pq_bench_time | 8.32 ns/call median | 5 changes |
+| 2026-10-20 | 344dccf | buildMosScale n=7 (5L 2s gens) | release, pq_bench_mos | 350 ns/scale median (min 347) | UI/document path, not RT: chainSafeGen check (n fmods), sort, 3 vector allocations |
+| 2026-10-20 | 344dccf | buildMosScale n=24 (random gens) | release, pq_bench_mos | 916 ns/scale median (min 910) | |
+| 2026-10-20 | 344dccf | MosLinearTable::lookup n=7 | release, pq_bench_mos | 5.0 ns/lookup median | binary search over 18 Farey boundaries; random g (mispredicts) |
+| 2026-10-20 | 344dccf | MosLinearTable::lookup n=24 | release, pq_bench_mos | 23.9 ns/lookup median (min 22.9) | 183 boundaries; random g; block-rate cost for T2.6 |
+| 2026-10-20 | 344dccf | lookup + evaluateLinearForm n=7 / n=24 | release, pq_bench_mos | 1.44 / 1.19 ns/degree median | per degree incl. amortised lookup; evaluation alone is one FMA-shaped expression per degree |
+| 2026-10-20 | 344dccf | buildMosRegions maxSize=18 | release, pq_bench_mos | 7.7 µs/build median | region chart rebuild (UI) |
+| 2026-10-20 | 344dccf | resolveHz/degree (MOS 5L 2s) | release, pq_bench_mos | 7.3 ns/pitch median (min 7.2) | table read + exp2; first version divided by n (10.2 ns), in-range fast path added |
