@@ -15,3 +15,5 @@ endfunction()
 
 pq_add_bench(pq_bench_core SOURCES core/bench_rt_primitives.cpp DEPS pq_core)
 pq_add_bench(pq_bench_tuning SOURCES tuning/bench_resolve.cpp DEPS pq_tuning)
+pq_add_bench(pq_bench_fast_math SOURCES core/bench_fast_math.cpp DEPS pq_core)
+pq_add_bench(pq_bench_time SOURCES core/bench_time.cpp DEPS pq_core)

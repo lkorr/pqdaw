@@ -17,6 +17,8 @@ pq_add_test(pq_tests_core
     core/test_arena.cpp
     core/test_epoch_reclaimer.cpp
     core/test_denormal_guard.cpp
+    core/test_fast_math.cpp
+    core/test_time.cpp
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning

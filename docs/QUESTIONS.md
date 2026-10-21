@@ -20,4 +20,15 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: "labelled with an equave index … otherwise `0\31`, `1\31`… with equave number" can be read as (a) the step within the equave as `k\n` plus the equave number shown separately, or (b) `e\n` where e is the equave index.
 - Options: A) row label = `stepLabel(degree within equave, n)` plus the equave index (`edoRow()` gives both); B) markers labelled `e\n`.
 - Provisional choice: A. `pq::tuning` exposes `stepLabel(k, n)` and `edoRow(step, n)` only; the UI composes the text, so B costs one format string.
+
+## Q3 · 2026-10-20 · T0.5 · Straight 1/64 grid is not a whole number of ticks
+- Context: PPQ 27720 = 2³·3²·5·7·11, so a whole note is 110880 ticks and 1/64 = 1732.5 ticks. SPEC §9.2 lists fixed grids down to 1/64. All 3/5/7/11-tuplets of 1/64 are exact (they span 1/32, 1/16 or 1/8), only the straight 1/64 is not.
+- Options: A) keep PPQ 27720; straight 1/64 grid lines are computed from the whole note and rounded per line (alternating 1732/1733, no drift), time signatures with denominator 64 are rejected. B) double PPQ to 55440 (1/64 exact; still lcm-friendly; int64 range is no issue).
+- Provisional choice: A (`noteValueIsExact(64) == false`, `noteValueTicks(64)` rounds, `TimeSigMap` rejects x/64). Reversible: PPQ is one constant, nothing is persisted yet.
+- Status: open
+
+## Q4 · 2026-10-20 · T0.5 · Tempo ramp law
+- Context: SPEC §9.2 asks for tempo ramps but not their shape.
+- Options: A) BPM linear in ticks (musical time), like tempo automation drawn on a beat-based arrangement (Ableton-style); seconds = closed-form log integral. B) BPM linear in seconds; ticks = quadratic in time.
+- Provisional choice: A, implemented with log1p/expm1 so it stays accurate for tiny slopes. A ramp drawn as a straight line on the beat grid is then really straight. Reversible: `TempoCurve` is an enum, so a `LinearInTime` curve can be added beside it.
 - Status: open
