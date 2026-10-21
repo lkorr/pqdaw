@@ -63,3 +63,102 @@ Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 | 2026-10-20 | dee098e | audio callback: runner + BlockAdapter direct 480/32, 256/32 | release, pq_bench_audio_io | 150 / 86.6 ns/callback (0.31 / 0.34 ns/frame) | 15 / 8 engine calls per callback on offset pointers, no copies |
 | 2026-10-20 | dee098e | audio callback: runner + BlockAdapter FIFO 480/64, 37/32, 1/32 | release, pq_bench_audio_io | 191 / 55.9 / 27.6 ns/callback (0.40 / 1.51 / 27.6 ns/frame) | one copy in + one copy out; 1-frame buffers are dominated by the per-callback fixed cost. All rows < 0.004% of the buffer period |
 | 2026-10-20 | dee098e | pqdaw --sine 440 (WASAPI shared, Focusrite USB, 48 kHz, 256 frames, block 32) | release | callback mean 1.01 µs, max 13.7 µs; 0 xruns, 0 deadline misses over 3 s | the sine engine: one fastSin per sample + channel copy |
+| 2026-10-20 | 0ff2b68 | dsp atom `add` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.081 ns/sample / 0.060 ns/voice-sample (0.482 ns/frame) | all inputs audio rate (Blk); 2× unrolled AVX2 loop; L1 is vectorised over time |
+| 2026-10-20 | 0ff2b68 | dsp atom `sub` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.082 ns/sample / 0.062 ns/voice-sample (0.497 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `mul` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.081 ns/sample / 0.060 ns/voice-sample (0.479 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `div` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.129 ns/sample / 0.129 ns/voice-sample (1.032 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `min` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.083 ns/sample / 0.061 ns/voice-sample (0.489 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `max` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.083 ns/sample / 0.061 ns/voice-sample (0.486 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `mod` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.131 ns/sample / 0.133 ns/voice-sample (1.064 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `pow` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.851 ns/sample / 0.813 ns/voice-sample (6.507 ns/frame) | exact: MSVC SVML |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_pow` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.672 ns/sample / 0.617 ns/voice-sample (4.934 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `cents_to_hz` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 1.258 ns/sample / 1.236 ns/voice-sample (9.887 ns/frame) | exact: evaluated in double (SVML exp2_pd) |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_cents_to_hz` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.284 ns/sample / 0.249 ns/voice-sample (1.996 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `hz_to_cents` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 1.929 ns/sample / 1.908 ns/voice-sample (15.262 ns/frame) | exact: double log2_pd |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_hz_to_cents` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.437 ns/sample / 0.344 ns/voice-sample (2.750 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `neg` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.074 ns/sample / 0.064 ns/voice-sample (0.512 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `abs` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.074 ns/sample / 0.067 ns/voice-sample (0.538 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `sign` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.090 ns/sample / 0.097 ns/voice-sample (0.776 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `floor` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.080 ns/sample / 0.068 ns/voice-sample (0.542 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `frac` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.094 ns/sample / 0.085 ns/voice-sample (0.681 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `sqrt` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.154 ns/sample / 0.154 ns/voice-sample (1.229 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_sqrt` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.154 ns/sample / 0.154 ns/voice-sample (1.234 ns/frame) | = sqrt (hardware sqrt) |
+| 2026-10-20 | 0ff2b68 | dsp atom `exp` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.284 ns/sample / 0.253 ns/voice-sample (2.027 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_exp` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.262 ns/sample / 0.250 ns/voice-sample (1.996 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `log` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.325 ns/sample / 0.290 ns/voice-sample (2.319 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_log` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.349 ns/sample / 0.291 ns/voice-sample (2.330 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `sin` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.343 ns/sample / 0.307 ns/voice-sample (2.459 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_sin` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.225 ns/sample / 0.208 ns/voice-sample (1.663 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `tan` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.492 ns/sample / 0.440 ns/voice-sample (3.523 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_tan` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.233 ns/sample / 0.223 ns/voice-sample (1.786 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `tanh` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.948 ns/sample / 0.944 ns/voice-sample (7.556 ns/frame) | exact: SVML |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_tanh` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.259 ns/sample / 0.222 ns/voice-sample (1.773 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `db_to_gain` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 1.354 ns/sample / 1.320 ns/voice-sample (10.561 ns/frame) | exact: double exp10_pd |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_db_to_gain` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.260 ns/sample / 0.238 ns/voice-sample (1.907 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `gain_to_db` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 1.547 ns/sample / 1.546 ns/voice-sample (12.366 ns/frame) | exact: double log10_pd |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_gain_to_db` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.334 ns/sample / 0.278 ns/voice-sample (2.223 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `const` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.074 ns/sample / 0.057 ns/voice-sample (0.459 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `clip` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.118 ns/sample / 0.083 ns/voice-sample (0.663 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `lerp` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.118 ns/sample / 0.089 ns/voice-sample (0.716 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `select` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.120 ns/sample / 0.093 ns/voice-sample (0.746 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `muladd` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.117 ns/sample / 0.078 ns/voice-sample (0.621 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `and` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.081 ns/sample / 0.062 ns/voice-sample (0.497 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `or` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.081 ns/sample / 0.062 ns/voice-sample (0.497 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `xor` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.081 ns/sample / 0.063 ns/voice-sample (0.500 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `nand` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.085 ns/sample / 0.068 ns/voice-sample (0.547 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `nor` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.085 ns/sample / 0.069 ns/voice-sample (0.549 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `not` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.074 ns/sample / 0.064 ns/voice-sample (0.512 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `gt` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.084 ns/sample / 0.059 ns/voice-sample (0.475 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `lt` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.084 ns/sample / 0.060 ns/voice-sample (0.478 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `ge` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.084 ns/sample / 0.061 ns/voice-sample (0.490 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `le` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.084 ns/sample / 0.062 ns/voice-sample (0.499 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `eq` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.085 ns/sample / 0.063 ns/voice-sample (0.505 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `ne` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.084 ns/sample / 0.062 ns/voice-sample (0.494 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `gate_to_real` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.074 ns/sample / 0.065 ns/voice-sample (0.518 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `mux` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.392 ns/sample / 0.361 ns/voice-sample (2.884 ns/frame) | 3 data inputs, Spl/Blk chosen at run time |
+| 2026-10-20 | 0ff2b68 | dsp atom `demux` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.413 ns/sample / 0.389 ns/voice-sample (3.113 ns/frame) | 4 outputs |
+| 2026-10-20 | 0ff2b68 | dsp atom `schmitt` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.723 ns/sample / 0.091 ns/voice-sample (0.729 ns/frame) | stateful logic: L1 per-sample recurrence, L8 one __m256 per frame |
+| 2026-10-20 | 0ff2b68 | dsp atom `rise` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.116 ns/sample / 0.066 ns/voice-sample (0.530 ns/frame) | L1 vectorised over time (shifted load) |
+| 2026-10-20 | 0ff2b68 | dsp atom `fall` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.116 ns/sample / 0.066 ns/voice-sample (0.524 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `change` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.116 ns/sample / 0.066 ns/voice-sample (0.528 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `srff` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.477 ns/sample / 0.074 ns/voice-sample (0.589 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `dff` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.600 ns/sample / 0.091 ns/voice-sample (0.727 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `tff` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.573 ns/sample / 0.088 ns/voice-sample (0.707 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `counter` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 2.524 ns/sample / 0.342 ns/voice-sample (2.738 ns/frame) | all 4 inputs audio rate |
+| 2026-10-20 | 0ff2b68 | dsp atom `clockdiv` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 1.346 ns/sample / 0.181 ns/voice-sample (1.445 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `pulse` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.966 ns/sample / 0.142 ns/voice-sample (1.134 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `timer` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.823 ns/sample / 0.128 ns/voice-sample (1.024 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `z1` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.084 ns/sample / 0.027 ns/voice-sample (0.218 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.651 ns/sample / 0.476 ns/voice-sample (3.809 ns/frame) | max 4096; L1 writes 8 ahead and reads with gathers |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay_cubic` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 1.259 ns/sample / 1.029 ns/voice-sample (8.231 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay_allpass` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 2.639 ns/sample / 0.506 ns/voice-sample (4.050 ns/frame) | per-sample recurrence (y1) and one division |
+| 2026-10-20 | 0ff2b68 | dsp atom `samplehold` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.601 ns/sample / 0.091 ns/voice-sample (0.729 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `latch` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.536 ns/sample / 0.079 ns/voice-sample (0.629 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `z1:read` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.517 ns/sample / 0.065 ns/voice-sample (0.520 ns/frame) | split kernel, normally called with frames = 1 (cost there is the call) |
+| 2026-10-20 | 0ff2b68 | dsp atom `z1:write` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.020 ns/sample / 0.002 ns/voice-sample (0.019 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay:read` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 2.192 ns/sample / 0.657 ns/voice-sample (5.254 ns/frame) | split kernel, per-sample path; normally called with frames = 1 |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay_cubic:read` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 5.370 ns/sample / 1.357 ns/voice-sample (10.856 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay_allpass:read` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 3.872 ns/sample / 0.737 ns/voice-sample (5.897 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay:write` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.765 ns/sample / 0.118 ns/voice-sample (0.947 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `phasor` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.584 ns/sample / 0.326 ns/voice-sample (2.608 ns/frame) | Blk hz: exact increment in double per sample; L1 uses an in-register prefix sum |
+| 2026-10-20 | 0ff2b68 | dsp atom `sine` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.322 ns/sample / 0.301 ns/voice-sample (2.409 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `sine_hz` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.925 ns/sample / 0.609 ns/voice-sample (4.875 ns/frame) | phasor + fast_sin fused |
+| 2026-10-20 | 0ff2b68 | dsp atom `wavetable` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.769 ns/sample / 0.559 ns/voice-sample (4.471 ns/frame) | 2048-point saw, 11 mip levels, mip per sample from Δphase, 2 gathers |
+| 2026-10-20 | 0ff2b68 | dsp atom `noise` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.191 ns/sample / 0.164 ns/voice-sample (1.315 ns/frame) | counter hash, block-partition independent |
+| 2026-10-20 | 0ff2b68 | dsp atom `shaper` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.580 ns/sample / 0.431 ns/voice-sample (3.450 ns/frame) | 1025-point curve, 2 gathers |
+| 2026-10-20 | 0ff2b68 | dsp atom `sample_read_linear` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 7.353 ns/sample / 1.034 ns/voice-sample (8.270 ns/frame) | per-sample 32.32 playhead incl. rate→fixed conversion; looping |
+| 2026-10-20 | 0ff2b68 | dsp atom `sample_read_cubic` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 9.098 ns/sample / 1.426 ns/voice-sample (11.405 ns/frame) | per-sample 32.32 playhead; 4 gathers |
+| 2026-10-20 | 0ff2b68 | dsp atom `sample_pos_linear` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.512 ns/sample / 0.431 ns/voice-sample (3.446 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `sample_pos_cubic` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.973 ns/sample / 0.865 ns/voice-sample (6.916 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `add (blk,spl)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.066 ns/sample / 0.053 ns/voice-sample (0.426 ns/frame) | buffer ⊗ param: second input one vector load per block |
+| 2026-10-20 | 0ff2b68 | dsp atom `mul (blk,spl)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.065 ns/sample / 0.042 ns/voice-sample (0.337 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `div (blk,spl)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.128 ns/sample / 0.128 ns/voice-sample (1.025 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `gt (blk,spl)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.067 ns/sample / 0.053 ns/voice-sample (0.427 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `fast_cents_to_hz (blk,spl)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.282 ns/sample / 0.255 ns/voice-sample (2.036 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `muladd (blk,spl,spl)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.078 ns/sample / 0.066 ns/voice-sample (0.532 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `phasor (spl hz, spl reset)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.151 ns/sample / 0.075 ns/voice-sample (0.597 ns/frame) | unmodulated pitch: L1 vectorised over time |
+| 2026-10-20 | 0ff2b68 | dsp atom `phasor (blk hz, spl reset)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.546 ns/sample / 0.272 ns/voice-sample (2.177 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `sine_hz (blk hz, spl reset)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.880 ns/sample / 0.551 ns/voice-sample (4.411 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `sine_hz (spl hz, spl reset)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.409 ns/sample / 0.247 ns/voice-sample (1.978 ns/frame) |  |
+| 2026-10-20 | 0ff2b68 | dsp atom `delay (spl delay)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.649 ns/sample / 0.432 ns/voice-sample (3.456 ns/frame) | param-rate delay time |
+| 2026-10-20 | 0ff2b68 | dsp atom `sample_read_cubic (spl rate, spl reset)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 4.935 ns/sample / 0.951 ns/voice-sample (7.604 ns/frame) |  |

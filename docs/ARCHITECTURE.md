@@ -149,6 +149,7 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - **Bools** are 32-bit lane masks (all ones / zero) in float slots, for both L.
 - **State**: one POD block per stateful node (`atom_state.h`, 32-byte aligned, 8 lanes even for L = 1), sized by `stateBytes(atom, StateInit)` and written by `initState` (no allocation). Its type tag for hot swap is the `Atom` id (plus the lane count for delay lines, whose ring follows the header).
 - **Resources** (wavetables, shaper curves, sample data) are immutable tables built off-thread (`tables.h`) and passed by pointer.
+- **Feedback**: `z1` and the delay lines also have split kernels (`z1:read`/`z1:write`, `delay*:read`/`delay:write`) sharing the atom's state, so a feedback SCC scheduled per sample can read at the start of the sample and write at the end.
 
 ## 4. Data and file formats
 - **Project**: a directory: `project.pqd` (JSON, `"schemaVersion"` field, UTF-8), `patches/*.pqp`, `samples/`, `cache/`.
