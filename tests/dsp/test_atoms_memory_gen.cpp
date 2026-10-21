@@ -407,6 +407,29 @@ TEST_CASE("dsp atoms: delay and z1 split kernels (per-sample feedback) match the
   }
 }
 
+TEST_CASE("dsp atoms: z1 starts at StateInit::z1Init (the language's `init`), fused and split") {
+  for (uint32_t lanes : {1u, 8u}) {
+    pq::dsp::StateInit init;
+    init.lanes = lanes;
+    init.z1Init = 0.25f;
+    for (Atom a : {Atom::Z1, Atom::Z1Read, Atom::Z1Write}) {
+      REQUIRE(pq::dsp::stateBytes(a, init) == sizeof(pq::dsp::Z1State));
+      pq::dsp::Z1State s;
+      pq::dsp::initState(a, &s, init);
+      for (float v : s.last) CHECK(v == 0.25f);
+    }
+    pq::dsp::Z1State s;
+    pq::dsp::initState(Atom::Z1, &s, init);
+    std::vector<float> x(4 * lanes), y(4 * lanes);
+    for (uint32_t i = 0; i < x.size(); ++i) x[i] = static_cast<float>(i + 1);
+    runBlock(Atom::Z1, lanes, &s, {x.data()}, {y.data()}, 4);
+    for (uint32_t l = 0; l < lanes; ++l) {
+      CHECK(y[l] == 0.25f);                  // first output: the init value
+      CHECK(y[lanes + l] == x[l]);           // then x delayed by one sample
+    }
+  }
+}
+
 TEST_CASE("dsp atoms: a feedback comb filter through the split delay kernels matches a double reference") {
   // y[n] = x[n] + g·delay(y)[n], delay modulated around 20.5 samples; per-sample read → math → write.
   constexpr uint32_t T = 3000;

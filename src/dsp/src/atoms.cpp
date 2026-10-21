@@ -142,6 +142,13 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
   if (bytes == 0 || state == nullptr) return;
   std::memset(state, 0, bytes);  // every field's initial value is 0 / false unless set below
   switch (a) {
+    case Atom::Z1:
+    case Atom::Z1Read:
+    case Atom::Z1Write: {
+      auto& s = *static_cast<Z1State*>(state);
+      for (float& v : s.last) v = init.z1Init;
+      break;
+    }
     case Atom::ClockDiv: {
       auto& s = *static_cast<ClockDivState*>(state);
       for (int32_t& k : s.k) k = -1;

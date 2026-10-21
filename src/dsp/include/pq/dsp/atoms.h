@@ -51,7 +51,7 @@
 //   timer (trig, duration)            on trig edge: high for N = round(duration) samples, starting at the edge
 //                                     sample (retriggerable; N ≤ 0 or NaN: no output; N ≤ 2147483520)
 // Memory:
-//   z1 (x)                            x delayed by one sample (initially 0)
+//   z1 (x)                            x delayed by one sample (initially StateInit::z1Init, default 0)
 //   delay / delay_cubic / delay_allpass (x, delay)  delay in SAMPLES (the compiler multiplies a time in
 //                                     seconds by sr), fractional, clamped to [1, max] linear, [2, max] cubic
 //                                     (4-point Hermite), [1.5, max] allpass (first-order allpass, fractional
@@ -154,6 +154,8 @@ struct StateInit {
   uint32_t lanes = 1;            // 1 or 8 (only the delay line's ring layout depends on it)
   uint32_t maxDelayFrames = 0;   // delay lines: largest delay in samples (≤ 2^30)
   uint32_t seed = 0;             // noise: per-node seed (e.g. the NodeId), mixed with the lane index
+  float z1Init = 0.0f;           // z1, z1:read, z1:write: the output before the first input (the language's `init`
+                                 // input, a const; for a bool z1 pass boolMask(true) or 0)
 };
 
 // Bytes of state (0 for stateless atoms). For delay lines: header + ring. Not RT-relevant.

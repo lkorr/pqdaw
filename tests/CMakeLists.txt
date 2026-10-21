@@ -89,6 +89,7 @@ pq_add_test(pq_tests_graph
     graph/test_parse_roundtrip.cpp
     graph/test_parse_errors.cpp
     graph/test_parse_fuzz.cpp
+    graph/test_kernel_map.cpp
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks.

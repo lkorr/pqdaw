@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include "pq/dsp/atom_state.h"
 #include "pq/graph/atoms.h"
 
 using namespace pq::graph;
@@ -22,23 +23,25 @@ const AtomSignature& sig(std::string_view name) {
 
 TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is registered") {
   // SPEC §7.2 (flip-flops are srff/dff/tff because `sr` is the sample-rate constant), plus the operator atoms of
-  // PATCH_LANGUAGE §2 and the voice/transport namespaces of §3.
+  // PATCH_LANGUAGE §2 and the voice/transport namespaces of §3. Q14 (T1.3) added the kernels' fast_ conversions and
+  // muladd, split sampleRead into the kernels' sample_read_* / sample_pos_*, and added the voice reducers (§7.4).
   const char* names[] = {
       "phasor", "sine", "sine_hz", "wavetable", "noise",
       "add", "sub", "mul", "div", "mod", "neg", "min", "max", "clip", "abs", "sign", "floor", "frac",
       "tan", "tanh", "exp", "log", "pow", "sqrt", "sin",
       "fast_tan", "fast_tanh", "fast_exp", "fast_log", "fast_pow", "fast_sqrt", "fast_sin",
       "cents_to_hz", "hz_to_cents", "db_to_gain", "gain_to_db", "select", "lerp", "gate_to_real",
+      "fast_cents_to_hz", "fast_hz_to_cents", "fast_db_to_gain", "fast_gain_to_db", "muladd",
       "shaper",
       "z1", "delay", "delay_allpass", "delay_cubic", "samplehold", "latch",
       "lt", "le", "gt", "ge", "eq", "ne", "and", "or", "xor", "nand", "nor", "not",
       "schmitt", "rise", "fall", "change", "srff", "dff", "tff", "counter", "clockdiv", "mux", "demux",
       "pulse", "timer",
-      "channel", "pack",
+      "channel", "pack", "voice_sum", "voice_last", "voice_highest", "voice_lowest", "voice_loudest",
       "voice.hz", "voice.cents", "voice.gate", "voice.trigger", "voice.velocity", "voice.release",
       "voice.ratio", "voice.harmonic", "voice.unisonCount", "voice.index",
       "transport.bpm", "transport.beat", "transport.barPhase", "transport.playing", "sr",
-      "sampleRead", "track.in", "sidechain.in", "send", "clipPlayer",
+      "sample_read_linear", "sample_read_cubic", "sample_pos_linear", "sample_pos_cubic", "track.in", "sidechain.in", "send", "clipPlayer",
   };
   for (const char* n : names) {
     CAPTURE(n);
@@ -117,14 +120,14 @@ TEST_CASE("atoms: selected signatures (data the compiler relies on)") {
   CHECK(phasor.inputs[1].name == "reset");
   CHECK(phasor.inputs[1].optional);
   CHECK(phasor.inputs[1].type.kind == Kind::Bool);
-  CHECK(phasor.stateBytes == 4);  // uint32 phase accumulator
+  CHECK(phasor.stateBytes == sizeof(pq::dsp::PhasorState));  // the kernel's state block (uint32 phase per lane)
   CHECK(phasor.outputs[0].type.rate == Rate::Audio);
 
   const AtomSignature& z1 = sig("z1");
   CHECK(z1.inputs[0].delayed);
   CHECK(z1.inputs[0].type.kind == Kind::Infer);  // any kind: z1 of a bool is a bool
   CHECK(z1.inputs[1].type.rate == Rate::Const);
-  CHECK(z1.stateBytes == 4);
+  CHECK(z1.stateBytes == sizeof(pq::dsp::Z1State));
 
   const AtomSignature& latch = sig("latch");
   CHECK(latch.has(atom_flags::kStateful));

@@ -2,6 +2,7 @@ pq_add_module(pq_graph
   SOURCES
     src/types.cpp
     src/atoms.cpp
+    src/kernel_map.cpp
     src/patch.cpp
     src/validate.cpp
     src/patch_equal.cpp
@@ -10,5 +11,5 @@ pq_add_module(pq_graph
     src/text_common.cpp
     src/parse.cpp
     src/print.cpp
-  DEPS pq_core
+  DEPS pq_core pq_dsp
 )

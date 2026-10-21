@@ -5,6 +5,8 @@
 #include <cassert>
 #include <cstdlib>
 
+#include "pq/dsp/atom_state.h"
+
 namespace pq::graph {
 
 namespace {
@@ -27,6 +29,8 @@ constexpr PortType kGlobalRP = portType(Kind::Real, Rate::Param, Poly::Global, k
 constexpr PortType kGlobalBP = portType(Kind::Bool, Rate::Param, Poly::Global, kWidthMono);
 constexpr PortType kGlobalRC = portType(Kind::Real, Rate::Const, Poly::Global, kWidthMono);
 constexpr PortType kGlobalAudioN = portType(Kind::Real, Rate::Audio, Poly::Global, kWidthInfer);
+constexpr PortType kRParamBound = portType(Kind::Real, Rate::Param);  // read once per block by the kernel
+constexpr PortType kGlobalAny = portType(Kind::Infer, Rate::Infer, Poly::Global);
 
 // Reference pitch default (SPEC §15: C3 = 261.626 Hz), used by cents_to_hz / hz_to_cents when `ref` is unconnected.
 constexpr float kRefHz = 261.626f;
@@ -47,7 +51,8 @@ constexpr PortSpec pBoolAB[] = {{"a", kB}, {"b", kB}};
 
 constexpr PortSpec pPhasor[] = {{"hz", kR, false, 0.0f, true}, {"reset", kB, true, 0.0f}};
 constexpr PortSpec pSine[] = {{"phase", kR}};
-constexpr PortSpec pWavetable[] = {{"phase", kR}, {"hz", kR, true, 0.0f}, {"table", kRConst, true, 0.0f}};
+// The kernel picks the mipmap from the phase increment (T1.6), so wavetable has no `hz` input.
+constexpr PortSpec pWavetable[] = {{"phase", kR}, {"table", kRConst, true, 0.0f}};
 constexpr PortSpec pNoise[] = {{"seed", kRConst, true, 0.0f}};
 
 constexpr PortSpec pClip[] = {{"x", kR}, {"lo", kR}, {"hi", kR}};
@@ -69,6 +74,7 @@ constexpr PortSpec pClockdiv[] = {{"clk", kB}, {"div", kR}};
 constexpr PortSpec pMux[] = {{"index", kR}, {"in", kAny}};
 constexpr PortSpec pDemuxIn[] = {{"index", kR}, {"x", kAny}};
 constexpr PortSpec pTimer[] = {{"trig", kB}, {"dur", kR}};
+constexpr PortSpec pPulse[] = {{"period", kR, true, 0.0f}};
 
 constexpr PortSpec pZ1[] = {{"x", kAny, false, 0.0f, true}, {"init", kRConst, true, 0.0f}};
 constexpr PortSpec pDelay[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}};
@@ -89,8 +95,20 @@ constexpr PortSpec pGlobalBP[] = {{"out", kGlobalBP}};
 constexpr PortSpec pGlobalRC[] = {{"out", kGlobalRC}};
 constexpr PortSpec pGlobalAudioN[] = {{"out", kGlobalAudioN}};
 
-constexpr PortSpec pSampleRead[] = {
-    {"sample", kRConst}, {"pos", kR}, {"loopStart", kR, true, 0.0f}, {"loopEnd", kR, true, 0.0f}};
+// Sample playback (T1.6 kernels): `sample` names the buffer (a resource). Positions are in frames of the buffer.
+// sample_read_*: 32.32 fixed-point playhead that advances by `rate` frames per sample (so `rate` is a delayed
+// input); start/loopStart/loopEnd are read once per block (param-rate bound).
+constexpr PortSpec pSampleRead[] = {{"sample", kRConst},
+                                    {"rate", kR, false, 0.0f, true},
+                                    {"reset", kB, true, 0.0f},
+                                    {"start", kRParamBound, true, 0.0f},
+                                    {"loopStart", kRParamBound, true, 0.0f},
+                                    {"loopEnd", kRParamBound, true, 0.0f}};
+constexpr PortSpec pSampleReadOut[] = {{"out", kRAudio}, {"playing", kBAudio}};
+constexpr PortSpec pSamplePos[] = {{"sample", kRConst}, {"pos", kR}};
+constexpr PortSpec pReduce[] = {{"x", kAny}};
+constexpr PortSpec pReduceOut[] = {{"out", kGlobalAny}};
+constexpr PortSpec pMulAdd[] = {{"a", kR}, {"b", kR}, {"c", kR}};
 constexpr PortSpec pSend[] = {{"x", kR}, {"bus", kRConst}};
 constexpr PortSpec pClipPlayer[] = {{"clip", kRConst}};
 
@@ -103,16 +121,23 @@ constexpr uint32_t kFast = kBroadcast | kFastApprox;
 
 using C = AtomCategory;
 
+// State block sizes are the dsp kernels' (T1.6): one block per node per channel, holding 8 voice lanes (a voice
+// group) or one global instance in lane 0. Delay lines add their ring (kVariableState).
+constexpr uint32_t kPhasorState = sizeof(dsp::PhasorState);
+constexpr uint32_t kEdgeState = sizeof(dsp::EdgeState);
+constexpr uint32_t kFlipFlopState = sizeof(dsp::FlipFlopState);
+constexpr uint32_t kDelayState = sizeof(dsp::DelayState);
+
 // Order is free (lookup goes through the sorted name index); grouped as in SPEC §7.2.
 const AtomSignature kAtoms[] = {
     // Generators. phasor keeps a uint32 fixed-point phase (CLAUDE.md §3); its output is the phase before the
     // increment, so `hz` only affects the next sample (delayed) while `reset` acts immediately.
-    {"phasor", C::Generator, pPhasor, pOutRAudio, 4, kStateful, 0, {}, "phase 0..1 at hz; reset (sync) restarts at 0"},
+    {"phasor", C::Generator, pPhasor, pOutRAudio, kPhasorState, kStateful, 0, {}, "phase 0..1 at hz; reset (sync) restarts at 0"},
     {"sine", C::Generator, pSine, pOutR, 0, kMath, 0, {}, "sin(2π·phase) of a 0..1 phase"},
-    {"sine_hz", C::Generator, pPhasor, pOutRAudio, 4, kStateful, 0, {}, "sine oscillator at hz (= sine(phasor(hz)))"},
-    {"wavetable", C::Generator, pWavetable, pOutR, 4, kStateful | kBroadcast, 0, {},
-     "band-limited table read by phase; mipmap chosen from hz, or from the phase increment when hz = 0"},
-    {"noise", C::Generator, pNoise, pOutRAudio, 4, kStateful, 0, {}, "white noise in −1..1 (uint32 generator state)"},
+    {"sine_hz", C::Generator, pPhasor, pOutRAudio, kPhasorState, kStateful, 0, {}, "sine oscillator at hz (= sine(phasor(hz)))"},
+    {"wavetable", C::Generator, pWavetable, pOutR, sizeof(dsp::WavetableState), kStateful | kBroadcast, 0, {},
+     "band-limited table read by phase; mipmap chosen from the phase increment"},
+    {"noise", C::Generator, pNoise, pOutRAudio, sizeof(dsp::NoiseState), kStateful, 0, {}, "white noise in −1..1 (uint32 generator state)"},
 
     // Math (exact). Operators: + − * / % unary − map to add sub mul div mod neg.
     {"add", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "a + b"},
@@ -143,6 +168,11 @@ const AtomSignature kAtoms[] = {
     {"fast_pow", C::Math, pAB, pOutR, 0, kFast, 0, "pow", "approximate a^b"},
     {"fast_sqrt", C::Math, pX, pOutR, 0, kFast, 0, "sqrt", "approximate √x"},
     {"fast_sin", C::Math, pX, pOutR, 0, kFast, 0, "sin", "approximate sin(x)"},
+    {"fast_cents_to_hz", C::Math, pCentsToHz, pOutR, 0, kFast, 0, "cents_to_hz", "approximate ref · 2^(cents/1200)"},
+    {"fast_hz_to_cents", C::Math, pHzToCents, pOutR, 0, kFast, 0, "hz_to_cents", "approximate 1200 · log2(hz/ref)"},
+    {"fast_db_to_gain", C::Math, pDb, pOutR, 0, kFast, 0, "db_to_gain", "approximate 10^(db/20)"},
+    {"fast_gain_to_db", C::Math, pGain, pOutR, 0, kFast, 0, "gain_to_db", "approximate 20 · log10(gain)"},
+    {"muladd", C::Math, pMulAdd, pOutR, 0, kMath, 0, {}, "a · b + c, fused (one rounding)"},
     // Conversions and selection.
     {"cents_to_hz", C::Math, pCentsToHz, pOutR, 0, kMath, 0, {}, "ref · 2^(cents/1200)"},
     {"hz_to_cents", C::Math, pHzToCents, pOutR, 0, kMath, 0, {}, "1200 · log2(hz/ref)"},
@@ -155,22 +185,27 @@ const AtomSignature kAtoms[] = {
     // Shaping.
     {"shaper", C::Shaping, pShaper, pOutR, 0, kMath, 0, {}, "transfer curve: table read by input value"},
 
-    // Memory. delay*: time in seconds, max (const) sizes the buffer; the read is clamped to ≥ 1 sample, which is
-    // what makes x a delayed input.
-    {"z1", C::Memory, pZ1, pOutAny, 4, kStateful, 0, {}, "one-sample delay"},
-    {"delay", C::Memory, pDelay, pOutR, 8, kStateful | kVariableState | kBroadcast, 0, {}, "delay line, linear read"},
-    {"delay_allpass", C::Memory, pDelay, pOutR, 12, kStateful | kVariableState | kBroadcast, 0, {},
-     "delay line, allpass-interpolated read"},
-    {"delay_cubic", C::Memory, pDelay, pOutR, 8, kStateful | kVariableState | kBroadcast, 0, {},
-     "delay line, cubic read"},
-    {"samplehold", C::Memory, pSampleHold, pOutR, 4, kStateful | kBroadcast, 0, {}, "x sampled on each true trig"},
-    {"latch", C::Memory, pLatch, pOutAny, 4, kStateful, 0, {}, "x while enable, else the last value"},
+    // Memory. delay*: time in seconds (the compiler multiplies by sr; the kernels take samples), max (const,
+    // seconds) sizes the buffer. The read is clamped to at least 1 (linear), 2 (cubic) or 1.5 (allpass) samples,
+    // so every interpolation tap is ≥ 1 sample old: that is what makes x a delayed input (Q14).
+    {"z1", C::Memory, pZ1, pOutAny, sizeof(dsp::Z1State), kStateful, 0, {}, "one-sample delay (starts at init)"},
+    {"delay", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
+     "delay line, linear read (≥ 1 sample)"},
+    {"delay_allpass", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
+     "delay line, allpass-interpolated read (≥ 1.5 samples)"},
+    {"delay_cubic", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
+     "delay line, cubic read (≥ 2 samples)"},
+    {"samplehold", C::Memory, pSampleHold, pOutR, sizeof(dsp::SampleHoldState), kStateful | kBroadcast, 0, {},
+     "x sampled on each rising edge of trig"},
+    {"latch", C::Memory, pLatch, pOutAny, sizeof(dsp::LatchState), kStateful, 0, {},
+     "x while enable, else the last value"},
 
     // Logic. Comparators (real → bool): < <= > >= == != map to lt le gt ge eq ne; && || ^^ ! map to and or xor not.
     {"lt", C::Logic, pAB, pOutB, 0, kMath, 0, {}, "a < b"},
     {"le", C::Logic, pAB, pOutB, 0, kMath, 0, {}, "a ≤ b"},
     {"gt", C::Logic, pAB, pOutB, 0, kMath, 0, {}, "a > b"},
     {"ge", C::Logic, pAB, pOutB, 0, kMath, 0, {}, "a ≥ b"},
+    // eq/ne also compare bools; infer() rewrites those to not(xor) / xor (the dsp comparators are real-only).
     {"eq", C::Logic, pAnyAB, pOutB, 0, kMathC, 0, {}, "a == b (both real or both bool)"},
     {"ne", C::Logic, pAnyAB, pOutB, 0, kMathC, 0, {}, "a != b (both real or both bool)"},
     {"and", C::Logic, pBoolAB, pOutB, 0, kMathC, 0, {}, "a ∧ b"},
@@ -179,27 +214,37 @@ const AtomSignature kAtoms[] = {
     {"nand", C::Logic, pBoolAB, pOutB, 0, kMathC, 0, {}, "¬(a ∧ b)"},
     {"nor", C::Logic, pBoolAB, pOutB, 0, kMathC, 0, {}, "¬(a ∨ b)"},
     {"not", C::Logic, pBoolX, pOutB, 0, kMath, 0, {}, "¬x"},
-    {"schmitt", C::Logic, pSchmitt, pOutBAudio, 4, kStateful | kBroadcast, 0, {},
+    {"schmitt", C::Logic, pSchmitt, pOutBAudio, sizeof(dsp::SchmittState), kStateful | kBroadcast, 0, {},
      "true above hi, false below lo, else unchanged"},
-    {"rise", C::Logic, pBoolX, pOutBAudio, 4, kStateful, 0, {}, "true for one sample when x goes false → true"},
-    {"fall", C::Logic, pBoolX, pOutBAudio, 4, kStateful, 0, {}, "true for one sample when x goes true → false"},
-    {"change", C::Logic, pBoolX, pOutBAudio, 4, kStateful, 0, {}, "true for one sample when x changes"},
+    {"rise", C::Logic, pBoolX, pOutBAudio, kEdgeState, kStateful, 0, {}, "true for one sample when x goes false → true"},
+    {"fall", C::Logic, pBoolX, pOutBAudio, kEdgeState, kStateful, 0, {}, "true for one sample when x goes true → false"},
+    {"change", C::Logic, pBoolX, pOutBAudio, kEdgeState, kStateful, 0, {}, "true for one sample when x changes"},
     // Flip-flops are srff/dff/tff, not sr/d/t: `sr` is the sample-rate constant (PATCH_LANGUAGE §3).
-    {"srff", C::Logic, pSrff, pQ, 4, kStateful, 0, {}, "set/reset flip-flop (reset wins)"},
-    {"dff", C::Logic, pDff, pQ, 4, kStateful, 0, {}, "D flip-flop: q = d on each rising clk"},
-    {"tff", C::Logic, pTff, pQ, 4, kStateful, 0, {}, "T flip-flop: q toggles on each rising clk while t"},
-    {"counter", C::Logic, pCounter, pOutRAudio, 8, kStateful, 0, {},
-     "+1 on rising up, −1 on rising down, 0 on reset; wraps to 0 at wrap when wrap > 0"},
-    {"clockdiv", C::Logic, pClockdiv, pOutBAudio, 8, kStateful, 0, {}, "one true clk in every div passes"},
+    {"srff", C::Logic, pSrff, pQ, kFlipFlopState, kStateful, 0, {}, "set/reset flip-flop (reset wins)"},
+    {"dff", C::Logic, pDff, pQ, kFlipFlopState, kStateful, 0, {}, "D flip-flop: q = d on each rising clk"},
+    {"tff", C::Logic, pTff, pQ, kFlipFlopState, kStateful, 0, {}, "T flip-flop: q toggles on each rising clk while t"},
+    {"counter", C::Logic, pCounter, pOutRAudio, sizeof(dsp::CounterState), kStateful, 0, {},
+     "+1 on rising up, −1 on rising down, 0 while reset; wraps within [0, wrap − 1] when wrap ≥ 1"},
+    {"clockdiv", C::Logic, pClockdiv, pOutBAudio, sizeof(dsp::ClockDivState), kStateful, 0, {},
+     "passes every div-th clk pulse (the first one included)"},
     {"mux", C::Logic, pMux, pOutAny, 0, kVariadicInputs, 2, {}, "in[clamp(floor(index))]"},
     {"demux", C::Logic, pDemuxIn, pOutAny, 0, kVariadicOutputs, 2, {}, "x to out[floor(index)], others 0/false"},
-    {"pulse", C::Logic, kNoPorts, pOutBAudio, 4, kStateful, 0, {},
-     "true on the first sample the instance runs (program start, voice start)"},
-    {"timer", C::Logic, pTimer, pOutBAudio, 8, kStateful, 0, {}, "true for dur seconds after each rising trig"},
+    {"pulse", C::Logic, pPulse, pOutBAudio, sizeof(dsp::PulseState), kStateful, 0, {},
+     "one-sample pulse when the instance starts, then every period seconds (period ≤ 0: once)"},
+    {"timer", C::Logic, pTimer, pOutBAudio, sizeof(dsp::TimerState), kStateful, 0, {},
+     "true for dur seconds from each rising trig"},
 
     // Structure: x[i] is channel(x, i); a tuple (a, b, …) is pack(a, b, …).
     {"channel", C::Structure, pChannel, pChannelOut, 0, 0, 0, {}, "channel i of a multichannel signal"},
     {"pack", C::Structure, pPack, pOutAny, 0, kVariadicInputs, 2, {}, "channels side by side (a, b, …)"},
+    // Voice → global reducers (SPEC §7.4). infer() inserts voice_sum where a voice signal meets a global input;
+    // calling one explicitly is the per-wire override. A global x passes through unchanged. On bools, sum is any
+    // (or); highest/lowest are or/and; loudest is the value with the largest magnitude.
+    {"voice_sum", C::Structure, pReduce, pReduceOut, 0, 0, 0, {}, "sum over the active voices (bool: any)"},
+    {"voice_last", C::Structure, pReduce, pReduceOut, 0, 0, 0, {}, "value of the most recently started voice"},
+    {"voice_highest", C::Structure, pReduce, pReduceOut, 0, 0, 0, {}, "largest value over the active voices"},
+    {"voice_lowest", C::Structure, pReduce, pReduceOut, 0, 0, 0, {}, "smallest value over the active voices"},
+    {"voice_loudest", C::Structure, pReduce, pReduceOut, 0, 0, 0, {}, "value with the largest |x| over the voices"},
 
     // Voice sources (SPEC §7.2 Events and voices).
     {"voice.hz", C::Voice, kNoPorts, pVoiceRA, 0, kNeedsVoice, 0, {}, "voice frequency, float32 Hz"},
@@ -221,8 +266,14 @@ const AtomSignature kAtoms[] = {
     {"sr", C::Transport, kNoPorts, pGlobalRC, 0, 0, 0, {}, "sample rate (const after specialisation)"},
 
     // Samples and I/O.
-    {"sampleRead", C::Sample, pSampleRead, pOutAny, 0, 0, 0, {},
-     "interpolated read of sample buffer `sample` at frame position pos, looping when loopEnd > loopStart"},
+    {"sample_read_linear", C::Sample, pSampleRead, pSampleReadOut, sizeof(dsp::SampleReadState), kStateful, 0, {},
+     "sample playback at rate (frames/sample), linear interpolation; loops when loopEnd > loopStart"},
+    {"sample_read_cubic", C::Sample, pSampleRead, pSampleReadOut, sizeof(dsp::SampleReadState), kStateful, 0, {},
+     "sample playback at rate (frames/sample), cubic interpolation; loops when loopEnd > loopStart"},
+    {"sample_pos_linear", C::Sample, pSamplePos, pOutR, 0, kBroadcast, 0, {},
+     "sample value at frame position pos (linear interpolation; 0 outside the buffer)"},
+    {"sample_pos_cubic", C::Sample, pSamplePos, pOutR, 0, kBroadcast, 0, {},
+     "sample value at frame position pos (cubic interpolation; 0 outside the buffer)"},
     {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input"},
     {"sidechain.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the device's sidechain input"},
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},

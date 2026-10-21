@@ -9,7 +9,7 @@ patch Atoms {
   parts = demux(sel > 0.2 ? 1 : 0, sel)
   hi    = parts.out1
   lo    = parts.out0
-  w     = wavetable(phasor(voice.hz), hz: voice.hz)
+  w     = wavetable(phasor(voice.hz))
   n     = noise(seed: 7)
   sh    = samplehold(n, transport.playing && rise(gate))
   cl    = clip(sh, -1, 1) + lerp(lo, hi, 0.5) + sign(w) + floor(w) + frac(w) + abs(w)
@@ -20,9 +20,9 @@ patch Atoms {
   tempo = transport.bpm / 60 + transport.beat + transport.barPhase + sr / 48000
   vs    = voice.velocity + voice.release + voice.ratio + voice.harmonic + voice.unisonCount + voice.index
           + gate_to_real(voice.trigger) + voice.hz
-  logic = schmitt(f, -0.1, 0.1) && fall(gate) || change(gate) ^^ tff(gate, pulse()) || dff(gate, rise(gate))
+  logic = schmitt(f, -0.1, 0.1) && fall(gate) || change(gate) ^^ tff(gate, pulse(10ms)) || dff(gate, rise(gate))
           && nand(gate, gate) || nor(gate, timer(gate, 50ms)) || clockdiv(gate, 3) || srff(gate, !gate)
-  played = sampleRead(1, voice.hz * 0.01, loopStart: 0, loopEnd: 100)
+  played = sample_read_cubic(1, voice.hz * 0.01, loopStart: 0, loopEnd: 100) + sample_pos_linear(1, 10)
   io    = track.in + sidechain.in + clipPlayer(0)
   sent  = send(f, 2)
   ops   = add(1, 2) * mul(3, 4) - select(gate, 1, 0) + channel(pack(1, 2), 1) + neg(f)

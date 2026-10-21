@@ -122,7 +122,7 @@ TEST_CASE("fuzz: the printer turns random graphs into text that parses back to t
   std::mt19937 rng(4242);
   const char* const atoms[] = {"add", "sub", "mul", "div", "mod", "neg", "not", "and", "lt", "eq", "select",
                                "channel", "pack", "z1", "sine", "phasor", "tanh", "mux", "demux", "counter",
-                               "voice.hz", "sr", "pulse", "noise", "clip", "lerp", "sampleRead"};
+                               "voice.hz", "sr", "pulse", "noise", "clip", "lerp", "sample_read_cubic"};
   int checked = 0;
   for (int iter = 0; iter < 2000; ++iter) {
     Patch p("R");

@@ -23,10 +23,10 @@ enum class AtomCategory : uint8_t {
   Shaping,    // shaper
   Memory,     // z1, delay*, samplehold, latch
   Logic,      // bool gates, comparators, edge detectors, flip-flops, counters, mux/demux
-  Structure,  // channel select, pack
+  Structure,  // channel select, pack, voice→global reducers (voice_sum …)
   Voice,      // voice.* sources
   Transport,  // transport.* sources, sr
-  Sample,     // sampleRead
+  Sample,     // sample_read_*, sample_pos_*
   Io,         // track.in, sidechain.in, send, clipPlayer
 };
 
@@ -61,8 +61,10 @@ struct AtomSignature {
   AtomCategory category;
   std::span<const PortSpec> inputs;
   std::span<const PortSpec> outputs;
-  // Bytes of state per channel per voice lane (0 = stateless). With kVariableState this is the fixed part only;
-  // the scheduler (T1.5) adds the buffer size computed from the const inputs.
+  // Bytes of the kernel's state block (pq/dsp/atom_state.h) per channel: one block holds a voice group (8 lanes) or
+  // one global instance (0 = stateless or engine-owned). With kVariableState this is the fixed part (header) only;
+  // the scheduler (T1.5) adds the ring computed from the const inputs (dsp::stateBytes). kernel_map.h maps every
+  // atom to its kernel and is checked against this table by the tests.
   uint32_t stateBytes = 0;
   uint32_t flags = 0;
   uint16_t minRepeat = 0;               // for variadic signatures: minimum count of the repeated port
