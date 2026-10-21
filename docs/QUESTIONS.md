@@ -460,21 +460,21 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Unison phase sharing (SPEC §5) is not implemented: the design allows it (a NoteOn could name a sibling note whose lane state is copied instead of the StateInit template, the same per-lane word copy as the reset).
 - Status: open (review with T3.16 / T3.17)
 
-## Q?-T1b.1-a · 2026-10-21 · T1b.1 · `jit` depends on `engine`, not the other way round
+## Q63 · 2026-10-21 · T1b.1 · `jit` depends on `engine`, not the other way round
 - Context: ARCHITECTURE §1 drew engine → jit, but the JIT must produce an `engine::ProgramImage` (the ABI lives in engine since T1.7, Q54), so jit includes engine headers.
 - Choice: `pq_jit` depends on `pq_engine` (+ graph, dsp, LLVM); the engine never includes jit. Whoever runs the compiler worker (the app, T1b.5) calls `jit::Compiler::compile` and hands the image to the engine like any other image. ARCHITECTURE updated (arrow reversed).
 - Options: A) as above; B) move the ProgramImage ABI headers into a small module below both (e.g. `program`), letting the engine call the compiler directly. B only matters if the engine itself must trigger compiles; it does not today.
 - Provisional choice: A (reversible: moving headers later is mechanical).
 - Status: open
 
-## Q?-T1b.1-b · 2026-10-21 · T1b.1 · Contraction on by default, so the JIT differs from the interpreter in the last bits
+## Q64 · 2026-10-21 · T1b.1 · Contraction on by default, so the JIT differs from the interpreter in the last bits
 - Context: TASKS T1b.1 allows `contract` and `afn`. With `contract`, LLVM fuses a·b + c written as separate ops (mul then add) into one FMA: one rounding instead of two. The interpreter rounds twice.
 - Measured: with contraction off the JIT is bit-identical to the interpreter on the whole corpus (224 runs + the stateful-loop and VoiceEngine tests); with it on, max |Δ| 5.4e-7 (criterion 1e-6). `afn` has no effect (exact transcendentals are calls to the CRT/SVML the kernels use; fast_ functions are generated from fast_math.h's own polynomials).
 - Options: A) contract on (the policy; a little faster and more accurate); B) off by default (bit-identical interpreter → JIT swaps in T1b.5, no sub-ulp step at the swap). The difference is ~1e-7 relative, far below audibility, but a comparison that flips (`level >= 0.999` one sample earlier) is possible in principle.
 - Provisional choice: A per the TASKS policy; `CompileOptions::contract = false` gives B.
 - Status: open
 
-## Q?-T1b.1-c · 2026-10-21 · T1b.1 · Default IR pipeline: a light custom pipeline instead of LLVM O2/O3
+## Q65 · 2026-10-21 · T1b.1 · Default IR pipeline: a light custom pipeline instead of LLVM O2/O3
 - Context: TASKS asks for O2/O3 with compile time vs code speed measured. The generated IR is already SSA, explicitly vectorised and fused, with invariants hoisted.
 - Measured (release, bench/RESULTS.md): a light pipeline (SROA, EarlyCSE, SimplifyCFG, LoopRotate + LICM) gives the same run time as O2/O3 within machine noise on every benchmark patch, at 2.5–5× less compile time (100-step chain ≈ 40 ms vs 130–220 ms). InstCombine made the interleaved loops slower and is left out. O0 loses state promotion in per-sample loops (loop_z1 3.6 vs 2.1 ns).
 - Options: A) light by default (`optLevel = 1`); B) O2.

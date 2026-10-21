@@ -164,7 +164,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
 
 ## M1b: JIT
 
-- [~] **T1b.1 LLVM codegen** *(worker AF, branch task/T1b.1-llvm-codegen)* (`jit`). Depends on: T1.7.
+- [x] **T1b.1 LLVM codegen** *(6562fdb)* (`jit`). Depends on: T1.7.
   - Lowers a Schedule to LLVM IR with the same ProgramImage ABI. Scalar first. Host CPU features and target machine options. Fast-math flags policy: `contract` and `afn` allowed; no `nnan`/`ninf`; denormals FTZ.
   - Accept: every interpreter test passes with the JIT backend producing output identical within 1e-6. Compile time for a 100-node patch is recorded.
 

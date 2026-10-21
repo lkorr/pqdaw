@@ -32,7 +32,7 @@ This document fixes the module layout and the interfaces between modules so that
    └──────────────────────────────────────────────────────┘
 ```
 
-Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `jit` sits above `engine` (T1b.1): it produces `engine::ProgramImage`s, so it includes engine headers; the engine never includes `jit` — whoever owns the compiler worker (the app) hands compiled images to the engine (QUESTIONS Q?-T1b.1-a). `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (a wall-clock `SimulatedTransport` until T3.17 puts it over the engine). `app` depends on `views` + `engine`.
+Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `jit` sits above `engine` (T1b.1): it produces `engine::ProgramImage`s, so it includes engine headers; the engine never includes `jit` — whoever owns the compiler worker (the app) hands compiled images to the engine (QUESTIONS Q63). `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (a wall-clock `SimulatedTransport` until T3.17 puts it over the engine). `app` depends on `views` + `engine`.
 
 | Module | CMake target | Namespace | Contents |
 |---|---|---|---|
