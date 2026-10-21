@@ -242,7 +242,7 @@ void checkGeometry(const DrawList& ours, const ImDrawList& ref, Stats& st, size_
 
 void report(const std::string& what, const Stats& st, const char* unit = "px") {
   MESSAGE(what << ": " << st.vertices << " vertices, " << st.exactCoords << "/" << st.coords
-               << " coordinates bit-identical, max " << st.maxUlps << " ulp (" << st.maxAbs << " " << unit << ")");
+               << " coordinates bit-identical, max " << st.maxUlps << " ulp (" << st.maxAbs << " " << std::string(unit) << ")");
 }
 
 // --- PQ Meter call sequences that live inside module members (transcribed; see the header comment) -------
