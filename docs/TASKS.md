@@ -64,7 +64,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - Implements `docs/PATCH_LANGUAGE.md` v0 exactly: units, imports, layout, solve blocks. Errors carry file:line:col plus a caret snippet.
   - Accept: a round-trip test (`parse(print(p)) == p`) over every file in `stdlib/` and `tests/graph/cases/`. At least 30 error-case tests with expected messages. A fuzz-ish test runs 10⁴ random token streams with no crashes.
 
-- [ ] **T1.3 Inference** (`graph`). Depends on: T1.2.
+- [~] **T1.3 Inference** *(worker N, branch task/T1.3-inference)* (`graph`). Depends on: T1.2.
   - Rate, kind, poly and width inference with the upper-bound semantics. Poly→global defaults to sum. Explicit conversions are required.
   - Accept: table-driven tests (inputs → inferred types) for 40+ cases, including modulation wires raising an unmodulated `param` input to `audio`, and poly→global summing.
 
