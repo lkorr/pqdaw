@@ -33,7 +33,9 @@
 //                 ops on frames t … t + subBlock − 1. subBlock = 1 (per sample) unless every cut in the loop is a
 //                 delay line whose delay has a constant lower bound D, in which case subBlock = the smallest whole
 //                 number of samples that every tap is old (linear ⌊D⌋, cubic ⌊D⌋ − 1, allpass ⌊D − 0.5⌋): a 250 ms
-//                 echo then runs in sub-blocks of 12000 frames, i.e. block-wise. Lower bounds come from literals,
+//                 echo then runs in sub-blocks of 12000 frames, i.e. block-wise. Lower bounds are evaluated in
+//                 float32 with the runtime's operations (a double bound can round above the runtime value and
+//                 make the tap read an unwritten frame). Lower bounds come from literals,
 //                 `sr`, products/sums of non-negative bounds and, with ScheduleOptions::trustParamRanges, the
 //                 declared range minimum of a param (the engine must clamp params to their ranges).
 //    Within a stage and class, ready SCCs are taken depth-first (most recently readied first), so a value is read
@@ -41,10 +43,14 @@
 //    Solve blocks of param/const rate are solved once per block inside the Control region.
 // 5. Buffers. Every op output is a virtual value; values get physical buffers by interval reuse (linear scan in op
 //    order, LIFO free lists per class: 8-float pattern, block × 1 lane, block × 8 lanes). Element-wise ops
-//    (dsp::KernelInfo::inPlaceOk) write over an input that dies at that op. A value read inside a loop (Loop region,
-//    solve body, or the per-group loop of a voice stage) but defined before it stays live to the loop's end and is
-//    never overwritten in place (the next iteration reads it again). A voice
-//    value read in a later voice stage gets a per-group buffer (Buffer::perGroup).
+//    (dsp::KernelInfo::inPlaceOk) write over an input whose last read is by that op. A read that happens AFTER an
+//    op rather than by it keeps the value alive past that op (it is never taken in place there): the solver's reads
+//    of every equation lhs/rhs and every unknown after each body evaluation, the engine's read of a voice output or
+//    export at the end of its stage (per group), a reducer accumulator over its whole stage, and a value read inside
+//    a loop (Loop region, solve body, or the per-group loop of a voice stage) but defined before it, which lives to
+//    after the loop's last op (the next iteration reads it again). A voice value read in a later voice stage gets a
+//    per-group buffer (Buffer::perGroup). tests/graph/sched_replay.h replays a schedule to prove no buffer is
+//    overwritten while live.
 // 6. State layout (StateLayout): one entry per (state key, channel) of every stateful kernel node (and per
 //    unknown without an initial guess: its previous solution). Keys are TypedPatch::stateKey (call-path hashes, stable
 //    across recompiles), tags are (kernel, lanes, size-affecting init: the delay ring's frames). Given the previous
@@ -267,6 +273,9 @@ struct ScheduleOptions {
   bool visualMode = false;              // delay-free cycle: insert z1 + warning instead of an error
   bool trustParamRanges = true;         // param range minimums bound delay times (loop sub-blocks)
   const StateLayout* previous = nullptr;  // keep the offsets of unchanged state (hot swap, T1.9)
+  // false: every value gets its own buffer and nothing runs in place (buffer index = value identity). Everything
+  // else is identical to the shared schedule, op for op. For checkers (tests/graph/sched_replay.h) and debugging.
+  bool shareBuffers = true;
   SourceText source{};                  // optional: errors as file:line:col (root-patch node spans)
 };
 

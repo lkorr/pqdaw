@@ -1,0 +1,55 @@
+// Buffer-liveness regressions from the M1 review (docs/reviews/M1.md C1, C2, H2, M10; probes in
+// docs/reviews/M1/probes/). Each one rendered wrong on both backends (or did not compile on the JIT) before T1.5-fix1.
+
+// C1: the equation's two sides share a product; the body's last op used to write rhs over lhs (y = 1, not √2).
+patch SolveInplace {
+  out y : audio
+  x = noise() * 0.0001 + 4
+  solve(iterations: 8) {
+    unknown u = 1
+    u * u == x - u * u
+  }
+  y = u
+}
+
+// C1 with two unknowns: the body's last op used to write a · 2 over the unknown a.
+patch SolveUnk2 {
+  out z : audio
+  out w : audio
+  x = noise() * 0.0001 + 4
+  solve(iterations: 8) {
+    unknown a = 1
+    unknown b = 1
+    a * 2 == b
+    a + b == x
+  }
+  z = b
+  w = a
+}
+
+// C2: the stage's last op used to write o2 over o1 (both peaked at 0.5).
+patch VoiceOut {
+  out o1 : audio voice
+  out o2 : audio voice
+  a = sine(phasor(voice.hz))
+  o1 = a
+  o2 = a * 0.5
+}
+
+// H2: a stereo delay line in a feedback loop (channel 1's read got the inputs (time, time); the JIT refused it).
+patch StereoFb {
+  out y : audio stereo
+  src = (noise() * 0.1, noise(seed: 3) * 0.1)
+  fb = src + delay(fb * 0.5, 2ms, 1s)
+  y = fb
+}
+
+// M10: the loop's sub-block from a param range minimum (20.75 ms = 995.99994 samples in float32 at 48 kHz) must not
+// round up to 996, or the tap reads an unwritten frame and the output depends on the block size.
+patch DelayLb {
+  param t = 20.75ms [20.75ms..1s]
+  out y : audio
+  src = noise() * 0.1
+  fb = src + delay(fb * 0.5, t, 1s)
+  y = fb
+}

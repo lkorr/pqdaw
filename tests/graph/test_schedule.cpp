@@ -22,6 +22,7 @@
 #include "pq/graph/parse.h"
 #include "pq/graph/schedule.h"
 #include "sched_exec.h"
+#include "sched_replay.h"
 #include "text_util.h"
 
 using namespace pq::graph;
@@ -150,6 +151,13 @@ void checkStructure(const Schedule& s, const TypedPatch& tp) {
       }
       if (op.kind == OpKind::Kernel) {
         CHECK(dsp::findKernel(op.kernel, op.lanes, op.splMask) != nullptr);
+        // Operand counts are the kernel's (M1 review H2: a stereo delay:read in a loop got (time, time)).
+        const dsp::KernelInfo& ki = dsp::kernelInfo(op.kernel);
+        INFO("op #" << i << " " << ki.name);
+        if (ki.variadicIn) CHECK(op.numIn >= ki.numIn);
+        else CHECK(op.numIn == ki.numIn);
+        if (ki.variadicOut) CHECK(op.numOut >= ki.numOut);
+        else CHECK(op.numOut == ki.numOut);
         CHECK((op.state != kNone) == (dsp::kernelInfo(op.kernel).stateSize > 0));
       }
       if (op.state != kNone) {
@@ -1124,6 +1132,397 @@ TEST_CASE("schedule: random feedback patches: structure and numerical equivalenc
     ++compared;
   }
   CHECK(compared >= 100);
+}
+
+// ---- buffer liveness: the schedule-replay checker (T1.5-fix1, M1 review C1/C2/H2) ----------------------------
+
+namespace {
+
+// Every patch of every .pqp file under the test corpora and stdlib that infers and optimises at `sr` (imports
+// relative to the file). Root `in`s with a default are retried unconnected, as the engine may leave them.
+struct CorpusPatch {
+  std::string where;
+  TypedPatch typed;
+};
+
+std::vector<CorpusPatch> corpus(double sr) {
+  namespace fs = std::filesystem;
+  const fs::path data(PQ_TEST_DATA_DIR);
+  std::vector<fs::path> files;
+  for (const fs::path& dir : {data / "graph" / "cases", data / "engine" / "patches", data / "jit" / "patches",
+                              data / "golden" / "patches", text_util::stdlibDir()})
+    for (const fs::path& p : text_util::pqpFiles(dir)) files.push_back(p);
+  std::vector<CorpusPatch> out;
+  for (const fs::path& path : files) {
+    text_util::DirLoader loader(path.parent_path());
+    const std::string text = text_util::readFile(path);
+    ParseOptions po;
+    po.imports = &loader;
+    const ParseResult parsed = parseDetailed(text, path.string(), po);
+    if (!parsed.ok()) continue;
+    std::vector<std::string> itexts;
+    std::vector<ParseResult> imported;
+    std::vector<fs::path> pending;
+    for (const std::string& imp : parsed.file.imports) pending.push_back(path.parent_path() / imp);
+    while (!pending.empty() && imported.size() < 64) {
+      const fs::path ip = pending.back();
+      pending.pop_back();
+      itexts.push_back(text_util::readFile(ip));
+      ParseOptions ipo;
+      ipo.imports = &loader;
+      imported.push_back(parseDetailed(itexts.back(), ip.string(), ipo));
+      for (const std::string& imp : imported.back().file.imports) pending.push_back(ip.parent_path() / imp);
+    }
+    PatchLibrary lib;
+    lib.add(parsed.file);
+    for (const ParseResult& ip : imported)
+      if (ip.ok()) lib.add(ip.file);
+    for (const Patch& patch : parsed.file.patches) {
+      InferOptions io;
+      io.library = &lib;
+      InferResult inf = inferDetailed(patch, io);
+      if (!inf.ok()) {
+        std::vector<RootInput> roots;
+        const Adjacency adj = patch.adjacency();
+        for (NodeIndex n = 0; n < patch.nodeCount(); ++n) {
+          if (patch.node(n).kind != NodeKind::Input) continue;
+          RootInput ri;
+          ri.connected = adj.driver[patch.flatInput(n, 0)] == kNone;
+          roots.push_back(ri);
+        }
+        io.inputs = roots;
+        inf = inferDetailed(patch, io);
+      }
+      if (!inf.ok()) continue;
+      OptimiseOptions oo;
+      oo.sampleRate = sr;
+      auto opt = optimise(std::move(inf.typed), oo);
+      if (!opt.ok()) continue;
+      out.push_back({path.filename().string() + ":" + patch.name(), std::move(opt.value())});
+    }
+  }
+  return out;
+}
+
+TypedPatch typedOf(std::string_view src) {
+  Compiled c;
+  compile(c, src);
+  return std::move(c.typed);
+}
+
+std::string replay(const TypedPatch& tp, sched_replay::Coverage* cov = nullptr) {
+  ScheduleOptions so;
+  so.sampleRate = 48000.0;
+  return sched_replay::check(tp, so, {}, cov);
+}
+
+// A random patch with global and voice stages, reducers and broadcasts, param-rate values, stereo signals, feedback
+// through z1 and (multichannel) delay lines, solve blocks with one or two unknowns (global, per voice and param rate)
+// and several outputs of each kind, two of them reading the same value (the C2 shape).
+std::string randomPatch(std::mt19937& rng) {
+  auto pick = [&](uint32_t n) { return static_cast<uint32_t>(rng() % n); };
+  enum Cat { G, V, GS, VS, C, kCats };
+  std::vector<std::string> pool[kCats] = {{"x", "g0"}, {"v0"}, {"xs", "gs0"}, {"vs0"}, {"p", "c0"}};
+  std::string s =
+      "patch R {\n  in x : audio\n  in xs : audio stereo\n  param p = 0.3 [0..1]\n"
+      "  out g1 : audio\n  out g2 : audio\n  out s1 : audio stereo\n  out o1 : audio voice\n  out o2 : audio voice\n"
+      "  out vs1 : audio voice stereo\n  out c1 : real\n"
+      "  g0 = tanh(x * 0.5)\n  v0 = sine(phasor(voice.hz))\n  gs0 = xs * 0.5\n  vs0 = (v0, v0 * 0.5 + 0.1)\n"
+      "  c0 = p * 2 + 0.1\n";
+  const uint32_t count = 6 + pick(26);
+  std::vector<Cat> cat(count);
+  for (auto& c : cat) c = static_cast<Cat>(pick(kCats));
+  auto any = [&](Cat c) { return pool[c][pick(static_cast<uint32_t>(pool[c].size()))]; };
+  auto later = [&](Cat c, uint32_t self) {  // a node of the same category, maybe not yet defined: feedback
+    std::vector<uint32_t> same;
+    for (uint32_t j = 0; j < count; ++j)
+      if (cat[j] == c && j >= self) same.push_back(j);
+    return "n" + std::to_string(same[pick(static_cast<uint32_t>(same.size()))]);
+  };
+  auto smp = [&](uint32_t lo, uint32_t n) { return std::to_string(lo + pick(n)) + "smp"; };
+  uint32_t solves = 0;
+  auto solve = [&](Cat c, const std::string& a, const std::string& b) {
+    const std::string u = "u" + std::to_string(solves), w = "w" + std::to_string(solves);
+    ++solves;
+    std::string t = "  solve(iterations: " + std::to_string(1 + pick(6)) + ") {\n";
+    const bool init = pick(2) == 0;
+    if (pick(2) == 0) {
+      t += "    unknown " + u + (init ? " = " + a : std::string()) + "\n";
+      switch (pick(3)) {
+        case 0: t += "    " + u + " * " + u + " * 0.25 + " + u + " == " + a + " - " + u + " * 0.5\n"; break;
+        case 1: t += "    " + u + " == " + a + " - tanh(" + u + ") * 0.3\n"; break;
+        default: t += "    " + u + " * " + u + " == " + a + " * " + a + " + 1 - " + u + " * " + u + "\n"; break;
+      }
+      pool[c].push_back(u);
+    } else {
+      t += "    unknown " + u + (init ? " = 1" : std::string()) + "\n    unknown " + w + "\n";
+      if (pick(2) == 0) t += "    " + u + " * 2 == " + w + " + " + a + "\n    " + u + " + " + w + " == " + b + "\n";
+      else t += "    " + u + " * " + u + " * 0.1 + " + w + " == " + a + "\n    " + w + " * 2 == " + u + " - " + b + "\n";
+      pool[c].push_back(u);
+      pool[c].push_back(w);
+    }
+    return t + "  }\n";
+  };
+  for (uint32_t i = 0; i < count; ++i) {
+    const std::string n = "n" + std::to_string(i);
+    const Cat c = cat[i];
+    std::string e;
+    const uint32_t k = pick(8);
+    switch (c) {
+      case G:
+        if (k == 0) e = "tanh(" + any(G) + " * 0.7)";
+        else if (k == 1) e = any(G) + " + " + any(G) + " * " + any(C);
+        else if (k == 2) e = "voice_sum(" + any(V) + ")";
+        else if (k == 3) e = "z1(tanh(" + later(G, i) + ")) * 0.5 + " + any(G);
+        else if (k == 4) e = "delay(" + any(G) + " + tanh(" + later(G, i) + ") * 0.4, " + smp(1, 40) + ", 64smp)";
+        else if (k == 5) e = "min(" + any(G) + ", " + any(G) + ") - 0.1";
+        else if (k == 6) e = any(GS) + "[" + std::to_string(pick(2)) + "] * 0.5";
+        else s += solve(G, any(G), any(G)), e = any(G) + " * 0.5";
+        break;
+      case V:
+        if (k == 0) e = "sine(phasor(voice.hz * " + std::to_string(1 + pick(3)) + "))";
+        else if (k == 1) e = any(V) + " * " + any(G);
+        else if (k == 2) e = any(V) + " + " + any(V);
+        else if (k == 3) e = "tanh(" + any(V) + " * " + any(C) + ")";
+        else if (k == 4) e = "z1(tanh(" + later(V, i) + ")) * 0.5 + " + any(V);
+        else if (k == 5) e = "delay(" + any(V) + " + tanh(" + later(V, i) + ") * 0.4, " + smp(1, 20) + ", 32smp)";
+        else if (k == 6) e = any(VS) + "[" + std::to_string(pick(2)) + "]";
+        else s += solve(V, any(V), any(V)), e = any(V) + " * 0.5";
+        break;
+      case GS:
+        if (k < 2) e = "(" + any(G) + ", " + any(G) + ")";
+        else if (k < 4) e = any(GS) + " * 0.5 + " + any(G);
+        else if (k < 6) e = any(GS) + " + delay(" + n + " * 0.5, " + smp(1, 30) + ", 64smp)";
+        else e = "tanh(" + any(GS) + " * " + any(GS) + ")";
+        break;
+      case VS:
+        if (k < 2) e = "(" + any(V) + ", " + any(V) + ")";
+        else if (k < 4) e = any(VS) + " * " + any(G);
+        else if (k < 6) e = any(VS) + " + delay(" + n + " * 0.25, " + smp(1, 16) + ", 32smp)";
+        else e = any(VS) + " * " + any(VS);
+        break;
+      default:
+        if (k < 3) e = any(C) + " * 0.5 + 0.1";
+        else if (k < 6) e = "tanh(" + any(C) + ") + " + any(C);
+        else s += solve(C, any(C), any(C)), e = any(C) + " + 0.25";
+        break;
+    }
+    s += "  " + n + " = " + e + "\n";
+    pool[c].push_back(n);
+  }
+  const std::string o1 = any(V);
+  s += "  g1 = " + any(G) + "\n  g2 = " + any(G) + " * 0.5\n  s1 = " + any(GS) + "\n  o1 = " + o1 + "\n  o2 = " +
+       (pick(2) ? o1 : any(V)) + " * 0.5\n  vs1 = " + any(VS) + "\n  c1 = " + any(C) + "\n}\n";
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("schedule: the replay checker catches a hand-made aliasing bug and accepts the unshared schedule") {
+  const TypedPatch tp = typedOf(R"(patch VoiceOut {
+  out o1 : audio voice
+  out o2 : audio voice
+  a = sine(phasor(voice.hz))
+  o1 = a
+  o2 = a * 0.5
+}
+)");
+  ScheduleOptions so;
+  so.shareBuffers = false;
+  const ScheduleResult unique = scheduleDetailed(tp, so);
+  REQUIRE(unique.ok());
+  CHECK(sched_replay::Replay(unique.schedule, unique.schedule, {}).run().empty());
+  so.shareBuffers = true;
+  const ScheduleResult shared = scheduleDetailed(tp, so);
+  REQUIRE(shared.ok());
+  CHECK(sched_replay::Replay(shared.schedule, unique.schedule, {}).run().empty());
+  // The pre-fix schedule: the mul writes o2 over o1's buffer in place.
+  Schedule bad = shared.schedule;
+  const Op& mul = bad.ops.back();
+  REQUIRE(mul.kernel == dsp::Atom::Mul);
+  bad.operands[mul.firstOperand + mul.numIn] = bad.operands[mul.firstOperand];
+  const std::string e = sched_replay::Replay(bad, unique.schedule, {}).run();
+  INFO(e);
+  CHECK(e.find("the engine reading output 0 at the end of stage 1") != std::string::npos);
+}
+
+TEST_CASE("schedule: M1 review probes: solve operands, unknowns and voice outputs outlive the last op") {
+  // C1: u·u is both equation sides' operand; the solver reads lhs and rhs after the body.
+  {
+    const TypedPatch tp = typedOf(R"(patch S {
+  out y : audio
+  x = noise() * 0.0001 + 4
+  solve(iterations: 8) {
+    unknown u = 1
+    u * u == x - u * u
+  }
+  y = u
+}
+)");
+    CHECK(replay(tp) == "");
+    const Schedule s = schedule(tp).value();
+    REQUIRE(s.equations.size() == 1);
+    CHECK_FALSE(s.equations[0].lhs == s.equations[0].rhs);
+  }
+  // C1, two unknowns: no body op writes into an unknown's buffer.
+  {
+    const TypedPatch tp = typedOf(R"(patch S {
+  out z : audio
+  x = noise() * 0.0001 + 4
+  solve(iterations: 8) {
+    unknown a = 1
+    unknown b = 1
+    a * 2 == b
+    a + b == x
+  }
+  z = b
+}
+)");
+    CHECK(replay(tp) == "");
+    const Schedule s = schedule(tp).value();
+    for (const SolveUnknown& u : s.unknowns)
+      for (uint32_t i = s.solves[0].firstOp; i < s.solves[0].firstOp + s.solves[0].numOps; ++i)
+        for (const Operand& o : s.outputsOf(s.ops[i])) CHECK_FALSE(o == u.value);
+  }
+  // C2: two voice outputs from one value.
+  {
+    const TypedPatch tp = typedOf(R"(patch V {
+  out o1 : audio voice
+  out o2 : audio voice
+  a = sine(phasor(voice.hz))
+  o1 = a
+  o2 = a * 0.5
+}
+)");
+    CHECK(replay(tp) == "");
+    const Schedule s = schedule(tp).value();
+    REQUIRE(s.outputs.size() == 2);
+    CHECK_FALSE(s.outputs[0].value == s.outputs[1].value);
+  }
+}
+
+TEST_CASE("schedule: a multichannel delay line in a feedback loop reads the same inputs on every channel (H2)") {
+  Compiled c;
+  compile(c, R"(patch St {
+  out y : audio stereo
+  src = (noise() * 0.1, noise(seed: 3) * 0.1)
+  fb = src + delay(fb * 0.5, 2ms, 1s)
+  y = fb
+}
+)");
+  const Schedule& s = ok(c);
+  checkStructure(s, c.typed);
+  CHECK(replay(c.typed) == "");
+  std::vector<std::vector<Operand>> reads;
+  uint32_t fills = 0;
+  for (const Op& op : s.ops) {
+    if (op.kernel == dsp::Atom::DelayReadLinear) reads.emplace_back(s.inputs(op).begin(), s.inputs(op).end());
+    fills += op.kernel == dsp::Atom::Const;
+  }
+  REQUIRE(reads.size() == 2);
+  CHECK(reads[0].size() == 1);
+  CHECK(reads[1] == reads[0]);
+  CHECK(fills == 0);
+}
+
+TEST_CASE("schedule: loop sub-blocks are bounded with the runtime's float32 delay (M10)") {
+  // 20.75 ms · 48 kHz = 996 in double but float(0.02075) · 48000 = 995.99994: the newest tap is 995 samples old.
+  Compiled c;
+  compile(c, R"(patch D {
+  param t = 20.75ms [20.75ms..1s]
+  out y : audio
+  src = noise() * 0.1
+  fb = src + delay(fb * 0.5, t, 1s)
+  y = fb
+}
+)");
+  const Schedule& s = ok(c);
+  uint32_t sub = 0;
+  for (const Region& r : s.regions)
+    if (r.kind == RegionKind::Loop) sub = r.subBlock;
+  CHECK(static_cast<float>(0.02075) * 48000.0f < 996.0f);
+  CHECK(sub == 995);
+  // Exact float values keep their full sub-block: 10smp → 10, 1 ms → 48 (float(0.001) · 48000 = 48.0000023).
+  CHECK(dumpOf(kFeedback).find("loop, sub-block 48") != std::string::npos);
+  Compiled l;
+  compile(l, kLoops);
+  std::vector<uint32_t> subs;
+  for (const Region& r : ok(l).regions)
+    if (r.kind == RegionKind::Loop) subs.push_back(r.subBlock);
+  std::sort(subs.begin(), subs.end());
+  CHECK(subs == std::vector<uint32_t>{1, 4, 10});
+}
+
+TEST_CASE("schedule: replay checker over the corpus: no buffer is overwritten while live") {
+  sched_replay::Coverage cov;
+  uint32_t checked = 0, withVoices = 0, withSolves = 0, withLoops = 0, multiOut = 0;
+  for (const CorpusPatch& cp : corpus(48000.0)) {
+    ScheduleOptions so;
+    so.sampleRate = 48000.0;
+    const ScheduleResult r = scheduleDetailed(cp.typed, so);
+    if (!r.ok()) continue;
+    INFO(cp.where);
+    CHECK(replay(cp.typed, &cov) == "");
+    ++checked;
+    bool voice = false, loop = false;
+    for (const Stage& sg : r.schedule.stages) voice |= sg.poly == Poly::Voice && sg.numOps > 0;
+    for (const Region& rg : r.schedule.regions) loop |= rg.kind == RegionKind::Loop;
+    withVoices += voice;
+    withLoops += loop;
+    withSolves += !r.schedule.solves.empty();
+    multiOut += r.schedule.outputs.size() > 1;
+  }
+  MESSAGE("replayed " << checked << " corpus patches (" << withVoices << " with voice stages, " << withSolves
+                      << " with solves, " << withLoops << " with loops, " << multiOut << " with several outputs): "
+                      << cov.reads << " reads, " << cov.bodyEvaluations << " Newton body evaluations, "
+                      << cov.solveReads << " solver reads, " << cov.outputReads << " engine output reads");
+  CHECK(checked >= 40);
+  CHECK(withVoices >= 8);
+  CHECK(withSolves >= 6);
+}
+
+TEST_CASE("schedule: replay checker over 500 random patches with voices, outputs, stereo delays and solves") {
+  std::mt19937 rng(0x5EEDu);
+  sched_replay::Coverage cov;
+  uint32_t checked = 0, attempts = 0, withSolves = 0, withVoiceSolve = 0, stereoLoops = 0, voiceOutsShared = 0;
+  while (checked < 500 && attempts < 2000) {
+    ++attempts;
+    const std::string src = randomPatch(rng);
+    const ParseResult parsed = parseDetailed(src, "r.pqp");
+    REQUIRE_MESSAGE(parsed.ok(), src);
+    InferResult inf = inferDetailed(parsed.file.patches[0]);
+    if (!inf.ok()) continue;  // e.g. a voice value fed back into a global one
+    OptimiseOptions oo;
+    oo.sampleRate = 48000.0;
+    auto opt = optimise(std::move(inf.typed), oo);
+    REQUIRE(opt.ok());
+    ScheduleOptions so;
+    so.sampleRate = 48000.0;
+    const ScheduleResult r = scheduleDetailed(opt.value(), so);
+    if (!r.ok()) continue;  // feedback across the voice/global boundary, solve blocks depending on each other …
+    INFO(src);
+    checkStructure(r.schedule, opt.value());
+    CHECK(replay(opt.value(), &cov) == "");
+    ++checked;
+    const Schedule& s = r.schedule;
+    withSolves += !s.solves.empty();
+    for (const SolveBlock& b : s.solves) withVoiceSolve += s.regions[b.region].poly == Poly::Voice;
+    for (const Op& op : s.ops) stereoLoops += op.kernel == dsp::Atom::DelayReadLinear && op.channel == 1;
+    for (size_t i = 0; i < s.outputs.size(); ++i)
+      for (size_t j = 0; j < i; ++j)
+        voiceOutsShared += s.outputs[i].poly == Poly::Voice && s.outputs[j].poly == Poly::Voice &&
+                           s.outputs[i].node != s.outputs[j].node;
+  }
+  MESSAGE("replayed " << checked << " random patches (" << attempts << " generated; " << withSolves
+                      << " with solves, " << withVoiceSolve << " voice solve blocks, " << stereoLoops
+                      << " channel-1 delay reads in loops): " << cov.reads << " reads, " << cov.bodyEvaluations
+                      << " Newton body evaluations, " << cov.solveReads << " solver reads, " << cov.outputReads
+                      << " engine output reads");
+  CHECK(checked == 500);
+  CHECK(withSolves >= 100);
+  CHECK(withVoiceSolve >= 50);
+  CHECK(stereoLoops >= 50);
+  CHECK(voiceOutsShared >= 100);
 }
 
 TEST_CASE("schedule: invalid options and inputs") {
