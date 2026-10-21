@@ -1,8 +1,9 @@
 # Benchmark executables. Not registered with CTest; run them from the release build and record results in RESULTS.md.
 #   pq_add_bench(pq_bench_core SOURCES core/bench_spsc.cpp DEPS pq_core)
 
-add_library(pq_bench_support INTERFACE)
-target_include_directories(pq_bench_support INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(pq_bench_support STATIC support/pq_bench_support.cpp)  # thread pinning, TSC, system load
+target_include_directories(pq_bench_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+pq_target_defaults(pq_bench_support)
 
 function(pq_add_bench name)
   cmake_parse_arguments(A "" "" "SOURCES;DEPS" ${ARGN})

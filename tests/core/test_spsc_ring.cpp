@@ -7,6 +7,7 @@
 
 #include "pq/core/alloc_trap.h"
 #include "pq/core/spsc_ring.h"
+#include "queue_stress.h"
 
 using pq::alloc_trap::countRtViolations;
 
@@ -124,4 +125,40 @@ TEST_CASE("spsc stress: 10^7 items across two threads, no loss, duplication or r
   CHECK(violations == 0);
   uint64_t extra = 0;
   CHECK_FALSE(r.tryPop(extra));
+}
+
+// T0.2-fix1 (review L5): 64-byte payload with the sequence number in every word, checked on pop. Catches
+// torn slots and payload/index reordering that a one-word payload can't show. Small rings force a
+// full/empty transition every few items. The mutation check (tests/core/queue_mutation_main.cpp) runs
+// these drivers against a tryPop whose acquire is weakened to relaxed.
+TEST_CASE("spsc stress: 64-byte payloads, 4*10^6 items, tryPop, no torn or stale slots") {
+  pq::SpscRing<pq::test::WidePayload> r(16);
+  const auto res = pq::test::spscWideStress(r, 4'000'000, false);
+  CHECK(res.received == 4'000'000);
+  CHECK(res.torn == 0);
+  CHECK(res.seqErrors == 0);
+}
+
+TEST_CASE("spsc stress: 64-byte payloads, 4*10^6 items, tryPop alternating with front/popFront") {
+  pq::SpscRing<pq::test::WidePayload> r(16);
+  const auto res = pq::test::spscWideStress(r, 4'000'000, true);
+  CHECK(res.received == 4'000'000);
+  CHECK(res.torn == 0);
+  CHECK(res.seqErrors == 0);
+}
+
+TEST_CASE("spsc stress: 64-byte payloads with the 64-byte index layout (benchmark comparison variant)") {
+  pq::SpscRing<pq::test::WidePayload, 64> r(16);
+  const auto res = pq::test::spscWideStress(r, 1'000'000, true);
+  CHECK(res.received == 1'000'000);
+  CHECK(res.torn == 0);
+  CHECK(res.seqErrors == 0);
+}
+
+TEST_CASE("spsc: hot index blocks are kHotLineSeparation apart") {
+  static_assert(alignof(pq::SpscRing<uint64_t>) == pq::kHotLineSeparation);
+  static_assert(sizeof(pq::SpscRing<uint64_t>) >= 3 * pq::kHotLineSeparation);
+  static_assert(alignof(pq::SpscRing<uint64_t, 64>) == 64);
+  pq::SpscRing<uint64_t> r(2);
+  CHECK(reinterpret_cast<uintptr_t>(&r) % pq::kHotLineSeparation == 0);
 }

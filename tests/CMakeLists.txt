@@ -47,6 +47,7 @@ pq_target_defaults(pq_alloc_trap_abort_probe)
 add_dependencies(pq_tests_core pq_alloc_trap_abort_probe)
 target_compile_definitions(pq_tests_core PRIVATE
   PQ_ALLOC_TRAP_PROBE="$<TARGET_FILE:pq_alloc_trap_abort_probe>")
+include(${CMAKE_CURRENT_SOURCE_DIR}/core/queue_mutation.cmake)
 # ui: draw list, PNG, damage, text, line primitives, colormaps (CPU) and the offscreen Vulkan path incl. the
 # test-pattern / text / lines goldens (GPU). PQ_ASSETS_DIR: the bundled fonts.
 pq_add_test(pq_tests_ui

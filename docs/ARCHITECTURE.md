@@ -60,8 +60,9 @@ Arrows point at dependencies. A module may only include headers from modules bel
 ## 3. Key interfaces (sketches; the real headers are authoritative once written)
 
 ```cpp
-// core: realtime-safe single-producer/single-consumer ring (power-of-two capacity, cache-line padded indices)
-template <class T> class SpscRing {
+// core: realtime-safe single-producer/single-consumer ring (power-of-two capacity; the producer- and consumer-written
+// index blocks are kHotLineSeparation = 128 bytes apart, outside each other's adjacent-line prefetch pair)
+template <class T, std::size_t HotLineSeparation = kHotLineSeparation> class SpscRing {
 public:
   explicit SpscRing(uint32_t capacityPow2);  // allocates: construct off the audio thread only
   bool tryPush(const T&) noexcept;

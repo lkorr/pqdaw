@@ -3,6 +3,7 @@
 #include <atomic>
 #include <bit>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 #include <utility>
@@ -23,8 +24,12 @@ namespace pq {
 // - A producer that is pre-empted between claiming and publishing a slot makes tryPop report "empty"
 //   until it resumes (later items are not skipped). The consumer never blocks on it.
 // - Positions are uint64, so wrap-around is not a practical concern.
-template <class T>
+// - HotLineSeparation: alignment of the producer-shared enqueue position, the consumer-owned dequeue
+//   position and the read-only mask (see kHotLineSeparation); 64 exists for the benchmark comparison.
+template <class T, std::size_t HotLineSeparation = kHotLineSeparation>
 class MpscQueue {
+  static_assert(HotLineSeparation >= kCacheLineSize && std::has_single_bit(HotLineSeparation),
+                "MpscQueue: HotLineSeparation must be a power of two >= the cache line size");
   static_assert(std::is_default_constructible_v<T>, "MpscQueue<T>: T must be default-constructible");
   static_assert(std::is_nothrow_move_assignable_v<T>, "MpscQueue<T>: T move assignment must be noexcept (RT-safe)");
 
@@ -89,9 +94,9 @@ private:
     T value{};
   };
 
-  alignas(kCacheLineSize) std::atomic<uint64_t> enqueuePos_{0};  // shared by producers
-  alignas(kCacheLineSize) uint64_t dequeuePos_ = 0;              // consumer-owned
-  alignas(kCacheLineSize) const uint64_t mask_;
+  alignas(HotLineSeparation) std::atomic<uint64_t> enqueuePos_{0};  // shared by producers
+  alignas(HotLineSeparation) uint64_t dequeuePos_ = 0;           // consumer-owned
+  alignas(HotLineSeparation) const uint64_t mask_;
   AlignedBuffer<Cell> cells_;
 };
 

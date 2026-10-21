@@ -3,6 +3,7 @@
 #include <atomic>
 #include <bit>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 #include <utility>
@@ -23,8 +24,13 @@ namespace pq {
 // - T must be default-constructible (slots are pre-built) and nothrow move-assignable (copy push needs
 //   nothrow copy assignment). Popped slots
 //   keep their moved-from value until overwritten; prefer trivially copyable T on RT paths.
-template <class T>
+// - HotLineSeparation: alignment of the producer-written and consumer-written index blocks (and of the
+//   read-only block after them). The default (kHotLineSeparation, 128) keeps them out of each other's
+//   adjacent-line prefetch pair; 64 exists for the benchmark comparison (bench/core/bench_rt_primitives.cpp).
+template <class T, std::size_t HotLineSeparation = kHotLineSeparation>
 class SpscRing {
+  static_assert(HotLineSeparation >= kCacheLineSize && std::has_single_bit(HotLineSeparation),
+                "SpscRing: HotLineSeparation must be a power of two >= the cache line size");
   static_assert(std::is_default_constructible_v<T>, "SpscRing<T>: T must be default-constructible");
   static_assert(std::is_nothrow_move_assignable_v<T>, "SpscRing<T>: T move assignment must be noexcept (RT-safe)");
 
@@ -95,11 +101,11 @@ private:
     return true;
   }
 
-  struct alignas(kCacheLineSize) ProducerSide {
+  struct alignas(HotLineSeparation) ProducerSide {
     std::atomic<uint32_t> head{0};  // next slot to write; published to the consumer
     uint32_t cachedTail = 0;        // producer's last view of c_.tail
   };
-  struct alignas(kCacheLineSize) ConsumerSide {
+  struct alignas(HotLineSeparation) ConsumerSide {
     std::atomic<uint32_t> tail{0};  // next slot to read; published to the producer
     uint32_t cachedHead = 0;        // consumer's last view of p_.head
   };
@@ -107,7 +113,7 @@ private:
   ProducerSide p_;
   ConsumerSide c_;
   // Read-only after construction (shared, never written: no false sharing with the lines above).
-  alignas(kCacheLineSize) const uint32_t capacity_;
+  alignas(HotLineSeparation) const uint32_t capacity_;
   const uint32_t mask_;
   AlignedBuffer<T> slots_;
 };
