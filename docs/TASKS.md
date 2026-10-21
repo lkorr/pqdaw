@@ -170,7 +170,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
 
 ## M1 follow-ups (from the M1 review, docs/reviews/M1.md)
 ```
-- [~] **T1.5-fix1 Scheduler buffer liveness: solve reads, voice outputs, multichannel delay loops** *(worker AP, branch task/T1.5-fix1-liveness)* (`graph`). Depends on: T1.5.
+- [~] **T1.5-fix1 Scheduler buffer liveness: solve reads, voice outputs, multichannel delay loops** *(PAUSED at session end — work pushed on `task/T1.5-fix1-liveness`, unverified/unmerged; resume from there)* (`graph`). Depends on: T1.5.
   - Pin every SolveEquation lhs/rhs and every unknown value (pin test `v.def <= b.firstOp`); pin every voice OutputRef/export
     value; build the delay-loop read list once per node (schedule.cpp:1482). checkStructure asserts op.numIn == kernel inputs.
     Delay-loop sub-block bound computed in float32 like the runtime (M10).
@@ -179,7 +179,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     (2 voice groups, 2 sub-block iterations, 3 Newton evaluations, after-solve and end-of-stage reads) runs over the corpus and
     500 random patches WITH voices, multiple outputs, multichannel delays and solve blocks; reverting any one fix fails it.
 
-- [~] **T1.8-fix1 Voice semantics: NaN-safe mix, retrigger, unison, voice_last, overflow** *(worker AQ, branch task/T1.8-fix1-voices)* (`engine`). Depends on: T1.8.
+- [~] **T1.8-fix1 Voice semantics: NaN-safe mix, retrigger, unison, voice_last, overflow** *(PAUSED at session end — work pushed on `task/T1.8-fix1-voices`, unverified/unmerged; resume from there)* (`engine`). Depends on: T1.8.
   - Mix and monitor with a lane-active select (no gain multiply on idle lanes); free lanes read a finite hz (referenceHz).
     Retrigger only Released voices not started this block, with ≥ 1 low gate frame (or an explicit producer flag); never
     merge two held notes. voice_last re-points to the newest live lane when its lane frees. Pitch/NoteOff lookup prefers
@@ -360,7 +360,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Header mixer section (on the right of the lanes, as in Live): volume, pan, track activator = mute (button and `0`, a param — no recompile; Q15), solo, arm, sends per return, output routing dropdown, tuning chip coloured per main tuning. Ctrl+T, Ctrl+R, Ctrl+G, ungroup, colour menu, height resize, fold. Returns and master at the bottom. PQ Meter-style meters fed by a plain-data `MeterSource`. Ableton solo semantics (exclusive; Ctrl-click additive; group solo solos members; member solo keeps parents audible) as a pure function `effectiveAudible(track)` shared with T3.17. Basic mixer view (Ctrl+Alt+M) from the same strips. Knob/fader drags coalesce to one undo step.
   - Accept: goldens `tracks-mixer`, `mixer-view`; 20+ table tests for `effectiveAudible`; scripted Ctrl+T inserts after the selection, Ctrl+G across nested groups, rename via Ctrl+R + Enter, a volume drag is one undo step with a `paramOnly` ChangeSet.
 
-- [~] **T3.11 Piano roll: EDO mode and note editing** *(worker AI, branch task/T3.11-piano-roll)* (`views`). Depends on: T3.7, T3.6, T3.3, T2.2. 👁
+- [~] **T3.11 Piano roll: EDO mode and note editing** *(PAUSED at session end — work pushed on `task/T3.11-piano-roll-rebased`, unverified/unmerged; resume from there)* (`views`). Depends on: T3.7, T3.6, T3.3, T2.2. 👁
   - Clip view: gutter keys, ruler, loop/start/end braces, note area, velocity lane (+ chance toggle). EDO mode: one row per step; equave markers labelled per Q2 (C-style names for 12edo-compatible EDOs); scale highlighting. Notes: draw mode B, select, rubber band, move, resize, Alt-drag copy, delete, velocity drag, Ctrl+U. Up/Down and Shift+Up/Down via T3.6. Ratio/Cents notes drawn at true pitch and marked off-grid. Fold to used notes/scale; vertical zoom/scroll; grid shared with the arrangement; audition via `TransportPort::auditionHz`. Virtualised by visible time range.
   - Accept: goldens `pianoroll-12edo`, `pianoroll-31edo`, `pianoroll-velocity`. Scripted: B-mode draw on a 5-tuplet grid lands on exact ticks; move/resize/copy/delete; Up on a Degree note in 31edo = +1\31; Up on 5/4 → 6/4; Shift+Up = one equave; each gesture one undo step. Perf: 100k-note clip with 3000 visible, full redraw < 1.5 ms CPU, drag frame < 1 ms.
 
@@ -368,7 +368,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - One row per degree; Proportional (default) and Equidistant layouts ported from `mos-roll.js` `layoutRows` (~747–860): asymmetric half-height rule, s-rows shrink to slivers as the MOS collapses, s-notes under L-notes; layout toggle keeps the centred row. Gutter keys coloured by step class with the hardness-based L/s blend. Scala scales use the same row model. Background EDO overlay for display and snapping. Live morph: generator changes relayout rows and Degree notes every frame without committing until gesture end (one undo step), using `MosLinearTable` within a region and `buildMOSScale` + `transferModeRotation` at region crossings.
   - Accept: goldens `pianoroll-5L2s-prop`, `pianoroll-5L2s-equi`, `pianoroll-5L2s-near-collapse`, `pianoroll-5L2s-over-31edo`, `pianoroll-scala`. Row layout matches `mos-roll.js` run under Node for 50 (generator, size, height) cases (±0.5 px; script in `tools/fixtures/`). Scripted morph across a region boundary keeps Degree notes on their rows, one undo step. Perf: morph frame (24-degree MOS, 10 equaves, 3000 notes) < 2 ms CPU.
 
-- [~] **T3.13 MOS wheel: region chart** *(worker AO, branch task/T3.13-mos-chart)* (`views`). Depends on: T3.7, T2.3. 👁
+- [~] **T3.13 MOS wheel: region chart** *(PAUSED at session end — work pushed on `task/T3.13-mos-chart`, unverified/unmerged; resume from there)* (`views`). Depends on: T3.7, T2.3. 👁
   - Port of mos-explorer `drawAxis`/`drawMOS`/`drawEDOs`/`drawTemperaments`/`drawGeneratorMarker`/`drawSizeScrollbar` (index.html ~3156–3690): generator cents × MOS size, Stern–Brocot bands from `buildMosRegions`, EDO markers up to a configurable max EDO, temperament ranges, generator marker drag with EDO snapping, size scrollbar, hover info (name, UDP, hardness). Emits a `MosSelection` value (no document dependency in the widget).
   - Accept: goldens `mos-chart-default` (5L2s, max EDO 31), `mos-chart-zoomed`; clicking inside a region selects its MOS (checked against `buildMosRegions` for 100 random points); marker near 7\12 snaps exactly to 700 ¢. Perf: chart build at 800×600 < 1 ms CPU.
 
@@ -380,7 +380,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Per-track lanes (show/hide; parameter chooser incl. main-tuning params); `A` automation mode over clips; breakpoint add/move (snapped, value readout)/delete/multi-select; curved segments (Alt-drag) with the curve law shared with T3.16; shapes menu (ramp, sine, square, triangle, saw over the time selection); automated-state indication and "Re-enable automation" (state only). Curves drawn as feathered ribbons (T0.9).
   - Accept: goldens `automation-lanes`, `automation-mode-over-clips`; scripted add/move/delete, Alt-drag curvature, shape insertion; each gesture one undo step with a non-structural ChangeSet; view curve evaluation matches `engine::evalAutomation` within 1e-6 at 10⁴ points.
 
-- [~] **T3.16 Engine timeline: transport, note sequencer, automation renderer** *(worker AN, branch task/T3.16-timeline)* (`engine`). Depends on: T1.8, T0.5.
+- [~] **T3.16 Engine timeline: transport, note sequencer, automation renderer** *(PAUSED at session end — work pushed on `task/T3.16-timeline`, unverified/unmerged; resume from there)* (`engine`). Depends on: T1.8, T0.5.
   - Audio-thread transport (play/stop/continue/locate, sample-accurate loop wrap, tempo map) exposed in `ProcessContext` and reported to the UI (lossy SPSC). `SequenceImage`: immutable flat per-track note array built off-thread from a plain-data description (no `document` dependency); clip loops unrolled lazily by a cursor; published by atomic swap + EpochReclaimer; cursor survives swaps. Emits note-on/off events at exact sample offsets; chance/velocity range via a deterministic per-note RNG (note id + loop pass). `AutomationImage`: breakpoints rendered per sample into audio-rate buffers for automated params (incremental cursor); unautomated params stay param-rate. `evalAutomation` header-only, shared with views.
   - Accept: a note at tick t starts at exactly `ticksToSamples(t)` for block sizes 1/32/37/480; loop wrap emits offs/ons at the exact wrap sample; locate during playback releases all sounding voices; swapping the image mid-note keeps unchanged notes and stops removed ones at the next block; automation buffers match `evalAutomation` within 1e-6; RtScope clean with 64 tracks × 200 clips. Perf: per block with no events < 50 ns per track; 100k-note SequenceImage build < 20 ms.
 

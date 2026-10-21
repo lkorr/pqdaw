@@ -355,3 +355,13 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: no hot path changed (one counter on the blocking submit path).
 - Notes/blockers: pq_tests_ui SIGSEGV (test_hidpi:186, test_partial_redraw) is an access violation on an NVIDIA driver thread (nvoglv64.dll+0xf42f5f); the queue/VMA errors are aftermath (doctest exit destructors on that thread). Reproduced only 05:50–06:40 (disk full + heavy GPU load), 0/22 later, ASan clean — OPEN, watching. Idle shell hover: each cursor-move event costs ≈ 0.24 ms UI-thread CPU with no frame drawn (worth optimising).
 - Orchestrator verification: rebased onto 72a787a; full build.ps1 release + dev: 0 warnings, 26/26 each. Assigned Q76.
+
+## 2026-10-21 · Session summary (orchestrator, paused at the user's request)
+- Merged to main this session (all verified dev + release by the orchestrator unless noted): M0 complete (T0.2–T0.9) + M0 review follow-ups (T0.1-fix1, T0.2-fix1/fix2, T0.7-fix1/2/3/4/5, T0.8-fix1, T0.9-fix1, T0.x-flake; T0.6-fix1 and T0.6-fix2 [!] hardware limits); M1 complete (T1.1–T1.11) + T1b.1 JIT; M2 T2.1–T2.5; M3 T3.1–T3.8. Reviews: docs/reviews/M0.md, docs/reviews/M1.md (2 Critical + 6 High; T1.5/T1.8/T1b.1 reopened as partial).
+- PAUSED (work pushed to origin on these branches, NOT verified or merged — resume each by checking out the branch, finishing, then the normal verify/merge):
+  - T3.11 piano roll — `task/T3.11-piano-roll-rebased`: worker reported done (27/27 dev+release, all criteria incl. Q40 virtual fundamental); orchestrator verification was interrupted. First thing to merge next session.
+  - T1.5-fix1 scheduler liveness (M1 review C1/C2/H2) — `task/T1.5-fix1-liveness` (WIP commit). Highest priority: solve filters and voice outputs compute wrong results on main until this lands.
+  - T1.8-fix1 voice semantics (H1/H4/H5…) — `task/T1.8-fix1-voices` (WIP).
+  - T3.16 engine timeline — `task/T3.16-timeline` (WIP). T3.13 MOS chart — `task/T3.13-mos-chart` (WIP). T0.x-buildspeed (sccache, shared downloads, slow tier) — `task/T0.x-buildspeed`.
+- Next after those: T1.x-arch1 (per-track compile units, user decision), T0.5-fix1 (PPQ 221,760), T3.2-fix1 (retheme from the user's Live screenshot), T3.6-fix1, T3.8-fix1, T1.6-fix1, T1b.1-fix1, T3.9/T3.10/T3.12/T3.14/T3.15/T3.17/T3.18, M1b T1b.2–T1b.6, M2 T2.6/T2.7; M2 and M3 reviews when those milestones complete.
+- Open issues: intermittent NVIDIA-driver-thread crash in pq_tests_ui (not reproduced since the disk-full period); manual ASIO driver-event check for the user in docs/REVIEW.md; ~37 agent worktrees under .claude/worktrees (build dirs of finished ones deleted; worktrees themselves can be pruned with `git worktree prune` after removing the folders).
