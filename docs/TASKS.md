@@ -154,11 +154,11 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Publishing a ProgramImage from a worker thread. Swap at a block boundary. State transfer by NodeId+type tag. Crossfade (5–20 ms) when audible, instant when silent. Epoch reclamation of old images.
   - Accept: an offline test swaps a modified patch mid-render. Phase continuity of an unchanged oscillator is exact. There is no discontinuity above −90 dBFS at the swap point for an unchanged signal path. RtScope clean.
 
-- [ ] **T1.10 Offline renderer + golden tests + `pqc` CLI** (`engine`, `tools`). Depends on: T1.7.
+- [~] **T1.10 Offline renderer + golden tests + `pqc` CLI** *(worker AL, branch task/T1.10-T1.11-render-bench)* (`engine`, `tools`). Depends on: T1.7.
   - `pqc check|dump-ir|dump-schedule|render <file.pqp> [--notes "…"] [--seconds N] -o out.wav`. A golden-audio comparison helper (absolute + spectral tolerance).
   - Accept: golden renders committed for 5+ patches. `pqc` usage is documented in `tools/README.md`.
 
-- [ ] **T1.11 Benchmark harness** (`bench`). Depends on: T1.7.
+- [~] **T1.11 Benchmark harness** *(worker AL, branch task/T1.10-T1.11-render-bench)* (`bench`). Depends on: T1.7.
   - A Google Benchmark-style runner (or a hand-rolled one with warmup/repeats/median), with CSV output and an append-to-`bench/RESULTS.md` script.
   - Accept: benchmarks exist for SPSC, the atoms, and an interpreted 32-node patch at 1/8/64 voices.
 
