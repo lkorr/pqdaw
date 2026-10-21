@@ -16,7 +16,7 @@
 //     elimination with partial pivoting; a lane whose step is not finite (singular J, NaN) keeps its value for that
 //     iteration. After the last iteration the body runs once more, so values read after the block match the
 //     solution; an unknown without an initial guess starts from the previous frame's solution (docs/QUESTIONS.md
-//     Q46, Q?-T1.7-a).
+//     Q46, Q53).
 // Cost: one indirect call per op per block (Block regions), per sub-block (Loop) or per Newton evaluation (solve
 // bodies), never a virtual call; see bench/RESULTS.md (T1.7).
 

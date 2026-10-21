@@ -135,11 +135,11 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Every leaf atom in SPEC §7.2: math, logic (bool lanes as masks), memory (`z1`, `delayline` with linear/allpass/cubic reads), generators (`phasor` with a **uint32 phase accumulator**, `sine`, `wavetable` with band-limited mipmaps, `noise`), `shaper`, `sampleRead`. Each has a scalar and an AVX2 path, block-wise.
   - Accept: each kernel is tested against a naive `double` reference. A phasor test shows zero drift over 10⁹ samples, with its frequency exact to the uint32 resolution. Benchmarks are recorded per atom (ns/sample, 1 and 8 lanes).
 
-- [~] **T1.7 Interpreter backend + ProgramImage** *(worker Z, branch task/T1.7-interpreter)* (`graph` + `engine`). Depends on: T1.5, T1.6.
+- [x] **T1.7 Interpreter backend + ProgramImage** *(00fe5e5)* (`graph` + `engine`). Depends on: T1.5, T1.6.
   - Flat op list, parameter block, `ProcessContext`, and the state arena.
   - Accept: the interpreted output of the patches in `tests/graph/cases/` matches a slow reference evaluator (sample-by-sample graph walk in `double`) within 1e-5. RtScope tests show process() never allocates.
 
-- [ ] **T1.8 Voices** (`engine`). Depends on: T1.7.
+- [~] **T1.8 Voices** *(worker AE, branch task/T1.8-voices)* (`engine`). Depends on: T1.7.
   - Voice allocator (max voices, stealing policy), the event list, voice lanes (8 per AVX2 group), the `voice.*` namespace, voice end on silence/envelope.
   - Accept: tests cover allocation and stealing, note on/off sample accuracy (an event at sample k takes effect at k), and 64 voices with no allocation.
 
@@ -157,7 +157,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
 
 ## M1b: JIT
 
-- [ ] **T1b.1 LLVM codegen** (`jit`). Depends on: T1.7.
+- [~] **T1b.1 LLVM codegen** *(worker AF, branch task/T1b.1-llvm-codegen)* (`jit`). Depends on: T1.7.
   - Lowers a Schedule to LLVM IR with the same ProgramImage ABI. Scalar first. Host CPU features and target machine options. Fast-math flags policy: `contract` and `afn` allowed; no `nnan`/`ninf`; denormals FTZ.
   - Accept: every interpreter test passes with the JIT backend producing output identical within 1e-6. Compile time for a 100-node patch is recorded.
 

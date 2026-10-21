@@ -389,7 +389,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: A (no visible difference is possible below a sub-pixel step; B is a local change in lines.cpp if exact equality is wanted).
 - Status: open
 
-## Q?-T1.7-a · 2026-10-21 · T1.7 · Solve blocks in the interpreter: Newton with a central-difference Jacobian
+## Q53 · 2026-10-21 · T1.7 · Solve blocks in the interpreter: Newton with a central-difference Jacobian
 - Context: Q46 leaves the Jacobian to the backend. The interpreter only has float kernels (no derivatives).
 - Choice: per frame (Loop region) or once per block (Control region), per lane: start from the initial guess or the previous solution; each of the `iterations` steps evaluates the body once for the residuals and twice per unknown for J (central differences, h = 2^-8 · max(|u|, 1), the step actually taken in float divides), solves J·Δ = r by Gaussian elimination with partial pivoting in double, and updates u −= Δ only when every component is finite (a singular J or NaN keeps the lane's value for that iteration); the body runs once more with the final values. Verified against a reference that solves in double with an exact-to-1e-10 Jacobian: diode clipper, the coupled 2×2 + 1-iteration + 64-iteration blocks of solve.pqp, a tanh ZDF one-pole per sample in a z1 loop (global and per voice) and a param-rate solve: max error 1.9e-6.
 - Cost: (1 + 2n) body evaluations per iteration; the 6-iteration tanh one-pole costs ~575 ns/sample interpreted (bench/RESULTS.md).
@@ -397,7 +397,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: A for the interpreter, which only plays while the JIT compiles; D in the JIT.
 - Status: open
 
-## Q?-T1.7-b · 2026-10-21 · T1.7 · Where the interpreter lives, and the ProcessContext voice/bool contract
+## Q54 · 2026-10-21 · T1.7 · Where the interpreter lives, and the ProcessContext voice/bool contract
 - Context: ARCHITECTURE §3 sketched `graph::buildInterpreted(const Schedule&) → ProgramImage`, but ProgramImage is an engine type and `graph` may not include `engine` (engine depends on graph).
 - Choice: `pq::engine::buildInterpreted(const graph::Schedule&, const InterpretOptions&) → Result<unique_ptr<ProgramImage>>` in `pq_engine` (engine now links pq_graph + pq_dsp); ARCHITECTURE updated. ProcessContext contract (pq/engine/program_image.h): voice data per 8-lane group in the kernel layout (zero-copy: the image points its records at the caller's buffers each block); bool signals in and out are lane masks (no conversion pass); param-rate inputs are read at frame 0; inactive lanes (VoiceGroupIO::laneMask) compute but reducers and sends ignore them; with no active voice a reducer outputs 0 (bool: false); voice_last needs VoiceTable::lastGroup/lastLane (the allocator's most recent note-on, T1.8); voice-group noise seeds are the node's seed + group · 0x9E3779B9 (lanes are mixed by dsp), so groups are decorrelated; a block larger than maxBlockFrames is refused with silent outputs (no splitting inside process()).
 - Options for the bool outputs: A) masks (as above, zero cost, the engine converts where it needs 0/1); B) 0.0/1.0 floats at the interface (one pass per bool output per block).
@@ -405,7 +405,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: as above (all reversible inside pq_engine).
 - Status: open
 
-## Q?-T1.7-c · 2026-10-21 · T1.7 · Findings in earlier tasks' code
+## Q55 · 2026-10-21 · T1.7 · Findings in earlier tasks' code
 - Scheduler (T1.5), fixed here: an element-wise op could write in place over an input whose last use was only "last" because a loop extended its liveness (a broadcast read by every voice group, a value defined before a Loop region or solve body). The op at the end of a voice stage then overwrote the broadcast value after group 0, and group 1 read group 0's product (the expected dump in test_schedule.cpp encoded the bug: `mul/8 (b2, b0) -> b0`). Such values are now `pinned` and never handed over in place; the test expectation was corrected.
 - dsp (T1.6), not changed (outside T1.7): `timer(trig, duration)` documents "NaN: no output", but the kernel computes `max(min(dur, 2147483520), 0)` and `_mm_min_ps(NaN, c)` returns c, so a NaN duration fires for ~2^31 samples. Fix: clamp with `min(max(dur, 0), 2147483520)`. The reference evaluator follows the documented behaviour; no case feeds NaN.
 - Status: open (timer fix to be assigned)
