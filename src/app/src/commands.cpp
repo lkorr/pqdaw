@@ -2,8 +2,11 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 
 #include "pq/ui/damage.h"
@@ -14,6 +17,7 @@
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
 #include "pq/ui/scenes.h"
+#include "pq/ui/widget.h"
 #include "pq/ui/window.h"
 
 namespace pq::app {
@@ -57,6 +61,21 @@ struct WindowApp {
   uint32_t framesPresented = 0;
   uint32_t framesSkipped = 0;
   std::string error;
+  // Widget scenes (widgets-core) run a live UiTree: SDL input → translateEvent → the tree; its damage and
+  // timers drive frames; layout is in logical px × the display scale.
+  std::unique_ptr<UiTree> ui;
+
+  double now() const { return std::chrono::duration<double>(Clock::now() - start).count(); }
+
+  // Runs the tree's timers/frame requests/layout and turns its damage into a frame request.
+  void updateUi() {
+    if (!ui) return;
+    uint32_t w = 0, h = 0;
+    window->pixelSize(w, h);
+    if (w && h) ui->setViewport(w, h, window->displayScale());
+    ui->update(now());
+    if (ui->needsPaint()) damage.addAll();  // swapchain images are not preserved: a damaged frame is drawn whole
+  }
 
   // Draws and presents one frame if the window has a drawable surface. Returns false on a hard error.
   bool drawFrame() {
@@ -72,8 +91,17 @@ struct WindowApp {
       ++framesSkipped;
     } else {
       dl.reset(ext.width, ext.height);
-      const double t = std::chrono::duration<double>(Clock::now() - start).count();
-      buildScene(scene, dl, textures, damage.animating() ? t : 0.0);
+      const double t = now();
+      if (ui) {
+        ui->setViewport(ext.width, ext.height, window->displayScale());
+        dl.addRectFilled({0, 0, static_cast<float>(ext.width), static_cast<float>(ext.height)}, kSceneClearColor);
+        PaintResources res;
+        res.text = textures.text.get();
+        res.fonts = &textures.fonts;
+        ui->paint(dl, res, t);
+      } else {
+        buildScene(scene, dl, textures, damage.animating() ? t : 0.0);
+      }
       if (Status s = swapchain->endFrame(*renderer, dl, kSceneClearColor); !s) {
         error = s.error().message;
         ok = false;
@@ -87,6 +115,10 @@ struct WindowApp {
   }
 
   void handle(const SDL_Event& e) {
+    if (ui) {
+      InputEvent in;
+      if (translateEvent(e, window->pixelDensity(), in)) ui->dispatch(in);
+    }
     switch (e.type) {
       case SDL_EVENT_QUIT:
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED: quit = true; break;
@@ -156,6 +188,10 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
   app->textures = *tex;
   app->damage.setAnimating(o.animate);
   app->damage.addAll();
+  if (o.scene == "widgets-core") {
+    app->ui = std::make_unique<UiTree>();
+    app->ui->setRoot(makeWidgetsCoreDemo());
+  }
   return app;
 }
 
@@ -170,12 +206,19 @@ int interactive(WindowApp& app) {
   while (!app.quit) {
     // Idle = blocked in the OS wait: no frames, no timers, ≈0% CPU. A minimised window never draws, so
     // pending damage or animation must not turn this into a spin either.
-    if (!app.damage.needsFrame() || app.window->minimized()) {
+    const bool uiBusy = app.ui && app.ui->needsFrame();  // widget animation frames pending
+    if ((!app.damage.needsFrame() && !uiBusy) || app.window->minimized()) {
       SDL_Event e;
-      if (SDL_WaitEvent(&e)) app.handle(e);
+      // Sleep until the next event, or the widget tree's next timer.
+      const double wake = app.ui ? app.ui->nextWakeTime() : std::numeric_limits<double>::infinity();
+      const bool got = std::isfinite(wake)
+                           ? SDL_WaitEventTimeout(&e, static_cast<Sint32>(std::clamp(std::ceil((wake - app.now()) * 1000.0), 0.0, 1e6)))
+                           : SDL_WaitEvent(&e);
+      if (got) app.handle(e);
     }
     pump(app);
     if (app.quit) break;
+    app.updateUi();
     if (app.damage.needsFrame() && !app.window->minimized()) {
       if (!app.drawFrame()) {
         std::fprintf(stderr, "pqdaw: frame failed: %s\n", app.error.c_str());

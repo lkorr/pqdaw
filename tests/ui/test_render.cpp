@@ -191,6 +191,9 @@ TEST_CASE("render: text matches the golden image") { checkGolden("text"); }
 // T0.9: PQ Meter's line primitives (ribbons, glow passes incl. additive, spectrum layering, colormaps).
 TEST_CASE("render: lines matches the golden image") { checkGolden("lines"); }
 
+// T3.1: widget tree (rows/columns, splitters, scroll view over virtualised content) painted by UiTree.
+TEST_CASE("render: widgets-core matches the golden image") { checkGolden("widgets-core"); }
+
 TEST_CASE("render: glyphs added after the first frame reach the GPU") {
   // The atlas page starts with ASCII only; a new glyph must be uploaded by the next draw.
   auto text = TextSystem::create(gpu().renderer->atlas());

@@ -55,6 +55,8 @@ pq_add_test(pq_tests_ui
     ui/test_text.cpp
     ui/test_lines.cpp
     ui/test_colormap.cpp
+    ui/test_layout.cpp
+    ui/test_widgets.cpp
   DEPS pq_ui)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR="${PQ_SOURCE_DIR}/assets")
 
@@ -72,6 +74,9 @@ add_test(NAME pqdaw_screenshot_text   # the executable finds the bundled fonts (
   COMMAND pqdaw --screenshot text ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_text.png)
 add_test(NAME pqdaw_window_selftest COMMAND pqdaw --window-selftest)
 set_tests_properties(pqdaw_window_selftest PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+# Same run with the live widget tree (T3.1): SDL window loop → UiTree layout/paint at every size.
+add_test(NAME pqdaw_window_selftest_widgets COMMAND pqdaw --window-selftest --scene widgets-core)
+set_tests_properties(pqdaw_window_selftest_widgets PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 
 pq_add_test(pq_tests_graph
   SOURCES
