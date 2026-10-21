@@ -60,6 +60,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   // Scopes of the default keymap, interned now so views can set them before the keymap file is applied.
   for (std::string_view s : {"arrangement", "pianoroll"}) (void)scope(s);
   registerGlobalActions();
+  declareViewActions(kPianoRollActions);
   syncLoop();
 }
 
@@ -112,6 +113,10 @@ void ViewContext::syncLoop() {
 
 void ViewContext::afterLoad() {
   saved_ = store_.current();
+  if (detailClip_.clip.valid() || detailClip_.track.valid()) {
+    detailClip_ = {};
+    notify(view_change::kDetailClip);
+  }
   lastDirty_ = false;
   if (transport_.playhead().playing) transport_.stop();
   startMarker_ = 0;
@@ -314,6 +319,21 @@ std::string ViewContext::gridLabel() const {
   return s;
 }
 
+// --- tools and the clip view -----------------------------------------------------------------------------
+
+void ViewContext::setDrawMode(bool on) {
+  if (on == drawMode_) return;
+  drawMode_ = on;
+  setStatus(on ? "Draw Mode on" : "Draw Mode off");
+  notify(view_change::kTool);
+}
+
+void ViewContext::setDetailClip(const doc::ClipRef& clip) {
+  if (clip.track == detailClip_.track && clip.clip == detailClip_.clip) return;
+  detailClip_ = clip;
+  notify(view_change::kDetailClip);
+}
+
 // --- layout ---------------------------------------------------------------------------------------------
 
 void ViewContext::setDetailVisible(bool v) {
@@ -351,6 +371,42 @@ void ViewContext::setStatus(std::string text) {
 }
 
 // --- actions --------------------------------------------------------------------------------------------
+
+void ViewContext::declareViewActions(std::span<const std::string_view> ids) {
+  viewActions_.reserve(viewActions_.size() + ids.size());
+  for (std::string_view id : ids) {
+    const size_t i = viewActions_.size();
+    viewActions_.push_back({std::string(id), {}, {}});
+    // Steps repeat while the key is held (Live nudges notes on auto-repeat).
+    ui::ActionOptions opt;
+    opt.repeatable = id.ends_with("Up") || id.ends_with("Down");
+    [[maybe_unused]] auto r = actions_.add(
+        std::string(id),
+        [this, i] {
+          if (viewActions_[i].handler) viewActions_[i].handler();
+        },
+        [this, i] { return viewActions_[i].handler && (!viewActions_[i].enabled || viewActions_[i].enabled()); }, opt);
+    assert(r.ok());
+  }
+}
+
+void ViewContext::setViewAction(std::string_view id, std::function<void()> handler, std::function<bool()> enabled) {
+  for (ViewAction& a : viewActions_)
+    if (a.id == id) {
+      a.handler = std::move(handler);
+      a.enabled = std::move(enabled);
+      return;
+    }
+  assert(false && "setViewAction: unknown view action id");
+}
+
+void ViewContext::clearViewAction(std::string_view id) {
+  for (ViewAction& a : viewActions_)
+    if (a.id == id) {
+      a.handler = nullptr;
+      a.enabled = nullptr;
+    }
+}
 
 ui::ScopeId ViewContext::scope(std::string_view name) {
   if (std::find(scopes_.begin(), scopes_.end(), name) == scopes_.end()) scopes_.emplace_back(name);
@@ -391,6 +447,13 @@ void ViewContext::registerGlobalActions() {
   add("file.saveAs", [this] { requestSaveAs(); }, [this] { return dialogs_ != nullptr; });
   add("view.toggleClipDevice", [this] { toggleClipDevice(); });
   add("view.toggleDetail", [this] { setDetailVisible(!detailVisible_); });
+  add("edit.toggleDrawMode", [this] { setDrawMode(!drawMode_); });
+  // Ctrl+1–5 edit the one grid both editors share (T3.3 GridSpec commands; Q33).
+  add("grid.narrow", [this] { setGrid(grid_.narrowed()); });
+  add("grid.widen", [this] { setGrid(grid_.widened()); });
+  add("grid.toggleTriplet", [this] { setGrid(grid_.tripletToggled()); });
+  add("grid.toggleSnap", [this] { setGrid(grid_.snapToggled()); });
+  add("grid.toggleFixed", [this] { setGrid(grid_.modeToggled()); });
 }
 
 }  // namespace pq::views

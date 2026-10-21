@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -48,6 +49,8 @@ inline constexpr uint32_t kGrid = 1u << 1;       // grid spec or the focused edi
 inline constexpr uint32_t kLayout = 1u << 2;     // detail view shown/hidden or switched clip ↔ device, browser
 inline constexpr uint32_t kProject = 1u << 3;    // project directory, name or unsaved-changes state
 inline constexpr uint32_t kStatus = 1u << 4;     // status line text
+inline constexpr uint32_t kTool = 1u << 5;       // draw mode (B) toggled (T3.11)
+inline constexpr uint32_t kDetailClip = 1u << 6; // the clip shown in the clip view changed (T3.11)
 }  // namespace view_change
 
 enum class DetailMode : uint8_t { Clip, Device };
@@ -170,6 +173,17 @@ public:
   // "Off" for an off grid; " · Snap off" appended when snapping is off.
   std::string gridLabel() const;
 
+  // --- editing tools (T3.11) ---
+  // Draw mode (B): shared by the clip view and the arrangement, like Live's.
+  bool drawMode() const noexcept { return drawMode_; }
+  void setDrawMode(bool on);
+
+  // --- the clip in the clip view (T3.11) ---
+  // The note clip the detail view's clip view edits (an invalid ClipRef: none). The arrangement (T3.8) sets it when
+  // a clip is selected; the clip view shows "No clip selected" when it is unset or the clip no longer exists.
+  const doc::ClipRef& detailClip() const noexcept { return detailClip_; }
+  void setDetailClip(const doc::ClipRef& clip);
+
   // --- layout state ---
   bool detailVisible() const noexcept { return detailVisible_; }
   void setDetailVisible(bool v);
@@ -195,10 +209,23 @@ public:
   Status applyKeymap(const ui::KeymapFile& file);
   // applyKeymap(assets/keymaps/ableton.json).
   Status applyDefaultKeymap();
+  // View actions (T3.11): the context registers every id in kPianoRollActions up front with a forwarding handler,
+  // so the keymap binds them whether or not the view exists (a bare context or shell, tests); while no view has
+  // installed a handler the action is disabled and its chord falls through (Q27). A view installs its handlers
+  // when it is created and clears them when it is destroyed. Unknown ids are ignored (asserted in dev builds).
+  void setViewAction(std::string_view id, std::function<void()> handler, std::function<bool()> enabled = {});
+  void clearViewAction(std::string_view id);
+  static constexpr std::string_view kPianoRollActions[] = {
+      "pianoroll.selectAll", "pianoroll.copy",      "pianoroll.cut",       "pianoroll.paste",
+      "pianoroll.duplicate", "pianoroll.delete",    "pianoroll.quantize",  "pianoroll.stepUp",
+      "pianoroll.stepDown",  "pianoroll.equaveUp",  "pianoroll.equaveDown", "pianoroll.toggleActive",
+      "pianoroll.fold",      "pianoroll.toggleScale"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",
-      "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail"};
+      "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
+      "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
+      "grid.toggleFixed"};
 
 private:
   void notify(uint32_t bits);
@@ -206,6 +233,7 @@ private:
   void syncLoop();
   void afterLoad();
   void registerGlobalActions();
+  void declareViewActions(std::span<const std::string_view> ids);
   // Asks about unsaved changes; runs `proceed` when it may go ahead (possibly after an asynchronous save-as).
   void guardUnsaved(std::function<void()> proceed);
 
@@ -223,12 +251,20 @@ private:
   bool detailVisible_ = true;
   DetailMode detailMode_ = DetailMode::Clip;
   bool browserVisible_ = false;
+  bool drawMode_ = false;
+  doc::ClipRef detailClip_{};
   std::string status_;
   TransportLoop loopSent_{};
   bool loopSentValid_ = false;
 
   ui::ActionRegistry actions_;
   ui::Keymap keymap_;
+  struct ViewAction {
+    std::string id;
+    std::function<void()> handler;
+    std::function<bool()> enabled;
+  };
+  std::vector<ViewAction> viewActions_;  // filled in the constructor only: indices are stable
   std::vector<std::string> scopes_;  // interned in this order (stable ScopeIds across applyKeymap)
 
   uint32_t nextObserver_ = 1;

@@ -53,3 +53,4 @@ target_compile_definitions(pq_bench_render PRIVATE PQ_SOURCE_DIR="${PQ_SOURCE_DI
 add_test(NAME pq_bench_runner_smoke
   COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:pq_bench_dsp> -DCSV=${CMAKE_CURRENT_BINARY_DIR}/runner_smoke.csv
           -P ${CMAKE_CURRENT_SOURCE_DIR}/runner_smoke.cmake)
+pq_add_bench(pq_bench_piano_roll SOURCES views/bench_piano_roll.cpp DEPS pq_views)

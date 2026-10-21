@@ -19,6 +19,11 @@
 //                       LoopRegion; ViewContext keeps it in sync).
 //   playhead()          the last known transport state. Views read it only while playing (the control bar's
 //                       position display, T3.8's playhead line).
+//   auditionHz(hz, velocity, durationMs)
+//                       T3.11: preview one pitch on the focused clip's track (a note clicked or drawn in the piano
+//                       roll, a key pressed in its gutter): `hz` resolved from the note's pitch identity, velocity
+//                       in (0, 127], the sound released after durationMs. Fire and forget, independent of playback;
+//                       T3.17 implements it over the engine (the app's simulated transport ignores it).
 
 #include <cstdint>
 
@@ -49,6 +54,7 @@ public:
   virtual void locate(Ticks tick) = 0;
   virtual void setLoop(const TransportLoop& loop) = 0;
   virtual PlayheadSnapshot playhead() = 0;
+  virtual void auditionHz(float hz, float velocity, float durationMs) = 0;
 };
 
 }  // namespace pq::views

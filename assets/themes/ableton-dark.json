@@ -73,7 +73,19 @@
     "arrangement.loopOffEdge": "#607175",
     "arrangement.playhead": "#B0B5A3",
     "arrangement.startMarker": "#00CCB7",
-    "arrangement.overviewFrame": "#82918F"
+    "arrangement.overviewFrame": "#82918F",
+    "roll.keyWhite": "#BCC6CA",
+    "roll.keyBlack": "#16282E",
+    "roll.keyText": "#141B1F",
+    "roll.rowNatural": "#26383F",
+    "roll.rowAccidental": "#1F3036",
+    "roll.rowScale": "#33474E",
+    "roll.rowLine": "#0000003A",
+    "roll.equave": "#0D1317C8",
+    "roll.outside": "#0000004D",
+    "roll.offGrid": "#62D4E8",
+    "roll.fundamental": "#62D4E88C",
+    "roll.harmonic": "#62D4E826"
   },
   "fonts": {
     "small": {"face": "regular", "px": 12, "tabular": false},

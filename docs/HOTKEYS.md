@@ -24,12 +24,12 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `view.toggleBrowser` | `Ctrl+Alt+B` | global | Showing and Hiding Views | M5 (browser) |
 | `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | M3 (T3.10) |
 | `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | implemented (T3.8; the arrangement owns the switch until the piano roll follows too) |
-| `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
-| `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
-| `grid.toggleTriplet` | `Ctrl+3` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
-| `grid.toggleSnap` | `Ctrl+4` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
-| `grid.toggleFixed` | `Ctrl+5` | global | Arrangement View Commands; MIDI Note Editor | M3 (T3.9; piano roll T3.11) |
-| `edit.toggleDrawMode` | `B` | global | Editing | M3 (T3.11) |
+| `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
+| `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
+| `grid.toggleTriplet` | `Ctrl+3` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
+| `grid.toggleSnap` | `Ctrl+4` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
+| `grid.toggleFixed` | `Ctrl+5` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
+| `edit.toggleDrawMode` | `B` | global | Editing | implemented (T3.11) |
 | `track.newMidi` | `Ctrl+T` | global | Commands for Tracks | M3 (T3.10) |
 | `track.newAudio` | `Ctrl+Shift+T` | global | Commands for Tracks | M6 (audio tracks) |
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | M3 (T3.10) |
@@ -60,19 +60,19 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `arrangement.duplicateTime` | `Ctrl+Shift+D` | arrangement | Arrangement View Commands | M3 (T3.9) |
 | `arrangement.deleteTime` | `Ctrl+Shift+Delete` | arrangement | Arrangement View Commands | M3 (T3.9) |
 | `arrangement.cutTime` | `Ctrl+Shift+X` | arrangement | Arrangement View Commands | M10 (not in T3.9) |
-| `pianoroll.selectAll` | `Ctrl+A` | pianoroll | MIDI Note Editor | M3 (T3.11) |
-| `pianoroll.copy` | `Ctrl+C` | pianoroll | Editing | M3 (T3.11) |
-| `pianoroll.cut` | `Ctrl+X` | pianoroll | Editing | M3 (T3.11) |
-| `pianoroll.paste` | `Ctrl+V` | pianoroll | Editing | M3 (T3.11) |
-| `pianoroll.duplicate` | `Ctrl+D` | pianoroll | Editing | M3 (T3.11) |
-| `pianoroll.delete` | `Delete` | pianoroll | Editing | M3 (T3.11) |
-| `pianoroll.quantize` | `Ctrl+U` | pianoroll | MIDI Note Editor | M3 (T3.11) |
+| `pianoroll.selectAll` | `Ctrl+A` | pianoroll | MIDI Note Editor | implemented (T3.11) |
+| `pianoroll.copy` | `Ctrl+C` | pianoroll | Editing | implemented (T3.11) |
+| `pianoroll.cut` | `Ctrl+X` | pianoroll | Editing | implemented (T3.11) |
+| `pianoroll.paste` | `Ctrl+V` | pianoroll | Editing | implemented (T3.11) |
+| `pianoroll.duplicate` | `Ctrl+D` | pianoroll | Editing | implemented (T3.11) |
+| `pianoroll.delete` | `Delete` | pianoroll | Editing | implemented (T3.11) |
+| `pianoroll.quantize` | `Ctrl+U` | pianoroll | MIDI Note Editor | implemented (T3.11) |
 | `pianoroll.quantizeSettings` | `Ctrl+Shift+U` | pianoroll | MIDI Note Editor | M10 (quantize settings) |
-| `pianoroll.stepUp` | `Up` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | M3 (T3.11) |
-| `pianoroll.stepDown` | `Down` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | M3 (T3.11) |
-| `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | M3 (T3.11) |
-| `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | M3 (T3.11) |
-| `pianoroll.toggleActive` | `0` | pianoroll | MIDI Note Editor | M3 (T3.11) |
+| `pianoroll.stepUp` | `Up` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
+| `pianoroll.stepDown` | `Down` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
+| `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
+| `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
+| `pianoroll.toggleActive` | `0` | pianoroll | MIDI Note Editor | implemented (T3.11) |
 
 ## Handled by controls, not the keymap (T3.2, implemented)
 
@@ -92,5 +92,6 @@ These keys belong to the focused control and never reach a keymap while it has f
 
 ## Not bound yet
 
+- Piano roll (T3.11): `pianoroll.fold` (fold to used notes / scale) and `pianoroll.toggleScale` (scale highlighting) are registered actions without a default chord (Live has none); the clip view's Fold and Scale buttons trigger them.
 - Macro mode toggle `Ctrl+CapsLock` (SPEC §6.2): CapsLock is a lock key, which a keymap chord cannot use as its key (T3.1); M8 handles it in the macro-mode scope.
 - Live shortcuts outside M3–M10 scope (Session View, racks, plug-in windows) are not listed.

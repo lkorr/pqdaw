@@ -9,6 +9,7 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/piano_roll/clip_view.h"
 
 namespace pq::views {
 
@@ -41,11 +42,45 @@ Status setupArrangementZoomedOut(Shell& shell) {
   return Ok{};
 }
 
+// T3.11: the first clip of the project in the clip view, the detail view raised so the roll is the main subject.
+Status openFirstClip(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  const doc::Project& p = *ctx.doc();
+  doc::ClipRef ref{};
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    if (!ref.clip.valid() && t.kind == doc::TrackKind::Midi && !t.clips.empty()) ref = {t.id, t.clips.front().id};
+  });
+  if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "pianoroll scene: the project has no MIDI clip", {}};
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(520.0f);
+  ctx.setDetailClip(ref);
+  return Ok{};
+}
+
+Status pianoRollVelocity(Shell& shell) {
+  if (Status s = openFirstClip(shell); !s) return s;
+  // Every fourth note selected, to show selected stems.
+  auto* view = dynamic_cast<ClipView*>(shell.tree().find("main/body/bottom/detail/clip/clip-view"));
+  if (!view) return Error{ErrorCode::NotFound, "pianoroll-velocity: no clip view", {}};
+  const doc::Project& p = *shell.context().doc();
+  const doc::Track* t = doc::findTrackPtr(p, view->clip().track);
+  const int32_t ci = t ? doc::findClipIndex(*t, view->clip().clip) : -1;
+  if (ci < 0) return Error{ErrorCode::NotFound, "pianoroll-velocity: clip not found", {}};
+  std::vector<doc::NoteId> ids;
+  size_t i = 0;
+  for (const doc::Note& n : t->clips[static_cast<size_t>(ci)].clip->notes)
+    if (i++ % 4 == 2) ids.push_back(n.id);
+  view->select(ids);
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
     {"arrangement-basic", 1280, 800, setupArrangementBasic},
     {"arrangement-zoomed-out", 1280, 800, setupArrangementZoomedOut},
+    {"pianoroll-12edo", 1280, 800, openFirstClip},
+    {"pianoroll-31edo", 1280, 800, openFirstClip},
+    {"pianoroll-velocity", 1280, 800, pianoRollVelocity},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

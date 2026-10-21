@@ -101,6 +101,12 @@ struct Theme {
         rulerText, loopFill, loopEdge, loopOffFill, loopOffEdge, playhead, startMarker, overviewFrame;
     bool operator==(const Arrangement&) const = default;
   } arrangement{};
+  struct Roll {  // piano roll (T3.11): keys, row shading, equave markers, area outside the clip, off-grid notes,
+                 // the virtual fundamental and its harmonic guide lines (SPEC §4.3)
+    Rgba keyWhite, keyBlack, keyText, rowNatural, rowAccidental, rowScale, rowLine, equave, outside, offGrid, fundamental,
+        harmonic;
+    bool operator==(const Roll&) const = default;
+  } roll{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;
