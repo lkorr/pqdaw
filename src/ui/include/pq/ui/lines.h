@@ -2,7 +2,7 @@
 
 // Signal-trace line primitives, ported from PQ Meter onto the draw list (SPEC §11: geometric AA, no MSAA).
 //
-// Sources (PQ Meter, C:\Users\Luke\Desktop\programming\pq meter\src):
+// Sources (PQ Meter's src/ directory; see the reference table in CLAUDE.md):
 //   ui/smooth_line.h             kSmoothFeather, smoothAlphaMul, catmullRom, splinePath, smoothPolyline,
 //                                smoothPolylineCols, smoothBand, smoothCurve
 //   modules/spectrum.cpp 200-325 gradientPolyline, gradientBand, splineSmooth

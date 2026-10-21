@@ -139,6 +139,9 @@ FetchContent_Declare(freetype
   GIT_SHALLOW    TRUE
   GIT_SUBMODULES ""
   EXCLUDE_FROM_ALL)
+# RtAudio's CMakeLists declares option(BUILD_SHARED_LIBS ... ON), which leaks into the cache; shadow it so
+# FreeType (and anything after it) builds static.
+set(BUILD_SHARED_LIBS OFF)
 set(FT_DISABLE_ZLIB ON)
 set(FT_DISABLE_BZIP2 ON)
 set(FT_DISABLE_PNG ON)

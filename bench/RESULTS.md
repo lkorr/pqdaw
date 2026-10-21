@@ -162,3 +162,16 @@ Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 | 2026-10-20 | 0ff2b68 | dsp atom `sine_hz (spl hz, spl reset)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.409 ns/sample / 0.247 ns/voice-sample (1.978 ns/frame) |  |
 | 2026-10-20 | 0ff2b68 | dsp atom `delay (spl delay)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 0.649 ns/sample / 0.432 ns/voice-sample (3.456 ns/frame) | param-rate delay time |
 | 2026-10-20 | 0ff2b68 | dsp atom `sample_read_cubic (spl rate, spl reset)` (L1 / L8) | release, pq_bench_dsp, 64-frame blocks | 4.935 ns/sample / 0.951 ns/voice-sample (7.604 ns/frame) |  |
+| 2026-10-20 | 418a780 | text/shape uncached, 12-char label | release, pq_bench_text_lines | 2.19 µs/label median (min 2.04) | HarfBuzz 14.5.1 + run build; HarfBuzz alone 2.02 µs. Inter's GPOS kerning is ~0.8 µs of it (kern off: 0.92 µs); an explicit cached shape plan saved nothing (1.67 vs 1.72 µs). Paid once per new string: runs are cached. Later runs on the loaded machine: 2.8–4.5 µs |
+| 2026-10-20 | 418a780 | text/measure cached, 12-char label | release | 26 ns/label median | string hash + lookup |
+| 2026-10-20 | 418a780 | text/draw cached, 12-char label (1024 labels/frame) | release | 93 ns/label median (min 88), 8.5 ns/glyph | lookup + 4 vtx / 6 idx per inked glyph; 11 264 glyph quads per frame → 95 µs/frame |
+| 2026-10-20 | 418a780 | text/font create + ASCII raster, 10..21 px | release | 16–22 µs/glyph (min 16.2) | FreeType 2.14.3 TrueType hinting (Inter's ttfautohint bytecode) + render + atlas copy; 94 glyphs per font ≈ 1.5–2 ms per font, at startup only. Noisy (3 other build agents) |
+| 2026-10-20 | 418a780 | lines/splinePath 2048 pts | release | 22.3 ns/input pt median (min 21.6) | sine + harmonic over 1800 px → 6835 output points (Catmull-Rom, ≤ 1.5 px chords) |
+| 2026-10-20 | 418a780 | lines/smoothPolyline 2048 pts | release | 17.1 ns/pt median (min 15.7) | 8 vtx + 18 idx (232 bytes) per segment, normals carried between segments, 2 sqrt/segment |
+| 2026-10-20 | 418a780 | lines/Catmull-Rom ribbon 2048 pts (splinePath + smoothPolyline) | release | 80 ns/input pt median (min 74) | = 24 ns/output pt; ribbon writes dominate |
+| 2026-10-20 | 418a780 | lines/scopeTrace 2048 pts (spline + 2 glow passes + core) | release | 196 ns/input pt median (min 186) | PQ Meter scope look; PQ Meter's invisible α=0 third glow pass is skipped (−25 % geometry) |
+| 2026-10-20 | 418a780 | lines/smoothPolylineCols 2048 pts | release | 17.6 ns/pt median (min 16.2) | per-vertex colour, shared miters, bevels > 120° |
+| 2026-10-20 | 418a780 | lines/spectrumCurve 1024 pts (fill + 3 bloom + body + core) | release | 44.8 ns/pt median (min 44.3) | 6 quad strips = 24 vtx / 36 idx per column |
+| 2026-10-20 | 418a780 | lines/splineSmooth 1024, knotStep 8 | release | 3.4 ns/pt median | peak-hold smoothing |
+| 2026-10-20 | 418a780 | scene/text build 800×480 | release | 6.1 µs/frame median | 3496 vtx, 3 commands (text shares the atlas texture with shapes); 90 µs offscreen frame incl. GPU wait |
+| 2026-10-20 | 418a780 | scene/lines build 800×480 | release | 429 µs/frame median | includes synthesising the test signals (~12k exp/pow calls for the spectrum alone) as well as drawing 76 915 vtx, so not a primitive benchmark (see the rows above); 250 µs offscreen frame |
