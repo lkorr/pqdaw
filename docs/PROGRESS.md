@@ -66,3 +66,38 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: hot data (Node 24 B, PortType 6 B, Wire 12 B) separate from cold data (names, layout, params); flat port indices for parallel arrays in later passes; CSR adjacency in one pass; error messages built only on failure; in-place erase compaction (2.4× faster than rebuild). Not on the audio thread.
 - Notes/blockers: for T1.2: parse/print operate on PatchFile; parsed patches never have an unnamed node with fan-out > 1; literals keep their unit; text carries no NodeIds (document layer keeps ids across text edits). For T1.5: use PortSpec::delayed for delay-free cycle detection (Q9); flattened subcircuits need a path key built from NodeIds.
 - Orchestrator verification: rebased onto 179dbbe (append conflicts resolved; module order core→tuning→graph→ui→app); build.ps1 dev + release: 0 warnings, 8/8 CTest.
+
+## 2026-10-20 · T0.6 · worker H / task/T0.6-audio-io
+- Did: new module pq_engine. AudioDevice interface (non-RT virtual open/start/stop/enumerate) with RtAudioDevice (RtAudio 6.0.1, WASAPI; ASIO opt-in via PQ_WITH_ASIO) and NullDevice (manual processBlock() or a high-resolution-waitable-timer thread on absolute deadlines). CallbackRunner = the single per-callback path for every backend (RtScope + DenormalGuard + rdtsc timing + single-writer relaxed stats: callbacks, frames, input overflows / output underflows, deadline misses, mean/max duration, max inter-callback gap, active span). RTAUDIO_NONINTERLEAVED → planar pointers, no conversion. AudioCallback = function pointer + user pointer, one call per block. BlockAdapter runs the engine at a fixed internal block (default 32): direct (zero copy, zero latency) when the device buffer is a multiple of it, else FIFO (+1 block latency). pqdaw --list-devices / --sine <hz> [--seconds --device --asio --rate --buffer --block --exclusive] in the app CLI. Sine = uint32 phase accumulator + fastSin, −12 dBFS. Stream opens at the device mix rate (avoids RtAudio's Media Foundation resampler, which allocates on the audio thread). ARCHITECTURE §3 gains the audio I/O sketch. Q12: WASAPI exclusive unavailable in RtAudio, WASAPI never reports output underflow, ASIO SDK licence.
+- Verified: build.ps1 dev + release: 0 warnings, 9/9 suites (pq_tests_engine 20 cases / 1199 assertions: device buffers 1/2/31/33/37/480/512 vs several blocks, threaded cadence, RtScope trap on the callback path). Dev pqdaw (trap linked, aborts on any RT allocation): --sine 440 --seconds 3 on default WASAPI (Speakers (2- Focusrite USB Audio), 48 kHz, 256 frames, block 32 direct): 501 callbacks, 0 xruns, 0 deadline misses, mean 15.3 µs (/Od), max 31.0 µs. Release: 570 callbacks, 0 xruns, 0 misses, mean 1.01 µs, max 13.7 µs. --buffer 64 (direct) and --buffer 37 (FIFO) at 44.1 kHz: 0 xruns. Opt-in ASIO build: 4 ASIO devices; Focusrite USB ASIO 64 frames 2 s: 1492 callbacks, 0 xruns, 0 misses.
+- --list-devices (WASAPI, PQ_WITH_ASIO=OFF; per-device rate lists omitted):
+    WASAPI (shared mode; exclusive mode is not available, docs/QUESTIONS.md, T0.6): 22 device(s)
+       id  out   in    rate  default  name
+      129    2    0   48000           Voicemeeter Input (VB-Audio Voicemeeter VAIO)
+      130    2    0   48000           Speakers (NVIDIA Broadcast)
+      131    2    0   48000           Voicemeeter In 2 (VB-Audio Voicemeeter VAIO)
+      132    2    0   48000           Voicemeeter In 3 (VB-Audio Voicemeeter VAIO)
+      133    2    0   48000           Voicemeeter In 4 (VB-Audio Voicemeeter VAIO)
+      134    2    0   48000           Voicemeeter In 5 (VB-Audio Voicemeeter VAIO)
+      135    2    0   44100  out      Speakers (2- Focusrite USB Audio)
+      136    2    0   48000           Voicemeeter VAIO3 Input (VB-Audio Voicemeeter VAIO)
+      137    2    0   48000           Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)
+      138    2    0   48000           Voicemeeter In 1 (VB-Audio Voicemeeter VAIO)
+      139    0    2   48000           Voicemeeter Out A2 (VB-Audio Voicemeeter VAIO)
+      140    0    2   48000           Voicemeeter Out B3 (VB-Audio Voicemeeter VAIO)
+      141    0    2   48000           Microphone (1080P Pro Stream)
+      142    0    2   48000           Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
+      143    0    2   48000           Voicemeeter Out A5 (VB-Audio Voicemeeter VAIO)
+      144    0    2   48000           Voicemeeter Out A4 (VB-Audio Voicemeeter VAIO)
+      145    0    2   48000           Voicemeeter Out A3 (VB-Audio Voicemeeter VAIO)
+      146    0    2   44100           Analogue 1 + 2 (2- Focusrite USB Audio)
+      147    0    2   48000           Microphone (NVIDIA Broadcast)
+      148    0    2   48000  in       Microphone (RØDE NT1 5th Gen)
+      149    0    2   48000           Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)
+      150    0    2   48000           Voicemeeter Out A1 (VB-Audio Voicemeeter VAIO)
+    ASIO: not compiled in (PQ_WITH_ASIO=OFF; see docs/QUESTIONS.md, T0.6)
+  With PQ_WITH_ASIO=ON: 129 ASIO4ALL v2 (default), 130 FL Studio ASIO, 131 Focusrite USB ASIO (6/6), 132 Voicemeeter Virtual ASIO (8/8).
+- Perf (release, pq_bench_audio_io): CallbackRunner ≈15–20 ns/callback over the kernel; runner+adapter direct 480/32 150 ns, 256/32 86.6 ns; FIFO 480/64 191 ns, 37/32 55.9 ns per callback; all < 0.004% of the buffer period.
+- CPU-efficiency check: per-block cost only; rdtsc instead of QPC (calibrated once off-thread); single-writer relaxed counters on their own cache line; non-interleaved buffers; BlockAdapter zero-copy whenever the buffer divides by the block; stream at device mix rate keeps RtAudio's allocating resampler off the audio thread.
+- Notes/blockers: WASAPI exclusive unavailable in RtAudio (reported as Unsupported; own WASAPI backend recommended later, Q12). RtAudio WASAPI never flags output underflow, so --sine also reports deadline misses, max gap and delivered-vs-device-clock. ASIO opt-in (Steinberg SDK licence). Side effect of the worker's ASIO test: the Focusrite's shared-mode rate changed from 44.1 to 48 kHz.
+- Orchestrator verification: fast-forward onto 2fe96c7; build.ps1 dev + release: 0 warnings, 9/9. Release --sine 440 --seconds 2 on default WASAPI: 315 callbacks, 0 xruns, 0 deadline misses, mean 0.95 µs; max inter-callback gap 20.8 ms vs 5.3 ms buffer period (WASAPI shared-mode burst delivery; worth watching once real Programs run).

@@ -36,7 +36,7 @@ Every task also carries these **standing criteria**, which aren't repeated below
   - `Ticks` (int64, PPQ 27720), a tempo map (with ramps) converting ticks↔seconds↔samples exactly or within ½ sample, and time signatures.
   - Accept: tests include round trips over a 10-hour session at 192 kHz with tempo ramps, staying within ½ sample, and exact tuplet positions for 3/5/7/11.
 
-- [~] **T0.6 Audio device I/O** *(worker H, branch task/T0.6-audio-io)* (`engine`). Depends on: T0.2.
+- [x] **T0.6 Audio device I/O** *(1d54a68)* (`engine`). Depends on: T0.2.
   - RtAudio (pinned) with WASAPI (shared and exclusive) and ASIO. Device enumeration, open/start/stop, an xrun counter, and a `NullDevice` backend for tests (driven by a thread, or manually from a test).
   - `pqdaw --list-devices` and `pqdaw --sine 440 --seconds 3 [--device N] [--asio]`.
   - Accept: NullDevice tests cover the callback cadence and buffer sizes. `--list-devices` output is pasted into PROGRESS.md. A `--sine` run on the default WASAPI device reports 0 xruns over 3 s (no one is listening, so log the callback stats).
