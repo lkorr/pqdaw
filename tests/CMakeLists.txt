@@ -10,3 +10,11 @@ pq_add_test(pq_tests_core
   SOURCES
     core/test_result.cpp
   DEPS pq_core)
+
+pq_add_test(pq_tests_tuning
+  SOURCES
+    tuning/test_rational.cpp
+    tuning/test_monzo.cpp
+    tuning/test_edo.cpp
+    tuning/test_resolve.cpp
+  DEPS pq_tuning)
