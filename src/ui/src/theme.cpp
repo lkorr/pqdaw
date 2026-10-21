@@ -54,6 +54,11 @@ const ColorToken kColors[] = {
     PQ_COLOR(roll, keyWhite), PQ_COLOR(roll, keyBlack), PQ_COLOR(roll, keyText), PQ_COLOR(roll, rowNatural),
     PQ_COLOR(roll, rowAccidental), PQ_COLOR(roll, rowScale), PQ_COLOR(roll, rowLine), PQ_COLOR(roll, equave),
     PQ_COLOR(roll, outside), PQ_COLOR(roll, offGrid), PQ_COLOR(roll, fundamental), PQ_COLOR(roll, harmonic),
+    PQ_COLOR(mosChart, background), PQ_COLOR(mosChart, grid), PQ_COLOR(mosChart, axis), PQ_COLOR(mosChart, axisBorder),
+    PQ_COLOR(mosChart, axisText), PQ_COLOR(mosChart, axisTick), PQ_COLOR(mosChart, axisSubTick), PQ_COLOR(mosChart, periodLine),
+    PQ_COLOR(mosChart, edoLine), PQ_COLOR(mosChart, edoText), PQ_COLOR(mosChart, edoCents), PQ_COLOR(mosChart, edoHardness),
+    PQ_COLOR(mosChart, marker), PQ_COLOR(mosChart, markerText), PQ_COLOR(mosChart, sizeText), PQ_COLOR(mosChart, bandText),
+    PQ_COLOR(mosChart, bandSubText), PQ_COLOR(mosChart, bandTextDim), PQ_COLOR(mosChart, bandGrayed), PQ_COLOR(mosChart, bandActive),
 };
 #undef PQ_COLOR
 

@@ -10,6 +10,7 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/piano_roll/clip_view.h"
+#include "pq/views/mos_wheel/mos_chart.h"
 
 namespace pq::views {
 
@@ -73,6 +74,54 @@ Status pianoRollVelocity(Shell& shell) {
   return Ok{};
 }
 
+// T3.13: the MOS region chart alone, filling the window: opened in the shell's overlay layer (not dismissable), so
+// the scene is the chart widget exactly as a popover would host it.
+MosChart* openMosChart(Shell& shell, const MosChartConfig& config) {
+  ui::OverlayLayer& layer = shell.overlay();
+  ui::UiTree* tree = layer.tree();
+  if (!tree) return nullptr;
+  auto chart = std::make_unique<MosChart>("mos-chart", config);
+  const float sc = tree->scale();
+  chart->setSize(ui::Length::fixed(static_cast<float>(tree->width()) / sc), ui::Length::fixed(static_cast<float>(tree->height()) / sc));
+  ui::OverlayOptions o;
+  o.placement = ui::Placement::AtPoint;
+  o.dismissOnOutsideClick = false;
+  o.takeFocus = false;
+  auto& w = static_cast<MosChart&>(layer.open(std::move(chart), std::move(o)));
+  tree->layoutNow();
+  return &w;
+}
+
+// T3.13: 5L 2s selected at 7\12 (700 ¢), EDO markers up to 31, the whole octave.
+Status setupMosChartDefault(Shell& shell) {
+  MosChartConfig cfg;
+  cfg.maxEdo = 31;
+  MosChart* c = openMosChart(shell, cfg);
+  if (!c) return Error{ErrorCode::NotFound, "no overlay layer for the MOS chart", {}};
+  if (!c->select({5, 2}, 700.0)) return Error{ErrorCode::NotFound, "5L 2s not in the chart", {}};
+  return Ok{};
+}
+
+// T3.13: zoomed to 655–745 ¢ around 5L 2s (generator 18\31), EDO markers and temperament ranges legible, the pointer
+// resting on 7L 2s (size 9) so the hover card shows.
+Status setupMosChartZoomed(Shell& shell) {
+  MosChartConfig cfg;
+  cfg.maxEdo = 31;
+  MosChart* c = openMosChart(shell, cfg);
+  if (!c) return Error{ErrorCode::NotFound, "no overlay layer for the MOS chart", {}};
+  c->setView(655.0, 745.0);
+  if (!c->select({5, 2}, 18.0 * 1200.0 / 31.0)) return Error{ErrorCode::NotFound, "5L 2s not in the chart", {}};
+  ui::UiTree& tree = *shell.overlay().tree();
+  tree.layoutNow();
+  const ui::IRect row = c->rowRect(9);
+  if (row.empty()) return Error{ErrorCode::NotFound, "row 9 not visible", {}};
+  ui::PointerEvent e;
+  e.type = ui::PointerType::Move;
+  e.pos = {c->xOfCents(676.0), static_cast<float>(row.y + row.h / 2)};
+  tree.dispatchPointer(e);
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -81,6 +130,8 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-12edo", 1280, 800, openFirstClip},
     {"pianoroll-31edo", 1280, 800, openFirstClip},
     {"pianoroll-velocity", 1280, 800, pianoRollVelocity},
+    {"mos-chart-default", 800, 600, setupMosChartDefault},
+    {"mos-chart-zoomed", 800, 600, setupMosChartZoomed},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

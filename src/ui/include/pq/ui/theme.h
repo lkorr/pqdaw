@@ -107,6 +107,11 @@ struct Theme {
         harmonic;
     bool operator==(const Roll&) const = default;
   } roll{};
+  struct MosChart {  // MOS wheel region chart (T3.13): surfaces from the Live 12 look, data colours from mos-explorer
+    Rgba background, grid, axis, axisBorder, axisText, axisTick, axisSubTick, periodLine, edoLine, edoText, edoCents,
+        edoHardness, marker, markerText, sizeText, bandText, bandSubText, bandTextDim, bandGrayed, bandActive;
+    bool operator==(const MosChart&) const = default;
+  } mosChart{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;
