@@ -40,3 +40,23 @@ pq_target_defaults(pq_alloc_trap_abort_probe)
 add_dependencies(pq_tests_core pq_alloc_trap_abort_probe)
 target_compile_definitions(pq_tests_core PRIVATE
   PQ_ALLOC_TRAP_PROBE="$<TARGET_FILE:pq_alloc_trap_abort_probe>")
+# ui: draw list, PNG, damage (CPU) and the offscreen Vulkan path incl. the test-pattern golden (GPU).
+pq_add_test(pq_tests_ui
+  SOURCES
+    ui/test_draw_list.cpp
+    ui/test_image.cpp
+    ui/test_render.cpp
+  DEPS pq_ui)
+
+# app: CLI parsing and the --screenshot command.
+pq_add_test(pq_tests_app
+  SOURCES
+    app/test_cli.cpp
+  DEPS pq_app pq_ui)
+
+# The real executable: headless screenshot, and the scripted window resize/minimise/restore run
+# (exit 77 = no display available → reported as skipped, not passed).
+add_test(NAME pqdaw_screenshot
+  COMMAND pqdaw --screenshot test-pattern ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot.png --size 400x240)
+add_test(NAME pqdaw_window_selftest COMMAND pqdaw --window-selftest)
+set_tests_properties(pqdaw_window_selftest PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)

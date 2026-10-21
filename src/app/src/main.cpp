@@ -1,0 +1,22 @@
+#include <cstdio>
+#include <string_view>
+#include <vector>
+
+#include "pq/app/cli.h"
+#include "pq/app/commands.h"
+
+int main(int argc, char** argv) {
+  const std::vector<std::string_view> args(argv + 1, argv + argc);
+  auto opts = pq::app::parseCli(args);
+  if (!opts) {
+    std::fprintf(stderr, "pqdaw: %s\n\n%s", opts.error().message.c_str(), pq::app::usage().c_str());
+    return 2;
+  }
+  switch (opts->mode) {
+    case pq::app::Mode::Help: std::fputs(pq::app::usage().c_str(), stdout); return 0;
+    case pq::app::Mode::Screenshot: return pq::app::runScreenshot(*opts);
+    case pq::app::Mode::WindowSelfTest: return pq::app::runWindow(*opts, true);
+    case pq::app::Mode::Window: return pq::app::runWindow(*opts, false);
+  }
+  return 1;
+}
