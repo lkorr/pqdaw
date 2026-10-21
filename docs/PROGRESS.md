@@ -281,3 +281,11 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: layout chosen on measurement for the real use (near-empty hand-offs); hot paths gained no instructions.
 - Notes/blockers: idle-machine re-recording impossible while agents build (rows labelled "shared machine"). Epoch reclaimer / RT log / callback stats still 64 B (unmeasured).
 - Orchestrator verification: fast-forward onto b520b30; build.ps1 dev + release: 0 warnings, 17/17. Assigned Q56.
+
+## 2026-10-21 · T0.1-fix1 · worker AC / task/T0.1-fix1-build-hardening
+- Did: every FetchContent dependency is a release archive pinned by SHA-256 URL_HASH (hashes checked by downloading); no GIT_* left, so configuring needs no git. BUILD_SHARED_LIBS forced OFF in the cache at the top of PqDependencies.cmake. DEPENDENCIES.md rewritten (fetched / external / committed tables, each dependency once with its hash). L9: x86-64-v3 startup check (AVX, AVX2, FMA, BMI1/2, LZCNT, F16C, MOVBE) as a C CRT initialiser in .CRT$XCB (before every C++ static initialiser and main), built without /arch:AVX2 or /GL, linked into every executable; prints the missing features (message box from Explorer) and exits 1; test hook PQ_TEST_CPU_DISABLE. L10: test scenes moved to pq_ui_scenes; fonts/theme/textures stay in pq_ui (scene_textures.h). Q57 (SPEC §2 "SSE4.1 fallback" wording).
+- Verified: fresh `cmake --preset dev` with every git.exe removed from PATH: exit 0, no GIT_EXECUTABLE in the cache. Fresh build.ps1 dev + release: 0 warnings, 19/19. ctests pqdaw_cpu_check_no_avx2 / _no_avx2_fma (exit 1, message, empty stdout). Disassembly of the check objects: 0 VEX/BMI/LZCNT/MOVBE instructions. Goldens unchanged.
+- Perf: startup check ≈ 1 µs. Build dirs dev 2.89 GB / release 1.26 GB.
+- CPU-efficiency check: no hot path touched; x86-64-v3 baseline kept (it is what enables /arch:AVX2 hot paths).
+- Notes/blockers: timing checks flake under parallel-agent load (pqdaw_window_selftest_partial CPU ratio, some pq_tests_ui/pq_tests_engine timing) — follow-up task scheduled.
+- Orchestrator verification: rebased onto 17c6e8d (QUESTIONS conflict); build.ps1 dev + release: 0 warnings, 19/19. Assigned Q57.

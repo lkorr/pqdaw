@@ -97,7 +97,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Measure from process creation; log per-phase times; on-disk `VkPipelineCache`; overlap font loading with device creation.
   - Accept: first frame < 300 ms from process creation on an idle machine, median of 10 cold-ish starts, recorded in RESULTS.md.
 
-- [~] **T0.1-fix1 Build hardening** *(worker AC, branch task/T0.1-fix1-build-hardening)* (`cmake`, docs). Depends on: —.
+- [x] **T0.1-fix1 Build hardening** *(see PROGRESS)* (`cmake`, docs). Depends on: —.
   - All FetchContent deps via release tarballs + `URL_HASH`. `BUILD_SHARED_LIBS OFF CACHE … FORCE` at the top. Clean up DEPENDENCIES.md. AVX2/FMA startup check with a clear message (L9). Move test scenes out of `pq_ui` (L10).
   - Accept: a fresh configure with `git` removed from PATH succeeds. DEPENDENCIES.md lists every dep exactly once with its hash. Running on a CPU without AVX2 (emulated via a test hook that forces `cpuFeatures().avx2 = false`) prints the message and exits 1.
 
