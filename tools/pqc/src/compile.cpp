@@ -30,7 +30,7 @@ std::string joinDiagnostics(std::string_view text, const std::vector<graph::Diag
 }
 
 // Imports relative to the importing file, recursively; every parsed file stays alive for the PatchLibrary.
-// (The same loader as `pqdaw --play`'s, src/app/src/play_command.cpp; QUESTIONS Q?-T1.10-b.)
+// (The same loader as `pqdaw --play`'s, src/app/src/play_command.cpp; QUESTIONS Q73.)
 class FileLoader final : public graph::ImportLoader {
 public:
   Result<std::vector<graph::SubcircuitRef>> load(std::string_view path, std::string_view importer) override {
