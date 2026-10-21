@@ -1,0 +1,26 @@
+# build outputs
+/build/
+/out/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.exp
+
+# private reference material (contains other people's chat logs/screenshots; repo is public)
+/reference/inspiration/
+
+# local caches
+/cache/
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeUserPresets.json
+
+# render/test artifacts (golden files live in tests/golden and ARE committed)
+/tests/out/
+/bench/out/
+*.tmp
