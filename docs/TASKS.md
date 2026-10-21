@@ -65,7 +65,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Persistent colour target (LOAD); damage rects → scissored re-record of intersecting commands → copy to swapchain image (or `VK_KHR_incremental_present`). Draw-list chunks per damage region so unchanged regions aren't rebuilt.
   - Accept: a 2 px-wide animated playhead over the `lines` scene redraws ≤ 2% of the pixels per frame (GPU timestamp or fragment count). UI-thread CPU per frame < 25% of a full redraw. Golden identical to the full-redraw path after 100 random damage sequences.
 
-- [~] **T0.6-fix1 Own WASAPI backend** *(worker U, branch task/T0.6-fix1-wasapi)* (`engine`). Depends on: T0.6.
+- [!] **T0.6-fix1 Own WASAPI backend** *(f85ecda; partial: Focusrite WASAPI exclusive minimum is 144 frames and events land on a ~2 ms grid — see PROGRESS)* (`engine`). Depends on: T0.6.
   - Event-driven `IAudioClient`/`IAudioClient3`: exclusive + shared (low-latency shared periods), float32 or int32/24 exclusive formats, no extra ring, MMCSS "Pro Audio". Underruns detected via `GetCurrentPadding` before each write plus `IAudioClock` position vs frames written. Lateness metric (L2).
   - Accept: exclusive 64- and 128-frame streams open on the Focusrite. 60 s `--sine` with max callback interval ≤ 1.5× period. An injected stall (test flag: sleep 3× period once) is reported as exactly 1 underrun. RtScope/alloc-trap clean. Latency reported in frames and matches a loopback measurement within 1 period. RtAudio stays for ASIO until T0.6-fix2.
 
@@ -105,7 +105,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - 64-byte multi-word payload stress tests (L5). 128-byte separation for cross-thread hot lines, kept only if pinned benchmarks show a gain (L3). Benchmarks pin threads to separate physical cores and report min/median/p99 over ≥ 5 runs. SPSC round-trip latency benchmark. Fix stale commit refs in RESULTS.md (L4).
   - Accept: RESULTS.md rows re-recorded on an idle machine with the method stated. Mutation check: replacing `acquire` with `relaxed` in `tryPop` is caught by at least the compiler-reordering variant under `/O2` (or documented as undetectable on x86 if it isn't).
 
-- [ ] **T0.2-fix2 RT log ring** (`core`). Depends on: T0.2.
+- [x] **T0.2-fix2 RT log ring** *(7cb2a43)* (`core`). Depends on: T0.2.
   - `RtLog`: fixed-size POD records (code, args) pushed from RT threads into an SPSC ring, formatted and written by a logger thread (ARCHITECTURE §1 promises it).
   - Accept: RtScope-clean push. 10⁶ records from the NullDevice callback lose none at 4096 capacity when drained at 100 Hz, and report drops exactly when overfilled.
 
