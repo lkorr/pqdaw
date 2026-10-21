@@ -7,7 +7,7 @@
 
 namespace pq::engine {
 
-// AudioDevice on RtAudio 6.0.1 (WASAPI shared mode; ASIO when built with PQ_WITH_ASIO=ON). RtAudio's headers
+// AudioDevice on RtAudio 6.0.1 (WASAPI shared mode; ASIO is our own AsioDevice). RtAudio's headers
 // (and <windows.h>) stay inside the .cpp.
 //
 // Audio path: RtAudio's callback thread (WASAPI: MMCSS "Pro Audio") calls a static trampoline with
@@ -18,11 +18,10 @@ namespace pq::engine {
 // the WASAPI backend only ever reports RTAUDIO_INPUT_OVERFLOW (capture data discontinuity) and never
 // RTAUDIO_OUTPUT_UNDERFLOW, so an output underrun on WASAPI is not counted there. CallbackStats::deadlineMisses
 // (a callback that took longer than one buffer period) and maxIntervalUs are the backend-independent signals.
-// RtAudio's ASIO backend does flag xruns (when the driver sends kAsioResyncRequest). The --sine command also
-// compares frames delivered against the device clock. See docs/QUESTIONS.md, T0.6.
+// The --sine command also compares frames delivered against the device clock. See docs/QUESTIONS.md, T0.6.
 class RtAudioDevice final : public AudioDevice {
 public:
-  // backend must be RtAudioWasapi or Asio. Errors: Unsupported if not compiled in.
+  // backend must be RtAudioWasapi (InvalidArgument otherwise).
   static Result<std::unique_ptr<RtAudioDevice>> create(Backend backend);
   ~RtAudioDevice() override;
 

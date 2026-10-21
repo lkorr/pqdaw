@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "pq_bench.h"
+#include "pq/engine/asio_abi.h"
+#include "pq/engine/asio_convert.h"
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/null_device.h"
 #include "pq/engine/sample_convert.h"
@@ -63,6 +65,23 @@ void benchConvert(SampleFormat f, uint32_t channels, uint32_t frames) {
   pq::bench::report(name, perFrame, "ns/frame");
 }
 
+// ASIO channel conversion (T0.6-fix2): one channel buffer per call, both directions, as the host does per channel
+// per buffer switch (float32 channels are zero-copy and need no call at all).
+void benchAsio(int32_t type, uint32_t frames) {
+  std::vector<float> in(frames), back(frames);
+  for (uint32_t i = 0; i < frames; ++i) in[i] = 0.9f * static_cast<float>((i * 7) % 101) / 101.0f - 0.45f;
+  std::vector<uint8_t> dev(static_cast<size_t>(frames) * 8 + 64);
+  const ToDeviceFn to = asioToDeviceFn(type);
+  const FromDeviceFn from = asioFromDeviceFn(type);
+  char name[96];
+  std::snprintf(name, sizeof name, "asio float -> %s 1ch %u frames", asioSampleTypeName(type), frames);
+  pq::bench::report(name, pq::bench::measure([&] { to(in.data(), frames, dev.data()); pq::bench::doNotOptimize(dev[5]); }, 1),
+                    "ns/call");
+  std::snprintf(name, sizeof name, "asio %s -> float 1ch %u frames", asioSampleTypeName(type), frames);
+  pq::bench::report(name, pq::bench::measure([&] { from(dev.data(), frames, back.data()); pq::bench::doNotOptimize(back[5]); }, 1),
+                    "ns/call");
+}
+
 }  // namespace
 
 int main() {
@@ -88,5 +107,9 @@ int main() {
   benchConvert(SampleFormat::Int24, 2, 480);
   benchConvert(SampleFormat::Int24, 3, 144);
   benchConvert(SampleFormat::Float32, 3, 144);
+  for (int32_t t : {pq::engine::asio::kInt32Lsb, pq::engine::asio::kInt24Lsb, pq::engine::asio::kInt16Lsb,
+                    pq::engine::asio::kInt32Lsb24, pq::engine::asio::kFloat64Lsb})
+    benchAsio(t, 64);
+  benchAsio(pq::engine::asio::kInt32Lsb, 256);
   return 0;
 }

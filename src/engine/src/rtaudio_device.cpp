@@ -38,7 +38,7 @@ namespace {
 RtAudio::Api toApi(Backend b) noexcept {
   switch (b) {
     case Backend::RtAudioWasapi: return RtAudio::WINDOWS_WASAPI;
-    case Backend::Asio: return RtAudio::WINDOWS_ASIO;
+    case Backend::Asio:  // our own host (AsioDevice); RtAudio's ASIO backend is not built
     case Backend::Null:
     case Backend::Wasapi: break;
   }
@@ -72,22 +72,16 @@ int rtAudioCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames,
 }  // namespace
 
 bool backendCompiled(Backend b) noexcept {
-  if (b == Backend::Null || b == Backend::Wasapi) return true;
+  if (b == Backend::Null || b == Backend::Wasapi || b == Backend::Asio) return true;
   return apiCompiled(toApi(b));
 }
 
 Result<std::unique_ptr<RtAudioDevice>> RtAudioDevice::create(Backend backend) {
   const RtAudio::Api api = toApi(backend);
   if (api == RtAudio::UNSPECIFIED)
-    return Error{ErrorCode::InvalidArgument, "RtAudioDevice: backend must be RtAudioWasapi or Asio"};
-  if (!apiCompiled(api)) {
-    if (backend == Backend::Asio)
-      return Error{ErrorCode::Unsupported,
-                   "ASIO support is not compiled in: RtAudio's ASIO backend needs the Steinberg ASIO SDK files, "
-                   "which are not permissively licensed (docs/QUESTIONS.md, T0.6). Rebuild with -DPQ_WITH_ASIO=ON "
-                   "to opt in."};
+    return Error{ErrorCode::InvalidArgument, "RtAudioDevice: backend must be RtAudioWasapi"};
+  if (!apiCompiled(api))
     return Error{ErrorCode::Unsupported, std::string("RtAudio was built without ") + backendName(backend)};
-  }
   auto impl = std::make_unique<Impl>();
   impl->backend = backend;
   impl->api = api;

@@ -19,15 +19,17 @@ enum class Mode {
   Screenshot,      // --screenshot <scene> <out.png> [--size WxH] [--scale S]
   WindowSelfTest,  // --window-selftest: scripted resize/minimise/restore run, exit code = result
   Help,            // --help
-  ListDevices,     // --list-devices [--backend wasapi|rtaudio] [--asio]
-  Sine,            // --sine <hz> [--seconds <s>] [--device <id|endpoint>] [--backend wasapi|rtaudio] [--asio] [--rate <hz>]
+  ListDevices,     // --list-devices [--backend wasapi|rtaudio|asio] [--asio]
+  Sine,            // --sine <hz> [--seconds <s>] [--device <id|endpoint|asio driver name>] [--backend wasapi|rtaudio|asio]
+                   //   [--asio] [--rate <hz>]
                    //   [--buffer <n>] [--block <n>] [--exclusive] [--level <dBFS>] [--inject-stall <wake>]
   LatencyTest,     // --latency-test [--seconds <s>] [--device <id|endpoint>] [--buffer <n>] [--level <dBFS>]
   Play,            // --play <file.pqp> [--patch <name>] [--notes "<keys>"] [--seconds <s>] [--level <dBFS>] + the
                    //   --sine stream flags
+  AsioPanel,       // --asio-panel [--device <id|name>] [--seconds <s>]: open an ASIO driver's control panel (T0.6-fix2)
 };
 
-// Which WASAPI implementation --sine / --list-devices use (--asio overrides both with RtAudio ASIO).
+// Which WASAPI implementation --sine / --list-devices use (--asio / --backend asio overrides both with our ASIO host).
 enum class WasapiImpl : uint8_t {
   Own,      // --backend wasapi (default): pq::engine::WasapiDevice
   RtAudio,  // --backend rtaudio: RtAudio's WASAPI backend
@@ -51,9 +53,10 @@ struct CliOptions {
   double sineHz = 440.0;
   double seconds = 3.0;
   uint32_t device = 0xFFFFFFFFu;  // pq::engine::kDefaultDevice
-  std::string deviceEndpoint;     // --device {endpoint id} (WASAPI); overrides device when non-empty
+  std::string deviceEndpoint;     // --device {endpoint id} (WASAPI) or an ASIO driver name; overrides device
   WasapiImpl wasapi = WasapiImpl::Own;
-  bool asio = false;
+  bool asio = false;              // --asio / --backend asio: our ASIO host (pq::engine::AsioDevice)
+  bool secondsGiven = false;      // --seconds was given (--asio-panel: otherwise wait for Enter)
   double levelDb = -24.0;         // test signal level, dBFS
   uint64_t stallAfterWake = 0;    // --inject-stall: WasapiDevice test hook (0 = off)
   bool exclusive = false;

@@ -184,7 +184,8 @@ namespace pq::engine {
   struct AudioBlock { const float* const* in; uint32_t numIn; float* const* out; uint32_t numOut; uint32_t frames; int64_t frameTime; };
   using AudioCallbackFn = void (*)(void* user, const AudioBlock&) noexcept;    // once per block, planar float
   class AudioDevice {                       // NullDevice (tests/headless), WasapiDevice (own WASAPI: exclusive + shared,
-                                            // output only), RtAudioDevice (RtAudio WASAPI shared; ASIO opt-in)
+                                            // output only), AsioDevice (own ASIO host, duplex), RtAudioDevice
+                                            // (RtAudio WASAPI shared, for comparison and input)
     virtual Result<std::vector<DeviceInfo>> enumerate();                       // non-RT virtuals
     virtual Result<StreamInfo> open(const StreamConfig&, AudioCallback);
     virtual Status start(); virtual Status stop(); virtual const CallbackStats& stats() const noexcept;
@@ -194,9 +195,11 @@ namespace pq::engine {
   class UnderrunTracker;  // per device wake: lateness vs the wall-clock schedule, empty shared buffer, device clock past
                           // frames written → CallbackStats::outputUnderflows (one per episode) + recordWake (lateness, queue)
   void planarToInterleaved(...);  // planar float → interleaved float32/int32/24-in-32/int24/int16 (AVX2 mono/stereo)
+  ToDeviceFn asioToDeviceFn(type); FromDeviceFn asioFromDeviceFn(type);  // per-channel ASIO conversions (AVX2)
 }
 ```
 `Backend::Wasapi` is our WasapiDevice (the default); `Backend::RtAudioWasapi` keeps RtAudio's WASAPI for comparison and input. WasapiDevice's audio thread joins MMCSS "Pro Audio" once, waits on the device event, and per event runs the callback once per period on planar scratch, then converts once into the device buffer (no ring).
+`Backend::Asio` is AsioDevice (T0.6-fix2): a clean-room host of the ASIO driver ABI (`asio_abi.h`; no Steinberg SDK). A control thread per device (COM STA, hidden window, message pump) makes every non-audio driver call and handles driver requests (reset / buffer-size / rate change → stop, dispose, release, reload, recreate, restart; latencies re-queried) that the RT-safe message callback only flags. The driver's thread calls bufferSwitch(TimeInfo) → convert inputs → CallbackRunner → convert outputs into the driver's half (float32 channels zero-copy) → outputReady(). One driver per process (the ABI's callbacks carry no context).
 The engine's process entry will be an `AudioCallback` behind a `BlockAdapter`; `ProcessContext` frame counts are therefore always the fixed internal block on the realtime path.
 
 ### ProgramImage ABI (shared by interpreter and JIT)

@@ -1,5 +1,6 @@
 #include "pq/engine/audio_device.h"
 
+#include "pq/engine/asio_device.h"
 #include "pq/engine/null_device.h"
 #include "pq/engine/rtaudio_device.h"
 #include "pq/engine/wasapi_device.h"
@@ -19,6 +20,7 @@ const char* backendName(Backend b) noexcept {
 Result<std::unique_ptr<AudioDevice>> createAudioDevice(Backend backend) {
   if (backend == Backend::Null) return std::unique_ptr<AudioDevice>(std::make_unique<NullDevice>());
   if (backend == Backend::Wasapi) return std::unique_ptr<AudioDevice>(std::make_unique<WasapiDevice>());
+  if (backend == Backend::Asio) return std::unique_ptr<AudioDevice>(std::make_unique<AsioDevice>());
   auto dev = RtAudioDevice::create(backend);
   if (!dev) return std::move(dev).error();
   return std::unique_ptr<AudioDevice>(std::move(dev).value());

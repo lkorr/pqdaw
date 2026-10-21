@@ -130,7 +130,8 @@ pq_add_test(pq_tests_graph
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
-# WASAPI backend (conversion, underrun tracker, opt-in device runs with PQ_TEST_AUDIO_DEVICE=1), the interpreter
+# WASAPI backend (conversion, underrun tracker, opt-in device runs with PQ_TEST_AUDIO_DEVICE=1), the ASIO host
+# (fake driver; opt-in real drivers), the interpreter
 # backend vs the reference evaluator (T1.7).
 pq_add_test(pq_tests_engine
   SOURCES
@@ -138,6 +139,7 @@ pq_add_test(pq_tests_engine
     engine/test_null_device.cpp
     engine/test_rtaudio_device.cpp
     engine/test_wasapi.cpp
+    engine/test_asio.cpp
     engine/test_rt_log_device.cpp
     engine/test_interpreter.cpp
     engine/test_voices.cpp

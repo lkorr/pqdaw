@@ -17,6 +17,9 @@ int runSine(const CliOptions& options);
 // --latency-test: shared-mode WASAPI output latency, impulses vs a loopback capture of the endpoint; exit 3 if the
 // reported latency is off by more than one period.
 int runLatencyTest(const CliOptions& options);
+// --asio-panel (T0.6-fix2): loads an ASIO driver (a stream is opened, not started), opens its control panel and
+// keeps the driver loaded until Enter (or --seconds); manual check only.
+int runAsioPanel(const CliOptions& options);
 // --play (T1.7, play_command.cpp): compile a .pqp patch with the interpreter and play its global outputs.
 int runPlay(const CliOptions& options);
 

@@ -104,10 +104,9 @@ target_link_libraries(pq_vma INTERFACE Vulkan::Vulkan)
 
 # --- RtAudio (MIT-style, see docs/DEPENDENCIES.md): audio device I/O for pq_engine --------------------------
 # Release tarball of tag 6.0.1 (2023-08-01), SHA-256 pinned. Static library, /MT via CMAKE_MSVC_RUNTIME_LIBRARY.
-# WASAPI only by default. RtAudio's ASIO backend compiles the Steinberg ASIO SDK files that RtAudio bundles,
-# which are not under a permissive licence (docs/QUESTIONS.md, T0.6), so it is opt-in: -DPQ_WITH_ASIO=ON.
+# WASAPI only. RtAudio's ASIO backend is never built: it compiles the Steinberg ASIO SDK files RtAudio bundles,
+# which are not permissively licensed; pqdaw has its own clean-room ASIO host (pq_engine AsioDevice, T0.6-fix2).
 # SYSTEM: RtAudio's headers are third-party and must not see our /W4 /WX.
-option(PQ_WITH_ASIO "Build RtAudio's ASIO backend (Steinberg ASIO SDK files; not permissively licensed, see docs/QUESTIONS.md)" OFF)
 FetchContent_Declare(rtaudio
   URL      https://github.com/thestk/rtaudio/archive/refs/tags/6.0.1.tar.gz
   URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
@@ -119,7 +118,7 @@ block()
   set(RTAUDIO_BUILD_TESTING OFF)
   set(RTAUDIO_BUILD_PYTHON OFF)
   set(RTAUDIO_API_WASAPI ON)
-  set(RTAUDIO_API_ASIO ${PQ_WITH_ASIO})
+  set(RTAUDIO_API_ASIO OFF)
   set(RTAUDIO_API_DS OFF)
   set(RTAUDIO_API_JACK OFF)
   set(RTAUDIO_API_PULSE OFF)

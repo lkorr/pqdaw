@@ -130,6 +130,24 @@ TEST_CASE("cli: --list-devices and --sine") {
   CHECK(o->bufferFrames == 37);
   CHECK(o->blockFrames == 64);
   CHECK(o->exclusive);
+  // T0.6-fix2: --backend asio (= --asio), ASIO drivers by name, --asio-panel.
+  o = parse({"--sine", "440", "--backend", "asio", "--device", "Focusrite USB ASIO", "--buffer", "64"});
+  REQUIRE(o.ok());
+  CHECK(o->asio);
+  CHECK(o->deviceEndpoint == "Focusrite USB ASIO");
+  CHECK(o->bufferFrames == 64);
+  o = parse({"--list-devices", "--backend", "asio"});
+  REQUIRE(o.ok());
+  CHECK(o->asio);
+  o = parse({"--asio-panel", "--device", "2", "--seconds", "5"});
+  REQUIRE(o.ok());
+  CHECK(o->mode == Mode::AsioPanel);
+  CHECK(o->asio);
+  CHECK(o->device == 2);
+  CHECK(o->secondsGiven);
+  o = parse({"--asio-panel"});
+  REQUIRE(o.ok());
+  CHECK_FALSE(o->secondsGiven);
   // Flags may come before the mode flag.
   o = parse({"--seconds", "2", "--sine", "100"});
   REQUIRE(o.ok());
@@ -153,7 +171,12 @@ TEST_CASE("cli: audio flag errors") {
   CHECK_FALSE(parse({"--device", "3"}).ok());
   CHECK_FALSE(parse({"--asio"}).ok());
   CHECK_FALSE(parse({"--screenshot", "a", "b.png", "--asio"}).ok());
-  CHECK_FALSE(parse({"--sine", "440", "--backend", "asio"}).ok());
+  CHECK_FALSE(parse({"--sine", "440", "--backend", "bogus"}).ok());
+  CHECK_FALSE(parse({"--sine", "440", "--device", "Focusrite USB ASIO"}).ok());  // names select ASIO drivers only
+  CHECK_FALSE(parse({"--sine", "440", "--asio", "--device", "{0.0.0.00000000}.{x}"}).ok());  // WASAPI endpoint id
+  CHECK_FALSE(parse({"--asio-panel", "--buffer", "64"}).ok());
+  CHECK_FALSE(parse({"--asio-panel", "--rate", "48000"}).ok());
+  CHECK_FALSE(parse({"--asio-panel", "--sine", "440"}).ok());
   CHECK_FALSE(parse({"--sine", "440", "--level", "3"}).ok());
   CHECK_FALSE(parse({"--sine", "440", "--inject-stall", "0"}).ok());
   CHECK_FALSE(parse({"--sine", "440", "--inject-stall", "5", "--backend", "rtaudio"}).ok());

@@ -16,13 +16,12 @@ enum class Backend : uint8_t {
   Null,           // NullDevice: no hardware; driven manually or by a timer thread (tests, offline use)
   Wasapi,         // our WASAPI backend (WasapiDevice): event-driven, exclusive and shared, output only
   RtAudioWasapi,  // RtAudio WASAPI (shared mode only; kept for comparison and for input streams)
-  Asio,           // RtAudio ASIO (only when built with PQ_WITH_ASIO=ON)
+  Asio,           // our ASIO host (AsioDevice, T0.6-fix2): registered ASIO drivers, duplex
 };
 
 const char* backendName(Backend b) noexcept;
 
-// True if this binary can open devices on the backend (Null, Wasapi and RtAudioWasapi always; Asio only with
-// PQ_WITH_ASIO).
+// True if this binary can open devices on the backend (all four are always compiled in).
 bool backendCompiled(Backend b) noexcept;
 
 enum class ShareMode : uint8_t {
@@ -50,11 +49,17 @@ struct DeviceInfo {
   uint32_t minPeriodFrames = 0;                // exclusive-mode minimum period at preferredSampleRate
   uint32_t sharedMinPeriodFrames = 0;          // shared-mode (IAudioClient3) period range at the mix rate
   uint32_t sharedMaxPeriodFrames = 0;
+  // Backend::Asio only (endpointId is then the driver's registry name):
+  int32_t minBufferFrames = 0, maxBufferFrames = 0, preferredBufferFrames = 0;
+  int32_t bufferGranularity = 0;   // -1 = powers of two, 0 = preferred only, n = steps of n frames
+  std::string sampleTypeName;      // the driver's sample type for output channel 0 (input 0 if no outputs)
+  std::string probeError;          // non-empty if the driver could not be loaded to query the fields above
 };
 
 struct StreamConfig {
   uint32_t outputDevice = kDefaultDevice;
-  std::string outputEndpointId;  // Backend::Wasapi: when non-empty, selects the device instead of outputDevice
+  std::string outputEndpointId;  // when non-empty, selects the device instead of outputDevice: Backend::Wasapi
+                                 // endpoint id, Backend::Asio driver name
   uint32_t outputChannels = 2;
   uint32_t inputDevice = kDefaultDevice;
   uint32_t inputChannels = 0;  // 0 = output-only stream
@@ -74,7 +79,9 @@ struct StreamInfo {
   uint32_t inputChannels = 0;
   uint32_t outputChannels = 0;
   uint32_t latencyFrames = 0;      // output latency as the backend can tell before running (0 if unknown);
-                                   // WASAPI measures the real figure while running: CallbackStats meanQueueFrames
+                                   // WASAPI measures the real figure while running: CallbackStats meanQueueFrames;
+                                   // ASIO: the driver's getLatencies() output figure
+  uint32_t inputLatencyFrames = 0; // ASIO: the driver's input latency (0 if unknown / no input)
   bool backendResampling = false;  // the backend converts sample rate on the audio thread (not RT-safe)
   // Backend::Wasapi only:
   ShareMode shareMode = ShareMode::Shared;

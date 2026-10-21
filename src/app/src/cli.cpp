@@ -80,14 +80,13 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--seconds") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.seconds) || !(o.seconds > 0.0) || o.seconds > 86400.0)
         return usageError("--seconds needs a duration in (0, 86400]");
+      o.secondsGiven = true;
       streamOnly = a;
     } else if (a == "--device") {
       if (i + 1 >= args.size()) return usageError("--device needs a device id or endpoint id from --list-devices");
       const std::string_view d = args[++i];
-      if (!d.empty() && d.front() == '{')
-        o.deviceEndpoint = std::string(d);
-      else if (!parseNumber(d, o.device))
-        return usageError("--device needs a device id or endpoint id ({...}) from --list-devices");
+      if (d.empty()) return usageError("--device needs a device id, endpoint id or ASIO driver name");
+      if (d.front() == '{' || !parseNumber(d, o.device)) o.deviceEndpoint = std::string(d);  // name checked below
       streamOnly = a;
     } else if (a == "--rate") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.sampleRate) || o.sampleRate == 0)
@@ -114,14 +113,16 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
         return usageError("--inject-stall needs a device wake-up number >= 1");
       sineOnly = a;
     } else if (a == "--backend") {
-      if (i + 1 >= args.size()) return usageError("--backend needs wasapi or rtaudio");
+      if (i + 1 >= args.size()) return usageError("--backend needs wasapi, rtaudio or asio");
       const std::string_view b = args[++i];
       if (b == "wasapi")
         o.wasapi = WasapiImpl::Own;
       else if (b == "rtaudio")
         o.wasapi = WasapiImpl::RtAudio;
+      else if (b == "asio")
+        o.asio = true;
       else
-        return usageError("--backend needs wasapi or rtaudio");
+        return usageError("--backend needs wasapi, rtaudio or asio");
       backendFlag = true;
     } else if (a == "--play") {
       if (Status s = setMode(Mode::Play, a); !s) return std::move(s).error();
@@ -137,6 +138,9 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--latency-test") {
       if (Status s = setMode(Mode::LatencyTest, a); !s) return std::move(s).error();
     } else if (a == "--asio") {
+      o.asio = true;
+    } else if (a == "--asio-panel") {
+      if (Status s = setMode(Mode::AsioPanel, a); !s) return std::move(s).error();
       o.asio = true;
     } else if (a == "--project") {
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--project needs a project directory");
@@ -156,16 +160,24 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   const bool play = o.mode == Mode::Play;
   if (!sineOnly.empty() && o.mode != Mode::Sine && !(play && sineOnly != "--inject-stall"))
     return usageError(std::string(sineOnly) + " only applies to --sine");
-  if (!streamOnly.empty() && o.mode != Mode::Sine && o.mode != Mode::LatencyTest && !play)
+  const bool panel = o.mode == Mode::AsioPanel;
+  if (!streamOnly.empty() && o.mode != Mode::Sine && o.mode != Mode::LatencyTest && !play &&
+      !(panel && (streamOnly == "--device" || streamOnly == "--seconds")))
     return usageError(std::string(streamOnly) + " only applies to --sine, --play and --latency-test");
+  if (panel && !sineOnly.empty()) return usageError("--asio-panel takes only --device and --seconds");
+  if (!o.deviceEndpoint.empty() && o.deviceEndpoint.front() != '{' && !o.asio)
+    return usageError("--device needs a device id or endpoint id ({...}) from --list-devices (driver names select "
+                      "ASIO drivers: add --backend asio)");
+  if (!o.deviceEndpoint.empty() && o.deviceEndpoint.front() == '{' && o.asio)
+    return usageError("endpoint ids select WASAPI devices; ASIO drivers are selected by id or name");
   if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
     return usageError("--backend only applies to --sine, --play and --list-devices");
   if (!o.patchName.empty() && !play) return usageError("--patch only applies to --play");
   if (!o.notes.empty() && !play) return usageError("--notes only applies to --play");
   if (o.stallAfterWake && (o.asio || o.wasapi != WasapiImpl::Own))
     return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
-  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
-    return usageError("--asio only applies to --sine, --play and --list-devices");
+  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play && !panel)
+    return usageError("--asio only applies to --sine, --play, --list-devices and --asio-panel");
   // T3.7: the DAW shell. --project picks the shell in the window unless another view scene is named.
   if (!o.project.empty() || o.idleCheckSeconds > 0.0) {
     if (o.mode == Mode::Window && !sceneFlag) o.scene = "shell";
@@ -218,10 +230,12 @@ std::string usage() {
          "                                           over --project or a new project) at UI scale S\n"
          "                                           (default 1), i.e. round(W*S) x round(H*S) device px\n"
          "  --window-selftest                        scripted resize/minimise/restore run (exit 77 = no display)\n"
-         "  --list-devices [--backend wasapi|rtaudio] [--asio]\n"
-         "                                           list audio devices (WASAPI ids and endpoint ids)\n"
+         "  --list-devices [--backend wasapi|rtaudio]\n"
+         "                                           list audio devices (WASAPI ids and endpoint ids) and\n"
+         "                                           ASIO drivers (ids, channels, rates, buffer sizes)\n"
          "  --sine <hz> [options]                    play a test tone and print callback/underrun stats:\n"
-         "      --seconds S, --device <id|{endpoint}>, --backend wasapi|rtaudio, --asio, --exclusive,\n"
+         "      --seconds S, --device <id|{endpoint}|ASIO driver name>, --backend wasapi|rtaudio|asio,\n"
+         "      --asio (= --backend asio), --exclusive,\n"
          "      --rate HZ, --buffer N (device frames), --block N (engine block), --level DBFS (default -24),\n"
          "      --inject-stall W (test: stall 3 periods after device wake-up W; expects 1 underrun)\n"
          "  --play <file.pqp> [--patch NAME] [options]\n"
@@ -230,6 +244,9 @@ std::string usage() {
          "                                           [-1, 1]; same stream options as --sine. A patch with only\n"
          "                                           voice outs plays an arpeggio through the voice engine:\n"
          "      --notes \"60 64 67\"                     12-edo keys (60 = C3) or <f>hz, one per 0.25 s\n"
+         "  --asio-panel [--device <id|name>] [--seconds S]\n"
+         "                                           open an ASIO driver's control panel; keeps the driver\n"
+         "                                           loaded until Enter (or for S seconds)\n"
          "  --latency-test [--seconds S] [--device ..] [--buffer N] [--level DBFS]\n"
          "                                           shared-mode output latency vs WASAPI loopback capture\n"
          "  --help                                  this text\n";

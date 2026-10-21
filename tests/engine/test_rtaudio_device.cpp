@@ -18,6 +18,7 @@ TEST_CASE("rtaudio: backends compiled into this build") {
   CHECK(backendCompiled(Backend::Null));
   CHECK(backendCompiled(Backend::Wasapi));
   CHECK(backendCompiled(Backend::RtAudioWasapi));
+  CHECK(backendCompiled(Backend::Asio));  // our own host since T0.6-fix2
   CHECK(std::string(backendName(Backend::Wasapi)) == "WASAPI");
   CHECK(std::string(backendName(Backend::RtAudioWasapi)) == "RtAudio WASAPI");
   CHECK(std::string(backendName(Backend::Asio)) == "ASIO");
@@ -71,13 +72,13 @@ TEST_CASE("rtaudio: invalid stream requests fail cleanly") {
   CHECK(createAudioDevice(Backend::Null).ok());
 }
 
-TEST_CASE("rtaudio: ASIO is either compiled in or reports why not") {
+// T0.6-fix2: Backend::Asio is our own host (AsioDevice); RtAudio's ASIO backend (Steinberg SDK files) is never
+// built, so RtAudioDevice refuses it.
+TEST_CASE("rtaudio: ASIO is our own host, not RtAudio's") {
   auto dev = createAudioDevice(Backend::Asio);
-  if (backendCompiled(Backend::Asio)) {
-    CHECK(dev.ok());
-  } else {
-    REQUIRE_FALSE(dev.ok());
-    CHECK(dev.error().code == pq::ErrorCode::Unsupported);
-    CHECK(dev.error().message.find("PQ_WITH_ASIO") != std::string::npos);
-  }
+  REQUIRE(dev.ok());
+  CHECK((*dev)->backend() == Backend::Asio);
+  auto rt = RtAudioDevice::create(Backend::Asio);
+  REQUIRE_FALSE(rt.ok());
+  CHECK(rt.error().code == pq::ErrorCode::InvalidArgument);
 }
