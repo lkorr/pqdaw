@@ -123,4 +123,7 @@ pq_add_test(pq_tests_document
     document/test_serialize.cpp
     document/test_serialize_errors.cpp
     document/test_project_io.cpp
+    document/test_edit_ops.cpp
+    document/test_edit_pitch.cpp
+    document/test_edit_time.cpp
   DEPS pq_doc)
