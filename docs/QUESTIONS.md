@@ -733,7 +733,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Audition: plays on the instrument of the clip in the clip view (else the first MIDI track), through the engine's audition ring; overlapping auditions up to 32.
 - Options: keep; or keep the device running (Ableton does) at ~0.2 % idle CPU.
 
-## Q?-T3.15-a · 2026-10-24 · T3.15 · Automation lanes: choices not fixed by SPEC/TASKS
+## Q97 · 2026-10-24 · T3.15 · Automation lanes: choices not fixed by SPEC/TASKS
 - Context: SPEC §9.6 / TASKS T3.15 name the features; Live's manual (not available to the worker) fixes the details. All of it is view behaviour in `src/views/src/arrangement/automation*.cpp` (nothing persisted beyond the document's existing `LaneView`), so each item is reversible.
 - Choices (provisional):
   1. **Lane state is view state**: which lanes a track shows, the parameter over its clips and automation mode are not saved (Q15: not undoable); a lane's height and visibility use the document's `LaneView` once the lane exists. The first show of a track's lanes lists its automated parameters, else its volume. Alternative: persist a per-track "lanes shown" flag (needs a `TrackView` field + serializer change).
