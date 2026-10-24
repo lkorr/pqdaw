@@ -22,6 +22,47 @@ float ScalarOps::sel(float m, float a, float b) noexcept {              // RT-sa
 }
 float ScalarOps::mask(bool b) noexcept { return std::bit_cast<float>(b ? 0xFFFFFFFFu : 0u); }  // RT-safe
 
+namespace {
+
+template <Atom A>
+void tangentStep(const TangentStep& g) noexcept {  // RT-safe
+  ScalarOps o;
+  Tan<float> dl[4], yl[4];
+  Tan<float>* d = g.numIn <= 4 ? dl : g.dScratch;
+  Tan<float>* dy = g.numOut <= 4 ? yl : g.dyScratch;
+  for (uint32_t j = 0; j < g.n; ++j) {
+    if (((g.outAny >> j) & 1u) == 0) continue;
+    for (uint32_t l = 0; l < g.lanes; ++l) {
+      const float a[3] = {g.a[l], g.a[8 + l], g.a[16 + l]};
+      for (uint32_t i = 0; i < g.numIn; ++i) {  // field by field (a whole-struct temporary is packed through memory)
+        const uint32_t on = (g.in[i].nz >> j) & 1u;
+        d[i].on = on;
+        d[i].v = on != 0 ? g.T[(g.in[i].slot * g.n + j) * 8 + l] : 0.0f;
+      }
+      tangentOp(o, A, g.numIn, g.numOut, a, g.y + l, d, dy);
+      for (uint32_t k = 0; k < g.numOut; ++k)
+        if (((g.out[k].nz >> j) & 1u) != 0) g.T[(g.out[k].slot * g.n + j) * 8 + l] = dy[k].v;
+    }
+  }
+}
+
+}  // namespace
+
+TangentStepFn scalarTangentStep(Atom a) noexcept {
+  switch (a) {
+#define PQ_TAN(X)   case Atom::X: return &tangentStep<Atom::X>;
+    PQ_TAN(Add) PQ_TAN(Sub) PQ_TAN(Mul) PQ_TAN(Div) PQ_TAN(Min) PQ_TAN(Max) PQ_TAN(Mod) PQ_TAN(Pow) PQ_TAN(PowFast)
+    PQ_TAN(CentsToHz) PQ_TAN(CentsToHzFast) PQ_TAN(HzToCents) PQ_TAN(HzToCentsFast) PQ_TAN(Neg) PQ_TAN(Abs) PQ_TAN(Sign)
+    PQ_TAN(Floor) PQ_TAN(Frac) PQ_TAN(Sqrt) PQ_TAN(SqrtFast) PQ_TAN(Exp) PQ_TAN(ExpFast) PQ_TAN(Log) PQ_TAN(LogFast)
+    PQ_TAN(Sin) PQ_TAN(SinFast) PQ_TAN(Tan) PQ_TAN(TanFast) PQ_TAN(Tanh) PQ_TAN(TanhFast) PQ_TAN(DbToGain)
+    PQ_TAN(DbToGainFast) PQ_TAN(GainToDb) PQ_TAN(GainToDbFast) PQ_TAN(Const) PQ_TAN(Clip) PQ_TAN(Lerp) PQ_TAN(Select)
+    PQ_TAN(MulAdd) PQ_TAN(And) PQ_TAN(Or) PQ_TAN(Xor) PQ_TAN(Nand) PQ_TAN(Nor) PQ_TAN(Not) PQ_TAN(Gt) PQ_TAN(Lt)
+    PQ_TAN(Ge) PQ_TAN(Le) PQ_TAN(Eq) PQ_TAN(Ne) PQ_TAN(GateToReal) PQ_TAN(Mux) PQ_TAN(Demux) PQ_TAN(SinePhase)
+#undef PQ_TAN
+    default: return nullptr;
+  }
+}
+
 bool hasTangent(Atom a) noexcept {
   switch (a) {
     case Atom::Add: case Atom::Sub: case Atom::Mul: case Atom::Div: case Atom::Min: case Atom::Max: case Atom::Mod:
@@ -62,9 +103,15 @@ bool bodyReadAfter(const g::Schedule& s, const g::SolveBlock& sb) {
     for (const g::Operand& o : s.outputsOf(s.ops[i]))
       if (o.kind == g::Operand::Kind::Buffer) written[o.index] = true;
   auto hit = [&](const g::Operand& o) { return o.kind == g::Operand::Kind::Buffer && written.count(o.index) != 0; };
-  for (uint32_t i = end; i < s.ops.size(); ++i)
+  // In op order after the body: a read of a body-written buffer is a reader; a write first replaces the value
+  // (buffer reuse), so later reads of that buffer read something else. Outputs and other blocks' operands are read
+  // at unknown points: any body-written buffer still holding its body value counts.
+  for (uint32_t i = end; i < s.ops.size(); ++i) {
     for (const g::Operand& o : s.inputs(s.ops[i]))
       if (hit(o)) return true;
+    for (const g::Operand& o : s.outputsOf(s.ops[i]))
+      if (o.kind == g::Operand::Kind::Buffer) written.erase(o.index);
+  }
   for (const g::OutputRef& o : s.outputs)
     if (hit(o.value)) return true;
   const g::SolveBlock* self = &sb;

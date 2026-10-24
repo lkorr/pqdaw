@@ -73,7 +73,8 @@ bool bodyReadAfter(const graph::Schedule& s, const graph::SolveBlock& sb);
 template <class F>
 struct Tan {
   F v{};
-  bool on = false;
+  uint32_t on = 0;   // 0 or 1
+  uint32_t pad_ = 0;  // 12+ bytes: MSVC returns it through memory field by field instead of packing it into RAX
 };
 
 // The tangent rules, written once for both backends. `O` supplies the arithmetic: the interpreter's scalar floats
@@ -118,7 +119,6 @@ PQ_NEWTON_INLINE void tangentOp(O& o, dsp::Atom atom, uint32_t numIn, uint32_t n
   constexpr float kLn10Over20 = 0.115129254649702284f;      // ln 10 / 20
   constexpr float k20OverLn10 = 8.68588963806503655f;       // 20 / ln 10
   constexpr float kTwoPi = 6.28318530717958648f;
-  for (uint32_t k = 0; k < numOut; ++k) dy[k] = off;
   switch (atom) {
     case Atom::Add: dy[0] = tadd(d[0], d[1]); return;
     case Atom::Sub: dy[0] = tsub(d[0], d[1]); return;
@@ -183,14 +183,19 @@ PQ_NEWTON_INLINE void tangentOp(O& o, dsp::Atom atom, uint32_t numIn, uint32_t n
       return;
     }
     case Atom::Demux: {  // output k = x where clamp(floor(index), 0, n − 1) == k
-      if (!d[1].on) return;
+      if (!d[1].on) {
+        for (uint32_t k = 0; k < numOut; ++k) dy[k] = off;
+        return;
+      }
       const F mx = o.sel(o.gt(o.floor(a[0]), o.c(0.0f)), o.floor(a[0]), o.c(0.0f));
       const F nm1 = o.c(static_cast<float>(numOut - 1));
       const F c = o.sel(o.lt(mx, nm1), mx, nm1);
       for (uint32_t k = 0; k < numOut; ++k) dy[k] = tsel(o.eq(c, o.c(static_cast<float>(k))), d[1], off);
       return;
     }
-    default: return;  // sign, floor, logic, comparisons, gate_to_real: zero
+    default:  // sign, floor, logic, comparisons, gate_to_real: zero
+      for (uint32_t k = 0; k < numOut; ++k) dy[k] = off;
+      return;
   }
 }
 
@@ -215,5 +220,24 @@ struct ScalarOps {
   static F logE(F x) noexcept { return logExact(x); }
   static F mask(bool b) noexcept;
 };
+
+// The interpreter's tangent step for one body op over all lanes and directions, specialised per atom (one indirect
+// call per op, like a kernel; the rule's switch folds away). T holds slot-major tangents: T[(slot·n + j)·8 + lane].
+struct TanPort {
+  uint32_t slot = 0;
+  uint32_t nz = 0;  // direction bits
+};
+struct TangentStep {
+  uint32_t numIn = 0, numOut = 0, n = 0, lanes = 0, outAny = 0;
+  const float* a = nullptr;      // the first three inputs' values, 8 floats each (lane l at [k·8 + l])
+  const float* y = nullptr;      // the op's output value (lane l at [l])
+  const TanPort* in = nullptr;   // numIn
+  const TanPort* out = nullptr;  // numOut
+  float* T = nullptr;
+  Tan<float>* dScratch = nullptr;   // ≥ numIn entries when numIn > 4
+  Tan<float>* dyScratch = nullptr;  // ≥ numOut entries when numOut > 4
+};
+using TangentStepFn = void (*)(const TangentStep&) noexcept;
+TangentStepFn scalarTangentStep(dsp::Atom a) noexcept;  // null: no rule
 
 }  // namespace pq::engine::newton

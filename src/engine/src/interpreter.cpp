@@ -271,15 +271,12 @@ struct EqRun {
 // Forward-mode tangents of a solve body (pq/engine/newton.h): per body op, where its inputs' and outputs' tangents
 // live (a slot of the tangent scratch, one per distinct buffer of the block) and which directions are non-zero.
 struct AdOp {
-  dsp::Atom atom = dsp::Atom::Add;
+  newton::TangentStepFn step = nullptr;
   uint32_t numIn = 0, numOut = 0;
   uint32_t firstIn = 0, firstOut = 0;  // into adPorts_
   uint32_t outAny = 0;                 // OR of the outputs' direction bits
 };
-struct AdPort {
-  uint32_t slot = 0;
-  uint32_t nz = 0;  // direction bits (0: no tangent, slot unused)
-};
+using AdPort = newton::TanPort;  // a tangent slot and its direction bits (0: no tangent, slot unused)
 
 struct SolveRun {
   uint32_t iterations = 1;
@@ -556,7 +553,6 @@ void InterpretedImage::evalBodyTangents(const SolveRun& s, uint32_t t) noexcept 
     for (uint32_t l = 0; l < L; ++l) T[(u.slot * n + j) * 8 + l] = 1.0f;
   }
   alignas(32) float snap[3 * 8] = {};
-  newton::ScalarOps ops;
   for (uint32_t k = 0; k < s.numBodyRec; ++k) {
     Rec& rec = recs_[s.firstBodyRec + k];
     if (s.loop) {
@@ -573,22 +569,20 @@ void InterpretedImage::evalBodyTangents(const SolveRun& s, uint32_t t) noexcept 
     for (uint32_t i = 0; i < na; ++i)
       for (uint32_t l = 0; l < L; ++l) snap[i * 8 + l] = rec.args.in[i][l];
     rec.fn(rec.args);
-    for (uint32_t l = 0; l < L; ++l) {
-      const float a[3] = {snap[l], snap[8 + l], snap[16 + l]};
-      const float y = rec.args.out[0][l];
-      for (uint32_t j = 0; j < n; ++j) {
-        if (((op.outAny >> j) & 1u) == 0) continue;
-        for (uint32_t i = 0; i < op.numIn; ++i) {
-          const AdPort& p = adPorts_[op.firstIn + i];
-          adIn_[i] = ((p.nz >> j) & 1u) != 0 ? newton::Tan<float>{T[(p.slot * n + j) * 8 + l], true} : newton::Tan<float>{};
-        }
-        newton::tangentOp(ops, op.atom, op.numIn, op.numOut, a, &y, adIn_.data(), adOut_.data());
-        for (uint32_t o = 0; o < op.numOut; ++o) {
-          const AdPort& p = adPorts_[op.firstOut + o];
-          if (((p.nz >> j) & 1u) != 0) T[(p.slot * n + j) * 8 + l] = adOut_[o].v;
-        }
-      }
-    }
+    newton::TangentStep g;
+    g.numIn = op.numIn;
+    g.numOut = op.numOut;
+    g.n = n;
+    g.lanes = L;
+    g.outAny = op.outAny;
+    g.a = snap;
+    g.y = rec.args.out[0];
+    g.in = adPorts_.data() + op.firstIn;
+    g.out = adPorts_.data() + op.firstOut;
+    g.T = T;
+    g.dScratch = adIn_.data();
+    g.dyScratch = adOut_.data();
+    op.step(g);
   }
 }
 
@@ -1262,7 +1256,7 @@ private:
     for (uint32_t k = 0; k < sb.numOps; ++k) {
       const g::Op& op = s_.ops[sb.firstOp + k];
       AdOp a;
-      a.atom = static_cast<dsp::Atom>(op.kernel);
+      a.step = newton::scalarTangentStep(static_cast<dsp::Atom>(op.kernel));
       a.numIn = op.numIn;
       a.numOut = op.numOut;
       a.firstIn = static_cast<uint32_t>(im.adPorts_.size());
