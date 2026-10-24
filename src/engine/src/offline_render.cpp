@@ -50,6 +50,7 @@ Result<RenderStats> renderOffline(const RenderRequest& rq, AudioSink& sink) {
   if (!rq.params.empty()) std::copy(rq.params.begin(), rq.params.end(), runner.params().begin());
   runner.transport() = rq.transport;
   if (rq.voices != nullptr) runner.setVoices(rq.voices, rq.events, std::max(rq.eventCapacity, 1u));
+  runner.setBlockHook(rq.hook);
 
   // Chunk buffer: whole blocks, planar.
   const uint32_t block = rq.blockFrames;

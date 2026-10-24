@@ -15,6 +15,7 @@ bool ImageRunner::prepare(ProgramImage* image, uint32_t numIn, uint32_t numOut, 
   blocks_ = 0;
   voices_ = nullptr;
   source_ = {};
+  hook_ = {};
   playMixes_ = false;
   const ImageInterface& io = image->io();
   params_.clear();
@@ -60,6 +61,7 @@ void ImageRunner::process(const AudioBlock& block) noexcept {  // RT-safe
     for (uint32_t c = 0; c < ctx.numIn; ++c) in[c] = block.in[c] + off;
     ctx.frames = n;
     ctx.sampleTime = block.frameTime + off;
+    if (hook_.fn != nullptr) hook_.fn(hook_.user, ctx.sampleTime, n, transport_, params_);
     ctx.transport = transport_;
     if (voices_ != nullptr) {
       events_.clear();
@@ -69,7 +71,7 @@ void ImageRunner::process(const AudioBlock& block) noexcept {  // RT-safe
     } else {
       image_->process(ctx);
     }
-    if (transport_.playing) transport_.beat += static_cast<double>(n) * transport_.beatsPerFrame;
+    if (hook_.fn == nullptr && transport_.playing) transport_.beat += static_cast<double>(n) * transport_.beatsPerFrame;
     for (uint32_t c = 0; c < std::min(numOut_, block.numOut); ++c) {
       float* dst = block.out[c] + off;
       const uint32_t s = chanSlot_[c];

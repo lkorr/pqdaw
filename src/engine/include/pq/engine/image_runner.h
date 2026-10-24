@@ -32,6 +32,16 @@ struct EventSource {
   void* user = nullptr;
 };
 
+// Called at the start of every image block, before the event source and the image (T3.16: Timeline::blockHook
+// advances the timeline, writes the transport snapshot the image sees and the automated param values). With a hook
+// set, the runner's own transport() is whatever the hook writes (it no longer advances by beatsPerFrame). Called on
+// the audio thread: must be RT-safe.
+struct BlockHook {
+  void (*fn)(void* user, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
+             std::span<float> params) noexcept = nullptr;
+  void* user = nullptr;
+};
+
 class ImageRunner {
 public:
   // Off the audio thread; the image must outlive the stream. Returns false for channel counts above kMaxChannels.
@@ -40,6 +50,8 @@ public:
   // After prepare, before start: run the image through `voices` (prepared for the same image) with events from
   // `source`. Allocates the event buffer (eventCapacity events per image block).
   void setVoices(VoiceEngine* voices, EventSource source, uint32_t eventCapacity = 1024);
+  // After prepare, before start: call `hook` at the start of every image block (BlockHook above).
+  void setBlockHook(BlockHook hook) noexcept { hook_ = hook; }
 
   AudioCallback callback() noexcept { return {&ImageRunner::onBlock, this}; }
   // One engine block (any frame count: blocks above the image's maxBlockFrames are split). RT-safe.
@@ -67,6 +79,7 @@ private:
   uint32_t chanSlot_[kMaxChannels] = {};
   VoiceEngine* voices_ = nullptr;
   EventSource source_;
+  BlockHook hook_;
   EventBuffer events_;
   bool playMixes_ = false;          // channels play VoiceEngine mixes (chanSlot_ indexes mixes)
   uint64_t blocks_ = 0;
