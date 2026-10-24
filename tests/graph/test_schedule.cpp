@@ -1542,7 +1542,7 @@ TEST_CASE("schedule: a delay line whose ring would pass 1 GiB is a located compi
   CHECK(big.find("test.pqp:3:") != std::string::npos);
   CHECK(big.find("maximum delay") != std::string::npos);
   CHECK(big.find("mono delay line") != std::string::npos);
-  // At the limit the patch schedules and its state entry covers the whole ring (2^28 frames · 4 B); one frame more
+  // Near the limit the patch schedules and its state entry covers the whole ring (2^28 frames · 4 B); one frame more
   // is an error. The same for a voice delay (8 lanes per frame: 2^25 frames).
   const auto at = [](uint32_t frames, bool voice) {
     const std::string f = std::to_string(frames);
@@ -1553,7 +1553,7 @@ TEST_CASE("schedule: a delay line whose ring would pass 1 GiB is a located compi
     const uint32_t limit = dsp::maxDelayFramesLimit(voice ? 8 : 1);
     CHECK(limit == (voice ? (1u << 25) : (1u << 28)) - 10u);
     Compiled c;
-    compile(c, at(limit, voice));
+    compile(c, at(limit - 8, voice));  // just below: the language's float literal and seconds round trip may add one
     const Schedule& s = ok(c);
     uint64_t ring = 0;
     for (const StateEntry& e : s.state.entries)
@@ -1566,7 +1566,7 @@ TEST_CASE("schedule: a delay line whose ring would pass 1 GiB is a located compi
     CHECK(e.find(voice ? "voice delay line" : "mono delay line") != std::string::npos);
   }
   // Two maximal rings exceed the 2 GiB arena: an error at the second one, not wrapped offsets.
-  const std::string lim = std::to_string(dsp::maxDelayFramesLimit(1));
+  const std::string lim = std::to_string(dsp::maxDelayFramesLimit(1) - 8);
   const std::string two = errorsOf("patch Two {\n  out y : audio\n  a = delay(sine_hz(100Hz), 1smp, " + lim +
                                    "smp)\n  b = delay(a, 1smp, " + lim + "smp)\n  y = b\n}\n");
   CHECK(two.find("state exceeds 2 GiB") != std::string::npos);

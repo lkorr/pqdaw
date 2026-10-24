@@ -698,7 +698,7 @@ TEST_CASE("dsp atoms: 8-lane delay lines reset one lane through DelayState::star
     pq::dsp::StateInit init;
     init.lanes = 8;
     init.maxDelayFrames = 64;
-    const uint32_t bytes = pq::dsp::stateBytes(a, init);
+    const size_t bytes = pq::dsp::stateBytes(a, init);
     pq::AlignedBuffer<float> sa(bytes / 4), sb(bytes / 4);
     pq::dsp::initState(a, sa.data(), init);
     pq::dsp::initState(a, sb.data(), init);

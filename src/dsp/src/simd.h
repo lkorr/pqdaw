@@ -94,6 +94,19 @@ struct S8 {
 
   // Table read: base[idx[lane]] for each lane. Callers guarantee every index is in bounds.
   static F gather(const float* base, I idx) noexcept { return _mm256_i32gather_ps(base, idx, 4); }
+  // Adjacent pairs: a = base[idx], b = base[idx + 1] per lane, as two 4-element 64-bit gathers (half the load
+  // uops of two 8-element float gathers) and a de-interleave.
+  static void gatherPair(const float* base, I idx, F& a, F& b) noexcept {
+    const __m256 lo = _mm256_castsi256_ps(
+        _mm256_i32gather_epi64(reinterpret_cast<const long long*>(base), _mm256_castsi256_si128(idx), 4));
+    const __m256 hi = _mm256_castsi256_ps(
+        _mm256_i32gather_epi64(reinterpret_cast<const long long*>(base), _mm256_extracti128_si256(idx, 1), 4));
+    // lo = [a0 b0 a1 b1 | a2 b2 a3 b3], hi = [a4 b4 a5 b5 | a6 b6 a7 b7]
+    const __m256 ev = _mm256_shuffle_ps(lo, hi, _MM_SHUFFLE(2, 0, 2, 0));  // [a0 a1 a4 a5 | a2 a3 a6 a7]
+    const __m256 od = _mm256_shuffle_ps(lo, hi, _MM_SHUFFLE(3, 1, 3, 1));
+    a = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ev), _MM_SHUFFLE(3, 1, 2, 0)));
+    b = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(od), _MM_SHUFFLE(3, 1, 2, 0)));
+  }
 
   // round(x · scale) as int32, computed in double (scale is exact enough to give the nearest integer of the
   // real product except within 2^-22 of a tie). Results must fit int32. Used for uint32 phase increments.
@@ -218,6 +231,11 @@ struct S1 {
   static I asI(F a) noexcept { return _mm_castps_si128(a); }
 
   static F gather(const float* base, I idx) noexcept { return _mm_load_ss(base + _mm_cvtsi128_si32(idx)); }
+  static void gatherPair(const float* base, I idx, F& a, F& b) noexcept {
+    const float* p = base + _mm_cvtsi128_si32(idx);
+    a = _mm_load_ss(p);
+    b = _mm_load_ss(p + 1);
+  }
 
   static I roundMulToInt(F x, double scale) noexcept {
     return _mm_cvtpd_epi32(_mm_mul_sd(_mm_cvtss_sd(_mm_setzero_pd(), x), _mm_set_sd(scale)));

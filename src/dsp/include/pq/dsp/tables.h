@@ -31,7 +31,9 @@ namespace pq::dsp {
 // so level j fades in over u ∈ [j − 1, j − 0.5), is alone up to u = j, and fades out over [j, j + 0.5): it is used
 // for true L in [j/2 − 0.5, j/2 + 0.336], inside its window with ≥ 0.079 octave to spare on both sides. Every
 // harmonic up to sr/3 is therefore always at full level (in both crossfaded levels), and no alias lands below sr/3.
-// Cost: 4 gathers per sample (two levels × linear interpolation) instead of 2.
+// Cost: 4 table reads per sample instead of 2 (two levels × linear interpolation, fetched as 64-bit pairs); the
+// mono kernel skips the lower level when no lane needs it (t = 1, half of every half-octave). Measured 0.81 →
+// 1.72 ns/sample mono in a crossfade, 1.24 at a steady single-level pitch; 4.8 → 10.3 ns per 8-voice frame.
 //
 // Increment estimate: the smaller of the last two |Δphase| (each wrapped to [0, 0.5]; NaN → 0). One phase jump
 // (a phasor reset upstream, the first sample after the state is initialised) then never selects the level for

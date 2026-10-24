@@ -55,6 +55,10 @@ struct Fixture {
   }
 };
 
+// Wavetable phase increment per sample and its per-lane spread. Default: 0.013 cycles (624 Hz at 48 kHz, inside a
+// mip crossfade), lanes 10 % apart; the " (steady 1 kHz)" variant: one pitch where only the upper level is read.
+float gWavetableInc = 0.013f, gWavetableSpread = 0.1f;
+
 // Realistic input values per atom/input (frame t, lane l).
 float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
   // Oscillator / playhead resets: none in the measured blocks (the common case; a firing reset switches the
@@ -72,7 +76,7 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
     case Atom::Phasor: case Atom::SineHz:
       return 100.0f + 1000.0f * r;
     case Atom::Wavetable:
-      return std::fmod(0.013f * static_cast<float>(t) * (1.0f + 0.1f * l), 1.0f);
+      return std::fmod(gWavetableInc * static_cast<float>(t) * (1.0f + gWavetableSpread * l), 1.0f);
     case Atom::SampleReadLinear: case Atom::SampleReadCubic:
       return i == 0 ? 0.5f + r : i == 2 ? 0.0f : i == 3 ? 1000.0f : 40000.0f;
     case Atom::SamplePosLinear: case Atom::SamplePosCubic:
@@ -173,6 +177,13 @@ int main(int argc, char** argv) {
   add(Atom::SineHz, 0b11, " (spl hz, spl reset)");
   add(Atom::DelayLinear, 0b10, " (spl delay)");
   add(Atom::SampleReadCubic, 0b11, " (spl rate, spl reset)");
+  runner.add("atom/wavetable (steady 1 kHz)", [&fx, &rows](pq::bench::Context& c) {
+    gWavetableInc = 1000.0f / 48000.0f;
+    gWavetableSpread = 0.0f;
+    rows.push_back(benchAtom(c, fx, Atom::Wavetable, 0, " (steady 1 kHz)"));
+    gWavetableInc = 0.013f;
+    gWavetableSpread = 0.1f;
+  });
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   if (code != 0 || rows.empty()) return code;
 

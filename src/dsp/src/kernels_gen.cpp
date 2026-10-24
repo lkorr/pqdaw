@@ -140,7 +140,9 @@ inline typename S::F phaseDelta(typename S::F p, typename S::F prev) noexcept { 
 }
 
 // One table read with the mip crossfade of tables.h. `inc` = increment estimate in cycles (≥ 0, not NaN).
-template <class S>
+// kSkip: test whether any lane needs the lower level before gathering it (worth it when the lanes are consecutive
+// samples of one pitch; voice lanes almost never all sit at t = 1, so there the test is pure overhead).
+template <class S, bool kSkip>
 inline typename S::F wavetableRead(const WavetableView& v, typename S::F p, typename S::F inc) noexcept {  // RT-safe
   // u = 2·log2(N·inc) from the float bits: bits·2^−23 − 127 = e + (m − 1) ≈ log2(N·inc) (0.086 octave low at most).
   const auto x = S::mul(inc, S::set(v.sizeF));
@@ -160,14 +162,18 @@ inline typename S::F wavetableRead(const WavetableView& v, typename S::F p, type
   const auto off = S::andi(i, S::seti(static_cast<int32_t>(v.size) - 1));
   const auto b0 = S::addi(S::muli(lo, stride), off);
   const auto b1 = S::addi(S::muli(hi, stride), off);
-  const auto one = S::seti(1);
-  const auto y0 = S::gather(v.data, b0);
-  const auto y1 = S::gather(v.data, S::addi(b0, one));
-  const auto z0 = S::gather(v.data, b1);
-  const auto z1 = S::gather(v.data, S::addi(b1, one));
-  const auto a = S::fma(fr, S::sub(y1, y0), y0);
+  typename S::F y0, y1, z0, z1;
+  S::gatherPair(v.data, b1, z0, z1);
   const auto b = S::fma(fr, S::sub(z1, z0), z0);
-  return S::fma(t, S::sub(b, a), a);
+  // Half of every half-octave reads the upper level alone (t = 1): with kSkip, skip the lower level's gathers when
+  // no lane needs it (a steady mono pitch, vectorised over time, half the time). Lanes at t = 1 return b exactly
+  // either way (fma(1, b − a, a) can differ from b by rounding), so the result does not depend on the lane mix.
+  const auto upperOnly = S::ge(t, S::set(1.0f));
+  if constexpr (kSkip)
+    if (!S::any(S::bnot(upperOnly))) return b;
+  S::gatherPair(v.data, b0, y0, y1);
+  const auto a = S::fma(fr, S::sub(y1, y0), y0);
+  return S::select(upperOnly, b, S::fma(t, S::sub(b, a), a));
 }
 
 struct WavetableK {
@@ -193,7 +199,7 @@ struct WavetableK {
           const auto ph = S8::load(p + i);
           const auto d = phaseDelta<S8>(ph, i == 0 ? S8::load(first) : S8::load(p + i - 1));
           const auto dPrev = _mm256_blend_ps(_mm256_permutevar8x32_ps(d, rot), dLast, 0x01);
-          S8::store(out + i, wavetableRead<S8>(v, ph, S8::min(d, dPrev)));
+          S8::store(out + i, wavetableRead<S8, true>(v, ph, S8::min(d, dPrev)));
           dLast = _mm256_permutevar8x32_ps(d, last);
         }
       }
@@ -202,7 +208,7 @@ struct WavetableK {
         const auto prev = i == 0 ? S1::load(st.prevPhase) : S1::load(p + i - 1);
         const auto ph = S1::load(p + i);
         const auto d = phaseDelta<S1>(ph, prev);
-        S1::store(out + i, wavetableRead<S1>(v, ph, S1::min(d, dPrev1)));
+        S1::store(out + i, wavetableRead<S1, true>(v, ph, S1::min(d, dPrev1)));
         dPrev1 = d;
       }
       if (a.frames > 0) {
@@ -216,7 +222,7 @@ struct WavetableK {
       for (uint32_t f = 0; f < a.frames; ++f) {
         const auto p = phase.at(f);
         const auto d = phaseDelta<S>(p, prev);
-        S::store(out + f * S::kW, wavetableRead<S>(v, p, S::min(d, prevD)));
+        S::store(out + f * S::kW, wavetableRead<S, S::kW == 1>(v, p, S::min(d, prevD)));
         prev = p;
         prevD = d;
       }
