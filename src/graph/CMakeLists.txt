@@ -15,5 +15,6 @@ pq_add_module(pq_graph
     src/optimise.cpp
     src/schedule.cpp
     src/schedule_dump.cpp
+    src/project.cpp
   DEPS pq_core pq_dsp
 )

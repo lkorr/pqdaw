@@ -2,7 +2,8 @@
 // tests/graph/cases and tests/engine/patches × 2 param sets × blocks 1/37/64/1024) against the interpreter (≤ 1e-6)
 // and the reference evaluator (≤ 1e-5); bit-identity with the interpreter when contraction is off; every
 // optimisation level; the ProgramImage contract cases (params, rejected blocks, missing inputs, interface, build
-// errors, state arena, ImageRunner, NullDevice); RtScope around every process(); compile time for 100/1000 nodes.
+// errors, state arena, ImageRunner, NullDevice); RtScope around every process(); compile time for 100/1000 nodes;
+// T1.x-arch1: a per-track project on JIT units and an interpreter → JIT unit swap after an edit.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -15,13 +16,17 @@
 
 #include "../engine/interp_harness.h"
 #include "../engine/liveness_probes.h"
+#include "../engine/project_fixture.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/image_runner.h"
 #include "pq/engine/interpreter.h"
 #include "pq/engine/note_events.h"
+#include "pq/engine/note_list.h"
 #include "pq/engine/null_device.h"
+#include "pq/engine/project_compile.h"
+#include "pq/engine/project_program.h"
 #include "pq/engine/voices.h"
 #include "pq/jit/compiler.h"
 
@@ -688,4 +693,117 @@ TEST_CASE("jit: M1 review liveness probes (solve operands, voice outputs, stereo
       CHECK(liveness_probes::bitEqual(interp.streams, liveness_probes::run(c, voices, 4096, 64, jitBuilder(jo)).streams));
     }
   }
+}
+
+namespace {
+
+pq::Result<std::unique_ptr<eng::ProgramImage>> jitUnit(void*, const Schedule& s, uint32_t maxBlock, uint32_t groups,
+                                                       const eng::Resources* res) {
+  jit::CompileOptions o;
+  o.maxBlockFrames = maxBlock;
+  o.maxVoiceGroups = groups;
+  o.resources = res;
+  o.contract = false;  // bit-identical to the interpreter
+  return compiler().compile(s, o);
+}
+
+struct ProjectRig {
+  std::unique_ptr<project_fixture::Project> proj;
+  std::unique_ptr<eng::ProjectCompiler> compiler;
+  std::vector<std::unique_ptr<eng::NoteListSource>> notes;
+  std::unique_ptr<eng::ProjectProgram> program;
+  int64_t time = 0;
+  uint64_t rtViolations = 0;
+
+  explicit ProjectRig(bool useJit) {
+    const project_fixture::Options o{4, 3, 3, 1};
+    proj = project_fixture::makeProject(o);
+    REQUIRE(proj != nullptr);
+    eng::ProjectCompileOptions co;
+    co.sampleRate = 48000.0;
+    co.maxBlockFrames = 64;
+    co.voice.maxVoices = 8;
+    if (useJit) co.backend = {&jitUnit, nullptr};
+    compiler = std::make_unique<eng::ProjectCompiler>(co);
+    auto b = compiler->build(proj->graph);
+    REQUIRE_MESSAGE(b.ok(), (b.ok() ? "" : b.error().message));
+    eng::ProjectConfig pc;
+    pc.sampleRate = 48000.0;
+    pc.maxBlockFrames = 64;
+    for (uint32_t k = 0; k < o.numTracks; ++k) {
+      const float hz = 110.0f * (1.0f + 0.25f * static_cast<float>(k));
+      notes.push_back(std::make_unique<eng::NoteListSource>(
+          std::vector<eng::TimedNote>{{0, 3000, hz, 0.8f, 0.5f}, {1200, 4000, hz * 1.5f, 0.6f, 0.5f}}));
+      pc.eventSources.push_back(notes.back()->source());
+    }
+    auto prog = eng::ProjectProgram::create(pc, b.value().layout);
+    REQUIRE(prog.ok());
+    program = std::move(prog.value());
+    for (uint32_t u = 0; u < b.value().images.size(); ++u) REQUIRE(program->publish(u, std::move(b.value().images[u])).ok());
+  }
+  void render(uint32_t frames, std::vector<float>& out) {
+    std::vector<float> l(64), r(64);
+    float* outs[2] = {l.data(), r.data()};
+    for (uint32_t f = 0; f < frames; f += 64) {
+      eng::AudioBlock ab;
+      ab.out = outs;
+      ab.numOut = 2;
+      ab.frames = 64;
+      ab.frameTime = time;
+      rtViolations += pq::alloc_trap::countRtViolations([&] {
+        pq::DenormalGuard dg;
+        program->process(ab);
+      });
+      out.insert(out.end(), l.begin(), l.end());
+      time += 64;
+    }
+  }
+  void editLevel(uint32_t track, double level) {
+    Patch& tp = *proj->trackPatches[track];
+    for (NodeIndex n = 0; n < tp.nodeCount(); ++n)
+      if (tp.node(n).kind == NodeKind::Const && tp.constant(n).literal == 0.15) {
+        tp.constant(n) = Constant::real(level);
+        return;
+      }
+    FAIL("no level constant");
+  }
+};
+
+}  // namespace
+
+TEST_CASE("jit: a per-track project on JIT units == interpreted units; an interpreter -> JIT unit swap after an edit") {
+  ProjectRig j(true), in(false);
+  std::vector<float> a, b;
+  j.render(2048, a);
+  in.render(2048, b);
+  REQUIRE(a.size() == b.size());
+  CHECK(std::memcmp(a.data(), b.data(), sizeof(float) * a.size()) == 0);
+  // Edit track 1: the JIT project plays the interpreted unit at once, then swaps to its JIT image.
+  j.editLevel(1, 0.5);
+  in.editLevel(1, 0.5);
+  const uint32_t tracks[] = {1};
+  const eng::UnitBackend interpreter{};
+  auto uj = j.compiler->update(j.proj->graph, tracks, &interpreter);
+  auto ui = in.compiler->update(in.proj->graph, tracks);
+  REQUIRE(uj.ok());
+  REQUIRE(ui.ok());
+  REQUIRE(uj.value().size() == 1);
+  const uint32_t unit = uj.value()[0].unit;
+  REQUIRE(j.program->publish(unit, std::move(uj.value()[0].image)).ok());
+  REQUIRE(in.program->publish(unit, std::move(ui.value()[0].image)).ok());
+  j.render(1024, a);
+  in.render(1024, b);
+  auto img = jitUnit(nullptr, *j.compiler->unit(unit).schedule, 64, eng::voiceGroupsFor(8), nullptr);
+  REQUIRE(img.ok());
+  auto bound = j.compiler->bind(unit, std::move(img.value()));
+  REQUIRE(bound.ok());
+  REQUIRE(j.program->publish(unit, std::move(bound.value())).ok());
+  j.render(2048, a);
+  in.render(2048, b);
+  CHECK(j.program->unitStats(unit).swaps == 3);
+  CHECK(j.program->unitStats(unit).crossfades == 2);
+  CHECK(in.program->unitStats(unit).crossfades == 1);
+  CHECK(std::memcmp(a.data(), b.data(), sizeof(float) * a.size()) == 0);
+  CHECK(j.rtViolations == 0);
+  CHECK(in.rtViolations == 0);
 }

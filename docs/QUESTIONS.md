@@ -634,3 +634,22 @@ Agents: add questions here instead of guessing on anything important. Use this f
   6. **EDO entry** keeps the target's equave if it was an EDO (else 2/1); **Scala** imports the .scl only (no .kbm; the reference Hz is kept); a **temperament preset** switches the chart's period to the preset's and selects its MOS (whole-scale tags → per-period counts) at the middle of its generator range.
   7. **Chips**: a minimal tuning chip replaces the clip box's "Tuning" row (the three piano-roll goldens changed only there); the track headers get theirs with T3.10's mixer section (`TuningChip` + `openMosWheel` are ready for it).
 - Status: open
+
+## Q?-T1.x-arch1-a · 2026-10-24 · T1.x-arch1 · Merging units: two instruments cannot share an image
+- Context: SPEC §15 says tracks joined by cross-track modulation / sidechain wires are merged into one unit. A ProgramImage has ONE voice table (`ProcessContext::voices`), driven by one VoiceEngine, so two instrument tracks in one image would play each other's notes. A modulation or sidechain wire between two instruments (or a merge that would close a cycle through two) therefore cannot be honoured as a merge.
+- Provisional (implemented, `pq/graph/project.h`): such a wire is **not merged**; it stays a feed-forward bus between the two units, which is exactly as sample-accurate (dependency order inside the block, no latency) and is recorded in `ProjectPartition::notes`. Merges are made greedily in wire order, each checked for a cycle through two instruments. A genuine *cycle* through two instruments (A modulates B and B modulates A) is an error (`Unsupported`), since there is no feed-forward order and no single image can hold both.
+- The whole-project program (`graph::wholeProject`, the per-unit project's reference and M12's starting point) has the same limit: with several instruments all of them see one voice table, so the tests feed every instrument the same notes.
+- Options: A) as above; B) a ProgramImage ABI with several voice tables (one per instrument region: voice stages tagged with their table, one VoiceEngine per table), needed anyway for M12's whole-project re-optimisation and for a two-instrument cycle; C) never merge acyclic wires at all (merge only cycles): edits stay smaller (a sidechained group does not recompile with the kick track), at the cost of cross-track optimisation, which per-track units forgo anyway.
+- Status: open
+
+## Q?-T1.x-arch1-b · 2026-10-24 · T1.x-arch1 · Bus types, topology edits, device inputs
+- Buses carry what the producer's root `out` infers (kind, width) but are always declared **audio-rate global** at the consumer, so a producer edit that changes a rate (a constant export becoming modulated) never recompiles its consumers. Cost: a param-rate signal crossing an *unmerged* bus is a block buffer, and the consumer's path from it is audio-rate (merged modulation wires are inside one unit and keep their rates). An edit that changes a bus's kind or width, or the partition (new track, new or removed wire), is a topology change: `ProjectCompiler::update` refuses it (`Unsupported`, "rebuild"), and T3.17 rebuilds the project and swaps it as a whole (not implemented here).
+- Device inputs (audio tracks recording or monitoring) are not buses yet; T3.17 adds input buses filled from the device block (one memcpy per channel).
+- Options: A) as above; B) carry the producer's rate across buses (param-rate buses as 8-float patterns) and recompile consumers when it changes.
+- Provisional: A.
+- Status: open
+
+## Q?-T1.x-arch1-c · 2026-10-24 · T1.x-arch1 · Who compiles the JIT image after an edit
+- The edit path implemented and measured (bench/RESULTS.md T1.x-arch1): `update(graph, tracks, &interpreter)` builds the edited unit's interpreted image at once (front end + interpreter ≈ a few ms for a ~700-op unit), it is published and crossfaded at the next block; the JIT compiles the same schedule on another thread and `bind()` + `publish()` swap it in (another crossfade). The project runner and the compiler provide both steps; the scheduling of the background compile (a worker thread, debounce, cancelling a stale compile when the user edits again) belongs to the T3.17 controller / T1b.5.
+- Interp → JIT swaps crossfade (SwapMode::Auto) rather than swap instantly: with `contract` on the two differ (M1 review M1), so Instant is unsafe; with `contract` off they are bit-identical (tested) and the crossfade is a no-op on the signal.
+- Status: open (for T1b.5 / T3.17)

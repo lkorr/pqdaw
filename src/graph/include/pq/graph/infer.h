@@ -52,6 +52,9 @@ class PatchLibrary {
 public:
   void add(const Patch& p);
   void add(const PatchFile& f);
+  // Every patch of `other` whose name is not here yet (T1.x-arch1: a project unit's library = its track patches,
+  // then the project's callees).
+  void addAll(const PatchLibrary& other);
   const Patch* find(std::string_view name) const noexcept;
 
 private:

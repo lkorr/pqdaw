@@ -160,6 +160,11 @@ pq_add_test(pq_tests_engine PERF
     engine/test_offline_render.cpp
   DEPS pq_engine)
 
+# T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).
+pq_add_test(pq_tests_project
+  SOURCES engine/test_project.cpp
+  DEPS pq_engine)
+
 # T3.16: the engine timeline (transport, note sequencer, automation renderer), with the VoiceEngine and renderOffline.
 pq_add_test(pq_tests_timeline
   SOURCES engine/test_timeline.cpp

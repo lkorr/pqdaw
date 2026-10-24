@@ -12,6 +12,8 @@ pq_add_module(pq_engine
     src/null_device.cpp
     src/offline_render.cpp
     src/program_host.cpp
+    src/project_program.cpp
+    src/project_compile.cpp
     src/rtaudio_device.cpp
     src/sample_convert.cpp
     src/sequence.cpp

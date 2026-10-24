@@ -28,6 +28,10 @@ void PatchLibrary::add(const PatchFile& f) {
   for (const Patch& p : f.patches) add(p);
 }
 
+void PatchLibrary::addAll(const PatchLibrary& other) {
+  for (const auto& [name, patch] : other.byName_) byName_.emplace(name, patch);
+}
+
 const Patch* PatchLibrary::find(std::string_view name) const noexcept {
   const auto it = byName_.find(name);
   return it == byName_.end() ? nullptr : it->second;

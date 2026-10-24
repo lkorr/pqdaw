@@ -130,6 +130,10 @@ public:
   NodeIndex addEquation(SolveIndex solve);
 
   void setNodeName(NodeIndex n, std::string name, uint16_t nameOutput = kWholeNode);
+  // Nodes added from now on get NodeIds > `id` (T1.x-arch1: a project unit gives each track's call node the track's
+  // own id, so state keys do not depend on which unit the track is in).
+  void reserveIdsThrough(NodeId id) noexcept { ids_.reserveThrough(id); }
+  NodeId nextId() const noexcept { return NodeId{ids_.peek()}; }
   void setLayout(NodeIndex n, const NodeLayout& layout) { layout_[n] = layout; }
   ParamDecl& paramDecl(NodeIndex n) { return params_[nodes_[n].payload]; }
   Constant& constant(NodeIndex n) { return constants_[nodes_[n].payload]; }
