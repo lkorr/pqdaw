@@ -46,6 +46,8 @@ struct SceneTextures {
   // The chrome theme (T3.2; assets/themes/ableton-dark.json) and its font roles resolved at `scale`.
   std::shared_ptr<const Theme> theme;
   ThemeFonts uiFonts;
+  // The renderer's tile cache (Renderer::tiles(); T3.8-fix1); null for createSceneText (no GPU).
+  std::shared_ptr<TileAtlas> tiles;
 };
 
 // Creates the textures and a text system on the renderer's atlas, loading the fonts and the default theme

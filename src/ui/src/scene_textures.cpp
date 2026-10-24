@@ -73,6 +73,7 @@ Result<SceneTextures> createSceneTextures(Renderer& renderer, UiScale scale) {
   t.fonts = text->fonts;
   t.theme = std::move(text->theme);
   t.uiFonts = text->uiFonts;
+  t.tiles = renderer.tiles();
   return t;
 }
 
@@ -112,6 +113,7 @@ PaintResources paintResources(const SceneTextures& t) noexcept {
   r.fonts = &t.fonts;
   r.theme = t.theme.get();
   r.uiFonts = &t.uiFonts;
+  r.tiles = t.tiles.get();
   return r;
 }
 

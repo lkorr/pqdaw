@@ -43,6 +43,7 @@
 namespace pq::ui {
 
 class TextSystem;
+class TileAtlas;
 struct SceneFonts;
 struct Theme;
 struct ThemeFonts;
@@ -114,6 +115,7 @@ struct PaintResources {
   const SceneFonts* fonts = nullptr;  // font roles resolved at the tree's UiScale (pq/ui/scene_textures.h setSceneScale)
   const Theme* theme = nullptr;       // chrome tokens (pq/ui/theme.h); null: themed controls draw nothing
   const ThemeFonts* uiFonts = nullptr;  // the theme's font roles resolved at the tree's UiScale
+  TileAtlas* tiles = nullptr;  // the renderer's tile cache (pq/ui/tile_atlas.h); null without a GPU: draw directly
 };
 
 // Info-view text (SPEC §9: Live's help text for whatever is under the pointer). A widget provides it by

@@ -398,21 +398,29 @@ TEST_CASE("arrangement: previews are built progressively, skipped while zooming,
   CHECK(frames > 1);
   CHECK(f.d.framesDrawn() - framesBefore == 1);  // build-only frames paint nothing; then one repaint
   CHECK(st.previewsDeferred == 0);
-  const uint32_t visibleNotes = st.noteRectsEmitted;
+  // With a GPU the notes come from preview tiles (T3.8-fix1): every visible clip from its exact tile.
+  CHECK(st.tilesDrawn > 0);
+  CHECK(st.tilesMissing == 0);
+  CHECK(st.tilesStale == 0);
+  const uint32_t visibleNotes = st.noteRectsEmitted + st.tileNotes;
   CHECK(visibleNotes > 0);
 
-  // Zooming out: while the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw no notes; after the
-  // settle time the lanes repaint with every preview.
+  // Zooming out: while the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw no notes directly (clips
+  // that had a tile draw it stretched, the others only their bodies); after the settle time the tiles at the new
+  // zoom are built and the lanes repaint with every preview.
   const Vec2 mid = f.lanePoint(0.5f, 0.5f);
   for (int i = 0; i < 8; ++i) f.arr->zoomAt(mid.x, 0.8);
   f.d.step();
   CHECK(f.arr->zooming());
   CHECK(st.previewsDeferred > 0);
+  CHECK(st.tilesStale > 0);
   CHECK(st.noteRectsEmitted == 0);  // 50 notes in a bar of ~16 px: all dense
   f.d.advance(0.5);
   CHECK_FALSE(f.arr->zooming());
   CHECK(st.previewsDeferred == 0);
-  CHECK(st.noteRectsEmitted > visibleNotes);
+  CHECK(st.tilesMissing == 0);
+  CHECK(st.tilesStale == 0);
+  CHECK(st.noteRectsEmitted + st.tileNotes > visibleNotes);
   CHECK_FALSE(f.d.tree().needsFrame());  // idle again
 
   // The cache stays bounded while scrolling over the whole song (with a small limit to see the bound act).

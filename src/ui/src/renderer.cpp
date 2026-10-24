@@ -96,6 +96,7 @@ Result<std::unique_ptr<Renderer>> Renderer::create(GpuContext& gpu, VkFormat col
   // Page 0 exists from the start (it backs kAtlasTexture); its texels go up with the first frame's transfers.
   r->atlas_ = std::make_shared<Atlas>();
   if (Status s = r->ensureAtlasPages(); !s) return std::move(s).error();
+  r->tiles_ = std::make_shared<TileAtlas>();  // pages (and their GPU images) open on first use
   return r;
 }
 
@@ -366,7 +367,7 @@ Result<TextureId> Renderer::createTexture(const Image& img, TextureFilter filter
   uint32_t id = 0;
   if (!freeIds_.empty()) {
     id = freeIds_.back();
-  } else if (nextTextureId_ < kMaxTextures) {
+  } else if (nextTextureId_ < kFirstTileTexture) {
     id = nextTextureId_;
   } else {
     return Error{ErrorCode::Overflow, "createTexture: texture table full", {}};
@@ -489,6 +490,34 @@ Status Renderer::stageAtlas() {
   return Ok{};
 }
 
+Status Renderer::stageTiles() {
+  TileAtlas& tiles = *tiles_;
+  while (tilePagesCreated_ < tiles.pageCount()) {
+    Texture& t = textures_[tilePageTexture(tilePagesCreated_)];
+    if (Status s = createImage(t, tiles.pageSize(), tiles.pageSize(), true, TextureFilter::Linear); !s) return s;
+    t.state = TexState::Live;
+    ++tilePagesCreated_;
+  }
+  // One staging copy for the whole frame's tiles (contiguous in the atlas's queue, each 4-byte aligned).
+  const std::span<const uint8_t> bytes = tiles.uploadBytes();
+  if (!tiles.uploads().empty()) {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize base = 0;
+    uint8_t* dst = stage(bytes.size(), buffer, base);
+    if (!dst) return Error{ErrorCode::Device, "tile upload: staging allocation failed", {}};
+    std::memcpy(dst, bytes.data(), bytes.size());
+    stats_.bytesStaged += bytes.size();
+    // Tiles never overlap each other (each is its own allocation; a page cleared and refilled within the frame
+    // dropped the old queue entries) and nothing else writes tile pages: batch 0, no overlap scan (queueCopy's is
+    // quadratic, and a rebuild frame writes hundreds of tiles).
+    for (const TileAtlas::Upload& u : tiles.uploads())
+      queued_.push_back({tilePageTexture(u.page), 0, buffer, base + u.offset, u.x, u.y, u.w, u.h});
+  }
+  tiles.clearUploads();
+  tiles.beginFrame();
+  return Ok{};
+}
+
 Status Renderer::ensureBuffer(Buffer& b, VkDeviceSize need, VkBufferUsageFlags usage) {
   if (b.size >= need) return Ok{};
   destroyBuffer(b);
@@ -532,6 +561,7 @@ Status Renderer::upload(uint32_t slot, std::span<const DrawLayer> layers) {
   ++stats_.framesUploaded;
   bindingCount_[slot] = 0;
   if (Status s = stageAtlas(); !s) return s;
+  if (Status s = stageTiles(); !s) return s;
   // Bind every queued upload (and the chunks holding its bytes) to this frame. Swaps keep the capacities.
   for (uint32_t c : openChunks_) vmaFlushAllocation(gpu_->allocator(), chunks_[c].alloc, 0, chunks_[c].used);
   slotChunks_[slot].swap(openChunks_);
@@ -707,6 +737,16 @@ VkDeviceSize Renderer::atlasGpuBytes() const noexcept {
   for (uint32_t p = 0; p < atlasPagesCreated_; ++p) {
     VmaAllocationInfo info{};
     vmaGetAllocationInfo(gpu_->allocator(), textures_[atlasPageTexture(p)].alloc, &info);
+    total += info.size;
+  }
+  return total;
+}
+
+VkDeviceSize Renderer::tilesGpuBytes() const noexcept {
+  VkDeviceSize total = 0;
+  for (uint32_t p = 0; p < tilePagesCreated_; ++p) {
+    VmaAllocationInfo info{};
+    vmaGetAllocationInfo(gpu_->allocator(), textures_[tilePageTexture(p)].alloc, &info);
     total += info.size;
   }
   return total;

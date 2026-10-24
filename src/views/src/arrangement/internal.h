@@ -16,6 +16,7 @@
 #include "pq/tuning/tuning.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
+#include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/arrangement.h"
 
@@ -41,6 +42,19 @@ struct PreviewNote {
 };
 inline constexpr uint16_t kPreviewDisabled = 1;
 
+// A clip's preview rendered into the renderer's TileAtlas (T3.8-fix1): a coverage mask in clip-local device px
+// (column 0 = the clip's left edge, row 0 = the top of its body) at one zoom and body height. The key is the device
+// px per tick and the body height (the clip and tuning are the Preview's own key); `width` follows from them.
+struct PreviewTile {
+  enum class State : uint8_t { None, Ready, Failed };  // Failed: no room in the atlas at this key (drawn directly)
+  ui::TileAtlas::Tile tile;
+  double k = 0.0;
+  int32_t width = 0;
+  int32_t bodyH = 0;
+  State state = State::None;
+  bool matches(double k2, int32_t bodyH2) const noexcept { return k == k2 && bodyH == bodyH2; }
+};
+
 struct Preview {
   doc::ClipPtr clip;                       // keeps the clip alive: the cache key is its address
   const doc::TuningDef* tuning = nullptr;  // the tuning the pitches were resolved in
@@ -48,6 +62,7 @@ struct Preview {
   Ticks maxLength = 0;                     // longest note (range lookups back off by it)
   float rowFraction = 0.25f;               // note height as a fraction of the body height
   uint64_t lastUsed = 0;                   // Model::paintSerial of the last paint that drew it
+  PreviewTile tile;                        // the last tile rendered for it (T3.8-fix1)
 };
 
 class Model {
@@ -78,12 +93,22 @@ public:
   const ClipIndex& clips(const doc::Track& t);
   // The preview of a clip resolved in `tuning` (cached by clip pointer + tuning), or nullptr when it is not cached and
   // this paint's build budget is spent (buildsDeferred is then set).
-  const Preview* preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning);
+  Preview* preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning);
+  // The cached preview, or nullptr (never builds).
+  Preview* cachedPreview(const doc::ClipPtr& clip, const doc::TuningDef* tuning) noexcept;
   // Per lanes paint: resets the build budget (0 = unlimited); after it, drops old previews beyond the cache bound.
   void beginPaint(uint32_t buildBudgetNotes) noexcept;
   void endPaint();
   bool buildsDeferred = false;    // a preview was not built for lack of budget (paint again)
   bool skippedForZoom = false;    // a dense clip skipped its preview while zooming (repaint when the zoom settles)
+  bool tilesAfterZoom = false;    // a paint while zooming wanted tiles at a new zoom (build them when it settles)
+  // T3.8-fix1, per lanes paint: a clip wanted a tile it does not have at this key (build them once the zoom has
+  // settled); a clip was drawn approximately (a stale tile stretched, or its body without notes: repaint once built);
+  // note rects the fallback for missing tiles emitted.
+  bool tilesMissing = false;
+  bool approxDrawn = false;
+  bool approxForZoom = false;  // ... of which a clip skipped only because the zoom is changing
+  uint32_t fallbackRects = 0;
   // After a document change: drops tuning objects and, when the caches outgrew the project, entries for clips and
   // tracks that are gone.
   void afterDocumentChange(size_t clipsInProject);
@@ -101,7 +126,7 @@ public:
 
   // Paint scratch (kept across frames: painting does not allocate once warm).
   struct Pending {
-    float x0 = 0, x1 = 0;
+    int32_t x0 = 0, x1 = 0;  // clip-local columns
     bool open = false;
   };
   std::vector<Pending> pending;     // per pixel row of a clip body
@@ -110,6 +135,16 @@ public:
     ui::Rgba col;
   };
   std::vector<RectOut> rects;  // a clip's preview rects, emitted in one reservation
+  // Tile quads and the borders of their clips, emitted after the rows (grouped by tile page: one draw command per
+  // page instead of two texture switches per clip; T3.8-fix1).
+  struct TileQuad {
+    uint32_t page;
+    float x0, y0, x1, y1;
+    float u0, v0, u1, v1;
+    ui::Rgba col;
+  };
+  std::vector<TileQuad> tileQuads;
+  std::vector<RectOut> deferredRects;
   std::vector<uint16_t> usedRows;
   std::vector<const doc::Track*> members;  // a group's member tracks (group summaries)
 
@@ -349,7 +384,8 @@ public:
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override;
   void onFrame(double now) override;
-  // Builds missing previews of the visible clips within one paint's budget; true when none is missing.
+  // Builds missing previews (and, once the zoom has settled, preview tiles: T3.8-fix1) of the visible clips within
+  // one frame's budgets; true when none is missing.
   bool buildAhead();
   // Preview notes built per paint (0 = unlimited).
   void setPreviewBudget(uint32_t notes) noexcept { previewBudget_ = notes; }
@@ -357,6 +393,8 @@ public:
 private:
   ArrangementView& view_;
   uint32_t previewBudget_ = arrangement_metrics::kPreviewBuildNotesPerPaint;
+  bool repaintWhenBuilt_ = false;  // a paint drew a clip approximately: repaint once everything is built
+  uint64_t latchBuilds_ = 0;       // previews + tiles built when repaintWhenBuilt_ was set
 };
 
 // Loop brace, bar numbers, ticks, locators, tempo / signature markers, start marker, playhead. Click locates,

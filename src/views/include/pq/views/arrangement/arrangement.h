@@ -158,6 +158,17 @@ inline constexpr double kZoomSettleSeconds = 0.15;
 //   that, previews not drawn in the last kPreviewMaxAgePaints lanes paints are dropped.
 inline constexpr size_t kPreviewCacheNotes = size_t{1} << 19;
 inline constexpr uint64_t kPreviewMaxAgePaints = 120;
+// Preview tiles (T3.8-fix1): with a GPU (PaintResources::tiles), a clip of at least kTileMinNotes notes whose body
+// fits a tile is drawn from a mask rendered once per (clip snapshot, tuning, device px per tick, body height) into
+// the renderer's TileAtlas (≤ 4 pages of 2048² R8 = 16 MiB GPU) and drawn as one quad, not one rect per note run.
+// Tiles are rasterised in LaneCanvas::onFrame (never in paint), at most kTileBuildTexelsPerFrame texels per frame
+// (at least one tile), and only once the zoom has settled. Until a clip's tile exists, paint draws its previous
+// tile stretched (another zoom or row height), else its notes directly while this paint's fallback stays within
+// kTileFallbackRectsPerPaint rects, else only its body; once the tiles are built the lanes repaint (only if a clip
+// was drawn approximately: the direct path draws exactly the pixels of the tile).
+inline constexpr uint32_t kTileMinNotes = 4;
+inline constexpr size_t kTileBuildTexelsPerFrame = size_t{1} << 20;
+inline constexpr uint32_t kTileFallbackRectsPerPaint = 4096;
 }  // namespace arrangement_metrics
 
 // One visible track row (flattened track tree; members of folded groups are not rows).
@@ -402,6 +413,14 @@ public:
     uint64_t playheadReads = 0;      // TransportPort::playhead() calls made by the view
     uint32_t previewsDeferred = 0;   // last lanes paint: clips drawn without a preview (build budget / zooming)
     uint64_t previewsEvicted = 0;
+    // T3.8-fix1, last lanes paint: clips drawn from their exact tile (and their notes), from a stale tile (stretched),
+    // and clips that wanted a tile it did not have yet. Totals: tiles rasterised, and tiles that found no room.
+    uint32_t tilesDrawn = 0;
+    uint32_t tileNotes = 0;
+    uint32_t tilesStale = 0;
+    uint32_t tilesMissing = 0;
+    uint64_t tilesBuilt = 0;
+    uint64_t tileFailures = 0;
   };
   const Stats& stats() const noexcept;
   size_t previewCacheSize() const noexcept;

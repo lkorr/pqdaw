@@ -69,7 +69,14 @@ double pitchCents(const tuning::PitchId& p, const tuning::Tuning* t, double refH
 
 }  // namespace
 
-const Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDef) {
+Preview* Model::cachedPreview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDef) noexcept {
+  auto found = previews_.find(clip.get());
+  if (found == previews_.end() || found->second.clip != clip || found->second.tuning != tuningDef) return nullptr;
+  found->second.lastUsed = paintSerial_;
+  return &found->second;
+}
+
+Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDef) {
   auto found = previews_.find(clip.get());
   if (found != previews_.end() && found->second.clip == clip && found->second.tuning == tuningDef) {
     found->second.lastUsed = paintSerial_;
@@ -90,6 +97,7 @@ const Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tu
   cachedNotes_ -= pv.notes.size();
   pv.clip = clip;
   pv.tuning = tuningDef;
+  pv.tile = PreviewTile{};  // a reused entry's tile showed another clip
   pv.notes.clear();
   pv.maxLength = 0;
   const doc::NoteSeq& seq = clip->notes;
@@ -143,11 +151,12 @@ void Model::endPaint() {
   // Bound the cache by what the view shows: once it holds more notes than the limit (or 3 × the most notes one paint
   // drew), previews not drawn in the last kPreviewMaxAgePaints paints go. The sweep is O(cache), at most every 64
   // paints.
-  peakNotes_ = std::max<size_t>(peakNotes_, stats.noteRectsEmitted);
+  const size_t drawn = size_t{stats.noteRectsEmitted} + stats.tileNotes;  // notes shown, directly or through tiles
+  peakNotes_ = std::max<size_t>(peakNotes_, drawn);
   if (paintSerial_ < nextTrim_) return;
   nextTrim_ = paintSerial_ + 64;
   const size_t cap = std::max(cacheLimitNotes_, 3 * peakNotes_);
-  peakNotes_ = stats.noteRectsEmitted;
+  peakNotes_ = drawn;
   if (cachedNotes_ <= cap) return;
   const uint64_t keepFrom =
       paintSerial_ > arrangement_metrics::kPreviewMaxAgePaints ? paintSerial_ - arrangement_metrics::kPreviewMaxAgePaints : 0;

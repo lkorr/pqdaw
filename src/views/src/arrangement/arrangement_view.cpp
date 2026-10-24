@@ -758,9 +758,10 @@ void ArrangementView::onTimer(uint32_t id) {
   if (id == settleTimer_) {
     settleTimer_ = 0;
     zooming_ = false;
-    if (model_->skippedForZoom) {
+    if (model_->skippedForZoom || model_->tilesAfterZoom) {
       model_->skippedForZoom = false;
-      lanes_->requestFrame();  // builds the dense clips' previews, then repaints the lanes once
+      model_->tilesAfterZoom = false;
+      lanes_->requestFrame();  // builds the dense clips' previews and the tiles at the new zoom, then repaints once
     }
     return;
   }

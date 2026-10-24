@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <optional>
 #include <span>
 
@@ -36,9 +37,6 @@ const doc::TuningDef* clipTuning(const ArrangementRow& row, const doc::NoteClip&
   return row.tuning;
 }
 
-// round() for pixel positions without the CRT call (positions here are ≥ −2 device px; ties round up).
-inline float roundPx(float v) noexcept { return std::floor(v + 0.5f); }
-
 // Solid rects in one reservation (the note preview: thousands per frame when zoomed out).
 void emitRects(DrawList& dl, std::span<const Model::RectOut> rs) {
   size_t n = 0;
@@ -65,6 +63,142 @@ void emitRects(DrawList& dl, std::span<const Model::RectOut> rs) {
     ix += 6;
     base += 4;
   }
+}
+
+// --- Note runs (T3.8-fix1) ---------------------------------------------------------------------------------
+// A clip's preview is generated in clip-local device px: column 0 = the clip's left edge, row 0 = the top of its
+// body. The direct path (one rect per run, offset by the clip's on-screen left edge) and the tile path (rasterised
+// once into the TileAtlas, drawn as one quad) share this generator, so both draw exactly the same pixels, and a tile
+// stays valid while the clip scrolls (positions do not depend on the view origin's fraction of a pixel).
+
+enum class RunKind : uint8_t { Note, Disabled, Seam };
+
+struct RunGeom {
+  double k = 0.0;     // device px per tick
+  int32_t width = 0;  // columns the notes may cover: [0, width)
+  int32_t bodyH = 0;  // rows of the body
+  int32_t noteH = 0;  // rows of a note
+};
+
+// Nearest column (ties up), clamped far outside any canvas so huge clips at deep zoom stay in range.
+inline int32_t roundCol(double v) noexcept {
+  return static_cast<int32_t>(std::clamp(std::floor(v + 0.5), -1073741824.0, 1073741824.0));
+}
+
+int32_t localWidth(Ticks length, double k) noexcept { return std::max<int32_t>(1, roundCol(static_cast<double>(length) * k)); }
+
+RunGeom runGeom(const Preview& pv, Ticks length, double k, int32_t bodyH) noexcept {
+  const int32_t noteH = std::clamp(static_cast<int32_t>(std::lround(static_cast<float>(bodyH) * pv.rowFraction)), 1, bodyH);
+  return {k, localWidth(length, k), bodyH, noteH};
+}
+
+// Calls sink(x0, x1, row, kind) for every run of the preview of a clip drawn at `start` with `timing`'s length,
+// content start and loop, for the passes meeting the tick window [from, to): notes as [x0, x1) columns noteH rows tall
+// from `row` (overlapping notes on one pixel row merged), disabled notes unmerged, loop seams one column, all rows.
+template <class Sink>
+void forEachNoteRun(const Preview& pv, const doc::NoteClip& timing, Ticks start, Ticks length, const RunGeom& geo, Ticks from,
+                    Ticks to, Model& m, Sink&& sink) {
+  const auto span = static_cast<uint32_t>(geo.bodyH - geo.noteH);
+  auto& pending = m.pending;
+  auto& used = m.usedRows;
+  if (pending.size() < static_cast<size_t>(geo.bodyH) + 1) pending.resize(static_cast<size_t>(geo.bodyH) + 1);
+  used.clear();
+  auto flush = [&](uint16_t row) {
+    Model::Pending& pr = pending[row];
+    if (!pr.open) return;
+    pr.open = false;
+    sink(pr.x0, pr.x1, row, RunKind::Note);
+  };
+  const double k = geo.k;
+  bool firstSeg = true;
+  // Passes over the content from the clip start (not from the window: a note that starts left of the window still
+  // shows); passes left of the window are skipped before touching notes.
+  doc::forEachClipSegment(timing, start, std::min(start + length, to), [&](const doc::ClipSegment& seg) {
+    const Ticks segEnd = seg.at + (seg.contentTo - seg.contentFrom);
+    const bool seam = !firstSeg;
+    firstSeg = false;
+    if (segEnd < from) return;
+    const double segL = static_cast<double>(seg.at - start) * k;
+    if (seam) {
+      const int32_t sx = roundCol(std::floor(segL));
+      if (sx >= 0 && sx < geo.width) sink(sx, sx + 1, uint16_t{0}, RunKind::Seam);
+    }
+    const Ticks visFrom = seg.contentFrom + std::max<Ticks>(0, from - seg.at);
+    const Ticks lookFrom = std::max(seg.contentFrom, visFrom - pv.maxLength);
+    const Ticks visTo = std::min(seg.contentTo, seg.contentFrom + (to - seg.at));
+    auto it = std::lower_bound(pv.notes.begin(), pv.notes.end(), lookFrom, [](const PreviewNote& n, Ticks t) { return n.start < t; });
+    for (; it != pv.notes.end() && it->start < visTo; ++it) {
+      const Ticks nEnd = std::min(it->end, seg.contentTo);
+      int32_t x0 = roundCol(segL + static_cast<double>(it->start - seg.contentFrom) * k);
+      int32_t x1 = roundCol(segL + static_cast<double>(nEnd - seg.contentFrom) * k);
+      if (x1 - x0 >= 3) x1 -= 1;  // a pixel gap between notes that are wide enough
+      x0 = std::max(x0, 0);
+      x1 = std::min(std::max(x1, x0 + 1), geo.width);
+      if (x1 <= x0) continue;
+      const auto row = static_cast<uint16_t>((static_cast<uint32_t>(it->y) * span + 32767u) / 65535u);
+      if (it->flags & kPreviewDisabled) {
+        sink(x0, x1, row, RunKind::Disabled);
+        continue;
+      }
+      Model::Pending& pr = pending[row];
+      if (pr.open && x0 <= pr.x1) {
+        pr.x1 = std::max(pr.x1, x1);  // overlaps the pending run at this pixel row: merge (zoomed-out clips)
+      } else {
+        if (pr.open) flush(row);
+        else used.push_back(row);
+        pr = {x0, x1, true};
+      }
+    }
+  });
+  for (uint16_t r : used) flush(r);
+}
+
+// Coverage of the translucent runs (the direct path draws them with these alphas over the body).
+constexpr uint8_t kDisabledAlpha = 90;
+constexpr uint8_t kSeamAlpha = 70;
+
+// Whether a clip's preview is drawn from a tile: enough notes to be worth a quad, and a body that fits a tile.
+bool wantsTile(const TileAtlas& tiles, size_t notes, int32_t width, int32_t bodyH) noexcept {
+  return notes >= am::kTileMinNotes && bodyH >= 3 && width >= 1 && static_cast<uint32_t>(width) <= tiles.maxTileSize() &&
+         static_cast<uint32_t>(bodyH) <= tiles.maxTileSize();
+}
+
+// Rasterises the clip's preview at (k, bodyH) into a new tile (the clip's own geometry). False when the atlas has
+// no room this frame (the tile is then marked Failed for this key and the clip is drawn directly).
+bool buildTile(TileAtlas& tiles, Preview& pv, const doc::NoteClip& clip, double k, int32_t bodyH, Model& m) {
+  PreviewTile& t = pv.tile;
+  const RunGeom geo = runGeom(pv, clip.length, k, bodyH);
+  t = PreviewTile{};
+  t.k = k;
+  t.width = geo.width;
+  t.bodyH = bodyH;
+  TileAtlas::Tile tile;
+  if (!tiles.allocate(static_cast<uint32_t>(geo.width), static_cast<uint32_t>(bodyH), tile)) {
+    t.state = PreviewTile::State::Failed;
+    ++m.stats.tileFailures;
+    return false;
+  }
+  uint8_t* dst = tiles.write(tile);
+  const uint32_t pitch = TileAtlas::rowPitch(tile);
+  uint8_t* base = dst + pitch + 1;  // content origin inside the transparent border
+  auto blend = [](uint8_t* p, int32_t n, uint32_t a) {
+    for (int32_t i = 0; i < n; ++i) p[i] = static_cast<uint8_t>(p[i] + ((255u - p[i]) * a + 127u) / 255u);
+  };
+  forEachNoteRun(pv, clip, clip.start, clip.length, geo, clip.start, clip.start + clip.length, m,
+                 [&](int32_t x0, int32_t x1, uint16_t row, RunKind kind) {
+                   const int32_t n = x1 - x0;
+                   const int32_t r0 = kind == RunKind::Seam ? 0 : row;
+                   const int32_t r1 = kind == RunKind::Seam ? geo.bodyH : row + geo.noteH;
+                   for (int32_t y = r0; y < r1; ++y) {
+                     uint8_t* p = base + static_cast<size_t>(y) * pitch + x0;
+                     if (kind == RunKind::Note) std::memset(p, 255, static_cast<size_t>(n));
+                     else blend(p, n, kind == RunKind::Disabled ? kDisabledAlpha : kSeamAlpha);
+                   }
+                 });
+  t.tile = tile;
+  t.state = PreviewTile::State::Ready;
+  ++m.stats.tilesBuilt;
+  return true;
 }
 
 }  // namespace
@@ -124,8 +258,17 @@ LaneCanvas::LaneCanvas(ArrangementView& view) : Widget("lanes"), view_(view) {}
 // Previews still missing (over a paint's build budget, or skipped while zooming): build them for the visible clips,
 // a budget per frame, without painting; repaint once they are all there (one repaint instead of one per frame).
 void LaneCanvas::onFrame(double /*now*/) {
-  if (buildAhead()) markDirty();
-  else requestFrame();
+  if (!buildAhead()) {
+    requestFrame();
+    return;
+  }
+  // Everything is built. Repaint if a paint drew a clip approximately and something was built since (otherwise the
+  // repaint would draw the same, and could ask again forever).
+  const Model& m = view_.model();
+  if (repaintWhenBuilt_) {
+    repaintWhenBuilt_ = false;
+    if (m.stats.previewBuilds + m.stats.tilesBuilt != latchBuilds_) markDirty();
+  }
 }
 
 bool LaneCanvas::buildAhead() {
@@ -143,25 +286,59 @@ bool LaneCanvas::buildAhead() {
   const float minW = static_cast<float>(s.px(12.0f));
   const auto rows = view_.rows();
   const int32_t localTop = c.y - r.y, localBottom = c.bottom() - r.y;
-  auto it = std::upper_bound(rows.begin(), rows.end(), localTop,
-                             [](int32_t y, const ArrangementRow& row) { return y < row.y + row.h; });
-  m.beginPaint(previewBudget_);
-  for (; it != rows.end() && it->y < localBottom; ++it) {
-    if (it->group || it->h - 3 - titleH < 3) continue;
-    const doc::Track& t = *it->track;
-    if (t.clips.empty()) continue;
-    const ClipIndex& ix = m.clips(t);
-    const auto [a, b] = ix.visible(from, to);
-    for (size_t j = a; j < b; ++j) {
-      const doc::ClipPtr& clip = t.clips[j].clip;
-      if (clip->notes.empty()) continue;
-      const float w = X(ix.end[j]) - X(ix.start[j]);
-      if (w < minW) continue;
-      if (view_.zooming() && w < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip->notes.size())) continue;
-      if (!m.preview(clip, clipTuning(*it, *clip, *m.shown))) return false;
+  const auto first = std::upper_bound(rows.begin(), rows.end(), localTop,
+                                      [](int32_t y, const ArrangementRow& row) { return y < row.y + row.h; });
+  // T3.8-fix1: tiles are built only once the zoom has settled (a tile is keyed by the exact zoom).
+  const PaintResources* res = tree() ? tree()->resources() : nullptr;
+  TileAtlas* tiles = res && !view_.zooming() ? res->tiles : nullptr;
+  // The clips paint would draw with notes: f(row, clip, bodyH) for each, in paint order; false from f stops.
+  auto forVisible = [&](auto&& f) {
+    for (auto it = first; it != rows.end() && it->y < localBottom; ++it) {
+      if (it->group || it->h - 3 - titleH < 3) continue;
+      const doc::Track& t = *it->track;
+      if (t.clips.empty()) continue;
+      const ClipIndex& ix = m.clips(t);
+      const auto [a, b] = ix.visible(from, to);
+      // The body as paintClip computes it: [top + titleH, bottom − 1) of the clip's [y + 1, y + h − 1).
+      const int32_t bodyH = it->h - 3 - titleH;
+      for (size_t j = a; j < b; ++j) {
+        const doc::ClipPtr& clip = t.clips[j].clip;
+        if (clip->notes.empty()) continue;
+        const float w = X(ix.end[j]) - X(ix.start[j]);
+        if (w < minW) continue;
+        if (view_.zooming() && w < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip->notes.size())) continue;
+        if (!f(*it, clip, bodyH)) return false;
+      }
     }
-  }
-  return true;
+    return true;
+  };
+  m.beginPaint(previewBudget_);
+  // Pass 1: the visible clips' current tiles are in use this frame, so the allocations below never evict them.
+  if (tiles)
+    (void)forVisible([&](const ArrangementRow& row, const doc::ClipPtr& clip, int32_t bodyH) {
+      if (const Preview* pv = m.cachedPreview(clip, clipTuning(row, *clip, *m.shown)))
+        if (pv->tile.state == PreviewTile::State::Ready && pv->tile.matches(k, bodyH) && tiles->valid(pv->tile.tile))
+          tiles->touch(pv->tile.tile.page);
+      return true;
+    });
+  // Pass 2: previews within the note budget, tiles within the texel budget (at least one of each per frame).
+  size_t texels = 0;
+  bool builtTile = false;
+  return forVisible([&](const ArrangementRow& row, const doc::ClipPtr& clip, int32_t bodyH) {
+    Preview* pv = m.preview(clip, clipTuning(row, *clip, *m.shown));
+    if (!pv) return false;
+    if (!tiles || !wantsTile(*tiles, clip->notes.size(), localWidth(clip->length, k), bodyH)) return true;
+    const PreviewTile& t = pv->tile;
+    if (t.matches(k, bodyH) &&
+        (t.state == PreviewTile::State::Failed || (t.state == PreviewTile::State::Ready && tiles->valid(t.tile))))
+      return true;
+    const size_t area = static_cast<size_t>(localWidth(clip->length, k) + 2) * static_cast<size_t>(bodyH + 2);
+    if (builtTile && texels + area > am::kTileBuildTexelsPerFrame) return false;
+    (void)buildTile(*tiles, *pv, *clip, k, bodyH, m);
+    texels += area;
+    builtTile = true;
+    return true;
+  });
 }
 
 bool LaneCanvas::onPointer(const PointerEvent& e) {
@@ -284,6 +461,155 @@ void paintGrid(LanePaint& lp, float y0, float y1) {
   }
 }
 
+// The preview drawn directly: one rect per note run, clipped to the clip's visible part [vx0, vx1] (the painted
+// region plus a pixel) and the canvas. Returns the note rects emitted.
+uint32_t paintDirect(LanePaint& lp, const Preview& pv, const doc::NoteClip& timing, const ClipGeom& g, float cx0, float cx1,
+                     float vx0, float vx1, float by0, int32_t bodyH, Rgba noteCol) {
+  const RunGeom geo = runGeom(pv, g.length, lp.k, bodyH);
+  const Rgba offCol = withAlpha(noteCol, kDisabledAlpha);
+  const Rgba seamCol = withAlpha(noteCol, kSeamAlpha);
+  const float lo = std::max(cx0, static_cast<float>(lp.r.x)), hi = std::min(cx1, static_cast<float>(lp.r.right()));
+  auto& out = lp.m.rects;  // written to the draw list in one reservation at the end (same order as generated)
+  out.clear();
+  uint32_t emitted = 0;
+  forEachNoteRun(pv, timing, g.start, g.length, geo, lp.from, lp.to, lp.m, [&](int32_t x0, int32_t x1, uint16_t row, RunKind kind) {
+    const float ax0 = std::max(cx0 + static_cast<float>(x0), lo);
+    const float ax1 = std::min(cx0 + static_cast<float>(x1), hi);
+    if (ax1 < vx0 || ax0 > vx1 || ax1 <= ax0) return;
+    if (kind == RunKind::Seam) {
+      out.push_back({ax0, by0, ax1, by0 + static_cast<float>(bodyH), seamCol});
+      return;
+    }
+    const float y = by0 + static_cast<float>(row);
+    out.push_back({ax0, y, ax1, y + static_cast<float>(geo.noteH), kind == RunKind::Note ? noteCol : offCol});
+    ++emitted;
+  });
+  emitRects(lp.ctx.dl, out);
+  lp.m.stats.noteRectsEmitted += emitted;
+  return emitted;
+}
+
+// Queues a tile drawn over the clip body from local column 0 at cx0: 1:1 when it was rendered at this zoom and
+// height (texel-exact: the quad's edges and uv sit on texel boundaries), else stretched (a stale tile, linear).
+void queueTile(LanePaint& lp, const TileAtlas& tiles, const PreviewTile& t, float cx0, float vx0, float vx1, float by0,
+               int32_t bodyH, Rgba noteCol) {
+  const double ratio = t.k / lp.k;  // tile texels per device px
+  const float x1 = std::min(vx1, cx0 + static_cast<float>(static_cast<double>(t.width) / ratio));
+  if (x1 <= vx0) return;
+  const float inv = tiles.uvScale();
+  const auto u = [&](float x) {
+    return (static_cast<float>(t.tile.x) + static_cast<float>(static_cast<double>(x - cx0) * ratio)) * inv;
+  };
+  lp.m.tileQuads.push_back({t.tile.page, vx0, by0, x1, by0 + static_cast<float>(bodyH), u(vx0), static_cast<float>(t.tile.y) * inv, u(x1),
+                            static_cast<float>(t.tile.y + static_cast<uint32_t>(t.bodyH)) * inv, noteCol});
+}
+
+// Emits the queued tile quads (one draw command per page) and then the borders of their clips.
+void flushTiles(LanePaint& lp) {
+  Model& m = lp.m;
+  if (m.tileQuads.empty() && m.deferredRects.empty()) return;
+  DrawList& dl = lp.ctx.dl;
+  const TextureId prev = dl.texture();
+  for (uint32_t page = 0; page < kMaxTilePages; ++page) {
+    uint32_t n = 0;
+    for (const Model::TileQuad& q : m.tileQuads) n += q.page == page ? 1 : 0;
+    if (n == 0) continue;
+    dl.setTexture(TileAtlas::texture(page));
+    const DrawList::PrimSpan sp = dl.primReserveSpan(6 * n, 4 * n);
+    Vertex* v = sp.v;
+    uint32_t* ix = sp.i;
+    uint32_t base = sp.base;
+    for (const Model::TileQuad& q : m.tileQuads) {
+      if (q.page != page) continue;
+      v[0] = {{q.x0, q.y0}, {q.u0, q.v0}, q.col};
+      v[1] = {{q.x1, q.y0}, {q.u1, q.v0}, q.col};
+      v[2] = {{q.x1, q.y1}, {q.u1, q.v1}, q.col};
+      v[3] = {{q.x0, q.y1}, {q.u0, q.v1}, q.col};
+      ix[0] = base;
+      ix[1] = base + 1;
+      ix[2] = base + 2;
+      ix[3] = base;
+      ix[4] = base + 2;
+      ix[5] = base + 3;
+      v += 4;
+      ix += 6;
+      base += 4;
+    }
+  }
+  dl.setTexture(prev);
+  emitRects(dl, m.deferredRects);
+  m.tileQuads.clear();
+  m.deferredRects.clear();
+}
+
+// A clip's notes (T3.8-fix1): from its tile when it has one at this zoom and body height; else (until onFrame has
+// built it) from its previous tile stretched, or directly within the paint's fallback budget, or not at all. Clips
+// without a tile (no GPU, few notes, too large for a tile, a resize preview) are drawn directly as in T3.8. Returns
+// true when a tile quad was queued (the clip's border must then follow it: flushTiles).
+bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, const doc::NoteClip& timing, const ClipGeom& g,
+                float cx0, float cx1, float vx0, float vx1, float by0, int32_t bodyH, bool dense, Rgba noteCol) {
+  Model& m = lp.m;
+  const doc::NoteClip& clip = *clipPtr;
+  const doc::TuningDef* tdef = clipTuning(row, clip, lp.p);
+  TileAtlas* tiles = lp.ctx.res.tiles;
+  // A tile is the clip's own content at its own length; a moved clip (drag preview) draws the same tile.
+  const bool ownContent = g.length == clip.length && g.contentStart == clip.contentStart;
+  if (tiles && ownContent && wantsTile(*tiles, clip.notes.size(), localWidth(g.length, lp.k), bodyH)) {
+    Preview* pv = m.cachedPreview(clipPtr, tdef);
+    const PreviewTile* t = pv ? &pv->tile : nullptr;
+    const bool ready = t && t->state == PreviewTile::State::Ready && tiles->valid(t->tile);
+    if (t && t->matches(lp.k, bodyH)) {
+      if (ready) {
+        queueTile(lp, *tiles, *t, cx0, vx0, vx1, by0, bodyH, noteCol);
+        tiles->touch(t->tile.page);
+        ++m.stats.tilesDrawn;
+        m.stats.tileNotes += static_cast<uint32_t>(clip.notes.size());
+        return true;
+      }
+      if (t->state == PreviewTile::State::Failed) {  // no room in the atlas at this key: exact, just slower
+        (void)paintDirect(lp, *pv, timing, g, cx0, cx1, vx0, vx1, by0, bodyH, noteCol);
+        return false;
+      }
+    }
+    ++m.stats.tilesMissing;
+    m.tilesMissing = true;
+    if (lp.view.zooming()) m.tilesAfterZoom = true;
+    if (ready) {
+      queueTile(lp, *tiles, *t, cx0, vx0, vx1, by0, bodyH, noteCol);
+      tiles->touch(t->tile.page);
+      ++m.stats.tilesStale;
+      m.approxDrawn = true;
+      return true;
+    }
+    if (!dense && m.fallbackRects < am::kTileFallbackRectsPerPaint) {
+      if (!pv) pv = m.preview(clipPtr, tdef);  // nullptr: over this paint's build budget
+      if (pv) {
+        m.fallbackRects += paintDirect(lp, *pv, timing, g, cx0, cx1, vx0, vx1, by0, bodyH, noteCol);
+        return false;
+      }
+    }
+    if (dense) m.skippedForZoom = m.approxForZoom = true;
+    ++m.stats.previewsDeferred;
+    m.approxDrawn = true;
+    return false;
+  }
+  // No tile.
+  if (dense) {
+    m.skippedForZoom = m.approxForZoom = true;
+    ++m.stats.previewsDeferred;
+    m.approxDrawn = true;
+    return false;
+  }
+  const Preview* pv = m.preview(clipPtr, tdef);  // nullptr: over this paint's build budget, built in a later frame
+  if (!pv) {
+    ++m.stats.previewsDeferred;
+    m.approxDrawn = true;
+    return false;
+  }
+  (void)paintDirect(lp, *pv, timing, g, cx0, cx1, vx0, vx1, by0, bodyH, noteCol);
+  return false;
+}
+
 // A clip: border, title strip with the name, body with the note preview (looped content repeated). `g` is where it
 // is drawn (its own bounds, or a drag preview's); a selected clip gets a light outline (T3.9).
 void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive,
@@ -323,8 +649,11 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
   if (lp.font != kNoFont && lp.ctx.res.text && cx1 - cx0 >= 10.0f) {
     const float pad = static_cast<float>(lp.ctx.scale.px(3.0f));
     const float nx = std::max(cx0, static_cast<float>(lp.r.x)) + pad;
-    if (nx < static_cast<float>(lp.c.right()) && cx1 - pad > nx)
-      drawTextUpTo(dl, *lp.ctx.res.text, lp.font, clip.name, nx, top + static_cast<float>(lp.baselineOff), cx1 - pad,
+    // Cut at the canvas edge too: a name running past it would paint the divider column, which the lanes' damage
+    // does not cover (partial repaints then differed from full ones while zooming; T3.8-fix1).
+    const float maxRight = std::min(cx1 - pad, rx1);
+    if (nx < static_cast<float>(lp.c.right()) && maxRight > nx)
+      drawTextUpTo(dl, *lp.ctx.res.text, lp.font, clip.name, nx, top + static_cast<float>(lp.baselineOff), maxRight,
                    lp.m.clipTextColour(lp.th, colour));
   }
 
@@ -334,100 +663,31 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
   // Level of detail: a clip narrower than 12 logical px shows only its colours (a preview there is a few unreadable
   // pixels, and at whole-song zoom it would cost tens of thousands of rects per frame).
   const bool detailed = cx1 - cx0 >= static_cast<float>(lp.ctx.scale.px(12.0f));
-  // While the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw only their bodies (their notes are a few
+  // While the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw no notes directly (their notes are a few
   // pixels each there; the frame stays cheap however far out the zoom goes); the lanes repaint once it settles.
   const bool dense = lp.view.zooming() &&
                      cx1 - cx0 < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip.notes.size());
-  if (detailed && dense && bodyH >= 3) {
-    lp.m.skippedForZoom = true;
-    ++lp.m.stats.previewsDeferred;
-  }
-  const Preview* pvp = nullptr;
-  if (detailed && !dense && bodyH >= 3 && !clip.notes.empty()) {
-    pvp = lp.m.preview(clipPtr, clipTuning(row, clip, lp.p));  // nullptr: over this paint's build budget, built in a later frame
-    if (!pvp) ++lp.m.stats.previewsDeferred;
-  }
-  if (pvp) {
-    const Preview& pv = *pvp;
-    const int32_t noteH = std::clamp(static_cast<int32_t>(std::lround(static_cast<float>(bodyH) * pv.rowFraction)), 1, bodyH);
-    const uint32_t span = static_cast<uint32_t>(bodyH - noteH);
-    const Rgba noteCol = clipNoteColour(colour);
-    const Rgba offCol = withAlpha(noteCol, 90);
-    const Rgba seamCol = withAlpha(noteCol, 70);
-    auto& pending = lp.m.pending;
-    auto& used = lp.m.usedRows;
-    auto& out = lp.m.rects;  // written to the draw list in one reservation at the end (same order as drawn)
-    if (pending.size() < static_cast<size_t>(bodyH) + 1) pending.resize(static_cast<size_t>(bodyH) + 1);
-    used.clear();
-    out.clear();
-    uint32_t emitted = 0;
-    auto flush = [&](uint16_t px) {
-      Model::Pending& pr = pending[px];
-      if (!pr.open) return;
-      pr.open = false;
-      const float y = by0 + static_cast<float>(px);
-      out.push_back({pr.x0, y, pr.x1, y + static_cast<float>(noteH), noteCol});
-      ++emitted;
-    };
-    const Ticks clipEnd = g.start + g.length;
-    const double k = lp.k;
-    bool firstSeg = true;
-    // Passes over the content from the clip start (not from the window: a note that starts left of the window
-    // still shows); passes left of the window are skipped before touching notes.
-    doc::forEachClipSegment(timing, g.start, std::min(clipEnd, lp.to), [&](const doc::ClipSegment& seg) {
-      const Ticks segEnd = seg.at + (seg.contentTo - seg.contentFrom);
-      const bool seam = !firstSeg;
-      firstSeg = false;
-      if (segEnd < lp.from) return;
-      const float segX0 = lp.X(static_cast<double>(seg.at));
-      if (seam && segX0 >= vx0 && segX0 < vx1) out.push_back({std::floor(segX0), by0, std::floor(segX0) + 1.0f, by1, seamCol});
-      const Ticks visFrom = seg.contentFrom + std::max<Ticks>(0, lp.from - seg.at);
-      const Ticks lookFrom = std::max(seg.contentFrom, visFrom - pv.maxLength);
-      const Ticks visTo = std::min(seg.contentTo, seg.contentFrom + (lp.to - seg.at));
-      auto it = std::lower_bound(pv.notes.begin(), pv.notes.end(), lookFrom,
-                                 [](const PreviewNote& n, Ticks t) { return n.start < t; });
-      for (; it != pv.notes.end() && it->start < visTo; ++it) {
-        const Ticks nEnd = std::min(it->end, seg.contentTo);
-        float x0 = roundPx(segX0 + static_cast<float>(static_cast<double>(it->start - seg.contentFrom) * k));
-        float x1 = roundPx(segX0 + static_cast<float>(static_cast<double>(nEnd - seg.contentFrom) * k));
-        if (x1 - x0 >= 3.0f) x1 -= 1.0f;  // a pixel gap between notes that are wide enough
-        x0 = std::max(x0, std::max(cx0, rx0));
-        x1 = std::min(std::max(x1, x0 + 1.0f), std::min(cx1, rx1));
-        if (x1 < vx0 || x0 > vx1 || x1 <= x0) continue;
-        const auto rowPx = static_cast<uint16_t>((static_cast<uint32_t>(it->y) * span + 32767u) / 65535u);
-        if (it->flags & kPreviewDisabled) {
-          const float y = by0 + static_cast<float>(rowPx);
-          out.push_back({x0, y, x1, y + static_cast<float>(noteH), offCol});
-          ++emitted;
-          continue;
-        }
-        Model::Pending& pr = pending[rowPx];
-        if (pr.open && x0 <= pr.x1) {
-          pr.x1 = std::max(pr.x1, x1);  // overlaps the pending run at this pixel row: merge (zoomed-out clips)
-        } else {
-          if (pr.open) flush(rowPx);
-          else used.push_back(rowPx);
-          pr = {x0, x1, true};
-        }
-      }
-    });
-    for (uint16_t pr : used) flush(pr);
-    emitRects(dl, out);
-    lp.m.stats.noteRectsEmitted += emitted;
-  }
+  // A tile quad and its clip's border go after the rows (flushTiles); everything else is drawn now.
+  bool deferred = false;
+  if (detailed && bodyH >= 3 && !clip.notes.empty())
+    deferred = paintNotes(lp, row, clipPtr, timing, g, cx0, cx1, vx0, vx1, by0, bodyH, dense, clipNoteColour(colour));
+  auto rect = [&](const Rect& rc, Rgba col) {
+    if (deferred) lp.m.deferredRects.push_back({rc.x0, rc.y0, rc.x1, rc.y1, col});
+    else dl.addRectFilled(rc, col);
+  };
   // Border: dark edges separate adjacent clips (Live draws clips with a thin dark outline); a selected clip is
   // outlined all round in the light selection colour.
   if (selected) {
     const Rgba sel = lp.th.clip.selectedBorder;
     const float w = static_cast<float>(std::max(1, lp.ctx.scale.px(1.0f)));
-    dl.addRectFilled({vx0, top, vx1, top + w}, sel);
-    dl.addRectFilled({vx0, bottom - w, vx1, bottom}, sel);
-    if (cx0 >= vx0) dl.addRectFilled({cx0, top, cx0 + w, bottom}, sel);
-    if (cx1 <= vx1) dl.addRectFilled({cx1 - w, top, cx1, bottom}, sel);
+    rect({vx0, top, vx1, top + w}, sel);
+    rect({vx0, bottom - w, vx1, bottom}, sel);
+    if (cx0 >= vx0) rect({cx0, top, cx0 + w, bottom}, sel);
+    if (cx1 <= vx1) rect({cx1 - w, top, cx1, bottom}, sel);
   } else if (cx1 - cx0 >= 3.0f) {
     const Rgba border = lp.th.clip.border;
-    if (cx0 >= vx0) dl.addRectFilled({cx0, top, cx0 + 1.0f, bottom}, border);
-    if (cx1 <= vx1) dl.addRectFilled({cx1 - 1.0f, top, cx1, bottom}, border);
+    if (cx0 >= vx0) rect({cx0, top, cx0 + 1.0f, bottom}, border);
+    if (cx1 <= vx1) rect({cx1 - 1.0f, top, cx1, bottom}, border);
   }
 }
 
@@ -490,6 +750,16 @@ void LaneCanvas::paint(PaintContext& ctx) {
   m.stats.clipsPainted = 0;
   m.stats.noteRectsEmitted = 0;
   m.stats.previewsDeferred = 0;
+  m.stats.tilesDrawn = 0;
+  m.stats.tileNotes = 0;
+  m.stats.tilesStale = 0;
+  m.stats.tilesMissing = 0;
+  m.tilesMissing = false;
+  m.approxDrawn = false;
+  m.approxForZoom = false;
+  m.fallbackRects = 0;
+  m.tileQuads.clear();
+  m.deferredRects.clear();
   if (c.empty()) return;
   m.beginPaint(previewBudget_);
   const double k = view_.devicePxPerTick();
@@ -545,9 +815,12 @@ void LaneCanvas::paint(PaintContext& ctx) {
     for (size_t j = a; j < b; ++j) {
       const doc::ClipPtr& clip = t.clips[j].clip;
       if (ed.hiddenWhileDragging(clip->id)) continue;  // drawn at its drag target below
+      // Deferred tile quads may not cross a clip drawn over them: overlapping clips (later on top) flush first.
+      if (j > 0 && ix.start[j] < ix.maxEnd[j - 1]) flushTiles(lp);
       paintClip(lp, *it, clip, y0 + 1.0f, y1 - 1.0f, active, {clip->start, clip->length, clip->contentStart}, ed.selected(clip->id));
     }
   }
+  flushTiles(lp);
 
   // 3b. Editing (T3.9): the time selection (lighter over the selected rows; the insert marker a line), then the
   // clips being dragged, drawn at their target.
@@ -570,14 +843,21 @@ void LaneCanvas::paint(PaintContext& ctx) {
     const float y0 = static_cast<float>(r.y + row.y), y1 = static_cast<float>(r.y + row.y + row.h);
     if (y1 <= static_cast<float>(c.y) || y0 >= static_cast<float>(c.bottom())) continue;
     paintClip(lp, row, dc.clip, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), g, true);
+    flushTiles(lp);  // drag previews overlap other clips: each one complete before the next
   }
 
   // T3.15: automation lanes and, in automation mode, the envelopes over the rows.
   view_.automation().paintLanes(ctx, r);
 
-  // Previews left for later frames: paint again next frame (onFrame damages the lanes) until all are built.
+  // Previews (and, once the zoom has settled, tiles) left for later frames: onFrame builds them without painting
+  // and repaints the lanes once, if this paint drew a clip approximately.
   m.endPaint();
-  if (m.buildsDeferred) requestFrame();
+  if (m.approxDrawn) {
+    if (!repaintWhenBuilt_) latchBuilds_ = m.stats.previewBuilds + m.stats.tilesBuilt;
+    if (m.approxForZoom) latchBuilds_ = UINT64_MAX;  // skipped only for the zoom: repaint even if nothing is built
+    repaintWhenBuilt_ = true;
+  }
+  if (m.buildsDeferred || (m.tilesMissing && !view_.zooming())) requestFrame();
 
   // 4. The editing overlay (T3.9), then the playhead on top.
   if (view_.onPaintOverlay) view_.onPaintOverlay(ctx);

@@ -78,6 +78,11 @@ inline constexpr uint32_t kMaxAtlasPages = 4;
 constexpr TextureId atlasPageTexture(uint32_t page) noexcept { return 1 + page; }
 constexpr bool isAtlasPageTexture(TextureId t) noexcept { return t - 1u < kMaxAtlasPages; }
 inline constexpr TextureId kFirstUserTexture = 1 + kMaxAtlasPages;
+// Pages of the renderer's TileAtlas (pq/ui/tile_atlas.h, T3.8-fix1): the last kMaxTilePages ids of the renderer's
+// texture table (Renderer::kMaxTextures = 256), reserved so user texture ids are unaffected.
+inline constexpr uint32_t kMaxTilePages = 4;
+inline constexpr TextureId kFirstTileTexture = 256 - kMaxTilePages;
+constexpr TextureId tilePageTexture(uint32_t page) noexcept { return kFirstTileTexture + page; }
 
 // Where the built-in sprites live in the atlas texture, in normalised uv.
 struct AtlasUv {

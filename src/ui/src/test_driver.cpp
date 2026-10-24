@@ -56,6 +56,7 @@ bool TestDriver::step() {
   tree_.update(now_);
   if (!tree_.needsPaint()) return false;
   if (res_.text) res_.text->beginFrame();  // frame boundary for the run cache and atlas LRU
+  if (res_.tiles) res_.tiles->beginFrame();  // and the tile LRU (its queued texels wait for render())
   dl_.reset(tree_.width(), tree_.height());
   tree_.paint(dl_, res_, now_);
   ++frames_;

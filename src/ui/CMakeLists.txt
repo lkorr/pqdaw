@@ -35,6 +35,7 @@ pq_add_module(pq_ui
     src/text.cpp
     src/text_edit.cpp
     src/theme.cpp
+    src/tile_atlas.cpp
     src/ui_tree.cpp
     src/vma_impl.cpp
     src/widget.cpp

@@ -47,6 +47,7 @@
 #include "pq/ui/draw_list.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
+#include "pq/ui/tile_atlas.h"
 
 struct VmaAllocation_T;
 
@@ -83,8 +84,9 @@ struct FrameDesc {
 class Renderer {
 public:
   static constexpr uint32_t kMaxFramesInFlight = 3;
-  static constexpr uint32_t kMaxTextures = 256;  // table size, including kAtlasTexture and the atlas pages
-  static constexpr uint32_t kMaxUserTextures = kMaxTextures - kFirstUserTexture;
+  static constexpr uint32_t kMaxTextures = 256;  // table size, including kAtlasTexture, the atlas and tile pages
+  static constexpr uint32_t kMaxUserTextures = kFirstTileTexture - kFirstUserTexture;
+  static_assert(kFirstTileTexture + kMaxTilePages == kMaxTextures, "tile pages are the table's last ids");
   static constexpr VkDeviceSize kStagingChunkBytes = VkDeviceSize(1) << 20;  // larger uploads get their own chunk
   static constexpr uint32_t kMaxRetainedLayers = 4;
   static constexpr uint32_t kMaxFrameLayers = 8;
@@ -98,6 +100,10 @@ public:
   // The glyph atlas behind kAtlasTexture / atlasPageTexture(p). The text system packs glyphs into it (UI thread).
   const std::shared_ptr<Atlas>& atlas() const noexcept { return atlas_; }
   uint32_t framesInFlight() const noexcept { return framesInFlight_; }
+  // The tile cache behind tilePageTexture(p) (T3.8-fix1): widgets rasterise tiles into it (UI thread); every
+  // upload() creates the GPU images of newly opened pages, stages the tiles written since the last frame and calls
+  // its beginFrame().
+  const std::shared_ptr<TileAtlas>& tiles() const noexcept { return tiles_; }
 
   // Creates an RGBA8 texture and queues its pixels for the next frame (no GPU wait). The id can be drawn from
   // the next frame on. Ids of destroyed textures are reused.
@@ -146,6 +152,8 @@ public:
   const Stats& stats() const noexcept { return stats_; }
   // GPU memory of the glyph atlas pages (VMA allocation sizes).
   VkDeviceSize atlasGpuBytes() const noexcept;
+  // GPU memory of the tile pages created so far (VMA allocation sizes; at most TileAtlas::maxGpuBytes() + alignment).
+  VkDeviceSize tilesGpuBytes() const noexcept;
 
 private:
   Renderer() = default;
@@ -195,6 +203,7 @@ private:
   void retireSlot(uint32_t slot) noexcept;
   Status ensureAtlasPages();  // a GPU image per atlas page (kAtlasTexture shares page 0's descriptor set)
   Status stageAtlas();        // ensureAtlasPages + queue each page's dirty rect
+  Status stageTiles();        // GPU images for opened tile pages + queue the tiles written this frame
 
   GpuContext* gpu_ = nullptr;
   VkFormat colorFormat_ = VK_FORMAT_UNDEFINED;
@@ -213,6 +222,8 @@ private:
 
   std::shared_ptr<Atlas> atlas_;
   uint32_t atlasPagesCreated_ = 0;
+  std::shared_ptr<TileAtlas> tiles_;
+  uint32_t tilePagesCreated_ = 0;
 
   // Staging ring.
   std::vector<Chunk> chunks_;  // a destroyed chunk leaves a hole (buffer == null) for the next one

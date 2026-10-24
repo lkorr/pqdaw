@@ -63,6 +63,7 @@ pq_add_test(pq_tests_ui PERF
     ui/test_hidpi.cpp
     ui/test_controls.cpp
     ui/test_partial_redraw.cpp
+    ui/test_tile_atlas.cpp
     ui/thread_cpu.cpp
   DEPS pq_ui pq_ui_scenes)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR=pq_build_source_assets_dir)
@@ -96,6 +97,7 @@ pq_add_test(pq_tests_views
     views/test_shell.cpp
     views/test_arrangement.cpp
     views/test_arrangement_editing.cpp
+    views/test_arrangement_tiles.cpp
     views/test_piano_roll.cpp
     views/test_piano_roll_scale.cpp
     views/test_mos_chart.cpp

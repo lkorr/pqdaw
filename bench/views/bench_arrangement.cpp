@@ -9,6 +9,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <tuple>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "pq/ui/draw_list.h"
 #include "pq/ui/scene_textures.h"
 #include "pq/ui/text.h"
+#include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
@@ -84,7 +86,21 @@ int main() {
       std::printf("scene text: %s\n", tex.error().message.c_str());
       return 1;
     }
-    const PaintResources res = paintResources(*tex);
+    // T3.8-fix1: clip previews through a tile atlas, as with a GPU. The renderer's per-frame part (copying the
+    // frame's new tiles into the staging ring, then the frame boundary) is done here by stageTiles() after each
+    // paint, so its CPU cost counts.
+    auto tiles = std::make_shared<TileAtlas>();
+    PaintResources resTiles = paintResources(*tex);
+    resTiles.tiles = tiles.get();
+    const PaintResources& res = resTiles;
+    std::vector<uint8_t> staging;
+    auto stageTiles = [&] {
+      const auto b = tiles->uploadBytes();
+      if (staging.size() < b.size()) staging.resize(b.size());
+      if (!b.empty()) std::memcpy(staging.data(), b.data(), b.size());
+      tiles->clearUploads();
+      tiles->beginFrame();
+    };
     const UiScale s(scale);
     const auto w = static_cast<uint32_t>(s.px(static_cast<float>(lw))), h = static_cast<uint32_t>(s.px(static_cast<float>(lh)));
     FakeTransport port;
@@ -106,6 +122,7 @@ int main() {
       tex->text->beginFrame();
       dl.reset(w, h);
       tree.paint(dl, res, now);
+      stageTiles();
     };
     auto frame = [&] {
       now += 1.0 / 144.0;
@@ -114,6 +131,7 @@ int main() {
       tex->text->beginFrame();
       dl.reset(w, h);
       tree.paint(dl, res, now, box);
+      stageTiles();
     };
     tree.update(now);
     paintFull();
@@ -232,15 +250,53 @@ int main() {
     pq::bench::reportStats(name, pq::bench::summarize(cold), "ns CPU/frame");
     std::printf("  cold cache: %zu frames to build every visible preview\n", cold.size());
 
-    // Per zoom level, settled (previews drawn): the full paint and what it emits.
-    for (int step = 0; step <= 8; ++step) {
+    // T3.8-fix1: one Ctrl+wheel notch at a time from the default zoom down to the minimum. After each notch, every
+    // frame until idle (UI-thread CPU): the build-only frames (previews and tiles, no paint), the first repaint after
+    // the zoom settles, then the settled full repaint (median of 5) and what it emits.
+    {
+      arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
       settle();
       paintFull();
-      const auto s2 = pq::bench::measure(paintFull, 1, 5, 1);
-      std::printf("  settled zoom %.3fx: %u clips, %u note rects, %u vertices, full paint median %.0f ns\n",
-                  std::pow(0.8, step), st.clipsPainted, st.noteRectsEmitted, static_cast<unsigned>(dl.vertices().size()),
-                  s2.medianNs);
-      arr->zoomAt(cx, 0.8);
+      std::vector<double> firsts, settled, builds;
+      for (int step = 0; step < 64; ++step) {
+        const bool atMin = arr->pxPerTick() <= arrangement_metrics::kMinPxPerTick;
+        const double notch = timed([&] { arr->zoomAt(cx, 0.8); });
+        double first = 0.0, maxBuild = 0.0;
+        int buildFrames = 0, repaints = 0;
+        for (int i = 0; i < 4000 && (arr->zooming() || tree.needsFrame()); ++i) {
+          const double t = timed([] {});
+          if (arr->zooming()) continue;  // waiting for the settle time (idle frames)
+          if (!dl.vertices().empty()) {
+            if (repaints++ == 0) first = t;
+          } else {
+            ++buildFrames;
+            maxBuild = std::max(maxBuild, t);
+          }
+        }
+        paintFull();
+        const auto full = pq::bench::measure(paintFull, 1, 5, 1);
+        std::printf("  zoom %.5fx: notch frame %.0f ns; %d build-only frames (max %.0f ns); first repaint after settle %.0f ns; "
+                    "settled full paint median %.0f ns (%u clips, %u from tiles, %u note rects, %u vertices, %u commands; "
+                    "tile pages %u)\n",
+                    arr->pxPerTick() / arrangement_metrics::kDefaultPxPerTick, notch, buildFrames, maxBuild, first, full.medianNs,
+                    st.clipsPainted, st.tilesDrawn, st.noteRectsEmitted, static_cast<unsigned>(dl.vertices().size()),
+                    static_cast<unsigned>(dl.commands().size()), tiles->pageCount());
+        if (repaints > 0) firsts.push_back(first);
+        settled.push_back(full.medianNs);
+        if (buildFrames > 0) builds.push_back(maxBuild);
+        if (atMin) break;
+      }
+      std::snprintf(name, sizeof name, "arrangement.first repaint after zoom settles (default..min) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+      pq::bench::reportStats(name, pq::bench::summarize(firsts), "ns CPU/frame");
+      std::snprintf(name, sizeof name, "arrangement.settled full paint per zoom (default..min, medians) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+      pq::bench::reportStats(name, pq::bench::summarize(settled), "ns/frame");
+      if (!builds.empty()) {
+        std::snprintf(name, sizeof name, "arrangement.build-only frame after a zoom (max per notch) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+        pq::bench::reportStats(name, pq::bench::summarize(builds), "ns CPU/frame");
+      }
+      std::printf("  tile atlas: %u pages (%.1f MiB), %llu evictions, %llu tiles built, %llu failures\n", tiles->pageCount(),
+                  static_cast<double>(tiles->gpuBytes()) / (1024.0 * 1024.0), static_cast<unsigned long long>(tiles->stats().evictions),
+                  static_cast<unsigned long long>(st.tilesBuilt), static_cast<unsigned long long>(st.tileFailures));
     }
     arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
     settle();
