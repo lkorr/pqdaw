@@ -66,6 +66,11 @@ const ColorToken kColors[] = {
     PQ_COLOR(mosCircle, sliderTrack), PQ_COLOR(mosCircle, sliderThumbEdge), PQ_COLOR(mosCircle, button),
     PQ_COLOR(mosCircle, buttonBorder), PQ_COLOR(mosCircle, buttonText), PQ_COLOR(mosCircle, periodMark),
     PQ_COLOR(mosCircle, octaveMark), PQ_COLOR(mosCircle, allIntervals), PQ_COLOR(mosCircle, guide),
+    PQ_COLOR(mixer, background), PQ_COLOR(mixer, separator), PQ_COLOR(mixer, boxBorder), PQ_COLOR(mixer, field),
+    PQ_COLOR(mixer, fieldText), PQ_COLOR(mixer, buttonOff), PQ_COLOR(mixer, buttonText), PQ_COLOR(mixer, activatorOn),
+    PQ_COLOR(mixer, activatorText), PQ_COLOR(mixer, soloOn), PQ_COLOR(mixer, armOn), PQ_COLOR(mixer, postOn),
+    PQ_COLOR(mixer, volumeFill), PQ_COLOR(mixer, panFill), PQ_COLOR(mixer, sendFill), PQ_COLOR(mixer, meterWell),
+    PQ_COLOR(mixer, selected),
 };
 #undef PQ_COLOR
 

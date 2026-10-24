@@ -53,7 +53,7 @@ void Overview::rebuildCache(const IRect& r) {
       const doc::NoteClip& c = *s.clip;
       const auto x0 = static_cast<int32_t>(std::floor(static_cast<double>(c.start - rg.start) * xScale));
       const auto x1 = std::max(x0 + 1, static_cast<int32_t>(std::ceil(static_cast<double>(c.start + c.length - rg.start) * xScale)));
-      const Rgba col = (c.active && t.active && parentActive) ? rgbOf(c.colour) : inactiveColour();
+      const Rgba col = (c.active && sounds(t) && parentActive) ? rgbOf(c.colour) : inactiveColour();
       if (blocks_.size() > first) {
         Block& last = blocks_.back();
         if (last.col == col && x0 <= last.x1) {
@@ -68,7 +68,7 @@ void Overview::rebuildCache(const IRect& r) {
     decltype(addTrack)& add;
     void operator()(const doc::Track& g, int32_t y0, int32_t y1, bool active) {
       for (const doc::TrackPtr& t : g.children) {
-        if (t->kind == doc::TrackKind::Group) (*this)(*t, y0, y1, active && t->active);
+        if (t->kind == doc::TrackKind::Group) (*this)(*t, y0, y1, active && sounds(*t));
         else add(*t, y0, y1, active);
       }
     }
@@ -79,10 +79,10 @@ void Overview::rebuildCache(const IRect& r) {
     if (y1 - y0 >= 3) y1 -= 1;  // a gap between tracks when there is room
     if (y1 <= y0) y1 = y0 + 1;
     if (row.group) {
-      if (row.folded) members(*row.track, y0, y1, row.track->active);
+      if (row.folded) members(*row.track, y0, y1, sounds(*row.track));
       continue;
     }
-    addTrack(*row.track, y0, y1, row.track->active);
+    addTrack(*row.track, y0, y1, sounds(*row.track));
   }
   // Rasterise at the strip's pixel resolution and keep one run per row and colour: many tracks share a pixel row
   // of a 16 px strip, so this bounds the strip's geometry by its pixels instead of the project's clip count

@@ -426,10 +426,11 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
   }
 }
 
-// The track's own activator and its groups' (a deactivated group silences its members).
+// The track's own activator and its groups' (a deactivated or muted group silences its members; T3.10: the
+// activator is the mute).
 bool rowActive(std::span<const ArrangementRow> rows, const ArrangementRow& row) noexcept {
-  bool active = row.track->active;
-  for (int32_t p = row.parent; p >= 0 && active; p = rows[static_cast<size_t>(p)].parent) active = rows[static_cast<size_t>(p)].track->active;
+  bool active = sounds(*row.track);
+  for (int32_t p = row.parent; p >= 0 && active; p = rows[static_cast<size_t>(p)].parent) active = sounds(*rows[static_cast<size_t>(p)].track);
   return active;
 }
 
@@ -463,7 +464,7 @@ void paintGroupSummary(LanePaint& lp, const doc::Track& group, float top, float 
       const float x1 = std::min(std::max(std::round(lp.X(static_cast<double>(ix.end[j]))), x0 + 1.0f),
                                 std::min(static_cast<float>(lp.c.right()) + 1.0f, static_cast<float>(lp.r.right())));
       if (x1 <= x0) continue;
-      const Rgba col = (c.active && t.active && group.active) ? rgbOf(c.colour) : inactiveColour();
+      const Rgba col = (c.active && sounds(t) && sounds(group)) ? rgbOf(c.colour) : inactiveColour();
       // Translucent body with a solid top edge: reads as a summary, not as clips (Live's group lane).
       lp.ctx.dl.addRectFilled({x0, y0, x1, y1}, withAlpha(col, 95));
       if (y1 - y0 >= 3.0f) lp.ctx.dl.addRectFilled({x0, y0, x1, y0 + 1.0f}, withAlpha(col, 230));
@@ -571,6 +572,99 @@ void LaneCanvas::paint(PaintContext& ctx) {
 
   // 4. The editing overlay (T3.9), then the playhead on top.
   if (view_.onPaintOverlay) view_.onPaintOverlay(ctx);
+  if (const auto& ph = view_.playhead()) {
+    const float x = std::floor(lp.X(static_cast<double>(*ph)));
+    const float w = static_cast<float>(std::max(1, ctx.scale.px(1.0f)));
+    if (x + w > cx0 && x < cx1) dl.addRectFilled({x, static_cast<float>(c.y), x + w, static_cast<float>(c.bottom())}, th.arrangement.playhead);
+  }
+}
+
+// --- BottomTracks / BottomLanes (T3.10: returns + master pinned at the bottom) -------------------------------------
+
+BottomTracks::BottomTracks(ArrangementView& view) : Widget("returns"), view_(view) {
+  setLayout(LayoutKind::Custom);
+  setClipChildren(true);
+  add<BottomLanes>(view);
+}
+
+void BottomTracks::arrange(LayoutPass& pass) {
+  const IRect r = rect();
+  const UiScale s(pass.scale());
+  const PaintResources* res = tree() ? tree()->resources() : nullptr;
+  const int32_t sb = s.px(res && res->theme ? res->theme->size.scrollbar : 10.0f);
+  const int32_t gap = std::min(r.h, s.px(am::kBottomGap));
+  const IRect body{r.x, r.y + gap, std::max(0, r.w - sb), std::max(0, r.h - gap)};  // the scroll view's columns
+  const int32_t hdr = s.px(view_.headerWidth());
+  pass.place(child(0), {body.x, body.y, lanesWidth(body, s, view_.headerWidth()), body.h});
+  const auto rows = view_.bottomRows();
+  for (size_t i = 1; i < childCount(); ++i) {
+    Widget& c = child(i);
+    if (!c.visible() || i - 1 >= rows.size()) continue;
+    const ArrangementRow& row = rows[i - 1];
+    pass.place(c, {body.right() - hdr, body.y + row.y, hdr, row.h});
+  }
+}
+
+void BottomTracks::paint(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  if (!th) return;
+  const IRect r = rect();
+  const IRect c = intersect(r, ctx.clip);
+  if (c.empty()) return;
+  DrawList& dl = ctx.dl;
+  dl.addRectFilled(c.toRect(), th->arrangement.background);
+  const int32_t gap = std::min(r.h, ctx.scale.px(am::kBottomGap));
+  dl.addRectFilled(IRect{r.x, r.y, r.w, gap}.toRect(), th->arrangement.separator);
+  // The divider between the lanes and the headers (as in the scrolling rows).
+  const int32_t sb = ctx.scale.px(th->size.scrollbar);
+  const IRect body{r.x, r.y + gap, std::max(0, r.w - sb), std::max(0, r.h - gap)};
+  const int32_t lw = lanesWidth(body, ctx.scale, view_.headerWidth());
+  const int32_t div = std::max(1, ctx.scale.px(1.0f));
+  dl.addRectFilled(IRect{body.x + lw, body.y, div, body.h}.toRect(), th->arrangement.separator);
+}
+
+BottomLanes::BottomLanes(ArrangementView& view) : Widget("lanes"), view_(view) {}
+
+bool BottomLanes::onPointer(const PointerEvent& e) {
+  if (e.type != PointerType::Wheel) return false;
+  if (e.mods & mod::kCtrl) {
+    view_.zoomAt(e.pos.x, std::pow(1.25, static_cast<double>(e.wheel.y)));
+    return true;
+  }
+  if ((e.mods & mod::kShift) || e.wheel.x != 0.0f) {
+    const float notches = e.wheel.x != 0.0f ? e.wheel.x : -e.wheel.y;
+    view_.scrollByPx(static_cast<double>(notches * 48.0f * (tree() ? tree()->scale() : 1.0f)));
+    return true;
+  }
+  return false;
+}
+
+void BottomLanes::paint(PaintContext& ctx) {
+  const Theme* thp = ctx.res.theme;
+  if (!thp) return;
+  const Theme& th = *thp;
+  Model& m = view_.model();
+  const IRect r = rect();
+  const IRect c = intersect(r, ctx.clip);
+  if (c.empty() || !m.shown) return;
+  const double k = view_.devicePxPerTick();
+  const double origin = view_.originTick();
+  LanePaint lp{ctx, th, m, view_, *m.shown, r, c, k, origin,
+               static_cast<Ticks>(std::floor(origin + (static_cast<double>(c.x - r.x) - 1.0) / k)),
+               static_cast<Ticks>(std::ceil(origin + (static_cast<double>(c.right() - r.x) + 1.0) / k)), 0};
+  DrawList& dl = ctx.dl;
+  const float cx0 = static_cast<float>(c.x), cx1 = static_cast<float>(c.right());
+  dl.addRectFilled(c.toRect(), th.arrangement.lane);
+  const Editor& ed = view_.editor();
+  const auto rows = view_.bottomRows();
+  for (const ArrangementRow& row : rows)
+    if (ed.trackSelected(row.id))
+      dl.addRectFilled({cx0, static_cast<float>(r.y + row.y), cx1, static_cast<float>(r.y + row.y + row.h - 1)}, th.arrangement.laneSelected);
+  paintGrid(lp, static_cast<float>(c.y), static_cast<float>(c.bottom()));
+  for (const ArrangementRow& row : rows) {
+    const float y1 = static_cast<float>(r.y + row.y + row.h);
+    if (y1 > static_cast<float>(c.y) && y1 - 1.0f < static_cast<float>(c.bottom())) dl.addRectFilled({cx0, y1 - 1.0f, cx1, y1}, th.arrangement.separator);
+  }
   if (const auto& ph = view_.playhead()) {
     const float x = std::floor(lp.X(static_cast<double>(*ph)));
     const float w = static_cast<float>(std::max(1, ctx.scale.px(1.0f)));

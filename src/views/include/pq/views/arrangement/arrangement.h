@@ -55,6 +55,22 @@
 //   Partial redraw: a selection change damages the selected rows over the changed time span only (whole rows when
 //   the selected tracks change); a drag frame damages the dragged clips' old and new rects.
 //
+// Track headers, groups, returns and master (T3.10):
+//   rows        the main track tree scrolls; the return tracks and the master are pinned at the bottom (`bottom`,
+//               Live's layout) with their own lanes (grid only: automation lanes come with T3.15) and headers.
+//   headers     a click selects the track (Shift adds, Ctrl toggles); the bottom edge (kResizeGrab) drags the row
+//               height (ViewState, not undoable, Q26); right-click opens the track menu (rename, insert, group,
+//               ungroup, colour, delete); the selected tracks' headers are tinted. The mixer section on the right is
+//               T3.10's MixerStrip (pq/views/mixer/mixer.h, installed by installMixer through setHeaderDecorator).
+//   commands    Ctrl+T / Ctrl+Alt+T insert a MIDI / return track after the selection; Ctrl+G groups the selected
+//               tracks (any parents, nesting allowed), Ctrl+Shift+G ungroups the selected groups; Ctrl+R renames the
+//               first selected track in place (Enter commits, Esc cancels); Delete with only tracks selected deletes
+//               them; `0` toggles the selected tracks' activators = mute (Q15: a Param, no recompile). Each = one undo
+//               step.
+//   repaint     a Param-only document change (volume, pan, sends, solo: a mixer drag) rebinds the rows and headers
+//               without repainting the lanes (the strips repaint only what changed); a mute change repaints them
+//               (muted tracks' clips are drawn inactive, as in Live).
+//
 // Extension points:
 //   T3.9  (editing, done): selection() / setSelection(), timeSelection()/setTimeSelection() (Z zooms to it),
 //         rows()/rowAt()/tickAtX()/xOfTick() for hit testing, `onPaintOverlay` (drawn after the editing overlay),
@@ -94,6 +110,7 @@ class Ruler;
 class TimeRuler;
 class Overview;
 class TrackStack;
+class BottomTracks;
 }  // namespace arrangement
 
 // Layout metrics in logical px.
@@ -104,9 +121,17 @@ inline constexpr float kRulerNumberRow = 17.0f;
 inline constexpr float kRulerLoopRow = 11.0f;
 inline constexpr float kTimeRulerHeight = 18.0f;  // min:sec ruler under the tracks (Live)
 inline constexpr float kHeaderWidth = 290.0f;     // name strip + mixer section, as in Live 12
-inline constexpr float kHeaderMixerWidth = 180.0f;  // reserved for T3.10's mixer section (empty until then)
+inline constexpr float kHeaderMixerWidth = 180.0f;  // T3.10's mixer section (pq/views/mixer/mixer.h)
 inline constexpr float kTrackHeight = 48.0f;      // default lane height (ViewState height 0)
 inline constexpr float kMinTrackHeight = 20.0f;
+inline constexpr float kMaxTrackHeight = 480.0f;
+inline constexpr float kReturnTrackHeight = 20.0f;  // default return row (Live: one line)
+inline constexpr float kMasterTrackHeight = 40.0f;  // default master row
+inline constexpr float kBottomGap = 4.0f;           // divider between the tracks and the returns / master
+inline constexpr float kBottomMaxFraction = 0.5f;   // the pinned rows take at most this share of the track area
+inline constexpr float kResizeGrab = 3.0f;          // logical px at a header's bottom edge that resize the row
+inline constexpr float kChipWidth = 64.0f;          // the header's chip section (tuning chip), under the title
+inline constexpr float kChipHeight = 14.0f;
 inline constexpr float kTitleHeight = 20.0f;      // track header title bar
 inline constexpr float kClipTitleHeight = 14.0f;  // clip title strip
 inline constexpr float kGroupIndent = 7.0f;       // header indent per group level
@@ -139,14 +164,16 @@ struct ArrangementRow {
   bool group = false;
   bool folded = false;
   const doc::TuningDef* tuning = nullptr;  // the track's effective tuning (Inherit resolved)
-  int32_t y = 0;                      // device px from the top of the track content
+  int32_t y = 0;                      // device px from the top of the track content (bottom rows: of the pinned area)
   int32_t h = 0;                      // device px (the bottom pixel row is the separator)
+  bool bottom = false;                // a return or the master (pinned at the bottom, ArrangementView::bottomRows)
 };
 
 // A track header (display only in T3.8: colour, name, group indent and fold). T3.10 fills mixerSection().
 class TrackHeader : public ui::Control {
 public:
   TrackHeader(std::string name, ArrangementView& view);
+  ~TrackHeader() override;
   // Rebinds to a row (the view reuses headers by row index when rows change).
   void bind(const ArrangementRow& row, std::span<const ArrangementRow> rows);
   doc::TrackId trackId() const noexcept { return id_; }
@@ -154,6 +181,9 @@ public:
   // T3.10's controls go here: a Row host placed at the header's right edge, full height, sized by
   // ArrangementView::setHeaderMixerWidth (0 = hidden).
   ui::Widget& mixerSection() const noexcept { return *mixer_; }
+  // T3.10 / T3.14: a Stack host under the title (the name column's second line, kChipWidth wide, kChipHeight high),
+  // for the tuning chip; hidden while the row is too low for it.
+  ui::Widget& chipSection() const noexcept { return *chip_; }
   // The fold toggle (groups only; hidden otherwise).
   ui::Control& foldButton() const noexcept { return *fold_; }
   // Device-px rect of the title bar (name + fold), for tests and T3.10, and its fill (the track colour, grey when
@@ -161,23 +191,40 @@ public:
   ui::IRect titleRect() const noexcept;
   ui::Rgba titleColour() const noexcept;
 
+  // Ctrl+R: the title becomes a text field (all selected); Enter / focus loss commits (one undo step), Esc cancels.
+  void beginRename();
+  bool renaming() const noexcept { return rename_ != nullptr; }
+  // Repaints when the track's selected state changed (the header is tinted while selected).
+  void syncSelected();
+  ui::TextEdit* renameField() const noexcept { return rename_; }
+
   void arrange(ui::LayoutPass& pass) override;
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
+  void onCaptureLost() override { resizing_ = false; }
+  void onFrame(double now) override;
 
 private:
+  void endRename(bool commit);
   ArrangementView& view_;
+  ui::TextEdit* rename_ = nullptr;
+  bool renameDone_ = false;  // the field is removed at the next frame (not from inside its own callback)
+  bool resizing_ = false;
+  float resizeStartY_ = 0.0f;
+  float resizeStartH_ = 0.0f;  // logical px
   doc::TrackId id_;
   const doc::Track* track_ = nullptr;
   std::string name_;
   uint32_t colour_ = 0;
   bool active_ = true;
+  bool selected_ = false;
   bool group_ = false;
   bool folded_ = false;
   uint16_t depth_ = 0;
   std::vector<uint32_t> ancestorColours_;  // outermost first (group stripes)
   ui::Control* fold_ = nullptr;
   ui::Widget* mixer_ = nullptr;
+  ui::Widget* chip_ = nullptr;
 };
 
 class ArrangementView : public ui::Widget {
@@ -229,6 +276,10 @@ public:
 
   // ---- rows and headers --------------------------------------------------------------------------------------
   std::span<const ArrangementRow> rows() const noexcept;
+  // The return tracks and the master, pinned below the scrolling rows (their y is from the top of that area).
+  std::span<const ArrangementRow> bottomRows() const noexcept;
+  // Device rect of the pinned area (lanes and headers), window coordinates; empty when it has no rows.
+  ui::IRect bottomRect() const noexcept;
   // Row index at a device y (in window coordinates), −1 outside the rows.
   int32_t rowAt(float deviceY) const noexcept;
   // Device rect of a row's lane (window coordinates; may lie outside the visible viewport).
@@ -236,6 +287,9 @@ public:
   TrackHeader* header(doc::TrackId id) const noexcept;
   // Folds/unfolds a group (ViewState, not undoable; Q26).
   void toggleFold(doc::TrackId id);
+  // A row's height in logical px (ViewState, not undoable; Q26), clamped to [kMinTrackHeight, kMaxTrackHeight].
+  void setTrackHeight(doc::TrackId id, float logicalPx);
+  float trackHeight(doc::TrackId id) const noexcept;
   // T3.10: header width and the width of each header's mixer section (logical px), and a hook run whenever a
   // header is bound to a track (create or update its controls there).
   void setHeaderWidth(float logicalPx);
@@ -281,6 +335,21 @@ public:
   bool loopSelection();
   bool toggleActive();
   void selectAll();
+  // ---- tracks (T3.10; each = one undo step, false when nothing happened, the reason in the status line) --------
+  // Selects a track (a header click: Shift adds, Ctrl toggles).
+  void selectTrack(doc::TrackId id, ui::Mods mods = 0);
+  // Ctrl+T (Midi) / Ctrl+Alt+T (Return): after the last selected track (returns: after the last selected return),
+  // else at the end; the new track is selected and gets the next palette colour.
+  bool newTrack(doc::TrackKind kind);
+  bool groupSelection();    // Ctrl+G
+  bool ungroupSelection();  // Ctrl+Shift+G
+  bool deleteTracks();      // the selected tracks (Delete after a header click, the track menu)
+  bool renameSelection();   // Ctrl+R: the first selected track's title becomes a text field
+  bool setTracksColour(doc::Colour c);  // the selected tracks
+  // Right-click on a header: Rename, Insert MIDI / Return Track, Group, Ungroup, Colour…, Delete.
+  ui::Menu* openTrackMenu(doc::TrackId id, ui::Vec2 at);
+  // The track colour palette (Live's clip / track colours, theme clipPalette) for the selected tracks.
+  ui::Widget* openColourPicker(ui::Vec2 at);
   bool hasClipboard() const noexcept;
   // The right-click menu (edit commands, then the grid: Adaptive / Fixed / tuplets / Snap / Off) at device `at`.
   ui::Menu* openContextMenu(ui::Vec2 at);
@@ -327,11 +396,12 @@ public:
   arrangement::LaneCanvas& lanes() const noexcept { return *lanes_; }
   ui::ScrollView& trackScroll() const noexcept { return *scroll_; }
   void markAxisDirty();  // the horizontal axis changed: ruler, overview and lanes repaint
+  void syncHeaderSelection();  // the selected tracks changed: their headers' tint
 
 private:
   void onDocument(const doc::StoreEvent& e);
   void onViewChange(uint32_t bits);
-  void rebuildRows();
+  void rebuildRows(bool lanesUnchanged = false);
   void syncHeaders();
   void refreshTransport();
   void schedulePlayhead();
@@ -355,6 +425,8 @@ private:
   ui::Widget* rulerCorner_ = nullptr;
   ui::Widget* overviewCorner_ = nullptr;
   std::vector<TrackHeader*> headers_;
+  std::vector<TrackHeader*> bottomHeaders_;
+  arrangement::BottomTracks* bottom_ = nullptr;
   HeaderDecorator decorator_;
 
   double originTick_ = 0.0;

@@ -256,6 +256,8 @@ public:
       "pianoroll.fold",      "pianoroll.toggleScale"};
   // View actions of the MOS wheel (T3.14): installMosWheel sets the handler (Ctrl+Shift+W, Q15).
   static constexpr std::string_view kMosWheelActions[] = {"tuning.openMosWheel"};
+  // T3.10: the mixer view's toggle (Ctrl+Alt+M), forwarded the same way (installMixer sets the handler).
+  static constexpr std::string_view kMixerActions[] = {"view.toggleMixer"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",

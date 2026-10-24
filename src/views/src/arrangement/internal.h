@@ -55,6 +55,8 @@ public:
   doc::Snapshot shown;
   std::vector<ArrangementRow> rows;
   int32_t contentHeight = 0;  // device px of all rows
+  std::vector<ArrangementRow> bottomRows;  // returns + master (T3.10), y from the top of the pinned area
+  int32_t bottomHeight = 0;                // device px of the bottom rows
   Ticks songEnd = 0;          // last clip end / loop end / last locator, at least 8 bars (rebuilt with the rows)
   ArrangementView::Stats stats;
 
@@ -210,6 +212,18 @@ public:
   bool hasClipboard() const noexcept { return !clipboard_.clips.empty(); }
   ui::Menu* openContextMenu(ui::Vec2 at);
 
+  // --- tracks (T3.10, tracks.cpp) ---
+  bool newTrack(doc::TrackKind kind);
+  bool groupSelection();
+  bool ungroupSelection();
+  bool deleteTracks();
+  bool renameSelection();
+  bool setTracksColour(doc::Colour c);
+  ui::Menu* openTrackMenu(doc::TrackId id, ui::Vec2 at);
+  ui::Widget* openColourPicker(ui::Vec2 at);
+  // Selects exactly these tracks (after a track edit).
+  void selectTracks(std::vector<doc::TrackId> tracks);
+
   // Device rect of a clip on a row (window coordinates).
   ui::IRect clipBox(int32_t row, Ticks start, Ticks end) const noexcept;
 
@@ -275,6 +289,30 @@ private:
   Drag drag_;
   Clipboard clipboard_;
   std::optional<TickRange> lastPaste_;  // the range the last paste selected (pasting again goes after it)
+};
+
+// The return tracks and the master, pinned under the scrolling rows (T3.10): their lanes (BottomLanes, child 0) and
+// headers, placed from ArrangementView::bottomRows().
+class BottomTracks : public ui::Widget {
+public:
+  explicit BottomTracks(ArrangementView& view);
+  void arrange(ui::LayoutPass& pass) override;
+  void paint(ui::PaintContext& ctx) override;
+
+private:
+  ArrangementView& view_;
+};
+
+// The pinned rows' lanes: lane colour, bar shading and grid (as the track lanes), selection tint, separators,
+// playhead. Wheel as the lanes (Ctrl zooms, Shift scrolls time).
+class BottomLanes : public ui::Widget {
+public:
+  explicit BottomLanes(ArrangementView& view);
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+
+private:
+  ArrangementView& view_;
 };
 
 // Content of the vertical ScrollView: the lane canvas and the headers, placed from the rows.
@@ -420,5 +458,8 @@ inline ui::Rgba rgbOf(doc::Colour c) noexcept { return ui::hex(c.rgb); }
 inline ui::Rgba clipBodyColour(ui::Rgba clip) noexcept { return ui::lerp(clip, ui::rgba(30, 30, 30), 0.30f); }
 inline ui::Rgba clipNoteColour(ui::Rgba clip) noexcept { return ui::lerp(clip, ui::rgba(0, 0, 0), 0.78f); }
 inline ui::Rgba inactiveColour() noexcept { return ui::rgba(112, 112, 112); }
+// Whether a track's clips are drawn active: deactivated or muted (its activator off, T3.10) tracks draw grey, as in
+// Live.
+inline bool sounds(const doc::Track& t) noexcept { return t.active && !t.mixer.mute; }
 
 }  // namespace pq::views::arrangement

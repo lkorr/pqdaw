@@ -22,7 +22,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `view.toggleClipDevice` | `Shift+Tab` | global | Showing and Hiding Views | implemented (T3.7) |
 | `view.toggleDetail` | `Ctrl+Alt+L` | global | Showing and Hiding Views | implemented (T3.7) |
 | `view.toggleBrowser` | `Ctrl+Alt+B` | global | Showing and Hiding Views | M5 (browser) |
-| `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | M3 (T3.10) |
+| `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | implemented (T3.10; the mixer view takes the track area while shown, Q?-T3.10-a) |
 | `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | implemented (T3.8; the arrangement owns the switch until the piano roll follows too) |
 | `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
@@ -30,9 +30,9 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `grid.toggleSnap` | `Ctrl+4` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `grid.toggleFixed` | `Ctrl+5` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `edit.toggleDrawMode` | `B` | global | Editing | implemented (T3.11) |
-| `track.newMidi` | `Ctrl+T` | global | Commands for Tracks | M3 (T3.10) |
+| `track.newMidi` | `Ctrl+T` | global | Commands for Tracks | implemented (T3.10; after the last selected track) |
 | `track.newAudio` | `Ctrl+Shift+T` | global | Commands for Tracks | M6 (audio tracks) |
-| `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | M3 (T3.10) |
+| `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
 | `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the first main tuning; pressed again: closes it, keeping the change) |
 | `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | M8 (Q15) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
@@ -41,10 +41,10 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `arrangement.zoomBack` | `X` | arrangement | Arrangement View Commands | implemented (T3.8) |
 | `arrangement.zoomIn` | `=` | arrangement | Zooming, Display and Selection | implemented (T3.8; Live's `+`, unshifted) |
 | `arrangement.zoomOut` | `-` | arrangement | Zooming, Display and Selection | implemented (T3.8) |
-| `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | M3 (T3.10) |
-| `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | M3 (T3.10) |
-| `arrangement.rename` | `Ctrl+R` | arrangement | Editing | M3 (T3.10) |
-| `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | implemented (T3.9; Q15: deactivates / reactivates the selected clips, else toggles the selected tracks' activators) |
+| `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | implemented (T3.10; any parents, nesting allowed) |
+| `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | implemented (T3.10) |
+| `arrangement.rename` | `Ctrl+R` | arrangement | Editing | implemented (T3.10; the selected track's title, Enter commits, Esc cancels) |
+| `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | implemented (T3.9; Q15: deactivates / reactivates the selected clips, else toggles the selected tracks' activators = mute since T3.10, a Param) |
 | `arrangement.toggleAutomationMode` | `A` | arrangement | Commands for Breakpoint Envelopes | M3 (T3.15) |
 | `arrangement.selectAll` | `Ctrl+A` | arrangement | Editing | implemented (T3.9) |
 | `arrangement.copy` | `Ctrl+C` | arrangement | Editing | implemented (T3.9) |

@@ -26,7 +26,9 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.selectAll", "arrangement.copy", "arrangement.cut", "arrangement.paste", "arrangement.duplicate",
     "arrangement.delete", "arrangement.split", "arrangement.consolidate", "arrangement.loopSelection",
     "arrangement.insertMidiClip", "arrangement.insertTime", "arrangement.duplicateTime", "arrangement.deleteTime",
-    "arrangement.toggleActive"};
+    "arrangement.toggleActive",
+    // T3.10
+    "track.newMidi", "track.newReturn", "track.group", "track.ungroup", "arrangement.rename"};
 
 float scrollbarWidth(const UiTree* tree) {
   const PaintResources* res = tree ? tree->resources() : nullptr;
@@ -66,7 +68,8 @@ ArrangementView::ArrangementView(ViewContext& ctx)
   lanes_ = &stack_->add<arrangement::LaneCanvas>(*this);
   timeRuler_ = &add<arrangement::TimeRuler>(*this);
   timeCorner_ = &add<arrangement::Corner>();
-  add<Scrollbar>("vscroll", *scroll_, Scrollbar::Axis::Vertical);
+  bottom_ = &add<arrangement::BottomTracks>(*this);  // T3.10: returns + master, pinned
+  add<Scrollbar>("vscroll", *scroll_, Scrollbar::Axis::Vertical);  // last (arrange() relies on it)
   overview_->attachScroll(*scroll_);
 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) { onDocument(e); });
@@ -85,6 +88,8 @@ ArrangementView::~ArrangementView() {
 
 const doc::Snapshot& ArrangementView::shown() const noexcept { return model_->shown; }
 std::span<const ArrangementRow> ArrangementView::rows() const noexcept { return model_->rows; }
+std::span<const ArrangementRow> ArrangementView::bottomRows() const noexcept { return model_->bottomRows; }
+IRect ArrangementView::bottomRect() const noexcept { return bottom_->visible() ? bottom_->rect() : IRect{}; }
 const ArrangementView::Stats& ArrangementView::stats() const noexcept { return model_->stats; }
 size_t ArrangementView::previewCacheSize() const noexcept { return model_->previewCount(); }
 
@@ -122,7 +127,10 @@ void ArrangementView::registerActions() {
   edit("arrangement.cut", [ed] { (void)ed->cutSelection(); }, clipsOrRange);
   edit("arrangement.paste", [ed] { (void)ed->paste(); }, [ed] { return ed->hasClipboard(); });
   edit("arrangement.duplicate", [ed] { (void)ed->duplicateSelection(); }, clipsOrRange);
-  edit("arrangement.delete", [ed] { (void)ed->deleteSelection(); }, clipsOrRange);
+  // Delete: clips or a range; with only tracks selected (a header click: no time selection) the tracks (T3.10).
+  edit("arrangement.delete", [ed] { (void)ed->deleteSelection(); }, [ed, clipsOrRange] {
+    return clipsOrRange() || (!ed->selection().tracks.empty() && !ed->selection().time);
+  });
   edit("arrangement.split", [ed] { (void)ed->splitSelection(); }, [ed] { return ed->selection().time.has_value(); });
   edit("arrangement.consolidate", [ed] { (void)ed->consolidateSelection(); }, clipsOrRange);
   edit("arrangement.loopSelection", [ed] { (void)ed->loopSelection(); }, hasTime);
@@ -133,6 +141,17 @@ void ArrangementView::registerActions() {
   edit("arrangement.deleteTime", [ed] { (void)ed->deleteTime(); }, hasTime);
   edit("arrangement.toggleActive", [ed] { (void)ed->toggleActive(); },
        [ed] { return !ed->selection().clips.empty() || !ed->selection().tracks.empty(); });
+  // T3.10 tracks. Ctrl+T / Ctrl+Alt+T are global chords (Live inserts tracks from anywhere).
+  auto hasTracks = [ed] { return !ed->selection().tracks.empty(); };
+  edit("track.newMidi", [ed] { (void)ed->newTrack(doc::TrackKind::Midi); }, {});
+  edit("track.newReturn", [ed] { (void)ed->newTrack(doc::TrackKind::Return); }, {});
+  edit("track.group", [ed] { (void)ed->groupSelection(); }, hasTracks);
+  edit("track.ungroup", [ed] { (void)ed->ungroupSelection(); }, [this, ed] {
+    for (doc::TrackId id : ed->selection().tracks)
+      if (const doc::Track* t = doc::findTrackPtr(*ctx_.doc(), id); t && t->kind == doc::TrackKind::Group) return true;
+    return false;
+  });
+  edit("arrangement.rename", [ed] { (void)ed->renameSelection(); }, hasTracks);
 }
 
 // --- editing (T3.9: arrangement::Editor, editing.cpp) ----------------------------------------------------
@@ -158,6 +177,15 @@ bool ArrangementView::duplicateTime() { return editor_->duplicateTime(); }
 bool ArrangementView::deleteTime() { return editor_->deleteTime(); }
 bool ArrangementView::loopSelection() { return editor_->loopSelection(); }
 bool ArrangementView::toggleActive() { return editor_->toggleActive(); }
+void ArrangementView::selectTrack(doc::TrackId id, Mods mods) { editor_->selectTrack(id, mods); }
+bool ArrangementView::newTrack(doc::TrackKind kind) { return editor_->newTrack(kind); }
+bool ArrangementView::groupSelection() { return editor_->groupSelection(); }
+bool ArrangementView::ungroupSelection() { return editor_->ungroupSelection(); }
+bool ArrangementView::deleteTracks() { return editor_->deleteTracks(); }
+bool ArrangementView::renameSelection() { return editor_->renameSelection(); }
+bool ArrangementView::setTracksColour(doc::Colour c) { return editor_->setTracksColour(c); }
+Menu* ArrangementView::openTrackMenu(doc::TrackId id, Vec2 at) { return editor_->openTrackMenu(id, at); }
+Widget* ArrangementView::openColourPicker(Vec2 at) { return editor_->openColourPicker(at); }
 void ArrangementView::selectAll() { editor_->selectAll(); }
 bool ArrangementView::hasClipboard() const noexcept { return editor_->hasClipboard(); }
 Menu* ArrangementView::openContextMenu(Vec2 at) { return editor_->openContextMenu(at); }
@@ -193,7 +221,20 @@ void ArrangementView::onDocument(const doc::StoreEvent& e) {
     zoomStack_.clear();
     timeSelection_.reset();
   }
-  rebuildRows();
+  // T3.10: mixer edits (volume, pan, sends, solo: Param) and header-only Meta edits (track names, colours, arm) do
+  // not change what the lanes, ruler or overview show: rebind the rows and headers (whose widgets repaint what
+  // changed) without repainting the view. A mute changes the clips' look (muted tracks draw inactive): full repaint.
+  const doc::ChangeSet& c = e.changes;
+  bool lanesUnchanged = false;
+  if (e.kind != doc::StoreEventKind::Reset && !c.empty()) {
+    if (c.paramOnly()) {
+      lanesUnchanged = std::none_of(c.params.begin(), c.params.end(),
+                                    [](const doc::ParamRef& r) { return r.kind == doc::ParamKind::TrackMute; });
+    } else if (c.metaOnly()) {
+      lanesUnchanged = c.clips.empty() && c.locators.empty() && c.tunings.empty() && c.lanes.empty();
+    }
+  }
+  rebuildRows(lanesUnchanged);
   editor_->afterDocumentChange(e);
 }
 
@@ -207,7 +248,7 @@ void ArrangementView::onViewChange(uint32_t bits) {
 
 // Flattens the track tree into rows (members of folded groups are skipped), with device-px positions from the
 // view state's heights (logical px; 0 = the default). Headers are rebound by index.
-void ArrangementView::rebuildRows() {
+void ArrangementView::rebuildRows(bool lanesUnchanged) {
   Model& m = *model_;
   const bool docChanged = m.shown != ctx_.doc();
   m.shown = ctx_.doc();
@@ -261,6 +302,33 @@ void ArrangementView::rebuildRows() {
   } walk{*this, p, vs, s, m.rows, cum, clipCount};
   walk(p.tracks, -1, 0, projectDef);
   m.contentHeight = s.px(static_cast<float>(cum));
+
+  // T3.10: the returns and the master, pinned at the bottom (their own y origin).
+  m.bottomRows.clear();
+  double bcum = 0.0;
+  auto addBottom = [&](const doc::Track& t, float defaultH) {
+    const auto it = vs.tracks.find(t.id);
+    const int32_t vh = it != vs.tracks.end() ? it->second.height : 0;
+    const double h = vh > 0 ? std::clamp<double>(vh, am::kMinTrackHeight, am::kMaxTrackHeight) : defaultH;
+    ArrangementRow r;
+    r.id = t.id;
+    r.track = &t;
+    r.bottom = true;
+    r.y = s.px(static_cast<float>(bcum));
+    bcum += h;
+    r.h = s.px(static_cast<float>(bcum)) - r.y;
+    m.bottomRows.push_back(r);
+  };
+  for (const doc::TrackPtr& t : p.returns) addBottom(*t, am::kReturnTrackHeight);
+  if (p.master) addBottom(*p.master, am::kMasterTrackHeight);
+  const int32_t bottomH = s.px(static_cast<float>(bcum));
+  const bool bottomResized = bottomH != m.bottomHeight;
+  m.bottomHeight = bottomH;
+  if (lanesUnchanged && !bottomResized) {
+    // Same rows, new track pointers (an edited track is a new node): rebind the headers only.
+    syncHeaders();
+    return;
+  }
   if (docChanged || m.songEnd == 0) {
     Ticks end = 8 * kTicksPerWhole;
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
@@ -276,28 +344,55 @@ void ArrangementView::rebuildRows() {
   overview_->invalidateCache();
   stack_->invalidateLayout();
   stack_->invalidateArrange();
+  bottom_->invalidateArrange();
+  invalidateArrange();  // the pinned area's height follows its rows
   markDirty();
 }
 
 void ArrangementView::syncHeaders() {
-  const auto& rows = model_->rows;
-  while (headers_.size() > rows.size()) {
-    TrackHeader* h = headers_.back();
-    headers_.pop_back();
-    (void)stack_->removeChild(*h);
-  }
-  while (headers_.size() < rows.size())
-    headers_.push_back(&stack_->add<TrackHeader>("track[" + std::to_string(headers_.size()) + "]", *this));
-  for (size_t i = 0; i < rows.size(); ++i) {
-    headers_[i]->bind(rows[i], rows);
-    if (decorator_) decorator_(*headers_[i], rows[i]);
-  }
+  auto sync = [this](std::vector<TrackHeader*>& headers, Widget& host, const std::vector<ArrangementRow>& rows, const char* base) {
+    while (headers.size() > rows.size()) {
+      TrackHeader* h = headers.back();
+      headers.pop_back();
+      (void)host.removeChild(*h);
+    }
+    while (headers.size() < rows.size())
+      headers.push_back(&host.add<TrackHeader>(base + std::to_string(headers.size()) + "]", *this));
+    for (size_t i = 0; i < rows.size(); ++i) {
+      headers[i]->bind(rows[i], rows);
+      if (decorator_) decorator_(*headers[i], rows[i]);
+    }
+  };
+  sync(headers_, *stack_, model_->rows, "track[");
+  sync(bottomHeaders_, *bottom_, model_->bottomRows, "bottom[");
 }
 
 TrackHeader* ArrangementView::header(doc::TrackId id) const noexcept {
   for (TrackHeader* h : headers_)
     if (h->trackId() == id) return h;
+  for (TrackHeader* h : bottomHeaders_)
+    if (h->trackId() == id) return h;
   return nullptr;
+}
+
+void ArrangementView::setTrackHeight(doc::TrackId id, float logicalPx) {
+  const auto h = static_cast<int32_t>(std::lround(std::clamp(logicalPx, am::kMinTrackHeight, am::kMaxTrackHeight)));
+  doc::TrackView& v = ctx_.store().view().tracks[id];
+  if (v.height == h) return;
+  v.height = h;
+  rebuildRows();
+}
+
+void ArrangementView::syncHeaderSelection() {
+  for (TrackHeader* h : headers_) h->syncSelected();
+  for (TrackHeader* h : bottomHeaders_) h->syncSelected();
+}
+
+float ArrangementView::trackHeight(doc::TrackId id) const noexcept {
+  for (const auto* list : {&model_->rows, &model_->bottomRows})
+    for (const ArrangementRow& r : *list)
+      if (r.id == id) return static_cast<float>(r.h) / (tree() ? tree()->scale() : 1.0f);
+  return 0.0f;
 }
 
 void ArrangementView::toggleFold(doc::TrackId id) {
@@ -318,16 +413,19 @@ void ArrangementView::setHeaderMixerWidth(float logicalPx) {
   logicalPx = std::max(0.0f, logicalPx);
   if (logicalPx == mixerWidth_) return;
   mixerWidth_ = logicalPx;
-  for (TrackHeader* h : headers_) {
-    h->invalidateArrange();
-    h->markDirty();
-  }
+  for (auto* list : {&headers_, &bottomHeaders_})
+    for (TrackHeader* h : *list) {
+      h->invalidateArrange();
+      h->markDirty();
+    }
 }
 
 void ArrangementView::setHeaderDecorator(HeaderDecorator d) {
   decorator_ = std::move(d);
-  if (decorator_)
+  if (decorator_) {
     for (size_t i = 0; i < headers_.size(); ++i) decorator_(*headers_[i], model_->rows[i]);
+    for (size_t i = 0; i < bottomHeaders_.size(); ++i) decorator_(*bottomHeaders_[i], model_->bottomRows[i]);
+  }
 }
 
 // --- layout ---------------------------------------------------------------------------------------------
@@ -349,11 +447,19 @@ void ArrangementView::arrange(LayoutPass& pass) {
   const int32_t bodyY = r.y + ovH + ruH;
   const int32_t trH = std::min(std::max(0, r.h - ovH - ruH), s.px(am::kTimeRulerHeight));
   const int32_t bodyH = std::max(0, r.h - ovH - ruH - trH);
-  pass.place(*scroll_, {r.x, bodyY, std::max(0, r.w - sb), bodyH});
+  // T3.10: returns + master pinned under the scrolling rows (at most kBottomMaxFraction of the body).
+  const int32_t pinnedRows = model_->bottomHeight;
+  const int32_t pinH = pinnedRows > 0
+                           ? std::min(pinnedRows + s.px(am::kBottomGap), static_cast<int32_t>(static_cast<float>(bodyH) * am::kBottomMaxFraction))
+                           : 0;
+  if (bottom_->visible() != (pinH > 0)) bottom_->setVisible(pinH > 0);
+  const int32_t scrollH = bodyH - pinH;
+  pass.place(*scroll_, {r.x, bodyY, std::max(0, r.w - sb), scrollH});
+  if (pinH > 0) pass.place(*bottom_, {r.x, bodyY + scrollH, r.w, pinH});
   pass.place(*timeRuler_, {r.x, bodyY + bodyH, lanesW, trH});
   pass.place(*timeCorner_, {r.x + lanesW, bodyY + bodyH, r.w - lanesW, trH});
   Widget& vscroll = child(childCount() - 1);
-  pass.place(vscroll, {r.right() - sb, bodyY, sb, bodyH});
+  pass.place(vscroll, {r.right() - sb, bodyY, sb, scrollH});
 }
 
 void ArrangementView::paint(PaintContext&) {}
@@ -408,6 +514,7 @@ void ArrangementView::markAxisDirty() {
   ruler_->markDirty();
   timeRuler_->markDirty();
   lanes_->markDirty();
+  if (bottom_->childCount()) bottom_->child(0).markDirty();
 }
 
 void ArrangementView::zoomAt(float anchorX, double factor) {
@@ -598,8 +705,10 @@ void ArrangementView::damagePlayheadColumn(Ticks t) {
   const float x = std::floor(xOfTick(static_cast<double>(t)));
   const int32_t w = std::max(1, tr->uiScale().px(1.0f));
   if (x + static_cast<float>(w) < static_cast<float>(lv.x) || x >= static_cast<float>(lv.right())) return;
-  const IRect col{static_cast<int32_t>(x) - 1, ru.y, w + 2, lv.bottom() - ru.y};
-  const IRect vis = intersect(intersect(col, {lv.x, ru.y, lv.w, lv.bottom() - ru.y}), rect());
+  const IRect bt = bottomRect();
+  const int32_t bottomY = bt.empty() ? lv.bottom() : bt.bottom();  // through the pinned returns / master too
+  const IRect col{static_cast<int32_t>(x) - 1, ru.y, w + 2, bottomY - ru.y};
+  const IRect vis = intersect(intersect(col, {lv.x, ru.y, lv.w, bottomY - ru.y}), rect());
   if (!vis.empty()) tr->damage().add(vis.toRect());
 }
 

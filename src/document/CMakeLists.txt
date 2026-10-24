@@ -15,6 +15,8 @@ pq_add_module(pq_doc
     src/edit_notes.cpp
     src/edit_time.cpp
     src/edit_automation.cpp
+    src/edit_mixer.cpp
+    src/audibility.cpp
   # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
   # nlohmann::json in MigrationFn.
   DEPS pq_tuning pq_core nlohmann_json::nlohmann_json

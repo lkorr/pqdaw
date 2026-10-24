@@ -62,6 +62,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   registerGlobalActions();
   declareViewActions(kPianoRollActions);
   declareViewActions(kMosWheelActions);
+  declareViewActions(kMixerActions);
   syncLoop();
 }
 

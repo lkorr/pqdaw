@@ -77,6 +77,26 @@ EditResult setTracksActive(const Project& p, std::span<const TrackId> tracks, bo
 // `0`: deactivates the selection if any selected track is active, else activates it all.
 EditResult toggleTracksActive(const Project& p, std::span<const TrackId> tracks);
 
+// ---- Mixer (T3.10) -----------------------------------------------------------------------------------------------
+// Mute and solo are Param edits (Q15: the track activator is the mute, no recompile); arm is Meta (Q26).
+
+// The track activator (Live's numbered button) = mute. The master has none (refused).
+EditResult setTracksMute(const Project& p, std::span<const TrackId> tracks, bool mute);
+// `0` with tracks selected, or a click on an activator: if any of the tracks is on (not muted) all are muted, else
+// all are switched back on.
+EditResult toggleTracksMute(const Project& p, std::span<const TrackId> tracks);
+// A click on Solo (Live's Exclusive Solo, its default): on an unsoloed track it solos the track and unsolos every
+// other track (main tree and returns); on a soloed track it unsolos just that track. `additive` (Ctrl-click) toggles
+// only this track. The master is refused. What solo does to the sound is pq/document/audibility.h.
+EditResult soloTrack(const Project& p, TrackId track, bool additive);
+// The arm button, same exclusive / additive rule over the MIDI tracks (Live's Exclusive Arm).
+EditResult armTrack(const Project& p, TrackId track, bool additive);
+// A return's Pre/Post switch (Live): every other track's send to `ret` taps before or after its fader (Structural:
+// the tap point moves). Tracks without a send (the master) are skipped.
+EditResult setReturnSendsPreFader(const Project& p, TrackId ret, bool preFader);
+// True when every track that can send to `ret` sends pre-fader (what the switch shows). False for no senders.
+bool returnSendsPreFader(const Project& p, TrackId ret) noexcept;
+
 // Fold is view state (Q15/Q26): not undoable, so it edits the store's ViewState directly and returns nothing.
 void setFolded(ViewState& view, TrackId track, bool folded);
 bool toggleFolded(ViewState& view, TrackId track);  // returns the new state

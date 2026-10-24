@@ -118,6 +118,11 @@ struct Theme {
         allIntervals, guide;
     bool operator==(const MosCircle&) const = default;
   } mosCircle{};
+  struct Mixer {  // track-header mixer section and mixer view (T3.10), sampled from Live 12's arrangement headers
+    Rgba background, separator, boxBorder, field, fieldText, buttonOff, buttonText, activatorOn, activatorText, soloOn, armOn,
+        postOn, volumeFill, panFill, sendFill, meterWell, selected;
+    bool operator==(const Mixer&) const = default;
+  } mixer{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;

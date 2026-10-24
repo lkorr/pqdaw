@@ -218,6 +218,7 @@ void Editor::setSelection(Selection s, bool showInClipView) {
   for (doc::TrackId t : sel_.tracks) trackIds_.push_back(t.value);
   std::sort(trackIds_.begin(), trackIds_.end());
   damageSelection(old, sel_);
+  if (old.tracks != sel_.tracks) view_.syncHeaderSelection();  // T3.10: selected headers are tinted
   view_.setTimeSelection(sel_.time && sel_.time->end > sel_.time->start ? sel_.time : std::nullopt);
   if (showInClipView && !sel_.clips.empty()) ctx_.setDetailClip(sel_.clips.front());
 }
@@ -705,6 +706,8 @@ bool Editor::deleteSelection() {
     setSelection(std::move(s), false);
     return true;
   }
+  // T3.10: tracks selected by their headers (no clips, no time selection or insert marker): delete the tracks.
+  if (sel_.clips.empty() && !sel_.time && !sel_.tracks.empty()) return deleteTracks();
   if (sel_.clips.empty()) return false;
   if (!apply(doc::ops::deleteClips(*ctx_.doc(), sel_.clips), "Delete", false)) return false;
   Selection s;
@@ -1022,7 +1025,8 @@ bool Editor::loopSelection() {
 }
 
 // `0` (Q15): the selected clips are deactivated if any is active, else reactivated; with no clip selected, the
-// selected tracks' activators toggle the same way.
+// selected tracks' activators toggle the same way. A track's activator is its mute (T3.10, Q15's answer: a Param,
+// no recompile), like the activator button in its header.
 bool Editor::toggleActive() {
   const doc::Project& p = *ctx_.doc();
   if (!sel_.clips.empty()) {
@@ -1035,7 +1039,7 @@ bool Editor::toggleActive() {
     return dispatch(std::move(b), "Activate");
   }
   if (sel_.tracks.empty()) return false;
-  return apply(doc::ops::toggleTracksActive(p, sel_.tracks), "Track Activator", false);
+  return apply(doc::ops::toggleTracksMute(p, sel_.tracks), "Track Activator", false);
 }
 
 void Editor::selectAll() {
