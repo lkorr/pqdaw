@@ -715,7 +715,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options: A) accept (now): both are within the kernels' tested accuracy, and the optimiser's exactness promise is read as "the same atom's value" rather than "the same libm"; B) make the 1-lane exact family call the 8-lane kernel's SVML function on a broadcast (one implementation, bit-identical across lane counts; the 1-lane kernels are a few ns slower or faster, to be measured — a dsp change); C) never change the rate of a global exact transcendental in the optimiser (loses the hoisting for global filters, e.g. tan(π·cutoff/sr), which T1.4's acceptance requires).
 - Provisional choice: A (no code depends on it; B is local to `src/dsp/src/simd.h`'s S1 exact family). Recommendation: B, so that interpreter/JIT/optimiser agree bit for bit at every rate.
 
-## Q?-T3.17-a · 2026-10-24 · T3.17 · Mixer lowering: pan laws, send tap point, smoothing, what "1 recompile" counts
+## Q95 · 2026-10-24 · T3.17 · Mixer lowering: pan laws, send tap point, smoothing, what "1 recompile" counts
 - Context: T3.17 lowers the document's mixer into per-track patches (`pq/document/lower.h`). SPEC/TASKS fix "mute/solo/volume are params, no recompile" but not these details.
 - Choices (provisional, all in the generated patch text, so a change recompiles once and touches nothing else):
   1. Pan: a MIDI track (mono instrument) uses constant power, −3 dB per side at the centre; groups, returns and the master (stereo buses) use balance, 0 dB at the centre (Q15 asked for "constant-power pan, measured against Live later").
@@ -726,7 +726,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   6. Tuning-param lanes (reference, generator…) are not lowered: tuning as a signal is T2.6; a tuning change re-resolves the notes' Hz (Structural).
 - Status: open
 
-## Q?-T3.17-b · 2026-10-24 · T3.17 · Playback runtime choices: interpreter only, idle sleep, device suspend, 48 kHz
+## Q96 · 2026-10-24 · T3.17 · Playback runtime choices: interpreter only, idle sleep, device suspend, 48 kHz
 - Interpreter only: pqdaw does not link the JIT yet (T1.x-arch2 gives `--play` the JIT; T1b.5 the background swap). The M3 tracks are small (BasicSynth: 39 ops per voice group; a track's mixer ~20 ops), so the interpreter is cheap enough; `ProjectCompiler::bind` is the hook for the background JIT image.
 - Idle: the engine answers blocks with silence once it has been quiet for 250 ms (transport stopped, no live voice, no fade or pending image, output ≤ −120 dBFS) and the audio output stops the device stream after 1 s of that, restarting it on the next wake (play, param write, audition, publish). The WASAPI client reset that a restart needs (~350 ms on the Focusrite) is done right after the stop, so play after idle waits only for the stream start. Measured: `pqdaw --idle-check 10` 0.009 % for pqdaw's threads (0.23 % with the stream running, mostly the device thread's 100 wakes/s). A delay/reverb tail with > 250 ms of silence inside it would be cut by the engine's gate: SPEC §7.7 per-node tails (T1.x-silence) replace this whole-engine heuristic.
 - Sample rate: the engine runs at 48 kHz; a device that will not open at 48 kHz falls back to a silent NullDevice with a message (rate switching = T3.18's preferences).

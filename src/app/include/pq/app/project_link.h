@@ -19,7 +19,7 @@
 //                unchanged units keep running untouched). Param, sequence and automation work of the same change
 //                happens at once on the UI thread, as above.
 // Every image is the interpreter's (the JIT is not linked into pqdaw yet: T1.x-arch2 / T1b.5 bring the background
-// JIT swap; the stock M3 patches are small, so the interpreter's cost is low; QUESTIONS Q?-T3.17-b).
+// JIT swap; the stock M3 patches are small, so the interpreter's cost is low; QUESTIONS Q96).
 //
 // ---- Threads ------------------------------------------------------------------------------------------------------
 //   UI thread      onDocumentChange (or attach()'s subscription), the TransportPort and MeterSource calls
