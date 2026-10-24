@@ -415,6 +415,7 @@ public:
   void arrange(ui::LayoutPass& pass) override;
   void paint(ui::PaintContext& ctx) override;
   void onTimer(uint32_t id) override;
+  void onFrame(double now) override;
   void onFocusChanged(bool focused) override;
   bool onKey(const ui::KeyEvent& e) override;
 

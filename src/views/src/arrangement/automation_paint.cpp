@@ -379,7 +379,7 @@ bool LaneHeader::onPointer(const PointerEvent& e) {
     return true;
   }
   if (hideRect().contains(e.pos)) {
-    a.hideLane(lane_.track, lane_.index);
+    a.hideLaneLater(lane_.track, lane_.index);  // removes this widget: not from inside its own handler
     return true;
   }
   view_.selectTrack(lane_.track, e.mods);

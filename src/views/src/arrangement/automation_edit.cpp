@@ -160,6 +160,18 @@ void ArrangementAutomation::hideLane(doc::TrackId t, size_t index) {
   view_.rowsChanged();
 }
 
+void ArrangementAutomation::hideLaneLater(doc::TrackId t, size_t index) {
+  pendingHide_ = {t, index};
+  view_.requestFrame();
+}
+
+void ArrangementAutomation::runPending() {
+  if (!pendingHide_) return;
+  const auto [t, i] = *pendingHide_;
+  pendingHide_.reset();
+  hideLane(t, i);
+}
+
 doc::ParamRef ArrangementAutomation::chosen(doc::TrackId t) const {
   const doc::Project& p = *ctx_.doc();
   if (const TrackState* s = findState(t); s && s->chosen && paramValid(p, *s->chosen)) return *s->chosen;

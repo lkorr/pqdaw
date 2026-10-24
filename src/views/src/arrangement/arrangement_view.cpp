@@ -769,6 +769,8 @@ void ArrangementView::onTimer(uint32_t id) {
   readPlayhead();
 }
 
+void ArrangementView::onFrame(double) { automation_->runPending(); }
+
 void ArrangementView::readPlayhead() {
   ++model_->stats.playheadReads;
   const PlayheadSnapshot ph = ctx_.transport().playhead();

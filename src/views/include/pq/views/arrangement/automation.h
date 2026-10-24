@@ -218,6 +218,10 @@ public:
   bool addLane(doc::TrackId t);
   // "−": hides lane `index` (LaneView::visible = false when it is automated); the last one hides the lanes.
   void hideLane(doc::TrackId t, size_t index);
+  // The same at the view's next frame: for the lane header's own "−" (hiding removes that header widget, which must
+  // not happen inside its pointer handler).
+  void hideLaneLater(doc::TrackId t, size_t index);
+  void runPending();
   // The parameter drawn over the track's clips in automation mode (the header's chooser). Default: the track's
   // first automated parameter, else its volume.
   doc::ParamRef chosen(doc::TrackId t) const;
@@ -352,6 +356,7 @@ private:
   bool selOverClips_ = false;
   Drag drag_;
   std::string readoutText_;
+  std::optional<std::pair<doc::TrackId, size_t>> pendingHide_;
   // Paint scratch (kept: painting does not allocate once warm).
   std::vector<EnvelopeVertex> verts_;
   std::vector<ui::Vec2> poly_;

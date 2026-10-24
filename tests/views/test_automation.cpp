@@ -224,6 +224,15 @@ TEST_CASE("automation: lanes show and hide under a track; the chooser offers mix
   CHECK_FALSE(f.ctx.store().view().lanes.at(f.lane(doc::ParamRef::track(doc::ParamKind::TrackSend, lead.id, f.track("A Reverb").id))->id).visible);
   CHECK(au.addLane(lead.id));
   CHECK(au.shownLanes(lead.id).size() == 3);
+  // The header's minus button hides its lane (at the next frame: the click's own widget goes away).
+  {
+    f.d.tree().layoutNow();
+    const IRect hr = f.d.rect(std::string(kArr) + "/tracks/lane[2]");
+    f.d.click({static_cast<float>(hr.right() - 14), static_cast<float>(hr.y + 10)});
+    f.d.step();
+    CHECK(au.shownLanes(lead.id).size() == 2);
+    CHECK(au.addLane(lead.id));
+  }
   au.showLanes(lead.id, false);
   CHECK(f.arr->laneRows().empty());
   CHECK(contentH() == before);
