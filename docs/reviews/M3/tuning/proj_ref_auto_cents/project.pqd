@@ -1,0 +1,154 @@
+{
+ "schemaVersion": 2,
+ "timeline": {
+  "tempo": [
+   {
+    "tick": 0,
+    "bpm": 120.0,
+    "curve": "step"
+   }
+  ],
+  "signatures": [
+   {
+    "bar": 0,
+    "numerator": 4,
+    "denominator": 4
+   }
+  ]
+ },
+ "loop": {
+  "start": 0,
+  "end": 3548160,
+  "enabled": false
+ },
+ "locators": [],
+ "tunings": [
+  {
+   "id": 1,
+   "name": "12-EDO",
+   "colour": "#5E9BD6",
+   "def": {
+    "kind": "edo",
+    "n": 12,
+    "equave": "2/1",
+    "referenceHz": 261.626
+   }
+  },
+  {
+   "id": 4,
+   "name": "5L2s",
+   "colour": "#AA4422",
+   "def": {
+    "kind": "mos",
+    "generator": 700.0,
+    "n": 7,
+    "period": 1200.0,
+    "periodsPerEquave": 1,
+    "rotation": 0,
+    "modmos": [],
+    "genSequence": [],
+    "octaveStretch": 0.0,
+    "referenceHz": 261.626
+   }
+  }
+ ],
+ "tracks": [
+  {
+   "id": 3,
+   "kind": "midi",
+   "name": "Glide",
+   "colour": "#808080",
+   "active": true,
+   "tuning": {
+    "main": 4
+   },
+   "mixer": {
+    "volumeDb": 0.0,
+    "pan": 0.0,
+    "mute": false,
+    "solo": false,
+    "arm": false,
+    "sends": [],
+    "output": "default"
+   },
+   "lanes": [
+    {
+     "id": 7,
+     "param": {
+      "kind": "tuningReference",
+      "owner": 4
+     },
+     "points": [
+      {
+       "id": 8,
+       "tick": 0,
+       "value": 261.626,
+       "curve": 0.0
+      },
+      {
+       "id": 9,
+       "tick": 887040,
+       "value": 300.0,
+       "curve": 0.0
+      }
+     ]
+    }
+   ],
+   "clips": [
+    {
+     "id": 6,
+     "name": "Glide",
+     "colour": "#808080",
+     "start": 0,
+     "length": 1774080,
+     "contentStart": 0,
+     "loop": {
+      "enabled": false,
+      "start": 0,
+      "end": 887040
+     },
+     "signature": {
+      "numerator": 4,
+      "denominator": 4
+     },
+     "tuning": "inherit",
+     "active": true,
+     "notes": [
+      {
+       "id": 5,
+       "start": 0,
+       "length": 1108800,
+       "pitch": {
+        "cents": 200.0
+       },
+       "velocity": 110.0
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "returns": [],
+ "master": {
+  "id": 2,
+  "kind": "master",
+  "name": "Master",
+  "colour": "#808080",
+  "active": true,
+  "tuning": "inherit",
+  "mixer": {
+   "volumeDb": 0.0,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "arm": false,
+   "sends": [],
+   "output": "default"
+  },
+  "lanes": []
+ },
+ "view": {
+  "tracks": [],
+  "lanes": []
+ }
+}
