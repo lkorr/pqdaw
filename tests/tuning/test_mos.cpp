@@ -114,13 +114,13 @@ TEST_CASE("Mos::retuneLinear (T3.12 live morph) equals Mos::make inside an inter
       p.periodsPerEquave = ppe;
       p.rotation = static_cast<int32_t>(rng() % static_cast<uint64_t>(n));
       p.generator = at(U(rng));
-      Result<Mos> mos = Mos::make(p);
+      auto mos = Mos::make(p);
       REQUIRE(mos.ok());
       const double g2 = at(U(rng));
       rotateLinearForm(table.lookup(g2, P), p.rotation, k.data(), m.data());
       mos->retuneLinear(g2, k, m, std::nullopt);
       p.generator = g2;
-      const Result<Mos> ref = Mos::make(p);
+      const auto ref = Mos::make(p);
       REQUIRE(ref.ok());
       CAPTURE(n);
       CAPTURE(ppe);
