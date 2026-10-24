@@ -9,15 +9,20 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/dsp/atoms.h"
 #include "pq/dsp/tuning_table.h"
 #include "pq/engine/tuning_signal.h"
+#include "pq/tuning/mos_regions.h"
 #include "pq/tuning/scala.h"
 #include "pq/tuning/scale_tuning.h"
 #include "pq/tuning/tuning_signal.h"
@@ -57,10 +62,11 @@ tun::MosParams mos(int32_t n, double period, int32_t ppe, int32_t rotation, doub
   return p;
 }
 
-// Index of the constant-order interval holding g (for crossing detection in the tests).
-int64_t intervalOf(const dsp::TuningTableView& v, double g, double P) {
-  const dsp::TuningCoefficients c = dsp::tuningCoefficients(v, 1, g, P);
-  return static_cast<int64_t>(std::llround(c.lo * 1e6));
+// The constant-order interval holding g as buildMOSScale sees it (boundaries included: the region hint and the
+// nudge decide), for crossing detection in the tests.
+int64_t intervalOf(const tun::MosLinearTable& t, const tun::MosParams& p, double g) {
+  const tun::MosLinearSpan s = t.lookup(g, p.period, p.region ? &*p.region : nullptr);
+  return static_cast<int64_t>(s.periodShift) * 100000 + s.interval;
 }
 
 // Runs the kernel over `frames` frames with the given inputs (pointer + Spl flag each), into hz / cents.
@@ -138,6 +144,45 @@ TEST_CASE("tuning signal: the linear form reproduces buildFullScale (MOS modes, 
   CHECK(maxErr <= 1e-9);
   CHECK(skipped * 100 < checked);
 
+  // Exact boundary generators (T2.6-fix2, M3 review H3): every interval boundary of these chain lengths, in three
+  // period shifts, with no region hint and with each region hint of that size around the boundary, against
+  // buildFullScale with the same hint and the transferred mode (ties of step counts without a hint are ambiguous in
+  // buildMOSScale itself and skipped).
+  uint64_t bChecked = 0, bSkipped = 0, bBad = 0;
+  for (const Cfg& c : cfgs) {
+    const tun::MosLinearTable lt(c.n);
+    const tun::MosRegionSet rs = tun::buildMosRegions(c.n, c.n, c.period, 1);
+    std::vector<std::optional<tun::RegionHint>> hints{std::nullopt};
+    for (const tun::MosRegion& r : rs.regions)
+      if (r.perPeriodSize == c.n) hints.push_back(r.hint());
+    for (const std::optional<tun::RegionHint>& h : hints)
+      for (int32_t rot = 0; rot < c.n; rot += 2) {
+        tun::MosParams base = mos(c.n, c.period, c.ppe, rot, c.stretch, c.period * 0.58);
+        base.region = h;
+        const dsp::TuningTable tab = table(mosTuning(base));
+        const int32_t N = c.n * c.ppe;
+        for (const double b : lt.boundaries())
+          for (const int32_t shift : {-1, 0, 1}) {
+            const double g = (shift + b) * c.period;
+            if (h && !(g >= h->lowCents - 1e-6 && g <= h->highCents + 1e-6)) continue;
+            const auto ref = tuning_ref::mosAt(base, g);
+            if (!ref) {
+              ++bSkipped;
+              continue;
+            }
+            for (int32_t eq = -1; eq <= 1; ++eq)
+              for (int32_t d = 0; d < N; ++d) {
+                const double got = dsp::tuningCents(tab.view(), static_cast<int64_t>(eq) * N + d, g, c.period, c.stretch);
+                bBad += std::fabs(got - ref->centsOf(d, eq)) > 1e-9;
+                ++bChecked;
+              }
+          }
+      }
+  }
+  MESSAGE("exact boundary generators: " << bChecked << " pitches, " << bSkipped << " tie generators skipped");
+  CHECK(bBad == 0);
+  CHECK(bChecked > 1000);
+
   // EDOs: D · equave / n.
   for (const auto& e : {tun::Edo::make(31).value(), tun::Edo::make(13, tun::Rational{3}).value(),
                         tun::Edo::makeCents(19, 1203.0).value()}) {
@@ -173,17 +218,24 @@ void generatorSweep(uint32_t frames) {
     tun::MosParams p;
     double g0, g1;
   };
+  // The first sweep's tuning carries the 5L2s region hint, which decides its exact 720-cent generator (T2.6-fix2);
+  // every sweep holds the generator at each interval boundary it passes that float32 represents exactly (720, 600,
+  // 480 … cents: where users stop a sweep), and the mode follows the explorer's transferModeRotation.
+  tun::MosParams hinted = mos(7, 1200.0, 1, 2, 2.5, 700.0);
+  hinted.region = tun::RegionHint{7, 4.0 / 7.0 * 1200.0, 720.0};
   const Sweep sweeps[] = {
-      {mos(7, 1200.0, 1, 2, 2.5, 700.0), 450.0, 850.0},  // crosses g/P = 2/5, 1/2, 3/5, 2/3 (and 7edo, 5edo inside)
+      {hinted, 450.0, 850.0},                             // crosses g/P = 2/5, 1/2, 3/5, 2/3 (and 7edo, 5edo inside)
       {mos(5, 600.0, 2, 1, 0.0, 120.0), 50.0, 280.0},     // two periods per equave; crosses 1/4, 1/3
       {mos(12, 1200.0, 1, 5, 0.0, 700.0), 660.0, 740.0},  // a 12-note chain: crosses 5/9, 4/7, 3/5
   };
   const int32_t deg[8] = {0, 1, 2, 3, 4, 6, 5, -1};
   const int32_t eqv[8] = {0, 0, 0, -1, 1, 0, 2, 0};
   constexpr uint32_t kBlock = 128;
+  constexpr uint32_t kHold = 2 * kBlock + 40;  // frames held at each exactly representable boundary (≥ a block start)
   for (const Sweep& s : sweeps) {
     const dsp::TuningTable tab = table(mosTuning(s.p));
     const dsp::TuningTableView& v = tab.view();
+    const tun::MosLinearTable lt(s.p.n);
     Pattern pd(0.0f), pe(0.0f);
     for (uint32_t l = 0; l < 8; ++l) {
       pd.v[l] = static_cast<float>(deg[l]);
@@ -192,8 +244,22 @@ void generatorSweep(uint32_t frames) {
     const Pattern pp(static_cast<float>(s.p.period)), pst(static_cast<float>(s.p.octaveStretch)),
         pr(static_cast<float>(kRef));
     std::vector<float> gen(frames * 8), fallHz(frames * 8, 440.0f), fallC(frames * 8, 0.0f);
-    for (uint32_t t = 0; t < frames; ++t)
-      std::fill_n(gen.begin() + t * 8, 8, static_cast<float>(s.g0 + (s.g1 - s.g0) * t / (frames - 1)));
+    std::vector<double> stops;  // the boundaries the ramp pauses on
+    for (const double b : lt.boundaries()) {
+      const double c = b * s.p.period;
+      if (c > s.g0 && c < s.g1 && static_cast<double>(static_cast<float>(c)) == c) stops.push_back(c);
+    }
+    CHECK(!stops.empty());
+    {
+      size_t next = 0;
+      uint32_t t = 0;
+      for (uint32_t i = 0; t < frames; ++i) {
+        const double x = std::min(s.g1, s.g0 + (s.g1 - s.g0) * i / (frames - 1));
+        for (; next < stops.size() && x >= stops[next]; ++next)
+          for (uint32_t k = 0; k < kHold && t < frames; ++k, ++t) std::fill_n(gen.begin() + t * 8, 8, static_cast<float>(stops[next]));
+        if (t < frames) std::fill_n(gen.begin() + (t++) * 8, 8, static_cast<float>(x));
+      }
+    }
     for (const bool blockRate : {false, true}) {
       CAPTURE(blockRate);
       std::vector<float> hz(frames * 8), cents(frames * 8);
@@ -205,19 +271,28 @@ void generatorSweep(uint32_t frames) {
         runKernel(8, &v, in, n, hz.data() + b * 8, cents.data() + b * 8);
       }
       double maxErr = 0.0;
-      uint64_t checked = 0, skipped = 0, jumps = 0, crossings = 0, badHz = 0, badCents = 0, badJumps = 0;
+      uint64_t checked = 0, skipped = 0, skippedOff = 0, onBoundary = 0, jumps = 0, crossings = 0, badHz = 0,
+               badCents = 0, badJumps = 0;
       int64_t firstBad = -1;
       std::optional<tun::Mos> ref;
+      auto atBoundary = [&](double g) {
+        for (const double b : lt.boundaries())
+          if (std::fabs(b * s.p.period - g) < 1e-9) return true;
+        return false;
+      };
       for (uint32_t t = 0; t < frames; ++t) {
         const uint32_t tg = blockRate ? t / kBlock * kBlock : t;  // the sample whose generator this one used
         const double g = static_cast<double>(gen[tg * 8]);
         if (t == 0 || tg != (blockRate ? (t - 1) / kBlock * kBlock : t - 1)) ref = tuning_ref::mosAt(s.p, g);
-        if (!ref) {
+        const bool boundary = atBoundary(g);
+        if (!ref) {  // only an exact boundary with a tie of step counts has no reference (tuning_ref::ambiguousGenerator)
           skipped += 8;
+          skippedOff += boundary ? 0 : 8;
           continue;
         }
+        onBoundary += boundary ? 8 : 0;
         const bool crossed = t > 0 && !blockRate &&
-                             intervalOf(v, static_cast<double>(gen[(t - 1) * 8]), s.p.period) != intervalOf(v, g, s.p.period);
+                             intervalOf(lt, s.p, static_cast<double>(gen[(t - 1) * 8])) != intervalOf(lt, s.p, g);
         crossings += crossed;
         for (uint32_t l = 0; l < 8; ++l) {
           const double c = ref->centsOf(deg[l], eqv[l]);
@@ -241,7 +316,8 @@ void generatorSweep(uint32_t frames) {
       MESSAGE("sweep n=" << s.p.n << " " << s.g0 << "→" << s.g1 << (blockRate ? " (block rate)" : " (per sample)")
                          << ", " << frames << " frames: " << checked << " voice-samples, max error " << maxErr
                          << " cents (incl. float32 Hz rounding), " << crossings << " interval crossings, " << jumps
-                         << " voice jumps, " << skipped << " boundary voice-samples skipped");
+                         << " voice jumps, " << onBoundary << " voice-samples at exact boundaries checked, "
+                         << skipped << " skipped (exact boundaries with a tie, where buildMOSScale is ambiguous)");
       // The 1-lane kernel (a global degree signal) on the same sweep: lane 4's degree, degree and generator as
       // audio-rate buffers, from a pre-onset start (hz 0 for the first 5 frames).
       if (!blockRate) {
@@ -265,8 +341,10 @@ void generatorSweep(uint32_t frames) {
       CHECK(badCents == 0);
       CHECK(badJumps == 0);
       if (!blockRate) CHECK(crossings >= 2);
-      if (!blockRate) CHECK(jumps >= crossings);
-      CHECK(skipped * 1000 < checked);
+      // (Not every crossing jumps any more: with the mode carried across it, as the explorer does, a degree whose
+      // root-relative order is unchanged moves continuously. The pitch per sample is checked above.)
+      CHECK(skippedOff == 0);
+      CHECK(onBoundary > 0);
     }
   }
 }
@@ -437,4 +515,37 @@ TEST_CASE("tuning signal: unmodulated inputs sound at the static pitch; fallback
         CHECK(hz[f * 8 + l] == doctest::Approx(want).epsilon(1e-6));
       }
   }
+}
+
+TEST_CASE("tuning signal: a 5L2s mode carried across 720 cents matches the explorer per degree (fixture)") {
+  // T2.6-fix2 (M3 review M7): the table carries the mode across interval boundaries like the explorer's
+  // transferModeRotation (the root keeps its chain position). tests/engine/fixtures/mode_transfer.json is the
+  // explorer's own output (tools/fixtures/gen_mode_transfer_fixture.mjs): every rotation of 5L2s defined at 700 cents
+  // with the 5L2s region selected, at generators through 720 cents (exactly 720 too, where the hint decides the side).
+  std::ifstream in(std::string(PQ_TEST_DATA_DIR) + "/engine/fixtures/mode_transfer.json", std::ios::binary);
+  REQUIRE(in.good());
+  const nlohmann::json fx = nlohmann::json::parse(in);
+  const int32_t n = fx["n"];
+  const double P = fx["period"];
+  uint32_t checked = 0, carried = 0;
+  double worst = 0.0;
+  for (const auto& c : fx["cases"]) {
+    tun::MosParams p = mos(n, P, 1, c["rotation"].get<int32_t>(), 0.0, fx["definitionGenerator"].get<double>());
+    p.region = tun::RegionHint{fx["region"]["perPeriodSize"].get<int32_t>(), fx["region"]["lowCents"].get<double>(),
+                               fx["region"]["highCents"].get<double>()};
+    const dsp::TuningTable tab = table(mosTuning(p));
+    const double g = c["generator"];
+    carried += c["carried"].get<int32_t>() != c["rotation"].get<int32_t>();
+    for (int32_t j = 0; j < n; ++j) {
+      const double err = std::fabs(dsp::tuningCents(tab.view(), j, g, P, 0.0) - c["pitches"][static_cast<size_t>(j)].get<double>());
+      worst = std::max(worst, err);
+      CAPTURE(g);
+      CAPTURE(j);
+      CHECK(err < 1e-6);
+      ++checked;
+    }
+  }
+  MESSAGE(checked << " degree pitches, worst " << worst << " cents; " << carried << " of " << fx["cases"].size()
+                  << " cases carry the mode to another rotation");
+  CHECK(carried > 0);
 }

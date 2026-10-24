@@ -4,19 +4,41 @@
 
 namespace pq::tuning {
 
+Result<LinearShape> linearShape(LinearTuningKind kind, int32_t n) {
+  if (n < 1) return Error{ErrorCode::InvalidArgument, "a tuning shape needs at least one note per period", {}};
+  LinearShape s;
+  s.kind = kind;
+  s.n = n;
+  const auto nn = static_cast<size_t>(n);
+  if (kind == LinearTuningKind::Edo) {
+    s.bounds = {0.0, 1.0};
+    s.k.resize(nn);
+    s.m.assign(nn, 0);
+    s.inverse.resize(nn);
+    for (int32_t j = 0; j < n; ++j) s.k[static_cast<size_t>(j)] = s.inverse[static_cast<size_t>(j)] = j;
+    s.sides.assign(2, 0);
+    s.windows.assign(2, 0.0);
+    return s;
+  }
+  const MosLinearTable table(n);
+  const auto b = table.boundaries();
+  s.bounds.assign(b.begin(), b.end());
+  s.k.assign(table.kTable().begin(), table.kTable().end());
+  s.m.assign(table.mTable().begin(), table.mTable().end());
+  s.inverse.assign(table.inverseTable().begin(), table.inverseTable().end());
+  s.sides.assign(table.boundarySides().begin(), table.boundarySides().end());
+  s.windows.assign(table.boundaryWindows().begin(), table.boundaryWindows().end());
+  return s;
+}
+
 Result<LinearTuningForm> linearTuningForm(const Tuning& tuning) {
   auto bad = [](const char* why) { return Error{ErrorCode::InvalidArgument, why, {}}; };
   LinearTuningForm f;
   f.referenceHz = tuning.referenceHz();
   if (const Edo* edo = tuning.edo()) {
-    const auto n = static_cast<int32_t>(edo->n());
     f.kind = LinearTuningKind::Edo;
-    f.n = n;
+    f.n = static_cast<int32_t>(edo->n());
     f.periodsPerEquave = 1;
-    f.bounds = {0.0, 1.0};
-    f.k.resize(static_cast<size_t>(n));
-    f.m.assign(static_cast<size_t>(n), 0);
-    for (int32_t j = 0; j < n; ++j) f.k[static_cast<size_t>(j)] = j;
     f.period = edo->equaveCents();
     f.generator = edo->stepCents();
     return f;
@@ -32,18 +54,12 @@ Result<LinearTuningForm> linearTuningForm(const Tuning& tuning) {
   f.generator = p.generator;
   f.period = p.period;
   f.stretch = p.octaveStretch;
-  const MosLinearTable table(p.n);
-  const std::span<const double> b = table.boundaries();
-  f.bounds.assign(b.begin(), b.end());
-  const auto intervals = static_cast<size_t>(table.intervalCount());
-  const auto n = static_cast<size_t>(p.n);
-  f.k.resize(intervals * n);
-  f.m.resize(intervals * n);
-  for (size_t t = 0; t < intervals; ++t) {
-    // The interval's midpoint in [0, P): periodShift 0, so the rotated form carries no shift.
-    const double mid = (f.bounds[t] + f.bounds[t + 1]) / 2.0 * p.period;
-    const MosLinearSpan span = table.lookup(mid, p.period);
-    rotateLinearForm(span, p.rotation, f.k.data() + t * n, f.m.data() + t * n);
+  f.hint = p.region;
+  // The explorer's oldChain[rotation] (transferModeRotation): the root's position in the generator chain at the
+  // definition's (nudged) generator.
+  if (p.n > 1) {
+    const std::vector<int32_t> chain = generatorChain(p.generator, p.n, p.period, p.region ? &*p.region : nullptr);
+    f.rootChain = chain[static_cast<size_t>(p.rotation)];
   }
   return f;
 }

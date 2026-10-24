@@ -13,11 +13,28 @@
 
 namespace tuning_ref {
 
-// Stretched cents of degree `degree` of equave `equave` for the MOS `p` at generator g (buildMOSScale per call), or
-// nullopt where buildMOSScale nudges a degenerate generator (a chain note within 1e-6 ¢ of the period: exactly at
-// an interval boundary, where the table takes the interval above and the JS a side of its choosing).
+// True where buildMOSScale leaves a degenerate generator (a chain note within 1e-6 ¢ of the period) un-nudged: a tie
+// of step counts on both sides and no applicable region hint. Its degree order is then float noise (the explorer
+// sorts coinciding positions), so no reference pitch per degree exists there. Boundary generators that ARE nudged
+// (every other boundary, T2.6-fix2) are compared like any other.
+inline bool ambiguousGenerator(const pq::tuning::MosParams& p, double g) {
+  const pq::tuning::RegionHint* hint = p.region ? &*p.region : nullptr;
+  if (pq::tuning::chainSafeGenerator(g, p.n, p.period, hint) != g) return false;
+  for (int32_t i = 1; i < p.n; ++i) {
+    const double r = std::fmod(std::fmod(i * g, p.period) + p.period, p.period);
+    if (r < 1e-6 || r > p.period - 1e-6) return true;
+  }
+  return false;
+}
+
+// The MOS `p` (its mode defined at p.generator) at generator g, as the explorer has it after moving the generator
+// there: the mode carried by transferModeRotation (T2.6-fix2), buildMOSScale with the region hint (boundaries
+// nudged). nullopt at an ambiguous generator (above).
 inline std::optional<pq::tuning::Mos> mosAt(pq::tuning::MosParams p, double g) {
-  if (pq::tuning::chainSafeGenerator(g, p.n, p.period) != g) return std::nullopt;
+  if (ambiguousGenerator(p, g)) return std::nullopt;
+  const pq::tuning::RegionHint* hint = p.region ? &*p.region : nullptr;
+  if (p.n > 1 && p.genSequence.empty())
+    p.rotation = pq::tuning::transferModeRotation(p.generator, p.n, p.rotation, g, p.n, p.period, hint);
   p.generator = g;
   auto m = pq::tuning::Mos::make(std::move(p));
   if (!m.ok()) return std::nullopt;

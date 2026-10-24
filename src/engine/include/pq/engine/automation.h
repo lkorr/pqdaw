@@ -33,10 +33,18 @@ struct AutomationPoint {
 
 struct AutomationLaneDesc {
   // What the lane drives. The renderer only carries it: Timeline::writeAutomatedParams writes the lane's frame-0
-  // value into params[target] (param-rate consumers); T3.17 may instead bind the audio-rate buffer to an input slot.
+  // value into params[target] (param-rate consumers).
   uint32_t target = 0;
   float emptyValue = 0.0f;              // the value of a lane without points
   std::vector<AutomationPoint> points;  // sorted by tick (points on one tick keep their order: a jump)
+  // T2.6-fix2 (M3 review M6): an audio-rate consumer of the lane. Each block, Timeline::writeAutomatedParams stores
+  // the lane's buffer in *tap while the block's values move, and null while the block is one constant (the consumer
+  // then reads the param, which holds that constant). Set to null when the image is replaced. The pointee must
+  // outlive every image that names it (the tuning node's TuningLiveInputs, pq/dsp/tuning_table.h). Audio thread.
+  const float** tap = nullptr;
+  // false: only the frame-0 value is rendered (the param is all any consumer reads): one value per lane per block
+  // instead of a buffer nobody reads. Lanes with a tap always render per sample.
+  bool perSample = true;
 };
 
 class AutomationImage {
@@ -45,6 +53,8 @@ public:
     uint32_t target;
     float emptyValue;
     uint32_t begin, end;  // into points()
+    const float** tap;    // AutomationLaneDesc::tap
+    bool perSample;       // AutomationLaneDesc::perSample || tap
   };
 
   // Off the audio thread (allocates). Points are stably sorted by tick. Errors: a non-finite value or curve.

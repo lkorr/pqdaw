@@ -1,0 +1,9 @@
+// Tests only (T2.6-fix2/fix3): a probe instrument in place of the M3 default, for LinkConfig::stdlib. Its output is
+// voice.hz itself, so a rendered track is the tuning node's pitch per sample (times the track's constant gains):
+// region crossings, lags and bit-identical pitches can be checked on the exact sample.
+patch BasicSynth {
+  out out  : audio voice mono
+  out done : bool voice mono
+  out = voice.hz
+  done = !voice.gate
+}

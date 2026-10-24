@@ -148,6 +148,130 @@ TEST_CASE("mos linear form: boundaries are the Farey fractions of order n − 1"
   }
 }
 
+namespace {
+
+// buildMOSScale's pitches against the table's form at g (lookup with the hint, the nudge applied). `asSet`: compare
+// the sorted pitch sets only (a degenerate generator buildMOSScale does not nudge: its degree order is float noise).
+double formError(const MosLinearTable& t, double g, double P, const RegionHint* hint, bool asSet = false) {
+  const MosLinearSpan s = t.lookup(g, P, hint);
+  const MosScale sc = buildMosScale(g, t.n(), P, hint);
+  std::vector<double> got(static_cast<size_t>(t.n())), want = sc.pitches;
+  for (int32_t j = 0; j < t.n(); ++j) got[static_cast<size_t>(j)] = s.cents(j, g + s.nudge, P);
+  if (asSet) {
+    for (double& c : got) c = std::fmod(std::fmod(c, P) + P, P);  // a note on the period reads as 0
+    for (double& c : want) c = std::fmod(std::fmod(c, P) + P, P);
+    for (double& c : got)
+      if (P - c < 1e-6) c = 0.0;
+    for (double& c : want)
+      if (P - c < 1e-6) c = 0.0;
+    std::sort(got.begin(), got.end());
+    std::sort(want.begin(), want.end());
+  }
+  double worst = 0.0;
+  for (size_t j = 0; j < got.size(); ++j) worst = std::max(worst, std::fabs(got[j] - want[j]));
+  return worst;
+}
+
+}  // namespace
+
+TEST_CASE("mos linear form: exact boundary generators follow buildMOSScale's nudge, with and without a region hint") {
+  // T2.6-fix2 (M3 review H3): at a boundary p/q the table used to take the interval above; buildMOSScale nudges a
+  // degenerate generator toward the hinted region (or the side with fewer step sizes). Every boundary of every chain
+  // length 2..24, three periods, three period shifts, at the boundary and inside / outside its window, with no hint
+  // and with each region hint of that size around it.
+  uint64_t checked = 0, nudged = 0;
+  double worst = 0.0;
+  for (int32_t n = 2; n <= 24; ++n) {
+    const MosLinearTable t(n);
+    for (const double P : {1200.0, 600.0, 1901.955}) {
+      const MosRegionSet rs = buildMosRegions(n, n, P, 1);
+      std::vector<RegionHint> hints;
+      for (const MosRegion& r : rs.regions)
+        if (r.perPeriodSize == n) hints.push_back(r.hint());
+      for (size_t b = 0; b < t.boundaries().size(); ++b) {
+        const double w = t.boundaryWindows()[b];
+        // A tie (no nudge without a hint) left exactly degenerate: only the pitch set is defined.
+        const bool tie = t.boundarySides()[b] == 0;
+        for (const int32_t shift : {-1, 0, 1})
+          for (const double d : {0.0, 3e-8, -3e-8, 0.37 * w, -0.37 * w, 0.93 * w, -0.93 * w, 1.7 * w, -1.7 * w}) {
+            const double g = (shift + t.boundaries()[b]) * P + d;
+            const double e0 = formError(t, g, P, nullptr, tie && std::fabs(d) < w);
+            worst = std::max(worst, e0);
+            CHECK(e0 < 1e-9);
+            ++checked;
+            for (const RegionHint& h : hints) {
+              if (!(g >= h.lowCents - 1e-6 && g <= h.highCents + 1e-6)) continue;
+              const double e = formError(t, g, P, &h);
+              worst = std::max(worst, e);
+              CHECK(e < 1e-9);
+              nudged += t.lookup(g, P, &h).nudge != 0.0;
+              ++checked;
+            }
+          }
+      }
+    }
+  }
+  MESSAGE(checked << " boundary generators (" << nudged << " hinted and nudged), worst |form − buildMOSScale| "
+                  << worst << " cents");
+  CHECK(nudged > 100);
+
+  // The review's case: 5L2s at exactly 720 cents (3\5, the collapsed end of 5L2s [685.7, 720]) with the 5L2s hint is
+  // the interval below (degree 1 = 240 cents, as buildMOSScale says); the half-open rule used to take the one above.
+  const MosLinearTable t7(7);
+  const MosRegionSet rs = buildMosRegions(7, 7, 1200.0, 1);
+  const MosRegion* r5 = nullptr;
+  for (const MosRegion& r : rs.regions)
+    if (r.key == MosKey{5, 2} && r.highCents == 720.0) r5 = &r;
+  REQUIRE(r5 != nullptr);
+  const RegionHint h5 = r5->hint();
+  const MosLinearSpan below = t7.lookup(720.0, 1200.0, &h5);
+  CHECK(below.highGenerator == 720.0);
+  CHECK(below.nudge == -kChainSafeNudge);
+  CHECK(below.cents(1, 720.0 + below.nudge, 1200.0) == doctest::Approx(240.0).epsilon(1e-9));
+  CHECK(buildMosScale(720.0, 7, 1200.0, &h5).pitches[1] == doctest::Approx(240.0).epsilon(1e-9));
+  // The interval above (what the half-open rule took at 720) gives degree 1 a whole step away.
+  CHECK(std::fabs(t7.lookup(720.001, 1200.0, nullptr).cents(1, 720.001, 1200.0) - 240.0) > 100.0);
+}
+
+TEST_CASE("mos linear form: carryRotation is transferModeRotation for an unchanged chain length (M7)") {
+  std::mt19937_64 rng(11);
+  uint64_t checked = 0, changed = 0;
+  for (int32_t n = 2; n <= 16; ++n) {
+    const MosLinearTable t(n);
+    const MosRegionSet rs = buildMosRegions(n, n, 1200.0, 1);
+    std::vector<RegionHint> hints;
+    for (const MosRegion& r : rs.regions)
+      if (r.perPeriodSize == n) hints.push_back(r.hint());
+    std::uniform_real_distribution<double> U(-200.0, 1400.0);
+    for (int rep = 0; rep < 60; ++rep) {
+      // Random generators, and boundary generators (where the hint matters).
+      const auto bi = [&] { return t.boundaries()[static_cast<size_t>(rng() % t.boundaries().size())] * 1200.0; };
+      const double from = rep % 3 == 0 ? bi() : U(rng);
+      const double to = rep % 4 == 0 ? bi() : U(rng);
+      const RegionHint* h = rep % 2 == 0 || hints.empty() ? nullptr : &hints[rng() % hints.size()];
+      // A degenerate generator buildMOSScale does not nudge (a tie of step counts, no applicable hint) has a chain
+      // order of float noise in the explorer (stable sort of coinciding positions): no defined mode to compare.
+      auto ambiguous = [&](double g) {
+        if (chainSafeGenerator(g, n, 1200.0, h) != g) return false;
+        for (int32_t i = 1; i < n; ++i) {
+          const double r = js::wrap(i * g, 1200.0);
+          if (r < 1e-6 || r > 1200.0 - 1e-6) return true;
+        }
+        return false;
+      };
+      if (ambiguous(from) || ambiguous(to)) continue;
+      for (int32_t rot = 0; rot < n; ++rot) {
+        const int32_t want = transferModeRotation(from, n, rot, to, n, 1200.0, h);
+        CHECK(t.carryRotation(from, rot, to, 1200.0, h) == want);
+        changed += want != rot;
+        ++checked;
+      }
+    }
+  }
+  MESSAGE(checked << " transfers, " << changed << " changed the rotation");
+  CHECK(changed > checked / 10);
+}
+
 TEST_CASE("mos tuning: degree resolution through resolveHz") {
   MosParams p;
   p.generator = 696.578;  // quarter-comma meantone fifth

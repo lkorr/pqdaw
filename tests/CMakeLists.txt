@@ -86,6 +86,7 @@ pq_add_test(pq_tests_playback
     app/test_playback.cpp
     app/test_tuning_playback.cpp
     app/test_live_jit.cpp
+    app/test_tuning_coverage.cpp
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -191,7 +192,7 @@ pq_add_test(pq_tests_engine PERF
     engine/test_offline_render.cpp
     engine/test_tuning_signal.cpp
     engine/test_tuning_voices.cpp
-  DEPS pq_engine)
+  DEPS pq_engine nlohmann_json::nlohmann_json)
 
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).
 pq_add_test(pq_tests_project

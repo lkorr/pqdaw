@@ -31,9 +31,14 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
   auto sd = pq::dsp::SampleData::build(smp);
   REQUIRE(sd.ok());
   // T2.6: a 2-note MOS table (one interval: degree 1 = g − ⌊g/P⌋·P), so tuning_hz takes its lookup paths.
-  const double bounds[] = {0.0, 1.0};
-  const int32_t tk[] = {0, 1}, tm[] = {0, 0};
-  auto tt = pq::dsp::TuningTable::build(pq::dsp::TuningTableKind::Mos, 2, 1, bounds, tk, tm, 700.0, 1200.0, 0.0, 261.626);
+  const double bounds[] = {0.0, 1.0}, windows[] = {1e-6, 1e-6};
+  const int32_t tk[] = {0, 1}, tm[] = {0, 0}, tinv[] = {0, 1};
+  const int8_t tsides[] = {1, 1};
+  auto shape = pq::dsp::TuningShape::build(pq::dsp::TuningTableKind::Mos, 2, bounds, tk, tm, tinv, tsides, windows);
+  REQUIRE(shape.ok());
+  pq::dsp::TuningDefinition tdef;
+  tdef.generator = 700.0;
+  auto tt = pq::dsp::TuningTable::build(shape.value(), tdef);
   REQUIRE(tt.ok());
 
   std::vector<pq::AlignedBuffer<float>> in, out;

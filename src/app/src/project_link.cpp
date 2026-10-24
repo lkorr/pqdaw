@@ -48,15 +48,6 @@ Error linkError(ErrorCode c, const std::string& m) { return Error{c, "playback: 
 
 // ---- Sequence lowering (doc → engine plain data, T3.16's descriptions) -------------------------------------------
 
-// Same table shape (T2.6-fix1): the discrete parameters a tuning node table depends on. Both have a signal.
-bool sameTableShape(const doc::TuningDef& a, const doc::TuningDef& b) {
-  if (!doc::hasTuningSignal(a) || !doc::hasTuningSignal(b)) return false;
-  if (a.edo() && b.edo()) return a.edo()->n() == b.edo()->n();
-  const tuning::MosParams* ma = a.mos();
-  const tuning::MosParams* mb = b.mos();
-  return ma && mb && ma->n == mb->n && ma->periodsPerEquave == mb->periodsPerEquave && ma->rotation == mb->rotation;
-}
-
 bool sameNote(const engine::NoteDesc& a, const engine::NoteDesc& b) {
   return a.start == b.start && a.length == b.length && a.id == b.id && a.hz == b.hz && a.velocity == b.velocity &&
          a.releaseVelocity == b.releaseVelocity && a.chance == b.chance && a.velocityRange == b.velocityRange &&
@@ -104,6 +95,31 @@ float dbFromLinear(float x, bool power) {
 }
 
 }  // namespace
+
+// The node table a main tuning needs (T2.6-fix2): its shape and the discrete part of its definition (periods per
+// equave; the root's chain position, i.e. the mode, which the node carries across intervals like the explorer; the
+// region hint, which decides exact boundary generators). nullopt: no signal.
+std::optional<ProjectLink::TableKey> ProjectLink::tableKey(const doc::TuningDef& d) {
+  if (!doc::hasTuningSignal(d)) return std::nullopt;
+  TableKey k;
+  if (const tuning::Edo* e = d.edo()) {
+    k.kind = dsp::TuningTableKind::Edo;
+    k.n = static_cast<int32_t>(e->n());
+    return k;
+  }
+  const tuning::MosParams& m = *d.mos();
+  k.kind = dsp::TuningTableKind::Mos;
+  k.n = m.n;
+  k.periodsPerEquave = m.periodsPerEquave;
+  const tuning::RegionHint* hint = m.region ? &*m.region : nullptr;
+  if (m.n > 1 && m.rotation >= 0 && m.rotation < m.n)
+    k.rootChain = tuning::generatorChain(m.generator, m.n, m.period, hint)[static_cast<size_t>(m.rotation)];
+  if (hint) {
+    k.hasHint = true;
+    k.hint = dsp::TuningHint{hint->perPeriodSize, hint->lowCents, hint->highCents};
+  }
+  return k;
+}
 
 // ---- Sequence lowering (doc -> engine plain data, T3.16's descriptions) -------------------------------------------
 
@@ -172,15 +188,19 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
 // ---- Tuning tables (UI thread builds, the compile path reads) ----------------------------------------------------
 
 const ProjectLink::TuningTableEntry* ProjectLink::tuningEntry(doc::TuningId id, const doc::TuningDef& def) const {
+  const std::optional<TableKey> key = tableKey(def);
+  if (!key) return nullptr;
   for (const auto& e : tuningEntries_)
-    if (e->id == id && sameTableShape(e->def, def)) return e.get();
+    if (e->id == id && e->key == *key) return e.get();
   return nullptr;
 }
 
 uint32_t ProjectLink::tuningTable(doc::TuningId id, const doc::TuningDef& def) const {
+  const std::optional<TableKey> key = tableKey(def);
+  if (!key) return kTuningTables;
   std::lock_guard lock(mutex_);
   for (uint32_t i = 0; i < tuningEntries_.size(); ++i)
-    if (tuningEntries_[i]->id == id && sameTableShape(tuningEntries_[i]->def, def)) return i;
+    if (tuningEntries_[i]->id == id && tuningEntries_[i]->key == *key) return i;
   return kTuningTables;
 }
 
@@ -189,26 +209,37 @@ uint32_t ProjectLink::tuningTablesBuilt() const {
   return static_cast<uint32_t>(tuningEntries_.size());
 }
 
-void ProjectLink::updateTuningTables(const doc::Project& p) {
+const dsp::TuningTableView* ProjectLink::tuningView(doc::TuningId id, const doc::TuningDef& def) const {
+  std::lock_guard lock(mutex_);
+  const TuningTableEntry* e = tuningEntry(id, def);
+  return e != nullptr ? &e->table.view() : nullptr;
+}
+
+bool ProjectLink::updateTuningTables(const doc::Project& p) {
+  bool built = false;
   for (const doc::TuningSlotPtr& slot : *p.tunings) {
-    if (!doc::hasTuningSignal(slot->def)) continue;
+    const std::optional<TableKey> key = tableKey(slot->def);
+    if (!key) continue;
     {
       std::lock_guard lock(mutex_);
       if (tuningEntry(slot->id, slot->def) != nullptr || tuningEntries_.size() >= kTuningTables) continue;
     }
     auto t = doc::buildTuning(slot->def);
     if (!t.ok()) continue;
-    auto table = engine::makeTuningTable(t.value());
-    if (!table.ok()) continue;
     auto e = std::make_unique<TuningTableEntry>();
+    auto table = engine::makeTuningTable(t.value(), {}, &e->live);  // the entry's address is stable (unique_ptr)
+    if (!table.ok()) continue;
     e->id = slot->id;
+    e->key = *key;
     e->def = slot->def;
     e->built = std::move(t.value());
     e->table = std::move(table.value());
     std::lock_guard lock(mutex_);
     tuningViews_[tuningEntries_.size()] = &e->table.view();  // before any lowering can name this index
     tuningEntries_.push_back(std::move(e));
+    built = true;
   }
+  return built;
 }
 
 // ---- Instruments ------------------------------------------------------------------------------------------------
@@ -489,6 +520,8 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
       if (s == kNone) continue;
       engine::AutomationLaneDesc d;
       d.target = s;
+      d.tap = liveTap(p, lane->param);  // T2.6-fix2: a tuning param drives its node per sample
+      d.perSample = false;              // every other consumer reads the param (one value per block)
       for (const doc::Breakpoint& b : lane->points) d.points.push_back({b.tick, b.value, b.curve});
       lanes.push_back(std::move(d));
       automated[s] = 1;
@@ -501,6 +534,26 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
   if (img.ok() && engine_->timeline().publishAutomation(std::move(img.value())).ok()) ++stats_.automationPublishes;
   if (released) applyParams(p, true);
   engine_->wake();
+}
+
+// The tuning node input an automation lane on `ref` drives per sample (T2.6-fix2): the live input of the current
+// table of its tuning, or null (not a tuning param, or the tuning has no table).
+const float** ProjectLink::liveTap(const doc::Project& p, const doc::ParamRef& ref) {
+  if (doc::isTrackParam(ref.kind)) return nullptr;
+  const doc::TuningSlot* slot = doc::findTuning(p, doc::TuningId{ref.owner});
+  if (slot == nullptr) return nullptr;
+  std::lock_guard lock(mutex_);
+  const TuningTableEntry* found = tuningEntry(slot->id, slot->def);
+  if (found == nullptr) return nullptr;
+  auto* e = const_cast<TuningTableEntry*>(found);  // the live inputs are the audio thread's, not the table's
+  switch (ref.kind) {
+    case doc::ParamKind::MosGenerator: return &e->live.generator;
+    case doc::ParamKind::MosPeriod:
+    case doc::ParamKind::TuningEquave: return &e->live.period;
+    case doc::ParamKind::MosStretch: return &e->live.stretch;
+    case doc::ParamKind::TuningReference: return &e->live.reference;
+    default: return nullptr;
+  }
 }
 
 void ProjectLink::publishTempo(const doc::Project& p) {
@@ -548,13 +601,17 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
       }
     }
   }
-  if (reset || structural) updateTuningTables(p);  // before the sequences resolve in the tables' definitions
+  // Tables before the sequences resolve in their definitions. A param change can need a new table too (a region
+  // hint moved with the generator: T2.6-fix2), which then is a compile like a structural change.
+  bool newTables = false;
+  if (reset || structural || (c.has(doc::kChangeParam) && !c.tunings.empty())) newTables = updateTuningTables(p);
+  const bool compile = structural || newTables;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
-  if (reset || structural || c.has(doc::kChangeSequence)) publishSequences(p);
+  if (reset || compile || c.has(doc::kChangeSequence)) publishSequences(p);
   else if (c.has(doc::kChangeParam) && !c.tunings.empty()) publishSequences(p, true);  // static pitches only
-  if (reset || structural || c.has(doc::kChangeAutomation)) publishAutomation(p);
-  if (structural) {
+  if (reset || compile || c.has(doc::kChangeAutomation)) publishAutomation(p);  // taps follow the tables
+  if (compile) {
     {
       std::lock_guard lock(mutex_);
       pending_ = true;

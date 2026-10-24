@@ -109,6 +109,7 @@ MosLinearTable::MosLinearTable(int32_t n) : n_(n) {
   // Farey fractions p/q in [0, 1] with q ≤ n − 1 (q ≥ 1), generated in order by the next-term recurrence.
   const int32_t order = std::max(n - 1, 1);
   int32_t a = 0, b = 1, c = 1, d = order;
+  std::vector<int32_t> den{1};
   bounds_.push_back(0.0);
   while (c <= order) {
     const int32_t kk = (order + b) / d;
@@ -118,19 +119,25 @@ MosLinearTable::MosLinearTable(int32_t n) : n_(n) {
     c = e;
     d = f;
     bounds_.push_back(static_cast<double>(a) / b);
+    den.push_back(b);
   }
   // (For n = 1 the chain is just the tonic: one interval [0, 1).)
-  if (n == 1) bounds_ = {0.0, 1.0};
+  if (n == 1) {
+    bounds_ = {0.0, 1.0};
+    den = {1, 1};
+  }
 
   const size_t intervals = bounds_.size() - 1;
-  k_.resize(intervals * static_cast<size_t>(n));
-  m_.resize(intervals * static_cast<size_t>(n));
+  const size_t nn = static_cast<size_t>(n);
+  k_.resize(intervals * nn);
+  m_.resize(intervals * nn);
+  inv_.resize(intervals * nn);
   struct Entry {
     double frac;
     int32_t k;
     int32_t m;
   };
-  std::vector<Entry> chain(static_cast<size_t>(n));
+  std::vector<Entry> chain(nn);
   for (size_t t = 0; t < intervals; ++t) {
     // At the midpoint no two chain notes coincide, so the order is the interval's.
     const double x = (bounds_[t] + bounds_[t + 1]) / 2.0;
@@ -140,30 +147,83 @@ MosLinearTable::MosLinearTable(int32_t n) : n_(n) {
       chain[static_cast<size_t>(i)] = {v - fl, i, static_cast<int32_t>(fl)};
     }
     std::sort(chain.begin(), chain.end(), [](const Entry& p, const Entry& q) { return p.frac < q.frac; });
-    for (int32_t j = 0; j < n; ++j) {
-      k_[t * static_cast<size_t>(n) + static_cast<size_t>(j)] = chain[static_cast<size_t>(j)].k;
-      m_[t * static_cast<size_t>(n) + static_cast<size_t>(j)] = chain[static_cast<size_t>(j)].m;
+    for (size_t j = 0; j < nn; ++j) {
+      k_[t * nn + j] = chain[j].k;
+      m_[t * nn + j] = chain[j].m;
+      inv_[t * nn + static_cast<size_t>(chain[j].k)] = static_cast<int32_t>(j);
+    }
+  }
+
+  // Boundaries: buildMOSScale's degenerate-chain window and hint-less nudge side (chainSafeGenerator, probed at
+  // P = 1200 cents: the step-size structure on either side of p/q does not depend on the period).
+  sides_.assign(bounds_.size(), 0);
+  windows_.assign(bounds_.size(), 0.0);
+  if (n > 1) {
+    constexpr double kP = 1200.0;
+    for (size_t i = 0; i < bounds_.size(); ++i) {
+      windows_[i] = 1e-6 / static_cast<double>(den[i]);
+      const double g = bounds_[i] * kP;
+      const double safe = chainSafeGenerator(g, n, kP, nullptr);
+      sides_[i] = static_cast<int8_t>(safe > g ? 1 : safe < g ? -1 : 0);
     }
   }
 }
 
-MosLinearSpan MosLinearTable::lookup(double genCents, double period) const noexcept {  // RT-safe
+MosLinearSpan MosLinearTable::lookup(double genCents, double period, const RegionHint* hint) const noexcept {  // RT-safe
   const double x = genCents / period;
-  const double shift = std::floor(x);
+  double shift = std::floor(x);
   double x0 = x - shift;
-  if (x0 >= 1.0) x0 = 0.0;  // guards rounding when x is a hair below an integer
+  if (x0 >= 1.0) {  // x a hair below an integer: that integer's boundary (the window below decides the side)
+    x0 = 0.0;
+    shift += 1.0;
+  }
+  const int32_t last = intervalCount() - 1;
   // Last boundary ≤ x0 (bounds_[0] = 0 ≤ x0 < 1 = bounds_.back()): ~log2(0.3·n²) compares.
   const auto it = std::upper_bound(bounds_.begin(), bounds_.end(), x0);
-  size_t t = static_cast<size_t>(it - bounds_.begin()) - 1;
-  if (t >= bounds_.size() - 1) t = bounds_.size() - 2;
+  int32_t t = static_cast<int32_t>(it - bounds_.begin()) - 1;
+  t = std::clamp(t, 0, last);
+  // Inside a boundary's window: buildMOSScale's nudge decides the side ("Boundaries" in the header).
+  double nudge = 0.0;
+  const double cLo = (shift + bounds_[static_cast<size_t>(t)]) * period;
+  const double cHi = (shift + bounds_[static_cast<size_t>(t) + 1]) * period;
+  if (std::fabs(genCents - cLo) < windows_[static_cast<size_t>(t)]) {
+    nudge = boundaryNudgeSide(genCents, n_, sides_[static_cast<size_t>(t)], hint) * kChainSafeNudge;
+    if (genCents + nudge < cLo) {
+      if (t == 0) {
+        t = last;
+        shift -= 1.0;
+      } else {
+        --t;
+      }
+    }
+  } else if (std::fabs(cHi - genCents) < windows_[static_cast<size_t>(t) + 1]) {
+    nudge = boundaryNudgeSide(genCents, n_, sides_[static_cast<size_t>(t) + 1], hint) * kChainSafeNudge;
+    if (genCents + nudge >= cHi) {
+      if (t == last) {
+        t = 0;
+        shift += 1.0;
+      } else {
+        ++t;
+      }
+    }
+  }
   MosLinearSpan s;
-  s.k = k_.data() + t * static_cast<size_t>(n_);
-  s.m = m_.data() + t * static_cast<size_t>(n_);
+  s.k = k_.data() + static_cast<size_t>(t) * static_cast<size_t>(n_);
+  s.m = m_.data() + static_cast<size_t>(t) * static_cast<size_t>(n_);
   s.n = n_;
   s.periodShift = static_cast<int32_t>(shift);
-  s.lowGenerator = (shift + bounds_[t]) * period;
-  s.highGenerator = (shift + bounds_[t + 1]) * period;
+  s.interval = t;
+  s.lowGenerator = (shift + bounds_[static_cast<size_t>(t)]) * period;
+  s.highGenerator = (shift + bounds_[static_cast<size_t>(t) + 1]) * period;
+  s.nudge = nudge;
   return s;
+}
+
+int32_t MosLinearTable::carryRotation(double fromGen, int32_t rotation, double toGen, double period,
+                                      const RegionHint* hint) const noexcept {  // RT-safe
+  if (rotation < 0 || rotation >= n_) return 0;
+  const int32_t chainPos = rootChain(lookup(fromGen, period, hint).interval, rotation);
+  return rotationOf(lookup(toGen, period, hint).interval, chainPos);
 }
 
 void rotateLinearForm(const MosLinearSpan& s, int32_t rotation, int32_t* kOut, int32_t* mOut) noexcept {  // RT-safe

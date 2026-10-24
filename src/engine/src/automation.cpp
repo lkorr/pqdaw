@@ -54,7 +54,8 @@ Result<std::unique_ptr<AutomationImage>> AutomationImage::build(std::span<const 
   for (const AutomationLaneDesc& l : lanes) {
     if (!std::isfinite(l.emptyValue))
       return Error{ErrorCode::InvalidArgument, "AutomationImage: lane " + std::to_string(l.target) + ": bad value", {}};
-    Lane lane{l.target, l.emptyValue, static_cast<uint32_t>(img->points_.size()), 0};
+    Lane lane{l.target, l.emptyValue, static_cast<uint32_t>(img->points_.size()), 0, l.tap,
+              l.perSample || l.tap != nullptr};
     for (const AutomationPoint& p : l.points) {
       if (!std::isfinite(p.value) || !std::isfinite(p.curve))
         return Error{ErrorCode::InvalidArgument,
@@ -136,6 +137,11 @@ void AutomationRenderer::render(const TickSpan& ticks, uint32_t frame, uint32_t 
   double holdUntil = std::numeric_limits<double>::infinity();
   const double* exact = ticks.perSample;  // fetched on first need
   for (uint32_t l = 0; l < n; ++l) {
+    // A block-rate lane (AutomationLaneDesc::perSample false) is read at frame 0 only: later runs of the block skip
+    // it, and its value paths below compute one sample (cnt), the same value the per-sample paths give frame 0.
+    const bool blockRate = !image_->lanes()[l].perSample;
+    if (blockRate && frame != 0) continue;
+    const uint32_t cnt = blockRate ? 1u : len;
     const auto pts = image_->points(l);
     if (pts.empty()) {
       fillConst(l, image_->lanes()[l].emptyValue, frame, len, wholeBlock);
@@ -164,19 +170,19 @@ void AutomationRenderer::render(const TickSpan& ticks, uint32_t frame, uint32_t 
       const double va = a.value, dv = static_cast<double>(b.value) - a.value;
       const double k = kAutomationCurveK * a.curve;
       if (std::abs(k) < kAutomationLinearK) {
-        for (uint32_t i = 0; i < len; ++i) out[i] = static_cast<float>(va + dv * ((ticks.first + ticks.step * i - ta) * inv));
+        for (uint32_t i = 0; i < cnt; ++i) out[i] = static_cast<float>(va + dv * ((ticks.first + ticks.step * i - ta) * inv));
       } else if (std::abs(k) >= kGeometricMinK) {
         // e^{k·x(i)} = e^{k·x0} · (e^{k·dx})^i; relative error ≤ len · ulp, far below 1e-6 of the segment.
         const double x0 = (ticks.first - ta) * inv;
         const double r = std::exp(k * ticks.step * inv);
         const double scale = dv / std::expm1(k);
         double e = std::exp(k * x0);
-        for (uint32_t i = 0; i < len; ++i) {
+        for (uint32_t i = 0; i < cnt; ++i) {
           out[i] = static_cast<float>(va + scale * (e - 1.0));
           e *= r;
         }
       } else {
-        for (uint32_t i = 0; i < len; ++i) {
+        for (uint32_t i = 0; i < cnt; ++i) {
           const double x = (ticks.first + ticks.step * i - ta) * inv;
           out[i] = static_cast<float>(va + dv * automationShape(x, a.curve));
         }
@@ -189,7 +195,7 @@ void AutomationRenderer::render(const TickSpan& ticks, uint32_t frame, uint32_t 
       ticks.exact(ticks.user, exact_.data(), len);
       exact = exact_.data();
     }
-    for (uint32_t i = 0; i < len; ++i) {
+    for (uint32_t i = 0; i < cnt; ++i) {
       const double t = exact != nullptr ? exact[i] : ticks.at(i);
       while (c + 1 < np && static_cast<double>(pts[static_cast<size_t>(c + 1)].tick) <= t) ++c;
       out[i] = static_cast<float>(valueWithCursor(pts, c, t));

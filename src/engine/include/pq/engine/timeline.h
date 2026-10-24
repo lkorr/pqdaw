@@ -46,7 +46,10 @@
 // ---- Automation ----------------------------------------------------------------------------------------------
 // AutomationRenderer (automation.h) renders every lane per sample for the block's samples (same segments as the
 // notes), or holds the value at the playhead while stopped. writeAutomatedParams() writes each lane's frame-0 value
-// into a param block for param-rate consumers; automation(lane) is the audio-rate buffer.
+// into a param block for param-rate consumers, and for a lane with an audio-rate consumer (AutomationLaneDesc::tap,
+// T2.6-fix2) its buffer into the tap while the block moves (null while it is constant, and when the image is
+// replaced or the timeline destroyed); automation(lane) is the audio-rate buffer. Lanes without a tap and with
+// AutomationLaneDesc::perSample false render only their frame-0 value.
 //
 // ---- Integration -----------------------------------------------------------------------------------------------
 // process(sampleTime, frames) runs once per engine block (calls with the same engine sampleTime are no-ops, so the

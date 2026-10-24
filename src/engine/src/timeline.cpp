@@ -102,6 +102,9 @@ Timeline::Timeline(const TimelineConfig& config)
 }
 
 Timeline::~Timeline() {
+  if (auto_ != nullptr)  // audio-rate consumers must not keep pointers into this timeline's buffers
+    for (const AutomationImage::Lane& l : auto_->lanes())
+      if (l.tap != nullptr) *l.tap = nullptr;
   delete pubSeq_.exchange(nullptr);
   delete pubAuto_.exchange(nullptr);
   delete pubTempo_.exchange(nullptr);
@@ -204,6 +207,9 @@ void Timeline::pickUpImages() noexcept {  // RT-safe
   if (s != seq_) swapSequence(s);
   const AutomationImage* a = pubAuto_.load(std::memory_order_acquire);
   if (a != auto_) {
+    if (auto_ != nullptr)  // the old image's audio-rate consumers read their params again
+      for (const AutomationImage::Lane& l : auto_->lanes())
+        if (l.tap != nullptr) *l.tap = nullptr;
     auto_ = a;
     automation_.attach(a);
     holdValid_ = false;
@@ -685,9 +691,11 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
 
 void Timeline::writeAutomatedParams(std::span<float> params) const noexcept {  // RT-safe
   const uint32_t n = automation_.numLanes();
+  const auto lanes = n != 0 ? automation_.image()->lanes() : std::span<const AutomationImage::Lane>{};
   for (uint32_t l = 0; l < n; ++l) {
     const uint32_t t = automation_.target(l);
     if (t < params.size()) params[t] = automation_.buffer(l)[0];
+    if (lanes[l].tap != nullptr) *lanes[l].tap = automation_.constant(l) ? nullptr : automation_.buffer(l);
   }
 }
 

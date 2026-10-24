@@ -343,7 +343,18 @@ void RollState::morphGenerator(double g) {
       gen = std::clamp(clamped, r.lowCents, r.highCents);
       if (!(r.key == sel->key)) {
         const tuning::RegionHint hint = r.hint();
-        m.rotation = tuning::transferModeRotation(m.generator, sel->perPeriodSize, m.rotation, gen, r.perPeriodSize, P, &hint);
+        if (r.perPeriodSize == sel->perPeriodSize && m.n == sel->perPeriodSize) {
+          // Same chain length: the rule the tuning node's table follows when automation moves the generator
+          // (MosLinearTable::carryRotation = transferModeRotation for an unchanged size; T2.6-fix2), so the roll's
+          // morph and the audio cannot disagree on the mode.
+          if (!linear_ || linear_->n() != m.n) {
+            linear_ = std::make_unique<tuning::MosLinearTable>(m.n);
+            linearHigh_ = -1.0;
+          }
+          m.rotation = linear_->carryRotation(m.generator, m.rotation, gen, P, &hint);
+        } else {
+          m.rotation = tuning::transferModeRotation(m.generator, sel->perPeriodSize, m.rotation, gen, r.perPeriodSize, P, &hint);
+        }
       }
       if (r.perPeriodSize != m.n) m.modmos.clear();  // alterations are per degree of the old size
       m.n = r.perPeriodSize;

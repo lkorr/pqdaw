@@ -41,9 +41,13 @@
 //
 // ---- Tuning tables (T2.6-fix1) ------------------------------------------------------------------------------------
 // Every main tuning with a signal (doc::hasTuningSignal) gets a tuning node table (engine::makeTuningTable) in
-// Resources::tunings, built on the UI thread when a snapshot first shows that tuning in that SHAPE (EDO n; MOS n,
-// periods per equave, rotation) and kept, immutable, for the link's lifetime (images point into it; a pool of
-// kTuningTables entries; beyond that a tuning's node gets a null table and passes static pitches through). A
+// Resources::tunings, built on the UI thread when a snapshot first shows that tuning with that TableKey (EDO n; MOS
+// n, periods per equave, the mode as the root's chain position, the region hint: T2.6-fix2) and kept, immutable, for
+// the link's lifetime (images point into it; a pool of kTuningTables entries; beyond that a tuning's node gets a null
+// table and passes static pitches through). A Param change that needs a new table (a region hint moved with the
+// generator) compiles like a structural change. Automation lanes on a tuning's params drive the node per sample
+// through the table's TuningLiveInputs (AutomationLaneDesc::tap; T2.6-fix2, M3 review M6); every other lane is
+// rendered one value per block (AutomationLaneDesc::perSample false: its consumers read params). A
 // continuous change (a param) never rebuilds a table, so the table's definition values can lag the document's: the
 // static NoteDesc::hz of a Degree note following the node is resolved in the TABLE's definition, which is what the
 // node passes through bit for bit while its inputs equal those values (pq/dsp/tuning_table.h), and the node
@@ -174,6 +178,26 @@ public:
   static constexpr uint32_t kTuningTables = 256;
   uint32_t tuningTable(doc::TuningId id, const doc::TuningDef& def) const;
   uint32_t tuningTablesBuilt() const;
+  // The table main tuning `id` in `def`'s shape plays through, or null (tests, tools).
+  const dsp::TuningTableView* tuningView(doc::TuningId id, const doc::TuningDef& def) const;
+
+  // What a tuning node table depends on besides the tuning's continuous values (T2.6-fix2): the shape (kind, n),
+  // periods per equave, the mode as the root's chain position, the region hint.
+  struct TableKey {
+    dsp::TuningTableKind kind = dsp::TuningTableKind::Edo;
+    int32_t n = 0;
+    int32_t periodsPerEquave = 1;
+    int32_t rootChain = 0;
+    bool hasHint = false;
+    dsp::TuningHint hint{};
+    friend bool operator==(const TableKey& a, const TableKey& b) noexcept {
+      return a.kind == b.kind && a.n == b.n && a.periodsPerEquave == b.periodsPerEquave &&
+             a.rootChain == b.rootChain && a.hasHint == b.hasHint &&
+             (!a.hasHint || (a.hint.perPeriodSize == b.hint.perPeriodSize && a.hint.lowCents == b.hint.lowCents &&
+                             a.hint.highCents == b.hint.highCents));
+    }
+  };
+  static std::optional<TableKey> tableKey(const doc::TuningDef& def);  // nullopt: no tuning signal
 
   // ---- views::TransportPort (UI thread) ----
   void play(Ticks from) override;
@@ -198,9 +222,11 @@ private:
   };
   struct TuningTableEntry {
     doc::TuningId id;
+    TableKey key;
     doc::TuningDef def;                    // the definition the table was built from
     std::optional<tuning::Tuning> built;   // `def` built (UI thread: the static Hz of the node's Degree notes)
-    dsp::TuningTable table;
+    dsp::TuningLiveInputs live;            // audio thread: automation buffers of this block (AutomationLaneDesc::tap)
+    dsp::TuningTable table;                // its view points at `live`
   };
   struct MeterState {
     float peakDb[2] = {-200.0f, -200.0f};
@@ -217,8 +243,10 @@ private:
   // onlyIfChanged: publish only when a track's description changed (after a tuning param change).
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
   engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);
-  void updateTuningTables(const doc::Project& p);  // UI thread: tables for the snapshot's signal tunings
+  // UI thread: tables for the snapshot's signal tunings; true when one was built (its index is new: a compile).
+  bool updateTuningTables(const doc::Project& p);
   const TuningTableEntry* tuningEntry(doc::TuningId id, const doc::TuningDef& def) const;  // caller holds mutex_
+  const float** liveTap(const doc::Project& p, const doc::ParamRef& ref);  // UI thread (T2.6-fix2)
   void publishAutomation(const doc::Project& p);
   void publishTempo(const doc::Project& p);
   void postTransport(const engine::TransportCommand& c);

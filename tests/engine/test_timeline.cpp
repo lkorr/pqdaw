@@ -888,6 +888,61 @@ TEST_CASE("automation: across a loop wrap, while stopped (value at the playhead)
   }
 }
 
+TEST_CASE("automation: block-rate lanes give the same param values; taps carry moving buffers (T2.6-fix2)") {
+  // M3 review M6: a lane nobody reads per sample renders one value per block (AutomationLaneDesc::perSample false),
+  // the same frame-0 value the per-sample render gives, so the param block is unchanged; a lane with an audio-rate
+  // consumer (AutomationLaneDesc::tap) hands its buffer over while the block moves and null while it is constant.
+  const auto lanes = automationLanes();
+  std::vector<e::AutomationLaneDesc> blockLanes = lanes, tapped = lanes;
+  for (e::AutomationLaneDesc& l : blockLanes) l.perSample = false;
+  const float* taps[5] = {};
+  for (size_t l = 0; l < tapped.size(); ++l) {
+    tapped[l].perSample = false;  // a tap renders per sample anyway
+    tapped[l].tap = &taps[l];
+  }
+  for (uint32_t block : {37u, 64u, 480u}) {
+    CAPTURE(block);
+    e::Timeline a(config()), b(config()), c(config());
+    for (auto* p : {&a, &b, &c}) {
+      p->apply(loopCmd(kBar - 3, 4 * kBar + 11));
+      p->apply(cmd(e::TransportCommandKind::Play, kBar / 2));
+    }
+    REQUIRE(a.publishAutomation(std::move(e::AutomationImage::build(lanes).value())));
+    REQUIRE(b.publishAutomation(std::move(e::AutomationImage::build(blockLanes).value())));
+    REQUIRE(c.publishAutomation(std::move(e::AutomationImage::build(tapped).value())));
+    std::vector<float> pa(16, 0.0f), pb(16, 0.0f), pc(16, 0.0f);
+    uint64_t moving = 0, still = 0;
+    for (int64_t clock = 0; clock < 600000; clock += block) {
+      a.process(clock, block);
+      b.process(clock, block);
+      c.process(clock, block);
+      a.writeAutomatedParams(pa);
+      b.writeAutomatedParams(pb);
+      c.writeAutomatedParams(pc);
+      for (size_t i = 0; i < pa.size(); ++i) {
+        REQUIRE(pb[i] == pa[i]);
+        REQUIRE(pc[i] == pa[i]);
+      }
+      for (uint32_t l = 0; l < lanes.size(); ++l) {
+        if (c.automation().constant(l)) {
+          REQUIRE(taps[l] == nullptr);
+          ++still;
+        } else {
+          REQUIRE(taps[l] == c.automation().buffer(l));
+          for (uint32_t i = 0; i < block; ++i) REQUIRE(taps[l][i] == a.automation().buffer(l)[i]);
+          ++moving;
+        }
+      }
+    }
+    CHECK(moving > 0);
+    CHECK(still > 0);
+    // A new image releases the old one's taps (its consumers read their params again).
+    REQUIRE(c.publishAutomation(std::move(e::AutomationImage::build(lanes).value())));
+    c.process(600000 + block, block);
+    for (const float* t : taps) CHECK(t == nullptr);
+  }
+}
+
 // ---- RT safety ----------------------------------------------------------------------------------------------------
 
 TEST_CASE("timeline: RtScope-clean with 64 tracks x 200 clips, loops, swaps, locates and automation") {

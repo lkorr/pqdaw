@@ -64,20 +64,37 @@ int32_t findAdjacentRegion(std::span<const MosRegion> regions, const MosRegion& 
 // degree at sorted position j is chain element k_j wrapped m_j times, so
 //     cents_j = k_j · g − m_j · P          (0 ≤ cents_j < P)
 // and the whole scale is n fused multiply-adds. The table holds (k, m) for every interval, built off the audio thread;
-// lookup is a binary search. Intervals are half-open [low, high): exactly at a boundary the interval above is used.
-// (buildMosScale nudges a degenerate generator to one side instead; the pitch sets agree there except for the one
-// chain note sitting on 0 vs P.) Rotation is applied with rotateLinearForm; MODMOS alterations are not linear in g
-// (the JS rounds L and s to 0.01 cents) and are not represented here.
+// lookup is a binary search. MODMOS alterations are not linear in g (the JS rounds L and s to 0.01 cents) and are not
+// represented here.
+//
+// Boundaries (T2.6-fix2, M3 review H3). Away from a boundary the intervals are half-open [low, high). A generator
+// within boundaryWindow(b) = 1e-6/q cents of boundary b = p/q (lowest terms) is degenerate for buildMOSScale: its
+// chainSafeGenerator nudges it by 1e-7 cents, toward the region hint's midpoint when the hint has this chain length
+// and contains the generator (±1e-6 cents), else toward the side whose chain has fewer distinct step sizes (no nudge
+// on a tie). intervalAt / lookup reproduce that choice exactly, and report the nudge (MosLinearSpan::nudge), so the
+// form gives the pitches buildMOSScale gives, boundaries included: e.g. 5L2s at exactly 720 cents with the 5L2s hint
+// is the interval below 3\5 (degree 1 = 240 cents, the collapsed 5L2s), with the 2L5s hint the one above. The two
+// sides differ in their degree-indexed pitches (whole steps for some degrees), not by one note.
+//
+// Mode transfer (T2.6-fix2, M3 review M7). Rotation r roots the scale at sorted degree r, which is chain element
+// rootChain(t, r) = k[t][r]. When the generator moves into another interval of the same chain length, the
+// explorer's transferModeRotation keeps that chain position: the rotation becomes rotationOf(t', rootChain). So a
+// tuning is defined by its root's chain position (its rotation at its own generator), and the rotation in any
+// interval follows from it (carryRotation). The tuning node's table (pq/dsp/tuning_table.h), the document's generator
+// edits (SetTuningParam) and the piano roll's live morph all use this rule.
 
 struct MosLinearSpan {
   const int32_t* k = nullptr;   // generator multiples, sorted-degree order (k[0] = 0)
   const int32_t* m = nullptr;   // period multiples for g reduced into [0, P)
   int32_t n = 0;
-  int32_t periodShift = 0;      // floor(g / P): adds k·periodShift to every m
+  int32_t periodShift = 0;      // floor(g / P) of the interval: adds k·periodShift to every m
+  int32_t interval = 0;         // index into boundaries() of the interval's low end
   double lowGenerator = 0.0;    // the interval in generator cents (for crossing detection)
   double highGenerator = 0.0;
+  double nudge = 0.0;           // buildMOSScale's degenerate-chain nudge of this generator (0, ±1e-7 cents)
 
-  // Unrotated degree j (0 ≤ j < n) in cents. RT-safe.
+  // Unrotated degree j (0 ≤ j < n) in cents at generator g (pass g + nudge for buildMOSScale's exact value).
+  // RT-safe.
   double cents(int32_t j, double g, double period) const noexcept {
     return static_cast<double>(k[j]) * g -
            (static_cast<double>(m[j]) + static_cast<double>(k[j]) * periodShift) * period;
@@ -86,7 +103,7 @@ struct MosLinearSpan {
 
 class MosLinearTable {
 public:
-  // n ≥ 1 notes per period. Holds about 0.3·n² intervals × n × 2 ints (n = 24: ~34 KB): build it off the audio
+  // n ≥ 1 notes per period. Holds about 0.3·n² intervals × n × 3 ints (n = 24: ~50 KB): build it off the audio
   // thread, once per chain length.
   explicit MosLinearTable(int32_t n);
 
@@ -95,16 +112,54 @@ public:
   int32_t intervalCount() const noexcept { return static_cast<int32_t>(bounds_.size()) - 1; }
   // Interval boundaries as fractions of the period (ascending, from 0 to 1).
   std::span<const double> boundaries() const noexcept { return bounds_; }
+  // Per boundary: where buildMOSScale without a region hint puts a generator inside its window (−1: the interval
+  // below, +1: above, 0: no nudge, so the half-open rule), and the window in cents (1e-6 / denominator).
+  std::span<const int8_t> boundarySides() const noexcept { return sides_; }
+  std::span<const double> boundaryWindows() const noexcept { return windows_; }
+  // Raw tables (intervalCount × n each, interval-major): k, m as in MosLinearSpan; inverse[t][c] = the sorted degree
+  // of chain element c in interval t.
+  std::span<const int32_t> kTable() const noexcept { return k_; }
+  std::span<const int32_t> mTable() const noexcept { return m_; }
+  std::span<const int32_t> inverseTable() const noexcept { return inv_; }
 
-  // The interval containing generator g (any finite value; reduced into [0, P) with periodShift). RT-safe.
-  MosLinearSpan lookup(double genCents, double period) const noexcept;
+  // The interval holding generator g (any finite value) as buildMOSScale(g, n, P, hint) sees it (see "Boundaries").
+  // RT-safe.
+  MosLinearSpan lookup(double genCents, double period, const RegionHint* hint = nullptr) const noexcept;
+
+  // Mode transfer (see above). RT-safe.
+  int32_t rootChain(int32_t interval, int32_t rotation) const noexcept {
+    return k_[static_cast<size_t>(interval) * static_cast<size_t>(n_) + static_cast<size_t>(rotation)];
+  }
+  int32_t rotationOf(int32_t interval, int32_t chain) const noexcept {
+    return inv_[static_cast<size_t>(interval) * static_cast<size_t>(n_) + static_cast<size_t>(chain)];
+  }
+  // The rotation at generator toGen of the mode `rotation` defined at fromGen (transferModeRotation for an unchanged
+  // chain length; 0 ≤ rotation < n). RT-safe.
+  int32_t carryRotation(double fromGen, int32_t rotation, double toGen, double period,
+                        const RegionHint* hint = nullptr) const noexcept;
 
 private:
   int32_t n_ = 0;
-  std::vector<double> bounds_;  // intervalCount + 1 entries
-  std::vector<int32_t> k_;      // intervalCount × n
-  std::vector<int32_t> m_;      // intervalCount × n
+  std::vector<double> bounds_;   // intervalCount + 1 entries
+  std::vector<int8_t> sides_;    // intervalCount + 1
+  std::vector<double> windows_;  // intervalCount + 1
+  std::vector<int32_t> k_;       // intervalCount × n
+  std::vector<int32_t> m_;       // intervalCount × n
+  std::vector<int32_t> inv_;     // intervalCount × n
 };
+
+// The side (−1 below, +1 above, 0 none) buildMOSScale's chainSafeGenerator nudges a degenerate generator `genCents`
+// at a boundary to, given the boundary's hint-less side: toward the hint's midpoint when the hint has n notes per
+// period and contains genCents (±1e-6 cents), else `naturalSide`. RT-safe.
+inline int32_t boundaryNudgeSide(double genCents, int32_t n, int8_t naturalSide, const RegionHint* hint) noexcept {
+  if (hint != nullptr && hint->perPeriodSize == n && genCents >= hint->lowCents - 1e-6 &&
+      genCents <= hint->highCents + 1e-6)
+    return (hint->lowCents + hint->highCents) / 2.0 >= genCents ? 1 : -1;
+  return naturalSide;
+}
+
+// chainSafeGenerator's nudge, in cents.
+inline constexpr double kChainSafeNudge = 1e-7;
 
 // Coefficients of the scale rotated to `rotation` (0 ≤ rotation < n), written to kOut/mOut (n entries each), so that
 // cents_j = kOut[j]·g − mOut[j]·P reproduces rotateMosScale(buildMosScale(g, n, P), rotation, P).pitches[j]. The
