@@ -112,7 +112,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Several timing/perf assertions fail intermittently while other builds run (seen: `pq_tests_ui` test_render.cpp "stalls == 0", `pq_tests_engine` test_null_device.cpp:281 callback within 50 ms, `pqdaw_window_selftest_partial` CPU ratio < 25 %, glyph-upload frame-interval check). `main` must always pass.
   - Accept: each timing assertion either measures something load-independent (thread CPU cycles, counts, deterministic fake clocks) or moves to an opt-in perf label (`ctest -L perf`) that the standard build doesn't run; the functional part of each test stays in the default suite. 10 consecutive full release `ctest` runs pass while a parallel `cmake --build` of the other preset runs.
 
-- [ ] **T0.5-fix1 PPQ 221,760** (`core`, all users). Depends on: T0.5. (User decision Q3.)
+- [~] **T0.5-fix1 PPQ 221,760** *(worker AY, branch task/T0.5-fix1-ppq)* (`core`, all users). Depends on: T0.5. (User decision Q3.)
   - Change PPQ from 27,720 to 221,760 (2⁶·3²·5·7·11) everywhere: core time.h constant, grid (T3.3: straight values down to 1/256, x/64 signatures legal), document/serialization (schemaVersion bump + migration multiplying stored ticks by 8; existing fixtures migrated), tests/goldens/benchmarks that hard-code tick values.
   - Accept: all tests pass with the new constant; every straight note value 1/1…1/256 and every 3/5/7/9/11-tuplet of them is an exact integer tick count; a schema-1 project loads, migrates and re-saves as schema 2 with all positions × 8; the 10 h @ 192 kHz tempo round-trip test still holds within ½ sample.
 
@@ -198,7 +198,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     1-sample loop; TimerNan outputs 0; the saw wavetable's top harmonic stays ≥ 16 kHz through every octave boundary (spectral
     test); tests use independent references (no copied level/wrap rules).
 
-- [ ] **T1b.1-fix1 JIT determinism, Newton, compile time** (`jit` + `engine`). Depends on: T1b.1.
+- [~] **T1b.1-fix1 JIT determinism, Newton, compile time** *(worker AZ, branch task/T1b.1-fix1-jit)* (`jit` + `engine`). Depends on: T1b.1.
   - contract off by default (Q64 reversed; optional optimiser `mulsub` fusion); Newton step relative with a 1e-6 floor and a
     fallback on non-finite J (both backends); forward-mode AD for inlined solve bodies (or correct Q53/RESULTS); interleave
     capped by code size; CodeGenOptLevel measured; per-call-site scratch arrays (no __chkstk frames); canonical bool masks.
@@ -376,7 +376,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Port of `drawMOSCircle` (index.html ~3693+): step slices, degree spokes with cents, tonic, JI markers, hardness slider (via `generatorForHardness`), mode rotation by step / by generator, parent/child arrows, MODMOS alterations. Popover linking chart + circle; also EDO entry, Scala file pick, temperament presets. Commits a tuning command to a clip / track / main tuning (one undo step); opened from tuning chips (+ hotkey, Q15). The roll previews live while dragging.
   - Accept: goldens `mos-circle-5L2s`, `mos-circle-modmos`, `mos-wheel-popover`; rotate-by-generator matches `rotateByGenerator`; hardness 2.0 gives L/s = 2 within 1e-6; parent/child arrows match `findParentMOS`/`getChildMOSes`; committing to a clip changes only that clip (one undo step); Esc cancels with no history entry.
 
-- [ ] **T3.15 Automation lanes** (`views`). Depends on: T3.9, T3.10, T3.6. 👁
+- [~] **T3.15 Automation lanes** *(worker BA, branch task/T3.15-automation)* (`views`). Depends on: T3.9, T3.10, T3.6. 👁
   - Per-track lanes (show/hide; parameter chooser incl. main-tuning params); `A` automation mode over clips; breakpoint add/move (snapped, value readout)/delete/multi-select; curved segments (Alt-drag) with the curve law shared with T3.16; shapes menu (ramp, sine, square, triangle, saw over the time selection); automated-state indication and "Re-enable automation" (state only). Curves drawn as feathered ribbons (T0.9).
   - Accept: goldens `automation-lanes`, `automation-mode-over-clips`; scripted add/move/delete, Alt-drag curvature, shape insertion; each gesture one undo step with a non-structural ChangeSet; view curve evaluation matches `engine::evalAutomation` within 1e-6 at 10⁴ points.
 
@@ -384,7 +384,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Audio-thread transport (play/stop/continue/locate, sample-accurate loop wrap, tempo map) exposed in `ProcessContext` and reported to the UI (lossy SPSC). `SequenceImage`: immutable flat per-track note array built off-thread from a plain-data description (no `document` dependency); clip loops unrolled lazily by a cursor; published by atomic swap + EpochReclaimer; cursor survives swaps. Emits note-on/off events at exact sample offsets; chance/velocity range via a deterministic per-note RNG (note id + loop pass). `AutomationImage`: breakpoints rendered per sample into audio-rate buffers for automated params (incremental cursor); unautomated params stay param-rate. `evalAutomation` header-only, shared with views.
   - Accept: a note at tick t starts at exactly `ticksToSamples(t)` for block sizes 1/32/37/480; loop wrap emits offs/ons at the exact wrap sample; locate during playback releases all sounding voices; swapping the image mid-note keeps unchanged notes and stops removed ones at the next block; automation buffers match `evalAutomation` within 1e-6; RtScope clean with 64 tracks × 200 clips. Perf: per block with no events < 50 ns per track; 100k-note SequenceImage build < 20 ms.
 
-- [ ] **T3.17 Project lowering and playback link** (`document`, `app`). Depends on: T3.16, T3.4, T3.7, T3.10, T1.9, T1.10 (T2.6 for tuning automation).
+- [~] **T3.17 Project lowering and playback link** *(worker AX, branch task/T3.17-playback)* (`document`, `app`). Depends on: T3.16, T3.4, T3.7, T3.10, T1.9, T1.10 (T2.6 for tuning automation).
   - `doc::lower(Snapshot)` → graph Patch + param map + sequence/automation descriptions: per MIDI track an instrument (M3 default instrument, Q15) → volume/pan → send taps → parent group sum → master; returns; mute/solo via `effectiveAudible`; param slots keyed by stable `ParamRef`. App controller per ChangeSet: `structural` → debounced recompile + T1.9 hot swap; `sequenceOnly` → publish a new SequenceImage; `paramOnly` → `EngineCommand` param writes. `TransportPort` over the engine; playhead and meters fed back; audition on click. `pqdaw --project <dir> --render out.wav [--seconds N]`.
   - Accept: golden offline renders (T1.10 helper) of a fixture with 2 MIDI tracks in 31edo and 5L2s, a group with volume automation, a return with a send, a muted track. Compile-count hooks: moving a note or changing velocity → 0 recompiles, effective at the next block; volume change → 0 recompiles; adding a track → exactly 1 recompile, click-free swap (T1.9 criteria). Solo/mute renders match `effectiveAudible`. Idle stopped app ≈ 0% CPU. End-to-end with NullDevice: open fixture, Space, after 1 s of blocks the playhead reported to views is within one block of 1 s.
 
