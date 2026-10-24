@@ -209,7 +209,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
 - [x] **T1.x-arch1 Per-track compilation units** *(6b1e487)* (`graph` + `engine` + `jit` + docs). Depends on: T1.5-fix1, T1.8-fix1, T1.9, T1b.1. Before T3.17. (User decision 2026-10-21: per-track units now; whole-project re-optimisation on idle later, M12.)
   - Each track's device chain is one compile unit (own Schedule/ProgramImage/state arena/compile-cache key); a project-level runner executes units in dependency order each block, passing audio between units through preallocated buffers (no added latency for feed-forward paths); tracks connected by cross-track modulation/sidechain wires are merged into one unit; group/return/master summing as units too. Hot swap (T1.9) per unit: an edit recompiles and crossfades only the changed unit.
   - Accept: a 30-track fixture (≈ 20k ops) — one device edit: audible change ≤ 200 ms, peak audio-thread CPU during the edit ≤ 1.3× steady state, unchanged tracks bit-identical through the swap; output of the per-unit project identical (≤ 1e-6) to a single whole-project program of the same graph; cross-track modulation wire merges units and stays sample-accurate.
-- [ ] **T1.x-arch2 Shared image host + one compile pipeline** (`engine`, `jit`, `tools`, `app`). Depends on: T1b.1.
+- [~] **T1.x-arch2 Shared image host + one compile pipeline** *(worker BG, branch task/T1.x-arch2-jit-host)* (`engine`, `jit`, `tools`, `app`). Depends on: T1b.1.
   - Extract interpreter/JIT host code (layout, params, inputs, reducers/sends/broadcast, Newton) into one engine-internal
     layer; `pq_compile` library for file → Schedule used by pqc and `pqdaw --play` (Q73 B, gives --play the JIT); renderOffline
     through ProgramHost.
@@ -260,7 +260,7 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - At build time, `pqc aot` compiles `stdlib/` into an object file linked into pqdaw. Runtime JIT objects are cached under `cache/` keyed by graph hash + CPU features + compiler version.
   - Accept: opening a stock device at runtime does no JIT compile (test hook counts compiles). A second load of the same user patch hits the cache.
 
-- [ ] **T1b.5 Interpreter→JIT live swap** (`engine` + `jit`). Depends on: T1b.1, T1.9.
+- [~] **T1b.5 Interpreter→JIT live swap** *(worker BG, same branch)* (`engine` + `jit`). Depends on: T1b.1, T1.9.
   - An edit plays immediately through the interpreter, then swaps to the JIT image when it's ready.
   - Accept: an offline test with a simulated compile delay. The swap is click-free (same criteria as T1.9). The JIT ProgramImage costs less than the interpreter's (benchmark).
 
@@ -392,11 +392,11 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Re-derive `assets/themes/ableton-dark.json` (and its generator) from the user's Live 12 Arrangement screenshot at `reference/inspiration/live12/arrangement.png` (git-ignored: never commit it or crops of it): sample surface/panel/track-lane/header/ruler/grid/text/accent/selection colours, compare control proportions (button heights, header widths, font sizes). Keep the contrast test passing (adjust targets only with justification).
   - Accept: a side-by-side comparison image (our `widgets`/`shell`/arrangement scenes vs the screenshot regions, generated locally, not committed) checked by eye and listed in REVIEW.md with the sampled values; all goldens regenerated deliberately.
 
-- [ ] **T2.6-fix1 Tuning signal in project playback** (`document` lowering, `app`). Depends on: T2.6, T3.17.
+- [~] **T2.6-fix1 Tuning signal in project playback** *(worker BF, branch task/T2.6-fix1-tuning-playback)* (`document` lowering, `app`). Depends on: T2.6, T3.17.
   - doc::lower emits `tune_voices` + the tuning node per track whose notes follow a main tuning (Degree notes), tuning params and their automation lanes lowered as params/automation, `Resources::tunings` built from the document (engine::makeTuningTable), NoteDesc pitch from `resolveTrackPitches` (replacing T3.17's O(n²) noteHz). Q100.3, Q101.
   - Accept: golden render of a fixture whose 5L2s generator is automated across a region boundary (pitches follow, jumps only at the crossing); a generator/reference param change while playing is audible next block with 0 recompiles; static projects render bit-identically to before.
 
-- [ ] **T3.6-fix1 Virtual fundamental in the model** (`document`, `tuning`). Depends on: T3.6, T3.11. (User decision Q40.)
+- [~] **T3.6-fix1 Virtual fundamental in the model** *(worker BF, same branch)* (`document`, `tuning`). Depends on: T3.6, T3.11. (User decision Q40.)
   - Ratio notes in a clip share a virtual fundamental derived from what is entered (1/lcm of their denominators relative to the anchor), updated as notes are added, moved or deleted; Up/Down = next harmonic of the current fundamental; explicit fundamental lock (`b`+index, SPEC §6.2) can override. Decide whether the fundamental is stored (with its update rule) or derived on read; keep reduced ratios exact either way.
   - Accept: 5/4 → 6/4 → 7/4 by Up; adding 4/3 moves the fundamental to 1/12; deleting it moves it back; undo restores it; serialization round-trips; the piano roll draws it (SPEC §4.3).
 
