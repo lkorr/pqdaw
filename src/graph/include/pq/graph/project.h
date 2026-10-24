@@ -29,7 +29,7 @@
 // 1. One unit per track. 2. Union over every Sidechain / Modulation wire (SPEC §15), except a union that would put
 // two Instrument tracks into one unit: the ProgramImage ABI has one voice table per image, so two instruments in one
 // image would share their voices. Such a wire stays a feed-forward bus, which is exactly as sample-accurate when it is
-// acyclic (a note is recorded; QUESTIONS Q?-T1.x-arch1-a). 3. Tarjan SCCs on the unit graph (every wire between two
+// acyclic (a note is recorded; QUESTIONS Q84). 3. Tarjan SCCs on the unit graph (every wire between two
 // units): a cycle between units is merged into one unit (SPEC §7.4 "cross-track SCCs pull the involved tracks into
 // one scheduling region"); the scheduler then treats the loop as any feedback: an explicit delay in it is used, a
 // delay-free one gets the usual implicit z1 with a warning (ScheduleOptions::visualMode). A cycle through two
