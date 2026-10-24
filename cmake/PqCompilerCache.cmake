@@ -28,6 +28,9 @@ if(_pq_sccache)
   # Normal variables: they initialise every target's <LANG>_COMPILER_LAUNCHER, third-party ones included.
   set(CMAKE_C_COMPILER_LAUNCHER "${_pq_sccache}")
   set(CMAKE_CXX_COMPILER_LAUNCHER "${_pq_sccache}")
+  # sccache cannot cache compiles that use a precompiled header (/Yu /Fp): SDL3's ~220 C files do. Without the
+  # PCH each of them re-reads SDL_internal.h on a cold compile, and every one becomes a cache hit afterwards.
+  set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
 else()
   message(STATUS "pqdaw: compiler cache: none (run scripts/get-sccache.ps1 to enable)")
 endif()
