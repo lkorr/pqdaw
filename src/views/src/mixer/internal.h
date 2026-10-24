@@ -29,6 +29,7 @@ public:
   bool apply(const doc::ops::EditResult& e, std::string_view what);
   // A value drag: one store gesture from the first change to the release.
   void beginGesture(std::string_view label);
+  void cancelGesture();  // Esc / focus lost: the store gesture is dropped (no history entry)
   void change(const doc::Command& c);
   void endGesture();
   // The activator of `id`: toggles every selected track when `id` is selected (like `0`), else just `id`.

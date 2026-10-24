@@ -326,6 +326,9 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
       quitAskedAt_ = SDL_GetTicksNS();
       return !quitAnswer_;
     }
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+      if (shell_) shell_->cancelInteraction();
+      return false;
     case SDL_EVENT_KEY_DOWN:
       return true;  // the shell's keys are all in its keymap; the test scenes' window keys (Esc quits, A animates) are off
     default: return false;

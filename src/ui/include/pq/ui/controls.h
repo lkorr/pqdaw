@@ -224,6 +224,11 @@ public:
   std::function<void()> onGestureBegin;
   std::function<void(double value)> onChange;
   std::function<void()> onGestureEnd;
+  // Esc during a drag or gesture (T3.x-fix-edit, M3 review M12b / Q92.6): the value returns to where the gesture
+  // started and this runs instead of onGestureEnd (unset: onChange(start value), then onGestureEnd).
+  std::function<void()> onGestureCancel;
+  // Ends the current drag / gesture without keeping it (see onGestureCancel). False when none was running.
+  bool cancelGesture();
   // Display text for a value (default: fixed `decimals` + unit). Called once per change.
   std::function<std::string(double value)> formatter;
   // Type-in parser (default: a decimal number, optionally followed by the unit; "-inf" when min is −inf).
@@ -234,6 +239,7 @@ public:
 
   bool onKey(const KeyEvent& e) override;
   void onCaptureLost() override;
+  void onInteractionCancelled() override { (void)cancelGesture(); }
 
 protected:
   double clampQuantise(double v) const noexcept;
@@ -254,6 +260,7 @@ protected:
   Vec2 last_{0, 0};
   bool dragging_ = false;
   bool gesture_ = false;
+  double gestureStart_ = 0.0;  // value_ when the current gesture began (cancelGesture restores it)
   std::string text_;
 };
 

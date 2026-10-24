@@ -315,6 +315,96 @@ TEST_CASE("clip view: move, resize, Alt-drag copy, delete, rubber band — each 
   CHECK(*r.note(100) == n100);
 }
 
+TEST_CASE("clip view: an Alt-drag copy that ends at offset zero adds nothing (M3 review M10)") {
+  Roll r("pianoroll-12edo");
+  r.setGrid(4, 1);  // 1/16
+  const doc::Snapshot before = r.ctx.doc();
+  const size_t h = r.history();
+  const size_t count = r.clip().notes.size();
+  const Vec2 from = r.centreOf(100);
+  // Past the click slop and back: the copy preview snaps to dt = 0, steps = 0.
+  r.d.move(from, mod::kAlt);
+  r.d.down(from, PointerButton::Left, mod::kAlt);
+  r.d.move({from.x + 40.0f, from.y - 20.0f}, mod::kAlt);
+  r.d.move({from.x + 1.0f, from.y}, mod::kAlt);
+  r.d.up({from.x + 1.0f, from.y}, PointerButton::Left, mod::kAlt);
+  CHECK(r.clip().notes.size() == count);  // no duplicate stacked on the original
+  CHECK(r.history() == h);
+  CHECK(r.ctx.doc() == before);
+  // A real offset still copies.
+  const Vec2 to{from.x + static_cast<float>(kQ * r.view->pxPerTick()), from.y};
+  r.d.drag(from, to, 6, mod::kAlt);
+  CHECK(r.clip().notes.size() == count + 1);
+  CHECK(r.history() == h + 1);
+}
+
+TEST_CASE("clip view: the default view centres on the densest band of notes, not on outliers (M3 review M14)") {
+  Roll r("pianoroll-31edo");
+  const std::vector<doc::Note> originals = r.notes();
+  REQUIRE(originals.size() >= 4);
+  // The review's probe: one note 12 equaves up and one at −9000 ¢ (the old fit centred between them: no note shown).
+  doc::Note up;
+  up.start = 0;
+  up.length = kQ;
+  up.pitch = PitchId::fromDegree(0, 12);
+  doc::Note down = up;
+  down.pitch = PitchId::fromCents(-9000.0);
+  const std::vector<doc::Note> extra{up, down};
+  auto e = doc::ops::addNotes(*r.ctx.doc(), r.ctx.store().ids(), r.ref, extra);
+  REQUIRE(e.ok());
+  REQUIRE(r.ctx.store().dispatch(e->command).ok());
+  // Open the clip afresh (a new clip in the view is fitted again).
+  r.ctx.setDetailClip({});
+  r.d.tree().layoutNow();
+  r.ctx.setDetailClip(r.ref);
+  r.d.tree().layoutNow();
+  r.d.step();
+  REQUIRE(r.view->hasClip());
+  int visible = 0;
+  for (const doc::Note& n : originals)
+    if (!r.view->noteRect(n.id).empty()) ++visible;  // noteRect is cut to the note area: empty = out of view
+  CHECK(visible * 2 >= static_cast<int>(originals.size()));  // most of the clip's notes are in view
+}
+
+TEST_CASE("clip view: Esc (or capture loss) during a rubber band puts the previous selection back (M3 review L19)") {
+  Roll r("pianoroll-12edo");
+  r.d.click(r.centreOf(116));
+  REQUIRE(r.view->selection().size() == 1);
+  // A press point in empty space (a press on a note would move it), and a band from there over every note.
+  const IRect area = r.d.rect("main/body/bottom/detail/clip/clip-view/notes");
+  Vec2 start{-1.0f, -1.0f};
+  for (int y = area.y + 2; y < area.bottom() - 2 && start.x < 0.0f; y += 3) {
+    const Vec2 p{static_cast<float>(area.right() - 6), static_cast<float>(y)};
+    bool onNote = false;
+    for (const doc::Note& n : r.notes()) {
+      const IRect nr = r.view->noteRect(n.id);
+      onNote = onNote || (!nr.empty() && nr.contains(p));
+    }
+    if (!onNote) start = p;
+  }
+  REQUIRE(start.x >= 0.0f);
+  const Vec2 end{static_cast<float>(area.x + 4), start.y > static_cast<float>(area.y + area.h / 2) ? static_cast<float>(area.y + 2)
+                                                                                                    : static_cast<float>(area.bottom() - 2)};
+  auto band = [&] {
+    r.d.move(start);
+    r.d.down(start);
+    r.d.move({(start.x + end.x) / 2, (start.y + end.y) / 2});
+    r.d.move(end);
+  };
+  band();
+  REQUIRE_FALSE((r.view->selection().size() == 1 && r.view->selection()[0] == 116));  // the band selected others
+  CHECK(r.d.press("Escape") == KeyResult::Widget);
+  r.d.up(end);
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.view->selection()[0] == 116);
+  // The same when the capture is lost (the window losing focus).
+  band();
+  r.shell->cancelInteraction();
+  r.d.up(end);
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.view->selection()[0] == 116);
+}
+
 TEST_CASE("clip view: a click selects without editing; Esc cancels a drag; drags preview without dispatching") {
   Roll r("pianoroll-12edo");
   const doc::Snapshot before = r.ctx.doc();
@@ -605,6 +695,24 @@ TEST_CASE("render: piano roll goldens (12edo, 31edo, velocity)") {
     CHECK(pq::ui::test::matchesGolden(scene, *img, *ref, true, &diff));
     MESSAGE(scene << ": " << pq::ui::test::describe(diff));
   }
+}
+
+TEST_CASE("render: piano roll at 150 % UI scale (pianoroll-31edo-1.5x) matches the golden image") {
+  // T3.x-fix-edit (M3 review L20: every view golden was 1.0× only).
+  const std::string scene = "pianoroll-31edo", name = "pianoroll-31edo-1.5x";
+  uint32_t w = 0, h = 0;
+  viewSceneDefaultSize(scene, w, h);
+  GpuOptions o;
+  o.validation = true;
+  auto img = renderViewScene(scene, views::test::fixtureDir(scene), w, h, UiScale(1.5f), o);
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  CHECK(img->width == static_cast<uint32_t>(std::lround(1.5 * w)));
+  auto ref = readPng(std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + name + ".png");
+  if (!ref) (void)writePng(name + ".actual.png", *img);
+  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+  ImageDiff diff;
+  CHECK(pq::ui::test::matchesGolden(name, *img, *ref, true, &diff));
+  MESSAGE(name << ": " << pq::ui::test::describe(diff));
 }
 
 // ---- partial redraw ---------------------------------------------------------------------------------------

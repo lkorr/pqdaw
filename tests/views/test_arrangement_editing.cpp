@@ -19,7 +19,9 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/arrangement/automation.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/mixer/mixer.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
 #include "../ui/golden_check.h"
@@ -173,6 +175,138 @@ TEST_CASE("arrangement editing: click selects and shows the clip; Shift adds, Ct
   CHECK(f.arr->selection().clips.empty());
   CHECK(f.arr->selection().tracks == std::vector<doc::TrackId>{f.track("Piano").id});
   CHECK(f.history() == h0);  // selection is not undoable (Q15)
+}
+
+// ---- T3.x-fix-edit (M3 review L19) --------------------------------------------------------------------------
+
+TEST_CASE("arrangement editing: window focus loss cancels a clip drag and a volume drag; nothing recorded, undo usable") {
+  Fixture f;
+  const doc::ClipRef bassB = f.clip("Bass", 1);
+  const doc::Snapshot before = f.ctx.doc();
+  const size_t h0 = f.history();
+  // A clip move in progress, then the window loses focus (alt-tab).
+  const Vec2 from = f.title(bassB, 5000);
+  f.d.move(from);
+  f.d.down(from);
+  f.d.move({from.x + 120.0f, from.y});
+  REQUIRE(f.arr->dragging());
+  f.shell->cancelInteraction();
+  CHECK_FALSE(f.arr->dragging());
+  CHECK(f.d.tree().captured() == nullptr);
+  f.d.move({from.x + 200.0f, from.y});  // the pointer comes back with the button still down: nothing follows it
+  f.d.up({from.x + 200.0f, from.y});
+  CHECK(f.ctx.doc() == before);
+  CHECK(f.history() == h0);
+  // A volume drag (a document gesture): cancelled, the gesture is gone, undo works again.
+  TrackHeader* h = f.arr->header(f.track("Bass").id);
+  REQUIRE(h != nullptr);
+  auto& strip = static_cast<MixerStrip&>(h->mixerSection().child(0));
+  const IRect vb = strip.volume()->rect();
+  const Vec2 c{static_cast<float>(vb.x + vb.w / 2), static_cast<float>(vb.y + vb.h / 2)};
+  const float vol0 = f.track("Bass").mixer.volumeDb;
+  const double box0 = strip.volume()->value();  // the box's own units (fader position)
+  f.d.move(c);
+  f.d.down(c);
+  f.d.move({c.x, c.y - 25.0f});
+  REQUIRE(f.ctx.store().inGesture());
+  CHECK(f.track("Bass").mixer.volumeDb != vol0);
+  f.shell->cancelInteraction();
+  CHECK_FALSE(f.ctx.store().inGesture());
+  CHECK(f.track("Bass").mixer.volumeDb == vol0);
+  CHECK(strip.volume()->value() == doctest::Approx(box0));
+  f.d.up({c.x, c.y - 25.0f});
+  CHECK(f.ctx.doc() == before);
+  CHECK(f.history() == h0);
+  // Undo is not blocked by a dangling gesture.
+  REQUIRE(f.ctx.store().dispatch(doc::SetTrackPan{f.track("Bass").id, 0.3f}).ok());
+  CHECK(f.ctx.undo());
+}
+
+TEST_CASE("arrangement editing: capture loss cancels an automation drag; Esc during a range drag restores the selection") {
+  Fixture f;
+  const doc::TrackId bass = f.track("Bass").id;
+  ArrangementAutomation& au = f.arr->automation();
+  au.showLanes(bass, true);
+  f.d.tree().layoutNow();
+  f.d.step();
+  const auto band = au.band(bass, doc::ParamRef::track(doc::ParamKind::TrackVolume, bass), false);
+  REQUIRE(band.has_value());
+  const doc::Snapshot before = f.ctx.doc();
+  const size_t h0 = f.history();
+  // A press on the (unautomated) line starts a breakpoint drag; the capture ends without a release.
+  const Vec2 p{f.arr->xOfTick(2.0 * static_cast<double>(kBar)), au.yOfValue(*band, f.track("Bass").mixer.volumeDb)};
+  f.d.move(p);
+  f.d.down(p);
+  f.d.move({p.x + 30.0f, p.y - 10.0f});
+  REQUIRE(au.dragging());
+  f.d.tree().releaseCapture();
+  CHECK_FALSE(au.dragging());  // before T3.x-fix-edit the drag kept following the pointer
+  f.d.move({p.x + 60.0f, p.y - 15.0f});
+  f.d.up({p.x + 60.0f, p.y - 15.0f});
+  CHECK(f.ctx.doc() == before);
+  CHECK(f.history() == h0);
+
+  // A selected clip, then a range drag in an empty lane cancelled by Esc: the clip selection comes back.
+  const doc::ClipRef bassA = f.clip("Bass", 0);
+  f.d.click(f.title(bassA, 2000));
+  REQUIRE(f.selected(bassA));
+  const ArrangementView::Selection sel0 = f.arr->selection();
+  const Vec2 a = f.lane("Strings", kBar / 2), b = f.lane("Strings", 3 * kBar);  // empty lane space
+  f.d.move(a);
+  f.d.down(a);
+  f.d.move({(a.x + b.x) / 2, (a.y + b.y) / 2});
+  f.d.move(b);
+  REQUIRE(f.arr->selection().range);
+  CHECK(f.d.press("Escape") == KeyResult::Widget);
+  f.d.up(b);
+  CHECK(f.selected(bassA));
+  CHECK_FALSE(f.arr->selection().range);
+  CHECK(f.arr->selection().clips.size() == sel0.clips.size());
+}
+
+TEST_CASE("arrangement editing: view-state changes (fold, track and lane heights, lane visibility) mark the project dirty") {
+  Fixture f;
+  REQUIRE_FALSE(f.ctx.dirty());
+  uint32_t projectBits = 0;
+  auto sub = f.ctx.observe([&](uint32_t bits) { projectBits |= bits & view_change::kProject; });
+  f.arr->setTrackHeight(f.track("Bass").id, 90.0f);
+  CHECK(f.ctx.dirty());
+  CHECK(projectBits != 0);
+  // Saving cleans it; a fold makes it dirty again.
+  const std::string dir = views::test::tempDir("viewstate_dirty");
+  REQUIRE(f.ctx.saveProjectAs(dir).ok());
+  CHECK_FALSE(f.ctx.dirty());
+  const doc::Track* group = nullptr;
+  doc::forEachTrack(*f.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (!group && t.kind == doc::TrackKind::Group) group = &t;
+  });
+  REQUIRE(group != nullptr);
+  f.arr->toggleFold(group->id);
+  CHECK(f.ctx.dirty());
+  REQUIRE(f.ctx.saveProject().ok());
+  CHECK_FALSE(f.ctx.dirty());
+  // An automation lane's height (view state once the lane exists) and its visibility.
+  const doc::TrackId bass = f.track("Bass").id;
+  ArrangementAutomation& au = f.arr->automation();
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, bass);
+  doc::AutomationLane lane;
+  lane.id = f.ctx.store().ids().lane();
+  lane.param = vol;
+  doc::Breakpoint bp;
+  bp.tick = kBar;
+  bp.value = -6.0f;
+  bp.id = f.ctx.store().ids().breakpoint();
+  lane.points.push_back(bp);
+  REQUIRE(f.ctx.store().dispatch(doc::AddAutomationLane{bass, std::make_shared<const doc::AutomationLane>(lane)}).ok());
+  REQUIRE(f.ctx.saveProject().ok());
+  CHECK_FALSE(f.ctx.dirty());
+  au.showLanes(bass, true);
+  au.setLaneHeight(bass, vol, 80.0f);
+  CHECK(f.ctx.dirty());
+  REQUIRE(f.ctx.saveProject().ok());
+  CHECK_FALSE(f.ctx.dirty());
+  au.hideLane(bass, 0);
+  CHECK(f.ctx.dirty());
 }
 
 TEST_CASE("arrangement editing: drag-move with snap on a 7-tuplet grid lands on exact ticks; 60 frames = one undo step") {

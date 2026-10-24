@@ -637,6 +637,12 @@ void UiTree::removeObserver(TreeObserver* o) noexcept {
   observers_.erase(std::remove(observers_.begin(), observers_.end(), o), observers_.end());
 }
 
+void UiTree::cancelInteraction() {
+  if (!captured_) return;
+  captured_->onInteractionCancelled();
+  releaseCapture();
+}
+
 void UiTree::releaseCapture() {
   if (!captured_) return;
   Widget* c = captured_;

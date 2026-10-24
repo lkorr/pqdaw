@@ -112,13 +112,21 @@ void ArrangementAutomation::lanesFor(const doc::Project& p, const doc::Track& t,
     if (paramValid(p, r) && std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
 }
 
+// A lane's LaneView::visible (view state saved with the project): marks the project dirty when it changes.
+void ArrangementAutomation::setLaneVisible(doc::LaneId lane, bool visible) {
+  doc::LaneView& v = ctx_.store().view().lanes[lane];
+  if (v.visible == visible) return;
+  v.visible = visible;
+  ctx_.viewStateChanged();
+}
+
 void ArrangementAutomation::setLaneParam(doc::TrackId t, size_t index, const doc::ParamRef& p) {
   TrackState& s = state(t);
   if (index >= s.lanes.size() || s.lanes[index] == p) return;
   const auto it = std::find(s.lanes.begin(), s.lanes.end(), p);
   if (it != s.lanes.end()) std::swap(*it, s.lanes[index]);
   else s.lanes[index] = p;
-  if (const LaneLookup l = view_.model().lane(p); l.lane) ctx_.store().view().lanes[l.lane->id].visible = true;
+  if (const LaneLookup l = view_.model().lane(p); l.lane) setLaneVisible(l.lane->id, true);
   view_.rowsChanged();
 }
 
@@ -142,7 +150,7 @@ bool ArrangementAutomation::addLane(doc::TrackId t) {
   }
   s.lanes.push_back(pick->param);
   s.shown = true;
-  if (const LaneLookup l = view_.model().lane(pick->param); l.lane) ctx_.store().view().lanes[l.lane->id].visible = true;
+  if (const LaneLookup l = view_.model().lane(pick->param); l.lane) setLaneVisible(l.lane->id, true);
   view_.rowsChanged();
   return true;
 }
@@ -153,7 +161,7 @@ void ArrangementAutomation::hideLane(doc::TrackId t, size_t index) {
   const std::vector<doc::ParamRef> shown = shownLanes(t);
   if (index >= shown.size()) return;
   const doc::ParamRef r = shown[index];
-  if (const LaneLookup l = view_.model().lane(r); l.lane) ctx_.store().view().lanes[l.lane->id].visible = false;
+  if (const LaneLookup l = view_.model().lane(r); l.lane) setLaneVisible(l.lane->id, false);
   std::erase(s.lanes, r);
   if (drag_.kind != DragKind::None && !drag_.band.overClips && drag_.band.param == r) cancelDrag();
   if (s.lanes.empty()) s.shown = false;
@@ -206,6 +214,7 @@ void ArrangementAutomation::setLaneHeight(doc::TrackId t, const doc::ParamRef& p
   if (h == laneHeight(t, p)) return;
   if (const LaneLookup l = view_.model().lane(p); l.lane) {
     ctx_.store().view().lanes[l.lane->id].height = static_cast<int32_t>(h);
+    ctx_.viewStateChanged();
   } else {
     TrackState& s = state(t);
     auto it = std::find_if(s.heights.begin(), s.heights.end(), [&](const auto& e) { return e.first == p; });
@@ -452,6 +461,12 @@ void ArrangementAutomation::cancelDrag() {
   drag_ = {};
   readoutText_.clear();
   if (created) clearSelection();
+}
+
+void ArrangementAutomation::abortDrag() {
+  const bool range = drag_.kind == DragKind::Range;
+  cancelDrag();
+  if (range) clearSelection();
 }
 
 bool ArrangementAutomation::pointer(const PointerEvent& e) {

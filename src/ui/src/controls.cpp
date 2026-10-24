@@ -327,6 +327,7 @@ void ValueControl::userSet(double v) {
   if (v == value_) return;
   if (!gesture_) {
     gesture_ = true;
+    gestureStart_ = value_;
     if (onGestureBegin) onGestureBegin();
   }
   value_ = v;
@@ -368,9 +369,33 @@ void ValueControl::dragEnd() {
 
 void ValueControl::onCaptureLost() { dragEnd(); }
 
+bool ValueControl::cancelGesture() {
+  if (!dragging_ && !gesture_) return false;
+  const bool hadGesture = gesture_;
+  if (dragging_) {
+    dragging_ = false;
+    setPressed(false);
+  }
+  gesture_ = false;
+  if (hadGesture && value_ != gestureStart_) {
+    value_ = gestureStart_;
+    refreshText();
+    markDirty();
+    if (!onGestureCancel && onChange) onChange(value_);
+  }
+  if (hadGesture) {
+    if (onGestureCancel) onGestureCancel();
+    else if (onGestureEnd) onGestureEnd();
+  }
+  // The button is still down: the rest of this press does nothing.
+  if (captured() && tree()) tree()->releaseCapture();
+  return true;
+}
+
 bool ValueControl::onKey(const KeyEvent& e) {
   if (!e.down) return false;
   const Mods chord = e.mods & mod::kChordMask;
+  if (e.key == key::kEscape && chord == mod::kNone && (dragging_ || gesture_)) return cancelGesture();
   if ((e.key == key::kDelete || e.key == key::kBackspace) && chord == mod::kNone) {
     userSet(spec_.def);
     endGesture();

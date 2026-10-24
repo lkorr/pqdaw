@@ -113,6 +113,7 @@ void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
   }
   s_.setInsertTick(g.snapping() ? g.snap(t) : t);
   d.kind = DragKind::Rubber;
+  d.pressSelection = s_.selection();
   d.additive = (e.mods & (mod::kShift | mod::kCtrl)) != 0;
   if (!d.additive) s_.clearSelection();
   d.base = s_.selection();
@@ -256,14 +257,14 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
 
 bool NoteAreaWidget::onKey(const KeyEvent& e) {
   if (e.down && e.key == key::kEscape && s_.drag.kind != DragKind::None) {
-    s_.cancelDrag();
+    s_.abortDrag();
     if (tree() && tree()->captured() == this) tree()->releaseCapture();
     return true;
   }
   return false;
 }
 
-void NoteAreaWidget::onCaptureLost() { s_.cancelDrag(); }
+void NoteAreaWidget::onCaptureLost() { s_.abortDrag(); }
 
 // --- keys -----------------------------------------------------------------------------------------------
 
@@ -542,7 +543,17 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
                              "taken (as in the MOS wheel). Releasing commits it to this clip (one undo step).");
   gen_->onGestureBegin = [this] { s_.beginGeneratorMorph(); };
   gen_->onChange = [this](double v) { s_.morphGenerator(v); };
-  gen_->onGestureEnd = [this] { s_.endGeneratorMorph(true); };
+  // T3.x-fix-edit (M3 review M12b, Q92.6): release commits and hands the keys back to the notes (Up / Down then
+  // transpose notes instead of nudging the generator by 0.1 ¢ per key, each a structural SetClipTuning); Esc during
+  // the drag restores the document's tuning and records nothing.
+  gen_->onGestureEnd = [this] {
+    s_.endGeneratorMorph(true);
+    if (s_.noteArea && tree() && gen_->focused()) tree()->setFocus(s_.noteArea);
+  };
+  gen_->onGestureCancel = [this] {
+    s_.endGeneratorMorph(false);
+    if (s_.noteArea && tree() && gen_->focused()) tree()->setFocus(s_.noteArea);
+  };
   auto& spacer = add<Widget>();
   spacer.setHeight(Length::flex(1));
   loop_ = &add<Toggle>("loop", "Loop", ToggleStyle::Accent);
@@ -572,10 +583,13 @@ void ClipBoxPanel::refresh() {
   }
   if (mos && !gen_->inGesture()) {
     const tuning::MosParams& p = mos->params();
-    if (gen_->spec().max != p.period) {
+    // The default (Delete, double-click reset) is the clip's committed generator, not a fixed 700 ¢: in a period-600
+    // MOS 700 ¢ is outside the period's MOS range altogether (M3 review M12b).
+    if (gen_->spec().max != p.period || gen_->spec().def != p.generator) {
       ValueSpec sp = gen_->spec();
       sp.max = p.period;
       sp.dragPixels = 2.0 * p.period;
+      sp.def = p.generator;
       gen_->setSpec(sp);
     }
     gen_->setValue(p.generator);

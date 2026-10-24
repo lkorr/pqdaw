@@ -102,6 +102,13 @@ Widget& Shell::slot(ShellSlot s) const noexcept {
   return *impl_->trackArea;
 }
 
+void Shell::cancelInteraction() {
+  tree_.cancelInteraction();
+  // Whatever still holds a document gesture open (a controller whose widget had no capture) is cancelled too: undo
+  // must not stay disabled behind an abandoned drag.
+  if (ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
+}
+
 const std::string& Shell::infoTitle() const noexcept { return impl_->info->title(); }
 const std::string& Shell::infoBody() const noexcept { return impl_->info->body(); }
 const std::string& Shell::positionText() const noexcept { return impl_->controlBar->positionText(); }

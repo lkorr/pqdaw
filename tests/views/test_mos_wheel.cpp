@@ -613,20 +613,22 @@ TEST_CASE("mos wheel: reopening a MOS tuning shows it in the chart and the circl
 
 namespace {
 
-void checkGolden(const char* scene) {
+// `scale` ≠ 1: the golden is <scene>-<scale>x.png (T3.x-fix-edit: HiDPI goldens, M3 review L20).
+void checkGolden(const char* scene, float scale = 1.0f, const char* suffix = "") {
   uint32_t w = 0, h = 0;
   viewSceneDefaultSize(scene, w, h);
   GpuOptions o;
   o.validation = true;
-  auto img = renderViewScene(scene, {}, w, h, {}, o);
+  auto img = renderViewScene(scene, {}, w, h, UiScale(scale), o);
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
-  const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + scene + ".png";
+  const std::string name = std::string(scene) + suffix;
+  const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + name + ".png";
   auto ref = readPng(path);
-  if (!ref) (void)writePng(std::string(scene) + ".actual.png", *img);
+  if (!ref) (void)writePng(name + ".actual.png", *img);
   REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
   ImageDiff d;
-  CHECK(pq::ui::test::matchesGolden(scene, *img, *ref, true, &d));
-  MESSAGE(std::string(scene) << ": " << pq::ui::test::describe(d));
+  CHECK(pq::ui::test::matchesGolden(name, *img, *ref, true, &d));
+  MESSAGE(name << ": " << pq::ui::test::describe(d));
 }
 
 }  // namespace
@@ -636,3 +638,5 @@ TEST_CASE("render: mos-circle-5L2s (18\\31, Lydian root) matches the golden imag
 TEST_CASE("render: mos-circle-modmos (7\\12 Aeolian, raised 7th) matches the golden image") { checkGolden("mos-circle-modmos"); }
 
 TEST_CASE("render: mos-wheel-popover (clip wheel over the roll preview) matches the golden image") { checkGolden("mos-wheel-popover"); }
+
+TEST_CASE("render: mos-wheel-popover at 150 % UI scale matches the golden image") { checkGolden("mos-wheel-popover", 1.5f, "-1.5x"); }

@@ -364,7 +364,12 @@ bool LaneCanvas::onPointer(const PointerEvent& e) {
   return false;  // plain wheel: the track scroll view scrolls vertically
 }
 
-void LaneCanvas::onCaptureLost() { view_.editor().cancelDrag(); }
+// Capture lost without a release (a popup, the view hidden, the window losing focus): both editors drop their drag
+// (T3.x-fix-edit: the automation drag used to keep following the pointer, M3 review L19).
+void LaneCanvas::onCaptureLost() {
+  view_.editor().abortDrag();
+  view_.automation().abortDrag();
+}
 
 namespace {
 
@@ -923,6 +928,8 @@ void BottomTracks::paint(PaintContext& ctx) {
 }
 
 BottomLanes::BottomLanes(ArrangementView& view) : Widget("lanes"), view_(view) {}
+
+void BottomLanes::onCaptureLost() { view_.automation().abortDrag(); }
 
 bool BottomLanes::onPointer(const PointerEvent& e) {
   if (e.type != PointerType::Wheel) return view_.automation().pointer(e);  // T3.15: automation mode over the rows

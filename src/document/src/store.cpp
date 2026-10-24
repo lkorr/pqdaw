@@ -118,26 +118,40 @@ void DocumentStore::reset(Snapshot s) {
 }
 
 ListenerId DocumentStore::subscribe(Listener l) {
-  std::erase_if(listeners_, [](const auto& p) { return !p.second; });
   const ListenerId id = nextListener_++;
-  listeners_.emplace_back(id, std::move(l));
+  listeners_.push_back({id, std::make_unique<Listener>(std::move(l)), true});
   return id;
 }
 
 void DocumentStore::unsubscribe(ListenerId id) noexcept {
-  for (auto& [lid, fn] : listeners_)
-    if (lid == id) fn = nullptr;  // compacted on the next subscribe (safe during notification)
+  for (size_t i = 0; i < listeners_.size(); ++i)
+    if (listeners_[i].id == id) {
+      if (notifyDepth_ > 0) {  // a notification may be inside this listener or about to reach an index past it
+        listeners_[i].live = false;
+        removedWhileNotifying_ = true;
+      } else {
+        listeners_.erase(listeners_.begin() + static_cast<std::ptrdiff_t>(i));
+      }
+      return;
+    }
 }
 
 void DocumentStore::notify(StoreEventKind kind, const Snapshot& before, const Snapshot& after,
                            const ChangeSet& changes) {
   if (listeners_.empty()) return;
   const StoreEvent ev{kind, before, after, changes};
+  // Index loop over a vector that may grow (a listener subscribing another: it hears this event too, as before) or
+  // have entries flagged dead; nothing is erased until the outermost notification ends.
+  ++notifyDepth_;
   for (size_t i = 0; i < listeners_.size(); ++i)
-    if (listeners_[i].second) {
-      Listener fn = listeners_[i].second;  // a copy: the listener may subscribe (reallocating the vector)
-      fn(ev);
+    if (listeners_[i].live) {
+      Listener* fn = listeners_[i].fn.get();  // stable while the vector reallocates
+      (*fn)(ev);
     }
+  if (--notifyDepth_ == 0 && removedWhileNotifying_) {
+    removedWhileNotifying_ = false;
+    std::erase_if(listeners_, [](const Entry& e) { return !e.live; });
+  }
 }
 
 }  // namespace pq::doc

@@ -98,6 +98,7 @@ struct DragState {
   int32_t zoomRowPx = 0;
   double pressScrollTick = 0.0;
   std::vector<uint32_t> base;  // Rubber: the selection the band adds to
+  std::vector<uint32_t> pressSelection;  // Rubber: the selection before the press (abortDrag restores it)
   // Damage tracking (Move / Copy / Resize / Velocity / Draw): the dragged notes as they were at the press, and the
   // screen box the preview covered last frame. Off for large selections (the whole area repaints).
   bool trackDamage = false;
@@ -198,6 +199,8 @@ public:
   void scrollByPx(float dx, float dy);
   void setRowHeight(int32_t logicalPx);   // rebuilds the rows, keeps the centre pitch
   void centreOnDegree(int64_t degree);
+  // The degree a fresh view centres on: the middle of the densest view-tall band of notes (M3 review M14).
+  int64_t densestDegree(int32_t viewHeightPx) const;
   // Fit the played region horizontally and centre the notes vertically (a new clip in the view).
   void fitToClip();
   // After the parts were placed: rows follow a UI-scale change, the scroll stays in range, a new clip is fitted.
@@ -279,6 +282,9 @@ public:
   void damageDrag();
   ui::IRect screenRectOf(Ticks start, Ticks length, const tuning::PitchId& pitch) const;
   void cancelDrag();
+  // The user abandoned the drag (Esc, capture or window focus lost): cancelDrag, and a rubber band puts back the
+  // selection from before its press (T3.x-fix-edit, M3 review L19).
+  void abortDrag();
   // Preview geometry of a note while a Move / Copy / Resize drag runs (nullopt: not part of the drag).
   struct Preview {
     Ticks start, length;

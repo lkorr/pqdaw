@@ -152,8 +152,17 @@ void ViewContext::syncLoop() {
 
 // --- project I/O ----------------------------------------------------------------------------------------
 
+void ViewContext::viewStateChanged() {
+  viewStateDirty_ = true;
+  if (!lastDirty_) {
+    lastDirty_ = true;
+    notify(view_change::kProject);
+  }
+}
+
 void ViewContext::afterLoad() {
   saved_ = store_.current();
+  viewStateDirty_ = false;
   clearTuningPreview();
   if (detailClip_.clip.valid() || detailClip_.track.valid()) {
     detailClip_ = {};
@@ -201,6 +210,7 @@ Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
   const bool renamed = projectDir_ != dirUtf8;
   projectDir_ = std::string(dirUtf8);
   saved_ = store_.current();
+  viewStateDirty_ = false;
   const bool wasDirty = lastDirty_;
   lastDirty_ = false;
   if (renamed || wasDirty) notify(view_change::kProject);

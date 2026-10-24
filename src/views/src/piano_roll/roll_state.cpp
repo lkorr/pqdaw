@@ -521,9 +521,50 @@ void RollState::fitToClip() {
   const Ticks span = std::max<Ticks>(regionEnd() - start, kPpq);
   pxPerTick_ = std::clamp(static_cast<double>(a.w) / static_cast<double>(span), kMinPxPerTick, kMaxPxPerTick);
   scrollTick_ = static_cast<double>(start);
-  if (!used_.empty()) centreOnDegree((used_.front() + used_.back()) / 2);
-  else centreOnDegree(0);
+  centreOnDegree(densestDegree(a.h));
   reportResolvedGrid();
+}
+
+// The degree to centre a fresh view on (T3.x-fix-edit, M3 review M14): the middle of the band one view tall that holds
+// the most notes. The middle of the whole pitch extent (Q77.5 before) showed empty equaves, and no note at all, as soon
+// as one note sat far away (12 equaves up, −9000 ¢). Notes count once each; ties go to the band nearest the median.
+int64_t RollState::densestDegree(int32_t viewHeightPx) const {
+  if (!clip_ || clip_->notes.empty()) return 0;
+  const int32_t n = std::max(1, degreesPerEquave(tuning_));
+  std::vector<int64_t> pos;
+  pos.reserve(clip_->notes.size());
+  for (const doc::Note& note : clip_->notes) {
+    if (note.pitch.kind() == tuning::PitchKind::Degree) pos.push_back(static_cast<int64_t>(note.pitch.equave()) * n + note.pitch.degree());
+    else if (const std::optional<double> c = centsOf(note.pitch)) pos.push_back(nearestDegree(*c));
+  }
+  if (pos.empty()) return 0;
+  std::sort(pos.begin(), pos.end());
+  // Degrees one view spans: an equave is about 240 logical px in the default fit (rows and lanes alike).
+  const float scale = (noteArea && noteArea->tree()) ? noteArea->tree()->scale() : 1.0f;
+  const double equavePx = 240.0 * static_cast<double>(scale);
+  const auto span = std::max<int64_t>(1, static_cast<int64_t>(static_cast<double>(n) * static_cast<double>(viewHeightPx) / equavePx) - 1);
+  // The middle of the Degree notes' extent (Q77.5) while it shows at least a quarter of the notes: the usual clip,
+  // unchanged.
+  const int64_t whole = used_.empty() ? (pos.front() + pos.back()) / 2 : (used_.front() + used_.back()) / 2;
+  const auto lo = std::lower_bound(pos.begin(), pos.end(), whole - span / 2);
+  const auto hi = std::upper_bound(pos.begin(), pos.end(), whole + span / 2);
+  if (static_cast<size_t>(hi - lo) * 4 >= pos.size()) return whole;
+  const int64_t median = pos[pos.size() / 2];
+  size_t best = 0, bestEnd = 0, j = 0;
+  int64_t bestDist = INT64_MAX;
+  for (size_t i = 0; i < pos.size(); ++i) {
+    if (i > 0 && pos[i] == pos[i - 1]) continue;  // windows start at a note
+    while (j < pos.size() && pos[j] - pos[i] <= span) ++j;
+    const size_t count = j - i;
+    const int64_t mid = (pos[i] + pos[j - 1]) / 2;
+    const int64_t dist = mid > median ? mid - median : median - mid;
+    if (count > bestEnd - best || (count == bestEnd - best && dist < bestDist)) {
+      best = i;
+      bestEnd = j;
+      bestDist = dist;
+    }
+  }
+  return (pos[best] + pos[bestEnd - 1]) / 2;
 }
 
 void RollState::afterLayout() {
@@ -1024,6 +1065,9 @@ void RollState::commitDrag() {
       }
       break;
     case DragKind::Copy: {
+      // A copy dropped back where it started (past the click slop, snapped to offset 0) would stack exact duplicates
+      // on the originals: invisible and double-triggered. Nothing to do, as in the arrangement (M3 review M10).
+      if (d.dt == 0 && d.steps == 0) break;
       std::vector<doc::Note> copies;
       for (const doc::Note& n : clip_->notes) {
         if (!selected(n.id)) continue;
@@ -1081,6 +1125,16 @@ void RollState::commitDrag() {
     default: break;
   }
   markAllDirty();
+}
+
+void RollState::abortDrag() {
+  if (drag.kind == DragKind::Rubber) {
+    std::vector<uint32_t> keep = std::move(drag.pressSelection);
+    cancelDrag();
+    select(std::move(keep));
+    return;
+  }
+  cancelDrag();
 }
 
 void RollState::cancelDrag() {

@@ -268,6 +268,8 @@ public:
   // ---- drag state (tests, the view) ----------------------------------------------------------------------------
   bool dragging() const noexcept;
   void cancelDrag();
+  // Esc / capture or focus lost: cancelDrag, and a time-selection drag leaves no selection (not the partial band).
+  void abortDrag();
   // The value readout shown next to a dragged breakpoint (empty when none).
   const std::string& readout() const noexcept { return readoutText_; }
 
@@ -361,6 +363,7 @@ private:
   template <class Make>
   bool editLane(const AutomationBand& b, std::string_view what, Make&& make);
   std::span<const doc::Breakpoint> pointsOf(const AutomationBand& b) const noexcept;
+  void setLaneVisible(doc::LaneId lane, bool visible);
   void paintBand(ui::PaintContext& ctx, const AutomationBand& b, const ui::IRect& clip);
   // The line of an automated band over `vis` without tiles: the feathered ribbon, or per-column spans when dense.
   void paintEnvelopeDirect(ui::PaintContext& ctx, const AutomationBand& b, std::span<const doc::Breakpoint> pts, double fallback,

@@ -157,8 +157,12 @@ public:
   Status saveProjectAs(std::string_view dirUtf8);
   const std::string& projectDir() const noexcept { return projectDir_; }
   std::string projectName() const { return projectNameOf(projectDir_); }
-  // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again).
-  bool dirty() const noexcept { return store_.current() != saved_; }
+  // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again), or
+  // view state that the project file keeps (folds, track and lane heights, lane visibility) changed since.
+  bool dirty() const noexcept { return store_.current() != saved_ || viewStateDirty_; }
+  // Views call this after changing the store's ViewState (it is saved with the project but not undoable, so the
+  // snapshot comparison cannot see it: T3.x-fix-edit, M3 review L19).
+  void viewStateChanged();
 
   // --- dialogs (the action layer) ---
   void setFileDialogs(FileDialogs* d) noexcept { dialogs_ = d; }
@@ -299,6 +303,7 @@ private:
   doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)
   std::string projectDir_;
   bool lastDirty_ = false;
+  bool viewStateDirty_ = false;  // ViewState edited since the last save / load
   doc::ListenerId storeListener_ = 0;
 
   FileDialogs* dialogs_ = nullptr;

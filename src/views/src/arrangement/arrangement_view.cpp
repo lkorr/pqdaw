@@ -224,12 +224,12 @@ IRect ArrangementView::clipRect(const doc::ClipRef& ref) const noexcept {
 
 bool ArrangementView::onKey(const KeyEvent& e) {
   if (e.down && e.key == key::kEscape && automation_->dragging()) {
-    automation_->cancelDrag();
+    automation_->abortDrag();
     if (tree() && tree()->captured()) tree()->releaseCapture();
     return true;
   }
   if (e.down && e.key == key::kEscape && editor_->dragging()) {
-    editor_->cancelDrag();
+    editor_->abortDrag();
     if (tree() && tree()->captured()) tree()->releaseCapture();
     return true;
   }
@@ -460,6 +460,7 @@ void ArrangementView::setTrackHeight(doc::TrackId id, float logicalPx) {
   doc::TrackView& v = ctx_.store().view().tracks[id];
   if (v.height == h) return;
   v.height = h;
+  ctx_.viewStateChanged();
   rebuildRows();
 }
 
@@ -477,6 +478,7 @@ float ArrangementView::trackHeight(doc::TrackId id) const noexcept {
 
 void ArrangementView::toggleFold(doc::TrackId id) {
   (void)doc::ops::toggleFolded(ctx_.store().view(), id);
+  ctx_.viewStateChanged();
   rebuildRows();
 }
 

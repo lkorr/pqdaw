@@ -46,6 +46,12 @@ void MixerController::endGesture() {
   (void)ctx.store().commitGesture();
 }
 
+void MixerController::cancelGesture() {
+  if (!gesture_) return;
+  gesture_ = false;
+  (void)ctx.store().cancelGesture();  // the document goes back to the gesture's base: no history entry
+}
+
 void MixerController::activatorClicked(doc::TrackId id) {
   std::vector<doc::TrackId> tracks;
   if (selectedTracks) tracks = selectedTracks();
@@ -217,6 +223,7 @@ void MixerStrip::build(doc::TrackKind kind) {
   auto valueHooks = [ctl](ValueControl& v, const char* label) {
     v.onGestureBegin = [ctl, label] { ctl->beginGesture(label); };
     v.onGestureEnd = [ctl] { ctl->endGesture(); };
+    v.onGestureCancel = [ctl] { ctl->cancelGesture(); };
   };
 
   volume_ = &add<LiveBox>("volume", LiveBox::Kind::Volume);
@@ -318,6 +325,7 @@ void MixerStrip::syncSends(const doc::Project& p, const doc::Track& t) {
         const doc::TrackId target = r->id;
         box.onGestureBegin = [ctl] { ctl->beginGesture("Send Level"); };
         box.onGestureEnd = [ctl] { ctl->endGesture(); };
+        box.onGestureCancel = [ctl] { ctl->cancelGesture(); };
         box.onChange = [this, ctl, target](double pos) {
           ctl->change(doc::SetSendLevel{id_, target, static_cast<float>(faderToVolume(pos))});
         };

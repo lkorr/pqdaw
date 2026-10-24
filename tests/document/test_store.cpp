@@ -142,6 +142,61 @@ TEST_CASE("store: listeners get before/after and can unsubscribe") {
   CHECK(calls == 2);
 }
 
+TEST_CASE("store: subscribing and unsubscribing during a notification never skips a listener (M3 review M11)") {
+  // Before T3.x-fix-edit, subscribe() compacted the listener list (erasing unsubscribed slots) even while notify()
+  // was iterating it by index, so the listener after an erased slot was skipped for that event.
+  Fixture f;
+  std::vector<int> heard(4, 0);
+  int lateHeard = 0;
+  ListenerId late = 0;
+  ListenerId ids[4] = {};
+  ids[0] = f.store.subscribe([&](const StoreEvent&) {
+    ++heard[0];
+    // Remove the next listener and subscribe a new one, from inside the notification.
+    f.store.unsubscribe(ids[1]);
+    if (!late) late = f.store.subscribe([&](const StoreEvent&) { ++lateHeard; });
+  });
+  ids[1] = f.store.subscribe([&](const StoreEvent&) { ++heard[1]; });
+  ids[2] = f.store.subscribe([&](const StoreEvent&) { ++heard[2]; });
+  // A listener that unsubscribes itself while it runs (its callable must stay alive until it returns).
+  ids[3] = f.store.subscribe([&](const StoreEvent&) {
+    ++heard[3];
+    f.store.unsubscribe(ids[3]);
+    ++heard[3];
+  });
+  REQUIRE(f.store.dispatch(SetTrackVolume{f.lead, -2.0f}).ok());
+  CHECK(heard[0] == 1);
+  CHECK(heard[1] == 0);  // unsubscribed before its turn
+  CHECK(heard[2] == 1);  // not skipped
+  CHECK(heard[3] == 2);
+  CHECK(lateHeard == 1);  // subscribed during the event: hears it (appended)
+  REQUIRE(f.store.dispatch(SetTrackVolume{f.lead, -3.0f}).ok());
+  CHECK(heard[0] == 2);
+  CHECK(heard[1] == 0);
+  CHECK(heard[2] == 2);
+  CHECK(heard[3] == 2);
+  CHECK(lateHeard == 2);
+  // A nested notification (a listener dispatching) keeps entries in place until the outer one ends.
+  int nested = 0;
+  bool once = false;
+  const ListenerId n = f.store.subscribe([&](const StoreEvent&) {
+    ++nested;
+    if (!once) {
+      once = true;
+      REQUIRE(f.store.dispatch(SetTrackPan{f.lead, 0.1f}).ok());
+    }
+  });
+  REQUIRE(f.store.dispatch(SetTrackVolume{f.lead, -4.0f}).ok());
+  CHECK(nested == 2);
+  CHECK(heard[2] == 4);
+  f.store.unsubscribe(n);
+  f.store.unsubscribe(ids[0]);
+  f.store.unsubscribe(ids[2]);
+  f.store.unsubscribe(late);
+  REQUIRE(f.store.dispatch(SetTrackVolume{f.lead, -5.0f}).ok());
+  CHECK(heard[2] == 4);
+}
+
 TEST_CASE("store: reset loads a document, clears history and continues ids after it") {
   Fixture f;
   const Snapshot doc = f.store.current();

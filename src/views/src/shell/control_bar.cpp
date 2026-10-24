@@ -213,6 +213,10 @@ void ControlBar::bindGesture(ValueControl& c, const char* label, MakeCommand mak
     if (ctx_.store().inGesture()) (void)ctx_.store().commitGesture();
     refreshDocument();  // a value the document refused (clamped) snaps back
   };
+  c.onGestureCancel = [this] {  // Esc / window focus lost: nothing recorded
+    if (ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
+    refreshDocument();
+  };
 }
 
 ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {

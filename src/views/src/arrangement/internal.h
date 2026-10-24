@@ -225,6 +225,9 @@ public:
   // --- input (LaneCanvas forwards everything but the wheel) ---
   bool pointer(const ui::PointerEvent& e);
   void cancelDrag();
+  // The user abandoned the drag (Esc, capture or window focus lost: T3.x-fix-edit, M3 review L19): as cancelDrag, and
+  // a time-selection drag puts back the selection from before its press (not the partial band).
+  void abortDrag();
   void selectTrack(doc::TrackId id, ui::Mods mods);
 
   // --- paint queries ---
@@ -333,6 +336,7 @@ private:
   ArrangementView& view_;
   ViewContext& ctx_;
   ArrangementView::Selection sel_;
+  ArrangementView::Selection pressSel_;  // the selection when the current press began (abortDrag restores it)
   std::vector<uint32_t> ids_;       // selected clip ids, sorted
   std::vector<uint32_t> trackIds_;  // selected track ids, sorted
   Drag drag_;
@@ -359,6 +363,7 @@ public:
   explicit BottomLanes(ArrangementView& view);
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
+  void onCaptureLost() override;
 
 private:
   ArrangementView& view_;

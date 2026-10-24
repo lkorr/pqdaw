@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -114,8 +115,18 @@ private:
   ChangeSet step_;                   // scratch for each dispatch
   const ChangeSet* last_ = &empty_;  // what lastChanges() returns
   ChangeSet empty_;
-  std::vector<std::pair<ListenerId, Listener>> listeners_;
+  // Listeners live behind a pointer, so a call in progress survives the vector growing (a listener subscribing
+  // another) and the listener unsubscribing itself (only flagged; entries are erased when no notification is running,
+  // M3 review M11: compacting inside a notification shifted the running loop's index past a listener).
+  struct Entry {
+    ListenerId id;
+    std::unique_ptr<Listener> fn;
+    bool live = true;
+  };
+  std::vector<Entry> listeners_;
   ListenerId nextListener_ = 1;
+  uint32_t notifyDepth_ = 0;
+  bool removedWhileNotifying_ = false;
 };
 
 }  // namespace pq::doc

@@ -403,6 +403,44 @@ TEST_CASE("clip view: the clip box Generator box morphs on a drag and commits on
   CHECK(r.clip().tuning.privateDef->mos()->generator == doctest::Approx(g));
 }
 
+TEST_CASE("clip view: Generator box: Esc cancels the drag, Delete restores the committed value, the keys return to the notes (M12b)") {
+  Roll r("pianoroll-5L2s");
+  const char* path = "main/body/bottom/detail/clip/clip-view/clip-box/generator-row/generator";
+  auto* gen = dynamic_cast<DragBox*>(r.d.find(path));
+  REQUIRE(gen != nullptr);
+  const doc::Snapshot before = r.ctx.doc();
+  const size_t h0 = r.history();
+  const double g0 = gen->value();
+  // 1. Esc mid-drag: the preview goes, the document and history are unchanged, the box shows the old value.
+  const Vec2 c = r.d.center(path);
+  r.d.move(c);
+  r.d.down(c);
+  for (int i = 1; i <= 6; ++i) r.d.move({c.x, c.y - 5.0f * static_cast<float>(i)});
+  REQUIRE(r.ctx.tuningPreview().has_value());
+  CHECK(r.d.press("Escape") == KeyResult::Widget);
+  CHECK_FALSE(r.ctx.tuningPreview().has_value());
+  r.d.move({c.x, c.y - 60.0f});  // the rest of the press does nothing
+  r.d.up({c.x, c.y - 60.0f});
+  CHECK(r.ctx.doc() == before);
+  CHECK(r.history() == h0);
+  CHECK(gen->value() == doctest::Approx(g0));
+  // 2. The default is the clip's committed generator (it was a fixed 700 ¢): Delete on the focused box is a no-op.
+  CHECK(gen->spec().def == doctest::Approx(g0));
+  r.d.tree().setFocus(gen);
+  r.d.press("Delete");
+  CHECK(r.history() == h0);
+  // 3. After a committed drag the keys go back to the note area: Up transposes notes, not the generator.
+  r.d.drag(c, {c.x, c.y - 20.0f}, 5);
+  CHECK(r.history() == h0 + 1);
+  const double g1 = r.clip().tuning.privateDef->mos()->generator;
+  const Widget* notes = r.d.find("main/body/bottom/detail/clip/clip-view/notes");
+  CHECK(r.d.tree().focus() == notes);
+  r.d.press("Ctrl+A");
+  r.d.press("Up");
+  CHECK(r.clip().tuning.privateDef->mos()->generator == doctest::Approx(g1));  // unchanged: the notes moved
+  CHECK(r.history() == h0 + 2);
+}
+
 // ---- goldens --------------------------------------------------------------------------------------------
 
 TEST_CASE("render: scale / MOS piano roll goldens (5L 2s prop, equi, near collapse, over 31edo; Scala)") {

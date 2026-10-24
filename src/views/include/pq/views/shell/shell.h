@@ -62,6 +62,11 @@ public:
   ViewContext& context() const noexcept { return ctx_; }
   ui::UiTree& tree() const noexcept { return tree_; }
 
+  // The window lost focus (SDL_EVENT_WINDOW_FOCUS_LOST; T3.x-fix-edit, M3 review L19): the drag under the pointer is
+  // cancelled (UiTree::cancelInteraction: clips, notes, breakpoints, value boxes) and a document gesture left open
+  // is cancelled, so an alt-tab never leaves undo disabled or a drag following the pointer.
+  void cancelInteraction();
+
   // The info view's current text and the control bar's position readout (tests).
   const std::string& infoTitle() const noexcept;
   const std::string& infoBody() const noexcept;

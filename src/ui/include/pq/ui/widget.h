@@ -277,6 +277,9 @@ public:
   virtual void onHoverChanged(bool /*hovered*/) {}
   virtual void onFocusChanged(bool /*focused*/) {}
   virtual void onCaptureLost() {}  // capture ended without a button release (widget removed, window lost focus)
+  // The user abandoned what the pointer was doing (the window lost focus: UiTree::cancelInteraction): drop any drag
+  // or value gesture without keeping it. Called on the captured widget before its onCaptureLost (T3.x-fix-edit).
+  virtual void onInteractionCancelled() {}
   virtual void onFrame(double /*now*/) {}
   virtual void onTimer(uint32_t /*id*/) {}
   // Virtualisation hook: the size of this widget's content when it is the content of a ScrollView with the
@@ -502,6 +505,9 @@ public:
   bool focusNext(bool backwards = false);
   // Ends a capture without a button release (calls onCaptureLost).
   void releaseCapture();
+  // The window lost focus mid-gesture (an alt-tab during a drag): the captured widget's onInteractionCancelled, then
+  // releaseCapture. Its drag ends without an edit (M3 review L19).
+  void cancelInteraction();
 
   // --- actions and keymaps ---
   // Uses `actions` and `keymap` for key routing (both must outlive the tree or be replaced). Resolves every

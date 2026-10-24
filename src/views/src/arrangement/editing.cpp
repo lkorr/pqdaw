@@ -345,6 +345,7 @@ bool Editor::pointer(const PointerEvent& e) {
 void Editor::press(const PointerEvent& e) {
   if (UiTree* t = view_.tree()) t->setFocus(&view_);
   if (drag_.kind != DragKind::None) cancelDrag();
+  pressSel_ = sel_;
   drag_ = {};
   drag_.press = e.pos;
   const Hit h = hitTest(e.pos);
@@ -617,6 +618,12 @@ void Editor::cancelDrag() {
   }
   double t0 = 0, t1 = 0;
   if (spanOf(sel_, t0, t1)) damageRows(sel_, t0, t1, false);  // the originals and the time overlay come back
+}
+
+void Editor::abortDrag() {
+  const bool range = drag_.kind == DragKind::Range;
+  cancelDrag();
+  if (range) setSelection(pressSel_, false);
 }
 
 void Editor::commitDrag() {
