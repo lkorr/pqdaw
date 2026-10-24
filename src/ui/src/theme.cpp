@@ -59,6 +59,13 @@ const ColorToken kColors[] = {
     PQ_COLOR(mosChart, edoLine), PQ_COLOR(mosChart, edoText), PQ_COLOR(mosChart, edoCents), PQ_COLOR(mosChart, edoHardness),
     PQ_COLOR(mosChart, marker), PQ_COLOR(mosChart, markerText), PQ_COLOR(mosChart, sizeText), PQ_COLOR(mosChart, bandText),
     PQ_COLOR(mosChart, bandSubText), PQ_COLOR(mosChart, bandTextDim), PQ_COLOR(mosChart, bandGrayed), PQ_COLOR(mosChart, bandActive),
+    PQ_COLOR(mosCircle, background), PQ_COLOR(mosCircle, ring), PQ_COLOR(mosCircle, spoke), PQ_COLOR(mosCircle, dot),
+    PQ_COLOR(mosCircle, dotEdge), PQ_COLOR(mosCircle, degreeText), PQ_COLOR(mosCircle, tonic), PQ_COLOR(mosCircle, altUp),
+    PQ_COLOR(mosCircle, altDown), PQ_COLOR(mosCircle, ji), PQ_COLOR(mosCircle, modmos), PQ_COLOR(mosCircle, info),
+    PQ_COLOR(mosCircle, modeName), PQ_COLOR(mosCircle, parent), PQ_COLOR(mosCircle, child), PQ_COLOR(mosCircle, dimText),
+    PQ_COLOR(mosCircle, sliderTrack), PQ_COLOR(mosCircle, sliderThumbEdge), PQ_COLOR(mosCircle, button),
+    PQ_COLOR(mosCircle, buttonBorder), PQ_COLOR(mosCircle, buttonText), PQ_COLOR(mosCircle, periodMark),
+    PQ_COLOR(mosCircle, octaveMark), PQ_COLOR(mosCircle, allIntervals), PQ_COLOR(mosCircle, guide),
 };
 #undef PQ_COLOR
 

@@ -11,6 +11,9 @@
 #include "pq/views/fake_transport.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/mos_wheel/mos_chart.h"
+#include "pq/views/mos_wheel/mos_circle.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
+#include "pq/document/edit_ops.h"
 
 namespace pq::views {
 
@@ -165,6 +168,81 @@ Status setupMosChartZoomed(Shell& shell) {
   return Ok{};
 }
 
+// T3.14: the MOS circle alone, filling the window (opened like the chart above). The selection comes from a chart
+// built off-tree (the circle takes the chart's MosSelection, as in the popover).
+MosCircle* openMosCircle(Shell& shell, tuning::MosKey key, double gen, int32_t rotation, std::vector<double> modmos) {
+  ui::OverlayLayer& layer = shell.overlay();
+  ui::UiTree* tree = layer.tree();
+  if (!tree) return nullptr;
+  MosChartConfig cfg;
+  cfg.maxEdo = 31;
+  MosChart chart("chart", cfg);
+  if (!chart.select(key, gen, rotation)) return nullptr;
+  auto circle = std::make_unique<MosCircle>("mos-circle", cfg);
+  circle->setSelection(chart.selection());
+  circle->setModmos(std::move(modmos));
+  const float sc = tree->scale();
+  circle->setSize(ui::Length::fixed(static_cast<float>(tree->width()) / sc), ui::Length::fixed(static_cast<float>(tree->height()) / sc));
+  ui::OverlayOptions o;
+  o.placement = ui::Placement::AtPoint;
+  o.dismissOnOutsideClick = false;
+  o.takeFocus = false;
+  auto& w = static_cast<MosCircle&>(layer.open(std::move(circle), std::move(o)));
+  tree->layoutNow();
+  return &w;
+}
+
+// T3.14: 5L 2s at 18\31 (meantone), mode rotation 0 (Lydian-side brightest root), the whole wheel.
+Status setupMosCircle5L2s(Shell& shell) {
+  if (!openMosCircle(shell, {5, 2}, 18.0 * 1200.0 / 31.0, 0, {}))
+    return Error{ErrorCode::NotFound, "mos-circle-5L2s: no overlay or no 5L 2s region", {}};
+  return Ok{};
+}
+
+// T3.14: 5L 2s at 7\12 in the Aeolian mode (rotation 2) with its 7th degree raised one chroma (harmonic minor:
+// the explorer's "#" degree, the green step pattern, the 300-cent step "M", the reset button).
+Status setupMosCircleModmos(Shell& shell) {
+  if (!openMosCircle(shell, {5, 2}, 700.0, 2, {0, 0, 0, 0, 0, 0, 1}))
+    return Error{ErrorCode::NotFound, "mos-circle-modmos: no overlay or no 5L 2s region", {}};
+  return Ok{};
+}
+
+// T3.14: a MIDI track with a 12-EDO melody in the clip view and the MOS wheel open for that clip (from the clip box's
+// tuning chip target), 5L 2s at 18\31 chosen: the roll behind shows the live preview (7 rows per octave).
+Status setupMosWheelPopover(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) -> std::optional<doc::ops::Edit> {
+    if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
+    return *e;
+  };
+  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Lead"));
+  if (!t) return Error{ErrorCode::Unknown, "mos-wheel-popover: createTrack failed", {}};
+  const auto c = run(doc::ops::insertEmptyClip(*store.current(), store.ids(), t->tracks[0], 0, 2 * kTicksPerWhole, "Melody"));
+  if (!c) return Error{ErrorCode::Unknown, "mos-wheel-popover: insertEmptyClip failed", {}};
+  std::vector<doc::Note> notes;
+  const int32_t degrees[] = {0, 2, 4, 5, 7, 9, 11, 12, 11, 9, 7, 5, 4, 2, 0, 7};
+  for (size_t i = 0; i < std::size(degrees); ++i) {
+    doc::Note n;
+    n.start = static_cast<Ticks>(i) * (kTicksPerWhole / 8);
+    n.length = kTicksPerWhole / 8;
+    n.pitch = tuning::PitchId::fromDegree(degrees[i] % 12, degrees[i] / 12);
+    n.velocity = 100.0f;
+    notes.push_back(n);
+  }
+  if (!run(doc::ops::addNotes(*store.current(), store.ids(), c->clips[0], notes)))
+    return Error{ErrorCode::Unknown, "mos-wheel-popover: addNotes failed", {}};
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(640.0f);
+  ctx.setDetailClip(c->clips[0]);
+  shell.tree().layoutNow();
+  const ui::UiScale s(shell.tree().scale());
+  const ui::IRect anchor{static_cast<int32_t>(shell.tree().width()) - s.px(MosWheelPopover::kWidth + 12.0f), s.px(36.0f), 1, 1};
+  MosWheelPopover* w = openMosWheel(shell.overlay(), ctx, TuningTarget::forClip(c->clips[0]), anchor);
+  if (!w) return Error{ErrorCode::NotFound, "mos-wheel-popover: no overlay layer", {}};
+  if (!w->chooseMos({5, 2}, 18.0 * 1200.0 / 31.0, 1)) return Error{ErrorCode::NotFound, "mos-wheel-popover: 5L 2s", {}};
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -176,6 +254,9 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-velocity", 1280, 800, pianoRollVelocity},
     {"mos-chart-default", 800, 600, setupMosChartDefault},
     {"mos-chart-zoomed", 800, 600, setupMosChartZoomed},
+    {"mos-circle-5L2s", 440, 560, setupMosCircle5L2s},
+    {"mos-circle-modmos", 440, 560, setupMosCircleModmos},
+    {"mos-wheel-popover", 1600, 900, setupMosWheelPopover},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

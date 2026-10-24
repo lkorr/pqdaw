@@ -77,6 +77,7 @@ void ClipView::onView(uint32_t bits) {
     s.markNotesDirty();
   }
   if ((bits & view_change::kTool) && s.cornerPanel) s.cornerPanel->markDirty();
+  if (bits & view_change::kTuningPreview) onDocument();  // the MOS wheel's live tuning (T3.14)
 }
 
 void ClipView::paint(PaintContext& ctx) {

@@ -18,9 +18,13 @@ namespace pq::views::test {
 
 // Dialogs that answer immediately with preset values (as if the user picked them).
 struct ScriptedDialogs final : FileDialogs {
-  std::string openPath, savePath;
+  std::string openPath, savePath, scalaPath;
   SaveChoice choice = SaveChoice::Discard;
-  int opens = 0, saves = 0, asks = 0;
+  int opens = 0, saves = 0, asks = 0, scalas = 0;
+  void chooseScalaFile(PathCallback done) override {
+    ++scalas;
+    done(scalaPath);
+  }
   void chooseProjectToOpen(PathCallback done) override {
     ++opens;
     done(openPath);

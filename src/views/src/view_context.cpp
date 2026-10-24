@@ -61,6 +61,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   for (std::string_view s : {"arrangement", "pianoroll"}) (void)scope(s);
   registerGlobalActions();
   declareViewActions(kPianoRollActions);
+  declareViewActions(kMosWheelActions);
   syncLoop();
 }
 
@@ -113,6 +114,7 @@ void ViewContext::syncLoop() {
 
 void ViewContext::afterLoad() {
   saved_ = store_.current();
+  clearTuningPreview();
   if (detailClip_.clip.valid() || detailClip_.track.valid()) {
     detailClip_ = {};
     notify(view_change::kDetailClip);
@@ -332,6 +334,50 @@ void ViewContext::setDetailClip(const doc::ClipRef& clip) {
   if (clip.track == detailClip_.track && clip.clip == detailClip_.clip) return;
   detailClip_ = clip;
   notify(view_change::kDetailClip);
+}
+
+// --- tuning preview (T3.14) ------------------------------------------------------------------------------
+
+void ViewContext::setTuningPreview(const TuningTarget& target, doc::TuningDef def) {
+  preview_ = TuningPreview{target, std::move(def)};
+  notify(view_change::kTuningPreview);
+}
+
+void ViewContext::clearTuningPreview() {
+  if (!preview_) return;
+  preview_.reset();
+  notify(view_change::kTuningPreview);
+}
+
+const doc::TuningDef* ViewContext::previewedTuning(const doc::Project& p, const doc::TrackPath& path, const doc::NoteClip* clip,
+                                                   doc::ClipId clipId) const noexcept {
+  if (!preview_) return doc::effectiveTuning(p, path, clip);
+  // The same walk as doc::effectiveTuning, answering with the preview where the walk reaches the target.
+  const TuningTarget& t = preview_->target;
+  const doc::TuningDef* pv = &preview_->def;
+  auto resolve = [&](const doc::TuningAssignment& a) -> const doc::TuningDef* {
+    if (a.mode == doc::TuningMode::Main) {
+      if (t.kind == TuningTarget::Kind::Main && a.main == t.main) return pv;
+      const doc::TuningSlot* slot = doc::findTuning(p, a.main);
+      return slot ? &slot->def : nullptr;
+    }
+    return a.privateDef.get();
+  };
+  if (clip) {
+    if (t.kind == TuningTarget::Kind::Clip && clipId == t.clip.clip) return pv;
+    if (clip->tuning.mode != doc::TuningMode::Inherit) return resolve(clip->tuning);
+  }
+  doc::TrackPath at = path;
+  while (at.depth > 0) {
+    const doc::Track& tr = doc::trackAt(p, at);
+    if (t.kind == TuningTarget::Kind::Track && tr.id == t.track) return pv;
+    if (tr.tuning.mode != doc::TuningMode::Inherit) return resolve(tr.tuning);
+    if (at.list != doc::TrackList::Main) break;
+    at = at.parent();
+  }
+  if (p.tunings->empty()) return nullptr;
+  const doc::TuningSlot& first = *p.tunings->front();
+  return (t.kind == TuningTarget::Kind::Main && first.id == t.main) ? pv : &first.def;
 }
 
 // --- layout ---------------------------------------------------------------------------------------------

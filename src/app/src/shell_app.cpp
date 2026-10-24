@@ -23,6 +23,7 @@ struct Ticket {
 };
 
 const SDL_DialogFileFilter kProjectFilter[] = {{"pqdaw project (project.pqd)", "pqd"}};
+const SDL_DialogFileFilter kScalaFilter[] = {{"Scala scale (*.scl)", "scl"}};
 
 void pushUser(uint32_t type, int32_t code, void* data1 = nullptr, void* data2 = nullptr) {
   SDL_Event ev{};
@@ -63,6 +64,11 @@ public:
     const std::string where(suggestedName == "Untitled" ? std::string_view{} : suggestedName);
     SDL_ShowSaveFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kProjectFilter, 1,
                            where.empty() ? nullptr : where.c_str());
+  }
+  void chooseScalaFile(PathCallback done) override {
+    pending_ = std::move(done);
+    SDL_ShowOpenFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kScalaFilter, 1, nullptr,
+                           false);
   }
   views::SaveChoice askSaveChanges(std::string_view projectName) override {
     const std::string msg = "Save changes to \"" + std::string(projectName) + "\" before closing it?";

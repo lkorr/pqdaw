@@ -14,6 +14,7 @@
 
 #include "pq/ui/controls.h"
 #include "pq/ui/widget.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
 #include "roll_state.h"
 
 namespace pq::views::roll {
@@ -36,6 +37,7 @@ public:
 private:
   RollState& s_;
   ui::Toggle* loop_ = nullptr;
+  TuningChip* tuning_ = nullptr;  // opens the MOS wheel for this clip (T3.14)
 };
 
 class CornerPanel : public ui::Widget {

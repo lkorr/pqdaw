@@ -473,7 +473,7 @@ void ClipBoxPanel::paint(PaintContext& ctx) {
   dl.addRectFilled(title.toRect(), clipCol);
   paint::text(ctx, f->bodyStrong, title, c->name.empty() ? std::string_view("MIDI Clip") : std::string_view(c->name),
               clipTextFor(*th, clipCol), TextAlign::Left, pad, pad);
-  int32_t y = title.bottom() + ctx.scale.px(4);
+  int32_t y = title.bottom() + ctx.scale.px(4) + lh;  // the first row is the tuning chip (T3.14)
   auto line = [&](std::string_view key, std::string_view value) {
     const IRect row{r.x, y, r.w, lh};
     paint::text(ctx, f->small, row, key, th->text.secondary, TextAlign::Left, pad, pad);
@@ -481,7 +481,6 @@ void ClipBoxPanel::paint(PaintContext& ctx) {
     y += lh;
   };
   char buf[64];
-  line("Tuning", s_.tuningName());
   std::snprintf(buf, sizeof buf, "%d / %d", c->signature.numerator, c->signature.denominator);
   line("Signature", buf);
   auto pos = [&](Ticks t) {

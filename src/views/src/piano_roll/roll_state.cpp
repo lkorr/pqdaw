@@ -62,7 +62,7 @@ bool RollState::refresh() {
       const int32_t i = doc::findClipIndex(t, ref_.clip);
       if (i >= 0) {
         c = t.clips[static_cast<size_t>(i)].clip;
-        def = doc::effectiveTuning(*cur, *path, c.get());
+        def = ctx.previewedTuning(*cur, *path, c.get(), ref_.clip);  // the MOS wheel preview (T3.14)
       }
     }
   }

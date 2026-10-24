@@ -463,7 +463,9 @@ void VelocityLaneWidget::onCaptureLost() {
 ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
   setLayout(LayoutKind::Column);
   setAlign(Align::Start, Align::Start);
-  setPadding({6, 0, 6, 6});
+  setPadding({6, 24, 6, 6});  // the chip sits in the first row under the 20-px title bar
+  tuning_ = &add<TuningChip>("tuning", s.ctx);
+  tuning_->setHeight(Length::fixed(18));
   auto& spacer = add<Widget>();
   spacer.setHeight(Length::flex(1));
   loop_ = &add<Toggle>("loop", "Loop", ToggleStyle::Accent);
@@ -481,6 +483,7 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
 
 void ClipBoxPanel::refresh() {
   if (const doc::NoteClip* c = s_.clip()) loop_->setOn(c->loop.enabled);
+  tuning_->setTarget(s_.hasClip() ? std::optional<TuningTarget>(TuningTarget::forClip(s_.clipRef())) : std::nullopt);
   markDirty();
 }
 

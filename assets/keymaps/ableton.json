@@ -26,7 +26,7 @@
     {"scope": "global", "keys": "Ctrl+T", "action": "track.newMidi", "status": "deferred:M3", "task": "T3.10"},
     {"scope": "global", "keys": "Ctrl+Shift+T", "action": "track.newAudio", "status": "deferred:M6"},
     {"scope": "global", "keys": "Ctrl+Alt+T", "action": "track.newReturn", "status": "deferred:M3", "task": "T3.10"},
-    {"scope": "global", "keys": "Ctrl+Shift+W", "action": "tuning.openMosWheel", "status": "deferred:M3", "task": "T3.14"},
+    {"scope": "global", "keys": "Ctrl+Shift+W", "action": "tuning.openMosWheel", "status": "implemented", "task": "T3.14"},
     {"scope": "global", "keys": "M", "action": "keyboard.toggleComputerMidi", "status": "deferred:M8"},
     {"scope": "global", "keys": "Ctrl+M", "action": "mapping.toggleMidiMap", "status": "deferred:M8"},
     {"scope": "global", "keys": "Ctrl+K", "action": "mapping.toggleKeyMap", "status": "deferred:M8"},

@@ -112,6 +112,12 @@ struct Theme {
         edoHardness, marker, markerText, sizeText, bandText, bandSubText, bandTextDim, bandGrayed, bandActive;
     bool operator==(const MosChart&) const = default;
   } mosChart{};
+  struct MosCircle {  // MOS wheel circle view (T3.14): surfaces from the Live 12 look, data colours from mos-explorer
+    Rgba background, ring, spoke, dot, dotEdge, degreeText, tonic, altUp, altDown, ji, modmos, info, modeName, parent,
+        child, dimText, sliderTrack, sliderThumbEdge, button, buttonBorder, buttonText, periodMark, octaveMark,
+        allIntervals, guide;
+    bool operator==(const MosCircle&) const = default;
+  } mosCircle{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;
