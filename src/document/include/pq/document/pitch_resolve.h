@@ -30,7 +30,7 @@ struct EffectiveTuning {
 EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, const NoteClip* clip = nullptr) noexcept;
 
 // True if the tuning has an audio-rate linear form (T2.6): EDO, or MOS without MODMOS alterations or a generator
-// sequence. Scale tunings and MODMOS play static pitches (QUESTIONS Q?-T2.6-a).
+// sequence. Scale tunings and MODMOS play static pitches (QUESTIONS Q100).
 bool hasTuningSignal(const TuningDef& def) noexcept;
 
 struct NotePitch {

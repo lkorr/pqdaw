@@ -17,7 +17,7 @@
 // An EDO is the same form with one interval: n = steps, g = P / n (the generator follows the equave), K = j,
 // M = −q, i.e. cents(D) = D · equave / n.
 //
-// Not representable (Error InvalidArgument; such tunings play the static resolved Hz, QUESTIONS Q?-T2.6-a):
+// Not representable (Error InvalidArgument; such tunings play the static resolved Hz, QUESTIONS Q100):
 //   - MODMOS alterations and generator sequences (the JS rounds L and s to 0.01 ¢, so they are not linear in g);
 //   - Scale (Scala) tunings (nothing continuous to modulate but the reference).
 //

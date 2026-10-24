@@ -290,11 +290,11 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - Prime-limit checks, Tenney height, octave reduction, harmonic/subharmonic series helpers, the fewest-keypress BFS from the JI trainer (`game-pianoroll.js`), and interval naming tables (colour notation/FJS) ported from `ji composition trainer/interval names.txt` + `data/intervalNames.js`.
   - Accept: tests, including BFS results matching the JS for a fixture set generated under Node.
 
-- [~] **T2.6 Tuning as signal** *(worker BC, branch task/T2.6-tuning-signal)* (`tuning` + `graph`). Depends on: T2.3, T1.7.
+- [x] **T2.6 Tuning as signal** *(merged 2026-10-24; lowering wiring → T2.6-fix1)* (`tuning` + `graph`). Depends on: T2.3, T1.7.
   - The per-region linear form `cents = k·g − m·P + e·P` (SPEC §3.3). A tuning node in the graph whose generator/period/stretch/reference are modulatable. `voice.hz` derives from it. Region crossings are detected at block rate or at the crossing sample.
   - Accept: a generator sweep through several regions produces continuous per-voice pitch (except at intended region changes) that matches `buildMOSScale` evaluated per sample within 1e-4 ¢. A benchmark shows the per-voice pitch cost.
 
-- [~] **T2.7 Main tunings model** *(worker BC, same branch)* (`document`). Depends on: T2.6.
+- [x] **T2.7 Main tunings model** *(merged 2026-10-24)* (`document`). Depends on: T2.6.
   - Named project tunings, track/clip assignment and override, per-tuning reference pitch, serialization.
   - Accept: tests; reassigning a track re-resolves all its notes; JSON round trip.
 
@@ -391,6 +391,10 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 - [ ] **T3.2-fix1 Retheme from the user's Live 12 screenshot** (`ui`, assets). Depends on: T3.2. 👁 (User decision Q47.)
   - Re-derive `assets/themes/ableton-dark.json` (and its generator) from the user's Live 12 Arrangement screenshot at `reference/inspiration/live12/arrangement.png` (git-ignored: never commit it or crops of it): sample surface/panel/track-lane/header/ruler/grid/text/accent/selection colours, compare control proportions (button heights, header widths, font sizes). Keep the contrast test passing (adjust targets only with justification).
   - Accept: a side-by-side comparison image (our `widgets`/`shell`/arrangement scenes vs the screenshot regions, generated locally, not committed) checked by eye and listed in REVIEW.md with the sampled values; all goldens regenerated deliberately.
+
+- [ ] **T2.6-fix1 Tuning signal in project playback** (`document` lowering, `app`). Depends on: T2.6, T3.17.
+  - doc::lower emits `tune_voices` + the tuning node per track whose notes follow a main tuning (Degree notes), tuning params and their automation lanes lowered as params/automation, `Resources::tunings` built from the document (engine::makeTuningTable), NoteDesc pitch from `resolveTrackPitches` (replacing T3.17's O(n²) noteHz). Q100.3, Q101.
+  - Accept: golden render of a fixture whose 5L2s generator is automated across a region boundary (pitches follow, jumps only at the crossing); a generator/reference param change while playing is audible next block with 0 recompiles; static projects render bit-identically to before.
 
 - [ ] **T3.6-fix1 Virtual fundamental in the model** (`document`, `tuning`). Depends on: T3.6, T3.11. (User decision Q40.)
   - Ratio notes in a clip share a virtual fundamental derived from what is entered (1/lcm of their denominators relative to the anchor), updated as notes are added, moved or deleted; Up/Down = next harmonic of the current fundamental; explicit fundamental lock (`b`+index, SPEC §6.2) can override. Decide whether the fundamental is stored (with its update rule) or derived on read; keep reduced ratios exact either way.
