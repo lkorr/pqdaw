@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "step"}
@@ -8,7 +8,7 @@
       {"bar": 0, "numerator": 4, "denominator": 4}
     ]
   },
-  "loop": {"start": 0, "end": 443520, "enabled": false},
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
   "locators": [],
   "tunings": [
     {
@@ -55,11 +55,11 @@
           "param": {"kind": "trackVolume", "owner": 4},
           "points": [
             {"id": 86, "tick": 0, "value": 0.0, "curve": 0.0},
-            {"id": 87, "tick": 221760, "value": -12.0, "curve": 0.6},
-            {"id": 88, "tick": 443520, "value": -3.0, "curve": -0.5},
-            {"id": 89, "tick": 665280, "value": -3.0, "curve": 0.0},
-            {"id": 90, "tick": 665280, "value": -20.0, "curve": 0.8},
-            {"id": 91, "tick": 887040, "value": -6.0, "curve": 0.0}
+            {"id": 87, "tick": 1774080, "value": -12.0, "curve": 0.6},
+            {"id": 88, "tick": 3548160, "value": -3.0, "curve": -0.5},
+            {"id": 89, "tick": 5322240, "value": -3.0, "curve": 0.0},
+            {"id": 90, "tick": 5322240, "value": -20.0, "curve": 0.8},
+            {"id": 91, "tick": 7096320, "value": -6.0, "curve": 0.0}
           ]
         }
       ],
@@ -69,21 +69,21 @@
           "name": "Beat",
           "colour": "#EF7B7B",
           "start": 0,
-          "length": 887040,
+          "length": 7096320,
           "contentStart": 0,
-          "loop": {"enabled": true, "start": 0, "end": 110880},
+          "loop": {"enabled": true, "start": 0, "end": 887040},
           "signature": {"numerator": 4, "denominator": 4},
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 12, "start": 0, "length": 6930, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 13, "start": 13860, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 14, "start": 27720, "length": 6930, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 15, "start": 41580, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 16, "start": 55440, "length": 6930, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 17, "start": 69300, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 18, "start": 83160, "length": 6930, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 19, "start": 97020, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
+            {"id": 12, "start": 0, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 13, "start": 110880, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 14, "start": 221760, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 15, "start": 332640, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 16, "start": 443520, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 17, "start": 554400, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 18, "start": 665280, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 19, "start": 776160, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
           ]
         }
       ]
@@ -102,14 +102,14 @@
           "param": {"kind": "trackPan", "owner": 5},
           "points": [
             {"id": 93, "tick": 0, "value": -0.8, "curve": 0.0},
-            {"id": 94, "tick": 110880, "value": 0.8, "curve": 0.0},
-            {"id": 95, "tick": 221760, "value": -0.8, "curve": 0.0},
-            {"id": 96, "tick": 332640, "value": 0.8, "curve": 0.0},
-            {"id": 97, "tick": 443520, "value": -0.8, "curve": 0.0},
-            {"id": 98, "tick": 554400, "value": 0.8, "curve": 0.0},
-            {"id": 99, "tick": 665280, "value": -0.8, "curve": 0.0},
-            {"id": 100, "tick": 776160, "value": 0.8, "curve": 0.0},
-            {"id": 101, "tick": 887040, "value": -0.8, "curve": 0.0}
+            {"id": 94, "tick": 887040, "value": 0.8, "curve": 0.0},
+            {"id": 95, "tick": 1774080, "value": -0.8, "curve": 0.0},
+            {"id": 96, "tick": 2661120, "value": 0.8, "curve": 0.0},
+            {"id": 97, "tick": 3548160, "value": -0.8, "curve": 0.0},
+            {"id": 98, "tick": 4435200, "value": 0.8, "curve": 0.0},
+            {"id": 99, "tick": 5322240, "value": -0.8, "curve": 0.0},
+            {"id": 100, "tick": 6209280, "value": 0.8, "curve": 0.0},
+            {"id": 101, "tick": 7096320, "value": -0.8, "curve": 0.0}
           ]
         }
       ],
@@ -119,21 +119,21 @@
           "name": "Bass",
           "colour": "#E68632",
           "start": 0,
-          "length": 887040,
+          "length": 7096320,
           "contentStart": 0,
-          "loop": {"enabled": true, "start": 0, "end": 110880},
+          "loop": {"enabled": true, "start": 0, "end": 887040},
           "signature": {"numerator": 4, "denominator": 4},
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 21, "start": 0, "length": 13860, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
-            {"id": 22, "start": 13860, "length": 13860, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
-            {"id": 23, "start": 27720, "length": 13860, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
-            {"id": 24, "start": 41580, "length": 13860, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
-            {"id": 25, "start": 55440, "length": 13860, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
-            {"id": 26, "start": 69300, "length": 13860, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
-            {"id": 27, "start": 83160, "length": 13860, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
-            {"id": 28, "start": 97020, "length": 13860, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
+            {"id": 21, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
+            {"id": 22, "start": 110880, "length": 110880, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
+            {"id": 23, "start": 221760, "length": 110880, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
+            {"id": 24, "start": 332640, "length": 110880, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
+            {"id": 25, "start": 443520, "length": 110880, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
+            {"id": 26, "start": 554400, "length": 110880, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
+            {"id": 27, "start": 665280, "length": 110880, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
+            {"id": 28, "start": 776160, "length": 110880, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
           ]
         }
       ]
@@ -151,39 +151,39 @@
           "id": 102,
           "param": {"kind": "trackPan", "owner": 9},
           "points": [
-            {"id": 103, "tick": 110880, "value": 0.0, "curve": 0.0},
-            {"id": 104, "tick": 131670, "value": 0.22961007, "curve": 0.0},
-            {"id": 105, "tick": 152460, "value": 0.42426407, "curve": 0.0},
-            {"id": 106, "tick": 173250, "value": 0.5543277, "curve": 0.0},
-            {"id": 107, "tick": 194040, "value": 0.6, "curve": 0.0},
-            {"id": 108, "tick": 214830, "value": 0.5543277, "curve": 0.0},
-            {"id": 109, "tick": 235620, "value": 0.42426407, "curve": 0.0},
-            {"id": 110, "tick": 256410, "value": 0.22961007, "curve": 0.0},
-            {"id": 111, "tick": 277200, "value": 7.347881e-17, "curve": 0.0},
-            {"id": 112, "tick": 297990, "value": -0.22961007, "curve": 0.0},
-            {"id": 113, "tick": 318780, "value": -0.42426407, "curve": 0.0},
-            {"id": 114, "tick": 339570, "value": -0.5543277, "curve": 0.0},
-            {"id": 115, "tick": 360360, "value": -0.6, "curve": 0.0},
-            {"id": 116, "tick": 381150, "value": -0.5543277, "curve": 0.0},
-            {"id": 117, "tick": 401940, "value": -0.42426407, "curve": 0.0},
-            {"id": 118, "tick": 422730, "value": -0.22961007, "curve": 0.0},
-            {"id": 119, "tick": 443520, "value": 0.0, "curve": 0.0},
-            {"id": 120, "tick": 464310, "value": 0.22961007, "curve": 0.0},
-            {"id": 121, "tick": 485100, "value": 0.42426407, "curve": 0.0},
-            {"id": 122, "tick": 505890, "value": 0.5543277, "curve": 0.0},
-            {"id": 123, "tick": 526680, "value": 0.6, "curve": 0.0},
-            {"id": 124, "tick": 547470, "value": 0.5543277, "curve": 0.0},
-            {"id": 125, "tick": 568260, "value": 0.42426407, "curve": 0.0},
-            {"id": 126, "tick": 589050, "value": 0.22961007, "curve": 0.0},
-            {"id": 127, "tick": 609840, "value": 7.347881e-17, "curve": 0.0},
-            {"id": 128, "tick": 630630, "value": -0.22961007, "curve": 0.0},
-            {"id": 129, "tick": 651420, "value": -0.42426407, "curve": 0.0},
-            {"id": 130, "tick": 672210, "value": -0.5543277, "curve": 0.0},
-            {"id": 131, "tick": 693000, "value": -0.6, "curve": 0.0},
-            {"id": 132, "tick": 713790, "value": -0.5543277, "curve": 0.0},
-            {"id": 133, "tick": 734580, "value": -0.42426407, "curve": 0.0},
-            {"id": 134, "tick": 755370, "value": -0.22961007, "curve": 0.0},
-            {"id": 135, "tick": 776160, "value": 0.0, "curve": 0.0}
+            {"id": 103, "tick": 887040, "value": 0.0, "curve": 0.0},
+            {"id": 104, "tick": 1053360, "value": 0.22961007, "curve": 0.0},
+            {"id": 105, "tick": 1219680, "value": 0.42426407, "curve": 0.0},
+            {"id": 106, "tick": 1386000, "value": 0.5543277, "curve": 0.0},
+            {"id": 107, "tick": 1552320, "value": 0.6, "curve": 0.0},
+            {"id": 108, "tick": 1718640, "value": 0.5543277, "curve": 0.0},
+            {"id": 109, "tick": 1884960, "value": 0.42426407, "curve": 0.0},
+            {"id": 110, "tick": 2051280, "value": 0.22961007, "curve": 0.0},
+            {"id": 111, "tick": 2217600, "value": 7.347881e-17, "curve": 0.0},
+            {"id": 112, "tick": 2383920, "value": -0.22961007, "curve": 0.0},
+            {"id": 113, "tick": 2550240, "value": -0.42426407, "curve": 0.0},
+            {"id": 114, "tick": 2716560, "value": -0.5543277, "curve": 0.0},
+            {"id": 115, "tick": 2882880, "value": -0.6, "curve": 0.0},
+            {"id": 116, "tick": 3049200, "value": -0.5543277, "curve": 0.0},
+            {"id": 117, "tick": 3215520, "value": -0.42426407, "curve": 0.0},
+            {"id": 118, "tick": 3381840, "value": -0.22961007, "curve": 0.0},
+            {"id": 119, "tick": 3548160, "value": 0.0, "curve": 0.0},
+            {"id": 120, "tick": 3714480, "value": 0.22961007, "curve": 0.0},
+            {"id": 121, "tick": 3880800, "value": 0.42426407, "curve": 0.0},
+            {"id": 122, "tick": 4047120, "value": 0.5543277, "curve": 0.0},
+            {"id": 123, "tick": 4213440, "value": 0.6, "curve": 0.0},
+            {"id": 124, "tick": 4379760, "value": 0.5543277, "curve": 0.0},
+            {"id": 125, "tick": 4546080, "value": 0.42426407, "curve": 0.0},
+            {"id": 126, "tick": 4712400, "value": 0.22961007, "curve": 0.0},
+            {"id": 127, "tick": 4878720, "value": 7.347881e-17, "curve": 0.0},
+            {"id": 128, "tick": 5045040, "value": -0.22961007, "curve": 0.0},
+            {"id": 129, "tick": 5211360, "value": -0.42426407, "curve": 0.0},
+            {"id": 130, "tick": 5377680, "value": -0.5543277, "curve": 0.0},
+            {"id": 131, "tick": 5544000, "value": -0.6, "curve": 0.0},
+            {"id": 132, "tick": 5710320, "value": -0.5543277, "curve": 0.0},
+            {"id": 133, "tick": 5876640, "value": -0.42426407, "curve": 0.0},
+            {"id": 134, "tick": 6042960, "value": -0.22961007, "curve": 0.0},
+            {"id": 135, "tick": 6209280, "value": 0.0, "curve": 0.0}
           ]
         }
       ],
@@ -202,8 +202,8 @@
               "param": {"kind": "mosGenerator", "owner": 3},
               "points": [
                 {"id": 137, "tick": 0, "value": 696.0, "curve": 0.0},
-                {"id": 138, "tick": 443520, "value": 705.0, "curve": 0.4},
-                {"id": 139, "tick": 887040, "value": 690.0, "curve": 0.0}
+                {"id": 138, "tick": 3548160, "value": 705.0, "curve": 0.4},
+                {"id": 139, "tick": 7096320, "value": 690.0, "curve": 0.0}
               ]
             }
           ],
@@ -213,51 +213,51 @@
               "name": "Chords",
               "colour": "#46A5E8",
               "start": 0,
-              "length": 443520,
+              "length": 3548160,
               "contentStart": 0,
-              "loop": {"enabled": false, "start": 0, "end": 443520},
+              "loop": {"enabled": false, "start": 0, "end": 3548160},
               "signature": {"numerator": 4, "denominator": 4},
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 30, "start": 0, "length": 97020, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 31, "start": 0, "length": 97020, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-                {"id": 32, "start": 0, "length": 97020, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 33, "start": 110880, "length": 97020, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
-                {"id": 34, "start": 110880, "length": 97020, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 35, "start": 110880, "length": 97020, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 36, "start": 221760, "length": 97020, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 37, "start": 221760, "length": 97020, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-                {"id": 38, "start": 221760, "length": 97020, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 39, "start": 332640, "length": 97020, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
-                {"id": 40, "start": 332640, "length": 97020, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 41, "start": 332640, "length": 97020, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
+                {"id": 30, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 31, "start": 0, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+                {"id": 32, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 33, "start": 887040, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+                {"id": 34, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 35, "start": 887040, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 36, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 37, "start": 1774080, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+                {"id": 38, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 39, "start": 2661120, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+                {"id": 40, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 41, "start": 2661120, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
               ]
             },
             {
               "id": 42,
               "name": "Chords",
               "colour": "#46A5E8",
-              "start": 443520,
-              "length": 443520,
+              "start": 3548160,
+              "length": 3548160,
               "contentStart": 0,
-              "loop": {"enabled": false, "start": 0, "end": 443520},
+              "loop": {"enabled": false, "start": 0, "end": 3548160},
               "signature": {"numerator": 4, "denominator": 4},
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 43, "start": 0, "length": 97020, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 44, "start": 0, "length": 97020, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-                {"id": 45, "start": 0, "length": 97020, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 46, "start": 110880, "length": 97020, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
-                {"id": 47, "start": 110880, "length": 97020, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 48, "start": 110880, "length": 97020, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 49, "start": 221760, "length": 97020, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 50, "start": 221760, "length": 97020, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-                {"id": 51, "start": 221760, "length": 97020, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 52, "start": 332640, "length": 97020, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
-                {"id": 53, "start": 332640, "length": 97020, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 54, "start": 332640, "length": 97020, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
+                {"id": 43, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 44, "start": 0, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+                {"id": 45, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 46, "start": 887040, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+                {"id": 47, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 48, "start": 887040, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 49, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 50, "start": 1774080, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+                {"id": 51, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 52, "start": 2661120, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+                {"id": 53, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 54, "start": 2661120, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
               ]
             }
           ]
@@ -277,16 +277,16 @@
               "name": "Pad",
               "colour": "#BB86F0",
               "start": 0,
-              "length": 887040,
+              "length": 7096320,
               "contentStart": 0,
-              "loop": {"enabled": true, "start": 0, "end": 221760},
+              "loop": {"enabled": true, "start": 0, "end": 1774080},
               "signature": {"numerator": 4, "denominator": 4},
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 56, "start": 0, "length": 221760, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 57, "start": 0, "length": 221760, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 58, "start": 0, "length": 221760, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
+                {"id": 56, "start": 0, "length": 1774080, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 57, "start": 0, "length": 1774080, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 58, "start": 0, "length": 1774080, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
               ]
             }
           ]
@@ -306,41 +306,41 @@
           "id": 140,
           "param": {"kind": "trackVolume", "owner": 8},
           "points": [
-            {"id": 141, "tick": 221760, "value": -30.0, "curve": -0.7},
-            {"id": 142, "tick": 443520, "value": 0.0, "curve": 0.0},
-            {"id": 143, "tick": 776160, "value": -2.0, "curve": 0.5},
-            {"id": 144, "tick": 887040, "value": -18.0, "curve": 0.0}
+            {"id": 141, "tick": 1774080, "value": -30.0, "curve": -0.7},
+            {"id": 142, "tick": 3548160, "value": 0.0, "curve": 0.0},
+            {"id": 143, "tick": 6209280, "value": -2.0, "curve": 0.5},
+            {"id": 144, "tick": 7096320, "value": -18.0, "curve": 0.0}
           ]
         },
         {
           "id": 145,
           "param": {"kind": "trackSend", "owner": 8, "target": 10},
           "points": [
-            {"id": 146, "tick": 221760, "value": -40.0, "curve": 0.0},
-            {"id": 147, "tick": 554400, "value": -6.0, "curve": 0.0},
-            {"id": 148, "tick": 887040, "value": -24.0, "curve": 0.0}
+            {"id": 146, "tick": 1774080, "value": -40.0, "curve": 0.0},
+            {"id": 147, "tick": 4435200, "value": -6.0, "curve": 0.0},
+            {"id": 148, "tick": 7096320, "value": -24.0, "curve": 0.0}
           ]
         },
         {
           "id": 149,
           "param": {"kind": "trackMute", "owner": 8},
           "points": [
-            {"id": 150, "tick": 443520, "value": 1.0, "curve": 0.0},
-            {"id": 151, "tick": 498960, "value": 1.0, "curve": 0.0},
-            {"id": 152, "tick": 498960, "value": 0.0, "curve": 0.0},
-            {"id": 153, "tick": 554400, "value": 0.0, "curve": 0.0},
-            {"id": 154, "tick": 554400, "value": 1.0, "curve": 0.0},
-            {"id": 155, "tick": 609840, "value": 1.0, "curve": 0.0},
-            {"id": 156, "tick": 609840, "value": 0.0, "curve": 0.0},
-            {"id": 157, "tick": 665280, "value": 0.0, "curve": 0.0},
-            {"id": 158, "tick": 665280, "value": 1.0, "curve": 0.0},
-            {"id": 159, "tick": 720720, "value": 1.0, "curve": 0.0},
-            {"id": 160, "tick": 720720, "value": 0.0, "curve": 0.0},
-            {"id": 161, "tick": 776160, "value": 0.0, "curve": 0.0},
-            {"id": 162, "tick": 776160, "value": 1.0, "curve": 0.0},
-            {"id": 163, "tick": 831600, "value": 1.0, "curve": 0.0},
-            {"id": 164, "tick": 831600, "value": 0.0, "curve": 0.0},
-            {"id": 165, "tick": 887040, "value": 0.0, "curve": 0.0}
+            {"id": 150, "tick": 3548160, "value": 1.0, "curve": 0.0},
+            {"id": 151, "tick": 3991680, "value": 1.0, "curve": 0.0},
+            {"id": 152, "tick": 3991680, "value": 0.0, "curve": 0.0},
+            {"id": 153, "tick": 4435200, "value": 0.0, "curve": 0.0},
+            {"id": 154, "tick": 4435200, "value": 1.0, "curve": 0.0},
+            {"id": 155, "tick": 4878720, "value": 1.0, "curve": 0.0},
+            {"id": 156, "tick": 4878720, "value": 0.0, "curve": 0.0},
+            {"id": 157, "tick": 5322240, "value": 0.0, "curve": 0.0},
+            {"id": 158, "tick": 5322240, "value": 1.0, "curve": 0.0},
+            {"id": 159, "tick": 5765760, "value": 1.0, "curve": 0.0},
+            {"id": 160, "tick": 5765760, "value": 0.0, "curve": 0.0},
+            {"id": 161, "tick": 6209280, "value": 0.0, "curve": 0.0},
+            {"id": 162, "tick": 6209280, "value": 1.0, "curve": 0.0},
+            {"id": 163, "tick": 6652800, "value": 1.0, "curve": 0.0},
+            {"id": 164, "tick": 6652800, "value": 0.0, "curve": 0.0},
+            {"id": 165, "tick": 7096320, "value": 0.0, "curve": 0.0}
           ]
         }
       ],
@@ -349,52 +349,52 @@
           "id": 59,
           "name": "Hook",
           "colour": "#16B293",
-          "start": 221760,
-          "length": 332640,
+          "start": 1774080,
+          "length": 2661120,
           "contentStart": 0,
-          "loop": {"enabled": false, "start": 0, "end": 332640},
+          "loop": {"enabled": false, "start": 0, "end": 2661120},
           "signature": {"numerator": 4, "denominator": 4},
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 60, "start": 0, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 61, "start": 27720, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 62, "start": 55440, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 63, "start": 83160, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 64, "start": 110880, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 65, "start": 138600, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 66, "start": 166320, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 67, "start": 194040, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 68, "start": 221760, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 69, "start": 249480, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 70, "start": 277200, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 71, "start": 304920, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
+            {"id": 60, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 61, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 62, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 63, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 64, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 65, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 66, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 67, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 68, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 69, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 70, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 71, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
           ]
         },
         {
           "id": 72,
           "name": "Hook",
           "colour": "#16B293",
-          "start": 554400,
-          "length": 332640,
+          "start": 4435200,
+          "length": 2661120,
           "contentStart": 0,
-          "loop": {"enabled": false, "start": 0, "end": 332640},
+          "loop": {"enabled": false, "start": 0, "end": 2661120},
           "signature": {"numerator": 4, "denominator": 4},
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 73, "start": 0, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 74, "start": 27720, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 75, "start": 55440, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 76, "start": 83160, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 77, "start": 110880, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 78, "start": 138600, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 79, "start": 166320, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 80, "start": 194040, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 81, "start": 221760, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 82, "start": 249480, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 83, "start": 277200, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 84, "start": 304920, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
+            {"id": 73, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 74, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 75, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 76, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 77, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 78, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 79, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 80, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 81, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 82, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 83, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 84, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
           ]
         }
       ]
