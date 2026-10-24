@@ -604,5 +604,12 @@ All signal displays reuse PQ Meter's DSP, ballistics and look, which the owner h
   - Default project is empty; mute/deactivate as in Ableton: the track activator mutes, `0` toggles activator on tracks and deactivates clips (Q15).
   - Theme reference: the user's Live 12 Arrangement screenshot (Q47; kept out of the repo).
 - 2026-10-21 (user, M1 review H6): compile granularity is **per track**: each track's device chain is compiled and optimised as its own unit; an edit recompiles and crossfades only that unit. Units are executed in dependency order within each block (no added latency); tracks joined by cross-track modulation/sidechain wires are merged into one unit (as §7.4 already says for cross-track SCCs). A whole-project re-optimisation pass when the user pauses editing (§7.5 background optimisation) is planned for later (M12), out of scope for now.
+- 2026-10-24 (user, sketch "VISUAL PROGRAMMING VIEW / INTERPRETATION OF PROJECT FILE"): **project patch view**: the whole project can be shown as one circuit-language patch, as a view mode of the arrangement, so any routing and modulation is visible and editable in one place.
+  - **Model**: it draws the project graph the engine runs (per-track units, T1.x-arch1; lowering, T3.17): each track is a band with a source node (MIDI input node playing that lane's clips, audio input node playing its audio clips) → its device chain → a compact mixer-strip node; sends are wires to the return bands; groups are containers around their members with their own chain; master on the right.
+  - **Fully editable**, two-way with the Ableton view (one model, like text ⇄ diagram): wiring any output to any parameter anywhere (cross-device modulation), re-routing a track to another group or return, adding/removing devices on a band all change the project.
+  - **Layout mirrors the arrangement**: bands in lane order, groups as containers, signal left → right, auto-laid out with optional stored manual nudges.
+  - **Semantic zoom**: zoomed in on one band you edit its chain (down to subcircuits and atoms, §7.3); zoomed out you see the whole project's routing.
+  - **Transition**: an animated morph from the arrangement — lanes keep their vertical position and unfold into their bands (clips collapse into the source node), and back.
+  - **Mixer**: a compact, expandable mixer-strip node at the end of each band (volume, pan, mute/solo, sends as visible wires).
 
 No open questions remain for draft 1.

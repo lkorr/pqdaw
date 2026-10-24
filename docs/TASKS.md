@@ -405,7 +405,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Accept: switching driver type/device/rate/buffer while playing reopens the stream without crash or allocation on the audio thread; settings persist across restarts; scripted test with NullDevice + fake device list; golden of the preferences window.
 
 ## M4 onward (outline: refine into tasks before starting; most need user review)
-- **M4**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator. 👁
+- **M4**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5**: browser + user library, Simpler, Drum Rack. 👁
 - **M6**: audio clips, warp, recording, take lanes, Capture MIDI, PDC, metronome.
 - **M7**: JI objects. 👁
