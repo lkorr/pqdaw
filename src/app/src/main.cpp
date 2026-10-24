@@ -24,6 +24,7 @@ int main(int argc, char** argv) {
     case pq::app::Mode::LatencyTest: return pq::app::runLatencyTest(*opts);
     case pq::app::Mode::Play: return pq::app::runPlay(*opts);
     case pq::app::Mode::AsioPanel: return pq::app::runAsioPanel(*opts);
+    case pq::app::Mode::Render: return pq::app::runRender(*opts);
   }
   return 1;
 }

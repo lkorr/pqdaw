@@ -15,6 +15,7 @@
 #include <string>
 
 #include "pq/app/cli.h"
+#include "pq/app/project_link.h"
 #include "pq/app/sim_transport.h"
 #include "pq/app/startup.h"
 #include "pq/core/result.h"
@@ -25,6 +26,7 @@
 namespace pq::app {
 
 class SdlFileDialogs;
+class AudioOutput;
 
 class ShellApp {
 public:
@@ -48,7 +50,11 @@ private:
 
   ui::UiTree& tree_;
   SDL_Window* window_;
+  // T3.17: the transport is the playback link (the engine); the simulated one only if the link cannot start.
+  // Declared before ctx_ (the context holds a reference to the port); audio_ after link_ (it calls the engine).
   std::unique_ptr<SimulatedTransport> transport_;
+  std::unique_ptr<ProjectLink> link_;
+  std::unique_ptr<AudioOutput> audio_;
   std::unique_ptr<views::ViewContext> ctx_;
   std::unique_ptr<SdlFileDialogs> dialogs_;
   std::unique_ptr<views::Shell> shell_;

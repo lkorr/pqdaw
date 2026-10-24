@@ -18,6 +18,15 @@
 //                         (T3.17 does a project-level swap then; out of scope here).
 //   bind(unit, image)     binds another image of a unit's current schedule (the JIT image compiled in the background
 //                         after the interpreter one was published: T1b.5's live swap uses exactly this).
+//   rebuild(graph, dirty) a topology edit (T3.17: tracks added or removed, re-routing, merges): re-partitions and
+//                         returns a TopologyBuild for ProjectProgram::publishTopology. A unit whose member tracks,
+//                         bus connections (by bus key "<track id>:<port>") and input bus types are unchanged and none
+//                         of whose tracks is in `dirty` is REUSED: nothing is compiled, it continues as it runs. Every
+//                         other unit is compiled; a unit with the same member tracks as before continues that unit
+//                         (its schedule against the previous state layout: a T1.9 swap with state transfer), a unit
+//                         with a new member set (a new track, a merge or a split) starts as a new unit (fresh state).
+//                         On error the compiler keeps its previous project.
+// Every layout this driver makes carries ProjectLayout::busKey.
 // Front-end and build times are reported per unit (CompiledUnit), measured with the steady clock.
 
 #include <cstdint>
@@ -74,12 +83,27 @@ struct CompiledUnit {
   std::vector<uint32_t> inBus;        // per root `in` ordinal (graph::UnitPatch::inBus)
   std::vector<std::pair<std::string, uint32_t>> links;  // flattened param name → project param
   bool voices = false;
+  // Identity across topology edits (rebuild).
+  std::vector<uint32_t> memberIds;          // the member tracks' ids, ascending
+  std::vector<std::string> readKeys, writeKeys;  // bus keys read / written, sorted
+  std::vector<graph::PortType> inTypes;     // per root `in` ordinal: the bus type it was compiled against
+  std::vector<std::string> inKeys;          // per root `in` ordinal: its bus key
+  std::vector<std::pair<uint32_t, std::string>> busNumbers;  // (k of a `bus<k>` name in the schedule, its bus key)
+  std::vector<uint32_t> busRemap;           // k of a `bus<k>` name → the current bus index (empty: identity)
 };
 
 struct ProjectBuild {
   graph::ProjectPartition partition;
   ProjectLayout layout;
   std::vector<UnitImage> images;   // per unit (layout order)
+};
+
+struct TopologyBuild {
+  graph::ProjectPartition partition;
+  ProjectLayout layout;
+  std::vector<TopologyUnit> units;  // parallel to layout.units: for ProjectProgram::publishTopology
+  uint32_t compiled = 0;            // units compiled by this rebuild
+  uint32_t reused = 0;              // units reused without a compile
 };
 
 struct UnitUpdate {
@@ -99,6 +123,13 @@ public:
   Result<std::vector<UnitUpdate>> update(const graph::ProjectGraph& graph, std::span<const uint32_t> tracks,
                                          const UnitBackend* backend = nullptr);
   Result<UnitImage> bind(uint32_t unit, std::unique_ptr<ProgramImage> image) const;
+  // See the file comment. `dirtyTracks`: indices into graph.tracks whose patch changed.
+  Result<TopologyBuild> rebuild(const graph::ProjectGraph& graph, std::span<const uint32_t> dirtyTracks,
+                                const UnitBackend* backend = nullptr);
+  // The project params units link to (ProjectParamLink::track indexes the graph passed next).
+  void setParamLinks(std::vector<ProjectParamLink> links) { opt_.paramLinks = std::move(links); }
+  // The bus key of graph port `p` ("<track id>:<port>").
+  static std::string busKey(const graph::ProjectGraph& graph, const graph::ProjectPort& p);
 
   const graph::ProjectPartition& partition() const noexcept { return partition_; }
   const CompiledUnit& unit(uint32_t u) const noexcept { return units_[u]; }
@@ -114,6 +145,7 @@ private:
   graph::ProjectPartition partition_;
   std::vector<CompiledUnit> units_;
   std::vector<graph::PortType> busTypes_;
+  std::vector<std::string> busKeys_;
   bool whole_ = false;
 };
 

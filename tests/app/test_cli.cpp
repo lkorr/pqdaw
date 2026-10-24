@@ -180,8 +180,22 @@ TEST_CASE("cli: audio flag errors") {
   CHECK_FALSE(parse({"--sine", "440", "--rate", "0"}).ok());
   CHECK_FALSE(parse({"--sine", "440", "--list-devices"}).ok());  // two modes
   CHECK_FALSE(parse({"--list-devices", "--seconds", "2"}).ok());  // --sine-only flag
-  CHECK_FALSE(parse({"--device", "3"}).ok());
-  CHECK_FALSE(parse({"--asio"}).ok());
+  // T3.17: the DAW window plays through a device, so it takes the device flags (they used to be refused there).
+  CHECK(parse({"--device", "3"}).ok());
+  CHECK(parse({"--asio"}).ok());
+  CHECK(parse({"--buffer", "128", "--exclusive", "--backend", "wasapi"}).ok());
+  CHECK_FALSE(parse({"--seconds", "2"}).ok());          // the window has no duration
+  CHECK_FALSE(parse({"--rate", "44100"}).ok());         // the engine runs at 48 kHz until T3.18
+  CHECK_FALSE(parse({"--render", "x.wav"}).ok());       // --render needs --project
+  CHECK_FALSE(parse({"--project", "p", "--render", "x.wav", "--device", "3"}).ok());
+  {
+    auto r = parse({"--project", "p", "--render", "x.wav", "--seconds", "4"});
+    REQUIRE(r.ok());
+    CHECK(r->mode == pq::app::Mode::Render);
+    CHECK(r->outPath == "x.wav");
+    CHECK(r->project == "p");
+    CHECK(r->seconds == 4.0);
+  }
   CHECK_FALSE(parse({"--screenshot", "a", "b.png", "--asio"}).ok());
   CHECK_FALSE(parse({"--sine", "440", "--backend", "bogus"}).ok());
   CHECK_FALSE(parse({"--sine", "440", "--device", "Focusrite USB ASIO"}).ok());  // names select ASIO drivers only

@@ -5,6 +5,7 @@ pq_add_module(pq_engine
     src/audio_device.cpp
     src/automation.cpp
     src/block_adapter.cpp
+    src/engine.cpp
     src/callback_stats.cpp
     src/image_runner.cpp
     src/interpreter.cpp

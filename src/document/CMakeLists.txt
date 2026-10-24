@@ -17,7 +17,9 @@ pq_add_module(pq_doc
     src/edit_automation.cpp
     src/edit_mixer.cpp
     src/audibility.cpp
+    src/lower.cpp
   # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
   # nlohmann::json in MigrationFn.
-  DEPS pq_tuning pq_core nlohmann_json::nlohmann_json
+  # pq_graph: project → graph lowering (lower.h, T3.17).
+  DEPS pq_tuning pq_core pq_graph nlohmann_json::nlohmann_json
 )

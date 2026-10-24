@@ -35,7 +35,26 @@
 // ---- Cost per block -----------------------------------------------------------------------------------------
 // Per unit: one ring poll, the param links, one virtual ProgramImage::process (or VoiceEngine::process), nothing else:
 // no copies between units. During a unit's fade: its old image once more plus one fused pass over its bus channels.
-// Device output: one memcpy per device channel from the output bus.
+// Device output: one memcpy per device channel from the output bus. Per block one more ring poll for topologies.
+//
+// ---- Topology changes (T3.17: a track added or removed, a re-routing, a merge) ------------------------------------
+// publishTopology(layout, units) replaces the unit list and the bus set while the program runs. Each unit of the new
+// layout either CONTINUES a unit of the current layout (TopologyUnit::from: the same runtime unit — its current image,
+// state, VoiceEngine and sounding voices — optionally with a new image) or is NEW (its first image). The non-RT call
+// allocates everything: bus storage (a bus whose ProjectLayout::busKey and width match a current bus keeps that bus's
+// storage, so a continued unit's image keeps reading and writing the same addresses and needs no rebinding), the new
+// units, one packet per new image (transfer plan against the continued unit's last published image, as publish()).
+// The audio thread switches at an image-block boundary, all at once: the unit order, the buses, and every new image
+// of the topology (one T1.9 swap each, crossfaded when audible; a new unit's first image starts instantly). The
+// switch waits (block by block) until none of the units that get a new image is fading or has packets still queued,
+// so the plans run against exactly the images they were built for.
+// A unit that is not continued (a removed track) keeps running as a ZOMBIE after the switch, in an order where it
+// still feeds the old images of its readers, until each of those readers has made the topology's new image current
+// and finished its crossfade: a removed track fades out through its readers' crossfades instead of cutting off. Then
+// it stops and is freed off the audio thread (collect()). If no such order exists (a reversed dependency), zombies are
+// dropped at the switch and the buses only they wrote read silence.
+// While a topology is pending (published, not yet switched to), publish() refuses (ErrorCode::Overflow: retry).
+// Unit indices in every accessor are those of the last PUBLISHED layout.
 
 #include <atomic>
 #include <cstdint>
@@ -80,6 +99,19 @@ struct ProjectLayout {
   std::vector<uint16_t> busWidth;     // channels per bus (≥ 1)
   std::vector<uint32_t> busProducer;  // writer unit per bus
   uint32_t outputBus = kNoBus;        // played on the device: channel c ← bus channel c (a mono bus on every channel)
+  // Optional (empty, or one per bus): what each bus carries, e.g. "<track id>:<port>". publishTopology() keeps the
+  // storage of a bus whose key and width are unchanged. Empty keys never match.
+  std::vector<std::string> busKey;
+  // Optional (empty, or one per bus): 1 = level-metered (peak and mean square of channels 0–1 per block; T3.17 track
+  // meters). Metering costs one pass over the bus's first two channels per block.
+  std::vector<uint8_t> busMetered;
+};
+
+// Levels of a metered bus since the previous readMeters() (linear; mean square over the frames).
+struct BusLevel {
+  uint8_t channels = 0;  // 0: not metered / no such bus
+  float peak[2] = {0.0f, 0.0f};
+  float meanSquare[2] = {0.0f, 0.0f};
 };
 
 // One image for one unit, with its bindings (pq/engine/project_compile.h makes them).
@@ -116,6 +148,26 @@ struct ProjectStats {
   uint64_t blocks = 0;          // image blocks
   uint64_t fadeBlocks = 0;      // image blocks in which any unit faded
   uint32_t maxFadingUnits = 0;  // the most units fading in one block
+  uint64_t topologySwitches = 0;
+  uint64_t topologyWaitBlocks = 0;  // image blocks a pending topology waited for fades / queued packets
+  uint64_t zombieRuns = 0;          // unit runs of removed units after a switch
+};
+
+inline constexpr uint32_t kNoUnit = 0xFFFFFFFFu;
+
+// One unit of a new topology (publishTopology).
+struct TopologyUnit {
+  uint32_t from = kNoUnit;  // the unit of the current layout this one continues, or kNoUnit: a new unit
+  bool hasImage = false;    // a new image (required for a new unit), made current at the switch
+  UnitImage image;
+  SwapPolicy policy;
+};
+
+struct TopologyInfo {
+  uint64_t sequence = 0;            // 1 for the first topology change, then 2, …
+  uint32_t newUnits = 0, continued = 0, newImages = 0, zombies = 0;
+  uint32_t reusedBuses = 0, newBuses = 0;
+  bool zombiesDropped = false;      // no order kept the removed units feeding their readers (see above)
 };
 
 class ProjectProgram {
@@ -134,6 +186,20 @@ public:
   // a channel ≥ the bus width, a produced bus channel left unwritten), a param link out of range, a plan error, too
   // many packets pending (ErrorCode::Overflow). Calls collect() first.
   Result<PublishInfo> publish(uint32_t unit, UnitImage image, const SwapPolicy& policy = {});
+  // Non-RT (serialised with publish). See "Topology changes". `units` is parallel to layout.units. Errors: an invalid
+  // layout (as create()), a `from` out of range or used twice, a continued unit whose `voices` differs, a new unit
+  // without an image, an image whose bindings do not match (as publish()), a topology already pending (Overflow).
+  Result<TopologyInfo> publishTopology(ProjectLayout layout, std::vector<TopologyUnit> units);
+  // Non-RT: a published topology the audio thread has not switched to yet.
+  bool topologyPending() const;
+  // Non-RT: publish(unit, …) would not be refused for lack of room (no topology pending, the unit's ring not full).
+  // A refused publish destroys the image it was given: wait for this first.
+  bool canPublish(uint32_t unit) const;
+  // Non-RT (one reader thread): the levels of buses of the last published layout since the previous call, then a reset
+  // request (the audio thread restarts the accumulation at its next block).
+  void readMeters(std::span<const uint32_t> buses, std::span<BusLevel> out);
+  // RT-safe (audio thread): no unit is fading, no image or topology is waiting, no voice is live in any unit.
+  bool quiet() const noexcept;
   // Non-RT: frees retired images every reader has passed; returns how many.
   size_t collect();
   size_t imagesAlive() const;   // non-RT
@@ -149,9 +215,9 @@ public:
   std::span<float> projectParams() noexcept { return projectParams_; }
   std::span<float> params(uint32_t unit) noexcept;           // the unit's current image's param block
   TransportSnapshot& transport() noexcept { return transport_; }
-  const float* bus(uint32_t b, uint16_t channel) const noexcept {  // the last block's values (frames floats)
-    return buses_.data() + (static_cast<size_t>(busFirst_[b]) + channel) * stride_;
-  }
+  // The last block's values (frames floats) of a bus of the topology the audio thread runs.
+  const float* bus(uint32_t b, uint16_t channel) const noexcept;
+  uint32_t numBuses() const noexcept;  // of the topology the audio thread runs
   const ProgramImage* current(uint32_t unit) const noexcept;
   bool crossfading(uint32_t unit) const noexcept;
   VoiceEngine* voices(uint32_t unit) noexcept;
@@ -167,30 +233,48 @@ public:
 private:
   struct Packet;
   struct Unit;
+  struct BusStore;
+  struct Slot;
+  struct Topology;
   ProjectProgram(const ProjectConfig& config, ProjectLayout layout);
   static void onBlock(void* self, const AudioBlock& b) noexcept { static_cast<ProjectProgram*>(self)->process(b); }
 
-  void trySwap(Unit& u) noexcept;
-  float unitPeak(const Unit& u) const noexcept;
-  bool runUnit(Unit& u, uint32_t frames, int64_t time) noexcept;  // true: it ran two images (a fade)
-  float* busChannel(uint32_t b, uint16_t channel) noexcept {
-    return buses_.data() + (static_cast<size_t>(busFirst_[b]) + channel) * stride_;
-  }
+  // Non-RT (mutex_ held).
+  Result<std::unique_ptr<Packet>> makePacket(const Unit& U, uint32_t unitIndex, const ProjectLayout& layout,
+                                             const std::vector<std::shared_ptr<BusStore>>& stores,
+                                             const std::vector<float*>& ownChannels, UnitImage ui,
+                                             const SwapPolicy& policy, PublishInfo& info);
+  std::unique_ptr<Unit> makeUnit(const UnitLayout& cfg);
+  void collectLocked();
+  // RT.
+  void trySwap(Unit& u, const Slot& s) noexcept;
+  void install(Unit& u, const Slot& s, Packet* p) noexcept;
+  void maybeSwitchTopology() noexcept;
+  float unitPeak(const Slot& s) const noexcept;
+  bool runUnit(Unit& u, const Slot& s, uint32_t frames, int64_t time) noexcept;  // true: it ran two images (a fade)
 
   ProjectConfig cfg_;
-  ProjectLayout layout_;
-  std::vector<std::unique_ptr<Unit>> units_;
-  // Buses: one block of `stride_` floats per bus channel.
-  AlignedBuffer<float> buses_;
-  std::vector<uint32_t> busFirst_;  // first channel index of each bus
+  ProjectLayout layout_;                            // last published
+  std::vector<std::unique_ptr<Unit>> units_;        // last published layout order
+  std::vector<std::vector<float*>> ownChannels_;    // per unit of units_: the bus channels it produces
+  std::vector<std::shared_ptr<BusStore>> stores_;   // last published layout's buses
+  std::vector<std::pair<uint64_t, std::unique_ptr<Unit>>> zombies_;  // removed units (topology sequence that removed them)
   uint32_t stride_ = 0;
+  AlignedBuffer<float> zeros_;                      // one block of zeros, never written
   std::vector<float> projectParams_;
   // Non-RT side.
   mutable std::mutex mutex_;
   std::atomic<uint64_t> freed_{0};
   EpochReclaimer reclaimer_{1};
   EpochReclaimer::ReaderId reader_{0};
+  std::vector<Topology*> topoInflight_;             // published and not retired (owned), in sequence order
+  uint64_t nextTopoSeq_ = 1;
+  SpscRing<Topology*> topoRing_{4};
+  std::atomic<uint64_t> topoCurrent_{0};            // sequence of the topology the audio thread runs
+  std::atomic<uint32_t> meterGen_{0};               // readMeters() requests a restart of the accumulation
   // Audio thread.
+  Topology* topo_ = nullptr;
+  Topology* topoPending_ = nullptr;                 // popped, waiting for fades / queued packets
   uint32_t lastFrames_ = 0;
   float silence_ = 0.0f;
   TransportSnapshot transport_;

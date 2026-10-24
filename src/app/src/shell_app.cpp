@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "pq/app/startup.h"
+#include "pq/views/mixer/mixer.h"
+#include "audio_output.h"
 
 namespace pq::app {
 
@@ -129,7 +131,21 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   app->userEvent_ = SDL_RegisterEvents(1);
   if (app->userEvent_ == 0) return Error{ErrorCode::Device, std::string("SDL_RegisterEvents: ") + SDL_GetError(), {}};
   app->transport_ = std::make_unique<SimulatedTransport>([] { return static_cast<double>(SDL_GetTicksNS()) * 1e-9; });
-  app->ctx_ = std::make_unique<views::ViewContext>(*app->transport_);
+  {
+    // T3.17: playback. The link compiles a default project first (the context's document follows at attach()).
+    doc::IdSource ids;
+    const double t0 = msSinceMainEntry();
+    auto link = ProjectLink::create(LinkConfig{}, doc::makeDefaultProject(ids));
+    if (link) {
+      app->link_ = std::move(*link);
+      std::printf("pqdaw: playback engine ready in %.1f ms\n", msSinceMainEntry() - t0);
+    } else
+      std::fprintf(stderr, "pqdaw: playback unavailable: %s\n", link.error().message.c_str());
+  }
+  if (app->link_)
+    app->ctx_ = std::make_unique<views::ViewContext>(*app->link_);
+  else
+    app->ctx_ = std::make_unique<views::ViewContext>(*app->transport_);
   app->dialogs_ = std::make_unique<SdlFileDialogs>(window, app->userEvent_);
   app->ctx_->setFileDialogs(app->dialogs_.get());
   if (!o.project.empty())
@@ -137,6 +153,13 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   auto shell = views::Shell::create(tree, *app->ctx_);
   if (!shell) return std::move(shell).error();
   app->shell_ = std::move(*shell);
+  if (app->link_) {
+    const double t1 = msSinceMainEntry();
+    app->link_->attach(*app->ctx_);
+    if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
+    if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
+    app->audio_ = std::make_unique<AudioOutput>(o, app->link_->engine());
+  }
   ShellApp* self = app.get();
   app->tempoSub_ = app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
   app->onTempoMaybeChanged();
@@ -152,9 +175,12 @@ ShellApp::~ShellApp() {
   // The shell's widgets subscribe to the context: destroy them first.
   tree_.setRoot(std::make_unique<ui::Widget>());
   shell_.reset();
+  audio_.reset();  // the device stops calling the engine
+  if (link_) link_->detach();
 }
 
 void ShellApp::onTempoMaybeChanged() {
+  if (link_) return;  // the engine follows the tempo map itself
   const auto& tl = ctx_->doc()->timeline;
   if (tl.get() == tempoTimeline_) return;
   tempoTimeline_ = tl.get();

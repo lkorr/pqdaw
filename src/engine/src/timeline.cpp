@@ -183,7 +183,10 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
 
 void Timeline::drainCommands() noexcept {  // RT-safe
   TransportCommand c;
-  for (uint32_t i = 0; i < cfg_.commandCapacity && commands_.tryPop(c); ++i) apply(c);
+  for (uint32_t i = 0; i < cfg_.commandCapacity && commands_.tryPop(c); ++i) {
+    apply(c);
+    ++commandsPosted_;
+  }
 }
 
 void Timeline::updateLoopSamples() noexcept {  // RT-safe
@@ -658,6 +661,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     r.bpm = snapshot_.bpm;
     r.loopWraps = stats_.loopWraps;
     r.playing = playing_;
+    r.commands = commandsPosted_;
     if (!reports_.tryPush(r)) ++stats_.droppedReports;
     reportPending_ = false;
   }

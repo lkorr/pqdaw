@@ -22,5 +22,7 @@ int runLatencyTest(const CliOptions& options);
 int runAsioPanel(const CliOptions& options);
 // --play (T1.7, play_command.cpp): compile a .pqp patch with the interpreter and play its global outputs.
 int runPlay(const CliOptions& options);
+// --render (T3.17, render_command.cpp): a project rendered offline through the playback engine into a WAV file.
+int runRender(const CliOptions& options);
 
 }  // namespace pq::app

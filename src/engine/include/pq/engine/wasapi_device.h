@@ -58,6 +58,9 @@ public:
   Result<StreamInfo> open(const StreamConfig& config, AudioCallback cb) override;
   Status start() override;
   Status stop() override;
+  // After stop(): resets the client now (what the next start() would do first; ~350 ms on some drivers), so a
+  // later start() is quick (T3.17: the DAW stops an idle stream and restarts it on the next play).
+  Status prepareRestart();
   void close() noexcept override;
   bool isOpen() const noexcept override;
   bool isRunning() const noexcept override;

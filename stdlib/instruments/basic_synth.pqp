@@ -1,0 +1,31 @@
+// The M3 default instrument (QUESTIONS Q15, option A): one per MIDI track until the stock devices arrive (M4).
+// Leaf atoms only. The pitch is voice.hz, the tuning-resolved Hz of the note (SPEC §3.1), so 31edo, MOS and ratio
+// notes play their true pitches. A soft additive tone (fundamental plus a little 2nd and 3rd harmonic) under a
+// one-pole ADSR; quiet by default (level 0.2 at full velocity) so a few voices on a few tracks stay well below 0 dBFS.
+//
+// The envelope approaches each target exponentially with a time constant of a fifth of the stage time, so a stage
+// is within 1 % of its target after its time. `done` ends the voice once the release has decayed below −90 dB
+// (VoiceEngine voice end, SPEC §7.7).
+patch BasicSynth {
+  param attack  = 5ms   [0.5ms..5s]
+  param decay   = 400ms [1ms..10s]
+  param sustain = 0.5   [0..1]
+  param release = 250ms [1ms..10s]
+  param level   = 0.2   [0..1]
+  param bright  = 0.35  [0..1]
+  out   out  : audio voice mono
+  out   done : bool voice mono
+
+  gate      = voice.gate
+  attacking = srff(rise(gate), env >= 0.99 || !gate)
+  target    = attacking ? 1.0 : gate ? sustain : 0.0
+  time      = attacking ? attack : gate ? decay : release
+  coef      = 1 - exp(-5 / max(time * sr, 1))
+  env       = z1(env + (target - env) * coef)
+
+  ph  = phasor(voice.hz)
+  osc = sine(ph) * (1 - bright * 0.4) + sine(frac(ph * 2)) * (bright * 0.3) + sine(frac(ph * 3)) * (bright * 0.1)
+  vel = 0.25 + 0.75 * voice.velocity
+  out = osc * env * vel * level
+  done = !gate && env < 0.00003
+}

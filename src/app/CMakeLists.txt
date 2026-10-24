@@ -9,9 +9,15 @@ pq_add_module(pq_app
     src/sim_transport.cpp
     src/startup.cpp
     src/file_watch.cpp
+    src/project_link.cpp
+    src/audio_output.cpp
+    src/render_command.cpp
   DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine
   PRIVATE_DEPS SDL3::SDL3-static)
 target_compile_options(pq_app PRIVATE /external:W0)
+# T3.17: the stdlib fallback location (pq::app::stdlibDir) for dev builds and tests.
+pq_use_build_paths(pq_app)
+target_compile_definitions(pq_app PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
 
 pq_add_executable(pqdaw
   SOURCES src/main.cpp

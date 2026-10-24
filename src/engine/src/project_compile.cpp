@@ -68,6 +68,20 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   cu.ops = static_cast<uint32_t>(sr.schedule.ops.size());
   cu.inBus = up.value().inBus;
   cu.voices = up.value().voices;
+  for (uint32_t t : partition_.units[u].tracks) cu.memberIds.push_back(g.tracks[t].id);
+  std::sort(cu.memberIds.begin(), cu.memberIds.end());
+  for (uint32_t b : up.value().inBus) {
+    cu.inKeys.push_back(busKeys_[b]);
+    cu.inTypes.push_back(busTypes_[b]);
+    cu.readKeys.push_back(busKeys_[b]);
+    cu.busNumbers.emplace_back(b, busKeys_[b]);
+  }
+  for (uint32_t b : up.value().outBus) {
+    cu.writeKeys.push_back(busKeys_[b]);
+    cu.busNumbers.emplace_back(b, busKeys_[b]);
+  }
+  std::sort(cu.readKeys.begin(), cu.readKeys.end());
+  std::sort(cu.writeKeys.begin(), cu.writeKeys.end());
   const uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
                         (uint64_t{voiceGroupsOf(opt_, cu.voices)} << 33);
   cu.key = unitHash(opt.value(), salt);
@@ -92,7 +106,8 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
     ui.in.push_back(BusRef{cu.inBus[s.ordinal], s.channel});
   }
   for (const IoSlot& s : io.globalOut) {
-    const uint32_t b = s.isExport ? kNoBus : graph::parseBusName(patch.nodeName(s.node));
+    uint32_t b = s.isExport ? kNoBus : graph::parseBusName(patch.nodeName(s.node));
+    if (b != kNoBus && !cu.busRemap.empty()) b = b < cu.busRemap.size() ? cu.busRemap[b] : kNoBus;
     ui.out.push_back(BusRef{b, b == kNoBus ? uint16_t{0} : s.channel});
   }
   if (cu.voices) {
@@ -130,10 +145,16 @@ Result<UnitImage> ProjectCompiler::makeImage(uint32_t u, const UnitBackend& back
   return bind(u, std::move(img.value()));
 }
 
+std::string ProjectCompiler::busKey(const graph::ProjectGraph& g, const graph::ProjectPort& p) {
+  return (p.track < g.tracks.size() ? std::to_string(g.tracks[p.track].id) : std::string("?")) + ":" + p.port;
+}
+
 Result<ProjectBuild> ProjectCompiler::buildFrom(const graph::ProjectGraph& g, graph::ProjectPartition partition) {
   partition_ = std::move(partition);
   units_.clear();
   busTypes_.assign(partition_.buses.size(), graph::PortType{});
+  busKeys_.clear();
+  for (const graph::ProjectBus& b : partition_.buses) busKeys_.push_back(busKey(g, b.source));
   ProjectBuild out;
   for (uint32_t u = 0; u < partition_.units.size(); ++u) {
     auto cu = compileUnit(g, u, nullptr);
@@ -157,6 +178,134 @@ Result<ProjectBuild> ProjectCompiler::buildFrom(const graph::ProjectGraph& g, gr
     out.layout.busProducer.push_back(partition_.buses[b].producer);
   }
   out.layout.outputBus = partition_.outputBus;
+  out.layout.busKey = busKeys_;
+  out.partition = partition_;
+  return out;
+}
+
+Result<TopologyBuild> ProjectCompiler::rebuild(const graph::ProjectGraph& g, std::span<const uint32_t> dirtyTracks,
+                                               const UnitBackend* backend) {
+  if (units_.empty()) return compileError(ErrorCode::InvalidArgument, "rebuild before build");
+  if (whole_) return compileError(ErrorCode::Unsupported, "rebuild of a whole-project build");
+  auto part = graph::partitionProject(g);
+  if (!part.ok()) return part.error();
+  // Keep the previous project until everything compiled.
+  graph::ProjectPartition oldPartition = std::move(partition_);
+  std::vector<CompiledUnit> oldUnits = std::move(units_);
+  std::vector<graph::PortType> oldTypes = std::move(busTypes_);
+  std::vector<std::string> oldKeys = std::move(busKeys_);
+  units_.clear();
+  auto restore = [&] {
+    partition_ = std::move(oldPartition);
+    units_ = std::move(oldUnits);
+    busTypes_ = std::move(oldTypes);
+    busKeys_ = std::move(oldKeys);
+  };
+  partition_ = std::move(part.value());
+  busTypes_.assign(partition_.buses.size(), graph::PortType{});
+  busKeys_.clear();
+  for (const graph::ProjectBus& b : partition_.buses) busKeys_.push_back(busKey(g, b.source));
+  std::vector<uint32_t> dirtyIds;
+  for (uint32_t t : dirtyTracks)
+    if (t < g.tracks.size()) dirtyIds.push_back(g.tracks[t].id);
+  auto keyIndex = [&](const std::string& k) -> uint32_t {
+    for (uint32_t b = 0; b < busKeys_.size(); ++b)
+      if (busKeys_[b] == k) return b;
+    return kNoBus;
+  };
+  auto oldKeyIndex = [&](const std::string& k) -> uint32_t {
+    for (uint32_t b = 0; b < oldKeys.size(); ++b)
+      if (oldKeys[b] == k) return b;
+    return kNoBus;
+  };
+  const UnitBackend& be = backend != nullptr ? *backend : opt_.backend;
+  TopologyBuild out;
+  std::vector<uint8_t> oldTaken(oldUnits.size(), 0);
+  for (uint32_t u = 0; u < partition_.units.size(); ++u) {
+    const graph::ProjectUnit& pu = partition_.units[u];
+    std::vector<uint32_t> members;
+    for (uint32_t t : pu.tracks) members.push_back(g.tracks[t].id);
+    std::sort(members.begin(), members.end());
+    std::vector<std::string> reads, writes;
+    for (uint32_t b = 0; b < partition_.buses.size(); ++b) {
+      const graph::ProjectBus& pb = partition_.buses[b];
+      if (pb.producer == u) writes.push_back(busKeys_[b]);
+      if (std::find(pb.readers.begin(), pb.readers.end(), u) != pb.readers.end()) reads.push_back(busKeys_[b]);
+    }
+    std::sort(reads.begin(), reads.end());
+    std::sort(writes.begin(), writes.end());
+    uint32_t from = kNoUnit;
+    for (uint32_t o = 0; o < oldUnits.size() && from == kNoUnit; ++o)
+      if (!oldTaken[o] && oldUnits[o].memberIds == members) from = o;
+    bool reuse = from != kNoUnit && oldUnits[from].readKeys == reads && oldUnits[from].writeKeys == writes;
+    for (uint32_t id : members) reuse = reuse && std::find(dirtyIds.begin(), dirtyIds.end(), id) == dirtyIds.end();
+    if (reuse) {  // its inputs must still have the types it was compiled against
+      const CompiledUnit& ou = oldUnits[from];
+      for (size_t k = 0; k < ou.inKeys.size() && reuse; ++k) {
+        const uint32_t b = keyIndex(ou.inKeys[k]);
+        reuse = b != kNoBus && busTypes_[b].kind == ou.inTypes[k].kind && busTypes_[b].width == ou.inTypes[k].width;
+      }
+    }
+    if (reuse) {  // and the same param links (the running image's links cannot change without a new image)
+      std::vector<std::pair<std::string, uint32_t>> links;
+      for (const ProjectParamLink& l : opt_.paramLinks)
+        if (l.track < g.tracks.size() && partition_.unitOf[l.track] == u)
+          links.emplace_back("t" + std::to_string(g.tracks[l.track].id) + "__" + l.param, l.projectParam);
+      auto old = oldUnits[from].links;
+      std::sort(links.begin(), links.end());
+      std::sort(old.begin(), old.end());
+      reuse = links == old;
+    }
+    TopologyUnit tu;
+    tu.from = from;
+    if (from != kNoUnit) oldTaken[from] = 1;
+    if (reuse) {
+      CompiledUnit cu = oldUnits[from];  // a copy: the old project stays intact until the build succeeds
+      for (size_t k = 0; k < cu.inKeys.size(); ++k) cu.inBus[k] = keyIndex(cu.inKeys[k]);
+      uint32_t maxNum = 0;
+      for (const auto& [num, key] : cu.busNumbers) maxNum = std::max(maxNum, num);
+      cu.busRemap.assign(maxNum + 1, kNoBus);
+      for (const auto& [num, key] : cu.busNumbers) cu.busRemap[num] = keyIndex(key);
+      for (uint32_t b = 0; b < partition_.buses.size(); ++b)
+        if (partition_.buses[b].producer == u) {
+          const uint32_t ob = oldKeyIndex(busKeys_[b]);
+          busTypes_[b] = ob != kNoBus ? oldTypes[ob] : graph::PortType{};
+        }
+      units_.push_back(std::move(cu));
+      ++out.reused;
+    } else {
+      const graph::StateLayout* previous = from != kNoUnit ? &oldUnits[from].schedule->state : nullptr;
+      auto cu = compileUnit(g, u, previous);
+      if (!cu.ok()) {
+        restore();
+        return cu.error();
+      }
+      for (uint32_t b = 0; b < partition_.buses.size(); ++b)
+        if (partition_.buses[b].producer == u) busTypes_[b] = graph::busType(*cu.value().typed, b);
+      units_.push_back(std::move(cu.value()));
+      auto img = makeImage(u, be);
+      if (!img.ok()) {
+        restore();
+        return img.error();
+      }
+      tu.hasImage = true;
+      tu.image = std::move(img.value());
+      ++out.compiled;
+    }
+    UnitLayout ul;
+    ul.name = pu.name;
+    ul.voices = units_[u].voices;
+    ul.voice = opt_.voice;
+    ul.eventSlot = pu.voiceTrack != graph::kNone ? g.tracks[pu.voiceTrack].eventSlot : kNoSlot;
+    out.layout.units.push_back(std::move(ul));
+    out.units.push_back(std::move(tu));
+  }
+  for (uint32_t b = 0; b < partition_.buses.size(); ++b) {
+    out.layout.busWidth.push_back(std::max<uint16_t>(busTypes_[b].width, 1));
+    out.layout.busProducer.push_back(partition_.buses[b].producer);
+  }
+  out.layout.outputBus = partition_.outputBus;
+  out.layout.busKey = busKeys_;
   out.partition = partition_;
   return out;
 }

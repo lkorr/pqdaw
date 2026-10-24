@@ -685,6 +685,14 @@ void WasapiDevice::Impl::threadMain() noexcept {
   threadAlive.store(false, std::memory_order_release);
 }
 
+Status WasapiDevice::prepareRestart() {
+  Impl& m = *impl_;
+  if (!m.open || m.threadAlive.load(std::memory_order_acquire) || !m.needsReset) return Ok{};
+  if (HRESULT hr = m.client->Reset(); FAILED(hr)) return comError("WasapiDevice: Reset after stop", hr);
+  m.needsReset = false;
+  return Ok{};
+}
+
 Status WasapiDevice::start() {
   Impl& m = *impl_;
   if (!m.open) return Error{ErrorCode::InvalidArgument, "WasapiDevice: start() without an open stream"};

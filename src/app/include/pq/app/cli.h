@@ -27,6 +27,7 @@ enum class Mode {
   Play,            // --play <file.pqp> [--patch <name>] [--notes "<keys>"] [--seconds <s>] [--level <dBFS>] + the
                    //   --sine stream flags
   AsioPanel,       // --asio-panel [--device <id|name>] [--seconds <s>]: open an ASIO driver's control panel (T0.6-fix2)
+  Render,          // --project <dir> --render <out.wav> [--seconds <s>]: offline render of a project (T3.17)
 };
 
 // Which WASAPI implementation --sine / --list-devices use (--asio / --backend asio overrides both with our ASIO host).

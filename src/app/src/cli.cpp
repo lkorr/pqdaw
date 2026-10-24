@@ -142,6 +142,10 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--asio-panel") {
       if (Status s = setMode(Mode::AsioPanel, a); !s) return std::move(s).error();
       o.asio = true;
+    } else if (a == "--render") {
+      if (Status s = setMode(Mode::Render, a); !s) return std::move(s).error();
+      if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--render needs an output .wav path");
+      o.outPath = std::string(args[++i]);
     } else if (a == "--project") {
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--project needs a project directory");
       o.project = std::string(args[++i]);
@@ -158,35 +162,42 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   if (o.mode != Mode::Screenshot && o.mode != Mode::Window && o.scale != 0.0f)
     return usageError("--scale only applies to --screenshot and the window");
   const bool play = o.mode == Mode::Play;
-  if (!sineOnly.empty() && o.mode != Mode::Sine && !(play && sineOnly != "--inject-stall"))
+  // T3.17: the DAW window plays through a device: it takes the device flags (--device, --buffer, --exclusive,
+  // --backend, --asio); --render takes --seconds.
+  const bool window = o.mode == Mode::Window;
+  const bool render = o.mode == Mode::Render;
+  if (!sineOnly.empty() && o.mode != Mode::Sine && !(play && sineOnly != "--inject-stall") &&
+      !(window && sineOnly == "--exclusive"))
     return usageError(std::string(sineOnly) + " only applies to --sine");
   const bool panel = o.mode == Mode::AsioPanel;
   if (!streamOnly.empty() && o.mode != Mode::Sine && o.mode != Mode::LatencyTest && !play &&
-      !(panel && (streamOnly == "--device" || streamOnly == "--seconds")))
-    return usageError(std::string(streamOnly) + " only applies to --sine, --play and --latency-test");
+      !(panel && (streamOnly == "--device" || streamOnly == "--seconds")) &&
+      !(window && (streamOnly == "--device" || streamOnly == "--buffer")) && !(render && streamOnly == "--seconds"))
+    return usageError(std::string(streamOnly) + " only applies to --sine, --play, --latency-test and the window");
   if (panel && !sineOnly.empty()) return usageError("--asio-panel takes only --device and --seconds");
   if (!o.deviceEndpoint.empty() && o.deviceEndpoint.front() != '{' && !o.asio)
     return usageError("--device needs a device id or endpoint id ({...}) from --list-devices (driver names select "
                       "ASIO drivers: add --backend asio)");
   if (!o.deviceEndpoint.empty() && o.deviceEndpoint.front() == '{' && o.asio)
     return usageError("endpoint ids select WASAPI devices; ASIO drivers are selected by id or name");
-  if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play)
+  if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play && !window)
     return usageError("--backend only applies to --sine, --play and --list-devices");
   if (!o.patchName.empty() && !play) return usageError("--patch only applies to --play");
   if (!o.notes.empty() && !play) return usageError("--notes only applies to --play");
   if (o.stallAfterWake && (o.asio || o.wasapi != WasapiImpl::Own))
     return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
-  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play && !panel)
+  if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play && !panel && !window)
     return usageError("--asio only applies to --sine, --play, --list-devices and --asio-panel");
   // The window opens the DAW shell (a new project, or --project) unless --scene names another scene (T3.9, Q60).
   if (o.mode == Mode::Window && !sceneFlag) o.scene = "shell";
   if (!o.project.empty() || o.idleCheckSeconds > 0.0) {
-    if (!o.project.empty() && o.mode != Mode::Window && o.mode != Mode::Screenshot)
-      return usageError("--project only applies to the window and --screenshot");
+    if (!o.project.empty() && o.mode != Mode::Window && o.mode != Mode::Screenshot && !render)
+      return usageError("--project only applies to the window, --screenshot and --render");
     if (o.idleCheckSeconds > 0.0 && o.mode != Mode::Window) return usageError("--idle-check only applies to the window");
     if ((o.mode == Mode::Window || o.mode == Mode::Screenshot) && !pq::views::isViewScene(o.scene))
       return usageError("--project and --idle-check need a view scene (e.g. shell), not '" + o.scene + "'");
   }
+  if (render && o.project.empty()) return usageError("--render needs --project <dir>");
   return o;
 }
 
@@ -248,6 +259,13 @@ std::string usage() {
          "                                           loaded until Enter (or for S seconds)\n"
          "  --latency-test [--seconds S] [--device ..] [--buffer N] [--level DBFS]\n"
          "                                           shared-mode output latency vs WASAPI loopback capture\n"
+         "  --project <dir> --render <out.wav> [--seconds S]\n"
+         "                                           render the project offline from the start through the\n"
+         "                                           playback engine (32-bit float WAV, 48 kHz stereo);\n"
+         "                                           default length: the end of the last clip + 2 s\n"
+         "  (window) --device ID, --buffer N, --exclusive, --backend wasapi|rtaudio|asio, --asio\n"
+         "                                           the output the DAW plays through (default: the default\n"
+         "                                           WASAPI device, shared mode, 48 kHz)\n"
          "  --help                                  this text\n";
 }
 

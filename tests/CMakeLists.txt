@@ -75,6 +75,14 @@ pq_add_test(pq_tests_app
     app/test_shell_app.cpp
   DEPS pq_app pq_ui)
 
+# T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
+# solo/mute vs effectiveAudible, topology swaps, the NullDevice end-to-end playhead).
+pq_add_test(pq_tests_playback
+  SOURCES
+    app/test_playback.cpp
+    golden/golden_audio.cpp
+  DEPS pq_app)
+
 # views (T3.7): ViewContext (project I/O, undo, transport routing), the shell (layout, hotkeys, control bar), goldens.
 pq_add_test(pq_tests_views
   SOURCES

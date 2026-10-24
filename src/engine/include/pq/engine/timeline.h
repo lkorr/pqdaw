@@ -117,6 +117,8 @@ struct TransportReport {
   SampleTime songSample = 0;   // the same position in samples
   double bpm = 120.0;
   uint64_t loopWraps = 0;
+  uint64_t commands = 0;       // commands taken from post() so far (T3.17: the UI knows which of its commands this
+                               // report already reflects)
   bool playing = false;
 };
 
@@ -294,6 +296,7 @@ private:
   Ticks bpmFrom_ = 0, bpmTo_ = 0;            // the constant-tempo segment of the last snapshot (empty: none)
   double bpmConst_ = 120.0;
   uint64_t framesSinceReport_ = UINT64_MAX / 2;
+  uint64_t commandsPosted_ = 0;  // commands drained from the post() ring
   // Sequencer.
   uint32_t numTracks_ = 0;
   uint32_t nextInstance_ = 1;    // event note ids: unique across tracks (wraps after 2^32 notes, skipping 0)
