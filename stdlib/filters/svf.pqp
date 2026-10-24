@@ -1,0 +1,76 @@
+// State-variable filter, zero-delay feedback (TPT). Two trapezoidal integrators in the classic SVF loop, solved in
+// closed form per sample (A. Simper, "Linear trapezoidal integrated state variable filter", Cytomic 2013; the same
+// filter as V. Zavalishin's TPT SVF with k = 2R). Stable and click-free under fast cutoff / Q modulation, including
+// audio-rate modulation, which is why EQ Eight and Auto Filter are built on it.
+//
+//   g = tan(π·cutoff/sr), k = 1/q,  a1 = 1 / (1 + g·(g + k)),  a2 = g·a1,  a3 = g·a2
+//   v3 = x − ic2,  v1 = a1·ic1 + a2·v3 (band),  v2 = ic2 + a2·ic1 + a3·v3 (low),  ic1 ← 2·v1 − ic1,  ic2 ← 2·v2 − ic2
+//
+// `svf` gives every response of one filter core as an output: lp, bp (unity gain at the cutoff), hp, notch, peak
+// (lp − hp) and allpass, all from the same two states; read as many as you like at no extra cost. The bell and the
+// shelves use the gain-dependent coefficients of the RBJ / Cytomic designs, so each of them is its own core:
+// `svf(x, cutoff: c, q: q, gain: 6dB).lowshelf` costs one core, and cores whose outputs are not read are removed
+// by the compiler. Cost per core: about ten multiply/adds per sample; the coefficients run once per block unless
+// cutoff, q or gain are modulated.
+patch svf {
+  in    x      : audio
+  param cutoff = 1kHz   [20Hz..20kHz] @unit(Hz) @curve(exp) @label("Cutoff")
+  param q      = 0.7071 [0.1..40]     @curve(exp) @label("Q")
+  param gain   = 0dB    [-24dB..24dB] @unit(dB) @label("Gain")   // bell and shelves only
+  out   lp        : audio
+  out   bp        : audio
+  out   hp        : audio
+  out   notch     : audio
+  out   peak      : audio
+  out   allpass   : audio
+  out   bell      : audio
+  out   lowshelf  : audio
+  out   highshelf : audio
+
+  // The cutoff is kept in [0, 0.49·sr] (tan has its pole at Nyquist); q > 0.
+  g = tan(3.141592653589793 * clip(cutoff, 0, 0.49 * sr) / sr)
+  k = 1 / max(q, 0.01)
+  A = sqrt(gain)              // 10^(dB/40): `gain` is already linear (dB literals are amplitudes)
+
+  f = svf_core(x, g: g, k: k)
+  lp      = f.low
+  bp      = k * f.band
+  hp      = x - k * f.band - f.low
+  notch   = x - k * f.band
+  peak    = x - k * f.band - 2 * f.low
+  allpass = x - 2 * k * f.band
+
+  // RBJ peaking EQ (symmetric boost/cut): k scaled by 1/A.
+  b = svf_core(x, g: g, k: k / A)
+  bell = x + k / A * (gain - 1) * b.band
+
+  // Shelves: the cutoff moved by A^(∓1/2) so it marks the middle of the transition (in dB).
+  ls = svf_core(x, g: g / sqrt(A), k: k)
+  lowshelf = x + k * (A - 1) * ls.band + (gain - 1) * ls.low
+  hs = svf_core(x, g: g * sqrt(A), k: k)
+  highshelf = gain * x + k * (1 - A) * A * hs.band + (1 - gain) * hs.low
+}
+
+// The SVF loop itself, for designs that compute their own g and k (g = tan(π·fc/sr) prewarped integrator gain,
+// k = 1/Q damping). Outputs the band-pass (peak gain 1/k) and low-pass integrator outputs; every other response
+// is a mix of these and the input.
+patch svf_core {
+  in    x : audio
+  param g = 0.0655  [0..100]   @label("g")   // tan(π · 1 kHz / 48 kHz)
+  param k = 1.4142  [0.001..100] @label("k")
+  out   band : audio
+  out   low  : audio
+
+  a1 = 1 / (1 + g * (g + k))
+  a2 = g * a1
+  a3 = g * a2
+
+  v3  = x - ic2
+  v1  = a1 * ic1 + a2 * v3
+  v2  = ic2 + a2 * ic1 + a3 * v3
+  ic1 = z1(2 * v1 - ic1)      // integrator states (trapezoidal)
+  ic2 = z1(2 * v2 - ic2)
+
+  band = v1
+  low  = v2
+}

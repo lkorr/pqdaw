@@ -1,0 +1,34 @@
+// ADSR envelope (SPEC §7.2: a composite of logic, math and memory atoms).
+//
+//   attack   from a rising gate, linear from the current level up to 1; `a` is the time for the full 0 → 1 rise
+//            (so a retrigger from a sounding level is shorter, and never clicks)
+//   decay    exponential from 1 towards `s`; after `d` the remaining distance is −80 dB (10⁻⁴) of where it started
+//   sustain  `s` while the gate is held; moving `s` glides there at the decay rate
+//   release  exponential towards 0 once the gate falls (also during attack or decay); −80 dB after `r`
+//
+// `done` is true once the gate is low and the level is below −80 dB. Wire it to an instrument's own
+// `out done : bool voice` and the VoiceEngine ends the voice there (SPEC §7.7). Stage times are param-rate, so
+// their coefficients run once per block; per sample the envelope is a few compares, two selects and a
+// multiply-add.
+patch adsr {
+  in    gate : bool
+  param a = 5ms   [0ms..10s] @unit(s) @curve(exp) @label("Attack")
+  param d = 200ms [1ms..10s] @unit(s) @curve(exp) @label("Decay")
+  param s = 0.7   [0..1]     @label("Sustain")
+  param r = 300ms [1ms..30s] @unit(s) @curve(exp) @label("Release")
+  out   out  : audio
+  out   done : bool
+
+  // In attack from each rising gate until the level reaches 1 or the gate falls.
+  attacking = srff(rise(gate), level >= 1 || !gate)
+
+  rise1 = 1 / max(a * sr, 1)                           // attack step per sample
+  dcoef = exp(-9.210340371976184 / max(d * sr, 1))     // e^(−ln 10⁴ / samples): −80 dB per stage time
+  rcoef = exp(-9.210340371976184 / max(r * sr, 1))
+
+  next  = attacking ? min(level + rise1, 1) : gate ? s + (level - s) * dcoef : level * rcoef
+  level = z1(next)
+
+  out  = next
+  done = !gate && next < 0.0001
+}

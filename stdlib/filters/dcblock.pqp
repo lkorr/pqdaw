@@ -1,0 +1,15 @@
+// DC blocker: a zero at DC and a pole just inside it,
+//
+//   y = x − x[n − 1] + R·y[n − 1],   R = exp(−2π·cutoff/sr)
+//
+// so the response is flat down to a few Hz and exactly 0 at DC. The classic cheap form (one multiply, two adds per
+// sample) for removing offsets after waveshapers, rectifiers or feedback loops.
+patch dcblock {
+  in    x      : audio
+  param cutoff = 10Hz [1Hz..200Hz] @unit(Hz) @curve(exp) @label("Cutoff")
+  out   out : audio
+
+  R   = exp(-6.283185307179586 * cutoff / sr)
+  y   = x - z1(x) + R * z1(y)
+  out = y
+}

@@ -1,0 +1,40 @@
+// Comb filters: a delay line fed back into itself. Peaks every 1/time Hz; with |fb| near 1 they ring like a string
+// or a tube. `maxTime` (constant) sizes the delay line; the delay is linearly interpolated and at least 0.1 ms.
+// Every cycle of both loops passes through the delay line, so with a known lower bound on the delay (a constant
+// time, or a param's range minimum) the compiler runs the loop in blocks of that many samples instead of one sample
+// at a time.
+
+// Feedback comb:  y = x + fb · y[n − D]   (D = time). The loop is exactly `time` long: the fundamental is 1/time.
+patch comb {
+  in    x       : audio
+  in    maxTime : real const = 100ms
+  param time = 10ms [0.1ms..1s]     @unit(s) @curve(exp) @label("Time")
+  param fb   = 0.5  [-0.999..0.999] @label("Feedback")
+  out   out : audio
+
+  y   = x + fb * delay(y, max(time, 0.1ms), maxTime)
+  out = y
+}
+
+// Damped feedback comb (a Karplus–Strong string):  y = x + fb · lp(y)[n − D].
+// The damping low-pass is the symmetric FIR  a·y[n] + (1 − 2a)·y[n − 1] + a·y[n − 2],  a = damp/4, whose gain is
+// 1 − damp·sin²(ω/2) (flat at DC, 1 − damp at Nyquist) and whose delay is exactly one sample at every frequency
+// (linear phase). The delay line is one sample shorter, so the loop is exactly `time` long at every frequency and
+// damping: the comb stays in tune at 1/time with harmonic partials (measured: within 0.05 cents up to 1 kHz; the
+// linear interpolation of a fractional delay adds 0.35 cents at 2.9 kHz). A one-pole damper would delay low
+// partials more than high ones and make the string flat (the M1 review's pluck sat 9 cents low). The FIR sits before the delay line (the two commute),
+// so its taps are plain z1s and the loop still runs in sub-blocks.
+patch comb_lp {
+  in    x       : audio
+  in    maxTime : real const = 100ms
+  param time = 10ms [0.1ms..1s]     @unit(s) @curve(exp) @label("Time")
+  param fb   = 0.5  [-0.999..0.999] @label("Feedback")
+  param damp = 0.3  [0..1]          @label("Damping")
+  out   out : audio
+
+  a   = damp * 0.25
+  y1  = z1(y)
+  lp  = a * (y + z1(y1)) + (1 - 2 * a) * y1
+  y   = x + fb * delay(lp, max(time - 1 / sr, 0.1ms), maxTime)
+  out = y
+}

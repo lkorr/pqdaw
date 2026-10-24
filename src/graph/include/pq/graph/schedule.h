@@ -10,7 +10,10 @@
 //    delay*.x, phasor.hz, sine_hz.hz, sample_read rate) are marked.
 // 2. Tarjan SCCs. A strongly connected component with more than one node (or a self-loop) is feedback. Inside it:
 //    - edges into z1.x / delay*.x are CUT: the node becomes a split pair (z1:read … z1:write, delay*:read …
-//      delay:write, pq/dsp/atoms.h); the read runs where the node would, the write at the end of the iteration;
+//      delay:write, pq/dsp/atoms.h); the read runs where the node would, the write at the end of the iteration.
+//      Exception (T1b.3): when cutting the delay lines alone already leaves the SCC acyclic (and it has no solve
+//      block), its z1s are not split: they run as ordinary kernels inside the loop, so a loop whose every cycle
+//      passes through a delay line keeps its sub-blocks (e.g. an FIR of z1 taps inside a comb's feedback);
 //    - what is left without the solve edges must be acyclic. Otherwise the cycle has no delay: an error (text,
 //      located at a node of the cycle) or, with ScheduleOptions::visualMode, a z1 is inserted on one of its wires
 //      and a warning is recorded (Schedule::warnings, insertedDelays). A cycle whose only delay is a delayed input
@@ -36,7 +39,8 @@
 //                 echo then runs in sub-blocks of 12000 frames, i.e. block-wise. Lower bounds are evaluated in
 //                 float32 with the runtime's operations (a double bound can round above the runtime value and
 //                 make the tap read an unwritten frame). Lower bounds come from literals,
-//                 `sr`, products/sums of non-negative bounds and, with ScheduleOptions::trustParamRanges, the
+//                 `sr`, products/sums of non-negative bounds, max, x − literal (T1b.3) and, with
+//                 ScheduleOptions::trustParamRanges, the
 //                 declared range minimum of a param (the engine must clamp params to their ranges).
 //    Within a stage and class, ready SCCs are taken depth-first (most recently readied first), so a value is read
 //    soon after it is written and few buffers are live; consecutive loops with the same subBlock share one region.

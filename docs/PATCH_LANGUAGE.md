@@ -96,9 +96,9 @@ Decided while implementing the parser; the open ones are tracked in [QUESTIONS.m
   - A cycle that goes through `z1(…)`, `delay(…)` or a stateful atom is ordinary feedback.
   - A cycle with no delay is an **error** in text, unless it is inside `solve`. The visual editor inserts an explicit `z1` and shows a warning instead.
   - For now a cycle whose only delay is `phasor`'s or `sine_hz`'s `hz` (or a sample player's `rate`) is reported the same way: those atoms have no split kernel yet, so put a `z1` into such a loop (QUESTIONS Q43). Loops through `z1` and delay lines are scheduled per sample, or in sub-blocks as long as the shortest delay allows (T1.5).
-  - Zero-delay-feedback filters write their solved form explicitly (see `stdlib/filters/svf.pqp` once it exists).
+  - Zero-delay-feedback filters write their solved form explicitly (see `stdlib/filters/svf.pqp` and `onepole.pqp`).
 - **Calls** go to a leaf atom (SPEC §7.2), a patch in the same file, or a patch from an `import`ed file. Calling a patch instantiates it as a subcircuit. Named arguments bind its `in`s and `param`s; anything not bound uses its default.
-- **Multi-output nodes** return a record, accessed with `.name` (e.g. `svf(x, cutoff: c, res: r).lp`).
+- **Multi-output nodes** return a record, accessed with `.name` (e.g. `svf(x, cutoff: c, q: r).lp`).
 - **Inference**: each port's declared `rate`/`poly` is an *upper bound*. The compiler infers the cheapest rate and poly that are correct (SPEC §7.1, §7.4). Mixing kinds requires explicit conversion, e.g. `gate_to_real(b)` or `x > 0`. There is no implicit bool↔real conversion. A subcircuit's `param`s accept any rate and poly (wiring a modulator into one makes that instance's path audio-rate or per-voice); its `in`s are bounded by their declaration. A per-voice signal into a `global` port is summed over the voices (on bools: any voice); to choose another reduction, call one explicitly: `voice_sum`, `voice_last`, `voice_highest`, `voice_lowest`, `voice_loudest` (QUESTIONS Q28). The rules in detail: `pq/graph/infer.h`.
 - **Width**: binary operators broadcast mono over stereo. Two stereo operands combine channel-wise. `[i]` selects a channel.
 - **Constants**: unit-normalised literals, constant arithmetic and `const` params are folded at compile time. `param`s are **never** folded, so knob changes never recompile.
@@ -109,6 +109,24 @@ Decided while implementing the parser; the open ones are tracked in [QUESTIONS.m
   - `sr` (sample rate as a `const` after specialisation)
 - **Tuning as a signal** (T2.6, SPEC §3.3): `tuning_hz(degree, equave, hz, cents, generator, period, stretch, reference, table: k)` is the pitch of a degree in tuning table `k` (an EDO or MOS; `period` is an EDO's equave) at modulatable generator / period / stretch / reference, with outputs `.hz` and `.cents`; lanes without a degree pass `hz` / `cents` through. `tv = tune_voices(t.hz, t.cents)` (no outputs; `cents` optional) makes `voice.hz` (and `voice.cents`) read those values in every subcircuit the patch instantiates, recursively; the patch's own `voice.hz` stays the engine's (that is the fallback input), and an inner `tune_voices` wins over an outer one. One per patch.
 - **Exports** become wire sources visible outside the device. Anything can be exported: an oscillator output, an envelope, a bool.
+
+## 3.1 The stock library (`stdlib/`, T1b.3)
+Stock subcircuits are ordinary patches in this language; a patch imports the file it calls (paths relative to the importing file: `import "filters/svf.pqp"` from the stdlib root, `import "../stdlib/filters/svf.pqp"` from a sibling directory). Every one of them has a hand-written C++ reference in `tests/stdlib/stdlib_reference.h` that the compiled subcircuit matches within 1e-5 on both backends.
+
+| File | Patches | Outputs (first = the call's value) |
+|---|---|---|
+| `filters/onepole.pqp` | `onepole(x, cutoff)`: TPT one-pole | `lp`, `hp`, `allpass` |
+| `filters/svf.pqp` | `svf(x, cutoff, q, gain)`: TPT state-variable filter; `svf_core(x, g, k)`: its loop | `lp`, `bp`, `hp`, `notch`, `peak`, `allpass`, `bell`, `lowshelf`, `highshelf` (`gain` is for the last three; unread outputs cost nothing) |
+| `filters/biquad.pqp` | `biquad(x, b0, b1, b2, a1, a2)` (TDF-II); RBJ designers `biquad_lowpass`, `_highpass`, `_bandpass`, `_notch`, `_allpass` (`cutoff`, `q`), `_peak`, `_lowshelf`, `_highshelf` (+ `gain`) | `out` |
+| `filters/allpass.pqp` | `allpass(x, cutoff)`: first order; `allpass_delay(x, maxTime, time, g)`: Schroeder | `out` |
+| `filters/dcblock.pqp` | `dcblock(x, cutoff)` | `out` |
+| `filters/comb.pqp` | `comb(x, maxTime, time, fb)`; `comb_lp(x, maxTime, time, fb, damp)`: damped (linear-phase, stays in tune) | `out` |
+| `envelopes/adsr.pqp` | `adsr(gate, a, d, s, r)` | `out`, `done` |
+| `control/lfo.pqp` | `lfo(reset, rate, sync, beats, phase)` | `sine`, `tri`, `saw`, `square` (export `cycle`) |
+| `control/slew.pqp`, `smooth.pqp` | `slew(x, rise, fall)`, `smooth(x, time)` | `out` |
+| `dynamics/envfollow.pqp` | `envfollow(x, attack, release, rms)` | `out` |
+
+Conventions: cutoffs are in Hz and kept below 0.49·sr; `q` is the quality factor (0.7071 = Butterworth); `gain` is a dB param (so linear inside); times are seconds: `adsr` stage times are full-scale times (attack 0 → 1 linear; decay/release exponential, −80 dB after the stage time), `envfollow`/`smooth` times are time constants (63 %), `slew` times are per unit of change. Delay-line subcircuits take their buffer size as a constant `in maxTime : real const` (the second positional argument) and keep the delay ≥ 0.1 ms, so a feedback loop through them runs in sub-blocks whenever the delay has a known lower bound.
 
 ## 4. Example
 

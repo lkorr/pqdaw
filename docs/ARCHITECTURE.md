@@ -49,7 +49,7 @@ Arrows point at dependencies. A module may only include headers from modules bel
 | `src/views` | `pq_views` | `pq::views` | The DAW's views (T3.7+): `ViewContext` (owns the `DocumentStore`, global actions, view state), `TransportPort`, the main-window shell (control bar, track-area/detail/browser slots, info view, status line), arrangement, mixer, piano roll, MOS wheel, preferences window (one subtree each; T3.18's `AudioPrefsPort` is the plain-data audio-device interface the app implements), view scenes for screenshots |
 | `src/app` | `pq_app` (lib) + `pqdaw` (exe: `main.cpp` only, so tests can link the CLI/commands) | `pq::app` | Main, CLI, the window loop, `ShellApp` (views in the window: SDL file dialogs, text input, title, idle/first-frame measurement), `TransportPort` implementations, the playback link (`ProjectLink`: document → engine, transport, meters; T3.17), the audio output (`AudioOutput`) and the audio device manager (`AudioDeviceManager`, T3.18: preferences, user settings file, rate changes, hot-plug), `--render` |
 | `tools/` | `pqc` (exe) + `pq_pqc` (lib: everything but `main`, for tests) | `pq::pqc` | Patch compiler CLI (T1.10, `tools/README.md`): check / dump-ir / dump-schedule / render (interpreter or JIT), later AOT. Depends on `compile` (its pipeline) |
-| `stdlib/` | – | – | Stock subcircuits and devices as `.pqp` text (filters, envelopes, devices) |
+| `stdlib/` | – | – | Stock subcircuits and devices as `.pqp` text: `filters/` (onepole, svf, biquad + RBJ designers, allpass, dcblock, comb), `envelopes/` (adsr), `control/` (lfo, slew, smooth), `dynamics/` (envfollow), `util/` (crossfade), `instruments/` (basic_synth); callers `import` the file (PATCH_LANGUAGE §3.1). Each subcircuit has a hand-written C++ reference in `tests/stdlib/` (T1b.3) |
 | `tests/` | `pq_tests_<module>` | – | doctest unit tests per module, golden renders in `tests/golden/` |
 | `bench/` | `pq_bench_<suite>` + `pq_bench_support` | `pq::bench` | Benchmarks; the T1.11 runner (`pq_bench.h`: named benchmarks, regex filter, warmup/repeats/median/p99, CSV) and `tools/bench/append_results.py` append results to `bench/RESULTS.md` |
 
@@ -135,7 +135,8 @@ namespace pq::graph {
   Result<TypedPatch> optimise(TypedPatch, const OptimiseOptions& = {}, OptimiseStats* = nullptr);
   // pq/graph/schedule.h (T1.5). Tarjan SCCs on wires + implicit equation→unknown edges of solve blocks; feedback SCCs
   // become Loop regions with z1/delay split into read (in place) + write (loop end), run per sample or, when every
-  // cut is a delay line with a constant lower bound, in sub-blocks of the shortest tap age; a delay-free cycle is an
+  // cut is a delay line with a constant lower bound, in sub-blocks of the shortest tap age (T1b.3: z1s are not cut
+  // when cutting the delay lines alone breaks every cycle, so they keep the sub-blocks); a delay-free cycle is an
   // error (text) or gets a z1 + warning (ScheduleOptions::visualMode, Schedule::rewritten). Stages alternate global
   // (even, lanes 1) / voice (odd, lanes 8, run per voice group); a stage = Control region (param/const ops once per
   // block on 8-float patterns, param-rate solves) + Block/Loop regions. Global audio read by voice ops is broadcast;

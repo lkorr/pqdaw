@@ -224,6 +224,12 @@ pq_add_test(pq_tests_jit PERF
     jit/test_live_swap.cpp  # T1b.5: interpreter -> JIT live swap through the background compiler
   DEPS pq_jit pq_compile)
 
+# T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
+# references (tests/stdlib/stdlib_reference.h, also the baseline of bench/jit/bench_stdlib.cpp), interpreter + JIT.
+pq_add_test(pq_tests_stdlib
+  SOURCES stdlib/test_stdlib.cpp
+  DEPS pq_jit)
+
 pq_add_test(pq_tests_dsp
   SOURCES
     dsp/test_atoms_math_logic.cpp

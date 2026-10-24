@@ -1,0 +1,32 @@
+// Allpass filters: flat magnitude, frequency-dependent phase.
+import "onepole.pqp"
+
+// First-order allpass (the zero-delay-feedback one-pole's allpass output): phase 0° at DC, −90° at the cutoff,
+// −180° at Nyquist. Chains of these, with modulated cutoffs, are a phaser. Audio-rate modulation is safe.
+patch allpass {
+  in    x      : audio
+  param cutoff = 1kHz [1Hz..20kHz] @unit(Hz) @curve(exp) @label("Cutoff")
+  out   out : audio
+
+  out = onepole(x, cutoff: cutoff).allpass
+}
+
+// Schroeder allpass around a delay line (reverb diffusers):
+//
+//   w = x + g·w[n − D],   y = w[n − D] − g·w          (|g| < 1; D = time, linearly interpolated)
+//
+// The impulse response is a train of echoes every `time`, decaying by g each, whose spectrum is flat. `maxTime`
+// (constant) sizes the delay line. The delay is at least 0.1 ms: with a known lower bound on the delay (a constant
+// time, or a param's range minimum) the compiler runs the feedback loop in blocks of that many samples instead of
+// one sample at a time.
+patch allpass_delay {
+  in    x       : audio
+  in    maxTime : real const = 100ms
+  param time = 10ms [0.1ms..1s] @unit(s) @curve(exp) @label("Time")
+  param g    = 0.5  [-0.99..0.99] @label("Diffusion")
+  out   out : audio
+
+  d   = delay(w, max(time, 0.1ms), maxTime)
+  w   = x + g * d
+  out = d - g * w
+}

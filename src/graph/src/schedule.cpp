@@ -631,12 +631,54 @@ private:
     }
   }
 
+  // Which z1 / delay-line nodes of each feedback SCC are split (read … write). T1b.3: when cutting only the delay
+  // lines already leaves the SCC acyclic, its z1s stay ordinary (fused) kernels inside the loop: every cycle then
+  // passes through a delay line, so the loop runs in sub-blocks of the delay's lower bound instead of per sample
+  // (a z1 on such a cycle only adds age). E.g. a comb whose loop holds an FIR made of z1 taps. SCCs with solve
+  // blocks, or with a cycle made of z1s alone, split everything as before.
+  bool isZ1(NodeIndex n) const noexcept {
+    const Node& nd = P().node(n);
+    return nd.kind == NodeKind::Atom && kernelMapping(nd.atom).lowering == Lowering::Kernel &&
+           kernelMapping(nd.atom).kernel == dsp::Atom::Z1;
+  }
+  bool acyclicCuttingDelayLinesOnly(uint32_t c) {
+    bool anyDelayCut = false;
+    for (NodeIndex m : members(c))
+      if (nk_[m] == NK::Unknown || nk_[m] == NK::Equation) return false;
+    auto kept = [&](const Edge& e) { return sccOf_[e.to] == c && (e.flag != kEdgeSplit || isZ1(e.to)); };
+    std::vector<uint32_t> deg(P().nodeCount(), 0);
+    for (NodeIndex m : members(c))
+      for (uint32_t e = succBegin_[m]; e < succBegin_[m + 1]; ++e) {
+        const Edge& ed = succ_[e];
+        if (kept(ed)) ++deg[ed.to];
+        else if (sccOf_[ed.to] == c) anyDelayCut = true;
+      }
+    if (!anyDelayCut) return false;
+    std::vector<NodeIndex> ready;
+    for (NodeIndex m : members(c))
+      if (deg[m] == 0) ready.push_back(m);
+    size_t done = 0;
+    while (!ready.empty()) {
+      const NodeIndex m = ready.back();
+      ready.pop_back();
+      ++done;
+      for (uint32_t e = succBegin_[m]; e < succBegin_[m + 1]; ++e)
+        if (kept(succ_[e]) && --deg[succ_[e].to] == 0) ready.push_back(succ_[e].to);
+    }
+    return done == members(c).size();
+  }
   void markSplits() {
     split_.assign(P().nodeCount(), 0);
+    const auto numScc = static_cast<uint32_t>(sccBegin_.size() - 1);
+    std::vector<uint8_t> delayOnly(numScc, 0);
+    for (uint32_t c = 0; c < numScc; ++c)
+      if (cyclic_[c]) delayOnly[c] = acyclicCuttingDelayLinesOnly(c) ? 1 : 0;
     for (NodeIndex u = 0; u < P().nodeCount(); ++u)
       for (uint32_t e = succBegin_[u]; e < succBegin_[u + 1]; ++e) {
         const Edge& ed = succ_[e];
-        if (ed.flag == kEdgeSplit && sccOf_[u] == sccOf_[ed.to] && cyclic_[sccOf_[u]]) split_[ed.to] = 1;
+        if (ed.flag == kEdgeSplit && sccOf_[u] == sccOf_[ed.to] && cyclic_[sccOf_[u]] &&
+            !(delayOnly[sccOf_[u]] && isZ1(ed.to)))
+          split_[ed.to] = 1;
       }
   }
 
@@ -834,6 +876,13 @@ private:
       return std::isnan(r) ? kUnknown : r;
     }
     if (name == "max") return std::max(in(0), in(1));
+    // a − constant (T1b.3: `time − 1/sr`): the runtime's float subtraction is monotonic in a.
+    if (name == "sub") {
+      const NodeIndex d = driver(1);
+      if (d == kNone || P().node(d).kind != NodeKind::Const) return kUnknown;
+      const float r = in(0) - static_cast<float>(P().constant(d).value());
+      return std::isnan(r) ? kUnknown : r;
+    }
     if (name == "muladd") {
       const float a = in(0), b = in(1), c = in(2);
       const float r = std::fma(a, b, c);
@@ -931,7 +980,8 @@ private:
     return bodyOf_[n] != kNone ? P().nodeCount() + bodyOf_[n] : n;
   }
 
-  // Kahn over the members of cyclic SCC c on same-sample edges (split and solve edges removed), solve bodies
+  // Kahn over the members of cyclic SCC c on same-sample edges (split and solve edges removed; the input edge of an
+  // unsplit z1 is an ordinary dependency), solve bodies
   // contracted to one item; then each body in its own Kahn order (its unknowns first). Min node index first.
   void internalOrder(uint32_t c) {
     const uint32_t N = P().nodeCount();
@@ -947,7 +997,8 @@ private:
     for (uint32_t it : items) itemMark_[it] = 0;
     auto kahn = [&](bool withDelayed) {
       auto inLoop = [&](const Edge& e) {
-        return sccOf_[e.to] == c && (e.flag == kEdgeNormal || (withDelayed && e.flag == kEdgeDelayed));
+        return sccOf_[e.to] == c && (e.flag == kEdgeNormal || (withDelayed && e.flag == kEdgeDelayed) ||
+                                     (e.flag == kEdgeSplit && !split_[e.to]));  // an unsplit z1 (markSplits)
       };
       for (uint32_t it : items) itemDeg_[it] = 0;
       for (NodeIndex m : members(c))

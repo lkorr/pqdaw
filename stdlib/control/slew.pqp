@@ -1,0 +1,15 @@
+// Slew limiter: the output follows x in straight lines, never faster than one full unit per `rise` going up and
+// per `fall` going down (so a 0 → 1 step becomes a `rise`-long ramp). Portamento on a pitch in cents, a
+// click-free gate, or a lag on any modulation. Times of 0 pass that direction through unchanged.
+patch slew {
+  in    x    : audio
+  param rise = 10ms [0ms..10s] @unit(s) @curve(exp) @label("Rise")
+  param fall = 10ms [0ms..10s] @unit(s) @curve(exp) @label("Fall")
+  out   out : audio
+
+  up   = 1 / max(rise * sr, 0.000001)       // largest step per sample
+  down = -1 / max(fall * sr, 0.000001)
+  prev = z1(y)
+  y    = prev + clip(x - prev, down, up)
+  out  = y
+}

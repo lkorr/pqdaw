@@ -1,0 +1,29 @@
+// One-pole filter, zero-delay feedback (TPT: topology-preserving transform; V. Zavalishin, "The Art of VA Filter
+// Design", ch. 3). One trapezoidal integrator whose feedback loop is solved in closed form, so the filter has no
+// extra sample of delay in its loop: its response matches the analog one-pole (frequency-warped by the bilinear
+// transform) and it stays well-behaved when the cutoff is modulated, even at audio rate.
+//
+//   lp = x · G / (1 + G)  in the analog domain;  here  v = (x − s) · G,  lp = s + v,  s ← lp + v
+//
+// Outputs: lp (6 dB/oct low-pass), hp (x − lp), allpass (lp − hp: first-order allpass, phase −180° at cutoff).
+// Cost: one multiply and three adds per sample; the coefficient (a tan and a divide) runs once per block unless
+// `cutoff` is modulated.
+patch onepole {
+  in    x      : audio
+  param cutoff = 1kHz [1Hz..20kHz] @unit(Hz) @curve(exp) @label("Cutoff")
+  out   lp      : audio
+  out   hp      : audio
+  out   allpass : audio
+
+  // Prewarped integrator gain. The cutoff is kept in [0, 0.49·sr]: tan has its pole at Nyquist.
+  g = tan(3.141592653589793 * clip(cutoff, 0, 0.49 * sr) / sr)
+  G = g / (1 + g)
+
+  v   = (x - s) * G           // integrator input, with the feedback solved for this sample
+  low = s + v                 // integrator output
+  s   = z1(low + v)           // trapezoidal integrator state
+
+  lp      = low
+  hp      = x - low
+  allpass = low - (x - low)
+}

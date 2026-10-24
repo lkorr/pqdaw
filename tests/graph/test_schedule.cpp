@@ -1470,6 +1470,53 @@ TEST_CASE("schedule: loop sub-blocks are bounded with the runtime's float32 dela
   CHECK(subs == std::vector<uint32_t>{1, 4, 10});
 }
 
+TEST_CASE("schedule: z1s on cycles that all pass through a delay line stay unsplit, so the loop keeps its sub-blocks (T1b.3)") {
+  // stdlib comb_lp's shape: a linear-phase FIR of z1 taps in a comb's feedback. Every cycle passes through the
+  // delay line, whose lower bound is 5 ms − 1/sr (x − literal bounds) = 239 samples.
+  auto loops = [](const Schedule& s) {
+    std::vector<uint32_t> subs;
+    for (const Region& r : s.regions)
+      if (r.kind == RegionKind::Loop) subs.push_back(r.subBlock);
+    return subs;
+  };
+  auto kernels = [](const Schedule& s, pq::dsp::Atom k) {
+    uint32_t n = 0;
+    for (const Op& op : s.ops) n += op.kind == OpKind::Kernel && op.kernel == k;
+    return n;
+  };
+  Compiled fir;
+  compile(fir, R"(patch K {
+  in    x : audio
+  param t = 5ms [5ms..40ms]
+  out   o : audio
+  y1 = z1(y)
+  w  = 0.25 * (y + z1(y1)) + 0.5 * y1
+  y  = x + 0.9 * delay(w, t - 1 / sr, 50ms)
+  o  = y
+}
+)");
+  CHECK(loops(ok(fir)) == std::vector<uint32_t>{239});
+  CHECK(kernels(ok(fir), pq::dsp::Atom::Z1) == 2);  // fused z1s inside the loop
+  CHECK(kernels(ok(fir), pq::dsp::Atom::Z1Read) == 0);
+  CHECK(kernels(ok(fir), pq::dsp::Atom::DelayReadLinear) == 1);
+  // A z1 on a cycle without the delay line (a one-pole in the feedback) still needs the per-sample loop, and then
+  // every z1 of the SCC is split as before.
+  Compiled iir;
+  compile(iir, R"(patch K {
+  in    x : audio
+  param t = 5ms [5ms..40ms]
+  out   o : audio
+  d  = delay(y + z1(y), t, 50ms)
+  lp = z1(lp + (d - lp) * 0.3)
+  y  = x + 0.9 * lp
+  o  = y
+}
+)");
+  CHECK(loops(ok(iir)) == std::vector<uint32_t>{1});
+  CHECK(kernels(ok(iir), pq::dsp::Atom::Z1) == 0);
+  CHECK(kernels(ok(iir), pq::dsp::Atom::Z1Read) == 2);
+}
+
 TEST_CASE("schedule: replay checker over the corpus: no buffer is overwritten while live") {
   sched_replay::Coverage cov;
   uint32_t checked = 0, withVoices = 0, withSolves = 0, withLoops = 0, multiOut = 0;

@@ -1,0 +1,31 @@
+// Low-frequency oscillator: one phase, four bipolar shapes (−1..1), free-running or locked to the song.
+//
+// Free: a `phasor` at `rate` (uint32 fixed-point phase, so it never drifts); `reset` restarts the cycle, e.g.
+// `lfo(voice.trigger, rate: 5Hz)` for a per-note LFO. Synced: the phase is the song position, one cycle every
+// `beats` beats (`beats: 1/4` is a sixteenth-note cycle in 4/4), so it stays locked through tempo changes and
+// relocations; `reset` does nothing then. `phase` offsets the cycle (0..1 = 0..360°).
+//
+// Every shape starts at the same point of the cycle as the sine: 0 at phase 0, rising. Only the outputs you read
+// are computed. Any param may be modulated (rate at audio rate is FM).
+patch lfo {
+  in    reset : bool = false
+  param rate  = 1Hz  [0.01Hz..40Hz] @unit(Hz) @curve(exp) @label("Rate")
+  param sync  = false               @label("Sync")
+  param beats = 1    [1/16..64]     @curve(exp) @label("Beats")
+  param phase = 0    [0..1]         @label("Phase")
+  out   sine   : audio
+  out   tri    : audio
+  out   saw    : audio
+  out   square : audio
+
+  free = phasor(rate, reset)
+  song = frac(transport.beat / beats)
+  ph   = frac((sync ? song : free) + phase)
+
+  sine   = sine(ph)
+  tri    = 4 * abs(frac(ph + 0.75) - 0.5) - 1
+  saw    = 2 * frac(ph + 0.5) - 1
+  square = ph < 0.5 ? 1 : -1
+
+  export cycle = ph                    // the phase itself, 0..1
+}

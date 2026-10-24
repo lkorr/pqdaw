@@ -43,6 +43,10 @@ pq_add_bench(pq_bench_interpreter SOURCES engine/bench_interpreter.cpp DEPS pq_e
 pq_add_bench(pq_bench_shell SOURCES views/bench_shell.cpp DEPS pq_views)
 pq_add_bench(pq_bench_voices SOURCES engine/bench_voices.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_jit SOURCES jit/bench_jit.cpp DEPS pq_jit)
+# T1b.3: the stdlib subcircuits (JIT, interpreter) vs their hand-written C++ references (tests/stdlib/).
+pq_add_bench(pq_bench_stdlib SOURCES jit/bench_stdlib.cpp DEPS pq_jit)
+pq_use_build_paths(pq_bench_stdlib)
+target_compile_definitions(pq_bench_stdlib PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
 pq_add_bench(pq_bench_hot_swap SOURCES engine/bench_hot_swap.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_timeline SOURCES engine/bench_timeline.cpp DEPS pq_engine)
 # T2.6: per-voice pitch cost of tuning as a signal (the tuning_hz kernel; a tuned track through the VoiceEngine).

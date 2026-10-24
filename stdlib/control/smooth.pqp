@@ -1,0 +1,16 @@
+// One-pole smoother: de-zippers a stepped control (a knob, automation, a sample&hold) into a smooth audio-rate
+// signal. The output approaches x exponentially with time constant `time` (63 % of a step after `time`, 99 %
+// after 4.6·`time`); time 0 passes x through. It starts from 0, so smoothing a value that is already non-zero
+// fades in over the first few time constants.
+//
+//   y ← y + (x − y)·c,   c = 1 − exp(−1 / (time·sr))
+patch smooth {
+  in    x    : audio
+  param time = 10ms [0ms..10s] @unit(s) @curve(exp) @label("Time")
+  out   out : audio
+
+  c    = 1 - exp(-1 / max(time * sr, 0.000001))
+  prev = z1(y)
+  y    = prev + (x - prev) * c
+  out  = y
+}
