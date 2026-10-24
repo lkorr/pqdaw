@@ -3,12 +3,14 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <numbers>
 #include <vector>
 
 #include "atom_harness.h"
+#include "pq/dsp/atom_state.h"
 #include "pq/dsp/tables.h"
 
 using namespace pqtest;
@@ -480,5 +482,63 @@ TEST_CASE("dsp atoms: a feedback comb filter through the split delay kernels mat
       worst = std::max(worst, std::abs(yr[t] - static_cast<double>(y[t])));
     }
     CHECK(worst < 1e-5);
+  }
+}
+
+// T1.8-fix1 (M1 review M9): an 8-lane delay line resets one lane in O(1) by setting DelayState::start[lane] to the
+// write position: from then on that lane reads exactly what a ring zeroed at that moment would give, the other
+// lanes are untouched, and the per-lane history stays bounded by the capacity (start is clamped) over many wraps.
+TEST_CASE("dsp atoms: 8-lane delay lines reset one lane through DelayState::start, bit for bit like a zeroed ring") {
+  constexpr uint32_t kB = 37;  // block length (not a multiple of 8)
+  for (Atom a : {Atom::DelayLinear, Atom::DelayCubic, Atom::DelayAllpass}) {
+    INFO("atom " << static_cast<int>(a));
+    pq::dsp::StateInit init;
+    init.lanes = 8;
+    init.maxDelayFrames = 64;
+    const uint32_t bytes = pq::dsp::stateBytes(a, init);
+    pq::AlignedBuffer<float> sa(bytes / 4), sb(bytes / 4);
+    pq::dsp::initState(a, sa.data(), init);
+    pq::dsp::initState(a, sb.data(), init);
+    auto& A = *reinterpret_cast<pq::dsp::DelayState*>(sa.data());
+    const uint32_t cap = A.capacity;
+    const pq::dsp::KernelFn k = pq::dsp::findKernel(a, 8, 0);
+    REQUIRE(k != nullptr);
+    std::vector<float> x(kB * 8), d(kB * 8), oa(kB * 8), ob(kB * 8);
+    uint32_t rng = 5;
+    auto rnd = [&] {
+      rng = rng * 1664525u + 1013904223u;
+      return static_cast<float>(rng >> 8) / 16777216.0f;
+    };
+    auto run = [&](void* st, const std::vector<float>& in, std::vector<float>& out) {
+      const float* ins[] = {in.data(), d.data()};
+      float* outs[] = {out.data()};
+      pq::dsp::KernelArgs args{ins, outs, st, nullptr, kB, 2, 1, 0};
+      k(args);
+    };
+    // Phase 1: A hears noise in every lane; B hears the same except lane 3, which stays silent.
+    for (uint32_t blk = 0; blk < 6; ++blk) {
+      std::vector<float> xb(kB * 8);
+      for (uint32_t i = 0; i < kB * 8; ++i) {
+        x[i] = rnd() - 0.5f;
+        xb[i] = (i & 7u) == 3 ? 0.0f : x[i];
+        d[i] = 2.0f + 62.0f * rnd();  // up to maxDelay: every tap distance gets exercised
+      }
+      run(sa.data(), x, oa);
+      run(sb.data(), xb, ob);
+    }
+    // Reset lane 3 of A in O(1); B's lane 3 has only ever seen silence.
+    A.start[3] = A.writePos;
+    A.apY1[3] = 0.0f;
+    // Phase 2: identical input; many ring wraps (start must be clamped, never wrap around).
+    for (uint32_t blk = 0; blk < 4 * cap / kB; ++blk) {
+      for (uint32_t i = 0; i < kB * 8; ++i) {
+        x[i] = rnd() - 0.5f;
+        d[i] = 1.0f + 63.0f * rnd();
+      }
+      run(sa.data(), x, oa);
+      run(sb.data(), x, ob);
+      for (uint32_t i = 0; i < kB * 8; ++i) REQUIRE(std::bit_cast<uint32_t>(oa[i]) == std::bit_cast<uint32_t>(ob[i]));
+      for (uint32_t l = 0; l < 8; ++l) REQUIRE(A.writePos - A.start[l] <= cap);
+    }
   }
 }

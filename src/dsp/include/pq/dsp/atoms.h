@@ -162,7 +162,8 @@ struct StateInit {
 uint32_t stateBytes(Atom a, const StateInit& init) noexcept;
 
 // Writes the initial state into `state` (stateBytes bytes, kStateAlign-aligned). No allocation: RT-safe, so it
-// can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines).
+// can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines; the
+// VoiceEngine resets one lane of an 8-lane delay line in O(1) through DelayState::start instead).
 void initState(Atom a, void* state, const StateInit& init) noexcept;  // RT-safe
 
 }  // namespace pq::dsp

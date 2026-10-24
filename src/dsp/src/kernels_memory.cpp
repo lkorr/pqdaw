@@ -78,26 +78,32 @@ inline typename S::F hermite(typename S::F xm1, typename S::F x0, typename S::F 
 
 // One delayed read. `pos` = ring frame of the sample being produced (its own input is never read); `rix`
 // maps a frame position to a ring float index (lane-interleaved for voice groups, plain for mono).
-template <class S, Interp K, class RingIndex>
+// kAge (8-lane rings with a lane younger than the longest tap, DelayState::start): a tap `k` frames old reads 0
+// where k > age (frames of the lane's valid history), bit for bit what a zeroed ring would give.
+template <class S, Interp K, bool kAge = false, class RingIndex>
 inline typename S::F delayTap(const float* ring, typename S::I pos, typename S::F dIn, float maxDelay,
-                              RingIndex rix, typename S::F& y1) noexcept {  // RT-safe
+                              RingIndex rix, typename S::F& y1, typename S::I age = {}) noexcept {  // RT-safe
   const auto one = S::seti(1);
+  // Tap `k` frames old (k as a vector of distances): valid iff k ≤ age.
+  auto tap = [&](typename S::I k) noexcept {
+    const auto x = S::gather(ring, rix(S::subi(pos, k)));
+    if constexpr (kAge) return S::andnot(S::asF(S::gti(k, age)), x);
+    else return x;
+  };
   // max(d, min) returns min for NaN.
   const auto d = S::min(S::max(dIn, S::set(kMinDelay<K>)), S::set(maxDelay));
   const auto fl = S::floor(d);
   auto fr = S::sub(d, fl);
   auto n = S::truncToInt(fl);
   if constexpr (K == Interp::Linear) {
-    const auto p0 = S::subi(pos, n);
-    const auto x0 = S::gather(ring, rix(p0));
-    const auto x1 = S::gather(ring, rix(S::subi(p0, one)));
+    const auto x0 = tap(n);
+    const auto x1 = tap(S::addi(n, one));
     return S::fma(fr, S::sub(x1, x0), x0);
   } else if constexpr (K == Interp::Cubic) {
-    const auto p0 = S::subi(pos, n);
-    const auto xm1 = S::gather(ring, rix(S::addi(p0, one)));
-    const auto x0 = S::gather(ring, rix(p0));
-    const auto x1 = S::gather(ring, rix(S::subi(p0, one)));
-    const auto x2 = S::gather(ring, rix(S::subi(p0, S::seti(2))));
+    const auto xm1 = tap(S::subi(n, one));
+    const auto x0 = tap(n);
+    const auto x1 = tap(S::addi(n, one));
+    const auto x2 = tap(S::addi(n, S::seti(2)));
     return hermite<S>(xm1, x0, x1, x2, fr);
   } else {
     // First-order allpass y = c·(x0 − y1) + x1, c = (1 − Δ)/(1 + Δ), with Δ kept in [0.5, 1.5): if fr < 0.5,
@@ -105,14 +111,31 @@ inline typename S::F delayTap(const float* ring, typename S::I pos, typename S::
     const auto low = S::lt(fr, S::set(0.5f));
     fr = S::add(fr, S::band(low, S::set(1.0f)));
     n = S::addi(n, S::asI(low));  // −1 where low
-    const auto p0 = S::subi(pos, n);
-    const auto x0 = S::gather(ring, rix(p0));
-    const auto x1 = S::gather(ring, rix(S::subi(p0, one)));
+    const auto x0 = tap(n);
+    const auto x1 = tap(S::addi(n, one));
     const auto c = S::div(S::sub(S::set(1.0f), fr), S::add(S::set(1.0f), fr));
     const auto y = S::fma(c, S::sub(x0, y1), x1);
     y1 = y;
     return y;
   }
+}
+
+// 8-lane rings (DelayState::start): the smallest writePos − start over the lanes, and the clamp that keeps every
+// lane's history ≤ capacity frames (so the uint32 difference never wraps; history beyond the ring is gone anyway).
+inline uint32_t youngestAge(const DelayState& st, uint32_t w) noexcept {  // RT-safe
+  const __m256i age = _mm256_sub_epi32(_mm256_set1_epi32(static_cast<int32_t>(w)),
+                                       _mm256_loadu_si256(reinterpret_cast<const __m256i*>(st.start)));
+  __m128i m = _mm_min_epu32(_mm256_castsi256_si128(age), _mm256_extracti128_si256(age, 1));
+  m = _mm_min_epu32(m, _mm_shuffle_epi32(m, _MM_SHUFFLE(1, 0, 3, 2)));
+  m = _mm_min_epu32(m, _mm_shuffle_epi32(m, _MM_SHUFFLE(2, 3, 0, 1)));
+  return static_cast<uint32_t>(_mm_cvtsi128_si32(m));
+}
+inline void clampStart(DelayState& st) noexcept {  // RT-safe
+  const __m256i w = _mm256_set1_epi32(static_cast<int32_t>(st.writePos));
+  __m256i* sp = reinterpret_cast<__m256i*>(st.start);
+  const __m256i age = _mm256_min_epu32(_mm256_sub_epi32(w, _mm256_loadu_si256(sp)),
+                                       _mm256_set1_epi32(static_cast<int32_t>(st.capacity)));
+  _mm256_storeu_si256(sp, _mm256_sub_epi32(w, age));
 }
 
 // Delay line kernels. The atom (kRead && kWrite) writes then reads each frame; the split kernels, for feedback
@@ -136,6 +159,7 @@ struct Delay {
       const In<S, splBit(SM, 0)> x(a.in[0]);
       for (; f < a.frames; ++f, ++w) S::store(ring + static_cast<size_t>(w & st.mask) * L, x.at(f));
       st.writePos = w;
+      if constexpr (L == 8) clampStart(st);
     } else {
       float* out = a.out[0];
       auto y1 = S::load(st.apY1);
@@ -164,6 +188,22 @@ struct Delay {
       const auto lane = S::laneIndex();
       const auto rix = [mask, lane](typename S::I p) noexcept { return ringIndex<S>(p, mask, lane); };
       const In<S, splBit(SM, kD)> delay(a.in[kD]);
+      if constexpr (L == 8) {
+        // A lane younger than the longest tap (floor(maxDelay) + 2 frames; after its O(1) reset): taps older than
+        // its history read 0 (age = w − start per lane, see delayTap). Only the first frames after a note-on.
+        if (youngestAge(st, w) < static_cast<uint32_t>(st.maxDelay) + 2u) {
+          const auto start = S::loadi(reinterpret_cast<const int32_t*>(st.start));
+          for (; f < a.frames; ++f, ++w) {
+            if constexpr (kWrite) {
+              const In<S, splBit(SM, 0)> x(a.in[0]);
+              S::store(ring + static_cast<size_t>(w & st.mask) * L, x.at(f));
+            }
+            const auto pos = S::seti(static_cast<int32_t>(w));
+            S::store(out + f * L, delayTap<S, K, true>(ring, pos, delay.at(f), st.maxDelay, rix, y1, S::subi(pos, start)));
+          }
+        }
+      }
+      // Steady state (and mono rings): every tap is inside the history.
       for (; f < a.frames; ++f, ++w) {
         if constexpr (kWrite) {
           const In<S, splBit(SM, 0)> x(a.in[0]);
@@ -172,7 +212,10 @@ struct Delay {
         const auto pos = S::seti(static_cast<int32_t>(w));
         S::store(out + f * L, delayTap<S, K>(ring, pos, delay.at(f), st.maxDelay, rix, y1));
       }
-      if constexpr (kWrite) st.writePos = w;
+      if constexpr (kWrite) {
+        st.writePos = w;
+        if constexpr (L == 8) clampStart(st);
+      }
       S::store(st.apY1, y1);
     }
   }

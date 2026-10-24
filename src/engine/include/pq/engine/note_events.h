@@ -26,7 +26,7 @@ enum class NoteEventKind : uint8_t {
   NoteOn,       // noteId, hz, velocity, ratio, harmonic, unisonCount, unisonIndex
   NoteOff,      // noteId, velocity = release velocity
   Pitch,        // noteId, hz = new Hz, rampFrames (0: step at `frame`)
-  AllNotesOff,  // release every held voice (transport stop / locate)
+  AllNotesOff,  // release every held voice; deferred starts are dropped (transport stop / locate)
   AllSoundOff,  // fast-fade every sounding voice (panic, project close); pending starts are dropped
 };
 
@@ -80,26 +80,46 @@ struct EventList {
 };
 
 // Preallocated event storage for one block. Construct off the audio thread; push/clear are RT-safe.
+//
+// Overflow (a full buffer) never loses a note-off (M1 review M7: a lost NoteOff is a stuck note):
+//   1. an incoming NoteOn is dropped;
+//   2. otherwise the newest NoteOn in the buffer is dropped to make room (its note never starts);
+//   3. an incoming Pitch is dropped; otherwise the newest Pitch in the buffer is dropped;
+//   4. the buffer holds only offs (NoteOff / AllNotesOff / AllSoundOff) and another off arrives: if an All* event at
+//      or before its frame already covers it, it is redundant (no NoteOn is in the block, so every held note is
+//      released by it); otherwise the newest event and the incoming one are merged into one AllNotesOff (AllSoundOff
+//      if either is one) at the earlier of their frames: notes may be released early, never left hanging.
+// dropped() counts dropped NoteOn / Pitch events; mergedOffs() counts offs absorbed by rule 4.
 class EventBuffer {
 public:
   EventBuffer() = default;
   explicit EventBuffer(uint32_t capacity) : storage_(capacity), capacity_(capacity) { list_.events = storage_.data(); }
 
   // Inserts keeping the list sorted by frame (after every event with frame ≤ e.frame): O(1) for events pushed in
-  // time order. Returns false (and counts the drop) when full. RT-safe.
+  // time order. Returns false when the event itself was dropped or merged (see above). RT-safe.
   bool push(const NoteEvent& e) noexcept {
-    if (list_.count >= capacity_) {
+    if (capacity_ == 0) {
       ++dropped_;
       return false;
     }
-    NoteEvent* ev = storage_.data();
-    uint32_t i = list_.count;
-    while (i > 0 && ev[i - 1].frame > e.frame) {
-      ev[i] = ev[i - 1];
-      --i;
+    if (list_.count >= capacity_) {
+      if (e.kind == NoteEventKind::NoteOn) {
+        ++dropped_;
+        return false;
+      }
+      if (removeNewest(NoteEventKind::NoteOn)) {
+        ++dropped_;
+      } else if (e.kind == NoteEventKind::Pitch) {
+        ++dropped_;
+        return false;
+      } else if (removeNewest(NoteEventKind::Pitch)) {
+        ++dropped_;
+      } else {
+        mergeOff(e);
+        return false;
+      }
     }
-    ev[i] = e;
-    ++list_.count;
+    insert(e);
     return true;
   }
   void clear() noexcept { list_.count = 0; }  // RT-safe
@@ -108,12 +128,47 @@ public:
   uint32_t size() const noexcept { return list_.count; }
   uint32_t capacity() const noexcept { return capacity_; }
   uint64_t dropped() const noexcept { return dropped_; }
+  uint64_t mergedOffs() const noexcept { return merged_; }
 
 private:
+  void insert(const NoteEvent& e) noexcept {  // RT-safe; count < capacity
+    NoteEvent* ev = storage_.data();
+    uint32_t i = list_.count;
+    while (i > 0 && ev[i - 1].frame > e.frame) {
+      ev[i] = ev[i - 1];
+      --i;
+    }
+    ev[i] = e;
+    ++list_.count;
+  }
+  bool removeNewest(NoteEventKind k) noexcept {  // RT-safe: the last event of kind k (latest frame, latest push)
+    NoteEvent* ev = storage_.data();
+    for (uint32_t i = list_.count; i > 0; --i)
+      if (ev[i - 1].kind == k) {
+        for (uint32_t j = i; j < list_.count; ++j) ev[j - 1] = ev[j];
+        --list_.count;
+        return true;
+      }
+    return false;
+  }
+  void mergeOff(const NoteEvent& e) noexcept {  // RT-safe; the buffer is full of offs, e is an off
+    ++merged_;
+    NoteEvent* ev = storage_.data();
+    const bool sound = e.kind == NoteEventKind::AllSoundOff;
+    for (uint32_t i = 0; i < list_.count && ev[i].frame <= e.frame; ++i)  // already covered?
+      if (ev[i].kind == NoteEventKind::AllSoundOff || (!sound && ev[i].kind == NoteEventKind::AllNotesOff)) return;
+    NoteEvent last = ev[--list_.count];
+    NoteEvent all;
+    all.kind = sound || last.kind == NoteEventKind::AllSoundOff ? NoteEventKind::AllSoundOff : NoteEventKind::AllNotesOff;
+    all.frame = last.frame < e.frame ? last.frame : e.frame;
+    insert(all);
+  }
+
   AlignedBuffer<NoteEvent> storage_;
   uint32_t capacity_ = 0;
   EventList list_;
   uint64_t dropped_ = 0;
+  uint64_t merged_ = 0;
 };
 
 }  // namespace pq::engine

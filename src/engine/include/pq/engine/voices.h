@@ -12,9 +12,11 @@
 // group. Best fit alone still leaves 15-33 % more occupied groups than ceil(voices / 8) under random traffic
 // (bench/RESULTS.md T1.8), so with VoiceConfig::compact (default) the engine empties the least occupied group at the
 // end of a block whenever a whole group can be freed: each of its voices moves to a free lane of another occupied
-// group: a strided copy of the lane's state words (O(ring) for delay lines, whose rings are re-aligned to the
-// destination group's write position); noise state stays with the group. FmVoice under random traffic: −12 % CPU,
-// engine time unchanged within noise (bench/RESULTS.md).
+// group: a strided copy of the lane's state words; noise state stays with the group. A delay line moves only the
+// part of its ring a read can still reach (min(the lane's history, floor(maxDelay) + 2) frames), re-aligned to the
+// destination group's write position, and a block moves at most VoiceConfig::moveBudgetFrames ring frames: a group
+// whose voices' rings exceed the budget is not emptied (bounded audio-thread work, M1 review M9). FmVoice under
+// random traffic: −12 % CPU, engine time unchanged within noise (bench/RESULTS.md).
 //
 // ---- Sample accuracy (an event at frame k takes effect at sample k) -----------------------------------------
 // No sub-block splitting: the block runs once and the voice.* signals carry the timing.
@@ -24,27 +26,41 @@
 //   voice.velocity, .release, .ratio, .harmonic, .unisonCount, .index
 //                             param rate (8-float pattern, read at frame 0): the values of the lane's latest
 //                             note-on / note-off in this block hold for the whole block
-// Before its onset, and while free, a lane reads hz 0, cents kIdleCents, gate and trigger false, and its gain is 0.
-// With resetOnNoteOn the lane's state is reset to StateInit at the start of the block in which it starts; with
-// hz 0 an oscillator does not advance before the onset, so a voice's output from sample k on does not depend on
-// where block boundaries fall (tested for block sizes 1…128). Lanes are reset generically from the image's
-// StateLayout: every per-lane word of each voice state entry (word index ≡ lane mod 8, pq/dsp/atom_state.h); the
-// shared words (noise counter, delay-line header, phasor incScale/halfSr) are kept. Any backend whose StateArena
-// follows atom_state.h works.
+// A free lane reads hz = referenceHz (cents 0: finite, so `1 / voice.hz` stays finite in idle lanes), gate and
+// trigger false, gain 0. With resetOnNoteOn, a lane that starts at frame k > 0 reads hz 0 (cents kIdleCents)
+// before k: its state is reset to StateInit at the start of that block, and with hz 0 an oscillator does not advance
+// before the onset, so a voice's output from sample k on does not depend on where block boundaries fall (tested
+// for block sizes 1…128). Those pre-onset frames have gain 0 and are excluded from the mix, the level meters and the
+// image's reducers/sends by the per-sample gain (VoiceGroupIO::gain), so a NaN there (0 / 0) reaches nothing outside
+// the lane; a stateful loop that divides by voice.hz should still use max(voice.hz, ε) (docs/QUESTIONS.md Q62).
+// Lanes are reset generically from the image's StateLayout: every per-lane word of each voice state entry (word
+// index ≡ lane mod 8, pq/dsp/atom_state.h); the shared words (noise counter, delay-line header, phasor
+// incScale/halfSr) are kept; a delay line's ring is reset in O(1) through its per-lane DelayState::start. Any
+// backend whose StateArena follows atom_state.h works.
 //
 // ---- Gain, stealing, mixing ----------------------------------------------------------------------------------
-// The engine mixes every voice `out` slot (not exports) into one global buffer per slot: Σ lanes gain · out, with
-// gain per lane and sample: 0 before the onset and while free, 1 while sounding, a linear ramp to 0 over
-// stealFadeMs when the voice is stolen. Voice→global reductions INSIDE the patch (voice_sum …) see the lane mask
-// only (block granular): they get neither the pre-onset zero nor the steal fade (docs/QUESTIONS.md Q61).
+// The engine mixes every voice `out` slot (not exports) into one global buffer per slot: Σ lanes gain · out over
+// the lanes with gain ≠ 0 (a select, not a multiply: an idle lane's NaN or inf never reaches the mix), with gain
+// per lane and sample: 0 before the onset and while free, 1 while sounding, a raised-cosine fade to 0 over
+// stealFadeMs when the voice is stolen. The same gain is handed to the image (VoiceGroupIO::gain): audio-rate
+// voice_sum and voice sends inside the patch select and weight lanes by it, voice_last reads its lane only where
+// the gain ≠ 0 (docs/QUESTIONS.md Q61 option A); voice_highest / lowest / loudest keep the block lane mask.
 // Stealing (live voices ≥ maxVoices): released voices are taken before held ones; among them the oldest
 // (StealPolicy::Oldest) or the quietest (StealPolicy::Quietest: lowest peak of the monitored outputs over the last
 // block; ties → oldest). The victim fades in its lane; the new note starts in a free lane at its frame. Without a
 // free lane (headroom exhausted) the new note waits for the victim's fade and starts at the first block after it
 // (VoiceStats::deferredStarts). StealPolicy::None drops notes beyond maxVoices.
-// Same-note retrigger (retriggerSameNote): a note-on whose Hz equals (bit for bit) a held or released voice's Hz
-// takes over that voice: no state reset, trigger pulse at k, gate true from k (no extra gate edge when it was
-// already held), new velocity.
+// Same-note retrigger (retriggerSameNote): a note-on whose Hz equals (bit for bit) a RELEASED voice's Hz takes over
+// that voice when the voice started before this block: no state reset, trigger pulse and gate rise at k (a visible
+// edge for rise(voice.gate)), new velocity. The gate is low for ≥ 1 frame first: a note-on at the frame of the
+// same pitch's note-off (abutting notes) re-attacks at k + 1 (the next block's frame 0 when k is the last frame).
+// A held voice is never taken over: two simultaneous notes at one pitch (unison, SPEC §5) are two voices.
+// Note lookup: NoteOff takes the newest held voice with the note id; Pitch the newest held one, else the newest
+// released one. voice_last is the newest started voice; when its lane frees or is stolen it moves to the newest
+// held or released voice.
+// Overflow: events beyond maxEventsPerBlock in one block drop the newest NoteOns / Pitch events; NoteOff,
+// AllNotesOff and AllSoundOff are always applied (note_events.h: EventBuffer degrades the same way when full). A
+// block longer than io().maxBlockFrames (refused by the image: silence) still applies its events and voice ends.
 //
 // ---- Voice end (SPEC §7.7) -----------------------------------------------------------------------------------
 // Checked at the end of each block; an ended lane is free from the next block on.
@@ -91,7 +107,7 @@ struct VoiceConfig {
   bool retriggerSameNote = true;
   bool resetOnNoteOn = true;        // lane state ← StateInit at note-on (Q29: per-voice oscillators restart)
   bool compact = true;              // move voices out of the least occupied group when a group can be freed
-  float stealFadeMs = 3.0f;         // linear fade of a stolen voice
+  float stealFadeMs = 3.0f;         // raised-cosine fade of a stolen voice
   float silenceDb = -90.0f;         // voice end: below this after release …
   float silenceMs = 20.0f;          // … for this long
   float releaseTimeoutMs = 2000.0f; // voice end without a done slot or monitored outputs
@@ -99,7 +115,9 @@ struct VoiceConfig {
   uint32_t monitorMask = 0;         // bit s: voice out/export slot s is monitored for silence and level (0: every
                                     // voice `out`); slots ≥ 32 cannot be named here
   uint32_t doneSlot = kNoSlot;      // index into io().voiceOut, or kNoSlot (findVoiceSlot(io, patch, "done"))
-  uint32_t maxEventsPerBlock = 1024; // events beyond this in one block are dropped (VoiceStats::droppedEvents)
+  uint32_t maxEventsPerBlock = 1024; // NoteOns + Pitch events applied per block; the newest beyond it are dropped
+                                     // (VoiceStats::droppedEvents). Note-offs are never dropped
+  uint32_t moveBudgetFrames = 32768; // compaction: delay-ring frames moved per block at most (bench/RESULTS.md)
 };
 
 // Voice groups an image needs for maxVoices plus one group of fade headroom.
@@ -119,6 +137,7 @@ struct VoiceBinding {
   };
   struct DelaySpan {
     uint32_t firstWord, capacity;     // a voice delay line's DelayState (8 lanes)
+    uint32_t reach;                   // frames a read can reach back: floor(maxDelay) + 2
   };
   ProgramImage* image = nullptr;
   uint32_t numOutSlots = 0;
@@ -147,7 +166,9 @@ struct VoiceStats {
   uint64_t droppedNotes = 0;    // StealPolicy::None beyond maxVoices, or a deferred note replaced / released early
   uint64_t unmatchedEvents = 0; // note-off / pitch for a note id that is not sounding
   uint64_t lateEvents = 0;      // frame ≥ block length (clamped)
-  uint64_t droppedEvents = 0;   // beyond VoiceConfig::maxEventsPerBlock
+  uint64_t droppedEvents = 0;   // NoteOn / Pitch beyond VoiceConfig::maxEventsPerBlock
+  uint64_t oversizeBlocks = 0;  // blocks longer than io().maxBlockFrames (events applied, image refused: silence)
+  uint64_t skippedMoves = 0;    // compactions not done because the group's delay rings exceed moveBudgetFrames
   uint64_t voicesEnded = 0;
   uint64_t voiceMoves = 0;      // compaction: voices moved to another group
   uint64_t blocks = 0;
@@ -198,7 +219,8 @@ public:
   uint32_t groups() const noexcept { return groups_; }
   LaneStatus laneStatus(uint32_t lane) const noexcept { return status_[lane]; }
   uint32_t laneNote(uint32_t lane) const noexcept { return noteId_[lane]; }
-  uint32_t laneOf(uint32_t noteId) const noexcept;   // a held/released/fading lane playing noteId, or kNoSlot
+  uint32_t laneOf(uint32_t noteId) const noexcept;   // the newest held, else released, else fading lane playing
+                                                     // noteId, or kNoSlot
   uint32_t liveVoices() const noexcept { return live_; }  // held + released + deferred (waiting for a fade)
   bool hasDeferredNote(uint32_t lane) const noexcept { return hasPending_[lane] != 0; }
   uint32_t activeGroups() const noexcept;            // groups with a non-free lane
@@ -209,6 +231,7 @@ public:
   const float* gain(uint32_t g) const noexcept { return gainBuf_.data() + static_cast<size_t>(g) * groupStride_; }
   const float* voiceOut(uint32_t g, uint32_t slot) const noexcept { return b_->outPtr[g * b_->numOutSlots + slot]; }
   float laneLevel(uint32_t lane) const noexcept { return level_[lane]; }
+  uint32_t lastLane() const noexcept { return lastLane_; }  // voice_last's lane, or kNoVoice
   const VoiceStats& stats() const noexcept { return stats_; }
   const VoiceConfig& config() const noexcept { return cfg_; }
 
@@ -225,6 +248,10 @@ private:
   // Allocation (logical state, time order).
   void allocate(const EventList* events, uint32_t frames) noexcept;
   void onNoteOn(const NoteEvent& e, uint32_t frame) noexcept;
+  uint32_t findNote(uint32_t noteId, bool released) const noexcept;
+  uint32_t newestLive() const noexcept;
+  uint32_t moveCost(uint32_t lane) const noexcept;
+  void skipBlock(const EventList* events, uint32_t frames) noexcept;
   uint32_t findFreeLane() const noexcept;
   uint32_t pickVictim() const noexcept;
   void addOp(uint32_t frame, uint32_t lane, OpKind kind, const NoteEvent& e) noexcept;
@@ -232,7 +259,7 @@ private:
   // Rendering (per lane, signal buffers).
   void renderGroup(uint32_t g, uint32_t frames) noexcept;
   void renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept;
-  void applyOp(const LaneOp& op) noexcept;
+  void applyOp(const LaneOp& op, bool writeTrigger = true) noexcept;
   void freeLane(uint32_t lane) noexcept;
   void moveLane(uint32_t from, uint32_t to) noexcept;
   void compact() noexcept;
@@ -240,7 +267,7 @@ private:
   // After the image.
   void mixOutputs(VoiceBinding& b, uint32_t frames) noexcept;
   void measure(uint32_t frames) noexcept;
-  void endVoices(uint32_t frames) noexcept;
+  void endVoices(uint32_t frames, bool imageRan = true) noexcept;
 
   std::unique_ptr<VoiceBinding> own_;  // prepare()'s binding
   VoiceBinding* b_ = nullptr;          // current
@@ -250,6 +277,8 @@ private:
   uint32_t fadeFrames_ = 1, silenceFrames_ = 1;
   int64_t releaseTimeoutFrames_ = 0;
   float silenceLevel_ = 0.0f;
+  float idleHz_ = 261.626f;           // voice.hz of a free lane (referenceHz)
+  std::vector<float> fadeTable_;      // raised cosine: fadeFrames_ + 1 values from 1 down to 0
   double sampleRate_ = 48000.0;
 
   // Buffers handed to the image.
@@ -282,11 +311,17 @@ private:
   std::vector<uint32_t> rampLeft_;
   std::vector<float> gateMask_;       // 0 or all-ones mask
   std::vector<float> laneGain_;
-  std::vector<float> fadeStep_;       // > 0 while fading
+  std::vector<uint32_t> fadeLeft_;    // > 0 while fading: frames to go
+  std::vector<float> fadeFrom_;       // gain when the fade started
   std::vector<float> velocity_, release_, ratio_, harmonic_, unison_, index_;
 
   // Per block scratch.
   std::vector<LaneOp> ops_, sortedOps_;
+  std::vector<LaneOp> carry_;         // ops for frame 0 of the next block (addOp)
+  uint32_t numCarry_ = 0;
+  uint32_t curFrames_ = 0;            // the block being allocated
+  std::vector<uint32_t> floor_;       // per lane: no op before this frame in this block
+  std::vector<uint8_t> hasCarry_;     // per lane: ops carried to the next block (no voice end, no move meanwhile)
   std::vector<uint32_t> opBegin_;     // per lane + 1 (counting sort)
   uint32_t numOps_ = 0;
   uint32_t numReady_ = 0;             // lanes in status Pending (start at the next block)

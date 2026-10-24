@@ -64,6 +64,12 @@ struct VoiceGroupIO {
   uint32_t numIn = 0;
   float* const* out = nullptr;          // voice `out`/`export` slots (io().voiceOut), frames · 8 each
   uint32_t numOut = 0;
+  // Per-lane, per-sample gain (frames · 8; the VoiceEngine's: 0 before a note's onset and while free, the steal fade),
+  // or null. Audio-rate voice_sum and voice sends add select(gain ≠ 0, x, 0) · gain over the laneMask lanes, and
+  // voice_last reads its lane only at frames where its gain ≠ 0 (else the reduction's 0), so a pre-onset or idle
+  // lane's NaN never leaves the group (Q61 option A). voice_highest / lowest / loudest and bool reductions keep the
+  // block's laneMask (their comparisons skip NaN). Null: the laneMask alone (block granular).
+  const float* gain = nullptr;
 };
 
 inline constexpr uint32_t kNoVoice = 0xFFFFFFFFu;

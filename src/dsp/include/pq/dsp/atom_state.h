@@ -91,6 +91,12 @@ struct alignas(32) DelayState {
   float maxDelay;     // largest accepted delay in samples (inputs are clamped)
   float pad_[3];
   float apY1[8];      // allpass interpolator: previous output per lane
+  // 8-lane rings only (voice delay lines, T1.8-fix1): per lane, the ring frame (in writePos's wrapping count) from
+  // which the lane's history is valid. A tap older than it reads 0, as if the lane's ring had been zeroed when
+  // start[l] was set, so the VoiceEngine resets a lane's delay line in O(1) (start[l] = writePos) instead of
+  // clearing its ring (O(capacity), M1 review M9). The write kernel keeps writePos − start[l] ≤ capacity, so the
+  // difference never wraps. Mono rings ignore it (never reset per lane; zeroed by initState).
+  uint32_t start[8];
   float* ring() noexcept { return reinterpret_cast<float*>(this + 1); }
   const float* ring() const noexcept { return reinterpret_cast<const float*>(this + 1); }
 };
@@ -115,7 +121,7 @@ static_assert(sizeof(TimerState) == 64);
 static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 32);
-static_assert(sizeof(DelayState) == 64);
+static_assert(sizeof(DelayState) == 96);
 static_assert(sizeof(SampleReadState) == 96);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);
 

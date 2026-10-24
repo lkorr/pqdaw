@@ -25,6 +25,7 @@ namespace pq::jit::rt {
 struct RunCtx {
   uint32_t laneMask = 0;                // active lanes of the voice group being run
   uint32_t lastLane = engine::kNoVoice; // voice_last's lane if it is in this group
+  const float* gain = nullptr;          // the group's per-sample lane gain (VoiceGroupIO::gain), or null
   const engine::SendBus* sends = nullptr;
   uint32_t numSends = 0;
 };

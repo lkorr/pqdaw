@@ -43,6 +43,7 @@ uint32_t roundUp(uint32_t n, uint32_t a) noexcept { return (n + a - 1) / a * a; 
 struct RunCtx {
   uint32_t laneMask = 0;          // active lanes of the voice group being run
   uint32_t lastLane = kNoVoice;   // voice_last's lane if it is in this group
+  const float* gain = nullptr;    // the group's per-sample lane gain (VoiceGroupIO::gain), or null
   const SendBus* sends = nullptr;
   uint32_t numSends = 0;
 };
@@ -145,11 +146,28 @@ void reduceKernel(const dsp::KernelArgs& a) noexcept {  // RT-safe
     for (uint32_t l = 0; l < 8; ++l) out[l] = v;
     return;
   }
+  const float* gain = ri.run->gain;  // per-sample lane gain (VoiceGroupIO::gain), or null
   if (ri.mode == ReduceMode::Sum && !ri.isBool) {
     const __m256 m = laneMaskVector(mask);
+    if (gain != nullptr) {  // select(gain ≠ 0, x, 0) · gain: a pre-onset / idle lane's NaN never gets in
+      const __m256 z = _mm256_setzero_ps();
+      for (uint32_t f = 0; f < a.frames; ++f) {
+        const __m256 g = _mm256_load_ps(gain + f * 8);
+        const __m256 x = _mm256_and_ps(_mm256_loadu_ps(in + f * inStride), _mm256_and_ps(m, _mm256_cmp_ps(g, z, _CMP_NEQ_OQ)));
+        out[f] += horizontalSum(_mm256_mul_ps(x, g));
+      }
+      return;
+    }
     for (uint32_t f = 0; f < a.frames; ++f) out[f] += horizontalSum(_mm256_and_ps(_mm256_loadu_ps(in + f * inStride), m));
     return;
   }
+  if (gain != nullptr && ri.mode == ReduceMode::Last) {  // the last voice only from its onset (gain ≠ 0)
+    if (last >= 8) return;
+    for (uint32_t f = 0; f < a.frames; ++f)
+      if (gain[f * 8 + last] != 0.0f) out[f] = in[f * inStride + last];
+    return;
+  }
+  // Highest / Lowest / Loudest and bool any / all keep the block lane mask: their comparisons skip NaN.
   for (uint32_t f = 0; f < a.frames; ++f) out[f] = reduceFrame(ri, in + f * inStride, out[f], mask, last);
 }
 
@@ -172,6 +190,15 @@ void sendKernel(const dsp::KernelArgs& a) noexcept {  // RT-safe
   }
   const __m256 m = laneMaskVector(rc.laneMask);
   const uint32_t stride = si.inPattern ? 0u : 8u;
+  if (rc.gain != nullptr) {  // as voice_sum: select(gain ≠ 0, x, 0) · gain
+    const __m256 z = _mm256_setzero_ps();
+    for (uint32_t f = 0; f < a.frames; ++f) {
+      const __m256 g = _mm256_load_ps(rc.gain + f * 8);
+      const __m256 x = _mm256_and_ps(_mm256_loadu_ps(in + f * stride), _mm256_and_ps(m, _mm256_cmp_ps(g, z, _CMP_NEQ_OQ)));
+      dst[f] += horizontalSum(_mm256_mul_ps(x, g));
+    }
+    return;
+  }
   for (uint32_t f = 0; f < a.frames; ++f) dst[f] += horizontalSum(_mm256_and_ps(_mm256_loadu_ps(in + f * stride), m));
 }
 
@@ -654,6 +681,7 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
       const VoiceGroupIO& gr = vt->groups[gi];
       if ((gr.laneMask & 0xFFu) == 0) continue;  // no voice in this group: not run (T1.8; its state holds)
       run_.laneMask = gr.laneMask & 0xFFu;
+      run_.gain = gr.gain;
       run_.lastLane = vt->lastGroup == gi && vt->lastLane < 8 && ((gr.laneMask >> vt->lastLane) & 1u) ? vt->lastLane
                                                                                                     : kNoVoice;
       any = any || run_.laneMask != 0;
@@ -673,6 +701,7 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
       }
   }
   run_.laneMask = 0;
+  run_.gain = nullptr;
   for (uint32_t k = firstGlobalOut_; k < outs_.size(); ++k) {
     const OutCopy& c = outs_[k];
     if (ctx.out != nullptr && c.slot < ctx.numOut && ctx.out[c.slot] != nullptr) copyOut(c, ctx.out[c.slot], frames, false);

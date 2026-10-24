@@ -206,6 +206,7 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
   for (const StageRun& st : stages_) {
     if (!st.voice) {
       run_.laneMask = 0;
+      run_.gain = nullptr;
       run_.lastLane = e::kNoVoice;
       st.fn(buf, aux, gstate, vstate, ext, tab, frames, 0);
       continue;
@@ -220,6 +221,7 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
       const e::VoiceGroupIO& gr = vt->groups[gi];
       if ((gr.laneMask & 0xFFu) == 0) continue;  // no voice in this group: not run (T1.8; its state holds)
       run_.laneMask = gr.laneMask & 0xFFu;
+      run_.gain = gr.gain;
       run_.lastLane = vt->lastGroup == gi && vt->lastLane < 8 && ((gr.laneMask >> vt->lastLane) & 1u) ? vt->lastLane
                                                                                                      : e::kNoVoice;
       any = any || run_.laneMask != 0;
@@ -238,6 +240,7 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
       }
   }
   run_.laneMask = 0;
+  run_.gain = nullptr;
   for (uint32_t k = firstGlobalOut_; k < outs_.size(); ++k) {
     const OutCopy& c = outs_[k];
     if (ctx.out != nullptr && c.slot < ctx.numOut && ctx.out[c.slot] != nullptr) copyOut(c, ctx.out[c.slot], frames, false);

@@ -363,8 +363,8 @@ stage 0 global
 outputs:
   out 'y' ch0 <- b2 (global)
 state global (524416 B):
-  s0 @0 +524352 delay/1 frames 96000 'echo' ch0
-  s1 @524352 +32 z1/1 'lp' ch0
+  s0 @0 +524384 delay/1 frames 96000 'echo' ch0
+  s1 @524384 +32 z1/1 'lp' ch0
 )");
   // Without trusting param ranges the echo loop runs per sample.
   ScheduleOptions so;
@@ -373,7 +373,7 @@ state global (524416 B):
   compile(c, kFeedback, so);
   CHECK(ok(c).regions[1].subBlock == 1);
   // Delay interpolators: cubic ⌊D⌋ − 1, allpass ⌊D − 0.5⌋.
-  CHECK(dumpOf(kCombs) == R"(schedule 'C': 1 stages, 2 regions, 6 ops; buffers: 3 block, 0 pattern; state: 1280 B global, 0 B per voice group
+  CHECK(dumpOf(kCombs) == R"(schedule 'C': 1 stages, 2 regions, 6 ops; buffers: 3 block, 0 pattern; state: 1344 B global, 0 B per voice group
 externals:
   e0 in#0 'x' ch0 audio global
 buffers: b0=blk1 b1=blk1 b2=blk1
@@ -388,9 +388,9 @@ stage 0 global
     #5 delay:write/1 (b2) [s1]  'b'
 outputs:
   out 'y' ch0 <- b1 (global)
-state global (1280 B):
-  s0 @0 +1088 delay_cubic/1 frames 200 'a' ch0
-  s1 @1088 +192 delay_allpass/1 frames 20 'b' ch0
+state global (1344 B):
+  s0 @0 +1120 delay_cubic/1 frames 200 'a' ch0
+  s1 @1120 +224 delay_allpass/1 frames 20 'b' ch0
 )");
 }
 

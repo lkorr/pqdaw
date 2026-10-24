@@ -164,20 +164,51 @@ Ev pitch(int64_t t, uint32_t id, float hz, uint32_t ramp = 0) { return {t, eng::
 
 }  // namespace
 
-TEST_CASE("voices: EventBuffer keeps frame order (stable) and counts overflow") {
+// T1.8-fix1 (M7): this test used to require that a full buffer drop an incoming NoteOff, i.e. it pinned the
+// stuck-note bug. A full buffer now drops the newest NoteOn (then Pitch) instead, and merges offs as a last resort.
+TEST_CASE("voices: EventBuffer keeps frame order (stable); overflow drops note-ons, never note-offs") {
   eng::EventBuffer b(4);
   CHECK(b.push(eng::noteOn(10, 1, 100.0f, 1.0f)));
   CHECK(b.push(eng::noteOn(3, 2, 100.0f, 1.0f)));
   CHECK(b.push(eng::noteOff(10, 3)));
   CHECK(b.push(eng::noteOff(0, 4)));
-  CHECK_FALSE(b.push(eng::noteOff(0, 5)));
-  CHECK(b.dropped() == 1);
-  const eng::EventList& l = b.list();
-  REQUIRE(l.count == 4);
-  CHECK(l.events[0].noteId == 4);
-  CHECK(l.events[1].noteId == 2);
-  CHECK(l.events[2].noteId == 1);  // same frame: push order
-  CHECK(l.events[3].noteId == 3);
+  {
+    const eng::EventList& l = b.list();
+    REQUIRE(l.count == 4);
+    CHECK(l.events[0].noteId == 4);
+    CHECK(l.events[1].noteId == 2);
+    CHECK(l.events[2].noteId == 1);  // same frame: push order
+    CHECK(l.events[3].noteId == 3);
+  }
+  CHECK_FALSE(b.push(eng::noteOn(1, 9, 100.0f, 1.0f)));  // full: an incoming note-on is dropped
+  CHECK(b.push(eng::noteOff(0, 5)));                     // full: the newest note-on (id 1) makes room
+  CHECK(b.dropped() == 2);
+  {
+    const eng::EventList& l = b.list();
+    REQUIRE(l.count == 4);
+    CHECK(l.events[0].noteId == 4);
+    CHECK(l.events[1].noteId == 5);
+    CHECK(l.events[2].noteId == 2);
+    CHECK(l.events[3].noteId == 3);
+  }
+  CHECK(b.push(eng::notePitch(20, 2, 200.0f)));  // the last note-on (id 2) makes room for a pitch event
+  CHECK(b.push(eng::noteOff(30, 6)));            // no note-on left: the pitch event makes room for an off
+  CHECK(b.dropped() == 4);
+  CHECK(b.list().events[3].noteId == 6);
+  CHECK(b.list().events[3].kind == eng::NoteEventKind::NoteOff);
+  // Only offs left: a further off merges with the newest one into an AllNotesOff at the earlier frame.
+  CHECK_FALSE(b.push(eng::noteOff(25, 7)));
+  CHECK(b.mergedOffs() == 1);
+  REQUIRE(b.size() == 4);
+  CHECK(b.list().events[3].kind == eng::NoteEventKind::AllNotesOff);
+  CHECK(b.list().events[3].frame == 25);
+  CHECK_FALSE(b.push(eng::noteOff(40, 8)));  // covered by that AllNotesOff (no note starts in this block)
+  CHECK(b.size() == 4);
+  CHECK(b.list().events[3].kind == eng::NoteEventKind::AllNotesOff);
+  CHECK_FALSE(b.push(NoteEvent{50, eng::NoteEventKind::AllSoundOff}));  // stronger: merged into an AllSoundOff
+  CHECK(b.list().events[3].kind == eng::NoteEventKind::AllSoundOff);
+  CHECK(b.list().events[3].frame == 25);
+  for (uint32_t i = 1; i < b.size(); ++i) CHECK(b.list().events[i - 1].frame <= b.list().events[i].frame);
   CHECK(pq::alloc_trap::countRtViolations([&] {
           b.clear();
           b.push(eng::noteOn(1, 9, 1.0f, 1.0f));
@@ -247,7 +278,9 @@ TEST_CASE("voices: voice.cents follows voice.hz; pitch steps and glides (linear 
   CHECK(r.ve.stats().pitchEvents == 2);
 }
 
-TEST_CASE("voices: idle and pre-onset lanes read hz 0, gate false; param-rate signals are 8-float patterns") {
+// T1.8-fix1 (H1): free lanes used to read hz 0, which turns 1 / voice.hz into inf (and 0 · inf = NaN in the mix);
+// they now read referenceHz (cents 0). Pre-onset frames keep hz 0 (block-boundary independence) and gain 0.
+TEST_CASE("voices: free lanes read referenceHz, pre-onset frames hz 0, gate false; param-rate signals are patterns") {
   VoiceConfig cfg;
   Rig r(kProbe, cfg, 2);
   NoteEvent e = eng::noteOn(0, 7, 330.0f, 0.6f);
@@ -263,8 +296,9 @@ TEST_CASE("voices: idle and pre-onset lanes read hz 0, gate false; param-rate si
     CHECK(hz[t * 8 + 0] == 110.0f);
     CHECK(hz[t * 8 + 1] == (t < 20 ? 0.0f : 330.0f));
     CHECK(std::bit_cast<uint32_t>(gate[t * 8 + 1]) == (t < 20 ? 0u : 0xFFFFFFFFu));
-    CHECK(hz[t * 8 + 2] == 0.0f);  // free lane
-    CHECK(r.ve.signal(0, eng::VoiceSignal::Cents)[t * 8 + 2] == eng::kIdleCents);
+    CHECK(hz[t * 8 + 2] == static_cast<float>(cfg.referenceHz));  // free lane
+    CHECK(r.ve.signal(0, eng::VoiceSignal::Cents)[t * 8 + 2] == 0.0f);
+    if (t < 20) CHECK(r.ve.signal(0, eng::VoiceSignal::Cents)[t * 8 + 1] == eng::kIdleCents);
     CHECK(r.ve.gain(0)[t * 8 + 1] == (t < 20 ? 0.0f : 1.0f));
   }
   CHECK(r.ve.signal(0, eng::VoiceSignal::Velocity)[1] == 0.6f);
@@ -671,4 +705,382 @@ TEST_CASE("voices: prepare rejects bad configurations") {
   auto gimg = buildRigImage(global.sched, io);
   REQUIRE(gimg.ok());
   CHECK_FALSE(ve.prepare(gimg->get(), cfg).ok());
+}
+
+// ---- T1.8-fix1: the M1 review's voice findings (H1, H4, H5, M6, M7, M8, M9, L2) ----------------------------------
+
+// H1 probes (docs/reviews/M1/probes/idle_lane_nan.pqp, nan_lane.pqp): 1 / voice.hz in free and pre-onset lanes.
+const char* kIdleLaneNan = R"(
+patch IdleLaneNan {
+  out out : audio voice mono
+  out = sine(phasor(voice.hz)) * (100 / voice.hz)
+}
+)";
+const char* kNanLane = R"(
+patch NanLane {
+  out out : audio voice mono
+  env = gate_to_real(voice.gate)
+  out = sine(phasor(voice.hz)) * env * (100 / voice.hz)
+}
+)";
+const char* kNanSum = R"(
+patch NanSum {
+  out y : audio
+  v = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * (100 / voice.hz)
+  y = voice_sum(v) * 0.1 + voice_last(v) * 0.01
+}
+)";
+
+TEST_CASE("voices: 1 / voice.hz never reaches the mix or the patch's reducers as NaN (H1)") {
+  for (const char* text : {kIdleLaneNan, kNanLane, kNanSum}) {
+    INFO(text);
+    VoiceConfig cfg;
+    Rig r(text, cfg, 2, 64);
+    // Onsets inside blocks (pre-onset frames), releases.
+    const auto out = r.run(4800, 64, {on(5, 1, 220.0f), on(37, 2, 330.0f), on(70, 3, 440.0f), off(2000, 1), off(2100, 2),
+                                      off(2200, 3)});
+    double energy = 0.0;
+    for (const auto& ch : out)
+      for (float v : ch) {
+        REQUIRE(std::isfinite(v));
+        energy += static_cast<double>(v) * v;
+      }
+    CHECK(energy > 1.0);
+    CHECK(r.rtViolations == 0);
+  }
+  // voice_last(100 / voice.hz) reads its lane only from the onset: 0, not inf, before it.
+  VoiceConfig cfg;
+  Rig r(R"(
+patch LastInv {
+  out y : audio
+  y = voice_last(100 / voice.hz)
+}
+)", cfg, 1, 64);
+  const auto out = r.run(128, 64, {on(10, 1, 400.0f), on(80, 2, 500.0f)});
+  for (uint32_t t = 0; t < 10; ++t) CHECK(out.back()[t] == 0.0f);
+  CHECK(out.back()[20] == 0.25f);
+  CHECK(out.back()[100] == 0.2f);
+}
+
+// rise(voice.gate) counts gate edges.
+const char* kEdges = R"(
+patch Edges {
+  out y : audio voice
+  out e : audio voice
+  y = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.25
+  e = gate_to_real(rise(voice.gate))
+}
+)";
+
+TEST_CASE("voices: abutting same-pitch notes re-attack; a retrigger is a visible gate edge (H4)") {
+  SUBCASE("note-on at the same frame as the note-off: the gate is low there and rises one frame later") {
+    // Off and on at 100, and at 191 = the last frame of a 64-block (carried to the next block's frame 0): the same
+    // edges for every block size.
+    const std::vector<Ev> evs = {on(0, 1, 220.0f), off(100, 1), on(100, 2, 220.0f), off(191, 2), on(191, 3, 220.0f)};
+    std::vector<float> refE, refY;
+    for (uint32_t block : {1u, 7u, 64u}) {
+      INFO("block " << block);
+      VoiceConfig cfg;
+      Rig r(kEdges, cfg, 1, 64, false);
+      const auto out = r.run(320, block, evs);
+      const auto& e = out[r.mixIndex("e")];
+      const auto& y = out[r.mixIndex("y")];
+      float edges = 0.0f;
+      for (float v : e) edges += v;
+      CHECK(edges == 3.0f);
+      CHECK(e[0] == 1.0f);
+      CHECK(e[101] == 1.0f);
+      CHECK(e[192] == 1.0f);
+      CHECK(r.ve.stats().retriggers == 2);
+      CHECK(r.ve.liveVoices() == 1);
+      CHECK(r.ve.laneStatus(r.ve.laneOf(3)) == eng::LaneStatus::Held);
+      CHECK(r.rtViolations == 0);
+      if (refE.empty()) {
+        refE = e;
+        refY = y;
+      }
+      CHECK(e == refE);
+      CHECK(y == refY);
+    }
+  }
+  SUBCASE("a note-off at the same frame as the retriggering note-on: a zero-length note, no stuck gate") {
+    VoiceConfig cfg;
+    cfg.silenceMs = 1.0f;
+    Rig r(kEdges, cfg, 1, 64, false);
+    r.run(64, 64, {on(0, 1, 220.0f)});
+    r.run(64, 64, {off(127, 1), on(127, 2, 220.0f), off(127, 2)});
+    r.run(64 * 4, 64);
+    CHECK(r.ve.laneOf(2) == eng::kNoSlot);
+    CHECK(r.ve.liveVoices() == 0);
+  }
+  SUBCASE("released one frame earlier, started in an earlier block: retrigger with a rising edge at k") {
+    VoiceConfig cfg;
+    Rig r(kEdges, cfg, 1, 64, false);
+    const auto out = r.run(256, 64, {on(0, 1, 220.0f), off(100, 1), on(101, 2, 220.0f)});
+    const auto& e = out[r.mixIndex("e")];
+    CHECK(r.ve.stats().retriggers == 1);
+    CHECK(e[101] == 1.0f);
+    float edges = 0.0f;
+    for (float v : e) edges += v;
+    CHECK(edges == 2.0f);
+    CHECK(r.ve.liveVoices() == 1);
+  }
+  SUBCASE("a voice started in this block is not taken over") {
+    VoiceConfig cfg;
+    Rig r(kEdges, cfg, 1, 64, false);
+    r.run(64, 64, {on(10, 1, 220.0f), off(20, 1), on(30, 2, 220.0f)});
+    CHECK(r.ve.stats().retriggers == 0);
+    CHECK(r.ve.liveVoices() == 2);
+  }
+}
+
+TEST_CASE("voices: simultaneous notes at one pitch are separate voices (unison, H5); lookups prefer held, newest (M8)") {
+  VoiceConfig cfg;
+  Rig one(kSine, cfg, 1, 64), two(kSine, cfg, 1, 64);
+  const auto a = one.run(512, 64, {on(3, 1, 220.0f)});
+  const auto b = two.run(512, 64, {on(3, 1, 220.0f), on(3, 2, 220.0f)});
+  CHECK(two.ve.liveVoices() == 2);
+  CHECK(two.ve.laneOf(1) != two.ve.laneOf(2));
+  for (size_t t = 0; t < a[0].size(); ++t) REQUIRE(b[0][t] == 2.0f * a[0][t]);
+  // Note-off and pitch find their own voice.
+  two.run(64, 64, {off(two.time + 1, 1), pitch(two.time + 2, 2, 330.0f)});
+  CHECK(two.ve.laneStatus(two.ve.laneOf(1)) == eng::LaneStatus::Released);
+  CHECK(two.ve.laneStatus(two.ve.laneOf(2)) == eng::LaneStatus::Held);
+  CHECK(two.ve.stats().unmatchedEvents == 0);
+  // Reused ids (MIDI-style): a pitch event goes to the newest held voice, not to a releasing tail of the same id.
+  VoiceConfig c2;
+  c2.retriggerSameNote = false;
+  Rig r(kProbe, c2, 1, 64);
+  r.run(64, 64, {on(0, 7, 220.0f)});
+  r.run(64, 64, {off(70, 7), on(80, 7, 330.0f), pitch(100, 7, 440.0f)});
+  uint32_t held = eng::kNoSlot, rel = eng::kNoSlot;
+  for (uint32_t l = 0; l < r.ve.lanes(); ++l) {
+    if (r.ve.laneStatus(l) == eng::LaneStatus::Held) held = l;
+    if (r.ve.laneStatus(l) == eng::LaneStatus::Released) rel = l;
+  }
+  REQUIRE(held != eng::kNoSlot);
+  REQUIRE(rel != eng::kNoSlot);
+  const float* hz = r.ve.signal(0, eng::VoiceSignal::Hz);
+  CHECK(hz[63 * 8 + (held & 7)] == 440.0f);
+  CHECK(hz[63 * 8 + (rel & 7)] == 220.0f);
+  CHECK(r.ve.laneOf(7) == held);
+}
+
+TEST_CASE("voices: voice_last moves to the newest sounding voice when its voice ends (M6, probes/last.pqp)") {
+  const char* kLast = R"(
+patch Last {
+  out o : audio voice
+  out y : audio
+  o = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.1
+  y = voice_last(voice.hz) / 1000
+}
+)";
+  VoiceConfig cfg;
+  cfg.silenceMs = 5.0f;
+  Rig r(kLast, cfg, 1, 64);
+  const auto out = r.run(9600, 64, {on(0, 1, 220.0f), on(4800, 2, 330.0f), off(6000, 2)});
+  const auto& y = out.back();
+  CHECK(y[4000] == doctest::Approx(0.22f));
+  CHECK(y[5500] == doctest::Approx(0.33f));
+  CHECK(r.ve.laneOf(2) == eng::kNoSlot);  // ended on silence
+  CHECK(y[9599] == doctest::Approx(0.22f));
+  CHECK(r.ve.lastLane() == r.ve.laneOf(1));
+}
+
+TEST_CASE("voices: event overflow and oversize blocks never leave a stuck note (M7)") {
+  SUBCASE("maxEventsPerBlock: the newest note-ons are dropped, every note-off applies") {
+    VoiceConfig cfg;
+    cfg.maxEventsPerBlock = 4;
+    Rig r(kProbe, cfg, 2, 64);
+    std::vector<Ev> evs;
+    for (uint32_t i = 0; i < 8; ++i) evs.push_back(on(i, i + 1, 100.0f + 10.0f * static_cast<float>(i)));
+    for (uint32_t i = 0; i < 8; ++i) evs.push_back(off(20 + i, i + 1));
+    r.run(64, 64, evs);
+    CHECK(r.ve.stats().droppedEvents == 4);
+    CHECK(r.ve.stats().noteOffs == 8);
+    for (uint32_t l = 0; l < r.ve.lanes(); ++l) CHECK(r.ve.laneStatus(l) != eng::LaneStatus::Held);
+  }
+  SUBCASE("an oversize block applies its events and voice ends") {
+    VoiceConfig cfg;
+    cfg.silenceMs = 1.0f;
+    Rig r(kProbe, cfg, 1, 64);
+    r.run(64, 64, {on(0, 1, 100.0f), on(1, 2, 200.0f)});
+    // A 100-frame block (> maxBlockFrames 64): the image refuses it, the engine still releases note 1.
+    r.buf.clear();
+    r.buf.push(eng::noteOff(30, 1));
+    r.buf.push(eng::noteOn(40, 3, 300.0f, 0.5f));
+    eng::ProcessContext ctx;
+    ctx.frames = 100;
+    ctx.sampleRate = kSr;
+    ctx.events = &r.buf.list();
+    CHECK(pq::alloc_trap::countRtViolations([&] { r.ve.process(ctx); }) == 0);
+    r.time += 100;
+    CHECK(r.ve.stats().oversizeBlocks == 1);
+    CHECK(r.ve.laneOf(1) == eng::kNoSlot);  // released and silent for 70 frames ≥ 1 ms: ended
+    CHECK(r.ve.laneStatus(r.ve.laneOf(3)) == eng::LaneStatus::Held);
+    const auto out = r.run(64, 64);
+    CHECK(out[r.mixIndex("f")][10] == 500.0f);  // notes 2 and 3 sound in the next normal block
+  }
+  SUBCASE("random traffic through a tiny EventBuffer: 0 stuck notes") {
+    VoiceConfig cfg;
+    cfg.silenceMs = 1.0f;
+    cfg.maxEventsPerBlock = 6;
+    Rig r(kProbe, cfg, eng::voiceGroupsFor(32), 64);
+    eng::EventBuffer small(8);
+    uint32_t rng = 77, nextId = 1;
+    auto rnd = [&](uint32_t n) {
+      rng = rng * 1664525u + 1013904223u;
+      return (rng >> 8) % n;
+    };
+    std::vector<uint32_t> held;  // the producer's view: notes it has started and not yet released
+    pq::DenormalGuard dg;
+    uint64_t rt = 0;
+    for (int b = 0; b < 3000; ++b) {
+      small.clear();
+      const uint32_t n = rnd(20);
+      std::vector<NoteEvent> evs;
+      for (uint32_t k = 0; k < n; ++k) {
+        if (rnd(2) == 0 || held.empty()) {
+          evs.push_back(eng::noteOn(rnd(64), nextId, 100.0f + static_cast<float>(rnd(1000)), 0.5f));
+          held.push_back(nextId++);
+        } else {
+          const uint32_t i = rnd(static_cast<uint32_t>(held.size()));
+          evs.push_back(eng::noteOff(rnd(64), held[i]));
+          held.erase(held.begin() + i);
+        }
+      }
+      if (b == 2999)  // the producer releases everything it still holds
+        for (uint32_t id : held) evs.push_back(eng::noteOff(63, id));
+      eng::ProcessContext ctx;
+      ctx.frames = 64;
+      ctx.sampleRate = kSr;
+      ctx.events = &small.list();
+      rt += pq::alloc_trap::countRtViolations([&] {
+        for (const NoteEvent& e : evs) small.push(e);
+        r.ve.process(ctx);
+      });
+    }
+    CHECK(rt == 0);
+    CHECK(small.dropped() > 0);
+    CHECK(small.mergedOffs() > 0);
+    CHECK(r.ve.stats().droppedEvents > 0);
+    uint32_t stuck = 0;
+    for (uint32_t l = 0; l < r.ve.lanes(); ++l) stuck += r.ve.laneStatus(l) == eng::LaneStatus::Held ? 1u : 0u;
+    CHECK(stuck == 0);
+    MESSAGE("EventBuffer dropped " << small.dropped() << ", merged offs " << small.mergedOffs() << "; engine dropped "
+                                   << r.ve.stats().droppedEvents);
+  }
+}
+
+TEST_CASE("voices: a reused lane's delay line starts silent (O(1) ring reset) and matches a fresh engine (M9)") {
+  const char* kLongEcho = R"(
+patch LongEcho {
+  out y : audio voice
+  x = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.2
+  e = delay(x + e * 0.7, 20ms, 50ms)
+  y = x + e
+}
+)";
+  for (const char* text : {kLongEcho, kEcho}) {
+    INFO(text);
+    VoiceConfig cfg;
+    cfg.silenceDb = -40.0f;  // end note 1 while its ring still holds history
+    cfg.silenceMs = 1.0f;
+    Rig used(text, cfg, 1, 64);
+    used.run(24000, 64, {on(0, 1, 300.0f), off(3000, 1)});
+    REQUIRE(used.ve.laneOf(1) == eng::kNoSlot);
+    const auto a = used.run(4800, 64, {on(used.time + 17, 2, 450.0f)});
+    REQUIRE(used.ve.laneOf(2) == 0);  // the lane note 1 used
+    Rig fresh(text, cfg, 1, 64);
+    fresh.run(24000, 64);
+    const auto b = fresh.run(4800, 64, {on(fresh.time + 17, 2, 450.0f)});
+    for (size_t t = 0; t < a[0].size(); ++t) REQUIRE(a[0][t] == b[0][t]);
+  }
+}
+
+TEST_CASE("voices: compaction respects the ring move budget (M9)") {
+  // Random traffic with a per-voice delay line: budget 0 → no moves (counted), the same sound as with moves.
+  std::vector<Ev> evs;
+  uint32_t rng = 31, id = 1;
+  auto rnd = [&](uint32_t n) {
+    rng = rng * 1664525u + 1013904223u;
+    return (rng >> 8) % n;
+  };
+  for (int64_t t = 0; t < 2 * 48000; t += 997 + rnd(3000))
+    for (uint32_t k = 0, n = 1 + rnd(4); k < n; ++k, ++id) {
+      evs.push_back(on(t + rnd(64), id, 80.0f * std::exp2(static_cast<float>(rnd(4800)) / 1200.0f), 0.5f));
+      evs.push_back(off(t + 200 + rnd(20000), id));
+    }
+  std::stable_sort(evs.begin(), evs.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
+  std::vector<float> out[2];
+  for (int k = 0; k < 2; ++k) {
+    VoiceConfig cfg;
+    cfg.silenceMs = 5.0f;
+    cfg.moveBudgetFrames = k == 0 ? 0u : 1u << 20;
+    Rig r(kEcho, cfg, eng::voiceGroupsFor(64), 64);
+    out[k] = r.run(2 * 48000 + 24000, 64, evs)[0];
+    if (k == 0) {
+      CHECK(r.ve.stats().voiceMoves == 0);
+      CHECK(r.ve.stats().skippedMoves > 0);
+    } else {
+      CHECK(r.ve.stats().voiceMoves > 5);
+    }
+  }
+  double maxDiff = 0;
+  for (size_t t = 0; t < out[0].size(); ++t) maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(out[0][t] - out[1][t])));
+  CHECK(maxDiff <= 1e-5);
+}
+
+TEST_CASE("voices: the steal fade is a raised cosine; voice_sum inside the patch gets it too (L2, Q61)") {
+  VoiceConfig cfg;
+  cfg.maxVoices = 1;
+  const char* kBoth = R"(
+patch Both {
+  out y : audio voice
+  out g : audio
+  y = gate_to_real(voice.gate)
+  g = voice_sum(gate_to_real(voice.gate))
+}
+)";
+  Rig r(kBoth, cfg, eng::voiceGroupsFor(1), 64);
+  const auto out = r.run(512, 64, {on(0, 1, 100.0f), on(100, 2, 200.0f)});  // note 2 steals note 1 at 100
+  const auto& y = out[r.mixIndex("y")];
+  const auto& g = out.back();
+  const uint32_t N = 144;  // 3 ms
+  for (uint32_t k = 0; k <= N + 20; ++k) {
+    const double fade = k < N ? 0.5 + 0.5 * std::cos(3.141592653589793 * k / N) : 0.0;
+    INFO("k " << k);
+    CHECK(y[100 + k] == doctest::Approx(1.0 + fade).epsilon(1e-6));  // the new voice (1) + the fading one
+    CHECK(g[100 + k] == doctest::Approx(1.0 + fade).epsilon(1e-6));
+  }
+  CHECK(g[50] == 1.0f);
+}
+
+TEST_CASE("voices: the M1 review's H4/H5 renders with the golden FmVoice (acceptance numbers)") {
+  std::vector<std::string> skipped;
+  auto files = compileFile(fs::path(PQ_TEST_DATA_DIR) / "golden" / "patches" / "fm_voice.pqp", kSr, skipped);
+  REQUIRE(files.size() == 2);  // FmVoice, then its adsr (compiled on its own too)
+  const float c4 = 261.6256f;
+  auto peak = [](const std::vector<float>& v, size_t from, size_t to) {
+    float m = 0.0f;
+    for (size_t t = from; t < to && t < v.size(); ++t) m = std::max(m, std::fabs(v[t]));
+    return m;
+  };
+  {  // "60@0:0.5 60@0.5:0.5": the second note re-attacks (peak ≥ 0.69 after 0.5 s; the decaying envelope ≈ 0.56 before)
+    Rig r(files[0], VoiceConfig{}, 2, 128);
+    const auto out = r.run(48000, 128, {on(0, 1, c4, 0.75f), off(24000, 1), on(24000, 2, c4, 0.75f), off(47999, 2)});
+    CHECK(peak(out[0], 19200, 24000) < 0.6f);
+    CHECK(peak(out[0], 24000, 48000) >= 0.69f);
+    CHECK(r.ve.stats().retriggers == 1);
+  }
+  {  // "60@0:1 60@0:1": two lanes, exactly twice the single note
+    Rig one(compileFile(fs::path(PQ_TEST_DATA_DIR) / "golden" / "patches" / "fm_voice.pqp", kSr, skipped)[0],
+            VoiceConfig{}, 2, 128);
+    Rig two(compileFile(fs::path(PQ_TEST_DATA_DIR) / "golden" / "patches" / "fm_voice.pqp", kSr, skipped)[0],
+            VoiceConfig{}, 2, 128);
+    const auto a = one.run(48000, 128, {on(0, 1, c4, 0.75f)});
+    const auto b = two.run(48000, 128, {on(0, 1, c4, 0.75f), on(0, 2, c4, 0.75f)});
+    CHECK(two.ve.liveVoices() == 2);
+    for (size_t t = 0; t < a[0].size(); ++t) REQUIRE(b[0][t] == 2.0f * a[0][t]);
+  }
 }
