@@ -209,7 +209,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
 - [x] **T1.x-arch1 Per-track compilation units** *(6b1e487)* (`graph` + `engine` + `jit` + docs). Depends on: T1.5-fix1, T1.8-fix1, T1.9, T1b.1. Before T3.17. (User decision 2026-10-21: per-track units now; whole-project re-optimisation on idle later, M12.)
   - Each track's device chain is one compile unit (own Schedule/ProgramImage/state arena/compile-cache key); a project-level runner executes units in dependency order each block, passing audio between units through preallocated buffers (no added latency for feed-forward paths); tracks connected by cross-track modulation/sidechain wires are merged into one unit; group/return/master summing as units too. Hot swap (T1.9) per unit: an edit recompiles and crossfades only the changed unit.
   - Accept: a 30-track fixture (≈ 20k ops) — one device edit: audible change ≤ 200 ms, peak audio-thread CPU during the edit ≤ 1.3× steady state, unchanged tracks bit-identical through the swap; output of the per-unit project identical (≤ 1e-6) to a single whole-project program of the same graph; cross-track modulation wire merges units and stays sample-accurate.
-- [~] **T1.x-arch2 Shared image host + one compile pipeline** *(worker BG, branch task/T1.x-arch2-jit-host)* (`engine`, `jit`, `tools`, `app`). Depends on: T1b.1.
+- [x] **T1.x-arch2 Shared image host + one compile pipeline** *(merged 2026-10-24)* (`engine`, `jit`, `tools`, `app`). Depends on: T1b.1.
   - Extract interpreter/JIT host code (layout, params, inputs, reducers/sends/broadcast, Newton) into one engine-internal
     layer; `pq_compile` library for file → Schedule used by pqc and `pqdaw --play` (Q73 B, gives --play the JIT); renderOffline
     through ProgramHost.
@@ -260,7 +260,7 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - At build time, `pqc aot` compiles `stdlib/` into an object file linked into pqdaw. Runtime JIT objects are cached under `cache/` keyed by graph hash + CPU features + compiler version.
   - Accept: opening a stock device at runtime does no JIT compile (test hook counts compiles). A second load of the same user patch hits the cache.
 
-- [~] **T1b.5 Interpreter→JIT live swap** *(worker BG, same branch)* (`engine` + `jit`). Depends on: T1b.1, T1.9.
+- [x] **T1b.5 Interpreter→JIT live swap** *(merged 2026-10-24)* (`engine` + `jit`). Depends on: T1b.1, T1.9.
   - An edit plays immediately through the interpreter, then swaps to the JIT image when it's ready.
   - Accept: an offline test with a simulated compile delay. The swap is click-free (same criteria as T1.9). The JIT ProgramImage costs less than the interpreter's (benchmark).
 
