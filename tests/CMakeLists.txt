@@ -158,6 +158,11 @@ pq_add_test(pq_tests_engine PERF
     engine/test_offline_render.cpp
   DEPS pq_engine)
 
+# T3.16: the engine timeline (transport, note sequencer, automation renderer), with the VoiceEngine and renderOffline.
+pq_add_test(pq_tests_timeline
+  SOURCES engine/test_timeline.cpp
+  DEPS pq_engine pq_doc)
+
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on
 # both backends, and the pqc CLI (in-process, plus the real pqc.exe once).
 pq_add_test(pq_tests_render
