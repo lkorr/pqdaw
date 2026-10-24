@@ -137,7 +137,7 @@ struct Rig {
     for (int i = 0; i < maxFrames && (i == 0 || tree.needsFrame() || arr->zooming()); ++i) frame();
   }
   // The partial target against a full repaint now, over the arrangement (the control bar's grid label, which a zoom
-  // changes, paints a pixel past its rect: a T3.7 Label matter outside this test, QUESTIONS Q?-T3.8-fix1-a).
+  // changes, paints a pixel past its rect: a T3.7 Label matter outside this test, QUESTIONS Q103).
   void comparePartial(const std::string& what) {
     auto pa = partial->read();
     REQUIRE(pa.ok());
