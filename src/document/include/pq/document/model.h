@@ -165,6 +165,30 @@ struct ClipLoop {
 // A note clip. `start`/`length` place it on the arrangement timeline; notes are in content ticks, and content tick
 // `contentStart` plays at arrangement tick `start` (Ableton's start marker), so resizing the clip's left edge while
 // keeping notes at their absolute time changes start, length and contentStart together.
+// ---- Virtual fundamental (T3.6-fix1; SPEC §4.3, QUESTIONS Q40, Q?-T3.6-fix1-a) -----------------------------------
+// The reference-anchored Ratio notes of a clip share a virtual fundamental F, DERIVED on read from what is entered
+// (virtualFundamental below): F = 1/D with D = lcm over those notes of each note's effective denominator — its own
+// reduced denominator, or, while the note still has the pitch an Up/Down step (or a vertical drag) gave it, the
+// denominator of the fundamental it was stepped on (a HarmonicStep). Ratios stay stored reduced and exact: 5/4 Up is
+// stored 3/2 with the step {note, 4, 3/2}, so the next Up still lands on 7/4. Adding 4/3 gives lcm(4, 3) = 12;
+// deleting it gives 4 again; undo / redo restore both, because the steps live in the clip snapshot. An explicit
+// lock (b + index, SPEC §6.2: "this note is the N-th harmonic") overrides the derivation with F = note / N.
+inline constexpr int64_t kMaxFundamentalDenominator = int64_t{1} << 20;  // finer: no fundamental (own denominators)
+
+struct HarmonicStep {
+  NoteId note;
+  int64_t denominator = 1;   // the fundamental 1/denominator the step used (≤ kMaxFundamentalDenominator)
+  tuning::Rational ratio;    // the reference-anchored ratio it produced; the step applies while the note has it
+  friend bool operator==(const HarmonicStep&, const HarmonicStep&) noexcept = default;
+};
+
+struct ClipFundamental {
+  std::vector<HarmonicStep> steps;        // sorted by note id, unique; only steps finer than the ratio's own denominator
+  std::optional<tuning::Rational> lock;   // explicit fundamental (relative to the clip reference), > 0
+  bool empty() const noexcept { return steps.empty() && !lock; }
+  friend bool operator==(const ClipFundamental&, const ClipFundamental&) noexcept = default;
+};
+
 struct NoteClip {
   ClipId id;
   std::string name;
@@ -176,12 +200,21 @@ struct NoteClip {
   TimeSignature signature;  // display only (SPEC §9.4)
   TuningAssignment tuning;  // Inherit = the track's tuning
   bool active = true;       // deactivated clips are kept but not played
+  ClipFundamental fundamental;  // T3.6-fix1: what the virtual fundamental is derived from (see above)
   NoteSeq notes;
 };
 bool operator==(const NoteClip& a, const NoteClip& b) noexcept;
 using ClipPtr = std::shared_ptr<const NoteClip>;
 // A copy of every field except the notes, which are replaced (avoids copying the old chunk directory).
 NoteClip withNotes(const NoteClip& c, NoteSeq notes);
+
+// The clip's virtual fundamental relative to its reference (see ClipFundamental): the lock if set, else 1/D, else
+// nullopt (no reference-anchored Ratio note, or D > kMaxFundamentalDenominator). `ownDenominators`: the lcm of the
+// reference-anchored Ratio notes' own denominators if the caller has it cached (0 none, −1 too large), or
+// kComputeOwnDenominators to scan the clip. O(1) without steps (given the lcm); with steps, one pass over the notes.
+inline constexpr int64_t kComputeOwnDenominators = -2;
+std::optional<tuning::Rational> virtualFundamental(const NoteClip& clip,
+                                                   int64_t ownDenominators = kComputeOwnDenominators);
 
 // A track's clips, sorted by (start, id). The id is kept next to the pointer so finding a clip by id scans a
 // contiguous array instead of dereferencing every clip.

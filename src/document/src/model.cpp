@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 #include "pq/tuning/mos_tuning.h"
 
@@ -165,7 +166,7 @@ bool operator==(const AutomationLane& a, const AutomationLane& b) noexcept {
 bool operator==(const NoteClip& a, const NoteClip& b) noexcept {
   return a.id == b.id && a.name == b.name && a.colour == b.colour && a.start == b.start && a.length == b.length &&
          a.contentStart == b.contentStart && a.loop == b.loop && a.signature == b.signature &&
-         a.tuning == b.tuning && a.active == b.active && a.notes == b.notes;
+         a.tuning == b.tuning && a.active == b.active && a.fundamental == b.fundamental && a.notes == b.notes;
 }
 
 NoteClip withNotes(const NoteClip& c, NoteSeq notes) {
@@ -180,8 +181,40 @@ NoteClip withNotes(const NoteClip& c, NoteSeq notes) {
   n.signature = c.signature;
   n.tuning = c.tuning;
   n.active = c.active;
+  n.fundamental = c.fundamental;
   n.notes = std::move(notes);
   return n;
+}
+
+std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t own) {
+  if (c.fundamental.lock) return c.fundamental.lock;
+  auto isRefRatio = [](const Note& n) {
+    return n.pitch.kind() == tuning::PitchKind::Ratio && n.pitch.anchorKind() == tuning::AnchorKind::Reference;
+  };
+  int64_t D = 0;  // −1: too fine
+  auto join = [&D](int64_t d) {
+    if (D < 0 || d == 0) return;
+    D = d < 0 ? -1 : (D ? std::lcm(D, d) : d);
+    if (D > kMaxFundamentalDenominator) D = -1;
+  };
+  const std::vector<HarmonicStep>& steps = c.fundamental.steps;
+  if (own == kComputeOwnDenominators || !steps.empty()) {
+    // One pass: own denominators (unless given) and the steps still in force.
+    if (own != kComputeOwnDenominators) join(own);
+    for (const Note& n : c.notes) {
+      if (!isRefRatio(n)) continue;
+      const tuning::Rational r = n.pitch.ratio();
+      if (own == kComputeOwnDenominators) join(r.den());
+      if (steps.empty()) continue;
+      const auto it = std::lower_bound(steps.begin(), steps.end(), n.id,
+                                       [](const HarmonicStep& s, NoteId id) { return s.note.value < id.value; });
+      if (it != steps.end() && it->note == n.id && it->ratio == r) join(it->denominator);
+    }
+  } else {
+    join(own);
+  }
+  if (D <= 0) return std::nullopt;
+  return tuning::Rational(1, D);
 }
 
 bool operator==(const Track& a, const Track& b) noexcept {

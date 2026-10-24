@@ -119,20 +119,21 @@ void paintOverlay(PaintContext& ctx, const RollState& s, const IRect& vis, float
 
 // --- virtual fundamental (SPEC §4.3, Q40) -------------------------------------------------------------------
 
-// The clip's virtual fundamental (reference / D) as a translucent line labelled "1/D" and its harmonics k/D as faint
-// guide lines labelled k, wherever they fall in view. Lines closer than 3 device px to the previous one are skipped
+// The clip's virtual fundamental F (reference · F; 1/D derived, or a lock) as a translucent line labelled with F
+// ("1/D", "7/20") and its harmonics k·F as faint guide lines labelled k, wherever they fall in view. Lines closer than 3 device px to the previous one are skipped
 // and labels need a text line of room, so a dense high range costs at most one line per 3 px of height.
 void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, const IRect& vis) {
-  const int64_t D = s.virtualFundamental();
+  const std::optional<tuning::Rational> F = s.virtualFundamental();
   const RowModel& rows = s.rows();
-  if (D <= 0 || rows.empty()) return;
+  if (!F || rows.empty()) return;
+  const double fn = static_cast<double>(F->num()), fd = static_cast<double>(F->den());
   const Theme& th = *ctx.res.theme;
   const auto [first, last] = rows.rowsIn(s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())) + 1);
   if (first >= last) return;
   const double hiCents = rows.row(first).cents + 100.0, loCents = rows.row(last - 1).cents - 100.0;
-  const double fund = -1200.0 * std::log2(static_cast<double>(D));  // cents of reference / D
-  const double kLo = std::max(1.0, std::ceil(static_cast<double>(D) * std::exp2(loCents / 1200.0)));
-  const double kHi = std::floor(static_cast<double>(D) * std::exp2(hiCents / 1200.0));
+  const double fund = 1200.0 * std::log2(fn) - 1200.0 * std::log2(fd);  // cents of reference · F (1/D: −1200·log2 D)
+  const double kLo = std::max(1.0, std::ceil(fd / fn * std::exp2(loCents / 1200.0)));
+  const double kHi = std::floor(fd / fn * std::exp2(hiCents / 1200.0));
   if (kHi < kLo) return;
   TextSystem* ts = ctx.res.text;
   const ThemeFonts* fonts = ctx.res.uiFonts;
@@ -153,7 +154,8 @@ void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, con
     else ctx.dl.addRectFilled({x0, y, x1, y + 1.0f}, th.roll.harmonic);
     if (std::fabs(lastLabelY - y) >= static_cast<float>(lineH) && fonts) {
       lastLabelY = y;
-      const int n = fundamentalLine ? std::snprintf(buf, sizeof buf, "1/%lld", static_cast<long long>(D))
+      const int n = fundamentalLine ? std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(F->num()),
+                                                    static_cast<long long>(F->den()))
                                     : std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(k));
       paint::text(ctx, fonts->small, {r.x, static_cast<int32_t>(y) - lineH, ctx.scale.px(48), lineH},
                   std::string_view(buf, static_cast<size_t>(n)), th.roll.fundamental, TextAlign::Left, pad, 0);

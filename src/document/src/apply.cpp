@@ -677,6 +677,10 @@ Res apply_(const Snapshot& s, const SetClipSignature& c, ChangeSet& cs) {
   return editClipHeader(s, c.clip, cs, kChangeMeta, [&](NoteClip& n) { n.signature = c.signature; });
 }
 
+Res apply_(const Snapshot& s, const SetClipFundamental& c, ChangeSet& cs) {
+  return editClipHeader(s, c.clip, cs, kChangeMeta, [&](NoteClip& n) { n.fundamental = c.fundamental; });
+}
+
 Res apply_(const Snapshot& s, const SetClipActive& c, ChangeSet& cs) {
   return editClipHeader(s, c.clip, cs, kChangeSequence, [&](NoteClip& n) { n.active = c.active; });
 }
@@ -1177,7 +1181,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Mute", "Solo", "Arm", "Set Send", "Send Pre/Post", "Set Output", "Activate Track", "Track Tuning",
     "Group Tracks", "Ungroup Tracks",
     "Add Clip", "Delete Clip", "Move Clip", "Resize Clip", "Clip Loop", "Clip Tuning", "Rename Clip",
-    "Clip Colour", "Clip Signature", "Activate Clip",
+    "Clip Colour", "Clip Signature", "Activate Clip", "Clip Fundamental",
     "Add Notes", "Delete Notes", "Edit Notes", "Move Note", "Resize Note", "Note Property",
     "Add Automation Lane", "Delete Automation Lane", "Add Breakpoints", "Delete Breakpoints", "Edit Breakpoints",
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",

@@ -172,6 +172,13 @@ std::vector<Case> cases() {
                }, M, noCheck});
   c.push_back({"SetClipActive", [](Fixture& f) -> Command { return SetClipActive{{f.lead, f.clipA}, false}; }, Q,
                noCheck});
+  c.push_back({"SetClipFundamental", [](Fixture& f) -> Command {
+                 ClipFundamental cf;
+                 cf.lock = pq::tuning::Rational(1, 8);
+                 return SetClipFundamental{{f.lead, f.clipA}, cf};
+               }, M, [](Fixture& f, const ChangeSet&) {
+                 CHECK(f.clip(f.lead, f.clipA).fundamental.lock == pq::tuning::Rational(1, 8));
+               }});
   // ---- notes
   c.push_back({"AddNotes", [](Fixture& f) -> Command {
                  return AddNotes{{f.lead, f.clipB}, {makeNote(f.store.ids(), 3 * pq::kPpq, 5)}};

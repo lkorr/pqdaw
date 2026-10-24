@@ -72,7 +72,21 @@ Status checkClip(const Project& p, const NoteClip& c) {
   PQ_DOC_TRY(checkTick(c.contentStart, "clip content start"));
   PQ_DOC_TRY(checkLoop(c.loop));
   PQ_DOC_TRY(checkSignature(c.signature));
+  PQ_DOC_TRY(checkFundamental(c.fundamental));
   return checkAssignment(p, c.tuning);
+}
+
+Status checkFundamental(const ClipFundamental& f) {
+  if (f.lock && !f.lock->isPositive()) return invalid("a fundamental lock must be positive");
+  for (size_t i = 0; i < f.steps.size(); ++i) {
+    const HarmonicStep& h = f.steps[i];
+    if (!h.note.valid()) return invalid("harmonic step without a note");
+    if (i > 0 && !(f.steps[i - 1].note.value < h.note.value)) return invalid("harmonic steps must be sorted by note id");
+    if (h.denominator < 1 || h.denominator > kMaxFundamentalDenominator)
+      return invalid("harmonic step denominator out of range");
+    if (!h.ratio.isPositive()) return invalid("harmonic step ratio must be positive");
+  }
+  return ok();
 }
 
 Status checkVolume(float db) { return checkParamValue(ParamKind::TrackVolume, db); }

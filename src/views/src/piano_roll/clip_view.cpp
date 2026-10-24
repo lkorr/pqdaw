@@ -137,7 +137,7 @@ void ClipView::select(std::span<const doc::NoteId> ids) {
 }
 
 Grid ClipView::grid() const noexcept { return state_->grid(); }
-int64_t ClipView::virtualFundamental() const { return state_->virtualFundamental(); }
+std::optional<tuning::Rational> ClipView::virtualFundamental() const { return state_->virtualFundamental(); }
 double ClipView::pxPerTick() const noexcept { return state_->pxPerTick(); }
 double ClipView::scrollTick() const noexcept { return state_->scrollTick(); }
 

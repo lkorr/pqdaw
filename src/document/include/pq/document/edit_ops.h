@@ -161,7 +161,9 @@ enum class StepUnit : uint8_t {
 struct PitchStepContext {
   const tuning::Tuning* tuning = nullptr;     // the clip's effective tuning (required for Degree/Cents/Ratio-equave)
   const tuning::Edo* displayGrid = nullptr;   // optional EDO overlay (SPEC §3.2): Cents notes step on its lines
-  int64_t harmonicDenominator = 0;            // Ratio: see stepPitch (0 = each note's own denominator)
+  // Reference-anchored Ratio notes: the clip's virtual fundamental (doc::virtualFundamental, T3.6-fix1); nullopt =
+  // each note's own fundamental 1/d. Ratios anchored to other notes always step on their own.
+  std::optional<tuning::Rational> fundamental;
 };
 // One note's pitch after `steps` steps (negative = down). nullopt = the note cannot move that way (left unchanged):
 //   Degree   Grid: ±1 degree of the tuning (one EDO step / one scale or MOS degree), carrying into the equave.
@@ -169,8 +171,9 @@ struct PitchStepContext {
 //   Cents    Grid: to the next display-grid line above/below (a line within 1e-6 ¢ counts as "on" it). The lines
 //            are every degree of the tuning in every equave (degree d of equave e at centsOf(d, e), stretch
 //            included), or the displayGrid EDO's steps if one is given. Equave: ± the tuning's equave in cents.
-//   Ratio    Grid: next harmonic of the fundamental 1/D: n/d → (m ± 1)/D with D = lcm(d, harmonicDenominator) (or d)
-//            and m = n·D/d, so 5/4 → 6/4 (= 3/2). Fails below the first harmonic (m ± steps < 1).
+//   Ratio    Grid: next harmonic of the fundamental F' = gcd(n/d, F) (the largest fundamental the note and F are both
+//            harmonics of; F = 1/D gives 1/lcm(d, D); without F: 1/d): n/d = m·F' → (m ± 1)·F', so on F = 1/4
+//            5/4 → 6/4 (= 3/2) → 7/4. Fails below the first harmonic (m ± steps < 1).
 //            Equave: × / ÷ the tuning's equave ratio (exact for EDO ratio equaves and Scala ratio equaves; a cents
 //            equave within 0.001 ¢ of a ratio p/q with p, q ≤ 64 uses that ratio; otherwise fails).
 //   Harmonic Grid: next voice of the JI object (voiceIndex ± 1, ≥ 0). Equave: fails (a voice has no equave).
@@ -179,11 +182,19 @@ std::optional<tuning::PitchId> stepPitch(const tuning::PitchId& pitch, int32_t s
 
 // Moves notes in time by `dt` and in pitch by `steps` display-grid steps (stepPitch). A note whose pitch cannot
 // step keeps its pitch (it still moves in time).
+// Both step reference-anchored Ratio notes on the clip's virtual fundamental (doc::virtualFundamental) and, unless it
+// is locked, record in the same Batch (SetClipFundamental) the fundamental each stepped note was on when that is
+// finer than its new reduced denominator (a HarmonicStep), so 5/4 → 3/2 → 7/4 keeps 1/4 (T3.6-fix1, Q40).
 EditResult moveNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, Ticks dt, int32_t steps = 0,
-                     const tuning::Edo* displayGrid = nullptr, int64_t harmonicDenominator = 0);
+                     const tuning::Edo* displayGrid = nullptr);
 // Up/Down (unit Grid) and Shift+Up/Down (unit Equave), using the clip's effective tuning.
 EditResult transposeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, int32_t steps,
-                          StepUnit unit, const tuning::Edo* displayGrid = nullptr, int64_t harmonicDenominator = 0);
+                          StepUnit unit, const tuning::Edo* displayGrid = nullptr);
+// The explicit fundamental lock (b + index, SPEC §6.2): "this note is the index-th harmonic", so the clip's virtual
+// fundamental becomes the note's ratio / index until unlocked. The note must be a reference-anchored Ratio note
+// (other identities have no exact ratio to divide; InvalidArgument), index ≥ 1. One undo step each.
+EditResult lockFundamental(const Project& p, ClipRef clip, NoteKey note, uint32_t harmonicIndex);
+EditResult unlockFundamental(const Project& p, ClipRef clip);
 
 enum class NoteEdge : uint8_t { Start, End };
 // Moves one edge of each note by `delta`; the other edge stays (length ≥ 1 tick).

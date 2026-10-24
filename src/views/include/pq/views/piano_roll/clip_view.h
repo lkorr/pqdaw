@@ -54,9 +54,10 @@ public:
   void select(std::span<const doc::NoteId> ids);
   // The editing grid at the current zoom.
   Grid grid() const noexcept;
-  // The clip's virtual fundamental as a denominator D (fundamental = reference / D; 0 = no Ratio notes). Ratio
-  // notes step on its harmonics (Q40); drawn per SPEC §4.3. The rule is at RollState::virtualFundamental.
-  int64_t virtualFundamental() const;
+  // The clip's virtual fundamental relative to its reference (1/D derived from the Ratio notes, or the lock;
+  // nullopt = none). Ratio notes step on its harmonics (Q40); drawn per SPEC §4.3. The rule is the document's
+  // (doc::virtualFundamental, T3.6-fix1).
+  std::optional<tuning::Rational> virtualFundamental() const;
 
   // --- view ---
   double pxPerTick() const noexcept;  // device px

@@ -470,6 +470,31 @@ private:
     assignment(PathSeg(&at, "tuning"), c.tuning);
     w_.key("active");
     w_.boolean(c.active);
+    if (!c.fundamental.empty()) {  // T3.6-fix1: written only when set, so older files and goldens are unchanged
+      const PathSeg fp(&at, "fundamental");
+      w_.key("fundamental");
+      w_.beginObject(false);
+      if (c.fundamental.lock) {
+        w_.key("lock");
+        w_.string(fp, ratioText(c.fundamental.lock->num(), c.fundamental.lock->den()));
+      }
+      if (!c.fundamental.steps.empty()) {
+        w_.key("steps");
+        w_.beginArray(false);
+        for (const HarmonicStep& h : c.fundamental.steps) {
+          w_.beginObject(false);
+          w_.key("note");
+          w_.integer(h.note.value);
+          w_.key("denominator");
+          w_.integer(h.denominator);
+          w_.key("ratio");
+          w_.string(fp, ratioText(h.ratio.num(), h.ratio.den()));
+          w_.endObject();
+        }
+        w_.endArray();
+      }
+      w_.endObject();
+    }
     const PathSeg notes(&at, "notes");
     w_.key("notes");
     w_.beginArray(true);
@@ -1279,7 +1304,7 @@ private:
 
   ClipPtr clip(const PathSeg& at) {
     static constexpr std::string_view K[] = {"id",        "name",   "colour", "start",  "length", "contentStart",
-                                             "loop",      "signature", "tuning", "active", "notes"};
+                                             "loop",      "signature", "tuning", "active", "notes", "fundamental"};
     auto c = std::make_shared<NoteClip>();
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
@@ -1319,10 +1344,52 @@ private:
         case 8: c->tuning = assignment(f); break;
         case 9: c->active = r_.readBool(f); break;
         case 10: c->notes = notes(f); break;
+        case 11: {
+          const size_t fstart = r_.pos();
+          c->fundamental = fundamental(f);
+          checkAt(f, fstart, detail::checkFundamental(c->fundamental));
+          break;
+        }
       }
     }
     m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
     return c;
+  }
+
+  // T3.6-fix1: {"lock": "n/d", "steps": [{"note": id, "denominator": D, "ratio": "n/d"}]}, both optional.
+  ClipFundamental fundamental(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"lock", "steps"};
+    ClipFundamental out;
+    auto ratioOf = [&](const PathSeg& f) {
+      std::string s;
+      r_.readString(f, s);
+      const auto r = parseRatioText(s);
+      if (!r || !r->isPositive()) r_.failValue(f, "ratio must be \"n/d\" with positive integers n, d");
+      return r.value_or(tuning::Rational(1));
+    };
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) out.lock = ratioOf(f);
+      if (k == 1) {
+        r_.beginArray(f);
+        for (size_t i = 0; r_.nextElement(f); ++i) {
+          const PathSeg el(&f, i);
+          static constexpr std::string_view S[] = {"note", "denominator", "ratio"};
+          HarmonicStep h;
+          Members sm(r_, el, S);
+          for (int q; (q = sm.next()) >= 0;) {
+            const PathSeg g(&el, S[static_cast<size_t>(q)]);
+            if (q == 0) h.note = NoteId{u32(g)};
+            if (q == 1) h.denominator = r_.readInt(g);
+            if (q == 2) h.ratio = ratioOf(g);
+          }
+          sm.require({0, 1, 2});
+          out.steps.push_back(h);
+        }
+      }
+    }
+    return out;
   }
 
   NoteSeq notes(const PathSeg& at) {

@@ -243,6 +243,7 @@ pq_add_test(pq_tests_document
     document/test_edit_time.cpp
     document/test_audibility.cpp
     document/test_main_tunings.cpp
+    document/test_virtual_fundamental.cpp
   DEPS pq_doc)
 
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it

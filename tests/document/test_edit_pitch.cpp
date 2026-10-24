@@ -60,7 +60,9 @@ double oracleNext(const pq::tuning::Tuning& t, double c, bool up, int eqRange) {
 
 std::optional<PitchId> step(const PitchId& p, int32_t n, StepUnit u, const pq::tuning::Tuning& t,
                             const pq::tuning::Edo* grid = nullptr, int64_t hd = 0) {
-  return ops::stepPitch(p, n, u, ops::PitchStepContext{&t, grid, hd});
+  // hd: a shared fundamental 1/hd (T3.6-fix1 made the context's fundamental a ratio; 0 = none).
+  const std::optional<Rational> f = hd > 0 ? std::optional<Rational>(Rational(1, hd)) : std::nullopt;
+  return ops::stepPitch(p, n, u, ops::PitchStepContext{&t, grid, f});
 }
 
 }  // namespace

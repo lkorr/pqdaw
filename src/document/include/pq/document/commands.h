@@ -81,6 +81,9 @@ struct RenameClip { ClipRef clip; std::string name; };            // Meta
 struct SetClipColour { ClipRef clip; Colour colour; };            // Meta
 struct SetClipSignature { ClipRef clip; TimeSignature signature; };  // Meta (display only)
 struct SetClipActive { ClipRef clip; bool active = true; };       // Sequence
+// Meta (not audible). The steps / lock the clip's virtual fundamental is derived from (T3.6-fix1); written by the
+// Up/Down and drag builders (ops::transposeNotes / moveNotes) and the lock builders (ops::lockFundamental).
+struct SetClipFundamental { ClipRef clip; ClipFundamental fundamental; };
 
 // ---- Notes (all Sequence) --------------------------------------------------------------------------------------
 struct AddNotes { ClipRef clip; std::vector<Note> notes; };
@@ -139,7 +142,7 @@ using CommandVariant = std::variant<
     SetTrackSolo, SetTrackArm, SetSendLevel, SetSendPreFader, SetTrackOutput, SetTrackActive, SetTrackTuning,
     GroupTracks, UngroupTracks,
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,
-    SetClipSignature, SetClipActive,
+    SetClipSignature, SetClipActive, SetClipFundamental,
     AddNotes, RemoveNotes, UpdateNotes, MoveNote, ResizeNote, SetNoteProperty,
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,

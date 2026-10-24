@@ -6,6 +6,7 @@
 #include <numeric>
 
 #include "edit_common.h"
+#include "pq/tuning/ji.h"
 
 namespace pq::doc::ops {
 
@@ -239,17 +240,19 @@ std::optional<PitchId> stepPitch(const PitchId& pitch, int32_t steps, StepUnit u
         if (!f) return std::nullopt;
         out = tuning::mul(r, *f);
       } else {
-        int64_t den = r.den();
-        if (ctx.harmonicDenominator > 0) {
-          const int64_t g = std::gcd(den, ctx.harmonicDenominator);
-          int64_t l = 0;
-          if (tuning::detail::mulOverflows(den / g, ctx.harmonicDenominator, l)) return std::nullopt;
-          den = l;
+        // The fundamental both the note and the clip's fundamental are harmonics of: gcd(n/d, F) (own: 1/d).
+        Rational f = Rational(1, r.den());
+        if (ctx.fundamental && pitch.anchorKind() == tuning::AnchorKind::Reference) {
+          const Rational both[2] = {r, *ctx.fundamental};
+          const std::optional<Rational> g = tuning::virtualFundamental(both);
+          if (!g) return std::nullopt;
+          f = *g;
         }
-        int64_t m = 0, m2 = 0;
-        if (tuning::detail::mulOverflows(r.num(), den / r.den(), m)) return std::nullopt;
-        if (tuning::detail::addOverflows(m, steps, m2) || m2 < 1) return std::nullopt;
-        out = Rational::tryMake(m2, den);
+        const std::optional<uint64_t> m = tuning::harmonicNumber(r, f);
+        if (!m || *m > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) return std::nullopt;
+        int64_t m2 = 0;
+        if (tuning::detail::addOverflows(static_cast<int64_t>(*m), steps, m2) || m2 < 1) return std::nullopt;
+        out = tuning::mul(Rational(m2), f);
       }
       if (!out || !out->isPositive()) return std::nullopt;
       return PitchId::fromRatio(*out, pitch.anchorKind(), pitch.anchorId());
@@ -294,36 +297,128 @@ EditResult deleteNotes(const Project& p, ClipRef clip, std::span<const NoteKey> 
   return e;
 }
 
-EditResult moveNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, Ticks dt, int32_t steps,
-                     const tuning::Edo* displayGrid, int64_t harmonicDenominator) {
+namespace {
+
+bool referenceRatio(const PitchId& p) noexcept {
+  return p.kind() == PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Reference;
+}
+
+// The harmonic-step memory after stepping notes (T3.6-fix1): every recorded step whose note still has the pitch it
+// produced and was not stepped again, plus one per stepped reference Ratio note whose effective denominator
+// lcm(D, its new denominator) is finer than that denominator (D = the clip's fundamental 1/D before the step).
+// Unchanged memory: nullopt (no command).
+std::optional<ClipFundamental> steppedMemory(const NoteClip& clip, const std::optional<Rational>& fundamental,
+                                            std::vector<std::pair<NoteId, Rational>> stepped) {
+  std::sort(stepped.begin(), stepped.end(), [](const auto& a, const auto& b) { return a.first.value < b.first.value; });
+  if (clip.fundamental.lock) {  // a lock is the fundamental: steps under it are not remembered
+    if (clip.fundamental.steps.empty()) return std::nullopt;
+  } else if (stepped.empty() && clip.fundamental.steps.empty()) {
+    return std::nullopt;
+  }
+  const int64_t D = fundamental && fundamental->num() == 1 ? fundamental->den() : 0;
+  std::vector<HarmonicStep> next;
+  auto isStepped = [&](NoteId id) {
+    const auto it = std::lower_bound(stepped.begin(), stepped.end(), id,
+                                     [](const auto& s, NoteId x) { return s.first.value < x.value; });
+    return it != stepped.end() && it->first == id;
+  };
+  // Prune: steps of notes that are gone, changed or stepped now (one pass over the clip when there are any).
+  if (!clip.fundamental.steps.empty()) {
+    const std::vector<HarmonicStep>& old = clip.fundamental.steps;
+    for (const Note& n : clip.notes) {
+      if (!referenceRatio(n.pitch)) continue;
+      const auto it = std::lower_bound(old.begin(), old.end(), n.id,
+                                       [](const HarmonicStep& h, NoteId id) { return h.note.value < id.value; });
+      if (it != old.end() && it->note == n.id && it->ratio == n.pitch.ratio() && !isStepped(n.id)) next.push_back(*it);
+    }
+  }
+  if (!clip.fundamental.lock && D > 0)
+    for (const auto& [id, r] : stepped) {
+      const int64_t used = std::lcm(D, r.den());
+      if (used != r.den() && used <= kMaxFundamentalDenominator) next.push_back(HarmonicStep{id, used, r});
+    }
+  std::sort(next.begin(), next.end(), [](const HarmonicStep& a, const HarmonicStep& b) { return a.note.value < b.note.value; });
+  if (next == clip.fundamental.steps) return std::nullopt;
+  ClipFundamental f = clip.fundamental;
+  f.steps = std::move(next);
+  return f;
+}
+
+// moveNotes / transposeNotes: step the notes on the clip's fundamental and update the step memory in the same Batch.
+template <class Move>
+EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, std::string label, int32_t steps,
+                     StepUnit unit, const tuning::Edo* displayGrid, Move&& move) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
   std::optional<tuning::Tuning> tun;
   if (steps != 0) {
-    Result<ClipFound> f = findClip(p, clip);
-    if (!f) return std::move(f).error();
     Result<tuning::Tuning> t = clipTuning(p, *f);
     if (!t) return std::move(t).error();
     tun = std::move(t).value();
   }
-  const PitchStepContext ctx{tun ? &*tun : nullptr, displayGrid, harmonicDenominator};
-  return updateNotes(p, clip, notes, notes.size() == 1 ? "Move Note" : "Move Notes", [&](Note& n) -> Status {
-    n.start += dt;
-    if (auto np = stepPitch(n.pitch, steps, StepUnit::Grid, ctx)) n.pitch = *np;
+  const std::optional<Rational> fundamental = steps != 0 ? virtualFundamental(*f->clip) : std::nullopt;
+  const PitchStepContext ctx{tun ? &*tun : nullptr, displayGrid, fundamental};
+  std::vector<std::pair<NoteId, Rational>> stepped;
+  EditResult e = updateNotes(p, clip, notes, std::move(label), [&](Note& n) -> Status {
+    move(n);
+    if (steps == 0) return ok();
+    if (auto np = stepPitch(n.pitch, steps, unit, ctx)) {
+      n.pitch = *np;
+      if (referenceRatio(n.pitch)) stepped.emplace_back(n.id, n.pitch.ratio());
+    }
     return ok();
   });
+  if (!e || steps == 0) return e;
+  if (std::optional<ClipFundamental> mem = steppedMemory(*f->clip, fundamental, stepped))
+    batchOf(*e).commands.push_back(SetClipFundamental{clip, std::move(*mem)});
+  return e;
+}
+
+}  // namespace
+
+EditResult moveNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, Ticks dt, int32_t steps,
+                     const tuning::Edo* displayGrid) {
+  return stepNotes(p, clip, notes, notes.size() == 1 ? "Move Note" : "Move Notes", steps, StepUnit::Grid, displayGrid,
+                   [&](Note& n) { n.start += dt; });
 }
 
 EditResult transposeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, int32_t steps, StepUnit unit,
-                          const tuning::Edo* displayGrid, int64_t harmonicDenominator) {
+                          const tuning::Edo* displayGrid) {
+  return stepNotes(p, clip, notes, unit == StepUnit::Equave ? "Transpose Equave" : "Transpose", steps, unit,
+                   displayGrid, [](Note&) {});
+}
+
+EditResult lockFundamental(const Project& p, ClipRef clip, NoteKey key, uint32_t harmonicIndex) {
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
-  Result<tuning::Tuning> t = clipTuning(p, *f);
-  if (!t) return std::move(t).error();
-  const PitchStepContext ctx{&*t, displayGrid, harmonicDenominator};
-  return updateNotes(p, clip, notes, unit == StepUnit::Equave ? "Transpose Equave" : "Transpose",
-                     [&](Note& n) -> Status {
-                       if (auto np = stepPitch(n.pitch, steps, unit, ctx)) n.pitch = *np;
-                       return ok();
-                     });
+  const Note* n = f->clip->notes.locate(key);
+  if (!n) return notFound("note not found");
+  if (harmonicIndex < 1) return invalid("harmonic index must be at least 1");
+  if (!referenceRatio(n->pitch)) return invalid("the fundamental lock needs a Ratio note (relative to the reference)");
+  const std::optional<Rational> lock = tuning::div(n->pitch.ratio(), Rational(static_cast<int64_t>(harmonicIndex)));
+  if (!lock) return invalid("fundamental out of range");
+  Edit e = makeEdit("Lock Fundamental");
+  e.noteClip = clip;
+  e.notes.push_back(key);
+  if (f->clip->fundamental.lock != lock) {
+    ClipFundamental cf = f->clip->fundamental;
+    cf.lock = lock;
+    batchOf(e).commands.push_back(SetClipFundamental{clip, std::move(cf)});
+  }
+  return e;
+}
+
+EditResult unlockFundamental(const Project& p, ClipRef clip) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  Edit e = makeEdit("Unlock Fundamental");
+  e.noteClip = clip;
+  if (f->clip->fundamental.lock) {
+    ClipFundamental cf = f->clip->fundamental;
+    cf.lock.reset();
+    batchOf(e).commands.push_back(SetClipFundamental{clip, std::move(cf)});
+  }
+  return e;
 }
 
 EditResult resizeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, NoteEdge edge, Ticks delta) {

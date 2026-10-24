@@ -20,7 +20,7 @@ int64_t floorDiv(int64_t a, int64_t b) noexcept {
 }
 
 // Largest shared denominator the Up/Down memory keeps (Q40); beyond it each note steps on its own denominator.
-constexpr int64_t kMaxHarmonicDenominator = int64_t{1} << 20;
+constexpr int64_t kMaxHarmonicDenominator = doc::kMaxFundamentalDenominator;
 
 constexpr double kMinPxPerTick = 1e-5;  // ≈ 1 px per bar
 constexpr double kMaxPxPerTick = 0.5;   // ≈ 870 px per 1/64 note
@@ -47,8 +47,6 @@ bool RollState::refresh() {
     ref_ = want;
     clip_.reset();
     sel_.clear();
-    harmonic_.clear();
-    ++harmonicVersion_;
     insertTick_.reset();
     fitted_ = false;
     drag = {};
@@ -815,59 +813,31 @@ void RollState::toggleSelectionActive() {
               "Activate Notes");
 }
 
-// Q40 (answered: "the virtual fundamental should change and update based on what's entered"). The clip's virtual
-// fundamental is reference / D, where D is the lcm over the clip's reference-anchored Ratio notes of each note's
-// *effective denominator*: its own reduced denominator, or, if the view stepped the note (Up/Down, a vertical drag)
-// and its pitch is still the one that step produced, the denominator of the fundamental it was stepped on. So
-//   5/4 alone → D = 4 (1/4); Up → 6/4 (stored 3/2, remembered 4) → D stays 4 → Up → 7/4;
-//   adding 4/3 → D = lcm(4, 3) = 12 (1/12); Up on 4/3 = 16/12 → 17/12;
-//   deleting the notes that needed a finer fundamental coarsens it again (it follows what is entered).
-// Notes anchored to other notes or JI objects do not contribute (their fundamental is their anchor's). D above 2^20
-// (or no Ratio notes) gives 0: each note then steps on its own denominator. The one place this rule lives; a
-// follow-up may store the fundamental in the document.
-int64_t RollState::virtualFundamental() const {
-  if (!clip_) return 0;
-  if (vfClip_ == clip_.get() && vfVersion_ == harmonicVersion_) return vfDen_;
-  // The chunks' own denominators (cached per chunk), then the remembered ones of notes still at their stepped pitch.
+// Q40 / T3.6-fix1: the rule lives in the document (doc::virtualFundamental: 1/lcm of the reference-anchored Ratio
+// notes' effective denominators, the steps it remembers kept in the clip, or the clip's lock). The view only feeds
+// it the lcm of the notes' own denominators from its per-chunk summaries, so an edit rescans just the rebuilt
+// chunks (plus one pass over the notes while the clip has remembered steps).
+std::optional<tuning::Rational> RollState::virtualFundamental() const {
+  if (!clip_) return std::nullopt;
+  if (vfClip_ == clip_.get()) return vf_;
   int64_t D = 0;
-  auto join = [&D](int64_t d) {
-    if (D < 0 || d == 0) return;
-    D = (d < 0) ? -1 : (D ? std::lcm(D, d) : d);
+  for (const ChunkInfo& c : chunks_) {
+    if (D < 0 || c.ratioDen == 0) continue;
+    D = c.ratioDen < 0 ? -1 : (D ? std::lcm(D, c.ratioDen) : c.ratioDen);
     if (D > kMaxHarmonicDenominator) D = -1;
-  };
-  for (const ChunkInfo& c : chunks_) join(c.ratioDen);
-  for (const auto& [id, mem] : harmonic_)
-    if (const doc::Note* n = clip_->notes.locate(mem.key); n && n->pitch == mem.pitch) join(mem.denominator);
-  if (D < 0) D = 0;
-  vfClip_ = clip_.get();
-  vfVersion_ = harmonicVersion_;
-  vfDen_ = D;
-  return D;
-}
-
-void RollState::rememberHarmonics(std::span<const doc::NoteKey> keys, int64_t D) {
-  for (const doc::NoteKey& k : keys) {
-    const doc::Note* n = clip_ ? clip_->notes.find(k) : nullptr;
-    if (!n || n->pitch.kind() != tuning::PitchKind::Ratio) {
-      harmonic_.erase(k.id.value);
-      continue;
-    }
-    const int64_t own = n->pitch.ratio().den();
-    const int64_t used = D ? std::lcm(D, own) : own;
-    harmonic_[k.id.value] = {used <= kMaxHarmonicDenominator ? used : own, n->pitch, k};
   }
-  ++harmonicVersion_;
+  vfClip_ = clip_.get();
+  vf_ = doc::virtualFundamental(*clip_, D);
+  return vf_;
 }
 
 void RollState::stepSelection(int32_t steps, doc::ops::StepUnit unit) {
   if (!clip_) return;
   const std::vector<doc::NoteKey> keys = selectionKeys();
   if (keys.empty()) return;
-  const int64_t D = virtualFundamental();
-  const doc::ops::EditResult e =
-      doc::ops::transposeNotes(*ctx.doc(), ref_, keys, steps, unit, overlay(), D);
-  if (!apply(e, unit == doc::ops::StepUnit::Grid ? "Transpose" : "Transpose by Equave")) return;
-  rememberHarmonics(e->notes, D);  // the denominator each Ratio note stepped with, against the pitch it now has
+  // Ratio notes step on the clip's virtual fundamental; the document remembers it with the step (T3.6-fix1).
+  const doc::ops::EditResult e = doc::ops::transposeNotes(*ctx.doc(), ref_, keys, steps, unit, overlay());
+  (void)apply(e, unit == doc::ops::StepUnit::Grid ? "Transpose" : "Transpose by Equave");
 }
 
 void RollState::copySelection() {
@@ -934,7 +904,7 @@ void RollState::updatePreviewPitches() {
   doc::ops::PitchStepContext pc;
   pc.tuning = &tuning_;
   pc.displayGrid = overlay();  // Cents notes move on the background EDO (T3.12)
-  pc.harmonicDenominator = virtualFundamental();
+  pc.fundamental = virtualFundamental();
   for (const ChunkInfo& c : chunks_) {
     if (c.nonDegree == 0) continue;
     for (uint32_t i = 0; i < c.count; ++i) {
@@ -1050,9 +1020,7 @@ void RollState::commitDrag() {
       if (d.dt != 0 || d.steps != 0) {
         // Ratio notes moved by rows step by harmonics of their fundamental, exactly as Up/Down does.
         const std::vector<doc::NoteKey> keys = selectionKeys();
-        const int64_t D = virtualFundamental();
-        const doc::ops::EditResult e = doc::ops::moveNotes(p, ref_, keys, d.dt, d.steps, overlay(), D);
-        if (apply(e, "Move Notes") && d.steps != 0) rememberHarmonics(e->notes, D);
+        (void)apply(doc::ops::moveNotes(p, ref_, keys, d.dt, d.steps, overlay()), "Move Notes");
       }
       break;
     case DragKind::Copy: {

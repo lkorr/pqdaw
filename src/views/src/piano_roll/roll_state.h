@@ -257,7 +257,7 @@ public:
   void quantizeSelection();
   void toggleSelectionActive();
   // Up / Down (StepUnit::Grid) and Shift+Up / Down (StepUnit::Equave) through ops::transposeNotes; Ratio notes step
-  // on the harmonics of the clip's virtual fundamental (harmonicDenominator = virtualFundamental(), Q40).
+  // on the harmonics of the clip's virtual fundamental (doc::virtualFundamental, kept by the document: T3.6-fix1).
   void stepSelection(int32_t steps, doc::ops::StepUnit unit);
   void copySelection();
   void cutSelection();
@@ -265,7 +265,7 @@ public:
   void setInsertTick(std::optional<Ticks> t) noexcept { insertTick_ = t; }
   // The clip's virtual fundamental as a denominator D (fundamental = reference / D; 0 = none), see the rule at its
   // definition (Q40). Ratio Up/Down and vertical drags step on its harmonics; the note area draws it (SPEC §4.3).
-  int64_t virtualFundamental() const;
+  std::optional<tuning::Rational> virtualFundamental() const;
   void addNotes(const std::vector<DrawnNote>& notes);
   // The pitch of a note in a cell of row `degree` (a Degree identity).
   tuning::PitchId degreePitch(int64_t degree) const noexcept;
@@ -336,7 +336,6 @@ public:
   void markAllDirty();
 
 private:
-  void rememberHarmonics(std::span<const doc::NoteKey> keys, int64_t D);
   void rebuildRows();
   bool morphInPlace(const doc::TuningDef& def);
   void rebuildChunks();
@@ -392,17 +391,8 @@ private:
   double morphRegionsPeriod_ = 0.0;
   int32_t morphRegionsReps_ = 0, morphRegionsMax_ = 0;
   std::vector<doc::Note> clipboard_;  // starts relative to the earliest copied note
-  // Q40: per Ratio note, the denominator its last step used and the pitch it produced.
-  struct HarmonicMemory {
-    int64_t denominator;
-    tuning::PitchId pitch;
-    doc::NoteKey key;  // where the note was after the step (a lookup hint)
-  };
-  std::unordered_map<uint32_t, HarmonicMemory> harmonic_;
-  uint64_t harmonicVersion_ = 0;
-  mutable const doc::NoteClip* vfClip_ = nullptr;  // virtualFundamental() cache
-  mutable uint64_t vfVersion_ = UINT64_MAX;
-  mutable int64_t vfDen_ = 0;
+  mutable const doc::NoteClip* vfClip_ = nullptr;  // virtualFundamental() cache (per clip snapshot)
+  mutable std::optional<tuning::Rational> vf_;
 };
 
 }  // namespace pq::views::roll

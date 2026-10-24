@@ -388,7 +388,7 @@ TEST_CASE("clip view: Up on 5/4 → 6/4 → 7/4 keeps the fundamental (Q40); Shi
   CHECK(r.note(125)->pitch == PitchId::fromRatio(Rational(5, 2)));
   CHECK(r.d.press("Shift+Down") == KeyResult::Action);
   CHECK(r.note(125)->pitch == PitchId::fromRatio(Rational(5, 4)));
-  CHECK(r.view->virtualFundamental() == 4);
+  CHECK(r.view->virtualFundamental() == Rational(1, 4));
 
   // Entering 4/3 refines the virtual fundamental to 1/12 (lcm 4, 3); Up on 4/3 = 16/12 → 17/12, and Up on 5/4 =
   // 15/12 → 16/12 = 4/3. A note stepped on 1/12 keeps that fundamental while its pitch is the stepped one, so after
@@ -400,11 +400,11 @@ TEST_CASE("clip view: Up on 5/4 → 6/4 → 7/4 keeps the fundamental (Q40); Shi
   auto add = doc::ops::addNotes(*r.ctx.doc(), r.ctx.store().ids(), r.ref, std::vector<doc::Note>{third});
   REQUIRE(add.ok());
   REQUIRE(r.ctx.store().dispatch(add->command).ok());
-  CHECK(r.view->virtualFundamental() == 12);
+  CHECK(r.view->virtualFundamental() == Rational(1, 12));
   REQUIRE(r.ctx.undo());  // removing the 4/3 moves it back, redo forward again
-  CHECK(r.view->virtualFundamental() == 4);
+  CHECK(r.view->virtualFundamental() == Rational(1, 4));
   REQUIRE(r.ctx.redo());
-  CHECK(r.view->virtualFundamental() == 12);
+  CHECK(r.view->virtualFundamental() == Rational(1, 12));
   const uint32_t thirdId = add->notes[0].id.value;
   r.d.click(r.centreOf(thirdId));
   CHECK(r.d.press("Up") == KeyResult::Action);
@@ -412,15 +412,29 @@ TEST_CASE("clip view: Up on 5/4 → 6/4 → 7/4 keeps the fundamental (Q40); Shi
   r.d.click(r.centreOf(125));
   CHECK(r.d.press("Up") == KeyResult::Action);
   CHECK(r.note(125)->pitch == PitchId::fromRatio(Rational(4, 3)));
-  CHECK(r.view->virtualFundamental() == 12);
+  CHECK(r.view->virtualFundamental() == Rational(1, 12));
   r.d.click(r.centreOf(thirdId));
   CHECK(r.d.press("Delete") == KeyResult::Action);
   r.d.click(r.centreOf(125));
   CHECK(r.d.press("Down") == KeyResult::Action);  // 16/12 → 15/12 = 5/4 on the remembered 1/12
   CHECK(r.note(125)->pitch == PitchId::fromRatio(Rational(5, 4)));
-  CHECK(r.view->virtualFundamental() == 12);
+  CHECK(r.view->virtualFundamental() == Rational(1, 12));
   CHECK(r.d.press("Delete") == KeyResult::Action);
-  CHECK(r.view->virtualFundamental() == 0);
+  CHECK(r.view->virtualFundamental() == std::nullopt);
+
+  // T3.6-fix1: the fundamental lives in the document, so undo brings back the note AND the fundamental it was
+  // stepped on (the view keeps no memory of its own), and an explicit lock (b + index; the keys are M8's macro mode)
+  // is what the roll steps on and draws.
+  REQUIRE(r.ctx.undo());
+  REQUIRE(r.note(125) != nullptr);
+  CHECK(r.view->virtualFundamental() == Rational(1, 12));
+  auto lock = doc::ops::lockFundamental(*r.ctx.doc(), r.ref, doc::keyOf(*r.note(125)), 5);  // 5/4 = 5 · 1/4
+  REQUIRE(lock.ok());
+  REQUIRE(r.ctx.store().dispatch(lock->command).ok());
+  CHECK(r.view->virtualFundamental() == Rational(1, 4));
+  r.d.click(r.centreOf(125));
+  CHECK(r.d.press("Up") == KeyResult::Action);
+  CHECK(r.note(125)->pitch == PitchId::fromRatio(Rational(6, 4)));
 }
 
 TEST_CASE("clip view: velocity drag over a selection is one undo step; chance lane; Ctrl+U; 0; Ctrl+D; Ctrl+A") {
