@@ -44,7 +44,29 @@ bool contains(uint32_t ax, uint32_t ay, uint32_t aw, uint32_t ah, uint32_t bx, u
 
 }  // namespace
 
-Result<std::unique_ptr<Renderer>> Renderer::create(GpuContext& gpu, VkFormat colorFormat, uint32_t framesInFlight) {
+bool Renderer::pipelineCacheCompatible(std::span<const uint8_t> blob, const VkPhysicalDeviceProperties& device) noexcept {
+  // VkPipelineCacheHeaderVersionOne: headerSize, headerVersion, vendorID, deviceID (4 × uint32), pipelineCacheUUID.
+  constexpr size_t kHeader = 16 + VK_UUID_SIZE;
+  if (blob.size() < kHeader) return false;
+  uint32_t h[4];
+  std::memcpy(h, blob.data(), sizeof h);
+  return h[0] >= kHeader && h[0] <= blob.size() && h[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && h[2] == device.vendorID &&
+         h[3] == device.deviceID && std::memcmp(blob.data() + 16, device.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+}
+
+std::vector<uint8_t> Renderer::pipelineCacheData() const {
+  std::vector<uint8_t> out;
+  if (!pipelineCache_) return out;
+  size_t n = 0;
+  if (vkGetPipelineCacheData(gpu_->device(), pipelineCache_, &n, nullptr) != VK_SUCCESS || n == 0) return out;
+  out.resize(n);
+  if (vkGetPipelineCacheData(gpu_->device(), pipelineCache_, &n, out.data()) != VK_SUCCESS) out.clear();
+  out.resize(std::min(out.size(), n));
+  return out;
+}
+
+Result<std::unique_ptr<Renderer>> Renderer::create(GpuContext& gpu, VkFormat colorFormat, uint32_t framesInFlight,
+                                                   const RendererOptions& options) {
   if (framesInFlight == 0 || framesInFlight > kMaxFramesInFlight)
     return Error{ErrorCode::InvalidArgument, "Renderer: framesInFlight must be 1..3", {}};
   std::unique_ptr<Renderer> r(new Renderer());
@@ -91,11 +113,32 @@ Result<std::unique_ptr<Renderer>> Renderer::create(GpuContext& gpu, VkFormat col
     if (VkResult e = vkCreateSampler(dev, &sci, nullptr, &r->samplers_[i]); e != VK_SUCCESS) return vkError("vkCreateSampler", e);
   }
 
+  // The pipeline cache (T0.7-fix6): creating the pipelines is a shader compile unless the driver finds them in it.
+  {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(gpu.physicalDevice(), &props);
+    VkPipelineCacheCreateInfo pcci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    if (pipelineCacheCompatible(options.pipelineCache, props)) {
+      pcci.initialDataSize = options.pipelineCache.size();
+      pcci.pInitialData = options.pipelineCache.data();
+      r->pipelineCacheReused_ = true;
+    }
+    if (vkCreatePipelineCache(dev, &pcci, nullptr, &r->pipelineCache_) != VK_SUCCESS) {
+      r->pipelineCacheReused_ = false;
+      pcci.initialDataSize = 0;
+      pcci.pInitialData = nullptr;
+      if (vkCreatePipelineCache(dev, &pcci, nullptr, &r->pipelineCache_) != VK_SUCCESS) r->pipelineCache_ = VK_NULL_HANDLE;
+    }
+  }
   if (Status s = r->createPipelines(); !s) return std::move(s).error();
 
   // Page 0 exists from the start (it backs kAtlasTexture); its texels go up with the first frame's transfers.
-  r->atlas_ = std::make_shared<Atlas>();
-  if (Status s = r->ensureAtlasPages(); !s) return std::move(s).error();
+  if (options.atlas) {
+    r->atlas_ = options.atlas;  // possibly being filled on another thread: its pages get images at upload()
+  } else {
+    r->atlas_ = std::make_shared<Atlas>();
+    if (Status s = r->ensureAtlasPages(); !s) return std::move(s).error();
+  }
   r->tiles_ = std::make_shared<TileAtlas>();  // pages (and their GPU images) open on first use
   return r;
 }
@@ -184,7 +227,7 @@ Status Renderer::createPipelines() {
     gp.pColorBlendState = &cb;
     gp.pDynamicState = &dy;
     gp.layout = layout_;
-    if (VkResult pe = vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &pipelines_[mode]); pe != VK_SUCCESS) {
+    if (VkResult pe = vkCreateGraphicsPipelines(dev, pipelineCache_, 1, &gp, nullptr, &pipelines_[mode]); pe != VK_SUCCESS) {
       status = vkError("vkCreateGraphicsPipelines", pe);
       break;
     }
@@ -211,6 +254,7 @@ Renderer::~Renderer() {
     if (p) vkDestroyPipeline(dev, p, nullptr);
   for (VkSampler s : samplers_)
     if (s) vkDestroySampler(dev, s, nullptr);
+  if (pipelineCache_) vkDestroyPipelineCache(dev, pipelineCache_, nullptr);
   if (layout_) vkDestroyPipelineLayout(dev, layout_, nullptr);
   if (descPool_) vkDestroyDescriptorPool(dev, descPool_, nullptr);  // frees the sets
   if (setLayout_) vkDestroyDescriptorSetLayout(dev, setLayout_, nullptr);

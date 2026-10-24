@@ -3,6 +3,7 @@
 #include <vk_mem_alloc.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -73,6 +74,13 @@ bool hasDeviceExtension(VkPhysicalDevice pd, const char* name) {
 
 Result<std::unique_ptr<GpuContext>> GpuContext::create(const GpuOptions& options) {
   std::unique_ptr<GpuContext> ctx(new GpuContext());
+  using Clock = std::chrono::steady_clock;
+  auto lap = [t = Clock::now()]() mutable {
+    const auto now = Clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(now - t).count();
+    t = now;
+    return ms;
+  };
 
   uint32_t loaderVersion = 0;
   if (vkEnumerateInstanceVersion(&loaderVersion) != VK_SUCCESS || loaderVersion < VK_API_VERSION_1_3)
@@ -109,6 +117,7 @@ Result<std::unique_ptr<GpuContext>> GpuContext::create(const GpuOptions& options
     ici.pNext = &dbg;  // also covers instance creation/destruction
   }
   if (VkResult r = vkCreateInstance(&ici, nullptr, &ctx->instance_); r != VK_SUCCESS) return vkError("vkCreateInstance", r);
+  ctx->createTimes_.instance = lap();
 
   if (validation) {
     auto createMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
@@ -157,6 +166,7 @@ Result<std::unique_ptr<GpuContext>> GpuContext::create(const GpuOptions& options
     }
   }
   if (!ctx->physical_) return Error{ErrorCode::Unsupported, "no Vulkan 1.3 device with dynamic rendering and a graphics queue", {}};
+  ctx->createTimes_.choose = lap();
 
   const float prio = 1.0f;
   VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -179,6 +189,7 @@ Result<std::unique_ptr<GpuContext>> GpuContext::create(const GpuOptions& options
   dci.enabledExtensionCount = options.swapchain ? 1u : 0u;
   dci.ppEnabledExtensionNames = devExts;
   if (VkResult r = vkCreateDevice(ctx->physical_, &dci, nullptr, &ctx->device_); r != VK_SUCCESS) return vkError("vkCreateDevice", r);
+  ctx->createTimes_.device = lap();
   vkGetDeviceQueue(ctx->device_, ctx->queueFamily_, 0, &ctx->queue_);
 
   VmaAllocatorCreateInfo aci{};
@@ -195,6 +206,7 @@ Result<std::unique_ptr<GpuContext>> GpuContext::create(const GpuOptions& options
     return vkError("vkCreateCommandPool", r);
   VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   if (VkResult r = vkCreateFence(ctx->device_, &fci, nullptr, &ctx->oneShotFence_); r != VK_SUCCESS) return vkError("vkCreateFence", r);
+  ctx->createTimes_.rest = lap();
   return ctx;
 }
 

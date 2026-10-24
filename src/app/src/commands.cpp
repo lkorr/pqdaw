@@ -19,7 +19,9 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pq/ui/damage.h"
@@ -33,6 +35,8 @@
 #include "pq/ui/widget.h"
 #include "pq/ui/window.h"
 #include "pq/views/view_scenes.h"
+#include "pq/app/pipeline_cache.h"
+#include "pq/app/startup.h"
 #include "file_watch.h"
 #include "shell_app.h"
 
@@ -94,6 +98,10 @@ struct WindowApp {
   uint32_t framesPresented = 0;
   uint32_t framesSkipped = 0;
   std::string error;
+  // T0.7-fix6: the Vulkan pipeline cache file and what it held at startup (saved after the first frame if the
+  // driver's cache differs).
+  std::string pipelineCacheFile;
+  std::vector<uint8_t> pipelineCacheAtStart;
   // Widget scenes (widgets-core, widgets) run a live UiTree: SDL input → translateEvent → the tree; its
   // damage and timers drive frames; layout is in logical px × the display scale.
   std::unique_ptr<UiTree> ui;
@@ -270,6 +278,7 @@ struct WindowApp {
       frame.damage = std::span<const ClipRect>(rects, full ? 0 : nRects);
       frame.clear = kSceneClearColor;
       const auto f2 = Clock::now();
+      if (framesPresented == 0) markStartupPhase("first frame: layout + paint");
       Status ended = swapchain->endFrame(*renderer, frame);
       using Ms = std::chrono::duration<double, std::milli>;
       lastTiming = {Ms(f1 - f0).count(), Ms(f2 - f1).count(), Ms(Clock::now() - f2).count()};
@@ -277,7 +286,9 @@ struct WindowApp {
         error = s.error().message;
         ok = false;
       } else {
+        if (framesPresented == 0) markStartupPhase("first frame presented");
         ++framesPresented;
+        if (framesPresented == 1) savePipelineCacheIfChanged();
         ++(full ? fullFrames : partialFrames);
         if (!full) lastPartialArea = static_cast<double>(area) / (static_cast<double>(W) * H);
         if (shell) shell->onFramePresented();
@@ -288,6 +299,17 @@ struct WindowApp {
     damage.clear();
     inFrame = false;
     return ok;
+  }
+
+  // After the first frame (off the startup path): keep the driver's pipeline cache for the next start, unless it is
+  // what was loaded.
+  void savePipelineCacheIfChanged() {
+    if (pipelineCacheFile.empty() || !renderer) return;
+    const std::vector<uint8_t> now = renderer->pipelineCacheData();
+    if (now.empty() || now == pipelineCacheAtStart) return;
+    if (!savePipelineCache(pipelineCacheFile, now))
+      std::fprintf(stderr, "pqdaw: could not save the pipeline cache to %s\n", pipelineCacheFile.c_str());
+    pipelineCacheAtStart.clear();
   }
 
   // Dev theme hot reload: re-resolves the theme's fonts, relayouts and redraws when the file changed.
@@ -381,27 +403,94 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
     wo.height = o.height;
   }
   wo.hidden = hidden;
+
+  // T0.7-fix6: startup in parallel. The Vulkan instance + device (loading the driver) are created on a worker while
+  // SDL starts video and creates the window on this thread; the fonts and the theme load on a second worker once the
+  // window's display scale is known, while the swapchain and the renderer are made here. Both are joined before
+  // anything uses them (the joiners also run on every error return).
+  struct Joiner {
+    std::thread t;
+    ~Joiner() { join(); }
+    void join() {
+      if (t.joinable()) t.join();
+    }
+  };
+  GpuOptions go;
+  go.instanceExtensions = Window::platformInstanceExtensions();
+  go.swapchain = true;
+  std::optional<Result<std::unique_ptr<GpuContext>>> gpuEarly;
+  Joiner gpuThread;
+  // PQ_STARTUP_SERIAL=1: the old order (device after the window, fonts after the renderer), for A/B measurement.
+  const char* serialEnv = std::getenv("PQ_STARTUP_SERIAL");
+  const bool serial = serialEnv && *serialEnv && *serialEnv != '0';
+  if (serial) go.instanceExtensions.clear();
+  if (!go.instanceExtensions.empty())
+    gpuThread.t = std::thread([&] {
+      gpuEarly.emplace(GpuContext::create(go));
+      markStartupPhase("Vulkan instance + device");
+    });
+  // SDL video first on its own, only to log the two parts (Window::create's own init is then a reference count).
+  const bool videoUp = SDL_InitSubSystem(SDL_INIT_VIDEO);
+  if (videoUp) markStartupPhase("SDL video init");
   auto window = Window::create(wo);
+  if (videoUp) SDL_QuitSubSystem(SDL_INIT_VIDEO);  // the window holds its own reference
   if (!window) return std::move(window).error();
   app->window = std::move(*window);
+  markStartupPhase("window created");
+  app->scaleOverride = o.scale;
+  app->scale = UiScale(o.scale > 0.0f ? o.scale : app->window->displayScale());
+  auto atlas = std::make_shared<Atlas>();
+  std::optional<Result<SceneTextures>> text;
+  Joiner fontThread;
+  auto loadFonts = [&] {
+    text.emplace(createSceneText(atlas, app->scale));
+    markStartupPhase("fonts + theme");
+  };
+  if (!serial) fontThread.t = std::thread(loadFonts);
 
-  GpuOptions go;
-  go.instanceExtensions = app->window->requiredInstanceExtensions();
-  go.swapchain = true;
-  auto gpu = GpuContext::create(go);
-  if (!gpu) return std::move(gpu).error();
-  app->gpu = std::move(*gpu);
+  gpuThread.join();
+  {
+    // The instance needs every extension the window's surface needs (the early list is SDL's for this platform).
+    const std::vector<std::string> need = app->window->requiredInstanceExtensions();
+    const bool covered = gpuEarly && std::all_of(need.begin(), need.end(), [&](const std::string& e) {
+      return std::find(go.instanceExtensions.begin(), go.instanceExtensions.end(), e) != go.instanceExtensions.end();
+    });
+    if (!covered) {
+      gpuEarly.reset();
+      go.instanceExtensions = need;
+      gpuEarly.emplace(GpuContext::create(go));
+      markStartupPhase("Vulkan instance + device (window's extension list)");
+    }
+  }
+  if (!*gpuEarly) return std::move(*gpuEarly).error();
+  app->gpu = std::move(**gpuEarly);
+  {
+    const GpuContext::CreateTimes& ct = app->gpu->createTimes();
+    char note[160];
+    std::snprintf(note, sizeof note, "Vulkan: vkCreateInstance %.1f ms, choose device %.1f ms, vkCreateDevice %.1f ms, VMA + pool %.1f ms",
+                  ct.instance, ct.choose, ct.device, ct.rest);
+    addStartupNote(note);
+  }
   auto sc = Swapchain::create(*app->gpu, *app->window, 2);
   if (!sc) return std::move(sc).error();
   app->swapchain = std::move(*sc);
-  auto renderer = Renderer::create(*app->gpu, app->swapchain->format(), 2);
+  markStartupPhase("swapchain");
+  app->pipelineCacheFile = pipelineCachePath();
+  app->pipelineCacheAtStart = loadPipelineCache(app->pipelineCacheFile);
+  RendererOptions ro;
+  ro.pipelineCache = app->pipelineCacheAtStart;
+  ro.atlas = atlas;
+  auto renderer = Renderer::create(*app->gpu, app->swapchain->format(), 2, ro);
   if (!renderer) return std::move(renderer).error();
   app->renderer = std::move(*renderer);
-  app->scaleOverride = o.scale;
-  app->scale = UiScale(o.scale > 0.0f ? o.scale : app->window->displayScale());
-  auto tex = createSceneTextures(*app->renderer, app->scale);
+  markStartupPhase(app->renderer->pipelineCacheReused() ? "renderer (pipelines from the disk cache)" : "renderer (pipelines compiled)");
+  fontThread.join();
+  if (serial) loadFonts();
+  if (!*text) return std::move(*text).error();
+  auto tex = createSceneTextures(*app->renderer, std::move(**text));
   if (!tex) return std::move(tex).error();
   app->textures = *tex;
+  markStartupPhase("scene textures");
   app->layered = sceneIsLayered(o.scene);
   app->overlayAnimating = app->layered && o.animate;
   app->damage.setAnimating(!app->layered && o.animate);
@@ -426,6 +515,7 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
     auto shell = ShellApp::create(*app->ui, app->window->sdl(), o);
     if (!shell) return std::move(shell).error();
     app->shell = std::move(*shell);
+    markStartupPhase("shell app ready");
   }
 #ifndef NDEBUG
   if (!hidden) {

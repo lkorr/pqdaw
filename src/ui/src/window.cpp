@@ -44,6 +44,14 @@ std::vector<std::string> Window::requiredInstanceExtensions() const {
   return out;
 }
 
+std::vector<std::string> Window::platformInstanceExtensions() {
+#ifdef _WIN32
+  return {"VK_KHR_surface", "VK_KHR_win32_surface"};  // SDL's Windows video backend (SDL_windowsvulkan.c)
+#else
+  return {};
+#endif
+}
+
 void Window::pixelSize(uint32_t& w, uint32_t& h) const noexcept {
   int iw = 0, ih = 0;
   if (!SDL_GetWindowSizeInPixels(window_, &iw, &ih)) iw = ih = 0;

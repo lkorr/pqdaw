@@ -15,6 +15,17 @@ void markProcessStart() noexcept;
 double msSinceMainEntry() noexcept;
 // Milliseconds since the OS created this process (GetProcessTimes); < 0 where unavailable.
 double msSinceProcessCreation() noexcept;
+
+// Startup phases (T0.7-fix6): markStartupPhase records "phase ended at t ms after process creation" (any thread;
+// `name` must outlive the process, e.g. a string literal; at most kMaxStartupPhases, later marks are dropped).
+// startupPhaseReport() is the table of every mark with the time since the previous mark on any thread, printed at
+// the first frame when startupLogEnabled() (environment PQ_STARTUP_LOG set and not "0").
+inline constexpr uint32_t kMaxStartupPhases = 48;
+void markStartupPhase(const char* name) noexcept;
+// A detail line printed under the table (e.g. how the Vulkan device time splits).
+void addStartupNote(std::string note);
+std::string startupPhaseReport();
+bool startupLogEnabled() noexcept;
 // CPU time (user + kernel) this process has used so far, in milliseconds (GetProcessTimes); < 0 where unavailable.
 double processCpuMs() noexcept;
 // Precise process CPU: cycles all threads ran (QueryProcessCycleTime, counted in TSC ticks) and the TSC itself, so a

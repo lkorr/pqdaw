@@ -8,6 +8,7 @@ pq_add_module(pq_app
     src/shell_app.cpp
     src/sim_transport.cpp
     src/startup.cpp
+    src/pipeline_cache.cpp
     src/file_watch.cpp
     src/project_link.cpp
     src/audio_output.cpp

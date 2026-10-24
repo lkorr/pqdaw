@@ -81,6 +81,18 @@ struct FrameDesc {
   Rgba clear = 0;
 };
 
+struct RendererOptions {
+  // A pipeline cache blob from an earlier run (vkGetPipelineCacheData; the app keeps it in the user settings
+  // directory, T0.7-fix6). Used only if its header names this device (vendor id, device id, pipelineCacheUUID: a
+  // driver update changes the UUID), else the cache starts empty. The app checks its own checksum before (a
+  // corrupt file never reaches the driver).
+  std::span<const uint8_t> pipelineCache;
+  // The glyph atlas to use (a text system may already be filling it on another thread: T0.7-fix6 loads the fonts
+  // while the device is created). create() does not touch it; its pages get GPU images at the first upload().
+  // Null: the renderer makes its own.
+  std::shared_ptr<Atlas> atlas;
+};
+
 class Renderer {
 public:
   static constexpr uint32_t kMaxFramesInFlight = 3;
@@ -91,12 +103,19 @@ public:
   static constexpr uint32_t kMaxRetainedLayers = 4;
   static constexpr uint32_t kMaxFrameLayers = 8;
 
-  static Result<std::unique_ptr<Renderer>> create(GpuContext& gpu, VkFormat colorFormat, uint32_t framesInFlight);
+  static Result<std::unique_ptr<Renderer>> create(GpuContext& gpu, VkFormat colorFormat, uint32_t framesInFlight,
+                                                   const RendererOptions& options = {});
   ~Renderer();
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;
 
   VkFormat colorFormat() const noexcept { return colorFormat_; }
+  // The pipeline cache's contents (to save for the next start; empty on failure), and whether create() used the
+  // blob it was given.
+  std::vector<uint8_t> pipelineCacheData() const;
+  bool pipelineCacheReused() const noexcept { return pipelineCacheReused_; }
+  // Whether a pipeline cache blob's header (VkPipelineCacheHeaderVersionOne) matches the device.
+  static bool pipelineCacheCompatible(std::span<const uint8_t> blob, const VkPhysicalDeviceProperties& device) noexcept;
   // The glyph atlas behind kAtlasTexture / atlasPageTexture(p). The text system packs glyphs into it (UI thread).
   const std::shared_ptr<Atlas>& atlas() const noexcept { return atlas_; }
   uint32_t framesInFlight() const noexcept { return framesInFlight_; }
@@ -212,6 +231,8 @@ private:
   VkDescriptorPool descPool_ = VK_NULL_HANDLE;
   VkPipelineLayout layout_ = VK_NULL_HANDLE;
   std::array<VkPipeline, kBlendModeCount> pipelines_{};
+  VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
+  bool pipelineCacheReused_ = false;
   VkSampler samplers_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
   std::array<Texture, kMaxTextures> textures_{};

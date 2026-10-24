@@ -12,8 +12,14 @@
 #include <tlhelp32.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace pq::app {
 
@@ -62,6 +68,66 @@ double msSinceProcessCreation() noexcept {
 #else
   return -1.0;
 #endif
+}
+
+namespace {
+struct Phase {
+  const char* name;
+  double ms;
+  uint32_t thread;
+};
+// Explicit app-level singleton (ARCHITECTURE §6): the startup marks (UI and startup worker threads; never audio).
+Phase gPhases[kMaxStartupPhases];
+uint32_t gPhaseCount = 0;
+std::vector<std::string> gNotes;
+std::mutex gPhaseMutex;
+}  // namespace
+
+void addStartupNote(std::string note) {
+  std::lock_guard lock(gPhaseMutex);
+  gNotes.push_back(std::move(note));
+}
+
+void markStartupPhase(const char* name) noexcept {
+  const double ms = msSinceProcessCreation();
+#ifdef _WIN32
+  const uint32_t tid = GetCurrentThreadId();
+#else
+  const uint32_t tid = 0;
+#endif
+  std::lock_guard lock(gPhaseMutex);
+  if (gPhaseCount < kMaxStartupPhases) gPhases[gPhaseCount++] = {name, ms, tid};
+}
+
+std::string startupPhaseReport() {
+  std::vector<Phase> ps;
+  std::vector<std::string> notes;
+  {
+    std::lock_guard lock(gPhaseMutex);
+    ps.assign(gPhases, gPhases + gPhaseCount);
+    notes = gNotes;
+  }
+  const uint32_t n = static_cast<uint32_t>(ps.size());
+  std::stable_sort(ps.begin(), ps.end(), [](const Phase& a, const Phase& b) { return a.ms < b.ms; });
+  std::string out = "startup phases (ms after process creation; +ms since the previous mark):\n";
+  double prev = 0.0;
+  const uint32_t mainThread = n ? ps.front().thread : 0;
+  for (const Phase& p : ps) {
+    char line[160];
+    std::snprintf(line, sizeof line, "  %8.1f  %+7.1f  %s%s\n", p.ms, p.ms - prev, p.name, p.thread == mainThread ? "" : "  [worker]");
+    out += line;
+    prev = p.ms;
+  }
+  for (const std::string& note : notes) out += "  " + note + "\n";
+  return out;
+}
+
+bool startupLogEnabled() noexcept {
+  static const bool on = [] {
+    const char* v = std::getenv("PQ_STARTUP_LOG");
+    return v && *v && !(v[0] == '0' && v[1] == 0);
+  }();
+  return on;
 }
 
 uint64_t processCycles() noexcept {

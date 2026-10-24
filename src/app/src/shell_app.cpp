@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 #include <string_view>
 #include <utility>
@@ -149,6 +150,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     }
     if (link) {
       app->link_ = std::move(*link);
+      markStartupPhase("playback engine (default project compiled)");
       std::printf("pqdaw: playback engine ready in %.1f ms\n", msSinceMainEntry() - t0);
     } else
       std::fprintf(stderr, "pqdaw: playback unavailable: %s\n", link.error().message.c_str());
@@ -159,11 +161,14 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     app->ctx_ = std::make_unique<views::ViewContext>(*app->transport_);
   app->dialogs_ = std::make_unique<SdlFileDialogs>(window, app->userEvent_);
   app->ctx_->setFileDialogs(app->dialogs_.get());
-  if (!o.project.empty())
+  if (!o.project.empty()) {
     if (Status s = app->ctx_->openProject(o.project); !s) return std::move(s).error();
+    markStartupPhase("project loaded");
+  }
   auto shell = views::Shell::create(tree, *app->ctx_);
   if (!shell) return std::move(shell).error();
   app->shell_ = std::move(*shell);
+  markStartupPhase("views built");
   if (app->link_) {
     const double t1 = msSinceMainEntry();
     app->link_->attach(*app->ctx_);
@@ -174,6 +179,8 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     // change, refreshes the preferences window).
     app->audio_->setUiNotify([](void* self) { pushUser(static_cast<ShellApp*>(self)->userEvent_, kAudioChanged); }, app.get());
     app->ctx_->setAudioPrefs(app->audio_.get());
+    app->audio_ = std::make_unique<AudioOutput>(o, app->link_->engine());
+    markStartupPhase("link attached, audio device opening in the background");
   }
   ShellApp* self = app.get();
   app->tempoSub_ = app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
@@ -330,7 +337,14 @@ void ShellApp::onFramePresented() {
   ++frames_;
   if (frames_ != 1) return;
   std::printf("pqdaw: %s\n", firstFrameReport().c_str());
+  if (startupLogEnabled()) std::printf("%s", startupPhaseReport().c_str());
   std::fflush(stdout);
+  // T0.7-fix6: tools/bench/startup.ps1 times repeated starts; PQ_STARTUP_EXIT=1 quits after the first frame.
+  if (const char* e = std::getenv("PQ_STARTUP_EXIT"); e && *e && *e != '0') {
+    SDL_Event q{};
+    q.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&q);
+  }
   if (idleSeconds_ > 0) {  // settle (show/expose) before measuring
     settleFrames_ = frames_;
     settleEvents_ = events_;

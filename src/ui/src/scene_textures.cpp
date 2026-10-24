@@ -52,7 +52,13 @@ Image checkerImage() {
 }  // namespace
 
 Result<SceneTextures> createSceneTextures(Renderer& renderer, UiScale scale) {
-  SceneTextures t;
+  auto text = createSceneText(renderer.atlas(), scale);
+  if (!text) return std::move(text).error();
+  return createSceneTextures(renderer, std::move(*text));
+}
+
+Result<SceneTextures> createSceneTextures(Renderer& renderer, SceneTextures text) {
+  SceneTextures t = std::move(text);
   auto magma = renderer.createTexture(magmaRampImage(), TextureFilter::Linear);
   if (!magma) return std::move(magma).error();
   t.magmaRamp = *magma;
@@ -63,16 +69,6 @@ Result<SceneTextures> createSceneTextures(Renderer& renderer, UiScale scale) {
   auto linear = renderer.createTexture(checker, TextureFilter::Linear);
   if (!linear) return std::move(linear).error();
   t.checkerLinear = *linear;
-
-  auto text = createSceneText(renderer.atlas(), scale);
-  if (!text) return std::move(text).error();
-  t.text = std::move(text->text);
-  t.regular = text->regular;
-  t.semiBold = text->semiBold;
-  t.scale = text->scale;
-  t.fonts = text->fonts;
-  t.theme = std::move(text->theme);
-  t.uiFonts = text->uiFonts;
   t.tiles = renderer.tiles();
   return t;
 }

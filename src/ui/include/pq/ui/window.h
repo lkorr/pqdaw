@@ -42,6 +42,9 @@ public:
   uint32_t id() const noexcept;
   // Instance extensions SDL needs for vkCreate*SurfaceKHR.
   std::vector<std::string> requiredInstanceExtensions() const;
+  // The instance extensions SDL's backend for this platform asks for, known without SDL (T0.7-fix6: the Vulkan
+  // instance is created while SDL starts and creates the window). Empty where not known: use the window's.
+  static std::vector<std::string> platformInstanceExtensions();
   // Drawable size in pixels (0×0 while minimised on Windows).
   void pixelSize(uint32_t& w, uint32_t& h) const noexcept;
   bool minimized() const noexcept;

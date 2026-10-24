@@ -53,6 +53,9 @@ struct SceneTextures {
 // Creates the textures and a text system on the renderer's atlas, loading the fonts and the default theme
 // from assetsDir() and resolving the font roles at `scale`.
 Result<SceneTextures> createSceneTextures(Renderer& renderer, UiScale scale = {});
+// The same from a createSceneText() result made on renderer.atlas() (T0.7-fix6: the app loads the fonts on a worker
+// thread while the device is created): adds the textures and the tile cache.
+Result<SceneTextures> createSceneTextures(Renderer& renderer, SceneTextures text);
 // Text only (no GPU): a text system on `atlas` with the fonts and theme loaded and resolved at `scale`; the
 // texture ids stay kAtlasTexture. For CPU tests and benchmarks of the text paths.
 Result<SceneTextures> createSceneText(std::shared_ptr<Atlas> atlas, UiScale scale = {});

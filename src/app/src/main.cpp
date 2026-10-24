@@ -8,8 +8,10 @@
 
 int main(int argc, char** argv) {
   pq::app::markProcessStart();  // first-frame timing (T3.7)
+  pq::app::markStartupPhase("main() entered (exe load + CRT start)");
   const std::vector<std::string_view> args(argv + 1, argv + argc);
   auto opts = pq::app::parseCli(args);
+  pq::app::markStartupPhase("command line parsed");
   if (!opts) {
     std::fprintf(stderr, "pqdaw: %s\n\n%s", opts.error().message.c_str(), pq::app::usage().c_str());
     return 2;

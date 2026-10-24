@@ -57,6 +57,13 @@ public:
   // a load-independent stand-in for "the CPU never waits for the GPU" (T0.x-flake).
   uint64_t blockingSubmits() const noexcept { return blockingSubmits_; }
 
+  // Where create() spent its time (ms; T0.7-fix6 startup log): vkCreateInstance (loader, ICD and implicit layers),
+  // choosing the physical device, vkCreateDevice, and the rest (VMA, command pool).
+  struct CreateTimes {
+    double instance = 0.0, choose = 0.0, device = 0.0, rest = 0.0;
+  };
+  const CreateTimes& createTimes() const noexcept { return createTimes_; }
+
   // Records a one-off command buffer with `record`, submits it and waits for completion. For uploads and
   // readback (not per-frame work).
   template <class F>
@@ -85,6 +92,7 @@ private:
   std::string deviceName_;
   uint32_t validationErrors_ = 0;
   uint64_t blockingSubmits_ = 0;
+  CreateTimes createTimes_;
   bool pipelineStatistics_ = false;
   float timestampPeriodNs_ = 0.0f;
 };
