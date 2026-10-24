@@ -335,12 +335,24 @@ TEST_CASE("tuning signal: unmodulated inputs sound at the static pitch; fallback
         ps(static_cast<float>(v.stretch)), pr(static_cast<float>(v.referenceHz));
     Pattern pd{0, 1, 2, 6, 3, kNaN, 4, 10}, pe{0, 0, -1, 2, 0, 0, 1, -3};
     constexpr uint32_t kF = 64;
-    std::vector<float> fh(kF * 8, 123.0f), fc(kF * 8, -7.0f), hz(kF * 8), cents(kF * 8);
-    for (uint32_t f = 0; f < 10; ++f) fh[f * 8 + 4] = 0.0f;  // lane 4 starts at frame 10 (voice.hz 0 before)
+    // The fallback is what the engine gives a note: its static Hz, float(resolveHzDouble) (T2.6-fix1); lane 5 has no
+    // degree, lane 4 starts at frame 10 (voice.hz 0 before).
+    std::vector<float> stat(8, 123.0f);
+    std::vector<double> statD(8, 0.0);
+    for (uint32_t l = 0; l < 8; ++l) {
+      if (l == 5) continue;
+      const auto st = tun::resolveHzDouble(
+          tun::PitchId::fromDegree(static_cast<int32_t>(pd.v[l]), static_cast<int32_t>(pe.v[l])), *t, {});
+      REQUIRE(st);
+      statD[l] = *st;
+      stat[l] = static_cast<float>(*st);
+    }
+    std::vector<float> fh(kF * 8), fc(kF * 8, -7.0f), hz(kF * 8), cents(kF * 8);
+    for (uint32_t f = 0; f < kF; ++f)
+      for (uint32_t l = 0; l < 8; ++l) fh[f * 8 + l] = l == 4 && f < 10 ? 0.0f : stat[l];
     const KIn in[8] = {{pd.v, true}, {pe.v, true}, {fh.data(), false}, {fc.data(), false},
                        {pg.v, true}, {pp.v, true}, {ps.v, true}, {pr.v, true}};
     runKernel(8, &v, in, kF, hz.data(), cents.data());
-    uint32_t exact = 0, total = 0;
     for (uint32_t l = 0; l < 8; ++l) {
       CAPTURE(l);
       for (uint32_t f = 0; f < kF; ++f) {
@@ -353,17 +365,41 @@ TEST_CASE("tuning signal: unmodulated inputs sound at the static pitch; fallback
           CHECK(hz[f * 8 + l] == 0.0f);
           continue;
         }
-        const auto stat = tun::resolveHzDouble(
-            tun::PitchId::fromDegree(static_cast<int32_t>(pd.v[l]), static_cast<int32_t>(pe.v[l])), *t, {});
-        REQUIRE(stat);
-        const float want = static_cast<float>(*stat);
-        CHECK(std::fabs(hz[f * 8 + l] - want) <= std::nextafter(want, 1e30f) - want);  // ≤ 1 ulp
-        exact += hz[f * 8 + l] == want;
-        ++total;
+        // Every tuning input at its definition value: the note's own static Hz, bit for bit; cents still the node's.
+        CHECK(hz[f * 8 + l] == stat[l]);
+        CHECK(std::fabs(std::exp2(cents[f * 8 + l] / 1200.0) * v.referenceHz - statD[l]) <= statD[l] * 2e-7);
       }
     }
-    MESSAGE("unmodulated: " << exact << " of " << total << " samples bit-equal to float(resolveHzDouble)");
-    CHECK(exact * 10 >= total * 9);
+    // An unmodulated tuning passes ANY fallback through (e.g. a voice.hz moved by a Pitch event): the pass-through
+    // trusts the lowering to give a following note its static Hz in the table's definition.
+    {
+      std::vector<float> other(kF * 8, 333.0f), hz3(kF * 8), c3(kF * 8);
+      const KIn in3[8] = {{pd.v, true}, {pe.v, true}, {other.data(), false}, {fc.data(), false},
+                          {pg.v, true}, {pp.v, true}, {ps.v, true}, {pr.v, true}};
+      runKernel(8, &v, in3, kF, hz3.data(), c3.data());
+      for (uint32_t i = 0; i < kF * 8; ++i) CHECK(hz3[i] == 333.0f);
+    }
+    // A modulated input (the reference one float32 ulp away from its definition value) computes the pitch: within an
+    // ulp of the static Hz of that reference, and for most samples bit-equal to it.
+    {
+      const float refUp = std::nextafter(static_cast<float>(v.referenceHz), 1e30f);
+      const Pattern pr2(refUp);
+      std::vector<float> hz4(kF * 8), c4(kF * 8);
+      const KIn in4[8] = {{pd.v, true}, {pe.v, true}, {fh.data(), false}, {fc.data(), false},
+                          {pg.v, true}, {pp.v, true}, {ps.v, true}, {pr2.v, true}};
+      runKernel(8, &v, in4, kF, hz4.data(), c4.data());
+      uint32_t exact = 0, total = 0;
+      for (uint32_t l = 0; l < 8; ++l)
+        for (uint32_t f = 0; f < kF; ++f) {
+          if (l == 5 || (l == 4 && f < 10)) continue;
+          const float want = static_cast<float>(statD[l] * (static_cast<double>(refUp) / v.referenceHz));
+          CHECK(std::fabs(hz4[f * 8 + l] - want) <= std::nextafter(want, 1e30f) - want);  // ≤ 1 ulp
+          exact += hz4[f * 8 + l] == want;
+          ++total;
+        }
+      MESSAGE("modulated by one ulp: " << exact << " of " << total << " samples bit-equal to the static pitch");
+      CHECK(exact * 10 >= total * 9);
+    }
 
     // The per-sample path agrees with the block path for constant inputs (an audio-rate generator buffer that holds
     // the parameter's value).
@@ -373,8 +409,8 @@ TEST_CASE("tuning signal: unmodulated inputs sound at the static pitch; fallback
     runKernel(8, &v, in2, kF, hz2.data(), c2.data());
     for (uint32_t i = 0; i < kF * 8; ++i) CHECK(std::fabs(hz2[i] - hz[i]) <= std::fabs(hz[i]) * 2.4e-7f);
 
-    // The 1-lane kernel: lane 3's degree as a global signal.
-    std::vector<float> d1(kF, pd.v[3]), e1(kF, pe.v[3]), h1(kF, 99.0f), c1(kF, 0.0f), oh(kF), oc(kF);
+    // The 1-lane kernel: lane 3's degree as a global signal (its fallback is lane 3's static Hz, as above).
+    std::vector<float> d1(kF, pd.v[3]), e1(kF, pe.v[3]), h1(kF, stat[3]), c1(kF, 0.0f), oh(kF), oc(kF);
     const Pattern g1(pg.v[0]), p1(pp.v[0]), s1(ps.v[0]), r1(pr.v[0]);
     const KIn in1[8] = {{d1.data(), false}, {e1.data(), false}, {h1.data(), false}, {c1.data(), false},
                         {g1.v, true}, {p1.v, true}, {s1.v, true}, {r1.v, true}};

@@ -79,10 +79,12 @@ pq_add_test(pq_tests_app
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
-# solo/mute vs effectiveAudible, topology swaps, the NullDevice end-to-end playhead).
+# solo/mute vs effectiveAudible, topology swaps, the NullDevice end-to-end playhead); T2.6-fix1: the tuning signal in
+# playback (tests/app/fixtures/tuning_automation, the bit-identical static render, live tuning params).
 pq_add_test(pq_tests_playback
   SOURCES
     app/test_playback.cpp
+    app/test_tuning_playback.cpp
     golden/golden_audio.cpp
   DEPS pq_app)
 

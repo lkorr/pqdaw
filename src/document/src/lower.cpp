@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "pq/document/audibility.h"
+#include "pq/document/pitch_resolve.h"
 
 namespace pq::doc {
 
@@ -20,11 +21,19 @@ struct SendInfo {
   bool preFader = false;
 };
 
+// A MIDI track's tuning node (T2.6-fix1).
+struct TuningNode {
+  TuningId id;                      // invalid: no node
+  const TuningDef* def = nullptr;
+  uint32_t table = 0;               // index into Resources::tunings
+};
+
 struct Node {
   const Track* track = nullptr;
   Kind kind = Kind::Midi;
   const Track* parent = nullptr;  // active parent group (main tree)
   std::vector<SendInfo> sends;    // per active return
+  TuningNode tuning;
 };
 
 std::string num(double v) {
@@ -74,6 +83,16 @@ std::string patchText(const Node& n, const std::string& instrument, float smooth
   for (const SendInfo& si : n.sends) s += "  param send" + std::to_string(si.ret.value) + " = -70 [-70..6]\n";
   if (n.kind != Kind::Midi) s += "  in in : audio global stereo = 0\n";
   s += "  out out : audio global stereo\n";
+  if (n.kind == Kind::Midi && n.tuning.id.valid()) {
+    // The tuning node: param defaults are fixed (the values arrive as params), so the text only depends on the
+    // tuning's kind and its table index.
+    const bool edo = n.tuning.def->edo() != nullptr;
+    s += "  param tref = 261.626 [1..20000]\n  param tper = 1200 [1..12000]\n";
+    if (!edo) s += "  param tgen = 700 [-12000..12000]\n  param tst = 0 [-1199..1200]\n";
+    s += std::string("  tun = tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, ") +
+         (edo ? "0, tper, 0, tref" : "tgen, tper, tst, tref") + ", table: " + std::to_string(n.tuning.table) + ")\n";
+    s += "  tunv = tune_voices(tun.hz, tun.cents)\n";
+  }
   if (n.kind == Kind::Midi) {
     s += "  out done : bool voice mono\n";
     s += "  syn = " + instrument + "()\n";
@@ -111,19 +130,27 @@ float sendLevel(const Track& t, TrackId ret, bool* pre) {
   return kMinVolumeDb;
 }
 
+using TableOf = std::function<uint32_t(TuningId, const TuningDef&)>;
+
 // The lowered nodes of a project (active tracks), in forEachTrack order: main tree depth-first, returns, master.
-std::vector<Node> collect(const Project& p) {
+// `tableOf` (optional): MIDI tracks following a tuning signal get a tuning node with that table.
+std::vector<Node> collect(const Project& p, const TableOf* tableOf) {
   std::vector<TrackId> returns;
   for (const TrackPtr& r : p.returns)
     if (r->active) returns.push_back(r->id);
   std::vector<Node> nodes;
   struct Walk {
+    const Project& p;
     std::vector<Node>& nodes;
     const std::vector<TrackId>& returns;
-    void operator()(const std::vector<TrackPtr>& list, const Track* parent) {
-      for (const TrackPtr& t : list) {
+    const TableOf* tableOf;
+    void operator()(const std::vector<TrackPtr>& list, const Track* parent, TrackPath path) {
+      for (uint32_t i = 0; i < list.size(); ++i) {
+        const TrackPtr& t = list[i];
         if (!t->active) continue;  // deactivated: left out with its members (Q15)
         if (t->kind != TrackKind::Midi && t->kind != TrackKind::Group) continue;
+        TrackPath here = path;
+        if (here.depth < kMaxTrackDepth) here.index[here.depth++] = i;
         Node n;
         n.track = t.get();
         n.kind = t->kind == TrackKind::Midi ? Kind::Midi : Kind::Group;
@@ -133,12 +160,18 @@ std::vector<Node> collect(const Project& p) {
           sendLevel(*t, r, &si.preFader);
           n.sends.push_back(si);
         }
+        if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth) {
+          if (const TuningId id = trackTuningSignal(p, here); id.valid()) {
+            const TuningSlot* slot = findTuning(p, id);
+            n.tuning = TuningNode{id, &slot->def, (*tableOf)(id, slot->def)};
+          }
+        }
         nodes.push_back(std::move(n));
-        if (t->kind == TrackKind::Group) (*this)(t->children, t.get());
+        if (t->kind == TrackKind::Group) (*this)(t->children, t.get(), here);
       }
     }
-  } walk{nodes, returns};
-  walk(p.tracks, nullptr);
+  } walk{p, nodes, returns, tableOf};
+  walk(p.tracks, nullptr, TrackPath{});
   for (const TrackPtr& r : p.returns)
     if (r->active) nodes.push_back(Node{r.get(), Kind::Return, nullptr, {}});
   if (p.master) nodes.push_back(Node{p.master.get(), Kind::Master, nullptr, {}});
@@ -159,6 +192,23 @@ void addParams(const Node& n, uint32_t index, const AudibilityMap& aud, std::vec
   if (!n.sends.empty()) add("sendGate", a == nullptr || a->sends ? 1.0f : 0.0f, std::nullopt);
   for (const SendInfo& si : n.sends)
     add("send" + std::to_string(si.ret.value), sendLevel(t, si.ret, nullptr), ParamRef::track(ParamKind::TrackSend, t.id, si.ret));
+  if (n.tuning.id.valid()) {  // the tuning node's params: one key per tuning, shared by every track following it
+    const TuningDef& d = *n.tuning.def;
+    auto tuningParam = [&](const char* name, ParamKind k, double v) {
+      const ParamRange r = paramRange(k);
+      const ParamRef ref = ParamRef::tuning(k, n.tuning.id);
+      out.push_back(LoweredParam{paramKey(ref), index, name, static_cast<float>(std::clamp(v, r.min, r.max)), ref});
+    };
+    tuningParam("tref", ParamKind::TuningReference, d.referenceHz);
+    if (const tuning::Edo* e = d.edo()) {
+      tuningParam("tper", ParamKind::TuningEquave, e->equaveCents());
+    } else {
+      const tuning::MosParams& m = *d.mos();
+      tuningParam("tper", ParamKind::MosPeriod, m.period);
+      tuningParam("tgen", ParamKind::MosGenerator, m.generator);
+      tuningParam("tst", ParamKind::MosStretch, m.octaveStretch);
+    }
+  }
 }
 
 }  // namespace
@@ -168,15 +218,26 @@ std::string paramKey(const ParamRef& ref) {
     case ParamKind::TrackVolume: return std::to_string(ref.owner) + ":volume";
     case ParamKind::TrackPan: return std::to_string(ref.owner) + ":pan";
     case ParamKind::TrackSend: return std::to_string(ref.owner) + ":send:" + std::to_string(ref.target);
-    default: return {};  // mute/solo are derived into gates; tuning params become signals with T2.6
+    // The tuning node's params (T2.6-fix1).
+    case ParamKind::TuningReference: return "tuning:" + std::to_string(ref.owner) + ":reference";
+    case ParamKind::TuningEquave: return "tuning:" + std::to_string(ref.owner) + ":equave";
+    case ParamKind::MosGenerator: return "tuning:" + std::to_string(ref.owner) + ":generator";
+    case ParamKind::MosPeriod: return "tuning:" + std::to_string(ref.owner) + ":period";
+    case ParamKind::MosStretch: return "tuning:" + std::to_string(ref.owner) + ":stretch";
+    default: return {};  // mute/solo are derived into gates
   }
+}
+
+TuningId trackTuningSignal(const Project& p, const TrackPath& path) noexcept {
+  const EffectiveTuning e = effectiveTuningRef(p, path);
+  return e.main.valid() && e.def != nullptr && hasTuningSignal(*e.def) ? e.main : TuningId{};
 }
 
 Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const LoweredProject* previous) {
   if (!p.master) return Error{ErrorCode::InvalidArgument, "lower: the project has no master", {}};
   if (o.library == nullptr || o.library->find(o.instrument) == nullptr)
     return Error{ErrorCode::NotFound, "lower: the instrument '" + o.instrument + "' is not in the library", {}};
-  const std::vector<Node> nodes = collect(p);
+  const std::vector<Node> nodes = collect(p, &o.tuningTableOf);
   const AudibilityMap aud = computeAudibility(p);
   LoweredProject out;
   out.graph.library = o.library;
@@ -255,8 +316,9 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   return out;
 }
 
-std::vector<LoweredParam> lowerParams(const Project& p) {
-  const std::vector<Node> nodes = collect(p);
+std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes) {
+  const TableOf anyTable = [](TuningId, const TuningDef&) { return 0u; };  // the index does not change a param
+  const std::vector<Node> nodes = collect(p, tuningNodes ? &anyTable : nullptr);
   const AudibilityMap aud = computeAudibility(p);
   std::vector<LoweredParam> out;
   for (uint32_t i = 0; i < nodes.size(); ++i) addParams(nodes[i], i, aud, out);

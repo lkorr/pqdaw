@@ -13,8 +13,11 @@
 // when the generator leaves the interval (a region crossing, detected at the crossing sample) or the degree changes.
 //
 // Unmodulated inputs: the node's param-rate inputs are float32 param slots. An input that equals float32(x) of the
-// definition's double value x (generator, period, stretch, reference) reads x exactly, so an unmodulated tuning
-// sounds at exactly the document's pitch (resolveHz's double result rounded once). Audio-rate inputs are used as is.
+// definition's double value x (generator, period, stretch, reference) reads x exactly, so the computed pitch is
+// within an ulp of the document's (resolveHz's double result rounded once). When EVERY tuning param input of a lane is
+// at its definition value in a block, the kernel passes the note's own `hz` input through instead (T2.6-fix1): the
+// project lowering resolves NoteDesc::hz in this table's definition, so an unmodulated tuning sounds bit-identically
+// to static pitches. Audio-rate inputs are used as is.
 
 #include <cmath>
 #include <cstdint>
