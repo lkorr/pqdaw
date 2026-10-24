@@ -35,6 +35,16 @@ else()
   message(STATUS "pqdaw: compiler cache: none (run scripts/get-sccache.ps1 to enable)")
 endif()
 
+# SYSTEM include directories: plain -I, with warnings silenced for every header included with <...>
+# (/external:anglebrackets /external:W0), instead of CMake's default -external:I<dir>. sccache hashes the
+# -external:I argument verbatim (not normalised to the checkout root), so every TU that sees a SYSTEM directory
+# inside the build tree (zlib, RtAudio, FreeType, HarfBuzz, VMA, SDL3 from _deps) would miss the cache in any
+# other worktree. Same warning policy as before: pqdaw's own headers are included with "...", third-party ones
+# with <...>. Applies with or without the cache, so both builds see the same warnings.
+set(CMAKE_INCLUDE_SYSTEM_FLAG_C "-I")
+set(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "-I")
+add_compile_options(/external:anglebrackets /external:W0)
+
 # No C++20 named modules in pqdaw or its dependencies. CMake 3.28+ otherwise adds a dependency-scan step
 # (a full extra preprocessor run of cl /scanDependencies, not cacheable) before every C++ compile.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
