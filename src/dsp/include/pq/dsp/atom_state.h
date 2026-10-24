@@ -78,8 +78,11 @@ struct alignas(32) NoiseState {
   uint32_t pad_[7];
 };
 
-struct alignas(32) WavetableState {  // wavetable: previous phase (to estimate the phase increment → mip level)
+// wavetable: previous phase and previous |Δphase| (the increment estimate → mip level is the smaller of the last
+// two deltas, so a single phase jump never picks the level; tables.h).
+struct alignas(32) WavetableState {
   float prevPhase[8];
+  float prevDelta[8];
 };
 
 // delayline: header, then `capacity * lanes` floats of ring buffer (frame-major, lanes interleaved).
@@ -120,7 +123,7 @@ static_assert(sizeof(PulseState) == 32);
 static_assert(sizeof(TimerState) == 64);
 static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
-static_assert(sizeof(WavetableState) == 32);
+static_assert(sizeof(WavetableState) == 64);
 static_assert(sizeof(DelayState) == 96);
 static_assert(sizeof(SampleReadState) == 96);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);

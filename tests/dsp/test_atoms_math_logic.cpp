@@ -86,6 +86,14 @@ TEST_CASE("dsp atoms: arithmetic") {
   // mod: floored, result compared modulo |b| (a/b rounding can put a result at 0 instead of b).
   checkAtom(spec(Atom::Mod, {uniform(-20, 20), signedMagnitude(0.3f, 4)},
                  ew2([](double a, double b) { return a - b * std::floor(a / b); }), Tol{1e-5, 0, 0, 1}));
+  // mod never returns b (M1 review L3): a − b·floor(a/b) of a tiny fraction of b on the other side of 0 rounds to
+  // exactly b in float; the documented result is 0 (the same point of the period). The period-tolerant check
+  // above accepts b, so this one is exact: [0, b) for b > 0, (b, 0] for b < 0.
+  checkAtom(spec(Atom::Mod, {pickFrom({-1e-9f, -1e-30f, -3e-8f, 1e-9f, 3e-8f, -0.0f, 0.0f}), pickFrom({1.0f, -1.0f, 0.25f, -4.0f})},
+                 ew2([](double a, double b) {
+                   const double r = a - b * std::floor(a / b);  // in double: within (b, 0] or [0, b), never b
+                   return static_cast<float>(r) == static_cast<float>(b) ? 0.0 : r;
+                 }), Tol{1e-7, 0}));
   checkAtom(spec(Atom::MulAdd, {uniform(-4, 4), uniform(-4, 4), uniform(-4, 4)},
                  ew3([](double a, double b, double c) { return a * b + c; }), Tol{1e-12, kF}));
   checkAtom(spec(Atom::Lerp, {uniform(-4, 4), uniform(-4, 4), uniform(-0.5f, 1.5f)},
@@ -118,6 +126,7 @@ TEST_CASE("dsp atoms: transcendental, exact and fast") {
   checkAtom(spec(Atom::LogFast, {uniform(1e-4f, 1e4f)}, ew1([](double x) { return std::log(x); }), Tol{2e-6, 2 * kF}));
   checkAtom(spec(Atom::Sin, {uniform(-100, 100)}, ew1([](double x) { return std::sin(x); }), Tol{2.5e-7, 0}));
   checkAtom(spec(Atom::SinFast, {uniform(-100, 100)}, ew1([](double x) { return std::sin(x); }), Tol{2e-7, 0}));
+  checkAtom(spec(Atom::SinFast, {uniform(-65536, 65536)}, ew1([](double x) { return std::sin(x); }), Tol{2e-7, 0}));
   checkAtom(spec(Atom::Tan, {uniform(-1.5f, 1.5f)}, ew1([](double x) { return std::tan(x); }), Tol{1e-30, 4 * kF}));
   checkAtom(spec(Atom::TanFast, {uniform(-1.5f, 1.5f)}, ew1([](double x) { return std::tan(x); }), Tol{1e-30, 4e-7}));
   checkAtom(spec(Atom::Tanh, {uniform(-10, 10)}, ew1([](double x) { return std::tanh(x); }), Tol{1e-30, 4 * kF}));
@@ -311,17 +320,47 @@ TEST_CASE("dsp atoms: stateful logic") {
                  [](const V& in, V& out) {
                    for (size_t t = 0; t < in[0].size(); ++t) out[0][t] = b01(t == 0);
                  }));
-  // timer(trig, duration)
-  checkAtom(spec(Atom::Timer, {boolRuns(0.05), pickFrom({0.0f, 1.0f, 3.0f, 10.0f, 2.6f, -4.0f, 40.0f})},
+  // timer(trig, duration): N ≤ 0 or NaN gives no output (NaN used to hold it high for 2^31 samples: Q55 / M1
+  // review M13); huge durations hold it high.
+  checkAtom(spec(Atom::Timer, {boolRuns(0.05), pickFrom({0.0f, 1.0f, 3.0f, 10.0f, 2.6f, -4.0f, 40.0f,
+                                                          std::numeric_limits<float>::quiet_NaN(), 1e12f})},
                  [](const V& in, V& out) {
                    int64_t r = 0;
                    bool prev = false;
                    for (size_t t = 0; t < in[0].size(); ++t) {
                      const bool b = in[0][t] != 0;
-                     if (b && !prev) r = static_cast<int64_t>(std::nearbyint(std::max(in[1][t], 0.0)));
+                     const double d = std::isnan(in[1][t]) ? 0.0 : std::clamp(in[1][t], 0.0, 2147483520.0);
+                     if (b && !prev) r = static_cast<int64_t>(std::nearbyint(d));
                      prev = b;
                      out[0][t] = b01(r > 0);
                      if (r > 0) --r;
                    }
                  }));
+}
+
+TEST_CASE("dsp atoms: fast_sin outside its accurate domain stays in [-1, 1]; NaN and inf give NaN (M1 review M5)") {
+  // The polynomial grew without bound past |x| = 65536 (fast_sin(1e10) = 1.9e20, fast_sin(1e20) = inf), so
+  // fast_sin(x) · 0 was NaN where the optimiser assumed 0.
+  const float inf = std::numeric_limits<float>::infinity();
+  const std::vector<float> xs = {1e5f, -1e5f, 1e6f, 3e7f, 1e10f, -1e10f, 1e20f, -1e20f, 3.4e38f, -3.4e38f, 65536.0f,
+                                 inf, -inf, std::numeric_limits<float>::quiet_NaN()};
+  for (uint32_t lanes : {1u, 8u})
+    for (uint32_t mask : {0u, 1u}) {
+      for (float x : xs) {
+        std::vector<float> in(8 * 8, x), out(8 * 8, 7.0f);
+        const float* ins[] = {in.data()};
+        float* outs[] = {out.data()};
+        pq::dsp::KernelArgs a{ins, outs, nullptr, nullptr, 8, 1, 1, mask};
+        pq::dsp::findKernel(Atom::SinFast, lanes, mask)(a);
+        for (uint32_t i = 0; i < 8 * lanes; ++i) {
+          INFO("x = " << x << " lanes " << lanes << " mask " << mask);
+          if (std::isfinite(x)) {
+            CHECK(std::isfinite(out[i]));
+            CHECK(std::fabs(out[i]) <= 1.0f);
+          } else {
+            CHECK(std::isnan(out[i]));
+          }
+        }
+      }
+    }
 }

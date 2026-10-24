@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "../engine/interp_harness.h"
+#include "../engine/kernel_probes.h"
 #include "../engine/liveness_probes.h"
 #include "../engine/project_fixture.h"
 #include "pq/core/alloc_trap.h"
@@ -675,6 +676,17 @@ TEST_CASE("jit: compile time of 100- and 1000-node patches (and they match the i
     CorpusStats cs;
     const uint32_t blocks[] = {64};
     checkPatch(c, 0, 0, {}, cs, false, blocks, 1);
+  }
+}
+
+TEST_CASE("jit: M1 review kernel edge probes (delay size, sample_read rates and loops, mod, timer, NaN hz, fast_sin)") {
+  kernel_probes::check(jitBuilder());
+  // The inlined mod, timer, phasor/sine_hz and fast_sin and the called kernels match the interpreter bit for bit.
+  for (const char* name : {"SrTiny", "LoopFast", "ModTiny", "TimerNan", "PhNan", "FastSinBig"}) {
+    const Compiled& c = kernel_probes::probe(name);
+    const InterpRun interp = kernel_probes::run(c, 4096, 64, {});
+    INFO(name);
+    CHECK(liveness_probes::bitEqual(interp.streams, kernel_probes::run(c, 4096, 64, jitBuilder()).streams));
   }
 }
 

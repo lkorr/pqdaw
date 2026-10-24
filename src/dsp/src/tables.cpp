@@ -2,6 +2,7 @@
 
 #include "pq/dsp/tables.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <numbers>
@@ -47,6 +48,15 @@ void fftInPlace(std::span<double> re, std::span<double> im, bool inverse) noexce
 
 // ---- Wavetable --------------------------------------------------------------------------------------------------
 
+uint32_t wavetableLevelTopHarmonic(uint32_t n, uint32_t level) noexcept {
+  const uint32_t half = n / 2;
+  // Even levels are exact octaves; odd ones are floor of an irrational number (never within 1e-9 of an integer).
+  const double h = level % 2 == 0 ? static_cast<double>(half >> (level / 2))
+                                  : std::floor(static_cast<double>(half) * std::exp2(-0.5 * level));
+  const uint32_t hi = half > 0 ? half - 1 : 0;
+  return std::min(static_cast<uint32_t>(h), hi);
+}
+
 Result<Wavetable> Wavetable::build(std::span<const float> cycle) {
   const std::size_t n = cycle.size();
   if (n < 16 || n > 65536 || !std::has_single_bit(n))
@@ -54,7 +64,7 @@ Result<Wavetable> Wavetable::build(std::span<const float> cycle) {
                                                  std::to_string(n), {}};
   Wavetable t;
   const uint32_t size = static_cast<uint32_t>(n);
-  const uint32_t levels = static_cast<uint32_t>(std::countr_zero(size));  // log2(N)
+  const uint32_t levels = 2 * static_cast<uint32_t>(std::countr_zero(size)) - 1;  // half-octave levels
   const uint32_t stride = size + 1;
   t.data_ = AlignedBuffer<float>(static_cast<std::size_t>(levels) * stride);
   t.view_ = {t.data_.data(), size, levels, stride, static_cast<float>(size)};
@@ -65,10 +75,10 @@ Result<Wavetable> Wavetable::build(std::span<const float> cycle) {
 
   std::vector<double> re(n), im(n);
   for (uint32_t k = 0; k < levels; ++k) {
-    const std::size_t maxH = (n / 2) >> k;  // keep harmonics h ≤ maxH, and h < N/2 (no Nyquist bin)
+    const std::size_t maxH = wavetableLevelTopHarmonic(size, k);  // < N/2: the Nyquist bin is never kept
     for (std::size_t b = 0; b < n; ++b) {
       const std::size_t h = b <= n / 2 ? b : n - b;  // harmonic number of bin b
-      const bool keep = h <= maxH && h < n / 2;
+      const bool keep = h <= maxH;
       re[b] = keep ? specRe[b] : 0.0;
       im[b] = keep ? specIm[b] : 0.0;
     }

@@ -89,14 +89,22 @@ bool isDelay(Atom a) noexcept {
   }
 }
 
-// Max delay clamped to [2, 2^30]: ≥ 2 keeps every interpolator's minimum delay (≤ 1) below the maximum.
-uint32_t clampMaxDelay(uint32_t d) noexcept { return d < 2u ? 2u : d > (1u << 30) ? (1u << 30) : d; }
+uint32_t ringLanes(const StateInit& init) noexcept { return init.lanes == kGroupLanes ? kGroupLanes : 1u; }
 
 // Ring frames: the 4-point read reaches maxDelay + 2 back, and the 1-lane kernel writes 8 frames ahead of its
 // reads (vectorised over time), so 10 frames of headroom.
+constexpr uint32_t kRingHeadroom = 10;
+
+// Max delay clamped to [2, maxDelayFramesLimit(lanes)]: ≥ 2 keeps every interpolator's minimum delay (≤ 1) below
+// the maximum; the upper clamp is only a last line of defence (the compiler rejects larger maxima), so that the
+// ring stateBytes() reports is always the ring the kernels address.
+uint32_t clampMaxDelay(uint32_t d, uint32_t lanes) noexcept {
+  const uint32_t hi = maxDelayFramesLimit(lanes);
+  return d < 2u ? 2u : d > hi ? hi : d;
+}
+
 uint32_t delayCapacity(uint32_t maxDelay) noexcept {
-  const uint64_t need = static_cast<uint64_t>(maxDelay) + 10;
-  return static_cast<uint32_t>(std::bit_ceil(need));
+  return std::bit_ceil(maxDelay + kRingHeadroom);  // maxDelay ≤ 2^28 − 10: no overflow
 }
 
 // Seeds for the noise lanes: well-mixed and distinct for every (seed, lane).
@@ -128,17 +136,23 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   return findTableKernel(a, lanes, spec);
 }
 
-uint32_t stateBytes(Atom a, const StateInit& init) noexcept {
+uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept {
+  const size_t l = lanes == kGroupLanes ? kGroupLanes : 1u;
+  return static_cast<uint32_t>(kMaxDelayRingBytes / sizeof(float) / l) - kRingHeadroom;
+}
+
+size_t stateBytes(Atom a, const StateInit& init) noexcept {
   if (static_cast<uint32_t>(a) >= kAtomCount) return 0;
-  const uint32_t base = kernelInfo(a).stateSize;
+  const size_t base = kernelInfo(a).stateSize;
   if (!isDelay(a)) return base;
-  const uint32_t lanes = init.lanes == kGroupLanes ? kGroupLanes : 1u;
-  const uint32_t maxDelay = clampMaxDelay(init.maxDelayFrames);
-  return base + delayCapacity(maxDelay) * lanes * static_cast<uint32_t>(sizeof(float));
+  const uint32_t lanes = ringLanes(init);
+  const uint32_t maxDelay = clampMaxDelay(init.maxDelayFrames, lanes);
+  // size_t throughout (M1 review H3: the uint32 product wrapped to 0 bytes for a 2^30-frame mono ring).
+  return base + static_cast<size_t>(delayCapacity(maxDelay)) * lanes * sizeof(float);
 }
 
 void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-safe
-  const uint32_t bytes = stateBytes(a, init);
+  const size_t bytes = stateBytes(a, init);
   if (bytes == 0 || state == nullptr) return;
   std::memset(state, 0, bytes);  // every field's initial value is 0 / false unless set below
   switch (a) {
@@ -174,11 +188,11 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     case Atom::DelayReadAllpass:
     case Atom::DelayWrite: {
       auto& s = *static_cast<DelayState*>(state);
-      const uint32_t maxDelay = clampMaxDelay(init.maxDelayFrames);
+      s.lanes = ringLanes(init);
+      const uint32_t maxDelay = clampMaxDelay(init.maxDelayFrames, s.lanes);
       s.capacity = delayCapacity(maxDelay);
       s.mask = s.capacity - 1;
       s.writePos = 0;
-      s.lanes = init.lanes == kGroupLanes ? kGroupLanes : 1u;
       s.maxDelay = static_cast<float>(maxDelay);
       break;
     }

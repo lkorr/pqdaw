@@ -166,7 +166,10 @@ private:
     else if (a == "sub") r = x - y;
     else if (a == "mul") r = x * y;
     else if (a == "div") r = x / y;
-    else if (a == "mod") r = x - y * std::floor(x / y);
+    else if (a == "mod") {  // a result that rounds to b in float is 0 (pq/dsp/atoms.h)
+      r = x - y * std::floor(x / y);
+      if (static_cast<float>(r) == static_cast<float>(y)) r = 0.0;
+    }
     else if (a == "neg") r = -x;
     else if (a == "min") r = x < y ? x : y;
     else if (a == "max") r = x > y ? x : y;

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "interp_harness.h"
+#include "kernel_probes.h"
 #include "liveness_probes.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
@@ -97,6 +98,10 @@ TEST_CASE("interpreter: every patch in tests/graph/cases and tests/engine/patche
 
 TEST_CASE("interpreter: M1 review liveness probes (solve operands, voice outputs, stereo feedback delay, delay sub-block)") {
   liveness_probes::check({});
+}
+
+TEST_CASE("interpreter: M1 review kernel edge probes (delay size, sample_read rates and loops, mod, timer, NaN hz, fast_sin)") {
+  kernel_probes::check({});
 }
 
 TEST_CASE("interpreter: voice stages with 1, 8 and 16 voices (reducers, broadcasts, per-group buffers, sends)") {

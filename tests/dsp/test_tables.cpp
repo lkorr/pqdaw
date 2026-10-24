@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <numbers>
@@ -45,7 +46,7 @@ TEST_CASE("fft matches a naive DFT and inverts") {
   }
 }
 
-TEST_CASE("wavetable mipmaps are band-limited per level and keep the lower harmonics") {
+TEST_CASE("wavetable mipmaps are band-limited per level (half an octave apart) and keep the lower harmonics") {
   constexpr uint32_t N = 512;
   for (auto shape : {pq::dsp::BasicShape::Saw, pq::dsp::BasicShape::Square, pq::dsp::BasicShape::Triangle,
                      pq::dsp::BasicShape::Sine}) {
@@ -54,13 +55,15 @@ TEST_CASE("wavetable mipmaps are band-limited per level and keep the lower harmo
     REQUIRE(wt.ok());
     const auto& v = wt->view();
     CHECK(v.size == N);
-    CHECK(v.levels == 9);
+    CHECK(v.levels == 17);  // 2·log2(N) − 1: level j keeps harmonics up to (N/2)·2^(−j/2)
     CHECK(v.stride == N + 1);
     for (uint32_t k = 0; k < v.levels; ++k) {
       const auto lvl = wt->level(k);
       REQUIRE(lvl.size() == N + 1);
       CHECK(lvl[N] == lvl[0]);
-      const size_t maxH = (N / 2) >> k;
+      const size_t maxH = std::min<size_t>(static_cast<size_t>(std::floor((N / 2) * std::pow(2.0, -0.5 * k))), N / 2 - 1);
+      CHECK(pq::dsp::wavetableLevelTopHarmonic(N, k) == maxH);
+      if (k + 1 == v.levels) CHECK(maxH == 1);
       // Sample a few harmonics on each side of the cut.
       for (size_t h : {size_t{1}, size_t{2}, size_t{3}, maxH > 1 ? maxH - 1 : 1, maxH, maxH + 1, maxH + 2, size_t{N / 2 - 1}}) {
         if (h == 0 || h >= N / 2) continue;

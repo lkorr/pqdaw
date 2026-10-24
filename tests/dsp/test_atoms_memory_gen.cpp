@@ -112,6 +112,51 @@ TEST_CASE("dsp atoms: delay lines (linear, cubic, allpass)") {
   }
 }
 
+TEST_CASE("dsp atoms: delay state sizes are size_t and cover the ring the kernels address (M1 review H3)") {
+  // A mono 2^30-frame ring used to be 2^33 bytes computed in uint32: stateBytes() wrapped to the bare header while
+  // initState() set capacity 2^31, and the kernel wrote gigabytes past the block.
+  for (uint32_t lanes : {1u, 8u}) {
+    const uint32_t limit = pq::dsp::maxDelayFramesLimit(lanes);
+    CHECK(limit == (lanes == 1 ? (1u << 28) : (1u << 25)) - 10u);
+    for (uint32_t maxDelay : {0u, 1u, 2u, 54u, 1000u, (1u << 20) - 10u, (1u << 20) - 9u, limit - 1u, limit, limit + 1u,
+                              1u << 29, 1u << 30, 0xFFFFFFFFu}) {
+      INFO("lanes " << lanes << " maxDelay " << maxDelay);
+      pq::dsp::StateInit init;
+      init.lanes = lanes;
+      init.maxDelayFrames = maxDelay;
+      const size_t bytes = pq::dsp::stateBytes(Atom::DelayLinear, init);
+      // Whatever is asked, a ring of at most 1 GiB (larger maxima are a compile error; the dsp clamps).
+      CHECK(bytes <= sizeof(pq::dsp::DelayState) + pq::dsp::kMaxDelayRingBytes);
+      // The ring holds every frame a read at the (clamped) maximum reaches: max + 2 back for the 4-point read, and
+      // the frame being written.
+      const uint64_t effective = std::min<uint64_t>(std::max<uint32_t>(maxDelay, 2u), limit);
+      CHECK(bytes >= sizeof(pq::dsp::DelayState) + (effective + 3) * lanes * sizeof(float));
+      for (Atom a : {Atom::DelayCubic, Atom::DelayAllpass, Atom::DelayReadLinear, Atom::DelayWrite})
+        CHECK(pq::dsp::stateBytes(a, init) == bytes);
+      // initState's header describes a ring inside the block.
+      if (bytes <= (size_t{1} << 22)) {
+        pq::AlignedBuffer<float> st(bytes / 4);
+        pq::dsp::initState(Atom::DelayLinear, st.data(), init);
+        const auto& h = *reinterpret_cast<const pq::dsp::DelayState*>(st.data());
+        CHECK(sizeof(pq::dsp::DelayState) + uint64_t{h.capacity} * h.lanes * sizeof(float) <= bytes);
+        CHECK(h.mask == h.capacity - 1);
+        CHECK(static_cast<uint64_t>(h.maxDelay) == effective);
+        CHECK(uint64_t{h.capacity} >= effective + 3);
+      }
+    }
+  }
+}
+
+TEST_CASE("dsp atoms: a delay ring with no slack (max = 2^k - 10) stays inside its state at the maximum delay") {
+  // The harness checks canaries after the state block on every call; delays reach and pass the maximum.
+  for (int kind = 0; kind < 3; ++kind) {
+    const Atom a = kind == 0 ? Atom::DelayLinear : kind == 1 ? Atom::DelayCubic : Atom::DelayAllpass;
+    AtomSpec s = spec(a, {uniform(-1, 1), uniform(100, 140)}, delayRef(kind, 118.0), Tol{2e-6, 0});
+    s.init.maxDelayFrames = 118;  // + 10 frames of headroom = 128 = the ring, exactly
+    checkAtom(s, 40 + static_cast<uint32_t>(kind));
+  }
+}
+
 TEST_CASE("dsp atoms: delay line with the wrong lane layout outputs silence instead of touching memory") {
   pq::dsp::StateInit init;
   init.lanes = 1;
@@ -138,13 +183,14 @@ TEST_CASE("dsp atoms: phasor and sine_hz against a double phase accumulator") {
         if (in[1][t] != 0) p = 0;
         out[0][t] = sine ? std::sin(2.0 * std::numbers::pi * p) : p;
         double hz = in[0][t];
-        hz = std::isnan(hz) ? -sr / 2 : std::clamp(hz, -sr / 2, sr / 2);
+        hz = std::isnan(hz) ? 0.0 : std::clamp(hz, -sr / 2, sr / 2);  // NaN hz is 0 Hz (M1 review L3)
         p += hz / sr;
         p -= std::floor(p);
       }
     };
   };
-  const Gen hz = pickFrom({20.0f, 261.626f, 440.0f, 1000.5f, -330.0f, 12345.6f, 23999.0f, 30000.0f, -30000.0f});
+  const Gen hz = pickFrom({20.0f, 261.626f, 440.0f, 1000.5f, -330.0f, 12345.6f, 23999.0f, 30000.0f, -30000.0f,
+                           std::numeric_limits<float>::quiet_NaN()});
   for (bool sine : {false, true}) {
     AtomSpec s = spec(sine ? Atom::SineHz : Atom::Phasor, {hz, boolRuns(0.01)}, phasorRef(sine),
                       sine ? Tol{2e-6, 0} : Tol{1e-6, 0, 1.0});
@@ -206,39 +252,16 @@ TEST_CASE("dsp atoms: noise is the documented counter hash, independent of block
   }
 }
 
-TEST_CASE("dsp atoms: wavetable read with mip selection against a double reference") {
+TEST_CASE("dsp atoms: wavetable reads and interpolates the table (a sine table: every level is the same cycle)") {
+  // Independent of the level rule: a sine's levels are all the same cycle, so any level choice or crossfade must
+  // give sin(2π·phase) up to the linear-interpolation error ((2π/N)²/8 = 7.5e-5 for N = 256). Phases: steady ramps
+  // of either sign, and random jumps (any |Δphase|), including phases outside [0, 1).
   constexpr uint32_t N = 256;
-  const auto cycle = pq::dsp::Wavetable::basicCycle(pq::dsp::BasicShape::Saw, N);
+  const auto cycle = pq::dsp::Wavetable::basicCycle(pq::dsp::BasicShape::Sine, N);
   auto wt = pq::dsp::Wavetable::build(cycle.span());
   REQUIRE(wt.ok());
-  const uint32_t levels = wt->view().levels;
-  REQUIRE(levels == 8);
-  // Reference levels by naive DFT in double.
-  std::vector<std::vector<double>> refLevels(levels, std::vector<double>(N + 1));
-  std::vector<double> cRe(N / 2 + 1), cIm(N / 2 + 1);
-  for (uint32_t h = 0; h <= N / 2; ++h)
-    for (uint32_t i = 0; i < N; ++i) {
-      const double ang = 2.0 * std::numbers::pi * h * i / N;
-      cRe[h] += cycle[i] * std::cos(ang);
-      cIm[h] -= cycle[i] * std::sin(ang);
-    }
-  for (uint32_t k = 0; k < levels; ++k) {
-    const uint32_t maxH = (N / 2) >> k;
-    for (uint32_t i = 0; i < N; ++i) {
-      double v = cRe[0] / N;
-      for (uint32_t h = 1; h <= maxH && h < N / 2; ++h) {
-        const double ang = 2.0 * std::numbers::pi * h * i / N;
-        v += 2.0 / N * (cRe[h] * std::cos(ang) - cIm[h] * std::sin(ang));
-      }
-      refLevels[k][i] = v;
-    }
-    refLevels[k][N] = refLevels[k][0];
-  }
-  // Phase ramps whose increment sits well inside one mip level's range: N·inc in 2^k·[0.55, 0.95].
   const Gen ramps = [](std::mt19937& rng, uint32_t, uint32_t T) {
-    std::uniform_int_distribution<int> kd(0, 8);
-    std::uniform_real_distribution<double> ud(0.55, 0.95);
-    const double inc = std::ldexp(ud(rng), kd(rng)) / N * (std::bernoulli_distribution(0.3)(rng) ? -1.0 : 1.0);
+    const double inc = std::uniform_real_distribution<double>(-0.5, 0.5)(rng);
     const double p0 = std::uniform_real_distribution<double>(0, 1)(rng);
     std::vector<float> v(T);
     for (uint32_t t = 0; t < T; ++t) {
@@ -247,25 +270,185 @@ TEST_CASE("dsp atoms: wavetable read with mip selection against a double referen
     }
     return v;
   };
-  AtomSpec s = spec(Atom::Wavetable, {ramps}, [&](const V& in, V& out) {
-    double prev = 0;
-    for (size_t t = 0; t < in[0].size(); ++t) {
-      const double p = in[0][t];
-      double d = p - prev;
-      d = std::abs(d - std::nearbyint(d));
-      prev = p;
-      const double x = static_cast<double>(static_cast<float>(d * N));
-      int lvl = x > 0 ? static_cast<int>(std::ceil(std::log2(x))) : 0;
-      lvl = std::clamp(lvl, 0, static_cast<int>(levels) - 1);
-      const double pos = (p - std::floor(p)) * N;
-      const double fl = std::floor(pos);
-      const size_t i = static_cast<size_t>(fl) & (N - 1);
-      const auto& tb = refLevels[static_cast<size_t>(lvl)];
-      out[0][t] = tb[i] + (pos - fl) * (tb[i + 1] - tb[i]);
-    }
-  }, Tol{3e-6, 0});
+  const RefFn sineRef = [](const V& in, V& out) {
+    for (size_t t = 0; t < in[0].size(); ++t) out[0][t] = std::sin(2.0 * std::numbers::pi * in[0][t]);
+  };
+  AtomSpec s = spec(Atom::Wavetable, {ramps}, sineRef, Tol{1e-4, 0});
   s.resource = &wt->view();
   checkAtom(s, 40);
+  s.gens = {uniform(-3, 3)};
+  checkAtom(s, 41);
+}
+
+namespace {
+
+// Renders `T` samples of the wavetable at a constant frequency (phase computed in double, as a phasor would give
+// it) through the 1-lane kernel in blocks of 64, after `warm` samples of the same signal.
+std::vector<double> renderWavetable(const pq::dsp::WavetableView& v, double hz, double sr, uint32_t T, uint32_t warm) {
+  pq::dsp::WavetableState st{};
+  pq::dsp::initState(Atom::Wavetable, &st, {});
+  const pq::dsp::KernelFn fn = pq::dsp::findKernel(Atom::Wavetable, 1, 0);
+  std::vector<double> out;
+  out.reserve(T);
+  std::vector<float> ph(64), y(64);
+  for (uint32_t t0 = 0; t0 < warm + T; t0 += 64) {
+    for (uint32_t i = 0; i < 64; ++i) {
+      const double p = hz * static_cast<double>(t0 + i) / sr;
+      ph[i] = static_cast<float>(p - std::floor(p));
+    }
+    const float* ins[] = {ph.data()};
+    float* outs[] = {y.data()};
+    pq::dsp::KernelArgs a{ins, outs, &st, &v, 64, 1, 1, 0};
+    fn(a);
+    for (uint32_t i = 0; i < 64; ++i)
+      if (t0 + i >= warm && out.size() < T) out.push_back(y[i]);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("dsp atoms: a saw wavetable keeps every harmonic up to 16 kHz through every octave (M1 review M12)") {
+  // One level per octave with a hard switch lost every harmonic above sr/4 just past 46.875·2^k Hz (N = 2048 at
+  // 48 kHz): 380 Hz had nothing above 12.2 kHz. Independent check by spectrum: render, window (4-term
+  // Blackman-Harris, sidelobes −92 dB), FFT, and compare each harmonic with the ideal saw's 2/(πh).
+  constexpr uint32_t N = 2048;
+  constexpr double sr = 48000.0;
+  constexpr uint32_t T = 16384;
+  const auto cycle = pq::dsp::Wavetable::basicCycle(pq::dsp::BasicShape::Saw, N);
+  auto wt = pq::dsp::Wavetable::build(cycle.span());
+  REQUIRE(wt.ok());
+  std::vector<double> win(T);
+  double winSum = 0;
+  for (uint32_t i = 0; i < T; ++i) {
+    const double x = 2.0 * std::numbers::pi * i / T;
+    win[i] = 0.35875 - 0.48829 * std::cos(x) + 0.14128 * std::cos(2 * x) - 0.01168 * std::cos(3 * x);
+    winSum += win[i];
+  }
+  // Frequencies: 12 per octave from 24 Hz to 8 kHz, plus both sides of every old octave boundary 46.875·2^k.
+  std::vector<double> freqs;
+  for (double f = 24.0; f <= 8000.0; f *= std::exp2(1.0 / 12.0)) freqs.push_back(f * 1.0137);
+  for (double b = 46.875; b <= 8000.0; b *= 2) {
+    freqs.push_back(b * 0.995);
+    freqs.push_back(b * 1.005);
+  }
+  double worstTopDb = 0, worstSpurDb = -400;
+  double worstTopF = 0, worstSpurF = 0;
+  std::vector<double> re(T), im(T);
+  for (double f0 : freqs) {
+    const std::vector<double> y = renderWavetable(wt->view(), f0, sr, T, 256);
+    for (uint32_t i = 0; i < T; ++i) {
+      re[i] = y[i] * win[i];
+      im[i] = 0;
+    }
+    pq::dsp::fftInPlace(re, im, false);
+    std::vector<double> mag(T / 2);
+    for (uint32_t k = 0; k < T / 2; ++k) mag[k] = 2.0 * std::hypot(re[k], im[k]) / winSum;
+    const double binHz = sr / T;
+    const auto peak = [&](double hz) {
+      const auto c = static_cast<int64_t>(std::llround(hz / binHz));
+      double m = 0;
+      for (int64_t k = std::max<int64_t>(c - 2, 0); k <= std::min<int64_t>(c + 2, T / 2 - 1); ++k)
+        m = std::max(m, mag[static_cast<size_t>(k)]);
+      return m;
+    };
+    // Every harmonic up to 16 kHz within 6 dB of the ideal amplitude (linear interpolation and the window's
+    // scalloping take at most a few dB at the top).
+    for (uint32_t h = 1; h * f0 <= 16000.0; ++h) {
+      const double ideal = 2.0 / (std::numbers::pi * h);
+      const double db = 20.0 * std::log10(peak(h * f0) / ideal);
+      if (db < worstTopDb) {
+        worstTopDb = db;
+        worstTopF = f0;
+      }
+      if (db < -6.0) {
+        FAIL_CHECK("f0 " << f0 << " Hz: harmonic " << h << " (" << h * f0 << " Hz) at " << db << " dB");
+        break;
+      }
+    }
+    // Below 16 kHz, nothing but harmonics: every bin more than 6 bins from a harmonic is a spur (an alias of a
+    // harmonic above Nyquist, or an interpolation image), measured relative to the fundamental.
+    const double fund = peak(f0);
+    for (uint32_t k = 8; k * binHz < 16000.0; ++k) {
+      const double hz = k * binHz;
+      const double nearest = std::max(1.0, std::round(hz / f0)) * f0;
+      if (std::fabs(hz - nearest) <= 6 * binHz) continue;
+      const double db = 20.0 * std::log10(std::max(mag[k], 1e-30) / fund);
+      if (db > worstSpurDb) {
+        worstSpurDb = db;
+        worstSpurF = f0;
+      }
+    }
+  }
+  MESSAGE("saw wavetable over " << freqs.size() << " frequencies: weakest harmonic up to 16 kHz " << worstTopDb
+                                << " dB (at f0 " << worstTopF << " Hz); strongest spur below 16 kHz " << worstSpurDb
+                                << " dB (at f0 " << worstSpurF << " Hz)");
+  CHECK(worstTopDb > -6.0);
+  CHECK(worstSpurDb < -75.0);  // measured −78.9 dB (linear-interpolation images of the lowest levels, f0 ≈ 55 Hz)
+}
+
+TEST_CASE("dsp atoms: a phase jump or a fresh state does not pick the wavetable level for one sample (M1 review L3)") {
+  // A phasor reset upstream (here: jumps to arbitrary phases) used to select the level from the jump, |Δphase| up to
+  // 0.5: a near-sine read of a saw for one sample, a click with drawn tables. The output at each sample must equal
+  // the steady-state output at the same phase and frequency: the same kernel primed with three samples of the
+  // steady ramp ending at that phase.
+  constexpr uint32_t N = 2048;
+  const auto cycle = pq::dsp::Wavetable::basicCycle(pq::dsp::BasicShape::Saw, N);
+  auto wt = pq::dsp::Wavetable::build(cycle.span());
+  REQUIRE(wt.ok());
+  const auto& v = wt->view();
+  constexpr double inc = 1000.0 / 48000.0;
+  std::vector<float> ph;
+  double p = 0.3;
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<double> ud(0, 1);
+  for (uint32_t t = 0; t < 2000; ++t) {
+    if (t % 97 == 50) p += 0.1 + 0.8 * ud(rng);  // a jump of at least 0.1 cycle either way (5x the increment)
+    ph.push_back(static_cast<float>(p - std::floor(p)));
+    p += inc;
+  }
+  const auto steady = [&](float q) {
+    pq::dsp::WavetableState st{};
+    pq::dsp::initState(Atom::Wavetable, &st, {});
+    float in[4], out[4];
+    for (int k = 0; k < 4; ++k) {
+      const double x = static_cast<double>(q) - (3 - k) * inc;
+      in[k] = static_cast<float>(x - std::floor(x));
+    }
+    const float* ins[] = {in};
+    float* outs[] = {out};
+    pq::dsp::KernelArgs a{ins, outs, &st, &v, 4, 1, 1, 0};
+    pq::dsp::findKernel(Atom::Wavetable, 1, 0)(a);
+    return static_cast<double>(out[3]);
+  };
+  for (uint32_t lanes : {1u, 8u}) {
+    pq::dsp::StateInit init;
+    init.lanes = lanes;
+    pq::dsp::WavetableState st{};
+    pq::dsp::initState(Atom::Wavetable, &st, init);
+    std::vector<float> in(ph.size() * lanes), out(ph.size() * lanes);
+    for (size_t t = 0; t < ph.size(); ++t)
+      for (uint32_t l = 0; l < lanes; ++l) in[t * lanes + l] = ph[t];
+    for (uint32_t t0 = 0; t0 < ph.size(); t0 += 37) {
+      const uint32_t n = std::min<uint32_t>(37, static_cast<uint32_t>(ph.size()) - t0);
+      const float* ins[] = {in.data() + static_cast<size_t>(t0) * lanes};
+      float* outs[] = {out.data() + static_cast<size_t>(t0) * lanes};
+      pq::dsp::KernelArgs a{ins, outs, &st, &v, n, 1, 1, 0};
+      pq::dsp::findKernel(Atom::Wavetable, lanes, 0)(a);
+    }
+    double worst = 0, first = 0;
+    for (size_t t = 0; t < ph.size(); ++t)
+      for (uint32_t l = 0; l < lanes; ++l) {
+        const double d = std::fabs(static_cast<double>(out[t * lanes + l]) - steady(ph[t]));
+        if (t == 0) first = std::max(first, d);
+        else worst = std::max(worst, d);
+      }
+    INFO("lanes " << lanes);
+    // After a jump: the steady output. The first sample of a fresh state reads the full-band level, which away
+    // from the saw's edge differs from the band-limited value only by the Gibbs ripple of the missing harmonics.
+    CHECK(worst < 1e-5);
+    CHECK(first < 0.02);
+  }
 }
 
 TEST_CASE("dsp atoms: shaper against a double reference") {
@@ -329,10 +512,15 @@ TEST_CASE("dsp atoms: sample_pos and sample_read against a double playhead") {
         out[0][t] = active ? interp(cubic, ci, pos - std::floor(pos)) : 0.0;
         out[1][t] = active ? 1.0 : 0.0;
         if (active) {
-          double next = pos + in[0][t];
-          const double nidx = std::floor(next);
-          if (loopOn && static_cast<double>(idx) < le && nidx >= le) next -= (le - ls);
-          else if (loopOn && static_cast<double>(idx) >= ls && nidx < ls) next += (le - ls);
+          // The documented playhead: rate in 32.32 fixed point (floor(rate·2^32), exact in double here), and a
+          // loop crossed in either direction is re-entered as often as it takes (so any rate stays in the loop).
+          // Positions stay below 2^20 with 2^-32 steps: exact in double.
+          double next = pos + std::floor(in[0][t] * 0x1p32) * 0x1p-32;
+          if (loopOn && static_cast<double>(idx) < le && std::floor(next) >= le) {
+            while (std::floor(next) >= le) next -= (le - ls);
+          } else if (loopOn && static_cast<double>(idx) >= ls && std::floor(next) < ls) {
+            while (std::floor(next) < ls) next += (le - ls);
+          }
           pos = next;
           active = std::floor(pos) >= 0 && std::floor(pos) < len;
         }
@@ -349,6 +537,21 @@ TEST_CASE("dsp atoms: sample_pos and sample_read against a double playhead") {
     // Audio-rate rate input.
     r.gens[0] = uniform(-2, 2);
     checkAtom(r, 71);
+    // Tiny rates of either sign (M1 review M11a: for rate in [-2^-25, 0) the fraction rounded to 1.0 and the
+    // playhead moved a whole sample backwards per sample), param and audio rate.
+    r.gens[0] = pickFrom({-1e-9f, -2.9e-8f, -3e-8f, -1e-6f, -1e-12f, 1e-9f, -0.4999f, -0.5f, -0.0f});
+    r.gens[3] = pickFrom({0.0f});
+    r.gens[4] = pickFrom({0.0f});
+    checkAtom(r, 72);
+    // Rates beyond the loop length, both directions (M1 review M11b: one jump of the loop length left the loop for
+    // good). Loops of 1 to 5 samples; start inside, before and after the loop.
+    r.gens[0] = pickFrom({2.0f, 3.5f, 7.25f, -5.5f, 64.0f, -64.0f, 1.0f, -1.0f, 1000.75f});
+    r.gens[2] = pickFrom({0.0f, 3.0f, 3.5f, 10.0f});
+    r.gens[3] = pickFrom({3.0f});
+    r.gens[4] = pickFrom({4.0f, 5.0f, 8.0f});
+    checkAtom(r, 73);
+    r.gens[0] = uniform(-40, 40);
+    checkAtom(r, 74);
   }
   CHECK(!pq::dsp::SampleData::build(std::vector<float>{}).ok());
 }
@@ -378,7 +581,7 @@ TEST_CASE("dsp atoms: delay and z1 split kernels (per-sample feedback) match the
     pq::dsp::StateInit init;
     init.lanes = lanes;
     init.maxDelayFrames = 64;
-    const uint32_t bytes = pq::dsp::stateBytes(Atom::DelayLinear, init);
+    const size_t bytes = pq::dsp::stateBytes(Atom::DelayLinear, init);
     CHECK(pq::dsp::stateBytes(Atom::DelayWrite, init) == bytes);
     for (int k = 0; k < 3; ++k) {
       pq::AlignedBuffer<float> s1(bytes / 4), s2(bytes / 4);

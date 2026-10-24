@@ -309,9 +309,10 @@ struct Timer {
       const auto t = trig.at(f);
       const auto edge = S::asI(S::andnot(prev, t));
       prev = t;
-      // N = round(duration) clamped to [0, 2^31 − 1]; NaN → 0. min() first so huge values clamp before
-      // conversion; max(·, 0) returns 0 for NaN.
-      const auto d = S::max(S::min(dur.at(f), S::set(2147483520.0f)), S::zero());
+      // N = round(duration) clamped to [0, 2147483520]; NaN → 0: max(dur, 0) returns its second operand, 0, for
+      // NaN, and only then min() clamps huge values before the conversion (min first turned NaN into 2^31 − 128:
+      // a gate stuck open for 12 h, Q55 / M1 review M13).
+      const auto d = S::min(S::max(dur.at(f), S::zero()), S::set(2147483520.0f));
       r = S::selecti(edge, S::roundToInt(d), r);
       const auto on = S::gti(r, zero);
       S::store(out + f * S::kW, S::asF(on));

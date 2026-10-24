@@ -10,7 +10,8 @@
 // Math (stateless, element-wise; float32 IEEE unless noted):
 //   add sub mul div (a, b)            a+b, a−b, a·b, a/b
 //   min max (a, b)                    a<b ? a : b, a>b ? a : b (so a NaN in either operand returns b)
-//   mod (a, b)                        floored: a − b·floor(a/b) (sign of b; NaN for b = 0)
+//   mod (a, b)                        floored: a − b·floor(a/b) (sign of b; NaN for b = 0); a result that
+//                                     rounds to exactly b (mod(−1e−9, 1)) is 0, so it lies in [0, b) for b > 0
 //   pow (a, b) / fast_pow             a^b. fast_pow = exp2(b·log2 a): a < 0 → NaN, a = 0 → 0 for b > 0
 //   cents_to_hz (cents, ref)          ref · 2^(cents/1200); exact form evaluated in double
 //   hz_to_cents (hz, ref)             1200·log2(hz/ref); exact form in double
@@ -21,7 +22,10 @@
 //   sqrt exp log sin tan tanh (x)     exact: CRT / SVML (verified ≤ a few ulp against double)
 //   fast_sqrt (x)                     = sqrt: the hardware square root is exact and already cheaper
 //                                     than an rsqrt + Newton step with zero/inf fix-ups
-//   fast_exp fast_log fast_sin fast_tan fast_tanh   pq/core/fast_math.h (error bounds documented there)
+//   fast_exp fast_log fast_sin fast_tan fast_tanh   pq/core/fast_math.h (error bounds documented there).
+//                                     fast_sin is accurate for |x| ≤ 65536 rad; the atom clamps its result to
+//                                     [−1, 1], so any finite x gives a finite value (garbage beyond the domain:
+//                                     use sine(phase) for unbounded phases); NaN and ±inf give NaN
 //   db_to_gain gain_to_db (x)         exact in double; fast_ variants from pq/core/units.h
 //   clip (x, lo, hi)                  min(max(x, lo), hi) in that order (NaN x → lo)
 //   lerp (a, b, t)                    a + t·(b − a) (one FMA)
@@ -70,21 +74,25 @@
 // Generators:
 //   phasor (hz, reset)                uint32 phase; output phase/2^32 in [0, 1) (top 24 bits, truncated);
 //                                     increment = round(hz · 2^32 / sr) with hz clamped to [−sr/2, sr/2]
-//                                     (negative = backwards). While reset is high the phase is 0. The output at
+//                                     (negative = backwards; NaN hz = 0 Hz). While reset is high the phase is 0. The output at
 //                                     sample t is the phase before adding that sample's increment.
 //   sine (phase)                      sin(2π·phase) for any real phase (fast_sin accuracy, ~1.5e-7 abs)
 //   sine_hz (hz, reset)               sin(2π·phasor(hz, reset)) fused (same phase accumulator as phasor)
-//   wavetable (phase)                 band-limited mipmapped table read (tables.h)
+//   wavetable (phase)                 band-limited mipmapped table read, adjacent half-octave levels crossfaded
+//                                     by the phase increment (tables.h)
 //   noise ()                          uniform white noise in [−1, 1): hash(counter + seed[lane]) (lowbias32),
 //                                     independent of block partitioning; lanes use different seeds
 // Tables:
 //   shaper (x)                        transfer curve (tables.h)
 //   sample_read_linear/_cubic (rate, reset, start, loopStart, loopEnd) → (out, playing)
-//                                     32.32 fixed-point playhead (exact for |rate| ≥ 2^−9). The output at t is
+//                                     32.32 fixed-point playhead, rate converted exactly (floor(rate·2^32);
+//                                     |rate| ≤ 2^20). The output at t is
 //                                     the interpolated sample at the playhead, then the playhead moves by rate.
 //                                     While reset is high the playhead is set to `start` and playing. Loop when
-//                                     loopEnd > loopStart (floored to samples): passing loopEnd forwards jumps
-//                                     back by (loopEnd − loopStart); passing loopStart backwards jumps forward.
+//                                     loopEnd > loopStart (floored to samples): passing loopEnd forwards wraps
+//                                     to loopStart + (overshoot mod length); passing loopStart backwards wraps
+//                                     to loopEnd − 1 − (overshoot mod length), for any rate (also |rate| >
+//                                     the loop length).
 //                                     Without a loop, leaving [0, length) stops playback (out 0, playing false)
 //                                     until the next reset. Interpolation taps around the loop seam read the
 //                                     buffer as stored (no crossfade). start/loopStart/loopEnd must be Spl.
@@ -93,6 +101,7 @@
 //                                     [0, length). Float position: sub-sample accurate to ~2^24 samples.
 // Cubic = 4-point, 3rd-order Hermite (Catmull-Rom); linear = 2-point.
 
+#include <cstddef>
 #include <cstdint>
 
 #include "pq/dsp/atom_state.h"
@@ -152,14 +161,25 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept;
 struct StateInit {
   double sampleRate = 48000.0;
   uint32_t lanes = 1;            // 1 or 8 (only the delay line's ring layout depends on it)
-  uint32_t maxDelayFrames = 0;   // delay lines: largest delay in samples (≤ 2^30)
+  uint32_t maxDelayFrames = 0;   // delay lines: largest delay in samples (≤ maxDelayFramesLimit(lanes))
   uint32_t seed = 0;             // noise: per-node seed (e.g. the NodeId), mixed with the lane index
   float z1Init = 0.0f;           // z1, z1:read, z1:write: the output before the first input (the language's `init`
                                  // input, a const; for a bool z1 pass boolMask(true) or 0)
 };
 
-// Bytes of state (0 for stateless atoms). For delay lines: header + ring. Not RT-relevant.
-uint32_t stateBytes(Atom a, const StateInit& init) noexcept;
+// Largest delay-line ring a state block may hold: 1 GiB. Keeps every ring float index (frame · lanes) far inside
+// int32 (the gathers' index type) and every state block inside the compiler's uint32 arena offsets.
+inline constexpr size_t kMaxDelayRingBytes = size_t{1} << 30;
+
+// Largest StateInit::maxDelayFrames whose ring fits kMaxDelayRingBytes for `lanes` (1 or 8): 2^28 − 10 frames
+// mono (93 min at 48 kHz), 2^25 − 10 per voice group (11.6 min). The compiler rejects a larger `max` with an
+// error naming the node; stateBytes()/initState() clamp to it as a last line of defence, so the ring a state
+// block is sized for is always the ring its kernels address.
+uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept;  // RT-safe
+
+// Bytes of state (0 for stateless atoms). For delay lines: header + ring (≤ sizeof(DelayState) + kMaxDelayRingBytes), computed in
+// size_t. Not RT-relevant.
+size_t stateBytes(Atom a, const StateInit& init) noexcept;
 
 // Writes the initial state into `state` (stateBytes bytes, kStateAlign-aligned). No allocation: RT-safe, so it
 // can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines; the

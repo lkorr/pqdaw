@@ -34,8 +34,9 @@ struct PhasorK {
   }
   template <class S>
   static typename S::I increment(typename S::F hz, const PhasorState& st) noexcept {
-    // max(hz, −half) returns −half for NaN. At ±sr/2 the increment is ±2^31, the same phase step either way.
-    const auto h = S::min(S::max(hz, S::set(-st.halfSr)), S::set(st.halfSr));
+    // NaN hz → 0 Hz (an ordered self-compare masks it to +0; without it max(NaN, −half) gave −sr/2, a full-scale
+    // Nyquist square: M1 review L3). At ±sr/2 the increment is ±2^31, the same phase step either way.
+    const auto h = S::min(S::max(S::band(S::eq(hz, hz), hz), S::set(-st.halfSr)), S::set(st.halfSr));
     return S::roundMulToInt(h, st.incScale);
   }
 
@@ -130,26 +131,43 @@ struct PhasorK {
 
 // ---- wavetable ------------------------------------------------------------------------------------------------
 
+// |p − prev| in cycles, wrapped to [0, 0.5]; NaN → 0 (max returns its second operand for NaN).
 template <class S>
-inline typename S::F wavetableRead(const WavetableView& v, typename S::F p, typename S::F prev) noexcept {  // RT-safe
-  // |phase increment| in cycles, wrapped to [0, 0.5].
+inline typename S::F phaseDelta(typename S::F p, typename S::F prev) noexcept {  // RT-safe
   auto d = S::sub(p, prev);
   d = S::abs(S::sub(d, S::round(d)));
-  // level = ceil(log2(N·inc)) from the float bits: exponent, +1 if the mantissa is non-zero.
-  const auto bits = S::asI(S::mul(d, S::set(v.sizeF)));
-  auto lvl = S::subi(S::template srli<23>(bits), S::seti(127));
-  const auto mant = S::andi(bits, S::seti(0x7FFFFF));
-  lvl = S::subi(lvl, S::xori(S::eqi(mant, S::seti(0)), S::seti(-1)));  // + 1 where mantissa ≠ 0
-  lvl = S::mini(S::maxi(lvl, S::seti(0)), S::seti(static_cast<int32_t>(v.levels) - 1));
+  return S::max(d, S::zero());
+}
+
+// One table read with the mip crossfade of tables.h. `inc` = increment estimate in cycles (≥ 0, not NaN).
+template <class S>
+inline typename S::F wavetableRead(const WavetableView& v, typename S::F p, typename S::F inc) noexcept {  // RT-safe
+  // u = 2·log2(N·inc) from the float bits: bits·2^−23 − 127 = e + (m − 1) ≈ log2(N·inc) (0.086 octave low at most).
+  const auto x = S::mul(inc, S::set(v.sizeF));
+  const auto u = S::fma(S::toFloat(S::asI(x)), S::set(2.384185791015625e-07f), S::set(-254.0f));  // 2^-22
+  const auto uf = S::floor(u);
+  const auto fu = S::sub(u, uf);
+  const auto t = S::min(S::add(fu, fu), S::set(1.0f));
+  const auto k = S::truncToInt(uf);
+  const auto top = S::seti(static_cast<int32_t>(v.levels) - 1);
+  const auto lo = S::mini(S::maxi(k, S::seti(0)), top);
+  const auto hi = S::mini(S::maxi(S::addi(k, S::seti(1)), S::seti(0)), top);
   // position in the level
   const auto pos = S::mul(S::sub(p, S::floor(p)), S::set(v.sizeF));
   const auto i = S::truncToInt(pos);
   const auto fr = S::sub(pos, S::toFloat(i));
-  const auto base = S::addi(S::muli(lvl, S::seti(static_cast<int32_t>(v.stride))),
-                            S::andi(i, S::seti(static_cast<int32_t>(v.size) - 1)));
-  const auto y0 = S::gather(v.data, base);
-  const auto y1 = S::gather(v.data, S::addi(base, S::seti(1)));
-  return S::fma(fr, S::sub(y1, y0), y0);
+  const auto stride = S::seti(static_cast<int32_t>(v.stride));
+  const auto off = S::andi(i, S::seti(static_cast<int32_t>(v.size) - 1));
+  const auto b0 = S::addi(S::muli(lo, stride), off);
+  const auto b1 = S::addi(S::muli(hi, stride), off);
+  const auto one = S::seti(1);
+  const auto y0 = S::gather(v.data, b0);
+  const auto y1 = S::gather(v.data, S::addi(b0, one));
+  const auto z0 = S::gather(v.data, b1);
+  const auto z1 = S::gather(v.data, S::addi(b1, one));
+  const auto a = S::fma(fr, S::sub(y1, y0), y0);
+  const auto b = S::fma(fr, S::sub(z1, z0), z0);
+  return S::fma(t, S::sub(b, a), a);
 }
 
 struct WavetableK {
@@ -160,31 +178,50 @@ struct WavetableK {
     const auto& v = *static_cast<const WavetableView*>(a.resource);
     float* out = a.out[0];
     if constexpr (S::kW == 1 && !splBit(SM, 0)) {
-      // Mono: the only "state" is the previous input sample, so vectorise over time with a shifted load.
+      // Mono: the only state is the previous phase and delta, so vectorise over time: 8 deltas from a shifted
+      // load, and the 8 previous deltas by rotating them one lane up (lane 0 takes the last delta before).
       const float* p = a.in[0];
       const uint32_t vecEnd = a.frames & ~7u;
+      __m256 dLast = _mm256_set1_ps(st.prevDelta[0]);  // broadcast
       if (vecEnd > 0) {
         alignas(32) float first[8];
         first[0] = st.prevPhase[0];
         std::memcpy(first + 1, p, 7 * sizeof(float));
-        S8::store(out, wavetableRead<S8>(v, S8::load(p), S8::load(first)));
-        for (uint32_t i = 8; i < vecEnd; i += 8)
-          S8::store(out + i, wavetableRead<S8>(v, S8::load(p + i), S8::load(p + i - 1)));
+        const __m256i rot = _mm256_setr_epi32(7, 0, 1, 2, 3, 4, 5, 6);
+        const __m256i last = _mm256_set1_epi32(7);
+        for (uint32_t i = 0; i < vecEnd; i += 8) {
+          const auto ph = S8::load(p + i);
+          const auto d = phaseDelta<S8>(ph, i == 0 ? S8::load(first) : S8::load(p + i - 1));
+          const auto dPrev = _mm256_blend_ps(_mm256_permutevar8x32_ps(d, rot), dLast, 0x01);
+          S8::store(out + i, wavetableRead<S8>(v, ph, S8::min(d, dPrev)));
+          dLast = _mm256_permutevar8x32_ps(d, last);
+        }
       }
+      auto dPrev1 = _mm256_castps256_ps128(dLast);
       for (uint32_t i = vecEnd; i < a.frames; ++i) {
         const auto prev = i == 0 ? S1::load(st.prevPhase) : S1::load(p + i - 1);
-        S1::store(out + i, wavetableRead<S1>(v, S1::load(p + i), prev));
+        const auto ph = S1::load(p + i);
+        const auto d = phaseDelta<S1>(ph, prev);
+        S1::store(out + i, wavetableRead<S1>(v, ph, S1::min(d, dPrev1)));
+        dPrev1 = d;
       }
-      if (a.frames > 0) st.prevPhase[0] = p[a.frames - 1];
+      if (a.frames > 0) {
+        st.prevPhase[0] = p[a.frames - 1];
+        S1::store(st.prevDelta, dPrev1);
+      }
     } else {
       const In<S, splBit(SM, 0)> phase(a.in[0]);
       auto prev = S::load(st.prevPhase);
+      auto prevD = S::load(st.prevDelta);
       for (uint32_t f = 0; f < a.frames; ++f) {
         const auto p = phase.at(f);
-        S::store(out + f * S::kW, wavetableRead<S>(v, p, prev));
+        const auto d = phaseDelta<S>(p, prev);
+        S::store(out + f * S::kW, wavetableRead<S>(v, p, S::min(d, prevD)));
         prev = p;
+        prevD = d;
       }
       S::store(st.prevPhase, prev);
+      S::store(st.prevDelta, prevD);
     }
   }
 };
@@ -303,9 +340,12 @@ struct TableEw {
 
 // ---- sample_read --------------------------------------------------------------------------------------------
 
-// Splits x (clamped to ±2^20) into a 32.32 fixed-point value: integer part floor(x) and fraction·2^32.
-// Exact for the fraction bits a float can hold down to 2^-32 (the fraction of a float is exact; it is
-// converted in two exact 16-bit halves because AVX2 has no float → uint32 conversion).
+// Splits x (clamped to ±2^20) into a 32.32 fixed-point value: integer part floor(x) and floor(fraction·2^32), i.e.
+// floor(x·2^32) exactly (bits below 2^-32 are dropped). For x ≥ 0 or x ≤ −0.5 the fraction x − floor(x) is an
+// exact float and is converted in two exact 16-bit halves (AVX2 has no float → uint32 conversion). For
+// −0.5 < x < 0 the fraction 1 + x needs more than 24 bits: it used to round, up to 1.0 for x ≥ −2^−25, and a
+// tiny negative rate then moved the playhead a whole sample backwards per sample (M1 review M11a). There
+// x·2^32 is an exact float in (−2^31, 0), and floor(x·2^32) as int32 is the fraction mod 2^32 (with hi = −1).
 template <class S>
 inline void toFixed(typename S::F x, typename S::I& hi, typename S::I& lo) noexcept {  // RT-safe
   x = S::min(S::max(x, S::set(-1048576.0f)), S::set(1048576.0f));  // NaN → −2^20
@@ -315,6 +355,22 @@ inline void toFixed(typename S::F x, typename S::I& hi, typename S::I& lo) noexc
   const auto f16i = S::floor(f16);
   const auto lo16 = S::truncToInt(S::mul(S::sub(f16, f16i), S::set(65536.0f)));
   lo = S::addi(S::template slli<16>(S::truncToInt(f16i)), lo16);
+  const auto smallNeg = S::band(S::lt(x, S::zero()), S::gt(x, S::set(-0.5f)));
+  lo = S::selecti(S::asI(smallNeg), S::truncToInt(S::floor(S::mul(x, S::set(4294967296.0f)))), lo);
+}
+
+// e mod len for 0 ≤ e ≤ 2^20 + 1 and len ≥ 1 (len given as int32; a loop longer than 2^31 wraps negative and is
+// treated as "longer than e"). Clamping len to 2^22 > e does not change the result, and keeps both operands exact
+// in float; the float quotient is at most one above floor(e/len) (rounding is monotonic and integers are exact),
+// which one correction fixes.
+template <class S>
+inline typename S::I smallMod(typename S::I e, typename S::I len) noexcept {  // RT-safe
+  const auto cap = S::seti(1 << 22);
+  const auto l = S::selecti(S::gti(len, S::seti(0)), S::mini(len, cap), cap);
+  const auto q = S::truncToInt(S::floor(S::div(S::toFloat(e), S::toFloat(l))));
+  auto m = S::subi(e, S::muli(q, l));
+  m = S::addi(m, S::andi(S::gti(S::seti(0), m), l));
+  return m;
 }
 
 template <bool kCubic>
@@ -371,11 +427,19 @@ struct SampleReadK {
       const I newFrac = S::addi(frac, incLo);
       const I carry = S::gti(S::xori(frac, signBit), S::xori(newFrac, signBit));  // −1 on carry
       I next = S::subi(S::addi(index, incHi), carry);
-      // Loops: crossing loopEnd forwards / loopStart backwards (masks are −1 where true).
+      // Loops: crossing loopEnd forwards / loopStart backwards (masks are −1 where true) wraps into the loop
+      // modulo its length: next = loopStart + (next − loopEnd) mod len forwards, loopEnd − 1 − (loopStart − 1 −
+      // next) mod len backwards. (A single ±len jump left the loop for good when |rate| > len: M1 review M11b.)
       const I crossFwd = S::andi(S::andi(loopOn, S::gti(loopEnd, index)), S::gti(next, S::subi(loopEnd, S::seti(1))));
       const I crossBwd = S::andi(S::andi(loopOn, S::gti(index, S::subi(loopStart, S::seti(1)))), S::gti(loopStart, next));
-      next = S::selecti(crossFwd, S::subi(next, loopLen), next);
-      next = S::selecti(crossBwd, S::addi(next, loopLen), next);
+      const I cross = S::xori(crossFwd, crossBwd);  // never both (fwd needs next ≥ loopEnd > loopStart > next)
+      if (S::any(S::asF(cross))) {
+        const I one = S::seti(1);
+        const I e = S::selecti(crossFwd, S::subi(next, loopEnd), S::subi(S::subi(loopStart, one), next));
+        const I m = smallMod<S>(e, loopLen);
+        const I wrapped = S::selecti(crossFwd, S::addi(loopStart, m), S::subi(S::subi(loopEnd, one), m));
+        next = S::selecti(cross, wrapped, next);
+      }
       // Leaving [0, length) stops playback; a stopped playhead stays where it was.
       const auto inRange = S::asF(S::andi(S::gti(next, S::seti(-1)), S::gti(length, next)));
       const I adv = S::asI(active);

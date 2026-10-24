@@ -123,7 +123,7 @@ struct WNode {
 
 struct Atoms {
   AtomId add, sub, mul, div, neg, pow, abs, min, max, muladd, and_, or_, xor_, not_, select, mux, channel, pack, sr;
-  AtomId phasor, gateToReal, noise, sineHz, sine, sin, fastSin, tanh, fastTanh, sign, counter, floor, frac, clip,
+  AtomId phasor, gateToReal, noise, sineHz, sine, sin, tanh, fastTanh, sign, counter, floor, frac, clip,
       exp, sqrt, fastExp, fastSqrt, voiceSum;
   Atoms() {
     add = atomId("add"); sub = atomId("sub"); mul = atomId("mul"); div = atomId("div"); neg = atomId("neg");
@@ -131,7 +131,7 @@ struct Atoms {
     and_ = atomId("and"); or_ = atomId("or"); xor_ = atomId("xor"); not_ = atomId("not");
     select = atomId("select"); mux = atomId("mux"); channel = atomId("channel"); pack = atomId("pack");
     sr = atomId("sr"); phasor = atomId("phasor"); gateToReal = atomId("gate_to_real"); noise = atomId("noise");
-    sineHz = atomId("sine_hz"); sine = atomId("sine"); sin = atomId("sin"); fastSin = atomId("fast_sin");
+    sineHz = atomId("sine_hz"); sine = atomId("sine"); sin = atomId("sin");
     tanh = atomId("tanh"); fastTanh = atomId("fast_tanh"); sign = atomId("sign"); counter = atomId("counter");
     floor = atomId("floor"); frac = atomId("frac"); clip = atomId("clip"); exp = atomId("exp");
     sqrt = atomId("sqrt"); fastExp = atomId("fast_exp"); fastSqrt = atomId("fast_sqrt");
@@ -442,7 +442,9 @@ private:
     auto f = [&](uint32_t i) { return inFacts(n, i); };
     if (at == A_.phasor || at == A_.gateToReal) return {true, true};
     if (at == A_.noise || at == A_.sineHz || at == A_.sign || at == A_.counter) return {true, false};
-    if (at == A_.sine || at == A_.sin || at == A_.fastSin || at == A_.tanh || at == A_.fastTanh || at == A_.floor)
+    // fast_sin is not here: its result is only specified for |x| ≤ 65536 (the dsp atom clamps it to [−1, 1],
+    // but the fact list promises only what the atoms' contracts promise; M1 review M5).
+    if (at == A_.sine || at == A_.sin || at == A_.tanh || at == A_.fastTanh || at == A_.floor)
       return {f(0).finite, false};
     if (at == A_.frac) return {f(0).finite, f(0).finite};
     if (at == A_.abs) return {f(0).finite, true};

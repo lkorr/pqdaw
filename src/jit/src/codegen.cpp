@@ -561,7 +561,11 @@ private:
       case Atom::Div: out(v.div(a[0], a[1])); return;
       case Atom::Min: out(v.min(a[0], a[1])); return;
       case Atom::Max: out(v.max(a[0], a[1])); return;
-      case Atom::Mod: out(v.fnma(a[1], v.floor(v.div(a[0], a[1])), a[0])); return;
+      case Atom::Mod: {  // dsp modFloored: a result that rounds to b is 0
+        Value* r = v.fnma(a[1], v.floor(v.div(a[0], a[1])), a[0]);
+        out(v.andnot(v.eq(r, a[1]), r));
+        return;
+      }
       case Atom::PowFast:
         out(pq::detail::fm::exp2<IrFm>(v.mul(a[1], pq::detail::fm::log2<IrFm>(a[0]))));
         return;
@@ -582,7 +586,9 @@ private:
       case Atom::SqrtFast: out(v.sqrt(a[0])); return;
       case Atom::ExpFast: out(pq::detail::fm::exp2<IrFm>(v.mul(a[0], v.cf(kLog2e)))); return;
       case Atom::LogFast: out(v.mul(pq::detail::fm::log2<IrFm>(a[0]), v.cf(kLn2))); return;
-      case Atom::SinFast: out(pq::detail::fm::sin<IrFm>(a[0])); return;
+      case Atom::SinFast:  // dsp SinFastOp: clamped to [−1, 1], NaN propagates
+        out(v.max(v.cf(-1.0f), v.min(v.cf(1.0f), pq::detail::fm::sin<IrFm>(a[0]))));
+        return;
       case Atom::TanFast: out(pq::detail::fm::tan<IrFm>(a[0])); return;
       case Atom::TanhFast: out(pq::detail::fm::tanh<IrFm>(a[0])); return;
       case Atom::DbToGainFast: out(pq::detail::fm::exp2<IrFm>(v.mul(a[0], v.cf(0.166096404744368118f)))); return;
@@ -715,7 +721,7 @@ private:
         Value* r = ldI(sp, 0, v);
         Value* t = a[0];
         Value* edge = v.asI(v.andnot(ldF(sp, 32, v), t));
-        Value* d = v.max(v.min(a[1], v.cf(2147483520.0f)), v.zero());
+        Value* d = v.min(v.max(a[1], v.zero()), v.cf(2147483520.0f));  // NaN → 0 (dsp Timer)
         r = v.selecti(edge, v.roundToInt(d), r);
         Value* on = v.gti(r, v.ci(0));
         out(v.asF(on));
@@ -748,8 +754,8 @@ private:
         ph = v.selecti(v.asI(a[1]), v.ci(0), ph);
         if (op.kernel == Atom::Phasor) out(v.mul(v.toFloat(v.srli(ph, 8)), v.cf(k2pm24)));
         else out(pq::detail::fm::sin<IrFm>(v.mul(v.toFloat(ph), v.cf(kTwoPiOver2p32))));
-        // max(hz, −half) returns −half for NaN.
-        Value* h = v.min(v.max(a[0], v.neg(halfSr)), halfSr);
+        // dsp PhasorK::increment: NaN hz → 0 Hz, then clamped to ±sr/2.
+        Value* h = v.min(v.max(v.band(v.eq(a[0], a[0]), a[0]), v.neg(halfSr)), halfSr);
         ph = v.addi(ph, v.roundMulToInt(h, scale));
         st(sp, 0, ph, v);
         return;

@@ -1,0 +1,64 @@
+// Kernel edge cases from the M1 review (docs/reviews/M1.md H3, M5, M11, M13, L3; probes in
+// docs/reviews/M1/probes/dsp_probes.pqp, dsp_loop.pqp, fastsin.pqp). Each one rendered wrong (DelayBig: wrote out of
+// bounds) before T1.6-fix1. Sample resource 1 is the harness's 300-sample wave; phasor(0Hz) is 0 at run time (it
+// keeps the values below from being folded).
+
+// M11a: a tiny negative rate kept the fraction at 1.0 and moved the playhead a whole sample back per sample.
+patch SrTiny {
+  out y : audio
+  out z : audio
+  rst = pulse(100)
+  z0 = phasor(0Hz)
+  a = sample_read_linear(1, z0 - 0.000000001, rst, start: 0.5)
+  b = sample_read_linear(1, z0 - 0.000001, rst, start: 0.5)
+  y = gate_to_real(a.playing)
+  z = gate_to_real(b.playing)
+}
+
+// M11b: a rate above the loop length left the loop (one ±length jump).
+patch LoopFast {
+  out y : audio
+  out z : audio
+  rst = pulse(100)
+  a = sample_read_linear(1, 2, rst, start: 0, loopStart: 0, loopEnd: 1)
+  b = sample_read_linear(1, 1, rst, start: 0, loopStart: 0, loopEnd: 1)
+  y = gate_to_real(a.playing)
+  z = gate_to_real(b.playing)
+}
+
+// L3: mod returned b.
+patch ModTiny {
+  out y : audio
+  y = mod(phasor(0Hz) - 0.000000001, 1)
+}
+
+// M13 / Q55: a NaN duration held the timer high for 2^31 samples.
+patch TimerNan {
+  out y : audio
+  t = pulse(100)
+  y = gate_to_real(timer(t, sqrt(phasor(0Hz) - 1)))
+}
+
+// L3: NaN hz ran phasor and sine_hz at Nyquist.
+patch PhNan {
+  out y : audio
+  out z : audio
+  y = phasor(sqrt(phasor(0Hz) - 1))
+  z = sine_hz(sqrt(phasor(0Hz) - 1))
+}
+
+// M5: fast_sin(1e20) was inf, so fast_sin(x) · 0 was NaN. (Its value out there is unspecified, so the outputs are
+// what is specified: it is in [−1, 1], and times 0 it is 0.)
+patch FastSinBig {
+  out y : audio
+  out z : audio
+  a = phasor(0Hz) + 100000000000000000000
+  y = gate_to_real(abs(fast_sin(a)) <= 1)
+  z = fast_sin(a) * phasor(0Hz)
+}
+
+// H3: a 12000 s mono delay line (5.76e8 frames) is a compile error.
+patch DelayBig {
+  out y : audio
+  y = delay(sine_hz(100Hz), 1smp, 12000)
+}

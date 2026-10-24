@@ -521,7 +521,10 @@ private:
     else if (a == "sub") r = x - y;
     else if (a == "mul") r = x * y;
     else if (a == "div") r = x / y;
-    else if (a == "mod") r = x - y * std::floor(x / y);
+    else if (a == "mod") {  // a result that rounds to b in float is 0 (pq/dsp/atoms.h)
+      r = x - y * std::floor(x / y);
+      if (static_cast<float>(r) == static_cast<float>(y)) r = 0.0;
+    }
     else if (a == "neg") r = -x;
     else if (a == "min") r = x < y ? x : y;
     else if (a == "max") r = x > y ? x : y;
@@ -656,9 +659,10 @@ private:
     } else if (a == "sine") {
       r = std::sin(2 * kPi * (x - std::nearbyint(x)));
     } else if (a == "wavetable") {
-      // pq/dsp/tables.h: the level whose top harmonic stays below Nyquist for the phase increment (|Δphase| wrapped
-      // to [0, 0.5], level = clamp(ceil(log2(N·inc)), 0, levels − 1)), read with linear interpolation. Evaluated
-      // in float like the signal it reads, on the same table data the program is given.
+      // pq/dsp/tables.h: increment estimate = the smaller of the last two |Δphase| (wrapped to [0, 0.5]), u =
+      // 2·log2(N·inc) from the float bits, levels floor(u) and floor(u) + 1 (clamped) crossfaded by min(2·frac(u),
+      // 1), each read with linear interpolation. Evaluated in float like the signal it reads, on the same table
+      // data the program is given.
       const uint32_t tbl = static_cast<uint32_t>(constIn(n, 1));
       if (tbl >= st_.wavetables.size() || st_.wavetables[tbl] == nullptr) {
         ok_ = false;
@@ -670,15 +674,25 @@ private:
       const float p = static_cast<float>(x), prev = static_cast<float>(s.a);
       float d = p - prev;
       d = std::fabs(d - std::nearbyint(d));
-      const uint32_t bits = std::bit_cast<uint32_t>(d * tv.sizeF);
-      int32_t lvl = static_cast<int32_t>(bits >> 23) - 127 + ((bits & 0x7FFFFFu) != 0 ? 1 : 0);
-      lvl = std::clamp<int32_t>(lvl, 0, static_cast<int32_t>(tv.levels) - 1);
+      if (std::isnan(d)) d = 0.0f;
+      const float inc = std::min(d, static_cast<float>(s.b));
+      s.b = d;
+      const double u = 2.0 * (std::bit_cast<uint32_t>(inc * tv.sizeF) * 0x1p-23 - 127.0);
+      const double k = std::floor(u);
+      const double t = std::min(2.0 * (u - k), 1.0);
+      const int32_t top = static_cast<int32_t>(tv.levels) - 1;
+      const int32_t lo = std::clamp<int32_t>(static_cast<int32_t>(k), 0, top);
+      const int32_t hi = std::clamp<int32_t>(static_cast<int32_t>(k) + 1, 0, top);
       const float pos = (p - std::floor(p)) * tv.sizeF;
       const auto i = static_cast<int32_t>(pos);
       const float fr = pos - static_cast<float>(i);
-      const size_t base = static_cast<size_t>(lvl) * tv.stride + (static_cast<uint32_t>(i) & (tv.size - 1));
-      const double y0 = tv.data[base], y1 = tv.data[base + 1];
-      r = y0 + static_cast<double>(fr) * (y1 - y0);
+      const auto read = [&](int32_t lvl) {
+        const size_t base = static_cast<size_t>(lvl) * tv.stride + (static_cast<uint32_t>(i) & (tv.size - 1));
+        const double y0 = tv.data[base], y1 = tv.data[base + 1];
+        return y0 + static_cast<double>(fr) * (y1 - y0);
+      };
+      const double ra = read(lo);
+      r = ra + t * (read(hi) - ra);
       s.a = p;
     } else if (a == "noise") {
       const uint32_t seed = st_.noiseSeed ? st_.noiseSeed(n, static_cast<uint16_t>(ch)) : 0u;
@@ -834,7 +848,7 @@ private:
         else if (ph) {
           const float halfSr = static_cast<float>(0.5 * sr_);
           float hz = static_cast<float>(in(n, 0, ch, v));
-          hz = std::isnan(hz) ? -halfSr : std::clamp(hz, -halfSr, halfSr);
+          hz = std::isnan(hz) ? 0.0f : std::clamp(hz, -halfSr, halfSr);
           const double incD = std::nearbyint(static_cast<double>(hz) * (4294967296.0 / sr_));
           s.u += static_cast<uint32_t>(static_cast<int64_t>(incD));
         } else {
@@ -850,8 +864,8 @@ private:
           const bool loopOn = le > ls;
           const bool fwd = loopOn && s.i < le && next > le - 1;
           const bool bwd = loopOn && s.i > ls - 1 && next < ls;
-          if (fwd) next -= le - ls;
-          if (bwd) next += le - ls;
+          if (fwd) next = ls + (next - le) % (le - ls);
+          if (bwd) next = le - 1 - (ls - 1 - next) % (le - ls);
           const bool inRange = next >= 0 && next < len;
           if (s.active) {
             s.i = next;

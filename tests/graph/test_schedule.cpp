@@ -1531,6 +1531,48 @@ TEST_CASE("schedule: replay checker over 500 random patches with voices, outputs
   CHECK(voiceOutsShared >= 100);
 }
 
+TEST_CASE("schedule: a delay line whose ring would pass 1 GiB is a located compile error (M1 review H3)") {
+  // DelayBig from docs/reviews/M1/probes/dsp_probes.pqp: max 12000 s = 5.76e8 frames. Its ring size used to wrap
+  // to 0 bytes in uint32 and the kernel wrote out of bounds; it must be rejected, naming the node and its line.
+  const std::string big = errorsOf(R"(patch DelayBig {
+  out y : audio
+  y = delay(sine_hz(100Hz), 1smp, 12000)
+}
+)");
+  CHECK(big.find("test.pqp:3:") != std::string::npos);
+  CHECK(big.find("maximum delay") != std::string::npos);
+  CHECK(big.find("mono delay line") != std::string::npos);
+  // At the limit the patch schedules and its state entry covers the whole ring (2^28 frames · 4 B); one frame more
+  // is an error. The same for a voice delay (8 lanes per frame: 2^25 frames).
+  const auto at = [](uint32_t frames, bool voice) {
+    const std::string f = std::to_string(frames);
+    return voice ? "patch V {\n  out y : audio voice\n  y = delay(sine(phasor(voice.hz)), 1smp, " + f + "smp)\n}\n"
+                 : "patch M {\n  out y : audio\n  y = delay(sine_hz(100Hz), 1smp, " + f + "smp)\n}\n";
+  };
+  for (bool voice : {false, true}) {
+    const uint32_t limit = dsp::maxDelayFramesLimit(voice ? 8 : 1);
+    CHECK(limit == (voice ? (1u << 25) : (1u << 28)) - 10u);
+    Compiled c;
+    compile(c, at(limit, voice));
+    const Schedule& s = ok(c);
+    uint64_t ring = 0;
+    for (const StateEntry& e : s.state.entries)
+      if (e.tag.kernel == static_cast<uint16_t>(dsp::Atom::DelayLinear)) ring = e.size;
+    CHECK(ring >= uint64_t{1} << 30);
+    CHECK(ring <= (uint64_t{1} << 30) + sizeof(dsp::DelayState));
+    CHECK((voice ? s.state.voiceBytes : s.state.globalBytes) >= ring);
+    const std::string e = errorsOf(at(limit + 1, voice));
+    CHECK(e.find("test.pqp:3:") != std::string::npos);
+    CHECK(e.find(voice ? "voice delay line" : "mono delay line") != std::string::npos);
+  }
+  // Two maximal rings exceed the 2 GiB arena: an error at the second one, not wrapped offsets.
+  const std::string lim = std::to_string(dsp::maxDelayFramesLimit(1));
+  const std::string two = errorsOf("patch Two {\n  out y : audio\n  a = delay(sine_hz(100Hz), 1smp, " + lim +
+                                   "smp)\n  b = delay(a, 1smp, " + lim + "smp)\n  y = b\n}\n");
+  CHECK(two.find("state exceeds 2 GiB") != std::string::npos);
+  CHECK((two.find("test.pqp:3:") != std::string::npos || two.find("test.pqp:4:") != std::string::npos));
+}
+
 TEST_CASE("schedule: invalid options and inputs") {
   Compiled c;
   compile(c, kChainA);

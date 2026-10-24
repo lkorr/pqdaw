@@ -38,7 +38,15 @@ PQ_BINARY(MulOp, S::mul(a, b))
 PQ_BINARY(DivOp, S::div(a, b))
 PQ_BINARY(MinOp, S::min(a, b))
 PQ_BINARY(MaxOp, S::max(a, b))
-PQ_BINARY(ModOp, S::fnma(b, S::floor(S::div(a, b)), a))
+// Floored modulo. a − b·floor(a/b) rounds to exactly b when a is a tiny negative fraction of b (mod(−1e−9, 1));
+// that result is returned as 0 (the same point of the period), so mod(a, b) is always in [0, b) for b > 0 (M1
+// review L3). One compare + andnot.
+template <class S>
+inline typename S::F modFloored(typename S::F a, typename S::F b) noexcept {  // RT-safe
+  const auto r = S::fnma(b, S::floor(S::div(a, b)), a);
+  return S::andnot(S::eq(r, b), r);
+}
+PQ_BINARY(ModOp, modFloored<S>(a, b))
 PQ_BINARY(PowOp, S::exactPow(a, b))
 PQ_BINARY(PowFastOp, S::fastExp2(S::mul(b, S::fastLog2(a))))
 PQ_BINARY(CentsToHzOp, S::exactCentsToHz(a, b))
@@ -57,7 +65,11 @@ PQ_UNARY(ExpFastOp, S::fastExp2(S::mul(x, S::set(kLog2e))))
 PQ_UNARY(LogOp, S::exactLog(x))
 PQ_UNARY(LogFastOp, S::mul(S::fastLog2(x), S::set(kLn2)))
 PQ_UNARY(SinOp, S::exactSin(x))
-PQ_UNARY(SinFastOp, S::fastSin(x))
+// fast_sin has no range reduction beyond |x| ≤ kFastSinMaxArg (65536 rad); further out its polynomial grows
+// without bound (fast_sin(1e10) was 1.9e20, fast_sin(1e20) inf; M1 review M5). The atom clamps the result to
+// [−1, 1]: two ops, bit-identical inside the domain except where the polynomial overshot 1 by an ulp, and NaN/±inf
+// in still give NaN (the constant is the first operand, so NaN propagates).
+PQ_UNARY(SinFastOp, S::max(S::set(-1.0f), S::min(S::set(1.0f), S::fastSin(x))))
 PQ_UNARY(TanOp, S::exactTan(x))
 PQ_UNARY(TanFastOp, S::fastTan(x))
 PQ_UNARY(TanhOp, S::exactTanh(x))

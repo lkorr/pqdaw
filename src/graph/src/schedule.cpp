@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <functional>
 #include <queue>
@@ -1484,9 +1485,16 @@ private:
         if (m.kernel == dsp::Atom::DelayLinear || m.kernel == dsp::Atom::DelayCubic ||
             m.kernel == dsp::Atom::DelayAllpass) {
           init.maxDelayFrames = maxDelayFramesOf(n);
-          if (init.maxDelayFrames == kNone) {
+          // A delay ring is at most dsp::kMaxDelayRingBytes (M1 review H3: a larger `max` overflowed the state
+          // size and the kernel wrote out of bounds). Rejected here, never clamped silently.
+          const uint32_t limit = dsp::maxDelayFramesLimit(lanes);
+          if (init.maxDelayFrames == kNone || init.maxDelayFrames > limit) {
+            char minutes[32];
+            std::snprintf(minutes, sizeof minutes, "%.1f", static_cast<double>(limit) / opt_.sampleRate / 60.0);
             report(n, ErrorCode::InvalidArgument,
-                   "the maximum delay of " + label(n) + " must be between 0 and 2^30 samples");
+                   "the maximum delay of " + label(n) + " must be between 0 and " + std::to_string(limit) +
+                       " samples (" + minutes + " min at " + std::to_string(static_cast<int64_t>(opt_.sampleRate)) +
+                       " Hz) for a " + (lanes == 8 ? "voice" : "mono") + " delay line, whose ring is at most 1 GiB");
             return;
           }
         }
@@ -1500,7 +1508,8 @@ private:
         tag.kernel = static_cast<uint16_t>(m.kernel);
         tag.lanes = lanes;
         tag.extra = init.maxDelayFrames;
-        stateIdx = stateEntry(n, static_cast<uint16_t>(ch), tag, dsp::stateBytes(m.kernel, init), init,
+        // ≤ sizeof(DelayState) + kMaxDelayRingBytes after the check above, so it fits the uint32 entry size.
+        stateIdx = stateEntry(n, static_cast<uint16_t>(ch), tag, static_cast<uint32_t>(dsp::stateBytes(m.kernel, init)), init,
                               lanes == 8 ? Poly::Voice : Poly::Global);
       }
       outs_.clear();
@@ -1973,6 +1982,19 @@ private:
       e.node = ps.node;
       L.entries.push_back(e);  // in pending order: Op::state indexes them 1:1
     }
+    // Each arena's total must fit its uint32 offsets with room for the stable layout's holes: reject (naming the
+    // node whose state crosses the cap) rather than let an offset wrap and two states overlap.
+    uint64_t total[2] = {0, 0};
+    for (const StateEntry& e : L.entries) {
+      uint64_t& t = total[e.arena == Poly::Voice];
+      t += e.size;
+      if (t > kMaxArenaBytes) {
+        report(e.node, ErrorCode::Overflow,
+               "the patch's " + std::string(e.arena == Poly::Voice ? "per-voice-group" : "global") +
+                   " state exceeds 2 GiB at " + label(e.node) + " (delay-line `max` values too large)");
+        return;
+      }
+    }
     // Unique (key, channel, arena): a repeated key (a hash collision, or a hand-built patch) is re-keyed
     // deterministically (the later entry in op order) so lookups and transfers stay unambiguous.
     std::vector<std::pair<uint64_t, uint32_t>> ids(L.entries.size());
@@ -1995,6 +2017,10 @@ private:
     if (opt_.previous && !opt_.previous->entries.empty()) laid = layoutStable(L, *opt_.previous);
     if (!laid) layoutFresh(L);
   }
+
+  // Per-arena state cap (2 GiB: one maximal delay ring is 1 GiB). The fresh layout's offsets then fit uint32; the
+  // stable layout computes in uint64 and falls back to a fresh layout if its end would pass the cap.
+  static constexpr uint64_t kMaxArenaBytes = uint64_t{1} << 31;
 
   static uint32_t round64(uint32_t x) noexcept { return (x + 63u) & ~63u; }
 
@@ -2019,11 +2045,11 @@ private:
     }
     std::sort(byKey.begin(), byKey.end());
     struct Range {
-      uint32_t begin, end;
+      uint64_t begin, end;
     };
     std::vector<Range> used[2];
     std::vector<uint8_t> kept(L.entries.size(), 0);
-    uint32_t live[2] = {0, 0};
+    uint64_t live[2] = {0, 0};
     for (size_t i = 0; i < L.entries.size(); ++i) {
       StateEntry& e = L.entries[i];
       const int a = e.arena == Poly::Voice;
@@ -2035,14 +2061,14 @@ private:
       if (!(pe.tag == e.tag) || pe.size != e.size || pe.arena != e.arena) continue;
       e.offset = pe.offset;
       kept[i] = 1;
-      used[a].push_back({e.offset, e.offset + e.size});
+      used[a].push_back({e.offset, uint64_t{e.offset} + e.size});
     }
-    uint32_t end[2] = {0, 0};
+    uint64_t end[2] = {0, 0};
     std::vector<Range> holes[2];
     for (int a = 0; a < 2; ++a) {
       auto& u = used[a];
       std::sort(u.begin(), u.end(), [](const Range& x, const Range& y) { return x.begin < y.begin; });
-      uint32_t at = 0;
+      uint64_t at = 0;
       for (const Range& r : u) {
         if (r.begin > at) holes[a].push_back({at, r.begin});
         at = std::max(at, r.end);
@@ -2056,13 +2082,17 @@ private:
       bool placed = false;
       for (Range& h : holes[a]) {
         if (h.end - h.begin < e.size) continue;
-        e.offset = h.begin;
+        e.offset = static_cast<uint32_t>(h.begin);  // a hole lies below a kept entry: < 2^32
         h.begin += e.size;
         placed = true;
         break;
       }
       if (!placed) {
-        e.offset = end[a];
+        if (end[a] + e.size > kMaxArenaBytes) {  // would pass the cap: lay out afresh (≤ live ≤ the cap)
+          L.compacted = true;
+          return false;
+        }
+        e.offset = static_cast<uint32_t>(end[a]);
         end[a] += e.size;
       }
     }
@@ -2072,8 +2102,8 @@ private:
         L.compacted = true;
         return false;
       }
-    L.globalBytes = round64(end[0]);
-    L.voiceBytes = round64(end[1]);
+    L.globalBytes = round64(static_cast<uint32_t>(end[0]));
+    L.voiceBytes = round64(static_cast<uint32_t>(end[1]));
     return true;
   }
 

@@ -137,8 +137,12 @@ inline RunResult runKernel(const AtomSpec& s, uint32_t lanes, uint32_t splMask, 
   }
   pq::dsp::StateInit init = s.init;
   init.lanes = lanes;
-  const uint32_t bytes = pq::dsp::stateBytes(s.atom, init);
-  pq::AlignedBuffer<float> state((bytes + 3) / 4 + 8);
+  // The state block, then 8 canary floats: a kernel must never write outside its stateBytes().
+  const size_t stateFloats = (pq::dsp::stateBytes(s.atom, init) + 3) / 4;
+  constexpr uint32_t kStateCanary = 8;
+  constexpr float kStateCanaryValue = -9876.5f;
+  pq::AlignedBuffer<float> state(stateFloats + kStateCanary);
+  for (uint32_t k = 0; k < kStateCanary; ++k) state[stateFloats + k] = kStateCanaryValue;
   pq::dsp::initState(s.atom, state.data(), init);
   const pq::dsp::KernelFn fn = pq::dsp::findKernel(s.atom, lanes, splMask);
   REQUIRE(fn != nullptr);
@@ -182,6 +186,9 @@ inline RunResult runKernel(const AtomSpec& s, uint32_t lanes, uint32_t splMask, 
     args.numOut = static_cast<uint16_t>(numOut);
     args.splMask = splMask;
     fn(args);
+    bool stateOk = true;
+    for (uint32_t k = 0; k < kStateCanary; ++k) stateOk &= state[stateFloats + k] == kStateCanaryValue;
+    REQUIRE_MESSAGE(stateOk, "kernel wrote past its state block");
     for (uint32_t o = 0; o < numOut; ++o) {
       const float* buf = outBufs[o].data();
       bool canaryOk = true;
