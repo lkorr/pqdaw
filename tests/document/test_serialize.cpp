@@ -5,11 +5,14 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -301,7 +304,7 @@ std::string schema0Text() {
 }  // namespace
 
 TEST_CASE("serialize: migration hook table (n -> n+1)") {
-  const Migration table[] = {{0, migrate0to1}};
+  const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -311,7 +314,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
     // Saving writes the current schema.
     Result<std::string> again = serializeProject(*r->project, r->view);
     REQUIRE(again.ok());
-    CHECK(again->rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
+    CHECK(again->rfind("{\n  \"schemaVersion\": " + std::to_string(kSchemaVersion) + ",", 0) == 0);
   }
   SUBCASE("no migration for the file's version") {
     Result<LoadedProject> r = parseProject(old);  // built-in table: empty
@@ -328,14 +331,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 1");
+    const size_t at = newer.find("\"schemaVersion\": 2");
     REQUIRE(at != std::string::npos);
     newer.replace(at, 18, "\"schemaVersion\": 7");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 7; this build reads up to 1)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 7; this build reads up to 2)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -343,9 +346,125 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                    d["locators"] = nlohmann::json::array();
                                    d.erase("bpm");
                                    return pq::Ok{};
-                                 }}};
+                                 }},
+                                builtinMigrations()[0]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
   }
+}
+
+// ---- Schema 1 -> 2 (T0.5-fix1: PPQ 27,720 -> 221,760) --------------------------------------------------------------
+
+namespace {
+
+// Walks the schema-1 document and its re-saved schema-2 form in parallel: same structure and values everywhere,
+// except schemaVersion (1 -> 2) and every tick member, which must be exactly 8x the old value.
+struct ScaleCheck {
+  size_t scaled = 0;              // tick values compared
+  size_t scaledNonZero = 0;       // of which != 0 (so the factor is really observed)
+  std::set<std::string> keys;     // tick member names seen
+  std::set<std::string> owners;   // where they were seen
+  std::vector<std::string> mismatches;
+
+  static bool isTickKey(std::string_view k) {
+    return k == "tick" || k == "start" || k == "end" || k == "length" || k == "contentStart";
+  }
+
+  void walk(const nlohmann::json& a, const nlohmann::json& b, std::string_view key, const std::string& path) {
+    if (a.is_object()) {
+      if (!b.is_object() || a.size() != b.size()) return fail(path, "object shape differs");
+      for (const auto& [k, v] : a.items()) {
+        if (!b.contains(k)) return fail(path, "missing key " + k);
+        walk(v, b.at(k), k, path + "." + k);
+      }
+    } else if (a.is_array()) {
+      if (!b.is_array() || a.size() != b.size()) return fail(path, "array shape differs");
+      for (size_t i = 0; i < a.size(); ++i) walk(a[i], b[i], key, path + "[" + std::to_string(i) + "]");
+    } else if (a.is_number_integer()) {
+      if (!b.is_number_integer()) return fail(path, "type differs");
+      const int64_t x = a.get<int64_t>(), y = b.get<int64_t>();
+      if (path == "$.schemaVersion") {
+        if (x != 1 || y != 2) fail(path, "schema version");
+      } else if (isTickKey(key)) {
+        ++scaled;
+        if (x != 0) ++scaledNonZero;
+        keys.insert(std::string(key));
+        for (const char* o : {"$.tracks", "$.returns", "$.master", "$.loop", "$.locators", "$.timeline", ".children",
+                              ".notes", ".points", ".clips"})
+          if (path.find(o) != std::string::npos) owners.insert(o);
+        if (y != 8 * x) fail(path, std::to_string(y) + " != 8 * " + std::to_string(x));
+      } else if (x != y) {
+        fail(path, "value changed");
+      }
+    } else if (a != b) {
+      fail(path, "value changed");
+    }
+  }
+  void fail(const std::string& path, const std::string& what) { mismatches.push_back(path + ": " + what); }
+};
+
+}  // namespace
+
+// fixtures/schema1 is fixtures/full as the schema-1 build wrote it (main at 39797d7), except that its two edge notes
+// at ±2^52 (kMaxTicks) are reduced to ±2^49, the largest schema-1 ticks that still fit kMaxTicks after × 8, and the
+// return track got an automation lane (ids 365–367) so every place a tick can live is covered.
+TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as schema 2") {
+  static_assert(kSchemaVersion == 2);
+  const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
+  REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
+
+  Result<LoadedProject> r = loadProject(fixturePath("schema1"));
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  CHECK(r->fileSchemaVersion == 1);
+  Result<std::string> again = serializeProject(*r->project, r->view);
+  REQUIRE(again.ok());
+  CHECK(again->rfind("{\n  \"schemaVersion\": 2,", 0) == 0);
+
+  ScaleCheck c;
+  c.walk(nlohmann::json::parse(oldText), nlohmann::json::parse(*again), {}, "$");
+  for (const std::string& m : c.mismatches) MESSAGE(m);
+  CHECK(c.mismatches.empty());
+  MESSAGE(c.scaled << " tick values scaled (" << c.scaledNonZero << " non-zero)");
+  CHECK(c.scaled > 300);
+  CHECK(c.scaledNonZero > 300);
+  CHECK(c.keys == std::set<std::string>{"tick", "start", "end", "length", "contentStart"});
+  CHECK(c.owners == std::set<std::string>{"$.tracks", "$.returns", "$.master", "$.loop", "$.locators", "$.timeline",
+                                          ".children", ".notes", ".points", ".clips"});
+
+  // The re-saved file is current: it loads without migration to the same project.
+  Result<LoadedProject> back = parseProject(*again);
+  REQUIRE(back.ok());
+  CHECK(back->fileSchemaVersion == 2);
+  CHECK(*back->project == *r->project);
+  CHECK(viewEq(back->view, r->view));
+  // Musical positions are unchanged: the old loop (bar 2 to bar 4 at PPQ 27720) is bar 2 to bar 4 now.
+  CHECK(r->project->loop.start == pq::kTicksPerWhole);
+  CHECK(r->project->loop.end == 3 * pq::kTicksPerWhole);
+}
+
+TEST_CASE("serialize: schema 1 -> 2 migration range errors") {
+  const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
+  const std::string loop = "\"loop\": {\"start\": 110880,";
+  REQUIRE(oldText.find(loop) != std::string::npos);
+  auto withLoopStart = [&](const std::string& v) {
+    std::string t = oldText;
+    t.replace(t.find(loop), loop.size(), "\"loop\": {\"start\": " + v + ",");
+    return t;
+  };
+  // x8 would overflow int64: refused by the migration.
+  Result<LoadedProject> big = parseProject(withLoopStart("2305843009213693952"));  // 2^61
+  REQUIRE_FALSE(big.ok());
+  CHECK(big.error().message == "$: migrating schema 1 to 2 failed: $.loop.start: tick out of range");
+  Result<LoadedProject> neg = parseProject(withLoopStart("-2305843009213693952"));
+  REQUIRE_FALSE(neg.ok());
+  CHECK(neg.error().message == "$: migrating schema 1 to 2 failed: $.loop.start: tick out of range");
+  // Fits int64 after x8 but beyond kMaxTicks: the decoder rejects the migrated value with its path.
+  Result<LoadedProject> far = parseProject(withLoopStart(std::to_string(-(kMaxTicks / 8 + 1))));
+  REQUIRE_FALSE(far.ok());
+  CHECK(far.error().message == "$.loop.start: tick out of range");
+  // The most negative schema-1 tick that still fits migrates.
+  Result<LoadedProject> edge = parseProject(withLoopStart(std::to_string(-(kMaxTicks / 8))));
+  REQUIRE_MESSAGE(edge.ok(), (edge.ok() ? std::string() : edge.error().message));
+  CHECK(edge->project->loop.start == -kMaxTicks);
 }

@@ -412,7 +412,9 @@ TEST_CASE("timeline: clip loops unrolled lazily match document clip_time semanti
     // Starting in the middle (a seek into a later pass) plays exactly the notes from there on.
     e::Timeline tl(config());
     REQUIRE(tl.publishSequence(image({{1, {cd}}})));
-    const Ticks from = c.start + c.length / 2 + 1;
+    // Just after the middle, at the first tick of a sample: every earlier tick is on an earlier sample, so "plays
+    // from tick `from`" and "sounds at sample ≥ s0" select the same notes (a tick is ~0.11 samples here).
+    const Ticks from = tm.firstTickAtOrAfterSample(tm.ticksToSamples(c.start + c.length / 2, kSr) + 1, kSr);
     tl.apply(cmd(e::TransportCommandKind::Play, from));
     Driver d{tl};
     d.run(tm.ticksToSamples(c.start + c.length + kBar, kSr) - tm.ticksToSamples(from, kSr), 64);

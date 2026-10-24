@@ -1,6 +1,6 @@
 #pragma once
 
-// Musical time: ticks (int64, PPQ 27720), tuplet arithmetic, a tempo map with linear ramps, and time signatures.
+// Musical time: ticks (int64, PPQ 221760), tuplet arithmetic, a tempo map with linear ramps, and time signatures.
 //
 // Positions are int64 ticks or int64 samples (SPEC §3.1). Seconds appear only as a double intermediate that is
 // never accumulated across conversions: each tempo segment stores its start time (computed once, with
@@ -24,13 +24,19 @@ namespace pq {
 using Ticks = int64_t;       // musical position; kPpq per quarter note
 using SampleTime = int64_t;  // position in samples at some sample rate
 
-// 27720 = lcm(1..11) = 2³·3²·5·7·11: every n-tuplet with n ≤ 11 (and products of 3, 5, 7, 11) of a quarter
-// lands on an integer tick.
-inline constexpr Ticks kPpq = 27720;
-inline constexpr Ticks kTicksPerWhole = 4 * kPpq;  // 110880
+// 221760 = 2⁶·3²·5·7·11 = 8 · lcm(1..11) (SPEC §3.1, decided 2026-10-21; was 27720 = lcm(1..11) before
+// schema 2): every straight note value down to 1/256 (= 3465 ticks) is an integer number of ticks, and so is every
+// n-tuplet with n ≤ 11 (and products of 3, 5, 7, 9, 11) of each of them.
+//
+// Headroom: int64 holds ±9.2·10¹⁸ ticks = 4.2·10¹³ quarters, i.e. ~79,000 years at 1000 BPM (kMaxBpm). Document
+// positions are limited to |t| ≤ 2^52 (doc::kMaxTicks) = 2.0·10¹⁰ quarters = ~38 years at 1000 BPM (~320 years
+// at 120 BPM), and TempoMap queries are valid to 2^53 (twice that).
+inline constexpr Ticks kPpq = 221760;
+inline constexpr Ticks kTicksPerWhole = 4 * kPpq;  // 887040
 
 // Note value 1/denominator of a whole note (4 → quarter). Exact iff kTicksPerWhole % denominator == 0:
-// true for 1, 2, 4, 8, 16, 32 and for 3, 5, 6, 7, 9, 10, 11, 12, …; false for 64 (1/64 = 1732.5 ticks).
+// true for 1, 2, 4 … 256 and for 3, 5, 6, 7, 9, 10, 11, 12, … (any divisor of 2⁸·3²·5·7·11); false for 512
+// (1/512 = 1732.5 ticks) and for primes ≥ 13.
 constexpr bool noteValueIsExact(int64_t denominator) noexcept {  // RT-safe
   return denominator > 0 && kTicksPerWhole % denominator == 0;
 }
@@ -46,7 +52,7 @@ constexpr int64_t tupletBase(int64_t n) noexcept {  // RT-safe
   return n <= 1 ? 1 : static_cast<int64_t>(std::bit_floor(static_cast<uint64_t>(n)));
 }
 // Span of one n-tuplet group of 1/denominator notes: tupletBase(n) straight notes, computed from the whole note
-// so it stays exact even where the straight note is not (11:8 of 1/64 = 1/8 = 13860 although 1/64 = 1732.5).
+// so it stays exact even where the straight note is not (11:8 of 1/512 = 1/64 = 13860 although 1/512 = 1732.5).
 // Rounded to the nearest tick when not exact.
 constexpr Ticks tupletGroupTicks(int64_t denominator, int64_t n) noexcept {  // RT-safe
   return (2 * kTicksPerWhole * tupletBase(n) + denominator) / (2 * denominator);
@@ -126,7 +132,7 @@ private:
 
 struct TimeSignature {
   int32_t numerator = 4;
-  int32_t denominator = 4;  // note value of one beat; must satisfy noteValueIsExact (so 64 is rejected)
+  int32_t denominator = 4;  // note value of one beat; must satisfy noteValueIsExact (… 64, 128, 256; not 512)
   friend bool operator==(const TimeSignature&, const TimeSignature&) = default;
 };
 

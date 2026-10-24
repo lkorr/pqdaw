@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdint>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <span>
@@ -1622,7 +1624,107 @@ int64_t readSchemaVersion(std::string_view text) {
 
 }  // namespace
 
-std::span<const Migration> builtinMigrations() noexcept { return {}; }
+// ==== Migrations ==================================================================================================
+
+namespace {
+
+// The tick resolution is part of the file format.
+static_assert(kPpq == 221760, "changing PPQ needs a schema bump and a migration that rescales every stored tick");
+
+// Schema 1 → 2 (T0.5-fix1): PPQ went from 27,720 to 221,760, so every stored tick is multiplied by 8. The tick
+// fields are: loop.start/end, locators[].tick, timeline.tempo[].tick, lanes[].points[].tick (on every track,
+// return, nested child and the master), clips[].start/length/contentStart, clips[].loop.start/end and
+// clips[].notes[].start/length. Bars (time signatures), ids, BPM, view state and every other number are unchanged.
+// Members of the wrong shape or type are left as they are for the decoder to report with their path; a tick that
+// would overflow int64 when scaled is an error here (and anything beyond kMaxTicks is rejected by the decoder).
+class TickScaler {
+public:
+  static constexpr int64_t kScale = 8;  // 221760 / 27720; fixed by history, independent of the current kPpq
+
+  Status run(nlohmann::json& doc) {
+    if (!doc.is_object()) return Ok{};
+    if (auto* loop = member(doc, "loop")) {
+      tick(*loop, "start", "$.loop");
+      tick(*loop, "end", "$.loop");
+    }
+    each(doc, "locators", "$.locators", [&](nlohmann::json& l, const std::string& at) { tick(l, "tick", at); });
+    if (auto* tl = member(doc, "timeline"))
+      each(*tl, "tempo", "$.timeline.tempo", [&](nlohmann::json& p, const std::string& at) { tick(p, "tick", at); });
+    each(doc, "tracks", "$.tracks", [&](nlohmann::json& t, const std::string& at) { track(t, at); });
+    each(doc, "returns", "$.returns", [&](nlohmann::json& t, const std::string& at) { track(t, at); });
+    if (auto* m = member(doc, "master")) track(*m, "$.master");
+    if (!error_.empty()) return Error{ErrorCode::InvalidArgument, error_, {}};
+    return Ok{};
+  }
+
+private:
+  static nlohmann::json* member(nlohmann::json& obj, const char* key) {
+    if (!obj.is_object()) return nullptr;
+    const auto it = obj.find(key);
+    return it == obj.end() ? nullptr : &*it;
+  }
+
+  template <class F>
+  void each(nlohmann::json& obj, const char* key, const std::string& path, F&& f) {
+    nlohmann::json* arr = member(obj, key);
+    if (!arr || !arr->is_array()) return;
+    for (size_t i = 0; i < arr->size(); ++i) f((*arr)[i], path + "[" + std::to_string(i) + "]");
+  }
+
+  void tick(nlohmann::json& obj, const char* key, const std::string& path) {
+    nlohmann::json* v = member(obj, key);
+    if (!v || !v->is_number_integer()) return;
+    constexpr int64_t kLimit = std::numeric_limits<int64_t>::max() / kScale;
+    if (v->is_number_unsigned()) {
+      const uint64_t u = v->get<uint64_t>();
+      if (u <= static_cast<uint64_t>(kLimit)) {
+        *v = static_cast<int64_t>(u) * kScale;
+        return;
+      }
+    } else {
+      const int64_t t = v->get<int64_t>();
+      if (t <= kLimit && t >= -kLimit) {
+        *v = t * kScale;
+        return;
+      }
+    }
+    if (error_.empty()) error_ = path + "." + key + ": tick out of range";
+  }
+
+  void track(nlohmann::json& t, const std::string& at) {
+    each(t, "lanes", at + ".lanes", [&](nlohmann::json& lane, const std::string& la) {
+      each(lane, "points", la + ".points", [&](nlohmann::json& p, const std::string& pa) { tick(p, "tick", pa); });
+    });
+    each(t, "clips", at + ".clips", [&](nlohmann::json& c, const std::string& ca) {
+      tick(c, "start", ca);
+      tick(c, "length", ca);
+      tick(c, "contentStart", ca);
+      if (auto* loop = member(c, "loop")) {
+        tick(*loop, "start", ca + ".loop");
+        tick(*loop, "end", ca + ".loop");
+      }
+      each(c, "notes", ca + ".notes", [&](nlohmann::json& n, const std::string& na) {
+        tick(n, "start", na);
+        tick(n, "length", na);
+      });
+    });
+    each(t, "children", at + ".children", [&](nlohmann::json& c, const std::string& ca) { track(c, ca); });
+  }
+
+  std::string error_;
+};
+
+Status migrateTicksPpq27720To221760(nlohmann::json& doc) { return TickScaler().run(doc); }
+
+constexpr Migration kBuiltinMigrations[] = {
+    {1, migrateTicksPpq27720To221760},
+};
+static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
+              "one built-in migration per schema step");
+
+}  // namespace
+
+std::span<const Migration> builtinMigrations() noexcept { return kBuiltinMigrations; }
 
 Result<std::string> serializeProject(const Project& p, const ViewState& view) {
   std::string out;

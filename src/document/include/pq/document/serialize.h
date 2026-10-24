@@ -41,7 +41,9 @@
 
 namespace pq::doc {
 
-inline constexpr int32_t kSchemaVersion = 1;
+// Schema history: 1 = ticks at PPQ 27,720; 2 = ticks at PPQ 221,760 (T0.5-fix1: migration 1 → 2 multiplies every
+// stored tick by 8).
+inline constexpr int32_t kSchemaVersion = 2;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader
@@ -51,7 +53,7 @@ struct Migration {
   int32_t from = 0;
   MigrationFn fn = nullptr;
 };
-// The built-in table (empty while kSchemaVersion is 1).
+// The built-in table: one step per schema version (1 → 2: ticks × 8).
 std::span<const Migration> builtinMigrations() noexcept;
 
 struct LoadOptions {

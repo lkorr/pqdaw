@@ -5,14 +5,14 @@ Each project has one MIDI track with one clip; the view scenes of the same names
 
     python tools/fixtures/make_pianoroll_fixtures.py
 
-Deterministic: rerunning produces identical files. Ticks are written at PPQ 27,720 (schema 1); T0.5-fix1's
-migration (PPQ 221,760, schema 2) must migrate these fixtures with the others (or PPQ below changes with it).
+Deterministic: rerunning produces identical files. Ticks are written at PPQ 221,760 (schema 2, T0.5-fix1); PPQ
+and the schema version below must follow pq/core/time.h (kPpq) and pq/document/serialize.h (kSchemaVersion).
 """
 
 import json
 import os
 
-PPQ = 27720
+PPQ = 221760
 WHOLE = 4 * PPQ
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "tests", "views", "fixtures")
 
@@ -33,7 +33,7 @@ def deg(d, e=0):
 def project(tuning_name, tuning_def, clip_name, colour, notes, length=2 * WHOLE, loop=None):
     loop = loop or {"enabled": True, "start": 0, "end": length}
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "timeline": {
             "tempo": [{"tick": 0, "bpm": 120.0, "curve": "step"}],
             "signatures": [{"bar": 0, "numerator": 4, "denominator": 4}],

@@ -114,16 +114,19 @@ std::vector<pq::TempoPoint> makeLongSession(double minSeconds) {
 // ---- Ticks and tuplets ------------------------------------------------------------------------------------------
 
 TEST_CASE("time: PPQ and note values") {
-  static_assert(pq::kPpq == 27720);
-  static_assert(pq::kTicksPerWhole == 110880);
-  for (int n = 1; n <= 11; ++n) CHECK(pq::kPpq % n == 0);  // lcm(1..11)
+  static_assert(pq::kPpq == 221760);  // 2⁶·3²·5·7·11 (SPEC §3.1, docs/QUESTIONS.md Q3)
+  static_assert(pq::kTicksPerWhole == 4 * pq::kPpq);
+  for (int n = 1; n <= 11; ++n) CHECK(pq::kPpq % n == 0);  // lcm(1..11) divides it
+  CHECK(pq::kPpq % 64 == 0);
   CHECK(pq::noteValueTicks(4) == pq::kPpq);
-  CHECK(pq::noteValueTicks(16) == 6930);
-  CHECK(pq::noteValueTicks(32) == 3465);
-  CHECK(pq::noteValueIsExact(32));
-  CHECK_FALSE(pq::noteValueIsExact(64));  // 1/64 = 1732.5 ticks (see docs/QUESTIONS.md)
-  CHECK(pq::noteValueTicks(64) == 1733);  // rounded
+  CHECK(pq::noteValueTicks(16) == pq::kPpq / 4);
+  CHECK(pq::noteValueTicks(32) == pq::kPpq / 8);
+  CHECK(pq::noteValueIsExact(64));
+  CHECK(pq::noteValueTicks(256) == 3465);  // the finest exact straight value
+  CHECK_FALSE(pq::noteValueIsExact(512));  // 1/512 = 1732.5 ticks
+  CHECK(pq::noteValueTicks(512) == 1733);  // rounded
   CHECK(pq::noteValueIsExact(12));
+  CHECK_FALSE(pq::noteValueIsExact(13));
   CHECK_FALSE(pq::noteValueIsExact(0));
 }
 
@@ -143,11 +146,14 @@ TEST_CASE("time: tuplet groups follow n:m with m the largest power of two <= n")
   CHECK(pq::tupletGroupTicks(64, 11) == pq::kTicksPerWhole / 8);
 }
 
-TEST_CASE("time: 3/5/7/11-tuplets (and their products) land exactly on integer ticks") {
-  const int64_t denominators[] = {1, 2, 4, 8, 16, 32, 64};
+TEST_CASE("time: straight 1/1 ... 1/256 and their 3/5/7/9/11-tuplets (and products) land exactly on integer ticks") {
+  const int64_t denominators[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
   const int64_t tuplets[] = {3, 5, 7, 11, 9, 15, 21, 33, 35, 55, 77};
   for (const int64_t d : denominators) {
-    for (const int64_t n : {3, 5, 7, 11}) {
+    // T0.5-fix1: every straight note value 1/1 … 1/256 is an integer tick count.
+    REQUIRE(pq::noteValueIsExact(d));
+    REQUIRE(pq::noteValueTicks(d) * d == pq::kTicksPerWhole);
+    for (const int64_t n : tuplets) {
       const Ticks span = pq::tupletGroupTicks(d, n);
       CAPTURE(d);
       CAPTURE(n);
@@ -160,7 +166,7 @@ TEST_CASE("time: 3/5/7/11-tuplets (and their products) land exactly on integer t
       }
     }
   }
-  // Any n-tuplet of a quarter for n dividing 27720 (all products of 3, 5, 7, 11, 9, 8) is exact.
+  // Any n-tuplet of a quarter for n dividing kPpq (all products of 3, 5, 7, 11, 9, 8) is exact.
   for (const int64_t n : tuplets) {
     REQUIRE(pq::tupletIsExact(pq::kPpq, n));
     for (int64_t k = 0; k <= n; ++k) REQUIRE(pq::tupletPosition(0, pq::kPpq, n, k) * n == k * pq::kPpq);
@@ -217,7 +223,7 @@ TEST_CASE("tempo: constant tempo is sample-exact") {
   CHECK(m.ticksToSamples(pq::kPpq, 48000.0) == 24000);
   const Ticks tenHours = 72000 * pq::kPpq;  // 72000 quarters = 36000 s
   CHECK(m.ticksToSamples(tenHours, 192000.0) == 36000LL * 192000LL);
-  CHECK(m.ticksToSamples(tenHours + 1, 192000.0) == 36000LL * 192000LL + 3);  // 1 tick = 3.46 samples
+  CHECK(m.ticksToSamples(tenHours + 8, 192000.0) == 36000LL * 192000LL + 3);  // 1 tick = 0.433 samples
   CHECK(m.samplesToTicks(24000, 48000.0) == static_cast<double>(pq::kPpq));
   // Before zero the first tempo continues.
   CHECK(m.ticksToSeconds(-pq::kPpq) == -0.5);
@@ -310,7 +316,7 @@ TEST_CASE("tempo: block partition by firstTickAtOrAfterSample covers every tick 
                               {60 * pq::kPpq, 300.0}};
   const auto r = pq::TempoMap::create(p);
   REQUIRE(r.ok());
-  const double sr = 44100.0;  // at 999 BPM a tick is ~0.1 sample, so many ticks share a sample
+  const double sr = 44100.0;  // at 999 BPM a tick is ~0.012 sample, so many ticks share a sample
   Ticks expected = r->firstTickAtOrAfterSample(0, sr);  // negative: ticks just before 0 round to sample 0
   CHECK(expected < 0);
   for (pq::SampleTime s0 = 0; s0 < 3 * 44100; s0 += 64) {
@@ -336,8 +342,15 @@ TEST_CASE("timesig: validation") {
     CHECK_FALSE(pq::TimeSigMap::create(c).ok());
   }
   {
-    const C c[] = {{0, {4, 64}}};  // 1/64 is not a whole number of ticks
+    const C c[] = {{0, {4, 512}}};  // 1/512 is not a whole number of ticks
     CHECK_FALSE(pq::TimeSigMap::create(c).ok());
+  }
+  {
+    const C c[] = {{0, {4, 4}}, {1, {7, 64}}, {2, {3, 256}}};  // x/64 (and finer) are legal at PPQ 221760
+    const auto r = pq::TimeSigMap::create(c);
+    REQUIRE(r.ok());
+    CHECK(r->barToTicks(2) - r->barToTicks(1) == 7 * (pq::kTicksPerWhole / 64));
+    CHECK(r->ticksToBarBeat(r->barToTicks(2) + 2 * (pq::kTicksPerWhole / 256) + 1) == pq::BarBeatTick{2, 2, 1});
   }
   {
     const C c[] = {{0, {0, 4}}};
@@ -372,7 +385,7 @@ TEST_CASE("timesig: bars, beats and changes on bar boundaries") {
   CHECK(m.signatureAt(m.barToTicks(6) - 1) == pq::TimeSignature{7, 8});
   CHECK(m.signatureAt(m.barToTicks(6)) == pq::TimeSignature{5, 4});
   CHECK(m.ticksToBarBeat(m.barToTicks(5) + 3 * (q / 2) + 7) == pq::BarBeatTick{5, 3, 7});
-  CHECK(m.ticksToBarBeat(m.barToTicks(12) + 9240 * 6 + 1) == pq::BarBeatTick{12, 6, 1});
+  CHECK(m.ticksToBarBeat(m.barToTicks(12) + (pq::kTicksPerWhole / 12) * 6 + 1) == pq::BarBeatTick{12, 6, 1});
 
   // Round trip over a range that crosses every change, including negative positions.
   for (Ticks t = -3 * pq::kTicksPerWhole; t < m.barToTicks(14); t += 61) {

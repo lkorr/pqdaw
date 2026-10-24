@@ -10,7 +10,7 @@
 namespace pq {
 namespace {
 
-constexpr Ticks kSixteenth = kTicksPerWhole / 16;  // 6930
+constexpr Ticks kSixteenth = kTicksPerWhole / 16;  // 55440
 constexpr Ticks kEndOfTime = std::numeric_limits<Ticks>::max();
 
 constexpr int64_t floorDiv(int64_t a, int64_t b) noexcept {  // RT-safe; b > 0
@@ -24,7 +24,7 @@ constexpr int64_t roundDivPos(int64_t a, int64_t b) noexcept { return (2 * a + b
 constexpr int64_t roundDiv(int64_t a, int64_t b) noexcept { return floorDiv(2 * a + b, 2 * b); }  // RT-safe
 
 // Lines of the group starting at gs: gs + round(j · num / den).
-// Every tuplet grid of PPQ 27720 has den == 1 (exact cells): skip the division there.
+// Every straight and 3/5/7/9/11-tuplet grid of PPQ 221760 has den == 1 (exact cells): skip the division there.
 constexpr Ticks linePos(const detail::GridLayout& L, Ticks gs, int64_t j) noexcept {  // RT-safe
   return L.den == 1 ? gs + j * L.num : gs + roundDivPos(j * L.num, L.den);
 }
@@ -336,7 +336,7 @@ bool GridLineCursor::next(GridLine& out) noexcept {
   out.bar = groupBar_ + barsIn;
   out.tickInBar = inBar;
   out.sig = L_.sig;
-  // 0 ≤ inBar < barLen ≤ 1024 whole notes < 2^32: a 32-bit modulo is enough (and cheaper than 64-bit).
+  // 0 ≤ inBar < barLen ≤ 1024 whole notes = 9.1·10⁸ ticks < 2^32: a 32-bit modulo is enough (and cheaper).
   const bool onBeat = static_cast<uint32_t>(inBar) % static_cast<uint32_t>(L_.beatLen) == 0;
   out.strength = inBar == 0                ? GridStrength::Bar
                  : onBeat                  ? GridStrength::Beat

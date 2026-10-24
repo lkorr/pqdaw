@@ -5,7 +5,7 @@
 // until then, over a wall-clock simulation (pq/app/sim_transport.h). Tests use FakeTransport
 // (pq/views/fake_transport.h), which records every request.
 //
-// Plain data only: positions are int64 ticks (PPQ 27720), the loop is three numbers. The port is called on the UI
+// Plain data only: positions are int64 ticks (PPQ 221760), the loop is three numbers. The port is called on the UI
 // thread; an engine implementation turns calls into EngineCommands (SPSC) and reads the playhead from the lossy
 // EngineReport ring, so playhead() is a cheap copy of the last report and may lag the audio by up to a block.
 //

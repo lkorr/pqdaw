@@ -110,10 +110,10 @@ TEST_CASE("serialize errors: syntax") {
 }
 
 TEST_CASE("serialize errors: structure, types and ranges") {
-  expectError(replaced(minimalText(), "  \"schemaVersion\": 1,\n", ""), "$: missing key \"schemaVersion\"");
-  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 1", "\"schemaVersion\": \"1\"")).code ==
+  expectError(replaced(minimalText(), "  \"schemaVersion\": 2,\n", ""), "$: missing key \"schemaVersion\"");
+  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 2", "\"schemaVersion\": \"2\"")).code ==
         pq::ErrorCode::Type);
-  expectError(replaced(minimalText(), "\"schemaVersion\": 1", "\"schemaVersion\": \"1\""),
+  expectError(replaced(minimalText(), "\"schemaVersion\": 2", "\"schemaVersion\": \"2\""),
               "$.schemaVersion: expected an integer, found a string");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"bogus\": 1,"), "$.bogus: unknown key");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"tracks\": [],"), "$.tracks: duplicate key");
@@ -121,9 +121,9 @@ TEST_CASE("serialize errors: structure, types and ranges") {
   expectError(replaced(minimalText(), "\"curve\": \"step\"", "\"curve\": \"cubic\""),
               "$.timeline.tempo[0].curve: curve must be \"step\" or \"linear\"");
   CHECK(expectFail(replaced(minimalText(), "\"bpm\": 120.0", "\"bpm\": 0.5")).message.rfind("$.timeline.tempo: ", 0) == 0);
-  CHECK(expectFail(replaced(minimalText(), "\"denominator\": 4}", "\"denominator\": 64}")).message.rfind(
+  CHECK(expectFail(replaced(minimalText(), "\"denominator\": 4}", "\"denominator\": 512}")).message.rfind(
             "$.timeline.signatures: ", 0) == 0);
-  expectError(replaced(minimalText(), "\"start\": 0, \"end\": 443520", "\"start\": 9, \"end\": 9"),
+  expectError(replaced(minimalText(), "\"start\": 0, \"end\": 3548160", "\"start\": 9, \"end\": 9"),
               "$.loop: loop end must be after loop start");
   expectError(replaced(minimalText(), "\"start\": 0, \"end\"", "\"start\": 1.5, \"end\""),
               "$.loop.start: expected an integer, found a number with a fraction or exponent");
@@ -189,7 +189,7 @@ TEST_CASE("serialize errors: tracks, clips, notes, lanes and references") {
                  "$.tracks[0].clips[1]: clips must be sorted by (start, id)");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["loop"]["end"] = 0; },
                  "$.tracks[0].clips[0].loop: loop end must be after loop start");
-  expectDomError([](json& d) { d["tracks"][0]["clips"][0]["signature"]["denominator"] = 64; },
+  expectDomError([](json& d) { d["tracks"][0]["clips"][0]["signature"]["denominator"] = 512; },
                  "$.tracks[0].clips[0].signature: invalid time signature");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["tuning"] = {{"main", 999}}; },
                  "$.tracks[0].clips[0].tuning: main tuning not found");

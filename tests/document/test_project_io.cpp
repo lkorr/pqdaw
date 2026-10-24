@@ -110,7 +110,7 @@ TEST_CASE("project io: errors name the file") {
   CHECK(missing.error().code == pq::ErrorCode::NotFound);
 
   fs::create_directories(fromUtf8(dir.utf8));
-  std::ofstream(dir.file("project.pqd"), std::ios::binary) << "{\n  \"schemaVersion\": 1,\n  \"tracks\": x\n}";
+  std::ofstream(dir.file("project.pqd"), std::ios::binary) << "{\n  \"schemaVersion\": 2,\n  \"tracks\": x\n}";
   Result<LoadedProject> bad = loadProject(dir.utf8);
   REQUIRE_FALSE(bad.ok());
   CHECK(bad.error().location.file == dir.utf8 + "\\project.pqd");

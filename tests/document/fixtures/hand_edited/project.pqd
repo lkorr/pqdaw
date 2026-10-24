@@ -6,7 +6,7 @@
   "tunings": [
     {"def": {"referenceHz": 440, "equaveCents": 1200.5, "n": 31, "kind": "edo"}, "colour": "#5e9bd6", "name": "31", "id": 1}
   ],
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "view": {"lanes": [], "tracks": [{"height": 0, "folded": true, "id": 10}]},
   "returns": [],
   "tracks": [
@@ -17,21 +17,21 @@
       "clips": [
         {
           "notes": [
-            {"pitch": {"degree": 3}, "velocity": 90, "length": 100, "start": 200, "id": 13},
-            {"id": 11, "start": 0, "length": 100, "velocity": 100, "pitch": {"ratio": "10/8"}},
-            {"id": 12, "start": 100, "length": 100, "velocity": 1e2, "pitch": {"cents": 100}, "chance": 0.5}
+            {"pitch": {"degree": 3}, "velocity": 90, "length": 800, "start": 1600, "id": 13},
+            {"id": 11, "start": 0, "length": 800, "velocity": 100, "pitch": {"ratio": "10/8"}},
+            {"id": 12, "start": 800, "length": 800, "velocity": 1e2, "pitch": {"cents": 100}, "chance": 0.5}
           ],
-          "id": 20, "name": "clip", "colour": "#808080", "start": 0, "length": 110880, "contentStart": 0,
-          "loop": {"start": 0, "end": 110880, "enabled": false}, "signature": {"denominator": 4, "numerator": 3},
+          "id": 20, "name": "clip", "colour": "#808080", "start": 0, "length": 887040, "contentStart": 0,
+          "loop": {"start": 0, "end": 887040, "enabled": false}, "signature": {"denominator": 4, "numerator": 3},
           "tuning": "inherit", "active": true
         }
       ]
     }
   ],
   "locators": [{"name": "A\tB", "tick": 0, "id": 30}],
-  "loop": {"enabled": true, "end": 2000, "start": 1000},
+  "loop": {"enabled": true, "end": 16000, "start": 8000},
   "timeline": {
     "signatures": [{"denominator": 4, "numerator": 4, "bar": 0}],
-    "tempo": [{"curve": "linear", "bpm": 90, "tick": 0}, {"curve": "step", "bpm": 140.5, "tick": 27720}]
+    "tempo": [{"curve": "linear", "bpm": 90, "tick": 0}, {"curve": "step", "bpm": 140.5, "tick": 221760}]
   }
 }

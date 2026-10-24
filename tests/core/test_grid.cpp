@@ -19,9 +19,11 @@ using namespace pq;
 
 namespace {
 
-constexpr Ticks W = kTicksPerWhole;  // 110880
-constexpr Ticks Q = kPpq;            // 27720
-constexpr Ticks S16 = W / 16;        // 6930
+constexpr Ticks W = kTicksPerWhole;  // 887040
+constexpr Ticks Q = kPpq;            // 221760
+constexpr Ticks S16 = W / 16;        // 55440
+constexpr Ticks T7 = Q / 7;          // a 7-tuplet 1/16 cell (7 per quarter): 31680
+constexpr Ticks T3 = W / 12;         // a triplet 1/8 cell: 73920
 
 GridSpec fixedSpec(int exp, int tuplet = 1) {
   GridSpec s;
@@ -186,7 +188,8 @@ TEST_CASE("grid: fixed values in 4/4 and 3/4") {
     } else {
       CHECK(d == GridDivision{0, 1 << e, 1});
     }
-    // Lines over 16 bars: cells are exactly the note value (1/64 rounds per Q3).
+    // Lines over 16 bars: cells are exactly the note value (every straight value is exact at PPQ 221760).
+    if (e > 0) REQUIRE(W % (int64_t{1} << e) == 0);
     const auto lines = ticksOf(collect(g, 0, 16 * W));
     const int64_t perCell = e < 0 ? (int64_t{1} << -e) : 0;
     const std::size_t expectCount = e <= 0 ? static_cast<std::size_t>(16 / (e < 0 ? perCell : 1))
@@ -194,14 +197,14 @@ TEST_CASE("grid: fixed values in 4/4 and 3/4") {
     REQUIRE(lines.size() == expectCount);
     for (std::size_t k = 0; k < lines.size(); ++k) {
       const Ticks expect = e <= 0 ? static_cast<Ticks>(k) * (e < 0 ? perCell : 1) * W
-                                  : (static_cast<Ticks>(2 * k) * W + (int64_t{1} << e)) / (int64_t{2} << e);
+                                  : static_cast<Ticks>(k) * (W >> e);
       CHECK(lines[k] == expect);
     }
   }
-  // Straight 1/64: alternating 1732 / 1733, exact again every 1/32.
+  // Straight 1/64 (docs/QUESTIONS.md Q3, PPQ 221760): every cell is exactly W/64 = 13860 ticks.
   const auto l64 = ticksOf(collect(Grid(fixedSpec(6), sigs, 1.0), 0, Q));
   REQUIRE(l64.size() == 16);
-  for (std::size_t k = 1; k < l64.size(); ++k) CHECK(l64[k] - l64[k - 1] == (k % 2 == 1 ? 1733 : 1732));
+  for (std::size_t k = 1; k < l64.size(); ++k) CHECK(l64[k] - l64[k - 1] == W / 64);
   // 1/1 and 1/2 in 3/4: 1/1 ≥ bar → 1 bar; 1/2 stays a note value, cut off at the bar line.
   CHECK(Grid(fixedSpec(0), sigs34, 1.0).divisionAt(0) == GridDivision{1, 0, 1});
   CHECK(ticksOf(collect(Grid(fixedSpec(1), sigs34, 1.0), 0, 2 * 3 * Q)) ==
@@ -210,7 +213,25 @@ TEST_CASE("grid: fixed values in 4/4 and 3/4") {
   CHECK(Grid(fixedSpec(0), makeSigs({{0, {2, 4}}}), 1.0).divisionAt(0) == GridDivision{2, 0, 1});
 }
 
-TEST_CASE("grid: every tuplet x note value lands on exact integer ticks (PPQ 27720)") {
+TEST_CASE("grid: x/64 signatures are legal and their beats are exact grid lines (PPQ 221760)") {
+  const TimeSigMap sigs = makeSigs({{0, {4, 4}}, {1, {7, 64}}, {2, {4, 4}}});
+  const Ticks beat = W / 64;
+  const auto lines = collect(Grid(fixedSpec(6), sigs, 1.0), W, W + 7 * beat + 1);
+  REQUIRE(lines.size() == 8);
+  for (std::size_t k = 0; k < lines.size(); ++k) {
+    CHECK(lines[k].tick == W + static_cast<Ticks>(k) * beat);
+    CHECK(lines[k].strength == (k == 0 || k == 7 ? GridStrength::Bar : GridStrength::Beat));
+  }
+  CHECK(lines[7].tick == W + 7 * beat);
+  // Adaptive, zoomed in: the 1/64 beat is the finest cell.
+  CHECK(Grid(adaptiveSpec(0), sigs, 100.0 / static_cast<double>(beat)).divisionAt(W) == GridDivision{0, 64, 1});
+  // A 7-tuplet of the 1/64 beat (4 beats per group of 7 lines) is exact too.
+  const auto l7 = ticksOf(collect(Grid(fixedSpec(6, 7), sigs, 1.0), W, W + 4 * beat));
+  REQUIRE(l7.size() == 7);
+  for (std::size_t k = 0; k < l7.size(); ++k) CHECK((l7[k] - W) * 7 == static_cast<Ticks>(k) * 4 * beat);
+}
+
+TEST_CASE("grid: every tuplet x note value lands on exact integer ticks (PPQ 221760)") {
   const TimeSigMap sigs;
   for (int n : {3, 5, 7, 9, 11, 15, 21}) {
     for (int e = 0; e <= 6; ++e) {
@@ -324,7 +345,8 @@ TEST_CASE("grid: line queries agree with iteration (random, tuplets, signature c
   for (int e = kGridFixedExpMin; e <= kGridFixedExpMax; ++e)
     for (int n : {1, 3, 5, 7, 11}) grids.emplace_back(fixedSpec(e, n), sigs, 1.0);
   for (int lv = kGridLevelMin; lv <= kGridLevelMax; ++lv)
-    for (double px : {0.05, 0.005, 0.0005, 0.00005}) grids.emplace_back(adaptiveSpec(lv, lv == 0 ? 7 : 1), sigs, px);
+    for (double pxPerQuarter : {1386.0, 138.6, 13.86, 1.386})
+      grids.emplace_back(adaptiveSpec(lv, lv == 0 ? 7 : 1), sigs, pxPerQuarter / static_cast<double>(Q));
   for (const Grid& g : grids) {
     const auto lines = ticksOf(collect(g, lo, hi));
     REQUIRE(lines.size() >= 2);
@@ -362,20 +384,20 @@ TEST_CASE("grid: line queries agree with iteration (random, tuplets, signature c
 
 TEST_CASE("grid: snap, snap toggle and Off") {
   const TimeSigMap sigs;
-  GridSpec s = fixedSpec(4);  // 1/16 = 6930
+  GridSpec s = fixedSpec(4);  // 1/16 = S16
   const Grid g(s, sigs, 1.0);
   CHECK(g.snapping());
   CHECK(g.snap(0) == 0);
-  CHECK(g.snap(3464) == 0);
-  CHECK(g.snap(3465) == S16);  // tie → later line
+  CHECK(g.snap(S16 / 2 - 1) == 0);
+  CHECK(g.snap(S16 / 2) == S16);  // tie → later line
   CHECK(g.snap(S16 + 1) == S16);
-  CHECK(g.snap(-3466) == -S16);  // before the start (pre-roll)
-  CHECK(g.snap(-3465) == 0);
-  // 7-tuplet 1/16: 7 lines per quarter = 3960 ticks.
+  CHECK(g.snap(-S16 / 2 - 1) == -S16);  // before the start (pre-roll)
+  CHECK(g.snap(-S16 / 2) == 0);
+  // 7-tuplet 1/16: 7 lines per quarter = T7 ticks.
   const Grid g7(fixedSpec(4, 7), sigs, 1.0);
-  CHECK(g7.snap(5000) == 3960);
+  CHECK(g7.snap(T7 + T7 / 4) == T7);
   CHECK(g7.snap(Q - 1) == Q);
-  CHECK(g7.snap(Q + 3960 * 3 + 1980) == Q + 3960 * 4);
+  CHECK(g7.snap(Q + T7 * 3 + T7 / 2) == Q + T7 * 4);
 
   const Grid noSnap(s.snapToggled(), sigs, 1.0);
   CHECK_FALSE(noSnap.snapping());
@@ -397,28 +419,29 @@ TEST_CASE("grid: snap, snap toggle and Off") {
 
 TEST_CASE("grid: snapDelta (Ableton relative snap)") {
   const TimeSigMap sigs;
-  const Grid g(fixedSpec(4), sigs, 1.0);  // 1/16 = 6930
+  const Grid g(fixedSpec(4), sigs, 1.0);  // 1/16 = S16
   // On the grid: moves to grid lines.
-  CHECK(g.snapDelta(S16, 3000) == 0);         // less than half a cell: stays
-  CHECK(g.snapDelta(S16, 3465) == S16);       // half a cell: next line
-  CHECK(g.snapDelta(S16, 10000) == S16);
-  CHECK(g.snapDelta(S16, 11000) == 2 * S16);
-  CHECK(g.snapDelta(S16, -3466) == -S16);
-  CHECK(g.snapDelta(2 * S16, -100000) == -14 * S16);  // 2·S16 − 100000 = −12.43 cells → −12 cells
-  // Off the grid: moves by whole cells, keeping the offset (1000) from the line before it.
-  const Ticks o = S16 + 1000;
-  CHECK(g.snapDelta(o, 3000) == 0);
-  CHECK(g.snapDelta(o, 4000) == S16);
+  CHECK(g.snapDelta(S16, S16 / 2 - 1) == 0);    // less than half a cell: stays
+  CHECK(g.snapDelta(S16, S16 / 2) == S16);      // half a cell: next line
+  CHECK(g.snapDelta(S16, S16 * 3 / 2 - 1) == S16);
+  CHECK(g.snapDelta(S16, S16 * 3 / 2 + 1) == 2 * S16);
+  CHECK(g.snapDelta(S16, -S16 / 2 - 1) == -S16);
+  CHECK(g.snapDelta(2 * S16, -(14 * S16 + S16 / 4)) == -14 * S16);  // 2 − 14.25 = −12.25 cells → −12 cells
+  // Off the grid: moves by whole cells, keeping the offset (S16 / 7) from the line before it.
+  const Ticks off = S16 / 7;
+  const Ticks o = S16 + off;
+  CHECK(g.snapDelta(o, S16 / 2 - 1) == 0);
+  CHECK(g.snapDelta(o, S16 / 2 + 1) == S16);
   CHECK(g.snapDelta(o, 3 * S16 - 100) == 3 * S16);
-  CHECK(g.snapDelta(o, -4000) == -S16);
-  CHECK(o + g.snapDelta(o, 5 * S16 + 17) == 6 * S16 + 1000);
-  // Off-grid with a 7-tuplet grid: steps of 3960, offset kept exactly.
+  CHECK(g.snapDelta(o, -S16 / 2 - 1) == -S16);
+  CHECK(o + g.snapDelta(o, 5 * S16 + 17) == 6 * S16 + off);
+  // Off-grid with a 7-tuplet grid: steps of T7, offset kept exactly.
   const Grid g7(fixedSpec(4, 7), sigs, 1.0);
-  const Ticks o7 = Q + 3960 * 2 + 77;
+  const Ticks o7 = Q + T7 * 2 + 77;
   for (int steps = -10; steps <= 10; ++steps) {
-    const Ticks d = g7.snapDelta(o7, steps * 3960 + 500);
+    const Ticks d = g7.snapDelta(o7, steps * T7 + T7 / 8);
     const Ticks moved = o7 + d;
-    CHECK((moved - 77) % 3960 == 0);  // still 77 past a 7-tuplet line (no bar cut-offs at 4/4)
+    CHECK((moved - 77) % T7 == 0);  // still 77 past a 7-tuplet line (no bar cut-offs at 4/4)
   }
   // Across bars with a cut-off cell (7/8 on a 1/4 grid): the anchor is the line before, the result a line + offset.
   const TimeSigMap s78 = makeSigs({{0, {7, 8}}});
@@ -429,7 +452,7 @@ TEST_CASE("grid: snapDelta (Ableton relative snap)") {
 
 TEST_CASE("grid: quantize at 0/50/100% and to tuplet grids") {
   const TimeSigMap sigs;
-  const Grid g(fixedSpec(4), sigs, 1.0);  // 1/16 = 6930
+  const Grid g(fixedSpec(4), sigs, 1.0);  // 1/16 = S16
   // start 100 after a line, end 1000 before one.
   const Ticks s = S16 + 100, e = 4 * S16 - 1000;
   CHECK(quantize(g, s, e, 0, QuantizeMode::StartEnd) == TickRange{s, e});
@@ -469,9 +492,9 @@ TEST_CASE("grid: quantize at 0/50/100% and to tuplet grids") {
       CHECK(std::abs(2 * (h.start - st) - (q.start - st)) <= 1);
     }
   }
-  // Triplet 1/8 (9240): 10000 → 9240; 14000 → 18480.
+  // Triplet 1/8 (T3): 1.1 cells → 1 cell; 1.6 cells → 2 cells.
   const Grid g3(fixedSpec(3, 3), sigs, 1.0);
-  CHECK(quantize(g3, 10000, 14000, 100, QuantizeMode::StartEnd) == TickRange{9240, 18480});
+  CHECK(quantize(g3, T3 + T3 / 10, T3 + T3 * 3 / 5, 100, QuantizeMode::StartEnd) == TickRange{T3, 2 * T3});
 }
 
 TEST_CASE("grid: ruler labels (bars.beats.sixteenths) at any zoom") {
@@ -521,7 +544,7 @@ TEST_CASE("rt: grid iteration over 10 hours and snap/quantize allocate nothing")
   const Ticks tenHours = 10 * 3600 * 2 * Q;  // 120 BPM
   const Grid fine(fixedSpec(6, 1), sigs, 1.0);
   const Grid trip(fixedSpec(5, 3), sigs, 1.0);
-  const Grid adapt(adaptiveSpec(0, 7), sigs, 0.001);
+  const Grid adapt(adaptiveSpec(0, 7), sigs, 27.72 / static_cast<double>(Q));  // 27.72 px per quarter
   int64_t count = 0;
   Ticks acc = 0;
   CHECK(alloc_trap::countRtViolations([&] {

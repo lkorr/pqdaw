@@ -1,10 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "timeline": {
     "tempo": [{"tick": 0, "bpm": 120.0, "curve": "step"}],
     "signatures": [{"bar": 0, "numerator": 4, "denominator": 4}]
   },
-  "loop": {"start": 0, "end": 443520, "enabled": false},
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
   "locators": [],
   "tunings": [
     {"id": 1, "name": "12-EDO", "colour": "#5E9BD6",

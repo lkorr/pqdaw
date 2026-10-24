@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "timeline": {
     "tempo": [
       {
@@ -18,7 +18,7 @@
   },
   "loop": {
     "start": 0,
-    "end": 443520,
+    "end": 3548160,
     "enabled": false
   },
   "locators": [],
@@ -59,12 +59,12 @@
           "name": "Septimal",
           "colour": "#46A5E8",
           "start": 0,
-          "length": 221760,
+          "length": 1774080,
           "contentStart": 0,
           "loop": {
             "enabled": true,
             "start": 0,
-            "end": 221760
+            "end": 1774080
           },
           "signature": {
             "numerator": 4,
@@ -76,7 +76,7 @@
             {
               "id": 200,
               "start": 0,
-              "length": 55440,
+              "length": 443520,
               "pitch": {
                 "degree": 0,
                 "equave": 0
@@ -86,7 +86,7 @@
             {
               "id": 201,
               "start": 0,
-              "length": 55440,
+              "length": 443520,
               "pitch": {
                 "degree": 10,
                 "equave": 0
@@ -96,7 +96,7 @@
             {
               "id": 202,
               "start": 0,
-              "length": 55440,
+              "length": 443520,
               "pitch": {
                 "degree": 18,
                 "equave": 0
@@ -106,7 +106,7 @@
             {
               "id": 203,
               "start": 0,
-              "length": 55440,
+              "length": 443520,
               "pitch": {
                 "degree": 25,
                 "equave": 0
@@ -116,7 +116,7 @@
             {
               "id": 208,
               "start": 0,
-              "length": 13860,
+              "length": 110880,
               "pitch": {
                 "degree": 0,
                 "equave": 1
@@ -125,8 +125,8 @@
             },
             {
               "id": 209,
-              "start": 13860,
-              "length": 13860,
+              "start": 110880,
+              "length": 110880,
               "pitch": {
                 "degree": 5,
                 "equave": 1
@@ -135,8 +135,8 @@
             },
             {
               "id": 210,
-              "start": 27720,
-              "length": 13860,
+              "start": 221760,
+              "length": 110880,
               "pitch": {
                 "degree": 9,
                 "equave": 1
@@ -145,8 +145,8 @@
             },
             {
               "id": 211,
-              "start": 41580,
-              "length": 13860,
+              "start": 332640,
+              "length": 110880,
               "pitch": {
                 "degree": 10,
                 "equave": 1
@@ -155,8 +155,8 @@
             },
             {
               "id": 204,
-              "start": 55440,
-              "length": 55440,
+              "start": 443520,
+              "length": 443520,
               "pitch": {
                 "degree": 18,
                 "equave": -1
@@ -165,8 +165,8 @@
             },
             {
               "id": 205,
-              "start": 55440,
-              "length": 55440,
+              "start": 443520,
+              "length": 443520,
               "pitch": {
                 "degree": 5,
                 "equave": 0
@@ -175,8 +175,8 @@
             },
             {
               "id": 206,
-              "start": 55440,
-              "length": 55440,
+              "start": 443520,
+              "length": 443520,
               "pitch": {
                 "degree": 13,
                 "equave": 0
@@ -185,8 +185,8 @@
             },
             {
               "id": 207,
-              "start": 55440,
-              "length": 55440,
+              "start": 443520,
+              "length": 443520,
               "pitch": {
                 "degree": 23,
                 "equave": 0
@@ -195,8 +195,8 @@
             },
             {
               "id": 212,
-              "start": 55440,
-              "length": 13860,
+              "start": 443520,
+              "length": 110880,
               "pitch": {
                 "degree": 13,
                 "equave": 1
@@ -205,8 +205,8 @@
             },
             {
               "id": 213,
-              "start": 83160,
-              "length": 13860,
+              "start": 665280,
+              "length": 110880,
               "pitch": {
                 "degree": 18,
                 "equave": 1
@@ -215,8 +215,8 @@
             },
             {
               "id": 214,
-              "start": 110880,
-              "length": 13860,
+              "start": 887040,
+              "length": 110880,
               "pitch": {
                 "degree": 17,
                 "equave": 1
@@ -225,8 +225,8 @@
             },
             {
               "id": 218,
-              "start": 110880,
-              "length": 83160,
+              "start": 887040,
+              "length": 665280,
               "pitch": {
                 "degree": 0,
                 "equave": -1
@@ -235,8 +235,8 @@
             },
             {
               "id": 219,
-              "start": 110880,
-              "length": 83160,
+              "start": 887040,
+              "length": 665280,
               "pitch": {
                 "degree": 18,
                 "equave": -1
@@ -245,8 +245,8 @@
             },
             {
               "id": 220,
-              "start": 110880,
-              "length": 83160,
+              "start": 887040,
+              "length": 665280,
               "pitch": {
                 "degree": 0,
                 "equave": 0
@@ -255,8 +255,8 @@
             },
             {
               "id": 215,
-              "start": 138600,
-              "length": 13860,
+              "start": 1108800,
+              "length": 110880,
               "pitch": {
                 "degree": 13,
                 "equave": 1
@@ -265,8 +265,8 @@
             },
             {
               "id": 223,
-              "start": 152460,
-              "length": 13860,
+              "start": 1219680,
+              "length": 110880,
               "pitch": {
                 "cents": 1500.0
               },
@@ -274,8 +274,8 @@
             },
             {
               "id": 216,
-              "start": 166320,
-              "length": 13860,
+              "start": 1330560,
+              "length": 110880,
               "pitch": {
                 "degree": 9,
                 "equave": 1
@@ -284,8 +284,8 @@
             },
             {
               "id": 221,
-              "start": 166320,
-              "length": 27720,
+              "start": 1330560,
+              "length": 221760,
               "pitch": {
                 "ratio": "7/4"
               },
@@ -293,8 +293,8 @@
             },
             {
               "id": 217,
-              "start": 194040,
-              "length": 13860,
+              "start": 1552320,
+              "length": 110880,
               "pitch": {
                 "degree": 0,
                 "equave": 1
@@ -303,8 +303,8 @@
             },
             {
               "id": 222,
-              "start": 194040,
-              "length": 27720,
+              "start": 1552320,
+              "length": 221760,
               "pitch": {
                 "ratio": "11/8"
               },

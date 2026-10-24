@@ -485,7 +485,7 @@ TEST_CASE("commands: invalid commands fail and leave the document untouched") {
       SetNoteProperty{{f.lead, f.clipA}, {f.keyA(0)}, NoteProperty::Chance, 2.0f},
       AddNotes{{f.lead, f.clipA}, {f.notesA[0]}},                     // already present
       SetClipLoop{{f.lead, f.clipA}, ClipLoop{true, 10, 10}},
-      SetClipSignature{{f.lead, f.clipA}, pq::TimeSignature{4, 64}},
+      SetClipSignature{{f.lead, f.clipA}, pq::TimeSignature{4, 512}},
       SetTempoMap{{{0, 0.5, pq::TempoCurve::Step}}},
       SetTimeSignatures{{{1, {4, 4}}}},                               // must start at bar 0
       SetLoop{{10, 10, true}},

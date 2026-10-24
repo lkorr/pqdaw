@@ -13,10 +13,10 @@
 //    signature change always starts a new cell.
 //  - Tuplet n puts n lines in the span of tupletBase(n) = bit_floor(n) straight cells (T0.5): a 7-tuplet at
 //    1/16 is 7 lines per quarter, a triplet at 1 bar is 3 lines per 2 bars. Line j of a group is at
-//    groupStart + round(j · span / n), computed from j directly (never accumulated). With PPQ 27720 every
-//    3/5/7/9/11-tuplet of every note value 1/1 … 1/64 is an exact integer; only straight 1/64 (1732.5 ticks)
-//    rounds, alternating 1732/1733 without drift (docs/QUESTIONS.md Q3). Groups that do not fit the rest of
-//    the bar (or segment) are cut off by the next bar (segment) line.
+//    groupStart + round(j · span / n), computed from j directly (never accumulated). With PPQ 221760 every
+//    straight note value 1/1 … 1/256 and every 3/5/7/9/11-tuplet of each is an exact integer (docs/QUESTIONS.md
+//    Q3); only primes ≥ 13 round (to the nearest tick, without drift). Groups that do not fit the rest of the
+//    bar (or segment) are cut off by the next bar (segment) line.
 //  - Adaptive: the finest division whose cell (including the tuplet) is ≥ adaptiveMinCellPx(level) pixels at
 //    the current zoom. Candidates fine → coarse: 1/64 … 1/2 (a note cell longer than a beat must tile the bar
 //    evenly, so 3/4 goes 1/4 → 1 bar, skipping 1/2), then 1, 2, 4, 8 … bars (up to kGridMaxBarsPerCell).

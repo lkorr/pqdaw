@@ -437,10 +437,11 @@ TEST_CASE("edit ops: quantize (Ctrl+U) to straight and tuplet grids, amount, all
   Fixture f;
   const ClipRef b{f.lead, f.clipB};
   Note n[3];
-  const Ticks starts[] = {1000, pq::kPpq + 3000, 2 * pq::kPpq - 50};
+  const Ticks s16 = pq::kPpq / 4, t7 = pq::kPpq / 7;  // a 1/16 cell, a 7-tuplet 1/16 cell
+  const Ticks starts[] = {s16 / 7, pq::kPpq + 3 * t7 / 4, 2 * pq::kPpq - 50};
   for (int i = 0; i < 3; ++i) {
     n[i].start = starts[i];
-    n[i].length = 5000;
+    n[i].length = s16 / 2;
   }
   auto a = ops::addNotes(f.doc(), f.store.ids(), b, n);
   commit(f.store, a);
@@ -450,9 +451,9 @@ TEST_CASE("edit ops: quantize (Ctrl+U) to straight and tuplet grids, amount, all
   commit(f.store, q);
   const NoteSeq& seq = f.clip(f.lead, f.clipB).notes;
   CHECK(seq.find(q->notes[0])->start == 0);
-  CHECK(seq.find(q->notes[1])->start == pq::kPpq);  // 3000 past a line, 3930 before the next
+  CHECK(seq.find(q->notes[1])->start == pq::kPpq);  // 0.43 cells past a line
   CHECK(seq.find(q->notes[2])->start == 2 * pq::kPpq);
-  for (const NoteKey& k : q->notes) CHECK(seq.find(k)->length == 5000);
+  for (const NoteKey& k : q->notes) CHECK(seq.find(k)->length == s16 / 2);
 
   REQUIRE(f.store.undo());
   // 7-tuplet 1/16 at 50 %: each start moves half way to the nearest of 7 lines per quarter (exact ticks).
@@ -460,8 +461,8 @@ TEST_CASE("edit ops: quantize (Ctrl+U) to straight and tuplet grids, amount, all
   auto q7 = ops::quantizeNotes(f.doc(), b, a->notes, g7, 0, 50);
   commit(f.store, q7);
   const NoteSeq& s7 = f.clip(f.lead, f.clipB).notes;
-  CHECK(s7.find(q7->notes[0])->start == 1000 + (0 - 1000) / 2);
-  CHECK(s7.find(q7->notes[1])->start == pq::kPpq + 3000 + (pq::kPpq + 3960 - (pq::kPpq + 3000)) / 2);
+  CHECK(s7.find(q7->notes[0])->start == starts[0] + (0 - starts[0]) / 2);
+  CHECK(s7.find(q7->notes[1])->start == starts[1] + (pq::kPpq + t7 - starts[1]) / 2);  // 3/4 of a cell: to the next
 
   // Empty selection = every note of the clip.
   REQUIRE(f.store.undo());

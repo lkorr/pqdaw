@@ -177,7 +177,7 @@ TEST_CASE("view context: the transport loop follows the document (edits, undo, o
   REQUIRE(ctx.undo());
   CHECK(port.loop == TransportLoop{0, 4 * kTicksPerWhole, false});
   REQUIRE(ctx.openProject(test::fixtureDir("small")).ok());
-  CHECK(port.loop == TransportLoop{97020, 388080, true});
+  CHECK(port.loop == TransportLoop{7 * kTicksPerWhole / 8, 4 * 7 * kTicksPerWhole / 8, true});  // bar 2 → bar 5 of 7/8
 }
 
 TEST_CASE("view context: opening stops playback, resets the start marker and reports errors") {

@@ -1,0 +1,674 @@
+{
+  "schemaVersion": 1,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "linear"},
+      {"tick": 443520, "bpm": 87.654321, "curve": "step"},
+      {"tick": 887040, "bpm": 1000.0, "curve": "linear"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4},
+      {"bar": 4, "numerator": 7, "denominator": 8},
+      {"bar": 6, "numerator": 11, "denominator": 12}
+    ]
+  },
+  "loop": {"start": 110880, "end": 332640, "enabled": true},
+  "locators": [
+    {"id": 363, "tick": -27720, "name": "Pickup 日本"},
+    {"id": 327, "tick": 110880, "name": "Verse"},
+    {"id": 364, "tick": 110880, "name": ""}
+  ],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    },
+    {
+      "id": 8,
+      "name": "31-EDO",
+      "colour": "#22AA44",
+      "def": {
+        "kind": "edo",
+        "n": 13,
+        "equave": "3/1",
+        "referenceHz": 261.626
+      }
+    },
+    {
+      "id": 9,
+      "name": "5L2s",
+      "colour": "#AA4422",
+      "def": {
+        "kind": "mos",
+        "generator": 696.0,
+        "n": 7,
+        "period": 1200.0,
+        "periodsPerEquave": 1,
+        "rotation": 0,
+        "modmos": [],
+        "genSequence": [],
+        "octaveStretch": 0.0,
+        "referenceHz": 261.626
+      }
+    },
+    {
+      "id": 10,
+      "name": "Scala 🎵",
+      "colour": "#4422AA",
+      "def": {
+        "kind": "scale",
+        "description": "Fixture scale: just major third, a cents step and a huge ratio",
+        "pitches": ["9/8", 386.31371386, "123456789012345678901234/98765432109876543210", "2/1"],
+        "mapping": {
+          "mapSize": 4,
+          "firstKey": 0,
+          "lastKey": 127,
+          "middleKey": 60,
+          "referenceKey": 69,
+          "referenceHz": 440.0,
+          "formalOctaveDegree": 4,
+          "mapping": [0, 1, null, 3]
+        },
+        "referenceHz": 97.7777777777778
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 4,
+      "kind": "midi",
+      "name": "Lead",
+      "colour": "#FF00A0",
+      "active": true,
+      "tuning": {"main": 8},
+      "mixer": {"volumeDb": -70.0, "pan": 0.0, "mute": true, "solo": false, "arm": true, "sends": [{"target": 3, "levelDb": -10.0, "preFader": true}], "output": "default"},
+      "lanes": [
+        {
+          "id": 321,
+          "param": {"kind": "trackVolume", "owner": 4},
+          "points": [
+            {"id": 322, "tick": 0, "value": -6.0, "curve": 0.0},
+            {"id": 323, "tick": 110880, "value": 0.0, "curve": 0.5},
+            {"id": 324, "tick": 221760, "value": -12.0, "curve": 0.0}
+          ]
+        },
+        {
+          "id": 351,
+          "param": {"kind": "trackSend", "owner": 4, "target": 3},
+          "points": [
+            {"id": 352, "tick": -100, "value": -70.0, "curve": -0.0}
+          ]
+        },
+        {
+          "id": 353,
+          "param": {"kind": "tuningReference", "owner": 8},
+          "points": [
+            {"id": 354, "tick": 0, "value": 440.0, "curve": 0.5}
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 311,
+          "name": "A",
+          "colour": "#808080",
+          "start": 0,
+          "length": 443520,
+          "contentStart": 0,
+          "loop": {"enabled": true, "start": 27720, "end": 83160},
+          "signature": {"numerator": 5, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 11, "start": 0, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 12, "start": 6930, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 13, "start": 13860, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 14, "start": 20790, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 15, "start": 27720, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 16, "start": 34650, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 17, "start": 41580, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 18, "start": 48510, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 19, "start": 55440, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 20, "start": 62370, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 21, "start": 69300, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 22, "start": 76230, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 23, "start": 83160, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 24, "start": 90090, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 25, "start": 97020, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 26, "start": 103950, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 27, "start": 110880, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 28, "start": 117810, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 29, "start": 124740, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 30, "start": 131670, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 31, "start": 138600, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 32, "start": 145530, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 33, "start": 152460, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 34, "start": 159390, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 35, "start": 166320, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 36, "start": 173250, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 37, "start": 180180, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 38, "start": 187110, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 39, "start": 194040, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 40, "start": 200970, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 41, "start": 207900, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 42, "start": 214830, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 43, "start": 221760, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 44, "start": 228690, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 45, "start": 235620, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 46, "start": 242550, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 47, "start": 249480, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 48, "start": 256410, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 49, "start": 263340, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 50, "start": 270270, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 51, "start": 277200, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 52, "start": 284130, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 53, "start": 291060, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 54, "start": 297990, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 55, "start": 304920, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 56, "start": 311850, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 57, "start": 318780, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 58, "start": 325710, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 59, "start": 332640, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 60, "start": 339570, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 61, "start": 346500, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 62, "start": 353430, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 63, "start": 360360, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 64, "start": 367290, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 65, "start": 374220, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 66, "start": 381150, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 67, "start": 388080, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 68, "start": 395010, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 69, "start": 401940, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 70, "start": 408870, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 71, "start": 415800, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 72, "start": 422730, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 73, "start": 429660, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 74, "start": 436590, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 75, "start": 443520, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 76, "start": 450450, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 77, "start": 457380, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 78, "start": 464310, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 79, "start": 471240, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 80, "start": 478170, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 81, "start": 485100, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 82, "start": 492030, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 83, "start": 498960, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 84, "start": 505890, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 85, "start": 512820, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 86, "start": 519750, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 87, "start": 526680, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 88, "start": 533610, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 89, "start": 540540, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 90, "start": 547470, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 91, "start": 554400, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 92, "start": 561330, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 93, "start": 568260, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 94, "start": 575190, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 95, "start": 582120, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 96, "start": 589050, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 97, "start": 595980, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 98, "start": 602910, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 99, "start": 609840, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 100, "start": 616770, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 101, "start": 623700, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 102, "start": 630630, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 103, "start": 637560, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 104, "start": 644490, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 105, "start": 651420, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 106, "start": 658350, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 107, "start": 665280, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 108, "start": 672210, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 109, "start": 679140, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 110, "start": 686070, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 111, "start": 693000, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 112, "start": 699930, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 113, "start": 706860, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 114, "start": 713790, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 115, "start": 720720, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 116, "start": 727650, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 117, "start": 734580, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 118, "start": 741510, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 119, "start": 748440, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 120, "start": 755370, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 121, "start": 762300, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 122, "start": 769230, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 123, "start": 776160, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 124, "start": 783090, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 125, "start": 790020, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 126, "start": 796950, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 127, "start": 803880, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 128, "start": 810810, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 129, "start": 817740, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 130, "start": 824670, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 131, "start": 831600, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 132, "start": 838530, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 133, "start": 845460, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 134, "start": 852390, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 135, "start": 859320, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 136, "start": 866250, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 137, "start": 873180, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 138, "start": 880110, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 139, "start": 887040, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 140, "start": 893970, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 141, "start": 900900, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 142, "start": 907830, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 143, "start": 914760, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 144, "start": 921690, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 145, "start": 928620, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 146, "start": 935550, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 147, "start": 942480, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 148, "start": 949410, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 149, "start": 956340, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 150, "start": 963270, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 151, "start": 970200, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 152, "start": 977130, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 153, "start": 984060, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 154, "start": 990990, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 155, "start": 997920, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 156, "start": 1004850, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 157, "start": 1011780, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 158, "start": 1018710, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 159, "start": 1025640, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 160, "start": 1032570, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 161, "start": 1039500, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 162, "start": 1046430, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 163, "start": 1053360, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 164, "start": 1060290, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 165, "start": 1067220, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 166, "start": 1074150, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 167, "start": 1081080, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 168, "start": 1088010, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 169, "start": 1094940, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 170, "start": 1101870, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 171, "start": 1108800, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 172, "start": 1115730, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 173, "start": 1122660, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 174, "start": 1129590, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 175, "start": 1136520, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 176, "start": 1143450, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 177, "start": 1150380, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 178, "start": 1157310, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 179, "start": 1164240, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 180, "start": 1171170, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 181, "start": 1178100, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 182, "start": 1185030, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 183, "start": 1191960, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 184, "start": 1198890, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 185, "start": 1205820, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 186, "start": 1212750, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 187, "start": 1219680, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 188, "start": 1226610, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 189, "start": 1233540, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 190, "start": 1240470, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 191, "start": 1247400, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 192, "start": 1254330, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 193, "start": 1261260, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 194, "start": 1268190, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 195, "start": 1275120, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 196, "start": 1282050, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 197, "start": 1288980, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 198, "start": 1295910, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 199, "start": 1302840, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 200, "start": 1309770, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 201, "start": 1316700, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 202, "start": 1323630, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 203, "start": 1330560, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 204, "start": 1337490, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 205, "start": 1344420, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 206, "start": 1351350, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 207, "start": 1358280, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 208, "start": 1365210, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 209, "start": 1372140, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 210, "start": 1379070, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 211, "start": 1386000, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 212, "start": 1392930, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 213, "start": 1399860, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 214, "start": 1406790, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 215, "start": 1413720, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 216, "start": 1420650, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 217, "start": 1427580, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 218, "start": 1434510, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 219, "start": 1441440, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 220, "start": 1448370, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 221, "start": 1455300, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 222, "start": 1462230, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 223, "start": 1469160, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 224, "start": 1476090, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 225, "start": 1483020, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 226, "start": 1489950, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 227, "start": 1496880, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 228, "start": 1503810, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 229, "start": 1510740, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 230, "start": 1517670, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 231, "start": 1524600, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 232, "start": 1531530, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 233, "start": 1538460, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 234, "start": 1545390, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 235, "start": 1552320, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 236, "start": 1559250, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 237, "start": 1566180, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 238, "start": 1573110, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 239, "start": 1580040, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 240, "start": 1586970, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 241, "start": 1593900, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 242, "start": 1600830, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 243, "start": 1607760, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 244, "start": 1614690, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 245, "start": 1621620, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 246, "start": 1628550, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 247, "start": 1635480, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 248, "start": 1642410, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 249, "start": 1649340, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 250, "start": 1656270, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 251, "start": 1663200, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 252, "start": 1670130, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 253, "start": 1677060, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 254, "start": 1683990, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 255, "start": 1690920, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 256, "start": 1697850, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 257, "start": 1704780, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 258, "start": 1711710, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 259, "start": 1718640, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 260, "start": 1725570, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 261, "start": 1732500, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 262, "start": 1739430, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 263, "start": 1746360, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 264, "start": 1753290, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 265, "start": 1760220, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 266, "start": 1767150, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 267, "start": 1774080, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 268, "start": 1781010, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 269, "start": 1787940, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 270, "start": 1794870, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 271, "start": 1801800, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 272, "start": 1808730, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 273, "start": 1815660, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 274, "start": 1822590, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 275, "start": 1829520, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 276, "start": 1836450, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 277, "start": 1843380, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 278, "start": 1850310, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 279, "start": 1857240, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0},
+            {"id": 280, "start": 1864170, "length": 13860, "pitch": {"degree": 21, "equave": 0}, "velocity": 100.0},
+            {"id": 281, "start": 1871100, "length": 13860, "pitch": {"degree": 22, "equave": 0}, "velocity": 100.0},
+            {"id": 282, "start": 1878030, "length": 13860, "pitch": {"degree": 23, "equave": 0}, "velocity": 100.0},
+            {"id": 283, "start": 1884960, "length": 13860, "pitch": {"degree": 24, "equave": 0}, "velocity": 100.0},
+            {"id": 284, "start": 1891890, "length": 13860, "pitch": {"degree": 25, "equave": 0}, "velocity": 100.0},
+            {"id": 285, "start": 1898820, "length": 13860, "pitch": {"degree": 26, "equave": 0}, "velocity": 100.0},
+            {"id": 286, "start": 1905750, "length": 13860, "pitch": {"degree": 27, "equave": 0}, "velocity": 100.0},
+            {"id": 287, "start": 1912680, "length": 13860, "pitch": {"degree": 28, "equave": 0}, "velocity": 100.0},
+            {"id": 288, "start": 1919610, "length": 13860, "pitch": {"degree": 29, "equave": 0}, "velocity": 100.0},
+            {"id": 289, "start": 1926540, "length": 13860, "pitch": {"degree": 30, "equave": 0}, "velocity": 100.0},
+            {"id": 290, "start": 1933470, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 291, "start": 1940400, "length": 13860, "pitch": {"degree": 1, "equave": 0}, "velocity": 100.0},
+            {"id": 292, "start": 1947330, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 293, "start": 1954260, "length": 13860, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+            {"id": 294, "start": 1961190, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 295, "start": 1968120, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+            {"id": 296, "start": 1975050, "length": 13860, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 297, "start": 1981980, "length": 13860, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+            {"id": 298, "start": 1988910, "length": 13860, "pitch": {"degree": 8, "equave": 0}, "velocity": 100.0},
+            {"id": 299, "start": 1995840, "length": 13860, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+            {"id": 300, "start": 2002770, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 100.0},
+            {"id": 301, "start": 2009700, "length": 13860, "pitch": {"degree": 11, "equave": 0}, "velocity": 100.0},
+            {"id": 302, "start": 2016630, "length": 13860, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+            {"id": 303, "start": 2023560, "length": 13860, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0},
+            {"id": 304, "start": 2030490, "length": 13860, "pitch": {"degree": 14, "equave": 0}, "velocity": 100.0},
+            {"id": 305, "start": 2037420, "length": 13860, "pitch": {"degree": 15, "equave": 0}, "velocity": 100.0},
+            {"id": 306, "start": 2044350, "length": 13860, "pitch": {"degree": 16, "equave": 0}, "velocity": 100.0},
+            {"id": 307, "start": 2051280, "length": 13860, "pitch": {"degree": 17, "equave": 0}, "velocity": 100.0},
+            {"id": 308, "start": 2058210, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 100.0},
+            {"id": 309, "start": 2065140, "length": 13860, "pitch": {"degree": 19, "equave": 0}, "velocity": 100.0},
+            {"id": 310, "start": 2072070, "length": 13860, "pitch": {"degree": 20, "equave": 0}, "velocity": 100.0}
+          ]
+        },
+        {
+          "id": 315,
+          "name": "B été",
+          "colour": "#123456",
+          "start": 887033,
+          "length": 110887,
+          "contentStart": -7,
+          "loop": {"enabled": false, "start": 0, "end": 110880},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": {"main": 9},
+          "active": false,
+          "notes": [
+            {"id": 344, "start": -562949953421312, "length": 562949953421312, "pitch": {"degree": -2147483648, "equave": 2147483647}, "velocity": 100.0},
+            {"id": 330, "start": -5, "length": 1, "pitch": {"degree": -5, "equave": -2}, "velocity": 127.0},
+            {"id": 312, "start": 0, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 331, "start": 1, "length": 1, "pitch": {"ratio": "5/4"}, "velocity": 0.1},
+            {"id": 332, "start": 2, "length": 1, "pitch": {"ratio": "7/4", "anchor": "note", "anchorId": 18}, "velocity": 100.0, "releaseVelocity": 0.0},
+            {"id": 333, "start": 3, "length": 1, "pitch": {"ratio": "3/2", "anchor": "jiFundamental", "anchorId": 42}, "velocity": 100.0, "chance": 0.25},
+            {"id": 334, "start": 4, "length": 1, "pitch": {"ratio": "9223372036854775807/9223372036854775806"}, "velocity": 100.0, "velocityRange": -127.0},
+            {"id": 335, "start": 5, "length": 1, "pitch": {"ratio": "9/8", "anchorId": 9}, "velocity": 100.0, "releaseVelocity": -0.0},
+            {"id": 336, "start": 6, "length": 1, "pitch": {"cents": 386.3137138648348}, "velocity": 100.0, "velocityRange": -0.0},
+            {"id": 337, "start": 7, "length": 1, "pitch": {"cents": -0.0}, "velocity": 1e-45},
+            {"id": 338, "start": 8, "length": 1, "pitch": {"cents": 5e-324}, "velocity": 1.1754944e-38},
+            {"id": 339, "start": 9, "length": 1, "pitch": {"cents": 1.7976931348623157e+308}, "velocity": 100.0, "chance": 0.0},
+            {"id": 340, "start": 10, "length": 1, "pitch": {"cents": -1e-300}, "velocity": 100.0, "disabled": true},
+            {"id": 341, "start": 11, "length": 1, "pitch": {"cents": 0.3333333333333333}, "velocity": 0.33333334},
+            {"id": 342, "start": 12, "length": 1, "pitch": {"jiObject": 7, "voice": 3}, "velocity": 100.0},
+            {"id": 313, "start": 27720, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 314, "start": 55440, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+            {"id": 343, "start": 562949953421312, "length": 1, "pitch": {"jiObject": 4294967295, "voice": 0}, "velocity": 100.0}
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "kind": "group",
+      "name": "Drums",
+      "colour": "#808080",
+      "active": true,
+      "tuning": {"main": 10},
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [
+        {
+          "id": 361,
+          "param": {"kind": "trackVolume", "owner": 5},
+          "points": [
+            {"id": 362, "tick": 0, "value": 0.1, "curve": 0.0}
+          ]
+        }
+      ],
+      "children": [
+        {
+          "id": 6,
+          "kind": "midi",
+          "name": "Kick",
+          "colour": "#808080",
+          "active": false,
+          "tuning": "inherit",
+          "mixer": {"volumeDb": 0.0, "pan": 0.1, "mute": false, "solo": false, "arm": false, "sends": [], "output": "master"},
+          "lanes": [
+            {
+              "id": 349,
+              "param": {"kind": "trackMute", "owner": 6},
+              "points": [
+                {"id": 350, "tick": 0, "value": 1.0, "curve": 0.0}
+              ]
+            }
+          ],
+          "clips": [
+            {
+              "id": 320,
+              "name": "K",
+              "colour": "#808080",
+              "start": 0,
+              "length": 110880,
+              "contentStart": 0,
+              "loop": {"enabled": false, "start": 0, "end": 110880},
+              "signature": {"numerator": 4, "denominator": 4},
+              "tuning": {
+                "private": {
+                  "kind": "mos",
+                  "generator": 700.0,
+                  "n": 7,
+                  "period": 1200.0,
+                  "periodsPerEquave": 1,
+                  "rotation": 3,
+                  "modmos": [0.0, -0.0, 1.0, 0.5, 5e-324],
+                  "genSequence": [700.0, 690.5],
+                  "octaveStretch": -0.5,
+                  "region": {"perPeriodSize": 7, "lowCents": 685.7142857142857, "highCents": 720.0},
+                  "referenceHz": 261.6255653005986
+                }
+              },
+              "active": true,
+              "notes": [
+                {"id": 316, "start": 0, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 317, "start": 27720, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 318, "start": 55440, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 319, "start": 83160, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0}
+              ]
+            }
+          ]
+        },
+        {
+          "id": 328,
+          "kind": "group",
+          "name": "Inner \"quoted\" ☃",
+          "colour": "#808080",
+          "active": true,
+          "tuning": "inherit",
+          "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+          "lanes": [],
+          "children": [
+            {
+              "id": 329,
+              "kind": "midi",
+              "name": "Tab\there\nnewline \\ \u0001",
+              "colour": "#808080",
+              "active": true,
+              "tuning": {
+                "private": {
+                  "kind": "edo",
+                  "n": 19,
+                  "equaveCents": 1200.00004,
+                  "referenceHz": 432.1
+                }
+              },
+              "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+              "lanes": [
+                {
+                  "id": 355,
+                  "param": {"kind": "tuningEquave", "owner": 8},
+                  "points": []
+                }
+              ],
+              "clips": [
+                {
+                  "id": 345,
+                  "name": "",
+                  "colour": "#808080",
+                  "start": -110880,
+                  "length": 1,
+                  "contentStart": 0,
+                  "loop": {"enabled": false, "start": 0, "end": 110880},
+                  "signature": {"numerator": 4, "denominator": 4},
+                  "tuning": "inherit",
+                  "active": true,
+                  "notes": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "kind": "midi",
+      "name": "Bass",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": true, "arm": false, "sends": [{"target": 3, "levelDb": -70.0, "preFader": true}], "output": {"track": 5}},
+      "lanes": [
+        {
+          "id": 325,
+          "param": {"kind": "mosGenerator", "owner": 9},
+          "points": [
+            {"id": 326, "tick": 0, "value": 696.0, "curve": 0.0}
+          ]
+        },
+        {
+          "id": 346,
+          "param": {"kind": "trackPan", "owner": 7},
+          "points": [
+            {"id": 347, "tick": 0, "value": -1.0, "curve": -1.0},
+            {"id": 348, "tick": 10, "value": 1.0, "curve": 1.0}
+          ]
+        },
+        {
+          "id": 356,
+          "param": {"kind": "mosPeriod", "owner": 9},
+          "points": [
+            {"id": 357, "tick": 5, "value": 1200.0, "curve": 0.0},
+            {"id": 358, "tick": 5, "value": 1100.0, "curve": 0.0}
+          ]
+        }
+      ],
+      "clips": []
+    }
+  ],
+  "returns": [
+    {
+      "id": 3,
+      "kind": "return",
+      "name": "Reverb",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "none"},
+      "lanes": [
+        {
+          "id": 365,
+          "param": {"kind": "trackVolume", "owner": 3},
+          "points": [
+            {"id": 366, "tick": 0, "value": -6.0, "curve": 0.0},
+            {"id": 367, "tick": 27720, "value": 0.0, "curve": 0.0}
+          ]
+        }
+      ]
+    }
+  ],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 6.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [
+      {
+        "id": 359,
+        "param": {"kind": "mosStretch", "owner": 9},
+        "points": [
+          {"id": 360, "tick": 0, "value": -1199.0, "curve": 0.0}
+        ]
+      }
+    ]
+  },
+  "view": {
+    "tracks": [
+      {"id": 2, "folded": true, "height": 33},
+      {"id": 4, "folded": false, "height": 120},
+      {"id": 5, "folded": true, "height": 0}
+    ],
+    "lanes": [
+      {"id": 321, "visible": false, "height": 0},
+      {"id": 353, "visible": true, "height": 77}
+    ]
+  }
+}

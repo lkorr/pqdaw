@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "timeline": {
     "tempo": [
       {
@@ -18,7 +18,7 @@
   },
   "loop": {
     "start": 0,
-    "end": 443520,
+    "end": 3548160,
     "enabled": false
   },
   "locators": [],
@@ -59,12 +59,12 @@
           "name": "Velocity Ramp",
           "colour": "#16B293",
           "start": 0,
-          "length": 221760,
+          "length": 1774080,
           "contentStart": 0,
           "loop": {
             "enabled": true,
             "start": 0,
-            "end": 221760
+            "end": 1774080
           },
           "signature": {
             "numerator": 4,
@@ -76,7 +76,7 @@
             {
               "id": 300,
               "start": 0,
-              "length": 6930,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 0
@@ -85,8 +85,8 @@
             },
             {
               "id": 301,
-              "start": 6930,
-              "length": 6930,
+              "start": 55440,
+              "length": 55440,
               "pitch": {
                 "degree": 5,
                 "equave": 0
@@ -95,8 +95,8 @@
             },
             {
               "id": 302,
-              "start": 13860,
-              "length": 6930,
+              "start": 110880,
+              "length": 55440,
               "pitch": {
                 "degree": 11,
                 "equave": 0
@@ -105,8 +105,8 @@
             },
             {
               "id": 303,
-              "start": 20790,
-              "length": 6930,
+              "start": 166320,
+              "length": 55440,
               "pitch": {
                 "degree": 2,
                 "equave": 0
@@ -116,8 +116,8 @@
             },
             {
               "id": 304,
-              "start": 27720,
-              "length": 6930,
+              "start": 221760,
+              "length": 55440,
               "pitch": {
                 "degree": 7,
                 "equave": 0
@@ -126,8 +126,8 @@
             },
             {
               "id": 305,
-              "start": 34650,
-              "length": 6930,
+              "start": 277200,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 1
@@ -136,8 +136,8 @@
             },
             {
               "id": 306,
-              "start": 41580,
-              "length": 6930,
+              "start": 332640,
+              "length": 55440,
               "pitch": {
                 "degree": 4,
                 "equave": 0
@@ -146,8 +146,8 @@
             },
             {
               "id": 307,
-              "start": 48510,
-              "length": 6930,
+              "start": 388080,
+              "length": 55440,
               "pitch": {
                 "degree": 9,
                 "equave": 0
@@ -156,8 +156,8 @@
             },
             {
               "id": 308,
-              "start": 55440,
-              "length": 6930,
+              "start": 443520,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 1
@@ -166,8 +166,8 @@
             },
             {
               "id": 309,
-              "start": 62370,
-              "length": 6930,
+              "start": 498960,
+              "length": 55440,
               "pitch": {
                 "degree": 5,
                 "equave": 1
@@ -176,8 +176,8 @@
             },
             {
               "id": 310,
-              "start": 69300,
-              "length": 6930,
+              "start": 554400,
+              "length": 55440,
               "pitch": {
                 "degree": 11,
                 "equave": 1
@@ -187,8 +187,8 @@
             },
             {
               "id": 311,
-              "start": 76230,
-              "length": 6930,
+              "start": 609840,
+              "length": 55440,
               "pitch": {
                 "degree": 2,
                 "equave": 1
@@ -197,8 +197,8 @@
             },
             {
               "id": 312,
-              "start": 83160,
-              "length": 6930,
+              "start": 665280,
+              "length": 55440,
               "pitch": {
                 "degree": 7,
                 "equave": 1
@@ -207,8 +207,8 @@
             },
             {
               "id": 313,
-              "start": 90090,
-              "length": 6930,
+              "start": 720720,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 2
@@ -217,8 +217,8 @@
             },
             {
               "id": 314,
-              "start": 97020,
-              "length": 6930,
+              "start": 776160,
+              "length": 55440,
               "pitch": {
                 "degree": 4,
                 "equave": 1
@@ -227,8 +227,8 @@
             },
             {
               "id": 315,
-              "start": 103950,
-              "length": 6930,
+              "start": 831600,
+              "length": 55440,
               "pitch": {
                 "degree": 9,
                 "equave": 1
@@ -237,8 +237,8 @@
             },
             {
               "id": 316,
-              "start": 110880,
-              "length": 6930,
+              "start": 887040,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 0
@@ -247,8 +247,8 @@
             },
             {
               "id": 317,
-              "start": 117810,
-              "length": 6930,
+              "start": 942480,
+              "length": 55440,
               "pitch": {
                 "degree": 5,
                 "equave": 0
@@ -258,8 +258,8 @@
             },
             {
               "id": 318,
-              "start": 124740,
-              "length": 6930,
+              "start": 997920,
+              "length": 55440,
               "pitch": {
                 "degree": 11,
                 "equave": 0
@@ -268,8 +268,8 @@
             },
             {
               "id": 319,
-              "start": 131670,
-              "length": 6930,
+              "start": 1053360,
+              "length": 55440,
               "pitch": {
                 "degree": 2,
                 "equave": 0
@@ -278,8 +278,8 @@
             },
             {
               "id": 320,
-              "start": 138600,
-              "length": 6930,
+              "start": 1108800,
+              "length": 55440,
               "pitch": {
                 "degree": 7,
                 "equave": 0
@@ -288,8 +288,8 @@
             },
             {
               "id": 321,
-              "start": 145530,
-              "length": 6930,
+              "start": 1164240,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 1
@@ -298,8 +298,8 @@
             },
             {
               "id": 322,
-              "start": 152460,
-              "length": 6930,
+              "start": 1219680,
+              "length": 55440,
               "pitch": {
                 "degree": 4,
                 "equave": 0
@@ -308,8 +308,8 @@
             },
             {
               "id": 323,
-              "start": 159390,
-              "length": 6930,
+              "start": 1275120,
+              "length": 55440,
               "pitch": {
                 "degree": 9,
                 "equave": 0
@@ -318,8 +318,8 @@
             },
             {
               "id": 324,
-              "start": 166320,
-              "length": 6930,
+              "start": 1330560,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 1
@@ -329,8 +329,8 @@
             },
             {
               "id": 325,
-              "start": 173250,
-              "length": 6930,
+              "start": 1386000,
+              "length": 55440,
               "pitch": {
                 "degree": 5,
                 "equave": 1
@@ -339,8 +339,8 @@
             },
             {
               "id": 326,
-              "start": 180180,
-              "length": 6930,
+              "start": 1441440,
+              "length": 55440,
               "pitch": {
                 "degree": 11,
                 "equave": 1
@@ -349,8 +349,8 @@
             },
             {
               "id": 327,
-              "start": 187110,
-              "length": 6930,
+              "start": 1496880,
+              "length": 55440,
               "pitch": {
                 "degree": 2,
                 "equave": 1
@@ -359,8 +359,8 @@
             },
             {
               "id": 328,
-              "start": 194040,
-              "length": 6930,
+              "start": 1552320,
+              "length": 55440,
               "pitch": {
                 "degree": 7,
                 "equave": 1
@@ -369,8 +369,8 @@
             },
             {
               "id": 329,
-              "start": 200970,
-              "length": 6930,
+              "start": 1607760,
+              "length": 55440,
               "pitch": {
                 "degree": 0,
                 "equave": 2
@@ -379,8 +379,8 @@
             },
             {
               "id": 330,
-              "start": 207900,
-              "length": 6930,
+              "start": 1663200,
+              "length": 55440,
               "pitch": {
                 "degree": 4,
                 "equave": 1
@@ -389,8 +389,8 @@
             },
             {
               "id": 331,
-              "start": 214830,
-              "length": 6930,
+              "start": 1718640,
+              "length": 55440,
               "pitch": {
                 "degree": 9,
                 "equave": 1

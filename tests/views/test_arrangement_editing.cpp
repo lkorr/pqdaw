@@ -180,7 +180,7 @@ TEST_CASE("arrangement editing: drag-move with snap on a 7-tuplet grid lands on 
   GridSpec g;
   g.mode = GridMode::Fixed;
   g.fixedExp = 4;  // 1/16
-  g.tuplet = 7;    // 7 lines per quarter: every 3960 ticks
+  g.tuplet = 7;    // 7 lines per quarter: every kPpq / 7 ticks
   f.ctx.setGrid(g);
   constexpr Ticks kCell = kPpq / 7;
   static_assert(kCell * 7 == kPpq);

@@ -202,14 +202,16 @@ TEST_CASE("row model: 31edo labels k\\31 with the equave number on degree 0; dia
 
 TEST_CASE("clip view: B-mode draw on a 5-tuplet grid lands on exact ticks; a drawn run is one undo step") {
   Roll r("pianoroll-12edo");
-  r.setGrid(4, 5);  // 1/16 quintuplets: 5 lines per quarter = 5544 ticks
+  r.setGrid(4, 5);  // 1/16 quintuplets: 5 lines per quarter
+  constexpr Ticks kCell = kQ / 5;
+  static_assert(kCell * 5 == kQ);
   const Grid g = r.view->grid();
-  CHECK(g.lineAfter(0) == 5544);
+  CHECK(g.lineAfter(0) == kCell);
   CHECK(r.d.press("B") == KeyResult::Action);
   CHECK(r.ctx.drawMode());
   const size_t n0 = r.clip().notes.size(), h0 = r.history();
   // Click inside the 4th cell of beat 3 (degree 2 = D3, a free row there).
-  const Ticks inCell = 2 * kQ + 3 * 5544 + 1234;
+  const Ticks inCell = 2 * kQ + 3 * kCell + kCell / 4;
   r.d.click(r.at(static_cast<double>(inCell), 2));
   REQUIRE(r.clip().notes.size() == n0 + 1);
   CHECK(r.history() == h0 + 1);
@@ -217,22 +219,22 @@ TEST_CASE("clip view: B-mode draw on a 5-tuplet grid lands on exact ticks; a dra
   for (const doc::Note& n : r.clip().notes)
     if (n.pitch == PitchId::fromDegree(2, 0) && n.start > 2 * kQ && n.start < 3 * kQ) drawn = &n;
   REQUIRE(drawn != nullptr);
-  CHECK(drawn->start == 2 * kQ + 3 * 5544);
-  CHECK(drawn->length == 5544);
-  CHECK(drawn->start % 5544 == 0);
+  CHECK(drawn->start == 2 * kQ + 3 * kCell);
+  CHECK(drawn->length == kCell);
+  CHECK(drawn->start % kCell == 0);
   // Audition of the drawn note through the port.
   REQUIRE(r.port.count(FakeTransport::Call::Audition) >= 1);
   CHECK(r.port.calls.back().hz == doctest::Approx(261.626 * std::exp2(2.0 / 12.0)).epsilon(1e-5));
 
   // A drag across three cells on the D#3 row: three notes, one undo step.
   const size_t n1 = r.clip().notes.size(), h1 = r.history();
-  r.d.drag(r.at(4 * kQ + 100.0, 3), r.at(4 * kQ + 2 * 5544 + 100.0, 3), 8);
+  r.d.drag(r.at(4 * kQ + 100.0, 3), r.at(4 * kQ + 2 * kCell + 100.0, 3), 8);
   CHECK(r.clip().notes.size() == n1 + 3);
   CHECK(r.history() == h1 + 1);
   std::vector<Ticks> starts;
   for (const doc::Note& n : r.clip().notes)
     if (n.pitch == PitchId::fromDegree(3, 0) && n.start >= 4 * kQ && n.start < 5 * kQ) starts.push_back(n.start);
-  CHECK(starts == std::vector<Ticks>{4 * kQ, 4 * kQ + 5544, 4 * kQ + 2 * 5544});
+  CHECK(starts == std::vector<Ticks>{4 * kQ, 4 * kQ + kCell, 4 * kQ + 2 * kCell});
   REQUIRE(r.ctx.undo());
   CHECK(r.clip().notes.size() == n1);
 
