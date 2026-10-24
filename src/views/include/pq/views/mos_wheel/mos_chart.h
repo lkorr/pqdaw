@@ -222,7 +222,6 @@ private:
   struct Card {
     std::vector<std::string> lines;
     ui::IRect rect{};
-    ui::Vec2 anchor{};
   };
   struct Labels {  // a region's band texts: "5L 2s", "5L2s", "5L 2s (Diatonic)" (or empty), "685.7¢–720.0¢"
     std::string label, compact, name, range;
@@ -304,10 +303,9 @@ private:
   int32_t pressSelected_ = -1;
   bool movedSinceLive_ = false;
   Card card_;
-  ui::Vec2 lastPointer_{-1e9f, -1e9f};
   std::string infoTitle_, infoBody_;
 
-  Stats stats_;
+  mutable Stats stats_;  // mutable: layout runs lazily from const geometry queries
 };
 
 }  // namespace pq::views
