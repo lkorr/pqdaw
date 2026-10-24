@@ -740,6 +740,16 @@ void Dropdown::setIndex(int32_t i) {
   markDirty();
 }
 
+void Dropdown::setItems(std::vector<std::string> items, int32_t index) {
+  if (menu_)
+    if (OverlayLayer* layer = OverlayLayer::of(*menu_)) layer->close(*menu_);
+  const int32_t i = items.empty() ? -1 : std::clamp(index, 0, static_cast<int32_t>(items.size()) - 1);
+  if (items == items_ && i == index_) return;
+  items_ = std::move(items);
+  index_ = i;
+  markDirty();
+}
+
 void Dropdown::choose(int32_t i) {
   if (items_.empty()) return;
   i = std::clamp(i, 0, static_cast<int32_t>(items_.size()) - 1);

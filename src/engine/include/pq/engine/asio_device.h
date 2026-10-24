@@ -69,8 +69,9 @@ uint32_t asioChooseBufferFrames(int32_t minSize, int32_t maxSize, int32_t prefer
 // - A control thread owned by the device: COM single-threaded apartment (drivers are apartment-threaded), a
 //   hidden window (the driver's system handle) and a message pump (drivers that show their control panel inside
 //   the process need it). Every driver call except the audio-path ones runs there: enumerate/open/start/stop/
-//   close/controlPanel marshal to it and block until done. It also polls (every 50 ms while a driver is loaded)
-//   the request flags the driver's messages set, and handles them off the audio thread: a reset request, a
+//   close/controlPanel marshal to it and block until done. It also polls (every 50 ms while the stream runs,
+//   250 ms while a driver is loaded but stopped) the request flags the driver's messages set, and handles them
+//   off the audio thread: a reset request, a
 //   buffer-size change or a sample-rate change → stop, disposeBuffers, Release, reload, init, recreate the
 //   stream (same configuration; after a rate change, at the driver's new rate), restart if it was running;
 //   latencies changed → re-query.
@@ -124,7 +125,7 @@ public:
   using StreamChangedFn = void (*)(void* user, const StreamInfo& info);
   void setStreamChangedCallback(StreamChangedFn fn, void* user);
 
-  // Handles pending driver requests now (normally the control thread polls them every 50 ms). For tests.
+  // Handles pending driver requests now (normally the control thread polls them every 50 / 250 ms). For tests.
   void handlePendingRequests();
 
   struct Impl;

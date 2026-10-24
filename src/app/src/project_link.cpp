@@ -198,6 +198,20 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   auto lib = loadInstrumentLibrary(cfg_.stdlib.empty() ? stdlibDir() : cfg_.stdlib);
   if (!lib.ok()) return lib.error();
   instruments_ = std::move(lib.value());
+  if (Status s = makeEngine(); !s.ok()) return s;
+  written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
+  automated_.assign(kProjectParams, 0);
+  current_ = initial;
+  applyParams(*current_, true);
+  if (Status s = compileNow(current_); !s.ok()) return s;
+  publishTempo(*current_);
+  publishSequences(*current_);
+  publishAutomation(*current_);
+  if (cfg_.compileThread) worker_ = std::thread([this] { workerMain(); });
+  return Ok{};
+}
+
+Status ProjectLink::makeEngine() {
   engine::EngineConfig ec;
   ec.sampleRate = cfg_.sampleRate;
   ec.blockFrames = cfg_.blockFrames;
@@ -216,16 +230,44 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   co.voice.maxVoices = std::max(cfg_.maxVoices, 1u);
   co.visualMode = true;
   compiler_ = std::make_unique<engine::ProjectCompiler>(co);
+  return Ok{};
+}
+
+Status ProjectLink::setSampleRate(double rate) {
+  if (!(rate >= 8000.0 && rate <= 768000.0)) return linkError(ErrorCode::InvalidArgument, "sample rate out of range");
+  if (rate == cfg_.sampleRate) return Ok{};
+  flush();  // no structural compile pending or running (and none can start: only this thread queues them)
+  const views::PlayheadSnapshot ph = playhead();
+  const double oldRate = cfg_.sampleRate;
+  std::unique_ptr<engine::Engine> oldEngine = std::move(engine_);
+  std::unique_ptr<engine::ProjectCompiler> oldCompiler = std::move(compiler_);
+  cfg_.sampleRate = rate;
+  if (Status s = makeEngine(); !s.ok()) {  // keep the old engine (still valid at its rate)
+    cfg_.sampleRate = oldRate;
+    engine_ = std::move(oldEngine);
+    compiler_ = std::move(oldCompiler);
+    return s;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    meterBus_.clear();  // the new program's layout is published by compileNow
+  }
+  meters_.clear();
   written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
-  automated_.assign(kProjectParams, 0);
-  current_ = initial;
+  tempoTimeline_ = nullptr;
+  report_ = engine::TransportReport{};
+  commandsPosted_ = 0;
   applyParams(*current_, true);
-  if (Status s = compileNow(current_); !s.ok()) return s;
+  const Status compiled = compileNow(current_);
   publishTempo(*current_);
   publishSequences(*current_);
   publishAutomation(*current_);
-  if (cfg_.compileThread) worker_ = std::thread([this] { workerMain(); });
-  return Ok{};
+  if (loopSent_) postTransport({engine::TransportCommandKind::SetLoop, loop_.enabled, 0, loop_.start, loop_.end});
+  postTransport({ph.playing ? engine::TransportCommandKind::Play : engine::TransportCommandKind::Locate, false, ph.tick, 0, 0});
+  optimistic_ = {ph.playing, ph.tick, 0};
+  oldCompiler.reset();
+  oldEngine.reset();  // the audio output no longer calls it (precondition)
+  return compiled;
 }
 
 ProjectLink::~ProjectLink() {
@@ -606,6 +648,8 @@ void ProjectLink::locate(Ticks tick) {
 void ProjectLink::setLoop(const views::TransportLoop& loop) {
   const views::PlayheadSnapshot now = playhead();
   postTransport({engine::TransportCommandKind::SetLoop, loop.enabled, 0, loop.start, loop.end});
+  loop_ = loop;
+  loopSent_ = true;
   optimistic_ = now;
 }
 

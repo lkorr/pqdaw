@@ -91,10 +91,12 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     } else if (a == "--rate") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.sampleRate) || o.sampleRate == 0)
         return usageError("--rate needs a sample rate in Hz");
+      o.rateGiven = true;
       sineOnly = a;
     } else if (a == "--buffer") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.bufferFrames) || o.bufferFrames == 0)
         return usageError("--buffer needs a frame count >= 1");
+      o.bufferGiven = true;
       streamOnly = a;
     } else if (a == "--block") {
       if (i + 1 >= args.size() || !parseNumber(args[++i], o.blockFrames) || o.blockFrames == 0 ||
@@ -124,6 +126,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       else
         return usageError("--backend needs wasapi, rtaudio or asio");
       backendFlag = true;
+      o.backendGiven = true;
     } else if (a == "--play") {
       if (Status s = setMode(Mode::Play, a); !s) return std::move(s).error();
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--play needs a .pqp file");
@@ -167,7 +170,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   const bool window = o.mode == Mode::Window;
   const bool render = o.mode == Mode::Render;
   if (!sineOnly.empty() && o.mode != Mode::Sine && !(play && sineOnly != "--inject-stall") &&
-      !(window && sineOnly == "--exclusive"))
+      !(window && (sineOnly == "--exclusive" || sineOnly == "--rate")))
     return usageError(std::string(sineOnly) + " only applies to --sine");
   const bool panel = o.mode == Mode::AsioPanel;
   if (!streamOnly.empty() && o.mode != Mode::Sine && o.mode != Mode::LatencyTest && !play &&
@@ -263,8 +266,10 @@ std::string usage() {
          "                                           render the project offline from the start through the\n"
          "                                           playback engine (32-bit float WAV, 48 kHz stereo);\n"
          "                                           default length: the end of the last clip + 2 s\n"
-         "  (window) --device ID, --buffer N, --exclusive, --backend wasapi|rtaudio|asio, --asio\n"
-         "                                           the output the DAW plays through (default: the default\n"
+         "  (window) --device ID, --buffer N, --rate HZ, --exclusive, --backend wasapi|rtaudio|asio, --asio\n"
+         "                                           the output the DAW plays through for this run (default:\n"
+         "                                           the audio preferences, Ctrl+, : saved in\n"
+         "                                           %APPDATA%\\pqdaw\\settings.json; first run: the default\n"
          "                                           WASAPI device, shared mode, 48 kHz)\n"
          "  --help                                  this text\n";
 }

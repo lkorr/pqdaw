@@ -185,7 +185,16 @@ TEST_CASE("cli: audio flag errors") {
   CHECK(parse({"--asio"}).ok());
   CHECK(parse({"--buffer", "128", "--exclusive", "--backend", "wasapi"}).ok());
   CHECK_FALSE(parse({"--seconds", "2"}).ok());          // the window has no duration
-  CHECK_FALSE(parse({"--rate", "44100"}).ok());         // the engine runs at 48 kHz until T3.18
+  {  // T3.18: the engine follows the device's rate, so the window takes --rate too (and records which flags came)
+    auto r = parse({"--rate", "44100", "--buffer", "128"});
+    REQUIRE(r.ok());
+    CHECK(r->rateGiven);
+    CHECK(r->sampleRate == 44100);
+    CHECK(r->bufferGiven);
+    CHECK_FALSE(r->backendGiven);
+    CHECK(parse({"--backend", "wasapi"})->backendGiven);
+    CHECK_FALSE(parse({})->rateGiven);
+  }
   CHECK_FALSE(parse({"--render", "x.wav"}).ok());       // --render needs --project
   CHECK_FALSE(parse({"--project", "p", "--render", "x.wav", "--device", "3"}).ok());
   {

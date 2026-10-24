@@ -104,6 +104,15 @@ public:
   // compile is pending or running. With compileThread = false it compiles on the calling thread.
   void flush();
 
+  // T3.18: another sample rate (the audio preferences, a driver that changed its clock). Every compiled image has
+  // the rate folded in (`sr` constants, durations in samples, the timeline's tick ↔ sample map, the smoothing
+  // coefficients), so the engine and the compiler are rebuilt at `rate` and the current document is compiled again
+  // synchronously; slots, sequences, automation, tempo, params and the transport (playing / position / loop) carry
+  // over. UI thread, and no device may call callback() during the call (the audio output is closed): the old
+  // engine is destroyed here. Afterwards engine() is the new engine (the audio output must be rebound to it).
+  // Errors: a rate outside [8 kHz, 768 kHz], a compile error (the engine then plays silence until the next compile).
+  Status setSampleRate(double rate);
+
   engine::AudioCallback callback() noexcept { return engine_->callback(); }
   engine::Engine& engine() noexcept { return *engine_; }
   const LinkStats& stats() const noexcept { return stats_; }  // read after flush() (written by the compile path)
@@ -146,6 +155,7 @@ private:
 
   explicit ProjectLink(const LinkConfig& config);
   Status init(const doc::Snapshot& initial);
+  Status makeEngine();  // engine_ + compiler_ at cfg_.sampleRate
   // UI thread.
   void applyParams(const doc::Project& p, bool forceAll);
   void publishSequences(const doc::Project& p);
@@ -185,6 +195,8 @@ private:
   uint64_t commandsPosted_ = 0;
   engine::TransportReport report_;
   views::PlayheadSnapshot optimistic_;
+  views::TransportLoop loop_{};  // the last loop sent (re-sent to a rebuilt engine)
+  bool loopSent_ = false;
   uint64_t reportSeq_ = 0;
   std::unordered_map<uint32_t, MeterState> meters_;
   double lastMeterRead_ = 0.0;

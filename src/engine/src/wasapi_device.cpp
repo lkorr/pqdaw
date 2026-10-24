@@ -871,4 +871,103 @@ Status LoopbackCapture::stop() {
   return Ok{};
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// DeviceChangeNotifier
+
+namespace {
+
+class EndpointClient final : public IMMNotificationClient {
+public:
+  std::atomic<DeviceChangeNotifier::ChangedFn> fn{nullptr};
+  std::atomic<void*> user{nullptr};
+  std::atomic<uint32_t> inFlight{0};
+
+  ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(refs_.fetch_add(1) + 1); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    const ULONG n = static_cast<ULONG>(refs_.fetch_sub(1) - 1);
+    if (n == 0) delete this;
+    return n;
+  }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** p) override {
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(IMMNotificationClient)) {
+      *p = static_cast<IMMNotificationClient*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *p = nullptr;
+    return E_NOINTERFACE;
+  }
+  HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override { return fire(); }
+  HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { return fire(); }
+  HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) override { return fire(); }
+  HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow, ERole role, LPCWSTR) override {
+    return role == eConsole ? fire() : S_OK;  // one notification per change (it comes once per role)
+  }
+  // Property changes are frequent (volume, jack sensing on some drivers) and say nothing about which devices exist.
+  HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) override { return S_OK; }
+
+private:
+  HRESULT fire() {
+    // seq_cst on both sides (here and in stop()): stop() stores fn = null, then reads inFlight; a store-load pair
+    // must not be reordered, or stop() could miss a call that already loaded the old fn.
+    inFlight.fetch_add(1);
+    if (auto f = fn.load()) f(user.load(std::memory_order_relaxed));
+    inFlight.fetch_sub(1);
+    return S_OK;
+  }
+  std::atomic<long> refs_{1};
+};
+
+}  // namespace
+
+struct DeviceChangeNotifier::Impl {
+  ComPtr<IMMDeviceEnumerator> enumerator;
+  EndpointClient* client = nullptr;
+  bool comOwned = false;
+};
+
+DeviceChangeNotifier::DeviceChangeNotifier() : impl_(std::make_unique<Impl>()) {}
+DeviceChangeNotifier::~DeviceChangeNotifier() { stop(); }
+
+bool DeviceChangeNotifier::active() const noexcept { return impl_->client != nullptr; }
+
+Status DeviceChangeNotifier::start(ChangedFn fn, void* user) {
+  stop();
+  Impl& m = *impl_;
+  const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  m.comOwned = SUCCEEDED(co);
+  auto en = makeEnumerator();
+  if (!en) {
+    if (m.comOwned) CoUninitialize();
+    m.comOwned = false;
+    return std::move(en).error();
+  }
+  m.enumerator = std::move(*en);
+  m.client = new EndpointClient();
+  m.client->user.store(user, std::memory_order_relaxed);
+  m.client->fn.store(fn, std::memory_order_release);
+  if (HRESULT hr = m.enumerator->RegisterEndpointNotificationCallback(m.client); FAILED(hr)) {
+    m.client->Release();
+    m.client = nullptr;
+    m.enumerator.Reset();
+    if (m.comOwned) CoUninitialize();
+    m.comOwned = false;
+    return comError("WASAPI: RegisterEndpointNotificationCallback", hr);
+  }
+  return Ok{};
+}
+
+void DeviceChangeNotifier::stop() noexcept {
+  Impl& m = *impl_;
+  if (m.client == nullptr) return;
+  m.client->fn.store(nullptr);
+  m.enumerator->UnregisterEndpointNotificationCallback(m.client);
+  while (m.client->inFlight.load() != 0) std::this_thread::yield();
+  m.client->Release();
+  m.client = nullptr;
+  m.enumerator.Reset();
+  if (m.comOwned) CoUninitialize();
+  m.comOwned = false;
+}
+
 }  // namespace pq::engine

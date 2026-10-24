@@ -377,6 +377,8 @@ public:
   std::function<void(int32_t index)> onChange;  // user changes only
   int32_t index() const noexcept { return index_; }
   void setIndex(int32_t i);  // programmatic
+  // Programmatic (T3.18: device lists change on hot-plug): new items and index, no callback. An open menu closes.
+  void setItems(std::vector<std::string> items, int32_t index);
   const std::vector<std::string>& items() const noexcept { return items_; }
   bool menuOpen() const noexcept { return menu_ != nullptr; }
   void openMenu();

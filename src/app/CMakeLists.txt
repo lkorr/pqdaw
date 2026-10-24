@@ -11,8 +11,10 @@ pq_add_module(pq_app
     src/file_watch.cpp
     src/project_link.cpp
     src/audio_output.cpp
+    src/audio_manager.cpp
+    src/user_settings.cpp
     src/render_command.cpp
-  DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine
+  DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine nlohmann_json::nlohmann_json
   PRIVATE_DEPS SDL3::SDL3-static)
 target_compile_options(pq_app PRIVATE /external:W0)
 # T3.17: the stdlib fallback location (pq::app::stdlibDir) for dev builds and tests.

@@ -64,6 +64,8 @@ struct CliOptions {
   uint32_t sampleRate = 0;      // 0 = the device's preferred rate
   uint32_t bufferFrames = 256;  // device buffer request
   uint32_t blockFrames = 32;    // internal engine block (pq::engine::BlockAdapter)
+  // T3.18: which device flags were given (the window's saved audio settings take the rest).
+  bool backendGiven = false, bufferGiven = false, rateGiven = false;
 
   // --play (T1.7): the patch file and the patch in it (empty: the first one).
   std::string playPath;

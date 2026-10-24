@@ -83,6 +83,12 @@ pq_add_test(pq_tests_playback
     golden/golden_audio.cpp
   DEPS pq_app)
 
+# T3.18: the audio device manager (settings file, startup settings, device switching / hot-plug / ASIO driver resets
+# over scripted devices, test tone, CPU meter). Real devices only with PQ_TEST_AUDIO_DEVICE=1.
+pq_add_test(pq_tests_audio
+  SOURCES app/test_audio_manager.cpp
+  DEPS pq_app)
+
 # views (T3.7): ViewContext (project I/O, undo, transport routing), the shell (layout, hotkeys, control bar), goldens.
 pq_add_test(pq_tests_views
   SOURCES
@@ -96,12 +102,15 @@ pq_add_test(pq_tests_views
     views/test_mixer.cpp
     views/test_mos_wheel.cpp
     views/test_automation.cpp
+    views/test_audio_prefs.cpp
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
   COMMAND pqdaw --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty --idle-check 10)
 # T0.x-flake: up to 30 s of settling and 3 measurement windows when outside events disturb one.
-set_tests_properties(pqdaw_idle_shell PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+# T3.18: its own (empty) settings directory, so the user's saved audio device (an ASIO driver, say) is not opened.
+set_tests_properties(pqdaw_idle_shell PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+  ENVIRONMENT PQ_SETTINGS_DIR=${CMAKE_CURRENT_BINARY_DIR}/settings_idle_shell)
 add_test(NAME pqdaw_screenshot_shell
   COMMAND pqdaw --screenshot shell ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_shell.png --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty)
 # T3.8: the arrangement scene through the real executable.

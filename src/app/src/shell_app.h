@@ -26,7 +26,7 @@
 namespace pq::app {
 
 class SdlFileDialogs;
-class AudioOutput;
+class AudioDeviceManager;
 
 class ShellApp {
 public:
@@ -54,7 +54,7 @@ private:
   // Declared before ctx_ (the context holds a reference to the port); audio_ after link_ (it calls the engine).
   std::unique_ptr<SimulatedTransport> transport_;
   std::unique_ptr<ProjectLink> link_;
-  std::unique_ptr<AudioOutput> audio_;
+  std::unique_ptr<AudioDeviceManager> audio_;  // T3.18: the device manager (owns the audio output; Ctrl+, prefs)
   std::unique_ptr<views::ViewContext> ctx_;
   std::unique_ptr<SdlFileDialogs> dialogs_;
   std::unique_ptr<views::Shell> shell_;

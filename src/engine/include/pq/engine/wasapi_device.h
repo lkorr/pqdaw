@@ -113,6 +113,29 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
+// Audio endpoint changes (T3.18: device hot-plug): an IMMNotificationClient registered with the system's device
+// enumerator. `fn(user)` is called on a system thread whenever an endpoint is added, removed, enabled / disabled or
+// becomes a default device, and whenever an endpoint's properties change (a USB interface that also has an ASIO
+// driver shows up here as well, so the DAW uses it as its generic "the hardware changed" signal). Event driven:
+// nothing runs between changes. fn must be thread-safe and return quickly (set a flag, notify a thread).
+// start()/stop() must be called on the same thread (COM is initialised there for the registration's lifetime).
+class DeviceChangeNotifier {
+public:
+  using ChangedFn = void (*)(void* user);
+  DeviceChangeNotifier();
+  ~DeviceChangeNotifier();  // stop()
+  DeviceChangeNotifier(const DeviceChangeNotifier&) = delete;
+  DeviceChangeNotifier& operator=(const DeviceChangeNotifier&) = delete;
+  Status start(ChangedFn fn, void* user);
+  void stop() noexcept;  // unregisters; returns once no fn call is running (none starts afterwards)
+  bool active() const noexcept;
+
+  struct Impl;
+
+private:
+  std::unique_ptr<Impl> impl_;
+};
+
 // QueryPerformanceCounter in 100 ns units (the time base WASAPI uses for its QPC positions). Not RT-unsafe (a
 // user-mode counter read), but kept out of the engine's hot path; used by measurement code.
 uint64_t qpcNow100ns() noexcept;

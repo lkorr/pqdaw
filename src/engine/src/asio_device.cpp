@@ -27,7 +27,10 @@ namespace pq::engine {
 namespace {
 
 constexpr uint32_t kProbeRates[] = {44100, 48000, 88200, 96000, 176400, 192000};
-constexpr DWORD kPollMs = 50;  // request polling while a driver is loaded
+constexpr DWORD kPollMs = 50;  // request polling while the stream runs
+// ... and while a driver is loaded but stopped (T3.18: the DAW keeps the driver loaded while its idle stream is
+// suspended; 20 wakes/s cost an idle DAW ~0.05 % of a core, 4/s a fifth of that; a request then waits ≤ 250 ms).
+constexpr DWORD kIdlePollMs = 250;
 
 std::string narrow(const wchar_t* w) {
   if (!w || !*w) return {};
@@ -688,7 +691,7 @@ struct AsioDevice::Impl {
   DWORD poll() {
     if (!driver) return INFINITE;
     handleRequests();
-    return kPollMs;
+    return running.load(std::memory_order_relaxed) ? kPollMs : kIdlePollMs;
   }
 
   void handleRequests() {

@@ -14,6 +14,7 @@
 #include "pq/views/mos_wheel/mos_chart.h"
 #include "pq/views/mos_wheel/mos_circle.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
+#include "pq/views/prefs/audio_prefs.h"
 #include "pq/document/edit_ops.h"
 
 namespace pq::views {
@@ -406,6 +407,33 @@ Status setupMixerView(Shell& shell) {
   return Ok{};
 }
 
+// T3.18: the preferences window (Audio tab) over the shell, from a scripted device list (FakeAudioPrefsPort::studio:
+// a Focusrite-like interface with ASIO and WASAPI endpoints). The port is static: the scene renders once.
+Status openAudioPrefs(Shell& shell, bool wasapi) {
+  static FakeAudioPrefsPort port;
+  port = FakeAudioPrefsPort::studio();
+  if (wasapi) {
+    AudioSettings s = port.current;
+    s.driver = AudioDriverType::WasapiExclusive;
+    s.outputDevice = "{0.0.0.00000000}.{a}";
+    s.outputName = "Speakers (Focusrite USB Audio)";
+    s.inputChannels = 0;
+    s.bufferFrames = 192;
+    port.apply(s);
+    port.applied.clear();
+    port.running.deviceName = s.outputName;
+    port.running.inputLatencyMs = 0.0;
+    port.running.outputLatencyMs = 8.0;
+    port.running.state = AudioStatus::State::Suspended;
+    port.load = 0.0;
+  }
+  shell.context().setAudioPrefs(&port);
+  if (!openPreferences(shell.overlay(), port)) return Error{ErrorCode::NotFound, "audio-prefs: no overlay layer", {}};
+  return Ok{};
+}
+Status setupAudioPrefs(Shell& shell) { return openAudioPrefs(shell, false); }
+Status setupAudioPrefsWasapi(Shell& shell) { return openAudioPrefs(shell, true); }
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -429,6 +457,8 @@ constexpr SceneEntry kScenes[] = {
     {"mixer-view", 1280, 800, setupMixerView},
     {"automation-lanes", 1280, 800, setupAutomationLanes},
     {"automation-mode-over-clips", 1280, 800, setupAutomationMode},
+    {"audio-prefs", 1280, 800, setupAudioPrefs},
+    {"audio-prefs-wasapi", 1280, 800, setupAudioPrefsWasapi},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

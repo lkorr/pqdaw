@@ -42,6 +42,8 @@
 
 namespace pq::views {
 
+class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
+
 // Bits passed to ctx.observe() callbacks: which part of the view state changed.
 namespace view_change {
 inline constexpr uint32_t kTransport = 1u << 0;  // play state requested, start marker moved
@@ -161,6 +163,9 @@ public:
   // --- dialogs (the action layer) ---
   void setFileDialogs(FileDialogs* d) noexcept { dialogs_ = d; }
   FileDialogs* fileDialogs() const noexcept { return dialogs_; }
+  // T3.18: the app's audio device manager, for the preferences window (Ctrl+,); null in tests and scenes without one.
+  void setAudioPrefs(AudioPrefsPort* p) noexcept { audioPrefs_ = p; }
+  AudioPrefsPort* audioPrefs() const noexcept { return audioPrefs_; }
   // What file.new / file.open / file.save / file.saveAs do: ask about unsaved changes, pick a path, then call the
   // explicit-path functions above. `then` runs after a successful operation (e.g. quit after "save and quit").
   void requestNew();
@@ -270,6 +275,8 @@ public:
   static constexpr std::string_view kMosWheelActions[] = {"tuning.openMosWheel"};
   // T3.10: the mixer view's toggle (Ctrl+Alt+M), forwarded the same way (installMixer sets the handler).
   static constexpr std::string_view kMixerActions[] = {"view.toggleMixer"};
+  // T3.18: the preferences window (Ctrl+, as in Live), forwarded the same way (installPreferences sets the handler).
+  static constexpr std::string_view kPrefsActions[] = {"app.preferences"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",
@@ -295,6 +302,7 @@ private:
   doc::ListenerId storeListener_ = 0;
 
   FileDialogs* dialogs_ = nullptr;
+  AudioPrefsPort* audioPrefs_ = nullptr;
   Ticks startMarker_ = 0;
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;

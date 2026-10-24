@@ -8,14 +8,15 @@
 
 #include "pq/app/startup.h"
 #include "pq/views/mixer/mixer.h"
-#include "audio_output.h"
+#include "pq/app/audio_manager.h"
+#include "pq/app/user_settings.h"
 
 namespace pq::app {
 
 namespace {
 
 // Codes of the shell's SDL user event (SDL_UserEvent::code).
-enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3 };
+enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4 };
 
 // File dialogs run their callback on another thread on some platforms: results are posted to the UI thread as a
 // user event carrying the path (owned by the event until delivered) and the request id.
@@ -131,11 +132,21 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   app->userEvent_ = SDL_RegisterEvents(1);
   if (app->userEvent_ == 0) return Error{ErrorCode::Device, std::string("SDL_RegisterEvents: ") + SDL_GetError(), {}};
   app->transport_ = std::make_unique<SimulatedTransport>([] { return static_cast<double>(SDL_GetTicksNS()) * 1e-9; });
+  // T3.18: the audio settings (user settings file + this run's device flags) decide the engine's sample rate.
+  std::vector<std::string> settingsWarnings;
+  const views::AudioSettings audio = AudioDeviceManager::startupSettings(o, userSettingsPath(), &settingsWarnings);
+  for (const std::string& w : settingsWarnings) std::fprintf(stderr, "pqdaw: settings: %s (default used)\n", w.c_str());
   {
     // T3.17: playback. The link compiles a default project first (the context's document follows at attach()).
     doc::IdSource ids;
     const double t0 = msSinceMainEntry();
-    auto link = ProjectLink::create(LinkConfig{}, doc::makeDefaultProject(ids));
+    LinkConfig lc;
+    lc.sampleRate = audio.sampleRate;
+    auto link = ProjectLink::create(lc, doc::makeDefaultProject(ids));
+    if (!link && audio.sampleRate != 48000) {  // a rate the engine cannot take: start at 48 kHz
+      lc.sampleRate = 48000;
+      link = ProjectLink::create(lc, doc::makeDefaultProject(ids));
+    }
     if (link) {
       app->link_ = std::move(*link);
       std::printf("pqdaw: playback engine ready in %.1f ms\n", msSinceMainEntry() - t0);
@@ -158,7 +169,11 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     app->link_->attach(*app->ctx_);
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
-    app->audio_ = std::make_unique<AudioOutput>(o, app->link_->engine());
+    app->audio_ = std::make_unique<AudioDeviceManager>(*app->link_, audio, ManagerHooks{}, o.device);
+    // The output notifies from its threads: post to the UI thread, which polls the manager (follows a device rate
+    // change, refreshes the preferences window).
+    app->audio_->setUiNotify([](void* self) { pushUser(static_cast<ShellApp*>(self)->userEvent_, kAudioChanged); }, app.get());
+    app->ctx_->setAudioPrefs(app->audio_.get());
   }
   ShellApp* self = app.get();
   app->tempoSub_ = app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
@@ -175,6 +190,7 @@ ShellApp::~ShellApp() {
   // The shell's widgets subscribe to the context: destroy them first.
   tree_.setRoot(std::make_unique<ui::Widget>());
   shell_.reset();
+  if (ctx_) ctx_->setAudioPrefs(nullptr);
   audio_.reset();  // the device stops calling the engine
   if (link_) link_->detach();
 }
@@ -210,6 +226,9 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
   if (e.type == userEvent_) {
     switch (e.user.code) {
       case kDialogResult: dialogs_->deliver(e.user); break;
+      case kAudioChanged:
+        if (audio_) audio_->poll();
+        break;
       case kIdleStart:
         // Settle: on a loaded machine the show/expose/focus events of a new window can arrive well after the first
         // frame. Measure only once a whole second passed without a frame or an event (other than this timer's),
