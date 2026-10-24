@@ -574,7 +574,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional choice: A now, C when CI exists. If you read the T0.7-fix1/T0.8-fix1 criteria as must-hold-on-every-default-run, the only robust alternative is B with the wall-clock bounds loosened, which tests less.
 - Status: open
 
-## Q?-T3.13-a · 2026-10-21 · T3.13 · MOS region chart: where the port departs from mos-explorer
+## Q79 · 2026-10-21 · T3.13 · MOS region chart: where the port departs from mos-explorer
 - Context: T3.13 ports the explorer's canvas (index.html drawAxis … drawSizeScrollbar, hitTest / handleClick / setGenFromScreenX). A few explorer behaviours do not exist or do not fit a widget, and the task asks for things the explorer does not do. All choices are local to `src/views/src/mos_wheel/` and are view behaviour (nothing persisted).
 - Choices (provisional):
   1. **EDO snapping while dragging the generator** (the explorer has none on the main canvas): the marker snaps to the nearest *visible* EDO marker within 6 logical px, to exactly step·period/n cents (computed that way, not as (step/n)·period, which can be one ulp off). Only visible markers snap: at the whole-octave zoom a 34-cent band holds ~20 generators up to 31edo, and snapping to all of them would leave nothing free; zooming in reveals (and makes snappable) more, like Live's adaptive grid. Alt bypasses the snap (Live's snap-bypass modifier). Alternative: snap to every m\n within the radius, lowest n first.

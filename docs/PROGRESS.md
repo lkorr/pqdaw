@@ -371,3 +371,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Verified: worker dev + release 27/27; orchestrator: rebased onto origin/main, release build + views/app tests 2/2, 0 warnings.
 - Perf: 100k-note clip full paint 0.33–0.58 ms (< 1.5), drag frame 0.04–0.59 ms (< 1).
 - Notes: the roll shows a clip only once arrangement selection (T3.9) calls setDetailClip.
+
+## 2026-10-24 · T3.13 · worker AO / task/T3.13-mos-chart
+- Did: MOS wheel region chart (`views/mos_wheel/`): `MosChart` widget porting mos-explorer drawAxis/drawMOS/drawEDOs/drawTemperaments/drawGeneratorMarker/drawSizeScrollbar: Stern–Brocot bands (buildMosRegions), EDO markers ≤ configurable max EDO, temperament ranges, generator marker drag with snapping to visible EDO markers (Alt bypasses), region crossing via findAdjacentRegion + transferModeRotation, wheel zoom, size scrollbar, hover card (name, range, parent, L:s, UDP, temperaments, nearest EDO). Emits `MosSelection` via onChange(Live/Commit/Cancel); no document dependency. 20 `mosChart.*` theme tokens. Goldens mos-chart-default / mos-chart-zoomed. Q79 (departures from the explorer, e.g. snapping only to visible markers); REVIEW entry.
+- Verified: worker dev 27/27, release 27/27 after one known driver-thread crash rerun; 12 chart tests (100 random clicks vs buildMosRegions × scales × views; drag near 7\12 → exactly 700.0; partial vs full redraw pixel-identical). Orchestrator: rebased onto 6863ec0, release build + views/app tests 2/2, 0 warnings; viewed mos-chart-default.png.
+- Perf (release, 800×600, shared machine): build 123 µs (< 1 ms), full paint 20–37 µs, drag frame 14–19 µs.
+- CPU-efficiency check: cached layout rebuilt only on view/config change (never during drags); clip-culled allocation-free paint; precise damage; lazy label formatting (154 → 66 µs build).
+- Notes: not reachable in the app until T3.14's popover hosts it.
