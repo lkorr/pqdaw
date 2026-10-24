@@ -37,10 +37,28 @@
 // all visible rows. The playhead is read from the TransportPort only while playing, on a timer due when it next
 // crosses a device pixel; a move damages only its old and new columns.
 //
+// Editing (T3.9, Live's arrangement editing; src/arrangement/editing.cpp):
+//   selection   a click on a clip selects it and shows it in the clip view (ctx.setDetailClip; a double-click also
+//               shows and focuses the detail view); Shift adds, Ctrl toggles; Ctrl+A selects every clip. A click on
+//               empty lane space (or in a clip's body) places the insert marker on that track; a drag there makes a
+//               time selection over the tracks it crosses and selects the clips it touches (the rubber band);
+//               Shift+click extends it. A click on a track header selects the track.
+//   gestures    dragging a clip's title strip moves the selection (relative snap, T3.3 snapDelta, from the pressed
+//               clip's start; across tracks by rows), Alt+drag copies, dragging a clip's edge resizes the selection.
+//               Every gesture is previewed (the moved clips are drawn at their target, nothing is dispatched) and
+//               dispatched once on release: one undo step. Esc cancels. Right-click opens the edit + grid menu.
+//   edits       Ctrl+C/X/V (in-process clipboard of clips: whole selected clips, or the part of each selected
+//               track's clips inside a time selection), Ctrl+D, Delete, Ctrl+E (at the insert marker or the time
+//               selection's edges), Ctrl+J, Ctrl+L, Ctrl+Shift+M, Ctrl+I, Ctrl+Shift+D, Ctrl+Shift+Delete, 0
+//               (deactivates / reactivates the selected clips, else toggles the selected tracks' activators; Q15).
+//               Each is one pq::doc::ops edit (several chained into one Batch where needed) = one undo step.
+//   Partial redraw: a selection change damages the selected rows over the changed time span only (whole rows when
+//   the selected tracks change); a drag frame damages the dragged clips' old and new rects.
+//
 // Extension points:
-//   T3.9  (editing): timeSelection()/setTimeSelection() (Z zooms to it), rows()/rowAt()/tickAtX()/xOfTick() for
-//         hit testing, LaneCanvas paints the selection overlay hook `paintOverlay` (set onPaintOverlay), the
-//         "arrangement" key scope and ActionRegistry::set for its actions.
+//   T3.9  (editing, done): selection() / setSelection(), timeSelection()/setTimeSelection() (Z zooms to it),
+//         rows()/rowAt()/tickAtX()/xOfTick() for hit testing, `onPaintOverlay` (drawn after the editing overlay),
+//         the "arrangement" key scope and ActionRegistry::set for its actions.
 //   T3.10 (headers, mixer): TrackHeader::mixerSection() (a Row host at the header's right, sized by
 //         setHeaderMixerWidth), setHeaderDecorator() (called whenever a header is bound to a track: add or update
 //         controls), setHeaderWidth(), heights from the store's ViewState (TrackView::height, logical px).
@@ -59,6 +77,7 @@
 #include "pq/core/time.h"
 #include "pq/document/model.h"
 #include "pq/ui/controls.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
 #include "pq/views/view_context.h"
 
@@ -69,6 +88,7 @@ class ArrangementView;
 
 namespace arrangement {
 class Model;
+class Editor;
 class LaneCanvas;
 class Ruler;
 class TimeRuler;
@@ -228,6 +248,47 @@ public:
   // the lanes' clip.
   std::function<void(ui::PaintContext&)> onPaintOverlay;
 
+  // ---- editing (T3.9) ----------------------------------------------------------------------------------------
+  struct Selection {
+    std::vector<doc::ClipRef> clips;   // selected clips; the first is the one shown in the clip view
+    std::vector<doc::TrackId> tracks;  // selected tracks (row order): the clips' tracks or the rows a range covers
+    std::optional<TickRange> time;     // the time selection; start == end is the insert marker
+    bool range = false;                // made by a drag over time (or Shift-extended): edits act on the time range
+                                       // of `tracks`, not on whole clips
+    bool empty() const noexcept { return clips.empty() && tracks.empty() && !time; }
+  };
+  const Selection& selection() const noexcept;
+  // Replaces the selection (repaints what changed; with showInClipView the first clip goes to the clip view).
+  void setSelection(Selection s, bool showInClipView = false);
+  // Whole clips: time = their span, tracks = theirs.
+  void selectClips(std::span<const doc::ClipRef> clips, bool showInClipView = true);
+  void clearSelection();
+  bool clipSelected(doc::ClipId id) const noexcept;
+  bool dragging() const noexcept;  // a clip move / copy / resize or a range drag is in progress
+  // The edits behind the actions (each = one undo step; false when there was nothing to do or it failed, the
+  // reason then in the status line).
+  bool deleteSelection();
+  bool copySelection();
+  bool cutSelection();
+  bool paste();
+  bool duplicateSelection();
+  bool splitSelection();
+  bool consolidateSelection();
+  bool insertMidiClip();
+  bool insertTime();
+  bool duplicateTime();
+  bool deleteTime();
+  bool loopSelection();
+  bool toggleActive();
+  void selectAll();
+  bool hasClipboard() const noexcept;
+  // The right-click menu (edit commands, then the grid: Adaptive / Fixed / tuplets / Snap / Off) at device `at`.
+  ui::Menu* openContextMenu(ui::Vec2 at);
+  // Device rect of a clip's lane box in window coordinates (empty when its track is not a row).
+  ui::IRect clipRect(const doc::ClipRef& clip) const noexcept;
+  // Double-click on a clip: installArrangement sets this to show the detail view and focus the clip view.
+  std::function<void()> onOpenClip;
+
   // ---- transport ---------------------------------------------------------------------------------------------
   // The playhead tick last read from the port while playing (nullopt when stopped).
   const std::optional<Ticks>& playhead() const noexcept { return playhead_; }
@@ -258,9 +319,12 @@ public:
   void paint(ui::PaintContext& ctx) override;
   void onTimer(uint32_t id) override;
   void onFocusChanged(bool focused) override;
+  bool onKey(const ui::KeyEvent& e) override;
 
   // Internal (the view's own widgets).
   arrangement::Model& model() const noexcept { return *model_; }
+  arrangement::Editor& editor() const noexcept { return *editor_; }
+  arrangement::LaneCanvas& lanes() const noexcept { return *lanes_; }
   ui::ScrollView& trackScroll() const noexcept { return *scroll_; }
   void markAxisDirty();  // the horizontal axis changed: ruler, overview and lanes repaint
 
@@ -279,6 +343,7 @@ private:
 
   ViewContext& ctx_;
   std::unique_ptr<arrangement::Model> model_;
+  std::unique_ptr<arrangement::Editor> editor_;
   ViewContext::Subscription docSub_, viewSub_;
   arrangement::Overview* overview_ = nullptr;
   arrangement::Ruler* ruler_ = nullptr;

@@ -37,7 +37,7 @@ enum class WasapiImpl : uint8_t {
 
 struct CliOptions {
   Mode mode = Mode::Window;
-  std::string scene = "test-pattern";
+  std::string scene = "test-pattern";  // the window without --scene: "shell" (parseCli, T3.9 / Q60)
   std::string outPath;
   uint32_t width = 0;   // 0 = mode default
   uint32_t height = 0;

@@ -19,8 +19,14 @@ namespace {
 constexpr float kScrollbarFallback = 10.0f;
 constexpr size_t kMaxZoomStack = 32;
 
-constexpr std::string_view kActionIds[] = {"arrangement.zoomToSelection", "arrangement.zoomBack", "arrangement.zoomIn",
-                                           "arrangement.zoomOut", "view.toggleFollow"};
+constexpr std::string_view kActionIds[] = {
+    "arrangement.zoomToSelection", "arrangement.zoomBack", "arrangement.zoomIn", "arrangement.zoomOut",
+    "view.toggleFollow",
+    // T3.9
+    "arrangement.selectAll", "arrangement.copy", "arrangement.cut", "arrangement.paste", "arrangement.duplicate",
+    "arrangement.delete", "arrangement.split", "arrangement.consolidate", "arrangement.loopSelection",
+    "arrangement.insertMidiClip", "arrangement.insertTime", "arrangement.duplicateTime", "arrangement.deleteTime",
+    "arrangement.toggleActive"};
 
 float scrollbarWidth(const UiTree* tree) {
   const PaintResources* res = tree ? tree->resources() : nullptr;
@@ -44,7 +50,8 @@ const doc::TuningDef* assignmentDef(const doc::Project& p, const doc::TuningAssi
 
 // --- construction ---------------------------------------------------------------------------------------
 
-ArrangementView::ArrangementView(ViewContext& ctx) : Widget("arrangement"), ctx_(ctx), model_(std::make_unique<Model>()) {
+ArrangementView::ArrangementView(ViewContext& ctx)
+    : Widget("arrangement"), ctx_(ctx), model_(std::make_unique<Model>()), editor_(std::make_unique<arrangement::Editor>(*this)) {
   setLayout(LayoutKind::Custom);
   setClipChildren(true);
   setFocusable(true);
@@ -100,6 +107,82 @@ void ArrangementView::registerActions() {
   set(kActionIds[2], [this] { zoomIn(); });
   set(kActionIds[3], [this] { zoomOut(); });
   set(kActionIds[4], [this] { setFollow(!follow_); });
+  // T3.9 editing. A disabled action's chord falls through (Q27), e.g. Delete with nothing selected.
+  arrangement::Editor* const ed = editor_.get();
+  auto edit = [&](std::string_view id, std::function<void()> h, std::function<bool()> en) {
+    [[maybe_unused]] auto r = a.set(std::string(id), std::move(h), std::move(en));
+    assert(r.ok());
+  };
+  auto hasTime = [ed] { return ed->selection().time && ed->selection().time->end > ed->selection().time->start; };
+  auto hasRange = [ed, hasTime] { return ed->selection().range && hasTime(); };
+  auto hasClips = [ed] { return !ed->selection().clips.empty(); };
+  auto clipsOrRange = [hasClips, hasRange] { return hasClips() || hasRange(); };
+  edit("arrangement.selectAll", [ed] { ed->selectAll(); }, {});
+  edit("arrangement.copy", [ed] { (void)ed->copySelection(); }, clipsOrRange);
+  edit("arrangement.cut", [ed] { (void)ed->cutSelection(); }, clipsOrRange);
+  edit("arrangement.paste", [ed] { (void)ed->paste(); }, [ed] { return ed->hasClipboard(); });
+  edit("arrangement.duplicate", [ed] { (void)ed->duplicateSelection(); }, clipsOrRange);
+  edit("arrangement.delete", [ed] { (void)ed->deleteSelection(); }, clipsOrRange);
+  edit("arrangement.split", [ed] { (void)ed->splitSelection(); }, [ed] { return ed->selection().time.has_value(); });
+  edit("arrangement.consolidate", [ed] { (void)ed->consolidateSelection(); }, clipsOrRange);
+  edit("arrangement.loopSelection", [ed] { (void)ed->loopSelection(); }, hasTime);
+  edit("arrangement.insertMidiClip", [ed] { (void)ed->insertMidiClip(); },
+       [ed] { return ed->selection().time.has_value() && !ed->selection().tracks.empty(); });
+  edit("arrangement.insertTime", [ed] { (void)ed->insertTime(); }, hasTime);
+  edit("arrangement.duplicateTime", [ed] { (void)ed->duplicateTime(); }, hasTime);
+  edit("arrangement.deleteTime", [ed] { (void)ed->deleteTime(); }, hasTime);
+  edit("arrangement.toggleActive", [ed] { (void)ed->toggleActive(); },
+       [ed] { return !ed->selection().clips.empty() || !ed->selection().tracks.empty(); });
+}
+
+// --- editing (T3.9: arrangement::Editor, editing.cpp) ----------------------------------------------------
+
+const ArrangementView::Selection& ArrangementView::selection() const noexcept { return editor_->selection(); }
+void ArrangementView::setSelection(Selection s, bool showInClipView) { editor_->setSelection(std::move(s), showInClipView); }
+void ArrangementView::selectClips(std::span<const doc::ClipRef> clips, bool showInClipView) {
+  editor_->setSelection(editor_->selectionOfClips({clips.begin(), clips.end()}), showInClipView);
+}
+void ArrangementView::clearSelection() { editor_->setSelection({}, false); }
+bool ArrangementView::clipSelected(doc::ClipId id) const noexcept { return editor_->selected(id); }
+bool ArrangementView::dragging() const noexcept { return editor_->dragging(); }
+bool ArrangementView::deleteSelection() { return editor_->deleteSelection(); }
+bool ArrangementView::copySelection() { return editor_->copySelection(); }
+bool ArrangementView::cutSelection() { return editor_->cutSelection(); }
+bool ArrangementView::paste() { return editor_->paste(); }
+bool ArrangementView::duplicateSelection() { return editor_->duplicateSelection(); }
+bool ArrangementView::splitSelection() { return editor_->splitSelection(); }
+bool ArrangementView::consolidateSelection() { return editor_->consolidateSelection(); }
+bool ArrangementView::insertMidiClip() { return editor_->insertMidiClip(); }
+bool ArrangementView::insertTime() { return editor_->insertTime(); }
+bool ArrangementView::duplicateTime() { return editor_->duplicateTime(); }
+bool ArrangementView::deleteTime() { return editor_->deleteTime(); }
+bool ArrangementView::loopSelection() { return editor_->loopSelection(); }
+bool ArrangementView::toggleActive() { return editor_->toggleActive(); }
+void ArrangementView::selectAll() { editor_->selectAll(); }
+bool ArrangementView::hasClipboard() const noexcept { return editor_->hasClipboard(); }
+Menu* ArrangementView::openContextMenu(Vec2 at) { return editor_->openContextMenu(at); }
+
+IRect ArrangementView::clipRect(const doc::ClipRef& ref) const noexcept {
+  const int32_t row = [&] {
+    for (size_t i = 0; i < model_->rows.size(); ++i)
+      if (model_->rows[i].id == ref.track) return static_cast<int32_t>(i);
+    return -1;
+  }();
+  if (row < 0) return {};
+  const doc::Track& t = *model_->rows[static_cast<size_t>(row)].track;
+  const int32_t i = doc::findClipIndex(t, ref.clip);
+  if (i < 0) return {};
+  const doc::NoteClip& c = *t.clips[static_cast<size_t>(i)].clip;
+  return editor_->clipBox(row, c.start, c.start + c.length);
+}
+
+bool ArrangementView::onKey(const KeyEvent& e) {
+  if (e.down && e.key == key::kEscape && editor_->dragging()) {
+    editor_->cancelDrag();
+    if (tree() && tree()->captured()) tree()->releaseCapture();
+    return true;
+  }
+  return false;
 }
 
 // --- document and view-state changes --------------------------------------------------------------------
@@ -111,6 +194,7 @@ void ArrangementView::onDocument(const doc::StoreEvent& e) {
     timeSelection_.reset();
   }
   rebuildRows();
+  editor_->afterDocumentChange(e);
 }
 
 void ArrangementView::onViewChange(uint32_t bits) {
@@ -525,6 +609,16 @@ ArrangementView& installArrangement(Shell& shell) {
   Widget& slot = shell.slot(ShellSlot::TrackArea);
   auto& view = slot.add<ArrangementView>(shell.context());
   shell.tree().setFocus(&view);
+  // Double-click on a clip: the clip view comes up (detail view shown, Clip mode) and takes the keyboard (Live).
+  view.onOpenClip = [&shell] {
+    ViewContext& ctx = shell.context();
+    ctx.setDetailVisible(true);
+    ctx.setDetailMode(DetailMode::Clip);
+    if (Widget* notes = shell.slot(ShellSlot::ClipDetail).find("clip-view/notes")) {
+      shell.tree().layoutNow();
+      shell.tree().setFocus(notes);
+    }
+  };
   return view;
 }
 

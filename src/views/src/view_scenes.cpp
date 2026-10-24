@@ -43,6 +43,49 @@ Status setupArrangementZoomedOut(Shell& shell) {
   return Ok{};
 }
 
+// T3.9: a time selection dragged over Piano … Strings (bars 5–7; it selects the clips it touches), then those clips
+// Alt-dragged (copied) two rows up and two bars later, the drag still in progress: the selected clips' outline, the
+// selected rows, the time selection and the drag preview in one picture.
+Status setupArrangementSelection(Shell& shell) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  ui::UiTree& tree = shell.tree();
+  tree.layoutNow();
+  int32_t piano = -1, strings = -1, bass = -1;
+  const auto rows = a->rows();
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i].track->name == "Piano") piano = static_cast<int32_t>(i);
+    if (rows[i].track->name == "Strings") strings = static_cast<int32_t>(i);
+    if (rows[i].track->name == "Bass") bass = static_cast<int32_t>(i);
+  }
+  if (piano < 0 || strings < 0 || bass < 0) return Error{ErrorCode::NotFound, "arrangement-selection: needs the arrangement fixture", {}};
+  auto send = [&](ui::PointerType t, ui::Vec2 p, ui::Mods m) {
+    ui::PointerEvent e;
+    e.type = t;
+    e.pos = p;
+    e.mods = m;
+    e.button = (t == ui::PointerType::Down || t == ui::PointerType::Up) ? ui::PointerButton::Left : ui::PointerButton::None;
+    e.clickCount = 1;
+    tree.dispatchPointer(e);
+  };
+  const double bar = static_cast<double>(kTicksPerWhole);
+  auto bodyY = [&](int32_t row) { const ui::IRect r = a->rowLaneRect(row); return static_cast<float>(r.bottom() - 8); };
+  auto titleY = [&](int32_t row) { return static_cast<float>(a->rowLaneRect(row).y + 7); };
+  const ui::Vec2 from{a->xOfTick(4.0 * bar) + 9.0f, bodyY(piano)};  // clear of the clip edge (that resizes)
+  send(ui::PointerType::Move, from, ui::mod::kNone);
+  send(ui::PointerType::Down, from, ui::mod::kNone);
+  send(ui::PointerType::Move, {a->xOfTick(5.0 * bar), bodyY(piano)}, ui::mod::kNone);
+  send(ui::PointerType::Move, {a->xOfTick(6.0 * bar) + 2.0f, bodyY(strings)}, ui::mod::kNone);
+  send(ui::PointerType::Up, {a->xOfTick(6.0 * bar) + 2.0f, bodyY(strings)}, ui::mod::kNone);
+  const ui::Vec2 grab{a->xOfTick(4.5 * bar), titleY(piano)};
+  send(ui::PointerType::Move, grab, ui::mod::kAlt);
+  send(ui::PointerType::Down, grab, ui::mod::kAlt);
+  send(ui::PointerType::Move, {a->xOfTick(5.5 * bar), titleY(bass)}, ui::mod::kAlt);
+  send(ui::PointerType::Move, {a->xOfTick(6.5 * bar), titleY(bass)}, ui::mod::kAlt);
+  if (!a->dragging()) return Error{ErrorCode::Unknown, "arrangement-selection: the drag did not start", {}};
+  return Ok{};
+}
+
 // T3.11: the first clip of the project in the clip view, the detail view raised so the roll is the main subject.
 Status openFirstClip(Shell& shell) {
   ViewContext& ctx = shell.context();
@@ -127,6 +170,7 @@ constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
     {"arrangement-basic", 1280, 800, setupArrangementBasic},
     {"arrangement-zoomed-out", 1280, 800, setupArrangementZoomedOut},
+    {"arrangement-selection", 1280, 800, setupArrangementSelection},
     {"pianoroll-12edo", 1280, 800, openFirstClip},
     {"pianoroll-31edo", 1280, 800, openFirstClip},
     {"pianoroll-velocity", 1280, 800, pianoRollVelocity},

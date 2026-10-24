@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <optional>
 #include <span>
 
 #include "internal.h"
@@ -164,7 +165,7 @@ bool LaneCanvas::buildAhead() {
 }
 
 bool LaneCanvas::onPointer(const PointerEvent& e) {
-  if (e.type != PointerType::Wheel) return false;
+  if (e.type != PointerType::Wheel) return view_.editor().pointer(e);  // selection and drags (T3.9)
   if (e.mods & mod::kCtrl) {
     view_.zoomAt(e.pos.x, std::pow(1.25, static_cast<double>(e.wheel.y)));
     return true;
@@ -177,6 +178,8 @@ bool LaneCanvas::onPointer(const PointerEvent& e) {
   }
   return false;  // plain wheel: the track scroll view scrolls vertically
 }
+
+void LaneCanvas::onCaptureLost() { view_.editor().cancelDrag(); }
 
 namespace {
 
@@ -276,16 +279,31 @@ void paintGrid(LanePaint& lp, float y0, float y1) {
   }
 }
 
-// A clip: border, title strip with the name, body with the note preview (looped content repeated).
-void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive) {
+// A clip: border, title strip with the name, body with the note preview (looped content repeated). `g` is where it
+// is drawn (its own bounds, or a drag preview's); a selected clip gets a light outline (T3.9).
+void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive,
+               const ClipGeom& g, bool selected) {
   const doc::NoteClip& clip = *clipPtr;
   DrawList& dl = lp.ctx.dl;
-  const float cx0 = std::round(lp.X(static_cast<double>(clip.start)));
-  float cx1 = std::round(lp.X(static_cast<double>(clip.start + clip.length)));
+  // Playback geometry for the segments: the clip itself, or (a preview) a copy of its timing without notes.
+  std::optional<doc::NoteClip> moved;
+  if (g.start != clip.start || g.length != clip.length || g.contentStart != clip.contentStart) {
+    moved.emplace();
+    moved->start = g.start;
+    moved->length = g.length;
+    moved->contentStart = g.contentStart;
+    moved->loop = clip.loop;
+  }
+  const doc::NoteClip& timing = moved ? *moved : clip;
+  const float cx0 = std::round(lp.X(static_cast<double>(g.start)));
+  float cx1 = std::round(lp.X(static_cast<double>(g.start + g.length)));
   if (cx1 <= cx0) cx1 = cx0 + 1.0f;
   // Geometry is limited to the painted region (plus a pixel): huge clips at deep zoom stay in float range.
-  const float vx0 = std::max(cx0, static_cast<float>(lp.c.x) - 1.0f);
-  const float vx1 = std::min(cx1, static_cast<float>(lp.c.right()) + 1.0f);
+  // Never past the canvas (the divider to the headers is the next column: a clip drawn over it would change with
+  // state the canvas's damage does not cover, e.g. the selection outline).
+  const float rx0 = static_cast<float>(lp.r.x), rx1 = static_cast<float>(lp.r.right());
+  const float vx0 = std::max(cx0, std::max(static_cast<float>(lp.c.x) - 1.0f, rx0));
+  const float vx1 = std::min(cx1, std::min(static_cast<float>(lp.c.right()) + 1.0f, rx1));
   if (vx1 <= vx0) return;
   ++lp.m.stats.clipsPainted;
 
@@ -346,12 +364,12 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
       out.push_back({pr.x0, y, pr.x1, y + static_cast<float>(noteH), noteCol});
       ++emitted;
     };
-    const Ticks clipEnd = clip.start + clip.length;
+    const Ticks clipEnd = g.start + g.length;
     const double k = lp.k;
     bool firstSeg = true;
     // Passes over the content from the clip start (not from the window: a note that starts left of the window
     // still shows); passes left of the window are skipped before touching notes.
-    doc::forEachClipSegment(clip, clip.start, std::min(clipEnd, lp.to), [&](const doc::ClipSegment& seg) {
+    doc::forEachClipSegment(timing, g.start, std::min(clipEnd, lp.to), [&](const doc::ClipSegment& seg) {
       const Ticks segEnd = seg.at + (seg.contentTo - seg.contentFrom);
       const bool seam = !firstSeg;
       firstSeg = false;
@@ -368,8 +386,8 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
         float x0 = roundPx(segX0 + static_cast<float>(static_cast<double>(it->start - seg.contentFrom) * k));
         float x1 = roundPx(segX0 + static_cast<float>(static_cast<double>(nEnd - seg.contentFrom) * k));
         if (x1 - x0 >= 3.0f) x1 -= 1.0f;  // a pixel gap between notes that are wide enough
-        x0 = std::max(x0, cx0);
-        x1 = std::min(std::max(x1, x0 + 1.0f), cx1);
+        x0 = std::max(x0, std::max(cx0, rx0));
+        x1 = std::min(std::max(x1, x0 + 1.0f), std::min(cx1, rx1));
         if (x1 < vx0 || x0 > vx1 || x1 <= x0) continue;
         const auto rowPx = static_cast<uint16_t>((static_cast<uint32_t>(it->y) * span + 32767u) / 65535u);
         if (it->flags & kPreviewDisabled) {
@@ -392,12 +410,27 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
     emitRects(dl, out);
     lp.m.stats.noteRectsEmitted += emitted;
   }
-  // Border: dark edges separate adjacent clips (Live draws clips with a thin dark outline).
-  if (cx1 - cx0 >= 3.0f) {
+  // Border: dark edges separate adjacent clips (Live draws clips with a thin dark outline); a selected clip is
+  // outlined all round in the light selection colour.
+  if (selected) {
+    const Rgba sel = lp.th.clip.selectedBorder;
+    const float w = static_cast<float>(std::max(1, lp.ctx.scale.px(1.0f)));
+    dl.addRectFilled({vx0, top, vx1, top + w}, sel);
+    dl.addRectFilled({vx0, bottom - w, vx1, bottom}, sel);
+    if (cx0 >= vx0) dl.addRectFilled({cx0, top, cx0 + w, bottom}, sel);
+    if (cx1 <= vx1) dl.addRectFilled({cx1 - w, top, cx1, bottom}, sel);
+  } else if (cx1 - cx0 >= 3.0f) {
     const Rgba border = lp.th.clip.border;
     if (cx0 >= vx0) dl.addRectFilled({cx0, top, cx0 + 1.0f, bottom}, border);
     if (cx1 <= vx1) dl.addRectFilled({cx1 - 1.0f, top, cx1, bottom}, border);
   }
+}
+
+// The track's own activator and its groups' (a deactivated group silences its members).
+bool rowActive(std::span<const ArrangementRow> rows, const ArrangementRow& row) noexcept {
+  bool active = row.track->active;
+  for (int32_t p = row.parent; p >= 0 && active; p = rows[static_cast<size_t>(p)].parent) active = rows[static_cast<size_t>(p)].track->active;
+  return active;
 }
 
 // Descendant MIDI tracks of a group (depth-first), for the group lane's clip summary.
@@ -425,8 +458,10 @@ void paintGroupSummary(LanePaint& lp, const doc::Track& group, float top, float 
     const auto [a, b] = ix.visible(lp.from, lp.to);
     for (size_t j = a; j < b; ++j) {
       const doc::NoteClip& c = *t.clips[j].clip;
-      const float x0 = std::max(std::round(lp.X(static_cast<double>(ix.start[j]))), static_cast<float>(lp.c.x) - 1.0f);
-      const float x1 = std::min(std::max(std::round(lp.X(static_cast<double>(ix.end[j]))), x0 + 1.0f), static_cast<float>(lp.c.right()) + 1.0f);
+      const float x0 = std::max(std::round(lp.X(static_cast<double>(ix.start[j]))),
+                                std::max(static_cast<float>(lp.c.x) - 1.0f, static_cast<float>(lp.r.x)));
+      const float x1 = std::min(std::max(std::round(lp.X(static_cast<double>(ix.end[j]))), x0 + 1.0f),
+                                std::min(static_cast<float>(lp.c.right()) + 1.0f, static_cast<float>(lp.r.right())));
       if (x1 <= x0) continue;
       const Rgba col = (c.active && t.active && group.active) ? rgbOf(c.colour) : inactiveColour();
       // Translucent body with a solid top edge: reads as a summary, not as clips (Live's group lane).
@@ -474,9 +509,16 @@ void LaneCanvas::paint(PaintContext& ctx) {
   while (last != rows.end() && last->y < localBottom) ++last;
   const float cx0 = static_cast<float>(c.x), cx1 = static_cast<float>(c.right());
 
-  // 1. The lane colour everywhere (Live continues lanes and grid into the empty area below the tracks), then the
-  // alternate-bar shading and the grid lines: one column per cell / line across every visible row.
+  // 1. The lane colour everywhere (Live continues lanes and grid into the empty area below the tracks), selected
+  // tracks' lanes lighter (T3.9), then the alternate-bar shading and the grid lines: one column per cell / line
+  // across every visible row.
   dl.addRectFilled(c.toRect(), th.arrangement.lane);
+  const Editor& ed = view_.editor();
+  if (!ed.selection().tracks.empty())
+    for (auto it = first; it != last; ++it)
+      if (ed.trackSelected(it->id))
+        dl.addRectFilled({cx0, static_cast<float>(r.y + it->y), cx1, static_cast<float>(r.y + it->y + it->h - 1)},
+                         th.arrangement.laneSelected);
   paintGrid(lp, static_cast<float>(c.y), static_cast<float>(c.bottom()));
 
   // 3. Row separators, clips, group summaries.
@@ -492,9 +534,35 @@ void LaneCanvas::paint(PaintContext& ctx) {
     if (t.clips.empty()) continue;
     const ClipIndex& ix = m.clips(t);
     const auto [a, b] = ix.visible(lp.from, lp.to);
-    bool active = t.active;
-    for (int32_t p = it->parent; p >= 0 && active; p = rows[static_cast<size_t>(p)].parent) active = rows[static_cast<size_t>(p)].track->active;
-    for (size_t j = a; j < b; ++j) paintClip(lp, *it, t.clips[j].clip, y0 + 1.0f, y1 - 1.0f, active);
+    const bool active = rowActive(rows, *it);
+    for (size_t j = a; j < b; ++j) {
+      const doc::ClipPtr& clip = t.clips[j].clip;
+      if (ed.hiddenWhileDragging(clip->id)) continue;  // drawn at its drag target below
+      paintClip(lp, *it, clip, y0 + 1.0f, y1 - 1.0f, active, {clip->start, clip->length, clip->contentStart}, ed.selected(clip->id));
+    }
+  }
+
+  // 3b. Editing (T3.9): the time selection (lighter over the selected rows; the insert marker a line), then the
+  // clips being dragged, drawn at their target.
+  if (const auto& ts = ed.selection().time; ts && ed.showTimeSelection()) {
+    const bool marker = ts->end <= ts->start;
+    const float x0 = std::max(cx0, std::floor(lp.X(static_cast<double>(ts->start))));
+    const float x1 = std::min(cx1, marker ? x0 + static_cast<float>(std::max(1, ctx.scale.px(1.0f)))
+                                          : std::floor(lp.X(static_cast<double>(ts->end))));
+    const Rgba col = withAlpha(th.clip.selectedBorder, marker ? 200 : 46);
+    if (x1 > x0)
+      for (auto it = first; it != last; ++it)
+        if (ed.trackSelected(it->id))
+          dl.addRectFilled({x0, static_cast<float>(r.y + it->y), x1, static_cast<float>(r.y + it->y + it->h - 1)}, col);
+  }
+  for (const DragClip& dc : ed.dragClips()) {
+    int32_t ri = 0;
+    ClipGeom g;
+    if (!ed.preview(dc, ri, g)) continue;
+    const ArrangementRow& row = rows[static_cast<size_t>(ri)];
+    const float y0 = static_cast<float>(r.y + row.y), y1 = static_cast<float>(r.y + row.y + row.h);
+    if (y1 <= static_cast<float>(c.y) || y0 >= static_cast<float>(c.bottom())) continue;
+    paintClip(lp, row, dc.clip, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), g, true);
   }
 
   // Previews left for later frames: paint again next frame (onFrame damages the lanes) until all are built.

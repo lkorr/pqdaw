@@ -178,9 +178,9 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     return usageError("--inject-stall needs the own WASAPI backend (--backend wasapi)");
   if (o.asio && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play && !panel)
     return usageError("--asio only applies to --sine, --play, --list-devices and --asio-panel");
-  // T3.7: the DAW shell. --project picks the shell in the window unless another view scene is named.
+  // The window opens the DAW shell (a new project, or --project) unless --scene names another scene (T3.9, Q60).
+  if (o.mode == Mode::Window && !sceneFlag) o.scene = "shell";
   if (!o.project.empty() || o.idleCheckSeconds > 0.0) {
-    if (o.mode == Mode::Window && !sceneFlag) o.scene = "shell";
     if (!o.project.empty() && o.mode != Mode::Window && o.mode != Mode::Screenshot)
       return usageError("--project only applies to the window and --screenshot");
     if (o.idleCheckSeconds > 0.0 && o.mode != Mode::Window) return usageError("--idle-check only applies to the window");
@@ -215,10 +215,9 @@ Result<std::vector<float>> parsePlayNotes(std::string_view notes) {
 
 std::string usage() {
   return "usage: pqdaw [options]\n"
-         "  (no mode)                                open the window (test pattern for now)\n"
-         "      --project <dir>                      open the DAW (scene shell) with this project\n"
-         "      --scene <name>                       scene to show (default test-pattern; shell = the DAW with\n"
-         "                                           a new project unless --project is given)\n"
+         "  (no mode)                                open the DAW (scene shell) with a new project\n"
+         "      --project <dir>                      open the DAW with this project\n"
+         "      --scene <name>                       scene to show instead (default shell; e.g. test-pattern)\n"
          "      --idle-check S                       shell: measure frames and CPU over S idle seconds; exit 0\n"
          "                                           only for 0 frames at < 0.1 % CPU\n"
          "      --size WxH                           initial window size\n"

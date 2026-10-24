@@ -99,13 +99,18 @@ void TrackHeader::paint(PaintContext& ctx) {
 }
 
 bool TrackHeader::onPointer(const PointerEvent& e) {
-  // Double-click on a group's title folds it (as the triangle does); selection and renaming are T3.9/T3.10's.
+  // Double-click on a group's title folds it (as the triangle does); renaming is T3.10's.
   if (e.type == PointerType::Down && e.button == PointerButton::Left && e.clickCount == 2 && group_ &&
       titleRect().contains(e.pos)) {
     view_.toggleFold(id_);
     return true;
   }
-  return false;
+  // A click selects the track (Shift adds, Ctrl toggles): `0` then toggles its activator (T3.9, Q15).
+  if (e.type == PointerType::Down && e.button == PointerButton::Left) {
+    view_.editor().selectTrack(id_, e.mods);
+    return true;
+  }
+  return e.type == PointerType::Up && e.button == PointerButton::Left;
 }
 
 namespace arrangement {

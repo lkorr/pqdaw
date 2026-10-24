@@ -280,6 +280,86 @@ int main() {
     ctx.togglePlay();
     tree.update(now += 0.2);
 
+    // T3.9 drag frames (UI-thread CPU per frame: pointer move → preview damage → partial paint), previews settled:
+    // a selected clip's title dragged around (time and across rows), an Alt-drag copy, an edge resize, a range
+    // (rubber band) drag over rows; and the release of a move (one edit dispatched, rows rebuilt, full repaint).
+    {
+      arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
+      arr->scrollToY(0);
+      settle();
+      auto pointer = [&](PointerType t, Vec2 p, Mods m = mod::kNone) {
+        PointerEvent e;
+        e.type = t;
+        e.pos = p;
+        e.mods = m;
+        e.button = (t == PointerType::Down || t == PointerType::Up) ? PointerButton::Left : PointerButton::None;
+        e.clickCount = 1;
+        tree.dispatchPointer(e);
+      };
+      const ArrangementRow row = arr->rows()[2];
+      const doc::ClipRef ref{row.id, row.track->clips[1].id};  // one bar at bar 3
+      const int32_t rowH = arr->rowLaneRect(2).h;
+      struct DragCase {
+        const char* what;
+        float dx0;     // grab point from the clip's left edge (device px)
+        Mods mods;
+        bool rows;     // also move across rows
+      };
+      const IRect box = arr->clipRect(ref);
+      const DragCase cases[] = {{"move", static_cast<float>(box.w) * 0.5f, mod::kNone, true},
+                                {"copy", static_cast<float>(box.w) * 0.5f, mod::kAlt, true},
+                                {"resize", static_cast<float>(box.w) - 2.0f, mod::kNone, false}};
+      for (const DragCase& dc : cases) {
+        arr->selectClips(std::span<const doc::ClipRef>(&ref, 1), false);
+        settle();
+        const IRect cb = arr->clipRect(ref);
+        const Vec2 grab{static_cast<float>(cb.x) + dc.dx0, static_cast<float>(cb.y) + 7.0f * scale};
+        pointer(PointerType::Move, grab, dc.mods);
+        pointer(PointerType::Down, grab, dc.mods);
+        pointer(PointerType::Move, {grab.x + 12.0f, grab.y}, dc.mods);
+        frame();
+        std::vector<double> drag;
+        int painted = 0;
+        for (int i = 0; i < 600; ++i) {
+          const float x = grab.x + 12.0f + static_cast<float>((i * 25) % 500);  // > one grid cell per frame
+          const float y = grab.y + (dc.rows ? static_cast<float>(((i / 40) % 3) * rowH) : 0.0f);
+          drag.push_back(timed([&] { pointer(PointerType::Move, {x, y}, dc.mods); }));
+          painted += dl.vertices().empty() ? 0 : 1;
+        }
+        std::snprintf(name, sizeof name, "arrangement.drag frame (%s) %ux%u@%.0fx", dc.what, w, h, static_cast<double>(scale));
+        pq::bench::reportStats(name, pq::bench::summarize(drag), "ns CPU/frame");
+        std::printf("  %s: %d of 600 frames painted\n", dc.what, painted);
+        const double release = timed([&] { pointer(PointerType::Up, {grab.x + 60.0f, grab.y}, dc.mods); });
+        std::printf("  %s release (one edit dispatched, rows rebuilt, full repaint): %.0f ns CPU\n", dc.what, release);
+        (void)ctx.undo();
+        settle();
+      }
+      // Range drag from empty space between clips of row 2 over 6 rows.
+      arr->clearSelection();
+      settle();
+      const IRect lane = arr->rowLaneRect(2);
+      const Vec2 from{arr->xOfTick(1.5 * static_cast<double>(kTicksPerWhole)), static_cast<float>(lane.bottom() - 4)};
+      pointer(PointerType::Move, from);
+      pointer(PointerType::Down, from);
+      pointer(PointerType::Move, {from.x + 12.0f, from.y});
+      frame();
+      std::vector<double> band;
+      int bandPainted = 0;
+      for (int i = 0; i < 600; ++i) {
+        const float x = from.x + 12.0f + static_cast<float>((i * 25) % 500);
+        const float y = from.y + static_cast<float>(((i / 30) % 6) * rowH);
+        band.push_back(timed([&] { pointer(PointerType::Move, {x, y}); }));
+        bandPainted += dl.vertices().empty() ? 0 : 1;
+      }
+      std::printf("  range: %d of 600 frames painted, %zu clips selected at the end\n", bandPainted,
+                  arr->selection().clips.size());
+      pointer(PointerType::Up, from);
+      std::snprintf(name, sizeof name, "arrangement.drag frame (range) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+      pq::bench::reportStats(name, pq::bench::summarize(band), "ns CPU/frame");
+      arr->clearSelection();
+      settle();
+    }
+
     // Memory over scroll frames: after a 1000-frame warm-up (more than one pass over the song, so the bounded preview
     // cache is at its working size), 10,000 frames sampled every 1000 (the criterion asks for 1000 flat).
     arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);

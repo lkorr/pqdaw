@@ -2,6 +2,7 @@
 
 // The arrangement view's private parts (T3.8): the row/clip/preview model and the widgets the view is built from.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include "pq/document/clip_time.h"
+#include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
 #include "pq/tuning/tuning.h"
 #include "pq/ui/text.h"
@@ -119,6 +121,162 @@ private:
   uint32_t textNext_ = 0;
 };
 
+// ---- Editing (T3.9) -------------------------------------------------------------------------------------------
+
+enum class DragKind : uint8_t {
+  None,
+  Move,    // the selected clips by (dt, rows); Alt held = Copy (the originals stay)
+  Resize,  // one edge of every selected clip by dt
+  Range,   // a time selection over rows (selects the clips it touches)
+};
+
+// Where a clip is drawn: its own bounds, or a drag preview's.
+struct ClipGeom {
+  Ticks start = 0;
+  Ticks length = 0;
+  Ticks contentStart = 0;
+};
+
+// A clip of a Move / Resize drag as it was at the press, and the row it was on.
+struct DragClip {
+  doc::ClipRef ref;
+  doc::ClipPtr clip;
+  int32_t row = -1;
+};
+
+// In-process clipboard: clips (copies, starts relative to the copied range) and the rows they came from, as offsets
+// among the MIDI rows.
+struct ClipboardEntry {
+  uint32_t rowOffset = 0;
+  doc::ClipPtr clip;  // start = offset from the clipboard origin
+};
+struct Clipboard {
+  std::vector<ClipboardEntry> clips;
+  Ticks length = 0;  // the copied span (a range, or the clips' extent)
+};
+
+class Editor {
+public:
+  explicit Editor(ArrangementView& view);
+
+  // --- selection ---
+  const ArrangementView::Selection& selection() const noexcept { return sel_; }
+  void setSelection(ArrangementView::Selection s, bool showInClipView);
+  bool selected(doc::ClipId id) const noexcept {
+    return !ids_.empty() && std::binary_search(ids_.begin(), ids_.end(), id.value);
+  }
+  bool trackSelected(doc::TrackId id) const noexcept {
+    return !trackIds_.empty() && std::binary_search(trackIds_.begin(), trackIds_.end(), id.value);
+  }
+  ArrangementView::Selection selectionOfClips(std::vector<doc::ClipRef> clips) const;
+  void afterDocumentChange(const doc::StoreEvent& e);
+
+  // --- input (LaneCanvas forwards everything but the wheel) ---
+  bool pointer(const ui::PointerEvent& e);
+  void cancelDrag();
+  void selectTrack(doc::TrackId id, ui::Mods mods);
+
+  // --- paint queries ---
+  DragKind dragKind() const noexcept { return drag_.moved ? drag_.kind : DragKind::None; }
+  bool dragging() const noexcept { return drag_.kind != DragKind::None; }
+  // A clip whose original is not drawn (it is being moved or resized: its preview is drawn instead).
+  bool hiddenWhileDragging(doc::ClipId id) const noexcept {
+    return drag_.moved && (drag_.kind == DragKind::Resize || (drag_.kind == DragKind::Move && !drag_.copy)) && selected(id);
+  }
+  // The time selection overlay is hidden while the selected clips are moved or resized (it follows them on
+  // release); a copy leaves it where the originals are.
+  bool showTimeSelection() const noexcept {
+    return !(drag_.moved && (drag_.kind == DragKind::Resize || (drag_.kind == DragKind::Move && !drag_.copy)));
+  }
+  const std::vector<DragClip>& dragClips() const noexcept { return drag_.clips; }
+  // Preview of a dragged clip: target row and geometry (false: not drawn).
+  bool preview(const DragClip& c, int32_t& row, ClipGeom& g) const noexcept;
+
+  // --- edits ---
+  bool deleteSelection();
+  bool copySelection();
+  bool cutSelection();
+  bool paste();
+  bool duplicateSelection();
+  bool splitSelection();
+  bool consolidateSelection();
+  bool insertMidiClip();
+  bool insertTime();
+  bool duplicateTime();
+  bool deleteTime();
+  bool loopSelection();
+  bool toggleActive();
+  void selectAll();
+  bool hasClipboard() const noexcept { return !clipboard_.clips.empty(); }
+  ui::Menu* openContextMenu(ui::Vec2 at);
+
+  // Device rect of a clip on a row (window coordinates).
+  ui::IRect clipBox(int32_t row, Ticks start, Ticks end) const noexcept;
+
+private:
+  struct Drag {
+    DragKind kind = DragKind::None;
+    bool moved = false;
+    bool copy = false;
+    doc::ops::ClipEdge edge = doc::ops::ClipEdge::End;
+    ui::Vec2 press{};
+    int32_t pressRow = -1;
+    Ticks origin = 0;  // snapping origin (Move: the pressed clip's start; Resize: its edge; Range: the anchor)
+    Ticks dt = 0;
+    int32_t drow = 0;
+    Ticks minDt = 0, maxDt = 0;  // clamps (start ≥ 0, length ≥ 1)
+    std::vector<DragClip> clips;
+    std::vector<ui::IRect> damage;  // the preview's rects last frame
+    // Range
+    int32_t anchorRow = -1;
+    bool additive = false;
+    std::vector<doc::ClipRef> base;
+    // A press on a clip of a multiple selection: on release without a move, select just it (Live).
+    doc::ClipRef pressed{};
+    bool collapseOnClick = false;
+  };
+  struct Hit {
+    int32_t row = -1;
+    doc::ClipRef ref{};
+    const doc::NoteClip* clip = nullptr;
+    int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body
+  };
+  Hit hitTest(ui::Vec2 p) const;
+  Grid grid() const noexcept;
+  Ticks snapTick(Ticks t) const noexcept;
+  Ticks tickAt(float x) const noexcept;
+  int32_t clampRow(float y) const noexcept;
+  int32_t rowOf(doc::TrackId id) const noexcept;
+  void press(const ui::PointerEvent& e);
+  void dragTo(const ui::PointerEvent& e);
+  void release(const ui::PointerEvent& e);
+  void beginClipDrag(DragKind kind, const Hit& h);
+  void updateRange(ui::Vec2 p);
+  void commitDrag();
+  void damageDragPreview();
+  void damageSelection(const ArrangementView::Selection& a, const ArrangementView::Selection& b);
+  void damageRows(const ArrangementView::Selection& s, double t0, double t1, bool fullRows);
+  bool spanOf(const ArrangementView::Selection& s, double& t0, double& t1) const;
+  // Selected tracks expanded to MIDI tracks (a selected group stands for its MIDI members, folded or not).
+  std::vector<doc::TrackId> midiTracks() const;
+  // The MIDI rows (row indices of non-group rows).
+  std::vector<int32_t> midiRows() const;
+  bool dispatch(doc::Batch batch, std::string_view what);
+  bool apply(const doc::ops::EditResult& e, std::string_view what, bool adoptClips);
+  bool needRange(std::string_view what) const;
+  bool fillClipboard(Clipboard& out) const;
+  bool pasteAt(const Clipboard& cb, Ticks at, int32_t firstRow, std::string_view what, bool selectRange);
+
+  ArrangementView& view_;
+  ViewContext& ctx_;
+  ArrangementView::Selection sel_;
+  std::vector<uint32_t> ids_;       // selected clip ids, sorted
+  std::vector<uint32_t> trackIds_;  // selected track ids, sorted
+  Drag drag_;
+  Clipboard clipboard_;
+  std::optional<TickRange> lastPaste_;  // the range the last paste selected (pasting again goes after it)
+};
+
 // Content of the vertical ScrollView: the lane canvas and the headers, placed from the rows.
 class TrackStack : public ui::Widget {
 public:
@@ -137,6 +295,7 @@ public:
   explicit LaneCanvas(ArrangementView& view);
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
+  void onCaptureLost() override;
   void onFrame(double now) override;
   // Builds missing previews of the visible clips within one paint's budget; true when none is missing.
   bool buildAhead();

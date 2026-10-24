@@ -37,28 +37,28 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | M8 (Q15) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
 | `mapping.toggleKeyMap` | `Ctrl+K` | global | Key/MIDI Map Commands | M8 |
-| `arrangement.zoomToSelection` | `Z` | arrangement | Arrangement View Commands | implemented (T3.8; no time selection until T3.9: fits the whole arrangement) |
+| `arrangement.zoomToSelection` | `Z` | arrangement | Arrangement View Commands | implemented (T3.8; the time selection, T3.9, else the whole arrangement) |
 | `arrangement.zoomBack` | `X` | arrangement | Arrangement View Commands | implemented (T3.8) |
 | `arrangement.zoomIn` | `=` | arrangement | Zooming, Display and Selection | implemented (T3.8; Live's `+`, unshifted) |
 | `arrangement.zoomOut` | `-` | arrangement | Zooming, Display and Selection | implemented (T3.8) |
 | `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | M3 (T3.10) |
 | `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | M3 (T3.10) |
 | `arrangement.rename` | `Ctrl+R` | arrangement | Editing | M3 (T3.10) |
-| `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | M3 (T3.10) |
+| `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | implemented (T3.9; Q15: deactivates / reactivates the selected clips, else toggles the selected tracks' activators) |
 | `arrangement.toggleAutomationMode` | `A` | arrangement | Commands for Breakpoint Envelopes | M3 (T3.15) |
-| `arrangement.selectAll` | `Ctrl+A` | arrangement | Editing | M3 (T3.9) |
-| `arrangement.copy` | `Ctrl+C` | arrangement | Editing | M3 (T3.9) |
-| `arrangement.cut` | `Ctrl+X` | arrangement | Editing | M3 (T3.9) |
-| `arrangement.paste` | `Ctrl+V` | arrangement | Editing | M3 (T3.9) |
-| `arrangement.duplicate` | `Ctrl+D` | arrangement | Editing | M3 (T3.9) |
-| `arrangement.delete` | `Delete` | arrangement | Editing | M3 (T3.9) |
-| `arrangement.split` | `Ctrl+E` | arrangement | Arrangement View Commands | M3 (T3.9) |
-| `arrangement.consolidate` | `Ctrl+J` | arrangement | Arrangement View Commands | M3 (T3.9) |
-| `arrangement.loopSelection` | `Ctrl+L` | arrangement | Loop Brace and Start/End Markers | M3 (T3.9) |
-| `arrangement.insertMidiClip` | `Ctrl+Shift+M` | arrangement | Arrangement View Commands | M3 (T3.9) |
-| `arrangement.insertTime` | `Ctrl+I` | arrangement | Arrangement View Commands | M3 (T3.9) |
-| `arrangement.duplicateTime` | `Ctrl+Shift+D` | arrangement | Arrangement View Commands | M3 (T3.9) |
-| `arrangement.deleteTime` | `Ctrl+Shift+Delete` | arrangement | Arrangement View Commands | M3 (T3.9) |
+| `arrangement.selectAll` | `Ctrl+A` | arrangement | Editing | implemented (T3.9) |
+| `arrangement.copy` | `Ctrl+C` | arrangement | Editing | implemented (T3.9) |
+| `arrangement.cut` | `Ctrl+X` | arrangement | Editing | implemented (T3.9) |
+| `arrangement.paste` | `Ctrl+V` | arrangement | Editing | implemented (T3.9) |
+| `arrangement.duplicate` | `Ctrl+D` | arrangement | Editing | implemented (T3.9) |
+| `arrangement.delete` | `Delete` | arrangement | Editing | implemented (T3.9) |
+| `arrangement.split` | `Ctrl+E` | arrangement | Arrangement View Commands | implemented (T3.9) |
+| `arrangement.consolidate` | `Ctrl+J` | arrangement | Arrangement View Commands | implemented (T3.9) |
+| `arrangement.loopSelection` | `Ctrl+L` | arrangement | Loop Brace and Start/End Markers | implemented (T3.9) |
+| `arrangement.insertMidiClip` | `Ctrl+Shift+M` | arrangement | Arrangement View Commands | implemented (T3.9) |
+| `arrangement.insertTime` | `Ctrl+I` | arrangement | Arrangement View Commands | implemented (T3.9) |
+| `arrangement.duplicateTime` | `Ctrl+Shift+D` | arrangement | Arrangement View Commands | implemented (T3.9) |
+| `arrangement.deleteTime` | `Ctrl+Shift+Delete` | arrangement | Arrangement View Commands | implemented (T3.9) |
 | `arrangement.cutTime` | `Ctrl+Shift+X` | arrangement | Arrangement View Commands | M10 (not in T3.9) |
 | `pianoroll.selectAll` | `Ctrl+A` | pianoroll | MIDI Note Editor | implemented (T3.11) |
 | `pianoroll.copy` | `Ctrl+C` | pianoroll | Editing | implemented (T3.11) |

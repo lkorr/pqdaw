@@ -82,6 +82,7 @@ pq_add_test(pq_tests_views
     views/test_view_context.cpp
     views/test_shell.cpp
     views/test_arrangement.cpp
+    views/test_arrangement_editing.cpp
     views/test_piano_roll.cpp
     views/test_mos_chart.cpp
   DEPS pq_views)

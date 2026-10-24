@@ -15,12 +15,24 @@ namespace {
 pq::Result<CliOptions> parse(std::vector<std::string_view> a) { return parseCli(a); }
 }  // namespace
 
-TEST_CASE("cli: no arguments opens the window") {
+TEST_CASE("cli: no arguments opens the window with the DAW shell (a new project); --scene picks another scene") {
   auto o = parse({});
   REQUIRE(o.ok());
   CHECK(o->mode == Mode::Window);
-  CHECK(o->scene == "test-pattern");
+  CHECK(o->scene == "shell");  // T3.9 (Q60): was the T0.7 test pattern
+  CHECK(o->project.empty());
   CHECK_FALSE(o->animate);
+  o = parse({"--scene", "test-pattern"});
+  REQUIRE(o.ok());
+  CHECK(o->scene == "test-pattern");
+  o = parse({"--animate", "--scene", "test-pattern"});
+  REQUIRE(o.ok());
+  CHECK(o->animate);
+  CHECK(o->scene == "test-pattern");
+  // The self-test keeps its own default scene (the test pattern).
+  o = parse({"--window-selftest"});
+  REQUIRE(o.ok());
+  CHECK(o->scene == "test-pattern");
 }
 
 TEST_CASE("cli: --screenshot with and without --size") {
