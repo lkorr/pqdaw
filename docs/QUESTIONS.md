@@ -31,7 +31,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: SPEC §9.2 asks for tempo ramps but not their shape.
 - Options: A) BPM linear in ticks (musical time), like tempo automation drawn on a beat-based arrangement (Ableton-style); seconds = closed-form log integral. B) BPM linear in seconds; ticks = quadratic in time.
 - Provisional choice: A, implemented with log1p/expm1 so it stays accurate for tiny slopes. A ramp drawn as a straight line on the beat grid is then really straight. Reversible: `TempoCurve` is an enum, so a `LinearInTime` curve can be added beside it.
-- Status: open
+- Status: answered (user, 2026-10-24): A — BPM linear in beats (as implemented).
 
 ## Q5 · 2026-10-20 · T2.3 · mos-explorer: the CLI (mos-calc.js) and the app (index.html) disagree
 - Context: mos-calc.js says it "mirrors index.html logic exactly", but its copies differ: `buildMOSScale` has no `chainSafeGen` nudge and sets s = 0 (not L) for an equalized scale; `computeHardness` returns a 4-digit string and no "1.00" case; `computeUDP` ignores brightness (always `n−1−root|root`). `generatorForHardness` exists only in the CLI and is built on its versions.
@@ -215,7 +215,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: "voice if any input is voice" makes `noise()`, `pulse()` and `phasor(220Hz)` in an instrument patch global: one instance shared by all voices. That is the cheapest, but it is audible: a per-voice phasor would restart its phase at note-on and per-voice noise is decorrelated between voices (N global-noise voices sum to N× one noise, not √N×), and `pulse()` fires once at program start instead of at every voice start.
 - Options: A) global (cheapest; per-voice behaviour by making an input per-voice, e.g. `phasor(220Hz, reset: voice.trigger)`); B) per-voice whenever the patch is instantiated in a voice context.
 - Provisional choice: A, with `InferOptions::freeRunningPoly` (default global) so the document/engine can choose B per patch without touching the compiler. "Free-running" = stateful with no input above const rate.
-- Status: open
+- Status: answered (user, 2026-10-24): **B — per-voice by default**: free-running stateful atoms in an instrument patch get one instance per voice (own phase from note-on, decorrelated noise); a patch can opt into a shared global instance. Implemented by T1.3-fix1.
 
 ## Q30 · 2026-10-21 · T1.3 · Inference defaults and boundary semantics
 - Choices made in `infer()` (each local to `src/graph/src/infer.cpp`):
@@ -775,7 +775,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Choice: C. D was rejected because the JIT would no longer be bit-identical to the interpreter on any solve, which the review made the default requirement (interp → JIT swaps, offline = live). C makes the interpreter cheaper too (1 body evaluation per iteration instead of 1 + 2n). The step-3 fallback and the FD-only bodies still use A's relative step, as the task asks, so the zero-crossing weakness remains for bodies that read a wavetable/shaper depending on the unknown (rare; a body op without a tangent rule).
 - Cost of C: one rule per element-wise atom (pq/engine/newton.h tangentOp, written once and instantiated twice), tested against a central difference of every dsp kernel (tests/engine/test_newton.cpp); exact sin' and pow's ∂/∂b call cos/log per lane (scalar, shared functions).
 - Measured (bench/RESULTS.md, ship, loaded machine): zdf_tanh JIT 222–229 → 150–162 ns/sample (1.5×), interpreter ≈ 1.03×. TASKS asks ≥ 2× with AD: NOT met. The body evaluations per iteration went from 3 to 1 (exact tanh calls 19 → 6), but Newton is a serial dependency chain per sample (tanh → residual → double divide → next guess), and the old u ± h evaluations were independent and overlapped in the out-of-order core, so the latency per iteration fell by ~1.5×, not 3×. Further options: a float (not double) n = 1 update in both backends (shorter chain, a numerics change), fast_tanh in user patches, or fewer iterations in the patch (an exact J may converge in fewer; not measured).
-- Status: open (C implemented; the 2× target needs a decision)
+- Status: answered (user, 2026-10-24): accept 1.5× (option C as implemented); revisit only if an M4 device with nonlinear solves is too slow. T1b.1-fix1 closed.
 
 ## Q99 · 2026-10-24 · T1b.1-fix1 · JIT machine-code level and the compile-time caps
 - Measured (bench/RESULTS.md T1b.1-fix1, ship preset, loaded machine — indicative): run time equal within noise at levels 1–3 on every bench patch; compile time of the 100-step chain 33–44 ms and of the review mux 171–254 ms at levels 1–3, level 0 12–15 / 63–76 ms.

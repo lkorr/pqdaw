@@ -198,7 +198,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     1-sample loop; TimerNan outputs 0; the saw wavetable's top harmonic stays ≥ 16 kHz through every octave boundary (spectral
     test); tests use independent references (no copied level/wrap rules).
 
-- [!] **T1b.1-fix1 JIT determinism, Newton, compile time** *(merged 2026-10-24; partial: zdf_tanh 1.5× not ≥ 2× — Q98)* (`jit` + `engine`). Depends on: T1b.1.
+- [x] **T1b.1-fix1 JIT determinism, Newton, compile time** *(merged 2026-10-24; zdf_tanh 1.5× accepted by the user, Q98)* (`jit` + `engine`). Depends on: T1b.1.
   - contract off by default (Q64 reversed; optional optimiser `mulsub` fusion); Newton step relative with a 1e-6 floor and a
     fallback on non-finite J (both backends); forward-mode AD for inlined solve bodies (or correct Q53/RESULTS); interleave
     capped by code size; CodeGenOptLevel measured; per-call-site scratch arrays (no __chkstk frames); canonical bool masks.
@@ -454,6 +454,10 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
     `3 / 2` and `100,5` are parse errors with a line number.
 
 
+- [ ] **T1.3-fix1 Per-voice free-running sources (Q29 answer)** (`graph`, `engine`). Depends on: T1.3.
+  - `InferOptions::freeRunningPoly` defaults to per-voice inside voice contexts: `noise`, `pulse`, `phasor`/LFOs with no input above const rate get one instance per voice (phase from note-on; noise seeded per voice, decorrelated); an explicit opt-in keeps one shared global instance (document the syntax in PATCH_LANGUAGE).
+  - Accept: two simultaneous voices of a patch with `noise()` are decorrelated (|corr| < 0.05) and an LFO restarts at each note-on; the opt-in gives the old global behaviour bit for bit; goldens re-rendered only where a patch relied on the old default (explained); interpreter == JIT.
+
 **Bundle C — views correctness and frame cost (views, ui, app)**
 - [ ] **T3.x-fix-paint Per-rect paint and automation tiles** (`app`, `ui`, `views`). Depends on: T3.15, T3.8-fix1.
   - Paint per damage rect (H8); automation bands rasterised into the TileAtlas; text helpers clip (M13); chips
@@ -469,7 +473,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Harmonic labels off the notes + F chip + toggle (M18); label-collision helper (L18); pan indicator and chip
     truncation (L17); control bar per Q107.1 B with CPU meter and tuning chip; panel gutters on the window colour;
     11-px roles (Q107.4 B), SemiBold track names; detail view collapsed until a clip is opened; dockable / movable
-    MOS wheel; Ctrl+T/Ctrl+Shift+T per Live (L15, QUESTIONS first); arrow-key navigation.
+    MOS wheel; Ctrl+T = new audio track / Ctrl+Shift+T = new MIDI track per Live 12 (L15; user confirmed 2026-10-24); arrow-key navigation.
   - Accept: REVIEW entry with a side-by-side (local only); goldens regenerated deliberately.
 
 
