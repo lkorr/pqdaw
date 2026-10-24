@@ -9,6 +9,7 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/mos_wheel/mos_chart.h"
 #include "pq/views/mos_wheel/mos_circle.h"
@@ -243,6 +244,55 @@ Status setupMosWheelPopover(Shell& shell) {
   return Ok{};
 }
 
+// T3.10: fixed meter levels for the mixer scenes, by track name (a static source: the scene renders once).
+Status setupMixerCommon(Shell& shell) {
+  MixerView* mixer = findMixer(shell);
+  ArrangementView* a = arrangementOf(shell);
+  if (!mixer || !a) return Error{ErrorCode::NotFound, "mixer scenes: the arrangement and the mixer must be installed", {}};
+  static FixedMeterSource meters;
+  meters = FixedMeterSource{};
+  auto lv = [](float rms, float peak, bool clip = false) {
+    ui::MeterLevels l;
+    l.rmsDb[0] = rms;
+    l.rmsDb[1] = rms - 2.0f;
+    l.peakDb[0] = peak;
+    l.peakDb[1] = peak - 1.5f;
+    l.holdDb[0] = peak + 1.0f;
+    l.holdDb[1] = peak;
+    l.clip[0] = clip;
+    return l;
+  };
+  struct Level {
+    const char* name;
+    float rms, peak;
+    bool clip;
+  };
+  const Level levels[] = {{"Drums", -14.0f, -6.0f, false}, {"Bass", -20.0f, -12.0f, false}, {"Keys", -16.0f, -9.0f, false},
+                          {"Piano", -18.0f, -10.0f, false}, {"Lead", -9.0f, -2.0f, true},   {"A Reverb", -26.0f, -18.0f, false},
+                          {"B Delay", -30.0f, -22.0f, false}, {"Master", -8.0f, -1.0f, false}};
+  doc::forEachTrack(*shell.context().doc(), [&](const doc::Track& t, const doc::Track*) {
+    for (const Level& l : levels)
+      if (t.name == l.name) meters.set(t.id, lv(l.rms, l.peak, l.clip));
+  });
+  mixer->setMeterSource(&meters);
+  // Piano selected (its header tinted), as after a click on its title.
+  for (const ArrangementRow& r : a->rows())
+    if (r.track->name == "Piano") a->selectTrack(r.id);
+  return Ok{};
+}
+
+// T3.10: the arrangement's headers with their mixer sections, returns and master pinned at the bottom
+// (tests/views/fixtures/mixer).
+Status setupTracksMixer(Shell& shell) { return setupMixerCommon(shell); }
+
+// T3.10: the mixer view (Ctrl+Alt+M) over the same project.
+Status setupMixerView(Shell& shell) {
+  if (Status s = setupMixerCommon(shell); !s) return s;
+  findMixer(shell)->setShown(true);
+  findMixer(shell)->wakeMeters();
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -257,6 +307,8 @@ constexpr SceneEntry kScenes[] = {
     {"mos-circle-5L2s", 440, 560, setupMosCircle5L2s},
     {"mos-circle-modmos", 440, 560, setupMosCircleModmos},
     {"mos-wheel-popover", 1600, 900, setupMosWheelPopover},
+    {"tracks-mixer", 1280, 800, setupTracksMixer},
+    {"mixer-view", 1280, 800, setupMixerView},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

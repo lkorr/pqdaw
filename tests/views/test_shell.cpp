@@ -330,7 +330,9 @@ TEST_CASE("shell: while playing, a position change damages only the position dis
   const IRect lanes = arr->lanesViewport();
   auto column = [&](Ticks t) {
     const auto x = static_cast<int32_t>(std::floor(arr->xOfTick(static_cast<double>(t))));
-    return IRect{x - 1, ruler.y, 3, lanes.bottom() - ruler.y};
+    // T3.10: through the pinned returns / master too.
+    const int32_t bottom = arr->bottomRect().empty() ? lanes.bottom() : arr->bottomRect().bottom();
+    return IRect{x - 1, ruler.y, 3, bottom - ruler.y};
   };
   const IRect allowed[] = {pos, column(0), column(5 * kTicksPerWhole)};
   const auto rects = f.d.tree().damage().rects();

@@ -148,13 +148,14 @@ void MixerView::wakeMeters() {
   if (ctl_->pollMeters()) meterTimer_ = requestTimer(mm::kMeterPollSeconds);
 }
 
+bool MixerView::pollMeters() { return ctl_->pollMeters(); }
+
 void MixerView::onTimer(uint32_t id) {
   if (id != meterTimer_) return;
   meterTimer_ = 0;
   if (ctl_->pollMeters()) meterTimer_ = requestTimer(mm::kMeterPollSeconds);
 }
 
-void MixerView::setTuningChipHandler(std::function<void(doc::TrackId, IRect)> fn) { ctl_->tuningHandler = std::move(fn); }
 
 void MixerView::arrange(LayoutPass& pass) {
   const IRect r = rect();

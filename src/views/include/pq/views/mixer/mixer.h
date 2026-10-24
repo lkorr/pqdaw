@@ -21,8 +21,8 @@
 // arm likewise. Volume, pan and send boxes are Live number boxes (vertical drag, Shift fine, double-click to type,
 // Delete = default) and the mixer view's fader; each drag / type-in / key is one store gesture = one undo step whose
 // ChangeSet is paramOnly. The output chooser lists Master, the groups the track may feed, and Sends Only
-// (Structural). The tuning chip shows the track's tuning in its main tuning's colour; a click opens the tuning menu
-// (Inherit / main tunings / Edit…: the MOS wheel popover, T3.14, through setTuningChipHandler).
+// (Structural). The tuning chip is T3.14's TuningChip for the track (its main tuning's colour; a click opens the MOS
+// wheel popover for the track); a right-click opens the assignment menu (Inherit / a main tuning / MOS Wheel…).
 //
 // Meters: PQ Meter-style ui::Meter per strip, fed from a plain-data MeterSource (the app implements it over the
 // engine's taps, T3.17). The views poll it on a timer (kMeterPollSeconds) only while it reports live(): one batched
@@ -83,7 +83,7 @@ inline constexpr float kHeaderMixerWidth = 180.0f;  // the header's mixer sectio
 inline constexpr float kLine = 20.0f;               // one header line
 inline constexpr float kBoxTop = 3.0f;              // box offset inside a line
 inline constexpr float kBox = 14.0f;                // box height
-inline constexpr float kStripWidth = 78.0f;         // a mixer-view strip
+inline constexpr float kStripWidth = 80.0f;         // a mixer-view strip
 inline constexpr double kMeterPollSeconds = 1.0 / 30.0;
 }  // namespace mixer_metrics
 
@@ -187,9 +187,8 @@ public:
   void setMeterSource(MeterSource* source);
   // Polls the source now (and keeps polling while it is live).
   void wakeMeters();
-  // The tuning chip's "Edit…" item and the hook T3.14's MOS wheel popover takes: called with the track and the chip's
-  // device rect. Without a handler the item is disabled.
-  void setTuningChipHandler(std::function<void(doc::TrackId, ui::IRect anchor)> fn);
+  // One poll now: a batched read for every strip's meter (benchmarks, tests). True while the source is live.
+  bool pollMeters();
   MixerController& controller() const noexcept { return *ctl_; }
 
   void arrange(ui::LayoutPass& pass) override;

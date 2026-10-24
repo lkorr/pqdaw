@@ -185,8 +185,7 @@ void LiveToggle::paint(PaintContext& ctx) {
   }
   const std::string_view text = kind_ == Kind::Post ? std::string_view(on() ? "Post" : "Pre") : std::string_view(label_);
   if (const ThemeFonts* f = ctx.res.uiFonts)
-    paint::text(ctx, kind_ == Kind::Solo ? f->bodyStrong : f->numeric, r, text, ink, TextAlign::Center, ctx.scale.px(1.0f),
-                ctx.scale.px(1.0f));
+    paint::text(ctx, kind_ == Kind::Solo ? f->bodyStrong : f->numeric, r, text, ink, TextAlign::Center, 0, 0);
 }
 
 // --- LiveBox ------------------------------------------------------------------------------------------------------------
@@ -301,91 +300,12 @@ void Chooser::paint(PaintContext& ctx) {
     paint::text(ctx, f->small, r, text_, m.fieldText, TextAlign::Left, ctx.scale.px(4.0f), ctx.scale.px(13.0f));
 }
 
-// --- TuningChip -------------------------------------------------------------------------------------------------------
-
-TuningChip::TuningChip() : Control("tuning") {
-  setInfo("Track Tuning", "The tuning this track plays in (filled: chosen here; outlined: from its group / the project). Click to choose.");
-}
-
-void TuningChip::set(std::string_view label, uint32_t rgb, Mode mode) {
-  if (label_ == label && rgb_ == rgb && mode_ == mode) return;
-  label_ = std::string(label);
-  rgb_ = rgb;
-  mode_ = mode;
-  markDirty();
-}
-
-bool TuningChip::onPointer(const PointerEvent& e) {
-  if (e.type == PointerType::Down && e.button == PointerButton::Left) {
-    if (onOpen) onOpen(*this);
-    return true;
-  }
-  return e.type == PointerType::Up && e.button == PointerButton::Left;
-}
-
-void TuningChip::paint(PaintContext& ctx) {
-  const Theme* th = ctx.res.theme;
-  if (!th) return;
-  const auto& m = th->mixer;
-  const IRect r = rect();
-  if (r.empty()) return;
-  const Rgba col = hex(rgb_);
-  Rgba ink = m.fieldText;
-  switch (mode_) {
-    case Mode::Main:
-      frame(ctx.dl, r, hovered() ? paint::hoverOf(col) : col, m.boxBorder);
-      ink = clipTextFor(*th, col);
-      break;
-    case Mode::Inherit: {
-      // Outlined in the inherited tuning's colour: the track follows its group / the project.
-      frame(ctx.dl, r, col, m.boxBorder);
-      const IRect in = paint::inset(r, std::max(1, ctx.scale.px(2.0f)));
-      if (!in.empty()) ctx.dl.addRectFilled(in.toRect(), hovered() ? paint::hoverOf(m.field) : m.field);
-      ink = lerp(col, m.fieldText, 0.35f);
-      break;
-    }
-    case Mode::Private:
-      frame(ctx.dl, r, hovered() ? paint::hoverOf(m.buttonOff) : m.buttonOff, m.boxBorder);
-      ink = m.fieldText;
-      break;
-  }
-  if (const ThemeFonts* f = ctx.res.uiFonts)
-    paint::text(ctx, f->small, r, label_, ink, TextAlign::Center, ctx.scale.px(2.0f), ctx.scale.px(2.0f));
-}
-
 // --- labels -----------------------------------------------------------------------------------------------------------
 
 std::string tuningShortName(const doc::TuningDef& d) {
   if (const tuning::Edo* e = d.edo()) return std::to_string(e->n()) + "-EDO";
   if (const tuning::MosParams* m = d.mos()) return std::to_string(m->n * std::max(1, m->periodsPerEquave)) + "-MOS";
   return "Scale";
-}
-
-ChipInfo chipInfo(const doc::Project& p, const doc::Track& t) {
-  ChipInfo out;
-  const auto path = doc::findTrack(p, t.id);
-  // Walk up the groups until an assignment that is not Inherit; the top resolves to the project's first tuning.
-  const doc::TuningAssignment* a = &t.tuning;
-  bool own = true;
-  std::optional<doc::TrackPath> at = path;
-  while (a->mode == doc::TuningMode::Inherit && at && at->depth > 1) {
-    at = at->parent();
-    a = &doc::trackAt(p, *at).tuning;
-    own = false;
-  }
-  if (a->mode == doc::TuningMode::Private && a->privateDef) {
-    out.label = tuningShortName(*a->privateDef);
-    out.mode = own ? TuningChip::Mode::Private : TuningChip::Mode::Inherit;
-    return out;
-  }
-  const doc::TuningSlot* slot = a->mode == doc::TuningMode::Main ? doc::findTuning(p, a->main) : nullptr;
-  if (!slot && p.tunings && !p.tunings->empty()) slot = p.tunings->front().get();
-  if (slot) {
-    out.label = slot->name;
-    out.rgb = slot->colour.rgb;
-  }
-  out.mode = (own && t.tuning.mode == doc::TuningMode::Main) ? TuningChip::Mode::Main : TuningChip::Mode::Inherit;
-  return out;
 }
 
 std::string outputLabel(const doc::Project& p, const doc::Track& t) {

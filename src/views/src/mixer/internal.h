@@ -14,6 +14,7 @@
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
 
 namespace pq::views {
 
@@ -42,7 +43,6 @@ public:
   std::string_view activatorLabel(const doc::Snapshot& s, doc::TrackId id);
 
   // --- tuning chip ---
-  std::function<void(doc::TrackId, ui::IRect)> tuningHandler;
   void openTuningMenu(ui::Widget& chip, doc::TrackId id);
 
   // --- output chooser ---
@@ -114,38 +114,22 @@ private:
   std::string text_;
 };
 
-// The tuning chip: the track's tuning name in its main tuning's colour (filled: assigned on this track; outlined:
-// inherited; grey: a private tuning).
-class TuningChip : public ui::Control {
-public:
-  enum class Mode : uint8_t { Inherit, Main, Private };
-  TuningChip();
-  void set(std::string_view label, uint32_t rgb, Mode mode);
-  const std::string& label() const noexcept { return label_; }
-  Mode mode() const noexcept { return mode_; }
-  uint32_t colour() const noexcept { return rgb_; }
-  std::function<void(ui::Widget& self)> onOpen;
-  doc::TrackId track;  // the track it shows (set by its owner on every bind)
-  void paint(ui::PaintContext& ctx) override;
-  bool onPointer(const ui::PointerEvent& e) override;
-
-private:
-  std::string label_;
-  uint32_t rgb_ = 0;
-  Mode mode_ = Mode::Inherit;
-};
-
-// The tuning a track plays in, for its chip: the slot (Main, or the one Inherit resolves to) or a private definition.
-struct ChipInfo {
-  std::string label;
-  uint32_t rgb = 0x808080;
-  TuningChip::Mode mode = TuningChip::Mode::Inherit;
-};
-ChipInfo chipInfo(const doc::Project& p, const doc::Track& t);
 // A short name for a tuning definition ("12-EDO", "5L 2s", "Scale").
 std::string tuningShortName(const doc::TuningDef& d);
 // The output chooser's text for a track.
 std::string outputLabel(const doc::Project& p, const doc::Track& t);
+// T3.14's tuning chip for a track (a left click opens the MOS wheel for the track), plus a right-click menu that
+// assigns the track a main tuning or Inherit (the wheel only commits private tunings).
+class TrackTuningChip : public TuningChip {
+public:
+  TrackTuningChip(ViewContext& ctx, std::shared_ptr<MixerController> ctl) : TuningChip("tuning", ctx), ctl_(std::move(ctl)) {}
+  void setTrack(doc::TrackId id) { setTarget(TuningTarget::forTrack(id)); }
+  bool onPointer(const ui::PointerEvent& e) override;
+
+private:
+  std::shared_ptr<MixerController> ctl_;
+};
+
 // The arrangement header's tuning chip (in TrackHeader::chipSection, created on first use; MIDI and group tracks
 // only, emptied otherwise).
 void bindHeaderChip(ui::Widget& section, const std::shared_ptr<MixerController>& ctl, const doc::Project& p, const doc::Track& t);

@@ -14,7 +14,7 @@ namespace mm = mixer_metrics;
 using mixer::Chooser;
 using mixer::LiveBox;
 using mixer::LiveToggle;
-using mixer::TuningChip;
+using mixer::TrackTuningChip;
 
 // --- MixerController --------------------------------------------------------------------------------------------------
 
@@ -107,11 +107,9 @@ void MixerController::openTuningMenu(Widget& chip, doc::TrackId id) {
     items.push_back(std::move(m));
   }
   items.push_back(MenuItem::sep());
-  MenuItem edit = MenuItem::item("Edit Tuning…", [h = tuningHandler, id, r = chip.rect()] {
-    if (h) h(id, r);
-  });
-  edit.enabled = static_cast<bool>(tuningHandler);
-  items.push_back(std::move(edit));
+  items.push_back(MenuItem::item("MOS Wheel…", [c, w = &chip, id] {
+    (void)openMosWheel(*w, *c, TuningTarget::forTrack(id), w->rect());
+  }));
   (void)openContextMenu(chip, {static_cast<float>(chip.rect().x), static_cast<float>(chip.rect().bottom())}, std::move(items));
 }
 
@@ -278,9 +276,7 @@ void MixerStrip::build(doc::TrackKind kind) {
     output_ = &out;
     // Header strips leave the chip to the header's chip section (under the title: bindHeaderChip).
     if (layout_ == StripLayout::Vertical && (kind == doc::TrackKind::Midi || kind == doc::TrackKind::Group)) {
-      auto& chip = add<TuningChip>();
-      chip.onOpen = [this, ctl](Widget& self) { ctl->openTuningMenu(self, id_); };
-      chip_ = &chip;
+      chip_ = &add<TrackTuningChip>(ctl->ctx, ctl_);
     }
   }
   meter_ = &add<Meter>("meter");
@@ -367,27 +363,27 @@ void MixerStrip::bind(const doc::Project& p, const doc::Track& t) {
   syncSends(p, t);
   if (output_) static_cast<Chooser*>(output_)->setText(mixer::outputLabel(p, t));
   if (chip_) {
-    const mixer::ChipInfo ci = mixer::chipInfo(p, t);
-    static_cast<TuningChip*>(chip_)->track = t.id;
-    static_cast<TuningChip*>(chip_)->set(ci.label, ci.rgb, ci.mode);
+    static_cast<TrackTuningChip*>(chip_)->setTrack(t.id);
   }
 }
 
 namespace mixer {
 
-void bindHeaderChip(Widget& section, const std::shared_ptr<MixerController>& ctl, const doc::Project& p, const doc::Track& t) {
+bool TrackTuningChip::onPointer(const PointerEvent& e) {
+  if (e.button == PointerButton::Right && target()) {
+    if (e.type == PointerType::Down) ctl_->openTuningMenu(*this, target()->track);
+    return true;
+  }
+  return TuningChip::onPointer(e);
+}
+
+void bindHeaderChip(Widget& section, const std::shared_ptr<MixerController>& ctl, const doc::Project&, const doc::Track& t) {
   if (t.kind != doc::TrackKind::Midi && t.kind != doc::TrackKind::Group) {
     if (section.childCount()) section.clearChildren();
     return;
   }
-  TuningChip* chip = section.childCount() ? static_cast<TuningChip*>(&section.child(0)) : nullptr;
-  if (!chip) {
-    chip = &section.add<TuningChip>();
-    chip->onOpen = [ctl, chip](Widget& self) { ctl->openTuningMenu(self, chip->track); };
-  }
-  chip->track = t.id;
-  const ChipInfo ci = chipInfo(p, t);
-  chip->set(ci.label, ci.rgb, ci.mode);
+  auto* chip = section.childCount() ? static_cast<TrackTuningChip*>(&section.child(0)) : &section.add<TrackTuningChip>(ctl->ctx, ctl);
+  chip->setTrack(t.id);
 }
 
 }  // namespace mixer
@@ -415,15 +411,15 @@ void MixerStrip::arrange(LayoutPass& pass) {
 }
 
 // Header columns (logical px): A = 4..68 (volume; pan below), the separator 70..72, B = 74..162
-// (activator 74..112, S 115..133, arm / Pre-Post 136..162; output below), the meter 166..174.
+// (activator 74..112, S 114..132, arm / Pre-Post 134..162; output below), the meter 166..174.
 void MixerStrip::arrangeHeader(LayoutPass& pass) {
   const IRect r = rect();
   const float L = mm::kLine, T = mm::kBoxTop, B = mm::kBox;
   put(pass, volume_, r, 4, T, 64, B);
   put(pass, activator_, r, 74, T, 38, B);
-  put(pass, solo_, r, 115, T, 18, B);
-  put(pass, arm_, r, 136, T, 26, B);
-  put(pass, post_, r, 136, T, 26, B);
+  put(pass, solo_, r, 114, T, 18, B);
+  put(pass, arm_, r, 134, T, 28, B);
+  put(pass, post_, r, 134, T, 28, B);
   if (kind_ == doc::TrackKind::Master) {
     put(pass, pan_, r, 74, T, 38, B);  // the master's pan sits where the others have their activator
   } else {
@@ -461,10 +457,10 @@ void MixerStrip::arrangeVertical(LayoutPass& pass) {
   row(pan_);
   row(volume_);
   const float buttonsY = H - 4 - B;
-  put(pass, activator_, r, 4, buttonsY, 30, B);
-  put(pass, solo_, r, 37, buttonsY, 17, B);
-  put(pass, arm_, r, 57, buttonsY, W - 61, B);
-  put(pass, post_, r, 57, buttonsY, W - 61, B);
+  put(pass, activator_, r, 4, buttonsY, 24, B);
+  put(pass, solo_, r, 31, buttonsY, 17, B);
+  put(pass, arm_, r, 51, buttonsY, W - 55, B);
+  put(pass, post_, r, 51, buttonsY, W - 55, B);
   const float fy0 = y + 2, fy1 = (kind_ == doc::TrackKind::Master ? H - 4 : buttonsY - 6);
   const float fh = std::max(0.0f, fy1 - fy0);
   if (fader_) {

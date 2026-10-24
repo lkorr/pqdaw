@@ -423,7 +423,8 @@ TEST_CASE("arrangement editing: delete, delete / insert time, Ctrl+L, Ctrl+Shift
   CHECK(f.track("Strings").clips[0].clip->length == 3 * kBar);
   REQUIRE(f.ctx.undo());
 
-  // 0 (Q15): deactivates the selected clip, again reactivates it; with a track selected, its activator.
+  // 0 (Q15): deactivates the selected clip, again reactivates it; with a track selected, its activator, which is the
+  // track's mute since T3.10 (Q15's answer: the activator mutes, a Param; it was SetTrackActive, a recompile).
   f.d.click(f.title(bassA, kBar));
   h = f.history();
   CHECK(f.d.press("0") == KeyResult::Action);
@@ -436,9 +437,11 @@ TEST_CASE("arrangement editing: delete, delete / insert time, Ctrl+L, Ctrl+Shift
   f.d.click({static_cast<float>(hdr.x + 40), static_cast<float>(hdr.y + 5)});
   f.d.press("0");
   CHECK(f.history() == h + 3);
-  CHECK_FALSE(f.track("Bass").active);
-  REQUIRE(f.ctx.undo());
+  CHECK(f.track("Bass").mixer.mute);
   CHECK(f.track("Bass").active);
+  CHECK(f.ctx.store().history().entries()[f.history() - 1].changes.paramOnly());
+  REQUIRE(f.ctx.undo());
+  CHECK_FALSE(f.track("Bass").mixer.mute);
 
   // Clipboard: copy Bass A, paste on Strings at bar 1 (twice: the second goes after the first), cut.
   f.d.click(f.title(bassA, kBar));

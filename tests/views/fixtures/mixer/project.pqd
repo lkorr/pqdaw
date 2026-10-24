@@ -1,0 +1,274 @@
+{
+  "schemaVersion": 1,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 122.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 443520, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    },
+    {
+      "id": 3,
+      "name": "31-EDO",
+      "colour": "#E0A63A",
+      "def": {
+        "kind": "edo",
+        "n": 31,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 4,
+      "kind": "midi",
+      "name": "Drums",
+      "colour": "#EF7B7B",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": -3.5, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 10, "levelDb": -12.0, "preFader": false}, {"target": 11, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "lanes": [],
+      "clips": [
+        {
+          "id": 12,
+          "name": "Beat",
+          "colour": "#EF7B7B",
+          "start": 0,
+          "length": 887040,
+          "contentStart": 0,
+          "loop": {"enabled": true, "start": 0, "end": 110880},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 13, "start": 0, "length": 6930, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 14, "start": 13860, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 15, "start": 27720, "length": 6930, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 16, "start": 41580, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 17, "start": 55440, "length": 6930, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 18, "start": 69300, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 19, "start": 83160, "length": 6930, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 20, "start": 97020, "length": 6930, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "kind": "midi",
+      "name": "Bass",
+      "colour": "#E68632",
+      "active": true,
+      "tuning": {"main": 3},
+      "mixer": {"volumeDb": -6.0, "pan": 0.0, "mute": false, "solo": false, "arm": true, "sends": [{"target": 11, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "lanes": [],
+      "clips": [
+        {
+          "id": 21,
+          "name": "Bass",
+          "colour": "#E68632",
+          "start": 0,
+          "length": 443520,
+          "contentStart": 0,
+          "loop": {"enabled": true, "start": 0, "end": 110880},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 22, "start": 0, "length": 13860, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
+            {"id": 23, "start": 13860, "length": 13860, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
+            {"id": 24, "start": 27720, "length": 13860, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
+            {"id": 25, "start": 41580, "length": 13860, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
+            {"id": 26, "start": 55440, "length": 13860, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
+            {"id": 27, "start": 69300, "length": 13860, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
+            {"id": 28, "start": 83160, "length": 13860, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
+            {"id": 29, "start": 97020, "length": 13860, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
+          ]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "kind": "group",
+      "name": "Keys",
+      "colour": "#8499F0",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 11, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "lanes": [],
+      "children": [
+        {
+          "id": 6,
+          "kind": "midi",
+          "name": "Piano",
+          "colour": "#46A5E8",
+          "active": true,
+          "tuning": "inherit",
+          "mixer": {"volumeDb": 0.0, "pan": -0.4, "mute": false, "solo": false, "arm": false, "sends": [{"target": 10, "levelDb": -6.0, "preFader": false}, {"target": 11, "levelDb": -70.0, "preFader": true}], "output": "default"},
+          "lanes": [],
+          "clips": [
+            {
+              "id": 30,
+              "name": "Chords",
+              "colour": "#46A5E8",
+              "start": 0,
+              "length": 443520,
+              "contentStart": 0,
+              "loop": {"enabled": false, "start": 0, "end": 443520},
+              "signature": {"numerator": 4, "denominator": 4},
+              "tuning": "inherit",
+              "active": true,
+              "notes": [
+                {"id": 31, "start": 0, "length": 97020, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 32, "start": 0, "length": 97020, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 33, "start": 0, "length": 97020, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 34, "start": 110880, "length": 97020, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 35, "start": 110880, "length": 97020, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+                {"id": 36, "start": 110880, "length": 97020, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+                {"id": 37, "start": 221760, "length": 97020, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 38, "start": 221760, "length": 97020, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 39, "start": 221760, "length": 97020, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 40, "start": 332640, "length": 97020, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 41, "start": 332640, "length": 97020, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+                {"id": 42, "start": 332640, "length": 97020, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0}
+              ]
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "kind": "midi",
+          "name": "Pad",
+          "colour": "#BB86F0",
+          "active": true,
+          "tuning": {
+            "private": {
+              "kind": "edo",
+              "n": 22,
+              "equave": "2/1",
+              "referenceHz": 261.626
+            }
+          },
+          "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": true, "solo": false, "arm": false, "sends": [{"target": 11, "levelDb": -70.0, "preFader": true}], "output": "default"},
+          "lanes": [],
+          "clips": [
+            {
+              "id": 43,
+              "name": "Pad 22",
+              "colour": "#BB86F0",
+              "start": 221760,
+              "length": 443520,
+              "contentStart": 0,
+              "loop": {"enabled": true, "start": 0, "end": 221760},
+              "signature": {"numerator": 4, "denominator": 4},
+              "tuning": "inherit",
+              "active": true,
+              "notes": [
+                {"id": 44, "start": 0, "length": 221760, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 45, "start": 0, "length": 221760, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 46, "start": 0, "length": 221760, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0}
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "kind": "midi",
+      "name": "Lead",
+      "colour": "#16B293",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 2.0, "pan": 0.24, "mute": false, "solo": true, "arm": false, "sends": [{"target": 10, "levelDb": -20.0, "preFader": false}, {"target": 11, "levelDb": -3.0, "preFader": true}], "output": {"track": 9}},
+      "lanes": [],
+      "clips": [
+        {
+          "id": 47,
+          "name": "Hook",
+          "colour": "#16B293",
+          "start": 443520,
+          "length": 332640,
+          "contentStart": 0,
+          "loop": {"enabled": false, "start": 0, "end": 332640},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 48, "start": 0, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 49, "start": 27720, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 50, "start": 55440, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 51, "start": 83160, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 52, "start": 110880, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 53, "start": 138600, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 54, "start": 166320, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 55, "start": 194040, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 56, "start": 221760, "length": 20790, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 57, "start": 249480, "length": 20790, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 58, "start": 277200, "length": 20790, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 59, "start": 304920, "length": 20790, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
+          ]
+        }
+      ]
+    }
+  ],
+  "returns": [
+    {
+      "id": 10,
+      "kind": "return",
+      "name": "A Reverb",
+      "colour": "#92A7FF",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": -9.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 11, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "lanes": []
+    },
+    {
+      "id": 11,
+      "kind": "return",
+      "name": "B Delay",
+      "colour": "#10A4EE",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": []
+    }
+  ],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": -1.5, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": []
+  },
+  "view": {
+    "tracks": [
+      {"id": 2, "folded": false, "height": 40},
+      {"id": 4, "folded": false, "height": 64},
+      {"id": 6, "folded": false, "height": 64},
+      {"id": 8, "folded": false, "height": 64},
+      {"id": 9, "folded": false, "height": 44},
+      {"id": 10, "folded": false, "height": 40}
+    ],
+    "lanes": []
+  }
+}

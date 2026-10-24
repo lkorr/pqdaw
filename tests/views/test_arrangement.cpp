@@ -293,7 +293,9 @@ TEST_CASE("arrangement: the playhead is read only while playing and damages only
   const IRect bar = f.d.rect("main/control-bar");
   for (const ClipRect& r : f.d.tree().damage().rects()) {
     const bool inBar = r.y1 <= bar.bottom();
-    const bool narrowColumn = r.x1 - r.x0 <= 3 && r.y1 <= lv.bottom();
+    // T3.10: the column runs on through the pinned returns / master below the lanes.
+    const int32_t columnBottom = f.arr->bottomRect().empty() ? lv.bottom() : f.arr->bottomRect().bottom();
+    const bool narrowColumn = r.x1 - r.x0 <= 3 && r.y1 <= columnBottom;
     CHECK_MESSAGE((inBar || narrowColumn), r.x0 << "," << r.y0 << " to " << r.x1 << "," << r.y1);
   }
   CHECK(*f.arr->playhead() == t1);
