@@ -116,7 +116,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Change PPQ from 27,720 to 221,760 (2⁶·3²·5·7·11) everywhere: core time.h constant, grid (T3.3: straight values down to 1/256, x/64 signatures legal), document/serialization (schemaVersion bump + migration multiplying stored ticks by 8; existing fixtures migrated), tests/goldens/benchmarks that hard-code tick values.
   - Accept: all tests pass with the new constant; every straight note value 1/1…1/256 and every 3/5/7/9/11-tuplet of them is an exact integer tick count; a schema-1 project loads, migrates and re-saves as schema 2 with all positions × 8; the 10 h @ 192 kHz tempo round-trip test still holds within ½ sample.
 
-- [~] **T0.x-buildspeed Faster builds and test loop** (`cmake`, `scripts`, `tests`). Depends on: —. *(worker AM, branch task/T0.x-buildspeed)*
+- [!] **T0.x-buildspeed Faster builds and test loop** (`cmake`, `scripts`, `tests`). Depends on: —. *(merged; release-build criterion blocked by LTCG links — Q91)*
   - Compiler cache: sccache (Apache-2.0, pinned release, SHA-256 checked, fetched by a script into a tools dir outside the repo) used as the compiler launcher when present; dev debug info switched to /Z7 so objects are cacheable; one shared cache directory for all worktrees.
   - Shared third-party downloads/builds across worktrees (shared FetchContent download dir at minimum; safe under concurrent configures).
   - Test tiers: heavy sweeps (10⁹-sample drift, 10⁴ fuzz runs, full mutation/reference sweeps, long GPU sweeps) behind a `slow` ctest label (doctest test-suite tags), excluded by default in `scripts/build.ps1`; `-Full` runs everything (used before merges to main).
