@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "step"}
@@ -8,7 +8,7 @@
       {"bar": 0, "numerator": 4, "denominator": 4}
     ]
   },
-  "loop": {"start": 0, "end": 443520, "enabled": false},
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
   "locators": [],
   "tunings": [
     {
@@ -67,19 +67,19 @@
           "name": "Lead 31",
           "colour": "#808080",
           "start": 0,
-          "length": 221760,
+          "length": 1774080,
           "contentStart": 0,
-          "loop": {"enabled": false, "start": 0, "end": 110880},
+          "loop": {"enabled": false, "start": 0, "end": 887040},
           "signature": {"numerator": 4, "denominator": 4},
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 10, "start": 0, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 90.0},
-            {"id": 11, "start": 27720, "length": 13860, "pitch": {"degree": 10, "equave": 0}, "velocity": 98.0},
-            {"id": 12, "start": 55440, "length": 13860, "pitch": {"degree": 18, "equave": 0}, "velocity": 106.0},
-            {"id": 13, "start": 83160, "length": 13860, "pitch": {"degree": 0, "equave": 1}, "velocity": 114.0},
-            {"id": 14, "start": 110880, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 15, "start": 110880, "length": 55440, "pitch": {"degree": 18, "equave": 0}, "velocity": 80.0}
+            {"id": 10, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": 0}, "velocity": 90.0},
+            {"id": 11, "start": 221760, "length": 110880, "pitch": {"degree": 10, "equave": 0}, "velocity": 98.0},
+            {"id": 12, "start": 443520, "length": 110880, "pitch": {"degree": 18, "equave": 0}, "velocity": 106.0},
+            {"id": 13, "start": 665280, "length": 110880, "pitch": {"degree": 0, "equave": 1}, "velocity": 114.0},
+            {"id": 14, "start": 887040, "length": 443520, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 15, "start": 887040, "length": 443520, "pitch": {"degree": 18, "equave": 0}, "velocity": 80.0}
           ]
         }
       ]
@@ -98,7 +98,7 @@
           "param": {"kind": "trackVolume", "owner": 5},
           "points": [
             {"id": 29, "tick": 0, "value": -18.0, "curve": 0.4},
-            {"id": 30, "tick": 55440, "value": 0.0, "curve": 0.0}
+            {"id": 30, "tick": 443520, "value": 0.0, "curve": 0.0}
           ]
         }
       ],
@@ -118,18 +118,18 @@
               "name": "Mos 5L2s",
               "colour": "#808080",
               "start": 0,
-              "length": 110880,
+              "length": 887040,
               "contentStart": 0,
-              "loop": {"enabled": false, "start": 0, "end": 110880},
+              "loop": {"enabled": false, "start": 0, "end": 887040},
               "signature": {"numerator": 4, "denominator": 4},
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 17, "start": 0, "length": 13860, "pitch": {"degree": 0, "equave": 0}, "velocity": 110.0},
-                {"id": 18, "start": 13860, "length": 13860, "pitch": {"degree": 2, "equave": 0}, "velocity": 110.0},
-                {"id": 19, "start": 27720, "length": 13860, "pitch": {"degree": 4, "equave": 0}, "velocity": 110.0},
-                {"id": 20, "start": 41580, "length": 13860, "pitch": {"degree": 5, "equave": 0}, "velocity": 110.0},
-                {"id": 21, "start": 55440, "length": 13860, "pitch": {"degree": 0, "equave": 1}, "velocity": 110.0}
+                {"id": 17, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": 0}, "velocity": 110.0},
+                {"id": 18, "start": 110880, "length": 110880, "pitch": {"degree": 2, "equave": 0}, "velocity": 110.0},
+                {"id": 19, "start": 221760, "length": 110880, "pitch": {"degree": 4, "equave": 0}, "velocity": 110.0},
+                {"id": 20, "start": 332640, "length": 110880, "pitch": {"degree": 5, "equave": 0}, "velocity": 110.0},
+                {"id": 21, "start": 443520, "length": 110880, "pitch": {"degree": 0, "equave": 1}, "velocity": 110.0}
               ]
             }
           ]
@@ -151,17 +151,17 @@
           "name": "Muted",
           "colour": "#808080",
           "start": 0,
-          "length": 110880,
+          "length": 887040,
           "contentStart": 0,
-          "loop": {"enabled": false, "start": 0, "end": 110880},
+          "loop": {"enabled": false, "start": 0, "end": 887040},
           "signature": {"numerator": 4, "denominator": 4},
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 23, "start": 0, "length": 13860, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0},
-            {"id": 24, "start": 27720, "length": 13860, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0},
-            {"id": 25, "start": 55440, "length": 13860, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0},
-            {"id": 26, "start": 83160, "length": 13860, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0}
+            {"id": 23, "start": 0, "length": 110880, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0},
+            {"id": 24, "start": 221760, "length": 110880, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0},
+            {"id": 25, "start": 443520, "length": 110880, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0},
+            {"id": 26, "start": 665280, "length": 110880, "pitch": {"degree": 7, "equave": 1}, "velocity": 127.0}
           ]
         }
       ]
