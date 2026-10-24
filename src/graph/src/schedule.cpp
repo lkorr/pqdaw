@@ -71,10 +71,13 @@ struct Val {
   bool perGroup = false;
   uint32_t defStage = 0;
   uint32_t def = kNone;   // op position
-  uint32_t last = 0;      // last use position (after loop extension)
+  // Liveness end in half steps: 2·p = last read BY op p (op p may write its output over it in place, element-wise);
+  // 2·p + 1 = last read AFTER op p and before op p + 1 (op p must not overwrite it; its buffer is free from op p + 1
+  // on). Reads after an op: the solver's lhs/rhs/unknown reads after a solve body, the engine's voice-output reads
+  // at the end of a voice stage, and the next iteration of a loop (voice group, Loop sub-block, Newton evaluation)
+  // re-reading a value defined before the loop.
+  uint32_t live = 0;
   uint32_t buffer = kNone;
-  bool pinned = false;    // read inside a loop (voice group loop, Loop region, solve body) that it was defined
-                          // before: its last use is not its death (the next iteration reads it again)
   NodeIndex node = kNone; // the node whose op defines it (for dumps)
 };
 
@@ -89,6 +92,7 @@ struct Use {
   uint32_t pos;
   uint32_t region;
   uint32_t solve;  // kNone outside a solve body
+  bool after;      // read after op `pos` has run (the solver's reads after a body), not by it
 };
 
 struct PendingState {
@@ -771,46 +775,76 @@ private:
     }
   }
 
-  // Lower bound of an output's value (−inf if unknown), for delay times (samples).
-  double lowerBound(NodeIndex n, int depth) const {
-    constexpr double kUnknown = -std::numeric_limits<double>::infinity();
+  // Lower bound of an output's value (−inf if unknown), for delay times (samples). Computed in float32 with the
+  // runtime's operations (constants and `sr` are float constants, params are clamped to float(rangeMin), mul/add
+  // round to nearest, muladd is an fma), so it is the smallest value the program can actually produce: a bound in
+  // double could round above it (M1 review M10: 20.75 ms · 48 kHz = 996 in double, 995.99994 at runtime). An add
+  // of a product may be contracted into an fma by the JIT; both roundings are considered.
+  float lowerBound(NodeIndex n, int depth) const {
+    constexpr float kUnknown = -std::numeric_limits<float>::infinity();
     if (depth > 16) return kUnknown;
     const Node& nd = P().node(n);
     switch (nd.kind) {
-      case NodeKind::Const: return P().constant(n).value();
+      case NodeKind::Const: return static_cast<float>(P().constant(n).value());
       case NodeKind::Param: {
         const ParamDecl& d = P().paramDecl(n);
-        return opt_.trustParamRanges && d.kind == Kind::Real && d.hasRange ? d.rangeMin.value() : kUnknown;
+        return opt_.trustParamRanges && d.kind == Kind::Real && d.hasRange ? static_cast<float>(d.rangeMin.value())
+                                                                          : kUnknown;
       }
       case NodeKind::Atom: break;
       default: return kUnknown;
     }
     const std::string_view name = atomSignature(nd.atom).name;
-    if (name == "sr") return opt_.sampleRate;
-    auto in = [&](uint32_t i) {
+    if (name == "sr") return static_cast<float>(opt_.sampleRate);
+    auto driver = [&](uint32_t i) -> NodeIndex {
       const WireIndex w = adj_.driver[P().flatInput(n, i)];
-      if (w == kNone) {
+      return w == kNone ? kNone : P().wire(w).from.node;
+    };
+    auto in = [&](uint32_t i) -> float {
+      const NodeIndex d = driver(i);
+      if (d == kNone) {
         const AtomSignature& sig = atomSignature(nd.atom);
-        return static_cast<double>(sig.inputs[specIndex(sig, i)].defaultValue);
+        return static_cast<float>(sig.inputs[specIndex(sig, i)].defaultValue);
       }
-      const PortRef f = P().wire(w).from;
-      return lowerBound(f.node, depth + 1);
+      return lowerBound(d, depth + 1);
     };
     if (name == "mul") {
-      const double a = in(0), b = in(1);
+      const float a = in(0), b = in(1);
       return a >= 0 && b >= 0 ? a * b : kUnknown;
     }
-    if (name == "add") return in(0) + in(1);
+    if (name == "add") {
+      const float a = in(0), b = in(1);
+      float r = a + b;
+      // The fma a contracted mul + add would compute instead (non-negative factors only, as for mul).
+      for (uint32_t i = 0; i < 2; ++i) {
+        const NodeIndex d = driver(i);
+        if (d == kNone || P().node(d).kind != NodeKind::Atom || atomSignature(P().node(d).atom).name != "mul") continue;
+        auto din = [&](uint32_t j) -> float {
+          const WireIndex w = adj_.driver[P().flatInput(d, j)];
+          if (w == kNone) {
+            const AtomSignature& sig = atomSignature(P().node(d).atom);
+            return static_cast<float>(sig.inputs[specIndex(sig, j)].defaultValue);
+          }
+          return lowerBound(P().wire(w).from.node, depth + 2);
+        };
+        const float x = din(0), y = din(1);
+        if (x >= 0 && y >= 0) r = std::min(r, std::fma(x, y, i == 0 ? b : a));
+      }
+      return std::isnan(r) ? kUnknown : r;
+    }
     if (name == "max") return std::max(in(0), in(1));
     if (name == "muladd") {
-      const double a = in(0), b = in(1);
-      return a >= 0 && b >= 0 ? a * b + in(2) : kUnknown;
+      const float a = in(0), b = in(1), c = in(2);
+      const float r = std::fma(a, b, c);
+      return a >= 0 && b >= 0 && !std::isnan(r) ? r : kUnknown;
     }
     return kUnknown;
   }
 
   // Frames per loop iteration: 1 with any split z1 or a solve; else the smallest guaranteed tap age of the split
-  // delay lines (pq/dsp kernels_memory.cpp: linear newest tap = ⌊d⌋, cubic ⌊d⌋ − 1, allpass ⌊d − 0.5⌋ samples old).
+  // delay lines, evaluated exactly as the read kernel does in float32 (pq/dsp kernels_memory.cpp delayTap:
+  // d = min(max(time, minimum), max frames); linear newest tap = ⌊d⌋, cubic ⌊d⌋ − 1, allpass ⌊d⌋ − 1 when the
+  // fraction is below 0.5, else ⌊d⌋).
   uint32_t subBlockOf(uint32_t c) const {
     uint32_t sub = kMaxSubBlock;
     for (NodeIndex m : members(c)) {
@@ -820,15 +854,17 @@ private:
       const dsp::Atom k = kernelMapping(nd.atom).kernel;
       if (k == dsp::Atom::Z1) return 1;
       const WireIndex tw = adj_.driver[P().flatInput(m, 1)];
-      double lb = -std::numeric_limits<double>::infinity();
+      float lb = -std::numeric_limits<float>::infinity();
       if (tw != kNone) lb = lowerBound(P().wire(tw).from.node, 0);
-      const double minD = k == dsp::Atom::DelayLinear ? 1.0 : k == dsp::Atom::DelayCubic ? 2.0 : 1.5;
-      double d = std::isfinite(lb) ? std::max(lb, minD) : minD;
-      d = std::min(d, static_cast<double>(maxDelayFramesOf(m)));
-      const double age = k == dsp::Atom::DelayLinear ? std::floor(d)
-                         : k == dsp::Atom::DelayCubic ? std::floor(d) - 1.0
-                                                      : std::floor(d - 0.5);
-      const uint32_t a = age < 1.0 ? 1u : age > kMaxSubBlock ? kMaxSubBlock : static_cast<uint32_t>(age);
+      const float minD = k == dsp::Atom::DelayLinear ? 1.0f : k == dsp::Atom::DelayCubic ? 2.0f : 1.5f;
+      float d = std::isfinite(lb) ? std::max(lb, minD) : minD;
+      d = std::min(d, static_cast<float>(maxDelayFramesOf(m)));
+      const float fl = std::floor(d);
+      const float age = k == dsp::Atom::DelayLinear ? fl
+                        : k == dsp::Atom::DelayCubic ? fl - 1.0f
+                                                     : (d - fl < 0.5f ? fl - 1.0f : fl);
+      const uint32_t a = !(age >= 1.0f) ? 1u : age > static_cast<float>(kMaxSubBlock) ? kMaxSubBlock
+                                                                                      : static_cast<uint32_t>(age);
       sub = std::min(sub, a);
     }
     return sub == kMaxSubBlock ? 1 : sub;
@@ -1336,8 +1372,8 @@ private:
 
   uint32_t curRegion() const noexcept { return static_cast<uint32_t>(S_const().regions.size() - 1); }
 
-  void use(const Operand& o, uint32_t pos) {
-    if (o.kind == Operand::Kind::Buffer) uses_.push_back({o.index, pos, curRegion(), curSolve_});
+  void use(const Operand& o, uint32_t pos, bool after = false) {
+    if (o.kind == Operand::Kind::Buffer) uses_.push_back({o.index, pos, curRegion(), curSolve_, after});
   }
 
   uint32_t pushOp(Op op, std::span<const Operand> ins, std::span<const Operand> outs) {
@@ -1432,6 +1468,13 @@ private:
       }
     }
     std::sort(kins_.begin(), kins_.end(), [](const KIn& a, const KIn& b) { return a.k < b.k; });
+    // A split read takes every kernel input but x (registry input 0). Built once per node: every channel's read
+    // op needs the same list (M1 review H2: compacting kins_ in place inside the channel loop gave channel 1 and
+    // up the inputs (time, time)).
+    kreads_.clear();
+    if (isSplit)
+      for (const KIn& k : kins_)
+        if (k.reg != 0) kreads_.push_back(k);
     for (uint32_t ch = 0; ch < width_[n]; ++ch) {
       uint32_t stateIdx = kNone;
       if (info.stateSize > 0) {
@@ -1478,11 +1521,7 @@ private:
       // Split: read now (z1: no input; delay: its time input), write (input x) at the end of the loop body.
       op.kernel = readKernel(m.kernel);
       op.state = stateIdx;
-      size_t keep = 0;
-      for (const KIn& k : kins_)
-        if (k.reg != 0) kins_[keep++] = k;
-      const size_t numRead = keep;
-      pushKernelOp(op, std::span<const KIn>(kins_.data(), numRead), outs_, control);
+      pushKernelOp(op, kreads_, outs_, control);
       op.kernel = writeKernel(m.kernel);
       writes_.push_back(op);
     }
@@ -1644,12 +1683,15 @@ private:
         const uint8_t lanes = poly_[q] == Poly::Voice ? 8 : 1;
         se.lhs = adapt(inputOperand(q, 0, ch), lanes, control, true, spl, q);
         se.rhs = adapt(inputOperand(q, 1, ch), lanes, control, true, spl, q);
-        use(se.lhs, end);
-        use(se.rhs, end);
+        // The solver reads both sides after the body has run (residuals), not inside it.
+        use(se.lhs, end, true);
+        use(se.rhs, end, true);
         sch.equations.push_back(se);
       }
     }
-    for (uint32_t k = b.firstUnknown; k < sch.unknowns.size(); ++k) use(sch.unknowns[k].value, end);
+    // The unknowns are written by the solver before every body evaluation and read back after it (the next
+    // evaluation's guess, the perturbed Jacobian columns): no body op may overwrite one, even at its last read.
+    for (uint32_t k = b.firstUnknown; k < sch.unknowns.size(); ++k) use(sch.unknowns[k].value, end, true);
     b.numUnknowns = static_cast<uint32_t>(sch.unknowns.size()) - b.firstUnknown;
     b.numEquations = static_cast<uint32_t>(sch.equations.size()) - b.firstEquation;
     curSolve_ = kNone;
@@ -1764,56 +1806,67 @@ private:
   void allocateBuffers() {
     Schedule& s = S();
     const auto numOps = static_cast<uint32_t>(s.ops.size());
-    const uint32_t kForever = numOps + 1;
+    // Half-step positions (Val::live): 2·p is "read by op p", 2·p + 1 "read after op p". kForever: after every op.
+    const uint32_t kForever = 2 * (numOps + 1);
     for (Val& v : vals_) {
       if (v.def == kNone) v.def = 0;  // never written (cannot happen for emitted values); keep it harmless
-      v.last = v.def;
+      v.live = 2 * v.def;
     }
     auto stageOfIndex = [&](uint32_t stageIdx) -> const Stage* {
       for (const Stage& sg : s.stages)
         if (sg.index == stageIdx) return &sg;
       return nullptr;
     };
+    // After the last op of [first, first + n): the value survives the whole range (a loop's next iteration, or a
+    // reader at its end, sees it). An empty range is read before its first op, i.e. after op first − 1.
+    auto afterRange = [](uint32_t first, uint32_t n) -> uint32_t {
+      return n ? 2 * (first + n - 1) + 1 : (first ? 2 * first - 1 : 0);
+    };
     for (const Use& u : uses_) {
       Val& v = vals_[u.val];
-      uint32_t q = u.pos;
+      uint32_t q = 2 * u.pos + (u.after ? 1u : 0u);
       const Region& r = s.regions[u.region];
       const Stage& sg = s.stages[regionStage_[u.region]];
-      if (sg.poly == Poly::Voice && v.def < sg.firstOp && sg.numOps) {
-        q = std::max(q, sg.firstOp + sg.numOps - 1);
-        v.pinned = true;
-      }
-      if (r.kind == RegionKind::Loop && v.def < r.firstOp && r.numOps) {
-        q = std::max(q, r.firstOp + r.numOps - 1);
-        v.pinned = true;
-      }
+      // A value defined before a loop and read inside it is read again by the loop's next iteration: it lives past
+      // the loop's last op (so that op cannot take it in place either).
+      if (sg.poly == Poly::Voice && v.def < sg.firstOp && sg.numOps) q = std::max(q, afterRange(sg.firstOp, sg.numOps));
+      if (r.kind == RegionKind::Loop && v.def < r.firstOp && r.numOps) q = std::max(q, afterRange(r.firstOp, r.numOps));
       if (u.solve != kNone) {
         const SolveBlock& b = s.solves[u.solve];
-        if (v.def < b.firstOp && b.numOps) {
-          q = std::max(q, b.firstOp + b.numOps - 1);
-          v.pinned = true;
-        }
+        if (v.def < b.firstOp && b.numOps) q = std::max(q, afterRange(b.firstOp, b.numOps));
       }
       if (v.poly == Poly::Voice && r.stage != v.defStage) v.perGroup = true;
-      v.last = std::max(v.last, q);
+      v.live = std::max(v.live, q);
     }
+    // Reducer accumulators: initialised before their stage's group loop and combined into by every group, so live
+    // over the whole stage even when nothing reads the result.
+    for (uint32_t vi : reduceVals_) {
+      Val& v = vals_[vi];
+      for (const Stage& sg : s.stages)
+        if (sg.numOps && v.def >= sg.firstOp && v.def < sg.firstOp + sg.numOps)
+          v.live = std::max(v.live, afterRange(sg.firstOp, sg.numOps));
+    }
+    // Outputs: the engine reads a voice output at the end of its stage, per group (after the stage's last op), and a
+    // global one after the last stage.
     for (const OutputRef& o : s.outputs) {
       if (o.value.kind != Operand::Kind::Buffer) continue;
       Val& v = vals_[o.value.index];
       if (o.poly == Poly::Voice) {
         if (v.poly == Poly::Voice && o.stage != v.defStage) v.perGroup = true;
         const Stage* sg = stageOfIndex(o.stage);
-        if (sg && sg->numOps) v.last = std::max(v.last, sg->firstOp + sg->numOps - 1);
+        v.live = std::max(v.live, sg ? afterRange(sg->firstOp, sg->numOps) : kForever);
       } else {
-        v.last = kForever;
+        v.live = kForever;
       }
     }
-    // Linear scan. Positions 0 … numOps (values may be defined at numOps: an empty solve body at the end).
+    // Linear scan over op positions 0 … numOps (values may be defined at numOps: an empty solve body at the end).
+    // A value whose live end is 2·p or 2·p + 1 dies at p: its buffer is free for values defined at p + 1 and later.
     const auto numVals = static_cast<uint32_t>(vals_.size());
+    auto deathOf = [&](const Val& v) { return std::min(v.live / 2, numOps + 1); };
     std::vector<uint32_t> defBegin(numOps + 3, 0), lastBegin(numOps + 3, 0);
     for (const Val& v : vals_) {
       ++defBegin[std::min(v.def, numOps + 1) + 1];
-      ++lastBegin[std::min(v.last, numOps + 1) + 1];
+      ++lastBegin[deathOf(v) + 1];
     }
     for (uint32_t p = 0; p + 1 < defBegin.size(); ++p) {
       defBegin[p + 1] += defBegin[p];
@@ -1824,7 +1877,7 @@ private:
       std::vector<uint32_t> fd(defBegin.begin(), defBegin.end() - 1), fl(lastBegin.begin(), lastBegin.end() - 1);
       for (uint32_t v = 0; v < numVals; ++v) {
         byDef[fd[std::min(vals_[v].def, numOps + 1)]++] = v;
-        byLast[fl[std::min(vals_[v].last, numOps + 1)]++] = v;
+        byLast[fl[deathOf(vals_[v])]++] = v;
       }
     }
     std::vector<uint32_t> freeList[3];
@@ -1844,17 +1897,17 @@ private:
         const Op& op = s.ops[p];
         if (op.kind == OpKind::Kernel && op.numOut > 0 && dsp::kernelInfo(op.kernel).inPlaceOk) {
           const Operand out0 = s.operands[op.firstOperand + op.numIn];
-          if (out0.kind == Operand::Kind::Buffer && !vals_[out0.index].perGroup &&
+          if (opt_.shareBuffers && out0.kind == Operand::Kind::Buffer && !vals_[out0.index].perGroup &&
               vals_[out0.index].buffer == kNone) {
             Val& o = vals_[out0.index];
             for (uint32_t j = 0; j < op.numIn; ++j) {
               const Operand in = s.operands[op.firstOperand + j];
               if (in.kind != Operand::Kind::Buffer || in.index == out0.index) continue;
               Val& iv = vals_[in.index];
-              // A pinned input does not die here: the next voice group / sub-block / Newton evaluation reads it
-              // again (T1.7 found an op at the end of a voice stage overwriting a broadcast buffer in place).
-              if (iv.last != p || iv.perGroup || iv.pinned || iv.buffer == kNone || handed[in.index] ||
-                  cls(iv) != cls(o))
+              // Only an input whose last read is BY this op (live = 2·p). One read after it (live = 2·p + 1: a
+              // loop's next iteration, the solver after a body, the engine after a voice stage) keeps its buffer
+              // (T1.7: a broadcast at a voice stage's end; M1 review C1/C2: solve operands and voice outputs).
+              if (iv.live != 2 * p || iv.perGroup || iv.buffer == kNone || handed[in.index] || cls(iv) != cls(o))
                 continue;
               o.buffer = iv.buffer;
               handed[in.index] = 1;
@@ -1871,7 +1924,7 @@ private:
           continue;
         }
         auto& fl = freeList[cls(v)];
-        if (!fl.empty()) {
+        if (opt_.shareBuffers && !fl.empty()) {
           v.buffer = fl.back();
           fl.pop_back();
         } else {
@@ -2071,7 +2124,7 @@ private:
   std::vector<Op> writes_;
   std::vector<DfsFrame> dfs_;
   std::vector<uint32_t> items_, heap_, seq_;
-  std::vector<KIn> kins_;
+  std::vector<KIn> kins_, kreads_;
   std::vector<Operand> outs_, insStack_;
   std::vector<uint32_t> reduceVals_;
   std::vector<PendingState> pending_;

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "interp_harness.h"
+#include "liveness_probes.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/engine/block_adapter.h"
@@ -92,6 +93,10 @@ TEST_CASE("interpreter: every patch in tests/graph/cases and tests/engine/patche
                       << " frames each; max error " << maxErr << (worst.empty() ? "" : " at " + worst) << skippedText);
   CHECK(compared >= 20);
   CHECK(voicePatches >= 6);
+}
+
+TEST_CASE("interpreter: M1 review liveness probes (solve operands, voice outputs, stereo feedback delay, delay sub-block)") {
+  liveness_probes::check({});
 }
 
 TEST_CASE("interpreter: voice stages with 1, 8 and 16 voices (reducers, broadcasts, per-group buffers, sends)") {

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../engine/interp_harness.h"
+#include "../engine/liveness_probes.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/engine/block_adapter.h"
@@ -669,5 +670,22 @@ TEST_CASE("jit: compile time of 100- and 1000-node patches (and they match the i
     CorpusStats cs;
     const uint32_t blocks[] = {64};
     checkPatch(c, 0, 0, {}, cs, false, blocks, 1);
+  }
+}
+
+TEST_CASE("jit: M1 review liveness probes (solve operands, voice outputs, stereo feedback delay, delay sub-block)") {
+  liveness_probes::check(jitBuilder());
+  // The stereo feedback delay compiles (it was "op 6: wrong input count") and matches the interpreter bit for bit,
+  // with contraction on (the default) and off; so do the other probes.
+  for (const char* name : {"StereoFb", "DelayLb", "SolveInplace", "SolveUnk2", "VoiceOut"}) {
+    const Compiled& c = liveness_probes::probe(liveness_probes::probes(), name);
+    const uint32_t voices = std::string(name) == "VoiceOut" ? 8u : 0u;
+    const InterpRun interp = liveness_probes::run(c, voices, 4096, 64, {});
+    for (bool contract : {true, false}) {
+      INFO(name << " contract " << contract);
+      jit::CompileOptions jo;
+      jo.contract = contract;
+      CHECK(liveness_probes::bitEqual(interp.streams, liveness_probes::run(c, voices, 4096, 64, jitBuilder(jo)).streams));
+    }
   }
 }

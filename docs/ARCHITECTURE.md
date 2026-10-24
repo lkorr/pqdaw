@@ -126,7 +126,10 @@ namespace pq::graph {
   // voice reducers accumulate in the voice stage. Flat output: ops {kind, dsp kernel, lanes, Spl mask, operands
   // (Buffer | Param slot | Const | External), state entry, resource}, regions, stages, solve blocks, buffers (interval
   // reuse, in-place element-wise ops; the 100-node test chains need 1–2), params, externals, outputs, StateLayout. dump() is
-  // the `pqc dump-schedule` text.
+  // the `pqc dump-schedule` text. Liveness counts reads after an op (solver lhs/rhs/unknown reads after a body,
+  // engine voice-output reads at a stage end, a loop's next iteration) as keeping the value past that op;
+  // ScheduleOptions::shareBuffers = false gives each value its own buffer (the replay checker, sched_replay.h, compares
+  // the two). Loop sub-block bounds are evaluated in float32 like the runtime.
   ScheduleResult scheduleDetailed(const TypedPatch&, const ScheduleOptions& = {});  // + warnings in the Schedule
   Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
 }
