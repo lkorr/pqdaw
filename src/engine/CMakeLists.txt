@@ -9,6 +9,7 @@ pq_add_module(pq_engine
     src/callback_stats.cpp
     src/image_runner.cpp
     src/interpreter.cpp
+    src/newton.cpp
     src/note_list.cpp
     src/null_device.cpp
     src/offline_render.cpp

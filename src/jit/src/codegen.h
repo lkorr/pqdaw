@@ -22,13 +22,15 @@
 //       flip-flops, schmitt, samplehold, latch, counter, clockdiv, pulse, timer, phasor, sine_hz), whose state is
 //       loaded and stored per frame so LLVM can keep it in registers across the loop.
 //     - the rest (delay lines, wavetable, noise, shaper, sample_*) is a call of the dsp kernel for one frame.
-//     - solve blocks: Newton with the interpreter's central-difference Jacobian and update (QUESTIONS Q53), the
-//       body generated inline (1 + 2n evaluations per iteration); n = 1 inline, n > 1 via rt::newtonLinear.
+//     - solve blocks: Newton exactly as the interpreter (pq/engine/newton.h, QUESTIONS Q53), the body generated
+//       inline with its forward-mode tangents (one evaluation per iteration: newton::tangentOp instantiated on IR);
+//       finite differences (1 + 2n evaluations) for bodies without tangent rules and, in a cold branch, for lanes
+//       whose tangent Jacobian is not finite; the update for n = 1 inline, for n > 1 via rt::newtonLinear.
 //   Special ops (broadcast, voice reducers, sends): a call of the runtime helper (runtime.h).
 //
 // Exact transcendentals call the same CRT (scalar) / SVML (8-wide) functions as the kernels; fast_ functions are
-// generated from pq/core/fast_math.h's own templates (ir_ops.h). So JIT and interpreter agree bit for bit except
-// where fast-math contraction (fmul + fadd → fma) is allowed by CompileOptions::contract.
+// generated from pq/core/fast_math.h's own templates (ir_ops.h). So JIT and interpreter agree bit for bit unless
+// fast-math contraction (fmul + fadd → fma) is opted into with CompileOptions::contract (off by default).
 //
 // Store elimination: an op output inside a fused run / per-frame region is stored to its buffer only when a
 // later op in another run (or a call, a special op, a solve, an output copy) reads that buffer before it is
@@ -50,7 +52,7 @@
 namespace pq::jit::detail {
 
 struct GenOptions {
-  bool contract = true;       // fast-math `contract` + `afn` on generated arithmetic (never nnan/ninf/nsz/reassoc)
+  bool contract = false;      // fast-math `contract` + `afn` on generated arithmetic (never nnan/ninf/nsz/reassoc)
   std::string cpu;            // "target-cpu" function attribute
   std::string features;       // "target-features" function attribute
   std::string prefix;         // function name prefix (unique per image)

@@ -11,12 +11,13 @@
 //   - runs each stage: Control regions once (frames = 1, 8 lanes), Block regions block-wise, Loop regions per
 //     sample or per sub-block (each Blk operand re-pointed at t·lanes before the call), voice stages once per
 //     active voice group; reducers (voice_sum …) accumulate over the groups' active lanes, sends add into buses;
-//   - solves `solve` blocks per frame (Loop) or once per block (Control) with Newton: the Jacobian by central
-//     differences of the body (h = 2^-8 · max(|u|, 1) per unknown and lane), the n×n system per lane by Gaussian
-//     elimination with partial pivoting; a lane whose step is not finite (singular J, NaN) keeps its value for that
-//     iteration. After the last iteration the body runs once more, so values read after the block match the
-//     solution; an unknown without an initial guess starts from the previous frame's solution (docs/QUESTIONS.md
-//     Q46, Q53).
+//   - solves `solve` blocks per frame (Loop) or once per block (Control) with Newton (pq/engine/newton.h, shared
+//     with the JIT): the Jacobian from forward-mode tangents carried through one body evaluation (finite differences
+//     with a step relative to the unknown for bodies without tangent rules, and for a lane whose tangent Jacobian is
+//     not finite), the n×n system per lane by Gaussian elimination with partial pivoting; a lane whose step is not
+//     finite (singular J, NaN) keeps its value for that iteration. After the last iteration the body runs once
+//     more, so values read after the block match the solution; an unknown without an initial guess starts from
+//     the previous frame's solution (docs/QUESTIONS.md Q46, Q53).
 // Cost: one indirect call per op per block (Block regions), per sub-block (Loop) or per Newton evaluation (solve
 // bodies), never a virtual call; see bench/RESULTS.md (T1.7).
 

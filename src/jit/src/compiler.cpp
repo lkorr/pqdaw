@@ -4,9 +4,11 @@
 
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ObjectTransformLayer.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <llvm/Object/ObjectFile.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Transforms/Scalar/EarlyCSE.h>
 #include <llvm/Transforms/Scalar/LICM.h>
@@ -20,6 +22,7 @@
 #include <llvm/TargetParser/Host.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <mutex>
 
 #include "codegen.h"
@@ -73,6 +76,9 @@ struct Compiler::Session {
   std::string cpu, features;
   std::recursive_mutex mutex;  // compiles are serialised; images remove their code under it (also from a failed compile)
   uint64_t nextId = 0;
+  // Filled by the object transform while a compile materialises its module (under `mutex`).
+  uint64_t objectBytes = 0;
+  bool stackProbes = false;
 };
 
 namespace {
@@ -95,7 +101,8 @@ struct CodeOwner {
 Compiler::Compiler(std::shared_ptr<Session> s) noexcept : session_(std::move(s)) {}
 Compiler::~Compiler() = default;
 
-Result<std::unique_ptr<Compiler>> Compiler::create() {
+Result<std::unique_ptr<Compiler>> Compiler::create(const CompilerConfig& config) {
+  if (config.codeGenLevel > 3) return Error{ErrorCode::InvalidArgument, "jit: codeGenLevel must be 0..3", {}};
   initialiseLlvmOnce();
   auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
   if (!jtmb) return llvmError("detecting the host", jtmb.takeError());
@@ -104,7 +111,9 @@ Result<std::unique_ptr<Compiler>> Compiler::create() {
   llvm::SubtargetFeatures features;
   for (const auto& f : llvm::sys::getHostCPUFeatures()) features.AddFeature(f.first(), f.second);
   jtmb->getFeatures() = features;
-  jtmb->setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
+  static constexpr llvm::CodeGenOptLevel kLevels[] = {llvm::CodeGenOptLevel::None, llvm::CodeGenOptLevel::Less,
+                                                      llvm::CodeGenOptLevel::Default, llvm::CodeGenOptLevel::Aggressive};
+  jtmb->setCodeGenOptLevel(kLevels[config.codeGenLevel]);
   auto session = std::make_shared<Session>();
   session->cpu = jtmb->getCPU();
   session->features = jtmb->getFeatures().getString();
@@ -114,6 +123,20 @@ Result<std::unique_ptr<Compiler>> Compiler::create() {
   auto jit = llvm::orc::LLJITBuilder().setJITTargetMachineBuilder(std::move(*jtmb)).create();
   if (!jit) return llvmError("creating LLJIT", jit.takeError());
   session->jit = std::move(*jit);
+  // Every object on its way to the linker: its size, and whether it calls the stack probe (a frame > 4 KiB).
+  Session* sp = session.get();
+  session->jit->getObjTransformLayer().setTransform(
+      [sp](std::unique_ptr<llvm::MemoryBuffer> obj) -> llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> {
+        sp->objectBytes += obj->getBufferSize();
+        auto file = llvm::object::ObjectFile::createObjectFile(obj->getMemBufferRef());
+        if (!file) return file.takeError();
+        for (const llvm::object::SymbolRef& sym : (*file)->symbols()) {
+          auto name = sym.getName();
+          if (!name) return name.takeError();
+          if (*name == "__chkstk" || *name == "__chkstk_ms" || *name == "___chkstk_ms") sp->stackProbes = true;
+        }
+        return std::move(obj);
+      });
   return std::unique_ptr<Compiler>(new Compiler(std::move(session)));
 }
 
@@ -180,12 +203,16 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
     return llvmError("adding the module", std::move(err));
   // From here the tracker owns code: release it if anything below fails.
   auto owner = std::make_shared<CodeOwner>(session_, tracker);
+  s.objectBytes = 0;
+  s.stackProbes = false;
   for (size_t k = 0; k < gen->stageFunctions.size(); ++k) {
     auto sym = s.jit->lookup(gen->stageFunctions[k]);  // materialises (compiles) the module now, not on the audio thread
     if (!sym) return llvmError("looking up a stage function", sym.takeError());
     image->stages_[k].fn = sym->toPtr<detail::StageFn>();
   }
   st.machineCodeMs = msSince(t1);
+  st.objectBytes = s.objectBytes;
+  st.stackProbes = s.stackProbes;
   image->tab_ = std::move(tab.ptrs());
   image->codeOwner_ = std::move(owner);
   st.totalMs = msSince(t0);

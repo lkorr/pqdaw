@@ -22,9 +22,11 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <unordered_map>
 
 #include "pq/core/aligned_buffer.h"
 #include "pq/dsp/atoms.h"
+#include "pq/engine/newton.h"
 #include "pq/graph/atoms.h"
 
 namespace pq::engine {
@@ -35,7 +37,6 @@ namespace g = pq::graph;
 
 constexpr uint32_t kFloatAlign = 16;  // 64 bytes
 constexpr uint32_t kSolveItem = 0x80000000u;
-constexpr float kNewtonStep = 0.00390625f;  // 2^-8: central-difference step relative to max(|u|, 1)
 
 uint32_t roundUp(uint32_t n, uint32_t a) noexcept { return (n + a - 1) / a * a; }
 
@@ -267,6 +268,19 @@ struct EqRun {
   OperandRef lhs, rhs;
 };
 
+// Forward-mode tangents of a solve body (pq/engine/newton.h): per body op, where its inputs' and outputs' tangents
+// live (a slot of the tangent scratch, one per distinct buffer of the block) and which directions are non-zero.
+struct AdOp {
+  dsp::Atom atom = dsp::Atom::Add;
+  uint32_t numIn = 0, numOut = 0;
+  uint32_t firstIn = 0, firstOut = 0;  // into adPorts_
+  uint32_t outAny = 0;                 // OR of the outputs' direction bits
+};
+struct AdPort {
+  uint32_t slot = 0;
+  uint32_t nz = 0;  // direction bits (0: no tangent, slot unused)
+};
+
 struct SolveRun {
   uint32_t iterations = 1;
   uint32_t lanes = 1;
@@ -274,6 +288,10 @@ struct SolveRun {
   uint32_t firstBodyRec = 0, numBodyRec = 0;
   uint32_t firstUnk = 0, firstEq = 0;
   bool loop = false;  // body records are relocated to frame t
+  bool ad = false;    // Jacobian by forward-mode tangents (else finite differences)
+  uint32_t firstAdOp = 0;   // numBodyRec AdOps
+  uint32_t firstAdEq = 0;   // per equation: lhs, rhs AdPorts (into adPorts_)
+  uint32_t firstAdUnk = 0;  // per unknown: its slot (into adPorts_)
 };
 
 struct StageRun {
@@ -341,7 +359,7 @@ public:
   // ---- built by Builder ----
   g::StateLayout layout_;
   ImageInterface io_;
-  AlignedBuffer<float> bufMem_, auxMem_, stateMem_, solveMem_;
+  AlignedBuffer<float> bufMem_, auxMem_, stateMem_, solveMem_, tanMem_;
   uint32_t globalStateBytes_ = 0, voiceStride_ = 0;
   std::vector<float*> pool_;
   std::vector<Rec> recs_;
@@ -352,6 +370,9 @@ public:
   std::vector<SolveRun> solves_;
   std::vector<UnkRun> unks_;
   std::vector<EqRun> eqs_;
+  std::vector<AdOp> adOps_;
+  std::vector<AdPort> adPorts_;
+  std::vector<newton::Tan<float>> adIn_, adOut_;  // scratch: one op's input / output tangents (largest arity)
   std::vector<ReduceInfo> reduceInfos_;
   std::vector<SendInfo> sendInfos_;
   std::vector<ReduceInit> reduceInits_;
@@ -387,6 +408,8 @@ private:
       rec.fn(rec.args);
     }
   }
+  void evalBodyTangents(const SolveRun& s, uint32_t t) noexcept;
+  void finiteDifferenceJacobian(const SolveRun& s, uint32_t t, const float* r0, float* J) noexcept;
   float* resolveGlobal(ExtRun& e, const ProcessContext& ctx, uint32_t frames) noexcept;
   void copyOut(const OutCopy& c, float* dst, uint32_t frames, bool voice) noexcept;
   void zeroOutputs(const ProcessContext& ctx) noexcept;
@@ -521,18 +544,101 @@ void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {
   }
 }
 
-// Newton with a central-difference Jacobian, per lane (interpreter.h). Scratch: solveMem_ holds u, saved, h, r0, rp,
-// rm (n·8 each), J (n·n·8) and the elimination matrix (n·(n+1)) for the largest block.
+// Newton per lane (pq/engine/newton.h has the scheme; the JIT generates the same arithmetic). Scratch: solveMem_
+// holds u, r0, rp, rm (n·8 each), up, um (8 each), J and Jfd (n·n·8 each) and the elimination matrix (n·(n+1)
+// doubles); tanMem_ the tangents (slots · n · 8).
+void InterpretedImage::evalBodyTangents(const SolveRun& s, uint32_t t) noexcept {  // RT-safe
+  const uint32_t n = s.n, L = s.lanes;
+  float* T = tanMem_.data();
+  for (uint32_t j = 0; j < n; ++j) {
+    const AdPort& u = adPorts_[s.firstAdUnk + j];
+    for (uint32_t l = 0; l < L; ++l) T[(u.slot * n + j) * 8 + l] = 1.0f;
+  }
+  alignas(32) float snap[3 * 8] = {};
+  newton::ScalarOps ops;
+  for (uint32_t k = 0; k < s.numBodyRec; ++k) {
+    Rec& rec = recs_[s.firstBodyRec + k];
+    if (s.loop) {
+      relocate(rec, t);
+      rec.args.frames = 1;
+    }
+    const AdOp& op = adOps_[s.firstAdOp + k];
+    if (op.outAny == 0) {
+      rec.fn(rec.args);
+      continue;
+    }
+    // The rules read input values; an in-place op overwrites one, so take them before the call.
+    const uint32_t na = std::min<uint32_t>(op.numIn, 3);
+    for (uint32_t i = 0; i < na; ++i)
+      for (uint32_t l = 0; l < L; ++l) snap[i * 8 + l] = rec.args.in[i][l];
+    rec.fn(rec.args);
+    for (uint32_t l = 0; l < L; ++l) {
+      const float a[3] = {snap[l], snap[8 + l], snap[16 + l]};
+      const float y = rec.args.out[0][l];
+      for (uint32_t j = 0; j < n; ++j) {
+        if (((op.outAny >> j) & 1u) == 0) continue;
+        for (uint32_t i = 0; i < op.numIn; ++i) {
+          const AdPort& p = adPorts_[op.firstIn + i];
+          adIn_[i] = ((p.nz >> j) & 1u) != 0 ? newton::Tan<float>{T[(p.slot * n + j) * 8 + l], true} : newton::Tan<float>{};
+        }
+        newton::tangentOp(ops, op.atom, op.numIn, op.numOut, a, &y, adIn_.data(), adOut_.data());
+        for (uint32_t o = 0; o < op.numOut; ++o) {
+          const AdPort& p = adPorts_[op.firstOut + o];
+          if (((p.nz >> j) & 1u) != 0) T[(p.slot * n + j) * 8 + l] = adOut_[o].v;
+        }
+      }
+    }
+  }
+}
+
+// J by finite differences around the current u (the body's values are those at u and r0 its residuals).
+void InterpretedImage::finiteDifferenceJacobian(const SolveRun& s, uint32_t t, const float* r0, float* J) noexcept {  // RT-safe
+  const uint32_t n = s.n, L = s.lanes, N8 = maxSolveN_ * 8;
+  const float* u = solveMem_.data();
+  float* rp = solveMem_.data() + 2 * N8;
+  float* rm = rp + N8;
+  float* up = rm + N8;
+  float* um = up + 8;
+  const UnkRun* unk = unks_.data() + s.firstUnk;
+  const EqRun* eq = eqs_.data() + s.firstEq;
+  auto residuals = [&](float* r) noexcept {
+    for (uint32_t i = 0; i < n; ++i)
+      for (uint32_t l = 0; l < L; ++l) r[i * 8 + l] = eq[i].lhs.at(t, l) - eq[i].rhs.at(t, l);
+  };
+  for (uint32_t j = 0; j < n; ++j) {
+    for (uint32_t l = 0; l < L; ++l) {
+      const float saved = u[j * 8 + l];
+      const float step = newton::kStep * std::max(std::fabs(saved), newton::kStepFloor);
+      const float h = std::isfinite(step) ? step : 0.0f;
+      up[l] = saved + h;
+      um[l] = saved - h;
+    }
+    for (uint32_t l = 0; l < L; ++l) unk[j].value.at(t, l) = up[l];
+    evalBody(s, t);
+    residuals(rp);
+    for (uint32_t l = 0; l < L; ++l) unk[j].value.at(t, l) = um[l];
+    evalBody(s, t);
+    residuals(rm);
+    for (uint32_t l = 0; l < L; ++l) unk[j].value.at(t, l) = u[j * 8 + l];
+    for (uint32_t i = 0; i < n; ++i)
+      for (uint32_t l = 0; l < L; ++l) {
+        const float p = rp[i * 8 + l], m = rm[i * 8 + l], saved = u[j * 8 + l];
+        // Central difference over the step actually taken in float; one-sided where a side is not finite.
+        J[(i * n + j) * 8 + l] = std::isfinite(p) && std::isfinite(m) ? (p - m) / (up[l] - um[l])
+                                 : std::isfinite(p)                    ? (p - r0[i * 8 + l]) / (up[l] - saved)
+                                                                       : (r0[i * 8 + l] - m) / (saved - um[l]);
+      }
+  }
+}
+
 void InterpretedImage::runSolve(const SolveRun& s, uint32_t t) noexcept {  // RT-safe
   const uint32_t n = s.n, L = s.lanes, N8 = maxSolveN_ * 8;
   float* u = solveMem_.data();
-  float* saved = u + N8;
-  float* h = saved + N8;
-  float* r0 = h + N8;
-  float* rp = r0 + N8;
-  float* rm = rp + N8;
-  float* J = rm + N8;
-  double* M = reinterpret_cast<double*>(J + static_cast<size_t>(maxSolveN_) * N8);
+  float* r0 = u + N8;
+  float* J = u + 4 * N8 + 16;
+  float* Jfd = J + static_cast<size_t>(maxSolveN_) * N8;
+  double* M = reinterpret_cast<double*>(Jfd + static_cast<size_t>(maxSolveN_) * N8);
+  const float* T = tanMem_.data();
   const UnkRun* unk = unks_.data() + s.firstUnk;
   const EqRun* eq = eqs_.data() + s.firstEq;
   auto writeU = [&]() noexcept {
@@ -547,27 +653,34 @@ void InterpretedImage::runSolve(const SolveRun& s, uint32_t t) noexcept {  // RT
     for (uint32_t l = 0; l < L; ++l) u[j * 8 + l] = unk[j].init.base ? unk[j].init.at(t, l) : unk[j].guess[l];
   writeU();
   for (uint32_t it = 0; it < s.iterations; ++it) {
-    evalBody(s, t);
-    residuals(r0);
-    for (uint32_t j = 0; j < n; ++j) {
-      for (uint32_t l = 0; l < L; ++l) {
-        saved[l] = u[j * 8 + l];
-        const float step = kNewtonStep * std::max(std::fabs(saved[l]), 1.0f);
-        h[l] = std::isfinite(step) ? step : 0.0f;
+    if (s.ad) {
+      evalBodyTangents(s, t);
+      residuals(r0);
+      uint32_t bad = 0;  // lanes whose tangent Jacobian is not finite
+      for (uint32_t i = 0; i < n; ++i) {
+        const AdPort& lp = adPorts_[s.firstAdEq + 2 * i];
+        const AdPort& rp = adPorts_[s.firstAdEq + 2 * i + 1];
+        for (uint32_t j = 0; j < n; ++j) {
+          const bool lo = ((lp.nz >> j) & 1u) != 0, ro = ((rp.nz >> j) & 1u) != 0;
+          for (uint32_t l = 0; l < L; ++l) {
+            const float tl = lo ? T[(lp.slot * n + j) * 8 + l] : 0.0f;
+            const float tr = ro ? T[(rp.slot * n + j) * 8 + l] : 0.0f;
+            const float x = lo && ro ? tl - tr : lo ? tl : ro ? -tr : 0.0f;
+            J[(i * n + j) * 8 + l] = x;
+            if (!std::isfinite(x)) bad |= 1u << l;
+          }
+        }
       }
-      for (uint32_t l = 0; l < L; ++l) unk[j].value.at(t, l) = saved[l] + h[l];
-      evalBody(s, t);
-      residuals(rp);
-      for (uint32_t l = 0; l < L; ++l) unk[j].value.at(t, l) = saved[l] - h[l];
-      evalBody(s, t);
-      residuals(rm);
-      for (uint32_t l = 0; l < L; ++l) {
-        unk[j].value.at(t, l) = saved[l];
-        // The step actually taken in float (saved ± h rounded).
-        h[l] = (saved[l] + h[l]) - (saved[l] - h[l]);
+      if (bad != 0) {
+        finiteDifferenceJacobian(s, t, r0, Jfd);
+        for (uint32_t q = 0; q < n * n; ++q)
+          for (uint32_t l = 0; l < L; ++l)
+            if ((bad >> l) & 1u) J[q * 8 + l] = Jfd[q * 8 + l];
       }
-      for (uint32_t i = 0; i < n; ++i)
-        for (uint32_t l = 0; l < L; ++l) J[(i * n + j) * 8 + l] = (rp[i * 8 + l] - rm[i * 8 + l]) / h[l];
+    } else {
+      evalBody(s, t);
+      residuals(r0);
+      finiteDifferenceJacobian(s, t, r0, J);
     }
     // Per lane: J·Δ = r0 (Gaussian elimination with partial pivoting, in double), u −= Δ when finite.
     for (uint32_t l = 0; l < L; ++l) {
@@ -1124,9 +1237,56 @@ private:
       site(SiteKind::EqRhs, static_cast<uint32_t>(im.eqs_.size()), se.rhs, gi);
       im.eqs_.push_back(e);
     }
+    adPlan(sb, r);
     maxN_ = std::max(maxN_, r.n);
     im.solves_.push_back(r);
     return true;
+  }
+
+  // The tangent records of a solve block (newton::planTangents): one tangent slot per distinct buffer.
+  void adPlan(const g::SolveBlock& sb, SolveRun& r) {
+    InterpretedImage& im = *img_;
+    const newton::TangentPlan plan = newton::planTangents(s_, sb);
+    r.ad = plan.ad;
+    if (!r.ad) return;
+    std::unordered_map<uint32_t, uint32_t> slotOf;
+    auto slot = [&](const g::Operand& o) -> uint32_t {
+      if (o.kind != g::Operand::Kind::Buffer) return 0;
+      return slotOf.emplace(o.index, static_cast<uint32_t>(slotOf.size())).first->second;
+    };
+    r.firstAdUnk = static_cast<uint32_t>(im.adPorts_.size());
+    for (uint32_t j = 0; j < sb.numUnknowns; ++j) im.adPorts_.push_back({slot(s_.unknowns[sb.firstUnknown + j].value), 1u << j});
+    r.firstAdOp = static_cast<uint32_t>(im.adOps_.size());
+    for (uint32_t k = 0; k < sb.numOps; ++k) {
+      const g::Op& op = s_.ops[sb.firstOp + k];
+      AdOp a;
+      a.atom = static_cast<dsp::Atom>(op.kernel);
+      a.numIn = op.numIn;
+      a.numOut = op.numOut;
+      a.firstIn = static_cast<uint32_t>(im.adPorts_.size());
+      const auto ins = s_.inputs(op);
+      for (uint32_t i = 0; i < op.numIn; ++i) {
+        const uint32_t nz = plan.inNz[plan.firstIn[k] + i];
+        im.adPorts_.push_back({nz != 0 ? slot(ins[i]) : 0u, nz});
+      }
+      a.firstOut = static_cast<uint32_t>(im.adPorts_.size());
+      const auto outs = s_.outputsOf(op);
+      for (uint32_t o = 0; o < op.numOut; ++o) {
+        const uint32_t nz = plan.outNz[plan.firstOut[k] + o];
+        im.adPorts_.push_back({nz != 0 ? slot(outs[o]) : 0u, nz});
+        a.outAny |= nz;
+      }
+      maxAdIn_ = std::max(maxAdIn_, a.numIn);
+      maxAdOut_ = std::max(maxAdOut_, a.numOut);
+      im.adOps_.push_back(a);
+    }
+    r.firstAdEq = static_cast<uint32_t>(im.adPorts_.size());
+    for (uint32_t q = 0; q < sb.numEquations; ++q) {
+      const g::SolveEquation& e = s_.equations[sb.firstEquation + q];
+      im.adPorts_.push_back({plan.lhsNz[q] != 0 ? slot(e.lhs) : 0u, plan.lhsNz[q]});
+      im.adPorts_.push_back({plan.rhsNz[q] != 0 ? slot(e.rhs) : 0u, plan.rhsNz[q]});
+    }
+    maxTanFloats_ = std::max<size_t>(maxTanFloats_, static_cast<size_t>(slotOf.size()) * sb.numUnknowns * 8);
   }
 
   bool stages() {
@@ -1278,11 +1438,14 @@ private:
     // Every cell starts at silence until the first block resolves it.
     for (const Site& st : im.sites_) *st.target = im.zeros_;
     im.maxSolveN_ = maxN_;
-    if (maxN_ > 0) {
-      const size_t floats = static_cast<size_t>(maxN_) * 8 * 6 + static_cast<size_t>(maxN_) * maxN_ * 8 +
+    if (maxN_ > 0) {  // runSolve's layout: u, r0, rp, rm, up + um, J, Jfd, M (doubles)
+      const size_t floats = static_cast<size_t>(maxN_) * 8 * 4 + 16 + 2 * static_cast<size_t>(maxN_) * maxN_ * 8 +
                             2 * static_cast<size_t>(maxN_) * (maxN_ + 1) + 16;
       im.solveMem_ = AlignedBuffer<float>(floats);
     }
+    if (maxTanFloats_ > 0) im.tanMem_ = AlignedBuffer<float>(maxTanFloats_);
+    im.adIn_.assign(std::max<uint32_t>(maxAdIn_, 1), {});
+    im.adOut_.assign(std::max<uint32_t>(maxAdOut_, 1), {});
   }
 
   const g::Schedule& s_;
@@ -1296,6 +1459,8 @@ private:
   std::byte* voiceState_ = nullptr;
   std::vector<PendingSite> pending_;
   uint32_t maxN_ = 0;
+  uint32_t maxAdIn_ = 0, maxAdOut_ = 0;
+  size_t maxTanFloats_ = 0;
 };
 
 }  // namespace

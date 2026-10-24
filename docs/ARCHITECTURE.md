@@ -136,21 +136,32 @@ namespace pq::graph {
   Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
 }
 
-// jit (pq/jit/compiler.h, T1b.1): the LLVM backend: same ProgramImage ABI and results as the interpreter (bit-identical
-// with CompileOptions::contract off; ≤ 5.4e-7 on the corpus with fmul+fadd contraction on, the default). One generated
-// function per stage; element-wise runs fused into loops (8 frames per <8 x float> for global ops, one frame of 8 voices
-// for voice ops; long runs interleave 8 independent chunks per iteration); per-sample loops, Control regions and solve
-// bodies inline, including the simple stateful atoms; delay lines, wavetable, noise, shaper, sample_* and stateful
-// atoms in block regions call the dsp kernels; exact transcendentals call the kernels' own CRT/SVML functions.
-// Host CPU target (AVX-512 where present), a light IR pipeline by default (src/jit/src/codegen.h, compiler.cpp).
+// jit (pq/jit/compiler.h, T1b.1): the LLVM backend: same ProgramImage ABI and results as the interpreter, bit for bit
+// with the default options (T1b.1-fix1: no fast-math flags; CompileOptions::contract opts into fmul+fadd contraction,
+// which a chaotic feedback loop turns into O(1) differences). One generated function per stage; element-wise runs
+// fused into loops (8 frames per <8 x float> for global ops, one frame of 8 voices for voice ops; latency-bound runs
+// interleave up to 8 independent chunks per iteration, capped by code size, and runs split past a size cap);
+// per-sample loops, Control regions and solve bodies inline, including the simple stateful atoms; delay lines,
+// wavetable, noise, shaper, sample_* and stateful atoms in block regions call the dsp kernels; exact transcendentals
+// call the kernels' own CRT/SVML functions. Host CPU target (AVX-512 where present), a light IR pipeline by default,
+// machine code at CompilerConfig::codeGenLevel (src/jit/src/codegen.h, compiler.cpp). CompileStats reports the
+// object size and whether any stage needs stack probes (it must not: a frame > 4 KiB touches guard pages on the
+// audio thread).
 namespace pq::jit {
   class Compiler {                                 // one per process; owns LLJIT; images may outlive it
   public:
-    static Result<std::unique_ptr<Compiler>> create();
+    static Result<std::unique_ptr<Compiler>> create(const CompilerConfig& = {});
     Result<std::unique_ptr<engine::ProgramImage>> compile(const graph::Schedule&, const CompileOptions& = {},
                                                           CompileStats* = nullptr);  // not RT-safe
   };
 }
+
+// engine Newton (pq/engine/newton.h, T1b.1-fix1): what both backends do for a solve block, in one place so they
+// agree bit for bit: forward-mode tangents through the body (one evaluation per iteration; tangentOp is one template
+// instantiated on scalar floats by the interpreter and on IR by the JIT; planTangents says which tangents are
+// structurally zero), finite differences with a step relative to the unknown (2^-8 · max(|u|, 1e-6), one-sided where
+// a side leaves the domain) for bodies without tangent rules (table reads) and lanes whose tangent Jacobian is not
+// finite, and the exact cos/log both backends call per lane (cosExact, logExact).
 
 // engine: what the audio thread runs (pq/engine/program_image.h, interpreter.h, image_runner.h; T1.7)
 namespace pq::engine {
@@ -270,7 +281,7 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - `using KernelFn = void (*)(const KernelArgs&) noexcept;` with `KernelArgs { const float* const* in; float* const* out; void* state; const void* resource; uint32_t frames; uint16_t numIn, numOut; uint32_t splMask; }`.
 - **Lanes**: each kernel is compiled for L = 1 (global signal) or L = 8 (one voice group). A block buffer holds `frames · L` floats, frame-major with voices interleaved (`[s·8 + v]`, one frame = one `__m256`). Global stateless kernels are vectorised over time.
 - **Rates**: an input is a block buffer (audio rate) or a Spl pattern of 8 floats constant over the block (param rate; per-voice values for L = 8, 8 copies of the value for L = 1). The Spl mask is a template specialisation chosen by `findKernel(atom, lanes, splMask)`, so unmodulated inputs cost one vector load per block and no per-sample branch.
-- **Bools** are 32-bit lane masks (all ones / zero) in float slots, for both L.
+- **Bools** are 32-bit lane masks (all ones / zero) in float slots, for both L. Every select on a bool (float `select`, integer `selecti`, the JIT's selects) reads the sign bit of the lane (blendvps), never single bytes, so a non-mask value at an engine input (1.0f: sign clear, false) means the same in every kernel and in both backends (T1b.1-fix1, M1 review L5).
 - **State**: one POD block per stateful node (`atom_state.h`, 32-byte aligned, 8 lanes even for L = 1), sized by `stateBytes(atom, StateInit)` (`size_t`; a delay ring is at most `kMaxDelayRingBytes` = 1 GiB, i.e. `maxDelayFramesLimit(lanes)` frames, and `schedule()` rejects a larger `max` with a located error; each state arena is capped at 2 GiB) and written by `initState` (no allocation). Its type tag for hot swap is the `Atom` id (plus the lane count for delay lines, whose ring follows the header).
 - **Resources** (wavetables, shaper curves, sample data) are immutable tables built off-thread (`tables.h`) and passed by pointer.
 - **Registry ↔ kernel**: `pq/graph/kernel_map.h` (`kernelMapping(AtomId)`) is the one mapping from language atoms to kernels: the kernel, and per registry input whether it is a kernel input (durations: `· sr` inserted by `optimise()`, after which `TypedPatch::durationsInSamples` is set), a resource, or a state-init const (`seed`, `max` delay, z1 `init`). Atoms without a kernel are marked Structural (`channel`, `pack`), Constant (`sr`) or Engine (`voice.*`, `transport.*`, I/O, `voice_*` reducers). Registry `stateBytes` = the kernel's state block. Tested against both tables (QUESTIONS Q14).

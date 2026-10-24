@@ -1,0 +1,66 @@
+// M1 review probes (docs/reviews/M1/probes) in the JIT corpus (T1b.1-fix1): every patch here must render
+// bit-identically on the JIT (default options) and the interpreter, and match the reference evaluator.
+
+// chaos.pqp: a logistic map in a z1 loop. `r - r * fb` is contractable to one FMA; with contraction the JIT
+// rounded once where the interpreter rounds twice, and the chaotic loop amplified that to |Δ| 0.988 (M1).
+patch Chaos {
+  out y : audio
+  fb = z1(v, init: 0.3)
+  r = fb * 3.99
+  v = r - r * fb
+  y = v
+}
+
+// The same map per voice, seeded from voice.hz: 8-lane per-sample code.
+patch ChaosVoice {
+  out y : audio voice
+  out mix : audio global
+  fb = z1(v, init: 0.3)
+  r = (fb + voice.hz * 0.0000001) * 3.99
+  v = r - r * fb
+  y = v
+  mix = voice_sum(v) * 0.1
+}
+
+// A contractable expression outside any loop (a·b − c·d), block-wise.
+patch Contractable {
+  in x : audio
+  out y : audio
+  y = x * 1.37 - x * x * 0.71
+}
+
+// solve_scale.pqp: an unknown far below 1. With the old absolute step floor (h = 2^-8 · max(|u|, 1)) the
+// central difference left log's domain, J was NaN and the solve stayed at its guess 0.001 (M2); it must
+// converge to 0.002.
+patch SolveScale {
+  param tg = 0.002 [0.000001..10]
+  param u0 = 0.001 [0.000001..10]
+  out y : audio
+  target = tg + 0 * sine(phasor(1Hz))
+  init = u0 + 0 * sine(phasor(1Hz))
+  solve(iterations: 8) {
+    unknown u = init
+    log(u) == log(target)
+  }
+  y = u
+}
+
+// A diode-like current far below 1 (the root is i ≈ 4e-8): an exponential of the unknown at a small scale.
+patch SolveCurrent {
+  in x : audio
+  out y : audio
+  v = 0.3 + x * 0.05
+  solve(iterations: 8) {
+    unknown i = 0.000001
+    i * 1000 == exp((v - i * 100) * 20) * 0.0000001
+  }
+  y = i * 1000
+}
+
+// last.pqp: voice_last.
+patch Last {
+  out o : audio voice
+  out y : audio
+  o = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.1
+  y = voice_last(voice.hz) / 1000
+}

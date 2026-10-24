@@ -85,7 +85,11 @@ struct S8 {
   template <int N> static I srai(I a) noexcept { return _mm256_srai_epi32(a, N); }
   static I eqi(I a, I b) noexcept { return _mm256_cmpeq_epi32(a, b); }
   static I gti(I a, I b) noexcept { return _mm256_cmpgt_epi32(a, b); }
-  static I selecti(I m, I a, I b) noexcept { return _mm256_blendv_epi8(b, a, m); }  // m ? a : b
+  // m ? a : b by the sign bit of each 32-bit lane (blendvps, like select and the JIT's selects), not per byte
+  // (pblendvb): a non-canonical bool input (1.0f) then means the same in every kernel and in both backends.
+  static I selecti(I m, I a, I b) noexcept {
+    return _mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(b), _mm256_castsi256_ps(a), _mm256_castsi256_ps(m)));
+  }
   static I truncToInt(F a) noexcept { return _mm256_cvttps_epi32(a); }  // NaN/out of range → INT_MIN
   static I roundToInt(F a) noexcept { return _mm256_cvtps_epi32(a); }   // nearest-even (default MXCSR)
   static F toFloat(I a) noexcept { return _mm256_cvtepi32_ps(a); }
@@ -223,7 +227,9 @@ struct S1 {
   template <int N> static I srai(I a) noexcept { return _mm_srai_epi32(a, N); }
   static I eqi(I a, I b) noexcept { return _mm_cmpeq_epi32(a, b); }
   static I gti(I a, I b) noexcept { return _mm_cmpgt_epi32(a, b); }
-  static I selecti(I m, I a, I b) noexcept { return _mm_blendv_epi8(b, a, m); }
+  static I selecti(I m, I a, I b) noexcept {  // by the sign bit, as S8::selecti
+    return _mm_castps_si128(_mm_blendv_ps(_mm_castsi128_ps(b), _mm_castsi128_ps(a), _mm_castsi128_ps(m)));
+  }
   static I truncToInt(F a) noexcept { return _mm_cvttps_epi32(a); }
   static I roundToInt(F a) noexcept { return _mm_cvtps_epi32(a); }
   static F toFloat(I a) noexcept { return _mm_cvtepi32_ps(a); }

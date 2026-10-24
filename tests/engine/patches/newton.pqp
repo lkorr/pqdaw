@@ -1,0 +1,114 @@
+// Newton tangent rules (T1b.1-fix1, pq/engine/newton.h): solve bodies that exercise the forward-mode derivative of
+// every element-wise atom family, per sample (global and per voice) and per block (param rate). Every solve here is
+// well conditioned, so the interpreter, the JIT (bit-identical to it) and the reference evaluator (Newton in double)
+// agree to the corpus tolerance.
+
+// Transcendentals: sin, exp, pow (base), log, sqrt, div, abs, tan, tanh.
+patch NewtonTranscendental {
+  in x : audio
+  out a : audio
+  out b : audio
+  out c : audio
+  out d : audio
+  solve(iterations: 6) {
+    unknown u = x
+    u + 0.2 * sin(u) + 0.1 * exp(u * 0.5) == x + 1
+  }
+  solve(iterations: 6) {
+    unknown v = 1
+    pow(v, 1.5) + log(v + 2) == 2 + x
+  }
+  solve(iterations: 6) {
+    unknown w = x
+    sqrt(w * w + 1) + w / (2 + abs(w)) == x * 2 + 1.5
+  }
+  solve(iterations: 6) {
+    unknown z = 0
+    z + 0.1 * tan(z * 0.5) - 0.3 * tanh(z * 2) == x * 0.5
+  }
+  a = u
+  b = v
+  c = w
+  d = z
+}
+
+// Piecewise atoms: clip, min, max, select, lerp, mux, mod, frac, floor, sign (the branch the value takes).
+patch NewtonPiecewise {
+  in x : audio
+  out a : audio
+  out b : audio
+  out c : audio
+  solve(iterations: 6) {
+    unknown p = x
+    p + clip(p, -0.2, 0.2) * 0.5 + min(p, 0.1) * 0.25 - max(p, -0.1) * 0.125 == x
+  }
+  solve(iterations: 6) {
+    unknown q = x
+    lerp(q, q * 2, 0.25) + (x > 0 ? q * 0.5 : q * 0.25) + mux(x * 2 + 1, q * 0.1, q * 0.2, q * 0.3) == x
+  }
+  solve(iterations: 6) {
+    unknown r = x
+    r + mod(r * 0.1 + 3, 0.7) * 0.1 + frac(r + 5) * 0.01 + sign(r) * floor(x) * 0.001 == x
+  }
+  a = p
+  b = q
+  c = r
+}
+
+// Pitch and level conversions and the fast_ approximations.
+patch NewtonConversions {
+  in x : audio
+  out a : audio
+  out b : audio
+  out c : audio
+  solve(iterations: 6) {
+    unknown g = 0
+    cents_to_hz(g * 100, 100) * 0.01 + db_to_gain(g) * 0.1 == 1.5 + x * 0.2
+  }
+  solve(iterations: 6) {
+    unknown h = 150
+    hz_to_cents(h, 100) * 0.001 + gain_to_db(h * 0.01) * 0.01 == 0.8 + x * 0.1
+  }
+  solve(iterations: 6) {
+    unknown f = x
+    fast_tanh(f) + fast_exp(f * 0.1) + fast_sin(f) * 0.1 + fast_log(f + 3) * 0.1 + fast_sqrt(f * f + 1) * 0.1 == x + 1
+  }
+  a = g
+  b = h * 0.01
+  c = f
+}
+
+// Two coupled unknowns (2×2 elimination) with pow in both directions.
+patch NewtonCoupled {
+  in x : audio
+  out a : audio
+  out b : audio
+  solve(iterations: 8) {
+    unknown s = 1
+    unknown t = 1
+    s * t + pow(s, t) * 0.1 == 2 + x
+    s - t * 0.5 + sin(s * t) * 0.1 == 0.3
+  }
+  a = s
+  b = t
+}
+
+// Per voice (8-lane tangents, per-lane exact cos), and once per block (Control region).
+patch NewtonVoice {
+  param k = 2 [0.5..4]
+  out y : audio voice
+  out mix : audio global
+  out root : real
+  x = sine(phasor(voice.hz)) * 0.8
+  solve(iterations: 5) {
+    unknown v = x
+    v + 0.3 * sin(v) + 0.05 * pow(abs(v) + 1, 1.5) == x
+  }
+  solve(iterations: 8) {
+    unknown c
+    c + sin(c) * k * 0.2 + sqrt(c * c + 1) * 0.1 == 1
+  }
+  y = v
+  mix = voice_sum(v) * 0.1
+  root = c
+}

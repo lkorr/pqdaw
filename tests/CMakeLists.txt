@@ -165,6 +165,7 @@ pq_add_test(pq_tests_engine PERF
     engine/test_asio.cpp
     engine/test_rt_log_device.cpp
     engine/test_interpreter.cpp
+    engine/test_newton.cpp
     engine/test_voices.cpp
     engine/test_hot_swap.cpp
     engine/test_offline_render.cpp
@@ -194,7 +195,7 @@ target_compile_definitions(pq_tests_render PRIVATE PQC_EXE=pq_build_pqc_exe)
 
 # jit (T1b.1): the LLVM backend against the interpreter and the reference evaluator over the T1.7 corpus, plus the
 # ProgramImage contract cases and compile times.
-pq_add_test(pq_tests_jit
+pq_add_test(pq_tests_jit PERF
   SOURCES
     jit/test_jit.cpp
     engine/test_voices.cpp  # the T1.8 voice suite again, on JIT images (rigImageBuilder, set in test_jit.cpp)

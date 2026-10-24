@@ -413,6 +413,14 @@ private:
     L.maxSolveN = maxN_;
     L.solveOff = off;
     if (maxN_ > 0) off += roundUp(maxN_ * 8 * 2 + maxN_ * maxN_ * 8 + 2 * maxN_ * (maxN_ + 1) + 16, kFloatAlign);
+    // Pointer arrays of kernel calls with more than kStackCallOperands inputs or outputs (a wide mux/demux):
+    // in buf, not on the stage function's stack (codegen.h).
+    uint32_t wide = 0;
+    for (const g::Op& op : s_.ops)
+      if (op.numIn > kStackCallOperands || op.numOut > kStackCallOperands) wide = std::max<uint32_t>(wide, op.numIn + op.numOut);
+    L.callOff = off;
+    L.callPtrs = wide;
+    off += roundUp(wide * 2, kFloatAlign);  // 8-byte pointers
     L.bufFloats = std::max<uint32_t>(off, kFloatAlign);
     im.buf_ = AlignedBuffer<float>(L.bufFloats);
     uint32_t aux = 0;

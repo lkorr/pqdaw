@@ -38,6 +38,10 @@ namespace pq::jit::detail {
 using StageFn = void (*)(float* buf, const float* aux, std::byte* gstate, std::byte* vstate, float* const* ext,
                          const void* const* tab, uint32_t frames, uint32_t group) noexcept;
 
+// Kernel calls with at most this many inputs and outputs keep their KernelArgs pointer arrays on the stage
+// function's stack; wider ones (a mux over many inputs) use HostLayout::callOff, so no frame needs stack probes.
+inline constexpr uint32_t kStackCallOperands = 64;
+
 // Where every schedule object lives (offsets in floats into buf / aux, bytes into state).
 struct HostLayout {
   uint32_t maxBlock = 0;
@@ -46,6 +50,7 @@ struct HostLayout {
   uint32_t bufFloats = 0;
   uint32_t solveOff = 0;                     // Newton scratch (n > 1): u, r0 (maxN·8 each), J (maxN²·8), M (doubles)
   uint32_t maxSolveN = 0;
+  uint32_t callOff = 0, callPtrs = 0;        // pointer arrays of wide kernel calls (callPtrs pointers; 0: none)
   uint32_t paramOff = 0, constOff = 0, zeroOff = 0;
   std::vector<uint32_t> extOwnOff;           // per external: its own pattern / ramp in aux (global ones)
   uint32_t auxFloats = 0;

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <limits>
 #include <map>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 
@@ -25,6 +26,7 @@
 #include "pq/core/fast_math.h"
 #include "pq/dsp/atom_state.h"
 #include "pq/dsp/atoms.h"
+#include "pq/engine/newton.h"
 #include "runtime.h"
 
 namespace pq::jit::detail {
@@ -32,6 +34,7 @@ namespace pq::jit::detail {
 namespace {
 
 namespace g = pq::graph;
+namespace newton = pq::engine::newton;
 using dsp::Atom;
 using llvm::Value;
 
@@ -42,7 +45,11 @@ constexpr float kTwoPi = 6.28318530717958648f;
 constexpr float kBelowOne = 0.99999994f;
 constexpr float kTwoPiOver2p32 = 1.46291807926715968e-09f;
 constexpr float k2pm24 = 5.9604644775390625e-08f;
-constexpr float kNewtonStep = 0.00390625f;  // the interpreter's central-difference step (Q53)
+
+// Code-size caps for fused runs (opCost units ≈ instructions per chunk; T1b.1-fix1, measured in bench/RESULTS.md).
+constexpr uint32_t kMaxRunCost = 1024;         // a fused run is split before it grows past this
+constexpr uint32_t kInterleaveBudget = 2048;   // chunks interleaved per iteration × run cost
+constexpr size_t kMaxRunInvariants = 16;       // distinct pattern operands (params, constants) per fused run
 
 static_assert(offsetof(dsp::KernelArgs, in) == 0 && offsetof(dsp::KernelArgs, out) == 8 &&
               offsetof(dsp::KernelArgs, state) == 16 && offsetof(dsp::KernelArgs, resource) == 24 &&
@@ -167,14 +174,17 @@ private:
       const bool pf = perFrame(r);
       const int32_t regionGroup = next++;
       int32_t run = -1;
-      uint32_t runLanes = 0;
+      uint32_t runLanes = 0, runSize = 0;
+      std::set<std::pair<int, uint32_t>> runInv;  // the run's distinct pattern operands (hoisted loads)
       for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) {
         const g::Op& op = s_.ops[i];
         const bool kernel = op.kind == g::OpKind::Kernel;
         // In slices, exact transcendentals stay block-wise kernel calls: the CRT/SVML call is the cost, and a call
         // inside a fused loop would spill every live vector register around it.
-        inline_[i] = kernel && ((isElementwise(op.kernel) && (pf || exactOf(op.kernel) < 0)) ||
-                                (pf && isSimpleStateful(op.kernel)));
+        // A mux/demux wider than kStackCallOperands is a kernel call: inline, its select chain is one basic block
+        // of thousands of instructions per chunk (the M1 review's 1200-input mux), the kernel runs it as a loop.
+        inline_[i] = kernel && !wideCall(op) &&
+                     ((isElementwise(op.kernel) && (pf || exactOf(op.kernel) < 0)) || (pf && isSimpleStateful(op.kernel)));
         if (pf) {
           grp_[i] = inline_[i] && !body_[i] ? regionGroup : -1;
           continue;
@@ -183,10 +193,26 @@ private:
           run = -1;
           continue;
         }
-        if (run < 0 || runLanes != op.lanes) {
+        // A run ends at kMaxRunCost: past that, values kept in registers across the run (store elimination) only
+        // turn into spills, and instruction selection / register allocation of one huge block is superlinear (the
+        // M1 review's 1200-input mux after 1200 products took 1.3–3 s to compile as one run).
+        // It also ends before it reads more than kMaxRunInvariants distinct params / constants / patterns: they are
+        // loaded once before the loop, so each is a register for the whole loop (or, past the register file, a
+        // spill: with one constant per op, the review's mux probe spilled 15 KB and needed stack probes).
+        const uint32_t c = opCost(i);
+        uint32_t newInv = 0;
+        for (const g::Operand& o : s_.inputs(op))
+          if (isPattern(o) && o.kind != g::Operand::Kind::None && !runInv.count({static_cast<int>(o.kind), o.index})) ++newInv;
+        if (run < 0 || runLanes != op.lanes || (runSize > 0 && runSize + c > kMaxRunCost) ||
+            (runSize > 0 && runInv.size() + newInv > kMaxRunInvariants)) {
           run = next++;
           runLanes = op.lanes;
+          runSize = 0;
+          runInv.clear();
         }
+        runSize += c;
+        for (const g::Operand& o : s_.inputs(op))
+          if (isPattern(o) && o.kind != g::Operand::Kind::None) runInv.insert({static_cast<int>(o.kind), o.index});
         grp_[i] = run;
       }
     }
@@ -248,12 +274,19 @@ private:
   // One function per stage, all regions in it. (Splitting a stage into one function per region was measured: it
   // makes compiles slower, since every function repeats its base-pointer setup; bench/RESULTS.md.)
   void stageFunction(const g::Stage& st, const std::string& name) {
-    beginFunction(name, llvm::Function::ExternalLinkage);
+    // The kernel-call pointer arrays are sized for this stage's calls only (an inline op never uses them): the
+    // M1 review's 1200-input mux sized them at 2 × 9.6 KB for every stage, a frame that needs __chkstk probes.
+    uint32_t maxOperands = 1;
+    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r)
+      for (uint32_t i = s_.regions[r].firstOp; i < s_.regions[r].firstOp + s_.regions[r].numOps; ++i)
+        if (!inline_[i] && !wideCall(s_.ops[i]))
+          maxOperands = std::max<uint32_t>(maxOperands, std::max<uint32_t>(s_.ops[i].numIn, s_.ops[i].numOut));
+    beginFunction(name, llvm::Function::ExternalLinkage, maxOperands);
     for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) emitRegion(r);
     B_.CreateRetVoid();
   }
 
-  llvm::Function* beginFunction(const std::string& name, llvm::Function::LinkageTypes linkage) {
+  llvm::Function* beginFunction(const std::string& name, llvm::Function::LinkageTypes linkage, uint32_t maxOperands) {
     llvm::FunctionType* ty = llvm::FunctionType::get(void_, {ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, i32_, i32_}, false);
     F_ = llvm::Function::Create(ty, linkage, name, M_);
     for (unsigned a = 0; a < 6; ++a) F_->addParamAttr(a, llvm::Attribute::NoAlias);
@@ -292,8 +325,6 @@ private:
       llvm::IRBuilder<> eb(entryTerm_);
       frames64_ = eb.CreateZExt(frames32, i64_);
       group64_ = eb.CreateZExt(group32_, i64_);
-      uint32_t maxOperands = 1;
-      for (const g::Op& op : s_.ops) maxOperands = std::max<uint32_t>(maxOperands, std::max<uint32_t>(op.numIn, op.numOut));
       kargs_ = eb.CreateAlloca(kargsTy_);
       inArr_ = eb.CreateAlloca(llvm::ArrayType::get(ptr_, maxOperands));
       outArr_ = eb.CreateAlloca(llvm::ArrayType::get(ptr_, maxOperands));
@@ -306,12 +337,17 @@ private:
   llvm::Constant* c64(uint64_t v) const { return llvm::ConstantInt::get(i64_, v); }
   llvm::Constant* c32(uint32_t v) const { return llvm::ConstantInt::get(i32_, v); }
 
-  Value* bufBase(uint32_t b) {
+  // A buffer's base: buf + a constant, emitted where it is used (`at`, default the current insert point), so it folds
+  // into the instruction's addressing mode. (Computed once in the entry block, every buffer's base was a value live
+  // across the whole function: with ~1200 buffers they were spilled, the frame needed stack probes and register
+  // allocation took seconds.) A per-group buffer's base needs the group index: computed once, in the entry block.
+  Value* bufBase(uint32_t b, llvm::IRBuilderBase* at = nullptr) {
+    if (!s_.buffers[b].perGroup) return (at ? *at : B_).CreateConstInBoundsGEP1_64(f32_, buf_, L_.bufOff[b]);
     auto it = bufBase_.find(b);
     if (it != bufBase_.end()) return it->second;
     llvm::IRBuilder<> eb(entryTerm_);
     Value* p = eb.CreateConstInBoundsGEP1_64(f32_, buf_, L_.bufOff[b]);
-    if (s_.buffers[b].perGroup) p = eb.CreateInBoundsGEP(f32_, p, eb.CreateMul(group64_, c64(L_.bufSize[b])));
+    p = eb.CreateInBoundsGEP(f32_, p, eb.CreateMul(group64_, c64(L_.bufSize[b])));
     bufBase_.emplace(b, p);
     return p;
   }
@@ -351,27 +387,25 @@ private:
   uint32_t lanesOf(const g::Operand& o) const noexcept { return lanesOfOperand(s_, o); }
 
   // Start of the operand's data: a block buffer's frame 0 or a pattern.
-  Value* basePtr(const g::Operand& o) {
+  Value* basePtr(const g::Operand& o, llvm::IRBuilderBase* at = nullptr) {
+    llvm::IRBuilderBase& b = at ? *at : B_;
     switch (o.kind) {
-      case g::Operand::Kind::Buffer: return bufBase(o.index);
-      case g::Operand::Kind::Param: {
-        llvm::IRBuilder<> eb(entryTerm_);
-        return eb.CreateConstInBoundsGEP1_64(f32_, aux_, L_.paramOff + static_cast<uint64_t>(o.index) * 8);
-      }
-      case g::Operand::Kind::Const: {
-        llvm::IRBuilder<> eb(entryTerm_);
-        return eb.CreateConstInBoundsGEP1_64(f32_, aux_, L_.constOff + static_cast<uint64_t>(o.index) * 8);
-      }
+      case g::Operand::Kind::Buffer: return bufBase(o.index, at);
+      case g::Operand::Kind::Param: return b.CreateConstInBoundsGEP1_64(f32_, aux_, L_.paramOff + static_cast<uint64_t>(o.index) * 8);
+      case g::Operand::Kind::Const: return b.CreateConstInBoundsGEP1_64(f32_, aux_, L_.constOff + static_cast<uint64_t>(o.index) * 8);
       case g::Operand::Kind::External: return extBase(o.index);
       default: return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_));
     }
   }
   // The operand's data at frame t (patterns: the pattern).
   Value* framePtr(const g::Operand& o, Value* t) {
-    Value* base = basePtr(o);
-    if (isPattern(o)) return base;
-    if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(t); c && c->isZero()) return base;
-    return B_.CreateInBoundsGEP(f32_, base, B_.CreateMul(t, c64(lanesOf(o)), "", true, true));
+    if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(t); isPattern(o) || (c && c->isZero())) return basePtr(o);
+    Value* idx = B_.CreateMul(t, c64(lanesOf(o)), "", true, true);
+    // A buffer's frame t as buf + (t·lanes + offset): one loop-variant address, so LICM cannot hoist a base pointer
+    // per buffer out of the loop (hundreds of them live across a long fused run spill; codegen.h).
+    if (o.kind == g::Operand::Kind::Buffer && !s_.buffers[o.index].perGroup)
+      return B_.CreateInBoundsGEP(f32_, buf_, B_.CreateAdd(idx, c64(L_.bufOff[o.index]), "", true, true));
+    return B_.CreateInBoundsGEP(f32_, basePtr(o), idx);
   }
   llvm::Align alignOf(const g::Operand& o, unsigned w) const {
     if (w == 1) return llvm::Align(4);
@@ -392,7 +426,7 @@ private:
       auto it = inv_.find(key);
       if (it != inv_.end()) return it->second;
       llvm::IRBuilder<> hb(hoistIP_);
-      Value* v = hb.CreateAlignedLoad(vecTy(w), basePtr(o), alignOf(o, w));
+      Value* v = hb.CreateAlignedLoad(vecTy(w), basePtr(o, &hb), alignOf(o, w));
       inv_.emplace(key, v);
       return v;
     }
@@ -409,7 +443,11 @@ private:
           if (it != fr.map->end()) return it->second;
         }
         if (isPattern(o)) return loadPattern(o, fr.w, fr.hoist);
-        return loadBlk(o, fr);
+        Value* x = loadBlk(o, fr);
+        // Loaded once per evaluation: every write to a buffer in this evaluation goes through write() (which
+        // updates the map) or a call / solve (which erase what they write).
+        if (fr.map) (*fr.map)[o.index] = x;
+        return x;
       }
       case g::Operand::Kind::Param: return loadPattern(o, fr.w, fr.hoist);
       case g::Operand::Kind::External:
@@ -476,12 +514,17 @@ private:
         state = tabSlot(L_.opInfo[i]);
         break;
     }
-    for (uint32_t j = 0; j < ins.size(); ++j)
-      B_.CreateStore(framePtr(ins[j], t0), B_.CreateConstInBoundsGEP2_64(inArr_->getAllocatedType(), inArr_, 0, j));
-    for (uint32_t k = 0; k < outs.size(); ++k)
-      B_.CreateStore(framePtr(outs[k], t0), B_.CreateConstInBoundsGEP2_64(outArr_->getAllocatedType(), outArr_, 0, k));
-    B_.CreateStore(inArr_, B_.CreateStructGEP(kargsTy_, kargs_, 0));
-    B_.CreateStore(outArr_, B_.CreateStructGEP(kargsTy_, kargs_, 1));
+    // Pointer arrays: on the stack, or for a wide call in buf (jit_image.h kStackCallOperands).
+    Value* inArr = inArr_;
+    Value* outArr = outArr_;
+    if (wideCall(op)) {
+      inArr = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.callOff);
+      outArr = B_.CreateConstInBoundsGEP1_64(ptr_, inArr, ins.size());
+    }
+    for (uint32_t j = 0; j < ins.size(); ++j) B_.CreateStore(framePtr(ins[j], t0), B_.CreateConstInBoundsGEP1_64(ptr_, inArr, j));
+    for (uint32_t k = 0; k < outs.size(); ++k) B_.CreateStore(framePtr(outs[k], t0), B_.CreateConstInBoundsGEP1_64(ptr_, outArr, k));
+    B_.CreateStore(inArr, B_.CreateStructGEP(kargsTy_, kargs_, 0));
+    B_.CreateStore(outArr, B_.CreateStructGEP(kargsTy_, kargs_, 1));
     B_.CreateStore(state, B_.CreateStructGEP(kargsTy_, kargs_, 2));
     B_.CreateStore(resource, B_.CreateStructGEP(kargsTy_, kargs_, 3));
     B_.CreateStore(n32, B_.CreateStructGEP(kargsTy_, kargs_, 4));
@@ -493,6 +536,7 @@ private:
   }
 
   uint32_t regionOf(uint32_t op) const { return opRegion_[op]; }
+  static bool wideCall(const g::Op& op) noexcept { return op.numIn > kStackCallOperands || op.numOut > kStackCallOperands; }
 
   // Exact transcendental through the CRT (scalar) or SVML (8-wide) wrapper.
   Value* exact(rt::Exact e, Value* a, Value* b, unsigned w) {
@@ -537,7 +581,8 @@ private:
     return v.selecti(v.asI(valid), v.roundToInt(x), v.ci(fallback));
   }
 
-  void emitInline(uint32_t i, const Frame& fr) {
+  // `argsOut`: the input values (Newton's tangent rules read them).
+  void emitInline(uint32_t i, const Frame& fr, std::vector<Value*>* argsOut = nullptr) {
     const g::Op& op = s_.ops[i];
     const auto ins = s_.inputs(op);
     Vx v(B_, fr.w);
@@ -545,6 +590,7 @@ private:
     std::vector<Value*> a;
     a.reserve(ins.size());
     for (const g::Operand& o : ins) a.push_back(read(o, fr));
+    if (argsOut) *argsOut = a;
     auto out = [&](Value* x) { write(i, 0, x, fr); };
     const int ex = exactOf(op.kernel);
     if (ex >= 0) {
@@ -845,21 +891,50 @@ private:
     }
   }
 
-  // Rough instruction count of a fused run's body (fast_ functions expand to ~20 instructions).
+  // Rough instruction count of one op in a fused run's body (fast_ functions expand to ~20 instructions).
+  uint32_t opCost(uint32_t i) const {
+    switch (s_.ops[i].kernel) {
+      case Atom::PowFast: return 45;
+      case Atom::CentsToHzFast: case Atom::HzToCentsFast: case Atom::ExpFast: case Atom::LogFast: case Atom::SinFast:
+      case Atom::TanFast: case Atom::TanhFast: case Atom::DbToGainFast: case Atom::GainToDbFast: case Atom::SinePhase:
+        return 22;
+      case Atom::Mux: case Atom::Demux: return 2 * s_.ops[i].numIn + 2 * s_.ops[i].numOut;
+      default: return 2;
+    }
+  }
   uint32_t runCost(uint32_t a, uint32_t b) const {
     uint32_t c = 0;
-    for (uint32_t i = a; i < b; ++i) {
-      switch (s_.ops[i].kernel) {
-        case Atom::PowFast: c += 45; break;
-        case Atom::CentsToHzFast: case Atom::HzToCentsFast: case Atom::ExpFast: case Atom::LogFast: case Atom::SinFast:
-        case Atom::TanFast: case Atom::TanhFast: case Atom::DbToGainFast: case Atom::GainToDbFast: case Atom::SinePhase:
-          c += 22;
-          break;
-        case Atom::Mux: case Atom::Demux: c += 2 * s_.ops[i].numIn + 2 * s_.ops[i].numOut; break;
-        default: c += 2; break;
-      }
-    }
+    for (uint32_t i = a; i < b; ++i) c += opCost(i);
     return c;
+  }
+  // Critical path of a fused run's body (opCost units): the longest chain of ops that feed each other.
+  uint32_t runDepth(uint32_t a, uint32_t b) const {
+    std::unordered_map<uint32_t, uint32_t> depthOf;  // buffer → depth of the value the run wrote there
+    uint32_t depth = 0;
+    for (uint32_t i = a; i < b; ++i) {
+      uint32_t d = 0;
+      for (const g::Operand& o : s_.inputs(s_.ops[i]))
+        if (o.kind == g::Operand::Kind::Buffer)
+          if (auto it = depthOf.find(o.index); it != depthOf.end()) d = std::max(d, it->second);
+      d += opCost(i);
+      for (const g::Operand& o : s_.outputsOf(s_.ops[i]))
+        if (o.kind == g::Operand::Kind::Buffer) depthOf[o.index] = d;
+      depth = std::max(depth, d);
+    }
+    return depth;
+  }
+  // How many chunks one iteration of a fused run interleaves. Interleaving exists for latency-bound runs (a long
+  // dependency chain: one chunk leaves the core idle); a run whose chunk already holds many independent chains (a
+  // row of products feeding a mux) gains nothing from it. So: enough chunks for ~8 chains in flight
+  // (8 · depth / cost, rounded up to a power of two, at most 8), none for short runs, and never more copies than
+  // kInterleaveBudget allows (code size and compile time grow with u · cost; the u-chunk body plus the one-chunk
+  // remainder loop are u + 1 copies of the run).
+  static unsigned interleaveFor(uint32_t cost, uint32_t depth) noexcept {
+    if (cost < 40) return 1;
+    unsigned u = 1;
+    while (u < 8 && static_cast<uint64_t>(u) * cost < 8ull * depth) u *= 2;
+    while (u > 1 && u * cost > kInterleaveBudget) u /= 2;
+    return u;
   }
 
   // A fused run over frames [t0, t0 + n). Each loop iteration evaluates `u` independent chunks (8 frames of a
@@ -875,8 +950,9 @@ private:
     const uint64_t chunk = lanes == 8 ? 1 : 8;  // frames per <8 x float>
     // 8 chunks: a 64-frame block of a 1-lane run is one iteration with eight independent chains (measured: 4 chunks
     // reach 1.4×, 8 chunks 2× the interpreter on a 36-op fast_ chain; bench/RESULTS.md). Short runs are not
-    // latency-bound (the out-of-order window overlaps their iterations) and stay at one chunk: less code.
-    const unsigned u = runCost(a, b) >= 40 ? 8u : 1u;
+    // latency-bound (the out-of-order window overlaps their iterations) and stay at one chunk: less code. Wide
+    // runs get fewer chunks (interleaveFor): one chunk of them already holds enough independent work.
+    const unsigned u = interleaveFor(runCost(a, b), runDepth(a, b));
     auto bodyAt = [&](Value* t, unsigned chunks, Value* mask) {
       std::vector<Map> maps(chunks);
       std::vector<Frame> frs;
@@ -925,8 +1001,47 @@ private:
   }
 
   // ================================================================================================================
-  // Solve blocks: Newton with the interpreter's central-difference Jacobian (QUESTIONS Q53).
+  // Solve blocks: Newton exactly as the interpreter (pq/engine/newton.h): forward-mode tangents through the inlined
+  // body (one evaluation per iteration), finite differences for bodies without tangent rules and for lanes whose
+  // tangent Jacobian is not finite.
   // ================================================================================================================
+  // The arithmetic newton::tangentOp needs, as IR (fast-math flags are cleared in solve blocks).
+  struct IrOps {
+    using F = llvm::Value*;
+    Gen& g;
+    Vx& v;
+    F c(float x) { return v.cf(x); }
+    F add(F a, F b) { return v.add(a, b); }
+    F sub(F a, F b) { return v.sub(a, b); }
+    F mul(F a, F b) { return v.mul(a, b); }
+    F div(F a, F b) { return v.div(a, b); }
+    F neg(F a) { return v.neg(a); }
+    F floor(F a) { return v.floor(a); }
+    F round(F a) { return v.round(a); }
+    F lt(F a, F b) { return v.lt(a, b); }
+    F gt(F a, F b) { return v.gt(a, b); }
+    F ge(F a, F b) { return v.ge(a, b); }
+    F eq(F a, F b) { return v.eq(a, b); }
+    F sel(F m, F a, F b) { return v.select(m, a, b); }
+    F cosE(F x) { return g.perLaneCall(reinterpret_cast<const void*>(&newton::cosExact), x, v.width()); }
+    F logE(F x) { return g.perLaneCall(reinterpret_cast<const void*>(&newton::logExact), x, v.width()); }
+  };
+
+  // float f(float) per lane through the pointer table (the interpreter calls the same function per lane).
+  Value* perLaneCall(const void* fn, Value* x, unsigned w) {
+    llvm::FunctionType* ty = llvm::FunctionType::get(f32_, {f32_}, false);
+    auto call = [&](Value* s) {
+      llvm::CallInst* c = callPtr(ty, tabLoad(fn), {s});
+      c->setMemoryEffects(llvm::MemoryEffects::inaccessibleMemOnly());  // errno at most
+      c->addFnAttr(llvm::Attribute::WillReturn);
+      return static_cast<Value*>(c);
+    };
+    if (w == 1) return call(x);
+    Value* r = llvm::PoisonValue::get(x->getType());
+    for (unsigned l = 0; l < w; ++l) r = B_.CreateInsertElement(r, call(B_.CreateExtractElement(x, uint64_t{l})), uint64_t{l});
+    return r;
+  }
+
   void emitSolve(const g::SolveBlock& sb, Value* t, unsigned lanes, Map& outer, bool hoist) {
     const uint32_t n = sb.numUnknowns;
     // Values the solver or the body write are in memory from here on.
@@ -937,6 +1052,7 @@ private:
     B_.clearFastMathFlags();  // the interpreter's arithmetic, exactly
     Vx v(B_, lanes);
     llvm::Type* vt = v.fT();
+    const newton::TangentPlan plan = newton::planTangents(s_, sb);
     std::vector<llvm::AllocaInst*> u(n);
     {
       llvm::IRBuilder<> eb(entryTerm_);
@@ -961,36 +1077,135 @@ private:
       const Frame fr{t, lanes, &m, hoist};
       for (uint32_t i = sb.firstOp; i < sb.firstOp + sb.numOps; ++i) emitFrameOp(i, fr);
     };
+    auto isFinite = [&](Value* x) {  // std::isfinite: |x| < inf, false for NaN
+      return B_.CreateFCmpOLT(B_.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, x), llvm::ConstantFP::getInfinity(x->getType()));
+    };
     // Initial guess: the init operand, or the previous frame's solution (state).
     for (uint32_t j = 0; j < n; ++j) {
       Value* x0 = unk(j).init.kind != g::Operand::Kind::None ? read(unk(j).init, memFrame) : ldF(statePtr(unk(j).state), 0, v);
       B_.CreateStore(x0, u[j]);
       storeUnknown(j, x0);
     }
-    auto isFinite = [&](Value* x) {  // std::isfinite: |x| < inf, false for NaN
-      return B_.CreateFCmpOLT(B_.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, x), llvm::ConstantFP::getInfinity(x->getType()));
-    };
-    auto iteration = [&]() {
-      evalBody();
-      const std::vector<Value*> r0 = residuals();
+    // J by finite differences around u (newton.h): relative step, one-sided where a side is not finite.
+    auto fdJacobian = [&](const std::vector<Value*>& r0) {
       std::vector<Value*> J(static_cast<size_t>(n) * n);
       for (uint32_t j = 0; j < n; ++j) {
         Value* saved = B_.CreateLoad(vt, u[j]);
         Value* absS = v.abs(saved);
-        Value* m1 = B_.CreateSelect(B_.CreateFCmpOLT(absS, v.cf(1.0f)), v.cf(1.0f), absS);  // std::max(|u|, 1)
-        Value* step = v.mul(v.cf(kNewtonStep), m1);
+        Value* m = B_.CreateSelect(B_.CreateFCmpOLT(absS, v.cf(newton::kStepFloor)), v.cf(newton::kStepFloor), absS);  // std::max
+        Value* step = v.mul(v.cf(newton::kStep), m);
         Value* h = B_.CreateSelect(isFinite(step), step, v.zero());
-        Value* sp = v.add(saved, h);
-        Value* sm = v.sub(saved, h);
-        storeUnknown(j, sp);
+        Value* up = v.add(saved, h);
+        Value* um = v.sub(saved, h);
+        storeUnknown(j, up);
         evalBody();
         const std::vector<Value*> rp = residuals();
-        storeUnknown(j, sm);
+        storeUnknown(j, um);
         evalBody();
         const std::vector<Value*> rm = residuals();
         storeUnknown(j, saved);
-        Value* hh = v.sub(sp, sm);  // the step actually taken in float
-        for (uint32_t q = 0; q < n; ++q) J[q * n + j] = v.div(v.sub(rp[q], rm[q]), hh);
+        Value* hh = v.sub(up, um);  // the steps actually taken in float
+        Value* hp = v.sub(up, saved);
+        Value* hm = v.sub(saved, um);
+        for (uint32_t q = 0; q < n; ++q) {
+          Value* fp = isFinite(rp[q]);
+          Value* fm = isFinite(rm[q]);
+          Value* central = v.div(v.sub(rp[q], rm[q]), hh);
+          Value* fwd = v.div(v.sub(rp[q], r0[q]), hp);
+          Value* bwd = v.div(v.sub(r0[q], rm[q]), hm);
+          J[q * n + j] = B_.CreateSelect(B_.CreateAnd(fp, fm), central, B_.CreateSelect(fp, fwd, bwd));
+        }
+      }
+      return J;
+    };
+    // One body evaluation carrying tangents; J from the equations' tangents.
+    auto adJacobian = [&]() {
+      using TanV = newton::Tan<Value*>;
+      Map m;
+      const Frame fr{t, lanes, &m, hoist};
+      std::unordered_map<uint32_t, std::vector<Value*>> tm;  // buffer → its value's tangent per direction
+      for (uint32_t j = 0; j < n; ++j) {
+        std::vector<Value*>& seed = tm[unk(j).value.index];
+        seed.assign(n, nullptr);
+        seed[j] = v.cf(1.0f);
+      }
+      auto tangentOf = [&](const g::Operand& o, uint32_t nzBits, uint32_t j) -> TanV {
+        if (((nzBits >> j) & 1u) == 0) return {};
+        return {tm.at(o.index).at(j), true};
+      };
+      IrOps ops{*this, v};
+      for (uint32_t k = 0; k < sb.numOps; ++k) {
+        const uint32_t i = sb.firstOp + k;
+        const g::Op& op = s_.ops[i];
+        std::vector<Value*> a;
+        const auto ins = s_.inputs(op);
+        const auto outs = s_.outputsOf(op);
+        Value* y = nullptr;
+        if (inline_[i]) {
+          emitInline(i, fr, &a);
+          y = m.at(outs[0].index);
+        } else {  // a wide mux/demux: the rules read a[0..2] and y; take the inputs before an in-place call
+          for (uint32_t q = 0; q < std::min<uint32_t>(op.numIn, 3); ++q) a.push_back(read(ins[q], fr));
+          emitFrameOp(i, fr);
+          y = read(outs[0], fr);
+        }
+        a.resize(std::max<size_t>(a.size(), 3), nullptr);
+        std::vector<std::vector<Value*>> res(op.numOut, std::vector<Value*>(n, nullptr));
+        std::vector<TanV> d(op.numIn), dy(op.numOut);
+        uint32_t any = 0;
+        for (uint32_t o = 0; o < op.numOut; ++o) any |= plan.outNz[plan.firstOut[k] + o];
+        for (uint32_t j = 0; j < n; ++j) {
+          if (((any >> j) & 1u) == 0) continue;
+          for (uint32_t q = 0; q < op.numIn; ++q) d[q] = tangentOf(ins[q], plan.inNz[plan.firstIn[k] + q], j);
+          newton::tangentOp(ops, static_cast<Atom>(op.kernel), op.numIn, op.numOut, a.data(), &y, d.data(), dy.data());
+          for (uint32_t o = 0; o < op.numOut; ++o)
+            if ((plan.outNz[plan.firstOut[k] + o] >> j) & 1u) res[o][j] = dy[o].v;
+        }
+        for (uint32_t o = 0; o < op.numOut; ++o) tm[outs[o].index] = std::move(res[o]);
+      }
+      std::vector<Value*> J(static_cast<size_t>(n) * n);
+      for (uint32_t q = 0; q < n; ++q) {
+        const g::SolveEquation& e = s_.equations[sb.firstEquation + q];
+        for (uint32_t j = 0; j < n; ++j) {
+          const TanV l = tangentOf(e.lhs, plan.lhsNz[q], j), r = tangentOf(e.rhs, plan.rhsNz[q], j);
+          J[q * n + j] = l.on && r.on ? v.sub(l.v, r.v) : l.on ? l.v : r.on ? v.neg(r.v) : v.zero();
+        }
+      }
+      return J;
+    };
+    auto iteration = [&]() {
+      std::vector<Value*> J, r0;
+      if (plan.ad) {
+        J = adJacobian();
+        r0 = residuals();
+        // Lanes whose tangent Jacobian is not finite take finite differences (a rarely taken branch).
+        Value* bad = nullptr;
+        for (Value* x : J) {
+          Value* nf = B_.CreateNot(isFinite(x));
+          bad = bad ? B_.CreateOr(bad, nf) : nf;
+        }
+        Value* anyBad = lanes == 1 ? bad : B_.CreateOrReduce(bad);
+        llvm::BasicBlock* pre = B_.GetInsertBlock();
+        llvm::BasicBlock* fdBB = llvm::BasicBlock::Create(C_, "newton_fd", F_);
+        llvm::BasicBlock* join = llvm::BasicBlock::Create(C_, "newton_j", F_);
+        B_.CreateCondBr(anyBad, fdBB, join);
+        B_.SetInsertPoint(fdBB);
+        const std::vector<Value*> Jfd = fdJacobian(r0);
+        std::vector<Value*> Jsel(J.size());
+        for (size_t e = 0; e < J.size(); ++e) Jsel[e] = B_.CreateSelect(bad, Jfd[e], J[e]);
+        llvm::BasicBlock* fdEnd = B_.GetInsertBlock();
+        B_.CreateBr(join);
+        B_.SetInsertPoint(join);
+        for (size_t e = 0; e < J.size(); ++e) {
+          llvm::PHINode* p = B_.CreatePHI(vt, 2);
+          p->addIncoming(J[e], pre);
+          p->addIncoming(Jsel[e], fdEnd);
+          J[e] = p;
+        }
+      } else {
+        evalBody();
+        r0 = residuals();
+        J = fdJacobian(r0);
       }
       if (n == 1) {
         llvm::Type* dt = lanes == 1 ? f64_ : static_cast<llvm::Type*>(llvm::FixedVectorType::get(f64_, lanes));

@@ -4,18 +4,23 @@
 // the interpreter (pq/engine/interpreter.h), compiled to native code for the host CPU with LLVM ORC LLJIT.
 //
 // What the image computes is exactly what the interpreter computes (same slots, state layout, engine data, special
-// ops, Newton scheme), bit for bit except where fast-math contraction is allowed; tests/jit compares the two on the
-// whole T1.7 corpus. How: one generated function per stage; element-wise ops are fused into loops (vectorised over
+// ops, Newton scheme), bit for bit with the default options; tests/jit compares the two on the whole T1.7 corpus plus
+// the M1 review probes (T1b.1-fix1). Opting into contraction (CompileOptions::contract) gives up bit-identity. How: one generated function per stage; element-wise ops are fused into loops (vectorised over
 // time for global signals, over the 8 voices of a group for voice signals), per-sample feedback loops and Control
 // regions are generated inline including the simple stateful atoms, and the remaining atoms call the dsp kernels
 // (src/jit/src/codegen.h has the details and the inlined-vs-called list).
 //
 // Target: the host CPU (llvm::sys::getHostCPUName + host features, e.g. AVX-512 when present). IR pipeline: a light
 // one by default (CompileOptions::optLevel 1), measured as fast as LLVM's O2/O3 on the generated code at a fraction
-// of the compile time (bench/RESULTS.md); machine code at CodeGenOptLevel::Aggressive. Fast-math policy
-// (TASKS T1b.1): `contract` and `afn` only, never nnan/ninf/nsz/reassoc; the functions declare FTZ/DAZ denormal
-// handling, which the audio thread's DenormalGuard provides (generated code uses SSE/AVX only, so MXCSR applies;
-// it never changes MXCSR itself).
+// of the compile time (bench/RESULTS.md); machine code at CompilerConfig::codeGenLevel. Fast-math policy
+// (T1b.1-fix1, QUESTIONS Q64 reversed): no fast-math flags by default, so every float operation rounds exactly as
+// the interpreter's kernels do. A feedback loop amplifies any one-ulp difference without bound (the M1 review's
+// 5-op logistic map differed by 0.988 with contraction), and T1b.5's interpreter → JIT swap must be seamless.
+// `contract = true` opts into `contract` + `afn` (never nnan/ninf/nsz/reassoc) for patches that are not
+// chaotic; the a·b + c fusions that matter are already explicit muladd atoms from the optimiser, so it buys
+// little (bench/RESULTS.md, T1b.1-fix1). The functions declare FTZ/DAZ denormal handling, which the audio
+// thread's DenormalGuard provides (generated code uses SSE/AVX only, so MXCSR applies; it never changes MXCSR
+// itself).
 //
 // Threads: Compiler::compile is NOT RT-safe (the compiler worker thread; it allocates, takes a lock, runs LLVM).
 // The returned image's process() is RT-safe. An image keeps its machine code alive on its own (it may outlive the
@@ -37,7 +42,8 @@ struct CompileOptions {
   uint32_t maxVoiceGroups = 8;     // voice groups with state (8 → 64 voices)
   const engine::Resources* resources = nullptr;  // as InterpretOptions::resources (must outlive the image)
   uint32_t optLevel = 1;           // 0: no IR passes; 1: the light pipeline (SROA, CSE, LICM; compiler.cpp); 2/3: LLVM O2/O3
-  bool contract = true;            // allow fmul + fadd → fma contraction (and `afn`); false: no fast-math flags
+  bool contract = false;           // true: allow fmul + fadd → fma contraction (and `afn`); NOT bit-identical to the
+                                   // interpreter (and unboundedly different in chaotic feedback loops)
 };
 
 struct CompileStats {
@@ -49,12 +55,23 @@ struct CompileStats {
   uint32_t irInstructions = 0;  // after optimisation
   uint32_t inlinedOps = 0;      // schedule ops generated inline
   uint32_t calledOps = 0;       // schedule ops that call a dsp kernel or a runtime helper
+  uint64_t objectBytes = 0;     // size of the machine-code object(s) linked
+  bool stackProbes = false;     // the object calls __chkstk: some stage function has a frame > 4 KiB, whose guard-page
+                                // probes may fault on the audio thread the first time (must stay false; tests/jit)
+};
+
+// Per-Compiler settings (one LLJIT instance and target machine each).
+struct CompilerConfig {
+  // LLVM CodeGenOptLevel for instruction selection and register allocation: 0 None (FastISel, fast register
+  // allocator), 1 Less, 2 Default, 3 Aggressive. Measured in bench/RESULTS.md (T1b.1-fix1).
+  uint32_t codeGenLevel = kDefaultCodeGenLevel;
+  static constexpr uint32_t kDefaultCodeGenLevel = 2;
 };
 
 class Compiler {
 public:
-  // Creates the LLJIT instance for the host CPU. Not RT-safe.
-  static Result<std::unique_ptr<Compiler>> create();
+  // Creates the LLJIT instance for the host CPU. Not RT-safe. Errors: codeGenLevel > 3, LLVM failures.
+  static Result<std::unique_ptr<Compiler>> create(const CompilerConfig& config = {});
   ~Compiler();
   Compiler(const Compiler&) = delete;
   Compiler& operator=(const Compiler&) = delete;

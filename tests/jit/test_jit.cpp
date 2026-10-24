@@ -1,9 +1,11 @@
 // T1b.1: the LLVM JIT backend. Every T1.7 interpreter test, run through the JIT: the whole corpus (every patch of
-// tests/graph/cases and tests/engine/patches × 2 param sets × blocks 1/37/64/1024) against the interpreter (≤ 1e-6)
-// and the reference evaluator (≤ 1e-5); bit-identity with the interpreter when contraction is off; every
-// optimisation level; the ProgramImage contract cases (params, rejected blocks, missing inputs, interface, build
-// errors, state arena, ImageRunner, NullDevice); RtScope around every process(); compile time for 100/1000 nodes;
-// T1.x-arch1: a per-track project on JIT units and an interpreter → JIT unit swap after an edit.
+// tests/graph/cases, tests/engine/patches and tests/jit/patches × 2 param sets × blocks 1/37/64/1024) bit-identical to
+// the interpreter with the default options (T1b.1-fix1: contraction off) and within 1e-5 of the reference evaluator;
+// opt-in contraction within 1e-6 on everything but the chaotic probes; every optimisation level; the ProgramImage
+// contract cases (params, rejected blocks, missing inputs, interface, build errors, state arena, ImageRunner,
+// NullDevice); RtScope around every process(); Newton probes; non-mask bools; compile time (100/1000 nodes, the
+// 1200-input mux) and no stack probes; T1.x-arch1: a per-track project on JIT units and an interpreter → JIT unit
+// swap after an edit.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -17,6 +19,7 @@
 #include "../engine/interp_harness.h"
 #include "../engine/kernel_probes.h"
 #include "../engine/liveness_probes.h"
+#include "../engine/newton_probes.h"
 #include "../engine/project_fixture.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
@@ -54,13 +57,13 @@ jit::Compiler& compiler() {
   return *c;
 }
 
-ImageBuilder jitBuilder(jit::CompileOptions base = {}) {
-  return [base](const Schedule& s, const eng::InterpretOptions& io) {
+ImageBuilder jitBuilder(jit::CompileOptions base = {}, jit::Compiler* with = nullptr) {
+  return [base, with](const Schedule& s, const eng::InterpretOptions& io) {
     jit::CompileOptions o = base;
     o.maxBlockFrames = io.maxBlockFrames;
     o.maxVoiceGroups = io.maxVoiceGroups;
     o.resources = io.resources;
-    return compiler().compile(s, o);
+    return (with ? *with : compiler()).compile(s, o);
   };
 }
 
@@ -110,7 +113,7 @@ struct CorpusStats {
 
 // One patch × voices × param set × every block size: JIT vs interpreter and vs the reference.
 void checkPatch(const Compiled& c, uint32_t voices, int paramSet, const jit::CompileOptions& jo, CorpusStats& cs,
-                bool requireBitIdentical, const uint32_t* blocks, size_t numBlocks) {
+                bool requireBitIdentical, const uint32_t* blocks, size_t numBlocks, jit::Compiler* with = nullptr) {
   const Setup st(c, voices, paramSet);
   std::string why;
   const Streams ref = runReference(st, kFrames, why);
@@ -125,7 +128,7 @@ void checkPatch(const Compiled& c, uint32_t voices, int paramSet, const jit::Com
     INFO(c.file << ":" << c.name << " voices " << voices << " params " << paramSet << " block " << block);
     const InterpRun interp = runInterp(st, kFrames, block, kMaxBlock);
     REQUIRE_MESSAGE(interp.error.empty(), interp.error);
-    const InterpRun run = runInterp(st, kFrames, block, kMaxBlock, jitBuilder(jo));
+    const InterpRun run = runInterp(st, kFrames, block, kMaxBlock, jitBuilder(jo, with));
     REQUIRE_MESSAGE(run.error.empty(), run.error);
     CHECK(run.rtViolations == 0);
     const Mismatch mi = compare(c, interp.streams, run.streams, (*face)->io());
@@ -145,12 +148,18 @@ void checkPatch(const Compiled& c, uint32_t voices, int paramSet, const jit::Com
   }
 }
 
-CorpusStats runCorpus(const jit::CompileOptions& jo, bool requireBitIdentical, const uint32_t* blocks, size_t numBlocks) {
+// The M1 review's chaotic feedback probes (tests/jit/patches/review_probes.pqp): any one-ulp difference grows to
+// O(1), so only bit-identical backends agree on them.
+bool chaotic(const Compiled& c) { return c.name == "Chaos" || c.name == "ChaosVoice"; }
+
+CorpusStats runCorpus(const jit::CompileOptions& jo, bool requireBitIdentical, const uint32_t* blocks, size_t numBlocks,
+                      bool includeChaotic = true) {
   CorpusStats cs;
   std::vector<std::string> skipped;
   for (const fs::path& path : allPatchFiles()) {
     ++cs.files;
     for (const Compiled& c : compileFile(path, 48000.0, skipped)) {
+      if (!includeChaotic && chaotic(c)) continue;
       const uint32_t voices = voicesFor(c);
       cs.voicePatches += voices > 0;
       for (int paramSet = 0; paramSet < 2; ++paramSet) checkPatch(c, voices, paramSet, jo, cs, requireBitIdentical, blocks, numBlocks);
@@ -184,6 +193,31 @@ std::string mixedChain(int n) {
   return t + "  y = a" + std::to_string(n) + "\n}\n";
 }
 
+// docs/reviews/M1/probes/mux1200.pqp: one mux over n products of a sine (one fused run of n + 1 ops before
+// T1b.1-fix1, interleaved 8 times: 1.3–3 s of machine code).
+std::string bigMux(int n) {
+  std::string t = "patch BigMux {\n  out y : audio\n  p = phasor(3Hz)\n  x = sine(phasor(220Hz))\n";
+  std::string args;
+  for (int i = 0; i < n; ++i) {
+    t += "  d" + std::to_string(i) + " = x * " + std::to_string(1.0 - i / static_cast<double>(n)) + "\n";
+    args += ", d" + std::to_string(i);
+  }
+  return t + "  y = mux(p * " + std::to_string(n) + args + ")\n}\n";
+}
+
+// Best total compile time of `reps` compiles.
+jit::CompileStats bestCompile(const Schedule& s, const jit::CompileOptions& jo, int reps) {
+  jit::CompileStats best;
+  best.totalMs = 1e30;
+  for (int r = 0; r < reps; ++r) {
+    jit::CompileStats st;
+    auto img = compiler().compile(s, jo, &st);
+    REQUIRE(img.ok());
+    if (st.totalMs < best.totalMs) best = st;
+  }
+  return best;
+}
+
 }  // namespace
 
 TEST_CASE("jit: host CPU and features") {
@@ -193,34 +227,85 @@ TEST_CASE("jit: host CPU and features") {
   CHECK(compiler().hostFeatures().find("+fma") != std::string::npos);
 }
 
-TEST_CASE("jit: every corpus patch matches the interpreter (1e-6) and the reference evaluator (1e-5)" * doctest::test_suite("slow")) {
-  const CorpusStats cs = runCorpus({}, false, kBlocks, std::size(kBlocks));
-  MESSAGE("JIT (default pipeline, contract): compared " << cs.patches << " patches from " << cs.files << " files (" << cs.voicePatches
-                                          << " with voice stages, 11 voices) × 2 param sets × blocks 1/37/64/1024 = "
-                                          << cs.configs << " runs of " << kFrames << " frames; max error vs interpreter "
-                                          << cs.maxVsInterp << " at " << cs.worstInterp << "; vs reference " << cs.maxVsRef
+TEST_CASE("jit: every corpus patch is bit-identical to the interpreter and matches the reference evaluator (1e-5)" * doctest::test_suite("slow")) {
+  const CorpusStats cs = runCorpus({}, true, kBlocks, std::size(kBlocks));
+  MESSAGE("JIT (default options: light pipeline, no fast-math flags): compared " << cs.patches << " patches from " << cs.files
+                                          << " files (" << cs.voicePatches << " with voice stages, 11 voices) × 2 param sets × "
+                                          << "blocks 1/37/64/1024 = " << cs.configs << " runs of " << kFrames
+                                          << " frames, bit-identical to the interpreter; max error vs reference " << cs.maxVsRef
                                           << " at " << cs.worstRef);
-  CHECK(cs.patches >= 20);
-  CHECK(cs.voicePatches >= 6);
-}
-
-TEST_CASE("jit: without contraction the JIT is bit-identical to the interpreter on the whole corpus" * doctest::test_suite("slow")) {
-  jit::CompileOptions jo;
-  jo.contract = false;
-  const CorpusStats cs = runCorpus(jo, true, kBlocks, std::size(kBlocks));
-  MESSAGE("JIT (default pipeline, no fast-math flags): " << cs.configs << " runs bit-identical to the interpreter; max error vs reference "
-                                           << cs.maxVsRef);
   CHECK(cs.maxVsInterp == 0.0);
+  CHECK(cs.patches >= 30);
+  CHECK(cs.voicePatches >= 8);
 }
 
-TEST_CASE("jit: every optimisation level is correct" * doctest::test_suite("slow")) {
+TEST_CASE("jit: opt-in contraction stays within 1e-6 of the interpreter except in chaotic feedback" * doctest::test_suite("slow")) {
+  jit::CompileOptions jo;
+  jo.contract = true;
+  const CorpusStats cs = runCorpus(jo, false, kBlocks, std::size(kBlocks), false);
+  MESSAGE("JIT (contract + afn): " << cs.configs << " runs; max error vs interpreter " << cs.maxVsInterp << " at " << cs.worstInterp
+                                   << "; vs reference " << cs.maxVsRef);
+}
+
+TEST_CASE("jit: the M1 review's chaotic feedback probes are bit-identical to the interpreter (contraction off by default)") {
+  std::vector<std::string> skipped;
+  const auto compiled = compileFile(jitPatchesDir() / "review_probes.pqp", 48000.0, skipped);
+  REQUIRE_MESSAGE(skipped.empty(), skipped.front());
+  uint32_t n = 0;
+  for (const Compiled& c : compiled) {
+    if (!chaotic(c)) continue;
+    ++n;
+    const Setup st(c, voicesFor(c), 0);
+    const InterpRun interp = runInterp(st, kFrames, 64, kMaxBlock);
+    REQUIRE(interp.error.empty());
+    const InterpRun jitRun = runInterp(st, kFrames, 64, kMaxBlock, jitBuilder());
+    REQUIRE(jitRun.error.empty());
+    INFO(c.name);
+    CHECK(bitDifferences(interp.streams, jitRun.streams) == 0);
+    // Opting into contraction fuses r − r·fb into one FMA, and the map turns that ulp into an O(1) difference:
+    // the reason it is not the default (and evidence that the option does what it says).
+    jit::CompileOptions jo;
+    jo.contract = true;
+    const InterpRun fused = runInterp(st, kFrames, 64, kMaxBlock, jitBuilder(jo));
+    REQUIRE(fused.error.empty());
+    auto face = eng::buildInterpreted(c.sched);
+    REQUIRE(face.ok());
+    const Mismatch m = compare(c, interp.streams, fused.streams, (*face)->io());
+    MESSAGE(c.name << " with contraction: max |jit - interp| " << m.maxErr);
+    CHECK(m.maxErr > 0.01);
+  }
+  CHECK(n == 2);
+}
+
+TEST_CASE("jit: Newton probes converge and are bit-identical to the interpreter (tangents, finite differences, fallback)") {
+  newton_probes::check(jitBuilder());
+  for (const Compiled& c : newton_probes::probes()) {
+    INFO(c.name);
+    CHECK(liveness_probes::bitEqual(newton_probes::run(c, 512, 64, {}).streams, newton_probes::run(c, 512, 64, jitBuilder()).streams));
+  }
+}
+
+TEST_CASE("jit: every optimisation level is bit-identical to the interpreter" * doctest::test_suite("slow")) {
   const uint32_t blocks[] = {37};
   for (uint32_t level : {0u, 2u, 3u}) {  // 1 (the default) is the corpus test above
     jit::CompileOptions jo;
     jo.optLevel = level;
-    const CorpusStats cs = runCorpus(jo, false, blocks, 1);
+    const CorpusStats cs = runCorpus(jo, true, blocks, 1);
     MESSAGE("JIT O" << level << ": " << cs.configs << " runs, max error vs interpreter " << cs.maxVsInterp);
+    CHECK(cs.maxVsInterp == 0.0);
   }
+  for (uint32_t cg = 0; cg <= 3; ++cg) {  // every machine-code level (CompilerConfig::codeGenLevel)
+    auto own = jit::Compiler::create({cg});
+    REQUIRE(own.ok());
+    CorpusStats cs;
+    std::vector<std::string> skipped;
+    for (const fs::path& path : allPatchFiles())
+      for (const Compiled& c : compileFile(path, 48000.0, skipped))
+        checkPatch(c, voicesFor(c), 0, {}, cs, true, blocks, 1, own->get());
+    MESSAGE("JIT codeGenLevel " << cg << ": " << cs.configs << " runs, max error vs interpreter " << cs.maxVsInterp);
+    CHECK(cs.maxVsInterp == 0.0);
+  }
+  CHECK_FALSE(jit::Compiler::create({4}).ok());
   jit::CompileOptions bad;
   bad.optLevel = 4;
   const Compiled c = compileText("patch P { out y : audio\n y = sine(phasor(440Hz)) }");
@@ -677,6 +762,97 @@ TEST_CASE("jit: compile time of 100- and 1000-node patches (and they match the i
     const uint32_t blocks[] = {64};
     checkPatch(c, 0, 0, {}, cs, false, blocks, 1);
   }
+}
+
+TEST_CASE("jit (perf): a 100-node patch compiles in <= 100 ms and the 1200-input mux in <= 300 ms (release, idle machine)" *
+          doctest::test_suite("perf")) {
+  const Compiled chain = compileText(mixedChain(100));
+  const Compiled mux = compileText(bigMux(1200));
+  const jit::CompileStats a = bestCompile(chain.sched, {}, 5);
+  const jit::CompileStats b = bestCompile(mux.sched, {}, 3);
+  MESSAGE("100-step chain (" << chain.sched.ops.size() << " ops): " << a.totalMs << " ms (machine code " << a.machineCodeMs
+                             << "); 1200-input mux (" << mux.sched.ops.size() << " ops): " << b.totalMs << " ms (machine code "
+                             << b.machineCodeMs << ", " << b.objectBytes << " B of code)");
+#ifdef NDEBUG
+  CHECK(a.totalMs <= 100.0);
+  CHECK(b.totalMs <= 300.0);
+#endif
+}
+
+TEST_CASE("jit: no stage function needs stack probes (the 1200-input mux, the corpus)") {
+  // A frame over 4 KiB makes the function call __chkstk, which touches the guard pages below the stack on the audio
+  // thread (M1 review L4: the mux's 1201-operand call arrays were 2 × 9.6 KB in every stage, and one 9600-value
+  // fused run spilled far more).
+  const Compiled mux = compileText(bigMux(1200));
+  jit::CompileStats st;
+  REQUIRE(compiler().compile(mux.sched, {}, &st).ok());
+  MESSAGE("1200-input mux: " << st.objectBytes << " B of code, " << st.totalMs << " ms");
+  CHECK(st.objectBytes > 0);
+  CHECK_FALSE(st.stackProbes);
+  std::vector<std::string> skipped;
+  uint32_t compiled = 0;
+  for (const fs::path& path : allPatchFiles())
+    for (const Compiled& c : compileFile(path, 48000.0, skipped)) {
+      INFO(c.file << ":" << c.name);
+      jit::CompileStats cs;
+      REQUIRE(compiler().compile(c.sched, {}, &cs).ok());
+      CHECK_FALSE(cs.stackProbes);
+      ++compiled;
+    }
+  CHECK(compiled >= 30);
+}
+
+TEST_CASE("jit: non-mask bool inputs (1.0f) mean the same in the inline code and the dsp kernels") {
+  // Bools are masks (all ones / zero); an engine input that violates that (1.0f) used to select per byte in the dsp
+  // kernels (pblendvb) and by the sign bit in the JIT (M1 review L5). Both now select by the sign bit, so 1.0f is false
+  // everywhere and the backends agree bit for bit. The loops put the atoms in a per-sample region, where the JIT
+  // generates them inline and the interpreter calls the kernels.
+  const Compiled c = compileText(R"(patch NonMask {
+  in b : bool audio
+  out p : audio
+  out k : audio
+  out q : audio
+  out t : audio
+  pp = phasor(1000Hz, reset: b || z1(pp) > 2)
+  kk = counter(b || z1(kk) > 100, reset: b, wrap: 5)
+  qq = gate_to_real(clockdiv(b || z1(qq) > 2, 3))
+  tt = gate_to_real(timer(b || z1(tt) > 2, 10))
+  p = pp
+  k = kk
+  q = qq
+  t = tt
+})");
+  std::vector<std::vector<float>> outs[2];
+  for (int backend = 0; backend < 2; ++backend) {
+    eng::InterpretOptions io;
+    io.maxBlockFrames = 64;
+    auto img = backend == 0 ? eng::buildInterpreted(c.sched, io) : jitBuilder()(c.sched, io);
+    REQUIRE(img.ok());
+    REQUIRE((*img)->io().globalOut.size() == 4);
+    std::vector<float> in(64);
+    std::vector<std::vector<float>> o(4, std::vector<float>(64));
+    float* op[4] = {o[0].data(), o[1].data(), o[2].data(), o[3].data()};
+    outs[backend].assign(4, {});
+    for (int blk = 0; blk < 16; ++blk) {
+      for (int f = 0; f < 64; ++f) in[f] = ((blk * 64 + f) / 7) % 2 ? 1.0f : 0.0f;  // 1.0f, not a mask
+      const float* ip[1] = {in.data()};
+      eng::ProcessContext ctx;
+      ctx.frames = 64;
+      ctx.in = ip;
+      ctx.numIn = 1;
+      ctx.out = op;
+      ctx.numOut = 4;
+      (*img)->process(ctx);
+      for (int k = 0; k < 4; ++k) outs[backend][k].insert(outs[backend][k].end(), o[k].begin(), o[k].end());
+    }
+  }
+  uint32_t nonZero = 0;
+  for (int k = 0; k < 4; ++k) {
+    INFO("output " << k);
+    CHECK(std::memcmp(outs[0][k].data(), outs[1][k].data(), outs[0][k].size() * sizeof(float)) == 0);
+    for (float x : outs[0][k]) nonZero += x != 0.0f;
+  }
+  CHECK(nonZero > 0);  // the phasor runs (1.0f has a clear sign bit: never a reset)
 }
 
 TEST_CASE("jit: M1 review kernel edge probes (delay size, sample_read rates and loops, mod, timer, NaN hz, fast_sin)") {

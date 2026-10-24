@@ -5,12 +5,15 @@
 //   fm_osc ×8      FmVoice's oscillators without the adsr (no per-sample loop)
 //   comb_delay     feedback comb through a delay line (loop in sub-blocks of 119 frames)
 //   loop_z1        one-pole feedback through z1 (per-sample loop, 3 ops)
-//   zdf_tanh       nonlinear ZDF one-pole: per-sample solve (6 Newton iterations, central differences)
+//   zdf_tanh       nonlinear ZDF one-pole: per-sample solve (6 Newton iterations; tangents since T1b.1-fix1)
 //   chain32_fast   chain32 with fast_ transcendentals (everything inline)
-// Compile time: 100- and 1000-step mixed chains (element-wise, z1, a one-pole loop every 10 steps) at O1/O2/O3.
+// T1b.1-fix1: the same at the default IR level with contraction opted in (`+contract`) and at machine-code levels
+// 1–3 (`cgN`). Compile time: 100- and 1000-step mixed chains (element-wise, z1, a one-pole loop every 10 steps) at
+// O1/O2/O3, and the 100-step chain and the M1 review's 1200-input mux at every machine-code level.
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "pq/core/denormal_guard.h"
@@ -55,17 +58,20 @@ g::Schedule scheduleOf(const std::string& text) {
   return std::move(s.value());
 }
 
-jit::Compiler& compiler() {
-  static std::unique_ptr<jit::Compiler> c = [] {
-    auto r = jit::Compiler::create();
+// One compiler per machine-code level (CompilerConfig::codeGenLevel); `compiler()` is the default one.
+jit::Compiler& compilerAt(uint32_t codeGenLevel) {
+  static std::unique_ptr<jit::Compiler> c[4];
+  if (!c[codeGenLevel]) {
+    auto r = jit::Compiler::create({codeGenLevel});
     if (!r) {
       std::fprintf(stderr, "%s\n", r.error().message.c_str());
       std::exit(6);
     }
-    return std::move(r.value());
-  }();
-  return *c;
+    c[codeGenLevel] = std::move(r.value());
+  }
+  return *c[codeGenLevel];
 }
+jit::Compiler& compiler() { return compilerAt(jit::CompilerConfig::kDefaultCodeGenLevel); }
 
 // Runs blocks of kBlock frames with a sine input, `voices` voices (gates held, staggered pitches).
 bench::Stats runImage(e::ProgramImage& img, uint32_t voices) {
@@ -115,7 +121,8 @@ bench::Stats runImage(e::ProgramImage& img, uint32_t voices) {
   return s;
 }
 
-void runBench(const char* name, const std::string& text, uint32_t voices, uint32_t optLevel = 2) {
+void runBench(const char* name, const std::string& text, uint32_t voices, uint32_t optLevel = 2, bool contract = false,
+              uint32_t codeGenLevel = jit::CompilerConfig::kDefaultCodeGenLevel) {
   if (!gFilter.empty() && std::string(name).find(gFilter) == std::string::npos) return;
   const uint32_t groups = voices ? (voices + 7) / 8 : 1;
   const g::Schedule sched = scheduleOf(text);
@@ -128,8 +135,9 @@ void runBench(const char* name, const std::string& text, uint32_t voices, uint32
   jo.maxBlockFrames = kBlock;
   jo.maxVoiceGroups = groups;
   jo.optLevel = optLevel;
+  jo.contract = contract;
   jit::CompileStats cs;
-  auto img = compiler().compile(sched, jo, &cs);
+  auto img = compilerAt(codeGenLevel).compile(sched, jo, &cs);
   if (!img) {
     std::fprintf(stderr, "%s\n", img.error().message.c_str());
     std::exit(7);
@@ -141,7 +149,9 @@ void runBench(const char* name, const std::string& text, uint32_t voices, uint32
   char label[128];
   std::snprintf(label, sizeof label, "interp/%s (%zu ops)", name, sched.ops.size());
   bench::report(label, {si.medianNs / per, si.minNs / per}, unit);
-  std::snprintf(label, sizeof label, "jit-O%u/%s", optLevel, name);
+  const bool cgDefault = codeGenLevel == jit::CompilerConfig::kDefaultCodeGenLevel;
+  std::snprintf(label, sizeof label, "jit-O%u%s%s%s/%s", optLevel, contract ? "+contract" : "", cgDefault ? "" : "-cg",
+                cgDefault ? "" : std::to_string(codeGenLevel).c_str(), name);
   bench::report(label, {sj.medianNs / per, sj.minNs / per}, unit);
   std::printf("      speed-up %.1fx; compile %.1f ms (IR %.1f, opt %.1f, machine code %.1f); %u ops inline, %u called\n",
               si.medianNs / sj.medianNs, cs.totalMs, cs.codegenMs, cs.optimiseMs, cs.machineCodeMs, cs.inlinedOps, cs.calledOps);
@@ -247,6 +257,34 @@ std::string mixedChain(int n) {
   return t + "  y = a" + std::to_string(n) + "\n}\n";
 }
 
+// docs/reviews/M1/probes/mux1200.pqp
+std::string bigMux(int n) {
+  std::string t = "patch BigMux {\n  out y : audio\n  p = phasor(3Hz)\n  x = sine(phasor(220Hz))\n";
+  std::string args;
+  for (int i = 0; i < n; ++i) {
+    t += "  d" + std::to_string(i) + " = x * " + std::to_string(1.0 - i / static_cast<double>(n)) + "\n";
+    args += ", d" + std::to_string(i);
+  }
+  return t + "  y = mux(p * " + std::to_string(n) + args + ")\n}\n";
+}
+
+void compileTimeCg(const char* name, const std::string& text) {
+  const g::Schedule s = scheduleOf(text);
+  for (uint32_t cg = 0; cg <= 3; ++cg) {
+    jit::CompileStats best;
+    best.totalMs = 1e30;
+    for (int rep = 0; rep < 5; ++rep) {
+      jit::CompileStats cs;
+      auto img = compilerAt(cg).compile(s, {}, &cs);
+      if (!img) std::exit(8);
+      if (cs.totalMs < best.totalMs) best = cs;
+    }
+    std::printf("BENCH jit-compile/%s (%zu ops) cg%u   total %8.1f ms (machine code %.1f), %llu B code, stack probes %d\n", name,
+                s.ops.size(), cg, best.totalMs, best.machineCodeMs, static_cast<unsigned long long>(best.objectBytes),
+                best.stackProbes ? 1 : 0);
+  }
+}
+
 void compileTime(int n) {
   const g::Schedule s = scheduleOf(mixedChain(n));
   for (uint32_t level : {1u, 2u, 3u}) {
@@ -283,10 +321,20 @@ int main(int argc, char** argv) {
       runBench("loop_z1", kLoopZ1, 0, level);
       runBench("zdf_tanh", kZdf, 0, level);
     }
+    // T1b.1-fix1: opt-in contraction, and the machine-code levels, at the default IR level.
+    for (const auto& [name, text, voices] : {std::tuple<const char*, std::string, uint32_t>{"chain32", chain32(false), 0},
+                                            {"chain32_fast", chain32(true), 0}, {"fm_voice x64", kFmVoice, 64},
+                                            {"comb_delay", kComb, 0}, {"loop_z1", kLoopZ1, 0}, {"zdf_tanh", kZdf, 0}}) {
+      runBench(name, text, voices, 1, true);
+      for (uint32_t cg = 1; cg <= 3; ++cg)
+        if (cg != jit::CompilerConfig::kDefaultCodeGenLevel) runBench(name, text, voices, 1, false, cg);
+    }
   }
   if (gFilter.empty()) {
     compileTime(100);
     compileTime(1000);
+    compileTimeCg("100-step chain", mixedChain(100));
+    compileTimeCg("mux1200", bigMux(1200));
   }
   return 0;
 }

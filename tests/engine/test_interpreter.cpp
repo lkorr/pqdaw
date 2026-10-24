@@ -9,6 +9,7 @@
 #include "interp_harness.h"
 #include "kernel_probes.h"
 #include "liveness_probes.h"
+#include "newton_probes.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/engine/block_adapter.h"
@@ -102,6 +103,10 @@ TEST_CASE("interpreter: M1 review liveness probes (solve operands, voice outputs
 
 TEST_CASE("interpreter: M1 review kernel edge probes (delay size, sample_read rates and loops, mod, timer, NaN hz, fast_sin)") {
   kernel_probes::check({});
+}
+
+TEST_CASE("interpreter: Newton converges for unknowns far below 1, through table reads and at a derivative singularity") {
+  newton_probes::check({});
 }
 
 TEST_CASE("interpreter: voice stages with 1, 8 and 16 voices (reducers, broadcasts, per-group buffers, sends)") {
