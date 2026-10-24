@@ -289,6 +289,7 @@ struct SolveRun {
   uint32_t firstUnk = 0, firstEq = 0;
   bool loop = false;  // body records are relocated to frame t
   bool ad = false;    // Jacobian by forward-mode tangents (else finite differences)
+  bool finalEval = true;  // run the body once more after the last iteration (newton::bodyReadAfter)
   uint32_t firstAdOp = 0;   // numBodyRec AdOps
   uint32_t firstAdEq = 0;   // per equation: lhs, rhs AdPorts (into adPorts_)
   uint32_t firstAdUnk = 0;  // per unknown: its slot (into adPorts_)
@@ -726,7 +727,7 @@ void InterpretedImage::runSolve(const SolveRun& s, uint32_t t) noexcept {  // RT
     }
     writeU();
   }
-  evalBody(s, t);
+  if (s.finalEval) evalBody(s, t);
   for (uint32_t j = 0; j < n; ++j)
     if (unk[j].guess)
       for (uint32_t l = 0; l < L; ++l) unk[j].guess[l] = u[j * 8 + l];
@@ -1238,6 +1239,7 @@ private:
       im.eqs_.push_back(e);
     }
     adPlan(sb, r);
+    r.finalEval = newton::bodyReadAfter(s_, sb);
     maxN_ = std::max(maxN_, r.n);
     im.solves_.push_back(r);
     return true;

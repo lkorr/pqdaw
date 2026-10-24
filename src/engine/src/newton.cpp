@@ -55,6 +55,29 @@ bool differentiableInput(Atom a, uint32_t k) noexcept {
   }
 }
 
+bool bodyReadAfter(const g::Schedule& s, const g::SolveBlock& sb) {
+  std::unordered_map<uint32_t, bool> written;
+  const uint32_t end = sb.firstOp + sb.numOps;
+  for (uint32_t i = sb.firstOp; i < end && i < s.ops.size(); ++i)
+    for (const g::Operand& o : s.outputsOf(s.ops[i]))
+      if (o.kind == g::Operand::Kind::Buffer) written[o.index] = true;
+  auto hit = [&](const g::Operand& o) { return o.kind == g::Operand::Kind::Buffer && written.count(o.index) != 0; };
+  for (uint32_t i = end; i < s.ops.size(); ++i)
+    for (const g::Operand& o : s.inputs(s.ops[i]))
+      if (hit(o)) return true;
+  for (const g::OutputRef& o : s.outputs)
+    if (hit(o.value)) return true;
+  const g::SolveBlock* self = &sb;
+  for (const g::SolveBlock& other : s.solves) {
+    if (&other == self || (other.firstOp == sb.firstOp && other.firstUnknown == sb.firstUnknown)) continue;
+    for (uint32_t k = 0; k < other.numUnknowns; ++k)
+      if (hit(s.unknowns[other.firstUnknown + k].init)) return true;
+    for (uint32_t k = 0; k < other.numEquations; ++k)
+      if (hit(s.equations[other.firstEquation + k].lhs) || hit(s.equations[other.firstEquation + k].rhs)) return true;
+  }
+  return false;
+}
+
 TangentPlan planTangents(const g::Schedule& s, const g::SolveBlock& sb) {
   TangentPlan p;
   p.n = sb.numUnknowns;

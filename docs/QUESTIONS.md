@@ -398,7 +398,19 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Cost: (1 + 2n) body evaluations per iteration; the 6-iteration tanh one-pole costs ~575 ns/sample interpreted (bench/RESULTS.md).
 - Options: A) as above (robust; J error ~1e-5 relative, so Newton reaches float precision after ≥ 2 iterations; a 1-iteration block is off by residual × 1e-5); B) forward differences (1 + n evaluations, ~1/3 cheaper, J error ~4e-3: visible with few iterations); C) chord/Broyden (J once per frame: much cheaper, but converges slowly for strongly nonlinear bodies such as a diode clipper at high drive); D) symbolic/forward-AD derivative kernels (exact J; the JIT's choice, T1b).
 - Provisional choice: A for the interpreter, which only plays while the JIT compiles; D in the JIT.
-- Status: open
+- Correction (T1b.1-fix1, M1 review M3): T1b.1 did NOT implement D. The JIT generated the same central-difference
+  Newton as the interpreter (1 + 2n body evaluations per iteration), and the bench/RESULTS.md T1.7 row's "forward AD in
+  the JIT removes the 2n" described a plan, not the code. The review also found that the absolute step floor
+  (h = 2^-8 · max(|u|, 1)) cannot converge for unknowns far below 1 (M2: log(u) == log(0.002) from 0.001 stayed at
+  0.001 forever: u − h left log's domain, J was NaN and every update was skipped).
+- Now (T1b.1-fix1): D in BOTH backends, from one source (pq/engine/newton.h): forward-mode tangents through the body
+  (one evaluation per iteration; one rule template instantiated on scalar floats by the interpreter and on IR by the
+  JIT, so the two stay bit-identical, which a JIT-only AD could not be). Finite differences remain for bodies with an
+  op that has no tangent rule (wavetable/shaper reads) and for any lane whose tangent Jacobian is not finite (a
+  derivative singularity: sqrt/log at 0), with the step relative to the unknown, h = 2^-8 · max(|u|, 1e-6), and a
+  one-sided difference where u ± h leaves the domain. See Q?-T1b.1-fix1-a for why tangents rather than only the
+  relative step. Measured (bench/RESULTS.md T1b.1-fix1): zdf_tanh JIT and interpreter both faster.
+- Status: D in both backends (T1b.1-fix1); open for the user (Q?-T1b.1-fix1-a)
 
 ## Q54 · 2026-10-21 · T1.7 · Where the interpreter lives, and the ProcessContext voice/bool contract
 - Context: ARCHITECTURE §3 sketched `graph::buildInterpreted(const Schedule&) → ProgramImage`, but ProgramImage is an engine type and `graph` may not include `engine` (engine depends on graph).
@@ -476,7 +488,16 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Measured: with contraction off the JIT is bit-identical to the interpreter on the whole corpus (224 runs + the stateful-loop and VoiceEngine tests); with it on, max |Δ| 5.4e-7 (criterion 1e-6). `afn` has no effect (exact transcendentals are calls to the CRT/SVML the kernels use; fast_ functions are generated from fast_math.h's own polynomials).
 - Options: A) contract on (the policy; a little faster and more accurate); B) off by default (bit-identical interpreter → JIT swaps in T1b.5, no sub-ulp step at the swap). The difference is ~1e-7 relative, far below audibility, but a comparison that flips (`level >= 0.999` one sample earlier) is possible in principle.
 - Provisional choice: A per the TASKS policy; `CompileOptions::contract = false` gives B.
-- Status: open
+- Reversed (T1b.1-fix1, M1 review M1): B is the default. "~1e-7, far below audibility" holds only for patches without
+  feedback: in a feedback loop the one-rounding difference is amplified without bound. The review's 5-op logistic map
+  (docs/reviews/M1/probes/chaos.pqp, now tests/jit/patches/review_probes.pqp) differed by 0.988 on every sample, and
+  T1b.5's interpreter → JIT swap must be seamless for chaotic and self-oscillating patches too. The "≤ 5.4e-7"
+  measurement was a property of a corpus with nothing contractable in feedback (Q74), not of the backend. With B the
+  JIT is bit-identical to the interpreter on the whole corpus + the review probes at every IR and machine-code level
+  (tests/jit). `contract = true` stays as an opt-in (within 1e-6 except on the chaotic probes); its speed benefit is
+  in bench/RESULTS.md (T1b.1-fix1 rows). Not done: the optional optimiser `mulsub` (a − b·c) fusion the review
+  suggested, which would give both backends the FMA explicitly; the measurement shows too little to justify it now.
+- Status: B (T1b.1-fix1)
 
 ## Q65 · 2026-10-21 · T1b.1 · Default IR pipeline: a light custom pipeline instead of LLVM O2/O3
 - Context: TASKS asks for O2/O3 with compile time vs code speed measured. The generated IR is already SSA, explicitly vectorised and fused, with invariants hoisted.

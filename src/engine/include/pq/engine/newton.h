@@ -14,7 +14,8 @@
 //      lane comes from finite differences instead (below); the other lanes keep the AD Jacobian.
 //   4. J·Δ = residual per lane (n = 1: a double division; n > 1: Gaussian elimination with partial pivoting in
 //      double); u −= Δ when every component is finite (else the lane keeps its value for this iteration).
-// After the last iteration the body runs once more (values read after the block match the solution).
+// After the last iteration the body runs once more (values read after the block match the solution), unless nothing
+// after the block reads a body value (bodyReadAfter).
 //
 // Finite differences (bodies with an op that has no tangent rule — a wavetable or shaper read — or more than
 // kMaxAdUnknowns unknowns, and the step-3 fallback): per unknown j and lane, h = 2^-8 · max(|u_j|, 1e-6) (relative
@@ -62,6 +63,12 @@ struct TangentPlan {
 };
 TangentPlan planTangents(const graph::Schedule& s, const graph::SolveBlock& sb);
 
+// Whether anything after the block may read a value its body wrote (an op after the body, an output or export,
+// another block's guess or equation). If not, the final body evaluation after the last iteration ("values read after
+// the block match the solution") has no reader and both backends skip it. Conservative: a buffer the body wrote and
+// a later op reuses for another value counts as read.
+bool bodyReadAfter(const graph::Schedule& s, const graph::SolveBlock& sb);
+
 // A tangent: `on` false means zero by construction (the value is not used).
 template <class F>
 struct Tan {
@@ -76,8 +83,13 @@ struct Tan {
 // derivative of the kernel's own formula (pq/dsp/atoms.h): min/max/abs/clip/select/mux follow the branch the value
 // took (same comparisons, same NaN order); floor, sign, comparisons and logic have zero derivative; frac's clamp
 // below 1 and mod's discontinuities are ignored (their one-sided derivative is the rule).
+#if defined(_MSC_VER)
+#define PQ_NEWTON_INLINE __forceinline
+#else
+#define PQ_NEWTON_INLINE inline __attribute__((always_inline))
+#endif
 template <class O>
-void tangentOp(O& o, dsp::Atom atom, uint32_t numIn, uint32_t numOut, const typename O::F* a, const typename O::F* y,
+PQ_NEWTON_INLINE void tangentOp(O& o, dsp::Atom atom, uint32_t numIn, uint32_t numOut, const typename O::F* a, const typename O::F* y,
                const Tan<typename O::F>* d, Tan<typename O::F>* dy) {
   using F = typename O::F;
   using T = Tan<F>;

@@ -1238,7 +1238,7 @@ private:
     const uint32_t iterations = std::max<uint32_t>(sb.iterations, 1);
     if (iterations == 1) iteration();
     else forLoop(c64(0), c64(iterations), 1, [&](Value*) { iteration(); });
-    evalBody();  // body values read after the block match the solution
+    if (newton::bodyReadAfter(s_, sb)) evalBody();  // body values read after the block match the solution
     for (uint32_t j = 0; j < n; ++j)
       if (unk(j).state != g::kNone) st(statePtr(unk(j).state), 0, B_.CreateLoad(vt, u[j]), v);
   }
