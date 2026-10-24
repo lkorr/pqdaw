@@ -4,6 +4,7 @@
 //   L1: ns per sample.  L8: ns per frame (8 voices) and ns per voice-sample (= frame / 8).
 // Prints BENCH lines and a markdown table for bench/RESULTS.md. T1.11: one runner benchmark per atom variant
 // (`atom/<name>[ (spl…)]`, rows `… L1` / `… L8`): pq_bench_dsp [--filter REGEX] [--csv FILE] [--pad N] (pq_bench.h).
+// Q94: `atom/<exact fn> (1-lane tail)`: the S1 scalar path of the exact transcendentals alone.
 
 #include <cmath>
 #include <cstdlib>
@@ -145,6 +146,31 @@ TableRow benchAtom(pq::bench::Context& ctx, Fixture& fx, Atom a, uint32_t splMas
   return row;
 }
 
+// The 1-lane scalar path alone (QUESTIONS Q94): an element-wise kernel at L = 1 runs 8 samples at a time with AVX2
+// and only a block's remainder (or a per-sample loop's single frame) with the S1 functions. Nine 7-frame calls over
+// the 64-frame inputs are all remainder, so this is the S1 cost per sample plus a ninth of a call each.
+void benchScalarTail(pq::bench::Context& ctx, Fixture& fx, Atom a) {
+  const auto& info = pq::dsp::kernelInfo(a);
+  const uint32_t nIn = info.numIn, nOut = info.numOut;
+  for (uint32_t i = 0; i < nIn; ++i)
+    for (uint32_t t = 0; t < kFrames; ++t) fx.in[i][t] = inputValue(a, i, t, 0, false);
+  constexpr uint32_t kTail = 7, kCalls = 9;
+  const float* ins[kCalls][kMaxIn]{};
+  float* outs[kCalls][kMaxOut]{};
+  pq::dsp::KernelArgs args[kCalls];
+  const pq::dsp::KernelFn fn = pq::dsp::findKernel(a, 1, info.splRequired);
+  for (uint32_t c = 0; c < kCalls; ++c) {
+    for (uint32_t i = 0; i < nIn; ++i) ins[c][i] = fx.in[i] + c * kTail;
+    for (uint32_t o = 0; o < nOut; ++o) outs[c][o] = fx.out[o] + c * kTail;
+    args[c] = pq::dsp::KernelArgs{ins[c], outs[c], nullptr, nullptr, kTail, static_cast<uint16_t>(nIn),
+                                  static_cast<uint16_t>(nOut), info.splRequired};
+  }
+  ctx.measure([&] {
+    for (const auto& ar : args) fn(ar);
+    pq::bench::doNotOptimize(fx.out[0][0]);
+  }, kTail * kCalls, "ns/sample", "S1 (7-frame calls)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -186,6 +212,10 @@ int main(int argc, char** argv) {
     gWavetableInc = 0.013f;
     gWavetableSpread = 0.1f;
   });
+  for (Atom a : {Atom::Sin, Atom::Tan, Atom::Tanh, Atom::Exp, Atom::Log, Atom::Pow, Atom::CentsToHz, Atom::HzToCents,
+                 Atom::DbToGain, Atom::GainToDb})
+    runner.add(std::string("atom/") + pq::dsp::kernelInfo(a).name + " (1-lane tail)",
+               [&fx, a](pq::bench::Context& c) { benchScalarTail(c, fx, a); });
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   if (code != 0 || rows.empty()) return code;
 

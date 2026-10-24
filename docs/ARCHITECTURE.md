@@ -156,7 +156,7 @@ namespace pq::graph {
 // interleave up to 8 independent chunks per iteration, capped by code size, and runs split past a size cap);
 // per-sample loops, Control regions and solve bodies inline, including the simple stateful atoms; delay lines,
 // wavetable, noise, shaper, sample_* and stateful atoms in block regions call the dsp kernels; exact transcendentals
-// call the kernels' own CRT/SVML functions. Host CPU target (AVX-512 where present), a light IR pipeline by default,
+// call the kernels' own SVML functions (1 lane = lane 0 of the 8-lane call, Q94). Host CPU target (AVX-512 where present), a light IR pipeline by default,
 // machine code at CompilerConfig::codeGenLevel (src/jit/src/codegen.h, compiler.cpp). CompileStats reports the
 // object size and whether any stage needs stack probes (it must not: a frame > 4 KiB touches guard pages on the
 // audio thread).

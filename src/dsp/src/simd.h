@@ -7,8 +7,8 @@
 //       stateless atom is vectorised over time.
 //   S1: one float in lane 0 of an SSE register (L = 1, the scalar path). Using SSE for the scalar path, like
 //       pq/core/fast_math.h does, makes S1 and S8 bit-identical per lane for every op built from these
-//       primitives (the only exception is the `exact` transcendental family, which uses the CRT's scalar
-//       functions on S1 and MSVC's SVML vector functions on S8; both are tested against double references).
+//       primitives, the `exact` transcendental family included: S1 calls S8's MSVC SVML functions on a broadcast
+//       (QUESTIONS Q94; until then it used the CRT's scalar functions, 1 ulp apart on ~15 % of arguments).
 //
 // Bool masks are floats with all bits set or clear (kernel.h). Only lane 0 of an S1 value is meaningful; the
 // other SSE lanes hold harmless garbage and are never stored or gathered.
@@ -254,23 +254,31 @@ struct S1 {
   static F fastTanh(F x) noexcept { return pq::detail::fm::tanh<pq::detail::fm::V4>(x); }
 
   static float f0(F x) noexcept { return _mm_cvtss_f32(x); }
-  static F exactSin(F x) noexcept { return _mm_set_ss(std::sin(f0(x))); }
-  static F exactTan(F x) noexcept { return _mm_set_ss(std::tan(f0(x))); }
-  static F exactTanh(F x) noexcept { return _mm_set_ss(std::tanh(f0(x))); }
-  static F exactExp(F x) noexcept { return _mm_set_ss(std::exp(f0(x))); }
-  static F exactLog(F x) noexcept { return _mm_set_ss(std::log(f0(x))); }
-  static F exactPow(F a, F b) noexcept { return _mm_set_ss(std::pow(f0(a), f0(b))); }
+  // "Exact" family: the S8 (SVML) functions on lane 0 broadcast to all 8 lanes (QUESTIONS Q94), so a value is the
+  // same bits at every lane count: a global op's 1-lane remainder or per-sample loop, a voice group's 8 lanes, a
+  // Control region's pattern and constant folding (which runs the 8-lane kernel) all agree. The broadcast keeps the
+  // other lanes finite (no SVML special-case path for garbage); unit conversions use S8's double path on 4 lanes.
+  static __m256 wide(F x) noexcept { return _mm256_broadcastss_ps(x); }
+  static F lane0(__m256 v) noexcept { return _mm256_castps256_ps128(v); }
+  static __m256d wideD(F x) noexcept { return _mm256_broadcastsd_pd(_mm_cvtss_sd(_mm_setzero_pd(), x)); }
+  static F exactSin(F x) noexcept { return lane0(S8::exactSin(wide(x))); }
+  static F exactTan(F x) noexcept { return lane0(S8::exactTan(wide(x))); }
+  static F exactTanh(F x) noexcept { return lane0(S8::exactTanh(wide(x))); }
+  static F exactExp(F x) noexcept { return lane0(S8::exactExp(wide(x))); }
+  static F exactLog(F x) noexcept { return lane0(S8::exactLog(wide(x))); }
+  static F exactPow(F a, F b) noexcept { return lane0(S8::exactPow(wide(a), wide(b))); }
+  // Each is S8's lambda body on one 4-double half, converted the same way (vcvtpd2ps).
   static F exactCentsToHz(F c, F ref) noexcept {
-    return _mm_set_ss(static_cast<float>(static_cast<double>(f0(ref)) * std::exp2(static_cast<double>(f0(c)) / 1200.0)));
+    return _mm256_cvtpd_ps(_mm256_mul_pd(wideD(ref), _mm256_exp2_pd(_mm256_div_pd(wideD(c), _mm256_set1_pd(1200.0)))));
   }
   static F exactHzToCents(F hz, F ref) noexcept {
-    return _mm_set_ss(static_cast<float>(1200.0 * std::log2(static_cast<double>(f0(hz)) / static_cast<double>(f0(ref)))));
+    return _mm256_cvtpd_ps(_mm256_mul_pd(_mm256_set1_pd(1200.0), _mm256_log2_pd(_mm256_div_pd(wideD(hz), wideD(ref)))));
   }
   static F exactDbToGain(F db) noexcept {
-    return _mm_set_ss(static_cast<float>(std::pow(10.0, static_cast<double>(f0(db)) / 20.0)));
+    return _mm256_cvtpd_ps(_mm256_exp10_pd(_mm256_div_pd(wideD(db), _mm256_set1_pd(20.0))));
   }
   static F exactGainToDb(F g) noexcept {
-    return _mm_set_ss(static_cast<float>(20.0 * std::log10(static_cast<double>(f0(g)))));
+    return _mm256_cvtpd_ps(_mm256_mul_pd(_mm256_set1_pd(20.0), _mm256_log10_pd(wideD(g))));
   }
 };
 

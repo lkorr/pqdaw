@@ -229,6 +229,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_phasor_drift.cpp
     dsp/test_tables.cpp
     dsp/test_dsp_rt.cpp
+    dsp/test_exact_lanes.cpp
   DEPS pq_dsp)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

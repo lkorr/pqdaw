@@ -1,6 +1,6 @@
 // Native helpers called by JIT-compiled code (runtime.h). The special-op kernels repeat the interpreter's
 // (src/engine/src/interpreter.cpp, which keeps them private) so both backends have one meaning; the exact
-// transcendentals repeat pq_dsp's simd.h S1/S8 expressions (private to pq_dsp) so both call the same CRT/SVML.
+// transcendentals repeat pq_dsp's simd.h S1/S8 expressions (private to pq_dsp) so both call the same SVML functions.
 
 #include "runtime.h"
 
@@ -66,21 +66,27 @@ inline float reduceFrame(const ReduceInfo& ri, const float* x, float acc, uint32
   }
 }
 
-// ---- exact transcendentals: pq_dsp simd.h S1 (scalar CRT) and S8 (SVML) ------------------------------------
-float sinS(float x) noexcept { return std::sin(x); }
-float tanS(float x) noexcept { return std::tan(x); }
-float tanhS(float x) noexcept { return std::tanh(x); }
-float expS(float x) noexcept { return std::exp(x); }
-float logS(float x) noexcept { return std::log(x); }
-float powS(float a, float b) noexcept { return std::pow(a, b); }
+// ---- exact transcendentals: pq_dsp simd.h S1 and S8, both SVML (Q94: S1 = S8 on lane 0 of a broadcast) -------
+inline float lane0(__m256 v) noexcept { return _mm256_cvtss_f32(v); }
+inline __m256d wideD(float x) noexcept { return _mm256_set1_pd(static_cast<double>(x)); }
+float sinS(float x) noexcept { return lane0(_mm256_sin_ps(_mm256_set1_ps(x))); }
+float tanS(float x) noexcept { return lane0(_mm256_tan_ps(_mm256_set1_ps(x))); }
+float tanhS(float x) noexcept { return lane0(_mm256_tanh_ps(_mm256_set1_ps(x))); }
+float expS(float x) noexcept { return lane0(_mm256_exp_ps(_mm256_set1_ps(x))); }
+float logS(float x) noexcept { return lane0(_mm256_log_ps(_mm256_set1_ps(x))); }
+float powS(float a, float b) noexcept { return lane0(_mm256_pow_ps(_mm256_set1_ps(a), _mm256_set1_ps(b))); }
 float centsToHzS(float c, float ref) noexcept {
-  return static_cast<float>(static_cast<double>(ref) * std::exp2(static_cast<double>(c) / 1200.0));
+  return _mm_cvtss_f32(_mm256_cvtpd_ps(_mm256_mul_pd(wideD(ref), _mm256_exp2_pd(_mm256_div_pd(wideD(c), _mm256_set1_pd(1200.0))))));
 }
 float hzToCentsS(float hz, float ref) noexcept {
-  return static_cast<float>(1200.0 * std::log2(static_cast<double>(hz) / static_cast<double>(ref)));
+  return _mm_cvtss_f32(_mm256_cvtpd_ps(_mm256_mul_pd(_mm256_set1_pd(1200.0), _mm256_log2_pd(_mm256_div_pd(wideD(hz), wideD(ref))))));
 }
-float dbToGainS(float db) noexcept { return static_cast<float>(std::pow(10.0, static_cast<double>(db) / 20.0)); }
-float gainToDbS(float g) noexcept { return static_cast<float>(20.0 * std::log10(static_cast<double>(g))); }
+float dbToGainS(float db) noexcept {
+  return _mm_cvtss_f32(_mm256_cvtpd_ps(_mm256_exp10_pd(_mm256_div_pd(wideD(db), _mm256_set1_pd(20.0)))));
+}
+float gainToDbS(float g) noexcept {
+  return _mm_cvtss_f32(_mm256_cvtpd_ps(_mm256_mul_pd(_mm256_set1_pd(20.0), _mm256_log10_pd(wideD(g)))));
+}
 
 template <class Fn>
 inline __m256 viaDouble(__m256 x, Fn f) noexcept {

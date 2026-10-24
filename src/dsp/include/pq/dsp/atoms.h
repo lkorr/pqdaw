@@ -19,7 +19,8 @@
 //   sign (x)                          1, −1 or 0 (also 0 for NaN)
 //   floor (x)                         floor
 //   frac (x)                          x − floor(x), clamped to the largest float below 1
-//   sqrt exp log sin tan tanh (x)     exact: CRT / SVML (verified ≤ a few ulp against double)
+//   sqrt exp log sin tan tanh (x)     exact: SVML at every lane count (sqrt: the instruction), verified ≤ a few ulp
+//                                     against double; 1 lane == 8 lanes bit for bit (Q94)
 //   fast_sqrt (x)                     = sqrt: the hardware square root is exact and already cheaper
 //                                     than an rsqrt + Newton step with zero/inf fix-ups
 //   fast_exp fast_log fast_sin fast_tan fast_tanh   pq/core/fast_math.h (error bounds documented there).
