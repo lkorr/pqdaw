@@ -121,6 +121,31 @@ Status pianoRollVelocity(Shell& shell) {
   return Ok{};
 }
 
+// T3.12: scale / MOS layouts over tests/views/fixtures/pianoroll-5L2s (… -near-collapse, pianoroll-scala).
+ClipView* openScaleClip(Shell& shell) {
+  if (!openFirstClip(shell)) return nullptr;
+  return dynamic_cast<ClipView*>(shell.tree().find("main/body/bottom/detail/clip/clip-view"));
+}
+
+Status pianoRollProportional(Shell& shell) {
+  if (!openScaleClip(shell)) return Error{ErrorCode::NotFound, "pianoroll scale scene: no clip view", {}};
+  return Ok{};
+}
+
+Status pianoRollEquidistant(Shell& shell) {
+  ClipView* v = openScaleClip(shell);
+  if (!v) return Error{ErrorCode::NotFound, "pianoroll-5L2s-equi: no clip view", {}};
+  v->setScaleLayout(roll::RowLayout::Equidistant);
+  return Ok{};
+}
+
+Status pianoRollOver31(Shell& shell) {
+  ClipView* v = openScaleClip(shell);
+  if (!v) return Error{ErrorCode::NotFound, "pianoroll-5L2s-over-31edo: no clip view", {}};
+  v->setOverlayEdo(31);
+  return Ok{};
+}
+
 // T3.13: the MOS region chart alone, filling the window: opened in the shell's overlay layer (not dismissable), so
 // the scene is the chart widget exactly as a popover would host it.
 MosChart* openMosChart(Shell& shell, const MosChartConfig& config) {
@@ -302,6 +327,11 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-12edo", 1280, 800, openFirstClip},
     {"pianoroll-31edo", 1280, 800, openFirstClip},
     {"pianoroll-velocity", 1280, 800, pianoRollVelocity},
+    {"pianoroll-5L2s-prop", 1280, 800, pianoRollProportional},
+    {"pianoroll-5L2s-equi", 1280, 800, pianoRollEquidistant},
+    {"pianoroll-5L2s-near-collapse", 1280, 800, pianoRollProportional},
+    {"pianoroll-5L2s-over-31edo", 1280, 800, pianoRollOver31},
+    {"pianoroll-scala", 1280, 800, pianoRollProportional},
     {"mos-chart-default", 800, 600, setupMosChartDefault},
     {"mos-chart-zoomed", 800, 600, setupMosChartZoomed},
     {"mos-circle-5L2s", 440, 560, setupMosCircle5L2s},

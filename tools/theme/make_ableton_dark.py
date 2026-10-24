@@ -88,6 +88,15 @@ colors = [
  ("roll.offGrid", "#62D4E8"),
  ("roll.fundamental", "#62D4E88C"),
  ("roll.harmonic", "#62D4E826"),
+ # Scale / MOS layouts (T3.12): gutter keys by step class (tonic, large step, small step at full hardness, extra
+ # MODMOS / Scala steps pull toward keyExtra), the pitch line of a proportional row, the background EDO overlay.
+ ("roll.keyTonic", "#F2C77E"),
+ ("roll.keyLarge", "#BCC6CA"),
+ ("roll.keySmall", "#4A6670"),
+ ("roll.keyExtra", "#B98AE0"),
+ ("roll.pitchLine", "#0000004A"),
+ ("roll.edoLine", "#62D4E844"),
+ ("roll.edoEquave", "#62D4E899"),
  # MOS wheel region chart (T3.13): surfaces from the Live 12 screenshot (arrangement.*), data colours from
  # mos-explorer (EDO blue, hardness amber, generator marker red).
  ("mosChart.background", "#16282E"),

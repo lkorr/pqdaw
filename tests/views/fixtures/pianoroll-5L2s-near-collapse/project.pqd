@@ -1,0 +1,378 @@
+{
+  "schemaVersion": 1,
+  "timeline": {
+    "tempo": [
+      {
+        "tick": 0,
+        "bpm": 120.0,
+        "curve": "step"
+      }
+    ],
+    "signatures": [
+      {
+        "bar": 0,
+        "numerator": 4,
+        "denominator": 4
+      }
+    ]
+  },
+  "loop": {
+    "start": 0,
+    "end": 443520,
+    "enabled": false
+  },
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "5L 2s",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "mos",
+        "generator": 717.0,
+        "n": 7,
+        "period": 1200.0,
+        "periodsPerEquave": 1,
+        "rotation": 4,
+        "modmos": [],
+        "genSequence": [],
+        "octaveStretch": 0.0,
+        "region": {
+          "perPeriodSize": 7,
+          "lowCents": 685.7142857142857,
+          "highCents": 720.0
+        },
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 3,
+      "kind": "midi",
+      "name": "1 MIDI",
+      "colour": "#16B293",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "arm": false,
+        "sends": [],
+        "output": "default"
+      },
+      "lanes": [],
+      "clips": [
+        {
+          "id": 4,
+          "name": "Near Collapse",
+          "colour": "#16B293",
+          "start": 0,
+          "length": 221760,
+          "contentStart": 0,
+          "loop": {
+            "enabled": true,
+            "start": 0,
+            "end": 221760
+          },
+          "signature": {
+            "numerator": 4,
+            "denominator": 4
+          },
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {
+              "id": 400,
+              "start": 0,
+              "length": 48510,
+              "pitch": {
+                "degree": 0,
+                "equave": 0
+              },
+              "velocity": 96.0
+            },
+            {
+              "id": 401,
+              "start": 0,
+              "length": 48510,
+              "pitch": {
+                "degree": 2,
+                "equave": 0
+              },
+              "velocity": 86.0
+            },
+            {
+              "id": 402,
+              "start": 0,
+              "length": 48510,
+              "pitch": {
+                "degree": 4,
+                "equave": 0
+              },
+              "velocity": 76.0
+            },
+            {
+              "id": 403,
+              "start": 0,
+              "length": 41580,
+              "pitch": {
+                "degree": 0,
+                "equave": -1
+              },
+              "velocity": 112.0
+            },
+            {
+              "id": 416,
+              "start": 0,
+              "length": 13860,
+              "pitch": {
+                "degree": 0,
+                "equave": 1
+              },
+              "velocity": 120.0
+            },
+            {
+              "id": 417,
+              "start": 27720,
+              "length": 20790,
+              "pitch": {
+                "degree": 1,
+                "equave": 1
+              },
+              "velocity": 84.0
+            },
+            {
+              "id": 418,
+              "start": 41580,
+              "length": 13860,
+              "pitch": {
+                "degree": 2,
+                "equave": 1
+              },
+              "velocity": 70.0
+            },
+            {
+              "id": 404,
+              "start": 55440,
+              "length": 48510,
+              "pitch": {
+                "degree": 5,
+                "equave": -1
+              },
+              "velocity": 96.0
+            },
+            {
+              "id": 405,
+              "start": 55440,
+              "length": 48510,
+              "pitch": {
+                "degree": 0,
+                "equave": 0
+              },
+              "velocity": 86.0
+            },
+            {
+              "id": 406,
+              "start": 55440,
+              "length": 48510,
+              "pitch": {
+                "degree": 2,
+                "equave": 0
+              },
+              "velocity": 76.0
+            },
+            {
+              "id": 407,
+              "start": 55440,
+              "length": 41580,
+              "pitch": {
+                "degree": 5,
+                "equave": -2
+              },
+              "velocity": 112.0
+            },
+            {
+              "id": 419,
+              "start": 55440,
+              "length": 13860,
+              "pitch": {
+                "degree": 4,
+                "equave": 1
+              },
+              "velocity": 127.0
+            },
+            {
+              "id": 420,
+              "start": 83160,
+              "length": 13860,
+              "pitch": {
+                "degree": 2,
+                "equave": 1
+              },
+              "velocity": 60.0
+            },
+            {
+              "id": 425,
+              "start": 97020,
+              "length": 13860,
+              "pitch": {
+                "ratio": "7/4"
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 408,
+              "start": 110880,
+              "length": 48510,
+              "pitch": {
+                "degree": 3,
+                "equave": -1
+              },
+              "velocity": 96.0
+            },
+            {
+              "id": 409,
+              "start": 110880,
+              "length": 48510,
+              "pitch": {
+                "degree": 5,
+                "equave": -1
+              },
+              "velocity": 86.0
+            },
+            {
+              "id": 410,
+              "start": 110880,
+              "length": 48510,
+              "pitch": {
+                "degree": 0,
+                "equave": 0
+              },
+              "velocity": 76.0
+            },
+            {
+              "id": 411,
+              "start": 110880,
+              "length": 41580,
+              "pitch": {
+                "degree": 3,
+                "equave": -2
+              },
+              "velocity": 112.0
+            },
+            {
+              "id": 421,
+              "start": 124740,
+              "length": 20790,
+              "pitch": {
+                "degree": 3,
+                "equave": 1
+              },
+              "velocity": 96.0
+            },
+            {
+              "id": 422,
+              "start": 138600,
+              "length": 20790,
+              "pitch": {
+                "degree": 5,
+                "equave": 1
+              },
+              "velocity": 76.0
+            },
+            {
+              "id": 426,
+              "start": 152460,
+              "length": 27720,
+              "pitch": {
+                "cents": 503.2258064516129
+              },
+              "velocity": 90.0
+            },
+            {
+              "id": 412,
+              "start": 166320,
+              "length": 48510,
+              "pitch": {
+                "degree": 4,
+                "equave": -1
+              },
+              "velocity": 96.0
+            },
+            {
+              "id": 413,
+              "start": 166320,
+              "length": 48510,
+              "pitch": {
+                "degree": 6,
+                "equave": -1
+              },
+              "velocity": 86.0
+            },
+            {
+              "id": 414,
+              "start": 166320,
+              "length": 48510,
+              "pitch": {
+                "degree": 1,
+                "equave": 0
+              },
+              "velocity": 76.0
+            },
+            {
+              "id": 415,
+              "start": 166320,
+              "length": 41580,
+              "pitch": {
+                "degree": 4,
+                "equave": -2
+              },
+              "velocity": 112.0
+            },
+            {
+              "id": 423,
+              "start": 166320,
+              "length": 13860,
+              "pitch": {
+                "degree": 4,
+                "equave": 1
+              },
+              "velocity": 110.0
+            },
+            {
+              "id": 424,
+              "start": 194040,
+              "length": 13860,
+              "pitch": {
+                "degree": 6,
+                "equave": 1
+              },
+              "velocity": 70.0
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {
+      "volumeDb": 0.0,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "arm": false,
+      "sends": [],
+      "output": "default"
+    }
+  }
+}

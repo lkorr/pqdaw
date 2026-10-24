@@ -43,6 +43,8 @@ public:
   const Edo* edo() const noexcept { return std::get_if<Edo>(&system_); }
   // The MOS, or nullptr if this tuning is another kind. RT-safe.
   const Mos* mos() const noexcept { return std::get_if<Mos>(&system_); }
+  // Mutable access for an in-place live morph (Mos::retuneLinear, T3.12). Not for tunings shared with other threads.
+  Mos* mos() noexcept { return std::get_if<Mos>(&system_); }
   // The Scale, or nullptr if this tuning is another kind. RT-safe.
   const Scale* scale() const noexcept { return std::get_if<Scale>(&system_); }
 

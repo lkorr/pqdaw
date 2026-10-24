@@ -53,12 +53,19 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
 }
 
 ClipView::~ClipView() {
+  if (state_->morphingGenerator() && ctx_.tuningPreview()) ctx_.clearTuningPreview();  // a morph cut short: no trace
   for (std::string_view id : ViewContext::kPianoRollActions) ctx_.clearViewAction(id);
 }
 
 void ClipView::onDocument() {
   RollState& s = *state_;
   if (s.refresh()) {
+    if (s.pitchOnlyChange()) {  // a live morph frame (T3.12): rows and notes move, nothing else
+      if (s.keysView) s.keysView->markDirty();
+      if (s.noteArea) s.noteArea->markDirty();
+      if (s.boxPanel) s.boxPanel->refresh();
+      return;
+    }
     setVisible(s.hasClip());
     s.markAllDirty();
   }
@@ -149,6 +156,15 @@ bool ClipView::scaleHighlight() const noexcept { return state_->scaleHighlight()
 void ClipView::setScaleHighlight(bool on) { state_->setScaleHighlight(on); }
 bool ClipView::showChance() const noexcept { return state_->showChance(); }
 void ClipView::setShowChance(bool on) { state_->setShowChance(on); }
+roll::RowLayout ClipView::scaleLayout() const noexcept { return state_->scaleLayout(); }
+void ClipView::setScaleLayout(roll::RowLayout layout) { state_->setScaleLayout(layout); }
+uint32_t ClipView::overlayEdo() const noexcept { return state_->overlayEdo(); }
+void ClipView::setOverlayEdo(uint32_t n) { state_->setOverlayEdo(n); }
+void ClipView::beginGeneratorMorph() { state_->beginGeneratorMorph(); }
+void ClipView::morphGenerator(double g) { state_->morphGenerator(g); }
+void ClipView::endGeneratorMorph(bool commit) { state_->endGeneratorMorph(commit); }
+uint64_t ClipView::morphLinearFrames() const noexcept { return state_->morphStats().linear; }
+uint64_t ClipView::morphRebuilds() const noexcept { return state_->morphStats().rebuilt; }
 
 float ClipView::xOfTick(double t) const noexcept { return state_->xOfTick(t); }
 

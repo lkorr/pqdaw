@@ -28,6 +28,7 @@
 #include "pq/core/grid.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
+#include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
 #include "pq/ui/color.h"
 #include "pq/ui/widget.h"
@@ -66,7 +67,10 @@ enum class BraceEdge : uint8_t { Start, End, Both };
 struct DrawnNote {
   Ticks start = 0;
   Ticks length = 0;
-  int64_t degree = 0;
+  int64_t degree = 0;  // the row (a Degree note), or the nearest row of a Cents note
+  // Alt-drawn on the background EDO overlay (T3.12): a Cents note on the overlay line nearest the pointer.
+  bool onOverlay = false;
+  double cents = 0.0;
 };
 
 struct DragState {
@@ -127,6 +131,15 @@ struct NotePlace {
   int32_t top = 0, bottom = 0;
   int8_t offGrid = 0;  // 0 on its row; +1 above / −1 below the nearest row (marked)
   bool ok = false;     // false: the pitch cannot be placed (Harmonic, JI-fundamental anchors: no JI objects yet)
+  uint8_t z = 0;       // the row's z (scale layouts: notes on larger steps paint over smaller ones)
+};
+
+// One note waiting to be painted in z order (Proportional layout: rows may overlap).
+struct ZNote {
+  float x0, x1, y0, y1;
+  ui::Rgba fill, border;
+  int8_t offGrid;
+  uint16_t key;  // z, + 256 when selected (selected notes always on top, as mos-roll.js drawOrder)
 };
 
 class RollState {
@@ -276,6 +289,45 @@ public:
   void updatePreviewPitches();
   float previewValue(const doc::Note& n) const noexcept;  // velocity / chance shown in the lane
 
+  // --- scale layouts, EDO overlay, live morph (T3.12) ---
+  // The layout of MOS / Scala rows (Proportional by default; EDO rows are always Uniform). Switching keeps the row
+  // at the middle of the note area there (mos-roll.js toggleLayout keeps the centred row).
+  RowLayout scaleLayout() const noexcept { return scaleLayout_; }
+  void setScaleLayout(RowLayout layout);
+  // Background EDO grid (of the octave) over a scale view: 0 = off. Display, and snapping: Cents notes step / move
+  // on its lines, and Alt in draw mode draws Cents notes on them.
+  uint32_t overlayEdo() const noexcept { return overlay_ ? overlay_->n() : 0; }
+  void setOverlayEdo(uint32_t n);
+  const tuning::Edo* overlay() const noexcept { return overlay_ ? &*overlay_ : nullptr; }
+  // The overlay line nearest `cents` (requires an overlay).
+  double nearestOverlayCents(double cents) const noexcept;
+  // The pitch a drawn cell gets: a Degree note on its row, or a Cents note on the overlay.
+  tuning::PitchId drawnPitch(const DrawnNote& d) const noexcept;
+
+  // Generator morph from the clip box (a MOS clip): every step previews through the context's tuning preview (the
+  // rows and Degree notes follow at frame rate, nothing is dispatched); end(true) commits the result as ONE
+  // SetClipTuning (one undo step), end(false) restores. Past the current MOS region's ends the generator moves into
+  // the adjacent region (tuning::findAdjacentRegion) carrying the mode (transferModeRotation), as the MOS wheel's
+  // chart does.
+  bool canMorphGenerator() const noexcept;
+  void beginGeneratorMorph();
+  void morphGenerator(double generatorCents);
+  void endGeneratorMorph(bool commit);
+  bool morphingGenerator() const noexcept { return morphBase_.has_value(); }
+  // How refresh() followed tuning changes: in place from the MosLinearTable interval (linear) or by a full rebuild
+  // (buildMOSScale, at region / interval crossings and for anything but a generator change).
+  struct MorphStats {
+    uint64_t linear = 0;
+    uint64_t rebuilt = 0;
+  };
+  const MorphStats& morphStats() const noexcept { return morphStats_; }
+  // Whether the last refresh() that reported a change only moved pitches in place (a morph frame): then only the
+  // keys, the note area and the clip box's generator need repainting (not the ruler or the velocity lane).
+  bool pitchOnlyChange() const noexcept { return pitchOnlyChange_; }
+
+  // Paint scratch (the note area's z-ordered notes), reused across frames.
+  std::vector<ZNote> zNotes, zSorted;
+
   // --- audition ---
   void audition(const tuning::PitchId& p, float velocity, Ticks contentStart, Ticks length);
 
@@ -286,6 +338,7 @@ public:
 private:
   void rememberHarmonics(std::span<const doc::NoteKey> keys, int64_t D);
   void rebuildRows();
+  bool morphInPlace(const doc::TuningDef& def);
   void rebuildChunks();
   void rebuildColours();
   void rebuildUsed();
@@ -323,6 +376,21 @@ private:
   std::vector<uint64_t> selBits_;  // bitmap of sel_ from selMin_ (empty: binary search)
   uint32_t selMin_ = 0;
   std::optional<Ticks> insertTick_;
+  // T3.12
+  RowLayout scaleLayout_ = RowLayout::Proportional;
+  bool keepCentredRow_ = false;
+  bool pitchOnlyChange_ = false;  // the last refresh() only retuned in place  // rebuildRows: centre the row that was centred (layout switch)
+  std::optional<tuning::Edo> overlay_;
+  std::unique_ptr<tuning::MosLinearTable> linear_;  // for the current chain length (built on the first morph frame)
+  double linearLow_ = 0.0, linearHigh_ = -1.0;      // the interval the rotated form below is for
+  int32_t linearRotation_ = -1;
+  std::vector<int32_t> linearK_, linearM_;
+  MorphStats morphStats_;
+  std::optional<doc::TuningDef> morphBase_;  // the clip's tuning when the generator morph began
+  doc::TuningDef morphDef_;
+  tuning::MosRegionSet morphRegions_;
+  double morphRegionsPeriod_ = 0.0;
+  int32_t morphRegionsReps_ = 0, morphRegionsMax_ = 0;
   std::vector<doc::Note> clipboard_;  // starts relative to the earliest copied note
   // Q40: per Ratio note, the denominator its last step used and the pitch it produced.
   struct HarmonicMemory {

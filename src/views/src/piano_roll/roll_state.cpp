@@ -70,19 +70,30 @@ bool RollState::refresh() {
   snap_ = cur;
   bool rowsDirty = false;
   bool clipCaches = false;
+  bool morphed = false;
   if (def && (!tuningValid_ || !(tuningDef_ == *def))) {
-    if (Result<tuning::Tuning> t = doc::buildTuning(*def)) {
+    if (tuningValid_ && morphInPlace(*def)) {
+      // A generator move inside one MosLinearTable interval (T3.12 live morph): the tuning and the rows were
+      // retuned in place; the row set, labels, chunk caches and highlight scale stay.
+      morphed = true;
+    } else if (Result<tuning::Tuning> t = doc::buildTuning(*def)) {
+      const int32_t oldN = tuningValid_ ? degreesPerEquave(tuning_) : -1;
       tuning_ = std::move(*t);
       tuningDef_ = *def;
       tuningValid_ = true;
       scaleMask_ = defaultHighlightScale(tuning_);
       rowsDirty = true;
       changed = true;
-      chunkCache_.clear();  // chunk degree spans are in this tuning's degrees
-      clipCaches = true;
+      ++morphStats_.rebuilt;
+      if (degreesPerEquave(tuning_) != oldN) {
+        chunkCache_.clear();  // chunk degree spans are absolute degrees: equave · size + degree
+        clipCaches = true;
+      } else if (fold_ && clip_) {
+        rebuildUsed();  // Ratio / Cents notes' nearest rows follow the pitches
+      }
     }
   }
-  if (def && (snapChanged || changed)) {
+  if (def && (snapChanged || changed || morphed)) {
     std::string name = "Private Tuning";
     for (const doc::TuningSlotPtr& slot : *cur->tunings)
       if (slot->def == *def) {
@@ -114,7 +125,8 @@ bool RollState::refresh() {
     }
   }
   if (rowsDirty || rows_.empty()) rebuildRows();
-  return changed;
+  pitchOnlyChange_ = morphed && !changed;
+  return changed || morphed;
 }
 
 void RollState::rebuildChunks() {
@@ -220,9 +232,13 @@ void RollState::rebuildRows() {
   if (!rows_.empty() && a.h > 0) {
     // (The middle of the content when it is shorter than the area, e.g. a fold of a few rows.)
     const int32_t cy = scrollY_ + std::min(a.h, rows_.contentHeight()) / 2;
-    centreCents = rows_.row(rows_.indexAtY(cy)).cents;
+    // Scale layouts keep the exact pitch there (a morph crossing a region does not jump), except when the layout
+    // itself changes: then the centred row stays centred (mos-roll.js toggleLayout).
+    centreCents = rows_.scaleLayout() && !keepCentredRow_ ? rows_.centsAtY(cy) : rows_.row(rows_.indexAtY(cy)).cents;
   }
   RowOptions o;
+  o.layout = scaleLayout_;
+  o.pxScale = static_cast<double>(scale);
   o.rowPx = std::max(1, us.px(static_cast<float>(rowPxLogical_)));
   o.fold = fold_ ? (scale_ ? Fold::Scale : Fold::UsedNotes) : Fold::None;
   o.used = used_;
@@ -234,6 +250,156 @@ void RollState::rebuildRows() {
     scrollY_ = p.centre - a.h / 2;
   }
   scrollByPx(0, 0);  // clamp
+}
+
+// --- live morph (T3.12) -----------------------------------------------------------------------------------------
+
+// SPEC §3.3: inside one interval of the generator axis where the chain's sorted order is fixed (a MosLinearTable
+// interval: no chain pitch crosses another or the period), every degree is linear in the generator, so a generator
+// change is n multiply-adds into the existing tuning and an in-place relayout of the existing rows. Anything else (a
+// crossing into another interval or MOS size, a mode / MODMOS / period change, a folded roll whose used rows may
+// change) returns false and refresh() rebuilds (buildMOSScale via doc::buildTuning; the mode across a region change
+// was carried by whoever changed the generator: the chart, or morphGenerator below, with transferModeRotation).
+bool RollState::morphInPlace(const doc::TuningDef& def) {
+  const tuning::MosParams* a = tuningDef_.mos();
+  const tuning::MosParams* b = def.mos();
+  tuning::Mos* mos = tuning_.mos();
+  if (!a || !b || !mos || fold_ || rows_.empty() || !rows_.scaleLayout()) return false;
+  if (a->n != b->n || a->period != b->period || a->periodsPerEquave != b->periodsPerEquave ||
+      a->rotation != b->rotation || a->octaveStretch != b->octaveStretch || def.referenceHz != tuningDef_.referenceHz ||
+      tuning::hasModmos(a->modmos) || tuning::hasModmos(b->modmos) || !a->genSequence.empty() || !b->genSequence.empty() ||
+      a->modmos.size() != b->modmos.size())
+    return false;
+  const double P = b->period;
+  if (!linear_ || linear_->n() != b->n) {
+    linear_ = std::make_unique<tuning::MosLinearTable>(b->n);  // ~0.3·n² intervals, once per chain length
+    linearHigh_ = -1.0;
+  }
+  // Stay clear of the interval ends, where buildMOSScale nudges a degenerate chain (chainSafeGen, 1e-6 ¢).
+  constexpr double kEdge = 1e-4;
+  auto inside = [&](double g, double lo, double hi) { return g > lo + kEdge && g < hi - kEdge; };
+  const tuning::MosLinearSpan span = linear_->lookup(b->generator, P);
+  if (!inside(b->generator, span.lowGenerator, span.highGenerator) ||
+      !inside(a->generator, span.lowGenerator, span.highGenerator))
+    return false;  // the generator crossed an interval boundary (or sits on one): rebuild
+  if (span.lowGenerator != linearLow_ || span.highGenerator != linearHigh_ || b->rotation != linearRotation_) {
+    linearK_.resize(static_cast<size_t>(b->n));
+    linearM_.resize(static_cast<size_t>(b->n));
+    tuning::rotateLinearForm(span, b->rotation, linearK_.data(), linearM_.data());
+    linearLow_ = span.lowGenerator;
+    linearHigh_ = span.highGenerator;
+    linearRotation_ = b->rotation;
+  }
+  mos->retuneLinear(b->generator, linearK_, linearM_, b->region);
+  tuningDef_ = def;
+  rows_.retune(tuning_);
+  ++morphStats_.linear;
+  scrollByPx(0.0f, 0.0f);  // the content height may change; keep the scroll in range
+  return true;
+}
+
+bool RollState::canMorphGenerator() const noexcept {
+  return clip_ != nullptr && tuningValid_ && tuningDef_.mos() != nullptr && tuningDef_.mos()->genSequence.empty() &&
+         tuningDef_.mos()->n >= 2 && (morphBase_.has_value() || !ctx.tuningPreview().has_value());
+}
+
+void RollState::beginGeneratorMorph() {
+  if (morphBase_ || !canMorphGenerator()) return;
+  // The document's tuning (not a preview): what end(false) restores and end(true) compares with.
+  morphBase_ = tuningDef_;
+  morphDef_ = tuningDef_;
+  const tuning::MosParams& m = *morphDef_.mos();
+  const int32_t maxSize = std::max(18, m.n);  // the chart's default size range, or more for a larger MOS
+  if (morphRegionsPeriod_ != m.period || morphRegionsReps_ != m.periodsPerEquave || morphRegionsMax_ != maxSize) {
+    morphRegions_ = tuning::buildMosRegions(maxSize, maxSize, m.period, m.periodsPerEquave);
+    morphRegionsPeriod_ = m.period;
+    morphRegionsReps_ = m.periodsPerEquave;
+    morphRegionsMax_ = maxSize;
+  }
+}
+
+void RollState::morphGenerator(double g) {
+  if (!morphBase_) beginGeneratorMorph();
+  if (!morphBase_ || !std::isfinite(g)) return;
+  tuning::MosParams& m = std::get<tuning::MosParams>(morphDef_.system);
+  const double P = m.period;
+  const std::span<const tuning::MosRegion> regions = morphRegions_.regions;
+  // The current region: the one the hint names, else the one of this size containing the generator.
+  auto contains = [&](const tuning::MosRegion& r, double x) { return x >= r.lowCents && x <= r.highCents; };
+  const tuning::MosRegion* sel = nullptr;
+  for (const tuning::MosRegion& r : regions) {
+    if (r.perPeriodSize != m.n) continue;
+    if (m.region && r.lowCents == m.region->lowCents && r.highCents == m.region->highCents) {
+      sel = &r;
+      break;
+    }
+    if (!sel && contains(r, m.generator)) sel = &r;
+  }
+  double gen = g;
+  if (sel && !contains(*sel, g)) {
+    // mos_chart.cpp dragGenerator (setGenFromScreenX): into the adjacent region, carrying the mode.
+    const double clamped = std::clamp(g, 0.0, P);
+    const int32_t adj = tuning::findAdjacentRegion(regions, *sel, clamped, 2, morphRegionsMax_);
+    if (adj >= 0) {
+      const tuning::MosRegion& r = regions[static_cast<size_t>(adj)];
+      gen = std::clamp(clamped, r.lowCents, r.highCents);
+      if (!(r.key == sel->key)) {
+        const tuning::RegionHint hint = r.hint();
+        m.rotation = tuning::transferModeRotation(m.generator, sel->perPeriodSize, m.rotation, gen, r.perPeriodSize, P, &hint);
+      }
+      if (r.perPeriodSize != m.n) m.modmos.clear();  // alterations are per degree of the old size
+      m.n = r.perPeriodSize;
+      m.region = r.hint();
+    } else {
+      gen = std::clamp(g, sel->lowCents, sel->highCents);
+    }
+  } else if (sel) {
+    m.region = sel->hint();
+  }
+  if (gen == m.generator && morphDef_ == tuningDef_) return;
+  m.generator = gen;
+  ctx.setTuningPreview(TuningTarget::forClip(ref_), morphDef_);  // → kTuningPreview → refresh(): the rows follow
+}
+
+void RollState::endGeneratorMorph(bool commit) {
+  if (!morphBase_) return;
+  const doc::TuningDef base = std::move(*morphBase_);
+  morphBase_.reset();
+  if (ctx.tuningPreview()) ctx.clearTuningPreview();
+  if (commit && !(morphDef_ == base) && clip_) {
+    if (Status s = ctx.store().dispatch(tuningCommand(TuningTarget::forClip(ref_), morphDef_)); !s)
+      ctx.setStatus("Generator: " + s.error().message);
+  }
+  (void)refresh();
+  markAllDirty();
+}
+
+void RollState::setScaleLayout(RowLayout layout) {
+  if (layout == RowLayout::Uniform) layout = RowLayout::Equidistant;
+  if (layout == scaleLayout_) return;
+  scaleLayout_ = layout;
+  keepCentredRow_ = true;
+  rebuildRows();
+  keepCentredRow_ = false;
+  markAllDirty();
+}
+
+void RollState::setOverlayEdo(uint32_t n) {
+  if (n == overlayEdo()) return;
+  overlay_.reset();
+  if (n > 0)
+    if (Result<tuning::Edo> e = tuning::Edo::make(n)) overlay_ = *e;
+  markAllDirty();
+}
+
+double RollState::nearestOverlayCents(double cents) const noexcept {
+  if (!overlay_) return cents;
+  const double step = overlay_->equaveCents() / overlay_->n();
+  return overlay_->centsOfStep(static_cast<int64_t>(std::llround(cents / step)));
+}
+
+tuning::PitchId RollState::drawnPitch(const DrawnNote& d) const noexcept {
+  return d.onOverlay ? tuning::PitchId::fromCents(d.cents) : degreePitch(d.degree);
 }
 
 void RollState::buildAnchorIndex() const {
@@ -346,7 +512,9 @@ void RollState::fitToClip() {
   fitted_ = true;
   // Rows: an equave of about 240 logical px (12edo: 14 px rows, Live's default key height; 31edo: 8 px).
   const int32_t n = std::max(1, degreesPerEquave(tuning_));
-  const int32_t rowPx = std::clamp(static_cast<int32_t>(std::lround(240.0 / n)), kMinRowPx + 2, 14);
+  // (EDO rows stop at Live's 14 px; a scale's fewer degrees get the whole equave height: 5L 2s → 34 px lanes.)
+  const int32_t maxRow = tuning_.edo() ? 14 : kMaxRowPx;
+  const int32_t rowPx = std::clamp(static_cast<int32_t>(std::lround(240.0 / n)), kMinRowPx + 2, maxRow);
   if (rowPx != rowPxLogical_) {
     rowPxLogical_ = rowPx;
     rebuildRows();
@@ -467,6 +635,7 @@ NotePlace RollState::place(const tuning::PitchId& p) const {
     if (const PitchRow* row = rows_.rowOfDegree(d)) {
       r.top = row->top;
       r.bottom = row->bottom;
+      r.z = row->z;
       r.ok = true;
       return r;
     }
@@ -479,6 +648,7 @@ NotePlace RollState::place(const tuning::PitchId& p) const {
   const CentsPlacement cp = rows_.placeCents(cents);
   r.top = cp.top;
   r.bottom = cp.bottom;
+  r.z = cp.z;
   r.ok = true;
   if (p.kind() != tuning::PitchKind::Degree && std::fabs(cp.offsetCents) > kOnGridToleranceCents)
     r.offGrid = cp.offsetCents > 0 ? 1 : -1;
@@ -495,13 +665,19 @@ const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone) const {
   const int32_t cy = contentY(p.y);
   const doc::Note* hit = nullptr;
   int hitZone = 0;
+  int hitKey = -1;
+  const bool zOrder = rows_.layout() == RowLayout::Proportional;
   forNotesIn(static_cast<Ticks>(std::floor(t0)), static_cast<Ticks>(std::ceil(t1)) + 1, [&](const doc::Note& n) {
     const NotePlace pl = place(n.pitch);
     if (!pl.ok || cy < pl.top || cy >= pl.bottom) return;
     const float x0 = std::round(xOfTick(static_cast<double>(n.start)));
     const float x1 = std::max(x0 + 3.0f, std::round(xOfTick(static_cast<double>(n.start + n.length))));
     if (p.x < x0 || p.x >= x1) return;
-    hit = &n;  // later notes draw on top
+    // The note drawn on top: later notes, and in the Proportional layout higher z (selected notes highest).
+    const int key = zOrder ? pl.z + (selected(n.id) ? 256 : 0) : 0;
+    if (key < hitKey) return;
+    hitKey = key;
+    hit = &n;
     const float w = x1 - x0;
     hitZone = 0;
     if (p.x >= x1 - grab && w >= 2.0f * grab) hitZone = 1;
@@ -689,7 +865,7 @@ void RollState::stepSelection(int32_t steps, doc::ops::StepUnit unit) {
   if (keys.empty()) return;
   const int64_t D = virtualFundamental();
   const doc::ops::EditResult e =
-      doc::ops::transposeNotes(*ctx.doc(), ref_, keys, steps, unit, nullptr, D);
+      doc::ops::transposeNotes(*ctx.doc(), ref_, keys, steps, unit, overlay(), D);
   if (!apply(e, unit == doc::ops::StepUnit::Grid ? "Transpose" : "Transpose by Equave")) return;
   rememberHarmonics(e->notes, D);  // the denominator each Ratio note stepped with, against the pitch it now has
 }
@@ -741,7 +917,7 @@ void RollState::addNotes(const std::vector<DrawnNote>& drawn) {
   for (size_t i = 0; i < drawn.size(); ++i) {
     notes[i].start = drawn[i].start;
     notes[i].length = drawn[i].length;
-    notes[i].pitch = degreePitch(drawn[i].degree);
+    notes[i].pitch = drawnPitch(drawn[i]);
   }
   (void)apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes), "Add Notes");
 }
@@ -757,6 +933,7 @@ void RollState::updatePreviewPitches() {
   if (!clip_ || drag.steps == 0) return;
   doc::ops::PitchStepContext pc;
   pc.tuning = &tuning_;
+  pc.displayGrid = overlay();  // Cents notes move on the background EDO (T3.12)
   pc.harmonicDenominator = virtualFundamental();
   for (const ChunkInfo& c : chunks_) {
     if (c.nonDegree == 0) continue;
@@ -850,7 +1027,7 @@ void RollState::damageDrag() {
     box = unite(box, screenRectOf(n.start, n.length, n.pitch));
     if (const std::optional<Preview> p = preview(n)) box = unite(box, screenRectOf(p->start, p->length, p->pitch));
   }
-  for (const DrawnNote& d : drag.drawn) box = unite(box, screenRectOf(d.start, d.length, degreePitch(d.degree)));
+  for (const DrawnNote& d : drag.drawn) box = unite(box, screenRectOf(d.start, d.length, drawnPitch(d)));
   const ui::IRect all = unite(box, drag.damage);
   drag.damage = box;
   if (all.empty()) return;
@@ -874,7 +1051,7 @@ void RollState::commitDrag() {
         // Ratio notes moved by rows step by harmonics of their fundamental, exactly as Up/Down does.
         const std::vector<doc::NoteKey> keys = selectionKeys();
         const int64_t D = virtualFundamental();
-        const doc::ops::EditResult e = doc::ops::moveNotes(p, ref_, keys, d.dt, d.steps, nullptr, D);
+        const doc::ops::EditResult e = doc::ops::moveNotes(p, ref_, keys, d.dt, d.steps, overlay(), D);
         if (apply(e, "Move Notes") && d.steps != 0) rememberHarmonics(e->notes, D);
       }
       break;

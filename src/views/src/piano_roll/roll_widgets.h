@@ -13,6 +13,7 @@
 //   └──────────┘└────────┴──────────────────────────────────────────────────────────────────────┘
 
 #include "pq/ui/controls.h"
+#include "pq/ui/theme.h"
 #include "pq/ui/widget.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "roll_state.h"
@@ -38,6 +39,13 @@ private:
   RollState& s_;
   ui::Toggle* loop_ = nullptr;
   TuningChip* tuning_ = nullptr;  // opens the MOS wheel for this clip (T3.14)
+  // T3.12 (scale / MOS tunings only): layout switch, background EDO, generator morph (MOS).
+  ui::Widget* layoutRow_ = nullptr;
+  ui::Button* layout_ = nullptr;
+  ui::Widget* gridRow_ = nullptr;
+  ui::DragBox* grid_ = nullptr;
+  ui::Widget* genRow_ = nullptr;
+  ui::DragBox* gen_ = nullptr;
 };
 
 class CornerPanel : public ui::Widget {
@@ -71,7 +79,9 @@ public:
   void onCaptureLost() override;
 
 private:
+  void paintScaleKeys(ui::PaintContext& ctx, const ui::IRect& r, const ui::IRect& vis);  // T3.12
   RollState& s_;
+  std::vector<ui::Rgba> classColours_;  // scratch: one colour per step class
 };
 
 class NoteAreaWidget : public ui::Control {
@@ -87,6 +97,7 @@ private:
   void pressNote(const ui::PointerEvent& e, const doc::Note& n, int zone);
   void pressEmpty(const ui::PointerEvent& e);
   void dragTo(ui::Vec2 p);
+  DrawnNote cellNote(TickRange c, float y, bool onOverlay) const;
   RollState& s_;
 };
 
@@ -121,5 +132,11 @@ private:
 // Shared paint helpers.
 void paintRowsBackground(ui::PaintContext& ctx, const RollState& s, const ui::IRect& r);
 void paintFundamental(ui::PaintContext& ctx, const RollState& s, const ui::IRect& r, const ui::IRect& vis);
+void paintOverlay(ui::PaintContext& ctx, const RollState& s, const ui::IRect& vis, float x0, float x1);
+// Key colours of a scale's step classes (T3.12): L in roll.keyLarge, s blended toward roll.keySmall by hardness
+// (mos-explorer's softness: s = L at L/s = 1, fully keySmall from L/s = 3), sizes in between interpolated between
+// their neighbours and pulled toward roll.keyExtra the more they stand apart (drawMOSCircle's colour map, with the
+// theme's keyExtra in place of the complement). `out` gets one colour per class.
+void stepClassColours(const ui::Theme& th, std::span<const StepClass> classes, double hardness, std::vector<ui::Rgba>& out);
 
 }  // namespace pq::views::roll

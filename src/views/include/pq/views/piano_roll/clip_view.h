@@ -7,9 +7,9 @@
 //            | lane-header (Chance) | velocity (stems, or chance)
 //
 // It edits the clip ViewContext::detailClip() names (hidden while there is none: the slot shows "No clip
-// selected"). EDO mode: one row per step of the clip's tuning (a MOS / Scala tuning gets one row per degree in the
-// same uniform layout until T3.12 adds its proportional layouts; pq/views/piano_roll/row_model.h), equave markers,
-// Q2 labels, scale highlighting, fold to used notes / scale. Ratio and Cents notes sit at their true pitch between
+// selected"). EDO mode: one row per step of the clip's tuning; MOS / Scala: one row per degree, Proportional or
+// Equidistant with step-class keys, an optional background EDO and a live generator morph (T3.12; row_model.h);
+// equave markers, Q2 labels, scale highlighting, fold to used notes / scale. Ratio and Cents notes sit at their true pitch between
 // rows and are marked off-grid (the theme's roll.offGrid border and a triangle pointing to the side of the nearest row
 // the pitch lies on). The grid is the context's shared GridSpec at this editor's zoom.
 //
@@ -74,6 +74,21 @@ public:
   void setScaleHighlight(bool on);
   bool showChance() const noexcept;
   void setShowChance(bool on);
+  // Scale / MOS layouts (T3.12): Proportional (default) or Equidistant rows for MOS and Scala tunings (EDOs are
+  // always Uniform); switching keeps the centred row. View state, not in the document.
+  roll::RowLayout scaleLayout() const noexcept;
+  void setScaleLayout(roll::RowLayout layout);
+  // Background EDO grid of the octave (0 = off): drawn behind the rows; Cents notes step / move on it.
+  uint32_t overlayEdo() const noexcept;
+  void setOverlayEdo(uint32_t n);
+  // Live generator morph of a MOS clip (what the clip box's Generator box does): previews every step through the
+  // context's tuning preview, end(true) commits one SetClipTuning (one undo step), end(false) restores.
+  void beginGeneratorMorph();
+  void morphGenerator(double generatorCents);
+  void endGeneratorMorph(bool commit);
+  // How many tuning changes were followed in place (MosLinearTable interval) vs by a rebuild (tests, bench).
+  uint64_t morphLinearFrames() const noexcept;
+  uint64_t morphRebuilds() const noexcept;
 
   // --- geometry (device px; tests script pointer input with these) ---
   float xOfTick(double contentTick) const noexcept;

@@ -96,6 +96,42 @@ TEST_CASE("mos linear form: k·g − m·P reproduces buildMosScale inside every 
   }
 }
 
+TEST_CASE("Mos::retuneLinear (T3.12 live morph) equals Mos::make inside an interval, every period, any rotation") {
+  std::mt19937_64 rng(31);
+  for (int32_t n : {2, 5, 7, 12, 24}) {
+    const MosLinearTable table(n);
+    std::vector<int32_t> k(static_cast<size_t>(n)), m(static_cast<size_t>(n));
+    for (int rep = 0; rep < 40; ++rep) {
+      const int32_t ppe = 1 + static_cast<int32_t>(rng() % 3);
+      const double P = 1200.0 / ppe;
+      const int32_t t = static_cast<int32_t>(rng() % static_cast<uint64_t>(table.intervalCount()));
+      const double lo = table.boundaries()[static_cast<size_t>(t)], hi = table.boundaries()[static_cast<size_t>(t) + 1];
+      auto at = [&](double u) { return (lo + (0.02 + 0.96 * u) * (hi - lo)) * P; };
+      std::uniform_real_distribution<double> U(0.0, 1.0);
+      MosParams p;
+      p.n = n;
+      p.period = P;
+      p.periodsPerEquave = ppe;
+      p.rotation = static_cast<int32_t>(rng() % static_cast<uint64_t>(n));
+      p.generator = at(U(rng));
+      Result<Mos> mos = Mos::make(p);
+      REQUIRE(mos.ok());
+      const double g2 = at(U(rng));
+      rotateLinearForm(table.lookup(g2, P), p.rotation, k.data(), m.data());
+      mos->retuneLinear(g2, k, m, std::nullopt);
+      p.generator = g2;
+      const Result<Mos> ref = Mos::make(p);
+      REQUIRE(ref.ok());
+      CAPTURE(n);
+      CAPTURE(ppe);
+      CHECK(mos->params().generator == g2);
+      REQUIRE(mos->size() == ref->size());
+      for (int32_t d = 0; d < ref->size(); ++d)
+        CHECK(std::fabs(mos->pitches()[static_cast<size_t>(d)] - ref->pitches()[static_cast<size_t>(d)]) < 1e-9);
+    }
+  }
+}
+
 TEST_CASE("mos linear form: boundaries are the Farey fractions of order n − 1") {
   // Order 4 (n = 5): 0, 1/4, 1/3, 1/2, 2/3, 3/4, 1.
   const MosLinearTable t(5);

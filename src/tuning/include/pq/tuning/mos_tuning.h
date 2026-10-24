@@ -40,6 +40,15 @@ public:
     return centsOfDegree(static_cast<int64_t>(equave) * size() + degree);
   }
 
+  // Live morph (T3.12): this MOS at another generator inside one MosLinearTable interval, from the interval's rotated
+  // linear form (rotateLinearForm for params().rotation: degree j of the period at k[j]·g − m[j]·period). Rewrites
+  // the pitches in place (every period of the equave) and sets params().generator / region; nothing else changes.
+  // Requires: k, m of size params().n, no MODMOS and no generator sequence, and the interval to contain `generator`
+  // away from its ends (where buildMOSScale's degenerate-chain nudge applies). Equal to Mos::make of the same
+  // params up to float rounding (~1e-12 cents). Allocation-free; RT-safe.
+  void retuneLinear(double generator, std::span<const int32_t> k, std::span<const int32_t> m,
+                    const std::optional<RegionHint>& region) noexcept;
+
 private:
   Mos() = default;
 

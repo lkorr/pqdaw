@@ -83,10 +83,11 @@ pq_add_test(pq_tests_views
     views/test_arrangement.cpp
     views/test_arrangement_editing.cpp
     views/test_piano_roll.cpp
+    views/test_piano_roll_scale.cpp
     views/test_mos_chart.cpp
     views/test_mixer.cpp
     views/test_mos_wheel.cpp
-  DEPS pq_views)
+  DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
   COMMAND pqdaw --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty --idle-check 10)

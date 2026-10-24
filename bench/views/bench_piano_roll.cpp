@@ -9,7 +9,9 @@
 #include <memory>
 #include <vector>
 
+#include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
+#include "pq/tuning/mos_regions.h"
 #include "pq/ui/atlas.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/scene_textures.h"
@@ -37,6 +39,115 @@ IRect bounds(std::span<const ClipRect> rects) {
     y1 = std::max(y1, r.y1);
   }
   return {x0, y0, x1 - x0, y1 - y0};
+}
+
+// T3.12: a live morph frame. A 24-degree MOS clip (per-period size 24, generator in the middle of its region) with
+// 3000 Degree notes over 10 equaves (degrees 0 … 239) in an 8-bar view, 3-px lanes (≈ 6 equaves on screen,
+// Proportional). One frame = a generator step through the context's tuning preview (as the MOS wheel and the clip
+// box do) → the clip view's refresh (in place: MosLinearTable form + RowModel::retune) → layout → paint of the damage.
+// A second measure crosses a MosLinearTable interval every frame (full rebuild: buildMOSScale + RowModel::build).
+int morphBench(const PaintResources& res, SceneTextures& tex) {
+  FakeTransport port;
+  ViewContext ctx(port);
+  doc::DocumentStore& st = ctx.store();
+  const tuning::MosRegionSet regions = tuning::buildMosRegions(24, 24, 1200.0, 1);
+  const tuning::MosRegion* region = nullptr;
+  for (const tuning::MosRegion& r : regions.regions)
+    if (r.perPeriodSize == 24 && (!region || std::fabs(r.lowCents + r.highCents - 1400.0) < std::fabs(region->lowCents + region->highCents - 1400.0))) region = &r;  // nearest 700 c (a meantone-family 24) 
+  if (!region) return 1;
+  doc::TuningDef def;
+  tuning::MosParams mp;
+  mp.n = 24;
+  mp.generator = 0.5 * (region->lowCents + region->highCents);
+  mp.region = region->hint();
+  def.system = mp;
+  auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi);
+  if (!t || !st.dispatch(t->command)) return 1;
+  if (!st.dispatch(doc::SetTrackTuning{t->tracks[0], doc::TuningAssignment::privateTuning(def)})) return 1;
+  const Ticks bars = 8;
+  auto c = doc::ops::insertEmptyClip(*st.current(), st.ids(), t->tracks[0], 0, bars * kTicksPerWhole);
+  if (!c || !st.dispatch(c->command)) return 1;
+  std::vector<doc::Note> notes(3000);
+  uint32_t seed = 777;
+  auto rnd = [&] { return seed = seed * 1664525u + 1013904223u; };
+  for (size_t i = 0; i < notes.size(); ++i) {
+    doc::Note& n = notes[i];
+    n.start = static_cast<Ticks>(i) * (bars * kTicksPerWhole) / static_cast<Ticks>(notes.size());
+    n.start -= n.start % (kPpq / 4);
+    n.length = (kPpq / 4) * (1 + rnd() % 4);
+    const int32_t d = static_cast<int32_t>(rnd() % 240);
+    n.pitch = tuning::PitchId::fromDegree(d % 24, d / 24);
+    n.velocity = static_cast<float>(1 + rnd() % 127);
+  }
+  auto add = doc::ops::addNotes(*st.current(), st.ids(), c->clips[0], notes);
+  if (!add || !st.dispatch(add->command)) return 1;
+
+  const uint32_t w = 1280, h = 800;
+  UiTree tree;
+  tree.setViewport(w, h, UiScale(1.0f));
+  tree.setResources(&res);
+  auto shell = Shell::create(tree, ctx);
+  if (!shell) return 1;
+  dynamic_cast<Splitter&>(*tree.find("main/body")).setPosition(520.0f);
+  ctx.setDetailClip(c->clips[0]);
+  tree.layoutNow();
+  auto* view = dynamic_cast<ClipView*>(tree.find("main/body/bottom/detail/clip/clip-view"));
+  if (!view) return 1;
+  view->setRowHeight(3);
+  view->centreOnDegree(120);
+  tree.layoutNow();
+  DrawList dl;
+  double now = 0.0;
+  tree.update(now);
+  tex.text->beginFrame();
+  dl.reset(w, h);
+  tree.paint(dl, res, now);
+  const TuningTarget target = TuningTarget::forClip(c->clips[0]);
+  const double g0 = mp.generator, span = region->highCents - region->lowCents;
+  std::printf("morph: 24-degree MOS (region %.3f-%.3f), 3000 notes over 10 equaves, %zu rows, lane %d px, %s\n",
+              region->lowCents, region->highCents, view->rows().size(), view->rows().laneHeight(),
+              view->rows().layout() == roll::RowLayout::Proportional ? "proportional" : "other");
+  auto frameBench = [&](const char* name, bool cross, bool paint) {
+    int i = 0;
+    uint64_t verts = 0, frames = 0;
+    const uint64_t lin0 = view->morphLinearFrames(), reb0 = view->morphRebuilds();
+    // Inside one MosLinearTable interval: tiny steps around the centre (an interval is ≥ ~P/n² wide); crossing:
+    // alternate between generators beyond either end of the region (its collapsed end is an interval boundary).
+    pq::bench::reportStats(name,
+                           pq::bench::measure(
+                               [&] {
+                                 ++i;
+                                 tuning::MosParams p = mp;
+                                 p.generator = cross ? g0 + ((i & 1) ? 1.5 : -1.5) * span
+                                                     : g0 + 1e-3 * static_cast<double>(i % 50);
+                                 doc::TuningDef d = def;
+                                 d.system = p;
+                                 ctx.setTuningPreview(target, std::move(d));
+                                 if (!paint) return;  // the clip view's refresh alone (observer → retune / rebuild)
+                                 now += 1.0 / 144.0;
+                                 tree.update(now);
+                                 const IRect box = bounds(tree.damage().rects());
+                                 tex.text->beginFrame();
+                                 dl.reset(w, h);
+                                 tree.paint(dl, res, now, box);
+                                 verts += dl.vertices().size();
+                                 ++frames;
+                               },
+                               1),
+                           "ns/frame");
+    std::printf("  %.0f vertices per frame; %llu in place, %llu rebuilt\n",
+                frames ? static_cast<double>(verts) / static_cast<double>(frames) : 0.0,
+                static_cast<unsigned long long>(view->morphLinearFrames() - lin0),
+                static_cast<unsigned long long>(view->morphRebuilds() - reb0));
+  };
+  frameBench("pianoroll.morph frame: 24-degree MOS, 10 equaves, 3000 notes (in place, MosLinearTable)", false, true);
+  frameBench("pianoroll.morph frame: 24-degree MOS, crossing an interval every frame (rebuild)", true, true);
+  frameBench("pianoroll.morph refresh only (no paint): in place", false, false);
+  frameBench("pianoroll.morph refresh only (no paint): rebuild", true, false);
+  tree.update(now + 1.0);
+  ctx.clearTuningPreview();
+  tree.setRoot(std::make_unique<Widget>());
+  return 0;
 }
 
 }  // namespace
@@ -196,5 +307,5 @@ int main() {
                         1, 9, 2),
                     "ns/edit");
   tree.setRoot(std::make_unique<Widget>());
-  return 0;
+  return morphBench(res, *tex);
 }

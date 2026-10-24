@@ -11,7 +11,11 @@
 // Every gesture is previewed and dispatched once on release: one undo step.
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <optional>
+#include <string>
+#include <string_view>
 
 #include "pq/ui/theme.h"
 #include "roll_widgets.h"
@@ -73,6 +77,23 @@ void NoteAreaWidget::pressNote(const PointerEvent& e, const doc::Note& n, int zo
   s_.audition(n.pitch, n.velocity, n.start, n.length);
 }
 
+// The note a draw gesture puts in cell `c` at device y: a Degree note on the row there, or with `onOverlay` (Alt, while
+// a background EDO is shown) a Cents note on the overlay line nearest the pointer's pitch (T3.12).
+DrawnNote NoteAreaWidget::cellNote(TickRange c, float y, bool onOverlay) const {
+  DrawnNote dn{c.start, c.end - c.start, 0};
+  const RowModel& rows = s_.rows();
+  if (rows.empty()) return dn;
+  const int32_t cy = s_.contentY(y);
+  if (onOverlay && s_.overlay()) {
+    dn.onOverlay = true;
+    dn.cents = s_.nearestOverlayCents(rows.centsAtY(static_cast<double>(cy)));
+    dn.degree = rows.placeCents(dn.cents).nearestDegree;
+  } else {
+    dn.degree = rows.row(rows.indexAtY(cy)).degree;
+  }
+  return dn;
+}
+
 void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
   DragState& d = s_.drag;
   d = {};
@@ -84,9 +105,9 @@ void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
   if (s_.ctx.drawMode()) {
     const TickRange c = drawCell(g, t);
     d.kind = DragKind::Draw;
-    d.drawn.push_back({c.start, c.end - c.start, d.pressDegree});
+    d.drawn.push_back(cellNote(c, e.pos.y, (e.mods & mod::kAlt) != 0));
     d.trackDamage = true;  // no notes tracked: the drawn cells are
-    s_.audition(s_.degreePitch(d.pressDegree), 100.0f, c.start, c.end - c.start);
+    s_.audition(s_.drawnPitch(d.drawn.back()), 100.0f, c.start, c.end - c.start);
     s_.damageDrag();
     return;
   }
@@ -136,11 +157,10 @@ void NoteAreaWidget::dragTo(Vec2 p) {
     case DragKind::Draw: {
       if (s_.rows().empty()) break;
       const TickRange c = drawCell(g, roundTicks(s_.tickAtX(p.x)));
-      const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(p.y))).degree;
       const bool have = std::any_of(d.drawn.begin(), d.drawn.end(), [&](const DrawnNote& n) { return n.start == c.start; });
       if (!have) {
-        d.drawn.push_back({c.start, c.end - c.start, deg});
-        s_.audition(s_.degreePitch(deg), 100.0f, c.start, c.end - c.start);
+        d.drawn.push_back(cellNote(c, p.y, !d.drawn.empty() && d.drawn.front().onOverlay));
+        s_.audition(s_.drawnPitch(d.drawn.back()), 100.0f, c.start, c.end - c.start);
       }
       break;
     }
@@ -183,9 +203,9 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         const Grid g = s_.grid();
         const TickRange c = drawCell(g, roundTicks(s_.tickAtX(e.pos.x)));
         if (!s_.rows().empty()) {
-          const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
-          s_.addNotes({{c.start, c.end - c.start, deg}});
-          s_.audition(s_.degreePitch(deg), 100.0f, c.start, c.end - c.start);
+          const DrawnNote dn = cellNote(c, e.pos.y, (e.mods & mod::kAlt) != 0);
+          s_.addNotes({dn});
+          s_.audition(s_.drawnPitch(dn), 100.0f, c.start, c.end - c.start);
         }
       } else {
         pressEmpty(e);
@@ -226,7 +246,7 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       } else if (e.mods & mod::kShift) {
         s_.scrollByPx(-dy * 60.0f * scale, 0.0f);
       } else {
-        s_.scrollByPx(-e.wheel.x * 60.0f * scale, -dy * 3.0f * static_cast<float>(std::max(1, s_.rows().empty() ? 12 : s_.rows().row(0).height())));
+        s_.scrollByPx(-e.wheel.x * 60.0f * scale, -dy * 3.0f * static_cast<float>(std::max(1, s_.rows().empty() ? 12 : s_.rows().laneHeight())));
       }
       return true;
     }
@@ -281,7 +301,7 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
       return true;
     case PointerType::Wheel:
       if (e.mods & mod::kCtrl) s_.setRowHeight(s_.rowPx() + static_cast<int32_t>(std::lround(e.wheel.y)));
-      else s_.scrollByPx(0.0f, -e.wheel.y * 3.0f * static_cast<float>(s_.rows().row(0).height()));
+      else s_.scrollByPx(0.0f, -e.wheel.y * 3.0f * static_cast<float>(s_.rows().laneHeight()));
       return true;
     default: return false;
   }
@@ -466,6 +486,63 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
   setPadding({6, 24, 6, 6});  // the chip sits in the first row under the 20-px title bar
   tuning_ = &add<TuningChip>("tuning", s.ctx);
   tuning_->setHeight(Length::fixed(18));
+  // T3.12: a "key  value" row per scale-view setting, shown only for MOS / Scala tunings (refresh()).
+  auto row = [this](const char* name, const char* text) -> Widget& {
+    Widget& w = add<Widget>(name);
+    w.setLayout(LayoutKind::Row);
+    w.setHeight(Length::fixed(18));
+    w.setPadding({0, 2, 0, 0});
+    w.add<Label>("label", text, FontRoleId::Small, TextTone::Secondary).setWidth(Length::flex(1));
+    return w;
+  };
+  layoutRow_ = &row("layout-row", "Layout");
+  layout_ = &layoutRow_->add<Button>("layout", "Proportional");
+  layout_->setWidth(Length::fixed(84));
+  layout_->setFocusable(false);
+  layout_->setInfo("Pitch Layout", "Proportional spaces the scale's rows by their real intervals (the gaps are the steps); "
+                                   "Equidistant gives every degree an equal row, like a chromatic piano roll.");
+  layout_->onClick = [this] {
+    s_.setScaleLayout(s_.scaleLayout() == RowLayout::Proportional ? RowLayout::Equidistant : RowLayout::Proportional);
+  };
+  gridRow_ = &row("grid-row", "EDO Grid");
+  ValueSpec gs;
+  gs.min = 0.0;
+  gs.max = 311.0;
+  gs.def = 0.0;
+  gs.step = 1.0;
+  gs.keyStep = 1.0;
+  gs.dragPixels = 600.0;
+  gs.decimals = 0;
+  grid_ = &gridRow_->add<DragBox>("edo-grid", gs);
+  grid_->setWidth(Length::fixed(64));
+  grid_->formatter = [](double v) { return v < 0.5 ? std::string("Off") : std::to_string(std::lround(v)) + "-EDO"; };
+  grid_->parser = [](std::string_view t) -> std::optional<double> {
+    if (t == "Off" || t == "off") return 0.0;
+    int v = 0;
+    const auto [p, ec] = std::from_chars(t.data(), t.data() + t.size(), v);
+    if (ec != std::errc{} || p == t.data()) return std::nullopt;
+    return static_cast<double>(v);
+  };
+  grid_->setSpec(gs);  // re-formats with the formatter
+  grid_->setInfo("Background EDO Grid", "Shows an EDO of the octave behind the scale (0 = off). Cents notes step and "
+                                        "move on its lines; Alt in Draw Mode draws Cents notes on them.");
+  grid_->onChange = [this](double v) { s_.setOverlayEdo(static_cast<uint32_t>(std::lround(std::max(0.0, v)))); };
+  genRow_ = &row("generator-row", "Generator");
+  ValueSpec ps;
+  ps.min = 0.0;
+  ps.max = 1200.0;
+  ps.def = 700.0;
+  ps.dragPixels = 2400.0;  // 0.5 ¢ per px over a 1200-¢ period (Shift: 0.05)
+  ps.keyStep = 0.1;
+  ps.decimals = 2;
+  ps.unit = "\xC2\xA2";
+  gen_ = &genRow_->add<DragBox>("generator", ps);
+  gen_->setWidth(Length::fixed(64));
+  gen_->setInfo("Generator", "Drag to morph the MOS: rows and notes follow live, past a region's end the next MOS is "
+                             "taken (as in the MOS wheel). Releasing commits it to this clip (one undo step).");
+  gen_->onGestureBegin = [this] { s_.beginGeneratorMorph(); };
+  gen_->onChange = [this](double v) { s_.morphGenerator(v); };
+  gen_->onGestureEnd = [this] { s_.endGeneratorMorph(true); };
   auto& spacer = add<Widget>();
   spacer.setHeight(Length::flex(1));
   loop_ = &add<Toggle>("loop", "Loop", ToggleStyle::Accent);
@@ -484,6 +561,25 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
 void ClipBoxPanel::refresh() {
   if (const doc::NoteClip* c = s_.clip()) loop_->setOn(c->loop.enabled);
   tuning_->setTarget(s_.hasClip() ? std::optional<TuningTarget>(TuningTarget::forClip(s_.clipRef())) : std::nullopt);
+  const bool scale = s_.hasClip() && s_.rows().scaleLayout();
+  const tuning::Mos* mos = scale ? s_.tuning().mos() : nullptr;
+  if (layoutRow_->visible() != scale) layoutRow_->setVisible(scale);
+  if (gridRow_->visible() != scale) gridRow_->setVisible(scale);
+  if (genRow_->visible() != (mos != nullptr)) genRow_->setVisible(mos != nullptr);
+  if (scale) {
+    layout_->setText(s_.scaleLayout() == RowLayout::Proportional ? "Proportional" : "Equidistant");
+    if (!grid_->inGesture()) grid_->setValue(static_cast<double>(s_.overlayEdo()));
+  }
+  if (mos && !gen_->inGesture()) {
+    const tuning::MosParams& p = mos->params();
+    if (gen_->spec().max != p.period) {
+      ValueSpec sp = gen_->spec();
+      sp.max = p.period;
+      sp.dragPixels = 2.0 * p.period;
+      gen_->setSpec(sp);
+    }
+    gen_->setValue(p.generator);
+  }
   markDirty();
 }
 

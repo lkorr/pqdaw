@@ -121,6 +121,45 @@ def velocity():
     return project("12-EDO", edo(12), "Velocity Ramp", "#16B293", ns)
 
 
+def mos5l2s(generator):
+    # 5L 2s, Ionian (rotation 4 of the generator chain's Lydian), in its region 4\7 … 3\5 of the octave.
+    return {"kind": "mos", "generator": generator, "n": 7, "period": 1200.0, "periodsPerEquave": 1, "rotation": 4,
+            "modmos": [], "genSequence": [], "octaveStretch": 0.0,
+            "region": {"perPeriodSize": 7, "lowCents": 1200.0 * 4 / 7, "highCents": 720.0},
+            "referenceHz": 261.626}
+
+
+def scale_tune():
+    # A diatonic tune over two octaves: chords (I, vi, IV, V in scale degrees), a bass line, a melody, plus a 7/4
+    # (off the scale) and a Cents note on 13\31 (503.2 ¢, a 31edo line between degrees 3 and 4).
+    q, e = PPQ, PPQ // 2
+    ns, nid = [], 400
+    chords = [(0, [0, 2, 4]), (2 * q, [-2, 0, 2]), (4 * q, [-4, -2, 0]), (6 * q, [-3, -1, 1])]
+    for t, ds in chords:
+        for i, d in enumerate(ds):
+            ns.append(note(nid, t, 2 * q - e // 2, deg(d % 7, d // 7), 96 - 10 * i)); nid += 1
+        b = ds[0] - 7
+        ns.append(note(nid, t, q + e, deg(b % 7, b // 7), 112)); nid += 1
+    melody = [(0, 7, 120), (q, 8, 84), (q + e, 9, 70), (2 * q, 11, 127), (3 * q, 9, 60), (4 * q + e, 10, 96),
+              (5 * q, 12, 76), (6 * q, 11, 110), (7 * q, 13, 70)]
+    for t, d, v in melody:
+        ns.append(note(nid, t, e if d % 2 else q - e // 2, deg(d % 7, d // 7), v)); nid += 1
+    ns.append(note(nid, 3 * q + e, e, {"ratio": "7/4"}, 100)); nid += 1
+    ns.append(note(nid, 5 * q + e, q, {"cents": 1200.0 * 13 / 31}, 90)); nid += 1
+    ns.sort(key=lambda n: (n["start"], n["id"]))
+    return ns
+
+
+def mos_project(generator, clip_name):
+    return project("5L 2s", mos5l2s(generator), clip_name, "#16B293", scale_tune())
+
+
+def scala_project():
+    just = {"kind": "scale", "description": "Just major (Ptolemy's intense diatonic)",
+            "pitches": ["9/8", "5/4", "4/3", "3/2", "5/3", "15/8", "2/1"], "referenceHz": 261.626}
+    return project("Just major", just, "Just Tune", "#8499F0", scale_tune())
+
+
 def write(name, proj):
     d = os.path.join(ROOT, name)
     os.makedirs(d, exist_ok=True)
@@ -132,3 +171,7 @@ if __name__ == "__main__":
     write("pianoroll-12edo", twelve())
     write("pianoroll-31edo", thirtyone())
     write("pianoroll-velocity", velocity())
+    # T3.12: 5L 2s at 18\31 (the -prop / -equi / -over-31edo scenes), near collapse (717 ¢: s = 9 ¢), a Scala scale.
+    write("pianoroll-5L2s", mos_project(1200.0 * 18 / 31, "Meantone Tune"))
+    write("pianoroll-5L2s-near-collapse", mos_project(717.0, "Near Collapse"))
+    write("pianoroll-scala", scala_project())

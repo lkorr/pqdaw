@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 #include "pq/tuning/edo.h"
 
@@ -153,7 +154,153 @@ RowModel RowModel::build(const tuning::Tuning& tuning, const RowOptions& o) {
   }
   m.contiguous_ = !usedFold && o.fold != Fold::Scale;
   m.topDegree_ = degrees.empty() ? 0 : degrees.front();
+  m.pxScale_ = o.pxScale > 0.0 ? o.pxScale : 1.0;
+  m.ppc_ = o.pxPerCent > 0.0 ? o.pxPerCent : (eq > 0.0 ? static_cast<double>(rowPx) * n / eq : 0.12);
+  m.lane_ = edo ? static_cast<double>(rowPx) : m.ppc_ * eq / n;
+  m.laneHeight_ = std::max(1, static_cast<int32_t>(std::lround(m.lane_)));
+  if (edo || m.rows_.empty()) {
+    m.layout_ = RowLayout::Uniform;
+    m.contentHeight_ = m.rows_.empty() ? 0 : m.rows_.back().bottom;
+    return m;
+  }
+  m.layout_ = o.layout == RowLayout::Proportional ? RowLayout::Proportional : RowLayout::Equidistant;
+  if (m.layout_ == RowLayout::Proportional)
+    for (size_t i = 1; i < m.rows_.size(); ++i)
+      if (m.rows_[i].cents > m.rows_[i - 1].cents) {  // not in pitch order: rows would cross
+        m.layout_ = RowLayout::Equidistant;
+        break;
+      }
+  // Proportional: content y is linear in cents from a pitch that a generator change cannot move past the top row (the
+  // next equave boundary above it: MOS pitches stay inside their equave), so a live morph keeps every pitch that
+  // does not change (the tonics) where it is on screen.
+  m.originCents_ = std::max(m.rows_.front().cents, static_cast<double>(floorDiv(m.rows_.front().degree, n) + 1) * eq);
+  m.steps_.assign(static_cast<size_t>(n), 0.0);
+  m.degClass_.assign(static_cast<size_t>(n), 0);
+  m.classes_.reserve(static_cast<size_t>(n));
+  m.y_.assign(m.rows_.size(), 0.0);
+  m.classify(tuning);
+  m.layoutRows();
   return m;
+}
+
+// Step classes (mos-roll.js getRows: each degree's step is the one above it; buckets as drawMOSCircle's 0.01 ¢). The
+// vectors were sized at build (classes_ has capacity n), so this never allocates.
+void RowModel::classify(const tuning::Tuning& t) noexcept {
+  const int32_t n = size_;
+  auto bucket = [](double v) { return std::round(v * 100.0) / 100.0; };
+  double prev = degreeCents(t, 0);
+  for (int32_t d = 0; d < n; ++d) {
+    const double next = degreeCents(t, d + 1);
+    steps_[static_cast<size_t>(d)] = bucket(next - prev);
+    prev = next;
+  }
+  classes_.clear();
+  const auto [mn, mx] = std::minmax_element(steps_.begin(), steps_.end());
+  if (*mx - *mn < 0.01) {
+    classes_.push_back({*mx});  // equal steps: one class (mos-roll.js "degenerate": every key is a large step)
+  } else {
+    for (double s : steps_) {  // unique, descending (insertion: n is small and capacity is reserved)
+      auto it = std::find_if(classes_.begin(), classes_.end(), [&](const StepClass& c) { return c.cents <= s; });
+      if (it != classes_.end() && it->cents == s) continue;
+      classes_.insert(it, StepClass{s});
+    }
+  }
+  const size_t count = classes_.size();
+  for (int32_t d = 0; d < n; ++d) {
+    size_t k = 0;
+    if (count > 1)
+      while (k + 1 < count && classes_[k].cents != steps_[static_cast<size_t>(d)]) ++k;
+    degClass_[static_cast<size_t>(d)] = static_cast<uint8_t>(std::min<size_t>(k, 255));
+  }
+  for (PitchRow& r : rows_) {
+    const uint8_t k = degClass_[static_cast<size_t>(floorMod(r.degree, n))];
+    r.stepClass = k;
+    r.z = static_cast<uint8_t>(std::min<size_t>(count - 1 - std::min<size_t>(k, count - 1), 255));
+  }
+}
+
+// mos-roll.js layoutRows (~747–860), in device px with the block constants scaled.
+void RowModel::layoutRows() noexcept {
+  const size_t nRows = rows_.size();
+  if (layout_ == RowLayout::Equidistant) {
+    // Every degree owns a full lane; rows butt (even cents: one lane per degree, packed when folded).
+    pad_ = lane_ * 0.5;
+    for (size_t i = 0; i < nRows; ++i) {
+      const double y = pad_ + static_cast<double>(i) * lane_;
+      y_[i] = y;
+      PitchRow& r = rows_[i];
+      r.top = static_cast<int32_t>(std::lround(y - pad_));
+      r.bottom = static_cast<int32_t>(std::lround(y + pad_));
+      r.centre = static_cast<int32_t>(std::lround(y));
+    }
+    contentHeight_ = nRows ? rows_.back().bottom : 0;
+    return;
+  }
+  // Proportional: a nominal block that follows the zoom but never falls under a legible floor; per row and per side
+  // it gives way only toward a neighbour that is close.
+  const double nominal = std::min(kRollMaxNoteH * pxScale_, std::max(kRollLegibleNoteH * pxScale_, lane_ * kRollNoteFill));
+  const double half = nominal / 2.0;
+  const double minGap = kRollMinNoteGap * pxScale_;
+  pad_ = std::ceil(half);
+  for (size_t i = 0; i < nRows; ++i) y_[i] = pad_ + (originCents_ - rows_[i].cents) * ppc_;
+  auto extent = [&](double span) {
+    if (!std::isfinite(span)) return half;
+    const double gap = std::min(minGap, span * 0.25);
+    return std::max(0.0, std::min(half, (span - gap) / 2.0));
+  };
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  for (size_t i = 0; i < nRows; ++i) {
+    // The nearest neighbour on each side at another pitch (coincident degrees share a lane).
+    double up = kInf, down = kInf;
+    for (size_t j = i; j-- > 0;) {
+      const double d = y_[i] - y_[j];
+      if (d > 1e-6) {
+        up = d;
+        break;
+      }
+    }
+    for (size_t j = i + 1; j < nRows; ++j) {
+      const double d = y_[j] - y_[i];
+      if (d > 1e-6) {
+        down = d;
+        break;
+      }
+    }
+    PitchRow& r = rows_[i];
+    r.top = static_cast<int32_t>(std::lround(y_[i] - extent(up)));
+    r.bottom = static_cast<int32_t>(std::lround(y_[i] + extent(down)));
+    r.centre = static_cast<int32_t>(std::lround(y_[i]));
+  }
+  contentHeight_ = nRows ? static_cast<int32_t>(std::ceil(y_.back() + half)) + 1 : 0;
+}
+
+double RowModel::hardness() const noexcept {
+  if (classes_.size() < 2) return 1.0;
+  const double L = classes_.front().cents, s = classes_.back().cents;
+  return s > 0.01 ? L / s : 20.0;
+}
+
+void RowModel::retune(const tuning::Tuning& tuning) noexcept {
+  for (PitchRow& r : rows_) r.cents = degreeCents(tuning, r.degree);
+  if (layout_ == RowLayout::Uniform) return;  // EDO rows do not morph
+  classify(tuning);
+  if (layout_ == RowLayout::Proportional) layoutRows();  // Equidistant geometry does not depend on the pitches
+}
+
+double RowModel::centsAtY(double y) const noexcept {
+  size_t lo = 0, hi = rows_.size();
+  while (lo < hi) {  // first row whose centre is below y
+    const size_t mid = (lo + hi) / 2;
+    if (static_cast<double>(rows_[mid].centre) <= y) lo = mid + 1;
+    else hi = mid;
+  }
+  if (rows_.size() == 1) return rows_[0].cents;
+  const size_t b = std::clamp<size_t>(lo, 1, rows_.size() - 1), a = b - 1;  // a above, b below
+  const PitchRow& ra = rows_[a];
+  const PitchRow& rb = rows_[b];
+  if (ra.centre == rb.centre) return ra.cents;
+  const double t = (y - ra.centre) / static_cast<double>(rb.centre - ra.centre);
+  return ra.cents + (rb.cents - ra.cents) * t;
 }
 
 int64_t RowModel::indexOfDegree(int64_t degree) const noexcept {
@@ -210,6 +357,7 @@ CentsPlacement RowModel::placeCents(double cents) const noexcept {
   p.bottom = p.centre + (near.bottom - near.centre);
   p.nearestDegree = near.degree;
   p.offsetCents = cents - near.cents;
+  p.z = near.z;
   return p;
 }
 

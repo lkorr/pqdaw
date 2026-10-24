@@ -27,6 +27,18 @@ Result<Mos> Mos::make(MosParams p) {
   return m;
 }
 
+void Mos::retuneLinear(double generator, std::span<const int32_t> k, std::span<const int32_t> m,
+                       const std::optional<RegionHint>& region) noexcept {  // RT-safe
+  const size_t n = static_cast<size_t>(params_.n);
+  const double P = params_.period;
+  for (size_t j = 0; j < n && j < k.size() && j < m.size(); ++j) {
+    const double c = static_cast<double>(k[j]) * generator - static_cast<double>(m[j]) * P;
+    for (size_t r = 0; r * n + j < pitches_.size(); ++r) pitches_[r * n + j] = c + static_cast<double>(r) * P;
+  }
+  params_.generator = generator;
+  params_.region = region;
+}
+
 double Mos::centsOfDegree(int64_t degree) const noexcept {  // RT-safe
   const int64_t n = static_cast<int64_t>(pitches_.size());
   int64_t q = degree / n;

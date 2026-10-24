@@ -66,7 +66,10 @@ void paintRowsBackground(PaintContext& ctx, const RollState& s, const IRect& r) 
   ctx.dl.addRectFilled(vis.toRect(), th.roll.rowAccidental);
   if (rows.empty()) return;
   const auto [first, last] = rows.rowsIn(s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())) + 1);
-  const bool lines = rows.size() > 0 && rows.row(0).height() >= 5;
+  const bool lines = rows.laneHeight() >= 5;
+  // Proportional (T3.12, mos-roll.js render): only the band a note can occupy is shaded, so the unshaded space
+  // between bands is the interval; the pitch line runs along the pitch itself, the equave line along the tonic's.
+  const bool proportional = rows.layout() == RowLayout::Proportional;
   const float x0 = static_cast<float>(vis.x), x1 = static_cast<float>(vis.right());
   for (size_t i = first; i < last; ++i) {
     const PitchRow& row = rows.row(i);
@@ -74,9 +77,43 @@ void paintRowsBackground(PaintContext& ctx, const RollState& s, const IRect& r) 
     Rgba c;
     if (s.scaleHighlight()) c = (row.flags & kRowInScale) ? th.roll.rowScale : th.roll.rowAccidental;
     else c = (row.flags & kRowNatural) ? th.roll.rowNatural : th.roll.rowAccidental;
-    if (c != th.roll.rowAccidental) ctx.dl.addRectFilled(frect(x0, y0, x1, y1), c);
-    if (row.flags & kRowEquaveStart) ctx.dl.addRectFilled(frect(x0, y1 - 1, x1, y1), th.roll.equave);
-    else if (lines) ctx.dl.addRectFilled(frect(x0, y1 - 1, x1, y1), th.roll.rowLine);
+    if (c != th.roll.rowAccidental && y1 > y0) ctx.dl.addRectFilled(frect(x0, y0, x1, y1), c);
+    if (proportional) {
+      const float yc = static_cast<float>(s.screenY(row.centre));
+      if (row.flags & kRowEquaveStart) ctx.dl.addRectFilled(frect(x0, yc, x1, yc + 1), th.roll.equave);
+      else if (lines) ctx.dl.addRectFilled(frect(x0, yc, x1, yc + 1), th.roll.pitchLine);
+    } else if (row.flags & kRowEquaveStart) {
+      ctx.dl.addRectFilled(frect(x0, y1 - 1, x1, y1), th.roll.equave);
+    } else if (lines) {
+      ctx.dl.addRectFilled(frect(x0, y1 - 1, x1, y1), th.roll.rowLine);
+    }
+  }
+}
+
+// --- background EDO overlay (T3.12, SPEC §3.2 display grid) ------------------------------------------------------
+
+// One line per overlay step (of the octave) at its pitch: placed through the rows like any cents pitch, so in the
+// Equidistant layout the lines are spaced between the degree rows they fall between. Lines closer than 3 device px to
+// the previous one are skipped (equave lines never), so a dense zoom costs at most one line per 3 px.
+void paintOverlay(PaintContext& ctx, const RollState& s, const IRect& vis, float x0, float x1) {
+  const tuning::Edo* e = s.overlay();
+  const RowModel& rows = s.rows();
+  if (!e || rows.empty() || vis.empty()) return;
+  const Theme& th = *ctx.res.theme;
+  const double hiCents = rows.centsAtY(s.contentY(static_cast<float>(vis.y)) - 2);
+  const double loCents = rows.centsAtY(s.contentY(static_cast<float>(vis.bottom())) + 2);
+  const int64_t n = e->n();
+  const double step = e->equaveCents() / static_cast<double>(n);
+  const int64_t kHi = static_cast<int64_t>(std::ceil(hiCents / step));
+  const int64_t kLo = std::max(kHi - 8192, static_cast<int64_t>(std::floor(loCents / step)));
+  float lastY = -1e30f;
+  for (int64_t k = kHi; k >= kLo; --k) {
+    const float y = static_cast<float>(s.screenY(rows.placeCents(e->centsOfStep(k)).centre));
+    if (y < static_cast<float>(vis.y) - 1.0f || y > static_cast<float>(vis.bottom()) + 1.0f) continue;
+    const bool equave = k % n == 0;
+    if (!equave && y - lastY < 3.0f) continue;
+    lastY = y;
+    ctx.dl.addRectFilled(frect(x0, y, x1, y + 1.0f), equave ? th.roll.edoEquave : th.roll.edoLine);
   }
 }
 
@@ -155,6 +192,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     }
   }
 
+  paintOverlay(ctx, s_, vis, static_cast<float>(vis.x), static_cast<float>(vis.right()));
   paintFundamental(ctx, s_, r, vis);
 
   // Notes. A Move / Copy drag shows the selected notes displaced: look as far back / ahead as the drag reaches.
@@ -166,6 +204,12 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   const bool anySelected = !s_.selection().empty();
   const bool velPreview = dr.kind == DragKind::Velocity && !s_.showChance();
   const float vx0 = static_cast<float>(vis.x) - 4.0f, vx1 = static_cast<float>(vis.right()) + 4.0f;
+  // Proportional rows may overlap (a collapsing MOS): notes are painted by their row's z, small steps under large
+  // ones, selected notes on top (mos-roll.js drawOrder), each z in time order. A counting sort over the visible notes
+  // into reused buffers; the other layouts cannot overlap and paint directly.
+  const bool zOrder = s_.rows().layout() == RowLayout::Proportional;
+  std::vector<ZNote>& zNotes = s_.zNotes;
+  zNotes.clear();
   auto emit = [&](const doc::Note& n, Ticks start, Ticks length, const tuning::PitchId& pitch, bool sel) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
     float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(start + length))));
@@ -185,7 +229,8 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
       d.fill = sel ? col.selFill[v] : col.fill[v];
       d.border = sel ? col.selBorder : col.border[v];
     }
-    drawNote(dl, d, th->roll.offGrid);
+    if (zOrder) zNotes.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, d.border, d.offGrid, static_cast<uint16_t>(pl.z + (sel ? 256 : 0))});
+    else drawNote(dl, d, th->roll.offGrid);
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
     const bool sel = anySelected && s_.selected(n.id);
@@ -198,16 +243,25 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     }
     if (n.start + n.length > from && n.start < to) emit(n, n.start, n.length, n.pitch, sel);
   });
+  if (zOrder && !zNotes.empty()) {
+    uint32_t count[513] = {};
+    for (const ZNote& z : zNotes) ++count[z.key + 1];
+    for (size_t k = 1; k < 513; ++k) count[k] += count[k - 1];
+    std::vector<ZNote>& sorted = s_.zSorted;
+    sorted.resize(zNotes.size());
+    for (const ZNote& z : zNotes) sorted[count[z.key]++] = z;  // stable: time order within one z
+    for (const ZNote& z : sorted) drawNote(dl, {z.x0, z.x1, z.y0, z.y1, z.fill, z.border, z.offGrid}, th->roll.offGrid);
+  }
 
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)
     for (const DrawnNote& dn : dr.drawn) {
-      const PitchRow* row = s_.rows().rowOfDegree(dn.degree);
-      if (!row) continue;
+      const NotePlace pl = s_.place(s_.drawnPitch(dn));
+      if (!pl.ok) continue;
       const float x0 = std::round(s_.xOfTick(static_cast<double>(dn.start)));
       const float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(dn.start + dn.length))));
-      drawNote(dl, {x0, x1, static_cast<float>(s_.screenY(row->top)), static_cast<float>(s_.screenY(row->bottom)),
-                    col.selFill[100], col.selBorder, 0},
+      drawNote(dl, {x0, x1, static_cast<float>(s_.screenY(pl.top)), static_cast<float>(s_.screenY(pl.bottom)),
+                    col.selFill[100], col.selBorder, pl.offGrid},
                th->roll.offGrid);
     }
 
@@ -243,6 +297,11 @@ void KeysWidget::paint(PaintContext& ctx) {
     dl.popClip();
     return;
   }
+  if (rows.scaleLayout()) {
+    paintScaleKeys(ctx, r, vis);
+    dl.popClip();
+    return;
+  }
   const ThemeFonts* fonts = ctx.res.uiFonts;
   TextSystem* ts = ctx.res.text;
   const FontId font = fonts ? fonts->small : kNoFont;
@@ -251,7 +310,7 @@ void KeysWidget::paint(PaintContext& ctx) {
   const float blackX1 = x0 + std::round(static_cast<float>(r.w) * 0.5f);
   const int32_t pad = ctx.scale.px(4);
   const auto [first, last] = rows.rowsIn(s_.contentY(static_cast<float>(vis.y)), s_.contentY(static_cast<float>(vis.bottom())) + 1);
-  const int32_t rowH = rows.row(0).height();
+  const int32_t rowH = rows.laneHeight();
   // Labels (Q2): every row when rows are tall enough for the text; else the white keys when they leave room
   // around them (a label may overhang into the unlabelled rows next to it); equave rows always. On a
   // 12edo-compatible EDO only the C rows are named until the rows are tall (Live labels the Cs).
@@ -296,6 +355,93 @@ void KeysWidget::paint(PaintContext& ctx) {
       }
     }
   dl.popClip();
+}
+
+// --- scale keys (T3.12) ------------------------------------------------------------------------------------------
+
+void stepClassColours(const Theme& th, std::span<const StepClass> classes, double hardness, std::vector<Rgba>& out) {
+  out.clear();
+  if (classes.empty()) return;
+  // drawMOSCircle: softness = 1 − (L/s − 1) / 2, clamped; s = lerp(L, keySmall, 1 − softness).
+  const double softness = std::clamp(1.0 - (hardness - 1.0) / 2.0, 0.0, 1.0);
+  const Rgba Lc = th.roll.keyLarge;
+  const Rgba sc = lerp(Lc, th.roll.keySmall, static_cast<float>(1.0 - softness));
+  out.assign(classes.size(), Lc);
+  if (classes.size() == 1) return;
+  out.back() = sc;
+  // Intermediate sizes (classes are sorted descending): between the nearest known neighbours by position, pulled
+  // toward keyExtra by how far the size stands from the next smaller one (the circle's pairSoftness), largest first.
+  const size_t last = classes.size() - 1;
+  for (size_t i = 1; i < last; ++i) {
+    const double st = classes[i].cents, above = classes[i - 1].cents, below = classes[last].cents;
+    const double range = above - below;
+    const double t = range > 0.01 ? (st - below) / range : 0.5;
+    const Rgba blend = lerp(out[last], out[i - 1], static_cast<float>(t));
+    const double pairRatio = below > 0.01 ? st / below : 20.0;
+    const double pairSoftness = std::clamp(1.0 - (pairRatio - 1.0) / 2.0, 0.0, 1.0);
+    const Rgba distinct = lerp(blend, th.roll.keyExtra, 0.3f);
+    out[i] = lerp(distinct, blend, static_cast<float>(pairSoftness));
+  }
+}
+
+// Gutter of a scale layout (mos-roll.js drawGutter): one key per row, exactly the row's block (in the Proportional
+// layout the gaps between keys are the intervals), coloured by step class with the hardness blend; the tonic in
+// roll.keyTonic. Degree numbers sit at each row's pitch where they do not crowd the previous one; the equave number on
+// a tab at degree 0. Overlay ticks at the right edge.
+void KeysWidget::paintScaleKeys(PaintContext& ctx, const IRect& r, const IRect& vis) {
+  const Theme* th = ctx.res.theme;
+  DrawList& dl = ctx.dl;
+  const RowModel& rows = s_.rows();
+  stepClassColours(*th, rows.stepClasses(), rows.hardness(), classColours_);
+  const float x0 = static_cast<float>(r.x), x1 = static_cast<float>(r.right());
+  const auto [first, last] = rows.rowsIn(s_.contentY(static_cast<float>(vis.y)), s_.contentY(static_cast<float>(vis.bottom())) + 1);
+  const Rgba accent = th->accent.primary;
+  const float hl = static_cast<float>(ctx.scale.px(3));
+  for (size_t i = first; i < last; ++i) {
+    const PitchRow& row = rows.row(i);
+    float y0 = static_cast<float>(s_.screenY(row.top)), y1 = static_cast<float>(s_.screenY(row.bottom));
+    if (y1 <= y0) continue;
+    if (y1 - y0 > 5.0f) y1 -= 1.0f;  // a hairline between keys once there is room
+    const Rgba c = (row.flags & kRowEquaveStart) ? th->roll.keyTonic
+                   : row.stepClass < classColours_.size() ? classColours_[row.stepClass]
+                                                          : th->roll.keyLarge;
+    dl.addRectFilled(frect(x0, y0, x1, y1), c);
+    if (s_.scaleHighlight() && (row.flags & kRowInScale)) dl.addRectFilled(frect(x1 - hl, y0, x1, y1), accent);
+  }
+  // Overlay ticks: the background EDO's lines continued into the gutter's right edge.
+  if (s_.overlay()) paintOverlay(ctx, s_, vis, x1 - static_cast<float>(ctx.scale.px(6)), x1);
+  const ThemeFonts* fonts = ctx.res.uiFonts;
+  TextSystem* ts = ctx.res.text;
+  if (!fonts || !ts) return;
+  const int32_t lineH = ts->metrics(fonts->small).lineHeight;
+  const int32_t pad = ctx.scale.px(4);
+  int32_t lastLabel = INT32_MIN / 2;
+  for (size_t i = first; i < last; ++i) {
+    const PitchRow& row = rows.row(i);
+    const int32_t yc = s_.screenY(row.centre);
+    const bool equave = (row.flags & kRowEquaveStart) != 0;
+    if (!equave && yc - lastLabel < lineH) continue;  // mos-roll.js: skip a label too close to the previous one
+    if (equave && yc - lastLabel < lineH / 2) continue;
+    const std::string& label = rows.label(i);
+    if (label.empty()) continue;
+    lastLabel = yc;
+    const Rgba keyCol = equave ? th->roll.keyTonic
+                        : row.stepClass < classColours_.size() ? classColours_[row.stepClass]
+                                                               : th->roll.keyLarge;
+    // Text over the key when it is tall enough, else over the gutter background beside it: pick the readable tone.
+    const bool onKey = row.height() >= lineH - 2;
+    const Rgba textCol = onKey ? clipTextFor(*th, keyCol) : th->text.secondary;
+    const IRect box{r.x, yc - lineH / 2, r.w, lineH};
+    paint::text(ctx, fonts->small, box, label, textCol, TextAlign::Right, pad, pad + (s_.overlay() ? ctx.scale.px(6) : 0));
+    if (const std::string& eq = rows.equaveLabel(i); !eq.empty()) {
+      const int32_t tw = ts->measure(fonts->bodyStrong, eq) + 2 * pad;
+      const int32_t th2 = ts->metrics(fonts->bodyStrong).lineHeight;
+      const int32_t ty = yc - th2 / 2;
+      dl.addRectFilled(frect(x0, static_cast<float>(ty), x0 + static_cast<float>(tw), static_cast<float>(ty + th2)),
+                       th->roll.keyTonic);
+      paint::text(ctx, fonts->bodyStrong, {r.x, ty, tw, th2}, eq, th->roll.keyText, TextAlign::Left, pad, 0);
+    }
+  }
 }
 
 // --- ruler ----------------------------------------------------------------------------------------------
@@ -473,7 +619,12 @@ void ClipBoxPanel::paint(PaintContext& ctx) {
   dl.addRectFilled(title.toRect(), clipCol);
   paint::text(ctx, f->bodyStrong, title, c->name.empty() ? std::string_view("MIDI Clip") : std::string_view(c->name),
               clipTextFor(*th, clipCol), TextAlign::Left, pad, pad);
-  int32_t y = title.bottom() + ctx.scale.px(4) + lh;  // the first row is the tuning chip (T3.14)
+  // The first rows are widgets: the tuning chip (T3.14), then for scale tunings layout / EDO grid / generator (T3.12).
+  int32_t y = title.bottom() + ctx.scale.px(4) + lh;
+  for (size_t i = 0; i < childCount(); ++i) {
+    const Widget& w = child(i);
+    if (w.visible() && w.height().kind == SizeKind::Fixed && &w != loop_ && &w != tuning_) y = std::max(y, w.rect().bottom() + ctx.scale.px(2));
+  }
   auto line = [&](std::string_view key, std::string_view value) {
     const IRect row{r.x, y, r.w, lh};
     paint::text(ctx, f->small, row, key, th->text.secondary, TextAlign::Left, pad, pad);

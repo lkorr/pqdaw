@@ -1,4 +1,4 @@
-# T3.11 clip view / piano roll (T3.12 adds its scale / MOS layouts here).
+# T3.11 clip view / piano roll; T3.12 scale / MOS layouts and live morph.
 set(PQ_VIEWS_PIANO_ROLL_SOURCES
   src/piano_roll/row_model.cpp
   src/piano_roll/roll_state.cpp

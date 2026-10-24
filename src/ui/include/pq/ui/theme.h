@@ -104,7 +104,9 @@ struct Theme {
   struct Roll {  // piano roll (T3.11): keys, row shading, equave markers, area outside the clip, off-grid notes,
                  // the virtual fundamental and its harmonic guide lines (SPEC §4.3)
     Rgba keyWhite, keyBlack, keyText, rowNatural, rowAccidental, rowScale, rowLine, equave, outside, offGrid, fundamental,
-        harmonic;
+        harmonic,
+        // scale / MOS layouts (T3.12): step-class keys, the proportional pitch line, the background EDO overlay
+        keyTonic, keyLarge, keySmall, keyExtra, pitchLine, edoLine, edoEquave;
     bool operator==(const Roll&) const = default;
   } roll{};
   struct MosChart {  // MOS wheel region chart (T3.13): surfaces from the Live 12 look, data colours from mos-explorer
