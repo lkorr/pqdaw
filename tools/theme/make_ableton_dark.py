@@ -1,62 +1,67 @@
 import colorsys, sys
+# Ableton Dark, re-derived from the user's Live 12 Arrangement View screenshot (T3.2-fix1, Q47; the screenshot is
+# git-ignored at reference/inspiration/live12/arrangement.png). "S:" = sampled there (pixel value, where), "own:"
+# = not visible in it, chosen to sit in the sampled palette. Live renders text with ClearType, so text colours
+# are the glyph-core value of large / bold glyphs.
 colors = [
- ("surface.background", "#1E1E1E"),
- ("surface.panel", "#2E2E2E"),
- ("surface.raised", "#3A3A3A"),
- ("surface.sunken", "#222222"),
- ("surface.divider", "#141414"),
- ("surface.highlight", "#444444"),
- ("control.fill", "#4A4A4A"),
- ("control.fillHover", "#565656"),
- ("control.fillPressed", "#3D3D3D"),
- ("control.fillDisabled", "#363636"),
- ("control.border", "#151515"),
- ("control.track", "#555555"),
- ("control.value", "#FFA33D"),
- ("control.valueDisabled", "#6A6A6A"),
- ("control.thumb", "#A8A8A8"),
- ("control.thumbHover", "#C6C6C6"),
- ("control.needle", "#E2E2E2"),
- ("field.fill", "#232323"),
- ("field.fillHover", "#292929"),
- ("field.border", "#151515"),
- ("field.borderFocus", "#FFA33D"),
- ("text.primary", "#DCDCDC"),
- ("text.secondary", "#A6A6A6"),
- ("text.disabled", "#808080"),
- ("text.onAccent", "#121212"),
- ("text.selection", "#375E7C"),
- ("text.caret", "#F2F2F2"),
- ("accent.primary", "#FFA33D"),
- ("accent.activator", "#F2C03A"),
- ("accent.solo", "#5DA9E6"),
- ("accent.arm", "#E8544B"),
- ("accent.focus", "#FFA33D"),
- ("selection.fill", "#3D6787"),
+ ("surface.background", "#16282E"),   # S: menu bar, transport bar, gaps between panels
+ ("surface.panel", "#26383F"),        # S: browser, detail view, status bar, track-header area, transport fields
+ ("surface.raised", "#3D4F55"),       # S: browser column-header strip, Tuning / Groove panel titles
+ ("surface.sunken", "#0F2026"),       # S: header choosers (Mixer, Track Volume), routing fields
+ ("surface.divider", "#0F2026"),      # S: 2-px dividers between track headers and browser columns
+ ("surface.highlight", "#3D4F55"),    # S: selected track row in the lanes
+ ("control.fill", "#08191F"),         # S: S / H / W / Set / Pause buttons
+ ("control.fillHover", "#14272E"),    # own: one step toward the panel
+ ("control.fillPressed", "#031117"),  # S: meter well (the darkest well in Live's panels)
+ ("control.fillDisabled", "#1B2D33"), # own: between control.fill and the panel
+ ("control.border", "#000A0F"),       # S: 1-px edge of the header buttons and number boxes
+ ("control.track", "#0F2026"),        # S: unfilled part of the Main volume box
+ ("control.value", "#007969"),        # S: value fill of Main volume, Global Amount 100 %, 1.00x
+ ("control.valueDisabled", "#4A5D63"),# own
+ ("control.thumb", "#B0B5A3"),        # own: the ruler-text colour
+ ("control.thumbHover", "#D6CDA8"),   # own: text.primary
+ ("control.needle", "#D6CDA8"),       # own: text.primary
+ ("field.fill", "#0F2026"),           # S: header choosers (Mixer, Track Volume), routing 1/2
+ ("field.fillHover", "#16282E"),      # own: surface.background
+ ("field.border", "#000A0F"),         # S: chooser / number-box edge
+ ("field.borderFocus", "#FFC658"),    # own: accent.focus
+ ("text.primary", "#D6CDA8"),         # S: browser items, "Drop Files and Devices Here", button labels
+ ("text.secondary", "#BCC0AE"),       # S+: bar-number / time-ruler text #B0B5A3 lightened to 4.5:1 on surface.raised (#B0B5A3 is 4.1:1 there;
+                                      #     Live's dimmer label grey #82918F is 3.7:1 on the panel, so it became text.disabled)
+ ("text.disabled", "#82918F"),        # S: "Edit", panel titles ("Collections", "Library"), overview frame
+ ("text.onAccent", "#0F2026"),        # S: number in a lit track activator
+ ("text.selection", "#2F566E"),       # own: steel blue, text.primary >= 4.5:1 on it
+ ("text.caret", "#F2EDD8"),           # own
+ ("accent.primary", "#FFC658"),       # S: lit loop switch, track activators, status-bar button
+ ("accent.activator", "#FFC658"),     # S: lit track activator (= mixer.activatorOn)
+ ("accent.solo", "#5EA8E6"),          # own (no lit solo in the screenshot; = mixer.soloOn)
+ ("accent.arm", "#FF5559"),           # S: lit arm button (= mixer.armOn)
+ ("accent.focus", "#FFC658"),         # own: accent.primary
+ ("selection.fill", "#3D6787"),       # own: steel blue (menus are not in the screenshot)
  ("selection.text", "#FFFFFF"),
- ("menu.fill", "#333333"),
- ("menu.border", "#151515"),
- ("menu.separator", "#484848"),
+ ("menu.fill", "#16282E"),            # own: surface.background (menus are not in the screenshot)
+ ("menu.border", "#000A0F"),          # own: control.border
+ ("menu.separator", "#3D4F55"),       # own: surface.raised
  ("menu.shadow", "#00000059"),
- ("tooltip.fill", "#474747"),
- ("tooltip.border", "#151515"),
- ("tooltip.text", "#EEEEEE"),
- ("track.header", "#3A3A3A"),
- ("track.headerSelected", "#4E4E4E"),
- ("track.lane", "#343434"),
- ("track.laneAlt", "#303030"),
- ("track.laneSelected", "#3E3E3E"),
- ("clip.text", "#121212"),
+ ("tooltip.fill", "#3D4F55"),         # own: surface.raised
+ ("tooltip.border", "#000A0F"),
+ ("tooltip.text", "#EEE8D0"),         # own: a lighter text.primary
+ ("track.header", "#26383F"),         # S: track-header area (= arrangement.header)
+ ("track.headerSelected", "#3D4F55"), # S: selected track's header row
+ ("track.lane", "#26383F"),           # S: arrangement lane (= arrangement.lane)
+ ("track.laneAlt", "#223339"),        # S: alternate beat shading (= arrangement.laneShade)
+ ("track.laneSelected", "#3D4F55"),   # S: selected track lane (= arrangement.laneSelected)
+ ("clip.text", "#000A0F"),            # S: darkest sampled ink (control.border); #0F2026 would give 4.4:1 on the worst palette colour
  ("clip.textLight", "#F2F2F2"),
- ("clip.border", "#151515"),
+ ("clip.border", "#000A0F"),
  ("clip.selectedBorder", "#F2F2F2"),
  ("grid.bar", "#00000070"),
  ("grid.beat", "#00000040"),
  ("grid.sub", "#00000024"),
  ("grid.shade", "#00000014"),
- ("scrollbar.track", "#262626"),
- ("scrollbar.thumb", "#5C5C5C"),
- ("scrollbar.thumbHover", "#747474"),
+ ("scrollbar.track", "#0F2026"),      # own: field well
+ ("scrollbar.thumb", "#52666B"),      # own
+ ("scrollbar.thumbHover", "#6B7E83"), # own
  # Arrangement view (T3.8): sampled from the user's Live 12 arrangement screenshot.
  ("arrangement.lane", "#26383F"),
  ("arrangement.laneShade", "#223339"),
@@ -74,8 +79,7 @@ colors = [
  ("arrangement.playhead", "#B0B5A3"),
  ("arrangement.startMarker", "#00CCB7"),
  ("arrangement.overviewFrame", "#82918F"),
- # Roll tokens follow the blue-grey palette of the Live 12 reference screenshot (Q47); the chrome keeps
- # the neutral greys until the retheme.
+ # Roll tokens follow the blue-grey palette of the Live 12 reference screenshot (Q47), like the base tokens above.
  ("roll.keyWhite", "#BCC6CA"),
  ("roll.keyBlack", "#16282E"),
  ("roll.keyText", "#141B1F"),
@@ -185,10 +189,16 @@ colors = [
  ("automation.reenable", "#FFA33D"),
  ("automation.reenableText", "#0F2026"),
 ]
-fonts = [("small","regular",12,False),("body","regular",13,False),("bodyStrong","semibold",13,False),("title","semibold",14,False),("numeric","regular",12,False)]
+# Sizes (T3.2-fix1): Live 12 at 100 % draws 7-px capitals (browser items, "Drop Files and Devices Here"); Inter 13 px
+# draws 9-10. Body text goes 13 -> 12 and titles 14 -> 13. Not smaller: 11 px is a size the scene fonts do not
+# already hold, so it would add two font roles per UI scale to the glyph atlas (measured: the 5-scale atlas no
+# longer fits one R8 page), and Inter below 12 px loses legibility at 1.0x. Controls are square in Live 12
+# (transport fields, header buttons); panels keep a 3-px radius (measured on the browser / detail-view corners).
+# Transport fields are 17 px high, track and browser rows 19 px.
+fonts = [("small","regular",12,False),("body","regular",12,False),("bodyStrong","semibold",13,False),("title","semibold",13,False),("numeric","regular",12,False)]
 metrics = [("spacing.xs",2),("spacing.sm",4),("spacing.md",8),("spacing.lg",12),
- ("radius.control",2),("radius.panel",3),("radius.menu",3),("radius.clip",2),
- ("size.control",18),("size.row",20),("size.menuItem",20),("size.scrollbar",10),("size.knob",34),("size.meter",14)]
+ ("radius.control",0),("radius.panel",3),("radius.menu",3),("radius.clip",2),
+ ("size.control",17),("size.row",19),("size.menuItem",20),("size.scrollbar",10),("size.knob",34),("size.meter",14)]
 
 # Clip palette: 13 hues + a grey column, 5 rows (vivid, light, mid, muted, dark). Own values: each row has a
 # target relative luminance, so a clip name is readable on every colour with dark text (rows 0-3) or light
@@ -218,7 +228,7 @@ for r,(s,t) in enumerate(rows):
         else: hi=m
     pal.append(hexc(m,m,m))
 o = []
-o.append('{\n  "name": "Ableton Dark (pqdaw approximation)",\n  "colors": {\n')
+o.append('{\n  "name": "Ableton Dark (sampled from Live 12)",\n  "colors": {\n')
 o.append(",\n".join('    "%s": "%s"' % kv for kv in colors) + "\n")
 o.append('  },\n  "fonts": {\n')
 o.append(",\n".join('    "%s": {"face": "%s", "px": %d, "tabular": %s}' % (n,f,p,"true" if t else "false") for n,f,p,t in fonts) + "\n")

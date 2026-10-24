@@ -104,8 +104,8 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   REQUIRE_MESSAGE(t.ok(), (t.ok() ? "" : t.error().message));
   CHECK(t->clipPalette.size() == kClipPaletteSize);
   CHECK(t->fonts.small.px == 12);
-  CHECK(t->fonts.body.px == 13);
-  CHECK(t->fonts.title.px == 14);
+  CHECK(t->fonts.body.px == 12);  // T3.2-fix1: 13 -> 12, closer to Live 12 (see the generator)
+  CHECK(t->fonts.title.px == 13);
   CHECK(alphaOf(t->surface.panel) == 255);
   CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 17 + 5 + 14 + 1);  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10), automation.* (T3.15)
 }
