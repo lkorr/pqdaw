@@ -195,10 +195,14 @@ colors = [
 # longer fits one R8 page), and Inter below 12 px loses legibility at 1.0x. Controls are square in Live 12
 # (transport fields, header buttons); panels keep a 3-px radius (measured on the browser / detail-view corners).
 # Transport fields are 17 px high, track and browser rows 19 px.
-fonts = [("small","regular",12,False),("body","regular",12,False),("bodyStrong","semibold",13,False),("title","semibold",13,False),("numeric","regular",12,False)]
+# T3.x-fix-look (Q107.4 option B, chosen by the M3 review): 11-px roles, closer to Live's 11-px Ableton Sans with
+# 7-px capitals; track names SemiBold 11 (bodyStrong), titles SemiBold 12. The glyph atlas then needs a second R8
+# page for the 5-scale font set (measured in tests/ui/test_render.cpp: 2 MiB of GPU memory, half the old RGBA page).
+fonts = [("small","regular",11,False),("body","regular",11,False),("bodyStrong","semibold",11,False),("title","semibold",12,False),("numeric","regular",11,False)]
 metrics = [("spacing.xs",2),("spacing.sm",4),("spacing.md",8),("spacing.lg",12),
  ("radius.control",0),("radius.panel",3),("radius.menu",3),("radius.clip",2),
- ("size.control",17),("size.row",19),("size.menuItem",20),("size.scrollbar",10),("size.knob",34),("size.meter",14)]
+ ("size.control",17),("size.row",19),("size.menuItem",20),("size.scrollbar",10),("size.knob",34),("size.meter",14),
+ ("size.gutter",6)]  # T3.x-fix-look: S: the window-colour gaps between Live's panels (browser / arrangement / detail)
 
 # Clip palette: 13 hues + a grey column, 5 rows (vivid, light, mid, muted, dark). Own values: each row has a
 # target relative luminance, so a clip name is readable on every colour with dark text (rows 0-3) or light

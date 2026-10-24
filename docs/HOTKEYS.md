@@ -30,8 +30,8 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `grid.toggleSnap` | `Ctrl+4` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `grid.toggleFixed` | `Ctrl+5` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `edit.toggleDrawMode` | `B` | global | Editing | implemented (T3.11) |
-| `track.newMidi` | `Ctrl+T` | global | Commands for Tracks | implemented (T3.10; after the last selected track) |
-| `track.newAudio` | `Ctrl+Shift+T` | global | Commands for Tracks | M6 (audio tracks) |
+| `track.newMidi` | `Ctrl+Shift+T` | global | Commands for Tracks | implemented (T3.10; after the last selected track; Live 12's chord since T3.x-fix-look, user confirmed 2026-10-24: was Ctrl+T) |
+| `track.newAudio` | `Ctrl+T` | global | Commands for Tracks | M6 (audio tracks; Live 12: Ctrl+T inserts an audio track) |
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
 | `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the first main tuning; pressed again: closes it, keeping the change) |
 | `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window, Audio tab; pressed again: closes it) |
@@ -42,6 +42,10 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `arrangement.zoomBack` | `X` | arrangement | Arrangement View Commands | implemented (T3.8) |
 | `arrangement.zoomIn` | `=` | arrangement | Zooming, Display and Selection | implemented (T3.8; Live's `+`, unshifted) |
 | `arrangement.zoomOut` | `-` | arrangement | Zooming, Display and Selection | implemented (T3.8) |
+| `arrangement.markerLeft` | `Left` | arrangement | Arrangement View Commands | implemented (T3.x-fix-look; the insert marker one grid cell earlier, the selected tracks kept) |
+| `arrangement.markerRight` | `Right` | arrangement | Arrangement View Commands | implemented (T3.x-fix-look; one grid cell later) |
+| `arrangement.trackUp` | `Up` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track above, scrolled into view) |
+| `arrangement.trackDown` | `Down` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track below) |
 | `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | implemented (T3.10; any parents, nesting allowed) |
 | `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | implemented (T3.10) |
 | `arrangement.rename` | `Ctrl+R` | arrangement | Editing | implemented (T3.10; the selected track's title, Enter commits, Esc cancels) |
@@ -70,6 +74,8 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `pianoroll.quantize` | `Ctrl+U` | pianoroll | MIDI Note Editor | implemented (T3.11) |
 | `pianoroll.quantizeSettings` | `Ctrl+Shift+U` | pianoroll | MIDI Note Editor | M10 (quantize settings) |
 | `pianoroll.stepUp` | `Up` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
+| `pianoroll.nudgeLeft` | `Left` | pianoroll | MIDI Note Editor | implemented (T3.x-fix-look; the selected notes one grid cell earlier, one undo step) |
+| `pianoroll.nudgeRight` | `Right` | pianoroll | MIDI Note Editor | implemented (T3.x-fix-look; one grid cell later) |
 | `pianoroll.stepDown` | `Down` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
 | `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |

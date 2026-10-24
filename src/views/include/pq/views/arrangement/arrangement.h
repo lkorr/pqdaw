@@ -62,7 +62,7 @@
 //               height (ViewState, not undoable, Q26); right-click opens the track menu (rename, insert, group,
 //               ungroup, colour, delete); the selected tracks' headers are tinted. The mixer section on the right is
 //               T3.10's MixerStrip (pq/views/mixer/mixer.h, installed by installMixer through setHeaderDecorator).
-//   commands    Ctrl+T / Ctrl+Alt+T insert a MIDI / return track after the selection; Ctrl+G groups the selected
+//   commands    Ctrl+Shift+T / Ctrl+Alt+T insert a MIDI / return track after the selection; Ctrl+G groups the selected
 //               tracks (any parents, nesting allowed), Ctrl+Shift+G ungroups the selected groups; Ctrl+R renames the
 //               first selected track in place (Enter commits, Esc cancels); Delete with only tracks selected deletes
 //               them; `0` toggles the selected tracks' activators = mute (Q15: a Param, no recompile). Each = one undo
@@ -288,6 +288,9 @@ public:
   // ---- vertical ----------------------------------------------------------------------------------------------
   int32_t scrollY() const noexcept;
   void scrollToY(int32_t devicePx);
+  // Keep a tick / a row in view (arrow-key navigation, T3.x-fix-look): scrolls only when it is outside the view.
+  void revealTick(Ticks t);
+  void revealRow(int32_t row);
 
   // ---- Z / X, zoom in / out ----------------------------------------------------------------------------------
   // T3.9 sets the time selection; Z zooms to it (with no selection Z fits the whole arrangement).
@@ -367,7 +370,7 @@ public:
   // ---- tracks (T3.10; each = one undo step, false when nothing happened, the reason in the status line) --------
   // Selects a track (a header click: Shift adds, Ctrl toggles).
   void selectTrack(doc::TrackId id, ui::Mods mods = 0);
-  // Ctrl+T (Midi) / Ctrl+Alt+T (Return): after the last selected track (returns: after the last selected return),
+  // Ctrl+Shift+T (Midi) / Ctrl+Alt+T (Return): after the last selected track (returns: after the last selected return),
   // else at the end; the new track is selected and gets the next palette colour.
   bool newTrack(doc::TrackKind kind);
   bool groupSelection();    // Ctrl+G

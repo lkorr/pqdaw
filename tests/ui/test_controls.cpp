@@ -103,11 +103,15 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   auto t = loadTheme(defaultThemePath());
   REQUIRE_MESSAGE(t.ok(), (t.ok() ? "" : t.error().message));
   CHECK(t->clipPalette.size() == kClipPaletteSize);
-  CHECK(t->fonts.small.px == 12);
-  CHECK(t->fonts.body.px == 12);  // T3.2-fix1: 13 -> 12, closer to Live 12 (see the generator)
-  CHECK(t->fonts.title.px == 13);
+  // T3.x-fix-look (Q107.4 B): 11-px roles, SemiBold 11 track names, SemiBold 12 titles (were 12 / 12 / 13).
+  CHECK(t->fonts.small.px == 11);
+  CHECK(t->fonts.body.px == 11);
+  CHECK(t->fonts.bodyStrong.px == 11);
+  CHECK(t->fonts.bodyStrong.face == ThemeFace::SemiBold);
+  CHECK(t->fonts.title.px == 12);
+  CHECK(t->size.gutter == 6.0f);
   CHECK(alphaOf(t->surface.panel) == 255);
-  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 17 + 5 + 14 + 1);  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10), automation.* (T3.15)
+  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 17 + 5 + 15 + 1);  // metrics: + size.gutter (T3.x-fix-look)  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10), automation.* (T3.15)
 }
 
 TEST_CASE("theme: the file round-trips (struct and bytes)") {
@@ -155,7 +159,7 @@ TEST_CASE("theme: a missing, unknown or malformed token fails with its name") {
     CHECK_MESSAGE(r.error().message.find("missing token \"" + name + "\"") != std::string::npos, r.error().message);
     ++checked;
   }
-  CHECK(checked == 57 + 16 + 19 + 20 + 25 + 17 + 17 + 5 + 14);  // + 16 arrangement.* (T3.8), 19 roll.* (T3.11, T3.12), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10), 17 automation.* (T3.15)
+  CHECK(checked == 57 + 16 + 19 + 20 + 25 + 17 + 17 + 5 + 15);  // + size.gutter (T3.x-fix-look), + 16 arrangement.* (T3.8), 19 roll.* (T3.11, T3.12), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10), 17 automation.* (T3.15)
   {
     auto r = parseTheme(removeLine("\"name\":"));
     REQUIRE_FALSE(r.ok());
@@ -333,8 +337,8 @@ TEST_CASE("keymap: the default file parses, chords are unique per scope, actions
   CHECK(has("global", "Space", "transport.playStop"));
   CHECK(has("global", "Shift+Space", "transport.continue"));
   CHECK(has("global", "F9", "transport.record"));
-  CHECK(has("global", "Ctrl+T", "track.newMidi"));
-  CHECK(has("global", "Ctrl+Shift+T", "track.newAudio"));
+  CHECK(has("global", "Ctrl+Shift+T", "track.newMidi"));  // Live 12 (T3.x-fix-look, M3 review L15)
+  CHECK(has("global", "Ctrl+T", "track.newAudio"));
   CHECK(has("arrangement", "Ctrl+G", "track.group"));
   CHECK(has("arrangement", "Ctrl+R", "arrangement.rename"));
   CHECK(has("arrangement", "0", "arrangement.toggleActive"));

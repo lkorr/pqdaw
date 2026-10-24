@@ -40,18 +40,29 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   std::unique_ptr<Shell> s(new Shell(tree, ctx));
   Impl& m = *s->impl_;
 
+  // T3.x-fix-look: the panels (browser, track area, info, detail) sit on the window colour with Live's gutters between
+  // them (theme metric size.gutter, 6 px sampled from Live 12) instead of butting together; the splitter handles are the
+  // gutters (transparent: the backdrop shows through).
+  const PaintResources* res = tree.resources();
+  const float gut = res && res->theme ? res->theme->size.gutter : 6.0f;
+  const auto g = static_cast<int16_t>(gut);
   auto& root = tree.emplaceRoot<Backdrop>();
   auto& main = root.add<Widget>("main");
   main.setLayout(LayoutKind::Column);
-  main.setGap(3);
+  main.setGap(0);
   m.controlBar = &main.add<shell::ControlBar>(ctx);
 
-  auto& body = main.add<Splitter>("body", Splitter::Axis::Vertical, 240.0f, Splitter::Anchor::Second);
+  auto& panels = main.add<Widget>();  // unnamed (transparent in widget paths): the gutter around the panels
+  panels.setLayout(LayoutKind::Column);
+  panels.setPadding({g, g, g, 0});
+  panels.setHeight(Length::flex(1));
+  auto& body = panels.add<Splitter>("body", Splitter::Axis::Vertical, 240.0f, Splitter::Anchor::Second);
+  body.setHeight(Length::flex(1));
   body.setLimits(80, kUnbounded, 80);
-  body.setHandleThickness(3);
+  body.setHandleThickness(g);
   auto& top = body.add<Widget>("top");
   top.setLayout(LayoutKind::Row);
-  top.setGap(3);
+  top.setGap(g);
   m.browser = &top.add<SlotHost>("browser", SlotHost::Fill::Panel, "Browser");
   m.browser->setWidth(Length::fixed(220));
   m.trackArea = &top.add<SlotHost>("track-area", SlotHost::Fill::Lane);
@@ -62,12 +73,15 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
 
   auto& bottom = body.add<Splitter>("bottom", Splitter::Axis::Horizontal, 200.0f, Splitter::Anchor::First);
   bottom.setLimits(120, 480, 200);
-  bottom.setHandleThickness(3);
+  bottom.setHandleThickness(g);
   m.bottom = &bottom;
   m.info = &bottom.add<shell::InfoView>();
   m.detail = &bottom.add<shell::DetailView>(ctx);
   m.detail->setClipChildren(true);
 
+  auto& below = main.add<Widget>();  // the gutter under the panels, above the status bar
+  below.setHeight(Length::fixed(gut));
+  below.setHittable(false);
   main.add<shell::StatusBar>(ctx);
   s->overlay_ = &root.add<OverlayLayer>("overlay");
 
@@ -110,6 +124,7 @@ void Shell::cancelInteraction() {
 }
 
 const std::string& Shell::infoTitle() const noexcept { return impl_->info->title(); }
+const std::string& Shell::cpuText() const noexcept { return impl_->controlBar->cpuText(); }
 const std::string& Shell::infoBody() const noexcept { return impl_->info->body(); }
 const std::string& Shell::positionText() const noexcept { return impl_->controlBar->positionText(); }
 

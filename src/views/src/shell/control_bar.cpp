@@ -7,6 +7,8 @@
 
 #include "../common/paint.h"
 #include "pq/document/commands.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
+#include "pq/views/prefs/audio_prefs.h"
 #include "shell_widgets.h"
 
 namespace pq::views::shell {
@@ -121,10 +123,11 @@ void TransportButton::paint(PaintContext& ctx) {
   const IRect r = rect();
   Rgba onCol = th->accent.primary;
   if (icon_ == Icon::Record) onCol = th->accent.arm;
-  Rgba fill = v.disabled ? th->control.fillDisabled : on_ ? onCol : th->control.fill;
+  // On the window-coloured control bar the switches are panel-coloured (Live's transport; Q107.1 option B).
+  Rgba fill = v.disabled ? th->surface.panel : on_ ? onCol : th->surface.panel;
   if (!v.disabled) {
-    if (v.pressed) fill = on_ ? paint::pressOf(fill) : th->control.fillPressed;
-    else if (v.hover) fill = on_ ? paint::hoverOf(fill) : th->control.fillHover;
+    if (v.pressed) fill = on_ ? paint::pressOf(fill) : th->control.fill;
+    else if (v.hover) fill = on_ ? paint::hoverOf(fill) : th->surface.raised;
   }
   paint::box(ctx.dl, r, ctx.scale.exact(th->radius.control), fill, th->control.border);
   Rgba ink = v.disabled ? th->text.disabled : on_ ? th->text.onAccent : th->text.primary;
@@ -172,7 +175,57 @@ void PositionDisplay::paint(PaintContext& ctx) {
   const Theme* th = ctx.res.theme;
   if (!th) return;
   const IRect r = rect();
-  paint::box(ctx.dl, r, ctx.scale.exact(th->radius.control), th->field.fill, th->field.border);
+  paint::box(ctx.dl, r, ctx.scale.exact(th->radius.control), th->surface.panel, th->field.border);
+  if (const ThemeFonts* f = ctx.res.uiFonts)
+    paint::text(ctx, f->numeric, r, text_, th->text.primary, TextAlign::Center, ctx.scale.px(4), ctx.scale.px(4));
+}
+
+// --- CpuMeter -------------------------------------------------------------------------------------------
+
+CpuMeter::CpuMeter(ViewContext& ctx) : Control("cpu"), ctx_(ctx) {
+  setFocusable(false);
+  setInfo("CPU Load Meter", "How much of the audio callback's time the engine uses while it plays (the share of each "
+                            "audio buffer spent computing it). It updates twice a second during playback.");
+}
+
+void CpuMeter::poll() {
+  AudioPrefsPort* port = ctx_.audioPrefs();
+  std::string t = "CPU \xE2\x80\x93";
+  if (port) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "CPU %.0f %%", std::clamp(port->cpuLoad(), 0.0, 999.0));
+    t = buf;
+  }
+  if (t != text_) {
+    text_ = std::move(t);
+    markDirty();
+  }
+}
+
+void CpuMeter::transportChanged() {
+  const bool playing = ctx_.transport().playhead().playing;
+  if (playing && timer_ == 0) {
+    poll();
+    timer_ = requestTimer(0.5);
+  } else if (!playing && timer_ != 0) {
+    cancelTimer(timer_);
+    timer_ = 0;
+    poll();  // the last reading
+  }
+}
+
+void CpuMeter::onTimer(uint32_t id) {
+  if (id != timer_) return;
+  timer_ = 0;
+  poll();
+  if (ctx_.transport().playhead().playing) timer_ = requestTimer(0.5);
+}
+
+void CpuMeter::paint(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  if (!th) return;
+  const IRect r = rect();
+  paint::box(ctx.dl, r, ctx.scale.exact(th->radius.control), th->surface.panel, th->field.border);
   if (const ThemeFonts* f = ctx.res.uiFonts)
     paint::text(ctx, f->numeric, r, text_, th->text.primary, TextAlign::Center, ctx.scale.px(4), ctx.scale.px(4));
 }
@@ -236,6 +289,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   tempo.dragPixels = kMaxTempo - kMinTempo;  // 1 BPM per logical px, Shift: 0.1
   tempo.keyStep = 1.0;
   tempo_ = &sized(add<DragBox>("tempo", tempo), 58);
+  tempo_->setStyle(DragBox::Style::OnWindow);
   tempo_->setInfo("Song Tempo", "The tempo of the song in beats per minute. Drag up or down to change it (Shift: fine), "
                                 "double-click to type a value, Delete returns it to 120.");
   bindGesture(*tempo_, "Change Tempo", [this](double v) -> doc::Command {
@@ -253,6 +307,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   num.decimals = 0;
   num.dragPixels = 98 * 6;
   sigNum_ = &sized(add<DragBox>("sig-numerator", num), 24);
+  sigNum_->setStyle(DragBox::Style::OnWindow);
   sigNum_->setInfo("Time Signature Numerator", "Beats per bar of the song's time signature (its first signature).");
   auto& slash = sized(add<Label>("sig-slash", "/", FontRoleId::Small, TextTone::Secondary, TextAlign::Center), 8);
   slash.setHittable(false);
@@ -264,6 +319,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   den.decimals = 0;
   den.dragPixels = 4 * 16;
   sigDen_ = &sized(add<DragBox>("sig-denominator", den), 24);
+  sigDen_->setStyle(DragBox::Style::OnWindow);
   sigDen_->formatter = [](double v) { return std::to_string(kDenominators[std::clamp(static_cast<int>(v), 0, 4)]); };
   sigDen_->parser = [](std::string_view t) -> std::optional<double> {
     int d = 0;
@@ -322,6 +378,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   ls.dragPixels = kMaxLoopSixteenths;  // one sixteenth per logical px
   ls.keyStep = 4;
   loopStart_ = &sized(add<DragBox>("loop-start", ls), 66);
+  loopStart_->setStyle(DragBox::Style::OnWindow);
   loopStart_->setInfo("Loop Start", "Where the arrangement loop begins (bar. beat. sixteenth). Drag or type to move the "
                                     "loop; its length stays.");
   loopStart_->formatter = [this](double v) {
@@ -342,6 +399,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   ValueSpec ll = ls;
   ll.min = 1;
   loopLength_ = &sized(add<DragBox>("loop-length", ll), 66);
+  loopLength_->setStyle(DragBox::Style::OnWindow);
   loopLength_->setInfo("Loop Length", "The length of the arrangement loop (bars. beats. sixteenths).");
   loopLength_->formatter = [this](double v) {
     const doc::Project& p = *ctx_.doc();
@@ -361,26 +419,48 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
 
   spring(*this);
 
-  // Grid display (right).
-  grid_ = &sized(add<Label>("grid", "", FontRoleId::Small, TextTone::Secondary, TextAlign::Right), 150);
+  // Right: the selected track's tuning (tunings are first-class: a chip like the header's), the CPU meter and the grid.
+  auto& chip = sized(add<TuningChip>("tuning", ctx_), 132, 17);
+  chip.setInfo("Tuning of the Selected Track", "The tuning the selected track plays in (with no track selected: the "
+                                               "project's first main tuning). Click to open the MOS wheel for it.");
+  tuningChip_ = &chip;
+  gap(*this, 6);
+  cpu_ = &sized(add<CpuMeter>(ctx_), 64, 17);
+  gap(*this, 6);
+  grid_ = &sized(add<Label>("grid", "", FontRoleId::Small, TextTone::Secondary, TextAlign::Right), 96);
   grid_->setInfo("Grid", "The editing grid of the arrangement and the clip view. Ctrl+1 / Ctrl+2 make it narrower / "
                          "wider, Ctrl+3 triplet, Ctrl+4 snap, Ctrl+5 fixed or adaptive; right-click an editor for "
                          "the grid menu.");
 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { refreshDocument(); });
   viewSub_ = ctx_.observe([this](uint32_t what) {
-    if (what & view_change::kTransport) refreshTransport();
+    if (what & view_change::kTransport) {
+      refreshTransport();
+      cpu_->transportChanged();
+    }
     if (what & view_change::kGrid) grid_->setText(ctx_.gridLabel());
+    if (what & (view_change::kSelection | view_change::kProject)) refreshTuningChip();
   });
   refreshDocument();
   refreshTransport();
+  refreshTuningChip();
   grid_->setText(ctx_.gridLabel());
+}
+
+void ControlBar::refreshTuningChip() {
+  auto& chip = static_cast<TuningChip&>(*tuningChip_);
+  const doc::Project& p = *ctx_.doc();
+  const doc::TrackId t = ctx_.selectedTrack();
+  if (t.valid() && doc::findTrackPtr(p, t)) chip.setTarget(TuningTarget::forTrack(t));
+  else if (p.tunings && !p.tunings->empty()) chip.setTarget(TuningTarget::forMain(p.tunings->front()->id));
+  else chip.setTarget(std::nullopt);
 }
 
 ControlBar::~ControlBar() = default;
 
 void ControlBar::refreshDocument() {
   const doc::Project& p = *ctx_.doc();
+  if (const doc::TrackId t = ctx_.selectedTrack(); t.valid() && !doc::findTrackPtr(p, t)) refreshTuningChip();  // deleted
   const bool timelineChanged = p.timeline.get() != timeline_;
   if (timelineChanged) {
     timeline_ = p.timeline.get();
@@ -442,7 +522,8 @@ void ControlBar::paint(PaintContext& ctx) {
   const Theme* th = ctx.res.theme;
   if (!th) return;
   const IRect r = rect();
-  ctx.dl.addRectFilled(r.toRect(), th->surface.panel);
+  // Live's transport bar is the window colour with panel-coloured fields (Q107.1 option B, T3.x-fix-look).
+  ctx.dl.addRectFilled(r.toRect(), th->surface.background);
 }
 
 }  // namespace pq::views::shell

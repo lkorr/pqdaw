@@ -27,6 +27,8 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.delete", "arrangement.split", "arrangement.consolidate", "arrangement.loopSelection",
     "arrangement.insertMidiClip", "arrangement.insertTime", "arrangement.duplicateTime", "arrangement.deleteTime",
     "arrangement.toggleActive",
+    // T3.x-fix-look: arrow keys
+    "arrangement.markerLeft", "arrangement.markerRight", "arrangement.trackUp", "arrangement.trackDown",
     // T3.10
     "track.newMidi", "track.newReturn", "track.group", "track.ungroup", "arrangement.rename",
     // T3.15
@@ -157,7 +159,7 @@ void ArrangementView::registerActions() {
   edit("arrangement.deleteTime", [ed] { (void)ed->deleteTime(); }, hasTime);
   edit("arrangement.toggleActive", [ed] { (void)ed->toggleActive(); },
        [ed] { return !ed->selection().clips.empty() || !ed->selection().tracks.empty(); });
-  // T3.10 tracks. Ctrl+T / Ctrl+Alt+T are global chords (Live inserts tracks from anywhere).
+  // T3.10 tracks. Ctrl+Shift+T / Ctrl+Alt+T are global chords (Live inserts tracks from anywhere).
   auto hasTracks = [ed] { return !ed->selection().tracks.empty(); };
   edit("track.newMidi", [ed] { (void)ed->newTrack(doc::TrackKind::Midi); }, {});
   edit("track.newReturn", [ed] { (void)ed->newTrack(doc::TrackKind::Return); }, {});
@@ -168,6 +170,12 @@ void ArrangementView::registerActions() {
     return false;
   });
   edit("arrangement.rename", [ed] { (void)ed->renameSelection(); }, hasTracks);
+  // T3.x-fix-look: arrow keys (Live): Left / Right move the insert marker by a grid cell, Up / Down select the track
+  // above / below (Shift extends the selection).
+  edit("arrangement.markerLeft", [ed] { ed->nudgeMarker(-1); }, {});
+  edit("arrangement.markerRight", [ed] { ed->nudgeMarker(1); }, {});
+  edit("arrangement.trackUp", [ed] { ed->stepTrack(-1); }, {});
+  edit("arrangement.trackDown", [ed] { ed->stepTrack(1); }, {});
   // T3.15: A toggles automation mode (Live).
   edit("arrangement.toggleAutomationMode", [au] { au->setMode(!au->mode()); }, {});
 }
@@ -618,6 +626,23 @@ void ArrangementView::scrollByPx(double devicePx) { setTimeView(originTick_ + de
 
 int32_t ArrangementView::scrollY() const noexcept { return scroll_->scrollY(); }
 void ArrangementView::scrollToY(int32_t devicePx) { scroll_->scrollTo(0, devicePx); }
+
+void ArrangementView::revealTick(Ticks t) {
+  const IRect lv = lanesViewport();
+  const float x = xOfTick(static_cast<double>(t));
+  if (x >= static_cast<float>(lv.x) && x < static_cast<float>(lv.right())) return;
+  // Put it a quarter into the view (as Live pages when the marker leaves it).
+  setTimeView(static_cast<double>(t) - 0.25 * static_cast<double>(lv.w) / devicePxPerTick(), pxPerTick_);
+}
+
+void ArrangementView::revealRow(int32_t row) {
+  const auto rs = rows();
+  if (row < 0 || static_cast<size_t>(row) >= rs.size()) return;
+  const ArrangementRow& r = rs[static_cast<size_t>(row)];
+  const int32_t viewH = scroll_->rect().h, y = scroll_->scrollY();
+  if (r.y < y) scrollToY(r.y);
+  else if (r.y + r.h > y + viewH) scrollToY(r.y + r.h - viewH);
+}
 
 int32_t ArrangementView::rowAt(float deviceY) const noexcept {
   const IRect sv = scroll_->rect();

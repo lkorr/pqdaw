@@ -601,6 +601,12 @@ void RollState::setScaleHighlight(bool on) {
   markAllDirty();
 }
 
+void RollState::setShowHarmonics(bool on) {
+  if (on == harmonics_) return;
+  harmonics_ = on;
+  markAllDirty();
+}
+
 void RollState::setShowChance(bool on) {
   if (on == chance_) return;
   chance_ = on;
@@ -879,6 +885,26 @@ void RollState::stepSelection(int32_t steps, doc::ops::StepUnit unit) {
   // Ratio notes step on the clip's virtual fundamental; the document remembers it with the step (T3.6-fix1).
   const doc::ops::EditResult e = doc::ops::transposeNotes(*ctx.doc(), ref_, keys, steps, unit, overlay());
   (void)apply(e, unit == doc::ops::StepUnit::Grid ? "Transpose" : "Transpose by Equave");
+}
+
+void RollState::nudgeSelection(int32_t cells) {
+  if (!clip_ || cells == 0) return;
+  const std::vector<doc::NoteKey> keys = selectionKeys();
+  if (keys.empty()) return;
+  Ticks first = INT64_MAX;
+  for (const doc::Note& n : clip_->notes)
+    if (selected(n.id)) first = std::min(first, n.start);
+  // One grid cell from the earliest note's start (on the grid: the next line; off it: to the line), or a sixteenth
+  // with the grid off.
+  const Grid g = grid();
+  Ticks to = first;
+  for (int32_t i = 0; i < std::abs(cells); ++i) {
+    if (!g.enabled()) to += (cells > 0 ? 1 : -1) * (kTicksPerWhole / 16);
+    else to = cells > 0 ? g.lineAfter(to) : g.lineAtOrBefore(to - 1);
+  }
+  const Ticks dt = std::max<Ticks>(to, 0) - first;
+  if (dt == 0) return;
+  (void)apply(doc::ops::moveNotes(*ctx.doc(), ref_, keys, dt, 0, overlay()), "Move Notes");
 }
 
 void RollState::copySelection() {

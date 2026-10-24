@@ -443,7 +443,11 @@ MosWheelPopover* openMosWheel(Widget& from, ViewContext& ctx, const TuningTarget
   auto pop = std::make_unique<MosWheelPopover>(ctx, target);
   MosWheelPopover* raw = pop.get();
   OverlayOptions o;
-  if (anchor.empty()) {
+  if (const std::optional<Vec2> at = MosWheelPopover::rememberedPosition()) {  // where the user last moved it
+    const float sc = layer->tree() ? layer->tree()->scale() : 1.0f;
+    o.anchor = {static_cast<int32_t>(std::lround(at->x * sc)), static_cast<int32_t>(std::lround(at->y * sc)), 0, 0};
+    o.placement = Placement::AtPoint;
+  } else if (anchor.empty()) {
     UiTree* tree = layer->tree();
     const UiScale s(tree ? tree->scale() : 1.0f);
     const int32_t W = tree ? static_cast<int32_t>(tree->width()) : 0, H = tree ? static_cast<int32_t>(tree->height()) : 0;
@@ -456,6 +460,39 @@ MosWheelPopover* openMosWheel(Widget& from, ViewContext& ctx, const TuningTarget
   o.onClosed = [raw] { raw->closed(); };
   layer->open(std::move(pop), std::move(o));
   return raw;
+}
+
+namespace {
+std::optional<Vec2> gWheelPos;  // logical px; UI thread only (the session's last wheel position)
+}  // namespace
+
+std::optional<Vec2> MosWheelPopover::rememberedPosition() noexcept { return gWheelPos; }
+void MosWheelPopover::forgetPosition() noexcept { gWheelPos.reset(); }
+
+bool MosWheelPopover::onPointer(const PointerEvent& e) {
+  UiTree* tree = this->tree();
+  const float sc = tree ? tree->scale() : 1.0f;
+  const IRect r = rect();
+  if (e.type == PointerType::Down && e.button == PointerButton::Left && e.pos.y < static_cast<float>(r.y) + 30.0f * sc) {
+    moving_ = true;
+    moveGrab_ = {e.pos.x - static_cast<float>(r.x), e.pos.y - static_cast<float>(r.y)};
+    return true;
+  }
+  if (moving_ && e.type == PointerType::Move) {
+    OverlayLayer* layer = OverlayLayer::of(*this);
+    if (!layer || !tree) return true;
+    const int32_t W = static_cast<int32_t>(tree->width()), H = static_cast<int32_t>(tree->height());
+    const int32_t x = std::clamp(static_cast<int32_t>(std::lround(e.pos.x - moveGrab_.x)), 0, std::max(0, W - r.w));
+    const int32_t y = std::clamp(static_cast<int32_t>(std::lround(e.pos.y - moveGrab_.y)), 0, std::max(0, H - r.h));
+    (void)layer->move(*this, {x, y, 0, 0}, Placement::AtPoint);
+    gWheelPos = Vec2{static_cast<float>(x) / sc, static_cast<float>(y) / sc};
+    return true;
+  }
+  if (moving_ && e.type == PointerType::Up) {
+    moving_ = false;
+    return true;
+  }
+  return Popover::onPointer(e);
 }
 
 MosWheelPopover* openMosWheelPopover(const Widget& w) {
@@ -555,6 +592,7 @@ void TuningChip::refresh() const {
     }
   }
   if (!def) return;
+  compact_ = compactTuningLabel(*def);
   for (const doc::TuningSlotPtr& slot : *p.tunings)
     if (slot->def == *def) {
       text_ = slot->name;
@@ -563,6 +601,17 @@ void TuningChip::refresh() const {
       return;
     }
   text_ = tuningSummary(*def);
+}
+
+// "12", "31" (an EDO's size), "5L 2s" (a MOS's family, tuningSummary's first part), "Scala": what fits a narrow chip.
+std::string compactTuningLabel(const doc::TuningDef& def) {
+  if (const tu::Edo* e = def.edo()) return std::to_string(e->n());
+  if (def.mos()) {
+    std::string s = tuningSummary(def);
+    if (const size_t dot = s.find(" \xC2\xB7"); dot != std::string::npos) s.resize(dot);
+    return s;
+  }
+  return "Scala";
 }
 
 const std::string& TuningChip::text() const {
@@ -592,9 +641,11 @@ void TuningChip::paint(PaintContext& ctx) {
   ctx.dl.addTriangleFilled({tx - h, ty - h * 0.6f}, {tx + h, ty - h * 0.6f}, {tx, ty + h * 0.8f}, th->text.secondary);
   if (const ThemeFonts* f = ctx.res.uiFonts) {
     const IRect tr{x, r.y, std::max(0, static_cast<int32_t>(tx - h) - ctx.scale.px(4.0f) - x), r.h};
-    ctx.dl.pushClip(r.toRect());
-    paint::text(ctx, f->small, tr, text_, th->text.primary, TextAlign::Left);
-    ctx.dl.popClip();
+    // Too narrow for the name (a mixer strip: "12-E…", M3 review L17): its compact form ("12", "5L 2s"), the dot keeps
+    // the colour (T3.x-fix-look).
+    std::string_view shown = text_;
+    if (ctx.res.text && ctx.res.text->measure(f->small, text_) > tr.w) shown = compact_;
+    paint::text(ctx, f->small, tr, shown, th->text.primary, TextAlign::Left);
   }
 }
 

@@ -1,4 +1,4 @@
-// Track commands of the arrangement (T3.10): insert MIDI / return tracks after the selection (Ctrl+T, Ctrl+Alt+T),
+// Track commands of the arrangement (T3.10): insert MIDI / return tracks after the selection (Ctrl+Shift+T, Ctrl+Alt+T),
 // group / ungroup (Ctrl+G, Ctrl+Shift+G), rename in place (Ctrl+R), delete, colour (the palette popover), and the
 // headers' right-click menu. Each edit is one pq::doc::ops builder = one undo step; the resulting tracks become the
 // selection.
@@ -162,7 +162,7 @@ Menu* Editor::openTrackMenu(doc::TrackId id, Vec2 at) {
   std::vector<MenuItem> items;
   items.push_back(action("Rename", "arrangement.rename", "Ctrl+R"));
   items.push_back(MenuItem::sep());
-  items.push_back(action("Insert MIDI Track", "track.newMidi", "Ctrl+T"));
+  items.push_back(action("Insert MIDI Track", "track.newMidi", "Ctrl+Shift+T"));
   items.push_back(action("Insert Return Track", "track.newReturn", "Ctrl+Alt+T"));
   items.push_back(MenuItem::sep());
   items.push_back(action("Group Tracks", "track.group", "Ctrl+G"));

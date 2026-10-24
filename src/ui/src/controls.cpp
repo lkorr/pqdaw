@@ -545,7 +545,9 @@ void DragBox::paint(PaintContext& ctx) {
   if (!th) return;
   const VisualState v = visualState();
   const IRect r = rect();
-  const Rgba fill = editing_ ? th->surface.sunken : (v.hover && !v.disabled) || v.pressed ? th->field.fillHover : th->field.fill;
+  const bool lit = (v.hover && !v.disabled) || v.pressed;
+  Rgba fill = editing_ ? th->surface.sunken : lit ? th->field.fillHover : th->field.fill;
+  if (style_ == Style::OnWindow && !editing_) fill = lit ? th->surface.raised : th->surface.panel;
   box(ctx.dl, r, ctx.scale.exact(th->radius.control), fill, (v.focus || editing_) ? th->field.borderFocus : th->field.border);
   const ThemeFonts* f = ctx.res.uiFonts;
   if (!f || !ctx.res.text) return;

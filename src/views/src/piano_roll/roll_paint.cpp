@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "../common/labels.h"
 #include "../common/paint.h"
 #include "pq/ui/theme.h"
 #include "roll_widgets.h"
@@ -119,48 +120,106 @@ void paintOverlay(PaintContext& ctx, const RollState& s, const IRect& vis, float
 
 // --- virtual fundamental (SPEC §4.3, Q40) -------------------------------------------------------------------
 
-// The clip's virtual fundamental F (reference · F; 1/D derived, or a lock) as a translucent line labelled with F
-// ("1/D", "7/20") and its harmonics k·F as faint guide lines labelled k, wherever they fall in view. Lines closer than 3 device px to the previous one are skipped
-// and labels need a text line of room, so a dense high range costs at most one line per 3 px of height.
-void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, const IRect& vis) {
-  const std::optional<tuning::Rational> F = s.virtualFundamental();
+namespace {
+
+// The harmonics k·F (k ≥ 1) of the clip's virtual fundamental between two pitches (cents from the reference), as
+// f(k, screen y) top to bottom; lines closer than 3 device px to the previous one are skipped (a dense high range costs
+// at most one per 3 px). At most 4096 per call.
+template <class F>
+void forEachHarmonic(const RollState& s, const tuning::Rational& Fr, int32_t contentTop, int32_t contentBottom, float yMin, float yMax, F&& f) {
   const RowModel& rows = s.rows();
-  if (!F || rows.empty()) return;
-  const double fn = static_cast<double>(F->num()), fd = static_cast<double>(F->den());
-  const Theme& th = *ctx.res.theme;
-  const auto [first, last] = rows.rowsIn(s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())) + 1);
+  const auto [first, last] = rows.rowsIn(contentTop, contentBottom + 1);
   if (first >= last) return;
+  const double fn = static_cast<double>(Fr.num()), fd = static_cast<double>(Fr.den());
   const double hiCents = rows.row(first).cents + 100.0, loCents = rows.row(last - 1).cents - 100.0;
   const double fund = 1200.0 * std::log2(fn) - 1200.0 * std::log2(fd);  // cents of reference · F (1/D: −1200·log2 D)
   const double kLo = std::max(1.0, std::ceil(fd / fn * std::exp2(loCents / 1200.0)));
   const double kHi = std::floor(fd / fn * std::exp2(hiCents / 1200.0));
   if (kHi < kLo) return;
-  TextSystem* ts = ctx.res.text;
-  const ThemeFonts* fonts = ctx.res.uiFonts;
-  const int32_t lineH = (ts && fonts) ? ts->metrics(fonts->small).lineHeight : 1 << 20;
-  const float x0 = static_cast<float>(vis.x), x1 = static_cast<float>(vis.right());
-  const int32_t pad = ctx.scale.px(3);
-  float lastY = 1e30f, lastLabelY = 1e30f;
-  char buf[32];
+  float lastY = 1e30f;
   const double kEnd = std::min(kHi, kLo + 4096.0);
   for (double k = kLo; k <= kEnd; k += 1.0) {
     const double c = fund + 1200.0 * std::log2(k);
     const float y = static_cast<float>(s.screenY(rows.placeCents(c).centre));
-    if (y < static_cast<float>(vis.y) - 1.0f || y > static_cast<float>(vis.bottom()) + 1.0f) continue;
-    const bool fundamentalLine = k == 1.0;
-    if (!fundamentalLine && std::fabs(lastY - y) < 3.0f) continue;
+    if (y < yMin - 1.0f || y > yMax + 1.0f) continue;
+    if (k != 1.0 && std::fabs(lastY - y) < 3.0f) continue;
     lastY = y;
-    if (fundamentalLine) ctx.dl.addRectFilled({x0, y - 1.0f, x1, y + 1.0f}, th.roll.fundamental);
-    else ctx.dl.addRectFilled({x0, y, x1, y + 1.0f}, th.roll.harmonic);
-    if (std::fabs(lastLabelY - y) >= static_cast<float>(lineH) && fonts) {
-      lastLabelY = y;
-      const int n = fundamentalLine ? std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(F->num()),
-                                                    static_cast<long long>(F->den()))
-                                    : std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(k));
-      paint::text(ctx, fonts->small, {r.x, static_cast<int32_t>(y) - lineH, ctx.scale.px(48), lineH},
-                  std::string_view(buf, static_cast<size_t>(n)), th.roll.fundamental, TextAlign::Left, pad, 0);
-    }
+    f(k, y);
   }
+}
+
+}  // namespace
+
+// The clip's virtual fundamental F (reference · F; 1/D derived, or a lock) as a translucent line and its harmonics k·F
+// as faint guide lines, under the notes. Their labels are drawn over the notes' area in a strip at its right edge
+// (paintHarmonicLabels), never under notes (T3.x-fix-look, M3 review M18). Off with the clip box's JI switch.
+void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, const IRect& vis) {
+  const std::optional<tuning::Rational> F = s.virtualFundamental();
+  if (!F || !s.showHarmonics() || s.rows().empty()) return;
+  (void)r;
+  const Theme& th = *ctx.res.theme;
+  const float x0 = static_cast<float>(vis.x), x1 = static_cast<float>(vis.right());
+  forEachHarmonic(s, *F, s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())), static_cast<float>(vis.y),
+                  static_cast<float>(vis.bottom()), [&](double k, float y) {
+                    if (k == 1.0) ctx.dl.addRectFilled({x0, y - 1.0f, x1, y + 1.0f}, th.roll.fundamental);
+                    else ctx.dl.addRectFilled({x0, y, x1, y + 1.0f}, th.roll.harmonic);
+                  });
+}
+
+// The labels of those lines: the harmonic numbers (2, 3, … and F itself as "1/4") in a strip along the right edge of
+// the note area, over a band of the panel colour so they read on any row and never sit under a note; placed with a
+// LabelSpace over the whole widget (partial and full repaints place the same ones). When F's own line is out of view a
+// chip pins it to the corner it lies beyond: "F = 1/4 · 65.41 Hz" (bottom-left when F is below, top-left when above).
+void paintHarmonicLabels(PaintContext& ctx, const RollState& s, const IRect& r) {
+  const std::optional<tuning::Rational> F = s.virtualFundamental();
+  TextSystem* ts = ctx.res.text;
+  const ThemeFonts* fonts = ctx.res.uiFonts;
+  if (!F || !s.showHarmonics() || s.rows().empty() || !ts || !fonts || r.empty()) return;
+  const Theme& th = *ctx.res.theme;
+  DrawList& dl = ctx.dl;
+  const FontId font = fonts->small;
+  const int32_t lineH = ts->metrics(font).lineHeight;
+  const int32_t pad = ctx.scale.px(3);
+  char buf[48];
+  // Strip width: the widest label it may hold ("1/4", a lock "7/20", harmonic numbers up to 4096).
+  const int nf = std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(F->num()), static_cast<long long>(F->den()));
+  const int32_t stripW = std::min(r.w / 3, std::max(ts->measure(font, std::string_view(buf, static_cast<size_t>(std::max(0, nf)))),
+                                                    ts->measure(font, "4096")) + 2 * pad);
+  const IRect strip{r.right() - stripW, r.y, stripW, r.h};
+  if (const IRect sv = intersect(strip, ctx.clip); !sv.empty()) {
+    dl.addRectFilled(sv.toRect(), withAlpha(th.surface.panel, 215));
+    if (sv.x == strip.x) dl.addRectFilled(IRect{strip.x, sv.y, 1, sv.h}.toRect(), th.roll.harmonic);
+  }
+  paint::LabelSpace space(ctx.scale.px(2));
+  bool fundamentalShown = false;
+  forEachHarmonic(s, *F, s.contentY(static_cast<float>(r.y)), s.contentY(static_cast<float>(r.bottom())), static_cast<float>(r.y),
+                  static_cast<float>(r.bottom()), [&](double k, float y) {
+                    const int32_t top = static_cast<int32_t>(y) - lineH / 2;
+                    if (top < r.y || top + lineH > r.bottom()) return;
+                    if (!space.place(top, top + lineH)) return;
+                    const int n = k == 1.0 ? std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(F->num()),
+                                                           static_cast<long long>(F->den()))
+                                           : std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(k));
+                    if (k == 1.0) fundamentalShown = true;
+                    paint::text(ctx, font, {strip.x, top, strip.w, lineH}, std::string_view(buf, static_cast<size_t>(std::max(0, n))),
+                                k == 1.0 ? th.text.primary : th.roll.fundamental, TextAlign::Center, 0, 0);
+                  });
+  if (fundamentalShown) return;
+  // F out of view: where is it?
+  const double fund = 1200.0 * std::log2(static_cast<double>(F->num())) - 1200.0 * std::log2(static_cast<double>(F->den()));
+  const float fy = static_cast<float>(s.screenY(s.rows().placeCents(fund).centre));
+  const bool below = fy >= static_cast<float>(r.bottom());
+  const double hz = s.tuning().referenceHz() * static_cast<double>(F->num()) / static_cast<double>(F->den());
+  const int n = std::snprintf(buf, sizeof buf, "F = %lld/%lld \xC2\xB7 %.2f Hz %s", static_cast<long long>(F->num()),
+                              static_cast<long long>(F->den()), hz, below ? "\xE2\x86\x93" : "\xE2\x86\x91");
+  const std::string_view label(buf, static_cast<size_t>(std::max(0, n)));
+  const int32_t w = std::min(r.w - stripW, ts->measure(font, label) + 2 * ctx.scale.px(5));
+  const int32_t h = lineH + ctx.scale.px(2);
+  const int32_t m = ctx.scale.px(4);
+  const IRect chip{r.x + m, below ? r.bottom() - m - h : r.y + m, w, h};
+  if (chip.w <= 0 || chip.h > r.h) return;
+  paint::box(dl, chip, 0.0f, th.field.fill, th.roll.fundamental);
+  paint::text(ctx, font, chip, label, th.text.primary, TextAlign::Left, ctx.scale.px(5), ctx.scale.px(3));
 }
 
 // --- note area ------------------------------------------------------------------------------------------
@@ -281,6 +340,15 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     dl.addRectStroke(band, th->selection.fill);
   }
   dl.popClip();
+}
+
+void NoteAreaWidget::paintOver(PaintContext& ctx) {
+  if (!ctx.res.theme || !s_.hasClip()) return;
+  const IRect r = rect();
+  if (intersect(r, ctx.clip).empty()) return;
+  ctx.dl.pushClip(r.toRect());
+  paintHarmonicLabels(ctx, s_, r);
+  ctx.dl.popClip();
 }
 
 // --- keys -----------------------------------------------------------------------------------------------
@@ -422,6 +490,9 @@ void KeysWidget::paintScaleKeys(PaintContext& ctx, const IRect& r, const IRect& 
     const PitchRow& row = rows.row(i);
     const int32_t yc = s_.screenY(row.centre);
     const bool equave = (row.flags & kRowEquaveStart) != 0;
+    // A sliver row (an s step near collapse) gets no number: it would sit on its neighbours' keys and the equave tab
+    // (T3.x-fix-look, M3 review L18).
+    if (!equave && row.height() < std::max(3, lineH / 3)) continue;
     if (!equave && yc - lastLabel < lineH) continue;  // mos-roll.js: skip a label too close to the previous one
     if (equave && yc - lastLabel < lineH / 2) continue;
     const std::string& label = rows.label(i);

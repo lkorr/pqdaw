@@ -144,7 +144,7 @@ struct Theme {
     bool operator==(const Radius&) const = default;
   } radius{};
   struct Size {  // logical px
-    float control, row, menuItem, scrollbar, knob, meter;
+    float control, row, menuItem, scrollbar, knob, meter, gutter;  // gutter: the window-colour gap between panels
     bool operator==(const Size&) const = default;
   } size{};
 

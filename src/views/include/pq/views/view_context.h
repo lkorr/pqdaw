@@ -55,6 +55,7 @@ inline constexpr uint32_t kTool = 1u << 5;       // draw mode (B) toggled (T3.11
 inline constexpr uint32_t kDetailClip = 1u << 6; // the clip shown in the clip view changed (T3.11)
 inline constexpr uint32_t kTuningPreview = 1u << 7;  // the MOS wheel's live tuning preview changed (T3.14)
 inline constexpr uint32_t kAutomation = 1u << 8;     // automation overridden / re-enabled (T3.15)
+inline constexpr uint32_t kSelection = 1u << 9;      // the selected track changed (T3.x-fix-look: the control bar's chip)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -214,7 +215,13 @@ public:
   // The note clip the detail view's clip view edits (an invalid ClipRef: none). The arrangement (T3.8) sets it when
   // a clip is selected; the clip view shows "No clip selected" when it is unset or the clip no longer exists.
   const doc::ClipRef& detailClip() const noexcept { return detailClip_; }
+  // Setting a clip opens the detail view the first time (it starts collapsed until a clip is opened: T3.x-fix-look,
+  // the M3 review's UI §5); after the user has shown or hidden it (Ctrl+Alt+L, Shift+Tab, the status bar) their
+  // choice stands.
   void setDetailClip(const doc::ClipRef& clip);
+  // The track the arrangement has selected (its first selected track; invalid: none). The control bar shows its tuning.
+  doc::TrackId selectedTrack() const noexcept { return selectedTrack_; }
+  void setSelectedTrack(doc::TrackId t);
 
   // --- tuning preview (T3.14) ---
   // The MOS wheel shows its tuning live while it is open: views that resolve a clip's tuning use previewedTuning()
@@ -274,7 +281,7 @@ public:
       "pianoroll.selectAll", "pianoroll.copy",      "pianoroll.cut",       "pianoroll.paste",
       "pianoroll.duplicate", "pianoroll.delete",    "pianoroll.quantize",  "pianoroll.stepUp",
       "pianoroll.stepDown",  "pianoroll.equaveUp",  "pianoroll.equaveDown", "pianoroll.toggleActive",
-      "pianoroll.fold",      "pianoroll.toggleScale"};
+      "pianoroll.fold",      "pianoroll.toggleScale", "pianoroll.nudgeLeft", "pianoroll.nudgeRight"};
   // View actions of the MOS wheel (T3.14): installMosWheel sets the handler (Ctrl+Shift+W, Q15).
   static constexpr std::string_view kMosWheelActions[] = {"tuning.openMosWheel"};
   // T3.10: the mixer view's toggle (Ctrl+Alt+M), forwarded the same way (installMixer sets the handler).
@@ -311,7 +318,9 @@ private:
   Ticks startMarker_ = 0;
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;
-  bool detailVisible_ = true;
+  bool detailVisible_ = false;  // T3.x-fix-look: collapsed until a clip is shown in it (Live)
+  bool detailAuto_ = true;       // no explicit show / hide yet: the first detail clip opens the detail view
+  doc::TrackId selectedTrack_{};
   DetailMode detailMode_ = DetailMode::Clip;
   bool browserVisible_ = false;
   bool drawMode_ = false;

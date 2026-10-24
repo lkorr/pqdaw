@@ -1,6 +1,6 @@
 // T3.10 track headers, groups and the mixer: the header mixer section (volume, pan, activator = mute, solo, arm,
-// sends, Pre/Post, output, tuning chip), returns and master pinned at the bottom, Ctrl+T / Ctrl+Alt+T / Ctrl+G /
-// Ctrl+Shift+G / Ctrl+R / Delete on tracks, the colour palette, height resize, the mixer view (Ctrl+Alt+M), meters
+// sends, Pre/Post, output, tuning chip), returns and master pinned at the bottom, Ctrl+Shift+T / Ctrl+Alt+T / Ctrl+G /
+// Ctrl+Shift+G / Ctrl+R / Delete on tracks (MIDI track: Ctrl+Shift+T since T3.x-fix-look), the colour palette, height resize, the mixer view (Ctrl+Alt+M), meters
 // from a MeterSource, and the goldens `tracks-mixer` / `mixer-view`. Every edit is one undo step; a volume drag is one
 // step whose ChangeSet is paramOnly.
 
@@ -360,12 +360,12 @@ TEST_CASE("mixer: a volume-drag frame damages and paints the same whatever the t
   CHECK(a.area > 0);
 }
 
-TEST_CASE("mixer: Ctrl+T / Ctrl+Alt+T insert after the selection; Ctrl+G across nested groups; Ctrl+Shift+G") {
+TEST_CASE("mixer: Ctrl+Shift+T / Ctrl+Alt+T insert after the selection; Ctrl+G across nested groups; Ctrl+Shift+G") {
   Fixture f("arrangement");
-  // Select Bass (second top-level track) by its title; Ctrl+T inserts right after it, selected, one step.
+  // Select Bass (second top-level track) by its title; Ctrl+Shift+T inserts right after it, selected, one step.
   f.d.click(f.title("Bass"));
   size_t h = f.history();
-  CHECK(f.d.press("Ctrl+T") == KeyResult::Action);
+  CHECK(f.d.press("Ctrl+Shift+T") == KeyResult::Action);  // Live 12: a MIDI track
   CHECK(f.history() == h + 1);
   const doc::Project& p = *f.ctx.doc();
   REQUIRE(p.tracks.size() >= 4);

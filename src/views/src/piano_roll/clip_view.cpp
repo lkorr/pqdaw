@@ -44,6 +44,8 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   bind("pianoroll.toggleActive", [](ClipView& v) { v.toggleSelectionActive(); });
   bind("pianoroll.fold", [](ClipView& v) { v.setFold(!v.fold()); });
   bind("pianoroll.toggleScale", [](ClipView& v) { v.setScaleHighlight(!v.scaleHighlight()); });
+  bind("pianoroll.nudgeLeft", [](ClipView& v) { v.nudgeSelection(-1); });  // T3.x-fix-look: arrow keys (Live)
+  bind("pianoroll.nudgeRight", [](ClipView& v) { v.nudgeSelection(1); });
 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { onDocument(); });
   viewSub_ = ctx_.observe([this](uint32_t bits) { onView(bits); });
@@ -193,6 +195,9 @@ Vec2 ClipView::stemHead(doc::NoteId id) const {
 }
 
 void ClipView::stepSelection(int32_t steps, doc::ops::StepUnit unit) { state_->stepSelection(steps, unit); }
+void ClipView::nudgeSelection(int32_t cells) { state_->nudgeSelection(cells); }
+bool ClipView::showHarmonics() const noexcept { return state_->showHarmonics(); }
+void ClipView::setShowHarmonics(bool on) { state_->setShowHarmonics(on); }
 void ClipView::deleteSelection() { state_->deleteSelection(); }
 void ClipView::duplicateSelection() { state_->duplicateSelection(); }
 void ClipView::quantizeSelection() { state_->quantizeSelection(); }

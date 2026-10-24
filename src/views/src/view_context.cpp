@@ -383,7 +383,19 @@ void ViewContext::setDrawMode(bool on) {
 void ViewContext::setDetailClip(const doc::ClipRef& clip) {
   if (clip.track == detailClip_.track && clip.clip == detailClip_.clip) return;
   detailClip_ = clip;
+  if (detailAuto_ && clip.clip.valid() && !detailVisible_) {
+    detailAuto_ = false;
+    detailVisible_ = true;
+    notify(view_change::kDetailClip | view_change::kLayout);
+    return;
+  }
   notify(view_change::kDetailClip);
+}
+
+void ViewContext::setSelectedTrack(doc::TrackId t) {
+  if (t == selectedTrack_) return;
+  selectedTrack_ = t;
+  notify(view_change::kSelection);
 }
 
 // --- tuning preview (T3.14) ------------------------------------------------------------------------------
@@ -433,12 +445,14 @@ const doc::TuningDef* ViewContext::previewedTuning(const doc::Project& p, const 
 // --- layout ---------------------------------------------------------------------------------------------
 
 void ViewContext::setDetailVisible(bool v) {
+  detailAuto_ = false;
   if (v == detailVisible_) return;
   detailVisible_ = v;
   notify(view_change::kLayout);
 }
 
 void ViewContext::setDetailMode(DetailMode m) {
+  detailAuto_ = false;
   if (m == detailMode_ && detailVisible_) return;
   detailMode_ = m;
   detailVisible_ = true;
@@ -446,6 +460,7 @@ void ViewContext::setDetailMode(DetailMode m) {
 }
 
 void ViewContext::toggleClipDevice() {
+  detailAuto_ = false;
   if (!detailVisible_) {
     detailVisible_ = true;
     notify(view_change::kLayout);

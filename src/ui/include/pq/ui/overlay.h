@@ -56,6 +56,8 @@ public:
   Widget& open(std::unique_ptr<Widget> popup, OverlayOptions options);
   // Closes `popup` and every popup opened after it. No-op if it is not open.
   void close(Widget& popup);
+  // Re-places an open popup (a movable panel dragged by its title, T3.x-fix-look). False when it is not open here.
+  bool move(Widget& popup, const IRect& anchor, Placement placement);
   void closeAll();
   bool isOpen(const Widget& popup) const noexcept;
   size_t openCount() const noexcept { return entries_.size(); }

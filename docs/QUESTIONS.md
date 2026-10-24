@@ -887,4 +887,14 @@ Agents: add questions here instead of guessing on anything important. Use this f
   c. **Exact transcendentals in voice Block regions** are a separate block-wise SVML call (by design, to avoid spills in fused runs); for audio-rate-modulated cutoffs ×8 that pass costs 10–15 % against a C++ loop with the SVML call inline.
   d. **Per-block fixed cost** (image process() overhead 0.11–0.15 ns/sample mono at 64 frames, plus function prologue and the Control region): latency-bound mono filters are 1.03–1.19× at block 64 and ≤ 1.06× at block 256.
 - Provisional: subcircuits as described; a/b/c are for the JIT owner (T1b.5 / BG) to decide; T1b.3 is reported [!] for adsr ×8 and the borderline ×8 cases.
+
+## Q?-T3.x-fix-look-a · 2026-10-24 · T3.x-fix-look · Readability: choices the task text did not fix
+- Choices (provisional, all view code or theme data, each a local change):
+  1. **CPU meter** reads `AudioPrefsPort::cpuLoad()` at 2 Hz only while the transport plays, plus one reading at stop; stopped, it keeps the last value and schedules nothing (SPEC §0 idle = no frames). Alternative: always poll at 2 Hz (Live does), costing a wake-up every 0.5 s when idle. Note: `cpuLoad()` measures "since the previous call", so with the Preferences window open as well both readers see shorter intervals (each still a valid load figure).
+  2. **Detail view**: collapsed at start; the first clip set as the detail clip (a selection or a double-click) opens it once; any explicit show / hide (Ctrl+Alt+L, Shift+Tab, the status bar) turns that automatic opening off. Alternative: open only on a double-click (Live's exact behaviour).
+  3. **Selected track** for the control bar's tuning chip = the arrangement editor's first selected track (`ViewContext::selectedTrack`, `view_change::kSelection`); none: the project's first main tuning.
+  4. **JI guide switch** in the clip box ("Harmonics: JI", shown only when the clip has a virtual fundamental), not in the corner panel (Fold / Scale fill its 76 px). View state, per clip view, default on.
+  5. **MOS wheel**: movable (title-band drag, position remembered for the session, process-wide), not dockable into the detail view. Docking needs the popover's content as a non-modal panel in the detail slot (a larger shell change); revisit with T3.19's panels.
+  6. **Arrow keys**: arrangement Left / Right = insert marker ± one grid cell (grid off: a sixteenth), keeping the selected tracks; Up / Down = select the track row above / below (scrolled into view). Piano roll Left / Right = move the selected notes by one grid cell (Live's note nudge) rather than an insert marker (the roll's paste position is not drawn).
+  7. **Gutter** 6 px (`size.gutter`, the M3 review's figure; the screenshot measures 7–9 px between Live's panels).
 - Status: open

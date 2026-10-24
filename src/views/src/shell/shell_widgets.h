@@ -50,6 +50,25 @@ private:
   std::string text_;
 };
 
+// The control bar's CPU load readout ("CPU 13 %", Live's transport-bar meter; T3.x-fix-look). It reads
+// AudioPrefsPort::cpuLoad() at 2 Hz only while the transport plays (one last read when it stops), so a stopped
+// session has no timer: idle stays at zero frames. Without an audio port it shows "CPU –".
+class CpuMeter : public ui::Control {
+public:
+  explicit CpuMeter(ViewContext& ctx);
+  void paint(ui::PaintContext& ctx) override;
+  void onTimer(uint32_t id) override;
+  // The transport started or stopped (the control bar forwards view_change::kTransport).
+  void transportChanged();
+  const std::string& text() const noexcept { return text_; }
+
+private:
+  void poll();
+  ViewContext& ctx_;
+  std::string text_ = "CPU \xE2\x80\x93";
+  uint32_t timer_ = 0;
+};
+
 // "1. 1. 1": bar, beat, sixteenth (1-based, Live's position display) at tick t.
 std::string formatPosition(const TimeSigMap& sigs, Ticks t);
 // "4. 0. 0": a duration in bars, beats and sixteenths of the signature at `at`.
@@ -72,9 +91,11 @@ public:
   void refreshDocument();
   void refreshTransport();
   const std::string& positionText() const noexcept { return position_->text(); }
+  const std::string& cpuText() const noexcept { return cpu_->text(); }
 
 private:
   void schedulePositionTimer(Ticks tick);
+  void refreshTuningChip();
   template <class MakeCommand>
   void bindGesture(ui::ValueControl& c, const char* label, MakeCommand make);
 
@@ -91,6 +112,8 @@ private:
   ui::DragBox* loopStart_ = nullptr;
   ui::DragBox* loopLength_ = nullptr;
   ui::Label* grid_ = nullptr;
+  CpuMeter* cpu_ = nullptr;
+  ui::Widget* tuningChip_ = nullptr;  // TuningChip (mos_wheel.h) of the selected track, else the first main tuning
   const void* timeline_ = nullptr;  // the timeline node the controls were last read from
   doc::LoopRegion loopShown_{};
   bool loopShownValid_ = false;

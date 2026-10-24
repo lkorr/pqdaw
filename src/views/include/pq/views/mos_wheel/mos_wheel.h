@@ -50,6 +50,8 @@ doc::Command tuningCommand(const TuningTarget& target, doc::TuningDef def);
 std::string tuningTargetLabel(const doc::Project& p, const TuningTarget& target);
 // One line describing a tuning: "31-EDO", "5L 2s · 696.77¢ · Mode 4", "Scala: <description>".
 std::string tuningSummary(const doc::TuningDef& def);
+// The shortest label of a tuning, for narrow chips: "12" (12-EDO), "5L 2s", "Scala" (T3.x-fix-look).
+std::string compactTuningLabel(const doc::TuningDef& def);
 // What Ctrl+Shift+W edits: the clip in the clip view, else the first main tuning.
 TuningTarget defaultTuningTarget(const ViewContext& ctx);
 
@@ -81,7 +83,13 @@ public:
   void cancel();  // closes without a command
 
   bool onKey(const ui::KeyEvent& e) override;
+  // Dragging the title band moves the popover (T3.x-fix-look, the M3 review's UI §7: at 920 × 580 it covered the very
+  // piano roll whose morph it shows). The position is remembered for the next wheel in this session.
+  bool onPointer(const ui::PointerEvent& e) override;
   ui::InfoText info() const override;
+  // Where the next wheel opens (logical px from the window's top-left; none: centred / under its chip).
+  static std::optional<ui::Vec2> rememberedPosition() noexcept;
+  static void forgetPosition() noexcept;
 
   // Called by the overlay when the popover closes for any reason (openMosWheel wires it): commits unless cancelled.
   void closed();
@@ -106,6 +114,8 @@ private:
   ui::TextEdit* edo_ = nullptr;
   ui::Dropdown* presets_ = nullptr;
   std::vector<int32_t> presetIndex_;  // dropdown item (after the placeholder) → temperaments() index
+  bool moving_ = false;               // a title drag in progress
+  ui::Vec2 moveGrab_{};               // pointer − top-left at the press (device px)
   bool done_ = false;                 // committed or cancelled
   bool cancelled_ = false;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // false once destroyed (late dialog callbacks)
@@ -145,6 +155,7 @@ private:
   std::optional<TuningTarget> target_;
   ViewContext::Subscription docSub_, viewSub_;
   mutable std::string text_;
+  mutable std::string compact_;  // shown when text_ does not fit (compactTuningLabel)
   mutable ui::Rgba swatch_ = 0;
   mutable bool hasSwatch_ = false;
   mutable bool stale_ = true;

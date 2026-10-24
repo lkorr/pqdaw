@@ -554,6 +554,13 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
     s_.endGeneratorMorph(false);
     if (s_.noteArea && tree() && gen_->focused()) tree()->setFocus(s_.noteArea);
   };
+  jiRow_ = &row("ji-row", "Harmonics");
+  ji_ = &jiRow_->add<Toggle>("ji", "JI", ToggleStyle::Accent);
+  ji_->setWidth(Length::fixed(34));
+  ji_->setFocusable(false);
+  ji_->setInfo("JI Guide", "Shows the clip's virtual fundamental F (the line labelled 1/D) and its harmonics, numbered in "
+                           "the strip at the note area's right edge; Up / Down step ratio notes along them.");
+  ji_->onToggle = [this](bool on) { s_.setShowHarmonics(on); };
   auto& spacer = add<Widget>();
   spacer.setHeight(Length::flex(1));
   loop_ = &add<Toggle>("loop", "Loop", ToggleStyle::Accent);
@@ -581,6 +588,9 @@ void ClipBoxPanel::refresh() {
     layout_->setText(s_.scaleLayout() == RowLayout::Proportional ? "Proportional" : "Equidistant");
     if (!grid_->inGesture()) grid_->setValue(static_cast<double>(s_.overlayEdo()));
   }
+  const bool ji = s_.hasClip() && s_.virtualFundamental().has_value();
+  if (jiRow_->visible() != ji) jiRow_->setVisible(ji);
+  ji_->setOn(s_.showHarmonics());
   if (mos && !gen_->inGesture()) {
     const tuning::MosParams& p = mos->params();
     // The default (Delete, double-click reset) is the clip's committed generator, not a fixed 700 ¢: in a period-600

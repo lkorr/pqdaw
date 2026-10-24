@@ -245,7 +245,7 @@ TEST_CASE("arrangement: a ruler drag zooms (vertical) around the pressed tick an
 }
 
 TEST_CASE("arrangement: wheel scrolls the tracks vertically, Shift+wheel scrolls time") {
-  Fixture f(true, 1280, 600);  // short: the rows overflow
+  Fixture f(true, 1280, 400);  // short: the rows overflow (400: with the detail view collapsed since T3.x-fix-look they fit 600)
   const Vec2 p = f.lanePoint(0.5f, 0.5f);
   CHECK(f.arr->scrollY() == 0);
   f.d.wheel(p, -1.0f);

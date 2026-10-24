@@ -242,11 +242,14 @@ void LiveBox::paint(PaintContext& ctx) {
   const double n = normalized();
   if (!in.empty()) {
     if (kind_ == Kind::Pan) {
+      // A thin bar along the bottom edge from the centre to the value (T3.x-fix-look, M3 review L17: the full-height
+      // fill and centre marker struck through the text, "C" and "12R" read as "Ȼ" / "1▌R"); the text stays clean.
       const int32_t mid = in.x + in.w / 2;
       const int32_t x = in.x + static_cast<int32_t>(std::lround(n * static_cast<double>(in.w)));
       const int32_t a = std::min(mid, x), b = std::max(mid, x);
-      if (b > a) ctx.dl.addRectFilled(IRect{a, in.y, b - a, in.h}.toRect(), m.panFill);
-      else ctx.dl.addRectFilled(IRect{mid, in.y, 1, in.h}.toRect(), withAlpha(m.panFill, 160));
+      const int32_t bh = std::min(in.h, std::max(2, ctx.scale.px(2.0f)));
+      const int32_t by = in.bottom() - bh;
+      if (b > a) ctx.dl.addRectFilled(IRect{a, by, b - a, bh}.toRect(), m.panFill);  // centred: no bar ("C" says it)
     } else {
       const int32_t w = static_cast<int32_t>(std::lround(n * static_cast<double>(in.w)));
       if (w > 0) ctx.dl.addRectFilled(IRect{in.x, in.y, w, in.h}.toRect(), kind_ == Kind::Volume ? m.volumeFill : m.sendFill);

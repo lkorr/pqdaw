@@ -214,6 +214,9 @@ public:
   void setFold(bool on);
   bool scaleHighlight() const noexcept { return scale_; }
   void setScaleHighlight(bool on);
+  // The virtual fundamental's guide (its line, the harmonics and their labels; the clip box's JI switch; view state).
+  bool showHarmonics() const noexcept { return harmonics_; }
+  void setShowHarmonics(bool on);
   bool showChance() const noexcept { return chance_; }
   void setShowChance(bool on);
   const std::vector<uint8_t>& highlightScale() const noexcept { return scaleMask_; }
@@ -262,6 +265,7 @@ public:
   // Up / Down (StepUnit::Grid) and Shift+Up / Down (StepUnit::Equave) through ops::transposeNotes; Ratio notes step
   // on the harmonics of the clip's virtual fundamental (doc::virtualFundamental, kept by the document: T3.6-fix1).
   void stepSelection(int32_t steps, doc::ops::StepUnit unit);
+  void nudgeSelection(int32_t cells);
   void copySelection();
   void cutSelection();
   void paste();
@@ -374,6 +378,7 @@ private:
   float builtScale_ = 0.0f;
   bool fold_ = false;
   bool scale_ = false;
+  bool harmonics_ = true;
   bool chance_ = false;
   bool fitted_ = false;  // fitToClip ran for the current clip (needs a laid-out area)
 

@@ -226,6 +226,7 @@ void Editor::setSelection(Selection s, bool showInClipView) {
   if (old.tracks != sel_.tracks) view_.syncHeaderSelection();  // T3.10: selected headers are tinted
   view_.setTimeSelection(sel_.time && sel_.time->end > sel_.time->start ? sel_.time : std::nullopt);
   if (showInClipView && !sel_.clips.empty()) ctx_.setDetailClip(sel_.clips.front());
+  ctx_.setSelectedTrack(sel_.tracks.empty() ? doc::TrackId{} : sel_.tracks.front());
 }
 
 // [t0, t1] covering the time selection (or insert marker) and every selected clip. False when there is neither.
@@ -320,6 +321,34 @@ void Editor::selectTrack(doc::TrackId id, Mods mods) {
     s.tracks = {id};
   }
   setSelection(std::move(s), false);
+}
+
+void Editor::nudgeMarker(int32_t cells) {
+  const Ticks from = sel_.time ? sel_.time->start : ctx_.startMarker();
+  const Grid g = grid();
+  Ticks t = from;
+  for (int32_t i = 0; i < std::abs(cells); ++i) {
+    if (!g.enabled()) t += (cells > 0 ? 1 : -1) * (kTicksPerWhole / 16);
+    else t = cells > 0 ? g.lineAfter(t) : g.lineAtOrBefore(t - 1);
+  }
+  t = std::max<Ticks>(0, t);
+  Selection s;
+  s.tracks = sel_.tracks;
+  s.time = TickRange{t, t};
+  setSelection(std::move(s), false);
+  view_.revealTick(t);
+}
+
+void Editor::stepTrack(int32_t rows) {
+  const auto rs = view_.rows();
+  if (rs.empty() || rows == 0) return;
+  int32_t cur = sel_.tracks.empty() ? (rows > 0 ? -1 : static_cast<int32_t>(rs.size())) : rowOf(rows > 0 ? sel_.tracks.back() : sel_.tracks.front());
+  const int32_t next = std::clamp(cur + rows, 0, static_cast<int32_t>(rs.size()) - 1);
+  Selection s;
+  s.tracks = {rs[static_cast<size_t>(next)].id};
+  s.time = sel_.time;
+  setSelection(std::move(s), false);
+  view_.revealRow(next);
 }
 
 // --- pointer ------------------------------------------------------------------------------------------------

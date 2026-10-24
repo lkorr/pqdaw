@@ -81,6 +81,9 @@ public:
   void setScaleLayout(roll::RowLayout layout);
   // Background EDO grid of the octave (0 = off): drawn behind the rows; Cents notes step / move on it.
   uint32_t overlayEdo() const noexcept;
+  // The virtual fundamental's guide (line, harmonics, labels strip, F chip): the clip box's JI switch (T3.x-fix-look).
+  bool showHarmonics() const noexcept;
+  void setShowHarmonics(bool on);
   void setOverlayEdo(uint32_t n);
   // Live generator morph of a MOS clip (what the clip box's Generator box does): previews every step through the
   // context's tuning preview, end(true) commits one SetClipTuning (one undo step), end(false) restores.
@@ -102,6 +105,9 @@ public:
 
   // --- commands (also the pianoroll actions) ---
   void stepSelection(int32_t steps, doc::ops::StepUnit unit);
+  // Left / Right (T3.x-fix-look): the selected notes move by `cells` grid cells (relative snap from the earliest
+  // selected start, as a drag), one undo step.
+  void nudgeSelection(int32_t cells);
   void deleteSelection();
   void duplicateSelection();
   void quantizeSelection();

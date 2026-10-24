@@ -174,11 +174,11 @@
     "automation.reenableText": "#0F2026"
   },
   "fonts": {
-    "small": {"face": "regular", "px": 12, "tabular": false},
-    "body": {"face": "regular", "px": 12, "tabular": false},
-    "bodyStrong": {"face": "semibold", "px": 13, "tabular": false},
-    "title": {"face": "semibold", "px": 13, "tabular": false},
-    "numeric": {"face": "regular", "px": 12, "tabular": false}
+    "small": {"face": "regular", "px": 11, "tabular": false},
+    "body": {"face": "regular", "px": 11, "tabular": false},
+    "bodyStrong": {"face": "semibold", "px": 11, "tabular": false},
+    "title": {"face": "semibold", "px": 12, "tabular": false},
+    "numeric": {"face": "regular", "px": 11, "tabular": false}
   },
   "metrics": {
     "spacing.xs": 2,
@@ -194,7 +194,8 @@
     "size.menuItem": 20,
     "size.scrollbar": 10,
     "size.knob": 34,
-    "size.meter": 14
+    "size.meter": 14,
+    "size.gutter": 6
   },
   "clipPalette": [
     "#EF7B7B", "#EB805F", "#E68632", "#CF921A", "#B39E16", "#90A815", "#4BB416", "#16B64C", "#16B293", "#18ADC4", "#46A5E8", "#8499F0", "#BB86F0", "#C4C4C4",

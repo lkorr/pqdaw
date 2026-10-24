@@ -56,7 +56,7 @@ using EditResult = Result<Edit>;
 
 // ---- Tracks ----------------------------------------------------------------------------------------------------
 
-// Ctrl+T (Midi) / Ctrl+Alt+G-style group / return. Inserted right after `after` among its siblings (invalid `after`:
+// Ctrl+Shift+T (Midi) / Ctrl+Alt+G-style group / return. Inserted right after `after` among its siblings (invalid `after`:
 // at the end of the top level; Return tracks always go to the returns list, after `after` if it is a return).
 // An empty name gets Live-style defaults: "<n> MIDI", "<n> Group", "<letter> Return".
 EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId after = {}, std::string name = {},

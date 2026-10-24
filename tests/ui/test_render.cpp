@@ -556,7 +556,10 @@ TEST_CASE("render: glyphs on every atlas page sample their R8 coverage exactly (
   }
 }
 
-TEST_CASE("render: the scene fonts at 5 scales fit one R8 page: atlas memory 1/4 of the old RGBA page") {
+// T3.x-fix-look (Q107.4 option B, the M3 review's verdict): the theme's 11-px roles (Regular 11, SemiBold 11 and 12)
+// are sizes the scene fonts did not hold, so the 5-scale set now needs a second R8 page: 2 MiB of GPU memory, still half
+// of T0.8's single RGBA page. Before: one R8 page (1 MiB). The bound stays explicit: at most 2 pages, none dropped.
+TEST_CASE("render: the scene fonts at 5 scales fit two R8 pages: atlas memory at most 1/2 of the old RGBA page") {
   auto r = Renderer::create(*gpu().ctx, OffscreenTarget::kFormat, 1);
   REQUIRE(r.ok());
   Renderer& rr = **r;
@@ -575,13 +578,14 @@ TEST_CASE("render: the scene fonts at 5 scales fit one R8 page: atlas memory 1/4
     REQUIRE((*target)->draw(rr, dl, kSceneClearColor).ok());
   }
   CHECK(t->text->stats().atlasFull == 0);
-  CHECK(rr.atlas()->pageCount() == 1);
+  CHECK(rr.atlas()->pageCount() <= 2);
   constexpr VkDeviceSize kOldRgbaPage = VkDeviceSize(kAtlasWidth) * kAtlasHeight * 4;  // T0.8: one RGBA8 page
   const VkDeviceSize gpuBytes = rr.atlasGpuBytes();
-  MESSAGE("glyph atlas GPU memory for 7 roles x 5 scales: " << gpuBytes << " bytes (old RGBA page: " << kOldRgbaPage << ")");
+  MESSAGE("glyph atlas: " << rr.atlas()->pageCount() << " page(s), GPU memory for the scene + theme roles x 5 scales: " << gpuBytes
+                          << " bytes (old RGBA page: " << kOldRgbaPage << ")");
   CHECK(gpuBytes > 0);
-  CHECK(gpuBytes * 4 <= kOldRgbaPage);
-  CHECK(rr.atlas()->memoryBytes() * 4 <= kOldRgbaPage);
+  CHECK(gpuBytes * 2 <= kOldRgbaPage);
+  CHECK(rr.atlas()->memoryBytes() * 2 <= kOldRgbaPage);
   // A new glyph uploads only its own rect (one byte per texel), not whole rows.
   const uint64_t before = rr.stats().atlasBytesStaged;
   const TextRun inf = t->text->shape(t->fonts.body, "\xE2\x88\x9E");  // ∞

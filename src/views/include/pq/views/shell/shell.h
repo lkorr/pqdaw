@@ -71,6 +71,7 @@ public:
   const std::string& infoTitle() const noexcept;
   const std::string& infoBody() const noexcept;
   const std::string& positionText() const noexcept;
+  const std::string& cpuText() const noexcept;  // the control bar's CPU meter (T3.x-fix-look)
 
   struct Impl;
 

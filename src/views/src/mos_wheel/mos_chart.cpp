@@ -10,6 +10,7 @@
 #include <limits>
 #include <string_view>
 
+#include "../common/labels.h"
 #include "../common/paint.h"
 #include "pq/tuning/mos_data.h"
 #include "pq/ui/text.h"
@@ -1071,10 +1072,14 @@ void MosChart::paint(PaintContext& ctx) {
   const float bottom = static_cast<float>(R.bottom());
   const double P = config_.period;
   const int32_t reps = periodReps();
-  auto centred = [&](FontId f, std::string_view str, float cx, float baseline, Rgba col) {
+  // T3.x-fix-look (M3 review L18): labels of one row never overprint: each row has a LabelSpace, and a label that
+  // would touch one already placed is skipped. Placement runs over every label of the row in priority order (not only
+  // those in the clip), so partial and full repaints skip the same ones.
+  auto centred = [&](FontId f, std::string_view str, float cx, float baseline, Rgba col, paint::LabelSpace* lane = nullptr) {
     if (!text || f == kNoFont || str.empty()) return;
     const TextRun run = ts->shape(f, str);
     const float x = std::round(cx - static_cast<float>(run.advance) / 2.0f);
+    if (lane && !lane->place(static_cast<int32_t>(x), static_cast<int32_t>(x) + run.advance)) return;
     if (!overlaps(clip, x, baseline - static_cast<float>(ts->metrics(f).ascent), x + static_cast<float>(run.advance),
                   baseline + static_cast<float>(ts->metrics(f).descent)))
       return;
@@ -1089,6 +1094,10 @@ void MosChart::paint(PaintContext& ctx) {
   const double tick = axisTick(vr);
   const float barTop = Y(mcm::kAxisY - mcm::kAxisBarH / 2), barBot = Y(mcm::kAxisY + mcm::kAxisBarH / 2);
   const auto i0 = static_cast<int64_t>(std::ceil(viewMin_ / tick)), i1 = static_cast<int64_t>(std::floor(viewMax_ / tick));
+  // Per paint: a few dozen extents at most (the chart repaints on interaction, never per playback frame).
+  const int32_t labelGap = s.px(4.0f);
+  paint::LabelSpace axisLabels(labelGap);
+  paint::LabelSpace edoLabels[3] = {paint::LabelSpace(labelGap), paint::LabelSpace(labelGap), paint::LabelSpace(labelGap)};
   for (int64_t i = i0; i <= i1; ++i) {
     const float x = c2x(static_cast<double>(i) * tick);
     if (overlaps(clip, x - 1, Y(mcm::kAxisY), x + 1, bottom)) dl.addVLine(x, Y(mcm::kAxisY), bottom, T.grid, 1.0f);
@@ -1110,7 +1119,7 @@ void MosChart::paint(PaintContext& ctx) {
     char buf[32];
     const int n = vr > 30 ? std::snprintf(buf, sizeof buf, "%lld\xC2\xA2", static_cast<long long>(std::llround(sc)))
                           : std::snprintf(buf, sizeof buf, "%.1f\xC2\xA2", sc);
-    centred(fNum, std::string_view(buf, n > 0 ? static_cast<size_t>(n) : 0), x, labelBase, T.axisText);
+    centred(fNum, std::string_view(buf, n > 0 ? static_cast<size_t>(n) : 0), x, labelBase, T.axisText, &axisLabels);
   }
   const double sub = tick / 5;
   if (sub > 0.005) {
@@ -1131,14 +1140,15 @@ void MosChart::paint(PaintContext& ctx) {
     }
 
   // --- EDO markers (drawEDOs) ---
+  // Markers come lowest n first (the explorer's priority): a label that would touch a placed one is skipped, row by
+  // row ("23\40 7\12 29\49 3\5" and "690.0¢700.0¢710.2¢" ran together at a zoomed view).
   for (size_t i = 0; i < markers_.size(); ++i) {
     const MosChartEdoMarker& m = markers_[i];
-    if (!overlaps(clip, m.x - s.exact(mcm::kEdoHitHalfW), Y(mcm::kEdoTop), m.x + s.exact(mcm::kEdoHitHalfW), Y(mcm::kTempTop)))
-      continue;
-    dl.addVLine(m.x, Y(mcm::kEdoTop), Y(mcm::kEdoTop + 18), T.edoLine, 1.0f);
-    centred(fStrong, markerLabels_[3 * i], m.x, Y(88), T.edoText);
-    centred(fSmall, markerLabels_[3 * i + 1], m.x, Y(102), T.edoCents);
-    centred(fSmall, markerLabels_[3 * i + 2], m.x, Y(116), T.edoHardness);
+    if (overlaps(clip, m.x - 1.0f, Y(mcm::kEdoTop), m.x + 1.0f, Y(mcm::kEdoTop + 18)))
+      dl.addVLine(m.x, Y(mcm::kEdoTop), Y(mcm::kEdoTop + 18), T.edoLine, 1.0f);
+    centred(fStrong, markerLabels_[3 * i], m.x, Y(88), T.edoText, &edoLabels[0]);
+    centred(fSmall, markerLabels_[3 * i + 1], m.x, Y(102), T.edoCents, &edoLabels[1]);
+    centred(fSmall, markerLabels_[3 * i + 2], m.x, Y(116), T.edoHardness, &edoLabels[2]);
   }
 
   // --- temperament ranges (drawTemperaments) ---
@@ -1177,9 +1187,12 @@ void MosChart::paint(PaintContext& ctx) {
     const bool active = isSel || (isHov && !grayed);
     dl.addRectStroke(rr, active ? T.bandActive : alphaOfFloat(col, grayed ? 0.2f : 0.7f), active ? s.pxf(2.0f) : 1.0f);
 
-    const float w = b.x2 - b.x1;
+    // A band's label stays clear of the size column at the left edge (a band running under it read "132L 11s":
+    // size 13 + "2L 11s"; T3.x-fix-look, L18): it is centred in the part of the band right of the column.
+    const float lx1 = std::max(b.x1, static_cast<float>(g.r.x + s.px(mcm::kSizeLabelRight + 6.0f)));
+    const float w = b.x2 - lx1;
     if (!text || !(w > s.exact(24.0f)) || (grayed && !(w > s.exact(50.0f)))) continue;
-    const float cx = (b.x1 + b.x2) / 2;
+    const float cx = (lx1 + b.x2) / 2;
     const int32_t maxW = static_cast<int32_t>(w) - s.px(6.0f);
     const Rgba tc = grayed ? T.bandTextDim : T.bandText;
     auto line = [&](FontId f, std::string_view str, float baseline, Rgba c) {

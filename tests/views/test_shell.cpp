@@ -63,6 +63,12 @@ constexpr const char* kPosition = "main/control-bar/position";
 
 TEST_CASE("shell: Ableton layout (control bar, track area, info + detail, status line) and slots") {
   Fixture f;
+  // T3.x-fix-look: the detail view starts collapsed (shown once a clip is opened), and the panels sit on the window
+  // colour with 6-px gutters (theme size.gutter) around and between them (were 3-px gaps, flush with the window edge).
+  CHECK_FALSE(f.d.find("main/body/bottom")->visible());
+  CHECK(f.d.rect("main/body/top/track-area").bottom() == 772);  // the whole height without the detail view
+  f.ctx.setDetailVisible(true);
+  f.d.tree().layoutNow();
   const IRect bar = f.d.rect("main/control-bar");
   CHECK(bar == IRect{0, 0, 1280, 32});
   const IRect status = f.d.rect("main/status-bar");
@@ -70,16 +76,16 @@ TEST_CASE("shell: Ableton layout (control bar, track area, info + detail, status
   const IRect track = f.d.rect("main/body/top/track-area");
   const IRect info = f.d.rect("main/body/bottom/info");
   const IRect detail = f.d.rect("main/body/bottom/detail");
-  CHECK(track.y == 35);  // 3 px gap below the control bar
-  CHECK(track.x == 0);   // the browser (M5) is hidden
-  CHECK(track.w == 1280);
+  CHECK(track.y == 38);  // a 6-px gutter below the control bar
+  CHECK(track.x == 6);   // the browser (M5) is hidden; gutter at the window edge
+  CHECK(track.w == 1268);
   CHECK(info.h == 240);  // the detail view's default height (splitter anchored at the bottom)
-  CHECK(info.bottom() == 775);
-  CHECK(track.bottom() + 3 == info.y);
-  CHECK(info.x == 0);
+  CHECK(info.bottom() == 772);  // a 6-px gutter above the status line
+  CHECK(track.bottom() + 6 == info.y);
+  CHECK(info.x == 6);
   CHECK(info.w == 200);
-  CHECK(detail.x == 203);
-  CHECK(detail.right() == 1280);
+  CHECK(detail.x == 212);
+  CHECK(detail.right() == 1274);
   CHECK(detail.y == info.y);
   // Slots.
   CHECK(&f.shell->slot(ShellSlot::TrackArea) == f.d.find("main/body/top/track-area"));
@@ -157,6 +163,11 @@ TEST_CASE("shell: Shift+Tab switches clip / device; Ctrl+Alt+L hides the detail 
   Fixture f;
   Widget& clip = f.shell->slot(ShellSlot::ClipDetail);
   Widget& device = f.shell->slot(ShellSlot::DeviceDetail);
+  // T3.x-fix-look: the detail view starts collapsed; the first Shift+Tab shows it (clip), the next switches.
+  CHECK_FALSE(f.d.find("main/body/bottom")->visible());
+  CHECK(f.d.press("Shift+Tab") == KeyResult::Action);
+  CHECK(f.d.find("main/body/bottom")->visible());
+  CHECK(f.ctx.detailMode() == DetailMode::Clip);
   CHECK(f.d.press("Shift+Tab") == KeyResult::Action);
   CHECK(f.ctx.detailMode() == DetailMode::Device);
   CHECK_FALSE(clip.visible());

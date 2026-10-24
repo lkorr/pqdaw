@@ -229,6 +229,10 @@ public:
   // a time-selection drag puts back the selection from before its press (not the partial band).
   void abortDrag();
   void selectTrack(doc::TrackId id, ui::Mods mods);
+  // Arrow keys (T3.x-fix-look): the insert marker one grid cell left / right (from the time selection's start, else
+  // the start marker; the selected tracks stay), the track selection one row up / down.
+  void nudgeMarker(int32_t cells);
+  void stepTrack(int32_t rows);
 
   // --- paint queries ---
   DragKind dragKind() const noexcept { return drag_.moved ? drag_.kind : DragKind::None; }

@@ -184,6 +184,18 @@ void OverlayLayer::closeAll() {
   if (!entries_.empty()) close(*entries_.front().popup);
 }
 
+bool OverlayLayer::move(Widget& popup, const IRect& anchor, Placement placement) {
+  for (Entry& e : entries_)
+    if (e.popup == &popup) {
+      if (e.options.anchor == anchor && e.options.placement == placement) return true;
+      e.options.anchor = anchor;
+      e.options.placement = placement;
+      invalidateArrange();
+      return true;
+    }
+  return false;
+}
+
 void OverlayLayer::arrange(LayoutPass& pass) {
   observe();
   const IRect vp = rect();

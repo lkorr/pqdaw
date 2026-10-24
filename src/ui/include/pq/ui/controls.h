@@ -269,6 +269,13 @@ protected:
 class DragBox : public ValueControl {
 public:
   DragBox(std::string name, ValueSpec spec, TextAlign align = TextAlign::Center);
+  // Field (default): the sunken field colour, for boxes inside panels. OnWindow: Live's transport fields, panel-coloured
+  // boxes on the window-coloured control bar (T3.x-fix-look, Q107.1 option B).
+  enum class Style : uint8_t { Field, OnWindow };
+  void setStyle(Style s) noexcept {
+    style_ = s;
+    markDirty();
+  }
   bool editing() const noexcept { return editing_; }
   // Type-in mode (double-click does this). The current text is selected.
   void beginEdit();
@@ -286,6 +293,7 @@ private:
   void endEdit();
   TextBuffer edit_;  // the type-in buffer
   TextAlign align_;
+  Style style_ = Style::Field;
   bool editing_ = false;
 };
 

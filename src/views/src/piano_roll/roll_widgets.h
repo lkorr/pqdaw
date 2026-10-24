@@ -46,6 +46,9 @@ private:
   ui::DragBox* grid_ = nullptr;
   ui::Widget* genRow_ = nullptr;
   ui::DragBox* gen_ = nullptr;
+  // T3.x-fix-look: the virtual fundamental's guide on / off (shown when the clip has reference-anchored ratios).
+  ui::Widget* jiRow_ = nullptr;
+  ui::Toggle* ji_ = nullptr;
 };
 
 class CornerPanel : public ui::Widget {
@@ -88,6 +91,7 @@ class NoteAreaWidget : public ui::Control {
 public:
   explicit NoteAreaWidget(RollState& s);
   void paint(ui::PaintContext& ctx) override;
+  void paintOver(ui::PaintContext& ctx) override;  // the harmonic labels strip and F chip, over the notes
   bool onPointer(const ui::PointerEvent& e) override;
   bool onKey(const ui::KeyEvent& e) override;
   void onCaptureLost() override;
@@ -132,6 +136,7 @@ private:
 // Shared paint helpers.
 void paintRowsBackground(ui::PaintContext& ctx, const RollState& s, const ui::IRect& r);
 void paintFundamental(ui::PaintContext& ctx, const RollState& s, const ui::IRect& r, const ui::IRect& vis);
+void paintHarmonicLabels(ui::PaintContext& ctx, const RollState& s, const ui::IRect& r);
 void paintOverlay(ui::PaintContext& ctx, const RollState& s, const ui::IRect& vis, float x0, float x1);
 // Key colours of a scale's step classes (T3.12): L in roll.keyLarge, s blended toward roll.keySmall by hardness
 // (mos-explorer's softness: s = L at L/s = 1, fully keySmall from L/s = 3), sizes in between interpolated between

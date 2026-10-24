@@ -304,6 +304,10 @@ TEST_CASE("view context: layout state and its notifications") {
     seen |= w;
     ++calls;
   });
+  // T3.x-fix-look: the detail view starts collapsed (Live: it opens when a clip is opened); the first toggle shows it.
+  CHECK_FALSE(ctx.detailVisible());
+  CHECK(ctx.detailMode() == DetailMode::Clip);
+  ctx.toggleClipDevice();
   CHECK(ctx.detailVisible());
   CHECK(ctx.detailMode() == DetailMode::Clip);
   ctx.toggleClipDevice();
@@ -315,10 +319,10 @@ TEST_CASE("view context: layout state and its notifications") {
   CHECK(ctx.detailVisible());
   CHECK(ctx.detailMode() == DetailMode::Clip);
   CHECK(seen == view_change::kLayout);
-  CHECK(calls == 4);
+  CHECK(calls == 5);
   sub.reset();
   ctx.toggleClipDevice();
-  CHECK(calls == 4);  // unsubscribed
+  CHECK(calls == 5);  // unsubscribed
 }
 
 TEST_CASE("view context: the default keymap binds every implemented action; scope ids are stable") {
@@ -341,8 +345,10 @@ TEST_CASE("view context: the default keymap binds every implemented action; scop
   CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+Y")) == "edit.redo");
   CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+S")) == "file.save");
   CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Shift+Tab")) == "view.toggleClipDevice");
-  // Deferred bindings stay unbound (Ctrl+T became implemented with T3.10: Ctrl+Shift+T, audio tracks, is M6).
-  CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+Shift+T")).empty());
+  // Deferred bindings stay unbound: Ctrl+T (audio tracks, M6) since T3.x-fix-look follows Live 12; the MIDI track is
+  // Ctrl+Shift+T.
+  CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+T")).empty());
+  CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+Shift+T")) == "track.newMidi");
   // Applying again (after more views registered actions) replaces the bindings instead of failing on duplicates.
   REQUIRE(ctx.applyDefaultKeymap().ok());
   CHECK(ctx.scope("arrangement") == arr);
