@@ -587,7 +587,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   8. **Generator marker colour** stays the explorer's red (#F0566E, not Live's orange) so it does not blend with the amber hardness labels; EDO labels keep the explorer's blue. Surfaces (background, axis, text) come from the Live 12 screenshot (`mosChart.*`).
 - Status: open
 
-## Q?-T3.16-a · 2026-10-24 · T3.16 · Timeline playback semantics not fixed by SPEC/TASKS
+## Q80 · 2026-10-24 · T3.16 · Timeline playback semantics not fixed by SPEC/TASKS
 - Context: Ableton's behaviour in these edges is not in the spec; the engine timeline had to pick.
 - Provisional choices (all in `pq/engine/timeline.h` / `sequence.h`, nothing persisted depends on them):
   1. No note chasing: Play/Locate/Continue and a sequence swap start only notes whose start is at or after the playhead (a note added under the playhead, or one already in progress at the play position, is silent until its next occurrence). Live has a "chase MIDI notes" option; adding it needs a backwards scan bounded by the clip's longest note (a per-clip max length in the image).
@@ -599,7 +599,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options for each: keep, or follow Live more closely (chasing; rerolling chance per playback).
 - Status: open
 
-## Q?-T3.16-b · 2026-10-24 · T3.16 · Curved automation under a tempo ramp costs ~17 ns per lane-sample
+## Q81 · 2026-10-24 · T3.16 · Curved automation under a tempo ramp costs ~17 ns per lane-sample
 - Context: under a constant tempo the renderer is 0.02 (constant) / 0.55 (straight) / 1.6 (curved) ns per lane-sample (bench/RESULTS.md). While the tempo ramps it needs the exact tick of every sample (`samplesToTicks`, shared by all lanes) and then expm1 per sample per curved lane: 17 ns/lane-sample (≈ 0.08 % of a core per lane at 48 kHz).
 - Options: A) accept (tempo ramps + curved automation are rare); B) interpolate ticks quadratically inside a block (error ≪ 1e-6 of a block's tick span, but no longer bit-equal to `evalAutomation(samplesToTicks(s))` at jumps); C) a fast exp2 for |k| ≥ 1 (accurate enough there), exact expm1 only for small curvature.
 - Provisional choice: A.
