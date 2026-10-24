@@ -165,7 +165,7 @@ struct ClipLoop {
 // A note clip. `start`/`length` place it on the arrangement timeline; notes are in content ticks, and content tick
 // `contentStart` plays at arrangement tick `start` (Ableton's start marker), so resizing the clip's left edge while
 // keeping notes at their absolute time changes start, length and contentStart together.
-// ---- Virtual fundamental (T3.6-fix1; SPEC §4.3, QUESTIONS Q40, Q?-T3.6-fix1-a) -----------------------------------
+// ---- Virtual fundamental (T3.6-fix1; SPEC §4.3, QUESTIONS Q40, Q106) -----------------------------------
 // The reference-anchored Ratio notes of a clip share a virtual fundamental F, DERIVED on read from what is entered
 // (virtualFundamental below): F = 1/D with D = lcm over those notes of each note's effective denominator — its own
 // reduced denominator, or, while the note still has the pitch an Up/Down step (or a vertical drag) gave it, the

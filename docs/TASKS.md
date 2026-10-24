@@ -392,11 +392,11 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Re-derive `assets/themes/ableton-dark.json` (and its generator) from the user's Live 12 Arrangement screenshot at `reference/inspiration/live12/arrangement.png` (git-ignored: never commit it or crops of it): sample surface/panel/track-lane/header/ruler/grid/text/accent/selection colours, compare control proportions (button heights, header widths, font sizes). Keep the contrast test passing (adjust targets only with justification).
   - Accept: a side-by-side comparison image (our `widgets`/`shell`/arrangement scenes vs the screenshot regions, generated locally, not committed) checked by eye and listed in REVIEW.md with the sampled values; all goldens regenerated deliberately.
 
-- [~] **T2.6-fix1 Tuning signal in project playback** *(worker BF, branch task/T2.6-fix1-tuning-playback)* (`document` lowering, `app`). Depends on: T2.6, T3.17.
+- [x] **T2.6-fix1 Tuning signal in project playback** *(merged 2026-10-24)* (`document` lowering, `app`). Depends on: T2.6, T3.17.
   - doc::lower emits `tune_voices` + the tuning node per track whose notes follow a main tuning (Degree notes), tuning params and their automation lanes lowered as params/automation, `Resources::tunings` built from the document (engine::makeTuningTable), NoteDesc pitch from `resolveTrackPitches` (replacing T3.17's O(n²) noteHz). Q100.3, Q101.
   - Accept: golden render of a fixture whose 5L2s generator is automated across a region boundary (pitches follow, jumps only at the crossing); a generator/reference param change while playing is audible next block with 0 recompiles; static projects render bit-identically to before.
 
-- [~] **T3.6-fix1 Virtual fundamental in the model** *(worker BF, same branch)* (`document`, `tuning`). Depends on: T3.6, T3.11. (User decision Q40.)
+- [x] **T3.6-fix1 Virtual fundamental in the model** *(merged 2026-10-24)* (`document`, `tuning`). Depends on: T3.6, T3.11. (User decision Q40.)
   - Ratio notes in a clip share a virtual fundamental derived from what is entered (1/lcm of their denominators relative to the anchor), updated as notes are added, moved or deleted; Up/Down = next harmonic of the current fundamental; explicit fundamental lock (`b`+index, SPEC §6.2) can override. Decide whether the fundamental is stored (with its update rule) or derived on read; keep reduced ratios exact either way.
   - Accept: 5/4 → 6/4 → 7/4 by Up; adding 4/3 moves the fundamental to 1/12; deleting it moves it back; undo restores it; serialization round-trips; the piano roll draws it (SPEC §4.3).
 
