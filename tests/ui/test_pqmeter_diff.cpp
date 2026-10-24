@@ -50,10 +50,10 @@
 #include <vector>
 
 #include "imgui.h"           // the shim (tests/ui/pqmeter_shim)
-#include "ui/smooth_line.h"  // PQ Meter: namespace pqui
+#include <ui/smooth_line.h>  // PQ Meter: namespace pqui (<...>: external, see pqmeter_diff.cmake)
 
 namespace pqm {
-#include "pqmeter_spectrum_helpers.inc"  // PQ Meter's spectrum.cpp helpers, extracted at configure time
+#include <pqmeter_spectrum_helpers.inc>  // PQ Meter's spectrum.cpp helpers, extracted at configure time
 }  // namespace pqm
 
 #include "pq/ui/color.h"

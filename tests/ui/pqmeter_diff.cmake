@@ -78,8 +78,9 @@ if(NOT _pqm_skip)
   message(STATUS "pqdaw: PQ Meter differential test enabled (${_pqm_src})")
   pq_add_test(pq_tests_pqmeter_diff SOURCES ui/test_pqmeter_diff.cpp DEPS pq_ui)
   target_include_directories(pq_tests_pqmeter_diff PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ui/pqmeter_shim")
-  # PQ Meter's code is compiled as external headers (/external:I, /external:W0): our /W4 /WX does not apply
-  # to it, only to the test and the shim.
+  # PQ Meter's code is compiled as external headers: the test includes it with <...> from these SYSTEM
+  # directories (/external:anglebrackets /external:W0, cmake/PqCompilerCache.cmake), so our /W4 /WX applies
+  # only to the test and the shim.
   target_include_directories(pq_tests_pqmeter_diff SYSTEM PRIVATE "${_pqm_src}" "${_pqm_gen}")
 else()
   message(STATUS "pqdaw: PQ Meter differential test SKIPPED: ${_pqm_skip}")
