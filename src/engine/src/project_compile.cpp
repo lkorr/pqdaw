@@ -145,6 +145,16 @@ Result<UnitImage> ProjectCompiler::makeImage(uint32_t u, const UnitBackend& back
   return bind(u, std::move(img.value()));
 }
 
+uint32_t ProjectCompiler::unitOf(const graph::Schedule* s) const noexcept {
+  for (uint32_t u = 0; u < units_.size(); ++u)
+    if (units_[u].schedule.get() == s) return u;
+  return kNoUnit;
+}
+
+uint32_t ProjectCompiler::imageVoiceGroups(uint32_t u) const noexcept {
+  return u < units_.size() ? voiceGroupsOf(opt_, units_[u].voices) : 1u;
+}
+
 std::string ProjectCompiler::busKey(const graph::ProjectGraph& g, const graph::ProjectPort& p) {
   return (p.track < g.tracks.size() ? std::to_string(g.tracks[p.track].id) : std::string("?")) + ":" + p.port;
 }

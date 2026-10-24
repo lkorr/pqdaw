@@ -131,6 +131,12 @@ public:
   // The bus key of graph port `p` ("<track id>:<port>").
   static std::string busKey(const graph::ProjectGraph& graph, const graph::ProjectPort& p);
 
+  // T1b.5: the unit whose current schedule is `s` (kNoUnit: none — the unit was recompiled or removed since), and the
+  // voice groups its images are built with. The background JIT image of a schedule is bound and published only
+  // while unitOf(schedule) finds it.
+  uint32_t unitOf(const graph::Schedule* s) const noexcept;
+  uint32_t imageVoiceGroups(uint32_t u) const noexcept;
+
   const graph::ProjectPartition& partition() const noexcept { return partition_; }
   const CompiledUnit& unit(uint32_t u) const noexcept { return units_[u]; }
   uint32_t numUnits() const noexcept { return static_cast<uint32_t>(units_.size()); }

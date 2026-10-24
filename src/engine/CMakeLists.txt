@@ -4,6 +4,7 @@ pq_add_module(pq_engine
     src/asio_device.cpp
     src/audio_device.cpp
     src/automation.cpp
+    src/background_compile.cpp
     src/block_adapter.cpp
     src/engine.cpp
     src/callback_stats.cpp

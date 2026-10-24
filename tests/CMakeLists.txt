@@ -85,6 +85,7 @@ pq_add_test(pq_tests_playback
   SOURCES
     app/test_playback.cpp
     app/test_tuning_playback.cpp
+    app/test_live_jit.cpp
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -220,7 +221,8 @@ pq_add_test(pq_tests_jit PERF
     jit/test_jit.cpp
     engine/test_voices.cpp  # the T1.8 voice suite again, on JIT images (rigImageBuilder, set in test_jit.cpp)
     engine/test_tuning_voices.cpp  # T2.6: the tuning node through the VoiceEngine, on JIT images
-  DEPS pq_jit)
+    jit/test_live_swap.cpp  # T1b.5: interpreter -> JIT live swap through the background compiler
+  DEPS pq_jit pq_compile)
 
 pq_add_test(pq_tests_dsp
   SOURCES

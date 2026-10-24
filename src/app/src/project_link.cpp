@@ -19,6 +19,7 @@
 #include <limits>
 #include <sstream>
 
+#include "pq/compile/compile.h"
 #include "pq/document/audibility.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/pitch_resolve.h"
@@ -264,6 +265,16 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   if (Status s = makeEngine(); !s.ok()) return s;
   written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
   automated_.assign(kProjectParams, 0);
+  if (cfg_.jit) {  // T1b.5: before the first compile, which already wants JIT images
+    engine::BackgroundCompilerConfig bc;
+    bc.backend = compile::jitUnitBackend();
+    bc.deliver = &ProjectLink::deliverJit;
+    bc.beforeBuild = cfg_.jitBeforeCompile != nullptr ? &ProjectLink::beforeJit : nullptr;
+    bc.user = this;
+    bc.lowPriority = true;
+    jit_ = std::make_unique<engine::BackgroundCompiler>(bc);
+    jitWorker_ = jit_.get();
+  }
   current_ = initial;
   updateTuningTables(*current_);  // T2.6-fix1: before the first lowering names their indices
   applyParams(*current_, true);
@@ -305,14 +316,22 @@ Status ProjectLink::setSampleRate(double rate) {
   flush();  // no structural compile pending or running (and none can start: only this thread queues them)
   const views::PlayheadSnapshot ph = playhead();
   const double oldRate = cfg_.sampleRate;
-  std::unique_ptr<engine::Engine> oldEngine = std::move(engine_);
-  std::unique_ptr<engine::ProjectCompiler> oldCompiler = std::move(compiler_);
-  cfg_.sampleRate = rate;
-  if (Status s = makeEngine(); !s.ok()) {  // keep the old engine (still valid at its rate)
-    cfg_.sampleRate = oldRate;
-    engine_ = std::move(oldEngine);
-    compiler_ = std::move(oldCompiler);
-    return s;
+  std::unique_ptr<engine::Engine> oldEngine;
+  std::unique_ptr<engine::ProjectCompiler> oldCompiler;
+  {
+    // T1b.5: a JIT delivery uses engine_ / compiler_ under compileMutex_; one for the old engine finds no unit in the
+    // new compiler (stale) and is dropped.
+    std::lock_guard compileLock(compileMutex_);
+    oldEngine = std::move(engine_);
+    oldCompiler = std::move(compiler_);
+    cfg_.sampleRate = rate;
+    if (Status s = makeEngine(); !s.ok()) {  // keep the old engine (still valid at its rate)
+      cfg_.sampleRate = oldRate;
+      engine_ = std::move(oldEngine);
+      compiler_ = std::move(oldCompiler);
+      return s;
+    }
+    jitDone_.clear();
   }
   {
     std::lock_guard lock(mutex_);
@@ -337,6 +356,7 @@ Status ProjectLink::setSampleRate(double rate) {
 }
 
 ProjectLink::~ProjectLink() {
+  jit_.reset();  // no JIT delivery after this (a running compile finishes first)
   detach();
   {
     std::lock_guard lock(mutex_);
@@ -592,6 +612,7 @@ void ProjectLink::flush() {
 }
 
 Status ProjectLink::compileNow(const doc::Snapshot& s) {
+  std::lock_guard compileLock(compileMutex_);  // vs the JIT worker's deliveries (compiler_, program publishes)
   doc::LowerOptions lo;
   lo.library = &instruments_->library;
   lo.externals = instruments_->signatures;
@@ -689,7 +710,94 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   stats_.unitCompiles += compiledUnits;
   lowered_ = std::move(lp);
   engine_->wake();
+  wantJit();
   return Ok{};
+}
+
+// ---- The interpreter → JIT live swap (T1b.5) --------------------------------------------------------------------
+
+void ProjectLink::wantJit() {
+  if (jit_ == nullptr) return;
+  std::vector<std::shared_ptr<const graph::Schedule>> done;
+  std::vector<engine::BackgroundJob> jobs;
+  for (uint32_t u = 0; u < compiler_->numUnits(); ++u) {
+    const std::shared_ptr<const graph::Schedule>& sc = compiler_->unit(u).schedule;
+    if (std::find(jitDone_.begin(), jitDone_.end(), sc) != jitDone_.end()) {
+      done.push_back(sc);  // its JIT image is running (or the JIT failed on it): nothing to do
+      continue;
+    }
+    engine::BackgroundJob j;
+    j.schedule = sc;
+    j.maxBlockFrames = compiler_->options().maxBlockFrames;
+    j.maxVoiceGroups = compiler_->imageVoiceGroups(u);
+    j.resources = compiler_->options().resources;
+    j.tag = compiler_->unit(u).key;
+    jobs.push_back(std::move(j));
+  }
+  jitDone_ = std::move(done);  // schedules no unit runs any more are forgotten (and freed)
+  {
+    std::lock_guard lock(jitStatsMutex_);
+    jitStats_.wanted += jobs.size();
+  }
+  jit_->want(std::move(jobs));
+}
+
+void ProjectLink::beforeJit(void* self, const engine::BackgroundJob&) {
+  const ProjectLink& link = *static_cast<ProjectLink*>(self);
+  link.cfg_.jitBeforeCompile(link.cfg_.jitUser);
+}
+
+void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Result<std::unique_ptr<engine::ProgramImage>> img) {
+  ProjectLink& link = *static_cast<ProjectLink*>(self);
+  auto count = [&](auto&& f) {
+    std::lock_guard lock(link.jitStatsMutex_);
+    f(link.jitStats_);
+  };
+  if (!img.ok()) {
+    std::fprintf(stderr, "pqdaw: JIT: %s (the unit stays interpreted)\n", img.error().message.c_str());
+    count([](JitStats& st) { ++st.errors; });
+    std::lock_guard lock(link.compileMutex_);
+    link.jitDone_.push_back(job.schedule);  // not retried
+    return;
+  }
+  count([&](JitStats& st) { ++st.built; });
+  // Publish into the unit that still runs this schedule. A full unit queue or a pending topology means the audio
+  // thread has not taken earlier images yet: retry without holding the lock (the compile path may need it, and on a
+  // test's own thread the engine only runs once that path returns), for at most 5 s.
+  for (int attempt = 0; attempt < 5000; ++attempt) {
+    {
+      std::lock_guard lock(link.compileMutex_);
+      engine::ProjectProgram* program = link.engine_->program();
+      const uint32_t u = program != nullptr ? link.compiler_->unitOf(job.schedule.get()) : engine::kNoUnit;
+      if (u == engine::kNoUnit) break;  // stale: the unit was recompiled or removed meanwhile
+      if (program->canPublish(u)) {
+        auto bound = link.compiler_->bind(u, std::move(img.value()));
+        // Bit-identical to the interpreted image (no contraction, T1b.1-fix1): an instant swap is sample-exact.
+        if (bound.ok() && program->publish(u, std::move(bound.value()), engine::SwapPolicy{engine::SwapMode::Instant}).ok()) {
+          link.jitDone_.push_back(job.schedule);
+          count([](JitStats& st) { ++st.published; });
+        } else {
+          count([](JitStats& st) { ++st.errors; });
+        }
+        return;
+      }
+    }
+    if (link.jitWorker_->stopping()) break;  // ~ProjectLink: the compiler object lives until its worker has joined
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  count([](JitStats& st) { ++st.stale; });
+}
+
+bool ProjectLink::waitForJit(double timeoutSeconds) {
+  flush();
+  return jit_ == nullptr || jit_->waitIdle(timeoutSeconds);
+}
+
+JitStats ProjectLink::jitStats() const {
+  std::lock_guard lock(jitStatsMutex_);
+  JitStats st = jitStats_;
+  if (jit_ != nullptr) st.totalCompileMs = jit_->stats().totalBuildMs;
+  return st;
 }
 
 // ---- Transport (UI thread) --------------------------------------------------------------------------------------

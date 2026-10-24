@@ -22,8 +22,13 @@
 //                ProjectCompiler::rebuild + ProjectProgram::publishTopology (only new and changed units compile;
 //                unchanged units keep running untouched). Param, sequence and automation work of the same change
 //                happens at once on the UI thread, as above.
-// Every image is the interpreter's (the JIT is not linked into pqdaw yet: T1.x-arch2 / T1b.5 bring the background
-// JIT swap; the stock M3 patches are small, so the interpreter's cost is low; QUESTIONS Q96).
+// T1b.5, the interpreter → JIT live swap: every compile publishes interpreted images (an edit is audible at once,
+// QUESTIONS Q86), then asks the background compiler (pq/engine/background_compile.h: ONE worker thread at
+// below-normal priority, newest wants replace the queue) for the JIT image of every unit schedule that has none yet.
+// A finished JIT image is published into its unit if the unit still runs that schedule (ProjectCompiler::unitOf;
+// else it is stale and dropped), with an Instant swap: interpreter and JIT images are bit-identical by default
+// (T1b.1-fix1) and the swap transfers every state word, so the output is sample-exact through it (tested). The JIT
+// publish does not wake a sleeping engine: the packet waits for the next block that runs.
 //
 // ---- Threads ------------------------------------------------------------------------------------------------------
 //   UI thread      onDocumentChange (or attach()'s subscription), the TransportPort and MeterSource calls
@@ -61,6 +66,7 @@
 #include "pq/document/model.h"
 #include "pq/document/store.h"
 #include "pq/dsp/tuning_table.h"
+#include "pq/engine/background_compile.h"
 #include "pq/engine/engine.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/sequence.h"
@@ -91,6 +97,21 @@ struct LinkConfig {
   double debounceMs = 50.0;       // structural changes: compile this long after the last one
   float sleepAfterMs = 250.0f;    // the engine's idle gate (0: off)
   std::string stdlib;             // empty: stdlibDir()
+  // T1b.5: swap every unit to its JIT image once the background compile has it (false: interpreter images only).
+  bool jit = true;
+  // Test hook (the "simulated slow compile"): called on the JIT worker before each compile; may block.
+  void (*jitBeforeCompile)(void* user) = nullptr;
+  void* jitUser = nullptr;
+};
+
+// T1b.5 counters (written by the JIT worker; jitStats() returns a consistent copy).
+struct JitStats {
+  uint64_t wanted = 0;      // unit schedules queued for a JIT image
+  uint64_t built = 0;       // JIT images compiled
+  uint64_t published = 0;   // ... and published into their unit
+  uint64_t stale = 0;       // ... dropped: the unit had moved on to another schedule (or room never came)
+  uint64_t errors = 0;      // JIT compiles that failed (the unit stays interpreted)
+  double totalCompileMs = 0.0;
 };
 
 struct LinkStats {
@@ -121,6 +142,11 @@ public:
   // Any thread but the audio thread: runs the pending structural compile now (no debounce) and returns when no
   // compile is pending or running. With compileThread = false it compiles on the calling thread.
   void flush();
+  // Any thread but the audio thread: flush(), then waits until the background JIT has compiled (and published or
+  // dropped) every image wanted so far; false on timeout. A JIT publish waits for room in the unit's queue, which an
+  // audio thread (or the caller driving the engine) makes: with a stopped engine and a full queue it times out.
+  bool waitForJit(double timeoutSeconds = 60.0);
+  JitStats jitStats() const;
 
   // T3.18: another sample rate (the audio preferences, a driver that changed its clock). Every compiled image has
   // the rate folded in (`sr` constants, durations in samples, the timeline's tick ↔ sample map, the smoothing
@@ -198,6 +224,9 @@ private:
   void postTransport(const engine::TransportCommand& c);
   // Compile path (worker or flush()).
   Status compileNow(const doc::Snapshot& s);
+  void wantJit();  // compile path, compileMutex_ held: the schedules without a JIT image → the background compiler
+  static void deliverJit(void* self, const engine::BackgroundJob& job, Result<std::unique_ptr<engine::ProgramImage>> img);
+  static void beforeJit(void* self, const engine::BackgroundJob& job);
   void workerMain();
   uint32_t slotForParam(const std::string& key);  // allocates (mutex_)
   uint32_t slotForTrack(doc::TrackId id);         // allocates (mutex_)
@@ -247,6 +276,14 @@ private:
   doc::Snapshot pendingSnap_;
   double pendingSince_ = 0.0;   // seconds (steady clock) of the last structural change
   LinkStats stats_;
+
+  // T1b.5. compileMutex_ serialises the compile path's use of compiler_ / program publishes with JIT deliveries.
+  std::mutex compileMutex_;
+  std::vector<std::shared_ptr<const graph::Schedule>> jitDone_;  // schedules with a JIT image (or a failed JIT)
+  mutable std::mutex jitStatsMutex_;
+  JitStats jitStats_;
+  std::unique_ptr<engine::BackgroundCompiler> jit_;  // destroyed first (~ProjectLink): no delivery after it
+  engine::BackgroundCompiler* jitWorker_ = nullptr;  // jit_, for its own worker's deliveries (never reassigned)
 };
 
 }  // namespace pq::app

@@ -687,7 +687,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 ## Q86 · 2026-10-24 · T1.x-arch1 · Who compiles the JIT image after an edit
 - The edit path implemented and measured (bench/RESULTS.md T1.x-arch1): `update(graph, tracks, &interpreter)` builds the edited unit's interpreted image at once (front end + interpreter ≈ a few ms for a ~700-op unit), it is published and crossfaded at the next block; the JIT compiles the same schedule on another thread and `bind()` + `publish()` swap it in (another crossfade). The project runner and the compiler provide both steps; the scheduling of the background compile (a worker thread, debounce, cancelling a stale compile when the user edits again) belongs to the T3.17 controller / T1b.5.
 - Interp → JIT swaps crossfade (SwapMode::Auto) rather than swap instantly: with `contract` on the two differ (M1 review M1), so Instant is unsafe; with `contract` off they are bit-identical (tested) and the crossfade is a no-op on the signal.
-- Status: open (for T1b.5 / T3.17)
+- Status: answered by T1b.5 (Q?-T1b.5-a): ProjectLink's compile path wants the JIT images, one background worker builds them, and they swap in Instantly (contract stays off by default, so they are bit-identical).
 ## Q89 · 2026-10-24 · T3.10 · Track headers, mixer section and mixer view: choices not fixed by SPEC/TASKS
 - Context: T3.10 had to settle these to build the header mixer section, the mixer view and the solo rule. All of it is view behaviour or a pure document function (`pq/document/audibility.h`, `edit_ops.h` mixer section), reversible before T3.17 lowers anything.
 - Choices (provisional):
@@ -844,4 +844,32 @@ Agents: add questions here instead of guessing on anything important. Use this f
   3. **Value colour**: Live's slider fills are teal (#007969: Main volume, Global Amount, 1.00x), so `control.value` (fader fill, knob arc) is teal; "on" toggles, focus and pressed drag-box text use Live's amber (#FFC658, the lit loop switch / activators) instead of the old orange #FFA33D. Device knobs are not in the screenshot; if Live 12's knob arcs differ, that is one token.
   4. **Sizes**: Live at 100 % draws 7-px capitals (Ableton Sans); Inter 12 px draws 9. Body text 13 → 12 px, titles 14 → 13 (small, numeric 12 and bodyStrong 13 unchanged). Tried first: every role one px smaller (11/12/12/13/11); Regular 11 and SemiBold 12 are sizes the scene fonts do not hold, so the 5-scale glyph atlas no longer fit one R8 page (`render: the scene fonts at 5 scales fit one R8 page` failed: a second page, about 2× atlas memory). Options: A) as chosen (atlas-neutral); B) 11-px roles and accept a second atlas page; C) 10 px (Live's cap height; Inter 10 is hard to read at 1.0×). Controls 18 → 17 px (Live's transport fields), rows 20 → 19 px (Live's track and browser rows), control radius 2 → 0 (Live 12 controls are square; also removes most of the 38 % rounded-corner paint cost of Q47). Panels keep radius 3 (measured).
   5. **Not in the screenshot** (own values in the sampled palette): menus (fill = window colour, steel-blue highlight row kept), tooltips (raised surface), text selection (#2F566E), scrollbars (field well + #52666B thumb), lit solo (#5EA8E6, = `mixer.soloOn`), hover / pressed / disabled control shades, the clip palette (kept: Q47's luminance rows; Live's track colours are more saturated but would fail the 4.5:1 clip-name rule in places).
+
+## Q?-T1b.5-a · 2026-10-24 · T1b.5 · Interpreter → JIT live swap: instant swaps, one low-priority worker, no wake-up
+- Context: TASKS T1b.5 asks for an edit that plays at once through the interpreter and swaps to the JIT image when
+  it is ready, per compile unit, with the compile on a worker thread "at low priority and bounded so the UI/audio
+  aren't starved". Q86 had the interp → JIT swap crossfade (Auto).
+- Choices (provisional, all in `pq/engine/background_compile.h` + `ProjectLink::wantJit / deliverJit`):
+  1. **Instant swap**, not a crossfade: with the default JIT options (no contraction, T1b.1-fix1) the two images are
+     bit-identical and the swap carries every state word, so the output is sample-exact through it (tests: the
+     4-track jit project and the playback fixture through a NullDevice, 0 differing samples; the 30-track bench,
+     32 swaps under sounding chords, 0 of 110 592 samples). A crossfade would only double the unit's CPU for 10 ms
+     for no audible change (Q67). If a non-bit-identical JIT option is ever made the default (contract, fast
+     transcendentals), the policy must go back to Auto: deliverJit is the one place to change.
+  2. **One worker thread at THREAD_PRIORITY_BELOW_NORMAL** for the whole process's live JIT (not one per unit, not a
+     pool): at most one core goes to LLVM, whatever the edit rate; the UI (normal) and the audio thread (MMCSS Pro
+     Audio) preempt it. Cost: a 32-unit project needs ~7 s (≈ 0.3 ms/op) until every unit is JIT, during which it
+     plays interpreted (≈ 5–6× the CPU, already the T3.17 situation). Options: a pool of N below-normal workers (N
+     cores during a cold open), or the T1b.4 disk cache (no compile at all for unchanged units); neither now.
+  3. **The queue is replaced, not appended**: after every structural compile the compile path names the schedules
+     still without a JIT image; queued jobs for schedules no unit runs any more are dropped before they start (an
+     edit storm compiles each final schedule once). A running LLVM compile cannot be cancelled: its image comes back
+     and is dropped as stale (counted). A failed JIT compile leaves the unit interpreted and is not retried.
+  4. **No wake-up for a JIT publish**: an asleep engine (Q96) keeps sleeping; the packet becomes current at the next
+     block that runs (the swap is inaudible either way), so a finished background compile never restarts the device.
+  5. **Delivery never blocks the compile path**: it takes the compile mutex only to look the unit up, bind and
+     publish; when the unit's queue is full or a topology is pending it retries without the lock (≤ 5 s, then the
+     image is dropped). This matters for tests that drive the engine on the compile thread itself.
+  6. `pqdaw --render` and the playback tests use the same path (LinkConfig::jit defaults to on); renders are
+     deterministic whether or not a JIT image arrives mid-render, because the images are bit-identical.
 - Status: open
