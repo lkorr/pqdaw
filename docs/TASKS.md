@@ -290,11 +290,11 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - Prime-limit checks, Tenney height, octave reduction, harmonic/subharmonic series helpers, the fewest-keypress BFS from the JI trainer (`game-pianoroll.js`), and interval naming tables (colour notation/FJS) ported from `ji composition trainer/interval names.txt` + `data/intervalNames.js`.
   - Accept: tests, including BFS results matching the JS for a fixture set generated under Node.
 
-- [ ] **T2.6 Tuning as signal** (`tuning` + `graph`). Depends on: T2.3, T1.7.
+- [~] **T2.6 Tuning as signal** *(worker BC, branch task/T2.6-tuning-signal)* (`tuning` + `graph`). Depends on: T2.3, T1.7.
   - The per-region linear form `cents = k·g − m·P + e·P` (SPEC §3.3). A tuning node in the graph whose generator/period/stretch/reference are modulatable. `voice.hz` derives from it. Region crossings are detected at block rate or at the crossing sample.
   - Accept: a generator sweep through several regions produces continuous per-voice pitch (except at intended region changes) that matches `buildMOSScale` evaluated per sample within 1e-4 ¢. A benchmark shows the per-voice pitch cost.
 
-- [ ] **T2.7 Main tunings model** (`document`). Depends on: T2.6.
+- [~] **T2.7 Main tunings model** *(worker BC, same branch)* (`document`). Depends on: T2.6.
   - Named project tunings, track/clip assignment and override, per-tuning reference pitch, serialization.
   - Accept: tests; reassigning a track re-resolves all its notes; JSON round trip.
 
