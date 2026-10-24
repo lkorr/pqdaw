@@ -404,6 +404,93 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Preferences window (Ableton "Audio" tab equivalent): driver type (ASIO / WASAPI shared / WASAPI exclusive), input/output device, sample rate, buffer size, input/output channel configuration, latency readout, test tone, CPU meter; persisted in user settings; device hot-plug and driver reset handled (stop → reopen → resume, Program kept).
   - Accept: switching driver type/device/rate/buffer while playing reopens the stream without crash or allocation on the audio thread; settings persist across restarts; scripted test with NullDevice + fake device list; golden of the preferences window.
 
+## M2/M3 follow-ups (from the M2/M3 review, docs/reviews/M3.md)
+
+**Bundle A — playback link and lowering (engine, document lowering, app)**
+- [ ] **T3.17-fix1 Idle gate, time base and link robustness** (`engine`, `app`). Depends on: T3.17.
+  - quiet() skips dead zombie slots and is computed inside ProjectProgram::process before quiescent() (C1);
+    engine time monotonic across device reopens, auditions released in audioOffline (M15b); compile wait fails
+    fast when the output is stopped (L11); metered / uiNotify / lastError races (L12); periodic collect() on UI
+    idle, final meter poll at stop (L13).
+  - Accept: a sleep-on test (remove a track, zombie dies, collect, publish a unit, 1000 blocks) under a poisoning
+    deleter passes; an audition across a reconfigure ends on time; flush() with the output closed returns < 50 ms.
+- [ ] **T3.17-fix2 Mixer lowering cost + IR lowering with stable ids** (`document`, `graph`, `app`). Depends on: T3.17. Before M4.
+  - Gains at block rate, per-sample smoothing only while moving; closed sends cost nothing; doc::lower builds
+    graph::Patch IR directly with NodeIds from document ids (track, return); the return set is not part of a
+    track's patch (H1, H2).
+  - Accept: 64 tracks × 8 returns, silent, playing ≤ 3 % of a core (interpreter); adding a return while a chord is
+    held recompiles only the return + master units and every held voice's state transfers (no re-attack, state
+    keys equal); bench rows in RESULTS.
+- [ ] **T3.17-fix3 Lowering semantics** (`document`, `app`, `engine`). Depends on: T3.17.
+  - Solo follows output routing (M1); return→return sends lowered with a cycle check or removed from model + UI
+    (M2); mute lanes played, signal-less tuning lanes refused or note-on-evaluated (M3); automation overrides
+    consumed (M4); > 128 MIDI tracks or a visible limit (M5); deactivated-group / return-to-group routing (L1, L2);
+    solo on inactive tracks (L3); ≥ 1-sample notes (L4); --render default length cap (L5); chance varies per
+    playback/loop pass live, seeded offline (M16).
+  - Accept: the M3/document probes (probe_mix, probe_lanes, probe_slots, probe_edges) give the Live-expected result
+    for each case, as new tests.
+
+
+**Bundle B — tuning signal coverage (tuning, dsp, document, app)**
+- [ ] **T2.6-fix2 Region boundaries, mode transfer, audio-rate tuning automation** (`tuning`, `dsp`, `engine`). Depends on: T2.6-fix1.
+  - Boundary side from the region hint (H3); transferModeRotation per interval in the table, shared with the roll's
+    morph (M7); automation buffers bound to the tuning node's audio-rate inputs (M6; also renders one value per
+    lane per block where nothing binds).
+  - Accept: proj_boundary_auto == proj_boundary_static at the held 720 ¢ (bit-identical pitch); the T2.6 sweep
+    includes boundary generators; a fixture with rotation ≠ 0 crossing 720 ¢ matches the explorer per degree;
+    crossing lands on the exact sample (pitch_track.py lag 0).
+- [ ] **T2.6-fix3 Every note follows its tuning** (`document`, `dsp`, `app`, `engine`). Depends on: T2.6-fix2.
+  - Ratio-on-note anchors follow the anchor's signal, reference-relative Ratio/Cents notes scale by ref(t)/ref₀
+    (H4b/c; Q1 and Q100.1 unified); per-voice tuning selection for clip overrides to another main tuning (H4a);
+    held notes retuned by Pitch events, never cut (H5); glides compose with the node (M9); description cache keyed
+    by the definitions in use.
+  - Accept: proj_anchor_ratio keeps 702 ¢ to its anchor throughout; proj_clip_override follows its tuning's
+    automation; proj_ref_auto_cents follows the reference; dragging the reference with a held Ratio chord emits no
+    note-off (test).
+- [ ] **T2.6-fix4 Tuning tables and small tuning fixes** (`app`, `tuning`, `document`). Depends on: T2.6-fix1.
+  - Tables keyed by shape, reset with the document, reclaimed by epoch, status when exhausted (M8); Scala value
+    strictness (L7); checked lcm (L8); tuning param ranges from paramRange (L9); correct the Q105.3/Q105.4 claims (L10).
+  - Accept: New → Open of another project uses no stale table; 1000 wheel size/mode changes keep the pool bounded;
+    `3 / 2` and `100,5` are parse errors with a line number.
+
+
+**Bundle C — views correctness and frame cost (views, ui, app)**
+- [ ] **T3.x-fix-paint Per-rect paint and automation tiles** (`app`, `ui`, `views`). Depends on: T3.15, T3.8-fix1.
+  - Paint per damage rect (H8); automation bands rasterised into the TileAtlas; text helpers clip (M13); chips
+    repaint only on tuning change (M12a).
+  - Accept: playing with 16 lanes × 1000 points + meters live: frame ≤ 1 ms CPU at 2560×1440; partial == full over
+    the whole shell (incl. the control bar label); volume-drag frame independent of track count.
+- [ ] **T3.x-fix-edit Editing correctness** (`views`, `document`). Depends on: T3.12, T3.9.
+  - Alt-copy at zero offset is a no-op (M10); store subscribe during notify (M11); Generator box cancel/default/
+    focus (M12b); default fit with outliers (M14); window focus loss cancels drags and gestures, capture loss cancels
+    automation drags, Esc restores the range selection, view-state changes mark the project dirty (L19).
+  - Accept: a test per item; goldens at 1.5× for the piano roll and popover.
+- [ ] **T3.x-fix-look Readability** (`views`, `ui`, theme). Depends on: T3.2-fix1. 👁
+  - Harmonic labels off the notes + F chip + toggle (M18); label-collision helper (L18); pan indicator and chip
+    truncation (L17); control bar per Q107.1 B with CPU meter and tuning chip; panel gutters on the window colour;
+    11-px roles (Q107.4 B), SemiBold track names; detail view collapsed until a clip is opened; dockable / movable
+    MOS wheel; Ctrl+T/Ctrl+Shift+T per Live (L15, QUESTIONS first); arrow-key navigation.
+  - Accept: REVIEW entry with a side-by-side (local only); goldens regenerated deliberately.
+
+
+**Bundle D — microtonal UI and the M4 gate**
+- [ ] **T3.19 Tunings and identities UI** (`views`). Depends on: T2.7, T3.14. 👁
+  - Menu bar (File/Edit/Create/View/Options/Help); Tunings panel (add, rename, colour, remove, reference Hz, equave,
+    stretch, open in wheel); note identity menu (convert Degree/Ratio/Cents, lock fundamental); Ratio entry (draw
+    snapping to harmonics of the virtual fundamental, type-in); ratio/harmonic note labels; row label modes and a
+    hover pitch readout (H7).
+  - Accept: scripted: create "Tuning B: 22edo", assign a track, automate its generator, enter 5/4 → Up → 6/4 → 7/4,
+    convert a Degree note to Ratio and back, each one undo step; goldens.
+- [ ] **M4-prep gate** (orchestrator): merge T1.x-arch2 + T1b.5 (pqdaw plays JIT images); merge T1.x-text-ids; T1b.3
+  stdlib filters/envelopes with C++ references; T1b.4; T1.x-silence (replaces the whole-engine idle gate, M15a);
+  T3.17-fix2's IR lowering; a QUESTIONS design note for the document device model (devices, ports, wires, macros,
+  layout as document entities with stable ids; how the project patch view and the Ableton view edit one model);
+  split ViewContext and extract the shared drag/selection/auto-scroll layer (M17).
+  - Accept: the 30-track stress fixture plays in pqdaw at ≤ 25 % of the block period (JIT); M4 tasks written
+    against the device-model decision.
+- [ ] **T0/T1-lows** (any worker, small): M0 L11, L13, L14, L2-for-ASIO, L8 (or record won't-fix); M1 L6–L10, L3
+  seam, Q14 diagnostic, M14 default-tier compile-time proxy, M7 self-test label; L14 build.ps1 synopsis; L16.
+
 ## M4: Devices and visual programming (plan: docs/plans/M4.md, approved 2026-10-24)
 Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b.3, T1b.4, and the M2/M3 review fixes.
 
