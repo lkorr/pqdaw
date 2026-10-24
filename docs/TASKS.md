@@ -404,8 +404,65 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Preferences window (Ableton "Audio" tab equivalent): driver type (ASIO / WASAPI shared / WASAPI exclusive), input/output device, sample rate, buffer size, input/output channel configuration, latency readout, test tone, CPU meter; persisted in user settings; device hot-plug and driver reset handled (stop → reopen → resume, Program kept).
   - Accept: switching driver type/device/rate/buffer while playing reopens the stream without crash or allocation on the audio thread; settings persist across restarts; scripted test with NullDevice + fake device list; golden of the preferences window.
 
-## M4 onward (outline: refine into tasks before starting; most need user review)
-- **M4**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
+## M4: Devices and visual programming (plan: docs/plans/M4.md, approved 2026-10-24)
+Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b.3, T1b.4, and the M2/M3 review fixes.
+
+- [ ] **T4.1 Device chains in the model + Device view** (`document`, `views`, `app`)
+  - Each track holds an ordered device chain (instances of stdlib/user patches with their param values); lowering uses the chain instead of the fixed default instrument; the detail panel's Device tab shows the chain left → right with generic auto-generated panels (one control per param); add (device menu until the M5 browser), remove, reorder, deactivate, copy/paste; undo; serialization (schema bump + migration from "default instrument").
+  - Accept: scripted add/reorder/remove/deactivate each one undo step; reorder recompiles only that track's unit; renders match a hand-built ProjectGraph; golden `device-chain`.
+
+- [ ] **T4.2 Circuit canvas** (`ui`, `views`)
+  - Zoomable, pannable canvas widget: schematic symbol library (gates, op-amp triangles, z⁻¹/delay boxes, filter boxes with response glyphs, oscillator circles, IC rectangles, const/param terminals), orthogonal wires with junction dots, colours/thickness by kind and rate (bool/param/audio/poly/modulation dashed), selection and hit testing, level-of-detail and cached tiles (as T3.8-fix1) so 10k atoms stay fast.
+  - Accept: goldens of the symbol sheet and a stock filter opened to atoms; pan/zoom frame < 2 ms at 2560×1440 with 10k atoms; idle 0 % CPU.
+
+- [ ] **T4.3 Layout + auto-route** (`graph`, `views`)
+  - Stored layout (a layout section in the .pqp text, ignored by the compiler and preserved by the printer), automatic layered placement for patches without layout, Manhattan router with crossing minimisation, a tidy command.
+  - Accept: every stdlib patch opens laid out without overlaps; round trip text → layout → text is byte-stable; routing a 500-node patch < 50 ms.
+
+- [ ] **T4.4 Circuit editing + text pane, two-way** (`views`, `graph`)
+  - Add/delete/connect/disconnect, make subcircuit / open / close, param pins, rename; a text pane (code editor widget: syntax colouring, inline errors from the parser and checker) synced both ways through the T1.x-text-ids diff; one undo history across both; edits hot-swap the running unit.
+  - Accept: scripted edits in either pane update the other; state kept across edits (T1.x-text-ids criterion); hot swap click-free; parse errors never break the running audio.
+
+- [ ] **T4.5 Live probing + cost meters** (`engine`, `views`)
+  - Hover a wire: value, logic level, or a mini-scope from an analysis tap (RT copy into a ring, no allocation); bool wires lit when high; per-subcircuit and per-wire ns/sample meters (§7.6).
+  - Accept: probe taps RtScope-clean; tap cost when no probe is open = 0; meter values within 20 % of the bench numbers.
+
+- [ ] **T4.6 Device panels framework** (`views`, `stdlib`)
+  - A front panel over a subcircuit: a panel description (controls bound to param pins, layout, visualiser slots), Live-style device frame (title bar, activator, fold, preset slot), PQ Meter visualisers hosted in panels (spectrum, scope, transfer curves).
+  - Accept: Utility's and Saturator's panels built from descriptions; goldens; panel repaint on param change damages only the control.
+
+- [ ] **T4.7 Cross-device wiring** (`document`, `views`, `app`)
+  - Export jacks on top of device panels; drag from a jack to any parameter anywhere (auto-scroll across tracks); bezier cables over the UI coloured by rate, show/hide/fade; modulated knobs show a live range ring; modulation wires in the document (ProjectWire) lowered through the per-track units (merging units per Q84 rules).
+  - Accept: wiring an LFO export on track 1 into a filter cutoff on track 3 is audible next compile, one undo step; ring shows the live range; cables follow scrolling at frame rate. Wires add no delay; a wire that closes a delay-free cycle gets an automatic z⁻¹ (1 sample), drawn on the wire (SPEC §15 2026-10-24).
+
+- [ ] **T4.8 Racks + macros** (`document`, `views`, `stdlib`)
+  - Audio Effect Rack and Instrument Rack as subcircuits: parallel chains with chain mixer (volume/pan/mute/solo), chain-select zones with fades, Instrument Rack pitch zones in Hz or the track's tuning and velocity zones; 16 macros (targets with min/max/curve; macros are signals, so modulatable); macro variations (store/recall/randomise with exclusions); nesting; openable in the circuit editor.
+  - Accept: zone crossfades click-free; a macro driving 8 targets costs one param write; rack ⇄ circuit view edits stay in sync; goldens `audio-rack`, `instrument-rack`.
+
+- [ ] **T4.9 Utility + Saturator** (`stdlib`)
+  - Built in the patch language with panels; parity per SPEC §8 (Utility all controls; Saturator all curve types, waveshaper, shaper, colour EQ, soft clip, HQ via `oversample`).
+  - Accept: transfer curves and frequency responses vs documented formulas / known behaviour (no Live renders for now); CPU per instance in RESULTS (ship).
+
+- [ ] **T4.10 EQ Eight** (`stdlib`, `views`)
+  - 8 SVF-based bands, all types and slopes, stereo/L-R/M-S, adaptive Q, HQ, scale, spectrum display (PQ Meter port), audio-rate modulatable band params.
+  - Accept: magnitude responses vs analytic responses within 0.1 dB; stable under audio-rate cutoff modulation; panel golden.
+
+- [ ] **T4.11 Auto Filter** (`stdlib`, `views`)
+  - Live 12 filter types and circuit models (Clean, OSR, MS2, SMP, PRD, approximated), drive, morph, LFO, envelope follower, sidechain.
+  - Accept: responses per model vs published/known model behaviour (listening notes in REVIEW); modulation click-free; panel golden.
+
+- [ ] **T4.12 Operator** (`stdlib`, `views`)
+  - 4 oscillators, 11 algorithms, ratio/fixed (coarse ratios as JI harmonics), per-osc envelopes, pitch envelope, LFO, filter, user waveforms, glide, spread, voices; exported oscillator outputs; pitch follows the tuning signal.
+  - Accept: algorithm routing tests; SPEC §13 calibration row (64 voices, interpreter and JIT, with crossfade numbers) ≤ the budget; panel golden; tuned playback in 31edo and a MOS.
+
+- [ ] **T4.13 Project patch view** (`views`, `document`; SPEC §15 2026-10-24)
+  - The whole project as one editable patch: one band per track in lane order (source node playing that lane's MIDI or audio clips → device chain → compact mixer-strip node), groups as containers with their own chain, returns fed by send wires, master on the right; fully two-way with the Ableton view; semantic zoom from the whole project down to one band's atoms; an animated morph from the arrangement (lanes keep their vertical position and unfold into bands; clips collapse into the source node) and back.
+  - Accept: the view of a fixture project matches its ProjectGraph exactly (nodes, wires, groups, sends); every edit kind in the patch view (wire, re-route to a group/return, add/remove device, mixer change) changes the document and shows in the Ableton view, one undo step each; morph animation at 144 Hz with 64 tracks; zoomed-out full-project paint < 2 ms (tiles); goldens `project-patch-overview`, `project-patch-band`.
+
+- [ ] **T4.14 M4 review** (independent review agent, as for M0–M3; critique implementation, UI, aesthetic).
+
+## M5 onward (outline: refine into tasks before starting; most need user review)
+- **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5**: browser + user library, Simpler, Drum Rack. 👁
 - **M6**: audio clips, warp, recording, take lanes, Capture MIDI, PDC, metronome.
 - **M7**: JI objects. 👁

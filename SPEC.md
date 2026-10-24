@@ -611,5 +611,10 @@ All signal displays reuse PQ Meter's DSP, ballistics and look, which the owner h
   - **Semantic zoom**: zoomed in on one band you edit its chain (down to subcircuits and atoms, §7.3); zoomed out you see the whole project's routing.
   - **Transition**: an animated morph from the arrangement — lanes keep their vertical position and unfold into their bands (clips collapse into the source node), and back.
   - **Mixer**: a compact, expandable mixer-strip node at the end of each band (volume, pan, mute/solo, sends as visible wires).
+- 2026-10-24 (user answers to docs/plans/M4.md):
+  - **Device parity references**: no Live renders for now; stock devices are built and checked against known formulas, published behaviour and memory, and adjusted later.
+  - **Device panel look**: our call for now (Live-like where known), adjustable later.
+  - **Adding devices before the M5 browser**: a device menu / search popup on the device chain.
+  - **Cross-device and cross-track wires add no delay.** This replaces §7.6's "latency-compensated by default" for wires. The one exception: a wire that would make the graph cyclic (closing a loop that has no delay in it) gets a **1-sample delay (z⁻¹)** on that wire, automatically, shown in the UI. Explicit in-patch feedback keeps its own semantics (z⁻¹ / `solve`, §7.1). Track-level plugin delay compensation of audio paths (M6) is unaffected.
 
 No open questions remain for draft 1.
