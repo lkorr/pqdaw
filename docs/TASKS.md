@@ -152,7 +152,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Flat op list, parameter block, `ProcessContext`, and the state arena.
   - Accept: the interpreted output of the patches in `tests/graph/cases/` matches a slow reference evaluator (sample-by-sample graph walk in `double`) within 1e-5. RtScope tests show process() never allocates.
 
-- [~] **T1.8 Voices** *(039fdea; reopened as partial by the M1 review — see T1.8-fix1)* (`engine`). Depends on: T1.7.
+- [x] **T1.8 Voices** *(039fdea; M1-review defects fixed in T1.8-fix1)* (`engine`). Depends on: T1.7.
   - Voice allocator (max voices, stealing policy), the event list, voice lanes (8 per AVX2 group), the `voice.*` namespace, voice end on silence/envelope.
   - Accept: tests cover allocation and stealing, note on/off sample accuracy (an event at sample k takes effect at k), and 64 voices with no allocation.
 
@@ -179,7 +179,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     (2 voice groups, 2 sub-block iterations, 3 Newton evaluations, after-solve and end-of-stage reads) runs over the corpus and
     500 random patches WITH voices, multiple outputs, multichannel delays and solve blocks; reverting any one fix fails it.
 
-- [~] **T1.8-fix1 Voice semantics: NaN-safe mix, retrigger, unison, voice_last, overflow** *(resumed 2026-10-24 on `task/T1.8-fix1-voices`)* (`engine`). Depends on: T1.8.
+- [x] **T1.8-fix1 Voice semantics: NaN-safe mix, retrigger, unison, voice_last, overflow** *(653a37b)* (`engine`). Depends on: T1.8.
   - Mix and monitor with a lane-active select (no gain multiply on idle lanes); free lanes read a finite hz (referenceHz).
     Retrigger only Released voices not started this block, with ≥ 1 low gate frame (or an explicit producer flag); never
     merge two held notes. voice_last re-points to the newest live lane when its lane frees. Pitch/NoteOff lookup prefers
