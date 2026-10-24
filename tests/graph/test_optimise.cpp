@@ -947,7 +947,7 @@ TEST_CASE("optimise: select sinking preserves values, NaN and infinities include
 
 TEST_CASE("optimise: select sinking runs bit-identically on the schedule") {
   // Arithmetic and fast_ kernels only: an exact transcendental of a global value is a 1-lane CRT call at audio rate
-  // and an 8-lane SVML call at param rate (QUESTIONS Q?-T1.4-fix1-a), as with any rate refinement.
+  // and an 8-lane SVML call at param rate (QUESTIONS Q94), as with any rate refinement.
   const char* src = R"(patch S {
   in x : audio
   param a = 0.25 [0..1]

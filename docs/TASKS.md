@@ -222,7 +222,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Accept: an idle 30-track project with reverbs/delays costs ≤ 1 % of a core after tails end; waking is sample-accurate
     (golden); interpreter and JIT identical.
 
-- [~] **T1.4-fix1 Optimiser: select hoisting, bit-exact folding, units** *(worker BB, branch task/T1.4-fix1-optimiser)* (`graph`). Depends on: T1.4.
+- [x] **T1.4-fix1 Optimiser: select hoisting, bit-exact folding, units** *(merged 2026-10-24)* (`graph`). Depends on: T1.4.
   - Sink pure ops below select/mux when it lowers the rate; fold with the 8-lane kernel (lane 0); `smp` rejected in params and
     arithmetic reaching seconds inputs; units in the CSE key.
   - Accept: FmVoice's adsr has no audio-rate exp after optimise (IR test) and the JIT fm_voice bench improves (RESULTS row);
