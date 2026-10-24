@@ -140,7 +140,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Constant folding (never `param`), DCE, CSE, algebraic simplification (×1, +0, ×0 when the other side is finite), and hoisting param-rate subexpressions out of audio-rate paths.
   - Accept: tests on before/after IR. A test proves `tan(π·cutoff/sr)` is hoisted to param rate when cutoff is unmodulated, and stays audio-rate when it is modulated.
 
-- [~] **T1.5 Scheduler** *(346999c; reopened as partial by the M1 review — see T1.5-fix1)* (`graph`). Depends on: T1.4.
+- [x] **T1.5 Scheduler** *(346999c; M1-review defects fixed in T1.5-fix1)* (`graph`). Depends on: T1.4.
   - Topological order, Tarjan SCCs, explicit-delay feedback handled, a zero-delay cycle outside `solve` rejected (text) or given an inserted `z1` plus a warning (visual mode flag). Block regions: per-sample for feedback SCCs, blocks elsewhere. Buffer liveness and reuse. State layout keyed by NodeId with type tags.
   - Accept: tests on schedule structure. The scratch-buffer count for a 100-node chain is ≤ 3. The state layout for an unchanged node is identical across reschedules.
 
@@ -170,7 +170,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
 
 ## M1 follow-ups (from the M1 review, docs/reviews/M1.md)
 ```
-- [~] **T1.5-fix1 Scheduler buffer liveness: solve reads, voice outputs, multichannel delay loops** *(resumed 2026-10-24 on `task/T1.5-fix1-liveness`)* (`graph`). Depends on: T1.5.
+- [x] **T1.5-fix1 Scheduler buffer liveness: solve reads, voice outputs, multichannel delay loops** *(4c085d3)* (`graph`). Depends on: T1.5.
   - Pin every SolveEquation lhs/rhs and every unknown value (pin test `v.def <= b.firstOp`); pin every voice OutputRef/export
     value; build the delay-loop read list once per node (schedule.cpp:1482). checkStructure asserts op.numIn == kernel inputs.
     Delay-loop sub-block bound computed in float32 like the runtime (M10).
