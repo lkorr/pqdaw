@@ -190,7 +190,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     leaves 0 stuck notes; a per-voice 2 s delay at 64 voices with note-on/compaction traffic stays under 25 % of the block
     period on the audio thread (bench row).
 
-- [ ] **T1.6-fix1 Kernel edge cases** (`dsp`). Depends on: T1.6.
+- [~] **T1.6-fix1 Kernel edge cases** *(worker AT, branch task/T1.6-fix1-kernels)* (`dsp`). Depends on: T1.6.
   - stateBytes in size_t + scheduler cap on ring bytes (error); sample_read tiny-negative rate and modulo loop wrap; timer NaN
     clamp (Q55); mod never returns b; NaN hz → 0 Hz; wavetable prevPhase at reset; fast_sin range reduction (or documented
     clamp) and remove it from the optimiser's finite facts; wavetable crossfade between adjacent mip levels.
