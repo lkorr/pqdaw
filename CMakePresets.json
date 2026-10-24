@@ -29,7 +29,8 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_FLAGS_RELEASE": "/O2 /Ob2 /DNDEBUG",
         "CMAKE_CXX_FLAGS_RELEASE": "/O2 /Ob2 /Oi /Ot /DNDEBUG",
-        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/OPT:REF"
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/OPT:REF",
+        "CMAKE_STATIC_LINKER_FLAGS_RELEASE": ""
       }
     },
     {
