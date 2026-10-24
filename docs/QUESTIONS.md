@@ -607,7 +607,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Options: A) accept (tempo ramps + curved automation are rare); B) interpolate ticks quadratically inside a block (error ≪ 1e-6 of a block's tick span, but no longer bit-equal to `evalAutomation(samplesToTicks(s))` at jumps); C) a fast exp2 for |k| ≥ 1 (accurate enough there), exact expm1 only for small curvature.
 - Provisional choice: A.
 
-## Q?-T3.9-a · 2026-10-24 · T3.9 · Arrangement editing choices not fixed by SPEC/TASKS
+## Q82 · 2026-10-24 · T3.9 · Arrangement editing choices not fixed by SPEC/TASKS
 - Context: T3.9 had to settle how Live's arrangement editing maps onto our selection model and T3.6's edit operations. All of it is view behaviour in `src/views/src/arrangement/editing.cpp` (nothing persisted, every edit still one `pq::doc::ops` edit = one undo step), so each item is reversible.
 - Choices (provisional):
   1. **Where a press goes** (Live): a clip's title strip moves it (Alt copies, the copy keeps the originals in place); its two ends (4 logical px, full height, at most a quarter of the clip) resize it; its body places the insert marker and a drag there makes a time selection. A click selects the clip and shows it in the clip view (`setDetailClip`) without opening or focusing the detail view; a double-click also shows the detail view in Clip mode and focuses the note editor. Alternative: a body drag also moves (simpler to discover, but no time selection inside packed clips).

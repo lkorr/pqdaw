@@ -352,7 +352,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Render each clip's note preview into a texture (per clip snapshot + zoom bucket) and draw it as one textured quad, so far-zoom settled repaints don't emit tens of thousands of note rects. Rebuild off the paint path within a budget.
   - Accept: at 2560×1440, 64 × 200 × 50, settled full repaint < 2 ms at every zoom down to the minimum, including the first repaint after a zoom settles; goldens unchanged (or deliberately regenerated and reviewed); texture memory bounded.
 
-- [~] **T3.9 Arrangement editing** *(worker AR, branch task/T3.9-arrangement-editing)* (`views`). Depends on: T3.8, T3.6. 👁
+- [x] **T3.9 Arrangement editing** *(28885ca)* (`views`). Depends on: T3.8, T3.6. 👁
   - Selection (clip select, Shift/Ctrl add, rubber band, time selection, Ctrl+A). Clip drag-move with relative snap, Alt+drag copy, edge resize, cross-track drag, Ctrl+Shift+M, Ctrl+E, Ctrl+D, Ctrl+J, Delete, Ctrl+L. Clipboard Ctrl+C/X/V (in-process document fragments). Ctrl+I, Ctrl+Shift+D, delete time. Right-click grid menu (Adaptive Narrowest…Widest / Fixed / Straight, Triplet, 5-, 7-, 11-tuplet / Snap / Off) and Ctrl+1–5. Double-click opens the clip in the detail view.
   - Accept: scripted tests asserting the resulting document plus exactly one undo step: drag-move with snap on a 7-tuplet grid lands on exact ticks; Alt-drag copy; resize; split; duplicate; consolidate; Ctrl+Shift+D; every grid menu item and Ctrl+1–5. A 60-frame drag = one undo entry. Golden `arrangement-selection` (clip + time selection, drag ghost).
 
