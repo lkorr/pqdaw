@@ -121,6 +121,46 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
       dl.addRectFilled({std::max(x, static_cast<float>(vis.x)), y, std::min(x + dash, static_cast<float>(vis.right())), y + t},
                        overridden ? at.lineOverridden : at.unautomated);
   } else {
+    // Density from the band's whole width (not the painted part: partial and full repaints decide alike).
+    const auto bandFirst = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(b.rect.x)))),
+                                            [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
+    const auto bandLast = std::upper_bound(bandFirst, pts.end(), static_cast<Ticks>(std::ceil(view_.tickAtX(static_cast<float>(b.rect.right())))),
+                                           [](Ticks t, const doc::Breakpoint& bp) { return t < bp.tick; });
+    const auto count = static_cast<float>(bandLast - bandFirst);
+    const float lineW = std::max(1.0f, au::kLineWidth * ctx.scale.factor);
+    if (count * 2.0f > static_cast<float>(b.rect.w)) {
+      // Dense (under 2 px per breakpoint): one span per pixel column from the lowest to the highest value the
+      // envelope takes there, as a rect. The ribbon would be a zigzag of sub-pixel segments costing 8 vertices each;
+      // the spans look the same and cost 4 per column.
+      // Per column: the envelope at its right edge (a cursor: amortised O(1); the left edge is the previous column's)
+      // and every breakpoint inside (value compares only; the display mapping runs at most twice per column). Each column depends only on its own
+      // ticks, so partial and full repaints agree exactly.
+      EnvelopeCursor cur(pts, fallback);
+      auto it = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(vis.x)))),
+                                 [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
+      uint32_t spans = 0;
+      double tl = view_.tickAtX(static_cast<float>(vis.x));
+      double vl = cur.at(tl);  // the envelope at the column's left edge (the previous column's right edge)
+      for (int32_t col = vis.x; col < vis.right(); ++col) {
+        const double tr = view_.tickAtX(static_cast<float>(col + 1));
+        double vmin = vl, vmax = vl;
+        for (; it != pts.end() && static_cast<double>(it->tick) < tr; ++it) {
+          if (static_cast<double>(it->tick) < tl) continue;
+          vmin = std::min(vmin, static_cast<double>(it->value));
+          vmax = std::max(vmax, static_cast<double>(it->value));
+        }
+        const double vr = cur.at(tr);
+        vmin = std::min(vmin, vr);
+        vmax = std::max(vmax, vr);
+        vl = vr;
+        const float ya = yOf(vmin), yb = vmax == vmin ? ya : yOf(vmax);
+        const auto x = static_cast<float>(col);
+        dl.addRectFilled({x, std::min(ya, yb) - lineW * 0.5f, x + 1.0f, std::max(ya, yb) + lineW * 0.5f}, lineCol);
+        ++spans;
+        tl = tr;
+      }
+      stats_.vertices += spans;
+    } else {
     // The polyline over the visible columns. A partial repaint must draw exactly the pixels a full one draws, and
     // a ribbon's pixels depend on its vertices, the joins at them (each vertex's neighbours) and the column groups.
     // So the polyline starts at a breakpoint three device columns (and two breakpoints) before the painted part and
@@ -204,20 +244,17 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
     }
     flush();
     stats_.vertices += static_cast<uint32_t>(poly_.size());
-    smoothPolyline(dl, poly_.data(), static_cast<uint32_t>(poly_.size()), lineCol, std::max(1.0f, au::kLineWidth * ctx.scale.factor));
+    smoothPolyline(dl, poly_.data(), static_cast<uint32_t>(poly_.size()), lineCol, lineW);
+    }
 
     // Breakpoint handles (all of them while they are at least kHandleMinSpacing px apart on average, else only the
     // selected ones).
-    const auto first = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(t0)),
+    const float reach = (au::kPointRadius + 2.0f) * ctx.scale.factor;
+    const auto first = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(vis.x) - reach))),
                                         [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
-    const auto last = std::upper_bound(first, pts.end(), static_cast<Ticks>(std::ceil(t1)),
+    const auto last = std::upper_bound(first, pts.end(), static_cast<Ticks>(std::ceil(view_.tickAtX(static_cast<float>(vis.right()) + reach))),
                                        [](Ticks t, const doc::Breakpoint& bp) { return t < bp.tick; });
-    // Level of detail from the band's whole width (not the painted part: partial and full repaints agree).
-    const auto bandFirst = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(b.rect.x)))),
-                                            [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
-    const auto bandLast = std::upper_bound(bandFirst, pts.end(), static_cast<Ticks>(std::ceil(view_.tickAtX(static_cast<float>(b.rect.right())))),
-                                           [](Ticks t, const doc::Breakpoint& bp) { return t < bp.tick; });
-    const auto count = static_cast<float>(bandLast - bandFirst);
+    // Level of detail from the band's whole width (count above: partial and full repaints agree).
     const bool all = count * au::kHandleMinSpacing * ctx.scale.factor <= static_cast<float>(b.rect.w);
     const bool sameLane = selParam_ == b.param && selTrack_ == b.track;
     const float r = au::kPointRadius * ctx.scale.factor;

@@ -61,8 +61,6 @@ int run(int points) {
   if (!arr) return 1;
   ctx.setDetailVisible(false);
   ArrangementAutomation& au = arr->automation();
-  for (const doc::TrackPtr& t : ctx.doc()->tracks) au.showLanes(t->id, true);
-  au.setMode(true);
   DrawList dl;
   double now = 1.0;
   tree.layoutNow();
@@ -72,6 +70,15 @@ int run(int points) {
     dl.reset(w, h);
     tree.paint(dl, res, now, region);
   };
+  char name[160];
+  // 0. Baseline: the same lanes area without automation shown (16 track rows of clips, grid, empty space).
+  paintRegion({0, 0, static_cast<int32_t>(w), static_cast<int32_t>(h)});
+  std::snprintf(name, sizeof name, "automation.baseline lanes-area paint without automation (%d points) 2560x1440", points);
+  pq::bench::reportStats(name, pq::bench::measure([&] { paintRegion(arr->lanesViewport()); }, 1), "ns/frame");
+  for (const doc::TrackPtr& t : ctx.doc()->tracks) au.showLanes(t->id, true);
+  au.setMode(true);
+  tree.layoutNow();
+  tree.update(now += 0.2);
   auto frame = [&] {
     now += 1.0 / 144.0;
     tree.update(now);
@@ -80,7 +87,6 @@ int run(int points) {
   const IRect lv = arr->lanesViewport();
   const IRect all{0, 0, static_cast<int32_t>(w), static_cast<int32_t>(h)};
   paintRegion(all);
-  char name[160];
 
   // 1. The lanes (and the envelopes over the rows) at the default zoom (≈ 26 bars in view).
   std::snprintf(name, sizeof name, "automation.lanes paint %d lanes x %d points, default zoom 2560x1440", kTracks, points);

@@ -78,7 +78,7 @@ inline constexpr float kLineWidth = 1.5f;        // envelope ribbon core (logica
 inline constexpr float kMaxChordPx = 2.0f;       // curved segments: subdivision chord (device px)
 inline constexpr float kCurveDragPx = 120.0f;    // Alt-drag: logical px of vertical travel for curve 0 → ±1
 inline constexpr float kChooserHeight = 14.0f;   // header parameter chooser
-inline constexpr float kHandleMinSpacing = 4.0f; // device px per visible breakpoint below which handles are skipped
+inline constexpr float kHandleMinSpacing = 12.0f; // logical px per breakpoint (band average) below which only selected handles show
 }  // namespace automation_metrics
 
 // ---- parameters ------------------------------------------------------------------------------------------------

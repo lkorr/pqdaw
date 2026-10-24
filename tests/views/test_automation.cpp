@@ -757,3 +757,31 @@ TEST_CASE("render: automation-lanes over tests/views/fixtures/automation matches
 TEST_CASE("render: automation-mode-over-clips over tests/views/fixtures/automation matches the golden image") {
   checkGolden("automation-mode-over-clips");
 }
+
+TEST_CASE("automation: a dense lane costs O(width): one span per pixel column, no handles") {
+  FakeTransport port;
+  ViewContext ctx(port);
+  views::test::buildAutomationBench(ctx.store(), 1, 20000);
+  TestDriver d(1280, 800);
+  auto s = Shell::create(d.tree(), ctx);
+  REQUIRE(s.ok());
+  auto* arr = dynamic_cast<ArrangementView*>(d.find(kArr));
+  REQUIRE(arr != nullptr);
+  ctx.setDetailVisible(false);
+  const doc::TrackId t = ctx.doc()->tracks.front()->id;
+  arr->automation().showLanes(t, true);
+  d.tree().layoutNow();
+  arr->setTimeView(0.0, static_cast<double>(arr->lanesViewport().w) / (65.0 * static_cast<double>(kBar)));
+  REQUIRE(d.enableGpu().ok());
+  d.tree().invalidateAll();
+  d.step();
+  DrawList dl;
+  dl.reset(d.tree().width(), d.tree().height());
+  d.tree().paint(dl, d.resources(), d.now(), arr->lanesViewport());
+  const auto& st = arr->automation().stats();
+  CHECK(st.bandsPainted == 1);
+  CHECK(st.handles == 0);
+  CHECK(st.vertices <= static_cast<uint32_t>(arr->lanesViewport().w) + 2);  // spans, one per column
+  CHECK(st.vertices > 100);
+  d.tree().setRoot(std::make_unique<Widget>());
+}

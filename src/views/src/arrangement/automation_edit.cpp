@@ -682,7 +682,11 @@ void ArrangementAutomation::updatePreview() {
       p.value = static_cast<float>(std::clamp(static_cast<double>(p.value) + drag_.dv, range.min, range.max));
       if (p.id == drag_.pressed.id) readoutText_ = formatParamValue(drag_.band.param, p.value);
     }
-    std::stable_sort(drag_.preview.begin(), drag_.preview.end(), pointLess);
+    // The moves are clamped between unmoved neighbours and shift together, so the order holds except for ties on a
+    // neighbour's tick (ordered by id): one insertion pass, O(n) on sorted input (no n log n sort per frame).
+    auto& pv = drag_.preview;
+    for (size_t i = 1; i < pv.size(); ++i)
+      for (size_t j = i; j > 0 && pointLess(pv[j], pv[j - 1]); --j) std::swap(pv[j], pv[j - 1]);
   } else if (drag_.kind == DragKind::Curve) {
     for (doc::Breakpoint& p : drag_.preview)
       if (p.id == drag_.segment) p.curve = drag_.curve;
