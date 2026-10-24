@@ -18,6 +18,7 @@
 //   select(literal, a, b) → a or b;  select(c, a, a) → a;  mux(literal i, …) → in[clamp(floor i)] (NaN → in0)
 //   channel(x, i) → x for a mono x;  channel(pack(…), literal i) → the pack input holding channel i, if it is mono
 //   voice_*(x) → x for a global x (the registry: "a global x passes through unchanged")
+//   f(…, select(c, a, b), …) → select(c, f(…, a, …), f(…, b, …)) when the copies are below f's rate (sinkSelect)
 // "Finite"/"sign bit clear" come from a small forward analysis (Facts): literals, and atoms whose range is known
 // (phasor, gate_to_real, abs, clip with finite literal bounds, …). Params and engine inputs are never assumed finite.
 
@@ -156,11 +157,15 @@ bool isVoiceReducer(const AtomSignature& sig) noexcept {
   return sig.category == AtomCategory::Structure && sig.name.starts_with("voice_");
 }
 
-// Runs a stateless kernel for one frame on one lane: the value a param-rate evaluation of the node produces at
-// runtime (kernel.h: "a param-rate computation is the same kernel run with frames = 1"), with FTZ/DAZ as on the
-// audio thread.
+// Runs a stateless kernel for one frame and returns lane 0: the value a const- or param-rate evaluation of the node
+// produces at runtime. Those nodes run in Control regions, which both backends execute with the 8-lane kernels
+// (schedule.h; the JIT calls the same kernels there), so folding uses the 8-lane kernel too: the 1-lane kernels
+// call the CRT for the exact transcendentals and differ from the 8-lane SVML ones by an ulp on about a third of
+// the arguments (M1 review M4). FTZ/DAZ as on the audio thread.
 bool evalKernel(dsp::Atom k, const float* in, uint32_t nIn, float* out, uint32_t nOut) {
-  const dsp::KernelFn fn = dsp::findKernel(k, 1, 0);
+  constexpr uint32_t kLanes = 8;
+  static_assert(dsp::kPatternFloats == kLanes, "one Blk frame of 8 lanes fills one pattern slot");
+  const dsp::KernelFn fn = dsp::findKernel(k, kLanes, 0);
   if (!fn) return false;
   struct alignas(32) Slot {
     float v[dsp::kPatternFloats];
@@ -195,6 +200,8 @@ public:
   Result<TypedPatch> run() {
     build();
     st_.nodesBefore = p_.nodeCount();
+    if (!tp_.durationsInSamples)
+      if (Status s = checkSampleArithmetic(); !s) return s.error();
     if (opt_.lowerDurations && !tp_.durationsInSamples) lowerDurations();
     const uint32_t cap = std::max<uint32_t>(opt_.maxPasses, 1);
     for (uint32_t pass = 0; pass < cap; ++pass) {
@@ -384,11 +391,16 @@ private:
 
   // ---- literals and facts ---------------------------------------------------------------------------------------
 
+  // Equal literals merge only with the same unit: the value is unit-normalised, but `smp` stays meaningful after
+  // optimise() (a delay `max` without a known sample rate is read as samples by the scheduler), so a `5smp` and a
+  // plain 5 are different values (M1 review L11). Other units only cost a missed merge of a free literal.
   static bool sameConst(const Constant& a, const Constant& b) noexcept {
-    return a.kind == b.kind && std::bit_cast<uint64_t>(a.value()) == std::bit_cast<uint64_t>(b.value());
+    return a.kind == b.kind && a.unit == b.unit &&
+           std::bit_cast<uint64_t>(a.value()) == std::bit_cast<uint64_t>(b.value());
   }
   static uint64_t constHash(const Constant& c) noexcept {
-    return hashMix(hashMix(0xC0C0C0ull, static_cast<uint64_t>(c.kind)), std::bit_cast<uint64_t>(c.value()));
+    const uint64_t h = hashMix(hashMix(0xC0C0C0ull, static_cast<uint64_t>(c.kind)), static_cast<uint64_t>(c.unit));
+    return hashMix(h, std::bit_cast<uint64_t>(c.value()));
   }
   static Facts constFacts(const Constant& c) noexcept {
     if (c.kind == Kind::Bool) return {};
@@ -474,6 +486,52 @@ private:
   }
 
   // ---- pass 0: durations ------------------------------------------------------------------------------------------
+
+  // An `smp` literal means samples only where it is wired straight into a duration input (Q35). Through arithmetic
+  // (`5smp * 2`, `t ? 5smp : 10smp`) the language has no units, so a duration input would read the result as
+  // seconds: 48000× too long. That is an error with a hint (M1 review L1). A forward pass in topological order marks
+  // the real values computed by pure atoms from an `smp` literal; any such value at a seconds input (other than the
+  // literal itself) is reported. Bool results (comparisons) carry no duration and stop the marking.
+  Status checkSampleArithmetic() {
+    bool any = false;
+    for (const WNode& w : nodes_) any |= w.kind == NodeKind::Const && consts_[w.payload].unit == Unit::smp;
+    if (!any) return Ok{};
+    computeOrder();
+    std::vector<uint8_t> fromSmp(outT_.size(), 0);
+    for (const uint32_t n : order_) {
+      const WNode& w = nodes_[n];
+      if (w.kind == NodeKind::Const) {
+        fromSmp[out(n)] = consts_[w.payload].unit == Unit::smp;
+        continue;
+      }
+      if (w.kind != NodeKind::Atom || !isPure(sigOf(w.atom))) continue;
+      bool t = false;
+      for (uint32_t i = 0; i < w.nIn; ++i)
+        if (const uint32_t d = in(n, i); d != kNone && outT_[d].kind == Kind::Real) t |= fromSmp[d] != 0;
+      for (uint32_t j = 0; j < w.nOut; ++j) fromSmp[out(n, j)] = t && outT_[out(n, j)].kind == Kind::Real;
+    }
+    for (uint32_t n = 0; n < nodes_.size(); ++n) {
+      const WNode& w = nodes_[n];
+      if (!w.alive || w.kind != NodeKind::Atom) continue;
+      const KernelMapping& km = kernelMapping(w.atom);
+      if (km.lowering != Lowering::Kernel || km.args.empty()) continue;
+      for (uint32_t i = 0; i < w.nIn; ++i) {
+        const ArgUse use = km.args[std::min<size_t>(i, km.args.size() - 1)].use;
+        if (use != ArgUse::InputSeconds && use != ArgUse::InitMaxDelaySeconds) continue;
+        const uint32_t d = in(n, i);
+        if (d == kNone || nodes_[owner(d)].kind == NodeKind::Const || !fromSmp[d]) continue;
+        const AtomSignature& sig = sigOf(w.atom);
+        const std::string what = w.src != kNone ? p_.describe(w.src) : std::string(sig.name);
+        return Error{ErrorCode::InvalidArgument,
+                     "patch '" + p_.name() + "': a value computed from an `smp` literal reaches the duration input '" +
+                         std::string(sig.inputs[specIndex(sig, i)].name) + "' of " + what +
+                         ", which reads seconds (the unit is lost in arithmetic: 5smp * 2 would mean 10 s). Write the "
+                         "sample count at the input itself (e.g. 10smp), or compute seconds with / sr",
+                     {}};
+      }
+    }
+    return Ok{};
+  }
 
   uint32_t srPort(const NodeOrigin& origin) {
     if (srPort_ == kNone) {
@@ -586,7 +644,7 @@ private:
     computeOrder();
     facts_.assign(outT_.size(), Facts{});
     cse_.reset(nodes_.size());
-    const uint32_t before = st_.folded + st_.simplified + st_.merged;
+    const uint32_t before = st_.folded + st_.simplified + st_.merged + st_.sunk;
     for (size_t k = 0; k < order_.size(); ++k) {
       const uint32_t n = order_[k];
       if (!nodes_[n].alive || nodes_[n].replaced) continue;
@@ -605,7 +663,7 @@ private:
         default: break;
       }
     }
-    return st_.folded + st_.simplified + st_.merged - before;
+    return st_.folded + st_.simplified + st_.merged + st_.sunk - before;
   }
 
   void visitAtom(uint32_t n) {
@@ -617,6 +675,7 @@ private:
     }
     if (fold(n)) return;
     if (simplify(n)) return;
+    if (opt_.sinkSelects && sinkSelect(n)) return;
     if (nodes_[n].nOut > 0 && !cyclic_[n]) facts_[out(n)] = atomFacts(n);
     cse(n);
   }
@@ -816,6 +875,138 @@ private:
     }
     const AtomSignature& sig = sigOf(at);
     if (isVoiceReducer(sig) && a != kNone && outT_[a].poly == Poly::Global) return simplified(replaceNode(n, a));
+    return false;
+  }
+
+  // ---- select sinking ---------------------------------------------------------------------------------------------
+  //
+  // f(…, select(c, a, b), …) → select(c, f(…, a, …), f(…, b, …)) (and the same through mux), when that lowers the
+  // rate of f: the copies only see the arms and f's other inputs, so with param-rate arms and other inputs they run
+  // once per block per arm, and only the select stays per sample. Arms that are themselves selects/mux are expanded
+  // the same way (nested `a ? x : b ? y : z`), up to kMaxSinkLeaves copies. Exact: f is a pure, stateless,
+  // element-wise kernel, so it gives the same value whichever arm is picked (NaN and signed zeros included), and
+  // evaluating it on every arm has no effect (no state is skipped or advanced, no side effect, FP exceptions are
+  // masked). The M1 review's M16: adsr's `1 − exp(−1/max(time·sr, 1))` with `time = attacking ? a : gate ? d : r`
+  // becomes three per-block exps and two per-sample selects instead of one exp per voice-sample.
+  static constexpr uint32_t kMaxSinkLeaves = 16;
+
+  // An alive select/mux whose arms can carry a sunk f (all connected, mono, not on a cycle).
+  bool sinkableSelect(uint32_t d) {
+    if (d == kNone) return false;
+    const uint32_t s = owner(d);
+    const WNode& w = nodes_[s];
+    if (!w.alive || w.replaced || w.kind != NodeKind::Atom || (w.atom != a_.select && w.atom != a_.mux)) return false;
+    if (w.nOut != 1 || outT_[d].width != kWidthMono || (s < cyclic_.size() && cyclic_[s])) return false;
+    for (uint32_t i = 1; i < w.nIn; ++i) {
+      const uint32_t x = in(s, i);
+      if (x == kNone || outT_[x].width != kWidthMono) return false;
+    }
+    return true;
+  }
+
+  // The leaves of the arm tree under select/mux port d whose own rate is above `limit` get expanded; returns
+  // false when there are more than kMaxSinkLeaves leaves. `top` is the highest leaf rate.
+  bool sinkLeaves(uint32_t d, Rate limit, uint32_t& leaves, Rate& top) {
+    const uint32_t s = owner(d);
+    for (uint32_t i = 1; i < nodes_[s].nIn; ++i) {
+      const uint32_t x = in(s, i);
+      if (outT_[x].rate > limit && sinkableSelect(x)) {
+        if (!sinkLeaves(x, limit, leaves, top)) return false;
+        continue;
+      }
+      if (++leaves > kMaxSinkLeaves) return false;
+      top = maxRate(top, outT_[x].rate);
+    }
+    return true;
+  }
+
+  // f's output type for the given input drivers (refineRates' rule; mono).
+  PortType sunkType(uint32_t n, std::span<const uint32_t> ins) const {
+    const AtomSignature& sig = sigOf(nodes_[n].atom);
+    Rate r = Rate::Const;
+    Poly p = Poly::Global;
+    for (uint32_t d : ins)
+      if (d != kNone) {
+        r = maxRate(r, outT_[d].rate);
+        if (outT_[d].poly == Poly::Voice) p = Poly::Voice;
+      }
+    const Rate declared = sig.outputs[0].type.rate;
+    return portType(outT_[out(n)].kind, declared == Rate::Infer ? r : maxRate(r, declared), p, kWidthMono);
+  }
+
+  // f (node n's atom and inputs) with input `slot` driven by d: a select/mux of copies if d is an expanded select,
+  // else one copy. Returns the new out-port. (addNode reallocates nodes_: no references into it are held.)
+  uint32_t sinkBuild(uint32_t n, uint32_t slot, uint32_t d, Rate limit, uint32_t& salt) {
+    const uint64_t key = hashMix(nodes_[n].key, 0x5E1EC7000ull + salt++);
+    const NodeOrigin origin = nodes_[n].origin;
+    const Kind kind = outT_[out(n)].kind;
+    std::vector<uint32_t> ins;
+    if (outT_[d].rate > limit && sinkableSelect(d)) {
+      const uint32_t s = owner(d);
+      const AtomId selAtom = nodes_[s].atom;
+      const uint32_t nArms = nodes_[s].nIn;
+      std::vector<uint32_t> arms(nArms);
+      for (uint32_t i = 0; i < nArms; ++i) arms[i] = in(s, i);
+      ins.assign(nArms, kNone);
+      ins[0] = arms[0];
+      Rate r = arms[0] != kNone ? outT_[arms[0]].rate : Rate::Const;
+      Poly p = arms[0] != kNone ? outT_[arms[0]].poly : Poly::Global;
+      for (uint32_t i = 1; i < nArms; ++i) {
+        ins[i] = sinkBuild(n, slot, arms[i], limit, salt);
+        r = maxRate(r, outT_[ins[i]].rate);
+        if (outT_[ins[i]].poly == Poly::Voice) p = Poly::Voice;
+      }
+      return out(addNode(NodeKind::Atom, selAtom, ins, 1, portType(kind, r, p, kWidthMono), key, origin));
+    }
+    const uint32_t nIn = nodes_[n].nIn;
+    ins.resize(nIn);
+    for (uint32_t i = 0; i < nIn; ++i) ins[i] = i == slot ? d : in(n, i);
+    const PortType t = sunkType(n, ins);
+    return out(addNode(NodeKind::Atom, nodes_[n].atom, ins, 1, t, key, origin));
+  }
+
+  bool sinkSelect(uint32_t n) {
+    const WNode& w = nodes_[n];
+    if (cyclic_[n] || w.nOut != 1 || w.nIn == 0 || w.atom == a_.select || w.atom == a_.mux) return false;
+    const PortType ot = outT_[out(n)];
+    if (ot.width != kWidthMono || ot.rate <= Rate::Param) return false;
+    const KernelMapping& km = kernelMapping(w.atom);
+    if (km.lowering != Lowering::Kernel) return false;
+    const dsp::KernelInfo& ki = dsp::kernelInfo(km.kernel);
+    if (ki.resource != dsp::Resource::None || ki.splRequired != 0 || ki.stateSize != 0) return false;
+    for (const ArgMap& am : km.args)
+      if (am.use != ArgUse::Input) return false;
+    const Rate declared = sigOf(w.atom).outputs[0].type.rate;
+    if (declared != Rate::Infer && declared >= ot.rate) return false;  // the copies could not run any less often
+    const uint32_t nIn = w.nIn;
+    for (uint32_t slot = 0; slot < nIn; ++slot) {
+      const uint32_t d = in(n, slot);
+      if (!sinkableSelect(d)) continue;
+      // f's other inputs are shared by every copy; they must already be below f's rate.
+      Rate others = Rate::Const;
+      bool mono = true;
+      for (uint32_t i = 0; i < nIn; ++i) {
+        const uint32_t x = i == slot ? kNone : in(n, i);
+        if (x == kNone) continue;
+        others = maxRate(others, outT_[x].rate);
+        mono &= outT_[x].width == kWidthMono;
+      }
+      if (!mono || others >= ot.rate) continue;
+      // Expand the nested selects at f's rate (the per-sample ones); every leaf must end up below it.
+      const Rate limit = static_cast<Rate>(static_cast<uint8_t>(ot.rate) - 1);
+      uint32_t leaves = 0;
+      Rate top = Rate::Const;
+      if (!sinkLeaves(d, limit, leaves, top) || maxRate(top, others) >= ot.rate) continue;
+      const auto firstNew = static_cast<uint32_t>(nodes_.size());
+      uint32_t salt = 0;
+      const uint32_t t = sinkBuild(n, slot, d, limit, salt);
+      if (!replaceNode(n, t)) {  // a type guard refused it (the select's poly differs from f's): undo
+        for (uint32_t m = firstNew; m < nodes_.size(); ++m) nodes_[m].alive = false;
+        return false;
+      }
+      ++st_.sunk;
+      return true;
+    }
     return false;
   }
 

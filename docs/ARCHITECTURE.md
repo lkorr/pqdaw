@@ -112,10 +112,12 @@ namespace pq::graph {
   // returns every Diagnostic, located at root-patch nodes via ParseResult::nodeSpans.
   Result<TypedPatch> infer(const Patch&, const InferOptions&);
   // pq/graph/optimise.h (T1.4). Durations → samples (`· sr` inserted, TypedPatch::durationsInSamples), then a
-  // fixpoint of constant folding (by the atom's own dsp kernel, never params), exact algebraic simplification, CSE
-  // and DCE; then rate refinement (pure atoms = max of their inputs' rates) and a·b + c → muladd fusion at equal
-  // rates. Stateful nodes keep stateKey, atom and types; replacements never change kind/width/poly. Error only for a
-  // folded channel index out of range. OptimiseOptions: sampleRate (sr folds when known), maxPasses, fuseMulAdd.
+  // fixpoint of constant folding (by the atom's own dsp kernel as Control regions run it: 8 lanes, lane 0; never
+  // params), exact algebraic simplification, select sinking (pure ops below a select/mux when the copies drop below
+  // audio rate), CSE (literals keyed by unit) and DCE; then rate refinement (pure atoms = max of their inputs' rates)
+  // and a·b + c → muladd fusion at equal rates. Stateful nodes keep stateKey, atom and types; replacements never
+  // change kind/width/poly. Errors: a folded channel index out of range; an `smp` literal through arithmetic into
+  // a duration input. OptimiseOptions: sampleRate (sr folds when known), maxPasses, fuseMulAdd.
   Result<TypedPatch> optimise(TypedPatch, const OptimiseOptions& = {}, OptimiseStats* = nullptr);
   // pq/graph/schedule.h (T1.5). Tarjan SCCs on wires + implicit equation→unknown edges of solve blocks; feedback SCCs
   // become Loop regions with z1/delay split into read (in place) + write (loop end), run per sample or, when every

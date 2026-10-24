@@ -493,6 +493,28 @@ private:
     return c;
   }
 
+  // The first literal written in `smp` in a folded constant expression, or kNone.
+  uint32_t smpLiteral(uint32_t node) const {
+    if (node == kNone) return kNone;
+    const AstNode& n = ast[node];
+    if (n.kind == AstKind::Number) return n.unit == Unit::smp ? node : kNone;
+    if (n.kind != AstKind::Unary && n.kind != AstKind::Binary) return kNone;
+    if (const uint32_t a = smpLiteral(n.a); a != kNone) return a;
+    return n.kind == AstKind::Binary ? smpLiteral(n.b) : kNone;
+  }
+
+  // A param default or range end: a constant, never in samples. A param is a knob value with no unit after
+  // normalisation; at a duration input it is read as seconds, so `param t = 100smp` would be a 100 s delay
+  // (M1 review L1, QUESTIONS Q35).
+  Constant paramConstant(uint32_t node, std::string_view what) {
+    Constant c = constantExpr(node, what);
+    if (const uint32_t bad = smpLiteral(node); bad != kNone)
+      failAst(bad, "a param cannot be in samples (`smp`): params are read as seconds at duration inputs, so this "
+                   "would be that many seconds. Use ms or s, or a plain number of samples divided by sr where it is "
+                   "used (delay(x, n / sr, …))");
+    return c;
+  }
+
   void parseParam(PatchSyn& p) {
     advance();  // param
     Member m;
@@ -517,7 +539,7 @@ private:
       throw;
     }
     noIndex_ = false;
-    d.defaultValue = constantExpr(def, "a param default");
+    d.defaultValue = paramConstant(def, "a param default");
     if (!kindGiven) d.kind = d.defaultValue.kind;
     else if (d.kind != d.defaultValue.kind)
       failAst(def, "param '" + std::string(text(m.nameTok)) + "' is " + std::string(toText(d.kind)) +
@@ -530,8 +552,8 @@ private:
       expect(Tok::RBracket, "after the range");
       if (d.kind != Kind::Real) fail(open, "only real params have a range");
       d.hasRange = true;
-      d.rangeMin = constantExpr(lo, "a range end");
-      d.rangeMax = constantExpr(hi, "a range end");
+      d.rangeMin = paramConstant(lo, "a range end");
+      d.rangeMax = paramConstant(hi, "a range end");
       if (d.rangeMin.kind != Kind::Real) failAst(lo, "a range end must be a number");
       if (d.rangeMax.kind != Kind::Real) failAst(hi, "a range end must be a number");
     }

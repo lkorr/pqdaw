@@ -546,7 +546,7 @@ state global (64 B):
 )");
 }
 
-TEST_CASE("schedule: every corpus patch schedules with valid structure (FmVoice: all per voice)") {
+TEST_CASE("schedule: every corpus patch schedules with valid structure (FmVoice: all audio per voice)") {
   text_util::DirLoader loader(text_util::casesDir());
   uint32_t scheduled = 0;
   bool sawFm = false;
@@ -589,7 +589,18 @@ TEST_CASE("schedule: every corpus patch schedules with valid structure (FmVoice:
         const Schedule& s = r.schedule;
         REQUIRE(!s.outputs.empty());
         CHECK(s.outputs[0].poly == Poly::Voice);
-        for (const Stage& sg : s.stages) CHECK(sg.poly == Poly::Voice);
+        // Every audio-rate op is per voice. Since select sinking (T1.4-fix1) the adsr's coefficients of the global
+        // attack/release params are computed once per block in a global stage before the voices: Control only.
+        uint32_t voiceStages = 0;
+        for (const Stage& sg : s.stages) {
+          if (sg.poly == Poly::Voice) {
+            ++voiceStages;
+            continue;
+          }
+          for (uint32_t ri = sg.firstRegion; ri < sg.firstRegion + sg.numRegions; ++ri)
+            CHECK(s.regions[ri].kind == RegionKind::Control);
+        }
+        CHECK(voiceStages >= 1);
       }
     }
   }

@@ -7,7 +7,9 @@
 
 #include "doctest_string_view.h"
 
+#include <bit>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <random>
 #include <set>
@@ -17,7 +19,9 @@
 #include "pq/graph/infer.h"
 #include "pq/graph/optimise.h"
 #include "pq/graph/parse.h"
+#include "pq/graph/schedule.h"
 #include "ref_eval.h"
+#include "sched_exec.h"
 #include "text_util.h"
 
 using namespace pq::graph;
@@ -345,6 +349,104 @@ TEST_CASE("optimise: folded values are bit-identical to the kernels' (fast_ atom
   REQUIRE(r.after.patch.node(cn).kind == NodeKind::Const);
   CHECK(r.after.patch.constant(cn).kind == Kind::Bool);
   CHECK(r.after.patch.constant(cn).literal == 0.0);
+}
+
+namespace {
+
+// Folded (literal arguments) vs unfolded (the same expression on params, scheduled and run the way a backend runs
+// it: Control regions on the 8-lane kernels) for `count` random arguments of every exact transcendental, compared
+// bit for bit (M1 review M4: folding used the 1-lane kernels, i.e. the CRT, and differed by an ulp from SVML).
+struct FoldFn {
+  const char* name;
+  int arity;
+  float (*arg)(std::mt19937&, int);
+};
+
+float uni(std::mt19937& g, float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(g); }
+
+const FoldFn kFoldFns[] = {
+    {"sin", 1, [](std::mt19937& g, int) { return uni(g, -1e4f, 1e4f) / (g() % 2 ? 1.0f : 1000.0f); }},
+    {"tan", 1, [](std::mt19937& g, int) { return uni(g, -1e3f, 1e3f) / (g() % 2 ? 1.0f : 100.0f); }},
+    {"tanh", 1, [](std::mt19937& g, int) { return uni(g, -20.0f, 20.0f); }},
+    {"exp", 1, [](std::mt19937& g, int) { return uni(g, -87.0f, 88.0f); }},
+    {"log", 1, [](std::mt19937& g, int) { return std::exp(uni(g, -80.0f, 80.0f)); }},
+    {"db_to_gain", 1, [](std::mt19937& g, int) { return uni(g, -300.0f, 300.0f); }},
+    {"gain_to_db", 1, [](std::mt19937& g, int) { return std::exp(uni(g, -40.0f, 40.0f)); }},
+    {"pow", 2, [](std::mt19937& g, int i) { return i == 0 ? std::exp(uni(g, -5.0f, 5.0f)) : uni(g, -10.0f, 10.0f); }},
+    {"cents_to_hz", 2, [](std::mt19937& g, int i) { return i == 0 ? uni(g, -20000.0f, 20000.0f) : uni(g, 1.0f, 20000.0f); }},
+    {"hz_to_cents", 2, [](std::mt19937& g, int i) { return i == 0 ? std::exp(uni(g, -5.0f, 10.0f)) : uni(g, 1.0f, 2000.0f); }},
+};
+
+std::string num9(float v) {
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%.9g", static_cast<double>(v));  // round-trips the float exactly
+  return buf;
+}
+
+void foldMatchesRuntime(int count) {
+  constexpr int kChunk = 1000;  // arguments per patch
+  std::mt19937 rng(4242);
+  for (const FoldFn& fn : kFoldFns) {
+    const std::string fnName = fn.name;
+    CAPTURE(fnName);
+    int compared = 0, nonFinite = 0;
+    for (int base = 0; base < count; base += kChunk) {
+      const int n = std::min(kChunk, count - base);
+      std::string folded = "patch F {\n", params = "patch U {\n";
+      for (int i = 0; i < n; ++i) {
+        std::string lits, refs;
+        for (int a = 0; a < fn.arity; ++a) {
+          const std::string v = num9(fn.arg(rng, a));
+          const std::string pn = "p" + std::to_string(i) + "_" + std::to_string(a);
+          params += "  param " + pn + " = " + v + "\n";
+          lits += (a ? ", " : "") + v;
+          refs += (a ? ", " : "") + pn;
+        }
+        const std::string y = "y" + std::to_string(i);
+        folded += "  out " + y + " : real\n  " + y + " = " + fn.name + "(" + lits + ")\n";
+        params += "  out " + y + " : real\n  " + y + " = " + fn.name + "(" + refs + ")\n";
+      }
+      folded += "}\n";
+      params += "}\n";
+      Run f, u;
+      optimiseText(f, folded);
+      optimiseText(u, params);
+      auto sched = schedule(u.after);
+      REQUIRE_MESSAGE(sched.ok(), (sched.ok() ? std::string() : sched.error().message));
+      const Schedule& s = sched.value();
+      const TypedPatch& sp = s.rewritten ? *s.rewritten : u.after;
+      sched_exec::Executor ex(s, 8);
+      const auto outs = ex.block(0);
+      REQUIRE(outs.size() == s.outputs.size());
+      for (size_t o = 0; o < s.outputs.size(); ++o) {
+        const std::string& name = sp.patch.nodeName(s.outputs[o].node);
+        const NodeIndex drv = driver(f.after, node(f.after, name), 0);
+        const float runtime = outs[o][0];
+        if (f.after.patch.node(drv).kind != NodeKind::Const) {  // inf/NaN results stay computations (Q34.5)
+          CHECK_FALSE(std::isfinite(runtime));
+          ++nonFinite;
+          continue;
+        }
+        const auto lit = static_cast<float>(f.after.patch.constant(drv).value());
+        CHECK_MESSAGE(std::bit_cast<uint32_t>(lit) == std::bit_cast<uint32_t>(runtime),
+                      name << ": folded " << num9(lit) << " vs runtime " << num9(runtime));
+        ++compared;
+      }
+    }
+    CHECK(compared + nonFinite == count);
+    CHECK(compared >= count * 9 / 10);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("optimise: folded == unfolded bit for bit for every exact transcendental (200 arguments each)") {
+  foldMatchesRuntime(200);
+}
+
+TEST_CASE("optimise: folded == unfolded bit for bit for every exact transcendental (10^4 arguments each)" *
+          doctest::test_suite("slow")) {
+  foldMatchesRuntime(10000);
 }
 
 TEST_CASE("optimise: sr folds only with a known sample rate") {
@@ -718,6 +820,189 @@ TEST_CASE("optimise: durations without a known sample rate multiply by the sr at
   CHECK(r.after.outputType(conv, 0).rate == Rate::Const);
 }
 
+TEST_CASE("optimise: an smp literal through arithmetic into a duration input is an error (M1 review L1)") {
+  auto errorOf = [](std::string_view src) {
+    ParseResult parsed = parseDetailed(src, "test.pqp");
+    REQUIRE(parsed.ok());
+    PatchLibrary lib;
+    lib.add(parsed.file);
+    InferOptions io;
+    io.library = &lib;
+    InferResult inf = inferDetailed(parsed.file.patches[0], io);
+    REQUIRE(inf.ok());
+    auto res = optimise(std::move(inf.typed), sr48k());
+    return res.ok() ? std::string() : res.error().message;
+  };
+  const std::string e1 = errorOf("patch T { in x : audio\n out o : audio\n o = delay(x, 5smp * 2, 1s) }");
+  CHECK(e1.find("a value computed from an `smp` literal reaches the duration input 'time'") != std::string::npos);
+  CHECK(e1.find("5smp * 2 would mean 10 s") != std::string::npos);
+  // Through a select, into timer `dur`, into a delay `max`, and through a subcircuit's param.
+  CHECK_FALSE(errorOf("patch T { in x : audio\n out o : audio\n o = delay(x, x > 0 ? 5smp : 9smp, 1s) }").empty());
+  CHECK_FALSE(errorOf("patch T { in x : audio\n out o : bool\n o = timer(x > 0, 100smp + 1) }").empty());
+  CHECK(errorOf("patch T { in x : audio\n out o : audio\n o = delay(x, 1ms, 4800smp / 2) }").find("'max'") !=
+        std::string::npos);
+  CHECK_FALSE(errorOf("patch T { in x : audio\n out o : audio\n o = D(x, t: 5smp)\n}\n"
+                      "patch D { in x : audio\n param t = 1ms\n out o : audio\n o = delay(x, t * 2, 1s) }")
+                  .empty());
+  // Still fine: smp wired directly (also through a subcircuit param), smp arithmetic that is not a duration, and a
+  // comparison with an smp literal (a bool carries no duration).
+  CHECK(errorOf("patch T { in x : audio\n out o : audio\n o = delay(x, 5smp, 64smp) }").empty());
+  CHECK(errorOf("patch T { in x : audio\n out o : audio\n o = D(x, t: 5smp)\n}\n"
+                "patch D { in x : audio\n param t = 1ms\n out o : audio\n o = delay(x, t, 1s) }")
+            .empty());
+  CHECK(errorOf("patch T { in x : audio\n out o : audio\n o = delay(x * (48000smp / sr), 1ms, 1s) }").empty());
+  CHECK(errorOf("patch T { in x : audio\n out o : audio\n o = delay(x, x * 4 > 3smp ? 1ms : 2ms, 1s) }").empty());
+}
+
+TEST_CASE("optimise: equal literals of different units are not merged (M1 review L11)") {
+  // Without a sample rate an smp `max` stays in samples for the scheduler; the plain 5 comes first in the order, so
+  // a unit-blind CSE would make the delay read 5 s.
+  Run r;
+  OptimiseOptions o;  // sampleRate 0
+  optimiseText(r, "patch C { in x : audio\n out y : audio\n out z : audio\n y = x * 5\n z = delay(x, 1ms, 5smp) }", o);
+  checkInvariants(r.before, r.after);
+  const NodeIndex d = driver(r.after, node(r.after, "z"), 0);
+  REQUIRE(atomName(r.after, d) == "delay");
+  const NodeIndex mx = driver(r.after, d, 2);
+  REQUIRE(r.after.patch.node(mx).kind == NodeKind::Const);
+  CHECK(r.after.patch.constant(mx).unit == Unit::smp);
+  CHECK(r.after.patch.constant(mx).value() == 5.0);
+  const NodeIndex m = driver(r.after, node(r.after, "y"), 0);
+  REQUIRE(atomName(r.after, m) == "mul");
+  const NodeIndex five = driver(r.after, m, 1);
+  CHECK(five != mx);
+  CHECK(r.after.patch.constant(five).unit == Unit::None);
+  auto s = schedule(r.after);
+  REQUIRE(s.ok());
+  CHECK(s.value().state.globalBytes < 4096);  // a 5-frame ring, not 5 s
+}
+
+// ---- select sinking (M1 review M16) ---------------------------------------------------------------------------------
+
+namespace {
+
+std::vector<Rate> ratesOf(const TypedPatch& tp, std::string_view atom) {
+  std::vector<Rate> v;
+  for (NodeIndex n = 0; n < tp.patch.nodeCount(); ++n)
+    if (atomName(tp, n) == atom) v.push_back(tp.outputType(n, 0).rate);
+  return v;
+}
+
+uint32_t countAt(const TypedPatch& tp, std::string_view atom, Rate r) {
+  uint32_t c = 0;
+  for (Rate x : ratesOf(tp, atom)) c += x == r;
+  return c;
+}
+
+}  // namespace
+
+TEST_CASE("optimise: FmVoice's adsr has no audio-rate exp after optimise (select sinking)") {
+  const std::string src = text_util::readFile(std::filesystem::path(PQ_TEST_DATA_DIR) / "golden" / "patches" / "fm_voice.pqp");
+  Run off;
+  OptimiseOptions o = sr48k();
+  o.sinkSelects = false;
+  optimiseText(off, src, o);
+  CHECK(countAt(off.after, "exp", Rate::Audio) == 1);  // the per voice-sample exp the review measured
+
+  Run r;
+  optimiseText(r, src);
+  checkInvariants(r.before, r.after);
+  CHECK(r.stats.converged);
+  // coef = 1 − exp(−1/max(time·sr, 1)), time = attacking ? a : gate ? d : r: five ops sunk below the two selects.
+  CHECK(r.stats.sunk == 5);
+  CHECK(countAt(r.after, "exp", Rate::Audio) == 0);
+  CHECK(countAt(r.after, "div", Rate::Audio) == 0);
+  CHECK(countAt(r.after, "max", Rate::Audio) == 0);
+  // attack and release: one param-rate exp each; the decay (200 ms) folded to a literal coefficient.
+  CHECK(countAt(r.after, "exp", Rate::Param) == 2);
+  CHECK(ratesOf(r.after, "exp").size() == 2);
+  // The per-sample work is the two selects (time's two plus target's two before; target's stay).
+  CHECK(countAt(r.after, "select", Rate::Audio) == countAt(off.after, "select", Rate::Audio));
+  CHECK(r.stats.nodesAfter < off.stats.nodesAfter + 12);
+}
+
+TEST_CASE("optimise: select sinking preserves values, NaN and infinities included") {
+  Run r;
+  optimiseText(r, R"(patch S {
+  in x : audio
+  param a = 5ms [0ms..10s]
+  param q = 300ms [1ms..30s]
+  out y : audio
+  out z : audio
+  out w : audio
+  out v : audio
+  t = x > 0.3 ? a : x < -0.3 ? 200ms : q
+  y = 1 - exp(-1 / max(t * sr, 1))
+  z = log(mux(x * 3 + 1.5, a, -1, q, 0)) * 2 - 1
+  w = tanh(t * x)
+  v = (x > 0 ? q : a) > 0.1 ? 1 : 0
+})");
+  checkInvariants(r.before, r.after);
+  CHECK(r.stats.sunk >= 8);
+  CHECK(countAt(r.after, "exp", Rate::Audio) == 0);
+  CHECK(countAt(r.after, "log", Rate::Audio) == 0);
+  CHECK(countAt(r.after, "tanh", Rate::Audio) == 1);  // its other input (x) is audio: nothing to gain
+  checkEquivalent(r, 512);
+}
+
+TEST_CASE("optimise: select sinking runs bit-identically on the schedule") {
+  // Arithmetic and fast_ kernels only: an exact transcendental of a global value is a 1-lane CRT call at audio rate
+  // and an 8-lane SVML call at param rate (QUESTIONS Q?-T1.4-fix1-a), as with any rate refinement.
+  const char* src = R"(patch S {
+  in x : audio
+  param a = 0.25 [0..1]
+  param q = 0.75 [0..1]
+  out y : audio
+  out z : audio
+  t = x > 0.3 ? a : x < -0.3 ? 0.002 : q
+  y = 1 - fast_exp(-1 / max(t * 480, 1))
+  z = mux(x * 3 + 1.5, a, -1, q, 0) * 7 - fast_tanh(q)
+})";
+  Run on, off;
+  OptimiseOptions o = sr48k();
+  optimiseText(on, src, o);
+  o.sinkSelects = false;
+  optimiseText(off, src, o);
+  CHECK(on.stats.sunk > 0);
+  auto s1 = schedule(on.after), s0 = schedule(off.after);
+  REQUIRE(s1.ok());
+  REQUIRE(s0.ok());
+  REQUIRE(sched_exec::supported(on.after));
+  sched_exec::Executor e1(s1.value(), 64), e0(s0.value(), 64);
+  for (uint64_t b = 0; b < 16; ++b) {
+    const auto r1 = e1.block(b * 64), r0 = e0.block(b * 64);
+    REQUIRE(r1.size() == r0.size());
+    for (size_t k = 0; k < r1.size(); ++k)
+      for (size_t f = 0; f < 64; ++f) CHECK(std::bit_cast<uint32_t>(r1[k][f]) == std::bit_cast<uint32_t>(r0[k][f]));
+  }
+}
+
+TEST_CASE("optimise: select sinking leaves state, wide muxes and audio arms alone") {
+  Run r;
+  optimiseText(r, R"(patch S {
+  in x : audio
+  param a = 0.5 [0..1]
+  param q = 0.25 [0..1]
+  out y1 : audio
+  out y2 : audio
+  out y3 : audio
+  out y4 : audio
+  y1 = phasor(x > 0 ? a : q)
+  y2 = exp(mux(x * 20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
+  y3 = exp(x > 0 ? a : x)
+  y4 = exp(mux(x * 16, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
+})");
+  checkInvariants(r.before, r.after);
+  // phasor is stateful: one instance, still reading the select (a phase per arm would change its state).
+  CHECK(countAtom(r.after, "phasor") == 1);
+  CHECK(atomName(r.after, driver(r.after, driver(r.after, node(r.after, "y1"), 0), 0)) == "select");
+  // 17 arms > 16 copies: left as is. An audio arm: left as is. 16 literal arms: sunk and folded to 16 literals.
+  CHECK(countAt(r.after, "exp", Rate::Audio) == 2);
+  CHECK(atomName(r.after, driver(r.after, node(r.after, "y4"), 0)) == "mux");
+  CHECK(r.stats.sunk == 1);
+  checkEquivalent(r, 256);
+}
+
 // ---- driver -------------------------------------------------------------------------------------------------------
 
 TEST_CASE("optimise: the fixpoint converges, honours the pass cap and is idempotent") {
@@ -800,7 +1085,9 @@ TEST_CASE("optimise: every corpus patch optimises with its invariants and output
       REQUIRE_MESSAGE(res.ok(), err);
       checkInvariants(inf.typed, res.value());
       CHECK(st.converged);
-      CHECK(st.nodesAfter <= st.nodesBefore + st.durations * 2);
+      // Growth only from duration conversions and select sinking (≤ 16 copies + 15 selects per sunk op; the copies
+      // run per block, the per-sample op count drops).
+      CHECK(st.nodesAfter <= st.nodesBefore + st.durations * 2 + st.sunk * 31);
       ++optimised;
       if (ref_eval::Evaluator(inf.typed).supported()) {
         const double d = ref_eval::maxRelDiff(inf.typed, res.value(), 256);

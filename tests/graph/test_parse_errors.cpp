@@ -33,6 +33,10 @@ std::pair<uint32_t, uint32_t> lineCol(std::string_view src, size_t offset) {
   return {line, col};
 }
 
+constexpr const char* kSmpParam =
+    "a param cannot be in samples (`smp`): params are read as seconds at duration inputs, so this would be that many "
+    "seconds. Use ms or s, or a plain number of samples divided by sr where it is used (delay(x, n / sr, …))";
+
 const ErrorCase kCases[] = {
     // ---- lexical ----
     {"patch P { param x = 5xs }", "unknown unit suffix 'xs' (units: Hz kHz ms s smp dB c st %)", "xs"},
@@ -124,6 +128,12 @@ const ErrorCase kCases[] = {
      "layout: 'y' has no input 'x'", "x via"},
     {"patch P { in x : real\n out y : real\n out z : real\n y = x\n z = x\n layout { wire x.out -> q.in } }",
      "layout: unknown node 'q'", "q.in"},
+    // ---- units: a param is never in samples (M1 review L1, docs/reviews/M1/probes/smp_param.pqp) ----
+    {"patch smpparam {\n  param t = 100smp [10smp..1000smp]\n  out y : audio\n  y = delay(noise(), t, 1s)\n}",
+     kSmpParam, "100smp"},
+    {"patch P { param t = 5ms [10smp..1s]\n out y : real\n y = t }", kSmpParam, "10smp"},
+    {"patch P { param t = 5ms [1ms..2 * 4800smp]\n out y : real\n y = t }", kSmpParam, "4800smp"},
+    {"patch P { param t = -(64smp)\n out y : real\n y = t }", kSmpParam, "64smp"},
     // ---- validation (T1.1), reported at the node's source position ----
     {"patch P { param p = 5 [0..1]\n out y : real\n y = p }",
      "patch 'P': param 'p' (param, #0): default is outside the range", "p ="},

@@ -348,6 +348,16 @@ TEST_CASE("validate: params") {
   d = ok;
   d.attrs.push_back(Attr{"flag", {AttrArg{"", AttrValue{AttrValue::Type::Bool, Constant::real(2), {}}}}});
   CHECK_ERROR(withParam(d), "argument is real, expected bool");
+  // Never in samples (M1 review L1): a param is read as seconds at a duration input, so 100smp would be 100 s.
+  d = ok;
+  d.defaultValue = Constant::real(0.01, Unit::smp);
+  CHECK_ERROR_CODE(withParam(d), "cannot be in samples (smp)", pq::ErrorCode::InvalidArgument);
+  d = ok;
+  d.rangeMax = Constant::real(48000, Unit::smp);
+  CHECK_ERROR(withParam(d), "cannot be in samples (smp)");
+  d = ok;
+  d.rangeMin = Constant::real(0, Unit::smp);
+  CHECK_ERROR(withParam(d), "cannot be in samples (smp)");
 }
 
 TEST_CASE("validate: constants and declared kinds") {

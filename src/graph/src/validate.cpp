@@ -118,6 +118,10 @@ private:
       return;
     }
     checkConstant(d.defaultValue, d.kind, [&] { return what() + " default"; });
+    // Params are read as seconds at duration inputs, so a default or range in samples would silently become that
+    // many seconds (M1 review L1; the parser reports the same with a location).
+    if (d.defaultValue.unit == Unit::smp || (d.hasRange && (d.rangeMin.unit == Unit::smp || d.rangeMax.unit == Unit::smp)))
+      fail(ErrorCode::InvalidArgument, what() + " cannot be in samples (smp): use ms or s");
     if (d.hasRange) {
       if (d.kind != Kind::Real) {
         fail(ErrorCode::Type, what() + ": only real params have a range");
