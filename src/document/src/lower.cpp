@@ -254,6 +254,13 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     } else {
       graph::ParseOptions po;
       po.externals = o.externals;
+      // The same track's previous patch (T1.x-text-ids, ParseOptions::previous): the new text's nodes inherit its
+      // NodeIds, so the unit's hot swap carries the state (smoothers, voices) instead of restarting it.
+      graph::PatchFile before;
+      if (previous != nullptr)
+        for (size_t j = 0; j < previous->trackIds.size() && before.patches.empty(); ++j)
+          if (previous->trackIds[j] == n.track->id) before.patches.push_back(previous->patches[j]->patch);
+      if (!before.patches.empty()) po.previous = &before;
       auto parsed = graph::parse(text, "track" + std::to_string(n.track->id.value) + ".pqp", po);
       if (!parsed.ok()) return Error{parsed.error().code, "lower: " + parsed.error().message, {}};
       auto made = std::make_shared<LoweredPatch>();

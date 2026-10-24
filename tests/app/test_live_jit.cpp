@@ -17,6 +17,7 @@
 
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
+#include "pq/document/lower.h"
 #include "pq/engine/null_device.h"
 
 using namespace pq;
@@ -143,4 +144,43 @@ TEST_CASE("T1b.5: live playback (NullDevice) starts interpreted and swaps every 
   CHECK(peak > 0.01f);
   MESSAGE("JIT: " << js.built << " images in " << lj->jitStats().totalCompileMs << " ms (background), " << js.stale
                   << " stale");
+}
+
+// T1.x-text-ids in the compile pipeline: a track whose generated patch text changes (here: a new return adds a send to
+// every main track) is re-parsed with its previous parse, so its unchanged nodes keep their NodeIds (state keys).
+TEST_CASE("lowering: a changed track patch inherits the NodeIds of its previous parse") {
+  auto lib = app::loadInstrumentLibrary();
+  REQUIRE(lib.ok());
+  playback_fixture::Fixture f;
+  LowerOptions lo;
+  lo.library = &(*lib)->library;
+  lo.externals = (*lib)->signatures;
+  uint32_t nextSlot = 0;
+  lo.slotOf = [&](TrackId) { return nextSlot++; };
+  auto a = lower(*f.snap(), lo);
+  REQUIRE(a.ok());
+  REQUIRE(f.store.dispatch(AddTrack{playback_fixture::track(f.store.ids().track(), TrackKind::Return, "Verb"), {}, kAppend}).ok());
+  auto b = lower(*f.snap(), lo, &a.value());
+  REQUIRE(b.ok());
+  auto patchOf = [&](const LoweredProject& lp, TrackId id) -> const graph::Patch& {
+    for (size_t i = 0; i < lp.trackIds.size(); ++i)
+      if (lp.trackIds[i] == id) return lp.patches[i]->patch;
+    FAIL("no track");
+    return lp.patches[0]->patch;
+  };
+  const graph::Patch& before = patchOf(a.value(), f.lead);
+  const graph::Patch& after = patchOf(b.value(), f.lead);
+  REQUIRE(&before != &after);  // the text changed (a send to the new return)
+  uint32_t named = 0, kept = 0;
+  for (graph::NodeIndex n = 0; n < before.nodeCount(); ++n) {
+    const std::string_view name = before.nodeName(n);
+    if (name.empty()) continue;
+    for (graph::NodeIndex m = 0; m < after.nodeCount(); ++m)
+      if (after.nodeName(m) == name) {
+        ++named;
+        kept += after.node(m).id == before.node(n).id;
+      }
+  }
+  CHECK(named > 5);
+  CHECK(kept == named);
 }
