@@ -96,8 +96,8 @@ TEST_CASE("newton: every tangent rule matches a central difference of its dsp ke
     CHECK(newton::hasTangent(a));
     CHECK_FALSE(newton::differentiableInput(a, 0));
     std::vector<newton::Tan<float>> d(2, {1.0f, true}), dy(1);
-    const float x[3] = {0.4f, 0.2f, 0.0f};
-    const float y = 0.0f;
+    const float x[3] = {0.4f, 0.2f, 0.7f};
+    const float y = 0.5f;  // non-zero: the inlined rules divide by y (sqrt)
     newton::tangentOp(ops, a, 2, 1, x, &y, d.data(), dy.data());
     CHECK_FALSE(dy[0].on);
   }
