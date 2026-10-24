@@ -432,14 +432,14 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 
 
 **Bundle B — tuning signal coverage (tuning, dsp, document, app)**
-- [ ] **T2.6-fix2 Region boundaries, mode transfer, audio-rate tuning automation** (`tuning`, `dsp`, `engine`). Depends on: T2.6-fix1.
+- [~] **T2.6-fix2 Region boundaries, mode transfer, audio-rate tuning automation** *(worker BK, branch task/T2.6-fix2-tuning-coverage)* (`tuning`, `dsp`, `engine`). Depends on: T2.6-fix1.
   - Boundary side from the region hint (H3); transferModeRotation per interval in the table, shared with the roll's
     morph (M7); automation buffers bound to the tuning node's audio-rate inputs (M6; also renders one value per
     lane per block where nothing binds).
   - Accept: proj_boundary_auto == proj_boundary_static at the held 720 ¢ (bit-identical pitch); the T2.6 sweep
     includes boundary generators; a fixture with rotation ≠ 0 crossing 720 ¢ matches the explorer per degree;
     crossing lands on the exact sample (pitch_track.py lag 0).
-- [ ] **T2.6-fix3 Every note follows its tuning** (`document`, `dsp`, `app`, `engine`). Depends on: T2.6-fix2.
+- [~] **T2.6-fix3 Every note follows its tuning** *(worker BK, same branch)* (`document`, `dsp`, `app`, `engine`). Depends on: T2.6-fix2.
   - Ratio-on-note anchors follow the anchor's signal, reference-relative Ratio/Cents notes scale by ref(t)/ref₀
     (H4b/c; Q1 and Q100.1 unified); per-voice tuning selection for clip overrides to another main tuning (H4a);
     held notes retuned by Pitch events, never cut (H5); glides compose with the node (M9); description cache keyed
@@ -447,7 +447,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Accept: proj_anchor_ratio keeps 702 ¢ to its anchor throughout; proj_clip_override follows its tuning's
     automation; proj_ref_auto_cents follows the reference; dragging the reference with a held Ratio chord emits no
     note-off (test).
-- [ ] **T2.6-fix4 Tuning tables and small tuning fixes** (`app`, `tuning`, `document`). Depends on: T2.6-fix1.
+- [~] **T2.6-fix4 Tuning tables and small tuning fixes** *(worker BK, same branch)* (`app`, `tuning`, `document`). Depends on: T2.6-fix1.
   - Tables keyed by shape, reset with the document, reclaimed by epoch, status when exhausted (M8); Scala value
     strictness (L7); checked lcm (L8); tuning param ranges from paramRange (L9); correct the Q105.3/Q105.4 claims (L10).
   - Accept: New → Open of another project uses no stale table; 1000 wheel size/mode changes keep the pool bounded;
@@ -459,17 +459,17 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Accept: two simultaneous voices of a patch with `noise()` are decorrelated (|corr| < 0.05) and an LFO restarts at each note-on; the opt-in gives the old global behaviour bit for bit; goldens re-rendered only where a patch relied on the old default (explained); interpreter == JIT.
 
 **Bundle C — views correctness and frame cost (views, ui, app)**
-- [ ] **T3.x-fix-paint Per-rect paint and automation tiles** (`app`, `ui`, `views`). Depends on: T3.15, T3.8-fix1.
+- [~] **T3.x-fix-paint Per-rect paint and automation tiles** *(worker BL, branch task/T3.x-fix-views)* (`app`, `ui`, `views`). Depends on: T3.15, T3.8-fix1.
   - Paint per damage rect (H8); automation bands rasterised into the TileAtlas; text helpers clip (M13); chips
     repaint only on tuning change (M12a).
   - Accept: playing with 16 lanes × 1000 points + meters live: frame ≤ 1 ms CPU at 2560×1440; partial == full over
     the whole shell (incl. the control bar label); volume-drag frame independent of track count.
-- [ ] **T3.x-fix-edit Editing correctness** (`views`, `document`). Depends on: T3.12, T3.9.
+- [~] **T3.x-fix-edit Editing correctness** *(worker BL, same branch)* (`views`, `document`). Depends on: T3.12, T3.9.
   - Alt-copy at zero offset is a no-op (M10); store subscribe during notify (M11); Generator box cancel/default/
     focus (M12b); default fit with outliers (M14); window focus loss cancels drags and gestures, capture loss cancels
     automation drags, Esc restores the range selection, view-state changes mark the project dirty (L19).
   - Accept: a test per item; goldens at 1.5× for the piano roll and popover.
-- [ ] **T3.x-fix-look Readability** (`views`, `ui`, theme). Depends on: T3.2-fix1. 👁
+- [~] **T3.x-fix-look Readability** *(worker BL, same branch)* (`views`, `ui`, theme). Depends on: T3.2-fix1. 👁
   - Harmonic labels off the notes + F chip + toggle (M18); label-collision helper (L18); pan indicator and chip
     truncation (L17); control bar per Q107.1 B with CPU meter and tuning chip; panel gutters on the window colour;
     11-px roles (Q107.4 B), SemiBold track names; detail view collapsed until a clip is opened; dockable / movable
