@@ -198,7 +198,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     1-sample loop; TimerNan outputs 0; the saw wavetable's top harmonic stays ≥ 16 kHz through every octave boundary (spectral
     test); tests use independent references (no copied level/wrap rules).
 
-- [~] **T1b.1-fix1 JIT determinism, Newton, compile time** *(worker AZ, branch task/T1b.1-fix1-jit)* (`jit` + `engine`). Depends on: T1b.1.
+- [!] **T1b.1-fix1 JIT determinism, Newton, compile time** *(merged 2026-10-24; partial: zdf_tanh 1.5× not ≥ 2× — Q98)* (`jit` + `engine`). Depends on: T1b.1.
   - contract off by default (Q64 reversed; optional optimiser `mulsub` fusion); Newton step relative with a 1e-6 floor and a
     fallback on non-finite J (both backends); forward-mode AD for inlined solve bodies (or correct Q53/RESULTS); interleave
     capped by code size; CodeGenOptLevel measured; per-call-site scratch arrays (no __chkstk frames); canonical bool masks.

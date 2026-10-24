@@ -408,9 +408,9 @@ Agents: add questions here instead of guessing on anything important. Use this f
   JIT, so the two stay bit-identical, which a JIT-only AD could not be). Finite differences remain for bodies with an
   op that has no tangent rule (wavetable/shaper reads) and for any lane whose tangent Jacobian is not finite (a
   derivative singularity: sqrt/log at 0), with the step relative to the unknown, h = 2^-8 · max(|u|, 1e-6), and a
-  one-sided difference where u ± h leaves the domain. See Q?-T1b.1-fix1-a for why tangents rather than only the
+  one-sided difference where u ± h leaves the domain. See Q98 for why tangents rather than only the
   relative step. Measured (bench/RESULTS.md T1b.1-fix1): zdf_tanh JIT and interpreter both faster.
-- Status: D in both backends (T1b.1-fix1); open for the user (Q?-T1b.1-fix1-a)
+- Status: D in both backends (T1b.1-fix1); open for the user (Q98)
 
 ## Q54 · 2026-10-21 · T1.7 · Where the interpreter lives, and the ProcessContext voice/bool contract
 - Context: ARCHITECTURE §3 sketched `graph::buildInterpreted(const Schedule&) → ProgramImage`, but ProgramImage is an engine type and `graph` may not include `engine` (engine depends on graph).
@@ -767,7 +767,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   8. **No A-mode toggle button**: A, the envelope menu and the lanes' menus switch it (a button above the headers would change every arrangement golden; one can be added with the retheme, T3.2-fix1).
 - Status: open
 
-## Q?-T1b.1-fix1-a · 2026-10-24 · T1b.1-fix1 · Newton: tangents in both backends, the relative finite-difference step only as a fallback
+## Q98 · 2026-10-24 · T1b.1-fix1 · Newton: tangents in both backends, the relative finite-difference step only as a fallback
 - Context: TASKS T1b.1-fix1 says "Newton step relative with a 1e-6 floor and a fallback on non-finite J (both backends); forward-mode AD for inlined solve bodies (or correct Q53/RESULTS)". The review's step, h = 2^-8 · max(|u|, 1e-6), fixes unknowns ≪ 1 but has the opposite problem for O(1) problems at a zero crossing, the normal case for every ZDF filter: at |u| ≈ 1e-5 the step is ≈ 4e-8, below the rounding noise of the body's O(1) intermediate terms (tanh(x) ≈ 0.5 has an ulp of 6e-8), so J is mostly noise there. (Not measured as a failure here: with tangents the finite-difference path only runs where they are unavailable.)
 - Options: A) the relative step alone (the task text); B) the old absolute step plus a shrink-on-trouble heuristic (non-finite residuals, curvature test); C) forward-mode tangents (exact J at every scale) in both backends, finite differences with the relative step only where tangents are unavailable or not finite; D) tangents in the JIT only.
 - Choice: C. D was rejected because the JIT would no longer be bit-identical to the interpreter on any solve, which the review made the default requirement (interp → JIT swaps, offline = live). C makes the interpreter cheaper too (1 body evaluation per iteration instead of 1 + 2n). The step-3 fallback and the FD-only bodies still use A's relative step, as the task asks, so the zero-crossing weakness remains for bodies that read a wavetable/shaper depending on the unknown (rare; a body op without a tangent rule).
@@ -775,7 +775,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Measured (bench/RESULTS.md, ship, loaded machine): zdf_tanh JIT 222–229 → 150–162 ns/sample (1.5×), interpreter ≈ 1.03×. TASKS asks ≥ 2× with AD: NOT met. The body evaluations per iteration went from 3 to 1 (exact tanh calls 19 → 6), but Newton is a serial dependency chain per sample (tanh → residual → double divide → next guess), and the old u ± h evaluations were independent and overlapped in the out-of-order core, so the latency per iteration fell by ~1.5×, not 3×. Further options: a float (not double) n = 1 update in both backends (shorter chain, a numerics change), fast_tanh in user patches, or fewer iterations in the patch (an exact J may converge in fewer; not measured).
 - Status: open (C implemented; the 2× target needs a decision)
 
-## Q?-T1b.1-fix1-b · 2026-10-24 · T1b.1-fix1 · JIT machine-code level and the compile-time caps
+## Q99 · 2026-10-24 · T1b.1-fix1 · JIT machine-code level and the compile-time caps
 - Measured (bench/RESULTS.md T1b.1-fix1, ship preset, loaded machine — indicative): run time equal within noise at levels 1–3 on every bench patch; compile time of the 100-step chain 33–44 ms and of the review mux 171–254 ms at levels 1–3, level 0 12–15 / 63–76 ms.
 - Choice: level 3 (Aggressive) stays the default, as in T1b.1 (no measured difference to 1 or 2). Level 0 (FastISel, fast register allocator) compiles ≈ 4× faster but spills enough that the review's mux needs stack probes again (> 4 KiB frame), so it is no candidate for the audio path without more work; it would suit a "first image fast, re-optimise in the background" scheme (SPEC §7.5), which is T1b.5's to decide.
 - Caps (codegen.cpp): a fused run ends at 1024 cost units or at 16 distinct pattern operands (each is a register for the whole loop: the review's mux had one constant per op and spilled 15 KB), chunks interleaved per iteration = enough for ~8 dependency chains (8 · depth / cost) and at most 2048 / cost, a mux/demux wider than 64 is a kernel call with its pointer array in the image's memory, and buffer addresses are buf + (t·lanes + offset) so LICM cannot hoist one base pointer per buffer out of a loop.

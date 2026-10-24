@@ -65,7 +65,7 @@ struct CompilerConfig {
   // LLVM CodeGenOptLevel for instruction selection and register allocation: 0 None (FastISel, fast register
   // allocator), 1 Less, 2 Default, 3 Aggressive. Measured in bench/RESULTS.md (T1b.1-fix1).
   uint32_t codeGenLevel = kDefaultCodeGenLevel;
-  static constexpr uint32_t kDefaultCodeGenLevel = 3;  // Aggressive, as in T1b.1: levels 1–3 measured equal (Q?-T1b.1-fix1-b)
+  static constexpr uint32_t kDefaultCodeGenLevel = 3;  // Aggressive, as in T1b.1: levels 1–3 measured equal (Q99)
 };
 
 class Compiler {
