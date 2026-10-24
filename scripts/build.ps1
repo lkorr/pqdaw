@@ -37,12 +37,16 @@ $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'vsenv.ps1')
 
 # sccache environment (read by the launcher and by the server it starts). One server per checkout, on a port
-# derived from the checkout's path, with that checkout as its base directory: identical sources in two
-# worktrees then hash identically and share the cache directory. Each build restarts it (fresh index of the shared cache); it exits after 30 idle minutes.
+# derived from the checkout's path; one cache directory for all checkouts. No base directory (SCCACHE_BASEDIRS):
+# with one, a hit could return an object compiled in another worktree together with that compile's
+# /showIncludes output, so Ninja recorded the other worktree's headers as this object's dependencies and stopped
+# rebuilding it when this checkout's headers changed (stale objects; T0.x-buildspeed-fix2). Entries are now keyed
+# by this checkout's absolute paths: a hit only returns what this checkout compiled before. Each build restarts
+# the server (fresh index of the shared cache); it exits after 30 idle minutes.
 $sccacheDir = if ($env:PQ_SCCACHE_DIR) { $env:PQ_SCCACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'pqdaw\sccache' }
 $env:SCCACHE_DIR = $sccacheDir
 $env:SCCACHE_CACHE_SIZE = '20G'
-$env:SCCACHE_BASEDIRS = $root
+Remove-Item Env:SCCACHE_BASEDIRS -ErrorAction SilentlyContinue
 $md5 = [Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant()))
 $env:SCCACHE_SERVER_PORT = [string](14300 + ([BitConverter]::ToUInt16($md5, 0) % 4000))
 $env:SCCACHE_IDLE_TIMEOUT = '1800'  # outlives a ship build's long LTCG link tail, so the stats survive
@@ -58,6 +62,14 @@ function Get-Sccache([string] $buildDir) {
 Push-Location $root
 try {
   $buildDir = Join-Path $root "build/$Preset"
+  # Build directories whose Ninja dependency log was written while worktrees shared cache entries can list
+  # another worktree's headers as dependencies (see SCCACHE_BASEDIRS above). Drop that log once: Ninja then
+  # rebuilds every object (from this checkout's cache entries where they exist) and records correct dependencies.
+  $depsMarker = Join-Path $buildDir '.pq-deps-v2'
+  if ((Test-Path (Join-Path $buildDir 'CMakeCache.txt')) -and -not (Test-Path $depsMarker)) {
+    Remove-Item (Join-Path $buildDir '.ninja_deps') -ErrorAction SilentlyContinue
+    Write-Host 'build.ps1: dependency log reset (T0.x-buildspeed-fix2); every object is rebuilt once'
+  }
   # Reconfigure when CMakePresets.json changed after this build directory was configured: a preset's cache
   # variables (compiler / linker flags) only reach an existing CMakeCache.txt through `cmake --preset`.
   $cacheFile = Join-Path $buildDir 'CMakeCache.txt'
@@ -68,6 +80,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "configure failed ($LASTEXITCODE)" }
   }
 
+  New-Item -ItemType File -Force $depsMarker | Out-Null
   $sccache = Get-Sccache $buildDir
   if ($sccache) {
     # Restart this checkout's server: a server indexes the shared cache directory when it starts and does not
