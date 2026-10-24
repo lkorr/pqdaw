@@ -349,7 +349,6 @@ int main(int argc, char** argv) {
     auto rig = makeRig(bi.value(), fo.numTracks, false);
     editScenario("edit/interp ", *proj, interp, *rig, nullptr, rounds, level);
   }
-  std::printf("system load during the run: %.0f %%
-", load.busyPercent());
+  std::printf("system load during the run: %.0f %%\n", load.busyPercent());
   return 0;
 }
