@@ -228,7 +228,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Accept: FmVoice's adsr has no audio-rate exp after optimise (IR test) and the JIT fm_voice bench improves (RESULTS row);
     folded == unfolded bit for bit for every exact transcendental over 10^4 arguments; smp_param.pqp is an error.
 
-- [~] **T1.x-text-ids Keep state keys across text edits (Q68)** *(worker BH, branch task/T1.x-text-ids)* (`graph`). Depends on: T1.2. Before M4.
+- [x] **T1.x-text-ids Keep state keys across text edits (Q68)** *(merged 2026-10-24; callers to pass ParseOptions::previous)* (`graph`). Depends on: T1.2. Before M4.
   - Structural diff mapping re-parsed nodes to previous NodeIds before scheduling.
   - Accept: adding an `export`, renaming a binding, or inserting a line in a .pqp keeps ≥ 99 % of state entries matched in
     the transfer plan; hot swap after a text edit is click-free on an unchanged path.

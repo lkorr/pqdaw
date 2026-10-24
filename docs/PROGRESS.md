@@ -542,3 +542,16 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Verified: worker -Full dev + release 48/48 (contrast test with unchanged targets). Orchestrator: rebased onto 0340ae2: release -Full 48/48, dev -Full ui|views|app 6/6, 0 warnings; viewed the widgets-vs-Live comparison.
 - Perf: widgets gallery 8,298 vertices vs 12,582 (square controls skip the rounded-corner path); paint timing under full load not meaningful.
 - CPU-efficiency check: data-only change; cheaper rectangle path; no extra atlas pages.
+
+## 2026-10-24 · T1.x-text-ids · worker BH / task/T1.x-text-ids
+- Did: re-parsed text inherits NodeIds (Q68 option B): pq/graph/id_match.h inheritNodeIds — names (declarations by kind+name, bindings by name, equations by position), structure (inputs; consumer edges unique by label+port), structural hashes for leftovers, weak pairs for changed atoms/literals; renames = vanished ↔ new name; unpaired nodes get fresh ids. ParseOptions::previous / ParseResult::idMatch; dense text order kept, Patch::setNodeIds with an id→index table when ids are unsorted. Tests test_id_match (Q68 edits, adversarial cases, corpus sweep `slow`), engine test_text_edits (transfer plans over the corpus, click-free hot swap). ARCHITECTURE, Q68 note.
+- Verified: worker -Full dev + release 48/48. Transfer plans keep 100 % of state entries for every edit kind over 43 corpus files (export on top 214/214, inserted lines 214/214, one rename 951/951, ≤ 64 renames 203/203, reordered lines 214/214, reprint 214/214); Q68 baseline without the previous parse 8/214. Hot swap after a text edit bit-identical on unchanged paths (global, voices, proto_operator), RtScope clean. Orchestrator: rebased onto f1f7950: release -Full 48/48, dev -Full graph|dsp|engine|jit|render|playback 12/12, 0 warnings.
+- Perf (ship, loaded, indicative): ≈ 105 ns/node (≈ 20 % on top of parse+validate); mux1200 (2409 nodes) 195–402 µs.
+- CPU-efficiency check: linear pass per node in the common case; compiler thread only.
+- Notes: no caller passes ParseOptions::previous yet (document lowering, pqc, app compile path) — follow-up (asked worker BG to wire its compile path if trivial).
+
+## 2026-10-24 · Q94 + fold_scan · worker BH / task/T1.x-text-ids
+- Did: dsp S1 exact family (sin tan tanh exp log pow, cents/Hz, dB/gain) calls the S8 SVML functions on a broadcast; JIT scalar runtime helpers the same — a global op no longer depends on block size (8-sample chunks vs remainder). fold_scan probe back in the JIT corpus (root cause: the independent reference evaluator is a few ulp off by design, × 1e9 in the probe; interp and JIT were already exact) with a test that all 76 channels are exactly 0 on both backends at block 1 and 64.
+- Verified: 1 lane == 8 lanes bit for bit over 67.6 M arguments (`slow`) and a 2^16-stride default sweep (old simd.h: sin 1608/65536, tan 3220/65536 differ); JIT corpus bit-identical (53 patches, 424 runs); same runs as above.
+- Perf (ship, loaded, indicative; 1-lane path only): sin +20 %, tan +38 %, tanh +70 %, cents_to_hz +25 %, gain_to_db +19 %; exp −12 %, log −10 %, pow −13 %, hz_to_cents −21 %, db_to_gain −52 %; JIT zdf_tanh +3 %.
+- CPU-efficiency check: only block remainders and per-sample loops use the 1-lane path; 128-bit SVML rejected (rounding not guaranteed equal to the 256-bit path).
