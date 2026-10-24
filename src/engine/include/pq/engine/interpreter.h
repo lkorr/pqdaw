@@ -27,18 +27,21 @@
 
 #include "pq/core/result.h"
 #include "pq/dsp/tables.h"
+#include "pq/dsp/tuning_table.h"
 #include "pq/engine/program_image.h"
 #include "pq/graph/schedule.h"
 
 namespace pq::engine {
 
-// Tables the patch's wavetable / shaper / sample atoms name by index (their `table` / `sample` const). They must
-// outlive the image. An index without a table reads the built-in default: a 2048-point sine wavetable, the identity
-// shaper on [−1, 1], a silent one-frame sample.
+// Tables the patch's wavetable / shaper / sample / tuning_hz atoms name by index (their `table` / `sample` const).
+// They must outlive the image. An index without a table reads the built-in default: a 2048-point sine wavetable, the
+// identity shaper on [−1, 1], a silent one-frame sample; a tuning_hz without a table passes its fallback hz / cents
+// through (T2.6).
 struct Resources {
   std::span<const dsp::WavetableView* const> wavetables;
   std::span<const dsp::ShaperView* const> shapers;
   std::span<const dsp::SampleView* const> samples;
+  std::span<const dsp::TuningTableView* const> tunings;  // T2.6
 };
 
 struct InterpretOptions {

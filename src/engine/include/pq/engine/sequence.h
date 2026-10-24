@@ -23,9 +23,10 @@
 // pass always decides the same way (offline renders are reproducible); a new seed rerolls.
 //
 // ---- Pitch -------------------------------------------------------------------------------------------------------
-// Notes carry resolved float32 Hz (SPEC §3.1) plus voice.ratio / voice.harmonic. PitchSource is the hook for tuning
-// as a signal (T2.6, not implemented here): a nonzero `tuning` will name a tuning signal whose per-sample value
-// drives the voice's Hz through Pitch events (note_events.h); until then the static `hz` is played.
+// Notes carry resolved float32 Hz (SPEC §3.1) plus voice.ratio / voice.harmonic. PitchSource is tuning as a signal
+// (T2.6): a nonzero `tuning` marks a Degree note of a tuning signal; its note-on carries degree/equave as
+// voice.degree / voice.equave (note_events.h), from which the track's tuning node (`tuning_hz` + `tune_voices`)
+// derives the voice's Hz per sample. `hz` stays the static pitch (and the fallback where no tuning node is bound).
 
 #include <cstdint>
 #include <memory>
@@ -37,9 +38,9 @@
 
 namespace pq::engine {
 
-// T2.6 hook (see above). All zero: the note plays its static hz.
+// T2.6 (see above). All zero: the note plays its static hz.
 struct PitchSource {
-  uint32_t tuning = 0;   // 0 = static Hz; otherwise the id of a tuning signal (T2.6)
+  uint32_t tuning = 0;   // 0 = static Hz; otherwise the id of the tuning signal the degree refers to (T2.6)
   int32_t degree = 0;    // the note's degree and equave in that tuning (Degree identities)
   int32_t equave = 0;
 };

@@ -119,5 +119,7 @@ KernelFn findLogicKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 KernelFn findMemoryKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 KernelFn findGeneratorKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 KernelFn findTableKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
+// tuning_hz (kernels_tuning.cpp): one function per lane count, any Spl mask.
+KernelFn findTuningKernel(uint32_t lanes) noexcept;
 
 }  // namespace pq::dsp::detail

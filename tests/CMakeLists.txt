@@ -150,6 +150,7 @@ pq_add_test(pq_tests_graph
     graph/test_infer.cpp
     graph/test_optimise.cpp
     graph/test_schedule.cpp
+    graph/test_voice_tuning.cpp
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
@@ -169,6 +170,8 @@ pq_add_test(pq_tests_engine PERF
     engine/test_voices.cpp
     engine/test_hot_swap.cpp
     engine/test_offline_render.cpp
+    engine/test_tuning_signal.cpp
+    engine/test_tuning_voices.cpp
   DEPS pq_engine)
 
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).
@@ -199,6 +202,7 @@ pq_add_test(pq_tests_jit PERF
   SOURCES
     jit/test_jit.cpp
     engine/test_voices.cpp  # the T1.8 voice suite again, on JIT images (rigImageBuilder, set in test_jit.cpp)
+    engine/test_tuning_voices.cpp  # T2.6: the tuning node through the VoiceEngine, on JIT images
   DEPS pq_jit)
 
 pq_add_test(pq_tests_dsp

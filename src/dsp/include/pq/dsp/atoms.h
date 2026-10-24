@@ -100,6 +100,16 @@
 //   sample_pos_linear/_cubic (pos)    stateless read at a sample position (float, in samples); 0 outside
 //                                     [0, length). Float position: sub-sample accurate to ~2^24 samples.
 // Cubic = 4-point, 3rd-order Hermite (Catmull-Rom); linear = 2-point.
+// Tuning (T2.6, SPEC §3.3; pq/dsp/tuning_table.h):
+//   tuning_hz (degree, equave, hz, cents, generator, period, stretch, reference) → (hz, cents)
+//                                     the pitch of Degree `degree` of equave `equave` in the resource's EDO / MOS
+//                                     linear form at the given (modulatable) generator, period (EDO: equave),
+//                                     stretch and reference, computed in double and rounded once: out.hz =
+//                                     reference · 2^(cents/1200), out.cents = the stretched cents from the reference.
+//                                     A lane without a finite degree/equave, or whose `hz` input is 0 (a voice before
+//                                     its onset), outputs its `hz` / `cents` inputs unchanged (the fallback). Region
+//                                     crossings are found at the sample where the generator leaves its interval.
+//                                     Reads KernelArgs::splMask at run time (one function per lane count).
 
 #include <cstddef>
 #include <cstdint>
@@ -129,11 +139,13 @@ enum class Atom : uint16_t {
   Phasor, SinePhase, SineHz, Wavetable, Noise,
   // tables
   Shaper, SampleReadLinear, SampleReadCubic, SamplePosLinear, SamplePosCubic,
+  // tuning as a signal (T2.6)
+  TuningHz,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);
 
-enum class Resource : uint8_t { None, Wavetable, Shaper, Sample };
+enum class Resource : uint8_t { None, Wavetable, Shaper, Sample, Tuning };
 
 // Static description of an atom kernel (for the T1.1 registry and the interpreter).
 struct KernelInfo {

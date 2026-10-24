@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <numbers>
 
 #include "pq/dsp/atoms.h"
@@ -26,7 +27,7 @@ namespace pq::engine {
 namespace {
 
 constexpr uint32_t kAudioSignals = 4;  // hz, cents, gate, trigger
-constexpr uint32_t kParamSignals = 6;  // velocity, release, ratio, harmonic, unisonCount, index
+constexpr uint32_t kParamSignals = 8;  // velocity, release, ratio, harmonic, unisonCount, index, degree, equave
 
 uint32_t roundUp(uint32_t n, uint32_t a) noexcept { return (n + a - 1) / a * a; }
 
@@ -236,6 +237,8 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
     sp[static_cast<uint32_t>(VoiceSignal::Harmonic)] = p + 24;
     sp[static_cast<uint32_t>(VoiceSignal::UnisonCount)] = p + 32;
     sp[static_cast<uint32_t>(VoiceSignal::Index)] = p + 40;
+    sp[static_cast<uint32_t>(VoiceSignal::Degree)] = p + 48;
+    sp[static_cast<uint32_t>(VoiceSignal::Equave)] = p + 56;
   }
 
   // Per lane and group state.
@@ -266,6 +269,8 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   harmonic_.assign(lanes_, 0.0f);
   unison_.assign(lanes_, 1.0f);
   index_.assign(lanes_, 0.0f);
+  degree_.assign(lanes_, std::numeric_limits<float>::quiet_NaN());
+  equave_.assign(lanes_, std::numeric_limits<float>::quiet_NaN());
   validFrames_.assign(groups_, 0);
   groupDirty_.assign(groups_, 0);
   carryDirty_.assign(groups_, 1);
@@ -728,6 +733,8 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
       harmonic_[lane] = e.harmonic;
       unison_[lane] = static_cast<float>(e.unisonCount);
       index_[lane] = static_cast<float>(e.unisonIndex);
+      degree_[lane] = e.degree;
+      equave_[lane] = e.equave;
       if (writeTrigger) {
         float* trig = audioSig_.data() + (static_cast<size_t>(lane >> 3) * kAudioSignals + 3) * groupStride_;
         trig[op.frame * 8 + (lane & 7u)] = kTrueMask;
@@ -811,6 +818,8 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
     p[24 + l] = harmonic_[l0 + l];
     p[32 + l] = unison_[l0 + l];
     p[40 + l] = index_[l0 + l];
+    p[48 + l] = degree_[l0 + l];
+    p[56 + l] = equave_[l0 + l];
   }
   // Constant over time only if nothing changed in this block and nothing keeps changing.
   bool moving = false;
@@ -868,6 +877,8 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   harmonic_[b] = harmonic_[a];
   unison_[b] = unison_[a];
   index_[b] = index_[a];
+  degree_[b] = degree_[a];
+  equave_[b] = equave_[a];
   setStatus(b, status_[a]);
   setStatus(a, LaneStatus::Free);
   hasPending_[a] = 0;

@@ -42,6 +42,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "voice.ratio", "voice.harmonic", "voice.unisonCount", "voice.index",
       "transport.bpm", "transport.beat", "transport.barPhase", "transport.playing", "sr",
       "sample_read_linear", "sample_read_cubic", "sample_pos_linear", "sample_pos_cubic", "track.in", "sidechain.in", "send", "clipPlayer",
+      // T2.6 (SPEC §3.3 tuning as a signal): the tuning node, its voice binding and the Degree voice signals.
+      "tuning_hz", "tune_voices", "voice.degree", "voice.equave",
   };
   for (const char* n : names) {
     CAPTURE(n);

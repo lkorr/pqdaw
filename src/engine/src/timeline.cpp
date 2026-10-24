@@ -489,6 +489,10 @@ void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t
       NoteEvent e = noteOn(f, nextInstance_, n.hz, vel);
       e.ratio = n.ratio;
       e.harmonic = n.harmonic;
+      if (n.pitch.tuning != 0) {  // T2.6: a Degree note of a tuning signal
+        e.degree = static_cast<float>(n.pitch.degree);
+        e.equave = static_cast<float>(n.pitch.equave);
+      }
       pushEvent(track, e);
       ++stats_.noteOns;
       heapPush(tr, Sounding{std::min(on + n.length, c.passEnd), tr.order++, on, nextInstance_, n.id, n.hz,

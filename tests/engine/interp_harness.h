@@ -208,6 +208,8 @@ inline double voiceSignal(uint32_t sig, uint32_t v, uint64_t t) {
     case eng::VoiceSignal::Harmonic: return 3.0 + v % 2;
     case eng::VoiceSignal::UnisonCount: return 1.0;
     case eng::VoiceSignal::Index: return static_cast<double>(v % 3);
+    case eng::VoiceSignal::Degree: return static_cast<double>(v % 7);
+    case eng::VoiceSignal::Equave: return static_cast<double>(v % 3) - 1.0;
     default: return 0.0;
   }
 }

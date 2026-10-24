@@ -21,9 +21,10 @@ pq_add_module(pq_engine
     src/sequence.cpp
     src/state_transfer.cpp
     src/timeline.cpp
+    src/tuning_signal.cpp
     src/voices.cpp
     src/wasapi_device.cpp
     src/wav_file.cpp
-  DEPS pq_core pq_dsp pq_graph
+  DEPS pq_core pq_dsp pq_graph pq_tuning
   PRIVATE_DEPS rtaudio ole32 avrt advapi32 user32
 )

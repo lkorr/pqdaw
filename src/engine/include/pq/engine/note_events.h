@@ -13,10 +13,13 @@
 // Pitch: every note is float32 Hz, resolved upstream from its pitch identity and tuning (SPEC §3.1). The
 // identity-derived per-voice values (voice.ratio, voice.harmonic, unison count/index) travel with the note-on.
 // Expression: a Pitch event moves a sounding note to a new Hz, as a step or as a glide that is linear in cents
-// (exponential in Hz) over rampFrames samples; T2.6 (tuning as signal) and glides/pitch curves drive voice.hz
-// per sample through it.
+// (exponential in Hz) over rampFrames samples (glides, pitch curves).
+// Tuning as a signal (T2.6): a note-on may carry its Degree identity (`degree`, `equave`; NaN = none) as
+// voice.degree / voice.equave; a patch's tuning node (`tuning_hz` bound with `tune_voices`) then derives the
+// voice's Hz per sample from the modulated tuning, and `hz` is only the fallback for lanes without a degree.
 
 #include <cstdint>
+#include <limits>
 
 #include "pq/core/aligned_buffer.h"
 
@@ -43,8 +46,10 @@ struct NoteEvent {
   uint16_t unisonIndex = 0;       // NoteOn: voice.index (index within its unison group)
   uint16_t pad2_ = 0;
   uint32_t rampFrames = 0;        // Pitch: glide length in samples (0 = step)
+  float degree = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.degree (T2.6; NaN = no Degree identity)
+  float equave = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.equave
 };
-static_assert(sizeof(NoteEvent) == 36);
+static_assert(sizeof(NoteEvent) == 44);
 
 inline NoteEvent noteOn(uint32_t frame, uint32_t noteId, float hz, float velocity) noexcept {  // RT-safe
   NoteEvent e;

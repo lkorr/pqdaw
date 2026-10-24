@@ -111,6 +111,18 @@ constexpr PortSpec pReduceOut[] = {{"out", kGlobalAny}};
 constexpr PortSpec pMulAdd[] = {{"a", kR}, {"b", kR}, {"c", kR}};
 constexpr PortSpec pSend[] = {{"x", kR}, {"bus", kRConst}};
 constexpr PortSpec pClipPlayer[] = {{"clip", kRConst}};
+// Tuning as a signal (T2.6, SPEC §3.3; pq/dsp/tuning_table.h). `table` names the tuning table resource.
+constexpr PortSpec pTuningHz[] = {{"degree", kR},
+                                  {"equave", kR, true, 0.0f},
+                                  {"hz", kR},
+                                  {"cents", kR, true, 0.0f},
+                                  {"generator", kR, true, 0.0f},
+                                  {"period", kR, true, 1200.0f},
+                                  {"stretch", kR, true, 0.0f},
+                                  {"reference", kR, true, kRefHz},
+                                  {"table", kRConst, true, 0.0f}};
+constexpr PortSpec pTuningHzOut[] = {{"hz", kR}, {"cents", kR}};
+constexpr PortSpec pTuneVoices[] = {{"hz", kR}, {"cents", kR, true, 0.0f}};
 
 constexpr std::span<const PortSpec> kNoPorts{};
 
@@ -257,6 +269,16 @@ const AtomSignature kAtoms[] = {
     {"voice.harmonic", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {}, "harmonic number for harmonic pitches"},
     {"voice.unisonCount", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {}, "number of unison voices"},
     {"voice.index", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {}, "index within the unison group"},
+    {"voice.degree", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
+     "degree of a Degree note in its tuning signal (NaN for other notes)"},
+    {"voice.equave", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
+     "equave of a Degree note in its tuning signal (NaN for other notes)"},
+    // Tuning as a signal (T2.6). infer() consumes tune_voices: within every subcircuit the calling patch
+    // instantiates, voice.hz reads `hz` and (when connected) voice.cents reads `cents`.
+    {"tuning_hz", C::Math, pTuningHz, pTuningHzOut, 0, 0, 0, {},
+     "pitch of a degree in an EDO/MOS tuning table at a modulatable generator/period/stretch/reference (else hz)"},
+    {"tune_voices", C::Structure, pTuneVoices, kNoPorts, 0, kNeedsVoice | kSideEffect, 0, {},
+     "voice.hz (and voice.cents) of the subcircuits this patch instantiates"},
 
     // Transport and sample rate.
     {"transport.bpm", C::Transport, kNoPorts, pGlobalRP, 0, kNeedsTransport, 0, {}, "tempo in BPM"},

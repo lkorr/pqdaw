@@ -523,7 +523,7 @@ private:
         const std::string_view name = g::atomSignature(ex.atom).name;
         static constexpr std::string_view kVoice[e::kVoiceSignalCount] = {
             "voice.hz", "voice.cents", "voice.gate", "voice.trigger", "voice.velocity", "voice.release",
-            "voice.ratio", "voice.harmonic", "voice.unisonCount", "voice.index"};
+            "voice.ratio", "voice.harmonic", "voice.unisonCount", "voice.index", "voice.degree", "voice.equave"};
         bool found = false;
         for (uint32_t k = 0; k < e::kVoiceSignalCount; ++k)
           if (name == kVoice[k]) {
@@ -569,6 +569,8 @@ private:
       case dsp::Resource::Sample:
         if (res_ && index < res_->samples.size() && res_->samples[index]) return res_->samples[index];
         return &defaultSample();
+      case dsp::Resource::Tuning:  // T2.6: no default, the kernel passes its fallback through
+        return res_ && index < res_->tunings.size() ? res_->tunings[index] : nullptr;
       default: return nullptr;
     }
   }

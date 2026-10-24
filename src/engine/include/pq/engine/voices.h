@@ -313,7 +313,7 @@ private:
   std::vector<float> laneGain_;
   std::vector<uint32_t> fadeLeft_;    // > 0 while fading: frames to go
   std::vector<float> fadeFrom_;       // gain when the fade started
-  std::vector<float> velocity_, release_, ratio_, harmonic_, unison_, index_;
+  std::vector<float> velocity_, release_, ratio_, harmonic_, unison_, index_, degree_, equave_;
 
   // Per block scratch.
   std::vector<LaneOp> ops_, sortedOps_;

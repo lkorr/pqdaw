@@ -10,6 +10,7 @@
 #include "pq/core/alloc_trap.h"
 #include "pq/dsp/atoms.h"
 #include "pq/dsp/tables.h"
+#include "pq/dsp/tuning_table.h"
 
 using pq::alloc_trap::countRtViolations;
 using pq::dsp::Atom;
@@ -17,7 +18,7 @@ using pq::dsp::Atom;
 TEST_CASE("rt: every atom kernel and initState are allocation-free") {
   REQUIRE(pq::alloc_trap::installed());
   constexpr uint32_t kFrames = 67;  // not a multiple of 8: exercises the scalar tails too
-  constexpr uint32_t kMaxIn = 5, kMaxOut = 4;
+  constexpr uint32_t kMaxIn = 8, kMaxOut = 4;  // tuning_hz has 8 inputs (T2.6)
 
   // Resources and buffers are built outside the RtScope (that allocates by design).
   const auto cycle = pq::dsp::Wavetable::basicCycle(pq::dsp::BasicShape::Saw, 256);
@@ -29,6 +30,11 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
   std::vector<float> smp(300, 0.25f);
   auto sd = pq::dsp::SampleData::build(smp);
   REQUIRE(sd.ok());
+  // T2.6: a 2-note MOS table (one interval: degree 1 = g − ⌊g/P⌋·P), so tuning_hz takes its lookup paths.
+  const double bounds[] = {0.0, 1.0};
+  const int32_t tk[] = {0, 1}, tm[] = {0, 0};
+  auto tt = pq::dsp::TuningTable::build(pq::dsp::TuningTableKind::Mos, 2, 1, bounds, tk, tm, 700.0, 1200.0, 0.0, 261.626);
+  REQUIRE(tt.ok());
 
   std::vector<pq::AlignedBuffer<float>> in, out;
   for (uint32_t i = 0; i < kMaxIn; ++i) in.emplace_back(static_cast<size_t>(kFrames) * 8);
@@ -53,6 +59,7 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
     const void* resource = info.resource == pq::dsp::Resource::Wavetable ? static_cast<const void*>(&wt->view())
                            : info.resource == pq::dsp::Resource::Shaper  ? static_cast<const void*>(&sh->view())
                            : info.resource == pq::dsp::Resource::Sample  ? static_cast<const void*>(&sd->view())
+                           : info.resource == pq::dsp::Resource::Tuning  ? static_cast<const void*>(&tt->view())
                                                                          : nullptr;
     const uint32_t specMax = info.variadicIn ? 15u : info.splSpecMask;
     for (uint32_t lanes : {1u, 8u}) {

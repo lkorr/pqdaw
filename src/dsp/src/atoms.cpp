@@ -77,6 +77,8 @@ constexpr KernelInfo kInfo[kAtomCount] = {
      Resource::Sample, false},
     {"sample_pos_linear", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
     {"sample_pos_cubic", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
+    // Every input may be Spl or Blk; the kernel reads KernelArgs::splMask (kernels_tuning.cpp).
+    {"tuning_hz", 8, 2, false, false, 0, 0, 0xFFu, 0, 0, Resource::Tuning, false},
 };
 
 bool isDelay(Atom a) noexcept {

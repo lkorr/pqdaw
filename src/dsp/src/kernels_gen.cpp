@@ -478,6 +478,7 @@ KernelFn findTableKernel(Atom a, uint32_t lanes, uint32_t m) noexcept {
     case Atom::SamplePosCubic: return pick<TableEw<SamplePosOp<true>>>(lanes, m);
     case Atom::SampleReadLinear: return pick<SampleReadK<false>>(lanes, m);
     case Atom::SampleReadCubic: return pick<SampleReadK<true>>(lanes, m);
+    case Atom::TuningHz: return findTuningKernel(lanes);
     default: return nullptr;
   }
 }

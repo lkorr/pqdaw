@@ -5,6 +5,10 @@
 //      bound checks and voice→global reduction happen exactly once per boundary (not once per consumer).
 //   2. infer: a worklist fixpoint over the FNodes, seeded in topological order (drivers first), joining each output
 //      upwards in the rate/poly/width/kind lattices; then the bound checks.
+//      Then the voice tunings (T2.6): a `tune_voices(hz, cents)` node rebinds voice.hz (and, with `cents`
+//      connected, voice.cents) for every subcircuit instantiated below its patch, so in-ports reading those
+//      voice sources are re-driven by the binder's inputs (the nearest binding ancestor wins; the binder's own
+//      patch still reads the engine's values, so `tuning_hz(…, voice.hz, …)` there is the fallback, not a cycle).
 //   3. emit: build the flattened Patch. Identities are wired through (or become voice_sum nodes where they reduce
 //      voices), root outputs with a global bound get a voice_sum in front, bool eq/ne become xor (+ not), and every
 //      port gets its inferred type.
@@ -117,6 +121,7 @@ struct Inst {
   uint32_t solveBase = 0;   // first flat solve block
   uint32_t depth = 0;
   std::string prefix;       // name prefix of its nodes ("" for the root)
+  NodeIndex binder = kNone; // its tune_voices node (T2.6), if any
 };
 
 class Inferrer {
@@ -268,6 +273,36 @@ private:
     outOwner_.reserve(root_.portCount());
     instantiate(0);
     failed_.assign(fnodes_.size(), 0);
+    bindVoiceTunings();
+  }
+
+  // T2.6: re-drive voice.hz / voice.cents reads under a tune_voices binder (see the file comment).
+  void bindVoiceTunings() {
+    if (voiceReads_.empty()) return;
+    std::vector<uint32_t> repl(outDecl_.size(), kNone);
+    bool any = false;
+    for (const auto& [f, cents] : voiceReads_) {
+      const FNode& fn = fnodes_[f];
+      for (uint32_t a = insts_[fn.inst].parent; a != kNone; a = insts_[a].parent) {
+        const Inst& A = insts_[a];
+        if (A.binder == kNone) continue;
+        const uint32_t bf = gF_[A.gbase + A.binder];
+        if (bf != kNone) {
+          const uint32_t drv = inDrv_[fnodes_[bf].firstIn + (cents ? 1u : 0u)];
+          if (drv != kNone) {
+            repl[fn.firstOut] = drv;
+            any = true;
+          }
+        }
+        break;  // the nearest binder decides (an unconnected `cents` leaves voice.cents to the engine)
+      }
+    }
+    if (!any) return;
+    // A binder's input may itself read a rebound voice source (nested binders): follow the chain. Each step goes
+    // to a strictly outer binder, so a chain is at most kMaxSubcircuitDepth long.
+    for (uint32_t& d : inDrv_) {
+      for (uint32_t steps = 0; d != kNone && repl[d] != kNone && steps <= kMaxSubcircuitDepth; ++steps) d = repl[d];
+    }
   }
 
   void instantiate(uint32_t ii) {
@@ -297,6 +332,15 @@ private:
           f = newNode(k, ii, n, nd.numInputs, nd.numOutputs);
           FNode& fn = fnodes_[f];
           fn.atom = nd.atom;
+          if (k == FKind::Atom && !isRoot && (nd.atom == atomVoiceHz_ || nd.atom == atomVoiceCents_))
+            voiceReads_.emplace_back(f, nd.atom == atomVoiceCents_);
+          if (k == FKind::Atom && nd.atom == atomTuneVoices_) {
+            if (insts_[ii].binder != kNone)
+              report(ii, n, ErrorCode::InvalidArgument,
+                     "a patch can bind the voice tuning (tune_voices) only once: " + describe(ii, n));
+            else
+              insts_[ii].binder = n;
+          }
           if (k == FKind::Unknown || k == FKind::Equation) fn.solve = insts_[ii].solveBase + nd.payload;
           for (uint32_t i = 0; i < nd.numInputs; ++i) inBound_[fn.firstIn + i] = P.inputType(n, i);
           for (uint32_t i = 0; i < nd.numOutputs; ++i) outDecl_[fn.firstOut + i] = P.outputType(n, i);
@@ -836,6 +880,7 @@ private:
           continue;
         case FKind::Atom: {
           const AtomSignature& sig = atomSignature(fn.atom);
+          if (fn.atom == atomTuneVoices_) continue;  // consumed by bindVoiceTunings (no node of its own)
           if ((fn.atom == atomEq || fn.atom == atomNe) && inDrv_[fn.firstIn] != kNone &&
               outT_[inDrv_[fn.firstIn]].kind == Kind::Bool) {
             // Bool equality: ne = xor, eq = not(xor). The dsp comparators are real-only (kernel_map.h).
@@ -940,6 +985,11 @@ private:
   std::vector<PortType> solveType_;
   std::vector<std::vector<uint32_t>> solveUnknowns_;
   AtomId atomPack_ = 0xFFFF;
+  // T2.6 voice tunings.
+  const AtomId atomVoiceHz_ = atomId("voice.hz");
+  const AtomId atomVoiceCents_ = atomId("voice.cents");
+  const AtomId atomTuneVoices_ = atomId("tune_voices");
+  std::vector<std::pair<uint32_t, bool>> voiceReads_;  // (FNode, is voice.cents) of non-root voice.hz/cents reads
 
   std::vector<PortRef> flatOut_;    // emit: per out-port
   std::vector<PortRef> inTarget_;   // emit: per in-port

@@ -5,6 +5,7 @@ pq_add_module(pq_dsp
     src/kernels_logic.cpp
     src/kernels_memory.cpp
     src/kernels_gen.cpp
+    src/kernels_tuning.cpp
     src/tables.cpp
   DEPS pq_core
 )

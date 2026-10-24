@@ -104,9 +104,10 @@ Decided while implementing the parser; the open ones are tracked in [QUESTIONS.m
 - **Constants**: unit-normalised literals, constant arithmetic and `const` params are folded at compile time. `param`s are **never** folded, so knob changes never recompile.
 - **Durations** (delay `time` and `max`, timer `dur`, pulse `period`) are in seconds. A literal written in `smp` directly at a duration input means that many samples (`delay(x, 1smp, 10ms)` is a one-sample delay); once it goes through arithmetic it is a plain number, and such a value reaching a duration input is an error (`delay(x, 5smp * 2, …)` would otherwise mean 10 s). A `param` default or range cannot be in `smp` (QUESTIONS Q35).
 - **Built-in namespaces** (read-only inputs, available in any patch that is instantiated in a voice or transport context):
-  - `voice.hz`, `voice.cents`, `voice.gate`, `voice.trigger`, `voice.velocity`, `voice.release`, `voice.ratio`, `voice.harmonic`, `voice.unisonCount`, `voice.index`
+  - `voice.hz`, `voice.cents`, `voice.gate`, `voice.trigger`, `voice.velocity`, `voice.release`, `voice.ratio`, `voice.harmonic`, `voice.unisonCount`, `voice.index`, `voice.degree`, `voice.equave` (T2.6: a Degree note's degree and equave in its tuning signal, NaN for other notes)
   - `transport.bpm`, `transport.beat`, `transport.barPhase`, `transport.playing`
   - `sr` (sample rate as a `const` after specialisation)
+- **Tuning as a signal** (T2.6, SPEC §3.3): `tuning_hz(degree, equave, hz, cents, generator, period, stretch, reference, table: k)` is the pitch of a degree in tuning table `k` (an EDO or MOS; `period` is an EDO's equave) at modulatable generator / period / stretch / reference, with outputs `.hz` and `.cents`; lanes without a degree pass `hz` / `cents` through. `tv = tune_voices(t.hz, t.cents)` (no outputs; `cents` optional) makes `voice.hz` (and `voice.cents`) read those values in every subcircuit the patch instantiates, recursively; the patch's own `voice.hz` stays the engine's (that is the fallback input), and an inner `tune_voices` wins over an outer one. One per patch.
 - **Exports** become wire sources visible outside the device. Anything can be exported: an oscillator output, an envelope, a bool.
 
 ## 4. Example

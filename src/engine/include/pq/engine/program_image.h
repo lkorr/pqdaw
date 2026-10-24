@@ -36,7 +36,11 @@
 namespace pq::engine {
 
 // voice.* sources (SPEC §7.2 "Events and voices"), the index into VoiceGroupIO::signals.
-enum class VoiceSignal : uint8_t { Hz, Cents, Gate, Trigger, Velocity, Release, Ratio, Harmonic, UnisonCount, Index, Count_ };
+// Degree / Equave (T2.6): a Degree note's degree and equave in its tuning signal (NaN for other notes), the inputs of
+// the tuning node (`tuning_hz`).
+enum class VoiceSignal : uint8_t {
+  Hz, Cents, Gate, Trigger, Velocity, Release, Ratio, Harmonic, UnisonCount, Index, Degree, Equave, Count_
+};
 inline constexpr uint32_t kVoiceSignalCount = static_cast<uint32_t>(VoiceSignal::Count_);
 
 // The transport at frame 0 of the block (transport.* atoms). beat and barPhase are audio rate:
@@ -56,7 +60,8 @@ struct TransportSnapshot {
 // A group whose laneMask is 0 is NOT run (T1.8): its state does not advance, its voice outputs are not written and
 // it contributes nothing to reducers, so the cost of the voice stages is per occupied group, whatever numGroups is.
 // voice.* buffers as the VoiceEngine provides them: Hz, Cents (float), Gate, Trigger (lane masks) audio rate
-// (frames · 8); Velocity, Release, Ratio, Harmonic, UnisonCount, Index param rate (8 floats: only frame 0 exists).
+// (frames · 8); Velocity, Release, Ratio, Harmonic, UnisonCount, Index, Degree, Equave param rate (8 floats: only
+// frame 0 exists).
 struct VoiceGroupIO {
   uint32_t laneMask = 0;                // bit v: lane v holds a voice (reducers and sends read only these); 0: skip
   const float* const* signals = nullptr;  // [kVoiceSignalCount] voice.* buffers (frames · 8), or null entries

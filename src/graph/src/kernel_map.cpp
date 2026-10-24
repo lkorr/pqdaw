@@ -28,6 +28,9 @@ constexpr ArgMap kNoise[] = {{U::InitSeed, 0}};                                 
 constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1},       // sample, rate, reset,
                                   {U::Input, 2},    {U::Input, 3}, {U::Input, 4}};      // start, loopStart, loopEnd
 constexpr ArgMap kSamplePos[] = {{U::Resource, 0}, {U::Input, 0}};                      // sample, pos
+constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // degree, equave, hz,
+                                {U::Input, 4}, {U::Input, 5}, {U::Input, 6}, {U::Input, 7},  // cents, generator, period,
+                                {U::Resource, 0}};                                           // stretch, reference, table
 
 struct Special {
   std::string_view atom;
@@ -47,6 +50,7 @@ constexpr Special kSpecial[] = {
     {"sample_read_cubic", kSampleRead},
     {"sample_pos_linear", kSamplePos},
     {"sample_pos_cubic", kSamplePos},
+    {"tuning_hz", kTuningHz},
 };
 
 struct NoKernel {
@@ -59,6 +63,8 @@ constexpr NoKernel kNoKernel[] = {
     {"pack", Lowering::Structural, "channels side by side: the inputs are written into one multichannel buffer"},
     {"sr", Lowering::Constant, "the sample rate, a const after specialisation"},
     {"voice.", Lowering::Engine, "read from the voice table (T1.8)"},
+    {"tune_voices", Lowering::Structural,
+     "consumed by infer(): rebinds voice.hz / voice.cents inside the subcircuits of its patch (T2.6)"},
     {"transport.", Lowering::Engine, "read from the transport snapshot in ProcessContext"},
     {"track.in", Lowering::Engine, "the track's input buffers"},
     {"sidechain.in", Lowering::Engine, "the device's sidechain buffers"},
