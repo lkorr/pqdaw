@@ -179,7 +179,6 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     // change, refreshes the preferences window).
     app->audio_->setUiNotify([](void* self) { pushUser(static_cast<ShellApp*>(self)->userEvent_, kAudioChanged); }, app.get());
     app->ctx_->setAudioPrefs(app->audio_.get());
-    app->audio_ = std::make_unique<AudioOutput>(o, app->link_->engine());
     markStartupPhase("link attached, audio device opening in the background");
   }
   ShellApp* self = app.get();

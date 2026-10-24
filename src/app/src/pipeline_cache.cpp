@@ -45,7 +45,7 @@ std::string utf8Of(const std::filesystem::path& p) {
 
 }  // namespace
 
-std::string userSettingsDir() {
+std::string localCacheDir() {
 #ifdef _WIN32
   wchar_t buf[MAX_PATH];
   const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
@@ -63,7 +63,7 @@ std::string userSettingsDir() {
 }
 
 std::string pipelineCachePath() {
-  const std::string dir = userSettingsDir();
+  const std::string dir = localCacheDir();
   return dir.empty() ? std::string() : utf8Of(pathOf(dir) / "vk_pipeline_cache.bin");
 }
 

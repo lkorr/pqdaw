@@ -13,10 +13,10 @@
 
 namespace pq::app {
 
-// The per-user directory for machine-local settings and caches: %LOCALAPPDATA%\pqdaw (UTF-8), created if needed;
-// empty when it cannot be determined or created.
-std::string userSettingsDir();
-// userSettingsDir() + "\vk_pipeline_cache.bin", or empty.
+// The per-user directory for machine-local caches: %LOCALAPPDATA%\pqdaw (UTF-8), created if needed; empty when it
+// cannot be determined or created. (User settings roam: userSettingsDir() in user_settings.h, %APPDATA%\pqdaw.)
+std::string localCacheDir();
+// localCacheDir() + "\vk_pipeline_cache.bin", or empty.
 std::string pipelineCachePath();
 // The blob savePipelineCache wrote, or empty when the file is missing, has the wrong magic or size, or fails its
 // checksum.
