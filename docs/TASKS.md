@@ -396,7 +396,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Ratio notes in a clip share a virtual fundamental derived from what is entered (1/lcm of their denominators relative to the anchor), updated as notes are added, moved or deleted; Up/Down = next harmonic of the current fundamental; explicit fundamental lock (`b`+index, SPEC §6.2) can override. Decide whether the fundamental is stored (with its update rule) or derived on read; keep reduced ratios exact either way.
   - Accept: 5/4 → 6/4 → 7/4 by Up; adding 4/3 moves the fundamental to 1/12; deleting it moves it back; undo restores it; serialization round-trips; the piano roll draws it (SPEC §4.3).
 
-- [ ] **T3.18 Audio preferences + device manager** (`engine`, `views`, `app`). Depends on: T0.6-fix1, T0.6-fix2, T3.7. 👁 (User decision Q12.)
+- [~] **T3.18 Audio preferences + device manager** *(worker BD, branch task/T3.18-audio-prefs)* (`engine`, `views`, `app`). Depends on: T0.6-fix1, T0.6-fix2, T3.7. 👁 (User decision Q12.)
   - Preferences window (Ableton "Audio" tab equivalent): driver type (ASIO / WASAPI shared / WASAPI exclusive), input/output device, sample rate, buffer size, input/output channel configuration, latency readout, test tone, CPU meter; persisted in user settings; device hot-plug and driver reset handled (stop → reopen → resume, Program kept).
   - Accept: switching driver type/device/rate/buffer while playing reopens the stream without crash or allocation on the audio thread; settings persist across restarts; scripted test with NullDevice + fake device list; golden of the preferences window.
 
