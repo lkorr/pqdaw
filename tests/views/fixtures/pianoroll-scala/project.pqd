@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "timeline": {
     "tempo": [
       {
@@ -18,7 +18,7 @@
   },
   "loop": {
     "start": 0,
-    "end": 443520,
+    "end": 3548160,
     "enabled": false
   },
   "locators": [],
@@ -67,12 +67,12 @@
           "name": "Just Tune",
           "colour": "#8499F0",
           "start": 0,
-          "length": 221760,
+          "length": 1774080,
           "contentStart": 0,
           "loop": {
             "enabled": true,
             "start": 0,
-            "end": 221760
+            "end": 1774080
           },
           "signature": {
             "numerator": 4,
@@ -84,7 +84,7 @@
             {
               "id": 400,
               "start": 0,
-              "length": 48510,
+              "length": 388080,
               "pitch": {
                 "degree": 0,
                 "equave": 0
@@ -94,7 +94,7 @@
             {
               "id": 401,
               "start": 0,
-              "length": 48510,
+              "length": 388080,
               "pitch": {
                 "degree": 2,
                 "equave": 0
@@ -104,7 +104,7 @@
             {
               "id": 402,
               "start": 0,
-              "length": 48510,
+              "length": 388080,
               "pitch": {
                 "degree": 4,
                 "equave": 0
@@ -114,7 +114,7 @@
             {
               "id": 403,
               "start": 0,
-              "length": 41580,
+              "length": 332640,
               "pitch": {
                 "degree": 0,
                 "equave": -1
@@ -124,7 +124,7 @@
             {
               "id": 416,
               "start": 0,
-              "length": 13860,
+              "length": 110880,
               "pitch": {
                 "degree": 0,
                 "equave": 1
@@ -133,8 +133,8 @@
             },
             {
               "id": 417,
-              "start": 27720,
-              "length": 20790,
+              "start": 221760,
+              "length": 166320,
               "pitch": {
                 "degree": 1,
                 "equave": 1
@@ -143,8 +143,8 @@
             },
             {
               "id": 418,
-              "start": 41580,
-              "length": 13860,
+              "start": 332640,
+              "length": 110880,
               "pitch": {
                 "degree": 2,
                 "equave": 1
@@ -153,8 +153,8 @@
             },
             {
               "id": 404,
-              "start": 55440,
-              "length": 48510,
+              "start": 443520,
+              "length": 388080,
               "pitch": {
                 "degree": 5,
                 "equave": -1
@@ -163,8 +163,8 @@
             },
             {
               "id": 405,
-              "start": 55440,
-              "length": 48510,
+              "start": 443520,
+              "length": 388080,
               "pitch": {
                 "degree": 0,
                 "equave": 0
@@ -173,8 +173,8 @@
             },
             {
               "id": 406,
-              "start": 55440,
-              "length": 48510,
+              "start": 443520,
+              "length": 388080,
               "pitch": {
                 "degree": 2,
                 "equave": 0
@@ -183,8 +183,8 @@
             },
             {
               "id": 407,
-              "start": 55440,
-              "length": 41580,
+              "start": 443520,
+              "length": 332640,
               "pitch": {
                 "degree": 5,
                 "equave": -2
@@ -193,8 +193,8 @@
             },
             {
               "id": 419,
-              "start": 55440,
-              "length": 13860,
+              "start": 443520,
+              "length": 110880,
               "pitch": {
                 "degree": 4,
                 "equave": 1
@@ -203,8 +203,8 @@
             },
             {
               "id": 420,
-              "start": 83160,
-              "length": 13860,
+              "start": 665280,
+              "length": 110880,
               "pitch": {
                 "degree": 2,
                 "equave": 1
@@ -213,8 +213,8 @@
             },
             {
               "id": 425,
-              "start": 97020,
-              "length": 13860,
+              "start": 776160,
+              "length": 110880,
               "pitch": {
                 "ratio": "7/4"
               },
@@ -222,8 +222,8 @@
             },
             {
               "id": 408,
-              "start": 110880,
-              "length": 48510,
+              "start": 887040,
+              "length": 388080,
               "pitch": {
                 "degree": 3,
                 "equave": -1
@@ -232,8 +232,8 @@
             },
             {
               "id": 409,
-              "start": 110880,
-              "length": 48510,
+              "start": 887040,
+              "length": 388080,
               "pitch": {
                 "degree": 5,
                 "equave": -1
@@ -242,8 +242,8 @@
             },
             {
               "id": 410,
-              "start": 110880,
-              "length": 48510,
+              "start": 887040,
+              "length": 388080,
               "pitch": {
                 "degree": 0,
                 "equave": 0
@@ -252,8 +252,8 @@
             },
             {
               "id": 411,
-              "start": 110880,
-              "length": 41580,
+              "start": 887040,
+              "length": 332640,
               "pitch": {
                 "degree": 3,
                 "equave": -2
@@ -262,8 +262,8 @@
             },
             {
               "id": 421,
-              "start": 124740,
-              "length": 20790,
+              "start": 997920,
+              "length": 166320,
               "pitch": {
                 "degree": 3,
                 "equave": 1
@@ -272,8 +272,8 @@
             },
             {
               "id": 422,
-              "start": 138600,
-              "length": 20790,
+              "start": 1108800,
+              "length": 166320,
               "pitch": {
                 "degree": 5,
                 "equave": 1
@@ -282,8 +282,8 @@
             },
             {
               "id": 426,
-              "start": 152460,
-              "length": 27720,
+              "start": 1219680,
+              "length": 221760,
               "pitch": {
                 "cents": 503.2258064516129
               },
@@ -291,8 +291,8 @@
             },
             {
               "id": 412,
-              "start": 166320,
-              "length": 48510,
+              "start": 1330560,
+              "length": 388080,
               "pitch": {
                 "degree": 4,
                 "equave": -1
@@ -301,8 +301,8 @@
             },
             {
               "id": 413,
-              "start": 166320,
-              "length": 48510,
+              "start": 1330560,
+              "length": 388080,
               "pitch": {
                 "degree": 6,
                 "equave": -1
@@ -311,8 +311,8 @@
             },
             {
               "id": 414,
-              "start": 166320,
-              "length": 48510,
+              "start": 1330560,
+              "length": 388080,
               "pitch": {
                 "degree": 1,
                 "equave": 0
@@ -321,8 +321,8 @@
             },
             {
               "id": 415,
-              "start": 166320,
-              "length": 41580,
+              "start": 1330560,
+              "length": 332640,
               "pitch": {
                 "degree": 4,
                 "equave": -2
@@ -331,8 +331,8 @@
             },
             {
               "id": 423,
-              "start": 166320,
-              "length": 13860,
+              "start": 1330560,
+              "length": 110880,
               "pitch": {
                 "degree": 4,
                 "equave": 1
@@ -341,8 +341,8 @@
             },
             {
               "id": 424,
-              "start": 194040,
-              "length": 13860,
+              "start": 1552320,
+              "length": 110880,
               "pitch": {
                 "degree": 6,
                 "equave": 1
