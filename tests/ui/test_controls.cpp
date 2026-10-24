@@ -107,7 +107,7 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   CHECK(t->fonts.body.px == 13);
   CHECK(t->fonts.title.px == 14);
   CHECK(alphaOf(t->surface.panel) == 255);
-  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 12 + 20 + 25 + 17 + 5 + 14 + 1);  // + arrangement.* (T3.8), roll.* (T3.11), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10)
+  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 5 + 14 + 1);  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10)
 }
 
 TEST_CASE("theme: the file round-trips (struct and bytes)") {
@@ -155,7 +155,7 @@ TEST_CASE("theme: a missing, unknown or malformed token fails with its name") {
     CHECK_MESSAGE(r.error().message.find("missing token \"" + name + "\"") != std::string::npos, r.error().message);
     ++checked;
   }
-  CHECK(checked == 57 + 16 + 12 + 20 + 25 + 17 + 5 + 14);  // + 16 arrangement.* (T3.8), 12 roll.* (T3.11), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10)
+  CHECK(checked == 57 + 16 + 19 + 20 + 25 + 17 + 5 + 14);  // + 16 arrangement.* (T3.8), 19 roll.* (T3.11, T3.12), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10)
   {
     auto r = parseTheme(removeLine("\"name\":"));
     REQUIRE_FALSE(r.ok());
