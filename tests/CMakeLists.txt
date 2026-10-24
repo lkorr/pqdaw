@@ -64,6 +64,7 @@ pq_add_test(pq_tests_ui PERF
     ui/test_controls.cpp
     ui/test_partial_redraw.cpp
     ui/test_tile_atlas.cpp
+    ui/test_pipeline_cache.cpp
     ui/thread_cpu.cpp
   DEPS pq_ui pq_ui_scenes)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR=pq_build_source_assets_dir)
@@ -74,6 +75,7 @@ pq_add_test(pq_tests_app
     app/test_cli.cpp
     app/test_play.cpp
     app/test_shell_app.cpp
+    app/test_startup.cpp
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
