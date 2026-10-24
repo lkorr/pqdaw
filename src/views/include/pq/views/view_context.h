@@ -52,6 +52,7 @@ inline constexpr uint32_t kStatus = 1u << 4;     // status line text
 inline constexpr uint32_t kTool = 1u << 5;       // draw mode (B) toggled (T3.11)
 inline constexpr uint32_t kDetailClip = 1u << 6; // the clip shown in the clip view changed (T3.11)
 inline constexpr uint32_t kTuningPreview = 1u << 7;  // the MOS wheel's live tuning preview changed (T3.14)
+inline constexpr uint32_t kAutomation = 1u << 8;     // automation overridden / re-enabled (T3.15)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -218,6 +219,17 @@ public:
   const doc::TuningDef* previewedTuning(const doc::Project& p, const doc::TrackPath& path, const doc::NoteClip* clip,
                                         doc::ClipId clipId) const noexcept;
 
+  // --- automation override (T3.15, SPEC §9.6) ---
+  // A parameter with an automation lane that is changed by hand (a mixer drag, a type-in, the activator) is
+  // overridden: its automation is off until "Re-enable Automation" (Live). The context marks it from the document's
+  // Param changes; state only until T3.17 lowers it. Cleared by reenableAutomation, newProject and openProject;
+  // an override whose lane is gone is dropped. Notifies kAutomation.
+  bool automationOverridden(const doc::ParamRef& p) const noexcept;
+  bool anyAutomationOverridden() const noexcept { return !overrides_.empty(); }
+  std::span<const doc::ParamRef> automationOverrides() const noexcept { return overrides_; }
+  void overrideAutomation(const doc::ParamRef& p);
+  void reenableAutomation();
+
   // --- layout state ---
   bool detailVisible() const noexcept { return detailVisible_; }
   void setDetailVisible(bool v);
@@ -292,6 +304,7 @@ private:
   bool drawMode_ = false;
   doc::ClipRef detailClip_{};
   std::optional<TuningPreview> preview_;
+  std::vector<doc::ParamRef> overrides_;  // sorted (T3.15)
   std::string status_;
   TransportLoop loopSent_{};
   bool loopSentValid_ = false;

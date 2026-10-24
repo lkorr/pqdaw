@@ -78,6 +78,8 @@
 //   T3.10 (headers, mixer): TrackHeader::mixerSection() (a Row host at the header's right, sized by
 //         setHeaderMixerWidth), setHeaderDecorator() (called whenever a header is bound to a track: add or update
 //         controls), setHeaderWidth(), heights from the store's ViewState (TrackView::height, logical px).
+//   T3.15 (automation lanes): automation() (pq/views/arrangement/automation.h), laneRows() / laneRect() (lanes under
+//         their track: ArrangementRow::lanesH), the header's paramChooser() / lanesToggle(), A = automation mode.
 //
 // UI thread only. Nothing here is RT-safe.
 
@@ -95,6 +97,7 @@
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
+#include "pq/views/arrangement/automation.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -111,6 +114,8 @@ class TimeRuler;
 class Overview;
 class TrackStack;
 class BottomTracks;
+class LaneHeader;
+class ReenableButton;
 }  // namespace arrangement
 
 // Layout metrics in logical px.
@@ -167,6 +172,11 @@ struct ArrangementRow {
   int32_t y = 0;                      // device px from the top of the track content (bottom rows: of the pinned area)
   int32_t h = 0;                      // device px (the bottom pixel row is the separator)
   bool bottom = false;                // a return or the master (pinned at the bottom, ArrangementView::bottomRows)
+  // T3.15: the automation lanes shown under the track (below y + h): laneRows()[firstLane, firstLane + laneCount),
+  // lanesH device px in all. rowAt() and the clip editing see only the track's own lane (y … y + h).
+  int32_t lanesH = 0;
+  uint32_t firstLane = 0;
+  uint32_t laneCount = 0;
 };
 
 // A track header (display only in T3.8: colour, name, group indent and fold). T3.10 fills mixerSection().
@@ -186,6 +196,10 @@ public:
   ui::Widget& chipSection() const noexcept { return *chip_; }
   // The fold toggle (groups only; hidden otherwise).
   ui::Control& foldButton() const noexcept { return *fold_; }
+  // T3.15: the automation-mode parameter chooser (under the title, shown in automation mode when the row is tall
+  // enough) and the lanes toggle (at the title's right end; shown in automation mode or while the lanes are shown).
+  ui::Control& paramChooser() const noexcept { return *chooser_; }
+  ui::Control& lanesToggle() const noexcept { return *lanesToggle_; }
   // Device-px rect of the title bar (name + fold), for tests and T3.10, and its fill (the track colour, grey when
   // the track is deactivated).
   ui::IRect titleRect() const noexcept;
@@ -225,6 +239,10 @@ private:
   ui::Control* fold_ = nullptr;
   ui::Widget* mixer_ = nullptr;
   ui::Widget* chip_ = nullptr;
+  ui::Control* chooser_ = nullptr;      // T3.15
+  ui::Control* lanesToggle_ = nullptr;  // T3.15
+  bool bottomRow_ = false;
+  bool chooserWanted_ = false;          // automation mode: the chooser is laid out when the row has room
 };
 
 class ArrangementView : public ui::Widget {
@@ -358,6 +376,16 @@ public:
   // Double-click on a clip: installArrangement sets this to show the detail view and focus the clip view.
   std::function<void()> onOpenClip;
 
+  // ---- automation (T3.15, pq/views/arrangement/automation.h) ---------------------------------------------------
+  ArrangementAutomation& automation() const noexcept { return *automation_; }
+  // The automation lanes shown under the rows (y from the top of the track content, as rows()).
+  std::span<const AutomationLaneRow> laneRows() const noexcept;
+  // Device rect of a lane (window coordinates; may lie outside the visible viewport), and of a pinned row's lane.
+  ui::IRect laneRect(size_t laneIndex) const noexcept;
+  ui::IRect pinnedRowRect(size_t bottomRow) const noexcept;
+  // Rows, lanes and headers are laid out again (lanes shown / hidden, a lane resized).
+  void rowsChanged() { rebuildRows(); }
+
   // ---- transport ---------------------------------------------------------------------------------------------
   // The playhead tick last read from the port while playing (nullopt when stopped).
   const std::optional<Ticks>& playhead() const noexcept { return playhead_; }
@@ -397,6 +425,9 @@ public:
   ui::ScrollView& trackScroll() const noexcept { return *scroll_; }
   void markAxisDirty();  // the horizontal axis changed: ruler, overview and lanes repaint
   void syncHeaderSelection();  // the selected tracks changed: their headers' tint
+  const std::vector<TrackHeader*>& headerWidgets() const noexcept { return headers_; }
+  const std::vector<arrangement::LaneHeader*>& laneHeaderWidgets() const noexcept { return laneHeaders_; }
+  ui::Widget* reenableButton() const noexcept;
 
 private:
   void onDocument(const doc::StoreEvent& e);
@@ -414,6 +445,7 @@ private:
   ViewContext& ctx_;
   std::unique_ptr<arrangement::Model> model_;
   std::unique_ptr<arrangement::Editor> editor_;
+  std::unique_ptr<ArrangementAutomation> automation_;
   ViewContext::Subscription docSub_, viewSub_;
   arrangement::Overview* overview_ = nullptr;
   arrangement::Ruler* ruler_ = nullptr;
@@ -426,6 +458,8 @@ private:
   ui::Widget* overviewCorner_ = nullptr;
   std::vector<TrackHeader*> headers_;
   std::vector<TrackHeader*> bottomHeaders_;
+  std::vector<arrangement::LaneHeader*> laneHeaders_;  // T3.15: one per laneRows() entry
+  arrangement::ReenableButton* reenable_ = nullptr;     // T3.15: above the headers, shown while automation is overridden
   arrangement::BottomTracks* bottom_ = nullptr;
   HeaderDecorator decorator_;
 

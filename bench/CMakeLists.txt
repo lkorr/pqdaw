@@ -51,6 +51,7 @@ pq_add_bench(pq_bench_arrangement SOURCES views/bench_arrangement.cpp DEPS pq_vi
 pq_add_bench(pq_bench_mos_chart SOURCES views/bench_mos_chart.cpp DEPS pq_views)
 pq_add_bench(pq_bench_mos_wheel SOURCES views/bench_mos_wheel.cpp DEPS pq_views)
 pq_add_bench(pq_bench_mixer SOURCES views/bench_mixer.cpp DEPS pq_views)
+pq_add_bench(pq_bench_automation SOURCES views/bench_automation.cpp DEPS pq_views)
 # T1.11: the 32-op voice patch at 1/8/64 voices (interpreter, JIT) and the golden offline renders (T1.10).
 pq_add_bench(pq_bench_render SOURCES engine/bench_render.cpp DEPS pq_pqc)
 pq_use_build_paths(pq_bench_render)

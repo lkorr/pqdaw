@@ -90,6 +90,94 @@ Status setupArrangementSelection(Shell& shell) {
   return Ok{};
 }
 
+// T3.15 helpers: a track of the automation fixture by name, and its lane / row geometry.
+const doc::Track* namedTrack(const doc::Project& p, std::string_view name) {
+  const doc::Track* found = nullptr;
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    if (!found && t.name == name) found = &t;
+  });
+  return found;
+}
+
+// The arrangement of the automation fixture prepared for a screenshot: the detail view hidden (the tracks are the
+// subject), the 8 bars filling the lanes.
+Status prepareAutomationScene(Shell& shell, ArrangementView*& a, const doc::Track*& drums, const doc::Track*& bass,
+                              const doc::Track*& piano, const doc::Track*& pad, const doc::Track*& lead) {
+  a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  ViewContext& ctx = shell.context();
+  const doc::Project& p = *ctx.doc();
+  drums = namedTrack(p, "Drums");
+  bass = namedTrack(p, "Bass");
+  piano = namedTrack(p, "Piano");
+  pad = namedTrack(p, "Pad");
+  lead = namedTrack(p, "Lead");
+  if (!drums || !bass || !piano || !pad || !lead) return Error{ErrorCode::NotFound, "automation scenes: need the automation fixture", {}};
+  ctx.setDetailVisible(false);
+  shell.tree().layoutNow();
+  const float sc = shell.tree().scale();
+  a->setTimeView(0.0, static_cast<double>(a->lanesViewport().w) / sc / (8.25 * static_cast<double>(kTicksPerWhole)));
+  return Ok{};
+}
+
+// T3.15: lanes under Drums (volume: curves and a jump), Bass (pan, overridden by hand: grey, "Re-enable Automation"
+// shows), Piano (the 5L 2s generator), Pad (volume, not automated: the dashed value) and Lead (volume, send A,
+// activator); a time selection over bars 2–4 of the drums' volume with its breakpoints selected.
+Status setupAutomationLanes(Shell& shell) {
+  ArrangementView* a = nullptr;
+  const doc::Track *drums = nullptr, *bass = nullptr, *piano = nullptr, *pad = nullptr, *lead = nullptr;
+  if (Status s = prepareAutomationScene(shell, a, drums, bass, piano, pad, lead); !s) return s;
+  ViewContext& ctx = shell.context();
+  ArrangementAutomation& au = a->automation();
+  for (const doc::Track* t : {drums, bass, piano, pad, lead}) au.showLanes(t->id, true);
+  ctx.overrideAutomation(doc::ParamRef::track(doc::ParamKind::TrackPan, bass->id));
+  shell.tree().layoutNow();
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, drums->id);
+  const TickRange range{kTicksPerWhole, 3 * kTicksPerWhole};
+  std::vector<doc::BreakpointId> ids;
+  for (const doc::LanePtr& l : drums->lanes)
+    if (l->param == vol)
+      for (const doc::Breakpoint& b : l->points)
+        if (b.tick >= range.start && b.tick <= range.end) ids.push_back(b.id);
+  au.select(drums->id, vol, std::move(ids), range);
+  return Ok{};
+}
+
+// T3.15: automation mode (A): every track's chosen envelope over its clips (Drums volume, Bass pan overridden: grey,
+// the Keys group's pan, Piano's 5L 2s generator, Pad's volume not automated: dashed, Lead volume), the header
+// choosers, and a breakpoint of Lead's volume being dragged (the value readout).
+Status setupAutomationMode(Shell& shell) {
+  ArrangementView* a = nullptr;
+  const doc::Track *drums = nullptr, *bass = nullptr, *piano = nullptr, *pad = nullptr, *lead = nullptr;
+  if (Status s = prepareAutomationScene(shell, a, drums, bass, piano, pad, lead); !s) return s;
+  ViewContext& ctx = shell.context();
+  ArrangementAutomation& au = a->automation();
+  au.setMode(true);
+  ctx.overrideAutomation(doc::ParamRef::track(doc::ParamKind::TrackPan, bass->id));
+  ui::UiTree& tree = shell.tree();
+  tree.layoutNow();
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, lead->id);
+  const std::optional<AutomationBand> band = au.band(lead->id, vol, true);
+  if (!band || !band->lane || band->lane->points.size() < 2) return Error{ErrorCode::NotFound, "automation-mode-over-clips: Lead's volume band", {}};
+  const std::optional<ui::Vec2> at = au.pointPos(*band, band->lane->points[1].id);  // the point at bar 4
+  if (!at) return Error{ErrorCode::NotFound, "automation-mode-over-clips: breakpoint", {}};
+  auto send = [&](ui::PointerType t, ui::Vec2 pos) {
+    ui::PointerEvent e;
+    e.type = t;
+    e.pos = pos;
+    e.button = (t == ui::PointerType::Down || t == ui::PointerType::Up) ? ui::PointerButton::Left : ui::PointerButton::None;
+    e.clickCount = 1;
+    tree.dispatchPointer(e);
+  };
+  send(ui::PointerType::Move, *at);
+  send(ui::PointerType::Down, *at);
+  const float bar = a->xOfTick(static_cast<double>(kTicksPerWhole)) - a->xOfTick(0.0);
+  send(ui::PointerType::Move, {at->x + bar * 0.25f, at->y + 4.0f});
+  send(ui::PointerType::Move, {at->x + bar * 0.5f, at->y + 8.0f});
+  if (!au.dragging()) return Error{ErrorCode::Unknown, "automation-mode-over-clips: the drag did not start", {}};
+  return Ok{};
+}
+
 // T3.11: the first clip of the project in the clip view, the detail view raised so the roll is the main subject.
 Status openFirstClip(Shell& shell) {
   ViewContext& ctx = shell.context();
@@ -339,6 +427,8 @@ constexpr SceneEntry kScenes[] = {
     {"mos-wheel-popover", 1600, 900, setupMosWheelPopover},
     {"tracks-mixer", 1280, 800, setupTracksMixer},
     {"mixer-view", 1280, 800, setupMixerView},
+    {"automation-lanes", 1280, 800, setupAutomationLanes},
+    {"automation-mode-over-clips", 1280, 800, setupAutomationMode},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

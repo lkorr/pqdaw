@@ -94,8 +94,46 @@ void ViewContext::notify(uint32_t bits) {
   if (--notifyDepth_ == 0) std::erase_if(observers_, [](const auto& o) { return !o.second; });
 }
 
+namespace {
+
+// Whether any lane automates `r` (a track parameter's lane lives on its own track).
+bool automated(const doc::Project& p, const doc::ParamRef& r) {
+  if (doc::isTrackParam(r.kind)) {
+    const doc::Track* t = doc::findTrackPtr(p, doc::TrackId{r.owner});
+    return t && std::any_of(t->lanes.begin(), t->lanes.end(), [&](const doc::LanePtr& l) { return l->param == r; });
+  }
+  bool found = false;
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    for (const doc::LanePtr& l : t.lanes) found = found || l->param == r;
+  });
+  return found;
+}
+
+}  // namespace
+
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
   if (e.kind == doc::StoreEventKind::Reset || !(e.before->loop == e.after->loop)) syncLoop();
+  // T3.15: a hand-made change of an automated parameter overrides its automation (Live); undo / redo do not.
+  bool overridesChanged = false;
+  if (e.kind == doc::StoreEventKind::Reset) {
+    overridesChanged = !overrides_.empty();
+    overrides_.clear();
+  } else {
+    if (e.kind == doc::StoreEventKind::Dispatch && e.changes.has(doc::kChangeParam))
+      for (const doc::ParamRef& r : e.changes.params) {
+        const auto it = std::lower_bound(overrides_.begin(), overrides_.end(), r);
+        if ((it == overrides_.end() || !(*it == r)) && automated(*e.after, r)) {
+          overrides_.insert(it, r);
+          overridesChanged = true;
+        }
+      }
+    if (!overrides_.empty() && e.changes.has(doc::kChangeStructural)) {
+      const size_t n = overrides_.size();
+      std::erase_if(overrides_, [&](const doc::ParamRef& r) { return !automated(*e.after, r); });
+      overridesChanged = overridesChanged || overrides_.size() != n;
+    }
+  }
+  if (overridesChanged) notify(view_change::kAutomation);
   const bool d = dirty();
   if (d != lastDirty_) {
     lastDirty_ = d;
@@ -415,6 +453,25 @@ void ViewContext::setStatus(std::string text) {
   if (text == status_) return;
   status_ = std::move(text);
   notify(view_change::kStatus);
+}
+
+// --- automation override (T3.15) ---------------------------------------------------------------------------
+
+bool ViewContext::automationOverridden(const doc::ParamRef& p) const noexcept {
+  return std::binary_search(overrides_.begin(), overrides_.end(), p);
+}
+
+void ViewContext::overrideAutomation(const doc::ParamRef& p) {
+  const auto it = std::lower_bound(overrides_.begin(), overrides_.end(), p);
+  if (it != overrides_.end() && *it == p) return;
+  overrides_.insert(it, p);
+  notify(view_change::kAutomation);
+}
+
+void ViewContext::reenableAutomation() {
+  if (overrides_.empty()) return;
+  overrides_.clear();
+  notify(view_change::kAutomation);
 }
 
 // --- actions --------------------------------------------------------------------------------------------

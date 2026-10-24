@@ -28,7 +28,9 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.insertMidiClip", "arrangement.insertTime", "arrangement.duplicateTime", "arrangement.deleteTime",
     "arrangement.toggleActive",
     // T3.10
-    "track.newMidi", "track.newReturn", "track.group", "track.ungroup", "arrangement.rename"};
+    "track.newMidi", "track.newReturn", "track.group", "track.ungroup", "arrangement.rename",
+    // T3.15
+    "arrangement.toggleAutomationMode"};
 
 float scrollbarWidth(const UiTree* tree) {
   const PaintResources* res = tree ? tree->resources() : nullptr;
@@ -53,7 +55,11 @@ const doc::TuningDef* assignmentDef(const doc::Project& p, const doc::TuningAssi
 // --- construction ---------------------------------------------------------------------------------------
 
 ArrangementView::ArrangementView(ViewContext& ctx)
-    : Widget("arrangement"), ctx_(ctx), model_(std::make_unique<Model>()), editor_(std::make_unique<arrangement::Editor>(*this)) {
+    : Widget("arrangement"),
+      ctx_(ctx),
+      model_(std::make_unique<Model>()),
+      editor_(std::make_unique<arrangement::Editor>(*this)),
+      automation_(std::make_unique<ArrangementAutomation>(*this)) {
   setLayout(LayoutKind::Custom);
   setClipChildren(true);
   setFocusable(true);
@@ -69,6 +75,7 @@ ArrangementView::ArrangementView(ViewContext& ctx)
   timeRuler_ = &add<arrangement::TimeRuler>(*this);
   timeCorner_ = &add<arrangement::Corner>();
   bottom_ = &add<arrangement::BottomTracks>(*this);  // T3.10: returns + master, pinned
+  reenable_ = &add<arrangement::ReenableButton>(*this);  // T3.15
   add<Scrollbar>("vscroll", *scroll_, Scrollbar::Axis::Vertical);  // last (arrange() relies on it)
   overview_->attachScroll(*scroll_);
 
@@ -89,6 +96,8 @@ ArrangementView::~ArrangementView() {
 const doc::Snapshot& ArrangementView::shown() const noexcept { return model_->shown; }
 std::span<const ArrangementRow> ArrangementView::rows() const noexcept { return model_->rows; }
 std::span<const ArrangementRow> ArrangementView::bottomRows() const noexcept { return model_->bottomRows; }
+std::span<const AutomationLaneRow> ArrangementView::laneRows() const noexcept { return model_->laneRows; }
+Widget* ArrangementView::reenableButton() const noexcept { return reenable_; }
 IRect ArrangementView::bottomRect() const noexcept { return bottom_->visible() ? bottom_->rect() : IRect{}; }
 const ArrangementView::Stats& ArrangementView::stats() const noexcept { return model_->stats; }
 size_t ArrangementView::previewCacheSize() const noexcept { return model_->previewCount(); }
@@ -127,10 +136,17 @@ void ArrangementView::registerActions() {
   edit("arrangement.cut", [ed] { (void)ed->cutSelection(); }, clipsOrRange);
   edit("arrangement.paste", [ed] { (void)ed->paste(); }, [ed] { return ed->hasClipboard(); });
   edit("arrangement.duplicate", [ed] { (void)ed->duplicateSelection(); }, clipsOrRange);
-  // Delete: clips or a range; with only tracks selected (a header click: no time selection) the tracks (T3.10).
-  edit("arrangement.delete", [ed] { (void)ed->deleteSelection(); }, [ed, clipsOrRange] {
-    return clipsOrRange() || (!ed->selection().tracks.empty() && !ed->selection().time);
-  });
+  // Delete: clips or a range; with only tracks selected (a header click: no time selection) the tracks (T3.10);
+  // selected breakpoints first (T3.15: one selection at a time).
+  ArrangementAutomation* const au = automation_.get();
+  edit("arrangement.delete",
+       [ed, au] {
+         if (!au->selectedPoints().empty()) (void)au->deleteSelected();
+         else (void)ed->deleteSelection();
+       },
+       [ed, au, clipsOrRange] {
+         return !au->selectedPoints().empty() || clipsOrRange() || (!ed->selection().tracks.empty() && !ed->selection().time);
+       });
   edit("arrangement.split", [ed] { (void)ed->splitSelection(); }, [ed] { return ed->selection().time.has_value(); });
   edit("arrangement.consolidate", [ed] { (void)ed->consolidateSelection(); }, clipsOrRange);
   edit("arrangement.loopSelection", [ed] { (void)ed->loopSelection(); }, hasTime);
@@ -152,6 +168,8 @@ void ArrangementView::registerActions() {
     return false;
   });
   edit("arrangement.rename", [ed] { (void)ed->renameSelection(); }, hasTracks);
+  // T3.15: A toggles automation mode (Live).
+  edit("arrangement.toggleAutomationMode", [au] { au->setMode(!au->mode()); }, {});
 }
 
 // --- editing (T3.9: arrangement::Editor, editing.cpp) ----------------------------------------------------
@@ -205,6 +223,11 @@ IRect ArrangementView::clipRect(const doc::ClipRef& ref) const noexcept {
 }
 
 bool ArrangementView::onKey(const KeyEvent& e) {
+  if (e.down && e.key == key::kEscape && automation_->dragging()) {
+    automation_->cancelDrag();
+    if (tree() && tree()->captured()) tree()->releaseCapture();
+    return true;
+  }
   if (e.down && e.key == key::kEscape && editor_->dragging()) {
     editor_->cancelDrag();
     if (tree() && tree()->captured()) tree()->releaseCapture();
@@ -221,13 +244,18 @@ void ArrangementView::onDocument(const doc::StoreEvent& e) {
     zoomStack_.clear();
     timeSelection_.reset();
   }
+  automation_->afterDocumentChange(e);
   // T3.10: mixer edits (volume, pan, sends, solo: Param) and header-only Meta edits (track names, colours, arm) do
   // not change what the lanes, ruler or overview show: rebind the rows and headers (whose widgets repaint what
   // changed) without repainting the view. A mute changes the clips' look (muted tracks draw inactive): full repaint.
   const doc::ChangeSet& c = e.changes;
   bool lanesUnchanged = false;
+  bool automationOnly = false;
   if (e.kind != doc::StoreEventKind::Reset && !c.empty()) {
-    if (c.paramOnly()) {
+    if (c.automationOnly()) {
+      // T3.15: breakpoints of existing lanes: only the bands showing those lanes repaint.
+      lanesUnchanged = automationOnly = true;
+    } else if (c.paramOnly()) {
       lanesUnchanged = std::none_of(c.params.begin(), c.params.end(),
                                     [](const doc::ParamRef& r) { return r.kind == doc::ParamKind::TrackMute; });
     } else if (c.metaOnly()) {
@@ -235,6 +263,7 @@ void ArrangementView::onDocument(const doc::StoreEvent& e) {
     }
   }
   rebuildRows(lanesUnchanged);
+  if (automationOnly) automation_->damageLanes(c.lanes);
   editor_->afterDocumentChange(e);
 }
 
@@ -243,6 +272,16 @@ void ArrangementView::onViewChange(uint32_t bits) {
   if (bits & view_change::kGrid) {
     lanes_->markDirty();
     ruler_->markDirty();
+  }
+  if (bits & view_change::kAutomation) {
+    // T3.15: overridden envelopes turn grey, the LEDs too; "Re-enable Automation" shows while any is overridden.
+    automation_->damageAll();
+    syncHeaders();
+    if (reenable_->visible() != ctx_.anyAutomationOverridden()) {
+      reenable_->setVisible(ctx_.anyAutomationOverridden());
+      invalidateArrange();
+      rulerCorner_->markDirty();
+    }
   }
 }
 
@@ -260,6 +299,14 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
   const doc::TuningDef* projectDef = (p.tunings && !p.tunings->empty()) ? &p.tunings->front()->def : nullptr;
 
   m.rows.clear();
+  // T3.15: every lane of the project by parameter, then the lanes shown under each row.
+  m.laneIndex.clear();
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    for (const doc::LanePtr& l : t.lanes) m.laneIndex.push_back({l->param, t.id, l.get()});
+  });
+  std::sort(m.laneIndex.begin(), m.laneIndex.end(), [](const Model::LaneEntry& a, const Model::LaneEntry& b) { return a.param < b.param; });
+  m.laneRows.clear();
+  std::vector<doc::ParamRef> laneParams;
   double cum = 0.0;  // logical px
   size_t clipCount = 0;
   struct Walk {
@@ -270,6 +317,8 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
     std::vector<ArrangementRow>& rows;
     double& cum;
     size_t& clipCount;
+    Model& m;
+    std::vector<doc::ParamRef>& laneParams;
     void operator()(const std::vector<doc::TrackPtr>& list, int32_t parent, uint16_t depth, const doc::TuningDef* inherited) {
       for (const doc::TrackPtr& t : list) {
         clipCount += t->clips.size();
@@ -287,6 +336,25 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
         r.y = s.px(static_cast<float>(cum));
         cum += h;
         r.h = s.px(static_cast<float>(cum)) - r.y;
+        // T3.15: the automation lanes shown under the track.
+        v.automation_->lanesFor(p, *t, laneParams);
+        r.firstLane = static_cast<uint32_t>(m.laneRows.size());
+        for (size_t k = 0; k < laneParams.size(); ++k) {
+          AutomationLaneRow lr;
+          lr.track = t->id;
+          lr.row = static_cast<int32_t>(rows.size());
+          lr.index = static_cast<uint32_t>(k);
+          lr.param = laneParams[k];
+          const LaneLookup l = m.lane(lr.param);
+          lr.owner = l.owner;
+          lr.lane = l.lane;
+          lr.y = s.px(static_cast<float>(cum));
+          cum += v.automation_->laneHeight(t->id, lr.param);
+          lr.h = s.px(static_cast<float>(cum)) - lr.y;
+          m.laneRows.push_back(lr);
+        }
+        r.laneCount = static_cast<uint32_t>(laneParams.size());
+        r.lanesH = s.px(static_cast<float>(cum)) - (r.y + r.h);
         rows.push_back(r);
         const auto index = static_cast<int32_t>(rows.size() - 1);
         if (r.group && !r.folded) (*this)(t->children, index, static_cast<uint16_t>(depth + 1), r.tuning);
@@ -299,7 +367,7 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
         countHidden(t->children);
       }
     }
-  } walk{*this, p, vs, s, m.rows, cum, clipCount};
+  } walk{*this, p, vs, s, m.rows, cum, clipCount, m, laneParams};
   walk(p.tracks, -1, 0, projectDef);
   m.contentHeight = s.px(static_cast<float>(cum));
 
@@ -365,6 +433,18 @@ void ArrangementView::syncHeaders() {
   };
   sync(headers_, *stack_, model_->rows, "track[");
   sync(bottomHeaders_, *bottom_, model_->bottomRows, "bottom[");
+  // T3.15: one header per automation lane.
+  while (laneHeaders_.size() > model_->laneRows.size()) {
+    arrangement::LaneHeader* h = laneHeaders_.back();
+    laneHeaders_.pop_back();
+    (void)stack_->removeChild(*h);
+  }
+  while (laneHeaders_.size() < model_->laneRows.size())
+    laneHeaders_.push_back(&stack_->add<arrangement::LaneHeader>("lane[" + std::to_string(laneHeaders_.size()) + "]", *this));
+  for (size_t i = 0; i < laneHeaders_.size(); ++i) {
+    const AutomationLaneRow& lr = model_->laneRows[i];
+    laneHeaders_[i]->bind(lr, lr.row >= 0 ? model_->rows[static_cast<size_t>(lr.row)].depth : uint16_t{0});
+  }
 }
 
 TrackHeader* ArrangementView::header(doc::TrackId id) const noexcept {
@@ -444,6 +524,13 @@ void ArrangementView::arrange(LayoutPass& pass) {
   pass.place(*overviewCorner_, {r.x + lanesW, r.y, r.w - lanesW, ovH});
   pass.place(*ruler_, {r.x, r.y + ovH, lanesW, ruH});
   pass.place(*rulerCorner_, {r.x + lanesW, r.y + ovH, r.w - lanesW, ruH});
+  // T3.15: "Re-enable Automation" in the corner above the headers, while any automation is overridden.
+  if (reenable_->visible() != ctx_.anyAutomationOverridden()) reenable_->setVisible(ctx_.anyAutomationOverridden());
+  if (reenable_->visible()) {
+    const int32_t m = s.px(4.0f);
+    pass.place(*reenable_, {r.x + lanesW + div + m, r.y + ovH + m, std::min(s.px(150.0f), std::max(0, r.w - lanesW - div - 2 * m)),
+                            std::min(s.px(16.0f), std::max(0, ruH - 2 * m))});
+  }
   const int32_t bodyY = r.y + ovH + ruH;
   const int32_t trH = std::min(std::max(0, r.h - ovH - ruH), s.px(am::kTimeRulerHeight));
   const int32_t bodyH = std::max(0, r.h - ovH - ruH - trH);
@@ -539,6 +626,20 @@ int32_t ArrangementView::rowAt(float deviceY) const noexcept {
                                    [](float y, const ArrangementRow& r) { return y < static_cast<float>(r.y + r.h); });
   if (it == rows.end() || local < static_cast<float>(it->y)) return -1;
   return static_cast<int32_t>(it - rows.begin());
+}
+
+IRect ArrangementView::laneRect(size_t i) const noexcept {
+  if (i >= model_->laneRows.size()) return {};
+  const AutomationLaneRow& l = model_->laneRows[i];
+  const IRect lr = lanes_->rect();
+  return {lr.x, stack_->rect().y + l.y, lr.w, l.h};
+}
+
+IRect ArrangementView::pinnedRowRect(size_t i) const noexcept {
+  if (i >= model_->bottomRows.size() || bottom_->childCount() == 0) return {};
+  const ArrangementRow& row = model_->bottomRows[i];
+  const IRect lr = bottom_->child(0).rect();
+  return {lr.x, lr.y + row.y, lr.w, row.h};
 }
 
 IRect ArrangementView::rowLaneRect(int32_t row) const noexcept {

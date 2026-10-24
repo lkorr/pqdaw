@@ -365,6 +365,29 @@ void MixerStrip::bind(const doc::Project& p, const doc::Track& t) {
   if (chip_) {
     static_cast<TrackTuningChip*>(chip_)->setTrack(t.id);
   }
+  // T3.15: which controls are automated (a track parameter's lane lives on its own track) and overridden.
+  uint32_t automated = 0, overridden = 0;
+  for (const doc::LanePtr& l : t.lanes) {
+    int32_t bit = -1;
+    switch (l->param.kind) {
+      case doc::ParamKind::TrackVolume: bit = 0; break;
+      case doc::ParamKind::TrackPan: bit = 1; break;
+      case doc::ParamKind::TrackMute: bit = 2; break;
+      case doc::ParamKind::TrackSend:
+        for (size_t i = 0; i < sends_.size() && i < 29; ++i)
+          if (sends_[i].target.value == l->param.target) bit = 3 + static_cast<int32_t>(i);
+        break;
+      default: break;
+    }
+    if (bit < 0) continue;
+    automated |= 1u << bit;
+    if (ctl_->ctx.automationOverridden(l->param)) overridden |= 1u << bit;
+  }
+  if (automated != automated_ || overridden != overridden_) {
+    automated_ = automated;
+    overridden_ = overridden;
+    markDirty();
+  }
 }
 
 namespace mixer {
@@ -496,6 +519,24 @@ void MixerStrip::paint(PaintContext& ctx) {
   if (const ThemeFonts* f = ctx.res.uiFonts)
     paint::text(ctx, f->bodyStrong, title, title_, clipTextFor(*th, col), TextAlign::Left, ctx.scale.px(5.0f), ctx.scale.px(3.0f));
   if (meter_ && meter_->visible()) dl.addRectFilled(meter_->rect().toRect(), m.meterWell);
+}
+
+void MixerStrip::paintOver(PaintContext& ctx) {
+  if (!automated_ || !ctx.res.theme) return;
+  const Theme& th = *ctx.res.theme;
+  const float size = static_cast<float>(std::max(2, ctx.scale.px(4.0f)));
+  auto mark = [&](const Widget* w, uint32_t bit) {
+    if (!w || !w->visible() || !(automated_ & (1u << bit))) return;
+    const IRect r = intersect(w->rect(), rect());
+    if (r.w < 2 * static_cast<int32_t>(size) || r.h < 2 * static_cast<int32_t>(size)) return;
+    const float x = static_cast<float>(r.x + 1), y = static_cast<float>(r.y + 1);
+    ctx.dl.addRectFilled({x, y, x + size, y + size}, (overridden_ & (1u << bit)) ? th.automation.ledOverridden : th.automation.led);
+  };
+  mark(volume_, 0);
+  mark(fader_, 0);
+  mark(pan_, 1);
+  mark(activator_, 2);
+  for (size_t i = 0; i < sends_.size() && i < 29; ++i) mark(sends_[i].box, static_cast<uint32_t>(3 + i));
 }
 
 bool MixerStrip::onPointer(const PointerEvent& e) {

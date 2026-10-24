@@ -86,15 +86,15 @@ void TrackStack::arrange(LayoutPass& pass) {
   const int32_t hx = r.right() - hdr;
   if (childCount() == 0) return;
   pass.place(child(0), {r.x, r.y, lw, r.h});
+  // Headers by row, then the automation lane headers (T3.15) by lane.
   const auto rows = view_.rows();
-  for (size_t i = 1; i < childCount(); ++i) {
-    Widget& c = child(i);
-    if (!c.visible()) continue;
-    if (i - 1 < rows.size()) {
-      const ArrangementRow& row = rows[i - 1];
-      pass.place(c, {hx, r.y + row.y, hdr, row.h});
-    }
-  }
+  const auto& headers = view_.headerWidgets();
+  for (size_t i = 0; i < headers.size() && i < rows.size(); ++i)
+    if (headers[i]->visible()) pass.place(*headers[i], {hx, r.y + rows[i].y, hdr, rows[i].h});
+  const auto lanes = view_.laneRows();
+  const auto& laneHeaders = view_.laneHeaderWidgets();
+  for (size_t i = 0; i < laneHeaders.size() && i < lanes.size(); ++i)
+    pass.place(*laneHeaders[i], {hx, r.y + lanes[i].y, hdr, lanes[i].h});
 }
 
 void TrackStack::paint(PaintContext& ctx) {
@@ -165,7 +165,12 @@ bool LaneCanvas::buildAhead() {
 }
 
 bool LaneCanvas::onPointer(const PointerEvent& e) {
-  if (e.type != PointerType::Wheel) return view_.editor().pointer(e);  // selection and drags (T3.9)
+  if (e.type != PointerType::Wheel) {
+    // T3.15: automation lanes and, in automation mode, the envelopes over the rows take their presses first.
+    if (view_.automation().pointer(e)) return true;
+    if (e.type == PointerType::Down) view_.automation().clearSelection();
+    return view_.editor().pointer(e);  // selection and drags (T3.9)
+  }
   if (e.mods & mod::kCtrl) {
     view_.zoomAt(e.pos.x, std::pow(1.25, static_cast<double>(e.wheel.y)));
     return true;
@@ -514,6 +519,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
   // tracks' lanes lighter (T3.9), then the alternate-bar shading and the grid lines: one column per cell / line
   // across every visible row.
   dl.addRectFilled(c.toRect(), th.arrangement.lane);
+  view_.automation().paintLaneBackgrounds(ctx, r);  // T3.15: automation lanes a shade darker, under the grid
   const Editor& ed = view_.editor();
   if (!ed.selection().tracks.empty())
     for (auto it = first; it != last; ++it)
@@ -565,6 +571,9 @@ void LaneCanvas::paint(PaintContext& ctx) {
     if (y1 <= static_cast<float>(c.y) || y0 >= static_cast<float>(c.bottom())) continue;
     paintClip(lp, row, dc.clip, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), g, true);
   }
+
+  // T3.15: automation lanes and, in automation mode, the envelopes over the rows.
+  view_.automation().paintLanes(ctx, r);
 
   // Previews left for later frames: paint again next frame (onFrame damages the lanes) until all are built.
   m.endPaint();
@@ -626,7 +635,7 @@ void BottomTracks::paint(PaintContext& ctx) {
 BottomLanes::BottomLanes(ArrangementView& view) : Widget("lanes"), view_(view) {}
 
 bool BottomLanes::onPointer(const PointerEvent& e) {
-  if (e.type != PointerType::Wheel) return false;
+  if (e.type != PointerType::Wheel) return view_.automation().pointer(e);  // T3.15: automation mode over the rows
   if (e.mods & mod::kCtrl) {
     view_.zoomAt(e.pos.x, std::pow(1.25, static_cast<double>(e.wheel.y)));
     return true;
@@ -665,6 +674,7 @@ void BottomLanes::paint(PaintContext& ctx) {
     const float y1 = static_cast<float>(r.y + row.y + row.h);
     if (y1 > static_cast<float>(c.y) && y1 - 1.0f < static_cast<float>(c.bottom())) dl.addRectFilled({cx0, y1 - 1.0f, cx1, y1}, th.arrangement.separator);
   }
+  view_.automation().paintPinned(ctx, r);  // T3.15
   if (const auto& ph = view_.playhead()) {
     const float x = std::floor(lp.X(static_cast<double>(*ph)));
     const float w = static_cast<float>(std::max(1, ctx.scale.px(1.0f)));

@@ -165,6 +165,25 @@ colors = [
  ("mixer.sendFill", "#4D6E78"),
  ("mixer.meterWell", "#031117"),
  ("mixer.selected", "#3D4F55"),
+ # Automation (T3.15): lanes a shade darker than arrangement.lane, Live's red envelope and breakpoints, grey when
+ # the automation is overridden, the orange "Re-enable Automation" button.
+ ("automation.lane", "#22343A"),
+ ("automation.line", "#FF5A5F"),
+ ("automation.lineOverridden", "#7D8C90"),
+ ("automation.unautomated", "#FF5A5F8C"),
+ ("automation.point", "#FF5A5F"),
+ ("automation.pointSelected", "#FFFFFF"),
+ ("automation.pointEdge", "#0F2026"),
+ ("automation.laneHeader", "#1F3036"),
+ ("automation.laneHeaderText", "#B0B5A3"),
+ ("automation.veil", "#16282E59"),
+ ("automation.selection", "#FFFFFF24"),
+ ("automation.readout", "#0F2026E6"),
+ ("automation.readoutText", "#F2F2F2"),
+ ("automation.led", "#FF5A5F"),
+ ("automation.ledOverridden", "#7D8C90"),
+ ("automation.reenable", "#FFA33D"),
+ ("automation.reenableText", "#0F2026"),
 ]
 fonts = [("small","regular",12,False),("body","regular",13,False),("bodyStrong","semibold",13,False),("title","semibold",14,False),("numeric","regular",12,False)]
 metrics = [("spacing.xs",2),("spacing.sm",4),("spacing.md",8),("spacing.lg",12),

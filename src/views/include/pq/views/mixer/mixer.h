@@ -16,6 +16,9 @@
 // the right. Strip: name in the track colour, output, tuning, sends, pan, volume box, fader + meter, activator,
 // solo, arm.
 //
+// Automation (T3.15): an automated control carries a small red marker in its corner (grey while the automation is
+// overridden by a hand-made change, ViewContext::automationOverridden), as in Live.
+//
 // Behaviour (Ableton): the activator is the track's mute (Q15: a Param, no recompile; clicking it toggles every
 // selected track when its own track is selected, like `0`); Solo is exclusive, Ctrl-click adds (doc::ops::soloTrack);
 // arm likewise. Volume, pan and send boxes are Live number boxes (vertical drag, Shift fine, double-click to type,
@@ -135,7 +138,12 @@ public:
 
   void arrange(ui::LayoutPass& pass) override;
   void paint(ui::PaintContext& ctx) override;
+  // T3.15: Live's automation marker on automated controls (red; grey while overridden).
+  void paintOver(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
+  // Automated / overridden controls (bit 0 volume, 1 pan, 2 activator, 3 + i send i), for tests.
+  uint32_t automatedMask() const noexcept { return automated_; }
+  uint32_t overriddenMask() const noexcept { return overridden_; }
 
 private:
   struct SendBox {
@@ -166,6 +174,8 @@ private:
   ui::Control* output_ = nullptr;
   ui::Control* chip_ = nullptr;
   ui::Meter* meter_ = nullptr;
+  uint32_t automated_ = 0;   // T3.15
+  uint32_t overridden_ = 0;
 };
 
 // ---- mixer view ----------------------------------------------------------------------------------------------------

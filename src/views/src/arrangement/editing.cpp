@@ -143,6 +143,11 @@ int32_t Editor::clampRow(float y) const noexcept {
   if (rows.empty()) return -1;
   const int32_t r = view_.rowAt(y);
   if (r >= 0) return r;
+  // In a track's automation lanes (T3.15): that track's row.
+  const float local = y - static_cast<float>(view_.rowLaneRect(0).y - rows.front().y);
+  const auto it = std::upper_bound(rows.begin(), rows.end(), local,
+                                   [](float v, const ArrangementRow& row) { return v < static_cast<float>(row.y + row.h + row.lanesH); });
+  if (it != rows.end() && local >= static_cast<float>(it->y)) return static_cast<int32_t>(it - rows.begin());
   return y < static_cast<float>(view_.rowLaneRect(0).y) ? 0 : static_cast<int32_t>(rows.size() - 1);
 }
 

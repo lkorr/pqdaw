@@ -54,6 +54,20 @@ class Model {
 public:
   doc::Snapshot shown;
   std::vector<ArrangementRow> rows;
+  // T3.15: the automation lanes shown under the rows (in row order), and every lane of the project by parameter
+  // (sorted by ParamRef; rebuilt with the rows).
+  std::vector<AutomationLaneRow> laneRows;
+  struct LaneEntry {
+    doc::ParamRef param;
+    doc::TrackId owner;
+    const doc::AutomationLane* lane = nullptr;
+  };
+  std::vector<LaneEntry> laneIndex;
+  LaneLookup lane(const doc::ParamRef& r) const noexcept {
+    const auto it = std::lower_bound(laneIndex.begin(), laneIndex.end(), r,
+                                     [](const LaneEntry& e, const doc::ParamRef& x) { return e.param < x; });
+    return (it != laneIndex.end() && it->param == r) ? LaneLookup{it->owner, it->lane} : LaneLookup{};
+  }
   int32_t contentHeight = 0;  // device px of all rows
   std::vector<ArrangementRow> bottomRows;  // returns + master (T3.10), y from the top of the pinned area
   int32_t bottomHeight = 0;                // device px of the bottom rows
@@ -413,6 +427,77 @@ private:
   uint64_t cacheRows_ = 0;
   ui::IRect cacheRect_{};
   TickRange cacheRange_{};
+};
+
+// ---- Automation (T3.15) ----------------------------------------------------------------------------------------
+
+// The header of an automation lane (ArrangementView::laneRows()[index]): automated-state LED, the parameter chooser,
+// "+" (another lane) and "−" (hide this one) in the name column; the bottom edge resizes the lane.
+class LaneHeader : public ui::Control {
+public:
+  LaneHeader(std::string name, ArrangementView& view);
+  void bind(const AutomationLaneRow& lane, uint16_t depth);
+  const AutomationLaneRow& lane() const noexcept { return lane_; }
+  // Device rects of the parts (tests).
+  ui::IRect chooserRect() const noexcept;
+  ui::IRect addRect() const noexcept;
+  ui::IRect hideRect() const noexcept;
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  void onCaptureLost() override { resizing_ = false; }
+
+private:
+  ArrangementView& view_;
+  AutomationLaneRow lane_;
+  uint16_t depth_ = 0;
+  std::string label_;
+  bool automated_ = false;
+  bool overridden_ = false;
+  bool resizing_ = false;
+  float resizeStartY_ = 0.0f;
+  float resizeStartH_ = 0.0f;
+};
+
+// The track header's parameter chooser in automation mode (Live's control chooser): the parameter drawn over the
+// track's clips.
+class ParamChooser : public ui::Control {
+public:
+  explicit ParamChooser(ArrangementView& view);
+  void set(doc::TrackId track, std::string label, bool automated, bool overridden);
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+
+private:
+  ArrangementView& view_;
+  doc::TrackId track_;
+  std::string label_;
+  bool automated_ = false;
+  bool overridden_ = false;
+};
+
+// The header's lanes toggle (▸ hidden / ▾ shown).
+class LanesToggle : public ui::Control {
+public:
+  explicit LanesToggle(ArrangementView& view);
+  void set(doc::TrackId track, bool shown);
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+
+private:
+  ArrangementView& view_;
+  doc::TrackId track_;
+  bool shown_ = false;
+};
+
+// "Re-enable Automation" above the track headers: shown while an automated parameter is overridden.
+class ReenableButton : public ui::Control {
+public:
+  explicit ReenableButton(ArrangementView& view);
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+
+private:
+  ArrangementView& view_;
 };
 
 // A filler (panel background) above the header column.

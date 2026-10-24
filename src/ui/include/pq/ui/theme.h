@@ -125,6 +125,11 @@ struct Theme {
         postOn, volumeFill, panFill, sendFill, meterWell, selected;
     bool operator==(const Mixer&) const = default;
   } mixer{};
+  struct Automation {  // automation lanes and envelopes (T3.15): Live's red envelope on the Live 12 surfaces
+    Rgba lane, line, lineOverridden, unautomated, point, pointSelected, pointEdge, laneHeader, laneHeaderText, veil,
+        selection, readout, readoutText, led, ledOverridden, reenable, reenableText;
+    bool operator==(const Automation&) const = default;
+  } automation{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;

@@ -45,7 +45,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | implemented (T3.10) |
 | `arrangement.rename` | `Ctrl+R` | arrangement | Editing | implemented (T3.10; the selected track's title, Enter commits, Esc cancels) |
 | `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | implemented (T3.9; Q15: deactivates / reactivates the selected clips, else toggles the selected tracks' activators = mute since T3.10, a Param) |
-| `arrangement.toggleAutomationMode` | `A` | arrangement | Commands for Breakpoint Envelopes | M3 (T3.15) |
+| `arrangement.toggleAutomationMode` | `A` | arrangement | Commands for Breakpoint Envelopes | implemented (T3.15; the chosen parameter's envelope over every track's clips, Live's Automation Mode) |
 | `arrangement.selectAll` | `Ctrl+A` | arrangement | Editing | implemented (T3.9) |
 | `arrangement.copy` | `Ctrl+C` | arrangement | Editing | implemented (T3.9) |
 | `arrangement.cut` | `Ctrl+X` | arrangement | Editing | implemented (T3.9) |

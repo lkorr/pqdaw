@@ -56,6 +56,10 @@ MixerView::MixerView(ViewContext& ctx, std::shared_ptr<MixerController> controll
   });
   viewSub_ = ctx_.observe([this](uint32_t bits) {
     if (bits & view_change::kTransport) wakeMeters();
+    if (bits & view_change::kAutomation) {  // T3.15: the strips' automation markers (overridden: grey)
+      stale_ = true;
+      if (shown()) sync();
+    }
   });
 }
 

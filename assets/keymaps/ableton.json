@@ -38,7 +38,7 @@
     {"scope": "arrangement", "keys": "Ctrl+Shift+G", "action": "track.ungroup", "status": "implemented", "task": "T3.10"},
     {"scope": "arrangement", "keys": "Ctrl+R", "action": "arrangement.rename", "status": "implemented", "task": "T3.10"},
     {"scope": "arrangement", "keys": "0", "action": "arrangement.toggleActive", "status": "implemented", "task": "T3.9"},
-    {"scope": "arrangement", "keys": "A", "action": "arrangement.toggleAutomationMode", "status": "deferred:M3", "task": "T3.15"},
+    {"scope": "arrangement", "keys": "A", "action": "arrangement.toggleAutomationMode", "status": "implemented", "task": "T3.15"},
     {"scope": "arrangement", "keys": "Ctrl+A", "action": "arrangement.selectAll", "status": "implemented", "task": "T3.9"},
     {"scope": "arrangement", "keys": "Ctrl+C", "action": "arrangement.copy", "status": "implemented", "task": "T3.9"},
     {"scope": "arrangement", "keys": "Ctrl+X", "action": "arrangement.cut", "status": "implemented", "task": "T3.9"},

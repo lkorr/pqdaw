@@ -73,6 +73,12 @@ const ColorToken kColors[] = {
     PQ_COLOR(mixer, activatorText), PQ_COLOR(mixer, soloOn), PQ_COLOR(mixer, armOn), PQ_COLOR(mixer, postOn),
     PQ_COLOR(mixer, volumeFill), PQ_COLOR(mixer, panFill), PQ_COLOR(mixer, sendFill), PQ_COLOR(mixer, meterWell),
     PQ_COLOR(mixer, selected),
+    PQ_COLOR(automation, lane), PQ_COLOR(automation, line), PQ_COLOR(automation, lineOverridden),
+    PQ_COLOR(automation, unautomated), PQ_COLOR(automation, point), PQ_COLOR(automation, pointSelected),
+    PQ_COLOR(automation, pointEdge), PQ_COLOR(automation, laneHeader), PQ_COLOR(automation, laneHeaderText),
+    PQ_COLOR(automation, veil), PQ_COLOR(automation, selection), PQ_COLOR(automation, readout),
+    PQ_COLOR(automation, readoutText), PQ_COLOR(automation, led), PQ_COLOR(automation, ledOverridden),
+    PQ_COLOR(automation, reenable), PQ_COLOR(automation, reenableText),
 };
 #undef PQ_COLOR
 

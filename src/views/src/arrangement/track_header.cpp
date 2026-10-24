@@ -23,6 +23,11 @@ TrackHeader::TrackHeader(std::string name, ArrangementView& view) : Control(std:
   mixer_->setVisible(false);
   chip_ = &add<Widget>("chip");
   chip_->setLayout(LayoutKind::Stack);
+  // T3.15: automation-mode parameter chooser and the lanes toggle (hidden until needed).
+  chooser_ = &add<arrangement::ParamChooser>(view);
+  chooser_->setVisible(false);
+  lanesToggle_ = &add<arrangement::LanesToggle>(view);
+  lanesToggle_->setVisible(false);
   setInfo("Track Title Bar",
           "Click to select the track (Shift adds, Ctrl toggles); drag its bottom edge to resize it; right-click for "
           "rename, insert, group and colour. A group's triangle folds or unfolds its tracks.");
@@ -68,6 +73,22 @@ void TrackHeader::bind(const ArrangementRow& row, std::span<const ArrangementRow
   }
   fold_->setVisible(group_);
   static_cast<arrangement::FoldButton*>(fold_)->setTrack(id_, folded_);
+  // T3.15: the parameter chooser (automation mode) and the lanes toggle (automation mode, or lanes shown; not for
+  // the pinned returns / master, whose envelopes show only over their rows).
+  const ArrangementAutomation& au = view_.automation();
+  const bool lanes = !row.bottom && au.lanesShown(id_);
+  const bool toggle = !row.bottom && (au.mode() || lanes);
+  if (bottomRow_ != row.bottom || lanesToggle_->visible() != toggle || (au.mode() != chooserWanted_)) changed = true;
+  bottomRow_ = row.bottom;
+  chooserWanted_ = au.mode();
+  lanesToggle_->setVisible(toggle);
+  static_cast<arrangement::LanesToggle*>(lanesToggle_)->set(id_, lanes);
+  if (au.mode()) {
+    const doc::ParamRef r = au.chosen(id_);
+    const doc::Project& p = *view_.shown();
+    const bool automated = view_.model().lane(r).lane != nullptr;
+    static_cast<arrangement::ParamChooser*>(chooser_)->set(id_, paramShortName(p, r), automated, view_.context().automationOverridden(r));
+  }
   if (changed) {
     invalidateArrange();
     markDirty();
@@ -99,18 +120,26 @@ void TrackHeader::arrange(LayoutPass& pass) {
   if (mixer_->visible() != (mixW > 0.0f)) mixer_->setVisible(mixW > 0.0f);
   const IRect t = titleRect();
   if (fold_->visible()) pass.place(*fold_, {t.x, t.y, std::min(t.w, s.px(18.0f)), t.h});
+  if (lanesToggle_->visible()) pass.place(*lanesToggle_, {t.right() - std::min(t.w, s.px(16.0f)), t.y, std::min(t.w, s.px(16.0f)), t.h});
   if (mixer_->visible()) {
     const int32_t mw = std::min(r.w, s.px(mixW));
     pass.place(*mixer_, {r.right() - mw, r.y, mw, std::max(0, r.h - 1)});
   }
   // The chip section: the name column's second line (Live leaves it empty), when the row is tall enough.
   const int32_t cy = t.bottom() + s.px(3.0f), ch = s.px(am::kChipHeight);
-  const bool chipFits = cy + ch <= r.bottom() - 1 && t.w > s.px(12.0f);
+  const int32_t cx = t.x + (group_ ? s.px(18.0f) : s.px(6.0f));
+  const int32_t cw = std::max(0, std::min(s.px(am::kChipWidth), t.right() - s.px(4.0f) - cx));
+  // T3.15: in automation mode the parameter chooser goes under the chip, or takes the chip's line when the row has
+  // room for only one of them (Live's header shows its choosers there).
+  const int32_t qh = s.px(automation_metrics::kChooserHeight);
+  const bool lineFits = cy + ch <= r.bottom() - 1 && t.w > s.px(12.0f);
+  const bool chooser = chooserWanted_ && lineFits;
+  const bool both = chooser && cy + ch + s.px(3.0f) + qh <= r.bottom() - 1;
+  const bool chipFits = lineFits && (!chooser || both);
   if (chip_->visible() != chipFits) chip_->setVisible(chipFits);
-  if (chipFits) {
-    const int32_t cx = t.x + (group_ ? s.px(18.0f) : s.px(6.0f));
-    pass.place(*chip_, {cx, cy, std::max(0, std::min(s.px(am::kChipWidth), t.right() - s.px(4.0f) - cx)), ch});
-  }
+  if (chipFits) pass.place(*chip_, {cx, cy, cw, ch});
+  if (chooser_->visible() != chooser) chooser_->setVisible(chooser);
+  if (chooser) pass.place(*chooser_, {cx, both ? cy + ch + s.px(3.0f) : cy, std::max(cw, std::min(s.px(am::kChipWidth), t.right() - s.px(4.0f) - cx)), qh});
   if (rename_) {
     const int32_t padL = group_ ? s.px(18.0f) : s.px(2.0f);
     pass.place(*rename_, {t.x + padL, t.y + 1, std::max(0, t.w - padL - s.px(2.0f)), std::max(0, t.h - 2)});
@@ -142,7 +171,8 @@ void TrackHeader::paint(PaintContext& ctx) {
   const Rgba text = view_.model().clipTextColour(th, fill);
   if (const ThemeFonts* f = ctx.res.uiFonts) {
     const int32_t padL = group_ ? ctx.scale.px(18.0f) : ctx.scale.px(6.0f);
-    paint::text(ctx, f->bodyStrong, t, name_, text, TextAlign::Left, padL, ctx.scale.px(4.0f));
+    const int32_t padR = lanesToggle_->visible() ? ctx.scale.px(18.0f) : ctx.scale.px(4.0f);  // T3.15: the lanes toggle
+    paint::text(ctx, f->bodyStrong, t, name_, text, TextAlign::Left, padL, padR);
   }
 }
 
