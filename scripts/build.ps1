@@ -37,14 +37,14 @@ $root = Split-Path -Parent $PSScriptRoot
 
 # sccache environment (read by the launcher and by the server it starts). One server per checkout, on a port
 # derived from the checkout's path, with that checkout as its base directory: identical sources in two
-# worktrees then hash identically and share the cache directory. The server exits after 5 idle minutes.
+# worktrees then hash identically and share the cache directory. The server exits after 30 idle minutes; it reads the shared cache's index when it starts.
 $sccacheDir = if ($env:PQ_SCCACHE_DIR) { $env:PQ_SCCACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'pqdaw\sccache' }
 $env:SCCACHE_DIR = $sccacheDir
 $env:SCCACHE_CACHE_SIZE = '20G'
 $env:SCCACHE_BASEDIRS = $root
 $md5 = [Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant()))
 $env:SCCACHE_SERVER_PORT = [string](14300 + ([BitConverter]::ToUInt16($md5, 0) % 4000))
-$env:SCCACHE_IDLE_TIMEOUT = '300'
+$env:SCCACHE_IDLE_TIMEOUT = '1800'  # outlives a release build's long LTCG link tail, so the stats survive
 $env:SCCACHE_IGNORE_SERVER_IO_ERROR = '1'   # server unreachable: compile without the cache instead of failing
 
 function Get-Sccache([string] $buildDir) {
