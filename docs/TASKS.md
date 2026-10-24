@@ -206,7 +206,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
     claim removed); mux1200 compiles ≤ 300 ms; a compile-time test asserts 100-node ≤ 100 ms (release, idle); chaos/edge
     probes added to the JIT corpus.
 
-- [ ] **T1.x-arch1 Per-track compilation units** (`graph` + `engine` + `jit` + docs). Depends on: T1.5-fix1, T1.8-fix1, T1.9, T1b.1. Before T3.17. (User decision 2026-10-21: per-track units now; whole-project re-optimisation on idle later, M12.)
+- [~] **T1.x-arch1 Per-track compilation units** *(worker AU, branch task/T1.x-arch1-track-units)* (`graph` + `engine` + `jit` + docs). Depends on: T1.5-fix1, T1.8-fix1, T1.9, T1b.1. Before T3.17. (User decision 2026-10-21: per-track units now; whole-project re-optimisation on idle later, M12.)
   - Each track's device chain is one compile unit (own Schedule/ProgramImage/state arena/compile-cache key); a project-level runner executes units in dependency order each block, passing audio between units through preallocated buffers (no added latency for feed-forward paths); tracks connected by cross-track modulation/sidechain wires are merged into one unit; group/return/master summing as units too. Hot swap (T1.9) per unit: an edit recompiles and crossfades only the changed unit.
   - Accept: a 30-track fixture (≈ 20k ops) — one device edit: audible change ≤ 200 ms, peak audio-thread CPU during the edit ≤ 1.3× steady state, unchanged tracks bit-identical through the swap; output of the per-unit project identical (≤ 1e-6) to a single whole-project program of the same graph; cross-track modulation wire merges units and stays sample-accurate.
 - [ ] **T1.x-arch2 Shared image host + one compile pipeline** (`engine`, `jit`, `tools`, `app`). Depends on: T1b.1.
