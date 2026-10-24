@@ -4,8 +4,11 @@
 //
 // Representation (flat arrays, dense indices; built for fast whole-graph passes in the compiler):
 // - Nodes live in one vector, addressed by a dense NodeIndex. Each node also has a stable NodeId that survives
-//   edits (hot-swap state is keyed by it, SPEC §7.5). Nodes are always sorted by NodeId (ids are handed out in
-//   increasing order and erase keeps relative order), so indexOf(NodeId) is a binary search.
+//   edits (hot-swap state is keyed by it, SPEC §7.5). Ids are handed out in increasing order and erase keeps
+//   relative order, so nodes are normally sorted by NodeId and indexOf(NodeId) is one probe or a binary search.
+//   setNodeIds() (T1.x-text-ids: a re-parsed text inherits the ids of the previous parse, id_match.h) may leave
+//   them unsorted; dense order is then still declaration/text order and an id → index table keeps indexOf
+//   O(log n). A new node's id is always larger than every id in the patch.
 // - Every node's ports are one contiguous range of a flat PortType array: inputs first, then outputs. A port is
 //   addressed by PortRef{node, port-within-direction}; flatInput()/flatOutput() give the flat index that per-port
 //   side tables (inference results, buffer assignments) are indexed by.
@@ -134,6 +137,10 @@ public:
   // own id, so state keys do not depend on which unit the track is in).
   void reserveIdsThrough(NodeId id) noexcept { ids_.reserveThrough(id); }
   NodeId nextId() const noexcept { return NodeId{ids_.peek()}; }
+  // Gives node i the id ids[i] (ids.size() == nodeCount(); distinct and valid, else nothing changes and false is
+  // returned). Dense order, ports, wires and payloads are unchanged; later nodes get ids above every id here.
+  // O(n log n).
+  bool setNodeIds(std::span<const NodeId> ids);
   void setLayout(NodeIndex n, const NodeLayout& layout) { layout_[n] = layout; }
   ParamDecl& paramDecl(NodeIndex n) { return params_[nodes_[n].payload]; }
   Constant& constant(NodeIndex n) { return constants_[nodes_[n].payload]; }
@@ -183,6 +190,7 @@ public:
   const SubcircuitRef& subcircuit(NodeIndex n) const noexcept { return subcircuits_[nodes_[n].payload]; }
 
   std::optional<NodeIndex> indexOf(NodeId id) const noexcept;               // O(log n)
+  bool idsSorted() const noexcept { return byId_.empty(); }                   // ids increase with the index
   std::optional<NodeIndex> findByName(std::string_view name) const noexcept;  // O(n)
   // Human-readable node reference for messages: `'name' (atom mul, #12)`.
   std::string describe(NodeIndex n) const;
@@ -222,6 +230,9 @@ private:
   std::vector<Solve> solves_;
   std::vector<LayoutComment> comments_;
   StableIdAllocator<NodeTag> ids_;
+  // Empty while ids increase with the dense index (always, unless setNodeIds() made them unsorted); otherwise
+  // every node index, sorted by id.
+  std::vector<NodeIndex> byId_;
 };
 
 }  // namespace pq::graph

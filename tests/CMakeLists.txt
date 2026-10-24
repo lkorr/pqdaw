@@ -157,6 +157,7 @@ pq_add_test(pq_tests_graph
     graph/test_patch_build.cpp
     graph/test_validate.cpp
     graph/test_patch_equal.cpp
+    graph/test_id_match.cpp
     graph/test_patch_file.cpp
     graph/test_parse_roundtrip.cpp
     graph/test_parse_errors.cpp
@@ -184,6 +185,7 @@ pq_add_test(pq_tests_engine PERF
     engine/test_newton.cpp
     engine/test_voices.cpp
     engine/test_hot_swap.cpp
+    engine/test_text_edits.cpp
     engine/test_offline_render.cpp
     engine/test_tuning_signal.cpp
     engine/test_tuning_voices.cpp

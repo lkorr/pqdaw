@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/graph/id_match.h"
 #include "pq/graph/patch_file.h"
 
 namespace pq::graph {
@@ -62,6 +63,10 @@ struct ParseOptions {
   ImportLoader* imports = nullptr;
   // Run PatchFile::validateAll() on the result and report its errors at the offending node's source position.
   bool validate = true;
+  // The previous parse of this text (T1.x-text-ids): when set, the result's nodes inherit the NodeIds of their
+  // counterparts in it (inheritNodeIds, id_match.h; patches paired by name), so hot-swap state keys survive the
+  // edit. Applied only to a result without diagnostics.
+  const PatchFile* previous = nullptr;
 };
 
 struct ParseResult {
@@ -70,6 +75,7 @@ struct ParseResult {
   // [patch][node]: the source span of every node of every lowered patch (offset kNone for nodes without one), so
   // later phases (infer()) can report file:line:col. Empty when lowering did not run.
   std::vector<std::vector<SourceSpan>> nodeSpans;
+  IdMatchStats idMatch;                  // with ParseOptions::previous: what kept its NodeId
   bool ok() const noexcept { return diagnostics.empty(); }
 };
 

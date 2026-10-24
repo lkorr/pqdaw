@@ -6,6 +6,7 @@ pq_add_module(pq_graph
     src/patch.cpp
     src/validate.cpp
     src/patch_equal.cpp
+    src/id_match.cpp
     src/patch_file.cpp
     src/lexer.cpp
     src/text_common.cpp

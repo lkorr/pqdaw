@@ -1854,6 +1854,8 @@ ParseResult parseDetailed(std::string_view source, std::string_view fileName, co
   // Node spans for later phases (inference reports at the node, T1.3).
   for (size_t i = 0; i < nodeSpan.size(); ++i) nodeSpan[i].resize(result.file.patches[i].nodeCount());
   result.nodeSpans = std::move(nodeSpan);
+  // Dense order (and so nodeSpans) is unchanged by the id inheritance.
+  if (options.previous && diags.list.empty()) result.idMatch = inheritNodeIds(result.file, *options.previous);
   return finish();
 }
 

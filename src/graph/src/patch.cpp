@@ -33,7 +33,9 @@ NodeIndex Patch::addNode(NodeKind kind, std::string name, uint32_t payload, uint
   nodes_.push_back(n);
   names_.push_back(std::move(name));
   layout_.emplace_back();
-  return static_cast<NodeIndex>(nodes_.size() - 1);
+  const auto index = static_cast<NodeIndex>(nodes_.size() - 1);
+  if (!byId_.empty()) byId_.push_back(index);  // the new id is the largest
+  return index;
 }
 
 NodeIndex Patch::addNode(NodeKind kind, std::string name, uint32_t payload, std::span<const PortType> inputs,
@@ -208,6 +210,50 @@ void Patch::eraseNodes(std::span<const NodeIndex> erase) {
   }
   wires_.resize(outWire);
   wireVia_.resize(outWire);
+
+  if (!byId_.empty()) {  // still sorted by id after dropping the erased nodes and renumbering the rest
+    uint32_t out = 0;
+    for (NodeIndex i : byId_)
+      if (remap[i] != kNone) byId_[out++] = remap[i];
+    byId_.resize(out);
+    if (std::is_sorted(byId_.begin(), byId_.end())) byId_.clear();
+  }
+}
+
+bool Patch::setNodeIds(std::span<const NodeId> ids) {
+  const auto n = static_cast<uint32_t>(nodes_.size());
+  if (ids.size() != n) return false;
+  uint32_t maxId = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    if (!ids[i].valid()) return false;
+    maxId = std::max(maxId, ids[i].value);
+  }
+  // order = node indices sorted by id: a counting pass when the ids are dense (as inheritNodeIds produces), else a
+  // sort. Either way a duplicate is found.
+  std::vector<NodeIndex> order;
+  order.reserve(n);
+  if (maxId <= 8ull * n + 1024u) {
+    std::vector<NodeIndex> slot(static_cast<size_t>(maxId) + 1, kNone);
+    for (uint32_t i = 0; i < n; ++i) {
+      if (slot[ids[i].value] != kNone) return false;
+      slot[ids[i].value] = i;
+    }
+    for (NodeIndex i : slot)
+      if (i != kNone) order.push_back(i);
+  } else {
+    for (uint32_t i = 0; i < n; ++i) order.push_back(i);
+    std::sort(order.begin(), order.end(), [&](NodeIndex a, NodeIndex b) { return ids[a] < ids[b]; });
+    for (uint32_t k = 1; k < n; ++k)
+      if (ids[order[k - 1]] == ids[order[k]]) return false;
+  }
+  for (uint32_t i = 0; i < n; ++i) nodes_[i].id = ids[i];
+  if (n) ids_.reserveThrough(ids[order.back()]);
+  if (std::is_sorted(order.begin(), order.end())) {
+    byId_.clear();
+  } else {
+    byId_ = std::move(order);
+  }
+  return true;
 }
 
 std::string_view Patch::inputName(NodeIndex n, uint32_t i) const noexcept {
@@ -276,6 +322,12 @@ std::optional<uint32_t> Patch::findOutput(NodeIndex n, std::string_view name) co
 }
 
 std::optional<NodeIndex> Patch::indexOf(NodeId id) const noexcept {
+  if (!byId_.empty()) {
+    const auto it = std::lower_bound(byId_.begin(), byId_.end(), id,
+                                     [&](NodeIndex i, NodeId v) { return nodes_[i].id < v; });
+    if (it != byId_.end() && nodes_[*it].id == id) return *it;
+    return std::nullopt;
+  }
   if (nodes_.empty() || id < nodes_.front().id) return std::nullopt;
   // Ids increase strictly with the index, so a node's index is at most its id's offset from the first id; with no
   // erases since the first node, it is exactly that (one probe).

@@ -30,8 +30,9 @@ constexpr uint32_t kBlock = 64;
 
 // ---- compiling with the previous layout ------------------------------------------------------------------------
 // Edits are made on the Patch IR, as the editor and the project lowering (T3.17) make them: nodes keep their
-// NodeIds, so their state keys survive. (Re-parsing edited TEXT renumbers nodes: declarations get ids before
-// bindings, so adding an `export` line would shift every later node's id and thus its state key.)
+// NodeIds, so their state keys survive. (A plain re-parse of edited TEXT renumbers nodes: declarations get ids before
+// bindings, so adding an `export` line would shift every later node's id and thus its state key; parsing with
+// ParseOptions::previous keeps them, tests/engine/test_text_edits.cpp.)
 Patch parsePatch(const std::string& text) {
   ParseResult pr = parseDetailed(text, "swap.pqp");
   REQUIRE_MESSAGE(pr.ok(), (pr.ok() ? "" : formatDiagnostic(text, pr.diagnostics.front())));
