@@ -10,7 +10,7 @@
 
   Compiler cache: when scripts/get-sccache.ps1 has installed sccache, CMake uses it as the compiler launcher
   (cmake/PqCompilerCache.cmake). This script points it at the cache shared by every checkout and worktree
-  (%LOCALAPPDATA%\pqdaw\sccache, 20 GB cap; override with $env:PQ_SCCACHE_DIR) and prints its statistics
+  (%LOCALAPPDATA%\pqdaw\sccache-v3\<checkout hash>, 6 GB cap each; override the root with $env:PQ_SCCACHE_DIR) and prints its statistics
   after the build.
 
 .EXAMPLE
@@ -43,11 +43,19 @@ $root = Split-Path -Parent $PSScriptRoot
 # rebuilding it when this checkout's headers changed (stale objects; T0.x-buildspeed-fix2). Entries are now keyed
 # by this checkout's absolute paths: a hit only returns what this checkout compiled before. Each build restarts
 # the server (fresh index of the shared cache); it exits after 30 idle minutes.
-$sccacheDir = if ($env:PQ_SCCACHE_DIR) { $env:PQ_SCCACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'pqdaw\sccache' }
-$env:SCCACHE_DIR = $sccacheDir
-$env:SCCACHE_CACHE_SIZE = '20G'
-Remove-Item Env:SCCACHE_BASEDIRS -ErrorAction SilentlyContinue
+# Each checkout has its own cache directory (T0.x-buildspeed-fix3): even without a base directory, an object
+# compiled in another worktree was still replayed here once, with that worktree's /showIncludes (Ninja then
+# tracked the wrong headers). Separate directories make that impossible. Delete the directories of removed
+# worktrees with scripts/clean-sccache.ps1.
 $md5 = [Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant()))
+$checkoutKey = -join ($md5[0..5] | ForEach-Object { $_.ToString('x2') })
+$sccacheRoot = if ($env:PQ_SCCACHE_DIR) { $env:PQ_SCCACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'pqdaw\sccache-v3' }
+$sccacheDir = Join-Path $sccacheRoot $checkoutKey
+New-Item -ItemType Directory -Force $sccacheDir | Out-Null
+Set-Content -Path (Join-Path $sccacheDir 'checkout.txt') -Value $root -NoNewline
+$env:SCCACHE_DIR = $sccacheDir
+$env:SCCACHE_CACHE_SIZE = '6G'
+Remove-Item Env:SCCACHE_BASEDIRS -ErrorAction SilentlyContinue
 $env:SCCACHE_SERVER_PORT = [string](14300 + ([BitConverter]::ToUInt16($md5, 0) % 4000))
 $env:SCCACHE_IDLE_TIMEOUT = '1800'  # outlives a ship build's long LTCG link tail, so the stats survive
 $env:SCCACHE_IGNORE_SERVER_IO_ERROR = '1'   # server unreachable: compile without the cache instead of failing
@@ -65,10 +73,10 @@ try {
   # Build directories whose Ninja dependency log was written while worktrees shared cache entries can list
   # another worktree's headers as dependencies (see SCCACHE_BASEDIRS above). Drop that log once: Ninja then
   # rebuilds every object (from this checkout's cache entries where they exist) and records correct dependencies.
-  $depsMarker = Join-Path $buildDir '.pq-deps-v2'
+  $depsMarker = Join-Path $buildDir '.pq-deps-v3'
   if ((Test-Path (Join-Path $buildDir 'CMakeCache.txt')) -and -not (Test-Path $depsMarker)) {
     Remove-Item (Join-Path $buildDir '.ninja_deps') -ErrorAction SilentlyContinue
-    Write-Host 'build.ps1: dependency log reset (T0.x-buildspeed-fix2); every object is rebuilt once'
+    Write-Host 'build.ps1: dependency log reset (T0.x-buildspeed-fix3); every object is rebuilt once'
   }
   # Reconfigure when CMakePresets.json changed after this build directory was configured: a preset's cache
   # variables (compiler / linker flags) only reach an existing CMakeCache.txt through `cmake --preset`.

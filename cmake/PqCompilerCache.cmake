@@ -1,10 +1,9 @@
 # Compiler cache, cache-friendly debug info, no module scanning (T0.x-buildspeed). Included after project(), before any target.
 #
 # sccache (scripts/get-sccache.ps1, pinned, SHA-256 checked) is the C/C++ compiler launcher when installed;
-# builds work the same without it. scripts/build.ps1 sets its environment: one cache directory shared by every
-# checkout and worktree (%LOCALAPPDATA%\pqdaw\sccache), and one sccache server per checkout. Entries are keyed by
-# the checkout's absolute paths (no SCCACHE_BASEDIRS): sharing objects across worktrees returned the other
-# worktree's /showIncludes output with them, which broke Ninja's header dependencies (T0.x-buildspeed-fix2).
+# builds work the same without it. scripts/build.ps1 sets its environment: one cache directory and one sccache
+# server per checkout (%LOCALAPPDATA%\pqdaw\sccache-v3\<hash>). Sharing objects across worktrees returned the
+# other worktree's /showIncludes output with them, which broke Ninja's header dependencies (T0.x-buildspeed-fix2/fix3).
 # Absolute paths still stay out of compiled code (pq_build_paths, below, compiled without the launcher), so the
 # sharing can come back if a launcher rewrites the dependency output; the test main prints file names without
 # directories for the same reason.
