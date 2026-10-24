@@ -153,7 +153,7 @@ TEST_CASE("mos circle: hardness r gives the exact step ratio L/s = r within 1e-6
         CHECK(s.generatorCents <= s.regionHigh);
         CHECK(std::fabs(exactHardness(s) - ratio) < 1e-6);
         // Where the CLI solves it (its first region of this key; it fails on regions ending at 0 or P/2, where its
-        // unnudged chain degenerates: Q?-T3.14-a), its generator agrees with ours to its 0.01-cent precision.
+        // unnudged chain degenerates: Q83), its generator agrees with ours to its 0.01-cent precision.
         if (!r.isMirror && cfg.periodsPerEquave == 1)
           if (const auto sol = tu::mos_calc::generatorForHardness(r.perPeriodKey.nL, r.perPeriodKey.nS, ratio, cfg.period)) {
             const auto b = tu::mos_calc::mosRegionBounds(r.perPeriodKey.nL, r.perPeriodKey.nS, cfg.period);

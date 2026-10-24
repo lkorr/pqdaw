@@ -116,7 +116,7 @@ std::optional<double> generatorForHardnessIn(const MosSelection& sel, double rat
   // L(g) and s(g) are linear inside a region (the chain's sorted order is fixed between the region's Farey ends), so
   // L − ratio·s = 0 is solved exactly from two interior points: the closed form of mos-calc's generatorForHardness
   // (which bisects 100 times on 0.01-cent-rounded steps, ~0.4 ms, and returns the collapsed end for regions that end
-  // at 0 or P/2; Q?-T3.14-a). A second step from the result absorbs floating-point rounding.
+  // at 0 or P/2; Q83). A second step from the result absorbs floating-point rounding.
   const tu::RegionHint hint = sel.hint();
   auto f = [&](double g) {
     const auto [L, s] = exactSteps(g, n, P, hint);

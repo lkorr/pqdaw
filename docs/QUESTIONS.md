@@ -622,7 +622,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   10. **Rendering fix**: clips, note previews and group summaries no longer draw one device pixel past the lanes onto the divider to the headers (state there, e.g. the selection outline, was outside the lanes' damage). This changed the `arrangement-basic` golden in that one column (x = 979); it was regenerated.
 - Status: open
 
-## Q?-T3.14-a · 2026-10-24 · T3.14 · MOS wheel popover: when it commits, how it previews, where it departs from mos-explorer
+## Q83 · 2026-10-24 · T3.14 · MOS wheel popover: when it commits, how it previews, where it departs from mos-explorer
 - Context: SPEC §4.2 and T3.14 ask for a popover that commits a tuning (one undo step) with a live roll preview and Esc cancelling; the explorer itself has no document, no undo and a resizable canvas. All choices are local to `src/views/src/mos_wheel/` and `ViewContext`'s preview (view state, nothing persisted).
 - Choices (provisional):
   1. **Session = one undo step.** Everything done in the open popover (chart clicks/drags, circle buttons, slider, MODMOS, EDO, Scala, presets) edits a draft; closing commits it as ONE command if it differs from the target's tuning: Apply, Enter, a press outside the popover (Live's popovers keep what was set), or Ctrl+Shift+W again. Esc and Cancel close without a command. Esc during a chart / slider / MODMOS drag cancels only that drag. Alternative: commit on every chart Commit (several undo steps per visit).
