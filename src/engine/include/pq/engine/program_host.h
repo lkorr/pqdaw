@@ -85,6 +85,10 @@ struct HostConfig {
   uint32_t maxPending = 8;         // packets published but not yet current (rounded up to a power of two)
   float silenceDb = -90.0f;        // SwapMode::Auto: output peaks at or below this are silent
   bool voices = false;             // run images through a VoiceEngine (prepared with the first image's geometry)
+  // T1.x-arch2: run images through this VoiceEngine instead of the host's own (implies `voices`). It must be prepared
+  // (VoiceEngine::prepare or prepareLanes) for the images' geometry and outlive the host; `voice` is then unused (the
+  // engine's own config applies). renderOffline(RenderRequest) uses it for the caller's VoiceEngine.
+  VoiceEngine* externalVoices = nullptr;
   VoiceConfig voice;               // doneSlot / monitorMask are per image (VoiceSlots)
   EventSource events;              // note events per image block (voices only)
   BlockHook hook;                  // per image block, before the events (T3.16: Timeline::blockHook writes the
@@ -146,7 +150,12 @@ public:
   const ProgramImage* current() const noexcept;  // audio thread
   bool crossfading() const noexcept { return fadeFrom_ != nullptr; }
   uint64_t currentSequence() const noexcept;     // audio thread
-  VoiceEngine* voices() noexcept { return cfg_.voices ? &voices_ : nullptr; }
+  VoiceEngine* voices() noexcept { return cfg_.voices ? ve_ : nullptr; }
+  // Makes the next published image current now, as the next block would (none while a crossfade runs). Before the
+  // first block: lets the caller set params() of the first image. RT-safe (audio thread, or while it is not running).
+  void takePending() noexcept {
+    if (fadeFrom_ == nullptr) trySwap();
+  }
 
   // The audio thread stops / resumes calling process() (device stopped, render paused): lets collect() free images
   // meanwhile. Call from the audio thread, or from any thread while it is not running. RT-safe.
@@ -184,6 +193,7 @@ private:
   float silence_ = 0.0f;           // silenceDb as a linear peak
   AlignedBuffer<float> zeros_;     // a silent source for the crossfade
   VoiceEngine voices_;
+  VoiceEngine* ve_ = &voices_;     // voices_ or HostConfig::externalVoices
   EventBuffer events_{1};
   TransportSnapshot transport_;
   HostStats stats_;

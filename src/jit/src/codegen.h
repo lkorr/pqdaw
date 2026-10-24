@@ -25,8 +25,9 @@
 //     - solve blocks: Newton exactly as the interpreter (pq/engine/newton.h, QUESTIONS Q53), the body generated
 //       inline with its forward-mode tangents (one evaluation per iteration: newton::tangentOp instantiated on IR);
 //       finite differences (1 + 2n evaluations) for bodies without tangent rules and, in a cold branch, for lanes
-//       whose tangent Jacobian is not finite; the update for n = 1 inline, for n > 1 via rt::newtonLinear.
-//   Special ops (broadcast, voice reducers, sends): a call of the runtime helper (runtime.h).
+//       whose tangent Jacobian is not finite; the update for n = 1 inline, for n > 1 a call of newton::linearUpdate
+//       (the interpreter's own).
+//   Special ops (broadcast, voice reducers, sends): a call of the shared image host's kernels (pq/engine/image_host.h).
 //
 // Exact transcendentals call the same CRT (scalar) / SVML (8-wide) functions as the kernels; fast_ functions are
 // generated from pq/core/fast_math.h's own templates (ir_ops.h). So JIT and interpreter agree bit for bit unless

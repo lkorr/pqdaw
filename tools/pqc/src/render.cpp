@@ -2,8 +2,6 @@
 #include <chrono>
 #include <cmath>
 
-#include "pq/engine/interpreter.h"
-#include "pq/jit/compiler.h"
 #include "pq/pqc/pqc.h"
 
 namespace pq::pqc {
@@ -11,13 +9,6 @@ namespace pq::pqc {
 namespace {
 
 Error backendError(const std::string& m) { return Error{ErrorCode::Unsupported, m, {}}; }
-
-// One LLJIT per process (ARCHITECTURE §6: the JIT compiler is an explicit singleton of the tool).
-Result<jit::Compiler*> jitCompiler() {
-  static Result<std::unique_ptr<jit::Compiler>> compiler = jit::Compiler::create();
-  if (!compiler) return compiler.error();
-  return compiler.value().get();
-}
 
 }  // namespace
 
@@ -44,24 +35,12 @@ Result<RenderInfo> renderFile(const std::filesystem::path& path, const RenderOpt
   info.patchName = compiled->patchName;
   info.ops = static_cast<uint32_t>(sched.ops.size());
   const uint32_t groups = engine::voiceGroupsFor(options.maxVoices);
-  std::unique_ptr<engine::ProgramImage> image;
-  if (options.backend == Backend::Jit) {
-    auto jc = jitCompiler();
-    if (!jc) return backendError("JIT: " + jc.error().message);
-    jit::CompileOptions co;
-    co.maxBlockFrames = options.blockFrames;
-    co.maxVoiceGroups = groups;
-    auto img = (*jc)->compile(sched, co);
-    if (!img) return backendError("JIT: " + img.error().message);
-    image = std::move(img.value());
-  } else {
-    engine::InterpretOptions eo;
-    eo.maxBlockFrames = options.blockFrames;
-    eo.maxVoiceGroups = groups;
-    auto img = engine::buildInterpreted(sched, eo);
-    if (!img) return backendError("interpreter: " + img.error().message);
-    image = std::move(img.value());
-  }
+  compile::ImageOptions imo;
+  imo.maxBlockFrames = options.blockFrames;
+  imo.maxVoiceGroups = groups;
+  auto built = compile::buildImage(sched, options.backend, imo);
+  if (!built) return backendError(options.backend == Backend::Jit ? "JIT: " + built.error().message : built.error().message);
+  std::unique_ptr<engine::ProgramImage> image = std::move(built.value());
   const engine::ImageInterface& io = image->io();
 
   uint32_t globalOuts = 0, voiceOuts = 0;

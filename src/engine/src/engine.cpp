@@ -10,6 +10,7 @@
 #include "pq/core/aligned_buffer.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
+#include "render_loop.h"
 
 namespace pq::engine {
 
@@ -190,43 +191,17 @@ void Engine::process(const AudioBlock& block) noexcept {  // RT-safe
 
 Result<RenderStats> Engine::renderOffline(uint64_t frames, AudioSink& sink, uint32_t blockFrames, uint32_t chunkFrames) {
   if (program_ == nullptr) return Error{ErrorCode::InvalidArgument, "engine: renderOffline without a program", {}};
-  const uint32_t block = blockFrames != 0 ? blockFrames : cfg_.blockFrames;
-  const uint32_t numCh = cfg_.numOut;
-  const uint32_t chunk = std::max(block, (std::max(chunkFrames, 1u) + block - 1) / block * block);
-  const size_t stride = (static_cast<size_t>(chunk) + 15u) & ~size_t{15};
-  AlignedBuffer<float> buf(stride * numCh);
-  std::vector<float*> chPtr(numCh), outPtr(numCh);
-  for (uint32_t c = 0; c < numCh; ++c) chPtr[c] = buf.data() + c * stride;
-  RenderStats st;
-  st.numChannels = numCh;
-  if (auto s = sink.begin(numCh, static_cast<uint32_t>(std::lround(cfg_.sampleRate)), frames); !s) return s.error();
-  double wall = 0.0;
-  const int64_t base = nextTime_;  // engine time continues (the timeline runs each engine time once)
-  int64_t t = 0;
-  while (static_cast<uint64_t>(t) < frames) {
-    const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(chunk, frames - static_cast<uint64_t>(t)));
-    const auto t0 = std::chrono::steady_clock::now();
-    {
-      RtScope rt;  // the per-block loop is the realtime path
-      DenormalGuard denormals;
-      for (uint32_t off = 0; off < n; off += block) {
-        const uint32_t m = std::min(block, n - off);
-        for (uint32_t c = 0; c < numCh; ++c) outPtr[c] = chPtr[c] + off;
-        const AudioBlock ab{nullptr, 0, outPtr.data(), numCh, m, base + t + off};
-        process(ab);
-        ++st.blocks;
-      }
-    }
-    wall += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (auto s = sink.write(chPtr.data(), n); !s) return s.error();
-    collect();
-    t += n;
-  }
-  if (auto s = sink.end(); !s) return s.error();
-  st.frames = frames;
-  st.wallSeconds = wall;
-  st.realtimeFactor = wall > 0.0 ? static_cast<double>(frames) / cfg_.sampleRate / wall : 0.0;
-  return st;
+  detail::RenderLoop loop;  // the one offline loop (render_loop.h), as engine::renderOffline
+  loop.callback = callback();
+  loop.numChannels = cfg_.numOut;
+  loop.sampleRate = cfg_.sampleRate;
+  loop.frames = frames;
+  loop.blockFrames = blockFrames != 0 ? blockFrames : cfg_.blockFrames;
+  loop.chunkFrames = chunkFrames;
+  loop.startFrame = nextTime_;  // engine time continues (the timeline runs each engine time once)
+  loop.between = [](void* self, int64_t) { static_cast<Engine*>(self)->collect(); };
+  loop.user = this;
+  return detail::runRenderLoop(loop, sink);
 }
 
 }  // namespace pq::engine

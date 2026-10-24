@@ -28,8 +28,7 @@ bool ImageRunner::prepare(ProgramImage* image, uint32_t numIn, uint32_t numOut, 
   std::vector<uint32_t> played;  // the `out` slots, in slot order
   for (uint32_t s = 0; s < slots; ++s)
     if (!io.globalOut[s].isExport) played.push_back(s);
-  for (uint32_t c = 0; c < kMaxChannels; ++c)
-    chanSlot_[c] = played.empty() ? graph::kNone : played.size() == 1 ? played[0] : c < played.size() ? played[c] : graph::kNone;
+  mapChannels(played, chanSlot_);
   return true;
 }
 
@@ -41,8 +40,9 @@ void ImageRunner::setVoices(VoiceEngine* voices, EventSource source, uint32_t ev
   for (const IoSlot& s : image_->io().globalOut) anyOut = anyOut || !s.isExport;
   playMixes_ = voices != nullptr && !anyOut && voices->numMixes() > 0;
   if (!playMixes_) return;
-  const uint32_t mixes = voices->numMixes();
-  for (uint32_t c = 0; c < kMaxChannels; ++c) chanSlot_[c] = mixes == 1 ? 0u : c < mixes ? c : graph::kNone;
+  std::vector<uint32_t> mixes(voices->numMixes());
+  for (uint32_t i = 0; i < mixes.size(); ++i) mixes[i] = i;
+  mapChannels(mixes, chanSlot_);
 }
 
 void ImageRunner::process(const AudioBlock& block) noexcept {  // RT-safe

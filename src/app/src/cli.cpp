@@ -41,6 +41,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   std::string_view sineOnly;    // last flag seen that only --sine accepts
   std::string_view streamOnly;  // last flag seen that only the stream modes (--sine, --latency-test) accept
   bool backendFlag = false;
+  bool programBackendFlag = false;  // --backend jit|interp (the program backend of --play)
   bool sceneFlag = false;
   auto setMode = [&](Mode m, std::string_view flag) -> Status {
     if (modeSet) return usageError("only one mode flag may be given (got another: " + std::string(flag) + ")");
@@ -115,8 +116,13 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
         return usageError("--inject-stall needs a device wake-up number >= 1");
       sineOnly = a;
     } else if (a == "--backend") {
-      if (i + 1 >= args.size()) return usageError("--backend needs wasapi, rtaudio or asio");
+      if (i + 1 >= args.size()) return usageError("--backend needs wasapi, rtaudio, asio, jit or interp");
       const std::string_view b = args[++i];
+      if (b == "jit" || b == "interp" || b == "interpreter") {
+        o.playBackend = b == "jit" ? PlayBackend::Jit : PlayBackend::Interpreter;
+        programBackendFlag = true;
+        continue;
+      }
       if (b == "wasapi")
         o.wasapi = WasapiImpl::Own;
       else if (b == "rtaudio")
@@ -124,7 +130,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       else if (b == "asio")
         o.asio = true;
       else
-        return usageError("--backend needs wasapi, rtaudio or asio");
+        return usageError("--backend needs wasapi, rtaudio, asio, jit or interp");
       backendFlag = true;
       o.backendGiven = true;
     } else if (a == "--play") {
@@ -185,6 +191,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
     return usageError("endpoint ids select WASAPI devices; ASIO drivers are selected by id or name");
   if (backendFlag && o.mode != Mode::Sine && o.mode != Mode::ListDevices && !play && !window)
     return usageError("--backend only applies to --sine, --play and --list-devices");
+  if (programBackendFlag && !play) return usageError("--backend jit|interp only applies to --play");
   if (!o.patchName.empty() && !play) return usageError("--patch only applies to --play");
   if (!o.notes.empty() && !play) return usageError("--notes only applies to --play");
   if (o.stallAfterWake && (o.asio || o.wasapi != WasapiImpl::Own))
@@ -252,10 +259,12 @@ std::string usage() {
          "      --rate HZ, --buffer N (device frames), --block N (engine block), --level DBFS (default -24),\n"
          "      --inject-stall W (test: stall 3 periods after device wake-up W; expects 1 underrun)\n"
          "  --play <file.pqp> [--patch NAME] [options]\n"
-         "                                           compile a patch (interpreter) and play its global outs on\n"
-         "                                           the device at --level DBFS (default -24), clipped to\n"
-         "                                           [-1, 1]; same stream options as --sine. A patch with only\n"
-         "                                           voice outs plays an arpeggio through the voice engine:\n"
+         "                                           compile a patch (the LLVM JIT; --backend interp: the\n"
+         "                                           interpreter) and play its global outs on the device at\n"
+         "                                           --level DBFS (default -24), clipped to [-1, 1]; same\n"
+         "                                           stream options as --sine. A patch with only voice outs\n"
+         "                                           plays an arpeggio through the voice engine:\n"
+         "      --backend jit|interp                 the program backend (default jit)\n"
          "      --notes \"60 64 67\"                     12-edo keys (60 = C3) or <f>hz, one per 0.25 s\n"
          "  --asio-panel [--device <id|name>] [--seconds S]\n"
          "                                           open an ASIO driver's control panel; keeps the driver\n"

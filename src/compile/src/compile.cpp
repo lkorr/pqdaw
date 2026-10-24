@@ -1,12 +1,13 @@
-// pqc: loading a .pqp file with its imports and running the graph pipeline (parse → infer → optimise → schedule).
+// pq_compile: loading a .pqp file with its imports and running the graph pipeline (parse → infer → optimise →
+// schedule); pq/compile/compile.h.
 #include <deque>
 #include <fstream>
 #include <map>
 #include <sstream>
 
-#include "pq/pqc/pqc.h"
+#include "pq/compile/compile.h"
 
-namespace pq::pqc {
+namespace pq::compile {
 
 namespace fs = std::filesystem;
 
@@ -30,7 +31,7 @@ std::string joinDiagnostics(std::string_view text, const std::vector<graph::Diag
 }
 
 // Imports relative to the importing file, recursively; every parsed file stays alive for the PatchLibrary.
-// (The same loader as `pqdaw --play`'s, src/app/src/play_command.cpp; QUESTIONS Q73.)
+// (pqc and `pqdaw --play` share it: QUESTIONS Q73 option B, T1.x-arch2.)
 class FileLoader final : public graph::ImportLoader {
 public:
   Result<std::vector<graph::SubcircuitRef>> load(std::string_view path, std::string_view importer) override {
@@ -167,4 +168,4 @@ Result<Compiled> compilePatch(const SourceFile& src, size_t index, const Compile
   return c;
 }
 
-}  // namespace pq::pqc
+}  // namespace pq::compile

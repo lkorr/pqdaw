@@ -1,9 +1,9 @@
 #pragma once
 
-// `pqdaw --play` (T1.7): a .pqp file → parse (imports relative to the file) → infer → optimise → schedule →
-// interpreted ProgramImage, for one patch with at least one global `out`, or (T1.8) an instrument patch with voice
-// `out`s, played through the VoiceEngine with an arpeggio (--notes). Minimal on purpose: T1.10 adds the offline
-// renderer and `pqc`, T3.16 the real sequencer.
+// `pqdaw --play` (T1.7): a .pqp file → pq_compile (pq/compile/compile.h, the pipeline pqc runs too: parse with the
+// imports relative to the file → infer → optimise → schedule → a ProgramImage on the JIT or the interpreter;
+// T1.x-arch2), for one patch with at least one global `out`, or (T1.8) an instrument patch with voice `out`s, played
+// through the VoiceEngine with an arpeggio (--notes). Minimal on purpose: T3.16 has the real sequencer.
 
 #include <cstdint>
 #include <memory>
@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/compile/compile.h"
 #include "pq/core/result.h"
 #include "pq/engine/image_runner.h"
 #include "pq/engine/program_image.h"
@@ -21,6 +22,7 @@ namespace pq::app {
 struct CompiledPlay {
   std::unique_ptr<engine::ProgramImage> image;
   std::string patchName;   // the patch compiled
+  compile::Backend backend = compile::Backend::Jit;
   uint32_t ops = 0;        // schedule size, for the summary line
   uint32_t outputs = 0;    // global `out` slots played
   uint32_t voiceOutputs = 0;  // voice `out` slots (played through the VoiceEngine when there is no global out)
@@ -48,6 +50,6 @@ inline constexpr float kPlayVoiceHeadroom = 0.5f;
 
 // `patch` empty: the first patch of the file. Not RT-safe (file I/O, compiling).
 Result<CompiledPlay> compilePatchFile(const std::string& path, std::string_view patch, double sampleRate,
-                                      uint32_t maxBlockFrames);
+                                      uint32_t maxBlockFrames, compile::Backend backend = compile::Backend::Jit);
 
 }  // namespace pq::app

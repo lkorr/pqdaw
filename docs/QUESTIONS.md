@@ -564,7 +564,9 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Chosen: `pq::pqc::SourceFile` + `compilePatch` in `pq_pqc` (tools/pqc/src/compile.cpp), a copy of the loader; `app` untouched (another worker is editing its CLI).
 - Options: A) keep both; B) move the loader + pipeline into a small library both link (e.g. `engine` or a new `pq_compile` above graph/engine/jit), and make `--play` use it (it would also get `--backend jit` and the timed notes for free).
 - Provisional: A until T3.17 touches the app's compile path; B then.
-- Status: open
+- Status: B (T1.x-arch2): `pq_compile` (src/compile, pq/compile/compile.h) holds SourceFile, compilePatch,
+  buildImage and the process's JIT compiler; pqc and `pqdaw --play` both use it (`--play` now defaults to the JIT,
+  `--backend interp` for the interpreter).
 
 ## Q74 · 2026-10-21 · T1.10 · Golden tolerances, and where goldens come from
 - Goldens are written from the interpreter (`PQ_UPDATE_GOLDENS=1`), and both backends must match them. Today the JIT renders all six bit-identically (the muladd fusion is the optimiser's, so contraction finds nothing left to fuse in these patches); the tolerance is there for patches where it does (≤ 5.4e-7, Q64), other CPUs (CRT/SVML transcendentals may differ in the last ulp) and harmless future changes.

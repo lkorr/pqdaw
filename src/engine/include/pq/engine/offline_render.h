@@ -1,8 +1,9 @@
 #pragma once
 
 // Offline rendering (T1.10, SPEC §9.8: "same Program, deterministic"). renderOffline runs a ProgramImage (any
-// backend: interpreter or JIT) through exactly the code the audio device runs — ImageRunner (+ VoiceEngine and an
-// event source) under DenormalGuard and an RtScope per chunk — but driven by a loop instead of a device clock:
+// backend: interpreter or JIT) through exactly the code the audio device runs — a ProgramHost (the hot-swap host,
+// program_host.h; T1.x-arch2: before, an ImageRunner, so offline renders could not exercise swaps) + VoiceEngine and
+// an event source, under DenormalGuard and an RtScope per chunk — but driven by a loop instead of a device clock:
 //   - fixed engine block (RenderRequest::blockFrames): the output depends only on the image, the request and the
 //     events, never on timing, threads or the wall clock (noise atoms are seeded at compile time);
 //   - as fast as the CPU allows (the wall time is measured for RenderStats only);
@@ -10,6 +11,8 @@
 //     I/O never interleaves with the per-block loop, and the loop itself does not allocate (RtScope-checked).
 // Global root `in`s read silence. Channel mapping as ImageRunner: channel c plays the c-th global `out` (a mono
 // patch: one channel by default), or, for an instrument (voice `out`s only) driven by `voices`, the c-th voice mix.
+// The second form renders whatever a ProgramHost plays, with a non-RT callback between chunks that may publish new
+// images (an edit, the background JIT image: T1b.5) — the swaps happen exactly as on the device.
 // Not RT-safe as a whole (the sink does I/O); call it from a render/tool thread.
 
 #include <cstdint>
@@ -18,6 +21,7 @@
 
 #include "pq/core/result.h"
 #include "pq/engine/image_runner.h"
+#include "pq/engine/program_host.h"
 #include "pq/engine/program_image.h"
 #include "pq/engine/voices.h"
 
@@ -67,7 +71,25 @@ struct RenderStats {
   double realtimeFactor = 0.0;       // audio seconds per wall second
 };
 
-// Errors: no image, blockFrames 0 or above the image's maximum, params of the wrong size, a sink error.
+// Errors: no image, blockFrames 0 or above the image's maximum, params of the wrong size, `voices` not prepared for
+// `image`, a sink error.
 Result<RenderStats> renderOffline(const RenderRequest& request, AudioSink& sink);
+
+// Offline through a ProgramHost (T1.x-arch2), which must have an image published. The host is driven exactly as by a
+// device callback (host.process per device block); between chunks, outside the RtScope, `betweenChunks` runs on the
+// rendering thread (non-RT: it may publish, collect, or wait for a compile). host.transport() / params() are the
+// caller's to set before (takePending() makes the first image current so its params can be written).
+struct HostRenderRequest {
+  uint64_t frames = 0;
+  uint32_t blockFrames = 64;         // device block (the host splits it at its maxBlockFrames)
+  uint32_t numChannels = 2;          // device output channels (<= the host's numOut)
+  float gain = 1.0f;                 // linear; no clipping
+  uint32_t chunkFrames = 8192;       // frames per sink write and per betweenChunks call (rounded up to whole blocks)
+  int64_t startFrame = 0;            // engine time of the first frame
+  void (*betweenChunks)(void* user, int64_t nextFrame) = nullptr;
+  void* user = nullptr;
+};
+// RenderStats::rejectedBlocks counts the image current at the end (since the start, if it was current then).
+Result<RenderStats> renderOffline(ProgramHost& host, const HostRenderRequest& request, AudioSink& sink);
 
 }  // namespace pq::engine

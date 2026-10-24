@@ -502,15 +502,15 @@ private:
         break;
       }
       case g::OpKind::Broadcast:
-        fn = reinterpret_cast<const void*>(&rt::broadcastKernel);
+        fn = reinterpret_cast<const void*>(&engine::host::broadcastKernel);
         spl = isPattern(ins[0]) ? 1u : 0u;
         break;
       case g::OpKind::Reduce:
-        fn = reinterpret_cast<const void*>(&rt::reduceKernel);
+        fn = reinterpret_cast<const void*>(&engine::host::reduceKernel);
         state = tabSlot(L_.opInfo[i]);
         break;
       case g::OpKind::Send:
-        fn = reinterpret_cast<const void*>(&rt::sendKernel);
+        fn = reinterpret_cast<const void*>(&engine::host::sendKernel);
         state = tabSlot(L_.opInfo[i]);
         break;
     }
@@ -1215,7 +1215,7 @@ private:
         Value* ok = B_.CreateAnd(isFinite(d), isFinite(nu));
         B_.CreateStore(B_.CreateSelect(ok, nu, uu), u[0]);
       } else {
-        // Per lane: Gaussian elimination in double with partial pivoting (rt::newtonLinear).
+        // Per lane: Gaussian elimination in double with partial pivoting (newton::linearUpdate, shared with the interpreter).
         const uint32_t N8 = L_.maxSolveN * 8;
         Value* uS = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.solveOff);
         Value* rS = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.solveOff + N8);
@@ -1227,7 +1227,7 @@ private:
         for (uint32_t q = 0; q < n; ++q) B_.CreateAlignedStore(r0[q], B_.CreateConstInBoundsGEP1_64(f32_, rS, q * 8), al);
         for (uint32_t q = 0; q < n * n; ++q) B_.CreateAlignedStore(J[q], B_.CreateConstInBoundsGEP1_64(f32_, jS, q * 8), al);
         llvm::FunctionType* ty = llvm::FunctionType::get(void_, {ptr_, ptr_, ptr_, ptr_, i32_, i32_}, false);
-        llvm::CallInst* c = callPtr(ty, tabLoad(reinterpret_cast<const void*>(&rt::newtonLinear)), {uS, jS, rS, mS, c32(n), c32(lanes)});
+        llvm::CallInst* c = callPtr(ty, tabLoad(reinterpret_cast<const void*>(&engine::newton::linearUpdate)), {uS, jS, rS, mS, c32(n), c32(lanes)});
         c->setMemoryEffects(llvm::MemoryEffects::argMemOnly());
         c->addFnAttr(llvm::Attribute::WillReturn);
         for (uint32_t j = 0; j < n; ++j)

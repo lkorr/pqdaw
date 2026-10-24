@@ -42,6 +42,10 @@ ProgramHost::ProgramHost(const HostConfig& config)
   cfg_.numIn = std::min(cfg_.numIn, kMaxChannels);
   cfg_.numOut = std::min(cfg_.numOut, kMaxChannels);
   cfg_.maxBlockFrames = std::max(cfg_.maxBlockFrames, 1u);
+  if (cfg_.externalVoices != nullptr) {
+    cfg_.voices = true;
+    ve_ = cfg_.externalVoices;
+  }
   reader_ = *reclaimer_.registerReader();  // one slot, registered once: cannot fail
   zeros_ = AlignedBuffer<float>(cfg_.maxBlockFrames + 8);
   if (cfg_.voices) events_ = EventBuffer(std::max(cfg_.eventCapacity, 1u));
@@ -101,9 +105,10 @@ Result<PublishInfo> ProgramHost::publish(std::unique_ptr<ProgramImage> image, co
   // Voices: lanes prepared once (with the first image), a binding per image.
   if (cfg_.voices) {
     if (last_ == nullptr) {
-      if (Status st = voices_.prepareLanes(io, cfg_.voice); !st.ok()) return st.error();
+      if (cfg_.externalVoices == nullptr)  // an external engine comes prepared for this geometry
+        if (Status st = voices_.prepareLanes(io, cfg_.voice); !st.ok()) return st.error();
     }
-    auto b = voices_.makeBinding(&img, voiceSlots.doneSlot, voiceSlots.monitorMask);
+    auto b = ve_->makeBinding(&img, voiceSlots.doneSlot, voiceSlots.monitorMask);
     if (!b.ok()) return b.error();
     p->binding = std::move(b.value());
     const uint32_t mixes = static_cast<uint32_t>(p->binding->mixSlots.size());
@@ -113,8 +118,7 @@ Result<PublishInfo> ProgramHost::publish(std::unique_ptr<ProgramImage> image, co
       for (uint32_t i = 0; i < mixes; ++i) played.push_back(i);
     }
   }
-  for (uint32_t c = 0; c < kMaxChannels; ++c)
-    p->chanSlot[c] = played.empty() ? graph::kNone : played.size() == 1 ? played[0] : c < played.size() ? played[c] : graph::kNone;
+  mapChannels(played, p->chanSlot);
 
   Packet* raw = p.get();
   inflight_.push_back(raw);
@@ -165,7 +169,7 @@ uint64_t ProgramHost::currentSequence() const noexcept { return cur_ != nullptr 
 const float* ProgramHost::channelSource(const Packet& p, bool fading, uint32_t c) const noexcept {  // RT-safe
   const uint32_t s = p.chanSlot[c];
   if (s == graph::kNone) return nullptr;
-  if (p.playMixes) return fading ? voices_.fadeMix(s) : voices_.mix(s);
+  if (p.playMixes) return fading ? ve_->fadeMix(s) : ve_->mix(s);
   return p.slotPtrs[s];
 }
 
@@ -186,7 +190,7 @@ void ProgramHost::trySwap() noexcept {  // RT-safe
   ++stats_.swaps;
   Packet* old = cur_;
   if (old == nullptr) {  // the first image: nothing to carry over
-    if (cfg_.voices) voices_.attach(p->binding.get(), nullptr);
+    if (cfg_.voices) ve_->attach(p->binding.get(), nullptr);
     cur_ = p;
     ++stats_.instantSwaps;
     stats_.transferBytes = 0;
@@ -194,10 +198,10 @@ void ProgramHost::trySwap() noexcept {  // RT-safe
   }
   bool fade = p->mode == SwapMode::Crossfade;
   if (p->mode == SwapMode::Auto)
-    fade = transport_.playing || (cfg_.voices && voices_.activeGroups() > 0) || playedPeak(*old, false, lastFrames_) > silence_;
+    fade = transport_.playing || (cfg_.voices && ve_->activeGroups() > 0) || playedPeak(*old, false, lastFrames_) > silence_;
   // State: the old image's current state, right before the new image's first block.
   const StateArena from = old->image->stateArena(), to = p->image->stateArena();
-  const uint32_t* groupMask = cfg_.voices && cfg_.voice.resetOnNoteOn ? voices_.laneMasks() : nullptr;
+  const uint32_t* groupMask = cfg_.voices && ve_->config().resetOnNoteOn ? ve_->laneMasks() : nullptr;
   executeTransfer(p->plan, from, to, groupMask);
   uint64_t bytes = p->plan.globalBytes;
   const uint32_t groups = std::min({p->plan.voiceGroups, from.voiceGroups, to.voiceGroups});
@@ -205,7 +209,7 @@ void ProgramHost::trySwap() noexcept {  // RT-safe
     if (groupMask == nullptr || groupMask[g] != 0) bytes += p->plan.voiceBytes;
   stats_.transferBytes = bytes;
   for (const auto& [dst, src] : p->paramMap) p->params[dst] = old->params[src];
-  if (cfg_.voices) voices_.attach(p->binding.get(), fade ? old->binding.get() : nullptr);
+  if (cfg_.voices) ve_->attach(p->binding.get(), fade ? old->binding.get() : nullptr);
   cur_ = p;
   if (fade) {
     fadeFrom_ = old;
@@ -254,7 +258,7 @@ void ProgramHost::process(const AudioBlock& block) noexcept {  // RT-safe
         events_.clear();
         if (cfg_.events.fn != nullptr) cfg_.events.fn(cfg_.events.user, time, n, events_);
         ctx.events = &events_.list();
-        voices_.process(ctx, old != nullptr ? &fctx : nullptr);
+        ve_->process(ctx, old != nullptr ? &fctx : nullptr);
       } else {
         cur_->image->process(ctx);
         if (old != nullptr) old->image->process(fctx);
@@ -276,7 +280,7 @@ void ProgramHost::process(const AudioBlock& block) noexcept {  // RT-safe
         fadePos_ += n;
         if (fadePos_ >= fadeLen_) {  // the fade is over: the old image is no longer used
           fadeFrom_ = nullptr;
-          if (cfg_.voices) voices_.attach(cur_->binding.get(), nullptr);
+          if (cfg_.voices) ve_->attach(cur_->binding.get(), nullptr);
           retire(old);
         }
       }

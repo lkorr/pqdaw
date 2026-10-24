@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -122,4 +123,50 @@ TEST_CASE("play: a voice patch plays an arpeggio through the VoiceEngine at <= -
   CHECK(voices.stats().retriggers == 20);
   CHECK(voices.liveVoices() == 4);
   MESSAGE("arpeggio peak " << 20.0 * std::log10(peak) << " dBFS");
+}
+
+// T1.x-arch2: --play compiles through pq_compile (the pipeline pqc runs) for the JIT (default) or the interpreter; the
+// two images play the same bits (T1b.1-fix1: no contraction by default).
+TEST_CASE("play: --backend jit|interp, and both backends play the same samples") {
+  std::vector<std::string_view> def{"--play", "x.pqp"};
+  REQUIRE(parseCli(def).ok());
+  CHECK(parseCli(def)->playBackend == PlayBackend::Jit);
+  std::vector<std::string_view> interp{"--play", "x.pqp", "--backend", "interp"};
+  REQUIRE(parseCli(interp).ok());
+  CHECK(parseCli(interp)->playBackend == PlayBackend::Interpreter);
+  std::vector<std::string_view> both{"--play", "x.pqp", "--backend", "jit", "--backend", "rtaudio"};
+  REQUIRE(parseCli(both).ok());
+  CHECK(parseCli(both)->playBackend == PlayBackend::Jit);
+  CHECK(parseCli(both)->wasapi == WasapiImpl::RtAudio);
+  std::vector<std::string_view> notPlay{"--sine", "440", "--backend", "jit"};
+  CHECK_FALSE(parseCli(notPlay).ok());
+
+  auto j = compilePatchFile(casePath("fm_voice.pqp"), "", 48000.0, 64, pq::compile::Backend::Jit);
+  auto i = compilePatchFile(casePath("fm_voice.pqp"), "", 48000.0, 64, pq::compile::Backend::Interpreter);
+  REQUIRE_MESSAGE(j.ok(), (j.ok() ? "" : j.error().message));
+  REQUIRE_MESSAGE(i.ok(), (i.ok() ? "" : i.error().message));
+  CHECK(j->image->io().backend == pq::engine::ImageBackend::Jit);
+  CHECK(i->image->io().backend == pq::engine::ImageBackend::Interpreter);
+  CHECK(j->ops == i->ops);
+  std::vector<float> out[2];
+  for (int k = 0; k < 2; ++k) {
+    CompiledPlay& c = k == 0 ? *j : *i;
+    pq::engine::VoiceEngine voices;
+    pq::engine::VoiceConfig vc;
+    vc.maxVoices = kPlayVoices;
+    REQUIRE(voices.prepare(c.image.get(), vc).ok());
+    Arpeggio arp(parsePlayNotes("60 64 67 72").value(), 48000.0);
+    pq::engine::ImageRunner runner;
+    REQUIRE(runner.prepare(c.image.get(), 0, 1, 1.0f, false));
+    runner.setVoices(&voices, arp.source());
+    std::vector<float> l(256);
+    float* outs[1] = {l.data()};
+    for (int b = 0; b < 48000 / 256; ++b) {  // 1 s
+      const pq::engine::AudioBlock blk{nullptr, 0, outs, 1, 256, b * 256};
+      CHECK(pq::alloc_trap::countRtViolations([&] { runner.process(blk); }) == 0);
+      out[k].insert(out[k].end(), l.begin(), l.end());
+    }
+  }
+  REQUIRE(out[0].size() == out[1].size());
+  CHECK(std::memcmp(out[0].data(), out[1].data(), out[0].size() * sizeof(float)) == 0);
 }

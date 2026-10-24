@@ -42,6 +42,13 @@ struct BlockHook {
   void* user = nullptr;
 };
 
+// The device channel map ImageRunner and ProgramHost share (one rule): channel c plays played[c] (the global `out`
+// slots, or the voice mixes, in order); a single played slot plays on every channel; others are graph::kNone.
+inline void mapChannels(std::span<const uint32_t> played, uint32_t (&chanSlot)[kMaxChannels]) noexcept {
+  for (uint32_t c = 0; c < kMaxChannels; ++c)
+    chanSlot[c] = played.empty() ? graph::kNone : played.size() == 1 ? played[0] : c < played.size() ? played[c] : graph::kNone;
+}
+
 class ImageRunner {
 public:
   // Off the audio thread; the image must outlive the stream. Returns false for channel counts above kMaxChannels.

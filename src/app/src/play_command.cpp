@@ -1,15 +1,10 @@
-// --play (T1.7): compile a patch with the interpreter and play it on the audio device. Parsing of the flag lives
-// in cli.cpp; the device/adapter setup mirrors --sine (audio_commands.cpp).
+// --play (T1.7): compile a patch (pq_compile: the JIT, or the interpreter) and play it on the audio device. Parsing
+// of the flags lives in cli.cpp; the device/adapter setup mirrors --sine (audio_commands.cpp).
 #include "pq/app/play.h"
 
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <deque>
-#include <filesystem>
-#include <fstream>
-#include <map>
-#include <sstream>
 #include <thread>
 
 #include "pq/app/cli.h"
@@ -17,61 +12,8 @@
 #include "pq/engine/audio_device.h"
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/image_runner.h"
-#include "pq/engine/interpreter.h"
-#include "pq/graph/infer.h"
-#include "pq/graph/optimise.h"
-#include "pq/graph/parse.h"
-#include "pq/graph/schedule.h"
 
 namespace pq::app {
-
-namespace {
-
-namespace fs = std::filesystem;
-
-Result<std::string> readText(const fs::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return Error{ErrorCode::NotFound, "cannot read " + path.string(), {}};
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  return ss.str();
-}
-
-// Loads imports relative to the importing file, recursively; keeps every parsed file alive for the PatchLibrary.
-class FileLoader final : public graph::ImportLoader {
-public:
-  Result<std::vector<graph::SubcircuitRef>> load(std::string_view path, std::string_view importer) override {
-    const fs::path full = fs::weakly_canonical(fs::path(importer).parent_path() / fs::path(path));
-    const std::string key = full.string();
-    if (auto it = byPath_.find(key); it != byPath_.end()) return graph::signatures(it->second->file);
-    if (active_.count(key)) return Error{ErrorCode::InvalidArgument, "import cycle at " + key, {}};
-    auto text = readText(full);
-    if (!text) return text.error();
-    active_[key] = 1;
-    texts_.push_back(std::move(*text));
-    graph::ParseOptions po;
-    po.imports = this;
-    auto parsed = std::make_unique<graph::ParseResult>(graph::parseDetailed(texts_.back(), key, po));
-    active_.erase(key);
-    if (!parsed->ok())
-      return Error{ErrorCode::Parse, formatDiagnostic(texts_.back(), parsed->diagnostics.front()), {}};
-    auto sigs = graph::signatures(parsed->file);
-    byPath_[key] = parsed.get();
-    files_.push_back(std::move(parsed));
-    return sigs;
-  }
-  void addTo(graph::PatchLibrary& lib) const {
-    for (const auto& f : files_) lib.add(f->file);
-  }
-
-private:
-  std::deque<std::string> texts_;
-  std::vector<std::unique_ptr<graph::ParseResult>> files_;
-  std::map<std::string, graph::ParseResult*> byPath_;
-  std::map<std::string, int> active_;
-};
-
-}  // namespace
 
 Arpeggio::Arpeggio(std::vector<float> hz, double sampleRate, double stepSeconds) : hz_(std::move(hz)) {
   if (hz_.empty()) hz_.push_back(261.626f);
@@ -93,53 +35,29 @@ void Arpeggio::produce(void* self, int64_t t, uint32_t frames, engine::EventBuff
 }
 
 Result<CompiledPlay> compilePatchFile(const std::string& path, std::string_view patch, double sampleRate,
-                                      uint32_t maxBlockFrames) {
-  const fs::path full = fs::weakly_canonical(fs::path(path));
-  auto text = readText(full);
-  if (!text) return text.error();
-  FileLoader loader;
-  graph::ParseOptions po;
-  po.imports = &loader;
-  const graph::ParseResult parsed = graph::parseDetailed(*text, full.string(), po);
-  if (!parsed.ok()) return Error{ErrorCode::Parse, formatDiagnostic(*text, parsed.diagnostics.front()), {}};
-  if (parsed.file.patches.empty()) return Error{ErrorCode::InvalidArgument, path + " has no patch", {}};
-  size_t k = 0;
-  if (!patch.empty()) {
-    while (k < parsed.file.patches.size() && parsed.file.patches[k].name() != patch) ++k;
-    if (k == parsed.file.patches.size())
-      return Error{ErrorCode::NotFound, "no patch '" + std::string(patch) + "' in " + path, {}};
-  }
-  graph::PatchLibrary lib;
-  lib.add(parsed.file);
-  loader.addTo(lib);
-  graph::InferOptions io;
-  io.library = &lib;
-  io.source = {*text, full.string(), parsed.nodeSpans[k]};
-  auto typed = graph::infer(parsed.file.patches[k], io);
-  if (!typed) return typed.error();
-  graph::OptimiseOptions oo;
-  oo.sampleRate = sampleRate;
-  auto opt = graph::optimise(std::move(typed.value()), oo);
-  if (!opt) return opt.error();
-  graph::ScheduleOptions so;
-  so.sampleRate = sampleRate;
-  so.source = {*text, full.string(), parsed.nodeSpans[k]};
-  auto sched = graph::schedule(opt.value(), so);
-  if (!sched) return sched.error();
-  engine::InterpretOptions eo;
-  eo.maxBlockFrames = maxBlockFrames;
-  eo.maxVoiceGroups = engine::voiceGroupsFor(kPlayVoices);
-  auto image = engine::buildInterpreted(sched.value(), eo);
+                                      uint32_t maxBlockFrames, compile::Backend backend) {
+  auto src = compile::SourceFile::load(compile::pathFromUtf8(path));
+  if (!src) return src.error();
+  auto k = (*src)->findPatch(patch);
+  if (!k) return k.error();
+  compile::CompileOptions co;
+  co.sampleRate = sampleRate;
+  auto compiled = compile::compilePatch(**src, *k, co);
+  if (!compiled) return compiled.error();
+  compile::ImageOptions io;
+  io.maxBlockFrames = maxBlockFrames;
+  io.maxVoiceGroups = engine::voiceGroupsFor(kPlayVoices);
+  auto image = compile::buildImage(compiled->schedule, backend, io);
   if (!image) return image.error();
   CompiledPlay c;
-  c.patchName = parsed.file.patches[k].name();
-  c.ops = static_cast<uint32_t>(sched->ops.size());
+  c.patchName = compiled->patchName;
+  c.backend = backend;
+  c.ops = static_cast<uint32_t>(compiled->schedule.ops.size());
   for (const engine::IoSlot& s : (*image)->io().globalOut) c.outputs += s.isExport ? 0u : 1u;
   for (const engine::IoSlot& s : (*image)->io().voiceOut) c.voiceOutputs += s.isExport ? 0u : 1u;
   if (c.outputs == 0 && c.voiceOutputs == 0)
     return Error{ErrorCode::Unsupported, "patch '" + c.patchName + "' has no `out` (global or voice) to play", {}};
-  const graph::Patch& scheduled = sched->rewritten ? sched->rewritten->patch : opt->patch;
-  c.doneSlot = engine::findVoiceSlot((*image)->io(), scheduled, "done");
+  c.doneSlot = engine::findVoiceSlot((*image)->io(), compiled->scheduled().patch, "done");
   c.image = std::move(image.value());
   return c;
 }
@@ -170,7 +88,10 @@ int runPlay(const CliOptions& options) {
   }
   const engine::StreamInfo info = *opened;
   // Compiled for the device's rate, with the internal block as the largest block.
-  auto compiled = compilePatchFile(options.playPath, options.patchName, info.sampleRate, options.blockFrames);
+  const compile::Backend programBackend =
+      options.playBackend == PlayBackend::Interpreter ? compile::Backend::Interpreter : compile::Backend::Jit;
+  auto compiled =
+      compilePatchFile(options.playPath, options.patchName, info.sampleRate, options.blockFrames, programBackend);
   if (!compiled) {
     std::fprintf(stderr, "pqdaw: %s\n", compiled.error().message.c_str());
     dev.close();
@@ -205,8 +126,9 @@ int runPlay(const CliOptions& options) {
     }
     runner.setVoices(&voices, arp.source());
   }
-  std::printf("patch:    '%s' from %s: %u ops (interpreter), %u %s output(s) played at %.1f dBFS, clipped to [-1, 1]\n",
+  std::printf("patch:    '%s' from %s: %u ops (%s), %u %s output(s) played at %.1f dBFS, clipped to [-1, 1]\n",
               compiled->patchName.c_str(), options.playPath.c_str(), compiled->ops,
+              compile::backendLabel(compiled->backend),
               instrument ? compiled->voiceOutputs : compiled->outputs, instrument ? "voice" : "global", options.levelDb);
   if (instrument)
     std::printf("notes:    %zu-note arpeggio, one note per 0.25 s, up to %u voices\n", notes->size(), kPlayVoices);

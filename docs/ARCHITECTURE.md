@@ -32,7 +32,7 @@ This document fixes the module layout and the interfaces between modules so that
    └──────────────────────────────────────────────────────┘
 ```
 
-Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `jit` sits above `engine` (T1b.1): it produces `engine::ProgramImage`s, so it includes engine headers; the engine never includes `jit` — whoever owns the compiler worker (the app) hands compiled images to the engine (QUESTIONS Q63). `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (`ProjectLink` over the engine since T3.17; the wall-clock `SimulatedTransport` remains only as a fallback when playback cannot start). `app` depends on `views` + `engine`. `document` depends on `graph` for the project → graph lowering (T3.17, `pq/document/lower.h`); it never includes `engine`.
+Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `jit` sits above `engine` (T1b.1): it produces `engine::ProgramImage`s, so it includes engine headers; the engine never includes `jit` — whoever owns the compiler worker (the app) hands compiled images to the engine (QUESTIONS Q63). `compile` (T1.x-arch2) sits above `engine` + `jit`: the one file → Schedule → image pipeline and the process's JIT compiler, used by `tools/pqc` and `app`. `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (`ProjectLink` over the engine since T3.17; the wall-clock `SimulatedTransport` remains only as a fallback when playback cannot start). `app` depends on `views` + `engine` + `compile`. `document` depends on `graph` for the project → graph lowering (T3.17, `pq/document/lower.h`); it never includes `engine`.
 
 | Module | CMake target | Namespace | Contents |
 |---|---|---|---|
@@ -41,13 +41,14 @@ Arrows point at dependencies. A module may only include headers from modules bel
 | `src/dsp` | `pq_dsp` | `pq::dsp` | Native leaf-atom kernels (scalar + SIMD), FFT, analysers ported from PQ Meter (spectrum grid, NSDF pitch, LUFS…), sample-rate conversion, warp engines later |
 | `src/graph` | `pq_graph` | `pq::graph` | Patch IR, patch-language parser/printer, inference (rate/kind/poly/width), optimiser, scheduler, `Program` description (the interpreter backend is in `engine`: it builds a ProgramImage), the project graph: per-track compile units (partition, composition, unit hash; T1.x-arch1) |
 | `src/jit` | `pq_jit` | `pq::jit` | LLVM IR generation from a schedule into an `engine::ProgramImage` (depends on `engine`), ORC LLJIT, AOT compilation of `stdlib/`, compile cache |
-| `src/engine` | `pq_engine` | `pq::engine` | Audio thread runtime: ProgramImage ABI, interpreter backend, Program execution, voice allocation, transport, hot swap + state transfer, the per-track project runner + compile driver (T1.x-arch1), parameter blocks, taps for meters, audio device I/O (RtAudio), MIDI I/O, offline renderer |
+| `src/compile` | `pq_compile` | `pq::compile` | T1.x-arch2 (Q73 B): `SourceFile` (a .pqp with its imports), `compilePatch` (infer → optimise → schedule), `buildImage` (interpreter or JIT), the process's `jitCompiler()` and `jitUnitBackend()` (`pq/compile/compile.h`). Depends on `engine` + `jit` |
+| `src/engine` | `pq_engine` | `pq::engine` | Audio thread runtime: ProgramImage ABI, the shared image host both backends run (`pq/engine/image_host.h`, T1.x-arch2), interpreter backend, Program execution, voice allocation, transport, hot swap + state transfer, the per-track project runner + compile driver (T1.x-arch1), parameter blocks, taps for meters, audio device I/O (RtAudio), MIDI I/O, offline renderer |
 | `src/document` (headers `pq/document/`) | `pq_doc` | `pq::doc` | Immutable project model (tracks, clips, notes, devices, tunings, automation), commands, undo/redo, serialization (JSON + `.pqp`), project → graph lowering |
 | `src/ui` | `pq_ui` | `pq::ui` | Window (SDL3), Vulkan renderer, draw lists (ImDrawVert-compatible), text (FreeType/HarfBuzz), widget toolkit, theme tokens, offscreen screenshot path |
 | `src/ui/scenes` | `pq_ui_scenes` | `pq::ui` | Named test scenes (`pq/ui/scenes.h`: `--screenshot`, goldens, ui benchmarks, `renderSceneImage`). Linked by `pq_app`, tests and benches; not part of the toolkit. The fonts, theme and textures they paint with (`pq/ui/scene_textures.h`) stay in `pq_ui` |
 | `src/views` | `pq_views` | `pq::views` | The DAW's views (T3.7+): `ViewContext` (owns the `DocumentStore`, global actions, view state), `TransportPort`, the main-window shell (control bar, track-area/detail/browser slots, info view, status line), arrangement, mixer, piano roll, MOS wheel, preferences window (one subtree each; T3.18's `AudioPrefsPort` is the plain-data audio-device interface the app implements), view scenes for screenshots |
 | `src/app` | `pq_app` (lib) + `pqdaw` (exe: `main.cpp` only, so tests can link the CLI/commands) | `pq::app` | Main, CLI, the window loop, `ShellApp` (views in the window: SDL file dialogs, text input, title, idle/first-frame measurement), `TransportPort` implementations, the playback link (`ProjectLink`: document → engine, transport, meters; T3.17), the audio output (`AudioOutput`) and the audio device manager (`AudioDeviceManager`, T3.18: preferences, user settings file, rate changes, hot-plug), `--render` |
-| `tools/` | `pqc` (exe) + `pq_pqc` (lib: everything but `main`, for tests) | `pq::pqc` | Patch compiler CLI (T1.10, `tools/README.md`): check / dump-ir / dump-schedule / render (interpreter or JIT), later AOT. Depends on `engine` + `jit` |
+| `tools/` | `pqc` (exe) + `pq_pqc` (lib: everything but `main`, for tests) | `pq::pqc` | Patch compiler CLI (T1.10, `tools/README.md`): check / dump-ir / dump-schedule / render (interpreter or JIT), later AOT. Depends on `compile` (its pipeline) |
 | `stdlib/` | – | – | Stock subcircuits and devices as `.pqp` text (filters, envelopes, devices) |
 | `tests/` | `pq_tests_<module>` | – | doctest unit tests per module, golden renders in `tests/golden/` |
 | `bench/` | `pq_bench_<suite>` + `pq_bench_support` | `pq::bench` | Benchmarks; the T1.11 runner (`pq_bench.h`: named benchmarks, regex filter, warmup/repeats/median/p99, CSV) and `tools/bench/append_results.py` append results to `bench/RESULTS.md` |
@@ -169,12 +170,30 @@ namespace pq::jit {
   };
 }
 
+// engine image host (pq/engine/image_host.h, T1.x-arch2, M1 review M15): everything an image does around its op code,
+// once for both backends: schedule validation, the memory layout (buffers + backend scratch, aux patterns, state
+// arena with StateInit), ImageInterface / StateLayout / StateArena, params (clamped, splatted), engine sources
+// (pointer table [ext · groups + group]), the special ops (broadcast, reducers, sends as KernelFns with a record
+// per op), resources (+ built-in defaults), and the stage loop with reducer init, RunCtx and output copies:
+//   host.build(schedule, {who, backend, maxBlockFrames, maxVoiceGroups, resources, extraBufFloats});
+//   process: if (host.begin(ctx)) host.run(ctx, global(k), voice(k, group));   // the backend's two callables
+// The interpreter's records and the JIT's stage functions are what remains backend-specific; ImageInterface::backend
+// says which one built an image.
+namespace pq::compile {   // pq_compile (T1.x-arch2, Q73 B): the one file → image pipeline (pqc, pqdaw --play)
+  Result<std::unique_ptr<SourceFile>> SourceFile::load(path);           // + imports, kept alive
+  Result<Compiled> compilePatch(const SourceFile&, size_t patch, const CompileOptions&);  // every stage kept
+  Result<std::unique_ptr<engine::ProgramImage>> buildImage(const graph::Schedule&, Backend, const ImageOptions&);
+  Result<jit::Compiler*> jitCompiler();                                 // the process's one LLJIT (thread-safe)
+  engine::UnitBackend jitUnitBackend() noexcept;                       // ProjectCompiler → the JIT
+}
+
 // engine Newton (pq/engine/newton.h, T1b.1-fix1): what both backends do for a solve block, in one place so they
 // agree bit for bit: forward-mode tangents through the body (one evaluation per iteration; tangentOp is one template
 // instantiated on scalar floats by the interpreter and on IR by the JIT; planTangents says which tangents are
 // structurally zero), finite differences with a step relative to the unknown (2^-8 · max(|u|, 1e-6), one-sided where
 // a side leaves the domain) for bodies without tangent rules (table reads) and lanes whose tangent Jacobian is not
-// finite, and the exact cos/log both backends call per lane (cosExact, logExact).
+// finite, the exact cos/log both backends call per lane (cosExact, logExact), and the n > 1 update both call
+(linearUpdate: Gaussian elimination per lane in double, T1.x-arch2).
 
 // engine: what the audio thread runs (pq/engine/program_image.h, interpreter.h, image_runner.h; T1.7)
 namespace pq::engine {
@@ -212,10 +231,13 @@ namespace pq::engine {
     void process(const AudioBlock&) noexcept;            // audio thread (device or offline loop)
     Result<RenderStats> renderOffline(frames, AudioSink&, blockFrames);  // same path, deterministic
   };
-  // T1.10 (pq/engine/offline_render.h): the free function the Engine will wrap. Runs any image through ImageRunner
+  // T1.10 (pq/engine/offline_render.h): runs any image through a ProgramHost (T1.x-arch2; before, an ImageRunner)
   // (+ VoiceEngine + an EventSource such as NoteListSource, pq/engine/note_list.h) at a fixed block, chunk by chunk
   // into an AudioSink (BufferSink, or a WavWriter-backed sink), FTZ/DAZ + an RtScope around each chunk's block loop.
+  // The second form renders a caller's ProgramHost with a non-RT callback between chunks (publish there: swaps
+  // offline are the live protocol). One loop (src/engine/src/render_loop.h) for both and for Engine::renderOffline.
   Result<RenderStats> renderOffline(const RenderRequest&, AudioSink&);
+  Result<RenderStats> renderOffline(ProgramHost&, const HostRenderRequest&, AudioSink&);
 }
 ```
 
@@ -260,7 +282,7 @@ The engine's process entry will be an `AudioCallback` behind a `BlockAdapter`; `
 - **Image bindings (T1.9)**: everything image-dependent (voice out slots, mix buffers, lane reset/move spans, the image's voice state) is a `VoiceBinding`. `prepareLanes(io, cfg)` sets up lanes and voice.* buffers for a geometry (maxVoiceGroups, maxBlockFrames, sample rate); `makeBinding(image, doneSlot, monitorMask)` (non-RT) binds any image of that geometry; `attach(current, fadingOut)` (RT) switches at a block boundary, so lanes, notes and allocator state survive a program swap. While a crossfade runs, `process(ctx, fadeCtx)` runs both images on the same voice table, lane resets and compaction moves apply to both, `fadeMix(i)` holds the old image's mixes. `prepare(image, cfg)` = prepareLanes + makeBinding + attach.
 
 ### Hot swap (engine, T1.9: `pq/engine/program_host.h`, `state_transfer.h`)
-- **ProgramHost** owns the running ProgramImage (any backend: it uses only the ABI). `publish(image, SwapPolicy{mode: Auto | Instant | Crossfade, fadeMs}, VoiceSlots)` (non-RT, internally serialised) builds everything that allocates — the transfer plan against the previously *published* image, the param remap (new slot ← old slot with the same `ParamSlot::key`), output scratch, the VoiceBinding — and pushes a packet through an SpscRing. The audio thread pops at most one packet per image block, never during a crossfade, so packets become current in publish order and each plan's source is exactly the image it replaces. Images must have the host's sample rate and maxBlockFrames (and voice geometry); `lastPublished()->stateLayout()` is the next compile's `ScheduleOptions::previous`. Device mapping as ImageRunner (input c → global root in c; output c ← c-th global `out`, mono on all, else the voice mixes).
+- **ProgramHost** owns the running ProgramImage (any backend: it uses only the ABI). `publish(image, SwapPolicy{mode: Auto | Instant | Crossfade, fadeMs}, VoiceSlots)` (non-RT, internally serialised) builds everything that allocates — the transfer plan against the previously *published* image, the param remap (new slot ← old slot with the same `ParamSlot::key`), output scratch, the VoiceBinding — and pushes a packet through an SpscRing. The audio thread pops at most one packet per image block, never during a crossfade, so packets become current in publish order and each plan's source is exactly the image it replaces. Images must have the host's sample rate and maxBlockFrames (and voice geometry); `lastPublished()->stateLayout()` is the next compile's `ScheduleOptions::previous`. Device mapping as ImageRunner (one rule, `mapChannels`: input c → global root in c; output c ← c-th global `out`, mono on all, else the voice mixes). `HostConfig::externalVoices` runs the images through a caller's prepared VoiceEngine (renderOffline's); `takePending()` makes the first published image current before the first block (so its params can be set).
 - **State transfer** (`buildTransferPlan` off-thread, `executeTransfer` RT): a new `StateEntry` takes the old entry with the same (stateKey, channel, arena) when tag and size match; else it keeps StateInit (`TransferPlan::matched/fresh/mismatched/dropped`). Ranges contiguous in both arenas are coalesced (with T1.5's stable offsets an edit is usually one range per arena). It runs on the audio thread at the swap, right before the new image's first block, from the old image's current state; voice ranges are copied per group, only for occupied groups when `resetOnNoteOn` (free lanes are reset at note start anyway). `ProgramImage::stateLayout()`/`stateArena()`/`io()` must be callable from the publishing thread while the image runs (they return immutable data / fixed pointers). State keys come from NodeIds: edits made on the Patch IR keep them; edited TEXT keeps them when it is parsed with the previous parse (`ParseOptions::previous`, T1.x-text-ids: ≥ 99 % — measured 100 % — of the corpus's state entries match after an added export, inserted lines, renamed bindings, reordered lines or a reprint); a plain re-parse renumbers nodes (declarations first) and loses the match (Q68). Every caller that re-parses text for a hot swap (pqc, a text editor view, the document lowering when its generated text changes) should pass the previous parse.
 - **Swap at the block boundary**: audible (Auto) = transport playing, or any voice lane in use, or the last block's played output above `HostConfig::silenceDb` (−90 dBFS; read from the old image's scratch, no per-block metering). Audible → **linear** crossfade over fadeMs (clamped 5–20 ms): both images run on the same inputs/events/voice table, `out = old + g·(new − old)`, g = (k+1)/N, exactly `new` from g = 1 (bit-exact where old == new: an unchanged path passes untouched; linear because the two programs are correlated, equal-power would bulge up to +3 dB). Silent → instant. Params carried, VoiceEngine re-attached.
 - **Reclamation**: the audio thread only advances an atomic "retired through" sequence (instantly, or when the fade ends) and calls `EpochReclaimer::quiescent` at the end of every `process()`; `collect()` (and `publish()`) retire those packets to the reclaimer, which frees them after the next quiescent state. The audio thread never frees. `audioOffline()/audioOnline()` while the stream is stopped.

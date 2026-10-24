@@ -208,7 +208,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   for (size_t k = 0; k < gen->stageFunctions.size(); ++k) {
     auto sym = s.jit->lookup(gen->stageFunctions[k]);  // materialises (compiles) the module now, not on the audio thread
     if (!sym) return llvmError("looking up a stage function", sym.takeError());
-    image->stages_[k].fn = sym->toPtr<detail::StageFn>();
+    image->fns_[k] = sym->toPtr<detail::StageFn>();
   }
   st.machineCodeMs = msSince(t1);
   st.objectBytes = s.objectBytes;

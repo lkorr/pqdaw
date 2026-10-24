@@ -45,6 +45,12 @@ inline constexpr uint32_t kMaxAdUnknowns = 32;  // tangent directions are a uint
 float cosExact(float x) noexcept;
 float logExact(float x) noexcept;
 
+// Step 4 for n > 1 unknowns, per lane l < lanes: solve J·Δ = r0 in double by Gaussian elimination with partial
+// pivoting and set u −= Δ when every component is finite (else the lane keeps its value). Layouts: u[j·8 + l],
+// r0[i·8 + l], J[(i·n + j)·8 + l]; M = n·(n + 1) doubles of scratch. One compiled copy for both backends: the
+// interpreter calls it, generated code calls this very function through its pointer table. RT-safe.
+void linearUpdate(float* u, const float* J, const float* r0, double* M, uint32_t n, uint32_t lanes) noexcept;
+
 // Whether atom `a` has a tangent rule, and whether its input k carries a derivative (select's mask, mux's index,
 // comparisons … do not). Every element-wise atom has a rule; stateful atoms cannot be in a solve body (the
 // scheduler rejects them) and table reads (wavetable, shaper) have none (finite differences).

@@ -5,6 +5,7 @@
 #include <bit>
 #include <cmath>
 #include <unordered_map>
+#include <utility>
 
 namespace pq::engine::newton {
 
@@ -14,6 +15,44 @@ using dsp::Atom;
 // Out of line on purpose (newton.h): one compiled copy for the interpreter and the generated code.
 __declspec(noinline) float cosExact(float x) noexcept { return std::cos(x); }  // RT-safe
 __declspec(noinline) float logExact(float x) noexcept { return std::log(x); }  // RT-safe
+
+void linearUpdate(float* u, const float* J, const float* r0, double* M, uint32_t n, uint32_t lanes) noexcept {  // RT-safe
+  const uint32_t w = n + 1;
+  for (uint32_t l = 0; l < lanes; ++l) {
+    for (uint32_t i = 0; i < n; ++i) {
+      for (uint32_t j = 0; j < n; ++j) M[i * w + j] = J[(i * n + j) * 8 + l];
+      M[i * w + n] = r0[i * 8 + l];
+    }
+    bool ok = true;
+    for (uint32_t c = 0; c < n && ok; ++c) {
+      uint32_t piv = c;
+      for (uint32_t i = c + 1; i < n; ++i)
+        if (std::fabs(M[i * w + c]) > std::fabs(M[piv * w + c])) piv = i;
+      if (!(std::fabs(M[piv * w + c]) > 0.0)) {
+        ok = false;
+        break;
+      }
+      if (piv != c)
+        for (uint32_t j = 0; j < w; ++j) std::swap(M[c * w + j], M[piv * w + j]);
+      for (uint32_t i = c + 1; i < n; ++i) {
+        const double f = M[i * w + c] / M[c * w + c];
+        for (uint32_t j = c; j < w; ++j) M[i * w + j] -= f * M[c * w + j];
+      }
+    }
+    if (!ok) continue;
+    for (uint32_t i = n; i-- > 0;) {
+      double v = M[i * w + n];
+      for (uint32_t j = i + 1; j < n; ++j) v -= M[i * w + j] * M[j * w + n];
+      M[i * w + n] = v / M[i * w + i];
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+      const double nu = static_cast<double>(u[i * 8 + l]) - M[i * w + n];
+      if (!std::isfinite(nu) || !std::isfinite(static_cast<float>(nu))) ok = false;
+    }
+    if (!ok) continue;
+    for (uint32_t i = 0; i < n; ++i) u[i * 8 + l] = static_cast<float>(static_cast<double>(u[i * 8 + l]) - M[i * w + n]);
+  }
+}
 
 float ScalarOps::floor(float a) noexcept { return std::floor(a); }      // RT-safe
 float ScalarOps::round(float a) noexcept { return std::nearbyint(a); }  // RT-safe (default rounding: ties to even)

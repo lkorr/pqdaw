@@ -24,10 +24,16 @@ enum class Mode {
                    //   [--asio] [--rate <hz>]
                    //   [--buffer <n>] [--block <n>] [--exclusive] [--level <dBFS>] [--inject-stall <wake>]
   LatencyTest,     // --latency-test [--seconds <s>] [--device <id|endpoint>] [--buffer <n>] [--level <dBFS>]
-  Play,            // --play <file.pqp> [--patch <name>] [--notes "<keys>"] [--seconds <s>] [--level <dBFS>] + the
-                   //   --sine stream flags
+  Play,            // --play <file.pqp> [--patch <name>] [--notes "<keys>"] [--seconds <s>] [--level <dBFS>]
+                   //   [--backend jit|interp] + the --sine stream flags
   AsioPanel,       // --asio-panel [--device <id|name>] [--seconds <s>]: open an ASIO driver's control panel (T0.6-fix2)
   Render,          // --project <dir> --render <out.wav> [--seconds <s>]: offline render of a project (T3.17)
+};
+
+// Which program backend --play compiles the patch for (--backend jit|interp; T1.x-arch2).
+enum class PlayBackend : uint8_t {
+  Jit,          // --backend jit (default): the LLVM JIT
+  Interpreter,  // --backend interp
 };
 
 // Which WASAPI implementation --sine / --list-devices use (--asio / --backend asio overrides both with our ASIO host).
@@ -70,6 +76,7 @@ struct CliOptions {
   // --play (T1.7): the patch file and the patch in it (empty: the first one).
   std::string playPath;
   std::string patchName;
+  PlayBackend playBackend = PlayBackend::Jit;
   // --notes (T1.8): the arpeggio a voice patch plays (parsePlayNotes); empty = the default "60 64 67 72".
   std::string notes;
 };

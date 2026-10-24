@@ -9,6 +9,7 @@
 #include "pq/engine/interpreter.h"
 #include "pq/engine/note_list.h"
 #include "pq/engine/offline_render.h"
+#include "pq/engine/program_host.h"
 #include "pq/engine/wav_file.h"
 #include "pq/graph/infer.h"
 #include "pq/graph/optimise.h"
@@ -229,4 +230,71 @@ TEST_CASE("renderOffline: argument errors") {
   const float two[] = {1.0f, 2.0f};
   rq.params = two;  // one param slot only
   CHECK_FALSE(e::renderOffline(rq, s));
+}
+
+// T1.x-arch2: renderOffline runs through a ProgramHost (the device's hot-swap path); the host form renders whatever
+// a host plays, with publishes between chunks exactly as a compiler thread would make them live.
+TEST_CASE("renderOffline: through a ProgramHost, swaps between chunks are the live protocol (bit-exact on equal programs)") {
+  Built ref = build(kStereo);
+  e::RenderRequest rq;
+  rq.image = ref.image.get();
+  rq.frames = 10000;
+  rq.blockFrames = 64;
+  e::BufferSink want;
+  REQUIRE(e::renderOffline(rq, want));
+
+  e::HostConfig hc;
+  hc.sampleRate = 48000.0;
+  hc.maxBlockFrames = 256;
+  hc.numOut = 2;
+  e::ProgramHost host(hc);
+  REQUIRE(host.publish(build(kStereo).image));
+  struct Swapper {
+    e::ProgramHost* host;
+    int64_t at;
+    int published = 0;
+    static void between(void* self, int64_t next) {
+      auto& s = *static_cast<Swapper*>(self);
+      if (next < s.at || s.published > 0) return;
+      // A recompile of the same patch (same state keys): the transfer carries every state word, the crossfade is
+      // exact where old == new.
+      REQUIRE(s.host->publish(build(kStereo).image, e::SwapPolicy{e::SwapMode::Crossfade, 10.0f}));
+      ++s.published;
+    }
+  } swapper{&host, 3200};
+  e::HostRenderRequest hr;
+  hr.frames = 10000;
+  hr.blockFrames = 64;
+  hr.numChannels = 2;
+  hr.chunkFrames = 640;
+  hr.betweenChunks = &Swapper::between;
+  hr.user = &swapper;
+  e::BufferSink got;
+  auto st = e::renderOffline(host, hr, got);
+  REQUIRE(st);
+  CHECK(st->blocks == (10000 + 63) / 64);
+  CHECK(swapper.published == 1);
+  CHECK(host.stats().swaps == 2);
+  CHECK(host.stats().crossfades == 1);
+  CHECK(host.stats().fadeBlocks > 0);
+  REQUIRE(got.channels.size() == 2);
+  for (size_t c = 0; c < 2; ++c) CHECK(std::memcmp(got.channels[c].data(), want.channels[c].data(), 10000 * 4) == 0);
+  host.collect();
+
+  // The one-image form checks that a VoiceEngine is prepared for that image (M1 review L9).
+  Built v1 = build(kVoice, 128, 3), v2 = build(kVoice, 128, 3);
+  e::VoiceEngine voices;
+  e::VoiceConfig vc;
+  vc.maxVoices = 16;
+  REQUIRE(voices.prepare(v1.image.get(), vc));
+  e::RenderRequest vr;
+  vr.image = v2.image.get();
+  vr.frames = 256;
+  vr.voices = &voices;
+  e::BufferSink s;
+  CHECK_FALSE(e::renderOffline(vr, s));
+  vr.image = v1.image.get();
+  CHECK(e::renderOffline(vr, s));
+  CHECK(voices.binding() != nullptr);  // the caller's binding is attached again afterwards
+  CHECK(voices.binding()->image == v1.image.get());
 }

@@ -125,7 +125,11 @@ struct IoSlot {
   uint32_t ordinal = 0;                   // inputs: the root `in`'s ordinal (InferOptions::inputs order)
 };
 
+// Which backend built an image (informational: tests, diagnostics, the T1b.5 interpreter → JIT swap's statistics).
+enum class ImageBackend : uint8_t { Unknown, Interpreter, Jit };
+
 struct ImageInterface {
+  ImageBackend backend = ImageBackend::Unknown;
   double sampleRate = 0.0;
   uint32_t maxBlockFrames = 0;
   uint32_t maxVoiceGroups = 0;

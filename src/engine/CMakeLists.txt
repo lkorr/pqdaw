@@ -7,6 +7,7 @@ pq_add_module(pq_engine
     src/block_adapter.cpp
     src/engine.cpp
     src/callback_stats.cpp
+    src/image_host.cpp
     src/image_runner.cpp
     src/interpreter.cpp
     src/newton.cpp

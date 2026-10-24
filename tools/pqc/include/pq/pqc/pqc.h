@@ -8,8 +8,8 @@
 //                     [--backend interp|jit] [--voices N] [--param NAME=VALUE]… [--gain DB] -o out.wav
 // Usage and exit codes: tools/README.md (and usage()).
 //
-// Pipeline (SPEC §7.4): read the file (imports relative to the importing file, recursively) → parse → infer →
-// optimise (specialised for --rate) → schedule → ProgramImage (interpreter, or the LLVM JIT) → offline render
+// Pipeline (SPEC §7.4): pq_compile (pq/compile/compile.h: read the file with its imports → parse → infer → optimise
+// (specialised for --rate) → schedule → ProgramImage on the interpreter or the LLVM JIT) → offline render
 // (engine::renderOffline: fixed block, deterministic) → 32-bit float WAV. Not RT-safe anywhere (tool code); the
 // render loop itself is the engine's RT path.
 
@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "pq/compile/compile.h"
 #include "pq/core/result.h"
 #include "pq/engine/note_list.h"
 #include "pq/engine/offline_render.h"
@@ -42,51 +43,12 @@ enum ExitCode : int {
   kExitBackend = 4,       // the patch compiled but could not be built or rendered (JIT failure, nothing to play…)
 };
 
-// A .pqp file with everything it imports, parsed and kept alive (the PatchLibrary points into it).
-class SourceFile {
-public:
-  // Errors: Io (unreadable file or import), Parse (every diagnostic of the failing file, formatted with
-  // file:line:col, the source line and a caret, one after the other).
-  static Result<std::unique_ptr<SourceFile>> load(const std::filesystem::path& path);
-  ~SourceFile();
-
-  const graph::PatchFile& file() const noexcept;
-  const std::string& text() const noexcept;
-  const std::string& fileName() const noexcept;
-  // Index of the patch named `name` (empty: the first patch), or an error naming the patches there are.
-  Result<size_t> findPatch(std::string_view name) const;
-  // Callees: this file's patches, then every imported file's.
-  const graph::PatchLibrary& library() const noexcept;
-  // Source spans of patch `index`'s nodes (for file:line:col diagnostics in later phases).
-  std::span<const graph::SourceSpan> nodeSpans(size_t index) const noexcept;
-
-  struct Impl;
-
-private:
-  explicit SourceFile(std::unique_ptr<Impl> impl);
-  std::unique_ptr<Impl> impl_;
-};
-
-struct CompileOptions {
-  double sampleRate = 48000.0;
-  bool visualMode = false;  // a delay-free cycle gets a z1 and a warning instead of an error
-};
-
-// One patch through the whole graph pipeline.
-struct Compiled {
-  std::string patchName;
-  graph::TypedPatch inferred;    // after infer() (durations in seconds)
-  graph::TypedPatch optimised;   // after optimise()
-  graph::OptimiseStats optimiseStats;
-  graph::Schedule schedule;
-  std::vector<std::string> warnings;  // formatted (visualMode z1 insertions)
-  // The patch every NodeIndex of the schedule refers to.
-  const graph::TypedPatch& scheduled() const noexcept { return schedule.rewritten ? *schedule.rewritten : optimised; }
-};
-
-// Errors carry every diagnostic of the failing phase, formatted against the source; their code is Type (any phase
-// after parsing).
-Result<Compiled> compilePatch(const SourceFile& source, size_t patchIndex, const CompileOptions& options = {});
+// The pipeline itself is pq_compile's (pq/compile/compile.h, shared with `pqdaw --play`; QUESTIONS Q73 B).
+using compile::Compiled;
+using compile::CompileOptions;
+using compile::compilePatch;
+using compile::pathFromUtf8;
+using compile::SourceFile;
 
 // ---- Notes (--notes) -------------------------------------------------------------------------------------------
 // See tools/README.md "Notes". A plain pitch list ("60 64 67 72", the `pqdaw --play` syntax) is the --play
@@ -107,7 +69,7 @@ Result<NotesSpec> parseNotes(std::string_view text);
 std::vector<engine::TimedNote> timedNotes(const NotesSpec& spec, double sampleRate, uint64_t frames);
 
 // ---- Rendering -------------------------------------------------------------------------------------------------
-enum class Backend : uint8_t { Interpreter, Jit };
+using compile::Backend;
 
 struct RenderOptions {
   std::string patch;                // empty: the first patch
@@ -140,8 +102,5 @@ Result<RenderInfo> renderFile(const std::filesystem::path& path, const RenderOpt
 std::string usage();
 // Runs one command line (args without the program name). Output to `out`, diagnostics to `err`; returns the exit code.
 int run(std::span<const std::string> args, std::ostream& out, std::ostream& err);
-
-// UTF-8 string → path (the CLI's arguments are UTF-8).
-std::filesystem::path pathFromUtf8(std::string_view s);
 
 }  // namespace pq::pqc
