@@ -356,14 +356,14 @@ Status ProjectLink::setSampleRate(double rate) {
 }
 
 ProjectLink::~ProjectLink() {
-  jit_.reset();  // no JIT delivery after this (a running compile finishes first)
   detach();
   {
     std::lock_guard lock(mutex_);
     quit_ = true;
   }
   cv_.notify_all();
-  if (worker_.joinable()) worker_.join();
+  if (worker_.joinable()) worker_.join();  // no compile path (and so no wantJit) after this
+  jit_.reset();  // then no JIT delivery (a running JIT compile finishes first; a waiting delivery gives up)
 }
 
 void ProjectLink::attach(views::ViewContext& ctx) {
