@@ -18,13 +18,13 @@ No heap allocation or free, no locks or mutexes, no syscalls, no file or console
 ### 3. Numbers
 - Pitch is float32 Hz at the end. Pitch identities stay exact (integer ratios).
 - Oscillator phase uses **uint32** fixed-point accumulators.
-- Timeline positions are **int64** ticks (PPQ 27720) or samples.
+- Timeline positions are **int64** ticks (`pq::kPpq`; never write literal tick values, derive them from the constant) or samples.
 - Denormals are flushed on audio threads.
 
 ### 4. Definition of done
 A task is done only when every acceptance criterion in `docs/TASKS.md` and every standing criterion holds, **verified by commands you actually ran**:
 - `./scripts/build.ps1` (dev) and `./scripts/build.ps1 -Preset release`: zero warnings (warnings are errors), all tests pass.
-- Benchmarks recorded in `bench/RESULTS.md` where relevant.
+- Benchmarks recorded in `bench/RESULTS.md` where relevant, measured on the `ship` preset (see Build and test).
 - No stubs, placeholder returns, `TODO: implement` notes, or commented-out failing tests in code that claims to be done.
 - Never weaken, skip or delete a test to make it pass. If a test is wrong, fix it and explain why in PROGRESS.md.
 - If you can't finish, mark the task `[!]` with the exact blocker in PROGRESS.md and move on. A partial result that is honestly labelled is fine; a false "done" is the worst possible outcome.
@@ -38,7 +38,8 @@ A task is done only when every acceptance criterion in `docs/TASKS.md` and every
 
 ```powershell
 ./scripts/build.ps1                                   # dev: RelWithDebInfo, /Od, /Z7, asserts on; default test tier
-./scripts/build.ps1 -Preset release                   # optimised
+./scripts/build.ps1 -Preset release                   # optimised per TU, no LTCG: routine verification + merge checks
+./scripts/build.ps1 -Preset ship -Target pq_bench_dsp -NoTests   # /GL + /LTCG: shipping builds, recorded benchmark numbers
 ./scripts/build.ps1 -Full                             # default + `slow` tiers (everything except `perf`)
 ./scripts/build.ps1 -Preset release -Perf             # only the opt-in, load-sensitive `perf` label
 ./scripts/build.ps1 -Target pq_tests_core -TestRegex core
@@ -49,6 +50,20 @@ From Git Bash: `scripts/build.sh -Preset release` (forwards to pwsh).
 Test tiers and caches:
 - The default `build.ps1` run skips the ctest labels `slow` (heavy sweeps: doctest cases tagged `* doctest::test_suite("slow")`, run by the `<exe>_slow` entry `pq_add_test` registers) and `perf` (load-sensitive wall-clock checks, T0.x-flake). Iterate with the default tier; **run `-Full` for dev and release before reporting a task done and before merging to main**: that is what "all tests pass" means in the definition of done. `perf` is not part of `-Full` (it depends on machine load); run `-Perf` when your task touches what it measures. Tag a new case `slow` when it takes over ~1 s in dev and is a sweep (fuzzing, exhaustive ranges, whole corpora, long stress runs); its coverage must not be needed by the default tier.
 - With sccache installed, every checkout and worktree shares one compiler cache (`%LOCALAPPDATA%\pqdaw\sccache`) and one archive download cache (`%LOCALAPPDATA%\pqdaw\downloads`); `build.ps1` sets the environment and prints the hit rate. Use `build.ps1`, not a bare `cmake --build`, so the cache settings apply. A cached object may come from another worktree, so never bake an absolute path into a compile definition or source: use `pq_use_build_paths` (`cmake/PqCompilerCache.cmake`). doctest reports file names without directories for the same reason.
+
+Presets: `dev` (unoptimised, asserts on), `release` (`/O2`, asserts off, no whole-program optimisation, so objects are cacheable and links are fast) and `ship` (`release` + `/GL` + `/LTCG`). "Release" in the definition of done means the `release` preset. Benchmark numbers that go into `bench/RESULTS.md` come from `ship`; build only the bench executable you need there (each `ship` link re-runs code generation for everything it links, minutes of CPU). Quick A/B comparisons while you iterate may use `release`; say which preset in RESULTS.
+
+### Working alongside other agents (shared machine)
+Several agents usually build on this machine at once (8 cores, 16 threads). CPU is the bottleneck: oversubscribing it slows everyone, including you, and makes timing measurements meaningless. So:
+- Set `$env:CMAKE_BUILD_PARALLEL_LEVEL=3` before building, unless you were told you are alone on the machine.
+- Iterate with **dev** builds of only what you touch: `./scripts/build.ps1 -Target pq_tests_<module> -TestRegex <module>`. Don't rebuild everything after each edit.
+- Run the complete verification (`-Full` dev, then `-Full` release) **once**, at the end, after your single rebase onto `origin/main`. Re-run only what failed. Never run two builds at the same time in one checkout, and never build dev and release concurrently.
+- `ship` builds are for benchmarks only, and only the bench target.
+- Benchmarks and wall-clock acceptance numbers measured while other agents build are indicative: record the system load the runner prints, and say so.
+- Known intermittent failures that are not yours: an NVIDIA-driver-thread crash (SIGSEGV) in `pq_tests_ui` / `pq_tests_views` (`test_hidpi`, partial redraw, MOS chart hover), the ASIO fake-driver timing check (`test_asio.cpp`). Re-run the one executable (`ctest --test-dir build/<preset> -R <exe>`) and note it in your report. Anything else that fails is yours to explain.
+- Before you report, make sure nothing you started is still running: no background builds, test runs or monitors waiting on output. Your report is final; a lingering background task keeps your agent alive and idle.
+- Don't edit `docs/TASKS.md` or `docs/PROGRESS.md` when you run as a worker: put your PROGRESS entry in your final report, and title new questions `## Q?-<task>-a · …` (the orchestrator numbers them at merge).
+- Disk: build directories are several GB each. Don't create extra ones (scratch worktrees, extra presets) unless the task needs them, and delete them when done.
 
 Toolchain facts (verified during setup):
 - MSVC (VS 2022, latest 17.x) via `scripts/vsenv.ps1`. CMake + Ninja. C++20.

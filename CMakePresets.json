@@ -24,7 +24,18 @@
     {
       "name": "release",
       "inherits": "base",
-      "displayName": "release: fully optimised, asserts off",
+      "displayName": "release: fully optimised per translation unit, asserts off (no LTCG; routine verification)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS_RELEASE": "/O2 /Ob2 /DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE": "/O2 /Ob2 /Oi /Ot /DNDEBUG",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/OPT:REF"
+      }
+    },
+    {
+      "name": "ship",
+      "inherits": "base",
+      "displayName": "ship: release + whole-program optimisation (/GL + /LTCG); shipping builds and recorded benchmarks",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_FLAGS_RELEASE": "/O2 /Ob2 /DNDEBUG",
@@ -36,12 +47,15 @@
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev" },
-    { "name": "release", "configurePreset": "release" }
+    { "name": "release", "configurePreset": "release" },
+    { "name": "ship", "configurePreset": "ship" }
   ],
   "testPresets": [
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" },
       "filter": { "exclude": { "label": "^(perf|slow)$" } } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" },
+      "filter": { "exclude": { "label": "^(perf|slow)$" } } },
+    { "name": "ship", "configurePreset": "ship", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" },
       "filter": { "exclude": { "label": "^(perf|slow)$" } } }
   ]
 }

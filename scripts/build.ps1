@@ -15,14 +15,15 @@
 
 .EXAMPLE
   ./scripts/build.ps1                        # dev preset, build all, run the default test tier
-  ./scripts/build.ps1 -Preset release
+  ./scripts/build.ps1 -Preset release        # optimised, no LTCG (routine verification)
+  ./scripts/build.ps1 -Preset ship -Target pq_bench_dsp -NoTests   # /GL + /LTCG: shipping builds, recorded benchmarks
   ./scripts/build.ps1 -Full                  # default + slow tiers (everything except perf)
   ./scripts/build.ps1 -Preset release -Perf  # only the opt-in wall-clock perf checks (ctest label `perf`)
   ./scripts/build.ps1 -Target pq_tests_core -TestRegex core
   ./scripts/build.ps1 -NoTests
 #>
 param(
-  [ValidateSet('dev', 'release')] [string] $Preset = 'dev',
+  [ValidateSet('dev', 'release', 'ship')] [string] $Preset = 'dev',
   [string] $Target = '',
   [string] $TestRegex = '',
   [switch] $NoTests,
@@ -44,7 +45,7 @@ $env:SCCACHE_CACHE_SIZE = '20G'
 $env:SCCACHE_BASEDIRS = $root
 $md5 = [Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant()))
 $env:SCCACHE_SERVER_PORT = [string](14300 + ([BitConverter]::ToUInt16($md5, 0) % 4000))
-$env:SCCACHE_IDLE_TIMEOUT = '1800'  # outlives a release build's long LTCG link tail, so the stats survive
+$env:SCCACHE_IDLE_TIMEOUT = '1800'  # outlives a ship build's long LTCG link tail, so the stats survive
 $env:SCCACHE_IGNORE_SERVER_IO_ERROR = '1'   # server unreachable: compile without the cache instead of failing
 
 function Get-Sccache([string] $buildDir) {
@@ -57,7 +58,12 @@ function Get-Sccache([string] $buildDir) {
 Push-Location $root
 try {
   $buildDir = Join-Path $root "build/$Preset"
-  if ($Reconfigure -or -not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
+  # Reconfigure when CMakePresets.json changed after this build directory was configured: a preset's cache
+  # variables (compiler / linker flags) only reach an existing CMakeCache.txt through `cmake --preset`.
+  $cacheFile = Join-Path $buildDir 'CMakeCache.txt'
+  $presetsChanged = (Test-Path $cacheFile) -and
+    ((Get-Item (Join-Path $root 'CMakePresets.json')).LastWriteTimeUtc -gt (Get-Item $cacheFile).LastWriteTimeUtc)
+  if ($Reconfigure -or $presetsChanged -or -not (Test-Path $cacheFile)) {
     cmake --preset $Preset
     if ($LASTEXITCODE -ne 0) { throw "configure failed ($LASTEXITCODE)" }
   }
