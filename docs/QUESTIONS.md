@@ -792,3 +792,9 @@ Agents: add questions here instead of guessing on anything important. Use this f
   7. **Size changes**: n, rotation and periods per equave are discrete (Structural, Q26), so inside one compiled program the chain length never changes and a sweep only crosses intervals of the same n; the explorer's updateHeldNotes / transferModeRotation remap (SPEC §3.3) would apply at the recompile swap and is not implemented (held notes keep their degree index). Pitch (glide) events do not move a Degree note under a tuning node (the node replaces voice.hz).
 - Status: open
 
+## Q?-T2.7-a · 2026-10-24 · T2.7 · Main tunings: what T2.7 added on top of T3.4/T3.5, and which tunings get a signal
+- Context: Q15 answered "T3.4 owns tuning slots / assignment / serialization; T2.7 shrinks to binding tunings to graph signal nodes". Named main tunings (TuningSlot), track / clip assignment (Inherit / Main / Private, SetTrackTuning / SetClipTuning), the per-tuning reference (TuningDef::referenceHz, SetTuningParam TuningReference) and their JSON (schema 2) already existed. T2.7 adds the resolution side: `doc::effectiveTuningRef` (the effective tuning AND which main tuning it is) and `doc::resolveTrackPitches` (every note's static Hz plus its tuning signal), tested for re-resolution on reassignment (track, group, clip override, private) and tuning edits, undo, and the JSON round trip. No schema change was needed.
+- Choices (provisional):
+  1. Only main tunings are signals (they are the automatable objects of SPEC §3.2); a private tuning (track or clip) is static. Alternative: a private tuning gets its own anonymous node (it has no automation lanes to drive it today).
+  2. Ratio-to-note anchors resolve within the clip, ≤ 8 links, cycles and missing anchors unresolved (the same rule as T3.17's lowering, whose `noteHz` in src/app/src/project_link.cpp could call `resolveTrackPitches` instead and drop its O(n²) anchor scan).
+- Status: open
