@@ -632,7 +632,17 @@ TEST_CASE("partial redraw: a widget tree painted with the damage as clip equals 
         rects[n++] = r;
         box = Damage::unite(box, r);
       }
-      tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+      // Odd sequences paint once per damage rect (the window loop since T3.x-fix-paint), even ones the rects'
+      // bounding box (the single-region overload): both must equal a full repaint.
+      if (seq % 2) {
+        IRect regions[Damage::kMaxRects];
+        int64_t area = 0;
+        const uint32_t m = tree.damageRects(regions, area);
+        REQUIRE(m == n);
+        tree.paint(dl, res, now, std::span<const IRect>(regions, m));
+      } else {
+        tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+      }
       painted += tree.stats().widgetsPainted;
       REQUIRE(partialTarget->draw(renderer, partialFrame({&layer, 1}, {rects, n})).ok());
       ++frames;
@@ -743,7 +753,14 @@ TEST_CASE("partial redraw: the T3.2 control gallery under random input equals a 
         rects[nr++] = r;
         box = Damage::unite(box, r);
       }
-      tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+      if (seq % 2) {  // per damage rect (the window loop), else the bounding box
+        IRect regions[Damage::kMaxRects];
+        int64_t area = 0;
+        const uint32_t m = tree.damageRects(regions, area);
+        tree.paint(dl, res, now, std::span<const IRect>(regions, m));
+      } else {
+        tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+      }
       REQUIRE(partialTarget->draw(renderer, partialFrame({&layer, 1}, {rects, nr})).ok());
       ++frames;
     }

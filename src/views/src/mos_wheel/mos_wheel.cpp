@@ -494,16 +494,30 @@ void installMosWheel(Shell& shell) { shell.slot(ShellSlot::ClipDetail).add<MosWh
 TuningChip::TuningChip(std::string name, ViewContext& ctx) : Control(std::move(name)), ctx_(ctx) {
   setFocusable(false);
   setInfo("Tuning", "The clip's tuning. Click to open the MOS wheel (Ctrl+Shift+W): MOS, EDO, Scala or a temperament.");
-  docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) {
-    stale_ = true;
-    markDirty();
+  // T3.x-fix-paint (M3 review M12a): a chip repaints only when what it shows changed. Most document events cannot
+  // change a resolved tuning (a mixer drag is a Param event per frame: before, every chip of every header repainted
+  // on each one, so a volume drag cost O(tracks)); the rest re-resolve and compare.
+  docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) {
+    if (tuningMayChange(e)) recheck();
   });
   viewSub_ = ctx_.observe([this](uint32_t bits) {
-    if (bits & view_change::kTuningPreview) {
-      stale_ = true;
-      markDirty();
-    }
+    if (bits & view_change::kTuningPreview) recheck();
   });
+}
+
+bool TuningChip::tuningMayChange(const doc::StoreEvent& e) noexcept {
+  if (e.kind == doc::StoreEventKind::Reset || e.changes.structural() || !e.changes.tunings.empty()) return true;
+  return std::any_of(e.changes.params.begin(), e.changes.params.end(),
+                     [](const doc::ParamRef& r) { return r.kind >= doc::ParamKind::TuningReference; });
+}
+
+void TuningChip::recheck() {
+  const std::string oldText = text_;
+  const Rgba oldSwatch = swatch_;
+  const bool oldHas = hasSwatch_, wasStale = stale_;
+  stale_ = true;
+  refresh();
+  if (wasStale || text_ != oldText || hasSwatch_ != oldHas || (hasSwatch_ && swatch_ != oldSwatch)) markDirty();
 }
 
 void TuningChip::setTarget(std::optional<TuningTarget> target) {

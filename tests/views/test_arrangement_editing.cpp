@@ -710,13 +710,7 @@ TEST_CASE("render: arrangement drags repaint only damage, and equal a full repai
       return;
     }
     ClipRect rects[Damage::kMaxRects];
-    uint32_t n = 0;
-    ClipRect box{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
-    for (const ClipRect& r : d.rects()) {
-      rects[n++] = r;
-      box = Damage::unite(box, r);
-    }
-    tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+    const uint32_t n = views::test::paintDamage(tree, dl, res, now, rects);
     FrameDesc pf = ff;
     pf.full = false;
     pf.damage = {rects, n};

@@ -42,6 +42,9 @@
 // vertices inside one pixel column collapse to first / min / max / last, so a lane costs O(visible width) however
 // many breakpoints it has. Every band paints only inside its rect and the paint clip; a drag frame damages the
 // columns between the moved points' unmoved neighbours (old and new) in every band showing that parameter.
+// With the renderer's TileAtlas (T3.x-fix-paint) an automated band's line is rasterised once per lane snapshot and
+// zoom into tiles of 512 timeline px and drawn as one quad per chunk (automation_tiles.cpp); the ribbon is the
+// fallback (no GPU, a band being dragged, while zooming, until onFrame has built a chunk).
 //
 // UI thread only. Nothing here is RT-safe except the pure evaluation helpers (EnvelopeCursor).
 
@@ -59,6 +62,7 @@
 #include "pq/document/model.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
+#include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 
 namespace pq::views {
@@ -288,8 +292,27 @@ public:
     uint32_t bandsPainted = 0;
     uint32_t vertices = 0;       // polyline vertices of the last paint
     uint32_t handles = 0;        // breakpoint handles drawn in the last paint
+    // T3.x-fix-paint envelope tiles: chunks drawn from a tile / drawn directly while their tile is missing (last
+    // paint); tiles rasterised and allocations that found no room (totals).
+    uint32_t envTilesDrawn = 0;
+    uint32_t envTilesMissing = 0;
+    uint64_t envTilesBuilt = 0;
+    uint64_t envTileFailures = 0;
   };
   const Stats& stats() const noexcept { return stats_; }
+
+  // ---- envelope tiles (T3.x-fix-paint; automation_tiles.cpp) ------------------------------------------------------
+  // Rasterises the missing envelope tiles of the bands visible in `viewport` (LaneCanvas::onFrame; within a texel
+  // budget) and damages the chunks it built so they repaint from them. True when none is missing.
+  bool buildEnvelopeTiles(ui::TileAtlas* tiles, const ui::IRect& canvas, const ui::IRect& viewport);
+  // A paint drew a chunk directly because its tile was missing (read and cleared by the lanes canvas: it asks for a
+  // frame so onFrame builds it).
+  bool takeEnvelopeTilesWanted() noexcept {
+    const bool w = envTilesWanted_;
+    envTilesWanted_ = false;
+    return w;
+  }
+  size_t envelopeTileCount() const noexcept { return envTiles_.size(); }
 
 private:
   struct TrackState {
@@ -339,6 +362,39 @@ private:
   bool editLane(const AutomationBand& b, std::string_view what, Make&& make);
   std::span<const doc::Breakpoint> pointsOf(const AutomationBand& b) const noexcept;
   void paintBand(ui::PaintContext& ctx, const AutomationBand& b, const ui::IRect& clip);
+  // The line of an automated band over `vis` without tiles: the feathered ribbon, or per-column spans when dense.
+  void paintEnvelopeDirect(ui::PaintContext& ctx, const AutomationBand& b, std::span<const doc::Breakpoint> pts, double fallback,
+                           const ui::IRect& vis, bool dense, ui::Rgba lineCol, float lineW);
+  // Envelope tiles: a band's line from its chunks' tiles (false: not eligible, draw directly); `offset` = the screen x
+  // of timeline px 0 the tiles use (handles follow it).
+  struct EnvTileKey {
+    const doc::AutomationLane* lane = nullptr;
+    int64_t chunk = 0;
+    double k = 0.0;
+    float lineW = 0.0f;
+    int32_t h = 0;
+    float top = 0.0f, bottom = 0.0f;  // band-local
+    ParamDisplay disp;
+    bool dense = false;
+    bool operator==(const EnvTileKey& o) const noexcept;
+    uint64_t hash() const noexcept;
+  };
+  struct EnvTile {
+    enum class State : uint8_t { Ready, Failed };
+    EnvTileKey key;
+    doc::LanePtr hold;
+    ui::TileAtlas::Tile tile;
+    State state = State::Failed;
+    uint64_t lastUsed = 0;
+  };
+  bool paintEnvelopeTiles(ui::PaintContext& ctx, const AutomationBand& b, std::span<const doc::Breakpoint> pts, const ui::IRect& vis,
+                          bool dense, ui::Rgba lineCol, float lineW, double& offset);
+  bool envTileEligible(const AutomationBand& b, std::span<const doc::Breakpoint> pts, const ui::TileAtlas* tiles) const noexcept;
+  EnvTileKey envTileKey(const AutomationBand& b, int64_t chunk, bool dense, float lineW) const;
+  double envTileOffset() const noexcept;
+  bool bandDense(const AutomationBand& b, std::span<const doc::Breakpoint> pts) const noexcept;
+  bool rasteriseEnvTile(ui::TileAtlas& tiles, const AutomationBand& b, std::span<const doc::Breakpoint> pts, const EnvTileKey& key,
+                        EnvTile& e);
   AutomationBand laneBand(size_t laneIndex) const;
   std::optional<AutomationBand> rowBand(int32_t row, bool pinned) const;
   Grid grid() const noexcept;
@@ -360,7 +416,12 @@ private:
   // Paint scratch (kept: painting does not allocate once warm).
   std::vector<EnvelopeVertex> verts_;
   std::vector<ui::Vec2> poly_;
+  std::unordered_map<uint64_t, EnvTile> envTiles_;  // by EnvTileKey::hash (a colliding key overwrites)
+  std::vector<AutomationBand> buildBands_;          // buildEnvelopeTiles scratch
+  uint64_t envTileClock_ = 0;
+  bool envTilesWanted_ = false;
   Stats stats_;
+  uint64_t statsFrame_ = 0;  // PaintContext::frame the stats count (a frame may paint once per damage rect)
 };
 
 }  // namespace pq::views

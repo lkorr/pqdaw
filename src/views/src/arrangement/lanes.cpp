@@ -258,7 +258,10 @@ LaneCanvas::LaneCanvas(ArrangementView& view) : Widget("lanes"), view_(view) {}
 // Previews still missing (over a paint's build budget, or skipped while zooming): build them for the visible clips,
 // a budget per frame, without painting; repaint once they are all there (one repaint instead of one per frame).
 void LaneCanvas::onFrame(double /*now*/) {
-  if (!buildAhead()) {
+  // T3.x-fix-paint: the automation envelopes' missing tiles too (they damage the chunks they build).
+  const PaintResources* res = tree() ? tree()->resources() : nullptr;
+  const bool envDone = view_.automation().buildEnvelopeTiles(res ? res->tiles : nullptr, rect(), view_.lanesViewport());
+  if (!buildAhead() || !envDone) {
     requestFrame();
     return;
   }
@@ -746,14 +749,19 @@ void LaneCanvas::paint(PaintContext& ctx) {
   Model& m = view_.model();
   const IRect r = rect();
   const IRect c = intersect(r, ctx.clip);
-  m.stats.rowsPainted = 0;
-  m.stats.clipsPainted = 0;
-  m.stats.noteRectsEmitted = 0;
-  m.stats.previewsDeferred = 0;
-  m.stats.tilesDrawn = 0;
-  m.stats.tileNotes = 0;
-  m.stats.tilesStale = 0;
-  m.stats.tilesMissing = 0;
+  // A frame may paint the canvas once per damage rect (UiTree::paint over rects): the "last paint" stats, the preview
+  // build budget and the cache's paint serial count frames, not passes.
+  const bool newFrame = ctx.frame != paintFrame_ || ctx.frame == 0;
+  if (newFrame) {
+    m.stats.rowsPainted = 0;
+    m.stats.clipsPainted = 0;
+    m.stats.noteRectsEmitted = 0;
+    m.stats.previewsDeferred = 0;
+    m.stats.tilesDrawn = 0;
+    m.stats.tileNotes = 0;
+    m.stats.tilesStale = 0;
+    m.stats.tilesMissing = 0;
+  }
   m.tilesMissing = false;
   m.approxDrawn = false;
   m.approxForZoom = false;
@@ -761,7 +769,8 @@ void LaneCanvas::paint(PaintContext& ctx) {
   m.tileQuads.clear();
   m.deferredRects.clear();
   if (c.empty()) return;
-  m.beginPaint(previewBudget_);
+  if (newFrame) m.beginPaint(previewBudget_);
+  paintFrame_ = ctx.frame;
   const double k = view_.devicePxPerTick();
   const double origin = view_.originTick();
   LanePaint lp{ctx, th, m, view_, *m.shown, r, c, k, origin,
@@ -848,6 +857,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
 
   // T3.15: automation lanes and, in automation mode, the envelopes over the rows.
   view_.automation().paintLanes(ctx, r);
+  if (view_.automation().takeEnvelopeTilesWanted()) requestFrame();  // onFrame builds the tiles
 
   // Previews (and, once the zoom has settled, tiles) left for later frames: onFrame builds them without painting
   // and repaints the lanes once, if this paint drew a clip approximately.

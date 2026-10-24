@@ -77,7 +77,11 @@ VisualState Control::visualState() const noexcept {
 // --- Label ----------------------------------------------------------------------------------------------
 
 Label::Label(std::string name, std::string text, FontRoleId font, TextTone tone, TextAlign align)
-    : Control(std::move(name)), text_(std::move(text)), font_(font), tone_(tone), align_(align) {}
+    : Control(std::move(name)), text_(std::move(text)), font_(font), tone_(tone), align_(align) {
+  // Descenders may hang below a tight label (text is centred on its capitals): declared, so they are inside the
+  // damage and the text clip (T3.x-fix-paint), not cut and not left stale.
+  setVisualOverflow({0, 0, 0, 4});
+}
 
 void Label::setText(std::string text) {
   if (text == text_) return;

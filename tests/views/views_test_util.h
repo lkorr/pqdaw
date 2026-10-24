@@ -12,6 +12,9 @@
 
 #include "pq/document/edit_ops.h"
 #include "pq/document/store.h"
+#include "pq/ui/damage.h"
+#include "pq/ui/draw_list.h"
+#include "pq/ui/widget.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views::test {
@@ -46,6 +49,18 @@ inline std::string tempDir(std::string_view name) {
   std::filesystem::remove_all(p, ec);
   std::filesystem::create_directories(p, ec);
   return p.string();
+}
+
+// A partial frame as the window loop paints it (src/app commands.cpp, T3.x-fix-paint): the tree once per damage rect,
+// each pass clipped to it. Fills `rects` with the frame's damage for FrameDesc::damage and returns their count.
+inline uint32_t paintDamage(ui::UiTree& tree, ui::DrawList& dl, const ui::PaintResources& res, double now,
+                            ui::ClipRect (&rects)[ui::Damage::kMaxRects]) {
+  ui::IRect regions[ui::Damage::kMaxRects];
+  int64_t area = 0;
+  const uint32_t n = tree.damageRects(regions, area);
+  for (uint32_t i = 0; i < n; ++i) rects[i] = {regions[i].x, regions[i].y, regions[i].right(), regions[i].bottom()};
+  tree.paint(dl, res, now, std::span<const ui::IRect>(regions, n));
+  return n;
 }
 
 inline std::string fixtureDir(std::string_view name) { return std::string(PQ_TEST_DATA_DIR) + "/views/fixtures/" + std::string(name); }

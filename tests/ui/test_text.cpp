@@ -223,6 +223,51 @@ TEST_CASE("text: runs are cached; a cached draw writes 4 vertices per inked glyp
   CHECK(dl.vertices().size() == nv);
 }
 
+TEST_CASE("text: drawRunClipped cuts glyph ink to the clip texel-exactly and equals drawRun when the ink fits (M3 M13)") {
+  Fixture fx;
+  const TextRun run = fx.ts->shape(fx.body, "Quickly jog");
+  REQUIRE(!run.glyphs.empty());
+  const Vec2 origin{20.0f, 30.0f};
+  // Ink bounds of the run at the origin.
+  int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
+  for (const GlyphQuad& g : run.glyphs) {
+    x0 = std::min(x0, 20 + g.x0);
+    y0 = std::min(y0, 30 + g.y0);
+    x1 = std::max(x1, 20 + g.x0 + static_cast<int32_t>(g.w));
+    y1 = std::max(y1, 30 + g.y0 + static_cast<int32_t>(g.h));
+  }
+  DrawList a, b;
+  a.reset(400, 100);
+  b.reset(400, 100);
+  TextSystem::drawRun(a, run, origin, rgba(255, 255, 255));
+  TextSystem::drawRunClipped(b, run, origin, rgba(255, 255, 255), {x0, y0, x1, y1});
+  REQUIRE(a.vertices().size() == b.vertices().size());
+  for (size_t i = 0; i < a.vertices().size(); ++i) {
+    CHECK(a.vertices()[i].pos.x == b.vertices()[i].pos.x);
+    CHECK(a.vertices()[i].pos.y == b.vertices()[i].pos.y);
+    CHECK(a.vertices()[i].uv.x == b.vertices()[i].uv.x);
+    CHECK(a.vertices()[i].uv.y == b.vertices()[i].uv.y);
+  }
+  // A clip cutting the descenders ('Q', 'y', 'j', 'g') and the last glyph: every vertex inside it, uv moved by whole
+  // texels in proportion (a 1:1 mapping kept), and a glyph wholly outside dropped.
+  const ClipRect clip{x0 + 3, y0, x1 - 4, 30};
+  DrawList c;
+  c.reset(400, 100);
+  TextSystem::drawRunClipped(c, run, origin, rgba(255, 255, 255), clip);
+  REQUIRE(!c.vertices().empty());
+  CHECK(c.vertices().size() <= a.vertices().size());
+  const float texel = 1.0f / static_cast<float>(kAtlasWidth);  // square pages
+  for (size_t q = 0; q + 3 < c.vertices().size(); q += 4) {
+    const Vertex* v = &c.vertices()[q];
+    CHECK(v[0].pos.x >= static_cast<float>(clip.x0));
+    CHECK(v[0].pos.y >= static_cast<float>(clip.y0));
+    CHECK(v[2].pos.x <= static_cast<float>(clip.x1));
+    CHECK(v[2].pos.y <= static_cast<float>(clip.y1));
+    CHECK(std::abs((v[2].uv.x - v[0].uv.x) - (v[2].pos.x - v[0].pos.x) * texel) < 1e-6f);
+    CHECK(std::abs((v[2].uv.y - v[0].uv.y) - (v[2].pos.y - v[0].pos.y) * texel) < 1e-6f);
+  }
+}
+
 TEST_CASE("text: 20k distinct strings shaped in one frame keep every earlier run valid (M8)" * doctest::test_suite("slow")) {
   Fixture fx;
   constexpr uint32_t kCount = 20000;  // > kMaxCachedRuns: the old cache flushed inside shape() here

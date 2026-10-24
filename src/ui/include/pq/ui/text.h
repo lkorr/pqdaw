@@ -173,6 +173,10 @@ public:
   int32_t drawTruncated(DrawList& dl, FontId font, Vec2 baseline, std::string_view utf8, int32_t maxWidth, Rgba col);
   // Draws a run returned by shape() (same origin rule). Restores the draw list's texture binding.
   static void drawRun(DrawList& dl, const TextRun& run, Vec2 baseline, Rgba col);
+  // drawRun() with the glyph ink cut to `clip` (device px; T3.x-fix-paint): glyph quads reaching past it are cropped
+  // on the CPU (texel-exact: glyphs sit 1:1 on whole pixels), so no clip push and no extra draw command. A widget's
+  // text then never paints outside the box it was laid out in, which a partial redraw relies on (M3 review M13).
+  static void drawRunClipped(DrawList& dl, const TextRun& run, Vec2 baseline, Rgba col, const ClipRect& clip);
 
   // Uncached HarfBuzz output (no rasterisation): what shape() builds its runs from.
   std::vector<ShapedGlyph> shapeGlyphs(FontId font, std::string_view utf8);

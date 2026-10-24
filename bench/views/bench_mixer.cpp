@@ -2,12 +2,15 @@
 // device px, CPU only (text through the CPU atlas): the header column's paint, a volume-drag frame (pointer move →
 // one Param dispatch inside a gesture → rows rebound → partial paint of the damage), the meter update (one batched
 // MeterSource read for every strip, steady and changing levels) and the mixer view's full paint.
+// T3.x-fix-paint: frames paint once per damage rect (the window loop), and the volume-drag frame is also measured at
+// 8 and 256 tracks: it must not grow with the track count (M3 review M12a).
 // Run from the release build; results → bench/RESULTS.md.
 
 #include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <memory>
+#include <span>
 
 #include "pq/document/commands.h"
 #include "pq/ui/atlas.h"
@@ -29,31 +32,14 @@ using namespace pq::views;
 
 namespace {
 
-IRect damageBox(UiTree& tree) {
-  if (tree.damage().full()) return {0, 0, static_cast<int32_t>(tree.width()), static_cast<int32_t>(tree.height())};
-  const auto rects = tree.damage().rects();
-  if (rects.empty()) return {};
-  int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
-  for (const ClipRect& r : rects) {
-    x0 = std::min(x0, r.x0);
-    y0 = std::min(y0, r.y0);
-    x1 = std::max(x1, r.x1);
-    y1 = std::max(y1, r.y1);
-  }
-  return {x0, y0, x1 - x0, y1 - y0};
-}
-
-}  // namespace
-
-int main() {
-  constexpr int kTracks = 64;
+int run(int trackCount, bool all) {
   const uint32_t w = 2560, h = 1440;
   auto tex = createSceneText(std::make_shared<Atlas>(), UiScale(1.0f));
   if (!tex) return 1;
   const PaintResources res = paintResources(*tex);
   FakeTransport port;
   ViewContext ctx(port);
-  views::test::buildLargeArrangement(ctx.store(), kTracks, 20, 10);
+  views::test::buildLargeArrangement(ctx.store(), trackCount, 20, 10);
   for (int i = 0; i < 2; ++i) {
     auto e = doc::ops::createTrack(*ctx.doc(), ctx.store().ids(), doc::TrackKind::Return);
     if (!e || !ctx.store().dispatch(e->command)) return 1;
@@ -78,7 +64,16 @@ int main() {
   auto frame = [&] {
     now += 1.0 / 144.0;
     tree.update(now);
-    paintRegion(damageBox(tree));
+    tex->text->beginFrame();
+    dl.reset(w, h);
+    if (tree.damage().full()) {
+      tree.paint(dl, res, now);
+      return;
+    }
+    IRect rs[Damage::kMaxRects];
+    int64_t area = 0;
+    const uint32_t n = tree.damageRects(rs, area);
+    tree.paint(dl, res, now, std::span<const IRect>(rs, n));
   };
   paintRegion({0, 0, static_cast<int32_t>(w), static_cast<int32_t>(h)});
 
@@ -115,11 +110,16 @@ int main() {
     tree.dispatchPointer(m);
     frame();
   };
-  pq::bench::reportStats("mixer.volume drag frame 64 tracks 2560x1440", pq::bench::measure(dragFrame, 1), "ns/frame");
+  char name[120];
+  std::snprintf(name, sizeof name, "mixer.volume drag frame %d tracks 2560x1440 (per-rect paint)", trackCount);
+  pq::bench::reportStats(name, pq::bench::measure(dragFrame, 1), "ns/frame");
+  std::printf("  drag frame: %u vertices, %llu widgets painted\n", static_cast<unsigned>(dl.vertices().size()),
+              static_cast<unsigned long long>(tree.stats().widgetsPainted));
   e.type = PointerType::Up;
   e.pos = p;
   tree.dispatchPointer(e);
   frame();
+  if (!all) return 0;
 
   // 3. Meters: one batched read for every strip and the meter updates (steady levels: no repaint; changing: the
   // meters repaint their rects).
@@ -150,4 +150,12 @@ int main() {
   pq::bench::reportStats("mixer.view paint(full) 67 strips 2560x1440",
                          pq::bench::measure([&] { paintRegion({0, 0, static_cast<int32_t>(w), static_cast<int32_t>(h)}); }, 1), "ns/frame");
   return 0;
+}
+
+}  // namespace
+
+int main() {
+  for (const int n : {8, 256})
+    if (const int r = run(n, false); r != 0) return r;
+  return run(64, true);
 }

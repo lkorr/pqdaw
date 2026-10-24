@@ -153,6 +153,9 @@ struct PaintContext {
   UiScale scale;  // logical → device px: the tree's scale (res.fonts are resolved at it)
   IRect clip;    // the scissor in effect: the visible part of the target (∩ the damage region in a partial
                  // redraw, UiTree::paint). Virtualised widgets draw only what intersects it (see ScrollView).
+  IRect widget{};      // where the widget whose paint()/paintOver() runs may draw: its rect + declared visual
+                       // overflow (text helpers cut glyph ink to it)
+  uint64_t frame = 0;  // UiTree paint serial: one value for every damage rect of one frame (per-frame stats, budgets)
 };
 
 // Places children inside a Custom layout (Widget::arrange). place() assigns a rect and lays the child out.
@@ -463,6 +466,16 @@ public:
   // damage (pq/ui/renderer.h FrameDesc): unchanged pixels stay in the persistent target, so the list needs only
   // what touches the rects. Contract: a widget's paint() / paintOver() stays inside its rect.
   void paint(DrawList& dl, const PaintResources& res, double now, const IRect& region);
+  // Partial redraw per damage rect (T3.x-fix-paint, M3 review H8): paints the tree once per rect, each pass under a
+  // draw-list clip of that rect (PaintContext::clip = the rect), so the list holds only what touches each rect
+  // instead of everything in their bounding box (a playhead column, a readout at the top and meters at the right
+  // edge no longer repaint the lanes between them). A widget reaching several rects paints once per rect, inside each.
+  // Every pass shares one PaintContext::frame. Render the list with the same rects as the frame's damage. An empty
+  // span paints nothing (clears the damage).
+  void paint(DrawList& dl, const PaintResources& res, double now, std::span<const IRect> rects);
+  // The damage rects of the next frame, clipped to the target (after update()/layoutNow()): what paint(…, rects)
+  // and the renderer's FrameDesc::damage take. Returns the count (≤ Damage::kMaxRects); `area` = their total px.
+  uint32_t damageRects(IRect (&out)[Damage::kMaxRects], int64_t& area) const noexcept;
   Damage& damage() noexcept { return damage_; }
   // Forces a full relayout at the next update() (benchmarks, theme changes).
   void invalidateAll() noexcept;
@@ -543,6 +556,7 @@ private:
   uint32_t width_ = 0, height_ = 0;
   UiScale scale_{};
   bool layoutPending_ = true;
+  uint64_t paintSerial_ = 0;  // PaintContext::frame
   int16_t maxOverflow_ = 0;  // largest visual overflow (logical px) any widget of the tree has declared
   IRect clip_{};  // during layout: the visible area through the clipping ancestors of the widget being placed
 

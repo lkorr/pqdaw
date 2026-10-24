@@ -48,7 +48,13 @@ void ArrangementAutomation::paintLaneBackgrounds(PaintContext& ctx, const IRect&
 }
 
 void ArrangementAutomation::paintLanes(PaintContext& ctx, const IRect& canvas) {
-  stats_ = {};
+  if (ctx.frame != statsFrame_ || ctx.frame == 0) {
+    const uint64_t built = stats_.envTilesBuilt, failed = stats_.envTileFailures;  // totals survive
+    stats_ = {};
+    stats_.envTilesBuilt = built;
+    stats_.envTileFailures = failed;
+  }
+  statsFrame_ = ctx.frame;
   const Theme* th = ctx.res.theme;
   if (!th) return;
   const IRect c = intersect(canvas, ctx.clip);
@@ -128,124 +134,16 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
                                            [](Ticks t, const doc::Breakpoint& bp) { return t < bp.tick; });
     const auto count = static_cast<float>(bandLast - bandFirst);
     const float lineW = std::max(1.0f, au::kLineWidth * ctx.scale.factor);
-    if (count * 2.0f > static_cast<float>(b.rect.w)) {
-      // Dense (under 2 px per breakpoint): one span per pixel column from the lowest to the highest value the
-      // envelope takes there, as a rect. The ribbon would be a zigzag of sub-pixel segments costing 8 vertices each;
-      // the spans look the same and cost 4 per column.
-      // Per column: the envelope at its right edge (a cursor: amortised O(1); the left edge is the previous column's)
-      // and every breakpoint inside (value compares only; the display mapping runs at most twice per column). Each column depends only on its own
-      // ticks, so partial and full repaints agree exactly.
-      EnvelopeCursor cur(pts, fallback);
-      auto it = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(vis.x)))),
-                                 [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
-      uint32_t spans = 0;
-      double tl = view_.tickAtX(static_cast<float>(vis.x));
-      double vl = cur.at(tl);  // the envelope at the column's left edge (the previous column's right edge)
-      for (int32_t col = vis.x; col < vis.right(); ++col) {
-        const double tr = view_.tickAtX(static_cast<float>(col + 1));
-        double vmin = vl, vmax = vl;
-        for (; it != pts.end() && static_cast<double>(it->tick) < tr; ++it) {
-          if (static_cast<double>(it->tick) < tl) continue;
-          vmin = std::min(vmin, static_cast<double>(it->value));
-          vmax = std::max(vmax, static_cast<double>(it->value));
-        }
-        const double vr = cur.at(tr);
-        vmin = std::min(vmin, vr);
-        vmax = std::max(vmax, vr);
-        vl = vr;
-        const float ya = yOf(vmin), yb = vmax == vmin ? ya : yOf(vmax);
-        const auto x = static_cast<float>(col);
-        dl.addRectFilled({x, std::min(ya, yb) - lineW * 0.5f, x + 1.0f, std::max(ya, yb) + lineW * 0.5f}, lineCol);
-        ++spans;
-        tl = tr;
-      }
-      stats_.vertices += spans;
-    } else {
-    // The polyline over the visible columns. A partial repaint must draw exactly the pixels a full one draws, and
-    // a ribbon's pixels depend on its vertices, the joins at them (each vertex's neighbours) and the column groups.
-    // So the polyline starts at a breakpoint three device columns (and two breakpoints) before the painted part and
-    // ends likewise after it, or at a fixed anchor just outside the band: from there on, its vertices, groups and
-    // joins are the full repaint's.
+    const bool dense = count * 2.0f > static_cast<float>(b.rect.w);
+    // T3.x-fix-paint: the line from envelope tiles (rasterised once per lane snapshot and zoom, drawn as one quad per
+    // chunk), else directly. Breakpoint handles then sit on the tiles' whole-pixel x mapping.
+    double tileOffset = 0.0;
+    const bool tiled = b.lane && pts.data() == b.lane->points.data() && paintEnvelopeTiles(ctx, b, pts, vis, dense, lineCol, lineW, tileOffset);
+    if (!tiled) paintEnvelopeDirect(ctx, b, pts, fallback, vis, dense, lineCol, lineW);
     const double k = view_.devicePxPerTick();
-    const float margin = 8.0f * ctx.scale.factor, anchor = 64.0f * ctx.scale.factor;
-    const double lo = view_.tickAtX(static_cast<float>(b.rect.x) - anchor);
-    const double hi = view_.tickAtX(static_cast<float>(b.rect.right()) + anchor);
-    auto columnOf = [&](const doc::Breakpoint& bp) { return std::floor(view_.xOfTick(static_cast<double>(bp.tick))); };
-    double t0 = lo;
-    {
-      const double from = view_.tickAtX(static_cast<float>(vis.x) - margin);
-      auto it = std::upper_bound(pts.begin(), pts.end(), from, [](double t, const doc::Breakpoint& bp) { return t < static_cast<double>(bp.tick); });
-      if (it != pts.begin()) {
-        size_t i = static_cast<size_t>(it - pts.begin()) - 1, steps = 0;
-        int cols = 0;
-        float col = columnOf(pts[i]);
-        while (i > 0 && (cols < 3 || steps < 2) && static_cast<double>(pts[i].tick) > lo) {
-          --i;
-          ++steps;
-          if (const float c = columnOf(pts[i]); c != col) {
-            ++cols;
-            col = c;
-          }
-        }
-        t0 = std::max(lo, static_cast<double>(pts[i].tick));
-      }
-    }
-    double t1 = hi;
-    {
-      const double to = view_.tickAtX(static_cast<float>(vis.right()) + margin);
-      auto it = std::lower_bound(pts.begin(), pts.end(), to, [](const doc::Breakpoint& bp, double t) { return static_cast<double>(bp.tick) < t; });
-      if (it != pts.end()) {
-        size_t i = static_cast<size_t>(it - pts.begin()), steps = 0;
-        int cols = 0;
-        float col = columnOf(pts[i]);
-        while (i + 1 < pts.size() && (cols < 3 || steps < 2) && static_cast<double>(pts[i].tick) < hi) {
-          ++i;
-          ++steps;
-          if (const float c = columnOf(pts[i]); c != col) {
-            ++cols;
-            col = c;
-          }
-        }
-        t1 = std::min(hi, static_cast<double>(pts[i].tick));
-      }
-    }
-    t1 = std::max(t0, t1);
-    envelopeVertices(pts, fallback, t0, t1, static_cast<double>(au::kMaxChordPx) / k, verts_);
-    // Map to device px; runs of vertices inside one pixel column collapse to first / min / max / last (a lane costs
-    // O(width) however many points it has).
-    poly_.clear();
-    size_t group = 0;
-    int32_t column = INT32_MIN;
-    auto flush = [&] {
-      const size_t n = poly_.size() - group;
-      if (n <= 4) return;
-      size_t lo = group, hi = group;
-      for (size_t i = group + 1; i < poly_.size() - 1; ++i) {
-        if (poly_[i].y < poly_[lo].y) lo = i;
-        if (poly_[i].y > poly_[hi].y) hi = i;
-      }
-      const Vec2 first = poly_[group], last = poly_.back();
-      const Vec2 a = poly_[std::min(lo, hi)], z = poly_[std::max(lo, hi)];
-      poly_.resize(group);
-      poly_.push_back(first);
-      poly_.push_back(a);
-      poly_.push_back(z);
-      poly_.push_back(last);
+    const auto xOf = [&](Ticks t) {
+      return tiled ? static_cast<float>(tileOffset + static_cast<double>(t) * k) : view_.xOfTick(static_cast<double>(t));
     };
-    for (const EnvelopeVertex& v : verts_) {
-      const Vec2 q{view_.xOfTick(v.tick), yOf(v.value)};
-      const auto col = static_cast<int32_t>(std::floor(q.x));
-      if (col != column) {
-        flush();
-        group = poly_.size();
-        column = col;
-      }
-      poly_.push_back(q);
-    }
-    flush();
-    stats_.vertices += static_cast<uint32_t>(poly_.size());
-    smoothPolyline(dl, poly_.data(), static_cast<uint32_t>(poly_.size()), lineCol, lineW);
-    }
 
     // Breakpoint handles (all of them while they are at least kHandleMinSpacing px apart on average, else only the
     // selected ones).
@@ -258,10 +156,10 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
     const bool all = count * au::kHandleMinSpacing * ctx.scale.factor <= static_cast<float>(b.rect.w);
     const bool sameLane = selParam_ == b.param && selTrack_ == b.track;
     const float r = au::kPointRadius * ctx.scale.factor;
-    for (auto it = first; it != last; ++it) {
+    for (auto it = (all || (sameLane && !selIds_.empty())) ? first : last; it != last; ++it) {  // nothing to draw: no walk
       const bool sel = sameLane && std::binary_search(selIds_.begin(), selIds_.end(), it->id.value);
       if (!all && !sel) continue;
-      const Vec2 c{view_.xOfTick(static_cast<double>(it->tick)), yOf(it->value)};
+      const Vec2 c{xOf(it->tick), yOf(it->value)};
       dl.addCircleFilled(c, r + ctx.scale.factor, at.pointEdge);
       dl.addCircleFilled(c, r, sel ? at.pointSelected : lineCol);
       ++stats_.handles;
@@ -290,6 +188,133 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
       }
   }
   dl.popClip();
+}
+
+void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const AutomationBand& b, std::span<const doc::Breakpoint> pts,
+                                                double fallback, const IRect& vis, bool dense, Rgba lineCol, float lineW) {
+  DrawList& dl = ctx.dl;
+  const ParamDisplay disp = paramDisplay(*view_.shown(), b.param);
+  const auto yOf = [&](double v) {
+    return static_cast<float>(static_cast<double>(b.bottom) - displayNorm(disp, v) * static_cast<double>(b.bottom - b.top));
+  };
+  if (dense) {
+    // Dense (under 2 px per breakpoint): one span per pixel column from the lowest to the highest value the
+    // envelope takes there, as a rect. The ribbon would be a zigzag of sub-pixel segments costing 8 vertices each;
+    // the spans look the same and cost 4 per column.
+    // Per column: the envelope at its right edge (a cursor: amortised O(1); the left edge is the previous column's)
+    // and every breakpoint inside (value compares only; the display mapping runs at most twice per column). Each column
+    // depends only on its own ticks, so partial and full repaints agree exactly.
+    EnvelopeCursor cur(pts, fallback);
+    auto it = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(vis.x)))),
+                               [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
+    uint32_t spans = 0;
+    double tl = view_.tickAtX(static_cast<float>(vis.x));
+    double vl = cur.at(tl);  // the envelope at the column's left edge (the previous column's right edge)
+    for (int32_t col = vis.x; col < vis.right(); ++col) {
+      const double tr = view_.tickAtX(static_cast<float>(col + 1));
+      double vmin = vl, vmax = vl;
+      for (; it != pts.end() && static_cast<double>(it->tick) < tr; ++it) {
+        if (static_cast<double>(it->tick) < tl) continue;
+        vmin = std::min(vmin, static_cast<double>(it->value));
+        vmax = std::max(vmax, static_cast<double>(it->value));
+      }
+      const double vr = cur.at(tr);
+      vmin = std::min(vmin, vr);
+      vmax = std::max(vmax, vr);
+      vl = vr;
+      const float ya = yOf(vmin), yb = vmax == vmin ? ya : yOf(vmax);
+      const auto x = static_cast<float>(col);
+      dl.addRectFilled({x, std::min(ya, yb) - lineW * 0.5f, x + 1.0f, std::max(ya, yb) + lineW * 0.5f}, lineCol);
+      ++spans;
+      tl = tr;
+    }
+    stats_.vertices += spans;
+    return;
+  }
+  // The polyline over the visible columns. A partial repaint must draw exactly the pixels a full one draws, and
+  // a ribbon's pixels depend on its vertices, the joins at them (each vertex's neighbours) and the column groups.
+  // So the polyline starts at a breakpoint three device columns (and two breakpoints) before the painted part and
+  // ends likewise after it, or at a fixed anchor just outside the band: from there on, its vertices, groups and
+  // joins are the full repaint's.
+  const double k = view_.devicePxPerTick();
+  const float margin = 8.0f * ctx.scale.factor, anchor = 64.0f * ctx.scale.factor;
+  const double lo = view_.tickAtX(static_cast<float>(b.rect.x) - anchor);
+  const double hi = view_.tickAtX(static_cast<float>(b.rect.right()) + anchor);
+  auto columnOf = [&](const doc::Breakpoint& bp) { return std::floor(view_.xOfTick(static_cast<double>(bp.tick))); };
+  double t0 = lo;
+  {
+    const double from = view_.tickAtX(static_cast<float>(vis.x) - margin);
+    auto it = std::upper_bound(pts.begin(), pts.end(), from, [](double t, const doc::Breakpoint& bp) { return t < static_cast<double>(bp.tick); });
+    if (it != pts.begin()) {
+      size_t i = static_cast<size_t>(it - pts.begin()) - 1, steps = 0;
+      int cols = 0;
+      float col = columnOf(pts[i]);
+      while (i > 0 && (cols < 3 || steps < 2) && static_cast<double>(pts[i].tick) > lo) {
+        --i;
+        ++steps;
+        if (const float c = columnOf(pts[i]); c != col) {
+          ++cols;
+          col = c;
+        }
+      }
+      t0 = std::max(lo, static_cast<double>(pts[i].tick));
+    }
+  }
+  double t1 = hi;
+  {
+    const double to = view_.tickAtX(static_cast<float>(vis.right()) + margin);
+    auto it = std::lower_bound(pts.begin(), pts.end(), to, [](const doc::Breakpoint& bp, double t) { return static_cast<double>(bp.tick) < t; });
+    if (it != pts.end()) {
+      size_t i = static_cast<size_t>(it - pts.begin()), steps = 0;
+      int cols = 0;
+      float col = columnOf(pts[i]);
+      while (i + 1 < pts.size() && (cols < 3 || steps < 2) && static_cast<double>(pts[i].tick) < hi) {
+        ++i;
+        ++steps;
+        if (const float c = columnOf(pts[i]); c != col) {
+          ++cols;
+          col = c;
+        }
+      }
+      t1 = std::min(hi, static_cast<double>(pts[i].tick));
+    }
+  }
+  t1 = std::max(t0, t1);
+  envelopeVertices(pts, fallback, t0, t1, static_cast<double>(au::kMaxChordPx) / k, verts_);
+  // Map to device px; runs of vertices inside one pixel column collapse to first / min / max / last (a lane costs
+  // O(width) however many points it has).
+  poly_.clear();
+  size_t group = 0;
+  int32_t column = INT32_MIN;
+  auto flush = [&] {
+    const size_t n = poly_.size() - group;
+    if (n <= 4) return;
+    size_t lo = group, hi = group;
+    for (size_t i = group + 1; i < poly_.size() - 1; ++i) {
+      if (poly_[i].y < poly_[lo].y) lo = i;
+      if (poly_[i].y > poly_[hi].y) hi = i;
+    }
+    const Vec2 first = poly_[group], last = poly_.back();
+    const Vec2 a = poly_[std::min(lo, hi)], z = poly_[std::max(lo, hi)];
+    poly_.resize(group);
+    poly_.push_back(first);
+    poly_.push_back(a);
+    poly_.push_back(z);
+    poly_.push_back(last);
+  };
+  for (const EnvelopeVertex& v : verts_) {
+    const Vec2 q{view_.xOfTick(v.tick), yOf(v.value)};
+    const auto col = static_cast<int32_t>(std::floor(q.x));
+    if (col != column) {
+      flush();
+      group = poly_.size();
+      column = col;
+    }
+    poly_.push_back(q);
+  }
+  flush();
+  stats_.vertices += static_cast<uint32_t>(poly_.size());
+  smoothPolyline(dl, poly_.data(), static_cast<uint32_t>(poly_.size()), lineCol, lineW);
 }
 
 // ---- lane header -------------------------------------------------------------------------------------------------

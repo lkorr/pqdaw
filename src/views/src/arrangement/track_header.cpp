@@ -37,7 +37,10 @@ TrackHeader::~TrackHeader() = default;
 
 void TrackHeader::bind(const ArrangementRow& row, std::span<const ArrangementRow> rows) {
   const doc::Track& t = *row.track;
-  bool changed = track_ != row.track || id_ != row.id || folded_ != row.folded || depth_ != row.depth;
+  // A new track node alone (any edit of the track, e.g. each frame of a volume drag) changes nothing the header
+  // draws itself: what it shows is compared field by field below (T3.x-fix-paint: the dragged track's whole header
+  // was repainted per frame). The mixer section's controls repaint their own changes.
+  bool changed = id_ != row.id || folded_ != row.folded || depth_ != row.depth;
   if (id_ != row.id && rename_) endRename(false);  // the row now shows another track
   track_ = row.track;
   id_ = row.id;

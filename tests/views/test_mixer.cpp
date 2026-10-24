@@ -283,6 +283,83 @@ TEST_CASE("mixer: a volume drag is one undo step with a paramOnly ChangeSet; the
   CHECK(f.track("Drums").mixer.pan == 0.0f);
 }
 
+TEST_CASE("mixer: a volume-drag frame damages and paints the same whatever the track count; chips repaint only on tuning changes") {
+  // T3.x-fix-paint (M3 review M12a): before, every header's tuning chip subscribed to the store and repainted on each
+  // Param event of the drag, so a frame damaged (and painted) one chip per visible track.
+  struct Frame {
+    int64_t area = 0;
+    uint32_t rects = 0;
+    uint64_t widgets = 0;
+  };
+  auto measure = [](int tracks) {
+    FakeTransport port;
+    ViewContext ctx(port);
+    views::test::buildLargeArrangement(ctx.store(), tracks, 4, 4);
+    TestDriver d(1280, 800);
+    auto shell = Shell::create(d.tree(), ctx);
+    REQUIRE(shell.ok());
+    d.tree().layoutNow();
+    auto* arr = dynamic_cast<ArrangementView*>(d.find(kArr));
+    REQUIRE(arr != nullptr);
+    d.step();
+    TrackHeader* h = arr->header(ctx.doc()->tracks.front()->id);
+    REQUIRE(h != nullptr);
+    auto& strip = static_cast<MixerStrip&>(h->mixerSection().child(0));
+    const IRect vb = strip.volume()->rect();
+    const Vec2 c{static_cast<float>(vb.x + vb.w / 2), static_cast<float>(vb.y + vb.h / 2)};
+    d.move(c);
+    d.down(c);
+    d.move({c.x, c.y - 3.0f});
+    d.step();  // the gesture's first frame
+    // Every chip of the tracks visible: none may be damaged by a volume change.
+    std::vector<IRect> chips;
+    for (const doc::TrackPtr& t : ctx.doc()->tracks)
+      if (TrackHeader* th = arr->header(t->id); th && th->visible() && th->chipSection().childCount() > 0)
+        chips.push_back(th->chipSection().child(0).rect());
+    REQUIRE(chips.size() >= 4);
+    Frame fr;
+    DrawList dl;
+    for (int i = 0; i < 6; ++i) {
+      d.move({c.x, c.y - 4.0f - static_cast<float>(i)});
+      d.tree().update(d.now());
+      IRect rs[Damage::kMaxRects];
+      int64_t area = 0;
+      const uint32_t n = d.tree().damageRects(rs, area);
+      for (uint32_t k = 0; k < n; ++k)
+        for (const IRect& chip : chips)
+          CHECK_MESSAGE(intersect(rs[k], chip).empty(), "damage " << rs[k].x << "," << rs[k].y << " " << rs[k].w << "x" << rs[k].h << " chip "
+                                                                   << chip.x << "," << chip.y << " " << chip.w << "x" << chip.h);
+      dl.reset(1280, 800);
+      d.tree().paint(dl, d.resources(), d.now(), std::span<const IRect>(rs, n));
+      fr.area += area;
+      fr.rects += n;
+      fr.widgets += d.tree().stats().widgetsPainted;
+    }
+    d.up({c.x, c.y - 10.0f});
+    // A tuning change does repaint the chips that show it (every track inherits the project's first tuning).
+    d.step();
+    const doc::TuningSlot& slot = *ctx.doc()->tunings->front();
+    auto edo = tuning::Edo::make(19);
+    REQUIRE(edo.ok());
+    REQUIRE(ctx.store().dispatch(doc::SetTuningDef{slot.id, doc::TuningDef{*edo, tuning::kDefaultReferenceHz}}).ok());
+    d.tree().update(d.now());
+    IRect rs[Damage::kMaxRects];
+    int64_t area = 0;
+    const uint32_t n = d.tree().damageRects(rs, area);
+    bool chipDamaged = false;
+    for (uint32_t k = 0; k < n; ++k)
+      for (const IRect& chip : chips) chipDamaged = chipDamaged || !intersect(rs[k], chip).empty();
+    CHECK(chipDamaged);
+    d.tree().setRoot(std::make_unique<Widget>());
+    return fr;
+  };
+  const Frame a = measure(8), b = measure(64);
+  CHECK(a.rects == b.rects);
+  CHECK(a.area == b.area);
+  CHECK(a.widgets == b.widgets);
+  CHECK(a.area > 0);
+}
+
 TEST_CASE("mixer: Ctrl+T / Ctrl+Alt+T insert after the selection; Ctrl+G across nested groups; Ctrl+Shift+G") {
   Fixture f("arrangement");
   // Select Bass (second top-level track) by its title; Ctrl+T inserts right after it, selected, one step.

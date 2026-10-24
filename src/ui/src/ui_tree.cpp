@@ -325,10 +325,42 @@ void UiTree::paint(DrawList& dl, const PaintResources& res, double now) {
 void UiTree::paint(DrawList& dl, const PaintResources& res, double now, const IRect& region) {
   layoutNow();
   PaintContext ctx{dl, res, now, scale_, intersect(region, {0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)})};
+  ctx.frame = ++paintSerial_;
   stats_.widgetsPainted = 0;
   if (root_) paintWidget(*root_, ctx);
   damage_.clear();
   ++stats_.framesPainted;
+}
+
+void UiTree::paint(DrawList& dl, const PaintResources& res, double now, std::span<const IRect> rects) {
+  layoutNow();
+  const IRect target{0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)};
+  PaintContext ctx{dl, res, now, scale_, {}};
+  ctx.frame = ++paintSerial_;
+  stats_.widgetsPainted = 0;
+  for (const IRect& r : rects) {
+    ctx.clip = intersect(r, target);
+    if (ctx.clip.empty() || !root_) continue;
+    // The draw-list clip makes every primitive of this pass land inside the rect (the renderer draws each command
+    // once per damage rect it reaches: a pass's commands reach only their own rect).
+    dl.pushClip(ctx.clip.toRect());
+    paintWidget(*root_, ctx);
+    dl.popClip();
+  }
+  damage_.clear();
+  ++stats_.framesPainted;
+}
+
+uint32_t UiTree::damageRects(IRect (&out)[Damage::kMaxRects], int64_t& area) const noexcept {
+  uint32_t n = 0;
+  area = 0;
+  for (const ClipRect& r : damage_.rects()) {
+    const IRect c = intersect({r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0}, {0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)});
+    if (c.empty() || n == Damage::kMaxRects) continue;
+    out[n++] = c;
+    area += int64_t{c.w} * c.h;
+  }
+  return n;
 }
 
 void UiTree::paintWidget(Widget& w, PaintContext& ctx) {
@@ -345,6 +377,7 @@ void UiTree::paintWidget(Widget& w, PaintContext& ctx) {
   const IRect vis = intersect(w.rect_, ctx.clip);
   if (own) {
     ++stats_.widgetsPainted;
+    ctx.widget = paintBounds(w.rect_, w.overflow_, scale_.factor);  // its rect grown by any declared visual overflow
     w.paint(ctx);
   }
   if (!w.children_.empty()) {
@@ -359,7 +392,10 @@ void UiTree::paintWidget(Widget& w, PaintContext& ctx) {
       for (auto& c : w.children_) paintWidget(*c, ctx);
     }
   }
-  if (own) w.paintOver(ctx);
+  if (own) {
+    ctx.widget = paintBounds(w.rect_, w.overflow_, scale_.factor);
+    w.paintOver(ctx);
+  }
 }
 
 void UiTree::noteOverflow(const Insets& o) noexcept {

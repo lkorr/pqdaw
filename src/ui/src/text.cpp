@@ -569,6 +569,51 @@ void TextSystem::drawRun(DrawList& dl, const TextRun& run, Vec2 baseline, Rgba c
   emitGlyphs(dl, run.glyphs.data(), static_cast<uint32_t>(run.glyphs.size()), run.pageMask, baseline, col);
 }
 
+void TextSystem::drawRunClipped(DrawList& dl, const TextRun& run, Vec2 baseline, Rgba col, const ClipRect& clip) {
+  if (run.glyphs.empty() || clip.x1 <= clip.x0 || clip.y1 <= clip.y0) return;
+  const int32_t ox = static_cast<int32_t>(std::floor(baseline.x + 0.5f)), oy = static_cast<int32_t>(std::floor(baseline.y + 0.5f));
+  // Common case: the ink lies inside the clip (one pass over the quads, then the unclipped emit).
+  bool inside = true;
+  for (const GlyphQuad& g : run.glyphs) {
+    const int32_t x0 = ox + g.x0, y0 = oy + g.y0;
+    if (x0 < clip.x0 || y0 < clip.y0 || x0 + g.w > clip.x1 || y0 + g.h > clip.y1) {
+      inside = false;
+      break;
+    }
+  }
+  if (inside) {
+    emitGlyphs(dl, run.glyphs.data(), static_cast<uint32_t>(run.glyphs.size()), run.pageMask, baseline, col);
+    return;
+  }
+  const TextureId prevTex = dl.texture();
+  for (const GlyphQuad& g : run.glyphs) {
+    const int32_t gx = ox + g.x0, gy = oy + g.y0;
+    const int32_t x0 = std::max(gx, clip.x0), y0 = std::max(gy, clip.y0);
+    const int32_t x1 = std::min(gx + static_cast<int32_t>(g.w), clip.x1), y1 = std::min(gy + static_cast<int32_t>(g.h), clip.y1);
+    if (x1 <= x0 || y1 <= y0) continue;
+    // The quad's texels map 1:1 to pixels, so the cropped uv moves by whole texels.
+    const float du = g.w ? (g.uv1.x - g.uv0.x) / static_cast<float>(g.w) : 0.0f;
+    const float dv = g.h ? (g.uv1.y - g.uv0.y) / static_cast<float>(g.h) : 0.0f;
+    const Vec2 a{g.uv0.x + du * static_cast<float>(x0 - gx), g.uv0.y + dv * static_cast<float>(y0 - gy)};
+    const Vec2 b{g.uv0.x + du * static_cast<float>(x1 - gx), g.uv0.y + dv * static_cast<float>(y1 - gy)};
+    dl.setTexture(atlasPageTexture(g.page));
+    const DrawList::PrimSpan sp = dl.primReserveSpan(6, 4);
+    const float fx0 = static_cast<float>(x0), fy0 = static_cast<float>(y0), fx1 = static_cast<float>(x1), fy1 = static_cast<float>(y1);
+    sp.v[0] = {{fx0, fy0}, a, col};
+    sp.v[1] = {{fx1, fy0}, {b.x, a.y}, col};
+    sp.v[2] = {{fx1, fy1}, b, col};
+    sp.v[3] = {{fx0, fy1}, {a.x, b.y}, col};
+    const uint32_t base = sp.base;
+    sp.i[0] = base;
+    sp.i[1] = base + 1;
+    sp.i[2] = base + 2;
+    sp.i[3] = base;
+    sp.i[4] = base + 2;
+    sp.i[5] = base + 3;
+  }
+  dl.setTexture(prevTex);
+}
+
 std::vector<ShapedGlyph> TextSystem::shapeGlyphs(FontId font, std::string_view utf8) {
   std::vector<ShapedGlyph> out;
   if (font >= impl_->fonts.size()) return out;

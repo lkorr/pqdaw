@@ -661,13 +661,7 @@ TEST_CASE("render: automation drags repaint only damage, and equal a full repain
       return;
     }
     ClipRect rects[Damage::kMaxRects];
-    uint32_t n = 0;
-    ClipRect box{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
-    for (const ClipRect& r : d.rects()) {
-      rects[n++] = r;
-      box = Damage::unite(box, r);
-    }
-    tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+    const uint32_t n = views::test::paintDamage(tree, dl, res, now, rects);
     FrameDesc pf = ff;
     pf.full = false;
     pf.damage = {rects, n};
@@ -730,6 +724,133 @@ TEST_CASE("render: automation drags repaint only damage, and equal a full repain
     compare("automation-curve-release");
   }
   CHECK(partialFrames > 10);
+  CHECK(au.stats().envTilesBuilt > 0);  // T3.x-fix-paint: the undragged bands came from envelope tiles
+}
+
+TEST_CASE("render: envelope tiles (T3.x-fix-paint) match the direct ribbon and keep partial == full through scroll and zoom") {
+  GpuOptions go;
+  go.validation = true;
+  auto gpu = GpuContext::create(go);
+  REQUIRE_MESSAGE(gpu.ok(), (gpu.ok() ? "" : gpu.error().message));
+  auto renderer = Renderer::create(**gpu, OffscreenTarget::kFormat, 3);
+  REQUIRE(renderer.ok());
+  auto tex = createSceneTextures(**renderer);
+  REQUIRE(tex.ok());
+  const PaintResources res = paintResources(*tex);
+  PaintResources resNoTiles = res;
+  resNoTiles.tiles = nullptr;
+  REQUIRE(res.tiles != nullptr);
+  constexpr uint32_t W = 1280, H = 800;
+  FakeTransport port;
+  ViewContext ctx(port);
+  REQUIRE(ctx.openProject(views::test::fixtureDir("automation")).ok());
+  UiTree tree;
+  tree.setViewport(W, H);
+  tree.setResources(&res);
+  auto shell = Shell::create(tree, ctx);
+  REQUIRE(shell.ok());
+  ctx.setDetailVisible(false);
+  tree.layoutNow();
+  auto* arr = dynamic_cast<ArrangementView*>(tree.find(kArr));
+  REQUIRE(arr != nullptr);
+  ArrangementAutomation& au = arr->automation();
+  for (const doc::TrackPtr& t : ctx.doc()->tracks) au.showLanes(t->id, true);
+  au.setMode(true);
+  tree.layoutNow();
+  auto partial = OffscreenTarget::create(**gpu, W, H, 1);
+  auto full = OffscreenTarget::create(**gpu, W, H, 1);
+  REQUIRE((partial.ok() && full.ok()));
+  DrawList dl;
+  const DrawLayer layer{&dl, kTransientLayer, 0};
+  FrameDesc ff;
+  ff.layers = {&layer, 1};
+  ff.clear = kSceneClearColor;
+  double now = 0.0;
+  auto drawFull = [&](OffscreenTarget& target, const PaintResources& r) {
+    tex->text->beginFrame();
+    dl.reset(W, H);
+    tree.paint(dl, r, now);
+    REQUIRE(target.draw(**renderer, ff).ok());
+    auto img = target.read();
+    REQUIRE(img.ok());
+    return std::move(*img);
+  };
+  auto frame = [&] {
+    now += 1.0 / 144.0;
+    tree.update(now);
+    if (!tree.damage().needsFrame()) return;
+    tex->text->beginFrame();
+    dl.reset(W, H);
+    if (tree.damage().full()) {
+      tree.paint(dl, res, now);
+      REQUIRE((*partial)->draw(**renderer, ff).ok());
+      return;
+    }
+    ClipRect rects[Damage::kMaxRects];
+    const uint32_t n = views::test::paintDamage(tree, dl, res, now, rects);
+    FrameDesc pf = ff;
+    pf.full = false;
+    pf.damage = {rects, n};
+    REQUIRE((*partial)->draw(**renderer, pf).ok());
+  };
+  auto settle = [&] {
+    for (int i = 0; i < 400 && (i < 2 || tree.needsFrame() || arr->zooming()); ++i) frame();
+  };
+  auto compare = [&](const std::string& what) {
+    auto a = (*partial)->read();
+    REQUIRE(a.ok());
+    const Image b = drawFull(**full, res);
+    const ImageDiff diff = compareImages(*a, b, 0);
+    if (diff.pixelsOverTolerance != 0) {
+      (void)writePng(what + ".partial.png", *a);
+      (void)writePng(what + ".full.png", b);
+    }
+    CHECK_MESSAGE(diff.pixelsOverTolerance == 0, what << ": " << diff.pixelsOverTolerance << " px differ");
+  };
+  (void)drawFull(**partial, res);
+  settle();
+  // Settled: every automated band visible is drawn from tiles, none missing.
+  (void)drawFull(**full, res);
+  CHECK(au.stats().envTilesDrawn > 0);
+  CHECK(au.stats().envTilesMissing == 0);
+  CHECK(au.stats().envTilesBuilt > 0);
+  compare("envtiles-settled");
+  // Tiles against the direct ribbon: the same envelope within the golden tolerance (antialiasing may differ).
+  {
+    const Image a = drawFull(**full, res);
+    const Image b = drawFull(**partial, resNoTiles);
+    CHECK(au.stats().envTilesDrawn == 0);
+    ImageDiff d;
+    CHECK(pq::ui::test::matchesGolden("envtiles-vs-direct", a, b, true, &d));
+    (void)drawFull(**partial, res);
+  }
+  // Scrolling keeps the tiles (whole-pixel chunks): nothing is rebuilt, partial frames equal a full repaint.
+  const uint64_t built = au.stats().envTilesBuilt;
+  for (int i = 0; i < 12; ++i) {
+    arr->scrollByPx(23.0);
+    frame();
+  }
+  settle();
+  compare("envtiles-scrolled");
+  CHECK(au.stats().envTilesBuilt > built);  // the newly exposed chunks
+  const uint64_t afterScroll = au.stats().envTilesBuilt;
+  arr->scrollByPx(-46.0);
+  settle();
+  CHECK(au.stats().envTilesBuilt == afterScroll);  // scrolling back: the chunks are still there
+  compare("envtiles-scrolled-back");
+  // Zoom: direct while zooming, tiles at the new zoom once it settles, repainted whole.
+  const IRect lv = arr->lanesViewport();
+  for (int i = 0; i < 4; ++i) {
+    arr->zoomAt(static_cast<float>(lv.x + lv.w / 3), 0.85);
+    frame();
+  }
+  compare("envtiles-zooming");
+  settle();
+  compare("envtiles-zoomed");
+  (void)drawFull(**full, res);
+  CHECK(au.stats().envTilesMissing == 0);
+  CHECK(au.stats().envTilesDrawn > 0);
+  CHECK((*gpu)->validationErrorCount() == 0);
 }
 
 namespace {

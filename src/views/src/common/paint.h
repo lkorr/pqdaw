@@ -37,6 +37,15 @@ inline int32_t capCentredBaseline(int32_t y, int32_t h, uint32_t pixelSize) noex
   return y + (h + cap + 1) / 2;
 }
 
+// Where a text helper's glyph ink may go (M3 review M13): horizontally the box (truncation keeps the advance inside it;
+// this also cuts the antialiased overhang of the last glyph), vertically the painting widget's rect (a descender
+// below a small box stays visible inside the widget). Outside UiTree::paint (no widget rect): the box.
+inline ui::ClipRect textClip(const ui::PaintContext& ctx, const ui::IRect& box) noexcept {
+  const ui::IRect& w = ctx.widget;
+  if (w.empty()) return {box.x, box.y, box.right(), box.bottom()};
+  return {std::max(box.x, w.x), w.y, std::min(box.right(), w.right()), w.bottom()};
+}
+
 // One line of text in `box` between the paddings, truncated with "…", aligned, capitals centred. Returns the
 // advance drawn.
 inline int32_t text(const ui::PaintContext& ctx, ui::FontId font, const ui::IRect& box, std::string_view s, ui::Rgba col,
@@ -50,7 +59,8 @@ inline int32_t text(const ui::PaintContext& ctx, ui::FontId font, const ui::IRec
   if (a == ui::TextAlign::Center) x += (avail - run.advance) / 2;
   else if (a == ui::TextAlign::Right) x = box.right() - padR - run.advance;
   const int32_t y = capCentredBaseline(box.y, box.h, ts->metrics(font).pixelSize);
-  ui::TextSystem::drawRun(ctx.dl, run, {static_cast<float>(x), static_cast<float>(y)}, col);
+  // Ink is cut to the box (M13): a glyph's antialiased edge or a descender must not leave the widget's rect.
+  ui::TextSystem::drawRunClipped(ctx.dl, run, {static_cast<float>(x), static_cast<float>(y)}, col, textClip(ctx, box));
   return run.advance;
 }
 

@@ -134,8 +134,13 @@ public:
   bool onKey(const ui::KeyEvent& e) override;
   void open();
 
+  // Whether a document event can change what a chip shows (a tuning, an assignment, the tree: Structural; tuning
+  // params). Param / Sequence / Automation / Timeline / Meta events of tracks cannot.
+  static bool tuningMayChange(const doc::StoreEvent& e) noexcept;
+
 private:
   void refresh() const;
+  void recheck();  // re-resolves now and repaints only if the text or swatch changed
   ViewContext& ctx_;
   std::optional<TuningTarget> target_;
   ViewContext::Subscription docSub_, viewSub_;

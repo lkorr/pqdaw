@@ -395,6 +395,7 @@ private:
   uint32_t previewBudget_ = arrangement_metrics::kPreviewBuildNotesPerPaint;
   bool repaintWhenBuilt_ = false;  // a paint drew a clip approximately: repaint once everything is built
   uint64_t latchBuilds_ = 0;       // previews + tiles built when repaintWhenBuilt_ was set
+  uint64_t paintFrame_ = 0;        // PaintContext::frame of the last paint (stats and budgets are per frame)
 };
 
 // Loop brace, bar numbers, ticks, locators, tempo / signature markers, start marker, playhead. Click locates,

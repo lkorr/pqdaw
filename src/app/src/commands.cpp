@@ -237,13 +237,11 @@ struct WindowApp {
       ClipRect rects[Damage::kMaxRects];
       uint32_t nRects = 0;
       int64_t area = 0;
-      ClipRect box{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
       for (const ClipRect& r : damage.rects()) {
         const ClipRect c{std::max(r.x0, 0), std::max(r.y0, 0), std::min(r.x1, static_cast<int32_t>(W)), std::min(r.y1, static_cast<int32_t>(H))};
         if (c.x1 <= c.x0 || c.y1 <= c.y0) continue;
         rects[nRects++] = c;
         area += Damage::area(c);
-        box = Damage::unite(box, c);
       }
       const bool full = forceFull || damage.full() || !swapchain->preserved() || (!ui && !layered) || extraFont != kNoFont ||
                         area * 100 > int64_t(W) * H * kPartialMaxPercent;
@@ -257,8 +255,11 @@ struct WindowApp {
           dl.addRectFilled({0, 0, static_cast<float>(W), static_cast<float>(H)}, kSceneClearColor);
           ui->paint(dl, res, t);
         } else {
-          // The background is the damage rects' clear; only widgets touching the damage are painted.
-          ui->paint(dl, res, t, nRects ? IRect{box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0} : IRect{});
+          // The background is the damage rects' clear; the tree paints once per damage rect (T3.x-fix-paint: not
+          // their bounding box), each pass clipped to its rect.
+          IRect regions[Damage::kMaxRects];
+          for (uint32_t i = 0; i < nRects; ++i) regions[i] = {rects[i].x0, rects[i].y0, rects[i].x1 - rects[i].x0, rects[i].y1 - rects[i].y0};
+          ui->paint(dl, res, t, std::span<const IRect>(regions, nRects));
         }
       } else if (layered && !forceFull) {
         layers[nLayers++] = {&staticLayer, 0, staticVersion};

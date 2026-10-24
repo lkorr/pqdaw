@@ -120,13 +120,7 @@ struct Rig {
       return;
     }
     ClipRect rects[Damage::kMaxRects];
-    uint32_t n = 0;
-    ClipRect box{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
-    for (const ClipRect& r : d.rects()) {
-      rects[n++] = r;
-      box = Damage::unite(box, r);
-    }
-    tree.paint(dl, res, now, {box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0});
+    const uint32_t n = views::test::paintDamage(tree, dl, res, now, rects);
     fd.full = false;
     fd.damage = {rects, n};
     REQUIRE(partial->draw(*renderer, fd).ok());
@@ -136,29 +130,20 @@ struct Rig {
   void settle(int maxFrames = 600) {
     for (int i = 0; i < maxFrames && (i == 0 || tree.needsFrame() || arr->zooming()); ++i) frame();
   }
-  // The partial target against a full repaint now, over the arrangement (the control bar's grid label, which a zoom
-  // changes, paints a pixel past its rect: a T3.7 Label matter outside this test, QUESTIONS Q103).
+  // The partial target against a full repaint now, over the whole shell. (Until T3.x-fix-paint this compared only
+  // the arrangement: the control bar's grid label, which a zoom changes, painted an antialiased pixel past its rect,
+  // Q103 / M3 review M13. Text helpers now cut glyph ink to the widget, so the label is covered too.)
   void comparePartial(const std::string& what) {
     auto pa = partial->read();
     REQUIRE(pa.ok());
-    const Image pb = drawFull(*full, res);
-    const IRect area = arr->rect();
-    const Image a = crop(*pa, area), b = crop(pb, area);
+    const Image b = drawFull(*full, res);
+    const Image& a = *pa;
     const ImageDiff diff = compareImages(a, b, 0);
     if (diff.pixelsOverTolerance != 0) {
       (void)writePng(what + ".partial.png", a);
       (void)writePng(what + ".full.png", b);
     }
     CHECK_MESSAGE(diff.pixelsOverTolerance == 0, what << ": " << diff.pixelsOverTolerance << " px differ");
-  }
-  static Image crop(const Image& img, const IRect& r) {
-    Image out;
-    out.width = static_cast<uint32_t>(r.w);
-    out.height = static_cast<uint32_t>(r.h);
-    out.rgba.resize(size_t(out.width) * out.height * 4);
-    for (uint32_t y = 0; y < out.height; ++y)
-      std::memcpy(out.pixel(0, y), img.pixel(static_cast<uint32_t>(r.x), static_cast<uint32_t>(r.y) + y), size_t(out.width) * 4);
-    return out;
   }
   // A full repaint from tiles against one with the notes drawn directly (no tile atlas).
   // expectTiles: false where every clip is wider than a tile (drawn directly in both paints).
