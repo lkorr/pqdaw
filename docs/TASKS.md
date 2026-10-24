@@ -112,7 +112,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Several timing/perf assertions fail intermittently while other builds run (seen: `pq_tests_ui` test_render.cpp "stalls == 0", `pq_tests_engine` test_null_device.cpp:281 callback within 50 ms, `pqdaw_window_selftest_partial` CPU ratio < 25 %, glyph-upload frame-interval check). `main` must always pass.
   - Accept: each timing assertion either measures something load-independent (thread CPU cycles, counts, deterministic fake clocks) or moves to an opt-in perf label (`ctest -L perf`) that the standard build doesn't run; the functional part of each test stays in the default suite. 10 consecutive full release `ctest` runs pass while a parallel `cmake --build` of the other preset runs.
 
-- [~] **T0.5-fix1 PPQ 221,760** *(worker AY, branch task/T0.5-fix1-ppq)* (`core`, all users). Depends on: T0.5. (User decision Q3.)
+- [x] **T0.5-fix1 PPQ 221,760** *(merged 2026-10-24)* (`core`, all users). Depends on: T0.5. (User decision Q3.)
   - Change PPQ from 27,720 to 221,760 (2⁶·3²·5·7·11) everywhere: core time.h constant, grid (T3.3: straight values down to 1/256, x/64 signatures legal), document/serialization (schemaVersion bump + migration multiplying stored ticks by 8; existing fixtures migrated), tests/goldens/benchmarks that hard-code tick values.
   - Accept: all tests pass with the new constant; every straight note value 1/1…1/256 and every 3/5/7/9/11-tuplet of them is an exact integer tick count; a schema-1 project loads, migrates and re-saves as schema 2 with all positions × 8; the 10 h @ 192 kHz tempo round-trip test still holds within ½ sample.
 

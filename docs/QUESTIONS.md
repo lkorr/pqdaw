@@ -705,7 +705,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   8. **Scala**: same row model; a scale whose degrees are not in ascending pitch order is laid out Equidistant (proportional rows would cross).
 - Status: open
 
-## Q?-T0.5-fix1-a · 2026-10-24 · T0.5-fix1 · Grid values finer than 1/64, and x/128 · x/256 signatures
+## Q93 · 2026-10-24 · T0.5-fix1 · Grid values finer than 1/64, and x/128 · x/256 signatures
 - Context: with PPQ 221,760 every straight value down to 1/256 is exact, but SPEC §9.2 lists the fixed grid as 1/1 … 1/64, and nothing says whether the adaptive grid should go finer when zoomed far in. `noteValueIsExact` accepts every divisor of the whole note (887,040 = 2⁸·3²·5·7·11), so `TimeSigMap` now accepts x/64 (asked for) and also x/128 and x/256 (and e.g. x/448).
 - Options: A) keep the grid's values as SPEC lists them: fixed 1/1 … 1/64 (Ctrl+1 stops there), adaptive finest 1/64; x/128 and x/256 signatures legal (their beats are exact; the adaptive grid shows 1/64 cells where they tile the bar, otherwise whole bars). B) extend the adaptive candidates to 1/256 (lines finer than 1/64 only at extreme zoom), fixed menu unchanged. C) also add 1/128 and 1/256 to the fixed menu and Ctrl+1. D) reject time-signature denominators above 64.
 - Provisional choice: A: no visible change to the grid, and nothing persisted depends on it (C widens `GridSpec::fixedExp`'s range; B is the loop bound in `Grid::divisionFor`; D is one check in `TimeSigMap::create`).
