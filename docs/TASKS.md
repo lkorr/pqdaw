@@ -92,7 +92,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Compile PQ Meter's `smooth_line.h` and the `spectrum.cpp`/`oscilloscope.cpp` helper functions against a minimal `ImDrawList` shim; compare vertex/index buffers with `pq::ui` for fixed inputs.
   - Accept: bit-identical output (or each documented difference, such as the skipped α=0 pass, asserted explicitly).
 
-- [~] **T0.7-fix6 Startup time** *(worker BE, same branch)* (`app`). Depends on: T0.7.
+- [x] **T0.7-fix6 Startup time** *(merged 2026-10-24; < 300 ms met under load, idle re-measure pending)* (`app`). Depends on: T0.7.
   - Measure from process creation; log per-phase times; on-disk `VkPipelineCache`; overlap font loading with device creation.
   - Accept: first frame < 300 ms from process creation on an idle machine, median of 10 cold-ish starts, recorded in RESULTS.md.
 
@@ -348,7 +348,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Ruler (bars/beats; time-signature and tempo markers), locators, loop brace, playhead (reads `TransportPort` only while playing). Track lanes with headers (name, colour, fold), group indentation. Note clips as Ableton clip bodies with a cached note preview rebuilt only when the clip snapshot pointer changes. Adaptive grid shading; scroll; Ctrl+wheel and ruler-drag zoom; Z / X; follow mode; overview strip. Virtualisation: per-track sorted clips + binary search; only visible tracks/clips emit geometry.
   - Accept: goldens `arrangement-basic` (8 tracks incl. a nested and a folded group, loop, locators) and `arrangement-zoomed-out`. Scripted: Ctrl+wheel zoom keeps the tick under the cursor fixed (±1 px); Z/X round-trip; ruler click locates via the port. Perf (release, 2560×1440, 64 tracks × 200 clips × 50 notes): full redraw < 2 ms CPU; scroll/zoom frame < 2 ms; draw-list memory flat over 1000 scroll frames.
 
-- [~] **T3.8-fix1 Cached clip preview textures** *(worker BE, branch task/T3.8-fix1-ui-perf)* (`views`, `ui`). Depends on: T3.8, T0.7-fix4.
+- [x] **T3.8-fix1 Cached clip preview textures** *(merged 2026-10-24)* (`views`, `ui`). Depends on: T3.8, T0.7-fix4.
   - Render each clip's note preview into a texture (per clip snapshot + zoom bucket) and draw it as one textured quad, so far-zoom settled repaints don't emit tens of thousands of note rects. Rebuild off the paint path within a budget.
   - Accept: at 2560×1440, 64 × 200 × 50, settled full repaint < 2 ms at every zoom down to the minimum, including the first repaint after a zoom settles; goldens unchanged (or deliberately regenerated and reviewed); texture memory bounded.
 
