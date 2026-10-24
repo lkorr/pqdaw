@@ -4,7 +4,8 @@
 // of cutoff / Q / gain / time, block sizes that split the sub-blocked loops. Criterion (TASKS T1b.3): every sample
 // within 1e-5 (absolute below 1, relative above: the resonant outputs exceed 1). Also: the damped comb's pitch, the
 // svf and biquad designs against the analog responses, and
-// the adsr semantics (stage times, retrigger, release from attack, sustain changes, done).
+// the adsr semantics (stage times, retrigger, release from attack, sustain changes, done). The param sweeps of svf and
+// of the biquad designers are tagged `slow` (-Full); the default tier keeps their audio-rate and analog checks.
 #include <doctest/doctest.h>
 
 #include <cmath>
@@ -246,7 +247,7 @@ const char* kSvfOuts = R"(
 
 }  // namespace
 
-TEST_CASE("stdlib svf: all nine outputs vs the reference (param cutoff / q / gain, global and voice)") {
+TEST_CASE("stdlib svf: all nine outputs vs the reference (param cutoff / q / gain, global and voice)" * doctest::test_suite("slow")) {
   for (const bool voice : {false, true}) {
     const Program p = compile(withPoly(std::string(R"(import "filters/svf.pqp"
 patch T {
@@ -344,7 +345,7 @@ TEST_CASE("stdlib svf: the designs match the analog prototypes (steady-state gai
 }
 
 // ================================================================================================================
-TEST_CASE("stdlib biquad: raw coefficients and every designer vs the reference (global and voice)") {
+TEST_CASE("stdlib biquad: raw coefficients and every designer vs the reference (global and voice)" * doctest::test_suite("slow")) {
   for (const bool voice : {false, true}) {
     const Program raw = compile(withPoly(R"(import "filters/biquad.pqp"
 patch T {
@@ -536,7 +537,7 @@ patch T {
   }
 }
 
-TEST_CASE("stdlib comb_lp: the fundamental is 1/time (tuning-compensated damping)") {
+TEST_CASE("stdlib comb_lp: the fundamental is 1/time at any damping (linear-phase damper)") {
   // Impulse response of a long-ringing low-pass comb; the strongest DFT bin near 1/time, refined to 0.05 cents.
   const Program p = compile(R"(import "filters/comb.pqp"
 patch T {
@@ -554,16 +555,22 @@ patch T {
       const Outputs o = run(p, Backend::Jit, st);
       REQUIRE(o.error.empty());
       const auto& y = o.at("y")[0];
-      auto power = [&](double f) {
-        std::complex<double> acc;
-        for (size_t t = 0; t < y.size(); ++t) acc += static_cast<double>(y[t]) * std::polar(1.0, -2.0 * 3.141592653589793 * f * t / kSr);
+      auto power = [&](double cents) {  // |DFT|² at f0 · 2^(cents/1200), by a rotating phasor
+        const std::complex<double> rot = std::polar(1.0, -2.0 * 3.141592653589793 * f0 * std::exp2(cents / 1200.0) / kSr);
+        std::complex<double> acc, z(1.0, 0.0);
+        for (const float v : y) {
+          acc += static_cast<double>(v) * z;
+          z *= rot;
+        }
         return std::norm(acc);
       };
-      double best = 0, bestCents = 0;
-      for (double cents = -20; cents <= 20.0001; cents += 0.05) {
-        const double pw = power(f0 * std::exp2(cents / 1200.0));
-        if (pw > best) best = pw, bestCents = cents;
-      }
+      // 1-cent scan over ±20 cents, then 0.05 cents around the best.
+      double best = 0, coarse = 0;
+      for (double cents = -20; cents <= 20.0001; cents += 1.0)
+        if (const double pw = power(cents); pw > best) best = pw, coarse = cents;
+      double bestCents = coarse;
+      for (double cents = coarse - 1.0; cents <= coarse + 1.0001; cents += 0.05)
+        if (const double pw = power(cents); pw > best) best = pw, bestCents = cents;
       // The damping FIR is linear-phase (exactly one sample), so the loop is exactly `time` at every frequency; what
       // is left is the delay line's linear interpolation of a fractional period, which matters only at high f0. (A
       // one-pole damper without compensation would be flat by its whole delay, e.g. 15 cents at 1 kHz with
