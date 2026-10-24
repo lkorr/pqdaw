@@ -128,9 +128,9 @@ private:
   bool openDevice(const OutputConfig& c);  // control thread, lock not held
   void openFallback(const OutputConfig& c, std::string why);
   void closeDevice();                      // control thread, lock not held
-  bool startStream();                      // control thread, lock not held
+  bool startStream(bool notifyUi = true);  // control thread, lock not held
   void stopStream(bool prepareRestart);
-  void publish(OutputStatus::State s, std::string message);
+  void publish(OutputStatus::State s, std::string message, bool notifyUi = true);
   void notify();
   void addTone(const engine::AudioBlock& b) noexcept;  // RT-safe
   float toneHzNow() const;

@@ -258,14 +258,14 @@ float AudioOutput::toneHzNow() const {
   return toneHz_;
 }
 
-void AudioOutput::publish(OutputStatus::State s, std::string message) {
+void AudioOutput::publish(OutputStatus::State s, std::string message, bool notifyUi) {
   {
     std::lock_guard lock(mutex_);
     status_.state = s;
     status_.message = std::move(message);
     ++status_.revision;
   }
-  notify();
+  if (notifyUi) notify();
 }
 
 void AudioOutput::openFallback(const OutputConfig& c, std::string why) {
@@ -387,7 +387,7 @@ void AudioOutput::closeDevice() {
   d->close();
 }
 
-bool AudioOutput::startStream() {
+bool AudioOutput::startStream(bool notifyUi) {
   if (!device_ || streamRunning_.load(std::memory_order_relaxed)) return streamRunning_.load(std::memory_order_relaxed);
   engine::Engine& eng = *engine_.load();
   eng.audioOnline();
@@ -399,7 +399,8 @@ bool AudioOutput::startStream() {
   }
   streamRunning_.store(true, std::memory_order_relaxed);
   running_.store(true, std::memory_order_release);
-  publish(fallback_ ? OutputStatus::State::Fallback : OutputStatus::State::Running, fallback_ ? status().message : std::string());
+  publish(fallback_ ? OutputStatus::State::Fallback : OutputStatus::State::Running, fallback_ ? status().message : std::string(),
+          notifyUi);
   return true;
 }
 
@@ -494,7 +495,7 @@ void AudioOutput::controlMain() {
       wakeRequest_ = false;
       wasAsleep = false;
       lock.unlock();
-      const bool ok = startStream();
+      const bool ok = startStream(false);  // a resume: the UI is not told (an open window polls the status)
       lock.lock();
       if (!ok) pending_ = config_;  // the device went away while suspended: reopen (or fall back)
       continue;
@@ -553,13 +554,12 @@ void AudioOutput::controlMain() {
     ++status_.suspensions;
     ++status_.revision;
     suspensions_.fetch_add(1, std::memory_order_relaxed);
-    lock.unlock();
-    notify();
-    lock.lock();
+    // Not notified: suspend / resume follow every play and stop, and an idle DAW must not wake its UI thread for
+    // them (an open preferences window sees the state at its next 2 Hz poll).
   }
   lock.unlock();
-  notifier.stop();
   closeDevice();
+  notifier.stop();
 }
 
 }  // namespace pq::app
