@@ -37,7 +37,7 @@ $root = Split-Path -Parent $PSScriptRoot
 
 # sccache environment (read by the launcher and by the server it starts). One server per checkout, on a port
 # derived from the checkout's path, with that checkout as its base directory: identical sources in two
-# worktrees then hash identically and share the cache directory. The server exits after 30 idle minutes; it reads the shared cache's index when it starts.
+# worktrees then hash identically and share the cache directory. Each build restarts it (fresh index of the shared cache); it exits after 30 idle minutes.
 $sccacheDir = if ($env:PQ_SCCACHE_DIR) { $env:PQ_SCCACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'pqdaw\sccache' }
 $env:SCCACHE_DIR = $sccacheDir
 $env:SCCACHE_CACHE_SIZE = '20G'
@@ -64,8 +64,11 @@ try {
 
   $sccache = Get-Sccache $buildDir
   if ($sccache) {
-    & $sccache --start-server *> $null   # fails harmlessly when this checkout's server already runs
-    & $sccache --zero-stats *> $null
+    # Restart this checkout's server: a server indexes the shared cache directory when it starts and does not
+    # see objects that other checkouts' servers store later, so a long-lived one would miss them. (A build
+    # running concurrently in the same checkout compiles its in-flight files without the cache meanwhile.)
+    & $sccache --stop-server *> $null
+    & $sccache --start-server *> $null
   }
 
   $buildArgs = @('--build', '--preset', $Preset)
