@@ -111,6 +111,11 @@ struct CorpusStats {
   std::string worstInterp, worstRef;
 };
 
+// tests/jit/patches/fold_scan.pqp multiplies one-ulp differences of exact transcendentals by 1e9; the reference
+// evaluator computes them independently in double (a few ulp from the kernels, ref_eval.h), so only the backends'
+// bit identity (here) and the probe's own exact zeros (its test below) apply to it.
+bool ulpProbe(const Compiled& c) { return c.name == "foldscan"; }
+
 // One patch × voices × param set × every block size: JIT vs interpreter and vs the reference.
 void checkPatch(const Compiled& c, uint32_t voices, int paramSet, const jit::CompileOptions& jo, CorpusStats& cs,
                 bool requireBitIdentical, const uint32_t* blocks, size_t numBlocks, jit::Compiler* with = nullptr) {
@@ -134,13 +139,13 @@ void checkPatch(const Compiled& c, uint32_t voices, int paramSet, const jit::Com
     const Mismatch mi = compare(c, interp.streams, run.streams, (*face)->io());
     const Mismatch mr = compare(c, ref, run.streams, (*face)->io());
     CHECK_MESSAGE(mi.maxErr <= kTolInterp, "vs interpreter: max error " << mi.maxErr << ": " << mi.where);
-    CHECK_MESSAGE(mr.maxErr <= kTolRef, "vs reference: max error " << mr.maxErr << ": " << mr.where);
+    if (!ulpProbe(c)) CHECK_MESSAGE(mr.maxErr <= kTolRef, "vs reference: max error " << mr.maxErr << ": " << mr.where);
     if (requireBitIdentical) CHECK_MESSAGE(bitDifferences(interp.streams, run.streams) == 0, "not bit-identical: " << mi.where);
     if (mi.maxErr >= cs.maxVsInterp) {
       cs.maxVsInterp = mi.maxErr;
       cs.worstInterp = c.file + ":" + c.name + " " + mi.where + " (block " + std::to_string(block) + ")";
     }
-    if (mr.maxErr >= cs.maxVsRef) {
+    if (!ulpProbe(c) && mr.maxErr >= cs.maxVsRef) {
       cs.maxVsRef = mr.maxErr;
       cs.worstRef = c.file + ":" + c.name + " " + mr.where + " (block " + std::to_string(block) + ")";
     }
@@ -245,6 +250,33 @@ TEST_CASE("jit: opt-in contraction stays within 1e-6 of the interpreter except i
   const CorpusStats cs = runCorpus(jo, false, kBlocks, std::size(kBlocks), false);
   MESSAGE("JIT (contract + afn): " << cs.configs << " runs; max error vs interpreter " << cs.maxVsInterp << " at " << cs.worstInterp
                                    << "; vs reference " << cs.maxVsRef);
+}
+
+TEST_CASE("jit: fold_scan: folded literals equal the runtime value at param rate (8 lanes) and global audio rate (1 lane), both backends") {
+  // M1 review M4 + QUESTIONS Q94: constant folding runs the 8-lane kernel; Control regions run it too; a global
+  // audio-rate op runs the 1-lane kernel, which calls the same SVML functions (dsp simd.h S1). Every channel of the
+  // probe is (folded − runtime) · 1e9 with the default params, so it is exactly 0 at every sample.
+  std::vector<std::string> skipped;
+  const std::vector<Compiled> compiled = compileFile(jitPatchesDir() / "fold_scan.pqp", 48000.0, skipped);
+  REQUIRE(compiled.size() == 1);
+  const Compiled& c = compiled[0];
+  const Setup st(c, 0, 0);
+  for (const bool jit : {false, true}) {
+    for (const uint32_t block : {1u, 64u}) {
+      CAPTURE(jit);
+      CAPTURE(block);
+      const InterpRun run = runInterp(st, 256, block, kMaxBlock, jit ? jitBuilder() : ImageBuilder{});
+      REQUIRE_MESSAGE(run.error.empty(), run.error);
+      REQUIRE(run.streams.size() == 2 * 38);
+      std::string nonzero;
+      for (const auto& [key, x] : run.streams) {
+        const bool zero = std::all_of(x.begin(), x.end(), [](double v) { return v == 0.0; });
+        if (!zero)  // global out slots: y's 38 channels, then z's
+          nonzero += " " + std::string(key.a < 38 ? "y" : "z") + "[" + std::to_string(key.a % 38) + "]=" + std::to_string(x.front());
+      }
+      CHECK_MESSAGE(nonzero.empty(), "folded != runtime on:" << nonzero);
+    }
+  }
 }
 
 TEST_CASE("jit: the M1 review's chaotic feedback probes are bit-identical to the interpreter (contraction off by default)") {
