@@ -1,0 +1,25 @@
+// Probe (M3 review, lowering state keys): the same group after a second return (id 21) was added: one more
+// param and send, exactly as doc::lower regenerates it.
+patch Group7 {
+  param volume = 0 [-70..6]
+  param pan = 0 [-1..1]
+  param gate = 1 [0..1]
+  param sendGate = 1 [0..1]
+  param send20 = -70 [-70..6]
+  param send21 = -70 [-70..6]
+  in in : audio global stereo = 0
+  out out : audio global stereo
+  x = in
+  vg = volume <= -70 ? 0 : db_to_gain(volume)
+  g = vg * gate
+  pl = min(1, 1 - pan)
+  pr = min(1, 1 + pan)
+  sg20 = sendGate * (send20 <= -70 ? 0 : db_to_gain(send20)) * vg
+  sg21 = sendGate * (send21 <= -70 ? 0 : db_to_gain(send21)) * vg
+  target = (pl * g, pr * g, pl * sg20, pr * sg20, pl * sg21, pr * sg21)
+  k = 1 - exp(-1 / (0.002 * sr))
+  sm = z1(sm + (target - sm) * k)
+  out = x * (sm[0], sm[1])
+  export tap20 = x * (sm[2], sm[3])
+  export tap21 = x * (sm[4], sm[5])
+}
