@@ -7,11 +7,13 @@
 //                recomputed (doc::lowerParams, O(tracks): solo changes other tracks' gates) and only the changed ones
 //                are written to the engine's project param block (Engine::setParam, a wait-free SPSC push). No
 //                compile. A tuning param (generator, period, stretch, reference, EDO equave) reaches the tuning
-//                nodes of the tracks that follow it the same way (T2.6-fix1), so their Degree notes, held ones too,
-//                move at the next block; the sequences are lowered again for the notes that keep static pitches in
-//                that tuning, and republished only if one of them changed.
+//                nodes of the tracks that follow it the same way (T2.6-fix1), so every note following it (Degree
+//                notes, Ratio notes on them, reference-relative Ratio / Cents notes: T2.6-fix3), held ones too, moves
+//                at the next block; only tracks whose notes keep static pitches in that tuning are lowered again,
+//                and republished only if one of them changed (held notes then retuned by Pitch events, not cut).
 //   Sequence     the note sequences of the touched tracks are lowered again (a per-track cache keyed by the
-//                track's snapshot node and its effective tuning), the SequenceImage is rebuilt and published at
+//                track's snapshot node and the definitions its clips resolve in: sequenceKey), the SequenceImage is
+//                rebuilt and published at
 //                once (Timeline::publishSequence): a moved note or a velocity change plays from the next block,
 //                with no compile.
 //   Automation   the AutomationImage is rebuilt and published (targets = project param slots).
@@ -124,6 +126,7 @@ struct LinkStats {
   uint64_t topologyChanges = 0;    // jobs that changed the partition / buses
   uint64_t unitPublishes = 0;
   uint64_t sequencePublishes = 0, automationPublishes = 0, tempoPublishes = 0;
+  uint64_t trackLowerings = 0;     // tracks whose note sequence was lowered again (the per-track cache missed)
   uint64_t paramWrites = 0;
   uint64_t compileErrors = 0;
   std::string lastError;
@@ -215,9 +218,8 @@ public:
 private:
   struct SeqCacheEntry {
     const doc::Track* track = nullptr;
-    const doc::TuningDef* tuning = nullptr;
-    const void* tunings = nullptr;  // Project::tunings: clip overrides to main tunings follow it
-    doc::Snapshot from;  // keeps `track`, `tuning` and `tunings` alive, so no address can be reused by a later node
+    std::vector<const void*> key;  // sequenceKey: the definitions (or node tables) its clips resolve in
+    doc::Snapshot from;  // keeps `track` and the keyed definitions alive, so no address can be reused by a later node
     engine::TrackSequenceDesc desc;
   };
   struct TuningTableEntry {
@@ -243,6 +245,7 @@ private:
   // onlyIfChanged: publish only when a track's description changed (after a tuning param change).
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
   engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);
+  std::vector<const void*> sequenceKey(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t) const;
   // UI thread: tables for the snapshot's signal tunings; true when one was built (its index is new: a compile).
   bool updateTuningTables(const doc::Project& p);
   const TuningTableEntry* tuningEntry(doc::TuningId id, const doc::TuningDef& def) const;  // caller holds mutex_

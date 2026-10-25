@@ -111,6 +111,11 @@
 //                                     its onset), outputs its `hz` / `cents` inputs unchanged (the fallback). Region
 //                                     crossings are found at the sample where the generator leaves its interval.
 //                                     Reads KernelArgs::splMask at run time (one function per lane count).
+//                                     T2.6-fix3: two more inputs, `select` (voice.tuning) and `node` (this node's
+//                                     number): with node ≥ 1 a lane is this node's only if select == node, and a
+//                                     lane of this node without a degree follows the reference (hz · reference /
+//                                     reference₀); a Degree lane's hz input over its static degree pitch (a note's
+//                                     ratio to its anchor, a glide) multiplies the computed pitch (kernels_tuning.cpp).
 
 #include <cstddef>
 #include <cstdint>

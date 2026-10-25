@@ -120,7 +120,9 @@ constexpr PortSpec pTuningHz[] = {{"degree", kR},
                                   {"period", kR, true, 1200.0f},
                                   {"stretch", kR, true, 0.0f},
                                   {"reference", kR, true, kRefHz},
-                                  {"table", kRConst, true, 0.0f}};
+                                  {"table", kRConst, true, 0.0f},
+                                  {"select", kR, true, 0.0f},   // T2.6-fix3: voice.tuning (which node a voice follows)
+                                  {"node", kR, true, 0.0f}};    // this node's number (0: every voice with a degree)
 constexpr PortSpec pTuningHzOut[] = {{"hz", kR}, {"cents", kR}};
 constexpr PortSpec pTuneVoices[] = {{"hz", kR}, {"cents", kR, true, 0.0f}};
 
@@ -273,6 +275,8 @@ const AtomSignature kAtoms[] = {
      "degree of a Degree note in its tuning signal (NaN for other notes)"},
     {"voice.equave", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
      "equave of a Degree note in its tuning signal (NaN for other notes)"},
+    {"voice.tuning", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
+     "the tuning node a note follows in its track patch (1, 2, …; 0 for a static pitch)"},
     // Tuning as a signal (T2.6). infer() consumes tune_voices: within every subcircuit the calling patch
     // instantiates, voice.hz reads `hz` and (when connected) voice.cents reads `cents`.
     {"tuning_hz", C::Math, pTuningHz, pTuningHzOut, 0, 0, 0, {},

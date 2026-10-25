@@ -37,9 +37,10 @@ namespace pq::engine {
 
 // voice.* sources (SPEC §7.2 "Events and voices"), the index into VoiceGroupIO::signals.
 // Degree / Equave (T2.6): a Degree note's degree and equave in its tuning signal (NaN for other notes), the inputs of
-// the tuning node (`tuning_hz`).
+// the tuning node (`tuning_hz`). Tuning (T2.6-fix3): which tuning node of the track patch the note follows (1, 2, …;
+// 0: a static pitch).
 enum class VoiceSignal : uint8_t {
-  Hz, Cents, Gate, Trigger, Velocity, Release, Ratio, Harmonic, UnisonCount, Index, Degree, Equave, Count_
+  Hz, Cents, Gate, Trigger, Velocity, Release, Ratio, Harmonic, UnisonCount, Index, Degree, Equave, Tuning, Count_
 };
 inline constexpr uint32_t kVoiceSignalCount = static_cast<uint32_t>(VoiceSignal::Count_);
 

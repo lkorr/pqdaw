@@ -27,7 +27,7 @@ namespace pq::engine {
 namespace {
 
 constexpr uint32_t kAudioSignals = 4;  // hz, cents, gate, trigger
-constexpr uint32_t kParamSignals = 8;  // velocity, release, ratio, harmonic, unisonCount, index, degree, equave
+constexpr uint32_t kParamSignals = 9;  // velocity, release, ratio, harmonic, unisonCount, index, degree, equave, tuning
 
 uint32_t roundUp(uint32_t n, uint32_t a) noexcept { return (n + a - 1) / a * a; }
 
@@ -239,6 +239,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
     sp[static_cast<uint32_t>(VoiceSignal::Index)] = p + 40;
     sp[static_cast<uint32_t>(VoiceSignal::Degree)] = p + 48;
     sp[static_cast<uint32_t>(VoiceSignal::Equave)] = p + 56;
+    sp[static_cast<uint32_t>(VoiceSignal::Tuning)] = p + 64;
   }
 
   // Per lane and group state.
@@ -271,6 +272,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   index_.assign(lanes_, 0.0f);
   degree_.assign(lanes_, std::numeric_limits<float>::quiet_NaN());
   equave_.assign(lanes_, std::numeric_limits<float>::quiet_NaN());
+  tuning_.assign(lanes_, 0.0f);
   validFrames_.assign(groups_, 0);
   groupDirty_.assign(groups_, 0);
   carryDirty_.assign(groups_, 1);
@@ -610,6 +612,13 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
         for (uint32_t l = 0; l < lanes_ && !found; ++l)
           if (hasPending_[l] && pending_[l].noteId == e.noteId) {
             pending_[l].hz = e.hz;
+            if (e.flags & kNoteEventRetune) {
+              pending_[l].ratio = e.ratio;
+              pending_[l].harmonic = e.harmonic;
+              pending_[l].degree = e.degree;
+              pending_[l].equave = e.equave;
+              pending_[l].tuning = e.tuning;
+            }
             found = true;
           }
         if (!found) ++stats_.unmatchedEvents;
@@ -735,6 +744,7 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
       index_[lane] = static_cast<float>(e.unisonIndex);
       degree_[lane] = e.degree;
       equave_[lane] = e.equave;
+      tuning_[lane] = e.tuning;
       if (writeTrigger) {
         float* trig = audioSig_.data() + (static_cast<size_t>(lane >> 3) * kAudioSignals + 3) * groupStride_;
         trig[op.frame * 8 + (lane & 7u)] = kTrueMask;
@@ -759,6 +769,13 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
         hzTarget_[lane] = e.hz;
         centsTarget_[lane] = tc;
         rampLeft_[lane] = e.rampFrames;
+      }
+      if (e.flags & kNoteEventRetune) {  // T2.6-fix3: the note's pitch identity changed too (a re-resolved note)
+        ratio_[lane] = e.ratio;
+        harmonic_[lane] = e.harmonic;
+        degree_[lane] = e.degree;
+        equave_[lane] = e.equave;
+        tuning_[lane] = e.tuning;
       }
       break;
     }
@@ -820,6 +837,7 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
     p[40 + l] = index_[l0 + l];
     p[48 + l] = degree_[l0 + l];
     p[56 + l] = equave_[l0 + l];
+    p[64 + l] = tuning_[l0 + l];
   }
   // Constant over time only if nothing changed in this block and nothing keeps changing.
   bool moving = false;
@@ -879,6 +897,7 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   index_[b] = index_[a];
   degree_[b] = degree_[a];
   equave_[b] = equave_[a];
+  tuning_[b] = tuning_[a];
   setStatus(b, status_[a]);
   setStatus(a, LaneStatus::Free);
   hasPending_[a] = 0;

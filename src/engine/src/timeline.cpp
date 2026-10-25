@@ -241,16 +241,30 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
   for (uint32_t k = 0; identity && k < newN; ++k) identity = next->tracks()[k].id == tracks_[k].id;
 
   // Re-validates the sounding notes of `src` (old state) against the new image's track `j`, writing the survivors
-  // into `dst.heap` (which may be src.heap itself). Note-offs for the others go to slot `j` at frame 0.
+  // into `dst.heap` (which may be src.heap itself). Note-offs for the others go to slot `j` at frame 0. A survivor
+  // whose pitch changed (a re-resolved note: a tuning edit, a re-pitch) is retuned at frame 0 by a Pitch event that
+  // also carries its new identity, instead of being cut (T2.6-fix3, M3 review H5).
   auto carry = [&](const TrackState& src, TrackState& dst, uint32_t j) noexcept {
     uint32_t kept = 0;
     for (uint32_t i = 0; i < src.heapSize; ++i) {
       Sounding s = src.heap[i];
       Ticks passEnd = 0;
       const SequenceImage::Note* n = next->findOccurrence(j, s.noteId, s.on, &passEnd);
-      if (n != nullptr && std::bit_cast<uint32_t>(n->hz) == std::bit_cast<uint32_t>(s.hz)) {
+      if (n != nullptr) {
         s.off = std::min(s.on + n->length, passEnd);
         if (s.off > now || !playing_) {
+          if (std::bit_cast<uint32_t>(n->hz) != std::bit_cast<uint32_t>(s.hz) || !(n->pitch == s.pitch) ||
+              std::bit_cast<uint32_t>(n->ratio) != std::bit_cast<uint32_t>(s.ratio) ||
+              std::bit_cast<uint32_t>(n->harmonic) != std::bit_cast<uint32_t>(s.harmonic)) {
+            NoteEvent e = notePitch(0, s.instance, n->hz);
+            e.flags = kNoteEventRetune;
+            setIdentity(e, *n);
+            if (pushEvent(j, e)) ++stats_.retunedOnSwap;
+            s.hz = n->hz;
+            s.ratio = n->ratio;
+            s.harmonic = n->harmonic;
+            s.pitch = n->pitch;
+          }
           dst.heap[kept++] = s;
           ++stats_.keptOnSwap;
           continue;
@@ -439,6 +453,18 @@ void Timeline::emitOff(uint32_t track, const Sounding& s, uint32_t frame) noexce
   if (pushEvent(track, noteOff(frame, s.instance, s.releaseVelocity))) ++stats_.noteOffs;
 }
 
+void Timeline::setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept {  // RT-safe
+  e.ratio = n.ratio;
+  e.harmonic = n.harmonic;
+  if (n.pitch.tuning != 0) {  // T2.6: a note following a tuning signal (T2.6-fix3: which node, and how)
+    e.tuning = static_cast<float>(n.pitch.node);
+    if (n.pitch.kind == PitchFollowKind::Degree) {
+      e.degree = static_cast<float>(n.pitch.degree);
+      e.equave = static_cast<float>(n.pitch.equave);
+    }
+  }
+}
+
 void Timeline::releaseAll(uint32_t frame) noexcept {  // RT-safe
   for (uint32_t k = 0; k < cfg_.maxTracks; ++k) {
     TrackState& t = tracks_[k];
@@ -493,16 +519,12 @@ void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t
       }
       const float vel = std::clamp(n.velocity + r.velocity * n.velocityRange, 1.0f, 127.0f) * (1.0f / 127.0f);
       NoteEvent e = noteOn(f, nextInstance_, n.hz, vel);
-      e.ratio = n.ratio;
-      e.harmonic = n.harmonic;
-      if (n.pitch.tuning != 0) {  // T2.6: a Degree note of a tuning signal
-        e.degree = static_cast<float>(n.pitch.degree);
-        e.equave = static_cast<float>(n.pitch.equave);
-      }
+      setIdentity(e, n);
       pushEvent(track, e);
       ++stats_.noteOns;
       heapPush(tr, Sounding{std::min(on + n.length, c.passEnd), tr.order++, on, nextInstance_, n.id, n.hz,
-                            std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f)});
+                            std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f), n.ratio, n.harmonic,
+                            n.pitch});
       if (++nextInstance_ == 0) nextInstance_ = 1;
     }
     ++c.note;

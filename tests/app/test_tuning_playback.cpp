@@ -215,9 +215,9 @@ TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning n
   const LoweredProject& lp = low.value();
   const TuningId t12 = f.snap()->tunings->front()->id;  // the default 12-EDO: Muted inherits it
   // MIDI tracks: Lead (31-EDO), Mos (5L2s), Muted (12-EDO, the first main tuning). Groups / returns / master: none.
-  CHECK(patchOf(lp, f.lead)->text.find("tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, 0, tper, 0, tref, table: 3)") != std::string::npos);
-  CHECK(patchOf(lp, f.mos)->text.find("tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, tgen, tper, tst, tref, table: 5)") != std::string::npos);
-  CHECK(patchOf(lp, f.muted)->text.find("tune_voices(tun.hz, tun.cents)") != std::string::npos);
+  CHECK(patchOf(lp, f.lead)->text.find("tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, 0, tper1, 0, tref1, table: 3, select: voice.tuning, node: 1)") != std::string::npos);
+  CHECK(patchOf(lp, f.mos)->text.find("tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, tgen1, tper1, tst1, tref1, table: 5, select: voice.tuning, node: 1)") != std::string::npos);
+  CHECK(patchOf(lp, f.muted)->text.find("tune_voices(tun1.hz, tun1.cents)") != std::string::npos);
   CHECK(patchOf(lp, f.grp)->text.find("tuning_hz") == std::string::npos);
   CHECK(patchOf(lp, f.echo)->text.find("tuning_hz") == std::string::npos);
   CHECK(asked.size() == 3);
@@ -225,7 +225,7 @@ TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning n
   REQUIRE(paramOf(lp, tuningKey(f.t31, "reference")) != nullptr);
   CHECK(paramOf(lp, tuningKey(f.t31, "reference"))->value == static_cast<float>(pq::tuning::kDefaultReferenceHz));
   CHECK(paramOf(lp, tuningKey(f.t31, "equave"))->value == 1200.0f);
-  CHECK(paramOf(lp, tuningKey(f.t31, "equave"))->name == "tper");
+  CHECK(paramOf(lp, tuningKey(f.t31, "equave"))->name == "tper1");
   CHECK(paramOf(lp, tuningKey(f.tMos, "generator"))->value == 705.0f);
   CHECK(paramOf(lp, tuningKey(f.tMos, "generator"))->ref == ParamRef::tuning(ParamKind::MosGenerator, f.tMos));
   CHECK(paramOf(lp, tuningKey(f.tMos, "period"))->value == 1200.0f);

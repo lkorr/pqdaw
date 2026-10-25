@@ -155,6 +155,31 @@ std::optional<double> expectedHz(const NoteClip& clip, const Note& n, const Tuni
   return pq::tuning::resolveHzDouble(n.pitch, t.value(), rc);
 }
 
+// How a note follows its clip's tuning signal (T2.6-fix3; independent of resolveTrackPitches): Degree notes and Ratio
+// notes anchored through notes to one follow its degree; Ratio-on-reference and Cents notes (and notes anchored to
+// them) follow the reference; the rest are static.
+struct Follow {
+  PitchFollow follow = PitchFollow::Static;
+  int32_t degree = 0, equave = 0;
+};
+Follow expectedFollow(const NoteClip& clip, const Note& n, int depth = 0) {
+  using pq::tuning::AnchorKind;
+  using pq::tuning::PitchKind;
+  if (depth > 8) return {};
+  switch (n.pitch.kind()) {
+    case PitchKind::Degree: return {PitchFollow::Degree, n.pitch.degree(), n.pitch.equave()};
+    case PitchKind::Cents: return {PitchFollow::Reference};
+    case PitchKind::Ratio:
+      if (n.pitch.anchorKind() == AnchorKind::Reference) return {PitchFollow::Reference};
+      if (n.pitch.anchorKind() == AnchorKind::Note)
+        for (const Note& m : clip.notes)
+          if (m.id.value == n.pitch.anchorId()) return expectedFollow(clip, m, depth + 1);
+      return {};
+    case PitchKind::Harmonic: return {};
+  }
+  return {};
+}
+
 const NoteClip& clipOf(const Project& p, TrackId t, ClipId c) {
   const Track& tr = *findTrackPtr(p, t);
   return *tr.clips[static_cast<size_t>(findClipIndex(tr, c))].clip;
@@ -184,11 +209,13 @@ void checkClip(const Project& p, const TrackPitches& tp, TrackId track, ClipId c
     REQUIRE(want.has_value());
     REQUIRE(np.hz.has_value());
     CHECK(*np.hz == *want);  // the same double computation
-    const bool signal = main.valid() && hasTuningSignal(def) && n.pitch.kind() == pq::tuning::PitchKind::Degree;
-    CHECK(np.signal == (signal ? main : TuningId{}));
-    if (signal) {
-      CHECK(np.degree == n.pitch.degree());
-      CHECK(np.equave == n.pitch.equave());
+    // T2.6-fix3: Ratio-on-note, Ratio-on-reference and Cents notes follow the signal too (they used to be static).
+    const Follow f = main.valid() && hasTuningSignal(def) ? expectedFollow(nc, n) : Follow{};
+    CHECK(np.follow == f.follow);
+    CHECK(np.signal == (f.follow != PitchFollow::Static ? main : TuningId{}));
+    if (f.follow == PitchFollow::Degree) {
+      CHECK(np.degree == f.degree);
+      CHECK(np.equave == f.equave);
     }
   }
 }

@@ -24,9 +24,10 @@
 //
 // ---- Pitch -------------------------------------------------------------------------------------------------------
 // Notes carry resolved float32 Hz (SPEC §3.1) plus voice.ratio / voice.harmonic. PitchSource is tuning as a signal
-// (T2.6): a nonzero `tuning` marks a Degree note of a tuning signal; its note-on carries degree/equave as
-// voice.degree / voice.equave (note_events.h), from which the track's tuning node (`tuning_hz` + `tune_voices`)
-// derives the voice's Hz per sample. `hz` stays the static pitch (and the fallback where no tuning node is bound).
+// (T2.6): a nonzero `tuning` marks a note following a tuning signal; its note-on carries voice.tuning = `node` (which
+// of the track patch's tuning nodes, T2.6-fix3) and, for kind Degree, degree/equave as voice.degree / voice.equave
+// (note_events.h; NaN for kind Reference), from which that node (`tuning_hz` + `tune_voices`) derives the voice's Hz
+// per sample. `hz` stays the static pitch (and the fallback where no tuning node is bound).
 
 #include <cstdint>
 #include <memory>
@@ -39,10 +40,18 @@
 namespace pq::engine {
 
 // T2.6 (see above). All zero: the note plays its static hz.
+enum class PitchFollowKind : uint8_t {
+  Degree = 0,     // the node computes `degree` / `equave` (the note's, or its anchor chain's root Degree note's)
+  Reference = 1,  // the node scales the static Hz by reference(t) / reference₀ (Ratio to the reference, Cents)
+};
 struct PitchSource {
-  uint32_t tuning = 0;   // 0 = static Hz; otherwise the id of the tuning signal the degree refers to (T2.6)
-  int32_t degree = 0;    // the note's degree and equave in that tuning (Degree identities)
+  uint32_t tuning = 0;   // 0 = static Hz; otherwise the id of the tuning signal the note follows (T2.6)
+  int32_t degree = 0;    // Degree: the degree and equave in that tuning
   int32_t equave = 0;
+  uint16_t node = 0;     // T2.6-fix3: the tuning node of the track patch (1, 2, …; doc::tuningNodeIndex): voice.tuning
+  PitchFollowKind kind = PitchFollowKind::Degree;
+  uint8_t pad_ = 0;
+  friend bool operator==(const PitchSource&, const PitchSource&) = default;
 };
 
 struct NoteDesc {
@@ -99,7 +108,6 @@ public:
     float velocity, releaseVelocity, chance, velocityRange;
     float ratio, harmonic;
     PitchSource pitch;
-    uint32_t pad_;
   };
   static_assert(sizeof(Note) == 64);
 

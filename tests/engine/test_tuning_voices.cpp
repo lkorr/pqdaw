@@ -156,7 +156,12 @@ TEST_CASE("tuning voices: a generator sweep through several regions gives every 
     CAPTURE(ns.degree);
     CAPTURE(ns.equave);
     TunedRig r(kFrames);  // a fresh engine per note: the mix is that one voice
-    eng::NoteEvent on = eng::noteOn(0, 1, 300.0f, 0.8f);
+    // The note-on carries the note's static Hz in the definition, as the timeline gives it (T2.6-fix3: the node
+    // reads it, a Degree note's hz over its static degree pitch being its ratio / glide).
+    const auto staticHz = pq::tuning::resolveHzDouble(pq::tuning::PitchId::fromDegree(ns.degree, ns.equave),
+                                                      pq::tuning::Tuning::make(pq::tuning::Mos::make(sweepMos()).value(), kRef).value(), {});
+    REQUIRE(staticHz);
+    eng::NoteEvent on = eng::noteOn(0, 1, static_cast<float>(*staticHz), 0.8f);
     on.degree = static_cast<float>(ns.degree);
     on.equave = static_cast<float>(ns.equave);
     std::vector<float> f, c;
@@ -171,7 +176,9 @@ TEST_CASE("tuning voices: a generator sweep through several regions gives every 
       const double cents = ref[t]->centsOf(ns.degree, ns.equave);
       const double refHz = kRef * std::exp2(cents / 1200.0);
       badHz += !tuning_ref::withinTolerance(f[t], refHz);
-      badCents += std::fabs(c[t] - cents) > std::fabs(cents) * 1.2e-7 + 1e-9;  // voice.cents follows too
+      // voice.cents follows too: the engine's cents of the note's float32 Hz moved by the tuning (T2.6-fix3), so it
+      // carries that Hz's rounding (≤ 1.03e-4 cents).
+      badCents += std::fabs(c[t] - cents) > std::fabs(cents) * 1.2e-7 + 2e-4;
       maxErr = std::max(maxErr, tuning_ref::centsError(f[t], refHz));
       ++checked;
     }
@@ -205,6 +212,7 @@ TEST_CASE("tuning voices: the timeline's PitchSource reaches the note-on as degr
   a.length = pq::kPpq;
   a.hz = 300.0f;
   a.pitch = {7, 3, -1};  // tuning 7: a Degree note (degree 3, equave −1)
+  a.pitch.node = 2;      // T2.6-fix3: the track patch's second tuning node
   b = a;
   b.id = 2;
   b.start = pq::kPpq / 2;
@@ -229,6 +237,8 @@ TEST_CASE("tuning voices: the timeline's PitchSource reaches the note-on as degr
   REQUIRE(ons.size() == 2);
   CHECK(ons[0].degree == 3.0f);
   CHECK(ons[0].equave == -1.0f);
+  CHECK(ons[0].tuning == 2.0f);
+  CHECK(ons[1].tuning == 0.0f);
   CHECK(std::isnan(ons[1].degree));
   CHECK(std::isnan(ons[1].equave));
 }

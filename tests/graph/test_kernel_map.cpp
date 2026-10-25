@@ -96,6 +96,7 @@ TEST_CASE("kernel map: the atoms without a kernel are exactly the structural, en
       "channel", "pack", "sr", "track.in", "sidechain.in", "send", "clipPlayer",
       "voice.hz", "voice.cents", "voice.gate", "voice.trigger", "voice.velocity", "voice.release", "voice.ratio",
       "voice.harmonic", "voice.unisonCount", "voice.index", "voice.degree", "voice.equave",
+      "voice.tuning",  // T2.6-fix3
       "tune_voices",  // T2.6: consumed by infer() (rebinds voice.hz / voice.cents)
       "transport.bpm", "transport.beat", "transport.barPhase", "transport.playing",
       "voice_sum", "voice_last", "voice_highest", "voice_lowest", "voice_loudest"};

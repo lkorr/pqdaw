@@ -74,21 +74,26 @@ struct KIn {
   const float* p;
   bool spl;
 };
+// The first 8 inputs (degree … reference); select / node (T2.6-fix3) are Spl patterns, by default 0 (node 0 takes
+// every lane with a degree, the T2.6 behaviour).
 void runKernel(uint32_t lanes, const dsp::TuningTableView* v, const KIn (&in)[8], uint32_t frames, float* hz,
-               float* cents) {
-  uint32_t mask = 0;
-  const float* ptr[8];
+               float* cents, const float* select = nullptr, const float* node = nullptr) {
+  alignas(32) static const float kZero[8] = {};
+  uint32_t mask = 0b1100000000u;
+  const float* ptr[10];
   for (uint32_t i = 0; i < 8; ++i) {
     ptr[i] = in[i].p;
     mask |= in[i].spl ? 1u << i : 0u;
   }
+  ptr[8] = select != nullptr ? select : kZero;
+  ptr[9] = node != nullptr ? node : kZero;
   float* out[2] = {hz, cents};
   dsp::KernelArgs a;
   a.in = ptr;
   a.out = out;
   a.resource = v;
   a.frames = frames;
-  a.numIn = 8;
+  a.numIn = 10;
   a.numOut = 2;
   a.splMask = mask;
   const dsp::KernelFn fn = dsp::findKernel(dsp::Atom::TuningHz, lanes, mask);
@@ -243,7 +248,20 @@ void generatorSweep(uint32_t frames) {
     }
     const Pattern pp(static_cast<float>(s.p.period)), pst(static_cast<float>(s.p.octaveStretch)),
         pr(static_cast<float>(kRef));
-    std::vector<float> gen(frames * 8), fallHz(frames * 8, 440.0f), fallC(frames * 8, 0.0f);
+    // The fallback is what the engine gives each note (T2.6-fix3 reads it: a Degree note's hz input over its static
+    // pitch is its ratio / glide): its static Hz in the definition, and the VoiceEngine's cents of that float32 Hz.
+    const tun::Mos defMos = tun::Mos::make(s.p).value();
+    float h0[8], c0[8];
+    for (uint32_t l = 0; l < 8; ++l) {
+      h0[l] = static_cast<float>(kRef * std::exp2(defMos.centsOf(deg[l], eqv[l]) / 1200.0));
+      c0[l] = static_cast<float>(1200.0 * std::log2(static_cast<double>(h0[l]) / kRef));
+    }
+    std::vector<float> gen(frames * 8), fallHz(frames * 8), fallC(frames * 8);
+    for (uint32_t t = 0; t < frames; ++t)
+      for (uint32_t l = 0; l < 8; ++l) {
+        fallHz[t * 8 + l] = h0[l];
+        fallC[t * 8 + l] = c0[l];
+      }
     std::vector<double> stops;  // the boundaries the ramp pauses on
     for (const double b : lt.boundaries()) {
       const double c = b * s.p.period;
@@ -302,7 +320,9 @@ void generatorSweep(uint32_t frames) {
             ++badHz;
             if (firstBad < 0) firstBad = t;
           }
-          badCents += std::fabs(cents[t * 8 + l] - c) > std::fabs(c) * 1.2e-7 + 1e-9;
+          // voice.cents = the engine's cents of the note's float32 Hz moved by the tuning (T2.6-fix3): it carries that
+          // Hz's rounding (≤ 1.03e-4 cents) besides its own float32 rounding.
+          badCents += std::fabs(cents[t * 8 + l] - c) > std::fabs(c) * 1.2e-7 + 2e-4;
           maxErr = std::max(maxErr, tuning_ref::centsError(out, refHz));
           ++checked;
           // Continuity: a step larger than the sweep can move a degree (≤ |K|·Δg ≪ 1 ¢) happens only where the
@@ -322,7 +342,7 @@ void generatorSweep(uint32_t frames) {
       // audio-rate buffers, from a pre-onset start (hz 0 for the first 5 frames).
       if (!blockRate) {
         std::vector<float> d1(frames, static_cast<float>(deg[4])), e1(frames, static_cast<float>(eqv[4])),
-            g1(frames), h1(frames, 440.0f), c1(frames, 0.0f), oh(frames), oc(frames);
+            g1(frames), h1(frames, h0[4]), c1(frames, c0[4]), oh(frames), oc(frames);
         for (uint32_t t = 0; t < frames; ++t) g1[t] = gen[t * 8];
         for (uint32_t t = 0; t < 5; ++t) h1[t] = 0.0f;
         uint64_t bad1 = 0;
@@ -368,11 +388,14 @@ TEST_CASE("tuning signal: modulated period, stretch and reference (EDO equave an
     CAPTURE(isEdo);
     const dsp::TuningTable tab = table(isEdo ? edo : mt);
     Pattern pd{0, 1, 5, 9, 17, 30, 3, 2}, pe{0, 0, 0, 1, -1, 1, 2, -2};
-    std::vector<float> gen(kFrames * 8), per(kFrames * 8), st(kFrames * 8), ref(kFrames * 8), fh(kFrames * 8, 1.0f),
+    std::vector<float> gen(kFrames * 8), per(kFrames * 8), st(kFrames * 8), ref(kFrames * 8), fh(kFrames * 8),
         fc(kFrames * 8, 0.0f), hz(kFrames * 8), cents(kFrames * 8);
     for (uint32_t t = 0; t < kFrames; ++t)
       for (uint32_t l = 0; l < 8; ++l) {
         const double u = static_cast<double>(t) / kFrames;
+        // The engine's hz for the note: its static pitch in the definition (T2.6-fix3 reads it).
+        fh[t * 8 + l] = static_cast<float>(*tun::resolveHzDouble(
+            tun::PitchId::fromDegree(static_cast<int32_t>(pd.v[l]), static_cast<int32_t>(pe.v[l])), isEdo ? edo : mt, {}));
         gen[t * 8 + l] = static_cast<float>(696.6 + 2.0 * std::sin(17.0 * u + l));
         per[t * 8 + l] = static_cast<float>(1200.0 + 9.0 * std::sin(5.0 * u + 0.3 * l));
         st[t * 8 + l] = static_cast<float>(4.0 * std::sin(3.0 * u));
@@ -414,7 +437,8 @@ TEST_CASE("tuning signal: unmodulated inputs sound at the static pitch; fallback
     Pattern pd{0, 1, 2, 6, 3, kNaN, 4, 10}, pe{0, 0, -1, 2, 0, 0, 1, -3};
     constexpr uint32_t kF = 64;
     // The fallback is what the engine gives a note: its static Hz, float(resolveHzDouble) (T2.6-fix1); lane 5 has no
-    // degree, lane 4 starts at frame 10 (voice.hz 0 before).
+    // degree, lane 4 starts at frame 10 (voice.hz 0 before). The fallback cents are arbitrary (-7): T2.6-fix3's
+    // voice.cents is the input's moved by the tuning, so an unmodulated node passes them through too.
     std::vector<float> stat(8, 123.0f);
     std::vector<double> statD(8, 0.0);
     for (uint32_t l = 0; l < 8; ++l) {
@@ -443,9 +467,9 @@ TEST_CASE("tuning signal: unmodulated inputs sound at the static pitch; fallback
           CHECK(hz[f * 8 + l] == 0.0f);
           continue;
         }
-        // Every tuning input at its definition value: the note's own static Hz, bit for bit; cents still the node's.
+        // Every tuning input at its definition value: the note's own static Hz and cents, bit for bit.
         CHECK(hz[f * 8 + l] == stat[l]);
-        CHECK(std::fabs(std::exp2(cents[f * 8 + l] / 1200.0) * v.referenceHz - statD[l]) <= statD[l] * 2e-7);
+        CHECK(cents[f * 8 + l] == -7.0f);
       }
     }
     // An unmodulated tuning passes ANY fallback through (e.g. a voice.hz moved by a Pitch event): the pass-through
@@ -496,18 +520,22 @@ TEST_CASE("tuning signal: unmodulated inputs sound at the static pitch; fallback
     for (uint32_t f = 0; f < kF; ++f) CHECK(std::fabs(oh[f] - hz[f * 8 + 3]) <= std::fabs(hz[f * 8 + 3]) * 1.2e-7f);
   }
 
-  // No table: the fallback passes through. A degree that changes mid-block takes effect at that sample.
+  // No table: the fallback passes through. A degree that changes mid-block takes effect at that sample (a modulated
+  // reference, one ulp up, so the node computes; the fallback is each note's static pitch, as the engine has it).
   {
     const dsp::TuningTable tab = table(edo);
     constexpr uint32_t kF = 32;
-    std::vector<float> d(kF * 8), e(kF * 8, 0.0f), fh(kF * 8, 200.0f), fc(kF * 8, 1.0f), hz(kF * 8), c(kF * 8);
+    std::vector<float> d(kF * 8), e(kF * 8, 0.0f), fh(kF * 8), fc(kF * 8, 1.0f), hz(kF * 8), c(kF * 8);
     for (uint32_t f = 0; f < kF; ++f)
-      for (uint32_t l = 0; l < 8; ++l) d[f * 8 + l] = f < 13 ? 0.0f : (l == 2 ? kNaN : 22.0f);
-    const Pattern pp(1200.0f), z(0.0f), pr(261.626f);
+      for (uint32_t l = 0; l < 8; ++l) {
+        d[f * 8 + l] = f < 13 ? 0.0f : (l == 2 ? kNaN : 22.0f);
+        fh[f * 8 + l] = f < 13 ? 261.626f : (l == 2 ? 200.0f : 523.252f);
+      }
+    const Pattern pp(1200.0f), z(0.0f), pr(std::nextafter(261.626f, 1e30f));
     const KIn in[8] = {{d.data(), false}, {e.data(), false}, {fh.data(), false}, {fc.data(), false},
                        {z.v, true}, {pp.v, true}, {z.v, true}, {pr.v, true}};
     runKernel(8, nullptr, in, kF, hz.data(), c.data());
-    for (uint32_t i = 0; i < kF * 8; ++i) CHECK(hz[i] == 200.0f);
+    for (uint32_t i = 0; i < kF * 8; ++i) CHECK(hz[i] == fh[i]);
     runKernel(8, &tab.view(), in, kF, hz.data(), c.data());
     for (uint32_t f = 0; f < kF; ++f)
       for (uint32_t l = 0; l < 8; ++l) {
@@ -548,4 +576,81 @@ TEST_CASE("tuning signal: a 5L2s mode carried across 720 cents matches the explo
   MESSAGE(checked << " degree pitches, worst " << worst << " cents; " << carried << " of " << fx["cases"].size()
                   << " cases carry the mode to another rotation");
   CHECK(carried > 0);
+}
+
+TEST_CASE("tuning signal: glides and note ratios compose with a modulated node; select / node; reference lanes") {
+  // T2.6-fix3 (M3 review M9, H4): a Degree lane's hz input over its static degree pitch (a Pitch-event glide, or a
+  // Ratio note's ratio to its root Degree note) multiplies the node's pitch; with node ≥ 1 a lane is this node's only
+  // when its select (voice.tuning) is the node number, and a selected lane without a degree follows the reference.
+  const tun::MosParams mp = mos(7, 1200.0, 1, 0, 0.0, 700.0);
+  const tun::Tuning mt = mosTuning(mp);
+  const dsp::TuningTable tab = table(mt);
+  const dsp::TuningTableView& v = tab.view();
+  constexpr uint32_t kF = 256;
+  const tun::Mos m = tun::Mos::make(mp).value();
+  auto staticHz = [&](int32_t d) { return kRef * std::exp2(m.centsOf(d, 0) / 1200.0); };
+  // Lanes: 0 a plain Degree note, 1 the same gliding up 100 cents over the block, 2 a 3/2 on degree 1, 3 a Cents
+  // note (no degree) of this node, 4 a Degree note of another node, 5 a static note (select 0), 6 / 7 like 0.
+  Pattern pd{1, 1, 1, kNaN, 1, kNaN, 2, 3}, pe{0, 0, 0, kNaN, 0, kNaN, 0, 0}, ps{2, 2, 2, 2, 1, 0, 2, 2}, pn(2.0f);
+  const float h0 = static_cast<float>(staticHz(1));
+  const float cHz = static_cast<float>(kRef * std::exp2(200.0 / 1200.0));
+  std::vector<float> fh(kF * 8), fc(kF * 8), hz(kF * 8), cents(kF * 8);
+  for (uint32_t f = 0; f < kF; ++f) {
+    const double glide = std::exp2(100.0 / 1200.0 * f / (kF - 1));
+    const float lane[8] = {h0,
+                           static_cast<float>(h0 * glide),
+                           static_cast<float>(staticHz(1) * 1.5),
+                           cHz,
+                           h0,
+                           333.0f,
+                           static_cast<float>(staticHz(2)),
+                           static_cast<float>(staticHz(3))};
+    for (uint32_t l = 0; l < 8; ++l) {
+      fh[f * 8 + l] = lane[l];
+      fc[f * 8 + l] = static_cast<float>(1200.0 * std::log2(lane[l] / kRef));
+    }
+  }
+  // Modulated: generator 710 (constant: the per-block path; and as an audio-rate buffer: the per-sample path), the
+  // reference up 2 %.
+  const float g = 710.0f, R = static_cast<float>(kRef * 1.02);
+  const Pattern pg(g), pp(1200.0f), pst(0.0f), pr(R);
+  std::vector<float> gb(kF * 8, g);
+  const auto at710 = tuning_ref::mosAt(mp, 710.0);
+  REQUIRE(at710);
+  auto node = [&](int32_t d) { return static_cast<double>(R) * std::exp2(at710->centsOf(d, 0) / 1200.0); };
+  for (const bool perSample : {false, true}) {
+    CAPTURE(perSample);
+    const KIn in[8] = {{pd.v, true}, {pe.v, true}, {fh.data(), false}, {fc.data(), false},
+                       {perSample ? gb.data() : pg.v, !perSample}, {pp.v, true}, {pst.v, true}, {pr.v, true}};
+    runKernel(8, &v, in, kF, hz.data(), cents.data(), ps.v, pn.v);
+    uint32_t bad = 0;
+    for (uint32_t f = 0; f < kF; ++f) {
+      const double glide = std::exp2(100.0 / 1200.0 * f / (kF - 1));
+      auto near = [](float got, double want, double rel) { return std::fabs(got / want - 1.0) <= rel; };
+      bad += !tuning_ref::withinTolerance(hz[f * 8 + 0], node(1));             // exact: its own static pitch
+      bad += !near(hz[f * 8 + 1], node(1) * glide, 3e-7);                       // the glide on top
+      bad += !near(hz[f * 8 + 2], node(1) * 1.5, 3e-7);                         // 3/2 of the moved root
+      bad += !near(hz[f * 8 + 3], static_cast<double>(cHz) * (R / kRef), 2e-7);  // the reference's move
+      bad += hz[f * 8 + 4] != h0;                                               // another node's voice
+      bad += hz[f * 8 + 5] != 333.0f;                                           // a static note
+      bad += !tuning_ref::withinTolerance(hz[f * 8 + 6], node(2));
+      // voice.cents: the input's, moved by the tuning (and the reference).
+      bad += std::fabs(cents[f * 8 + 3] - (fc[f * 8 + 3] + 1200.0 * std::log2(R / kRef))) > 2e-4;
+      bad += cents[f * 8 + 5] != fc[f * 8 + 5];
+      bad += std::fabs(cents[f * 8 + 1] - (fc[f * 8 + 1] + 1200.0 * std::log2(node(1) / staticHz(1)))) > 2e-4;
+    }
+    CHECK(bad == 0);
+  }
+  // The 1-lane kernel, lane 1 (the glide) as a global signal: the same pitch per sample.
+  std::vector<float> d1(kF, 1.0f), e1(kF, 0.0f), s1(kF, 2.0f), n1(kF, 2.0f), h1(kF), c1(kF), oh(kF), oc(kF);
+  for (uint32_t f = 0; f < kF; ++f) {
+    h1[f] = fh[f * 8 + 1];
+    c1[f] = fc[f * 8 + 1];
+  }
+  const KIn in1[8] = {{d1.data(), false}, {e1.data(), false}, {h1.data(), false}, {c1.data(), false},
+                      {pg.v, true},       {pp.v, true},       {pst.v, true},      {pr.v, true}};
+  runKernel(1, &v, in1, kF, oh.data(), oc.data(), s1.data(), n1.data());
+  uint32_t bad1 = 0;
+  for (uint32_t f = 0; f < kF; ++f) bad1 += std::fabs(oh[f] / (node(1) * std::exp2(100.0 / 1200.0 * f / (kF - 1))) - 1.0) > 3e-7;
+  CHECK(bad1 == 0);
 }

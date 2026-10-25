@@ -35,9 +35,11 @@
 // sources, e.g. live MIDI on the same instrument, are left alone). Note ids in events are per-track instance numbers
 // (unique among sounding notes), not document ids.
 // Chance and velocity range: SequenceImage's deterministic per-note-and-pass RNG (sequence.h).
-// Image swap (sequence): sounding notes follow their track id. A sounding note that is unchanged in the new image
-// (same id, same start, same Hz; findOccurrence) keeps sounding, with its note-off recomputed from the new length;
-// one that was removed or changed gets a note-off at frame 0 of the first block of the new image. Notes of a track
+// Image swap (sequence): sounding notes follow their track id. A sounding note that is still in the new image (same
+// id, same start; findOccurrence) keeps sounding, with its note-off recomputed from the new length; if its pitch
+// changed (Hz, PitchSource, ratio, harmonic: a tuning edit re-resolved it, or it was re-pitched) it is retuned at
+// frame 0 by a Pitch step carrying its new identity (kNoteEventRetune, T2.6-fix3), never cut. One that was removed
+// gets a note-off at frame 0 of the first block of the new image. Notes of a track
 // that disappeared are dropped (counted: its instrument goes away with the recompile). Cursors re-seek at the
 // current tick: notes starting from it on play from the new image; notes that started earlier are not chased.
 // Capacities: maxSoundingPerTrack (beyond it the earliest-ending note is cut early, counted) and maxEventsPerTrack
@@ -146,6 +148,7 @@ struct TimelineStats {
   uint64_t earlyOffs = 0;          // maxSoundingPerTrack exceeded: the earliest-ending note was cut
   uint64_t orphanedNotes = 0;      // sounding notes of a track missing from a new image
   uint64_t keptOnSwap = 0, stoppedOnSwap = 0;
+  uint64_t retunedOnSwap = 0;      // kept notes whose pitch changed: a Pitch event (kNoteEventRetune) at frame 0
   uint64_t sequenceSwaps = 0, automationSwaps = 0, tempoSwaps = 0;
   uint64_t loopWraps = 0;
   uint64_t droppedReports = 0;
@@ -216,6 +219,8 @@ private:
     uint32_t noteId;      // the document note id
     float hz;
     float releaseVelocity;
+    float ratio, harmonic;  // the identity it sounds with (an image swap retunes it when they change)
+    PitchSource pitch;
   };
   struct Cursor {
     uint32_t clip = 0, clipEnd = 0;  // into the image's clips
@@ -259,6 +264,7 @@ private:
   // Event output.
   bool pushEvent(uint32_t track, const NoteEvent& e) noexcept;
   void emitOff(uint32_t track, const Sounding& s, uint32_t frame) noexcept;
+  static void setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept;  // ratio, harmonic, tuning identity
   // Heap.
   void heapPush(TrackState& t, const Sounding& s) noexcept;
   Sounding heapPop(TrackState& t) noexcept;

@@ -30,7 +30,8 @@ constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1}
 constexpr ArgMap kSamplePos[] = {{U::Resource, 0}, {U::Input, 0}};                      // sample, pos
 constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // degree, equave, hz,
                                 {U::Input, 4}, {U::Input, 5}, {U::Input, 6}, {U::Input, 7},  // cents, generator, period,
-                                {U::Resource, 0}};                                           // stretch, reference, table
+                                {U::Resource, 0},                                            // stretch, reference, table,
+                                {U::Input, 8},    {U::Input, 9}};                            // select, node
 
 struct Special {
   std::string_view atom;

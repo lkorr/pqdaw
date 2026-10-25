@@ -51,8 +51,7 @@ Error linkError(ErrorCode c, const std::string& m) { return Error{c, "playback: 
 bool sameNote(const engine::NoteDesc& a, const engine::NoteDesc& b) {
   return a.start == b.start && a.length == b.length && a.id == b.id && a.hz == b.hz && a.velocity == b.velocity &&
          a.releaseVelocity == b.releaseVelocity && a.chance == b.chance && a.velocityRange == b.velocityRange &&
-         a.ratio == b.ratio && a.harmonic == b.harmonic && a.pitch.tuning == b.pitch.tuning &&
-         a.pitch.degree == b.pitch.degree && a.pitch.equave == b.pitch.equave && a.enabled == b.enabled;
+         a.ratio == b.ratio && a.harmonic == b.harmonic && a.pitch == b.pitch && a.enabled == b.enabled;
 }
 
 bool sameDesc(const engine::TrackSequenceDesc& a, const engine::TrackSequenceDesc& b) {
@@ -123,21 +122,24 @@ std::optional<ProjectLink::TableKey> ProjectLink::tableKey(const doc::TuningDef&
 
 // ---- Sequence lowering (doc -> engine plain data, T3.16's descriptions) -------------------------------------------
 
-// Pitches from doc::resolveTrackPitches (T2.7: Ratio anchors within the clip, memoised). A Degree note of the main
-// tuning whose signal the track's tuning node follows (doc::trackTuningSignal) carries its identity (PitchSource,
-// T2.6) and its static Hz in the tuning TABLE's definition (see the file comment of project_link.h); every other
-// note plays its static Hz. Harmonic / JI-fundamental identities need JI objects (M7): unresolved, not played.
+// Pitches from doc::resolveTrackPitches (T2.7: Ratio anchors within the clip, memoised). A note following one of the
+// track's tuning signals (doc::trackTuningSignals: one node each, T2.6-fix3) carries how (PitchSource: the node,
+// Degree with its (root's) degree, or Reference) and its static Hz in that tuning's TABLE definition (see the file
+// comment of project_link.h); every other note plays its static Hz. Harmonic / JI-fundamental identities need JI
+// objects (M7): unresolved, not played.
 engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const doc::TrackPath& path,
                                                   const doc::Track& track) {
+  ++stats_.trackLowerings;
   engine::TrackSequenceDesc d;
   d.id = track.id.value;
-  auto pitches = doc::resolveTrackPitches(p, track.id);
-  const doc::TuningId signal = doc::trackTuningSignal(p, path);
-  const TuningTableEntry* entry = nullptr;
-  if (signal.valid()) {
+  const std::vector<doc::TuningId> signals = doc::trackTuningSignals(p, path);
+  doc::ResolveOptions ro;
+  ro.signalTuning = [this](doc::TuningId id, const doc::TuningDef& def) -> const tuning::Tuning* {
     std::lock_guard lock(mutex_);
-    entry = tuningEntry(signal, doc::findTuning(p, signal)->def);  // entries live as long as the link
-  }
+    const TuningTableEntry* e = tuningEntry(id, def);  // entries live as long as the link
+    return e != nullptr && e->built ? &*e->built : nullptr;
+  };
+  auto pitches = doc::resolveTrackPitches(p, track.id, ro);
   for (size_t ci = 0; ci < track.clips.size(); ++ci) {
     const doc::NoteClip& c = *track.clips[ci].clip;
     engine::ClipDesc cd;
@@ -156,16 +158,22 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
       for (const doc::Note& n : c.notes) {
         const doc::NotePitch& np = cp.notes[ni++];
         if (!np.hz) continue;
-        double hz = *np.hz;
+        const double hz = *np.hz;
+        if (!(hz > 0.0) || !std::isfinite(static_cast<float>(hz))) continue;
         engine::NoteDesc nd;
-        if (signal.valid() && np.signal == signal) {
-          nd.pitch = engine::PitchSource{signal.value, np.degree, np.equave};
-          if (entry != nullptr && entry->built && !(entry->def == *cp.tuning.def)) {
-            const auto th = tuning::resolveHzDouble(n.pitch, *entry->built, {});
-            if (th) hz = *th;
+        if (np.follow != doc::PitchFollow::Static) {
+          const uint32_t node = doc::tuningNodeIndex(signals, np.signal);
+          if (node != 0) {
+            nd.pitch.tuning = np.signal.value;
+            nd.pitch.node = static_cast<uint16_t>(node);
+            nd.pitch.kind = np.follow == doc::PitchFollow::Degree ? engine::PitchFollowKind::Degree
+                                                                   : engine::PitchFollowKind::Reference;
+            if (np.follow == doc::PitchFollow::Degree) {
+              nd.pitch.degree = np.degree;
+              nd.pitch.equave = np.equave;
+            }
           }
         }
-        if (!(hz > 0.0) || !std::isfinite(static_cast<float>(hz))) continue;
         nd.start = n.start;
         nd.length = std::max<Ticks>(n.length, 1);
         nd.id = n.id.value;
@@ -183,6 +191,27 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
     d.clips.push_back(std::move(cd));
   }
   return d;
+}
+
+// What a track's lowered sequence depends on besides the track node itself (T2.6-fix3, M3 review H5): per clip the
+// definition its notes resolve in — the node table's (an entry, stable while the table lives) for a clip following
+// a tuning signal, else the effective TuningDef — and the track's tuning signals (node numbers). A tuning param
+// change replaces the tuning slot but not its table, so tracks whose notes follow the node are not re-lowered.
+std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const doc::TrackPath& path,
+                                                  const doc::Track& t) const {
+  std::vector<const void*> key;
+  for (const doc::TuningId id : doc::trackTuningSignals(p, path))
+    key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(id.value)));
+  key.push_back(nullptr);  // separator
+  std::lock_guard lock(mutex_);
+  for (const doc::ClipSlot& c : t.clips) {
+    const doc::EffectiveTuning e = doc::effectiveTuningRef(p, path, c.clip.get());
+    const void* k = e.def;
+    if (e.main.valid() && e.def != nullptr && doc::hasTuningSignal(*e.def))
+      if (const TuningTableEntry* entry = tuningEntry(e.main, *e.def)) k = entry;
+    key.push_back(k);
+  }
+  return key;
 }
 
 // ---- Tuning tables (UI thread builds, the compile path reads) ----------------------------------------------------
@@ -395,6 +424,10 @@ ProjectLink::~ProjectLink() {
   cv_.notify_all();
   if (worker_.joinable()) worker_.join();  // no compile path (and so no wantJit) after this
   jit_.reset();  // then no JIT delivery (a running JIT compile finishes first; a waiting delivery gives up)
+  // The engine before the tuning tables: its images point into them, and its timeline clears the automation taps
+  // that point at their live inputs (T2.6-fix2).
+  compiler_.reset();
+  engine_.reset();
 }
 
 void ProjectLink::attach(views::ViewContext& ctx) {
@@ -478,16 +511,14 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
   forEachMidi(p, [&](const doc::TrackPath& path, const doc::Track& t) {
     const uint32_t slot = slotForTrack(t.id);
     if (slot == kNone) return;
-    const doc::TuningDef* def = doc::effectiveTuning(p, path);
+    std::vector<const void*> key = sequenceKey(p, path, t);
     SeqCacheEntry e;
     auto it = seqCache_.find(t.id.value);
-    if (it != seqCache_.end() && it->second.track == &t && it->second.tuning == def &&
-        it->second.tunings == p.tunings.get()) {
+    if (it != seqCache_.end() && it->second.track == &t && it->second.key == key) {
       e = std::move(it->second);
     } else {
       e.track = &t;
-      e.tuning = def;
-      e.tunings = p.tunings.get();
+      e.key = std::move(key);
       e.from = current_;
       e.desc = lowerTrack(p, path, t);
       changed |= it == seqCache_.end() || !sameDesc(it->second.desc, e.desc);

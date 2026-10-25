@@ -27,48 +27,82 @@ EffectiveTuning refOf(const Project& p, const TuningAssignment& a) noexcept {
 }
 
 // Anchored Ratio notes refer to other notes of the clip by id; anchors chain (a note anchored to an anchored note).
-// Memoised depth-first resolution, bounded like the playback lowering (8 links), cycles unresolved.
+// Memoised depth-first resolution, bounded like the playback lowering (8 links), cycles unresolved. With `signal`
+// (the clip follows a tuning signal) each note also gets how it follows it (PitchFollow, T2.6-fix3): a chain of note
+// anchors follows its root.
 class ClipResolver {
 public:
-  ClipResolver(const NoteClip& clip, const tuning::Tuning& t) : t_(t) {
+  struct Resolved {
+    std::optional<double> hz;
+    PitchFollow follow = PitchFollow::Static;
+    int32_t degree = 0, equave = 0;
+  };
+
+  ClipResolver(const NoteClip& clip, const tuning::Tuning& t, bool signal) : t_(t), signal_(signal) {
     notes_.reserve(clip.notes.size());
     for (const Note& n : clip.notes) notes_.push_back(&n);
     byId_.reserve(notes_.size());
     for (uint32_t i = 0; i < notes_.size(); ++i) byId_.emplace_back(notes_[i]->id.value, i);
     std::sort(byId_.begin(), byId_.end());
     state_.assign(notes_.size(), 0);
-    hz_.assign(notes_.size(), std::nullopt);
+    out_.assign(notes_.size(), Resolved{});
   }
   size_t size() const noexcept { return notes_.size(); }
   const Note& note(size_t i) const noexcept { return *notes_[i]; }
-  std::optional<double> hz(uint32_t i, int depth = 0) {
-    if (state_[i] == 2) return hz_[i];
-    if (state_[i] == 1 || depth > 8) return std::nullopt;  // a cycle, or a chain longer than the lowering allows
+
+  Resolved get(uint32_t i, int depth = 0) {
+    if (state_[i] == 2) return out_[i];
+    if (state_[i] == 1 || depth > 8) return Resolved{};  // a cycle, or a chain longer than the lowering allows
     state_[i] = 1;
     const tuning::PitchId& p = notes_[i]->pitch;
     tuning::ResolveContext rc;
-    std::optional<double> r;
+    Resolved r;
     bool resolvable = true;
-    if (p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Note) {
-      const auto it = std::lower_bound(byId_.begin(), byId_.end(), std::pair<uint32_t, uint32_t>{p.anchorId(), 0});
-      if (it == byId_.end() || it->first != p.anchorId()) resolvable = false;
-      else if (const auto a = hz(it->second, depth + 1)) rc.anchorHz = *a;
-      else resolvable = false;
+    switch (p.kind()) {
+      case tuning::PitchKind::Degree:
+        r.follow = PitchFollow::Degree;
+        r.degree = p.degree();
+        r.equave = p.equave();
+        break;
+      case tuning::PitchKind::Cents:
+        r.follow = PitchFollow::Reference;
+        break;
+      case tuning::PitchKind::Ratio:
+        if (p.anchorKind() == tuning::AnchorKind::Reference) {
+          r.follow = PitchFollow::Reference;
+        } else if (p.anchorKind() == tuning::AnchorKind::Note) {
+          const auto it = std::lower_bound(byId_.begin(), byId_.end(), std::pair<uint32_t, uint32_t>{p.anchorId(), 0});
+          if (it == byId_.end() || it->first != p.anchorId()) {
+            resolvable = false;
+          } else if (const Resolved a = get(it->second, depth + 1); a.hz) {
+            rc.anchorHz = *a.hz;
+            r.follow = a.follow;  // the chain follows its root
+            r.degree = a.degree;
+            r.equave = a.equave;
+          } else {
+            resolvable = false;
+          }
+        }
+        break;  // a JI-fundamental anchor needs its JI object (M7): resolveHzDouble fails without anchorHz
+      case tuning::PitchKind::Harmonic:
+        break;
     }
-    if (resolvable) r = tuning::resolveHzDouble(p, t_, rc);
+    if (resolvable) r.hz = tuning::resolveHzDouble(p, t_, rc);
     // A pitch that does not survive float32 (the engine's Hz) is not a playable note.
-    if (r && !(*r >= static_cast<double>(FLT_MIN) && *r <= static_cast<double>(FLT_MAX))) r.reset();
-    hz_[i] = r;
+    if (r.hz && !(*r.hz >= static_cast<double>(FLT_MIN) && *r.hz <= static_cast<double>(FLT_MAX))) r.hz.reset();
+    if (!r.hz || !signal_) r.follow = PitchFollow::Static;
+    out_[i] = r;
     state_[i] = 2;
     return r;
   }
 
 private:
   const tuning::Tuning& t_;
+  bool signal_;
   std::vector<const Note*> notes_;
   std::vector<std::pair<uint32_t, uint32_t>> byId_;  // (note id, index), sorted
   std::vector<uint8_t> state_;                       // 0 new, 1 in progress, 2 done
-  std::vector<std::optional<double>> hz_;
+  std::vector<Resolved> out_;
 };
 
 }  // namespace
@@ -93,7 +127,7 @@ bool hasTuningSignal(const TuningDef& def) noexcept {
   return false;
 }
 
-Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id) {
+Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id, const ResolveOptions& options) {
   const std::optional<TrackPath> path = findTrack(p, id);
   if (!path) return Error{ErrorCode::NotFound, "resolveTrackPitches: no such track", {}};
   const Track& track = trackAt(p, *path);
@@ -107,8 +141,10 @@ Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id) {
     cp.clip = clip.id;
     cp.tuning = effectiveTuningRef(p, *path, &clip);
     cp.notes.reserve(clip.notes.size());
+    const bool signal = cp.tuning.main.valid() && cp.tuning.def && hasTuningSignal(*cp.tuning.def);
     const tuning::Tuning* t = nullptr;
-    if (cp.tuning.def) {
+    if (signal && options.signalTuning) t = options.signalTuning(cp.tuning.main, *cp.tuning.def);
+    if (!t && cp.tuning.def) {
       auto it = built.find(cp.tuning.def);
       if (it == built.end()) {
         Result<tuning::Tuning> b = buildTuning(*cp.tuning.def);
@@ -117,23 +153,21 @@ Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id) {
       }
       if (it->second) t = &*it->second;
     }
-    const bool signal = cp.tuning.main.valid() && cp.tuning.def && hasTuningSignal(*cp.tuning.def);
     if (t) {
-      ClipResolver r(clip, *t);
+      ClipResolver r(clip, *t, signal);
       for (uint32_t i = 0; i < r.size(); ++i) {
-        const Note& n = r.note(i);
+        const ClipResolver::Resolved v = r.get(i);
         NotePitch np;
-        np.note = n.id;
-        np.hz = r.hz(i);
-        if (signal && np.hz && n.pitch.kind() == tuning::PitchKind::Degree) {
-          np.signal = cp.tuning.main;
-          np.degree = n.pitch.degree();
-          np.equave = n.pitch.equave();
-        }
+        np.note = r.note(i).id;
+        np.hz = v.hz;
+        np.follow = v.follow;
+        if (v.follow != PitchFollow::Static) np.signal = cp.tuning.main;
+        np.degree = v.degree;
+        np.equave = v.equave;
         cp.notes.push_back(np);
       }
     } else {
-      for (const Note& n : clip.notes) cp.notes.push_back(NotePitch{n.id, std::nullopt, {}, 0, 0});
+      for (const Note& n : clip.notes) cp.notes.push_back(NotePitch{n.id, std::nullopt, {}, PitchFollow::Static, 0, 0});
     }
     out.clips.push_back(std::move(cp));
   }

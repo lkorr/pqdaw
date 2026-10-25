@@ -17,6 +17,9 @@
 // Tuning as a signal (T2.6): a note-on may carry its Degree identity (`degree`, `equave`; NaN = none) as
 // voice.degree / voice.equave; a patch's tuning node (`tuning_hz` bound with `tune_voices`) then derives the
 // voice's Hz per sample from the modulated tuning, and `hz` is only the fallback for lanes without a degree.
+// T2.6-fix3: `tuning` (voice.tuning) names which of the track patch's tuning nodes the note follows (a reference-
+// relative note has a tuning but no degree), and a Pitch event with kNoteEventRetune moves a held note to a new
+// static Hz AND identity (a re-resolved note: the timeline's sequence swap retunes instead of cutting it).
 
 #include <cstdint>
 #include <limits>
@@ -33,10 +36,14 @@ enum class NoteEventKind : uint8_t {
   AllSoundOff,  // fast-fade every sounding voice (panic, project close); pending starts are dropped
 };
 
+// NoteEvent::flags.
+inline constexpr uint8_t kNoteEventRetune = 1;  // Pitch: also replace the note's identity (ratio, harmonic, degree,
+                                                // equave, tuning): a held note re-resolved by an edit (T2.6-fix3)
+
 struct NoteEvent {
   uint32_t frame = 0;             // sample offset in the block
   NoteEventKind kind = NoteEventKind::NoteOn;
-  uint8_t pad_ = 0;
+  uint8_t flags = 0;              // kNoteEventRetune
   uint16_t unisonCount = 1;       // NoteOn: voice.unisonCount (JI object voices at one pitch; SPEC §5)
   uint32_t noteId = 0;            // the producer's handle for this note (note-off and expression find it by id)
   float hz = 0.0f;                // NoteOn: initial Hz (> 0); Pitch: target Hz (> 0)
@@ -48,8 +55,9 @@ struct NoteEvent {
   uint32_t rampFrames = 0;        // Pitch: glide length in samples (0 = step)
   float degree = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.degree (T2.6; NaN = no Degree identity)
   float equave = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.equave
+  float tuning = 0.0f;            // NoteOn: voice.tuning (T2.6-fix3: the tuning node the note follows; 0 = none)
 };
-static_assert(sizeof(NoteEvent) == 44);
+static_assert(sizeof(NoteEvent) == 48);
 
 inline NoteEvent noteOn(uint32_t frame, uint32_t noteId, float hz, float velocity) noexcept {  // RT-safe
   NoteEvent e;

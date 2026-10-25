@@ -1,30 +1,41 @@
 // The tuning node's kernel (T2.6, SPEC §3.3): tuning_hz(degree, equave, hz, cents, generator, period, stretch,
-// reference) → (hz, cents), resource = TuningTableView (pq/dsp/tuning_table.h).
+// reference, select, node) → (hz, cents), resource = TuningTableView (pq/dsp/tuning_table.h).
 //
-// Per lane and sample:
-//   tuned   = the lane has a finite degree and equave (a Degree note in this tuning) and the table exists;
-//   started = the fallback hz is not 0 (the VoiceEngine's voice.hz is 0 before a note's onset in its first block);
-//   out.hz    = tuned && started && !unmodulated ? reference · 2^(cents/1200) : hz
-//   out.cents = tuned && started                 ? cents (stretched, from the reference)  : cents
-// where `unmodulated` (T2.6-fix1) = every tuning param input is a Spl pattern equal to float32 of the table's
-// definition value (generator — not read by an EDO —, period, stretch, reference): the tuning is exactly the one the
-// note's static Hz was resolved in, so the node passes that Hz through bit for bit (the project lowering resolves
-// a Degree note's NoteDesc::hz in the table's definition: pq/app/project_link.h). A project whose tunings are not
-// modulated therefore renders bit-identically with and without its tuning nodes, and saves the exp2 per lane.
-// so a lane starting mid-block keeps the engine's "0 Hz until the onset" rule (its output from the onset on does
-// not depend on block boundaries), and notes without a degree (Ratio, Cents, Harmonic, other tunings) pass through.
+// Per lane (T2.6-fix3 adds `select` / `node` and the reference and ratio cases, M3 review H4 / M9):
+//   mine      = node == 0 || select == node (a track patch chains one node per tuning signal; voice.tuning says
+//               which one a note follows: QUESTIONS Q105);
+//   degree    = mine and a finite degree / equave: a Degree note in this tuning, or a Ratio note anchored (through
+//               notes) to one, carrying the root's degree;
+//   reference = mine, node ≥ 1 and no degree: a Ratio note on the reference or a Cents note;
+//   started   = hz is not 0 (the VoiceEngine's voice.hz is 0 before a note's onset in its first block).
+// With D the absolute degree, tc(t) its stretched cents at the inputs' generator / period / stretch, tc₀ the same at
+// the table's definition values, hz₀ = reference₀ · 2^(tc₀/1200) its static pitch there and r(t) = reference(t):
+//   degree:    out.hz = r · 2^(tc/1200) · E,   E = hz / hz₀ (1 when within 4e-7 of it: a Degree note's own static
+//                                             Hz; otherwise the note's ratio to its root and any glide, M9)
+//              out.cents = cents + (tc − tc₀) + 1200·log2(r / reference₀)
+//   reference: out.hz = hz · r / reference₀,  out.cents = cents + 1200·log2(r / reference₀)
+//   otherwise (another node's voice, a static note, not started): hz, cents unchanged.
+// So voice.cents is the engine's cents of the note (VoiceEngine: from VoiceConfig::referenceHz) moved by what the
+// tuning did to it; its reference term uses the reference at frame 0 of the block (a per-sample reference moves
+// voice.cents at block rate; voice.hz follows it per sample).
+// `unmodulated` (T2.6-fix1) = every tuning param input is a Spl pattern equal to float32 of the table's definition
+// value (generator — not read by an EDO —, period, stretch, reference): the tuning is exactly the one the notes'
+// static Hz were resolved in, so every lane's output is its input, bit for bit (the project lowering resolves a
+// following note's NoteDesc::hz in the table's definition: pq/app/project_link.h). A project whose tunings are not
+// modulated therefore renders bit-identically with and without its tuning nodes, at the cost of a copy.
 //
-// Two paths, chosen per block from KernelArgs::splMask (this kernel reads the mask at run time instead of being
-// template-specialised for its 2^8 masks; both backends set it):
-//   - every tuning input (degree, equave, generator, period, stretch, reference) is a Spl pattern: the pitch of
-//     each lane is computed once per block in double (the common, unmodulated case), and the per-sample work is
-//     one compare and two blends per 8 lanes;
+// Three paths, chosen per block from KernelArgs::splMask (read at run time instead of template-specialising the
+// 2^10 masks; both backends set it):
+//   - unmodulated: a copy;
+//   - every tuning input (degree, equave, select, node, generator, period, stretch, reference) constant over the
+//     block: each lane's pitch is computed once per block in double, and the per-sample work is a few float
+//     multiplies, a compare and blends per 8 lanes;
 //   - otherwise, per sample in AVX2 doubles (4 lanes per __m256d): the range check of the cached (K, M) against the
-//     generator (2 mul + 2 cmp), the linear form (1 FMA), the stretch, exp2 (round, 9-term polynomial, exponent
-//     add) and the reference. A lane leaves the cached coefficients only at a region crossing or a degree change,
-//     where its coefficients are re-derived (scalar binary search) at that very sample.
-// Double precision is needed: k·g − m·P reaches ~10^4 ¢, where float32 would be ~1e-3 ¢; in double the only
-// error is the final float32 rounding of the Hz value (≤ 0.5 ulp).
+//     generator, the linear form (1 FMA), the stretch, exp2 (round, 10-term polynomial, exponent add), the
+//     reference and E. A lane leaves the cached coefficients only at a region crossing or a degree change, where
+//     they are re-derived (scalar binary search) at that very sample.
+// Double precision is needed: k·g − m·P reaches ~10^4 ¢, where float32 would be ~1e-3 ¢; in double the only error
+// of a Degree note is the final float32 rounding of the Hz value (≤ 0.5 ulp; a ratio note adds its hz input's).
 //
 // T2.6-fix2: the coefficients come from tuningCoefficients (pq/dsp/tuning_table.h): the mode carried across
 // intervals (the root's chain position), exact boundaries decided like buildMOSScale (the cached range is shrunk by
@@ -138,6 +149,7 @@ namespace {
 
 constexpr double kInv1200 = 1.0 / 1200.0;
 constexpr double kExpClamp = 512.0;  // octaves: keeps the exponent add in range; float32 Hz saturates long before
+constexpr double kSnap = 4e-7;       // |hz / hz₀ − 1| below this is the note's own static pitch (a few float ulps)
 
 // 2^f for |f| ≤ 0.5: Taylor series of e^(f·ln2) to degree 10 (truncation < 1e-13 relative, far below the final
 // float32 rounding). Coefficients ln2^i / i!.
@@ -176,13 +188,6 @@ inline __m256d exp2Vec(__m256d x) noexcept {  // RT-safe
 // A Spl input equal to float32 of the definition's value reads the double value (see tuning_table.h).
 inline double exactOr(float in, float f, double d) noexcept { return in == f ? d : static_cast<double>(in); }
 
-// Every tuning param input at float32 of the definition's value (an EDO does not read the generator): the node
-// passes the note's own static Hz through (see the file comment).
-inline bool unmodulated(const TuningTableView& v, float gen, float per, float st, float ref) noexcept {
-  return (v.kind == TuningTableKind::Edo || gen == v.generatorF) && per == v.periodF && st == v.stretchF &&
-         ref == v.referenceF;
-}
-
 // An input: the value of lane `lane` at frame t is p[t·ts + lane·ls]. A Spl pattern: ts = 0, ls = 1; a block buffer:
 // ts = lanes, ls = 1; a live automation buffer (global, per sample: TuningLiveInputs): ts = 1, ls = 0.
 struct In8 {
@@ -193,14 +198,14 @@ struct In8 {
   bool constant() const noexcept { return ts == 0; }
 };
 
-// The tuning param inputs of this block: the node's inputs, with the live automation buffers in place of those
-// that are moving this block (an EDO reads neither the generator nor the stretch).
-struct TuningIns {
-  In8 gen, per, st, ref;
+// The kernel's inputs for this block: the tuning params replaced by the live automation buffers that move in it (an
+// EDO reads neither the generator nor the stretch).
+struct Ins {
+  In8 deg, eq, hz, ce, gen, per, st, ref, sel, node;
 };
-inline TuningIns tuningIns(const TuningTableView* v, const In8& gen, const In8& per, const In8& st,
-                           const In8& ref) noexcept {
-  TuningIns r{gen, per, st, ref};
+inline Ins inputs(const KernelArgs& a, const TuningTableView* v, uint32_t lanes) noexcept {
+  auto in = [&](uint32_t i) { return In8{a.in[i], ((a.splMask >> i) & 1u) ? 0u : lanes, 1u}; };
+  Ins r{in(0), in(1), in(2), in(3), in(4), in(5), in(6), in(7), in(8), in(9)};
   if (v != nullptr && v->live != nullptr) {
     const TuningLiveInputs& l = *v->live;
     const bool edo = v->kind == TuningTableKind::Edo;
@@ -212,25 +217,44 @@ inline TuningIns tuningIns(const TuningTableView* v, const In8& gen, const In8& 
   return r;
 }
 
-// One lane's setup from its degree/equave: tuned flag and absolute degree.
-inline bool laneDegree(const TuningTableView& v, float deg, float eq, int64_t& D) noexcept {
-  if (!(std::isfinite(deg) && std::isfinite(eq))) return false;
-  // |values| ≤ 2^24 keep the products exact; a degree beyond that is not a note.
-  if (std::fabs(deg) > 16777216.0f || std::fabs(eq) > 16777216.0f) return false;
-  const int64_t N = static_cast<int64_t>(v.n) * v.periodsPerEquave;
-  D = static_cast<int64_t>(std::floor(eq)) * N + static_cast<int64_t>(std::floor(deg));
+// Every tuning param input constant and at float32 of the definition's value (an EDO does not read the generator
+// or the stretch) for every lane: the block is a copy (see the file comment).
+inline bool unmodulated(const TuningTableView& v, const Ins& x, uint32_t lanes) noexcept {
+  const bool edo = v.kind == TuningTableKind::Edo;
+  if (!x.per.constant() || !x.ref.constant() || (!edo && (!x.gen.constant() || !x.st.constant()))) return false;
+  for (uint32_t l = 0; l < lanes; ++l)
+    if (x.per.p[l] != v.periodF || x.ref.p[l] != v.referenceF ||
+        (!edo && (x.gen.p[l] != v.generatorF || x.st.p[l] != v.stretchF)))
+      return false;
   return true;
 }
 
-// Scalar pitch of a tuned lane (the constant-input path and the 1-lane kernel): stretched cents and Hz. `ownHz`: the
-// lane passes its static Hz through (unmodulated), so only the cents are needed (hz = 1: valid, unused).
-inline void lanePitch(const TuningTableView& v, int64_t D, double g, double P, double st, double ref, double& cents,
-                      double& hz, bool ownHz = false) noexcept {
+// What a lane is to this node (see the file comment).
+enum class Mode : uint8_t { Pass, Degree, Reference };
+
+// One lane's role from its degree / equave / select and the node number; D = its absolute degree.
+inline Mode laneMode(const TuningTableView& v, float deg, float eq, float sel, float node, int64_t& D) noexcept {
+  if (node != 0.0f && sel != node) return Mode::Pass;
+  if (std::isfinite(deg) && std::isfinite(eq) && std::fabs(deg) <= 16777216.0f && std::fabs(eq) <= 16777216.0f) {
+    // |values| ≤ 2^24 keep the products exact; a degree beyond that is not a note.
+    const int64_t N = static_cast<int64_t>(v.n) * v.periodsPerEquave;
+    D = static_cast<int64_t>(std::floor(eq)) * N + static_cast<int64_t>(std::floor(deg));
+    return Mode::Degree;
+  }
+  return node >= 1.0f ? Mode::Reference : Mode::Pass;
+}
+
+// Stretched cents of degree D at generator g, period P, stretch st (the EDO's generator follows its equave).
+inline double centsAt(const TuningTableView& v, int64_t D, double g, double P, double st) noexcept {
   if (v.kind == TuningTableKind::Edo) g = P / static_cast<double>(v.n);
   const TuningCoefficients c = tuningCoefficients(v, D, g, P);
-  const double pure = std::fma(c.K, g + c.nudge, -(c.M * P));
-  cents = pure * (1200.0 + st) * kInv1200;
-  hz = ownHz ? 1.0 : ref * exp2Scalar(cents * kInv1200);
+  return std::fma(c.K, g + c.nudge, -(c.M * P)) * (1200.0 + st) * kInv1200;
+}
+
+// The degree's cents and 1 / Hz at the table's definition (tc₀, 1 / hz₀).
+inline void definitionPitch(const TuningTableView& v, int64_t D, double& tc0, double& invHz0) noexcept {
+  tc0 = centsAt(v, D, v.generator, v.period, v.stretch);
+  invHz0 = 1.0 / (v.referenceHz * exp2Scalar(tc0 * kInv1200));
 }
 
 inline bool finitePositive(double hz) noexcept { return hz > 0.0 && hz <= 3.4e38; }
@@ -240,75 +264,75 @@ inline bool inRange(const TuningCoefficients& c, double g, double P) noexcept {
   return g >= std::fma(c.lo, P, c.loMargin) && g < std::fma(c.hi, P, -c.hiMargin);
 }
 
+inline void copyBlock(const KernelArgs& a, const Ins& x, uint32_t lanes) noexcept {
+  const uint32_t n = a.frames * lanes;
+  for (uint32_t i = 0; i < n; ++i) a.out[0][i] = x.hz.constant() ? x.hz.p[i % lanes] : x.hz.p[i];
+  for (uint32_t i = 0; i < n; ++i) a.out[1][i] = x.ce.constant() ? x.ce.p[i % lanes] : x.ce.p[i];
+}
+
 // ---- 1 lane ----------------------------------------------------------------------------------------------------
 
 void tuningHz1(const KernelArgs& a) noexcept {  // RT-safe
   const auto* v = static_cast<const TuningTableView*>(a.resource);
-  const uint32_t mask = a.splMask;
-  auto in = [&](uint32_t i) { return In8{a.in[i], ((mask >> i) & 1u) ? 0u : 1u, 1u}; };
-  const In8 deg = in(0), eq = in(1), hz = in(2), ce = in(3);
-  const TuningIns ti = tuningIns(v, in(4), in(5), in(6), in(7));
-  const In8 &gen = ti.gen, &per = ti.per, &st = ti.st, &ref = ti.ref;
-  float* oh = a.out[0];
-  float* oc = a.out[1];
-  const auto pick = [](const In8& x, uint32_t tt, float f, double d) {
-    return x.constant() ? exactOr(x.p[0], f, d) : static_cast<double>(x.at(tt, 0));
-  };
-  if (v != nullptr && deg.constant() && eq.constant() && gen.constant() && per.constant() && st.constant() &&
-      ref.constant()) {
-    // Every tuning input is constant over the block: one pitch.
-    int64_t D = 0;
-    double cents = 0.0, outHz = 0.0;
-    const bool ownHz = unmodulated(*v, gen.p[0], per.p[0], st.p[0], ref.p[0]);  // the note's static Hz is exact
-    bool ok = laneDegree(*v, deg.p[0], eq.p[0], D);
-    if (ok) {
-      lanePitch(*v, D, pick(gen, 0, v->generatorF, v->generator), pick(per, 0, v->periodF, v->period),
-                pick(st, 0, v->stretchF, v->stretch), pick(ref, 0, v->referenceF, v->referenceHz), cents, outHz,
-                ownHz);
-      ok = finitePositive(outHz);
-    }
-    const float th = static_cast<float>(outHz), tc = static_cast<float>(cents);
-    for (uint32_t t = 0; t < a.frames; ++t) {
-      const float h = hz.at(t, 0);
-      const bool use = ok && h != 0.0f;
-      oh[t] = use && !ownHz ? th : h;
-      oc[t] = use ? tc : ce.at(t, 0);
-    }
+  const Ins x = inputs(a, v, 1);
+  if (v == nullptr || unmodulated(*v, x, 1)) {
+    copyBlock(a, x, 1);
     return;
   }
-  // Per sample, with the coefficients cached until the generator leaves their range or the degree changes.
+  float* oh = a.out[0];
+  float* oc = a.out[1];
+  const auto pick = [](const In8& in, uint32_t t, float f, double d) {
+    return in.constant() ? exactOr(in.p[0], f, d) : static_cast<double>(in.at(t, 0));
+  };
+  // voice.cents' reference term: the reference at frame 0 of the block.
+  const double refC = 1200.0 * std::log2(pick(x.ref, 0, v->referenceF, v->referenceHz) / v->referenceHz);
   TuningCoefficients co;
   int64_t D = 0;
-  bool tuned = false, have = false;
-  uint32_t degBits = 0, eqBits = 0;
+  Mode mode = Mode::Pass;
+  double tc0 = 0.0, invHz0 = 0.0;
+  bool have = false;
+  uint32_t bits[4] = {};
   for (uint32_t t = 0; t < a.frames; ++t) {
-    const float h = hz.at(t, 0);
-    const float c = ce.at(t, 0);
-    if (v == nullptr || h == 0.0f) {
+    const float h = x.hz.at(t, 0);
+    const float c = x.ce.at(t, 0);
+    if (h == 0.0f) {
       oh[t] = h;
       oc[t] = c;
       continue;
     }
-    const double P = pick(per, t, v->periodF, v->period);
+    const double P = pick(x.per, t, v->periodF, v->period);
     const double g = v->kind == TuningTableKind::Edo ? P / static_cast<double>(v->n)
-                                                     : pick(gen, t, v->generatorF, v->generator);
-    const float df = deg.at(t, 0), ef = eq.at(t, 0);
-    const uint32_t db = std::bit_cast<uint32_t>(df), eb = std::bit_cast<uint32_t>(ef);
-    if (!have || db != degBits || eb != eqBits || !inRange(co, g, P)) {
+                                                     : pick(x.gen, t, v->generatorF, v->generator);
+    const float df = x.deg.at(t, 0), ef = x.eq.at(t, 0), sf = x.sel.at(t, 0), nf = x.node.at(t, 0);
+    const uint32_t now[4] = {std::bit_cast<uint32_t>(df), std::bit_cast<uint32_t>(ef), std::bit_cast<uint32_t>(sf),
+                             std::bit_cast<uint32_t>(nf)};
+    const bool same = have && now[0] == bits[0] && now[1] == bits[1] && now[2] == bits[2] && now[3] == bits[3];
+    if (!same) {
       have = true;
-      degBits = db;
-      eqBits = eb;
-      tuned = laneDegree(*v, df, ef, D);
-      if (tuned) co = tuningCoefficients(*v, D, g, P);
+      std::memcpy(bits, now, sizeof bits);
+      mode = laneMode(*v, df, ef, sf, nf, D);
+      if (mode == Mode::Degree) {
+        definitionPitch(*v, D, tc0, invHz0);
+        co = tuningCoefficients(*v, D, g, P);
+      }
+    } else if (mode == Mode::Degree && !inRange(co, g, P)) {
+      co = tuningCoefficients(*v, D, g, P);
     }
-    double cents = 0.0, outHz = 0.0;
-    if (tuned) {
-      cents = std::fma(co.K, g + co.nudge, -(co.M * P)) * (1200.0 + pick(st, t, v->stretchF, v->stretch)) * kInv1200;
-      outHz = pick(ref, t, v->referenceF, v->referenceHz) * exp2Scalar(cents * kInv1200);
+    const double r = pick(x.ref, t, v->referenceF, v->referenceHz);
+    double outHz = h, outC = c;
+    if (mode == Mode::Degree) {
+      const double tc = std::fma(co.K, g + co.nudge, -(co.M * P)) * (1200.0 + pick(x.st, t, v->stretchF, v->stretch)) * kInv1200;
+      double e = static_cast<double>(h) * invHz0;
+      if (std::fabs(e - 1.0) < kSnap) e = 1.0;
+      outHz = r * exp2Scalar(tc * kInv1200) * e;
+      outC = static_cast<double>(c) + (tc - tc0) + refC;
+    } else if (mode == Mode::Reference) {
+      outHz = static_cast<double>(h) * (r / v->referenceHz);
+      outC = static_cast<double>(c) + refC;
     }
-    const bool use = tuned && finitePositive(outHz);
+    const bool use = mode != Mode::Pass && finitePositive(outHz);
     oh[t] = use ? static_cast<float>(outHz) : h;
-    oc[t] = use ? static_cast<float>(cents) : c;
+    oc[t] = use ? static_cast<float>(outC) : c;
   }
 }
 
@@ -316,59 +340,74 @@ void tuningHz1(const KernelArgs& a) noexcept {  // RT-safe
 
 void tuningHz8(const KernelArgs& a) noexcept {  // RT-safe
   const auto* v = static_cast<const TuningTableView*>(a.resource);
-  const uint32_t mask = a.splMask;
-  auto in = [&](uint32_t i) { return In8{a.in[i], ((mask >> i) & 1u) ? 0u : 8u, 1u}; };
-  const In8 deg = in(0), eq = in(1), hz = in(2), ce = in(3);
-  const TuningIns ti = tuningIns(v, in(4), in(5), in(6), in(7));
-  const In8 &gen = ti.gen, &per = ti.per, &st = ti.st, &ref = ti.ref;
+  const Ins x = inputs(a, v, 8);
+  const In8 &deg = x.deg, &eq = x.eq, &hz = x.hz, &ce = x.ce, &gen = x.gen, &per = x.per, &st = x.st, &ref = x.ref,
+            &sel = x.sel, &node = x.node;
   float* oh = a.out[0];
   float* oc = a.out[1];
   const uint32_t frames = a.frames;
 
-  if (v == nullptr) {  // no table: pass the fallback through
+  if (v == nullptr || unmodulated(*v, x, 8)) {  // no table, or exactly the definition: the notes' own pitches
     for (uint32_t t = 0; t < frames; ++t) {
       _mm256_storeu_ps(oh + t * 8, _mm256_loadu_ps(hz.p + t * hz.ts));
       _mm256_storeu_ps(oc + t * 8, _mm256_loadu_ps(ce.p + t * ce.ts));
     }
     return;
   }
+  const __m256 zero = _mm256_setzero_ps();
 
-  if (deg.constant() && eq.constant() && gen.constant() && per.constant() && st.constant() && ref.constant()) {
-    // Every tuning input is constant over the block: one pitch per lane.
-    alignas(32) float th[8], tc[8], tm[8], tmh[8];
+  if (deg.constant() && eq.constant() && sel.constant() && node.constant() && gen.constant() && per.constant() &&
+      st.constant() && ref.constant()) {
+    // Every tuning input is constant over the block: one pitch per lane, then out.hz = h · mul (Reference, Pass:
+    // mul = r/r₀, 1) or th · snap(h / hz₀) (Degree), out.cents = c + dc.
+    alignas(32) float th[8], invB[8], mul[8], dc[8], isDeg[8], use[8];
     for (uint32_t l = 0; l < 8; ++l) {
       int64_t D = 0;
-      double cents = 0.0, outHz = 0.0;
-      const bool ownHz = unmodulated(*v, gen.p[l], per.p[l], st.p[l], ref.p[l]);
-      bool ok = laneDegree(*v, deg.p[l], eq.p[l], D);
-      if (ok) {
-        lanePitch(*v, D, exactOr(gen.p[l], v->generatorF, v->generator), exactOr(per.p[l], v->periodF, v->period),
-                  exactOr(st.p[l], v->stretchF, v->stretch), exactOr(ref.p[l], v->referenceF, v->referenceHz), cents,
-                  outHz, ownHz);
-        ok = finitePositive(outHz);
+      const Mode mode = laneMode(*v, deg.p[l], eq.p[l], sel.p[l], node.p[l], D);
+      const double r = exactOr(ref.p[l], v->referenceF, v->referenceHz);
+      const double refC = 1200.0 * std::log2(r / v->referenceHz);
+      th[l] = invB[l] = dc[l] = 0.0f;
+      mul[l] = 1.0f;
+      isDeg[l] = use[l] = boolMask(false);
+      if (mode == Mode::Degree) {
+        double tc0 = 0.0, invHz0 = 0.0;
+        definitionPitch(*v, D, tc0, invHz0);
+        const double tc = centsAt(*v, D, exactOr(gen.p[l], v->generatorF, v->generator),
+                                  exactOr(per.p[l], v->periodF, v->period), exactOr(st.p[l], v->stretchF, v->stretch));
+        const double outHz = r * exp2Scalar(tc * kInv1200);
+        if (finitePositive(outHz) && finitePositive(1.0 / invHz0)) {
+          th[l] = static_cast<float>(outHz);
+          invB[l] = static_cast<float>(invHz0);
+          dc[l] = static_cast<float>((tc - tc0) + refC);
+          isDeg[l] = use[l] = boolMask(true);
+        }
+      } else if (mode == Mode::Reference && finitePositive(r)) {
+        mul[l] = static_cast<float>(r / v->referenceHz);
+        dc[l] = static_cast<float>(refC);
+        use[l] = boolMask(true);
       }
-      th[l] = ok ? static_cast<float>(outHz) : 0.0f;
-      tc[l] = ok ? static_cast<float>(cents) : 0.0f;
-      tm[l] = boolMask(ok);
-      tmh[l] = boolMask(ok && !ownHz);
     }
-    const __m256 vh = _mm256_load_ps(th), vc = _mm256_load_ps(tc), vm = _mm256_load_ps(tm),
-                 vmh = _mm256_load_ps(tmh);
-    const __m256 zero = _mm256_setzero_ps();
+    const __m256 vth = _mm256_load_ps(th), vib = _mm256_load_ps(invB), vmul = _mm256_load_ps(mul),
+                 vdc = _mm256_load_ps(dc), vdeg = _mm256_load_ps(isDeg), vuse = _mm256_load_ps(use);
+    const __m256 one = _mm256_set1_ps(1.0f), snap = _mm256_set1_ps(static_cast<float>(kSnap));
+    const __m256 absMask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
     for (uint32_t t = 0; t < frames; ++t) {
       const __m256 h = _mm256_loadu_ps(hz.p + t * hz.ts);
       const __m256 c = _mm256_loadu_ps(ce.p + t * ce.ts);
-      const __m256 started = _mm256_cmp_ps(h, zero, _CMP_NEQ_OQ);
-      _mm256_storeu_ps(oh + t * 8, _mm256_blendv_ps(h, vh, _mm256_and_ps(vmh, started)));
-      _mm256_storeu_ps(oc + t * 8, _mm256_blendv_ps(c, vc, _mm256_and_ps(vm, started)));
+      __m256 e = _mm256_mul_ps(h, vib);
+      e = _mm256_blendv_ps(e, one, _mm256_cmp_ps(_mm256_and_ps(_mm256_sub_ps(e, one), absMask), snap, _CMP_LT_OQ));
+      const __m256 hzT = _mm256_blendv_ps(_mm256_mul_ps(h, vmul), _mm256_mul_ps(vth, e), vdeg);
+      const __m256 on = _mm256_and_ps(vuse, _mm256_cmp_ps(h, zero, _CMP_NEQ_OQ));
+      _mm256_storeu_ps(oh + t * 8, _mm256_blendv_ps(h, hzT, on));
+      _mm256_storeu_ps(oc + t * 8, _mm256_blendv_ps(c, _mm256_add_ps(c, vdc), on));
     }
     return;
   }
 
-  // Per-sample path. Lane caches: absolute degree, tuned flag, coefficients and the range they hold for.
-  alignas(32) double K[8], M[8], lo[8], hi[8], loM[8], hiM[8], nudge[8];
-  alignas(32) float tunedF[8];
-  alignas(32) uint32_t degBits[8], eqBits[8];
+  // Per-sample path. Lane caches: role, absolute degree, the definition pitch, coefficients and their range.
+  alignas(32) double K[8], M[8], lo[8], hi[8], loM[8], hiM[8], nudge[8], tc0[8], invHz0[8];
+  alignas(32) float degF[8], refF[8];  // masks: a Degree lane, a Reference lane
+  alignas(32) uint32_t degBits[8], eqBits[8], selBits[8];
   int64_t D[8];
   const bool edo = v->kind == TuningTableKind::Edo;
   const double invN = 1.0 / static_cast<double>(v->n);
@@ -380,28 +419,38 @@ void tuningHz8(const KernelArgs& a) noexcept {  // RT-safe
     sS[l] = st.constant() ? exactOr(st.p[l], v->stretchF, v->stretch) : 0.0;
     rS[l] = ref.constant() ? exactOr(ref.p[l], v->referenceF, v->referenceHz) : 0.0;
   }
-  auto lanesOf = [](const In8& x, uint32_t t, const double* spl, __m256d& lo4, __m256d& hi4) {
-    if (x.constant()) {
+  auto lanesOf = [](const In8& in, uint32_t t, const double* spl, __m256d& lo4, __m256d& hi4) {
+    if (in.constant()) {
       lo4 = _mm256_load_pd(spl);
       hi4 = _mm256_load_pd(spl + 4);
-    } else if (x.ls == 0) {  // a live automation buffer: one value for every lane
-      lo4 = hi4 = _mm256_set1_pd(static_cast<double>(x.p[t]));
+    } else if (in.ls == 0) {  // a live automation buffer: one value for every lane
+      lo4 = hi4 = _mm256_set1_pd(static_cast<double>(in.p[t]));
     } else {
-      const __m256 f = _mm256_loadu_ps(x.p + t * x.ts);
+      const __m256 f = _mm256_loadu_ps(in.p + t * in.ts);
       lo4 = _mm256_cvtps_pd(_mm256_castps256_ps128(f));
       hi4 = _mm256_cvtps_pd(_mm256_extractf128_ps(f, 1));
     }
   };
+  // voice.cents' reference term, per lane, from the reference at frame 0.
+  alignas(32) float refC[8];
+  for (uint32_t l = 0; l < 8; ++l)
+    refC[l] = static_cast<float>(1200.0 * std::log2((ref.constant() ? rS[l] : static_cast<double>(ref.at(0, l))) /
+                                                    v->referenceHz));
   alignas(32) double gNow[8], pNow[8];
-  // (Re-)derives lane l's coefficients at sample t from its current degree and generator.
-  auto setupLane = [&](uint32_t l, uint32_t t) {
-    const float df = deg.at(t, l), ef = eq.at(t, l);
-    degBits[l] = std::bit_cast<uint32_t>(df);
-    eqBits[l] = std::bit_cast<uint32_t>(ef);
-    const bool ok = laneDegree(*v, df, ef, D[l]);
-    tunedF[l] = boolMask(ok);
-    if (!ok) {
-      K[l] = M[l] = nudge[l] = loM[l] = hiM[l] = 0.0;
+  // (Re-)derives lane l's role and coefficients at sample t from its current degree / select and generator.
+  auto setupLane = [&](uint32_t l, uint32_t t, bool roleChanged) {
+    if (roleChanged) {
+      const float df = deg.at(t, l), ef = eq.at(t, l), sf = sel.at(t, l);
+      degBits[l] = std::bit_cast<uint32_t>(df);
+      eqBits[l] = std::bit_cast<uint32_t>(ef);
+      selBits[l] = std::bit_cast<uint32_t>(sf);
+      const Mode mode = laneMode(*v, df, ef, sf, node.at(t, l), D[l]);
+      degF[l] = boolMask(mode == Mode::Degree);
+      refF[l] = boolMask(mode == Mode::Reference);
+      if (mode == Mode::Degree) definitionPitch(*v, D[l], tc0[l], invHz0[l]);
+    }
+    if (!maskIsTrue(degF[l])) {
+      K[l] = M[l] = nudge[l] = loM[l] = hiM[l] = tc0[l] = invHz0[l] = 0.0;
       lo[l] = -std::numeric_limits<double>::infinity();
       hi[l] = std::numeric_limits<double>::infinity();
       return;
@@ -415,8 +464,10 @@ void tuningHz8(const KernelArgs& a) noexcept {  // RT-safe
     hiM[l] = c.hiMargin;
     nudge[l] = c.nudge;
   };
-  const bool degSpl = deg.constant() && eq.constant();
-  const __m256 zero = _mm256_setzero_ps();
+  const bool roleSpl = deg.constant() && eq.constant() && sel.constant();
+  const __m256d k1200 = _mm256_set1_pd(1200.0), inv = _mm256_set1_pd(kInv1200), oneD = _mm256_set1_pd(1.0),
+                snapD = _mm256_set1_pd(kSnap), invRef0 = _mm256_set1_pd(1.0 / v->referenceHz);
+  const __m256d absD = _mm256_castsi256_pd(_mm256_set1_epi64x(0x7FFFFFFFFFFFFFFFll));
   for (uint32_t t = 0; t < frames; ++t) {
     __m256d g0, g1, p0, p1, s0, s1, r0, r1;
     lanesOf(per, t, pS, p0, p1);
@@ -426,18 +477,20 @@ void tuningHz8(const KernelArgs& a) noexcept {  // RT-safe
     } else {
       lanesOf(gen, t, gS, g0, g1);
     }
-    // Which lanes need new coefficients: first sample, a degree change, or the generator outside their range.
-    uint32_t redo = 0;
+    // Which lanes need new coefficients: first sample, a role change, or the generator outside their range.
+    uint32_t redo = 0, roles = 0;
     if (t == 0) {
-      redo = 0xFFu;
+      redo = roles = 0xFFu;
     } else {
-      if (!degSpl) {
-        const __m256i db = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(deg.p + t * deg.ts));
-        const __m256i eb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(eq.p + t * eq.ts));
-        const __m256i same =
-            _mm256_and_si256(_mm256_cmpeq_epi32(db, _mm256_load_si256(reinterpret_cast<const __m256i*>(degBits))),
-                             _mm256_cmpeq_epi32(eb, _mm256_load_si256(reinterpret_cast<const __m256i*>(eqBits))));
-        redo |= ~static_cast<uint32_t>(_mm256_movemask_ps(_mm256_castsi256_ps(same))) & 0xFFu;
+      if (!roleSpl) {
+        auto sameBits = [&](const In8& in, const uint32_t* prev) {
+          const __m256i b = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in.p + t * in.ts));
+          return _mm256_cmpeq_epi32(b, _mm256_load_si256(reinterpret_cast<const __m256i*>(prev)));
+        };
+        const __m256i same = _mm256_and_si256(_mm256_and_si256(sameBits(deg, degBits), sameBits(eq, eqBits)),
+                                              sameBits(sel, selBits));
+        roles = ~static_cast<uint32_t>(_mm256_movemask_ps(_mm256_castsi256_ps(same))) & 0xFFu;
+        redo |= roles;
       }
       const __m256d in0 = _mm256_and_pd(
           _mm256_cmp_pd(g0, _mm256_fmadd_pd(_mm256_load_pd(lo), p0, _mm256_load_pd(loM)), _CMP_GE_OQ),
@@ -454,35 +507,44 @@ void tuningHz8(const KernelArgs& a) noexcept {  // RT-safe
       _mm256_store_pd(gNow + 4, g1);
       _mm256_store_pd(pNow, p0);
       _mm256_store_pd(pNow + 4, p1);
-      for (uint32_t bits = redo; bits != 0; bits &= bits - 1) setupLane(static_cast<uint32_t>(std::countr_zero(bits)), t);
+      for (uint32_t b = redo; b != 0; b &= b - 1) {
+        const auto l = static_cast<uint32_t>(std::countr_zero(b));
+        setupLane(l, t, ((roles >> l) & 1u) != 0);
+      }
     }
     lanesOf(st, t, sS, s0, s1);
     lanesOf(ref, t, rS, r0, r1);
-    // cents = (K·(g + nudge) − M·P) · (1200 + st) / 1200;  hz = ref · 2^(cents / 1200)
-    const __m256d k1200 = _mm256_set1_pd(1200.0), inv = _mm256_set1_pd(kInv1200);
-    const __m256d c0 = _mm256_mul_pd(
-        _mm256_mul_pd(_mm256_fmsub_pd(_mm256_load_pd(K), _mm256_add_pd(g0, _mm256_load_pd(nudge)),
-                                      _mm256_mul_pd(_mm256_load_pd(M), p0)),
-                      _mm256_add_pd(k1200, s0)),
-        inv);
-    const __m256d c1 = _mm256_mul_pd(
-        _mm256_mul_pd(_mm256_fmsub_pd(_mm256_load_pd(K + 4), _mm256_add_pd(g1, _mm256_load_pd(nudge + 4)),
-                                      _mm256_mul_pd(_mm256_load_pd(M + 4), p1)),
-                      _mm256_add_pd(k1200, s1)),
-        inv);
-    const __m256d h0 = _mm256_mul_pd(r0, exp2Vec(_mm256_mul_pd(c0, inv)));
-    const __m256d h1 = _mm256_mul_pd(r1, exp2Vec(_mm256_mul_pd(c1, inv)));
-    const __m256 hzT = _mm256_set_m128(_mm256_cvtpd_ps(h1), _mm256_cvtpd_ps(h0));
-    const __m256 cT = _mm256_set_m128(_mm256_cvtpd_ps(c1), _mm256_cvtpd_ps(c0));
     const __m256 h = _mm256_loadu_ps(hz.p + t * hz.ts);
     const __m256 c = _mm256_loadu_ps(ce.p + t * ce.ts);
-    // Tuned, started, and a finite positive result (invalid inputs fall back to the engine's value).
+    const __m256d h0 = _mm256_cvtps_pd(_mm256_castps256_ps128(h)), h1 = _mm256_cvtps_pd(_mm256_extractf128_ps(h, 1));
+    // Degree: tc = (K·(g + nudge) − M·P) · (1200 + st) / 1200;  hz = ref · 2^(tc / 1200) · snap(h / hz₀)
+    auto degreeHz = [&](int o, __m256d g, __m256d P, __m256d S, __m256d R, __m256d H, __m256d& tc) {
+      tc = _mm256_mul_pd(_mm256_mul_pd(_mm256_fmsub_pd(_mm256_load_pd(K + o), _mm256_add_pd(g, _mm256_load_pd(nudge + o)),
+                                                       _mm256_mul_pd(_mm256_load_pd(M + o), P)),
+                                       _mm256_add_pd(k1200, S)),
+                         inv);
+      __m256d e = _mm256_mul_pd(H, _mm256_load_pd(invHz0 + o));
+      e = _mm256_blendv_pd(e, oneD, _mm256_cmp_pd(_mm256_and_pd(_mm256_sub_pd(e, oneD), absD), snapD, _CMP_LT_OQ));
+      return _mm256_mul_pd(_mm256_mul_pd(R, exp2Vec(_mm256_mul_pd(tc, inv))), e);
+    };
+    __m256d tcA, tcB;
+    const __m256d dA = degreeHz(0, g0, p0, s0, r0, h0, tcA), dB = degreeHz(4, g1, p1, s1, r1, h1, tcB);
+    // Reference: hz · ref / ref₀.
+    const __m256d rA = _mm256_mul_pd(h0, _mm256_mul_pd(r0, invRef0)), rB = _mm256_mul_pd(h1, _mm256_mul_pd(r1, invRef0));
+    const __m256 degM = _mm256_load_ps(degF), refM = _mm256_load_ps(refF);
+    const __m256 hzDeg = _mm256_set_m128(_mm256_cvtpd_ps(dB), _mm256_cvtpd_ps(dA));
+    const __m256 hzRef = _mm256_set_m128(_mm256_cvtpd_ps(rB), _mm256_cvtpd_ps(rA));
+    const __m256 hzT = _mm256_blendv_ps(hzRef, hzDeg, degM);
+    // cents: c + (tc − tc₀) + refC (Degree), c + refC (Reference).
+    const __m256d dcA = _mm256_sub_pd(tcA, _mm256_load_pd(tc0)), dcB = _mm256_sub_pd(tcB, _mm256_load_pd(tc0 + 4));
+    const __m256 dcDeg = _mm256_set_m128(_mm256_cvtpd_ps(dcB), _mm256_cvtpd_ps(dcA));
+    const __m256 dcT = _mm256_add_ps(_mm256_and_ps(dcDeg, degM), _mm256_load_ps(refC));
+    // Mine, started, and a finite positive result (invalid inputs fall back to the engine's value).
     const __m256 good = _mm256_and_ps(_mm256_cmp_ps(hzT, zero, _CMP_GT_OQ),
                                       _mm256_cmp_ps(hzT, _mm256_set1_ps(3.4e38f), _CMP_LE_OQ));
-    const __m256 use =
-        _mm256_and_ps(_mm256_and_ps(_mm256_load_ps(tunedF), good), _mm256_cmp_ps(h, zero, _CMP_NEQ_OQ));
+    const __m256 use = _mm256_and_ps(_mm256_and_ps(_mm256_or_ps(degM, refM), good), _mm256_cmp_ps(h, zero, _CMP_NEQ_OQ));
     _mm256_storeu_ps(oh + t * 8, _mm256_blendv_ps(h, hzT, use));
-    _mm256_storeu_ps(oc + t * 8, _mm256_blendv_ps(c, cT, use));
+    _mm256_storeu_ps(oc + t * 8, _mm256_blendv_ps(c, _mm256_add_ps(c, dcT), use));
   }
 }
 

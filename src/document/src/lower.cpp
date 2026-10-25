@@ -33,7 +33,7 @@ struct Node {
   Kind kind = Kind::Midi;
   const Track* parent = nullptr;  // active parent group (main tree)
   std::vector<SendInfo> sends;    // per active return
-  TuningNode tuning;
+  std::vector<TuningNode> tunings;  // T2.6-fix3: one node per tuning signal its clips follow (trackTuningSignals)
 };
 
 std::string num(double v) {
@@ -83,15 +83,24 @@ std::string patchText(const Node& n, const std::string& instrument, float smooth
   for (const SendInfo& si : n.sends) s += "  param send" + std::to_string(si.ret.value) + " = -70 [-70..6]\n";
   if (n.kind != Kind::Midi) s += "  in in : audio global stereo = 0\n";
   s += "  out out : audio global stereo\n";
-  if (n.kind == Kind::Midi && n.tuning.id.valid()) {
-    // The tuning node: param defaults are fixed (the values arrive as params), so the text only depends on the
-    // tuning's kind and its table index.
-    const bool edo = n.tuning.def->edo() != nullptr;
-    s += "  param tref = 261.626 [1..20000]\n  param tper = 1200 [1..12000]\n";
-    if (!edo) s += "  param tgen = 700 [-12000..12000]\n  param tst = 0 [-1199..1200]\n";
-    s += std::string("  tun = tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, ") +
-         (edo ? "0, tper, 0, tref" : "tgen, tper, tst, tref") + ", table: " + std::to_string(n.tuning.table) + ")\n";
-    s += "  tunv = tune_voices(tun.hz, tun.cents)\n";
+  if (n.kind == Kind::Midi && !n.tunings.empty()) {
+    // The tuning nodes (T2.6-fix1; one per tuning signal, chained, each taking the voices that select it: T2.6-fix3):
+    // param defaults are fixed (the values arrive as params), so the text only depends on the tunings' kinds and
+    // table indices.
+    std::string hz = "voice.hz", cents = "voice.cents";
+    for (size_t k = 0; k < n.tunings.size(); ++k) {
+      const TuningNode& t = n.tunings[k];
+      const std::string i = std::to_string(k + 1);
+      const bool edo = t.def->edo() != nullptr;
+      s += "  param tref" + i + " = 261.626 [1..20000]\n  param tper" + i + " = 1200 [1..12000]\n";
+      if (!edo) s += "  param tgen" + i + " = 700 [-12000..12000]\n  param tst" + i + " = 0 [-1199..1200]\n";
+      s += "  tun" + i + " = tuning_hz(voice.degree, voice.equave, " + hz + ", " + cents + ", " +
+           (edo ? "0, tper" + i + ", 0, tref" + i : "tgen" + i + ", tper" + i + ", tst" + i + ", tref" + i) +
+           ", table: " + std::to_string(t.table) + ", select: voice.tuning, node: " + i + ")\n";
+      hz = "tun" + i + ".hz";
+      cents = "tun" + i + ".cents";
+    }
+    s += "  tunv = tune_voices(" + hz + ", " + cents + ")\n";
   }
   if (n.kind == Kind::Midi) {
     s += "  out done : bool voice mono\n";
@@ -160,12 +169,11 @@ std::vector<Node> collect(const Project& p, const TableOf* tableOf) {
           sendLevel(*t, r, &si.preFader);
           n.sends.push_back(si);
         }
-        if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth) {
-          if (const TuningId id = trackTuningSignal(p, here); id.valid()) {
+        if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth)
+          for (const TuningId id : trackTuningSignals(p, here)) {
             const TuningSlot* slot = findTuning(p, id);
-            n.tuning = TuningNode{id, &slot->def, (*tableOf)(id, slot->def)};
+            n.tunings.push_back(TuningNode{id, &slot->def, (*tableOf)(id, slot->def)});
           }
-        }
         nodes.push_back(std::move(n));
         if (t->kind == TrackKind::Group) (*this)(t->children, t.get(), here);
       }
@@ -192,12 +200,14 @@ void addParams(const Node& n, uint32_t index, const AudibilityMap& aud, std::vec
   if (!n.sends.empty()) add("sendGate", a == nullptr || a->sends ? 1.0f : 0.0f, std::nullopt);
   for (const SendInfo& si : n.sends)
     add("send" + std::to_string(si.ret.value), sendLevel(t, si.ret, nullptr), ParamRef::track(ParamKind::TrackSend, t.id, si.ret));
-  if (n.tuning.id.valid()) {  // the tuning node's params: one key per tuning, shared by every track following it
-    const TuningDef& d = *n.tuning.def;
-    auto tuningParam = [&](const char* name, ParamKind k, double v) {
-      const ParamRange r = paramRange(k);
-      const ParamRef ref = ParamRef::tuning(k, n.tuning.id);
-      out.push_back(LoweredParam{paramKey(ref), index, name, static_cast<float>(std::clamp(v, r.min, r.max)), ref});
+  for (size_t k = 0; k < n.tunings.size(); ++k) {  // tuning node params: one key per tuning, shared by its followers
+    const TuningNode& node = n.tunings[k];
+    const TuningDef& d = *node.def;
+    const std::string i = std::to_string(k + 1);
+    auto tuningParam = [&](const char* name, ParamKind kind, double v) {
+      const ParamRange r = paramRange(kind);
+      const ParamRef ref = ParamRef::tuning(kind, node.id);
+      out.push_back(LoweredParam{paramKey(ref), index, name + i, static_cast<float>(std::clamp(v, r.min, r.max)), ref});
     };
     tuningParam("tref", ParamKind::TuningReference, d.referenceHz);
     if (const tuning::Edo* e = d.edo()) {
@@ -231,6 +241,27 @@ std::string paramKey(const ParamRef& ref) {
 TuningId trackTuningSignal(const Project& p, const TrackPath& path) noexcept {
   const EffectiveTuning e = effectiveTuningRef(p, path);
   return e.main.valid() && e.def != nullptr && hasTuningSignal(*e.def) ? e.main : TuningId{};
+}
+
+std::vector<TuningId> trackTuningSignals(const Project& p, const TrackPath& path) {
+  std::vector<TuningId> out;
+  if (const TuningId t = trackTuningSignal(p, path); t.valid()) out.push_back(t);
+  std::vector<TuningId> overrides;
+  for (const ClipSlot& c : trackAt(p, path).clips) {
+    if (c.clip->tuning.mode != TuningMode::Main) continue;
+    const EffectiveTuning e = effectiveTuningRef(p, path, c.clip.get());
+    if (e.main.valid() && e.def != nullptr && hasTuningSignal(*e.def)) overrides.push_back(e.main);
+  }
+  std::sort(overrides.begin(), overrides.end(), [](TuningId a, TuningId b) { return a.value < b.value; });
+  for (const TuningId t : overrides)
+    if (std::find(out.begin(), out.end(), t) == out.end()) out.push_back(t);
+  return out;
+}
+
+uint32_t tuningNodeIndex(std::span<const TuningId> signals, TuningId t) noexcept {
+  for (size_t i = 0; i < signals.size(); ++i)
+    if (signals[i] == t) return static_cast<uint32_t>(i + 1);
+  return 0;
 }
 
 Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const LoweredProject* previous) {

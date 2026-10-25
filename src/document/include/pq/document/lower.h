@@ -23,20 +23,26 @@
 //   return (Ableton's implicit sends): a send level is a param, so turning a send up never recompiles either.
 //   Deactivated tracks (Track::active = false, `0`: structural, Q15) and their members are left out of the graph.
 //   Mute / solo: computeAudibility (audibility.h) → the `gate` (output) and `sendGate` params.
-//   Tuning signal (T2.6-fix1, SPEC §3.3; QUESTIONS Q100): a MIDI track whose track-level effective tuning is a main
-//                 tuning with a linear form (trackTuningSignal: EDO, MOS without MODMOS / generator sequence) gets
-//                 `tun = tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, <gen>, tper, <st>, tref,
-//                 table: k)` + `tunv = tune_voices(tun.hz, tun.cents)` before the instrument, so its Degree notes
-//                 follow the tuning's params (MOS: tgen, tper, tst, tref; EDO: tper = the equave, tref; the EDO's
-//                 generator / stretch inputs are literals) and their automation lanes. k = the table's index in
-//                 Resources::tunings, from LowerOptions::tuningTableOf (the owner of the tables is the app, so the
-//                 text only changes when the table does: a new table shape is a structural change anyway). Tracks of
-//                 other tunings, and every note not following the track's tuning signal, keep their static Hz.
+//   Tuning signal (T2.6-fix1, SPEC §3.3; QUESTIONS Q100, Q105): a MIDI track gets one tuning node per main tuning
+//                 with a linear form its clips follow (trackTuningSignals: the track-level tuning, then clip
+//                 overrides to other main tunings, T2.6-fix3), chained before the instrument:
+//                   tun1 = tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, <gen1>, tper1, <st1>, tref1,
+//                                    table: k1, select: voice.tuning, node: 1)
+//                   tun2 = tuning_hz(voice.degree, voice.equave, tun1.hz, tun1.cents, …, node: 2) …
+//                   tunv = tune_voices(tunN.hz, tunN.cents)
+//                 Node i takes the voices whose voice.tuning is i (a note's PitchSource::node) and passes the others
+//                 through, so every note follows its own clip's tuning (MOS params: tgen, tper, tst, tref; EDO:
+//                 tper = the equave, tref; the EDO's generator / stretch inputs are literals) and their automation
+//                 lanes. k = the table's index in Resources::tunings, from LowerOptions::tuningTableOf (the owner of
+//                 the tables is the app, so the text only changes when a table does). Degree notes, Ratio notes
+//                 anchored (through notes) to them, and reference-relative Ratio / Cents notes follow the node
+//                 (doc::PitchFollow); private, Scala and MODMOS tunings keep their static Hz.
 //
 // ---- Params ----------------------------------------------------------------------------------------------------
 // One LoweredParam per (track, patch param) with a stable string key ("<track id>:volume", ":pan", ":gate",
 // ":sendGate", ":send:<return id>"; a tuning node's params "tuning:<tuning id>:reference", ":equave", ":generator",
-// ":period", ":stretch", one entry per track that follows the tuning, all with the same key) that the app maps to a
+// ":period", ":stretch" (patch names tref<i>, tper<i>, tgen<i>, tst<i> for node i), one entry per track that follows
+// the tuning, all with the same key) that the app maps to a
 // project param slot that never moves, and the current value; `ref` is the document ParamRef where there is one
 // (automation lanes target it; gates are derived).
 //
@@ -107,10 +113,13 @@ std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes =
 // The key of a document param, or "" for params that are not lowered (mute / solo: derived into the gates).
 std::string paramKey(const ParamRef& ref);
 
-// The main tuning whose signal a MIDI track's tuning node follows (T2.6-fix1): its track-level effective tuning
-// (effectiveTuningRef without a clip) when that is a main tuning with a linear form (hasTuningSignal); invalid
-// otherwise (no node). Only Degree notes of that tuning follow the node (doc::NotePitch::signal == this id); a clip
-// overriding to another tuning plays static pitches.
+// The main tuning of a MIDI track's track-level effective tuning (effectiveTuningRef without a clip) when that is a
+// main tuning with a linear form (hasTuningSignal); invalid otherwise.
 TuningId trackTuningSignal(const Project& project, const TrackPath& path) noexcept;
+// T2.6-fix3 (M3 review H4a): the tuning signals a MIDI track's clips follow, one tuning node each, in node order:
+// the track-level one (trackTuningSignal) first, then the main tunings with a signal that clips override to, by
+// tuning id. A note following signal t is voice.tuning = tuningNodeIndex(signals, t) (1-based; 0: none).
+std::vector<TuningId> trackTuningSignals(const Project& project, const TrackPath& path);
+uint32_t tuningNodeIndex(std::span<const TuningId> signals, TuningId tuning) noexcept;
 
 }  // namespace pq::doc

@@ -22,6 +22,7 @@
 #include "pq/engine/automation.h"
 #include "pq/engine/offline_render.h"
 #include "pq/tuning/mos_regions.h"
+#include "pq/tuning/scala.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -198,4 +199,217 @@ TEST_CASE("mode transfer (M7): a live generator edit across 720 cents carries th
   for (size_t i = at(0.2); i < at(1.4); ++i) worst = std::max(worst, std::fabs(a[i] / r[i] - 1.0));
   MESSAGE("live edit vs reload: worst relative difference " << worst);
   CHECK(worst < 1e-6);
+}
+
+// ---- T2.6-fix3 -------------------------------------------------------------------------------------------------
+
+namespace {
+
+// The probe output of a one-note project against a model pitch per sample (both up to one constant: the track's
+// settled gains), over [from, to) seconds. Returns the worst relative error.
+template <class Model>
+double trackError(const std::vector<float>& out, Model&& model, double from, double to, double calibrate) {
+  const double C = out[at(calibrate)] / model(static_cast<int64_t>(at(calibrate)));
+  double worst = 0.0;
+  for (size_t i = at(from); i < at(to); ++i)
+    worst = std::max(worst, std::fabs(out[i] / C / model(static_cast<int64_t>(i)) - 1.0));
+  return worst;
+}
+
+// 5L2s (tuning 4 of the review's projects) at the lane's generator for sample n: degree `degree`'s Hz.
+double mosHz(const Project& p, const std::vector<engine::AutomationPoint>& pts, int64_t n, int32_t degree) {
+  const tuning::MosParams& def = *tuningOf(p, 4).def.mos();
+  const auto m = tuning_ref::mosAt(def, static_cast<double>(laneValueAt(pts, n)));
+  REQUIRE(m);
+  return tuningOf(p, 4).def.referenceHz * std::exp2(m->centsOf(degree, 0) / 1200.0);
+}
+
+}  // namespace
+
+TEST_CASE("note-anchored Ratio (H4b): a 3/2 on a Degree note keeps 702 cents to its anchor while the generator moves") {
+  // proj_anchor_ratio: the 5L2s generator automated 700 → 740 cents over 2 s; a 3/2 anchored to a (disabled) Degree
+  // note of degree 1. The review measured the 3/2 frozen at 440.498 Hz while its anchor glided: 897 cents apart at
+  // 1.05 s. It now follows the anchor's signal: anchor pitch × 3/2 on every sample, the crossing included.
+  const Snapshot snap = load("m3_review/proj_anchor_ratio");
+  auto link = makeLink(snap);
+  const std::vector<float> out = render(*link, 2.5);
+  const auto pts = lanePoints(*snap);
+  auto model = [&](int64_t n) { return mosHz(*snap, pts, n, 1) * 1.5; };
+  const double worst = trackError(out, model, 0.1, 2.4, 0.5);
+  // The interval to the anchor, measured: the output over the anchor's model (calibrated at 0.5 s, where both are
+  // known), in cents.
+  const double C = out[at(0.5)] / model(static_cast<int64_t>(at(0.5)));
+  double lo = 1e9, hi = -1e9;
+  for (size_t i = at(0.1); i < at(2.4); ++i) {
+    const double cents = 1200.0 * std::log2(out[i] / C / mosHz(*snap, pts, static_cast<int64_t>(i), 1));
+    lo = std::min(lo, cents);
+    hi = std::max(hi, cents);
+  }
+  MESSAGE("3/2 over its anchor: " << lo << " … " << hi << " cents; worst relative error vs anchor × 3/2 " << worst);
+  CHECK(worst < 2e-6);
+  CHECK(lo > 701.955 - 0.01);
+  CHECK(hi < 701.955 + 0.01);
+}
+
+TEST_CASE("clip override (H4a): a clip in another main tuning follows that tuning's automation") {
+  // proj_clip_override: the track follows 12-EDO, its clip overrides to 5L2s, whose generator is automated 700 →
+  // 740 cents. The review measured the clip's note frozen at 293.665 Hz. The track patch now has a tuning node per
+  // signal its clips follow (12-EDO: node 1, 5L2s: node 2) and the note selects node 2 (voice.tuning).
+  const Snapshot snap = load("m3_review/proj_clip_override");
+  auto link = makeLink(snap);
+  const std::vector<float> out = render(*link, 2.5);
+  const auto pts = lanePoints(*snap);
+  const double worst = trackError(out, [&](int64_t n) { return mosHz(*snap, pts, n, 1); }, 0.1, 2.4, 0.5);
+  MESSAGE("clip override vs 5L2s at the lane's generator: worst relative error " << worst);
+  CHECK(worst < 2e-6);
+  const auto notes = link->engine().timeline().sequence()->notes();
+  REQUIRE(notes.size() == 1);
+  CHECK(notes[0].pitch.node == 2);
+  CHECK(notes[0].pitch.tuning == 4);
+}
+
+TEST_CASE("reference automation (H4c): a Cents note follows the reference like the Degree notes") {
+  // proj_ref_auto_cents: the reference of 5L2s automated 261.626 → 300 Hz over 2 s, one Cents note (+200 cents).
+  // The review measured it frozen at 293.665 Hz (while a static reference edit did move it: Q1 vs Q100.1). It now
+  // scales with reference(t) / reference₀; proj_ref_auto_degree (a Degree note) agrees with the same rule.
+  for (const char* name : {"m3_review/proj_ref_auto_cents", "m3_review/proj_ref_auto_degree"}) {
+    const std::string project = name;
+    CAPTURE(project);
+    const Snapshot snap = load(name);
+    auto link = makeLink(snap);
+    const std::vector<float> out = render(*link, 2.5);
+    const auto pts = lanePoints(*snap);
+    const tuning::Mos m = tuning::Mos::make(*tuningOf(*snap, 4).def.mos()).value();
+    const bool cents = std::string(name).ends_with("cents");
+    auto model = [&](int64_t n) {
+      return static_cast<double>(laneValueAt(pts, n)) * std::exp2((cents ? 200.0 : m.centsOf(1, 0)) / 1200.0);
+    };
+    const double worst = trackError(out, model, 0.1, 2.4, 0.5);
+    MESSAGE("vs reference(t) · the note's ratio to it: worst relative error " << worst);
+    CHECK(worst < 2e-6);
+    CHECK(out[at(1.9)] / out[at(0.1)] > 1.1);  // it moved
+  }
+}
+
+namespace {
+
+// A project with one MIDI track in `def` (a main tuning) holding a chord of reference-anchored Ratio notes, a Degree
+// note and a Ratio anchored to it, all from 0 for 4 beats.
+struct HeldChord {
+  DocumentStore store;
+  TrackId track;
+  TuningId tuning;
+  explicit HeldChord(const TuningDef& def) {
+    IdSource& ids = store.ids();
+    track = ids.track();
+    tuning = ids.tuning();
+    Batch b{"held chord", {}};
+    b.commands.push_back(AddTuning{TuningSlot{tuning, "T", Colour{0x4466AA}, def}});
+    b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(track, TrackKind::Midi, "Chord")), {}, kAppend});
+    b.commands.push_back(SetTrackTuning{track, TuningAssignment::mainTuning(tuning)});
+    NoteClip c;
+    c.id = ids.clip();
+    c.start = 0;
+    c.length = 8 * kPpq;
+    std::vector<Note> notes;
+    auto add = [&](tuning::PitchId pitch) {
+      Note n;
+      n.id = ids.note();
+      n.start = 0;
+      n.length = 4 * kPpq;
+      n.pitch = pitch;
+      notes.push_back(n);
+      return n.id;
+    };
+    for (const auto& r : {tuning::Rational{1}, tuning::Rational{5, 4}, tuning::Rational{3, 2}, tuning::Rational{7, 4}})
+      add(tuning::PitchId::fromRatio(r));
+    const NoteId root = add(tuning::PitchId::fromDegree(2, 0));
+    add(tuning::PitchId::fromRatio(tuning::Rational{9, 8}, tuning::AnchorKind::Note, root.value));
+    c.notes = NoteSeq::fromNotes(std::move(notes)).value();
+    b.commands.push_back(AddClip{track, std::make_shared<const NoteClip>(std::move(c))});
+    REQUIRE(store.dispatch(b).ok());
+  }
+};
+
+// Plays the link block by block, dragging the tuning's reference in a gesture from 0.3 s (one SetTuningParam per
+// block, as a knob drag does), and returns the timeline's note-offs before the notes end and its retunes.
+struct DragResult {
+  uint64_t noteOffs = 0, stopped = 0, retuned = 0, lowered = 0, compiles = 0;
+  std::vector<float> out;
+};
+DragResult dragReference(HeldChord& h, ProjectLink& link, double toHz) {
+  [[maybe_unused]] const ListenerId sub = h.store.subscribe([&](const StoreEvent& e) { link.onDocumentChange(e); });
+  link.play(0);
+  constexpr uint32_t kBlock = 64;
+  std::vector<float> l(kBlock), r(kBlock);
+  DragResult res;
+  const app::LinkStats s0 = link.stats();
+  engine::TimelineStats t0{};
+  const double from = findTuning(*h.store.current(), h.tuning)->def.referenceHz;
+  for (int64_t time = 0, b = 0; time < static_cast<int64_t>(at(1.5)); time += kBlock, ++b) {
+    if (time == static_cast<int64_t>(at(0.3)) / kBlock * kBlock) {
+      REQUIRE(h.store.beginGesture("drag the reference").ok());
+      t0 = link.engine().timeline().stats();
+    }
+    const int64_t d0 = static_cast<int64_t>(at(0.3)) / kBlock, d1 = static_cast<int64_t>(at(1.0)) / kBlock;
+    if (b >= d0 && b <= d1) {
+      const double u = static_cast<double>(b - d0) / static_cast<double>(d1 - d0);
+      REQUIRE(h.store.dispatch(SetTuningParam{h.tuning, ParamKind::TuningReference, from + (toHz - from) * u}).ok());
+      link.flush();
+      if (b == d1) REQUIRE(h.store.commitGesture().ok());
+    }
+    float* ch[2] = {l.data(), r.data()};
+    link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+    res.out.insert(res.out.end(), l.begin(), l.end());
+  }
+  const engine::TimelineStats t1 = link.engine().timeline().stats();
+  res.noteOffs = t1.noteOffs - t0.noteOffs;
+  res.stopped = t1.stoppedOnSwap - t0.stoppedOnSwap;
+  res.retuned = t1.retunedOnSwap - t0.retunedOnSwap;
+  res.lowered = link.stats().trackLowerings - s0.trackLowerings;
+  res.compiles = link.stats().compiles - s0.compiles;
+  return res;
+}
+
+}  // namespace
+
+TEST_CASE("held notes (H5): dragging the reference under a held Ratio chord emits no note-off, and the chord follows") {
+  // A 5L2s main tuning (a signal): every note follows the node (the reference-anchored ratios scale with the
+  // reference, the Degree note and its 9/8 move with it too), so the drag changes no sequence: nothing is re-lowered
+  // (the per-track description cache is keyed by the tables in use, not the tuning list), no note-off, no compile.
+  TuningDef mos;
+  tuning::MosParams mp;
+  mp.generator = 700.0;
+  mos.system = mp;
+  HeldChord h(mos);
+  auto link = makeLink(h.store.current());
+  const DragResult r = dragReference(h, *link, 300.0);
+  MESSAGE("signal tuning: " << r.noteOffs << " note-offs, " << r.stopped << " stopped, " << r.retuned << " retuned, "
+                            << r.lowered << " track lowerings, " << r.compiles << " compiles during the drag");
+  CHECK(r.noteOffs == 0);
+  CHECK(r.stopped == 0);
+  CHECK(r.lowered == 0);
+  CHECK(r.compiles == 0);
+  // The chord moved by the drag's ratio (the probe sums the six voices: every voice scales by 300 / 261.626).
+  CHECK(r.out[at(1.2)] / r.out[at(0.2)] == doctest::Approx(300.0 / tuning::kDefaultReferenceHz).epsilon(1e-5));
+}
+
+TEST_CASE("held notes (H5): notes that keep static pitches are retuned by Pitch events when a drag re-resolves them") {
+  // A Scala tuning has no signal: its notes resolve statically, so the reference drag re-lowers the track and swaps
+  // the sequence with new Hz. The held notes are retuned at the swap (a Pitch event with their new identity), never
+  // cut: no note-off before the notes end, and the chord ends at the dragged reference.
+  auto scl = tuning::parseScl("! just.scl\njust\n3\n!\n5/4\n3/2\n2/1\n");
+  REQUIRE(scl.ok());
+  auto def = makeScaleDef(scl.value(), std::nullopt);
+  REQUIRE(def.ok());
+  HeldChord h(def.value());
+  auto link = makeLink(h.store.current());
+  const DragResult r = dragReference(h, *link, 300.0);
+  MESSAGE("static tuning: " << r.noteOffs << " note-offs, " << r.stopped << " stopped, " << r.retuned << " retuned, "
+                            << r.lowered << " track lowerings during the drag");
+  CHECK(r.noteOffs == 0);
+  CHECK(r.stopped == 0);
+  CHECK(r.retuned > 6);  // six voices, several drag steps
+  CHECK(r.lowered > 0);
+  CHECK(r.out[at(1.2)] / r.out[at(0.2)] == doctest::Approx(300.0 / tuning::kDefaultReferenceHz).epsilon(1e-5));
 }

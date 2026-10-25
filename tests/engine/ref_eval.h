@@ -469,7 +469,8 @@ private:
     if (a.starts_with("voice.")) {
       static constexpr std::string_view kSig[pq::engine::kVoiceSignalCount] = {
           "voice.hz", "voice.cents", "voice.gate", "voice.trigger", "voice.velocity", "voice.release",
-          "voice.ratio", "voice.harmonic", "voice.unisonCount", "voice.index", "voice.degree", "voice.equave"};
+          "voice.ratio", "voice.harmonic", "voice.unisonCount", "voice.index", "voice.degree", "voice.equave",
+          "voice.tuning"};
       for (uint32_t k = 0; k < pq::engine::kVoiceSignalCount; ++k)
         if (a.s == kSig[k]) set(n, 0, 0, v, st_.voiceSignal ? st_.voiceSignal(k, v, t_) : 0.0);
       return;
