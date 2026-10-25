@@ -478,7 +478,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 
 
 **Bundle D — microtonal UI and the M4 gate**
-- [ ] **T3.19 Tunings and identities UI** (`views`). Depends on: T2.7, T3.14. 👁
+- [~] **T3.19 Tunings and identities UI** *(worker BO, branch task/T3.19-tunings-ui)* (`views`). Depends on: T2.7, T3.14. 👁
   - Menu bar (File/Edit/Create/View/Options/Help); Tunings panel (add, rename, colour, remove, reference Hz, equave,
     stretch, open in wheel); note identity menu (convert Degree/Ratio/Cents, lock fundamental); Ratio entry (draw
     snapping to harmonics of the virtual fundamental, type-in); ratio/harmonic note labels; row label modes and a
