@@ -28,7 +28,7 @@ All are pinned. Permissive licences only. Add new ones in `cmake/PqDependencies.
 
 | Name | Version | Location | Licence | Used by | Purpose |
 |---|---|---|---|---|---|
-| LLVM (prebuilt) | 23.1.3 `clang+llvm-23.1.3-x86_64-pc-windows-msvc` | `C:\dev\llvm-23.1.3` (`PQ_LLVM_DIR`) | Apache-2.0 WITH LLVM-exception | jit, tests | ORC JIT + AOT codegen |
+| LLVM (prebuilt) | 23.1.3 `clang+llvm-23.1.3-x86_64-pc-windows-msvc` | `C:\dev\llvm-23.1.3` (`PQ_LLVM_DIR`) | Apache-2.0 WITH LLVM-exception | jit, tests | ORC JIT (the AOT seed is JIT output stored at build time, T1b.4); components in `cmake/PqLLVM.cmake`; 36 MiB of pqdaw.exe (QUESTIONS Q?-T1b.6-a) |
 | Vulkan SDK (LunarG) | 1.4.357.0 | `$VULKAN_SDK` (`find_package(Vulkan 1.3 COMPONENTS glslc)`) | Apache-2.0 (headers, loader), glslc Apache-2.0 | ui | Vulkan headers + `vulkan-1` loader import lib. `glslc` compiles the UI shaders to SPIR-V at build time (embedded, no runtime files). Validation layer optional (`PQ_VK_VALIDATION=1`) |
 
 **Build tools** (optional, fetched by a script into `%LOCALAPPDATA%\pqdaw\tools`, never linked; builds work without them):

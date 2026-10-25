@@ -24,7 +24,7 @@ find_package(LLVM 23.1 REQUIRED CONFIG PATHS "${PQ_LLVM_DIR}/lib/cmake/llvm" NO_
 message(STATUS "pqdaw: LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 
 llvm_map_components_to_libnames(PQ_LLVM_LIBS
-  core support orcjit native passes irreader analysis target transformutils)
+  core support orcjit native passes analysis target transformutils)
 
 add_library(pq_llvm INTERFACE)
 target_include_directories(pq_llvm SYSTEM INTERFACE ${LLVM_INCLUDE_DIRS})
