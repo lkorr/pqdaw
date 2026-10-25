@@ -8,7 +8,12 @@
 //   zdf_tanh       nonlinear ZDF one-pole: per-sample solve (6 Newton iterations; tangents since T1b.1-fix1)
 //   chain32_fast   chain32 with fast_ transcendentals (everything inline)
 // T1b.1-fix1: the same at the default IR level with contraction opted in (`+contract`) and at machine-code levels
-// 1–3 (`cgN`). Compile time: 100- and 1000-step mixed chains (element-wise, z1, a one-pole loop every 10 steps) at
+// 1–3 (`cgN`).
+// T1b.2 (`voice-code`): voice patches at 8 and 64 voices with every jit::VoiceCode — the scalar-lane baseline
+// ("scalar JIT": one voice lane per call, scalar code), groups (<8 x float>, T1b.1), pairs on 256-bit halves and on
+// 512-bit registers — plus the interpreter; speed-ups against the scalar baseline. Patches: osc_filter (phasor saw
+// + sine sub into a TPT SVF low-pass), fm_voice, and the M1 review's proto-Operator (4 FM operators, 4 ADSRs, SVF,
+// LFO; docs/reviews/M1/probes/proto_operator.pqp) as the SPEC §13 calibration row. Compile time: 100- and 1000-step mixed chains (element-wise, z1, a one-pole loop every 10 steps) at
 // O1/O2/O3, and the 100-step chain and the M1 review's 1200-input mux at every machine-code level.
 #include <cmath>
 #include <cstdio>
@@ -121,6 +126,54 @@ bench::Stats runImage(e::ProgramImage& img, uint32_t voices) {
   return s;
 }
 
+const char* voiceCodeName(jit::VoiceCode vc) {
+  switch (vc) {
+    case jit::VoiceCode::ScalarLanes: return "scalar-lanes";
+    case jit::VoiceCode::Groups: return "groups";
+    case jit::VoiceCode::Pairs256: return "pairs256";
+    case jit::VoiceCode::Pairs512: return "pairs512";
+    default: return "auto";
+  }
+}
+
+// T1b.2: one voice patch with every voice code (and the interpreter), at `voices` voices.
+void runVoiceCodes(const char* name, const std::string& text, uint32_t voices) {
+  const std::string full = std::string("voice-code/") + name + " x" + std::to_string(voices);
+  if (!gFilter.empty() && full.find(gFilter) == std::string::npos) return;
+  const uint32_t groups = (voices + 7) / 8;
+  const g::Schedule sched = scheduleOf(text);
+  e::InterpretOptions eo;
+  eo.maxBlockFrames = kBlock;
+  eo.maxVoiceGroups = groups;
+  auto interp = e::buildInterpreted(sched, eo);
+  if (!interp) std::exit(5);
+  const double per = static_cast<double>(voices);
+  char label[160];
+  std::snprintf(label, sizeof label, "%s interp (%zu ops)", full.c_str(), sched.ops.size());
+  const bench::Stats si = runImage(**interp, voices);
+  bench::report(label, {si.medianNs / per, si.minNs / per}, "ns/voice-sample");
+  double scalarNs = 0;
+  for (jit::VoiceCode vc : {jit::VoiceCode::ScalarLanes, jit::VoiceCode::Groups, jit::VoiceCode::Pairs256, jit::VoiceCode::Pairs512}) {
+    jit::CompileOptions jo;
+    jo.maxBlockFrames = kBlock;
+    jo.maxVoiceGroups = groups;
+    jo.voiceCode = vc;
+    jit::CompileStats cs;
+    auto img = compiler().compile(sched, jo, &cs);
+    if (!img) {
+      std::printf("      %s: %s\n", voiceCodeName(vc), img.error().message.c_str());
+      continue;
+    }
+    const bench::Stats sj = runImage(**img, voices);
+    if (vc == jit::VoiceCode::ScalarLanes) scalarNs = sj.medianNs;
+    std::snprintf(label, sizeof label, "%s %s", full.c_str(), voiceCodeName(vc));
+    bench::report(label, {sj.medianNs / per, sj.minNs / per}, "ns/voice-sample");
+    std::printf("      %.1fx the scalar lanes, %.1fx the interpreter; compile %.1f ms, %u paired stages, %llu B code\n",
+                scalarNs > 0 ? scalarNs / sj.medianNs : 0.0, si.medianNs / sj.medianNs, cs.totalMs, cs.pairedStages,
+                static_cast<unsigned long long>(cs.objectBytes));
+  }
+}
+
 void runBench(const char* name, const std::string& text, uint32_t voices, uint32_t optLevel = 2, bool contract = false,
               uint32_t codeGenLevel = jit::CompilerConfig::kDefaultCodeGenLevel) {
   if (!gFilter.empty() && std::string(name).find(gFilter) == std::string::npos) return;
@@ -207,6 +260,81 @@ const char* kFmOsc = R"(patch FmOsc {
   car = sine(phasor(voice.hz + mod * index * voice.hz))
   out = car * gate_to_real(voice.gate)
 })";
+
+// T1b.2: an oscillator + filter voice: a phasor saw and a sine (block region) into a TPT state-variable low-pass
+// (a per-sample feedback loop through two z1s) with param-rate coefficients.
+const char* kOscFilter = R"(patch OscFilter {
+  param cutoff = 1500Hz [20Hz..20kHz]
+  param res = 0.4 [0..1]
+  out   out : audio voice mono
+  saw = phasor(voice.hz) * 2 - 1
+  sub = sine(phasor(voice.hz * 0.5))
+  x   = saw + 0.5 * sub
+  g   = tan(3.141592653589793 * cutoff / sr)
+  k   = 2 - 2 * res
+  a1  = 1 / (1 + g * (g + k))
+  a2  = g * a1
+  a3  = g * a2
+  v3  = x - ic2
+  v1  = a1 * ic1 + a2 * v3
+  v2  = ic2 + a2 * ic1 + a3 * v3
+  ic1 = z1(2 * v1 - ic1)
+  ic2 = z1(2 * v2 - ic2)
+  out = v2 * gate_to_real(voice.gate)
+})";
+
+// docs/reviews/M1/probes/proto_operator.pqp (the M1 review's SPEC §13 calibration probe), verbatim.
+const char* kProtoOperator = R"(patch ProtoOperator {
+  param r2 = 2.0 [0.25..16]
+  param r3 = 3.0 [0.25..16]
+  param r4 = 0.5 [0.25..16]
+  param i2 = 1.0 [0..20]
+  param i3 = 0.7 [0..20]
+  param i4 = 0.4 [0..20]
+  param cutoff = 2000Hz [20Hz..20kHz]
+  param res = 0.3 [0..1]
+  out   out : audio voice mono
+
+  e1 = adsr(voice.gate, a: 2ms, d: 300ms, s: 0.6, r: 200ms)
+  e2 = adsr(voice.gate, a: 1ms, d: 150ms, s: 0.3, r: 150ms)
+  e3 = adsr(voice.gate, a: 5ms, d: 500ms, s: 0.5, r: 300ms)
+  e4 = adsr(voice.gate, a: 1ms, d: 80ms,  s: 0.0, r: 100ms)
+
+  o4 = sine(phasor(voice.hz * r4)) * e4 * i4
+  o3 = sine(phasor(voice.hz * r3 + o4 * voice.hz)) * e3 * i3
+  o2 = sine(phasor(voice.hz * r2 + o3 * voice.hz)) * e2 * i2
+  o1 = sine(phasor(voice.hz + o2 * voice.hz)) * e1
+
+  lfo = sine(phasor(0.5Hz))
+  g   = tan(3.141592653589793 * min(cutoff * (1 + 0.3 * lfo), 18000) / sr)
+  k   = 2 - 2 * res
+  a1  = 1 / (1 + g * (g + k))
+  a2  = g * a1
+  a3  = g * a2
+  v3  = o1 - ic2
+  v1  = a1 * ic1 + a2 * v3
+  v2  = ic2 + a2 * ic1 + a3 * v3
+  ic1 = z1(2 * v1 - ic1)
+  ic2 = z1(2 * v2 - ic2)
+  out = v2 * voice.velocity
+}
+
+patch adsr {
+  in    gate : bool audio voice mono
+  param a = 5ms   [0ms..10s]
+  param d = 200ms [1ms..10s]
+  param s = 0.7   [0..1]
+  param r = 300ms [1ms..30s]
+  out   out : audio voice mono
+
+  attacking = srff(rise(gate), level >= 0.999 || !gate)
+  target    = attacking ? 1.0 : gate ? s : 0.0
+  time      = attacking ? a : gate ? d : r
+  coef      = 1 - exp(-1 / max(time * sr, 1))
+  level     = z1(level + (target - level) * coef)
+  out = level
+}
+)";
 
 const char* kComb = R"(patch Comb {
   in x : audio
@@ -311,6 +439,9 @@ int main(int argc, char** argv) {
   if (argc > 1 && !compileOnly) gFilter = argv[1];
   std::printf("T1b.1 JIT vs interpreter, block %u frames, 48 kHz; JIT target %s\n", kBlock, compiler().hostCpu().c_str());
   if (!compileOnly) {
+    // Per-block fixed cost of an image (host begin/run/output copies + one stage call): a pass-through patch.
+    runBench("empty (y = x)", "patch E {\n  in x : audio\n  out y : audio\n  y = x\n}\n", 0, 1);
+    runBench("empty_voice x8", "patch E {\n  out y : audio voice\n  y = gate_to_real(voice.gate)\n}\n", 8, 1);
     for (uint32_t level : {0u, 1u, 2u, 3u}) {
       runBench("chain32", chain32(false), 0, level);
       runBench("chain32_fast", chain32(true), 0, level);
@@ -320,6 +451,12 @@ int main(int argc, char** argv) {
       runBench("comb_delay", kComb, 0, level);
       runBench("loop_z1", kLoopZ1, 0, level);
       runBench("zdf_tanh", kZdf, 0, level);
+    }
+    // T1b.2: the voice codes.
+    for (uint32_t voices : {8u, 64u}) {
+      runVoiceCodes("osc_filter", kOscFilter, voices);
+      runVoiceCodes("fm_voice", kFmVoice, voices);
+      runVoiceCodes("proto_operator", kProtoOperator, voices);
     }
     // T1b.1-fix1: opt-in contraction, and the machine-code levels, at the default IR level.
     for (const auto& [name, text, voices] : {std::tuple<const char*, std::string, uint32_t>{"chain32", chain32(false), 0},

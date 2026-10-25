@@ -34,8 +34,10 @@ using engine::host::isPatternOperand;  // shared with codegen
 using engine::host::lanesOfOperand;
 
 // The generated function of one stage. RT-safe (generated code: no allocation, locks, syscalls or exceptions).
-using StageFn = void (*)(float* buf, const float* aux, std::byte* gstate, std::byte* vstate, float* const* ext,
-                         const void* const* tab, uint32_t frames, uint32_t group) noexcept;
+// vstate1 / group1: a pair function's second group (null / 0 otherwise); lane: the scalar baseline's voice lane.
+using StageFn = void (*)(float* buf, const float* aux, std::byte* gstate, std::byte* vstate, std::byte* vstate1,
+                         float* const* ext, const void* const* tab, uint32_t frames, uint32_t group, uint32_t group1,
+                         uint32_t lane) noexcept;
 
 // Kernel calls with at most this many inputs and outputs keep their KernelArgs pointer arrays on the stage
 // function's stack; wider ones (a mux over many inputs) use HostLayout::callOff, so no frame needs stack probes.
@@ -51,7 +53,20 @@ struct HostLayout {
   uint32_t callOff = 0, callPtrs = 0;        // pointer arrays of wide kernel calls (callPtrs pointers; 0: none)
   uint32_t paramOff = 0, constOff = 0;
   std::vector<uint32_t> opInfo;              // per op: pointer-table slot of its resource / info record, or kNone
+  // Pairs (T1b.2, codegen.h): per stage, whether it gets a two-group function; per buffer, the float offset of the
+  // second group's copy of a pairable stage's own voice value (kNone: none); per op, the second group's record slot
+  // (reducers).
+  std::vector<uint8_t> pairable;
+  std::vector<uint32_t> altOff;
+  std::vector<uint32_t> opInfoB;
 };
+
+// Atoms whose voice ops codegen generates inline wherever they are (the "simple stateful" atoms, codegen.h).
+bool inlineStateful(dsp::Atom a) noexcept;
+
+// Whether buffer b is written in stage k by a voice-lane op (not a reducer's global accumulator) or as a solve
+// unknown: the stage's own voice values, which a pair function keeps per group (HostLayout::altOff).
+std::vector<uint8_t> stageLocalBuffers(const graph::Schedule& s, uint32_t stage);
 
 // Pointer table under construction: one slot per distinct pointer.
 class PtrTable {
@@ -88,6 +103,8 @@ public:
   engine::host::ImageHost host_;
   HostLayout layout_;
   std::vector<StageFn> fns_;                 // per Schedule::stages entry (set by the Compiler)
+  std::vector<StageFn> pairFns_;             // per stage: the two-group function, or null (T1b.2)
+  bool scalarLanes_ = false;                 // the scalar baseline: voice stages run once per lane
   std::vector<const void*> tab_;
   // Releases the machine code (set by the Compiler; runs in the destructor, off the audio thread).
   std::shared_ptr<void> codeOwner_;
@@ -97,6 +114,10 @@ public:
 // resources) with the JIT's scratch, checks that every kernel the generated code calls exists, and fills the layout
 // and pointer-table slots codegen needs. The stage functions are filled in by the Compiler. Not RT-safe.
 Result<std::unique_ptr<JitImage>> buildHost(const graph::Schedule& s, uint32_t maxBlockFrames, uint32_t maxVoiceGroups,
-                                            const engine::Resources* resources, PtrTable& tab);
+                                            const engine::Resources* resources, bool pairs, PtrTable& tab);
+
+// After the stage functions are in (T1b.2): tells the host which voice stages have a pair function (and where the
+// second group's outputs are). Not RT-safe.
+void finishPairs(JitImage& img, const graph::Schedule& s);
 
 }  // namespace pq::jit::detail

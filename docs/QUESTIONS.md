@@ -898,3 +898,45 @@ Agents: add questions here instead of guessing on anything important. Use this f
   6. **Arrow keys**: arrangement Left / Right = insert marker ± one grid cell (grid off: a sixteenth), keeping the selected tracks; Up / Down = select the track row above / below (scrolled into view). Piano roll Left / Right = move the selected notes by one grid cell (Live's note nudge) rather than an insert marker (the roll's paste position is not drawn).
   7. **Gutter** 6 px (`size.gutter`, the M3 review's figure; the screenshot measures 7–9 px between Live's panels).
 - Status: open
+
+## Q?-T1b.2-a · 2026-10-24 · T1b.2 · Voice-SIMD codegen: what T1b.1 already did, the "scalar JIT" baseline, pairs of groups, AVX-512
+- What T1b.1 already did: every voice op was <8 x float> across the 8 voices of a group (one frame per vector, the
+  scalar code path only for global per-sample loops), bools were 32-bit lane masks, so "8× AVX2 voice lanes" existed.
+  Not done: 16 lanes, stateful atoms in voice block regions (phasor / sine_hz were dsp kernel calls), and regions
+  ran one after the other (a per-sample feedback loop alone in its loop, latency-bound).
+- "Scalar JIT" (the acceptance baseline) did not exist, so T1b.2 defines it: `VoiceCode::ScalarLanes`, the same
+  generated code with one voice lane per call and scalar instructions (the conventional per-voice render loop, as a
+  JIT would produce it without voice SIMD). It refuses voice stages that need kernel or special-op calls (it cannot
+  run an 8-lane kernel lane by lane); the bench voices are fully inline. It is bit-identical to the interpreter too.
+- Choices (src/jit/src/codegen.h):
+  1. Simple stateful atoms are inline in voice block regions; consecutive voice regions that run frame by frame
+     (inline Block regions + per-sample loops) are fused into one loop over frames ("chains", up to 1024 cost units):
+     the oscillators fill the issue slots the feedback chain leaves idle.
+  2. Pairs: a voice stage without sends and without per-frame calls also gets a function for TWO occupied groups as
+     <16 x float>; Auto uses 512-bit registers where the host has AVX-512F (`prefer-vector-width` 512), else two
+     256-bit halves. A lone group runs the 8-lane function. Stage-local voice values get a second copy, inline
+     state is staged in 16-lane stack slots (registers after SROA; without that LICM kept every state value as two
+     halves joined/split on the feedback path), kernel calls and reducers run once per half (second-group reducer
+     records), exact transcendentals are one 8-wide SVML call per half (SVML's 512-bit functions need not round
+     like the 256-bit ones). Each reducer combines group a then b: bit-identical. Stages with sends are not paired
+     (a bus channel would add two groups' sends in a different order). Stages with per-frame calls are not paired
+     (each call spills every live vector; twice the values overflowed the 4 KiB frame: stack probes).
+  3. Every other function is held to 256-bit vectors (`min-legal-vector-width` 256): LLVM otherwise put the
+     phasor's <8 x double> on zmm, which turns off port 1's vector ALU for the whole loop; voice groups 12–15 %
+     faster (= AVX-512 off for those functions, within noise; AVX-512VL's 32 registers and k-masks kept).
+  4. Bool masks as predicates: a select or AND on a comparison's mask uses the comparison (a k-register on
+     AVX-512) instead of materialising the lane mask and testing its sign again. Same bits.
+- Measured (bench/RESULTS.md T1b.2 rows, ship, heavily loaded machine): osc+filter voice 6.4–6.7× the scalar lanes
+  at 8 voices, 11.2–11.6× at 64; fm_voice 7.2× / 12.0–12.3×; proto-Operator 7.4–7.5× / 13.3×, ≈ 1 % of a core
+  at 64 voices (§13 target < 10 %). Every mode is bit-identical to the interpreter on the corpus (tests/jit
+  voice-code cases, 19 voices = a pair + a lone group; the slow corpus test with Auto).
+- Cost: compile time of a paired voice stage roughly doubles (proto-Operator 9.5 → 29 ms). Options: A) both
+  functions (now); B) pair functions only, a lone group run with a spare scratch group (half the code; 8 voices pay
+  up to 2× in throughput-bound code); C) a first image with groups only, the pair image compiled afterwards by the
+  T1b.5 worker and swapped in (bit-identical images make that swap Instant; a ProjectLink change). Provisional: A.
+- Not done (from the T1b.3 worker's notes, 2026-10-24): exact transcendentals in voice block regions are still one
+  kernel call per block (an inline per-frame SVML call would spill the chain's registers; ≈ 10–15 % with an
+  audio-rate filter cutoff); the per-block fixed cost of an image rose with the shared image host (≈ +6 ns per
+  64-frame block, measured A/B, cause not traced); 8 voices are latency-bound on feedback chains (one group, nothing
+  to pair). pq_bench_stdlib (T1b.3) was not on main yet, so its rows were not re-measured here.
+- Status: open (A–C for the compile cost)

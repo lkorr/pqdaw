@@ -365,9 +365,9 @@ TEST_CASE("jit: every simple stateful atom inside a per-sample loop (inline per-
     jit::CompileStats st;
     REQUIRE(compiler().compile(c.sched, {}, &st).ok());
     const uint32_t voices = voicesFor(c);
-    // Nothing in the loops is a call; the voice patch calls its oscillator's phasor kernel (block region, outside the
-    // loop) and the voice_sum helper.
-    CHECK(st.calledOps == (voices ? 2u : 0u));
+    // Nothing in the loops is a call; the voice patch calls the voice_sum helper (its oscillator's phasor in the
+    // block region outside the loop is inline too since T1b.2).
+    CHECK(st.calledOps == (voices ? 1u : 0u));
     CorpusStats cs;
     for (int paramSet = 0; paramSet < 2; ++paramSet) checkPatch(c, voices, paramSet, {}, cs, false, kBlocks, std::size(kBlocks));
     jit::CompileOptions exact;
@@ -375,6 +375,91 @@ TEST_CASE("jit: every simple stateful atom inside a per-sample loop (inline per-
     checkPatch(c, voices, 0, exact, cs, true, kBlocks, std::size(kBlocks));
     MESSAGE(c.name << ": max error vs interpreter " << cs.maxVsInterp << ", vs reference " << cs.maxVsRef);
   }
+}
+
+// T1b.2: the ways of generating voice stages (one group per call; two groups per call on 256-bit halves or 512-bit
+// registers; the scalar-lane baseline) all compute the interpreter's bits. 19 voices = groups 0 and 1 as a pair,
+// group 2 (three voices) alone.
+static void voiceCodeCorpus(jit::VoiceCode vc, const uint32_t* blocks, size_t numBlocks, int paramSets) {
+  CorpusStats cs;
+  uint32_t patches = 0, paired = 0, scalarRefused = 0;
+  std::vector<std::string> skipped;
+  for (const fs::path& path : allPatchFiles())
+    for (const Compiled& c : compileFile(path, 48000.0, skipped)) {
+      if (voicesFor(c) == 0) continue;
+      jit::CompileOptions jo;
+      jo.voiceCode = vc;
+      jo.maxVoiceGroups = 3;
+      jit::CompileStats st;
+      auto img = compiler().compile(c.sched, jo, &st);
+      if (vc == jit::VoiceCode::ScalarLanes && !img) {  // a voice stage with kernel / special-op calls
+        CHECK(img.error().message.find("scalar-lane baseline") != std::string::npos);
+        ++scalarRefused;
+        continue;
+      }
+      if (!img) FAIL(c.file << ":" << c.name << ": " << img.error().message);
+      CHECK_FALSE(st.stackProbes);
+      paired += st.pairedStages > 0;
+      ++patches;
+      for (int ps = 0; ps < paramSets; ++ps) checkPatch(c, 19, ps, jo, cs, true, blocks, numBlocks);
+    }
+  MESSAGE("voice code " << static_cast<int>(vc) << ": " << patches << " voice patches (" << paired << " with pair functions, "
+                        << scalarRefused << " refused by the scalar baseline), " << cs.configs
+                        << " runs bit-identical to the interpreter");
+  CHECK(cs.maxVsInterp == 0.0);
+  CHECK(patches >= (vc == jit::VoiceCode::ScalarLanes ? 3u : 8u));
+  if (vc == jit::VoiceCode::Pairs256 || vc == jit::VoiceCode::Pairs512) CHECK(paired >= 5);
+  if (vc == jit::VoiceCode::Groups || vc == jit::VoiceCode::ScalarLanes) CHECK(paired == 0);
+}
+
+TEST_CASE("jit: voice code: groups, pairs (256-bit halves, 512-bit registers) and the scalar lanes are bit-identical to the interpreter") {
+  const uint32_t blocks[] = {37};
+  MESSAGE("host AVX-512F: " << (compiler().hostFeatures().find("+avx512f") != std::string::npos));
+  for (jit::VoiceCode vc : {jit::VoiceCode::Groups, jit::VoiceCode::Pairs256, jit::VoiceCode::Pairs512, jit::VoiceCode::ScalarLanes})
+    voiceCodeCorpus(vc, blocks, 1, 1);
+}
+
+TEST_CASE("jit: voice code, every block size and param set (19 voices)" * doctest::test_suite("slow")) {
+  for (jit::VoiceCode vc : {jit::VoiceCode::Groups, jit::VoiceCode::Pairs256, jit::VoiceCode::Pairs512, jit::VoiceCode::ScalarLanes})
+    voiceCodeCorpus(vc, kBlocks, std::size(kBlocks), 2);
+}
+
+TEST_CASE("jit: the scalar-lane baseline refuses a voice that calls kernels; a pair function exists only where it pays") {
+  // A voice delay line is a kernel call per block: the baseline cannot run it lane by lane.
+  const Compiled echo = compileText(
+      "patch E { out y : audio voice\n x = sine(phasor(voice.hz))\n y = x + delay(x, 3ms, 10ms) * 0.5 }");
+  jit::CompileOptions scalar;
+  scalar.voiceCode = jit::VoiceCode::ScalarLanes;
+  auto r = compiler().compile(echo.sched, scalar);
+  REQUIRE_FALSE(r.ok());
+  CHECK(r.error().message.find("delay") != std::string::npos);
+  // Oscillator + filter: every voice op inline, a chain (the oscillators fused into the filter's per-sample loop) and
+  // a pair function; with one voice group there is nothing to pair.
+  const Compiled osc = compileText(R"(patch OscFilter {
+  param cutoff = 1500Hz [20Hz..20kHz]
+  out   out : audio voice mono
+  x   = phasor(voice.hz) * 2 - 1
+  g   = tan(3.141592653589793 * cutoff / sr)
+  lp  = z1(lp + (x - lp) * (g / (1 + g)))
+  out = lp * gate_to_real(voice.gate)
+})");
+  jit::CompileStats st;
+  REQUIRE(compiler().compile(osc.sched, {}, &st).ok());
+  CHECK(st.calledOps == 0);
+  CHECK(st.pairedStages == 1);
+  jit::CompileOptions one;
+  one.maxVoiceGroups = 1;
+  REQUIRE(compiler().compile(osc.sched, one, &st).ok());
+  CHECK(st.pairedStages == 0);
+  REQUIRE(compiler().compile(osc.sched, scalar, &st).ok());
+  CHECK(st.pairedStages == 0);
+  CorpusStats cs;
+  for (jit::VoiceCode vc : {jit::VoiceCode::Auto, jit::VoiceCode::ScalarLanes}) {
+    jit::CompileOptions jo;
+    jo.voiceCode = vc;
+    for (uint32_t voices : {1u, 8u, 19u, 64u}) checkPatch(osc, voices, 0, jo, cs, true, kBlocks, std::size(kBlocks));
+  }
+  CHECK(cs.maxVsInterp == 0.0);
 }
 
 TEST_CASE("jit: VoiceEngine-driven FmVoice / echo / probe (note traffic, steals, voice moves) match the interpreter") {

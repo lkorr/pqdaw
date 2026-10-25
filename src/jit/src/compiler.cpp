@@ -21,6 +21,9 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Host.h>
 
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/Transforms/Utils/Cloning.h>
+#include <llvm/Support/FileSystem.h>
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
@@ -149,8 +152,14 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   const auto t0 = clock::now();
   CompileStats st;
   if (options.optLevel > 3) return Error{ErrorCode::InvalidArgument, "jit: optLevel must be 0..3", {}};
+  // Voice code (T1b.2): pairs where possible; 512-bit pairs only where the host has AVX-512F.
+  const bool avx512 = session_->features.find("+avx512f") != std::string::npos;
+  VoiceCode vc = options.voiceCode;
+  if (vc == VoiceCode::Auto) vc = avx512 ? VoiceCode::Pairs512 : VoiceCode::Pairs256;
+  if (vc == VoiceCode::Pairs512 && !avx512) vc = VoiceCode::Pairs256;
+  const bool pairs = vc == VoiceCode::Pairs256 || vc == VoiceCode::Pairs512;
   detail::PtrTable tab;
-  auto host = detail::buildHost(schedule, options.maxBlockFrames, options.maxVoiceGroups, options.resources, tab);
+  auto host = detail::buildHost(schedule, options.maxBlockFrames, options.maxVoiceGroups, options.resources, pairs, tab);
   if (!host) return std::move(host).error();
   std::unique_ptr<detail::JitImage> image = std::move(host.value());
   st.hostMs = msSince(t0);
@@ -169,6 +178,9 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   go.cpu = s.cpu;
   go.features = s.features;
   go.prefix = "pq_image" + std::to_string(id);
+  go.scalarLanes = vc == VoiceCode::ScalarLanes;
+  go.pairs = pairs;
+  go.pairsZmm = vc == VoiceCode::Pairs512;
   auto gen = detail::generate(schedule, image->layout_, tab, *mod, go);
   if (!gen) return std::move(gen).error();
   st.codegenMs = msSince(t1);
@@ -195,6 +207,18 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
     mpm.run(*mod, mam);
   }
   st.optimiseMs = msSince(t1);
+  // Developer aid (compiler.h): PQ_JIT_DUMP=<path prefix> writes each image's optimised IR and its assembly.
+  if (const char* dump = std::getenv("PQ_JIT_DUMP"); dump != nullptr && *dump != '\0') {
+    std::error_code ec;
+    llvm::raw_fd_ostream os(std::string(dump) + std::to_string(id) + ".ll", ec);
+    if (!ec) mod->print(os, nullptr);
+    llvm::raw_fd_ostream as(std::string(dump) + std::to_string(id) + ".s", ec);
+    if (!ec) {
+      llvm::legacy::PassManager pm;
+      auto clone = llvm::CloneModule(*mod);
+      if (!s.tm->addPassesToEmitFile(pm, as, nullptr, llvm::CodeGenFileType::AssemblyFile)) pm.run(*clone);
+    }
+  }
   for (const llvm::Function& f : *mod) st.irInstructions += static_cast<uint32_t>(f.getInstructionCount());
 
   t1 = clock::now();
@@ -209,7 +233,14 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
     auto sym = s.jit->lookup(gen->stageFunctions[k]);  // materialises (compiles) the module now, not on the audio thread
     if (!sym) return llvmError("looking up a stage function", sym.takeError());
     image->fns_[k] = sym->toPtr<detail::StageFn>();
+    if (gen->pairFunctions[k].empty()) continue;
+    auto pair = s.jit->lookup(gen->pairFunctions[k]);
+    if (!pair) return llvmError("looking up a pair function", pair.takeError());
+    image->pairFns_[k] = pair->toPtr<detail::StageFn>();
+    ++st.pairedStages;
   }
+  image->scalarLanes_ = go.scalarLanes;
+  detail::finishPairs(*image, schedule);
   st.machineCodeMs = msSince(t1);
   st.objectBytes = s.objectBytes;
   st.stackProbes = s.stackProbes;

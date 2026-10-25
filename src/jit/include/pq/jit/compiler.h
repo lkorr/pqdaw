@@ -22,6 +22,9 @@
 // thread's DenormalGuard provides (generated code uses SSE/AVX only, so MXCSR applies; it never changes MXCSR
 // itself).
 //
+// Developer aid: with the environment variable PQ_JIT_DUMP=<path prefix>, compile() writes every image's optimised
+// IR (<prefix><n>.ll) and assembly (<prefix><n>.s), n = the image's number in this process (T1b.2).
+//
 // Threads: Compiler::compile is NOT RT-safe (the compiler worker thread; it allocates, takes a lock, runs LLVM).
 // The returned image's process() is RT-safe. An image keeps its machine code alive on its own (it may outlive the
 // Compiler); destroy it off the audio thread.
@@ -37,6 +40,16 @@
 
 namespace pq::jit {
 
+// How voice stages are generated (T1b.2, src/jit/src/codegen.h). Every choice computes the same bits.
+enum class VoiceCode : uint8_t {
+  Auto,         // the default: Pairs512 on hosts with AVX-512, Pairs256 elsewhere (QUESTIONS Q?-T1b.2-a)
+  Groups,       // one voice group (8 lanes, <8 x float>) per call: T1b.1's code
+  Pairs256,     // two occupied groups per call as <16 x float> on two 256-bit halves; a lone group as Groups
+  Pairs512,     // the same on 512-bit registers (AVX-512 hosts; Pairs256 on hosts without AVX-512F)
+  ScalarLanes,  // the benchmark baseline "scalar JIT": one voice lane per call, scalar code. An error for a schedule
+                // whose voice stages need kernel or special-op calls (only fully inline voices can be run this way)
+};
+
 struct CompileOptions {
   uint32_t maxBlockFrames = 1024;  // largest ProcessContext::frames
   uint32_t maxVoiceGroups = 8;     // voice groups with state (8 → 64 voices)
@@ -44,6 +57,7 @@ struct CompileOptions {
   uint32_t optLevel = 1;           // 0: no IR passes; 1: the light pipeline (SROA, CSE, LICM; compiler.cpp); 2/3: LLVM O2/O3
   bool contract = false;           // true: allow fmul + fadd → fma contraction (and `afn`); NOT bit-identical to the
                                    // interpreter (and unboundedly different in chaotic feedback loops)
+  VoiceCode voiceCode = VoiceCode::Auto;
 };
 
 struct CompileStats {
@@ -55,6 +69,7 @@ struct CompileStats {
   uint32_t irInstructions = 0;  // after optimisation
   uint32_t inlinedOps = 0;      // schedule ops generated inline
   uint32_t calledOps = 0;       // schedule ops that call a dsp kernel or a runtime helper
+  uint32_t pairedStages = 0;    // voice stages that got a two-group function (VoiceCode::Pairs*, T1b.2)
   uint64_t objectBytes = 0;     // size of the machine-code object(s) linked
   bool stackProbes = false;     // the object calls __chkstk: some stage function has a frame > 4 KiB, whose guard-page
                                 // probes may fault on the audio thread the first time (must stay false; tests/jit)

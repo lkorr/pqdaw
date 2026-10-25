@@ -24,6 +24,12 @@
 //                zeroed when no group ran), voice outputs copied after each group, global outputs after the last stage.
 // A backend supplies only how one stage runs: run(ctx, global(k), voice(k, group)) calls its two callables (inlined:
 // templates, no std::function, no virtual call).
+//   pairs        (T1b.2) a backend may also run two occupied voice groups in one call, pair(k, a, b), for the voice
+//                stages it marks with enablePairs(): the second group's reducers use their own records (runB(),
+//                reduceInfoB()), and its voice outputs that live in a stage-local buffer are read from the
+//                backend's second copy. Each reducer still combines group a before group b, so the result is the
+//                one the sequential loop computes, bit for bit. Stages with sends cannot be paired (a bus channel
+//                adds the sends of one group in op order).
 //
 // Threads: build() and the build-time accessors are not RT-safe (they allocate). begin(), run() and the special-op
 // kernels are RT-safe. The object must not move after build() (the special-op records point at its RunCtx): backends
@@ -31,6 +37,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -141,6 +148,12 @@ public:
   const void* resource(dsp::Resource kind, uint32_t index) const { return resourceFor(resources_, kind, index); }
   const ReduceInfo* reduceInfo(uint32_t op) const noexcept;  // null unless op is a Reduce
   const SendInfo* sendInfo(uint32_t op) const noexcept;      // null unless op is a Send
+  // Pairs (T1b.2; build time, not RT-safe): pairableStages[k] marks voice stages run(…, pair) may pair (stages with
+  // sends are refused: false is stored); alt(k, buffer) is where the second group of a pair keeps a stage-local
+  // voice value of stage k (null: in the buffer itself, i.e. per-group or not written in the stage).
+  void enablePairs(const std::vector<uint8_t>& pairableStages, const std::function<float*(uint32_t, uint32_t)>& alt);
+  const ReduceInfo* reduceInfoB(uint32_t op) const noexcept;  // a reducer's record for a pair's second group
+  bool pairable(uint32_t stage) const noexcept { return stage < pairable_.size() && pairable_[stage] != 0; }
 
   // ---- the ProgramImage accessors ----
   const ImageInterface& io() const noexcept { return io_; }
@@ -168,7 +181,13 @@ public:
   // Runs every stage (after a successful begin()): global(k) for global stage k, voice(k, g) for voice stage k and
   // each occupied group g; reducers, RunCtx and output copies around them. RT-safe when the callables are.
   template <class GlobalStage, class VoiceStage>
-  void run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice) noexcept;
+  void run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice) noexcept {
+    run(ctx, global, voice, [](uint32_t, uint32_t, uint32_t) noexcept {});
+  }
+  // The same, with pair(k, a, b) for two occupied groups a < b of a pairable stage (enablePairs); a group left
+  // without a partner runs through voice(k, g).
+  template <class GlobalStage, class VoiceStage, class PairStage>
+  void run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice, PairStage&& pair) noexcept;
 
 private:
   enum class Src : uint8_t {
@@ -194,6 +213,7 @@ private:
     uint32_t ext = graph::kNone;
     uint32_t srcLanes = 1;     // 1 or 8 for a block; 0 for a pattern
     uint32_t group = 0;
+    float* srcAlt = nullptr;   // pairs: where the value is when this group ran as a pair's second group (or null)
   };
   struct ReduceInit {
     float* out = nullptr;
@@ -218,6 +238,8 @@ private:
   void copyOut(const OutCopy& c, float* dst, uint32_t frames, bool voice) noexcept;
   void zeroOutputs(const ProcessContext& ctx) noexcept;
   void initReducers(const StageRun& st, uint32_t frames, bool zero) noexcept;
+  void setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept;  // RT-safe
+  void copyGroupOut(const StageRun& st, const VoiceGroupIO& gr, uint32_t gi, uint32_t frames, bool alt) noexcept;
 
   std::string who_ = "image";
   Error err_;
@@ -237,16 +259,46 @@ private:
   std::vector<uint8_t> bufPerGroup_;     // per buffer: Buffer::perGroup
   std::vector<ReduceInit> reduceInits_;
   std::vector<OutCopy> outs_;            // voice stage copies (via StageRun), then the global ones
+  std::vector<uint32_t> outBuffer_;      // per outs_ entry: its source buffer if that is not per-group, else kNone
+  std::vector<uint32_t> opStage_;        // per op: its Schedule::stages index
   uint32_t firstGlobalOut_ = 0;
   std::vector<StageRun> stages_;
   RunCtx run_;
+  RunCtx runB_;                          // a pair's second group (T1b.2)
+  std::vector<ReduceInfo> reduceInfosB_; // per reducer, reading runB_ (fixed addresses, reserved once)
+  std::vector<uint8_t> pairable_;        // per stage
   uint32_t groups_ = 0;
   const VoiceTable* voices_ = nullptr;
   uint64_t rejected_ = 0;
 };
 
-template <class GlobalStage, class VoiceStage>
-void ImageHost::run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice) noexcept {  // RT-safe
+inline void ImageHost::setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept {  // RT-safe
+  const VoiceGroupIO& gr = vt->groups[gi];
+  rc.laneMask = gr.laneMask & 0xFFu;
+  rc.gain = gr.gain;
+  rc.lastLane = vt->lastGroup == gi && vt->lastLane < 8 && ((gr.laneMask >> vt->lastLane) & 1u) ? vt->lastLane : kNoVoice;
+  rc.sends = run_.sends;
+  rc.numSends = run_.numSends;
+}
+
+inline void ImageHost::copyGroupOut(const StageRun& st, const VoiceGroupIO& gr, uint32_t gi, uint32_t frames,
+                                    bool alt) noexcept {  // RT-safe
+  const uint32_t ob = st.firstOut + gi * st.numOut;
+  for (uint32_t c = ob; c < ob + st.numOut; ++c) {
+    const OutCopy& oc = outs_[c];
+    if (gr.out == nullptr || oc.slot >= gr.numOut || gr.out[oc.slot] == nullptr) continue;
+    if (alt && oc.srcAlt != nullptr) {
+      OutCopy a = oc;
+      a.src = oc.srcAlt;
+      copyOut(a, gr.out[oc.slot], frames, true);
+    } else {
+      copyOut(oc, gr.out[oc.slot], frames, true);
+    }
+  }
+}
+
+template <class GlobalStage, class VoiceStage, class PairStage>
+void ImageHost::run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice, PairStage&& pair) noexcept {  // RT-safe
   const uint32_t frames = ctx.frames;
   const VoiceTable* vt = voices_;
   for (uint32_t k = 0; k < stages_.size(); ++k) {
@@ -260,19 +312,25 @@ void ImageHost::run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&
     }
     initReducers(st, frames, false);
     bool any = false;
+    const bool pairs = pairable(k);
     for (uint32_t gi = 0; gi < groups_; ++gi) {
       const VoiceGroupIO& gr = vt->groups[gi];
       if ((gr.laneMask & 0xFFu) == 0) continue;  // no voice in this group: not run (T1.8; its state holds)
-      run_.laneMask = gr.laneMask & 0xFFu;
-      run_.gain = gr.gain;
-      run_.lastLane = vt->lastGroup == gi && vt->lastLane < 8 && ((gr.laneMask >> vt->lastLane) & 1u) ? vt->lastLane : kNoVoice;
       any = true;
-      voice(k, gi);
-      const uint32_t ob = st.firstOut + gi * st.numOut;
-      for (uint32_t c = ob; c < ob + st.numOut; ++c) {
-        const OutCopy& oc = outs_[c];
-        if (gr.out != nullptr && oc.slot < gr.numOut && gr.out[oc.slot] != nullptr) copyOut(oc, gr.out[oc.slot], frames, true);
+      setRun(run_, vt, gi);
+      uint32_t gb = gi + 1;
+      if (pairs)
+        while (gb < groups_ && (vt->groups[gb].laneMask & 0xFFu) == 0) ++gb;
+      if (!pairs || gb >= groups_) {
+        voice(k, gi);
+        copyGroupOut(st, gr, gi, frames, false);
+        continue;
       }
+      setRun(runB_, vt, gb);
+      pair(k, gi, gb);
+      copyGroupOut(st, gr, gi, frames, false);
+      copyGroupOut(st, vt->groups[gb], gb, frames, true);
+      gi = gb;
     }
     if (!any) initReducers(st, frames, true);
   }

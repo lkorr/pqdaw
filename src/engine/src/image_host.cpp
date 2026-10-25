@@ -521,6 +521,10 @@ void ImageHost::specialOps(const g::Schedule& s) {
   sendInfos_.reserve(numSend);
   opInfo_.assign(s.ops.size(), g::kNone);
   opKind_.resize(s.ops.size());
+  opStage_.assign(s.ops.size(), g::kNone);
+  for (uint32_t k = 0; k < s.stages.size(); ++k)
+    for (uint32_t ri = s.stages[k].firstRegion; ri < s.stages[k].firstRegion + s.stages[k].numRegions; ++ri)
+      for (uint32_t i = s.regions[ri].firstOp; i < s.regions[ri].firstOp + s.regions[ri].numOps; ++i) opStage_[i] = k;
   for (uint32_t i = 0; i < s.ops.size(); ++i) {
     const g::Op& op = s.ops[i];
     opKind_[i] = op.kind;
@@ -550,6 +554,9 @@ void ImageHost::specialOps(const g::Schedule& s) {
       sendInfos_.push_back(si);
     }
   }
+  // The records of a pair's second group (T1b.2): the same, reading runB_ (one allocation, fixed addresses).
+  reduceInfosB_ = reduceInfos_;
+  for (ReduceInfo& ri : reduceInfosB_) ri.run = &runB_;
 }
 
 const ReduceInfo* ImageHost::reduceInfo(uint32_t op) const noexcept {
@@ -560,6 +567,26 @@ const ReduceInfo* ImageHost::reduceInfo(uint32_t op) const noexcept {
 const SendInfo* ImageHost::sendInfo(uint32_t op) const noexcept {
   if (op >= opKind_.size() || opKind_[op] != g::OpKind::Send || opInfo_[op] == g::kNone) return nullptr;
   return &sendInfos_[opInfo_[op]];
+}
+
+void ImageHost::enablePairs(const std::vector<uint8_t>& pairableStages, const std::function<float*(uint32_t, uint32_t)>& alt) {
+  pairable_.assign(stages_.size(), 0);
+  for (uint32_t k = 0; k < stages_.size() && k < pairableStages.size(); ++k) {
+    if (!pairableStages[k] || !stages_[k].voice) continue;
+    bool sends = false;
+    for (uint32_t i = 0; i < opStage_.size(); ++i) sends = sends || (opStage_[i] == k && opKind_[i] == g::OpKind::Send);
+    if (sends) continue;  // a bus channel adds one group's sends in op order: a pair would interleave two groups
+    pairable_[k] = 1;
+    const StageRun& st = stages_[k];
+    for (uint32_t gi = 0; gi < L_.groups; ++gi)
+      for (uint32_t c = st.firstOut + gi * st.numOut; c < st.firstOut + (gi + 1) * st.numOut; ++c)
+        if (outBuffer_[c] != g::kNone) outs_[c].srcAlt = alt(k, outBuffer_[c]);
+  }
+}
+
+const ReduceInfo* ImageHost::reduceInfoB(uint32_t op) const noexcept {
+  if (op >= opKind_.size() || opKind_[op] != g::OpKind::Reduce || opInfo_[op] == g::kNone) return nullptr;
+  return &reduceInfosB_[opInfo_[op]];
 }
 
 float* ImageHost::resolve(const g::Operand& o, uint32_t gi) noexcept {
@@ -583,6 +610,7 @@ bool ImageHost::outCopy(const g::Schedule& s, const g::OutputRef& o, uint32_t sl
   } else {
     c.src = resolve(o.value, gi);
   }
+  outBuffer_.push_back(o.value.kind == g::Operand::Kind::Buffer && !bufPerGroup_[o.value.index] ? o.value.index : g::kNone);
   c.srcLanes = isPatternOperand(s, o.value) ? 0u : lanesOfOperand(s, o.value);
   if (o.poly == g::Poly::Global && c.srcLanes == 8) return fail("global output reads a voice value");
   outs_.push_back(c);

@@ -81,17 +81,7 @@ bool isElementwise(Atom a) noexcept {
 }
 
 // Stateful atoms generated inline in per-frame contexts (one frame per evaluation; state in registers).
-bool isSimpleStateful(Atom a) noexcept {
-  switch (a) {
-    case Atom::Schmitt: case Atom::Rise: case Atom::Fall: case Atom::Change: case Atom::SrFlipFlop:
-    case Atom::DFlipFlop: case Atom::TFlipFlop: case Atom::Counter: case Atom::ClockDiv: case Atom::Pulse:
-    case Atom::Timer: case Atom::Z1: case Atom::Z1Read: case Atom::Z1Write: case Atom::SampleHold: case Atom::Latch:
-    case Atom::Phasor: case Atom::SineHz:
-      return true;
-    default:
-      return false;
-  }
-}
+bool isSimpleStateful(Atom a) noexcept { return inlineStateful(a); }  // jit_image.cpp
 
 int exactOf(Atom a) noexcept {
   switch (a) {
@@ -113,7 +103,7 @@ using Map = std::unordered_map<uint32_t, Value*>;  // buffer index → its value
 
 struct Frame {
   Value* t = nullptr;   // i64 frame index of the first frame this evaluation covers
-  unsigned w = 1;       // 1: scalar, 8: <8 x float>
+  unsigned w = 1;       // 1: scalar, 8: <8 x float>, 16: <16 x float> (a voice pair)
   Map* map = nullptr;   // values computed earlier in this evaluation
   bool hoist = false;   // pattern loads may go to the region preheader
   Value* mask = nullptr;  // <8 x i1>: only these frames exist (a 1-lane slice's last, partial 8 frames)
@@ -139,10 +129,29 @@ public:
 
   Result<GenResult> run() {
     analyse();
+    if (o_.scalarLanes)
+      for (const g::Stage& st : s_.stages) {
+        if (st.poly != g::Poly::Voice) continue;
+        for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r)
+          for (uint32_t i = s_.regions[r].firstOp; i < s_.regions[r].firstOp + s_.regions[r].numOps; ++i)
+            if (!inline_[i])
+              return Error{ErrorCode::Unsupported,
+                           "jit: the scalar-lane baseline needs every voice op inline; op " + std::to_string(i) + " (" +
+                               (s_.ops[i].kind == g::OpKind::Kernel ? dsp::kernelInfo(s_.ops[i].kernel).name : "special op") +
+                               ") is a call",
+                           {}};
+      }
+    res_.pairFunctions.assign(s_.stages.size(), {});
     for (uint32_t k = 0; k < s_.stages.size(); ++k) {
+      const g::Stage& st = s_.stages[k];
+      const bool voice = st.poly == g::Poly::Voice;
       const std::string name = o_.prefix + "_stage" + std::to_string(k);
-      stageFunction(s_.stages[k], name);
+      stageFunction(k, name, voice ? (o_.scalarLanes ? 1u : 8u) : 0u);
       res_.stageFunctions.push_back(name);
+      if (voice && o_.pairs && k < L_.pairable.size() && L_.pairable[k] && !frameCalls(st)) {
+        stageFunction(k, name + "_pair", 16);
+        res_.pairFunctions[k] = name + "_pair";
+      }
     }
     for (uint32_t i = 0; i < s_.ops.size(); ++i) (inline_[i] ? res_.inlinedOps : res_.calledOps) += 1;
     std::string err;
@@ -155,6 +164,21 @@ private:
   // ================================================================================================================
   // Analysis: how each op is emitted, and which op outputs must reach memory.
   // ================================================================================================================
+  // Whether a stage calls a function once per frame (a kernel call in a per-sample loop, an exact transcendental
+  // there, Newton's n > 1 update). Such a stage gets no pair function: a call clobbers every vector register, so the
+  // loop spills and reloads all its live values around it, and twice the values per pair overflow the 4 KiB frame
+  // (stack probes; tests/jit stateful_loops.pqp) for no gain, since the calls dominate.
+  bool frameCalls(const g::Stage& st) const {
+    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+      const g::Region& reg = s_.regions[r];
+      if (!perFrame(reg) || reg.kind == g::RegionKind::Control) continue;
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
+        if (!inline_[i] || exactOf(s_.ops[i].kernel) >= 0) return true;
+      for (uint32_t k = reg.firstSolve; k < reg.firstSolve + reg.numSolves; ++k)
+        if (s_.solves[k].numUnknowns > 1) return true;
+    }
+    return false;
+  }
   bool perFrame(const g::Region& r) const noexcept {
     return r.kind == g::RegionKind::Control || (r.kind == g::RegionKind::Loop && (r.subBlock <= 1 || r.numSolves > 0));
   }
@@ -183,8 +207,13 @@ private:
         // inside a fused loop would spill every live vector register around it.
         // A mux/demux wider than kStackCallOperands is a kernel call: inline, its select chain is one basic block
         // of thousands of instructions per chunk (the M1 review's 1200-input mux), the kernel runs it as a loop.
+        // T1b.2: in voice slices the simple stateful atoms are inline too (one frame of the group's voices per
+        // chunk: the state is one vector carried from frame to frame, as in a per-sample loop), and in the
+        // scalar-lane baseline so are the exact transcendentals (one scalar call per lane and frame).
+        const bool voiceSlice = !pf && r.poly == g::Poly::Voice && op.lanes == 8;
         inline_[i] = kernel && !wideCall(op) &&
-                     ((isElementwise(op.kernel) && (pf || exactOf(op.kernel) < 0)) || (pf && isSimpleStateful(op.kernel)));
+                     ((isElementwise(op.kernel) && (pf || exactOf(op.kernel) < 0 || (voiceSlice && o_.scalarLanes))) ||
+                      ((pf || voiceSlice) && isSimpleStateful(op.kernel)));
         if (pf) {
           grp_[i] = inline_[i] && !body_[i] ? regionGroup : -1;
           continue;
@@ -214,6 +243,50 @@ private:
         for (const g::Operand& o : s_.inputs(op))
           if (isPattern(o) && o.kind != g::Operand::Kind::None) runInv.insert({static_cast<int>(o.kind), o.index});
         grp_[i] = run;
+      }
+    }
+    // Chains (T1b.2, codegen.h): consecutive regions of a voice stage that run frame by frame with every op inline
+    // (Block regions of inline ops, per-sample Loop regions) become one loop over frames, when one of them is a
+    // per-sample loop (whose dependency chain the other regions' independent work overlaps) and the whole body
+    // stays below kMaxRunCost (a bigger body would not fit the out-of-order window either). One group: values
+    // cross the regions in registers.
+    chainEnd_.assign(s_.regions.size(), -1);
+    for (const g::Stage& st : s_.stages) {
+      if (st.poly != g::Poly::Voice) continue;
+      auto chainable = [&](uint32_t r) {
+        const g::Region& reg = s_.regions[r];
+        if (reg.kind == g::RegionKind::Control) return false;
+        if (perFrame(reg)) return true;
+        if (reg.kind != g::RegionKind::Block) return false;
+        for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
+          if (!inline_[i]) return false;
+        return true;
+      };
+      uint32_t r = st.firstRegion;
+      const uint32_t end = st.firstRegion + st.numRegions;
+      while (r < end) {
+        if (!chainable(r)) {
+          ++r;
+          continue;
+        }
+        uint32_t last = r, cost = 0;
+        bool loop = false;
+        for (uint32_t q = r; q < end && chainable(q); ++q) {
+          const g::Region& reg = s_.regions[q];
+          const uint32_t c = runCost(reg.firstOp, reg.firstOp + reg.numOps);
+          if (q > r && cost + c > kMaxRunCost) break;
+          cost += c;
+          loop = loop || reg.kind == g::RegionKind::Loop;
+          last = q;
+        }
+        if (last > r && loop) {
+          chainEnd_[r] = static_cast<int32_t>(last);
+          const int32_t id = next++;
+          for (uint32_t q = r; q <= last; ++q)
+            for (uint32_t i = s_.regions[q].firstOp; i < s_.regions[q].firstOp + s_.regions[q].numOps; ++i)
+              if (grp_[i] >= 0) grp_[i] = id;
+        }
+        r = last + 1;
       }
     }
     // Store elimination. Accesses per buffer in op order (an op's reads before its writes).
@@ -273,7 +346,9 @@ private:
   // ================================================================================================================
   // One function per stage, all regions in it. (Splitting a stage into one function per region was measured: it
   // makes compiles slower, since every function repeats its base-pointer setup; bench/RESULTS.md.)
-  void stageFunction(const g::Stage& st, const std::string& name) {
+  // vw: the voice width of a voice stage's function (1 scalar lanes, 8 a group, 16 a pair); 0 for a global stage.
+  void stageFunction(uint32_t k, const std::string& name, unsigned vw) {
+    const g::Stage& st = s_.stages[k];
     // The kernel-call pointer arrays are sized for this stage's calls only (an inline op never uses them): the
     // M1 review's 1200-input mux sized them at 2 × 9.6 KB for every stage, a frame that needs __chkstk probes.
     uint32_t maxOperands = 1;
@@ -281,20 +356,61 @@ private:
       for (uint32_t i = s_.regions[r].firstOp; i < s_.regions[r].firstOp + s_.regions[r].numOps; ++i)
         if (!inline_[i] && !wideCall(s_.ops[i]))
           maxOperands = std::max<uint32_t>(maxOperands, std::max<uint32_t>(s_.ops[i].numIn, s_.ops[i].numOut));
+    voice_ = vw != 0;
+    vw_ = voice_ ? vw : 8u;
+    local_ = vw == 16 ? stageLocalBuffers(s_, k) : std::vector<uint8_t>(s_.buffers.size(), 0);
+    staged_.assign(s_.state.entries.size(), 0);
+    if (vw == 16) {
+      auto stage = [&](uint32_t e) {
+        if (e != g::kNone && voiceArena(e)) staged_[e] = 1;
+      };
+      for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+        const g::Region& reg = s_.regions[r];
+        for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
+          if (inline_[i]) stage(s_.ops[i].state);
+        for (uint32_t q = reg.firstSolve; q < reg.firstSolve + reg.numSolves; ++q)
+          for (uint32_t u = s_.solves[q].firstUnknown; u < s_.solves[q].firstUnknown + s_.solves[q].numUnknowns; ++u)
+            stage(s_.unknowns[u].state);
+      }
+    }
     beginFunction(name, llvm::Function::ExternalLinkage, maxOperands);
-    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) emitRegion(r);
+    if (vw == 16) stagePairState(true);
+    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+      if (chainEnd_[r] >= 0) {
+        emitChain(r, static_cast<uint32_t>(chainEnd_[r]));
+        r = static_cast<uint32_t>(chainEnd_[r]);
+        continue;
+      }
+      emitRegion(r);
+    }
+    if (vw == 16) stagePairState(false);
     B_.CreateRetVoid();
+    voice_ = false;
+    vw_ = 8;
   }
 
   llvm::Function* beginFunction(const std::string& name, llvm::Function::LinkageTypes linkage, uint32_t maxOperands) {
-    llvm::FunctionType* ty = llvm::FunctionType::get(void_, {ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, i32_, i32_}, false);
+    llvm::FunctionType* ty = llvm::FunctionType::get(
+        void_, {ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, i32_, i32_, i32_, i32_}, false);
     F_ = llvm::Function::Create(ty, linkage, name, M_);
-    for (unsigned a = 0; a < 6; ++a) F_->addParamAttr(a, llvm::Attribute::NoAlias);
-    for (unsigned a : {1u, 4u, 5u}) F_->addParamAttr(a, llvm::Attribute::ReadOnly);
+    for (unsigned a = 0; a < 7; ++a) F_->addParamAttr(a, llvm::Attribute::NoAlias);
+    for (unsigned a : {1u, 5u, 6u}) F_->addParamAttr(a, llvm::Attribute::ReadOnly);
     F_->addFnAttr(llvm::Attribute::NoUnwind);
     F_->addFnAttr("no-builtins");  // no memset/memcpy calls the JIT would have to resolve
     if (!o_.cpu.empty()) F_->addFnAttr("target-cpu", o_.cpu);
     if (!o_.features.empty()) F_->addFnAttr("target-features", o_.features);
+    Vx::kMasks() = o_.features.find("+avx512vl") != std::string::npos;  // comparisons as k-register predicates
+    if (vw_ == 16 && o_.pairsZmm) {  // a pair's <16 x float> on one zmm register (LLVM prefers 256-bit vectors)
+      F_->addFnAttr("prefer-vector-width", "512");
+      F_->addFnAttr("min-legal-vector-width", "512");
+    } else {
+      // Every other function stays on 256-bit registers (AVX-512VL instructions, 32 registers and k-masks remain):
+      // without this attribute LLVM legalises the phasor's <8 x double> onto zmm, and one 512-bit instruction in a
+      // loop turns off the core's port-1 vector ALU for the whole loop (measured T1b.2: voice groups 12–15 % faster
+      // with it; the same as with AVX-512 switched off in these functions, Q?-T1b.2-a).
+      F_->addFnAttr("prefer-vector-width", "256");
+      F_->addFnAttr("min-legal-vector-width", "256");
+    }
     {
       llvm::AttrBuilder ab(C_);
       ab.addDenormalFPEnvAttr(llvm::DenormalFPEnv(llvm::DenormalMode::getPreserveSign()));  // FTZ/DAZ on audio threads
@@ -305,10 +421,13 @@ private:
     aux_ = &*arg++;
     gstate_ = &*arg++;
     vstate_ = &*arg++;
+    vstate1_ = &*arg++;
     ext_ = &*arg++;
     tabArg_ = &*arg++;
     Value* frames32 = &*arg++;
-    group32_ = &*arg;
+    group32_ = &*arg++;
+    Value* group1_32 = &*arg++;
+    Value* lane32 = &*arg;
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(C_, "entry", F_);
     llvm::BasicBlock* start = llvm::BasicBlock::Create(C_, "start", F_);
     B_.SetInsertPoint(entry);
@@ -319,12 +438,15 @@ private:
     extPtr_.clear();
     tabLoad_.clear();
     statePtr_.clear();
+    stageSlot_.clear();
     inv_.clear();
     hoistIP_ = nullptr;
     {
       llvm::IRBuilder<> eb(entryTerm_);
       frames64_ = eb.CreateZExt(frames32, i64_);
       group64_ = eb.CreateZExt(group32_, i64_);
+      group1_64_ = eb.CreateZExt(group1_32, i64_);
+      lane64_ = eb.CreateZExt(lane32, i64_);
       kargs_ = eb.CreateAlloca(kargsTy_);
       inArr_ = eb.CreateAlloca(llvm::ArrayType::get(ptr_, maxOperands));
       outArr_ = eb.CreateAlloca(llvm::ArrayType::get(ptr_, maxOperands));
@@ -341,24 +463,33 @@ private:
   // into the instruction's addressing mode. (Computed once in the entry block, every buffer's base was a value live
   // across the whole function: with ~1200 buffers they were spilled, the frame needed stack probes and register
   // allocation took seconds.) A per-group buffer's base needs the group index: computed once, in the entry block.
-  Value* bufBase(uint32_t b, llvm::IRBuilderBase* at = nullptr) {
-    if (!s_.buffers[b].perGroup) return (at ? *at : B_).CreateConstInBoundsGEP1_64(f32_, buf_, L_.bufOff[b]);
-    auto it = bufBase_.find(b);
+  // h: the half of a pair (0: the function's group, 1: its second group; codegen.h). A stage-local voice value's
+  // second half lives in its HostLayout::altOff copy.
+  Value* bufBase(uint32_t b, llvm::IRBuilderBase* at = nullptr, unsigned h = 0) {
+    if (!s_.buffers[b].perGroup)
+      return (at ? *at : B_).CreateConstInBoundsGEP1_64(f32_, buf_, bufOffset(b, h));
+    auto it = bufBase_.find(b * 2 + h);
     if (it != bufBase_.end()) return it->second;
     llvm::IRBuilder<> eb(entryTerm_);
     Value* p = eb.CreateConstInBoundsGEP1_64(f32_, buf_, L_.bufOff[b]);
-    p = eb.CreateInBoundsGEP(f32_, p, eb.CreateMul(group64_, c64(L_.bufSize[b])));
-    bufBase_.emplace(b, p);
+    p = eb.CreateInBoundsGEP(f32_, p, eb.CreateMul(h ? group1_64_ : group64_, c64(L_.bufSize[b])));
+    bufBase_.emplace(b * 2 + h, p);
     return p;
   }
-  Value* extBase(uint32_t e) {
-    auto it = extPtr_.find(e);
+  // Float offset of a buffer that is not per-group, for half h.
+  uint64_t bufOffset(uint32_t b, unsigned h) const noexcept {
+    return h == 1 && local_[b] && L_.altOff[b] != g::kNone ? L_.altOff[b] : L_.bufOff[b];
+  }
+  Value* extBase(uint32_t e, unsigned h = 0) {
+    const bool perGroup = s_.externals[e].poly == g::Poly::Voice;
+    if (!perGroup) h = 0;
+    auto it = extPtr_.find(e * 2 + h);
     if (it != extPtr_.end()) return it->second;
     llvm::IRBuilder<> eb(entryTerm_);
     Value* idx = c64(static_cast<uint64_t>(e) * L_.groups);
-    if (s_.externals[e].poly == g::Poly::Voice) idx = eb.CreateAdd(idx, group64_);
+    if (perGroup) idx = eb.CreateAdd(idx, h ? group1_64_ : group64_);
     Value* p = eb.CreateLoad(ptr_, eb.CreateInBoundsGEP(ptr_, ext_, idx));
-    extPtr_.emplace(e, p);
+    extPtr_.emplace(e * 2 + h, p);
     return p;
   }
   Value* tabLoad(const void* p) {
@@ -373,14 +504,156 @@ private:
     tabLoad_.emplace(slot, v);
     return v;
   }
-  Value* statePtr(uint32_t entry) {
-    auto it = statePtr_.find(entry);
-    if (it != statePtr_.end()) return it->second;
+  Value* statePtr(uint32_t entry, unsigned h = 0) {
     const g::StateEntry& e = s_.state.entries[entry];
+    if (e.arena != g::Poly::Voice) h = 0;
+    auto it = statePtr_.find(entry * 2 + h);
+    if (it != statePtr_.end()) return it->second;
     llvm::IRBuilder<> eb(entryTerm_);
-    Value* p = eb.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), e.arena == g::Poly::Voice ? vstate_ : gstate_, e.offset);
-    statePtr_.emplace(entry, p);
+    Value* p = eb.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_),
+                                             e.arena == g::Poly::Voice ? (h ? vstate1_ : vstate_) : gstate_, e.offset);
+    statePtr_.emplace(entry * 2 + h, p);
     return p;
+  }
+  bool voiceArena(uint32_t entry) const noexcept { return s_.state.entries[entry].arena == g::Poly::Voice; }
+
+  // ---- voice-stage operands (T1b.2): the 8 floats of operand o at frame t for half h; plus the lane in the
+  // scalar baseline. Patterns are not offset by t.
+  Value* voicePtr(const g::Operand& o, Value* t, unsigned h, llvm::IRBuilderBase& b) {
+    Value* idx = nullptr;
+    auto* ct = llvm::dyn_cast<llvm::ConstantInt>(t);
+    if (!isPattern(o) && !(ct && ct->isZero())) idx = b.CreateMul(t, c64(lanesOf(o)), "", true, true);
+    if (vw_ == 1) idx = idx ? b.CreateAdd(idx, lane64_, "", true, true) : lane64_;
+    if (o.kind == g::Operand::Kind::Buffer && !s_.buffers[o.index].perGroup) {
+      const uint64_t off = bufOffset(o.index, h);
+      if (!idx) return b.CreateConstInBoundsGEP1_64(f32_, buf_, off);
+      return b.CreateInBoundsGEP(f32_, buf_, b.CreateAdd(idx, c64(off), "", true, true));  // see framePtr
+    }
+    Value* base = o.kind == g::Operand::Kind::Buffer     ? bufBase(o.index, &b, h)
+                  : o.kind == g::Operand::Kind::External ? extBase(o.index, h)
+                                                         : basePtr(o, &b);
+    return idx ? b.CreateInBoundsGEP(f32_, base, idx) : base;
+  }
+  // Whether both halves of a pair read the same memory for o (params, constants, global values).
+  bool sharedByHalves(const g::Operand& o) const noexcept {
+    switch (o.kind) {
+      case g::Operand::Kind::Buffer: return !s_.buffers[o.index].perGroup && !local_[o.index];
+      case g::Operand::Kind::External: return s_.externals[o.index].poly != g::Poly::Voice;
+      default: return true;
+    }
+  }
+  llvm::Align voiceAlign(const g::Operand& o) const {
+    if (vw_ == 1 || o.kind == g::Operand::Kind::External) return llvm::Align(4);
+    return llvm::Align(32);
+  }
+  Value* concat(Value* lo, Value* hi) {
+    llvm::SmallVector<int, 16> idx;
+    for (int k = 0; k < 16; ++k) idx.push_back(k);
+    return B_.CreateShuffleVector(lo, hi, idx);
+  }
+  Value* half(Value* v, unsigned h) {
+    llvm::SmallVector<int, 8> idx;
+    for (int k = 0; k < 8; ++k) idx.push_back(static_cast<int>(h) * 8 + k);
+    return B_.CreateShuffleVector(v, idx);
+  }
+  Value* voiceLoad(const g::Operand& o, Value* t, llvm::IRBuilderBase& b, llvm::Type* elem = nullptr) {
+    if (!elem) elem = f32_;
+    if (vw_ == 1) return b.CreateAlignedLoad(elem, voicePtr(o, t, 0, b), llvm::Align(4));
+    llvm::Type* v8 = llvm::FixedVectorType::get(elem, 8);
+    Value* lo = b.CreateAlignedLoad(v8, voicePtr(o, t, 0, b), voiceAlign(o));
+    if (vw_ == 8) return lo;
+    Value* hi = sharedByHalves(o) ? lo : b.CreateAlignedLoad(v8, voicePtr(o, t, 1, b), voiceAlign(o));
+    llvm::SmallVector<int, 16> idx;
+    for (int k = 0; k < 16; ++k) idx.push_back(k);
+    return b.CreateShuffleVector(lo, hi, idx);
+  }
+  void voiceStore(Value* val, const g::Operand& o, Value* t) {
+    if (vw_ != 16) {
+      B_.CreateAlignedStore(val, voicePtr(o, t, 0, B_), voiceAlign(o));
+      return;
+    }
+    B_.CreateAlignedStore(half(val, 0), voicePtr(o, t, 0, B_), voiceAlign(o));
+    B_.CreateAlignedStore(half(val, 1), voicePtr(o, t, 1, B_), voiceAlign(o));
+  }
+  // Pair functions stage the voice state of the stage's inline stateful ops (and solve guesses): each 32-byte lane
+  // array of the two groups is one 16-lane value in a stack slot, filled at entry from both groups' blocks (in) and
+  // written back at exit. The slots cannot alias the buffers (the groups' blocks could, for LLVM, not be told apart
+  // from each other's halves), so SROA turns them into registers and a loop carries each state value in one
+  // register: without staging, LICM kept every state value as two 256-bit halves, joined and split on every frame
+  // (on the feedback path), measured 1.2× slower on osc_filter ×64.
+  Value* stagedPtr(uint32_t entry, uint32_t off) {
+    auto it = stageSlot_.find(static_cast<uint64_t>(entry) << 32 | off);
+    if (it != stageSlot_.end()) return it->second;
+    llvm::IRBuilder<> eb(entryTerm_);
+    llvm::AllocaInst* a = eb.CreateAlloca(llvm::FixedVectorType::get(i32_, 16));
+    a->setAlignment(llvm::Align(64));
+    stageSlot_.emplace(static_cast<uint64_t>(entry) << 32 | off, a);
+    return a;
+  }
+  void stagePairState(bool in) {
+    llvm::Type* i8 = llvm::Type::getInt8Ty(C_);
+    llvm::Type* v8 = llvm::FixedVectorType::get(i32_, 8);
+    llvm::Type* v16 = llvm::FixedVectorType::get(i32_, 16);
+    for (uint32_t e = 0; e < staged_.size(); ++e) {
+      if (!staged_[e]) continue;
+      const uint32_t size = (s_.state.entries[e].size + 31) / 32 * 32;
+      for (uint32_t off = 0; off < size; off += 32) {
+        Value* g0 = B_.CreateConstInBoundsGEP1_64(i8, statePtr(e, 0), off);
+        Value* g1 = B_.CreateConstInBoundsGEP1_64(i8, statePtr(e, 1), off);
+        if (in) {
+          Value* lo = B_.CreateAlignedLoad(v8, g0, llvm::Align(32));
+          Value* hi = B_.CreateAlignedLoad(v8, g1, llvm::Align(32));
+          B_.CreateAlignedStore(concat(lo, hi), stagedPtr(e, off), llvm::Align(64));
+        } else {
+          Value* x = B_.CreateAlignedLoad(v16, stagedPtr(e, off), llvm::Align(64));
+          B_.CreateAlignedStore(half(x, 0), g0, llvm::Align(32));
+          B_.CreateAlignedStore(half(x, 1), g1, llvm::Align(32));
+        }
+      }
+    }
+  }
+
+  // A state array (8 lanes × 4 bytes at byte offset off of a state entry), as a value of this width: the
+  // global arena's (Control regions of global stages: 8 lanes; per-sample loops: 1), or a voice entry's per half
+  // (and at the lane, scalar baseline).
+  Value* ldState(uint32_t entry, uint32_t off, Vx& v, bool asInt) {
+    llvm::Type* i8 = llvm::Type::getInt8Ty(C_);
+    llvm::Type* elem = asInt ? i32_ : f32_;
+    if (!voice_ || !voiceArena(entry))
+      return B_.CreateAlignedLoad(asInt ? v.iT() : v.fT(), B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry), off),
+                                  llvm::Align(v.width() == 8 ? 32 : 4));
+    if (vw_ == 1) {
+      Value* p = B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry), off);
+      return B_.CreateAlignedLoad(elem, B_.CreateInBoundsGEP(elem, p, lane64_), llvm::Align(4));
+    }
+    if (vw_ == 16 && staged_[entry]) return B_.CreateAlignedLoad(asInt ? v.iT() : v.fT(), stagedPtr(entry, off), llvm::Align(64));
+    llvm::Type* v8 = llvm::FixedVectorType::get(elem, 8);
+    Value* lo = B_.CreateAlignedLoad(v8, B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry, 0), off), llvm::Align(32));
+    if (vw_ == 8) return lo;
+    Value* hi = B_.CreateAlignedLoad(v8, B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry, 1), off), llvm::Align(32));
+    return concat(lo, hi);
+  }
+  void stState(uint32_t entry, uint32_t off, Value* x, Vx& v) {
+    llvm::Type* i8 = llvm::Type::getInt8Ty(C_);
+    if (!voice_ || !voiceArena(entry)) {
+      B_.CreateAlignedStore(x, B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry), off), llvm::Align(v.width() == 8 ? 32 : 4));
+      return;
+    }
+    if (vw_ == 1) {
+      Value* p = B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry), off);
+      B_.CreateAlignedStore(x, B_.CreateInBoundsGEP(x->getType(), p, lane64_), llvm::Align(4));
+      return;
+    }
+    if (vw_ == 8) {
+      B_.CreateAlignedStore(x, B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry, 0), off), llvm::Align(32));
+      return;
+    }
+    if (staged_[entry]) {
+      B_.CreateAlignedStore(x, stagedPtr(entry, off), llvm::Align(64));
+      return;
+    }
+    B_.CreateAlignedStore(half(x, 0), B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry, 0), off), llvm::Align(32));
+    B_.CreateAlignedStore(half(x, 1), B_.CreateConstInBoundsGEP1_64(i8, statePtr(entry, 1), off), llvm::Align(32));
   }
 
   bool isPattern(const g::Operand& o) const noexcept { return isPatternOperand(s_, o); }
@@ -426,10 +699,11 @@ private:
       auto it = inv_.find(key);
       if (it != inv_.end()) return it->second;
       llvm::IRBuilder<> hb(hoistIP_);
-      Value* v = hb.CreateAlignedLoad(vecTy(w), basePtr(o, &hb), alignOf(o, w));
+      Value* v = voice_ ? voiceLoad(o, c64(0), hb) : hb.CreateAlignedLoad(vecTy(w), basePtr(o, &hb), alignOf(o, w));
       inv_.emplace(key, v);
       return v;
     }
+    if (voice_) return voiceLoad(o, c64(0), B_);
     return B_.CreateAlignedLoad(vecTy(w), basePtr(o), alignOf(o, w));
   }
 
@@ -460,6 +734,7 @@ private:
   // A block operand's frames (masked: frames past the slice are neither read nor written; their lanes compute
   // harmless garbage that is never stored).
   Value* loadBlk(const g::Operand& o, const Frame& fr) {
+    if (voice_) return voiceLoad(o, fr.t, B_);
     if (fr.mask)
       return B_.CreateMaskedLoad(vecTy(fr.w), framePtr(o, fr.t), alignOf(o, fr.w), fr.mask, Vx(B_, fr.w).zero());
     return B_.CreateAlignedLoad(vecTy(fr.w), framePtr(o, fr.t), alignOf(o, fr.w));
@@ -471,6 +746,10 @@ private:
     const g::Operand& o = s_.operands[operand];
     if (fr.map) (*fr.map)[o.index] = val;
     if (!store_[operand]) return;
+    if (voice_) {
+      voiceStore(val, o, fr.t);
+      return;
+    }
     if (fr.mask && !isPattern(o)) B_.CreateMaskedStore(val, framePtr(o, fr.t), alignOf(o, fr.w), fr.mask);
     else B_.CreateAlignedStore(val, framePtr(o, fr.t), alignOf(o, fr.w));
   }
@@ -484,8 +763,12 @@ private:
     return c;
   }
 
-  // Op i as a kernel/helper call on frames [t0, t0 + n).
+  // Op i as a kernel/helper call on frames [t0, t0 + n): once, or in a pair function once per half (each group
+  // with its own buffers, state and reducer record).
   void emitCall(uint32_t i, Value* t0, Value* n32) {
+    for (unsigned h = 0; h < (vw_ == 16 ? 2u : 1u); ++h) emitCallHalf(i, t0, n32, h);
+  }
+  void emitCallHalf(uint32_t i, Value* t0, Value* n32, unsigned h) {
     const g::Op& op = s_.ops[i];
     const auto ins = s_.inputs(op);
     const auto outs = s_.outputsOf(op);
@@ -497,7 +780,7 @@ private:
       case g::OpKind::Kernel: {
         const bool control = s_.regions[regionOf(i)].kind == g::RegionKind::Control;
         fn = reinterpret_cast<const void*>(dsp::findKernel(op.kernel, control ? 8u : op.lanes, op.splMask));
-        if (op.state != g::kNone) state = statePtr(op.state);
+        if (op.state != g::kNone) state = statePtr(op.state, h);
         if (L_.opInfo[i] != g::kNone) resource = tabSlot(L_.opInfo[i]);
         break;
       }
@@ -507,13 +790,14 @@ private:
         break;
       case g::OpKind::Reduce:
         fn = reinterpret_cast<const void*>(&engine::host::reduceKernel);
-        state = tabSlot(L_.opInfo[i]);
+        state = tabSlot(h ? L_.opInfoB[i] : L_.opInfo[i]);
         break;
       case g::OpKind::Send:
         fn = reinterpret_cast<const void*>(&engine::host::sendKernel);
         state = tabSlot(L_.opInfo[i]);
         break;
     }
+    auto ptrOf = [&](const g::Operand& o) { return voice_ ? voicePtr(o, t0, h, B_) : framePtr(o, t0); };
     // Pointer arrays: on the stack, or for a wide call in buf (jit_image.h kStackCallOperands).
     Value* inArr = inArr_;
     Value* outArr = outArr_;
@@ -521,8 +805,8 @@ private:
       inArr = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.callOff);
       outArr = B_.CreateConstInBoundsGEP1_64(ptr_, inArr, ins.size());
     }
-    for (uint32_t j = 0; j < ins.size(); ++j) B_.CreateStore(framePtr(ins[j], t0), B_.CreateConstInBoundsGEP1_64(ptr_, inArr, j));
-    for (uint32_t k = 0; k < outs.size(); ++k) B_.CreateStore(framePtr(outs[k], t0), B_.CreateConstInBoundsGEP1_64(ptr_, outArr, k));
+    for (uint32_t j = 0; j < ins.size(); ++j) B_.CreateStore(ptrOf(ins[j]), B_.CreateConstInBoundsGEP1_64(ptr_, inArr, j));
+    for (uint32_t k = 0; k < outs.size(); ++k) B_.CreateStore(ptrOf(outs[k]), B_.CreateConstInBoundsGEP1_64(ptr_, outArr, k));
     B_.CreateStore(inArr, B_.CreateStructGEP(kargsTy_, kargs_, 0));
     B_.CreateStore(outArr, B_.CreateStructGEP(kargsTy_, kargs_, 1));
     B_.CreateStore(state, B_.CreateStructGEP(kargsTy_, kargs_, 2));
@@ -541,6 +825,11 @@ private:
   // Exact transcendental through the CRT (scalar) or SVML (8-wide) wrapper.
   Value* exact(rt::Exact e, Value* a, Value* b, unsigned w) {
     const bool binary = rt::exactIsBinary(e);
+    if (w == 16) {  // a pair: the 8-wide call per half (SVML's 512-bit functions need not round like the 256-bit ones)
+      Value* lo = exact(e, half(a, 0), binary ? half(b, 0) : nullptr, 8);
+      Value* hi = exact(e, half(a, 1), binary ? half(b, 1) : nullptr, 8);
+      return concat(lo, hi);
+    }
     if (w == 1) {
       llvm::FunctionType* ty =
           binary ? llvm::FunctionType::get(f32_, {f32_, f32_}, false) : llvm::FunctionType::get(f32_, {f32_}, false);
@@ -561,18 +850,10 @@ private:
   // ================================================================================================================
   // Inline ops.
   // ================================================================================================================
-  Value* ldF(Value* sp, uint32_t off, Vx& v) {
-    return B_.CreateAlignedLoad(v.fT(), B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), sp, off),
-                                llvm::Align(v.width() == 8 ? 32 : 4));
-  }
-  Value* ldI(Value* sp, uint32_t off, Vx& v) {
-    return B_.CreateAlignedLoad(v.iT(), B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), sp, off),
-                                llvm::Align(v.width() == 8 ? 32 : 4));
-  }
-  void st(Value* sp, uint32_t off, Value* x, Vx& v) {
-    B_.CreateAlignedStore(x, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), sp, off),
-                          llvm::Align(v.width() == 8 ? 32 : 4));
-  }
+  // A state entry's lane array at byte offset `off` (ldState / stState).
+  Value* ldF(uint32_t entry, uint32_t off, Vx& v) { return ldState(entry, off, v, false); }
+  Value* ldI(uint32_t entry, uint32_t off, Vx& v) { return ldState(entry, off, v, true); }
+  void st(uint32_t entry, uint32_t off, Value* x, Vx& v) { stState(entry, off, x, v); }
   Value* splatScalar(Value* x, unsigned w) { return w == 1 ? x : B_.CreateVectorSplat(w, x); }
 
   // round(x) when 1 ≤ x < 2^31, else `fallback` (kernels_logic.cpp countFrom).
@@ -675,8 +956,8 @@ private:
       }
       default: break;
     }
-    // ---- stateful (per frame only) ----
-    Value* sp = statePtr(op.state);
+    // ---- stateful (one frame per evaluation) ----
+    const uint32_t sp = op.state;
     switch (op.kernel) {
       case Atom::Z1: {
         out(ldF(sp, 0, v));
@@ -794,9 +1075,10 @@ private:
       case Atom::Phasor:
       case Atom::SineHz: {
         Value* ph = ldI(sp, 0, v);
-        Value* scale = B_.CreateAlignedLoad(f64_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), sp, 32), llvm::Align(8));
+        // incScale and halfSr are per op (the same in every group's block): read from the first half's.
+        Value* scale = B_.CreateAlignedLoad(f64_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtr(sp), 32), llvm::Align(8));
         Value* halfSr = splatScalar(
-            B_.CreateAlignedLoad(f32_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), sp, 40), llvm::Align(8)), v.width());
+            B_.CreateAlignedLoad(f32_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtr(sp), 40), llvm::Align(8)), v.width());
         ph = v.selecti(v.asI(a[1]), v.ci(0), ph);
         if (op.kernel == Atom::Phasor) out(v.mul(v.toFloat(v.srli(ph, 8)), v.cf(k2pm24)));
         else out(pq::detail::fm::sin<IrFm>(v.mul(v.toFloat(ph), v.cf(kTwoPiOver2p32))));
@@ -848,7 +1130,7 @@ private:
     const g::Region& reg = s_.regions[ri];
     if (reg.kind == g::RegionKind::Control) {
       Map m;
-      emitPerFrame(reg, c64(0), 8, m, false);
+      emitPerFrame(reg, c64(0), voice_ ? vw_ : 8u, m, false);
       return;
     }
     // Preheader for the region's invariant pattern loads.
@@ -856,7 +1138,7 @@ private:
     hoistIP_ = B_.CreateBr(body);
     inv_.clear();
     B_.SetInsertPoint(body);
-    const unsigned lanes = reg.poly == g::Poly::Voice ? 8u : 1u;
+    const unsigned lanes = voice_ ? vw_ : 1u;
     if (reg.kind == g::RegionKind::Block) {
       emitSlice(reg.firstOp, reg.firstOp + reg.numOps, c64(0), frames64_);
     } else if (perFrame(reg)) {
@@ -871,6 +1153,29 @@ private:
         emitSlice(reg.firstOp, reg.firstOp + reg.numOps, t, n);
       });
     }
+    hoistIP_ = nullptr;
+    inv_.clear();
+  }
+
+  // Regions [r0, r1] of a voice stage as one loop over frames (a chain, analyse()): per frame, every region's ops
+  // in order (Block regions' inline ops, per-sample regions with their solves), values in one map.
+  void emitChain(uint32_t r0, uint32_t r1) {
+    llvm::BasicBlock* body = llvm::BasicBlock::Create(C_, "chain", F_);
+    hoistIP_ = B_.CreateBr(body);
+    inv_.clear();
+    B_.SetInsertPoint(body);
+    forLoop(c64(0), frames64_, 1, [&](Value* t) {
+      Map m;
+      for (uint32_t r = r0; r <= r1; ++r) {
+        const g::Region& reg = s_.regions[r];
+        if (reg.kind == g::RegionKind::Block) {
+          const Frame fr{t, vw_, &m, true};
+          for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) emitInline(i, fr);
+        } else {
+          emitPerFrame(reg, t, vw_, m, true);
+        }
+      }
+    });
     hoistIP_ = nullptr;
     inv_.clear();
   }
@@ -953,11 +1258,12 @@ private:
     // latency-bound (the out-of-order window overlaps their iterations) and stay at one chunk: less code. Wide
     // runs get fewer chunks (interleaveFor): one chunk of them already holds enough independent work.
     const unsigned u = interleaveFor(runCost(a, b), runDepth(a, b));
+    const unsigned w = lanes == 8 ? vw_ : 8u;  // a voice run: one frame of the group's (pair's, lane's) voices
     auto bodyAt = [&](Value* t, unsigned chunks, Value* mask) {
       std::vector<Map> maps(chunks);
       std::vector<Frame> frs;
       for (unsigned c = 0; c < chunks; ++c)
-        frs.push_back({c == 0 ? t : B_.CreateAdd(t, c64(c * chunk), "", true, true), 8, &maps[c], true, mask});
+        frs.push_back({c == 0 ? t : B_.CreateAdd(t, c64(c * chunk), "", true, true), w, &maps[c], true, mask});
       for (uint32_t i = a; i < b; ++i)
         for (unsigned c = 0; c < chunks; ++c) emitInline(i, frs[c]);
     };
@@ -1061,7 +1367,8 @@ private:
     auto unk = [&](uint32_t j) -> const g::SolveUnknown& { return s_.unknowns[sb.firstUnknown + j]; };
     auto storeUnknown = [&](uint32_t j, Value* x) {
       const g::Operand& o = unk(j).value;
-      B_.CreateAlignedStore(x, framePtr(o, t), alignOf(o, lanes));
+      if (voice_) voiceStore(x, o, t);
+      else B_.CreateAlignedStore(x, framePtr(o, t), alignOf(o, lanes));
     };
     const Frame memFrame{t, lanes, nullptr, hoist};
     auto residuals = [&]() {
@@ -1082,7 +1389,7 @@ private:
     };
     // Initial guess: the init operand, or the previous frame's solution (state).
     for (uint32_t j = 0; j < n; ++j) {
-      Value* x0 = unk(j).init.kind != g::Operand::Kind::None ? read(unk(j).init, memFrame) : ldF(statePtr(unk(j).state), 0, v);
+      Value* x0 = unk(j).init.kind != g::Operand::Kind::None ? read(unk(j).init, memFrame) : ldF(unk(j).state, 0, v);
       B_.CreateStore(x0, u[j]);
       storeUnknown(j, x0);
     }
@@ -1208,7 +1515,7 @@ private:
         J = fdJacobian(r0);
       }
       if (n == 1) {
-        llvm::Type* dt = lanes == 1 ? f64_ : static_cast<llvm::Type*>(llvm::FixedVectorType::get(f64_, lanes));
+        llvm::Type* dt = lanes == 1 ? f64_ : static_cast<llvm::Type*>(llvm::FixedVectorType::get(f64_, lanes));  // 1, 8, 16
         Value* uu = B_.CreateLoad(vt, u[0]);
         Value* d = B_.CreateFDiv(B_.CreateFPExt(r0[0], dt), B_.CreateFPExt(J[0], dt));
         Value* nu = B_.CreateFPTrunc(B_.CreateFSub(B_.CreateFPExt(uu, dt), d), vt);
@@ -1221,17 +1528,28 @@ private:
         Value* rS = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.solveOff + N8);
         Value* jS = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.solveOff + 2 * N8);
         Value* mS = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.solveOff + 2 * N8 + L_.maxSolveN * N8);
-        const llvm::Align al(lanes == 8 ? 32 : 4);
-        for (uint32_t j = 0; j < n; ++j)
-          B_.CreateAlignedStore(B_.CreateLoad(vt, u[j]), B_.CreateConstInBoundsGEP1_64(f32_, uS, j * 8), al);
-        for (uint32_t q = 0; q < n; ++q) B_.CreateAlignedStore(r0[q], B_.CreateConstInBoundsGEP1_64(f32_, rS, q * 8), al);
-        for (uint32_t q = 0; q < n * n; ++q) B_.CreateAlignedStore(J[q], B_.CreateConstInBoundsGEP1_64(f32_, jS, q * 8), al);
-        llvm::FunctionType* ty = llvm::FunctionType::get(void_, {ptr_, ptr_, ptr_, ptr_, i32_, i32_}, false);
-        llvm::CallInst* c = callPtr(ty, tabLoad(reinterpret_cast<const void*>(&engine::newton::linearUpdate)), {uS, jS, rS, mS, c32(n), c32(lanes)});
-        c->setMemoryEffects(llvm::MemoryEffects::argMemOnly());
-        c->addFnAttr(llvm::Attribute::WillReturn);
-        for (uint32_t j = 0; j < n; ++j)
-          B_.CreateStore(B_.CreateAlignedLoad(vt, B_.CreateConstInBoundsGEP1_64(f32_, uS, j * 8), al), u[j]);
+        // A pair solves its halves one after the other in the same scratch (8 lanes each).
+        const unsigned halves = lanes == 16 ? 2u : 1u;
+        const unsigned hl = lanes == 16 ? 8u : lanes;
+        llvm::Type* ht = hl == 1 ? f32_ : static_cast<llvm::Type*>(llvm::FixedVectorType::get(f32_, hl));
+        const llvm::Align al(hl == 8 ? 32 : 4);
+        auto part = [&](Value* x, unsigned h) { return halves == 2 ? half(x, h) : x; };
+        std::vector<Value*> uh(n);
+        for (unsigned h = 0; h < halves; ++h) {
+          for (uint32_t j = 0; j < n; ++j)
+            B_.CreateAlignedStore(part(B_.CreateLoad(vt, u[j]), h), B_.CreateConstInBoundsGEP1_64(f32_, uS, j * 8), al);
+          for (uint32_t q = 0; q < n; ++q) B_.CreateAlignedStore(part(r0[q], h), B_.CreateConstInBoundsGEP1_64(f32_, rS, q * 8), al);
+          for (uint32_t q = 0; q < n * n; ++q) B_.CreateAlignedStore(part(J[q], h), B_.CreateConstInBoundsGEP1_64(f32_, jS, q * 8), al);
+          llvm::FunctionType* ty = llvm::FunctionType::get(void_, {ptr_, ptr_, ptr_, ptr_, i32_, i32_}, false);
+          llvm::CallInst* c = callPtr(ty, tabLoad(reinterpret_cast<const void*>(&engine::newton::linearUpdate)), {uS, jS, rS, mS, c32(n), c32(hl)});
+          c->setMemoryEffects(llvm::MemoryEffects::argMemOnly());
+          c->addFnAttr(llvm::Attribute::WillReturn);
+          for (uint32_t j = 0; j < n; ++j) {
+            Value* x = B_.CreateAlignedLoad(ht, B_.CreateConstInBoundsGEP1_64(f32_, uS, j * 8), al);
+            uh[j] = h == 0 ? x : concat(uh[j], x);
+          }
+        }
+        for (uint32_t j = 0; j < n; ++j) B_.CreateStore(uh[j], u[j]);
       }
       for (uint32_t j = 0; j < n; ++j) storeUnknown(j, B_.CreateLoad(vt, u[j]));
     };
@@ -1240,7 +1558,7 @@ private:
     else forLoop(c64(0), c64(iterations), 1, [&](Value*) { iteration(); });
     if (newton::bodyReadAfter(s_, sb)) evalBody();  // body values read after the block match the solution
     for (uint32_t j = 0; j < n; ++j)
-      if (unk(j).state != g::kNone) st(statePtr(unk(j).state), 0, B_.CreateLoad(vt, u[j]), v);
+      if (unk(j).state != g::kNone) st(unk(j).state, 0, B_.CreateLoad(vt, u[j]), v);
   }
 
   const g::Schedule& s_;
@@ -1259,11 +1577,18 @@ private:
   std::vector<bool> inline_, body_, store_;
   std::vector<int32_t> grp_;
   std::vector<uint32_t> opRegion_;
+  std::vector<int32_t> chainEnd_;  // per region: the last region of the chain it starts, or −1
   // current function
+  bool voice_ = false;             // a voice stage's function
+  unsigned vw_ = 8;                // its voice width: 1 (scalar lanes), 8 (a group), 16 (a pair)
+  std::vector<uint8_t> local_;     // pair functions: per buffer, a value of this stage kept per group (altOff)
+  std::vector<uint8_t> staged_;    // pair functions: per state entry, staged in 16-lane stack slots
+  std::unordered_map<uint64_t, llvm::Value*> stageSlot_;  // (entry, lane-array offset) → its slot
   llvm::Function* F_ = nullptr;
   llvm::Instruction* entryTerm_ = nullptr;
-  Value *buf_ = nullptr, *aux_ = nullptr, *gstate_ = nullptr, *vstate_ = nullptr, *ext_ = nullptr, *tabArg_ = nullptr;
-  Value *group32_ = nullptr, *frames64_ = nullptr, *group64_ = nullptr;
+  Value *buf_ = nullptr, *aux_ = nullptr, *gstate_ = nullptr, *vstate_ = nullptr, *vstate1_ = nullptr, *ext_ = nullptr,
+        *tabArg_ = nullptr;
+  Value *group32_ = nullptr, *frames64_ = nullptr, *group64_ = nullptr, *group1_64_ = nullptr, *lane64_ = nullptr;
   llvm::AllocaInst *kargs_ = nullptr, *inArr_ = nullptr, *outArr_ = nullptr, *slot_ = nullptr;
   std::unordered_map<uint32_t, Value*> bufBase_, extPtr_, tabLoad_, statePtr_;
   llvm::Instruction* hoistIP_ = nullptr;

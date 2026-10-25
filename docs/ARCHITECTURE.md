@@ -157,11 +157,21 @@ namespace pq::graph {
 // fused into loops (8 frames per <8 x float> for global ops, one frame of 8 voices for voice ops; latency-bound runs
 // interleave up to 8 independent chunks per iteration, capped by code size, and runs split past a size cap);
 // per-sample loops, Control regions and solve bodies inline, including the simple stateful atoms; delay lines,
-// wavetable, noise, shaper, sample_* and stateful atoms in block regions call the dsp kernels; exact transcendentals
-// call the kernels' own SVML functions (1 lane = lane 0 of the 8-lane call, Q94). Host CPU target (AVX-512 where present), a light IR pipeline by default,
-// machine code at CompilerConfig::codeGenLevel (src/jit/src/codegen.h, compiler.cpp). CompileStats reports the
-// object size and whether any stage needs stack probes (it must not: a frame > 4 KiB touches guard pages on the
-// audio thread).
+// wavetable, noise, shaper, sample_* and global stateful atoms in block regions call the dsp kernels; exact
+// transcendentals call the kernels' own SVML functions (1 lane = lane 0 of the 8-lane call, Q94). Host CPU target
+// (AVX-512 where present), a light IR pipeline by default, machine code at CompilerConfig::codeGenLevel
+// (src/jit/src/codegen.h, compiler.cpp). CompileStats reports the object size and whether any stage needs stack
+// probes (it must not: a frame > 4 KiB touches guard pages on the audio thread).
+// Voice stages (T1b.2, CompileOptions::voiceCode, Q?-T1b.2-a): a voice value is one vector across voice lanes. The
+// simple stateful atoms are inline in voice block regions too, and consecutive voice regions that run frame by
+// frame (inline Block regions + per-sample loops) are fused into one loop over frames ("chains"). Every voice stage
+// without sends or per-frame calls also gets a PAIR function (StageFn with group1/vstate1) that runs two occupied
+// groups as <16 x float>: one zmm per value on AVX-512 hosts (VoiceCode::Pairs512, the Auto choice there), two ymm
+// halves otherwise (Pairs256); a lone group runs the 8-lane function. Its stage-local voice values have a second copy
+// for the second group (HostLayout::altOff), kernel calls and reducers run once per half (second-group reducer
+// records: ImageHost::reduceInfoB), exact transcendentals are one 8-wide SVML call per half: every mode is
+// bit-identical to the interpreter (tests/jit voice-code cases). VoiceCode::ScalarLanes is the benchmark baseline
+// (one voice lane per call, scalar code; refuses voice stages with calls). CompileStats::pairedStages.
 namespace pq::jit {
   class Compiler {                                 // one per process; owns LLJIT; images may outlive it
   public:
@@ -178,6 +188,9 @@ namespace pq::jit {
 // per op), resources (+ built-in defaults), and the stage loop with reducer init, RunCtx and output copies:
 //   host.build(schedule, {who, backend, maxBlockFrames, maxVoiceGroups, resources, extraBufFloats});
 //   process: if (host.begin(ctx)) host.run(ctx, global(k), voice(k, group));   // the backend's two callables
+//   (T1b.2) host.run(ctx, global, voice, pair(k, a, b)) runs two occupied groups per call in the stages marked by
+//   host.enablePairs(stages, alt): the second group's reducers read their own records (reduceInfoB, RunCtx runB),
+//   each reducer still combines a before b (bit-identical); stages with sends are never paired
 // The interpreter's records and the JIT's stage functions are what remains backend-specific; ImageInterface::backend
 // says which one built an image.
 namespace pq::compile {   // pq_compile (T1.x-arch2, Q73 B): the one file → image pipeline (pqc, pqdaw --play)

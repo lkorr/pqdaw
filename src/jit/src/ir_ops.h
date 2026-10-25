@@ -79,13 +79,43 @@ public:
   // ---- bitwise on floats ----
   V asI(V f) { return b_.CreateBitCast(f, iT_); }
   V asF(V i) { return b_.CreateBitCast(i, fT_); }
-  V band(V a, V c) { return asF(b_.CreateAnd(asI(a), asI(c))); }
+  // On AVX-512 targets (kMasks(), set per generated function) a comparison's mask AND a value is a zero-masking
+  // select on the comparison's k-register (same bits: all ones keeps the value, zero gives +0.0) instead of
+  // materialising the mask in a vector register (T1b.2: bool masks as vector predicates).
+  V band(V a, V c) {
+    if (kMasks()) {
+      if (V p = maskPred(a)) return b_.CreateSelect(p, c, zero());
+      if (V p = maskPred(c)) return b_.CreateSelect(p, a, zero());
+    }
+    return asF(b_.CreateAnd(asI(a), asI(c)));
+  }
   V bor(V a, V c) { return asF(b_.CreateOr(asI(a), asI(c))); }
   V bxor(V a, V c) { return asF(b_.CreateXor(asI(a), asI(c))); }
-  V andnot(V a, V c) { return asF(b_.CreateAnd(b_.CreateNot(asI(a)), asI(c))); }  // ~a & c
+  V andnot(V a, V c) {  // ~a & c
+    if (kMasks())
+      if (V p = maskPred(a)) return b_.CreateSelect(p, zero(), c);
+    return asF(b_.CreateAnd(b_.CreateNot(asI(a)), asI(c)));
+  }
+  static bool& kMasks() noexcept {
+    thread_local bool on = false;
+    return on;
+  }
+  // The comparison behind a mask made by mask(), or null.
+  static V maskPred(V m) {
+    if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(m))
+      if (auto* se = llvm::dyn_cast<llvm::SExtInst>(bc->getOperand(0)))
+        if (se->getSrcTy()->getScalarSizeInBits() == 1) return se->getOperand(0);
+    return nullptr;
+  }
   V bnot(V a) { return asF(b_.CreateNot(asI(a))); }
-  // m ? a : c by the sign bit of m (blendvps)
-  V select(V m, V a, V c) { return b_.CreateSelect(b_.CreateICmpSLT(asI(m), ci(0)), a, c); }
+  // m ? a : c by the sign bit of m (blendvps). A mask that comes straight from a comparison selects by the
+  // comparison itself (T1b.2: the predicate, a k-register on AVX-512, instead of a sign-extended lane mask that is
+  // compared again); the result is the same because a comparison's mask is all ones or zero.
+  V select(V m, V a, V c) { return b_.CreateSelect(pred(m), a, c); }
+  V pred(V m) {
+    if (V p = maskPred(m)) return p;
+    return b_.CreateICmpSLT(asI(m), ci(0));
+  }
 
   // ---- integer lanes ----
   V addi(V a, V c) { return b_.CreateAdd(a, c); }
@@ -100,7 +130,11 @@ public:
   V srai(V a, int n) { return b_.CreateAShr(a, ci(n)); }
   V eqi(V a, V c) { return b_.CreateSExt(b_.CreateICmpEQ(a, c), iT_); }
   V gti(V a, V c) { return b_.CreateSExt(b_.CreateICmpSGT(a, c), iT_); }
-  V selecti(V m, V a, V c) { return b_.CreateSelect(b_.CreateICmpSLT(m, ci(0)), a, c); }  // per-lane sign
+  V selecti(V m, V a, V c) {  // per-lane sign (a sign-extended comparison: the comparison, as in select)
+    if (auto* se = llvm::dyn_cast<llvm::SExtInst>(m))
+      if (se->getSrcTy()->getScalarSizeInBits() == 1) return b_.CreateSelect(se->getOperand(0), a, c);
+    return b_.CreateSelect(b_.CreateICmpSLT(m, ci(0)), a, c);
+  }
   V toFloat(V i) { return b_.CreateSIToFP(i, fT_); }
 
   // cvttps2dq / cvtps2dq: NaN and out-of-range → INT_MIN (the "integer indefinite" value).
@@ -123,13 +157,46 @@ public:
       llvm::Value* v = b_.CreateInsertElement(llvm::PoisonValue::get(v2d), p, uint64_t{0});
       return b_.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(m, llvm::Intrinsic::x86_sse2_cvtsd2si), {v});
     }
+    if (w_ == 16 && zmm()) {  // vcvtpd2dq zmm: the same conversion (current rounding mode, overflow → INT_MIN)
+      llvm::Function* cvt = llvm::Intrinsic::getOrInsertDeclaration(m, llvm::Intrinsic::x86_avx512_mask_cvtpd2dq_512);
+      llvm::Type* v8i = llvm::FixedVectorType::get(i32_, 8);
+      auto part = [&](int base) {
+        llvm::SmallVector<int, 8> idx;
+        for (int k = 0; k < 8; ++k) idx.push_back(base + k);
+        return b_.CreateCall(cvt, {b_.CreateShuffleVector(p, idx), llvm::Constant::getNullValue(v8i),
+                                   b_.getInt8(0xFF), b_.getInt32(4)});
+      };
+      return concat16(part(0), part(8));
+    }
     llvm::Function* cvt = llvm::Intrinsic::getOrInsertDeclaration(m, llvm::Intrinsic::x86_avx_cvt_pd2dq_256);
+    if (w_ == 16) {
+      llvm::Value* q[4];
+      for (int k = 0; k < 4; ++k) q[k] = b_.CreateCall(cvt, {b_.CreateShuffleVector(p, {4 * k, 4 * k + 1, 4 * k + 2, 4 * k + 3})});
+      return concat16(b_.CreateShuffleVector(q[0], q[1], {0, 1, 2, 3, 4, 5, 6, 7}),
+                      b_.CreateShuffleVector(q[2], q[3], {0, 1, 2, 3, 4, 5, 6, 7}));
+    }
     llvm::Value* lo = b_.CreateCall(cvt, {b_.CreateShuffleVector(p, {0, 1, 2, 3})});
     llvm::Value* hi = b_.CreateCall(cvt, {b_.CreateShuffleVector(p, {4, 5, 6, 7})});
     return b_.CreateShuffleVector(lo, hi, {0, 1, 2, 3, 4, 5, 6, 7});
   }
 
 private:
+  // A pair function on 512-bit registers (codegen.h): its <16 x …> conversions use the AVX-512 forms, which round
+  // and saturate exactly like the 256-bit ones; on two 256-bit halves they use the AVX forms per half.
+  bool zmm() const {
+    const llvm::Function* f = b_.GetInsertBlock()->getParent();
+    return f->getFnAttribute("prefer-vector-width").getValueAsString() == "512";
+  }
+  V concat16(V lo, V hi) {
+    llvm::SmallVector<int, 16> idx;
+    for (int k = 0; k < 16; ++k) idx.push_back(k);
+    return b_.CreateShuffleVector(lo, hi, idx);
+  }
+  V halfOf(V x, int h) {
+    llvm::SmallVector<int, 8> idx;
+    for (int k = 0; k < 8; ++k) idx.push_back(h * 8 + k);
+    return b_.CreateShuffleVector(x, idx);
+  }
   V cvt(V f, bool trunc) {
     llvm::Module* m = b_.GetInsertBlock()->getModule();
     if (w_ == 1) {
@@ -139,9 +206,14 @@ private:
                                m, trunc ? llvm::Intrinsic::x86_sse_cvttss2si : llvm::Intrinsic::x86_sse_cvtss2si),
                            {v});
     }
-    return b_.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
-                             m, trunc ? llvm::Intrinsic::x86_avx_cvtt_ps2dq_256 : llvm::Intrinsic::x86_avx_cvt_ps2dq_256),
-                         {f});
+    if (w_ == 16 && zmm())
+      return b_.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+                               m, trunc ? llvm::Intrinsic::x86_avx512_mask_cvttps2dq_512 : llvm::Intrinsic::x86_avx512_mask_cvtps2dq_512),
+                           {f, llvm::Constant::getNullValue(iT_), b_.getInt16(0xFFFF), b_.getInt32(4)});
+    llvm::Function* c256 = llvm::Intrinsic::getOrInsertDeclaration(
+        m, trunc ? llvm::Intrinsic::x86_avx_cvtt_ps2dq_256 : llvm::Intrinsic::x86_avx_cvt_ps2dq_256);
+    if (w_ == 16) return concat16(b_.CreateCall(c256, {halfOf(f, 0)}), b_.CreateCall(c256, {halfOf(f, 1)}));
+    return b_.CreateCall(c256, {f});
   }
 
   llvm::IRBuilder<>& b_;
