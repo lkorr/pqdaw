@@ -248,6 +248,7 @@ void RollState::rebuildRows() {
   if (scale_ || o.fold == Fold::Scale) o.scale = scaleMask_;
   rows_ = RowModel::build(tuning_, o);
   builtScale_ = scale;
+  hoverSnap_ = nullptr;  // the hover readout's row index refers to the old rows
   if (centreCents && !rows_.empty() && a.h > 0) {
     const CentsPlacement p = rows_.placeCents(*centreCents);
     scrollY_ = p.centre - a.h / 2;

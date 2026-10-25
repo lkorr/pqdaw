@@ -32,10 +32,9 @@ MenuBar::MenuBar(ViewContext& ctx) : Widget("menu-bar"), ctx_(ctx), alive_(std::
   setFocusable(false);  // the focused editor keeps the focus, so Edit knows what it acts on
 }
 
-MenuBar::~MenuBar() {
-  *alive_ = nullptr;
-  close();
-}
+// The open menu's callbacks reach the bar through alive_ (null from here on). The menu is not closed here: during the
+// tree's teardown the overlay layer may already be half destroyed, and it closes (and forgets) its popups itself.
+MenuBar::~MenuBar() { *alive_ = nullptr; }
 
 IRect MenuBar::titleRect(int32_t i) const {
   if (i < 0 || i >= kMenus) return {};
