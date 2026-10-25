@@ -459,6 +459,74 @@ TEST_CASE("voices: lane state is reset to StateInit at note-on (Q29), unless dis
   }
 }
 
+// T1.3-fix1 (Q29 B): a free-running source in a voice patch has one instance per voice; `shared(…)` keeps the old
+// single global instance, bit for bit what freeRunningPoly = Global (T1.3) gave.
+namespace {
+std::string noisePair(const char* source) {
+  return std::string("patch NoisePair {\n  out a : audio voice\n  out b : audio voice\n  out done : bool voice\n  n = ") +
+         source +
+         "\n  a = n * gate_to_real(voice.velocity > 0.5)\n  b = n * gate_to_real(voice.velocity <= 0.5)\n"
+         "  done = not(voice.gate)\n}\n";
+}
+double correlation(const std::vector<float>& x, const std::vector<float>& y) {
+  double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+  const size_t n = std::min(x.size(), y.size());
+  for (size_t i = 0; i < n; ++i) {
+    sx += x[i];
+    sy += y[i];
+    sxx += static_cast<double>(x[i]) * x[i];
+    syy += static_cast<double>(y[i]) * y[i];
+    sxy += static_cast<double>(x[i]) * y[i];
+  }
+  const double cx = sxx - sx * sx / n, cy = syy - sy * sy / n, cxy = sxy - sx * sy / n;
+  return cxy / std::sqrt(cx * cy);
+}
+}  // namespace
+
+TEST_CASE("voices: two simultaneous voices of noise() are decorrelated; shared(noise()) is the old global noise") {
+  const std::vector<Ev> notes = {on(0, 1, 200.0f, 0.9f), on(0, 2, 300.0f, 0.3f)};
+  Rig voice(compileText(noisePair("noise()"), kSr), {}, 1, 64);
+  const auto v = voice.run(48000, 64, notes);
+  const double c = correlation(v[voice.mixIndex("a")], v[voice.mixIndex("b")]);
+  MESSAGE("per-voice noise: corr " << c);
+  CHECK(std::abs(c) < 0.05);
+  CHECK(voice.rtViolations == 0);
+  // The opt-in: one instance for both voices, identical to the T1.3 default bit for bit.
+  Rig shared(compileText(noisePair("shared(noise())"), kSr), {}, 1, 64);
+  Rig old(compileText(noisePair("noise()"), kSr, Poly::Global), {}, 1, 64);
+  const auto s = shared.run(48000, 64, notes);
+  const auto o = old.run(48000, 64, notes);
+  CHECK(correlation(s[shared.mixIndex("a")], s[shared.mixIndex("b")]) > 0.999);
+  REQUIRE(s.size() == o.size());
+  for (size_t m = 0; m < s.size(); ++m) CHECK(std::memcmp(s[m].data(), o[m].data(), s[m].size() * sizeof(float)) == 0);
+}
+
+TEST_CASE("voices: an LFO restarts at each note-on (per voice); shared(…) keeps one free-running LFO") {
+  const char* perVoice =
+      "patch Lfo {\n  out y : audio voice\n  out done : bool voice\n  y = sine(phasor(3Hz)) * gate_to_real(voice.gate)\n"
+      "  done = not(voice.gate)\n}\n";
+  const char* sharedLfo =
+      "patch Lfo {\n  out y : audio voice\n  out done : bool voice\n  y = shared(sine(phasor(3Hz))) * gate_to_real(voice.gate)\n"
+      "  done = not(voice.gate)\n}\n";
+  const char* oldLfo = perVoice;  // compiled with freeRunningPoly = Global
+  const std::vector<Ev> notes = {on(5, 1, 123.0f), off(305, 1), on(1000, 2, 456.0f), off(1300, 2)};
+  for (int variant = 0; variant < 3; ++variant) {
+    INFO("variant " << variant);
+    Rig r(compileText(variant == 1 ? sharedLfo : variant == 0 ? perVoice : oldLfo, kSr, variant == 2 ? Poly::Global : Poly::Voice),
+          {}, 1, 64);
+    const auto out = r.run(2048, 64, notes);
+    const auto& y = out[r.mixIndex("y")];
+    int same = 0;
+    for (uint32_t k = 0; k < 300; ++k) same += y[5 + k] == y[1000 + k] ? 1 : 0;
+    if (variant == 0) {
+      CHECK(same == 300);  // the same LFO trajectory from each onset
+      CHECK(y[5] == 0.0f);  // sin(0)
+    } else {
+      CHECK(same < 300);  // one LFO running since the program started
+    }
+  }
+}
+
 TEST_CASE("voices: voice end — done slot, silence after release, release timeout without outputs") {
   SUBCASE("done") {
     VoiceConfig cfg;

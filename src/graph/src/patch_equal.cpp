@@ -51,6 +51,7 @@ uint64_t labelHash(const Patch& p, NodeIndex v) noexcept {
   const Node& nd = p.node(v);
   uint64_t h = mix(static_cast<uint64_t>(nd.kind), nd.atom);
   h = mix(h, (static_cast<uint64_t>(nd.numInputs) << 32) | (static_cast<uint64_t>(nd.numOutputs) << 16) | nd.nameOutput);
+  h = mix(h, nd.shared ? 1u : 0u);
   for (uint32_t k = 0, e = static_cast<uint32_t>(nd.numInputs) + nd.numOutputs; k < e; ++k) {
     const PortType& t = p.portTypes()[nd.firstPort + k];
     h = mix(h, (static_cast<uint64_t>(t.kind) << 40) | (static_cast<uint64_t>(t.rate) << 32) |
@@ -163,7 +164,7 @@ bool sameNode(const Patch& a, NodeIndex i, const Patch& b, NodeIndex j) {
   const Node& x = a.node(i);
   const Node& y = b.node(j);
   if (x.kind != y.kind || x.numInputs != y.numInputs || x.numOutputs != y.numOutputs ||
-      x.nameOutput != y.nameOutput)
+      x.nameOutput != y.nameOutput || x.shared != y.shared)
     return false;
   if (a.nodeName(i) != b.nodeName(j) || !(a.layout(i) == b.layout(j))) return false;
   const auto ta = a.portTypes().subspan(x.firstPort, x.numInputs + x.numOutputs);

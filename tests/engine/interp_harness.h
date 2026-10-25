@@ -118,7 +118,8 @@ inline std::vector<Compiled> compileFile(const fs::path& path, double sr, std::v
 }
 
 // Compiles source text (all patches; the first one is returned or the test fails).
-inline Compiled compileText(const std::string& text, double sr = 48000.0) {
+// freeRunningPoly: InferOptions::freeRunningPoly (Global = the T1.3 behaviour, for T1.3-fix1's comparisons).
+inline Compiled compileText(const std::string& text, double sr = 48000.0, Poly freeRunningPoly = InferOptions{}.freeRunningPoly) {
   ParseResult pr = parseDetailed(text, "test.pqp");
   if (!pr.ok()) {
     std::fprintf(stderr, "%s\n", formatDiagnostic(text, pr.diagnostics.front()).c_str());
@@ -128,6 +129,7 @@ inline Compiled compileText(const std::string& text, double sr = 48000.0) {
   lib.add(pr.file);
   InferOptions io;
   io.library = &lib;
+  io.freeRunningPoly = freeRunningPoly;
   auto inf = infer(pr.file.patches[0], io);
   if (!inf.ok()) {
     std::fprintf(stderr, "%s\n", inf.error().message.c_str());

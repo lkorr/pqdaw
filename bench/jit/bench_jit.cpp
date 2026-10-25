@@ -283,7 +283,9 @@ const char* kOscFilter = R"(patch OscFilter {
   out = v2 * gate_to_real(voice.gate)
 })";
 
-// docs/reviews/M1/probes/proto_operator.pqp (the M1 review's SPEC §13 calibration probe), verbatim.
+// docs/reviews/M1/probes/proto_operator.pqp (the M1 review's SPEC §13 calibration probe). Its LFO is global (one LFO
+// for all voices) as in the review: since T1.3-fix1 that is written shared(…); the probe's text without it, now
+// a per-voice LFO restarting at each note-on, is kProtoOperatorVoiceLfo.
 const char* kProtoOperator = R"(patch ProtoOperator {
   param r2 = 2.0 [0.25..16]
   param r3 = 3.0 [0.25..16]
@@ -305,7 +307,7 @@ const char* kProtoOperator = R"(patch ProtoOperator {
   o2 = sine(phasor(voice.hz * r2 + o3 * voice.hz)) * e2 * i2
   o1 = sine(phasor(voice.hz + o2 * voice.hz)) * e1
 
-  lfo = sine(phasor(0.5Hz))
+  lfo = shared(sine(phasor(0.5Hz)))
   g   = tan(3.141592653589793 * min(cutoff * (1 + 0.3 * lfo), 18000) / sr)
   k   = 2 - 2 * res
   a1  = 1 / (1 + g * (g + k))
@@ -335,6 +337,13 @@ patch adsr {
   out = level
 }
 )";
+
+std::string protoOperatorVoiceLfo() {
+  std::string t = kProtoOperator;
+  const std::string from = "shared(sine(phasor(0.5Hz)))";
+  t.replace(t.find(from), from.size(), "sine(phasor(0.5Hz))");
+  return t;
+}
 
 const char* kComb = R"(patch Comb {
   in x : audio
@@ -457,6 +466,7 @@ int main(int argc, char** argv) {
       runVoiceCodes("osc_filter", kOscFilter, voices);
       runVoiceCodes("fm_voice", kFmVoice, voices);
       runVoiceCodes("proto_operator", kProtoOperator, voices);
+      runVoiceCodes("proto_operator_voice_lfo", protoOperatorVoiceLfo(), voices);
     }
     // T1b.1-fix1: opt-in contraction, and the machine-code levels, at the default IR level.
     for (const auto& [name, text, voices] : {std::tuple<const char*, std::string, uint32_t>{"chain32", chain32(false), 0},

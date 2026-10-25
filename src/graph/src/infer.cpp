@@ -102,6 +102,7 @@ struct FNode {
   NodeIndex src = kNone;              // node in instances[inst].patch
   uint32_t firstIn = 0, firstOut = 0;
   uint32_t solve = kNone;             // flat solve block (Unknown/Equation)
+  bool shared = false;                // Atom: Node::shared (`shared(…)`, T1.3-fix1)
 };
 
 struct CalleeInfo {
@@ -332,6 +333,7 @@ private:
           f = newNode(k, ii, n, nd.numInputs, nd.numOutputs);
           FNode& fn = fnodes_[f];
           fn.atom = nd.atom;
+          fn.shared = k == FKind::Atom && nd.shared;
           if (k == FKind::Atom && !isRoot && (nd.atom == atomVoiceHz_ || nd.atom == atomVoiceCents_))
             voiceReads_.emplace_back(f, nd.atom == atomVoiceCents_);
           if (k == FKind::Atom && nd.atom == atomTuneVoices_) {
@@ -599,13 +601,11 @@ private:
     Kind kind = Kind::Infer;
     uint16_t width = kWidthInfer;
     uint32_t packWidth = 0;
-    bool varying = false;  // some input is not const (or not known yet to be const)
     for (uint32_t i = 0; i < fn.nIn; ++i) {
       const uint32_t p = fn.firstIn + i;
       const PortType t = inType(p);
       rate = maxRate(rate, t.rate);
       poly = maxPoly(poly, t.poly);
-      if (inDrv_[p] != kNone && t.rate > Rate::Const) varying = true;
       if (pack) {
         packWidth += std::max<uint32_t>(t.width, 1);
       } else if (!joinWidth(width, t.width)) {
@@ -626,7 +626,7 @@ private:
       }
       width = static_cast<uint16_t>(packWidth);
     }
-    if (stateful && !varying) poly = maxPoly(poly, opt_.freeRunningPoly);
+    if (!perVoice_.empty() && perVoice_[f]) poly = Poly::Voice;  // a free-running source made per-voice (freeRunning)
     bool changed = false;
     for (uint32_t j = 0; j < fn.nOut; ++j) {
       const uint32_t o = fn.firstOut + j;
@@ -702,6 +702,12 @@ private:
         }
       }
     }
+    drain();
+    freeRunning();
+  }
+
+  // Processes the worklist until nothing changes.
+  void drain() {
     for (size_t head = 0; head < queue_.size(); ++head) {
       const uint32_t f = queue_[head];
       queued_[f] = 0;
@@ -715,6 +721,73 @@ private:
         queue_.erase(queue_.begin(), queue_.begin() + static_cast<std::ptrdiff_t>(head) + 1);
         head = static_cast<size_t>(-1);
       }
+    }
+    queue_.clear();
+  }
+
+  // Free-running sources (QUESTIONS Q29 B, T1.3-fix1): a stateful atom whose inputs are all global and at most
+  // param rate (noise(), pulse(), phasor(0.5Hz), phasor(rateParam), sine_hz(lfoRate)…) gets one instance per
+  // voice when the patch is in a voice context and its output feeds voice processing: phase from note-on, noise
+  // seeded per voice. A source that reaches voice processing only through a `shared(…)` node, or only through a
+  // global-bound port (a callee's `in … global`: that is a reduction), keeps one global instance. Delay lines stay
+  // global (a ring per voice is a memory decision the patch makes by feeding a voice signal in).
+  //   Decided after the fixpoint, from the inferred types (rates do not depend on poly, so promoting a source never
+  // changes which atoms are free-running): the previous rule, evaluated per node during the fixpoint, read an
+  // unevaluated driver as const, so the result depended on visit order (M1 review M21). Iterated, because a
+  // promoted source makes its consumers per-voice, which other sources may feed.
+  void freeRunning() {
+    if (opt_.freeRunningPoly != Poly::Voice || !opt_.voiceContext) return;
+    const auto nf = static_cast<uint32_t>(fnodes_.size());
+    perVoice_.assign(nf, 0);
+    auto isVoice = [&](const PortType& t) { return t.poly == Poly::Voice; };
+    for (uint32_t round = 0; round < nf + 1; ++round) {
+      // Nodes whose value reaches voice processing: backwards from every per-voice node.
+      std::vector<uint8_t> feeds(nf, 0);
+      std::vector<uint32_t> stack;
+      for (uint32_t f = 0; f < nf; ++f) {
+        const FNode& fn = fnodes_[f];
+        bool v = false;
+        for (uint32_t o = fn.firstOut; o < fn.firstOut + fn.nOut && !v; ++o) v = isVoice(outT_[o]);
+        // A per-voice input, or a port declared voice (a root `out … voice`: the voices' own output).
+        for (uint32_t p = fn.firstIn; p < fn.firstIn + fn.nIn && !v; ++p)
+          v = inBound_[p].poly == Poly::Voice || (inDrv_[p] != kNone && isVoice(outT_[inDrv_[p]]));
+        if (fn.kind == FKind::Equation || fn.kind == FKind::Unknown) v = v || isVoice(solveType_[fn.solve]);
+        if (v) {
+          feeds[f] = 1;
+          stack.push_back(f);
+        }
+      }
+      while (!stack.empty()) {
+        const uint32_t v = stack.back();
+        stack.pop_back();
+        const FNode& fn = fnodes_[v];
+        for (uint32_t p = fn.firstIn; p < fn.firstIn + fn.nIn; ++p) {
+          if (inBound_[p].poly == Poly::Global || inDrv_[p] == kNone) continue;  // a reduction, or unconnected
+          const uint32_t u = outOwner_[inDrv_[p]];
+          if (feeds[u]) continue;
+          feeds[u] = 1;
+          if (!fnodes_[u].shared) stack.push_back(u);
+        }
+      }
+      bool any = false;
+      for (uint32_t f = 0; f < nf; ++f) {
+        const FNode& fn = fnodes_[f];
+        if (fn.kind != FKind::Atom || fn.shared || perVoice_[f] || !feeds[f]) continue;
+        const AtomSignature& sig = atomSignature(fn.atom);
+        if (!sig.has(atom_flags::kStateful) || sig.name.starts_with("delay")) continue;
+        bool freeRun = true;
+        for (uint32_t p = fn.firstIn; p < fn.firstIn + fn.nIn && freeRun; ++p) {
+          if (inDrv_[p] == kNone) continue;
+          const PortType& t = outT_[inDrv_[p]];
+          freeRun = !isVoice(t) && (t.rate == Rate::Infer || t.rate <= Rate::Param);
+        }
+        if (!freeRun) continue;
+        perVoice_[f] = 1;
+        push(f);
+        any = true;
+      }
+      if (!any) break;
+      drain();
     }
   }
 
@@ -929,6 +1002,27 @@ private:
           inTarget_[p] = {n, static_cast<uint16_t>(i)};
         }
       }
+      // A per-voice oscillator made from a free-running one (freeRunning) restarts at its voice's onset sample:
+      // reset = voice.trigger (or'ed with its own reset). The lane's state is reset at the start of the onset's
+      // block, and a const/param-rate rate (unlike voice.hz, which is 0 before the onset) would otherwise advance
+      // it for the frames before the onset.
+      if (fn.kind == FKind::Atom && !perVoice_.empty() && perVoice_[f] && (fn.atom == atomPhasor_ || fn.atom == atomSineHz_)) {
+        const PortType trigType = portType(Kind::Bool, Rate::Audio, Poly::Voice, kWidthMono);
+        const NodeIndex trig = addFlat(tp, out.addAtom(atomVoiceTrigger_), hashMix(key, 0x7121660u),
+                                       {fn.inst, fn.src, NodeOrigin::What::Rewrite});
+        extraOut_.emplace_back(trig, trigType);
+        const uint32_t p = fn.firstIn + 1;  // phasor / sine_hz: (hz, reset)
+        if (inDrv_[p] == kNone) {
+          out.connect(PortRef{trig, 0}, PortRef{n, 1});
+        } else {
+          const NodeIndex any = addFlat(tp, out.addAtom(atomOr_), hashMix(key, 0x7121661u),
+                                        {fn.inst, fn.src, NodeOrigin::What::Rewrite});
+          extraOut_.emplace_back(any, trigType);
+          inTarget_[p] = {any, 0};
+          out.connect(PortRef{trig, 0}, PortRef{any, 1});
+          out.connect(PortRef{any, 0}, PortRef{n, 1});
+        }
+      }
     }
 
     // Pass 2: wires from each in-port's (wired-through) source.
@@ -978,6 +1072,7 @@ private:
   std::vector<uint32_t> outOwner_;  // per out-port: FNode
   std::vector<PortType> outT_;      // per out-port: inferred
   std::vector<uint8_t> failed_;     // per FNode: already reported
+  std::vector<uint8_t> perVoice_;   // per FNode: a free-running source made per-voice (freeRunning)
 
   std::vector<uint32_t> consBegin_, cons_;
   std::vector<uint32_t> queue_;
@@ -989,6 +1084,11 @@ private:
   const AtomId atomVoiceHz_ = atomId("voice.hz");
   const AtomId atomVoiceCents_ = atomId("voice.cents");
   const AtomId atomTuneVoices_ = atomId("tune_voices");
+  // T1.3-fix1: per-voice oscillators restart at the onset.
+  const AtomId atomPhasor_ = atomId("phasor");
+  const AtomId atomSineHz_ = atomId("sine_hz");
+  const AtomId atomVoiceTrigger_ = atomId("voice.trigger");
+  const AtomId atomOr_ = atomId("or");
   std::vector<std::pair<uint32_t, bool>> voiceReads_;  // (FNode, is voice.cents) of non-root voice.hz/cents reads
 
   std::vector<PortRef> flatOut_;    // emit: per out-port

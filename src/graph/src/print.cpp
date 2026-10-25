@@ -403,8 +403,18 @@ private:
     return true;
   }
 
-  // The defining expression of a computed node.
+  // The defining expression of a computed node; `shared(…)` around it when the node is marked (Node::shared).
   void expr(NodeIndex v, int minPrec) {
+    if (p_.node(v).shared && p_.node(v).kind == NodeKind::Atom) {
+      out_ += "shared(";
+      exprBody(v, kPrecTernary);
+      out_ += ')';
+      return;
+    }
+    exprBody(v, minPrec);
+  }
+
+  void exprBody(NodeIndex v, int minPrec) {
     const Node& nd = p_.node(v);
     if (nd.kind == NodeKind::Const) {
       const Constant& c = p_.constant(v);

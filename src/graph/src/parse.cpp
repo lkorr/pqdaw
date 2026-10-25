@@ -1546,6 +1546,28 @@ private:
       return k;
     }();
 
+    // `shared(expr)` (T1.3-fix1, PATCH_LANGUAGE §3): marks the node computing expr, no node of its own.
+    if (name == "shared") {
+      if (n.b != 1 || positional != 1) {
+        errorTok(n.tok, "shared() takes one expression, e.g. shared(noise()) or shared(sine(phasor(0.5Hz)))");
+        return {};
+      }
+      const uint32_t arg = args_[n.a].expr;
+      const AstKind k = ast_[arg].kind;
+      if (k == AstKind::Name || k == AstKind::NamePort || k == AstKind::Number || k == AstKind::Bool) {
+        errorAst(arg, "shared() wraps the expression that computes the source (write shared(noise()) where the "
+                      "source is defined, not shared(name))");
+        return {};
+      }
+      const PortRef v = materialize(arg);
+      if (v.node == kNone) return {};
+      if (p_->node(v.node).kind != NodeKind::Atom) {
+        errorAst(arg, "shared() applies to an atom or operator expression, not to a subcircuit call or a constant");
+        return {};
+      }
+      p_->setShared(v.node, true);
+      return v;
+    }
     NodeIndex callNode;
     uint32_t repeatedFrom = kNone;  // first repeated (variadic) input; named arguments cannot address those
     if (const SubcircuitRef* ref = patches_.find(name)) {

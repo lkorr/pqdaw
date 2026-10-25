@@ -25,8 +25,13 @@
 //     root's `out … global`, a callee's `in … global`) is reduced by an inserted voice_sum node (SPEC §7.4: poly →
 //     global defaults to sum; on bools the sum is "any voice"). The per-wire override is an explicit reducer call
 //     in the text: voice_last / voice_highest / voice_lowest / voice_loudest (QUESTIONS Q28).
-//   - Stateful atoms with no non-const input (noise(), pulse(), phasor(220Hz)) are free-running: their poly is
-//     InferOptions::freeRunningPoly (global by default, QUESTIONS Q29).
+//   - Free-running sources (T1.3-fix1, QUESTIONS Q29 B): a stateful atom whose inputs are all global and at most
+//     param rate (noise(), pulse(), phasor(0.5Hz), phasor(rateParam)) is per-voice when InferOptions::voiceContext
+//     and freeRunningPoly = Voice (the default) and its output feeds voice processing (some path of consumers
+//     reaches a per-voice node, not through a global-bound port): one instance per voice, phase from note-on, noise
+//     seeded per voice. A source that reaches voice processing only through a node marked `shared(…)`
+//     (Node::shared) keeps one global instance, as does every source with freeRunningPoly = Global (the T1.3
+//     behaviour). Delay lines are never promoted. Decided after the fixpoint (infer.cpp freeRunning).
 //   - Element-wise atoms broadcast mono over N channels; pack concatenates channels; channel(x, i) is mono (i must
 //     be a const below x's width, any i on a mono x). Engine I/O sources have InferOptions::ioChannels channels.
 //   - eq / ne on bools are rewritten to not(xor) / xor (the dsp comparators are real-only, kernel_map.h).
@@ -80,7 +85,7 @@ struct InferOptions {
   bool voiceContext = true;               // voice.* sources allowed (false for an audio effect's patch)
   bool implicitVoiceSum = true;           // false: a voice signal into a global bound is an error (needs an
                                           // explicit reducer call) instead of getting a voice_sum
-  Poly freeRunningPoly = Poly::Global;    // poly of stateful atoms with no non-const input (Q29)
+  Poly freeRunningPoly = Poly::Voice;     // free-running sources feeding voice processing: Voice (Q29 B) or Global
   uint16_t ioChannels = 2;                // width of track.in, sidechain.in and clipPlayer
   std::span<const RootInput> inputs;      // per root `in`, in node order; missing entries = connected, declared
   SourceText source{};                    // optional

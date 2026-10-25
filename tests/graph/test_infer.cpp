@@ -20,7 +20,7 @@ namespace {
 struct Options {
   bool voiceContext = true;
   bool implicitVoiceSum = true;
-  Poly freeRunningPoly = Poly::Global;
+  Poly freeRunningPoly = Poly::Voice;  // InferOptions default (T1.3-fix1)
   uint16_t ioChannels = 2;
   std::vector<RootInput> inputs;
 };
@@ -209,13 +209,41 @@ const Case kCases[] = {
      "patch R { in x : audio voice\n out o : audio voice\n f = Filt(x, cutoff: voice.hz * 2)\n o = f }\n"
      "patch Filt { in x : audio\n param cutoff = 1000 [20..20000]\n out y : audio\n g = tan(cutoff * 0.0001)\n y = x * g }",
      {{"f__g", "real audio voice mono"}}},
-    {"free-running sources are global by default",
+    // T1.3-fix1 (Q29 B): free-running sources that feed voice processing are per-voice by default.
+    {"free-running sources feeding voices are per-voice by default",
      "patch R { out o : audio voice\n n = noise()\n p = phasor(220Hz)\n o = n + p + voice.hz }",
-     {{"n", "real audio global mono"}, {"p", "real audio global mono"}}},
-    {"free-running sources per voice when asked",
+     {{"n", "real audio voice mono"}, {"p", "real audio voice mono"}}},
+    {"free-running sources into a voice output are per-voice (no voice signal needed)",
      "patch R { out o : audio voice\n n = noise()\n p = pulse()\n o = n + gate_to_real(p) }",
-     {{"n", "real audio voice mono"}, {"p", "bool audio voice mono"}}, nullptr, nullptr,
-     {true, true, Poly::Voice, 2, {}}},
+     {{"n", "real audio voice mono"}, {"p", "bool audio voice mono"}}},
+    {"freeRunningPoly = Global keeps the T1.3 behaviour",
+     "patch R { out o : audio voice\n n = noise()\n p = phasor(220Hz)\n o = n + p + voice.hz }",
+     {{"n", "real audio global mono"}, {"p", "real audio global mono"}}, nullptr, nullptr,
+     {true, true, Poly::Global, 2, {}}},
+    {"an LFO with a rate param into a voice filter is per-voice (param inputs are free-running too)",
+     "patch R { param rate = 5 [0.1..20]\n out o : audio voice\n lfo = sine(phasor(rate))\n c = 1000 + lfo * 500\n"
+     " o = sine(phasor(voice.hz)) * c }",
+     {{"lfo", "real audio voice mono"}, {"c", "real audio voice mono"}}},
+    {"shared(…) keeps one global instance (and its whole cone)",
+     "patch R { out o : audio voice\n lfo = shared(sine(phasor(0.5Hz)))\n n = shared(noise())\n"
+     " o = sine(phasor(voice.hz)) * (1 + lfo) + n }",
+     {{"lfo", "real audio global mono"}, {"n", "real audio global mono"}}},
+    {"a source that only feeds global processing stays global",
+     "patch R { out o : audio voice\n out fx : audio global\n n = noise()\n o = sine(phasor(voice.hz))\n fx = n * 0.1 }",
+     {{"n", "real audio global mono"}, {"o:in", "real audio voice mono"}}},
+    {"a source reaching voices only through a callee's global-bound input stays global",
+     "patch R { out o : audio voice\n n = noise()\n o = G(n, voice.hz) }\n"
+     "patch G { in x : real global\n in h : audio\n out y : audio\n y = voice_sum(h) * 0 + x + h }",
+     {{"n", "real audio global mono"}}},
+    {"outside a voice context free-running sources stay global",
+     "patch R { in x : audio\n out o : audio\n o = x + noise() * 0.01 + phasor(3Hz) }",
+     {{"o:in", "real audio global mono"}}, nullptr, nullptr, {false, true, Poly::Voice, 2, {}}},
+    {"delay lines are never promoted",
+     "patch R { param v = 1 [0..1]\n out o : audio voice\n d = delay(v, 1ms, 10ms)\n o = d * voice.hz }",
+     {{"d", "real audio global mono"}}},
+    {"a source in a feedback loop is decided after the fixpoint (no visit-order dependence)",
+     "patch R { out o : audio voice\n fb = z1(s * 0.5)\n s = sine(phasor(2Hz))\n o = (fb + s) * voice.velocity }",
+     {{"s", "real audio voice mono"}, {"fb", "real audio voice mono"}}},
     {"voice into a global bound without implicit sums is an error",
      "patch R { out o : audio global\n o = voice.hz }",
      {}, "needs an explicit reducer", "1:15", {true, false, Poly::Global, 2, {}}},
@@ -519,4 +547,41 @@ TEST_CASE("infer: every corpus patch infers, standalone (root inputs with a defa
       }
     }
   CHECK(inferred >= 15);
+}
+
+TEST_CASE("shared(…): an attribute of the source's node (no node, same NodeIds), printed back, errors located") {
+  const char* plain = "patch R {\n  out o : audio voice\n  n = noise()\n  m = noise()\n  o = n + m + voice.hz\n}\n";
+  const char* marked = "patch R {\n  out o : audio voice\n  n = shared(noise())\n  m = noise()\n  o = n + m + voice.hz\n}\n";
+  const ParseResult a = parseDetailed(plain, "a.pqp");
+  const ParseResult b = parseDetailed(marked, "b.pqp");
+  REQUIRE(a.ok());
+  REQUIRE(b.ok());
+  const Patch& pa = a.file.patches[0];
+  const Patch& pb = b.file.patches[0];
+  REQUIRE(pa.nodeCount() == pb.nodeCount());
+  uint32_t marks = 0;
+  for (NodeIndex i = 0; i < pa.nodeCount(); ++i) {
+    CHECK(pa.node(i).id == pb.node(i).id);  // so state keys and noise seeds are unchanged
+    marks += pb.node(i).shared ? 1u : 0u;
+    CHECK_FALSE(pa.node(i).shared);
+  }
+  CHECK(marks == 1);
+  CHECK_FALSE(pa == pb);  // structural equality sees the mark
+  const std::string printed = print(b.file);
+  CHECK(printed.find("n = shared(noise())") != std::string::npos);
+  const ParseResult again = parseDetailed(printed, "c.pqp");
+  REQUIRE(again.ok());
+  CHECK(again.file.patches[0] == pb);
+  // Inline, around an operator.
+  const ParseResult inl =
+      parseDetailed("patch R {\n  out o : audio voice\n  o = shared(sine(phasor(1Hz)) * 0.5) + voice.hz\n}\n", "d.pqp");
+  REQUIRE(inl.ok());
+  const ParseResult inl2 = parseDetailed(print(inl.file), "e.pqp");
+  REQUIRE(inl2.ok());
+  CHECK(inl2.file.patches[0] == inl.file.patches[0]);
+  for (const char* bad : {"patch R { out o : audio\n n = noise()\n o = shared(n) }", "patch R { out o : audio\n o = shared(1) }",
+                          "patch R { out o : audio\n o = shared(noise(), noise()) }"}) {
+    CAPTURE(bad);
+    CHECK_FALSE(parseDetailed(bad, "f.pqp").ok());
+  }
 }

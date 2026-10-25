@@ -940,3 +940,41 @@ Agents: add questions here instead of guessing on anything important. Use this f
   64-frame block, measured A/B, cause not traced); 8 voices are latency-bound on feedback chains (one group, nothing
   to pair). pq_bench_stdlib (T1b.3) was not on main yet, so its rows were not re-measured here.
 - Status: open (A–C for the compile cost)
+
+## Q?-T1.3-fix1-a · 2026-10-24 · T1.3-fix1 · Per-voice free-running sources: which sources, which contexts, the `shared(…)` syntax
+- Context: Q29 answered B (per-voice by default, a patch can opt into one shared global instance). Choices made in
+  `src/graph/src/infer.cpp` (freeRunning, emit), `parse.cpp`, `print.cpp`, PATCH_LANGUAGE §3:
+  1. **Free-running** = a stateful atom whose inputs are all global and at most **param** rate (TASKS says "no
+     input above const rate"; the M1 review's M21 pointed out that this leaves `phasor(rateParam)`, i.e. every LFO
+     with a rate knob, global). Delay lines are excluded (a ring per voice is a memory decision the patch makes by
+     feeding a voice signal in).
+  2. **Voice context** = InferOptions::voiceContext, and the source's value feeds voice processing: some path of
+     consumers reaches a per-voice node or a port declared `voice` (a root `out … voice`), not through a
+     global-bound port (a callee's `in … global` is a reduction). A source that only feeds global processing (a
+     global effect section, an `out … global`) stays global. Alternative not taken: every free-running source of an
+     instrument patch per voice (simpler, but a global reverb's noise would become N summed noises).
+  3. Decided **after** the fixpoint, from the inferred types, iterated until no source changes (a promoted source
+     makes its consumers per-voice, which other sources may feed). The T1.3 rule ran inside the fixpoint and read an
+     unevaluated driver as const (visit-order dependence, M21); rates do not depend on poly, so the decision is
+     stable.
+  4. **Phase from note-on**: the engine resets a lane's state at the start of its onset's block, and an oscillator
+     at a const/param rate (unlike one at voice.hz, which is 0 before the onset) would run for the frames before the
+     onset. A per-voice phasor / sine_hz made this way gets `reset = voice.trigger` (or'ed with its own reset; nodes
+     inserted by infer), so its phase is 0 at the onset sample. Noise is seeded per lane (decorrelated: |corr| =
+     0.0006 for two voices); it restarts its sequence at each note-on of a lane. pulse() fires at the lane's reset
+     (the block start of the onset, up to one block early) — not changed.
+  5. **Opt-in syntax**: `shared(expr)` marks the node computing expr (Node::shared), with no node of its own, so
+     adding it to a patch changes no NodeId: state keys and noise seeds stay as before, and the result is bit for bit
+     the T1.3 default (`freeRunningPoly = Global`; test_voices). Every free-running source that reaches voice
+     processing only through a marked node stays global (`shared(sine(phasor(0.5Hz)))` keeps the phasor global
+     too). A wrapper atom (a real node) was the first idea; it shifts every later NodeId, which reseeds later noise
+     nodes, so it could not give the old behaviour bit for bit. Not allowed: `shared(name)` (write it where the
+     source is defined), literals, subcircuit calls. `shared` is reserved as a call name.
+- Goldens: one re-rendered, `tests/golden/audio/pluck.wav` (Karplus–Strong per voice): its excitation
+  `noise(seed: 3) * gate_to_real(timer(voice.trigger, 5ms))` was one global noise shared by every string; now each
+  voice's burst is its own noise from its own onset (decorrelated strings). Interpreter and JIT match the new golden
+  (0 difference). Every other golden and playback fixture is unchanged (their free-running sources feed only global
+  processing, or they have none).
+- Measured: proto-Operator ×64 with its LFO per voice (the probe's text without `shared`) vs shared: bench/RESULTS.md
+  T1.3-fix1 row (the filter coefficient's exact tan then runs per voice-sample instead of per block sample).
+- Status: open (1 and 2 are provisional readings of the task text)

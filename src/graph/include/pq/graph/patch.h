@@ -61,6 +61,10 @@ struct Node {
   uint16_t numOutputs = 0;
   uint32_t payload = kNone;     // Const/Param/Subcircuit: side-table index; Unknown/Equation: SolveIndex
   uint16_t nameOutput = kWholeNode;
+  // Atom only (T1.3-fix1, PATCH_LANGUAGE §3 "Free-running sources"): `shared(expr)` in text. The free-running
+  // sources that feed voice processing only through this node keep ONE global instance instead of one per voice.
+  // An attribute of the node, not a node of its own, so adding it changes no NodeId (state keys, noise seeds).
+  bool shared = false;
 };
 
 struct PortRef {
@@ -133,6 +137,7 @@ public:
   NodeIndex addEquation(SolveIndex solve);
 
   void setNodeName(NodeIndex n, std::string name, uint16_t nameOutput = kWholeNode);
+  void setShared(NodeIndex n, bool shared) { nodes_[n].shared = shared; }  // Node::shared (Atom nodes)
   // Nodes added from now on get NodeIds > `id` (T1.x-arch1: a project unit gives each track's call node the track's
   // own id, so state keys do not depend on which unit the track is in).
   void reserveIdsThrough(NodeId id) noexcept { ids_.reserveThrough(id); }

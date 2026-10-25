@@ -123,7 +123,10 @@ namespace pq::graph {
   // kind/rate/poly/width with declared types as upper bounds. TypedPatch = { Patch patch (flat: no Subcircuit nodes,
   // inserted voice_sum reducers, bool eq/ne rewritten), types[] (inferred, parallel to patch.portTypes()),
   // stateKey[] (per node: hash of the NodeId call path, the hot-swap key), origin[], instances[] }. inferDetailed()
-  // returns every Diagnostic, located at root-patch nodes via ParseResult::nodeSpans.
+  // returns every Diagnostic, located at root-patch nodes via ParseResult::nodeSpans. T1.3-fix1 (Q29 B): free-running
+  // sources (stateful, inputs global and ≤ param rate) that feed voice processing are per-voice
+  // (InferOptions::freeRunningPoly = Voice, decided after the fixpoint; per-voice phasor/sine_hz get reset =
+  // voice.trigger); `shared(expr)` in text sets Node::shared (an attribute, no node) and keeps its cone global.
   Result<TypedPatch> infer(const Patch&, const InferOptions&);
   // pq/graph/optimise.h (T1.4). Durations → samples (`· sr` inserted, TypedPatch::durationsInSamples), then a
   // fixpoint of constant folding (by the atom's own dsp kernel as Control regions run it: 8 lanes, lane 0; never
