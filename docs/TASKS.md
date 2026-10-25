@@ -256,7 +256,7 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - In `.pqp`: `onepole`, `svf` (TPT), `biquad` (TDF-II), `allpass`, `dcblock`, `comb`, `adsr`, `lfo`, `envfollow`, `slew`, `smooth`. Each has a hand-written C++ reference implementation in `tests/` (not shipped).
   - Accept: output matches the references within 1e-5 (sweeps, impulse responses, modulated cutoff). **JIT'd stdlib filters are within ~10% of the hand-written C++ cost** (benchmark recorded). If they're slower, fix the compiler, not the filter.
 
-- [ ] **T1b.4 AOT stdlib + compile cache** (`jit`). Depends on: T1b.3.
+- [~] **T1b.4 AOT stdlib + compile cache** *(worker BN, branch task/T1b.4-aot-cache)* (`jit`). Depends on: T1b.3.
   - At build time, `pqc aot` compiles `stdlib/` into an object file linked into pqdaw. Runtime JIT objects are cached under `cache/` keyed by graph hash + CPU features + compiler version.
   - Accept: opening a stock device at runtime does no JIT compile (test hook counts compiles). A second load of the same user patch hits the cache.
 
@@ -264,7 +264,7 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - An edit plays immediately through the interpreter, then swaps to the JIT image when it's ready.
   - Accept: an offline test with a simulated compile delay. The swap is click-free (same criteria as T1.9). The JIT ProgramImage costs less than the interpreter's (benchmark).
 
-- [ ] **T1b.6 LLVM size check**. Depends on: T1b.4.
+- [~] **T1b.6 LLVM size check** *(worker BN, same branch)*. Depends on: T1b.4.
   - Measure the release `pqdaw.exe` size and the contribution of the LLVM components. Try `/OPT:REF /OPT:ICF` and pruning the component list.
   - Accept: numbers in PROGRESS.md. If the result is > 30 MB, write up the asmjit option (SPEC §2 table) for the user in `docs/QUESTIONS.md`.
 
