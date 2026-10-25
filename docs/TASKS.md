@@ -252,7 +252,7 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - Vector types across voice lanes (8× AVX2, 16× AVX-512 when the host has it). Bool masks as vector predicates.
   - Accept: 8- and 64-voice benchmarks show at least 5× over scalar JIT for an oscillator+filter voice.
 
-- [~] **T1b.3 Stock subcircuits** *(worker BJ, branch task/T1b.3-stdlib)* (`stdlib`). Depends on: T1b.1.
+- [!] **T1b.3 Stock subcircuits** *(merged 2026-10-24; partial: adsr ×8 1.6× the C++ cost — JIT causes handed to T1b.2, Q109)* (`stdlib`). Depends on: T1b.1.
   - In `.pqp`: `onepole`, `svf` (TPT), `biquad` (TDF-II), `allpass`, `dcblock`, `comb`, `adsr`, `lfo`, `envfollow`, `slew`, `smooth`. Each has a hand-written C++ reference implementation in `tests/` (not shipped).
   - Accept: output matches the references within 1e-5 (sweeps, impulse responses, modulated cutoff). **JIT'd stdlib filters are within ~10% of the hand-written C++ cost** (benchmark recorded). If they're slower, fix the compiler, not the filter.
 
