@@ -457,6 +457,7 @@ private:
   void onViewChange(uint32_t bits);
   void rebuildRows(bool lanesUnchanged = false);
   void syncHeaders();
+  void rebindTrackNodes();  // a mixer Param change: new track nodes, same rows (T3.x-fix-paint)
   void refreshTransport();
   void schedulePlayhead();
   void readPlayhead();

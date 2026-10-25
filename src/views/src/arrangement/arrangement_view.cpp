@@ -252,6 +252,19 @@ void ArrangementView::onDocument(const doc::StoreEvent& e) {
     zoomStack_.clear();
     timeSelection_.reset();
   }
+  // T3.x-fix-paint (M3 review M12a): a mixer value change (volume, pan, sends, solo: a Param event per frame of a drag)
+  // changes no row, lane or tuning: only the edited tracks' nodes (and their groups') are new. Repoint the rows and
+  // rebind just those headers, instead of rebuilding every row and rebinding every header and strip (O(tracks) per
+  // drag frame: 93 µs at 256 tracks before).
+  if (e.kind != doc::StoreEventKind::Reset && e.changes.paramOnly() && !e.changes.params.empty() &&
+      std::all_of(e.changes.params.begin(), e.changes.params.end(), [](const doc::ParamRef& r) {
+        return r.kind == doc::ParamKind::TrackVolume || r.kind == doc::ParamKind::TrackPan || r.kind == doc::ParamKind::TrackSolo ||
+               r.kind == doc::ParamKind::TrackSend;
+      })) {
+    automation_->afterDocumentChange(e);
+    rebindTrackNodes();
+    return;
+  }
   automation_->afterDocumentChange(e);
   // T3.10: mixer edits (volume, pan, sends, solo: Param) and header-only Meta edits (track names, colours, arm) do
   // not change what the lanes, ruler or overview show: rebind the rows and headers (whose widgets repaint what
@@ -423,6 +436,54 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
   bottom_->invalidateArrange();
   invalidateArrange();  // the pinned area's height follows its rows
   markDirty();
+}
+
+void ArrangementView::rebindTrackNodes() {
+  Model& m = *model_;
+  m.shown = ctx_.doc();
+  const doc::Project& p = *m.shown;
+  // The rows are the flattened tree (folded groups skip their members) and a Param change keeps its shape: walk it in
+  // the same order and repoint every row whose track node is new.
+  size_t i = 0;
+  bool shapeOk = true;
+  auto walk = [&](auto&& self, const std::vector<doc::TrackPtr>& list) -> void {
+    for (const doc::TrackPtr& t : list) {
+      if (!shapeOk) return;
+      if (i >= m.rows.size() || m.rows[i].id != t->id) {
+        shapeOk = false;
+        return;
+      }
+      ArrangementRow& r = m.rows[i];
+      const bool changed = r.track != t.get();
+      r.track = t.get();
+      if (changed && i < headers_.size()) {
+        headers_[i]->bind(r, m.rows);
+        if (decorator_) decorator_(*headers_[i], r);
+      }
+      ++i;
+      if (r.group && !r.folded) self(self, t->children);
+    }
+  };
+  walk(walk, p.tracks);
+  size_t b = 0;
+  auto bottom = [&](const doc::Track& t) {
+    if (b >= m.bottomRows.size() || m.bottomRows[b].id != t.id) {
+      shapeOk = false;
+      return;
+    }
+    ArrangementRow& r = m.bottomRows[b];
+    if (r.track != &t) {
+      r.track = &t;
+      if (b < bottomHeaders_.size()) {
+        bottomHeaders_[b]->bind(r, m.bottomRows);
+        if (decorator_) decorator_(*bottomHeaders_[b], r);
+      }
+    }
+    ++b;
+  };
+  for (const doc::TrackPtr& t : p.returns) bottom(*t);
+  if (p.master) bottom(*p.master);
+  if (!shapeOk || i != m.rows.size() || b != m.bottomRows.size()) rebuildRows(true);  // not expected: be safe
 }
 
 void ArrangementView::syncHeaders() {

@@ -266,7 +266,7 @@ TEST_CASE("mixer: a volume drag is one undo step with a paramOnly ChangeSet; the
   CHECK(f.lastEntryChanges().params[0].kind == doc::ParamKind::TrackVolume);
   CHECK(events >= 30);
   CHECK(lastParamOnly);
-  CHECK(f.arr->stats().rowRebuilds > rebuildsBefore);
+  CHECK(f.arr->stats().rowRebuilds == rebuildsBefore);  // T3.x-fix-paint: a mixer Param change repoints the edited rows, no rebuild
   REQUIRE(f.ctx.undo());
   CHECK(f.track("Drums").mixer.volumeDb == before);
   // A send drag and a pan key step are one step each.
