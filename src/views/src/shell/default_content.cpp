@@ -5,6 +5,7 @@
 //   T3.11 installClipView(shell);      → ShellSlot::ClipDetail
 //   T3.14 installMosWheel(shell);      → shell.overlay() (popover), the tuning.openMosWheel action
 //   T3.18 installPreferences(shell);   → shell.overlay() (the preferences window), the app.preferences action
+//   T3.19 installTuningsPanel(shell);  → ShellSlot::Tunings (View > Tunings), the tuning.newMain action
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
 #include "pq/views/arrangement/arrangement.h"
@@ -13,6 +14,7 @@
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/shell/shell.h"
+#include "pq/views/tunings/tunings_panel.h"
 #include "shell_widgets.h"
 
 namespace pq::views {
@@ -25,6 +27,7 @@ void installDefaultContent(Shell& shell) {
   installClipView(shell);
   installMosWheel(shell);
   installPreferences(shell);
+  installTuningsPanel(shell);
 }
 
 }  // namespace pq::views

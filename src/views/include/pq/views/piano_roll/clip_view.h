@@ -22,10 +22,13 @@
 // Painting is virtualised by the visible time range (note chunks outside it are skipped) and by the visible rows.
 // UI thread only.
 
+#include <optional>
 #include <span>
+#include <string_view>
 
 #include "pq/core/grid.h"
 #include "pq/document/edit_ops.h"
+#include "pq/ui/controls.h"
 #include "pq/ui/widget.h"
 #include "pq/views/piano_roll/row_model.h"
 #include "pq/views/shell/shell.h"
@@ -116,6 +119,29 @@ public:
   void copySelection();
   void cutSelection();
   void paste();
+
+  // --- identities, ratio entry, labels (T3.19, SPEC §3.1 / §4.3, M3 review H7) ---
+  // The right-click menu of the note area offers these; each edit is one undo step.
+  //   convertSelection   Degree ↔ Ratio ↔ Cents (pq::doc::ops::convertNotes: Ratio = the simplest ratio within
+  //                      ops::ratioSnapTolerance, so Degree → Ratio → Degree is the identity)
+  //   setSelectionPitch  a typed identity (enterPitch parses "7/4", "386.3c", "4\22", "4\22+1")
+  //   lockFundamental    "this note is the index-th harmonic" (ops::lockFundamental) / unlockFundamental
+  // Drawing with Shift (draw mode, or Shift+double-click) adds Ratio notes on the harmonics of the virtual fundamental
+  // (no fundamental yet: the row's pitch snapped to the simplest ratio). Ratio notes show "n/d · k" when they fit.
+  bool convertSelection(tuning::PitchKind to);
+  bool setSelectionPitch(const tuning::PitchId& p);
+  bool enterPitch(std::string_view text);
+  std::optional<tuning::PitchId> parsePitch(std::string_view text) const;
+  // The pitch type-in popover for the selection (the menu's Set Pitch…): returns its text field.
+  ui::TextEdit* openPitchEntry();
+  bool lockFundamental(doc::NoteId note, uint32_t harmonicIndex);
+  bool unlockFundamental();
+  // What the keys print on each row (the clip box's Row Labels, the keys' right-click menu). View state.
+  roll::RowLabels rowLabels() const noexcept;
+  void setRowLabels(roll::RowLabels mode);
+  // The info view's text for the pointer at device `p` over the note area (keys = false) or the keys: the hovered
+  // note's identity and pitch, or the row's (cents, Hz, nearest ratio, overlay EDO step). Tests read it directly.
+  ui::InfoText readoutAt(ui::Vec2 p, bool keys);
 
   roll::RollState& state() noexcept { return *state_; }
 

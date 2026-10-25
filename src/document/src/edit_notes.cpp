@@ -509,8 +509,50 @@ EditResult duplicateNotes(const Project& p, IdSource& ids, ClipRef clip, std::sp
   return e;
 }
 
+std::optional<Rational> simplestRatioBetween(double lo, double hi) noexcept {
+  if (!(lo > 0.0) || !(hi >= lo) || !std::isfinite(hi)) return std::nullopt;
+  // Continued-fraction terms of the simplest number in [lo, hi] (the Stern–Brocot node closest to the root): the
+  // integer part while both ends share it, then recurse on the reciprocals of the fractional parts.
+  int64_t terms[64];
+  int n = 0;
+  double a = lo, b = hi;
+  for (;;) {
+    if (n == 64) return std::nullopt;
+    const double fa = std::floor(a);
+    if (fa > 1e15) return std::nullopt;
+    if (fa == a) {
+      terms[n++] = static_cast<int64_t>(fa);
+      break;
+    }
+    if (fa + 1.0 <= b) {
+      terms[n++] = static_cast<int64_t>(fa) + 1;
+      break;
+    }
+    terms[n++] = static_cast<int64_t>(fa);
+    const double na = 1.0 / (b - fa), nb = 1.0 / (a - fa);
+    a = na;
+    b = nb;
+  }
+  // t0 + 1/(t1 + 1/(… + 1/t_{n−1})), folded from the back with overflow checks.
+  int64_t num = terms[n - 1], den = 1;
+  constexpr int64_t kLimit = int64_t{1} << 40;
+  for (int i = n - 2; i >= 0; --i) {
+    if (num > kLimit || terms[i] > kLimit) return std::nullopt;
+    const int64_t next = terms[i] * num + den;
+    den = num;
+    num = next;
+  }
+  if (num <= 0 || den <= 0 || num > kLimit || den > kLimit) return std::nullopt;
+  return Rational::tryMake(num, den);
+}
+
+std::optional<Rational> simplestRatioNear(double cents, double toleranceCents) noexcept {
+  if (!std::isfinite(cents) || !(toleranceCents >= 0.0)) return std::nullopt;
+  return simplestRatioBetween(std::exp2((cents - toleranceCents) / 1200.0), std::exp2((cents + toleranceCents) / 1200.0));
+}
+
 EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, PitchKind to) {
-  if (to != PitchKind::Cents && to != PitchKind::Degree) return invalid("notes convert to Cents or Degree");
+  if (to == PitchKind::Harmonic) return invalid("notes convert to Degree, Ratio or Cents");
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
   Result<tuning::Tuning> t = clipTuning(p, *f);
@@ -530,21 +572,43 @@ EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey>
     }
     return std::nullopt;
   };
-  return updateNotes(p, clip, notes, to == PitchKind::Cents ? "Freeze to Cents" : "Snap to Degree",
-                     [&](Note& n) -> Status {
-                       if (n.pitch.kind() == to) return ok();
-                       const auto c = centsOf(n.pitch);
-                       if (!c) return ok();
-                       if (to == PitchKind::Cents) {
-                         n.pitch = PitchId::fromCents(*c);
-                       } else {
-                         const int64_t abs = l.nearest(*c);
-                         const int64_t e = floorDiv(abs, l.size);
-                         if (!fitsI32(e)) return ok();
-                         n.pitch = PitchId::fromDegree(static_cast<int32_t>(abs - e * l.size), static_cast<int32_t>(e));
-                       }
-                       return ok();
-                     });
+  const char* label = to == PitchKind::Cents ? "Freeze to Cents" : to == PitchKind::Degree ? "Snap to Degree" : "Snap to Ratio";
+  return updateNotes(p, clip, notes, label, [&](Note& n) -> Status {
+    if (n.pitch.kind() == to) return ok();
+    const auto c = centsOf(n.pitch);
+    if (!c) return ok();
+    if (to == PitchKind::Cents) {
+      n.pitch = PitchId::fromCents(*c);
+    } else if (to == PitchKind::Degree) {
+      const int64_t abs = l.nearest(*c);
+      const int64_t e = floorDiv(abs, l.size);
+      if (!fitsI32(e)) return ok();
+      n.pitch = PitchId::fromDegree(static_cast<int32_t>(abs - e * l.size), static_cast<int32_t>(e));
+    } else {
+      const std::optional<Rational> r = simplestRatioNear(*c, ratioSnapTolerance(*t, *c));
+      if (!r || !r->isPositive()) return ok();
+      n.pitch = PitchId::fromRatio(*r);
+    }
+    return ok();
+  });
+}
+
+double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept {
+  const DegreeLattice l = DegreeLattice::of(t);
+  if (!l.usable()) return kRatioSnapMaxCents;
+  const int64_t d = l.nearest(cents);
+  const double step = std::min(l.centsOf(d + 1) - l.centsOf(d), l.centsOf(d) - l.centsOf(d - 1));
+  return std::clamp(0.45 * step, kRatioSnapMinCents, kRatioSnapMaxCents);
+}
+
+EditResult setNotesPitch(const Project& p, ClipRef clip, std::span<const NoteKey> notes, const PitchId& pitch) {
+  if (pitch.kind() == PitchKind::Harmonic) return invalid("a Harmonic pitch needs a JI object");
+  if (pitch.kind() == PitchKind::Ratio && (!pitch.ratio().isPositive() || pitch.anchorKind() == tuning::AnchorKind::JiFundamental))
+    return invalid("a ratio pitch must be positive and anchored to the reference or a note");
+  return updateNotes(p, clip, notes, "Set Note Pitch", [&](Note& n) -> Status {
+    n.pitch = pitch;
+    return ok();
+  });
 }
 
 }  // namespace pq::doc::ops

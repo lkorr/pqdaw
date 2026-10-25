@@ -15,7 +15,9 @@
 #include "pq/views/mos_wheel/mos_circle.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/prefs/audio_prefs.h"
+#include "pq/views/tunings/tunings_panel.h"
 #include "pq/document/edit_ops.h"
+#include "shell/shell_widgets.h"
 
 namespace pq::views {
 
@@ -434,6 +436,191 @@ Status openAudioPrefs(Shell& shell, bool wasapi) {
 Status setupAudioPrefs(Shell& shell) { return openAudioPrefs(shell, false); }
 Status setupAudioPrefsWasapi(Shell& shell) { return openAudioPrefs(shell, true); }
 
+// ---- T3.19: menu bar, Tunings panel, ratio notes ------------------------------------------------------------------
+
+// T3.19: the menu bar's Create menu open over the empty project (Insert MIDI / Return Track, Insert MIDI Clip, New
+// Main Tuning).
+Status setupMenuBar(Shell& shell) {
+  auto* bar = dynamic_cast<pq::views::shell::MenuBar*>(shell.tree().find("main/menu-bar"));
+  if (!bar) return Error{ErrorCode::NotFound, "menu-bar: no menu bar", {}};
+  shell.tree().layoutNow();
+  if (!bar->open(2)) return Error{ErrorCode::NotFound, "menu-bar: no overlay layer", {}};
+  return Ok{};
+}
+
+namespace {
+
+// Dispatches an edit; nullopt (and nothing changed) on failure.
+std::optional<doc::ops::Edit> runEdit(doc::DocumentStore& store, const doc::ops::EditResult& e) {
+  if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
+  return *e;
+}
+
+doc::Note scnNote(Ticks start, Ticks length, tuning::PitchId pitch, float velocity = 100.0f) {
+  doc::Note n;
+  n.start = start;
+  n.length = length;
+  n.pitch = pitch;
+  n.velocity = velocity;
+  return n;
+}
+
+}  // namespace
+
+// T3.19: three main tunings (the default 12-EDO, "Tuning B: 22edo", "Tuning C: 5L 2s" with its generator automated on
+// Lead), tracks assigned to them, the Tunings panel shown left of the arrangement, Lead's generator lane open.
+Status setupTuningsPanel(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  doc::DocumentStore& store = ctx.store();
+  auto* panelPtr = dynamic_cast<TuningsPanel*>(shell.slot(ShellSlot::Tunings).find("tunings-panel"));
+  ArrangementView* a = arrangementOf(shell);
+  if (!panelPtr || !a) return Error{ErrorCode::NotFound, "tunings-panel: the panel and the arrangement must be installed", {}};
+  const Error fail{ErrorCode::Unknown, "tunings-panel: an edit failed", {}};
+  doc::TuningDef b;
+  b.system = *tuning::Edo::make(22);
+  const auto tb = runEdit(store, doc::ops::addMainTuning(*store.current(), store.ids(), "Tuning B: 22edo", b, doc::Colour{0xE0A43C}));
+  doc::TuningDef c;
+  tuning::MosParams m;
+  m.n = 7;
+  m.period = 1200.0;
+  m.generator = 696.77;
+  c.system = m;
+  const auto tc = runEdit(store, doc::ops::addMainTuning(*store.current(), store.ids(), "Tuning C: 5L 2s", c, doc::Colour{0x8FC24A}));
+  if (!tb || !tc) return fail;
+  const doc::TuningId B = tb->tunings[0], C = tc->tunings[0];
+  struct T {
+    const char* name;
+    doc::TuningAssignment a;
+    uint32_t colour;
+  };
+  const T tracks[] = {{"Bass", doc::TuningAssignment::mainTuning(B), 0xE68632},
+                      {"Lead", doc::TuningAssignment::mainTuning(C), 0x6FB04A},
+                      {"Pad", doc::TuningAssignment::inherit(), 0x5E9BD6}};
+  doc::TrackId lead;
+  doc::TrackId after;
+  for (const T& t : tracks) {
+    const auto e = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, after, t.name, doc::Colour{t.colour}));
+    if (!e) return fail;
+    after = e->tracks[0];
+    if (!store.dispatch(doc::SetTrackTuning{after, t.a}).ok()) return fail;
+    if (std::string_view(t.name) == "Lead") lead = after;
+    const auto clip = runEdit(store, doc::ops::insertEmptyClip(*store.current(), store.ids(), after, 0, 4 * kTicksPerWhole, t.name));
+    if (!clip) return fail;
+    std::vector<doc::Note> notes;
+    for (int i = 0; i < 8; ++i)
+      notes.push_back(scnNote(i * (kTicksPerWhole / 2), kTicksPerWhole / 2, tuning::PitchId::fromDegree((i * 3) % 7, 0)));
+    if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), clip->clips[0], notes))) return fail;
+  }
+  // Lead automates Tuning C's generator: a ramp across the region (meantone → superpyth).
+  auto lane = std::make_shared<doc::AutomationLane>();
+  lane->id = store.ids().lane();
+  lane->param = doc::ParamRef::tuning(doc::ParamKind::MosGenerator, C);
+  lane->points = {{0, 690.0f, 0.0f, store.ids().breakpoint()},
+                  {2 * kTicksPerWhole, 705.0f, 0.0f, store.ids().breakpoint()},
+                  {4 * kTicksPerWhole, 696.77f, 0.0f, store.ids().breakpoint()}};
+  if (!store.dispatch(doc::AddAutomationLane{lead, lane}).ok()) return fail;
+  ctx.setTuningsVisible(true);
+  ctx.setDetailVisible(false);
+  shell.tree().layoutNow();
+  if (!panelPtr->showAutomationLane(doc::ParamRef::tuning(doc::ParamKind::MosGenerator, C))) return fail;
+  a->selectTrack(lead);
+  shell.tree().layoutNow();
+  a->setTimeView(0.0, static_cast<double>(a->lanesViewport().w) / shell.tree().scale() / (4.5 * static_cast<double>(kTicksPerWhole)));
+  return Ok{};
+}
+
+namespace {
+
+// T3.19: a MIDI track with one clip of Ratio notes (the 4:5:6:7 chord over F = 1/4, a 9/4 and a 7/4 melody), a Degree
+// note and a Cents note; the roll raised and its rows labelled with ratios. Returns the clip view.
+ClipView* buildRatioScene(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  doc::DocumentStore& store = ctx.store();
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Harmonics", doc::Colour{0xE68632}));
+  if (!t) return nullptr;
+  const auto c = runEdit(store, doc::ops::insertEmptyClip(*store.current(), store.ids(), t->tracks[0], 0, 2 * kTicksPerWhole, "Otonal"));
+  if (!c) return nullptr;
+  using tuning::PitchId;
+  using tuning::Rational;
+  const Ticks q = kPpq;
+  std::vector<doc::Note> notes = {
+      scnNote(0, 4 * q, PitchId::fromRatio(Rational(1))),          scnNote(0, 4 * q, PitchId::fromRatio(Rational(5, 4))),
+      scnNote(0, 4 * q, PitchId::fromRatio(Rational(3, 2))),       scnNote(0, 4 * q, PitchId::fromRatio(Rational(7, 4))),
+      scnNote(4 * q, 2 * q, PitchId::fromRatio(Rational(9, 4))),   scnNote(6 * q, q, PitchId::fromRatio(Rational(2))),
+      scnNote(7 * q, q, PitchId::fromRatio(Rational(7, 4))),       scnNote(4 * q, 2 * q, PitchId::fromDegree(4, 0), 80.0f),
+      scnNote(6 * q, 2 * q, PitchId::fromCents(-31.0), 70.0f)};
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), c->clips[0], notes))) return nullptr;
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(560.0f);
+  ctx.setDetailClip(c->clips[0]);
+  shell.tree().layoutNow();
+  auto* view = dynamic_cast<ClipView*>(shell.tree().find("main/body/bottom/detail/clip/clip-view"));
+  if (!view) return nullptr;
+  view->setRowLabels(roll::RowLabels::Ratio);
+  view->setRowHeight(18);
+  view->centreOnDegree(9);
+  shell.tree().layoutNow();
+  return view;
+}
+
+// The centre of a note's rect (device px), or nullopt.
+std::optional<ui::Vec2> noteCentre(ClipView& v, const doc::Note& n) {
+  const ui::IRect r = v.noteRect(n.id);
+  if (r.empty()) return std::nullopt;
+  return ui::Vec2{static_cast<float>(r.x) + static_cast<float>(r.w) * 0.5f, static_cast<float>(r.y) + static_cast<float>(r.h) * 0.5f};
+}
+
+const doc::Note* sceneNote(const ViewContext& ctx, const ClipView& v, tuning::PitchId pitch, Ticks start) {
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), v.clip().track);
+  const int32_t ci = t ? doc::findClipIndex(*t, v.clip().clip) : -1;
+  if (ci < 0) return nullptr;
+  for (const doc::Note& n : t->clips[static_cast<size_t>(ci)].clip->notes)
+    if (n.pitch == pitch && n.start == start) return &n;
+  return nullptr;
+}
+
+}  // namespace
+
+// T3.19: ratio labels on the notes ("7/4 · 7": the ratio and its harmonic over F = 1/4), rows labelled with ratios, the
+// 7/4 of the chord selected, and the pointer resting on it: the info view reads its identity and pitch.
+Status setupPianoRollRatios(Shell& shell) {
+  ClipView* v = buildRatioScene(shell);
+  if (!v) return Error{ErrorCode::Unknown, "pianoroll-ratios: building the clip failed", {}};
+  const doc::Note* n = sceneNote(shell.context(), *v, tuning::PitchId::fromRatio(tuning::Rational(7, 4)), 0);
+  if (!n) return Error{ErrorCode::NotFound, "pianoroll-ratios: 7/4", {}};
+  const doc::NoteId id = n->id;
+  v->select(std::span<const doc::NoteId>(&id, 1));
+  const std::optional<ui::Vec2> at = noteCentre(*v, *n);
+  if (!at) return Error{ErrorCode::NotFound, "pianoroll-ratios: 7/4 not visible", {}};
+  ui::PointerEvent e;
+  e.type = ui::PointerType::Move;
+  e.pos = *at;
+  shell.tree().dispatchPointer(e);
+  return Ok{};
+}
+
+// T3.19: the note menu (right-click on the chord's 3/2): convert to Degree / Ratio / Cents, Set Pitch…, Lock
+// Fundamental ▸, Row Labels ▸.
+Status setupPianoRollNoteMenu(Shell& shell) {
+  ClipView* v = buildRatioScene(shell);
+  if (!v) return Error{ErrorCode::Unknown, "pianoroll-note-menu: building the clip failed", {}};
+  const doc::Note* n = sceneNote(shell.context(), *v, tuning::PitchId::fromRatio(tuning::Rational(3, 2)), 0);
+  if (!n) return Error{ErrorCode::NotFound, "pianoroll-note-menu: 3/2", {}};
+  const std::optional<ui::Vec2> at = noteCentre(*v, *n);
+  if (!at) return Error{ErrorCode::NotFound, "pianoroll-note-menu: 3/2 not visible", {}};
+  ui::PointerEvent e;
+  e.type = ui::PointerType::Move;
+  e.pos = *at;
+  shell.tree().dispatchPointer(e);
+  e.type = ui::PointerType::Down;
+  e.button = ui::PointerButton::Right;
+  e.clickCount = 1;
+  shell.tree().dispatchPointer(e);
+  e.type = ui::PointerType::Up;
+  shell.tree().dispatchPointer(e);
+  if (shell.overlay().openCount() == 0) return Error{ErrorCode::Unknown, "pianoroll-note-menu: no menu", {}};
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -459,6 +646,10 @@ constexpr SceneEntry kScenes[] = {
     {"automation-mode-over-clips", 1280, 800, setupAutomationMode},
     {"audio-prefs", 1280, 800, setupAudioPrefs},
     {"audio-prefs-wasapi", 1280, 800, setupAudioPrefsWasapi},
+    {"menu-bar", 1280, 800, setupMenuBar},
+    {"tunings-panel", 1280, 800, setupTuningsPanel},
+    {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},
+    {"pianoroll-note-menu", 1280, 800, setupPianoRollNoteMenu},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

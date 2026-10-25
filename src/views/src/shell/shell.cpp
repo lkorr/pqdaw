@@ -26,6 +26,7 @@ struct Shell::Impl {
   SlotHost* trackArea = nullptr;
   SlotHost* mixer = nullptr;
   SlotHost* browser = nullptr;
+  SlotHost* tunings = nullptr;
   Widget* bottom = nullptr;
   shell::DetailView* detail = nullptr;
   shell::InfoView* info = nullptr;
@@ -50,6 +51,7 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   auto& main = root.add<Widget>("main");
   main.setLayout(LayoutKind::Column);
   main.setGap(0);
+  main.add<shell::MenuBar>(ctx);
   m.controlBar = &main.add<shell::ControlBar>(ctx);
 
   auto& panels = main.add<Widget>();  // unnamed (transparent in widget paths): the gutter around the panels
@@ -65,6 +67,9 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   top.setGap(g);
   m.browser = &top.add<SlotHost>("browser", SlotHost::Fill::Panel, "Browser");
   m.browser->setWidth(Length::fixed(220));
+  m.tunings = &top.add<SlotHost>("tunings", SlotHost::Fill::Panel, "Tunings");
+  m.tunings->setWidth(Length::fixed(236));
+  m.tunings->setClipChildren(true);
   m.trackArea = &top.add<SlotHost>("track-area", SlotHost::Fill::Lane);
   m.trackArea->setWidth(Length::flex(1));
   m.trackArea->setClipChildren(true);
@@ -75,7 +80,7 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   bottom.setLimits(120, 480, 200);
   bottom.setHandleThickness(g);
   m.bottom = &bottom;
-  m.info = &bottom.add<shell::InfoView>();
+  m.info = &bottom.add<shell::InfoView>(ctx);
   m.detail = &bottom.add<shell::DetailView>(ctx);
   m.detail->setClipChildren(true);
 
@@ -89,6 +94,7 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   auto applyLayout = [impl, &ctx] {
     impl->bottom->setVisible(ctx.detailVisible());
     impl->browser->setVisible(ctx.browserVisible());
+    impl->tunings->setVisible(ctx.tuningsVisible());
   };
   applyLayout();
   m.layoutSub = ctx.observe([applyLayout](uint32_t what) {
@@ -112,6 +118,7 @@ Widget& Shell::slot(ShellSlot s) const noexcept {
     case ShellSlot::ClipDetail: return impl_->detail->clip();
     case ShellSlot::DeviceDetail: return impl_->detail->device();
     case ShellSlot::Browser: return *impl_->browser;
+    case ShellSlot::Tunings: return *impl_->tunings;
   }
   return *impl_->trackArea;
 }

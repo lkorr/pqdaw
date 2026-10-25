@@ -14,6 +14,7 @@
 #include "pq/document/model.h"
 
 #include "pq/ui/controls.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
 #include "pq/views/view_context.h"
 
@@ -120,10 +121,52 @@ private:
   uint32_t timer_ = 0;
 };
 
-// Info view (bottom-left, SPEC §9): title + wrapped body of whatever is under the pointer (infoFor(hovered)).
+// The menu bar (T3.19, M3 review H7): Live's row of menus at the top of the window — File, Edit, Create, View, Options,
+// Help — built from ui::Menu. Every item runs an action of the context's registry (greyed while the action is disabled
+// or not registered, e.g. a view that is not installed) and shows the chord the keymap binds to it. A click on a title
+// opens its menu below it; while one is open, moving over another title switches to it and a click on the open title
+// closes it (OverlayOptions::onOutsidePointer). Edit's Cut / Copy / Paste / Duplicate / Delete / Select All act on the
+// clip view when the focus is in it, else on the arrangement (the focused editor, as Live). Closed menus do not exist;
+// the bar repaints only its own rect, on hover and open changes.
+class MenuBar : public ui::Widget {
+public:
+  static constexpr const char* kTitles[] = {"File", "Edit", "Create", "View", "Options", "Help"};
+  static constexpr int32_t kMenus = 6;
+
+  explicit MenuBar(ViewContext& ctx);
+  ~MenuBar() override;
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  void onHoverChanged(bool hovered) override;
+
+  // Opens menu i (0 = File … 5 = Help) below its title, closing any other; returns it (nullptr without an overlay).
+  ui::Menu* open(int32_t i);
+  void close();
+  int32_t openIndex() const noexcept { return open_; }
+  ui::Menu* openMenu() const noexcept { return menu_; }
+  // Device-px rect of title i (from the last layout).
+  ui::IRect titleRect(int32_t i) const;
+  // The items menu i shows right now (state-dependent: checks, labels, the focused editor). Tests read them.
+  std::vector<ui::MenuItem> items(int32_t i) const;
+
+private:
+  int32_t titleAt(ui::Vec2 p) const;
+  bool outside(const ui::PointerEvent& e);
+  std::string shortcut(std::string_view action) const;
+  ui::MenuItem act(std::string label, std::string action) const;
+
+  ViewContext& ctx_;
+  int32_t open_ = -1;
+  int32_t hover_ = -1;
+  ui::Menu* menu_ = nullptr;
+  std::shared_ptr<MenuBar*> alive_;
+};
+
+// Info view (bottom-left, SPEC §9): title + wrapped body of whatever is under the pointer (infoFor(hovered)), re-read
+// when the hovered widget's text changes in place (view_change::kInfo, T3.19: the piano roll's pitch readout).
 class InfoView : public ui::Widget, private ui::TreeObserver {
 public:
-  InfoView();
+  explicit InfoView(ViewContext& ctx);
   ~InfoView() override;
   void attachTo(ui::UiTree& tree);
   void show(const ui::InfoText& t);
@@ -133,6 +176,7 @@ public:
 
 private:
   void onHoverChanged(ui::Widget* hovered) override;
+  ViewContext::Subscription sub_;
   std::string title_, body_;
   // Word-wrap cache: line starts in body_ for (font, width).
   std::vector<uint32_t> lines_;

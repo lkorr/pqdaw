@@ -64,6 +64,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   declareViewActions(kMosWheelActions);
   declareViewActions(kMixerActions);
   declareViewActions(kPrefsActions);
+  declareViewActions(kTuningsActions);
   syncLoop();
 }
 
@@ -475,6 +476,12 @@ void ViewContext::setBrowserVisible(bool v) {
   notify(view_change::kLayout);
 }
 
+void ViewContext::setTuningsVisible(bool v) {
+  if (v == tuningsVisible_) return;
+  tuningsVisible_ = v;
+  notify(view_change::kLayout);
+}
+
 void ViewContext::setStatus(std::string text) {
   if (text == status_) return;
   status_ = std::move(text);
@@ -584,6 +591,7 @@ void ViewContext::registerGlobalActions() {
   add("grid.toggleTriplet", [this] { setGrid(grid_.tripletToggled()); });
   add("grid.toggleSnap", [this] { setGrid(grid_.snapToggled()); });
   add("grid.toggleFixed", [this] { setGrid(grid_.modeToggled()); });
+  add("view.toggleTunings", [this] { setTuningsVisible(!tuningsVisible_); });
 }
 
 }  // namespace pq::views

@@ -3,11 +3,12 @@
 // The main window layout (T3.7, SPEC §9: Ableton's layout).
 //
 //   ┌──────────────────────────────────────────────────────────────────────────────┐
+//   │ File  Edit  Create  View  Options  Help                                      │  main/menu-bar (T3.19)
 //   │ control bar: tempo · time signature │ position · play stop rec │ loop … │ grid │  main/control-bar
-//   ├─────────┬────────────────────────────────────────────────────────────────────┤
-//   │ browser │ track area (arrangement T3.8; mixer view T3.10 in the same host)     │  main/body/top
-//   │ (M5,    │                                                                      │
-//   │ hidden) │                                                                      │
+//   ├─────────┬─────────┬──────────────────────────────────────────────────────────┤
+//   │ browser │ tunings │ track area (arrangement T3.8; mixer view T3.10 in the same │  main/body/top
+//   │ (M5,    │ (T3.19, │ host)                                                    │
+//   │ hidden) │ hidden) │                                                          │
 //   ├═════════╧════════════════════════ splitter ═══════════════════════════════════┤
 //   │ info view ║ detail view: clip (piano roll T3.11) / device (M4)               │  main/body/bottom
 //   ├────────────────────────────────────────────────────────────────────────────────┤
@@ -22,6 +23,7 @@
 //   ShellSlot::ClipDetail    main/body/bottom/detail/clip       T3.11's clip view (piano roll)
 //   ShellSlot::DeviceDetail  main/body/bottom/detail/device     M4's device chain
 //   ShellSlot::Browser       main/body/top/browser              M5 (hidden: ViewContext::browserVisible)
+//   ShellSlot::Tunings       main/body/top/tunings              T3.19's Tunings panel (hidden: ViewContext::tuningsVisible)
 // Views install themselves in installDefaultContent() (src/views/src/shell/default_content.cpp; one call per view)
 // so the shell itself does not change as views arrive.
 //
@@ -40,7 +42,7 @@
 
 namespace pq::views {
 
-enum class ShellSlot : uint8_t { TrackArea, Mixer, ClipDetail, DeviceDetail, Browser };
+enum class ShellSlot : uint8_t { TrackArea, Mixer, ClipDetail, DeviceDetail, Browser, Tunings };
 
 struct ShellOptions {
   // Keymap to bind; null = assets/keymaps/ableton.json (ViewContext::applyDefaultKeymap).

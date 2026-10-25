@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <limits>
 
+#include "pq/document/edit_ops.h"
 #include "pq/tuning/edo.h"
 
 namespace pq::views::roll {
@@ -56,6 +57,52 @@ uint32_t twelveCompatibleEdo(const tuning::Tuning& t) noexcept {
   const tuning::Edo* e = t.edo();
   if (!e || e->n() % 12 != 0 || !isOctave(e->equaveCents())) return 0;
   return e->n();
+}
+
+RowLabels resolveRowLabels(RowLabels mode, const tuning::Tuning& t) noexcept {
+  if (mode != RowLabels::Auto) return mode;
+  if (const tuning::Scale* s = t.scale()) {
+    const auto& pitches = s->source().pitches;
+    const bool allRatios = !pitches.empty() && std::all_of(pitches.begin(), pitches.end(), [](const tuning::ScalaPitch& p) {
+      return p.kind == tuning::ScalaPitch::Kind::Ratio;
+    });
+    if (allRatios) return RowLabels::Ratio;
+  }
+  return RowLabels::Name;
+}
+
+size_t formatRowLabel(RowLabels mode, const tuning::Tuning& t, int64_t d, char (&buf)[24]) noexcept {
+  const int32_t n = std::max(1, degreesPerEquave(t));
+  const int64_t within = floorMod(d, n);
+  const int64_t equave = floorDiv(d, n);
+  const double inEquave = degreeCents(t, d) - degreeCents(t, equave * n);  // stretch-safe: from this equave's tonic
+  auto put = [&](int len) { return static_cast<size_t>(std::clamp(len, 0, 15)); };
+  switch (mode) {
+    case RowLabels::Cents: return put(std::snprintf(buf, 16, "%.1f", inEquave));
+    case RowLabels::Ratio: {
+      if (within == 0) return put(std::snprintf(buf, 16, "1/1"));
+      if (const tuning::Scale* s = t.scale()) {
+        const auto& pitches = s->source().pitches;
+        if (static_cast<size_t>(within) <= pitches.size()) {
+          const tuning::ScalaPitch& p = pitches[static_cast<size_t>(within - 1)];
+          if (p.kind == tuning::ScalaPitch::Kind::Ratio)
+            return put(std::snprintf(buf, 16, "%lld/%lld", static_cast<long long>(p.ratio.num()), static_cast<long long>(p.ratio.den())));
+        }
+      }
+      if (const std::optional<tuning::Rational> r = doc::ops::simplestRatioNear(inEquave, doc::ops::ratioSnapTolerance(t, degreeCents(t, d)));
+          r && r->num() < 100000 && r->den() < 100000) {
+        const bool exact = std::fabs(1200.0 * std::log2(r->toDouble()) - inEquave) < 1e-3;
+        return put(std::snprintf(buf, 16, "%s%lld/%lld", exact ? "" : "~", static_cast<long long>(r->num()), static_cast<long long>(r->den())));
+      }
+      return put(std::snprintf(buf, 16, "%.1f", inEquave));
+    }
+    case RowLabels::Degree:
+      if (t.edo()) return put(std::snprintf(buf, 16, "%lld\\%d", static_cast<long long>(within), n));
+      return put(std::snprintf(buf, 16, "%lld", static_cast<long long>(within)));
+    case RowLabels::Auto:
+    case RowLabels::Name: break;
+  }
+  return put(std::snprintf(buf, 16, "%lld", static_cast<long long>(within)));
 }
 
 std::vector<uint8_t> defaultHighlightScale(const tuning::Tuning& t) {
@@ -121,7 +168,11 @@ RowModel RowModel::build(const tuning::Tuning& tuning, const RowOptions& o) {
   m.rows_.resize(degrees.size());
   m.labels_.resize(degrees.size());
   m.equaveLabels_.resize(degrees.size());
+  m.labelMode_ = resolveRowLabels(o.labels, tuning);
+  const bool nameMode = m.labelMode_ == RowLabels::Name;
+  m.named_ = nameMode && twelve != 0;
   char buf[48];
+  char lbuf[24];
   for (size_t i = 0; i < degrees.size(); ++i) {
     const int64_t d = degrees[i];
     const int64_t within = floorMod(d, n);
@@ -139,7 +190,12 @@ RowModel RowModel::build(const tuning::Tuning& tuning, const RowOptions& o) {
     // Labels (Q2): 12edo-compatible EDOs name the 12edo rows Ableton-style (C3 = degree 0 of equave 0, the
     // reference); other EDOs label every row k\n and put the equave number on degree 0 (octave EDOs count like
     // Ableton's octaves, 3 = the reference's; other equaves count from 0).
-    if (perSemitone && within % perSemitone == 0) {
+    if (!nameMode) {
+      // T3.19 label modes: the equave number goes on degree 0's tab (octave EDOs count like Live's octaves).
+      if (perSemitone && within % perSemitone == 0) f |= kRowNamed;
+      m.labels_[i].assign(lbuf, formatRowLabel(m.labelMode_, tuning, d, lbuf));
+      if (within == 0) m.equaveLabels_[i] = std::to_string(edo && octave ? equave + 3 : equave);
+    } else if (perSemitone && within % perSemitone == 0) {
       f |= kRowNamed;
       std::snprintf(buf, sizeof buf, "%s%lld", kNoteNames[within / perSemitone], static_cast<long long>(equave + 3));
       m.labels_[i] = buf;
@@ -282,6 +338,11 @@ double RowModel::hardness() const noexcept {
 
 void RowModel::retune(const tuning::Tuning& tuning) noexcept {
   for (PitchRow& r : rows_) r.cents = degreeCents(tuning, r.degree);
+  if (labelMode_ == RowLabels::Cents || labelMode_ == RowLabels::Ratio) {
+    // The pitch labels follow the morph (≤ 15 characters: the strings' small buffers, no allocation).
+    char lbuf[24];
+    for (size_t i = 0; i < rows_.size(); ++i) labels_[i].assign(lbuf, formatRowLabel(labelMode_, tuning, rows_[i].degree, lbuf));
+  }
   if (layout_ == RowLayout::Uniform) return;  // EDO rows do not morph
   classify(tuning);
   if (layout_ == RowLayout::Proportional) layoutRows();  // Equidistant geometry does not depend on the pitches

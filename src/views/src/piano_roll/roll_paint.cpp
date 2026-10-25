@@ -13,6 +13,7 @@
 
 #include "../common/labels.h"
 #include "../common/paint.h"
+#include "pq/tuning/ji.h"
 #include "pq/ui/theme.h"
 #include "roll_widgets.h"
 
@@ -271,6 +272,10 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   const bool zOrder = s_.rows().layout() == RowLayout::Proportional;
   std::vector<ZNote>& zNotes = s_.zNotes;
   zNotes.clear();
+  // T3.19: Ratio notes carry their ratio (and harmonic number over the virtual fundamental), drawn after every note.
+  std::vector<NoteLabel>& labels = s_.noteLabels;
+  labels.clear();
+  const std::optional<tuning::Rational> F = s_.virtualFundamental();
   auto emit = [&](const doc::Note& n, Ticks start, Ticks length, const tuning::PitchId& pitch, bool sel) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
     float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(start + length))));
@@ -292,6 +297,13 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     }
     if (zOrder) zNotes.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, d.border, d.offGrid, static_cast<uint16_t>(pl.z + (sel ? 256 : 0))});
     else drawNote(dl, d, th->roll.offGrid);
+    if (pitch.kind() == tuning::PitchKind::Ratio) {
+      const tuning::Rational r = pitch.ratio();
+      uint32_t k = 0;
+      if (F && pitch.anchorKind() == tuning::AnchorKind::Reference)
+        if (const std::optional<uint64_t> h = tuning::harmonicNumber(r, *F); h && *h <= 99999) k = static_cast<uint32_t>(*h);
+      labels.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, r.num(), r.den(), k});
+    }
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
     const bool sel = anySelected && s_.selected(n.id);
@@ -313,6 +325,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     for (const ZNote& z : zNotes) sorted[count[z.key]++] = z;  // stable: time order within one z
     for (const ZNote& z : sorted) drawNote(dl, {z.x0, z.x1, z.y0, z.y1, z.fill, z.border, z.offGrid}, th->roll.offGrid);
   }
+  if (!labels.empty()) paintNoteLabels(ctx);
 
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)
@@ -340,6 +353,36 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     dl.addRectStroke(band, th->selection.fill);
   }
   dl.popClip();
+}
+
+// Ratio labels (T3.19, SPEC §4.3 "notes with Ratio identity show their ratio"; M3 review UI §2): "7/4" in the note's
+// top-left once the note is ≥ 24 logical px wide and as tall as the small font, with " · 7" (its harmonic number over
+// the clip's virtual fundamental) when that fits too. Text in the clip-text colour that reads on the note's fill.
+void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
+  const Theme& th = *ctx.res.theme;
+  TextSystem* ts = ctx.res.text;
+  const ThemeFonts* fonts = ctx.res.uiFonts;
+  if (!ts || !fonts) return;
+  const FontId font = fonts->small;
+  const float minW = ctx.scale.exact(24.0f);
+  const float minH = static_cast<float>(ts->metrics(font).pixelSize) + 1.0f;
+  const int32_t pad = ctx.scale.px(3);
+  char buf[48];
+  for (const NoteLabel& l : s_.noteLabels) {
+    const float w = l.x1 - l.x0, h = l.y1 - l.y0;
+    if (w < minW || h < minH) continue;
+    int n = std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(l.num), static_cast<long long>(l.den));
+    if (n <= 0) continue;
+    const int32_t avail = static_cast<int32_t>(w) - 2 * pad;
+    std::string_view text(buf, static_cast<size_t>(n));
+    if (ts->measure(font, text) > avail) continue;
+    if (l.harmonic) {
+      const int m = std::snprintf(buf + n, sizeof buf - static_cast<size_t>(n), " \xC2\xB7 %u", l.harmonic);
+      if (m > 0 && ts->measure(font, std::string_view(buf, static_cast<size_t>(n + m))) <= avail) text = std::string_view(buf, static_cast<size_t>(n + m));
+    }
+    const IRect box{static_cast<int32_t>(l.x0), static_cast<int32_t>(l.y0), static_cast<int32_t>(w), static_cast<int32_t>(std::min(h, minH + 3.0f))};
+    paint::text(ctx, font, box, text, clipTextFor(th, l.fill), TextAlign::Left, pad, pad);
+  }
 }
 
 void NoteAreaWidget::paintOver(PaintContext& ctx) {
@@ -384,7 +427,7 @@ void KeysWidget::paint(PaintContext& ctx) {
   // Labels (Q2): every row when rows are tall enough for the text; else the white keys when they leave room
   // around them (a label may overhang into the unlabelled rows next to it); equave rows always. On a
   // 12edo-compatible EDO only the C rows are named until the rows are tall (Live labels the Cs).
-  const bool twelve = twelveCompatibleEdo(s_.tuning()) != 0;
+  const bool twelve = rows.namedLabels();  // 12edo names: only the C rows until the rows are tall (Live)
   const bool allLabels = rowH >= fontPx + (twelve ? 6 : 0);
   const bool naturalLabels = !twelve && rowH >= 6;
   const Rgba accent = th->accent.primary;

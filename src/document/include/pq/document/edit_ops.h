@@ -48,6 +48,7 @@ struct Edit {
   ClipRef noteClip;               // the clip `notes` belong to
   std::vector<NoteKey> notes;     // keys as they are in the resulting snapshot
   std::vector<BreakpointId> points;
+  std::vector<TuningId> tunings;  // main tunings created or kept (T3.19)
 
   bool empty() const noexcept;    // the batch has no commands
   const Batch& batch() const noexcept;
@@ -216,8 +217,36 @@ EditResult duplicateNotes(const Project& p, IdSource& ids, ClipRef clip, std::sp
                           Ticks offset = 0);
 
 // SPEC §3.1 explicit identity conversions. Degree and Ratio (reference-anchored) → Cents: the exact same pitch
-// ("freeze"). Ratio/Cents → Degree: the nearest degree of the clip's tuning ("snap"). Other notes are left alone.
+// ("freeze"). Ratio/Cents → Degree: the nearest degree of the clip's tuning ("snap"). Degree/Cents → Ratio (T3.19):
+// the simplest ratio (smallest denominator, the Stern–Brocot node nearest the root) within ratioSnapTolerance of the
+// pitch, reference-anchored, so Degree → Ratio → Degree returns the same degree. Other notes are left alone; `to` =
+// Harmonic is refused (no JI objects yet).
 EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, tuning::PitchKind to);
+// Sets every note's pitch identity to `pitch` (a type-in, T3.19). A Ratio must be positive and anchored to the
+// reference or a note; Harmonic is refused.
+EditResult setNotesPitch(const Project& p, ClipRef clip, std::span<const NoteKey> notes, const tuning::PitchId& pitch);
+
+// The simplest positive ratio in [lo, hi] (smallest denominator, then numerator: the first Stern–Brocot node inside
+// the interval), or nullopt (lo ≤ 0, hi < lo, or terms beyond 2^40). Exact integer arithmetic on the continued-fraction
+// terms of the interval's ends; at most 64 terms. 2^(385/1200) … 2^(415/1200) → 5/4.
+std::optional<tuning::Rational> simplestRatioBetween(double lo, double hi) noexcept;
+// The simplest ratio within ±toleranceCents of `cents` (above the reference).
+std::optional<tuning::Rational> simplestRatioNear(double cents, double toleranceCents) noexcept;
+// How far a ratio snapped from a pitch may lie from it (T3.19): 0.45 × the smaller step to the neighbouring degrees of
+// the tuning (so it stays nearer its degree than any other), clamped to [kRatioSnapMinCents, kRatioSnapMaxCents].
+inline constexpr double kRatioSnapMinCents = 0.05;
+inline constexpr double kRatioSnapMaxCents = 20.0;  // 12-EDO's 900 ¢ → 5/3 (15.6 ¢ off), 300 ¢ → 6/5
+double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept;
+
+// ---- Main tunings (T3.19, SPEC §3.2) ---------------------------------------------------------------------------
+
+// A new main tuning at the end of the list (one AddTuning; Structural: a new tuning signal). Edit::tunings = its id.
+EditResult addMainTuning(const Project& p, IdSource& ids, std::string name, TuningDef def, Colour colour);
+// Removes a main tuning in one step: every track and clip assigned to it (TuningMode::Main) is reassigned to
+// `replacement` (invalid: the first other main tuning) first, then RemoveTuning (which drops its automation lanes).
+// Refused for the last main tuning. Edit::tunings = {replacement}, Edit::tracks = the reassigned tracks (and clips'
+// tracks).
+EditResult removeMainTuning(const Project& p, TuningId tuning, TuningId replacement = {});
 
 // ---- Time selection (all tracks) ------------------------------------------------------------------------------
 

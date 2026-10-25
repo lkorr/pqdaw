@@ -211,7 +211,15 @@ void OverlayLayer::arrange(LayoutPass& pass) {
 }
 
 bool OverlayLayer::onPointer(const PointerEvent& e) {
-  // Reached only when the press missed every popup (popups consume their own presses).
+  // Reached only when the event missed every popup (popups consume their own presses).
+  if (e.type == PointerType::Down || e.type == PointerType::Move) {
+    for (size_t i = entries_.size(); i-- > 0;) {
+      if (!entries_[i].options.onOutsidePointer) continue;
+      const std::function<bool(const PointerEvent&)> fn = entries_[i].options.onOutsidePointer;  // may close it
+      if (fn(e) && e.type == PointerType::Down) return true;
+      break;
+    }
+  }
   if (e.type == PointerType::Down) {
     for (const Entry& en : entries_)
       if (en.options.dismissOnOutsideClick) {

@@ -69,14 +69,16 @@ TEST_CASE("shell: Ableton layout (control bar, track area, info + detail, status
   CHECK(f.d.rect("main/body/top/track-area").bottom() == 772);  // the whole height without the detail view
   f.ctx.setDetailVisible(true);
   f.d.tree().layoutNow();
+  // T3.19: Live's menu bar (File … Help) is the top row, 20 px; the control bar sits under it.
+  CHECK(f.d.rect("main/menu-bar") == IRect{0, 0, 1280, 20});
   const IRect bar = f.d.rect("main/control-bar");
-  CHECK(bar == IRect{0, 0, 1280, 32});
+  CHECK(bar == IRect{0, 20, 1280, 32});
   const IRect status = f.d.rect("main/status-bar");
   CHECK(status == IRect{0, 778, 1280, 22});
   const IRect track = f.d.rect("main/body/top/track-area");
   const IRect info = f.d.rect("main/body/bottom/info");
   const IRect detail = f.d.rect("main/body/bottom/detail");
-  CHECK(track.y == 38);  // a 6-px gutter below the control bar
+  CHECK(track.y == 58);  // a 6-px gutter below the control bar
   CHECK(track.x == 6);   // the browser (M5) is hidden; gutter at the window edge
   CHECK(track.w == 1268);
   CHECK(info.h == 240);  // the detail view's default height (splitter anchored at the bottom)
@@ -94,6 +96,8 @@ TEST_CASE("shell: Ableton layout (control bar, track area, info + detail, status
   CHECK(&f.shell->slot(ShellSlot::DeviceDetail) == f.d.find("main/body/bottom/detail/device"));
   CHECK(&f.shell->slot(ShellSlot::Browser) == f.d.find("main/body/top/browser"));
   CHECK_FALSE(f.shell->slot(ShellSlot::Browser).visible());
+  CHECK(&f.shell->slot(ShellSlot::Tunings) == f.d.find("main/body/top/tunings"));  // T3.19, hidden until View > Tunings
+  CHECK_FALSE(f.shell->slot(ShellSlot::Tunings).visible());
   CHECK_FALSE(f.shell->slot(ShellSlot::Mixer).visible());
   CHECK(f.shell->slot(ShellSlot::ClipDetail).visible());
   CHECK_FALSE(f.shell->slot(ShellSlot::DeviceDetail).visible());

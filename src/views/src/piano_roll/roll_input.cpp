@@ -2,9 +2,12 @@
 //   note area   click selects (Shift / Ctrl toggles), drag moves (time snapped relative to the grid, pitch by rows),
 //               Alt-drag copies, the note's ends resize, a drag on empty space draws a selection rectangle,
 //               double-click adds / deletes a note; in draw mode (B) a click adds a grid-cell note (or deletes the
-//               note under it) and a drag adds one per cell crossed. Wheel scrolls (Shift: horizontally), Ctrl+wheel
-//               zooms time, Ctrl+Alt+wheel zooms rows. Esc cancels a drag.
-//   keys        click auditions the row and selects its notes (Shift adds); horizontal drag zooms the rows.
+//               note under it) and a drag adds one per cell crossed. Alt draws Cents notes on the background EDO,
+//               Shift draws Ratio notes on the virtual fundamental's harmonics (T3.19). Right-click: the note menu
+//               (convert identity, set pitch, lock the fundamental, row labels). Wheel scrolls (Shift: horizontally),
+//               Ctrl+wheel zooms time, Ctrl+Alt+wheel zooms rows. Esc cancels a drag. Hover: the pitch readout.
+//   keys        click auditions the row and selects its notes (Shift adds); horizontal drag zooms the rows;
+//               right-click: row labels; hover: the row's pitch readout.
 //   ruler       drag the loop brace (its ends or the whole brace), the start marker and the end marker; elsewhere a
 //               vertical drag zooms time around the pointer and a horizontal drag scrolls.
 //   velocity    drag a stem (or chance bar) up / down: every selected note changes by the same amount.
@@ -13,10 +16,15 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
+#include "pq/tuning/ji.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "roll_widgets.h"
 
@@ -77,22 +85,36 @@ void NoteAreaWidget::pressNote(const PointerEvent& e, const doc::Note& n, int zo
   s_.audition(n.pitch, n.velocity, n.start, n.length);
 }
 
-// The note a draw gesture puts in cell `c` at device y: a Degree note on the row there, or with `onOverlay` (Alt, while
-// a background EDO is shown) a Cents note on the overlay line nearest the pointer's pitch (T3.12).
-DrawnNote NoteAreaWidget::cellNote(TickRange c, float y, bool onOverlay) const {
+// The note a draw gesture puts in cell `c` at device y: a Degree note on the row there; with Overlay (Alt, while a
+// background EDO is shown) a Cents note on the overlay line nearest the pointer's pitch (T3.12); with Ratio (Shift,
+// T3.19) a Ratio note on the virtual fundamental's harmonic nearest the pointer (RollState::ratioFor).
+DrawnNote NoteAreaWidget::cellNote(TickRange c, float y, DrawPitch mode) const {
   DrawnNote dn{c.start, c.end - c.start, 0};
   const RowModel& rows = s_.rows();
   if (rows.empty()) return dn;
   const int32_t cy = s_.contentY(y);
-  if (onOverlay && s_.overlay()) {
-    dn.onOverlay = true;
+  if (mode == DrawPitch::Overlay && s_.overlay()) {
+    dn.mode = DrawPitch::Overlay;
     dn.cents = s_.nearestOverlayCents(rows.centsAtY(static_cast<double>(cy)));
     dn.degree = rows.placeCents(dn.cents).nearestDegree;
+  } else if (mode == DrawPitch::Ratio) {
+    dn.mode = DrawPitch::Ratio;
+    const int64_t row = rows.row(rows.indexAtY(cy)).degree;
+    dn.ratio = s_.ratioFor(row, rows.centsAtY(static_cast<double>(cy)));
+    dn.degree = rows.placeCents(tuning::cents(dn.ratio)).nearestDegree;
   } else {
     dn.degree = rows.row(rows.indexAtY(cy)).degree;
   }
   return dn;
 }
+
+namespace {
+DrawPitch drawPitchFor(Mods m) noexcept {
+  if (m & mod::kAlt) return DrawPitch::Overlay;
+  if (m & mod::kShift) return DrawPitch::Ratio;
+  return DrawPitch::Row;
+}
+}  // namespace
 
 void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
   DragState& d = s_.drag;
@@ -105,7 +127,7 @@ void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
   if (s_.ctx.drawMode()) {
     const TickRange c = drawCell(g, t);
     d.kind = DragKind::Draw;
-    d.drawn.push_back(cellNote(c, e.pos.y, (e.mods & mod::kAlt) != 0));
+    d.drawn.push_back(cellNote(c, e.pos.y, drawPitchFor(e.mods)));
     d.trackDamage = true;  // no notes tracked: the drawn cells are
     s_.audition(s_.drawnPitch(d.drawn.back()), 100.0f, c.start, c.end - c.start);
     s_.damageDrag();
@@ -160,7 +182,7 @@ void NoteAreaWidget::dragTo(Vec2 p) {
       const TickRange c = drawCell(g, roundTicks(s_.tickAtX(p.x)));
       const bool have = std::any_of(d.drawn.begin(), d.drawn.end(), [&](const DrawnNote& n) { return n.start == c.start; });
       if (!have) {
-        d.drawn.push_back(cellNote(c, p.y, !d.drawn.empty() && d.drawn.front().onOverlay));
+        d.drawn.push_back(cellNote(c, p.y, d.drawn.empty() ? DrawPitch::Row : d.drawn.front().mode));
         s_.audition(s_.drawnPitch(d.drawn.back()), 100.0f, c.start, c.end - c.start);
       }
       break;
@@ -185,6 +207,11 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
   if (!s_.hasClip()) return false;
   switch (e.type) {
     case PointerType::Down: {
+      if (e.button == PointerButton::Right) {
+        if (tree()) tree()->setFocus(this);
+        (void)openMenu(e.pos);
+        return true;
+      }
       if (e.button != PointerButton::Left) return false;
       if (tree()) tree()->setFocus(this);
       int zone = 0;
@@ -204,7 +231,7 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         const Grid g = s_.grid();
         const TickRange c = drawCell(g, roundTicks(s_.tickAtX(e.pos.x)));
         if (!s_.rows().empty()) {
-          const DrawnNote dn = cellNote(c, e.pos.y, (e.mods & mod::kAlt) != 0);
+          const DrawnNote dn = cellNote(c, e.pos.y, drawPitchFor(e.mods));
           s_.addNotes({dn});
           s_.audition(s_.drawnPitch(dn), 100.0f, c.start, c.end - c.start);
         }
@@ -218,8 +245,10 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         dragTo(e.pos);
         return true;
       }
+      if (!captured()) s_.hoverAt(e.pos, false);
       return false;
     case PointerType::Up: {
+      if (e.button == PointerButton::Right) return true;
       if (e.button != PointerButton::Left) return false;
       DragState& d = s_.drag;
       if (d.kind == DragKind::None) return true;
@@ -266,6 +295,111 @@ bool NoteAreaWidget::onKey(const KeyEvent& e) {
 
 void NoteAreaWidget::onCaptureLost() { s_.abortDrag(); }
 
+void NoteAreaWidget::onHoverChanged(bool hovered) {
+  Control::onHoverChanged(hovered);
+  if (!hovered) s_.clearHover();
+}
+
+InfoText NoteAreaWidget::info() const {
+  if (!s_.hovering()) return Control::info();
+  return {s_.hoverTitle(), s_.hoverBody()};
+}
+
+// The right-click menu (T3.19, M3 review H7): identity conversions, a typed pitch and the fundamental lock for the
+// selected notes (a note under the pointer that is not selected becomes the selection, as Live), else paste / select
+// all; the row labels for any press.
+Menu* NoteAreaWidget::openMenu(Vec2 at) {
+  if (const doc::Note* n = s_.noteAt(at); n && !s_.selected(n->id)) s_.selectOnly(n->id);
+  std::shared_ptr<RollState*> alive = s_.self();
+  auto guarded = [alive](std::function<void(RollState&)> f) {
+    return [alive, f = std::move(f)] {
+      if (*alive) f(**alive);
+    };
+  };
+  std::vector<MenuItem> items;
+  const std::vector<uint32_t>& sel = s_.selection();
+  if (!sel.empty()) {
+    // Which identities the selection holds.
+    bool kinds[4] = {false, false, false, false};
+    const doc::Note* single = nullptr;
+    for (const doc::Note& n : s_.clip()->notes)
+      if (s_.selected(n.id)) {
+        kinds[static_cast<size_t>(n.pitch.kind())] = true;
+        single = &n;
+      }
+    if (sel.size() != 1) single = nullptr;
+    const int nKinds = kinds[0] + kinds[1] + kinds[2] + kinds[3];
+    auto conv = [&](const char* label, tuning::PitchKind k) {
+      MenuItem m = MenuItem::item(label, guarded([k](RollState& st) { (void)st.convertSelection(k); }));
+      m.checked = nKinds == 1 && kinds[static_cast<size_t>(k)];
+      m.enabled = !(nKinds == 1 && kinds[static_cast<size_t>(k)]) && !(nKinds == 1 && kinds[3]);
+      return m;
+    };
+    items.push_back(conv("Degree (moves with the tuning)", tuning::PitchKind::Degree));
+    items.push_back(conv("Ratio (stays at its just pitch)", tuning::PitchKind::Ratio));
+    items.push_back(conv("Cents (never moves)", tuning::PitchKind::Cents));
+    items.push_back(MenuItem::item("Set Pitch\xE2\x80\xA6", guarded([](RollState& st) { (void)st.openPitchEntry(); })));
+    items.push_back(MenuItem::sep());
+    // The fundamental lock: "this note is the k-th harmonic" (SPEC §6.2's b + index), for one reference-anchored ratio.
+    const std::optional<tuning::Rational> lock = s_.clip()->fundamental.lock;
+    if (single && single->pitch.kind() == tuning::PitchKind::Ratio && single->pitch.anchorKind() == tuning::AnchorKind::Reference) {
+      const tuning::Rational r = single->pitch.ratio();
+      uint32_t current = 0;
+      if (const std::optional<tuning::Rational> F = s_.virtualFundamental())
+        if (const std::optional<uint64_t> k = tuning::harmonicNumber(r, *F); k && *k <= 4096) current = static_cast<uint32_t>(*k);
+      std::vector<MenuItem> sub;
+      const doc::NoteId id = single->id;
+      auto add = [&](uint32_t k) {
+        const std::optional<tuning::Rational> f = tuning::Rational::tryMake(r.num(), r.den() * static_cast<int64_t>(k));
+        if (!f) return;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "Harmonic %u  (F = %lld/%lld)%s", k, static_cast<long long>(f->num()),
+                      static_cast<long long>(f->den()), k == current ? "  \xC2\xB7 current" : "");
+        MenuItem m = MenuItem::item(buf, guarded([id, k](RollState& st) { (void)st.lockFundamentalOn(id, k); }));
+        m.checked = lock && *lock == *f;
+        sub.push_back(std::move(m));
+      };
+      if (current > 16) add(current);
+      for (uint32_t k = 1; k <= 16; ++k) add(k);
+      items.push_back(MenuItem::sub("Lock Fundamental", std::move(sub)));
+    }
+    MenuItem unlock = MenuItem::item("Unlock Fundamental", guarded([](RollState& st) { (void)st.unlockFundamental(); }));
+    unlock.enabled = lock.has_value();
+    items.push_back(std::move(unlock));
+    items.push_back(MenuItem::sep());
+    MenuItem dup = MenuItem::item("Duplicate", guarded([](RollState& st) { st.duplicateSelection(); }), "Ctrl+D");
+    items.push_back(std::move(dup));
+    items.push_back(MenuItem::item("Quantize", guarded([](RollState& st) { st.quantizeSelection(); }), "Ctrl+U"));
+    items.push_back(MenuItem::item("Delete", guarded([](RollState& st) { st.deleteSelection(); }), "Delete"));
+  } else {
+    items.push_back(MenuItem::item("Paste", guarded([](RollState& st) { st.paste(); }), "Ctrl+V"));
+    items.push_back(MenuItem::item("Select All", guarded([](RollState& st) { st.selectAll(); }), "Ctrl+A"));
+    MenuItem unlock = MenuItem::item("Unlock Fundamental", guarded([](RollState& st) { (void)st.unlockFundamental(); }));
+    unlock.enabled = s_.clip()->fundamental.lock.has_value();
+    items.push_back(std::move(unlock));
+  }
+  items.push_back(MenuItem::sep());
+  items.push_back(rowLabelsMenu(s_));
+  return openContextMenu(*this, at, std::move(items));
+}
+
+MenuItem rowLabelsMenu(RollState& s) {
+  std::shared_ptr<RollState*> alive = s.self();
+  std::vector<MenuItem> sub;
+  const RowLabels cur = s.rowLabels();
+  const std::pair<const char*, RowLabels> modes[] = {{"Auto", RowLabels::Auto},       {"Note Names", RowLabels::Name},
+                                                     {"Degrees", RowLabels::Degree},  {"Cents", RowLabels::Cents},
+                                                     {"Ratios", RowLabels::Ratio}};
+  for (const auto& [label, mode] : modes) {
+    MenuItem m = MenuItem::item(label, [alive, mode = mode] {
+      if (*alive) (*alive)->setRowLabels(mode);
+    });
+    m.checked = cur == mode;
+    sub.push_back(std::move(m));
+  }
+  return MenuItem::sub("Row Labels", std::move(sub));
+}
+
 // --- keys -----------------------------------------------------------------------------------------------
 
 KeysWidget::KeysWidget(RollState& s) : Control("keys"), s_(s) {
@@ -278,6 +412,12 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
   DragState& d = s_.drag;
   switch (e.type) {
     case PointerType::Down: {
+      if (e.button == PointerButton::Right) {
+        std::vector<MenuItem> items;
+        items.push_back(rowLabelsMenu(s_));
+        (void)openContextMenu(*this, e.pos, std::move(items));
+        return true;
+      }
       if (e.button != PointerButton::Left) return false;
       if (s_.noteArea && tree()) tree()->setFocus(s_.noteArea);
       const PitchRow& row = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y)));
@@ -296,6 +436,7 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
         s_.setRowHeight(d.zoomRowPx + static_cast<int32_t>(std::lround(dx / 6.0f)));
         return true;
       }
+      if (!captured()) s_.hoverAt(e.pos, true);
       return false;
     case PointerType::Up:
       if (d.kind == DragKind::KeysZoom) d = {};
@@ -310,6 +451,16 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
 
 void KeysWidget::onCaptureLost() {
   if (s_.drag.kind == DragKind::KeysZoom) s_.drag = {};
+}
+
+void KeysWidget::onHoverChanged(bool hovered) {
+  Control::onHoverChanged(hovered);
+  if (!hovered) s_.clearHover();
+}
+
+InfoText KeysWidget::info() const {
+  if (!s_.hovering()) return Control::info();
+  return {s_.hoverTitle(), s_.hoverBody()};
 }
 
 // --- ruler ----------------------------------------------------------------------------------------------
@@ -554,6 +705,14 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
     s_.endGeneratorMorph(false);
     if (s_.noteArea && tree() && gen_->focused()) tree()->setFocus(s_.noteArea);
   };
+  labelsRow_ = &row("labels-row", "Row Labels");
+  labels_ = &labelsRow_->add<Dropdown>("row-labels", std::vector<std::string>{"Auto", "Names", "Degrees", "Cents", "Ratios"}, 0);
+  labels_->setWidth(Length::fixed(64));
+  labels_->setFocusable(false);
+  labels_->setInfo("Row Labels", "What the keys show on each row: Auto (ratios for a just Scala scale, else names), note "
+                                 "names / k\\n steps, degrees, cents within the equave, or ratios (exact for a Scala "
+                                 "ratio, else the simplest ratio nearby, marked ~).");
+  labels_->onChange = [this](int32_t i) { s_.setRowLabels(static_cast<RowLabels>(std::clamp(i, 0, 4))); };
   jiRow_ = &row("ji-row", "Harmonics");
   ji_ = &jiRow_->add<Toggle>("ji", "JI", ToggleStyle::Accent);
   ji_->setWidth(Length::fixed(34));
@@ -588,6 +747,7 @@ void ClipBoxPanel::refresh() {
     layout_->setText(s_.scaleLayout() == RowLayout::Proportional ? "Proportional" : "Equidistant");
     if (!grid_->inGesture()) grid_->setValue(static_cast<double>(s_.overlayEdo()));
   }
+  labels_->setIndex(static_cast<int32_t>(s_.rowLabels()));
   const bool ji = s_.hasClip() && s_.virtualFundamental().has_value();
   if (jiRow_->visible() != ji) jiRow_->setVisible(ji);
   ji_->setOn(s_.showHarmonics());

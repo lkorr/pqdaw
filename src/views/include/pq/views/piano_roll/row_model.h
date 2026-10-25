@@ -87,6 +87,21 @@ struct StepClass {
   double cents = 0.0;  // the step size, bucketed at 0.01 cents
 };
 
+// What the keys print on each row (T3.19, M3 review H7: a JI Scala scale reads 1/1 9/8 5/4 …, not 0…6).
+enum class RowLabels : uint8_t {
+  Auto,    // Ratio for a Scala scale whose pitches are all ratios, else Name
+  Name,    // Q2: C3-style names on 12edo-compatible EDOs, k\n on other EDOs, the degree index of a MOS / scale
+  Degree,  // k\n on every EDO (also 12-compatible ones), the degree index of a MOS / scale
+  Cents,   // the pitch within the equave in cents ("386.3")
+  Ratio,   // the exact ratio of a Scala ratio pitch ("9/8"), else the simplest ratio within ops::ratioSnapTolerance
+           // marked "~" ("~5/4"), else the cents
+};
+// The mode Auto resolves to for a tuning.
+RowLabels resolveRowLabels(RowLabels mode, const tuning::Tuning& t) noexcept;
+// One row's label (degree `d` of tuning `t`) in a resolved mode other than Name (which build() does). Writes ≤ 15
+// characters (std::string's small buffer: assigning it does not allocate) and returns the length.
+size_t formatRowLabel(RowLabels mode, const tuning::Tuning& t, int64_t d, char (&buf)[24]) noexcept;
+
 enum class Fold : uint8_t {
   None,       // every degree in [lowCents, highCents] (and every used degree)
   UsedNotes,  // only the degrees in `used` (fold to used notes)
@@ -111,6 +126,7 @@ struct RowOptions {
   std::span<const int64_t> used;
   // Highlight scale: one entry per degree within the equave (non-zero = in the scale). Empty: every degree.
   std::span<const uint8_t> scale;
+  RowLabels labels = RowLabels::Auto;  // T3.19
 };
 
 // Where a note of a given pitch in cents is drawn.
@@ -164,6 +180,10 @@ public:
   double hardness() const noexcept;
   // Row label ("C3", "7\31", …; empty when the row has none) and, on equave rows, the equave number ("3").
   const std::string& label(size_t i) const noexcept { return labels_[i]; }
+  // The resolved label mode, and whether the labels are 12edo names (the keys then label only the C rows until rows are
+  // tall, as Live does).
+  RowLabels labelMode() const noexcept { return labelMode_; }
+  bool namedLabels() const noexcept { return named_; }
   const std::string& equaveLabel(size_t i) const noexcept { return equaveLabels_[i]; }
 
   // Index of the row of absolute degree `degree`, or −1 if it is not shown (out of range or folded away).
@@ -201,6 +221,8 @@ private:
   bool contiguous_ = false;  // rows_[i].degree == topDegree_ − i for every i
   int64_t topDegree_ = 0;
   RowLayout layout_ = RowLayout::Uniform;
+  RowLabels labelMode_ = RowLabels::Name;
+  bool named_ = false;
   double ppc_ = 0.0;           // px per cent
   double lane_ = 0.0;          // lane height, device px (fractional)
   double pxScale_ = 1.0;

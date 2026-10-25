@@ -11,7 +11,11 @@ using namespace pq::ui;
 
 // --- InfoView -------------------------------------------------------------------------------------------
 
-InfoView::InfoView() : Widget("info") {}
+InfoView::InfoView(ViewContext& ctx) : Widget("info") {
+  sub_ = ctx.observe([this](uint32_t what) {
+    if ((what & view_change::kInfo) && observing_) show(infoFor(observing_->hovered()));
+  });
+}
 
 InfoView::~InfoView() {
   if (observing_) observing_->removeObserver(this);

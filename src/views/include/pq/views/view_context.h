@@ -56,6 +56,7 @@ inline constexpr uint32_t kDetailClip = 1u << 6; // the clip shown in the clip v
 inline constexpr uint32_t kTuningPreview = 1u << 7;  // the MOS wheel's live tuning preview changed (T3.14)
 inline constexpr uint32_t kAutomation = 1u << 8;     // automation overridden / re-enabled (T3.15)
 inline constexpr uint32_t kSelection = 1u << 9;      // the selected track changed (T3.x-fix-look: the control bar's chip)
+inline constexpr uint32_t kInfo = 1u << 10;          // the hovered widget's info text changed in place (T3.19: the roll's pitch readout)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -255,6 +256,14 @@ public:
   void toggleClipDevice();
   bool browserVisible() const noexcept { return browserVisible_; }
   void setBrowserVisible(bool v);
+  // The Tunings panel (T3.19, SPEC §3.2; View > Tunings): hidden at start. Notifies kLayout.
+  bool tuningsVisible() const noexcept { return tuningsVisible_; }
+  void setTuningsVisible(bool v);
+
+  // --- info view (T3.19) ---
+  // A widget whose info() text changes while it stays hovered (the piano roll's pitch readout under the pointer) calls
+  // this; the info view re-reads infoFor(hovered). Notifies kInfo.
+  void infoChanged() { notify(view_change::kInfo); }
 
   // --- status line ---
   void setStatus(std::string text);
@@ -288,12 +297,14 @@ public:
   static constexpr std::string_view kMixerActions[] = {"view.toggleMixer"};
   // T3.18: the preferences window (Ctrl+, as in Live), forwarded the same way (installPreferences sets the handler).
   static constexpr std::string_view kPrefsActions[] = {"app.preferences"};
+  // T3.19: Create > New Main Tuning (installTuningsPanel sets the handler: it shows the panel with the new tuning).
+  static constexpr std::string_view kTuningsActions[] = {"tuning.newMain"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",
       "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
       "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
-      "grid.toggleFixed"};
+      "grid.toggleFixed",   "view.toggleTunings"};
 
 private:
   void notify(uint32_t bits);
@@ -323,6 +334,7 @@ private:
   doc::TrackId selectedTrack_{};
   DetailMode detailMode_ = DetailMode::Clip;
   bool browserVisible_ = false;
+  bool tuningsVisible_ = false;
   bool drawMode_ = false;
   doc::ClipRef detailClip_{};
   std::optional<TuningPreview> preview_;

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "../common/colour_grid.h"
 #include "../common/paint.h"
 #include "internal.h"
 #include "pq/ui/theme.h"
@@ -14,65 +15,6 @@ namespace pq::views::arrangement {
 
 using namespace pq::ui;
 
-namespace {
-
-constexpr float kSwatch = 16.0f;  // logical px
-constexpr float kSwatchGap = 2.0f;
-
-// Live's colour chooser: the theme's clip palette (14 × 5), the current colour outlined. A click picks.
-class ColourGrid : public Control {
-public:
-  ColourGrid(uint32_t current, std::function<void(uint32_t)> pick)
-      : Control("colours"), current_(current), pick_(std::move(pick)) {
-    setSize(Length::fixed(kClipPaletteColumns * (kSwatch + kSwatchGap) - kSwatchGap),
-            Length::fixed(kClipPaletteRows * (kSwatch + kSwatchGap) - kSwatchGap));
-    setInfo("Track Colour", "Click a colour for the selected tracks.");
-  }
-  IRect cell(uint32_t i) const noexcept {
-    const UiScale s = tree() ? tree()->uiScale() : UiScale{};
-    const IRect r = rect();
-    const float col = static_cast<float>(i % kClipPaletteColumns), row = static_cast<float>(i / kClipPaletteColumns);
-    const int32_t x0 = r.x + s.px(col * (kSwatch + kSwatchGap)), y0 = r.y + s.px(row * (kSwatch + kSwatchGap));
-    return {x0, y0, r.x + s.px(col * (kSwatch + kSwatchGap) + kSwatch) - x0, r.y + s.px(row * (kSwatch + kSwatchGap) + kSwatch) - y0};
-  }
-  void paint(PaintContext& ctx) override {
-    const Theme* th = ctx.res.theme;
-    if (!th) return;
-    for (uint32_t i = 0; i < th->clipPalette.size() && i < kClipPaletteSize; ++i) {
-      const IRect c = cell(i);
-      const Rgba col = th->clipPalette[i];
-      ctx.dl.addRectFilled(c.toRect(), col);
-      const bool cur = (col & 0x00FFFFFFu) == hexToRgba(current_);
-      if (cur || i == hovered_) ctx.dl.addRectStroke(c.toRect(), cur ? th->clip.selectedBorder : th->mixer.boxBorder);
-    }
-  }
-  bool onPointer(const PointerEvent& e) override {
-    const PaintResources* res = tree() ? tree()->resources() : nullptr;
-    const uint32_t n = res && res->theme ? static_cast<uint32_t>(std::min<size_t>(res->theme->clipPalette.size(), kClipPaletteSize)) : 0;
-    uint32_t at = UINT32_MAX;
-    for (uint32_t i = 0; i < n; ++i)
-      if (cell(i).contains(e.pos)) at = i;
-    if (e.type == PointerType::Move && at != hovered_) {
-      hovered_ = at;
-      markDirty();
-    }
-    if (e.type == PointerType::Down && e.button == PointerButton::Left && at != UINT32_MAX) {
-      const Rgba c = res->theme->clipPalette[at];
-      if (pick_) pick_((static_cast<uint32_t>(redOf(c)) << 16) | (static_cast<uint32_t>(greenOf(c)) << 8) | blueOf(c));
-      return true;
-    }
-    return e.type == PointerType::Up || e.type == PointerType::Down;
-  }
-
-private:
-  // 0xRRGGBB as the palette's packed Rgba without alpha (for the comparison above).
-  static uint32_t hexToRgba(uint32_t rgb) noexcept { return hex(rgb) & 0x00FFFFFFu; }
-  uint32_t current_;
-  std::function<void(uint32_t)> pick_;
-  uint32_t hovered_ = UINT32_MAX;
-};
-
-}  // namespace
 
 void Editor::selectTracks(std::vector<doc::TrackId> tracks) {
   using Selection = ArrangementView::Selection;
@@ -182,12 +124,12 @@ Widget* Editor::openColourPicker(Vec2 at) {
   const doc::Track* first = doc::findTrackPtr(*ctx_.doc(), sel_.tracks.front());
   auto pop = std::make_unique<Popover>(layer->uniqueName("track-colours"));
   Popover* popPtr = pop.get();
-  pop->add<ColourGrid>(first ? first->colour.rgb : 0u, [this, layer, popPtr](uint32_t rgb) {
+  pop->add<paint::ColourGrid>(first ? first->colour.rgb : 0u, [this, layer, popPtr](uint32_t rgb) {
     (void)setTracksColour(doc::Colour{rgb});
     layer->close(*popPtr);
   });
-  const float w = kClipPaletteColumns * (kSwatch + kSwatchGap) - kSwatchGap + 16.0f;
-  const float h = kClipPaletteRows * (kSwatch + kSwatchGap) - kSwatchGap + 16.0f;
+  const float w = paint::colourGridWidth() + 16.0f;
+  const float h = paint::colourGridHeight() + 16.0f;
   pop->setSize(Length::fixed(w), Length::fixed(h));
   OverlayOptions o;
   o.anchor = {static_cast<int32_t>(std::lround(at.x)), static_cast<int32_t>(std::lround(at.y)), 0, 0};

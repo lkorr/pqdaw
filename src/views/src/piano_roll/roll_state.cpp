@@ -3,10 +3,14 @@
 #include "roll_state.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <numeric>
 
 #include "pq/document/commands.h"
+#include "pq/tuning/ji.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "roll_widgets.h"
 
@@ -33,9 +37,9 @@ ui::Rgba mix(ui::Rgba a, ui::Rgba b, float t) noexcept { return ui::lerp(a, b, t
 
 }  // namespace
 
-RollState::RollState(ViewContext& c) : ctx(c) {}
+RollState::RollState(ViewContext& c) : ctx(c), self_(std::make_shared<RollState*>(this)) {}
 
-RollState::~RollState() = default;
+RollState::~RollState() { *self_ = nullptr; }
 
 // --- clip and caches ------------------------------------------------------------------------------------
 
@@ -240,6 +244,7 @@ void RollState::rebuildRows() {
   o.rowPx = std::max(1, us.px(static_cast<float>(rowPxLogical_)));
   o.fold = fold_ ? (scale_ ? Fold::Scale : Fold::UsedNotes) : Fold::None;
   o.used = used_;
+  o.labels = rowLabels_;
   if (scale_ || o.fold == Fold::Scale) o.scale = scaleMask_;
   rows_ = RowModel::build(tuning_, o);
   builtScale_ = scale;
@@ -408,7 +413,273 @@ double RollState::nearestOverlayCents(double cents) const noexcept {
 }
 
 tuning::PitchId RollState::drawnPitch(const DrawnNote& d) const noexcept {
-  return d.onOverlay ? tuning::PitchId::fromCents(d.cents) : degreePitch(d.degree);
+  switch (d.mode) {
+    case DrawPitch::Overlay: return tuning::PitchId::fromCents(d.cents);
+    case DrawPitch::Ratio: return tuning::PitchId::fromRatio(d.ratio);
+    case DrawPitch::Row: break;
+  }
+  return degreePitch(d.degree);
+}
+
+// --- identities, row labels, hover readout (T3.19) ----------------------------------------------------------------
+
+void RollState::setRowLabels(RowLabels mode) {
+  if (mode == rowLabels_) return;
+  rowLabels_ = mode;
+  rebuildRows();
+  if (keysView) keysView->markDirty();
+  if (boxPanel) boxPanel->refresh();
+  hoverSnap_ = nullptr;  // the readout's title carries the row label
+}
+
+bool RollState::convertSelection(tuning::PitchKind to) {
+  if (!clip_) return false;
+  const std::vector<doc::NoteKey> keys = selectionKeys();
+  if (keys.empty()) return false;
+  const char* what = to == tuning::PitchKind::Ratio ? "Convert to Ratio" : to == tuning::PitchKind::Cents ? "Convert to Cents" : "Convert to Degree";
+  return apply(doc::ops::convertNotes(*ctx.doc(), ref_, keys, to), what);
+}
+
+bool RollState::setSelectionPitch(const tuning::PitchId& p) {
+  if (!clip_) return false;
+  const std::vector<doc::NoteKey> keys = selectionKeys();
+  if (keys.empty()) return false;
+  if (!apply(doc::ops::setNotesPitch(*ctx.doc(), ref_, keys, p), "Set Pitch")) return false;
+  if (const doc::Note* n = findNote(keys.front().id)) audition(n->pitch, n->velocity, n->start, n->length);
+  return true;
+}
+
+std::optional<tuning::PitchId> RollState::parsePitch(std::string_view t) const {
+  while (!t.empty() && t.front() == ' ') t.remove_prefix(1);
+  while (!t.empty() && t.back() == ' ') t.remove_suffix(1);
+  if (t.empty()) return std::nullopt;
+  auto integer = [](std::string_view s, int64_t& v) {
+    const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
+    return r.ec == std::errc{} && r.ptr == s.data() + s.size();
+  };
+  // Degree "k\n" or "k\n+e" / "k\n-e" (an equave offset).
+  if (const size_t bs = t.find('\\'); bs != std::string_view::npos) {
+    std::string_view rest = t.substr(bs + 1);
+    int64_t k = 0, n = 0, e = 0;
+    const size_t sign = rest.find_first_of("+-");
+    if (sign != std::string_view::npos) {
+      std::string_view es = rest.substr(sign);
+      if (es.front() == '+') es.remove_prefix(1);
+      if (!integer(es, e)) return std::nullopt;
+      rest = rest.substr(0, sign);
+    }
+    if (!integer(t.substr(0, bs), k) || !integer(rest, n) || n != degreesPerEquave(tuning_) || k < 0 || k >= n) return std::nullopt;
+    if (e < INT32_MIN || e > INT32_MAX) return std::nullopt;
+    return tuning::PitchId::fromDegree(static_cast<int32_t>(k), static_cast<int32_t>(e));
+  }
+  // Ratio "n/d" or "n:d".
+  size_t slash = t.find('/');
+  if (slash == std::string_view::npos) slash = t.find(':');
+  if (slash != std::string_view::npos) {
+    int64_t n = 0, d = 0;
+    if (!integer(t.substr(0, slash), n) || !integer(t.substr(slash + 1), d) || n <= 0 || d <= 0) return std::nullopt;
+    const std::optional<tuning::Rational> r = tuning::Rational::tryMake(n, d);
+    if (!r) return std::nullopt;
+    return tuning::PitchId::fromRatio(*r);
+  }
+  // Cents "386.3c" / "386.3¢" (a bare number is cents too).
+  std::string_view num = t;
+  if (num.ends_with("\xC2\xA2")) num.remove_suffix(2);
+  else if (num.ends_with('c') || num.ends_with('C')) num.remove_suffix(1);
+  while (!num.empty() && num.back() == ' ') num.remove_suffix(1);
+  double c = 0.0;
+  const auto r = std::from_chars(num.data(), num.data() + num.size(), c);
+  if (r.ec != std::errc{} || r.ptr != num.data() + num.size() || !std::isfinite(c)) return std::nullopt;
+  return tuning::PitchId::fromCents(c);
+}
+
+ui::TextEdit* RollState::openPitchEntry() {
+  if (!clip_ || sel_.empty() || !noteArea) return nullptr;
+  ui::OverlayLayer* layer = ui::OverlayLayer::of(*noteArea);
+  if (!layer) return nullptr;
+  // Anchored under the earliest selected note (on screen), else the note area's corner.
+  const doc::Note* first = nullptr;
+  for (const doc::Note& n : clip_->notes)
+    if (selected(n.id)) {
+      first = &n;
+      break;
+    }
+  ui::IRect anchor{area().x + 8, area().y + 8, 1, 1};
+  if (first) {
+    const ui::IRect r = intersect(screenRectOf(first->start, first->length, first->pitch), area());
+    if (!r.empty()) anchor = r;
+  }
+  auto pop = std::make_unique<ui::Popover>(layer->uniqueName("pitch-entry"));
+  ui::Popover* popPtr = pop.get();
+  pop->setSize(ui::Length::fixed(236), ui::Length::fixed(58));
+  pop->setInfo("Set Pitch", "Type a pitch for the selected notes and press Enter: a ratio such as 7/4 (stays at that just "
+                            "pitch), cents such as 386.3c (never moves) or a degree such as 4\\22 (moves with the tuning; "
+                            "+1 for the next equave). Esc closes.");
+  pop->add<ui::Label>("title", "Pitch: 7/4 \xC2\xB7 386.3c \xC2\xB7 4\\n", ui::FontRoleId::Small, ui::TextTone::Secondary)
+      .setHeight(ui::Length::fixed(16));
+  auto& edit = pop->add<ui::TextEdit>("pitch");
+  edit.setHeight(ui::Length::fixed(20));
+  if (first) {
+    char buf[64] = {};
+    const tuning::PitchId& p = first->pitch;
+    switch (p.kind()) {
+      case tuning::PitchKind::Ratio:
+        std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(p.ratio().num()), static_cast<long long>(p.ratio().den()));
+        break;
+      case tuning::PitchKind::Cents: std::snprintf(buf, sizeof buf, "%.3fc", p.cents()); break;
+      case tuning::PitchKind::Degree:
+        std::snprintf(buf, sizeof buf, p.equave() ? "%d\\%d%+d" : "%d\\%d", p.degree(), degreesPerEquave(tuning_), p.equave());
+        break;
+      case tuning::PitchKind::Harmonic: break;
+    }
+    edit.setText(buf);
+  }
+  std::shared_ptr<RollState*> alive = self_;
+  edit.onCommit = [alive, layer, popPtr](const std::string& text) {
+    RollState* s = *alive;
+    if (!s) return;
+    const std::optional<tuning::PitchId> p = s->parsePitch(text);
+    if (!p) {
+      s->ctx.setStatus("Pitch: type a ratio (7/4), cents (386.3c) or a degree (4\\22)");
+      return;
+    }
+    if (layer->isOpen(*popPtr)) layer->close(*popPtr);
+    (void)s->setSelectionPitch(*p);
+  };
+  edit.onCancel = [layer, popPtr] {
+    if (layer->isOpen(*popPtr)) layer->close(*popPtr);
+  };
+  ui::OverlayOptions o;
+  o.anchor = anchor;
+  o.placement = ui::Placement::Below;
+  layer->open(std::move(pop), std::move(o));
+  if (ui::UiTree* t = layer->tree()) {
+    t->layoutNow();
+    t->setFocus(&edit);
+    edit.buffer().selectAll();
+  }
+  return &edit;
+}
+
+bool RollState::lockFundamentalOn(doc::NoteId note, uint32_t harmonicIndex) {
+  if (!clip_) return false;
+  const doc::Note* n = findNote(note);
+  if (!n) return false;
+  const std::vector<uint32_t> keep = sel_;
+  if (!apply(doc::ops::lockFundamental(*ctx.doc(), ref_, doc::keyOf(*n), harmonicIndex), "Lock Fundamental")) return false;
+  select(keep);
+  return true;
+}
+
+bool RollState::unlockFundamental() {
+  if (!clip_ || !clip_->fundamental.lock) return false;
+  const std::vector<uint32_t> keep = sel_;
+  if (!apply(doc::ops::unlockFundamental(*ctx.doc(), ref_), "Unlock Fundamental")) return false;
+  select(keep);
+  return true;
+}
+
+tuning::Rational RollState::ratioFor(int64_t degree, double cents) const {
+  if (const std::optional<tuning::Rational> F = virtualFundamental()) {
+    // The harmonic k·F nearest the pointer in pitch (log distance), k ≥ 1.
+    const double f = F->toDouble();
+    const double x = std::exp2(cents / 1200.0) / f;
+    if (x < 1e9) {
+      const double lo = std::max(1.0, std::floor(x));
+      const double k = (x <= 1.0 || std::fabs(std::log2(x / lo)) <= std::fabs(std::log2((lo + 1.0) / x))) ? lo : lo + 1.0;
+      if (const auto r = tuning::Rational::tryMake(F->num() * static_cast<int64_t>(k), F->den()); r && r->isPositive()) return *r;
+    }
+  }
+  // No fundamental yet: the row's pitch snapped to the simplest ratio near it (as Convert to Ratio does).
+  const double rc = degreeCents(tuning_, degree);
+  if (const std::optional<tuning::Rational> r = doc::ops::simplestRatioNear(rc, doc::ops::ratioSnapTolerance(tuning_, rc))) return *r;
+  return tuning::Rational{1};
+}
+
+std::string RollState::pitchReadout(double cents, bool nearestRatio) const {
+  char buf[160];
+  const double hz = tuning_.referenceHz() * std::exp2(cents / 1200.0);
+  int len = std::snprintf(buf, sizeof buf, "%.2f \xC2\xA2 \xC2\xB7 %.2f Hz", cents, hz);
+  std::string s(buf, static_cast<size_t>(std::max(0, len)));
+  if (const std::optional<tuning::Rational> r =
+          nearestRatio ? doc::ops::simplestRatioNear(cents, doc::ops::ratioSnapTolerance(tuning_, cents)) : std::nullopt) {
+    const double dev = cents - tuning::cents(*r);
+    len = std::snprintf(buf, sizeof buf, " \xC2\xB7 \xE2\x89\x88 %lld/%lld (%+.2f \xC2\xA2)", static_cast<long long>(r->num()),
+                        static_cast<long long>(r->den()), dev);
+    s.append(buf, static_cast<size_t>(std::max(0, len)));
+  }
+  if (overlay_) {
+    const int64_t n = overlay_->n();
+    const double step = overlay_->equaveCents() / static_cast<double>(n);
+    const int64_t k = static_cast<int64_t>(std::llround(cents / step));
+    const int64_t e = floorDiv(k, n);
+    len = std::snprintf(buf, sizeof buf, " \xC2\xB7 %lld-EDO %lld\\%lld (%+.2f \xC2\xA2)", static_cast<long long>(n),
+                        static_cast<long long>(k - e * n), static_cast<long long>(n), cents - overlay_->centsOfStep(k));
+    s.append(buf, static_cast<size_t>(std::max(0, len)));
+  }
+  return s;
+}
+
+void RollState::hoverAt(ui::Vec2 p, bool keys) {
+  if (!clip_ || rows_.empty()) {
+    clearHover();
+    return;
+  }
+  const int64_t idx = static_cast<int64_t>(rows_.indexAtY(contentY(p.y)));
+  const doc::Note* n = keys ? nullptr : noteAt(p);
+  const uint32_t nid = n ? n->id.value : 0;
+  if (idx == hoverRow_ && nid == hoverNote_ && keys == hoverKeys_ && snap_.get() == hoverSnap_) return;
+  hoverRow_ = idx;
+  hoverNote_ = nid;
+  hoverKeys_ = keys;
+  hoverSnap_ = snap_.get();
+  const PitchRow& row = rows_.row(static_cast<size_t>(idx));
+  const std::string& label = rows_.label(static_cast<size_t>(idx));
+  char buf[96];
+  if (n) {
+    // The note: its identity, then its pitch.
+    const tuning::PitchId& id = n->pitch;
+    int len = 0;
+    switch (id.kind()) {
+      case tuning::PitchKind::Degree:
+        len = std::snprintf(buf, sizeof buf, "Degree Note %d\\%d%s", id.degree(), degreesPerEquave(tuning_), "");
+        if (id.equave()) len += std::snprintf(buf + len, sizeof buf - static_cast<size_t>(len), " (equave %+d)", id.equave());
+        break;
+      case tuning::PitchKind::Ratio:
+        len = std::snprintf(buf, sizeof buf, "Ratio Note %lld/%lld", static_cast<long long>(id.ratio().num()), static_cast<long long>(id.ratio().den()));
+        break;
+      case tuning::PitchKind::Cents: len = std::snprintf(buf, sizeof buf, "Cents Note %.3f \xC2\xA2", id.cents()); break;
+      case tuning::PitchKind::Harmonic: len = std::snprintf(buf, sizeof buf, "Harmonic Note"); break;
+    }
+    hoverTitle_.assign(buf, static_cast<size_t>(std::clamp(len, 0, static_cast<int>(sizeof buf) - 1)));
+    const std::optional<double> c = centsOf(id);
+    hoverBody_ = c ? pitchReadout(*c, id.kind() != tuning::PitchKind::Ratio) : std::string("Its pitch needs a JI object.");
+    if (id.kind() == tuning::PitchKind::Ratio && id.anchorKind() == tuning::AnchorKind::Reference)
+      if (const std::optional<tuning::Rational> F = virtualFundamental())
+        if (const std::optional<uint64_t> k = tuning::harmonicNumber(id.ratio(), *F)) {
+          len = std::snprintf(buf, sizeof buf, " \xC2\xB7 harmonic %llu of F = %lld/%lld", static_cast<unsigned long long>(*k),
+                              static_cast<long long>(F->num()), static_cast<long long>(F->den()));
+          hoverBody_.append(buf, static_cast<size_t>(std::max(0, len)));
+        }
+    hoverBody_ += ". Right-click: convert to Degree / Ratio / Cents, set its pitch, lock the fundamental.";
+  } else {
+    hoverTitle_ = label.empty() ? std::string("Row") : "Row " + label;
+    if (const std::string& eq = rows_.equaveLabel(static_cast<size_t>(idx)); !eq.empty()) hoverTitle_ += " \xC2\xB7 equave " + eq;
+    hoverBody_ = pitchReadout(row.cents);
+    hoverBody_ += keys ? ". Click to hear it and select its notes; right-click for the row labels."
+                       : ". Draw (B) or double-click adds a note; Shift draws ratios on the harmonics, Alt cents on the EDO grid.";
+  }
+  ctx.infoChanged();
+}
+
+void RollState::clearHover() {
+  if (hoverRow_ < 0) return;
+  hoverRow_ = -1;
+  hoverNote_ = 0;
+  hoverSnap_ = nullptr;
+  hoverTitle_.clear();
+  hoverBody_.clear();
+  ctx.infoChanged();
 }
 
 void RollState::buildAnchorIndex() const {

@@ -44,6 +44,10 @@ struct OverlayOptions {
   bool dismissOnOutsideClick = true;
   bool takeFocus = true;            // focus the popup on open, restore the previous focus on close
   std::function<void()> onClosed;   // called once when the popup closes, for any reason
+  // Pointer moves and presses outside every popup while this one is open (T3.19: a menu bar switches menus as the
+  // pointer moves over its titles, and a press on its own title closes the menu instead of reopening it). Return true
+  // to consume a press: the outside-click dismiss is then skipped. Newest popup first.
+  std::function<bool(const PointerEvent&)> onOutsidePointer;
 };
 
 class OverlayLayer : public Widget, private TreeObserver {

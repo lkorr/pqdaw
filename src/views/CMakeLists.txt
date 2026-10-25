@@ -9,6 +9,7 @@
 #   include/pq/views/piano_roll/   src/piano_roll/    clip view / piano roll (T3.11, T3.12)
 #   include/pq/views/mos_wheel/    src/mos_wheel/     MOS wheel chart, circle, popover (T3.13, T3.14)
 #   include/pq/views/prefs/        src/prefs/         preferences window (T3.18)
+#   include/pq/views/tunings/      src/tunings/       Tunings panel (T3.19)
 #   src/common/                                       private drawing helpers shared by every view
 # A subtree lists its sources in its own src/<subtree>/sources.cmake as
 #   set(PQ_VIEWS_<SUBTREE>_SOURCES src/<subtree>/a.cpp ...)   # paths relative to this directory
@@ -18,9 +19,10 @@ set(PQ_VIEWS_SOURCES
   src/view_scenes.cpp
   src/shell/shell.cpp
   src/shell/control_bar.cpp
+  src/shell/menu_bar.cpp
   src/shell/panels.cpp
   src/shell/default_content.cpp)
-foreach(sub arrangement mixer piano_roll mos_wheel prefs)
+foreach(sub arrangement mixer piano_roll mos_wheel prefs tunings)
   include(${CMAKE_CURRENT_SOURCE_DIR}/src/${sub}/sources.cmake OPTIONAL)
   string(TOUPPER ${sub} _sub)
   list(APPEND PQ_VIEWS_SOURCES ${PQ_VIEWS_${_sub}_SOURCES})

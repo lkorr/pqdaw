@@ -207,6 +207,23 @@ void ClipView::copySelection() { state_->copySelection(); }
 void ClipView::cutSelection() { state_->cutSelection(); }
 void ClipView::paste() { state_->paste(); }
 
+bool ClipView::convertSelection(tuning::PitchKind to) { return state_->convertSelection(to); }
+bool ClipView::setSelectionPitch(const tuning::PitchId& p) { return state_->setSelectionPitch(p); }
+std::optional<tuning::PitchId> ClipView::parsePitch(std::string_view text) const { return state_->parsePitch(text); }
+bool ClipView::enterPitch(std::string_view text) {
+  const std::optional<tuning::PitchId> p = state_->parsePitch(text);
+  return p && state_->setSelectionPitch(*p);
+}
+ui::TextEdit* ClipView::openPitchEntry() { return state_->openPitchEntry(); }
+bool ClipView::lockFundamental(doc::NoteId note, uint32_t index) { return state_->lockFundamentalOn(note, index); }
+bool ClipView::unlockFundamental() { return state_->unlockFundamental(); }
+roll::RowLabels ClipView::rowLabels() const noexcept { return state_->rowLabels(); }
+void ClipView::setRowLabels(roll::RowLabels mode) { state_->setRowLabels(mode); }
+ui::InfoText ClipView::readoutAt(ui::Vec2 p, bool keys) {
+  state_->hoverAt(p, keys);
+  return {state_->hoverTitle(), state_->hoverBody()};
+}
+
 ClipView& installClipView(Shell& shell) {
   return shell.slot(ShellSlot::ClipDetail).add<ClipView>(shell.context());
 }

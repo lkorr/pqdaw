@@ -31,6 +31,7 @@
 #include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
 #include "pq/ui/color.h"
+#include "pq/ui/controls.h"
 #include "pq/ui/widget.h"
 #include "pq/views/piano_roll/row_model.h"
 #include "pq/views/view_context.h"
@@ -64,13 +65,29 @@ enum class DragKind : uint8_t {
 
 enum class BraceEdge : uint8_t { Start, End, Both };
 
+// How a draw gesture picks its notes' pitch identity.
+enum class DrawPitch : uint8_t {
+  Row,      // a Degree note on the row
+  Overlay,  // Alt (T3.12): a Cents note on the background EDO line nearest the pointer
+  Ratio,    // Shift (T3.19): a Ratio note on the virtual fundamental's nearest harmonic (no fundamental: the row's
+            // pitch snapped to the simplest ratio, ops::simplestRatioNear)
+};
+
 struct DrawnNote {
   Ticks start = 0;
   Ticks length = 0;
-  int64_t degree = 0;  // the row (a Degree note), or the nearest row of a Cents note
-  // Alt-drawn on the background EDO overlay (T3.12): a Cents note on the overlay line nearest the pointer.
-  bool onOverlay = false;
-  double cents = 0.0;
+  int64_t degree = 0;  // the row (a Degree note), or the nearest row of a Cents / Ratio note
+  DrawPitch mode = DrawPitch::Row;
+  double cents = 0.0;     // Overlay
+  tuning::Rational ratio{1};  // Ratio (reference-anchored)
+};
+
+// A Ratio note's label waiting to be drawn over the notes (T3.19): its box and the colour it sits on.
+struct NoteLabel {
+  float x0, x1, y0, y1;
+  ui::Rgba fill;
+  int64_t num, den;
+  uint32_t harmonic;  // its harmonic number over the virtual fundamental (0: not one)
 };
 
 struct DragState {
@@ -335,8 +352,45 @@ public:
   // keys, the note area and the clip box's generator need repainting (not the ruler or the velocity lane).
   bool pitchOnlyChange() const noexcept { return pitchOnlyChange_; }
 
-  // Paint scratch (the note area's z-ordered notes), reused across frames.
+  // Paint scratch (the note area's z-ordered notes, the ratio labels), reused across frames.
   std::vector<ZNote> zNotes, zSorted;
+  std::vector<NoteLabel> noteLabels;
+
+  // --- row labels (T3.19) ---
+  RowLabels rowLabels() const noexcept { return rowLabels_; }
+  void setRowLabels(RowLabels mode);
+
+  // A handle menus and popovers hold: null once this state is destroyed.
+  const std::shared_ptr<RollState*>& self() const noexcept { return self_; }
+
+  // --- identities (T3.19, SPEC §3.1) ---
+  // Converts the selected notes (ops::convertNotes; one undo step). False when nothing changed.
+  bool convertSelection(tuning::PitchKind to);
+  // Gives every selected note this pitch identity (ops::setNotesPitch; one undo step).
+  bool setSelectionPitch(const tuning::PitchId& p);
+  // The type-in for the selected notes' pitch (a popover with a text field, anchored at the first selected note; Enter
+  // applies parsePitch's identity, Esc closes). Returns the text field (nullptr without a selection or overlay).
+  ui::TextEdit* openPitchEntry();
+  // A typed pitch: "7/4" or "7:4" (a ratio over the reference), "386.3c" / "386.3¢" (cents), "4\22" or "4\22+1"
+  // (degree 4, equave +1, of the clip's tuning: the size must match). nullopt when unparsable.
+  std::optional<tuning::PitchId> parsePitch(std::string_view text) const;
+  // The fundamental lock (ops::lockFundamental: `note` is the index-th harmonic) and its release; one undo step each.
+  bool lockFundamentalOn(doc::NoteId note, uint32_t harmonicIndex);
+  bool unlockFundamental();
+  // Shift-draw: the reference-anchored ratio a drawn note on row `degree` with the pointer at `cents` gets.
+  tuning::Rational ratioFor(int64_t degree, double cents) const;
+
+  // --- hover readout (T3.19, M3 review UI §2) ---
+  // The pointer at device `p` over the note area (keys = false) or the keys: re-formats the readout when the row or
+  // the note under it changed and tells the info view (ctx.infoChanged). clearHover when the pointer leaves.
+  void hoverAt(ui::Vec2 p, bool keys);
+  void clearHover();
+  bool hovering() const noexcept { return hoverRow_ >= 0; }
+  const std::string& hoverTitle() const noexcept { return hoverTitle_; }
+  const std::string& hoverBody() const noexcept { return hoverBody_; }
+  // The readout for a pitch in cents from the reference (row label, cents, Hz, nearest simple ratio and its
+  // deviation, the overlay EDO's nearest step), as hoverAt formats it. Also used for the hovered note.
+  std::string pitchReadout(double cents, bool nearestRatio = true) const;
 
   // --- audition ---
   void audition(const tuning::PitchId& p, float velocity, Ticks contentStart, Ticks length);
@@ -402,6 +456,13 @@ private:
   double morphRegionsPeriod_ = 0.0;
   int32_t morphRegionsReps_ = 0, morphRegionsMax_ = 0;
   std::vector<doc::Note> clipboard_;  // starts relative to the earliest copied note
+  RowLabels rowLabels_ = RowLabels::Auto;
+  int64_t hoverRow_ = -1;   // the row index the readout is for (−1: none)
+  uint32_t hoverNote_ = 0;  // the note id it is for (0: none)
+  bool hoverKeys_ = false;
+  const void* hoverSnap_ = nullptr;  // the snapshot it was formatted for
+  std::string hoverTitle_, hoverBody_;
+  std::shared_ptr<RollState*> self_;
   mutable const doc::NoteClip* vfClip_ = nullptr;  // virtualFundamental() cache (per clip snapshot)
   mutable std::optional<tuning::Rational> vf_;
 };

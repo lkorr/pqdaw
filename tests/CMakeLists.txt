@@ -112,6 +112,7 @@ pq_add_test(pq_tests_views
     views/test_automation.cpp
     views/test_audio_prefs.cpp
     views/test_look.cpp
+    views/test_tunings_ui.cpp
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell

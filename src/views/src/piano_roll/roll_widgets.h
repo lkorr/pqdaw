@@ -13,6 +13,7 @@
 //   └──────────┘└────────┴──────────────────────────────────────────────────────────────────────┘
 
 #include "pq/ui/controls.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "pq/ui/widget.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
@@ -46,6 +47,9 @@ private:
   ui::DragBox* grid_ = nullptr;
   ui::Widget* genRow_ = nullptr;
   ui::DragBox* gen_ = nullptr;
+  // T3.19: the keys' row label mode.
+  ui::Widget* labelsRow_ = nullptr;
+  ui::Dropdown* labels_ = nullptr;
   // T3.x-fix-look: the virtual fundamental's guide on / off (shown when the clip has reference-anchored ratios).
   ui::Widget* jiRow_ = nullptr;
   ui::Toggle* ji_ = nullptr;
@@ -80,6 +84,8 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override;
+  void onHoverChanged(bool hovered) override;
+  ui::InfoText info() const override;  // the hovered row's pitch readout (T3.19)
 
 private:
   void paintScaleKeys(ui::PaintContext& ctx, const ui::IRect& r, const ui::IRect& vis);  // T3.12
@@ -96,14 +102,22 @@ public:
   bool onKey(const ui::KeyEvent& e) override;
   void onCaptureLost() override;
   void onFocusChanged(bool focused) override;
+  void onHoverChanged(bool hovered) override;
+  ui::InfoText info() const override;  // the pitch readout under the pointer (T3.19)
+  // The right-click menu at device `at` (T3.19).
+  ui::Menu* openMenu(ui::Vec2 at);
 
 private:
   void pressNote(const ui::PointerEvent& e, const doc::Note& n, int zone);
   void pressEmpty(const ui::PointerEvent& e);
   void dragTo(ui::Vec2 p);
-  DrawnNote cellNote(TickRange c, float y, bool onOverlay) const;
+  DrawnNote cellNote(TickRange c, float y, DrawPitch mode) const;
+  void paintNoteLabels(ui::PaintContext& ctx);
   RollState& s_;
 };
+
+// The "Row Labels ▸" submenu (keys and note area menus).
+ui::MenuItem rowLabelsMenu(RollState& s);
 
 class LaneHeaderWidget : public ui::Widget {
 public:

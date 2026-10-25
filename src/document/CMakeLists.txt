@@ -16,6 +16,7 @@ pq_add_module(pq_doc
     src/edit_time.cpp
     src/edit_automation.cpp
     src/edit_mixer.cpp
+    src/edit_tunings.cpp
     src/audibility.cpp
     src/lower.cpp
     src/pitch_resolve.cpp

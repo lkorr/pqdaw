@@ -486,6 +486,103 @@ TEST_CASE("edit ops: identity conversions (freeze to cents, snap to degree)") {
   CHECK(f.clip(f.lead, f.clipA).notes.find(k[0])->pitch == PitchId::fromDegree(5, 0));
 }
 
+TEST_CASE("edit ops: simplest ratio in an interval (Stern-Brocot), the snap tolerance (T3.19)") {
+  using pq::tuning::Rational;
+  auto near = [](double cents, double tol) { return ops::simplestRatioNear(cents, tol); };
+  CHECK(near(400.0, 15.0) == Rational(5, 4));
+  CHECK(near(700.0, 15.0) == Rational(3, 2));
+  CHECK(near(900.0, 20.0) == Rational(5, 3));  // 15.64 ¢ away: inside 20, outside 15
+  CHECK(near(900.0, 15.0) == Rational(22, 13));
+  CHECK(near(968.8259, 0.01) == Rational(7, 4));
+  CHECK(near(-386.3137, 0.01) == Rational(4, 5));  // below the reference
+  CHECK(near(1901.955, 0.01) == Rational(3));
+  CHECK(near(0.0, 5.0) == Rational(1));
+  CHECK(ops::simplestRatioBetween(0.6, 0.7) == Rational(2, 3));
+  CHECK(ops::simplestRatioBetween(2.0, 2.0) == Rational(2));
+  CHECK(ops::simplestRatioBetween(1.25, 1.25) == Rational(5, 4));  // an exact end (1.25 is exact in binary)
+  CHECK_FALSE(ops::simplestRatioBetween(0.0, 1.0).has_value());
+  CHECK_FALSE(ops::simplestRatioBetween(2.0, 1.0).has_value());
+  // Every interval: the result lies inside it and no smaller denominator has a value inside it.
+  for (int i = 1; i < 400; ++i) {
+    const double lo = 0.5 + i * 0.0137, hi = lo * std::exp2(7.0 / 1200.0);
+    const auto r = ops::simplestRatioBetween(lo, hi);
+    REQUIRE(r.has_value());
+    CHECK(r->toDouble() >= lo - 1e-12);
+    CHECK(r->toDouble() <= hi + 1e-12);
+    for (int64_t d = 1; d < r->den(); ++d) CHECK(std::ceil(lo * d) > std::floor(hi * d));
+  }
+  // Tolerance: 0.45 × the smaller neighbouring step, clamped to [0.05, 20].
+  const auto t12 = pq::tuning::Tuning::make(pq::tuning::Edo::standard12()).value();
+  CHECK(ops::ratioSnapTolerance(t12, 400.0) == doctest::Approx(20.0));
+  const auto t72 = pq::tuning::Tuning::make(pq::tuning::Edo::make(72).value()).value();
+  CHECK(ops::ratioSnapTolerance(t72, 400.0) == doctest::Approx(0.45 * 1200.0 / 72));
+}
+
+TEST_CASE("edit ops: Degree → Ratio → Degree is the identity; Cents → Ratio; set a typed pitch (T3.19)") {
+  Fixture f;
+  const ClipRef a{f.lead, f.clipA};  // 31-EDO: degree 10 = 387.10 ¢, degree 18 = 696.77 ¢
+  const NoteKey k[] = {f.keyA(10), f.keyA(18)};
+  commit(f.store, ops::convertNotes(f.doc(), a, k, pq::tuning::PitchKind::Ratio));
+  CHECK(f.clip(f.lead, f.clipA).notes.find(k[0])->pitch == PitchId::fromRatio(pq::tuning::Rational(5, 4)));
+  CHECK(f.clip(f.lead, f.clipA).notes.find(k[1])->pitch == PitchId::fromRatio(pq::tuning::Rational(3, 2)));
+  commit(f.store, ops::convertNotes(f.doc(), a, k, pq::tuning::PitchKind::Degree));
+  CHECK(f.clip(f.lead, f.clipA).notes.find(k[0])->pitch == PitchId::fromDegree(10, 0));
+  CHECK(f.clip(f.lead, f.clipA).notes.find(k[1])->pitch == PitchId::fromDegree(18, 0));
+  // Every degree of 31-EDO over two equaves round-trips (the tolerance keeps each ratio nearer its own degree).
+  for (size_t i = 0; i < 62; ++i) {
+    const NoteKey one[] = {f.keyA(i)};
+    const PitchId before = f.clip(f.lead, f.clipA).notes.find(one[0])->pitch;
+    REQUIRE(f.store.dispatch(ops::convertNotes(f.doc(), a, one, pq::tuning::PitchKind::Ratio)->command).ok());
+    CHECK(f.clip(f.lead, f.clipA).notes.find(one[0])->pitch.kind() == pq::tuning::PitchKind::Ratio);
+    REQUIRE(f.store.dispatch(ops::convertNotes(f.doc(), a, one, pq::tuning::PitchKind::Degree)->command).ok());
+    CHECK(f.clip(f.lead, f.clipA).notes.find(one[0])->pitch == before);
+  }
+  // Cents → Ratio, and a typed pitch.
+  const NoteKey c[] = {f.keyA(3)};
+  commit(f.store, ops::setNotesPitch(f.doc(), a, c, PitchId::fromCents(968.0)));
+  commit(f.store, ops::convertNotes(f.doc(), a, c, pq::tuning::PitchKind::Ratio));
+  CHECK(f.clip(f.lead, f.clipA).notes.find(c[0])->pitch == PitchId::fromRatio(pq::tuning::Rational(7, 4)));
+  CHECK_FALSE(ops::convertNotes(f.doc(), a, c, pq::tuning::PitchKind::Harmonic).ok());
+  CHECK_FALSE(ops::setNotesPitch(f.doc(), a, c, PitchId::fromHarmonic(1, 0)).ok());
+}
+
+TEST_CASE("edit ops: add a main tuning; remove one reassigns its tracks and clips in one step (T3.19)") {
+  Fixture f;
+  pq::doc::TuningDef d22;
+  d22.system = pq::tuning::Edo::make(22).value();
+  const auto add = ops::addMainTuning(f.doc(), f.store.ids(), "Tuning B: 22edo", d22, Colour{0x123456});
+  commit(f.store, add);
+  REQUIRE(add->tunings.size() == 1);
+  const TuningId b = add->tunings[0];
+  const TuningSlot* slot = findTuning(f.doc(), b);
+  REQUIRE(slot != nullptr);
+  CHECK(slot->name == "Tuning B: 22edo");
+  CHECK(slot->colour.rgb == 0x123456u);
+  CHECK(slot->def.edo()->n() == 22u);
+  CHECK(f.doc().tunings->back()->id == b);
+  CHECK_FALSE(ops::addMainTuning(f.doc(), f.store.ids(), "", d22, {}).ok());
+
+  // Lead follows the 31-EDO main tuning: removing it moves Lead (and nothing else) to the replacement.
+  const auto rm = ops::removeMainTuning(f.doc(), f.t31, b);
+  REQUIRE(rm.ok());
+  CHECK(rm->tracks == std::vector<TrackId>{f.lead});
+  commit(f.store, rm);
+  CHECK(findTuning(f.doc(), f.t31) == nullptr);
+  CHECK(f.track(f.lead).tuning == TuningAssignment::mainTuning(b));
+  // Default replacement: the first other tuning.
+  const auto rm2 = ops::removeMainTuning(f.doc(), b);
+  REQUIRE(rm2.ok());
+  CHECK(rm2->tunings.front() == f.t12);
+  // The last tuning cannot go.
+  Fixture g;
+  std::vector<TuningId> others;
+  for (const TuningSlotPtr& s : *g.doc().tunings)
+    if (s->id != g.t12) others.push_back(s->id);
+  for (TuningId id : others) REQUIRE(g.store.dispatch(ops::removeMainTuning(g.doc(), id)->command).ok());
+  CHECK(g.doc().tunings->size() == 1);
+  CHECK_FALSE(ops::removeMainTuning(g.doc(), g.t12).ok());
+}
+
 // ---- Automation ----------------------------------------------------------------------------------------------------
 
 TEST_CASE("edit ops: add, move, delete breakpoints and curve a segment") {
