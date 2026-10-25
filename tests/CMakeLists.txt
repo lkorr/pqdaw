@@ -80,13 +80,15 @@ pq_add_test(pq_tests_app
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
 # solo/mute vs effectiveAudible, topology swaps, the NullDevice end-to-end playhead); T2.6-fix1: the tuning signal in
-# playback (tests/app/fixtures/tuning_automation, the bit-identical static render, live tuning params).
+# playback (tests/app/fixtures/tuning_automation, the bit-identical static render, live tuning params); T1b.4: the AOT
+# seed and the disk cache under ProjectLink (a stock track compiles nothing; a second load of a project neither).
 pq_add_test(pq_tests_playback
   SOURCES
     app/test_playback.cpp
     app/test_tuning_playback.cpp
     app/test_live_jit.cpp
     app/test_tuning_coverage.cpp
+    app/test_jit_aot.cpp
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -225,6 +227,7 @@ pq_add_test(pq_tests_jit PERF
     engine/test_voices.cpp  # the T1.8 voice suite again, on JIT images (rigImageBuilder, set in test_jit.cpp)
     engine/test_tuning_voices.cpp  # T2.6: the tuning node through the VoiceEngine, on JIT images
     jit/test_live_swap.cpp  # T1b.5: interpreter -> JIT live swap through the background compiler
+    jit/test_jit_cache.cpp  # T1b.4: the compile cache (memory, disk, read-only AOT directories)
   DEPS pq_jit pq_compile)
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++

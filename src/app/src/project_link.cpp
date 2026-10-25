@@ -395,7 +395,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   automated_.assign(kProjectParams, 0);
   if (cfg_.jit) {  // T1b.5: before the first compile, which already wants JIT images
     engine::BackgroundCompilerConfig bc;
-    bc.backend = compile::jitUnitBackend();
+    bc.backend = cfg_.jitBackend.fn != nullptr ? cfg_.jitBackend : compile::jitUnitBackend();
     bc.deliver = &ProjectLink::deliverJit;
     bc.beforeBuild = cfg_.jitBeforeCompile != nullptr ? &ProjectLink::beforeJit : nullptr;
     bc.user = this;

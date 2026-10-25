@@ -99,8 +99,14 @@ Result<std::unique_ptr<engine::ProgramImage>> buildImage(const graph::Schedule& 
 // The process's JIT compiler (ARCHITECTURE §6: an explicit singleton): created on the first call (LLVM target
 // initialisation, ~ms), never destroyed before exit; its images may outlive any use. Thread-safe.
 Result<jit::Compiler*> jitCompiler();
+// T1b.4: the process compiler's cache (pq/jit/cache.h). Applied when jitCompiler() creates it, or at once if it
+// exists; without a call the process compiler shares code in memory only (tests, pqc). pqdaw calls it at startup
+// (app::configureJitCache). Thread-safe.
+void setJitCache(const jit::CacheConfig& cache);
 // ProjectCompiler's backend through jitCompiler() (UnitBackend::user unused).
 engine::UnitBackend jitUnitBackend() noexcept;
+// The same through a given compiler (tests, the AOT seed: their own Compiler and cache); it must outlive the backend.
+engine::UnitBackend jitUnitBackend(jit::Compiler* compiler) noexcept;
 
 // UTF-8 string → path (command-line arguments are UTF-8).
 std::filesystem::path pathFromUtf8(std::string_view s);

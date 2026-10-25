@@ -1,5 +1,6 @@
 pq_add_module(pq_jit
   SOURCES
+    src/cache.cpp
     src/codegen.cpp
     src/compiler.cpp
     src/jit_image.cpp

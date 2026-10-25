@@ -111,6 +111,9 @@ struct LinkConfig {
   std::string stdlib;             // empty: stdlibDir()
   // T1b.5: swap every unit to its JIT image once the background compile has it (false: interpreter images only).
   bool jit = true;
+  // T1b.4: what builds the JIT images (fn null: compile::jitUnitBackend(), the process compiler and its cache); tests
+  // and the AOT seed pass compile::jitUnitBackend(&theirCompiler).
+  engine::UnitBackend jitBackend;
   // Test hook (the "simulated slow compile"): called on the JIT worker before each compile; may block.
   void (*jitBeforeCompile)(void* user) = nullptr;
   void* jitUser = nullptr;

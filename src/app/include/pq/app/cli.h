@@ -28,6 +28,7 @@ enum class Mode {
                    //   [--backend jit|interp] + the --sine stream flags
   AsioPanel,       // --asio-panel [--device <id|name>] [--seconds <s>]: open an ASIO driver's control panel (T0.6-fix2)
   Render,          // --project <dir> --render <out.wav> [--seconds <s>]: offline render of a project (T3.17)
+  JitAot,          // --jit-aot <dir>: compile the stock units into an AOT seed directory (T1b.4, app::seedJitAot)
 };
 
 // Which program backend --play compiles the patch for (--backend jit|interp; T1.x-arch2).

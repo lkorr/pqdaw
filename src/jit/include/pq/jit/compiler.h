@@ -25,9 +25,13 @@
 // Developer aid: with the environment variable PQ_JIT_DUMP=<path prefix>, compile() writes every image's optimised
 // IR (<prefix><n>.ll) and assembly (<prefix><n>.s), n = the image's number in this process (T1b.2).
 //
-// Threads: Compiler::compile is NOT RT-safe (the compiler worker thread; it allocates, takes a lock, runs LLVM).
-// The returned image's process() is RT-safe. An image keeps its machine code alive on its own (it may outlive the
-// Compiler); destroy it off the audio thread.
+// Compile cache (T1b.4, pq/jit/cache.h): compile() first looks the machine code up in memory (a live image with the
+// same key shares it), then on disk (CacheConfig), and runs LLVM only on a miss. A cached image is bit-identical in
+// output to a freshly compiled one. counters() says what happened (the "no JIT compile" test hook).
+//
+// Threads: Compiler::compile is NOT RT-safe (the compiler worker thread; it allocates, takes a lock, runs LLVM, reads
+// and writes the cache directory). The returned image's process() is RT-safe. An image keeps its machine code alive
+// on its own (it may outlive the Compiler); destroy it off the audio thread.
 
 #include <cstdint>
 #include <memory>
@@ -37,6 +41,7 @@
 #include "pq/engine/interpreter.h"
 #include "pq/engine/program_image.h"
 #include "pq/graph/schedule.h"
+#include "pq/jit/cache.h"
 
 namespace pq::jit {
 
@@ -61,6 +66,9 @@ struct CompileOptions {
 };
 
 struct CompileStats {
+  enum class Source : uint8_t { Compiled, Memory, Disk, Aot };  // where the machine code came from (pq/jit/cache.h)
+  Source source = Source::Compiled;
+  double cacheMs = 0;         // key + lookups + (hits) loading and linking the object, (compiles) writing the entry
   double hostMs = 0;          // schedule checks, memory layout, state init
   double codegenMs = 0;       // Schedule → LLVM IR
   double optimiseMs = 0;      // LLVM IR pipeline
@@ -75,12 +83,23 @@ struct CompileStats {
                                 // probes may fault on the audio thread the first time (must stay false; tests/jit)
 };
 
+// What the machine code is compiled for.
+enum class Target : uint8_t {
+  Host,      // this CPU and every feature it has (AVX-512 where present)
+  Baseline,  // kBaselineCpu (x86-64-v3: AVX2, FMA, BMI2), pqdaw's own baseline, so it runs wherever pqdaw runs. The
+             // AOT seed is compiled for it (QUESTIONS Q?-T1b.4-a); a Host compiler finds such entries in
+             // CacheConfig::readOnly directories.
+};
+inline constexpr const char* kBaselineCpu = "x86-64-v3";
+
 // Per-Compiler settings (one LLJIT instance and target machine each).
 struct CompilerConfig {
   // LLVM CodeGenOptLevel for instruction selection and register allocation: 0 None (FastISel, fast register
   // allocator), 1 Less, 2 Default, 3 Aggressive. Measured in bench/RESULTS.md (T1b.1-fix1).
   uint32_t codeGenLevel = kDefaultCodeGenLevel;
   static constexpr uint32_t kDefaultCodeGenLevel = 3;  // Aggressive, as in T1b.1: levels 1–3 measured equal (Q99)
+  Target target = Target::Host;
+  CacheConfig cache;  // default: code shared in memory, no disk cache
 };
 
 class Compiler {
@@ -96,8 +115,15 @@ public:
   Result<std::unique_ptr<engine::ProgramImage>> compile(const graph::Schedule& schedule, const CompileOptions& options = {},
                                                         CompileStats* stats = nullptr);
 
-  const std::string& hostCpu() const noexcept;       // e.g. "rocketlake"
-  const std::string& hostFeatures() const noexcept;  // "+avx2,+fma,…"
+  // The CPU the machine code is for: the host's name and features (e.g. "rocketlake", "+avx2,+fma,…"), or
+  // kBaselineCpu and no extra features with Target::Baseline.
+  const std::string& hostCpu() const noexcept;
+  const std::string& hostFeatures() const noexcept;
+
+  // Thread-safe; applies from the next compile(). Images already built keep their code.
+  void setCache(const CacheConfig& cache);
+  CacheConfig cache() const;
+  CacheCounters counters() const;  // thread-safe snapshot
 
   struct Session;  // LLJIT + target machine, shared with the images it compiled
 

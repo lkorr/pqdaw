@@ -155,6 +155,10 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       if (Status s = setMode(Mode::Render, a); !s) return std::move(s).error();
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--render needs an output .wav path");
       o.outPath = std::string(args[++i]);
+    } else if (a == "--jit-aot") {
+      if (Status s = setMode(Mode::JitAot, a); !s) return std::move(s).error();
+      if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--jit-aot needs an output directory");
+      o.outPath = std::string(args[++i]);
     } else if (a == "--project") {
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--project needs a project directory");
       o.project = std::string(args[++i]);
@@ -275,6 +279,9 @@ std::string usage() {
          "                                           render the project offline from the start through the\n"
          "                                           playback engine (32-bit float WAV, 48 kHz stereo);\n"
          "                                           default length: the end of the last clip + 2 s\n"
+         "  --jit-aot <dir>                          compile the stock units (a new project, default instrument\n"
+         "                                           tracks; 44.1/48/88.2/96 kHz) for the baseline CPU into the\n"
+         "                                           AOT seed <dir> (replaced; pqdaw reads <exe dir>/jit-aot)\n"
          "  (window) --device ID, --buffer N, --rate HZ, --exclusive, --backend wasapi|rtaudio|asio, --asio\n"
          "                                           the output the DAW plays through for this run (default:\n"
          "                                           the audio preferences, Ctrl+, : saved in\n"

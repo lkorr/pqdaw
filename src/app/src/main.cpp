@@ -4,6 +4,7 @@
 
 #include "pq/app/cli.h"
 #include "pq/app/commands.h"
+#include "pq/app/jit_cache.h"
 #include "pq/app/startup.h"
 
 int main(int argc, char** argv) {
@@ -16,17 +17,22 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "pqdaw: %s\n\n%s", opts.error().message.c_str(), pq::app::usage().c_str());
     return 2;
   }
+  // T1b.4: the modes that JIT-compile use the user's compile cache and the AOT seed next to the executable.
+  using pq::app::Mode;
+  if (opts->mode == Mode::Window || opts->mode == Mode::WindowSelfTest || opts->mode == Mode::Play || opts->mode == Mode::Render)
+    pq::app::configureJitCache();
   switch (opts->mode) {
-    case pq::app::Mode::Help: std::fputs(pq::app::usage().c_str(), stdout); return 0;
-    case pq::app::Mode::Screenshot: return pq::app::runScreenshot(*opts);
-    case pq::app::Mode::WindowSelfTest: return pq::app::runWindow(*opts, true);
-    case pq::app::Mode::Window: return pq::app::runWindow(*opts, false);
-    case pq::app::Mode::ListDevices: return pq::app::runListDevices(*opts);
-    case pq::app::Mode::Sine: return pq::app::runSine(*opts);
-    case pq::app::Mode::LatencyTest: return pq::app::runLatencyTest(*opts);
-    case pq::app::Mode::Play: return pq::app::runPlay(*opts);
-    case pq::app::Mode::AsioPanel: return pq::app::runAsioPanel(*opts);
-    case pq::app::Mode::Render: return pq::app::runRender(*opts);
+    case Mode::Help: std::fputs(pq::app::usage().c_str(), stdout); return 0;
+    case Mode::Screenshot: return pq::app::runScreenshot(*opts);
+    case Mode::WindowSelfTest: return pq::app::runWindow(*opts, true);
+    case Mode::Window: return pq::app::runWindow(*opts, false);
+    case Mode::ListDevices: return pq::app::runListDevices(*opts);
+    case Mode::Sine: return pq::app::runSine(*opts);
+    case Mode::LatencyTest: return pq::app::runLatencyTest(*opts);
+    case Mode::Play: return pq::app::runPlay(*opts);
+    case Mode::AsioPanel: return pq::app::runAsioPanel(*opts);
+    case Mode::Render: return pq::app::runRender(*opts);
+    case Mode::JitAot: return pq::app::runJitAot(opts->outPath);
   }
   return 1;
 }
