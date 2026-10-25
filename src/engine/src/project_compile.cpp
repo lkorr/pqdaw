@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "pq/dsp/atoms.h"
 #include "pq/graph/infer.h"
 #include "pq/graph/optimise.h"
 
@@ -123,6 +124,17 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
         found = true;
       }
     if (!found) return compileError(ErrorCode::NotFound, "bind: no param '" + name + "' (a linked param must exist)");
+  }
+  if (opt_.keepAlive) {  // T2.6-fix4: the owners of the tuning tables this unit's ops read
+    std::vector<uint32_t> seen;
+    for (const graph::Op& op : cu.schedule->ops) {
+      if (op.kind != graph::OpKind::Kernel || op.resource == graph::kNone) continue;
+      if (dsp::kernelInfo(op.kernel).resource != dsp::Resource::Tuning) continue;
+      if (std::find(seen.begin(), seen.end(), op.resource) != seen.end()) continue;
+      seen.push_back(op.resource);
+      if (std::shared_ptr<const void> owner = opt_.keepAlive(dsp::Resource::Tuning, op.resource))
+        ui.keepAlive.push_back(std::move(owner));
+    }
   }
   ui.image = std::move(image);
   return ui;

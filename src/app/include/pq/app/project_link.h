@@ -41,21 +41,27 @@
 // Project param slots and note-event slots are assigned per stable key (param key / track id) and never move while
 // the key exists; slots of removed keys are reused only after a later compile (a removed unit may still be fading).
 //
-// ---- Tuning tables (T2.6-fix1) ------------------------------------------------------------------------------------
+/// ---- Tuning tables (T2.6-fix1, T2.6-fix4) ---------------------------------------------------------------------------
 // Every main tuning with a signal (doc::hasTuningSignal) gets a tuning node table (engine::makeTuningTable) in
 // Resources::tunings, built on the UI thread when a snapshot first shows that tuning with that TableKey (EDO n; MOS
-// n, periods per equave, the mode as the root's chain position, the region hint: T2.6-fix2) and kept, immutable, for
-// the link's lifetime (images point into it; a pool of kTuningTables entries; beyond that a tuning's node gets a null
-// table and passes static pitches through). A Param change that needs a new table (a region hint moved with the
-// generator) compiles like a structural change. Automation lanes on a tuning's params drive the node per sample
-// through the table's TuningLiveInputs (AutomationLaneDesc::tap; T2.6-fix2, M3 review M6); every other lane is
-// rendered one value per block (AutomationLaneDesc::perSample false: its consumers read params). A
+// n, periods per equave, the mode as the root's chain position, the region hint: T2.6-fix2). A table is a shared
+// SHAPE (the interval table of a chain length: one per (kind, n) while any table uses it) plus its definition.
+// Ownership (T2.6-fix4, M3 review M8): the link holds the tables of the current document (`held_`; a Reset — File >
+// New / Open — drops them all, so a new project never plays an older project's table, whatever its tuning ids), the
+// running compile holds the ones its lowering named, and every unit image holds the ones it reads
+// (ProjectCompileOptions::keepAlive → UnitImage::keepAlive, freed with the image by the program's epoch reclaimer). A
+// table nobody holds is freed and its slot of the kTuningTables (256) Resources::tunings slots is reused. With every
+// slot in use a tuning's node gets no table (static pitches) and the link reports it (LinkStats::tablesExhausted, the
+// status line). A Param change that needs a new table (a region hint moved with the generator) compiles like a
+// structural change. Automation lanes on a tuning's params drive the node per sample through the slot's
+// TuningLiveInputs (AutomationLaneDesc::tap; T2.6-fix2, M3 review M6); every other lane is rendered one value per
+// block (AutomationLaneDesc::perSample false: its consumers read params). A
 // continuous change (a param) never rebuilds a table, so the table's definition values can lag the document's: the
-// static NoteDesc::hz of a Degree note following the node is resolved in the TABLE's definition, which is what the
+// static NoteDesc::hz of a note following the node is resolved in the TABLE's definition, which is what the
 // node passes through bit for bit while its inputs equal those values (pq/dsp/tuning_table.h), and the node
 // computes the pitch from the params otherwise. Unmodulated projects therefore render bit-identically to static
-// pitches; after a live edit the pitch is computed from the float32 param (<= ~1e-4 cent off the double value).
-
+// pitches; after a live edit the pitch is computed from the float32 param (a float32 generator is within half an ulp,
+// ~3e-5 ¢ at 700 ¢, so degree k is within k times that: ~7e-4 ¢ at k = 24; QUESTIONS Q105.4).
 #include <array>
 #include <condition_variable>
 #include <cstdint>
@@ -127,6 +133,7 @@ struct LinkStats {
   uint64_t unitPublishes = 0;
   uint64_t sequencePublishes = 0, automationPublishes = 0, tempoPublishes = 0;
   uint64_t trackLowerings = 0;     // tracks whose note sequence was lowered again (the per-track cache missed)
+  uint64_t tablesExhausted = 0;    // tunings left without a node table (every Resources::tunings slot in use)
   uint64_t paramWrites = 0;
   uint64_t compileErrors = 0;
   std::string lastError;
@@ -176,11 +183,13 @@ public:
   // Slot lookups (tests, tools). kNoSlot when unknown.
   uint32_t paramSlot(const std::string& key) const;
   uint32_t eventSlot(doc::TrackId track) const;
-  // Tuning tables (see the file comment): the index into Resources::tunings of main tuning `id` in `def`'s shape,
-  // or kTuningTables (a null entry: no table); and the number built so far.
+  // Tuning tables (see the file comment): the index into Resources::tunings of main tuning `id` in `def`'s shape
+  // (the compile path: the running compile then holds that table), or kTuningTables (a null entry: no table); the
+  // tables alive (held by the document, a compile or an image), and the shapes alive.
   static constexpr uint32_t kTuningTables = 256;
-  uint32_t tuningTable(doc::TuningId id, const doc::TuningDef& def) const;
+  uint32_t tuningTable(doc::TuningId id, const doc::TuningDef& def);
   uint32_t tuningTablesBuilt() const;
+  uint32_t tuningShapesAlive() const;
   // The table main tuning `id` in `def`'s shape plays through, or null (tests, tools).
   const dsp::TuningTableView* tuningView(doc::TuningId id, const doc::TuningDef& def) const;
 
@@ -216,19 +225,21 @@ public:
   void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept override;
 
 private:
-  struct SeqCacheEntry {
-    const doc::Track* track = nullptr;
-    std::vector<const void*> key;  // sequenceKey: the definitions (or node tables) its clips resolve in
-    doc::Snapshot from;  // keeps `track` and the keyed definitions alive, so no address can be reused by a later node
-    engine::TrackSequenceDesc desc;
-  };
   struct TuningTableEntry {
     doc::TuningId id;
     TableKey key;
     doc::TuningDef def;                    // the definition the table was built from
     std::optional<tuning::Tuning> built;   // `def` built (UI thread: the static Hz of the node's Degree notes)
-    dsp::TuningLiveInputs live;            // audio thread: automation buffers of this block (AutomationLaneDesc::tap)
-    dsp::TuningTable table;                // its view points at `live`
+    uint32_t slot = 0;                     // its index into Resources::tunings
+    dsp::TuningTable table;                // its view points at live_[slot]
+  };
+  using EntryPtr = std::shared_ptr<const TuningTableEntry>;
+  struct SeqCacheEntry {
+    const doc::Track* track = nullptr;
+    std::vector<const void*> key;  // sequenceKey: the definitions (or node tables) its clips resolve in
+    doc::Snapshot from;  // keeps `track` and the keyed definitions alive, so no address can be reused by a later node
+    std::vector<EntryPtr> tables;  // … and the keyed tables
+    engine::TrackSequenceDesc desc;
   };
   struct MeterState {
     float peakDb[2] = {-200.0f, -200.0f};
@@ -245,10 +256,12 @@ private:
   // onlyIfChanged: publish only when a track's description changed (after a tuning param change).
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
   engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);
-  std::vector<const void*> sequenceKey(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t) const;
-  // UI thread: tables for the snapshot's signal tunings; true when one was built (its index is new: a compile).
-  bool updateTuningTables(const doc::Project& p);
-  const TuningTableEntry* tuningEntry(doc::TuningId id, const doc::TuningDef& def) const;  // caller holds mutex_
+  std::vector<const void*> sequenceKey(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t,
+                                       std::vector<EntryPtr>* tables = nullptr) const;
+  // UI thread: the tables of the snapshot's signal tunings become the held set (`fresh`: a Reset, build new ones even
+  // for an unchanged key); true when one was built (its index is new: a compile).
+  bool updateTuningTables(const doc::Project& p, bool fresh = false);
+  const EntryPtr* tuningEntry(doc::TuningId id, const doc::TuningDef& def) const;  // held; caller holds mutex_
   const float** liveTap(const doc::Project& p, const doc::ParamRef& ref);  // UI thread (T2.6-fix2)
   void publishAutomation(const doc::Project& p);
   void publishTempo(const doc::Project& p);
@@ -278,10 +291,16 @@ private:
   std::vector<uint32_t> freeSlots_;               // FIFO: the least recently freed first
   std::unordered_map<uint32_t, uint32_t> meterBus_;    // track id → bus index of its `out` in the published layout
   uint32_t nextParam_ = 0, nextSlot_ = 0;
-  // Tuning tables: the entry list under mutex_; tuningViews_[i] is written once, before index i can be named by a
-  // lowering, and resources_ (read by the compile path) spans the whole fixed array.
-  std::vector<std::unique_ptr<TuningTableEntry>> tuningEntries_;
+  // Tuning tables (mutex_; see the file comment). tuningViews_[i] is written when slot i gets a table, before any
+  // lowering can name it, and resources_ (read by the compile path) spans the whole fixed array; live_[i] is the
+  // audio thread's (automation taps), stable for the link's life.
+  std::vector<EntryPtr> held_;                                        // the current document's
+  std::unordered_map<uint32_t, EntryPtr> compileHeld_;               // the last compile's (+ the running one's)
+  std::unordered_map<uint32_t, EntryPtr> jobHeld_;                   // the running compile's
+  std::array<std::weak_ptr<const TuningTableEntry>, kTuningTables> slots_;
+  std::vector<std::pair<uint64_t, std::weak_ptr<const dsp::TuningShape>>> shapes_;  // (kind, n) → shape
   std::array<const dsp::TuningTableView*, kTuningTables> tuningViews_{};
+  std::array<dsp::TuningLiveInputs, kTuningTables> live_{};
   engine::Resources resources_;
 
   // UI thread state.

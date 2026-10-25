@@ -218,3 +218,26 @@ TEST_CASE("virtual fundamental: serialization round-trips (schema 2, the field w
   bad.replace(bad.find("\"denominator\": 8"), 16, "\"denominator\": 0");
   CHECK_FALSE(parseProject(bad).ok());
 }
+
+TEST_CASE("virtual fundamental: denominators near int64 never overflow the lcm (M3 review L8)") {
+  // std::lcm is undefined when the result does not fit; lcmCapped stops at the cap first.
+  constexpr int64_t kCap = kMaxFundamentalDenominator;
+  CHECK(lcmCapped(4, 6, kCap) == 12);
+  CHECK(lcmCapped(kCap, 1, kCap) == kCap);
+  CHECK(lcmCapped(kCap, 3, kCap) == -1);
+  CHECK(lcmCapped((int64_t{1} << 43) + 1, (int64_t{1} << 44) + 3, kCap) == -1);
+  CHECK(lcmCapped(INT64_MAX, INT64_MAX - 1, INT64_MAX) == -1);  // the product would wrap
+  CHECK(lcmCapped(INT64_MAX, INT64_MAX, INT64_MAX) == INT64_MAX);
+  // A clip whose reference-anchored ratios have denominators beyond 2^43: no fundamental (each note steps on its own).
+  NoteClip c;
+  c.notes = NoteSeq::fromNotes({}).value();
+  std::vector<Note> notes;
+  for (const int64_t d : {(int64_t{1} << 43) + 1, (int64_t{1} << 44) + 3, int64_t{3}}) {
+    Note n;
+    n.id = NoteId{static_cast<uint32_t>(notes.size() + 1)};
+    n.pitch = PitchId::fromRatio(Rational{d + 1, d});
+    notes.push_back(n);
+  }
+  c.notes = NoteSeq::fromNotes(std::move(notes)).value();
+  CHECK_FALSE(virtualFundamental(c).has_value());
+}

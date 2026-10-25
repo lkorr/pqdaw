@@ -122,8 +122,17 @@ EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, cons
 }
 
 bool hasTuningSignal(const TuningDef& def) noexcept {
-  if (def.edo()) return true;
-  if (const tuning::MosParams* m = def.mos()) return !tuning::hasModmos(m->modmos) && m->genSequence.empty();
+  // T2.6-fix4 (M3 review L9): a definition whose continuous values the node's params cannot hold (outside
+  // paramRange, which the program clamps them to) plays static pitches instead of a node that would play others.
+  auto inRange = [](ParamKind k, double v) {
+    const ParamRange r = paramRange(k);
+    return v >= r.min && v <= r.max;
+  };
+  if (!inRange(ParamKind::TuningReference, def.referenceHz)) return false;
+  if (const tuning::Edo* e = def.edo()) return inRange(ParamKind::TuningEquave, e->equaveCents());
+  if (const tuning::MosParams* m = def.mos())
+    return !tuning::hasModmos(m->modmos) && m->genSequence.empty() && inRange(ParamKind::MosGenerator, m->generator) &&
+           inRange(ParamKind::MosPeriod, m->period) && inRange(ParamKind::MosStretch, m->octaveStretch);
   return false;
 }
 

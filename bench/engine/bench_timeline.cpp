@@ -6,7 +6,9 @@
 //                                loop: per block and per event (block cost / events per block)
 //   build/100k notes             SequenceImage::build from plain descriptions (criterion: < 20 ms)
 //   automation/<kind>            AutomationRenderer per lane-sample for 32 lanes over 64-frame blocks: constant,
-//                                straight, curved, and a ramping tempo (exact per-sample ticks)
+//                                straight, curved, and a ramping tempo (exact per-sample ticks); "…, block rate":
+//                                the same lanes with AutomationLaneDesc::perSample false (T2.6-fix2: lanes whose
+//                                consumers read params render only their frame-0 value)
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -175,13 +177,15 @@ int main(int argc, char** argv) {
     bool ramp;
   };
   for (const AutoCase& ac : {AutoCase{"constant", 0.5f, 0.5f, 0.0f, false}, AutoCase{"straight", 0.0f, 1.0f, 0.0f, false},
-                             AutoCase{"curved", 0.0f, 1.0f, 0.6f, false}, AutoCase{"curved, tempo ramp", 0.0f, 1.0f, 0.6f, true}}) {
-    r.add(std::string("automation/") + ac.name, [ac](pq::bench::Context& c) {
+                             AutoCase{"curved", 0.0f, 1.0f, 0.6f, false}, AutoCase{"curved, tempo ramp", 0.0f, 1.0f, 0.6f, true}})
+  for (const bool perSample : {true, false}) {
+    r.add(std::string("automation/") + ac.name + (perSample ? "" : ", block rate"), [ac, perSample](pq::bench::Context& c) {
       e::Timeline tl(config(1));
       std::vector<e::AutomationLaneDesc> lanes(32);
       for (uint32_t l = 0; l < 32; ++l) {
         lanes[l].target = l;
         lanes[l].points = {{0, ac.v0, ac.curve}, {100000 * kBar, ac.v1, 0.0f}};
+        lanes[l].perSample = perSample;
       }
       auto ai = e::AutomationImage::build(lanes);
       if (!ai) die(ai.error().message);

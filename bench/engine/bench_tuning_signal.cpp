@@ -1,7 +1,9 @@
 // T2.6: per-voice pitch cost of tuning as a signal. Record the numbers from the `ship` preset.
 //   kernel/*   the tuning_hz kernel alone, 64-frame blocks, called through its KernelFn like the interpreter does
 //              (ns per frame = 8 voices for L8, ns per sample for L1):
-//                static            every tuning input a param (Spl): one pitch per lane per block, per sample a blend
+//                unmodulated       every tuning input a param at the table's definition: a copy (T2.6-fix3)
+//                static            every tuning input a param (Spl), modulated: one pitch per lane per block, per sample
+//                                  the hz / hz0 factor (T2.6-fix3) and blends
 //                gen sweep         audio-rate generator moving inside one interval (no region crossing)
 //                gen crossing      audio-rate generator crossing an interval boundary every ~32 samples
 //                all audio         generator, period, stretch and reference all audio rate
@@ -54,27 +56,30 @@ pq::tuning::Tuning mosTuning() {
 
 struct KernelFixture {
   dsp::TuningTable table;
-  pq::AlignedBuffer<float> buf{12 * kFrames * 8};
-  float* in[8]{};
+  pq::AlignedBuffer<float> buf{14 * kFrames * 8};
+  float* in[10]{};
   float* out[2]{};
-  const float* inPtr[8]{};
+  const float* inPtr[10]{};
   float* outPtr[2]{};
   KernelFixture() {
     auto t = e::makeTuningTable(mosTuning());
     if (!t) std::exit(2);
     table = std::move(t.value());
-    for (uint32_t i = 0; i < 8; ++i) in[i] = buf.data() + i * kFrames * 8 + i * 16;
-    for (uint32_t o = 0; o < 2; ++o) out[o] = buf.data() + (8 + o) * kFrames * 8 + (8 + o) * 16;
-    for (uint32_t i = 0; i < 8; ++i) inPtr[i] = in[i];
+    for (uint32_t i = 0; i < 10; ++i) in[i] = buf.data() + i * kFrames * 8 + i * 16;
+    for (uint32_t o = 0; o < 2; ++o) out[o] = buf.data() + (10 + o) * kFrames * 8 + (10 + o) * 16;
+    for (uint32_t i = 0; i < 10; ++i) inPtr[i] = in[i];
     for (uint32_t o = 0; o < 2; ++o) outPtr[o] = out[o];
   }
 };
 
-enum class Mode { Static, Sweep, Crossing, AllAudio };
+enum class Mode { Unmodulated, Static, Sweep, Crossing, AllAudio };
 
 void benchKernel(pq::bench::Context& ctx, KernelFixture& fx, Mode mode, uint32_t lanes) {
-  // Inputs: degree, equave, hz, cents, generator, period, stretch, reference.
-  const uint32_t mask = mode == Mode::Static ? 0b11110011u : mode == Mode::AllAudio ? 0b00000011u : 0b11100011u;
+  // Inputs: degree, equave, hz, cents, generator, period, stretch, reference, select, node (the last two Spl 0).
+  const uint32_t mask = 0b1100000000u | (mode == Mode::Static || mode == Mode::Unmodulated ? 0b11110011u
+                                         : mode == Mode::AllAudio                          ? 0b00000011u
+                                                                                           : 0b11100011u);
+  for (uint32_t t = 0; t < kFrames * 8; ++t) fx.in[8][t] = fx.in[9][t] = 0.0f;
   for (uint32_t i = 0; i < 8; ++i)
     for (uint32_t t = 0; t < kFrames; ++t)
       for (uint32_t l = 0; l < 8; ++l) {
@@ -87,8 +92,9 @@ void benchKernel(pq::bench::Context& ctx, KernelFixture& fx, Mode mode, uint32_t
           case 2: v = 300.0f; break;
           case 3: v = 0.0f; break;
           case 4:
-            v = mode == Mode::Crossing ? 590.0f + 20.0f * static_cast<float>((tt / 32) % 2) + 0.01f * tt
-                                       : 696.0f + 0.01f * static_cast<float>(tt);
+            v = mode == Mode::Unmodulated ? fx.table.view().generatorF
+                : mode == Mode::Crossing  ? 590.0f + 20.0f * static_cast<float>((tt / 32) % 2) + 0.01f * tt
+                                          : 696.0f + 0.01f * static_cast<float>(tt);
             break;
           case 5: v = 1200.0f + (mode == Mode::AllAudio ? 0.001f * tt : 0.0f); break;
           case 6: v = mode == Mode::AllAudio ? 0.001f * tt : 0.0f; break;
@@ -97,7 +103,7 @@ void benchKernel(pq::bench::Context& ctx, KernelFixture& fx, Mode mode, uint32_t
         fx.in[i][(spl ? 0 : t * lanes) + (lanes == 8 || spl ? l : 0)] = v;
       }
   const dsp::KernelFn fn = dsp::findKernel(dsp::Atom::TuningHz, lanes, mask);
-  dsp::KernelArgs args{fx.inPtr, fx.outPtr, nullptr, &fx.table.view(), kFrames, 8, 2, mask};
+  dsp::KernelArgs args{fx.inPtr, fx.outPtr, nullptr, &fx.table.view(), kFrames, 10, 2, mask};
   ctx.measure([&] {
     fn(args);
     pq::bench::doNotOptimize(fx.out[0][0]);
@@ -225,7 +231,8 @@ int main(int argc, char** argv) {
   const struct {
     const char* name;
     Mode mode;
-  } kModes[] = {{"kernel/static", Mode::Static},
+  } kModes[] = {{"kernel/unmodulated", Mode::Unmodulated},
+                {"kernel/static", Mode::Static},
                 {"kernel/gen sweep", Mode::Sweep},
                 {"kernel/gen crossing every 32 samples", Mode::Crossing},
                 {"kernel/all audio", Mode::AllAudio}};

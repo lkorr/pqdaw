@@ -15,6 +15,8 @@
 #include "../engine/tuning_signal_ref.h"
 #include "../golden/golden_audio.h"
 #include "pq/app/project_link.h"
+#include "pq/core/denormal_guard.h"
+#include "pq/core/rt_scope.h"
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
 #include "pq/document/serialize.h"
@@ -359,7 +361,11 @@ DragResult dragReference(HeldChord& h, ProjectLink& link, double toHz) {
       if (b == d1) REQUIRE(h.store.commitGesture().ok());
     }
     float* ch[2] = {l.data(), r.data()};
-    link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+    {
+      RtScope rt;  // the audio thread: retunes, taps and the nodes allocate nothing
+      DenormalGuard dg;
+      link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+    }
     res.out.insert(res.out.end(), l.begin(), l.end());
   }
   const engine::TimelineStats t1 = link.engine().timeline().stats();
@@ -412,4 +418,157 @@ TEST_CASE("held notes (H5): notes that keep static pitches are retuned by Pitch 
   CHECK(r.retuned > 6);  // six voices, several drag steps
   CHECK(r.lowered > 0);
   CHECK(r.out[at(1.2)] / r.out[at(0.2)] == doctest::Approx(300.0 / tuning::kDefaultReferenceHz).epsilon(1e-5));
+}
+
+// ---- T2.6-fix4 -------------------------------------------------------------------------------------------------
+
+namespace {
+
+// Into `store`: a main tuning with `def`, a track following it with one Degree note of each degree 0..6 for 2 beats.
+// Returns the tuning's id (the same in every fresh store).
+TuningId addOneTuning(DocumentStore& store, const TuningDef& def) {
+  IdSource& ids = store.ids();
+  const TuningId t = ids.tuning();
+  const TrackId tr = ids.track();
+  Batch b{"one tuning", {}};
+  b.commands.push_back(AddTuning{TuningSlot{t, "T", Colour{0x4466AA}, def}});
+  b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(tr, TrackKind::Midi, "M")), {}, kAppend});
+  b.commands.push_back(SetTrackTuning{tr, TuningAssignment::mainTuning(t)});
+  NoteClip c;
+  c.id = ids.clip();
+  c.start = 0;
+  c.length = 4 * kPpq;
+  std::vector<Note> notes;
+  for (int32_t d = 0; d < 7; ++d) {
+    Note n;
+    n.id = ids.note();
+    n.start = 0;
+    n.length = 2 * kPpq;
+    n.pitch = tuning::PitchId::fromDegree(d, 0);
+    notes.push_back(n);
+  }
+  c.notes = NoteSeq::fromNotes(std::move(notes)).value();
+  b.commands.push_back(AddClip{tr, std::make_shared<const NoteClip>(std::move(c))});
+  REQUIRE(store.dispatch(b).ok());
+  return t;
+}
+
+TuningDef mosDef(int32_t n, double generator, int32_t rotation = 0) {
+  TuningDef d;
+  tuning::MosParams m;
+  m.n = n;
+  m.generator = generator;
+  m.rotation = rotation;
+  d.system = m;
+  return d;
+}
+
+void runBlocks(ProjectLink& link, int64_t& time, uint32_t blocks) {
+  std::vector<float> l(64), r(64);
+  float* ch[2] = {l.data(), r.data()};
+  for (uint32_t b = 0; b < blocks; ++b, time += 64) link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, 64, time});
+}
+
+}  // namespace
+
+TEST_CASE("tuning tables (M8): File > New / Open of another project uses none of the previous project's tables") {
+  // Two projects with the same tuning id and table key (a 7-note MOS) but different generators. Tables used to be
+  // kept per (tuning id, shape) for the link's life, so the second project reused the first one's table (defined at
+  // the first generator: its node then computed instead of passing the static pitches through). A Reset now drops
+  // the document's tables: the second project plays exactly what a fresh link plays.
+  DocumentStore sa, sb;
+  const TuningId ta = addOneTuning(sa, mosDef(7, 700.0)), tb = addOneTuning(sb, mosDef(7, 690.0));
+  REQUIRE(ta == tb);
+  const Snapshot a = sa.current(), b = sb.current();
+  auto link = makeLink(a);
+  const TuningDef& defB = findTuning(*b, tb)->def;
+  const dsp::TuningTableView* viewA = link->tuningView(ta, findTuning(*a, ta)->def);
+  REQUIRE(viewA != nullptr);
+  CHECK(viewA->generator == 700.0);
+  const doc::ChangeSet none;
+  link->onDocumentChange(StoreEvent{StoreEventKind::Reset, a, b, none});
+  link->flush();
+  const dsp::TuningTableView* viewB = link->tuningView(tb, defB);
+  REQUIRE(viewB != nullptr);
+  CHECK(viewB->generator == 690.0);
+  CHECK(viewB != viewA);
+  // A's tables are still held by the images that play them; once the new images are current (a few blocks, stopped:
+  // an instant swap) and the program collects the retired ones, they are freed.
+  CHECK(link->tuningTablesBuilt() == 3);  // A's MOS (its image), B's two; A's 12-EDO, which no image read, is gone
+  int64_t time = 0;
+  runBlocks(*link, time, 4);  // the new images become current; the next collect retires the old ones …
+  link->engine().collect();
+  runBlocks(*link, time, 4);  // … and once the audio thread has passed, frees them
+  link->engine().collect();
+  CHECK(link->tuningTablesBuilt() == 2);  // B's MOS and its default 12-EDO
+  auto fresh = makeLink(b);
+  const std::vector<float> outLink = render(*link, 1.0), outFresh = render(*fresh, 1.0);
+  // (From 0.1 s: the gain smoothers of the reset link start from the state they reached in the blocks above.)
+  size_t equal = 0, total = 0;
+  for (size_t i = at(0.1); i < outLink.size(); ++i, ++total) equal += outLink[i] == outFresh[i];
+  MESSAGE(equal << " of " << total << " samples equal to a fresh link's render");
+  CHECK(equal == total);
+  CHECK(link->engine().timeline().sequence()->notes()[1].hz == fresh->engine().timeline().sequence()->notes()[1].hz);
+}
+
+TEST_CASE("tuning tables (M8): 1000 size / mode changes keep the pool bounded; tables of one size share a shape") {
+  // Browsing sizes and modes in the MOS wheel commits SetTuningDef (structural) each time; every new shape or mode
+  // used a pool slot until the 256 ran out and pitches silently went static. Tables nobody holds are freed now: the
+  // document's, the running compile's and the images' (freed by the program once retired).
+  DocumentStore store;
+  const TuningId t = addOneTuning(store, mosDef(7, 700.0));
+  auto link = makeLink(store.current());
+  [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  link->play(0);
+  int64_t time = 0;
+  uint32_t most = 0;
+  for (int i = 0; i < 1000; ++i) {
+    const int32_t n = 5 + i % 9;           // sizes 5…13
+    const int32_t rot = (i / 9) % n;       // and modes
+    REQUIRE(store.dispatch(SetTuningDef{t, mosDef(n, 1200.0 * (2.0 * n / 3.0 + 0.3) / n, rot)}).ok());
+    if (i % 25 == 0) {  // a compile every so often (the debounce), with audio running in between
+      link->flush();
+      runBlocks(*link, time, 8);
+    }
+    most = std::max(most, link->tuningTablesBuilt());
+  }
+  link->flush();
+  runBlocks(*link, time, 8);
+  link->engine().collect();
+  MESSAGE("1000 changes: at most " << most << " tables alive, " << link->tuningTablesBuilt() << " at the end, "
+                                   << link->tuningShapesAlive() << " shapes; " << link->stats().tablesExhausted
+                                   << " tunings left without a table");
+  CHECK(link->stats().tablesExhausted == 0);
+  CHECK(most <= 8);
+  CHECK(link->tuningTablesBuilt() <= 4);  // the MOS (and one an image may still hold) and the default 12-EDO
+  CHECK(link->tuningShapesAlive() <= 4);
+}
+
+TEST_CASE("tuning tables (M8): every slot in use leaves further tunings static, and says so; one shape per size") {
+  // 300 main tunings with a signal, all 7-note MOS (one shape), each used by a track: 256 get a table, 44 play static
+  // pitches, the link reports it.
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  Batch b{"300 tunings", {}};
+  for (int i = 0; i < 300; ++i) {
+    const TuningId t = ids.tuning();
+    b.commands.push_back(AddTuning{TuningSlot{t, "T" + std::to_string(i), Colour{0x4466AA}, mosDef(7, 690.0 + 0.05 * i)}});
+    const TrackId tr = ids.track();
+    b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(tr, TrackKind::Midi, "M")), {}, kAppend});
+    b.commands.push_back(SetTrackTuning{tr, TuningAssignment::mainTuning(t)});
+  }
+  REQUIRE(store.dispatch(b).ok());
+  LinkConfig c;
+  c.compileThread = false;
+  c.sleepAfterMs = 0.0f;
+  c.stdlib = fixture("probe_stdlib").string();
+  auto made = ProjectLink::create(c, store.current());
+  REQUIRE(made.ok());
+  ProjectLink& link = *made.value();
+  MESSAGE(link.tuningTablesBuilt() << " tables, " << link.tuningShapesAlive() << " shapes, " << link.stats().tablesExhausted
+                                   << " tunings without one: " << link.stats().lastError);
+  CHECK(link.tuningTablesBuilt() == ProjectLink::kTuningTables);
+  CHECK(link.tuningShapesAlive() == 2);  // the default 12-EDO's and the 7-note MOS shape, shared by 255 tables
+  CHECK(link.stats().tablesExhausted == 300 + 1 - ProjectLink::kTuningTables);  // the default 12-EDO is one more
+  CHECK(link.stats().lastError.find("static pitches") != std::string::npos);
 }

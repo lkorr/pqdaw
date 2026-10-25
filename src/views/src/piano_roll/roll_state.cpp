@@ -160,7 +160,7 @@ void RollState::rebuildChunks() {
         } else if (note.pitch.kind() == tuning::PitchKind::Ratio && note.pitch.anchorKind() == tuning::AnchorKind::Reference &&
                    den >= 0) {
           const int64_t d = note.pitch.ratio().den();
-          den = den ? std::lcm(den, d) : d;
+          den = den ? doc::lcmCapped(den, d, kMaxHarmonicDenominator) : d;  // −1 when finer (no overflow)
           if (den > kMaxHarmonicDenominator) den = -1;
         }
       }
@@ -881,7 +881,7 @@ std::optional<tuning::Rational> RollState::virtualFundamental() const {
   int64_t D = 0;
   for (const ChunkInfo& c : chunks_) {
     if (D < 0 || c.ratioDen == 0) continue;
-    D = c.ratioDen < 0 ? -1 : (D ? std::lcm(D, c.ratioDen) : c.ratioDen);
+    D = c.ratioDen < 0 ? -1 : (D ? doc::lcmCapped(D, c.ratioDen, kMaxHarmonicDenominator) : c.ratioDen);
     if (D > kMaxHarmonicDenominator) D = -1;
   }
   vfClip_ = clip_.get();

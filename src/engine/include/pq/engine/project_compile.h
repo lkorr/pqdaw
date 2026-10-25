@@ -30,6 +30,7 @@
 // Front-end and build times are reported per unit (CompiledUnit), measured with the steady clock.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -70,6 +71,11 @@ struct ProjectCompileOptions {
   bool visualMode = true;               // delay-free cycles (also between merged tracks) get a z1 + warning
   UnitBackend backend;
   std::vector<ProjectParamLink> paramLinks;
+  // T2.6-fix4 (optional): the owner of resource `index` of `kind` (only Tuning is asked), kept alive by every image
+  // that reads it (UnitImage::keepAlive), so a table can be freed once no image uses it. Called by bind() (every
+  // image goes through it), on whichever thread binds: the compile thread, or a background image's (T1b.5), so the
+  // owner must still know the resources of every schedule that may be bound.
+  std::function<std::shared_ptr<const void>(dsp::Resource kind, uint32_t index)> keepAlive;
 };
 
 struct CompiledUnit {

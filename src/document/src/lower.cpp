@@ -92,8 +92,19 @@ std::string patchText(const Node& n, const std::string& instrument, float smooth
       const TuningNode& t = n.tunings[k];
       const std::string i = std::to_string(k + 1);
       const bool edo = t.def->edo() != nullptr;
-      s += "  param tref" + i + " = 261.626 [1..20000]\n  param tper" + i + " = 1200 [1..12000]\n";
-      if (!edo) s += "  param tgen" + i + " = 700 [-12000..12000]\n  param tst" + i + " = 0 [-1199..1200]\n";
+      // The ranges are the document's (paramRange, T2.6-fix4: the program clamps a param to its declared range, so
+      // a narrower one would make the node and the static pitch differ; hasTuningSignal refuses a definition
+      // outside them).
+      auto param = [&](const char* name, double def, ParamKind k) {
+        const ParamRange r = paramRange(k);
+        s += "  param " + std::string(name) + i + " = " + num(def) + " [" + num(r.min) + ".." + num(r.max) + "]\n";
+      };
+      param("tref", 261.626, ParamKind::TuningReference);
+      param("tper", 1200.0, edo ? ParamKind::TuningEquave : ParamKind::MosPeriod);
+      if (!edo) {
+        param("tgen", 700.0, ParamKind::MosGenerator);
+        param("tst", 0.0, ParamKind::MosStretch);
+      }
       s += "  tun" + i + " = tuning_hz(voice.degree, voice.equave, " + hz + ", " + cents + ", " +
            (edo ? "0, tper" + i + ", 0, tref" + i : "tgen" + i + ", tper" + i + ", tst" + i + ", tref" + i) +
            ", table: " + std::to_string(t.table) + ", select: voice.tuning, node: " + i + ")\n";

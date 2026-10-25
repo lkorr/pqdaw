@@ -174,6 +174,9 @@ struct ClipLoop {
 // deleting it gives 4 again; undo / redo restore both, because the steps live in the clip snapshot. An explicit
 // lock (b + index, SPEC §6.2: "this note is the N-th harmonic") overrides the derivation with F = note / N.
 inline constexpr int64_t kMaxFundamentalDenominator = int64_t{1} << 20;  // finer: no fundamental (own denominators)
+// lcm(a, b) for a, b ≥ 1, or −1 when it exceeds `cap` (computed without overflow: std::lcm is undefined when the
+// result does not fit; T2.6-fix4, M3 review L8). RT-safe.
+int64_t lcmCapped(int64_t a, int64_t b, int64_t cap) noexcept;
 
 struct HarmonicStep {
   NoteId note;

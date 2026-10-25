@@ -334,8 +334,8 @@ std::optional<ClipFundamental> steppedMemory(const NoteClip& clip, const std::op
   }
   if (!clip.fundamental.lock && D > 0)
     for (const auto& [id, r] : stepped) {
-      const int64_t used = std::lcm(D, r.den());
-      if (used != r.den() && used <= kMaxFundamentalDenominator) next.push_back(HarmonicStep{id, used, r});
+      const int64_t used = lcmCapped(D, r.den(), kMaxFundamentalDenominator);  // −1: finer than any fundamental
+      if (used > 0 && used != r.den()) next.push_back(HarmonicStep{id, used, r});
     }
   std::sort(next.begin(), next.end(), [](const HarmonicStep& a, const HarmonicStep& b) { return a.note.value < b.note.value; });
   if (next == clip.fundamental.steps) return std::nullopt;

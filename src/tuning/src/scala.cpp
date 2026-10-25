@@ -85,6 +85,19 @@ struct PitchParse {
   std::string message;
 };
 
+// T2.6-fix4 (M3 review L7): a value must end at the end of the line, a space / tab or a '!' comment, and a '/' after
+// spaces is a spaced ratio ("3 / 2"), not a comment: those read as 3/1, 100/1 and 1/1 before ("3 / 2", "100,5", "1e3").
+// An empty message: the value ends well.
+std::string valueEndError(std::string_view line, size_t i) {
+  if (i < line.size() && !isSpace(line[i]) && line[i] != '!')
+    return std::string("unexpected '") + line[i] +
+           "' after the pitch value (a ratio like 3/2 or cents like 701.955, then a space or the end of the line)";
+  size_t j = i;
+  while (j < line.size() && isSpace(line[j])) ++j;
+  if (j > i && j < line.size() && line[j] == '/') return "a ratio cannot have spaces around '/' (write 3/2)";
+  return {};
+}
+
 PitchParse parsePitchLine(std::string_view line) {
   PitchParse out;
   size_t i = 0;
@@ -111,6 +124,8 @@ PitchParse parsePitchLine(std::string_view line) {
       out.message = "cents value out of range";
       return out;
     }
+    out.message = valueEndError(line, i);
+    if (!out.message.empty()) return out;
     out.pitch = ScalaPitch::fromCents(v);
     return out;
   }
@@ -139,6 +154,8 @@ PitchParse parsePitchLine(std::string_view line) {
       return out;
     }
   }
+  out.message = valueEndError(line, i);
+  if (!out.message.empty()) return out;
   if (isZeroDigits(intDigits)) {
     out.message = "ratio must be positive";
     return out;

@@ -186,6 +186,12 @@ NoteClip withNotes(const NoteClip& c, NoteSeq notes) {
   return n;
 }
 
+int64_t lcmCapped(int64_t a, int64_t b, int64_t cap) noexcept {  // RT-safe
+  if (a < 1 || b < 1) return -1;
+  const int64_t x = a / std::gcd(a, b);  // lcm = x · b
+  return x > cap / b ? -1 : x * b;
+}
+
 std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t own) {
   if (c.fundamental.lock) return c.fundamental.lock;
   auto isRefRatio = [](const Note& n) {
@@ -194,7 +200,7 @@ std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t ow
   int64_t D = 0;  // −1: too fine
   auto join = [&D](int64_t d) {
     if (D < 0 || d == 0) return;
-    D = d < 0 ? -1 : (D ? std::lcm(D, d) : d);
+    D = d < 0 ? -1 : (D ? lcmCapped(D, d, kMaxFundamentalDenominator) : d);
     if (D > kMaxFundamentalDenominator) D = -1;
   };
   const std::vector<HarmonicStep>& steps = c.fundamental.steps;

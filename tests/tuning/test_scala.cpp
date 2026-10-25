@@ -133,10 +133,13 @@ TEST_CASE("scl: cents forms and precision") {
   CHECK(s.pitches[4] == C(12.5));
   CHECK(s.pitches[5] == C(3.141592653589793));
   checkRoundTrip(s);
-  // An exponent is not part of the format: "1.5e3" reads as 1.5 cents (the rest of the line is ignored).
-  CHECK(mustParse("e\n1\n1.5e3\n").pitches[0] == C(1.5));
-  // A ratio followed by a period is a ratio ("anything after a valid pitch value should be ignored").
-  CHECK(mustParse("e\n1\n3/2.\n").pitches[0] == R(3, 2));
+  // An exponent is not part of the format, nor is a period after a ratio. These used to read as 1.5 cents and 3/2
+  // (the rest of the line ignored); T2.6-fix4 (M3 review L7) makes a value end at a space, a '!' or the line's end,
+  // so a typo is a read error at its line instead of a silently different pitch ("1e3" read as 1/1).
+  CHECK_FALSE(parseScl("e\n1\n1.5e3\n").ok());
+  CHECK_FALSE(parseScl("e\n1\n3/2.\n").ok());
+  CHECK(mustParse("e\n1\n1.5 e3\n").pitches[0] == C(1.5));  // after a space it is a comment, as the spec says
+  CHECK(mustParse("e\n1\n3/2!fifth\n").pitches[0] == R(3, 2));
 }
 
 TEST_CASE("scl: ratio forms, reduction and large ratios") {
@@ -180,6 +183,13 @@ TEST_CASE("scl: read errors") {
       {"desc\n1\n-.5\n", 3},
       {"desc\n1\nC#\n", 3},                     // not a pitch
       {"desc\n1\n+3/2\n", 3},                   // signed ratio
+      // T2.6-fix4 (M3 review L7): these read as 3/1, 100/1, 1/1, 3/2 before.
+      {"desc\n2\n5/4\n3 / 2\n", 4},             // a spaced ratio
+      {"desc\n2\n5/4\n3 /2\n", 4},
+      {"desc\n1\n100,5\n", 3},                  // a decimal comma
+      {"desc\n1\n1e3\n", 3},                    // an exponent
+      {"desc\n1\n3/2.\n", 3},                   // a ratio with a period
+      {"desc\n1\n701.955c\n", 3},               // a unit glued to the value
   };
   for (const Bad& b : bad) {
     CAPTURE(b.text);

@@ -18,6 +18,7 @@ using detail::peakAbs;
 
 struct ProjectProgram::Packet {
   uint64_t seq = 0;
+  std::vector<std::shared_ptr<const void>> keepAlive;     // UnitImage::keepAlive (destroyed after the image)
   std::unique_ptr<ProgramImage> image;
   TransferPlan plan;                                      // from the unit's previous packet (empty for the first)
   SwapMode mode = SwapMode::Auto;
@@ -266,6 +267,7 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
     if (slot >= io.params.size() || param >= cfg_.numProjectParams)
       return projectError(ErrorCode::InvalidArgument, who + "a param link is out of range");
   p->paramLinks = std::move(ui.paramLinks);
+  p->keepAlive = std::move(ui.keepAlive);
 
   // Crossfade scratch: this packet's own outputs while it fades out later.
   const auto slots = static_cast<uint32_t>(p->outPtrs.size());

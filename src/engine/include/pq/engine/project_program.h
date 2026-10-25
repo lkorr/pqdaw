@@ -123,6 +123,9 @@ struct UnitImage {
   VoiceSlots voiceSlots;
   std::vector<std::pair<uint32_t, uint32_t>> paramLinks;  // (io().params slot, project param index)
   uint64_t key = 0;         // compile-cache key (graph::unitHash), informational
+  // Owners of resources the image points into (T2.6-fix4: its tuning tables), released with the image: when the
+  // program frees a retired image (collect(), off the audio thread) or at its destruction.
+  std::vector<std::shared_ptr<const void>> keepAlive;
 };
 
 struct ProjectConfig {

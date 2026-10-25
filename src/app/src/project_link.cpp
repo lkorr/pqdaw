@@ -136,8 +136,8 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
   doc::ResolveOptions ro;
   ro.signalTuning = [this](doc::TuningId id, const doc::TuningDef& def) -> const tuning::Tuning* {
     std::lock_guard lock(mutex_);
-    const TuningTableEntry* e = tuningEntry(id, def);  // entries live as long as the link
-    return e != nullptr && e->built ? &*e->built : nullptr;
+    const EntryPtr* e = tuningEntry(id, def);  // held: alive while this (UI) thread lowers
+    return e != nullptr && (*e)->built ? &*(*e)->built : nullptr;
   };
   auto pitches = doc::resolveTrackPitches(p, track.id, ro);
   for (size_t ci = 0; ci < track.clips.size(); ++ci) {
@@ -194,11 +194,12 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
 }
 
 // What a track's lowered sequence depends on besides the track node itself (T2.6-fix3, M3 review H5): per clip the
-// definition its notes resolve in — the node table's (an entry, stable while the table lives) for a clip following
-// a tuning signal, else the effective TuningDef — and the track's tuning signals (node numbers). A tuning param
-// change replaces the tuning slot but not its table, so tracks whose notes follow the node are not re-lowered.
+// definition its notes resolve in — the node table's (an entry; its owner goes to `tables`, so the address stays
+// unique while the cache keys on it) for a clip following a tuning signal, else the effective TuningDef — and the
+// track's tuning signals (node numbers). A tuning param change replaces the tuning slot but not its table, so tracks
+// whose notes follow the node are not re-lowered.
 std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const doc::TrackPath& path,
-                                                  const doc::Track& t) const {
+                                                  const doc::Track& t, std::vector<EntryPtr>* tables) const {
   std::vector<const void*> key;
   for (const doc::TuningId id : doc::trackTuningSignals(p, path))
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(id.value)));
@@ -208,7 +209,10 @@ std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const d
     const doc::EffectiveTuning e = doc::effectiveTuningRef(p, path, c.clip.get());
     const void* k = e.def;
     if (e.main.valid() && e.def != nullptr && doc::hasTuningSignal(*e.def))
-      if (const TuningTableEntry* entry = tuningEntry(e.main, *e.def)) k = entry;
+      if (const EntryPtr* entry = tuningEntry(e.main, *e.def)) {
+        k = entry->get();
+        if (tables) tables->push_back(*entry);
+      }
     key.push_back(k);
   }
   return key;
@@ -216,57 +220,121 @@ std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const d
 
 // ---- Tuning tables (UI thread builds, the compile path reads) ----------------------------------------------------
 
-const ProjectLink::TuningTableEntry* ProjectLink::tuningEntry(doc::TuningId id, const doc::TuningDef& def) const {
+const ProjectLink::EntryPtr* ProjectLink::tuningEntry(doc::TuningId id, const doc::TuningDef& def) const {
   const std::optional<TableKey> key = tableKey(def);
   if (!key) return nullptr;
-  for (const auto& e : tuningEntries_)
-    if (e->id == id && e->key == *key) return e.get();
+  for (const EntryPtr& e : held_)
+    if (e->id == id && e->key == *key) return &e;
   return nullptr;
 }
 
-uint32_t ProjectLink::tuningTable(doc::TuningId id, const doc::TuningDef& def) const {
-  const std::optional<TableKey> key = tableKey(def);
-  if (!key) return kTuningTables;
+uint32_t ProjectLink::tuningTable(doc::TuningId id, const doc::TuningDef& def) {  // compile path
   std::lock_guard lock(mutex_);
-  for (uint32_t i = 0; i < tuningEntries_.size(); ++i)
-    if (tuningEntries_[i]->id == id && tuningEntries_[i]->key == *key) return i;
-  return kTuningTables;
+  const EntryPtr* e = tuningEntry(id, def);
+  if (e == nullptr) return kTuningTables;
+  compileHeld_[(*e)->slot] = *e;  // this compile's images will hold it (ProjectCompileOptions::keepAlive)
+  jobHeld_[(*e)->slot] = *e;
+  return (*e)->slot;
 }
 
 uint32_t ProjectLink::tuningTablesBuilt() const {
   std::lock_guard lock(mutex_);
-  return static_cast<uint32_t>(tuningEntries_.size());
+  uint32_t n = 0;
+  for (const auto& w : slots_) n += !w.expired();
+  return n;
+}
+
+uint32_t ProjectLink::tuningShapesAlive() const {
+  std::lock_guard lock(mutex_);
+  uint32_t n = 0;
+  for (const auto& [k, w] : shapes_) n += !w.expired();
+  return n;
 }
 
 const dsp::TuningTableView* ProjectLink::tuningView(doc::TuningId id, const doc::TuningDef& def) const {
   std::lock_guard lock(mutex_);
-  const TuningTableEntry* e = tuningEntry(id, def);
-  return e != nullptr ? &e->table.view() : nullptr;
+  const EntryPtr* e = tuningEntry(id, def);
+  return e != nullptr ? &(*e)->table.view() : nullptr;
 }
 
-bool ProjectLink::updateTuningTables(const doc::Project& p) {
+bool ProjectLink::updateTuningTables(const doc::Project& p, bool fresh) {
   bool built = false;
+  std::vector<EntryPtr> next;
+  uint32_t exhausted = 0;
   for (const doc::TuningSlotPtr& slot : *p.tunings) {
     const std::optional<TableKey> key = tableKey(slot->def);
     if (!key) continue;
     {
       std::lock_guard lock(mutex_);
-      if (tuningEntry(slot->id, slot->def) != nullptr || tuningEntries_.size() >= kTuningTables) continue;
+      EntryPtr found;
+      if (!fresh)  // the held table, else one an image still holds (e.g. after an undo back to it)
+        for (const EntryPtr& e : held_)
+          if (e->id == slot->id && e->key == *key) found = e;
+      if (!found && !fresh)
+        for (const auto& w : slots_)
+          if (EntryPtr e = w.lock(); e && e->id == slot->id && e->key == *key && e->def == slot->def) found = e;
+      if (found) {
+        next.push_back(std::move(found));
+        continue;
+      }
     }
     auto t = doc::buildTuning(slot->def);
     if (!t.ok()) continue;
-    auto e = std::make_unique<TuningTableEntry>();
-    auto table = engine::makeTuningTable(t.value(), {}, &e->live);  // the entry's address is stable (unique_ptr)
+    auto form = engine::tuningShapeKey(t.value());
+    if (!form.ok()) continue;
+    const uint64_t shapeKey = (static_cast<uint64_t>(form.value().kind) << 32) | static_cast<uint32_t>(form.value().n);
+    std::unique_lock lock(mutex_);
+    uint32_t free = kTuningTables;
+    for (uint32_t i = 0; i < kTuningTables && free == kTuningTables; ++i)
+      if (slots_[i].expired()) free = i;
+    if (free == kTuningTables) {  // every slot in use: this tuning plays static pitches
+      ++exhausted;
+      continue;
+    }
+    std::shared_ptr<const dsp::TuningShape> shape;
+    for (auto& [k, w] : shapes_)
+      if (k == shapeKey) shape = w.lock();
+    lock.unlock();  // building a shape is O(n³) for a MOS: not under the mutex
+    if (!shape) {
+      auto made = engine::makeTuningShape(form.value());
+      if (!made.ok()) continue;
+      shape = std::move(made.value());
+    }
+    auto table = engine::makeTuningTable(t.value(), shape, &live_[free]);
     if (!table.ok()) continue;
+    auto e = std::make_shared<TuningTableEntry>();
     e->id = slot->id;
     e->key = *key;
     e->def = slot->def;
     e->built = std::move(t.value());
+    e->slot = free;
     e->table = std::move(table.value());
-    std::lock_guard lock(mutex_);
-    tuningViews_[tuningEntries_.size()] = &e->table.view();  // before any lowering can name this index
-    tuningEntries_.push_back(std::move(e));
+    lock.lock();
+    bool stored = false;
+    for (auto& [k, w] : shapes_)
+      if (k == shapeKey) {
+        if (w.expired()) w = shape;
+        stored = true;
+      }
+    if (!stored) {
+      std::erase_if(shapes_, [](const auto& s) { return s.second.expired(); });
+      shapes_.emplace_back(shapeKey, shape);
+    }
+    tuningViews_[free] = &e->table.view();  // before any lowering can name this index
+    slots_[free] = e;
+    next.push_back(std::move(e));
     built = true;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    held_ = std::move(next);  // the tables no longer held die with their last image
+  }
+  if (exhausted > 0) {
+    stats_.tablesExhausted += exhausted;
+    const std::string m = "Tuning: " + std::to_string(exhausted) + " tuning(s) play static pitches (all " +
+                          std::to_string(kTuningTables) + " tuning node tables are in use)";
+    stats_.lastError = m;
+    if (ctx_ != nullptr) ctx_->setStatus(m);
   }
   return built;
 }
@@ -366,6 +434,13 @@ Status ProjectLink::makeEngine() {
   co.visualMode = true;
   resources_.tunings = tuningViews_;  // fixed array: entries are filled in as tables are built
   co.resources = &resources_;
+  // T2.6-fix4: every image holds the tuning tables it reads (the ones its compile named: compileHeld_).
+  co.keepAlive = [this](dsp::Resource kind, uint32_t index) -> std::shared_ptr<const void> {
+    if (kind != dsp::Resource::Tuning) return nullptr;
+    std::lock_guard lock(mutex_);
+    const auto it = compileHeld_.find(index);
+    return it != compileHeld_.end() ? it->second : nullptr;
+  };
   compiler_ = std::make_unique<engine::ProjectCompiler>(co);
   return Ok{};
 }
@@ -511,7 +586,8 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
   forEachMidi(p, [&](const doc::TrackPath& path, const doc::Track& t) {
     const uint32_t slot = slotForTrack(t.id);
     if (slot == kNone) return;
-    std::vector<const void*> key = sequenceKey(p, path, t);
+    std::vector<EntryPtr> tables;
+    std::vector<const void*> key = sequenceKey(p, path, t, &tables);
     SeqCacheEntry e;
     auto it = seqCache_.find(t.id.value);
     if (it != seqCache_.end() && it->second.track == &t && it->second.key == key) {
@@ -520,6 +596,7 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
       e.track = &t;
       e.key = std::move(key);
       e.from = current_;
+      e.tables = std::move(tables);
       e.desc = lowerTrack(p, path, t);
       changed |= it == seqCache_.end() || !sameDesc(it->second.desc, e.desc);
     }
@@ -574,15 +651,15 @@ const float** ProjectLink::liveTap(const doc::Project& p, const doc::ParamRef& r
   const doc::TuningSlot* slot = doc::findTuning(p, doc::TuningId{ref.owner});
   if (slot == nullptr) return nullptr;
   std::lock_guard lock(mutex_);
-  const TuningTableEntry* found = tuningEntry(slot->id, slot->def);
+  const EntryPtr* found = tuningEntry(slot->id, slot->def);
   if (found == nullptr) return nullptr;
-  auto* e = const_cast<TuningTableEntry*>(found);  // the live inputs are the audio thread's, not the table's
+  dsp::TuningLiveInputs& live = live_[(*found)->slot];  // the slot's, stable for the link's life (T2.6-fix4)
   switch (ref.kind) {
-    case doc::ParamKind::MosGenerator: return &e->live.generator;
+    case doc::ParamKind::MosGenerator: return &live.generator;
     case doc::ParamKind::MosPeriod:
-    case doc::ParamKind::TuningEquave: return &e->live.period;
-    case doc::ParamKind::MosStretch: return &e->live.stretch;
-    case doc::ParamKind::TuningReference: return &e->live.reference;
+    case doc::ParamKind::TuningEquave: return &live.period;
+    case doc::ParamKind::MosStretch: return &live.stretch;
+    case doc::ParamKind::TuningReference: return &live.reference;
     default: return nullptr;
   }
 }
@@ -635,7 +712,8 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   // Tables before the sequences resolve in their definitions. A param change can need a new table too (a region
   // hint moved with the generator: T2.6-fix2), which then is a compile like a structural change.
   bool newTables = false;
-  if (reset || structural || (c.has(doc::kChangeParam) && !c.tunings.empty())) newTables = updateTuningTables(p);
+  if (reset || structural || (c.has(doc::kChangeParam) && !c.tunings.empty()))
+    newTables = updateTuningTables(p, reset);  // a Reset (New / Open) never keeps an earlier project's tables
   const bool compile = structural || newTables;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
@@ -701,6 +779,23 @@ void ProjectLink::flush() {
 
 Status ProjectLink::compileNow(const doc::Snapshot& s) {
   std::lock_guard compileLock(compileMutex_);  // vs the JIT worker's deliveries (compiler_, program publishes)
+  {
+    // The tables this compile names (tuningTable) go to compileHeld_ (its images hold them through keepAlive) and to
+    // jobHeld_; when it ends, compileHeld_ keeps only this compile's, so a later bind() of a schedule that still runs
+    // (an image compiled in the background) finds its tables, and older ones are released.
+    std::lock_guard lock(mutex_);
+    jobHeld_.clear();
+  }
+  struct EndJob {
+    ProjectLink& link;
+    bool ok = false;
+    ~EndJob() {  // a failed compile keeps the earlier compile's tables too (its schedules still run)
+      std::lock_guard lock(link.mutex_);
+      if (ok) link.compileHeld_ = std::move(link.jobHeld_);
+      else link.compileHeld_.merge(link.jobHeld_);
+      link.jobHeld_.clear();
+    }
+  } endJob{*this};
   doc::LowerOptions lo;
   lo.library = &instruments_->library;
   lo.externals = instruments_->signatures;
@@ -797,6 +892,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   if (compiledUnits > 0) ++stats_.compiles;
   stats_.unitCompiles += compiledUnits;
   lowered_ = std::move(lp);
+  endJob.ok = true;
   engine_->wake();
   wantJit();
   return Ok{};

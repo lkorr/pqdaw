@@ -347,3 +347,26 @@ TEST_CASE("main tunings: the JSON round trip keeps tunings, references, assignme
   REQUIRE(again.ok());
   CHECK(again.value() == text.value());
 }
+
+TEST_CASE("main tunings: a definition outside the tuning params' ranges has no signal (static pitches; M3 review L9)") {
+  // The tuning node's params are declared with paramRange and the program clamps them to it, so a definition outside
+  // it would sound clamped through a node but exact as a static pitch: hasTuningSignal says no.
+  TuningDef mos;
+  pq::tuning::MosParams m;
+  m.generator = 700.0;
+  mos.system = m;
+  CHECK(hasTuningSignal(mos));
+  TuningDef far = mos;
+  std::get<pq::tuning::MosParams>(far.system).generator = 12500.0;  // valid for Mos::make, beyond [-12000, 12000]
+  CHECK(buildTuning(far).ok());
+  CHECK_FALSE(hasTuningSignal(far));
+  TuningDef highRef = mos;
+  highRef.referenceHz = 25000.0;
+  CHECK(buildTuning(highRef).ok());
+  CHECK_FALSE(hasTuningSignal(highRef));
+  TuningDef wideEdo;
+  wideEdo.system = pq::tuning::Edo::makeCents(12, 15000.0).value();
+  CHECK_FALSE(hasTuningSignal(wideEdo));
+  TuningDef edo;
+  CHECK(hasTuningSignal(edo));
+}

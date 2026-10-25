@@ -11,7 +11,9 @@
 //     Latin-1, see descriptionUtf8()).
 //   - The next non-comment line holds the note count: an integer ≥ 0 with optional surrounding spaces/tabs.
 //   - Then `count` pitch lines. Leading spaces/tabs are ignored; the pitch value is parsed from the start of the
-//     text and anything after a valid value is ignored ("100.0 cents", " 5/4   E\").
+//     text and anything after a valid value and a space / tab (or a '!') is ignored ("100.0 cents", " 5/4   E\").
+//     A value followed directly by anything else ("100,5", "1e3", "701.955c") or a ratio written with spaces
+//     ("3 / 2") is a read error at that line (T2.6-fix4: they used to read as 100/1, 1/1, 701.955, 3/1).
 //       * a value with a period is cents: [+|-]digits.[digits]  ("408.", "-5.0"; no leading period, as in Scala:
 //         "floating point values may not start with a decimal point"),
 //       * otherwise a ratio: digits[/digits]; a bare integer n is n/1; "10/20" is 1/2. Zero, a zero denominator and

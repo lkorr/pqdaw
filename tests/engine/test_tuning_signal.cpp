@@ -654,3 +654,26 @@ TEST_CASE("tuning signal: glides and note ratios compose with a modulated node; 
   for (uint32_t f = 0; f < kF; ++f) bad1 += std::fabs(oh[f] / (node(1) * std::exp2(100.0 / 1200.0 * f / (kF - 1))) - 1.0) > 3e-7;
   CHECK(bad1 == 0);
 }
+
+TEST_CASE("tuning signal: shapes are shared and their size is ~0.3·n² intervals × n × 12 bytes (QUESTIONS Q105.3)") {
+  // T2.6-fix4: a table is a shared shape (per chain length) plus a few hundred bytes of definition.
+  auto s24 = pq::engine::makeTuningShape({dsp::TuningTableKind::Mos, 24});
+  auto s60 = pq::engine::makeTuningShape({dsp::TuningTableKind::Mos, 60});
+  REQUIRE(s24.ok());
+  REQUIRE(s60.ok());
+  MESSAGE("shape bytes: n = 24 " << s24.value()->bytes() << ", n = 60 " << s60.value()->bytes());
+  CHECK(s24.value()->bytes() < 60 * 1024);
+  CHECK(s60.value()->bytes() < 800 * 1024);
+  // Two tunings of one chain length on one shape: their tables differ only in the definition.
+  tun::MosParams a = mos(7, 1200.0, 1, 0, 0.0, 700.0), b = mos(7, 1200.0, 1, 3, 2.0, 690.0);
+  auto shape = pq::engine::makeTuningShape({dsp::TuningTableKind::Mos, 7});
+  REQUIRE(shape.ok());
+  auto ta = pq::engine::makeTuningTable(mosTuning(a), shape.value()), tb = pq::engine::makeTuningTable(mosTuning(b), shape.value());
+  REQUIRE(ta.ok());
+  REQUIRE(tb.ok());
+  CHECK(ta.value().view().k == tb.value().view().k);
+  CHECK(shape.value().use_count() == 3);
+  CHECK_FALSE(pq::engine::makeTuningTable(mosTuning(mos(5, 1200.0, 1, 0, 0.0, 700.0)), shape.value()).ok());
+  for (int32_t d = 0; d < 7; ++d)
+    CHECK(dsp::tuningCents(tb.value().view(), d, 690.0, 1200.0, 2.0) == doctest::Approx(tuning_ref::mosCents(b, 690.0, d, 0).value()));
+}
