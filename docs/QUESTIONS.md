@@ -899,7 +899,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   7. **Gutter** 6 px (`size.gutter`, the M3 review's figure; the screenshot measures 7–9 px between Live's panels).
 - Status: open
 
-## Q?-T1b.2-a · 2026-10-24 · T1b.2 · Voice-SIMD codegen: what T1b.1 already did, the "scalar JIT" baseline, pairs of groups, AVX-512
+## Q111 · 2026-10-24 · T1b.2 · Voice-SIMD codegen: what T1b.1 already did, the "scalar JIT" baseline, pairs of groups, AVX-512
 - What T1b.1 already did: every voice op was <8 x float> across the 8 voices of a group (one frame per vector, the
   scalar code path only for global per-sample loops), bools were 32-bit lane masks, so "8× AVX2 voice lanes" existed.
   Not done: 16 lanes, stateful atoms in voice block regions (phasor / sine_hz were dsp kernel calls), and regions
@@ -941,7 +941,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   to pair). pq_bench_stdlib (T1b.3) was not on main yet, so its rows were not re-measured here.
 - Status: open (A–C for the compile cost)
 
-## Q?-T1.3-fix1-a · 2026-10-24 · T1.3-fix1 · Per-voice free-running sources: which sources, which contexts, the `shared(…)` syntax
+## Q112 · 2026-10-24 · T1.3-fix1 · Per-voice free-running sources: which sources, which contexts, the `shared(…)` syntax
 - Context: Q29 answered B (per-voice by default, a patch can opt into one shared global instance). Choices made in
   `src/graph/src/infer.cpp` (freeRunning, emit), `parse.cpp`, `print.cpp`, PATCH_LANGUAGE §3:
   1. **Free-running** = a stateful atom whose inputs are all global and at most **param** rate (TASKS says "no

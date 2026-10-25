@@ -407,7 +407,7 @@ private:
       // Every other function stays on 256-bit registers (AVX-512VL instructions, 32 registers and k-masks remain):
       // without this attribute LLVM legalises the phasor's <8 x double> onto zmm, and one 512-bit instruction in a
       // loop turns off the core's port-1 vector ALU for the whole loop (measured T1b.2: voice groups 12–15 % faster
-      // with it; the same as with AVX-512 switched off in these functions, Q?-T1b.2-a).
+      // with it; the same as with AVX-512 switched off in these functions, Q111).
       F_->addFnAttr("prefer-vector-width", "256");
       F_->addFnAttr("min-legal-vector-width", "256");
     }

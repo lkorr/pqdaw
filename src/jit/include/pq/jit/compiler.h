@@ -42,7 +42,7 @@ namespace pq::jit {
 
 // How voice stages are generated (T1b.2, src/jit/src/codegen.h). Every choice computes the same bits.
 enum class VoiceCode : uint8_t {
-  Auto,         // the default: Pairs512 on hosts with AVX-512, Pairs256 elsewhere (QUESTIONS Q?-T1b.2-a)
+  Auto,         // the default: Pairs512 on hosts with AVX-512, Pairs256 elsewhere (QUESTIONS Q111)
   Groups,       // one voice group (8 lanes, <8 x float>) per call: T1b.1's code
   Pairs256,     // two occupied groups per call as <16 x float> on two 256-bit halves; a lone group as Groups
   Pairs512,     // the same on 512-bit registers (AVX-512 hosts; Pairs256 on hosts without AVX-512F)

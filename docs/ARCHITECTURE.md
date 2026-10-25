@@ -165,7 +165,7 @@ namespace pq::graph {
 // (AVX-512 where present), a light IR pipeline by default, machine code at CompilerConfig::codeGenLevel
 // (src/jit/src/codegen.h, compiler.cpp). CompileStats reports the object size and whether any stage needs stack
 // probes (it must not: a frame > 4 KiB touches guard pages on the audio thread).
-// Voice stages (T1b.2, CompileOptions::voiceCode, Q?-T1b.2-a): a voice value is one vector across voice lanes. The
+// Voice stages (T1b.2, CompileOptions::voiceCode, Q111): a voice value is one vector across voice lanes. The
 // simple stateful atoms are inline in voice block regions too, and consecutive voice regions that run frame by
 // frame (inline Block regions + per-sample loops) are fused into one loop over frames ("chains"). Every voice stage
 // without sends or per-frame calls also gets a PAIR function (StageFn with group1/vstate1) that runs two occupied

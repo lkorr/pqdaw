@@ -248,7 +248,7 @@ Also decide before T3.17: Q61 option A (M19) and the Q29 default (M21). Both are
   - Lowers a Schedule to LLVM IR with the same ProgramImage ABI. Scalar first. Host CPU features and target machine options. Fast-math flags policy: `contract` and `afn` allowed; no `nnan`/`ninf`; denormals FTZ.
   - Accept: every interpreter test passes with the JIT backend producing output identical within 1e-6. Compile time for a 100-node patch is recorded.
 
-- [~] **T1b.2 Voice-SIMD codegen** *(worker BM, branch task/T1b.2-voice-simd)* (`jit`). Depends on: T1b.1.
+- [x] **T1b.2 Voice-SIMD codegen** *(merged 2026-10-24)* (`jit`). Depends on: T1b.1.
   - Vector types across voice lanes (8× AVX2, 16× AVX-512 when the host has it). Bool masks as vector predicates.
   - Accept: 8- and 64-voice benchmarks show at least 5× over scalar JIT for an oscillator+filter voice.
 
@@ -454,7 +454,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
     `3 / 2` and `100,5` are parse errors with a line number.
 
 
-- [~] **T1.3-fix1 Per-voice free-running sources (Q29 answer)** *(worker BM, same branch)* (`graph`, `engine`). Depends on: T1.3.
+- [x] **T1.3-fix1 Per-voice free-running sources (Q29 answer)** *(merged 2026-10-24)* (`graph`, `engine`). Depends on: T1.3.
   - `InferOptions::freeRunningPoly` defaults to per-voice inside voice contexts: `noise`, `pulse`, `phasor`/LFOs with no input above const rate get one instance per voice (phase from note-on; noise seeded per voice, decorrelated); an explicit opt-in keeps one shared global instance (document the syntax in PATCH_LANGUAGE).
   - Accept: two simultaneous voices of a patch with `noise()` are decorrelated (|corr| < 0.05) and an LFO restarts at each note-on; the opt-in gives the old global behaviour bit for bit; goldens re-rendered only where a patch relied on the old default (explained); interpreter == JIT.
 
