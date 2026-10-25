@@ -188,7 +188,7 @@ A **JI object** is a region in a note clip, drawn as a box over the global roll,
 ### 6.1 Default: Ableton Live hotkeys
 Copy Live 12's Arrangement/clip-view shortcuts (to be checked against the Live 12 manual during implementation). Examples:
 - Space play/stop; Shift+Space continue; F9 record.
-- Ctrl+T / Ctrl+Shift+T new MIDI/audio track; Ctrl+G group; Ctrl+R rename; 0 activate/deactivate.
+- Ctrl+T / Ctrl+Shift+T new audio/MIDI track (as in Live 12; user decision 2026-10-24); Ctrl+G group; Ctrl+R rename; 0 activate/deactivate.
 - Ctrl+E split; Ctrl+J consolidate; Ctrl+D duplicate; Ctrl+L loop selection.
 - Ctrl+1/2/3/4/5 grid narrow/widen/triplet/snap/fixed; B draw mode; A automation mode; Z / X zoom to selection / back.
 - Ctrl+Alt+B browser; Shift+Tab clip/device detail; Alt+drag copy; Ctrl+Shift+M insert clip.

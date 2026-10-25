@@ -575,3 +575,16 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf (ship, block 64, loaded, indicative; JIT/C++): most filters 0.45–1.12 mono and 0.75–1.04 ×8; comb/allpass_delay/audio-rate-cutoff ×8 up to 1.08–1.19; adsr ×8 1.55–1.62. RESULTS rows.
 - CPU-efficiency check: coefficient math at param rate hoisted; shortest recursion chains (Simper SVF, TDF-II); comb_lp moved to sub-blocked loops; every case measured against hand-written SIMD C++.
 - Notes/blockers: [!] adsr ×8 1.55–1.62× and borderline ×8 cases: root causes in src/jit (AVX-512 k-mask selects on the critical path — adsr ×8 1.29–1.43× with AVX-512 off; rise/!gate as separate block passes; exact transcendentals as separate block calls; per-block image overhead, possibly higher after the shared host) — handed to T1b.2 (worker BM) with pq_bench_stdlib as benchmark (Q109).
+
+## 2026-10-24 · T3.x-fix-paint · worker BL / task/T3.x-fix-views
+- Did: paint per damage rect (one clipped pass per rect; M3 review H8); automation envelopes rasterised into the TileAtlas in 512-px chunks; TextSystem::drawRunClipped + text helpers clip (M13; partial == full over the whole shell, Q103 fixed); tuning chips re-resolve/repaint only on tuning changes (M12a); mixer param changes repoint edited rows instead of rebuilding. Goldens with text kept inside widgets regenerated.
+- Verified: worker -Full dev + release 48/48; per-rect vs bbox random sequences, envelope tiles vs direct, partial == full through scroll/zoom, volume-drag damage equal at 8 vs 64 tracks. Orchestrator: rebased onto 8df996e: release -Full 50/50, dev -Full ui|views|app|document 8/8, 0 warnings; viewed the local side-by-side vs Live.
+- Perf (ship, loaded): playing frame 16 lanes × 1000 pts + meters 0.018 ms (review measured 1.3–5.6 ms; target ≤ 1 ms); full lanes paint 0.136 ms (was 1.07); volume-drag 4.8/9.4/23.7 µs at 8/64/256 tracks (was 8.5/18/93).
+- Notes: volume-drag CPU still ~75 ns/track (document dispatch / listener fan-out, not paint) — not fully track-count independent.
+
+## 2026-10-24 · T3.x-fix-edit · worker BL / task/T3.x-fix-views
+- Did: M10 Alt-copy at offset 0 no-op; M11 store listeners stable during notify (no std::function copies); M12b Esc cancels value drags, Generator box defaults/focus; M14 densest-band default fit; L19 focus loss cancels drags/gestures, capture loss cancels automation drags, Esc restores the selection, view-state changes mark the project dirty. New 1.5× goldens pianoroll-31edo-1.5x, mos-wheel-popover-1.5x. One test per item.
+
+## 2026-10-24 · T3.x-fix-look 👁 · worker BL / task/T3.x-fix-views
+- Did: 11-px text + SemiBold track names (Q107.4 B; glyph atlas 2 R8 pages = 2 MiB, test updated deliberately); control bar on the window colour with panel fields, selected-track tuning chip, CPU meter (polls only while playing); 6-px panel gutters; detail view collapsed until a clip is shown; JI harmonic strip + F chip + Harmonics switch (M18); label-collision helper (L18); pan bar, compact tuning chips (L17); movable MOS wheel (not dockable); Ctrl+T audio / Ctrl+Shift+T MIDI per Live 12 (user decision; SPEC §6.1 updated by the orchestrator); arrow-key navigation. All goldens regenerated deliberately. REVIEW entry, Q110.
+- Notes: still missing vs Live: menu bar (T3.19), browser (M5), single-row headers.

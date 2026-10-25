@@ -459,17 +459,17 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Accept: two simultaneous voices of a patch with `noise()` are decorrelated (|corr| < 0.05) and an LFO restarts at each note-on; the opt-in gives the old global behaviour bit for bit; goldens re-rendered only where a patch relied on the old default (explained); interpreter == JIT.
 
 **Bundle C — views correctness and frame cost (views, ui, app)**
-- [~] **T3.x-fix-paint Per-rect paint and automation tiles** *(worker BL, branch task/T3.x-fix-views)* (`app`, `ui`, `views`). Depends on: T3.15, T3.8-fix1.
+- [x] **T3.x-fix-paint Per-rect paint and automation tiles** *(merged 2026-10-24)* (`app`, `ui`, `views`). Depends on: T3.15, T3.8-fix1.
   - Paint per damage rect (H8); automation bands rasterised into the TileAtlas; text helpers clip (M13); chips
     repaint only on tuning change (M12a).
   - Accept: playing with 16 lanes × 1000 points + meters live: frame ≤ 1 ms CPU at 2560×1440; partial == full over
     the whole shell (incl. the control bar label); volume-drag frame independent of track count.
-- [~] **T3.x-fix-edit Editing correctness** *(worker BL, same branch)* (`views`, `document`). Depends on: T3.12, T3.9.
+- [x] **T3.x-fix-edit Editing correctness** *(merged 2026-10-24)* (`views`, `document`). Depends on: T3.12, T3.9.
   - Alt-copy at zero offset is a no-op (M10); store subscribe during notify (M11); Generator box cancel/default/
     focus (M12b); default fit with outliers (M14); window focus loss cancels drags and gestures, capture loss cancels
     automation drags, Esc restores the range selection, view-state changes mark the project dirty (L19).
   - Accept: a test per item; goldens at 1.5× for the piano roll and popover.
-- [~] **T3.x-fix-look Readability** *(worker BL, same branch)* (`views`, `ui`, theme). Depends on: T3.2-fix1. 👁
+- [x] **T3.x-fix-look Readability** *(merged 2026-10-24)* (`views`, `ui`, theme). Depends on: T3.2-fix1. 👁
   - Harmonic labels off the notes + F chip + toggle (M18); label-collision helper (L18); pan indicator and chip
     truncation (L17); control bar per Q107.1 B with CPU meter and tuning chip; panel gutters on the window colour;
     11-px roles (Q107.4 B), SemiBold track names; detail view collapsed until a clip is opened; dockable / movable
