@@ -115,7 +115,8 @@ DevicePanel* openDevice(Shell& shell, const std::string& devicePath, std::string
 DevicePreview* openPreview(Shell& shell) noexcept;
 DevicePanel* openPanel(Shell& shell) noexcept;
 
-// The device scenes (view_scenes.cpp: device-utility, device-saturator, device-eq-eight; `file` = the device's .pqp):
+// The device scenes (view_scenes.cpp: device-utility, device-saturator, device-eq-eight, device-operator; `file` = the
+// device's .pqp):
 // the device opened with a few non-default settings; EQ Eight with a spectrum of a fixed test signal.
 Status setupDeviceScene(Shell& shell, std::string_view file);
 

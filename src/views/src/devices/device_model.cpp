@@ -173,7 +173,8 @@ std::string formatValue(const ParamInfo& p, double v) {
       if (gainFloorIsSilence(p) && v <= p.min * 1.0000001) return "-inf dB";
       return fmt(std::fabs(d) < 0.05 ? "0.0 dB" : "%.1f dB", d);
     case DisplayUnit::Percent: return fmt(std::fabs(d) >= 10.0 ? "%.0f %%" : "%.1f %%", d);
-    case DisplayUnit::Seconds: return d >= 1000.0 ? fmt("%.2f s", d / 1000.0) : fmt("%.1f ms", d);
+    case DisplayUnit::Seconds:  // Live: "12.0 ms", "450 ms", "1.20 s"
+      return d >= 1000.0 ? fmt("%.2f s", d / 1000.0) : fmt(d >= 100.0 ? "%.0f ms" : "%.1f ms", d);
     default:
       if (p.steps > 1) return fmt("%.0f", v);
       return fmt(std::fabs(v) >= 10.0 ? "%.1f" : "%.2f", v);

@@ -1,9 +1,10 @@
-// The device panel scenes (T4.6; `device-utility`, `device-saturator`, `device-eq-eight`): a stock device opened in the
-// Device tab with a few non-default settings, and for EQ Eight a spectrum analysed (synchronously, deterministic)
-// from a fixed test signal, so the goldens show every layer of the panel.
+// The device panel scenes (T4.6; `device-utility`, `device-saturator`, `device-eq-eight`; T4.12 `device-operator`): a
+// stock device opened in the Device tab with a few non-default settings, and for EQ Eight a spectrum analysed
+// (synchronously, deterministic) from a fixed test signal, so the goldens show every layer of the panel.
 
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "pq/views/devices/device_view.h"
@@ -52,6 +53,29 @@ Status setupDeviceScene(Shell& shell, std::string_view file) {
     panel->setParamValue("output", db(-4.0));
     panel->setConstValue("type", 0.0);  // Analog Clip
     panel->setConstValue("color", 1.0);
+  } else if (patch == "operator") {
+    // T4.12: four operators in algorithm 3, A playing the User waveform (the partial editor shows), its envelope
+    // looping; C a just fifth (3/2), D slightly detuned with feedback.
+    panel->setConstValue("algorithm", 3.0);
+    for (const char* on : {"onB", "onC", "onD"}) panel->setConstValue(on, 1.0);
+    panel->setConstValue("waveA", 22.0);
+    panel->setConstValue("loopA", 1.0);
+    panel->setParamValue("levelB", db(-6.0));
+    panel->setParamValue("levelC", db(-12.0));
+    panel->setParamValue("levelD", db(-18.0));
+    panel->setParamValue("coarseB", 2.0);
+    panel->setParamValue("coarseC", 3.0);
+    panel->setParamValue("denC", 2.0);
+    panel->setParamValue("coarseD", 7.0);
+    panel->setParamValue("fineD", 13.0);
+    panel->setParamValue("feedback", 0.35);
+    panel->setParamValue("attackA", 0.012);
+    panel->setParamValue("decayA", 0.45);
+    panel->setParamValue("sustainA", db(-9.0));
+    panel->setParamValue("releaseA", 0.3);
+    panel->setParamValue("repeatA", 0.2);
+    const double partials[16] = {1.0, 0.5, 0.62, 0.25, 0.4, 0.12, 0.3, 0.08, 0.18, 0.05, 0.1, 0.0, 0.06, 0.0, 0.03, 0.0};
+    for (int h = 0; h < 16; ++h) panel->setParamValue("uA" + std::to_string(h + 1), partials[h]);
   } else if (patch == "eq_eight") {
     panel->setConstValue("on1", 1.0);
     panel->setParamValue("freq1", 40.0);

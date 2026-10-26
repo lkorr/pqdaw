@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -461,6 +463,101 @@ TEST_CASE("device panels: EQ Eight's band selection rebinds the knobs; a dot dra
   CHECK(freq->value() > toPosition(*e.sig.findParam("freq4"), 1000.0));  // the knob follows the dot
 }
 
+// ---- Operator (T4.12) --------------------------------------------------------------------------------------------------
+
+TEST_CASE("device panels: Operator's description reaches every param and const of the device") {
+  Device o("operator");
+  CHECK(o.desc.title == "Operator");
+  // Every binding, expanded over the operator selector (A … D), as names.
+  std::set<std::string> bound;
+  auto add = [&](const std::string& n) {
+    if (n.empty()) return;
+    for (const char* op : {"A", "B", "C", "D"}) {
+      std::map<std::string, std::string, std::less<>> v{{"op", op}};
+      const std::string r = resolveTemplate(n[0] == '#' ? n.substr(1) : n, v);
+      bound.insert(r);
+    }
+  };
+  for (const ControlDesc& c : o.desc.controls) {
+    add(c.param);
+    add(c.constName);
+    for (const auto& [role, name] : c.bind)
+      if (!role.empty() && role[0] != '@') add(name);
+  }
+  for (const ParamInfo& p : o.sig.params) CHECK_MESSAGE(bound.count(p.name) == 1, "no control for param " << p.name);
+  for (const ConstInfo& c : o.sig.consts) CHECK_MESSAGE(bound.count(c.name) == 1, "no control for const " << c.name);
+  CHECK(o.sig.exports.size() == 7);  // opA … opD, lfo, pitchEnv, filterEnv: the jack strip
+}
+
+TEST_CASE("device panels: Operator's envelope points drag their times and levels; the algorithm picker is structural") {
+  Device o("operator");
+  FakeTarget t;
+  PanelRig r(o, &t, true);  // painted (points are placed in paint)
+  Widget* env = r.panel->control("envOsc");
+  REQUIRE(env != nullptr);
+  REQUIRE(env->visible());
+  CHECK_FALSE(r.panel->control("envFilter")->visible());
+  // Defaults of operator A: attack 0, decay 600 ms, release 50 ms, Sustain 0 dB: the Sustain point sits on the top
+  // line at 0.6 / total of the plot's width (total = (a + d + hold + r) · 1.04, hold = ¼ (a + d + r)).
+  const IRect er = env->rect();
+  const float x0 = static_cast<float>(er.x + 6), x1 = static_cast<float>(er.right() - 6), y0 = static_cast<float>(er.y + 6);
+  const double total = (0.6 + 0.25 * 0.65 + 0.05) * 1.04;
+  const Vec2 sus{x0 + static_cast<float>(0.6 / total) * (x1 - x0), y0};
+  r.d.move(sus);
+  r.d.down(sus);
+  r.d.move({sus.x + 25.0f, sus.y + 20.0f});
+  r.d.up({sus.x + 25.0f, sus.y + 20.0f});
+  CHECK(r.panel->paramValue("decayA") > 0.6);    // right: longer
+  CHECK(r.panel->paramValue("sustainA") < 1.0);  // down: lower
+  CHECK(t.begins == 2);                          // one gesture per param of the point
+  CHECK(t.ends == 2);
+  // The operator tabs rebind the envelope (operator B's params).
+  r.panel->select("op", 1);
+  r.d.step();
+  CHECK(r.panel->controlFor("decayB") != nullptr);
+  // The algorithm picker: a click on the fifth diagram chooses algorithm 5 (a const: structural).
+  Widget* alg = r.panel->control("algorithm");
+  REQUIRE(alg != nullptr);
+  const IRect ar = alg->rect();
+  const float cw = (static_cast<float>(ar.w) - 6.0f) / 6.0f, ch = (static_cast<float>(ar.h) - 6.0f) / 2.0f;
+  r.d.click({static_cast<float>(ar.x) + 3.0f + cw * 4.5f, static_cast<float>(ar.y) + 3.0f + ch * 0.5f});
+  r.d.step();
+  REQUIRE(!t.consts.empty());
+  CHECK(t.consts.back().name == "algorithm");
+  CHECK(t.consts.back().value == 5.0);
+  CHECK(r.panel->constValue("algorithm") == 5.0);
+  // Sections: the filter's envelope and controls replace the operators'.
+  r.panel->select("sec", 2);
+  r.d.step();
+  CHECK(r.panel->control("envFilter")->visible());
+  CHECK_FALSE(r.panel->control("envOsc")->visible());
+  CHECK(r.panel->controlFor("filterFreq") != nullptr);
+}
+
+TEST_CASE("device panels: Operator's partial editor shows for the User waveform and draws the partials") {
+  Device o("operator");
+  FakeTarget t;
+  PanelRig r(o, &t, true);
+  Widget* parts = r.panel->control("partials");
+  REQUIRE(parts != nullptr);
+  CHECK_FALSE(parts->visible());
+  r.panel->setConstValue("waveA", 22.0);
+  r.d.step();
+  REQUIRE(parts->visible());
+  const IRect pr = parts->rect();
+  // Drag across the first three bars at half height.
+  const float y = static_cast<float>(pr.y) + 0.5f * static_cast<float>(pr.h);
+  const float bw = (static_cast<float>(pr.w) - 8.0f) / 16.0f;
+  r.d.down({static_cast<float>(pr.x) + 4.0f + 0.5f * bw, y});
+  r.d.move({static_cast<float>(pr.x) + 4.0f + 1.5f * bw, y});
+  r.d.move({static_cast<float>(pr.x) + 4.0f + 2.5f * bw, y});
+  r.d.up({static_cast<float>(pr.x) + 4.0f + 2.5f * bw, y});
+  CHECK(r.panel->paramValue("uA1") == doctest::Approx(0.5).epsilon(0.05));
+  CHECK(r.panel->paramValue("uA2") == doctest::Approx(0.5).epsilon(0.05));
+  CHECK(r.panel->paramValue("uA3") == doctest::Approx(0.5).epsilon(0.05));
+  CHECK(r.panel->paramValue("uA4") == 0.0);
+}
+
 // ---- spectrum: nothing while hidden; idle ------------------------------------------------------------------------------
 
 TEST_CASE("device panels: the spectrum costs nothing while hidden and the panel idles once settled") {
@@ -540,7 +637,7 @@ TEST_CASE("device preview: param edits are param writes; structural edits re-che
 }
 
 TEST_CASE("device preview: every stock device's host patch compiles; a device without a description gets the auto panel") {
-  for (const char* dev : {"utility", "saturator", "eq_eight"}) {
+  for (const char* dev : {"utility", "saturator", "eq_eight", "operator"}) {
     FakePlayer player;
     auto pv = DevicePreview::open(stdlibPath((std::string("devices/") + dev + ".pqp").c_str()), &player);
     REQUIRE_MESSAGE(pv.ok(), (pv.ok() ? "" : pv.error().message));
@@ -556,6 +653,28 @@ TEST_CASE("device preview: every stock device's host patch compiles; a device wi
   CHECK(std::find(titles.begin(), titles.end(), "EQ Eight") != titles.end());
   CHECK(std::find(titles.begin(), titles.end(), "Saturator") != titles.end());
   CHECK(std::find(titles.begin(), titles.end(), "Utility") != titles.end());
+  CHECK(std::find(titles.begin(), titles.end(), "Operator") != titles.end());
+}
+
+TEST_CASE("device preview: an instrument (Operator) plays the arpeggio's notes itself and ends voices with its own done") {
+  FakePlayer player;
+  auto pv = DevicePreview::open(stdlibPath("devices/operator.pqp"), &player);
+  REQUIRE_MESSAGE(pv.ok(), (pv.ok() ? "" : pv.error().message));
+  DevicePreview& p = **pv;
+  CHECK(p.signature().audioIn.empty());
+  const std::string text = p.hostText();
+  CHECK(text.find("preview_source") == std::string::npos);
+  CHECK(text.find("pq_d = operator(") != std::string::npos);
+  CHECK(text.find("done = pq_d.done") != std::string::npos);
+  REQUIRE(p.play().ok());
+  CHECK(player.plays == 1);
+  p.setConst("algorithm", 5.0);  // structural: recompiled through the editor
+  CHECK(player.plays == 2);
+  CHECK(p.hostText().find("algorithm: 5") != std::string::npos);
+  p.setActive(false);
+  CHECK(player.plays == 3);
+  CHECK(p.hostText().find("operator(") == std::string::npos);
+  p.stop();
 }
 
 // ---- goldens ------------------------------------------------------------------------------------------------------------
@@ -563,3 +682,4 @@ TEST_CASE("device preview: every stock device's host patch compiles; a device wi
 TEST_CASE("device panels: golden of Utility") { checkGolden("device-utility", stdlibPath("devices/utility.pqp")); }
 TEST_CASE("device panels: golden of Saturator") { checkGolden("device-saturator", stdlibPath("devices/saturator.pqp")); }
 TEST_CASE("device panels: golden of EQ Eight") { checkGolden("device-eq-eight", stdlibPath("devices/eq_eight.pqp")); }
+TEST_CASE("device panels: golden of Operator") { checkGolden("device-operator", stdlibPath("devices/operator.pqp")); }

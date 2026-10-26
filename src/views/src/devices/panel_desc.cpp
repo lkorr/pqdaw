@@ -151,7 +151,8 @@ ControlDesc readControl(const json& c, const std::string& where) {
       if (d.selector.empty()) throw std::runtime_error(where + ": tabs need a \"selector\"");
       break;
     case ControlKind::Visual:
-      if (d.visual != "transfer" && d.visual != "eq" && d.visual != "spectrum")
+      if (d.visual != "transfer" && d.visual != "eq" && d.visual != "spectrum" && d.visual != "envelope" &&
+          d.visual != "algorithm" && d.visual != "partials")
         throw std::runtime_error(where + ": unknown visual \"" + d.visual + "\"");
       break;
     case ControlKind::Label: break;

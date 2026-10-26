@@ -596,6 +596,7 @@ private:
 std::unique_ptr<PanelDisplay> makeDisplay(DevicePanel::Impl& impl, const ControlDesc& desc) {
   if (desc.visual == "transfer") return std::make_unique<TransferDisplay>(impl, desc);
   if (desc.visual == "eq") return std::make_unique<EqDisplay>(impl, desc);
+  if (auto op = makeOperatorDisplay(impl, desc)) return op;
   return std::make_unique<SpectrumDisplay>(impl, desc);
 }
 

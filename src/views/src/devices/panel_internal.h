@@ -78,6 +78,8 @@ protected:
 };
 
 std::unique_ptr<PanelDisplay> makeDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
+// Operator's displays (T4.12, operator_displays.cpp): "envelope", "algorithm", "partials"; null for another visual.
+std::unique_ptr<PanelDisplay> makeOperatorDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
 
 // True when `w` and every ancestor are visible and it is in a tree.
 bool shownInTree(const ui::Widget& w) noexcept;

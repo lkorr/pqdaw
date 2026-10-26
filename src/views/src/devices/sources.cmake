@@ -5,6 +5,7 @@ set(PQ_VIEWS_DEVICES_SOURCES
   src/devices/panel_desc.cpp
   src/devices/device_panel.cpp
   src/devices/device_displays.cpp
+  src/devices/operator_displays.cpp  # T4.12: Operator's envelope, algorithm picker, partial editor
   src/devices/analysis.cpp
   src/devices/device_view.cpp
   src/devices/device_scenes.cpp)
