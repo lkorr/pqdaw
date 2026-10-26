@@ -287,7 +287,7 @@ struct DeviceValue {
   friend bool operator==(const DeviceValue&, const DeviceValue&) = default;
 };
 
-// T4.4-fix1 (SPEC §15 2026-10-26; QUESTIONS Q?-T4.4-fix1-a): a USER DEVICE is a stock device edited in the circuit
+// T4.4-fix1 (SPEC §15 2026-10-26; QUESTIONS Q138): a USER DEVICE is a stock device edited in the circuit
 // editor. The first edit forks the instance: it gets its own copy of the device's patch file (`text`: the whole .pqp
 // with its imports and helper patches), stored in the project; the stock file and every other instance are unchanged.
 // The device's patch is the patch of `text` named Device::patch (the stock name it was forked from: "Revert to Stock"
