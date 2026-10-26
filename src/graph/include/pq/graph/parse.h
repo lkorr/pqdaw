@@ -124,7 +124,8 @@ std::string printLayout(const Patch& patch);
 
 // T4.3: `source` with each patch's layout block replaced by the one printLayout() writes for laidOut.patches[i] —
 // inserted before the patch's closing '}' when it had none, removed when the new one is empty — and every other byte
-// unchanged (comments, formatting, the order of members). `parsed` is parseDetailed(source) (its patchSpans);
+// unchanged (comments, formatting, the order of members). `parsed` is parseDetailed(source) (its patchSpans; it must
+// have lowered: validation errors are fine, T4.4);
 // `laidOut` has the same patches in the same order (normally parsed.file with layouts changed). Text → layout → text
 // is byte-stable: splicing the layout a parse of the result reads back gives the result again.
 Result<std::string> spliceLayout(std::string_view source, const ParseResult& parsed, const PatchFile& laidOut);

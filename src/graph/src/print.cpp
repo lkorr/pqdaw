@@ -674,7 +674,7 @@ std::string printLayout(const Patch& patch) {
 }
 
 Result<std::string> spliceLayout(std::string_view source, const ParseResult& parsed, const PatchFile& laidOut) {
-  if (!parsed.ok() || parsed.patchSpans.size() != laidOut.patches.size())
+  if (!(parsed.ok() || parsed.lowered) || parsed.patchSpans.size() != laidOut.patches.size())
     return Error{ErrorCode::InvalidArgument, "spliceLayout: the source did not parse, or the patch counts differ", {}};
   std::string out;
   out.reserve(source.size() + 256);
