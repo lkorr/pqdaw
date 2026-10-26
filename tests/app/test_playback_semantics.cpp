@@ -456,8 +456,10 @@ TEST_CASE("automation overrides (T3.15) are consumed: a hand-made value plays un
 
 // ---- probe_slots.py ---------------------------------------------------------------------------------------------
 
-TEST_CASE("probe_slots: more than 128 MIDI tracks play; beyond the engine's limit the status says so (M5)") {
-  for (const uint32_t n : {129u, ProjectLink::kEventSlots + 1u}) {
+namespace {
+// n MIDI tracks, a note only on the 129th (or the last one with a slot).
+void slotsCase(uint32_t n) {
+  {
     CAPTURE(n);
     Proj p;
     std::vector<TrackId> ids;
@@ -473,6 +475,14 @@ TEST_CASE("probe_slots: more than 128 MIDI tracks play; beyond the engine's limi
     CHECK(link->stats().tracksWithoutSlot == n - std::min(n, ProjectLink::kEventSlots));
     if (n > ProjectLink::kEventSlots) CHECK(link->lastError().find("at most") != std::string::npos);
   }
+}
+}  // namespace
+
+TEST_CASE("probe_slots: more than 128 MIDI tracks play (M5)") { slotsCase(129); }
+
+// A stress size (513 tracks, ~2 s in dev): the slow tier.
+TEST_CASE("probe_slots: beyond the engine's 512 MIDI tracks the status says so (M5)" * doctest::test_suite("slow")) {
+  slotsCase(ProjectLink::kEventSlots + 1u);
 }
 
 // ---- probe_edges.py ---------------------------------------------------------------------------------------------
