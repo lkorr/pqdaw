@@ -192,7 +192,7 @@ namespace pq::jit {
 // Target::Baseline key — and compiles only on a miss, storing the object in `dir`. A hit links the stored COFF object
 // (no IR, no passes, no instruction selection) and rebuilds the image's memory and pointer table from the current
 // schedule (buildHost), so it is bit-identical to a fresh compile. Key = xxh3-128 of what codegen reads (schedule
-// minus identities: state keys, noise seeds, node indices, diagnostics; the HostLayout; compile options) + target
+// minus identities: state keys, noise seeds, node indices, diagnostics; the HostLayout incl. T1b.2's pair layout; compile options incl. the resolved VoiceCode) + target
 // CPU/features + machine-code level + LLVM version + entry format + a hash of the executable's file (generated code
 // reaches kernels through the pointer table, stored as offsets into this binary; codegen itself is in it). Code is
 // shared/stored only when every table slot codegen added points into the executable (else `uncacheable`). Entries:
