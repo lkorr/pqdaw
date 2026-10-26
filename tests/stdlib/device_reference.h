@@ -314,4 +314,164 @@ struct Saturator {
   }
 };
 
+// ---- EQ Eight (stdlib/devices/eq_eight.pqp) -------------------------------------------------------------------------
+// The `pow` atom: SVML powf (lane 0 of the 8-wide call, as the 1-lane kernel).
+inline float vpow(float a, float b) { return _mm256_cvtss_f32(_mm256_pow_ps(_mm256_set1_ps(a), _mm256_set1_ps(b))); }
+
+enum EqType { kLC48 = 0, kLC12, kLS, kBell, kNotch, kHS, kHC12, kHC48 };
+struct EqBand {
+  float freq = 1000.0f, gain = 1.0f, q = 0.7071f;  // gain linear
+};
+struct EqCoef {
+  float g, k, m0, m1, m2, k2, k3, k4;
+};
+// eq8_coef: one band's section coefficients at os·sr.
+inline EqCoef eqCoef(int type, float os, const EqBand& b, bool adaptive, float scale, float sr) {
+  const float ge = vpow(b.gain, scale);
+  const float A = std::sqrt(ge);
+  const float qe = adaptive ? b.q * std::sqrt(std::max(ge, 1.0f / ge)) : b.q;
+  const float w = stdref::vtan(3.141592653589793f * std::clamp(b.freq, 0.0f, 0.49f * sr) / (os * sr));
+  const float kc = 1.0f / std::max(b.q, 0.01f), kb = 1.0f / std::max(qe, 0.01f), sA = std::sqrt(A);
+  EqCoef c{};
+  constexpr float f1 = 1.3870398453221475f;
+  switch (type) {
+    case kLC48: c = {w, f1 * kc, 1, -f1 * kc, -1}; break;
+    case kLC12: c = {w, kc, 1, -kc, -1}; break;
+    case kLS: c = {w / sA, kb, 1, kb * (A - 1), ge - 1}; break;
+    case kBell: c = {w, kb / A, 1, kb / A * (ge - 1), 0}; break;
+    case kNotch: c = {w, kc, 1, -kc, 0}; break;
+    case kHS: c = {w * sA, kb, ge, kb * (1 - A) * A, 1 - ge}; break;
+    case kHC12: c = {w, kc, 0, 0, 1}; break;
+    default: c = {w, f1 * kc, 0, 0, 1}; break;
+  }
+  c.k2 = 1.1758756024193588f * kc;
+  c.k3 = 0.7856949583871023f * kc;
+  c.k4 = 0.2758993792829431f * kc;
+  return c;
+}
+
+// One section (eq8_sec): y = m0·x + m1·band + m2·low, fused as the optimiser fuses it: with m0 the literal 1
+// (every type but the high shelf) m1·band + x is one multiply-add, else m0·x + m1·band; then m2·low + that.
+struct EqSec {
+  stdref::SvfCore<float> core;
+  float tick(float x, const stdref::SvfCore<float>::Coef& c, bool m0One, float m0, float m1, float m2) {
+    float band, low;
+    core.tick(x, c, band, low);
+    const float v = m0One ? fma_(m1, band, x) : fma_(m0, x, m1 * band);
+    return fma_(m2, low, v);
+  }
+};
+
+// One band (eq8_band; the 2× band is the same section ticks on both oversampled samples).
+struct EqBandState {
+  EqSec sec[4];
+  // Prepared section coefficients (param-rate: once per block).
+  stdref::SvfCore<float>::Coef cc[4]{};
+  float mix[4][3]{};
+  void prepare(int type, const EqCoef& c) {
+    const bool hp = type == kLC48;
+    cc[0] = stdref::SvfCore<float>::coef(c.g, c.k);
+    mix[0][0] = c.m0, mix[0][1] = c.m1, mix[0][2] = c.m2;
+    const float ks[3] = {c.k2, c.k3, c.k4};
+    for (int i = 0; i < (type == kLC48 || type == kHC48 ? 3 : 0); ++i) {
+      cc[i + 1] = stdref::SvfCore<float>::coef(c.g, ks[i]);
+      mix[i + 1][0] = hp ? 1.0f : 0.0f;
+      mix[i + 1][1] = hp ? -ks[i] : 0.0f;
+      mix[i + 1][2] = hp ? -1.0f : 1.0f;
+    }
+  }
+  float tick(int type, float x) {
+    float y = sec[0].tick(x, cc[0], type != kHS && type != kHC12 && type != kHC48, mix[0][0], mix[0][1], mix[0][2]);
+    if (type == kLC48 || type == kHC48)
+      for (int i = 1; i < 4; ++i) y = sec[i].tick(y, cc[i], type == kLC48, mix[i][0], mix[i][1], mix[i][2]);
+    return y;
+  }
+};
+
+struct EqConf {
+  int mode = 0, hq = 1;
+  int type[2][8] = {{0, 2, 3, 3, 3, 3, 5, 7}, {0, 2, 3, 3, 3, 3, 5, 7}};
+  bool on[2][8] = {{false, true, true, true, true, true, true, false}, {false, true, true, true, true, true, true, false}};
+};
+struct EqParams {
+  EqBand band[2][8];
+  bool adaptive = false;
+  float scale = 1.0f, outGain = 1.0f;
+  EqParams() {
+    const float f[8] = {30, 100, 250, 1000, 2500, 5000, 10000, 18000};
+    for (int s = 0; s < 2; ++s)
+      for (int i = 0; i < 8; ++i) band[s][i].freq = f[i];
+  }
+};
+
+// One chain of eight bands over one channel (eq8_chain).
+struct EqChain {
+  EqBandState band[8];
+  HbUp<3, 3> up;
+  HbDown<3, 3> down;
+  float bandOut[8] = {};
+  void prepare(const EqConf& conf, int set, const EqParams& p, float sr) {
+    for (int i = 0; i < 8; ++i)
+      if (conf.on[set][i])
+        band[i].prepare(conf.type[set][i], eqCoef(conf.type[set][i], static_cast<float>(conf.hq), p.band[set][i], p.adaptive, p.scale, sr));
+  }
+  float tick(const EqConf& conf, int set, float x) {
+    if (conf.hq <= 1) {
+      for (int i = 0; i < 8; ++i) {
+        if (conf.on[set][i]) x = band[i].tick(conf.type[set][i], x);
+        bandOut[i] = x;
+      }
+      return x;
+    }
+    float s0, s1;
+    up.tick(x, kHb1P0, kHb1P1, s0, s1);
+    for (int i = 0; i < 8; ++i) {
+      if (conf.on[set][i]) {
+        s0 = band[i].tick(conf.type[set][i], s0);
+        s1 = band[i].tick(conf.type[set][i], s1);
+      }
+      bandOut[i] = s0;
+    }
+    return down.tick(s0, s1, kHb1P0, kHb1P1);
+  }
+};
+
+struct EqEight {
+  EqConf conf;
+  float sr = 48000.0f;
+  EqChain chain[2];  // stereo: A on L (0) and R (1); L/R, M/S: A (0), B (1)
+  float out[2] = {}, a[2] = {}, b = 0.0f, band[8][2] = {};
+  void prepare(const EqParams& p) {
+    chain[0].prepare(conf, 0, p, sr);
+    chain[1].prepare(conf, conf.mode == 0 ? 0 : 1, p, sr);
+  }
+  void process(float L, float R, float outGain) {
+    if (conf.mode == 0) {
+      a[0] = chain[0].tick(conf, 0, L);
+      a[1] = chain[1].tick(conf, 0, R);
+      b = 0.0f;
+      out[0] = a[0] * outGain;
+      out[1] = a[1] * outGain;
+      for (int i = 0; i < 8; ++i) band[i][0] = chain[0].bandOut[i], band[i][1] = chain[1].bandOut[i];
+      return;
+    }
+    const float xa = conf.mode == 2 ? 0.5f * (L + R) : L, xb = conf.mode == 2 ? 0.5f * (L - R) : R;
+    const float ca = chain[0].tick(conf, 0, xa), cb = chain[1].tick(conf, 1, xb);
+    a[0] = a[1] = ca;
+    b = cb;
+    if (conf.mode == 2) {
+      out[0] = (ca + cb) * outGain;
+      out[1] = (ca - cb) * outGain;
+    } else {
+      out[0] = ca * outGain;
+      out[1] = cb * outGain;
+    }
+    for (int i = 0; i < 8; ++i) band[i][0] = band[i][1] = chain[0].bandOut[i];
+  }
+  void tick(float L, float R, const EqParams& p) {
+    prepare(p);
+    process(L, R, p.outGain);
+  }
+};
+
 }  // namespace devref

@@ -1,0 +1,371 @@
+// EQ Eight (SPEC §8; Ableton Live's EQ Eight), DSP part (the panel and its spectrum are T4.6 / T4.10's view work):
+// eight bands of TPT state-variable filters (stdlib/filters/svf.pqp's core), every band freq / gain / Q a param
+// that may be modulated at audio rate (the SVF's states are the analog filter's, so fast cutoff, gain and Q
+// changes neither click nor blow up). QUESTIONS Q?-T4.10-a lists the choices Live does not document.
+//
+// Band types (`typeN`, a constant: a change recompiles, SPEC §7.5) in Live's order:
+//   0 Low Cut 48   eighth-order high-pass: four SVF sections with the Butterworth-8 dampings scaled by 1/(√2·q)
+//                  (q = 0.7071: Butterworth, −3 dB at freq; higher q: a resonant corner)
+//   1 Low Cut 12   SVF high-pass, Q = q            2 Low Shelf   RBJ / Cytomic low shelf (gain, q)
+//   3 Bell         RBJ peaking (gain, q)           4 Notch       SVF notch (q)
+//   5 High Shelf   RBJ / Cytomic high shelf        6 High Cut 12 SVF low-pass       7 High Cut 48 (as 0, low-pass)
+// Every type is one form, y = m0·x + m1·band + m2·low of one SVF core (g, k) (four in series for the 48s), with
+// (g, k, m0, m1, m2) per type (eq8_band). `onN` (constant) bypasses a band: off bands cost nothing.
+//
+// Gain staging: `scale` multiplies every band's gain in dB (gain^scale, so 0 % = flat, −100 % inverts the curve);
+// adaptive Q multiplies the Q of the gain types (bell, shelves) by 10^(|gain dB|/40) (×2.37 at ±15 dB), so the
+// bandwidth narrows as the boost or cut grows, as on analog EQs; `outGain` is the output gain.
+//
+// Modes (`mode`, constant): 0 Stereo (the A bands on both channels), 1 L/R (A on left, B on right), 2 M/S
+// (A on mid = (L + R)/2, B on side = (L − R)/2, then L = M + S, R = M − S). The B bands (…B1 … …B8) are read in L/R
+// and M/S only.
+//
+// HQ (`hq: 2`, constant) runs the bands at 2× the sample rate (stdlib/util/oversample.pqp's half-band, flat to
+// 20 kHz): bells and shelves near Nyquist keep their analog shape instead of the bilinear transform's cramping.
+//
+// Exports: `a`, `b` (each set's output), `band1` … `band8` (after each band of the A set; with HQ the first of the
+// two oversampled samples).
+//
+// Cost per band per channel: one SVF core (about ten multiply-adds) plus two or three multiply-adds per sample
+// (four cores for the 48s); coefficients once per block unless freq / gain / q are modulated.
+import "../filters/svf.pqp"
+import "../util/oversample.pqp"
+
+patch eq_eight {
+  in    x : audio stereo
+  in    mode : real const = 0     // 0 Stereo, 1 L/R, 2 M/S
+  in    hq   : real const = 1     // 1 or 2 (oversampling)
+  in    type1  : real const = 0
+  in    type2  : real const = 2
+  in    type3  : real const = 3
+  in    type4  : real const = 3
+  in    type5  : real const = 3
+  in    type6  : real const = 3
+  in    type7  : real const = 5
+  in    type8  : real const = 7
+  in    on1    : real const = 0
+  in    on2    : real const = 1
+  in    on3    : real const = 1
+  in    on4    : real const = 1
+  in    on5    : real const = 1
+  in    on6    : real const = 1
+  in    on7    : real const = 1
+  in    on8    : real const = 0
+  in    typeB1 : real const = 0
+  in    typeB2 : real const = 2
+  in    typeB3 : real const = 3
+  in    typeB4 : real const = 3
+  in    typeB5 : real const = 3
+  in    typeB6 : real const = 3
+  in    typeB7 : real const = 5
+  in    typeB8 : real const = 7
+  in    onB1   : real const = 0
+  in    onB2   : real const = 1
+  in    onB3   : real const = 1
+  in    onB4   : real const = 1
+  in    onB5   : real const = 1
+  in    onB6   : real const = 1
+  in    onB7   : real const = 1
+  in    onB8   : real const = 0
+  param freq1 = 30Hz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("1 Freq")
+  param gain1 = 0dB [-15dB..15dB] @unit(dB) @label("1 Gain")
+  param q1    = 0.7071 [0.1..18] @curve(exp) @label("1 Q")
+  param freq2 = 100Hz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("2 Freq")
+  param gain2 = 0dB [-15dB..15dB] @unit(dB) @label("2 Gain")
+  param q2    = 0.7071 [0.1..18] @curve(exp) @label("2 Q")
+  param freq3 = 250Hz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("3 Freq")
+  param gain3 = 0dB [-15dB..15dB] @unit(dB) @label("3 Gain")
+  param q3    = 0.7071 [0.1..18] @curve(exp) @label("3 Q")
+  param freq4 = 1kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("4 Freq")
+  param gain4 = 0dB [-15dB..15dB] @unit(dB) @label("4 Gain")
+  param q4    = 0.7071 [0.1..18] @curve(exp) @label("4 Q")
+  param freq5 = 2.5kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("5 Freq")
+  param gain5 = 0dB [-15dB..15dB] @unit(dB) @label("5 Gain")
+  param q5    = 0.7071 [0.1..18] @curve(exp) @label("5 Q")
+  param freq6 = 5kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("6 Freq")
+  param gain6 = 0dB [-15dB..15dB] @unit(dB) @label("6 Gain")
+  param q6    = 0.7071 [0.1..18] @curve(exp) @label("6 Q")
+  param freq7 = 10kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("7 Freq")
+  param gain7 = 0dB [-15dB..15dB] @unit(dB) @label("7 Gain")
+  param q7    = 0.7071 [0.1..18] @curve(exp) @label("7 Q")
+  param freq8 = 18kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("8 Freq")
+  param gain8 = 0dB [-15dB..15dB] @unit(dB) @label("8 Gain")
+  param q8    = 0.7071 [0.1..18] @curve(exp) @label("8 Q")
+  param freqB1 = 30Hz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("1 Freq B")
+  param gainB1 = 0dB [-15dB..15dB] @unit(dB) @label("1 Gain B")
+  param qB1    = 0.7071 [0.1..18] @curve(exp) @label("1 Q B")
+  param freqB2 = 100Hz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("2 Freq B")
+  param gainB2 = 0dB [-15dB..15dB] @unit(dB) @label("2 Gain B")
+  param qB2    = 0.7071 [0.1..18] @curve(exp) @label("2 Q B")
+  param freqB3 = 250Hz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("3 Freq B")
+  param gainB3 = 0dB [-15dB..15dB] @unit(dB) @label("3 Gain B")
+  param qB3    = 0.7071 [0.1..18] @curve(exp) @label("3 Q B")
+  param freqB4 = 1kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("4 Freq B")
+  param gainB4 = 0dB [-15dB..15dB] @unit(dB) @label("4 Gain B")
+  param qB4    = 0.7071 [0.1..18] @curve(exp) @label("4 Q B")
+  param freqB5 = 2.5kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("5 Freq B")
+  param gainB5 = 0dB [-15dB..15dB] @unit(dB) @label("5 Gain B")
+  param qB5    = 0.7071 [0.1..18] @curve(exp) @label("5 Q B")
+  param freqB6 = 5kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("6 Freq B")
+  param gainB6 = 0dB [-15dB..15dB] @unit(dB) @label("6 Gain B")
+  param qB6    = 0.7071 [0.1..18] @curve(exp) @label("6 Q B")
+  param freqB7 = 10kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("7 Freq B")
+  param gainB7 = 0dB [-15dB..15dB] @unit(dB) @label("7 Gain B")
+  param qB7    = 0.7071 [0.1..18] @curve(exp) @label("7 Q B")
+  param freqB8 = 18kHz [10Hz..22kHz] @unit(Hz) @curve(exp) @label("8 Freq B")
+  param gainB8 = 0dB [-15dB..15dB] @unit(dB) @label("8 Gain B")
+  param qB8    = 0.7071 [0.1..18] @curve(exp) @label("8 Q B")
+  param adaptive = false              @label("Adaptive Q")
+  param scale    = 100% [-200%..200%] @label("Scale")
+  param outGain  = 0dB [-12dB..12dB]  @unit(dB) @label("Output")
+  out   out : audio stereo
+
+  // Stereo: one chain over both channels. L/R and M/S: the A chain on L or M, the B chain on R or S.
+  st = eq8_chain(x, hq, type1, type2, type3, type4, type5, type6, type7, type8, on1, on2, on3, on4, on5, on6, on7, on8, freq1, freq2, freq3, freq4, freq5, freq6, freq7, freq8, gain1, gain2, gain3, gain4, gain5, gain6, gain7, gain8, q1, q2, q3, q4, q5, q6, q7, q8, adaptive, scale)
+  M  = 0.5 * (x[0] + x[1])
+  S  = 0.5 * (x[0] - x[1])
+  ca = eq8_chain(mode >= 1.5 ? M : x[0], hq, type1, type2, type3, type4, type5, type6, type7, type8, on1, on2, on3, on4, on5, on6, on7, on8, freq1, freq2, freq3, freq4, freq5, freq6, freq7, freq8, gain1, gain2, gain3, gain4, gain5, gain6, gain7, gain8, q1, q2, q3, q4, q5, q6, q7, q8, adaptive, scale)
+  cb = eq8_chain(mode >= 1.5 ? S : x[1], hq, typeB1, typeB2, typeB3, typeB4, typeB5, typeB6, typeB7, typeB8, onB1, onB2, onB3, onB4, onB5, onB6, onB7, onB8, freqB1, freqB2, freqB3, freqB4, freqB5, freqB6, freqB7, freqB8, gainB1, gainB2, gainB3, gainB4, gainB5, gainB6, gainB7, gainB8, qB1, qB2, qB3, qB4, qB5, qB6, qB7, qB8, adaptive, scale)
+  lr = mode >= 1.5 ? (ca + cb, ca - cb) : (ca, cb)
+  out = (mode >= 0.5 ? lr : st) * outGain
+
+  export a = mode >= 0.5 ? ca : st
+  export b = mode >= 0.5 ? cb : 0
+  export band1 = mode >= 0.5 ? ca.band1 : st.band1
+  export band2 = mode >= 0.5 ? ca.band2 : st.band2
+  export band3 = mode >= 0.5 ? ca.band3 : st.band3
+  export band4 = mode >= 0.5 ? ca.band4 : st.band4
+  export band5 = mode >= 0.5 ? ca.band5 : st.band5
+  export band6 = mode >= 0.5 ? ca.band6 : st.band6
+  export band7 = mode >= 0.5 ? ca.band7 : st.band7
+  export band8 = mode >= 0.5 ? ca.band8 : st.band8
+}
+
+// Eight bands in series, at 1× or (hq 2) at 2× between os_up2 and os_down2.
+patch eq8_chain {
+  in    x  : audio
+  in    hq : real const = 1
+  in    t1 : real const = 0
+  in    t2 : real const = 2
+  in    t3 : real const = 3
+  in    t4 : real const = 3
+  in    t5 : real const = 3
+  in    t6 : real const = 3
+  in    t7 : real const = 5
+  in    t8 : real const = 7
+  in    o1 : real const = 0
+  in    o2 : real const = 1
+  in    o3 : real const = 1
+  in    o4 : real const = 1
+  in    o5 : real const = 1
+  in    o6 : real const = 1
+  in    o7 : real const = 1
+  in    o8 : real const = 0
+  param f1 = 30Hz [10Hz..22kHz] @unit(Hz)
+  param f2 = 100Hz [10Hz..22kHz] @unit(Hz)
+  param f3 = 250Hz [10Hz..22kHz] @unit(Hz)
+  param f4 = 1kHz [10Hz..22kHz] @unit(Hz)
+  param f5 = 2.5kHz [10Hz..22kHz] @unit(Hz)
+  param f6 = 5kHz [10Hz..22kHz] @unit(Hz)
+  param f7 = 10kHz [10Hz..22kHz] @unit(Hz)
+  param f8 = 18kHz [10Hz..22kHz] @unit(Hz)
+  param g1 = 0dB [-15dB..15dB] @unit(dB)
+  param g2 = 0dB [-15dB..15dB] @unit(dB)
+  param g3 = 0dB [-15dB..15dB] @unit(dB)
+  param g4 = 0dB [-15dB..15dB] @unit(dB)
+  param g5 = 0dB [-15dB..15dB] @unit(dB)
+  param g6 = 0dB [-15dB..15dB] @unit(dB)
+  param g7 = 0dB [-15dB..15dB] @unit(dB)
+  param g8 = 0dB [-15dB..15dB] @unit(dB)
+  param q1 = 0.7071 [0.1..18]
+  param q2 = 0.7071 [0.1..18]
+  param q3 = 0.7071 [0.1..18]
+  param q4 = 0.7071 [0.1..18]
+  param q5 = 0.7071 [0.1..18]
+  param q6 = 0.7071 [0.1..18]
+  param q7 = 0.7071 [0.1..18]
+  param q8 = 0.7071 [0.1..18]
+  param adaptive = false
+  param scale    = 100% [-200%..200%]
+  out   y : audio
+
+  // 1×
+  b1 = eq8_band(x, t1, o1, 1, f1, g1, q1, adaptive, scale)
+  b2 = eq8_band(b1, t2, o2, 1, f2, g2, q2, adaptive, scale)
+  b3 = eq8_band(b2, t3, o3, 1, f3, g3, q3, adaptive, scale)
+  b4 = eq8_band(b3, t4, o4, 1, f4, g4, q4, adaptive, scale)
+  b5 = eq8_band(b4, t5, o5, 1, f5, g5, q5, adaptive, scale)
+  b6 = eq8_band(b5, t6, o6, 1, f6, g6, q6, adaptive, scale)
+  b7 = eq8_band(b6, t7, o7, 1, f7, g7, q7, adaptive, scale)
+  b8 = eq8_band(b7, t8, o8, 1, f8, g8, q8, adaptive, scale)
+
+  // 2×
+  u  = os_up2(x)
+  c1 = eq8_band2(u.s0, u.s1, t1, o1, f1, g1, q1, adaptive, scale)
+  c2 = eq8_band2(c1.y0, c1.y1, t2, o2, f2, g2, q2, adaptive, scale)
+  c3 = eq8_band2(c2.y0, c2.y1, t3, o3, f3, g3, q3, adaptive, scale)
+  c4 = eq8_band2(c3.y0, c3.y1, t4, o4, f4, g4, q4, adaptive, scale)
+  c5 = eq8_band2(c4.y0, c4.y1, t5, o5, f5, g5, q5, adaptive, scale)
+  c6 = eq8_band2(c5.y0, c5.y1, t6, o6, f6, g6, q6, adaptive, scale)
+  c7 = eq8_band2(c6.y0, c6.y1, t7, o7, f7, g7, q7, adaptive, scale)
+  c8 = eq8_band2(c7.y0, c7.y1, t8, o8, f8, g8, q8, adaptive, scale)
+  y2 = os_down2(c8.y0, c8.y1)
+
+  y = hq >= 1.5 ? y2 : b8
+  export band1 = hq >= 1.5 ? c1.y0 : b1
+  export band2 = hq >= 1.5 ? c2.y0 : b2
+  export band3 = hq >= 1.5 ? c3.y0 : b3
+  export band4 = hq >= 1.5 ? c4.y0 : b4
+  export band5 = hq >= 1.5 ? c5.y0 : b5
+  export band6 = hq >= 1.5 ? c6.y0 : b6
+  export band7 = hq >= 1.5 ? c7.y0 : b7
+  export band8 = hq >= 1.5 ? c8.y0 : b8
+}
+
+// One band's coefficients: the SVF core (g, k) of its first section and the mix y = m0·x + m1·band + m2·low, plus
+// the dampings of sections 2–4 (the 48 dB types). `os`: the band runs at os·sr.
+patch eq8_coef {
+  in    type : real const = 3
+  in    os   : real const = 1
+  param freq = 1kHz   [10Hz..22kHz] @unit(Hz)
+  param gain = 0dB    [-15dB..15dB] @unit(dB)
+  param q    = 0.7071 [0.1..18]
+  param adaptive = false
+  param scale    = 100% [-200%..200%]
+  out   g  : audio
+  out   k  : audio
+  out   m0 : audio
+  out   m1 : audio
+  out   m2 : audio
+  out   k2 : audio
+  out   k3 : audio
+  out   k4 : audio
+
+  ge = pow(gain, scale)                                // gain^scale = the scaled dB, linear
+  A  = sqrt(ge)                                        // 10^(dB/40)
+  qe = adaptive ? q * sqrt(max(ge, 1 / ge)) : q        // adaptive Q: × 10^(|dB|/40)
+  w  = tan(3.141592653589793 * clip(freq, 0, 0.49 * sr) / (os * sr))
+  kc = 1 / max(q, 0.01)
+  kb = 1 / max(qe, 0.01)
+  sA = sqrt(A)
+  //          LC48               LC12  LS        Bell                Notch HS                  HC12 HC48
+  g  = mux(type, w,              w,    w / sA,   w,                  w,    w * sA,             w,   w)
+  k  = mux(type, 1.3870398453221475 * kc, kc, kb, kb / A,           kc,   kb,                 kc,  1.3870398453221475 * kc)
+  m0 = mux(type, 1,              1,    1,        1,                  1,    ge,                 0,   0)
+  m1 = mux(type, -1.3870398453221475 * kc, -kc, kb * (A - 1), kb / A * (ge - 1), -kc, kb * (1 - A) * A, 0, 0)
+  m2 = mux(type, -1,             -1,   ge - 1,   0,                  0,    1 - ge,             1,   1)
+  // Butterworth-8 dampings 2·cos((2i − 1)π/16) scaled by 1/(√2·q): sections 2–4 (section 1 above)
+  k2 = 1.1758756024193588 * kc
+  k3 = 0.7856949583871023 * kc
+  k4 = 0.2758993792829431 * kc
+}
+
+// One section: y = m0·x + m1·band + m2·low of an SVF core.
+patch eq8_sec {
+  in    x  : audio
+  param g  = 0.0655 [0..100]
+  param k  = 1.4142 [0..100]
+  param m0 = 1
+  param m1 = 0
+  param m2 = 0
+  out   y : audio
+
+  f = svf_core(x, g: g, k: k)
+  y = m0 * x + m1 * f.band + m2 * f.low
+}
+
+// A band at the base rate.
+patch eq8_band {
+  in    x    : audio
+  in    type : real const = 3
+  in    on   : real const = 1
+  in    os   : real const = 1
+  param freq = 1kHz   [10Hz..22kHz] @unit(Hz)
+  param gain = 0dB    [-15dB..15dB] @unit(dB)
+  param q    = 0.7071 [0.1..18]
+  param adaptive = false
+  param scale    = 100% [-200%..200%]
+  out   y : audio
+
+  c   = eq8_coef(type, os, freq, gain, q, adaptive, scale)
+  s1  = eq8_sec(x, c.g, c.k, c.m0, c.m1, c.m2)
+  // 48 dB: three more sections of the same kind (high-pass: 1, −k, −1; low-pass: 0, 0, 1)
+  hp  = type < 0.5
+  s2  = eq8_sec(s1, c.g, c.k2, hp ? 1 : 0, hp ? -c.k2 : 0, hp ? -1 : 1)
+  s3  = eq8_sec(s2, c.g, c.k3, hp ? 1 : 0, hp ? -c.k3 : 0, hp ? -1 : 1)
+  s4  = eq8_sec(s3, c.g, c.k4, hp ? 1 : 0, hp ? -c.k4 : 0, hp ? -1 : 1)
+  cut48 = type < 0.5 || type > 6.5
+  y   = on < 0.5 ? x : cut48 ? s4 : s1
+}
+
+// The SVF core over two consecutive samples per tick (the 2× rate): svf_core's update twice, s0 first.
+patch eq8_svf2 {
+  in    s0 : audio
+  in    s1 : audio
+  param g = 0.0655 [0..100]
+  param k = 1.4142 [0..100]
+  out   band0 : audio
+  out   low0  : audio
+  out   band1 : audio
+  out   low1  : audio
+
+  a1 = 1 / (1 + g * (g + k))
+  d1 = -2 * g * (g + k) * a1
+  b1 = 2 * g * a1
+  b2 = b1 * g
+
+  p1 = z1(n1)                 // integrator states after the second sample
+  p2 = z1(n2)
+  u  = s0 - p2
+  q1 = b1 * u + (d1 * p1 + p1)
+  q2 = b2 * u + (b1 * p1 + p2)
+  v  = s1 - q2
+  n1 = b1 * v + (d1 * q1 + q1)
+  n2 = b2 * v + (b1 * q1 + q2)
+
+  band0 = 0.5 * (p1 + q1)
+  low0  = 0.5 * (p2 + q2)
+  band1 = 0.5 * (q1 + n1)
+  low1  = 0.5 * (q2 + n2)
+}
+
+patch eq8_sec2 {
+  in    x0 : audio
+  in    x1 : audio
+  param g  = 0.0655 [0..100]
+  param k  = 1.4142 [0..100]
+  param m0 = 1
+  param m1 = 0
+  param m2 = 0
+  out   y0 : audio
+  out   y1 : audio
+
+  f  = eq8_svf2(x0, x1, g: g, k: k)
+  y0 = m0 * x0 + m1 * f.band0 + m2 * f.low0
+  y1 = m0 * x1 + m1 * f.band1 + m2 * f.low1
+}
+
+// A band at 2× (two samples per tick).
+patch eq8_band2 {
+  in    x0   : audio
+  in    x1   : audio
+  in    type : real const = 3
+  in    on   : real const = 1
+  param freq = 1kHz   [10Hz..22kHz] @unit(Hz)
+  param gain = 0dB    [-15dB..15dB] @unit(dB)
+  param q    = 0.7071 [0.1..18]
+  param adaptive = false
+  param scale    = 100% [-200%..200%]
+  out   y0 : audio
+  out   y1 : audio
+
+  c   = eq8_coef(type, 2, freq, gain, q, adaptive, scale)
+  s1  = eq8_sec2(x0, x1, c.g, c.k, c.m0, c.m1, c.m2)
+  hp  = type < 0.5
+  s2  = eq8_sec2(s1.y0, s1.y1, c.g, c.k2, hp ? 1 : 0, hp ? -c.k2 : 0, hp ? -1 : 1)
+  s3  = eq8_sec2(s2.y0, s2.y1, c.g, c.k3, hp ? 1 : 0, hp ? -c.k3 : 0, hp ? -1 : 1)
+  s4  = eq8_sec2(s3.y0, s3.y1, c.g, c.k4, hp ? 1 : 0, hp ? -c.k4 : 0, hp ? -1 : 1)
+  cut48 = type < 0.5 || type > 6.5
+  y0  = on < 0.5 ? x0 : cut48 ? s4.y0 : s1.y0
+  y1  = on < 0.5 ? x1 : cut48 ? s4.y1 : s1.y1
+}

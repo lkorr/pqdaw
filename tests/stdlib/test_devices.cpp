@@ -635,3 +635,464 @@ TEST_CASE("Saturator: dry/wet 0 is the input exactly; waveshaper drive 0 is the 
   const Outputs q = runBoth(ws, st, "ws bypass");
   for (uint32_t t = 0; t < st.frames; ++t) CHECK(q.at("y")[0][t] == static_cast<float>(stereoSignal(0, t)));
 }
+
+// ================================================================================================================
+// EQ Eight
+// ================================================================================================================
+namespace {
+
+// Audio-rate modulators: a cutoff sweeping ~60 Hz … 20 kHz (3 Hz) with a 700 Hz wobble, a gain ±15 dB (5 Hz),
+// a Q 0.1 … 18 (11 Hz).
+double eqModFreq(uint64_t t) {
+  const double s = static_cast<double>(t) / kSr;
+  return 1000.0 * std::exp2(4.2 * std::sin(2.0 * kPi * 3.0 * s)) * (1.0 + 0.5 * std::sin(2.0 * kPi * 700.0 * s));
+}
+double eqModGain(uint64_t t) { return std::pow(10.0, 15.0 * std::sin(2.0 * kPi * 5.0 * static_cast<double>(t) / kSr) / 20.0); }
+double eqModQ(uint64_t t) { return 0.1 * std::pow(180.0, 0.5 + 0.5 * std::sin(2.0 * kPi * 11.0 * static_cast<double>(t) / kSr)); }
+
+// mods: "" (none); "some": A band 3 freq, band 4 gain, band 5 q; "all": every A band's freq (m1 · (0.25 … 2)),
+// gain (m2 on odd bands, 1/m2 on even ones, so the cascade's gain stays within ±15 dB-ish) and q (0.1 + 0.3·m3:
+// 0.13 … 5.5); "full": as "all" with q = m3 itself (0.1 … 18; for the stability test).
+Program eqProgram(const devref::EqConf& c, const std::string& mods = "") {
+  std::string args = "mode: " + std::to_string(c.mode) + ", hq: " + std::to_string(c.hq);
+  for (int s = 0; s < 2; ++s)
+    for (int i = 0; i < 8; ++i) {
+      const std::string n = (s ? "B" : "") + std::to_string(i + 1);
+      args += ", type" + n + ": " + std::to_string(c.type[s][i]) + ", on" + n + ": " + (c.on[s][i] ? "1" : "0");
+    }
+  if (mods == "some") args += ", freq3: m1, gain4: m2, q5: m3";
+  if (mods == "all" || mods == "full")
+    for (int i = 0; i < 8; ++i) {
+      const std::string n = std::to_string(i + 1), f = std::to_string(0.25 + 0.25 * i);
+      args += ", freq" + n + ": m1 * " + f + ", gain" + n + (i % 2 ? ": 1 / m2" : ": m2") +
+              (mods == "full" ? ", q" + n + ": m3" : ", q" + n + ": 0.1 + m3 * 0.3");
+    }
+  std::string t = R"(import "devices/eq_eight.pqp"
+patch T {
+  in  x : audio stereo
+  in  m1 : audio
+  in  m2 : audio
+  in  m3 : audio
+  out y : audio stereo
+  out a : audio
+  out b : audio
+  out band1 : audio
+  out band2 : audio
+  out band3 : audio
+  out band4 : audio
+  out band5 : audio
+  out band6 : audio
+  out band7 : audio
+  out band8 : audio
+  e = eq_eight(x, %ARGS)
+  y = e
+  a = e.a
+  b = e.b
+  band1 = e.band1
+  band2 = e.band2
+  band3 = e.band3
+  band4 = e.band4
+  band5 = e.band5
+  band6 = e.band6
+  band7 = e.band7
+  band8 = e.band8
+})";
+  return compile(replaceAll(t, "%ARGS", args));
+}
+
+double modFactor(int i) { return 0.25 + 0.25 * i; }
+
+void setEqParams(Stimulus& st, const devref::EqParams& p, const std::string& mods = "") {
+  for (int s = 0; s < 2; ++s)
+    for (int i = 0; i < 8; ++i) {
+      const std::string n = (s ? "B" : "") + std::to_string(i + 1);
+      const bool all = s == 0 && (mods == "all" || mods == "full"), some = mods == "some" && s == 0;
+      if (!all && !(some && i == 2)) st.params["e__freq" + n] = p.band[s][i].freq;
+      if (!all && !(some && i == 3)) st.params["e__gain" + n] = p.band[s][i].gain;
+      if (!all && !(some && i == 4)) st.params["e__q" + n] = p.band[s][i].q;
+    }
+  st.params["e__adaptive"] = p.adaptive;
+  st.params["e__scale"] = p.scale;
+  st.params["e__outGain"] = p.outGain;
+}
+
+// The reference's params at sample t with the modulators applied.
+devref::EqParams modulated(devref::EqParams p, const std::string& mods, uint64_t t) {
+  if (mods == "some") {
+    p.band[0][2].freq = static_cast<float>(eqModFreq(t));
+    p.band[0][3].gain = static_cast<float>(eqModGain(t));
+    p.band[0][4].q = static_cast<float>(eqModQ(t));
+  } else if (mods == "all" || mods == "full") {
+    for (int i = 0; i < 8; ++i) {
+      // The wrapper's expressions, in float32 as the patch computes them.
+      const float m2 = static_cast<float>(eqModGain(t)), m3 = static_cast<float>(eqModQ(t));
+      p.band[0][i].freq = static_cast<float>(eqModFreq(t)) * static_cast<float>(modFactor(i));
+      p.band[0][i].gain = i % 2 ? 1.0f / m2 : m2;
+      p.band[0][i].q = mods == "full" ? m3 : devref::fma_(m3, 0.3f, 0.1f);
+    }
+  }
+  return p;
+}
+
+Stimulus eqStimulus(uint32_t frames, uint32_t block, const std::function<double(uint32_t, uint64_t)>& x) {
+  Stimulus st;
+  st.frames = frames;
+  st.block = block;
+  st.inputCh = [x](uint32_t ord, uint32_t ch, uint32_t, uint64_t t) {
+    switch (ord) {
+      case 0: return x(ch, t);
+      case 1: return eqModFreq(t);
+      case 2: return eqModGain(t);
+      default: return eqModQ(t);
+    }
+  };
+  st.input = [](uint32_t, uint32_t, uint64_t) { return 0.0; };
+  return st;
+}
+
+void checkEq(const devref::EqConf& conf, const devref::EqParams& p, const std::string& mods, uint32_t block, const std::string& label,
+             double tol = 1e-5) {
+  const Program prog = eqProgram(conf, mods);
+  Stimulus st = eqStimulus(kFrames, block, [](uint32_t ch, uint64_t t) { return stereoSignal(ch, t, 0.5); });
+  setEqParams(st, p, mods);
+  const Outputs o = runBoth(prog, st, label);
+  devref::EqEight ref;
+  ref.conf = conf;
+  std::map<std::string, std::vector<double>> r;
+  for (uint64_t t = 0; t < st.frames; ++t) {
+    const devref::EqParams q = modulated(p, mods, t);
+    ref.tick(static_cast<float>(stereoSignal(0, t, 0.5)), static_cast<float>(stereoSignal(1, t, 0.5)), q);
+    r["y"].push_back(ref.out[0]);
+    r["y[1]"].push_back(ref.out[1]);
+    r["a"].push_back(ref.a[0]);
+    if (conf.mode == 0) r["a[1]"].push_back(ref.a[1]);
+    r["b"].push_back(ref.b);
+    for (int i = 0; i < 8; ++i) {
+      r["band" + std::to_string(i + 1)].push_back(ref.band[i][0]);
+      if (conf.mode == 0) r["band" + std::to_string(i + 1) + "[1]"].push_back(ref.band[i][1]);
+    }
+  }
+  Check c;
+  for (const auto& [name, v] : r) c.add(name, o.at(name)[0], v);
+  CHECK_MESSAGE(c.worst <= tol, label << ": max error " << c.worst << " (" << c.where << ")");
+}
+
+// Every type once in the A set (and a different arrangement in B), non-default params.
+devref::EqConf allTypes(int mode, int hq) {
+  devref::EqConf c;
+  c.mode = mode;
+  c.hq = hq;
+  const int a[8] = {0, 2, 3, 4, 3, 5, 6, 7}, b[8] = {1, 3, 3, 2, 5, 4, 7, 6};
+  for (int i = 0; i < 8; ++i) {
+    c.type[0][i] = a[i];
+    c.type[1][i] = b[i];
+    c.on[0][i] = c.on[1][i] = true;
+  }
+  c.on[1][5] = false;
+  return c;
+}
+devref::EqParams someParams() {
+  devref::EqParams p;
+  const float f[8] = {40, 120, 400, 1500, 3000, 6000, 11000, 16000};
+  const float g[8] = {1, 2.5f, 0.3f, 1, 4.0f, 0.6f, 1, 1};
+  const float q[8] = {0.7071f, 1.2f, 2.5f, 6.0f, 0.5f, 0.9f, 3.0f, 1.4f};
+  for (int s = 0; s < 2; ++s)
+    for (int i = 0; i < 8; ++i) {
+      p.band[s][i].freq = f[i] * (s ? 0.8f : 1.0f);
+      p.band[s][i].gain = s ? 1.0f / g[i] : g[i];
+      p.band[s][i].q = q[i];
+    }
+  p.outGain = 0.7f;
+  return p;
+}
+
+// Analytic response of one band (the bilinear design: the analog prototype at s = j·tan(πf/sr)/tan(πfc/sr)).
+std::complex<double> eqAnalytic(int type, double f, const devref::EqBand& b, bool adaptive, double scale, double srEff) {
+  const auto s = sOf(f, b.freq, srEff);
+  const double ge = std::pow(static_cast<double>(b.gain), scale), A = std::sqrt(ge);
+  const double qe = adaptive ? b.q * std::sqrt(std::max(ge, 1.0 / ge)) : b.q;
+  const double k = 1.0 / b.q, kb = 1.0 / qe, sA = std::sqrt(A);
+  const std::complex<double> s2 = s * s;
+  auto sec = [&](double kk, bool hp) { return (hp ? s2 : std::complex<double>(1.0)) / (s2 + kk * s + 1.0); };
+  const double f48[4] = {1.3870398453221475, 1.1758756024193588, 0.7856949583871023, 0.2758993792829431};
+  switch (type) {
+    case 0:
+    case 7: {
+      std::complex<double> h = 1.0;
+      for (double fi : f48) h *= sec(fi * k, type == 0);
+      return h;
+    }
+    case 1: return sec(k, true);
+    case 2: return A * (s2 + sA * kb * s + A) / (A * s2 + sA * kb * s + 1.0);
+    case 3: return (s2 + kb * A * s + 1.0) / (s2 + kb / A * s + 1.0);
+    case 4: return (s2 + 1.0) / (s2 + k * s + 1.0);
+    case 5: return A * (A * s2 + sA * kb * s + 1.0) / (s2 + sA * kb * s + A);
+    default: return sec(k, false);
+  }
+}
+
+}  // namespace
+
+static void eqVsReference(bool full) {
+  for (const int mode : {0, 1, 2})
+    for (const int hq : {1, 2}) {
+      if (!full && (mode + hq) % 2 == 0) continue;  // default tier: stereo 1×, L/R 2×, M/S 1×
+      const devref::EqConf c = allTypes(mode, hq);
+      devref::EqParams p = someParams();
+      if (mode == 2) {
+        p.adaptive = true;
+        p.scale = 1.5f;
+      }
+      checkEq(c, p, "", hq == 2 ? 37 : 64, "eq mode " + std::to_string(mode) + " hq " + std::to_string(hq));
+    }
+  // The default device (bands 2–7 on, flat).
+  checkEq(devref::EqConf{}, devref::EqParams{}, "", 64, "eq defaults");
+}
+
+TEST_CASE("EQ Eight: every type, mode and HQ vs the C++ reference, interpreter == JIT") { eqVsReference(false); }
+TEST_CASE("EQ Eight: every mode at 1x and 2x vs the C++ reference" * doctest::test_suite("slow")) { eqVsReference(true); }
+
+TEST_CASE("EQ Eight: audio-rate freq / gain / Q modulation vs the C++ reference") {
+  for (const int hq : {1, 2}) {
+    devref::EqParams p = someParams();
+    p.adaptive = hq == 2;
+    checkEq(allTypes(0, hq), p, "some", 64, "eq modulated some hq " + std::to_string(hq));
+    checkEq(allTypes(1, hq), p, "all", 37, "eq modulated all hq " + std::to_string(hq));
+  }
+}
+
+static void eqMagnitudes(bool full) {
+  struct Cfg {
+    int type;
+    float freq, gainDb, q;
+    bool adaptive;
+    float scale;
+  };
+  const Cfg cfgs[] = {
+      {0, 30, 0, 0.7071f, false, 1}, {0, 1000, 0, 3, false, 1},     {0, 12000, 0, 0.5f, false, 1},
+      {1, 100, 0, 0.7071f, false, 1}, {1, 5000, 0, 4, false, 1},
+      {2, 100, 12, 0.7071f, false, 1}, {2, 2000, -9, 1.5f, true, 1}, {2, 400, 6, 1, false, 1.5f},
+      {3, 1000, 15, 1, false, 1},     {3, 60, -12, 4, false, 1},    {3, 12000, 6, 0.3f, false, 1}, {3, 18000, -15, 8, false, 1},
+      {3, 3000, 10, 2, true, 1},      {3, 700, 8, 1.5f, true, -0.5f},
+      {4, 1000, 0, 2, false, 1},      {4, 300, 0, 10, false, 1},
+      {5, 8000, 9, 0.7071f, false, 1}, {5, 500, -6, 2, true, 1.2f},
+      {6, 8000, 0, 0.7071f, false, 1}, {6, 200, 0, 6, false, 1},
+      {7, 2000, 0, 0.7071f, false, 1}, {7, 15000, 0, 1.5f, false, 1},
+  };
+  constexpr uint32_t kLen = 32768;
+  int lastType[3] = {-1, -1, -1};
+  for (const int hq : {1, 2})
+    for (const Cfg& cf : cfgs) {
+      if (!full && lastType[hq] == cf.type) continue;  // default tier: the first setting of each type
+      lastType[hq] = cf.type;
+      devref::EqConf c;
+      c.hq = hq;
+      for (int i = 0; i < 8; ++i) c.on[0][i] = c.on[1][i] = false;
+      c.type[0][3] = cf.type;
+      c.on[0][3] = true;
+      devref::EqParams p;
+      p.band[0][3] = {cf.freq, static_cast<float>(std::pow(10.0, cf.gainDb / 20.0)), cf.q};
+      p.adaptive = cf.adaptive;
+      p.scale = cf.scale;
+      const Program prog = eqProgram(c);
+      Stimulus st = eqStimulus(kLen, 64, [](uint32_t, uint64_t t) { return t == 0 ? 1.0 : 0.0; });
+      setEqParams(st, p);
+      const Outputs o = run(prog, hq == 2 ? Backend::Jit : Backend::Interp, st);
+      REQUIRE_MESSAGE(o.error.empty(), o.error);
+      double worst = 0.0, at = 0.0;
+      for (const double f : logFreqs(20.0, 20000.0, 41)) {
+        const double want = db(eqAnalytic(cf.type, f, p.band[0][3], cf.adaptive, cf.scale, kSr * hq));
+        if (want < -60.0) continue;  // below: float32 noise of the impulse response
+        const double e = std::fabs(magDb(o.at("y")[0], 0, f) - want);
+        if (e > worst) {
+          worst = e;
+          at = f;
+        }
+      }
+      CHECK_MESSAGE(worst < 0.1, "type " << cf.type << " freq " << cf.freq << " gain " << cf.gainDb << " q " << cf.q << " hq " << hq
+                                         << ": max deviation " << worst << " dB at " << at << " Hz");
+    }
+}
+
+TEST_CASE("EQ Eight: magnitude responses vs the analytic responses within 0.1 dB") { eqMagnitudes(false); }
+TEST_CASE("EQ Eight: magnitude responses of 22 settings x 1x / 2x within 0.1 dB" * doctest::test_suite("slow")) { eqMagnitudes(true); }
+
+TEST_CASE("EQ Eight: HQ keeps high bells closer to the analog shape") {
+  // A +12 dB bell at 16 kHz, q 1: at 1× the bilinear transform squeezes it towards Nyquist; at 2× it is much closer
+  // to the analog bell (unwarped: s = j·f/fc).
+  constexpr uint32_t kLen = 16384;
+  double dev[3] = {};
+  for (const int hq : {1, 2}) {
+    devref::EqConf c;
+    c.hq = hq;
+    for (int i = 0; i < 8; ++i) c.on[0][i] = false;
+    c.on[0][3] = true;
+    devref::EqParams p;
+    p.band[0][3] = {16000.0f, 3.981071705534973f, 1.0f};
+    const Program prog = eqProgram(c);
+    Stimulus st = eqStimulus(kLen, 64, [](uint32_t, uint64_t t) { return t == 0 ? 1.0 : 0.0; });
+    setEqParams(st, p);
+    const Outputs o = run(prog, Backend::Jit, st);
+    REQUIRE(o.error.empty());
+    for (const double f : logFreqs(2000.0, 20000.0, 31)) {
+      const std::complex<double> s(0.0, f / 16000.0);
+      const double A = std::sqrt(3.981071705534973);
+      const double want = db((s * s + A * s + 1.0) / (s * s + s / A + 1.0));
+      dev[hq] = std::max(dev[hq], std::fabs(magDb(o.at("y")[0], 0, f) - want));
+    }
+  }
+  MESSAGE("bell 16 kHz +12 dB: max deviation from the analog bell 2–20 kHz: 1x " << dev[1] << " dB, 2x " << dev[2] << " dB");
+  CHECK(dev[2] < 0.5 * dev[1]);
+}
+
+namespace {
+
+double lowTones(uint64_t t) {
+  const double s = static_cast<double>(t) / kSr;
+  return 0.3 * (std::sin(2.0 * kPi * 110.0 * s) + std::sin(2.0 * kPi * 440.0 * s + 1.0) + std::sin(2.0 * kPi * 1300.0 * s + 2.0));
+}
+
+// The 10 ms-window RMS maximum of a signal from sample `from` on.
+template <class T>
+double maxRms(const std::vector<T>& y, size_t from = 0) {
+  double acc = 0.0, best = 0.0;
+  for (size_t t = from; t < y.size(); ++t) {
+    acc += static_cast<double>(y[t]) * y[t];
+    if ((t - from) % 480 == 479) {
+      best = std::max(best, std::sqrt(acc / 480.0));
+      acc = 0.0;
+    }
+  }
+  return best;
+}
+
+// The modulated ANALOG filter of one band, integrated in double (RK4, 16 steps per sample; coefficients and input
+// interpolated linearly between samples): each SVF section is bp' = ω(x − k·bp − lp), lp' = ω·bp with
+// ω = 2·os·sr·g (g the band's prewarped integrator gain, so ω is the analog frequency the bilinear design maps to),
+// output m0·x + m1·bp + m2·lp, the eq8_coef coefficients of each sample.
+std::vector<double> analogBand(int type, int os, const std::vector<devref::EqBand>& bands, bool adaptive, double scale,
+                               const std::vector<double>& x) {
+  const size_t n = x.size();
+  const int nsec = type == 0 || type == 7 ? 4 : 1;
+  struct Sec {
+    double g, k, m0, m1, m2;
+  };
+  std::vector<std::array<Sec, 4>> cs(n);
+  for (size_t t = 0; t < n; ++t) {
+    const devref::EqCoef c = devref::eqCoef(type, static_cast<float>(os), bands[t], adaptive, static_cast<float>(scale), kSr);
+    const bool hp = type == 0;
+    cs[t][0] = {c.g, c.k, c.m0, c.m1, c.m2};
+    const double ks[3] = {c.k2, c.k3, c.k4};
+    for (int i = 0; i < 3; ++i) cs[t][i + 1] = {c.g, ks[i], hp ? 1.0 : 0.0, hp ? -ks[i] : 0.0, hp ? -1.0 : 1.0};
+  }
+  constexpr int kSteps = 16;
+  const double dt = 1.0 / (kSr * kSteps), wScale = 2.0 * os * kSr;
+  double st[4][2] = {};  // (bp, lp) per section
+  std::vector<double> out(n, 0.0);
+  // Derivatives of the cascade at fractional position u ∈ [0, 1] of sample interval t.
+  auto deriv = [&](size_t t, double u, const double (&s)[4][2], double (&d)[4][2]) {
+    const size_t t1 = std::min(t + 1, n - 1);
+    double in = x[t] + u * (x[t1] - x[t]);
+    for (int i = 0; i < nsec; ++i) {
+      const Sec& a = cs[t][i];
+      const Sec& b = cs[t1][i];
+      const double g = a.g + u * (b.g - a.g), k = a.k + u * (b.k - a.k);
+      const double w = wScale * g;
+      d[i][0] = w * (in - k * s[i][0] - s[i][1]);
+      d[i][1] = w * s[i][0];
+      const double m0 = a.m0 + u * (b.m0 - a.m0), m1 = a.m1 + u * (b.m1 - a.m1), m2 = a.m2 + u * (b.m2 - a.m2);
+      in = m0 * in + m1 * s[i][0] + m2 * s[i][1];
+    }
+  };
+  auto output = [&](size_t t) {
+    double in = x[t];
+    for (int i = 0; i < nsec; ++i) in = cs[t][i].m0 * in + cs[t][i].m1 * st[i][0] + cs[t][i].m2 * st[i][1];
+    return in;
+  };
+  for (size_t t = 0; t < n; ++t) {
+    out[t] = output(t);
+    for (int step = 0; step < kSteps; ++step) {
+      const double u = static_cast<double>(step) / kSteps, h = 1.0 / kSteps;
+      double k1[4][2], k2[4][2], k3[4][2], k4[4][2], tmp[4][2];
+      deriv(t, u, st, k1);
+      for (int i = 0; i < 4; ++i) for (int j = 0; j < 2; ++j) tmp[i][j] = st[i][j] + 0.5 * dt * k1[i][j];
+      deriv(t, u + 0.5 * h, tmp, k2);
+      for (int i = 0; i < 4; ++i) for (int j = 0; j < 2; ++j) tmp[i][j] = st[i][j] + 0.5 * dt * k2[i][j];
+      deriv(t, u + 0.5 * h, tmp, k3);
+      for (int i = 0; i < 4; ++i) for (int j = 0; j < 2; ++j) tmp[i][j] = st[i][j] + dt * k3[i][j];
+      deriv(t, u + h, tmp, k4);
+      for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 2; ++j) st[i][j] += dt / 6.0 * (k1[i][j] + 2.0 * k2[i][j] + 2.0 * k3[i][j] + k4[i][j]);
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+static void eqTracksAnalog(bool full) {
+  // One band of each type with its freq (7 Hz … 6.9 kHz, a 3 Hz sweep plus a ±50 % 700 Hz wobble), gain (±15 dB)
+  // and Q (0.1 … 18) all modulated at audio rate, over 0.5 s of three tones (110, 440, 1300 Hz: low enough that the
+  // bilinear frequency warping of the input does not matter). Deep, fast cutoff modulation of a resonant filter
+  // pumps energy into it in the ANALOG filter too (parametric resonance: the cuts' Q-18 sections gain ~70 dB here),
+  // so "stable" means: the digital band's energy follows the analog band's (10 ms RMS maxima within 1 dB; measured
+  // ≤ 0.35 dB) and adds no growth of its own.
+  constexpr uint32_t kN = 24000;
+  for (const int hq : {1, 2})
+    for (int type = 0; type < 8; ++type) {
+      if (!full && !(hq == 1 && (type == 0 || type == 3)) && !(hq == 2 && type == 5)) continue;
+      devref::EqConf c;
+      c.hq = hq;
+      for (int i = 0; i < 8; ++i) c.on[0][i] = c.on[1][i] = false;
+      c.type[0][0] = type;
+      c.on[0][0] = true;
+      const Program prog = eqProgram(c, "full");
+      Stimulus st = eqStimulus(kN, 64, [](uint32_t, uint64_t t) { return lowTones(t); });
+      setEqParams(st, someParams(), "full");
+      const Outputs o = run(prog, Backend::Jit, st);
+      REQUIRE_MESSAGE(o.error.empty(), o.error);
+      std::vector<double> x(kN);
+      std::vector<devref::EqBand> bands(kN);
+      for (uint32_t t = 0; t < kN; ++t) {
+        x[t] = static_cast<float>(lowTones(t));
+        bands[t] = modulated(someParams(), "full", t).band[0][0];
+      }
+      std::vector<double> ana = analogBand(type, hq, bands, false, 1.0, x);
+      for (double& v : ana) v *= static_cast<double>(someParams().outGain);  // the device's output gain (0.7)
+
+      const double rd = maxRms(o.at("y")[0]), ra = maxRms(ana);
+      const double ddb = 20.0 * std::log10(rd / ra);
+      MESSAGE("type " << type << " hq " << hq << ": max 10 ms RMS digital " << rd << ", analog " << ra << " (" << ddb << " dB)");
+      CHECK(std::isfinite(rd));
+      CHECK_MESSAGE(std::fabs(ddb) < 1.0, "type " << type << " hq " << hq << ": digital " << rd << " vs analog " << ra);
+    }
+}
+
+TEST_CASE("EQ Eight: under audio-rate modulation a band tracks the modulated analog filter (no blow-up)") { eqTracksAnalog(false); }
+TEST_CASE("EQ Eight: under audio-rate modulation every band type tracks the analog filter, 1x and 2x" * doctest::test_suite("slow")) {
+  eqTracksAnalog(true);
+}
+
+TEST_CASE("EQ Eight: all eight bands modulated at audio rate stay finite and ring out") {
+  // Every band (every type) with freq, gain (±15 dB) and Q (0.1 … 18) modulated at audio rate: 1 s of noise, then
+  // 1 s of silence while the modulation goes on. Interpreter == JIT bit for bit throughout.
+  for (const int hq : {1, 2}) {
+    const Program prog = eqProgram(allTypes(0, hq), "full");
+    Stimulus st = eqStimulus(96000, 64, [](uint32_t ch, uint64_t t) { return t < 48000 ? 0.5 * noise(t, 3 + ch) : 0.0; });
+    setEqParams(st, someParams(), "full");
+    const Outputs o = runBoth(prog, st, "eq full modulation hq " + std::to_string(hq));
+    double peak = 0.0, tail = 0.0;
+    bool finite = true;
+    for (int ch = 0; ch < 2; ++ch) {
+      const auto& y = o.at(ch ? "y[1]" : "y")[0];
+      for (size_t t = 0; t < y.size(); ++t) {
+        finite &= std::isfinite(y[t]);
+        peak = std::max(peak, std::fabs(static_cast<double>(y[t])));
+        if (t >= 84000) tail = std::max(tail, std::fabs(static_cast<double>(y[t])));
+      }
+    }
+    MESSAGE("eq full modulation hq " << hq << ": peak " << peak << ", last 250 ms peak " << tail);
+    CHECK(finite);
+    CHECK(tail < 1e-6);
+  }
+}

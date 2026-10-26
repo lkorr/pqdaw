@@ -251,6 +251,118 @@ struct SatBlock {
   }
 };
 
+// ---- EQ Eight, block-wise: how a hand-written SVF EQ is structured ------------------------------------------------
+// Coefficients once per block (or, for an audio-rate cutoff, vectorised over the block first); then one loop per
+// filter section over the block with its two states in registers, both channels in the same loop when they share
+// the coefficients (stereo mode). HQ: the half-band up loop, the sections over the 2× block, the down loop.
+struct EqBlock {
+  struct Sec {
+    stdref::SvfCore<float>::Coef c;
+    bool m0One;
+    float m0, m1, m2;
+    int band;
+  };
+  int mode = 0, hq = 1;
+  std::vector<Sec> secs[2];
+  float st[2][2][32][2] = {};  // [chain][channel][section] (ic1, ic2)
+  devref::HbUp<3, 3> up[2];
+  devref::HbDown<3, 3> dn[2];
+  int audioBand = -1;          // the band whose freq comes from the control signal
+  devref::EqBand audio{};
+  alignas(32) float buf[2][2048 + 8];
+  alignas(32) float cv[3 * 1024];  // per-sample d1, b1, b2 of the audio-rate band
+
+  void prepare(const devref::EqConf& conf, const devref::EqParams& p) {
+    for (int chain = 0; chain < 2; ++chain) {
+      const int set = mode == 0 ? 0 : chain;
+      secs[chain].clear();
+      for (int b = 0; b < 8; ++b) {
+        if (!conf.on[set][b]) continue;
+        const int type = conf.type[set][b];
+        const devref::EqCoef c = devref::eqCoef(type, static_cast<float>(hq), p.band[set][b], p.adaptive, p.scale, kSr);
+        const bool one = type != devref::kHS && type != devref::kHC12 && type != devref::kHC48;
+        secs[chain].push_back({stdref::SvfCore<float>::coef(c.g, c.k), one, c.m0, c.m1, c.m2, b});
+        if (type == devref::kLC48 || type == devref::kHC48) {
+          const bool hp = type == devref::kLC48;
+          const float ks[3] = {c.k2, c.k3, c.k4};
+          for (float k : ks) secs[chain].push_back({stdref::SvfCore<float>::coef(c.g, k), hp, hp ? 1.0f : 0.0f, hp ? -k : 0.0f, hp ? -1.0f : 1.0f, b});
+        }
+      }
+    }
+  }
+  // One section over n samples of up to two channels (in place).
+  template <int kCh>
+  static void runSec(float* const (&x)[2], uint32_t n, const Sec& s, float (&state)[2][32][2], int si, const float* d1v = nullptr) {
+    float ic1[kCh], ic2[kCh];
+    for (int c = 0; c < kCh; ++c) ic1[c] = state[c][si][0], ic2[c] = state[c][si][1];
+    for (uint32_t t = 0; t < n; ++t) {
+      const float d1 = d1v ? d1v[t] : s.c.d1, b1 = d1v ? d1v[1024 + t] : s.c.b1, b2 = d1v ? d1v[2048 + t] : s.c.b2;
+      for (int c = 0; c < kCh; ++c) {
+        const float v = x[c][t] - ic2[c];
+        const float n1 = std::fma(b1, v, std::fma(d1, ic1[c], ic1[c]));
+        const float n2 = std::fma(b2, v, std::fma(b1, ic1[c], ic2[c]));
+        const float band = 0.5f * (ic1[c] + n1), low = 0.5f * (ic2[c] + n2);
+        const float w = s.m0One ? std::fma(s.m1, band, x[c][t]) : std::fma(s.m0, x[c][t], s.m1 * band);
+        x[c][t] = std::fma(s.m2, low, w);
+        ic1[c] = n1;
+        ic2[c] = n2;
+      }
+    }
+    for (int c = 0; c < kCh; ++c) state[c][si][0] = ic1[c], state[c][si][1] = ic2[c];
+  }
+  void run(const devref::EqParams& p) {
+    const Signals& sg = sig();
+    const uint32_t n = kBlock * static_cast<uint32_t>(hq);
+    for (int ch = 0; ch < 2; ++ch) {
+      auto u = up[ch];
+      for (uint32_t t = 0; t < kBlock; ++t) {
+        const float L = sg.ch[0][t], R = sg.ch[1][t];
+        const float x = mode == 2 ? (ch ? 0.5f * (L - R) : 0.5f * (L + R)) : (ch ? R : L);
+        if (hq == 1) buf[ch][t] = x;
+        else u.tick(x, devref::kHb1P0, devref::kHb1P1, buf[ch][2 * t], buf[ch][2 * t + 1]);
+      }
+      up[ch] = u;
+    }
+    if (audioBand >= 0) {  // per-sample coefficients of the modulated band (a bell): vectorised over the block
+      const devref::EqCoef c0 = devref::eqCoef(devref::kBell, 1.0f, audio, p.adaptive, p.scale, kSr);
+      const __m256 k = _mm256_set1_ps(c0.k), one = _mm256_set1_ps(1.0f);
+      for (uint32_t t = 0; t < kBlock; t += 8) {
+        const __m256 f = _mm256_min_ps(_mm256_max_ps(_mm256_loadu_ps(sg.ctl.data() + t), _mm256_setzero_ps()), _mm256_set1_ps(0.49f * kSr));
+        const __m256 g = _mm256_tan_ps(_mm256_div_ps(_mm256_mul_ps(_mm256_set1_ps(3.141592653589793f), f), _mm256_set1_ps(kSr)));
+        const __m256 gk = _mm256_add_ps(g, k);
+        const __m256 a1 = _mm256_div_ps(one, _mm256_fmadd_ps(g, gk, one));
+        _mm256_store_ps(cv + t, _mm256_mul_ps(_mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(-2.0f), g), gk), a1));
+        const __m256 b1 = _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(2.0f), g), a1);
+        _mm256_store_ps(cv + 1024 + t, b1);
+        _mm256_store_ps(cv + 2048 + t, _mm256_mul_ps(b1, g));
+      }
+    }
+    float* const xs[2] = {buf[0], buf[1]};
+    if (mode == 0) {
+      for (size_t i = 0; i < secs[0].size(); ++i)
+        runSec<2>(xs, n, secs[0][i], st[0], static_cast<int>(i), secs[0][i].band == audioBand ? cv : nullptr);
+    } else {
+      for (int chain = 0; chain < 2; ++chain) {
+        float* const one[2] = {buf[chain], buf[chain]};
+        for (size_t i = 0; i < secs[chain].size(); ++i) runSec<1>(one, n, secs[chain][i], st[chain], static_cast<int>(i));
+      }
+    }
+    for (int ch = 0; ch < 2; ++ch) {
+      auto d = dn[ch];
+      for (uint32_t t = 0; t < kBlock; ++t) {
+        const float y = hq == 1 ? buf[ch][t] : d.tick(buf[ch][2 * t], buf[ch][2 * t + 1], devref::kHb1P0, devref::kHb1P1);
+        buf[ch][t] = y;
+      }
+      dn[ch] = d;
+    }
+    for (uint32_t t = 0; t < kBlock; ++t) {
+      const float a = buf[0][t], b = buf[1][t];
+      gOut[2 * t] = (mode == 2 ? a + b : a) * p.outGain;
+      gOut[2 * t + 1] = (mode == 2 ? a - b : b) * p.outGain;
+    }
+  }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -319,6 +431,60 @@ patch T { in x : audio stereo
                                std::to_string(list[i].type) + ", hq: " + std::to_string(list[i].hq) + ")\n  y = s }";
       cases.push_back({"saturator type " + std::to_string(list[i].type) + " hq " + std::to_string(list[i].hq), text,
                        {{"s__drive", 3.981}, {"s__output", 0.7}}, [i] { blocks[i].run(sp); }});
+    }
+  }
+
+  // ---- EQ Eight --------------------------------------------------------------------------------------------------
+  {
+    struct EqCase {
+      std::string name;
+      int mode, hq;
+      int types[8];
+      bool on[8];
+      bool audioFreq;  // band 4's freq from the control input (per-sample coefficients)
+    };
+    const EqCase list[] = {
+        {"eq_eight defaults (6 bands)", 0, 1, {0, 2, 3, 3, 3, 3, 5, 7}, {false, true, true, true, true, true, true, false}, false},
+        {"eq_eight 8 bells", 0, 1, {3, 3, 3, 3, 3, 3, 3, 3}, {true, true, true, true, true, true, true, true}, false},
+        {"eq_eight 1 bell", 0, 1, {3, 3, 3, 3, 3, 3, 3, 3}, {false, false, false, true, false, false, false, false}, false},
+        {"eq_eight LC48 + HC48", 0, 1, {0, 3, 3, 3, 3, 3, 3, 7}, {true, false, false, false, false, false, false, true}, false},
+        {"eq_eight 8 bands L/R", 1, 1, {0, 2, 3, 3, 3, 3, 5, 7}, {true, true, true, true, true, true, true, true}, false},
+        {"eq_eight 8 bells HQ", 0, 2, {3, 3, 3, 3, 3, 3, 3, 3}, {true, true, true, true, true, true, true, true}, false},
+        {"eq_eight 1 bell audio-rate freq", 0, 1, {3, 3, 3, 3, 3, 3, 3, 3}, {false, false, false, true, false, false, false, false}, true},
+    };
+    static std::vector<EqBlock> eqs(std::size(list));
+    static std::vector<devref::EqParams> eqp(std::size(list));
+    static std::vector<devref::EqConf> eqc(std::size(list));
+    for (size_t i = 0; i < std::size(list); ++i) {
+      const EqCase& e = list[i];
+      devref::EqConf& r = eqc[i];
+      eqs[i].mode = r.mode = e.mode;
+      eqs[i].hq = r.hq = e.hq;
+      std::string args = "mode: " + std::to_string(e.mode) + ", hq: " + std::to_string(e.hq);
+      std::map<std::string, double> params;
+      const float f[8] = {60, 150, 400, 900, 2000, 4500, 9000, 15000};
+      for (int s = 0; s < 2; ++s)
+        for (int b = 0; b < 8; ++b) {
+          r.type[s][b] = e.types[b];
+          r.on[s][b] = e.on[b];
+          const std::string n = (s ? "B" : "") + std::to_string(b + 1);
+          args += ", type" + n + ": " + std::to_string(e.types[b]) + ", on" + n + ": " + (e.on[b] ? "1" : "0");
+          eqp[i].band[s][b] = {f[b] * (s ? 1.1f : 1.0f), b % 2 ? 2.0f : 0.5f, 1.2f};
+          if (!(e.audioFreq && s == 0 && b == 3)) params["e__freq" + n] = eqp[i].band[s][b].freq;
+          params["e__gain" + n] = eqp[i].band[s][b].gain;
+          params["e__q" + n] = eqp[i].band[s][b].q;
+        }
+      if (e.audioFreq) args += ", freq4: c";
+      const std::string text = "import \"devices/eq_eight.pqp\"\npatch T { in x : audio stereo\n  in c : audio\n  out y : audio stereo\n  e = eq_eight(x, " +
+                               args + ")\n  y = e }";
+      if (e.audioFreq) {
+        eqs[i].audioBand = 3;
+        eqs[i].audio = eqp[i].band[0][3];
+      }
+      cases.push_back({e.name, text, params, [i] {
+                         eqs[i].prepare(eqc[i], eqp[i]);
+                         eqs[i].run(eqp[i]);
+                       }});
     }
   }
 
