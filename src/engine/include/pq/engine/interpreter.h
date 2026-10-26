@@ -34,9 +34,9 @@
 namespace pq::engine {
 
 // Tables the patch's wavetable / shaper / sample / tuning_hz atoms name by index (their `table` / `sample` const).
-// They must outlive the image. An index without a table reads the built-in default: a 2048-point sine wavetable, the
-// identity shaper on [−1, 1], a silent one-frame sample; a tuning_hz without a table passes its fallback hz / cents
-// through (T2.6).
+// They must outlive the image. An index without a table reads the built-in default: a 2048-point sine wavetable (a
+// wavetable index ≥ dsp::kBuiltinWavetableBase: that built-in waveform, T4.12), the identity shaper on [−1, 1], a
+// silent one-frame sample; a tuning_hz without a table passes its fallback hz / cents through (T2.6).
 struct Resources {
   std::span<const dsp::WavetableView* const> wavetables;
   std::span<const dsp::ShaperView* const> shapers;

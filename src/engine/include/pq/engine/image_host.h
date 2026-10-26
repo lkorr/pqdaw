@@ -17,8 +17,9 @@
 //                into one pointer table [ext · maxVoiceGroups + group] (no copies; param-rate sources splatted).
 //   special ops  broadcast, voice reducers and sends as dsp::KernelFn with their info record in KernelArgs::state
 //                (one record per schedule op, at a fixed address); RunCtx says which voice group is running.
-//   resources    the Resources tables by index, or the built-in defaults (sine wavetable, identity shaper, a silent
-//                sample; tuning_hz has none: its kernel passes the fallback through).
+//   resources    the Resources tables by index, or the built-in defaults (sine wavetable — at an index
+//                ≥ dsp::kBuiltinWavetableBase the built-in waveform there, T4.12 —, identity shaper, a silent sample;
+//                tuning_hz has none: its kernel passes the fallback through).
 //   stage loop   run(): global stages once, voice stages once per occupied voice group (T1.8) with the group's lane
 //                mask / gain / voice_last lane in RunCtx, reducer accumulators initialised before the group loop (and
 //                zeroed when no group ran), voice outputs copied after each group, global outputs after the last stage.

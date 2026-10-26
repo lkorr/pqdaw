@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <mutex>
 #include <numbers>
 #include <string>
 #include <utility>
@@ -109,6 +110,81 @@ AlignedBuffer<float> Wavetable::basicCycle(BasicShape shape, uint32_t n) {
 std::span<const float> Wavetable::level(uint32_t k) const noexcept {
   if (k >= view_.levels) return {};
   return {view_.data + static_cast<std::size_t>(k) * view_.stride, view_.stride};
+}
+
+// ---- Built-in wavetables (T4.12) --------------------------------------------------------------------------------
+
+AlignedBuffer<float> builtinWaveCycle(BuiltinWave w, uint32_t n) {
+  std::vector<double> c(n, 0.0);
+  const double twoPi = 2.0 * std::numbers::pi;
+  auto partials = [&](uint32_t count, bool odd) {
+    for (uint32_t i = 0; i < n; ++i) {
+      const double th = twoPi * static_cast<double>(i) / static_cast<double>(n);
+      double s = 0.0;
+      for (uint32_t k = 1; k <= count; ++k) {
+        const double h = odd ? 2.0 * k - 1.0 : static_cast<double>(k);
+        s += std::sin(h * th) / h;
+      }
+      c[i] = s;
+    }
+  };
+  switch (w) {
+    case BuiltinWave::Saw3: partials(3, false); break;
+    case BuiltinWave::Saw4: partials(4, false); break;
+    case BuiltinWave::Saw6: partials(6, false); break;
+    case BuiltinWave::Saw8: partials(8, false); break;
+    case BuiltinWave::Saw16: partials(16, false); break;
+    case BuiltinWave::Saw32: partials(32, false); break;
+    case BuiltinWave::Saw64: partials(64, false); break;
+    case BuiltinWave::Square3: partials(3, true); break;
+    case BuiltinWave::Square4: partials(4, true); break;
+    case BuiltinWave::Square6: partials(6, true); break;
+    case BuiltinWave::Square8: partials(8, true); break;
+    case BuiltinWave::Square16: partials(16, true); break;
+    case BuiltinWave::Square32: partials(32, true); break;
+    case BuiltinWave::Square64: partials(64, true); break;
+    case BuiltinWave::Triangle:
+      for (uint32_t i = 0; i < n; ++i) {
+        const double ph = static_cast<double>(i) / static_cast<double>(n);
+        c[i] = ph < 0.25 ? 4.0 * ph : ph < 0.75 ? 2.0 - 4.0 * ph : 4.0 * ph - 4.0;
+      }
+      break;
+    case BuiltinWave::NoiseLoop: {
+      uint64_t z = 0x5DEECE66Dull;  // fixed seed: the same loop in every program and run
+      double mean = 0.0;
+      for (uint32_t i = 0; i < n; ++i) {
+        z = z * 6364136223846793005ull + 1442695040888963407ull;  // PCG's LCG step
+        c[i] = static_cast<double>(z >> 11) / 9007199254740992.0 * 2.0 - 1.0;
+        mean += c[i];
+      }
+      mean /= static_cast<double>(n);
+      for (double& x : c) x -= mean;
+      break;
+    }
+    default: break;
+  }
+  double peak = 0.0;
+  for (const double x : c) peak = std::max(peak, std::fabs(x));
+  AlignedBuffer<float> out(n);
+  for (uint32_t i = 0; i < n; ++i) out[i] = static_cast<float>(peak > 0.0 ? c[i] / peak : 0.0);
+  return out;
+}
+
+namespace {
+Wavetable buildBuiltin(uint32_t k) {
+  const AlignedBuffer<float> cycle = builtinWaveCycle(static_cast<BuiltinWave>(k), 2048);
+  auto t = Wavetable::build(cycle.span());
+  return t ? std::move(t.value()) : Wavetable{};
+}
+}  // namespace
+
+const WavetableView* builtinWavetable(uint32_t k) {
+  if (k >= kBuiltinWaveCount) return nullptr;
+  // One function-local static per table (thread-safe initialisation), built only when a program first reads it.
+  static Wavetable tables[kBuiltinWaveCount];
+  static std::once_flag once[kBuiltinWaveCount];
+  std::call_once(once[k], [k] { tables[k] = buildBuiltin(k); });
+  return &tables[k].view();
 }
 
 // ---- Shaper -----------------------------------------------------------------------------------------------------

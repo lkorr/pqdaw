@@ -218,6 +218,8 @@ const void* resourceFor(const Resources* r, dsp::Resource kind, uint32_t index) 
   switch (kind) {
     case dsp::Resource::Wavetable:
       if (r && index < r->wavetables.size() && r->wavetables[index]) return r->wavetables[index];
+      if (index >= dsp::kBuiltinWavetableBase)  // T4.12: Operator's built-in waveforms (pq/dsp/tables.h)
+        if (const dsp::WavetableView* b = dsp::builtinWavetable(index - dsp::kBuiltinWavetableBase)) return b;
       return &defaultWavetable();
     case dsp::Resource::Shaper:
       if (r && index < r->shapers.size() && r->shapers[index]) return r->shapers[index];

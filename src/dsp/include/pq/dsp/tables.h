@@ -73,6 +73,28 @@ private:
   WavetableView view_{};
 };
 
+// ---- Built-in wavetables (T4.12: Operator's waveform set) ----------------------------------------------------
+// A wavetable atom whose `table` is kBuiltinWavetableBase + k reads built-in table k (Resources index from 0 and
+// never reach the base). Each is a 2048-point cycle of a fixed partial series, normalised to peak 1 and band-limited
+// by the mipmaps like any table; every partial in sine phase (each shape starts its cycle where a sine does):
+//   SawN     Σ_{h=1..N} sin(hθ)/h                 (a falling ramp: +1 just after the cycle start, −1 before its end)
+//   SquareN  Σ_{k=1..N} sin((2k−1)θ)/(2k−1)        (N odd partials: +1 for the first half of the cycle)
+//   Triangle the naive triangle (0 → 1 at ¼ cycle → −1 at ¾), every partial up to the mip level's limit
+//   NoiseLoop a fixed white-noise cycle (seeded, DC removed): pitched "looped noise"
+inline constexpr uint32_t kBuiltinWavetableBase = 65536;
+enum class BuiltinWave : uint8_t {
+  Saw3, Saw4, Saw6, Saw8, Saw16, Saw32, Saw64,
+  Square3, Square4, Square6, Square8, Square16, Square32, Square64,
+  Triangle, NoiseLoop,
+  Count_
+};
+inline constexpr uint32_t kBuiltinWaveCount = static_cast<uint32_t>(BuiltinWave::Count_);
+// The normalised cycle of a built-in wave, n points (n a power of two ≥ 16). Not RT-safe.
+AlignedBuffer<float> builtinWaveCycle(BuiltinWave w, uint32_t n);
+// The process-wide table of built-in wave k (< kBuiltinWaveCount), built on first use and kept; null for an
+// unknown k. Not RT-safe on the first call for a k (allocates, FFTs); thread-safe.
+const WavetableView* builtinWavetable(uint32_t k);
+
 // ---- Shaper: a transfer curve read by input value -----------------------------------------------------------
 // `points` = P ≥ 2 samples of the curve at x = lo + i·(hi − lo)/(P − 1). Input outside [lo, hi] is clamped
 // (NaN reads the lo end). Linear interpolation between points: curves are drawn as dense tables (≥ 1024
