@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "pq/app/startup.h"
+#include "pq/compile/compile.h"
+#include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/app/audio_manager.h"
 #include "pq/app/user_settings.h"
@@ -185,6 +187,17 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     // change, refreshes the preferences window).
     app->audio_->setUiNotify([](void* self) { pushUser(static_cast<ShellApp*>(self)->userEvent_, kAudioChanged); }, app.get());
     app->ctx_->setAudioPrefs(app->audio_.get());
+    // T4.4: the circuit editor's patch preview plays through the same device, attached only while it plays.
+    PreviewConfig pc;
+    pc.sampleRate = app->link_->engine().config().sampleRate;
+    pc.jit = compile::jitUnitBackend();
+    app->preview_ = std::make_unique<PatchPreview>(pc);
+    app->previewCallback_ = app->preview_->callback();
+    ShellApp* raw = app.get();
+    app->preview_->onActiveChanged = [raw](bool on) {
+      if (raw->audio_) raw->audio_->output().setExtraSource(on ? &raw->previewCallback_ : nullptr);
+    };
+    views::circuit::setPatchPlayer(*app->shell_, app->preview_.get());
     markStartupPhase("link attached, audio device opening in the background");
   }
   ShellApp* self = app.get();
@@ -203,8 +216,18 @@ ShellApp::~ShellApp() {
   tree_.setRoot(std::make_unique<ui::Widget>());
   shell_.reset();
   if (ctx_) ctx_->setAudioPrefs(nullptr);
-  audio_.reset();  // the device stops calling the engine
+  if (preview_) preview_->onActiveChanged = nullptr;
+  audio_.reset();  // the device stops calling the engine (and the preview)
   if (link_) link_->detach();
+}
+
+// T4.4: the project engine was rebuilt at another rate: the preview follows (it stops; the next edit or Play restarts it).
+void ShellApp::syncPreviewRate() {
+  if (!preview_ || !link_ || !audio_) return;
+  const double rate = link_->engine().config().sampleRate;
+  if (rate == preview_->sampleRate()) return;
+  audio_->output().setExtraSource(nullptr);
+  preview_->setSampleRate(rate);
 }
 
 void ShellApp::onTempoMaybeChanged() {
@@ -240,6 +263,7 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
       case kDialogResult: dialogs_->deliver(e.user); break;
       case kAudioChanged:
         if (audio_) audio_->poll();
+        syncPreviewRate();
         break;
       case kIdleStart:
         // Settle: on a loaded machine the show/expose/focus events of a new window can arrive well after the first

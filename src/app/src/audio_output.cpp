@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 #include "pq/engine/asio_device.h"
 #include "pq/engine/null_device.h"
@@ -162,6 +163,16 @@ void AudioOutput::setTestTone(bool on, float levelDb, float hz) {
   cv_.notify_all();
 }
 
+void AudioOutput::setExtraSource(const engine::AudioCallback* cb) {
+  extra_.store(cb);
+  while (inExtra_.load() != 0) std::this_thread::yield();  // a callback still using the previous source finishes
+  {
+    std::lock_guard lock(mutex_);
+    wakeRequest_ = wakeRequest_ || cb != nullptr;  // a suspended stream starts for the preview
+  }
+  cv_.notify_all();
+}
+
 Status AudioOutput::controlPanel() {
   std::unique_lock lock(mutex_);
   if (!device_ || device_->backend() != engine::Backend::Asio || fallback_)
@@ -213,7 +224,13 @@ void AudioOutput::onEngine(void* self, const engine::AudioBlock& b) noexcept {
   eng.process(b);
   const bool tone = o.toneOn_.load(std::memory_order_relaxed);
   if (tone) o.addTone(b);
-  else if (eng.asleep()) return;  // silence: nothing to clamp
+  // The extra source (T4.4): announced before the pointer is read (sequentially consistent, paired with
+  // setExtraSource), so a replaced source is never called after setExtraSource returned.
+  o.inExtra_.store(1);
+  const engine::AudioCallback* extra = o.extra_.load();
+  if (extra) extra->fn(extra->user, b);
+  o.inExtra_.store(0, std::memory_order_release);
+  if (!tone && !extra && eng.asleep()) return;  // silence: nothing to clamp
   for (uint32_t c = 0; c < b.numOut; ++c) {
     float* x = b.out[c];
     for (uint32_t f = 0; f < b.frames; ++f) x[f] = std::clamp(x[f], -1.0f, 1.0f);
@@ -489,7 +506,7 @@ void AudioOutput::controlMain() {
     if (!streamRunning_.load(std::memory_order_relaxed)) {  // suspended: block until a wake (no periodic work)
       cv_.wait(lock, [&] {
         return quit_ || closeRequest_ || pending_.has_value() || hwChanged_ || panelRequest_ || wakeRequest_ ||
-               toneOn_.load(std::memory_order_relaxed);
+               toneOn_.load(std::memory_order_relaxed) || extra_.load(std::memory_order_relaxed) != nullptr;
       });
       if (quit_ || closeRequest_ || pending_ || hwChanged_ || panelRequest_) continue;
       wakeRequest_ = false;
@@ -534,7 +551,8 @@ void AudioOutput::controlMain() {
       openedAt = clock::now();
       continue;
     }
-    if (wakeRequest_ || toneOn_.load(std::memory_order_relaxed) || !engine_.load()->asleep()) {
+    if (wakeRequest_ || toneOn_.load(std::memory_order_relaxed) || extra_.load(std::memory_order_relaxed) != nullptr ||
+        !engine_.load()->asleep()) {
       wakeRequest_ = false;
       wasAsleep = false;
       continue;

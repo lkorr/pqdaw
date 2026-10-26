@@ -15,6 +15,7 @@
 #include <string>
 
 #include "pq/app/cli.h"
+#include "pq/app/patch_preview.h"
 #include "pq/app/project_link.h"
 #include "pq/app/sim_transport.h"
 #include "pq/app/startup.h"
@@ -47,6 +48,7 @@ private:
   void updateTitle();
   void syncTextInput();
   void onTempoMaybeChanged();
+  void syncPreviewRate();
 
   ui::UiTree& tree_;
   SDL_Window* window_;
@@ -54,6 +56,10 @@ private:
   // Declared before ctx_ (the context holds a reference to the port); audio_ after link_ (it calls the engine).
   std::unique_ptr<SimulatedTransport> transport_;
   std::unique_ptr<ProjectLink> link_;
+  // T4.4: the circuit editor's patch preview, added into the device after the engine (declared before audio_: the
+  // output stops calling it first).
+  std::unique_ptr<PatchPreview> preview_;
+  engine::AudioCallback previewCallback_{};
   std::unique_ptr<AudioDeviceManager> audio_;  // T3.18: the device manager (owns the audio output; Ctrl+, prefs)
   std::unique_ptr<views::ViewContext> ctx_;
   std::unique_ptr<SdlFileDialogs> dialogs_;

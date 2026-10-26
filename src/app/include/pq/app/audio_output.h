@@ -111,6 +111,11 @@ public:
   // suspended. Any thread.
   void setTestTone(bool on, float levelDb, float hz);
   bool testTone() const noexcept { return toneOn_.load(std::memory_order_relaxed); }
+  // T4.4: an extra source added into every device block after the engine and the test tone (the circuit editor's
+  // patch preview, pq/app/patch_preview.h); while one is set the stream is not suspended. Returns once no device
+  // callback uses the previous source any more (so it may be destroyed or rebuilt afterwards). `cb` must stay valid
+  // until it is replaced. Any non-audio thread.
+  void setExtraSource(const engine::AudioCallback* cb);
   // ASIO: the driver's control panel. Errors when no ASIO stream is open.
   Status controlPanel();
 
@@ -162,6 +167,8 @@ private:
 
   // Test tone: written by any thread, read by the audio thread (relaxed: a tone change may take one block).
   std::atomic<bool> toneOn_{false};
+  std::atomic<const engine::AudioCallback*> extra_{nullptr};
+  std::atomic<uint32_t> inExtra_{0};  // the audio thread is inside the extra source (setExtraSource's handshake)
   std::atomic<float> toneGain_{0.0f};
   std::atomic<uint32_t> toneInc_{0};
   uint32_t tonePhase_ = 0;  // audio thread
