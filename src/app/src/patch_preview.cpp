@@ -94,6 +94,10 @@ Status PatchPreview::play(const graph::Schedule& schedule, const graph::TypedPat
   stats_.lastMatched = published->plan.matched;
   stats_.lastFresh = published->plan.fresh + published->plan.mismatched;
   stats_.lastDropped = published->plan.dropped;
+  // T4.6: the names of the params setParam() writes (root params keep their names through inference).
+  paramKeys_.clear();
+  for (const graph::ParamSlot& ps : schedule.params)
+    if (ps.node < scheduled.patch.nodeCount()) paramKeys_.emplace_back(scheduled.patch.nodeName(ps.node), ps.key);
   fresh_ = false;
   slots_ = slots;
   currentKind_ = kind;
@@ -139,6 +143,34 @@ void PatchPreview::deliver(void* self, const engine::BackgroundJob& job,
   else ++p.stats_.failures;
 }
 
+bool PatchPreview::setParam(std::string_view name, float value) {
+  uint64_t key = 0;
+  {
+    std::lock_guard lock(mutex_);
+    if (!active_.load(std::memory_order_acquire)) return false;
+    const auto it = std::find_if(paramKeys_.begin(), paramKeys_.end(), [&](const auto& p) { return p.first == name; });
+    if (it == paramKeys_.end()) return false;
+    key = it->second;
+  }
+  return paramWrites_.tryPush(ParamWrite{key, value});  // the UI thread is the ring's only producer
+}
+
+// RT-safe: a few writes per block at most, each a scan of the current image's params (a device has ≤ ~100).
+void PatchPreview::applyParamWrites(engine::ProgramHost& host) noexcept {
+  ParamWrite w;
+  while (paramWrites_.tryPop(w)) {
+    const engine::ProgramImage* img = host.current();
+    if (img == nullptr) continue;
+    const auto& ps = img->io().params;
+    const std::span<float> block = host.params();
+    for (size_t i = 0; i < ps.size() && i < block.size(); ++i)
+      if (ps[i].key == w.key) {
+        block[i] = w.value;
+        break;
+      }
+  }
+}
+
 bool PatchPreview::waitForJit(double seconds) { return !jit_ || jit_->waitIdle(seconds); }
 
 PatchPreview::Stats PatchPreview::stats() const {
@@ -163,7 +195,9 @@ void PatchPreview::process(const engine::AudioBlock& b) noexcept {
     local.numOut = cfg_.numOut;
     local.frames = n;
     local.frameTime = b.frameTime + done;
+    applyParamWrites(*host);
     host->process(local);
+    tap_.write(outs_.data(), cfg_.numOut, n);  // one relaxed load while no display reads it
     for (uint32_t c = 0; c < b.numOut; ++c) {
       const float* src = outs_[std::min(c, cfg_.numOut - 1)];
       float* dst = b.out[c] + done;

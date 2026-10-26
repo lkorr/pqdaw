@@ -7,6 +7,7 @@
 
 #include "../common/paint.h"
 #include "panel_internal.h"
+#include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
 
 namespace pq::views::devices {
@@ -150,6 +151,42 @@ private:
   ui::DragBox* box_;
 };
 
+// ---- EQ filter-type chooser: the item as a filter-shape glyph (the menu lists the names) ----------------------------------
+class FilterChooser final : public ui::Dropdown {
+public:
+  FilterChooser(std::string name, std::vector<std::string> items) : Dropdown(std::move(name), std::move(items), 0) {}
+  void paint(ui::PaintContext& ctx) override {
+    const ui::Theme* th = ctx.res.theme;
+    if (!th) return;
+    const ui::VisualState v = visualState();
+    const ui::IRect r = rect();
+    const ui::Rgba fill = v.hover || v.pressed || menuOpen() ? th->field.fillHover : th->field.fill;
+    paint::box(ctx.dl, r, 0.0f, fill, v.focus || menuOpen() ? th->field.borderFocus : th->field.border);
+    // The glyph: magnitude (0 = bottom … 1 = top) over x ∈ [0, 1], a log-ish frequency axis.
+    const float gx0 = static_cast<float>(r.x) + ctx.scale.exact(7.0f), gx1 = static_cast<float>(r.right()) - ctx.scale.exact(7.0f);
+    const float gy0 = static_cast<float>(r.y) + ctx.scale.exact(4.0f), gy1 = static_cast<float>(r.bottom()) - ctx.scale.exact(4.0f);
+    constexpr int kN = 24;
+    ui::Vec2 pts[kN];
+    const int type = index();
+    for (int i = 0; i < kN; ++i) {
+      const float u = static_cast<float>(i) / (kN - 1);
+      float m = 0.5f;
+      switch (type) {
+        case 0: m = u < 0.35f ? 0.5f * std::pow(u / 0.35f, 4.0f) : 0.5f; break;                 // low cut 48
+        case 1: m = u < 0.45f ? 0.5f * std::sqrt(u / 0.45f) : 0.5f; break;                      // low cut 12
+        case 2: m = 0.5f + 0.35f / (1.0f + std::exp((u - 0.4f) * 14.0f)); break;               // low shelf
+        case 3: m = 0.5f + 0.4f * std::exp(-(u - 0.5f) * (u - 0.5f) * 40.0f); break;           // bell
+        case 4: m = 0.5f - 0.45f * std::exp(-(u - 0.5f) * (u - 0.5f) * 120.0f); break;         // notch
+        case 5: m = 0.5f + 0.35f / (1.0f + std::exp(-(u - 0.6f) * 14.0f)); break;              // high shelf
+        case 6: m = u > 0.55f ? 0.5f * std::sqrt((1.0f - u) / 0.45f) : 0.5f; break;            // high cut 12
+        default: m = u > 0.65f ? 0.5f * std::pow((1.0f - u) / 0.35f, 4.0f) : 0.5f; break;      // high cut 48
+      }
+      pts[i] = {gx0 + u * (gx1 - gx0), gy1 - m * (gy1 - gy0)};
+    }
+    ui::smoothPolyline(ctx.dl, pts, kN, v.disabled ? th->text.disabled : th->text.primary, ctx.scale.exact(1.25f));
+  }
+};
+
 // ---- tabs: one latching button per selector value ------------------------------------------------------------------------
 class PanelTabs final : public ui::Widget {
 public:
@@ -231,7 +268,8 @@ private:
 
 class TitleBar final : public ui::Widget {
 public:
-  explicit TitleBar(DevicePanel& panel, std::string title) : Widget("title"), panel_(panel), title_(std::move(title)) {}
+  TitleBar(DevicePanel& panel, DevicePanel::Impl& impl, std::string title)
+      : Widget("title"), panel_(panel), impl_(impl), title_(std::move(title)) {}
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     const ui::ThemeFonts* f = ctx.res.uiFonts;
@@ -270,8 +308,7 @@ public:
     }
     if (e.type != ui::PointerType::Down || e.button != ui::PointerButton::Left) return false;
     if (activatorRect().contains(e.pos)) {
-      panel_.setActive(!panel_.active());
-      if (panel_.target_) panel_.target_->setActive(panel_.active());
+      impl_.userActive(!panel_.active());
       return true;
     }
     if (foldRect().contains(e.pos) || e.clickCount == 2) {
@@ -291,7 +328,6 @@ public:
   }
 
 private:
-  friend class pq::views::devices::DevicePanel;
   ui::IRect activatorRect() const {
     const ui::IRect r = rect();
     const float s = tree() ? tree()->scale() : 1.0f;
@@ -313,6 +349,7 @@ private:
     return {r.right() - w - static_cast<int32_t>(std::lround(5.0f * s)), r.y + (r.h - h) / 2, w, h};
   }
   DevicePanel& panel_;
+  DevicePanel::Impl& impl_;
   std::string title_;
   bool hoverFold_ = false;
 };
@@ -324,7 +361,7 @@ public:
     setLayout(ui::LayoutKind::Custom);
     setClipChildren(true);
   }
-  void add(ui::Widget& w, const ControlDesc& d) { placed_.push_back({&w, &d}); }
+  void place(ui::Widget& w, const ControlDesc& d) { placed_.push_back({&w, &d}); }
   void arrange(ui::LayoutPass& pass) override {
     const ui::IRect r = rect();
     const int32_t pad = pass.px(kPad);
@@ -401,6 +438,11 @@ void DevicePanel::Impl::userConst(const std::string& name, double v, ui::Widget*
   consts[name] = v;
   if (panel.target_) panel.target_->setConst(name, v);
   changed(name, true, source);
+}
+
+void DevicePanel::Impl::userActive(bool on) {
+  panel.setActive(on);
+  if (panel.target_) panel.target_->setActive(on);
 }
 
 void DevicePanel::Impl::userSelect(const std::string& selector, int32_t index) {
@@ -591,7 +633,7 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
     j.setHeight(ui::Length::fixed(kJackStripH));
     for (const std::string& e : sig_.exports) jacks_.push_back({e, {}});
   }
-  add<TitleBar>(*this, desc_.title).setHeight(ui::Length::fixed(kTitleH));
+  add<TitleBar>(*this, im, desc_.title).setHeight(ui::Length::fixed(kTitleH));
   auto& body = add<PanelBody>(*this);
   body.setHeight(ui::Length::fixed(desc_.height + 2 * kPad));
   body_ = &body;
@@ -669,7 +711,8 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
         break;
       }
       case ControlKind::Chooser: {
-        auto& c = body.add<ui::Dropdown>(d.id, d.items, 0);
+        ui::Dropdown& c = d.style == "filter" ? static_cast<ui::Dropdown&>(body.add<FilterChooser>(d.id, d.items))
+                                              : body.add<ui::Dropdown>(d.id, d.items, 0);
         Impl* ip = &im;
         ui::Dropdown* cp = &c;
         const ControlDesc* dp = &d;
@@ -710,7 +753,7 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
         break;
       }
     }
-    body.add(*b.widget, d);
+    body.place(*b.widget, d);
     im.bound.push_back(std::move(b));
   }
   im.bindAll();
@@ -789,6 +832,15 @@ void DevicePanel::setFolded(bool f) {
 }
 
 float DevicePanel::logicalWidth() const noexcept { return folded_ ? kFoldedW : desc_.width + 2 * kPad; }
+
+float DevicePanel::logicalHeight() const noexcept {
+  return (sig_.exports.empty() ? 0.0f : kJackStripH) + kTitleH + desc_.height + 2 * kPad;
+}
+
+void DevicePanel::wakeDisplays() {
+  for (Impl::Bound& b : impl_->bound)
+    if (b.display) b.display->requestFrame();
+}
 
 ui::Widget* DevicePanel::controlFor(std::string_view param) const noexcept {
   for (const Impl::Bound& b : impl_->bound)

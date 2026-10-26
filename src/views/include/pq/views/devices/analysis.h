@@ -57,6 +57,8 @@ public:
   SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual);
   // One worker iteration (reads the tap, analyses, publishes). Returns the hops analysed. Manual feeds only.
   uint32_t step(double now);
+  // No more snapshots will come (a manual feed in a scene or test): the displays may stop animating.
+  void hold();
   // Stats (tests, the bench): hops analysed, wake-ups of the worker.
   uint64_t hopsAnalysed() const noexcept { return hops_.load(std::memory_order_relaxed); }
   uint64_t wakeups() const noexcept { return wakeups_.load(std::memory_order_relaxed); }

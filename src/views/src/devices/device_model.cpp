@@ -107,6 +107,7 @@ DeviceSignature signatureOf(const graph::Patch& patch) {
           sig.consts.push_back(std::move(c));
         } else if (sig.audioIn.empty()) {
           sig.audioIn = patch.nodeName(n);
+          sig.audioInWidth = t.width == graph::kWidthInfer ? 2 : t.width;
         }
         break;
       }

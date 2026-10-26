@@ -88,6 +88,11 @@ const ColorToken kColors[] = {
     PQ_COLOR(code, background), PQ_COLOR(code, gutter), PQ_COLOR(code, lineNumber), PQ_COLOR(code, lineNumberCurrent), PQ_COLOR(code, currentLine), PQ_COLOR(code, text),
     PQ_COLOR(code, keyword), PQ_COLOR(code, number), PQ_COLOR(code, string), PQ_COLOR(code, comment), PQ_COLOR(code, name), PQ_COLOR(code, punctuation),
     PQ_COLOR(code, selection), PQ_COLOR(code, caret), PQ_COLOR(code, error), PQ_COLOR(code, errorText), PQ_COLOR(code, warning), PQ_COLOR(code, stale),
+    PQ_COLOR(device, background), PQ_COLOR(device, titleBar), PQ_COLOR(device, titleText), PQ_COLOR(device, titleTextOff), PQ_COLOR(device, border),
+    PQ_COLOR(device, jackStrip), PQ_COLOR(device, jack), PQ_COLOR(device, jackRing), PQ_COLOR(device, jackRingHover), PQ_COLOR(device, activatorOn),
+    PQ_COLOR(device, activatorOff), PQ_COLOR(device, label), PQ_COLOR(device, value), PQ_COLOR(device, knob), PQ_COLOR(device, display),
+    PQ_COLOR(device, displayGrid), PQ_COLOR(device, displayGridMajor), PQ_COLOR(device, displayText), PQ_COLOR(device, curve), PQ_COLOR(device, curveFill),
+    PQ_COLOR(device, band), PQ_COLOR(device, bandOff), PQ_COLOR(device, bandText), PQ_COLOR(device, bandSelected),
 };
 #undef PQ_COLOR
 

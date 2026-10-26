@@ -19,6 +19,7 @@
 #include "pq/core/rt_scope.h"
 #include "pq/graph/atoms.h"
 #include "pq/views/circuit/patch_editor.h"
+#include "pq/views/devices/device_view.h"
 
 using namespace pq;
 using namespace pq::app;
@@ -217,4 +218,78 @@ TEST_CASE("patch preview: an instrument's voices keep sounding through an edit")
   for (size_t i = mark; i < y.size(); ++i) after = std::max(after, std::fabs(y[i]));
   CHECK(after > 0.01f);
   CHECK(ed.stats().swaps == 2);
+}
+
+// ---- T4.6: device panels through the preview --------------------------------------------------------------------------
+
+TEST_CASE("patch preview: param writes by name reach the playing program (RT-safe), and the output tap fills only when read") {
+  PreviewConfig pc;
+  pc.sampleRate = kRate;
+  pc.gainDb = 0.0f;
+  PatchPreview preview(pc);
+  auto made = PatchEditor::fromText(stdlibPath("preview_param_test.pqp"),
+                                    "patch Tone {\n  param level = 0.5 [0..1]\n  out y : audio\n  y = sine(phasor(220Hz)) * level\n}\n");
+  REQUIRE(made.ok());
+  PatchEditor& ed = **made;
+  ed.setPlayer(&preview);
+  REQUIRE(ed.play(0).ok());
+  std::vector<float> y;
+  int64_t t = 0;
+  render(preview, 20, y, t);
+  auto peakFrom = [&](size_t from) {
+    float m = 0.0f;
+    for (size_t i = from; i < y.size(); ++i) m = std::max(m, std::fabs(y[i]));
+    return m;
+  };
+  CHECK(peakFrom(y.size() / 2) == doctest::Approx(0.5f).epsilon(0.01));
+  // Nobody reads the tap: the audio thread copies nothing.
+  TapRing& tap = *preview.outputTap();
+  CHECK(tap.written() == 0);
+  CHECK(preview.setParam("level", 0.25f));
+  CHECK_FALSE(preview.setParam("nope", 1.0f));
+  tap.addReader();
+  const size_t mark = y.size();
+  render(preview, 20, y, t);  // under RtScope (render): the param write and the tap copy allocate nothing
+  CHECK(peakFrom(mark) == doctest::Approx(0.25f).epsilon(0.01));
+  CHECK(tap.written() == 20u * kBlock);
+  std::vector<float> got(kBlock);
+  REQUIRE(tap.read(0, tap.written() - kBlock, kBlock, got.data()) == kBlock);
+  for (uint32_t i = 0; i < kBlock; ++i) CHECK(got[i] == doctest::Approx(y[y.size() - kBlock + i]));
+  tap.removeReader();
+  // Stopped: writes are refused.
+  ed.stop();
+  CHECK_FALSE(preview.setParam("level", 0.1f));
+}
+
+TEST_CASE("patch preview: a device panel's preview plays the Saturator; a curve change hot-swaps click-free") {
+  PreviewConfig pc;
+  pc.sampleRate = kRate;
+  pc.gainDb = 0.0f;
+  PatchPreview preview(pc);
+  auto pv = views::devices::DevicePreview::open(stdlibPath("devices/saturator.pqp"), &preview);
+  REQUIRE_MESSAGE(pv.ok(), (pv.ok() ? std::string() : pv.error().message));
+  views::devices::DevicePreview& dev = **pv;
+  REQUIRE(dev.play().ok());
+  std::vector<float> y;
+  int64_t t = 0;
+  render(preview, 60, y, t);  // the arpeggio through the Saturator (Medium Curve)
+  float peak = 0.0f;
+  for (float v : y) peak = std::max(peak, std::fabs(v));
+  CHECK(peak > 0.05f);
+  // Drive up: a param write (no recompile), heard at once.
+  const uint64_t published = preview.stats().published;
+  dev.setParam("drive", std::pow(10.0, 18.0 / 20.0));
+  render(preview, 20, y, t);
+  CHECK(preview.stats().published == published);
+  // Type → Hard Curve: a recompile through the host patch's editor, crossfaded while it plays.
+  dev.setConst("type", 4.0);
+  CHECK(preview.stats().published == published + 1);
+  CHECK(preview.stats().lastMatched > 0);  // state carried (the source's phasors and envelopes)
+  const size_t mark = y.size();
+  render(preview, 40, y, t);
+  // No step at the swap larger than the signal's own largest step before it (a saturated arpeggio: steep but bounded).
+  const float before = maxStep(std::vector<float>(y.begin(), y.begin() + static_cast<std::ptrdiff_t>(mark)));
+  const float during = maxStep(std::vector<float>(y.begin() + static_cast<std::ptrdiff_t>(mark) - 1, y.end()));
+  CHECK(during <= 1.5f * before + 1e-3f);
+  dev.stop();
 }

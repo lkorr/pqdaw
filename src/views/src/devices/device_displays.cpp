@@ -26,6 +26,15 @@ constexpr double kEaseSeconds = 0.045;
 class SpectrumLayer {
 public:
   explicit SpectrumLayer(SpectrumFeed* feed) : feed_(feed) {}
+  // The feed the panel's target offers now (it may arrive or change after the display was made).
+  void setFeed(SpectrumFeed* f) {
+    if (f == feed_) return;
+    release();
+    feed_ = f;
+    seq_ = 0;
+    target_.clear();
+    shown_.clear();
+  }
   ~SpectrumLayer() { release(); }
   SpectrumLayer(const SpectrumLayer&) = delete;
   SpectrumLayer& operator=(const SpectrumLayer&) = delete;
@@ -247,11 +256,13 @@ public:
   SpectrumDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : PanelDisplay(d.id, impl, d), layer_(impl.spectrum()) {}
   bool dependsOn(std::string_view) const override { return false; }
   void onFrame(double now) override {
+    layer_.setFeed(impl_.spectrum());
     if (layer_.frame(*this, now)) markDirty();
   }
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     if (!th) return;
+    layer_.setFeed(impl_.spectrum());
     const ui::IRect r = rect();
     paint::box(ctx.dl, r, ctx.scale.exact(2.0f), th->device.display, th->device.border);
     const ui::Rect f = insetRect(r, 1).toRect();
@@ -318,12 +329,14 @@ public:
   }
 
   void onFrame(double now) override {
+    layer_.setFeed(impl_.spectrum());
     if (layer_.frame(*this, now)) markDirty();
   }
 
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     if (!th) return;
+    layer_.setFeed(impl_.spectrum());
     const ui::IRect r = rect();
     paint::box(ctx.dl, r, ctx.scale.exact(2.0f), th->device.display, th->device.border);
     const ui::Rect f = insetRect(r, 1).toRect();

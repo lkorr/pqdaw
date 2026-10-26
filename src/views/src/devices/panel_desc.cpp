@@ -84,7 +84,7 @@ json substituteJson(const json& j, const std::string& var, const std::string& va
 }
 
 ControlDesc readControl(const json& c, const std::string& where) {
-  checkKeys(c, {"type", "id", "param", "const", "label", "text", "info", "items", "values", "selector", "visual", "bind", "rect", "when"},
+  checkKeys(c, {"type", "id", "param", "const", "label", "text", "info", "items", "values", "style", "selector", "visual", "bind", "rect", "when"},
             where);
   ControlDesc d;
   d.kind = kindOf(c.at("type").get<std::string>(), where);
@@ -97,6 +97,7 @@ ControlDesc readControl(const json& c, const std::string& where) {
   if (c.contains("items")) d.items = c["items"].get<std::vector<std::string>>();
   if (c.contains("values")) d.values = c["values"].get<std::vector<double>>();
   if (c.contains("selector")) d.selector = c["selector"].get<std::string>();
+  if (c.contains("style")) d.style = c["style"].get<std::string>();
   if (c.contains("visual")) d.visual = c["visual"].get<std::string>();
   if (c.contains("bind"))
     for (auto it = c["bind"].begin(); it != c["bind"].end(); ++it) d.bind[it.key()] = it.value().get<std::string>();
@@ -144,6 +145,7 @@ ControlDesc readControl(const json& c, const std::string& where) {
       if (d.values.empty())
         for (size_t i = 0; i < d.items.size(); ++i) d.values.push_back(static_cast<double>(i));
       if (d.values.size() != d.items.size()) throw std::runtime_error(where + ": \"values\" and \"items\" differ in length");
+      if (!d.style.empty() && d.style != "filter") throw std::runtime_error(where + ": unknown chooser style \"" + d.style + "\"");
       break;
     case ControlKind::Tabs:
       if (d.selector.empty()) throw std::runtime_error(where + ": tabs need a \"selector\"");
@@ -282,9 +284,9 @@ Result<PanelDesc> parsePanelDesc(std::string_view text, const DeviceSignature& s
         } else checkBinding(p, sig, c.name, c.source == Condition::Source::Const, where + ": when");
       }
       if (d.kind == ControlKind::Tabs && !p.findSelector(d.selector)) return panelError(where, "unknown selector \"" + d.selector + "\"");
-      if (d.id.empty()) {
-        std::string base = !d.param.empty() ? d.param : !d.constName.empty() ? d.constName : d.kind == ControlKind::Visual ? d.visual : "c";
-        d.id = base + "#" + std::to_string(i);
+      if (d.id.empty()) {  // the binding (or visual) name; "#<index>" when that is taken
+        const std::string base = !d.param.empty() ? d.param : !d.constName.empty() ? d.constName : d.kind == ControlKind::Visual ? d.visual : "label";
+        d.id = ids.count(base) ? base + "#" + std::to_string(i) : base;
       }
       if (!ids.insert(d.id).second) return panelError(where, "duplicate id \"" + d.id + "\"");
     }

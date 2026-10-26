@@ -122,6 +122,7 @@ pq_add_test(pq_tests_views
     views/test_look.cpp
     views/test_tunings_ui.cpp
     views/test_circuit.cpp
+    views/test_device_panels.cpp
     views/test_patch_editor.cpp
     views/test_circuit_editor.cpp
   DEPS pq_views nlohmann_json::nlohmann_json)

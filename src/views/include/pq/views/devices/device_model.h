@@ -45,6 +45,7 @@ struct DeviceSignature {
   std::vector<ConstInfo> consts;
   std::vector<std::string> exports;  // `export` jacks (SPEC §7.3: the output jacks on top of the device)
   std::string audioIn;               // the first non-const `in` (the signal input; "" for an instrument)
+  uint16_t audioInWidth = 2;         // its declared channels (2 when not declared)
   const ParamInfo* findParam(std::string_view name) const noexcept;
   const ConstInfo* findConst(std::string_view name) const noexcept;
 };

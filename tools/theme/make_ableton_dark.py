@@ -232,6 +232,32 @@ colors = [
  ("code.errorText", "#FF8A8D"),
  ("code.warning", "#FFC658"),  # circuit.selected
  ("code.stale", "#0F202699"),  # veil over the canvas while the text does not parse
+ # Device panels (T4.6, SPEC §7.3 / §9; own values on the sampled surfaces): the body a step above the detail view, the
+ # title bar raised, displays in the field well with PQ Meter's grid alphas, curves and band dots in the amber.
+ ("device.background", "#2E4047"),  # the device body: a step above the detail view's panel, as Live's device panels
+ ("device.titleBar", "#3D4F55"),  # surface.raised
+ ("device.titleText", "#F2EDD8"),
+ ("device.titleTextOff", "#82918F"),  # text.disabled: a switched-off device
+ ("device.border", "#000A0F"),  # control.border
+ ("device.jackStrip", "#1B2D33"),  # the strip of export jacks along the top edge (SPEC §9)
+ ("device.jack", "#08191F"),
+ ("device.jackRing", "#B0B5A3"),
+ ("device.jackRingHover", "#FFC658"),
+ ("device.activatorOn", "#FFC658"),  # accent.activator
+ ("device.activatorOff", "#4A5D63"),  # control.valueDisabled
+ ("device.label", "#BCC0AE"),  # text.secondary
+ ("device.value", "#D6CDA8"),  # text.primary
+ ("device.knob", "#F0B85A"),  # knob value arcs: the amber a step warmer
+ ("device.display", "#0F2026"),  # displays: the dark well of fields
+ ("device.displayGrid", "#FFFFFF14"),  # PQ Meter's grid alpha (SPEC §11.1)
+ ("device.displayGridMajor", "#FFFFFF29"),
+ ("device.displayText", "#FFFFFF70"),  # PQ Meter's grid-label alpha
+ ("device.curve", "#FFC658"),  # transfer curve, EQ response
+ ("device.curveFill", "#FFC65833"),  # the selected EQ band's own response
+ ("device.band", "#FFC658"),  # EQ band dots
+ ("device.bandOff", "#5E7176"),
+ ("device.bandText", "#0F2026"),
+ ("device.bandSelected", "#F2EDD8"),
 ]
 # Sizes (T3.2-fix1): Live 12 at 100 % draws 7-px capitals (browser items, "Drop Files and Devices Here"); Inter 13 px
 # draws 9-10. Body text goes 13 -> 12 and titles 14 -> 13. Not smaller: 11 px is a size the scene fonts do not

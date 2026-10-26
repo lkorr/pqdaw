@@ -1,0 +1,28 @@
+{
+  "format": "pqdaw-panel 1",
+  "patch": "utility",
+  "title": "Utility",
+  "size": [248, 142],
+  "controls": [
+    {"type": "label", "text": "Channel", "rect": [0, 0, 60, 14]},
+    {"type": "chooser", "param": "chan", "label": "Channel Mode", "items": ["Stereo", "Left", "Right", "Swap"], "rect": [0, 14, 60, 18],
+     "info": "Which input channels play: both, the left on both sides, the right on both sides, or swapped."},
+    {"type": "toggle", "param": "invL", "text": "Ø L", "rect": [0, 40, 28, 18], "info": "Inverts the phase of the left channel."},
+    {"type": "toggle", "param": "invR", "text": "Ø R", "rect": [32, 40, 28, 18], "info": "Inverts the phase of the right channel."},
+    {"type": "toggle", "param": "mono", "text": "Mono", "rect": [0, 66, 60, 18], "info": "Sums the signal to mono."},
+    {"type": "toggle", "param": "msMode", "text": "Mid/Side", "rect": [0, 88, 60, 18],
+     "info": "The width knob becomes a mid/side balance: -100 % plays only the mid, +100 % only the side."},
+    {"type": "knob", "param": "width", "rect": [64, 0, 56, 58], "when": [{"param": "msMode", "in": [0]}]},
+    {"type": "knob", "param": "ms", "rect": [64, 0, 56, 58], "when": [{"param": "msMode", "in": [1]}]},
+    {"type": "knob", "param": "balance", "rect": [64, 84, 56, 58]},
+    {"type": "knob", "param": "gain", "rect": [124, 0, 56, 58]},
+    {"type": "toggle", "param": "mute", "text": "Mute", "rect": [124, 84, 56, 18]},
+    {"type": "toggle", "const": "dc", "text": "DC", "rect": [124, 106, 56, 18],
+     "info": "A 5 Hz DC filter at the input (a structural setting: switching it recompiles the device)."},
+    {"type": "toggle", "const": "bassMono", "text": "Bass Mono", "rect": [184, 0, 64, 18],
+     "info": "Mixes the band below the frequency to mono (a Linkwitz-Riley 24 dB/oct crossover; structural: switching it recompiles)."},
+    {"type": "knob", "param": "bassFreq", "label": "Freq", "rect": [188, 22, 56, 58], "when": [{"const": "bassMono", "in": [1]}]},
+    {"type": "toggle", "const": "audition", "text": "Audition", "rect": [184, 84, 64, 18], "when": [{"const": "bassMono", "in": [1]}],
+     "info": "Plays only the mono bass band (structural)."}
+  ]
+}

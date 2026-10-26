@@ -10,7 +10,10 @@
 // document: PatchEditor::onCommitted hands the new text to a `SetDevicePatch` command and the project's per-track
 // compile (ProjectLink) swaps the unit, so this interface is only the stand-alone preview's.
 
+#include <string_view>
+
 #include "pq/core/result.h"
+#include "pq/core/tap_ring.h"
 #include "pq/graph/schedule.h"
 
 namespace pq::views::circuit {
@@ -28,6 +31,13 @@ public:
   // The state layout of the program published last (ScheduleOptions::previous: unchanged state keeps its offsets,
   // so the swap's transfer is a few coalesced copies), or null.
   virtual const graph::StateLayout* stateLayout() const = 0;
+
+  // T4.6 (device panels): writes a root `param` of the playing program by name, in its internal units (a dB param takes
+  // a linear gain); no recompile. Lock-free hand-over to the audio thread (applied at the next block; a hot swap carries
+  // it by param key). False when nothing plays, the name is not a param of what plays, or the write queue is full.
+  virtual bool setParam(std::string_view /*name*/, float /*value*/) { return false; }
+  // T4.6: the analysis tap of the played output (stereo; SPEC §11.1), or null. Owned by the player; lives as long as it.
+  virtual TapRing* outputTap() noexcept { return nullptr; }
 };
 
 }  // namespace pq::views::circuit

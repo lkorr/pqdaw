@@ -111,7 +111,7 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   CHECK(t->fonts.title.px == 12);
   CHECK(t->size.gutter == 6.0f);
   CHECK(alphaOf(t->surface.panel) == 255);
-  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 17 + 21 + 18 + 5 + 15 + 1);  // metrics: + size.gutter (T3.x-fix-look)  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10), automation.* (T3.15), circuit.* (T4.2), code.* (T4.4)
+  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 17 + 21 + 18 + 24 + 5 + 15 + 1);  // metrics: + size.gutter (T3.x-fix-look)  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10), automation.* (T3.15), circuit.* (T4.2), code.* (T4.4), device.* (T4.6)
 }
 
 TEST_CASE("theme: the file round-trips (struct and bytes)") {

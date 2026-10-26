@@ -1,0 +1,37 @@
+{
+  "format": "pqdaw-panel 1",
+  "patch": "eq_eight",
+  "title": "EQ Eight",
+  "size": [628, 146],
+  "selectors": [
+    {"name": "band", "values": ["1", "2", "3", "4", "5", "6", "7", "8"], "default": 3},
+    {"name": "ab", "values": ["", "B"], "default": 0}
+  ],
+  "controls": [
+    {"type": "visual", "visual": "eq", "rect": [0, 0, 400, 106],
+     "bind": {"freq": "freq{ab}{band}", "gain": "gain{ab}{band}", "q": "q{ab}{band}", "type": "#type{ab}{band}", "on": "#on{ab}{band}",
+              "scale": "scale", "adaptive": "adaptive", "output": "outGain", "hq": "#hq", "@bands": "band", "@range": "15"}},
+    {"repeat": {"var": "i", "values": ["1", "2", "3", "4", "5", "6", "7", "8"], "step": [50, 0]},
+     "control": {"type": "toggle", "const": "on{ab}{i}", "id": "on{i}", "text": "{i}", "rect": [0, 110, 48, 16],
+                 "info": "Switches band {i} on or off (structural: an off band costs nothing)."}},
+    {"repeat": {"var": "i", "values": ["1", "2", "3", "4", "5", "6", "7", "8"], "step": [50, 0]},
+     "control": {"type": "chooser", "const": "type{ab}{i}", "id": "type{i}", "label": "Band {i} Type",
+                 "items": ["Low Cut 48", "Low Cut 12", "Low Shelf", "Bell", "Notch", "High Shelf", "High Cut 12", "High Cut 48"],
+                 "style": "filter", "rect": [0, 128, 48, 18],
+                 "info": "Band {i}'s filter: low cut 48 / 12 dB, low shelf, bell, notch, high shelf, high cut 12 / 48 dB (structural)."}},
+    {"type": "knob", "param": "freq{ab}{band}", "id": "freq", "rect": [406, 0, 54, 58]},
+    {"type": "knob", "param": "gain{ab}{band}", "id": "gain", "rect": [462, 0, 54, 58]},
+    {"type": "knob", "param": "q{ab}{band}", "id": "q", "rect": [518, 0, 54, 58]},
+    {"type": "knob", "param": "scale", "rect": [574, 0, 54, 58]},
+    {"type": "label", "text": "Mode", "rect": [406, 66, 70, 14]},
+    {"type": "chooser", "const": "mode", "label": "Mode", "items": ["Stereo", "L/R", "M/S"], "rect": [406, 80, 70, 18],
+     "info": "Stereo: one set of bands on both channels. L/R and M/S: set A on left / mid, set B on right / side (structural)."},
+    {"type": "label", "text": "Edit", "rect": [480, 66, 56, 14], "when": [{"const": "mode", "in": [1, 2]}]},
+    {"type": "tabs", "selector": "ab", "id": "edit", "rect": [480, 80, 56, 18], "when": [{"const": "mode", "in": [1, 2]}]},
+    {"type": "toggle", "param": "adaptive", "text": "Adaptive Q", "rect": [406, 106, 70, 18],
+     "info": "Narrows the bells and shelves as their boost or cut grows, as analog EQs do."},
+    {"type": "toggle", "const": "hq", "text": "HQ", "values": [1, 2], "rect": [480, 106, 56, 18],
+     "info": "Runs the bands at twice the sample rate: bells and shelves near Nyquist keep their analog shape (structural)."},
+    {"type": "knob", "param": "outGain", "rect": [574, 66, 54, 58]}
+  ]
+}

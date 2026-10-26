@@ -10,6 +10,7 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
+#include "pq/views/devices/device_view.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -729,6 +730,9 @@ constexpr SceneEntry kScenes[] = {
     {"circuit", 1280, 800, nullptr, setupCircuit},
     {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},
     {"circuit-svf-core", 1280, 800, nullptr, setupCircuitSvfCore},
+    {"device-utility", 1280, 800, nullptr, devices::setupDeviceScene},       // T4.6: --project stdlib/devices/utility.pqp
+    {"device-saturator", 1280, 800, nullptr, devices::setupDeviceScene},
+    {"device-eq-eight", 1280, 800, nullptr, devices::setupDeviceScene},
     {"circuit-editor", 1280, 800, nullptr, setupCircuitEditor},
     {"circuit-editor-error", 1280, 800, nullptr, setupCircuitEditorError},
 };

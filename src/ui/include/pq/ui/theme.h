@@ -142,6 +142,11 @@ struct Theme {
         comment, name, punctuation, selection, caret, error, errorText, warning, stale;
     bool operator==(const Code&) const = default;
   } code{};
+  struct Device {  // device panels (T4.6, SPEC §7.3 / §9): frame, jacks, knob arcs, displays (transfer curve, EQ)
+    Rgba background, titleBar, titleText, titleTextOff, border, jackStrip, jack, jackRing, jackRingHover, activatorOn, activatorOff, label,
+        value, knob, display, displayGrid, displayGridMajor, displayText, curve, curveFill, band, bandOff, bandText, bandSelected;
+    bool operator==(const Device&) const = default;
+  } device{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;

@@ -79,6 +79,11 @@ uint64_t SpectrumFeed::snapshot(uint64_t seq, std::vector<float>& levels, bool& 
   return seq_;
 }
 
+void SpectrumFeed::hold() {
+  std::lock_guard lock(mutex_);
+  settled_ = true;
+}
+
 uint32_t SpectrumFeed::step(double now) {
   const uint32_t ran = work(now);
   return ran;

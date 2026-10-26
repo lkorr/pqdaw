@@ -7,10 +7,12 @@
 //   T3.18 installPreferences(shell);   → shell.overlay() (the preferences window), the app.preferences action
 //   T3.19 installTuningsPanel(shell);  → ShellSlot::Tunings (View > Tunings), the tuning.newMain action
 //   T4.2  circuit::installCircuitViewer(shell); → shell.overlay() (the circuit viewer), the view.openPatch action
+//   T4.6  devices::installDeviceView(shell);    → ShellSlot::DeviceDetail (device panels), the view.openDevice action
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_viewer.h"
+#include "pq/views/devices/device_view.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -31,6 +33,7 @@ void installDefaultContent(Shell& shell) {
   installPreferences(shell);
   installTuningsPanel(shell);
   circuit::installCircuitViewer(shell);
+  devices::installDeviceView(shell);
 }
 
 }  // namespace pq::views

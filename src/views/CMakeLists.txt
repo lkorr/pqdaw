@@ -11,6 +11,7 @@
 #   include/pq/views/prefs/        src/prefs/         preferences window (T3.18)
 #   include/pq/views/tunings/      src/tunings/       Tunings panel (T3.19)
 #   include/pq/views/circuit/      src/circuit/       circuit canvas, symbols, patch viewer (T4.2, T4.3)
+#   include/pq/views/devices/      src/devices/       device panels, displays, the Device view (T4.6)
 #   src/common/                                       private drawing helpers shared by every view
 # A subtree lists its sources in its own src/<subtree>/sources.cmake as
 #   set(PQ_VIEWS_<SUBTREE>_SOURCES src/<subtree>/a.cpp ...)   # paths relative to this directory
@@ -23,7 +24,7 @@ set(PQ_VIEWS_SOURCES
   src/shell/menu_bar.cpp
   src/shell/panels.cpp
   src/shell/default_content.cpp)
-foreach(sub arrangement mixer piano_roll mos_wheel prefs tunings circuit)
+foreach(sub arrangement mixer piano_roll mos_wheel prefs tunings circuit devices)
   include(${CMAKE_CURRENT_SOURCE_DIR}/src/${sub}/sources.cmake OPTIONAL)
   string(TOUPPER ${sub} _sub)
   list(APPEND PQ_VIEWS_SOURCES ${PQ_VIEWS_${_sub}_SOURCES})
@@ -31,4 +32,5 @@ endforeach()
 
 pq_add_module(pq_views
   SOURCES ${PQ_VIEWS_SOURCES}
-  DEPS pq_ui pq_doc pq_graph pq_tuning pq_core)
+  DEPS pq_ui pq_doc pq_graph pq_dsp pq_tuning pq_core
+  PRIVATE_DEPS nlohmann_json::nlohmann_json)  # T4.6: panel descriptions (JSON)

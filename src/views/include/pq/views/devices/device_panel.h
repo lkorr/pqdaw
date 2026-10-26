@@ -76,8 +76,11 @@ public:
   void setActive(bool on);  // programmatic (no target call)
   bool folded() const noexcept { return folded_; }
   void setFolded(bool f);
-  // Logical width of the whole panel as laid out now (folded: the title bar only).
+  // Logical size of the whole panel as laid out now (folded: the title bar only).
   float logicalWidth() const noexcept;
+  float logicalHeight() const noexcept;
+  // The source started playing: displays that show the output spectrum start drawing it (if shown).
+  void wakeDisplays();
 
   // ---- T4.7 hooks ----
   struct Jack {

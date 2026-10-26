@@ -243,6 +243,7 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       v.push_back(check(act("Tunings", "view.toggleTunings"), ctx_.tuningsVisible()));
       v.push_back(act("MOS Wheel", "tuning.openMosWheel"));
       v.push_back(act("Open Patch in Circuit View\xE2\x80\xA6", "view.openPatch"));  // T4.2
+      v.push_back(act("Open Device…", "view.openDevice"));  // T4.6
       v.push_back(MenuItem::sep());
       v.push_back(act("Zoom In", "arrangement.zoomIn"));
       v.push_back(act("Zoom Out", "arrangement.zoomOut"));

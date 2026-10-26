@@ -50,6 +50,7 @@ struct DevicePanel::Impl {
   void userParamEnd(const std::string& name);
   void userConst(const std::string& name, double v, ui::Widget* source);
   void userSelect(const std::string& selector, int32_t index);
+  void userActive(bool on);
   // Shows a value change on every control and display that reads `name` (except `source`).
   void changed(std::string_view name, bool isConst, ui::Widget* source);
   // Rebinds every control after a selector change; re-evaluates visibility.

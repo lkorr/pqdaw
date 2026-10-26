@@ -28,7 +28,8 @@
 //       {"repeat": {"var": "i", "values": ["1", …], "step": [dx, dy]}, "control": {… "{i}" …}}
 //     ]
 //   }
-//   Any control may carry "id" (its widget name; default: the binding or the type and index), "label" (overrides the
+//   A chooser may carry "style": "filter" (EQ filter-shape glyphs, items in EQ Eight's type order).
+//   Any control may carry "id" (its widget name; default: the binding or visual name, + "#<index>" when taken), "label" (overrides the
 //   param's @label), "when": [{"param" | "const" | "selector": name, "in": [values]}] (shown only while every
 //   condition holds; params and consts compare numbers, selectors strings) and "info" (info-view body text).
 // Bindings may contain "{selector}" (and inside "repeat", "{var}"); parsePanelDesc checks that every binding resolves
@@ -63,6 +64,7 @@ struct ControlDesc {
   std::string label, text, info;
   std::vector<std::string> items;
   std::vector<double> values;  // chooser / toggle values of a const (default: 0 … n−1; toggle [0, 1])
+  std::string style;           // Chooser: "filter" draws EQ filter-shape glyphs instead of the item text (Live's EQ row)
   std::string selector;        // Tabs
   std::string visual;          // Visual
   std::map<std::string, std::string> bind;  // Visual: role → param / const name (templated)

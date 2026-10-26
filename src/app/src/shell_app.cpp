@@ -12,6 +12,7 @@
 #include "pq/app/startup.h"
 #include "pq/compile/compile.h"
 #include "pq/views/circuit/circuit_editor.h"
+#include "pq/views/devices/device_view.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/app/audio_manager.h"
 #include "pq/app/user_settings.h"
@@ -182,6 +183,8 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   if (!shell) return std::move(shell).error();
   app->shell_ = std::move(*shell);
   markStartupPhase("views built");
+  // T4.6: View > Open Device… lists the stock devices (the player is attached below once the playback link exists).
+  views::devices::setDeviceLibrary(*app->shell_, stdlibDir() + "/devices", nullptr);
   if (app->link_) {
     const double t1 = msSinceMainEntry();
     app->link_->attach(*app->ctx_);
@@ -203,6 +206,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       if (raw->audio_) raw->audio_->output().setExtraSource(on ? &raw->previewCallback_ : nullptr);
     };
     views::circuit::setPatchPlayer(*app->shell_, app->preview_.get());
+    views::devices::setDeviceLibrary(*app->shell_, stdlibDir() + "/devices", app->preview_.get());  // T4.6
     markStartupPhase("link attached, audio device opening in the background");
   }
   ShellApp* self = app.get();

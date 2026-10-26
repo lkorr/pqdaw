@@ -19,10 +19,15 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pq/app/play.h"
 #include "pq/core/aligned_buffer.h"
+#include "pq/core/spsc_ring.h"
+#include "pq/core/tap_ring.h"
 #include "pq/engine/audio_block.h"
 #include "pq/engine/background_compile.h"
 #include "pq/engine/program_host.h"
@@ -52,6 +57,12 @@ public:
   void stop() override;
   bool playing() const override { return active_.load(std::memory_order_acquire); }
   const graph::StateLayout* stateLayout() const override;
+  // T4.6: param writes by root param name (an SPSC ring to the audio thread, applied before the next block by
+  // ParamSlot::key, so a write that crosses a hot swap lands in whichever image is current), and the output tap the
+  // device panels' spectrum reads (written after the program, before the preview's level; nothing while no display
+  // wants it).
+  bool setParam(std::string_view name, float value) override;
+  TapRing* outputTap() noexcept override { return &tap_; }
 
   // Audio thread: adds the preview into b.out (RT-safe). Nothing while stopped.
   void process(const engine::AudioBlock& b) noexcept;
@@ -97,6 +108,15 @@ private:
   // Audio-thread scratch: the host renders here, then it is added to the device block.
   AlignedBuffer<float> scratch_;
   std::vector<float*> outs_;
+  // T4.6: param writes (UI → audio) and the names of the playing program's params (UI thread, under mutex_).
+  struct ParamWrite {
+    uint64_t key = 0;
+    float value = 0.0f;
+  };
+  SpscRing<ParamWrite> paramWrites_{256};
+  std::vector<std::pair<std::string, uint64_t>> paramKeys_;
+  TapRing tap_{2, 32768, 2048};
+  void applyParamWrites(engine::ProgramHost& host) noexcept;
 };
 
 }  // namespace pq::app
