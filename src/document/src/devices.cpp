@@ -6,8 +6,11 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 
+#include "pq/document/lower.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
 
@@ -100,6 +103,19 @@ struct DeviceLibrary::Files final : graph::ImportLoader {
   std::vector<std::unique_ptr<graph::ParseResult>> parsed;
   std::map<std::string, graph::ParseResult*> byPath;
   std::map<std::string, int> active;
+  // T4.4-fix1: per stock device, its file (the key its imports resolve against, its text and parse).
+  struct Stock {
+    std::string patch, key;
+    const std::string* text = nullptr;
+    const graph::ParseResult* parsed = nullptr;
+  };
+  std::vector<Stock> stock;
+  std::map<const graph::ParseResult*, std::pair<std::string, const std::string*>> origin;  // parse → (key, text)
+  const Stock* stockOf(std::string_view patch) const {
+    for (const Stock& s : stock)
+      if (s.patch == patch) return &s;
+    return nullptr;
+  }
 
   Result<graph::ParseResult*> loadFile(const fs::path& path) {
     std::error_code ec;
@@ -111,13 +127,15 @@ struct DeviceLibrary::Files final : graph::ImportLoader {
     if (!text) return text.error();
     active[key] = 1;
     texts.push_back(std::move(*text));
+    const std::string* mine = &texts.back();  // a deque: stays valid while imports push their texts
     graph::ParseOptions po;
     po.imports = this;
-    auto r = std::make_unique<graph::ParseResult>(graph::parseDetailed(texts.back(), key, po));
+    auto r = std::make_unique<graph::ParseResult>(graph::parseDetailed(*mine, key, po));
     active.erase(key);
-    if (!r->ok()) return Error{ErrorCode::Parse, joinDiagnostics(texts.back(), r->diagnostics), {}};
+    if (!r->ok()) return Error{ErrorCode::Parse, joinDiagnostics(*mine, r->diagnostics), {}};
     graph::ParseResult* raw = r.get();
     byPath[key] = raw;
+    origin[raw] = {key, mine};
     parsed.push_back(std::move(r));
     return raw;
   }
@@ -127,6 +145,18 @@ struct DeviceLibrary::Files final : graph::ImportLoader {
     if (!r) return std::move(r).error();
     return graph::signatures((*r)->file);
   }
+};
+
+// T4.4-fix1: resolved user devices, per device id (resolve()).
+struct DeviceLibrary::UserCache {
+  std::mutex mutex;
+  struct Entry {
+    std::shared_ptr<const ResolvedDevice> r;
+    uint64_t used = 0;
+  };
+  std::unordered_map<uint32_t, std::vector<Entry>> byDevice;
+  uint64_t clock = 0;
+  size_t baseFiles = 0;  // files_->parsed of the stock set (later ones: user imports)
 };
 
 const DeviceParamInfo* DeviceInfo::param(std::string_view n) const noexcept {
@@ -229,7 +259,7 @@ std::string DeviceLibrary::pathOf(std::string_view patch) const {
   return {};
 }
 
-DeviceLibrary::DeviceLibrary() : files_(std::make_unique<Files>()) {}
+DeviceLibrary::DeviceLibrary() : files_(std::make_unique<Files>()), users_(std::make_unique<UserCache>()) {}
 DeviceLibrary::~DeviceLibrary() = default;
 
 Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlibDirUtf8) {
@@ -251,6 +281,8 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
     found.emplace_back(patch, &sd);
     const std::u8string u8 = path.u8string();
     lib->paths_.emplace_back(std::string(sd.patch), std::string(u8.begin(), u8.end()));
+    const auto& [key, text] = lib->files_->origin.at(*file);
+    lib->files_->stock.push_back(DeviceLibrary::Files::Stock{std::string(sd.patch), key, text, *file});
   }
   // The device files first (in stock order), then every file they import: the first patch under a name wins.
   for (const auto& [patch, sd] : found) lib->library_.add(*patch);
@@ -268,7 +300,157 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
                                                    " but its patch is not one", {}};
     lib->catalog_.add(std::move(*info));
   }
+  lib->users_->baseFiles = lib->files_->parsed.size();
   return lib;
+}
+
+// ---- User devices (T4.4-fix1) -----------------------------------------------------------------------------------------
+
+namespace {
+
+// What the program depends on in a file's patches (lower.h patchHash per patch, plus the solve blocks' iterations):
+// equal for a layout, comment or formatting edit.
+uint64_t graphHash(const graph::PatchFile& f) noexcept {
+  uint64_t h = 0xcbf29ce484222325ull;
+  auto mix = [&](uint64_t v) {
+    h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+  };
+  for (const graph::Patch& p : f.patches) {
+    mix(patchHash(p));
+    for (const graph::Solve& s : p.solves()) mix(s.iterations);
+  }
+  return h;
+}
+
+std::string hex16(uint64_t v) {
+  static constexpr char kDigits[] = "0123456789abcdef";
+  std::string s(16, '0');
+  for (int i = 15; i >= 0; --i, v >>= 4) s[static_cast<size_t>(i)] = kDigits[v & 15];
+  return s;
+}
+
+std::shared_ptr<const UserDeviceGraph> renamedGraph(const graph::PatchFile& parsed, const std::string& rootName,
+                                                   DeviceId device, uint64_t hash) {
+  auto g = std::make_shared<UserDeviceGraph>();
+  g->file = parsed;
+  g->hash = hash;
+  const std::string suffix = "__u" + std::to_string(device.value) + "_" + hex16(hash);
+  std::vector<std::string> own;
+  for (const graph::Patch& p : parsed.patches) own.push_back(p.name());
+  for (graph::Patch& p : g->file.patches) {
+    p.setName(p.name() + suffix);
+    for (graph::NodeIndex n = 0; n < p.nodeCount(); ++n)
+      if (p.node(n).kind == graph::NodeKind::Subcircuit &&
+          std::find(own.begin(), own.end(), p.subcircuit(n).patch) != own.end())
+        p.setSubcircuitPatch(n, p.subcircuit(n).patch + suffix);
+  }
+  g->root = rootName + suffix;
+  for (const graph::Patch& p : g->file.patches) g->library.add(p);
+  return g;
+}
+
+}  // namespace
+
+std::shared_ptr<const ResolvedDevice> DeviceLibrary::resolve(const Device& d) const {
+  if (!d.source) return nullptr;
+  UserCache& c = *users_;
+  std::lock_guard lock(c.mutex);
+  std::vector<UserCache::Entry>& list = c.byDevice[d.id.value];
+  const uint64_t now = ++c.clock;
+  for (UserCache::Entry& e : list)
+    if (e.r->source == d.source || e.r->source->text == d.source->text) {
+      e.used = now;
+      return e.r;
+    }
+  // The ids to carry: the editor's parse of this text, else the device's last parse, else the stock file's.
+  const UserCache::Entry* latest = nullptr;  // the most recently used entry that parsed
+  const UserCache::Entry* lastGood = nullptr;  // … that plays its own graph
+  for (const UserCache::Entry& e : list) {
+    if (e.r->parsedOk && (!latest || e.used > latest->used)) latest = &e;
+    if (e.r->graph && !e.r->stale && (!lastGood || e.used > lastGood->used)) lastGood = &e;
+  }
+  const Files::Stock* stock = files_->stockOf(d.patch);
+  const graph::PatchFile* previous = d.source->ids.get();
+  if (!previous && latest) previous = &latest->r->parsed;
+  if (!previous && stock) previous = &stock->parsed->file;
+
+  auto r = std::make_shared<ResolvedDevice>();
+  r->device = d.id;
+  r->source = d.source;
+  const DeviceInfo* stockInfo = catalog_.find(d.patch);
+  const std::string displayName = stockInfo ? stockInfo->name : d.patch;
+  if (!stock) {
+    r->error = "the stock device '" + d.patch + "' it was made from is not in the library";
+  } else {
+    graph::ParseOptions po;
+    po.imports = files_.get();
+    po.previous = previous;
+    po.lenientLayout = true;  // as the circuit editor parses (the same ids for the same text)
+    po.deferMissingInputs = true;
+    graph::ParseResult pr = graph::parseDetailed(d.source->text, stock->key, po);
+    if (!pr.lowered) {
+      r->error = pr.diagnostics.empty() ? std::string("the text does not parse")
+                                        : graph::formatDiagnostic(d.source->text, pr.diagnostics.front());
+    } else {
+      r->parsed = std::move(pr.file);
+      r->parsedOk = true;
+      const graph::Patch* root = r->parsed.find(d.patch);
+      if (!pr.diagnostics.empty()) {
+        r->error = graph::formatDiagnostic(d.source->text, pr.diagnostics.front());
+      } else if (!root) {
+        r->error = "the edited text has no patch '" + d.patch + "'";
+      } else {
+        auto info = describeDevice(*root, displayName);
+        if (!info) {
+          r->error = info.error().message;
+        } else if (info->kind != d.kind) {
+          r->error = std::string("the edited patch is not ") +
+                     (d.kind == DeviceKind::Instrument ? "an instrument" : "an audio effect") + " any more";
+        } else {
+          const uint64_t h = graphHash(r->parsed);
+          for (const UserCache::Entry& e : list)  // the same graph as an earlier text (a layout / comment edit)
+            if (e.r->graph && !e.r->stale && e.r->graph->hash == h) r->graph = e.r->graph;
+          if (!r->graph) r->graph = renamedGraph(r->parsed, d.patch, d.id, h);
+          r->info = std::move(*info);
+        }
+      }
+    }
+  }
+  if (!r->error.empty() && lastGood) {  // the last good version keeps playing
+    r->graph = lastGood->r->graph;
+    r->info = lastGood->r->info;
+    r->stale = true;
+  }
+  for (size_t i = c.baseFiles; i < files_->parsed.size(); ++i) r->extraFiles.push_back(&files_->parsed[i]->file);
+  list.push_back(UserCache::Entry{r, now});
+  if (list.size() > kResolvedPerDevice) {
+    auto oldest = std::min_element(list.begin(), list.end(),
+                                   [](const UserCache::Entry& a, const UserCache::Entry& b) { return a.used < b.used; });
+    list.erase(oldest);
+  }
+  return r;
+}
+
+std::string DeviceLibrary::stockText(std::string_view patch) const {
+  const Files::Stock* s = files_->stockOf(patch);
+  return s && s->text ? *s->text : std::string();
+}
+
+const graph::PatchFile* DeviceLibrary::stockFile(std::string_view patch) const {
+  const Files::Stock* s = files_->stockOf(patch);
+  return s ? &s->parsed->file : nullptr;
+}
+
+const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
+  if (!d.source) return library_.find(d.patch);
+  hold = resolve(d);
+  return hold ? hold->root() : nullptr;
+}
+
+const DeviceInfo* DeviceLibrary::infoOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
+  if (!d.source) return catalog_.find(d.patch);
+  hold = resolve(d);
+  return hold && hold->graph ? &hold->info : nullptr;
 }
 
 }  // namespace pq::doc

@@ -14,6 +14,14 @@ void History::push(Entry e) {
   cursor_ = entries_.size();
 }
 
+void History::amendLast(Snapshot after, const ChangeSet& more) {
+  if (entries_.empty() || cursor_ != entries_.size()) return;
+  Entry& e = entries_.back();
+  e.after = std::move(after);
+  e.changes.merge(more);
+  e.changes.normalize();
+}
+
 void History::clear() noexcept {
   entries_.clear();
   cursor_ = 0;
@@ -27,7 +35,35 @@ DocumentStore::DocumentStore(Snapshot initial) : current_(std::move(initial)) {
   ids_.reserveThrough(maxEntityId(*current_));
 }
 
+Status DocumentStore::dispatchCoalescing(const Command& c, uint64_t key) {
+  const bool join = key != 0 && key == coalesceKey_ && !gesture_ && history_.cursor() == coalesceAt_ &&
+                    coalesceAt_ == history_.entries().size() && coalesceAt_ > 0;
+  if (!join) {
+    Status s = dispatch(c);
+    if (s && key != 0 && !gesture_ && history_.cursor() == history_.entries().size() && history_.cursor() > 0 &&
+        last_ == &history_.entries().back().changes) {  // it recorded an entry: later ones with `key` may join it
+      coalesceKey_ = key;
+      coalesceAt_ = history_.cursor();
+    }
+    return s;
+  }
+  step_.clear();
+  last_ = &empty_;
+  Result<Snapshot> r = apply(current_, c, step_);
+  if (!r) return std::move(r).error();
+  Snapshot next = std::move(r).value();
+  if (next == current_) return Ok{};
+  Snapshot before = std::move(current_);
+  current_ = std::move(next);
+  step_.normalize();
+  history_.amendLast(current_, step_);
+  last_ = &step_;
+  notify(StoreEventKind::Dispatch, before, current_, step_);
+  return Ok{};
+}
+
 Status DocumentStore::dispatch(const Command& c) {
+  coalesceKey_ = 0;
   step_.clear();
   last_ = &empty_;
   Result<Snapshot> r = apply(current_, c, step_);
@@ -51,6 +87,7 @@ Status DocumentStore::dispatch(const Command& c) {
 }
 
 Status DocumentStore::beginGesture(std::string label) {
+  coalesceKey_ = 0;
   if (gesture_) return Error{ErrorCode::InvalidArgument, "a gesture is already in progress", {}};
   gesture_ = Gesture{std::move(label), current_, {}};
   return Ok{};
@@ -86,6 +123,7 @@ Status DocumentStore::cancelGesture() {
 }
 
 bool DocumentStore::undo() {
+  coalesceKey_ = 0;
   if (gesture_) return false;
   const History::Entry* e = history_.stepBack();
   if (!e) return false;
@@ -97,6 +135,7 @@ bool DocumentStore::undo() {
 }
 
 bool DocumentStore::redo() {
+  coalesceKey_ = 0;
   if (gesture_) return false;
   const History::Entry* e = history_.stepForward();
   if (!e) return false;
@@ -108,6 +147,7 @@ bool DocumentStore::redo() {
 }
 
 void DocumentStore::reset(Snapshot s) {
+  coalesceKey_ = 0;
   gesture_.reset();
   history_.clear();
   last_ = &empty_;

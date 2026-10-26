@@ -440,8 +440,10 @@ private:
   }
 
   // T4.1: one line per device; params / settings as {name: value} (only those set), `active` only when false.
+  // T4.4-fix1 (schema 5): a user device's own patch text as "source": one string per line (diffable; the text is
+  // the lines joined by "\n"), the device then written over several lines.
   void device(const PathSeg& at, const Device& d) {
-    w_.beginObject(false);
+    w_.beginObject(d.source != nullptr);
     w_.key("id");
     w_.integer(d.id.value);
     w_.key("patch");
@@ -465,6 +467,30 @@ private:
     };
     values("params", d.params);
     values("settings", d.settings);
+    if (d.source) {
+      // Lines end in "\r\n" throughout (a Windows checkout of the stdlib): written without the '\r', "crlf": true.
+      const std::string_view text = d.source->text;
+      bool crlf = text.find('\n') != std::string_view::npos;
+      for (size_t b = text.find('\n'); crlf && b != std::string_view::npos; b = text.find('\n', b + 1))
+        crlf = b > 0 && text[b - 1] == '\r';
+      if (crlf) {
+        w_.key("crlf");
+        w_.boolean(true);
+      }
+      const PathSeg sat(&at, "source");
+      w_.key("source");
+      w_.beginArray(true);
+      size_t line = 0;
+      for (size_t a = 0;; ++line) {
+        const size_t b = text.find('\n', a);
+        std::string_view l = text.substr(a, b == std::string_view::npos ? std::string_view::npos : b - a);
+        if (crlf && b != std::string_view::npos) l.remove_suffix(1);
+        w_.string(PathSeg(&sat, line), l);
+        if (b == std::string_view::npos) break;
+        a = b + 1;
+      }
+      w_.endArray();
+    }
     w_.endObject();
   }
 
@@ -1221,8 +1247,9 @@ private:
     r_.beginArray(at);
     for (size_t i = 0; r_.nextElement(at); ++i) {
       const PathSeg el(&at, i);
-      static constexpr std::string_view K[] = {"id", "patch", "kind", "active", "params", "settings"};
+      static constexpr std::string_view K[] = {"id", "patch", "kind", "active", "params", "settings", "source", "crlf"};
       auto d = std::make_shared<Device>();
+      bool crlf = false;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
         const PathSeg f(&el, K[static_cast<size_t>(k)]);
@@ -1236,9 +1263,37 @@ private:
           case 3: d->active = r_.readBool(f); break;
           case 4: d->params = deviceValues(f); break;
           case 5: d->settings = deviceValues(f); break;
+          case 6: {  // T4.4-fix1: a user device's patch text, one string per line
+            auto src = std::make_shared<UserPatch>();
+            r_.beginArray(f);
+            std::string line;
+            for (size_t j = 0; r_.nextElement(f); ++j) {
+              line.clear();
+              r_.readString(PathSeg(&f, j), line);
+              if (j > 0) src->text += '\n';
+              src->text += line;
+            }
+            if (src->text.empty()) r_.failValue(f, "must not be empty");
+            d->source = std::move(src);
+            break;
+          }
+          case 7: crlf = r_.readBool(f); break;
         }
       }
       m.require({0, 1, 2});
+      if (crlf && d->source) {  // the lines were written without their '\r'
+        std::string t;
+        t.reserve(d->source->text.size() + d->source->text.size() / 32);
+        for (const char ch : d->source->text) {
+          if (ch == '\n') t += '\r';
+          t += ch;
+        }
+        auto src = std::make_shared<UserPatch>();
+        src->text = std::move(t);
+        d->source = std::move(src);
+      } else if (crlf) {
+        r_.failValue(el, "\"crlf\" without a \"source\"");
+      }
       v.push_back(std::move(d));
     }
     return v;
@@ -2004,10 +2059,19 @@ Status migrateAddWires(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 4 → 5 (T4.4-fix1): schema 5 adds the optional per-device "source" (a user device's own patch text); every device of
+// a schema-4 file plays its stock patch, so nothing changes. Self-contained (renumber, do not merge, if another schema
+// step lands first).
+Status migrateAddUserDeviceSource(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
     {3, migrateAddWires},
+    {4, migrateAddUserDeviceSource},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

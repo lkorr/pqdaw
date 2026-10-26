@@ -419,6 +419,16 @@ std::vector<Case> cases() {
                }, S, [](Fixture& f, const ChangeSet&) {
                  CHECK(f.track(f.lead).devices.at(1)->setting("bassMono")->value == 1.0);
                }});
+  c.push_back({"SetDevicePatch", [withChain](Fixture& f) -> Command {  // T4.4-fix1: a user device's own text
+                 withChain(f);
+                 auto src = std::make_shared<UserPatch>();
+                 src->text = "patch utility { in x : audio stereo  out y : audio stereo  y = x }";
+                 return SetDevicePatch{chain.fx, src};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
+                 REQUIRE(f.track(f.lead).devices.at(1)->edited());
+                 CHECK(f.track(f.lead).devices.at(1)->patch == "utility");
+               }});
   // ---- modulation wires (T4.7): withWire adds chain.wire = inst.lfo → fx.width.
   static WireId wire;
   auto withWire = [withChain](Fixture& f) {

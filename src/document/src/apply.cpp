@@ -1323,6 +1323,19 @@ Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
   return editDevice(s, *loc, std::move(d), cs, kChangeStructural);
 }
 
+// T4.4-fix1: a user device's text (fork / edit) or back to the stock patch (null).
+Res apply_(const Snapshot& s, const SetDevicePatch& c, ChangeSet& cs) {
+  Result<DevLoc> loc = locateDevice(*s, c.device);
+  if (!loc) return std::move(loc).error();
+  const Device& old = *loc->track->devices[loc->index];
+  if (c.source && c.source->text.empty())
+    return Error{ErrorCode::InvalidArgument, "a device patch text must not be empty", {}};
+  if (old.source == c.source || (old.source && c.source && *old.source == *c.source)) return s;
+  Device d = old;
+  d.source = c.source;
+  return editDevice(s, *loc, std::move(d), cs, kChangeStructural);
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 // np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
@@ -1433,6 +1446,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
+    "Edit Device Patch",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Batch"};
 

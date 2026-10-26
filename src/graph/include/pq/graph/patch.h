@@ -149,6 +149,9 @@ public:
   void setLayout(NodeIndex n, const NodeLayout& layout) { layout_[n] = layout; }
   ParamDecl& paramDecl(NodeIndex n) { return params_[nodes_[n].payload]; }
   Constant& constant(NodeIndex n) { return constants_[nodes_[n].payload]; }
+  // T4.4-fix1: renames the callee a Subcircuit node calls (a project's user device renames its file's patches apart
+  // from the stock ones; the ports are unchanged).
+  void setSubcircuitPatch(NodeIndex n, std::string patch) { subcircuits_[nodes_[n].payload].patch = std::move(patch); }
   Solve& solve(SolveIndex s) { return solves_[s]; }
 
   WireIndex connect(PortRef from, PortRef to);

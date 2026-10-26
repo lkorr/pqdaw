@@ -44,6 +44,9 @@ public:
   std::string_view redoLabel() const noexcept { return canRedo() ? std::string_view(entries_[cursor_].label) : ""; }
 
   void clear() noexcept;
+  // T4.4-fix1 (DocumentStore::dispatchCoalescing): the last entry, when it is the one undo would take next, now ends
+  // at `after` and also touched `more`.
+  void amendLast(Snapshot after, const ChangeSet& more);
 
 private:
   // A deque, not a vector: a push never relocates existing entries, so a commit costs the same at entry 10 and

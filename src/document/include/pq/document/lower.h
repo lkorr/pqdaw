@@ -26,6 +26,10 @@
 // ProjectTrack::maxVoices = round(voices) clamped to [1, kMaxPolyphony] (the user's value, else the patch's default);
 // an instrument without one gets the link's default (LinkConfig::maxVoices). A change of it is a structural edit of
 // that track whose unit restarts with a VoiceEngine of the new size (engine::ProjectCompiler::update / rebuild).
+// User devices (T4.4-fix1, model.h UserPatch): the call names the device's own root, resolved through
+// LowerOptions::devices (devices.h DeviceLibrary::resolve: renamed `<name>__u<id>_<graph hash>`, the NodeIds the circuit
+// editor shows); the call's NodeId is the same, so a fork, an edit and Revert to Stock keep every state the patch
+// still has. graph.library is then LoweredProject::userLibrary.
 //
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
@@ -107,9 +111,15 @@ namespace pq::doc {
 // The largest polyphony an instrument's `voices` setting may ask for (T4.12-fix1).
 inline constexpr uint32_t kMaxPolyphony = 128;
 
+class DeviceLibrary;
+struct ResolvedDevice;
+
 struct LowerOptions {
   // The device library (devices.h: every patch a device may name, and what those import). Required.
   const graph::PatchLibrary* library = nullptr;
+  // T4.4-fix1: resolves user devices (Device::source; devices.h DeviceLibrary::resolve). Null: user devices are
+  // bypassed (listed in missingDevices). The app passes the DeviceLibrary whose library() is `library`.
+  const DeviceLibrary* devices = nullptr;
   std::span<const graph::SubcircuitRef> externals; // unused since T3.17-fix2 (the IR calls library patches directly)
   // The note-event slot of a MIDI track (Timeline::eventSource(k)); stable across lowerings (the app keeps the map).
   // kNone (graph::kNone): the track has no slot (more MIDI tracks than the engine has slots): it is lowered without
@@ -215,11 +225,26 @@ struct LoweredProject {
   std::vector<DeviceId> missingDevices;                       // bypassed: patch not in the library (or not its kind)
   std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
+  // T4.4-fix1: user devices. With any, graph.library is `userLibrary` (their renamed patches, then the library's and
+  // the files their texts import), and the resolutions stay alive with the lowering (the compiled units' instances
+  // point into them).
+  std::shared_ptr<const graph::PatchLibrary> userLibrary;
+  std::vector<std::shared_ptr<const ResolvedDevice>> userDevices;
+  // User devices whose current text does not play (ResolvedDevice::error): stale = their last good text plays, else
+  // they are bypassed (and in missingDevices).
+  struct DeviceError {
+    DeviceId device;
+    std::string message;
+    bool stale = false;
+  };
+  std::vector<DeviceError> deviceErrors;
 };
 
 // T4.7: how every wire of `project` is lowered with `library` (the same answer lower() gives, without building the
-// graph; the views draw the delayed and inactive ones). In id order.
+// graph; the views draw the delayed and inactive ones). In id order. T4.4-fix1: with `devices`, user devices play
+// their own patches (a wire to a port an edit removed is Invalid).
 std::vector<WireState> wireStates(const Project& project, const graph::PatchLibrary& library);
+std::vector<WireState> wireStates(const Project& project, const DeviceLibrary& devices);
 
 // T4.7: the knob travel of a device param — what its panel knob shows (pq/views/devices/device_model.h toPosition /
 // fromPosition follow the same rule) and what modulation adds to: Log for @curve(exp) with positive ends and for dB
@@ -244,6 +269,8 @@ Result<LoweredProject> lower(const Project& project, const LowerOptions& options
 // the device library lower() used (device params are included only with it; T4.1).
 std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes = false,
                                       const graph::PatchLibrary* library = nullptr);
+// T4.4-fix1: the same with user devices resolved through `devices` (its library()).
+std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes, const DeviceLibrary& devices);
 
 // What, besides structural changes, decides the lowered graph: the sends that are lowered only while stored (return
 // → return sends, sends that close a loop) and which of them are delayed. A send level edit that changes this key

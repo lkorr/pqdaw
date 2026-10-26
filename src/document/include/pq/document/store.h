@@ -79,6 +79,12 @@ public:
   // Applies a command. A no-op command changes nothing (no history entry, no notification). On error the document
   // is unchanged. lastChanges() then describes this dispatch (empty for a no-op or an error).
   Status dispatch(const Command& c);
+  // T4.4-fix1: as dispatch(), but a change dispatched with the same non-zero `key` as the one that recorded the latest
+  // history entry — with nothing recorded, undone or redone since and no gesture open — joins that entry (its `after`
+  // and ChangeSet) instead of adding one, still notifying every listener (each change plays at once). The circuit
+  // editor's typing run in a device's text is one undo step this way. Any other dispatch, gesture, undo or redo ends the
+  // run.
+  Status dispatchCoalescing(const Command& c, uint64_t key);
   const ChangeSet& lastChanges() const noexcept { return *last_; }
 
   // Gestures (see the file comment). An empty label takes the first dispatched command's label.
@@ -112,6 +118,8 @@ private:
   ViewState view_;
   History history_;
   std::optional<Gesture> gesture_;
+  uint64_t coalesceKey_ = 0;         // dispatchCoalescing: the key of the run that recorded entry coalesceAt_ − 1
+  size_t coalesceAt_ = 0;
   ChangeSet step_;                   // scratch for each dispatch
   const ChangeSet* last_ = &empty_;  // what lastChanges() returns
   ChangeSet empty_;

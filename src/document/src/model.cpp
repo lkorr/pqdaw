@@ -166,6 +166,14 @@ const DeviceValue* findValue(const std::vector<DeviceValue>& v, std::string_view
 const DeviceValue* Device::param(std::string_view name) const noexcept { return findValue(params, name); }
 const DeviceValue* Device::setting(std::string_view name) const noexcept { return findValue(settings, name); }
 
+bool operator==(const Device& a, const Device& b) noexcept {
+  if (a.id != b.id || a.patch != b.patch || a.kind != b.kind || a.active != b.active || a.params != b.params ||
+      a.settings != b.settings)
+    return false;
+  if (a.source == b.source) return true;
+  return a.source && b.source && *a.source == *b.source;
+}
+
 DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
   auto d = std::make_shared<Device>();
   d->id = id;

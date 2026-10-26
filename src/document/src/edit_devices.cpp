@@ -177,6 +177,36 @@ EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setti
   return e;
 }
 
+EditResult editDevicePatch(const Project& p, DeviceId device, std::string text, std::shared_ptr<const graph::PatchFile> ids) {
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  if (text.empty()) return invalid("a device patch text must not be empty");
+  Edit e = makeEdit("Edit Device Patch");
+  if (l.device->source && l.device->source->text == text) return e;  // unchanged: nothing to undo
+  e.devices.push_back(device);
+  e.tracks.push_back(l.track->id);
+  auto src = std::make_shared<UserPatch>();
+  src->text = std::move(text);
+  src->ids = std::move(ids);
+  batchOf(e).commands.push_back(SetDevicePatch{device, std::move(src)});
+  return e;
+}
+
+EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devices) {
+  Edit e = makeEdit("Revert to Stock");
+  std::vector<DeviceId> seen;
+  for (const DeviceId id : devices) {
+    if (std::find(seen.begin(), seen.end(), id) != seen.end()) continue;
+    const DeviceLoc l = findDevice(p, id);
+    if (!l.track) return notFound("device not found");
+    seen.push_back(id);
+    if (!l.device->edited()) continue;
+    e.devices.push_back(id);
+    batchOf(e).commands.push_back(SetDevicePatch{id, nullptr});
+  }
+  return e;
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,

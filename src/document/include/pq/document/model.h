@@ -29,6 +29,10 @@
 #include "pq/tuning/mos.h"
 #include "pq/tuning/tuning.h"
 
+namespace pq::graph {
+struct PatchFile;
+}
+
 namespace pq::doc {
 
 // 0xRRGGBB. Clip/track colours come from the theme palette (T3.2) but are stored as plain RGB.
@@ -283,6 +287,23 @@ struct DeviceValue {
   friend bool operator==(const DeviceValue&, const DeviceValue&) = default;
 };
 
+// T4.4-fix1 (SPEC §15 2026-10-26; QUESTIONS Q?-T4.4-fix1-a): a USER DEVICE is a stock device edited in the circuit
+// editor. The first edit forks the instance: it gets its own copy of the device's patch file (`text`: the whole .pqp
+// with its imports and helper patches), stored in the project; the stock file and every other instance are unchanged.
+// The device's patch is the patch of `text` named Device::patch (the stock name it was forked from: "Revert to Stock"
+// drops the copy and plays the library's patch again). Imports resolve relative to the stock file's location (the
+// stdlib), so `import "../filters/svf.pqp"` keeps working.
+// `ids` (optional, never saved) is the circuit editor's parse of `text` at the edit: the device library takes its
+// NodeIds from it (ParseOptions::previous), so the project plays the very ids the editor shows (probes, cost) and keeps
+// every state the editor kept. Without it (a loaded project) the library parses `text` with the ids of the device's
+// previous text, else of the stock file (devices.h DeviceLibrary::resolve).
+struct UserPatch {
+  std::string text;
+  std::shared_ptr<const graph::PatchFile> ids;
+  friend bool operator==(const UserPatch& a, const UserPatch& b) noexcept { return a.text == b.text; }
+};
+using UserPatchPtr = std::shared_ptr<const UserPatch>;
+
 // One device instance in a track's chain: a call of `patch` (a patch of the device library) with the values the user
 // set. Ports are the patch's signature and are not stored; params / settings not listed play the patch's defaults.
 struct Device {
@@ -292,9 +313,13 @@ struct Device {
   bool active = true;                // deactivated: left out of the graph (structural, zero CPU)
   std::vector<DeviceValue> params;   // sorted by name, unique
   std::vector<DeviceValue> settings; // sorted by name, unique
+  // T4.4-fix1: the instance's own patch text (a user device), or null (the library's stock patch). Shared, so a param
+  // edit copies the Device but never the text.
+  UserPatchPtr source;
+  bool edited() const noexcept { return source != nullptr; }
   const DeviceValue* param(std::string_view name) const noexcept;    // nullptr: the patch's default
   const DeviceValue* setting(std::string_view name) const noexcept;  // nullptr: the patch's default
-  friend bool operator==(const Device&, const Device&) = default;
+  friend bool operator==(const Device& a, const Device& b) noexcept;  // the texts compared, not the pointers
 };
 using DevicePtr = std::shared_ptr<const Device>;
 

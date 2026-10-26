@@ -11,6 +11,7 @@
 #include <unordered_map>
 
 #include "pq/document/audibility.h"
+#include "pq/document/devices.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/graph/kernel_map.h"
 #include "pq/graph/patch_file.h"
@@ -63,19 +64,75 @@ const Send* storedSend(const Track& t, TrackId ret) {
   return nullptr;
 }
 
+// The patches devices call (T4.4-fix1): the library's by name; a user device's own root (its resolution, kept alive by
+// the UserCallees that made this).
+struct Callees {
+  const graph::PatchLibrary* lib = nullptr;  // the library, or the combined one (LoweredProject::userLibrary)
+  std::unordered_map<uint32_t, const graph::Patch*> userRoot;  // device id → its own root (null: nothing plays)
+  const graph::Patch* find(const Device& d) const noexcept {
+    if (lib == nullptr) return nullptr;
+    if (!d.source) return lib->find(d.patch);
+    const auto it = userRoot.find(d.id.value);
+    return it == userRoot.end() ? nullptr : it->second;
+  }
+};
+
+// The callees of `p`'s devices: `base` alone while no device is a user device. With user devices and `combined`
+// (what a graph needs: lower(), the wire planner's walk into callees), a combined library of their renamed patches,
+// the base library and the stdlib files their texts import; without it (the param fast path: only roots are looked
+// at) nothing is built but the per-device lookup (a cache hit per user device).
+struct UserCallees {
+  Callees callees;
+  std::shared_ptr<graph::PatchLibrary> combined;
+  std::vector<std::shared_ptr<const ResolvedDevice>> held;
+  std::vector<LoweredProject::DeviceError> errors;
+};
+UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const DeviceLibrary* devices, bool combined) {
+  UserCallees u;
+  u.callees.lib = base;
+  if (base == nullptr) return u;
+  std::vector<const graph::PatchFile*> extra;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const DevicePtr& d : t.devices) {
+      if (!d->source) continue;
+      std::shared_ptr<const ResolvedDevice> r = devices != nullptr ? devices->resolve(*d) : nullptr;
+      if (!r) {
+        u.callees.userRoot[d->id.value] = nullptr;
+        u.errors.push_back({d->id, "edited devices need the device library", false});
+        continue;
+      }
+      if (!r->error.empty()) u.errors.push_back({d->id, r->error, r->graph != nullptr});
+      u.callees.userRoot[d->id.value] = r->root();
+      if (combined) {
+        if (!u.combined) u.combined = std::make_shared<graph::PatchLibrary>();
+        if (r->graph) u.combined->addAll(r->graph->library);
+        for (const graph::PatchFile* f : r->extraFiles)
+          if (std::find(extra.begin(), extra.end(), f) == extra.end()) extra.push_back(f);
+      }
+      u.held.push_back(std::move(r));
+    }
+  });
+  if (u.combined) {
+    u.combined->addAll(*base);
+    for (const graph::PatchFile* f : extra) u.combined->add(*f);  // first under a name wins: the stock set's
+    u.callees.lib = u.combined.get();
+  }
+  return u;
+}
+
 // T4.1: whether a MIDI track lowers an instrument (its first active device, found in the library as one).
-bool lowersInstrument(const Track& t, const graph::PatchLibrary* lib) noexcept;
+bool lowersInstrument(const Track& t, const Callees* lib) noexcept;
 
 // The lowered nodes of a project (active tracks), in forEachTrack order: main tree depth-first, returns, master;
 // their routing and their sends. `tableOf` (optional): MIDI tracks following a tuning signal get a tuning node with
 // that table (only those that lower an instrument with `lib`: the node feeds its voices).
-Plan plan(const Project& p, const TableOf* tableOf, const graph::PatchLibrary* lib) {
+Plan plan(const Project& p, const TableOf* tableOf, const Callees* lib) {
   Plan pl;
   struct Walk {
     const Project& p;
     std::vector<Node>& nodes;
     const TableOf* tableOf;
-    const graph::PatchLibrary* lib;
+    const Callees* lib;
     void operator()(const std::vector<TrackPtr>& list, const Track* parent, TrackPath path) {
       for (uint32_t i = 0; i < list.size(); ++i) {
         const TrackPtr& t = list[i];
@@ -357,11 +414,11 @@ bool calleeIsInstrument(const graph::Patch& p) noexcept {
   return !audioIn && voiceOut;
 }
 
-bool lowersInstrument(const Track& t, const graph::PatchLibrary* lib) noexcept {
+bool lowersInstrument(const Track& t, const Callees* lib) noexcept {
   for (const DevicePtr& d : t.devices) {
     if (!d->active) continue;
     if (d->kind != DeviceKind::Instrument || lib == nullptr) return false;
-    const graph::Patch* callee = lib->find(d->patch);
+    const graph::Patch* callee = lib->find(*d);
     return callee != nullptr && calleeIsInstrument(*callee);
   }
   return false;
@@ -375,11 +432,11 @@ struct LDev {
 // The devices of a track that are lowered, in chain order: active, their patch in the library and of their kind (an
 // instrument only first on a MIDI track). The rest are bypassed; with `missing`, those not found / of the wrong kind
 // are listed there.
-std::vector<LDev> loweredDevices(const Node& n, const graph::PatchLibrary* lib, std::vector<DeviceId>* missing) {
+std::vector<LDev> loweredDevices(const Node& n, const Callees* lib, std::vector<DeviceId>* missing) {
   std::vector<LDev> out;
   for (const DevicePtr& d : n.track->devices) {
     if (!d->active) continue;
-    const graph::Patch* callee = lib != nullptr ? lib->find(d->patch) : nullptr;
+    const graph::Patch* callee = lib != nullptr ? lib->find(*d) : nullptr;
     const bool instrument = d->kind == DeviceKind::Instrument;
     if (callee == nullptr || calleeIsInstrument(*callee) != instrument || (instrument && (n.kind != Kind::Midi || !out.empty()))) {
       if (missing != nullptr) missing->push_back(d->id);
@@ -391,7 +448,7 @@ std::vector<LDev> loweredDevices(const Node& n, const graph::PatchLibrary* lib, 
 }
 
 // The lowered devices of every plan node (`missing`: as loweredDevices).
-std::vector<std::vector<LDev>> allDevices(const Plan& pl, const graph::PatchLibrary* lib, std::vector<DeviceId>* missing) {
+std::vector<std::vector<LDev>> allDevices(const Plan& pl, const Callees* lib, std::vector<DeviceId>* missing) {
   std::vector<std::vector<LDev>> out(pl.nodes.size());
   for (size_t i = 0; i < pl.nodes.size(); ++i) out[i] = loweredDevices(pl.nodes[i], lib, missing);
   return out;
@@ -975,7 +1032,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
 }
 
 void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::vector<LoweredParam>& out,
-               const graph::PatchLibrary* lib, const WirePlan& wp) {
+               const Callees* lib, const WirePlan& wp) {
   const Node& n = pl.nodes[index];
   const Track& t = *n.track;
   const std::string id = std::to_string(t.id.value);
@@ -1213,12 +1270,17 @@ uint32_t tuningNodeIndex(std::span<const TuningId> signals, TuningId t) noexcept
 Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const LoweredProject* previous) {
   if (!p.master) return Error{ErrorCode::InvalidArgument, "lower: the project has no master", {}};
   if (o.library == nullptr) return Error{ErrorCode::InvalidArgument, "lower: no device library", {}};
-  const Plan pl = plan(p, &o.tuningTableOf, o.library);
+  UserCallees uc = makeCallees(p, o.library, o.devices, true);  // T4.4-fix1
+  const Callees* lib = &uc.callees;
+  const Plan pl = plan(p, &o.tuningTableOf, lib);
   const AudibilityMap aud = computeAudibility(p, AudibilityOptions{true});
   LoweredProject out;
-  out.graph.library = o.library;
-  const std::vector<std::vector<LDev>> devs = allDevices(pl, o.library, &out.missingDevices);
-  PortDeps deps(o.library);
+  out.graph.library = lib->lib;
+  out.userLibrary = std::move(uc.combined);
+  out.userDevices = std::move(uc.held);
+  out.deviceErrors = std::move(uc.errors);
+  const std::vector<std::vector<LDev>> devs = allDevices(pl, lib, &out.missingDevices);
+  PortDeps deps(lib->lib);
   const WirePlan wp = planWires(p, pl, devs, deps);  // T4.7
   out.wires = wp.states;
   std::unordered_map<uint32_t, std::shared_ptr<const LoweredPatch>> prev;  // track id → its previous patch
@@ -1253,7 +1315,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     pt.maxVoices = polyphony;  // T4.12-fix1: the instrument's `voices` setting (0: the link's default)
     if (voices && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
     out.graph.tracks.push_back(std::move(pt));
-    addParams(pl, i, aud, out.params, o.library, wp);
+    addParams(pl, i, aud, out.params, lib, wp);
   }
   out.master = pl.master;
   // Wires: outputs, then sends (wire order = summing order).
@@ -1277,25 +1339,50 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   return out;
 }
 
-std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const graph::PatchLibrary* library) {
+namespace {
+
+std::vector<LoweredParam> paramsWith(const Project& p, bool tuningNodes, const Callees* lib) {
   const TableOf anyTable = [](TuningId, const TuningDef&) { return 0u; };  // the index does not change a param
-  const Plan pl = plan(p, tuningNodes ? &anyTable : nullptr, library);
+  const Plan pl = plan(p, tuningNodes ? &anyTable : nullptr, lib);
   const AudibilityMap aud = computeAudibility(p, AudibilityOptions{true});
   WirePlan wp;
-  if (library != nullptr && !wiresOf(p).empty()) {
-    PortDeps deps(library);
-    wp = planWires(p, pl, allDevices(pl, library, nullptr), deps);
+  if (lib != nullptr && !wiresOf(p).empty()) {
+    PortDeps deps(lib->lib);
+    wp = planWires(p, pl, allDevices(pl, lib, nullptr), deps);
   }
   std::vector<LoweredParam> out;
-  for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out, library, wp);
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out, lib, wp);
   return out;
+}
+
+std::vector<WireState> wireStatesWith(const Project& p, const Callees& lib) {
+  if (wiresOf(p).empty()) return {};
+  const Plan pl = plan(p, nullptr, &lib);
+  PortDeps deps(lib.lib);
+  return planWires(p, pl, allDevices(pl, &lib, nullptr), deps).states;
+}
+
+}  // namespace
+
+std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const graph::PatchLibrary* library) {
+  if (library == nullptr) return paramsWith(p, tuningNodes, nullptr);
+  const UserCallees uc = makeCallees(p, library, nullptr, !wiresOf(p).empty());
+  return paramsWith(p, tuningNodes, &uc.callees);
+}
+
+std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const DeviceLibrary& devices) {
+  const UserCallees uc = makeCallees(p, &devices.library(), &devices, !wiresOf(p).empty());
+  return paramsWith(p, tuningNodes, &uc.callees);
 }
 
 std::vector<WireState> wireStates(const Project& p, const graph::PatchLibrary& library) {
   if (wiresOf(p).empty()) return {};
-  const Plan pl = plan(p, nullptr, &library);
-  PortDeps deps(&library);
-  return planWires(p, pl, allDevices(pl, &library, nullptr), deps).states;
+  return wireStatesWith(p, makeCallees(p, &library, nullptr, true).callees);
+}
+
+std::vector<WireState> wireStates(const Project& p, const DeviceLibrary& devices) {
+  if (wiresOf(p).empty()) return {};
+  return wireStatesWith(p, makeCallees(p, &devices.library(), &devices, true).callees);
 }
 
 std::vector<DelayedSend> delayedSends(const Project& p) {

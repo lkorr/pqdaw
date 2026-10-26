@@ -313,6 +313,15 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> value);
 // One structural setting (nullopt: the default).
 EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setting, std::optional<double> value);
+// T4.4-fix1 (SPEC §15 2026-10-26): the device's patch text after an edit in the circuit editor; `ids` is the editor's
+// parse of it (model.h UserPatch::ids: the project then plays the NodeIds the editor shows). The first edit of a stock
+// device forks it into a user device ("Edit Device Patch"); each edit is one undo step, and undoing the first one
+// restores the stock reference. An unchanged text is an empty edit.
+EditResult editDevicePatch(const Project& p, DeviceId device, std::string text,
+                           std::shared_ptr<const graph::PatchFile> ids = nullptr);
+// "Revert to Stock": the devices' own texts are dropped (the library's patch plays again; id, values and wires stay).
+// Devices that are not edited are skipped (none edited: an empty edit).
+EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devices);
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------------
 // One Batch = one undo step each. Ports are not checked against the device patches (the views offer only real ones).

@@ -147,6 +147,10 @@ struct SetDeviceActive { DeviceId device; bool active = true; };   // Structural
 struct SetDeviceParam { DeviceId device; std::string param; std::optional<double> value; };
 // Structural: a `real const` input (a literal at the call site; the unit recompiles). nullopt = the default.
 struct SetDeviceSetting { DeviceId device; std::string setting; std::optional<double> value; };
+// T4.4-fix1: Structural. The device's own patch text (a user device: the circuit editor's edit of it) or null (back to
+// the library's stock patch). The id, values and wires stay: state keys follow the device id, so only that track's
+// unit recompiles and every state the edit kept carries over. An equal text is a no-op.
+struct SetDevicePatch { DeviceId device; UserPatchPtr source; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
 // Structural. Adds `wire` (its id pre-allocated). Both devices must exist; the amount must be in [−1, 1]; a wire with
@@ -177,7 +181,7 @@ using CommandVariant = std::variant<
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
-    AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting,
+    AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch,
     AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     Batch>;
 
