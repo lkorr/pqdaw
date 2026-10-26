@@ -359,7 +359,8 @@ TEST_CASE("probes: every node output of the corpus probed, audio bit-identical t
 
 // The T4.5 acceptance "meter values within 20 % of the bench numbers for the same patch": stock devices driven like
 // bench/jit/bench_devices.cpp (stereo input, 64-frame blocks), process() timed with the steady clock (the bench's way,
-// best of several rounds) on an image without a meter, the meter's own total on an identical image with the meter on.
+// best of several rounds) with the meter off, and the meter's own total over as many blocks with it on — the same image,
+// the two alternated, so machine load and memory layout are the same for both.
 // Wall-clock, so label `perf` (run on a quiet machine: build.ps1 -Preset release -Perf).
 TEST_CASE("cost meter: its total is within 20 % of a benchmark of the same patch (T4.5)" * doctest::test_suite("perf")) {
   const fs::path dev = fs::path(PQ_TEST_DATA_DIR).parent_path() / "stdlib" / "devices";
@@ -374,16 +375,13 @@ TEST_CASE("cost meter: its total is within 20 % of a benchmark of the same patch
     io.maxVoiceGroups = 1;
     io.resources = &interp_test::tables().resources;
     const auto inner = interp_test::rigImageBuilder();
-    auto plainImg = inner ? inner(comp.sched, io) : eng::buildInterpreted(comp.sched, io);
     auto meterImg = inner ? inner(comp.sched, io) : eng::buildInterpreted(comp.sched, io);
-    REQUIRE(plainImg.ok());
     REQUIRE(meterImg.ok());
     eng::CostMeter meter;
     eng::InspectBinding b;
     b.meter = &meter;
     REQUIRE((*meterImg)->bindInspect(b));
-    meter.setEnabled(true);
-    const eng::ImageInterface& face = (*plainImg)->io();
+    const eng::ImageInterface& face = (*meterImg)->io();
     std::vector<std::vector<float>> in(face.globalIn.size(), std::vector<float>(64)), out(face.globalOut.size(), std::vector<float>(64));
     for (size_t s2 = 0; s2 < in.size(); ++s2)
       for (uint32_t t = 0; t < 64; ++t)
@@ -400,26 +398,22 @@ TEST_CASE("cost meter: its total is within 20 % of a benchmark of the same patch
     ctx.out = outP.data();
     ctx.numOut = static_cast<uint32_t>(outP.size());
     pq::DenormalGuard dg;
-    auto bench = [&](eng::ProgramImage& img) {
-      double best = 1e30;
-      for (int round = 0; round < 15; ++round) {
-        const auto t0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < 400; ++i) img.process(ctx);
-        best = std::min(best, std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / (400.0 * 64.0));
-      }
-      return best;
-    };
-    for (int i = 0; i < 200; ++i) (*meterImg)->process(ctx);  // warm up
+    eng::ProgramImage& img = **meterImg;
+    for (int i = 0; i < 200; ++i) img.process(ctx);  // warm up
     eng::CostMeter::Reading rd;
-    (void)meter.read(rd);  // baseline
-    double says = 1e30;
+    double says = 1e30, benched = 1e30;
     for (int round = 0; round < 15; ++round) {
-      for (int i = 0; i < 400; ++i) (*meterImg)->process(ctx);
+      meter.setEnabled(false);
+      const auto t0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < 400; ++i) img.process(ctx);
+      benched = std::min(benched, std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / (400.0 * 64.0));
+      (void)meter.read(rd);  // the baseline for the metered blocks (nothing was added while off)
+      meter.setEnabled(true);
+      for (int i = 0; i < 400; ++i) img.process(ctx);
       if (meter.read(rd)) says = std::min(says, rd.totalNsPerFrame);
     }
-    const double benched = bench(**plainImg);
-    MESSAGE(file << (inner ? " (JIT)" : " (interpreter)") << ": benchmark " << benched << " ns/frame, meter " << says
-                 << " ns/frame (" << 100.0 * (says / benched - 1.0) << " %)");
+    MESSAGE(std::string(file) << std::string(inner ? " (JIT)" : " (interpreter)") << ": benchmark " << benched << " ns/frame, meter "
+                              << says << " ns/frame (" << 100.0 * (says / benched - 1.0) << " %)");
     CHECK(says > 0.8 * benched);
     CHECK(says < 1.2 * benched);
   }
