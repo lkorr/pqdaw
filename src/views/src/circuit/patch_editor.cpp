@@ -74,6 +74,53 @@ private:
   std::map<std::string, std::string> failures_;
 };
 
+// The same graph, node for node in the same dense order with the same NodeIds, wires, payloads, names and layout (a
+// re-parse after an edit of a comment or of whitespace): O(nodes + wires), no hashing. The canvas then keeps its scene.
+bool sameGraph(const graph::Patch& a, const graph::Patch& b) {
+  if (a.name() != b.name() || a.nodeCount() != b.nodeCount() || a.wireCount() != b.wireCount() ||
+      a.portCount() != b.portCount())
+    return false;
+  for (NodeIndex v = 0; v < a.nodeCount(); ++v) {
+    const graph::Node &x = a.node(v), &y = b.node(v);
+    if (x.id != y.id || x.kind != y.kind || x.atom != y.atom || x.numInputs != y.numInputs || x.numOutputs != y.numOutputs ||
+        x.nameOutput != y.nameOutput || x.shared != y.shared || a.nodeName(v) != b.nodeName(v) || !(a.layout(v) == b.layout(v)))
+      return false;
+    switch (x.kind) {
+      case graph::NodeKind::Const:
+        if (!(a.constant(v) == b.constant(v))) return false;
+        break;
+      case graph::NodeKind::Param:
+        if (!(a.paramDecl(v) == b.paramDecl(v))) return false;
+        break;
+      case graph::NodeKind::Subcircuit:
+        if (!(a.subcircuit(v) == b.subcircuit(v))) return false;
+        break;
+      case graph::NodeKind::Unknown:
+      case graph::NodeKind::Equation:
+        if (x.payload != y.payload) return false;
+        break;
+      default: break;
+    }
+  }
+  const auto pa = a.portTypes(), pb = b.portTypes();
+  if (!std::equal(pa.begin(), pa.end(), pb.begin())) return false;
+  for (graph::WireIndex w = 0; w < a.wireCount(); ++w) {
+    if (!(a.wire(w) == b.wire(w))) return false;
+    const auto va = a.wireVia(w), vb = b.wireVia(w);
+    if (!std::equal(va.begin(), va.end(), vb.begin(), vb.end())) return false;
+  }
+  const auto sa = a.solves(), sb = b.solves();
+  const auto ca = a.comments(), cb = b.comments();
+  return std::equal(sa.begin(), sa.end(), sb.begin(), sb.end()) && std::equal(ca.begin(), ca.end(), cb.begin(), cb.end());
+}
+
+bool sameGraph(const PatchFile& a, const PatchFile& b) {
+  if (a.imports != b.imports || a.patches.size() != b.patches.size()) return false;
+  for (size_t i = 0; i < a.patches.size(); ++i)
+    if (!sameGraph(a.patches[i], b.patches[i])) return false;
+  return true;
+}
+
 struct Step {
   uint32_t offset = 0;
   std::string removed, inserted;
@@ -93,6 +140,7 @@ struct PatchEditor::Impl {
   std::vector<std::shared_ptr<const PatchDocument>> imports;
   graph::ParseResult good;  // the last parse that lowered
   bool lowered = false;
+  bool graphChanged = false;  // the last re-parse changed the graph (else only text spans moved)
   std::vector<std::optional<graph::Patch>> drawn;  // parallel to good.file.patches; computed when asked
   std::vector<graph::Diagnostic> parseDiags;       // of the current text
   std::vector<EditorDiagnostic> checkDiags, all;
@@ -115,8 +163,17 @@ struct PatchEditor::Impl {
     loader.beginParse();
     graph::ParseResult r = graph::parseDetailed(text, path, o);
     parseDiags = r.diagnostics;
+    const bool wasLowered = lowered;
     lowered = r.lowered;
-    if (r.lowered) {
+    graphChanged = false;
+    if (r.lowered && wasLowered && sameGraph(r.file, good.file)) {
+      // A comment, whitespace or formatting edit: the same graph (and so the same drawn patches); only the text spans
+      // moved.
+      stats.lastIdMatch = r.idMatch;
+      good = std::move(r);
+      imports = loader.used_;
+    } else if (r.lowered) {
+      graphChanged = true;
       // Carry the drawn positions by NodeId (a text edit names no position for a new or moved-key node).
       std::vector<std::optional<graph::Patch>> next(r.file.patches.size());
       for (size_t i = 0; i < r.file.patches.size(); ++i) {
@@ -194,7 +251,7 @@ struct PatchEditor::Impl {
     c.offset = offset;
     c.removed = removed;
     c.inserted = static_cast<uint32_t>(inserted.size());
-    c.graph = lowered;
+    c.graph = lowered && graphChanged;
     c.diagnostics = true;
     c.caret = offset + c.inserted;
     emit(c);

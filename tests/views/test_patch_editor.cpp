@@ -389,3 +389,22 @@ TEST_CASE("patch editor: state is kept across editor edits over the stdlib (>= 9
   REQUIRE(total > 0);
   CHECK(static_cast<double>(matched) >= 0.99 * static_cast<double>(total));
 }
+
+TEST_CASE("patch editor: an edit of a comment or whitespace keeps the graph (no canvas rebuild)") {
+  auto e = fromText(kVoice);
+  int graphChanges = 0, textChanges = 0;
+  e->onChange = [&](const EditorChange& c) {
+    graphChanges += c.graph ? 1 : 0;
+    textChanges += c.text ? 1 : 0;
+  };
+  const graph::Patch& before = e->drawn(0);
+  const float zx = before.layout(atomNode(before, "z1")).x;
+  e->replaceText(static_cast<uint32_t>(e->text().find("hand-written")), 0, "carefully ");
+  e->replaceText(static_cast<uint32_t>(e->text().find("  y = tanh")), 0, "\n");
+  CHECK(textChanges == 2);
+  CHECK(graphChanges == 0);
+  CHECK(e->drawn(0).layout(atomNode(e->drawn(0), "z1")).x == zx);
+  // The parse moved with the text: node spans point at the new offsets.
+  e->replaceText(static_cast<uint32_t>(e->text().find("0.25")), 4, "0.3");
+  CHECK(graphChanges == 1);
+}

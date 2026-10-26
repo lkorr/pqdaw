@@ -119,6 +119,20 @@ int main() {
                            "ns/key");
   }
   {
+    // Whitespace at the top of the file (before its first comment): the same graph, no layout or scene work.
+    std::vector<double> t;
+    bool sp = false;
+    for (int i = 0; i < 400; ++i) {
+      const double t0 = nowNs();
+      if (!sp) ed.replaceText(0, 0, " ");
+      else ed.replaceText(0, 1, "");
+      sp = !sp;
+      t.push_back(nowNs() - t0);
+    }
+    pq::bench::reportStats("circuit.editor keystroke, graph unchanged (whitespace; largest stdlib patch)", pq::bench::summarize(t),
+                           "ns/key");
+  }
+  {
     std::vector<double> t;
     for (int i = 0; i < 400; ++i) {
       const double t0 = nowNs();
