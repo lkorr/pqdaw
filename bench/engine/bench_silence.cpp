@@ -9,6 +9,7 @@
 //                                   sleep bookkeeping on non-silent playback (the source scans, per-region flags)
 // Backends: interp and jit (every unit's image from compile::jitUnitBackend()). ns per block; "% of a core" =
 // ns / 1 333 333 (one block period). Release / ship build. Usage: pq_bench_silence [runner options]
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -120,6 +121,33 @@ int main(int argc, char** argv) {
       const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
       std::printf("  %s: %.3f %% of a core (median), %u of %u units asleep\n", name.c_str(),
                   100.0 * s.medianNs / (1e9 * kBlock / kSr), asleep, rig.units);
+    });
+  }
+  // The awake overhead as an interleaved A/B (the machine's load moves between separate rows): rounds of 100 blocks
+  // of the sleep-plan program, then 100 of the plan-less one, same notes; the median of the per-round ratios.
+  for (bool jit : {false, true}) {
+    const std::string name = std::string("awake/overhead A/B ") + (jit ? "jit" : "interp");
+    runner.add(name, [jit, name](bench::Context& c) {
+      Rig a(false, jit, true), b(false, jit, false);
+      std::vector<double> ratio, ta, tb;
+      for (int round = 0; round < 60; ++round) {
+        auto time = [](Rig& r) {
+          const auto t0 = std::chrono::steady_clock::now();
+          for (int i = 0; i < 100; ++i) r.block();
+          return std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / 100.0;
+        };
+        const double x = round % 2 ? time(a) : 0.0, y = time(b), z = round % 2 ? 0.0 : time(a);
+        const double av = x + z;
+        ta.push_back(av);
+        tb.push_back(y);
+        ratio.push_back(av / y);
+      }
+      c.record(bench::summarize(ta), "ns/block", "sleep");
+      c.record(bench::summarize(tb), "ns/block", "nosleep");
+      const bench::Stats r = bench::summarize(ratio);
+      c.record(r, "ratio", "sleep/nosleep");
+      std::printf("  %s: sleep / nosleep = %.4f (median of 60 interleaved rounds; min %.4f, max %.4f)\n", name.c_str(),
+                  r.medianNs, r.minNs, r.maxNs);
     });
   }
   return runner.main(argc, argv);
