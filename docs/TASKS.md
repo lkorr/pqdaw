@@ -498,7 +498,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 ## M4: Devices and visual programming (plan: docs/plans/M4.md, approved 2026-10-24)
 Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b.3, T1b.4, and the M2/M3 review fixes.
 
-- [~] **T4.1 Device chains in the model + Device view** *(worker BW, branch task/T4.1-device-chains)* (`document`, `views`, `app`)
+- [x] **T4.1 Device chains in the model + Device view** *(merged 2026-10-26)* (`document`, `views`, `app`)
   - Each track holds an ordered device chain (instances of stdlib/user patches with their param values); lowering uses the chain instead of the fixed default instrument; the detail panel's Device tab shows the chain left → right with generic auto-generated panels (one control per param); add (device menu until the M5 browser), remove, reorder, deactivate, copy/paste; undo; serialization (schema bump + migration from "default instrument").
   - Accept: scripted add/reorder/remove/deactivate each one undo step; reorder recompiles only that track's unit; renders match a hand-built ProjectGraph; golden `device-chain`.
 

@@ -1,6 +1,6 @@
 #pragma once
 
-// The Device view (T4.1, SPEC §9; QUESTIONS Q?-T4.1-a): the detail view's Device tab shows the selected track's device
+// The Device view (T4.1, SPEC §9; QUESTIONS Q129): the detail view's Device tab shows the selected track's device
 // chain left → right — one T4.6 device panel per device (pq/views/devices/device_panel.h: Live-style frame, its panel
 // description or the generated generic one) — and an add slot at the end. Every edit is a document command
 // (pq/document/edit_ops.h), one undo step each:

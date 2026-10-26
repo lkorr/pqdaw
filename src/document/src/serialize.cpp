@@ -1871,7 +1871,7 @@ private:
 
 Status migrateTicksPpq27720To221760(nlohmann::json& doc) { return TickScaler().run(doc); }
 
-// Schema 2 → 3 (T4.1, QUESTIONS Q?-T4.1-a): device chains. Before, every MIDI track played the default instrument
+// Schema 2 → 3 (T4.1, QUESTIONS Q129): device chains. Before, every MIDI track played the default instrument
 // implicitly; now it is the first device of its chain. Every track gets "devices": MIDI tracks
 // [{"id": <new>, "patch": "BasicSynth", "kind": "instrument"}], every other track []. New ids continue above the
 // largest "id" anywhere in the file (one counter for every entity), in track order: tracks depth-first, returns,

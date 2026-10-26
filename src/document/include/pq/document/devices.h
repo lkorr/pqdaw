@@ -1,6 +1,6 @@
 #pragma once
 
-// The device library and catalog (T4.1; QUESTIONS Q?-T4.1-a, item 11).
+// The device library and catalog (T4.1; QUESTIONS Q129, item 11).
 //
 // A device is an instance of a patch (SPEC §7.3: devices are subcircuits). The DEVICE LIBRARY is the set of patches
 // devices may call: the stock devices of stdlib/ (BasicSynth, Utility, Saturator, EQ Eight) with everything they

@@ -128,7 +128,7 @@ struct ParamRef {
   static ParamRef tuning(ParamKind k, TuningId t) { return {k, t.value, 0}; }
   static ParamRef device(DeviceId d, std::string_view param);  // {DeviceParam, d, deviceParamHash(param)}
 };
-// FNV-1a 32 of a device param's name: the ParamRef target of a device param (QUESTIONS Q?-T4.1-a, item 2).
+// FNV-1a 32 of a device param's name: the ParamRef target of a device param (QUESTIONS Q129, item 2).
 uint32_t deviceParamHash(std::string_view name) noexcept;
 bool isTrackParam(ParamKind k) noexcept;
 bool isAutomatable(ParamKind k) noexcept;
@@ -265,7 +265,7 @@ struct Mixer {
   friend bool operator==(const Mixer&, const Mixer&) noexcept = default;
 };
 
-// ---- Devices (T4.1, SPEC §7.3, §8; QUESTIONS Q?-T4.1-a) ----------------------------------------------------------
+// ---- Devices (T4.1, SPEC §7.3, §8; QUESTIONS Q129) ----------------------------------------------------------
 
 // What a device is, fixed when it is created from the catalog (devices.h), so the document can enforce the chain
 // rule without the device library: a MIDI track holds at most one instrument, at index 0, then audio effects; groups,

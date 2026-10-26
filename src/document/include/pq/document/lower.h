@@ -13,7 +13,7 @@
 // state follows its document entity: adding, removing or reordering other entities never moves it. A lowering that
 // produces the same IR for a track (equal structure and ids: patchHash + operator==) shares the previous patch, so
 // the link knows exactly which tracks changed. The printed form (patchText) is only a debug dump.
-// Device chains (T4.1, QUESTIONS Q?-T4.1-a): a device instance is a subcircuit call named `d<device id>` whose NodeId
+// Device chains (T4.1, QUESTIONS Q129): a device instance is a subcircuit call named `d<device id>` whose NodeId
 // is nodeIdFor(NodeRole::Device, device id, 0); its ports are that callee's ports (T4.7's cross-device wires will be
 // wires between those call nodes), so editing a chain keeps the state of every device it does not touch. The chain is
 // wired left → right: the signal so far → the device's first `in` (through `pack(x, x)`, k = 1, when a mono signal

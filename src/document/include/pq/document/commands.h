@@ -130,7 +130,7 @@ struct SetTuningDef { TuningId tuning; TuningDef def; };
 // Param. Sets one continuous parameter (the ParamKind must be a tuning param that applies to the tuning's kind).
 struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningReference; double value = 0.0; };
 
-// ---- Devices (T4.1; QUESTIONS Q?-T4.1-a) -----------------------------------------------------------------------
+// ---- Devices (T4.1; QUESTIONS Q129) -----------------------------------------------------------------------
 // The chain rule: a MIDI track holds at most one instrument, at index 0, then audio effects; groups, returns and the
 // master hold audio effects only. Device ids are project-wide unique (pre-allocated from the IdSource).
 // Structural. Inserts `device` into `track`'s chain at `index` (kAppend: at the end).

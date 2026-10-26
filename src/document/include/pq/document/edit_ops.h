@@ -286,7 +286,7 @@ struct ShapeParams {
 EditResult insertShape(const Project& p, IdSource& ids, TrackId track, LaneId lane, Ticks start, Ticks end,
                        const ShapeParams& shape);
 
-// ---- Devices (T4.1; QUESTIONS Q?-T4.1-a) -----------------------------------------------------------------------
+// ---- Devices (T4.1; QUESTIONS Q129) -----------------------------------------------------------------------
 // Each builder is one Batch = one undo step. Device kinds come from the catalog entry (devices.h); the chain rule
 // (commands.h) holds after every edit.
 
