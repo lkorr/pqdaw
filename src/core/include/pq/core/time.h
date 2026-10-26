@@ -40,8 +40,10 @@ inline constexpr Ticks kTicksPerWhole = 4 * kPpq;  // 887040
 constexpr bool noteValueIsExact(int64_t denominator) noexcept {  // RT-safe
   return denominator > 0 && kTicksPerWhole % denominator == 0;
 }
-// Rounded to the nearest tick when not exact.
+// Rounded to the nearest tick when not exact. A denominator ≤ 0 (no note value; e.g. an unchecked UI field) gives 0
+// instead of dividing by zero.
 constexpr Ticks noteValueTicks(int64_t denominator) noexcept {  // RT-safe
+  if (denominator <= 0) return 0;
   return (2 * kTicksPerWhole + denominator) / (2 * denominator);
 }
 
@@ -53,8 +55,9 @@ constexpr int64_t tupletBase(int64_t n) noexcept {  // RT-safe
 }
 // Span of one n-tuplet group of 1/denominator notes: tupletBase(n) straight notes, computed from the whole note
 // so it stays exact even where the straight note is not (11:8 of 1/512 = 1/64 = 13860 although 1/512 = 1732.5).
-// Rounded to the nearest tick when not exact.
+// Rounded to the nearest tick when not exact. A denominator ≤ 0 gives 0 (as noteValueTicks).
 constexpr Ticks tupletGroupTicks(int64_t denominator, int64_t n) noexcept {  // RT-safe
+  if (denominator <= 0) return 0;
   return (2 * kTicksPerWhole * tupletBase(n) + denominator) / (2 * denominator);
 }
 // Whether all n notes of a group spanning `span` ticks land on integer ticks.

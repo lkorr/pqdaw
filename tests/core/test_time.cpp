@@ -130,6 +130,16 @@ TEST_CASE("time: PPQ and note values") {
   CHECK_FALSE(pq::noteValueIsExact(0));
 }
 
+TEST_CASE("time: a denominator <= 0 gives 0 ticks instead of dividing by zero (M0 review L13)") {
+  static_assert(pq::noteValueTicks(0) == 0);
+  static_assert(pq::tupletGroupTicks(0, 3) == 0);
+  CHECK(pq::noteValueTicks(-4) == 0);
+  CHECK(pq::tupletGroupTicks(-16, 7) == 0);
+  volatile int64_t zero = 0;  // a runtime value (a UI field), not a constant
+  CHECK(pq::noteValueTicks(zero) == 0);
+  CHECK(pq::tupletGroupTicks(zero, 5) == 0);
+}
+
 TEST_CASE("time: tuplet groups follow n:m with m the largest power of two <= n") {
   CHECK(pq::tupletBase(1) == 1);
   CHECK(pq::tupletBase(2) == 2);
