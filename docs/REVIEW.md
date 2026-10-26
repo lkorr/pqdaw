@@ -179,3 +179,11 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What was matched against: Live 12's device panels from memory (title bar, knobs with label / value, EQ Eight's display with numbered dots and the band row with filter glyphs, Saturator's curve display); PQ Meter's spectrum look (SPEC §11.1).
 - To judge (QUESTIONS Q128): the layouts (px rects in `stdlib/devices/*.panel.json`, one edit away); knob arcs in amber; the spectrum's tilt (4.5 dB/oct) and its level under the EQ curve; folded look; Utility's balance reads "0.00" (Live: "C").
 - Known gaps: devices live in tracks only with T4.1 (until then one stand-alone preview); cables / modulation rings arrive with T4.7 (hooks in place); no preset browser (M5); no rotated title when folded.
+
+## T4.1 Device chains + the Device view · 2026-10-25 (👁)
+- What to look at:
+  - Golden: `tests/views/golden/device-chain.png` — a MIDI track's chain in the Device tab: Basic Synth (generated panel), Saturator (Digital Clip, +6 dB drive, selected: the focus-coloured outline), Utility (deactivated: T4.6's off look); the add slot after it (scroll right). Regenerate: `pqdaw --screenshot device-chain out.png`. Viewed by the worker.
+  - Live: `pqdaw`, select a track (click its header), Shift+Tab to the Device tab: + (or right-click empty space) → the device menu; drag a title bar left / right to reorder (an orange marker shows where it lands); click a title then Delete / 0 / Ctrl+C / Ctrl+V / Ctrl+D; right-click a device for its menu. Turn a knob while a clip plays: no compile (param writes); change Saturator's Type: one recompile of that track (crossfade).
+- To judge (QUESTIONS Q?-T4.1-a): deactivation leaves the device out of the graph (zero CPU, state restarts) rather than bypassing it live; an instrument added to a MIDI track replaces its instrument; the add slot reads "Add Device" / "Add"; no drag of devices between tracks yet (MoveDevice supports it; the browser / arrangement drop targets come later).
+- Known gaps: no per-device spectrum in the chain (the EQ Eight display shows its grid; the per-device analysis taps come with T4.5 / T4.7); device params are not automatable yet; no device presets; no rename.
+

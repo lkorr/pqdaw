@@ -101,6 +101,9 @@ public:
   const DeviceCatalog& catalog() const noexcept { return catalog_; }
   // The signatures of every patch in the library (parse externals for a caller's own patch text).
   std::span<const graph::SubcircuitRef> signatures() const noexcept { return signatures_; }
+  // The .pqp file a catalog device was loaded from (UTF-8; "" when unknown): the views find its panel description
+  // next to it (`<stem>.panel.json`, T4.6).
+  std::string pathOf(std::string_view patch) const;
   // Stock devices whose file is not in this stdlib directory (not in the catalog; a project naming one bypasses it).
   std::span<const std::string> missing() const noexcept { return missing_; }
 
@@ -113,6 +116,7 @@ private:
   DeviceCatalog catalog_;
   std::vector<graph::SubcircuitRef> signatures_;
   std::vector<std::string> missing_;
+  std::vector<std::pair<std::string, std::string>> paths_;  // patch → file
 };
 
 // Parses every stock device (stockDevices()) under `stdlibDirUtf8` with its imports. A stock file that does not exist

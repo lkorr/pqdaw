@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <string>
 
 #include "../common/drag.h"
@@ -11,6 +12,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/theme.h"
+#include "pq/views/devices/panel_desc.h"
 #include "pq/views/shell/shell.h"
 
 namespace pq::views {
@@ -22,6 +24,13 @@ namespace {
 class DeviceFrame;
 
 }  // namespace
+
+// The panel of a device patch: its signature and its description (the .panel.json next to the device file, else the
+// generated generic panel). Cached per patch by the view.
+struct PanelTemplate {
+  devices::DeviceSignature sig;
+  devices::PanelDesc desc;
+};
 
 struct DeviceChainView::Impl {
   DeviceChainView& view;
@@ -44,7 +53,7 @@ struct DeviceChainView::Impl {
     return view.track_.valid() ? doc::findTrackPtr(*view.ctx_.doc(), view.track_) : nullptr;
   }
   // Runs an edit builder's result as one undo step; false when there was nothing to do.
-  bool run(const doc::ops::EditResult& e) {
+  bool run(const doc::ops::EditResult& e, bool selectResult = true) {
     if (!e) {
       view.ctx_.setStatus(e.error().message);
       return false;
@@ -54,10 +63,13 @@ struct DeviceChainView::Impl {
       view.ctx_.setStatus(s.error().message);
       return false;
     }
-    if (!e->devices.empty()) view.select(e->devices);
+    if (selectResult && !e->devices.empty()) view.select(e->devices);
     return true;
   }
   int32_t frameIndex(doc::DeviceId id) const noexcept;
+  // One panel template per device patch (signature + description), built on first use.
+  std::map<std::string, std::unique_ptr<PanelTemplate>, std::less<>> templates;
+  const PanelTemplate* templateFor(const std::string& patch);
   void startDrag(doc::DeviceId id, const ui::PointerEvent& e) {
     drag.begin(e);
     dragging = id;
@@ -69,132 +81,118 @@ struct DeviceChainView::Impl {
 
 namespace {
 
-// ---- The device frame's host -----------------------------------------------------------------------------------
+// ---- A device panel's target: the document's device instance ---------------------------------------------------
 
-class FrameHost final : public DeviceHost {
+class DocTarget final : public devices::DeviceTarget {
 public:
-  FrameHost(DeviceChainView& view, ViewContext& ctx, doc::DeviceId id, std::string patch)
-      : view_(view), ctx_(ctx), id_(id), patch_(std::move(patch)) {}
-  ViewContext& context() noexcept override { return ctx_; }
-  doc::DeviceId device() const noexcept override { return id_; }
-  const doc::DeviceInfo* info() const noexcept override {
-    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-    return lib != nullptr ? lib->catalog().find(patch_) : nullptr;
-  }
-  const doc::Device* current() const noexcept override { return doc::findDevice(*ctx_.doc(), id_).device; }
-  void beginParam(std::string_view) override {
+  DocTarget(DeviceChainView::Impl& impl, ViewContext& ctx, doc::DeviceId id) : impl_(impl), ctx_(ctx), id_(id) {}
+  void paramGestureBegin(std::string_view) override {
     if (!ctx_.store().inGesture()) {
       (void)ctx_.store().beginGesture("Device Parameter");
       ownGesture_ = true;
     }
   }
-  void setParam(std::string_view param, std::optional<double> value) override {
+  void setParam(std::string_view param, double value) override {
+    // Inside the gesture each change is applied at once (live param writes); outside it is one undo step of its own.
     auto e = doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param), value);
     if (e && !e->empty()) (void)ctx_.store().dispatch(e->command);
-    (void)view_;
   }
-  void endParam() override {
+  void paramGestureEnd(std::string_view) override {
     if (ownGesture_ && ctx_.store().inGesture()) (void)ctx_.store().commitGesture();
     ownGesture_ = false;
   }
-  void cancelParam() override {
-    if (ownGesture_ && ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
-    ownGesture_ = false;
+  void setConst(std::string_view name, double value) override {
+    impl_.run(doc::ops::setDeviceSetting(*ctx_.doc(), id_, std::string(name), value), false);
   }
-  void setSetting(std::string_view setting, std::optional<double> value) override {
-    auto e = doc::ops::setDeviceSetting(*ctx_.doc(), id_, std::string(setting), value);
-    if (!e) {
-      ctx_.setStatus(e.error().message);
-      return;
-    }
-    if (!e->empty()) (void)ctx_.store().dispatch(e->command);
+  void setActive(bool on) override {
+    impl_.run(doc::ops::setDevicesActive(*ctx_.doc(), std::vector<doc::DeviceId>{id_}, on), false);
   }
 
 private:
-  DeviceChainView& view_;
+  DeviceChainView::Impl& impl_;
   ViewContext& ctx_;
   doc::DeviceId id_;
-  std::string patch_;
   bool ownGesture_ = false;
 };
 
-// ---- A device frame: title bar (activator, name) over the device's panel ------------------------------------------
+// ---- A device frame: the device's panel, plus selection, the reorder drag and the context menu ---------------------
 
 class DeviceFrame final : public ui::Widget {
 public:
-  DeviceFrame(DeviceChainView& view, DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d,
-              const DevicePanelRegistry& panels)
-      : Widget("device[" + std::to_string(d.id.value) + "]"), impl_(impl), id_(d.id), host_(view, ctx, d.id, d.patch) {
+  DeviceFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d, const PanelTemplate* tpl)
+      : Widget("device[" + std::to_string(d.id.value) + "]"), impl_(impl), ctx_(ctx), id_(d.id), target_(impl, ctx, d.id) {
     setLayout(ui::LayoutKind::Custom);
-    const doc::DeviceInfo* info = host_.info();
-    title_ = info != nullptr ? info->name : d.patch;
-    activator_ = &add<ui::Toggle>("on", "", ui::ToggleStyle::Activator, d.active);
-    activator_->setInfo("Device Activator", "Turns the device on or off. Off, it is left out of the track's graph "
-                                            "(no CPU); its state starts fresh when it is turned on again.");
-    activator_->onToggle = [this](bool on) {
-      impl_.run(doc::ops::setDevicesActive(*host_.context().doc(), std::vector<doc::DeviceId>{id_}, on));
-    };
-    const DevicePanelFactory* f = panels.find(d.patch);
-    std::unique_ptr<DevicePanel> p = f != nullptr && *f ? (*f)(host_) : nullptr;
-    if (!p) p = makeGenericPanel(host_);
-    panel_ = static_cast<DevicePanel*>(&addChild(std::move(p)));
+    if (tpl != nullptr) {
+      std::map<std::string, double, std::less<>> values;
+      for (const doc::DeviceValue& v : d.params) values[v.name] = v.value;
+      for (const doc::DeviceValue& v : d.settings) values[v.name] = v.value;
+      panel_ = &add<devices::DevicePanel>("panel", tpl->sig, tpl->desc, &target_, values);
+      panel_->setActive(d.active);
+      panel_->onSizeChanged = [this] { impl_.content->invalidateLayout(); };
+    }
+    missing_ = tpl == nullptr ? "'" + d.patch + "' is not available: bypassed" : std::string();
     active_ = d.active;
-    info_ = "Drag the title bar to move the device in the chain. Delete removes it, 0 turns it on or off, "
-            "Ctrl+C / Ctrl+V / Ctrl+D copy, paste and duplicate it. Right-click for more.";
   }
 
   doc::DeviceId id() const noexcept { return id_; }
-  DevicePanel* panel() const noexcept { return panel_; }
+  devices::DevicePanel* panel() const noexcept { return panel_; }
+  devices::DeviceTarget* target() noexcept { return &target_; }
   void setSelected(bool s) {
     if (selected_ == s) return;
     selected_ = s;
     markDirty();
   }
+  // The device changed in the document (values, settings, activation): the panel repaints what moved.
   void update(const doc::Device& d) {
-    if (active_ != d.active) {
-      active_ = d.active;
-      activator_->setOn(d.active);
-      markDirty();
+    active_ = d.active;
+    if (!panel_) return;
+    panel_->setActive(d.active);
+    for (const devices::ParamInfo& p : panel_->signature().params) {
+      const doc::DeviceValue* v = d.param(p.name);
+      panel_->setParamValue(p.name, v != nullptr ? v->value : p.def);
     }
-    panel_->refresh(d);
+    for (const devices::ConstInfo& c : panel_->signature().consts) {
+      const doc::DeviceValue* v = d.setting(c.name);
+      panel_->setConstValue(c.name, v != nullptr ? v->value : c.def);
+    }
   }
-  float preferredWidth(float heightLogical) const {
-    return std::max(120.0f, panel_->preferredWidth(std::max(0.0f, heightLogical - kTitleH)));
+  // Only these params of the device changed (a Param ChangeSet).
+  void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef> params) {
+    if (!panel_) return;
+    for (const doc::ParamRef& r : params) {
+      if (r.kind != doc::ParamKind::DeviceParam || r.owner != d.id.value) continue;
+      for (const devices::ParamInfo& p : panel_->signature().params)
+        if (doc::deviceParamHash(p.name) == r.target) {
+          const doc::DeviceValue* v = d.param(p.name);
+          panel_->setParamValue(p.name, v != nullptr ? v->value : p.def);
+        }
+    }
   }
+  float logicalWidth() const { return panel_ ? panel_->logicalWidth() : 160.0f; }
+  float logicalHeight(float available) const { return panel_ ? std::min(available, panel_->logicalHeight()) : available; }
 
-  ui::InfoText info() const override { return {title_, info_}; }
+  ui::InfoText info() const override {
+    return {"Device", "Drag the title bar to move the device in the chain. Delete removes it, 0 turns it on or off, "
+                      "Ctrl+C / Ctrl+V / Ctrl+D copy, paste and duplicate it. Right-click for more."};
+  }
 
   void arrange(ui::LayoutPass& pass) override {
-    const ui::IRect r = rect();
-    const int32_t th = pass.px(kTitleH), a = pass.px(12.0f);
-    pass.place(*activator_, {r.x + pass.px(5.0f), r.y + (th - a) / 2, a, a});
-    pass.place(*panel_, {r.x, r.y + th, r.w, std::max(0, r.h - th)});
+    if (panel_) pass.place(*panel_, rect());
   }
 
   void paint(ui::PaintContext& ctx) override {
+    if (panel_ || !ctx.res.theme) return;
     const ui::Theme* t = ctx.res.theme;
-    if (!t) return;
-    const ui::IRect r = rect();
-    const int32_t th = ctx.scale.px(kTitleH);
-    paint::box(ctx.dl, r, 0.0f, t->surface.raised, 0);
-    const ui::IRect title{r.x, r.y, r.w, th};
-    paint::box(ctx.dl, title, 0.0f, selected_ ? t->selection.fill : t->control.fill, 0);
-    if (ctx.res.uiFonts) {
-      const int32_t left = ctx.scale.px(22.0f);
-      paint::text(ctx, ctx.res.uiFonts->bodyStrong, title, title_,
-                  !active_ ? t->text.disabled : selected_ ? t->selection.text : t->text.primary, ui::TextAlign::Left,
-                  left, ctx.scale.px(6.0f));
-    }
-    paint::box(ctx.dl, r, 0.0f, 0, selected_ ? t->accent.focus : t->surface.divider);
+    paint::box(ctx.dl, rect(), 0.0f, t->surface.raised, t->surface.divider);
+    if (ctx.res.uiFonts)
+      paint::text(ctx, ctx.res.uiFonts->small, paint::inset(rect(), ctx.scale.px(6.0f)), missing_, t->text.secondary,
+                  ui::TextAlign::Left);
   }
 
   void paintOver(ui::PaintContext& ctx) override {
-    if (active_ || !ctx.res.theme) return;
-    // Off: the panel is dimmed (Live greys a deactivated device).
-    const ui::IRect r = rect();
-    const int32_t th = ctx.scale.px(kTitleH);
-    const ui::Rgba dim = ui::rgba(0, 0, 0, 96);
-    ctx.dl.addRectFilled(ui::IRect{r.x + 1, r.y + th, std::max(0, r.w - 2), std::max(0, r.h - th - 1)}.toRect(), dim);
+    if (!selected_ || !ctx.res.theme) return;
+    // The selected device: an outline in the focus colour (Live highlights the selected device).
+    paint::box(ctx.dl, rect(), 0.0f, 0, ctx.res.theme->accent.focus);
   }
 
   bool onPointer(const ui::PointerEvent& e) override;
@@ -202,17 +200,20 @@ public:
 private:
   bool inTitle(ui::Vec2 p) const noexcept {
     const ui::IRect r = rect();
+    // The title bar is the panel's top kTitleH (below the jack strip of a device with exports).
+    const float strip = panel_ && !panel_->signature().exports.empty() ? 10.0f : 0.0f;  // T4.6 kJackStripH
+    const int32_t top = tree() ? tree()->uiScale().px(strip) : 0;
     const int32_t th = tree() ? tree()->uiScale().px(kTitleH) : 20;
-    return p.x >= static_cast<float>(r.x) && p.x < static_cast<float>(r.right()) && p.y >= static_cast<float>(r.y) &&
-           p.y < static_cast<float>(r.y + th);
+    return p.x >= static_cast<float>(r.x) && p.x < static_cast<float>(r.right()) &&
+           p.y >= static_cast<float>(r.y + top) && p.y < static_cast<float>(r.y + top + th);
   }
 
   DeviceChainView::Impl& impl_;
+  ViewContext& ctx_;
   doc::DeviceId id_;
-  FrameHost host_;
-  std::string title_, info_;
-  ui::Toggle* activator_ = nullptr;
-  DevicePanel* panel_ = nullptr;
+  DocTarget target_;
+  devices::DevicePanel* panel_ = nullptr;
+  std::string missing_;
   bool active_ = true;
   bool selected_ = false;
 };
@@ -270,7 +271,8 @@ public:
   // Device px the chain needs at a height of `heightLogical` (frames, gaps, the add slot).
   int32_t totalWidthPx(float heightLogical, float scale) const {
     float x = kChainPad;
-    for (const DeviceFrame* f : impl_.frames) x += f->preferredWidth(heightLogical - 2.0f * kChainPad) + kFrameGap;
+    (void)heightLogical;
+    for (const DeviceFrame* f : impl_.frames) x += f->logicalWidth() + kFrameGap;
     x += kAddW + kChainPad;
     return static_cast<int32_t>(std::lround(x * scale));
   }
@@ -285,8 +287,8 @@ public:
     int32_t x = r.x + pad;
     const int32_t h = std::max(0, r.h - 2 * pad);
     for (DeviceFrame* f : impl_.frames) {
-      const int32_t w = pass.px(f->preferredWidth(hLogical - 2.0f * kChainPad));
-      pass.place(*f, {x, r.y + pad, w, h});
+      const int32_t w = pass.px(f->logicalWidth());
+      pass.place(*f, {x, r.y + pad, w, std::min(h, pass.px(f->logicalHeight(hLogical - 2.0f * kChainPad)))});
       x += w + gap;
     }
     if (impl_.view.addSlot()) pass.place(*impl_.view.addSlot(), {x, r.y + pad, pass.px(kAddW), h});
@@ -318,7 +320,7 @@ bool DeviceFrame::onPointer(const ui::PointerEvent& e) {
         view.select(one);
       }
       DeviceChainView* v = &view;
-      const doc::Device* d = host_.current();
+      const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
       const bool on = d != nullptr && d->active;
       std::vector<ui::MenuItem> items;
       items.push_back(ui::MenuItem::item(on ? "Deactivate" : "Activate", [v] { v->toggleSelectedActive(); }, "0"));
@@ -370,6 +372,23 @@ int32_t DeviceChainView::Impl::frameIndex(doc::DeviceId id) const noexcept {
   return -1;
 }
 
+const PanelTemplate* DeviceChainView::Impl::templateFor(const std::string& patch) {
+  if (const auto it = templates.find(patch); it != templates.end()) return it->second.get();
+  const doc::DeviceLibrary* lib = view.ctx_.deviceLibrary();
+  const graph::Patch* callee = lib != nullptr ? lib->library().find(patch) : nullptr;
+  std::unique_ptr<PanelTemplate> t;
+  if (callee != nullptr) {
+    t = std::make_unique<PanelTemplate>();
+    t->sig = devices::signatureOf(*callee);
+    const std::string file = lib->pathOf(patch);
+    auto desc = file.empty() ? Result<devices::PanelDesc>(Error{ErrorCode::NotFound, "", {}})
+                             : devices::loadPanelDesc(devices::panelPathFor(file), t->sig);
+    const doc::DeviceInfo* info = lib->catalog().find(patch);
+    t->desc = desc ? std::move(*desc) : devices::autoPanel(t->sig, info != nullptr ? info->name : patch);
+  }
+  return (templates[patch] = std::move(t)).get();
+}
+
 void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
   const float s = view.tree() ? view.tree()->scale() : 1.0f;
   drag.move(e.pos, s);
@@ -414,7 +433,7 @@ void DeviceChainView::Impl::endDrag(bool commit) {
 
 // ---- DeviceChainView -------------------------------------------------------------------------------------------
 
-DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("devices"), ctx_(ctx), impl_(std::make_unique<Impl>(*this)) {
+DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(ctx), impl_(std::make_unique<Impl>(*this)) {
   setLayout(ui::LayoutKind::Column);
   setFocusable(true);
   setKeyScope(ctx.scope("devices"));
@@ -427,7 +446,10 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("devices"), ctx_(ctx
   bar.setHeight(ui::Length::fixed(10.0f));
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onStore(e); });
   observer_ = ctx.observe([this](uint32_t bits) {
-    if (bits & view_change::kDevices) sync(true);
+    if (bits & view_change::kDevices) {
+      impl_->templates.clear();  // another library: other signatures
+      sync(true);
+    }
     else if (bits & (view_change::kSelection | view_change::kDetailClip)) follow();
   });
   sync(true);
@@ -466,7 +488,7 @@ void DeviceChainView::sync(bool force) {
     for (DeviceFrame* f : m.frames) (void)m.content->removeChild(*f);
     m.frames.clear();
     for (const doc::DevicePtr& d : chain) {
-      auto f = std::make_unique<DeviceFrame>(*this, m, ctx_, *d, panels_);
+      auto f = std::make_unique<DeviceFrame>(m, ctx_, *d, m.templateFor(d->patch));
       DeviceFrame* raw = f.get();
       m.content->addChild(std::move(f));  // placed by ChainContent::arrange, left of the add slot
       m.frames.push_back(raw);
@@ -502,7 +524,7 @@ void DeviceChainView::onStore(const doc::StoreEvent& e) {
     if (t == nullptr || t->devices.size() != m.shown.size()) return sync(false);
     for (size_t i = 0; i < t->devices.size(); ++i) {
       if (t->devices[i] == m.shown[i]) continue;
-      m.frames[i]->panel()->paramsChanged(*t->devices[i], c.params);
+      m.frames[i]->paramsChanged(*t->devices[i], c.params);
       m.shown[i] = t->devices[i];
     }
     m.shownFrom = e.after;
@@ -602,7 +624,12 @@ ui::Widget* DeviceChainView::frameOf(doc::DeviceId device) const noexcept {
   return i < 0 ? nullptr : impl_->frames[static_cast<size_t>(i)];
 }
 
-DevicePanel* DeviceChainView::panelOf(doc::DeviceId device) const noexcept {
+devices::DeviceTarget* DeviceChainView::targetOf(doc::DeviceId device) const noexcept {
+  const int32_t i = impl_->frameIndex(device);
+  return i < 0 ? nullptr : impl_->frames[static_cast<size_t>(i)]->target();
+}
+
+devices::DevicePanel* DeviceChainView::panelOf(doc::DeviceId device) const noexcept {
   const int32_t i = impl_->frameIndex(device);
   return i < 0 ? nullptr : impl_->frames[static_cast<size_t>(i)]->panel();
 }
@@ -646,7 +673,7 @@ DeviceChainView& installDeviceChain(Shell& shell) {
 }
 
 DeviceChainView* findDeviceChain(Shell& shell) noexcept {
-  return dynamic_cast<DeviceChainView*>(shell.slot(ShellSlot::DeviceDetail).find("devices"));
+  return dynamic_cast<DeviceChainView*>(shell.slot(ShellSlot::DeviceDetail).find("chain-view"));
 }
 
 }  // namespace pq::views

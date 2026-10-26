@@ -79,7 +79,7 @@ std::string joinDiagnostics(std::string_view text, const std::vector<graph::Diag
   return m;
 }
 
-fs::path pathOf(std::string_view utf8) {
+fs::path utf8Path(std::string_view utf8) {
   return fs::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
 }
 
@@ -121,7 +121,7 @@ struct DeviceLibrary::Files final : graph::ImportLoader {
   }
 
   Result<std::vector<graph::SubcircuitRef>> load(std::string_view path, std::string_view importer) override {
-    auto r = loadFile(fs::path(importer).parent_path() / pathOf(path));
+    auto r = loadFile(fs::path(importer).parent_path() / utf8Path(path));
     if (!r) return std::move(r).error();
     return graph::signatures((*r)->file);
   }
@@ -221,15 +221,21 @@ double deviceSettingValue(const Device& d, const DeviceSettingInfo& s) noexcept 
 
 std::span<const StockDevice> stockDevices() noexcept { return kStock; }
 
+std::string DeviceLibrary::pathOf(std::string_view patch) const {
+  for (const auto& [p, file] : paths_)
+    if (p == patch) return file;
+  return {};
+}
+
 DeviceLibrary::DeviceLibrary() : files_(std::make_unique<Files>()) {}
 DeviceLibrary::~DeviceLibrary() = default;
 
 Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlibDirUtf8) {
   std::unique_ptr<DeviceLibrary> lib(new DeviceLibrary());
-  const fs::path root = pathOf(stdlibDirUtf8);
+  const fs::path root = utf8Path(stdlibDirUtf8);
   std::vector<std::pair<const graph::Patch*, const StockDevice*>> found;
   for (const StockDevice& sd : kStock) {
-    const fs::path path = root / pathOf(sd.file);
+    const fs::path path = root / utf8Path(sd.file);
     std::error_code ec;
     if (!fs::exists(path, ec)) {  // a reduced stdlib (a test's probe instrument): that device is not available
       lib->missing_.push_back(std::string(sd.patch));
@@ -241,6 +247,8 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
     if (!patch)
       return Error{ErrorCode::NotFound, "no patch '" + std::string(sd.patch) + "' in " + std::string(sd.file), {}};
     found.emplace_back(patch, &sd);
+    const std::u8string u8 = path.u8string();
+    lib->paths_.emplace_back(std::string(sd.patch), std::string(u8.begin(), u8.end()));
   }
   // The device files first (in stock order), then every file they import: the first patch under a name wins.
   for (const auto& [patch, sd] : found) lib->library_.add(*patch);
