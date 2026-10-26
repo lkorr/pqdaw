@@ -43,7 +43,7 @@
 //   output wire (sends only).
 //   Sends: every main track (MIDI, group) has its implicit send to every active return (Live): a send level is a
 //   param, so turning one up never recompiles. Return → return sends are lowered only when stored in the document
-//   (Live keeps a return's sends to other returns disabled until used; QUESTIONS Q?-T3.17-fix3-a). A send whose
+//   (Live keeps a return's sends to other returns disabled until used; QUESTIONS Q127). A send whose
 //   target can reach the sender through the lowered routing (a return → return loop, a return routed into a group
 //   that sends to it) would close a delay-free cycle: it is lowered only when stored, and gets an automatic 1-sample
 //   delay (z1) on that send (SPEC §15 2026-10-24: a wire that closes a delay-free cycle gets an automatic z⁻¹);
