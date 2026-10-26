@@ -665,7 +665,7 @@ void CircuitEditor::onTimer(uint32_t id) {
   if (id == costTimer_) {
     costTimer_ = 0;
     pollCost();
-    if (costShown()) costTimer_ = requestTimer(0.25);
+    if (costShown() && doc_->playing()) costTimer_ = requestTimer(0.25);  // stopped: idle (Play restarts it)
     return;
   }
   if (id != checkTimer_) {
@@ -797,6 +797,7 @@ bool CircuitEditor::togglePlay() {
   }
   setStatus("Playing " + doc_->playingPatch() + ": edits swap in as you make them.");
   refreshProbes(true);  // T4.5: the LED trace of the bool wires (a second, bit-identical program)
+  if (costShown() && !costTimer_) costTimer_ = requestTimer(0.25);
   updateTitle();
   return true;
 }
@@ -1161,8 +1162,8 @@ void CircuitEditor::setCostShown(bool on) {
     setStatus({});
     return;
   }
-  setStatus(doc_->playing() ? "Cost: measuringâ¦" : "Cost: play the patch to measure it.");
-  if (!costTimer_) costTimer_ = requestTimer(0.25);
+  setStatus(doc_->playing() ? "Cost: measuring\xE2\x80\xA6" : "Cost: play the patch to measure it.");
+  if (!costTimer_ && doc_->playing()) costTimer_ = requestTimer(0.25);
 }
 
 void CircuitEditor::pollCost() {

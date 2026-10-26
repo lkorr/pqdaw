@@ -61,6 +61,10 @@ target_compile_definitions(pq_bench_stdlib PRIVATE PQ_TEST_DATA_DIR=pq_build_tes
 pq_add_bench(pq_bench_devices SOURCES jit/bench_devices.cpp DEPS pq_jit)
 pq_use_build_paths(pq_bench_devices)
 target_compile_definitions(pq_bench_devices PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
+# T4.5: what probes and cost meters cost on the stock devices, and the meter against a benchmark of the same image.
+pq_add_bench(pq_bench_inspect SOURCES jit/bench_inspect.cpp DEPS pq_jit)
+pq_use_build_paths(pq_bench_inspect)
+target_compile_definitions(pq_bench_inspect PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
 pq_add_bench(pq_bench_hot_swap SOURCES engine/bench_hot_swap.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_timeline SOURCES engine/bench_timeline.cpp DEPS pq_engine)
 # T2.6: per-voice pitch cost of tuning as a signal (the tuning_hz kernel; a tuned track through the VoiceEngine).

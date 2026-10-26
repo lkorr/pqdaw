@@ -3,6 +3,8 @@
 // compares the two backends' probe streams bit for bit.
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <string>
@@ -353,4 +355,72 @@ TEST_CASE("probes: every node output of the corpus probed, audio bit-identical t
                             << std::string(jit ? "; interpreter == JIT probe streams" : ""));
   CHECK(compared >= 80);
   if (jit) CHECK(jitCompared == compared);
+}
+
+// The T4.5 acceptance "meter values within 20 % of the bench numbers for the same patch": stock devices driven like
+// bench/jit/bench_devices.cpp (stereo input, 64-frame blocks), process() timed with the steady clock (the bench's way,
+// best of several rounds) on an image without a meter, the meter's own total on an identical image with the meter on.
+// Wall-clock, so label `perf` (run on a quiet machine: build.ps1 -Preset release -Perf).
+TEST_CASE("cost meter: its total is within 20 % of a benchmark of the same patch (T4.5)" * doctest::test_suite("perf")) {
+  const fs::path dev = fs::path(PQ_TEST_DATA_DIR).parent_path() / "stdlib" / "devices";
+  for (const char* file : {"saturator.pqp", "eq_eight.pqp", "utility.pqp"}) {
+    INFO(file);
+    std::vector<std::string> skipped;
+    std::vector<Pair> pairs = compileFilePairs(dev / file, 48000.0, skipped);
+    REQUIRE(!pairs.empty());
+    const interp_test::Compiled& comp = pairs.front().plain;
+    eng::InterpretOptions io;
+    io.maxBlockFrames = 64;
+    io.maxVoiceGroups = 1;
+    io.resources = &interp_test::tables().resources;
+    const auto inner = interp_test::rigImageBuilder();
+    auto plainImg = inner ? inner(comp.sched, io) : eng::buildInterpreted(comp.sched, io);
+    auto meterImg = inner ? inner(comp.sched, io) : eng::buildInterpreted(comp.sched, io);
+    REQUIRE(plainImg.ok());
+    REQUIRE(meterImg.ok());
+    eng::CostMeter meter;
+    eng::InspectBinding b;
+    b.meter = &meter;
+    REQUIRE((*meterImg)->bindInspect(b));
+    meter.setEnabled(true);
+    const eng::ImageInterface& face = (*plainImg)->io();
+    std::vector<std::vector<float>> in(face.globalIn.size(), std::vector<float>(64)), out(face.globalOut.size(), std::vector<float>(64));
+    for (size_t s2 = 0; s2 < in.size(); ++s2)
+      for (uint32_t t = 0; t < 64; ++t)
+        in[s2][t] = 0.4f * std::sin(0.37f * static_cast<float>(t) + static_cast<float>(s2)) + 0.25f * std::sin(1.91f * static_cast<float>(t));
+    std::vector<const float*> inP;
+    std::vector<float*> outP;
+    for (auto& v : in) inP.push_back(v.data());
+    for (auto& v : out) outP.push_back(v.data());
+    eng::ProcessContext ctx;
+    ctx.frames = 64;
+    ctx.sampleRate = 48000.0;
+    ctx.in = inP.data();
+    ctx.numIn = static_cast<uint32_t>(inP.size());
+    ctx.out = outP.data();
+    ctx.numOut = static_cast<uint32_t>(outP.size());
+    pq::DenormalGuard dg;
+    auto bench = [&](eng::ProgramImage& img) {
+      double best = 1e30;
+      for (int round = 0; round < 15; ++round) {
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < 400; ++i) img.process(ctx);
+        best = std::min(best, std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / (400.0 * 64.0));
+      }
+      return best;
+    };
+    for (int i = 0; i < 200; ++i) (*meterImg)->process(ctx);  // warm up
+    eng::CostMeter::Reading rd;
+    (void)meter.read(rd);  // baseline
+    double says = 1e30;
+    for (int round = 0; round < 15; ++round) {
+      for (int i = 0; i < 400; ++i) (*meterImg)->process(ctx);
+      if (meter.read(rd)) says = std::min(says, rd.totalNsPerFrame);
+    }
+    const double benched = bench(**plainImg);
+    MESSAGE(file << (inner ? " (JIT)" : " (interpreter)") << ": benchmark " << benched << " ns/frame, meter " << says
+                 << " ns/frame (" << 100.0 * (says / benched - 1.0) << " %)");
+    CHECK(says > 0.8 * benched);
+    CHECK(says < 1.2 * benched);
+  }
 }

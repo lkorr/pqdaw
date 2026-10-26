@@ -150,6 +150,7 @@ public:
 
 private:
   void runRegion(const RegionRun& r, uint32_t frames) noexcept;
+  void runMetered(ProcessContext& ctx) noexcept;
   void relocate(const Rec& rec, uint32_t t) noexcept {  // RT-safe
     for (uint32_t k = rec.firstReloc; k < rec.firstReloc + rec.numReloc; ++k) {
       const Reloc& rl = relocs_[k];
@@ -394,28 +395,50 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
   for (uint32_t i = voiceSiteBegin_[0]; i < voiceSiteBegin_[host_.groups()]; ++i)
     *sites_[i].target = host_.extPtr(sites_[i].ext, sites_[i].group);
   const uint32_t frames = ctx.frames;
-  const bool meter = host_.metering();  // T4.5: time each region (one test per region while no meter is shown)
-  auto globalRegion = [&](const RegionRun& rr) noexcept {
-    if (host_.regionAsleep(rr.schedRegion)) {  // T1.x-silence: the constant-output kernel instead
-      host_.fillRegion(rr.schedRegion, frames);
-      return;
-    }
-    runRegion(rr, frames);
-    if (shadow_ && host_.regionSegmentAsleep(rr.schedRegion) && !host_.regionFillsSilent(rr.schedRegion, frames))
-      host_.countViolation();
-  };
+  if (host_.metering()) {  // T4.5: a cost meter is shown: the same stages, each region timed
+    runMetered(ctx);
+    return;
+  }
   host_.run(
       ctx,
       [&](uint32_t k) noexcept {
         const StageRegions& st = stages_[k];
         for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
           const RegionRun& rr = regions_[r];
-          if (!meter) {
-            globalRegion(rr);
+          if (host_.regionAsleep(rr.schedRegion)) {  // T1.x-silence: the constant-output kernel instead
+            host_.fillRegion(rr.schedRegion, frames);
             continue;
           }
+          runRegion(rr, frames);
+          if (shadow_ && host_.regionSegmentAsleep(rr.schedRegion) && !host_.regionFillsSilent(rr.schedRegion, frames))
+            host_.countViolation();
+        }
+      },
+      [&](uint32_t k, uint32_t gi) noexcept {
+        const StageRegions& st = stages_[k];
+        const uint32_t base = st.firstRegion + gi * st.numRegions;
+        for (uint32_t r = base; r < base + st.numRegions; ++r) runRegion(regions_[r], frames);
+      });
+}
+
+// T4.5: process() while a cost meter is shown — the TSC read around every region (pq/engine/inspect.h). A separate
+// path, so the unmetered one stays the code it was.
+void InterpretedImage::runMetered(ProcessContext& ctx) noexcept {  // RT-safe
+  const uint32_t frames = ctx.frames;
+  host_.run(
+      ctx,
+      [&](uint32_t k) noexcept {
+        const StageRegions& st = stages_[k];
+        for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+          const RegionRun& rr = regions_[r];
           const uint64_t t0 = __rdtsc();
-          globalRegion(rr);
+          if (host_.regionAsleep(rr.schedRegion)) {
+            host_.fillRegion(rr.schedRegion, frames);
+          } else {
+            runRegion(rr, frames);
+            if (shadow_ && host_.regionSegmentAsleep(rr.schedRegion) && !host_.regionFillsSilent(rr.schedRegion, frames))
+              host_.countViolation();
+          }
           host_.addRegionCycles(rr.schedRegion, __rdtsc() - t0);
         }
       },
@@ -423,10 +446,6 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
         const StageRegions& st = stages_[k];
         const uint32_t base = st.firstRegion + gi * st.numRegions;
         for (uint32_t r = base; r < base + st.numRegions; ++r) {
-          if (!meter) {
-            runRegion(regions_[r], frames);
-            continue;
-          }
           const uint64_t t0 = __rdtsc();
           runRegion(regions_[r], frames);
           host_.addRegionCycles(regions_[r].schedRegion, __rdtsc() - t0);
