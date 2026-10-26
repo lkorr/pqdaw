@@ -309,7 +309,7 @@ DevicePtr makeDefaultInstrument(DeviceId id);  // makeDevice(id, kDefaultInstrum
 // entities: a wire may cross tracks, and moving a device to another track keeps its wires (they name device ids).
 // Removing a device (or its track) removes its wires in the same command.
 //
-// The modulation law (QUESTIONS Q?-T4.7-a): additive in the target's KNOB TRAVEL (the 0..1 position its knob shows:
+// The modulation law (QUESTIONS Q135): additive in the target's KNOB TRAVEL (the 0..1 position its knob shows:
 // linear in the value, in dB for gains, logarithmic for @curve(exp)), with the knob as the centre:
 //     position = clamp(knob position + Σ amount_i · source_i, 0, 1),  value = the param's value at that position.
 // A source of ±1 at amount 1 sweeps the whole travel; a negative amount inverts. The knob keeps the user's value (the

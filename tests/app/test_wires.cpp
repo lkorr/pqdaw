@@ -141,7 +141,7 @@ TEST_CASE("wires: an LFO on track 1 wired into a filter cutoff on track 3 is aud
   const double flat = spreadOver(0.6, 1.6);  // the first note on its sustain
   runTo(1.8);
   // Wire it (between two notes): one undo step, a compile (both tracks change: an export on 1, an input on 3; the
-  // wire merges their units, which start afresh: QUESTIONS Q?-T4.7-a).
+  // wire merges their units, which start afresh: QUESTIONS Q135).
   const app::LinkStats s0 = link->stats();
   auto e = ops::connectWire(*f.store.current(), f.store.ids(), f.lfo, "lfo", f.eq, "freq1", 0.6);
   REQUIRE(e.ok());
@@ -592,7 +592,7 @@ TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it 
   MESSAGE("Dst's unit: blocks skipped while its wire carried silence: " << dstIdle);
   // Not asserted: the modulated value (knob ± modulation) is not 0 at silence, so the region computing it is not
   // sleepable (Q130.3: no rate demotion while a modulator is silent): a wired target stays awake. QUESTIONS
-  // Q?-T4.7-a item 7 records the cost and the follow-up.
+  // Q135 item 7 records the cost and the follow-up.
   d.run(static_cast<uint32_t>(0.4 * kRate / kBlock));  // the note: Src's mid moves Dst's width
   link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
   CHECK(sw.up + sw.down > 1e-3f);
