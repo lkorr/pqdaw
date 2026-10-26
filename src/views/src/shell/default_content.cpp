@@ -34,8 +34,8 @@ void installDefaultContent(Shell& shell) {
   installPreferences(shell);
   installTuningsPanel(shell);
   circuit::installCircuitViewer(shell);
-  devices::installDeviceView(shell);
-  installDeviceChain(shell);
+  installDeviceChain(shell);          // the selected track's chain …
+  devices::installDeviceView(shell);  // … under T4.6's stand-alone preview, which covers it while one is open
 }
 
 }  // namespace pq::views

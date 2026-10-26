@@ -411,6 +411,10 @@ Status ProjectLink::makeEngine() {
   ec.blockFrames = cfg_.blockFrames;
   ec.numOut = 2;
   ec.numProjectParams = kProjectParams;
+  // T4.1: every device param is a project param now (BasicSynth alone adds 6 per MIDI track), so writing the whole
+  // param set at once (a Reset, applyParams(forceAll)) can exceed the default 4096-write ring; a dropped first write
+  // would leave a param at 0 until its next change. The ring holds every slot (16384 × 8 B).
+  ec.paramRing = kProjectParams;
   ec.maxSlots = kEventSlots;
   // T3.17-fix3: 512 slots at 128 events per block and 128 sounding notes per track (≈ 25 KB per slot) instead of
   // 128 slots at 512 / 256 (≈ 61 KB): more than enough for a 64-frame block, and room for 512 MIDI tracks.
