@@ -50,6 +50,10 @@ constexpr float k2pm24 = 5.9604644775390625e-08f;
 constexpr uint32_t kMaxRunCost = 1024;         // a fused run is split before it grows past this
 constexpr uint32_t kInterleaveBudget = 2048;   // chunks interleaved per iteration × run cost
 constexpr size_t kMaxRunInvariants = 16;       // distinct pattern operands (params, constants) per fused run
+// T4.12: a voice stage with a chain above this cost gets no pair function. Twice a big chain's live values and staged
+// state overflowed the 4 KiB frame that needs no stack probes (Operator with every section on: chains of 372–740,
+// pair frames of 4.4 KiB; the corpus's chains are ≤ 232); such a stage runs group by group.
+constexpr uint32_t kMaxPairChainCost = 320;
 
 static_assert(offsetof(dsp::KernelArgs, in) == 0 && offsetof(dsp::KernelArgs, out) == 8 &&
               offsetof(dsp::KernelArgs, state) == 16 && offsetof(dsp::KernelArgs, resource) == 24 &&
@@ -148,7 +152,8 @@ public:
       const std::string name = o_.prefix + "_stage" + std::to_string(k);
       stageFunction(k, name, voice ? (o_.scalarLanes ? 1u : 8u) : 0u);
       res_.stageFunctions.push_back(name);
-      if (voice && o_.pairs && k < L_.pairable.size() && L_.pairable[k] && !frameCalls(st)) {
+      if (voice && o_.pairs && k < L_.pairable.size() && L_.pairable[k] && !frameCalls(st) &&
+          chainCost_[k] <= kMaxPairChainCost) {
         stageFunction(k, name + "_pair", 16);
         res_.pairFunctions[k] = name + "_pair";
       }
@@ -251,7 +256,9 @@ private:
     // stays below kMaxRunCost (a bigger body would not fit the out-of-order window either). One group: values
     // cross the regions in registers.
     chainEnd_.assign(s_.regions.size(), -1);
-    for (const g::Stage& st : s_.stages) {
+    chainCost_.assign(s_.stages.size(), 0);
+    for (uint32_t sk = 0; sk < s_.stages.size(); ++sk) {
+      const g::Stage& st = s_.stages[sk];
       if (st.poly != g::Poly::Voice) continue;
       auto chainable = [&](uint32_t r) {
         const g::Region& reg = s_.regions[r];
@@ -280,6 +287,7 @@ private:
           last = q;
         }
         if (last > r && loop) {
+          chainCost_[sk] = std::max(chainCost_[sk], cost);
           chainEnd_[r] = static_cast<int32_t>(last);
           const int32_t id = next++;
           for (uint32_t q = r; q <= last; ++q)
@@ -1614,6 +1622,7 @@ private:
   std::vector<int32_t> grp_;
   std::vector<uint32_t> opRegion_;
   std::vector<int32_t> chainEnd_;  // per region: the last region of the chain it starts, or −1
+  std::vector<uint32_t> chainCost_;  // per stage: the cost of its largest chain (T4.12: pair functions)
   // current function
   bool voice_ = false;             // a voice stage's function
   unsigned vw_ = 8;                // its voice width: 1 (scalar lanes), 8 (a group), 16 (a pair)

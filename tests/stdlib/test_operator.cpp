@@ -999,13 +999,21 @@ TEST_CASE("Operator: what is off is not compiled (operators, sections, waveforms
 }
 
 TEST_CASE("Operator: JIT images of the full configurations need no stack probes (audio-thread safe frames)") {
-  for (const bool spread : {false, true}) {
+  struct V {
+    const char* name;
+    std::array<int, 4> wave;
+    bool spread;
+  };
+  const V variants[] = {{"full sines", {0, 0, 0, 0}, false}, {"full tables", {3, 8, 17, 19}, false},
+                        {"full user", {22, 0, 22, 0}, false}, {"spread sines", {0, 0, 0, 0}, true},
+                        {"spread mixed", {22, 3, 0, 20}, true}};
+  for (const V& v : variants) {
     opref::Config c;
     c.on = {true, true, true, true};
-    c.wave = {0, 3, 22, 0};
+    c.wave = v.wave;
     c.filterOn = c.lfoOn = c.pitchEnvOn = c.glideOn = true;
     c.filterSlope = 1;
-    c.spreadOn = spread;
+    c.spreadOn = v.spread;
     const Program p = compile(operatorText(c, false), kSr);
     pq::jit::CompileOptions o;
     o.maxBlockFrames = 128;
@@ -1013,8 +1021,8 @@ TEST_CASE("Operator: JIT images of the full configurations need no stack probes 
     pq::jit::CompileStats stats;
     auto img = jitCompiler().compile(p.sched, o, &stats);
     REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
-    CHECK_FALSE(stats.stackProbes);
-    MESSAGE((spread ? "spread" : "full") << ": " << p.sched.ops.size() << " ops, JIT " << stats.totalMs << " ms, "
-                                         << stats.pairedStages << " paired stages, " << stats.objectBytes << " B");
+    CHECK_MESSAGE(!stats.stackProbes, std::string(v.name) << " needs stack probes");
+    MESSAGE(std::string(v.name) << ": " << p.sched.ops.size() << " ops, JIT " << stats.totalMs << " ms, "
+                                << stats.pairedStages << " paired stages, " << stats.objectBytes << " B");
   }
 }
