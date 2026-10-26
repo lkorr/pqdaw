@@ -1160,7 +1160,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   9. **Text pane font**: Inter (proportional), the theme's body role; no monospace font is shipped (a new font asset + theme role would be needed: JetBrains Mono / Iosevka are OFL). The caret does not blink, so a focused editor is idle.
 - Status: open
 
-## Q?-T4.6-a · 2026-10-25 · T4.6 · Device panels: the description format, hosting until T4.1, structural edits, the spectrum's defaults
+## Q128 · 2026-10-25 · T4.6 · Device panels: the description format, hosting until T4.1, structural edits, the spectrum's defaults
 - Context: TASKS T4.6 (+ the panels of T4.9 / T4.10), SPEC §7.3 (panel controls are the subcircuit's `param` pins), §9, §11.1, §15 2026-10-24 (panel look is our call, Live-like). Files: `src/views/{include/pq/views,src}/devices/`, `stdlib/devices/*.panel.json`, `src/core/include/pq/core/tap_ring.h`, `src/dsp/{include/pq/dsp,src}/{fft,spectrum}.*`.
 - Choices (provisional):
   1. **The description is a separate file** `<device>.panel.json` next to the `.pqp` (format "pqdaw-panel 1", strict reader, `pq/views/devices/panel_desc.h`): controls at logical-px rects in the body, bound by name to params (`"param"`) or structural consts (`"const"`), visibility conditions, selectors with `{name}` templates (EQ Eight's band and A/B sets), `repeat`, displays with role → name bindings. Alternatives: a `panel { }` section in the .pqp (one file per device, but a PATCH_LANGUAGE / parser / printer change, and the text pane would show view data) or a grid instead of px rects (less control over Live-like layouts). A device without a file gets `autoPanel` (one control per param: T4.1's generic panels can use it).

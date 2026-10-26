@@ -1,7 +1,7 @@
 #pragma once
 
 // Panel descriptions (T4.6): how a device's front panel lays out its controls. Stored next to the device as
-// `<device>.panel.json` (stdlib/devices/saturator.pqp → saturator.panel.json; QUESTIONS Q?-T4.6-a for the choice of a
+// `<device>.panel.json` (stdlib/devices/saturator.pqp → saturator.panel.json; QUESTIONS Q128 for the choice of a
 // separate JSON file over a section in the .pqp). A device without one gets autoPanel(): one control per param.
 //
 // Format ("pqdaw-panel 1"; every key below; unknown keys are errors):

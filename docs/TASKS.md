@@ -518,7 +518,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Hover a wire: value, logic level, or a mini-scope from an analysis tap (RT copy into a ring, no allocation); bool wires lit when high; per-subcircuit and per-wire ns/sample meters (§7.6).
   - Accept: probe taps RtScope-clean; tap cost when no probe is open = 0; meter values within 20 % of the bench numbers.
 
-- [~] **T4.6 Device panels framework** *(worker BU, branch task/T4.6-device-panels; + T4.9/T4.10 panels)* (`views`, `stdlib`)
+- [x] **T4.6 Device panels framework** *(merged 2026-10-25)* (`views`, `stdlib`)
   - A front panel over a subcircuit: a panel description (controls bound to param pins, layout, visualiser slots), Live-style device frame (title bar, activator, fold, preset slot), PQ Meter visualisers hosted in panels (spectrum, scope, transfer curves).
   - Accept: Utility's and Saturator's panels built from descriptions; goldens; panel repaint on param change damages only the control.
 
@@ -530,11 +530,11 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Audio Effect Rack and Instrument Rack as subcircuits: parallel chains with chain mixer (volume/pan/mute/solo), chain-select zones with fades, Instrument Rack pitch zones in Hz or the track's tuning and velocity zones; 16 macros (targets with min/max/curve; macros are signals, so modulatable); macro variations (store/recall/randomise with exclusions); nesting; openable in the circuit editor.
   - Accept: zone crossfades click-free; a macro driving 8 targets costs one param write; rack ⇄ circuit view edits stay in sync; goldens `audio-rack`, `instrument-rack`.
 
-- [~] **T4.9 Utility + Saturator** *(DSP merged 2026-10-25; panel with T4.6, worker BU)* (`stdlib`)
+- [x] **T4.9 Utility + Saturator** *(DSP + panel merged 2026-10-25)* (`stdlib`)
   - Built in the patch language with panels; parity per SPEC §8 (Utility all controls; Saturator all curve types, waveshaper, shaper, colour EQ, soft clip, HQ via `oversample`).
   - Accept: transfer curves and frequency responses vs documented formulas / known behaviour (no Live renders for now); CPU per instance in RESULTS (ship).
 
-- [~] **T4.10 EQ Eight** *(DSP merged 2026-10-25; panel with T4.6, worker BU)* (`stdlib`, `views`)
+- [x] **T4.10 EQ Eight** *(DSP + panel merged 2026-10-25)* (`stdlib`, `views`)
   - 8 SVF-based bands, all types and slopes, stereo/L-R/M-S, adaptive Q, HQ, scale, spectrum display (PQ Meter port), audio-rate modulatable band params.
   - Accept: magnitude responses vs analytic responses within 0.1 dB; stable under audio-rate cutoff modulation; panel golden.
 
