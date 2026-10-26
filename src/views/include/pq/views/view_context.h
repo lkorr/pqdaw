@@ -333,8 +333,10 @@ public:
   // T4.6: View > Open Device… (installDeviceView sets the handler: a menu of the stock devices → the Device tab).
   static constexpr std::string_view kDeviceActions[] = {"view.openDevice"};
   // T4.1: the Device view's edits (installDeviceChain sets the handlers; scope "devices").
-  static constexpr std::string_view kDeviceChainActions[] = {"device.delete", "device.copy",      "device.cut",
-                                                             "device.paste",  "device.duplicate", "device.toggleActive"};
+  // T4.8: device.group (Ctrl+G: the selection into a rack).
+  static constexpr std::string_view kDeviceChainActions[] = {"device.delete",    "device.copy",         "device.cut",
+                                                             "device.paste",     "device.duplicate",    "device.toggleActive",
+                                                             "device.group"};
   // T4.7: View > Cables (Show / Fade / Hide) and deleting the selected wire (installWiring sets the handlers).
   static constexpr std::string_view kWiringActions[] = {"view.cycleCables", "wire.delete"};
   // T4.13: View > Project Patch (Ctrl+Alt+P): the project patch view in the track area (installProjectPatch sets it).

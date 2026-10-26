@@ -67,6 +67,28 @@ public:
   // patch: one undo step). An edited device's title shows an "edited" marker.
   bool openInCircuitView(doc::DeviceId device);
   bool revertSelectedToStock();
+  // T4.8: Ctrl+G — the selected devices (of one list) into a new rack (pq/document/edit_ops.h groupDevices).
+  bool groupSelected();
+  // T4.8: opens a rack's lowered subcircuit in the circuit viewer (read-only; rack_frame.cpp, Q?-T4.8-a).
+  bool openRackCircuit(doc::DeviceId rack);
+
+  // ---- T4.8: racks (rack_frame.cpp) --------------------------------------------------------------------------------
+  // The chain a rack's frame shows (invalid: none; its first chain by default) and showing another one.
+  doc::ChainId shownChain(doc::DeviceId rack) const;
+  void showChain(doc::DeviceId rack, doc::ChainId chain);
+  // Macro map mode (Live's Map): on for `rack` (invalid: off). While on, a click on one of the rack's macros picks it;
+  // then a click on a knob of a device inside the rack (or on the rack's chain selector) maps it to that macro (or
+  // unmaps it when it already is), one undo step each.
+  void setMapMode(doc::DeviceId rack);
+  doc::DeviceId mapRack() const noexcept;
+  int32_t mapMacro() const noexcept;
+  void pickMacro(int32_t macro);
+  // Map mode: maps `device`.`param` to the picked macro (as the overlay's click does).
+  bool mapPicked(doc::DeviceId device, std::string_view param);
+  // The zone editor of a rack: shown (with the Key / Velocity / Chain tab) or hidden.
+  void showZones(doc::DeviceId rack, std::optional<doc::ZoneKind> tab);
+  std::optional<doc::ZoneKind> zonesShown(doc::DeviceId rack) const;
+  bool onKey(const ui::KeyEvent& e) override;
 
   // The device menu (the + slot, a right-click on empty space): the catalog's instruments and audio effects.
   std::vector<ui::MenuItem> deviceMenu();

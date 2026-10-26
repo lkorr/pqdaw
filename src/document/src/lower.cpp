@@ -1956,6 +1956,44 @@ std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const 
   return paramsWith(p, tuningNodes, &uc.callees);
 }
 
+Result<graph::Patch> rackSubcircuit(const Project& p, DeviceId rackId, const graph::PatchLibrary& library,
+                                   const DeviceLibrary* devices) {
+  const DeviceLoc loc = findDevice(p, rackId);
+  if (loc.device == nullptr || !loc.device->rack) return Error{ErrorCode::NotFound, "rackSubcircuit: no such rack", {}};
+  const DevicePtr rack = loc.list()[loc.index];
+  const bool instrument = rack->kind == DeviceKind::Instrument;
+  // The rack on its own, as the track lowers it (active or not: the view shows what it would play).
+  TrackDevs td;
+  DevicePtr shown = rack;
+  if (!rack->active) {
+    auto on = std::make_shared<Device>(*rack);
+    on->active = true;
+    shown = std::move(on);
+  }
+  const UserCallees uc = makeCallees(p, &library, devices, true);  // T4.4-fix1: user devices inside it play their text
+  lowerList(td, std::vector<DevicePtr>{shown}, instrument, &uc.callees, nullptr, td.top);
+  Ir ir((instrument ? "InstrumentRack" : "AudioEffectRack") + std::to_string(rackId.value));
+  LowerOptions o;
+  o.library = uc.callees.lib;
+  o.devices = devices;
+  Build b{ir, o, td, std::vector<NodeIndex>(td.size(), graph::kNone), {}};
+  if (td.top.empty()) {  // an Instrument Rack with no chain that plays: an empty patch with its output
+    ir.output("out", kStereo, ir.konst(0.0, kC0), kOut);
+  } else if (instrument) {
+    const Voices v = instrumentRack(b, td.top.front(), kPending);
+    ir.output("out", kStereo, v.x, kOut);
+    if (v.done.node != graph::kNone)
+      ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1), v.done, kDone);
+  } else {
+    uint16_t width = graph::kWidthStereo;
+    const PortRef x = audioRack(b, td.top.front(), ir.input("in", ir.konst(0.0, kC0), kIn), width);
+    ir.output("out", kStereo, x, kOut);
+  }
+  lowerSites(b, 0, 0, WirePlan{}, nullptr);
+  if (!ir.finish()) return Error{ErrorCode::Overflow, "rackSubcircuit: a document id too large for a stable node id", {}};
+  return std::move(ir.patch());
+}
+
 std::vector<LoweredParam> chainParamValues(const Project& p, ChainId chain) {
   std::vector<LoweredParam> out;
   const ChainLoc c = findChain(p, chain);

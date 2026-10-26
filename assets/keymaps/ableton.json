@@ -79,6 +79,7 @@
     {"scope": "devices", "keys": "Ctrl+X", "action": "device.cut", "status": "implemented", "task": "T4.1"},
     {"scope": "devices", "keys": "Ctrl+V", "action": "device.paste", "status": "implemented", "task": "T4.1"},
     {"scope": "devices", "keys": "Ctrl+D", "action": "device.duplicate", "status": "implemented", "task": "T4.1"},
-    {"scope": "devices", "keys": "0", "action": "device.toggleActive", "status": "implemented", "task": "T4.1"}
+    {"scope": "devices", "keys": "0", "action": "device.toggleActive", "status": "implemented", "task": "T4.1"},
+    {"scope": "devices", "keys": "Ctrl+G", "action": "device.group", "status": "implemented", "task": "T4.8"}
   ]
 }

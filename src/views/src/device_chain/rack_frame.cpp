@@ -1,0 +1,1223 @@
+// Racks in the Device view (T4.8, SPEC §8.2; Live's rack): pq/views/device_chain/device_chain.h. A rack's frame is, left
+// to right: a strip of buttons (show macros / chains / zones, Map, Rand, variations), the macro panel (a T4.6
+// DevicePanel over the rack's params: up to 16 macros and the chain selector, with the title bar's activator and fold),
+// the chain list (one row per chain: activator, name, solo, volume, pan — the chain mixer), the zone editor (Key /
+// Velocity / Chain zones as bars aligned with the rows), then the frames of the chain it shows (devices and nested
+// racks, framed like the track's) and a slot that adds to that chain. Every edit is a document command (edit_ops.h),
+// one undo step each; drags are store gestures (one step).
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <optional>
+#include <string>
+
+#include "../common/paint.h"
+#include "internal.h"
+#include "pq/core/automation_curve.h"
+#include "pq/document/lower.h"
+#include "pq/graph/parse.h"
+#include "pq/ui/controls.h"
+#include "pq/ui/overlay.h"
+#include "pq/ui/theme.h"
+#include "pq/views/circuit/circuit_viewer.h"
+
+namespace pq::views {
+
+using namespace device_chain;
+
+namespace {
+
+constexpr float kStripW = 22.0f;     // the button strip
+constexpr float kMacroCell = 56.0f;  // a macro knob's cell (w and h)
+constexpr float kListW = 220.0f;     // the chain list
+constexpr float kRowH = 22.0f;       // a chain row
+constexpr float kZoneW = 230.0f;     // the zone editor
+constexpr float kSlotW = 112.0f;     // the add / drop slot after the shown chain
+constexpr float kPad = 6.0f;         // T4.6's panel padding
+
+std::string fmtDb(double db) {
+  if (db <= doc::kMinVolumeDb) return "-inf dB";
+  char b[32];
+  std::snprintf(b, sizeof b, "%.1f dB", db);
+  return b;
+}
+std::string fmtPan(double p) {
+  const long v = std::lround(p * 50.0);
+  if (v == 0) return "C";
+  return std::to_string(std::labs(v)) + (v < 0 ? "L" : "R");
+}
+
+// The rack's params as a device signature: "macro1" … "macro16" (labels: the macro names) and "select" ("Chain").
+devices::DeviceSignature rackSignature(const doc::Device& d) {
+  devices::DeviceSignature s;
+  s.patch = d.patch;
+  for (uint32_t k = 0; k < doc::kMacroCount; ++k) {
+    devices::ParamInfo p;
+    p.name = doc::macroParamName(k);
+    p.label = doc::macroDisplayName(*d.rack, k);
+    p.min = 0.0;
+    p.max = doc::kMacroMax;
+    s.params.push_back(std::move(p));
+  }
+  devices::ParamInfo sel;
+  sel.name = std::string(doc::kSelectParam);
+  sel.label = "Chain";
+  sel.min = 0.0;
+  sel.max = doc::kSelectMax;
+  s.params.push_back(std::move(sel));
+  return s;
+}
+
+// The macro panel's layout: the visible macros in columns of four, then the chain selector's knob in a column of its
+// own; only the title bar when the macros are hidden.
+devices::PanelDesc rackPanel(const doc::Device& d, const devices::DeviceSignature& sig) {
+  devices::PanelDesc p;
+  p.patch = sig.patch;
+  p.title = d.kind == doc::DeviceKind::Instrument ? "Instrument Rack" : "Audio Effect Rack";
+  const doc::Rack& r = *d.rack;
+  if (!r.showMacros) {
+    p.width = 112.0f;
+    p.height = 0.0f;
+    return p;
+  }
+  const uint32_t n = std::clamp<uint32_t>(r.visibleMacros, 1, doc::kMacroCount);
+  const uint32_t rows = std::min<uint32_t>(4, n), cols = (n + 3) / 4;
+  for (uint32_t k = 0; k < n; ++k) {
+    devices::ControlDesc c;
+    c.kind = devices::ControlKind::Knob;
+    c.param = c.id = doc::macroParamName(k);
+    c.x = static_cast<float>(k / 4) * kMacroCell;
+    c.y = static_cast<float>(k % 4) * kMacroCell;
+    c.w = kMacroCell - 4.0f;
+    c.h = kMacroCell;
+    c.info = "A macro: drives every param mapped to it (Map, then the macro, then a knob).";
+    p.controls.push_back(std::move(c));
+  }
+  devices::ControlDesc c;
+  c.kind = devices::ControlKind::Knob;
+  c.param = c.id = std::string(doc::kSelectParam);
+  c.x = static_cast<float>(cols) * kMacroCell;
+  c.y = 0.0f;
+  c.w = kMacroCell - 4.0f;
+  c.h = kMacroCell;
+  c.info = "The chain selector: chains play where their Chain zone covers it (with their fades).";
+  p.controls.push_back(std::move(c));
+  p.width = static_cast<float>(cols + 1) * kMacroCell;
+  p.height = static_cast<float>(rows) * kMacroCell;
+  return p;
+}
+
+// The macro panel's target: the rack's params (macros, selector), its activator.
+class RackTarget final : public devices::DeviceTarget {
+public:
+  RackTarget(DeviceChainView::Impl& impl, doc::DeviceId id) : impl_(impl), id_(id) {}
+  void paramGestureBegin(std::string_view) override {
+    if (!impl_.ctx().store().inGesture()) {
+      (void)impl_.ctx().store().beginGesture("Device Parameter");
+      own_ = true;
+    }
+  }
+  void setParam(std::string_view param, double value) override {
+    impl_.live(doc::ops::setDeviceParam(impl_.doc(), id_, std::string(param), std::clamp(value, 0.0, doc::kMacroMax)));
+  }
+  void paramGestureEnd(std::string_view) override {
+    if (own_ && impl_.ctx().store().inGesture()) (void)impl_.ctx().store().commitGesture();
+    own_ = false;
+  }
+  void setConst(std::string_view, double) override {}
+  void setActive(bool on) override {
+    impl_.run(doc::ops::setDevicesActive(impl_.doc(), std::vector<doc::DeviceId>{id_}, on), false);
+  }
+
+private:
+  DeviceChainView::Impl& impl_;
+  doc::DeviceId id_;
+  bool own_ = false;
+};
+
+class RackFrame;
+
+// One chain row: activator, name, solo, volume, pan (the chain mixer).
+class ChainRow final : public ui::Widget {
+public:
+  ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::Chain& c);
+  doc::ChainId chain() const noexcept { return chain_; }
+  void set(const doc::Chain& c, bool shown);
+  void arrange(ui::LayoutPass& pass) override;
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  ui::InfoText info() const override {
+    return {"Chain", "Click to show the chain's devices. The square switches the chain on or off (off: it costs "
+                     "nothing), S solos it, then its volume and pan. Drop a device here to add it to the chain. "
+                     "Right-click for more."};
+  }
+
+private:
+  RackFrame& rack_;
+  DeviceChainView::Impl& impl_;
+  doc::ChainId chain_;
+  std::string name_;
+  bool shown_ = false;
+  ui::Toggle* on_ = nullptr;
+  ui::Toggle* solo_ = nullptr;
+  ui::DragBox* vol_ = nullptr;
+  ui::DragBox* pan_ = nullptr;
+};
+
+// The chain list: a header ("Chains", +) and the rows.
+class ChainList final : public ui::Widget {
+public:
+  ChainList(RackFrame& rack, DeviceChainView::Impl& impl) : Widget("chains"), rack_(rack), impl_(impl) {
+    setLayout(ui::LayoutKind::Custom);
+  }
+  std::vector<ChainRow*> rows;
+  void arrange(ui::LayoutPass& pass) override {
+    const ui::IRect r = rect();
+    int32_t y = r.y + pass.px(kTitleH);
+    for (ChainRow* row : rows) {
+      pass.place(*row, {r.x, y, r.w, pass.px(kRowH)});
+      y += pass.px(kRowH);
+    }
+  }
+  ui::IRect addRect() const {
+    const ui::IRect r = rect();
+    const int32_t th = tree() ? tree()->uiScale().px(kTitleH) : 20;
+    return {r.right() - th, r.y, th, th};
+  }
+  // Below the rows: the area a dropped device makes a new chain from.
+  ui::IRect emptyArea() const {
+    const ui::IRect r = rect();
+    const float s = tree() ? tree()->scale() : 1.0f;
+    const int32_t top = r.y + static_cast<int32_t>(std::lround((kTitleH + kRowH * static_cast<float>(rows.size())) * s));
+    return {r.x, top, r.w, std::max(0, r.bottom() - top)};
+  }
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  ui::InfoText info() const override {
+    return {"Chains", "The rack's parallel chains. + adds one; dropping a device below the rows makes a new chain with it."};
+  }
+
+private:
+  RackFrame& rack_;
+  DeviceChainView::Impl& impl_;
+};
+
+// The zone editor: per chain a bar over the zone's value range (Key: pitch, Velocity, Chain: the selector), the fades
+// as ramps; drag an edge (low / high), the body (moves the zone), or in the upper part a fade edge. The Chain tab's
+// header holds the selector's marker (drag it).
+class ZoneEditor final : public ui::Widget {
+public:
+  ZoneEditor(RackFrame& rack, DeviceChainView::Impl& impl) : Widget("zones"), rack_(rack), impl_(impl) {}
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  ui::InfoText info() const override {
+    return {"Zones", "Where each chain plays: drag a bar's ends, its body, or (in its upper part) its fade edges. Key "
+                     "zones are pitch ranges (Hz, or degrees of the track's tuning), Velocity zones 0 … 127, Chain "
+                     "zones the chain selector's range (drag the marker above them)."};
+  }
+  double toValue(float x) const;
+  float toX(double v) const;
+
+private:
+  enum class Grab : uint8_t { None, Lo, Hi, FadeLo, FadeHi, Move, Selector };
+  RackFrame& rack_;
+  DeviceChainView::Impl& impl_;
+  Grab grab_ = Grab::None;
+  doc::ChainId chain_;
+  doc::Zone start_;
+  double pressValue_ = 0.0;
+};
+
+// After the shown chain: adds a device to it (the device menu), or names what to drop.
+class ChainSlot final : public ui::Control {
+public:
+  ChainSlot(RackFrame& rack, DeviceChainView::Impl& impl) : Control("chain-slot"), rack_(rack), impl_(impl) {
+    setInfo("Chain", "Opens the device menu: the device goes at the end of the chain shown (a rack without chains gets "
+                     "one). Devices dragged here join that chain.");
+  }
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+
+private:
+  RackFrame& rack_;
+  DeviceChainView::Impl& impl_;
+};
+
+// The button strip on the rack's left edge (Live's rack strip).
+class RackStrip final : public ui::Widget {
+public:
+  enum Button : uint8_t { kMacros, kChains, kZones, kMap, kRand, kVariations, kButtons };
+  RackStrip(RackFrame& rack, DeviceChainView::Impl& impl) : Widget("strip"), rack_(rack), impl_(impl) {}
+  ui::IRect buttonRect(uint32_t b) const {
+    const ui::IRect r = rect();
+    const float s = tree() ? tree()->scale() : 1.0f;
+    const int32_t sz = static_cast<int32_t>(std::lround(18.0f * s)), step = static_cast<int32_t>(std::lround(22.0f * s));
+    return {r.x + (r.w - sz) / 2, r.y + static_cast<int32_t>(std::lround(kTitleH * s)) + static_cast<int32_t>(b) * step, sz, sz};
+  }
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  ui::InfoText info() const override {
+    return {"Rack", "M shows the macros, C the chain list, Z the zone editor. Map: click a macro, then a knob inside the "
+                    "rack to map it (again to unmap; Esc ends). Rnd randomizes the macros (not the excluded ones). Var: "
+                    "store and recall macro variations."};
+  }
+
+private:
+  RackFrame& rack_;
+  DeviceChainView::Impl& impl_;
+};
+
+class RackFrame final : public FrameBase {
+public:
+  RackFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d)
+      : FrameBase("rack[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), target_(impl, d.id) {
+    setLayout(ui::LayoutKind::Custom);
+    strip_ = &add<RackStrip>(*this, impl);
+    list_ = &add<ChainList>(*this, impl);
+    zones_ = &add<ZoneEditor>(*this, impl);
+    slot_ = &add<ChainSlot>(*this, impl);
+    update(d);
+  }
+
+  const doc::Rack& rack() const noexcept { return *rack_; }
+  bool instrument() const noexcept { return kind_ == doc::DeviceKind::Instrument; }
+  doc::ChainId shownChain() const noexcept { return shown_; }
+  const doc::Chain* shownChainPtr() const noexcept { return shown_.valid() ? rack_->findChain(shown_) : nullptr; }
+  std::optional<doc::ZoneKind> zoneTab() const {
+    const auto it = impl_.zoneTab.find(id_.value);
+    if (it == impl_.zoneTab.end() || it->second == DeviceChainView::Impl::kZonesHidden) return std::nullopt;
+    return static_cast<doc::ZoneKind>(it->second);
+  }
+  double paramValue(std::string_view name) const {
+    for (const doc::DeviceValue& v : params_)
+      if (v.name == name) return v.value;
+    return 0.0;
+  }
+  ChainList& list() noexcept { return *list_; }
+  RackStrip& strip() noexcept { return *strip_; }
+
+  devices::DevicePanel* panel() const noexcept override { return panel_; }
+  devices::DeviceTarget* target() noexcept override { return &target_; }
+  bool isRack() const noexcept override { return true; }
+
+  void collect(std::map<uint32_t, FrameBase*>& all) override {
+    all[id_.value] = this;
+    for (FrameBase* f : inner_) f->collect(all);
+  }
+
+  float logicalWidth() const override {
+    if (panel_ != nullptr && panel_->folded()) return panel_->logicalWidth();
+    float w = kStripW + (panel_ != nullptr ? panel_->logicalWidth() : 0.0f);
+    if (rack_->showChains) w += kListW + (zoneTab() ? kZoneW : 0.0f);
+    for (const FrameBase* f : inner_) w += kFrameGap + f->logicalWidth();
+    return w + kFrameGap + kSlotW + kFrameGap;
+  }
+  float logicalHeight(float available) const override {
+    if (panel_ != nullptr && panel_->folded()) return std::min(available, panel_->logicalHeight());
+    return available;
+  }
+
+  void update(const doc::Device& d) override {
+    const bool first = rack_ == nullptr;
+    const bool optionsChanged = first || d.rack->macroNames != rack_->macroNames ||
+                                d.rack->visibleMacros != rack_->visibleMacros || d.rack->showMacros != rack_->showMacros;
+    rack_ = d.rack;
+    kind_ = d.kind;
+    active_ = d.active;
+    params_ = d.params;
+    // The macro panel: rebuilt when its layout changed, else its values.
+    if (optionsChanged) {
+      bool folded = false;
+      if (panel_ != nullptr) {
+        folded = panel_->folded();
+        (void)removeChild(*panel_);
+        panel_ = nullptr;
+      }
+      sig_ = rackSignature(d);
+      desc_ = rackPanel(d, sig_);
+      std::map<std::string, double, std::less<>> values;
+      for (const doc::DeviceValue& v : d.params) values[v.name] = v.value;
+      panel_ = &add<devices::DevicePanel>("panel", sig_, desc_, &target_, values);
+      panel_->setFolded(folded);
+      panel_->onSizeChanged = [this] { relayout(); };
+    }
+    panel_->setActive(d.active);
+    for (const devices::ParamInfo& p : sig_.params) panel_->setParamValue(p.name, paramValue(p.name));
+    // The chain rows.
+    bool sameRows = list_->rows.size() == rack_->chains.size();
+    for (size_t i = 0; sameRows && i < rack_->chains.size(); ++i) sameRows = list_->rows[i]->chain() == rack_->chains[i]->id;
+    if (!sameRows) {
+      for (ChainRow* r : list_->rows) (void)list_->removeChild(*r);
+      list_->rows.clear();
+      for (const doc::ChainPtr& c : rack_->chains) list_->rows.push_back(&list_->add<ChainRow>(*this, impl_, *c));
+      list_->invalidateLayout();
+    }
+    // The chain shown: the one picked (view state), else the first.
+    const auto it = impl_.shownChain.find(id_.value);
+    shown_ = it != impl_.shownChain.end() && rack_->findChain(it->second) != nullptr ? it->second
+             : rack_->chains.empty()                                                    ? doc::ChainId{}
+                                                                                         : rack_->chains.front()->id;
+    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
+    syncInner();
+    list_->setVisible(rack_->showChains);
+    zones_->setVisible(rack_->showChains && zoneTab().has_value());
+    zones_->markDirty();
+    relayout();
+  }
+  void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef>) override { update(d); }
+
+  // Shows another chain (view state: no document change).
+  void showChain(doc::ChainId c) {
+    impl_.shownChain[id_.value] = c;
+    shown_ = c;
+    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
+    syncInner();
+    impl_.reindex();
+    relayout();
+  }
+  void relayout() {
+    invalidateLayout();
+    if (impl_.content != nullptr) impl_.content->invalidateLayout();
+    markDirty();
+  }
+
+  void arrange(ui::LayoutPass& pass) override {
+    const ui::IRect r = rect();
+    int32_t x = r.x;
+    const bool folded = panel_ != nullptr && panel_->folded();
+    for (size_t i = 0; i < childCount(); ++i) child(i).setVisible(!folded || &child(i) == panel_);
+    if (folded) {
+      pass.place(*panel_, {r.x, r.y, pass.px(panel_->logicalWidth()), pass.px(panel_->logicalHeight())});
+      return;
+    }
+    list_->setVisible(rack_->showChains);
+    zones_->setVisible(rack_->showChains && zoneTab().has_value());
+    pass.place(*strip_, {x, r.y, pass.px(kStripW), r.h});
+    x += pass.px(kStripW);
+    if (panel_ != nullptr) {
+      const int32_t w = pass.px(panel_->logicalWidth());
+      pass.place(*panel_, {x, r.y, w, std::min(r.h, pass.px(panel_->logicalHeight()))});
+      x += w;
+    }
+    if (rack_->showChains) {
+      pass.place(*list_, {x, r.y, pass.px(kListW), r.h});
+      x += pass.px(kListW);
+      if (zoneTab()) {
+        pass.place(*zones_, {x, r.y, pass.px(kZoneW), r.h});
+        x += pass.px(kZoneW);
+      }
+    }
+    for (FrameBase* f : inner_) {
+      x += pass.px(kFrameGap);
+      const int32_t w = pass.px(f->logicalWidth());
+      const float avail = static_cast<float>(r.h) / pass.scale() - kTitleH - kPad;
+      pass.place(*f, {x, r.y + pass.px(kTitleH), w, std::min(r.h - pass.px(kTitleH), pass.px(f->logicalHeight(avail)))});
+      x += w;
+    }
+    x += pass.px(kFrameGap);
+    pass.place(*slot_, {x, r.y + pass.px(kTitleH), pass.px(kSlotW), std::max(0, r.h - pass.px(kTitleH) - pass.px(kPad))});
+  }
+
+  void paint(ui::PaintContext& ctx) override {
+    const ui::Theme* th = ctx.res.theme;
+    if (!th) return;
+    const ui::IRect r = rect();
+    paint::box(ctx.dl, r, 0.0f, th->device.background, 0);
+    // The title band over the chain list and the shown chain (the macro panel draws its own title bar).
+    const int32_t tb = ctx.scale.px(kTitleH);
+    ctx.dl.addRectFilled(ui::IRect{r.x, r.y, r.w, tb}.toRect(), th->device.titleBar);
+    if (const doc::Chain* c = shownChainPtr(); c != nullptr && ctx.res.uiFonts && !(panel_ != nullptr && panel_->folded())) {
+      // The chain shown, named above its devices.
+      const int32_t x0 = slot_->rect().x - (inner_.empty() ? 0 : (slot_->rect().x - inner_.front()->rect().x));
+      const ui::IRect t{x0, r.y, std::max(0, slot_->rect().right() - x0), tb};
+      paint::text(ctx, ctx.res.uiFonts->small, t, c->name, active_ ? th->device.titleText : th->device.titleTextOff,
+                  ui::TextAlign::Left, ctx.scale.px(6.0f));
+    }
+  }
+  void paintOver(ui::PaintContext& ctx) override {
+    if (const ui::Theme* th = ctx.res.theme) paint::box(ctx.dl, rect(), 0.0f, 0, th->device.border);
+    FrameBase::paintOver(ctx);
+  }
+
+  bool inTitle(ui::Vec2 p) const override {
+    // The title band right of the macro panel's activator (the panel's own title bar handles its activator and fold).
+    if (!FrameBase::inTitle(p)) return false;
+    if (panel_ != nullptr && panel_->rect().contains(p)) {
+      const float s = tree() ? tree()->scale() : 1.0f;
+      return p.x > static_cast<float>(panel_->rect().x) + 36.0f * s;
+    }
+    return true;
+  }
+
+  bool dropAt(ui::Vec2 p, DropTarget& out) override {
+    if (panel_ != nullptr && panel_->folded()) return false;
+    const float s = tree() ? tree()->scale() : 1.0f;
+    if (rack_->showChains && list_->rect().contains(p)) {
+      for (ChainRow* row : list_->rows)
+        if (row->rect().contains(p)) {
+          const doc::Chain* c = rack_->findChain(row->chain());
+          out.kind = DropTarget::Kind::Chain;
+          out.chain = row->chain();
+          out.index = c != nullptr ? static_cast<uint32_t>(c->devices.size()) : doc::kAppend;
+          out.marker = row->rect();
+          out.row = true;
+          return true;
+        }
+      const ui::IRect empty = list_->emptyArea();
+      if (empty.contains(p)) {
+        out.kind = DropTarget::Kind::NewChain;
+        out.rack = id_;
+        out.marker = {empty.x, empty.y, empty.w, static_cast<int32_t>(std::lround(kRowH * s))};
+        out.row = true;
+        return true;
+      }
+      return false;
+    }
+    // The chain shown: the gap nearest the pointer.
+    const doc::Chain* c = shownChainPtr();
+    const int32_t from = inner_.empty() ? slot_->rect().x : inner_.front()->rect().x;
+    if (c == nullptr || p.x < static_cast<float>(from) - 4.0f * s || p.x > static_cast<float>(slot_->rect().right())) {
+      if (c == nullptr && slot_->rect().contains(p)) {  // no chain yet: the slot makes one
+        out.kind = DropTarget::Kind::NewChain;
+        out.rack = id_;
+        out.marker = slot_->rect();
+        out.row = true;
+        return true;
+      }
+      return false;
+    }
+    auto slot = static_cast<uint32_t>(inner_.size());
+    for (size_t i = 0; i < inner_.size(); ++i) {
+      const ui::IRect fr = inner_[i]->rect();
+      if (p.x < static_cast<float>(fr.x) + static_cast<float>(fr.w) * 0.5f) {
+        slot = static_cast<uint32_t>(i);
+        break;
+      }
+    }
+    // An Instrument Rack's chain keeps its instrument first.
+    if (instrument() && !c->devices.empty() && c->devices.front()->kind == doc::DeviceKind::Instrument &&
+        c->devices.front()->id != impl_.dragging)
+      slot = std::max(slot, 1u);
+    out.kind = DropTarget::Kind::Chain;
+    out.chain = c->id;
+    out.index = slot;
+    const int32_t gap = static_cast<int32_t>(std::lround(kFrameGap * s));
+    const int32_t x = slot < inner_.size() ? inner_[slot]->rect().x - gap / 2 : slot_->rect().x - gap / 2;
+    const int32_t w = std::max(2, static_cast<int32_t>(std::lround(2.0f * s)));
+    out.marker = {x - w / 2, slot_->rect().y, w, slot_->rect().h};
+    out.row = false;
+    return true;
+  }
+
+  // The rack's own macro knobs (map mode picks them).
+  ui::Widget* macroKnob(uint32_t k) const {
+    return panel_ != nullptr && !panel_->folded() ? panel_->controlFor(doc::macroParamName(k)) : nullptr;
+  }
+
+private:
+  // The frames of the chain shown: rebuilt when its devices changed, else updated.
+  void syncInner() {
+    const doc::Chain* c = shownChainPtr();
+    static const std::vector<doc::DevicePtr> kNone;
+    const std::vector<doc::DevicePtr>& devs = c != nullptr ? c->devices : kNone;
+    bool same = devs.size() == innerShown_.size();
+    for (size_t i = 0; same && i < devs.size(); ++i)
+      same = devs[i]->id == innerShown_[i]->id && devs[i]->isRack() == innerShown_[i]->isRack() &&
+             inner_[i]->keeps(*devs[i]);
+    if (same) {
+      for (size_t i = 0; i < devs.size(); ++i)
+        if (devs[i] != innerShown_[i]) inner_[i]->update(*devs[i]);
+    } else {
+      for (FrameBase* f : inner_) (void)removeChild(*f);
+      inner_.clear();
+      for (const doc::DevicePtr& d : devs) {
+        auto f = makeFrame(impl_, ctx_, *d);
+        inner_.push_back(f.get());
+        addChild(std::move(f));
+      }
+    }
+    innerShown_ = devs;
+  }
+
+  RackTarget target_;
+  std::shared_ptr<const doc::Rack> rack_;
+  doc::DeviceKind kind_ = doc::DeviceKind::AudioEffect;
+  bool active_ = true;
+  std::vector<doc::DeviceValue> params_;
+  devices::DeviceSignature sig_;
+  devices::PanelDesc desc_;
+  devices::DevicePanel* panel_ = nullptr;
+  RackStrip* strip_ = nullptr;
+  ChainList* list_ = nullptr;
+  ZoneEditor* zones_ = nullptr;
+  ChainSlot* slot_ = nullptr;
+  doc::ChainId shown_;
+  std::vector<FrameBase*> inner_;
+  std::vector<doc::DevicePtr> innerShown_;
+};
+
+// ---- ChainRow ----------------------------------------------------------------------------------------------------
+
+ChainRow::ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::Chain& c)
+    : Widget("chain[" + std::to_string(c.id.value) + "]"), rack_(rack), impl_(impl), chain_(c.id) {
+  setLayout(ui::LayoutKind::Custom);
+  on_ = &add<ui::Toggle>("on", "", ui::ToggleStyle::Activator, c.active);
+  on_->onToggle = [this](bool on) { impl_.run(doc::ops::setChainActive(impl_.doc(), chain_, on), false); };
+  solo_ = &add<ui::Toggle>("solo", "S", ui::ToggleStyle::Solo, c.solo);
+  solo_->onToggle = [this](bool on) { impl_.run(doc::ops::setChainSolo(impl_.doc(), chain_, on), false); };
+  ui::ValueSpec vs;
+  vs.min = doc::kMinVolumeDb;
+  vs.max = doc::kMaxVolumeDb;
+  vs.def = 0.0;
+  vs.dragPixels = 150.0;
+  vs.decimals = 1;
+  vs.unit = "dB";
+  vol_ = &add<ui::DragBox>("volume", vs);
+  vol_->formatter = [](double v) { return fmtDb(v); };
+  ui::ValueSpec ps;
+  ps.min = -1.0;
+  ps.max = 1.0;
+  ps.def = 0.0;
+  ps.step = 0.02;
+  ps.dragPixels = 100.0;
+  pan_ = &add<ui::DragBox>("pan", ps);
+  pan_->formatter = [](double v) { return fmtPan(v); };
+  auto begin = [this] {
+    if (!impl_.ctx().store().inGesture()) (void)impl_.ctx().store().beginGesture("Chain Mixer");
+  };
+  auto end = [this] {
+    if (impl_.ctx().store().inGesture()) (void)impl_.ctx().store().commitGesture();
+  };
+  vol_->onGestureBegin = begin;
+  pan_->onGestureBegin = begin;
+  vol_->onGestureEnd = end;
+  pan_->onGestureEnd = end;
+  vol_->onChange = [this](double v) {
+    impl_.live(doc::ops::setChainMixer(impl_.doc(), chain_, static_cast<float>(v), static_cast<float>(pan_->value())));
+  };
+  pan_->onChange = [this](double v) {
+    impl_.live(doc::ops::setChainMixer(impl_.doc(), chain_, static_cast<float>(vol_->value()), static_cast<float>(v)));
+  };
+  set(c, false);
+}
+
+void ChainRow::set(const doc::Chain& c, bool shown) {
+  if (name_ != c.name || shown_ != shown) markDirty();
+  name_ = c.name;
+  shown_ = shown;
+  on_->setOn(c.active);
+  solo_->setOn(c.solo);
+  if (!vol_->inGesture()) vol_->setValue(c.volumeDb);
+  if (!pan_->inGesture()) pan_->setValue(c.pan);
+}
+
+void ChainRow::arrange(ui::LayoutPass& pass) {
+  const ui::IRect r = rect();
+  const int32_t pad = pass.px(3.0f), h = r.h - 2 * pad;
+  int32_t x = r.x + pad;
+  pass.place(*on_, {x, r.y + pad, pass.px(14.0f), h});
+  int32_t right = r.right() - pad;
+  const int32_t panW = pass.px(34.0f), volW = pass.px(50.0f), soloW = pass.px(16.0f);
+  right -= panW;
+  pass.place(*pan_, {right, r.y + pad, panW, h});
+  right -= volW + pad;
+  pass.place(*vol_, {right, r.y + pad, volW, h});
+  right -= soloW + pad;
+  pass.place(*solo_, {right, r.y + pad, soloW, h});
+}
+
+void ChainRow::paint(ui::PaintContext& ctx) {
+  const ui::Theme* th = ctx.res.theme;
+  if (!th) return;
+  const ui::IRect r = rect();
+  if (shown_) ctx.dl.addRectFilled(r.toRect(), th->selection.fill);
+  ctx.dl.addRectFilled(ui::IRect{r.x, r.bottom() - 1, r.w, 1}.toRect(), th->surface.divider);
+  if (!ctx.res.uiFonts) return;
+  const int32_t x0 = on_->rect().right() + ctx.scale.px(5.0f);
+  const ui::IRect t{x0, r.y, std::max(0, solo_->rect().x - x0 - ctx.scale.px(3.0f)), r.h};
+  paint::text(ctx, ctx.res.uiFonts->small, t, name_, shown_ ? th->selection.text : th->text.primary, ui::TextAlign::Left);
+}
+
+bool ChainRow::onPointer(const ui::PointerEvent& e) {
+  if (e.type != ui::PointerType::Down) return e.type == ui::PointerType::Up;
+  if (e.button == ui::PointerButton::Right) {
+    const doc::ChainLoc loc = doc::findChain(impl_.doc(), chain_);
+    if (loc.chain == nullptr) return true;
+    DeviceChainView::Impl* im = &impl_;
+    const doc::ChainId c = chain_;
+    const doc::DeviceId rack = loc.rack->id;
+    std::vector<ui::MenuItem> items;
+    items.push_back(ui::MenuItem::item(loc.chain->active ? "Deactivate Chain" : "Activate Chain",
+                                       [im, c, on = loc.chain->active] { im->run(doc::ops::setChainActive(im->doc(), c, !on), false); }));
+    items.push_back(ui::MenuItem::item(loc.chain->solo ? "Unsolo" : "Solo",
+                                       [im, c, s = loc.chain->solo] { im->run(doc::ops::setChainSolo(im->doc(), c, !s), false); }));
+    items.push_back(ui::MenuItem::sep());
+    items.push_back(ui::MenuItem::item("Duplicate Chain",
+                                       [im, c] { im->run(doc::ops::duplicateChain(im->doc(), im->ctx().store().ids(), c), false); }));
+    items.push_back(ui::MenuItem::item("Delete Chain",
+                                       [im, c] { im->run(doc::ops::deleteChains(im->doc(), std::vector<doc::ChainId>{c}), false); }));
+    items.push_back(ui::MenuItem::item("Add Chain",
+                                       [im, rack] { im->run(doc::ops::addChain(im->doc(), im->ctx().store().ids(), rack), false); }));
+    items.push_back(ui::MenuItem::sep());
+    const bool first = loc.index == 0, last = loc.index + 1 == loc.rack->rack->chains.size();
+    ui::MenuItem up = ui::MenuItem::item("Move Up", [im, c, i = loc.index] { im->run(doc::ops::moveChain(im->doc(), c, i - 1), false); });
+    up.enabled = !first;
+    items.push_back(std::move(up));
+    ui::MenuItem down = ui::MenuItem::item("Move Down", [im, c, i = loc.index] { im->run(doc::ops::moveChain(im->doc(), c, i + 1), false); });
+    down.enabled = !last;
+    items.push_back(std::move(down));
+    ui::openContextMenu(*this, e.pos, std::move(items));
+    return true;
+  }
+  if (e.button != ui::PointerButton::Left) return false;
+  rack_.showChain(chain_);
+  return true;
+}
+
+// ---- ChainList ---------------------------------------------------------------------------------------------------
+
+void ChainList::paint(ui::PaintContext& ctx) {
+  const ui::Theme* th = ctx.res.theme;
+  if (!th) return;
+  const ui::IRect r = rect();
+  ctx.dl.addRectFilled(r.toRect(), th->surface.sunken);
+  const int32_t tb = ctx.scale.px(kTitleH);
+  ctx.dl.addRectFilled(ui::IRect{r.x, r.y, r.w, tb}.toRect(), th->device.titleBar);
+  ctx.dl.addRectFilled(ui::IRect{r.x, r.y, 1, r.h}.toRect(), th->device.border);
+  if (!ctx.res.uiFonts) return;
+  paint::text(ctx, ctx.res.uiFonts->small, {r.x, r.y, r.w, tb}, "Chains", th->device.titleText, ui::TextAlign::Left,
+              ctx.scale.px(6.0f));
+  const ui::IRect a = addRect();
+  paint::text(ctx, ctx.res.uiFonts->bodyStrong, a, "+", th->device.titleText, ui::TextAlign::Center);
+  if (rows.empty()) {
+    const ui::IRect e = emptyArea();
+    paint::text(ctx, ctx.res.uiFonts->small, {e.x, e.y, e.w, ctx.scale.px(2.0f * kRowH)},
+                rack_.instrument() ? "Drop an instrument here" : "Drop audio effects here", th->text.secondary,
+                ui::TextAlign::Center);
+  }
+}
+
+bool ChainList::onPointer(const ui::PointerEvent& e) {
+  if (e.type != ui::PointerType::Down || e.button != ui::PointerButton::Left) return e.type == ui::PointerType::Up;
+  if (addRect().contains(e.pos)) {
+    impl_.run(doc::ops::addChain(impl_.doc(), impl_.ctx().store().ids(), rack_.id()), false);
+    return true;
+  }
+  return false;
+}
+
+// ---- ZoneEditor --------------------------------------------------------------------------------------------------
+
+// The zone editor's value axis for a zone kind: linear over 0 … 127 (velocity, selector), log 20 Hz … 20 kHz (key zones
+// in Hz), linear −48 … 72 degrees (key zones in degrees).
+struct Axis {
+  bool log = false;
+  double lo = 0.0, hi = 127.0;
+};
+Axis axisOf(doc::ZoneKind k, doc::KeyZoneUnit unit) {
+  if (k != doc::ZoneKind::Key) return {};
+  return unit == doc::KeyZoneUnit::Hz ? Axis{true, 20.0, 20000.0} : Axis{false, -48.0, 72.0};
+}
+
+float ZoneEditor::toX(double v) const {
+  const doc::ZoneKind k = rack_.zoneTab().value_or(doc::ZoneKind::Select);
+  const Axis a = axisOf(k, rack_.rack().keyUnit);
+  const ui::IRect r = rect();
+  const float s = tree() ? tree()->scale() : 1.0f;
+  const float x0 = static_cast<float>(r.x) + 6.0f * s, x1 = static_cast<float>(r.right()) - 6.0f * s;
+  double t = a.log ? (std::log(std::max(v, 1e-9)) - std::log(a.lo)) / (std::log(a.hi) - std::log(a.lo)) : (v - a.lo) / (a.hi - a.lo);
+  t = std::clamp(t, 0.0, 1.0);
+  return x0 + static_cast<float>(t) * (x1 - x0);
+}
+
+double ZoneEditor::toValue(float x) const {
+  const doc::ZoneKind k = rack_.zoneTab().value_or(doc::ZoneKind::Select);
+  const Axis a = axisOf(k, rack_.rack().keyUnit);
+  const ui::IRect r = rect();
+  const float s = tree() ? tree()->scale() : 1.0f;
+  const float x0 = static_cast<float>(r.x) + 6.0f * s, x1 = static_cast<float>(r.right()) - 6.0f * s;
+  const double t = std::clamp(static_cast<double>((x - x0) / std::max(1.0f, x1 - x0)), 0.0, 1.0);
+  return a.log ? std::exp(std::log(a.lo) + t * (std::log(a.hi) - std::log(a.lo))) : a.lo + t * (a.hi - a.lo);
+}
+
+void ZoneEditor::paint(ui::PaintContext& ctx) {
+  const ui::Theme* th = ctx.res.theme;
+  if (!th) return;
+  const ui::IRect r = rect();
+  ctx.dl.addRectFilled(r.toRect(), th->surface.sunken);
+  ctx.dl.addRectFilled(ui::IRect{r.x, r.y, 1, r.h}.toRect(), th->device.border);
+  const int32_t tb = ctx.scale.px(kTitleH);
+  ctx.dl.addRectFilled(ui::IRect{r.x, r.y, r.w, tb}.toRect(), th->device.titleBar);
+  const doc::ZoneKind tab = rack_.zoneTab().value_or(doc::ZoneKind::Select);
+  // The tabs: Key, Vel, Chain (an Audio Effect Rack: Chain only).
+  if (ctx.res.uiFonts) {
+    const char* names[3] = {"Key", "Vel", "Chain"};
+    const int32_t w = ctx.scale.px(40.0f);
+    int32_t x = r.x + ctx.scale.px(4.0f);
+    for (uint32_t i = rack_.instrument() ? 0u : 2u; i < 3; ++i) {
+      const ui::IRect t{x, r.y + ctx.scale.px(3.0f), w, tb - ctx.scale.px(6.0f)};
+      const bool on = static_cast<uint32_t>(tab) == i;
+      paint::box(ctx.dl, t, ctx.scale.exact(2.0f), on ? th->accent.primary : th->control.track, 0);
+      paint::text(ctx, ctx.res.uiFonts->small, t, names[i], on ? th->text.onAccent : th->text.secondary, ui::TextAlign::Center);
+      x += w + ctx.scale.px(3.0f);
+    }
+    if (tab == doc::ZoneKind::Key)
+      paint::text(ctx, ctx.res.uiFonts->small, {x, r.y, r.right() - x - ctx.scale.px(4.0f), tb},
+                  rack_.rack().keyUnit == doc::KeyZoneUnit::Hz ? "Hz" : "Degrees", th->text.secondary, ui::TextAlign::Right);
+  }
+  const ui::Rgba zoneFill = ui::withAlpha(th->accent.primary, 110), solidFill = ui::withAlpha(th->accent.primary, 200);
+  const doc::Rack& rack = rack_.rack();
+  for (size_t i = 0; i < rack.chains.size(); ++i) {
+    const doc::Chain& c = *rack.chains[i];
+    const int32_t y = r.y + tb + static_cast<int32_t>(i) * ctx.scale.px(kRowH);
+    const int32_t h = ctx.scale.px(kRowH);
+    if (y + h > r.bottom()) break;
+    ctx.dl.addRectFilled(ui::IRect{r.x, y + h - 1, r.w, 1}.toRect(), th->surface.divider);
+    const doc::Zone& z = c.zone(tab);
+    const float xl = toX(z.lo), xfl = toX(z.fadeLo), xfh = toX(z.fadeHi), xh = toX(z.hi);
+    const float y0 = static_cast<float>(y) + 0.3f * static_cast<float>(h), y1 = static_cast<float>(y + h) - 3.0f * ctx.scale.exact(1.0f);
+    // The fades as ramps, the full-gain part solid.
+    if (xfl > xl) ctx.dl.addTriangleFilled({xl, y1}, {xfl, y0}, {xfl, y1}, zoneFill);
+    if (xh > xfh) ctx.dl.addTriangleFilled({xfh, y0}, {xh, y1}, {xfh, y1}, zoneFill);
+    if (xfh > xfl) ctx.dl.addRectFilled({xfl, y0, xfh, y1}, c.active ? solidFill : zoneFill);
+    else ctx.dl.addRectFilled({xfl - 1.0f, y0, xfl + 1.0f, y1}, solidFill);
+  }
+  // The selector's marker (Chain tab), above the bars.
+  if (tab == doc::ZoneKind::Select) {
+    const float x = toX(rack_.paramValue(doc::kSelectParam));
+    const float yb = static_cast<float>(r.y + tb);
+    const float s = ctx.scale.exact(4.0f);
+    ctx.dl.addTriangleFilled({x - s, yb - s}, {x + s, yb - s}, {x, yb}, th->accent.focus);
+    const int32_t rows = static_cast<int32_t>(rack.chains.size());
+    ctx.dl.addRectFilled({x - 0.5f, yb, x + 0.5f, yb + static_cast<float>(rows * ctx.scale.px(kRowH))}, ui::withAlpha(th->accent.focus, 160));
+  }
+}
+
+bool ZoneEditor::onPointer(const ui::PointerEvent& e) {
+  const ui::IRect r = rect();
+  const float s = tree() ? tree()->scale() : 1.0f;
+  const int32_t tb = static_cast<int32_t>(std::lround(kTitleH * s)), rh = static_cast<int32_t>(std::lround(kRowH * s));
+  const doc::ZoneKind tab = rack_.zoneTab().value_or(doc::ZoneKind::Select);
+  doc::DocumentStore& store = impl_.ctx().store();
+  if (e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left) {
+    if (e.pos.y < static_cast<float>(r.y + tb)) {
+      // The tabs, the key unit, or the selector's marker.
+      const float x = e.pos.x - static_cast<float>(r.x) - 4.0f * s;
+      const auto i = static_cast<int32_t>(std::floor(x / (43.0f * s))) + (rack_.instrument() ? 0 : 2);
+      if (x >= 0.0f && i >= 0 && i < 3 && (rack_.instrument() || i == 2)) {
+        impl_.view.showZones(rack_.id(), static_cast<doc::ZoneKind>(i));
+        return true;
+      }
+      if (tab == doc::ZoneKind::Key && e.pos.x > static_cast<float>(r.right()) - 60.0f * s) {
+        impl_.run(doc::ops::setKeyZoneUnit(impl_.doc(), rack_.id(), rack_.rack().keyUnit == doc::KeyZoneUnit::Hz
+                                                                          ? doc::KeyZoneUnit::Degree
+                                                                          : doc::KeyZoneUnit::Hz),
+                  false);
+        return true;
+      }
+      if (tab == doc::ZoneKind::Select) {
+        grab_ = Grab::Selector;
+        (void)store.beginGesture("Device Parameter");
+        impl_.live(doc::ops::setDeviceParam(impl_.doc(), rack_.id(), std::string(doc::kSelectParam), std::round(toValue(e.pos.x))));
+      }
+      return true;
+    }
+    const auto row = static_cast<size_t>((e.pos.y - static_cast<float>(r.y + tb)) / static_cast<float>(rh));
+    if (row >= rack_.rack().chains.size()) return true;
+    const doc::Chain& c = *rack_.rack().chains[row];
+    const doc::Zone& z = c.zone(tab);
+    const float slop = 4.0f * s;
+    const float yInRow = e.pos.y - static_cast<float>(r.y + tb) - static_cast<float>(row) * static_cast<float>(rh);
+    const bool upper = yInRow < 0.4f * static_cast<float>(rh);
+    if (upper && std::fabs(e.pos.x - toX(z.fadeLo)) < slop) grab_ = Grab::FadeLo;
+    else if (upper && std::fabs(e.pos.x - toX(z.fadeHi)) < slop) grab_ = Grab::FadeHi;
+    else if (std::fabs(e.pos.x - toX(z.lo)) < slop) grab_ = Grab::Lo;
+    else if (std::fabs(e.pos.x - toX(z.hi)) < slop) grab_ = Grab::Hi;
+    else if (e.pos.x > toX(z.lo) && e.pos.x < toX(z.hi)) grab_ = Grab::Move;
+    else grab_ = Grab::None;
+    if (grab_ == Grab::None) return true;
+    chain_ = c.id;
+    start_ = z;
+    pressValue_ = toValue(e.pos.x);
+    (void)store.beginGesture("Chain Zone");
+    return true;
+  }
+  if (e.type == ui::PointerType::Move && grab_ != Grab::None) {
+    const double v = toValue(e.pos.x);
+    if (grab_ == Grab::Selector) {
+      impl_.live(doc::ops::setDeviceParam(impl_.doc(), rack_.id(), std::string(doc::kSelectParam), std::round(v)));
+      return true;
+    }
+    const doc::ZoneRange range = doc::zoneRange(tab, rack_.rack().keyUnit);
+    const Axis a = axisOf(tab, rack_.rack().keyUnit);
+    auto clampV = [&](double x) { return std::clamp(x, range.min, range.max); };
+    auto snap = [&](double x) { return a.log ? x : std::round(x); };  // velocity / selector / degrees: whole steps
+    doc::Zone z = start_;
+    switch (grab_) {
+      case Grab::Lo: z.lo = std::min(clampV(snap(v)), z.fadeLo); break;
+      case Grab::Hi: z.hi = std::max(clampV(snap(v)), z.fadeHi); break;
+      case Grab::FadeLo: z.fadeLo = std::clamp(snap(v), z.lo, z.fadeHi); break;
+      case Grab::FadeHi: z.fadeHi = std::clamp(snap(v), z.fadeLo, z.hi); break;
+      case Grab::Move: {
+        // Moves the zone keeping its shape (ratios on the log axis).
+        if (a.log) {
+          double k = v / std::max(pressValue_, 1e-9);
+          k = std::clamp(k, range.min / std::max(start_.lo, 1e-9), range.max / std::max(start_.hi, 1e-9));
+          z = {start_.lo * k, start_.fadeLo * k, start_.fadeHi * k, start_.hi * k};
+        } else {
+          double d = snap(v - pressValue_);
+          d = std::clamp(d, range.min - start_.lo, range.max - start_.hi);
+          z = {start_.lo + d, start_.fadeLo + d, start_.fadeHi + d, start_.hi + d};
+        }
+        break;
+      }
+      default: break;
+    }
+    if (doc::zoneValid(z, tab, rack_.rack().keyUnit)) impl_.live(doc::ops::setChainZone(impl_.doc(), chain_, tab, z));
+    return true;
+  }
+  if (e.type == ui::PointerType::Up && grab_ != Grab::None) {
+    grab_ = Grab::None;
+    if (store.inGesture()) (void)store.commitGesture();
+    return true;
+  }
+  return false;
+}
+
+// ---- ChainSlot, RackStrip -------------------------------------------------------------------------------------------
+
+void ChainSlot::paint(ui::PaintContext& ctx) {
+  const ui::Theme* t = ctx.res.theme;
+  if (!t) return;
+  const ui::IRect r = rect();
+  paint::box(ctx.dl, r, ctx.scale.exact(3.0f), visualState().hover ? t->surface.raised : t->surface.sunken, t->surface.divider);
+  if (!ctx.res.uiFonts) return;
+  const char* hint = rack_.shownChainPtr() != nullptr ? "Add to Chain"
+                     : rack_.instrument()             ? "Drop an Instrument"
+                                                      : "Drop Audio Effects";
+  const int32_t plus = ctx.scale.px(24.0f);
+  paint::text(ctx, ctx.res.uiFonts->title, {r.x, r.y + r.h / 2 - plus, r.w, plus}, "+", t->text.secondary, ui::TextAlign::Center);
+  paint::text(ctx, ctx.res.uiFonts->small, {r.x, r.y + r.h / 2, r.w, ctx.scale.px(18.0f)}, hint, t->text.secondary,
+              ui::TextAlign::Center, ctx.scale.px(4.0f), ctx.scale.px(4.0f));
+}
+
+bool ChainSlot::onPointer(const ui::PointerEvent& e) {
+  if (e.type != ui::PointerType::Up || e.button != ui::PointerButton::Left || !rect().contains(e.pos))
+    return e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left;
+  const ui::Vec2 at{static_cast<float>(rect().x), static_cast<float>(rect().bottom())};
+  if (const doc::Chain* c = rack_.shownChainPtr()) {
+    ui::openContextMenu(*this, at, impl_.deviceMenu({}, c->id, doc::kAppend, rack_.instrument()));
+    return true;
+  }
+  // No chain yet: a device picked makes the first chain with it.
+  std::vector<ui::MenuItem> items;
+  const doc::DeviceCatalog* cat = impl_.catalog();
+  DeviceChainView::Impl* im = &impl_;
+  const doc::DeviceId rack = rack_.id();
+  if (cat != nullptr)
+    for (const doc::DeviceInfo& d : cat->devices()) {
+      ui::MenuItem it = ui::MenuItem::item(d.name, [im, rack, patch = d.patch, kind = d.kind] {
+        im->run(doc::ops::addChainWithDevice(im->doc(), im->ctx().store().ids(), rack, patch, kind));
+      });
+      it.enabled = d.kind == doc::DeviceKind::AudioEffect || rack_.instrument();
+      items.push_back(std::move(it));
+    }
+  ui::openContextMenu(*this, at, std::move(items));
+  return true;
+}
+
+void RackStrip::paint(ui::PaintContext& ctx) {
+  const ui::Theme* th = ctx.res.theme;
+  if (!th) return;
+  const ui::IRect r = rect();
+  ctx.dl.addRectFilled(r.toRect(), th->device.titleBar);
+  if (!ctx.res.uiFonts) return;
+  const doc::Rack& rk = rack_.rack();
+  const bool on[kButtons] = {rk.showMacros, rk.showChains, rack_.zoneTab().has_value(), impl_.mapRack == rack_.id(), false,
+                             !rk.variations.empty()};
+  const char* text[kButtons] = {"M", "C", "Z", "Map", "Rnd", "Var"};
+  for (uint32_t b = 0; b < kButtons; ++b) {
+    const ui::IRect br = buttonRect(b);
+    paint::box(ctx.dl, br, ctx.scale.exact(2.0f), on[b] ? (b == kMap ? th->circuit.wireBool : th->accent.primary) : th->control.track, 0);
+    paint::text(ctx, ctx.res.uiFonts->small, br, text[b], on[b] ? th->text.onAccent : th->text.secondary, ui::TextAlign::Center);
+  }
+}
+
+bool RackStrip::onPointer(const ui::PointerEvent& e) {
+  if (e.type != ui::PointerType::Down || e.button != ui::PointerButton::Left) return e.type == ui::PointerType::Up;
+  const doc::Rack& rk = rack_.rack();
+  const doc::DeviceId id = rack_.id();
+  for (uint32_t b = 0; b < kButtons; ++b) {
+    if (!buttonRect(b).contains(e.pos)) continue;
+    switch (b) {
+      case kMacros: impl_.run(doc::ops::setRackShow(impl_.doc(), id, rk.showChains, !rk.showMacros), false); break;
+      case kChains: impl_.run(doc::ops::setRackShow(impl_.doc(), id, !rk.showChains, rk.showMacros), false); break;
+      case kZones:
+        impl_.view.showZones(id, rack_.zoneTab() ? std::nullopt
+                                                 : std::optional<doc::ZoneKind>(rack_.instrument() ? doc::ZoneKind::Key
+                                                                                                   : doc::ZoneKind::Select));
+        break;
+      case kMap: impl_.setMapMode(impl_.mapRack == id ? doc::DeviceId{} : id); break;
+      case kRand: impl_.run(doc::ops::randomizeMacros(impl_.doc(), id, static_cast<uint64_t>(e.pos.x * 7919.0f) ^ id.value), false); break;
+      case kVariations: {
+        DeviceChainView::Impl* im = &impl_;
+        std::vector<ui::MenuItem> items;
+        items.push_back(ui::MenuItem::item("Store Variation", [im, id] { im->run(doc::ops::storeVariation(im->doc(), id), false); }));
+        if (!rk.variations.empty()) items.push_back(ui::MenuItem::sep());
+        for (uint32_t i = 0; i < rk.variations.size(); ++i) {
+          const std::string& n = rk.variations[i].name;
+          items.push_back(ui::MenuItem::item("Recall " + n, [im, id, i] { im->run(doc::ops::recallVariation(im->doc(), id, i), false); }));
+          items.push_back(ui::MenuItem::sub("   " + n, {ui::MenuItem::item("Overwrite", [im, id, i] {
+                                                          im->run(doc::ops::storeVariation(im->doc(), id, {}, i), false);
+                                                        }),
+                                                        ui::MenuItem::item("Delete", [im, id, i] {
+                                                          im->run(doc::ops::deleteVariation(im->doc(), id, i), false);
+                                                        })}));
+        }
+        items.push_back(ui::MenuItem::sep());
+        std::vector<ui::MenuItem> excl;
+        for (uint32_t k = 0; k < rk.visibleMacros; ++k) {
+          const bool x = ((rk.randomizeExclude >> k) & 1u) != 0;
+          ui::MenuItem it = ui::MenuItem::item(doc::macroDisplayName(rk, k), [im, id, k, x] {
+            im->run(doc::ops::setMacroExcluded(im->doc(), id, k, !x), false);
+          });
+          it.checked = x;
+          excl.push_back(std::move(it));
+        }
+        items.push_back(ui::MenuItem::sub("Exclude from Rand", std::move(excl)));
+        std::vector<ui::MenuItem> count;
+        for (uint32_t n : {1u, 2u, 4u, 8u, 12u, 16u}) {
+          ui::MenuItem it = ui::MenuItem::item(std::to_string(n), [im, id, n] { im->run(doc::ops::setVisibleMacros(im->doc(), id, n), false); });
+          it.checked = rk.visibleMacros == n;
+          count.push_back(std::move(it));
+        }
+        items.push_back(ui::MenuItem::sub("Macros Shown", std::move(count)));
+        if (rack_.instrument()) {
+          ui::MenuItem pv = ui::MenuItem::item("Per-Voice Chains", [im, id, v = rk.voiceChains] {
+            im->run(doc::ops::setVoiceChains(im->doc(), id, !v), false);
+          });
+          pv.checked = rk.voiceChains;
+          items.push_back(std::move(pv));
+        }
+        ui::openContextMenu(*this, {static_cast<float>(buttonRect(b).right()), static_cast<float>(buttonRect(b).y)}, std::move(items));
+        break;
+      }
+      default: break;
+    }
+    markDirty();
+    return true;
+  }
+  return true;
+}
+
+// ---- Map mode -----------------------------------------------------------------------------------------------------
+
+// Over the chain while a rack's Map is on: tints the knobs a macro of that rack may drive (mapped ones stronger), rings
+// the picked macro; clicks pick a macro or map / unmap a knob. Wheel events pass through (the chain still scrolls).
+class MapOverlay final : public ui::Widget {
+public:
+  explicit MapOverlay(DeviceChainView::Impl& impl) : Widget("map-overlay"), impl_(impl) { setHittable(true); }
+
+  struct Target {
+    doc::DeviceId device;
+    std::string param;
+    ui::IRect rect;
+    int32_t macro = -1;  // a macro knob of the rack in map mode (a pick, not a target)
+  };
+  std::vector<Target> targets() const {
+    std::vector<Target> out;
+    FrameBase* rf = impl_.frameOf(impl_.mapRack);
+    if (rf == nullptr) return out;
+    const doc::DeviceLoc rl = doc::findDevice(impl_.doc(), impl_.mapRack);
+    if (rl.device == nullptr || !rl.device->rack) return out;
+    for (auto& [id, f] : impl_.all) {
+      const doc::DeviceId dev{id};
+      const bool self = dev == impl_.mapRack;
+      if (!self && !doc::deviceContains(*rl.device, dev)) continue;
+      const devices::DevicePanel* panel = f->panel();
+      if (panel == nullptr || panel->folded()) continue;
+      for (const devices::ParamInfo& p : panel->signature().params) {
+        if (p.isBool) continue;
+        const ui::Widget* w = panel->controlFor(p.name);
+        if (w == nullptr || !w->visible() || w->rect().empty()) continue;
+        Target t{dev, p.name, w->rect(), -1};
+        if (self) {
+          const std::optional<uint32_t> m = doc::macroIndex(p.name);
+          if (m) t.macro = static_cast<int32_t>(*m);
+          else if (p.name != doc::kSelectParam) continue;
+        }
+        out.push_back(std::move(t));
+      }
+    }
+    return out;
+  }
+
+  void paint(ui::PaintContext& ctx) override {
+    const ui::Theme* th = ctx.res.theme;
+    if (!th) return;
+    for (const Target& t : targets()) {
+      if (t.macro >= 0) {
+        const bool picked = t.macro == impl_.mapMacro;
+        paint::box(ctx.dl, t.rect, 0.0f, picked ? ui::withAlpha(th->circuit.wireBool, 90) : 0,
+                   picked ? th->accent.focus : ui::withAlpha(th->circuit.wireBool, 200));
+        continue;
+      }
+      const doc::MappingLoc m = doc::mappingOf(impl_.doc(), t.device, t.param);
+      const bool ours = m.mapping != nullptr && m.rack->id == impl_.mapRack;
+      const bool byPicked = ours && static_cast<int32_t>(m.mapping->macro) == impl_.mapMacro;
+      paint::box(ctx.dl, t.rect, 0.0f, ui::withAlpha(th->circuit.wireBool, byPicked ? 140 : ours ? 80 : 35),
+                 ui::withAlpha(th->circuit.wireBool, 200));
+    }
+  }
+
+  bool onPointer(const ui::PointerEvent& e) override {
+    if (e.type != ui::PointerType::Down) return e.type == ui::PointerType::Up;
+    if (e.button != ui::PointerButton::Left) return true;
+    // The rack strip's Map button stays usable (it ends map mode).
+    if (auto* rf = impl_.frameOf(impl_.mapRack); rf != nullptr && rf->isRack()) {
+      for (size_t i = 0; i < rf->childCount(); ++i)
+        if (auto* strip = dynamic_cast<RackStrip*>(&rf->child(i)); strip != nullptr && strip->buttonRect(RackStrip::kMap).contains(e.pos)) {
+          impl_.setMapMode({});
+          return true;
+        }
+    }
+    for (const Target& t : targets()) {
+      if (!t.rect.contains(e.pos)) continue;
+      if (t.macro >= 0) impl_.view.pickMacro(t.macro);
+      else impl_.view.mapPicked(t.device, t.param);
+      return true;
+    }
+    return true;
+  }
+  ui::InfoText info() const override {
+    return {"Map Mode", "Click a macro of the rack, then knobs inside it: each click maps the knob to that macro (or "
+                        "unmaps it). Esc or Map ends map mode."};
+  }
+
+private:
+  DeviceChainView::Impl& impl_;
+};
+
+}  // namespace
+
+std::unique_ptr<FrameBase> device_chain::makeRackFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d) {
+  return std::make_unique<RackFrame>(impl, ctx, d);
+}
+
+std::unique_ptr<ui::Widget> device_chain::makeMapOverlay(DeviceChainView::Impl& impl) {
+  return std::make_unique<MapOverlay>(impl);
+}
+
+void DeviceChainView::Impl::setMapMode(doc::DeviceId rack) {
+  mapRack = rack;
+  mapMacro = -1;
+  if (rack.valid() && mapOverlay == nullptr) mapOverlay = &content->addChild(makeMapOverlay(*this));
+  if (!rack.valid() && mapOverlay != nullptr) {
+    (void)content->removeChild(*mapOverlay);
+    mapOverlay = nullptr;
+  }
+  for (auto& [id, f] : all)
+    if (f->isRack()) f->markDirty();
+  content->invalidateLayout();
+  content->markDirty();
+}
+
+// ---- DeviceChainView: racks ------------------------------------------------------------------------------------------
+
+doc::ChainId DeviceChainView::shownChain(doc::DeviceId rack) const {
+  auto* f = dynamic_cast<RackFrame*>(impl_->frameOf(rack));
+  return f != nullptr ? f->shownChain() : doc::ChainId{};
+}
+
+void DeviceChainView::showChain(doc::DeviceId rack, doc::ChainId chain) {
+  if (auto* f = dynamic_cast<RackFrame*>(impl_->frameOf(rack))) f->showChain(chain);
+  else impl_->shownChain[rack.value] = chain;
+}
+
+void DeviceChainView::setMapMode(doc::DeviceId rack) { impl_->setMapMode(rack); }
+doc::DeviceId DeviceChainView::mapRack() const noexcept { return impl_->mapRack; }
+int32_t DeviceChainView::mapMacro() const noexcept { return impl_->mapMacro; }
+
+void DeviceChainView::pickMacro(int32_t macro) {
+  impl_->mapMacro = macro;
+  if (impl_->mapOverlay != nullptr) impl_->mapOverlay->markDirty();
+}
+
+bool DeviceChainView::mapPicked(doc::DeviceId device, std::string_view param) {
+  Impl& m = *impl_;
+  if (!m.mapRack.valid() || m.mapMacro < 0) {
+    ctx_.setStatus("Map: click a macro first, then the knob to map to it");
+    return false;
+  }
+  const doc::Project& p = *ctx_.doc();
+  const doc::MappingLoc cur = doc::mappingOf(p, device, param);
+  bool r = false;
+  if (cur.mapping != nullptr && cur.rack->id == m.mapRack && cur.mapping->macro == m.mapMacro) {
+    r = m.run(doc::ops::unmapParam(p, device, param), false);  // a second click unmaps
+  } else {
+    // A macro's first mapping takes over the param's position (Live).
+    std::optional<double> macroValue;
+    const doc::DeviceLoc rl = doc::findDevice(p, m.mapRack);
+    bool hasMappings = false;
+    if (rl.device != nullptr && rl.device->rack)
+      for (const doc::MacroMapping& mm : rl.device->rack->mappings) hasMappings = hasMappings || mm.macro == m.mapMacro;
+    if (!hasMappings)
+      if (devices::DevicePanel* panel = panelOf(device))
+        if (const devices::ParamInfo* info = panel->signature().findParam(param))
+          macroValue = devices::toPosition(*info, panel->paramValue(param)) * doc::kMacroMax;
+    r = m.run(doc::ops::mapMacro(p, ctx_.store().ids(), m.mapRack, static_cast<uint32_t>(m.mapMacro), device,
+                                 std::string(param), macroValue),
+              false);
+  }
+  if (m.mapOverlay != nullptr) m.mapOverlay->markDirty();
+  refreshRings();
+  return r;
+}
+
+void DeviceChainView::showZones(doc::DeviceId rack, std::optional<doc::ZoneKind> tab) {
+  impl_->zoneTab[rack.value] = tab ? static_cast<uint8_t>(*tab) : Impl::kZonesHidden;
+  if (FrameBase* f = impl_->frameOf(rack)) {
+    if (const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), rack); l.device != nullptr) f->update(*l.device);
+  }
+  impl_->reindex();
+  impl_->content->invalidateLayout();
+}
+
+std::optional<doc::ZoneKind> DeviceChainView::zonesShown(doc::DeviceId rack) const {
+  const auto it = impl_->zoneTab.find(rack.value);
+  if (it == impl_->zoneTab.end() || it->second == Impl::kZonesHidden) return std::nullopt;
+  return static_cast<doc::ZoneKind>(it->second);
+}
+
+bool DeviceChainView::openRackCircuit(doc::DeviceId rack) {
+  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+  if (lib == nullptr) return false;
+  Result<graph::Patch> sub = doc::rackSubcircuit(*ctx_.doc(), rack, lib->library(), lib);
+  if (!sub) {
+    ctx_.setStatus(sub.error().message);
+    return false;
+  }
+  // A read-only document of the lowered rack (Q?-T4.8-a): the patch (its text is the printed IR), with the device
+  // files it calls as imports so a double-click opens them.
+  auto d = std::make_shared<circuit::PatchDocument>();
+  d->path = sub->name() + ".pqp";
+  d->source = graph::print(*sub);
+  const std::string name = sub->name();
+  std::vector<std::string> files;
+  for (graph::NodeIndex n = 0; n < sub->nodeCount(); ++n) {
+    if (sub->node(n).kind != graph::NodeKind::Subcircuit) continue;
+    const std::string f = lib->pathOf(sub->subcircuit(n).patch);
+    if (!f.empty() && std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+  }
+  d->parsed.file.patches.push_back(std::move(*sub));
+  d->parsed.lowered = true;
+  for (const std::string& f : files)
+    if (auto imp = circuit::loadPatchDocument(f)) d->imports.push_back(std::move(*imp));
+  if (circuit::openCircuitViewer(*this, std::move(d), name) == nullptr) {
+    ctx_.setStatus("The rack cannot be shown");
+    return false;
+  }
+  return true;
+}
+
+}  // namespace pq::views

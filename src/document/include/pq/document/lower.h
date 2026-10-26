@@ -278,6 +278,15 @@ std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes =
 // T4.4-fix1: the same with user devices resolved through `devices` (its library()).
 std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes, const DeviceLibrary& devices);
 
+// T4.8: a rack's lowered subcircuit on its own — `patch AudioEffectRack<id> { in in; … out out }` (an Instrument Rack:
+// no input, voices inside, `done`) built by the same code that lowers it inside its track (chains, zones, chain mixers,
+// mappings; its macros and selector as params of the patch). The circuit view of a rack (read-only; Q?-T4.8-a).
+// Wires into the rack are not part of it (they belong to the track patch). With `devices`, user devices inside it
+// (T4.4-fix1) call their own renamed roots as lower() does (else they are left out, as lower() bypasses them without
+// one). Errors: NotFound (no such rack).
+Result<graph::Patch> rackSubcircuit(const Project& project, DeviceId rack, const graph::PatchLibrary& library,
+                                    const DeviceLibrary* devices = nullptr);
+
 // T4.8: the derived params of one rack chain as lower() names them (its mixer gains "chain<id>:gl" / ":gr"; its zones
 // that are on, ":s0" … ":s3", ":v0" …, ":k0" …) with their current values; empty when there is no such chain. The link's
 // fast path for a chain mixer or zone drag (`track` is 0: unknown here).

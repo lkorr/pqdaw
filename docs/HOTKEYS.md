@@ -88,6 +88,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `device.duplicate` | `Ctrl+D` | devices | Editing | implemented (T4.1) |
 | `device.toggleActive` | `0` | devices | Editing (Activate/Deactivate) | implemented (T4.1: the device activator) |
 | (gesture) double-click a device's title | — | devices | — | T4.4-fix1: Open in Circuit View (also in the device's context menu, with Revert to Stock); the triangle folds |
+| `device.group` | `Ctrl+G` | devices | Editing (Group) | implemented (T4.8: the selected devices of one chain into a new rack; with the instrument: an Instrument Rack) |
 
 ## Handled by controls, not the keymap (T3.2, implemented)
 
