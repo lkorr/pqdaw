@@ -616,5 +616,6 @@ All signal displays reuse PQ Meter's DSP, ballistics and look, which the owner h
   - **Device panel look**: our call for now (Live-like where known), adjustable later.
   - **Adding devices before the M5 browser**: a device menu / search popup on the device chain.
   - **Cross-device and cross-track wires add no delay.** This replaces §7.6's "latency-compensated by default" for wires. The one exception: a wire that would make the graph cyclic (closing a loop that has no delay in it) gets a **1-sample delay (z⁻¹)** on that wire, automatically, shown in the UI. Explicit in-patch feedback keeps its own semantics (z⁻¹ / `solve`, §7.1). Track-level plugin delay compensation of audio paths (M6) is unaffected.
+- 2026-10-26 (user): **the circuit editor works on the active project, not on loose files.** "Open in Circuit View" opens a device of the project (right-click / double-click a device); edits go into the document (one undo history with the Ableton view). Editing a stock device **forks it into a user device**: the instance gets its own copy of the patch stored in the project, the stock definition and other instances stay unchanged; saving it to the user library comes with M5. Opening loose .pqp files becomes a developer option. Audio tracks (Ctrl+T) stay in M6 with audio clips and recording.
 
 No open questions remain for draft 1.
