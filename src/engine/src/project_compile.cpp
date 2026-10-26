@@ -40,6 +40,86 @@ uint32_t voiceGroupsOf(const ProjectCompileOptions& o, bool voices) { return voi
 
 }  // namespace
 
+uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames) {
+  using namespace graph;
+  const Patch& p = typed.patch;
+  const Adjacency adj = p.adjacency();
+  const AtomId gain = atomId("gain"), gainAdd = atomId("gain_add"), voiceSum = atomId("voice_sum");
+  const AtomId mul = atomId("mul");
+  auto global = [&](NodeIndex n) {
+    for (uint32_t o = 0; o < p.node(n).numOutputs; ++o)
+      if (typed.outputType(n, o).poly == Poly::Voice) return false;
+    return true;
+  };
+  // Settling: every global stateful node is a gain with a constant time (in samples after optimise()).
+  double maxTime = 0.0;
+  for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
+    const Node& nd = p.node(n);
+    if (nd.kind != NodeKind::Atom || !global(n) || !atomSignature(nd.atom).has(atom_flags::kStateful)) continue;
+    if (nd.atom != gain && nd.atom != gainAdd) return 0;
+    const uint32_t timeIn = nd.atom == gain ? 2u : 3u;
+    const WireIndex w = adj.driver[p.flatInput(n, timeIn)];
+    double t = 0.002 * 768000.0;  // unconnected (optimise() wires the default): 2 ms at the highest rate
+    if (w != kNone) {
+      const NodeIndex d = p.wire(w).from.node;
+      if (p.node(d).kind != NodeKind::Const) return 0;
+      t = p.constant(d).value();
+      if (!typed.durationsInSamples) return 0;
+    }
+    if (!(t >= 0.0) || t > 1e7) return 0;
+    maxTime = std::max(maxTime, t);
+  }
+  // Zero propagation (memoised; -1 unknown, 0 not zero, 1 zero). Cycles count as not zero.
+  std::vector<int8_t> zero(p.nodeCount(), -1);
+  auto inputZero = [&](auto& self, NodeIndex n, uint32_t i) -> bool {
+    const WireIndex w = adj.driver[p.flatInput(n, i)];
+    if (w == kNone) return false;  // an unconnected input reads a default (not 0 in general)
+    return self(self, p.wire(w).from.node);
+  };
+  auto isZero = [&](auto& self, NodeIndex n) -> bool {
+    if (zero[n] >= 0) return zero[n] == 1;
+    zero[n] = 0;  // in progress: a cycle is not zero
+    const Node& nd = p.node(n);
+    bool z = false;
+    switch (nd.kind) {
+      case NodeKind::Input: z = true; break;  // a root input: its bus is silent
+      case NodeKind::Const: z = p.constant(n).value() == 0.0; break;
+      case NodeKind::Atom: {
+        const std::string_view name = atomSignature(nd.atom).name;
+        if (nd.atom == voiceSum) {
+          z = true;  // no voice sounds
+        } else if (nd.atom == mul) {
+          z = inputZero(self, n, 0) || inputZero(self, n, 1);
+        } else if (nd.atom == gain) {
+          z = inputZero(self, n, 0);
+        } else if (nd.atom == gainAdd) {
+          z = inputZero(self, n, 0) && inputZero(self, n, 1);
+        } else if (name == "select") {
+          z = inputZero(self, n, 1) && inputZero(self, n, 2);
+        } else if (name == "add" || name == "sub" || name == "neg" || name == "abs" || name == "pack" ||
+                   name == "channel" || name == "min" || name == "max") {
+          z = true;
+          const uint32_t ins = name == "channel" ? 1u : nd.numInputs;
+          for (uint32_t i = 0; i < ins && z; ++i) z = inputZero(self, n, i);
+        }
+        break;
+      }
+      default: break;
+    }
+    zero[n] = z ? 1 : 0;
+    return z;
+  };
+  for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
+    const NodeKind k = p.node(n).kind;
+    if (k != NodeKind::Output && k != NodeKind::Export) continue;
+    if (typed.inputType(n, 0).poly == Poly::Voice) continue;  // voice outputs: not produced without voices
+    if (!inputZero(isZero, n, 0)) return 0;
+  }
+  // |residual| ≤ a few units decays below the 3e-8 snap threshold within 20 time constants (e^-20 ≈ 2e-9).
+  const double frames = std::ceil(20.0 * std::max(maxTime, 1.0));
+  return static_cast<uint32_t>(std::min(1e6, std::ceil(frames / std::max(maxBlockFrames, 1u)))) + 1;
+}
+
 ProjectCompiler::ProjectCompiler(ProjectCompileOptions options) : opt_(std::move(options)) {}
 
 Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, uint32_t u,
@@ -83,6 +163,7 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   }
   std::sort(cu.readKeys.begin(), cu.readKeys.end());
   std::sort(cu.writeKeys.begin(), cu.writeKeys.end());
+  cu.idleAfterBlocks = idleAfterBlocks(opt.value(), opt_.maxBlockFrames);
   const uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
                         (uint64_t{voiceGroupsOf(opt_, cu.voices)} << 33);
   cu.key = unitHash(opt.value(), salt);
@@ -102,6 +183,7 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
   const ImageInterface& io = image->io();
   UnitImage ui;
   ui.key = cu.key;
+  ui.idleAfterBlocks = cu.idleAfterBlocks;
   for (const IoSlot& s : io.globalIn) {
     if (s.ordinal >= cu.inBus.size()) return compileError(ErrorCode::InvalidArgument, "bind: an input without a bus");
     ui.in.push_back(BusRef{cu.inBus[s.ordinal], s.channel});

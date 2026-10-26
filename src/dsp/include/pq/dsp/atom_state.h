@@ -70,6 +70,19 @@ struct alignas(32) PhasorState {
   float pad_[5];
 };
 
+// gain / gain_add (T3.17-fix2): per lane the target the gain heads for and the residual d (gain = target + d; 0 when
+// settled), the time constant its coefficient was computed for, the coefficient r = e^(−1/τ), and for the 1-lane
+// closed form r^0 … r^7 and r^8 (lane 0's).
+struct alignas(32) GainState {
+  float target[8];
+  float d[8];
+  float tau[8];
+  float r[8];
+  float rpow[8];
+  float r8;
+  float pad_[7];
+};
+
 // noise: counter-based generator (out[t] = hash(counter_t + seed[lane])), so the output does not depend on how
 // the timeline is split into blocks.
 struct alignas(32) NoiseState {

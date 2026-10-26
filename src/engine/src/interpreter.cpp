@@ -17,6 +17,8 @@
 #include "pq/engine/interpreter.h"
 
 #include <algorithm>
+#include <bit>
+#include <limits>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -50,6 +52,10 @@ struct Reloc {
 
 struct RegionRun {
   g::RegionKind kind = g::RegionKind::Block;
+  // T3.17-fix2: a global Control region that computes only from params and constants (no engine sources, no solve
+  // blocks) into buffers nothing else writes: its results stay valid while the params do, so it is skipped in a
+  // block whose params equal the previous block's (a settled mixer's gain math costs nothing).
+  bool memo = false;
   uint32_t subBlock = 0;
   uint32_t firstRec = 0, numRec = 0;
   uint32_t firstItem = 0, numItems = 0;  // with solve blocks: rec index, or kSolveItem | solve index
@@ -132,6 +138,9 @@ public:
   uint32_t numGlobalSites_ = 0;
   std::vector<uint32_t> voiceSiteBegin_;  // per group: first site (size maxGroups + 1)
   uint32_t maxSolveN_ = 0;
+  std::vector<float> lastParams_;  // the previous block's params (bitwise), for the memo regions
+  bool memoValid_ = false;         // the memo regions have run at least once
+  bool paramsSame_ = false;        // this block's params equal the previous block's
 
 private:
   void runRegion(const RegionRun& r, uint32_t frames) noexcept;
@@ -159,6 +168,7 @@ private:
 void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {  // RT-safe
   switch (r.kind) {
     case g::RegionKind::Control:
+      if (r.memo && paramsSame_) return;  // its buffers still hold this block's values
       if (r.numItems == 0) {
         for (uint32_t i = r.firstRec; i < r.firstRec + r.numRec; ++i) recs_[i].fn(recs_[i].args);
       } else {
@@ -361,6 +371,18 @@ void InterpretedImage::runSolve(const SolveRun& s, uint32_t t) noexcept {  // RT
 
 void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
   if (!host_.begin(ctx)) return;
+  {  // the memo regions' inputs: the params (host_.begin clamps and splats them from ctx.params, deterministically)
+    const uint32_t n = static_cast<uint32_t>(lastParams_.size());
+    const uint32_t have = ctx.params != nullptr ? std::min(ctx.numParams, n) : 0u;
+    bool same = memoValid_;
+    for (uint32_t i = 0; i < n; ++i) {
+      const float v = i < have ? ctx.params[i] : std::numeric_limits<float>::quiet_NaN();  // NaN: the default
+      same = same && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(lastParams_[i]);
+      lastParams_[i] = v;
+    }
+    paramsSame_ = same;
+    memoValid_ = true;
+  }
   // Engine data → the records' pointer cells.
   for (uint32_t i = 0; i < numGlobalSites_; ++i) *sites_[i].target = host_.extPtr(sites_[i].ext, 0);
   for (uint32_t i = voiceSiteBegin_[0]; i < voiceSiteBegin_[host_.groups()]; ++i)
@@ -588,6 +610,7 @@ private:
           for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
             if (!makeRec(i, gi, loop, control)) return false;
           rr.numRec = static_cast<uint32_t>(im.recs_.size()) - rr.firstRec;
+          rr.memo = control && !voice && reg.numSolves == 0 && memoizable(reg);
           if (reg.numSolves > 0) {
             rr.firstItem = static_cast<uint32_t>(im.items_.size());
             uint32_t sIdx = reg.firstSolve;
@@ -617,9 +640,39 @@ private:
     return true;
   }
 
+  // See RegionRun::memo. The schedule's Buffer operands are physical buffers, so "nothing else writes them" also
+  // excludes a buffer shared (by interval reuse) with a value of another region.
+  bool memoizable(const g::Region& reg) const {
+    std::vector<uint32_t> written;
+    for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+      const g::Op& op = s_.ops[i];
+      if (op.kind != g::OpKind::Kernel || op.state != g::kNone || op.resource != g::kNone) return false;
+      for (const g::Operand& o : s_.inputs(op)) {
+        if (o.kind == g::Operand::Kind::Param || o.kind == g::Operand::Kind::Const) continue;
+        if (o.kind != g::Operand::Kind::Buffer) return false;  // an engine source (transport …) may change
+        if (std::find(written.begin(), written.end(), o.index) == written.end()) return false;  // from elsewhere
+      }
+      for (const g::Operand& o : s_.outputsOf(op)) {
+        if (o.kind != g::Operand::Kind::Buffer) return false;
+        written.push_back(o.index);
+      }
+    }
+    for (uint32_t i = 0; i < s_.ops.size(); ++i) {
+      if (i >= reg.firstOp && i < reg.firstOp + reg.numOps) continue;
+      for (const g::Operand& o : s_.outputsOf(s_.ops[i]))
+        if (o.kind == g::Operand::Kind::Buffer && std::find(written.begin(), written.end(), o.index) != written.end())
+          return false;
+    }
+    for (const g::SolveUnknown& u : s_.unknowns)
+      if (u.value.kind == g::Operand::Kind::Buffer && std::find(written.begin(), written.end(), u.value.index) != written.end())
+        return false;
+    return true;
+  }
+
   // Pointers into the final vectors.
   void finish() {
     InterpretedImage& im = *img_;
+    im.lastParams_.assign(im.host_.io().params.size(), 0.0f);
     for (Rec& r : im.recs_) {
       r.args.in = const_cast<const float* const*>(im.pool_.data() + r.inBase);
       r.args.out = im.pool_.data() + r.outBase;

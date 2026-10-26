@@ -146,9 +146,10 @@ TEST_CASE("T1b.5: live playback (NullDevice) starts interpreted and swaps every 
                   << " stale");
 }
 
-// T1.x-text-ids in the compile pipeline: a track whose generated patch text changes (here: a new return adds a send to
-// every main track) is re-parsed with its previous parse, so its unchanged nodes keep their NodeIds (state keys).
-TEST_CASE("lowering: a changed track patch inherits the NodeIds of its previous parse") {
+// Was (T1b.5): a track whose generated patch text changed (a new return added a send to every main track) was
+// re-parsed with its previous parse to keep its NodeIds. Since T3.17-fix2 the lowering builds IR with NodeIds from
+// document ids and a new return does not change any track's patch: this checks that instead.
+TEST_CASE("lowering: a new return leaves every track patch as it was; NodeIds come from document ids") {
   auto lib = app::loadInstrumentLibrary();
   REQUIRE(lib.ok());
   playback_fixture::Fixture f;
@@ -168,19 +169,25 @@ TEST_CASE("lowering: a changed track patch inherits the NodeIds of its previous 
     FAIL("no track");
     return lp.patches[0]->patch;
   };
-  const graph::Patch& before = patchOf(a.value(), f.lead);
-  const graph::Patch& after = patchOf(b.value(), f.lead);
-  REQUIRE(&before != &after);  // the text changed (a send to the new return)
-  uint32_t named = 0, kept = 0;
-  for (graph::NodeIndex n = 0; n < before.nodeCount(); ++n) {
-    const std::string_view name = before.nodeName(n);
-    if (name.empty()) continue;
-    for (graph::NodeIndex m = 0; m < after.nodeCount(); ++m)
-      if (after.nodeName(m) == name) {
-        ++named;
-        kept += after.node(m).id == before.node(n).id;
-      }
-  }
-  CHECK(named > 5);
-  CHECK(kept == named);
+  // T3.17-fix2 (M3 review H2): the return set is not part of a track's patch, so a new return changes no track patch
+  // at all (shared, so not recompiled); the old return's sends keep their nodes.
+  for (const TrackId t : {f.lead, f.grp, f.mos, f.muted}) CHECK(&patchOf(a.value(), t) == &patchOf(b.value(), t));
+  CHECK(&patchOf(a.value(), f.echo) == &patchOf(b.value(), f.echo));
+  // The master's patch too (its unit composes one more input wire: that unit recompiles, not the patch).
+  CHECK(&patchOf(a.value(), f.master) == &patchOf(b.value(), f.master));
+  // NodeIds come from document ids: the same node of the same entity has the same id in every lowering, whatever
+  // was lowered before (here: lowered without a previous project).
+  auto c = lower(*f.snap(), lo);
+  REQUIRE(c.ok());
+  const graph::Patch& fresh = patchOf(c.value(), f.lead);
+  const graph::Patch& kept = patchOf(b.value(), f.lead);
+  REQUIRE(fresh.nodeCount() == kept.nodeCount());
+  for (graph::NodeIndex n = 0; n < fresh.nodeCount(); ++n) CHECK(fresh.node(n).id == kept.node(n).id);
+  // A send's nodes in the return carry the sender's id.
+  const graph::Patch& echo = patchOf(b.value(), f.echo);
+  bool found = false;
+  for (graph::NodeIndex n = 0; n < echo.nodeCount(); ++n)
+    if (echo.nodeName(n) == "s" + std::to_string(f.lead.value))
+      found = echo.node(n).id.value == nodeIdFor(NodeRole::SendInput, f.lead.value, 0);
+  CHECK(found);
 }

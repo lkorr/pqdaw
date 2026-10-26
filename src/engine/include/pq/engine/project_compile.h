@@ -88,6 +88,7 @@ struct CompiledUnit {
   std::vector<std::string> warnings;  // scheduler warnings (inserted z1s)
   std::vector<uint32_t> inBus;        // per root `in` ordinal (graph::UnitPatch::inBus)
   std::vector<std::pair<std::string, uint32_t>> links;  // flattened param name → project param
+  uint32_t idleAfterBlocks = 0;   // UnitImage::idleAfterBlocks (idleAfterBlocks())
   bool voices = false;
   // Identity across topology edits (rebuild).
   std::vector<uint32_t> memberIds;          // the member tracks' ids, ascending
@@ -117,6 +118,14 @@ struct UnitUpdate {
   bool unchanged = false;          // same compile-cache key: nothing to publish
   UnitImage image;                 // when !unchanged
 };
+
+// T3.17-fix2 (idle units, pq/engine/project_program.h): whether a unit's outputs are exactly zero while every root
+// input is zero and no voice sounds, and its global state then only settles: every global stateful node is a gain /
+// gain_add with a constant time, and every global out / export is zero by propagation (root inputs and voice_sum are
+// zero; mul / gain zero if their signal input is; add, sub, neg, abs, pack, channel, select, min, max, gain_add zero if
+// all their signal inputs are; a constant 0). Returns the blocks of unchanged params after which every such gain has
+// snapped onto its target (ceil(20 · time / maxBlockFrames) + 1), or 0 when the unit does not qualify.
+uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames);
 
 class ProjectCompiler {
 public:

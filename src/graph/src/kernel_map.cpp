@@ -33,6 +33,9 @@ constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U:
                                 {U::Resource, 0},                                            // stretch, reference, table,
                                 {U::Input, 8},    {U::Input, 9}};                            // select, node
 
+constexpr ArgMap kGain[] = {{U::Input, 0}, {U::Input, 1}, {U::InputSeconds, 2}};                  // x, g, time
+constexpr ArgMap kGainAdd[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::InputSeconds, 3}};  // acc, x, g, time
+
 struct Special {
   std::string_view atom;
   std::span<const ArgMap> args;
@@ -52,6 +55,8 @@ constexpr Special kSpecial[] = {
     {"sample_pos_linear", kSamplePos},
     {"sample_pos_cubic", kSamplePos},
     {"tuning_hz", kTuningHz},
+    {"gain", kGain},
+    {"gain_add", kGainAdd},
 };
 
 struct NoKernel {

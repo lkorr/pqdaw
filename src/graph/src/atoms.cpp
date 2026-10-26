@@ -125,6 +125,9 @@ constexpr PortSpec pTuningHz[] = {{"degree", kR},
                                   {"node", kR, true, 0.0f}};    // this node's number (0: every voice with a degree)
 constexpr PortSpec pTuningHzOut[] = {{"hz", kR}, {"cents", kR}};
 constexpr PortSpec pTuneVoices[] = {{"hz", kR}, {"cents", kR, true, 0.0f}};
+// T3.17-fix2: smoothed gains (time in seconds, 2 ms by default; the compiler converts it to samples).
+constexpr PortSpec pGainIn[] = {{"x", kR}, {"g", kR}, {"time", kRConst, true, 0.002f}};
+constexpr PortSpec pGainAddIn[] = {{"acc", kR}, {"x", kR}, {"g", kR}, {"time", kRConst, true, 0.002f}};
 
 constexpr std::span<const PortSpec> kNoPorts{};
 
@@ -283,6 +286,11 @@ const AtomSignature kAtoms[] = {
      "pitch of a degree in an EDO/MOS tuning table at a modulatable generator/period/stretch/reference (else hz)"},
     {"tune_voices", C::Structure, pTuneVoices, kNoPorts, 0, kNeedsVoice | kSideEffect, 0, {},
      "voice.hz (and voice.cents) of the subcircuits this patch instantiates"},
+    // Smoothed gains (T3.17-fix2, the mixer): a param gain at block rate, smoothed per sample only while it moves.
+    {"gain", C::Math, pGainIn, pOutRAudio, sizeof(dsp::GainState), kStateful | kBroadcast, 0, {},
+     "x · g, g smoothed (one-pole, time) when it changes; settled: one multiply"},
+    {"gain_add", C::Math, pGainAddIn, pOutRAudio, sizeof(dsp::GainState), kStateful | kBroadcast, 0, {},
+     "acc + x · g, g smoothed as in gain; settled at 0: acc passes through (a closed send costs nothing)"},
 
     // Transport and sample rate.
     {"transport.bpm", C::Transport, kNoPorts, pGlobalRP, 0, kNeedsTransport, 0, {}, "tempo in BPM"},

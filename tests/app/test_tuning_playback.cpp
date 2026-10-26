@@ -99,6 +99,46 @@ const LoweredPatch* patchOf(const LoweredProject& lp, TrackId id) {
   return nullptr;
 }
 
+// T3.17-fix2: the lowering builds IR, not text. One tuning_hz node of a lowered patch, read back from the IR: its
+// table and node-number constants and what drives its generator / period / stretch / reference inputs ("0" for the
+// constant 0 an EDO's generator and stretch read, else the param's name).
+struct TuningNodeIr {
+  int table = -1, node = -1;
+  std::string generator, period, stretch, reference;
+};
+std::vector<TuningNodeIr> tuningNodes(const LoweredPatch* lp) {
+  std::vector<TuningNodeIr> out;
+  if (lp == nullptr) return out;
+  const graph::Patch& p = lp->patch;
+  auto driver = [&](graph::NodeIndex n, uint16_t input) -> graph::NodeIndex {
+    for (const graph::Wire& w : p.wires())
+      if (w.to.node == n && w.to.port == input) return w.from.node;
+    return graph::kNone;
+  };
+  auto text = [&](graph::NodeIndex d) -> std::string {
+    if (d == graph::kNone) return "?";
+    if (p.node(d).kind == graph::NodeKind::Const) return std::to_string(static_cast<int>(p.constant(d).value()));
+    return p.nodeName(d);
+  };
+  for (graph::NodeIndex n = 0; n < p.nodeCount(); ++n) {
+    if (p.node(n).kind != graph::NodeKind::Atom || p.node(n).atom != graph::atomId("tuning_hz")) continue;
+    TuningNodeIr t;
+    t.table = std::stoi(text(driver(n, 8)));
+    t.node = std::stoi(text(driver(n, 10)));
+    t.generator = text(driver(n, 4));
+    t.period = text(driver(n, 5));
+    t.stretch = text(driver(n, 6));
+    t.reference = text(driver(n, 7));
+    out.push_back(t);
+  }
+  return out;
+}
+bool hasAtom(const LoweredPatch* lp, const char* name) {
+  for (graph::NodeIndex n = 0; n < lp->patch.nodeCount(); ++n)
+    if (lp->patch.node(n).kind == graph::NodeKind::Atom && lp->patch.node(n).atom == graph::atomId(name)) return true;
+  return false;
+}
+
 const LoweredParam* paramOf(const LoweredProject& lp, const std::string& key) {
   for (const LoweredParam& p : lp.params)
     if (p.key == key) return &p;
@@ -215,11 +255,25 @@ TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning n
   const LoweredProject& lp = low.value();
   const TuningId t12 = f.snap()->tunings->front()->id;  // the default 12-EDO: Muted inherits it
   // MIDI tracks: Lead (31-EDO), Mos (5L2s), Muted (12-EDO, the first main tuning). Groups / returns / master: none.
-  CHECK(patchOf(lp, f.lead)->text.find("tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, 0, tper1, 0, tref1, table: 3, select: voice.tuning, node: 1)") != std::string::npos);
-  CHECK(patchOf(lp, f.mos)->text.find("tuning_hz(voice.degree, voice.equave, voice.hz, voice.cents, tgen1, tper1, tst1, tref1, table: 5, select: voice.tuning, node: 1)") != std::string::npos);
-  CHECK(patchOf(lp, f.muted)->text.find("tune_voices(tun1.hz, tun1.cents)") != std::string::npos);
-  CHECK(patchOf(lp, f.grp)->text.find("tuning_hz") == std::string::npos);
-  CHECK(patchOf(lp, f.echo)->text.find("tuning_hz") == std::string::npos);
+  const auto leadNodes = tuningNodes(patchOf(lp, f.lead)), mosNodes = tuningNodes(patchOf(lp, f.mos));
+  REQUIRE(leadNodes.size() == 1);  // 31-EDO: generator and stretch are the constant 0
+  CHECK(leadNodes[0].table == 3);
+  CHECK(leadNodes[0].node == 1);
+  CHECK(leadNodes[0].generator == "0");
+  CHECK(leadNodes[0].period == "tper1");
+  CHECK(leadNodes[0].stretch == "0");
+  CHECK(leadNodes[0].reference == "tref1");
+  REQUIRE(mosNodes.size() == 1);  // 5L2s: every continuous value a param
+  CHECK(mosNodes[0].table == 5);
+  CHECK(mosNodes[0].node == 1);
+  CHECK(mosNodes[0].generator == "tgen1");
+  CHECK(mosNodes[0].period == "tper1");
+  CHECK(mosNodes[0].stretch == "tst1");
+  CHECK(mosNodes[0].reference == "tref1");
+  CHECK(tuningNodes(patchOf(lp, f.muted)).size() == 1);
+  CHECK(hasAtom(patchOf(lp, f.muted), "tune_voices"));
+  CHECK(tuningNodes(patchOf(lp, f.grp)).empty());
+  CHECK(tuningNodes(patchOf(lp, f.echo)).empty());
   CHECK(asked.size() == 3);
   // Params: one key per tuning param, current values in the document's units; the refs automation lanes target.
   REQUIRE(paramOf(lp, tuningKey(f.t31, "reference")) != nullptr);
@@ -253,7 +307,8 @@ TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning n
   REQUIRE(f.store.dispatch(SetTuningDef{f.tMos, d}).ok());
   auto shaped = lower(*f.snap(), lo, &again.value());
   REQUIRE(shaped.ok());
-  CHECK(patchOf(shaped.value(), f.mos)->text.find("table: 6") != std::string::npos);
+  REQUIRE(tuningNodes(patchOf(shaped.value(), f.mos)).size() == 1);
+  CHECK(tuningNodes(patchOf(shaped.value(), f.mos))[0].table == 6);
   CHECK(patchOf(shaped.value(), f.mos) != patchOf(again.value(), f.mos));
   CHECK(patchOf(shaped.value(), f.lead) == patchOf(again.value(), f.lead));
 
@@ -261,13 +316,13 @@ TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning n
   REQUIRE(f.store.dispatch(SetTrackTuning{f.lead, TuningAssignment::privateTuning(TuningDef{})}).ok());
   auto priv = lower(*f.snap(), lo, &shaped.value());
   REQUIRE(priv.ok());
-  CHECK(patchOf(priv.value(), f.lead)->text.find("tuning_hz") == std::string::npos);
+  CHECK(tuningNodes(patchOf(priv.value(), f.lead)).empty());
   mp.modmos = {0.0, 1.0};
   d.system = mp;
   REQUIRE(f.store.dispatch(SetTuningDef{f.tMos, d}).ok());
   auto modmos = lower(*f.snap(), lo, &priv.value());
   REQUIRE(modmos.ok());
-  CHECK(patchOf(modmos.value(), f.mos)->text.find("tuning_hz") == std::string::npos);
+  CHECK(tuningNodes(patchOf(modmos.value(), f.mos)).empty());
   CHECK(paramOf(modmos.value(), tuningKey(f.tMos, "generator")) == nullptr);
 }
 

@@ -152,12 +152,20 @@ TEST_CASE("lowering: the fixture's tracks, routing, sends and params; unchanged 
       if (w.from.track == idx(from) && w.from.port == port && w.to.track == idx(to) && w.to.port == "in") return true;
     return false;
   };
+  auto sendWire = [&](TrackId from, const char* port, TrackId to) {  // T3.17-fix2: sends live in the return
+    for (const auto& w : lp.graph.wires)
+      if (w.from.track == idx(from) && w.from.port == port && w.to.track == idx(to) &&
+          w.to.port == "s" + std::to_string(from.value))
+        return true;
+    return false;
+  };
   CHECK(wire(f.lead, "out", f.master));
   CHECK(wire(f.mos, "out", f.grp));
   CHECK(wire(f.grp, "out", f.master));
   CHECK(wire(f.echo, "out", f.master));
-  CHECK(wire(f.lead, ("tap" + std::to_string(f.echo.value)).c_str(), f.echo));
-  CHECK(wire(f.muted, ("tap" + std::to_string(f.echo.value)).c_str(), f.echo));  // implicit sends at −∞ are params
+  CHECK(sendWire(f.lead, "post", f.echo));
+  CHECK(sendWire(f.muted, "post", f.echo));  // implicit sends at −∞ are params
+  CHECK(sendWire(f.grp, "post", f.echo));
   CHECK(lp.graph.wires.size() == 9);
   auto param = [&](const std::string& key) -> const LoweredParam* {
     for (const auto& p : lp.params)
@@ -169,10 +177,16 @@ TEST_CASE("lowering: the fixture's tracks, routing, sends and params; unchanged 
   CHECK(param(lead + ":volume")->value == doctest::Approx(-3.0));
   CHECK(param(lead + ":pan")->value == doctest::Approx(-0.4));
   CHECK(param(lead + ":send:" + std::to_string(f.echo.value))->value == doctest::Approx(-6.0));
+  CHECK(param(lead + ":send:" + std::to_string(f.echo.value))->track == idx(f.echo));  // the return's patch param
   CHECK(param(lead + ":gate")->value == 1.0f);
-  CHECK(param(muted + ":gate")->value == 0.0f);  // mute is a param (Q15)
-  CHECK(param(muted + ":sendGate")->value == 0.0f);
+  // Mute is a param (Q15), its own since T3.17-fix3 (a mute lane plays): the gates are the solo rule without it.
+  CHECK(param(muted + ":mute")->value == 1.0f);
+  CHECK(param(muted + ":mute")->ref == ParamRef::track(ParamKind::TrackMute, f.muted));
+  CHECK(param(muted + ":gate")->value == 1.0f);
+  CHECK(param(muted + ":sendGate")->value == 1.0f);
+  CHECK(param(lead + ":mute")->value == 0.0f);
   CHECK(param(std::to_string(f.master.value) + ":gate") == nullptr);
+  CHECK(param(std::to_string(f.master.value) + ":mute") == nullptr);
   CHECK(paramKey(ParamRef::track(ParamKind::TrackVolume, f.grp)) == std::to_string(f.grp.value) + ":volume");
 
   // A mute or a volume change does not change any patch text: every patch is shared with the previous lowering.

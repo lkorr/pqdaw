@@ -71,6 +71,8 @@ pq_add_bench(pq_bench_project SOURCES engine/bench_project.cpp DEPS pq_jit)
 pq_add_bench(pq_bench_live_swap SOURCES engine/bench_live_swap.cpp DEPS pq_compile)
 # T1b.4: the JIT compile cache on the 30-track fixture: cold open with no cache, an empty cache and a warm cache.
 pq_add_bench(pq_bench_jit_cache SOURCES engine/bench_jit_cache.cpp DEPS pq_compile)
+# T3.17-fix2: the lowered mixer through the whole playback path (64 tracks x R returns, silent / notes, interp / JIT).
+pq_add_bench(pq_bench_playback SOURCES app/bench_playback.cpp DEPS pq_app)
 pq_add_bench(pq_bench_arrangement SOURCES views/bench_arrangement.cpp DEPS pq_views)
 pq_add_bench(pq_bench_mos_chart SOURCES views/bench_mos_chart.cpp DEPS pq_views)
 pq_add_bench(pq_bench_mos_wheel SOURCES views/bench_mos_wheel.cpp DEPS pq_views)

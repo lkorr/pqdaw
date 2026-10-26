@@ -1,25 +1,25 @@
-// Project → graph lowering (T3.17): pq/document/lower.h describes the signal flow.
+// Project → graph lowering (T3.17; IR with stable ids T3.17-fix2): pq/document/lower.h describes the signal flow.
 #include "pq/document/lower.h"
 
 #include <algorithm>
-#include <charconv>
+#include <bit>
 #include <cmath>
-#include <cstdio>
+#include <cstring>
+#include <numbers>
 #include <unordered_map>
 
 #include "pq/document/audibility.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/graph/patch_file.h"
 
 namespace pq::doc {
 
 namespace {
 
-enum class Kind : uint8_t { Midi, Group, Return, Master };
+using graph::NodeIndex;
+using graph::PortRef;
 
-struct SendInfo {
-  TrackId ret;
-  bool preFader = false;
-};
+enum class Kind : uint8_t { Midi, Group, Return, Master };
 
 // A MIDI track's tuning node (T2.6-fix1).
 struct TuningNode {
@@ -31,138 +31,43 @@ struct TuningNode {
 struct Node {
   const Track* track = nullptr;
   Kind kind = Kind::Midi;
-  const Track* parent = nullptr;  // active parent group (main tree)
-  std::vector<SendInfo> sends;    // per active return
+  const Track* parent = nullptr;    // active parent group (main tree)
   std::vector<TuningNode> tunings;  // T2.6-fix3: one node per tuning signal its clips follow (trackTuningSignals)
 };
 
-std::string num(double v) {
-  char buf[64];
-  const auto r = std::to_chars(buf, buf + sizeof buf, v);
-  return std::string(buf, r.ptr);
-}
+// A lowered send (see the file comment of lower.h).
+struct SendLink {
+  uint32_t from = 0, to = 0;  // node indices (sender, return)
+  bool pre = false;           // reads the sender's pre-fader export
+  bool delayed = false;       // closes a loop: an automatic 1-sample delay
+  bool conditional = false;   // lowered only while stored (return → return, or a loop)
+  float levelDb = kMinVolumeDb;
+};
 
-// The gain stage shared by every role: `pl`/`pr` (pan law), `vg` (volume gain), `g` (× gate), the send gains, one
-// smoothed multichannel gain `sm` (2 + 2 · sends channels).
-void gainStage(std::string& s, Kind kind, const std::vector<SendInfo>& sends, float smoothingMs) {
-  s += "  vg = volume <= -70 ? 0 : db_to_gain(volume)\n";
-  s += kind == Kind::Master ? "  g = vg\n" : "  g = vg * gate\n";
-  if (kind == Kind::Midi) {  // a mono source: constant power, −3 dB per side at the centre
-    s += "  th = (pan + 1) * 0.7853981633974483\n";
-    s += "  pl = sin(th + 1.5707963267948966)\n";
-    s += "  pr = sin(th)\n";
-  } else {  // a stereo bus: balance, 0 dB at the centre
-    s += "  pl = min(1, 1 - pan)\n";
-    s += "  pr = min(1, 1 + pan)\n";
-  }
-  std::string target = "(pl * g, pr * g";
-  for (const SendInfo& si : sends) {
-    const std::string r = std::to_string(si.ret.value);
-    s += "  sg" + r + " = sendGate * (send" + r + " <= -70 ? 0 : db_to_gain(send" + r + "))" +
-         (si.preFader ? "" : " * vg") + "\n";
-    target += ", pl * sg" + r + ", pr * sg" + r;
-  }
-  target += ")";
-  s += "  target = " + target + "\n";
-  s += "  k = 1 - exp(-1 / (" + num(static_cast<double>(smoothingMs) * 1e-3) + " * sr))\n";
-  s += "  sm = z1(sm + (target - sm) * k)\n";
-}
-
-std::string patchText(const Node& n, const std::string& instrument, float smoothingMs) {
-  const std::string id = std::to_string(n.track->id.value);
-  std::string s;
-  switch (n.kind) {
-    case Kind::Midi: s = "patch Midi" + id + " {\n"; break;
-    case Kind::Group: s = "patch Group" + id + " {\n"; break;
-    case Kind::Return: s = "patch Return" + id + " {\n"; break;
-    case Kind::Master: s = "patch Master" + id + " {\n"; break;
-  }
-  s += "  param volume = 0 [-70..6]\n  param pan = 0 [-1..1]\n";
-  if (n.kind != Kind::Master) s += "  param gate = 1 [0..1]\n";
-  if (!n.sends.empty()) s += "  param sendGate = 1 [0..1]\n";
-  for (const SendInfo& si : n.sends) s += "  param send" + std::to_string(si.ret.value) + " = -70 [-70..6]\n";
-  if (n.kind != Kind::Midi) s += "  in in : audio global stereo = 0\n";
-  s += "  out out : audio global stereo\n";
-  if (n.kind == Kind::Midi && !n.tunings.empty()) {
-    // The tuning nodes (T2.6-fix1; one per tuning signal, chained, each taking the voices that select it: T2.6-fix3):
-    // param defaults are fixed (the values arrive as params), so the text only depends on the tunings' kinds and
-    // table indices.
-    std::string hz = "voice.hz", cents = "voice.cents";
-    for (size_t k = 0; k < n.tunings.size(); ++k) {
-      const TuningNode& t = n.tunings[k];
-      const std::string i = std::to_string(k + 1);
-      const bool edo = t.def->edo() != nullptr;
-      // The ranges are the document's (paramRange, T2.6-fix4: the program clamps a param to its declared range, so
-      // a narrower one would make the node and the static pitch differ; hasTuningSignal refuses a definition
-      // outside them).
-      auto param = [&](const char* name, double def, ParamKind k) {
-        const ParamRange r = paramRange(k);
-        s += "  param " + std::string(name) + i + " = " + num(def) + " [" + num(r.min) + ".." + num(r.max) + "]\n";
-      };
-      param("tref", 261.626, ParamKind::TuningReference);
-      param("tper", 1200.0, edo ? ParamKind::TuningEquave : ParamKind::MosPeriod);
-      if (!edo) {
-        param("tgen", 700.0, ParamKind::MosGenerator);
-        param("tst", 0.0, ParamKind::MosStretch);
-      }
-      s += "  tun" + i + " = tuning_hz(voice.degree, voice.equave, " + hz + ", " + cents + ", " +
-           (edo ? "0, tper" + i + ", 0, tref" + i : "tgen" + i + ", tper" + i + ", tst" + i + ", tref" + i) +
-           ", table: " + std::to_string(t.table) + ", select: voice.tuning, node: " + i + ")\n";
-      hz = "tun" + i + ".hz";
-      cents = "tun" + i + ".cents";
-    }
-    s += "  tunv = tune_voices(" + hz + ", " + cents + ")\n";
-  }
-  if (n.kind == Kind::Midi) {
-    s += "  out done : bool voice mono\n";
-    s += "  syn = " + instrument + "()\n";
-    s += "  x = voice_sum(syn)\n";
-    s += "  done = syn.done\n";
-  } else {
-    s += "  x = in\n";
-  }
-  gainStage(s, n.kind, n.sends, smoothingMs);
-  s += "  out = x * (sm[0], sm[1])\n";
-  for (size_t i = 0; i < n.sends.size(); ++i)
-    s += "  export tap" + std::to_string(n.sends[i].ret.value) + " = x * (sm[" + std::to_string(2 + 2 * i) + "], sm[" +
-         std::to_string(3 + 2 * i) + "])\n";
-  s += "}\n";
-  return s;
-}
-
-graph::TrackRole roleOf(Kind k) {
-  switch (k) {
-    case Kind::Midi: return graph::TrackRole::Instrument;
-    case Kind::Group: return graph::TrackRole::Group;
-    case Kind::Return: return graph::TrackRole::Return;
-    case Kind::Master: return graph::TrackRole::Master;
-  }
-  return graph::TrackRole::Audio;
-}
-
-float sendLevel(const Track& t, TrackId ret, bool* pre) {
-  for (const Send& s : t.mixer.sends)
-    if (s.target == ret) {
-      if (pre) *pre = s.preFader;
-      return std::clamp(s.levelDb, kMinVolumeDb, kMaxVolumeDb);
-    }
-  if (pre) *pre = false;
-  return kMinVolumeDb;
-}
+struct Plan {
+  std::vector<Node> nodes;
+  std::unordered_map<uint32_t, uint32_t> indexOf;  // track id → node index
+  std::vector<uint32_t> dest;                      // per node: the node its output feeds, or graph::kNone
+  std::vector<SendLink> sends;
+  uint32_t master = graph::kNone;
+};
 
 using TableOf = std::function<uint32_t(TuningId, const TuningDef&)>;
 
-// The lowered nodes of a project (active tracks), in forEachTrack order: main tree depth-first, returns, master.
-// `tableOf` (optional): MIDI tracks following a tuning signal get a tuning node with that table.
-std::vector<Node> collect(const Project& p, const TableOf* tableOf) {
-  std::vector<TrackId> returns;
-  for (const TrackPtr& r : p.returns)
-    if (r->active) returns.push_back(r->id);
-  std::vector<Node> nodes;
+const Send* storedSend(const Track& t, TrackId ret) {
+  for (const Send& s : t.mixer.sends)
+    if (s.target == ret) return &s;
+  return nullptr;
+}
+
+// The lowered nodes of a project (active tracks), in forEachTrack order: main tree depth-first, returns, master;
+// their routing and their sends. `tableOf` (optional): MIDI tracks following a tuning signal get a tuning node with
+// that table.
+Plan plan(const Project& p, const TableOf* tableOf) {
+  Plan pl;
   struct Walk {
     const Project& p;
     std::vector<Node>& nodes;
-    const std::vector<TrackId>& returns;
     const TableOf* tableOf;
     void operator()(const std::vector<TrackPtr>& list, const Track* parent, TrackPath path) {
       for (uint32_t i = 0; i < list.size(); ++i) {
@@ -175,11 +80,6 @@ std::vector<Node> collect(const Project& p, const TableOf* tableOf) {
         n.track = t.get();
         n.kind = t->kind == TrackKind::Midi ? Kind::Midi : Kind::Group;
         n.parent = parent;
-        for (TrackId r : returns) {
-          SendInfo si{r, false};
-          sendLevel(*t, r, &si.preFader);
-          n.sends.push_back(si);
-        }
         if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth)
           for (const TuningId id : trackTuningSignals(p, here)) {
             const TuningSlot* slot = findTuning(p, id);
@@ -189,28 +89,326 @@ std::vector<Node> collect(const Project& p, const TableOf* tableOf) {
         if (t->kind == TrackKind::Group) (*this)(t->children, t.get(), here);
       }
     }
-  } walk{p, nodes, returns, tableOf};
+  } walk{p, pl.nodes, tableOf};
   walk(p.tracks, nullptr, TrackPath{});
+  const auto mainCount = static_cast<uint32_t>(pl.nodes.size());
   for (const TrackPtr& r : p.returns)
-    if (r->active) nodes.push_back(Node{r.get(), Kind::Return, nullptr, {}});
-  if (p.master) nodes.push_back(Node{p.master.get(), Kind::Master, nullptr, {}});
-  return nodes;
+    if (r->active) pl.nodes.push_back(Node{r.get(), Kind::Return, nullptr, {}});
+  if (p.master) {
+    pl.master = static_cast<uint32_t>(pl.nodes.size());
+    pl.nodes.push_back(Node{p.master.get(), Kind::Master, nullptr, {}});
+  }
+  const auto n = static_cast<uint32_t>(pl.nodes.size());
+  for (uint32_t i = 0; i < n; ++i) pl.indexOf[pl.nodes[i].track->id.value] = i;
+
+  // Routing.
+  auto inside = [&](const Track& group, TrackId id) {  // id is group itself or one of its members
+    if (group.id == id) return true;
+    struct Find {
+      TrackId id;
+      bool operator()(const std::vector<TrackPtr>& list) const {
+        for (const TrackPtr& t : list)
+          if (t->id == id || (*this)(t->children)) return true;
+        return false;
+      }
+    };
+    return Find{id}(group.children);
+  };
+  pl.dest.assign(n, graph::kNone);
+  for (uint32_t i = 0; i < n; ++i) {
+    const Node& nd = pl.nodes[i];
+    if (nd.kind == Kind::Master) continue;
+    const Output& op = nd.track->mixer.output;
+    uint32_t d = pl.master;
+    switch (op.kind) {
+      case OutputKind::Default:
+        if (nd.parent != nullptr) d = pl.indexOf.at(nd.parent->id.value);
+        break;
+      case OutputKind::Master: break;
+      case OutputKind::Track:
+        if (const Track* target = findTrackPtr(p, op.track); target != nullptr && target->kind == TrackKind::Group) {
+          const auto it = pl.indexOf.find(op.track.value);
+          if (it == pl.indexOf.end()) d = graph::kNone;  // a deactivated group plays nothing (M3 review L1)
+          else if (!inside(*nd.track, op.track)) d = it->second;  // (a group cannot feed itself: the master)
+        }
+        break;
+      case OutputKind::None: d = graph::kNone; break;
+    }
+    pl.dest[i] = d;
+  }
+
+  // Sends: main tracks first, then returns, each in track order; a send that closes a loop is delayed.
+  std::vector<std::vector<uint32_t>> adj(n);
+  for (uint32_t i = 0; i < n; ++i)
+    if (pl.dest[i] != graph::kNone) adj[i].push_back(pl.dest[i]);
+  std::vector<uint8_t> seen(n);
+  std::vector<uint32_t> stack;
+  auto reaches = [&](uint32_t from, uint32_t to) {
+    std::fill(seen.begin(), seen.end(), uint8_t{0});
+    stack.assign(1, from);
+    seen[from] = 1;
+    while (!stack.empty()) {
+      const uint32_t v = stack.back();
+      stack.pop_back();
+      if (v == to) return true;
+      for (uint32_t w : adj[v])
+        if (!seen[w]) {
+          seen[w] = 1;
+          stack.push_back(w);
+        }
+    }
+    return false;
+  };
+  auto addSends = [&](uint32_t s) {
+    const Node& sn = pl.nodes[s];
+    for (uint32_t r = mainCount; r < n; ++r) {
+      if (pl.nodes[r].kind != Kind::Return || r == s) continue;
+      const Send* stored = storedSend(*sn.track, pl.nodes[r].track->id);
+      const bool feedback = reaches(r, s);
+      SendLink l;
+      l.from = s;
+      l.to = r;
+      l.conditional = sn.kind == Kind::Return || feedback;
+      if (l.conditional && stored == nullptr) continue;
+      l.pre = stored != nullptr && stored->preFader;
+      l.delayed = feedback;
+      l.levelDb = stored != nullptr ? std::clamp(stored->levelDb, kMinVolumeDb, kMaxVolumeDb) : kMinVolumeDb;
+      pl.sends.push_back(l);
+      adj[s].push_back(r);
+    }
+  };
+  for (uint32_t s = 0; s < mainCount; ++s) addSends(s);
+  for (uint32_t s = mainCount; s < n; ++s)
+    if (pl.nodes[s].kind == Kind::Return) addSends(s);
+  return pl;
 }
 
-void addParams(const Node& n, uint32_t index, const AudibilityMap& aud, std::vector<LoweredParam>& out) {
+// ---- IR construction ---------------------------------------------------------------------------------------------
+
+// Fixed NodeIds of a role's own nodes (< kEntityNodeBase): never renumbered, so their state keys never move.
+enum Fixed : uint32_t {
+  kVolume = 1, kPan, kGate, kSendGate, kMute,
+  kIn = 8, kOut, kPost, kPre, kDone,
+  kInstrument = 16, kVoiceSum,
+  kC0 = 20, kC1, kCHalf, kCFloor, kCQuarterPi, kCHalfPi, kCTime,
+  kVolLe = 32, kVolDb, kVg, kUnmuted, kGateOut, kGateSends, kGOut, kGPost,
+  kPanA = 40, kPanB, kTheta, kPl, kPr,
+  kOutL = 48, kOutR, kOutPack, kOutGain, kPostL, kPostR, kPostPack, kPostGain, kPreL, kPreR, kPrePack, kPreGain,
+  kVDegree = 64, kVEquave, kVHz, kVCents, kVTuning, kTuneVoices,
+  kSendAcc = 72,
+};
+// Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
+enum TuningK : uint32_t { kTRef, kTPer, kTGen, kTSt, kTNode, kTTable, kTIndex };
+enum SendK : uint32_t { kSIn, kSLevel, kSLe, kSDb, kSGain, kSDelay, kSAdd };
+
+// `audio global stereo` (the ports' declared type, as the text form wrote them).
+constexpr graph::PortType kStereo = graph::portType(graph::Kind::Infer, graph::Rate::Audio, graph::Poly::Global, 2);
+
+class Ir {
+public:
+  explicit Ir(std::string name) : p_(std::move(name)) {}
+  graph::Patch& patch() noexcept { return p_; }
+  bool failed() const noexcept { return failed_; }
+
+  PortRef atom(std::string_view name, std::initializer_list<PortRef> ins, uint32_t id, uint16_t repeat = 0) {
+    const NodeIndex n = take(p_.addAtom(graph::atomId(name), repeat), id);
+    uint16_t i = 0;
+    for (const PortRef& in : ins) p_.connect(in, PortRef{n, i++});
+    return PortRef{n, 0};
+  }
+  // A constant: one node per id (a fixed constant is shared by everything that reads it).
+  PortRef konst(double v, uint32_t id) {
+    for (const auto& [cid, port] : consts_)
+      if (cid == id) return port;
+    const PortRef port{take(p_.addConst(graph::Constant::real(v)), id), 0};
+    consts_.emplace_back(id, port);
+    return port;
+  }
+  PortRef param(const std::string& name, double def, double lo, double hi, uint32_t id) {
+    graph::ParamDecl d;
+    d.defaultValue = graph::Constant::real(def);
+    d.hasRange = true;
+    d.rangeMin = graph::Constant::real(lo);
+    d.rangeMax = graph::Constant::real(hi);
+    return PortRef{take(p_.addParam(name, std::move(d)), id), 0};
+  }
+  PortRef input(const std::string& name, PortRef def, uint32_t id) {
+    const NodeIndex n = take(p_.addInput(name, kStereo), id);
+    p_.connect(def, PortRef{n, 0});
+    return PortRef{n, 0};
+  }
+  void output(const std::string& name, graph::PortType type, PortRef value, uint32_t id) {
+    const NodeIndex n = take(p_.addOutput(name, type), id);
+    p_.connect(value, PortRef{n, 0});
+  }
+  void exportPort(const std::string& name, PortRef value, uint32_t id) {
+    const NodeIndex n = take(p_.addExport(name), id);
+    p_.connect(value, PortRef{n, 0});
+  }
+  NodeIndex call(graph::SubcircuitRef ref, uint32_t id) { return take(p_.addSubcircuit(std::move(ref)), id); }
+  // Gives every node its document-derived id. False: two nodes asked for one id, or an id did not fit (a bug, or an
+  // entity id beyond nodeIdFor's range).
+  bool finish() {
+    std::vector<graph::NodeId> ids;
+    ids.reserve(ids_.size());
+    for (uint32_t v : ids_) ids.push_back(graph::NodeId{v});
+    return !failed_ && p_.setNodeIds(ids);
+  }
+
+private:
+  NodeIndex take(NodeIndex n, uint32_t id) {
+    if (id == 0) failed_ = true;
+    ids_.push_back(id);
+    return n;
+  }
+  graph::Patch p_;
+  std::vector<uint32_t> ids_;
+  std::vector<std::pair<uint32_t, PortRef>> consts_;
+  bool failed_ = false;
+};
+
+// The gain stages (see lower.h): x → out (and for senders post / pre exports).
+void gainStages(Ir& ir, Kind kind, PortRef x, float smoothingMs) {
+  const PortRef volume = ir.param("volume", 0.0, kMinVolumeDb, kMaxVolumeDb, kVolume);
+  const PortRef pan = ir.param("pan", 0.0, -1.0, 1.0, kPan);
+  const PortRef c0 = ir.konst(0.0, kC0), c1 = ir.konst(1.0, kC1);
+  const PortRef time = ir.konst(static_cast<double>(smoothingMs) * 1e-3, kCTime);
+  const PortRef vg = ir.atom("select", {ir.atom("le", {volume, ir.konst(kMinVolumeDb, kCFloor)}, kVolLe), c0,
+                                        ir.atom("db_to_gain", {volume}, kVolDb)},
+                             kVg);
+  PortRef pl, pr;
+  if (kind == Kind::Midi) {  // a mono source: constant power, −3 dB per side at the centre
+    const PortRef th = ir.atom("mul", {ir.atom("add", {pan, c1}, kPanA), ir.konst(std::numbers::pi / 4, kCQuarterPi)}, kTheta);
+    pl = ir.atom("sin", {ir.atom("add", {th, ir.konst(std::numbers::pi / 2, kCHalfPi)}, kPanB)}, kPl);
+    pr = ir.atom("sin", {th}, kPr);
+  } else {  // a stereo bus: balance, 0 dB at the centre
+    pl = ir.atom("min", {c1, ir.atom("sub", {c1, pan}, kPanA)}, kPl);
+    pr = ir.atom("min", {c1, ir.atom("add", {c1, pan}, kPanB)}, kPr);
+  }
+  auto stage = [&](PortRef g, uint32_t l, uint32_t r, uint32_t pack, uint32_t gain) {
+    const PortRef gl = ir.atom("mul", {pl, g}, l), gr = ir.atom("mul", {pr, g}, r);
+    return ir.atom("gain", {x, ir.atom("pack", {gl, gr}, pack, 2), time}, gain);
+  };
+  if (kind == Kind::Master) {
+    ir.output("out", kStereo, stage(vg, kOutL, kOutR, kOutPack, kOutGain), kOut);
+    return;
+  }
+  const PortRef gate = ir.param("gate", 1.0, 0.0, 1.0, kGate);
+  const PortRef sendGate = ir.param("sendGate", 1.0, 0.0, 1.0, kSendGate);
+  const PortRef mute = ir.param("mute", 0.0, 0.0, 1.0, kMute);
+  const PortRef unmuted = ir.atom("lt", {mute, ir.konst(0.5, kCHalf)}, kUnmuted);
+  const PortRef go = ir.atom("select", {unmuted, gate, c0}, kGateOut);
+  const PortRef so = ir.atom("select", {unmuted, sendGate, c0}, kGateSends);
+  ir.output("out", kStereo, stage(ir.atom("mul", {vg, go}, kGOut), kOutL, kOutR, kOutPack, kOutGain), kOut);
+  ir.exportPort("post", stage(ir.atom("mul", {vg, so}, kGPost), kPostL, kPostR, kPostPack, kPostGain), kPost);
+  ir.exportPort("pre", stage(so, kPreL, kPreR, kPrePack, kPreGain), kPre);
+}
+
+std::string patchName(const Node& n) {
+  const std::string id = std::to_string(n.track->id.value);
+  switch (n.kind) {
+    case Kind::Midi: return "Midi" + id;
+    case Kind::Group: return "Group" + id;
+    case Kind::Return: return "Return" + id;
+    case Kind::Master: return "Master" + id;
+  }
+  return id;
+}
+
+Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const graph::Patch& instrument) {
+  const Node& n = pl.nodes[index];
+  Ir ir(patchName(n));
+  PortRef x;
+  if (n.kind == Kind::Midi) {
+    if (!n.tunings.empty()) {
+      // The tuning nodes (T2.6-fix1; one per tuning signal, chained, each taking the voices that select it: T2.6-fix3):
+      // param defaults are fixed (the values arrive as params), so the IR only depends on the tunings' kinds, ids
+      // and table indices. Ranges are the document's (paramRange; T2.6-fix4: the program clamps a param to its
+      // declared range, so a narrower one would make the node and the static pitch differ).
+      PortRef hz = ir.atom("voice.hz", {}, kVHz), cents = ir.atom("voice.cents", {}, kVCents);
+      const PortRef degree = ir.atom("voice.degree", {}, kVDegree), equave = ir.atom("voice.equave", {}, kVEquave);
+      const PortRef select = ir.atom("voice.tuning", {}, kVTuning);
+      const PortRef c0 = ir.konst(0.0, kC0);
+      for (size_t k = 0; k < n.tunings.size(); ++k) {
+        const TuningNode& t = n.tunings[k];
+        const std::string i = std::to_string(k + 1);
+        const bool edo = t.def->edo() != nullptr;
+        auto id = [&](uint32_t sub) { return nodeIdFor(NodeRole::TuningNode, t.id.value, sub); };
+        auto param = [&](const char* name, double def, ParamKind kind, uint32_t sub) {
+          const ParamRange r = paramRange(kind);
+          return ir.param(std::string(name) + i, def, r.min, r.max, id(sub));
+        };
+        const PortRef tref = param("tref", 261.626, ParamKind::TuningReference, kTRef);
+        const PortRef tper = param("tper", 1200.0, edo ? ParamKind::TuningEquave : ParamKind::MosPeriod, kTPer);
+        const PortRef tgen = edo ? c0 : param("tgen", 700.0, ParamKind::MosGenerator, kTGen);
+        const PortRef tst = edo ? c0 : param("tst", 0.0, ParamKind::MosStretch, kTSt);
+        const PortRef node =
+            ir.atom("tuning_hz",
+                    {degree, equave, hz, cents, tgen, tper, tst, tref, ir.konst(static_cast<double>(t.table), id(kTTable)),
+                     select, ir.konst(static_cast<double>(k + 1), id(kTIndex))},
+                    id(kTNode));
+        hz = PortRef{node.node, 0};
+        cents = PortRef{node.node, 1};
+      }
+      ir.atom("tune_voices", {hz, cents}, kTuneVoices);
+    }
+    const NodeIndex syn = ir.call(graph::subcircuitSignature(instrument), kInstrument);
+    const auto out = ir.patch().findOutput(syn, "out");
+    const auto done = ir.patch().findOutput(syn, "done");
+    if (!out || !done) return Error{ErrorCode::InvalidArgument, "lower: the instrument has no out / done", {}};
+    x = ir.atom("voice_sum", {PortRef{syn, static_cast<uint16_t>(*out)}}, kVoiceSum);
+    ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
+              PortRef{syn, static_cast<uint16_t>(*done)}, kDone);
+  } else if (n.kind == Kind::Return) {
+    // The sum of the sends into it (T3.17-fix2): one input and one gain_add per sender, ids from the sender.
+    const PortRef c0 = ir.konst(0.0, kC0);
+    const PortRef time = ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime);
+    const PortRef floor = ir.konst(kMinVolumeDb, kCFloor);
+    PortRef acc = c0;
+    for (const SendLink& l : pl.sends) {
+      if (l.to != index) continue;
+      const uint32_t from = pl.nodes[l.from].track->id.value;
+      auto id = [&](uint32_t sub) { return nodeIdFor(NodeRole::SendInput, from, sub); };
+      PortRef src = ir.input("s" + std::to_string(from), c0, id(kSIn));
+      if (l.delayed) src = ir.atom("z1", {src}, id(kSDelay));  // closes a loop: 1 sample (SPEC §15 2026-10-24)
+      const PortRef level = ir.param("send" + std::to_string(from), kMinVolumeDb, kMinVolumeDb, kMaxVolumeDb, id(kSLevel));
+      const PortRef g = ir.atom("select", {ir.atom("le", {level, floor}, id(kSLe)), c0, ir.atom("db_to_gain", {level}, id(kSDb))},
+                                id(kSGain));
+      acc = ir.atom("gain_add", {acc, src, g, time}, id(kSAdd));
+    }
+    x = acc;
+  } else {
+    x = ir.input("in", ir.konst(0.0, kC0), kIn);
+  }
+  gainStages(ir, n.kind, x, o.smoothingMs);
+  if (!ir.finish())
+    return Error{ErrorCode::Overflow, "lower: track " + std::to_string(n.track->id.value) +
+                                          ": a document id too large for a stable node id (nodeIdFor)", {}};
+  return std::move(ir.patch());
+}
+
+void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::vector<LoweredParam>& out) {
+  const Node& n = pl.nodes[index];
   const Track& t = *n.track;
   const std::string id = std::to_string(t.id.value);
-  auto add = [&](std::string name, float v, std::optional<ParamRef> ref) {
-    out.push_back(LoweredParam{id + ":" + (name.starts_with("send") && name != "sendGate" ? "send:" + name.substr(4) : name),
-                               index, std::move(name), v, ref});
+  auto add = [&](const std::string& name, float v, std::optional<ParamRef> ref) {
+    out.push_back(LoweredParam{id + ":" + name, index, name, v, ref});
   };
   add("volume", std::clamp(t.mixer.volumeDb, kMinVolumeDb, kMaxVolumeDb), ParamRef::track(ParamKind::TrackVolume, t.id));
   add("pan", std::clamp(t.mixer.pan, -1.0f, 1.0f), ParamRef::track(ParamKind::TrackPan, t.id));
-  const TrackAudibility* a = aud.find(t.id);
-  if (n.kind != Kind::Master) add("gate", a == nullptr || a->output ? 1.0f : 0.0f, std::nullopt);
-  if (!n.sends.empty()) add("sendGate", a == nullptr || a->sends ? 1.0f : 0.0f, std::nullopt);
-  for (const SendInfo& si : n.sends)
-    add("send" + std::to_string(si.ret.value), sendLevel(t, si.ret, nullptr), ParamRef::track(ParamKind::TrackSend, t.id, si.ret));
+  if (n.kind != Kind::Master) {
+    const TrackAudibility* a = aud.find(t.id);
+    add("gate", a == nullptr || a->output ? 1.0f : 0.0f, std::nullopt);
+    add("sendGate", a == nullptr || a->sends ? 1.0f : 0.0f, std::nullopt);
+    add("mute", t.mixer.mute ? 1.0f : 0.0f, ParamRef::track(ParamKind::TrackMute, t.id));
+  }
+  if (n.kind == Kind::Return)
+    for (const SendLink& l : pl.sends) {
+      if (l.to != index) continue;
+      const TrackId from = pl.nodes[l.from].track->id;
+      out.push_back(LoweredParam{std::to_string(from.value) + ":send:" + id, index, "send" + std::to_string(from.value),
+                                 l.levelDb, ParamRef::track(ParamKind::TrackSend, from, t.id)});
+    }
   for (size_t k = 0; k < n.tunings.size(); ++k) {  // tuning node params: one key per tuning, shared by its followers
     const TuningNode& node = n.tunings[k];
     const TuningDef& d = *node.def;
@@ -232,12 +430,93 @@ void addParams(const Node& n, uint32_t index, const AudibilityMap& aud, std::vec
   }
 }
 
+graph::TrackRole roleOf(Kind k) {
+  switch (k) {
+    case Kind::Midi: return graph::TrackRole::Instrument;
+    case Kind::Group: return graph::TrackRole::Group;
+    case Kind::Return: return graph::TrackRole::Return;
+    case Kind::Master: return graph::TrackRole::Master;
+  }
+  return graph::TrackRole::Audio;
+}
+
+// 64-bit FNV-1a over plain values.
+struct Hasher {
+  uint64_t h = 1469598103934665603ull;
+  void bytes(const void* p, size_t n) noexcept {
+    const auto* b = static_cast<const unsigned char*>(p);
+    for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
+  }
+  template <class T>
+  void operator()(const T& v) noexcept {
+    bytes(&v, sizeof v);
+  }
+  void str(std::string_view s) noexcept {
+    (*this)(s.size());
+    bytes(s.data(), s.size());
+  }
+  void constant(const graph::Constant& c) noexcept {
+    (*this)(c.kind);
+    (*this)(c.unit);
+    (*this)(std::bit_cast<uint64_t>(c.literal));
+  }
+};
+
 }  // namespace
+
+uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept {
+  const uint64_t id = kEntityNodeBase + (static_cast<uint64_t>(entity) * 3 + static_cast<uint32_t>(role)) * kEntityNodeSlots + k;
+  return id <= 0xFFFFFFFFull && k < kEntityNodeSlots ? static_cast<uint32_t>(id) : 0u;
+}
+
+uint64_t patchHash(const graph::Patch& p) noexcept {
+  Hasher h;
+  h.str(p.name());
+  for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
+    const graph::Node& nd = p.node(n);
+    h(nd.id.value);
+    h(nd.kind);
+    h(nd.atom);
+    h(nd.numInputs);
+    h(nd.numOutputs);
+    h.str(p.nodeName(n));
+    switch (nd.kind) {
+      case graph::NodeKind::Const: h.constant(p.constant(n)); break;
+      case graph::NodeKind::Param: {
+        const graph::ParamDecl& d = p.paramDecl(n);
+        h.constant(d.defaultValue);
+        h(d.hasRange);
+        h.constant(d.rangeMin);
+        h.constant(d.rangeMax);
+        break;
+      }
+      case graph::NodeKind::Subcircuit: h.str(p.subcircuit(n).patch); break;
+      default: break;
+    }
+    for (uint32_t i = 0; i < static_cast<uint32_t>(nd.numInputs) + nd.numOutputs; ++i) {
+      const graph::PortType& t = p.portTypes()[nd.firstPort + i];
+      h(t.kind);
+      h(t.rate);
+      h(t.poly);
+      h(t.width);
+    }
+  }
+  for (const graph::Wire& w : p.wires()) {
+    h(p.node(w.from.node).id.value);
+    h(w.from.port);
+    h(p.node(w.to.node).id.value);
+    h(w.to.port);
+  }
+  return h.h;
+}
+
+std::string patchText(const LoweredPatch& p) { return graph::print(p.patch); }
 
 std::string paramKey(const ParamRef& ref) {
   switch (ref.kind) {
     case ParamKind::TrackVolume: return std::to_string(ref.owner) + ":volume";
     case ParamKind::TrackPan: return std::to_string(ref.owner) + ":pan";
+    case ParamKind::TrackMute: return std::to_string(ref.owner) + ":mute";  // T3.17-fix3: its lane plays
     case ParamKind::TrackSend: return std::to_string(ref.owner) + ":send:" + std::to_string(ref.target);
     // The tuning node's params (T2.6-fix1).
     case ParamKind::TuningReference: return "tuning:" + std::to_string(ref.owner) + ":reference";
@@ -245,7 +524,7 @@ std::string paramKey(const ParamRef& ref) {
     case ParamKind::MosGenerator: return "tuning:" + std::to_string(ref.owner) + ":generator";
     case ParamKind::MosPeriod: return "tuning:" + std::to_string(ref.owner) + ":period";
     case ParamKind::MosStretch: return "tuning:" + std::to_string(ref.owner) + ":stretch";
-    default: return {};  // mute/solo are derived into gates
+    default: return {};  // solo is derived into the gates
   }
 }
 
@@ -277,37 +556,29 @@ uint32_t tuningNodeIndex(std::span<const TuningId> signals, TuningId t) noexcept
 
 Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const LoweredProject* previous) {
   if (!p.master) return Error{ErrorCode::InvalidArgument, "lower: the project has no master", {}};
-  if (o.library == nullptr || o.library->find(o.instrument) == nullptr)
+  const graph::Patch* instrument = o.library != nullptr ? o.library->find(o.instrument) : nullptr;
+  if (instrument == nullptr)
     return Error{ErrorCode::NotFound, "lower: the instrument '" + o.instrument + "' is not in the library", {}};
-  const std::vector<Node> nodes = collect(p, &o.tuningTableOf);
-  const AudibilityMap aud = computeAudibility(p);
+  const Plan pl = plan(p, &o.tuningTableOf);
+  const AudibilityMap aud = computeAudibility(p, AudibilityOptions{true});
   LoweredProject out;
   out.graph.library = o.library;
-  std::unordered_map<std::string_view, std::shared_ptr<const LoweredPatch>> prev;
+  std::unordered_map<uint32_t, std::shared_ptr<const LoweredPatch>> prev;  // track id → its previous patch
   if (previous != nullptr)
-    for (const auto& lp : previous->patches) prev.emplace(lp->text, lp);
-  std::unordered_map<uint32_t, uint32_t> indexOf;  // track id → graph index
-  for (uint32_t i = 0; i < nodes.size(); ++i) {
-    const Node& n = nodes[i];
-    std::string text = patchText(n, o.instrument, o.smoothingMs);
+    for (size_t j = 0; j < previous->trackIds.size(); ++j) prev.emplace(previous->trackIds[j].value, previous->patches[j]);
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i) {
+    const Node& n = pl.nodes[i];
+    auto built = buildPatch(pl, i, o, *instrument);
+    if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
-    if (auto it = prev.find(text); it != prev.end()) {
-      lp = it->second;
+    const uint64_t hash = patchHash(built.value());
+    if (const auto it = prev.find(n.track->id.value);
+        it != prev.end() && it->second->hash == hash && it->second->patch == built.value()) {
+      lp = it->second;  // the same IR: the same patch object, its unit is not recompiled
     } else {
-      graph::ParseOptions po;
-      po.externals = o.externals;
-      // The same track's previous patch (T1.x-text-ids, ParseOptions::previous): the new text's nodes inherit its
-      // NodeIds, so the unit's hot swap carries the state (smoothers, voices) instead of restarting it.
-      graph::PatchFile before;
-      if (previous != nullptr)
-        for (size_t j = 0; j < previous->trackIds.size() && before.patches.empty(); ++j)
-          if (previous->trackIds[j] == n.track->id) before.patches.push_back(previous->patches[j]->patch);
-      if (!before.patches.empty()) po.previous = &before;
-      auto parsed = graph::parse(text, "track" + std::to_string(n.track->id.value) + ".pqp", po);
-      if (!parsed.ok()) return Error{parsed.error().code, "lower: " + parsed.error().message, {}};
       auto made = std::make_shared<LoweredPatch>();
-      made->text = std::move(text);
-      made->patch = std::move(parsed.value().patches.front());
+      made->patch = std::move(built.value());
+      made->hash = hash;
       lp = std::move(made);
     }
     out.patches.push_back(lp);
@@ -318,60 +589,49 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     pt.patch = &out.patches.back()->patch;
     pt.role = roleOf(n.kind);
     pt.eventSlot = n.kind == Kind::Midi && o.slotOf ? o.slotOf(n.track->id) : graph::kNone;
+    if (n.kind == Kind::Midi && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
     out.graph.tracks.push_back(std::move(pt));
-    indexOf[n.track->id.value] = i;
-    addParams(n, i, aud, out.params);
-    if (n.kind == Kind::Master) out.master = i;
+    addParams(pl, i, aud, out.params);
   }
+  out.master = pl.master;
   // Wires: outputs, then sends (wire order = summing order).
   using W = graph::WireKind;
-  auto isActiveGroup = [&](TrackId id) {
-    auto it = indexOf.find(id.value);
-    return it != indexOf.end() && nodes[it->second].kind == Kind::Group;
-  };
-  auto inside = [&](const Track& group, TrackId id) {  // id is group itself or one of its members
-    if (group.id == id) return true;
-    struct Find {
-      TrackId id;
-      bool operator()(const std::vector<TrackPtr>& list) const {
-        for (const TrackPtr& t : list)
-          if (t->id == id || (*this)(t->children)) return true;
-        return false;
-      }
-    };
-    return Find{id}(group.children);
-  };
-  for (uint32_t i = 0; i < nodes.size(); ++i) {
-    const Node& n = nodes[i];
-    if (n.kind == Kind::Master) continue;
-    const Output& op = n.track->mixer.output;
-    uint32_t dest = out.master;
-    switch (op.kind) {
-      case OutputKind::Default:
-        if (n.parent != nullptr) dest = indexOf.at(n.parent->id.value);
-        break;
-      case OutputKind::Master: break;
-      case OutputKind::Track:
-        if (n.kind != Kind::Return && isActiveGroup(op.track) && !inside(*n.track, op.track)) dest = indexOf.at(op.track.value);
-        break;
-      case OutputKind::None: dest = graph::kNone; break;
-    }
-    if (dest != graph::kNone) out.graph.wires.push_back({{i, "out"}, {dest, "in"}, W::Audio});
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i)
+    if (pl.dest[i] != graph::kNone) out.graph.wires.push_back({{i, "out"}, {pl.dest[i], "in"}, W::Audio});
+  for (const SendLink& l : pl.sends) {
+    const TrackId from = pl.nodes[l.from].track->id;
+    out.graph.wires.push_back({{l.from, l.pre ? "pre" : "post"}, {l.to, "s" + std::to_string(from.value)}, W::Audio});
+    if (l.delayed) out.delayedSends.push_back(DelayedSend{from, pl.nodes[l.to].track->id});
   }
-  for (uint32_t i = 0; i < nodes.size(); ++i)
-    for (const SendInfo& si : nodes[i].sends)
-      out.graph.wires.push_back({{i, "tap" + std::to_string(si.ret.value)}, {indexOf.at(si.ret.value), "in"}, W::Audio});
-  out.graph.output = {out.master, "out"};
+  out.graph.output = {pl.master, "out"};
   return out;
 }
 
 std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes) {
   const TableOf anyTable = [](TuningId, const TuningDef&) { return 0u; };  // the index does not change a param
-  const std::vector<Node> nodes = collect(p, tuningNodes ? &anyTable : nullptr);
-  const AudibilityMap aud = computeAudibility(p);
+  const Plan pl = plan(p, tuningNodes ? &anyTable : nullptr);
+  const AudibilityMap aud = computeAudibility(p, AudibilityOptions{true});
   std::vector<LoweredParam> out;
-  for (uint32_t i = 0; i < nodes.size(); ++i) addParams(nodes[i], i, aud, out);
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out);
   return out;
+}
+
+std::vector<DelayedSend> delayedSends(const Project& p) {
+  const Plan pl = plan(p, nullptr);
+  std::vector<DelayedSend> out;
+  for (const SendLink& l : pl.sends)
+    if (l.delayed) out.push_back(DelayedSend{pl.nodes[l.from].track->id, pl.nodes[l.to].track->id});
+  return out;
+}
+
+std::vector<uint64_t> conditionalSendsKey(const Project& p) {
+  const Plan pl = plan(p, nullptr);
+  std::vector<uint64_t> key;
+  for (const SendLink& l : pl.sends)
+    if (l.conditional)
+      key.push_back((static_cast<uint64_t>(pl.nodes[l.from].track->id.value) << 33) ^
+                    (static_cast<uint64_t>(pl.nodes[l.to].track->id.value) << 1) ^ (l.delayed ? 1u : 0u));
+  return key;
 }
 
 }  // namespace pq::doc

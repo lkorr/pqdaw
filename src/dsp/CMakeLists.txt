@@ -6,6 +6,7 @@ pq_add_module(pq_dsp
     src/kernels_memory.cpp
     src/kernels_gen.cpp
     src/kernels_tuning.cpp
+    src/kernels_gain.cpp
     src/tables.cpp
   DEPS pq_core
 )

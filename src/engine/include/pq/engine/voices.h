@@ -225,6 +225,12 @@ public:
   uint32_t laneOf(uint32_t noteId) const noexcept;   // the newest held, else released, else fading lane playing
                                                      // noteId, or kNoSlot
   uint32_t liveVoices() const noexcept { return live_; }  // held + released + deferred (waiting for a fade)
+  // T3.17-fix2 (idle units, pq/engine/project_program.h): a block with no live voice and no event that the image is
+  // not run for: only the engine clock moves (nothing else changes when no lane is in use). RT-safe.
+  void advanceIdle(uint32_t frames) noexcept {
+    clock_ += frames;
+    ++stats_.blocks;
+  }
   bool hasDeferredNote(uint32_t lane) const noexcept { return hasPending_[lane] != 0; }
   uint32_t activeGroups() const noexcept;            // groups with a non-free lane
   uint32_t groupsRunLastBlock() const noexcept { return groupsRun_; }

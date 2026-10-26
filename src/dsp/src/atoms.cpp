@@ -79,6 +79,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     {"sample_pos_cubic", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
     // Every input may be Spl or Blk; the kernel reads KernelArgs::splMask (kernels_tuning.cpp).
     {"tuning_hz", 10, 2, false, false, 0, 0, 0x3FFu, 0, 0, Resource::Tuning, false},
+    // T3.17-fix2 (kernels_gain.cpp): stateful, but element-wise in time, so the output may take an input's buffer.
+    {"gain", 3, 1, false, false, 0, 0, kB0 | kB1, kB2, sizeof(GainState), Resource::None, true},
+    {"gain_add", 4, 1, false, false, 0, 0, kB0 | kB1 | kB2, kB3, sizeof(GainState), Resource::None, true},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -135,6 +138,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findLogicKernel(a, lanes, spec)) return f;
   if (KernelFn f = findMemoryKernel(a, lanes, spec)) return f;
   if (KernelFn f = findGeneratorKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findGainKernel(a, lanes, spec)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
