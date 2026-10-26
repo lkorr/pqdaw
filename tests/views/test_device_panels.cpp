@@ -610,6 +610,8 @@ TEST_CASE("device panels: Operator's partial editor shows for the User waveform 
   CHECK(r.panel->paramValue("uA2") == doctest::Approx(0.5).epsilon(0.05));
   CHECK(r.panel->paramValue("uA3") == doctest::Approx(0.5).epsilon(0.05));
   CHECK(r.panel->paramValue("uA4") == 0.0);
+}
+
 TEST_CASE("device panels: Auto Filter's dot drag edits frequency and resonance; a type change shows the type's controls") {
   Device a("auto_filter");
   FakeTarget t;
