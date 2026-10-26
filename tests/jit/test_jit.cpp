@@ -210,6 +210,12 @@ std::string bigMux(int n) {
   return t + "  y = mux(p * " + std::to_string(n) + args + ")\n}\n";
 }
 
+// The compile-size proxy's bounds (see its test case), about 1.5x what T1.11-fix1 measured (2026-10-25, default
+// CompileOptions): 100-step chain 1436 IR instructions / 18666 B of code, 1200-input mux 9897 / 214474 B. A JIT change
+// that legitimately grows the code more than that updates them (and says so in PROGRESS).
+constexpr uint32_t kChainIrBound = 2200, kMuxIrBound = 15000;
+constexpr uint64_t kChainCodeBound = 28000, kMuxCodeBound = 320000;
+
 // Best total compile time of `reps` compiles.
 jit::CompileStats bestCompile(const Schedule& s, const jit::CompileOptions& jo, int reps) {
   jit::CompileStats best;
@@ -894,6 +900,24 @@ TEST_CASE("jit (perf): a 100-node patch compiles in <= 100 ms and the 1200-input
   CHECK(a.totalMs <= 100.0);
   CHECK(b.totalMs <= 300.0);
 #endif
+}
+
+TEST_CASE("jit: compile-size proxy for compile time: IR and machine code of the 100-step chain and the 1200-input mux") {
+  // M1 review M14: the wall-clock bounds (100-node <= 100 ms, mux1200 <= 300 ms) are checked only in the perf tier,
+  // which depends on machine load. Compile time follows the amount of IR and machine code, which does not: the
+  // regression M14 found (an 8x interleave duplicating every select of the mux into one huge block) multiplied both.
+  // Bounds = about 1.5x what T1.11-fix1 measured (printed below), so a real blow-up fails here in every tier.
+  const Compiled chain = compileText(mixedChain(100));
+  const Compiled mux = compileText(bigMux(1200));
+  jit::CompileStats a, b;
+  REQUIRE(compiler().compile(chain.sched, {}, &a).ok());
+  REQUIRE(compiler().compile(mux.sched, {}, &b).ok());
+  MESSAGE("100-step chain: " << a.irInstructions << " IR instructions, " << a.objectBytes << " B of code; 1200-input mux: "
+                             << b.irInstructions << " IR instructions, " << b.objectBytes << " B of code");
+  CHECK(a.irInstructions <= kChainIrBound);
+  CHECK(a.objectBytes <= kChainCodeBound);
+  CHECK(b.irInstructions <= kMuxIrBound);
+  CHECK(b.objectBytes <= kMuxCodeBound);
 }
 
 TEST_CASE("jit: no stage function needs stack probes (the 1200-input mux, the corpus)") {
