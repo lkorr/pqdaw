@@ -58,6 +58,7 @@ ProjectConfig Engine::projectConfig() noexcept {
   pc.numOut = cfg_.numOut;
   pc.hook = timeline_->blockHook();
   pc.numProjectParams = cfg_.numProjectParams;
+  pc.idleUnits = cfg_.idleUnits;
   pc.eventSources.reserve(slots_.size());
   for (SlotSource& s : slots_) pc.eventSources.push_back({&Engine::onSlot, &s});
   return pc;
@@ -93,6 +94,19 @@ void Engine::collect() {
 }
 
 void Engine::audioOffline() noexcept {  // RT-safe
+  // T3.17-fix1 (M3 review M15b): the device stopped (a reconfigure, a lost device, an idle suspend). A sounding
+  // audition ends now: its note-off goes out with the next block that runs, whenever that is; one whose note-on was
+  // never sent is dropped. The audio thread is not running, so its state may be touched here.
+  for (uint32_t i = 0; i < numAuditions_;) {
+    Audition& a = auditions_[i];
+    if (!a.started) {
+      a = auditions_[--numAuditions_];
+      continue;
+    }
+    a.offTime = std::min(a.offTime, nextTime_);
+    ++i;
+  }
+  audio_.store(kAudioStopped, std::memory_order_release);
   timeline_->audioOffline();
   if (program_) program_->audioOffline();
 }
@@ -100,6 +114,7 @@ void Engine::audioOffline() noexcept {  // RT-safe
 void Engine::audioOnline() noexcept {  // RT-safe
   timeline_->audioOnline();
   if (program_) program_->audioOnline();
+  audio_.store(kAudioRunning, std::memory_order_release);
 }
 
 void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept {  // RT-safe
@@ -122,15 +137,20 @@ void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer
     if (a.offTime < end) {
       out.push(noteOff(static_cast<uint32_t>(std::max<int64_t>(0, a.offTime - sampleTime)), a.id));
       a = e.auditions_[--e.numAuditions_];  // unordered removal
+      ++e.stats_.auditionOffs;
       continue;
     }
     ++i;
   }
 }
 
-void Engine::process(const AudioBlock& block) noexcept {  // RT-safe
+void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   ++stats_.blocks;
-  nextTime_ = block.frameTime + block.frames;
+  // The engine's own time base (T3.17-fix1, M3 review M15b): monotonic whatever the device does (a reopened device
+  // starts its frame count at 0 again), so audition note-offs and the units' sample time never go back.
+  AudioBlock block = device;
+  block.frameTime = nextTime_;
+  nextTime_ += block.frames;
   bool activity = false;
   ParamWrite pw;
   if (program_) {
@@ -198,7 +218,7 @@ Result<RenderStats> Engine::renderOffline(uint64_t frames, AudioSink& sink, uint
   loop.frames = frames;
   loop.blockFrames = blockFrames != 0 ? blockFrames : cfg_.blockFrames;
   loop.chunkFrames = chunkFrames;
-  loop.startFrame = nextTime_;  // engine time continues (the timeline runs each engine time once)
+  loop.startFrame = nextTime_;  // informational: process() keeps its own time base (engine time continues)
   loop.between = [](void* self, int64_t) { static_cast<Engine*>(self)->collect(); };
   loop.user = this;
   return detail::runRenderLoop(loop, sink);

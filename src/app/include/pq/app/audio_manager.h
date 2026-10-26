@@ -23,6 +23,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -96,6 +97,8 @@ private:
   uint32_t cliDeviceIndex_;
   std::unique_ptr<AudioOutput> output_;
   std::function<void()> listener_;
+  // Set on the UI thread while the output's threads may already call onOutput (T3.17-fix1, M3 review L12).
+  std::mutex notifyMutex_;
   void (*uiNotify_)(void*) = nullptr;
   void* uiNotifyUser_ = nullptr;
   std::map<engine::Backend, std::vector<engine::DeviceInfo>> deviceCache_;

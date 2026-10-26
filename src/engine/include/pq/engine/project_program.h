@@ -54,6 +54,15 @@
 // it stops and is freed off the audio thread (collect()). If no such order exists (a reversed dependency), zombies are
 // dropped at the switch and the buses only they wrote read silence.
 // While a topology is pending (published, not yet switched to), publish() refuses (ErrorCode::Overflow: retry).
+//
+// ---- Idle units (T3.17-fix2, M3 review H1: "silence is free", the unit-level start of T1.x-silence) -------------
+// A unit whose image declares UnitImage::idleAfterBlocks (the compiler proves its outputs are zero when its input
+// buses are silent and no voice sounds, and that its only state is smoothed gains) is not run in a block where every
+// bus it reads is silent, it has no live voice and no note event, it is not fading, and its linked params have been
+// unchanged for more than idleAfterBlocks blocks of that kind (so its gains have settled: running it would change
+// nothing, the skip is bit-exact). Its bus channels are zeroed once and marked silent, so the units reading them can
+// go idle too: a silent project costs a few compares per unit per block. Any event, param change, voice, new image
+// or non-silent input runs it again at once.
 // Unit indices in every accessor are those of the last PUBLISHED layout.
 
 #include <atomic>
@@ -126,6 +135,10 @@ struct UnitImage {
   // Owners of resources the image points into (T2.6-fix4: its tuning tables), released with the image: when the
   // program frees a retired image (collect(), off the audio thread) or at its destruction.
   std::vector<std::shared_ptr<const void>> keepAlive;
+  // T3.17-fix2 (idle units, see "Idle units" above): ≥ 1 when the image's outputs are exactly zero while every bus it
+  // reads is silent and no voice sounds, and its state then only settles (smoothed gains); the number of such
+  // blocks with unchanged params after which its state no longer changes either. 0: never skipped.
+  uint32_t idleAfterBlocks = 0;
 };
 
 struct ProjectConfig {
@@ -138,6 +151,7 @@ struct ProjectConfig {
   uint32_t numProjectParams = 0;
   std::vector<EventSource> eventSources;  // indexed by UnitLayout::eventSlot
   uint32_t eventCapacity = 1024;          // note events per unit per image block
+  bool idleUnits = true;                  // skip idle units ("Idle units"; false: run every unit, for measurements)
 };
 
 struct UnitStats {
@@ -145,6 +159,7 @@ struct UnitStats {
   uint64_t fadeBlocks = 0;      // image blocks in which this unit ran two images
   uint64_t transferBytes = 0;   // last swap
   uint64_t sequence = 0;        // the current image's publish sequence (1, 2, …)
+  uint64_t idleBlocks = 0;      // image blocks skipped as an idle unit (T3.17-fix2)
 };
 
 struct ProjectStats {
@@ -201,8 +216,11 @@ public:
   // Non-RT (one reader thread): the levels of buses of the last published layout since the previous call, then a reset
   // request (the audio thread restarts the accumulation at its next block).
   void readMeters(std::span<const uint32_t> buses, std::span<BusLevel> out);
-  // RT-safe (audio thread): no unit is fading, no image or topology is waiting, no voice is live in any unit.
-  bool quiet() const noexcept;
+  // RT-safe (audio thread): after the last process(), no unit was fading, no image or topology was waiting and no
+  // voice was live in any running unit. Computed inside process() before the program tells its reclaimer that the
+  // audio thread is quiescent (T3.17-fix1, M3 review C1): read after that, the units of the current topology's dead
+  // zombie slots may already be freed by a concurrent collect(). False before the first process().
+  bool quiet() const noexcept { return quiet_; }
   // Non-RT: frees retired images every reader has passed; returns how many.
   size_t collect();
   size_t imagesAlive() const;   // non-RT
@@ -254,6 +272,7 @@ private:
   void install(Unit& u, const Slot& s, Packet* p) noexcept;
   void maybeSwitchTopology() noexcept;
   float unitPeak(const Slot& s) const noexcept;
+  bool computeQuiet() const noexcept;
   bool runUnit(Unit& u, const Slot& s, uint32_t frames, int64_t time) noexcept;  // true: it ran two images (a fade)
 
   ProjectConfig cfg_;
@@ -279,6 +298,7 @@ private:
   Topology* topo_ = nullptr;
   Topology* topoPending_ = nullptr;                 // popped, waiting for fades / queued packets
   uint32_t lastFrames_ = 0;
+  bool quiet_ = false;                              // computeQuiet() at the end of the last process()
   float silence_ = 0.0f;
   TransportSnapshot transport_;
   ProjectStats stats_;

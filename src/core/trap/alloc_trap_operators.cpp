@@ -56,7 +56,7 @@ void* allocNoThrow(std::size_t size, std::size_t align) noexcept {
 
 inline void freeChecked(void* p, std::size_t size, std::size_t align) noexcept {
   check(Op::Delete, size, align, p);
-  if (p) rawFree(p, align);
+  if (p && !pq::alloc_trap::detail::poisonFree(p, size, align)) rawFree(p, align);
 }
 
 inline std::size_t al(std::align_val_t a) noexcept { return static_cast<std::size_t>(a); }

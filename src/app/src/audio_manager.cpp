@@ -99,12 +99,14 @@ AudioDeviceManager::~AudioDeviceManager() {
 }
 
 void AudioDeviceManager::setUiNotify(void (*fn)(void*), void* user) {
+  std::lock_guard lock(notifyMutex_);
   uiNotify_ = fn;
   uiNotifyUser_ = user;
 }
 
-void AudioDeviceManager::onOutput(void* self) {  // the output's threads
+void AudioDeviceManager::onOutput(void* self) {  // the output's threads (never the audio thread)
   auto& m = *static_cast<AudioDeviceManager*>(self);
+  std::lock_guard lock(m.notifyMutex_);
   if (m.uiNotify_) m.uiNotify_(m.uiNotifyUser_);
 }
 

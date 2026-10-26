@@ -5,11 +5,13 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../engine/tuning_signal_ref.h"
@@ -533,7 +535,20 @@ TEST_CASE("tuning tables (M8): 1000 size / mode changes keep the pool bounded; t
     most = std::max(most, link->tuningTablesBuilt());
   }
   link->flush();
+  // T3.17-fix2: the background JIT publishes its images (Instant swaps) whenever they are done; one landing in the
+  // last blocks left a retired image (and its table) not yet collected, so the count at the end depended on the JIT
+  // thread's timing. Let the JIT finish first (blocks give its publishes room), then swap, retire and free.
+  for (int i = 0; i < 20000; ++i) {
+    const app::JitStats js = link->jitStats();
+    if (js.published + js.stale + js.errors >= js.wanted) break;
+    runBlocks(*link, time, 1);
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
   runBlocks(*link, time, 8);
+  link->engine().collect();
+  // An image the collect above retired (the last swap's) is freed once the audio thread has passed one more block —
+  // the reclaimer's rule; the app's worker and UI idle collects (T3.17-fix1) do exactly this.
+  runBlocks(*link, time, 1);
   link->engine().collect();
   MESSAGE("1000 changes: at most " << most << " tables alive, " << link->tuningTablesBuilt() << " at the end, "
                                    << link->tuningShapesAlive() << " shapes; " << link->stats().tablesExhausted
@@ -566,9 +581,9 @@ TEST_CASE("tuning tables (M8): every slot in use leaves further tunings static, 
   REQUIRE(made.ok());
   ProjectLink& link = *made.value();
   MESSAGE(link.tuningTablesBuilt() << " tables, " << link.tuningShapesAlive() << " shapes, " << link.stats().tablesExhausted
-                                   << " tunings without one: " << link.stats().lastError);
+                                   << " tunings without one: " << link.lastError());
   CHECK(link.tuningTablesBuilt() == ProjectLink::kTuningTables);
   CHECK(link.tuningShapesAlive() == 2);  // the default 12-EDO's and the 7-note MOS shape, shared by 255 tables
   CHECK(link.stats().tablesExhausted == 300 + 1 - ProjectLink::kTuningTables);  // the default 12-EDO is one more
-  CHECK(link.stats().lastError.find("static pitches") != std::string::npos);
+  CHECK(link.lastError().find("static pitches") != std::string::npos);
 }

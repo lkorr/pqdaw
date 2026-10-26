@@ -25,6 +25,7 @@
 #include "pq/document/pitch_resolve.h"
 #include "pq/engine/tuning_signal.h"
 #include "pq/tuning/tuning.h"
+#include "pq/ui/theme.h"
 
 #ifdef PQ_SOURCE_DIR
 #define PQ_STDLIB_FALLBACK PQ_SOURCE_DIR
@@ -38,7 +39,7 @@ namespace {
 
 constexpr uint32_t kNone = 0xFFFFFFFFu;
 constexpr uint32_t kProjectParams = 16384;
-constexpr uint32_t kEventSlots = 128;
+constexpr uint32_t kEventSlots = ProjectLink::kEventSlots;
 
 double nowSeconds() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -333,7 +334,7 @@ bool ProjectLink::updateTuningTables(const doc::Project& p, bool fresh) {
     stats_.tablesExhausted += exhausted;
     const std::string m = "Tuning: " + std::to_string(exhausted) + " tuning(s) play static pitches (all " +
                           std::to_string(kTuningTables) + " tuning node tables are in use)";
-    stats_.lastError = m;
+    setError(m);
     if (ctx_ != nullptr) ctx_->setStatus(m);
   }
   return built;
@@ -404,6 +405,8 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
     jitWorker_ = jit_.get();
   }
   current_ = initial;
+  conditionalSends_ = doc::conditionalSendsKey(*current_);
+  reportDelayedSends(*current_);
   updateTuningTables(*current_);  // T2.6-fix1: before the first lowering names their indices
   applyParams(*current_, true);
   if (Status s = compileNow(current_); !s.ok()) return s;
@@ -421,7 +424,12 @@ Status ProjectLink::makeEngine() {
   ec.numOut = 2;
   ec.numProjectParams = kProjectParams;
   ec.maxSlots = kEventSlots;
+  // T3.17-fix3: 512 slots at 128 events per block and 128 sounding notes per track (≈ 25 KB per slot) instead of
+  // 128 slots at 512 / 256 (≈ 61 KB): more than enough for a 64-frame block, and room for 512 MIDI tracks.
+  ec.timeline.maxEventsPerTrack = 128;
+  ec.timeline.maxSoundingPerTrack = 128;
   ec.sleepAfterMs = cfg_.sleepAfterMs;
+  ec.idleUnits = cfg_.idleUnits;
   ec.timeline.reportEveryFrames = cfg_.blockFrames;  // the playhead within one engine block
   ec.timeline.reportCapacity = 1024;               // > 1 s of reports between two UI polls
   auto eng = engine::Engine::create(ec);
@@ -467,6 +475,8 @@ Status ProjectLink::setSampleRate(double rate) {
       return s;
     }
     jitDone_.clear();
+    deferred_.clear();  // results for the old program (the new one is compiled from scratch below)
+    anyDeferred_.store(false, std::memory_order_release);
   }
   {
     std::lock_guard lock(mutex_);
@@ -509,6 +519,10 @@ void ProjectLink::attach(views::ViewContext& ctx) {
   detach();
   ctx_ = &ctx;
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onDocumentChange(e); });
+  // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
+  observer_ = ctx.observe([this](uint32_t what) {
+    if ((what & views::view_change::kAutomation) != 0 && current_) publishAutomation(*current_);
+  });
   if (ctx.doc() != current_) {  // follow the context's document
     const doc::ChangeSet none;
     const doc::StoreEvent e{doc::StoreEventKind::Reset, current_, ctx.doc(), none};
@@ -517,6 +531,7 @@ void ProjectLink::attach(views::ViewContext& ctx) {
 }
 
 void ProjectLink::detach() {
+  observer_ = views::ViewContext::Subscription();
   sub_ = views::ViewContext::Subscription();
   ctx_ = nullptr;
 }
@@ -583,9 +598,14 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
   std::vector<engine::TrackSequenceDesc> descs;
   std::unordered_map<uint32_t, SeqCacheEntry> next;
   bool changed = false;
+  uint32_t withoutSlot = 0;
+  std::string firstWithout;
   forEachMidi(p, [&](const doc::TrackPath& path, const doc::Track& t) {
     const uint32_t slot = slotForTrack(t.id);
-    if (slot == kNone) return;
+    if (slot == kNone) {
+      if (withoutSlot++ == 0) firstWithout = t.name;
+      return;
+    }
     std::vector<EntryPtr> tables;
     std::vector<const void*> key = sequenceKey(p, path, t, &tables);
     SeqCacheEntry e;
@@ -606,10 +626,22 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
   });
   changed |= next.size() != seqCache_.size();
   seqCache_ = std::move(next);
+  if (withoutSlot != stats_.tracksWithoutSlot) {  // M3 review M5: a visible limit, not a silent track
+    stats_.tracksWithoutSlot = withoutSlot;
+    if (withoutSlot > 0) {
+      const std::string m = "Playback: " + std::to_string(withoutSlot) + " MIDI track(s) from '" + firstWithout +
+                            "' on are not played (the engine plays at most " + std::to_string(kEventSlots) +
+                            " MIDI tracks)";
+      setError(m);
+      if (ctx_ != nullptr) ctx_->setStatus(m);
+    }
+  }
   if (onlyIfChanged && !changed) return;  // e.g. a tuning param that only the tuning nodes follow
-  auto img = engine::SequenceImage::build(descs);
+  engine::SequenceBuildOptions so;
+  so.seed = cfg_.chanceSeed;
+  auto img = engine::SequenceImage::build(descs, so);
   if (!img.ok()) {
-    stats_.lastError = img.error().message;
+    setError(img.error().message);
     return;
   }
   if (engine_->timeline().publishSequence(std::move(img.value())).ok()) ++stats_.sequencePublishes;
@@ -619,11 +651,18 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
 void ProjectLink::publishAutomation(const doc::Project& p) {
   std::vector<engine::AutomationLaneDesc> lanes;
   std::vector<uint8_t> automated(kProjectParams, 0);
+  std::string inert;  // lanes on a tuning without a signal: nothing follows them (T3.17-fix3, M3 review M3)
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::LanePtr& lane : t.lanes) {
       if (lane->points.empty()) continue;
       const std::string key = doc::paramKey(lane->param);
-      if (key.empty()) continue;  // not lowered (mute/solo are gates, tuning params are T2.6)
+      if (key.empty()) continue;  // not lowered (solo is derived into the gates)
+      // Overridden by hand (T3.15's "Re-enable Automation"): the document value plays until re-enabled (M4).
+      if (ctx_ != nullptr && ctx_->automationOverridden(lane->param)) continue;
+      if (!doc::isTrackParam(lane->param.kind))
+        if (const doc::TuningSlot* ts = doc::findTuning(p, doc::TuningId{lane->param.owner});
+            ts != nullptr && !doc::hasTuningSignal(ts->def) && inert.empty())
+          inert = ts->name;
       const uint32_t s = slotForParam(key);
       if (s == kNone) continue;
       engine::AutomationLaneDesc d;
@@ -635,6 +674,9 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
       automated[s] = 1;
     }
   });
+  if (!inert.empty() && inert != inertReported_ && ctx_ != nullptr)
+    ctx_->setStatus("Automation of tuning '" + inert + "' has no effect: it is not an EDO or MOS tuning (no signal)");
+  inertReported_ = inert;
   bool released = false;  // a param that lost its lane gets its document value again
   for (uint32_t s = 0; s < kProjectParams; ++s) released |= automated_[s] && !automated[s];
   automated_ = std::move(automated);
@@ -714,7 +756,16 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   bool newTables = false;
   if (reset || structural || (c.has(doc::kChangeParam) && !c.tunings.empty()))
     newTables = updateTuningTables(p, reset);  // a Reset (New / Open) never keeps an earlier project's tables
-  const bool compile = structural || newTables;
+  // A send level can change the graph (T3.17-fix3): a return's send to another return, or a send that closes a loop,
+  // is lowered only while it is stored (lower.h).
+  bool sendsChanged = false;
+  if (reset || structural || c.has(doc::kChangeParam)) {
+    std::vector<uint64_t> key = doc::conditionalSendsKey(p);
+    sendsChanged = key != conditionalSends_;
+    conditionalSends_ = std::move(key);
+    if (sendsChanged || structural) reportDelayedSends(p);
+  }
+  const bool compile = structural || newTables || sendsChanged;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
   if (reset || compile || c.has(doc::kChangeSequence)) publishSequences(p);
@@ -731,11 +782,51 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   }
 }
 
+void ProjectLink::reportDelayedSends(const doc::Project& p) {
+  std::vector<doc::DelayedSend> d = doc::delayedSends(p);
+  stats_.delayedSends = static_cast<uint32_t>(d.size());
+  const bool same = d.size() == delayed_.size() &&
+                    std::equal(d.begin(), d.end(), delayed_.begin(), [](const doc::DelayedSend& a, const doc::DelayedSend& b) {
+                      return a.from == b.from && a.to == b.to;
+                    });
+  delayed_ = std::move(d);
+  if (same || delayed_.empty() || ctx_ == nullptr) return;
+  // SPEC §15 2026-10-24: a send that closes a delay-free loop gets an automatic 1-sample delay, shown in the UI.
+  auto name = [&](doc::TrackId id) {
+    const doc::Track* t = doc::findTrackPtr(p, id);
+    return t != nullptr ? t->name : std::to_string(id.value);
+  };
+  std::string m = "Feedback: the send " + name(delayed_.front().from) + " \xE2\x86\x92 " + name(delayed_.front().to) +
+                  " closes a loop and is delayed by 1 sample";
+  if (delayed_.size() > 1) m += " (and " + std::to_string(delayed_.size() - 1) + " more)";
+  ctx_->setStatus(m);
+}
+
 // ---- Compiling --------------------------------------------------------------------------------------------------
 
 void ProjectLink::workerMain() {
   std::unique_lock lock(mutex_);
+  // After a compile the worker keeps collecting the program's retired images for a while (the audio thread retires
+  // them a fade later: T3.17-fix1, M3 review L13), and retries deferred publishes while there are any.
+  uint32_t collects = 0;
   for (;;) {
+    const bool deferred = anyDeferred_.load(std::memory_order_acquire);
+    if (!pending_ && !quit_ && (deferred || collects > 0)) {
+      cv_.wait_for(lock, std::chrono::milliseconds(deferred ? 20 : 100));
+      if (quit_) return;
+      if (!pending_) {
+        lock.unlock();
+        {
+          std::lock_guard compileLock(compileMutex_);
+          bool drained = true;
+          if (anyDeferred_.load(std::memory_order_acquire)) (void)drainDeferred(drained);
+          if (engine::ProjectProgram* program = engine_->program()) program->collect();
+        }
+        lock.lock();
+        if (collects > 0) --collects;
+        continue;
+      }
+    }
     cv_.wait(lock, [&] { return quit_ || pending_; });
     if (quit_) return;
     // Debounce: compile once nothing structural happened for debounceMs (flush() skips the wait).
@@ -754,6 +845,7 @@ void ProjectLink::workerMain() {
     (void)compileNow(s);
     lock.lock();
     busy_ = false;
+    collects = 20;  // about 2 s of collects
     cv_.notify_all();
   }
 }
@@ -763,11 +855,18 @@ void ProjectLink::flush() {
     doc::Snapshot s;
     {
       std::lock_guard lock(mutex_);
-      if (!pending_) return;
-      s = std::move(pendingSnap_);
-      pending_ = false;
+      if (pending_) {
+        s = std::move(pendingSnap_);
+        pending_ = false;
+      }
     }
-    (void)compileNow(s);
+    if (s) {
+      (void)compileNow(s);
+    } else if (anyDeferred_.load(std::memory_order_acquire)) {
+      std::lock_guard compileLock(compileMutex_);
+      bool drained = true;
+      (void)drainDeferred(drained);
+    }
     return;
   }
   std::unique_lock lock(mutex_);
@@ -775,6 +874,94 @@ void ProjectLink::flush() {
   cv_.notify_all();
   cv_.wait(lock, [&] { return quit_ || (!pending_ && !busy_); });
   flushNow_ = false;
+}
+
+void ProjectLink::setError(std::string message) {
+  std::lock_guard lock(errorMutex_);
+  lastError_ = std::move(message);
+}
+
+std::string ProjectLink::lastError() const {
+  std::lock_guard lock(errorMutex_);
+  return lastError_;
+}
+
+void ProjectLink::collect() { engine_->collect(); }
+
+void ProjectLink::collectIdle() {
+  const double now = nowSeconds();
+  if (now - lastCollect_ < 0.2) return;
+  lastCollect_ = now;
+  collect();
+}
+
+Status ProjectLink::drainDeferred(bool& drained) {
+  drained = false;
+  engine::ProjectProgram* program = engine_->program();
+  if (program == nullptr) {
+    deferred_.clear();
+    anyDeferred_.store(false, std::memory_order_release);
+    drained = true;
+    return Ok{};
+  }
+  // Waits (bounded) while the audio thread runs. When the output is stopped (Engine::audioStopped) it wakes the
+  // engine once (a suspended stream restarts on a wake, AudioOutput, within a few milliseconds) and gives up after
+  // 30 ms: the result stays queued for the next drain.
+  auto waitFor = [&](auto&& ready) -> bool {
+    double stoppedSince = -1.0;
+    for (int i = 0; i < 5000; ++i) {
+      if (ready()) return true;
+      if (engine_->audioStopped()) {
+        const double now = nowSeconds();
+        if (stoppedSince < 0.0) stoppedSince = now;
+        else if (now - stoppedSince > 0.03) return false;
+      } else {
+        stoppedSince = -1.0;
+      }
+      engine_->wake();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  auto fail = [&](const Error& e) {
+    deferred_.clear();
+    anyDeferred_.store(false, std::memory_order_release);
+    ++stats_.compileErrors;
+    setError(e.message);
+    std::fprintf(stderr, "pqdaw: %s\n", e.message.c_str());
+    return Status(e);
+  };
+  while (!deferred_.empty()) {
+    Deferred& d = deferred_.front();
+    if (d.topology) {
+      if (!waitFor([&] { return !program->topologyPending(); })) {
+        anyDeferred_.store(true, std::memory_order_release);
+        return Ok{};
+      }
+      // The meter map and the published layout change together (read() indexes the published layout).
+      std::lock_guard lock(mutex_);
+      auto info = program->publishTopology(d.topo.layout, std::move(d.topo.units));
+      if (!info.ok()) return fail(info.error());
+      meterBus_ = std::move(d.meterMap);
+      ++stats_.topologyChanges;
+    } else {
+      while (!d.units.empty()) {
+        engine::UnitUpdate& u = d.units.front();
+        if (!waitFor([&] { return program->canPublish(u.unit); })) {
+          anyDeferred_.store(true, std::memory_order_release);
+          return Ok{};
+        }
+        if (auto r = program->publish(u.unit, std::move(u.image)); !r.ok()) return fail(r.error());
+        ++stats_.unitPublishes;
+        d.units.erase(d.units.begin());
+      }
+    }
+    deferred_.pop_front();
+  }
+  anyDeferred_.store(false, std::memory_order_release);
+  drained = true;
+  engine_->wake();
+  return Ok{};
 }
 
 Status ProjectLink::compileNow(const doc::Snapshot& s) {
@@ -804,7 +991,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);
   auto fail = [&](const Error& e) {
     ++stats_.compileErrors;
-    stats_.lastError = e.message;
+    setError(e.message);
     std::fprintf(stderr, "pqdaw: %s\n", e.message.c_str());
     return Status(e);
   };
@@ -837,16 +1024,9 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     layout.busMetered.assign(layout.busKey.size(), 0);
     for (size_t b = 0; b < layout.busKey.size(); ++b) layout.busMetered[b] = layout.busKey[b].ends_with(":out") ? 1 : 0;
   };
-  // Publishing waits (bounded) until the audio thread has taken earlier images / topologies: a refused publish
-  // would destroy the image.
-  auto waitFor = [&](auto&& ready) -> Status {
-    for (int i = 0; i < 5000; ++i) {
-      if (ready()) return Ok{};
-      engine_->wake();
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    return linkError(ErrorCode::Overflow, "the audio thread did not take the previous program within 5 s");
-  };
+  // Publishing: in order, after whatever earlier compiles left deferred (drainDeferred waits, bounded, for the
+  // audio thread to take earlier images / topologies, because a refused publish would destroy the image; when the
+  // output is stopped it queues instead of waiting: T3.17-fix1, M3 review L11).
   engine::ProjectProgram* program = engine_->program();
   uint32_t compiledUnits = 0;
   if (program == nullptr) {  // the first program (init): before any audio runs
@@ -864,29 +1044,31 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     }
     engine_->setProgram(std::move(prog.value()));
   } else {
+    Deferred d;
     auto upd = compiler_->update(lp.graph, dirty);
     if (!upd.ok() && upd.error().code == ErrorCode::Unsupported) {  // a topology change
       auto tb = compiler_->rebuild(lp.graph, dirty);
       if (!tb.ok()) return fail(tb.error());
       metered(tb.value().layout);
       compiledUnits = tb.value().compiled;
-      if (Status st = waitFor([&] { return !program->topologyPending(); }); !st.ok()) return fail(st.error());
-      // The meter map and the published layout change together (read() indexes the published layout).
-      std::lock_guard lock(mutex_);
-      auto info = program->publishTopology(tb.value().layout, std::move(tb.value().units));
-      if (!info.ok()) return fail(info.error());
-      meterBus_ = meterMap(tb.value().layout);
-      ++stats_.topologyChanges;
+      d.topology = true;
+      d.meterMap = meterMap(tb.value().layout);
+      d.topo = std::move(tb.value());
     } else if (!upd.ok()) {
       return fail(upd.error());
     } else {
       for (engine::UnitUpdate& u : upd.value()) {
         if (u.unchanged) continue;
         ++compiledUnits;
-        if (Status st = waitFor([&] { return program->canPublish(u.unit); }); !st.ok()) return fail(st.error());
-        if (auto r = program->publish(u.unit, std::move(u.image)); !r.ok()) return fail(r.error());
-        ++stats_.unitPublishes;
+        d.units.push_back(std::move(u));
       }
+    }
+    if (d.topology || !d.units.empty()) {
+      const bool queued = !deferred_.empty();
+      deferred_.push_back(std::move(d));
+      bool drained = true;
+      if (Status st = drainDeferred(drained); !st.ok()) return st;
+      if (!drained || queued) ++stats_.deferredPublishes;
     }
   }
   if (compiledUnits > 0) ++stats_.compiles;
@@ -954,7 +1136,8 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
       engine::ProjectProgram* program = link.engine_->program();
       const uint32_t u = program != nullptr ? link.compiler_->unitOf(job.schedule.get()) : engine::kNoUnit;
       if (u == engine::kNoUnit) break;  // stale: the unit was recompiled or removed meanwhile
-      if (program->canPublish(u)) {
+      // Deferred publishes first: until they are in, the program's units are not yet the compiler's.
+      if (link.deferred_.empty() && program->canPublish(u)) {
         auto bound = link.compiler_->bind(u, std::move(img.value()));
         // Bit-identical to the interpreted image (no contraction, T1b.1-fix1): an instant swap is sample-exact.
         if (bound.ok() && program->publish(u, std::move(bound.value()), engine::SwapPolicy{engine::SwapMode::Instant}).ok()) {
@@ -1032,6 +1215,7 @@ views::PlayheadSnapshot ProjectLink::playhead() {
     fresh = true;
   }
   if (fresh) ++reportSeq_;
+  collectIdle();
   views::PlayheadSnapshot s;
   if (report_.commands >= commandsPosted_) {
     s.playing = report_.playing;
@@ -1061,7 +1245,7 @@ void ProjectLink::auditionHz(float hz, float velocity, float durationMs) {
 
 // ---- Meters (UI thread) -----------------------------------------------------------------------------------------
 
-bool ProjectLink::live() const noexcept { return !engine_->asleep() || report_.playing; }
+bool ProjectLink::live() const noexcept { return !engine_->asleep() || metersLit_; }  // asleep ⇒ stopped
 
 void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept {
   const size_t n = std::min(ids.size(), out.size());
@@ -1074,11 +1258,16 @@ void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLev
       if (auto it = meterBus_.find(ids[i].value); it != meterBus_.end()) buses[i] = it->second;
     if (program != nullptr) program->readMeters(buses, levels);
   }
+  // Asleep, nothing runs and every bus is silent; the program's published levels are those of the last block it ran
+  // (it restarts the accumulation only when it runs again), which froze the meters lit (T3.17-fix1, M3 review L13).
+  if (engine_->asleep())
+    for (engine::BusLevel& l : levels) l.peak[0] = l.peak[1] = l.meanSquare[0] = l.meanSquare[1] = 0.0f;
   const double now = nowSeconds();
   const double dt = std::clamp(now - lastMeterRead_, 0.0, 1.0);
   lastMeterRead_ = now;
   constexpr float kFallDbPerSecond = 26.0f;  // PQ Meter-like release of the peak bar
   constexpr double kHoldSeconds = 1.5;
+  bool lit = false;
   for (size_t i = 0; i < n; ++i) {
     ui::MeterLevels m;
     MeterState& st = meters_[ids[i].value];
@@ -1098,9 +1287,13 @@ void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLev
       m.rmsDb[c] = rms;
       m.holdDb[c] = st.holdDb[c];
       m.clip[c] = st.clip[c];
+      constexpr float kFloor = ui::signal_theme::kMeterFloorDb;  // nothing below it is drawn
+      lit = lit || m.peakDb[c] > kFloor || m.rmsDb[c] > kFloor || m.holdDb[c] > kFloor || m.clip[c];
     }
     out[i] = m;
   }
+  metersLit_ = lit;
+  collectIdle();
 }
 
 // ---- Offline ------------------------------------------------------------------------------------------------

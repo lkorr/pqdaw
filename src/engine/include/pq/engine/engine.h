@@ -14,6 +14,9 @@
 //   program() publish / publishTopology, timeline() publish*         the compile / UI threads (their own rules)
 //   post, setParam, audition, wake   ONE producer thread (the UI thread): wait-free SPSC pushes
 //   process, callback                the audio thread (or the offline render loop)
+//   audioOffline / audioOnline       the device's owner, while the audio thread does not run
+// Time: process() keeps its own sample count (time()), so the units and the timeline see one monotonic time base
+// across device reopens; a device block's frameTime is not used (T3.17-fix1).
 //
 // ---- Per block (process) ------------------------------------------------------------------------------------
 // 1. Drain the param ring into the project param block and the audition ring into the audition slots.
@@ -55,6 +58,7 @@ struct EngineConfig {
   uint32_t auditionRing = 64;
   uint32_t maxAuditions = 32;       // audition notes at once (beyond it: the oldest is released, the new one dropped)
   float sleepAfterMs = 250.0f;      // idle gate (0: never sleep)
+  bool idleUnits = true;            // ProjectConfig::idleUnits
   TimelineConfig timeline;          // sampleRate / maxBlockFrames / maxTracks are set from the fields above
 };
 
@@ -64,6 +68,7 @@ struct EngineStats {
   uint64_t wakes = 0;
   uint64_t paramWrites = 0;
   uint64_t auditions = 0;
+  uint64_t auditionOffs = 0;    // audition note-offs sent
 };
 
 class Engine {
@@ -109,8 +114,18 @@ public:
   void process(const AudioBlock& block) noexcept;  // RT-safe
   AudioCallback callback() noexcept { return {&Engine::onBlock, this}; }
   const EngineStats& stats() const noexcept { return stats_; }
-  void audioOffline() noexcept;  // the device stopped (lets collect() free while nothing runs). RT-safe
+  // The device stopped calling process() (lets collect() free while nothing runs; sounding auditions end with the
+  // next block: T3.17-fix1) / starts calling it again. Called by the device's owner, not by the audio thread, while
+  // the audio thread does not run. RT-safe.
+  void audioOffline() noexcept;
   void audioOnline() noexcept;
+  // Any thread: audioOffline() was the last of the two calls (the owner stopped the device and nothing runs
+  // process() now). False for an engine whose owner never called either (tests and offline renders drive process()
+  // themselves). The compile path uses it to stop waiting for an audio thread that is not there (T3.17-fix1, L11).
+  bool audioStopped() const noexcept { return audio_.load(std::memory_order_acquire) == kAudioStopped; }
+  // Audio thread (or after it): the engine time of the next block. Monotonic: process() ignores the device's
+  // AudioBlock::frameTime (a reopened device restarts it at 0) and counts the frames it was given.
+  int64_t time() const noexcept { return nextTime_; }
 
   // ---- Offline ----
   // Renders `frames` frames at device blocks of `blockFrames` (a multiple of the image block is cheapest) into
@@ -153,6 +168,8 @@ private:
   std::atomic<void*> wakeUser_{nullptr};
   std::atomic<bool> asleep_{false};
   std::atomic<uint64_t> droppedParams_{0};
+  static constexpr uint8_t kAudioUnknown = 0, kAudioRunning = 1, kAudioStopped = 2;
+  std::atomic<uint8_t> audio_{kAudioUnknown};
   // Audio thread.
   std::vector<Audition> auditions_;  // capacity maxAuditions
   uint32_t numAuditions_ = 0;
@@ -160,7 +177,7 @@ private:
   uint32_t seenWake_ = 0;
   uint64_t quietFrames_ = 0;
   uint64_t sleepFrames_ = 0;
-  int64_t nextTime_ = 0;  // engine time after the last block
+  int64_t nextTime_ = 0;  // engine time of the next block (its own count of frames: monotonic)
   EngineStats stats_;
 };
 

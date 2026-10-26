@@ -5,6 +5,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,6 +37,10 @@ struct ProjectProgram::Packet {
   };
   std::vector<FadeLane> fade;                             // when this packet replaces the previous one
   std::unique_ptr<VoiceBinding> binding;                  // voice units
+  // Idle units (see the header).
+  uint32_t idleAfter = 0;                                 // UnitImage::idleAfterBlocks
+  std::vector<float> linked;                              // the linked params' values in the last block
+  std::vector<const BusStore*> inStores;                  // the distinct buses it reads
 };
 
 struct ProjectProgram::Unit {
@@ -59,6 +64,8 @@ struct ProjectProgram::Unit {
   EventBuffer eventBuf{1};
   std::unique_ptr<VoiceEngine> voices;
   UnitStats stats;
+  uint32_t quietBlocks = 0;  // consecutive blocks with silent inputs, no voice, no event and unchanged params
+  bool idle = false;         // skipped last block (its bus channels are zero)
 };
 
 // A bus: `width` planar channels of `stride` floats at fixed addresses for its whole life (shared by every topology
@@ -70,7 +77,7 @@ struct ProjectProgram::BusStore {
   uint16_t width;
   uint32_t stride;
   std::string key;
-  bool metered;
+  bool metered;  // non-RT (readMeters / publishTopology, mutex_); the audio thread reads Topology::metered
   // Meter (audio thread accumulates and publishes; readMeters() reads and asks for a restart through meterGen_).
   uint32_t seenGen = 0;
   float accPeak[2] = {0.0f, 0.0f};
@@ -79,6 +86,7 @@ struct ProjectProgram::BusStore {
   std::atomic<float> pubPeak[2] = {0.0f, 0.0f};
   std::atomic<float> pubMs[2] = {0.0f, 0.0f};
   float* channel(uint16_t c) noexcept { return data.data() + static_cast<size_t>(c) * stride; }
+  bool silent = false;  // audio thread: its producer is idle and zeroed it (idle units)
 };
 
 // One entry of a topology's run order.
@@ -99,6 +107,9 @@ struct ProjectProgram::Topology {
   BusStore* output = nullptr;
   std::vector<std::pair<uint32_t, Packet*>> swaps;   // (order index, packet) made current at the switch
   std::vector<BusStore*> zeroAtSwitch;               // buses whose zombies were dropped
+  // The metered buses of this topology (ProjectLayout::busMetered), fixed when it is made: the audio thread reads
+  // only this list, never BusStore::metered, which a later publishTopology() rewrites (M3 review L12).
+  std::vector<BusStore*> metered;
 };
 
 namespace {
@@ -202,6 +213,8 @@ ProjectProgram::ProjectProgram(const ProjectConfig& config, ProjectLayout layout
   t->alive = std::make_unique<std::atomic<uint8_t>[]>(t->order.size());
   for (size_t i = 0; i < t->order.size(); ++i) t->alive[i].store(1, std::memory_order_relaxed);
   t->stores = stores_;
+  for (size_t b = 0; b < stores_.size(); ++b)
+    if (meteredBus(layout_, b)) t->metered.push_back(stores_[b].get());
   t->output = layout_.outputBus != kNoBus ? stores_[layout_.outputBus].get() : nullptr;
   topoInflight_.push_back(t);
   topo_ = t;
@@ -268,6 +281,11 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
       return projectError(ErrorCode::InvalidArgument, who + "a param link is out of range");
   p->paramLinks = std::move(ui.paramLinks);
   p->keepAlive = std::move(ui.keepAlive);
+  p->idleAfter = ui.idleAfterBlocks;
+  p->linked.assign(p->paramLinks.size(), std::numeric_limits<float>::quiet_NaN());
+  for (const BusRef& r : ui.in)
+    if (r.bus != kNoBus && std::find(p->inStores.begin(), p->inStores.end(), stores[r.bus].get()) == p->inStores.end())
+      p->inStores.push_back(stores[r.bus].get());
 
   // Crossfade scratch: this packet's own outputs while it fades out later.
   const auto slots = static_cast<uint32_t>(p->outPtrs.size());
@@ -374,7 +392,7 @@ Result<TopologyInfo> ProjectProgram::publishTopology(ProjectLayout layout, std::
           break;
         }
     if (s) {
-      s->metered = meteredBus(layout, b);  // read by the audio thread only after the switch (ring release/acquire)
+      s->metered = meteredBus(layout, b);  // non-RT (readMeters, under mutex_); the audio thread reads Topology::metered
       ++info.reusedBuses;
     } else {
       s = std::make_shared<BusStore>(layout.busWidth[b], stride_, key, meteredBus(layout, b));
@@ -522,6 +540,8 @@ Result<TopologyInfo> ProjectProgram::publishTopology(ProjectLayout layout, std::
   t->alive = std::make_unique<std::atomic<uint8_t>[]>(t->order.size());
   for (size_t i = 0; i < t->order.size(); ++i) t->alive[i].store(1, std::memory_order_relaxed);
   t->stores = stores;
+  for (size_t b = 0; b < stores.size(); ++b)
+    if (meteredBus(layout, b)) t->metered.push_back(stores[b].get());
   if (!info.zombiesDropped)
     for (uint32_t k = 0; k < z; ++k)
       for (float* ch : ownChannels_[zombieOld[k]])
@@ -592,10 +612,15 @@ void ProjectProgram::readMeters(std::span<const uint32_t> buses, std::span<BusLe
   meterGen_.fetch_add(1, std::memory_order_release);
 }
 
-bool ProjectProgram::quiet() const noexcept {  // RT-safe
+// RT-safe (audio thread, inside process() before the reclaimer hears that this reader is quiescent: after that, a
+// concurrent collect() may free the units a dead slot of the current topology still names, M3 review C1). Dead
+// zombie slots (alive == 0) are skipped: their units are retired, possibly already freed.
+bool ProjectProgram::computeQuiet() const noexcept {
   if (topoPending_ != nullptr || !topoRing_.emptyApprox()) return false;
-  for (const Slot& s : topo_->order) {
-    const Unit& U = *s.unit;
+  const Topology& t = *topo_;
+  for (size_t i = 0; i < t.order.size(); ++i) {
+    if (t.alive[i].load(std::memory_order_relaxed) == 0) continue;
+    const Unit& U = *t.order[i].unit;
     if (U.fadeFrom != nullptr || !U.ring.emptyApprox()) return false;
     if (U.voices && U.voices->liveVoices() > 0) return false;
   }
@@ -708,6 +733,8 @@ float ProjectProgram::unitPeak(const Slot& s) const noexcept {  // RT-safe
 
 void ProjectProgram::install(Unit& U, const Slot& s, Packet* p) noexcept {  // RT-safe
   ++U.stats.swaps;
+  U.quietBlocks = 0;  // a new image runs (idle units)
+  U.idle = false;
   U.stats.sequence = p->seq;
   Packet* old = U.cur;
   if (old == nullptr) {  // the unit's first image
@@ -770,6 +797,38 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   Packet* p = U.cur;
   if (p == nullptr) return false;  // no image yet: its buses keep reading zeros
   Packet* old = U.fadeFrom;
+  if (U.voices) {
+    U.eventBuf.clear();
+    if (s.events.fn != nullptr) s.events.fn(s.events.user, time, frames, U.eventBuf);
+  }
+  if (p->idleAfter != 0 && cfg_.idleUnits) {  // idle units (see the header): bit-exact skip of a unit that would change nothing
+    bool quiet = old == nullptr && (!U.voices || (U.voices->liveVoices() == 0 && U.eventBuf.list().count == 0));
+    for (const BusStore* b : p->inStores) quiet = quiet && b->silent;
+    for (size_t i = 0; i < p->paramLinks.size(); ++i) {
+      const float v = projectParams_[p->paramLinks[i].second];
+      quiet = quiet && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(p->linked[i]);
+      p->linked[i] = v;
+    }
+    U.quietBlocks = quiet ? U.quietBlocks + 1 : 0;
+    if (U.quietBlocks > p->idleAfter) {
+      if (!U.idle) {
+        for (float* ch : s.own) std::memset(ch, 0, sizeof(float) * stride_);
+        for (const auto& b : topo_->stores)
+          for (float* ch : s.own)
+            if (ch >= b->data.data() && ch < b->data.data() + b->data.size()) b->silent = true;
+        U.idle = true;
+      }
+      if (U.voices) U.voices->advanceIdle(frames);
+      ++U.stats.idleBlocks;
+      return false;
+    }
+  }
+  if (U.idle) {
+    U.idle = false;
+    for (const auto& b : topo_->stores)
+      for (float* ch : s.own)
+        if (ch >= b->data.data() && ch < b->data.data() + b->data.size()) b->silent = false;
+  }
   for (const auto& [slot, param] : p->paramLinks) p->params[slot] = projectParams_[param];
   ProcessContext ctx;
   ctx.frames = frames;
@@ -794,8 +853,6 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     fctx.numParams = static_cast<uint32_t>(old->params.size());
   }
   if (U.voices) {
-    U.eventBuf.clear();
-    if (s.events.fn != nullptr) s.events.fn(s.events.user, time, frames, U.eventBuf);
     ctx.events = &U.eventBuf.list();
     U.voices->process(ctx, old != nullptr ? &fctx : nullptr);
   } else {
@@ -840,9 +897,8 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
       fading += runUnit(*s.unit, s, n, time) ? 1u : 0u;
     }
     const uint32_t gen = meterGen_.load(std::memory_order_acquire);
-    for (const auto& sp : t.stores) {
-      BusStore& b = *sp;
-      if (!b.metered) continue;
+    for (BusStore* bp : t.metered) {
+      BusStore& b = *bp;
       if (b.seenGen != gen) {
         b.seenGen = gen;
         b.accPeak[0] = b.accPeak[1] = 0.0f;
@@ -874,6 +930,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
       transport_.beat += static_cast<double>(n) * transport_.beatsPerFrame;
     lastFrames_ = n;
   }
+  quiet_ = computeQuiet();  // before quiescent(): see computeQuiet
   reclaimer_.quiescent(reader_);
 }
 

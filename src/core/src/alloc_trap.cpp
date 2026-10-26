@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <malloc.h>
 
 #include <windows.h>
 // dbghelp.h needs windows.h first.
@@ -104,8 +106,51 @@ void reportViolation(const Violation& v) noexcept {
   pq::detail::tRtDepth = depth;
 }
 
+// ---- PoisonFrees -------------------------------------------------------------------------------------------------
+namespace {
+struct Quarantined {
+  void* p;
+  std::size_t align;
+};
+std::atomic<bool> gPoison{false};
+std::atomic<uint64_t> gPoisoned{0};
+std::atomic<std::size_t> gQuarantineCount{0};
+// Static storage: the quarantine itself must not allocate (it runs inside operator delete).
+Quarantined gQuarantine[PoisonFrees::kQuarantineBlocks];
+}  // namespace
+
+PoisonFrees::PoisonFrees() noexcept {
+  gPoisoned.store(0, std::memory_order_relaxed);
+  gQuarantineCount.store(0, std::memory_order_relaxed);
+  gPoison.store(true, std::memory_order_release);
+}
+
+PoisonFrees::~PoisonFrees() noexcept {
+  gPoison.store(false, std::memory_order_release);
+  const std::size_t count = gQuarantineCount.load(std::memory_order_acquire);
+  const std::size_t n = count < kQuarantineBlocks ? count : kQuarantineBlocks;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (gQuarantine[i].align == 0) std::free(gQuarantine[i].p);
+    else _aligned_free(gQuarantine[i].p);
+  }
+  gQuarantineCount.store(0, std::memory_order_relaxed);
+}
+
+uint64_t PoisonFrees::poisoned() noexcept { return gPoisoned.load(std::memory_order_relaxed); }
+
 namespace detail {
 void markInstalled() noexcept { gInstalled.store(true, std::memory_order_release); }
+
+bool poisonFree(void* p, std::size_t size, std::size_t align) noexcept {
+  if (!gPoison.load(std::memory_order_acquire)) return false;
+  const std::size_t bytes = size != 0 ? size : align == 0 ? _msize(p) : _aligned_msize(p, align, 0);
+  std::memset(p, PoisonFrees::kPoisonByte, bytes);
+  gPoisoned.fetch_add(1, std::memory_order_relaxed);
+  const std::size_t slot = gQuarantineCount.fetch_add(1, std::memory_order_acq_rel);
+  if (slot >= PoisonFrees::kQuarantineBlocks) return false;  // full: poisoned, then freed by the caller
+  gQuarantine[slot] = Quarantined{p, align};
+  return true;
+}
 }  // namespace detail
 
 }  // namespace alloc_trap

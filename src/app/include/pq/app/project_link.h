@@ -63,7 +63,9 @@
 // pitches; after a live edit the pitch is computed from the float32 param (a float32 generator is within half an ulp,
 // ~3e-5 ¢ at 700 ¢, so degree k is within k times that: ~7e-4 ¢ at k = 24; QUESTIONS Q105.4).
 #include <array>
+#include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -109,6 +111,12 @@ struct LinkConfig {
   double debounceMs = 50.0;       // structural changes: compile this long after the last one
   float sleepAfterMs = 250.0f;    // the engine's idle gate (0: off)
   std::string stdlib;             // empty: stdlibDir()
+  // T3.17-fix3 (M3 review M16): the chance / velocity-range seed (engine::SequenceBuildOptions). Each playback and
+  // each arrangement loop repeat draws anew from it (the timeline's playback pass); a given seed renders the same
+  // way every time (offline: `--render --seed`). The window sets a random one per session.
+  uint64_t chanceSeed = 0;
+  // Skip idle units (pq/engine/project_program.h; bit-exact). false: run every unit (measurements, tests).
+  bool idleUnits = true;
   // T1b.5: swap every unit to its JIT image once the background compile has it (false: interpreter images only).
   bool jit = true;
   // T1b.4: what builds the JIT images (fn null: compile::jitUnitBackend(), the process compiler and its cache); tests
@@ -139,7 +147,14 @@ struct LinkStats {
   uint64_t tablesExhausted = 0;    // tunings left without a node table (every Resources::tunings slot in use)
   uint64_t paramWrites = 0;
   uint64_t compileErrors = 0;
-  std::string lastError;
+  // T3.17-fix1 (M3 review L11): compile results that could not be handed to the program at once because the audio
+  // thread was not running (the output stopped) and an earlier image / topology was still waiting for it; they are
+  // published in order once it runs again (deferredPublishes counts the compiles that waited this way).
+  uint64_t deferredPublishes = 0;
+  // T3.17-fix3 (M3 review M5, M2): MIDI tracks beyond the engine's event slots (not played; the status line says
+  // so), and sends lowered with an automatic 1-sample delay (they close a loop), at the last change.
+  uint32_t tracksWithoutSlot = 0;
+  uint32_t delayedSends = 0;
 };
 
 class ProjectLink final : public views::TransportPort, public views::MeterSource {
@@ -177,12 +192,22 @@ public:
   engine::AudioCallback callback() noexcept { return engine_->callback(); }
   engine::Engine& engine() noexcept { return *engine_; }
   const LinkStats& stats() const noexcept { return stats_; }  // read after flush() (written by the compile path)
+  // The last error any path reported (compile, sequence build, tuning tables). Any thread (T3.17-fix1, M3 review
+  // L12: the compile worker and the UI thread both write it).
+  std::string lastError() const;
+  // Frees retired engine images (timeline and program). UI thread. The link also calls it by itself while the UI
+  // polls the playhead or the meters (at most every 200 ms), and the compile worker collects the program's retired
+  // images after a compile (T3.17-fix1, M3 review L13), so nothing waits for the next publish to be freed.
+  void collect();
   const LinkConfig& config() const noexcept { return cfg_; }
   // Offline render of the current state from `fromTick` (transport playing) for `frames` frames into `sink`; must not
   // run while a device drives the engine. Flushes pending compiles first.
   Result<engine::RenderStats> renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink);
 
   static constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
+  // Note-event slots: MIDI tracks the engine can play at once (T3.17-fix3, M3 review M5: was 128, silently). A track
+  // beyond it is lowered without notes and the status line names the limit.
+  static constexpr uint32_t kEventSlots = 512;
   // Slot lookups (tests, tools). kNoSlot when unknown.
   uint32_t paramSlot(const std::string& key) const;
   uint32_t eventSlot(doc::TrackId track) const;
@@ -224,6 +249,8 @@ public:
   void auditionHz(float hz, float velocity, float durationMs) override;
 
   // ---- views::MeterSource (UI thread) ----
+  // True while the engine runs (it never sleeps while playing), and afterwards until every meter the views read has decayed
+  // to the floor (T3.17-fix1, M3 review L13: the meters' last poll after a stop shows them falling, not frozen lit).
   bool live() const noexcept override;
   void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept override;
 
@@ -267,10 +294,24 @@ private:
   const EntryPtr* tuningEntry(doc::TuningId id, const doc::TuningDef& def) const;  // held; caller holds mutex_
   const float** liveTap(const doc::Project& p, const doc::ParamRef& ref);  // UI thread (T2.6-fix2)
   void publishAutomation(const doc::Project& p);
+  void reportDelayedSends(const doc::Project& p);  // UI thread: the status line names a newly delayed send
   void publishTempo(const doc::Project& p);
   void postTransport(const engine::TransportCommand& c);
   // Compile path (worker or flush()).
   Status compileNow(const doc::Snapshot& s);
+  // A compile's result for the program, published in order (compileMutex_).
+  struct Deferred {
+    bool topology = false;
+    engine::TopologyBuild topo;                      // topology
+    std::unordered_map<uint32_t, uint32_t> meterMap;  // topology: track id → bus of its `out`
+    std::vector<engine::UnitUpdate> units;           // otherwise: the changed units' images, in order
+  };
+  // Publishes deferred_ front to back (compileMutex_ held). While the audio thread runs it waits (bounded) for the
+  // room a publish needs; when it does not run (Engine::audioStopped), it stops at the first publish that needs it
+  // and leaves the rest queued: ok() with `drained` false. An error drops the queue (a compile then rebuilds).
+  Status drainDeferred(bool& drained);
+  void setError(std::string message);
+  void collectIdle();  // UI thread: collect() at most every 200 ms
   void wantJit();  // compile path, compileMutex_ held: the schedules without a JIT image → the background compiler
   static void deliverJit(void* self, const engine::BackgroundJob& job, Result<std::unique_ptr<engine::ProgramImage>> img);
   static void beforeJit(void* self, const engine::BackgroundJob& job);
@@ -313,6 +354,10 @@ private:
   const void* tempoTimeline_ = nullptr;
   views::ViewContext* ctx_ = nullptr;
   views::ViewContext::Subscription sub_;
+  views::ViewContext::Subscription observer_;  // the context's automation overrides (T3.17-fix3, M3 review M4)
+  std::vector<uint64_t> conditionalSends_;     // doc::conditionalSendsKey of current_
+  std::vector<doc::DelayedSend> delayed_;      // doc::delayedSends of current_ (reported when it changes)
+  std::string inertReported_;                  // the tuning whose inert lanes the status line last named
   uint64_t commandsPosted_ = 0;
   engine::TransportReport report_;
   views::PlayheadSnapshot optimistic_;
@@ -321,6 +366,8 @@ private:
   uint64_t reportSeq_ = 0;
   std::unordered_map<uint32_t, MeterState> meters_;
   double lastMeterRead_ = 0.0;
+  bool metersLit_ = false;  // a meter read last time is above its floor (live() keeps the views polling)
+  double lastCollect_ = 0.0;
 
   // Compile worker (cv_ with mutex_).
   std::condition_variable cv_;
@@ -329,9 +376,13 @@ private:
   doc::Snapshot pendingSnap_;
   double pendingSince_ = 0.0;   // seconds (steady clock) of the last structural change
   LinkStats stats_;
+  mutable std::mutex errorMutex_;
+  std::string lastError_;
 
   // T1b.5. compileMutex_ serialises the compile path's use of compiler_ / program publishes with JIT deliveries.
   std::mutex compileMutex_;
+  std::deque<Deferred> deferred_;                 // compileMutex_; see drainDeferred
+  std::atomic<bool> anyDeferred_{false};          // deferred_ is not empty (read by the worker without the lock)
   std::vector<std::shared_ptr<const graph::Schedule>> jitDone_;  // schedules with a JIT image (or a failed JIT)
   mutable std::mutex jitStatsMutex_;
   JitStats jitStats_;

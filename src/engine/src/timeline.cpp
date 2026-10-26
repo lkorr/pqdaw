@@ -108,6 +108,8 @@ Timeline::~Timeline() {
   delete pubSeq_.exchange(nullptr);
   delete pubAuto_.exchange(nullptr);
   delete pubTempo_.exchange(nullptr);
+  for (const auto& [p, deleter] : held_) deleter(p);
+  held_.clear();
   reclaimer_.unregisterReader(reader_);
 }
 
@@ -118,7 +120,8 @@ Status Timeline::publishSequence(std::unique_ptr<SequenceImage> image) {
                  "Timeline: " + std::to_string(image->numTracks()) + " tracks (maximum " +
                      std::to_string(cfg_.maxTracks) + ")",
                  {}};
-  if (SequenceImage* old = pubSeq_.exchange(image.release(), std::memory_order_acq_rel)) reclaimer_.retire(old);
+  if (SequenceImage* old = pubSeq_.exchange(image.release(), std::memory_order_seq_cst))
+    retireImage(old, [](void* q) noexcept { delete static_cast<SequenceImage*>(q); });
   collect();
   return Ok{};
 }
@@ -130,19 +133,45 @@ Status Timeline::publishAutomation(std::unique_ptr<AutomationImage> image) {
                  "Timeline: " + std::to_string(image->numLanes()) + " automation lanes (maximum " +
                      std::to_string(cfg_.maxAutomationLanes) + ")",
                  {}};
-  if (AutomationImage* old = pubAuto_.exchange(image.release(), std::memory_order_acq_rel)) reclaimer_.retire(old);
+  if (AutomationImage* old = pubAuto_.exchange(image.release(), std::memory_order_seq_cst))
+    retireImage(old, [](void* q) noexcept { delete static_cast<AutomationImage*>(q); });
   collect();
   return Ok{};
 }
 
 Status Timeline::publishTempo(std::unique_ptr<TempoImage> image) {
   if (image == nullptr) return Error{ErrorCode::InvalidArgument, "Timeline: null tempo image", {}};
-  if (TempoImage* old = pubTempo_.exchange(image.release(), std::memory_order_acq_rel)) reclaimer_.retire(old);
+  if (TempoImage* old = pubTempo_.exchange(image.release(), std::memory_order_seq_cst))
+    retireImage(old, [](void* q) noexcept { delete static_cast<TempoImage*>(q); });
   collect();
   return Ok{};
 }
 
-size_t Timeline::collect() { return reclaimer_.collect(); }
+bool Timeline::hazardous(const void* p) const noexcept {
+  for (const Hazard& h : hazard_)
+    if (h.cur.load(std::memory_order_seq_cst) == p || h.cand.load(std::memory_order_seq_cst) == p) return true;
+  return false;
+}
+
+void Timeline::retireImage(void* old, void (*deleter)(void*) noexcept) {
+  if (hazardous(old)) held_.emplace_back(old, deleter);  // the audio thread holds it: later (collect)
+  else reclaimer_.retire(old, deleter);
+}
+
+size_t Timeline::collect() {
+  // Held images the audio thread has let go of (it drops one when it takes a newer one, at a block start): to the
+  // reclaimer, which frees them once the audio thread has passed a block (or at once while it is offline).
+  for (size_t i = 0; i < held_.size();) {
+    if (hazardous(held_[i].first)) {
+      ++i;
+      continue;
+    }
+    reclaimer_.retire(held_[i].first, held_[i].second);
+    held_[i] = held_.back();
+    held_.pop_back();
+  }
+  return reclaimer_.collect();
+}
 
 bool Timeline::post(const TransportCommand& command) noexcept { return commands_.tryPush(command); }  // RT-safe
 bool Timeline::poll(TransportReport& report) noexcept { return reports_.tryPop(report); }             // RT-safe
@@ -162,16 +191,23 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
     case TransportCommandKind::Play:
       locate(cmd.tick);
       playing_ = true;
+      ++playbackPass_;
       break;
     case TransportCommandKind::Stop:
       if (playing_) releasePending_ = true;
       playing_ = false;
       break;
     case TransportCommandKind::Continue:
-      if (!playing_) seekPending_ = true;
+      if (!playing_) {
+        seekPending_ = true;
+        ++playbackPass_;
+      }
       playing_ = true;
       break;
-    case TransportCommandKind::Locate: locate(cmd.tick); break;
+    case TransportCommandKind::Locate:
+      locate(cmd.tick);
+      if (playing_) ++playbackPass_;
+      break;
     case TransportCommandKind::SetLoop:
       loopEnabled_ = cmd.loopEnabled;
       loopStart_ = cmd.loopStart;
@@ -199,13 +235,35 @@ void Timeline::updateLoopSamples() noexcept {  // RT-safe
   loopOn_ = loopEnabled_ && loopEnd_ > loopStart_ && loopEndSample_ > loopStartSample_;
 }
 
+// The published image of one kind, protected before it is dereferenced (see Timeline::Hazard): `cur` if nothing
+// newer is published or the publisher keeps replacing it (then next block). RT-safe: at most 4 rounds.
+template <class T>
+const T* Timeline::acquireImage(std::atomic<T*>& pub, Hazard& h, const T* cur, const T* ifNull) noexcept {
+  const T* p = pub.load(std::memory_order_seq_cst);
+  for (int round = 0; round < 4; ++round) {
+    const T* v = p != nullptr ? p : ifNull;
+    if (v == cur) return cur;
+    h.cand.store(p, std::memory_order_seq_cst);
+    const T* q = pub.load(std::memory_order_seq_cst);
+    if (q == p) return v;  // protected by cand until it is cur
+    p = q;
+  }
+  h.cand.store(nullptr, std::memory_order_release);
+  return cur;
+}
+
 void Timeline::pickUpImages() noexcept {  // RT-safe
-  const TempoImage* t = pubTempo_.load(std::memory_order_acquire);
-  if (t == nullptr) t = defaultTempo_.get();
+  // Each kind: take the newest published image, swap to it (the swap still reads the old one), then the old one is
+  // no longer held (cur) and may be retired.
+  const TempoImage* t = acquireImage(pubTempo_, hazard_[2], tempo_, defaultTempo_.get());
   if (t != tempo_) swapTempo(t);
-  const SequenceImage* s = pubSeq_.load(std::memory_order_acquire);
+  hazard_[2].cur.store(tempo_, std::memory_order_seq_cst);
+  hazard_[2].cand.store(nullptr, std::memory_order_release);
+  const SequenceImage* s = acquireImage(pubSeq_, hazard_[0], seq_, static_cast<const SequenceImage*>(nullptr));
   if (s != seq_) swapSequence(s);
-  const AutomationImage* a = pubAuto_.load(std::memory_order_acquire);
+  hazard_[0].cur.store(seq_, std::memory_order_seq_cst);
+  hazard_[0].cand.store(nullptr, std::memory_order_release);
+  const AutomationImage* a = acquireImage(pubAuto_, hazard_[1], auto_, static_cast<const AutomationImage*>(nullptr));
   if (a != auto_) {
     if (auto_ != nullptr)  // the old image's audio-rate consumers read their params again
       for (const AutomationImage::Lane& l : auto_->lanes())
@@ -215,6 +273,8 @@ void Timeline::pickUpImages() noexcept {  // RT-safe
     holdValid_ = false;
     ++stats_.automationSwaps;
   }
+  hazard_[1].cur.store(auto_, std::memory_order_seq_cst);
+  hazard_[1].cand.store(nullptr, std::memory_order_release);
 }
 
 void Timeline::swapTempo(const TempoImage* next) noexcept {  // RT-safe
@@ -251,7 +311,7 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
       Ticks passEnd = 0;
       const SequenceImage::Note* n = next->findOccurrence(j, s.noteId, s.on, &passEnd);
       if (n != nullptr) {
-        s.off = std::min(s.on + n->length, passEnd);
+        s.off = offTick(s.on, std::min(s.on + n->length, passEnd));
         if (s.off > now || !playing_) {
           if (std::bit_cast<uint32_t>(n->hz) != std::bit_cast<uint32_t>(s.hz) || !(n->pitch == s.pitch) ||
               std::bit_cast<uint32_t>(n->ratio) != std::bit_cast<uint32_t>(s.ratio) ||
@@ -465,6 +525,13 @@ void Timeline::setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept 
   }
 }
 
+Ticks Timeline::offTick(Ticks on, Ticks off) const noexcept {  // RT-safe
+  const TempoMap& tm = tempo_->tempo();
+  const double sr = cfg_.sampleRate;
+  if (tm.ticksToSamples(off, sr) > tm.ticksToSamples(on, sr)) return off;  // the common case: one conversion each
+  return std::max(off, tm.firstTickAtOrAfterSample(tm.ticksToSamples(on, sr) + 1, sr));
+}
+
 void Timeline::releaseAll(uint32_t frame) noexcept {  // RT-safe
   for (uint32_t k = 0; k < cfg_.maxTracks; ++k) {
     TrackState& t = tracks_[k];
@@ -506,7 +573,7 @@ void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t
       continue;
     }
     const SequenceImage::Note& n = notes[c.note];
-    const NoteRandom r = noteRandom(seq_->seed(), n.id, c.pass);
+    const NoteRandom r = noteRandom(seq_->seed() ^ (playbackPass_ * 0x9E3779B97F4A7C15ull), n.id, c.pass);
     if (!(r.chance < n.chance)) {
       ++stats_.chanceSkips;
     } else if (eventCount_[track] + 2 + tr.heapSize > cap) {  // keep room for every pending note-off
@@ -522,7 +589,7 @@ void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t
       setIdentity(e, n);
       pushEvent(track, e);
       ++stats_.noteOns;
-      heapPush(tr, Sounding{std::min(on + n.length, c.passEnd), tr.order++, on, nextInstance_, n.id, n.hz,
+      heapPush(tr, Sounding{offTick(on, std::min(on + n.length, c.passEnd)), tr.order++, on, nextInstance_, n.id, n.hz,
                             std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f), n.ratio, n.harmonic,
                             n.pitch});
       if (++nextInstance_ == 0) nextInstance_ = 1;
@@ -585,6 +652,7 @@ void Timeline::playBlock(uint32_t frames) noexcept {  // RT-safe
     f += len;
     if (wrap) {
       ++stats_.loopWraps;
+      ++playbackPass_;
       pos_ = loopStartSample_;
       nextTick_ = loopStart_;
       tickLazy_ = false;

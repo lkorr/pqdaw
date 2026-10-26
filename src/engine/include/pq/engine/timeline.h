@@ -170,7 +170,7 @@ public:
   Status publishTempo(std::unique_ptr<TempoImage> image);
   // Frees retired images every reader has passed; returns how many. publish*() calls it too.
   size_t collect();
-  size_t pendingImages() const { return reclaimer_.pending(); }
+  size_t pendingImages() const { return reclaimer_.pending() + held_.size(); }
 
   // ---- UI thread ----
   bool post(const TransportCommand& command) noexcept;  // false when the ring is full. RT-safe (wait-free)
@@ -185,7 +185,9 @@ public:
   void apply(const TransportCommand& command) noexcept;
   BlockHook blockHook() noexcept { return {&Timeline::onBlockHook, this}; }
   EventSource eventSource(uint32_t track) noexcept { return {&Timeline::onEventSource, &sources_[track]}; }
-  // Lets collect() free images while the audio thread is not running (device stopped). RT-safe.
+  // Lets collect() free images while the audio thread is not running (device stopped). RT-safe. The images the
+  // audio thread holds (the ones its last block used: it keeps them across a stop) are never freed while they are
+  // held, offline or not (T3.17-fix1: see Timeline::Hazard).
   void audioOffline() noexcept { reclaimer_.goOffline(reader_); }
   void audioOnline() noexcept { reclaimer_.goOnline(reader_); }
 
@@ -275,6 +277,24 @@ private:
   std::atomic<SequenceImage*> pubSeq_{nullptr};
   std::atomic<AutomationImage*> pubAuto_{nullptr};
   std::atomic<TempoImage*> pubTempo_{nullptr};
+  // T3.17-fix1: which images the audio thread holds, per kind (sequence, automation, tempo): `cur` = the one it uses
+  // (kept across blocks and across a device stop), `cand` = a newer one it is about to take (hazard-pointer
+  // protocol: store the candidate, re-read the published pointer, take it only if it did not change; bounded, else
+  // it tries again next block). A replaced image that is either one waits in held_ (publishing thread only), and goes
+  // to the reclaimer once the audio thread has let go of it. Before, an image was retired as soon as it was
+  // replaced, but the audio thread keeps using its current image until the next block's pick-up: a stopped
+  // (offline) device, or a quiescent state between its pick-up and the publish, let collect() free an image the
+  // next block read.
+  struct Hazard {
+    std::atomic<const void*> cur{nullptr};
+    std::atomic<const void*> cand{nullptr};
+  };
+  Hazard hazard_[3];
+  std::vector<std::pair<void*, void (*)(void*) noexcept>> held_;
+  void retireImage(void* old, void (*deleter)(void*) noexcept);
+  bool hazardous(const void* p) const noexcept;
+  template <class T>
+  const T* acquireImage(std::atomic<T*>& pub, Hazard& h, const T* cur, const T* ifNull) noexcept;
   EpochReclaimer reclaimer_{1};
   EpochReclaimer::ReaderId reader_{0};
   SpscRing<TransportCommand> commands_;
@@ -297,6 +317,14 @@ private:
   SampleTime loopStartSample_ = 0, loopEndSample_ = 0;
   SampleTime pos_ = 0;           // song sample at frame 0 of the next block
   Ticks nextTick_ = 0;           // first tick of the next block's range (when !tickLazy_)
+  // T3.17-fix3 (M3 review M16): chance and velocity range are drawn per (seed, note, clip pass, playback pass): the
+  // playback pass counts transport starts (Play, Continue, a Locate while playing) and arrangement loop wraps, so
+  // every playback and every loop repeat decides anew, and a given seed and command sequence (an offline render)
+  // decides the same way every time.
+  uint64_t playbackPass_ = 0;
+  // A note's off tick: at least one sample after its on sample (M3 review L4: a note shorter than a sample rounded its
+  // off onto its on sample and never sounded).
+  Ticks offTick(Ticks on, Ticks off) const noexcept;
   bool tickLazy_ = false;        // nextTick_ is firstTickAtOrAfterSample(pos_), not computed yet
   int64_t lastSampleTime_ = INT64_MIN;
   TransportSnapshot snapshot_;

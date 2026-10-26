@@ -88,9 +88,30 @@ uint64_t countRtViolations(F&& f) {
 // Entry point for the replacement operators: records v and dispatches it. Not for general use.
 void reportViolation(const Violation& v) noexcept;
 
+// A poisoning deleter for use-after-free tests (T3.17-fix1, M3 review C1). While one is alive (process-wide, every
+// thread), every block freed through the replacement operator delete is overwritten with kPoisonByte and kept
+// allocated ("quarantined": no later allocation can reuse it), so a read of freed memory deterministically sees
+// 0xDDDD… (a non-null pointer, a huge size, a NaN) instead of whatever was there or whatever reused it. Up to
+// kQuarantineBlocks blocks are kept (later ones are poisoned and freed); the destructor frees them. Requires
+// installed() (test executables); a no-op otherwise. Not nestable.
+class PoisonFrees {
+public:
+  static constexpr unsigned char kPoisonByte = 0xDD;
+  static constexpr std::size_t kQuarantineBlocks = 1u << 16;
+  PoisonFrees() noexcept;
+  ~PoisonFrees() noexcept;
+  PoisonFrees(const PoisonFrees&) = delete;
+  PoisonFrees& operator=(const PoisonFrees&) = delete;
+  // Blocks freed (poisoned) while this scope was alive.
+  static uint64_t poisoned() noexcept;
+};
+
 namespace detail {
 // Called once by pq_alloc_trap's static initialiser.
 void markInstalled() noexcept;
+// Called by the replacement operator delete for a non-null block before it frees it. True: the block was poisoned
+// and quarantined (do not free it). size 0 = unknown (unsized delete: the CRT's block size is used).
+bool poisonFree(void* p, std::size_t size, std::size_t align) noexcept;
 }  // namespace detail
 
 }  // namespace pq::alloc_trap
