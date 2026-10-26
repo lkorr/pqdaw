@@ -1172,7 +1172,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   7. **Saturator display**: the static curve (drive, curve, output, soft clip, dry/wet; the colour EQ is frequency dependent and not drawn); the Waveshaper section is always shown (Live greys it out unless the type is Waveshaper).
 - Status: open
 
-## Q?-T1.x-silence-a · 2026-10-26 · T1.x-silence · Silence and sleep: measured feedback tails, zero-only constant outputs, region granularity, the engine gate
+## Q130 · 2026-10-26 · T1.x-silence · Silence and sleep: measured feedback tails, zero-only constant outputs, region granularity, the engine gate
 - Context: SPEC §7.7, TASKS T1.x-silence, M1 review M17, M3 review M15a; bundle A's idle units (Q126.3). Design in ARCHITECTURE "Silence and sleep" and PATCH_LANGUAGE §3.
 - Choices (provisional):
   1. **Tail declarations per atom, inherited by subcircuits.** Each leaf atom declares its silence rule and its memory length (`dsp::silenceInfo` / `silenceTail`: z1 and edge detectors 1 sample, a delay line floor(max) + 3); a stdlib filter, delay, reverb or device needs no declaration of its own — it is made of those atoms, and the scheduler's analysis (a greatest fixpoint over the schedule) derives what the subcircuit does. A hand-written per-subcircuit declaration would be redundant and could be wrong; every rule is instead checked against its kernel (tests/dsp/test_silence.cpp) and every sleeping region against running it (Shadow mode over the corpus incl. stdlib: 0 violations).

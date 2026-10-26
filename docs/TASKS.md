@@ -216,7 +216,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Accept: jit_image.cpp/runtime.cpp shrink to codegen-specific code; all interpreter, JIT, voice, hot-swap and golden tests
     pass unchanged; `pqdaw --play --backend jit` works.
 
-- [~] **T1.x-silence Silence and sleep (SPEC §7.7)** *(worker BV, branch task/T1.x-silence)* (`graph` + `engine` + `jit`). Depends on: T1.x-arch1.
+- [x] **T1.x-silence Silence and sleep (SPEC §7.7)** *(merged 2026-10-26)* (`graph` + `engine` + `jit`). Depends on: T1.x-arch1.
   - Per-node tail declarations; per-region silent-input detection at block boundaries; constant-output kernels while asleep;
     ABI field reporting output silence; voice end via the same mechanism.
   - Accept: an idle 30-track project with reverbs/delays costs ≤ 1 % of a core after tails end; waking is sample-accurate
