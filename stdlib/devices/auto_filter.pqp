@@ -1,0 +1,441 @@
+// Auto Filter (SPEC §8; Ableton Live 12's Auto Filter): a resonant filter whose cutoff an LFO and an envelope
+// follower (of the input or of a sidechain) move, with five circuit models. Live publishes neither its filter
+// equations nor renders we may use (SPEC §15 2026-10-24): the types and models below are documented topologies
+// chosen to behave the way Live's manual describes them, adjustable later. QUESTIONS Q?-T4.11-a lists every choice.
+//
+// Signal flow (stereo, every channel alike):
+//   oct  = lfoAmount·4·lfo(ch) + envAmount·8·env           octaves (lfo ±1 per channel, env = follower level)
+//   fc   = clip(base·2^oct, 10 Hz, 0.49·sr)                 base = freq (DJ: from the DJ knob)
+//   wet  = filter_type(x, fc, res, drive, morph)
+//   out  = (x + dryWet·(wet − x)) · output
+// `res` 0 … 125 %: 100 % is where the nonlinear models start to self-oscillate.
+//
+// Filter types (`type`, a constant; Live 12's set as remembered):
+//   0 Lowpass  1 Highpass  2 Bandpass (unity peak)  3 Notch   12 or 24 dB/oct (`slope` 0 / 1), any circuit
+//   4 Morph    continuous Lowpass → Bandpass → Highpass → Notch → Lowpass over `morph` 0 … 100 %, any circuit
+//   5 DJ       one knob (`dj`): left = lowpass from 20 kHz down to 25 Hz, right = highpass from 15 Hz up to 15 kHz,
+//              centre = bypass (the filter fades in over the first 5 % each way); Clean, 12 / 24 dB
+//   6 Comb     feedback comb y = x + fb·y[n − 1/fc], fb = 0.792·res (0 … 0.99), output · √(1 − fb²) (unity
+//              power on noise); fc 20 Hz … 10 kHz is the fundamental
+//   7 Resampling  sample-and-hold at 2·fc (the new Nyquist is fc), no anti-aliasing (that is the sound)
+//   8 Notch + Lowpass  a notch at fc (resonance = its sharpness) into a Butterworth 12 dB lowpass at 2·fc
+//   9 Vowel    three formant band-passes (Peterson–Barney vowels A E I O U, interpolated by `morph`), shifted by
+//              √(fc / 1 kHz), Q 3 … 14 by res, formant gains 0 / −6 / −12 dB
+//
+// Circuit models (`circuit`, a constant; types 0–4; the others use Clean). Each is a zero-delay-feedback filter:
+// for small signals all of them are LINEAR filters with the analytic responses below; `drive` (0 … 24 dB) sets
+// how early the nonlinearity bites (the nonlinear terms see the signal × drive and their output is divided by
+// drive: drive changes the character, not the level).
+//   Clean  TPT state-variable filter (af_svf: svf_core_fast with g per channel), k = max(√2·(1 − 0.8·res), 0.02):
+//          never self-oscillates (Q 0.71 … 50); drive unused (as in Live).
+//   OSR    "state-variable, resonance limited by a hard-clipping diode": the SVF with k = √2·(1 − res) after a
+//          soft input stage (tanh(drive·x)/drive), plus a hard diode on the band-pass state,
+//          hp = x − lp − k·bp − 4·(bp − clip(bp, ±1/drive)). The equation is piecewise linear, so it is solved in
+//          closed form (no Newton): the linear solution, and if |bp| passes the diode's knee, the clipped branch's.
+//   MS2    "Sallen-Key, soft clipping limits the resonance" (MS-20-like): the SVF whose positive resonance
+//          feedback saturates, hp = x − lp − 2·bp + (2 − k)·tanh(drive·bp)/drive; `solve`, 2 Newton iterations
+//          from the linear solution (within −120 dB of the converged solution at +12 / +24 dB drive; 1 iteration
+//          would be −46 … −66 dB).
+//   SMP    a custom design between MS2 and PRD: PRD's saturating input stage and MS2's saturating resonance
+//          feedback, made asymmetric (even harmonics), hp = tanh(drive·x)/drive − lp − 2·bp +
+//          (2 − k)·a(drive·bp)/drive, a(v) = tanh v + tanh² v / 4; `solve`, 2 iterations (as MS2).
+//   PRD    a four-pole transistor ladder (Moog/Prodigy-like) with the saturating input pair and no other resonance
+//          limiting: u = tanh(drive·(x − 4·res·y4))/drive into four TPT one-poles; the passband drops by
+//          1/(1 + 4·res) as resonance rises, as on the original. `solve` on y4, 1 Newton iteration from the linear
+//          solution (measured within −120 dB of the converged solution even at +24 dB drive).
+//          Responses: Oberheim-Xpander pole mixing of (u, y1 … y4): LP4 y4, LP2 y2 (12 dB = the 2-pole tap of the
+//          same ladder), HP (1−G)ⁿ, BP 4G²(1−G)² / 2G(1−G), notch (1 − 2G + 2G²)^(n/2).
+// The SVF models' outputs mix (x, bp, lp): lp, hp = x − k·bp − lp, bp·kb (kb = k for Clean, max(k, 0.25) for the
+// nonlinear models, so their self-oscillation stays audible), notch = x − k·bp. 24 dB = a fixed Butterworth SVF
+// section (k = 1.848, Clean) into the model's section with k·0.5412 (Butterworth-4 at res 0).
+//
+// LFO (`lfo: 1` turns it on; a constant: off costs nothing): `lfoShape` 0 sine, 1 triangle, 2 saw up, 3 saw down,
+// 4 square, 5 random (sample-and-hold, a new value each cycle and at the start); the shapes with jumps (saws,
+// square, random) go through a 0.5 ms one-pole, so a jump of the cutoff does not click (measured: the filter's
+// largest step then equals the analog filter's on the same cutoff path). Rate free (0.01 … 40 Hz) or synced to the
+// song (`lfoSync`, one cycle per `lfoBeats` beats); `lfoOffset` shifts both channels' phase, `lfoPhase` the right
+// channel's against the left, `lfoSpin` speeds the right channel up by 0 … 50 %. Envelope follower (`env: 1`):
+// peak follower (stdlib envfollow) of the mono input, attack / release time constants; with `scOn: 1` it
+// listens to the `sc` input (gain `scGain`, mixed with the own input by `scMix`). `sc` is the device's sidechain
+// input: unconnected it is silence; T4.7 routes a track into it.
+//
+// Exports: `cutoff` (the modulated cutoff, Hz, per channel), `lfoSignal` (the LFO, ±1 per channel), `envelope`.
+//
+// Cost: the cutoff is param rate (coefficients once per block) unless the LFO or the follower is on; then the
+// coefficient math (one fast_exp, one fast_tan, a divide per section) runs per sample. Clean: one SVF core per
+// section; OSR: the same plus a compare and two divides; MS2 / SMP / PRD: a 1-unknown Newton solve per sample
+// (bench/RESULTS.md T4.11: Clean ≈ 6–11, OSR ≈ 17–21, PRD ≈ 70–75, MS2 / SMP ≈ 100–110 ns per stereo sample).
+import "../dynamics/envfollow.pqp"
+import "../control/smooth.pqp"
+
+patch auto_filter {
+  in    x         : audio stereo
+  in    sc        : audio stereo = (0, 0)   // sidechain input (silence until routed, T4.7)
+  in    type      : real const = 0          // 0 LP 1 HP 2 BP 3 Notch 4 Morph 5 DJ 6 Comb 7 Resampling 8 Notch+LP 9 Vowel
+  in    circuit   : real const = 0          // 0 Clean 1 OSR 2 MS2 3 SMP 4 PRD
+  in    slope     : real const = 0          // 0: 12 dB/oct, 1: 24 dB/oct
+  in    lfo       : real const = 0          // 1: LFO on
+  in    lfoShape  : real const = 0          // 0 sine 1 triangle 2 saw up 3 saw down 4 square 5 random
+  in    env       : real const = 0          // 1: envelope follower on
+  in    scOn      : real const = 0          // 1: the follower listens to the sidechain input
+  param freq      = 1kHz  [20Hz..20kHz]   @unit(Hz) @curve(exp) @label("Frequency")
+  param res       = 30%   [0%..125%]      @label("Resonance")
+  param drive     = 0dB   [0dB..24dB]     @unit(dB) @label("Drive")
+  param morph     = 0%    [0%..100%]      @label("Morph")
+  param dj        = 0%    [-100%..100%]   @label("DJ")
+  param lfoAmount = 0%    [0%..100%]      @label("Amount")
+  param lfoRate   = 1Hz   [0.01Hz..40Hz]  @unit(Hz) @curve(exp) @label("Rate")
+  param lfoSync   = false                 @label("Sync")
+  param lfoBeats  = 1     [1/16..64]      @curve(exp) @label("Beats")
+  param lfoOffset = 0%    [0%..100%]      @label("Offset")
+  param lfoPhase  = 0%    [0%..100%]      @label("Phase")
+  param lfoSpin   = 0%    [0%..50%]       @label("Spin")
+  param envAmount = 0%    [-100%..100%]   @label("Amount")
+  param attack    = 6ms   [0.1ms..100ms]  @unit(s) @curve(exp) @label("Attack")
+  param release   = 200ms [1ms..3s]       @unit(s) @curve(exp) @label("Release")
+  param scGain    = 0dB   [-24dB..24dB]   @unit(dB) @label("SC Gain")
+  param scMix     = 100%  [0%..100%]      @label("SC Mix")
+  param dryWet    = 100%  [0%..100%]      @label("Dry/Wet")
+  param output    = 0dB   [-24dB..24dB]   @unit(dB) @label("Output")
+  out   out : audio stereo
+
+  // ---- modulation (octaves) ----
+  det  = scOn >= 0.5 ? x + scMix * (sc * scGain - x) : x
+  e    = envfollow(0.5 * (det[0] + det[1]), attack, release)
+  lr   = af_lfo(lfoShape, lfoRate, lfoSync, lfoBeats, lfoOffset, lfoPhase, lfoSpin)
+  l    = lfoShape >= 1.5 ? smooth(lr, 0.5ms) : lr        // the shapes with jumps: de-clicked (0.5 ms one-pole)
+  oct  = (lfo >= 0.5 ? lfoAmount * 4 * l : 0) + (env >= 0.5 ? envAmount * 8 * e : 0)
+
+  // DJ: the knob's cutoff (left: lowpass 20 kHz → 25 Hz, right: highpass 15 Hz → 15 kHz).
+  djc  = dj < 0 ? 20000 * fast_exp(6.684611727667927 * dj) : 15 * fast_exp(6.907755278982137 * dj)
+  base = type > 4.5 && type < 5.5 ? djc : freq
+  fc   = lfo + env >= 0.5 ? clip(base * fast_exp(0.6931471805599453 * oct), 10, 0.49 * sr) : clip(base, 10, 0.49 * sr)
+  g    = fast_tan(3.141592653589793 * fc / sr)
+
+  // ---- response weights of the SVF / ladder types: LP, BP, HP, notch ----
+  p    = 4 * morph
+  hLP  = max(0, 1 - abs(p)) + max(0, p - 3)
+  hBP  = max(0, 1 - abs(p - 1))
+  hHP  = max(0, 1 - abs(p - 2))
+  hN   = max(0, 1 - abs(p - 3))
+  djHP = dj > 0 ? 1 : 0
+  wLP  = mux(type, 1, 0, 0, 0, hLP, 1 - djHP)
+  wBP  = mux(type, 0, 0, 1, 0, hBP, 0)
+  wHP  = mux(type, 0, 1, 0, 0, hHP, djHP)
+  wN   = mux(type, 0, 0, 0, 1, hN, 0)
+  d    = circuit >= 0.5 ? drive : 1
+
+  // ---- the types ----
+  model = type > 4.5 ? 0 : circuit
+  filt  = af_filter(x, model, slope, g, res, d, wLP, wBP, wHP, wN)
+  djw   = min(1, 20 * abs(dj))
+  djOut = x + djw * (filt - x)
+  comb  = af_comb(x, fc, res)
+  rsmp  = samplehold(x, af_wrap(min(2 * fc, 0.45 * sr)))
+  nlp   = af_notch_lp(x, fc, g, res)
+  vowel = af_vowel(x, fc, res, morph)
+  w     = mux(type, filt, filt, filt, filt, filt, djOut, comb, rsmp, nlp, vowel)
+
+  out = (x + dryWet * (w - x)) * output
+
+  export cutoff    = fc
+  export lfoSignal = l
+  export envelope  = e
+}
+
+// The LFO: two phases (left, right), one shape. Free: phasors at rate and rate·(1 + spin); synced: the song
+// position, one cycle per `beats` beats (the right channel `1 + spin` times faster). `offset` shifts both phases,
+// `phase` the right one.
+patch af_lfo {
+  in    shape  : real const = 0
+  param rate   = 1Hz  [0.01Hz..40Hz] @unit(Hz)
+  param sync   = false
+  param beats  = 1    [1/16..64]
+  param offset = 0    [0..1]
+  param phase  = 0    [0..1]
+  param spin   = 0    [0..0.5]
+  out   y : audio stereo
+
+  fl  = phasor(rate)
+  fr  = phasor(rate * (1 + spin))
+  sl  = frac(transport.beat / beats)
+  sr_ = frac(transport.beat * (1 + spin) / beats)
+  pl  = frac((sync ? sl : fl) + offset)
+  pr  = frac((sync ? sr_ : fr) + offset + phase)
+  y   = (af_shape(pl, shape), af_shape(pr, shape))
+}
+
+// One LFO shape at phase p (0..1), bipolar; every shape starts like the sine (0 or its cycle start at p = 0).
+patch af_shape {
+  in    p     : audio
+  in    shape : real const = 0
+  out   y : audio
+
+  sine   = sine(p)
+  tri    = 4 * abs(frac(p + 0.75) - 0.5) - 1
+  sawUp  = 2 * frac(p + 0.5) - 1
+  sawDn  = 1 - 2 * frac(p + 0.5)
+  square = p < 0.5 ? 1 : -1
+  rnd    = samplehold(noise(), p < z1(p) || z1(1) < 0.5)   // a new value at each cycle start (and at the first sample)
+  y = mux(shape, sine, tri, sawUp, sawDn, square, rnd)
+}
+
+// True for the one sample per cycle where a phasor at `hz` wraps (hz < sr/2).
+patch af_wrap {
+  in    hz : audio
+  out   y : bool
+
+  ph = phasor(hz)
+  y  = ph < z1(ph)
+}
+
+// Types 0–5: the circuit model at 12 dB (one section) or 24 dB (a Butterworth pre-section, then the model).
+// `model` 0 Clean, 1 OSR, 2 MS2, 3 SMP, 4 PRD; w* the response weights.
+patch af_filter {
+  in    x     : audio
+  in    model : real const = 0
+  in    slope : real const = 0
+  in    g     : audio
+  param res = 0.3    [0..1.25]
+  param d   = 1      [1..16]
+  param wLP = 1      [0..1]
+  param wBP = 0      [0..1]
+  param wHP = 0      [0..1]
+  param wN  = 0      [0..1]
+  out   y : audio
+
+  clean = model < 0.5
+  k12 = clean ? max(1.4142135623730951 * (1 - 0.8 * res), 0.02) : 1.4142135623730951 * (1 - res)
+  kB  = slope >= 0.5 ? 0.541196100146197 * k12 : k12
+  kbB = clean ? kB : max(kB, 0.25)
+  a   = af_sec(x, 0, g, 1.8477590650225735, 1.8477590650225735, 1, wLP, wBP, wHP, wN)
+  b   = af_sec(slope >= 0.5 ? a : x, min(model, 3), g, kB, kbB, d, wLP, wBP, wHP, wN)
+  lad = af_ladder(x, slope, g, 4 * res, d, wLP, wBP, wHP, wN)
+  y   = model > 3.5 ? lad : b
+}
+
+// One SVF section of model 0–3 and its output mix: y = (wHP + wN)·x + (kb·wBP − k·(wHP + wN))·bp + (wLP − wHP)·lp.
+patch af_sec {
+  in    x     : audio
+  in    model : real const = 0
+  in    g  : audio
+  param k  = 1.4142 [-1..100]
+  param kb = 1.4142 [0..100]
+  param d  = 1      [1..16]
+  param wLP = 1 [0..1]
+  param wBP = 0 [0..1]
+  param wHP = 0 [0..1]
+  param wN  = 0 [0..1]
+  out   y : audio
+
+  c  = af_svf(x, g, k)
+  o  = af_osr(x, g, k, d)
+  m  = af_ms2(x, g, k, d)
+  s  = af_smp(x, g, k, d)
+  bp = mux(model, c.band, o.band, m.band, s.band)
+  lp = mux(model, c.low, o.low, m.low, s.low)
+  hn = wHP + wN
+  y  = hn * x + (kb * wBP - k * hn) * bp + (wLP - wHP) * lp
+}
+
+// OSR: TPT SVF after a soft input stage (xs = tanh(d·x)/d), a hard diode on the band-pass state (knee ±1/d,
+// slope 4 beyond). Closed form:
+//   a·bp + 4g·(bp − clip(bp, ±t)) = c,  a = 1 + g·(g + k),  c = g·(xs − s2) + s1,  t = 1/d
+//   bp = c/a when |c/a| ≤ t, else (c + 4g·t·sign)/(a + 4g)   (the left side increases with bp: one solution)
+patch af_osr {
+  in    x : audio
+  in    g : audio
+  param k = 1.4142 [-1..100]
+  param d = 1      [1..16]
+  out   band : audio
+  out   low  : audio
+
+  t   = 1 / d
+  xs  = fast_tanh(d * x) / d
+  a   = 1 + g * (g + k)
+  c   = g * (xs - s2) + s1
+  bl  = c / a
+  sg  = bl > t ? 1 : bl < -t ? -1 : 0
+  gd  = 4 * g
+  bp  = (c + gd * t * sg) / (a + gd * abs(sg))
+  lp  = g * bp + s2
+  s1  = z1(2 * bp - s1)
+  s2  = z1(2 * lp - s2)
+  band = bp
+  low  = lp
+}
+
+// MS2: TPT SVF whose positive resonance feedback saturates: hp = x − lp − 2·bp + (2 − k)·tanh(d·bp)/d.
+patch af_ms2 {
+  in    x : audio
+  in    g : audio
+  param k = 1.4142 [-1..100]
+  param d = 1      [1..16]
+  out   band : audio
+  out   low  : audio
+
+  kr  = 2 - k
+  bl  = (g * (x - s2) + s1) / (1 + g * (g + k))
+  solve(iterations: 2) {
+    unknown bp = bl
+    bp == s1 + g * (x - (g + 2) * bp - s2 + kr * fast_tanh(d * bp) / d)
+  }
+  lp  = g * bp + s2
+  s1  = z1(2 * bp - s1)
+  s2  = z1(2 * lp - s2)
+  band = bp
+  low  = lp
+}
+
+// SMP: between MS2 and PRD: a saturating input stage (as PRD's) and MS2's saturating resonance feedback, but
+// asymmetric (so it adds even harmonics): hp = tanh(d·x)/d − lp − 2·bp + (2 − k)·a(d·bp)/d, a(v) = t + t²/4 with
+// t = tanh(v) (a(0) = 0 and slope 1 at 0: small signals see the linear SVF; increasing, bounded in [−3/4, 5/4]).
+patch af_smp {
+  in    x : audio
+  in    g : audio
+  param k = 1.4142 [-1..100]
+  param d = 1      [1..16]
+  out   band : audio
+  out   low  : audio
+
+  kr  = 2 - k
+  xs  = fast_tanh(d * x) / d
+  bl  = (g * (xs - s2) + s1) / (1 + g * (g + k))
+  solve(iterations: 2) {
+    unknown bp = bl
+    bp == s1 + g * (xs - (g + 2) * bp - s2 + kr * (ts + 0.25 * ts * ts) / d)
+  }
+  ts  = fast_tanh(d * bp)
+  lp  = g * bp + s2
+  s1  = z1(2 * bp - s1)
+  s2  = z1(2 * lp - s2)
+  band = bp
+  low  = lp
+}
+
+// PRD: four TPT one-poles (G = g/(1 + g)) after a saturating input pair, u = tanh(d·(x − k·y4))/d. With
+// H = 1 − G and the stage states s1 … s4: y4 = G⁴·u + S, S = ((H·s1·G + H·s2)·G + H·s3)·G + H·s4.
+// Output: Xpander pole mixing of (u, y1 … y4) for the 12 or 24 dB response of each weight.
+patch af_ladder {
+  in    x     : audio
+  in    slope : real const = 0
+  in    g : audio
+  param k = 1.2    [0..5]
+  param d = 1      [1..16]
+  param wLP = 1 [0..1]
+  param wBP = 0 [0..1]
+  param wHP = 0 [0..1]
+  param wN  = 0 [0..1]
+  out   y : audio
+
+  G   = g / (1 + g)
+  H   = 1 - G
+  G2  = G * G
+  G4  = G2 * G2
+  S   = ((H * s1 * G + H * s2) * G + H * s3) * G + H * s4
+  lin = (G4 * x + S) / (1 + k * G4)
+  u   = fast_tanh(d * (x - k * y4)) / d
+  solve(iterations: 1) {
+    unknown y4 = lin
+    y4 == G4 * u + S
+  }
+  y1 = G * u + H * s1
+  y2 = G * y1 + H * s2
+  y3 = G * y2 + H * s3
+  s1 = z1(2 * y1 - s1)
+  s2 = z1(2 * y2 - s2)
+  s3 = z1(2 * y3 - s3)
+  s4 = z1(2 * y4 - s4)
+
+  // Pole-mixing coefficients of (u, y1, y2, y3, y4): 24 dB LP (0,0,0,0,1) BP (0,0,4,−8,4) HP (1,−4,6,−4,1)
+  // N (1,−4,8,−8,4); 12 dB LP (0,0,1,0,0) BP (0,2,−2,0,0) HP (1,−2,1,0,0) N (1,−2,2,0,0).
+  hn  = wHP + wN
+  c0  = hn
+  c1  = slope >= 0.5 ? -4 * hn : 2 * wBP - 2 * hn
+  c2  = slope >= 0.5 ? 4 * wBP + 6 * wHP + 8 * wN : wLP - 2 * wBP + wHP + 2 * wN
+  c3  = slope >= 0.5 ? -8 * wBP - 4 * wHP - 8 * wN : 0
+  c4  = slope >= 0.5 ? wLP + 4 * wBP + wHP + 4 * wN : 0
+  y   = c0 * u + c1 * y1 + c2 * y2 + c3 * y3 + c4 * y4
+}
+
+// Comb: y = x + fb·y[n − T], T = 1/fc (fc 20 Hz … 10 kHz), fb = 0.792·res; the output scaled by √(1 − fb²).
+patch af_comb {
+  in    x  : audio
+  in    fc : audio
+  param res = 0.3  [0..1.25]
+  out   y : audio
+
+  fb  = 0.792 * res
+  yc  = x + fb * delay(yc, 1 / clip(fc, 20, 10000), 50ms)
+  y   = yc * sqrt(1 - fb * fb)
+}
+
+// Notch + Lowpass: an SVF notch at fc (k = Clean's resonance law) into a Butterworth SVF lowpass at 2·fc.
+patch af_notch_lp {
+  in    x  : audio
+  in    fc : audio
+  in    g  : audio
+  param res = 0.3    [0..1.25]
+  out   y : audio
+
+  k  = max(1.4142135623730951 * (1 - 0.8 * res), 0.02)
+  n  = af_svf(x, g, k)
+  nt = x - k * n.band
+  g2 = fast_tan(3.141592653589793 * min(2 * fc, 0.49 * sr) / sr)
+  y  = af_svf(nt, g2, 1.4142135623730951).low
+}
+
+// Vowel: three formant band-passes (unity peak) at the vowel's formants × √(fc / 1 kHz), gains 1, 1/2, 1/4.
+// `morph` 0 … 1 goes A → E → I → O → U (linear in Hz between neighbours). Q = 3 + 9·res.
+patch af_vowel {
+  in    x  : audio
+  in    fc : audio
+  param res   = 0.3  [0..1.25]
+  param morph = 0    [0..1]
+  out   y : audio
+
+  q  = 4 * morph
+  i  = min(floor(q), 3)
+  f  = q - i
+  f1 = mux(i, 730, 530, 270, 570) + f * (mux(i, 530, 270, 570, 300) - mux(i, 730, 530, 270, 570))
+  f2 = mux(i, 1090, 1840, 2290, 840) + f * (mux(i, 1840, 2290, 840, 870) - mux(i, 1090, 1840, 2290, 840))
+  f3 = mux(i, 2440, 2480, 3010, 2410) + f * (mux(i, 2480, 3010, 2410, 2240) - mux(i, 2440, 2480, 3010, 2410))
+  sh = sqrt(fc * 0.001)
+  k  = 1 / (3 + 9 * res)
+  b1 = af_svf(x, af_warp(f1 * sh), k).band
+  b2 = af_svf(x, af_warp(f2 * sh), k).band
+  b3 = af_svf(x, af_warp(f3 * sh), k).band
+  y  = k * (b1 + 0.5 * b2 + 0.25 * b3)
+}
+
+// The prewarped integrator gain of a frequency kept in [20 Hz, 0.45·sr].
+patch af_warp {
+  in    f : audio
+  out   g : audio
+
+  g = fast_tan(3.141592653589793 * clip(f, 20, 0.45 * sr) / sr)
+}
+
+// stdlib svf_core_fast (filters/svf_fast.pqp) with the integrator gain g as an input, so it may differ per channel
+// (the LFO's stereo phase): the same TPT SVF, the state update two multiply-adds deep.
+patch af_svf {
+  in    x : audio
+  in    g : audio
+  param k = 1.4142 [-1..100]
+  out   band : audio
+  out   low  : audio
+
+  a1 = 1 / (1 + g * (g + k))
+  d1 = -2 * g * (g + k) * a1
+  b1 = 2 * g * a1
+  b2 = b1 * g
+
+  v   = x - ic2
+  n1  = b1 * v + (d1 * ic1 + ic1)
+  n2  = b2 * v + (b1 * ic1 + ic2)
+  ic1 = z1(n1)
+  ic2 = z1(n2)
+
+  band = 0.5 * (ic1 + n1)
+  low  = 0.5 * (ic2 + n2)
+}

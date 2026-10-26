@@ -21,16 +21,24 @@
 //       {"type": "chooser", "const": "hq", "items": ["Off", "2x", "4x", "8x"], "values": [1, 2, 4, 8], "rect": […]},
 //       {"type": "label", "text": "Waveshaper", "rect": […]},
 //       {"type": "tabs", "selector": "band", "rect": […]},                       // one button per selector value
-//       {"type": "visual", "visual": "transfer" | "eq" | "spectrum" | "envelope" | "algorithm" | "partials", "rect": […],
+//       {"type": "visual", "visual": "transfer" | "eq" | "spectrum" | "envelope" | "algorithm" | "partials" |
+//        "filter" | "lfo", "rect": […],
 //        "bind": {"drive": "drive", …}},
 //                                           // T4.12 (Operator): "envelope" roles a, d, r, init, peak, sus, end (params, as
 //                                           // draggable points), "mode" (#const: the loop mode's label), option "@db": "1"
 //                                           // (amplitude levels drawn in dB); "algorithm" roles algorithm (#const, picked by
 //                                           // a click), onA … onD (#consts: operators that are off dimmed); "partials" roles
 //                                           // u1 … uN (one bar each, drawn by dragging)
+//                                           // T4.11 (Auto Filter): "filter" (the response with a
+//                                           // frequency / resonance dot) roles freq, res, morph, dj, type,
+//                                           // circuit, slope; "lfo" (its LFO shape) roles shape, offset,
+//                                           // phase, spin, on
 //                                           // bind: display role → a param name, "#name" for a structural const;
 //                                           // keys starting with "@" are options ("@bands": the band selector,
-//                                           // "@range": the EQ display's ± dB range)
+//                                           // "@range": the EQ display's ± dB range). "filter" (Auto Filter: the
+//                                           // response with a frequency / resonance dot) reads freq, res, morph, dj,
+//                                           // type, circuit, slope; "lfo" (its LFO shape) reads shape, offset, phase,
+//                                           // spin, on
 //       {"repeat": {"var": "i", "values": ["1", …], "step": [dx, dy]}, "control": {… "{i}" …}}
 //     ]
 //   }

@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
+#include <vector>
 
 #include "pq/core/fast_math.h"
 #include "stdlib_reference.h"
@@ -499,5 +501,512 @@ struct EqEight {
     process(L, R, p.outGain);
   }
 };
+
+// ---- Auto Filter (stdlib/devices/auto_filter.pqp) -----------------------------------------------------------------
+// The device's float32 formulas, per sample, both channels interleaved. Structural settings come from a `Conf`
+// type: AfRuntime (tests: every combination at run time) or AfFixed<…> (benchmarks: the hand-written, specialised
+// filter a DSP programmer would write; every `if` on the configuration folds away). Param-rate values are prepared
+// once per block (prepare), as the compiled Control region does; with the LFO or the follower on, the cutoff and
+// the coefficients that depend on it run per sample. The nonlinear models' Newton iterations follow the engine's
+// solver (pq/engine/newton.h): r = lhs − rhs and its exact derivative in float, Δ = r / J in double.
+inline constexpr float kLog2e = 1.44269504088896341f;
+inline float fastExp(float x) { return pq::fastExp2(x * kLog2e); }
+inline float fastTan(float x) { return pq::fastTan(x); }
+inline float fracBelowOne(float x) { return std::min(x - std::floor(x), 0.99999994f); }
+
+struct AfParams {
+  float freq = 1000.0f, res = 0.3f, drive = 1.0f, morph = 0.0f, dj = 0.0f;
+  float lfoAmount = 0.0f, lfoRate = 1.0f;
+  bool lfoSync = false;
+  float lfoBeats = 1.0f, lfoOffset = 0.0f, lfoPhase = 0.0f, lfoSpin = 0.0f;
+  float envAmount = 0.0f, attack = 0.006f, release = 0.2f, scGain = 1.0f, scMix = 1.0f;
+  float dryWet = 1.0f, output = 1.0f;
+};
+
+// Run-time configuration (tests).
+struct AfRuntime {
+  int type = 0, circuit = 0, slope = 0, lfoShape = 0;
+  bool lfo = false, env = false, scOn = false;
+  int iterations = 2;        // Newton iterations of MS2 / SMP (the device: 2)
+  int ladderIterations = 1;  // ... of PRD (the device: 1)
+  bool prevGuess = false;  // start Newton from the previous sample's solution instead of the linear one
+};
+// Compile-time configuration (benchmarks).
+template <int kType, int kCircuit, int kSlope, bool kLfo, bool kEnv, int kShape = 0>
+struct AfFixed {
+  static constexpr int type = kType, circuit = kCircuit, slope = kSlope, lfoShape = kShape, iterations = 2, ladderIterations = 1;
+  static constexpr bool lfo = kLfo, env = kEnv, scOn = false, prevGuess = false;
+};
+
+// The svf_core_fast step with its derived coefficients (af_svf).
+struct AfSvfCoef {
+  float d1, b1, b2;
+  static AfSvfCoef make(float g, float k) {
+    const float gk = g + k;
+    const float a1 = 1.0f / fma_(g, gk, 1.0f);
+    const float b1 = 2.0f * g * a1;
+    return {-2.0f * g * gk * a1, b1, b1 * g};
+  }
+};
+struct AfSvf {
+  float ic1 = 0.0f, ic2 = 0.0f;
+  void tick(float x, const AfSvfCoef& c, float& band, float& low) {
+    const float v = x - ic2;
+    const float n1 = fma_(c.b1, v, fma_(c.d1, ic1, ic1));
+    const float n2 = fma_(c.b2, v, fma_(c.b1, ic1, ic2));
+    band = 0.5f * (ic1 + n1);
+    low = 0.5f * (ic2 + n2);
+    ic1 = n1;
+    ic2 = n2;
+  }
+};
+
+// One Newton solve of u = rhs(u) (the device's form `u == rhs`): `f(u, drhs)` returns rhs and its derivative.
+template <class F>
+inline float afNewton(float u, int iterations, F&& f) {
+  for (int it = 0; it < iterations; ++it) {
+    float drhs = 0.0f;
+    const float rhs = f(u, drhs);
+    const float r = u - rhs;
+    const float J = 1.0f - drhs;
+    const double d = static_cast<double>(r) / static_cast<double>(J);
+    const float nu = static_cast<float>(static_cast<double>(u) - d);
+    if (std::isfinite(d) && std::isfinite(nu)) u = nu;
+  }
+  return u;
+}
+
+// The nonlinear SVF sections (af_osr, af_ms2, af_smp): states s1 (band), s2 (low).
+struct AfNlSvf {
+  float s1 = 0.0f, s2 = 0.0f, last = 0.0f;
+  void finish(float g, float bp, float& band, float& low) {
+    const float lp = fma_(g, bp, s2);
+    s1 = 2.0f * bp - s1;
+    s2 = 2.0f * lp - s2;
+    band = bp;
+    low = lp;
+  }
+  void osr(float x, float g, float k, float d, float& band, float& low) {
+    const float t = 1.0f / d;
+    const float xs = fastTanh(d * x) / d;
+    const float a = fma_(g, g + k, 1.0f);
+    const float c = fma_(g, xs - s2, s1);
+    const float bl = c / a;
+    const float sg = bl > t ? 1.0f : bl < -t ? -1.0f : 0.0f;
+    const float gd = 4.0f * g;
+    const float bp = fma_(gd * t, sg, c) / fma_(gd, std::fabs(sg), a);
+    finish(g, bp, band, low);
+  }
+  void ms2(float x, float g, float k, float d, int iterations, bool prevGuess, float& band, float& low) {
+    const float kr = 2.0f - k;
+    const float bl = fma_(g, x - s2, s1) / fma_(g, g + k, 1.0f);
+    const float g2 = g + 2.0f;
+    const float bp = last = afNewton(prevGuess ? last : bl, iterations, [&](float u, float& dr) {
+      const float T = fastTanh(d * u);
+      const float inner = ((x - g2 * u) - s2) + (kr * T) / d;
+      const float dT = d * (1.0f - T * T);
+      dr = (-g2 + (dT * kr) / d) * g;
+      return fma_(g, inner, s1);
+    });
+    finish(g, bp, band, low);
+  }
+  void smp(float x, float g, float k, float d, int iterations, bool prevGuess, float& band, float& low) {
+    const float kr = 2.0f - k;
+    const float xs = fastTanh(d * x) / d;
+    const float bl = fma_(g, xs - s2, s1) / fma_(g, g + k, 1.0f);
+    const float g2 = g + 2.0f;
+    const float bp = last = afNewton(prevGuess ? last : bl, iterations, [&](float u, float& dr) {
+      const float T = fastTanh(d * u);
+      const float inner = ((xs - g2 * u) - s2) + (kr * fma_(0.25f * T, T, T)) / d;
+      const float dT = d * (1.0f - T * T);
+      dr = (-g2 + ((dT + (dT * T * 0.25f + 0.25f * T * dT)) * kr) / d) * g;
+      return fma_(g, inner, s1);
+    });
+    finish(g, bp, band, low);
+  }
+};
+
+// The ladder (af_ladder): stage states s[0..3]; writes the taps u, y1 … y4.
+struct AfLadder {
+  float s[4] = {}, last = 0.0f;
+  void tick(float x, float G, float k, float d, int iterations, bool prevGuess, float (&tap)[5]) {
+    const float H = 1.0f - G;
+    const float G2 = G * G, G4 = G2 * G2;
+    const float S = fma_(H, s[3], fma_(fma_(H, s[2], fma_(H * s[0], G, H * s[1]) * G), G, 0.0f));
+    const float lin = fma_(G4, x, S) / fma_(k, G4, 1.0f);
+    const float y4 = last = afNewton(prevGuess ? last : lin, iterations, [&](float v, float& dr) {
+      const float T = fastTanh(d * (x - k * v));
+      dr = (((-k * d) * (1.0f - T * T)) / d) * G4;
+      return fma_(G4, T / d, S);
+    });
+    const float u = fastTanh(d * (x - k * y4)) / d;
+    const float y1 = fma_(G, u, H * s[0]);
+    const float y2 = fma_(G, y1, H * s[1]);
+    const float y3 = fma_(G, y2, H * s[2]);
+    s[0] = 2.0f * y1 - s[0];
+    s[1] = 2.0f * y2 - s[1];
+    s[2] = 2.0f * y3 - s[2];
+    s[3] = 2.0f * y4 - s[3];
+    tap[0] = u;
+    tap[1] = y1;
+    tap[2] = y2;
+    tap[3] = y3;
+    tap[4] = y4;
+  }
+};
+
+// With AfFixed every configuration test is a constant: that is the point (they fold away), so C4127 is off here.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4127)
+#endif
+template <class Conf>
+struct AutoFilter {
+  Conf conf{};
+  float sr = 48000.0f;
+  double beat0 = 0.0, beatsPerFrame = 2.0 / 48000.0;  // transport (120 BPM)
+  uint64_t t = 0;
+
+  // ---- state, per channel ----
+  stdref::EnvFollow<float> follower;
+  stdref::Phasor lfoPh[2];
+  stdref::Smooth<float> lfoSmooth[2];
+  AfSvf secA[2], secB[2], nlp1[2], nlp2[2], vow[2][3];
+  AfNlSvf nl[2];
+  AfLadder lad[2];
+  stdref::Comb<float> comb[2] = {stdref::Comb<float>(0.05f, 48000.0f, 1), stdref::Comb<float>(0.05f, 48000.0f, 1)};
+  stdref::Phasor rsPh[2];
+  float rsPrev[2] = {}, rsHeld[2] = {};
+  bool rsPrevTrig[2] = {};
+
+  // ---- prepared (param rate) ----
+  AfParams p{};
+  float wLP = 1, wBP = 0, wHP = 0, wN = 0, k12 = 0, kB = 0, kbB = 0, kL = 0, d = 1, ca = 0, cr = 0, base = 0;
+  float c[5] = {};  // ladder pole mix
+  float djw = 0, fb = 0, combScale = 1, vk = 0, vf[3] = {};
+  // ---- outputs ----
+  float out[2] = {}, cutoff[2] = {}, lfo[2] = {}, envelope = 0;
+
+  bool mod() const { return conf.lfo || conf.env; }
+  static float pick(int i, std::initializer_list<float> v) { return v.begin()[std::clamp<int>(i, 0, static_cast<int>(v.size()) - 1)]; }
+
+  void prepare(const AfParams& q) {
+    p = q;
+    const int type = conf.type;
+    const float pm = 4.0f * p.morph;
+    const float hLP = std::max(0.0f, 1.0f - std::fabs(pm)) + std::max(0.0f, pm - 3.0f);
+    const float hBP = std::max(0.0f, 1.0f - std::fabs(pm - 1.0f));
+    const float hHP = std::max(0.0f, 1.0f - std::fabs(pm - 2.0f));
+    const float hN = std::max(0.0f, 1.0f - std::fabs(pm - 3.0f));
+    const float djHP = p.dj > 0.0f ? 1.0f : 0.0f;
+    wLP = pick(type, {1, 0, 0, 0, hLP, 1 - djHP});
+    wBP = pick(type, {0, 0, 1, 0, hBP, 0});
+    wHP = pick(type, {0, 1, 0, 0, hHP, djHP});
+    wN = pick(type, {0, 0, 0, 1, hN, 0});
+    const int model = type > 4 ? 0 : conf.circuit;
+    d = conf.circuit >= 1 ? p.drive : 1.0f;
+    const bool clean = model == 0;
+    k12 = clean ? std::max(1.4142135623730951f * (1.0f - 0.8f * p.res), 0.02f) : 1.4142135623730951f * (1.0f - p.res);
+    kB = conf.slope >= 1 ? 0.541196100146197f * k12 : k12;
+    kbB = clean ? kB : std::max(kB, 0.25f);
+    kL = 4.0f * p.res;
+    const float hn = wHP + wN;
+    if (conf.slope >= 1) {
+      c[0] = hn;
+      c[1] = -4.0f * hn;
+      c[2] = 4.0f * wBP + 6.0f * wHP + 8.0f * wN;
+      c[3] = -8.0f * wBP - 4.0f * wHP - 8.0f * wN;
+      c[4] = wLP + 4.0f * wBP + wHP + 4.0f * wN;
+    } else {
+      c[0] = hn;
+      c[1] = 2.0f * wBP - 2.0f * hn;
+      c[2] = wLP - 2.0f * wBP + wHP + 2.0f * wN;
+      c[3] = 0.0f;
+      c[4] = 0.0f;
+    }
+    ca = stdref::EnvFollow<float>::coef(p.attack, sr);
+    cr = stdref::EnvFollow<float>::coef(p.release, sr);
+    const float djc = p.dj < 0.0f ? 20000.0f * fastExp(6.684611727667927f * p.dj) : 15.0f * fastExp(6.907755278982137f * p.dj);
+    base = type == 5 ? djc : p.freq;
+    djw = std::min(1.0f, 20.0f * std::fabs(p.dj));
+    fb = 0.792f * p.res;
+    combScale = std::sqrt(1.0f - fb * fb);
+    const float q4 = 4.0f * p.morph;
+    const int i = static_cast<int>(std::min(std::floor(q4), 3.0f));
+    const float f = q4 - static_cast<float>(i);
+    const float F1[5] = {730, 530, 270, 570, 300}, F2[5] = {1090, 1840, 2290, 840, 870}, F3[5] = {2440, 2480, 3010, 2410, 2240};
+    vf[0] = fma_(f, F1[i + 1] - F1[i], F1[i]);
+    vf[1] = fma_(f, F2[i + 1] - F2[i], F2[i]);
+    vf[2] = fma_(f, F3[i + 1] - F3[i], F3[i]);
+    vk = 1.0f / fma_(9.0f, p.res, 3.0f);
+    modStatic = modFor(std::clamp(base, 10.0f, 0.49f * sr));
+  }
+
+  float lfoShape(float ph) const {
+    switch (conf.lfoShape) {
+      case 0: return sinePhase(ph);
+      case 1: return 4.0f * std::fabs(fracBelowOne(ph + 0.75f) - 0.5f) - 1.0f;
+      case 2: return 2.0f * fracBelowOne(ph + 0.5f) - 1.0f;
+      case 3: return 1.0f - 2.0f * fracBelowOne(ph + 0.5f);
+      default: return ph < 0.5f ? 1.0f : -1.0f;  // 4 square (5 random is not reproduced: the noise atom's seeds)
+    }
+  }
+
+  // One SVF-family section of `model` (af_sec) with its output mix.
+  float section(int ch, AfSvf& lin, int model, float x, float g, float k, float kb, const AfSvfCoef& cc) {
+    float band = 0.0f, low = 0.0f;
+    switch (model) {
+      case 0: lin.tick(x, cc, band, low); break;
+      case 1: nl[ch].osr(x, g, k, d, band, low); break;
+      case 2: nl[ch].ms2(x, g, k, d, conf.iterations, conf.prevGuess, band, low); break;
+      default: nl[ch].smp(x, g, k, d, conf.iterations, conf.prevGuess, band, low); break;
+    }
+    const float hn = wHP + wN;
+    return fma_(wLP - wHP, low, fma_(fma_(kb, wBP, -(k * hn)), band, hn * x));
+  }
+
+  // The cutoff-dependent coefficients of one channel at one sample.
+  struct ChMod {
+    float fc = 0, g = 0, G = 0, g2 = 0;
+    AfSvfCoef cA{}, cB{}, cv[3]{};
+  };
+  ChMod modStatic{};  // the unmodulated cutoff's (prepare)
+
+  ChMod modFor(float fc) const {
+    ChMod m;
+    m.fc = fc;
+    if (conf.type == 6 || conf.type == 7 || conf.type == 9) return vowelOnly(m);  // these read fc (vowel: its own g's)
+    m.g = fastTan(3.141592653589793f * fc / sr);
+    m.G = m.g / (1.0f + m.g);
+    if (conf.type <= 5) {
+      if (conf.slope >= 1) m.cA = AfSvfCoef::make(m.g, 1.8477590650225735f);
+      m.cB = AfSvfCoef::make(m.g, kB);
+    } else if (conf.type == 8) {
+      m.g2 = fastTan(3.141592653589793f * std::min(2.0f * fc, 0.49f * sr) / sr);
+    }
+    return m;
+  }
+  ChMod vowelOnly(ChMod m) const {
+    if (conf.type == 9) {
+      const float sh = std::sqrt(m.fc * 0.001f);
+      for (int i = 0; i < 3; ++i) m.cv[i] = AfSvfCoef::make(fastTan(3.141592653589793f * std::clamp(vf[i] * sh, 20.0f, 0.45f * sr) / sr), vk);
+    }
+    return m;
+  }
+
+  // One channel's filter at one sample.
+  float filterOne(int ch, float xi, const ChMod& m) {
+    const int type = conf.type;
+    const int model = type > 4 ? 0 : conf.circuit;
+    float w = 0.0f;
+    if (type <= 5) {
+      float filt;
+      if (model == 4) {
+        float tap[5];
+        lad[ch].tick(xi, m.G, kL, d, conf.ladderIterations, conf.prevGuess, tap);
+        filt = fma_(c[4], tap[4], fma_(c[3], tap[3], fma_(c[2], tap[2], fma_(c[1], tap[1], c[0] * tap[0]))));
+      } else {
+        float in = xi;
+        if (conf.slope >= 1) in = section(ch, secA[ch], 0, xi, m.g, 1.8477590650225735f, 1.8477590650225735f, m.cA);
+        filt = section(ch, secB[ch], model, in, m.g, kB, kbB, m.cB);
+      }
+      w = type == 5 ? fma_(djw, filt - xi, xi) : filt;
+    } else if (type == 6) {
+      const float T = 1.0f / std::clamp(m.fc, 20.0f, 10000.0f);
+      w = comb[ch].tick(xi, T * sr, fb) * combScale;
+    } else if (type == 7) {
+      const float ph = rsPh[ch].tick(std::min(2.0f * m.fc, 0.45f * sr), false, sr);
+      const bool trig = ph < rsPrev[ch];
+      rsPrev[ch] = ph;
+      if (trig && !rsPrevTrig[ch]) rsHeld[ch] = xi;
+      rsPrevTrig[ch] = trig;
+      w = rsHeld[ch];
+    } else if (type == 8) {
+      const float k = std::max(1.4142135623730951f * (1.0f - 0.8f * p.res), 0.02f);
+      float band, low;
+      nlp1[ch].tick(xi, AfSvfCoef::make(m.g, k), band, low);
+      const float nt = xi - k * band;
+      nlp2[ch].tick(nt, AfSvfCoef::make(m.g2, 1.4142135623730951f), band, low);
+      w = low;
+    } else {
+      float b[3];
+      for (int i = 0; i < 3; ++i) {
+        float low;
+        vow[ch][i].tick(xi, m.cv[i], b[i], low);
+      }
+      w = vk * fma_(0.25f, b[2], fma_(0.5f, b[1], b[0]));
+    }
+    return fma_(p.dryWet, w - xi, xi) * p.output;
+  }
+
+  // One stereo sample (tests: everything per sample).
+  void process(const float (&x)[2], const float (&sc)[2]) {
+    float oct[2] = {0.0f, 0.0f};
+    if (conf.env) {
+      float det[2] = {x[0], x[1]};
+      if (conf.scOn)
+        for (int ch = 0; ch < 2; ++ch) det[ch] = fma_(p.scMix, sc[ch] * p.scGain - x[ch], x[ch]);
+      envelope = follower.tick(0.5f * (det[0] + det[1]), ca, cr, false);
+    }
+    if (conf.lfo) {
+      const float beat = static_cast<float>(beat0 + static_cast<double>(t) * beatsPerFrame);
+      const float fl = lfoPh[0].tick(p.lfoRate, false, sr);
+      const float fr = lfoPh[1].tick(p.lfoRate * (1.0f + p.lfoSpin), false, sr);
+      const float sl = fracBelowOne(beat / p.lfoBeats);
+      const float sR = fracBelowOne(beat * (1.0f + p.lfoSpin) / p.lfoBeats);
+      const float pl = fracBelowOne((p.lfoSync ? sl : fl) + p.lfoOffset);
+      const float pr = fracBelowOne(((p.lfoSync ? sR : fr) + p.lfoOffset) + p.lfoPhase);
+      lfo[0] = lfoShape(pl);
+      lfo[1] = lfoShape(pr);
+      if (conf.lfoShape >= 2) {  // the shapes with jumps: a 0.5 ms one-pole
+        const float sm = stdref::Smooth<float>::coef(0.0005f, sr);
+        lfo[0] = lfoSmooth[0].tick(lfo[0], sm);
+        lfo[1] = lfoSmooth[1].tick(lfo[1], sm);
+      }
+      const float a4 = p.lfoAmount * 4.0f;
+      oct[0] = a4 * lfo[0];
+      oct[1] = a4 * lfo[1];
+    }
+    if (conf.env) {
+      const float e8 = p.envAmount * 8.0f * envelope;
+      oct[0] += e8;
+      oct[1] += e8;
+    }
+    for (int ch = 0; ch < 2; ++ch) {
+      const ChMod m = mod() ? modFor(std::clamp(base * fastExp(0.6931471805599453f * oct[ch]), 10.0f, 0.49f * sr)) : modStatic;
+      cutoff[ch] = m.fc;
+      out[ch] = filterOne(ch, x[ch], m);
+    }
+    ++t;
+  }
+
+  // A block (benchmarks: how a hand-written filter is structured): the modulation and the cutoff-dependent
+  // coefficients computed vectorised over the block first (8 samples per AVX2 op; the follower's recursion, the
+  // phasors' integer phases and the LFO smoother scalar), then one loop over the frames running both channels'
+  // filters. Free-running LFO, no sidechain. Writes outLR[2·i + ch]. Not RT code (allocates its buffers once).
+  void processBlock(const float* xL, const float* xR, uint32_t n, float* outLR) {
+    if (!mod()) {
+      for (uint32_t i = 0; i < n; ++i) {
+        outLR[2 * i] = filterOne(0, xL[i], modStatic);
+        outLR[2 * i + 1] = filterOne(1, xR[i], modStatic);
+      }
+      t += n;
+      return;
+    }
+    const uint32_t n8 = (n + 7) & ~7u;
+    if (blk_.size() < 22u * n8 + 8) blk_.assign(22u * n8 + 8, 0.0f);
+    float* base0 = blk_.data() + ((8 - (reinterpret_cast<uintptr_t>(blk_.data()) / 4) % 8) % 8);  // 32-byte aligned
+    auto buf = [&](uint32_t k) { return base0 + static_cast<size_t>(k) * n8; };
+    float* oct[2] = {buf(0), buf(1)};
+    float* tmp = buf(2);
+    for (uint32_t i = 0; i < 2 * n8; ++i) base0[i] = 0.0f;
+    if (conf.env) {
+      const float e8 = p.envAmount * 8.0f;
+      for (uint32_t i = 0; i < n; ++i) {
+        envelope = follower.tick(0.5f * (xL[i] + xR[i]), ca, cr, false);
+        oct[0][i] = oct[1][i] = e8 * envelope;
+      }
+    }
+    if (conf.lfo) {
+      const float rates[2] = {p.lfoRate, p.lfoRate * (1.0f + p.lfoSpin)};
+      const float offs[2] = {p.lfoOffset, p.lfoOffset + p.lfoPhase};
+      const __m256 a4 = _mm256_set1_ps(p.lfoAmount * 4.0f);
+      for (int ch = 0; ch < 2; ++ch) {
+        const float half = sr * 0.5f, h = std::min(std::max(rates[ch], -half), half);
+        const uint32_t inc = static_cast<uint32_t>(static_cast<int64_t>(std::nearbyint(static_cast<double>(h) * (4294967296.0 / sr))));
+        uint32_t ph = lfoPh[ch].phase;
+        for (uint32_t i = 0; i < n; ++i) {
+          tmp[i] = static_cast<float>(ph >> 8) * 5.9604644775390625e-08f;
+          ph += inc;
+        }
+        lfoPh[ch].phase = ph;
+        const __m256 off = _mm256_set1_ps(offs[ch]), below = _mm256_set1_ps(0.99999994f);
+        for (uint32_t i = 0; i < n8; i += 8) {
+          __m256 q = _mm256_add_ps(_mm256_load_ps(tmp + i), off);
+          q = _mm256_min_ps(_mm256_sub_ps(q, _mm256_floor_ps(q)), below);
+          __m256 v;
+          if (conf.lfoShape == 0) {
+            const __m256 r = _mm256_sub_ps(q, _mm256_round_ps(q, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+            v = pq::fastSin(_mm256_mul_ps(r, _mm256_set1_ps(stdref::kTwoPi)));
+          } else if (conf.lfoShape == 1) {
+            __m256 u = _mm256_add_ps(q, _mm256_set1_ps(0.75f));
+            u = _mm256_min_ps(_mm256_sub_ps(u, _mm256_floor_ps(u)), below);
+            const __m256 a = _mm256_andnot_ps(_mm256_set1_ps(-0.0f), _mm256_sub_ps(u, _mm256_set1_ps(0.5f)));
+            v = _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(4.0f), a), _mm256_set1_ps(1.0f));
+          } else if (conf.lfoShape == 4) {
+            v = _mm256_blendv_ps(_mm256_set1_ps(-1.0f), _mm256_set1_ps(1.0f), _mm256_cmp_ps(q, _mm256_set1_ps(0.5f), _CMP_LT_OQ));
+          } else {
+            __m256 u = _mm256_add_ps(q, _mm256_set1_ps(0.5f));
+            u = _mm256_min_ps(_mm256_sub_ps(u, _mm256_floor_ps(u)), below);
+            v = _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(2.0f), u), _mm256_set1_ps(1.0f));
+            if (conf.lfoShape == 3) v = _mm256_sub_ps(_mm256_setzero_ps(), v);
+          }
+          _mm256_store_ps(tmp + i, v);
+        }
+        if (conf.lfoShape >= 2) {
+          const float sm = stdref::Smooth<float>::coef(0.0005f, sr);
+          for (uint32_t i = 0; i < n; ++i) tmp[i] = lfoSmooth[ch].tick(tmp[i], sm);
+        }
+        for (uint32_t i = 0; i < n8; i += 8)
+          _mm256_store_ps(oct[ch] + i, _mm256_fmadd_ps(a4, _mm256_load_ps(tmp + i), _mm256_load_ps(oct[ch] + i)));
+      }
+    }
+    // Cutoff → coefficients, vectorised: fc, g, G and the main section's (d1, b1, b2).
+    float* fcv[2] = {buf(3), buf(4)};
+    float* gv[2] = {buf(5), buf(6)};
+    float* Gv[2] = {buf(7), buf(8)};
+    float* cB[2][3] = {{buf(9), buf(10), buf(11)}, {buf(12), buf(13), buf(14)}};
+    float* cA[2][3] = {{buf(15), buf(16), buf(17)}, {buf(18), buf(19), buf(20)}};
+    const __m256 ln2l2e = _mm256_set1_ps(0.6931471805599453f * kLog2e), vb = _mm256_set1_ps(base), lo = _mm256_set1_ps(10.0f),
+                 hi = _mm256_set1_ps(0.49f * sr), wv = _mm256_set1_ps(3.141592653589793f / sr), one = _mm256_set1_ps(1.0f),
+                 kb = _mm256_set1_ps(kB), ka = _mm256_set1_ps(1.8477590650225735f), m2 = _mm256_set1_ps(-2.0f), two = _mm256_set1_ps(2.0f);
+    for (int ch = 0; ch < 2; ++ch)
+      for (uint32_t i = 0; i < n8; i += 8) {
+        const __m256 e = pq::fastExp2(_mm256_mul_ps(_mm256_load_ps(oct[ch] + i), ln2l2e));
+        const __m256 f = _mm256_min_ps(_mm256_max_ps(_mm256_mul_ps(vb, e), lo), hi);
+        const __m256 g = pq::fastTan(_mm256_mul_ps(f, wv));
+        _mm256_store_ps(fcv[ch] + i, f);
+        _mm256_store_ps(gv[ch] + i, g);
+        _mm256_store_ps(Gv[ch] + i, _mm256_div_ps(g, _mm256_add_ps(one, g)));
+        const __m256 gk = _mm256_add_ps(g, kb);
+        const __m256 a1 = _mm256_div_ps(one, _mm256_fmadd_ps(g, gk, one));
+        const __m256 b1 = _mm256_mul_ps(_mm256_mul_ps(two, g), a1);
+        _mm256_store_ps(cB[ch][0] + i, _mm256_mul_ps(_mm256_mul_ps(_mm256_mul_ps(m2, g), gk), a1));
+        _mm256_store_ps(cB[ch][1] + i, b1);
+        _mm256_store_ps(cB[ch][2] + i, _mm256_mul_ps(b1, g));
+        if (conf.slope >= 1) {  // the 24 dB pre-section
+          const __m256 gka = _mm256_add_ps(g, ka);
+          const __m256 aa = _mm256_div_ps(one, _mm256_fmadd_ps(g, gka, one));
+          const __m256 ba = _mm256_mul_ps(_mm256_mul_ps(two, g), aa);
+          _mm256_store_ps(cA[ch][0] + i, _mm256_mul_ps(_mm256_mul_ps(_mm256_mul_ps(m2, g), gka), aa));
+          _mm256_store_ps(cA[ch][1] + i, ba);
+          _mm256_store_ps(cA[ch][2] + i, _mm256_mul_ps(ba, g));
+        }
+      }
+    // The Clean-only types' coefficient sets (comb, resampling, notch + lowpass, vowel) per sample through modFor.
+    const bool perSample = conf.type > 5;
+    for (uint32_t i = 0; i < n; ++i)
+      for (int ch = 0; ch < 2; ++ch) {
+        ChMod m;
+        if (perSample) {
+          m = modFor(fcv[ch][i]);
+        } else {
+          m.fc = fcv[ch][i];
+          m.g = gv[ch][i];
+          m.G = Gv[ch][i];
+          m.cB = {cB[ch][0][i], cB[ch][1][i], cB[ch][2][i]};
+          if (conf.slope >= 1) m.cA = {cA[ch][0][i], cA[ch][1][i], cA[ch][2][i]};
+        }
+        outLR[2 * i + ch] = filterOne(ch, ch ? xR[i] : xL[i], m);
+      }
+    t += n;
+  }
+
+private:
+  std::vector<float> blk_;
+};
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 }  // namespace devref

@@ -116,4 +116,113 @@ inline std::complex<double> eqBandResponse(const EqBand& b, const EqCoef& c, dou
   return eqBandResponseWarped(b, c, eqWarp(f, sr, os));
 }
 
+// ---- Auto Filter (auto_filter.pqp: the small-signal response of the unmodulated filter, and the LFO shapes) ----------
+enum AfType : int { kAfLowpass = 0, kAfHighpass, kAfBandpass, kAfNotch, kAfMorph, kAfDj, kAfComb, kAfResampling, kAfNotchLp, kAfVowel };
+
+struct AutoFilterState {
+  int type = kAfLowpass, circuit = 0, slope = 0;  // circuit 0 Clean, 1 OSR, 2 MS2, 3 SMP, 4 PRD; slope 0: 12 dB, 1: 24 dB
+  double freq = 1000.0, res = 0.3, morph = 0.0, dj = 0.0;
+};
+
+// The cutoff the filter runs at without modulation (the DJ knob's for the DJ type), clamped as the device clamps it.
+inline double autoFilterCutoff(const AutoFilterState& s, double sr) {
+  double base = s.freq;
+  if (s.type == kAfDj) base = s.dj < 0.0 ? 20000.0 * std::exp(6.684611727667927 * s.dj) : 15.0 * std::exp(6.907755278982137 * s.dj);
+  return std::clamp(base, 10.0, 0.49 * sr);
+}
+
+// The response at f Hz for small signals (the nonlinear models are linear there: tanh(v) ≈ v, below the OSR diode's
+// knee). The TPT filters are the bilinear transforms of their analog prototypes: s = j·tan(πf/sr)/tan(πfc/sr).
+// Resampling: the sample-and-hold's in-band (zero-order hold) magnitude at the new rate 2·fc.
+inline std::complex<double> autoFilterResponse(const AutoFilterState& st, double f, double sr) {
+  using C = std::complex<double>;
+  const double fc = autoFilterCutoff(st, sr);
+  const double fw = std::tan(kPi * std::min(f, 0.4999 * sr) / sr);
+  auto sAt = [&](double cut) { return C(0.0, fw / std::tan(kPi * std::clamp(cut, 10.0, 0.49 * sr) / sr)); };
+  const C s = sAt(fc);
+  const int type = st.type;
+  if (type <= kAfDj) {
+    const double pm = 4.0 * st.morph;
+    const double hLP = std::max(0.0, 1.0 - std::fabs(pm)) + std::max(0.0, pm - 3.0), hBP = std::max(0.0, 1.0 - std::fabs(pm - 1.0));
+    const double hHP = std::max(0.0, 1.0 - std::fabs(pm - 2.0)), hN = std::max(0.0, 1.0 - std::fabs(pm - 3.0));
+    const double djHP = st.dj > 0.0 ? 1.0 : 0.0;
+    const double w[6][4] = {{1, 0, 0, 0}, {0, 0, 1, 0}, {0, 1, 0, 0}, {0, 0, 0, 1}, {hLP, hBP, hHP, hN}, {1 - djHP, 0, djHP, 0}};
+    const double wLP = w[type][0], wBP = w[type][1], wHP = w[type][2], wN = w[type][3], hn = wHP + wN;
+    const int model = type > kAfMorph ? 0 : st.circuit;
+    C h;
+    if (model == 4) {  // PRD: the ladder's pole mixing over 1 + k·G⁴
+      const double k = 4.0 * st.res;
+      const C G = 1.0 / (1.0 + s);
+      double c[5];
+      if (st.slope) {
+        c[0] = hn, c[1] = -4 * hn, c[2] = 4 * wBP + 6 * wHP + 8 * wN, c[3] = -8 * wBP - 4 * wHP - 8 * wN, c[4] = wLP + 4 * wBP + wHP + 4 * wN;
+      } else {
+        c[0] = hn, c[1] = 2 * wBP - 2 * hn, c[2] = wLP - 2 * wBP + wHP + 2 * wN, c[3] = 0, c[4] = 0;
+      }
+      C num = 0.0, gn = 1.0;
+      for (double ci : c) {
+        num += ci * gn;
+        gn *= G;
+      }
+      h = num / (1.0 + k * G * G * G * G);
+    } else {  // the SVF models: (hn·D + (kb·wBP − k·hn)·s + wLP − wHP) / D per section, D = s² + k·s + 1
+      const bool clean = model == 0;
+      const double k12 = clean ? std::max(std::sqrt(2.0) * (1.0 - 0.8 * st.res), 0.02) : std::sqrt(2.0) * (1.0 - st.res);
+      const double kB = st.slope ? 0.541196100146197 * k12 : k12;
+      const double kbB = clean ? kB : std::max(kB, 0.25);
+      auto sec = [&](double k, double kb) {
+        const C D = s * s + k * s + 1.0;
+        return (hn * D + (kb * wBP - k * hn) * s + (wLP - wHP)) / D;
+      };
+      h = sec(kB, kbB);
+      if (st.slope) h *= sec(1.8477590650225735, 1.8477590650225735);
+    }
+    if (type == kAfDj) h = 1.0 + std::min(1.0, 20.0 * std::fabs(st.dj)) * (h - 1.0);
+    return h;
+  }
+  if (type == kAfComb) {
+    const double fb = 0.792 * st.res, T = sr / std::clamp(fc, 20.0, 10000.0);
+    return std::sqrt(1.0 - fb * fb) / (1.0 - fb * std::polar(1.0, -2.0 * kPi * f / sr * T));
+  }
+  if (type == kAfResampling) {
+    const double u = kPi * f / std::min(2.0 * fc, 0.45 * sr);
+    return u < 1e-9 ? 1.0 : std::sin(u) / u;
+  }
+  if (type == kAfNotchLp) {
+    const double k = std::max(std::sqrt(2.0) * (1.0 - 0.8 * st.res), 0.02);
+    const C s2 = sAt(std::min(2.0 * fc, 0.49 * sr));
+    return (s * s + 1.0) / (s * s + k * s + 1.0) / (s2 * s2 + std::sqrt(2.0) * s2 + 1.0);
+  }
+  // Vowel: three formant band-passes, A E I O U by morph, shifted by √(fc / 1 kHz).
+  const double q4 = 4.0 * st.morph;
+  const int i = static_cast<int>(std::min(std::floor(q4), 3.0));
+  const double fr = q4 - i;
+  static constexpr double F[3][5] = {{730, 530, 270, 570, 300}, {1090, 1840, 2290, 840, 870}, {2440, 2480, 3010, 2410, 2240}};
+  const double k = 1.0 / (3.0 + 9.0 * st.res), sh = std::sqrt(fc * 0.001), gains[3] = {1.0, 0.5, 0.25};
+  C h = 0.0;
+  for (int j = 0; j < 3; ++j) {
+    const double fj = std::clamp((F[j][i] + fr * (F[j][i + 1] - F[j][i])) * sh, 20.0, 0.45 * sr);
+    const C sj = sAt(fj);
+    h += gains[j] * k * sj / (sj * sj + k * sj + 1.0);
+  }
+  return h;
+}
+
+// The LFO shapes (af_shape) at phase ph in [0, 1); `cycle` picks the random shape's held value (a fixed pattern
+// for the display: the device draws its values from noise).
+inline double autoFilterLfo(int shape, double ph, int cycle = 0) {
+  auto frac = [](double x) { return x - std::floor(x); };
+  switch (shape) {
+    case 0: return std::sin(2.0 * kPi * ph);
+    case 1: return 4.0 * std::fabs(frac(ph + 0.75) - 0.5) - 1.0;
+    case 2: return 2.0 * frac(ph + 0.5) - 1.0;
+    case 3: return 1.0 - 2.0 * frac(ph + 0.5);
+    case 4: return ph < 0.5 ? 1.0 : -1.0;
+    default: {
+      static constexpr double kSteps[8] = {0.35, -0.7, 0.9, -0.15, 0.55, -0.95, 0.1, -0.45};
+      return kSteps[static_cast<unsigned>(cycle) % 8u];
+    }
+  }
+}
+
 }  // namespace pq::views::devices::math

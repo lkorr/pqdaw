@@ -1,5 +1,6 @@
-// The device panel scenes (T4.6; `device-utility`, `device-saturator`, `device-eq-eight`; T4.12 `device-operator`): a
-// stock device opened in the Device tab with a few non-default settings, and for EQ Eight a spectrum analysed
+// The device panel scenes (T4.6; `device-utility`, `device-saturator`, `device-eq-eight`; T4.11
+// `device-auto-filter`; T4.12 `device-operator`): a stock device opened in the Device tab with a few
+// non-default settings, and for EQ Eight a spectrum analysed
 // (synchronously, deterministic) from a fixed test signal, so the goldens show every layer of the panel.
 
 #include <cmath>
@@ -76,6 +77,20 @@ Status setupDeviceScene(Shell& shell, std::string_view file) {
     panel->setParamValue("repeatA", 0.2);
     const double partials[16] = {1.0, 0.5, 0.62, 0.25, 0.4, 0.12, 0.3, 0.08, 0.18, 0.05, 0.1, 0.0, 0.06, 0.0, 0.03, 0.0};
     for (int h = 0; h < 16; ++h) panel->setParamValue("uA" + std::to_string(h + 1), partials[h]);
+  } else if (patch == "auto_filter") {
+    // MS2 at 24 dB with some drive and resonance; LFO (triangle) and envelope on, so every section is lit.
+    panel->setConstValue("circuit", 2.0);
+    panel->setConstValue("slope", 1.0);
+    panel->setConstValue("lfo", 1.0);
+    panel->setConstValue("lfoShape", 1.0);
+    panel->setConstValue("env", 1.0);
+    panel->setParamValue("freq", 1200.0);
+    panel->setParamValue("res", 0.7);
+    panel->setParamValue("drive", db(6.0));
+    panel->setParamValue("lfoAmount", 0.3);
+    panel->setParamValue("lfoRate", 0.5);
+    panel->setParamValue("lfoPhase", 0.25);
+    panel->setParamValue("envAmount", 0.25);
   } else if (patch == "eq_eight") {
     panel->setConstValue("on1", 1.0);
     panel->setParamValue("freq1", 40.0);

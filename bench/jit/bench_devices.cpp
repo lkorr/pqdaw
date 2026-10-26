@@ -1,5 +1,5 @@
-// T4.9 / T4.10: the stock devices of stdlib/devices/ (Utility, Saturator, EQ Eight) compiled by the JIT (and the
-// interpreter, for reference) against their hand-written C++ implementations (tests/stdlib/device_reference.h: the
+// T4.9 / T4.10 / T4.11: the stock devices of stdlib/devices/ (Utility, Saturator, EQ Eight, Auto Filter) compiled by
+// the JIT (and the interpreter, for reference) against their hand-written C++ implementations (tests/stdlib/device_reference.h: the
 // same float32 formulas, state in locals, one loop over the samples with every stage interleaved, param-rate values
 // once per block). Release / ship build.
 //
@@ -363,6 +363,35 @@ struct EqBlock {
   }
 };
 
+// ---- Auto Filter -----------------------------------------------------------------------------------------------------
+devref::AfParams autoFilterParams() {
+  devref::AfParams p;
+  p.freq = 900.0f;
+  p.res = 0.6f;
+  p.drive = 2.0f;
+  p.morph = 0.4f;
+  p.lfoAmount = 0.5f;
+  p.lfoRate = 3.0f;
+  p.envAmount = 0.4f;
+  return p;
+}
+
+template <class Conf>
+void addAutoFilter(std::vector<Case>& cases, const std::string& name, int type, int circuit, int slope, bool lfo, bool env) {
+  static devref::AutoFilter<Conf> ref;
+  static const devref::AfParams p = autoFilterParams();
+  const std::string text = "import \"devices/auto_filter.pqp\"\npatch T { in x : audio stereo\n  out y : audio stereo\n  a = auto_filter(x, type: " +
+                           std::to_string(type) + ", circuit: " + std::to_string(circuit) + ", slope: " + std::to_string(slope) +
+                           ", lfo: " + (lfo ? "1" : "0") + ", env: " + (env ? "1" : "0") + ")\n  y = a }";
+  const std::map<std::string, double> params = {{"a__freq", p.freq},           {"a__res", p.res},         {"a__drive", p.drive},
+                                                {"a__morph", p.morph},         {"a__lfoAmount", p.lfoAmount}, {"a__lfoRate", p.lfoRate},
+                                                {"a__envAmount", p.envAmount}};
+  cases.push_back({name, text, params, [] {
+                     ref.prepare(p);
+                     ref.processBlock(sig().ch[0].data(), sig().ch[1].data(), kBlock, gOut.data());
+                   }});
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -372,7 +401,7 @@ int main(int argc, char** argv) {
     else gFilter = a;
   }
   pq::bench::SystemLoad load;
-  std::printf("T4.9/T4.10 stock devices: JIT vs hand-written C++ (device_reference.h), stereo, block %u, 48 kHz; JIT target %s\n",
+  std::printf("T4.9-T4.11 stock devices: JIT vs hand-written C++ (device_reference.h), stereo, block %u, 48 kHz; JIT target %s\n",
               kBlock, st::jitCompiler().hostCpu().c_str());
   std::vector<Case> cases;
 
@@ -487,6 +516,21 @@ patch T { in x : audio stereo
                        }});
     }
   }
+
+  // ---- Auto Filter (T4.11) ---------------------------------------------------------------------------------------
+  // The C++ side is devref::AutoFilter specialised at compile time (AfFixed: every branch on the configuration folds
+  // away): param-rate values once per block, then one loop over the frames with both channels interleaved.
+  addAutoFilter<devref::AfFixed<0, 0, 0, false, false>>(cases, "auto_filter LP12 Clean", 0, 0, 0, false, false);
+  addAutoFilter<devref::AfFixed<0, 0, 1, true, false>>(cases, "auto_filter LP24 Clean + LFO", 0, 0, 1, true, false);
+  addAutoFilter<devref::AfFixed<4, 0, 0, true, true>>(cases, "auto_filter Morph12 Clean + LFO + env", 4, 0, 0, true, true);
+  addAutoFilter<devref::AfFixed<0, 1, 0, false, false>>(cases, "auto_filter LP12 OSR", 0, 1, 0, false, false);
+  addAutoFilter<devref::AfFixed<0, 1, 1, true, false>>(cases, "auto_filter LP24 OSR + LFO", 0, 1, 1, true, false);
+  addAutoFilter<devref::AfFixed<0, 2, 0, false, false>>(cases, "auto_filter LP12 MS2", 0, 2, 0, false, false);
+  addAutoFilter<devref::AfFixed<2, 3, 0, true, false>>(cases, "auto_filter BP12 SMP + LFO", 2, 3, 0, true, false);
+  addAutoFilter<devref::AfFixed<0, 4, 1, false, false>>(cases, "auto_filter LP24 PRD", 0, 4, 1, false, false);
+  addAutoFilter<devref::AfFixed<0, 4, 1, true, true>>(cases, "auto_filter LP24 PRD + LFO + env", 0, 4, 1, true, true);
+  addAutoFilter<devref::AfFixed<6, 0, 0, true, false>>(cases, "auto_filter Comb + LFO", 6, 0, 0, true, false);
+  addAutoFilter<devref::AfFixed<9, 0, 0, true, false>>(cases, "auto_filter Vowel + LFO", 9, 0, 0, true, false);
 
   for (const Case& c : cases) runCase(c);
   std::printf("worst jit/c++ ratio %.2f; system load during the run %.0f %%\n", gWorstRatio, load.busyPercent());

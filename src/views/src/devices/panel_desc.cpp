@@ -152,7 +152,8 @@ ControlDesc readControl(const json& c, const std::string& where) {
       break;
     case ControlKind::Visual:
       if (d.visual != "transfer" && d.visual != "eq" && d.visual != "spectrum" && d.visual != "envelope" &&
-          d.visual != "algorithm" && d.visual != "partials")
+          d.visual != "algorithm" && d.visual != "partials" &&
+          d.visual != "filter" && d.visual != "lfo")
         throw std::runtime_error(where + ": unknown visual \"" + d.visual + "\"");
       break;
     case ControlKind::Label: break;

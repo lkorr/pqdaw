@@ -591,12 +591,259 @@ private:
   ui::Vec2 last_{0, 0};
 };
 
+// ---- Auto Filter: the filter response with a frequency / resonance dot, and the LFO shape ---------------------------
+// Both read their values through role bindings ("freq", "res", "#type" …); a role that is not bound uses a default.
+class RoleBinding {
+public:
+  RoleBinding(DevicePanel::Impl& impl, const ControlDesc& d) : impl_(impl), desc_(d) {}
+  void rebind() {
+    names_.clear();
+    deps_.clear();
+    for (const auto& [role, name] : desc_.bind) {
+      if (role.empty() || role[0] == '@' || name.empty()) continue;
+      const std::string n = name[0] == '#' ? "#" + impl_.resolve(name.substr(1)) : impl_.resolve(name);
+      names_[role] = n;
+      deps_.insert(n);
+    }
+  }
+  bool dependsOn(std::string_view name) const { return deps_.count(std::string(name)) != 0; }
+  double get(const char* role, double def) const {
+    const auto it = names_.find(role);
+    return it == names_.end() ? def : impl_.value(it->second);
+  }
+  // The param a role is bound to ("" for a const or an unbound role).
+  std::string param(const char* role) const {
+    const auto it = names_.find(role);
+    return it == names_.end() || it->second.empty() || it->second[0] == '#' ? std::string() : it->second;
+  }
+
+private:
+  DevicePanel::Impl& impl_;
+  const ControlDesc& desc_;
+  std::map<std::string, std::string, std::less<>> names_;
+  std::set<std::string, std::less<>> deps_;
+};
+
+class FilterDisplay final : public PanelDisplay {
+public:
+  FilterDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : PanelDisplay(d.id, impl, d), roles_(impl, d) { rebind(); }
+  void rebind() override {
+    roles_.rebind();
+    dirty_ = true;
+  }
+  bool dependsOn(std::string_view name) const override { return roles_.dependsOn(name); }
+  void valuesChanged() override {
+    dirty_ = true;
+    markDirty();
+  }
+  ui::InfoText info() const override {
+    return {"Filter Display", "The filter's response at the current settings (without the LFO and envelope). Drag the dot: left / right "
+                              "sets the frequency (DJ: the DJ knob), up / down the resonance. Shift: fine."};
+  }
+
+  math::AutoFilterState state() const {
+    math::AutoFilterState s;
+    s.type = static_cast<int>(std::lround(roles_.get("type", 0)));
+    s.circuit = static_cast<int>(std::lround(roles_.get("circuit", 0)));
+    s.slope = static_cast<int>(std::lround(roles_.get("slope", 0)));
+    s.freq = roles_.get("freq", 1000.0);
+    s.res = roles_.get("res", 0.3);
+    s.morph = roles_.get("morph", 0.0);
+    s.dj = roles_.get("dj", 0.0);
+    return s;
+  }
+  // Tests: where the dot is drawn (device px), after a paint.
+  ui::Vec2 dotPos() const {
+    const math::AutoFilterState s = state();
+    const float x = axis_.x(static_cast<float>(math::autoFilterCutoff(s, impl_.sampleRate())));
+    const float u = static_cast<float>(std::clamp(s.res / kResMax, 0.0, 1.0));
+    return {x, plot_.y1 - 4.0f - u * (plot_.height() - 8.0f)};
+  }
+
+  void paint(ui::PaintContext& ctx) override {
+    const ui::Theme* th = ctx.res.theme;
+    if (!th) return;
+    const ui::IRect r = rect();
+    paint::box(ctx.dl, r, ctx.scale.exact(2.0f), th->device.display, th->device.border);
+    const ui::Rect f = insetRect(r, 1).toRect();
+    axis_ = {f.x0, f.x1};
+    plot_ = f;
+    ctx.dl.pushClip(f);
+    drawFreqGrid(ctx, *th, f, axis_, true);
+    for (float db : {kTopDb - 12.0f, -12.0f, -24.0f}) {
+      const float y = std::round(yOf(db));
+      ctx.dl.addRectFilled({f.x0, y, f.x1, y + 1.0f}, th->device.displayGrid);
+    }
+    ctx.dl.addRectFilled({f.x0, std::round(yOf(0.0f)), f.x1, std::round(yOf(0.0f)) + 1.0f}, th->device.displayGridMajor);
+    const uint32_t n = static_cast<uint32_t>(std::max(16.0f, f.width() / ctx.scale.exact(1.5f)));
+    if (dirty_ || resp_.size() != n) compute(n);
+    pts_.resize(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      const float u = static_cast<float>(i) / static_cast<float>(n - 1);
+      pts_[i] = {f.x0 + u * f.width(), std::clamp(yOf(resp_[i]), f.y0 - 2.0f, f.y1 + 2.0f)};
+    }
+    // The response filled down to the floor (Live draws its filter as a filled shape), then the curve.
+    for (uint32_t i = 0; i + 1 < n; ++i) {
+      const ui::Vec2 q[4] = {{pts_[i].x, f.y1}, pts_[i], pts_[i + 1], {pts_[i + 1].x, f.y1}};
+      ctx.dl.addConvexPolyFilled(q, th->device.curveFill);
+    }
+    ui::smoothPolyline(ctx.dl, pts_.data(), n, th->device.curve, ctx.scale.exact(1.6f));
+    // The frequency / resonance dot.
+    const ui::Vec2 c = dotPos();
+    const float rad = ctx.scale.exact(kDotRadius);
+    if (hover_ || drag_) ctx.dl.addCircleFilled(c, rad + ctx.scale.exact(1.5f), th->device.bandSelected);
+    ctx.dl.addCircleFilled(c, rad, th->device.band);
+    ctx.dl.popClip();
+  }
+
+  bool onPointer(const ui::PointerEvent& e) override {
+    switch (e.type) {
+      case ui::PointerType::Move: {
+        if (drag_) {
+          dragTo(e.pos, e.mods);
+          return true;
+        }
+        const bool h = nearDot(e.pos);
+        if (h != hover_) {
+          hover_ = h;
+          markDirty();
+        }
+        return false;
+      }
+      case ui::PointerType::Down: {
+        if (e.button != ui::PointerButton::Left || !nearDot(e.pos)) return false;
+        drag_ = true;
+        last_ = e.pos;
+        xParam_ = state().type == math::kAfDj ? roles_.param("dj") : roles_.param("freq");
+        resParam_ = roles_.param("res");
+        if (!xParam_.empty()) impl_.userParamBegin(xParam_);
+        if (!resParam_.empty()) impl_.userParamBegin(resParam_);
+        markDirty();
+        return true;
+      }
+      case ui::PointerType::Up: {
+        if (!drag_ || e.button != ui::PointerButton::Left) return false;
+        endDrag();
+        return true;
+      }
+      default: return false;
+    }
+  }
+  void onCaptureLost() override {
+    if (drag_) endDrag();
+  }
+  void onHoverChanged(bool h) override {
+    if (!h && hover_) {
+      hover_ = false;
+      markDirty();
+    }
+  }
+
+private:
+  static constexpr float kDotRadius = 6.0f, kTopDb = 24.0f, kBottomDb = -48.0f;
+  static constexpr double kResMax = 1.25;
+  float yOf(float db) const noexcept { return plot_.y0 + 2.0f + (kTopDb - db) / (kTopDb - kBottomDb) * (plot_.height() - 4.0f); }
+  bool nearDot(ui::Vec2 p) const {
+    const float s = tree() ? tree()->scale() : 1.0f;
+    const ui::Vec2 c = dotPos();
+    const float r = (kDotRadius + 4.0f) * s;
+    return (c.x - p.x) * (c.x - p.x) + (c.y - p.y) * (c.y - p.y) <= r * r;
+  }
+  void dragTo(ui::Vec2 p, ui::Mods mods) {
+    const float k = (mods & ui::mod::kShift) ? 0.1f : 1.0f;
+    const float dx = (p.x - last_.x) * k, dy = (p.y - last_.y) * k;
+    last_ = p;
+    if (const ParamInfo* xp = impl_.paramInfo(xParam_)) {
+      double pos = toPosition(*xp, impl_.value(xParam_));
+      if (xp->exp)  // the axis spans 10 Hz … 22 kHz; the param's own range may differ (position is log in both)
+        pos += dx * std::log(2200.0) / std::log(xp->max / xp->min) / std::max(1.0f, plot_.width());
+      else  // DJ: the axis' width spans the knob's travel
+        pos += dx / std::max(1.0f, plot_.width());
+      impl_.userParam(xParam_, fromPosition(*xp, std::clamp(pos, 0.0, 1.0)), this);
+    }
+    if (const ParamInfo* rp = impl_.paramInfo(resParam_)) {
+      const double pos = std::clamp(toPosition(*rp, impl_.value(resParam_)) - dy / std::max(1.0f, plot_.height() - 8.0f), 0.0, 1.0);
+      impl_.userParam(resParam_, fromPosition(*rp, pos), this);
+    }
+  }
+  void endDrag() {
+    drag_ = false;
+    if (!xParam_.empty()) impl_.userParamEnd(xParam_);
+    if (!resParam_.empty()) impl_.userParamEnd(resParam_);
+    markDirty();
+  }
+  void compute(uint32_t n) {
+    resp_.assign(n, 0.0f);
+    const math::AutoFilterState s = state();
+    const double sr = impl_.sampleRate();
+    for (uint32_t i = 0; i < n; ++i) {
+      const double hz = axis_.hz(plot_.x0 + plot_.width() * static_cast<float>(i) / static_cast<float>(n - 1));
+      resp_[i] = static_cast<float>(20.0 * std::log10(std::max(std::abs(math::autoFilterResponse(s, hz, sr)), 1e-9)));
+    }
+    dirty_ = false;
+  }
+
+  RoleBinding roles_;
+  std::vector<float> resp_;
+  std::vector<ui::Vec2> pts_;
+  FreqAxis axis_;
+  ui::Rect plot_{0, 0, 1, 1};
+  bool dirty_ = true, hover_ = false, drag_ = false;
+  ui::Vec2 last_{0, 0};
+  std::string xParam_, resParam_;
+};
+
+class LfoDisplay final : public PanelDisplay {
+public:
+  LfoDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : PanelDisplay(d.id, impl, d), roles_(impl, d) { rebind(); }
+  void rebind() override { roles_.rebind(); }
+  bool dependsOn(std::string_view name) const override { return roles_.dependsOn(name); }
+  ui::InfoText info() const override {
+    return {"LFO Shape", "Two cycles of the LFO: the left channel bright, the right channel (Phase, Spin) dim."};
+  }
+  void paint(ui::PaintContext& ctx) override {
+    const ui::Theme* th = ctx.res.theme;
+    if (!th) return;
+    const ui::IRect r = rect();
+    paint::box(ctx.dl, r, ctx.scale.exact(2.0f), th->device.display, th->device.border);
+    const ui::Rect f = insetRect(r, ctx.scale.px(3.0f)).toRect();
+    ctx.dl.pushClip(r.toRect());
+    const float cy = std::round(0.5f * (f.y0 + f.y1));
+    ctx.dl.addRectFilled({f.x0, cy, f.x1, cy + 1.0f}, th->device.displayGridMajor);
+    const float mx = std::round(0.5f * (f.x0 + f.x1));
+    ctx.dl.addRectFilled({mx, f.y0, mx + 1.0f, f.y1}, th->device.displayGrid);
+    const bool on = roles_.get("on", 1.0) >= 0.5;
+    const int shape = static_cast<int>(std::lround(roles_.get("shape", 0)));
+    const double offset = roles_.get("offset", 0.0), phase = roles_.get("phase", 0.0), spin = roles_.get("spin", 0.0);
+    const uint32_t n = static_cast<uint32_t>(std::max(32.0f, f.width()));
+    for (int ch = 1; ch >= 0; --ch) {
+      pts_.resize(n);
+      for (uint32_t i = 0; i < n; ++i) {
+        const double u = 2.0 * i / (n - 1);  // two cycles
+        const double t = ch ? u * (1.0 + spin) + offset + phase : u + offset;
+        const double ph = t - std::floor(t);
+        const double v = math::autoFilterLfo(shape, ph, static_cast<int>(std::floor(t)) + 3 * ch);
+        pts_[i] = {f.x0 + static_cast<float>(u * 0.5) * f.width(), cy - static_cast<float>(v) * 0.5f * (f.height() - 2.0f)};
+      }
+      const ui::Rgba col = !on ? th->device.displayGrid : ch ? ui::withAlpha(th->device.curve, 110) : th->device.curve;
+      ui::smoothPolyline(ctx.dl, pts_.data(), n, col, ctx.scale.exact(ch ? 1.2f : 1.6f));
+    }
+    ctx.dl.popClip();
+  }
+
+private:
+  RoleBinding roles_;
+  std::vector<ui::Vec2> pts_;
+};
+
 }  // namespace
 
 std::unique_ptr<PanelDisplay> makeDisplay(DevicePanel::Impl& impl, const ControlDesc& desc) {
   if (desc.visual == "transfer") return std::make_unique<TransferDisplay>(impl, desc);
   if (desc.visual == "eq") return std::make_unique<EqDisplay>(impl, desc);
   if (auto op = makeOperatorDisplay(impl, desc)) return op;
+  if (desc.visual == "filter") return std::make_unique<FilterDisplay>(impl, desc);
+  if (desc.visual == "lfo") return std::make_unique<LfoDisplay>(impl, desc);
   return std::make_unique<SpectrumDisplay>(impl, desc);
 }
 

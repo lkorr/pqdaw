@@ -159,12 +159,13 @@ void checkGolden(const char* scene, const std::string& file) {
 // ---- descriptions -----------------------------------------------------------------------------------------------------
 
 TEST_CASE("device panels: the stock panel descriptions bind to their devices") {
-  Device u("utility"), s("saturator"), e("eq_eight");
+  Device u("utility"), s("saturator"), e("eq_eight"), a("auto_filter");
   CHECK(u.desc.title == "Utility");
   CHECK(s.desc.title == "Saturator");
   CHECK(e.desc.title == "EQ Eight");
-  // Every visible param of Utility and Saturator has a control.
-  for (const Device* d : {&u, &s})
+  CHECK(a.desc.title == "Auto Filter");
+  // Every visible param of Utility, Saturator and Auto Filter has a control.
+  for (const Device* d : {&u, &s, &a})
     for (const ParamInfo& p : d->sig.params) {
       bool found = false;
       for (const ControlDesc& c : d->desc.controls) found = found || c.param == p.name || c.bind.count(p.name) || c.bind.count("x");
@@ -187,6 +188,10 @@ TEST_CASE("device panels: the stock panel descriptions bind to their devices") {
   CHECK(choosers == 8);
   // Exports become jacks.
   CHECK(u.sig.exports == std::vector<std::string>{"mid", "side", "bass"});
+  CHECK(a.sig.exports == std::vector<std::string>{"cutoff", "lfoSignal", "envelope"});
+  // Auto Filter's structural settings are consts; its signal input is `x` (the sidechain `sc` has a default).
+  for (const char* c : {"type", "circuit", "slope", "lfo", "lfoShape", "env", "scOn"}) CHECK(a.sig.findConst(c) != nullptr);
+  CHECK(a.sig.audioIn == "x");
 }
 
 TEST_CASE("device panels: a description that names a missing param, const or selector fails with the control") {
@@ -329,6 +334,55 @@ TEST_CASE("device panels: the EQ display's response is the bands' measured respo
         CHECK_MESSAGE(std::fabs(measured - shown) < 0.05, "type " << type << " os " << os << " f " << f << ": " << measured << " vs " << shown);
       }
     }
+}
+
+TEST_CASE("device panels: the Auto Filter display's response is the filter's measured response (types, models, slopes)") {
+  // devref::AutoFilter (the DSP reference the device is held to in tests/stdlib) on small sines (amplitude 1e-4: the
+  // nonlinear models' linear range), against math::autoFilterResponse.
+  const double sr = 48000.0;
+  struct Cfg {
+    int type, circuit, slope;
+    double freq, res, morph, dj;
+  };
+  const Cfg cfgs[] = {{0, 0, 0, 800, 0.6, 0, 0},     {1, 1, 1, 2000, 0.5, 0, 0},   {2, 2, 0, 500, 0.8, 0, 0},
+                      {3, 3, 1, 1500, 0.4, 0, 0},    {4, 4, 0, 900, 0.7, 0.3, 0},  {0, 4, 1, 300, 0.9, 0, 0},
+                      {5, 0, 1, 1000, 0.5, 0, -0.4}, {5, 0, 0, 1000, 0.3, 0, 0.5}, {8, 0, 0, 700, 0.6, 0, 0},
+                      {9, 0, 0, 1000, 0.4, 0.6, 0},  {6, 0, 0, 480, 0.8, 0, 0}};
+  for (const Cfg& k : cfgs) {
+    math::AutoFilterState st;
+    st.type = k.type;
+    st.circuit = k.circuit;
+    st.slope = k.slope;
+    st.freq = k.freq;
+    st.res = k.res;
+    st.morph = k.morph;
+    st.dj = k.dj;
+    devref::AfParams p;
+    p.freq = static_cast<float>(k.freq);
+    p.res = static_cast<float>(k.res);
+    p.morph = static_cast<float>(k.morph);
+    p.dj = static_cast<float>(k.dj);
+    for (double f : {100.0, 450.0, 1000.0, 2500.0, 7000.0}) {
+      devref::AutoFilter<devref::AfRuntime> ref;
+      ref.conf.type = k.type;
+      ref.conf.circuit = k.circuit;
+      ref.conf.slope = k.slope;
+      ref.prepare(p);
+      double peak = 0.0;
+      const float s0[2] = {0.0f, 0.0f};
+      for (int i = 0; i < 48000; ++i) {
+        const float v = static_cast<float>(1e-4 * std::sin(2.0 * math::kPi * f * i / sr));
+        const float x[2] = {v, v};
+        ref.process(x, s0);
+        if (i > 24000) peak = std::max(peak, static_cast<double>(std::fabs(ref.out[0])));
+      }
+      const double measured = 20.0 * std::log10(std::max(peak / 1e-4, 1e-9));
+      const double shown = 20.0 * std::log10(std::max(std::abs(math::autoFilterResponse(st, f, sr)), 1e-9));
+      if (shown < -50.0) continue;  // deep in a stopband: below what the display needs
+      CHECK_MESSAGE(std::fabs(measured - shown) < 0.05,
+                    "type " << k.type << " circuit " << k.circuit << " slope " << k.slope << " f " << f << ": " << measured << " vs " << shown);
+    }
+  }
 }
 
 // ---- the panel: edits, damage, bindings ---------------------------------------------------------------------------------
@@ -556,6 +610,39 @@ TEST_CASE("device panels: Operator's partial editor shows for the User waveform 
   CHECK(r.panel->paramValue("uA2") == doctest::Approx(0.5).epsilon(0.05));
   CHECK(r.panel->paramValue("uA3") == doctest::Approx(0.5).epsilon(0.05));
   CHECK(r.panel->paramValue("uA4") == 0.0);
+TEST_CASE("device panels: Auto Filter's dot drag edits frequency and resonance; a type change shows the type's controls") {
+  Device a("auto_filter");
+  FakeTarget t;
+  PanelRig r(a, &t, true);
+  Widget* disp = r.panel->control("filter");
+  REQUIRE(disp != nullptr);
+  // The dot: x at the cutoff (1 kHz default) on the 10 Hz … 22 kHz log axis, y at the resonance (30 % of 125 %).
+  const IRect fr = disp->rect();
+  const float x0 = static_cast<float>(fr.x + 1), x1 = static_cast<float>(fr.right() - 1);
+  const float y0 = static_cast<float>(fr.y + 1), y1 = static_cast<float>(fr.bottom() - 1);
+  const float x = x0 + (x1 - x0) * static_cast<float>(std::log(1000.0 / 10.0) / std::log(2200.0));
+  const float y = y1 - 4.0f - static_cast<float>(0.3 / 1.25) * (y1 - y0 - 8.0f);
+  r.d.move({x, y});
+  r.d.down({x, y});
+  r.d.move({x + 40.0f, y - 20.0f});
+  r.d.up({x + 40.0f, y - 20.0f});
+  CHECK(t.begins == 2);
+  CHECK(t.ends == 2);
+  CHECK(r.panel->paramValue("freq") > 1000.0);
+  CHECK(r.panel->paramValue("res") > 0.3);
+  // The DJ type swaps Frequency for the DJ knob; the circuit and drive are for types 0–4 only.
+  CHECK(r.panel->control("freq")->visible());
+  CHECK_FALSE(r.panel->control("dj")->visible());
+  CHECK_FALSE(r.panel->control("drive")->visible());  // Clean: no drive
+  r.panel->setConstValue("circuit", 4.0);
+  r.d.step();
+  CHECK(r.panel->control("drive")->visible());
+  r.panel->setConstValue("type", 5.0);
+  r.d.step();
+  CHECK_FALSE(r.panel->control("freq")->visible());
+  CHECK(r.panel->control("dj")->visible());
+  CHECK_FALSE(r.panel->control("circuit")->visible());
+  CHECK_FALSE(r.panel->control("drive")->visible());
 }
 
 // ---- spectrum: nothing while hidden; idle ------------------------------------------------------------------------------
@@ -637,7 +724,7 @@ TEST_CASE("device preview: param edits are param writes; structural edits re-che
 }
 
 TEST_CASE("device preview: every stock device's host patch compiles; a device without a description gets the auto panel") {
-  for (const char* dev : {"utility", "saturator", "eq_eight", "operator"}) {
+  for (const char* dev : {"utility", "saturator", "eq_eight", "operator", "auto_filter"}) {
     FakePlayer player;
     auto pv = DevicePreview::open(stdlibPath((std::string("devices/") + dev + ".pqp").c_str()), &player);
     REQUIRE_MESSAGE(pv.ok(), (pv.ok() ? "" : pv.error().message));
@@ -654,6 +741,7 @@ TEST_CASE("device preview: every stock device's host patch compiles; a device wi
   CHECK(std::find(titles.begin(), titles.end(), "Saturator") != titles.end());
   CHECK(std::find(titles.begin(), titles.end(), "Utility") != titles.end());
   CHECK(std::find(titles.begin(), titles.end(), "Operator") != titles.end());
+  CHECK(std::find(titles.begin(), titles.end(), "Auto Filter") != titles.end());
 }
 
 TEST_CASE("device preview: an instrument (Operator) plays the arpeggio's notes itself and ends voices with its own done") {
@@ -683,3 +771,4 @@ TEST_CASE("device panels: golden of Utility") { checkGolden("device-utility", st
 TEST_CASE("device panels: golden of Saturator") { checkGolden("device-saturator", stdlibPath("devices/saturator.pqp")); }
 TEST_CASE("device panels: golden of EQ Eight") { checkGolden("device-eq-eight", stdlibPath("devices/eq_eight.pqp")); }
 TEST_CASE("device panels: golden of Operator") { checkGolden("device-operator", stdlibPath("devices/operator.pqp")); }
+TEST_CASE("device panels: golden of Auto Filter") { checkGolden("device-auto-filter", stdlibPath("devices/auto_filter.pqp")); }
