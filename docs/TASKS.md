@@ -546,7 +546,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - 4 oscillators, 11 algorithms, ratio/fixed (coarse ratios as JI harmonics), per-osc envelopes, pitch envelope, LFO, filter, user waveforms, glide, spread, voices; exported oscillator outputs; pitch follows the tuning signal.
   - Accept: algorithm routing tests; SPEC §13 calibration row (64 voices, interpreter and JIT, with crossfade numbers) ≤ the budget; panel golden; tuned playback in 31edo and a MOS.
 
-- [~] **T4.12-fix1 Operator: circuit-model filter, voices, interpreter cost** *(worker CB, branch task/T4.12-fix1-operator)* (`stdlib`, `document` lowering, `engine`). Depends on: T4.11, T4.12.
+- [x] **T4.12-fix1 Operator: circuit-model filter, voices, interpreter cost** *(merged 2026-10-26; interpreter-window overrun → T1b.x-perf)* (`stdlib`, `document` lowering, `engine`). Depends on: T4.11, T4.12.
   - Operator's filter reuses Auto Filter's circuit models (resolve the resonance-law mismatch, Q133 item 11; reference + panel Circuit/Drive + golden); the `voices` setting read by the chain lowering (track polyphony); reduce the interpreter cost of the full configuration (Q131) or document why the JIT window makes it acceptable.
   - Accept: Operator with MS2/PRD filter at 64 voices within SPEC §13 on the JIT; voices setting changes polyphony (test); reference ≤ 1e-5.
 
