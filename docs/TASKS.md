@@ -538,11 +538,11 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - 8 SVF-based bands, all types and slopes, stereo/L-R/M-S, adaptive Q, HQ, scale, spectrum display (PQ Meter port), audio-rate modulatable band params.
   - Accept: magnitude responses vs analytic responses within 0.1 dB; stable under audio-rate cutoff modulation; panel golden.
 
-- [ ] **T4.11 Auto Filter** (`stdlib`, `views`)
+- [~] **T4.11 Auto Filter** *(worker BX, branch task/T4.11-auto-filter)* (`stdlib`, `views`)
   - Live 12 filter types and circuit models (Clean, OSR, MS2, SMP, PRD, approximated), drive, morph, LFO, envelope follower, sidechain.
   - Accept: responses per model vs published/known model behaviour (listening notes in REVIEW); modulation click-free; panel golden.
 
-- [ ] **T4.12 Operator** (`stdlib`, `views`)
+- [~] **T4.12 Operator** *(worker BY, branch task/T4.12-operator)* (`stdlib`, `views`)
   - 4 oscillators, 11 algorithms, ratio/fixed (coarse ratios as JI harmonics), per-osc envelopes, pitch envelope, LFO, filter, user waveforms, glide, spread, voices; exported oscillator outputs; pitch follows the tuning signal.
   - Accept: algorithm routing tests; SPEC §13 calibration row (64 voices, interpreter and JIT, with crossfade numbers) ≤ the budget; panel golden; tuned playback in 31edo and a MOS.
 
