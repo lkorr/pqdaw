@@ -495,6 +495,10 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 - [x] **T0/T1-lows** *(merged 2026-10-25; M1 L6 deferred to JIT follow-up)* (any worker, small): M0 L11, L13, L14, L2-for-ASIO, L8 (or record won't-fix); M1 L6–L10, L3
   seam, Q14 diagnostic, M14 default-tier compile-time proxy, M7 self-test label; L14 build.ps1 synopsis; L16.
 
+- [ ] **T0.x-buildsize Smaller build directories** (`cmake`, `scripts`). Measured 2026-10-26: one dev build = 17.5 GB (pdb 5.9, ilk 5.2, obj 3.5, exe 1.8, lib 1.1): ~70 executables, most statically linking all of LLVM.
+  - Steps: (1) dev links with `/DEBUG:FASTLINK` (PDBs reference the /Z7 objects instead of copying them); (2) link `pq_jit`/LLVM only into targets that use the JIT (jit/playback/app tests, pqdaw, pqc, JIT benches) — fix the over-broad library dependency that pulls it into core/tuning/document/ui/views tests; (3) bench executables excluded from the dev `all` target (built on request: `-Target pq_bench_x`); (4) keep incremental linking (fast edit → relink).
+  - Accept: dev build dir ≤ 6 GB, release ≤ 3 GB; clean dev build time and one-edit rebuild time no worse than before (measured, same machine load); debugging a test in the debugger still works; all tests pass (-Full dev + release).
+
 ## M4: Devices and visual programming (plan: docs/plans/M4.md, approved 2026-10-24)
 Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b.3, T1b.4, and the M2/M3 review fixes.
 
