@@ -510,7 +510,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Stored layout (a layout section in the .pqp text, ignored by the compiler and preserved by the printer), automatic layered placement for patches without layout, Manhattan router with crossing minimisation, a tidy command.
   - Accept: every stdlib patch opens laid out without overlaps; round trip text → layout → text is byte-stable; routing a 500-node patch < 50 ms.
 
-- [~] **T4.4 Circuit editing + text pane, two-way** *(worker BT, branch task/T4.4-circuit-editing)* (`views`, `graph`)
+- [x] **T4.4 Circuit editing + text pane, two-way** *(merged 2026-10-25)* (`views`, `graph`)
   - Add/delete/connect/disconnect, make subcircuit / open / close, param pins, rename; a text pane (code editor widget: syntax colouring, inline errors from the parser and checker) synced both ways through the T1.x-text-ids diff; one undo history across both; edits hot-swap the running unit.
   - Accept: scripted edits in either pane update the other; state kept across edits (T1.x-text-ids criterion); hot swap click-free; parse errors never break the running audio.
 
