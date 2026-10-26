@@ -634,3 +634,14 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 
 ## 2026-10-25 · T1b.6 · worker BN / task/T1b.4-aot-cache
 - Did/measured: pqdaw.exe 47.7 MB release (ship 47.4 MB, gzip 20.9 MB); LLVM 36.4 of 44.6 MiB (81.7 %); component-list pruning changes nothing (linker already drops unreferenced code; unused irreader removed); dropping O2/O3 pipelines + unused analyses → 37.4 MB (experiment, not adopted); LLVM codegen floor ≈ 24–25 MiB, so < 30 MB is not reachable with LLVM. tools/size/exe_size_by_lib.py. Q118 with the asmjit write-up. **User decision: keep the exe as is** (no pruning, asmjit not planned now).
+
+## 2026-10-25 · T1.11-fix1 [~ partial: idle re-record pending] · worker BQ / task/T1.11-fix1-hygiene
+- Did: append_results.py refuses dirty trees (except RESULTS.md + CSVs), refuses non-ship or > 25 %-load rows unless --indicative (labelled), summarises higher-is-better units correctly (tests: tools/bench/test_append_results.py, CTest pq_tools_append_results). Runner CSV gains `preset` (ship/release/dev via PQ_BENCH_PRESET) and `better`; per-block timing mode (Context::measureBlocks / --blocks; Q75 resolved C). pq_bench_render operator/interp|jit x64 = proto-Operator §13 calibration row. tools/bench/rerecord_m1.ps1 re-records the M1 rows on an idle machine.
+- Verified: worker -Full dev + release 51/51. Orchestrator: rebased onto 928d277+: release -Full 51/51, dev -Full core|dsp|engine|jit|ui|app|document|tools 15/15, 0 warnings.
+- Perf (ship, load 33–35 %, indicative): proto-Operator 64 voices JIT 234 ns/sample = 1.13 % of a core (crossfade 1.97×); interpreter 13.7 %.
+- Notes: "M1 rows re-recorded on an idle machine" pending — orchestrator runs ./tools/bench/rerecord_m1.ps1 when the machine is idle.
+
+## 2026-10-25 · T0/T1-lows · worker BQ / task/T1.11-fix1-hygiene
+- Did: M0 L13, L11 (surface caps queried only when needed), L14 (pace only when another frame is due), M7 label, L2 for ASIO (buffer-switch lateness); M1 L3 (sample_read loop-seam taps), L7 (dsp::laneStateInfo per-atom lane map used by VoiceEngine), L8 (voice-less host copies no voice state on swap), L9 (negative note starts clipped, velocity clamp, quietest-steal minimum age 20 ms), L10 docs; Q14 scheduler warning (reset fed by voice.gate); M14 default-tier JIT code-size proxy; M3 L14, L16 (pq/core/clip_time.h shared by document + SequenceImage). Won't fix: M0 L8 (Live uses an ASCII hyphen too). Deferred: M1 L6 (src/jit CodeOwner dtor mutex) → JIT follow-up.
+- Verified: one test per fix (a deliberately wrong lane-state declaration was caught); same runs as above.
+- Notes: the first seam fix crashed MSVC under /LTCG (C1001) in ship only — restructured; CLAUDE.md now asks for a ship link of pq_bench_dsp after kernel/codegen changes.

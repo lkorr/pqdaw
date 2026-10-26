@@ -233,7 +233,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Accept: adding an `export`, renaming a binding, or inserting a line in a .pqp keeps ≥ 99 % of state entries matched in
     the transfer plan; hot swap after a text edit is click-free on an unchanged path.
 
-- [~] **T1.11-fix1 Benchmark hygiene** *(worker BQ, branch task/T1.11-fix1-hygiene; tooling now, idle re-record later)* (`bench`, `tools`). Depends on: T1.11.
+- [~] **T1.11-fix1 Benchmark hygiene** *(tooling merged 2026-10-25; idle re-record of M1 rows pending: tools/bench/rerecord_m1.ps1)* (`bench`, `tools`). Depends on: T1.11.
   - append_results.py refuses dirty trees and load > 25 % (or labels "indicative"); higher-is-better units summarised
     correctly; per-block sample mode for process() benches (p99 of single blocks); proto-Operator 64-voice bench (interp, JIT)
     as the §13 calibration row.
@@ -492,7 +492,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   split ViewContext and extract the shared drag/selection/auto-scroll layer (M17).
   - Accept: the 30-track stress fixture plays in pqdaw at ≤ 25 % of the block period (JIT); M4 tasks written
     against the device-model decision.
-- [~] **T0/T1-lows** *(worker BQ, same branch)* (any worker, small): M0 L11, L13, L14, L2-for-ASIO, L8 (or record won't-fix); M1 L6–L10, L3
+- [x] **T0/T1-lows** *(merged 2026-10-25; M1 L6 deferred to JIT follow-up)* (any worker, small): M0 L11, L13, L14, L2-for-ASIO, L8 (or record won't-fix); M1 L6–L10, L3
   seam, Q14 diagnostic, M14 default-tier compile-time proxy, M7 self-test label; L14 build.ps1 synopsis; L16.
 
 ## M4: Devices and visual programming (plan: docs/plans/M4.md, approved 2026-10-24)
