@@ -110,13 +110,19 @@ public:
                                 {c.x + d.x * i1 - nrm.x * hw, c.y + d.y * i1 - nrm.y * hw},
                                 {c.x + d.x * i0 - nrm.x * hw, c.y + d.y * i0 - nrm.y * hw}};
       ctx.dl.addConvexPolyFilled(quad, v.disabled ? th->text.disabled : th->control.needle);
-      // T4.7's modulation ring (a signal display: PQ Meter's accent), outside the track.
+      // T4.7's modulation ring (a signal display: PQ Meter's accent), outside the track: the range the wires can
+      // sweep faint, what the modulation swept since the last poll bright.
       if (mod_.active) {
         const float mr = rad + 0.5f * thick + ctx.scale.exact(2.0f);
         const float m0 = a0 + sweep * std::clamp(std::min(mod_.lo, mod_.hi), 0.0f, 1.0f);
         const float m1 = a0 + sweep * std::clamp(std::max(mod_.lo, mod_.hi), 0.0f, 1.0f);
         if (m1 - m0 > 1e-4f)
-          ctx.dl.addArcStroke(c, mr, m0, m1, ui::withAlpha(ui::signal_theme::kAccent, 210), ctx.scale.exact(1.5f), ui::LineCap::Round);
+          ctx.dl.addArcStroke(c, mr, m0, m1, ui::withAlpha(ui::signal_theme::kAccent, 90), ctx.scale.exact(1.5f), ui::LineCap::Round);
+        if (mod_.liveHi >= mod_.liveLo) {
+          const float l0 = a0 + sweep * std::clamp(mod_.liveLo, 0.0f, 1.0f), l1 = a0 + sweep * std::clamp(mod_.liveHi, 0.0f, 1.0f);
+          if (l1 - l0 > 1e-4f)
+            ctx.dl.addArcStroke(c, mr, l0, l1, ui::withAlpha(ui::signal_theme::kAccent, 235), ctx.scale.exact(2.0f), ui::LineCap::Round);
+        }
         if (mod_.current >= 0.0f) {
           const float am = a0 + sweep * std::clamp(mod_.current, 0.0f, 1.0f);
           ctx.dl.addCircleFilled({c.x + std::cos(am) * mr, c.y + std::sin(am) * mr}, ctx.scale.exact(2.0f), ui::signal_theme::kAccent);
@@ -229,6 +235,11 @@ public:
   }
   bool onPointer(const ui::PointerEvent& e) override {
     const int32_t at = jackAt(e.pos);
+    if (pressed_ && (e.type == ui::PointerType::Move || e.type == ui::PointerType::Up)) {  // T4.7: a cable drag
+      if (e.type == ui::PointerType::Up) pressed_ = false;
+      if (panel_.onJackDrag) panel_.onJackDrag(e);
+      return true;
+    }
     if (e.type == ui::PointerType::Move) {
       if (at != hover_) {
         hover_ = at;
@@ -238,11 +249,13 @@ public:
       return at >= 0;
     }
     if (e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && at >= 0) {
+      pressed_ = true;
       if (panel_.onJackPressed) panel_.onJackPressed(jacks()[static_cast<size_t>(at)].name, e.pos);
       return true;
     }
     return false;
   }
+  void onCaptureLost() override { pressed_ = false; }
   void onHoverChanged(bool h) override {
     if (!h && hover_ >= 0) {
       hover_ = -1;
@@ -254,7 +267,8 @@ public:
 
 private:
   static constexpr std::string_view kJackInfo =
-      "A signal the device exports: wire it to any parameter (cross-device wiring arrives with T4.7).";
+      "A signal the device exports: drag it onto any knob of any device to modulate it (on another track: hover its "
+      "row in the arrangement first).";
   std::span<const DevicePanel::Jack> jacks() const { return panel_.jacks(); }
   int32_t jackAt(ui::Vec2 p) const {
     for (size_t i = 0; i < jacks().size(); ++i)
@@ -263,6 +277,7 @@ private:
   }
   DevicePanel& panel_;
   int32_t hover_ = -1;
+  bool pressed_ = false;
   std::string tip_;
 };
 

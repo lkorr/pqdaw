@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 122.0, "curve": "step"}

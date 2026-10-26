@@ -9,12 +9,14 @@
 //   T4.2  circuit::installCircuitViewer(shell); → shell.overlay() (the circuit viewer), the view.openPatch action
 //   T4.6  devices::installDeviceView(shell);    → ShellSlot::DeviceDetail (device panels), the view.openDevice action
 //   T4.1  installDeviceChain(shell);   → ShellSlot::DeviceDetail (the Device view), the device.* actions
+//   T4.7  installWiring(shell);        → ShellSlot::Cables (the cables over the UI), view.cycleCables, wire.delete
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
+#include "pq/views/device_chain/wiring.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -36,6 +38,7 @@ void installDefaultContent(Shell& shell) {
   circuit::installCircuitViewer(shell);
   installDeviceChain(shell);          // the selected track's chain …
   devices::installDeviceView(shell);  // … under T4.6's stand-alone preview, which covers it while one is open
+  installWiring(shell);               // the cables between its jacks and knobs
 }
 
 }  // namespace pq::views

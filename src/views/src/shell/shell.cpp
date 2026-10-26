@@ -31,6 +31,7 @@ struct Shell::Impl {
   shell::DetailView* detail = nullptr;
   shell::InfoView* info = nullptr;
   shell::ControlBar* controlBar = nullptr;
+  Widget* cables = nullptr;
 };
 
 Shell::Shell(UiTree& tree, ViewContext& ctx) : tree_(tree), ctx_(ctx), impl_(std::make_unique<Impl>()) {}
@@ -88,6 +89,9 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   below.setHeight(Length::fixed(gut));
   below.setHittable(false);
   main.add<shell::StatusBar>(ctx);
+  // T4.7: the cable layer's host, over the panels and under the overlay; it lets the pointer through.
+  m.cables = &root.add<Widget>("cables");
+  m.cables->setHittable(false);
   s->overlay_ = &root.add<OverlayLayer>("overlay");
 
   Impl* impl = &m;
@@ -119,6 +123,7 @@ Widget& Shell::slot(ShellSlot s) const noexcept {
     case ShellSlot::DeviceDetail: return impl_->detail->device();
     case ShellSlot::Browser: return *impl_->browser;
     case ShellSlot::Tunings: return *impl_->tunings;
+    case ShellSlot::Cables: return *impl_->cables;
   }
   return *impl_->trackArea;
 }

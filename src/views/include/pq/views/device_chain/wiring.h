@@ -65,7 +65,7 @@ public:
   virtual void readModulation(std::span<const ModTarget> targets, std::span<ModSweep> out) noexcept = 0;
 };
 
-// Fixed sweeps (tests, scenes).
+// Fixed sweeps (tests, scenes); zero while not live, as the engine's while it sleeps.
 class FixedModulationSource final : public ModulationSource {
 public:
   void set(doc::DeviceId device, std::string param, ModSweep s);
@@ -159,7 +159,7 @@ private:
     std::string port;
     ui::Vec2 pos{};
     doc::TrackId hoverTrack;
-    double hoverSince = 0.0;
+    uint32_t hoverTicks = 0;  // drag ticks (1/60 s) over hoverTrack
     uint32_t timer = 0;
   } drag_;
 };

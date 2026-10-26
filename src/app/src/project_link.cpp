@@ -888,7 +888,7 @@ void ProjectLink::reportWires(const doc::Project& p) {
   };
   const std::string what = w != nullptr ? name(w->from) + " " + w->port + " \xE2\x86\x92 " + name(w->to) + " " + w->param : "a wire";
   ctx_->setStatus(first->status == doc::WireStatus::Delayed
-                      ? "Feedback: the wire " + what + " closes a loop and is delayed by 1 sample (z\xE2\x81\xBB\xC2\xB9)"
+                      ? "Feedback: the wire " + what + " closes a loop and is delayed by 1 sample (z-1)"
                       : "The wire " + what + " is not played: it would close a loop through two instrument tracks");
 }
 

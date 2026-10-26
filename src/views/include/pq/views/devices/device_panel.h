@@ -92,6 +92,8 @@ public:
   };
   std::span<const Jack> jacks() const noexcept;
   std::function<void(std::string_view exportName, ui::Vec2 pos)> onJackPressed;
+  // T4.7: the pointer events (Move, Up) that follow a jack press while the jack strip holds the pointer (a cable drag).
+  std::function<void(const ui::PointerEvent& e)> onJackDrag;
   // The control bound to `param` right now (knob, box, toggle, chooser), or null.
   ui::Widget* controlFor(std::string_view param) const noexcept;
   void setModulation(std::string_view param, const ui::ModulationRing& ring);

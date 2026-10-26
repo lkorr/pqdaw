@@ -552,3 +552,48 @@ TEST_CASE("wires: deleting a device deletes its wires, in one undo step") {
   REQUIRE(store.undo());
   CHECK(wiresOf(*store.current()).size() == 1);  // one undo step restores the device and its wire
 }
+
+// T1.x-silence: a modulation source on another track keeps the target's unit running (and its ring moving) while it is
+// non-zero, through the bus-silence flags; the tap is zero exactly when the modulation is.
+TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it is non-zero") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId a = ids.track(), bt = ids.track();
+  const DeviceId instA = ids.device(), utilA = ids.device(), instB = ids.device(), utilB = ids.device();
+  Batch b{"two", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(a, TrackKind::Midi, "Src", instA), {}, kAppend});
+  b.commands.push_back(AddTrack{playback_fixture::track(bt, TrackKind::Midi, "Dst", instB), {}, kAppend});
+  b.commands.push_back(AddDevice{a, makeDevice(utilA, "utility", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{bt, makeDevice(utilB, "utility", DeviceKind::AudioEffect), kAppend});
+  // Src plays a note 2.0–2.5 s; Dst never plays (two instruments: the wire stays a bus between their units, Q84).
+  b.commands.push_back(AddClip{a, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 4 * kPpq, kPpq, 0)}, "n")});
+  b.commands.push_back(AddWire{Wire{ids.wire(), utilA, "mid", utilB, "width", 0.5, WireReducer::Sum}});
+  REQUIRE(store.dispatch(b).ok());
+  auto link = makeLink(store.current());
+  REQUIRE(link->lastError().empty());
+  REQUIRE(link->wireStates().size() == 1);
+  CHECK(link->wireStates()[0].status == WireStatus::Lowered);
+  Driver d{*link};
+  engine::ProjectProgram& program = *link->engine().program();
+  REQUIRE(program.numUnits() >= 3);
+  const views::ModTarget tgt{utilB, "width"};
+  views::ModSweep sw;
+  link->play(0);
+  d.run(static_cast<uint32_t>(1.5 * kRate / kBlock));  // silence: nothing modulates
+  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
+  d.run(static_cast<uint32_t>(0.4 * kRate / kBlock));
+  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
+  CHECK(sw.known);
+  CHECK(sw.up == 0.0f);
+  CHECK(sw.down == 0.0f);
+  uint64_t dstIdle = 0;
+  for (uint32_t u = 0; u < program.numUnits(); ++u)
+    if (program.layout().units[u].name == "Dst") dstIdle = program.unitStats(u).idleBlocks;
+  MESSAGE("Dst's unit: blocks skipped while its wire carried silence: " << dstIdle);
+  // Not asserted: the modulated value (knob ± modulation) is not 0 at silence, so the region computing it is not
+  // sleepable (Q130.3: no rate demotion while a modulator is silent): a wired target stays awake. QUESTIONS
+  // Q?-T4.7-a item 7 records the cost and the follow-up.
+  d.run(static_cast<uint32_t>(0.4 * kRate / kBlock));  // the note: Src's mid moves Dst's width
+  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
+  CHECK(sw.up + sw.down > 1e-3f);
+}

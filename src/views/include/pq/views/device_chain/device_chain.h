@@ -21,8 +21,10 @@
 // library (ViewContext::setDeviceLibrary). T4.6's stand-alone preview (View > Open Device…, devices::DeviceView) shares
 // the slot and covers the chain while a preview is open. UI thread only.
 
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -71,6 +73,31 @@ public:
 
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
+  void onTimer(uint32_t id) override;
+
+  // ---- T4.7: cross-device wiring (pq/views/device_chain/wiring.h) --------------------------------------------------
+  // A jack press (Down) and the pointer events of the drag that follows (Move, Up); installWiring sets it.
+  std::function<void(doc::DeviceId device, std::string_view port, const ui::PointerEvent& e)> onJack;
+  struct ParamControl {
+    doc::DeviceId device;
+    std::string param;
+    ui::IRect rect;  // device px
+  };
+  // The controls a cable can be dropped on now: the knobs and boxes of real (not bool) params, visible in the chain.
+  std::vector<ParamControl> paramControls() const;
+  // Device px: a device's jack centre / the top centre of the control bound to one of its params. nullopt: the device
+  // is not in the shown chain. `docked` false: it is, but the point is scrolled away or its control is hidden (a
+  // folded panel, another tab): the nearest point of its frame inside the chain's viewport.
+  std::optional<ui::Vec2> jackPoint(doc::DeviceId device, std::string_view port, bool* docked = nullptr) const;
+  std::optional<ui::Vec2> paramPoint(doc::DeviceId device, std::string_view param, bool* docked = nullptr) const;
+  ui::IRect chainViewport() const noexcept;  // the chain's visible area
+  void scrollChainBy(int32_t dx);
+  // The knobs' modulation rings: static ranges from the document's wires, live sweeps from the context's
+  // ModulationSource (polled at 30 Hz only while it is live and a modulated knob is shown).
+  void refreshRings();
+  bool ringsPolling() const noexcept;
+  // Reads the sweeps once and updates the rings (the 30 Hz timer's work; tests and scenes call it directly).
+  void pollRings();
 
   struct Impl;
 

@@ -322,6 +322,8 @@ struct ModulationRing {
   bool active = false;
   float lo = 0.0f, hi = 0.0f;  // range swept by the modulation
   float current = -1.0f;       // live modulated position (< 0: none)
+  // T4.7: the part of [lo, hi] the modulation swept since the last poll (liveHi < liveLo: none), drawn brighter.
+  float liveLo = 0.0f, liveHi = -1.0f;
   bool operator==(const ModulationRing&) const = default;
 };
 

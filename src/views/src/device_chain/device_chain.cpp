@@ -12,6 +12,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/theme.h"
+#include "pq/views/device_chain/wiring.h"
 #include "pq/views/devices/panel_desc.h"
 #include "pq/views/shell/shell.h"
 
@@ -77,6 +78,12 @@ struct DeviceChainView::Impl {
   }
   void moveDrag(const ui::PointerEvent& e);
   void endDrag(bool commit);
+  // T4.7: the modulated params of the shown chain, the knob travel their wires sum to, their last sweeps.
+  std::vector<ModTarget> ringTargets;
+  std::vector<float> ringSpan;
+  std::vector<ModSweep> ringSweeps;
+  uint32_t ringTimer = 0;
+  bool ringsLit = false;
 };
 
 namespace {
@@ -129,6 +136,17 @@ public:
       panel_ = &add<devices::DevicePanel>("panel", tpl->sig, tpl->desc, &target_, values);
       panel_->setActive(d.active);
       panel_->onSizeChanged = [this] { impl_.content->invalidateLayout(); };
+      // T4.7: a jack press and the drag after it go to the cable layer (installWiring).
+      panel_->onJackPressed = [this](std::string_view port, ui::Vec2 pos) {
+        ui::PointerEvent e;
+        e.type = ui::PointerType::Down;
+        e.button = ui::PointerButton::Left;
+        e.pos = pos;
+        if (impl_.view.onJack) impl_.view.onJack(id_, port, e);
+      };
+      panel_->onJackDrag = [this](const ui::PointerEvent& e) {
+        if (impl_.view.onJack) impl_.view.onJack(id_, {}, e);
+      };
     }
     missing_ = tpl == nullptr ? "'" + d.patch + "' is not available: bypassed" : std::string();
     active_ = d.active;
@@ -451,6 +469,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
       sync(true);
     }
     else if (bits & (view_change::kSelection | view_change::kDetailClip)) follow();
+    if (bits & view_change::kModulation) refreshRings();
   });
   sync(true);
 }
@@ -509,6 +528,7 @@ void DeviceChainView::sync(bool force) {
     slot->setVisible(t != nullptr);
     slot->setHint(t == nullptr ? std::string() : chain.empty() ? "Add Device" : "Add");
   }
+  refreshRings();  // T4.7
 }
 
 void DeviceChainView::onStore(const doc::StoreEvent& e) {
@@ -528,6 +548,7 @@ void DeviceChainView::onStore(const doc::StoreEvent& e) {
       m.shown[i] = t->devices[i];
     }
     m.shownFrom = e.after;
+    if (!doc::wiresOf(*e.after).empty()) refreshRings();  // a modulated knob's ring follows it
     return;
   }
   sync(e.kind == doc::StoreEventKind::Reset);
@@ -670,6 +691,147 @@ DeviceChainView& installDeviceChain(Shell& shell) {
   ctx.setViewAction("device.duplicate", [p] { p->duplicateSelected(); }, has);
   ctx.setViewAction("device.toggleActive", [p] { p->toggleSelectedActive(); }, has);
   return v;
+}
+
+// ---- T4.7: wiring hooks and the modulation rings ---------------------------------------------------------------------
+
+ui::IRect DeviceChainView::chainViewport() const noexcept { return impl_->scroll->rect(); }
+
+void DeviceChainView::scrollChainBy(int32_t dx) {
+  impl_->scroll->scrollTo(impl_->scroll->scrollX() + dx, impl_->scroll->scrollY());
+}
+
+namespace {
+bool shownNow(const ui::Widget& w) noexcept {
+  for (const ui::Widget* p = &w; p != nullptr; p = p->parent())
+    if (!p->visible()) return false;
+  return w.tree() != nullptr;
+}
+ui::Vec2 clampInto(ui::Vec2 p, const ui::IRect& r, bool& inside) {
+  const float x = std::clamp(p.x, static_cast<float>(r.x), static_cast<float>(r.right()));
+  const float y = std::clamp(p.y, static_cast<float>(r.y), static_cast<float>(r.bottom()));
+  inside = x == p.x && y == p.y;
+  return {x, y};
+}
+}  // namespace
+
+std::vector<DeviceChainView::ParamControl> DeviceChainView::paramControls() const {
+  std::vector<ParamControl> out;
+  const ui::IRect vp = chainViewport();
+  for (const auto* f : impl_->frames) {
+    const devices::DevicePanel* panel = static_cast<const DeviceFrame*>(f)->panel();
+    if (panel == nullptr || panel->folded()) continue;
+    for (const devices::ParamInfo& p : panel->signature().params) {
+      if (p.isBool) continue;
+      const ui::Widget* w = panel->controlFor(p.name);
+      if (w == nullptr || !shownNow(*w)) continue;
+      const ui::IRect r = ui::intersect(w->rect(), vp);
+      if (r.empty()) continue;
+      out.push_back({static_cast<const DeviceFrame*>(f)->id(), p.name, r});
+    }
+  }
+  return out;
+}
+
+
+std::optional<ui::Vec2> DeviceChainView::jackPoint(doc::DeviceId device, std::string_view port, bool* docked) const {
+  const devices::DevicePanel* panel = panelOf(device);
+  if (panel == nullptr) return std::nullopt;
+  ui::Vec2 p{static_cast<float>(panel->rect().x) + 8.0f, static_cast<float>(panel->rect().y)};
+  for (const devices::DevicePanel::Jack& j : panel->jacks())
+    if (j.name == port) p = {static_cast<float>(j.rect.x) + 0.5f * static_cast<float>(j.rect.w),
+                             static_cast<float>(j.rect.y) + 0.5f * static_cast<float>(j.rect.h)};
+  bool inside = false;
+  const ui::Vec2 q = clampInto(p, chainViewport(), inside);
+  if (docked != nullptr) *docked = inside;
+  return q;
+}
+
+std::optional<ui::Vec2> DeviceChainView::paramPoint(doc::DeviceId device, std::string_view param, bool* docked) const {
+  const devices::DevicePanel* panel = panelOf(device);
+  if (panel == nullptr) return std::nullopt;
+  const ui::Widget* w = panel->folded() ? nullptr : panel->controlFor(param);
+  bool ok = w != nullptr && shownNow(*w);
+  ui::Vec2 p;
+  if (ok) {
+    const ui::IRect r = w->rect();
+    p = {static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.25f * static_cast<float>(r.h)};
+  } else {  // the title bar's right end
+    const ui::IRect r = panel->rect();
+    p = {static_cast<float>(r.right()) - 6.0f, static_cast<float>(r.y) + 14.0f};
+  }
+  bool inside = false;
+  const ui::Vec2 q = clampInto(p, chainViewport(), inside);
+  if (docked != nullptr) *docked = ok && inside;
+  return q;
+}
+
+bool DeviceChainView::ringsPolling() const noexcept { return impl_->ringTimer != 0; }
+
+void DeviceChainView::refreshRings() {
+  Impl& m = *impl_;
+  const doc::Project& p = *ctx_.doc();
+  m.ringTargets.clear();
+  m.ringSpan.clear();
+  for (const doc::Wire& w : doc::wiresOf(p)) {
+    if (m.frameIndex(w.to) < 0) continue;
+    bool found = false;
+    for (size_t i = 0; i < m.ringTargets.size(); ++i)
+      if (m.ringTargets[i].device == w.to && m.ringTargets[i].param == w.param) {
+        m.ringSpan[i] += std::fabs(static_cast<float>(w.amount));
+        found = true;
+      }
+    if (!found) {
+      m.ringTargets.push_back({w.to, w.param});
+      m.ringSpan.push_back(std::fabs(static_cast<float>(w.amount)));
+    }
+  }
+  m.ringSweeps.resize(m.ringTargets.size());
+  for (DeviceFrame* f : m.frames) {
+    devices::DevicePanel* panel = f->panel();
+    if (panel == nullptr) continue;
+    for (const devices::ParamInfo& info : panel->signature().params) {
+      ui::ModulationRing ring;
+      for (size_t i = 0; i < m.ringTargets.size(); ++i) {
+        if (m.ringTargets[i].device != f->id() || m.ringTargets[i].param != info.name) continue;
+        const auto pk = static_cast<float>(devices::toPosition(info, panel->paramValue(info.name)));
+        ring.active = true;
+        ring.lo = std::clamp(pk - m.ringSpan[i], 0.0f, 1.0f);
+        ring.hi = std::clamp(pk + m.ringSpan[i], 0.0f, 1.0f);
+        const ModSweep& s = m.ringSweeps[i];
+        if (s.known && (s.up > 0.0f || s.down > 0.0f)) {
+          ring.liveLo = std::clamp(pk - s.down, 0.0f, 1.0f);
+          ring.liveHi = std::clamp(pk + s.up, 0.0f, 1.0f);
+          ring.current = 0.5f * (ring.liveLo + ring.liveHi);
+        }
+      }
+      panel->setModulation(info.name, ring);
+    }
+  }
+  // Poll while a modulated knob is shown and the source runs (and once after it stops: the rings fall still).
+  ModulationSource* src = ctx_.modulationSource();
+  const bool want = src != nullptr && !m.ringTargets.empty() && (src->modulationLive() || m.ringsLit);
+  if (want && m.ringTimer == 0) m.ringTimer = requestTimer(1.0 / 30.0);
+  if (!want && m.ringTimer != 0) {
+    cancelTimer(m.ringTimer);
+    m.ringTimer = 0;
+  }
+}
+
+void DeviceChainView::onTimer(uint32_t id) {
+  if (id != impl_->ringTimer) return;
+  impl_->ringTimer = 0;
+  pollRings();
+}
+
+void DeviceChainView::pollRings() {
+  Impl& m = *impl_;
+  ModulationSource* src = ctx_.modulationSource();
+  if (src == nullptr || m.ringTargets.empty()) return;
+  src->readModulation(m.ringTargets, m.ringSweeps);
+  m.ringsLit = false;
+  for (const ModSweep& s : m.ringSweeps) m.ringsLit = m.ringsLit || s.up > 0.0f || s.down > 0.0f;
+  refreshRings();  // repaints only the knobs whose ring moved; re-arms the timer while live
 }
 
 DeviceChainView* findDeviceChain(Shell& shell) noexcept {

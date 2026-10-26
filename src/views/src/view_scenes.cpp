@@ -19,6 +19,7 @@
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
+#include "pq/views/device_chain/wiring.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -874,6 +875,54 @@ Status setupDeviceChain(Shell& shell) {
   return Ok{};
 }
 
+// T4.7: cross-device wiring. Track "Mod" holds an LFO; "Keys" holds BasicSynth → LFO → Utility. Wires: Keys' LFO
+// into Utility's width and balance (the cables in the chain), the LFO's export into its own rate (a delay-free loop: its
+// badge shows z⁻¹), and Mod's LFO into BasicSynth's brightness (its cable rises to Mod's row in the arrangement). The
+// rings show fixed sweeps (a FixedModulationSource; the app reads the engine's taps).
+Status setupDeviceWiring(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-wiring: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) -> std::optional<doc::ops::Edit> {
+    if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
+    return *e;
+  };
+  const auto mod = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Mod"));
+  const auto keys = mod ? run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, mod->tracks[0], "Keys"))
+                        : std::nullopt;
+  if (!mod || !keys) return Error{ErrorCode::Unknown, "device-wiring: createTrack failed", {}};
+  const doc::TrackId modT = mod->tracks[0], keysT = keys->tracks[0];
+  const auto lfoA = run(doc::ops::addDevice(*store.current(), store.ids(), modT, "lfo_device", doc::DeviceKind::AudioEffect));
+  const auto lfoB = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "lfo_device", doc::DeviceKind::AudioEffect));
+  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "utility", doc::DeviceKind::AudioEffect));
+  if (!lfoA || !lfoB || !util) return Error{ErrorCode::Unknown, "device-wiring: addDevice failed", {}};
+  const doc::DeviceId a = lfoA->devices[0], b = lfoB->devices[0], u = util->devices[0];
+  const doc::DeviceId inst = doc::findTrackPtr(*store.current(), keysT)->devices.at(0)->id;
+  if (!run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "width", 0.35)) ||
+      !run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "balance", -0.6)) ||
+      !run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", b, "rate", 0.2)) ||
+      !run(doc::ops::connectWire(*store.current(), store.ids(), a, "lfo", inst, "bright", 0.4)))
+    return Error{ErrorCode::Unknown, "device-wiring: connectWire failed", {}};
+  static FixedModulationSource sweeps;
+  sweeps = FixedModulationSource();
+  sweeps.set(u, "width", ModSweep{true, 0.2f, 0.05f});
+  sweeps.set(u, "balance", ModSweep{true, 0.1f, 0.45f});
+  sweeps.set(inst, "bright", ModSweep{true, 0.3f, 0.3f});
+  ctx.setModulationSource(&sweeps);
+  ctx.setSelectedTrack(keysT);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-wiring: the Device view is not installed", {}};
+  shell.tree().layoutNow();
+  sweeps.setLive(true);
+  v->pollRings();  // one read; then no source: the rings keep it and nothing polls (a still screenshot)
+  ctx.setModulationSource(nullptr);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -917,6 +966,7 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-probe", 1280, 800, nullptr, setupCircuitEditorProbe},  // T4.5: --project stdlib/envelopes/adsr.pqp
     {"circuit-editor-cost", 1280, 800, nullptr, setupCircuitEditorCost},    // T4.5: --project stdlib/filters/svf.pqp
     {"device-chain", 1280, 800, setupDeviceChain},
+    {"device-wiring", 1280, 800, setupDeviceWiring},  // T4.7
 };
 
 std::string_view kNames[std::size(kScenes)] = {};
