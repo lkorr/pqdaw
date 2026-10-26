@@ -119,5 +119,8 @@ DevicePanel* openPanel(Shell& shell) noexcept;
 // device's .pqp):
 // the device opened with a few non-default settings; EQ Eight with a spectrum of a fixed test signal.
 Status setupDeviceScene(Shell& shell, std::string_view file);
+// T4.12-fix1 `device-operator-filter` (`file` = operator.pqp): Operator as in device-operator, its Filter section shown
+// with the MS2 circuit model, drive and the filter envelope.
+Status setupOperatorFilterScene(Shell& shell, std::string_view file);
 
 }  // namespace pq::views::devices

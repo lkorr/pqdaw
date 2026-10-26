@@ -200,6 +200,78 @@ TEST_CASE("device chains: add / reorder / remove / deactivate are one undo step 
   CHECK(program.stats().topologySwitches == 0);
 }
 
+// T4.12-fix1: an instrument's `voices` setting (Operator's) is its track's polyphony. A project with an Operator track
+// (8-note chords at beats 0 and 4) and a BasicSynth track (a held 3-note chord): Operator's unit plays 6 voices (its
+// default) while the other track keeps the link's 24; setting voices to 12 recompiles Operator's unit only (a new
+// unit with a 12-voice VoiceEngine: rebuild, every other unit reused and still sounding), and the next chord plays
+// all 8 notes.
+TEST_CASE("device chains: an instrument's voices setting is its track's polyphony (a recompile of that unit only)") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId op = ids.track(), keys = ids.track();
+  const DeviceId opDev = ids.device(), keysDev = ids.device();
+  {
+    Batch b{"voices", {}};
+    Track t = makeTrack(op, TrackKind::Midi, "Op");
+    t.devices.push_back(makeDevice(opDev, "operator", DeviceKind::Instrument));
+    b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", keysDev), {}, kAppend});
+    std::vector<Note> chords, held;
+    for (Ticks at : {Ticks{0}, Ticks{4 * kPpq}})
+      for (int32_t d = 0; d < 8; ++d) chords.push_back(playback_fixture::note(ids, at, 2 * kPpq, 3 * d));
+    for (int32_t d : {0, 4, 7}) held.push_back(playback_fixture::note(ids, 0, 16 * kPpq, d));
+    b.commands.push_back(AddClip{op, playback_fixture::clip(ids, 0, 8 * kPpq, chords, "chords")});
+    b.commands.push_back(AddClip{keys, playback_fixture::clip(ids, 0, 16 * kPpq, held, "held")});
+    REQUIRE(store.dispatch(b).ok());
+  }
+  auto link = makeLink(store.current(), false);
+  [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  Driver d{*link};
+  link->play(0);
+  d.run(200);  // beat 0.53: the first chord sounds
+  engine::ProjectProgram& program = *link->engine().program();
+  auto unitNamed = [&](const char* name) {
+    for (uint32_t u = 0; u < program.numUnits(); ++u)
+      if (program.layout().units[u].name == name) return u;
+    FAIL("no unit " << name);
+    return 0u;
+  };
+  uint32_t opUnit = unitNamed("Op");
+  const uint32_t keysUnit = unitNamed("Keys");
+  CHECK(program.layout().units[opUnit].voice.maxVoices == 6);  // Operator's default `voices`
+  CHECK(program.voices(opUnit)->config().maxVoices == 6);
+  CHECK(program.voices(opUnit)->liveVoices() == 6);             // 8 notes, 6 voices: two stolen
+  CHECK(program.voices(keysUnit)->config().maxVoices == 24);    // no `voices` setting: the link's default
+  CHECK(program.voices(keysUnit)->liveVoices() == 3);
+  const app::LinkStats s0 = link->stats();
+  {
+    auto e = ops::setDeviceSetting(*store.current(), opDev, "voices", 12.0);
+    REQUIRE(e.ok());
+    REQUIRE(store.dispatch(e->command).ok());
+  }
+  link->flush();
+  CHECK(link->stats().compiles == s0.compiles + 1);
+  CHECK(link->stats().unitCompiles == s0.unitCompiles + 1);  // Operator's unit only
+  CHECK(link->stats().topologyChanges == s0.topologyChanges + 1);
+  d.run(4);  // the audio thread switches to the new layout
+  opUnit = unitNamed("Op");
+  CHECK(program.layout().units[opUnit].voice.maxVoices == 12);
+  CHECK(program.voices(opUnit)->config().maxVoices == 12);
+  CHECK(program.voices(unitNamed("Keys"))->liveVoices() == 3);  // the other track was not touched
+  d.run(4 * 375 - 200);  // past beat 4: the second chord
+  CHECK(program.voices(opUnit)->liveVoices() == 8);              // all 8 notes sound with 12 voices
+  CHECK(program.voices(unitNamed("Keys"))->liveVoices() == 3);
+  // The lowering clamps the setting: 0 → 1 voice, 1000 → kMaxPolyphony.
+  for (const auto& [set, want] : {std::pair{0.0, 1u}, std::pair{1000.0, kMaxPolyphony}}) {
+    auto e = ops::setDeviceSetting(*store.current(), opDev, "voices", set);
+    REQUIRE(e.ok());
+    REQUIRE(store.dispatch(e->command).ok());
+    link->flush();
+    d.run(4);
+    CHECK(program.voices(unitNamed("Op"))->config().maxVoices == want);
+  }
+}
+
 // Renders a project graph through the engine's per-track compile path with fixed notes on slot 0 and the given
 // project params linked (as ProjectLink links them).
 golden::Channels renderGraph(const graph::ProjectGraph& g, const std::vector<engine::ProjectParamLink>& links,

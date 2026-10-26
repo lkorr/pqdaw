@@ -12,10 +12,10 @@
 //                         ONLY the units holding them, scheduled against each unit's previous state layout (so the
 //                         swap's state transfer is a few memcpys), and returns their new images. A unit whose
 //                         compile-cache key (graph::unitHash of the optimised unit + sample rate, block size, voice
-//                         groups; the backend is not part of it: T1b.4's disk cache adds it) is unchanged is reported
-//                         `unchanged` without an image. If the edit changed the topology — a different partition, or a
-//                         bus whose kind/width changed — it returns ErrorCode::Unsupported: rebuild the project
-//                         (T3.17 does a project-level swap then; out of scope here).
+//                         groups, polyphony; the backend is not part of it: T1b.4's disk cache adds it) is unchanged is
+//                         reported `unchanged` without an image. If the edit changed the topology — a different
+//                         partition, a bus whose kind/width changed, or (T4.12-fix1) an instrument unit's polyphony —
+//                         it returns ErrorCode::Unsupported: rebuild the project (T3.17 does a project-level swap then).
 //   bind(unit, image)     binds another image of a unit's current schedule (the JIT image compiled in the background
 //                         after the interpreter one was published: T1b.5's live swap uses exactly this).
 //   rebuild(graph, dirty) a topology edit (T3.17: tracks added or removed, re-routing, merges): re-partitions and
@@ -25,6 +25,8 @@
 //                         other unit is compiled; a unit with the same member tracks as before continues that unit
 //                         (its schedule against the previous state layout: a T1.9 swap with state transfer), a unit
 //                         with a new member set (a new track, a merge or a split) starts as a new unit (fresh state).
+//                         T4.12-fix1: so does an instrument unit whose polyphony changed (a running unit's VoiceEngine
+//                         keeps the lanes it was prepared with: the new one gets its own; its voices and state restart).
 //                         On error the compiler keeps its previous project.
 // Every layout this driver makes carries ProjectLayout::busKey.
 // Front-end and build times are reported per unit (CompiledUnit), measured with the steady clock.
@@ -66,7 +68,8 @@ struct ProjectParamLink {
 struct ProjectCompileOptions {
   double sampleRate = 48000.0;
   uint32_t maxBlockFrames = 1024;
-  VoiceConfig voice;                    // instrument units: polyphony (maxVoiceGroups = voiceGroupsFor(maxVoices))
+  VoiceConfig voice;                    // instrument units: polyphony (maxVoiceGroups = voiceGroupsFor(maxVoices)); a
+                                        // unit's instrument track overrides maxVoices with ProjectTrack::maxVoices > 0
   const Resources* resources = nullptr; // must outlive the images
   bool visualMode = true;               // delay-free cycles (also between merged tracks) get a z1 + warning
   bool sleep = true;                    // T1.x-silence: sleep plans (graph::ScheduleOptions::sleep; false: never sleep)
@@ -91,6 +94,7 @@ struct CompiledUnit {
   std::vector<std::pair<std::string, uint32_t>> links;  // flattened param name → project param
   uint32_t idleAfterBlocks = 0;   // UnitImage::idleAfterBlocks (idleAfterBlocks())
   bool voices = false;
+  uint32_t maxVoices = 0;         // voice units: the polyphony its images and VoiceEngine are built for (0: none)
   // Identity across topology edits (rebuild).
   std::vector<uint32_t> memberIds;          // the member tracks' ids, ascending
   std::vector<std::string> readKeys, writeKeys;  // bus keys read / written, sorted

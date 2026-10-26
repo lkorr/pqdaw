@@ -9,7 +9,8 @@
 //
 // What the reference leaves out: Noise White (per-lane random; tested statistically) and the LFO's S&H / Noise
 // shapes. Everything else — every algorithm, waveform (the band-limited tables read exactly as the wavetable kernel
-// reads them), envelope mode, feedback, pitch envelope, LFO, filter type and slope, glide, spread, velocity and key
+// reads them), envelope mode, feedback, pitch envelope, LFO, filter type, slope and circuit model (T4.12-fix1: Auto
+// Filter's reference sections devref::AfNlSvf / AfLadder, the engine's Newton steps), glide, spread, velocity and key
 // sensitivity, volume and pan — is here.
 
 #include <algorithm>
@@ -177,6 +178,7 @@ struct Config {
   bool lfoRetrig = true;
   bool filterOn = false;
   int filterType = 0, filterSlope = 0, filterLoop = 0;
+  int filterCircuit = 0;  // 0 Clean, 1 OSR, 2 MS2, 3 SMP, 4 PRD (T4.12-fix1)
   bool glideOn = false;
   bool spreadOn = false;
 };
@@ -200,6 +202,7 @@ struct Params {
   bool lfoSync = false;
   float lfoBeats = 1.0f, lfoAmount = 1.0f, lfoPitch = 100.0f, lfoFilter = 0.0f;
   float filterFreq = 2000.0f, filterRes = 0.2f, morph = 0.0f, filterKey = 0.0f, filterVel = 0.0f, fenvAmount = 0.0f;
+  float filterDrive = 1.0f;  // linear (the dB knob's value)
   EnvParams fenv{0.0f, 0.6f, 0.05f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
   float volume = db(-12), pan = 0.0f, transpose = 0.0f, time = 1.0f, spread = 0.0f, glideTime = 0.1f;
   Params() {
@@ -306,15 +309,32 @@ struct Bank {
   }
 };
 
-// op_filter: two svf_core_fast stages (the first only at 24 dB, Butterworth), the type's response.
+// op_filter: Clean = two svf_core_fast stages (the first only at 24 dB, Butterworth), the type's response; OSR / MS2 /
+// SMP = Auto Filter's nonlinear SVF sections (devref::AfNlSvf: the same float formulas and Newton steps as
+// stdlib/filters/circuit.pqp) in the second stage, damping k; PRD = devref::AfLadder with feedback 2·(2 − k).
 struct Filter {
   devref::FastSvfCore s1, s2;
-  static float response(int type, float x, float band, float low, float k, float morph) {
+  devref::AfNlSvf nl;
+  devref::AfLadder lad;
+  struct Weights {
+    float lp, bp, hp, n;
+  };
+  static Weights weights(int type, float morph) {
     const float mt = morph * 4.0f;
     const float wLP = std::max(0.0f, 1.0f - mt) + std::max(0.0f, mt - 3.0f);
     const float wBP = std::max(0.0f, 1.0f - std::fabs(mt - 1.0f));
     const float wHP = std::max(0.0f, 1.0f - std::fabs(mt - 2.0f));
     const float wN = std::max(0.0f, 1.0f - std::fabs(mt - 3.0f));
+    switch (type) {
+      case 0: return {1, 0, 0, 0};
+      case 1: return {0, 0, 1, 0};
+      case 2: return {0, 1, 0, 0};
+      case 3: return {0, 0, 0, 1};
+      default: return {wLP, wBP, wHP, wN};
+    }
+  }
+  static float response(int type, float x, float band, float low, float k, float morph) {
+    const Weights w = weights(4, morph);
     const float kb = k * band;
     const float hp = x - kb - low, notch = x - kb;
     switch (type) {
@@ -322,10 +342,31 @@ struct Filter {
       case 1: return hp;
       case 2: return kb;
       case 3: return notch;
-      default: return fma_(wN, notch, fma_(wHP, hp, fma_(wBP, kb, wLP * low)));
+      default: return fma_(w.n, notch, fma_(w.hp, hp, fma_(w.bp, kb, w.lp * low)));
     }
   }
-  float tick(int type, int slope, float x, float g, float k, float morph) {
+  float tick(int type, int slope, int circuit, float x, float g, float k, float morph, float d) {
+    if (circuit == 4) {
+      const Weights w = weights(type, morph);
+      const float hn = w.hp + w.n;
+      float c[5];
+      if (slope == 1) {
+        c[0] = hn;
+        c[1] = -4.0f * hn;
+        c[2] = 4.0f * w.bp + 6.0f * w.hp + 8.0f * w.n;
+        c[3] = -8.0f * w.bp - 4.0f * w.hp - 8.0f * w.n;
+        c[4] = w.lp + 4.0f * w.bp + w.hp + 4.0f * w.n;
+      } else {
+        c[0] = hn;
+        c[1] = 2.0f * w.bp - 2.0f * hn;
+        c[2] = w.lp - 2.0f * w.bp + w.hp + 2.0f * w.n;
+        c[3] = 0.0f;
+        c[4] = 0.0f;
+      }
+      float tap[5];
+      lad.tick(x, g / (1.0f + g), 2.0f * (2.0f - k), d, 1, false, tap);
+      return fma_(c[4], tap[4], fma_(c[3], tap[3], fma_(c[2], tap[2], fma_(c[1], tap[1], c[0] * tap[0]))));
+    }
     float xi = x;
     if (slope == 1) {
       float band, low;
@@ -333,8 +374,13 @@ struct Filter {
       s1.tick(x, devref::FastSvfCore::coef(g, kB), band, low);
       xi = response(type, x, band, low, kB, morph);
     }
-    float band, low;
-    s2.tick(xi, devref::FastSvfCore::coef(g, k), band, low);
+    float band = 0.0f, low = 0.0f;
+    switch (circuit) {
+      case 1: nl.osr(xi, g, k, d, band, low); break;
+      case 2: nl.ms2(xi, g, k, d, 2, false, band, low); break;
+      case 3: nl.smp(xi, g, k, d, 2, false, band, low); break;
+      default: s2.tick(xi, devref::FastSvfCore::coef(g, k), band, low); break;
+    }
     return response(type, xi, band, low, k, morph);
   }
 };
@@ -481,8 +527,9 @@ struct Operator {
         const float fc = fastCentsToHz(fcC, prm.filterFreq);
         const float g = pq::fastTan(3.141592653589793f * clipf(fc, 10.0f, 0.49f * kSr) / kSr);
         const float k = 2.0f - 1.98f * prm.filterRes;
-        yL = vc.filtL.tick(cfg.filterType, cfg.filterSlope, monoL, g, k, prm.morph);
-        if (cfg.spreadOn) yR = vc.filtR.tick(cfg.filterType, cfg.filterSlope, monoR, g, k, prm.morph);
+        yL = vc.filtL.tick(cfg.filterType, cfg.filterSlope, cfg.filterCircuit, monoL, g, k, prm.morph, prm.filterDrive);
+        if (cfg.spreadOn)
+          yR = vc.filtR.tick(cfg.filterType, cfg.filterSlope, cfg.filterCircuit, monoR, g, k, prm.morph, prm.filterDrive);
         else yR = yL;
       }
       const float vol = lin(prm.volume);

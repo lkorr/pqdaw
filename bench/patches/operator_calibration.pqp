@@ -1,9 +1,12 @@
 // T4.12: the SPEC §13 calibration patches of pq_bench_render's operator/stock benchmarks: the stock Operator
-// (stdlib/devices/operator.pqp) as an instrument, in three configurations.
+// (stdlib/devices/operator.pqp) as an instrument, in six configurations.
 //   OpDefault  the device as it loads: operator A, a sine, its envelope; everything else off
 //   OpFull     all four operators (algorithm 1, sines), feedback, pitch envelope, a per-voice LFO into pitch and
 //              filter, the 24 dB low-pass with its envelope, glide: every per-voice path on except spread
 //   OpSpread   OpFull with spread (a second set of operators and filter for the right channel)
+//   OpMs2      OpFull with the MS2 circuit model (T4.12-fix1: a per-voice Newton solve, 2 iterations) at +12 dB drive
+//   OpPrd      OpFull with the PRD circuit model (the transistor ladder, 1 iteration) at +12 dB drive
+//   OpSpreadMs2  OpMs2 with spread (two filters per voice: the most expensive filter configuration)
 import "../../stdlib/devices/operator.pqp"
 
 patch OpDefault {
@@ -30,6 +33,39 @@ patch OpSpread {
   o    = operator(algorithm: 1, onA: 1, onB: 1, onC: 1, onD: 1, pitchEnvOn: 1, lfoOn: 1, filterOn: 1, filterSlope: 1,
                   glideOn: 1, spreadOn: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB, feedback: 30%, penvAmount: 200c,
                   lfoFilter: 1200c, fenvAmount: 2400c, sustainA: -6dB, sustainB: -12dB, spread: 50%)
+  out  = o
+  done = o.done
+}
+
+patch OpMs2 {
+  out out  : audio voice stereo
+  out done : bool voice
+  o    = operator(algorithm: 1, onA: 1, onB: 1, onC: 1, onD: 1, pitchEnvOn: 1, lfoOn: 1, filterOn: 1, filterSlope: 1,
+                  filterCircuit: 2, glideOn: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB, feedback: 30%,
+                  penvAmount: 200c, lfoFilter: 1200c, fenvAmount: 2400c, sustainA: -6dB, sustainB: -12dB,
+                  filterRes: 60%, filterDrive: 12dB)
+  out  = o
+  done = o.done
+}
+
+patch OpPrd {
+  out out  : audio voice stereo
+  out done : bool voice
+  o    = operator(algorithm: 1, onA: 1, onB: 1, onC: 1, onD: 1, pitchEnvOn: 1, lfoOn: 1, filterOn: 1, filterSlope: 1,
+                  filterCircuit: 4, glideOn: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB, feedback: 30%,
+                  penvAmount: 200c, lfoFilter: 1200c, fenvAmount: 2400c, sustainA: -6dB, sustainB: -12dB,
+                  filterRes: 60%, filterDrive: 12dB)
+  out  = o
+  done = o.done
+}
+
+patch OpSpreadMs2 {
+  out out  : audio voice stereo
+  out done : bool voice
+  o    = operator(algorithm: 1, onA: 1, onB: 1, onC: 1, onD: 1, pitchEnvOn: 1, lfoOn: 1, filterOn: 1, filterSlope: 1,
+                  filterCircuit: 2, glideOn: 1, spreadOn: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB, feedback: 30%,
+                  penvAmount: 200c, lfoFilter: 1200c, fenvAmount: 2400c, sustainA: -6dB, sustainB: -12dB,
+                  filterRes: 60%, filterDrive: 12dB, spread: 50%)
   out  = o
   done = o.done
 }

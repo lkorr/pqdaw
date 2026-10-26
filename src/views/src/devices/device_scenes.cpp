@@ -1,5 +1,6 @@
 // The device panel scenes (T4.6; `device-utility`, `device-saturator`, `device-eq-eight`; T4.11
-// `device-auto-filter`; T4.12 `device-operator`): a stock device opened in the Device tab with a few
+// `device-auto-filter`; T4.12 `device-operator`; T4.12-fix1 `device-operator-filter`): a stock device opened in the
+// Device tab with a few
 // non-default settings, and for EQ Eight a spectrum analysed
 // (synchronously, deterministic) from a fixed test signal, so the goldens show every layer of the panel.
 
@@ -119,6 +120,26 @@ Status setupDeviceScene(Shell& shell, std::string_view file) {
       panel->wakeDisplays();
     }
   }
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+Status setupOperatorFilterScene(Shell& shell, std::string_view file) {
+  if (Status s = setupDeviceScene(shell, file); !s.ok()) return s;
+  DevicePanel* panel = openPanel(shell);
+  if (panel == nullptr || panel->signature().patch != "operator")
+    return Error{ErrorCode::InvalidArgument, "operator filter scene: not Operator", {}};
+  // The filter on: MS2 at 24 dB with +9 dB drive, resonance 70 %, a decaying filter envelope.
+  panel->setConstValue("filterOn", 1.0);
+  panel->setConstValue("filterCircuit", 2.0);
+  panel->setConstValue("filterSlope", 1.0);
+  panel->setParamValue("filterDrive", db(9.0));
+  panel->setParamValue("filterFreq", 900.0);
+  panel->setParamValue("filterRes", 0.7);
+  panel->setParamValue("fenvAmount", 3600.0);
+  panel->setParamValue("fenvDecay", 0.35);
+  panel->setParamValue("fenvSustain", 0.2);
+  panel->select("sec", 2);  // Filter
   shell.tree().layoutNow();
   return Ok{};
 }

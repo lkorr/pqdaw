@@ -723,6 +723,28 @@ graph::NodeIndex callDevice(Ir& ir, const LDev& d) {
   return c;
 }
 
+// T4.12-fix1: the polyphony an instrument device asks for: its `voices` setting (a `real const` input of that name:
+// the value the user set, else the input's literal default), rounded and clamped to [1, kMaxPolyphony]; 0 when the
+// patch has no such setting (the track then gets the compiler's default).
+uint32_t devicePolyphony(const LDev& d) {
+  const graph::Patch& p = *d.callee;
+  for (graph::NodeIndex n = 0; n < p.nodeCount(); ++n) {
+    if (p.node(n).kind != graph::NodeKind::Input || p.nodeName(n) != "voices") continue;
+    if (p.outputType(n, 0).rate != graph::Rate::Const) return 0;
+    std::optional<double> v;
+    for (const DeviceValue& s : d.device->settings)
+      if (s.name == "voices") v = s.value;
+    if (!v) {
+      const graph::WireIndex w = p.adjacency().driver[p.flatInput(n, 0)];
+      if (w != graph::kNone && p.node(p.wire(w).from.node).kind == graph::NodeKind::Const)
+        v = p.constant(p.wire(w).from.node).value();
+    }
+    if (!v || !std::isfinite(*v)) return 0;
+    return static_cast<uint32_t>(std::clamp(std::round(*v), 1.0, static_cast<double>(kMaxPolyphony)));
+  }
+  return 0;
+}
+
 // The audio effects of `devs` from `first` on, wired left → right after `x` (declared width `width`). calls[k]: the
 // call node of devs[k].
 PortRef effectChain(Ir& ir, std::span<const LDev> devs, size_t first, PortRef x, uint16_t width,
@@ -858,13 +880,15 @@ void lowerWires(Ir& ir, uint32_t node, uint32_t track, std::span<const LDev> dev
 }
 
 Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const std::vector<LDev>& devs,
-                                const WirePlan& wp, bool& voices, uint32_t track, std::vector<ModulationTap>* taps) {
+                                const WirePlan& wp, bool& voices, uint32_t& polyphony, uint32_t track,
+                                std::vector<ModulationTap>* taps) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   PortRef x;
   std::vector<NodeIndex> calls(devs.size(), graph::kNone);
   const bool instrument = n.kind == Kind::Midi && !devs.empty() && devs.front().device->kind == DeviceKind::Instrument;
   voices = instrument;
+  polyphony = instrument ? devicePolyphony(devs.front()) : 0u;
   size_t firstEffect = 0;
   uint16_t width = graph::kWidthStereo;
   if (n.kind == Kind::Midi && !instrument) {
@@ -1203,7 +1227,8 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   for (uint32_t i = 0; i < pl.nodes.size(); ++i) {
     const Node& n = pl.nodes[i];
     bool voices = false;
-    auto built = buildPatch(pl, i, o, devs[i], wp, voices, i, &out.taps);
+    uint32_t polyphony = 0;
+    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, i, &out.taps);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());
@@ -1225,6 +1250,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     // T4.1: a MIDI track without an active instrument is a plain audio track (no voices, no notes).
     pt.role = n.kind == Kind::Midi && !voices ? graph::TrackRole::Audio : roleOf(n.kind);
     pt.eventSlot = voices && o.slotOf ? o.slotOf(n.track->id) : graph::kNone;
+    pt.maxVoices = polyphony;  // T4.12-fix1: the instrument's `voices` setting (0: the link's default)
     if (voices && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
     out.graph.tracks.push_back(std::move(pt));
     addParams(pl, i, aud, out.params, o.library, wp);

@@ -62,7 +62,12 @@
 // LP over `morph` 0..1); `filterSlope` 0 12 dB/oct (one TPT state-variable filter), 1 24 dB (two: a Butterworth
 // stage then the resonant one). Cutoff = `filterFreq` · 2^(cents/1200), cents = filter envelope · `fenvAmount` +
 // LFO · `lfoFilter` + key tracking `filterKey` · (note cents from C3) + `filterVel` · velocity; per voice and
-// sample. Live's circuit models (OSR, MS2, SMP, PRD) are not here: this is the Clean circuit (Q131).
+// sample. `filterCircuit` (structural): 0 Clean (the TPT SVFs above), or Auto Filter's circuit models (stdlib/filters/
+// circuit.pqp; QUESTIONS Q133): 1 OSR, 2 MS2, 3 SMP (nonlinear SVF sections in the resonant stage), 4 PRD (the
+// transistor ladder: 12 dB = its 2-pole tap, 24 dB = 4 poles); `filterDrive` drives their nonlinearity (0 … 24 dB,
+// level-compensated). One resonance law for every circuit: r = 0.99·res; the SVF damping k = 2·(1 − r) = 2 − 1.98·res
+// (Q 0.5 … 50: the Clean filter unchanged since T4.12, bit for bit), the ladder's feedback 4·r = 2·(2 − k). At 100 %
+// every circuit stops just short of self-oscillation (Auto Filter's knob goes on to 125 % and self-oscillates).
 // GLIDE (`glideOn`): each new note slides from the previous note's pitch (the newest note started before it, in
 // any voice) to its own, linearly in cents over `glideTime`. SPREAD (`spreadOn`): a second set of the four
 // operators and the filter; the left channel plays the first set `spread` · 10 ¢ flat, the right one the second
@@ -70,13 +75,15 @@
 // OUTPUT: stereo, · `volume` (−70 dB = −inf) · the balance law of `pan` (min(1, 1 ∓ pan): centre = unity).
 //
 // Structural settings are constants (`in … : real const`): a change recompiles and crossfades (SPEC §7.5), and only
-// the chosen paths exist in the program (QUESTIONS Q121). `voices` is the polyphony the host gives the device
-// (VoiceConfig::maxVoices; the patch itself does not read it).
+// the chosen paths exist in the program (QUESTIONS Q121). `voices` is the polyphony the host gives the device: the
+// project lowering reads it as the track's polyphony (VoiceConfig::maxVoices; pq/document/lower.h); the patch
+// itself does not read it.
 //
 // Exports: `opA` … `opD` (each operator's output after envelope and level; the left set with spread), `lfo`,
 // `pitchEnv`, `filterEnv`.
 import "../envelopes/msenv.pqp"
 import "../filters/svf_fast.pqp"
+import "../filters/circuit.pqp"
 
 patch operator {
   // Structural settings
@@ -101,10 +108,11 @@ patch operator {
   in    filterOn    : real const = 0
   in    filterType  : real const = 0     // 0 LP, 1 HP, 2 BP, 3 Notch, 4 Morph
   in    filterSlope : real const = 0     // 0 12 dB/oct, 1 24 dB/oct
+  in    filterCircuit : real const = 0   // 0 Clean, 1 OSR, 2 MS2, 3 SMP, 4 PRD
   in    filterLoop  : real const = 0
   in    glideOn     : real const = 0
   in    spreadOn    : real const = 0
-  in    voices      : real const = 6     // the host's polyphony (VoiceConfig::maxVoices); not read here
+  in    voices      : real const = 6     // the track's polyphony (read by the lowering; 1 … 128)
 
   // Operators
   param coarseA  = 1      [0..48]        @steps(49) @label("Coarse")
@@ -271,6 +279,7 @@ patch operator {
   // Filter
   param filterFreq = 2kHz   [20Hz..20kHz]   @unit(Hz) @curve(exp) @label("Freq")
   param filterRes  = 20%    [0%..100%]      @label("Res")
+  param filterDrive = 0dB   [0dB..24dB]     @unit(dB) @label("Drive")
   param morph      = 0      [0..1]          @label("Morph")
   param filterKey  = 0%     [0%..100%]      @label("Key")
   param filterVel  = 0c     [-4800c..4800c] @label("Vel")
@@ -421,8 +430,10 @@ patch operator {
   fc    = fast_cents_to_hz(fcC, filterFreq)
   fg    = fast_tan(3.141592653589793 * clip(fc, 10, 0.49 * sr) / sr)
   fk    = 2 - 1.98 * filterRes
-  fL    = op_filter(monoL, g: fg, k: fk, morph: morph, type: filterType, slope: filterSlope)
-  fR    = op_filter(monoR, g: fg, k: fk, morph: morph, type: filterType, slope: filterSlope)
+  fL    = op_filter(monoL, g: fg, k: fk, morph: morph, d: filterDrive, type: filterType, slope: filterSlope,
+                    circuit: filterCircuit)
+  fR    = op_filter(monoR, g: fg, k: fk, morph: morph, d: filterDrive, type: filterType, slope: filterSlope,
+                    circuit: filterCircuit)
   yL    = filterOn >= 0.5 ? fL : monoL
   yR    = spreadOn >= 0.5 ? (filterOn >= 0.5 ? fR : monoR) : yL
 
@@ -685,15 +696,22 @@ patch op_partials {
       (nmax > 13 ? u13 * s13 : 0) + (nmax > 14 ? u14 * s14 : 0) + (nmax > 15 ? u15 * s15 : 0) + (nmax > 16 ? u16 * s16 : 0)
 }
 
-// The filter of one channel: TPT state-variable filters (stdlib/filters/svf_fast.pqp), 12 or 24 dB/oct.
-// `g` = tan(π·fc/sr), `k` = 1/Q (resonance).
+// The filter of one channel (per voice). `g` = tan(π·fc/sr); `k` = the SVF damping 2·(1 − r), r = 0.99·res (Q
+// 0.5 … 50: Operator's resonance law); `d` = the drive of the circuit models; `circuit` 0 Clean, 1 OSR, 2 MS2, 3 SMP,
+// 4 PRD (structural). Clean: TPT state-variable filters (stdlib/filters/svf_fast.pqp). OSR / MS2 / SMP: Auto Filter's
+// nonlinear SVF sections (stdlib/filters/circuit.pqp) with the same damping k, their band and low outputs mixed as
+// Clean's. 24 dB: a Butterworth Clean stage of the same response first (k = √2), then the resonant one (any model).
+// PRD: Auto Filter's transistor ladder with feedback 4·r = 2·(2 − k) (its 12 dB response the 2-pole tap of the same
+// ladder, no Butterworth stage).
 patch op_filter {
   in    x     : audio
   param g     = 0.0655 [0..100]
   param k     = 1.4142 [0.02..2]
   param morph = 0      [0..1]
-  in    type  : real const = 0
-  in    slope : real const = 0
+  param d     = 1      [1..16]
+  in    type    : real const = 0
+  in    slope   : real const = 0
+  in    circuit : real const = 0
   out   y : audio
 
   // Morph weights: LP → BP → HP → Notch → LP over 0..1 (param rate)
@@ -708,7 +726,17 @@ patch op_filter {
   a0 = mux(type, a.low, x - 1.4142135623730951 * a.band - a.low, 1.4142135623730951 * a.band, x - 1.4142135623730951 * a.band,
            wLP * a.low + wBP * (1.4142135623730951 * a.band) + wHP * (x - 1.4142135623730951 * a.band - a.low) + wN * (x - 1.4142135623730951 * a.band))
   xi = slope >= 0.5 ? a0 : x
-  b  = svf_core_fast(xi, g: g, k: k)
-  y  = mux(type, b.low, xi - k * b.band - b.low, k * b.band, xi - k * b.band,
-           wLP * b.low + wBP * (k * b.band) + wHP * (xi - k * b.band - b.low) + wN * (xi - k * b.band))
+  c  = svf_core_fast(xi, g: g, k: k)
+  o  = af_osr(xi, g, k, d)
+  m  = af_ms2(xi, g, k, d)
+  s  = af_smp(xi, g, k, d)
+  bb = mux(circuit, c.band, o.band, m.band, s.band, c.band)
+  bl = mux(circuit, c.low, o.low, m.low, s.low, c.low)
+  sv = mux(type, bl, xi - k * bb - bl, k * bb, xi - k * bb,
+           wLP * bl + wBP * (k * bb) + wHP * (xi - k * bb - bl) + wN * (xi - k * bb))
+
+  // PRD: the ladder, the type as its response weights
+  lad = af_ladder(x, slope, g, 2 * (2 - k), d, mux(type, 1, 0, 0, 0, wLP), mux(type, 0, 0, 1, 0, wBP),
+                  mux(type, 0, 1, 0, 0, wHP), mux(type, 0, 0, 0, 1, wN))
+  y  = circuit > 3.5 ? lad : sv
 }

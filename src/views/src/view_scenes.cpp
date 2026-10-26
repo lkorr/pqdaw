@@ -960,6 +960,7 @@ constexpr SceneEntry kScenes[] = {
     {"device-saturator", 1280, 800, nullptr, devices::setupDeviceScene},
     {"device-eq-eight", 1280, 800, nullptr, devices::setupDeviceScene},
     {"device-operator", 1280, 800, nullptr, devices::setupDeviceScene},      // T4.12: --project stdlib/devices/operator.pqp
+    {"device-operator-filter", 1280, 800, nullptr, devices::setupOperatorFilterScene},  // T4.12-fix1: the same --project
     {"device-auto-filter", 1280, 800, nullptr, devices::setupDeviceScene},  // T4.11
     {"circuit-editor", 1280, 800, nullptr, setupCircuitEditor},
     {"circuit-editor-error", 1280, 800, nullptr, setupCircuitEditorError},

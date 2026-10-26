@@ -773,4 +773,7 @@ TEST_CASE("device panels: golden of Utility") { checkGolden("device-utility", st
 TEST_CASE("device panels: golden of Saturator") { checkGolden("device-saturator", stdlibPath("devices/saturator.pqp")); }
 TEST_CASE("device panels: golden of EQ Eight") { checkGolden("device-eq-eight", stdlibPath("devices/eq_eight.pqp")); }
 TEST_CASE("device panels: golden of Operator") { checkGolden("device-operator", stdlibPath("devices/operator.pqp")); }
+TEST_CASE("device panels: golden of Operator's filter section (circuit model, drive)") {
+  checkGolden("device-operator-filter", stdlibPath("devices/operator.pqp"));
+}
 TEST_CASE("device panels: golden of Auto Filter") { checkGolden("device-auto-filter", stdlibPath("devices/auto_filter.pqp")); }

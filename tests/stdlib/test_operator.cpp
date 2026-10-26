@@ -59,7 +59,8 @@ std::string operatorText(const opref::Config& c, bool exports = true) {
   args += ", lfoOn: " + std::to_string(c.lfoOn ? 1 : 0) + ", lfoWave: " + std::to_string(c.lfoWave) +
           ", lfoRetrig: " + std::to_string(c.lfoRetrig ? 1 : 0);
   args += ", filterOn: " + std::to_string(c.filterOn ? 1 : 0) + ", filterType: " + std::to_string(c.filterType) +
-          ", filterSlope: " + std::to_string(c.filterSlope) + ", filterLoop: " + std::to_string(c.filterLoop);
+          ", filterSlope: " + std::to_string(c.filterSlope) + ", filterLoop: " + std::to_string(c.filterLoop) +
+          ", filterCircuit: " + std::to_string(c.filterCircuit);
   args += ", glideOn: " + std::to_string(c.glideOn ? 1 : 0) + ", spreadOn: " + std::to_string(c.spreadOn ? 1 : 0);
   if (!exports)
     return "import \"devices/operator.pqp\"\npatch T {\n  out y : audio voice stereo\n  out done : bool voice\n"
@@ -125,6 +126,7 @@ void setParams(Stimulus& st, const Program& prog, const opref::Params& p) {
   set("lfoFilter", p.lfoFilter);
   set("filterFreq", p.filterFreq);
   set("filterRes", p.filterRes);
+  set("filterDrive", p.filterDrive);
   set("morph", p.morph);
   set("filterKey", p.filterKey);
   set("filterVel", p.filterVel);
@@ -245,8 +247,8 @@ Outputs runBoth(const Program& p, const Stimulus& st, const std::string& label) 
   return a;
 }
 
-// Every output vs the reference: |got − ref| / max(1, |ref|) ≤ tol (done exactly).
-void compare(const Outputs& o, const std::map<std::string, std::vector<std::vector<double>>>& ref, const std::string& label,
+// Every output vs the reference: |got − ref| / max(1, |ref|) ≤ tol (done exactly). Returns the largest error.
+double compare(const Outputs& o, const std::map<std::string, std::vector<std::vector<double>>>& ref, const std::string& label,
              double tol = 1e-5) {
   double worst = 0.0;
   std::string where;
@@ -266,15 +268,16 @@ void compare(const Outputs& o, const std::map<std::string, std::vector<std::vect
     }
   }
   CHECK_MESSAGE(worst <= tol, label << ": max error " << worst << " (" << where << ")");
+  return worst;
 }
 
-void checkVsReference(const opref::Config& cfg, const opref::Params& prm, const std::vector<Note>& notes, uint32_t frames,
-                      uint32_t block, const std::string& label, double tol = 1e-5) {
+double checkVsReference(const opref::Config& cfg, const opref::Params& prm, const std::vector<Note>& notes, uint32_t frames,
+                        uint32_t block, const std::string& label, double tol = 1e-5) {
   const Program prog = compile(operatorText(cfg), kSr);
   Stimulus st = noteStimulus(notes, frames, block);
   setParams(st, prog, prm);
   const Outputs o = runBoth(prog, st, label);
-  compare(o, runReference(cfg, prm, notes, st), label, tol);
+  return compare(o, runReference(cfg, prm, notes, st), label, tol);
 }
 
 // Three voices: different pitches, onsets, velocities and note lengths (one released early, one held to the end).
@@ -697,6 +700,103 @@ TEST_CASE("Operator: filter types, slopes, envelope, key, velocity and LFO vs th
     }
 }
 
+// T4.12-fix1: the circuit models (Auto Filter's sections with Operator's resonance law) in every type and slope,
+// driven hard enough that the nonlinearity matters (+12 dB, loud carriers, high resonance), modulated per sample by
+// the filter envelope, key, velocity and (every other configuration) the LFO. The default tier runs two types per
+// circuit and slope; the slow tier all of them.
+void checkCircuit(int circuit, int type, int slope, bool spread) {
+  opref::Params prm = richParams();
+  prm.op[1].level = 1.0f;  // B a full-level carrier (algorithm 7: D → C, B → A; carriers C and A)
+  prm.volume = 1.0f;
+  prm.filterFreq = 700.0f;
+  prm.filterRes = 0.85f;
+  prm.filterDrive = opref::db(12.0);
+  prm.fenvAmount = 3600.0f;
+  prm.fenv = {0.003f, 0.08f, 0.03f, 0.0f, 1.0f, 0.25f, 0.0f, 1.0f};
+  prm.filterKey = 0.5f;
+  prm.filterVel = -1200.0f;
+  prm.lfoFilter = 600.0f;
+  prm.lfoRate = 4.0f;
+  prm.spread = 0.5f;
+  opref::Config cfg;
+  cfg.algorithm = 7;
+  cfg.on = {true, true, true, true};
+  cfg.wave = {8, 0, 17, 0};  // Saw 32 and Square 64 carriers
+  cfg.filterOn = true;
+  cfg.filterType = type;
+  cfg.filterSlope = slope;
+  cfg.filterCircuit = circuit;
+  cfg.lfoOn = (type + slope) % 2 == 0;
+  cfg.spreadOn = spread;
+  opref::Params p = prm;
+  p.morph = type == 4 ? 0.13f + 0.21f * static_cast<float>(slope) + 0.1f * static_cast<float>(circuit) : 0.0f;
+  const std::string label = "circuit " + std::to_string(circuit) + " type " + std::to_string(type) + " slope " +
+                            std::to_string(slope) + (spread ? " spread" : "");
+  const double worst = checkVsReference(cfg, p, threeVoices(), 3000, slope ? 37u : 64u, label);
+  MESSAGE(label << ": max error vs the reference " << worst);
+}
+
+TEST_CASE("Operator: filter circuit models (OSR, MS2, SMP, PRD) vs the reference, interpreter == JIT") {
+  for (int circuit = 1; circuit <= 4; ++circuit)
+    for (int slope = 0; slope <= 1; ++slope) {
+      checkCircuit(circuit, (circuit + 2 * slope) % 5, slope, false);
+      checkCircuit(circuit, 4, slope, circuit == 2 + slope);  // Morph (and spread: MS2 12 dB, SMP 24 dB)
+    }
+}
+
+TEST_CASE("Operator: filter circuit models x every type and slope" * doctest::test_suite("slow")) {
+  for (int circuit = 1; circuit <= 4; ++circuit)
+    for (int type = 0; type <= 4; ++type)
+      for (int slope = 0; slope <= 1; ++slope) checkCircuit(circuit, type, slope, false);
+}
+
+TEST_CASE("Operator: the circuit models are the linear filter for small signals and saturate when driven") {
+  // One sine carrier at 220 Hz into a resonant 12 dB low-pass at 2 kHz: at −60 dBFS every model's output equals
+  // Clean's within 1e-3 of its level (the models are the linear filter there; Clean and the SVF models share the
+  // damping k, PRD's ladder only the resonance r, so it is compared with its own linear ladder: its drive at 0 dB);
+  // at 0 dBFS with +24 dB drive and resonance 90 % MS2 / SMP / PRD saturate (the output differs from the quiet one
+  // scaled up by more than 5 % of its peak) and stay bounded.
+  auto render = [](int circuit, float level, float drive, float res) {
+    opref::Config cfg;
+    cfg.filterOn = true;
+    cfg.filterCircuit = circuit;
+    opref::Params p;
+    p.op[0].env = {0.0f, 0.6f, 0.05f, opref::db(-70), 1.0f, 1.0f, opref::db(-70), 1.0f};
+    p.op[0].level = level;
+    p.volume = 1.0f;
+    p.filterFreq = 2000.0f;
+    p.filterRes = res;
+    p.filterDrive = drive;
+    const Program prog = compile(operatorText(cfg, false), kSr);
+    Stimulus st = noteStimulus({{220.0, 0, 6000, 1.0}}, 6000, 64);
+    setParams(st, prog, p);
+    const Outputs o = runBoth(prog, st, "circuit " + std::to_string(circuit));
+    return o.at("y")[0];
+  };
+  const std::vector<float> clean = render(0, opref::db(-60), 1.0f, 0.5f);
+  for (int circuit = 1; circuit <= 3; ++circuit) {
+    CAPTURE(circuit);
+    const std::vector<float> quiet = render(circuit, opref::db(-60), 1.0f, 0.5f);
+    double worst = 0.0;
+    for (size_t t = 0; t < clean.size(); ++t) worst = std::max(worst, std::fabs(static_cast<double>(quiet[t]) - clean[t]));
+    CHECK(worst <= 1e-3 * opref::db(-60));
+  }
+  for (int circuit = 2; circuit <= 4; ++circuit) {
+    CAPTURE(circuit);
+    const std::vector<float> quiet = render(circuit, opref::db(-60), opref::db(24), 0.9f);
+    const std::vector<float> loud = render(circuit, 1.0f, opref::db(24), 0.9f);
+    double diff = 0.0, ref = 0.0;
+    for (size_t t = 3000; t < loud.size(); ++t) {
+      diff = std::max(diff, std::fabs(static_cast<double>(loud[t]) - 1000.0 * quiet[t]));
+      ref = std::max(ref, std::fabs(static_cast<double>(loud[t])));
+    }
+    CHECK(ref > 0.05);
+    CHECK(diff > 0.05 * ref);  // saturation: not the quiet response scaled
+    MESSAGE("circuit " << circuit << ": loud peak " << ref << ", deviation from the scaled quiet response " << diff);
+    CHECK(ref < 4.0);          // bounded
+  }
+}
+
 TEST_CASE("Operator: glide, spread, transpose, fixed frequency, time, volume and pan vs the reference") {
   // Glide: notes in different voices one after another; each slides from the previous note's pitch.
   const std::vector<Note> legato{{220.0, 0, 1500, 1.0}, {330.0, 1200, 2700, 0.9}, {165.0, 2400, 4000, 0.8}, {440.0, 2400, 4000, 0.8}};
@@ -1003,16 +1103,19 @@ TEST_CASE("Operator: JIT images of the full configurations need no stack probes 
     const char* name;
     std::array<int, 4> wave;
     bool spread;
+    int circuit = 0;
   };
-  const V variants[] = {{"full sines", {0, 0, 0, 0}, false}, {"full tables", {3, 8, 17, 19}, false},
-                        {"full user", {22, 0, 22, 0}, false}, {"spread sines", {0, 0, 0, 0}, true},
-                        {"spread mixed", {22, 3, 0, 20}, true}};
+  const V variants[] = {{"full sines", {0, 0, 0, 0}, false},     {"full tables", {3, 8, 17, 19}, false},
+                        {"full user", {22, 0, 22, 0}, false},     {"spread sines", {0, 0, 0, 0}, true},
+                        {"spread mixed", {22, 3, 0, 20}, true},   {"full MS2", {0, 0, 0, 0}, false, 2},
+                        {"full PRD", {0, 0, 0, 0}, false, 4},     {"spread SMP", {22, 3, 0, 20}, true, 3}};
   for (const V& v : variants) {
     opref::Config c;
     c.on = {true, true, true, true};
     c.wave = v.wave;
     c.filterOn = c.lfoOn = c.pitchEnvOn = c.glideOn = true;
     c.filterSlope = 1;
+    c.filterCircuit = v.circuit;
     c.spreadOn = v.spread;
     const Program p = compile(operatorText(c, false), kSr);
     pq::jit::CompileOptions o;

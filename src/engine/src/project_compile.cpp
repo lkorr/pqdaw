@@ -36,7 +36,21 @@ bool sameUnits(const graph::ProjectPartition& a, const graph::ProjectPartition& 
   return a.outputBus == b.outputBus;
 }
 
-uint32_t voiceGroupsOf(const ProjectCompileOptions& o, bool voices) { return voices ? voiceGroupsFor(o.voice.maxVoices) : 1u; }
+uint32_t voiceGroupsOf(const CompiledUnit& cu) { return cu.voices ? voiceGroupsFor(cu.maxVoices) : 1u; }
+
+// T4.12-fix1: the polyphony of unit u — its instrument track's own (ProjectTrack::maxVoices), else the default.
+uint32_t polyphonyOf(const ProjectCompileOptions& o, const graph::ProjectGraph& g, const graph::ProjectUnit& pu) {
+  if (pu.voiceTrack == graph::kNone) return 0;
+  const uint32_t own = pu.voiceTrack < g.tracks.size() ? g.tracks[pu.voiceTrack].maxVoices : 0u;
+  return std::max(own > 0 ? own : o.voice.maxVoices, 1u);
+}
+
+// The VoiceEngine configuration of a compiled unit.
+VoiceConfig voiceConfigOf(const ProjectCompileOptions& o, const CompiledUnit& cu) {
+  VoiceConfig vc = o.voice;
+  if (cu.voices) vc.maxVoices = cu.maxVoices;
+  return vc;
+}
 
 }  // namespace
 
@@ -150,6 +164,7 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   cu.ops = static_cast<uint32_t>(sr.schedule.ops.size());
   cu.inBus = up.value().inBus;
   cu.voices = up.value().voices;
+  cu.maxVoices = cu.voices ? polyphonyOf(opt_, g, partition_.units[u]) : 0u;
   for (uint32_t t : partition_.units[u].tracks) cu.memberIds.push_back(g.tracks[t].id);
   std::sort(cu.memberIds.begin(), cu.memberIds.end());
   for (uint32_t b : up.value().inBus) {
@@ -166,7 +181,7 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   std::sort(cu.writeKeys.begin(), cu.writeKeys.end());
   cu.idleAfterBlocks = idleAfterBlocks(opt.value(), opt_.maxBlockFrames);
   const uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
-                        (uint64_t{voiceGroupsOf(opt_, cu.voices)} << 33);
+                        (uint64_t{voiceGroupsOf(cu)} << 33) ^ (uint64_t{cu.maxVoices} << 45);
   cu.key = unitHash(opt.value(), salt);
   for (const ProjectParamLink& l : opt_.paramLinks)
     if (l.track < g.tracks.size() && partition_.unitOf[l.track] == u)
@@ -226,7 +241,7 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
 Result<UnitImage> ProjectCompiler::makeImage(uint32_t u, const UnitBackend& backend) {
   CompiledUnit& cu = units_[u];
   const auto t0 = std::chrono::steady_clock::now();
-  const uint32_t groups = voiceGroupsOf(opt_, cu.voices);
+  const uint32_t groups = voiceGroupsOf(cu);
   Result<std::unique_ptr<ProgramImage>> img = [&]() -> Result<std::unique_ptr<ProgramImage>> {
     if (backend.fn != nullptr) return backend.fn(backend.user, *cu.schedule, opt_.maxBlockFrames, groups, opt_.resources);
     InterpretOptions io;
@@ -247,7 +262,7 @@ uint32_t ProjectCompiler::unitOf(const graph::Schedule* s) const noexcept {
 }
 
 uint32_t ProjectCompiler::imageVoiceGroups(uint32_t u) const noexcept {
-  return u < units_.size() ? voiceGroupsOf(opt_, units_[u].voices) : 1u;
+  return u < units_.size() ? voiceGroupsOf(units_[u]) : 1u;
 }
 
 std::string ProjectCompiler::busKey(const graph::ProjectGraph& g, const graph::ProjectPort& p) {
@@ -274,7 +289,7 @@ Result<ProjectBuild> ProjectCompiler::buildFrom(const graph::ProjectGraph& g, gr
     UnitLayout ul;
     ul.name = pu.name;
     ul.voices = units_[u].voices;
-    ul.voice = opt_.voice;
+    ul.voice = voiceConfigOf(opt_, units_[u]);
     ul.eventSlot = pu.voiceTrack != graph::kNone ? g.tracks[pu.voiceTrack].eventSlot : kNoSlot;
     out.layout.units.push_back(std::move(ul));
   }
@@ -339,9 +354,11 @@ Result<TopologyBuild> ProjectCompiler::rebuild(const graph::ProjectGraph& g, std
     }
     std::sort(reads.begin(), reads.end());
     std::sort(writes.begin(), writes.end());
+    // T4.12-fix1: an instrument unit whose polyphony changed does not continue its old unit (a new VoiceEngine).
+    const uint32_t poly = polyphonyOf(opt_, g, pu);
     uint32_t from = kNoUnit;
     for (uint32_t o = 0; o < oldUnits.size() && from == kNoUnit; ++o)
-      if (!oldTaken[o] && oldUnits[o].memberIds == members) from = o;
+      if (!oldTaken[o] && oldUnits[o].memberIds == members && oldUnits[o].maxVoices == poly) from = o;
     bool reuse = from != kNoUnit && oldUnits[from].readKeys == reads && oldUnits[from].writeKeys == writes;
     for (uint32_t id : members) reuse = reuse && std::find(dirtyIds.begin(), dirtyIds.end(), id) == dirtyIds.end();
     if (reuse) {  // its inputs must still have the types it was compiled against
@@ -400,7 +417,7 @@ Result<TopologyBuild> ProjectCompiler::rebuild(const graph::ProjectGraph& g, std
     UnitLayout ul;
     ul.name = pu.name;
     ul.voices = units_[u].voices;
-    ul.voice = opt_.voice;
+    ul.voice = voiceConfigOf(opt_, units_[u]);
     ul.eventSlot = pu.voiceTrack != graph::kNone ? g.tracks[pu.voiceTrack].eventSlot : kNoSlot;
     out.layout.units.push_back(std::move(ul));
     out.units.push_back(std::move(tu));
@@ -443,6 +460,10 @@ Result<std::vector<UnitUpdate>> ProjectCompiler::update(const graph::ProjectGrap
     const uint32_t u = partition_.unitOf[t];
     if (std::find(dirty.begin(), dirty.end(), u) == dirty.end()) dirty.push_back(u);
   }
+  // T4.12-fix1: a changed polyphony needs a new VoiceEngine for that unit: a topology change (before anything compiles).
+  for (uint32_t u = 0; u < partition_.units.size(); ++u)
+    if (units_[u].voices && polyphonyOf(opt_, g, partition_.units[u]) != units_[u].maxVoices)
+      return compileError(ErrorCode::Unsupported, "the polyphony of unit '" + partition_.units[u].name + "' changed: rebuild");
   std::sort(dirty.begin(), dirty.end());
   std::vector<UnitUpdate> out;
   for (uint32_t u : dirty) {

@@ -12,8 +12,9 @@
 //   operator/stock-<config> <backend> xN   T4.12, SPEC §13 calibration of the stock Operator (stdlib/devices/
 //                          operator.pqp through bench/patches/operator_calibration.pqp): default (operator A only),
 //                          full (four operators, feedback, pitch envelope, per-voice LFO, 24 dB filter with its
-//                          envelope, glide) and spread (full + spread) at 1 / 8 / 64 held voices through a ProgramHost;
-//                          ns per frame, per voice-sample, "core" and, at 64 voices, the crossfade blocks as above
+//                          envelope, glide), spread (full + spread) and, T4.12-fix1, ms2 / prd (full with the MS2 /
+//                          PRD circuit model at +12 dB drive), spread-ms2 (both) at 1 / 8 / 64 held voices through a
+//                          ProgramHost; ns per frame, per voice-sample, "core" and, at 64 voices, the crossfade blocks as above
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -374,7 +375,9 @@ int main(int argc, char** argv) {
     const char* name;
     const char* patch;
   };
-  static const Stock stock[] = {{"default", "OpDefault"}, {"full", "OpFull"}, {"spread", "OpSpread"}};
+  static const Stock stock[] = {{"default", "OpDefault"}, {"full", "OpFull"},  {"spread", "OpSpread"},
+                                {"ms2", "OpMs2"},         {"prd", "OpPrd"},
+                                {"spread-ms2", "OpSpreadMs2"}};
   for (const Stock& sc : stock)
     for (bool jit : {false, true})
       for (uint32_t v : {1u, 8u, 64u})

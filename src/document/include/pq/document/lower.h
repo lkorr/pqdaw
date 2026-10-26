@@ -22,6 +22,10 @@
 // write. Its settings (`real const` inputs the user set) are literal constants at the call (stateless; ids from a
 // per-track pool below kEntityNodeBase): a change recompiles that track's unit. Deactivated devices are left out; a
 // device whose patch is not in the library (or not of its kind) is bypassed and listed in missingDevices.
+// Polyphony (T4.12-fix1): an instrument's setting named `voices` (Operator's) is its track's polyphony,
+// ProjectTrack::maxVoices = round(voices) clamped to [1, kMaxPolyphony] (the user's value, else the patch's default);
+// an instrument without one gets the link's default (LinkConfig::maxVoices). A change of it is a structural edit of
+// that track whose unit restarts with a VoiceEngine of the new size (engine::ProjectCompiler::update / rebuild).
 //
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
@@ -99,6 +103,9 @@
 #include "pq/graph/project.h"
 
 namespace pq::doc {
+
+// The largest polyphony an instrument's `voices` setting may ask for (T4.12-fix1).
+inline constexpr uint32_t kMaxPolyphony = 128;
 
 struct LowerOptions {
   // The device library (devices.h: every patch a device may name, and what those import). Required.

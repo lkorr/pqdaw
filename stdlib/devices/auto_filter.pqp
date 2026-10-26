@@ -67,6 +67,7 @@
 // (bench/RESULTS.md T4.11: Clean ≈ 6–11, OSR ≈ 17–21, PRD ≈ 70–75, MS2 / SMP ≈ 100–110 ns per stereo sample).
 import "../dynamics/envfollow.pqp"
 import "../control/smooth.pqp"
+import "../filters/circuit.pqp"     // the circuit models af_osr, af_ms2, af_smp, af_ladder (shared with Operator)
 
 patch auto_filter {
   in    x         : audio stereo
@@ -236,126 +237,6 @@ patch af_sec {
   lp = mux(model, c.low, o.low, m.low, s.low)
   hn = wHP + wN
   y  = hn * x + (kb * wBP - k * hn) * bp + (wLP - wHP) * lp
-}
-
-// OSR: TPT SVF after a soft input stage (xs = tanh(d·x)/d), a hard diode on the band-pass state (knee ±1/d,
-// slope 4 beyond). Closed form:
-//   a·bp + 4g·(bp − clip(bp, ±t)) = c,  a = 1 + g·(g + k),  c = g·(xs − s2) + s1,  t = 1/d
-//   bp = c/a when |c/a| ≤ t, else (c + 4g·t·sign)/(a + 4g)   (the left side increases with bp: one solution)
-patch af_osr {
-  in    x : audio
-  in    g : audio
-  param k = 1.4142 [-1..100]
-  param d = 1      [1..16]
-  out   band : audio
-  out   low  : audio
-
-  t   = 1 / d
-  xs  = fast_tanh(d * x) / d
-  a   = 1 + g * (g + k)
-  c   = g * (xs - s2) + s1
-  bl  = c / a
-  sg  = bl > t ? 1 : bl < -t ? -1 : 0
-  gd  = 4 * g
-  bp  = (c + gd * t * sg) / (a + gd * abs(sg))
-  lp  = g * bp + s2
-  s1  = z1(2 * bp - s1)
-  s2  = z1(2 * lp - s2)
-  band = bp
-  low  = lp
-}
-
-// MS2: TPT SVF whose positive resonance feedback saturates: hp = x − lp − 2·bp + (2 − k)·tanh(d·bp)/d.
-patch af_ms2 {
-  in    x : audio
-  in    g : audio
-  param k = 1.4142 [-1..100]
-  param d = 1      [1..16]
-  out   band : audio
-  out   low  : audio
-
-  kr  = 2 - k
-  bl  = (g * (x - s2) + s1) / (1 + g * (g + k))
-  solve(iterations: 2) {
-    unknown bp = bl
-    bp == s1 + g * (x - (g + 2) * bp - s2 + kr * fast_tanh(d * bp) / d)
-  }
-  lp  = g * bp + s2
-  s1  = z1(2 * bp - s1)
-  s2  = z1(2 * lp - s2)
-  band = bp
-  low  = lp
-}
-
-// SMP: between MS2 and PRD: a saturating input stage (as PRD's) and MS2's saturating resonance feedback, but
-// asymmetric (so it adds even harmonics): hp = tanh(d·x)/d − lp − 2·bp + (2 − k)·a(d·bp)/d, a(v) = t + t²/4 with
-// t = tanh(v) (a(0) = 0 and slope 1 at 0: small signals see the linear SVF; increasing, bounded in [−3/4, 5/4]).
-patch af_smp {
-  in    x : audio
-  in    g : audio
-  param k = 1.4142 [-1..100]
-  param d = 1      [1..16]
-  out   band : audio
-  out   low  : audio
-
-  kr  = 2 - k
-  xs  = fast_tanh(d * x) / d
-  bl  = (g * (xs - s2) + s1) / (1 + g * (g + k))
-  solve(iterations: 2) {
-    unknown bp = bl
-    bp == s1 + g * (xs - (g + 2) * bp - s2 + kr * (ts + 0.25 * ts * ts) / d)
-  }
-  ts  = fast_tanh(d * bp)
-  lp  = g * bp + s2
-  s1  = z1(2 * bp - s1)
-  s2  = z1(2 * lp - s2)
-  band = bp
-  low  = lp
-}
-
-// PRD: four TPT one-poles (G = g/(1 + g)) after a saturating input pair, u = tanh(d·(x − k·y4))/d. With
-// H = 1 − G and the stage states s1 … s4: y4 = G⁴·u + S, S = ((H·s1·G + H·s2)·G + H·s3)·G + H·s4.
-// Output: Xpander pole mixing of (u, y1 … y4) for the 12 or 24 dB response of each weight.
-patch af_ladder {
-  in    x     : audio
-  in    slope : real const = 0
-  in    g : audio
-  param k = 1.2    [0..5]
-  param d = 1      [1..16]
-  param wLP = 1 [0..1]
-  param wBP = 0 [0..1]
-  param wHP = 0 [0..1]
-  param wN  = 0 [0..1]
-  out   y : audio
-
-  G   = g / (1 + g)
-  H   = 1 - G
-  G2  = G * G
-  G4  = G2 * G2
-  S   = ((H * s1 * G + H * s2) * G + H * s3) * G + H * s4
-  lin = (G4 * x + S) / (1 + k * G4)
-  u   = fast_tanh(d * (x - k * y4)) / d
-  solve(iterations: 1) {
-    unknown y4 = lin
-    y4 == G4 * u + S
-  }
-  y1 = G * u + H * s1
-  y2 = G * y1 + H * s2
-  y3 = G * y2 + H * s3
-  s1 = z1(2 * y1 - s1)
-  s2 = z1(2 * y2 - s2)
-  s3 = z1(2 * y3 - s3)
-  s4 = z1(2 * y4 - s4)
-
-  // Pole-mixing coefficients of (u, y1, y2, y3, y4): 24 dB LP (0,0,0,0,1) BP (0,0,4,−8,4) HP (1,−4,6,−4,1)
-  // N (1,−4,8,−8,4); 12 dB LP (0,0,1,0,0) BP (0,2,−2,0,0) HP (1,−2,1,0,0) N (1,−2,2,0,0).
-  hn  = wHP + wN
-  c0  = hn
-  c1  = slope >= 0.5 ? -4 * hn : 2 * wBP - 2 * hn
-  c2  = slope >= 0.5 ? 4 * wBP + 6 * wHP + 8 * wN : wLP - 2 * wBP + wHP + 2 * wN
-  c3  = slope >= 0.5 ? -8 * wBP - 4 * wHP - 8 * wN : 0
-  c4  = slope >= 0.5 ? wLP + 4 * wBP + wHP + 4 * wN : 0
-  y   = c0 * u + c1 * y1 + c2 * y2 + c3 * y3 + c4 * y4
 }
 
 // Comb: y = x + fb·y[n − T], T = 1/fc (fc 20 Hz … 10 kHz), fb = 0.792·res; the output scaled by √(1 − fb²).

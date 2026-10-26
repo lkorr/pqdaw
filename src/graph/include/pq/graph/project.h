@@ -71,6 +71,8 @@ struct ProjectTrack {
   const Patch* patch = nullptr;  // must outlive every use of the graph, partition and composed unit
   TrackRole role = TrackRole::Audio;
   uint32_t eventSlot = kNone;    // Instrument: the note-event slot (Timeline::eventSource(k)); kNone: none
+  uint32_t maxVoices = 0;        // Instrument: its polyphony (T4.12-fix1: the instrument device's `voices` setting);
+                                 // 0: the compiler's default (engine::ProjectCompileOptions::voice.maxVoices)
 };
 
 enum class WireKind : uint8_t { Audio, Sidechain, Modulation };
