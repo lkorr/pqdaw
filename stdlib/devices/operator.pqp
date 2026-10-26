@@ -3,7 +3,7 @@
 // velocity / key sensitivity; feedback on the top operator (D); a pitch envelope, an LFO, a filter with its own
 // envelope, glide, spread, transpose and the voice's pitch from the tuning signal. Live does not publish its
 // algorithms or curves: everything below is our reading of the manual and of how the device sounds (SPEC §15
-// 2026-10-24: no Live renders yet, adjustable later); QUESTIONS Q?-T4.12-a lists each choice.
+// 2026-10-24: no Live renders yet, adjustable later); QUESTIONS Q131 lists each choice.
 //
 // PITCH. The voice's pitch is voice.hz: the tuning-resolved Hz of the note (SPEC §3.1), so 31edo, MOS and ratio
 // notes play their true pitches; a track's tuning node (tune_voices) rebinds it. An operator in ratio mode plays
@@ -62,7 +62,7 @@
 // LP over `morph` 0..1); `filterSlope` 0 12 dB/oct (one TPT state-variable filter), 1 24 dB (two: a Butterworth
 // stage then the resonant one). Cutoff = `filterFreq` · 2^(cents/1200), cents = filter envelope · `fenvAmount` +
 // LFO · `lfoFilter` + key tracking `filterKey` · (note cents from C3) + `filterVel` · velocity; per voice and
-// sample. Live's circuit models (OSR, MS2, SMP, PRD) are not here: this is the Clean circuit (Q?-T4.12-a).
+// sample. Live's circuit models (OSR, MS2, SMP, PRD) are not here: this is the Clean circuit (Q131).
 // GLIDE (`glideOn`): each new note slides from the previous note's pitch (the newest note started before it, in
 // any voice) to its own, linearly in cents over `glideTime`. SPREAD (`spreadOn`): a second set of the four
 // operators and the filter; the left channel plays the first set `spread` · 10 ¢ flat, the right one the second
