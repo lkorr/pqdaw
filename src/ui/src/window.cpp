@@ -360,19 +360,26 @@ Result<Swapchain::FrameStatus> Swapchain::beginFrame(VkExtent2D& extent) {
   const VkDevice dev = gpu_->device();
 
   for (int attempt = 0; attempt < 2; ++attempt) {
-    VkSurfaceCapabilitiesKHR caps;
-    if (VkResult e = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu_->physicalDevice(), surface_, &caps); e != VK_SUCCESS)
-      return vkError("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", e);
-    VkExtent2D want = caps.currentExtent;
-    if (want.width == UINT32_MAX) {  // surface size is defined by the swapchain: use the window's
-      uint32_t w = 0, h = 0;
-      window_->pixelSize(w, h);
-      want = {std::clamp(w, caps.minImageExtent.width, caps.maxImageExtent.width),
-              std::clamp(h, caps.minImageExtent.height, caps.maxImageExtent.height)};
-    }
-    if (want.width == 0 || want.height == 0) return FrameStatus::Skipped;
-    if (dirty_ || !swapchain_ || want.width != extent_.width || want.height != extent_.height) {
-      if (Status s = recreate(want); !s) return std::move(s).error();
+    // M0 review L11: the surface capabilities are a driver round trip, so they are queried only when the window's
+    // pixel size changed since the last query (a cheap window-system read that also sees resizes whose events
+    // were not pumped yet), the swapchain went out of date / suboptimal, or there is none yet.
+    uint32_t pw = 0, ph = 0;
+    window_->pixelSize(pw, ph);
+    if (dirty_ || !swapchain_ || pw != queriedPixelW_ || ph != queriedPixelH_) {
+      VkSurfaceCapabilitiesKHR caps;
+      ++surfaceQueries_;
+      if (VkResult e = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu_->physicalDevice(), surface_, &caps); e != VK_SUCCESS)
+        return vkError("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", e);
+      VkExtent2D want = caps.currentExtent;
+      if (want.width == UINT32_MAX)  // surface size is defined by the swapchain: use the window's
+        want = {std::clamp(pw, caps.minImageExtent.width, caps.maxImageExtent.width),
+                std::clamp(ph, caps.minImageExtent.height, caps.maxImageExtent.height)};
+      if (want.width == 0 || want.height == 0) return FrameStatus::Skipped;  // queried again next time (no swapchain change)
+      if (dirty_ || !swapchain_ || want.width != extent_.width || want.height != extent_.height) {
+        if (Status s = recreate(want); !s) return std::move(s).error();
+      }
+      queriedPixelW_ = pw;
+      queriedPixelH_ = ph;
     }
 
     if (VkResult e = vkWaitForFences(dev, 1, &inFlight_[slot_], VK_TRUE, UINT64_MAX); e != VK_SUCCESS)

@@ -88,6 +88,9 @@ public:
   VkPresentModeKHR presentMode() const noexcept { return presentMode_; }
   uint32_t framesInFlight() const noexcept { return framesInFlight_; }
   uint32_t recreateCount() const noexcept { return recreateCount_; }
+  // vkGetPhysicalDeviceSurfaceCapabilitiesKHR calls made by beginFrame (only after a pixel-size change, an out-of-date
+  // or suboptimal swapchain, or before the first one; M0 review L11).
+  uint32_t surfaceQueries() const noexcept { return surfaceQueries_; }
 
   enum class FrameStatus { Ready, Skipped };
   // Waits for the next frame slot and acquires a swapchain image, recreating the swapchain when the surface
@@ -133,6 +136,8 @@ private:
   bool frameOpen_ = false;
   bool dirty_ = false;
   uint32_t recreateCount_ = 0;
+  uint32_t surfaceQueries_ = 0;
+  uint32_t queriedPixelW_ = 0, queriedPixelH_ = 0;  // the window's pixel size at the last surface query
   VkCommandPool pool_ = VK_NULL_HANDLE;
   VkCommandBuffer cmd_[kMaxSlots] = {};
   VkFence inFlight_[kMaxSlots] = {};

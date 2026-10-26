@@ -534,6 +534,19 @@ void pump(WindowApp& app) {
   while (SDL_PollEvent(&e)) app.handle(e);
 }
 
+// After a presented frame (M0 review L14): takes the input that arrived while it was drawn, then waits for the next
+// compositor pass only if another frame is already due (animation, damage, widget frame requests). Otherwise the
+// loop goes straight back to its blocking wait, so the next input is answered at once instead of after up to one
+// compositor interval. Input arriving during a frame (a drag, continuous mouse motion) still makes the next frame
+// due here, so such frames stay paced and coalesced. Returns whether it waited.
+bool paceIfAnotherFrameDue(WindowApp& app) {
+  pump(app);
+  app.updateUi();
+  if (app.quit || (!app.frameDue() && !(app.ui && app.ui->needsFrame()))) return false;
+  app.pacer.wait();  // one frame per compositor pass, without a driver vsync spin
+  return true;
+}
+
 int interactive(WindowApp& app) {
   SDL_AddEventWatch(&WindowApp::liveResizeWatch, &app);
   while (!app.quit) {
@@ -559,7 +572,7 @@ int interactive(WindowApp& app) {
         SDL_RemoveEventWatch(&WindowApp::liveResizeWatch, &app);
         return 1;
       }
-      app.pacer.wait();  // one frame per compositor pass, without a driver vsync spin
+      paceIfAnotherFrameDue(app);
     }
   }
   SDL_RemoveEventWatch(&WindowApp::liveResizeWatch, &app);
@@ -568,7 +581,7 @@ int interactive(WindowApp& app) {
 
 // Scripted check that resize, minimise and restore are handled (acceptance: they don't crash). Each step
 // pumps events and renders through the same path as the interactive loop, then checks the outcome.
-int selfTest(WindowApp& app, Clock::time_point processStart) {
+int selfTest(WindowApp& app, Clock::time_point windowStart) {
   int failures = 0;
   // T0.x-flake: wall-clock criteria that depend on machine load (frame-interval hitch, partial-redraw CPU ratio)
   // are enforced only with PQ_PERF_CHECKS=1 (ctest -L perf: pqdaw_window_selftest_perf); otherwise they are
@@ -595,8 +608,16 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
   SDL_ShowWindow(app.window->sdl());
   settle();
   frame("first frame presents");
-  std::printf("  first frame %.1f ms after process start\n",
-              std::chrono::duration<double, std::milli>(Clock::now() - processStart).count());
+  {
+    // M0 review M7 (M3 review: still open for the self-test): say what each figure is measured from. The window app
+    // starts in runWindow(), after process creation, executable load, CRT start-up and command-line parsing; the
+    // SPEC §11 first-frame figure is the one from process creation (the shell logs it the same way, T0.7-fix6).
+    const double fromWindow = std::chrono::duration<double, std::milli>(Clock::now() - windowStart).count();
+    const double fromProcess = msSinceProcessCreation();
+    std::printf("  first frame %.1f ms after the window app started (runWindow), %.1f ms after process creation\n",
+                fromWindow, fromProcess);
+    check(fromProcess < 0 || fromProcess >= fromWindow, "first-frame time from process creation includes the app's");
+  }
 
   const struct {
     int w, h;
@@ -641,6 +662,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
   // Animated burst through the real pacing path: 60 paced frames should take about one second at 60 Hz.
   const auto t0 = Clock::now();
   const uint32_t timeoutsBefore = app.pacer.timeouts();
+  const uint32_t queriesBeforeBurst = app.swapchain->surfaceQueries();
   app.damage.setAnimating(true);
   bool burstOk = true;
   for (int i = 0; i < 60; ++i) {
@@ -651,8 +673,29 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
   app.damage.setAnimating(false);
   const double burstMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   check(burstOk, "60 animated paced frames present");
+  // M0 review L11: frames at an unchanged size do not query the surface capabilities (a driver round trip).
+  check(app.swapchain->surfaceQueries() == queriesBeforeBurst, "frames at an unchanged size query no surface caps");
   std::printf("  60 paced frames: %.1f ms (%.2f ms/frame), pacer %s, %u pacer timeouts\n", burstMs, burstMs / 60.0,
               app.pacer.available() ? "DwmFlush" : "unavailable", app.pacer.timeouts() - timeoutsBefore);
+
+  // M0 review L14: the interactive loop's pacing step. A frame after which nothing is due goes straight back to the
+  // event wait (no compositor wait before the next input); an animating one waits for the next pass. Outside events
+  // (a hover over the window) can make a frame due, so the first case gets a few attempts.
+  {
+    bool idleUnpaced = false;
+    for (int attempt = 0; attempt < 5 && !idleUnpaced; ++attempt) {
+      settle();
+      app.damage.addAll();
+      if (!app.drawFrame()) break;
+      idleUnpaced = !paceIfAnotherFrameDue(app);
+    }
+    check(idleUnpaced, "a frame with nothing further due is not paced (L14)");
+    app.damage.setAnimating(true);
+    const bool drawn = app.drawFrame();
+    check(drawn && paceIfAnotherFrameDue(app), "an animating frame is paced");
+    app.damage.setAnimating(false);
+    settle();
+  }
 
   // T0.8-fix1: 200 glyphs rasterised in the middle of an animated, paced run: no frame interval may exceed
   // 1.5x the run's median (uploads go through the frame's own command buffer; nothing waits for the GPU).
@@ -922,7 +965,7 @@ int selfTest(WindowApp& app, Clock::time_point processStart) {
 }  // namespace
 
 int runWindow(const CliOptions& o, bool selfTestMode) {
-  const auto processStart = Clock::now();
+  const auto windowStart = Clock::now();
   auto app = openWindowApp(o, selfTestMode);
   if (!app) {
     if ((selfTestMode || o.idleCheckSeconds > 0.0) && app.error().code == ErrorCode::Unsupported && app.error().message.rfind("no display", 0) == 0) {
@@ -932,7 +975,7 @@ int runWindow(const CliOptions& o, bool selfTestMode) {
     std::fprintf(stderr, "pqdaw: %s\n", app.error().message.c_str());
     return 1;
   }
-  return selfTestMode ? selfTest(**app, processStart) : interactive(**app);
+  return selfTestMode ? selfTest(**app, windowStart) : interactive(**app);
 }
 
 }  // namespace pq::app
