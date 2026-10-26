@@ -526,7 +526,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Export jacks on top of device panels; drag from a jack to any parameter anywhere (auto-scroll across tracks); bezier cables over the UI coloured by rate, show/hide/fade; modulated knobs show a live range ring; modulation wires in the document (ProjectWire) lowered through the per-track units (merging units per Q84 rules).
   - Accept: wiring an LFO export on track 1 into a filter cutoff on track 3 is audible next compile, one undo step; ring shows the live range; cables follow scrolling at frame rate. Wires add no delay; a wire that closes a delay-free cycle gets an automatic z⁻¹ (1 sample), drawn on the wire (SPEC §15 2026-10-24).
 
-- [ ] **T4.8 Racks + macros** (`document`, `views`, `stdlib`)
+- [~] **T4.8 Racks + macros** *(worker CE, branch task/T4.8-racks)* (`document`, `views`, `stdlib`)
   - Audio Effect Rack and Instrument Rack as subcircuits: parallel chains with chain mixer (volume/pan/mute/solo), chain-select zones with fades, Instrument Rack pitch zones in Hz or the track's tuning and velocity zones; 16 macros (targets with min/max/curve; macros are signals, so modulatable); macro variations (store/recall/randomise with exclusions); nesting; openable in the circuit editor.
   - Accept: zone crossfades click-free; a macro driving 8 targets costs one param write; rack ⇄ circuit view edits stay in sync; goldens `audio-rack`, `instrument-rack`.
 
@@ -554,7 +554,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Q111 option C (compile voice groups first, swap in the pair image later in the background — Instant, bit-identical); Q122 fuse consecutive global per-sample loop regions like voice "chains" (EQ Eight L/R 2.7× stereo); Q126 per-image fixed overhead (+6 ns/block since the shared host; tiny always-busy units slower on JIT than interpreter); Q132 optimiser folds select(const, voice-rate, literal); M1 L6 (CodeOwner destructor mutex).
   - Accept: each item measured before/after on ship (bench rows), bit-identity interpreter == JIT kept, compile-time/size bounds kept or justified.
 
-- [ ] **T4.4-fix1 Circuit editor on the project's devices** (`views`, `document`, `app`). Depends on: T4.1, T4.4. (User decision 2026-10-26, SPEC §15.)
+- [~] **T4.4-fix1 Circuit editor on the project's devices** *(worker CD, branch task/T4.4-fix1-project-devices)* (`views`, `document`, `app`). Depends on: T4.1, T4.4. (User decision 2026-10-26, SPEC §15.)
   - "Open in Circuit View" on a device (context menu / double-click title) opens that device's patch in the circuit editor; edits go through document commands (one undo history with the Ableton view) and recompile only that track's unit with state kept; editing a stock device forks it into a user device (the instance's own patch copy stored in the project; schema change + migration; stock and other instances unchanged; visible "edited" marker); View > Open Patch… on loose .pqp files moves to a developer option.
   - Accept: scripted fork-on-edit (other instances and the stock device unchanged, one undo step, undo restores the stock reference); edits audible after a unit compile with state kept; project save/load round-trips user devices; golden of the editor opened from a device.
 
