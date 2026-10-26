@@ -1,7 +1,7 @@
 // Auto Filter (SPEC §8; Ableton Live 12's Auto Filter): a resonant filter whose cutoff an LFO and an envelope
 // follower (of the input or of a sidechain) move, with five circuit models. Live publishes neither its filter
 // equations nor renders we may use (SPEC §15 2026-10-24): the types and models below are documented topologies
-// chosen to behave the way Live's manual describes them, adjustable later. QUESTIONS Q?-T4.11-a lists every choice.
+// chosen to behave the way Live's manual describes them, adjustable later. QUESTIONS Q133 lists every choice.
 //
 // Signal flow (stereo, every channel alike):
 //   oct  = lfoAmount·4·lfo(ch) + envAmount·8·env           octaves (lfo ±1 per channel, env = follower level)

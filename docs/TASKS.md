@@ -538,13 +538,17 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - 8 SVF-based bands, all types and slopes, stereo/L-R/M-S, adaptive Q, HQ, scale, spectrum display (PQ Meter port), audio-rate modulatable band params.
   - Accept: magnitude responses vs analytic responses within 0.1 dB; stable under audio-rate cutoff modulation; panel golden.
 
-- [~] **T4.11 Auto Filter** *(worker BX, branch task/T4.11-auto-filter)* (`stdlib`, `views`)
+- [x] **T4.11 Auto Filter** *(merged 2026-10-26)* (`stdlib`, `views`)
   - Live 12 filter types and circuit models (Clean, OSR, MS2, SMP, PRD, approximated), drive, morph, LFO, envelope follower, sidechain.
   - Accept: responses per model vs published/known model behaviour (listening notes in REVIEW); modulation click-free; panel golden.
 
 - [!] **T4.12 Operator** *(merged 2026-10-26; partial: interpreter over §13 in full configs; voices setting not lowered)* (`stdlib`, `views`)
   - 4 oscillators, 11 algorithms, ratio/fixed (coarse ratios as JI harmonics), per-osc envelopes, pitch envelope, LFO, filter, user waveforms, glide, spread, voices; exported oscillator outputs; pitch follows the tuning signal.
   - Accept: algorithm routing tests; SPEC §13 calibration row (64 voices, interpreter and JIT, with crossfade numbers) ≤ the budget; panel golden; tuned playback in 31edo and a MOS.
+
+- [ ] **T4.12-fix1 Operator: circuit-model filter, voices, interpreter cost** (`stdlib`, `document` lowering, `engine`). Depends on: T4.11, T4.12.
+  - Operator's filter reuses Auto Filter's circuit models (resolve the resonance-law mismatch, Q133 item 11; reference + panel Circuit/Drive + golden); the `voices` setting read by the chain lowering (track polyphony); reduce the interpreter cost of the full configuration (Q131) or document why the JIT window makes it acceptable.
+  - Accept: Operator with MS2/PRD filter at 64 voices within SPEC §13 on the JIT; voices setting changes polyphony (test); reference ≤ 1e-5.
 
 - [ ] **T4.13 Project patch view** (`views`, `document`; SPEC §15 2026-10-24)
   - The whole project as one editable patch: one band per track in lane order (source node playing that lane's MIDI or audio clips → device chain → compact mixer-strip node), groups as containers with their own chain, returns fed by send wires, master on the right; fully two-way with the Ableton view; semantic zoom from the whole project down to one band's atoms; an animated morph from the arrangement (lanes keep their vertical position and unfold into bands; clips collapse into the source node) and back.
