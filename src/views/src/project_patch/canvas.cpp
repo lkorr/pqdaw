@@ -10,6 +10,7 @@
 #include "../common/paint.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/theme.h"
+#include "pq/views/circuit/probes.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
@@ -307,6 +308,25 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         paint::box(dl, box, 3.0f * us, th.circuit.costBg, th.circuit.cost);
         paint::text(ctx, ctx.res.uiFonts->small, box, "z\xE2\x81\xBB\xC2\xB9", th.circuit.cost, ui::TextAlign::Center);
       }
+  }
+
+  // CPU cost labels (Show CPU Cost): ns per sample above each device block's right end.
+  if (view_.showCosts() && level != Lod::Far && ctx.res.uiFonts != nullptr && ctx.res.text != nullptr) {
+    ui::TextSystem& ts = *ctx.res.text;
+    const ui::FontId font = ctx.res.uiFonts->small;
+    const int32_t lh = static_cast<int32_t>(std::round(14.0f * us)), pad = static_cast<int32_t>(std::round(4.0f * us));
+    for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
+      const float ns = view_.deviceCost(i);
+      if (ns < 0.0f || pp.nodes[i].kind != NodeKind::Device) continue;
+      const Node& n = pp.nodes[i];
+      const Vec2 tr = toDevice({n.x + n.w, n.y});
+      const std::string label = circuit::formatCostNs(static_cast<double>(ns));
+      const int32_t w = ts.shape(font, label).advance + 2 * pad;
+      const ui::IRect box{static_cast<int32_t>(tr.x) - w, static_cast<int32_t>(tr.y) - lh - 1, w, lh};
+      if (!overlaps(box.toRect(), clip)) continue;
+      paint::box(dl, box, 3.0f * us, th.circuit.costBg, 0);
+      paint::text(ctx, font, box, label, th.circuit.cost, ui::TextAlign::Center);
+    }
   }
 
   // Gestures.

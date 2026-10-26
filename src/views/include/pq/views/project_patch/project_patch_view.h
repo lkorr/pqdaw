@@ -53,6 +53,7 @@
 #include "pq/ui/widget.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_scene.h"
+#include "pq/views/project_patch/device_cost.h"
 #include "pq/views/project_patch/project_patch.h"
 #include "pq/views/view_context.h"
 
@@ -209,6 +210,17 @@ public:
   // ---- sources and hooks --------------------------------------------------------------------------------------
   void setMeterSource(MeterSource* source);
   MeterSource* meterSource() const noexcept { return meters_; }
+  // Per-device CPU cost labels (T4.13; Q134 item 8): the app's ProjectLink. Shown on request (the band menu's Show CPU
+  // Cost): metering on, polled at kCostPollSeconds while shown and live, each device labelled with its ns per sample
+  // over its block; off: metering off, nothing polled.
+  static constexpr double kCostPollSeconds = 0.25;
+  void setCostSource(DeviceCostSource* source);
+  DeviceCostSource* costSource() const noexcept { return costSource_; }
+  void setShowCosts(bool on);
+  bool showCosts() const noexcept { return showCosts_; }
+  // The label of model node n (its ns per sample, smoothed), or < 0 for none.
+  float deviceCost(uint32_t node) const noexcept { return node < costs_.size() ? costs_[node] : -1.0f; }
+  void pollCosts();
   // "Open in Circuit View" on a device block (the circuit editor on the project's device, SPEC §15 2026-10-26; the app
   // or the circuit editor's installer sets it; null: the item is disabled).
   std::function<void(doc::DeviceId)> onOpenDevice;
@@ -273,6 +285,10 @@ private:
   Stats stats_;
   Readout readout_;
   uint32_t readoutTimer_ = 0;
+  DeviceCostSource* costSource_ = nullptr;
+  bool showCosts_ = false;
+  std::vector<float> costs_;  // per model node (devices; < 0: none)
+  uint32_t costTimer_ = 0;
 
   struct Morph {
     bool active = false;

@@ -124,3 +124,7 @@ target_compile_definitions(pq_bench_circuit_editor PRIVATE PQ_SOURCE_DIR=pq_buil
 pq_add_bench(pq_bench_device_panels SOURCES views/bench_device_panels.cpp DEPS pq_views)
 pq_use_build_paths(pq_bench_device_panels)
 target_compile_definitions(pq_bench_device_panels PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
+# T4.13: the project patch view over 64 tracks (model / scene builds, whole-project and band paints and pans, the morph).
+pq_add_bench(pq_bench_project_patch SOURCES views/bench_project_patch.cpp DEPS pq_views)
+pq_use_build_paths(pq_bench_project_patch)
+target_compile_definitions(pq_bench_project_patch PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)

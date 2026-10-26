@@ -11,6 +11,7 @@ pq_add_module(pq_app
     src/pipeline_cache.cpp
     src/file_watch.cpp
     src/project_link.cpp
+    src/project_link_cost.cpp
     src/audio_output.cpp
     src/audio_manager.cpp
     src/user_settings.cpp

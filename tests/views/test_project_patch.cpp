@@ -614,6 +614,34 @@ TEST_CASE("project patch: hovering a wire reads its signal (meters, modulation s
   CHECK(u.view().readout().edge == kNone);
 }
 
+TEST_CASE("project patch: CPU cost labels meter only while asked for and shown") {
+  Ui u;
+  FixedDeviceCostSource src;
+  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  src.set(sat, 42.5f);
+  u.view().setCostSource(&src);
+  u.show();
+  CHECK_FALSE(src.metering());  // nothing measured until the labels are asked for
+  u.view().setShowCosts(true);
+  CHECK(src.metering());
+  const uint32_t n = u.pp().nodeOf(sat);
+  CHECK(u.view().deviceCost(n) == doctest::Approx(42.5f));
+  for (const Node& other : u.pp().nodes)
+    if (other.kind == NodeKind::Device && other.device != sat) CHECK(u.view().deviceCost(u.pp().nodeOf(other.device)) < 0.0f);
+  // Not live: one read, then no polling (idle).
+  const uint64_t reads = src.reads();
+  u.d.advance(1.0);
+  CHECK(src.reads() == reads);
+  // Hidden: metering off; shown again: on.
+  u.view().setShown(false, false);
+  CHECK_FALSE(src.metering());
+  u.view().setShown(true, false);
+  CHECK(src.metering());
+  u.view().setShowCosts(false);
+  CHECK_FALSE(src.metering());
+  CHECK(u.view().deviceCost(n) < 0.0f);
+}
+
 TEST_CASE("project patch: a document change while hidden costs nothing; shown, a structural edit rebuilds once") {
   Ui u;
   ProjectPatchView& v = u.view();
@@ -697,7 +725,7 @@ void golden(const char* name) {
   REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
   ImageDiff d;
   CHECK(pq::ui::test::matchesGolden(name, *img, *ref, true, &d));
-  MESSAGE(name << ": " << pq::ui::test::describe(d));
+  MESSAGE(std::string(name) << ": " << pq::ui::test::describe(d));
 }
 }  // namespace
 

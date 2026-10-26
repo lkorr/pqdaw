@@ -102,6 +102,10 @@ void ProjectPatchView::setShown(bool on, bool animate) {
     }
     if (arr) arr->setVisible(false);
     if (tree()) tree()->setFocus(canvas_);
+    if (costSource_ != nullptr && showCosts_) {  // the labels measure only while shown
+      costSource_->setCostMetering(true);
+      pollCosts();
+    }
   } else {
     if (animate && arr != nullptr && tree() != nullptr) {
       captureArrangement();
@@ -109,6 +113,7 @@ void ProjectPatchView::setShown(bool on, bool animate) {
       return;  // hidden when the morph ends
     }
     slot->setVisible(false);
+    if (costSource_ != nullptr && showCosts_) costSource_->setCostMetering(false);
     if (arr) {
       arr->setVisible(true);
       if (tree()) tree()->setFocus(arr);
@@ -146,6 +151,7 @@ void ProjectPatchView::finishMorph() {
     morph_.t = 0.0f;
     canvas_->setVisible(true);
     if (Widget* slot = parent()) slot->setVisible(false);
+    if (costSource_ != nullptr && showCosts_) costSource_->setCostMetering(false);
     if (ArrangementView* arr = arrangementNear(*this)) {
       arr->setVisible(true);
       if (tree()) tree()->setFocus(arr);
@@ -452,6 +458,10 @@ void ProjectPatchView::rebuild() {
     }
   if (!nodes.empty() || !wires.empty()) canvas_->select(nodes, wires);
   readout_ = {};
+  if (showCosts_) {
+    costs_.clear();
+    if (!costTimer_) pollCosts();
+  }
   ++stats_.rebuilds;
   stats_.lastRebuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -783,6 +793,11 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   ui::MenuItem reset = ui::MenuItem::item("Reset Layout", [this] { resetLayout(); });
   reset.enabled = !ctx_.store().view().patchNudges.empty();
   items.push_back(std::move(reset));
+  items.push_back(ui::MenuItem::sep());
+  ui::MenuItem cost = ui::MenuItem::item("Show CPU Cost", [this] { setShowCosts(!showCosts_); });
+  cost.checked = showCosts_;
+  cost.enabled = costSource_ != nullptr;
+  items.push_back(std::move(cost));
   return ui::openContextMenu(*canvas_, at, std::move(items));
 }
 
@@ -921,10 +936,66 @@ void ProjectPatchView::updateReadout(uint32_t edge) {
 }
 
 void ProjectPatchView::onTimer(uint32_t id) {
+  if (id == costTimer_) {
+    costTimer_ = 0;
+    pollCosts();
+    return;
+  }
   if (id != readoutTimer_) return;
   readoutTimer_ = 0;
   pollReadout();
 }
+
+// ---- cost labels ----------------------------------------------------------------------------------------------------
+
+void ProjectPatchView::setCostSource(DeviceCostSource* source) {
+  if (source == costSource_) return;
+  if (costSource_ != nullptr && showCosts_) costSource_->setCostMetering(false);
+  costSource_ = source;
+  if (costSource_ != nullptr && showCosts_ && shown()) {
+    costSource_->setCostMetering(true);
+    pollCosts();
+  }
+}
+
+void ProjectPatchView::setShowCosts(bool on) {
+  if (on == showCosts_) return;
+  showCosts_ = on;
+  if (costSource_ != nullptr) costSource_->setCostMetering(on && shown());
+  if (!on) {
+    if (costTimer_) cancelTimer(costTimer_);
+    costTimer_ = 0;
+    costs_.clear();
+    canvas_->markDirty();
+    return;
+  }
+  pollCosts();
+}
+
+void ProjectPatchView::pollCosts() {
+  if (!showCosts_ || costSource_ == nullptr || !shown()) return;
+  std::vector<doc::DeviceId> ids;
+  std::vector<uint32_t> nodes;
+  for (uint32_t n = 0; n < patch_.nodes.size(); ++n)
+    if (patch_.nodes[n].kind == NodeKind::Device) {
+      ids.push_back(patch_.nodes[n].device);
+      nodes.push_back(n);
+    }
+  std::vector<float> ns(ids.size(), -1.0f);
+  costSource_->readDeviceCosts(ids, ns);
+  std::vector<float> next(patch_.nodes.size(), -1.0f);
+  bool changed = costs_.size() != next.size();
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    const float prev = nodes[i] < costs_.size() ? costs_[nodes[i]] : -1.0f;
+    // Smoothed like the circuit editor's labels (a reading every 250 ms jitters).
+    next[nodes[i]] = ns[i] < 0.0f ? -1.0f : (prev < 0.0f ? ns[i] : prev + 0.35f * (ns[i] - prev));
+    changed = changed || std::fabs(next[nodes[i]] - prev) > 0.05f * std::max(1.0f, prev);
+  }
+  costs_ = std::move(next);
+  if (changed) canvas_->markDirty();
+  if (costSource_->costLive()) costTimer_ = requestTimer(kCostPollSeconds);
+}
+
 
 void ProjectPatchView::pollReadout() {
   const uint32_t edge = readout_.edge;

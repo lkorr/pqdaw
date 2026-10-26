@@ -15,6 +15,7 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/project_patch/project_patch_view.h"
 #include "pq/app/audio_manager.h"
 #include "pq/app/user_settings.h"
 
@@ -198,6 +199,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     });
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
+    if (auto* patch = views::findProjectPatch(*app->shell_)) {  // T4.13: wire readouts and the CPU cost labels
+      patch->setMeterSource(app->link_.get());
+      patch->setCostSource(app->link_.get());
+    }
     app->audio_ = std::make_unique<AudioDeviceManager>(*app->link_, audio, ManagerHooks{}, o.device);
     // The output notifies from its threads: post to the UI thread, which polls the manager (follows a device rate
     // change, refreshes the preferences window).

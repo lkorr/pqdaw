@@ -445,7 +445,12 @@ Status ProjectLink::makeEngine() {
     return it != compileHeld_.end() ? it->second : nullptr;
   };
   // T4.4-fix1: the circuit editor's device inspection (probe taps, cost meter) on the inspected unit's images.
-  co.onBind = [this](uint32_t, const engine::CompiledUnit& cu, engine::ProgramImage& image) { inspector_->bind(cu, image); };
+  // T4.13: every other unit's images get its schedule's cost meter (the project patch view's per-device labels); an image
+  // has one meter, so the inspected unit is measured by the editor's meter only.
+  co.onBind = [this](uint32_t, const engine::CompiledUnit& cu, engine::ProgramImage& image) {
+    if (cu.inspect) inspector_->bind(cu, image);
+    else bindCost(image, cu.schedule);
+  };
   {
     std::lock_guard lock(mutex_);
     if (inspect_) co.inspect.push_back(*inspect_);

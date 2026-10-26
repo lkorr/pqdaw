@@ -89,6 +89,7 @@
 #include "pq/tuning/tuning.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/project_patch/device_cost.h"
 #include "pq/views/transport_port.h"
 #include "pq/views/view_context.h"
 
@@ -178,7 +179,10 @@ struct LinkStats {
   uint32_t invalidWires = 0;
 };
 
-class ProjectLink final : public views::TransportPort, public views::MeterSource, public views::ModulationSource {
+class ProjectLink final : public views::TransportPort,
+                          public views::MeterSource,
+                          public views::ModulationSource,
+                          public views::project_patch::DeviceCostSource {
 public:
   // Builds the engine and compiles `initial` synchronously (the first program is set before any audio runs).
   static Result<std::unique_ptr<ProjectLink>> create(const LinkConfig& config, const doc::Snapshot& initial);
@@ -282,6 +286,15 @@ public:
   // Both consumers read the program's meters through one path (readLevels), so neither steals the other's peaks.
   bool modulationLive() const noexcept override;
   void readModulation(std::span<const views::ModTarget> targets, std::span<views::ModSweep> out) noexcept override;
+
+  // ---- views::project_patch::DeviceCostSource (UI thread; T4.13, src/app/src/project_link_cost.cpp) ----
+  // One engine::CostMeter per unit schedule, bound to each of its images (interpreter, JIT) as it is published; off
+  // (the default) the images only read the meter's flag per block. A reading is split among each member track's nodes
+  // by T4.5's attribution (views::circuit::attributeCost): a device call `d<id>` gets its whole instance. A compile in
+  // progress (compileMutex_ busy) makes a read return the last values instead of waiting.
+  void setCostMetering(bool on) override;
+  bool costLive() const noexcept override;
+  void readDeviceCosts(std::span<const doc::DeviceId> devices, std::span<float> nsPerFrame) override;
   // The wires as the last lowering placed them (doc::wireStates; UI thread, after a structural change).
   std::span<const doc::WireState> wireStates() const noexcept { return wireStates_; }
 
@@ -369,7 +382,15 @@ private:
   uint32_t slotForParam(const std::string& key);  // allocates (mutex_)
   uint32_t slotForTrack(doc::TrackId id);         // allocates (mutex_)
 
+  // T4.13 (project_link_cost.cpp): the cost meters. Declared before engine_ so they outlive every image bound to them.
+  struct CostState;
+  struct CostStateDeleter {
+    void operator()(CostState* s) const noexcept;
+  };
+  static CostState* newCostState();
+  void bindCost(engine::ProgramImage& image, const std::shared_ptr<const graph::Schedule>& schedule);  // compileMutex_
   LinkConfig cfg_;
+  std::unique_ptr<CostState, CostStateDeleter> cost_{newCostState()};
   std::unique_ptr<doc::DeviceLibrary> devices_;
   std::unique_ptr<DeviceInspector> inspector_;   // T4.4-fix1 (see the end of the class)
   std::vector<doc::DeviceId> missingReported_;   // UI thread: devices the status line named as missing
