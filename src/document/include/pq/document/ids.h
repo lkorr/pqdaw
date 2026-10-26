@@ -25,6 +25,8 @@ struct TuningTag {};
 struct LocatorTag {};
 struct DeviceTag {};  // T4.1: a device instance in a track's chain
 struct WireTag {};    // T4.7: a cross-device modulation wire
+struct ChainTag {};   // T4.8: a chain of a rack
+struct MappingTag {}; // T4.8: a macro mapping of a rack
 
 using TrackId = StableId<TrackTag>;
 using ClipId = StableId<ClipTag>;
@@ -35,6 +37,8 @@ using TuningId = StableId<TuningTag>;
 using LocatorId = StableId<LocatorTag>;
 using DeviceId = StableId<DeviceTag>;
 using WireId = StableId<WireTag>;
+using ChainId = StableId<ChainTag>;
+using MappingId = StableId<MappingTag>;
 
 // The project-wide id counter. Not thread-safe (owned by the UI thread's DocumentStore).
 class IdSource {
@@ -55,6 +59,8 @@ public:
   LocatorId locator() noexcept { return next<LocatorTag>(); }
   DeviceId device() noexcept { return next<DeviceTag>(); }
   WireId wire() noexcept { return next<WireTag>(); }
+  ChainId chain() noexcept { return next<ChainTag>(); }
+  MappingId mapping() noexcept { return next<MappingTag>(); }
 
   // The value next() would hand out.
   uint32_t peek() const noexcept { return next_; }

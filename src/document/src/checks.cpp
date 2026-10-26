@@ -170,6 +170,16 @@ Status checkValues(const std::vector<DeviceValue>& v, const char* what) {
 }  // namespace
 
 Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices) {
+  return checkList(listKindOf(kind), devices);
+}
+
+ListKind listKindOf(TrackKind kind) noexcept { return kind == TrackKind::Midi ? ListKind::MidiTrack : ListKind::OtherTrack; }
+
+ListKind chainListKind(const Device& rack) noexcept {
+  return rack.kind == DeviceKind::Instrument ? ListKind::InstrumentRackChain : ListKind::AudioRackChain;
+}
+
+Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
   for (size_t i = 0; i < devices.size(); ++i) {
     const DevicePtr& d = devices[i];
     if (!d) return invalid("null device");
@@ -178,11 +188,73 @@ Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices) {
     for (size_t j = 0; j < i; ++j)
       if (devices[j]->id == d->id) return invalid("device id twice in a chain");
     if (d->kind == DeviceKind::Instrument) {
-      if (kind != TrackKind::Midi) return invalid("instruments go on MIDI tracks");
-      if (i != 0) return invalid("the instrument must be the first device of a MIDI track");
+      if (kind == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks");
+      if (kind == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
+      if (i != 0)
+        return invalid(kind == ListKind::MidiTrack ? "the instrument must be the first device of a MIDI track"
+                                                   : "the instrument must be the first device of its chain");
     }
     PQ_DOC_TRY(checkValues(d->params, "params"));
     PQ_DOC_TRY(checkValues(d->settings, "settings"));
+    if (d->rack) {
+      PQ_DOC_TRY(checkRack(*d));
+    } else if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack) {
+      return invalid("'" + d->patch + "' is a rack and needs its chains");
+    }
+  }
+  return ok();
+}
+
+Status checkMapping(const MacroMapping& m) {
+  if (!m.id.valid()) return invalid("mapping has no id");
+  if (m.macro >= kMacroCount) return invalid("a rack has 16 macros");
+  if (!m.device.valid()) return invalid("mapping has no target device");
+  PQ_DOC_TRY(checkDeviceValue(m.param, std::nullopt));
+  if (!finiteIn(m.min, 0.0, 1.0) || !finiteIn(m.max, 0.0, 1.0)) return invalid("mapping min / max must be in [0, 1]");
+  if (!finiteIn(m.curve, -1.0, 1.0)) return invalid("mapping curve must be in [-1, 1]");
+  return ok();
+}
+
+Status checkRack(const Device& d) {
+  const Rack& r = *d.rack;
+  const bool instrument = d.kind == DeviceKind::Instrument;
+  if (d.patch != (instrument ? kInstrumentRack : kAudioEffectRack)) return invalid("a rack's patch must name its kind");
+  if (!d.settings.empty()) return invalid("racks have no settings");
+  for (const DeviceValue& v : d.params) {
+    if (!isRackParam(v.name)) return invalid("'" + v.name + "' is not a rack param (macro1 … macro16, select)");
+    if (!finiteIn(v.value, 0.0, kMacroMax)) return invalid("rack param '" + v.name + "' must be in [0, 127]");
+  }
+  if (r.visibleMacros < 1 || r.visibleMacros > kMacroCount) return invalid("a rack shows 1 … 16 macros");
+  if (static_cast<uint8_t>(r.keyUnit) > static_cast<uint8_t>(KeyZoneUnit::Degree)) return invalid("unknown key zone unit");
+  if (r.voiceChains && !instrument) return invalid("only Instrument Rack chains run per voice");
+  for (const MacroVariation& v : r.variations)
+    for (const double x : v.values)
+      if (!finiteIn(x, 0.0, kMacroMax)) return invalid("macro variation values must be in [0, 127]");
+  for (size_t i = 0; i < r.chains.size(); ++i) {
+    const ChainPtr& c = r.chains[i];
+    if (!c) return invalid("null chain");
+    if (!c->id.valid()) return invalid("chain has no id");
+    for (size_t j = 0; j < i; ++j)
+      if (r.chains[j]->id == c->id) return invalid("chain id twice in a rack");
+    if (!finiteIn(c->volumeDb, kMinVolumeDb, kMaxVolumeDb)) return invalid("chain volume out of range");
+    if (!finiteIn(c->pan, -1.0, 1.0)) return invalid("chain pan out of range");
+    for (const ZoneKind k : {ZoneKind::Key, ZoneKind::Velocity, ZoneKind::Select})
+      if (!zoneValid(c->zone(k), k, r.keyUnit)) return invalid("chain zone out of order or out of range");
+    if (!instrument && (!zoneOff(c->key, ZoneKind::Key, r.keyUnit) || !zoneOff(c->velocity, ZoneKind::Velocity, r.keyUnit)))
+      return invalid("key and velocity zones are Instrument Rack zones");
+    PQ_DOC_TRY(checkList(chainListKind(d), c->devices));
+  }
+  for (size_t i = 0; i < r.mappings.size(); ++i) {
+    const MacroMapping& m = r.mappings[i];
+    PQ_DOC_TRY(checkMapping(m));
+    if (i > 0 && !(r.mappings[i - 1].id < m.id)) return invalid("mappings must be sorted by id, unique");
+    for (size_t j = 0; j < i; ++j)
+      if (r.mappings[j].device == m.device && r.mappings[j].param == m.param) return invalid("a param is mapped twice");
+    if (m.device == d.id) {
+      if (m.param != kSelectParam) return invalid("a rack's macros map its chain selector, not themselves");
+    } else if (!deviceContains(d, m.device)) {
+      return invalid("a macro maps only devices inside its rack");
+    }
   }
   return ok();
 }

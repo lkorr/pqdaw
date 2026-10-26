@@ -122,6 +122,9 @@ enum class ParamKind : uint8_t {
   DeviceParam,
   // T4.7: the amount of a modulation wire (owner = wire id), in [−1, 1]; a runtime param, not automatable yet.
   WireAmount,
+  // T4.8: a rack chain's runtime values (owner = chain id; target = what: 0 mixer (volume, pan), 1 + ZoneKind a zone).
+  // The lowering derives the chain's param values from them (lower.h "Racks"); not automatable yet.
+  ChainMixer,
 };
 
 struct ParamRef {
@@ -134,6 +137,7 @@ struct ParamRef {
   static ParamRef tuning(ParamKind k, TuningId t) { return {k, t.value, 0}; }
   static ParamRef device(DeviceId d, std::string_view param);  // {DeviceParam, d, deviceParamHash(param)}
   static ParamRef wireAmount(WireId w) { return {ParamKind::WireAmount, w.value, 0}; }
+  static ParamRef chain(ChainId c, uint32_t what = 0) { return {ParamKind::ChainMixer, c.value, what}; }
 };
 // FNV-1a 32 of a device param's name: the ParamRef target of a device param (QUESTIONS Q129, item 2).
 uint32_t deviceParamHash(std::string_view name) noexcept;
@@ -303,25 +307,135 @@ struct UserPatch {
   friend bool operator==(const UserPatch& a, const UserPatch& b) noexcept { return a.text == b.text; }
 };
 using UserPatchPtr = std::shared_ptr<const UserPatch>;
+struct Rack;
 
 // One device instance in a track's chain: a call of `patch` (a patch of the device library) with the values the user
 // set. Ports are the patch's signature and are not stored; params / settings not listed play the patch's defaults.
+// T4.8: a RACK is a Device with `rack` set (patch kAudioEffectRack / kInstrumentRack, kind AudioEffect / Instrument): it
+// holds parallel chains of devices instead of calling a library patch; its params are its macros and its chain
+// selector ("macro1" … "macro16", "select"), stored in `params` like any device's.
 struct Device {
   DeviceId id;
   std::string patch;
   DeviceKind kind = DeviceKind::AudioEffect;
   bool active = true;                // deactivated: left out of the graph (structural, zero CPU)
   std::vector<DeviceValue> params;   // sorted by name, unique
-  std::vector<DeviceValue> settings; // sorted by name, unique
+  std::vector<DeviceValue> settings; // sorted by name, unique (racks: none)
   // T4.4-fix1: the instance's own patch text (a user device), or null (the library's stock patch). Shared, so a param
-  // edit copies the Device but never the text.
+  // edit copies the Device but never the text. Racks: always null (a rack has no patch text).
   UserPatchPtr source;
+  std::shared_ptr<const Rack> rack;  // T4.8: non-null for a rack
   bool edited() const noexcept { return source != nullptr; }
   const DeviceValue* param(std::string_view name) const noexcept;    // nullptr: the patch's default
   const DeviceValue* setting(std::string_view name) const noexcept;  // nullptr: the patch's default
-  friend bool operator==(const Device& a, const Device& b) noexcept;  // the texts compared, not the pointers
+  bool isRack() const noexcept { return rack != nullptr; }
 };
+bool operator==(const Device& a, const Device& b) noexcept;  // deep (racks by content, user texts by text)
 using DevicePtr = std::shared_ptr<const Device>;
+
+// ---- Racks (T4.8, SPEC §8.2; QUESTIONS Q129 item 6, Q?-T4.8-a) -------------------------------------------------------
+// An Audio Effect Rack (kind AudioEffect) or an Instrument Rack (kind Instrument) holds parallel CHAINS, each a device
+// list (the same chain rule as a track: an Instrument Rack's chain may start with one instrument — a device or a nested
+// Instrument Rack —, then audio effects; an Audio Effect Rack's chains hold audio effects only) with its own mixer
+// (volume, pan, activator, solo) and ZONES. Racks nest (a chain may hold racks). Up to 16 MACROS: params of the rack
+// ("macro1" … "macro16", 0 … 127) that drive any number of MAPPINGS (a target param of a device inside the rack, a
+// min / max in the target's knob travel and a curve); the CHAIN SELECTOR is the rack param "select" (0 … 127).
+// Everything continuous is a runtime value (a macro turn is one param write; a chain's volume / pan or a zone drag are
+// param writes too); chains, mappings, mute / solo and a zone switched on or off are structural.
+inline constexpr std::string_view kAudioEffectRack = "AudioEffectRack";
+inline constexpr std::string_view kInstrumentRack = "InstrumentRack";
+inline constexpr uint32_t kMacroCount = 16;
+inline constexpr double kMacroMax = 127.0;   // a macro's value range is 0 … 127 (Live's macro scale)
+inline constexpr double kSelectMax = 127.0;  // the chain selector's range (and a select zone's)
+inline constexpr double kVelocityMax = 127.0;
+// The rack params: "macro1" … "macro16" (index 0 … 15) and "select".
+std::string macroParamName(uint32_t index);                           // "macro<index + 1>"
+std::optional<uint32_t> macroIndex(std::string_view param) noexcept;  // the inverse; nullopt: not a macro
+inline constexpr std::string_view kSelectParam = "select";
+bool isRackParam(std::string_view param) noexcept;  // a macro or "select"
+
+// A zone: the values where a chain plays. Gain 0 below `lo` and above `hi`, rising linearly from `lo` to `fadeLo`,
+// 1 from `fadeLo` to `fadeHi`, falling linearly to `hi` (lo ≤ fadeLo ≤ fadeHi ≤ hi). A zone covering its whole range
+// is OFF: it costs nothing (no node in the graph).
+enum class ZoneKind : uint8_t { Key, Velocity, Select };
+// Key zones of an Instrument Rack: in Hz (a pitch range; the fades are linear in log frequency) or in degrees of the
+// track's tuning (converted to Hz from the track's current tuning; they follow a tuning param edit).
+enum class KeyZoneUnit : uint8_t { Hz, Degree };
+struct Zone {
+  double lo = 0.0, fadeLo = 0.0, fadeHi = 0.0, hi = 0.0;
+  friend constexpr bool operator==(const Zone&, const Zone&) noexcept = default;
+};
+struct ZoneRange {
+  double min = 0.0, max = 0.0;
+};
+ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept;  // Key: Hz 1 … 100000, Degree −1024 … 1024; else 0 … 127
+Zone fullZone(ZoneKind kind, KeyZoneUnit unit) noexcept;        // {min, min, max, max}: off
+bool zoneOff(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept;
+bool zoneValid(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept;  // ordered, finite, inside the range
+
+struct Chain {
+  ChainId id;
+  std::string name;
+  std::vector<DevicePtr> devices;  // left → right
+  float volumeDb = 0.0f;           // [kMinVolumeDb, kMaxVolumeDb]; at kMinVolumeDb: −∞
+  float pan = 0.0f;                // [−1, 1], balance
+  bool active = true;              // the chain activator: off = muted, left out of the graph (structural, zero CPU)
+  bool solo = false;               // any soloed chain in a rack: only soloed chains play (structural)
+  Zone key, velocity, select;      // makeChain sets the full (off) zones
+  const Zone& zone(ZoneKind k) const noexcept {
+    return k == ZoneKind::Key ? key : k == ZoneKind::Velocity ? velocity : select;
+  }
+  Zone& zone(ZoneKind k) noexcept { return k == ZoneKind::Key ? key : k == ZoneKind::Velocity ? velocity : select; }
+};
+bool operator==(const Chain& a, const Chain& b) noexcept;
+using ChainPtr = std::shared_ptr<const Chain>;
+
+// A macro mapping: macro `macro` (0 … 15) drives `param` of `device` (a device inside the rack, at any depth; a nested
+// rack's macro or selector too). The target's knob position = min + (max − min) · shape(macro / 127, curve), in the
+// target's knob travel (the panel knob's 0 … 1: linear, in dB for gains, logarithmic for @curve(exp); doc::paramTravel)
+// with the automation curve law (pq/core/automation_curve.h; curve 0 = straight). min > max inverts. A mapped param
+// plays the macro (its own stored value is kept but unused); wires into it still add (Q135's law, the mapping as the
+// centre). A param has at most one mapping in the project.
+struct MacroMapping {
+  MappingId id;
+  uint8_t macro = 0;
+  DeviceId device;
+  std::string param;
+  double min = 0.0, max = 1.0;  // [0, 1] knob travel
+  double curve = 0.0;           // [−1, 1]
+  friend bool operator==(const MacroMapping&, const MacroMapping&) = default;
+};
+
+// A stored snapshot of all macro values (Live's macro variations).
+struct MacroVariation {
+  std::string name;
+  std::array<double, kMacroCount> values{};
+  friend bool operator==(const MacroVariation&, const MacroVariation&) = default;
+};
+
+struct Rack {
+  std::vector<ChainPtr> chains;
+  std::vector<MacroMapping> mappings;                 // sorted by id
+  std::array<std::string, kMacroCount> macroNames{};  // "" = "Macro <k>" (Meta)
+  uint8_t visibleMacros = 8;                          // 1 … 16 knobs shown (Meta)
+  std::vector<MacroVariation> variations;             // Meta
+  uint16_t randomizeExclude = 0;                      // bit k: Rand leaves macro k alone (Meta)
+  KeyZoneUnit keyUnit = KeyZoneUnit::Hz;              // Instrument Rack (structural)
+  // Instrument Rack: each chain's audio effects run per voice (SPEC §8.2 voicechain: the voices are summed after the
+  // chain instead of after its instrument). Structural.
+  bool voiceChains = false;
+  bool showChains = true;  // the chain list is shown (Meta)
+  bool showMacros = true;  // the macro knobs are shown (Meta)
+  const Chain* findChain(ChainId id) const noexcept;
+};
+bool operator==(const Rack& a, const Rack& b) noexcept;
+
+// A new rack device (no chains: an empty rack passes its input through) / a new chain (full zones).
+DevicePtr makeRack(DeviceId id, DeviceKind kind, std::vector<ChainPtr> chains = {});
+ChainPtr makeChain(ChainId id, std::string name, std::vector<DevicePtr> devices = {});
+std::string macroDisplayName(const Rack& r, uint32_t index);  // the name, else "Macro <index + 1>"
+// A rack param's value: the stored one, else 0.
+double rackParamValue(const Device& rack, std::string_view param) noexcept;
 
 // The M3 default instrument (QUESTIONS Q15 A): every MIDI track ops::createTrack makes starts with it.
 inline constexpr std::string_view kDefaultInstrument = "BasicSynth";
@@ -457,13 +571,46 @@ const Track* parentOf(const Project& p, const TrackPath& path) noexcept;
 const TuningSlot* findTuning(const Project& p, TuningId id) noexcept;
 // Index of the clip in track.clips, or −1.
 int32_t findClipIndex(const Track& t, ClipId id) noexcept;
-// The track holding device `id` (nullptr: none) and the device.
+// The track holding device `id` (nullptr: none) and the device. T4.8: a device inside a rack is found too (any depth):
+// `chain` is then the chain holding it (index into chain->devices), `rack` that chain's rack device; the track is the one
+// holding the outermost rack.
 struct DeviceLoc {
   const Track* track = nullptr;
   const Device* device = nullptr;
-  uint32_t index = 0;  // in track->devices
+  uint32_t index = 0;            // in the list holding it: track->devices, or chain->devices
+  const Chain* chain = nullptr;  // T4.8: the chain holding it (nullptr: the track's chain)
+  const Device* rack = nullptr;  // T4.8: the rack holding `chain`
+  // The list holding the device.
+  const std::vector<DevicePtr>& list() const noexcept;
 };
 DeviceLoc findDevice(const Project& p, DeviceId id) noexcept;
+// T4.8: a chain of any rack in the project: the chain, its rack and the track holding the rack.
+struct ChainLoc {
+  const Track* track = nullptr;
+  const Device* rack = nullptr;
+  const Chain* chain = nullptr;
+  uint32_t index = 0;  // in rack->rack->chains
+};
+ChainLoc findChain(const Project& p, ChainId id) noexcept;
+// T4.8: the mapping with `id` and its rack (nullptr: none).
+struct MappingLoc {
+  const Track* track = nullptr;
+  const Device* rack = nullptr;
+  const MacroMapping* mapping = nullptr;
+};
+MappingLoc findMapping(const Project& p, MappingId id) noexcept;
+// T4.8: the mapping driving `device`.`param` (nullptr: unmapped) and its rack.
+MappingLoc mappingOf(const Project& p, DeviceId device, std::string_view param) noexcept;
+// T4.8: visits `d` and every device inside it (racks: chains in order, depth-first): f(const Device&).
+template <class F>
+void forEachDeviceIn(const Device& d, F&& f);
+// Visits every device of a list (and inside racks), depth-first in chain order.
+template <class F>
+void forEachDeviceIn(const std::vector<DevicePtr>& list, F&& f) {
+  for (const DevicePtr& d : list) forEachDeviceIn(*d, f);
+}
+// Whether `inner` is `outer` or inside it (a rack).
+bool deviceContains(const Device& outer, DeviceId inner) noexcept;
 // T4.7: the project's wires (an empty list when it has none) and one by id (nullptr: none).
 const WireList& wiresOf(const Project& p) noexcept;
 const Wire* findWire(const Project& p, WireId id) noexcept;
@@ -487,6 +634,21 @@ void forEachTrack(const Project& p, F&& f) {
   walk(p.tracks, nullptr);
   walk(p.returns, nullptr);
   if (p.master) f(*p.master, static_cast<const Track*>(nullptr));
+}
+
+template <class F>
+void forEachDeviceIn(const Device& d, F&& f) {
+  f(d);
+  if (d.rack)
+    for (const ChainPtr& c : d.rack->chains) forEachDeviceIn(c->devices, f);
+}
+
+// T4.8: visits every device of the project, nested ones too: f(const Device&, const Track&).
+template <class F>
+void forEachDevice(const Project& p, F&& f) {
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    forEachDeviceIn(t.devices, [&](const Device& d) { f(d, t); });
+  });
 }
 
 }  // namespace pq::doc

@@ -133,14 +133,19 @@ struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningRefe
 // ---- Devices (T4.1; QUESTIONS Q129) -----------------------------------------------------------------------
 // The chain rule: a MIDI track holds at most one instrument, at index 0, then audio effects; groups, returns and the
 // master hold audio effects only. Device ids are project-wide unique (pre-allocated from the IdSource).
-// Structural. Inserts `device` into `track`'s chain at `index` (kAppend: at the end).
-struct AddDevice { TrackId track; DevicePtr device; uint32_t index = kAppend; };
-// Structural. Removes a device (its values and its wires go with it; undo restores them).
+// Structural. Inserts `device` into `track`'s chain at `index` (kAppend: at the end). T4.8: with `chain` valid, into that
+// rack chain instead (`track` is then ignored); a rack device brings its chains, mappings and inner devices (all ids
+// new).
+struct AddDevice { TrackId track; DevicePtr device; uint32_t index = kAppend; ChainId chain; };
+// Structural. Removes a device (its values and its wires go with it; undo restores them). T4.8: a rack goes with
+// everything inside it (their wires too); mappings of outer racks onto the removed devices go with them.
 struct RemoveDevice { DeviceId device; };
 // Structural. Moves a device to `toTrack` (invalid: its own track) at `index` (in the destination chain after removal;
 // kAppend: the end). Within one track only that track's unit recompiles (every device keeps its state: its NodeId is
-// its id); between tracks both do, and the device starts fresh there (state lives per track).
-struct MoveDevice { DeviceId device; TrackId toTrack; uint32_t index = kAppend; };
+// its id); between tracks both do, and the device starts fresh there (state lives per track). T4.8: with `toChain`
+// valid, into that rack chain (`toTrack` ignored; a rack cannot go into itself); mappings of racks the device leaves
+// are removed with it (a macro maps only devices inside its rack).
+struct MoveDevice { DeviceId device; TrackId toTrack; uint32_t index = kAppend; ChainId toChain; };
 struct SetDeviceActive { DeviceId device; bool active = true; };   // Structural (left out of the graph when off)
 // Param (ParamRef::device(device, param)): a runtime value, one param write, never a compile. `value` in the
 // param's normalised unit; nullopt = back to the patch's default.
@@ -163,6 +168,46 @@ struct RemoveWire { WireId wire; };                                // Structural
 struct SetWireAmount { WireId wire; double amount = kDefaultWireAmount; };
 struct SetWireReducer { WireId wire; WireReducer reducer = WireReducer::Sum; };  // Structural
 
+// ---- Racks (T4.8; model.h "Racks") ------------------------------------------------------------------------------
+// Structural. Inserts `chain` (with its devices; ids new) into rack `rack` at `index` (kAppend: the end). The chain
+// rule of the rack's kind applies to its devices.
+struct AddChain { DeviceId rack; ChainPtr chain; uint32_t index = kAppend; };
+// Structural. Removes a chain with its devices (their wires and the mappings onto them go too).
+struct RemoveChain { ChainId chain; };
+// Structural. Moves a chain within its rack (index after removal; kAppend: the end).
+struct MoveChain { ChainId chain; uint32_t index = kAppend; };
+struct RenameChain { ChainId chain; std::string name; };          // Meta
+// Param (ParamRef::chain(chain, 0)): a chain's volume (dB, kMinVolumeDb = −∞) and pan; one param write per value.
+struct SetChainMixer { ChainId chain; float volumeDb = 0.0f; float pan = 0.0f; };
+struct SetChainActive { ChainId chain; bool active = true; };     // Structural (a muted chain is left out)
+struct SetChainSolo { ChainId chain; bool solo = false; };        // Structural
+// Param (ParamRef::chain(chain, 1 + kind)) while the zone stays on (or off); Structural when it switches on or off
+// (an off zone has no node). The zone must be valid for the rack's key unit.
+struct SetChainZone { ChainId chain; ZoneKind kind = ZoneKind::Select; Zone zone; };
+// Structural. Adds a mapping (id pre-allocated) to rack `rack`: its target must be a device inside the rack (or one of
+// the rack's nested racks' params), the param a name (not checked against the patch: the document is library-free; a
+// param the patch lacks is left out by the lowering), not already mapped anywhere; min / max in [0, 1], curve in
+// [−1, 1], macro < 16.
+struct AddMacroMapping { DeviceId rack; MacroMapping mapping; };
+struct RemoveMacroMapping { MappingId mapping; };                  // Structural
+// Structural. Replaces a mapping's macro / min / max / curve (matched by id; the target cannot change).
+struct SetMacroMapping { MacroMapping mapping; };
+// Everything about a rack that is not a chain, a mapping or a param value. Meta, except `keyUnit` / `voiceChains`
+// (Structural; a key unit change resets every chain's key zone to off).
+struct RackOptions {
+  std::array<std::string, kMacroCount> macroNames{};
+  uint8_t visibleMacros = 8;
+  std::vector<MacroVariation> variations;
+  uint16_t randomizeExclude = 0;
+  KeyZoneUnit keyUnit = KeyZoneUnit::Hz;
+  bool voiceChains = false;
+  bool showChains = true;
+  bool showMacros = true;
+  friend bool operator==(const RackOptions&, const RackOptions&) = default;
+};
+RackOptions rackOptions(const Rack& r);
+struct SetRackOptions { DeviceId rack; RackOptions options; };
+
 // ---- Compound --------------------------------------------------------------------------------------------------
 struct Command;
 // Several commands as one undo step, applied in order; fails as a whole if any fails. ChangeSet = union.
@@ -183,6 +228,8 @@ using CommandVariant = std::variant<
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch,
     AddWire, RemoveWire, SetWireAmount, SetWireReducer,
+    AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
+    AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     Batch>;
 
 struct Command {

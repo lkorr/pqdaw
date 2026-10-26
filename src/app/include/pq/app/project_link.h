@@ -339,6 +339,8 @@ private:
   void applyParams(const doc::Project& p, bool forceAll);
   // T4.1: a change of device params only (a knob drag): writes just those, O(changed params).
   void applyDeviceParams(const doc::Project& p, std::span<const doc::ParamRef> params);
+  // T4.8: writes `value` to the slot linked to `key`, if the lowered patches declare it (no slot is allocated).
+  void writeLinked(const std::string& key, float value);
   // onlyIfChanged: publish only when a track's description changed (after a tuning param change).
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
   engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);

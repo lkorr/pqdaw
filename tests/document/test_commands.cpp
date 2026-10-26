@@ -477,6 +477,182 @@ std::vector<Case> cases() {
                  CHECK(cs.wires == std::vector<WireId>{wire});
                  CHECK(wiresOf(f.doc()).empty());
                }});
+  // ---- racks (T4.8): withRack gives bass an Audio Effect Rack [c1: utility u1 | c2: utility u2], macro 1 → u1.width.
+  struct RackIds {
+    DeviceId rack, u1, u2;
+    ChainId c1, c2;
+    MappingId map;
+  };
+  static RackIds rk;
+  auto withRack = [withChain](Fixture& f) {
+    withChain(f);
+    IdSource& ids = f.store.ids();
+    rk.rack = ids.device();
+    rk.u1 = ids.device();
+    rk.u2 = ids.device();
+    rk.c1 = ids.chain();
+    rk.c2 = ids.chain();
+    rk.map = ids.mapping();
+    DevicePtr rack = makeRack(rk.rack, DeviceKind::AudioEffect,
+                              {makeChain(rk.c1, "A", {makeDevice(rk.u1, "utility", DeviceKind::AudioEffect)}),
+                               makeChain(rk.c2, "B", {makeDevice(rk.u2, "utility", DeviceKind::AudioEffect)})});
+    MacroMapping m;
+    m.id = rk.map;
+    m.macro = 0;
+    m.device = rk.u1;
+    m.param = "width";
+    REQUIRE(f.store.dispatch(Batch{"rack", {AddDevice{f.bass, rack, kAppend}, AddMacroMapping{rk.rack, m}}}).ok());
+  };
+  auto rackOf = [](Fixture& f) -> const Rack& { return *findDevice(f.doc(), rk.rack).device->rack; };
+  c.push_back({"AddDevice (into a rack chain)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return AddDevice{{}, makeDevice(f.store.ids().device(), "utility", DeviceKind::AudioEffect), 0, rk.c2};
+               }, S, [rackOf](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{f.bass});
+                 CHECK(rackOf(f).chains[1]->devices.size() == 2);
+               }});
+  c.push_back({"MoveDevice (into a rack chain)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return MoveDevice{chain.fx, {}, kAppend, rk.c2};
+               }, S, [rackOf](Fixture& f, const ChangeSet& cs) {
+                 CHECK(contains(cs.tracks, f.lead));
+                 CHECK(contains(cs.tracks, f.bass));
+                 CHECK(rackOf(f).chains[1]->devices.back()->id == chain.fx);
+                 CHECK(findDevice(f.doc(), chain.fx).chain == rackOf(f).chains[1].get());
+               }});
+  c.push_back({"MoveDevice (out of its rack: its mapping goes)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return MoveDevice{rk.u1, f.lead, kAppend};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) {
+                 CHECK(rackOf(f).mappings.empty());
+                 CHECK(rackOf(f).chains[0]->devices.empty());
+                 CHECK(f.track(f.lead).devices.back()->id == rk.u1);
+               }});
+  c.push_back({"RemoveDevice (a rack, with what is inside)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return RemoveDevice{rk.rack};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(contains(cs.devices, rk.rack));
+                 CHECK(contains(cs.devices, rk.u1));
+                 CHECK(contains(cs.devices, rk.u2));
+                 CHECK_FALSE(findDevice(f.doc(), rk.u1).device);
+               }});
+  c.push_back({"RemoveDevice (inside a rack: the mapping onto it goes)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return RemoveDevice{rk.u1};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) {
+                 CHECK(rackOf(f).mappings.empty());
+                 CHECK_FALSE(findMapping(f.doc(), rk.map).mapping);
+               }});
+  c.push_back({"SetDeviceParam (a macro)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return SetDeviceParam{rk.rack, "macro1", 64.0};
+               }, P, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::device(rk.rack, "macro1")});
+                 CHECK(rackParamValue(*findDevice(f.doc(), rk.rack).device, "macro1") == 64.0);
+               }});
+  c.push_back({"SetDeviceParam (a nested device)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return SetDeviceParam{rk.u2, "width", 0.5};
+               }, P, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{rk.u2});
+                 CHECK(findDevice(f.doc(), rk.u2).device->param("width")->value == 0.5);
+               }});
+  c.push_back({"AddChain", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return AddChain{rk.rack, makeChain(f.store.ids().chain(), "C"), 1};
+               }, S, [rackOf](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{rk.rack});
+                 CHECK(rackOf(f).chains.size() == 3);
+                 CHECK(rackOf(f).chains[1]->name == "C");
+               }});
+  c.push_back({"RemoveChain", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return RemoveChain{rk.c1};
+               }, S, [rackOf](Fixture& f, const ChangeSet& cs) {
+                 CHECK(contains(cs.devices, rk.u1));
+                 CHECK(rackOf(f).chains.size() == 1);
+                 CHECK(rackOf(f).mappings.empty());  // it mapped u1
+               }});
+  c.push_back({"MoveChain", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return MoveChain{rk.c2, 0};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) { CHECK(rackOf(f).chains[0]->id == rk.c2); }});
+  c.push_back({"RenameChain", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return RenameChain{rk.c1, "Dry"};
+               }, M, [rackOf](Fixture& f, const ChangeSet&) { CHECK(rackOf(f).chains[0]->name == "Dry"); }});
+  c.push_back({"SetChainMixer", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return SetChainMixer{rk.c1, -6.0f, 0.5f};
+               }, P, [rackOf](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::chain(rk.c1, 0)});
+                 CHECK(rackOf(f).chains[0]->volumeDb == -6.0f);
+               }});
+  c.push_back({"SetChainActive", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return SetChainActive{rk.c2, false};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) { CHECK_FALSE(rackOf(f).chains[1]->active); }});
+  c.push_back({"SetChainSolo", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return SetChainSolo{rk.c2, true};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) { CHECK(rackOf(f).chains[1]->solo); }});
+  c.push_back({"SetChainZone (switched on: structural)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return SetChainZone{rk.c1, ZoneKind::Select, Zone{0.0, 0.0, 40.0, 80.0}};
+               }, S, [rackOf](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params.empty());
+                 CHECK(rackOf(f).chains[0]->select.hi == 80.0);
+               }});
+  c.push_back({"SetChainZone (stays on: a param)", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 REQUIRE(f.store.dispatch(SetChainZone{rk.c1, ZoneKind::Select, Zone{0.0, 0.0, 40.0, 80.0}}).ok());
+                 return SetChainZone{rk.c1, ZoneKind::Select, Zone{0.0, 10.0, 50.0, 90.0}};
+               }, P, [](Fixture&, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::chain(rk.c1, 1 + static_cast<uint32_t>(ZoneKind::Select))});
+               }});
+  c.push_back({"AddMacroMapping", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 MacroMapping m;
+                 m.id = f.store.ids().mapping();
+                 m.macro = 3;
+                 m.device = rk.u2;
+                 m.param = "gain";
+                 m.min = 0.25;
+                 m.max = 0.75;
+                 m.curve = -0.5;
+                 return AddMacroMapping{rk.rack, m};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) {
+                 CHECK(rackOf(f).mappings.size() == 2);
+                 CHECK(mappingOf(f.doc(), rk.u2, "gain").mapping->macro == 3);
+               }});
+  c.push_back({"RemoveMacroMapping", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 return RemoveMacroMapping{rk.map};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) { CHECK(rackOf(f).mappings.empty()); }});
+  c.push_back({"SetMacroMapping", [withRack](Fixture& f) -> Command {
+                 withRack(f);
+                 MacroMapping m = *findMapping(f.doc(), rk.map).mapping;
+                 m.max = 0.5;
+                 m.curve = 1.0;
+                 return SetMacroMapping{m};
+               }, S, [](Fixture& f, const ChangeSet&) { CHECK(findMapping(f.doc(), rk.map).mapping->curve == 1.0); }});
+  c.push_back({"SetRackOptions (names: meta)", [withRack, rackOf](Fixture& f) -> Command {
+                 withRack(f);
+                 RackOptions o = rackOptions(rackOf(f));
+                 o.macroNames[0] = "Width";
+                 o.visibleMacros = 4;
+                 return SetRackOptions{rk.rack, o};
+               }, M, [rackOf](Fixture& f, const ChangeSet&) { CHECK(macroDisplayName(rackOf(f), 0) == "Width"); }});
+  c.push_back({"SetRackOptions (key unit: structural)", [withRack, rackOf](Fixture& f) -> Command {
+                 withRack(f);
+                 RackOptions o = rackOptions(rackOf(f));
+                 o.keyUnit = KeyZoneUnit::Degree;
+                 return SetRackOptions{rk.rack, o};
+               }, S, [rackOf](Fixture& f, const ChangeSet&) {
+                 CHECK(rackOf(f).keyUnit == KeyZoneUnit::Degree);
+                 CHECK(zoneOff(rackOf(f).chains[0]->key, ZoneKind::Key, KeyZoneUnit::Degree));
+               }});
   // ---- compound
   c.push_back({"Batch (param + sequence)", [](Fixture& f) -> Command {
                  return Batch{"Mixed", {SetTrackVolume{f.lead, -1.0f},

@@ -142,7 +142,8 @@ bool isTrackParam(ParamKind k) noexcept {
 // T4.1: device params are not automatable yet (their lanes arrive with device automation).
 // T4.7: nor are wire amounts.
 bool isAutomatable(ParamKind k) noexcept {
-  return k != ParamKind::TrackSolo && k != ParamKind::DeviceParam && k != ParamKind::WireAmount;
+  return k != ParamKind::TrackSolo && k != ParamKind::DeviceParam && k != ParamKind::WireAmount &&
+         k != ParamKind::ChainMixer;
 }
 
 uint32_t deviceParamHash(std::string_view name) noexcept {
@@ -166,14 +167,6 @@ const DeviceValue* findValue(const std::vector<DeviceValue>& v, std::string_view
 const DeviceValue* Device::param(std::string_view name) const noexcept { return findValue(params, name); }
 const DeviceValue* Device::setting(std::string_view name) const noexcept { return findValue(settings, name); }
 
-bool operator==(const Device& a, const Device& b) noexcept {
-  if (a.id != b.id || a.patch != b.patch || a.kind != b.kind || a.active != b.active || a.params != b.params ||
-      a.settings != b.settings)
-    return false;
-  if (a.source == b.source) return true;
-  return a.source && b.source && *a.source == *b.source;
-}
-
 DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
   auto d = std::make_shared<Device>();
   d->id = id;
@@ -184,6 +177,117 @@ DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
 
 DevicePtr makeDefaultInstrument(DeviceId id) {
   return makeDevice(id, std::string(kDefaultInstrument), DeviceKind::Instrument);
+}
+
+// ---- Racks (T4.8) ----------------------------------------------------------------------------------------------
+
+std::string macroParamName(uint32_t index) { return "macro" + std::to_string(index + 1); }
+
+std::optional<uint32_t> macroIndex(std::string_view param) noexcept {
+  if (!param.starts_with("macro") || param.size() < 6 || param.size() > 7) return std::nullopt;
+  uint32_t v = 0;
+  for (const char c : param.substr(5)) {
+    if (c < '0' || c > '9') return std::nullopt;
+    v = v * 10 + static_cast<uint32_t>(c - '0');
+  }
+  if (param[5] == '0' || v < 1 || v > kMacroCount) return std::nullopt;
+  return v - 1;
+}
+
+bool isRackParam(std::string_view param) noexcept { return param == kSelectParam || macroIndex(param).has_value(); }
+
+ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept {
+  switch (kind) {
+    case ZoneKind::Key: return unit == KeyZoneUnit::Hz ? ZoneRange{1.0, 100000.0} : ZoneRange{-1024.0, 1024.0};
+    case ZoneKind::Velocity: return {0.0, kVelocityMax};
+    case ZoneKind::Select: return {0.0, kSelectMax};
+  }
+  return {};
+}
+
+Zone fullZone(ZoneKind kind, KeyZoneUnit unit) noexcept {
+  const ZoneRange r = zoneRange(kind, unit);
+  return Zone{r.min, r.min, r.max, r.max};
+}
+
+bool zoneOff(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept {
+  const ZoneRange r = zoneRange(kind, unit);
+  return z.lo <= r.min && z.fadeLo <= r.min && z.fadeHi >= r.max && z.hi >= r.max;
+}
+
+bool zoneValid(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept {
+  const ZoneRange r = zoneRange(kind, unit);
+  for (const double v : {z.lo, z.fadeLo, z.fadeHi, z.hi})
+    if (!std::isfinite(v) || v < r.min || v > r.max) return false;
+  return z.lo <= z.fadeLo && z.fadeLo <= z.fadeHi && z.fadeHi <= z.hi;
+}
+
+const Chain* Rack::findChain(ChainId id) const noexcept {
+  for (const ChainPtr& c : chains)
+    if (c->id == id) return c.get();
+  return nullptr;
+}
+
+bool operator==(const Chain& a, const Chain& b) noexcept {
+  return a.id == b.id && a.name == b.name && a.volumeDb == b.volumeDb && a.pan == b.pan && a.active == b.active &&
+         a.solo == b.solo && a.key == b.key && a.velocity == b.velocity && a.select == b.select &&
+         deepEqList(a.devices, b.devices);
+}
+
+bool operator==(const Rack& a, const Rack& b) noexcept {
+  return deepEqList(a.chains, b.chains) && a.mappings == b.mappings && a.macroNames == b.macroNames &&
+         a.visibleMacros == b.visibleMacros && a.variations == b.variations && a.randomizeExclude == b.randomizeExclude &&
+         a.keyUnit == b.keyUnit && a.voiceChains == b.voiceChains && a.showChains == b.showChains &&
+         a.showMacros == b.showMacros;
+}
+
+bool operator==(const Device& a, const Device& b) noexcept {
+  return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
+         a.settings == b.settings && deepEq(a.source, b.source) && deepEq(a.rack, b.rack);
+}
+
+DevicePtr makeRack(DeviceId id, DeviceKind kind, std::vector<ChainPtr> chains) {
+  auto d = std::make_shared<Device>();
+  d->id = id;
+  d->patch = std::string(kind == DeviceKind::Instrument ? kInstrumentRack : kAudioEffectRack);
+  d->kind = kind;
+  auto r = std::make_shared<Rack>();
+  r->chains = std::move(chains);
+  d->rack = std::move(r);
+  return d;
+}
+
+ChainPtr makeChain(ChainId id, std::string name, std::vector<DevicePtr> devices) {
+  auto c = std::make_shared<Chain>();
+  c->id = id;
+  c->name = std::move(name);
+  c->devices = std::move(devices);
+  c->key = fullZone(ZoneKind::Key, KeyZoneUnit::Hz);
+  c->velocity = fullZone(ZoneKind::Velocity, KeyZoneUnit::Hz);
+  c->select = fullZone(ZoneKind::Select, KeyZoneUnit::Hz);
+  return c;
+}
+
+std::string macroDisplayName(const Rack& r, uint32_t index) {
+  if (index < kMacroCount && !r.macroNames[index].empty()) return r.macroNames[index];
+  return "Macro " + std::to_string(index + 1);
+}
+
+double rackParamValue(const Device& rack, std::string_view param) noexcept {
+  const DeviceValue* v = rack.param(param);
+  return v != nullptr ? v->value : 0.0;
+}
+
+const std::vector<DevicePtr>& DeviceLoc::list() const noexcept {
+  static const std::vector<DevicePtr> kNone;
+  if (chain != nullptr) return chain->devices;
+  return track != nullptr ? track->devices : kNone;
+}
+
+bool deviceContains(const Device& outer, DeviceId inner) noexcept {
+  bool found = false;
+  forEachDeviceIn(outer, [&](const Device& d) { found = found || d.id == inner; });
+  return found;
 }
 
 int32_t Track::deviceIndex(DeviceId device) const noexcept {
@@ -208,6 +312,7 @@ ParamRange paramRange(ParamKind k) noexcept {
     case ParamKind::MosStretch: return {-1199.0, 1200.0};
     case ParamKind::DeviceParam: return {-1e30, 1e30};  // the device patch's own range applies (DeviceCatalog)
     case ParamKind::WireAmount: return {-1.0, 1.0};
+    case ParamKind::ChainMixer: return {-1e30, 1e30};  // a chain's mixer / zones (each value its own range)
   }
   return {};
 }
@@ -346,7 +451,12 @@ uint32_t maxEntityId(const Project& p) {
   for (const Wire& w : wiresOf(p)) see(w.id.value);
   forEachTrack(p, [&](const Track& t, const Track*) {
     see(t.id.value);
-    for (const DevicePtr& d : t.devices) see(d->id.value);
+    forEachDeviceIn(t.devices, [&](const Device& d) {
+      see(d.id.value);
+      if (!d.rack) return;  // T4.8: chains and mappings
+      for (const ChainPtr& c : d.rack->chains) see(c->id.value);
+      for (const MacroMapping& m : d.rack->mappings) see(m.id.value);
+    });
     for (const LanePtr& l : t.lanes) {
       see(l->id.value);
       for (const Breakpoint& b : l->points) see(b.id.value);
@@ -402,13 +512,64 @@ int32_t findClipIndex(const Track& t, ClipId id) noexcept {
   return -1;
 }
 
+namespace {
+// Searches `list` (held by `chain` of `rack`, or the track's own chain) and the racks in it.
+bool findIn(const std::vector<DevicePtr>& list, DeviceId id, const Chain* chain, const Device* rack, DeviceLoc& out) noexcept {
+  for (size_t i = 0; i < list.size(); ++i) {
+    const Device& d = *list[i];
+    if (d.id == id) {
+      out.device = &d;
+      out.index = static_cast<uint32_t>(i);
+      out.chain = chain;
+      out.rack = rack;
+      return true;
+    }
+    if (d.rack)
+      for (const ChainPtr& c : d.rack->chains)
+        if (findIn(c->devices, id, c.get(), &d, out)) return true;
+  }
+  return false;
+}
+}  // namespace
+
 DeviceLoc findDevice(const Project& p, DeviceId id) noexcept {
   DeviceLoc out;
   if (!id.valid()) return out;
   forEachTrack(p, [&](const Track& t, const Track*) {
     if (out.track) return;
-    const int32_t i = t.deviceIndex(id);
-    if (i >= 0) out = DeviceLoc{&t, t.devices[static_cast<size_t>(i)].get(), static_cast<uint32_t>(i)};
+    if (findIn(t.devices, id, nullptr, nullptr, out)) out.track = &t;
+  });
+  return out;
+}
+
+ChainLoc findChain(const Project& p, ChainId id) noexcept {
+  ChainLoc out;
+  if (!id.valid()) return out;
+  forEachDevice(p, [&](const Device& d, const Track& t) {
+    if (out.chain || !d.rack) return;
+    for (size_t i = 0; i < d.rack->chains.size(); ++i)
+      if (d.rack->chains[i]->id == id) out = ChainLoc{&t, &d, d.rack->chains[i].get(), static_cast<uint32_t>(i)};
+  });
+  return out;
+}
+
+MappingLoc findMapping(const Project& p, MappingId id) noexcept {
+  MappingLoc out;
+  if (!id.valid()) return out;
+  forEachDevice(p, [&](const Device& d, const Track& t) {
+    if (out.mapping || !d.rack) return;
+    for (const MacroMapping& m : d.rack->mappings)
+      if (m.id == id) out = MappingLoc{&t, &d, &m};
+  });
+  return out;
+}
+
+MappingLoc mappingOf(const Project& p, DeviceId device, std::string_view param) noexcept {
+  MappingLoc out;
+  forEachDevice(p, [&](const Device& d, const Track& t) {
+    if (out.mapping || !d.rack) return;
+    for (const MacroMapping& m : d.rack->mappings)
+      if (m.device == device && m.param == param) out = MappingLoc{&t, &d, &m};
   });
   return out;
 }

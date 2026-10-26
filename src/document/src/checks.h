@@ -43,6 +43,18 @@ Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r);
 // at most one instrument, at index 0, then audio effects; other tracks audio effects only); each device's patch name
 // non-empty and its params / settings sorted by name, unique, named and finite.
 Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices);
+// T4.8: where a device list lives: it decides whether it may start with an instrument.
+enum class ListKind : uint8_t { MidiTrack, OtherTrack, InstrumentRackChain, AudioRackChain };
+ListKind listKindOf(TrackKind kind) noexcept;
+ListKind chainListKind(const Device& rack) noexcept;  // the kind of the lists inside a rack
+// A device list (any level): checkChain's rules for that kind of list, and every rack in it (recursively): its patch
+// and kind agree, chain ids valid and unique in the rack, chain mixers / zones valid, params only macros and the
+// selector (0 … 127), no settings, mappings sorted by id with valid fields onto devices inside the rack (or its own
+// selector), at most one mapping per target in the rack.
+Status checkList(ListKind kind, const std::vector<DevicePtr>& devices);
+// T4.8: one rack (as checkList checks every rack of a list; the chains' lists included).
+Status checkRack(const Device& rack);
+Status checkMapping(const MacroMapping& m);  // its own fields
 // A device param / setting name (non-empty) and value (finite, when set).
 Status checkDeviceValue(const std::string& name, const std::optional<double>& value);
 // T4.7: a wire's own fields (valid ids, non-empty port and param names, amount in [−1, 1], a known reducer).

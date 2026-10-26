@@ -294,21 +294,28 @@ EditResult insertShape(const Project& p, IdSource& ids, TrackId track, LaneId la
 // Adds a new device of `patch` / `kind` (normally a catalog entry) to `track` at `index` (kAppend: the end; clamped to
 // after the instrument). An instrument goes first; on a MIDI track that has one, it replaces it (Live). Instruments
 // only go on MIDI tracks.
+// T4.8: with `chain` valid, into that rack chain instead (`track` ignored; an instrument goes first in an Instrument
+// Rack's chain, replacing the chain's instrument). `patch` kAudioEffectRack / kInstrumentRack adds an empty rack.
 EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string patch, DeviceKind kind,
-                     uint32_t index = kAppend);
-// Removes the devices (any tracks).
+                     uint32_t index = kAppend, ChainId chain = {});
+// Removes the devices (any tracks; a device inside another removed rack goes with it).
 EditResult deleteDevices(const Project& p, std::span<const DeviceId> devices);
-// Moves a device to `toTrack` (invalid: its own track) at `index` (the destination chain after removal).
-EditResult moveDevice(const Project& p, DeviceId device, TrackId toTrack, uint32_t index);
+// Moves a device to `toTrack` (invalid: its own track) at `index` (the destination chain after removal). T4.8: with
+// `toChain` valid, into that rack chain.
+EditResult moveDevice(const Project& p, DeviceId device, TrackId toTrack, uint32_t index, ChainId toChain = {});
 EditResult setDevicesActive(const Project& p, std::span<const DeviceId> devices, bool active);
 // Deactivates the devices if any is active, else activates them all (Live's device activator on a selection).
 EditResult toggleDevicesActive(const Project& p, std::span<const DeviceId> devices);
 // Pastes copies (fresh ids, the same values) of `devices` into `track` at `index` (kAppend: the end). An instrument
 // among them replaces the track's instrument (MIDI tracks only); the rest keep their order.
+// T4.8: with `chain` valid, into that rack chain. Racks are copied whole (fresh ids for the rack, its chains, mappings
+// and inner devices; mappings follow the copies).
 EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::span<const DevicePtr> devices,
-                        uint32_t index = kAppend);
-// Ctrl+D: copies of the devices right after the last of them on its track (instruments are not duplicated).
+                        uint32_t index = kAppend, ChainId chain = {});
+// Ctrl+D: copies of the devices right after the last of them in its list (instruments are not duplicated).
 EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
+// A copy of `d` with fresh ids (a rack: its chains, mappings and inner devices too; mapping targets follow the copies).
+DevicePtr cloneDevice(const Device& d, IdSource& ids);
 // One param value (nullopt: back to the patch's default). A drag is several of these inside one store gesture.
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> value);
 // One structural setting (nullopt: the default).
@@ -335,5 +342,50 @@ EditResult setWireReducer(const Project& p, WireId wire, WireReducer reducer);
 // The wires into `device`.`param` / out of `device`.`port` (any order of the project's list: by id).
 std::vector<WireId> wiresInto(const Project& p, DeviceId device, std::string_view param);
 std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_view port);
+
+// ---- Racks (T4.8; model.h "Racks") ------------------------------------------------------------------------------
+// One Batch = one undo step each.
+// Ctrl+G: wraps the devices (one list: a track's chain or one rack chain) into a new rack with one chain holding them in
+// their order, placed where the first of them was. With the list's instrument among them: an Instrument Rack (the
+// instrument first in its chain), else an Audio Effect Rack. The devices keep their ids (state, wires, mappings).
+EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
+// Adds an empty chain ("Chain <n>") to the rack at `index` (kAppend: the end).
+EditResult addChain(const Project& p, IdSource& ids, DeviceId rack, uint32_t index = kAppend, std::string name = {});
+// Adds a chain holding a new device of `patch` / `kind` (a device dropped on the rack's chain list: Live).
+EditResult addChainWithDevice(const Project& p, IdSource& ids, DeviceId rack, std::string patch, DeviceKind kind);
+// Moves `device` into a new chain of `rack` (a device dragged onto the rack's chain list).
+EditResult moveDeviceToNewChain(const Project& p, IdSource& ids, DeviceId device, DeviceId rack);
+EditResult deleteChains(const Project& p, std::span<const ChainId> chains);
+EditResult moveChain(const Project& p, ChainId chain, uint32_t index);
+EditResult renameChain(const Project& p, ChainId chain, std::string name);
+EditResult duplicateChain(const Project& p, IdSource& ids, ChainId chain);  // the copy goes right after it
+// A chain's volume (dB; kMinVolumeDb = −∞) and pan. A drag is several of these inside one store gesture.
+EditResult setChainMixer(const Project& p, ChainId chain, float volumeDb, float pan);
+EditResult setChainActive(const Project& p, ChainId chain, bool active);
+EditResult setChainSolo(const Project& p, ChainId chain, bool solo, bool exclusive = true);  // exclusive: others off
+EditResult setChainZone(const Project& p, ChainId chain, ZoneKind kind, Zone zone);
+// Maps macro `macro` (0 … 15) of `rack` to `device`.`param` (full travel, straight). `macroValue` (0 … 127, optional):
+// the macro is set to it in the same step (Live: a first mapping takes over the param's current position). A param
+// already mapped (anywhere) is moved to this macro.
+EditResult mapMacro(const Project& p, IdSource& ids, DeviceId rack, uint32_t macro, DeviceId device, std::string param,
+                    std::optional<double> macroValue = std::nullopt);
+EditResult unmapMacro(const Project& p, MappingId mapping);
+EditResult unmapParam(const Project& p, DeviceId device, std::string_view param);  // whatever maps it
+EditResult setMacroMapping(const Project& p, MappingId mapping, double min, double max, double curve);
+EditResult setMacroValue(const Project& p, DeviceId rack, uint32_t macro, double value);  // 0 … 127, clamped
+EditResult renameMacro(const Project& p, DeviceId rack, uint32_t macro, std::string name);
+EditResult setVisibleMacros(const Project& p, DeviceId rack, uint32_t count);  // 1 … 16
+EditResult setRackShow(const Project& p, DeviceId rack, bool chains, bool macros);
+EditResult setKeyZoneUnit(const Project& p, DeviceId rack, KeyZoneUnit unit);
+EditResult setVoiceChains(const Project& p, DeviceId rack, bool perVoice);
+// Macro variations (Live): store the current macro values as a new variation (or over `index`), recall one (every
+// macro set: one step), delete / rename one, randomize the macros (those not excluded; `seed` makes it reproducible),
+// exclude a macro from Rand.
+EditResult storeVariation(const Project& p, DeviceId rack, std::string name = {}, uint32_t index = kAppend);
+EditResult recallVariation(const Project& p, DeviceId rack, uint32_t index);
+EditResult deleteVariation(const Project& p, DeviceId rack, uint32_t index);
+EditResult renameVariation(const Project& p, DeviceId rack, uint32_t index, std::string name);
+EditResult randomizeMacros(const Project& p, DeviceId rack, uint64_t seed);
+EditResult setMacroExcluded(const Project& p, DeviceId rack, uint32_t macro, bool excluded);
 
 }  // namespace pq::doc::ops

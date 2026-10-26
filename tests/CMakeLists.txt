@@ -302,6 +302,7 @@ pq_add_test(pq_tests_document
     document/test_virtual_fundamental.cpp
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
     document/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit, file, resolution, lowering, coalescing)
+    document/test_racks.cpp    # T4.8: racks (rules, builders, file, lowering)
   DEPS pq_doc)
 
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it

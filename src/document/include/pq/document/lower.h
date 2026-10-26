@@ -154,6 +154,12 @@ enum class NodeRole : uint8_t {
   // never a tuning, track or device id: a wire's nodes take the k slots of all three role spaces (k / 16 picks it).
   // k 0–15: the wire's own nodes; k 16–47: the nodes of the param it modulates (keyed by its lowest wire id).
   Wire = 3,
+  // T4.8 (racks; lower.h "Racks"): like Wire, a chain id or a mapping id is no other entity's id, so their nodes take
+  // the k slots of all three role spaces (k < 48). A rack is a device whose own Device slots stay unused (it has no
+  // call): its nodes take the TuningNode and SendInput slots of its id (k < 32: k / 16 picks the space).
+  Chain = 4,
+  Mapping = 5,
+  Rack = 6,
 };
 inline constexpr uint32_t kEntityNodeBase = 1024;
 inline constexpr uint32_t kEntityNodeSlots = 16;  // k < 16 per (role, entity)
@@ -271,6 +277,11 @@ std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes =
                                       const graph::PatchLibrary* library = nullptr);
 // T4.4-fix1: the same with user devices resolved through `devices` (its library()).
 std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes, const DeviceLibrary& devices);
+
+// T4.8: the derived params of one rack chain as lower() names them (its mixer gains "chain<id>:gl" / ":gr"; its zones
+// that are on, ":s0" … ":s3", ":v0" …, ":k0" …) with their current values; empty when there is no such chain. The link's
+// fast path for a chain mixer or zone drag (`track` is 0: unknown here).
+std::vector<LoweredParam> chainParamValues(const Project& project, ChainId chain);
 
 // What, besides structural changes, decides the lowered graph: the sends that are lowered only while stored (return
 // → return sends, sends that close a loop) and which of them are delayed. A send level edit that changes this key

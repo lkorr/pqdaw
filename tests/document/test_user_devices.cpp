@@ -148,7 +148,7 @@ TEST_CASE("user devices: the project file keeps a device's own text (schema 5), 
   REQUIRE(t.store.dispatch(ops::editDevicePatch(*t.store.current(), t.synB, louderSynth(*lib) + "\n")->command).ok());
   Result<std::string> saved = serializeProject(*t.store.current(), t.store.view());
   REQUIRE(saved.ok());
-  CHECK(saved->rfind("{\n  \"schemaVersion\": 5,", 0) == 0);
+  CHECK(saved->rfind("{\n  \"schemaVersion\": " + std::to_string(kSchemaVersion) + ",", 0) == 0);
   CHECK(saved->find("\"source\": [") != std::string::npos);
   CHECK(saved->find("\"patch saturator {\"") != std::string::npos);  // one JSON string per line
   Result<LoadedProject> back = parseProject(*saved);
@@ -174,7 +174,7 @@ TEST_CASE("user devices: the project file keeps a device's own text (schema 5), 
 
 // fixtures/schema4 is fixtures/full as the schema-4 build wrote it (main at bd62cfd). Schema 5 only adds the optional
 // per-device "source", so the migrated project is the rich project itself and re-saves as fixtures/full.
-TEST_CASE("user devices: a schema-4 project loads unchanged into schema 5 (every device stock)") {
+TEST_CASE("user devices: a schema-4 project loads unchanged into the current schema (every device stock)") {
   Result<LoadedProject> r = loadProject(fixturePath("schema4"));
   REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
   CHECK(r->fileSchemaVersion == 4);

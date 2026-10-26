@@ -441,9 +441,11 @@ private:
 
   // T4.1: one line per device; params / settings as {name: value} (only those set), `active` only when false.
   // T4.4-fix1 (schema 5): a user device's own patch text as "source": one string per line (diffable; the text is
-  // the lines joined by "\n"), the device then written over several lines.
+  // the lines joined by "\n"), the device then written over several lines. T4.8 (schema 6): a rack spans several lines
+  // too: its "rack" object holds the chains (each with its own "devices"), the mappings and the options that differ
+  // from the defaults.
   void device(const PathSeg& at, const Device& d) {
-    w_.beginObject(d.source != nullptr);
+    w_.beginObject(d.source != nullptr || d.rack != nullptr);
     w_.key("id");
     w_.integer(d.id.value);
     w_.key("patch");
@@ -490,6 +492,135 @@ private:
         a = b + 1;
       }
       w_.endArray();
+    }
+    if (d.rack) rack(PathSeg(&at, "rack"), *d.rack);
+    w_.endObject();
+  }
+
+  // T4.8.
+  void zone(const PathSeg& at, const char* key, const Zone& z) {
+    w_.key(key);
+    w_.beginArray(false);
+    for (const double v : {z.lo, z.fadeLo, z.fadeHi, z.hi}) w_.number(at, v);
+    w_.endArray();
+  }
+
+  void rack(const PathSeg& at, const Rack& r) {
+    w_.key("rack");
+    w_.beginObject(true);
+    const PathSeg chainsAt(&at, "chains");
+    w_.key("chains");
+    w_.beginArray(true);
+    for (size_t i = 0; i < r.chains.size(); ++i) {
+      const Chain& c = *r.chains[i];
+      const PathSeg el(&chainsAt, i);
+      w_.beginObject(true);
+      w_.key("id");
+      w_.integer(c.id.value);
+      w_.key("name");
+      w_.string(PathSeg(&el, "name"), c.name);
+      if (c.volumeDb != 0.0f) {
+        w_.key("volumeDb");
+        w_.number(PathSeg(&el, "volumeDb"), c.volumeDb);
+      }
+      if (c.pan != 0.0f) {
+        w_.key("pan");
+        w_.number(PathSeg(&el, "pan"), c.pan);
+      }
+      if (!c.active) {
+        w_.key("active");
+        w_.boolean(false);
+      }
+      if (c.solo) {
+        w_.key("solo");
+        w_.boolean(true);
+      }
+      if (!zoneOff(c.key, ZoneKind::Key, r.keyUnit)) zone(PathSeg(&el, "key"), "key", c.key);
+      if (!zoneOff(c.velocity, ZoneKind::Velocity, r.keyUnit)) zone(PathSeg(&el, "velocity"), "velocity", c.velocity);
+      if (!zoneOff(c.select, ZoneKind::Select, r.keyUnit)) zone(PathSeg(&el, "select"), "select", c.select);
+      const PathSeg devs(&el, "devices");
+      w_.key("devices");
+      w_.beginArray(true);
+      for (size_t j = 0; j < c.devices.size(); ++j) device(PathSeg(&devs, j), *c.devices[j]);
+      w_.endArray();
+      w_.endObject();
+    }
+    w_.endArray();
+    if (!r.mappings.empty()) {
+      const PathSeg mapsAt(&at, "mappings");
+      w_.key("mappings");
+      w_.beginArray(true);
+      for (size_t i = 0; i < r.mappings.size(); ++i) {
+        const MacroMapping& m = r.mappings[i];
+        const PathSeg el(&mapsAt, i);
+        w_.beginObject(false);
+        w_.key("id");
+        w_.integer(m.id.value);
+        w_.key("macro");
+        w_.integer(m.macro + 1);
+        w_.key("device");
+        w_.integer(m.device.value);
+        w_.key("param");
+        w_.string(PathSeg(&el, "param"), m.param);
+        w_.key("min");
+        w_.number(PathSeg(&el, "min"), m.min);
+        w_.key("max");
+        w_.number(PathSeg(&el, "max"), m.max);
+        if (m.curve != 0.0) {
+          w_.key("curve");
+          w_.number(PathSeg(&el, "curve"), m.curve);
+        }
+        w_.endObject();
+      }
+      w_.endArray();
+    }
+    if (std::any_of(r.macroNames.begin(), r.macroNames.end(), [](const std::string& s) { return !s.empty(); })) {
+      const PathSeg namesAt(&at, "macroNames");
+      w_.key("macroNames");
+      w_.beginArray(false);
+      for (size_t i = 0; i < kMacroCount; ++i) w_.string(PathSeg(&namesAt, i), r.macroNames[i]);
+      w_.endArray();
+    }
+    if (r.visibleMacros != 8) {
+      w_.key("visibleMacros");
+      w_.integer(r.visibleMacros);
+    }
+    if (!r.variations.empty()) {
+      const PathSeg varsAt(&at, "variations");
+      w_.key("variations");
+      w_.beginArray(true);
+      for (size_t i = 0; i < r.variations.size(); ++i) {
+        const PathSeg el(&varsAt, i);
+        w_.beginObject(false);
+        w_.key("name");
+        w_.string(PathSeg(&el, "name"), r.variations[i].name);
+        w_.key("values");
+        w_.beginArray(false);
+        for (const double v : r.variations[i].values) w_.number(PathSeg(&el, "values"), v);
+        w_.endArray();
+        w_.endObject();
+      }
+      w_.endArray();
+    }
+    if (r.randomizeExclude != 0) {
+      w_.key("randomizeExclude");
+      w_.integer(r.randomizeExclude);
+    }
+    if (r.keyUnit != KeyZoneUnit::Hz) {
+      w_.key("keyUnit");
+      w_.string(at, "degree");
+    }
+    if (r.voiceChains) {
+      w_.key("voiceChains");
+      w_.boolean(true);
+    }
+    if (!r.showChains) {
+      w_.key("showChains");
+      w_.boolean(false);
+    }
+    if (!r.showMacros) {
+      w_.key("showMacros");
+      w_.boolean(false);
     }
     w_.endObject();
   }
@@ -1273,7 +1404,8 @@ private:
     r_.beginArray(at);
     for (size_t i = 0; r_.nextElement(at); ++i) {
       const PathSeg el(&at, i);
-      static constexpr std::string_view K[] = {"id", "patch", "kind", "active", "params", "settings", "source", "crlf"};
+      static constexpr std::string_view K[] = {"id",       "patch",  "kind", "active", "params",
+                                               "settings", "source", "crlf", "rack"};
       auto d = std::make_shared<Device>();
       bool crlf = false;
       Members m(r_, el, K);
@@ -1304,6 +1436,7 @@ private:
             break;
           }
           case 7: crlf = r_.readBool(f); break;
+          case 8: d->rack = rack(f); break;
         }
       }
       m.require({0, 1, 2});
@@ -1320,9 +1453,162 @@ private:
       } else if (crlf) {
         r_.failValue(el, "\"crlf\" without a \"source\"");
       }
+      if (d->rack && d->source) r_.failValue(el, "a rack has no \"source\"");
       v.push_back(std::move(d));
     }
     return v;
+  }
+
+  // T4.8: a rack (checked as a whole by checkList when its track is read).
+  Zone zone(const PathSeg& at) {
+    double v[4] = {};
+    size_t n = 0;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      if (n == 4) r_.failHere(el, "a zone is [lo, fadeLo, fadeHi, hi]", ErrorCode::InvalidArgument);
+      v[n++] = r_.readDouble(el);
+    }
+    if (n != 4) r_.failHere(at, "a zone is [lo, fadeLo, fadeHi, hi]", ErrorCode::InvalidArgument);
+    return Zone{v[0], v[1], v[2], v[3]};
+  }
+
+  std::shared_ptr<const Rack> rack(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"chains",           "mappings", "macroNames",  "visibleMacros",
+                                             "variations",       "randomizeExclude", "keyUnit", "voiceChains",
+                                             "showChains",       "showMacros"};
+    auto r = std::make_shared<Rack>();
+    std::vector<std::shared_ptr<Chain>> chains;
+    std::vector<std::array<std::optional<Zone>, 3>> zones;  // per chain ("keyUnit" may come after the chains)
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: {
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            static constexpr std::string_view CK[] = {"id", "name", "volumeDb", "pan", "active", "solo",
+                                                      "key", "velocity", "select", "devices"};
+            auto c = std::make_shared<Chain>();
+            std::array<std::optional<Zone>, 3> z;
+            Members cm(r_, el, CK);
+            for (int ck; (ck = cm.next()) >= 0;) {
+              const PathSeg cf(&el, CK[static_cast<size_t>(ck)]);
+              switch (ck) {
+                case 0: c->id = ChainId{defineId(cf)}; break;
+                case 1: c->name = str(cf); break;
+                case 2: c->volumeDb = static_cast<float>(r_.readDouble(cf)); break;
+                case 3: c->pan = static_cast<float>(r_.readDouble(cf)); break;
+                case 4: c->active = r_.readBool(cf); break;
+                case 5: c->solo = r_.readBool(cf); break;
+                case 6: z[0] = zone(cf); break;
+                case 7: z[1] = zone(cf); break;
+                case 8: z[2] = zone(cf); break;
+                case 9: c->devices = devices(cf); break;
+              }
+            }
+            cm.require({0, 1, 9});
+            zones.push_back(z);
+            chains.push_back(std::move(c));
+          }
+          break;
+        }
+        case 1: {
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            static constexpr std::string_view MK[] = {"id", "macro", "device", "param", "min", "max", "curve"};
+            MacroMapping mp;
+            Members mm(r_, el, MK);
+            for (int mk; (mk = mm.next()) >= 0;) {
+              const PathSeg mf(&el, MK[static_cast<size_t>(mk)]);
+              switch (mk) {
+                case 0: mp.id = MappingId{defineId(mf)}; break;
+                case 1: {
+                  const int64_t v = r_.readInt(mf);
+                  if (v < 1 || v > static_cast<int64_t>(kMacroCount)) r_.failValue(mf, "macros are 1 … 16");
+                  mp.macro = static_cast<uint8_t>(v - 1);
+                  break;
+                }
+                case 2: mp.device = DeviceId{ref(mf)}; break;
+                case 3: mp.param = str(mf); break;
+                case 4: mp.min = r_.readDouble(mf); break;
+                case 5: mp.max = r_.readDouble(mf); break;
+                case 6: mp.curve = r_.readDouble(mf); break;
+              }
+            }
+            mm.require({0, 1, 2, 3, 4, 5});
+            check(el, detail::checkMapping(mp));
+            r->mappings.push_back(std::move(mp));
+          }
+          break;
+        }
+        case 2: {
+          size_t n = 0;
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            if (n == kMacroCount) r_.failHere(el, "a rack has 16 macros", ErrorCode::InvalidArgument);
+            r->macroNames[n++] = str(el);
+          }
+          break;
+        }
+        case 3: {
+          const int64_t v = r_.readInt(f);
+          if (v < 1 || v > static_cast<int64_t>(kMacroCount)) r_.failValue(f, "a rack shows 1 … 16 macros");
+          r->visibleMacros = static_cast<uint8_t>(v);
+          break;
+        }
+        case 4: {
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            static constexpr std::string_view VK[] = {"name", "values"};
+            MacroVariation var;
+            Members vm(r_, el, VK);
+            for (int vk; (vk = vm.next()) >= 0;) {
+              const PathSeg vf(&el, VK[static_cast<size_t>(vk)]);
+              if (vk == 0) var.name = str(vf);
+              if (vk == 1) {
+                size_t n = 0;
+                r_.beginArray(vf);
+                for (size_t j = 0; r_.nextElement(vf); ++j) {
+                  const PathSeg xe(&vf, j);
+                  if (n == kMacroCount) r_.failHere(xe, "a variation holds 16 values", ErrorCode::InvalidArgument);
+                  var.values[n++] = r_.readDouble(xe);
+                }
+                if (n != kMacroCount) r_.failHere(vf, "a variation holds 16 values", ErrorCode::InvalidArgument);
+              }
+            }
+            vm.require({0, 1});
+            r->variations.push_back(std::move(var));
+          }
+          break;
+        }
+        case 5: {
+          const int64_t v = r_.readInt(f);
+          if (v < 0 || v > 0xFFFF) r_.failValue(f, "a 16-bit mask");
+          r->randomizeExclude = static_cast<uint16_t>(v);
+          break;
+        }
+        case 6: {
+          static constexpr std::array<std::string_view, 2> kUnits = {"hz", "degree"};
+          r->keyUnit = static_cast<KeyZoneUnit>(name(f, kUnits, "key zone unit"));
+          break;
+        }
+        case 7: r->voiceChains = r_.readBool(f); break;
+        case 8: r->showChains = r_.readBool(f); break;
+        case 9: r->showMacros = r_.readBool(f); break;
+      }
+    }
+    m.require({0});
+    for (size_t i = 0; i < chains.size(); ++i) {  // absent zones are off (in the rack's key unit)
+      const ZoneKind kinds[3] = {ZoneKind::Key, ZoneKind::Velocity, ZoneKind::Select};
+      for (size_t k = 0; k < 3; ++k) chains[i]->zone(kinds[k]) = zones[i][k].value_or(fullZone(kinds[k], r->keyUnit));
+      r->chains.push_back(std::move(chains[i]));
+    }
+    return r;
   }
 
   // T4.7: the wires, sorted by id in the file (ends are checked against the devices in validate()).
@@ -1736,6 +2022,14 @@ private:
         if (wl[j].from == wl[i].from && wl[j].port == wl[i].port && wl[j].to == wl[i].to && wl[j].param == wl[i].param)
           json::fail(el, "these two ports are already wired (wire " + std::to_string(wl[j].id.value) + ")");
     }
+    // T4.8: a param has at most one macro mapping in the project.
+    std::set<std::pair<uint32_t, std::string>> mapped;
+    forEachDevice(p, [&](const Device& d, const Track&) {
+      if (!d.rack) return;
+      for (const MacroMapping& m : d.rack->mappings)
+        if (!mapped.emplace(m.device.value, m.param).second)
+          json::fail(root, "device " + std::to_string(m.device.value) + " param '" + m.param + "' is mapped to two macros");
+    });
 
     std::sort(ids_.begin(), ids_.end());
     const auto dup = std::adjacent_find(ids_.begin(), ids_.end());
@@ -1790,7 +2084,23 @@ private:
     auto walkTrack = [&](auto& self, const PathSeg& at, const Track& t) -> void {
       see(t.id.value, at);
       const PathSeg devs(&at, "devices");
-      for (size_t i = 0; i < t.devices.size(); ++i) see(t.devices[i]->id.value, PathSeg(&devs, i));
+      auto walkDevices = [&](auto& rec, const PathSeg& listAt, const std::vector<DevicePtr>& list) -> void {
+        for (size_t i = 0; i < list.size(); ++i) {
+          const PathSeg da(&listAt, i);
+          see(list[i]->id.value, da);
+          if (!list[i]->rack) continue;  // T4.8: chains, mappings, inner devices
+          const PathSeg ra(&da, "rack");
+          const PathSeg ca(&ra, "chains");
+          for (size_t j = 0; j < list[i]->rack->chains.size(); ++j) {
+            const PathSeg cj(&ca, j);
+            see(list[i]->rack->chains[j]->id.value, cj);
+            rec(rec, PathSeg(&cj, "devices"), list[i]->rack->chains[j]->devices);
+          }
+          const PathSeg ma(&ra, "mappings");
+          for (size_t j = 0; j < list[i]->rack->mappings.size(); ++j) see(list[i]->rack->mappings[j].id.value, PathSeg(&ma, j));
+        }
+      };
+      walkDevices(walkDevices, devs, t.devices);
       const PathSeg lanes(&at, "lanes");
       for (size_t i = 0; i < t.lanes.size(); ++i) {
         const PathSeg la(&lanes, i);
@@ -2135,11 +2445,19 @@ Status migrateAddUserDeviceSource(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 5 → 6 (T4.8): schema 6 lets a device hold a "rack" (chains, macro mappings, options); a schema-5 file has no rack, so
+// nothing changes. Self-contained: it reads nothing the other steps write.
+Status migrateAddRacks(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
     {3, migrateAddWires},
     {4, migrateAddUserDeviceSource},
+    {5, migrateAddRacks},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

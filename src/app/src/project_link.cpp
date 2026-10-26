@@ -660,8 +660,22 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
       }
       continue;
     }
+    // T4.8: a rack chain's mixer or zone: the derived params of that chain (only those the lowered patch has).
+    if (ref.kind == doc::ParamKind::ChainMixer) {
+      for (const doc::LoweredParam& lp : doc::chainParamValues(p, doc::ChainId{ref.owner})) writeLinked(lp.key, lp.value);
+      continue;
+    }
     const doc::DeviceLoc d = doc::findDevice(p, doc::DeviceId{ref.owner});
     if (d.device == nullptr) continue;
+    if (d.device->rack) {  // T4.8: a macro or the chain selector: one param write (when the patch reads it)
+      for (uint32_t i = 0; i <= doc::kMacroCount; ++i) {
+        const std::string name = i == doc::kMacroCount ? std::string(doc::kSelectParam) : doc::macroParamName(i);
+        if (doc::deviceParamHash(name) != ref.target) continue;
+        writeLinked("dev" + std::to_string(ref.owner) + ":" + name, static_cast<float>(doc::rackParamValue(*d.device, name)));
+        break;
+      }
+      continue;
+    }
     std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: a user device plays its own patch
     const graph::Patch* callee = devices_->patchOf(*d.device, hold);
     if (callee == nullptr) continue;  // bypassed (missing): nothing reads it
@@ -681,6 +695,17 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
       }
       break;
     }
+  }
+}
+
+void ProjectLink::writeLinked(const std::string& key, float value) {
+  const uint32_t s = paramSlot(key);  // never allocates: a param the lowered patches do not declare has no slot
+  if (s == kNone || automated_[s] || written_[s] == value) return;
+  if (engine_->setParam(s, value)) {
+    written_[s] = value;
+    ++stats_.paramWrites;
+  } else {
+    written_[s] = std::numeric_limits<float>::quiet_NaN();
   }
 }
 
@@ -830,21 +855,27 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     for (const doc::TuningSlotPtr& t : *p.tunings) tunings.push_back(t->id.value);
     std::sort(tunings.begin(), tunings.end());
     std::vector<uint32_t> devices;  // T4.1: device params ("dev<id>:<name>") live while their device does
-    doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-      for (const doc::DevicePtr& d : t.devices) devices.push_back(d->id.value);
+    std::vector<uint32_t> chains;   // T4.8: rack chain params ("chain<id>:<name>") while their chain does
+    doc::forEachDevice(p, [&](const doc::Device& d, const doc::Track&) {
+      devices.push_back(d.id.value);
+      if (d.rack)
+        for (const doc::ChainPtr& c : d.rack->chains) chains.push_back(c->id.value);
     });
     std::sort(devices.begin(), devices.end());
+    std::sort(chains.begin(), chains.end());
     std::vector<uint32_t> wires;  // T4.7: wire amounts ("wire<id>:amount") live while their wire does
     for (const doc::Wire& w : doc::wiresOf(p)) wires.push_back(w.id.value);
     for (auto it = paramSlots_.begin(); it != paramSlots_.end();) {
       const bool tuningKey = it->first.starts_with("tuning:");
       const bool deviceKey = it->first.starts_with("dev");
       const bool wireKey = it->first.starts_with("wire");
-      const uint32_t id = static_cast<uint32_t>(
-          std::strtoul(it->first.c_str() + (tuningKey ? 7 : deviceKey ? 3 : wireKey ? 4 : 0), nullptr, 10));
+      const bool chainKey = it->first.starts_with("chain");
+      const uint32_t id = static_cast<uint32_t>(std::strtoul(
+          it->first.c_str() + (tuningKey ? 7 : deviceKey ? 3 : wireKey ? 4 : chainKey ? 5 : 0), nullptr, 10));
       const bool keep = tuningKey   ? std::binary_search(tunings.begin(), tunings.end(), id)
                          : deviceKey ? std::binary_search(devices.begin(), devices.end(), id)
                          : wireKey   ? std::binary_search(wires.begin(), wires.end(), id)
+                         : chainKey  ? std::binary_search(chains.begin(), chains.end(), id)
                                      : live(id);
       if (!keep) {
         freeParams_.push_back(it->second);
@@ -867,7 +898,8 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   const bool deviceParamsOnly =
       !reset && !structural && c.paramOnly() && !c.params.empty() &&
       std::all_of(c.params.begin(), c.params.end(), [](const doc::ParamRef& r) {
-        return r.kind == doc::ParamKind::DeviceParam || r.kind == doc::ParamKind::WireAmount;
+        return r.kind == doc::ParamKind::DeviceParam || r.kind == doc::ParamKind::WireAmount ||
+               r.kind == doc::ParamKind::ChainMixer;  // T4.8
       });
   if (deviceParamsOnly) {
     applyDeviceParams(p, c.params);
@@ -904,23 +936,21 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
 void ProjectLink::reportMissingDevices(const doc::Project& p) {
   std::vector<doc::DeviceId> missing;
   std::string first;
-  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-    for (const doc::DevicePtr& d : t.devices) {
-      if (!d->active) continue;
-      if (d->edited()) {  // T4.4-fix1: a user device whose text does not play
-        const auto r = devices_->resolve(*d);
-        if (r && r->error.empty()) continue;
-        if (missing.empty()) {
-          const doc::DeviceInfo* info = devices_->catalog().find(d->patch);
-          const std::string why = r ? r->error.substr(0, r->error.find('\n')) : std::string("no device library");
-          first = "The edited " + (info ? info->name : d->patch) + " (" + t.name + ") does not play its text (" + why +
-                  (r && r->stale ? "): its last good version plays" : "): it is bypassed");
-        }
-        missing.push_back(d->id);
-      } else if (devices_->library().find(d->patch) == nullptr) {
-        if (missing.empty()) first = "Device '" + d->patch + "' is not available: it is bypassed";
-        missing.push_back(d->id);
+  doc::forEachDevice(p, [&](const doc::Device& d, const doc::Track& t) {  // T4.8: inside racks too (racks have no patch)
+    if (!d.active || d.rack) return;
+    if (d.edited()) {  // T4.4-fix1: a user device whose text does not play
+      const auto r = devices_->resolve(d);
+      if (r && r->error.empty()) return;
+      if (missing.empty()) {
+        const doc::DeviceInfo* info = devices_->catalog().find(d.patch);
+        const std::string why = r ? r->error.substr(0, r->error.find('\n')) : std::string("no device library");
+        first = "The edited " + (info ? info->name : d.patch) + " (" + t.name + ") does not play its text (" + why +
+                (r && r->stale ? "): its last good version plays" : "): it is bypassed");
       }
+      missing.push_back(d.id);
+    } else if (devices_->library().find(d.patch) == nullptr) {
+      if (missing.empty()) first = "Device '" + d.patch + "' is not available: it is bypassed";
+      missing.push_back(d.id);
     }
   });
   if (missing == missingReported_) return;
