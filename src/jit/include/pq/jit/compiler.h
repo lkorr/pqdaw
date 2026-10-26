@@ -87,7 +87,7 @@ struct CompileStats {
 enum class Target : uint8_t {
   Host,      // this CPU and every feature it has (AVX-512 where present)
   Baseline,  // kBaselineCpu (x86-64-v3: AVX2, FMA, BMI2), pqdaw's own baseline, so it runs wherever pqdaw runs. The
-             // AOT seed is compiled for it (QUESTIONS Q?-T1b.4-a); a Host compiler finds such entries in
+             // AOT seed is compiled for it (QUESTIONS Q116); a Host compiler finds such entries in
              // CacheConfig::readOnly directories.
 };
 inline constexpr const char* kBaselineCpu = "x86-64-v3";

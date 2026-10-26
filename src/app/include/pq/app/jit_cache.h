@@ -1,6 +1,6 @@
 #pragma once
 
-// pqdaw's JIT compile cache and AOT seed (T1b.4; pq/jit/cache.h, QUESTIONS Q?-T1b.4-a).
+// pqdaw's JIT compile cache and AOT seed (T1b.4; pq/jit/cache.h, QUESTIONS Q116).
 //
 //   user cache  %LOCALAPPDATA%\pqdaw\jit-cache (read-write, 512 MB, least recently used out). $PQ_JIT_CACHE_DIR
 //               names another directory; $PQ_JIT_CACHE_DIR=off turns the disk cache off.

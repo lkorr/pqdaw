@@ -1,6 +1,6 @@
 #pragma once
 
-// The JIT's compile cache (T1b.4, SPEC §7.4 "Compile cache"; QUESTIONS Q?-T1b.4-a/b). Every Compiler::compile looks
+// The JIT's compile cache (T1b.4, SPEC §7.4 "Compile cache"; QUESTIONS Q116/b). Every Compiler::compile looks
 // its machine code up before running LLVM:
 //   1. in memory: an image of the same key already alive in this process shares its code (one copy of the machine
 //      code, one link; e.g. several tracks with the same instrument and default strip),

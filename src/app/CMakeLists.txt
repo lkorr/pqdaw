@@ -27,7 +27,7 @@ pq_add_executable(pqdaw
   SOURCES src/main.cpp
   DEPS pq_app)
 
-# T1b.4: the AOT seed (pq/app/jit_cache.h, QUESTIONS Q?-T1b.4-a). Right after every link, the new executable compiles
+# T1b.4: the AOT seed (pq/app/jit_cache.h, QUESTIONS Q116). Right after every link, the new executable compiles
 # the stock units (a new project, default-instrument tracks; 44.1/48/88.2/96 kHz) for the baseline CPU into
 # <exe dir>/jit-aot, which it reads at run time: its entries are keyed by this very binary, so they are rebuilt with
 # it (well under a second in release). Ship the directory next to pqdaw.exe.
