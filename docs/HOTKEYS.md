@@ -124,8 +124,19 @@ View > Open Patch in Circuit View… opens a `.pqp` file in the editor (canvas l
 | `Enter` / double-click | canvas, a subcircuit selected | open it; `Backspace` with nothing selected goes back |
 | `F`, `=` / `-`, wheel, `Ctrl+wheel`, middle-drag | canvas | fit, zoom, scroll, zoom at the pointer, pan (T4.2) |
 
+## Cross-device wiring (T4.7, handled by the cable layer, not the keymap)
+
+| Keys / gesture | Where | Effect |
+|---|---|---|
+| drag a jack onto a knob | Device view | wire the export to the param (one undo step); hover a track row in the arrangement first to reach another track's devices (the list scrolls at its edges) |
+| `Esc` | while dragging a cable | cancel |
+| drag the badge up / down (`Shift`: fine), double-click | a cable's badge | the wire's amount (−100 … +100 %, one undo step); back to 50 % |
+| `Delete` / `Backspace` | a selected badge | delete the wire (also `wire.delete`, and the badge's right-click menu) |
+| View > Cables | menu | `view.cycleCables`: Show → Fade → Hide (no default chord) |
+
 ## Not bound yet
 
+- Wiring (T4.7): `view.cycleCables` and `wire.delete` have no default chord (Live has none); the View menu and the badge run them.
 - Piano roll (T3.11): `pianoroll.fold` (fold to used notes / scale) and `pianoroll.toggleScale` (scale highlighting) are registered actions without a default chord (Live has none); the clip view's Fold and Scale buttons trigger them.
 - Macro mode toggle `Ctrl+CapsLock` (SPEC §6.2): CapsLock is a lock key, which a keymap chord cannot use as its key (T3.1); M8 handles it in the macro-mode scope.
 - Live shortcuts outside M3–M10 scope (Session View, racks, plug-in windows) are not listed.

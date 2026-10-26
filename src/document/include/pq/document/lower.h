@@ -14,8 +14,8 @@
 // produces the same IR for a track (equal structure and ids: patchHash + operator==) shares the previous patch, so
 // the link knows exactly which tracks changed. The printed form (patchText) is only a debug dump.
 // Device chains (T4.1, QUESTIONS Q129): a device instance is a subcircuit call named `d<device id>` whose NodeId
-// is nodeIdFor(NodeRole::Device, device id, 0); its ports are that callee's ports (T4.7's cross-device wires will be
-// wires between those call nodes), so editing a chain keeps the state of every device it does not touch. The chain is
+// is nodeIdFor(NodeRole::Device, device id, 0); its ports are that callee's ports (T4.7's modulation wires feed their
+// param pins: "Modulation wires" below), so editing a chain keeps the state of every device it does not touch. The chain is
 // wired left → right: the signal so far → the device's first `in` (through `pack(x, x)`, k = 1, when a mono signal
 // meets a stereo input), its first `out` → the next device. Its params are left unconnected, so each is a runtime
 // param `d<id>__<name>` of the track patch, linked to the project param `dev<id>:<name>`: a param edit is a param

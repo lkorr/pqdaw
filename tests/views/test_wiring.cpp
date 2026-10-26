@@ -8,6 +8,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -223,6 +224,16 @@ TEST_CASE("wiring: cables follow scrolling in the same frame and damage only the
   bool covers = false;
   for (uint32_t i = 0; i < n; ++i) covers = covers || ui::intersect(rects[i], after->bounds) == after->bounds;
   CHECK(covers);
+  // A scroll frame (the chain's layout + the cables' ends + their damage), indicative (dev build, shared machine).
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int k = 0; k < 200; ++k) {
+      u.view().scrollChainBy(k % 2 == 0 ? 4 : -4);
+      u.d.tree().update(u.d.now());
+    }
+    const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / 200.0;
+    MESSAGE("scroll frame with cables (layout + ends + damage): " << us << " us");
+  }
   // Nothing moves: the layer adds no damage (cables cost nothing while still).
   u.d.step();
   u.d.step();
