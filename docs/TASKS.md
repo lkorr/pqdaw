@@ -554,7 +554,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Operator's filter reuses Auto Filter's circuit models (resolve the resonance-law mismatch, Q133 item 11; reference + panel Circuit/Drive + golden); the `voices` setting read by the chain lowering (track polyphony); reduce the interpreter cost of the full configuration (Q131) or document why the JIT window makes it acceptable.
   - Accept: Operator with MS2/PRD filter at 64 voices within SPEC §13 on the JIT; voices setting changes polyphony (test); reference ≤ 1e-5.
 
-- [~] **T1b.x-perf JIT/optimiser follow-ups from M4 devices** *(worker CC, branch task/T1b.x-perf)* (`jit`, `graph`, `engine`).
+- [x] **T1b.x-perf JIT/optimiser follow-ups from M4 devices** *(merged 2026-10-26)* (`jit`, `graph`, `engine`).
   - Q111 option C (compile voice groups first, swap in the pair image later in the background — Instant, bit-identical); Q122 fuse consecutive global per-sample loop regions like voice "chains" (EQ Eight L/R 2.7× stereo); Q126 per-image fixed overhead (+6 ns/block since the shared host; tiny always-busy units slower on JIT than interpreter); Q132 optimiser folds select(const, voice-rate, literal); M1 L6 (CodeOwner destructor mutex).
   - Accept: each item measured before/after on ship (bench rows), bit-identity interpreter == JIT kept, compile-time/size bounds kept or justified.
 

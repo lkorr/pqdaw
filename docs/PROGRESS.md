@@ -747,3 +747,9 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
   - task/T4.13-project-patch-view (3 commits, worktree agent-a4a81135…): project patch view, mid-verification.
 - Next after these: T0.x-buildsize (plan in TASKS), M4 review (T4.14) + full ship-preset test run at the milestone boundary.
 - Disk: 2026-10-26 C: filled (0.3 GB); 84 stale worktrees + their sccache dirs removed (scripts/clean-sccache.ps1); remove whole worktrees after each merge from now on.
+
+## 2026-10-26 · T1b.x-perf · worker CC / task/T1b.x-perf
+- Did: Q111 C (quick first JIT image = voice groups or the cached final image, then the pair image in the background, Instant-swapped); Q122 (global per-sample loops fused into chains, ≤ 20 invariants+states per fused loop); Q126 (JIT memoises param-only control regions via ImageHost::paramsChanged, as the interpreter does); Q132 (constant select/mux picking a literal of another width folds to a typed literal); M1 L6 (code release never waits for a running compile); extra: LinkConfig::interpretBudget — a heavy unit keeps its JIT image through an edit until the new JIT image arrives (fixes T4.12-fix1's interpreter-window overrun); Q137.
+- Verified: worker -Full dev + release 51/51 (perf tier: pqdaw_window_selftest_perf playhead CPU ratio failed twice — load-sensitive UI check, Q52). Orchestrator on current main: release -Full 51/51, dev -Full 51/51, 0 warnings.
+- Perf (ship, indicative): EQ Eight L/R 66.3 → 43.7, M/S 73.1 → 44.0, stereo 40.2 → 35.3 ns/stereo sample; Utility bass mono 16.8 → 9.8; busy 64×8 mixer JIT 48 → 39 µs/block (interpreter 41); Operator first image 24–40 % sooner; 30-track first JIT 5.8 → 4.1–5.3 s.
+- Notes: empty image JIT +4 ns/block vs interpreter (untraced, ≈ 0.03 % of a core at 100 units); quick-first doubles background compile work (kept on; low-priority thread).
