@@ -147,7 +147,6 @@ private:
   void endDrag(bool commit, ui::Vec2 pos);
 
   ViewContext& ctx_;
-  Shell& shell_;
   std::unique_ptr<Impl> impl_;
   ViewContext::Subscription sub_, observer_;
   CableMode mode_ = CableMode::Show;

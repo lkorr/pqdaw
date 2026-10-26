@@ -323,14 +323,20 @@ struct CableLayer::Impl {
   doc::Snapshot statesFrom;
   ui::IRect dragBounds{};                    // what the dragged cable and the target outlines painted
   uint32_t lastHoverRow = 0xFFFFFFFFu;
-  DeviceChainView* chain(Shell& shell) const { return findDeviceChain(shell); }
-  ArrangementView* arrangement(Shell& shell) const {
-    return dynamic_cast<ArrangementView*>(shell.slot(ShellSlot::TrackArea).find("arrangement"));
-  }
+  // The tree and the slots the layer reads, not the Shell: a screenshot or a test may destroy the Shell object before
+  // the widget tree.
+  ui::UiTree* tree = nullptr;
+  ui::Widget* trackArea = nullptr;
+  ui::Widget* deviceSlot = nullptr;
+  DeviceChainView* chain() const { return dynamic_cast<DeviceChainView*>(deviceSlot->find("chain-view")); }
+  ArrangementView* arrangement() const { return dynamic_cast<ArrangementView*>(trackArea->find("arrangement")); }
 };
 
 CableLayer::CableLayer(ViewContext& ctx, Shell& shell)
-    : Widget("cable-layer"), ctx_(ctx), shell_(shell), impl_(std::make_unique<Impl>()) {
+    : Widget("cable-layer"), ctx_(ctx), impl_(std::make_unique<Impl>()) {
+  impl_->tree = &shell.tree();
+  impl_->trackArea = &shell.slot(ShellSlot::TrackArea);
+  impl_->deviceSlot = &shell.slot(ShellSlot::DeviceDetail);
   setLayout(ui::LayoutKind::Custom);
   setHittable(false);  // the pointer passes through, except on badges (and while a cable is dragged)
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onStore(e); });
@@ -342,7 +348,7 @@ CableLayer::CableLayer(ViewContext& ctx, Shell& shell)
 }
 
 CableLayer::~CableLayer() {
-  shell_.tree().removeObserver(this);
+  impl_->tree->removeObserver(this);
   ctx_.clearViewAction("view.cycleCables");
   ctx_.clearViewAction("wire.delete");
 }
@@ -418,8 +424,8 @@ bool CableLayer::refresh() {
   }
   if (ctx_.doc() != impl_->statesFrom && ctx_.deviceLibrary() != nullptr) rebuildStatus();
   const doc::Project& p = *ctx_.doc();
-  DeviceChainView* chain = impl_->chain(shell_);
-  ArrangementView* arr = impl_->arrangement(shell_);
+  DeviceChainView* chain = impl_->chain();
+  ArrangementView* arr = impl_->arrangement();
   const float s = tree()->scale();
   // A track's anchor in the arrangement: its header's left edge (clamped to the visible rows).
   auto trackAnchor = [&](doc::TrackId id) -> std::optional<ui::Vec2> {
@@ -562,7 +568,7 @@ void CableLayer::paint(ui::PaintContext& ctx) {
   }
   if (!drag_.active) return;
   // The cable being dragged, and the knobs it can be dropped on.
-  if (DeviceChainView* chain = impl_->chain(shell_)) {
+  if (DeviceChainView* chain = impl_->chain()) {
     const Target hit = targetAt(drag_.pos);
     for (const DeviceChainView::ParamControl& pc : chain->paramControls()) {
       const bool on = pc.device == hit.device && pc.param == hit.param;
@@ -578,7 +584,7 @@ void CableLayer::paint(ui::PaintContext& ctx) {
 }
 
 CableLayer::Target CableLayer::targetAt(ui::Vec2 pos) const {
-  if (DeviceChainView* chain = impl_->chain(shell_))
+  if (DeviceChainView* chain = impl_->chain())
     for (const DeviceChainView::ParamControl& pc : chain->paramControls())
       if (pc.rect.contains(pos)) return {pc.device, pc.param};
   return {};
@@ -647,7 +653,7 @@ void CableLayer::onTimer(uint32_t id) {
   const float s = tree() ? tree()->scale() : 1.0f;
   const float edge = kEdge * s;
   // Over the arrangement's rows: hovering one shows its chain (spring-loaded); near the list's ends it scrolls.
-  if (ArrangementView* arr = impl_->arrangement(shell_); arr != nullptr && shownNow(*arr)) {
+  if (ArrangementView* arr = impl_->arrangement(); arr != nullptr && shownNow(*arr)) {
     const ui::IRect vp = arr->lanesViewport();
     const ui::IRect area = arr->rect();
     if (area.contains(drag_.pos)) {
@@ -668,7 +674,7 @@ void CableLayer::onTimer(uint32_t id) {
     }
   }
   // Near the left / right end of the shown chain it scrolls sideways.
-  if (DeviceChainView* chain = impl_->chain(shell_)) {
+  if (DeviceChainView* chain = impl_->chain()) {
     const ui::IRect vp = chain->chainViewport();
     if (vp.contains(drag_.pos)) {
       if (drag_.pos.x < static_cast<float>(vp.x) + edge) chain->scrollChainBy(-static_cast<int32_t>(std::lround(12.0f * s)));
