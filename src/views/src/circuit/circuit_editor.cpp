@@ -487,7 +487,16 @@ void CircuitEditor::present(const std::string& patch, bool fit) {
 bool CircuitEditor::show(std::string_view patch) {
   std::string name(patch);
   if (name.empty()) {
-    if (doc_->parsed().file.patches.empty()) return false;
+    if (doc_->parsed().file.patches.empty()) {
+      // The file's text never parsed: the text pane shows it with its errors; the canvas fills in once it parses.
+      backStack_.clear();
+      shown_.clear();
+      canvas_->setEditable(false);
+      canvas_->setStale(!doc_->textLowered());
+      refreshMarks();
+      updateTitle();
+      return true;
+    }
     name = doc_->parsed().file.patches.front().name();
   }
   if (doc_->patchIndex(name) == graph::kNone && !doc_->findCallee(name)) return false;
@@ -524,6 +533,8 @@ void CircuitEditor::rebuildScene(bool fit) {
       backStack_.clear();
       shown_ = doc_->parsed().file.patches.front().name();
       p = shownGraph();
+      canvas_->setEditable(true);
+      updateTitle();
       fit = true;
     }
     if (!p) return;

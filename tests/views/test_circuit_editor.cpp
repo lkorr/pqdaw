@@ -294,3 +294,25 @@ TEST_CASE("code editor: typing, Enter keeps the indent, word moves, selection, c
   CHECK(ed.caret() == c0 + 2);
   CHECK(ed.lineCount() == 5);
 }
+
+TEST_CASE("circuit editor: a file whose text does not parse opens in the text pane; fixing it brings the circuit") {
+  TestDriver d(1200, 700);
+  auto& root = d.setRoot<Widget>("root");
+  root.setLayout(LayoutKind::Stack);
+  (void)root.add<OverlayLayer>("overlay");
+  d.tree().layoutNow();
+  auto doc = PatchEditor::fromText(stdlibPath("editor_ui_test.pqp"), "patch P {\n  out y : audio\n  y = tanh(\n}\n");
+  REQUIRE(doc.ok());
+  CircuitEditor* e = openCircuitEditor(root, std::move(*doc));
+  REQUIRE(e != nullptr);
+  CHECK_FALSE(e->textPane().marks().empty());
+  CHECK(e->canvas().scene() == nullptr);
+  CodeEditor& text = e->textPane();
+  d.tree().setFocus(&text);
+  text.setCaret(static_cast<uint32_t>(text.text().find("tanh(") + 5));
+  REQUIRE(d.type("0)"));
+  REQUIRE(e->document().textLowered());
+  REQUIRE(e->canvas().scene() != nullptr);
+  CHECK(e->shownPatch() == "P");
+  CHECK(e->canvas().editable());
+}

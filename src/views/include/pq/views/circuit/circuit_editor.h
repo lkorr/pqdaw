@@ -96,7 +96,7 @@ public:
   // The shown patch's name, and its index in the file (kNone: an imported, read-only patch).
   const std::string& shownPatch() const noexcept { return shown_; }
   size_t shownIndex() const noexcept;
-  bool readOnly() const noexcept { return shownIndex() == graph::kNone; }
+  bool readOnly() const noexcept { return !shown_.empty() && shownIndex() == graph::kNone; }
 
   // The editor's commands (the keys and gestures above call these; tests script them).
   bool addAt(graph::Point2 world, std::string_view spec);
