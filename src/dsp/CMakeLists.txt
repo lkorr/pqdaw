@@ -8,5 +8,7 @@ pq_add_module(pq_dsp
     src/kernels_tuning.cpp
     src/kernels_gain.cpp
     src/tables.cpp
+    src/fft.cpp
+    src/spectrum.cpp
   DEPS pq_core
 )

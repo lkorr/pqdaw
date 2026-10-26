@@ -24,6 +24,7 @@ pq_add_test(pq_tests_core
     core/test_math_time_rt.cpp
     core/test_stable_id.cpp
     core/test_rt_log.cpp
+    core/test_tap_ring.cpp
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning
@@ -258,6 +259,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_exact_lanes.cpp
     dsp/test_lane_state.cpp
     dsp/test_gain.cpp
+    dsp/test_spectrum.cpp
   DEPS pq_dsp)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.
