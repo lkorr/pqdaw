@@ -89,6 +89,7 @@ Decided while implementing the parser; the open ones are tracked in [QUESTIONS.m
 - **Solve blocks**: an equation is an expression whose top-level operator is `==`; each side is a real expression.
 - **Imports**: the string is recorded as written and resolved relative to the importing file by the compiler's loader (the parser does no file I/O); calls may use any patch of an imported file. `;` after an import is optional. Reading an `out` and negative literals: Q22.
 - **Limits**: an expression may be at most 128 levels deep (a sum of 128 terms) and nest at most 129 levels of brackets/arguments; deeper text is an error, never a crash.
+- **Exports** (T4.4): `export e` without `= expr` declares a jack that nothing drives yet (validation reports it as a dangling port); the circuit editor adds a jack before the wire into it, and the printer writes an undriven export this way.
 - **Printing**: `print` writes a canonical form (declarations, bindings, outputs, exports, solve blocks, layout), inlining every unnamed node that has exactly one consumer. `parse(print(f)) == f` for every parsed file, and `print` is stable under a second round trip. Placing or routing a node never changes how the rest of the patch prints (T4.3: before, a placed anonymous node got a generated `_n` name).
 
 ### 2.2 The layout block (T4.3)
@@ -104,7 +105,7 @@ The circuit diagram's layout (SPEC §7.3 "Layout is stored") is the `layout { �
 - **Bindings are a dataflow graph, not statements.** Order doesn't matter, and a name may be used before it is bound. Each binding is one node (or a subgraph of nodes).
 - **Cycles**:
   - A cycle that goes through `z1(…)`, `delay(…)` or a stateful atom is ordinary feedback.
-  - A cycle with no delay is an **error** in text, unless it is inside `solve`. The visual editor inserts an explicit `z1` and shows a warning instead.
+  - A cycle with no delay is an **error** in text, unless it is inside `solve`. The visual editor inserts an explicit `z1` and shows a warning instead: T4.4's editor puts the `z1` on the wire that would close the loop (`pq/graph/edit.h` connect), so the saved text is valid and shows the delay; the language's rule does not change. (SPEC §15 2026-10-24's automatic z⁻¹ on cross-device wires is the same rule one level up.)
   - For now a cycle whose only delay is `phasor`'s or `sine_hz`'s `hz` (or a sample player's `rate`) is reported the same way: those atoms have no split kernel yet, so put a `z1` into such a loop (QUESTIONS Q43). Loops through `z1` and delay lines are scheduled per sample, or in sub-blocks as long as the shortest delay allows (T1.5).
   - Zero-delay-feedback filters write their solved form explicitly (see `stdlib/filters/svf.pqp` and `onepole.pqp`).
 - **Calls** go to a leaf atom (SPEC §7.2), a patch in the same file, or a patch from an `import`ed file. Calling a patch instantiates it as a subcircuit. Named arguments bind its `in`s and `param`s; anything not bound uses its default.

@@ -96,6 +96,27 @@ These keys belong to the focused control and never reach a keymap while it has f
 | Menu | `Up` / `Down` / `Home` / `End` move, `Right` / `Enter` open a submenu, `Left` / `Esc` close one level, `Enter` / `Space` choose | modal while open |
 | Popover | `Esc` | dismiss |
 | any | `Tab` / `Shift+Tab` | focus traversal (T3.1) when no binding takes the chord |
+| Code editor (the circuit editor's text pane, T4.4) | arrows (`Ctrl`: by word), `Home` / `End` (`Ctrl`: of the text), `Page Up` / `Page Down`, `Shift` selects; `Backspace` / `Delete` (`Ctrl`: word); `Enter` keeps the indent; `Tab` / `Shift+Tab` indent / outdent; `Ctrl+A` / `C` / `X` / `V` | editing; `Ctrl+Z` / `Ctrl+Y` go to the editor's one history |
+
+## Circuit editor (T4.4, handled by the editor window, not the keymap)
+
+View > Open Patch in Circuit View… opens a `.pqp` file in the editor (canvas left, text right). These keys work while the editor has focus (the canvas ones while the canvas has it); they are not keymap entries because the editor is a modal full-window popover.
+
+| Keys | Where | Effect |
+|---|---|---|
+| `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | editor | undo / redo (one history over canvas and text) |
+| `Ctrl+S` | editor | save (the drawn layout spliced into the file) |
+| `Ctrl+Enter` | editor | play / stop the shown patch (edits hot-swap while it plays) |
+| `Esc` | text pane / editor | back to the canvas; closes the editor (twice when there are unsaved changes) |
+| drag a pin to a pin | canvas | connect (a loop with no delay gets a z⁻¹) |
+| drag a node | canvas | move the selection |
+| double-click empty space, `N` | canvas | add a node from a spec (`tanh`, `0.5`, `440Hz`, `*`, `svf`, `param x = 1`, `in x : audio`, `out y`, `export e`) |
+| double-click a node, `Ctrl+R` | canvas | rename (a subcircuit opens instead on double-click) |
+| `Delete` / `Backspace` | canvas | delete the selected nodes and wires |
+| `Ctrl+G` | canvas | make a subcircuit of the selection |
+| `P` | canvas | turn the selected constant into a param pin |
+| `Enter` / double-click | canvas, a subcircuit selected | open it; `Backspace` with nothing selected goes back |
+| `F`, `=` / `-`, wheel, `Ctrl+wheel`, middle-drag | canvas | fit, zoom, scroll, zoom at the pointer, pan (T4.2) |
 
 ## Not bound yet
 

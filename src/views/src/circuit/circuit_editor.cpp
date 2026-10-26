@@ -425,7 +425,10 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
 
 CircuitEditor::~CircuitEditor() {
   *alive_ = false;
-  if (doc_) doc_->onChange = nullptr;
+  if (doc_) {
+    doc_->onChange = nullptr;
+    if (doc_->playing()) doc_->stop();  // a closed editor leaves nothing playing
+  }
 }
 
 size_t CircuitEditor::shownIndex() const noexcept { return doc_->patchIndex(shown_); }

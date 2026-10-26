@@ -97,3 +97,8 @@ endif()
 pq_add_bench(pq_bench_piano_roll SOURCES views/bench_piano_roll.cpp DEPS pq_views)
 # T4.2 / T4.3: the circuit canvas over a 10k-atom patch (pan / zoom frames, tiles) and the auto-layout of 500-node patches.
 pq_add_bench(pq_bench_circuit SOURCES views/bench_circuit.cpp DEPS pq_views)
+# T4.4: the circuit editor on the largest stdlib patch: a keystroke (re-parse + id diff + layout, + scene), the debounced
+# check, and the typing latency of the editor window (key -> document -> scene -> frame).
+pq_add_bench(pq_bench_circuit_editor SOURCES views/bench_circuit_editor.cpp DEPS pq_views)
+pq_use_build_paths(pq_bench_circuit_editor)
+target_compile_definitions(pq_bench_circuit_editor PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
