@@ -8,11 +8,13 @@
 //   T3.19 installTuningsPanel(shell);  → ShellSlot::Tunings (View > Tunings), the tuning.newMain action
 //   T4.2  circuit::installCircuitViewer(shell); → shell.overlay() (the circuit viewer), the view.openPatch action
 //   T4.6  devices::installDeviceView(shell);    → ShellSlot::DeviceDetail (device panels), the view.openDevice action
+//   T4.1  installDeviceChain(shell);   → ShellSlot::DeviceDetail (the Device view), the device.* actions
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/devices/device_view.h"
+#include "pq/views/device_chain/device_chain.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -27,13 +29,13 @@ void installDefaultContent(Shell& shell) {
   installArrangement(shell);
   installMixer(shell);
   static_cast<shell::SlotHost&>(shell.slot(ShellSlot::ClipDetail)).setHint("No clip selected");
-  static_cast<shell::SlotHost&>(shell.slot(ShellSlot::DeviceDetail)).setHint("No devices");
   installClipView(shell);
   installMosWheel(shell);
   installPreferences(shell);
   installTuningsPanel(shell);
   circuit::installCircuitViewer(shell);
   devices::installDeviceView(shell);
+  installDeviceChain(shell);
 }
 
 }  // namespace pq::views

@@ -1,6 +1,7 @@
 #include "pq/views/view_scenes.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 
 #include "pq/ui/draw_list.h"
@@ -11,6 +12,7 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/devices/device_view.h"
+#include "pq/views/device_chain/device_chain.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -697,6 +699,39 @@ Status setupCircuitEditorError(Shell& shell, std::string_view file) {
   return Ok{};
 }
 
+// T4.1: the Device view of a MIDI track: Basic Synth → Saturator (Digital Clip, drive +6 dB, selected) → Utility (off),
+// generic panels. Needs the device library (renderViewScene's `devices`; pqdaw --screenshot loads the stock one).
+Status setupDeviceChain(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-chain: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) -> std::optional<doc::ops::Edit> {
+    if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
+    return *e;
+  };
+  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
+  if (!t) return Error{ErrorCode::Unknown, "device-chain: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  const auto sat = run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect));
+  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  if (!sat || !util) return Error{ErrorCode::Unknown, "device-chain: addDevice failed", {}};
+  const doc::DeviceId satId = sat->devices[0], utilId = util->devices[0];
+  if (!run(doc::ops::setDeviceSetting(*store.current(), satId, "type", 6.0)) ||
+      !run(doc::ops::setDeviceParam(*store.current(), satId, "drive", 1.9952623149688795)) ||  // +6 dB
+      !run(doc::ops::setDevicesActive(*store.current(), std::vector<doc::DeviceId>{utilId}, false)))
+    return Error{ErrorCode::Unknown, "device-chain: device edits failed", {}};
+  ctx.setSelectedTrack(track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-chain: the Device view is not installed", {}};
+  const doc::DeviceId one[1] = {satId};
+  v->select(one);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -735,6 +770,7 @@ constexpr SceneEntry kScenes[] = {
     {"device-eq-eight", 1280, 800, nullptr, devices::setupDeviceScene},
     {"circuit-editor", 1280, 800, nullptr, setupCircuitEditor},
     {"circuit-editor-error", 1280, 800, nullptr, setupCircuitEditorError},
+    {"device-chain", 1280, 800, setupDeviceChain},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

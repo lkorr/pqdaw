@@ -316,6 +316,9 @@ public:
   static constexpr std::string_view kCircuitActions[] = {"view.openPatch"};
   // T4.6: View > Open Device… (installDeviceView sets the handler: a menu of the stock devices → the Device tab).
   static constexpr std::string_view kDeviceActions[] = {"view.openDevice"};
+  // T4.1: the Device view's edits (installDeviceChain sets the handlers; scope "devices").
+  static constexpr std::string_view kDeviceChainActions[] = {"device.delete", "device.copy",      "device.cut",
+                                                             "device.paste",  "device.duplicate", "device.toggleActive"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",

@@ -126,6 +126,7 @@ pq_add_test(pq_tests_views
     views/test_device_panels.cpp
     views/test_patch_editor.cpp
     views/test_circuit_editor.cpp
+    views/test_device_chain.cpp  # T4.1: the Device view (chain edits, generic panels, the panel hook, golden)
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell

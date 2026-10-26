@@ -2,7 +2,7 @@
 
 The default keymap is data: [`assets/keymaps/ableton.json`](../assets/keymaps/ableton.json) (format in `src/ui/include/pq/ui/keymap_file.h`). It copies Ableton Live 12's shortcuts (SPEC §6.1) onto pqdaw action ids. A binding is either `implemented` (its action must be registered when the keymap is applied, or loading fails) or `deferred:M<n>` (the chord is reserved for the milestone that implements it and does nothing until then). `tests/ui/test_controls.cpp` checks that every chord parses, that no chord is bound twice in one scope, that every implemented action resolves, and that every binding is listed below.
 
-Scopes: `global` (always active, consulted last), `arrangement` (focus inside the arrangement view), `pianoroll` (focus inside the clip view's note editor). A focused text field takes printable keys first (Q27), so `B` while renaming types a "b". Chords match the layout key (Q27). Windows key names; on macOS Ctrl would read Cmd.
+Scopes: `global` (always active, consulted last), `arrangement` (focus inside the arrangement view), `pianoroll` (focus inside the clip view's note editor), `devices` (focus inside the Device view, T4.1). A focused text field takes printable keys first (Q27), so `B` while renaming types a "b". Chords match the layout key (Q27). Windows key names; on macOS Ctrl would read Cmd.
 
 The "Live 12 manual section" column names the subsection of the Live Reference Manual's *Live Keyboard Shortcuts* chapter that lists the shortcut. The subsection names follow that chapter's layout as of Live 11/12 and were written from memory: check them against the installed Live 12 manual (QUESTIONS.md, Q48).
 
@@ -80,6 +80,12 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.toggleActive` | `0` | pianoroll | MIDI Note Editor | implemented (T3.11) |
+| `device.delete` | `Delete` | devices | Editing | implemented (T4.1: deletes the selected devices) |
+| `device.copy` | `Ctrl+C` | devices | Editing | implemented (T4.1) |
+| `device.cut` | `Ctrl+X` | devices | Editing | implemented (T4.1) |
+| `device.paste` | `Ctrl+V` | devices | Editing | implemented (T4.1: after the selected device, else at the end) |
+| `device.duplicate` | `Ctrl+D` | devices | Editing | implemented (T4.1) |
+| `device.toggleActive` | `0` | devices | Editing (Activate/Deactivate) | implemented (T4.1: the device activator) |
 
 ## Handled by controls, not the keymap (T3.2, implemented)
 
