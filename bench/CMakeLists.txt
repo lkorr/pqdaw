@@ -23,7 +23,14 @@ function(pq_add_bench name)
   add_executable(${name} ${A_SOURCES})
   target_link_libraries(${name} PRIVATE pq_bench_support ${A_DEPS})
   pq_target_defaults(${name})
+  # T0.x-buildsize: in dev, benches are built only on request (`build.ps1 -Target <bench>`), or all of them with
+  # -DPQ_DEV_BENCHES=ON. Recorded numbers come from ship anyway; dev bench binaries cost ~0.5 GB each when they link
+  # LLVM. pq_bench_dsp stays in `all` (the runner smoke test runs it).
+  if(PQ_BENCH_PRESET STREQUAL "dev" AND NOT PQ_DEV_BENCHES AND NOT name STREQUAL "pq_bench_dsp")
+    set_target_properties(${name} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+  endif()
 endfunction()
+option(PQ_DEV_BENCHES "dev preset: build every bench executable in `all`" OFF)
 
 # Benchmarks are added below as modules appear.
 
