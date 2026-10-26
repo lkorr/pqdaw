@@ -5,7 +5,6 @@
 //
 //   g = tan(π·cutoff/sr), k = 1/q,  a1 = 1 / (1 + g·(g + k)),  a2 = g·a1,  a3 = g·a2
 //   v3 = x − ic2,  v1 = a1·ic1 + a2·v3 (band),  v2 = ic2 + a2·ic1 + a3·v3 (low),  ic1 ← 2·v1 − ic1,  ic2 ← 2·v2 − ic2
-//   (computed in the equivalent shallower form of svf_core below)
 //
 // `svf` gives every response of one filter core as an output: lp, bp (unity gain at the cutoff), hp, notch, peak
 // (lp − hp) and allpass, all from the same two states; read as many as you like at no extra cost. The bell and the
@@ -55,13 +54,6 @@ patch svf {
 // The SVF loop itself, for designs that compute their own g and k (g = tan(π·fc/sr) prewarped integrator gain,
 // k = 1/Q damping). Outputs the band-pass (peak gain 1/k) and low-pass integrator outputs; every other response
 // is a mix of these and the input.
-//
-// The state update is Simper's ic ← 2·v − ic solved for the new states (T4.10, same filter in exact arithmetic):
-//   v = x − ic2,  ic1 ← ic1 + d1·ic1 + b1·v,  ic2 ← ic2 + b1·ic1 + b2·v
-//   d1 = 2·a1 − 2 = −2·g·(g + k)·a1,  b1 = 2·a2 = 2·g·a1,  b2 = 2·a3 = b1·g,  band = (ic1 + ic1')/2, low = (ic2 + ic2')/2
-// Each new state is two multiply-adds deep from the old ones (the classic form is four), so a chain of filters
-// that runs sample by sample (a loop per filter, or an EQ's cascade) is twice as fast; the increments are added to
-// the states, which keeps the low-frequency precision of the original (no 1 − 2·a3 near 1).
 patch svf_core {
   in    x : audio
   param g = 0.0655  [0..100]   @label("g")   // tan(π · 1 kHz / 48 kHz)
@@ -70,16 +62,15 @@ patch svf_core {
   out   low  : audio
 
   a1 = 1 / (1 + g * (g + k))
-  d1 = -2 * g * (g + k) * a1
-  b1 = 2 * g * a1
-  b2 = b1 * g
+  a2 = g * a1
+  a3 = g * a2
 
-  v   = x - ic2
-  n1  = b1 * v + (d1 * ic1 + ic1)
-  n2  = b2 * v + (b1 * ic1 + ic2)
-  ic1 = z1(n1)                // integrator states (trapezoidal)
-  ic2 = z1(n2)
+  v3  = x - ic2
+  v1  = a1 * ic1 + a2 * v3
+  v2  = ic2 + a2 * ic1 + a3 * v3
+  ic1 = z1(2 * v1 - ic1)      // integrator states (trapezoidal)
+  ic2 = z1(2 * v2 - ic2)
 
-  band = 0.5 * (ic1 + n1)
-  low  = 0.5 * (ic2 + n2)
+  band = v1
+  low  = v2
 }

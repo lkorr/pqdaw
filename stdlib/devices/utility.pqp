@@ -27,7 +27,7 @@
 //
 // Cost (no bass mono): per sample one 4-channel smoothing step (the per-sample loop) and 4 multiply-adds; with bass
 // mono three SVF cores more.
-import "../filters/svf.pqp"
+import "../filters/svf_fast.pqp"
 import "../filters/dcblock.pqp"
 
 patch utility {
@@ -89,15 +89,15 @@ patch utility {
   ss    = split + sn
   M     = ss[0] * L + ss[1] * R
   S     = ss[2] * L + ss[3] * R
-  // LR4 crossover from Butterworth SVF cores (k = √2): allpass = x − 2k·band, hp = x − k·band − low, lp = low.
+  // LR4 crossover from Butterworth SVF cores (svf_core_fast) (k = √2): allpass = x − 2k·band, hp = x − k·band − low, lp = low.
   gx    = tan(3.141592653589793 * clip(bassFreq, 0, 0.49 * sr) / sr)
-  ap    = svf_core(M, g: gx, k: 1.4142135623730951)
+  ap    = svf_core_fast(M, g: gx, k: 1.4142135623730951)
   Mp    = M - 2.8284271247461903 * ap.band
-  h1    = svf_core(S, g: gx, k: 1.4142135623730951)
+  h1    = svf_core_fast(S, g: gx, k: 1.4142135623730951)
   S1    = S - 1.4142135623730951 * h1.band - h1.low
-  h2    = svf_core(S1, g: gx, k: 1.4142135623730951)
+  h2    = svf_core_fast(S1, g: gx, k: 1.4142135623730951)
   Sp    = S1 - 1.4142135623730951 * h2.band - h2.low
-  low   = svf_core(svf_core(M, g: gx, k: 1.4142135623730951).low, g: gx, k: 1.4142135623730951).low
+  low   = svf_core_fast(svf_core_fast(M, g: gx, k: 1.4142135623730951).low, g: gx, k: 1.4142135623730951).low
   bm    = audition >= 0.5 ? (ss[4] * low, ss[5] * low) : (ss[4] * (Mp + Sp), ss[5] * (Mp - Sp))
 
   out = bassMono >= 0.5 ? bm : plain

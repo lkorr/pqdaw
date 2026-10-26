@@ -22,6 +22,32 @@ inline float fastSin(float x) { return pq::fastSin(x); }
 // The `sine` atom (pq/dsp kernels_math.cpp): fastSin((phase − round(phase))·2π), round to nearest even.
 inline float sinePhase(float ph) { return pq::fastSin((ph - std::nearbyint(ph)) * stdref::kTwoPi); }
 
+// ---- svf_core_fast (stdlib/filters/svf_fast.pqp): svf_core's filter, the state update two FMAs deep ------------
+struct FastSvfCore {
+  float ic1 = 0.0f, ic2 = 0.0f;
+  struct Coef {
+    float d1, b1, b2;  // 2·a1 − 2, 2·a2, 2·a3
+  };
+  static Coef coef(float g, float k) {
+    Coef c;
+    const float gk = g + k;
+    const float a1 = 1.0f / fma_(g, gk, 1.0f);
+    c.d1 = -2.0f * g * gk * a1;
+    c.b1 = 2.0f * g * a1;
+    c.b2 = c.b1 * g;
+    return c;
+  }
+  void tick(float x, const Coef& c, float& band, float& low) {
+    const float v = x - ic2;
+    const float n1 = fma_(c.b1, v, fma_(c.d1, ic1, ic1));
+    const float n2 = fma_(c.b2, v, fma_(c.b1, ic1, ic2));
+    band = 0.5f * (ic1 + n1);
+    low = 0.5f * (ic2 + n2);
+    ic1 = n1;
+    ic2 = n2;
+  }
+};
+
 // ---- Utility (stdlib/devices/utility.pqp) --------------------------------------------------------------------------
 struct UtilityParams {
   float chan = 0.0f;  // 0 Stereo, 1 Left, 2 Right, 3 Swap
@@ -41,7 +67,7 @@ struct UtilityConf {
 
 struct Utility {
   float ed[4] = {}, es[6] = {}, td[4] = {}, ts[6] = {};  // smoothing distances and the previous targets
-  stdref::SvfCore<float> ap, h1, h2, l1, l2;
+  FastSvfCore ap, h1, h2, l1, l2;
   stdref::DcBlock<float> dcL, dcR;
   UtilityConf conf;
   float sr = 48000.0f;
@@ -49,7 +75,7 @@ struct Utility {
   bool wantBass = true;  // compute the `bass` export (tests); a benchmark reading only `out` turns it off
   // Param-rate values (prepare(): once per block, as the compiled Control region).
   float direct[4] = {}, split[6] = {}, k = 0.0f, rc = 0.0f;
-  stdref::SvfCore<float>::Coef bc{};
+  FastSvfCore::Coef bc{};
 
   void prepare(const UtilityParams& p) {
     const int ci = static_cast<int>(std::clamp(std::floor(p.chan), 0.0f, 3.0f));
@@ -70,7 +96,7 @@ struct Utility {
     std::copy(sp, sp + 6, split);
     bassCoef(p.bassFreq);
   }
-  void bassCoef(float bassFreq) { bc = stdref::SvfCore<float>::coef(stdref::prewarp(bassFreq, sr), 1.4142135623730951f); }
+  void bassCoef(float bassFreq) { bc = FastSvfCore::coef(stdref::prewarp(bassFreq, sr), 1.4142135623730951f); }
 
   // One sample with the prepared coefficients.
   void process(float L, float R) {
@@ -353,8 +379,8 @@ inline EqCoef eqCoef(int type, float os, const EqBand& b, bool adaptive, float s
 // One section (eq8_sec): y = m0·x + m1·band + m2·low, fused as the optimiser fuses it: with m0 the literal 1
 // (every type but the high shelf) m1·band + x is one multiply-add, else m0·x + m1·band; then m2·low + that.
 struct EqSec {
-  stdref::SvfCore<float> core;
-  float tick(float x, const stdref::SvfCore<float>::Coef& c, bool m0One, float m0, float m1, float m2) {
+  FastSvfCore core;
+  float tick(float x, const FastSvfCore::Coef& c, bool m0One, float m0, float m1, float m2) {
     float band, low;
     core.tick(x, c, band, low);
     const float v = m0One ? fma_(m1, band, x) : fma_(m0, x, m1 * band);
@@ -366,15 +392,15 @@ struct EqSec {
 struct EqBandState {
   EqSec sec[4];
   // Prepared section coefficients (param-rate: once per block).
-  stdref::SvfCore<float>::Coef cc[4]{};
+  FastSvfCore::Coef cc[4]{};
   float mix[4][3]{};
   void prepare(int type, const EqCoef& c) {
     const bool hp = type == kLC48;
-    cc[0] = stdref::SvfCore<float>::coef(c.g, c.k);
+    cc[0] = FastSvfCore::coef(c.g, c.k);
     mix[0][0] = c.m0, mix[0][1] = c.m1, mix[0][2] = c.m2;
     const float ks[3] = {c.k2, c.k3, c.k4};
     for (int i = 0; i < (type == kLC48 || type == kHC48 ? 3 : 0); ++i) {
-      cc[i + 1] = stdref::SvfCore<float>::coef(c.g, ks[i]);
+      cc[i + 1] = FastSvfCore::coef(c.g, ks[i]);
       mix[i + 1][0] = hp ? 1.0f : 0.0f;
       mix[i + 1][1] = hp ? -ks[i] : 0.0f;
       mix[i + 1][2] = hp ? -1.0f : 1.0f;

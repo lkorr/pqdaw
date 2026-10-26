@@ -1,5 +1,5 @@
 // EQ Eight (SPEC §8; Ableton Live's EQ Eight), DSP part (the panel and its spectrum are T4.6 / T4.10's view work):
-// eight bands of TPT state-variable filters (stdlib/filters/svf.pqp's core), every band freq / gain / Q a param
+// eight bands of TPT state-variable filters (stdlib/filters/svf_fast.pqp's core), every band freq / gain / Q a param
 // that may be modulated at audio rate (the SVF's states are the analog filter's, so fast cutoff, gain and Q
 // changes neither click nor blow up). QUESTIONS Q?-T4.10-a lists the choices Live does not document.
 //
@@ -28,7 +28,7 @@
 //
 // Cost per band per channel: one SVF core (about ten multiply-adds) plus two or three multiply-adds per sample
 // (four cores for the 48s); coefficients once per block unless freq / gain / q are modulated.
-import "../filters/svf.pqp"
+import "../filters/svf_fast.pqp"
 import "../util/oversample.pqp"
 
 patch eq_eight {
@@ -270,7 +270,7 @@ patch eq8_sec {
   param m2 = 0
   out   y : audio
 
-  f = svf_core(x, g: g, k: k)
+  f = svf_core_fast(x, g: g, k: k)
   y = m0 * x + m1 * f.band + m2 * f.low
 }
 
@@ -298,7 +298,7 @@ patch eq8_band {
   y   = on < 0.5 ? x : cut48 ? s4 : s1
 }
 
-// The SVF core over two consecutive samples per tick (the 2× rate): svf_core's update twice, s0 first.
+// The SVF core over two consecutive samples per tick (the 2× rate): svf_core_fast's update twice, s0 first.
 patch eq8_svf2 {
   in    s0 : audio
   in    s1 : audio

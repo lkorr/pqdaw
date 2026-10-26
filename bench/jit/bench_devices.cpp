@@ -257,7 +257,7 @@ struct SatBlock {
 // the coefficients (stereo mode). HQ: the half-band up loop, the sections over the 2× block, the down loop.
 struct EqBlock {
   struct Sec {
-    stdref::SvfCore<float>::Coef c;
+    devref::FastSvfCore::Coef c;
     bool m0One;
     float m0, m1, m2;
     int band;
@@ -281,11 +281,11 @@ struct EqBlock {
         const int type = conf.type[set][b];
         const devref::EqCoef c = devref::eqCoef(type, static_cast<float>(hq), p.band[set][b], p.adaptive, p.scale, kSr);
         const bool one = type != devref::kHS && type != devref::kHC12 && type != devref::kHC48;
-        secs[chain].push_back({stdref::SvfCore<float>::coef(c.g, c.k), one, c.m0, c.m1, c.m2, b});
+        secs[chain].push_back({devref::FastSvfCore::coef(c.g, c.k), one, c.m0, c.m1, c.m2, b});
         if (type == devref::kLC48 || type == devref::kHC48) {
           const bool hp = type == devref::kLC48;
           const float ks[3] = {c.k2, c.k3, c.k4};
-          for (float k : ks) secs[chain].push_back({stdref::SvfCore<float>::coef(c.g, k), hp, hp ? 1.0f : 0.0f, hp ? -k : 0.0f, hp ? -1.0f : 1.0f, b});
+          for (float k : ks) secs[chain].push_back({devref::FastSvfCore::coef(c.g, k), hp, hp ? 1.0f : 0.0f, hp ? -k : 0.0f, hp ? -1.0f : 1.0f, b});
         }
       }
     }

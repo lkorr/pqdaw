@@ -136,6 +136,7 @@ Stock subcircuits are ordinary patches in this language; a patch imports the fil
 | `control/lfo.pqp` | `lfo(reset, rate, sync, beats, phase)` | `sine`, `tri`, `saw`, `square` (export `cycle`) |
 | `control/slew.pqp`, `smooth.pqp` | `slew(x, rise, fall)`, `smooth(x, time)` | `out` |
 | `dynamics/envfollow.pqp` | `envfollow(x, attack, release, rms)` | `out` |
+| `filters/svf_fast.pqp` (T4.9) | `svf_core_fast(x, g, k)`: svf_core with the state update two multiply-adds deep (same filter; the devices use it) | `band`, `low` |
 | `util/oversample.pqp` (T4.9) | polyphase IIR half-band stages: `os_up2(x)` / `os_down2(s0, s1)` (48 ↔ 96 kHz), `os_up2_4` / `os_down4_2`, `os_up4_8` / `os_down8_4` (later stages take the samples of the stage before, in time order); `hb_ap1/2/4`: one allpass over 1, 2, 4 samples per tick | `s0, s1` / `o0 …` / `y` |
 | `devices/utility.pqp` (T4.9) | `utility(x)`: Live's Utility (stereo); constants `bassMono`, `audition`, `dc` | `out` (exports `mid`, `side`, `bass`) |
 | `devices/saturator.pqp` (T4.9) | `saturator(x)`: Live's Saturator (stereo); constants `type` 0–8, `hq` 1/2/4/8, `color`, `softClip`; `sat_shape`: one curve sample | `out` (exports `driven`, `wet`) |

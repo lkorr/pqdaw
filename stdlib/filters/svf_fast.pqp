@@ -1,0 +1,34 @@
+// svf_core with a shallower recursion (T4.9; QUESTIONS Q?-T4.9-b): the same TPT state-variable filter as
+// svf.pqp's svf_core in exact arithmetic (the same two integrator states, so the same behaviour under audio-rate
+// modulation), with Simper's update ic ← 2·v − ic solved for the new states:
+//
+//   v = x − ic2,  ic1 ← ic1 + d1·ic1 + b1·v,  ic2 ← ic2 + b1·ic1 + b2·v
+//   d1 = 2·a1 − 2 = −2·g·(g + k)·a1,  b1 = 2·a2 = 2·g·a1,  b2 = 2·a3 = b1·g   (a1 = 1 / (1 + g·(g + k)))
+//   band = (ic1 + ic1')/2,  low = (ic2 + ic2')/2
+//
+// Each new state is two multiply-adds deep from the old ones (svf_core's form is four), so a filter that runs
+// sample by sample — one per-sample loop per filter, as cascades (EQ bands, crossovers) are scheduled — costs about
+// half. The increments are added to the states, which keeps svf_core's low-frequency precision (no 1 − 2·a3 near
+// 1). Measured: svf lp 4.2–4.6 → 2.5 ns/sample mono (ship). The stock devices use it; svf_core keeps its form for
+// now (the circuit canvas's `circuit-svf-core` golden shows it, Q?-T4.9-b).
+patch svf_core_fast {
+  in    x : audio
+  param g = 0.0655  [0..100]   @label("g")   // tan(π · 1 kHz / 48 kHz)
+  param k = 1.4142  [0.001..100] @label("k")
+  out   band : audio
+  out   low  : audio
+
+  a1 = 1 / (1 + g * (g + k))
+  d1 = -2 * g * (g + k) * a1
+  b1 = 2 * g * a1
+  b2 = b1 * g
+
+  v   = x - ic2
+  n1  = b1 * v + (d1 * ic1 + ic1)
+  n2  = b2 * v + (b1 * ic1 + ic2)
+  ic1 = z1(n1)                // integrator states (trapezoidal)
+  ic2 = z1(n2)
+
+  band = 0.5 * (ic1 + n1)
+  low  = 0.5 * (ic2 + n2)
+}
