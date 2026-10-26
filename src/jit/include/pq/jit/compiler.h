@@ -63,6 +63,7 @@ struct CompileOptions {
   bool contract = false;           // true: allow fmul + fadd → fma contraction (and `afn`); NOT bit-identical to the
                                    // interpreter (and unboundedly different in chaotic feedback loops)
   VoiceCode voiceCode = VoiceCode::Auto;
+  engine::SleepMode sleep = engine::SleepMode::On;  // T1.x-silence (pq/engine/program_image.h); not part of the code
 };
 
 struct CompileStats {

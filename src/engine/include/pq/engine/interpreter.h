@@ -48,6 +48,7 @@ struct InterpretOptions {
   uint32_t maxBlockFrames = 1024;  // largest ProcessContext::frames (buffers hold this many frames)
   uint32_t maxVoiceGroups = 8;     // voice groups with records and state (8 → 64 voices)
   const Resources* resources = nullptr;
+  SleepMode sleep = SleepMode::On; // T1.x-silence (program_image.h)
 };
 
 // Not RT-safe (allocates and initialises the state arena). Errors: an op without a kernel for its lanes/Spl mask, an

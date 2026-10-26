@@ -52,6 +52,7 @@ struct HostLayout {
   uint32_t maxSolveN = 0;
   uint32_t callOff = 0, callPtrs = 0;        // pointer arrays of wide kernel calls (callPtrs pointers; 0: none)
   uint32_t paramOff = 0, constOff = 0;
+  uint32_t sleepOff = 0;                     // aux: the sleep segments' flag words (T1.x-silence, image_host.h)
   std::vector<uint32_t> opInfo;              // per op: pointer-table slot of its resource / info record, or kNone
   // Pairs (T1b.2, codegen.h): per stage, whether it gets a two-group function; per buffer, the float offset of the
   // second group's copy of a pairable stage's own voice value (kNone: none); per op, the second group's record slot
@@ -98,6 +99,7 @@ public:
   const engine::ImageInterface& io() const noexcept override { return host_.io(); }
   engine::StateArena stateArena() noexcept override { return host_.stateArena(); }
   uint64_t rejectedBlocks() const noexcept override { return host_.rejectedBlocks(); }
+  const engine::SleepStats* sleepStats() const noexcept override { return &host_.sleepStats(); }
 
   // ---- built by buildHost() / Compiler ----
   engine::host::ImageHost host_;
@@ -114,7 +116,8 @@ public:
 // resources) with the JIT's scratch, checks that every kernel the generated code calls exists, and fills the layout
 // and pointer-table slots codegen needs. The stage functions are filled in by the Compiler. Not RT-safe.
 Result<std::unique_ptr<JitImage>> buildHost(const graph::Schedule& s, uint32_t maxBlockFrames, uint32_t maxVoiceGroups,
-                                            const engine::Resources* resources, bool pairs, PtrTable& tab);
+                                            const engine::Resources* resources, bool pairs, PtrTable& tab,
+                                            engine::SleepMode sleep = engine::SleepMode::On);
 
 // After the stage functions are in (T1b.2): tells the host which voice stages have a pair function (and where the
 // second group's outputs are). Not RT-safe.

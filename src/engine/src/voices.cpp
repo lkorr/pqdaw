@@ -92,6 +92,7 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
   VoiceBinding& B = *bp;
   B.image = image;
   B.doneSlot = doneSlot;
+  B.tailFrames = io.voiceTailFrames;
 
   // Voice out slots: `out`s are mixed and monitored; the done slot is read; other exports are not requested.
   const uint32_t numOutSlots = static_cast<uint32_t>(io.voiceOut.size());
@@ -248,6 +249,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   noteHz_.assign(lanes_, 0.0f);
   level_.assign(lanes_, 0.0f);
   silentFrames_.assign(lanes_, 0);
+  doneTail_.assign(lanes_, 0);
   hasPending_.assign(lanes_, 0);
   pending_.assign(lanes_, NoteEvent{});
   hz_.assign(lanes_, static_cast<double>(idleHz_));
@@ -463,6 +465,7 @@ void VoiceEngine::onNoteOn(const NoteEvent& e, uint32_t frame) noexcept {  // RT
       noteId_[l] = e.noteId;
       startTime_[l] = t;
       silentFrames_[l] = 0;
+      doneTail_[l] = 0;
       lastLane_ = l;
       ++stats_.retriggers;
       return;
@@ -514,6 +517,7 @@ void VoiceEngine::onNoteOn(const NoteEvent& e, uint32_t frame) noexcept {  // RT
   noteHz_[lane] = e.hz;
   startTime_[lane] = t;
   silentFrames_[lane] = 0;
+  doneTail_[lane] = 0;
   level_[lane] = 0.0f;
   if (cfg_.resetOnNoteOn) {
     resetLaneState(lane);  // before this block's image run
@@ -549,6 +553,7 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
     noteHz_[l] = e.hz;
     startTime_[l] = clock_;
     silentFrames_[l] = 0;
+    doneTail_[l] = 0;
     level_[l] = 0.0f;
     if (cfg_.resetOnNoteOn) resetLaneState(l);
     lastLane_ = l;  // already counted in live_ while it waited
@@ -879,6 +884,7 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   noteHz_[b] = noteHz_[a];
   level_[b] = level_[a];
   silentFrames_[b] = silentFrames_[a];
+  doneTail_[b] = doneTail_[a];
   hasPending_[b] = hasPending_[a];
   pending_[b] = pending_[a];
   hz_[b] = hz_[a];
@@ -1033,7 +1039,8 @@ void VoiceEngine::measure(uint32_t frames) noexcept {  // RT-safe
   for (uint32_t k = 0; k < na; ++k) {
     const uint32_t g = act[k];
     bool released = all;
-    for (uint32_t l = 0; l < 8 && !released; ++l) released = status_[g * 8 + l] == LaneStatus::Released;
+    for (uint32_t l = 0; l < 8 && !released; ++l)
+      released = status_[g * 8 + l] == LaneStatus::Released || doneTail_[g * 8 + l] != 0;
     if (!released) continue;
     __m256 peak = _mm256_setzero_ps();
     const float* gn = gainBuf_.data() + static_cast<size_t>(g) * groupStride_;
@@ -1053,6 +1060,7 @@ void VoiceEngine::endVoices(uint32_t frames, bool imageRan) noexcept {  // RT-sa
   const int64_t end = clock_ + frames;
   const VoiceBinding& b = *b_;
   const bool monitored = !b.monitorSlots.empty();
+  const uint32_t window = std::max(silenceFrames_, b.tailFrames);  // the voice's tail rings out first (T1.x-silence)
   for (uint32_t g = 0; g < groups_; ++g) {
     if (laneMask_[g] == 0) continue;
     const float* done = imageRan && b.doneSlot != kNoSlot ? b.outPtr[static_cast<size_t>(g) * b.numOutSlots + b.doneSlot] : nullptr;
@@ -1061,22 +1069,36 @@ void VoiceEngine::endVoices(uint32_t frames, bool imageRan) noexcept {  // RT-sa
       const LaneStatus s = status_[lane];
       if (s == LaneStatus::Free || s == LaneStatus::Pending || hasCarry_[lane]) continue;
       bool finished = false;
+      bool doneNow = false;
       if (done != nullptr) {
         const float v = done[(frames - 1) * 8 + l];
-        finished = std::bit_cast<uint32_t>(v) == 0xFFFFFFFFu || v > 0.5f;
+        doneNow = std::bit_cast<uint32_t>(v) == 0xFFFFFFFFu || v > 0.5f;
       }
       if (s == LaneStatus::Fading) {
-        finished = finished || fadeEnd_[lane] <= end;
-      } else if (s == LaneStatus::Released && !finished) {
-        if (monitored) {
-          if (level_[lane] < silenceLevel_) {
-            silentFrames_[lane] += frames;
-            finished = silentFrames_[lane] >= silenceFrames_;
+        finished = doneNow || fadeEnd_[lane] <= end;
+      } else {
+        if (doneNow && !doneTail_[lane]) {  // the envelope is done: end now, or let the tail ring out
+          if (b.tailFrames == 0) {
+            finished = true;
           } else {
+            doneTail_[lane] = 1;
             silentFrames_[lane] = 0;
           }
-        } else if (b.doneSlot == kNoSlot) {
-          finished = end - releaseTime_[lane] >= releaseTimeoutFrames_;
+        }
+        if (!finished && (s == LaneStatus::Released || doneTail_[lane])) {
+          if (monitored) {
+            if (level_[lane] < silenceLevel_) {
+              silentFrames_[lane] += frames;
+              finished = silentFrames_[lane] >= window;
+            } else {
+              silentFrames_[lane] = 0;
+            }
+          } else if (doneTail_[lane]) {
+            silentFrames_[lane] += frames;
+            finished = silentFrames_[lane] >= b.tailFrames;
+          } else if (b.doneSlot == kNoSlot) {
+            finished = end - releaseTime_[lane] >= releaseTimeoutFrames_;
+          }
         }
       }
       if (finished) freeLane(lane);

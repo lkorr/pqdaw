@@ -184,6 +184,7 @@ pq_add_test(pq_tests_graph PERF
     graph/test_infer.cpp
     graph/test_optimise.cpp
     graph/test_schedule.cpp
+    graph/test_sleep_plan.cpp
     graph/test_voice_tuning.cpp
     graph/test_layout.cpp
     graph/test_edit.cpp
@@ -209,11 +210,14 @@ pq_add_test(pq_tests_engine PERF
     engine/test_offline_render.cpp
     engine/test_tuning_signal.cpp
     engine/test_tuning_voices.cpp
+    engine/test_silence.cpp
   DEPS pq_engine nlohmann_json::nlohmann_json)
 
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).
 pq_add_test(pq_tests_project
-  SOURCES engine/test_project.cpp
+  SOURCES
+    engine/test_project.cpp
+    engine/test_project_silence.cpp  # T1.x-silence: dormant units, silent buses, the engine's gate waits for tails
   DEPS pq_engine)
 
 # T3.16: the engine timeline (transport, note sequencer, automation renderer), with the VoiceEngine and renderOffline.
@@ -242,6 +246,8 @@ pq_add_test(pq_tests_jit PERF
     engine/test_tuning_voices.cpp  # T2.6: the tuning node through the VoiceEngine, on JIT images
     jit/test_live_swap.cpp  # T1b.5: interpreter -> JIT live swap through the background compiler
     jit/test_jit_cache.cpp  # T1b.4: the compile cache (memory, disk, read-only AOT directories)
+    engine/test_silence.cpp  # T1.x-silence: the sleep suite again, on JIT images
+    jit/test_jit_silence.cpp  # T1.x-silence: interpreter and JIT sleep identically
   DEPS pq_jit pq_compile)
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
@@ -263,6 +269,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_lane_state.cpp
     dsp/test_gain.cpp
     dsp/test_spectrum.cpp
+    dsp/test_silence.cpp
   DEPS pq_dsp)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

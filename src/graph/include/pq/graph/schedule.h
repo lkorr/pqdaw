@@ -236,6 +236,71 @@ struct StateLayout {
   const StateEntry* find(uint64_t key, uint16_t channel, Poly arena) const noexcept;
 };
 
+// ---- Sleep plan (T1.x-silence, SPEC §7.7) -----------------------------------------------------------------------
+// Which regions of the global stages may SLEEP: be skipped for a block while their input is silent and their state
+// has decayed, their outputs replaced by zero fills (the "constant-output kernel"), chosen at the block boundary by the
+// image host (pq/engine/image_host.h) for both backends. Built by schedule() from the atoms' silence declarations
+// (pq/dsp/atoms.h: dsp::silenceInfo, dsp::silenceTail):
+//   - values are classified under the hypothesis H = "the segment's SOURCES are silent this block, the params its
+//     smoothers follow are unchanged since the previous block, and its state is quiescent": Z (exactly ±0 under H, a
+//     greatest fixpoint, so feedback loops through delays qualify), K (computed from params and constants only:
+//     constant while they are unchanged; a z1 of a K value is K and, settled, equal to its input, so x − z1(x) of a K
+//     x is Z: a de-zippered coefficient's change term), or neither;
+//   - a Block or Loop region of a global stage is sleepable when it has no solve block, its every stateful op keeps
+//     its state under H (a memory atom with a Z input: z1, delay lines, rise/fall/change; a z1 of a K value; a gain /
+//     gain_add with a Z signal and K target and time) and its sends carry Z values; stateless ops may compute
+//     anything that only sleepable ops of its segment read;
+//   - sleepable regions that exchange values (directly or through stateless ops outside them) form one SEGMENT; every
+//     value a segment produces that something outside it reads (later regions, later stages, the image's outputs)
+//     must be Z, else the region producing it is not sleepable (repeated until stable);
+//   - a segment's SOURCES are the values its Z-ness assumes silent that exist when its stage starts: root inputs,
+//     track.in / sidechain.in, and values of earlier stages (voice reducers);
+//   - its STATES are the stateful entries the host checks and flushes: memory (z1 / edge: |v| ≤ ε; a delay line: its
+//     last silenceTail() written frames ≤ ε), smoothers (residual exactly 0), settled z1s (nothing to check);
+//   - its PARAMS are the params whose change wakes it (the K inputs of its smoothers and settled z1s).
+// Each sleepable region lists the buffers it FILLS while asleep (its values read outside its segment).
+enum class SleepStateKind : uint8_t {
+  Memory,    // z1 / rise / fall / change: lane 0's word ≤ ε (then flushed to 0)
+  Delay,     // a global delay line: the last `tail` frames written ≤ ε (then flushed)
+  Smoother,  // gain / gain_add: lane 0's residual exactly 0
+  Settled,   // a z1 of a K value: equal to its input while the params are unchanged (not checked)
+};
+
+struct SleepState {
+  uint32_t entry = kNone;  // StateLayout::entries
+  SleepStateKind kind = SleepStateKind::Memory;
+  uint32_t tail = 0;       // frames of history (dsp::silenceTail)
+};
+
+struct SleepSegment {
+  uint32_t stage = 0;                       // Schedule::stages index (a global stage)
+  uint32_t firstSource = 0, numSources = 0;  // into SleepPlan::sources
+  uint32_t firstState = 0, numStates = 0;    // into SleepPlan::states
+  uint32_t firstParam = 0, numParams = 0;    // into SleepPlan::params (param slot indices)
+  uint32_t tailFrames = 0;                   // its longest memory (informational: the tail after the last sound)
+  bool feedback = false;                     // holds a Loop region (its tail decays rather than ends exactly)
+};
+
+struct RegionSleep {
+  uint32_t segment = kNone;                 // the region's segment, or kNone: always runs
+  uint32_t firstFill = 0, numFills = 0;     // into SleepPlan::fills (Schedule::buffers indices)
+};
+
+struct SleepPlan {
+  std::vector<SleepSegment> segments;
+  std::vector<Operand> sources;             // External or Buffer operands, read at the start of the segment's stage
+  std::vector<SleepState> states;
+  std::vector<uint32_t> params;
+  std::vector<uint32_t> fills;
+  std::vector<RegionSleep> regions;         // parallel to Schedule::regions (empty: nothing sleeps)
+  // Nothing in a global stage keeps state outside the segments (and no send runs outside them): with every segment
+  // asleep, silent outputs and no voices, running the image changes nothing (ProcessContext::dormant).
+  bool dormantCapable = false;
+  // The longest delay-line memory of the voice stages (dsp::silenceTail; z1s not counted): how long a released voice
+  // may still sound after its outputs fall silent (the VoiceEngine's voice end, pq/engine/voices.h).
+  uint32_t voiceTailFrames = 0;
+};
+
 // A z1 inserted by visualMode into a delay-free cycle.
 struct InsertedDelay {
   NodeIndex z1 = kNone;        // the new node (in *Schedule::rewritten)
@@ -264,6 +329,7 @@ struct Schedule {
   // Set when visualMode inserted z1s: the patch every NodeIndex above refers to (the input patch plus the z1s,
   // whose indices follow the input's). Null otherwise: NodeIndex values refer to the input patch.
   std::shared_ptr<const TypedPatch> rewritten;
+  SleepPlan sleep;                           // T1.x-silence (see "Sleep plan" above)
 
   std::span<const Operand> inputs(const Op& op) const noexcept { return {operands.data() + op.firstOperand, op.numIn}; }
   std::span<const Operand> outputsOf(const Op& op) const noexcept {
@@ -273,6 +339,10 @@ struct Schedule {
   uint32_t patternBuffers() const noexcept;
 };
 
+// Builds `s.sleep` for a complete schedule (schedule() calls it; ScheduleOptions::sleep = false keeps only the voice
+// tail).
+void planSleep(Schedule& s);
+
 struct ScheduleOptions {
   double sampleRate = 48000.0;          // > 0: sizes delay rings, values `sr`, converts delay `max`
   bool visualMode = false;              // delay-free cycle: insert z1 + warning instead of an error
@@ -281,6 +351,8 @@ struct ScheduleOptions {
   // false: every value gets its own buffer and nothing runs in place (buffer index = value identity). Everything
   // else is identical to the shared schedule, op for op. For checkers (tests/graph/sched_replay.h) and debugging.
   bool shareBuffers = true;
+  // T1.x-silence: build Schedule::sleep (false: nothing sleeps; the voice tail is computed either way).
+  bool sleep = true;
   SourceText source{};                  // optional: errors as file:line:col (root-patch node spans)
 };
 

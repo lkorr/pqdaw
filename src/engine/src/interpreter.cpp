@@ -52,6 +52,7 @@ struct Reloc {
 
 struct RegionRun {
   g::RegionKind kind = g::RegionKind::Block;
+  uint32_t schedRegion = 0;  // its Schedule::regions index (the sleep plan's, T1.x-silence)
   // T3.17-fix2: a global Control region that computes only from params and constants (no engine sources, no solve
   // blocks) into buffers nothing else writes: its results stay valid while the params do, so it is skipped in a
   // block whose params equal the previous block's (a settled mixer's gain math costs nothing).
@@ -118,6 +119,7 @@ public:
   const ImageInterface& io() const noexcept override { return host_.io(); }
   StateArena stateArena() noexcept override { return host_.stateArena(); }
   uint64_t rejectedBlocks() const noexcept override { return host_.rejectedBlocks(); }
+  const SleepStats* sleepStats() const noexcept override { return &host_.sleepStats(); }
 
   // ---- built by Builder ----
   host::ImageHost host_;
@@ -140,6 +142,7 @@ public:
   uint32_t maxSolveN_ = 0;
   std::vector<float> lastParams_;  // the previous block's params (bitwise), for the memo regions
   bool memoValid_ = false;         // the memo regions have run at least once
+  bool shadow_ = false;            // SleepMode::Shadow (T1.x-silence)
   bool paramsSame_ = false;        // this block's params equal the previous block's
 
 private:
@@ -392,7 +395,16 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
       ctx,
       [&](uint32_t k) noexcept {
         const StageRegions& st = stages_[k];
-        for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) runRegion(regions_[r], frames);
+        for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+          const RegionRun& rr = regions_[r];
+          if (host_.regionAsleep(rr.schedRegion)) {  // T1.x-silence: the constant-output kernel instead
+            host_.fillRegion(rr.schedRegion, frames);
+            continue;
+          }
+          runRegion(rr, frames);
+          if (shadow_ && host_.regionSegmentAsleep(rr.schedRegion) && !host_.regionFillsSilent(rr.schedRegion, frames))
+            host_.countViolation();
+        }
       },
       [&](uint32_t k, uint32_t gi) noexcept {
         const StageRegions& st = stages_[k];
@@ -414,6 +426,8 @@ public:
     bo.maxBlockFrames = o_.maxBlockFrames;
     bo.maxVoiceGroups = o_.maxVoiceGroups;
     bo.resources = o_.resources;
+    bo.sleep = o_.sleep;
+    img_->shadow_ = o_.sleep == SleepMode::Shadow;
     if (Status st = img_->host_.build(s_, bo); !st.ok()) return st.error();
     G_ = o_.maxVoiceGroups;
     if (!stages()) return err_;
@@ -605,6 +619,7 @@ private:
           const bool control = reg.kind == g::RegionKind::Control;
           RegionRun rr;
           rr.kind = reg.kind;
+          rr.schedRegion = ri;
           rr.subBlock = reg.subBlock;
           rr.firstRec = static_cast<uint32_t>(im.recs_.size());
           for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)

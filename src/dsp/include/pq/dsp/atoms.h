@@ -232,6 +232,32 @@ struct LaneStateInfo {
 };
 LaneStateInfo laneStateInfo(Atom a) noexcept;  // RT-safe
 
+// ---- Silence (SPEC §7.7, T1.x-silence) ---------------------------------------------------------------------------
+// Each atom's "silent in → silent out after tail T" declaration, from which the scheduler builds a program's sleep plan
+// (pq/graph/schedule.h, "Sleep"). Silent = exactly ±0 (bools: false). Inputs a rule does not name are coefficients
+// (any finite value). Checked for every atom by tests/dsp/test_silence.cpp, which runs each kernel on silent inputs.
+enum class SilenceRule : uint8_t {
+  None,      // no guarantee: generators, values that are not 0 at 0 (exp, cos, db_to_gain, ge/le/eq, not, nand),
+             // tables, held values (sample&hold, latch, flip-flops, counters, schmitt)
+  Any,       // the output is ±0 when ANY input named in `inputs` is ±0 (mul, and)
+  All,       // the output is ±0 when ALL inputs named in `inputs` are ±0 (add, sub, min, max, neg, tanh, lerp(a, b, t), …)
+  Clip,      // clip(x, lo, hi): All over {x} when lo ≤ 0 ≤ hi (the scheduler checks constant bounds)
+  MulAdd,    // muladd(a, b, c): (a or b) and c
+  Memory,    // z1, delay lines, rise/fall/change: the output is the stored history of `inputs` (the split reads: of the
+             // write's input). Silent once `inputs` have been silent for silenceTail() frames: the TAIL
+  Smoother,  // gain / gain_add: All over `inputs`; the state (target, residual) is settled once its residual is
+             // exactly 0, and stays settled while the `settle` inputs (target, time) keep their values
+};
+struct SilenceInfo {
+  SilenceRule rule = SilenceRule::None;
+  uint32_t inputs = 0;  // bit i: input i (mux: every input after the index)
+  uint32_t settle = 0;  // Smoother: the inputs whose change moves the state
+};
+SilenceInfo silenceInfo(Atom a) noexcept;  // RT-safe
+// The tail: frames of history a stateful atom keeps (z1 and edge detectors 1; a delay line floor(max) + 3, its
+// oldest tap; stateless atoms and smoothers 0).
+uint32_t silenceTail(Atom a, const StateInit& init) noexcept;  // RT-safe
+
 // Writes the initial state into `state` (stateBytes bytes, kStateAlign-aligned). No allocation: RT-safe, so it
 // can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines; the
 // VoiceEngine resets one lane of an 8-lane delay line in O(1) through DelayState::start instead).

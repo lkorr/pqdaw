@@ -142,6 +142,7 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   so.sampleRate = opt_.sampleRate;
   so.visualMode = opt_.visualMode;
   so.previous = previous;
+  so.sleep = opt_.sleep;
   ScheduleResult sr = scheduleDetailed(opt.value(), so);
   if (!sr.ok()) return compileError(sr.diagnostics.front().code, who + sr.diagnostics.front().message);
   CompiledUnit cu;

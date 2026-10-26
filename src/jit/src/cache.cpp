@@ -133,8 +133,10 @@ static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegen
 static_assert(sizeof(dsp::StateInit) == 24, "dsp::StateInit changed: update codegenDigest");
 static_assert(sizeof(g::StateEntry) == 64, "graph::StateEntry changed: update codegenDigest");
 static_assert(sizeof(g::StateLayout) == 40, "graph::StateLayout changed: update codegenDigest");
-static_assert(sizeof(g::Schedule) == 400, "graph::Schedule changed: update codegenDigest");
-static_assert(sizeof(HostLayout) == 176, "HostLayout changed: update codegenDigest");
+static_assert(sizeof(g::Schedule) == 400 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
+static_assert(sizeof(g::RegionSleep) == 12, "graph::RegionSleep changed: update codegenDigest");
+static_assert(sizeof(HostLayout) == 184, "HostLayout changed: update codegenDigest");
 
 Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots) {
   Stream h;
@@ -199,6 +201,12 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
     h.put(x.size), h.put(x.init.sampleRate), h.put(x.init.lanes), h.put(x.init.maxDelayFrames), h.put(x.init.z1Init);
   }
   h.put(s.state.globalBytes), h.put(s.state.voiceBytes), h.put(s.sampleRate);
+  // The sleep plan (T1.x-silence): which regions are guarded by which segment's flag, and what they fill. Sources,
+  // states and params are the host's (not code).
+  h.put(s.sleep.regions.size());
+  for (const g::RegionSleep& x : s.sleep.regions) h.put(x.segment), h.put(x.firstFill), h.put(x.numFills);
+  h.putU32s(s.sleep.fills);
+  h.put(L.sleepOff);
   // Schedule::warnings, insertedDelays and rewritten are diagnostics and names: not read by code generation.
   h.put(L.maxBlock), h.put(L.groups);
   h.putU32s(L.bufOff);

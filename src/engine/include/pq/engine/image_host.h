@@ -31,6 +31,19 @@
 //                one the sequential loop computes, bit for bit. Stages with sends cannot be paired (a bus channel
 //                adds the sends of one group in op order).
 //
+//   sleep        (T1.x-silence, SPEC §7.7) the schedule's sleep plan (pq/graph/schedule.h "Sleep plan") at run time.
+//                At the start of each global stage, per segment of that stage: its sources are scanned (exactly ±0
+//                over the block? ProcessContext::inSilent answers for silent root inputs), its waking params compared
+//                with the previous block's, and, awake with silent sources, its states checked: memory words ≤ ε,
+//                a delay line's last `tail` written frames ≤ ε (the frames written since the last check are scanned,
+//                once the whole span), smoother residuals exactly 0. Quiescent → flushed (the ≤ ε residue set to 0)
+//                and asleep. Asleep with silent sources and unchanged params → stays asleep (state untouched).
+//                Anything else → awake for the whole block. The backends read regionAsleep (the interpreter) or
+//                the flag word in aux (layout().sleepOff + segment, generated code) per sleepable region and run
+//                it or zero its fill buffers instead (fillRegion), one branch per region per block. ε = kSleepEpsilon
+//                (2^-30, −180 dBFS on the state, so ≤ −120 dBFS at the output through 60 dB of gain): the tail cut a
+//                decaying (feedback) segment gets; a feed-forward one ends exactly.
+//                After the last stage: ProcessContext::outSilent / tailsDone / dormant.
 // Threads: build() and the build-time accessors are not RT-safe (they allocate). begin(), run() and the special-op
 // kernels are RT-safe. The object must not move after build() (the special-op records point at its RunCtx): backends
 // hold it as a member of a heap-allocated image.
@@ -98,6 +111,7 @@ const void* resourceFor(const Resources* resources, dsp::Resource kind, uint32_t
 
 struct BuildOptions {
   const char* who = "image";        // error prefix ("interpreter", "jit")
+  SleepMode sleep = SleepMode::On;  // T1.x-silence
   ImageBackend backend = ImageBackend::Unknown;
   uint32_t maxBlockFrames = 1024;   // [1, 2^20]
   uint32_t maxVoiceGroups = 8;      // [1, 1024]
@@ -116,6 +130,7 @@ struct Layout {
   std::vector<uint32_t> extOwnOff;        // per external: its own pattern / ramp in aux (global ones)
   uint32_t globalStateBytes = 0, voiceStride = 0;
   uint32_t maxSolveN = 0;                 // unknowns of the largest solve block
+  uint32_t sleepOff = 0;                  // aux: one flag word per sleep segment (non-zero bits: skip its regions)
 };
 
 class ImageHost {
@@ -168,6 +183,26 @@ public:
   }
   uint64_t rejectedBlocks() const noexcept { return rejected_; }
 
+  // ---- sleep (T1.x-silence; RT-safe) ----
+  SleepMode sleepMode() const noexcept { return sleepMode_; }
+  bool hasSleep() const noexcept { return !segs_.empty(); }
+  // The region's segment is asleep this block and SleepMode::On: skip it (fillRegion instead).
+  bool regionAsleep(uint32_t region) const noexcept {
+    const uint32_t g = region < regionSeg_.size() ? regionSeg_[region] : graph::kNone;
+    return g != graph::kNone && segs_[g].skip;
+  }
+  // The region's segment is asleep this block (Shadow: its ops still run).
+  bool regionSegmentAsleep(uint32_t region) const noexcept {
+    const uint32_t g = region < regionSeg_.size() ? regionSeg_[region] : graph::kNone;
+    return g != graph::kNone && segs_[g].asleep;
+  }
+  void fillRegion(uint32_t region, uint32_t frames) noexcept;                // zero the region's fill buffers
+  bool regionFillsSilent(uint32_t region, uint32_t frames) const noexcept;   // every fill buffer is ±0 (Shadow)
+  void countViolation() noexcept { ++sleepStats_.violations; }
+  uint32_t numSegments() const noexcept { return static_cast<uint32_t>(segs_.size()); }
+  bool segmentAsleep(uint32_t segment) const noexcept { return segment < segs_.size() && segs_[segment].asleep; }
+  const SleepStats& sleepStats() const noexcept { return sleepStats_; }
+
   // ---- per block (RT-safe) ----
   // Starts a block: false for frames == 0 (nothing to do) or frames > maxBlockFrames (every output zeroed, counted
   // in rejectedBlocks()). Otherwise splats the params and resolves the engine sources (extPtr / extTable).
@@ -180,14 +215,16 @@ public:
   float* const* extTable() const noexcept { return extPtr_.data(); }  // RT-safe: [ext · maxVoiceGroups + group]
   // Runs every stage (after a successful begin()): global(k) for global stage k, voice(k, g) for voice stage k and
   // each occupied group g; reducers, RunCtx and output copies around them. RT-safe when the callables are.
+  // It also decides the sleep of each global stage's segments right before the stage, and writes ctx's silence
+  // reports (outSilent, tailsDone, dormant) after the outputs.
   template <class GlobalStage, class VoiceStage>
-  void run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice) noexcept {
+  void run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice) noexcept {
     run(ctx, global, voice, [](uint32_t, uint32_t, uint32_t) noexcept {});
   }
   // The same, with pair(k, a, b) for two occupied groups a < b of a pairable stage (enablePairs); a group left
   // without a partner runs through voice(k, g).
   template <class GlobalStage, class VoiceStage, class PairStage>
-  void run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice, PairStage&& pair) noexcept;
+  void run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice, PairStage&& pair) noexcept;
 
 private:
   enum class Src : uint8_t {
@@ -225,6 +262,38 @@ private:
     uint32_t firstReduce = 0, numReduce = 0;
     uint32_t firstOut = 0, numOut = 0;  // voice: group g's output copies at firstOut + g · numOut
   };
+
+  // Sleep (T1.x-silence).
+  struct SegSource {
+    float* buf = nullptr;            // a buffer of an earlier stage, or null: the external `ext`
+    uint32_t ext = graph::kNone;
+    uint32_t inSlot = graph::kNone;  // a global root input: its io().globalIn slot (ProcessContext::inSilent)
+    uint32_t perFrame = 1;           // floats per frame (0: an 8-float pattern)
+  };
+  struct SegState {
+    std::byte* ptr = nullptr;
+    graph::SleepStateKind kind = graph::SleepStateKind::Memory;
+    uint32_t tail = 0;
+    bool known = false;              // delay: the ring positions below are valid
+    uint32_t scanPos = 0;            // delay: writes before this ring counter are accounted for
+    uint32_t loudPos = 0;            // delay: one past the last write > ε
+    uint32_t nonzeroPos = 0;         // delay: one past the last write ≠ ±0
+  };
+  struct SegRun {
+    uint32_t stage = 0;
+    uint32_t firstSource = 0, numSources = 0, firstState = 0, numStates = 0, firstParam = 0, numParams = 0;
+    bool asleep = false;
+    bool skip = false;               // asleep and SleepMode::On: the backends skip its regions
+    uint32_t* flag = nullptr;        // in aux (the generated code's copy of `skip`)
+  };
+  struct FillRun {
+    float* ptr = nullptr;
+    uint32_t perFrame = 1;           // floats per frame (0: an 8-float pattern)
+  };
+  bool sleepLayout(const graph::Schedule& s, SleepMode mode);
+  void decideSleep(uint32_t stage, const ProcessContext& ctx, uint32_t frames) noexcept;
+  bool segmentQuiescent(SegRun& g) noexcept;
+  void sleepReports(ProcessContext& ctx, uint32_t frames, bool anyVoice) noexcept;
 
   bool fail(std::string msg);
   bool validate(const graph::Schedule& s);
@@ -270,6 +339,22 @@ private:
   uint32_t groups_ = 0;
   const VoiceTable* voices_ = nullptr;
   uint64_t rejected_ = 0;
+  // Sleep (T1.x-silence).
+  SleepMode sleepMode_ = SleepMode::On;
+  std::vector<SegRun> segs_;
+  std::vector<SegSource> segSources_;
+  std::vector<SegState> segStates_;
+  std::vector<uint32_t> segParams_;
+  std::vector<uint32_t> stageSegFirst_;    // per stage + 1 sentinel: its first segment (segments are in stage order)
+  std::vector<uint32_t> regionSeg_;        // per Schedule::regions entry
+  std::vector<uint32_t> regionFillFirst_;  // per region + 1 sentinel: into fills_
+  std::vector<FillRun> fills_;
+  std::vector<uint32_t> paramBits_;        // per param: lane 0 of its pattern in the previous block
+  std::vector<uint8_t> paramChanged_;      // per param: changed this block (all of them in the first block)
+  bool firstBlock_ = true;
+  bool dormantCapable_ = false;
+  bool planSegments_ = false;              // the schedule has sleep segments (whatever the mode)
+  SleepStats sleepStats_;
 };
 
 inline void ImageHost::setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept {  // RT-safe
@@ -298,15 +383,17 @@ inline void ImageHost::copyGroupOut(const StageRun& st, const VoiceGroupIO& gr, 
 }
 
 template <class GlobalStage, class VoiceStage, class PairStage>
-void ImageHost::run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice, PairStage&& pair) noexcept {  // RT-safe
+void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice, PairStage&& pair) noexcept {  // RT-safe
   const uint32_t frames = ctx.frames;
   const VoiceTable* vt = voices_;
+  bool anyVoice = false;
   for (uint32_t k = 0; k < stages_.size(); ++k) {
     const StageRun& st = stages_[k];
     if (!st.voice) {
       run_.laneMask = 0;
       run_.gain = nullptr;
       run_.lastLane = kNoVoice;
+      if (stageSegFirst_[k] != stageSegFirst_[k + 1]) decideSleep(k, ctx, frames);
       global(k);
       continue;
     }
@@ -333,6 +420,7 @@ void ImageHost::run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&
       gi = gb;
     }
     if (!any) initReducers(st, frames, true);
+    anyVoice = anyVoice || any;
   }
   run_.laneMask = 0;
   run_.gain = nullptr;
@@ -340,6 +428,7 @@ void ImageHost::run(const ProcessContext& ctx, GlobalStage&& global, VoiceStage&
     const OutCopy& oc = outs_[c];
     if (ctx.out != nullptr && oc.slot < ctx.numOut && ctx.out[oc.slot] != nullptr) copyOut(oc, ctx.out[oc.slot], frames, false);
   }
+  sleepReports(ctx, frames, anyVoice);
 }
 
 }  // namespace pq::engine::host

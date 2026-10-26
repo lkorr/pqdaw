@@ -22,9 +22,11 @@
 // 1. Drain the param ring into the project param block and the audition ring into the audition slots.
 // 2. Idle gate: while asleep the block is silence and nothing runs (no units, no timeline). The engine falls asleep
 //    after `sleepAfterMs` of quiet blocks — transport stopped, ProjectProgram::quiet() (no fades, nothing queued, no
-//    live voice in any unit), output peak ≤ −120 dBFS — and wakes on any transport command, param write, audition or
-//    wake() (a publish). So a stopped project costs one check per device block (SPEC §7.7's per-node sleep is
-//    T1.x-silence; this is the whole-engine case). Off with EngineConfig::sleepAfterMs = 0 (offline renders).
+//    live voice in any unit, and no tail in progress: every unit's sleepable regions asleep, T1.x-silence, so a
+//    delay or reverb tail is never frozen mid-way, M3 review M15a), output peak ≤ −120 dBFS — and wakes on any
+//    transport command, param write, audition or wake() (a publish). So a stopped project costs one check per device
+//    block (SPEC §7.7's per-region sleep is in every image, pq/engine/image_host.h; this is the whole-engine case).
+//    Off with EngineConfig::sleepAfterMs = 0 (offline renders).
 // 3. ProjectProgram::process: per image block the hook (Timeline::process: transport, automation → project params,
 //    note events), then every unit; an instrument unit's events come from slotSource(k) = the timeline's track k
 //    plus the audition notes of slot k.

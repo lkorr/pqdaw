@@ -1186,3 +1186,32 @@ TEST_CASE("voices: the M1 review's H4/H5 renders with the golden FmVoice (accept
     for (size_t t = 0; t < a[0].size(); ++t) REQUIRE(b[0][t] == 2.0f * a[0][t]);
   }
 }
+
+// T1.x-silence (SPEC §7.7): voice end via the tail declarations. A voice whose envelope reports `done` while an echo
+// inside it (a voice-level delay line) is still to come keeps sounding for the voice's tail (io().voiceTailFrames:
+// the delay line's 60 ms maximum + 3), then ends once its output has stayed silent for that long.
+TEST_CASE("voices: a voice with an echo inside rings out its tail after its envelope is done (T1.x-silence)") {
+  const char* kEchoDone = R"(
+patch EchoDone {
+  out y : audio voice mono
+  out done : bool voice mono
+  target = voice.gate ? 1.0 : 0.0
+  env = z1(env + (target - env) * 0.05)
+  dry = sine(phasor(voice.hz)) * env * 0.3
+  y = dry + delay(dry, 50ms, 60ms) * 0.5
+  done = !voice.gate && env < 0.0001
+}
+)";
+  Rig r(kEchoDone, VoiceConfig{}, 1, 64);
+  CHECK(r.img->io().voiceTailFrames == 2880 + 3);
+  int64_t ended = -1;
+  const auto out = r.run(16000, 64, {on(0, 1, 440.0f), off(960, 1)}, [&](int64_t t, uint32_t) {
+    if (ended < 0 && r.ve.liveVoices() == 0) ended = t;
+  });
+  double echo = 0.0;
+  for (size_t t = 2400; t < 3300; ++t) echo += static_cast<double>(out[0][t]) * out[0][t];
+  CHECK(echo > 1.0);   // the echo of the note, 50 ms on: the voice did not end when its envelope was done
+  REQUIRE(ended > 0);  // and it ended: after the echo and a tail's length of silence, not before
+  CHECK(ended >= 960 + 2400 + 2883);
+  CHECK(ended <= 960 + 2400 + 2883 + 1500);
+}

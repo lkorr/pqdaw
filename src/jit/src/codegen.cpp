@@ -381,6 +381,10 @@ private:
         r = static_cast<uint32_t>(chainEnd_[r]);
         continue;
       }
+      if (!voice_ && r < s_.sleep.regions.size() && s_.sleep.regions[r].segment != g::kNone) {
+        emitSleepingRegion(r);
+        continue;
+      }
       emitRegion(r);
     }
     if (vw == 16) stagePairState(false);
@@ -1155,6 +1159,38 @@ private:
     }
     hoistIP_ = nullptr;
     inv_.clear();
+  }
+
+  // T1.x-silence: a sleepable region behind its segment's flag (the host decides it at the stage's start, image_host.h):
+  // asleep, its fill buffers are zeroed (the constant-output kernel) instead of running it. One branch per block.
+  void emitSleepingRegion(uint32_t r) {
+    const g::RegionSleep& rs = s_.sleep.regions[r];
+    Value* flag = B_.CreateAlignedLoad(i32_, B_.CreateConstInBoundsGEP1_64(f32_, aux_, L_.sleepOff + rs.segment),
+                                       llvm::Align(4));
+    llvm::BasicBlock* asleep = llvm::BasicBlock::Create(C_, "asleep", F_);
+    llvm::BasicBlock* awake = llvm::BasicBlock::Create(C_, "awake", F_);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "after", F_);
+    B_.CreateCondBr(B_.CreateICmpNE(flag, c32(0)), asleep, awake);
+    B_.SetInsertPoint(asleep);
+    llvm::Constant* zero8 = llvm::Constant::getNullValue(vecTy(8));
+    for (uint32_t k = rs.firstFill; k < rs.firstFill + rs.numFills; ++k) {
+      const uint32_t b = s_.sleep.fills[k];
+      const g::Buffer& buf = s_.buffers[b];
+      // Whole 8-float chunks: a buffer is sized in 16-float units (image_host.cpp layoutMemory), so the rounded-up
+      // tail stays inside it.
+      Value* n = buf.cls == g::Buffer::Class::Pattern ? static_cast<Value*>(c64(8))
+                                                      : B_.CreateMul(frames64_, c64(buf.lanes), "", true, true);
+      n = B_.CreateAnd(B_.CreateAdd(n, c64(7)), c64(~uint64_t{7}));
+      forLoop(c64(0), n, 8, [&](Value* i) {
+        Value* p = B_.CreateInBoundsGEP(f32_, buf_, B_.CreateAdd(i, c64(L_.bufOff[b]), "", true, true));
+        B_.CreateAlignedStore(zero8, p, llvm::Align(32));
+      });
+    }
+    B_.CreateBr(done);
+    B_.SetInsertPoint(awake);
+    emitRegion(r);
+    B_.CreateBr(done);
+    B_.SetInsertPoint(done);
   }
 
   // Regions [r0, r1] of a voice stage as one loop over frames (a chain, analyse()): per frame, every region's ops

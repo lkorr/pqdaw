@@ -275,7 +275,8 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   const VoiceCode baselineVc = resolve(false);  // what a Target::Baseline compiler makes of the same options
   const bool pairs = vc == VoiceCode::Pairs256 || vc == VoiceCode::Pairs512;
   detail::PtrTable tab;
-  auto host = detail::buildHost(schedule, options.maxBlockFrames, options.maxVoiceGroups, options.resources, pairs, tab);
+  auto host = detail::buildHost(schedule, options.maxBlockFrames, options.maxVoiceGroups, options.resources, pairs, tab,
+                                options.sleep);
   if (!host) return std::move(host).error();
   std::unique_ptr<detail::JitImage> image = std::move(host.value());
   st.hostMs = msSince(t0);

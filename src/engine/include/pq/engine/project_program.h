@@ -63,6 +63,11 @@
 // nothing, the skip is bit-exact). Its bus channels are zeroed once and marked silent, so the units reading them can
 // go idle too: a silent project costs a few compares per unit per block. Any event, param change, voice, new image
 // or non-silent input runs it again at once.
+// T1.x-silence: a unit is skipped the same way while its image reported itself dormant after the last block it ran
+// (ProcessContext::dormant: every sleepable region asleep — its reverbs' and delays' tails done —, its outputs
+// silent, nothing else in it keeping state). Every run marks the buses the unit produces silent or not from its
+// image's outSilent report, and each image gets its input buses' flags as ProcessContext::inSilent. quiet() is false
+// while any unit reported a tail in progress (tailsDone false).
 // Unit indices in every accessor are those of the last PUBLISHED layout.
 
 #include <atomic>

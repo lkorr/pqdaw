@@ -182,6 +182,78 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
   }
 }
 
+SilenceInfo silenceInfo(Atom a) noexcept {  // RT-safe
+  using R = SilenceRule;
+  constexpr uint32_t i0 = 1u, i1 = 2u, i2 = 4u, i3 = 8u;
+  switch (a) {
+    case Atom::Mul:
+    case Atom::And: return {R::Any, i0 | i1, 0};
+    case Atom::Add:
+    case Atom::Sub:
+    case Atom::Min:
+    case Atom::Max:
+    case Atom::Or:
+    case Atom::Xor:
+    case Atom::Gt:  // 0 > 0, 0 < 0 and 0 ≠ 0 are false
+    case Atom::Lt:
+    case Atom::Ne:
+    case Atom::Lerp: return {R::All, i0 | i1, 0};  // a + t·(b − a): t is a coefficient
+    case Atom::Div:  // 0 / y (y a finite non-zero coefficient)
+    case Atom::Neg:
+    case Atom::Abs:
+    case Atom::Sign:
+    case Atom::Floor:
+    case Atom::Frac:
+    case Atom::Sqrt:
+    case Atom::SqrtFast:
+    case Atom::Sin:
+    case Atom::SinFast:
+    case Atom::Tan:
+    case Atom::TanFast:
+    case Atom::Tanh:
+    case Atom::TanhFast:
+    case Atom::Const:
+    case Atom::GateToReal:
+    case Atom::SinePhase: return {R::All, i0, 0};  // sin(2π·0)
+    case Atom::Select: return {R::All, i1 | i2, 0};
+    case Atom::Mux: return {R::All, ~i0, 0};
+    case Atom::Demux: return {R::All, i1, 0};
+    case Atom::Clip: return {R::Clip, i0, 0};
+    case Atom::MulAdd: return {R::MulAdd, i0 | i1 | i2, 0};
+    case Atom::Z1:
+    case Atom::Z1Write:
+    case Atom::Rise:
+    case Atom::Fall:
+    case Atom::Change:
+    case Atom::DelayLinear:
+    case Atom::DelayCubic:
+    case Atom::DelayAllpass:
+    case Atom::DelayWrite: return {R::Memory, i0, 0};
+    case Atom::Z1Read:
+    case Atom::DelayReadLinear:
+    case Atom::DelayReadCubic:
+    case Atom::DelayReadAllpass: return {R::Memory, 0, 0};  // the history its write half stores
+    case Atom::Gain: return {R::Smoother, i0, i1 | i2};
+    case Atom::GainAdd: return {R::Smoother, i0 | i1, i2 | i3};
+    default: return {};
+  }
+}
+
+uint32_t silenceTail(Atom a, const StateInit& init) noexcept {  // RT-safe
+  switch (a) {
+    case Atom::Z1:
+    case Atom::Z1Read:
+    case Atom::Z1Write:
+    case Atom::Rise:
+    case Atom::Fall:
+    case Atom::Change: return 1;
+    default: break;
+  }
+  if (!isDelay(a)) return 0;
+  // The oldest tap: floor(d) + 1 (linear, allpass after its borrow) or + 2 (cubic) frames for d ≤ max.
+  return clampMaxDelay(init.maxDelayFrames, ringLanes(init)) + 3u;
+}
+
 uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept {
   const size_t l = lanes == kGroupLanes ? kGroupLanes : 1u;
   return static_cast<uint32_t>(kMaxDelayRingBytes / sizeof(float) / l) - kRingHeadroom;

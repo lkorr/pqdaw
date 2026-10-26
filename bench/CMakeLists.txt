@@ -71,6 +71,11 @@ pq_add_bench(pq_bench_project SOURCES engine/bench_project.cpp DEPS pq_jit)
 pq_add_bench(pq_bench_live_swap SOURCES engine/bench_live_swap.cpp DEPS pq_compile)
 # T1b.4: the JIT compile cache on the 30-track fixture: cold open with no cache, an empty cache and a warm cache.
 pq_add_bench(pq_bench_jit_cache SOURCES engine/bench_jit_cache.cpp DEPS pq_compile)
+# T1.x-silence: the idle 30-track stdlib reverb/delay project after its tails (asleep), and the sleep bookkeeping on
+# the busy 30-track fixture (interp / JIT, sleep plans on / off).
+pq_add_bench(pq_bench_silence SOURCES engine/bench_silence.cpp DEPS pq_compile)
+pq_use_build_paths(pq_bench_silence)
+target_compile_definitions(pq_bench_silence PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
 # T3.17-fix2: the lowered mixer through the whole playback path (64 tracks x R returns, silent / notes, interp / JIT).
 pq_add_bench(pq_bench_playback SOURCES app/bench_playback.cpp DEPS pq_app)
 pq_add_bench(pq_bench_arrangement SOURCES views/bench_arrangement.cpp DEPS pq_views)

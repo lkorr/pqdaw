@@ -115,6 +115,35 @@ struct ProcessContext {
   const VoiceTable* voices = nullptr;   // null or 0 groups: voice stages do not run (voice reducers read 0)
   const SendBus* sends = nullptr;       // indexed by bus number
   uint32_t numSends = 0;
+  // ---- Silence (T1.x-silence, SPEC §7.7; optional) ----
+  // In: per global in slot (io().globalIn), 1 = the caller knows the slot's buffer is exactly ±0 over this block (a
+  // silent bus), so the image need not look at it. Null: the image checks what it needs.
+  const uint8_t* inSilent = nullptr;
+  // Out: per global out slot (io().globalOut), set by process() to 1 when the slot's data of this block is exactly ±0.
+  uint8_t* outSilent = nullptr;
+  // Written by process() (false when it refused the block):
+  bool tailsDone = false;  // every sleepable region of the image is asleep: no tail is in progress
+  bool dormant = false;    // tailsDone, every global out silent, no voice group ran and nothing else in the image keeps
+                           // state: the next block, with silent inputs and the same params, would change nothing
+};
+
+// T1.x-silence (SPEC §7.7): what an image does with its schedule's sleep plan (pq/graph/schedule.h "Sleep plan";
+// pq/engine/image_host.h "sleep"). On: sleeping regions are skipped and their outputs zero-filled. Off: everything
+// always runs. Shadow (tests): decisions and tail flushes as On, but every region runs; the interpreter checks that a
+// region it would have skipped produced exactly the zeros its fills would have written (SleepStats::violations).
+enum class SleepMode : uint8_t { Off, On, Shadow };
+
+// The level below which a decaying tail's STATE is cut (and flushed) when a segment falls asleep: 2^-30 ≈ −180 dBFS,
+// so that the output the cut residue would still have produced stays ≤ −120 dBFS through up to 60 dB of resonance or
+// feedback gain (a 60 Hz low shelf, a comb at feedback 0.999; tests/stdlib's biquads measure it).
+inline constexpr float kSleepEpsilon = 9.313225746154785e-10f;
+
+struct SleepStats {
+  uint64_t sleeps = 0;          // segment transitions awake → asleep
+  uint64_t wakes = 0;           // asleep → awake
+  uint64_t asleepBlocks = 0;    // segment-blocks spent asleep
+  uint64_t flushes = 0;         // states set to 0 when falling asleep (a residue ≤ ε that was not 0 yet)
+  uint64_t violations = 0;      // Shadow: a region that would have been skipped produced something other than ±0
 };
 
 // One slot of the program's interface: a root `in`, `out` or `export` channel.
@@ -137,6 +166,9 @@ struct ImageInterface {
   std::vector<IoSlot> globalIn, voiceIn, globalOut, voiceOut;
   std::vector<graph::ParamSlot> params;
   bool hasVoiceStages = false;
+  // T1.x-silence: frames a released voice may still sound after its outputs fell silent (the voice stages' longest
+  // delay line, graph::SleepPlan::voiceTailFrames): the VoiceEngine's silence window is at least this long.
+  uint32_t voiceTailFrames = 0;
 };
 
 // Where the program's state lives (for T1.9's state transfer by graph::StateLayout): the global arena and one
@@ -159,6 +191,8 @@ public:
   virtual StateArena stateArena() noexcept = 0;
   // Blocks refused because ctx.frames exceeded io().maxBlockFrames.
   virtual uint64_t rejectedBlocks() const noexcept = 0;
+  // T1.x-silence: the image's sleep statistics (null: the image does not sleep). RT-safe.
+  virtual const SleepStats* sleepStats() const noexcept { return nullptr; }
 };
 
 }  // namespace pq::engine

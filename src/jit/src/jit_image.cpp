@@ -95,7 +95,8 @@ std::vector<uint8_t> stageLocalBuffers(const g::Schedule& s, uint32_t stage) {
 }
 
 Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBlockFrames, uint32_t maxVoiceGroups,
-                                            const e::Resources* resources, bool pairs, PtrTable& tab) {
+                                            const e::Resources* resources, bool pairs, PtrTable& tab,
+                                            e::SleepMode sleep) {
   // The JIT's scratch after the buffers: Newton (n > 1) and the pointer arrays of wide kernel calls (codegen.h).
   uint32_t maxN = 0;
   for (const g::SolveBlock& sb : s.solves)
@@ -137,6 +138,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   bo.maxBlockFrames = maxBlockFrames;
   bo.maxVoiceGroups = maxVoiceGroups;
   bo.resources = resources;
+  bo.sleep = sleep;
   bo.extraBufFloats = solveFloats + callFloats + altFloats;
   if (Status st = host.build(s, bo); !st.ok()) return st.error();
 
@@ -167,6 +169,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   L.callPtrs = wide;
   L.paramOff = HL.paramOff;
   L.constOff = HL.constOff;
+  L.sleepOff = HL.sleepOff;
   L.pairable = pairable;
   L.altOff = altOff;
   for (uint32_t& a : L.altOff)

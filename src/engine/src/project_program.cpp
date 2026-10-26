@@ -41,6 +41,12 @@ struct ProjectProgram::Packet {
   uint32_t idleAfter = 0;                                 // UnitImage::idleAfterBlocks
   std::vector<float> linked;                              // the linked params' values in the last block
   std::vector<const BusStore*> inStores;                  // the distinct buses it reads
+  // Silence (T1.x-silence): ProcessContext::inSilent / outSilent and the buses behind them.
+  std::vector<const BusStore*> inStoreOf;                 // per global in slot (null: reads zeros)
+  std::vector<uint8_t> inSilent, outSilent;               // per global in / out slot
+  std::vector<BusStore*> outStores;                       // the distinct buses it produces
+  std::vector<uint32_t> outStoreOf;                       // per global out slot: index into outStores, or kNone
+  std::vector<uint8_t> outStoreSilent;                    // scratch, per outStores entry
 };
 
 struct ProjectProgram::Unit {
@@ -66,6 +72,9 @@ struct ProjectProgram::Unit {
   UnitStats stats;
   uint32_t quietBlocks = 0;  // consecutive blocks with silent inputs, no voice, no event and unchanged params
   bool idle = false;         // skipped last block (its bus channels are zero)
+  // T1.x-silence: what its image reported after the last block it ran (ProcessContext::dormant / tailsDone).
+  bool dormant = false;
+  bool tailsDone = true;
 };
 
 // A bus: `width` planar channels of `stride` floats at fixed addresses for its whole life (shared by every topology
@@ -286,6 +295,23 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
   for (const BusRef& r : ui.in)
     if (r.bus != kNoBus && std::find(p->inStores.begin(), p->inStores.end(), stores[r.bus].get()) == p->inStores.end())
       p->inStores.push_back(stores[r.bus].get());
+  for (const BusRef& r : ui.in) p->inStoreOf.push_back(r.bus != kNoBus ? stores[r.bus].get() : nullptr);
+  p->inSilent.assign(ui.in.size(), 0);
+  p->outSilent.assign(ui.out.size(), 0);
+  for (const BusRef& r : ui.out) {
+    if (r.bus == kNoBus) {
+      p->outStoreOf.push_back(graph::kNone);
+      continue;
+    }
+    BusStore* b = stores[r.bus].get();
+    auto it = std::find(p->outStores.begin(), p->outStores.end(), b);
+    if (it == p->outStores.end()) {
+      p->outStores.push_back(b);
+      it = p->outStores.end() - 1;
+    }
+    p->outStoreOf.push_back(static_cast<uint32_t>(it - p->outStores.begin()));
+  }
+  p->outStoreSilent.assign(p->outStores.size(), 0);
 
   // Crossfade scratch: this packet's own outputs while it fades out later.
   const auto slots = static_cast<uint32_t>(p->outPtrs.size());
@@ -623,6 +649,7 @@ bool ProjectProgram::computeQuiet() const noexcept {
     const Unit& U = *t.order[i].unit;
     if (U.fadeFrom != nullptr || !U.ring.emptyApprox()) return false;
     if (U.voices && U.voices->liveVoices() > 0) return false;
+    if (!U.tailsDone) return false;  // T1.x-silence: a reverb or delay tail is still ringing out
   }
   return true;
 }
@@ -740,6 +767,8 @@ void ProjectProgram::install(Unit& U, const Slot& s, Packet* p) noexcept {  // R
   ++U.stats.swaps;
   U.quietBlocks = 0;  // a new image runs (idle units)
   U.idle = false;
+  U.dormant = false;  // T1.x-silence: until the new image says so itself
+  U.tailsDone = false;
   U.stats.sequence = p->seq;
   Packet* old = U.cur;
   if (old == nullptr) {  // the unit's first image
@@ -806,7 +835,10 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     U.eventBuf.clear();
     if (s.events.fn != nullptr) s.events.fn(s.events.user, time, frames, U.eventBuf);
   }
-  if (p->idleAfter != 0 && cfg_.idleUnits) {  // idle units (see the header): bit-exact skip of a unit that would change nothing
+  if (cfg_.idleUnits) {
+    // Idle units (see the header): bit-exact skip of a unit that would change nothing — proven by the compiler
+    // (idleAfterBlocks: settled gains only), or reported by its image after its last block (T1.x-silence: dormant,
+    // every sleepable region asleep, nothing else keeping state, outputs silent).
     bool quiet = old == nullptr && (!U.voices || (U.voices->liveVoices() == 0 && U.eventBuf.list().count == 0));
     for (const BusStore* b : p->inStores) quiet = quiet && b->silent;
     for (size_t i = 0; i < p->paramLinks.size(); ++i) {
@@ -815,7 +847,8 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
       p->linked[i] = v;
     }
     U.quietBlocks = quiet ? U.quietBlocks + 1 : 0;
-    if (U.quietBlocks > p->idleAfter) {
+    if ((p->idleAfter != 0 && U.quietBlocks > p->idleAfter) || (U.dormant && quiet)) {
+      U.tailsDone = true;  // settled gains (idleAfterBlocks' proof), or every sleepable region asleep (dormant)
       if (!U.idle) {
         for (float* ch : s.own) std::memset(ch, 0, sizeof(float) * stride_);
         for (const auto& b : topo_->stores)
@@ -835,8 +868,11 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
         if (ch >= b->data.data() && ch < b->data.data() + b->data.size()) b->silent = false;
   }
   for (const auto& [slot, param] : p->paramLinks) p->params[slot] = projectParams_[param];
+  for (size_t k = 0; k < p->inStoreOf.size(); ++k) p->inSilent[k] = p->inStoreOf[k] == nullptr || p->inStoreOf[k]->silent;
   ProcessContext ctx;
   ctx.frames = frames;
+  ctx.inSilent = p->inSilent.data();
+  ctx.outSilent = p->outSilent.data();
   ctx.sampleRate = cfg_.sampleRate;
   ctx.sampleTime = time;
   ctx.transport = transport_;
@@ -856,6 +892,8 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     fctx.numOut = static_cast<uint32_t>(old->fadePtrs.size());
     fctx.params = old->params.data();
     fctx.numParams = static_cast<uint32_t>(old->params.size());
+    fctx.inSilent = nullptr;
+    fctx.outSilent = nullptr;
   }
   if (U.voices) {
     ctx.events = &U.eventBuf.list();
@@ -864,6 +902,14 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     p->image->process(ctx);
     if (old != nullptr) old->image->process(fctx);
   }
+  // T1.x-silence: the image's silence report. A bus is silent when every slot writing it was (never during a fade:
+  // the faded bus is old + g·(new − old)).
+  U.dormant = old == nullptr && ctx.dormant;
+  U.tailsDone = old == nullptr && ctx.tailsDone;
+  for (uint8_t& z : p->outStoreSilent) z = old == nullptr ? 1 : 0;
+  for (size_t k = 0; k < p->outStoreOf.size(); ++k)
+    if (p->outStoreOf[k] != graph::kNone && p->outSilent[k] == 0) p->outStoreSilent[p->outStoreOf[k]] = 0;
+  for (size_t k = 0; k < p->outStores.size(); ++k) p->outStores[k]->silent = p->outStoreSilent[k] != 0;
   if (old == nullptr) return false;
   for (const Packet::FadeLane& l : p->fade) crossfade(l.bus, l.old, l.bus, frames, U.fadePos, U.fadeLen);
   ++U.stats.fadeBlocks;

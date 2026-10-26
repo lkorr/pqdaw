@@ -2261,7 +2261,16 @@ uint32_t Schedule::patternBuffers() const noexcept {
 }
 
 ScheduleResult scheduleDetailed(const TypedPatch& patch, const ScheduleOptions& options) {
-  return Scheduler(patch, options).run();
+  ScheduleResult r = Scheduler(patch, options).run();
+  if (r.ok()) {
+    planSleep(r.schedule);
+    if (!options.sleep) {  // nothing sleeps; the voice tail stays (voice end does not depend on the switch)
+      const uint32_t tail = r.schedule.sleep.voiceTailFrames;
+      r.schedule.sleep = SleepPlan{};
+      r.schedule.sleep.voiceTailFrames = tail;
+    }
+  }
+  return r;
 }
 
 Result<Schedule> schedule(const TypedPatch& patch, const ScheduleOptions& options) {

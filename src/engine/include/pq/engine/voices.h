@@ -63,11 +63,15 @@
 // block longer than io().maxBlockFrames (refused by the image: silence) still applies its events and voice ends.
 //
 // ---- Voice end (SPEC §7.7) -----------------------------------------------------------------------------------
-// Checked at the end of each block; an ended lane is free from the next block on.
-//   1. doneSlot (a voice out/export, e.g. `out done : bool voice`): the voice ends when the slot's value at the last
-//      frame of the block is true (mask) or > 0.5, held or released (one-shots end themselves);
+// Checked at the end of each block; an ended lane is free from the next block on. The voice's TAIL (T1.x-silence) is
+// the image's io().voiceTailFrames: the longest delay line of its voice stages (dsp::silenceTail), how long the voice
+// can still sound after its outputs fell silent (an echo inside the voice). 0 for voices without delay lines.
+//   1. doneSlot (a voice out/export, e.g. `out done : bool voice`): true (mask) or > 0.5 at the last frame of the
+//      block, held or released (one-shots end themselves): without a tail the voice ends there; with one, its
+//      envelope is done and the tail rings out: it ends once its monitored slots have stayed below silenceDb for the
+//      tail (without monitored slots: the tail's length after done);
 //   2. after note-off: when the monitored slots (monitorMask; default every voice `out`, not exports) have stayed
-//      below silenceDb for silenceMs (block-peak granular). Held voices never end on silence;
+//      below silenceDb for max(silenceMs, the tail) (block-peak granular). Held voices never end on silence;
 //   3. with neither monitored slots nor a done slot: releaseTimeoutMs after note-off.
 // A stolen voice ends when its fade is over.
 //
@@ -145,6 +149,7 @@ struct VoiceBinding {
   ProgramImage* image = nullptr;
   uint32_t numOutSlots = 0;
   uint32_t doneSlot = kNoSlot;        // index into io().voiceOut, or kNoSlot
+  uint32_t tailFrames = 0;            // io().voiceTailFrames (voice end, T1.x-silence)
   std::vector<uint32_t> mixSlots;     // io().voiceOut index per mix
   std::vector<uint32_t> monitorSlots;
   AlignedBuffer<float> outBuf;        // per group and requested voice out slot: groupStride floats
@@ -311,6 +316,7 @@ private:
   std::vector<float> noteHz_;         // the note's Hz for same-note matching (latest note-on / pitch target)
   std::vector<float> level_;          // peak of the monitored outs over the last block
   std::vector<uint32_t> silentFrames_;
+  std::vector<uint8_t> doneTail_;     // done fired with a tail to ring out (T1.x-silence)
   std::vector<uint8_t> hasPending_;
   std::vector<NoteEvent> pending_;    // deferred note-on per lane (status Fading / Pending)
   // Per lane: render state (signal values at the start of the next frame to render).

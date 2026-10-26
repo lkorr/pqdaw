@@ -63,6 +63,7 @@ ImageBuilder jitBuilder(jit::CompileOptions base = {}, jit::Compiler* with = nul
     o.maxBlockFrames = io.maxBlockFrames;
     o.maxVoiceGroups = io.maxVoiceGroups;
     o.resources = io.resources;
+    o.sleep = io.sleep;
     return (with ? *with : compiler()).compile(s, o);
   };
 }

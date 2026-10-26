@@ -255,9 +255,10 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
   io_.maxBlockFrames = o.maxBlockFrames;
   io_.maxVoiceGroups = o.maxVoiceGroups;
   io_.params = s.params;
+  io_.voiceTailFrames = s.sleep.voiceTailFrames;
   if (!validate(s) || !layoutMemory(s, o.extraBufFloats) || !externals(s)) return err_;
   specialOps(s);
-  if (!stages(s)) return err_;
+  if (!stages(s) || !sleepLayout(s, o.sleep)) return err_;
   return Ok{};
 }
 
@@ -390,6 +391,8 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
     aux += roundUp(x.rate == g::Rate::Audio ? B : 8u, kFloatAlign);
   }
   aux = roundUp(aux, kFloatAlign);
+  L_.sleepOff = aux;  // one flag word per sleep segment (T1.x-silence)
+  aux += roundUp(std::max<uint32_t>(static_cast<uint32_t>(s.sleep.segments.size()), 1u), kFloatAlign);
   L_.zeroOff = aux;
   aux += B * 8;
   L_.auxFloats = aux;
@@ -678,6 +681,264 @@ bool ImageHost::stages(const g::Schedule& s) {
   return true;
 }
 
+// ---- sleep (T1.x-silence) ---------------------------------------------------------------------------------------
+
+bool ImageHost::sleepLayout(const g::Schedule& s, SleepMode mode) {
+  sleepMode_ = mode;
+  const g::SleepPlan& plan = s.sleep;
+  planSegments_ = !plan.segments.empty();
+  stageSegFirst_.assign(s.stages.size() + 1, 0);
+  regionSeg_.assign(s.regions.size(), g::kNone);
+  regionFillFirst_.assign(s.regions.size() + 1, 0);
+  paramBits_.assign(params_.size(), 0);
+  paramChanged_.assign(params_.size(), 1);
+  dormantCapable_ = plan.dormantCapable;
+  if (mode == SleepMode::Off || plan.segments.empty() || plan.regions.size() != s.regions.size()) {
+    segs_.clear();
+    return true;
+  }
+  float* auxp = auxMem_.data();
+  for (uint32_t gi = 0; gi < plan.segments.size(); ++gi) {
+    const g::SleepSegment& sg = plan.segments[gi];
+    if (sg.stage >= s.stages.size() || s.stages[sg.stage].poly != g::Poly::Global) return fail("sleep segment outside a global stage");
+    if (gi > 0 && sg.stage < plan.segments[gi - 1].stage) return fail("sleep segments out of stage order");
+    if (sg.firstSource + sg.numSources > plan.sources.size() || sg.firstState + sg.numStates > plan.states.size() ||
+        sg.firstParam + sg.numParams > plan.params.size())
+      return fail("sleep segment out of range");
+    SegRun r;
+    r.stage = sg.stage;
+    r.firstSource = static_cast<uint32_t>(segSources_.size());
+    for (uint32_t k = sg.firstSource; k < sg.firstSource + sg.numSources; ++k) {
+      const g::Operand& o = plan.sources[k];
+      if (!validOperand(s, o)) return fail("sleep source out of range");
+      SegSource src;
+      if (o.kind == g::Operand::Kind::External) {
+        const g::External& x = s.externals[o.index];
+        if (x.poly != g::Poly::Global) return fail("sleep source is a voice signal");
+        src.ext = o.index;
+        src.perFrame = x.rate == g::Rate::Audio ? 1u : 0u;
+        if (exts_[o.index].src == Src::RootGlobal) src.inSlot = exts_[o.index].index;
+      } else if (o.kind == g::Operand::Kind::Buffer) {
+        if (bufPerGroup_[o.index]) return fail("sleep source is a per-group buffer");
+        src.buf = resolve(o, 0);
+        src.perFrame = isPatternOperand(s, o) ? 0u : lanesOfOperand(s, o);
+      } else {
+        return fail("sleep source is neither an engine input nor a buffer");
+      }
+      segSources_.push_back(src);
+    }
+    r.numSources = static_cast<uint32_t>(segSources_.size()) - r.firstSource;
+    r.firstState = static_cast<uint32_t>(segStates_.size());
+    for (uint32_t k = sg.firstState; k < sg.firstState + sg.numStates; ++k) {
+      const g::SleepState& st = plan.states[k];
+      if (st.entry >= s.state.entries.size() || s.state.entries[st.entry].arena != g::Poly::Global)
+        return fail("sleep state is not a global state entry");
+      const g::StateEntry& e = s.state.entries[st.entry];
+      const size_t need = st.kind == g::SleepStateKind::Delay      ? sizeof(dsp::DelayState)
+                          : st.kind == g::SleepStateKind::Smoother ? sizeof(dsp::GainState)
+                                                                   : sizeof(float);
+      if (e.size < need) return fail("sleep state smaller than its kind");
+      SegState ss;
+      ss.ptr = globalState() + e.offset;
+      ss.kind = st.kind;
+      ss.tail = std::max<uint32_t>(st.tail, 1u);
+      segStates_.push_back(ss);
+    }
+    r.numStates = static_cast<uint32_t>(segStates_.size()) - r.firstState;
+    r.firstParam = static_cast<uint32_t>(segParams_.size());
+    for (uint32_t k = sg.firstParam; k < sg.firstParam + sg.numParams; ++k) {
+      if (plan.params[k] >= params_.size()) return fail("sleep param out of range");
+      segParams_.push_back(plan.params[k]);
+    }
+    r.numParams = static_cast<uint32_t>(segParams_.size()) - r.firstParam;
+    r.flag = reinterpret_cast<uint32_t*>(auxp + L_.sleepOff + gi);
+    *r.flag = 0;
+    segs_.push_back(r);
+  }
+  for (uint32_t k = 0; k <= s.stages.size(); ++k) {
+    uint32_t first = static_cast<uint32_t>(segs_.size());
+    for (uint32_t gi = 0; gi < segs_.size(); ++gi)
+      if (segs_[gi].stage >= k) {
+        first = gi;
+        break;
+      }
+    stageSegFirst_[k] = first;
+  }
+  for (uint32_t r = 0; r < s.regions.size(); ++r) {
+    const g::RegionSleep& rs = plan.regions[r];
+    regionFillFirst_[r] = static_cast<uint32_t>(fills_.size());
+    if (rs.segment == g::kNone) continue;
+    if (rs.segment >= segs_.size() || rs.firstFill + rs.numFills > plan.fills.size()) return fail("region sleep out of range");
+    if (s.regions[r].stage != s.stages[segs_[rs.segment].stage].index) return fail("region sleeps in another stage's segment");
+    regionSeg_[r] = rs.segment;
+    for (uint32_t k = rs.firstFill; k < rs.firstFill + rs.numFills; ++k) {
+      const uint32_t b = plan.fills[k];
+      if (b >= s.buffers.size() || bufPerGroup_[b]) return fail("sleep fill is not a shared buffer");
+      FillRun f;
+      f.ptr = buf() + L_.bufOff[b];
+      f.perFrame = s.buffers[b].cls == g::Buffer::Class::Pattern ? 0u : s.buffers[b].lanes;
+      fills_.push_back(f);
+    }
+  }
+  regionFillFirst_[s.regions.size()] = static_cast<uint32_t>(fills_.size());
+  return true;
+}
+
+namespace {
+
+// Exactly ±0 over n floats (bools: false). Looks at the last float first: a sounding signal is caught at once.
+inline bool allSilent(const float* p, uint32_t n) noexcept {  // RT-safe
+  if (n == 0) return true;
+  if ((std::bit_cast<uint32_t>(p[n - 1]) & 0x7FFFFFFFu) != 0) return false;
+  const __m256i abs = _mm256_set1_epi32(0x7FFFFFFF);
+  __m256i acc = _mm256_setzero_si256();
+  uint32_t i = 0;
+  for (; i + 8 <= n; i += 8) acc = _mm256_or_si256(acc, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i)));
+  uint32_t tail = 0;
+  for (; i < n; ++i) tail |= std::bit_cast<uint32_t>(p[i]);
+  return _mm256_testz_si256(acc, abs) != 0 && (tail & 0x7FFFFFFFu) == 0;
+}
+
+inline bool small(float v) noexcept { return std::fabs(v) <= kSleepEpsilon; }  // NaN: false
+
+}  // namespace
+
+void ImageHost::fillRegion(uint32_t region, uint32_t frames) noexcept {  // RT-safe
+  for (uint32_t k = regionFillFirst_[region]; k < regionFillFirst_[region + 1]; ++k) {
+    const FillRun& f = fills_[k];
+    std::memset(f.ptr, 0, sizeof(float) * (f.perFrame == 0 ? 8u : frames * f.perFrame));
+  }
+}
+
+bool ImageHost::regionFillsSilent(uint32_t region, uint32_t frames) const noexcept {  // RT-safe
+  for (uint32_t k = regionFillFirst_[region]; k < regionFillFirst_[region + 1]; ++k) {
+    const FillRun& f = fills_[k];
+    if (!allSilent(f.ptr, f.perFrame == 0 ? 8u : frames * f.perFrame)) return false;
+  }
+  return true;
+}
+
+// Whether the segment's states have decayed (see the header); flushes them when they have.
+bool ImageHost::segmentQuiescent(SegRun& g) noexcept {  // RT-safe
+  bool quiet = true;
+  for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {
+    SegState& st = segStates_[k];
+    switch (st.kind) {
+      case g::SleepStateKind::Memory:
+        quiet = quiet && small(*reinterpret_cast<const float*>(st.ptr));
+        break;
+      case g::SleepStateKind::Smoother:
+        quiet = quiet && (std::bit_cast<uint32_t>(reinterpret_cast<const dsp::GainState*>(st.ptr)->d[0]) & 0x7FFFFFFFu) == 0;
+        break;
+      case g::SleepStateKind::Settled: break;
+      case g::SleepStateKind::Delay: {
+        auto& d = *reinterpret_cast<dsp::DelayState*>(st.ptr);
+        if (d.lanes != 1) {
+          quiet = false;
+          break;
+        }
+        const uint32_t reach = std::min(st.tail, d.capacity);
+        const float* ring = d.ring();
+        const uint32_t w = d.writePos;
+        if (!st.known) {  // the whole reachable history once (a fresh image, or one whose state was transferred)
+          st.known = true;
+          st.scanPos = w - reach;
+          st.loudPos = st.nonzeroPos = w - reach;
+        }
+        // The frames written since the last look (at most the ring: older ones are overwritten anyway).
+        uint32_t from = st.scanPos;
+        if (static_cast<int32_t>(w - from) > static_cast<int32_t>(d.capacity)) from = w - d.capacity;
+        for (uint32_t pos = from; pos != w; ++pos) {
+          const float v = ring[pos & d.mask];
+          const uint32_t bits = std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu;
+          if (bits != 0) {
+            st.nonzeroPos = pos + 1;
+            if (!small(v)) st.loudPos = pos + 1;
+          }
+        }
+        st.scanPos = w;
+        quiet = quiet && static_cast<int32_t>(w - st.loudPos) >= static_cast<int32_t>(reach) && small(d.apY1[0]);
+        break;
+      }
+    }
+  }
+  if (!quiet) return false;
+  for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {  // flush the ≤ ε residue
+    SegState& st = segStates_[k];
+    if (st.kind == g::SleepStateKind::Memory) {
+      float& v = *reinterpret_cast<float*>(st.ptr);
+      if ((std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu) != 0) {
+        v = 0.0f;
+        ++sleepStats_.flushes;
+      }
+    } else if (st.kind == g::SleepStateKind::Delay) {
+      auto& d = *reinterpret_cast<dsp::DelayState*>(st.ptr);
+      const uint32_t reach = std::min(st.tail, d.capacity);
+      const uint32_t w = d.writePos;
+      if (static_cast<int32_t>(w - st.nonzeroPos) < static_cast<int32_t>(reach)) {
+        float* ring = d.ring();
+        for (uint32_t pos = w - reach; pos != w; ++pos) ring[pos & d.mask] = 0.0f;
+        ++sleepStats_.flushes;
+      }
+      if ((std::bit_cast<uint32_t>(d.apY1[0]) & 0x7FFFFFFFu) != 0) {
+        d.apY1[0] = 0.0f;
+        ++sleepStats_.flushes;
+      }
+      st.nonzeroPos = st.loudPos = w - reach;
+    }
+  }
+  return true;
+}
+
+void ImageHost::decideSleep(uint32_t stage, const ProcessContext& ctx, uint32_t frames) noexcept {  // RT-safe
+  for (uint32_t gi = stageSegFirst_[stage]; gi < stageSegFirst_[stage + 1]; ++gi) {
+    SegRun& g = segs_[gi];
+    bool silentIn = true;
+    for (uint32_t k = g.firstSource; k < g.firstSource + g.numSources && silentIn; ++k) {
+      const SegSource& src = segSources_[k];
+      if (src.inSlot != g::kNone && ctx.inSilent != nullptr && src.inSlot < ctx.numIn && ctx.inSilent[src.inSlot] != 0) continue;
+      const float* p = src.buf != nullptr ? src.buf : extPtr(src.ext, 0);
+      silentIn = allSilent(p, src.perFrame == 0 ? 8u : frames * src.perFrame);
+    }
+    bool changed = false;
+    for (uint32_t k = g.firstParam; k < g.firstParam + g.numParams && !changed; ++k) changed = paramChanged_[segParams_[k]] != 0;
+    if (!silentIn || changed) {
+      if (g.asleep) ++sleepStats_.wakes;
+      g.asleep = false;
+      // This block writes the delay lines: count it as loud (the next look starts after it).
+      for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {
+        SegState& st = segStates_[k];
+        if (st.kind != g::SleepStateKind::Delay) continue;
+        const uint32_t w = reinterpret_cast<const dsp::DelayState*>(st.ptr)->writePos + frames;
+        st.known = true;
+        st.scanPos = st.loudPos = st.nonzeroPos = w;
+      }
+    } else if (!g.asleep && segmentQuiescent(g)) {
+      g.asleep = true;
+      ++sleepStats_.sleeps;
+    }
+    if (g.asleep) ++sleepStats_.asleepBlocks;
+    g.skip = g.asleep && sleepMode_ == SleepMode::On;
+    *g.flag = g.skip ? 0xFFFFFFFFu : 0u;
+  }
+}
+
+void ImageHost::sleepReports(ProcessContext& ctx, uint32_t frames, bool anyVoice) noexcept {  // RT-safe
+  bool outsSilent = true;
+  for (uint32_t c = firstGlobalOut_; c < outs_.size(); ++c) {
+    const OutCopy& oc = outs_[c];
+    if (ctx.out == nullptr || oc.slot >= ctx.numOut || ctx.out[oc.slot] == nullptr) continue;
+    const bool z = allSilent(ctx.out[oc.slot], frames);
+    if (ctx.outSilent != nullptr) ctx.outSilent[oc.slot] = z ? 1 : 0;
+    outsSilent = outsSilent && z;
+  }
+  bool asleep = sleepMode_ != SleepMode::Off || !planSegments_;  // Off: tails are never known to be done
+  for (const SegRun& g : segs_) asleep = asleep && g.asleep;
+  ctx.tailsDone = asleep;
+  ctx.dormant = asleep && outsSilent && !anyVoice && dormantCapable_ && sleepMode_ != SleepMode::Off;
+  firstBlock_ = false;
+}
+
 // ---- per block --------------------------------------------------------------------------------------------------
 
 float* ImageHost::resolveGlobal(ExtRun& e, const ProcessContext& ctx, uint32_t frames) noexcept {  // RT-safe
@@ -777,7 +1038,8 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   const uint32_t G = L_.groups;
   run_.sends = ctx.sends;
   run_.numSends = ctx.sends ? ctx.numSends : 0;
-  // Params: clamped to the declared range (Q44), NaN → default, splatted once per block.
+  // Params: clamped to the declared range (Q44), NaN → default, splatted once per block. Sleep (T1.x-silence): which
+  // of them changed since the previous block.
   for (uint32_t i = 0; i < params_.size(); ++i) {
     const ParamRun& p = params_[i];
     float v = ctx.params != nullptr && i < ctx.numParams ? ctx.params[i] : p.def;
@@ -788,6 +1050,9 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
       v = v < p.lo ? p.lo : v > p.hi ? p.hi : v;
     }
     splat8(p.pattern, v);
+    const uint32_t bits = std::bit_cast<uint32_t>(v);
+    paramChanged_[i] = firstBlock_ || bits != paramBits_[i] ? 1 : 0;
+    paramBits_[i] = bits;
   }
   // Engine data → the pointer table.
   const VoiceTable* vt = ctx.voices;

@@ -69,6 +69,7 @@ struct ProjectCompileOptions {
   VoiceConfig voice;                    // instrument units: polyphony (maxVoiceGroups = voiceGroupsFor(maxVoices))
   const Resources* resources = nullptr; // must outlive the images
   bool visualMode = true;               // delay-free cycles (also between merged tracks) get a z1 + warning
+  bool sleep = true;                    // T1.x-silence: sleep plans (graph::ScheduleOptions::sleep; false: never sleep)
   UnitBackend backend;
   std::vector<ProjectParamLink> paramLinks;
   // T2.6-fix4 (optional): the owner of resource `index` of `kind` (only Tuning is asked), kept alive by every image
