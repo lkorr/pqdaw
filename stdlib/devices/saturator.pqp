@@ -1,7 +1,7 @@
 // Saturator (SPEC §8; Ableton Live's Saturator): drive → curve → output → soft clip, colour EQ before the drive,
 // dry/wet, HQ oversampling. Live does not publish its curves; these are documented formulas chosen to match the
 // character Live's manual and common measurements describe (SPEC §15 2026-10-24: no Live renders yet, adjustable
-// later). QUESTIONS Q?-T4.9-a lists every choice.
+// later). QUESTIONS Q121 lists every choice.
 //
 // Signal flow (stereo, every channel alike):
 //   pre  = colour ? bell(lowshelf(x, 200 Hz, base), colorFreq, colorWidth, depth) : x      (TPT SVFs, base rate)

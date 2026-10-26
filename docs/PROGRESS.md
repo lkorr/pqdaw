@@ -656,3 +656,15 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Verified: same runs; orchestrator viewed circuit-svf-core.png.
 - Perf (ship, 10k atoms, 2560×1440, indicative): pan median ≤ 0.52 ms, zoom p99 ≤ 0.93 ms; idle 0 %. [!] pan p99 at 2× UI scale fully zoomed out 2.91 ms > 2 ms (frames that build chunk tiles ahead of the pan).
 - Notes: rotation/flip not drawn; far-zoom wires one colour; read-only (editing is T4.4).
+
+## 2026-10-25 · T4.9 (DSP part: Utility + Saturator) · worker BS / task/T4.9-stock-dsp
+- Did: stdlib/devices/utility.pqp (channel mode, phase L/R, width/mid-side/mono, balance, gain, mute as one smoothed 2×2 matrix — default Utility bit-transparent; bass mono LR4 crossover; DC filter; exports) and stdlib/devices/saturator.pqp (Analog Clip, Soft Sine, Bass Shaper, Medium/Hard Curve, Sinoid Fold, Digital Clip, Waveshaper, Shaper, colour pre-EQ, soft clip, dry/wet, output, HQ 1/2/4/8). No native `oversample` region yet: stdlib/util/oversample.pqp (polyphase IIR half-bands, 2×/4×/8×) as subcircuits, at 0.79–1.00× a C++ version (Q121). stdlib/filters/svf_fast.pqp (shorter SVF recursion; svf_core unchanged because T4.2's golden draws it — Q122). Structural settings (curve type, HQ factor…) are compile-time constants: only the chosen path is compiled (~9× cheaper than a runtime selector); changing one recompiles with a crossfade (Q121). Curves are documented own formulas (no Live renders, SPEC §15). Stereo harness, device_reference.h, test_devices.cpp, bench_devices.
+- Verified: worker -Full dev + release 51/51; every config within 1e-5 of the C++ reference on interpreter and JIT (bit-identical to each other), RtScope clean; Utility identities exact, bass-mono bands flat ≤ 0.01 dB. Orchestrator: rebased onto fab3b17+: release -Full 51/51, dev -Full stdlib|graph|jit|views 8/8, 0 warnings.
+- Perf (ship, indicative): Utility 3.5–3.7 vs C++ 5.6–8.0 ns/stereo sample; Saturator 1× 1.4–2.0, 2× 15–17.5, 4× 27–29, 8× 45–46 ns (0.23–1.00× C++). Aliasing Analog Clip 1/2/4/8×: −43/−67/−87/−106 dB.
+- Notes: panels → T4.6 (worker BU); global per-sample loops aren't fused by the JIT (Q122, JIT follow-up).
+
+## 2026-10-25 · T4.10 (DSP part: EQ Eight) · worker BS / task/T4.9-stock-dsp
+- Did: stdlib/devices/eq_eight.pqp: 8 TPT-SVF bands, LC48/LC12/LS/Bell/Notch/HS/HC12/HC48, Stereo / L-R / M-S, adaptive Q, scale, output, HQ (2×), audio-rate modulatable freq/gain/q; exports. Q123 (48 dB law, adaptive-Q law, ranges, defaults — provisional).
+- Verified: 22 settings × 1×/2× within 0.1 dB of analytic responses; HQ bell at 16 kHz 0.96 dB from analog (6.2 dB at 1×); under audio-rate modulation every type tracks the modulated analog filter within 0.01–0.33 dB and rings out. Same runs as T4.9.
+- Perf (ship, indicative): 6 default bands 18 ns vs C++ 25.7; 8 bells 24–25 vs 32–34; HQ 54–59 vs 66–77; L/R 64 ns (2.7× stereo: unfused global loops, Q122).
+- Notes: spectrum display + panel → T4.6 (worker BU).

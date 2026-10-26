@@ -1,6 +1,6 @@
 // Oversampling by 2×, 4× and 8× around a nonlinearity or a filter: polyphase IIR half-band filters (two parallel
 // chains of first-order allpasses; L. de Soras' "hiir" design, after the elliptic half-band of R. Lyons / Valenzuela
-// & Constantinides), written as base-rate subcircuits (QUESTIONS Q?-T4.9-a: SPEC §7.2's `oversample { … }` region
+// & Constantinides), written as base-rate subcircuits (QUESTIONS Q121: SPEC §7.2's `oversample { … }` region
 // is not in patch language v0; these stages are its subcircuit form).
 //
 // Half-band H(z) = ½·(A0(z²) + z⁻¹·A1(z²)), each Ai a chain of allpasses (c + z⁻¹)/(1 + c·z⁻¹) at the low rate of

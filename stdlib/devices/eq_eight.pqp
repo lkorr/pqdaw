@@ -1,7 +1,7 @@
 // EQ Eight (SPEC §8; Ableton Live's EQ Eight), DSP part (the panel and its spectrum are T4.6 / T4.10's view work):
 // eight bands of TPT state-variable filters (stdlib/filters/svf_fast.pqp's core), every band freq / gain / Q a param
 // that may be modulated at audio rate (the SVF's states are the analog filter's, so fast cutoff, gain and Q
-// changes neither click nor blow up). QUESTIONS Q?-T4.10-a lists the choices Live does not document.
+// changes neither click nor blow up). QUESTIONS Q123 lists the choices Live does not document.
 //
 // Band types (`typeN`, a constant: a change recompiles, SPEC §7.5) in Live's order:
 //   0 Low Cut 48   eighth-order high-pass: four SVF sections with the Butterworth-8 dampings scaled by 1/(√2·q)

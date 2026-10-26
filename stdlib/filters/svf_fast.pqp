@@ -1,4 +1,4 @@
-// svf_core with a shallower recursion (T4.9; QUESTIONS Q?-T4.9-b): the same TPT state-variable filter as
+// svf_core with a shallower recursion (T4.9; QUESTIONS Q122): the same TPT state-variable filter as
 // svf.pqp's svf_core in exact arithmetic (the same two integrator states, so the same behaviour under audio-rate
 // modulation), with Simper's update ic ← 2·v − ic solved for the new states:
 //
@@ -10,7 +10,7 @@
 // sample by sample — one per-sample loop per filter, as cascades (EQ bands, crossovers) are scheduled — costs about
 // half. The increments are added to the states, which keeps svf_core's low-frequency precision (no 1 − 2·a3 near
 // 1). Measured: svf lp 4.2–4.6 → 2.5 ns/sample mono (ship). The stock devices use it; svf_core keeps its form for
-// now (the circuit canvas's `circuit-svf-core` golden shows it, Q?-T4.9-b).
+// now (the circuit canvas's `circuit-svf-core` golden shows it, Q122).
 patch svf_core_fast {
   in    x : audio
   param g = 0.0655  [0..100]   @label("g")   // tan(π · 1 kHz / 48 kHz)

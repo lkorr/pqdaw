@@ -1,6 +1,6 @@
 // Utility (SPEC §8; Ableton Live's Utility): channel mode, phase invert, width or mid/side balance, mono, bass mono,
 // balance, gain, mute, DC filter. Built from the formulas below (no Live renders yet, SPEC §15 2026-10-24); the
-// choices Live does not document are in QUESTIONS Q?-T4.9-a.
+// choices Live does not document are in QUESTIONS Q121.
 //
 // Everything but bass mono and the DC filter is linear and memoryless, so it collapses into one 2 × 2 matrix that
 // is computed once per block from the params (the Control region) and smoothed per sample (one-pole, 2 ms, like
