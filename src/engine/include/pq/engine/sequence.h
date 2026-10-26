@@ -4,7 +4,7 @@
 // document, without the engine depending on `document`) and the immutable SequenceImage built from them off the
 // audio thread. The Timeline (timeline.h) publishes images by atomic swap and walks them with per-track cursors.
 //
-// ---- Clip semantics (the same as pq/document/clip_time.h) ------------------------------------------------------
+// ---- Clip semantics (pq/core/clip_time.h, shared with pq/document/clip_time.h) -----------------------------------
 // A clip plays content from `contentStart` at arrangement tick `start`, for `length` ticks. With the loop off,
 // content tick contentStart + o plays at start + o. With the loop on (loopEnabled and loopEnd > loopStart), playback
 // runs from contentStart up to loopEnd and then repeats [loopStart, loopEnd) until the clip ends; a start marker at

@@ -108,6 +108,9 @@ struct VoiceConfig {
   bool resetOnNoteOn = true;        // lane state ← StateInit at note-on (Q29: per-voice oscillators restart)
   bool compact = true;              // move voices out of the least occupied group when a group can be freed
   float stealFadeMs = 3.0f;         // raised-cosine fade of a stolen voice
+  float quietestMinAgeMs = 20.0f;   // StealPolicy::Quietest: voices younger than this (still in their attack, their
+                                    // block peak not yet representative) are stolen only when every candidate is
+                                    // (M1 review L9)
   float silenceDb = -90.0f;         // voice end: below this after release …
   float silenceMs = 20.0f;          // … for this long
   float releaseTimeoutMs = 2000.0f; // voice end without a done slot or monitored outputs
@@ -276,6 +279,7 @@ private:
   uint32_t groups_ = 0, lanes_ = 0, maxBlock_ = 0, stride_ = 0, groupStride_ = 0;
   uint32_t fadeFrames_ = 1, silenceFrames_ = 1;
   int64_t releaseTimeoutFrames_ = 0;
+  int64_t quietestMinAgeFrames_ = 0;
   float silenceLevel_ = 0.0f;
   float idleHz_ = 261.626f;           // voice.hz of a free lane (referenceHz)
   std::vector<float> fadeTable_;      // raised cosine: fadeFrames_ + 1 values from 1 down to 0

@@ -306,6 +306,41 @@ inline typename S::F sampleInterp(const float* data, typename S::I i, typename S
   }
 }
 
+// sample_read's interpolation inside a loop (M1 review L3): while the playhead's sample i is in [loopStart, loopEnd),
+// the taps past the seam come from the other end of the loop (i + 1, i + 2 ≥ loopEnd wrap back by the loop length;
+// the cubic's i − 1 < loopStart wraps forward), so a loop plays seamlessly instead of reading the samples stored
+// after loopEnd. Taps are then clamped to [−1, length] (the zero guards: a loop reaching past the data reads 0
+// there, as an unlooped read does), which also keeps every gather inside the guarded buffer whatever the loop
+// points are. Two wraps for i + 2 cover a one-sample loop.
+template <class S, bool kCubic>
+inline typename S::F sampleInterpLoop(const float* data, typename S::I i, typename S::F fr, typename S::I loopOn,
+                                      typename S::I loopStart, typename S::I loopEnd, typename S::I loopLen,
+                                      typename S::I length) noexcept {  // RT-safe
+  using I = typename S::I;
+  const I one = S::seti(1);
+  const I inLoop = S::andi(loopOn, S::andi(S::gti(i, S::subi(loopStart, one)), S::gti(loopEnd, i)));
+  const I lastIn = S::subi(loopEnd, one);
+  const auto wrapDown = [&](I t) noexcept {
+    return S::selecti(S::andi(inLoop, S::gti(t, lastIn)), S::subi(t, loopLen), t);
+  };
+  const auto clampTap = [&](I t) noexcept { return S::mini(S::maxi(t, S::seti(-1)), length); };
+  const auto x0 = S::gather(data, i);
+  const auto x1 = S::gather(data, clampTap(wrapDown(S::addi(i, one))));
+  if constexpr (kCubic) {
+    I tm1 = S::subi(i, one);
+    tm1 = S::selecti(S::andi(inLoop, S::gti(loopStart, tm1)), S::addi(tm1, loopLen), tm1);
+    const auto xm1 = S::gather(data, clampTap(tm1));
+    const auto x2 = S::gather(data, clampTap(wrapDown(wrapDown(S::addi(i, S::seti(2))))));
+    const auto half = S::set(0.5f);
+    const auto c1 = S::mul(half, S::sub(x1, xm1));
+    const auto c2 = S::add(S::fnma(S::set(2.5f), x0, xm1), S::fnma(half, x2, S::add(x1, x1)));
+    const auto c3 = S::fma(half, S::sub(x2, xm1), S::mul(S::set(1.5f), S::sub(x0, x1)));
+    return S::fma(S::fma(S::fma(c3, fr, c2), fr, c1), fr, x0);
+  } else {
+    return S::fma(fr, S::sub(x1, x0), x0);
+  }
+}
+
 template <class S, bool kCubic>
 inline typename S::F samplePosRead(const SampleView& v, typename S::F pos) noexcept {  // RT-safe
   const auto valid = S::band(S::ge(pos, S::zero()), S::lt(pos, S::toFloat(S::seti(v.length))));
@@ -408,6 +443,7 @@ struct SampleReadK {
     const I signBit = S::seti(static_cast<int32_t>(0x80000000u));
     const auto startValid = S::band(S::asF(S::gti(startHi, S::seti(-1))), S::asF(S::gti(length, startHi)));
     const bool resetActive = splBit(SM, 1) ? S::any(reset.at(0)) : blockAny(a.in[1], a.frames * S::kW);
+    const bool anyLoop = S::any(S::asF(loopOn));  // block-constant: unlooped reads keep the plain taps
 
     I index = S::loadi(st.index);
     I frac = S::loadu32(st.frac);
@@ -426,7 +462,9 @@ struct SampleReadK {
       // Read (index clamped for memory safety; inactive lanes output 0).
       const I i = S::mini(S::maxi(index, zero), lastIndex);
       const auto fr = S::mul(S::toFloat(S::template srli<8>(frac)), S::set(k2pm24));
-      S::store(out + f * S::kW, S::band(active, sampleInterp<S, kCubic>(v.data, i, fr)));
+      const auto y = anyLoop ? sampleInterpLoop<S, kCubic>(v.data, i, fr, loopOn, loopStart, loopEnd, loopLen, length)
+                             : sampleInterp<S, kCubic>(v.data, i, fr);
+      S::store(out + f * S::kW, S::band(active, y));
       S::store(playing + f * S::kW, active);
       // Advance the 32.32 playhead: unsigned carry out of the fraction via a sign-flipped signed compare.
       if constexpr (!splBit(SM, 0)) toFixed<S>(rate.at(f), incHi, incLo);

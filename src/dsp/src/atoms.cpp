@@ -138,6 +138,42 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   return findTableKernel(a, lanes, spec);
 }
 
+LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
+  // Every stateful atom is listed: a new one gets no default (tests/dsp/test_lane_state.cpp fails until it is added).
+  switch (a) {
+    case Atom::Schmitt:
+    case Atom::Rise:
+    case Atom::Fall:
+    case Atom::Change:
+    case Atom::SrFlipFlop:
+    case Atom::DFlipFlop:
+    case Atom::TFlipFlop:
+    case Atom::Counter:
+    case Atom::ClockDiv:
+    case Atom::Pulse:
+    case Atom::Timer:
+    case Atom::Z1:
+    case Atom::Z1Read:
+    case Atom::Z1Write:
+    case Atom::SampleHold:
+    case Atom::Latch:
+    case Atom::Wavetable:
+    case Atom::SampleReadLinear:
+    case Atom::SampleReadCubic: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
+    case Atom::Phasor:
+    case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
+    case Atom::Noise: return {LaneState::PerLane, 0};
+    case Atom::DelayLinear:
+    case Atom::DelayCubic:
+    case Atom::DelayAllpass:
+    case Atom::DelayReadLinear:
+    case Atom::DelayReadCubic:
+    case Atom::DelayReadAllpass:
+    case Atom::DelayWrite: return {LaneState::DelayLine, 0};
+    default: return {};
+  }
+}
+
 uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept {
   const size_t l = lanes == kGroupLanes ? kGroupLanes : 1u;
   return static_cast<uint32_t>(kMaxDelayRingBytes / sizeof(float) / l) - kRingHeadroom;

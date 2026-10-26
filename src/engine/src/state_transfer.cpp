@@ -92,11 +92,11 @@ Result<TransferPlan> buildTransferPlan(const graph::StateLayout& from, const Sta
 }
 
 void executeTransfer(const TransferPlan& plan, const StateArena& from, const StateArena& to,
-                     const uint32_t* groupMask) noexcept {  // RT-safe
+                     const uint32_t* groupMask, uint32_t maxGroups) noexcept {  // RT-safe
   if (from.global != nullptr && to.global != nullptr)
     for (const StateCopy& c : plan.global) std::memcpy(to.global + c.dst, from.global + c.src, c.size);
   if (plan.voice.empty() || from.voice == nullptr || to.voice == nullptr) return;
-  const uint32_t groups = std::min({plan.voiceGroups, from.voiceGroups, to.voiceGroups});
+  const uint32_t groups = std::min({plan.voiceGroups, from.voiceGroups, to.voiceGroups, maxGroups});
   for (uint32_t g = 0; g < groups; ++g) {
     if (groupMask != nullptr && groupMask[g] == 0) continue;
     const std::byte* src = from.voice + static_cast<size_t>(g) * from.voiceStride;

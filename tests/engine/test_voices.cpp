@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -389,6 +390,39 @@ TEST_CASE("voices: stealing — oldest, released first, quietest, none") {
     CHECK(r.ve.laneOf(3) == eng::kNoSlot);
     CHECK(r.ve.stats().droppedNotes == 1);
     CHECK(r.ve.liveVoices() == 2);
+  }
+}
+
+TEST_CASE("voices: quietest stealing skips voices still in their attack (M1 review L9)") {
+  VoiceConfig cfg;
+  cfg.maxVoices = 4;
+  cfg.steal = eng::StealPolicy::Quietest;  // quietestMinAgeMs 20 ms = 960 frames
+  Rig r(kProbe, cfg, eng::voiceGroupsFor(4), 64);
+  r.run(64, 64, {on(0, 1, 100.0f, 0.9f), on(0, 2, 200.0f, 0.5f), on(0, 3, 300.0f, 0.7f)});
+  r.run(1024, 64);                                // voices 1-3 are > 20 ms old
+  r.run(64, 64, {on(r.time, 4, 400.0f, 0.1f)});  // young and (in its block peak) the quietest
+  CHECK(r.ve.laneLevel(r.ve.laneOf(4)) < r.ve.laneLevel(r.ve.laneOf(2)));
+  r.run(64, 64, {on(r.time + 3, 5, 500.0f)});
+  CHECK(r.ve.stats().steals == 1);
+  CHECK(r.ve.laneStatus(r.ve.laneOf(2)) == eng::LaneStatus::Fading);  // the quietest mature voice
+  CHECK(r.ve.laneStatus(r.ve.laneOf(4)) == eng::LaneStatus::Held);
+}
+
+TEST_CASE("voices: NaN and out-of-range velocities reach the patch clamped to [0, 1] (M1 review L9)") {
+  VoiceConfig cfg;
+  Rig r(kProbe, cfg, 2, 64);
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const auto a = r.run(64, 64, {on(0, 1, 100.0f, nan)});
+  const auto b = r.run(64, 64, {off(r.time, 1), on(r.time, 2, 200.0f, 3.0f)});
+  const auto c = r.run(64, 64, {off(r.time, 2), on(r.time, 3, 300.0f, -1.0f)});
+  const auto& ya = a[r.mixIndex("y")];
+  const auto& yb = b[r.mixIndex("y")];
+  const auto& yc = c[r.mixIndex("y")];
+  for (uint32_t t = 0; t < 64; ++t) {
+    INFO("t " << t);
+    CHECK(ya[t] == 0.0f);  // NaN → 0 (was NaN in every sample)
+    CHECK(yb[t] == 1.0f);  // 3 → 1
+    CHECK(yc[t] == 0.0f);  // −1 → 0
   }
 }
 

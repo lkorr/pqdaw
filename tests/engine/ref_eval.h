@@ -736,7 +736,19 @@ private:
       }
       const int64_t i = std::clamp<int64_t>(s.i, 0, len - 1);
       const double fr = static_cast<double>(s.frac >> 8) * 0x1p-24;
-      set(n, 0, ch, v, s.active ? interp(d, i, fr, a == "sample_read_cubic") : 0.0);
+      // Inside the loop the taps past the seam come from the other end of the loop (M1 review L3).
+      const int64_t ls = clampedFloor(I(4)), le = clampedFloor(I(5));
+      const bool inLoop = le > ls && i >= ls && i < le;
+      const auto tap = [&](int64_t j) {
+        if (inLoop) {
+          while (j >= le) j -= le - ls;
+          while (j < ls) j += le - ls;
+        }
+        return at(d, j);
+      };
+      const double ys = a == "sample_read_cubic" ? hermite(tap(i - 1), tap(i), tap(i + 1), tap(i + 2), fr)
+                                                 : tap(i) + fr * (tap(i + 1) - tap(i));
+      set(n, 0, ch, v, s.active ? ys : 0.0);
       set(n, 1, ch, v, b01(s.active));
       return;
     } else {

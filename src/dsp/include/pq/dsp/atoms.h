@@ -95,8 +95,10 @@
 //                                     to loopEnd − 1 − (overshoot mod length), for any rate (also |rate| >
 //                                     the loop length).
 //                                     Without a loop, leaving [0, length) stops playback (out 0, playing false)
-//                                     until the next reset. Interpolation taps around the loop seam read the
-//                                     buffer as stored (no crossfade). start/loopStart/loopEnd must be Spl.
+//                                     until the next reset. While the playhead is inside the loop, the
+//                                     interpolation taps past the seam come from the other end of the loop
+//                                     (seamless loops; M1 review L3); taps outside the data read 0. No
+//                                     crossfade. start/loopStart/loopEnd must be Spl.
 //                                     Initially playing from 0.
 //   sample_pos_linear/_cubic (pos)    stateless read at a sample position (float, in samples); 0 outside
 //                                     [0, length). Float position: sub-sample accurate to ~2^24 samples.
@@ -198,6 +200,23 @@ uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept;  // RT-safe
 // Bytes of state (0 for stateless atoms). For delay lines: header + ring (≤ sizeof(DelayState) + kMaxDelayRingBytes), computed in
 // size_t. Not RT-relevant.
 size_t stateBytes(Atom a, const StateInit& init) noexcept;
+
+// Which bytes of an atom's 8-lane state block belong to one voice lane (M1 review L7): what the VoiceEngine resets at
+// a note-on and moves when a voice changes group, without knowing the state structs. Per-lane fields are [8] arrays,
+// so inside them word w belongs to lane w mod 8; they come first in every struct (atom_state.h). Declared for every
+// stateful atom (tests/dsp/test_lane_state.cpp checks that, and checks each PerLane declaration by running the
+// kernel on lane-permuted inputs).
+enum class LaneState : uint8_t {
+  None,       // stateless (or not declared: a stateful atom must never return this)
+  PerLane,    // bytes [0, perLaneBytes) are per-lane [8] arrays; the rest is shared by the group's lanes (phasor's
+              // incScale/halfSr, noise's counter; noise's per-lane seeds are constant from StateInit, so 0 bytes)
+  DelayLine,  // DelayState: shared header, apY1[8] per lane, start[8] + the ring handled by the VoiceEngine in O(1)
+};
+struct LaneStateInfo {
+  LaneState kind = LaneState::None;
+  uint32_t perLaneBytes = 0;  // PerLane only
+};
+LaneStateInfo laneStateInfo(Atom a) noexcept;  // RT-safe
 
 // Writes the initial state into `state` (stateBytes bytes, kStateAlign-aligned). No allocation: RT-safe, so it
 // can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines; the

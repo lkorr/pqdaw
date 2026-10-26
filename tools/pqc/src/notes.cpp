@@ -1,7 +1,7 @@
 // pqc --notes: a compact note list (tools/README.md "Notes").
 //   notes    = note { sep note }            sep: spaces, tabs or commas
 //   note     = pitch [ "@" time ] [ ":" time ] [ "*" velocity ]
-//   pitch    = number                       12-TET key number (69 = A4 = 440 Hz, 60 = C4; fractions allowed)
+//   pitch    = number                       12-TET key number (69 = A3 = 440 Hz, 60 = C3: Ableton naming, SPEC §3.1; fractions)
 //            | number ( "hz" | "Hz" )       frequency
 //   time     = number [ "s" | "ms" ]        seconds by default
 //   velocity = number in [0, 1]

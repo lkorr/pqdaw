@@ -549,6 +549,24 @@ TEST_CASE("hot swap: voices keep sounding through a swap (instant and crossfaded
   }
 }
 
+TEST_CASE("hot swap: a host without voices copies no voice state at a swap (M1 review L8)") {
+  HostFixture f;
+  const Compiled& a = f.add(kVoice);
+  const Compiled& spare = f.add(withSpare(parsePatch(kVoice), 1.5, true), &a);
+  const uint32_t groups = 2;
+  eng::ProgramHost h(globalConfig());  // voices off: the voice stages never run here
+  REQUIRE(h.publish(buildImage(a, groups)).ok());
+  Render r;
+  render(h, 4 * kBlock, r);
+  auto info = h.publish(buildImage(spare, groups), eng::SwapPolicy{eng::SwapMode::Instant, 10.0f});
+  REQUIRE(info.ok());
+  REQUIRE(info->plan.voiceBytes > 0);  // the plan has voice ranges (the phasor), per group
+  render(h, kBlock, r);
+  CHECK(h.stats().swaps == 2);
+  CHECK(h.stats().transferBytes == info->plan.globalBytes);  // was globalBytes + groups · voiceBytes
+  CHECK(r.rtViolations == 0);
+}
+
 TEST_CASE("hot swap: old images are retired to the epoch reclaimer and freed off the audio thread") {
   HostFixture f;
   const Compiled& a = f.add(kTwoOuts);

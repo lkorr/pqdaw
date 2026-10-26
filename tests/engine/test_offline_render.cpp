@@ -144,6 +144,31 @@ TEST_CASE("note list: sample-accurate events in block-relative frames, offs befo
   CHECK(l.events[0].noteId == 1);
 }
 
+TEST_CASE("note list: a note starting before 0 is clipped to its own end; one ending by 0 is left out (M1 L9)") {
+  std::vector<e::TimedNote> notes(3);
+  notes[0] = {-100, 150, 220.0f, 0.5f, 0.5f};  // [−100, 50) → plays [0, 50)
+  notes[1] = {-100, 100, 330.0f, 0.5f, 0.5f};  // [−100, 0): not played
+  notes[2] = {10, 20, 440.0f, 0.5f, 0.5f};
+  e::NoteListSource src(notes);
+  CHECK(src.numEvents() == 4);
+  e::EventBuffer buf(16);
+  buf.clear();
+  src.source().fn(src.source().user, 0, 64, buf);
+  const auto l = buf.list();
+  REQUIRE(l.count == 4);
+  CHECK(l.events[0].kind == e::NoteEventKind::NoteOn);
+  CHECK(l.events[0].noteId == 1);
+  CHECK(l.events[0].frame == 0);
+  CHECK(l.events[1].noteId == 3);  // ids stay 1 + list index
+  CHECK(l.events[1].frame == 10);
+  CHECK(l.events[2].kind == e::NoteEventKind::NoteOff);
+  CHECK(l.events[2].noteId == 3);
+  CHECK(l.events[2].frame == 30);
+  CHECK(l.events[3].kind == e::NoteEventKind::NoteOff);
+  CHECK(l.events[3].noteId == 1);
+  CHECK(l.events[3].frame == 50);  // was 150: the full length from the clamped start
+}
+
 TEST_CASE("renderOffline: channels, params, gain; chunk size never changes a bit") {
   Built b = build(kStereo);
   e::BufferSink ref;

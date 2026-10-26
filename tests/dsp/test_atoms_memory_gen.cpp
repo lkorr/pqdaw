@@ -509,7 +509,20 @@ TEST_CASE("dsp atoms: sample_pos and sample_read against a double playhead") {
         }
         const int64_t idx = static_cast<int64_t>(std::floor(pos));
         const int64_t ci = std::clamp<int64_t>(idx, 0, len - 1);
-        out[0][t] = active ? interp(cubic, ci, pos - std::floor(pos)) : 0.0;
+        // Inside the loop the taps past the seam come from the other end of the loop (M1 review L3).
+        const bool inLoop = loopOn && static_cast<double>(ci) >= ls && static_cast<double>(ci) < le;
+        const auto tap = [&](int64_t j) {
+          if (inLoop) {
+            const auto ils = static_cast<int64_t>(ls), ile = static_cast<int64_t>(le);
+            while (j >= ile) j -= ile - ils;
+            while (j < ils) j += ile - ils;
+          }
+          return at(j);
+        };
+        const double fr = pos - std::floor(pos);
+        const double y = cubic ? hermiteRef(tap(ci - 1), tap(ci), tap(ci + 1), tap(ci + 2), fr)
+                               : tap(ci) + fr * (tap(ci + 1) - tap(ci));
+        out[0][t] = active ? y : 0.0;
         out[1][t] = active ? 1.0 : 0.0;
         if (active) {
           // The documented playhead: rate in 32.32 fixed point (floor(rate·2^32), exact in double here), and a
@@ -554,6 +567,46 @@ TEST_CASE("dsp atoms: sample_pos and sample_read against a double playhead") {
     checkAtom(r, 74);
   }
   CHECK(!pq::dsp::SampleData::build(std::vector<float>{}).ok());
+}
+
+TEST_CASE("dsp atoms: sample_read interpolates across the loop seam from the loop's other end (M1 review L3)") {
+  // Sample k = k (a ramp), loop [10, 14), start 12, rate 0.5: frames read 12, 12.5, 13, 13.5, 10, 10.5 …; at 13.5
+  // the linear taps are 13 and 10 (the sample after loopEnd − 1 inside the loop is loopStart), not 13 and 14.
+  std::vector<float> ramp(32);
+  for (size_t k = 0; k < ramp.size(); ++k) ramp[k] = static_cast<float>(k);
+  auto data = pq::dsp::SampleData::build(ramp);
+  REQUIRE(data.ok());
+  for (const bool cubic : {false, true}) {
+    for (const uint32_t lanes : {1u, 8u}) {
+      INFO("cubic " << cubic << ", lanes " << lanes);
+      const Atom atom = cubic ? Atom::SampleReadCubic : Atom::SampleReadLinear;
+      constexpr uint32_t T = 8;
+      std::vector<float> rate(8, 0.5f), start(8, 12.0f), ls(8, 10.0f), le(8, 14.0f);
+      std::vector<float> reset(T * lanes, 0.0f);
+      for (uint32_t l = 0; l < lanes; ++l) reset[l] = pq::dsp::boolMask(true);  // reset at frame 0
+      std::vector<float> out(T * lanes), playing(T * lanes);
+      pq::dsp::SampleReadState st{};
+      pq::dsp::StateInit init;
+      init.lanes = lanes;
+      pq::dsp::initState(atom, &st, init);
+      const float* ins[] = {rate.data(), reset.data(), start.data(), ls.data(), le.data()};
+      float* outs[] = {out.data(), playing.data()};
+      const uint32_t spl = 0b11101;  // rate, start, loopStart, loopEnd at param rate; reset per sample
+      pq::dsp::KernelArgs args{ins, outs, &st, &data->view(), T, 5, 2, spl};
+      pq::dsp::findKernel(atom, lanes, spl)(args);
+      // Positions 12, 12.5, 13, 13.5, 10, 10.5, 11, 11.5; loop-wrapped taps: s(j) = 10 + (j − 10) mod 4.
+      const auto s = [](int j) { return static_cast<double>(10 + ((j - 10) % 4 + 4) % 4); };
+      for (uint32_t t = 0; t < T; ++t) {
+        const double pos = 12.0 + 0.5 * t >= 14.0 ? 12.0 + 0.5 * t - 4.0 : 12.0 + 0.5 * t;
+        const int i = static_cast<int>(std::floor(pos));
+        const double fr = pos - i;
+        const double want = cubic ? hermiteRef(s(i - 1), s(i), s(i + 1), s(i + 2), fr) : s(i) + fr * (s(i + 1) - s(i));
+        for (uint32_t l = 0; l < lanes; ++l) CHECK(out[t * lanes + l] == doctest::Approx(want).epsilon(1e-6));
+      }
+      // The case that read past the seam before: 13.5 → (13 + 10) / 2 = 11.5, not 13.5.
+      if (!cubic) CHECK(out[3 * lanes] == 11.5f);
+    }
+  }
 }
 
 namespace {

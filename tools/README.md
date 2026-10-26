@@ -57,7 +57,7 @@ interpreter or the LLVM JIT, and rendered offline.
 ```
 notes    = note { sep note }              sep: spaces, tabs or commas
 note     = pitch [ "@" time ] [ ":" time ] [ "*" velocity ]
-pitch    = number                         12-TET key number: 69 = A4 = 440 Hz, 60 = C4; fractions allowed (60.5)
+pitch    = number                         12-TET key number: 69 = A3 = 440 Hz, 60 = C3 = 261.626 Hz (Ableton naming, SPEC §3.1); fractions allowed (60.5)
          | number ( "hz" | "Hz" )         a frequency
 time     = number [ "s" | "ms" ]          seconds by default
 velocity = number in [0, 1]               default 0.7

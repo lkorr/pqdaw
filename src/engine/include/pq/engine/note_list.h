@@ -6,7 +6,8 @@
 // timeline jumps backwards, e.g. a second render from 0).
 //
 // Order at equal times: note-offs before note-ons (a note ending where the next one starts never cuts the new one),
-// then list order. Note ids are 1 + the note's index in the list.
+// then list order. Note ids are 1 + the note's index in the list. A note starting before 0 plays from 0 to its own
+// end; one ending at or before 0 is left out.
 
 #include <cstdint>
 #include <vector>

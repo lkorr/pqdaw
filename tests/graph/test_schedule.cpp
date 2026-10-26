@@ -635,6 +635,27 @@ TEST_CASE("schedule: a delay-free cycle is an error in text, located at a node o
   CHECK(r.error().message.find("delay-free feedback loop") != std::string::npos);
 }
 
+TEST_CASE("schedule: a phasor / sine_hz reset fed by voice.gate is warned about (level-sensitive, Q14)") {
+  Compiled c;
+  compile(c, R"(patch R {
+  out y : audio voice
+  a = sine(phasor(voice.hz, reset: voice.gate))
+  b = sine_hz(voice.hz * 2, reset: voice.gate)
+  e = sine(phasor(voice.hz * 3, reset: rise(voice.gate)))
+  y = a + b + e
+}
+)");
+  const Schedule& s = ok(c);
+  REQUIRE(s.warnings.size() == 2);  // a and b; e restarts on the gate's rising edge, as intended
+  for (const auto& w : s.warnings) {
+    CHECK(w.message.find("level-sensitive") != std::string::npos);
+    CHECK(w.message.find("rise(voice.gate)") != std::string::npos);
+    CHECK(w.location.line >= 3);
+  }
+  // Still an ordinary schedule: a warning, not an error.
+  checkStructure(s, c.typed);
+}
+
 TEST_CASE("schedule: visual mode inserts a z1 into a delay-free cycle and warns") {
   ScheduleOptions so;
   so.visualMode = true;

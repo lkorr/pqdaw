@@ -202,9 +202,11 @@ void ProgramHost::trySwap() noexcept {  // RT-safe
   // State: the old image's current state, right before the new image's first block.
   const StateArena from = old->image->stateArena(), to = p->image->stateArena();
   const uint32_t* groupMask = cfg_.voices && ve_->config().resetOnNoteOn ? ve_->laneMasks() : nullptr;
-  executeTransfer(p->plan, from, to, groupMask);
+  // A host without voices never runs voice stages, so their state is not copied (M1 review L8).
+  const uint32_t maxGroups = cfg_.voices ? UINT32_MAX : 0u;
+  executeTransfer(p->plan, from, to, groupMask, maxGroups);
   uint64_t bytes = p->plan.globalBytes;
-  const uint32_t groups = std::min({p->plan.voiceGroups, from.voiceGroups, to.voiceGroups});
+  const uint32_t groups = std::min({p->plan.voiceGroups, from.voiceGroups, to.voiceGroups, maxGroups});
   for (uint32_t g = 0; g < groups; ++g)
     if (groupMask == nullptr || groupMask[g] != 0) bytes += p->plan.voiceBytes;
   stats_.transferBytes = bytes;

@@ -19,6 +19,7 @@ pq_add_test(pq_tests_core
     core/test_denormal_guard.cpp
     core/test_fast_math.cpp
     core/test_time.cpp
+    core/test_clip_time.cpp
     core/test_grid.cpp
     core/test_math_time_rt.cpp
     core/test_stable_id.cpp
@@ -244,6 +245,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_tables.cpp
     dsp/test_dsp_rt.cpp
     dsp/test_exact_lanes.cpp
+    dsp/test_lane_state.cpp
   DEPS pq_dsp)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

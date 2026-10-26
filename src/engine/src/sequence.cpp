@@ -5,6 +5,8 @@
 #include <numeric>
 #include <string>
 
+#include "pq/core/clip_time.h"
+
 namespace pq::engine {
 
 namespace {
@@ -67,11 +69,12 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
       c.end = cd.start + cd.length;
       if (k + 1 < order.size()) c.end = std::min(c.end, td.clips[order[k + 1]].start);  // overwritten by the next
       if (c.end <= c.start) continue;
-      const bool looped = cd.loopEnabled && cd.loopEnd > cd.loopStart;
+      // The clip-time rules are pq/core/clip_time.h, shared with the document (M3 review L16).
+      const ContentLoop loop{cd.loopEnabled, cd.loopStart, cd.loopEnd};
+      const bool looped = contentLooped(loop);
       const Ticks loopLen = looped ? cd.loopEnd - cd.loopStart : 0;
-      c.content0 = cd.contentStart;
-      if (looped && c.content0 >= cd.loopEnd) c.content0 = cd.loopStart + (c.content0 - cd.loopEnd) % loopLen;
-      c.firstPassEnd = looped ? std::min(c.end, c.start + (cd.loopEnd - c.content0)) : c.end;
+      c.content0 = clipContentAt(cd.contentStart, loop, 0);
+      c.firstPassEnd = looped ? std::min(c.end, c.start + clipFirstPassLength(cd.contentStart, loop)) : c.end;
       const bool loopPasses = looped && c.firstPassEnd < c.end;
       c.loopStart = looped ? cd.loopStart : 0;
       c.loopLen = loopPasses ? loopLen : 0;

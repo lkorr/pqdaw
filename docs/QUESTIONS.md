@@ -103,7 +103,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: SPEC §7.2 names these atoms without fixing their exact behaviour. Provisional semantics (documented in `src/dsp/include/pq/dsp/atoms.h`, tested):
   - `pulse(period)`: high on the first sample, then every round(period) samples (a clock source); an invalid period gives a single pulse on the first sample. Alternative: a one-sample trigger on an input edge (that is what `rise` already does).
   - `samplehold(x, trig)` samples on the rising edge of `trig`; `latch(x, enable)` is level-sensitive (transparent while high).
-  - `phasor`/`sine_hz` `reset` and `sample_read` `reset` are level-sensitive (phase/playhead held at the start while high); use `rise()` for edge behaviour.
+  - `phasor`/`sine_hz` `reset` and `sample_read` `reset` are level-sensitive (phase/playhead held at the start while high); use `rise()` for edge behaviour. Since T0/T1-lows (M1 review, Q14 trap) the scheduler warns (`Schedule::warnings`, shown by `pqc check`) when such a reset is fed straight from `voice.gate`, which holds the oscillator at its start for the whole note.
   - `clockdiv(clk, n)` passes every n-th input pulse (keeps the pulse width) rather than producing a 50 % square wave.
   - `counter` wraps within [0, n−1]; reset wins over simultaneous edges.
   - `sr` flip-flop: reset wins when both inputs are high.

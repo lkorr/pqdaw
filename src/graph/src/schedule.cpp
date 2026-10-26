@@ -170,6 +170,7 @@ public:
       }
       applyInserts(inserts);
     }
+    lintLevelResets();
     markSplits();
     checkSolves();
     if (!res_.ok()) return std::move(res_);
@@ -230,6 +231,34 @@ private:
     const Node& nd = P().node(n);
     if (nd.kind == NodeKind::Atom) return std::string(atomSignature(nd.atom).name) + "#" + std::to_string(n);
     return std::string(toText(nd.kind)) + "#" + std::to_string(n);
+  }
+
+  // ---- lint ---------------------------------------------------------------------------------------------------
+  // Q14 / M1 review: phasor, sine_hz and sample_read resets are level-sensitive (held at the start while high). Fed
+  // straight from voice.gate, that holds the oscillator or playhead at its start for the whole note, which is
+  // almost never meant: warn and point at rise(). (Edge behaviour stays a subcircuit choice; the kernels are
+  // unchanged.)
+  void lintLevelResets() {
+    static const AtomId gateId = atomId("voice.gate");
+    static const AtomId resettable[] = {atomId("phasor"), atomId("sine_hz"), atomId("sample_read_linear"),
+                                        atomId("sample_read_cubic")};
+    const Patch& p = P();
+    for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
+      const Node& nd = p.node(n);
+      if (nd.kind != NodeKind::Atom) continue;
+      if (std::find(std::begin(resettable), std::end(resettable), nd.atom) == std::end(resettable)) continue;
+      const std::optional<uint32_t> in = p.findInput(n, "reset");
+      if (!in) continue;
+      const WireIndex w = adj_.driver[p.flatInput(n, *in)];
+      if (w == kNone) continue;
+      const NodeIndex src = p.wire(w).from.node;
+      if (p.node(src).kind != NodeKind::Atom || p.node(src).atom != gateId) continue;
+      S().warnings.push_back(makeDiag(
+          n, ErrorCode::Type,
+          "the reset of " + label(n) +
+              " is level-sensitive: voice.gate holds it at its start for the whole note; use rise(voice.gate) to "
+              "restart it once per note"));
+    }
   }
 
   // ---- analyse ----------------------------------------------------------------------------------------------

@@ -9,9 +9,11 @@
   it is opt-in and not part of -Full, because those checks depend on machine load.
 
   Compiler cache: when scripts/get-sccache.ps1 has installed sccache, CMake uses it as the compiler launcher
-  (cmake/PqCompilerCache.cmake). This script points it at the cache shared by every checkout and worktree
-  (%LOCALAPPDATA%\pqdaw\sccache-v3\<checkout hash>, 6 GB cap each; override the root with $env:PQ_SCCACHE_DIR) and prints its statistics
-  after the build.
+  (cmake/PqCompilerCache.cmake). This script points it at this checkout's own cache directory
+  (%LOCALAPPDATA%\pqdaw\sccache-v3\<checkout hash>, 6 GB cap; every checkout and worktree has its own, so a fresh
+  worktree compiles cold; T0.x-buildspeed-fix3) and prints its statistics after the build. Override the root with
+  $env:PQ_SCCACHE_DIR; scripts/clean-sccache.ps1 deletes the directories of removed worktrees. Dependency archives
+  are downloaded once into %LOCALAPPDATA%\pqdaw\downloads, shared by every checkout.
 
 .EXAMPLE
   ./scripts/build.ps1                        # dev preset, build all, run the default test tier
@@ -36,13 +38,13 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'vsenv.ps1')
 
-# sccache environment (read by the launcher and by the server it starts). One server per checkout, on a port
-# derived from the checkout's path; one cache directory for all checkouts. No base directory (SCCACHE_BASEDIRS):
+# sccache environment (read by the launcher and by the server it starts). One server and one cache directory per
+# checkout, the port derived from the checkout's path. No base directory (SCCACHE_BASEDIRS):
 # with one, a hit could return an object compiled in another worktree together with that compile's
 # /showIncludes output, so Ninja recorded the other worktree's headers as this object's dependencies and stopped
 # rebuilding it when this checkout's headers changed (stale objects; T0.x-buildspeed-fix2). Entries are now keyed
 # by this checkout's absolute paths: a hit only returns what this checkout compiled before. Each build restarts
-# the server (fresh index of the shared cache); it exits after 30 idle minutes.
+# the server; it exits after 30 idle minutes.
 # Each checkout has its own cache directory (T0.x-buildspeed-fix3): even without a base directory, an object
 # compiled in another worktree was still replayed here once, with that worktree's /showIncludes (Ninja then
 # tracked the wrong headers). Separate directories make that impossible. Delete the directories of removed
@@ -91,9 +93,9 @@ try {
   New-Item -ItemType File -Force $depsMarker | Out-Null
   $sccache = Get-Sccache $buildDir
   if ($sccache) {
-    # Restart this checkout's server: a server indexes the shared cache directory when it starts and does not
-    # see objects that other checkouts' servers store later, so a long-lived one would miss them. (A build
-    # running concurrently in the same checkout compiles its in-flight files without the cache meanwhile.)
+    # Restart this checkout's server, so it starts from a fresh index of its cache directory (kept from when the
+    # cache was shared between checkouts; cheap). A build running concurrently in the same checkout compiles its
+    # in-flight files without the cache meanwhile.
     & $sccache --stop-server *> $null
     & $sccache --start-server *> $null
   }

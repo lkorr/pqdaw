@@ -53,9 +53,10 @@ struct TransferPlan {
 Result<TransferPlan> buildTransferPlan(const graph::StateLayout& from, const StateArena& fromArena,
                                        const graph::StateLayout& to, const StateArena& toArena);
 
-// Copies the planned ranges from `from` into `to`. Voice ranges go to groups g < plan.voiceGroups whose
-// groupMask[g] is non-zero (groupMask null: every group). RT-safe: memcpy only, bounded by the plan.
+// Copies the planned ranges from `from` into `to`. Voice ranges go to groups g < min(plan.voiceGroups, maxGroups)
+// whose groupMask[g] is non-zero (groupMask null: every group); maxGroups 0 copies no voice state (a host that runs
+// no voices, M1 review L8). RT-safe: memcpy only, bounded by the plan.
 void executeTransfer(const TransferPlan& plan, const StateArena& from, const StateArena& to,
-                     const uint32_t* groupMask = nullptr) noexcept;
+                     const uint32_t* groupMask = nullptr, uint32_t maxGroups = UINT32_MAX) noexcept;
 
 }  // namespace pq::engine

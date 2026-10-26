@@ -258,7 +258,8 @@ struct Schedule {
   std::vector<OutputRef> outputs;
   StateLayout state;
   double sampleRate = 0.0;
-  std::vector<Diagnostic> warnings;          // visualMode: one per inserted z1
+  std::vector<Diagnostic> warnings;          // visualMode: one per inserted z1; a level-sensitive reset fed by
+                                             // voice.gate (Q14)
   std::vector<InsertedDelay> insertedDelays;
   // Set when visualMode inserted z1s: the patch every NodeIndex above refers to (the input patch plus the z1s,
   // whose indices follow the input's). Null otherwise: NodeIndex values refer to the input patch.

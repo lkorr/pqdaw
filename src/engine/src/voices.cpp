@@ -31,24 +31,17 @@ constexpr uint32_t kParamSignals = 9;  // velocity, release, ratio, harmonic, un
 
 uint32_t roundUp(uint32_t n, uint32_t a) noexcept { return (n + a - 1) / a * a; }
 
+// A note's velocity as voice.velocity / voice.release see it: clamped to [0, 1], NaN → 0 (M1 review L9: a producer's
+// NaN or out-of-range value must not reach every patch that multiplies by it).
+inline float unitVelocity(float v) noexcept {  // RT-safe
+  return v >= 0.0f ? (v <= 1.0f ? v : 1.0f) : 0.0f;
+}
+
 inline float horizontalSum(__m256 v) noexcept {  // RT-safe
   __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
   s = _mm_add_ps(s, _mm_movehl_ps(s, s));
   s = _mm_add_ss(s, _mm_movehdup_ps(s));
   return _mm_cvtss_f32(s);
-}
-
-inline bool isDelayAtom(dsp::Atom a) noexcept {
-  switch (a) {
-    case dsp::Atom::DelayLinear:
-    case dsp::Atom::DelayCubic:
-    case dsp::Atom::DelayAllpass:
-    case dsp::Atom::DelayReadLinear:
-    case dsp::Atom::DelayReadCubic:
-    case dsp::Atom::DelayReadAllpass:
-    case dsp::Atom::DelayWrite: return true;
-    default: return false;
-  }
 }
 
 const float kTrueMask = dsp::boolMask(true);
@@ -152,8 +145,7 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
   for (const graph::StateEntry& e : layout.entries) {
     if (e.arena != graph::Poly::Voice || e.size == 0 || e.tag.lanes != 8) continue;
     if (e.offset + e.size > arena.voiceStride) return bad("state entry outside the voice block");
-    // Which words are per lane (pq/dsp/atom_state.h): every field is an [8] array except the noise counter, the
-    // delay-line header and the phasor's incScale/halfSr (shared by the group's lanes).
+    // Which words are per lane: dsp::laneStateInfo (M1 review L7; declared per atom next to the state structs).
     uint32_t size = e.size;
     auto addSpan = [](std::vector<VoiceBinding::Span>& v, VoiceBinding::Span sp) {
       if (!v.empty() && v.back().firstWord + v.back().numWords == sp.firstWord)
@@ -164,8 +156,9 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
     if (e.tag.kernel != graph::StateTag::kSolveGuess) {
       const auto atom = static_cast<dsp::Atom>(e.tag.kernel);
       dsp::initState(atom, reinterpret_cast<std::byte*>(B.stateTemplate.data()) + e.offset, e.init);
-      if (atom == dsp::Atom::Noise) continue;  // per-lane seeds are constant; the counter is shared
-      if (isDelayAtom(atom)) {
+      const dsp::LaneStateInfo lane = dsp::laneStateInfo(atom);
+      if (lane.kind == dsp::LaneState::None) return bad("voice state of an atom without a lane layout (laneStateInfo)");
+      if (lane.kind == dsp::LaneState::DelayLine) {
         // Header shared; apY1[8] reset per lane; the ring is reset in O(1) through start[lane] (resetLaneState)
         // and moved re-aligned to the destination group's write position (moveLane).
         const uint32_t* h = B.stateTemplate.data() + e.offset / 4;
@@ -177,7 +170,9 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
         B.delays.push_back({e.offset / 4, h[0], static_cast<uint32_t>(maxDelay) + 2u});
         continue;
       }
-      if (atom == dsp::Atom::Phasor || atom == dsp::Atom::SineHz) size = 32;  // phase[8] only
+      if (lane.perLaneBytes > e.size) return bad("lane layout larger than the state entry");
+      size = lane.perLaneBytes;  // the rest of the entry is shared by the group's lanes
+      if (size == 0) continue;   // e.g. noise: per-lane seeds are constant, the counter is shared
     }
     addSpan(B.resetSpans, {e.offset / 4, size / 4});
     addSpan(B.moveSpans, {e.offset / 4, size / 4});
@@ -212,6 +207,8 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   fadeFrames_ = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(cfg_.stealFadeMs * 0.001 * sampleRate_)));
   silenceFrames_ = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(cfg_.silenceMs * 0.001 * sampleRate_)));
   releaseTimeoutFrames_ = std::max<int64_t>(0, std::llround(cfg_.releaseTimeoutMs * 0.001 * sampleRate_));
+  quietestMinAgeFrames_ =
+      std::isfinite(cfg_.quietestMinAgeMs) ? std::max<int64_t>(0, std::llround(cfg_.quietestMinAgeMs * 0.001 * sampleRate_)) : 0;
   silenceLevel_ = static_cast<float>(std::pow(10.0, cfg_.silenceDb / 20.0));
   idleHz_ = static_cast<float>(cfg_.referenceHz);
   fadeTable_.assign(fadeFrames_ + 1, 0.0f);
@@ -424,7 +421,13 @@ uint32_t VoiceEngine::pickVictim() const noexcept {  // RT-safe
       continue;
     }
     if (cfg_.steal == StealPolicy::Quietest) {
-      if (level_[l] < level_[best] || (level_[l] == level_[best] && startTime_[l] < startTime_[best])) best = l;
+      // Mature voices (at least quietestMinAgeMs old) first: a voice still in its attack reads quiet but is not.
+      const bool lm = clock_ - startTime_[l] >= quietestMinAgeFrames_, bm = clock_ - startTime_[best] >= quietestMinAgeFrames_;
+      if (lm != bm) {
+        if (lm) best = l;
+      } else if (level_[l] < level_[best] || (level_[l] == level_[best] && startTime_[l] < startTime_[best])) {
+        best = l;
+      }
     } else if (startTime_[l] < startTime_[best]) {
       best = l;
     }
@@ -736,7 +739,7 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
       gateMask_[lane] = kTrueMask;
       laneGain_[lane] = 1.0f;
       fadeLeft_[lane] = 0;
-      velocity_[lane] = e.velocity;
+      velocity_[lane] = unitVelocity(e.velocity);
       release_[lane] = 0.0f;
       ratio_[lane] = e.ratio;
       harmonic_[lane] = e.harmonic;
@@ -753,7 +756,7 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
     }
     case OpKind::Release:
       gateMask_[lane] = 0.0f;
-      release_[lane] = e.velocity;
+      release_[lane] = unitVelocity(e.velocity);
       break;
     case OpKind::Pitch: {
       const double target = e.hz;
