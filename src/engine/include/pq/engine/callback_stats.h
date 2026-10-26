@@ -39,8 +39,9 @@ public:
     double maxIntervalUs = 0;       // longest gap between the starts of consecutive callbacks
     double activeSeconds = 0;       // from the start of the first callback to the start of the last one
     bool timingReliable = false;    // false if the TSC is not invariant
-    // Device wake-ups, recorded by backends that wait on a device clock (WASAPI; zero for the others).
-    // outputUnderflows above then counts underrun episodes found by UnderrunTracker.
+    // Device wake-ups, recorded by backends that wait on a device clock (WASAPI) or get one per buffer switch
+    // (ASIO: lateness against the driver's sample position, M0 review L2); zero for the others (RtAudio, NullDevice).
+    // For WASAPI, outputUnderflows above then counts underrun episodes found by UnderrunTracker.
     uint64_t wakes = 0;
     uint64_t waitTimeouts = 0;      // device event waits that timed out
     int64_t maxLatenessFrames = 0;  // worst wake-up lateness vs the device schedule (UnderrunTracker)

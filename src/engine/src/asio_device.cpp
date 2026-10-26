@@ -21,6 +21,7 @@
 #include "pq/engine/asio_abi.h"
 #include "pq/engine/asio_convert.h"
 #include "pq/engine/callback_runner.h"
+#include "pq/engine/underrun_tracker.h"
 
 namespace pq::engine {
 
@@ -310,6 +311,14 @@ struct AsioDevice::Impl {
   std::atomic<uint32_t> inCallback{0};
   int64_t lastPos = 0;
   bool havePos = false;
+  // Lateness (M0 review L2): each buffer switch is a wake against the driver's sample clock. X = TSC time in frames
+  // minus the switch's sample position (frames delivered when the driver reports none); UnderrunTracker keeps the
+  // baseline (the minimum X), and lateness = X − baseline goes to CallbackStats::recordWake. Underruns are still
+  // counted from position jumps only (`missed`); the tracker's own underrun flags are not used.
+  UnderrunTracker lateness;
+  double framesPerTick = 0;  // sample rate / TSC rate, set in startDriver()
+  uint64_t tsc0 = 0;         // TSC at the first switch after a start (0: none yet)
+  int64_t delivered = 0;     // frames handed to the driver since the start
 
   // --- audio thread ---
 
@@ -338,6 +347,15 @@ struct AsioDevice::Impl {
         missed = havePos && pos - lastPos >= static_cast<int64_t>(frames) + frames / 2;
         lastPos = pos;
         havePos = true;
+      }
+      {
+        const uint64_t now = readTsc();
+        if (tsc0 == 0) tsc0 = now;
+        UnderrunTracker::Wake w;
+        w.nowFrames = static_cast<int64_t>(static_cast<double>(now - tsc0) * framesPerTick);
+        w.written = posValid ? pos : delivered;
+        runner.recordWake(lateness.onWake(w).latenessFrames, -1, false);
+        delivered += frames;
       }
       for (uint32_t k = 0; k < numConvertIn; ++k) {
         const uint32_t c = convertIn[k];
@@ -657,6 +675,13 @@ struct AsioDevice::Impl {
 
   Status startDriver() {
     havePos = false;
+    {
+      std::lock_guard lock(infoMutex);
+      framesPerTick = static_cast<double>(info.sampleRate) / tscFrequencyHz();
+    }
+    lateness.reset({frames, frames, false});
+    tsc0 = 0;
+    delivered = 0;
     streamActive.store(true, std::memory_order_release);
     if (asio::Status s = driver->start(); s != asio::kOk) {
       streamActive.store(false, std::memory_order_release);

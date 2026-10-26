@@ -369,6 +369,32 @@ TEST_CASE("asio host: a sample-position jump is counted as a missed buffer") {
   dev.close();
 }
 
+TEST_CASE("asio host: a buffer switch that comes late against the sample clock is reported as lateness (M0 L2)") {
+  FakeDriver f;
+  AsioDevice dev(fakeSource(f));
+  PassEngine eng;
+  StreamConfig cfg;
+  cfg.bufferFrames = 128;
+  REQUIRE(dev.open(cfg, {&PassEngine::process, &eng}).ok());
+  REQUIRE(dev.start().ok());
+  // The fake's switches come back to back (microseconds apart) while its position advances 128 frames each: early
+  // against the sample clock.
+  for (int i = 0; i < 40; ++i) f.tick(i & 1);
+  CallbackStats::Snapshot st = dev.stats().snapshot();
+  CHECK(st.wakes == 40);  // one wake per buffer switch
+  CHECK(st.callbacks == 40);
+  // A switch 60 ms late (2880 frames at 48 kHz): reported as at least 50 ms. A sleep only ever gets longer, so this
+  // lower bound holds under load.
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  f.tick(0);
+  st = dev.stats().snapshot();
+  CHECK(st.wakes == 41);
+  CHECK(st.maxLatenessFrames >= 2400);
+  CHECK(st.maxLatenessUs >= 50000.0);
+  CHECK(st.outputUnderflows == 0);  // lateness is reported, not counted as an underrun (no position jump)
+  dev.close();
+}
+
 TEST_CASE("asio host: rate selection, unsupported rate, channel count, sample type and init errors") {
   FakeDriver f;
   AsioDevice dev(fakeSource(f));
