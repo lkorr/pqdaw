@@ -60,6 +60,9 @@ struct CacheCounters {
   uint64_t evictedFiles = 0, evictedBytes = 0;
   uint64_t verified = 0;          // hits whose IR hash was compared (verify)
   uint64_t verifyMismatches = 0;  // ... and differed (must stay 0)
+  // M1 review L6: machine code is released when its last image goes, without waiting for a compile in progress.
+  uint64_t codesReleased = 0;     // machine-code objects released (JITDylibs removed)
+  uint64_t releasesDeferred = 0;  // ... whose release found a compile running and was left to it (freed when it ended)
 };
 
 // %LOCALAPPDATA%\pqdaw\jit-cache (created if missing); empty if that is not available.

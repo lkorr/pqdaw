@@ -478,6 +478,9 @@ patch T { in x : audio stereo
         {"eq_eight 1 bell", 0, 1, {3, 3, 3, 3, 3, 3, 3, 3}, {false, false, false, true, false, false, false, false}, false},
         {"eq_eight LC48 + HC48", 0, 1, {0, 3, 3, 3, 3, 3, 3, 7}, {true, false, false, false, false, false, false, true}, false},
         {"eq_eight 8 bands L/R", 1, 1, {0, 2, 3, 3, 3, 3, 5, 7}, {true, true, true, true, true, true, true, true}, false},
+        // T1b.x-perf (Q122): the same eight bands in stereo and in M/S mode, so L/R and M/S compare with stereo.
+        {"eq_eight 8 bands stereo", 0, 1, {0, 2, 3, 3, 3, 3, 5, 7}, {true, true, true, true, true, true, true, true}, false},
+        {"eq_eight 8 bands M/S", 2, 1, {0, 2, 3, 3, 3, 3, 5, 7}, {true, true, true, true, true, true, true, true}, false},
         {"eq_eight 8 bells HQ", 0, 2, {3, 3, 3, 3, 3, 3, 3, 3}, {true, true, true, true, true, true, true, true}, false},
         {"eq_eight 1 bell audio-rate freq", 0, 1, {3, 3, 3, 3, 3, 3, 3, 3}, {false, false, false, true, false, false, false, false}, true},
     };

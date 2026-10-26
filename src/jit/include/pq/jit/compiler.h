@@ -31,7 +31,8 @@
 //
 // Threads: Compiler::compile is NOT RT-safe (the compiler worker thread; it allocates, takes a lock, runs LLVM, reads
 // and writes the cache directory). The returned image's process() is RT-safe. An image keeps its machine code alive
-// on its own (it may outlive the Compiler); destroy it off the audio thread.
+// on its own (it may outlive the Compiler); destroy it off the audio thread. Destroying it never waits for a compile in
+// progress (M1 review L6): its code is released at once when the compiler is idle, else by that compile when it ends.
 
 #include <cstdint>
 #include <memory>
@@ -101,6 +102,10 @@ struct CompilerConfig {
   static constexpr uint32_t kDefaultCodeGenLevel = 3;  // Aggressive, as in T1b.1: levels 1–3 measured equal (Q99)
   Target target = Target::Host;
   CacheConfig cache;  // default: code shared in memory, no disk cache
+  // Test hook: called by compile() on its thread, with the compiler's lock held, right before an LLVM compile (cache
+  // misses only); may block (a simulated slow compile).
+  void (*beforeCompile)(void* user) = nullptr;
+  void* beforeCompileUser = nullptr;
 };
 
 class Compiler {

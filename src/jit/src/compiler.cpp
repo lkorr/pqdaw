@@ -27,6 +27,7 @@
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Support/FileSystem.h>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
@@ -78,12 +79,12 @@ llvm::ModulePassManager lightPipeline() {
 
 // One image's machine code: its own JITDylib (so two copies of one object, e.g. a disk entry loaded while a fresh
 // compile of the same key is alive, never collide on symbol names), the stage functions, and the pointer-table slots
-// after the host's. Shared by every live image with the same key; removed (under the session lock) with the last.
+// after the host's. Shared by every live image with the same key; released with the last of them (CodeReleaser: under
+// the session lock, never waiting for it — M1 review L6).
 struct SharedCode {
   detail::Key key;
   llvm::orc::ExecutionSession* es = nullptr;
   llvm::orc::JITDylib* jd = nullptr;
-  bool shared = false;  // registered in Session::codes
   std::vector<detail::StageFn> fns;
   std::vector<detail::StageFn> pairFns;  // per stage: the two-group function or null (T1b.2)
   uint32_t pairedStages = 0;
@@ -111,7 +112,17 @@ struct Compiler::Session {
   std::string cpu, features;
   uint32_t codeGenLevel = CompilerConfig::kDefaultCodeGenLevel;
   bool baseline = false;
-  mutable std::recursive_mutex mutex;  // compiles are serialised; images release their code under it
+  void (*beforeCompile)(void*) = nullptr;  // CompilerConfig's test hook
+  void* beforeCompileUser = nullptr;
+  // Compiles are serialised by `mutex`, and machine code is released under it (LLVM's JIT state is touched by one
+  // thread at a time). Releasing never WAITS for it (M1 review L6: an image freed off the audio thread must not stall
+  // behind a compile of seconds): a release that finds the mutex taken parks the code in `released`, and whoever
+  // holds the mutex frees it on the way out (Lock below).
+  mutable std::recursive_mutex mutex;
+  std::mutex releaseMutex;                 // guards `released` only (held for a push or a swap)
+  std::vector<SharedCode*> released;       // codes whose last image is gone, waiting for `mutex`
+  std::atomic<bool> pendingRelease{false};
+  std::atomic<uint64_t> releasesDeferred{0};
   uint64_t nextId = 0;
   // Filled by the object transform while a compile materialises its module or a cached object is linked (`mutex`).
   uint64_t objectBytes = 0;
@@ -124,27 +135,84 @@ struct Compiler::Session {
   std::filesystem::path sizedDir;
   uint64_t dirBytes = 0;
   uint32_t storesSinceScan = 0;
-  // Live code by key. Declared after `jit`, so it is destroyed first (its JITDylibs are removed while LLJIT lives).
-  std::unordered_map<detail::Key, std::shared_ptr<SharedCode>, detail::KeyHash> codes;
-  ~Session() { codes.clear(); }
+  // Live code by key (weak: an image's code lives as long as its images). Every code is released while LLJIT
+  // lives (~Session).
+  std::unordered_map<detail::Key, std::weak_ptr<SharedCode>, detail::KeyHash> codes;
+
+  // `mutex` held: frees one code (its JITDylib) and forgets its key unless a newer code took it.
+  void freeCode(SharedCode* c) noexcept {
+    if (auto it = codes.find(c->key); it != codes.end() && it->second.expired()) codes.erase(it);
+    delete c;
+    ++counters.codesReleased;
+  }
+  // `mutex` held: frees what releases parked meanwhile.
+  void drainReleased() noexcept {
+    std::vector<SharedCode*> list;
+    {
+      std::lock_guard lock(releaseMutex);
+      list.swap(released);
+      pendingRelease.store(false);
+    }
+    for (SharedCode* c : list) freeCode(c);
+  }
+  // Lets go of `mutex` (one level), freeing what releases parked meanwhile: a release that parks after our drain
+  // either finds the mutex free and drains itself, or we see its flag here and drain again.
+  void unlockAndDrain() noexcept {
+    for (;;) {
+      drainReleased();
+      mutex.unlock();
+      if (!pendingRelease.load()) return;
+      if (!mutex.try_lock()) return;  // its holder drains on its way out
+    }
+  }
+  // RAII: `mutex` for a compile or an accessor; parked codes are freed when it is let go.
+  struct Lock {
+    Session& s;
+    explicit Lock(Session& session) : s(session) { s.mutex.lock(); }
+    ~Lock() { s.unlockAndDrain(); }
+    Lock(const Lock&) = delete;
+    Lock& operator=(const Lock&) = delete;
+  };
+
+  ~Session() {
+    codes.clear();
+    for (SharedCode* c : released) delete c;  // every image is gone (each holds the session): nothing races this
+    released.clear();
+  }
 };
 
 namespace {
 
-// Keeps an image's machine code alive; the last image of a code removes it (and its registration).
+// The deleter of a SharedCode (its last owner is gone): frees it under the session lock if that is free right now,
+// else parks it for the lock's holder (Session::unlockAndDrain). Never blocks on a compile (M1 review L6).
+struct CodeReleaser {
+  Compiler::Session* s = nullptr;
+  void operator()(SharedCode* c) const noexcept {
+    if (s->mutex.try_lock()) {
+      s->freeCode(c);
+      s->unlockAndDrain();
+      return;
+    }
+    {
+      std::lock_guard lock(s->releaseMutex);
+      s->released.push_back(c);
+      s->pendingRelease.store(true);
+    }
+    s->releasesDeferred.fetch_add(1);
+    if (s->mutex.try_lock()) s->unlockAndDrain();  // the holder may have let go between our two looks
+  }
+};
+
+std::shared_ptr<SharedCode> newCode(Compiler::Session& s) {
+  return std::shared_ptr<SharedCode>(new SharedCode, CodeReleaser{&s});
+}
+
+// Keeps an image's machine code (and the session that releases it) alive. Members are destroyed in reverse order:
+// the code first, while the session lives.
 struct ImageCode {
   std::shared_ptr<Compiler::Session> session;
   std::shared_ptr<SharedCode> code;
   ImageCode(std::shared_ptr<Compiler::Session> s, std::shared_ptr<SharedCode> c) : session(std::move(s)), code(std::move(c)) {}
-  ~ImageCode() {
-    std::lock_guard<std::recursive_mutex> lock(session->mutex);
-    // Every copy of a SharedCode pointer is made or dropped under the lock, so use_count is exact here.
-    if (code->shared && code.use_count() == 2) {
-      session->codes.erase(code->key);
-      code->shared = false;
-    }
-    code.reset();
-  }
   ImageCode(const ImageCode&) = delete;
   ImageCode& operator=(const ImageCode&) = delete;
 };
@@ -179,6 +247,8 @@ Result<std::unique_ptr<Compiler>> Compiler::create(const CompilerConfig& config)
   session->codeGenLevel = config.codeGenLevel;
   session->baseline = config.target == Target::Baseline;
   session->cache = config.cache;
+  session->beforeCompile = config.beforeCompile;
+  session->beforeCompileUser = config.beforeCompileUser;
   auto tm = jtmb->createTargetMachine();
   if (!tm) return llvmError("creating the target machine", tm.takeError());
   session->tm = std::move(*tm);
@@ -211,19 +281,21 @@ const std::string& Compiler::hostCpu() const noexcept { return session_->cpu; }
 const std::string& Compiler::hostFeatures() const noexcept { return session_->features; }
 
 void Compiler::setCache(const CacheConfig& cache) {
-  std::lock_guard<std::recursive_mutex> lock(session_->mutex);
+  Session::Lock lock(*session_);
   session_->cache = cache;
   session_->sizedDir.clear();  // size the (new) directory again at the next store
 }
 
 CacheConfig Compiler::cache() const {
-  std::lock_guard<std::recursive_mutex> lock(session_->mutex);
+  Session::Lock lock(*session_);
   return session_->cache;
 }
 
 CacheCounters Compiler::counters() const {
-  std::lock_guard<std::recursive_mutex> lock(session_->mutex);
-  return session_->counters;
+  Session::Lock lock(*session_);
+  CacheCounters c = session_->counters;
+  c.releasesDeferred = session_->releasesDeferred.load();
+  return c;
 }
 
 namespace {
@@ -282,7 +354,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   st.hostMs = msSince(t0);
   const auto hostSlots = static_cast<uint32_t>(tab.ptrs().size());
 
-  std::lock_guard<std::recursive_mutex> lock(session_->mutex);
+  Session::Lock lock(*session_);
   Session& s = *session_;
   const CacheConfig& cc = s.cache;
   auto tc = clock::now();
@@ -346,13 +418,17 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   };
 
   // 1. A live image with this key: share its code.
-  if (auto it = s.codes.find(key); it != s.codes.end() && verified(*it->second)) {
+  auto live = [&]() -> std::shared_ptr<SharedCode> {
+    auto it = s.codes.find(key);
+    return it != s.codes.end() ? it->second.lock() : nullptr;
+  };
+  if (auto code = live(); code && verified(*code)) {
     ++s.counters.memoryHits;
-    return attach(it->second, Source::Memory);
+    return attach(code, Source::Memory);
   }
 
   // 2. Disk: the read-write directory, then the read-only ones (also under the baseline target's key).
-  if (bin.ok && s.codes.find(key) == s.codes.end()) {
+  if (bin.ok && !live()) {
     std::error_code fsError;  // a failed delete of a bad entry is not an error of the compile
     auto tryDir = [&](const std::filesystem::path& dir, const Key& k, bool writable) -> std::shared_ptr<SharedCode> {
       detail::Entry e;
@@ -366,7 +442,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
         if (writable && r == detail::ReadResult::Hit) std::filesystem::remove(detail::entryPath(dir, k), fsError);
         return nullptr;
       }
-      auto code = std::make_shared<SharedCode>();
+      auto code = newCode(s);
       code->key = key;
       code->hostSlots = hostSlots;
       for (uint64_t off : e.fnOffsets) code->fnSlots.push_back(reinterpret_cast<const void*>(bin.base + off));
@@ -417,7 +493,6 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
       code->irInstructions = e.irInstructions;
       code->inlinedOps = e.inlinedOps;
       code->calledOps = e.calledOps;
-      code->shared = true;
       s.codes[key] = code;
       return code;
     };
@@ -449,6 +524,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   st.cacheMs = msSince(tc);
 
   // 3. Compile.
+  if (s.beforeCompile != nullptr) s.beforeCompile(s.beforeCompileUser);
   ++s.counters.compiles;
   auto ctx = std::make_unique<llvm::LLVMContext>();
   auto mod = std::make_unique<llvm::Module>(go.prefix, *ctx);
@@ -506,7 +582,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
 
   // The code may be shared and stored only if every pointer-table slot it added is inside the executable (functions,
   // static data): those are the same in every image of this key and at the same offset in every run of this binary.
-  auto code = std::make_shared<SharedCode>();
+  auto code = newCode(s);
   code->key = key;
   code->hostSlots = hostSlots;
   code->fnSlots.assign(tab.ptrs().begin() + hostSlots, tab.ptrs().end());
@@ -594,10 +670,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
     ++s.counters.storeErrors;  // not one object (never expected)
   }
   s.captured.clear();
-  if (cacheable && s.codes.find(key) == s.codes.end()) {  // (a verify mismatch leaves the live one registered)
-    code->shared = true;
-    s.codes[key] = code;
-  }
+  if (cacheable && !live()) s.codes[key] = code;  // (a verify mismatch leaves the live one registered)
   st.cacheMs += msSince(tc);
   return attach(code, Source::Compiled);
 }

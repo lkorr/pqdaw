@@ -12,8 +12,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <random>
 #include <string>
 #include <thread>
@@ -528,4 +530,88 @@ TEST_CASE("jit cache: an image loaded from disk outlives its compiler") {
   img->process(ctx);
   CHECK(y[15] == doctest::Approx(std::tanh(0.75)).epsilon(1e-6));
   img.reset();
+}
+
+// M1 review L6: an image's machine code used to be released under the compiler's lock, so freeing an image (off the
+// audio thread: the program's reclaimer, a stale JIT image) waited for whatever compile was running (seconds for a
+// big unit). The release now never waits: with a compile in progress it is deferred, and the compile releases it
+// when it finishes (CacheCounters::releasesDeferred / codesReleased).
+TEST_CASE("jit: freeing an image never waits for a compile in progress; its code is released when the compile ends") {
+  struct Hold {
+    std::mutex m;
+    std::condition_variable cv;
+    bool open = true, entered = false;
+  };
+  Hold hold;
+  jit::CompilerConfig cfg;
+  cfg.beforeCompile = [](void* user) {
+    Hold& h = *static_cast<Hold*>(user);
+    std::unique_lock lock(h.m);
+    h.entered = true;
+    h.cv.notify_all();
+    h.cv.wait(lock, [&] { return h.open; });
+  };
+  cfg.beforeCompileUser = &hold;
+  auto made = jit::Compiler::create(cfg);
+  REQUIRE(made.ok());
+  jit::Compiler& comp = *made.value();
+  const Compiled a = compileText("patch A { in x : audio\n out y : audio\n y = tanh(x * 3) }");
+  const Compiled b = compileText("patch B { in x : audio\n out y : audio\n y = sin(x * 5) + x }");
+  auto imgA = comp.compile(a.sched);
+  REQUIRE(imgA.ok());
+  CHECK(comp.counters().compiles == 1);
+  {
+    std::lock_guard lock(hold.m);
+    hold.open = false;
+    hold.entered = false;
+  }
+  std::unique_ptr<eng::ProgramImage> imgB;
+  std::thread compiling([&] {
+    auto r = comp.compile(b.sched);  // held in beforeCompile, with the compiler's lock taken
+    REQUIRE(r.ok());
+    imgB = std::move(r.value());
+  });
+  {
+    std::unique_lock lock(hold.m);
+    REQUIRE(hold.cv.wait_for(lock, std::chrono::seconds(30), [&] { return hold.entered; }));
+  }
+  // Free A on another thread while B's compile holds the lock: it must return without waiting for B.
+  std::atomic<bool> freed{false};
+  std::thread release([&] {
+    imgA.value().reset();
+    freed = true;
+  });
+  const auto t0 = std::chrono::steady_clock::now();
+  while (!freed && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20))
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const bool returned = freed.load();
+  {
+    std::lock_guard lock(hold.m);
+    hold.open = true;  // let B finish either way (a blocked release would otherwise never return)
+  }
+  hold.cv.notify_all();
+  release.join();
+  compiling.join();
+  CHECK_MESSAGE(returned, "freeing an image waited for the compile in progress");
+  const jit::CacheCounters c = comp.counters();
+  CHECK(c.releasesDeferred == 1);
+  CHECK(c.codesReleased == 1);  // released by the compile that held the lock, when it ended
+  CHECK(c.compiles == 2);
+  // A's code is gone from the live code: compiling A again runs LLVM (no memory hit).
+  REQUIRE(comp.compile(a.sched).ok());
+  CHECK(comp.counters().compiles == 3);
+  CHECK(comp.counters().memoryHits == 0);
+  // B still runs.
+  REQUIRE(imgB != nullptr);
+  std::vector<float> x(16, 0.25f), y(16);
+  const float* ins[1] = {x.data()};
+  float* outs[1] = {y.data()};
+  eng::ProcessContext ctx;
+  ctx.frames = 16;
+  ctx.in = ins;
+  ctx.numIn = 1;
+  ctx.out = outs;
+  ctx.numOut = 1;
+  imgB->process(ctx);
+  CHECK(y[15] == doctest::Approx(std::sin(1.25) + 0.25).epsilon(1e-6));
 }

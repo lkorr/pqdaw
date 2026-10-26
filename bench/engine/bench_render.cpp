@@ -383,5 +383,29 @@ int main(int argc, char** argv) {
       for (uint32_t v : {1u, 8u, 64u})
         r.add(std::string("operator/stock-") + sc.name + " " + (jit ? "jit" : "interp") + " x" + std::to_string(v),
               [&sc, jit, v](bench::Context& c) { benchVoicePatch(c, stockSchedule(sc.patch), jit, v, v == 64); });
+  // T1b.x-perf (Q111 C): the cold JIT compile of each stock configuration (64-voice geometry, no cache: every image
+  // is dropped before the next compile, so nothing is shared in memory) with voice groups only (the quick first image)
+  // and with the default voice code (the pair functions as well: the final image).
+  for (const Stock& sc : stock)
+    for (jit::VoiceCode vc : {jit::VoiceCode::Groups, jit::VoiceCode::Auto})
+      r.add(std::string("operator/stock-") + sc.name + " compile " + (vc == jit::VoiceCode::Groups ? "groups" : "auto"),
+            [&sc, vc](bench::Context& c) {
+              const g::Schedule& s = stockSchedule(sc.patch);
+              std::vector<double> ms;
+              uint32_t paired = 0;
+              for (int rep = 0; rep < 7; ++rep) {
+                jit::CompileOptions co;
+                co.maxBlockFrames = kBlock;
+                co.maxVoiceGroups = e::voiceGroupsFor(64);
+                co.voiceCode = vc;
+                jit::CompileStats st;
+                auto img = jitCompiler().compile(s, co, &st);
+                if (!img) die(img.error().message);
+                ms.push_back(st.totalMs);
+                paired = st.pairedStages;
+              }
+              std::printf("  %u paired stages\n", paired);
+              c.record(bench::summarize(ms), "ms/compile");
+            });
   return r.main(argc, argv);
 }

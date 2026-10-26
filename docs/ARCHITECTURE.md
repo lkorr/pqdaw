@@ -234,7 +234,9 @@ namespace pq::jit {
 namespace pq::jit {
   struct CacheConfig { path dir; vector<path> readOnly; uint64_t maxBytes = 512 MiB; bool verify = false; };
   struct CacheCounters { compiles, memoryHits, diskHits, aotHits, stores, storeErrors, rejected, uncacheable, evicted…,
-                         verified, verifyMismatches; };   // "no JIT compile" = compiles unchanged (the test hook)
+                         verified, verifyMismatches, codesReleased, releasesDeferred; };   // "no JIT compile" = compiles unchanged (the test hook)
+  // T1b.x-perf (M1 review L6): an image's code is released with its last image without waiting for a compile in
+  // progress: freed at once when the compiler's lock is free, else parked and freed by the lock's holder as it lets go.
   enum class Target { Host, Baseline /* x86-64-v3 */ };    // CompilerConfig::target
 }
 
