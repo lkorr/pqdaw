@@ -2,15 +2,57 @@
 
 #include "pq/engine/inspect.h"
 
+#include <intrin.h>
+
 #include <algorithm>
+#include <vector>
 
 #include "pq/engine/callback_stats.h"
 
 namespace pq::engine {
 
 CostMeter::CostMeter(uint32_t maxRegions)
-    : maxRegions_(std::max<uint32_t>(maxRegions, 1)), cycles_(new std::atomic<uint64_t>[std::max<uint32_t>(maxRegions, 1)]) {
-  for (uint32_t i = 0; i < maxRegions_; ++i) cycles_[i].store(0, std::memory_order_relaxed);
+    : maxRegions_(std::max<uint32_t>(maxRegions, 1)),
+      cycles_(new std::atomic<uint64_t>[std::max<uint32_t>(maxRegions, 1)]),
+      timings_(new std::atomic<uint64_t>[std::max<uint32_t>(maxRegions, 1)]) {
+  for (uint32_t i = 0; i < maxRegions_; ++i) {
+    cycles_[i].store(0, std::memory_order_relaxed);
+    timings_[i].store(0, std::memory_order_relaxed);
+  }
+  (void)timerCost();  // calibrated here, off the audio thread
+}
+
+const CostMeter::TimerCost& CostMeter::timerCost() {
+  static const TimerCost cost = [] {
+    TimerCost c;
+    // What an empty timed region reads: back-to-back TSC reads (the median of many).
+    std::vector<uint64_t> d(4001);
+    for (uint64_t& x : d) {
+      const uint64_t a = __rdtsc();
+      const uint64_t b = __rdtsc();
+      x = b - a;
+    }
+    std::nth_element(d.begin(), d.begin() + static_cast<std::ptrdiff_t>(d.size() / 2), d.end());
+    c.innerCycles = static_cast<double>(d[d.size() / 2]);
+    // What one timing adds to the block around it: two reads and the counter update, as the generated code does them
+    // (the best of a few trials of 2000).
+    volatile uint64_t acc[2] = {0, 0};
+    double best = 1e30;
+    for (int trial = 0; trial < 7; ++trial) {
+      constexpr int kN = 2000;
+      const uint64_t t0 = __rdtsc();
+      for (int i = 0; i < kN; ++i) {
+        const uint64_t a = __rdtsc();
+        const uint64_t b = __rdtsc();
+        acc[0] = acc[0] + (b - a);
+        acc[1] = acc[1] + 1;
+      }
+      best = std::min(best, static_cast<double>(__rdtsc() - t0) / kN);
+    }
+    c.outerCycles = best;
+    return c;
+  }();
+  return cost;
 }
 
 uint32_t CostMeter::attach(std::span<const uint32_t> units) {
@@ -18,14 +60,19 @@ uint32_t CostMeter::attach(std::span<const uint32_t> units) {
   const uint32_t key = nextKey_++;
   units_.assign(units.begin(), units.end());
   unitsKey_ = key;
+  unitsTag_ = nextTag_;
   active_.store(key, std::memory_order_relaxed);
   return key;
 }
 
 void CostMeter::add(const uint64_t* regionCycles, uint32_t n, uint64_t totalCycles, uint32_t frames) noexcept {  // RT-safe
   n = std::min(n, maxRegions_);
-  for (uint32_t i = 0; i < n; ++i)
-    if (regionCycles[i] != 0) cycles_[i].store(cycles_[i].load(std::memory_order_relaxed) + regionCycles[i], std::memory_order_relaxed);
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint64_t c = regionCycles[2 * static_cast<size_t>(i)], k = regionCycles[2 * static_cast<size_t>(i) + 1];
+    if (k == 0) continue;
+    cycles_[i].store(cycles_[i].load(std::memory_order_relaxed) + c, std::memory_order_relaxed);
+    timings_[i].store(timings_[i].load(std::memory_order_relaxed) + k, std::memory_order_relaxed);
+  }
   total_.store(total_.load(std::memory_order_relaxed) + totalCycles, std::memory_order_relaxed);
   frames_.store(frames_.load(std::memory_order_relaxed) + frames, std::memory_order_release);
 }
@@ -42,21 +89,33 @@ bool CostMeter::read(Reading& out) {
     baseTotal_ = total;
     baseFrames_ = frames;
     baseCycles_.resize(n);
-    for (uint32_t i = 0; i < n; ++i) baseCycles_[i] = cycles_[i].load(std::memory_order_relaxed);
+    baseTimings_.resize(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      baseCycles_[i] = cycles_[i].load(std::memory_order_relaxed);
+      baseTimings_[i] = timings_[i].load(std::memory_order_relaxed);
+    }
     return false;
   }
   if (frames <= baseFrames_) return false;
   const double df = static_cast<double>(frames - baseFrames_);
   const double nsPerCycle = 1e9 / tscFrequencyHz();
+  const TimerCost& tc = timerCost();
   out.key = key;
+  out.tag = unitsTag_;
   out.frames = frames - baseFrames_;
-  out.totalNsPerFrame = static_cast<double>(total - baseTotal_) * nsPerCycle / df;
   out.regionNsPerFrame.assign(units_.size(), 0.0);
+  double timings = 0.0;
   for (uint32_t i = 0; i < n; ++i) {
-    const uint64_t c = cycles_[i].load(std::memory_order_relaxed);
-    out.regionNsPerFrame[i] = static_cast<double>(c - baseCycles_[i]) * nsPerCycle / df;
+    const uint64_t c = cycles_[i].load(std::memory_order_relaxed), k = timings_[i].load(std::memory_order_relaxed);
+    const double dk = static_cast<double>(k - baseTimings_[i]);
+    timings += dk;
+    const double dc = static_cast<double>(c - baseCycles_[i]) - dk * tc.innerCycles;
+    out.regionNsPerFrame[i] = std::max(0.0, dc) * nsPerCycle / df;
     baseCycles_[i] = c;
+    baseTimings_[i] = k;
   }
+  const double dt = static_cast<double>(total - baseTotal_) - timings * tc.outerCycles;
+  out.totalNsPerFrame = std::max(0.0, dt) * nsPerCycle / df;
   out.units = units_;
   baseTotal_ = total;
   baseFrames_ = frames;

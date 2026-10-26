@@ -30,6 +30,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/patch_editor.h"
+#include "pq/views/circuit/probes.h"
 
 namespace pq::ui {
 class Label;
@@ -53,6 +54,12 @@ public:
   void setEditable(bool e) noexcept { editable_ = e; }
   bool editable() const noexcept { return editable_; }
   void setStale(bool s);  // the text does not parse: the canvas shows the last good version under a veil
+  // T4.5: the probe readout and cost labels drawn over the scene (owned by the caller; null: none).
+  void setProbeOverlay(const ProbeOverlay* o) {
+    overlay_ = o;
+    markDirty();
+  }
+  ui::Vec2 pointer() const noexcept { return pointer_; }  // the last pointer position over the canvas (device px)
 
   std::function<void(std::vector<uint32_t> nodes, float dx, float dy)> onMove;  // world units
   // A connection from an output pin to an input pin (scene pin indices; hidden pins included).
@@ -76,6 +83,8 @@ private:
   ui::Vec2 press_{0, 0}, last_{0, 0};
   uint32_t fromPin_ = UINT32_MAX, targetPin_ = UINT32_MAX;
   bool editable_ = true, stale_ = false;
+  const ProbeOverlay* overlay_ = nullptr;
+  ui::Vec2 pointer_{0, 0};
 };
 
 class CircuitEditor : public ui::Popover {
@@ -115,6 +124,23 @@ public:
   void beginAdd(graph::Point2 world, ui::Vec2 device);
   void beginRename(uint32_t node);
 
+  // ---- T4.5: live probes and cost meters (pq/views/circuit/probes.h) ----
+  // Probes the source of scene wire `wire` as a hover dwell does (UINT32_MAX: drops the hover probe at once).
+  void probeWire(uint32_t wire);
+  // The Cost toggle.
+  void setCostShown(bool on);
+  bool costShown() const noexcept;
+  // Runs the 30 Hz probe poll and the 4 Hz cost poll now (tests; the timers run them otherwise).
+  void pollProbes();
+  void pollCost();
+  const ProbeOverlay& probeOverlay() const noexcept { return overlay_; }
+  // The call path of the shown patch inside the playing one (NodeIds of the call nodes), or false when the shown patch
+  // is not part of what plays.
+  bool shownPath(std::vector<graph::NodeId>& path) const;
+  // The probe targets and ids the document compiles in now, and the bool wires lit from them.
+  const std::vector<graph::ProbeTarget>& probeTargets() const noexcept { return compiledTargets_; }
+  const std::vector<uint32_t>& probeIds() const noexcept { return compiledIds_; }
+
   bool onKey(const ui::KeyEvent& e) override;
   void onTimer(uint32_t id) override;
   ui::InfoText info() const override;
@@ -145,6 +171,29 @@ private:
   bool closeArmed_ = false;
   graph::Patch importedShown_;  // an imported patch being shown (laid out)
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+
+  // T4.5.
+  void hoverChanged(const CanvasHit& hit);
+  void refreshProbes(bool recheck);  // the probe set from the LED wires and the hover probe; a recheck if it changed
+  void clearProbeDisplay();
+  void ensurePoll();
+  uint32_t probeIdFor(graph::NodeId node, uint16_t port);
+  bool wireSource(uint32_t wire, graph::NodeId& node, uint16_t& port) const;
+  std::vector<graph::NodeId> callStack_;  // the call nodes opened from the first shown patch (parallel to backStack_)
+  ui::Toggle* cost_ = nullptr;
+  ProbeOverlay overlay_;
+  uint32_t hoverWire_ = UINT32_MAX;       // the scene wire under the pointer
+  uint32_t probeWire_ = UINT32_MAX;       // the wire whose source the hover probe reads
+  uint32_t hoverProbe_ = UINT32_MAX;      // that probe's id
+  std::vector<std::pair<uint64_t, uint32_t>> probeIdOf_;  // (NodeId << 16 | port) → id, for the shown patch
+  uint32_t nextProbeId_ = 1;
+  std::vector<std::pair<uint32_t, uint32_t>> ledWires_;   // (scene wire, probe id) of the bool wires
+  std::vector<uint8_t> lit_;                              // per scene wire: drawn lit
+  std::vector<graph::ProbeTarget> compiledTargets_;
+  std::vector<uint32_t> compiledIds_, compiledSignals_;
+  uint32_t dwellTimer_ = 0, graceTimer_ = 0, pollTimer_ = 0, costTimer_ = 0;
+  std::vector<std::pair<uint64_t, double>> costSmooth_;  // NodeId (wires: | 1 << 63 sums, | 1 << 62 copies) → ns
+  double costTotal_ = 0.0;
 };
 
 // Opens an editor over the whole window of `from`'s tree (its overlay layer). nullptr without an overlay layer or when

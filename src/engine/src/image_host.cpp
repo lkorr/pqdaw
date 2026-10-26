@@ -383,9 +383,9 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   }
   L_.extraOff = off;
   off += roundUp(extraBufFloats, kFloatAlign);
-  L_.meterOff = off;  // T4.5: one uint64 per region (the backends time their regions into it while metered)
+  L_.meterOff = off;  // T4.5: per region (cycles, timings) as two uint64 (the backends time their regions into it)
   numRegions_ = static_cast<uint32_t>(s.regions.size());
-  off += roundUp(std::max<uint32_t>(numRegions_, 1u) * 2u, kFloatAlign);
+  off += roundUp(std::max<uint32_t>(numRegions_, 1u) * 4u, kFloatAlign);
   L_.bufFloats = std::max<uint32_t>(off, kFloatAlign);
   bufMem_ = AlignedBuffer<float>(L_.bufFloats);
   uint32_t aux = 0;
@@ -1227,7 +1227,7 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   if (meter_ != nullptr && meter_->wants(meterKey_)) {
     metering_ = true;
     meterT0_ = __rdtsc();
-    std::memset(regionCycles(), 0, static_cast<size_t>(numRegions_) * sizeof(uint64_t));
+    std::memset(regionCycles(), 0, static_cast<size_t>(numRegions_) * 2 * sizeof(uint64_t));
   }
   *meterFlag_ = metering_ ? 1u : 0u;
   const uint32_t G = L_.groups;

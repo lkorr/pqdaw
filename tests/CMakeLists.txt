@@ -79,6 +79,7 @@ pq_add_test(pq_tests_app
     app/test_shell_app.cpp
     app/test_startup.cpp
     app/test_patch_preview.cpp
+    app/test_probe_preview.cpp  # T4.5: probes and cost meters through the editor and the preview
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,

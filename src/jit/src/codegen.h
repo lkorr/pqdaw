@@ -56,8 +56,8 @@
 // written again.
 //
 // Cost meters (T4.5): every region (or chain) is bracketed by a branch on the host's meter flag (aux, loaded once per
-// call); while it is raised, llvm.readcyclecounter before and after, the difference added to the region's uint64 in buf
-// (HostLayout::meterOff). The region code itself is the same with or without a meter.
+// call); while it is raised, llvm.readcyclecounter before and after, the difference added to the region's cycles in buf
+// (HostLayout::meterOff) and its timing count incremented. The region code itself is the same with or without a meter.
 //
 // No relocations against process code: functions, resources and special-op records are reached through `tab`
 // (PtrTable slots), buffers/params/state through the base pointers. Not RT code: runs on the compiler thread.

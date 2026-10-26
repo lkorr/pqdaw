@@ -3,6 +3,7 @@
 #include "pq/app/patch_preview.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 #include "pq/engine/interpreter.h"
@@ -12,6 +13,10 @@ namespace pq::app {
 
 namespace {
 constexpr float kPreviewArpHz[] = {261.626f, 329.628f, 391.995f, 523.251f};
+
+double nowSeconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 }
 
 PatchPreview::PatchPreview(const PreviewConfig& config)
@@ -20,6 +25,12 @@ PatchPreview::PatchPreview(const PreviewConfig& config)
   scratch_ = AlignedBuffer<float>(static_cast<size_t>(cfg_.maxDeviceFrames) * cfg_.numOut);
   outs_.resize(cfg_.numOut);
   for (uint32_t c = 0; c < cfg_.numOut; ++c) outs_[c] = scratch_.data() + static_cast<size_t>(c) * cfg_.maxDeviceFrames;
+  // T4.5: the probe taps (fixed pools: nothing is allocated while probes come and go).
+  for (uint32_t i = 0; i < kProbeRings; ++i)
+    rings_.push_back(std::make_unique<TapRing>(1, kProbeRingFrames, std::max<uint32_t>(cfg_.maxBlockFrames, 1024)));
+  levels_ = std::make_unique<ProbeLevel[]>(kProbeLevels);
+  ringSlots_.resize(kProbeRings);
+  levelSlots_.resize(kProbeLevels);
   if (cfg_.jit.fn) {
     engine::BackgroundCompilerConfig bc;
     bc.backend = cfg_.jit;
@@ -82,6 +93,10 @@ Status PatchPreview::play(const graph::Schedule& schedule, const graph::TypedPat
   const int kind = (*image)->io().hasVoiceStages ? 1 : 0;
   std::lock_guard lock(mutex_);
   if (!hosts_[kind]) makeHost(kind);
+  // T4.5: taps for this schedule's probes, and the cost meter (tagged with the generation this play() makes).
+  const uint64_t gen = generation_.load(std::memory_order_relaxed) + 1;
+  bindProbes(schedule);
+  bind(**image, gen);
   engine::SwapPolicy policy;
   // Starting (or switching between a global and a voice patch): at once; an edit of what plays: hot swap.
   policy.mode = fresh_ || kind != currentKind_ ? engine::SwapMode::Instant : engine::SwapMode::Auto;
@@ -91,6 +106,7 @@ Status PatchPreview::play(const graph::Schedule& schedule, const graph::TypedPat
     return std::move(published).error();
   }
   ++stats_.published;
+  generation_.store(gen, std::memory_order_release);
   stats_.lastMatched = published->plan.matched;
   stats_.lastFresh = published->plan.fresh + published->plan.mismatched;
   stats_.lastDropped = published->plan.dropped;
@@ -135,6 +151,7 @@ void PatchPreview::deliver(void* self, const engine::BackgroundJob& job,
     ++p.stats_.staleJit;
     return;
   }
+  p.bind(**image, p.generation_.load(std::memory_order_relaxed));  // T4.5: the same taps as the interpreter's image
   engine::SwapPolicy policy;
   policy.mode = engine::SwapMode::Instant;  // bit-identical to the interpreter's image: full state transfer, no fade
   // A full ring (a burst of edits the audio thread has not taken yet) drops this image: the interpreter's keeps
@@ -169,6 +186,96 @@ void PatchPreview::applyParamWrites(engine::ProgramHost& host) noexcept {
         break;
       }
   }
+}
+
+// ---- T4.5: probes and cost meters -------------------------------------------------------------------------------------
+
+void PatchPreview::setProbeSignals(std::span<const uint32_t> ids) {
+  std::lock_guard lock(mutex_);
+  wantSignals_.assign(ids.begin(), ids.end());
+}
+
+// Under mutex_. Frees the slots of probes that are gone (they rest kProbeTapRest seconds before reuse: an image that
+// still writes them may run until its crossfade ends) and binds a slot per probe of `schedule`.
+void PatchPreview::bindProbes(const graph::Schedule& schedule) {
+  const double now = nowSeconds();
+  auto has = [](const auto& v, uint32_t id) { return std::find(v.begin(), v.end(), id) != v.end(); };
+  std::vector<uint32_t> ids;
+  for (const graph::ProbeRef& p : schedule.probes) ids.push_back(p.id);
+  for (uint32_t i = 0; i < ringSlots_.size(); ++i) {
+    TapSlot& sl = ringSlots_[i];
+    if (sl.bound && (!has(ids, sl.id) || !has(wantSignals_, sl.id))) {
+      sl.bound = false;
+      sl.freedAt = now;
+      rings_[i]->removeReader();
+    }
+  }
+  for (TapSlot& sl : levelSlots_)
+    if (sl.bound && !has(ids, sl.id)) {
+      sl.bound = false;
+      sl.freedAt = now;
+    }
+  auto slotFor = [&](std::vector<TapSlot>& slots, uint32_t id, bool& fresh) -> int {
+    fresh = false;
+    for (uint32_t i = 0; i < slots.size(); ++i)
+      if (slots[i].bound && slots[i].id == id) return static_cast<int>(i);
+    int best = -1;
+    for (uint32_t i = 0; i < slots.size(); ++i)  // the slot freed longest ago, if it has rested
+      if (!slots[i].bound && now - slots[i].freedAt >= kProbeTapRest &&
+          (best < 0 || slots[i].freedAt < slots[static_cast<uint32_t>(best)].freedAt))
+        best = static_cast<int>(i);
+    if (best >= 0) {
+      slots[static_cast<uint32_t>(best)].bound = true;
+      slots[static_cast<uint32_t>(best)].id = id;
+      fresh = true;
+    }
+    return best;
+  };
+  binding_.clear();
+  for (const uint32_t id : ids) {
+    engine::ProbeTap t;
+    t.id = id;
+    bool fresh = false;
+    if (const int l = slotFor(levelSlots_, id, fresh); l >= 0) t.level = &levels_[static_cast<uint32_t>(l)];
+    if (has(wantSignals_, id))
+      if (const int r = slotFor(ringSlots_, id, fresh); r >= 0) {
+        t.ring = rings_[static_cast<uint32_t>(r)].get();
+        if (fresh) t.ring->addReader();
+      }
+    binding_.push_back(t);
+  }
+}
+
+void PatchPreview::bind(engine::ProgramImage& image, uint64_t gen) {
+  meter_.setTag(gen);
+  engine::InspectBinding b;
+  b.probes = binding_;
+  b.meter = &meter_;
+  (void)image.bindInspect(b);  // an image that cannot be inspected plays without probes
+}
+
+TapRing* PatchPreview::probeSignal(uint32_t id) noexcept {
+  std::lock_guard lock(mutex_);
+  for (uint32_t i = 0; i < ringSlots_.size(); ++i)
+    if (ringSlots_[i].bound && ringSlots_[i].id == id) return rings_[i].get();
+  return nullptr;
+}
+
+const ProbeLevel* PatchPreview::probeLevel(uint32_t id) const noexcept {
+  std::lock_guard lock(mutex_);
+  for (uint32_t i = 0; i < levelSlots_.size(); ++i)
+    if (levelSlots_[i].bound && levelSlots_[i].id == id) return &levels_[i];
+  return nullptr;
+}
+
+bool PatchPreview::readCost(CostReading& out) {
+  engine::CostMeter::Reading r;
+  if (!meter_.read(r)) return false;
+  out.generation = r.tag;
+  out.totalNsPerFrame = r.totalNsPerFrame;
+  out.regionNsPerFrame = std::move(r.regionNsPerFrame);
+  out.units = std::move(r.units);
+  return true;
 }
 
 bool PatchPreview::waitForJit(double seconds) { return !jit_ || jit_->waitIdle(seconds); }

@@ -267,7 +267,7 @@ TEST_CASE("cost meter: regions are timed only while the meter is enabled, and ad
     double sum = 0.0;
     for (double v : rd.regionNsPerFrame) sum += v;
     CHECK(sum > 0.0);
-    CHECK(sum <= rd.totalNsPerFrame * 1.0001);  // the regions are inside the block
+    CHECK(sum <= rd.totalNsPerFrame * 1.05 + 0.5);  // the regions are inside the block (each less its timer cost)
     for (uint32_t r = 0; r < rd.units.size(); ++r) {
       CHECK(rd.units[r] <= r);
       if (rd.units[r] != r) CHECK(rd.regionNsPerFrame[r] == 0.0);  // counted in its unit's first region

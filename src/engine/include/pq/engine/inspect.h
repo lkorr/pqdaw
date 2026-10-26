@@ -23,7 +23,8 @@
 // backends: the interpreter around its region loops, the JIT's generated code around each region or fused chain of
 // regions, behind one flag word loaded per stage function) and around the whole block, and adds the cycles to the
 // meter after the block. Disabled (no meter shown): one relaxed load per block and one predictable branch per region
-// per block (measured within noise). A reader turns the cycles into ns per frame (CostMeter::read). Regions are the
+// per block (measured within noise). A reader turns the cycles into ns per frame (CostMeter::read), less the measured
+// cost of the TSC reads themselves (CostMeter::timerCost: per timing, from the region and from the total). Regions are the
 // finest unit both backends can time without changing the code they run (a fused JIT chain times as one unit:
 // CostMeter::Reading::units); pq/graph/inspect.h's opCostWeight splits a region among its ops.
 //
@@ -58,15 +59,31 @@ public:
   // the first region of the unit its time is counted in (itself, or a fused chain's first region) — and makes that
   // image the metered one (another image bound earlier stops adding). Returns the image's key.
   uint32_t attach(std::span<const uint32_t> units);
+  // Off the audio thread: the tag attach() gives the images it registers from now on (Reading::tag), e.g. which
+  // schedule they run, so a reader can match a reading with the schedule its regions belong to.
+  void setTag(uint64_t tag) {
+    std::lock_guard lock(mutex_);
+    nextTag_ = tag;
+  }
   // Audio thread: is `key` the metered image, and is the meter on? RT-safe.
   bool wants(uint32_t key) const noexcept {
     return enabled_.load(std::memory_order_relaxed) && active_.load(std::memory_order_relaxed) == key;
   }
-  // Audio thread: one block's cycles per region (n ≤ maxRegions counted), the whole block's, and its frames. RT-safe.
+  // Audio thread: one block's (cycles, timings) per region (2n uint64; n ≤ maxRegions counted), the whole block's
+  // cycles, and its frames. RT-safe.
   void add(const uint64_t* regionCycles, uint32_t n, uint64_t totalCycles, uint32_t frames) noexcept;
+
+  // The cost of timing (measured once per process, off the audio thread): what an empty timed region reads (subtracted
+  // from each region per timing) and what one timing adds to the enclosing block (subtracted from the total).
+  struct TimerCost {
+    double innerCycles = 0.0;
+    double outerCycles = 0.0;
+  };
+  static const TimerCost& timerCost();
 
   struct Reading {
     uint32_t key = 0;                 // the metered image (a hot swap or the JIT's image starts a new key)
+    uint64_t tag = 0;                 // setTag() when that image was attached
     uint64_t frames = 0;              // frames measured since the previous reading
     double totalNsPerFrame = 0.0;     // the whole image (stages, the host's own work around them)
     std::vector<double> regionNsPerFrame;  // per schedule region (0 for a region that is part of a unit, see units)
@@ -82,17 +99,18 @@ private:
   std::atomic<uint32_t> active_{0};
   uint32_t nextKey_ = 1;
   // Written by the audio thread only (load + store), read by the reader.
-  std::unique_ptr<std::atomic<uint64_t>[]> cycles_;
+  std::unique_ptr<std::atomic<uint64_t>[]> cycles_, timings_;
   alignas(kCacheLineSize) std::atomic<uint64_t> total_{0};
   std::atomic<uint64_t> frames_{0};
   // attach / read
   std::mutex mutex_;
   std::vector<uint32_t> units_;        // of the active key
   uint32_t unitsKey_ = 0;
+  uint64_t nextTag_ = 0, unitsTag_ = 0;
   // the reader's baseline
   uint32_t baseKey_ = 0;
   uint64_t baseTotal_ = 0, baseFrames_ = 0;
-  std::vector<uint64_t> baseCycles_;
+  std::vector<uint64_t> baseCycles_, baseTimings_;
 };
 
 // One probe's destinations (by Schedule::probes id). Either may be null.

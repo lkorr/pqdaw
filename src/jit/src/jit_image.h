@@ -53,7 +53,7 @@ struct HostLayout {
   uint32_t callOff = 0, callPtrs = 0;        // pointer arrays of wide kernel calls (callPtrs pointers; 0: none)
   uint32_t paramOff = 0, constOff = 0;
   uint32_t sleepOff = 0;                     // aux: the sleep segments' flag words (T1.x-silence, image_host.h)
-  uint32_t meterOff = 0;                     // buf: one uint64 per region, the cost meter's cycles (T4.5)
+  uint32_t meterOff = 0;                     // buf: per region (cycles, timings) as two uint64: the cost meter (T4.5)
   uint32_t meterFlagOff = 0;                 // aux: non-zero while the block is metered (T4.5)
   std::vector<uint32_t> opInfo;              // per op: pointer-table slot of its resource / info record, or kNone
   // Pairs (T1b.2, codegen.h): per stage, whether it gets a two-group function; per buffer, the float offset of the

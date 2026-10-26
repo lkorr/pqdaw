@@ -134,7 +134,8 @@ struct Theme {
                     // kind and rate (bool green-ish, param grey, audio the signal colour), selection in the focus amber
     Rgba background, grid, symbolFill, symbolStroke, symbolText, pinText, terminalFill, paramFill, ioFill, subcircuitFill,
         subcircuitTitle, wireBool, wireParam, wireAudio, wireConst, wireBoolLit, selected, hover, rubberBand, rubberBandEdge,
-        comment;
+        comment,
+        probeBg, probeGrid, probeTrace, probeText, cost, costBg;  // T4.5: probe readouts (PQ Meter's signal look), cost labels
     bool operator==(const Circuit&) const = default;
   } circuit{};
   struct Code {  // the circuit editor's text pane (T4.4): syntax colours on the field well, inline diagnostics

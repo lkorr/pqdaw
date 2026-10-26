@@ -12,6 +12,7 @@
 #include <optional>
 #include <sstream>
 
+#include "pq/graph/inspect.h"
 #include "pq/graph/layout.h"
 #include "pq/graph/optimise.h"
 #include "pq/graph/schedule.h"
@@ -151,6 +152,10 @@ struct PatchEditor::Impl {
   std::string playingName;
   bool checkPending = true;
   CheckStats stats;
+  // T4.5: probes for the playing patch's next checks; what the player plays.
+  std::vector<graph::ProbeTarget> probeTargets;
+  std::vector<uint32_t> probeIds;
+  std::unique_ptr<PlayedProgram> played;
 
   // ---- parsing -------------------------------------------------------------------------------------------------------
   void reparse(const PatchFile* idsFrom) {
@@ -393,9 +398,11 @@ struct PatchEditor::Impl {
       for (const auto& d : imports) collectLibrary(lib, *d);
       const graph::SourceText source{text, path, idx < good.nodeSpans.size() ? std::span<const graph::SourceSpan>(good.nodeSpans[idx])
                                                                              : std::span<const graph::SourceSpan>()};
+      const bool live = player && !playingName.empty() && playingName == good.file.patches[idx].name();
       graph::InferOptions io;
       io.library = &lib;
       io.source = source;
+      if (live) io.probes = probeTargets;  // T4.5: only the playing patch carries probes
       graph::InferResult ir = graph::inferDetailed(good.file.patches[idx], io);
       const double rate = player ? player->sampleRate() : 48000.0;
       if (!ir.ok()) {
@@ -404,6 +411,20 @@ struct PatchEditor::Impl {
       } else {
         graph::OptimiseOptions oo;
         oo.sampleRate = rate;
+        std::vector<uint32_t> valueMap;
+        if (!ir.probeSources.empty()) oo.valueMap = &valueMap;
+        // The instance tree as NodeIds while the parse's patches are at hand (PlayedProgram).
+        std::vector<uint32_t> instParent;
+        std::vector<graph::NodeId> instCall;
+        for (const graph::InstanceInfo& in : ir.typed.instances) {
+          instParent.push_back(in.parent);
+          instCall.push_back(in.parent != graph::kNone && in.parent < ir.typed.instances.size() &&
+                                     ir.typed.instances[in.parent].patch != nullptr
+                                 ? ir.typed.instances[in.parent].patch->node(in.callNode).id
+                                 : graph::NodeId{});
+        }
+        std::vector<const graph::Patch*> instPatch;
+        for (const graph::InstanceInfo& in : ir.typed.instances) instPatch.push_back(in.patch);
         auto opt = graph::optimise(std::move(ir.typed), oo);
         if (!opt) {
           const uint32_t at = good.patchSpans[idx].begin == graph::kNone ? 0 : good.patchSpans[idx].begin;
@@ -413,8 +434,10 @@ struct PatchEditor::Impl {
           graph::ScheduleOptions so;
           so.sampleRate = rate;
           so.source = source;
-          const bool live = player && !playingName.empty() && playingName == good.file.patches[idx].name();
           so.previous = live ? player->stateLayout() : nullptr;
+          std::vector<graph::ProbePoint> points;
+          if (!ir.probeSources.empty()) points = graph::probePoints(opt->patch, ir.probeSources, valueMap, probeIds);
+          so.probes = points;
           graph::ScheduleResult sr = graph::scheduleDetailed(*opt, so);
           if (!sr.ok()) {
             addCheckDiags(sr.diagnostics);
@@ -423,6 +446,25 @@ struct PatchEditor::Impl {
             const graph::TypedPatch& scheduled = sr.schedule.rewritten ? *sr.schedule.rewritten : *opt;
             if (Status s = player->play(sr.schedule, scheduled); s) {
               ++stats.swaps;
+              // T4.5: what plays, in NodeIds (cost attribution; the instances' patches are this parse's).
+              auto pp = std::make_unique<PlayedProgram>();
+              pp->generation = player->generation();
+              pp->schedule = sr.schedule;
+              pp->instanceParent = instParent;
+              pp->instanceCall = instCall;
+              const size_t nn = scheduled.patch.nodeCount();
+              pp->nodeInstance.assign(nn, graph::kNone);
+              pp->nodeSource.assign(nn, graph::NodeId{});
+              pp->nodeWhat.assign(nn, graph::NodeOrigin::What::Node);
+              for (size_t n = 0; n < nn && n < scheduled.origin.size(); ++n) {
+                const graph::NodeOrigin& o = scheduled.origin[n];
+                pp->nodeInstance[n] = o.instance;
+                pp->nodeWhat[n] = o.what;
+                if (o.instance < instPatch.size() && instPatch[o.instance] && o.node < instPatch[o.instance]->nodeCount())
+                  pp->nodeSource[n] = instPatch[o.instance]->node(o.node).id;
+              }
+              for (const graph::ProbeRef& pr : sr.schedule.probes) pp->probeIds.push_back(pr.id);
+              played = std::move(pp);
             } else {
               ++stats.refusedSwaps;
               note = "not played: " + s.error().message;
@@ -714,6 +756,14 @@ Status PatchEditor::save() {
   return Ok{};
 }
 
+void PatchEditor::setProbes(std::vector<graph::ProbeTarget> targets, std::vector<uint32_t> ids) {
+  impl_->probeTargets = std::move(targets);
+  impl_->probeIds = std::move(ids);
+  impl_->probeIds.resize(impl_->probeTargets.size(), 0);
+}
+
+const PatchEditor::PlayedProgram* PatchEditor::played() const noexcept { return impl_->played.get(); }
+
 Status PatchEditor::check(size_t patch) {
   Impl& m = *impl_;
   size_t idx = patch;
@@ -736,6 +786,7 @@ void PatchEditor::stop() {
   Impl& m = *impl_;
   if (m.player) m.player->stop();
   m.playingName.clear();
+  m.played.reset();
   EditorChange c;
   if (onChange) onChange(c);
 }

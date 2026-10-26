@@ -506,9 +506,11 @@ private:
     B_.CreateCondBr(meterOn_, on, cont);
     B_.SetInsertPoint(on);
     Value* t1 = B_.CreateIntrinsic(i64_, llvm::Intrinsic::readcyclecounter, llvm::ArrayRef<Value*>{});
-    Value* p = B_.CreateConstInBoundsGEP1_64(i64_, B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.meterOff), region);
+    Value* p = B_.CreateConstInBoundsGEP1_64(i64_, B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.meterOff), 2 * uint64_t{region});
     Value* old = B_.CreateAlignedLoad(i64_, p, llvm::Align(8));
     B_.CreateAlignedStore(B_.CreateAdd(old, B_.CreateSub(t1, t0)), p, llvm::Align(8));
+    Value* q = B_.CreateConstInBoundsGEP1_64(i64_, p, 1);  // how often it was timed (the meter subtracts the TSC reads)
+    B_.CreateAlignedStore(B_.CreateAdd(B_.CreateAlignedLoad(i64_, q, llvm::Align(8)), c64(1)), q, llvm::Align(8));
     B_.CreateBr(cont);
     B_.SetInsertPoint(cont);
   }

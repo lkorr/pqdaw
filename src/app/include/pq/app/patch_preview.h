@@ -30,6 +30,7 @@
 #include "pq/core/tap_ring.h"
 #include "pq/engine/audio_block.h"
 #include "pq/engine/background_compile.h"
+#include "pq/engine/inspect.h"
 #include "pq/engine/program_host.h"
 #include "pq/views/circuit/patch_player.h"
 
@@ -63,6 +64,19 @@ public:
   // wants it).
   bool setParam(std::string_view name, float value) override;
   TapRing* outputTap() noexcept override { return &tap_; }
+  // T4.5: probe taps from fixed pools (kProbeRings rings of kProbeRingFrames frames, kProbeLevels levels), bound by
+  // probe id to every image published (the interpreter's and the JIT's); a tap freed by a probe that went away is
+  // reused only after kProbeTapRest seconds, by when no image that wrote it still runs. One CostMeter for every image.
+  void setProbeSignals(std::span<const uint32_t> ids) override;
+  TapRing* probeSignal(uint32_t id) noexcept override;
+  const ProbeLevel* probeLevel(uint32_t id) const noexcept override;
+  void setMetering(bool on) override { meter_.setEnabled(on); }
+  bool readCost(CostReading& out) override;
+  uint64_t generation() const noexcept override { return generation_.load(std::memory_order_acquire); }
+  static constexpr uint32_t kProbeRings = 8;
+  static constexpr uint32_t kProbeRingFrames = 16384;
+  static constexpr uint32_t kProbeLevels = 256;
+  static constexpr double kProbeTapRest = 1.0;
 
   // Audio thread: adds the preview into b.out (RT-safe). Nothing while stopped.
   void process(const engine::AudioBlock& b) noexcept;
@@ -117,6 +131,21 @@ private:
   std::vector<std::pair<std::string, uint64_t>> paramKeys_;
   TapRing tap_{2, 32768, 2048};
   void applyParamWrites(engine::ProgramHost& host) noexcept;
+  // T4.5 (UI thread / the compiler's worker, under mutex_): tap slots by probe id, the binding of the last schedule.
+  struct TapSlot {
+    uint32_t id = 0;
+    bool bound = false;
+    double freedAt = -1e9;  // seconds (steady clock)
+  };
+  std::vector<std::unique_ptr<TapRing>> rings_;
+  std::unique_ptr<ProbeLevel[]> levels_;
+  std::vector<TapSlot> ringSlots_, levelSlots_;
+  std::vector<uint32_t> wantSignals_;
+  std::vector<engine::ProbeTap> binding_;  // the last published schedule's taps (the JIT image gets the same)
+  engine::CostMeter meter_;
+  std::atomic<uint64_t> generation_{0};
+  void bindProbes(const graph::Schedule& schedule);
+  void bind(engine::ProgramImage& image, uint64_t generation);
 };
 
 }  // namespace pq::app

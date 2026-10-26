@@ -50,8 +50,8 @@
 //                the last stage for global values, the bound probes' values are copied into their TapRing / ProbeLevel
 //                (a sleeping region's value reads 0). Cost meter: while the bound CostMeter wants this image, begin()
 //                reads the TSC and raises the aux flag word (layout().meterFlagOff) that tells the backends to time
-//                their regions into regionCycles() (buf, layout().meterOff: one uint64 per schedule region, zeroed per
-//                block); after the last stage the block's cycles go to the meter.
+//                their regions into regionCycles() (buf, layout().meterOff: per schedule region its cycles and how
+//                often it was timed, zeroed per block); after the last stage the block's cycles go to the meter.
 // Threads: build() and the build-time accessors are not RT-safe (they allocate). begin(), run() and the special-op
 // kernels are RT-safe. The object must not move after build() (the special-op records point at its RunCtx): backends
 // hold it as a member of a heap-allocated image.
@@ -140,7 +140,7 @@ struct Layout {
   uint32_t globalStateBytes = 0, voiceStride = 0;
   uint32_t maxSolveN = 0;                 // unknowns of the largest solve block
   uint32_t sleepOff = 0;                  // aux: one flag word per sleep segment (non-zero bits: skip its regions)
-  uint32_t meterOff = 0;                  // buf: one uint64 per schedule region (2 floats each), T4.5
+  uint32_t meterOff = 0;                  // buf: per schedule region two uint64: cycles, timings (4 floats), T4.5
   uint32_t meterFlagOff = 0;              // aux: one word, non-zero while this block is metered, T4.5
 };
 
@@ -222,8 +222,13 @@ public:
   uint32_t numRegions() const noexcept { return numRegions_; }
   // This block is metered (after begin()). RT-safe.
   bool metering() const noexcept { return metering_; }
+  // Per region: [2r] cycles, [2r + 1] how many times it was timed (this block).
   uint64_t* regionCycles() noexcept { return reinterpret_cast<uint64_t*>(bufMem_.data() + L_.meterOff); }
-  void addRegionCycles(uint32_t region, uint64_t cycles) noexcept { regionCycles()[region] += cycles; }  // RT-safe
+  void addRegionCycles(uint32_t region, uint64_t cycles) noexcept {  // RT-safe
+    uint64_t* c = regionCycles() + 2 * static_cast<size_t>(region);
+    c[0] += cycles;
+    c[1] += 1;
+  }
 
   // ---- per block (RT-safe) ----
   // Starts a block: false for frames == 0 (nothing to do) or frames > maxBlockFrames (every output zeroed, counted

@@ -4,11 +4,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "pq/ui/controls.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
 #include "pq/views/circuit/circuit_scene.h"
+#include "probe_paint.h"
 
 namespace pq::views::circuit {
 
@@ -158,6 +160,10 @@ uint32_t EditCanvas::pinNear(ui::Vec2 d, bool wantInput) const {
 }
 
 bool EditCanvas::onPointer(const ui::PointerEvent& e) {
+  if (e.type == ui::PointerType::Move || e.type == ui::PointerType::Down) {
+    pointer_ = e.pos;
+    if (overlay_ && overlay_->readout) markDirty();  // the readout follows the pointer
+  }
   if (!scene() || !editable_ || stale_) {
     if (e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && e.clickCount >= 2 && scene()) {
       const CanvasHit hit = hitTest(e.pos);
@@ -316,6 +322,24 @@ void EditCanvas::paintOverlay(ui::PaintContext& ctx) {
       }
     }
   }
+  if (overlay_) {  // T4.5: cost labels, then the probe readout on top
+    if (lod() != Lod::Far) {
+      for (const ProbeOverlay::Label& l : overlay_->nodeLabels) {
+        if (l.item >= sc.nodes.size()) continue;
+        const SceneNode& n = sc.nodes[l.item];
+        paintCostLabel(ctx, toDevice({n.x + n.w * 0.5f, n.y}), l.text, l.heat, true);
+      }
+      for (const ProbeOverlay::Label& l : overlay_->wireLabels) {
+        if (l.item >= sc.wires.size()) continue;
+        const SceneWire& w = sc.wires[l.item];
+        if (w.pointCount < 2) continue;
+        const uint32_t k = w.firstPoint + (w.pointCount - 1) / 2;
+        const graph::Point2 a = sc.points[k], b = sc.points[k + 1];
+        paintCostLabel(ctx, toDevice({(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f}), l.text, l.heat, false);
+      }
+    }
+    if (overlay_->readout) paintProbeReadout(ctx, *overlay_, pointer_, r);
+  }
   if (stale_) {
     ctx.dl.addRectFilled(r.toRect(), th->code.stale);
     if (ctx.res.text && ctx.res.uiFonts) {
@@ -365,6 +389,9 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   play_ = &bar.add<ui::Toggle>("play", "Play", ui::ToggleStyle::Accent, false);
   play_->setWidth(ui::Length::fixed(48));
   play_->onToggle = [this](bool) { (void)togglePlay(); };
+  cost_ = &bar.add<ui::Toggle>("cost", "Cost", ui::ToggleStyle::Accent, false);  // T4.5: ns per sample per part
+  cost_->setWidth(ui::Length::fixed(44));
+  cost_->onToggle = [this](bool on) { setCostShown(on); };
   auto& tidyButton = bar.add<ui::Button>("tidy", "Tidy");
   tidyButton.setWidth(ui::Length::fixed(44));
   tidyButton.onClick = [this] { (void)tidy(); };
@@ -421,6 +448,8 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
     beginAdd(w, d);
   };
   canvas_->onRename = [this](uint32_t node) { beginRename(node); };
+  canvas_->onHoverChanged = [this](const CanvasHit& h) { hoverChanged(h); };
+  canvas_->setProbeOverlay(&overlay_);
 }
 
 CircuitEditor::~CircuitEditor() {
@@ -428,6 +457,7 @@ CircuitEditor::~CircuitEditor() {
   if (doc_) {
     doc_->onChange = nullptr;
     if (doc_->playing()) doc_->stop();  // a closed editor leaves nothing playing
+    if (PatchPlayer* pl = doc_->player()) pl->setMetering(false);
   }
 }
 
@@ -477,7 +507,11 @@ void CircuitEditor::present(const std::string& patch, bool fit) {
     text_->setText(doc_->text());
     text_->setReadOnly(false);
   }
+  // T4.5: another patch: its probes (ids are per shown patch) and the hover state start afresh.
+  probeIdOf_.clear();
+  hoverWire_ = probeWire_ = hoverProbe_ = UINT32_MAX;
   rebuildScene(fit);
+  refreshProbes(true);
   refreshMarks();
   updateTitle();
   if (local && doc_->textLowered() && static_cast<size_t>(shownIndex()) < doc_->parsed().patchSpans.size())
@@ -501,6 +535,7 @@ bool CircuitEditor::show(std::string_view patch) {
   }
   if (doc_->patchIndex(name) == graph::kNone && !doc_->findCallee(name)) return false;
   backStack_.clear();
+  callStack_.clear();
   present(name, true);
   return true;
 }
@@ -511,6 +546,7 @@ bool CircuitEditor::openNode(uint32_t node) {
   const std::string callee = p->subcircuit(node).patch;
   if (doc_->patchIndex(callee) == graph::kNone && !doc_->findCallee(callee)) return false;
   backStack_.push_back(shown_);
+  callStack_.push_back(p->node(node).id);
   present(callee, true);
   return true;
 }
@@ -519,6 +555,7 @@ bool CircuitEditor::back() {
   if (backStack_.empty()) return false;
   const std::string p = backStack_.back();
   backStack_.pop_back();
+  if (!callStack_.empty()) callStack_.pop_back();
   present(p, true);
   return true;
 }
@@ -540,6 +577,14 @@ void CircuitEditor::rebuildScene(bool fit) {
     if (!p) return;
   }
   canvas_->setScene(buildScene(*p), fit, true);
+  // T4.5: wire indices change with the scene: the hover probe follows its source (by NodeId), the LEDs are re-read.
+  lit_.clear();
+  overlay_.nodeLabels.clear();
+  overlay_.wireLabels.clear();
+  hoverWire_ = UINT32_MAX;
+  overlay_.readout = false;
+  if (probeWire_ != UINT32_MAX) probeWire_ = UINT32_MAX - 1;  // re-found by refreshProbes from hoverProbe_'s source
+  refreshProbes(false);  // an edit's own check (50 ms later) compiles them in
   lastIds_.clear();
   for (NodeIndex v = 0; v < p->nodeCount(); ++v) lastIds_.push_back(p->node(v).id);
   std::vector<uint32_t> sel;
@@ -598,6 +643,28 @@ void CircuitEditor::scheduleCheck() {
 }
 
 void CircuitEditor::onTimer(uint32_t id) {
+  if (id == dwellTimer_) {  // T4.5: the pointer rested on a wire: probe it
+    dwellTimer_ = 0;
+    if (hoverWire_ != UINT32_MAX) probeWire(hoverWire_);
+    return;
+  }
+  if (id == graceTimer_) {  // left the probed wire a while ago: drop its probe
+    graceTimer_ = 0;
+    if (hoverWire_ == UINT32_MAX) probeWire(UINT32_MAX);
+    return;
+  }
+  if (id == pollTimer_) {
+    pollTimer_ = 0;
+    pollProbes();
+    ensurePoll();
+    return;
+  }
+  if (id == costTimer_) {
+    costTimer_ = 0;
+    pollCost();
+    if (costShown()) costTimer_ = requestTimer(0.25);
+    return;
+  }
   if (id != checkTimer_) {
     Popover::onTimer(id);
     return;
@@ -708,6 +775,8 @@ bool CircuitEditor::save() {
 bool CircuitEditor::togglePlay() {
   if (doc_->playing()) {
     doc_->stop();
+    refreshProbes(false);  // nothing plays: no probes
+    clearProbeDisplay();
     setStatus("Stopped.");
     updateTitle();
     return true;
@@ -724,6 +793,7 @@ bool CircuitEditor::togglePlay() {
     return false;
   }
   setStatus("Playing " + doc_->playingPatch() + ": edits swap in as you make them.");
+  refreshProbes(true);  // T4.5: the LED trace of the bool wires (a second, bit-identical program)
   updateTitle();
   return true;
 }
@@ -848,6 +918,307 @@ ui::InfoText CircuitEditor::info() const {
   return {"Circuit Editor",
           "Drag pins to wire, drag nodes to move, double-click to add or rename. The text on the right is the same patch: "
           "edit either. Ctrl+Z undoes both, Ctrl+S saves, Ctrl+Enter plays."};
+}
+
+// ---- T4.5: live probes and cost meters -------------------------------------------------------------------------------
+
+namespace {
+constexpr double kDwellSeconds = 0.15;  // the pointer rests on a wire this long before it is probed
+constexpr double kGraceSeconds = 1.5;   // a probe stays compiled this long after the pointer left its wire
+constexpr double kPollSeconds = 1.0 / 30.0;
+constexpr uint32_t kMaxLedProbes = 64;
+constexpr uint32_t kScopeFrames = 1024;  // the readout's mini-scope: ≈ 21 ms at 48 kHz
+}  // namespace
+
+bool CircuitEditor::shownPath(std::vector<graph::NodeId>& path) const {
+  path.clear();
+  if (!doc_->playing()) return false;
+  const std::string& playing = doc_->playingPatch();
+  if (backStack_.empty()) return shown_ == playing;
+  if (backStack_.front() != playing || callStack_.size() != backStack_.size()) return false;
+  path = callStack_;
+  return true;
+}
+
+bool CircuitEditor::wireSource(uint32_t wire, graph::NodeId& node, uint16_t& port) const {
+  const auto& sc = canvas_->scene();
+  const graph::Patch* p = const_cast<CircuitEditor*>(this)->shownGraph();
+  if (!sc || !p || wire >= sc->wires.size()) return false;
+  const ScenePin& from = sc->pins[sc->wires[wire].fromPin];
+  if (from.node >= p->nodeCount()) return false;
+  node = p->node(from.node).id;
+  port = from.port;
+  return true;
+}
+
+uint32_t CircuitEditor::probeIdFor(graph::NodeId node, uint16_t port) {
+  const uint64_t key = (static_cast<uint64_t>(node.value) << 16) | port;
+  for (const auto& [k, id] : probeIdOf_)
+    if (k == key) return id;
+  probeIdOf_.emplace_back(key, nextProbeId_);
+  return nextProbeId_++;
+}
+
+void CircuitEditor::hoverChanged(const CanvasHit& hit) {
+  const uint32_t wire = hit.kind == CanvasHit::Kind::Wire ? hit.index : UINT32_MAX;
+  if (wire == hoverWire_) return;
+  hoverWire_ = wire;
+  if (dwellTimer_) cancelTimer(dwellTimer_);
+  dwellTimer_ = 0;
+  if (wire == UINT32_MAX) {
+    if (overlay_.readout) {
+      overlay_.readout = false;
+      canvas_->markDirty();
+    }
+    if (hoverProbe_ != UINT32_MAX) {
+      if (graceTimer_) cancelTimer(graceTimer_);
+      graceTimer_ = requestTimer(kGraceSeconds);
+    }
+    return;
+  }
+  if (graceTimer_) cancelTimer(graceTimer_);
+  graceTimer_ = 0;
+  std::vector<graph::NodeId> path;
+  if (!shownPath(path)) return;  // nothing to probe: the shown patch is not playing
+  // Back on the probed source (another wire of its net too): the readout at once; else after the dwell.
+  graph::NodeId n, m;
+  uint16_t a = 0, b = 0;
+  if (probeWire_ != UINT32_MAX && wireSource(wire, n, a) && wireSource(probeWire_, m, b) && n == m && a == b) {
+    probeWire_ = wire;
+    overlay_.readout = true;
+    overlay_.wire = wire;
+    pollProbes();
+    ensurePoll();
+    return;
+  }
+  dwellTimer_ = requestTimer(kDwellSeconds);
+}
+
+void CircuitEditor::probeWire(uint32_t wire) {
+  graph::NodeId node;
+  uint16_t port = 0;
+  if (wire == UINT32_MAX || !wireSource(wire, node, port)) {
+    probeWire_ = hoverProbe_ = UINT32_MAX;
+    overlay_.readout = false;
+    canvas_->markDirty();
+    refreshProbes(true);
+    return;
+  }
+  probeWire_ = wire;
+  hoverProbe_ = probeIdFor(node, port);
+  const auto& sc = canvas_->scene();
+  overlay_.readout = true;
+  overlay_.wire = wire;
+  overlay_.isBool = sc->wires[wire].style.boolean;
+  overlay_.hasData = false;
+  overlay_.samples.clear();
+  canvas_->markDirty();
+  refreshProbes(true);
+  ensurePoll();
+}
+
+void CircuitEditor::refreshProbes(bool recheck) {
+  std::vector<graph::ProbeTarget> targets;
+  std::vector<uint32_t> ids, signals;
+  ledWires_.clear();
+  std::vector<graph::NodeId> path;
+  const auto& sc = canvas_->scene();
+  const graph::Patch* p = shownGraph();
+  if (shownPath(path) && sc && p) {
+    auto add = [&](uint32_t wire) -> uint32_t {
+      graph::NodeId node;
+      uint16_t port = 0;
+      if (!wireSource(wire, node, port)) return UINT32_MAX;
+      const uint32_t id = probeIdFor(node, port);
+      if (std::find(ids.begin(), ids.end(), id) == ids.end()) {
+        graph::ProbeTarget t;
+        t.path = path;
+        t.node = node;
+        t.output = port;
+        targets.push_back(std::move(t));
+        ids.push_back(id);
+      }
+      return id;
+    };
+    // The LED trace: every bool net (one probe per source, level only).
+    for (uint32_t w = 0; w < sc->wires.size(); ++w) {
+      if (!sc->wires[w].style.boolean) continue;
+      if (ids.size() >= kMaxLedProbes) break;
+      if (const uint32_t id = add(w); id != UINT32_MAX) ledWires_.emplace_back(w, id);
+    }
+    // The hover probe (its full signal), found again by its source after a scene rebuild.
+    if (hoverProbe_ != UINT32_MAX) {
+      if (probeWire_ == UINT32_MAX - 1 || probeWire_ >= sc->wires.size()) {
+        probeWire_ = UINT32_MAX;
+        for (uint32_t w = 0; w < sc->wires.size() && probeWire_ == UINT32_MAX; ++w) {
+          graph::NodeId node;
+          uint16_t port = 0;
+          if (wireSource(w, node, port) && probeIdFor(node, port) == hoverProbe_) probeWire_ = w;
+        }
+        if (probeWire_ == UINT32_MAX) hoverProbe_ = UINT32_MAX;  // its source is gone
+      }
+      if (probeWire_ != UINT32_MAX && add(probeWire_) == hoverProbe_) signals.push_back(hoverProbe_);
+    }
+  } else {
+    hoverProbe_ = UINT32_MAX;
+    probeWire_ = UINT32_MAX;
+  }
+  lit_.assign(sc ? sc->wires.size() : 0, 0);
+  for (uint32_t w = 0; sc && w < sc->wires.size(); ++w) canvas_->setWireLit(w, false);
+  if (ids == compiledIds_ && signals == compiledSignals_) {
+    ensurePoll();
+    return;
+  }
+  compiledTargets_ = targets;
+  compiledIds_ = ids;
+  compiledSignals_ = signals;
+  doc_->setProbes(std::move(targets), std::move(ids));
+  if (PatchPlayer* pl = doc_->player()) pl->setProbeSignals(compiledSignals_);
+  if (recheck && doc_->playing()) {
+    const Status st = doc_->check();
+    if (!st) setStatus("Probes not compiled in: " + st.error().message);
+  }
+  ensurePoll();
+}
+
+void CircuitEditor::clearProbeDisplay() {
+  overlay_.readout = false;
+  overlay_.samples.clear();
+  overlay_.nodeLabels.clear();
+  overlay_.wireLabels.clear();
+  if (const auto& sc = canvas_->scene())
+    for (uint32_t w = 0; w < sc->wires.size(); ++w) canvas_->setWireLit(w, false);
+  lit_.clear();
+  canvas_->markDirty();
+}
+
+void CircuitEditor::ensurePoll() {
+  const bool want = doc_->playing() && (!ledWires_.empty() || overlay_.readout);
+  if (want && !pollTimer_) pollTimer_ = requestTimer(kPollSeconds);
+}
+
+void CircuitEditor::pollProbes() {
+  PatchPlayer* pl = doc_->player();
+  if (!pl || !doc_->playing()) return;
+  // LED trace: lit in a block where the value was high.
+  const auto& sc = canvas_->scene();
+  if (sc && lit_.size() == sc->wires.size())
+    for (const auto& [w, id] : ledWires_) {
+      const ProbeLevel* lv = pl->probeLevel(id);
+      const bool on = lv && lv->hi.load(std::memory_order_relaxed) > 0.5f;
+      if ((lit_[w] != 0) != on) {
+        lit_[w] = on ? 1 : 0;
+        canvas_->setWireLit(w, on);
+      }
+    }
+  // The readout: the value and the last kScopeFrames frames.
+  if (!overlay_.readout || hoverProbe_ == UINT32_MAX) return;
+  TapRing* ring = pl->probeSignal(hoverProbe_);
+  if (!ring) return;
+  const uint64_t written = ring->written();
+  const uint64_t from = std::max<uint64_t>(ring->oldestReadable(), written > kScopeFrames ? written - kScopeFrames : 0);
+  const uint32_t n = static_cast<uint32_t>(written - from);
+  overlay_.samples.resize(n);
+  const uint32_t got = n ? ring->read(0, from, n, overlay_.samples.data()) : 0;
+  overlay_.samples.resize(got);
+  overlay_.hasData = got > 0;
+  if (got > 0) {
+    const float last = overlay_.samples.back();
+    overlay_.value = overlay_.isBool ? (std::signbit(last) ? "HIGH" : "LOW") : formatProbeValue(last);
+  }
+  canvas_->markDirty();
+}
+
+bool CircuitEditor::costShown() const noexcept { return cost_ && cost_->on(); }
+
+void CircuitEditor::setCostShown(bool on) {
+  if (cost_->on() != on) cost_->setOn(on);
+  if (PatchPlayer* pl = doc_->player()) pl->setMetering(on);
+  costSmooth_.clear();
+  costTotal_ = 0.0;
+  if (!on) {
+    if (costTimer_) cancelTimer(costTimer_);
+    costTimer_ = 0;
+    overlay_.nodeLabels.clear();
+    overlay_.wireLabels.clear();
+    canvas_->markDirty();
+    setStatus({});
+    return;
+  }
+  setStatus(doc_->playing() ? "Cost: measuringâ¦" : "Cost: play the patch to measure it.");
+  if (!costTimer_) costTimer_ = requestTimer(0.25);
+}
+
+void CircuitEditor::pollCost() {
+  PatchPlayer* pl = doc_->player();
+  const PatchEditor::PlayedProgram* played = doc_->played();
+  if (!costShown() || !pl || !played || !doc_->playing()) return;
+  PatchPlayer::CostReading rd;
+  if (!pl->readCost(rd)) return;
+  std::vector<graph::NodeId> path;
+  CostMap cm;
+  if (!shownPath(path) || !attributeCost(*played, rd, path, cm)) {
+    if (rd.generation == played->generation) {
+      costTotal_ = costTotal_ > 0.0 ? 0.7 * costTotal_ + 0.3 * rd.totalNsPerFrame : rd.totalNsPerFrame;
+      setStatus("Cost " + formatCostNs(costTotal_) + " per sample (the shown patch is not what plays)");
+    }
+    return;
+  }
+  // Smoothed (one-pole over the 4 Hz readings) per node and wire.
+  auto smooth = [&](uint64_t key, double ns) {
+    for (auto& [k, v] : costSmooth_)
+      if (k == key) {
+        v = 0.7 * v + 0.3 * ns;
+        return v;
+      }
+    costSmooth_.emplace_back(key, ns);
+    return ns;
+  };
+  costTotal_ = costTotal_ > 0.0 ? 0.7 * costTotal_ + 0.3 * cm.totalNs : cm.totalNs;
+  const graph::Patch* p = shownGraph();
+  const auto& sc = canvas_->scene();
+  if (!p || !sc) return;
+  overlay_.nodeLabels.clear();
+  overlay_.wireLabels.clear();
+  const double top = std::max(cm.shownNs, 1e-9);
+  for (const CostMap::Entry& e : cm.nodes) {
+    const auto v = p->indexOf(e.node);
+    if (!v || *v >= sc->nodes.size()) continue;
+    const double ns = smooth(e.node.value, e.ns);
+    if (ns < 0.005) continue;
+    overlay_.nodeLabels.push_back({*v, formatCostNs(ns), static_cast<float>(e.ns / top)});
+  }
+  auto wireInto = [&](graph::NodeIndex v) {  // a per-voice wire into v (the one a voice → global sum belongs to)
+    uint32_t any = UINT32_MAX;
+    for (uint32_t w = 0; w < sc->wires.size(); ++w)
+      if (sc->pins[sc->wires[w].toPin].node == v) {
+        if (sc->wires[w].style.poly) return w;
+        if (any == UINT32_MAX) any = w;
+      }
+    return any;
+  };
+  auto wireOutOf = [&](graph::NodeIndex v) {
+    for (uint32_t w = 0; w < sc->wires.size(); ++w)
+      if (sc->pins[sc->wires[w].fromPin].node == v) return w;
+    return UINT32_MAX;
+  };
+  for (const CostMap::Entry& e : cm.sumsInto)
+    if (const auto v = p->indexOf(e.node))
+      if (const uint32_t w = wireInto(*v); w != UINT32_MAX) {
+        const double ns = smooth(static_cast<uint64_t>(e.node.value) | (uint64_t{1} << 63), e.ns);
+        if (ns >= 0.005) overlay_.wireLabels.push_back({w, formatCostNs(ns), static_cast<float>(e.ns / top)});
+      }
+  for (const CostMap::Entry& e : cm.copiesFrom)
+    if (const auto v = p->indexOf(e.node))
+      if (const uint32_t w = wireOutOf(*v); w != UINT32_MAX) {
+        const double ns = smooth(static_cast<uint64_t>(e.node.value) | (uint64_t{1} << 62), e.ns);
+        if (ns >= 0.005) overlay_.wireLabels.push_back({w, formatCostNs(ns), static_cast<float>(e.ns / top)});
+      }
+  canvas_->markDirty();
+  const double sr = pl->sampleRate();
+  char pct[48];
+  std::snprintf(pct, sizeof pct, "%.2f %% of a core at %.0f kHz", costTotal_ * sr * 1e-7, sr / 1000.0);
+  setStatus("Cost " + formatCostNs(costTotal_) + " per sample (" + pct + ")");
 }
 
 CircuitEditor* openCircuitEditor(ui::Widget& from, std::unique_ptr<PatchEditor> document, std::string_view patch,

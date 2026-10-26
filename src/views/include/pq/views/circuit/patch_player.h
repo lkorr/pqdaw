@@ -10,8 +10,12 @@
 // document: PatchEditor::onCommitted hands the new text to a `SetDevicePatch` command and the project's per-track
 // compile (ProjectLink) swaps the unit, so this interface is only the stand-alone preview's.
 
+#include <cstdint>
+#include <span>
 #include <string_view>
+#include <vector>
 
+#include "pq/core/probe_level.h"
 #include "pq/core/result.h"
 #include "pq/core/tap_ring.h"
 #include "pq/graph/schedule.h"
@@ -38,6 +42,30 @@ public:
   virtual bool setParam(std::string_view /*name*/, float /*value*/) { return false; }
   // T4.6: the analysis tap of the played output (stereo; SPEC §11.1), or null. Owned by the player; lives as long as it.
   virtual TapRing* outputTap() noexcept { return nullptr; }
+
+  // ---- T4.5: live probes and cost meters (pq/graph/inspect.h; the engine's half: pq/engine/inspect.h) --------------
+  // The editor compiles probes into the schedules it plays (ScheduleOptions::probes, with ids it chooses). The player
+  // binds every probe id of a schedule it plays to a ProbeLevel it owns, and the ids named here (call before play())
+  // also to a TapRing (the full signal: a mini-scope), and keeps those taps for as long as the id stays in the
+  // schedules it plays. Taps are owned by the player and outlive any program that writes them.
+  virtual void setProbeSignals(std::span<const uint32_t> /*ids*/) {}
+  // The full signal of probe `id` of the playing program (mono, written block by block; bools as lane masks: sign bit
+  // set = high), or null. The player is the ring's registered reader while it is bound: read it from the UI thread.
+  virtual TapRing* probeSignal(uint32_t /*id*/) noexcept { return nullptr; }
+  // Probe `id`'s per-block level (last / min / max; bools 0 / 1), or null.
+  virtual const ProbeLevel* probeLevel(uint32_t /*id*/) const noexcept { return nullptr; }
+  // Cost meters: measured only while on (pq/engine/inspect.h).
+  virtual void setMetering(bool /*on*/) {}
+  struct CostReading {
+    uint64_t generation = 0;               // which play() the measured program came from (see generation())
+    double totalNsPerFrame = 0.0;          // the whole program, ns per sample frame
+    std::vector<double> regionNsPerFrame;  // per region of that play()'s schedule
+    std::vector<uint32_t> units;           // per region: the first region of the unit it was timed in (a JIT chain)
+  };
+  // The cost since the previous reading; false while there is none yet (just enabled, a new program).
+  virtual bool readCost(CostReading& /*out*/) { return false; }
+  // Counts play() calls that published a program.
+  virtual uint64_t generation() const noexcept { return 0; }
 };
 
 }  // namespace pq::views::circuit

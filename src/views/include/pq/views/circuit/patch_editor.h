@@ -127,6 +127,23 @@ public:
   void stop();
   bool playing() const noexcept;
   const std::string& playingPatch() const noexcept;  // "" when stopped
+  // ---- live probes and cost (T4.5, pq/graph/inspect.h) ---------------------------------------------------------------
+  // Probes compiled into the playing patch from its next check on (targets[i] gets ids[i]; call check() to apply them
+  // now). Nothing else of the program changes (the audio is bit-identical with or without them).
+  void setProbes(std::vector<graph::ProbeTarget> targets, std::vector<uint32_t> ids);
+  // What the player plays (the last schedule handed to it), for reading its cost: the schedule and, per node of the
+  // scheduled patch, where it was written — kept as NodeIds, so it stays valid while the text changes.
+  struct PlayedProgram {
+    uint64_t generation = 0;                  // PatchPlayer::generation() after it was played
+    graph::Schedule schedule;
+    std::vector<uint32_t> instanceParent;     // per instance (TypedPatch::instances): its caller (kNone: the root)
+    std::vector<graph::NodeId> instanceCall;  // … and the call node in the caller
+    std::vector<uint32_t> nodeInstance;       // per node of the scheduled patch: its instance
+    std::vector<graph::NodeId> nodeSource;    // … the node it comes from in that instance's patch (invalid: none)
+    std::vector<graph::NodeOrigin::What> nodeWhat;
+    std::vector<uint32_t> probeIds;           // the probes that have a value (Schedule::probes ids)
+  };
+  const PlayedProgram* played() const noexcept;  // null: nothing played yet
   // The last check's schedule statistics.
   struct CheckStats {
     uint64_t checks = 0, swaps = 0, refusedSwaps = 0;  // swaps: schedules handed to the player
