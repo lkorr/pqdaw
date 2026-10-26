@@ -41,6 +41,7 @@ void usage(const std::string& suite) {
       "  --repeats N      timed rounds per measurement (default 15; median and p99 are over these)\n"
       "  --warmup N       untimed rounds first (default 3)\n"
       "  --min-time MS    minimum length of one round in ms (default 2)\n"
+      "  --blocks N       per-block sample mode: single calls timed (default 2000)\n"
       "  --csv FILE       write the rows as CSV (tools/bench/append_results.py turns it into RESULTS.md rows)\n"
       "  --no-pin         do not pin the main thread to physical core 1 / raise its priority\n",
       suite.c_str());
@@ -94,17 +95,26 @@ const char* buildType() {
 #endif
 }
 
+const char* presetName() {
+#ifdef PQ_BENCH_PRESET
+  return PQ_BENCH_PRESET;
+#else
+  return "unknown";
+#endif
+}
+
 bool writeCsv(const std::string& path, const std::string& suite, const std::vector<Row>& rows) {
   std::ofstream f(path, std::ios::binary | std::ios::trunc);
   if (!f) return false;
   const std::string cpu = csvField(cpuBrand());
-  f << "suite,benchmark,name,unit,median,min,p99,max,samples,load_percent,cpu,build\n";
+  f << "suite,benchmark,name,unit,median,min,p99,max,samples,load_percent,cpu,build,preset,better\n";
   char num[256];
   for (const Row& r : rows) {
     std::snprintf(num, sizeof num, "%.6g,%.6g,%.6g,%.6g,%zu,%.1f", r.stats.medianNs, r.stats.minNs, r.stats.p99Ns,
                   r.stats.maxNs, r.stats.samples, r.loadPercent);
     f << csvField(suite) << ',' << csvField(r.benchmark) << ',' << csvField(r.name) << ',' << csvField(r.unit) << ','
-      << num << ',' << cpu << ',' << buildType() << '\n';
+      << num << ',' << cpu << ',' << buildType() << ',' << presetName() << ','
+      << (higherIsBetter(r.unit) ? "higher" : "lower") << '\n';
   }
   return static_cast<bool>(f);
 }
@@ -126,8 +136,9 @@ int Runner::run(const RunOptions& o) {
     pinCurrentThread(cpuTopology().coreMask(1));
     raisePriority();
   }
-  std::printf("SUITE %s: %s, %s build, %d repeats, %d warmup, rounds >= %.1f ms%s\n", suite_.c_str(), cpuBrand().c_str(),
-              buildType(), o.repeats, o.warmup, o.minRoundNs / 1e6, o.pin ? ", main thread pinned to core 1" : "");
+  std::printf("SUITE %s: %s, %s preset (%s build), %d repeats, %d warmup, rounds >= %.1f ms, %u blocks%s\n",
+              suite_.c_str(), cpuBrand().c_str(), presetName(), buildType(), o.repeats, o.warmup, o.minRoundNs / 1e6,
+              o.blocks, o.pin ? ", main thread pinned to core 1" : "");
   for (const Bench& b : benches_) {
     if (!selected(b.name)) continue;
     const size_t first = rows_.size();
@@ -154,7 +165,7 @@ int Runner::main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const char* a = argv[i];
     const bool hasValue = i + 1 < argc;
-    int ms = 0;
+    int ms = 0, blocks = 0;
     if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
       usage(suite_);
       return 0;
@@ -175,6 +186,9 @@ int Runner::main(int argc, char** argv) {
     } else if (std::strcmp(a, "--repeats") == 0 && hasValue && parseInt(argv[i + 1], o.repeats, 1, 100000)) {
       ++i;
     } else if (std::strcmp(a, "--warmup") == 0 && hasValue && parseInt(argv[i + 1], o.warmup, 0, 100000)) {
+      ++i;
+    } else if (std::strcmp(a, "--blocks") == 0 && hasValue && parseInt(argv[i + 1], blocks, 1, 10000000)) {
+      o.blocks = static_cast<uint32_t>(blocks);
       ++i;
     } else if (std::strcmp(a, "--min-time") == 0 && hasValue && parseInt(argv[i + 1], ms, 0, 600000)) {
       o.minRoundNs = ms * 1e6;

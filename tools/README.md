@@ -97,7 +97,7 @@ that explains them.
 Runner benches (`bench/include/pq_bench.h`: `pq::bench::Runner`) share one command line:
 
 ```
-pq_bench_<suite> [--filter REGEX] [--list] [--repeats N] [--warmup N] [--min-time MS] [--csv FILE] [--no-pin]
+pq_bench_<suite> [--filter REGEX] [--list] [--repeats N] [--warmup N] [--min-time MS] [--blocks N] [--csv FILE] [--no-pin]
 ```
 
 - `--filter`: ECMAScript regex searched in benchmark names (`--list` prints them); a benchmark's setup runs only when
@@ -105,9 +105,15 @@ pq_bench_<suite> [--filter REGEX] [--list] [--repeats N] [--warmup N] [--min-tim
 - Every measurement: `--warmup` untimed rounds (default 3), then `--repeats` timed rounds (default 15), each round
   calling the code until it lasts `--min-time` ms (default 2). Reported: median, min, p99 (nearest rank: with fewer
   than 100 repeats it is the maximum; use `--repeats 101` for a real p99) and max, per op.
+- Per-block sample mode (`Context::measureBlocks`, T1.11-fix1): benches whose call is one audio block also time
+  `--blocks` single calls (default 2000) after a warm-up, reported as `<name> [per block]`: median / p99 / max of
+  single blocks, the tail a device callback sees (round averages hide it, Q75).
+- Higher-is-better units (`x realtime`, `…/s`) report the low tail in the p99 field: min = worst, p99 = the value 99 %
+  of rounds reached, max = best (`summarizeHigherIsBetter`).
 - The main thread is pinned to physical core 1 at raised priority (`--no-pin` to skip).
-- `--csv FILE` writes `suite,benchmark,name,unit,median,min,p99,max,samples,load_percent,cpu,build` (load = system
-  busy % while that benchmark ran: how shared the machine was).
+- `--csv FILE` writes `suite,benchmark,name,unit,median,min,p99,max,samples,load_percent,cpu,build,preset,better`
+  (load = system busy % while that benchmark ran: how shared the machine was; build = NDEBUG or not; preset = `ship`,
+  `release` or `dev`, from the bench library's compile flags; better = `higher` / `lower`).
 
 Runner benches so far:
 
@@ -115,19 +121,33 @@ Runner benches so far:
 |---|---|
 | `pq_bench_core` | `spsc/…`, `mpsc/…`, `rtlog/…`, `baseline/…`, `cross/…` (pinned cross-thread throughput and round trips; `--runs N` per variant, default 11), `pool/…`, `arena/…`, `epoch/…`. The old `pq_bench_core cross [runs] [substring]` still works. |
 | `pq_bench_dsp` | `atom/<name>[ (spl…)]`: every leaf atom kernel at L1 (ns/sample) and L8 (ns/frame of 8 voices), plus the markdown table; `--pad N` as before. |
-| `pq_bench_render` | `patch32/interp xN`, `patch32/jit xN` (N = 1, 8, 64): a 32-op per-voice patch through the VoiceEngine, ns/sample and ns/voice-sample; `render/<golden> interp|jit`: offline render of each golden patch, ns/frame and × realtime. |
+| `pq_bench_render` | `patch32/interp xN`, `patch32/jit xN` (N = 1, 8, 64): a 32-op per-voice patch through the VoiceEngine, ns/sample, ns/voice-sample and `[per block]`; `render/<golden> interp|jit`: offline render of each golden patch, ns/frame and × realtime; `operator/interp|jit x64` (T1.11-fix1): the proto-Operator (`bench/patches/proto_operator.pqp`) at 64 held voices through a ProgramHost: ns/sample (rounds, `[per block]`), `core` = % of one core at 48 kHz (SPEC §13: < 10 %), `crossfade [per block]` and `crossfade ratio` (a 20 ms swap to a fresh image of the same program). |
 
-Recording results (release build only; RESULTS.md is append-only):
+Recording results (ship preset; RESULTS.md is append-only):
 
 ```
-build/release/bench/pq_bench_render.exe --csv render.csv
-python tools/bench/append_results.py render.csv --label T1.11 --config "block 64, 48 kHz" --note "what changed"
+./scripts/build.ps1 -Preset ship -Target pq_bench_render -NoTests
+build/ship/bench/pq_bench_render.exe --csv build/ship/render.csv
+python tools/bench/append_results.py build/ship/render.csv --label T1.11 --config "block 64, 48 kHz" --note "what changed"
 ```
 
-The script appends one row per CSV row: date, commit (`git rev-parse --short HEAD`, `-dirty` when tracked files other
-than RESULTS.md changed, or `<label> (on <sha>)`), name, build + suite + `--config`, `median (min, p99, n)`, and the
-machine (CPU from the CSV, logical CPUs, OS) with the system load and `--note`. `--dry-run` prints instead;
-`--filter REGEX` keeps some rows; dev-build CSVs are refused unless `--allow-dev`.
+The script appends one row per CSV row: date, commit (`git rev-parse --short HEAD`, or `<label> (on <sha>)`), name,
+preset + suite + `--config`, the summary, and the machine (CPU from the CSV, logical CPUs, OS) with the system load
+and `--note`. Lower-is-better rows read `median (min, p99, n)`, higher-is-better ones `median (worst, p1, best, n)`.
+A row is a baseline only when (T1.11-fix1, M1 review M20):
+- the tree is clean: nothing but `bench/RESULTS.md` and the CSV files differs from HEAD, tracked or untracked (always
+  refused otherwise: commit first, so the commit names what was measured);
+- the bench was built with `ship`;
+- the system load while its benchmark ran was known and ≤ 25 % (`--max-load`).
+
+Rows failing the last two are refused unless `--indicative`, which records them with "indicative: <reasons>" first in
+Notes (machine shared with other builds, release-preset A/B runs). `--dry-run` prints instead; `--filter REGEX` keeps
+some rows; dev-build rows also need `--allow-dev`. Tests: `tools/bench/test_append_results.py` (CTest
+`pq_tools_append_results`, registered when CMake finds Python 3).
+
+`tools/bench/rerecord_m1.ps1` rebuilds the ship benches and re-records the M1 rows (patch32, golden renders,
+proto-Operator, SPSC, atoms) in one go; run it on an idle machine from a clean checkout (`-DryRun` to only print,
+`-Indicative` to record on a shared machine).
 
 **Migrating another bench** (the rest still print BENCH lines by hand): replace `main`'s body with a Runner, one
 `add(name, fn)` per measurement or per group, and keep the existing code inside the lambdas. `report()` /

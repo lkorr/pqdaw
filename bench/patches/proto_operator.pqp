@@ -1,0 +1,71 @@
+// T1.11-fix1: the SPEC §13 calibration patch of pq_bench_render's operator/ benchmarks, a copy of the M1 review's
+// probe (docs/reviews/M1/probes/proto_operator.pqp, kept there as the review's record).
+// Review probe: an Operator-like voice (4 sine operators in series, 4 ADSRs from atoms, TPT SVF low-pass
+// with param cutoff, global LFO on the filter). Rough calibration of SPEC §13 "Operator 64 voices < 10 %".
+
+patch ProtoOperator {
+  param r2 = 2.0 [0.25..16]
+  param r3 = 3.0 [0.25..16]
+  param r4 = 0.5 [0.25..16]
+  param i2 = 1.0 [0..20]
+  param i3 = 0.7 [0..20]
+  param i4 = 0.4 [0..20]
+  param cutoff = 2000Hz [20Hz..20kHz]
+  param res = 0.3 [0..1]
+  out   out : audio voice mono
+
+  e1 = adsr(voice.gate, a: 2ms, d: 300ms, s: 0.6, r: 200ms)
+  e2 = adsr(voice.gate, a: 1ms, d: 150ms, s: 0.3, r: 150ms)
+  e3 = adsr(voice.gate, a: 5ms, d: 500ms, s: 0.5, r: 300ms)
+  e4 = adsr(voice.gate, a: 1ms, d: 80ms,  s: 0.0, r: 100ms)
+
+  o4 = sine(phasor(voice.hz * r4)) * e4 * i4
+  o3 = sine(phasor(voice.hz * r3 + o4 * voice.hz)) * e3 * i3
+  o2 = sine(phasor(voice.hz * r2 + o3 * voice.hz)) * e2 * i2
+  o1 = sine(phasor(voice.hz + o2 * voice.hz)) * e1
+
+  lfo = sine(phasor(0.5Hz))
+  g   = tan(3.141592653589793 * min(cutoff * (1 + 0.3 * lfo), 18000) / sr)
+  k   = 2 - 2 * res
+  a1  = 1 / (1 + g * (g + k))
+  a2  = g * a1
+  a3  = g * a2
+  v3  = o1 - ic2
+  v1  = a1 * ic1 + a2 * v3
+  v2  = ic2 + a2 * ic1 + a3 * v3
+  ic1 = z1(2 * v1 - ic1)
+  ic2 = z1(2 * v2 - ic2)
+  out = v2 * voice.velocity
+}
+
+patch adsr {
+  in    gate : bool audio voice mono
+  param a = 5ms   [0ms..10s]
+  param d = 200ms [1ms..10s]
+  param s = 0.7   [0..1]
+  param r = 300ms [1ms..30s]
+  out   out : audio voice mono
+
+  attacking = srff(rise(gate), level >= 0.999 || !gate)
+  target    = attacking ? 1.0 : gate ? s : 0.0
+  time      = attacking ? a : gate ? d : r
+  coef      = 1 - exp(-1 / max(time * sr, 1))
+  level     = z1(level + (target - level) * coef)
+  out = level
+}
+
+patch adsr_fast {
+  in    gate : bool audio voice mono
+  param a = 5ms   [0ms..10s]
+  param d = 200ms [1ms..10s]
+  param s = 0.7   [0..1]
+  param r = 300ms [1ms..30s]
+  out   out : audio voice mono
+
+  attacking = srff(rise(gate), level >= 0.999 || !gate)
+  target    = attacking ? 1.0 : gate ? s : 0.0
+  time      = attacking ? a : gate ? d : r
+  coef      = 1 - fast_exp(-1 / max(time * sr, 1))
+  level     = z1(level + (target - level) * coef)
+  out = level
+}

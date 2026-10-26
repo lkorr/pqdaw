@@ -18,8 +18,17 @@
 //   }
 // A benchmark runs only when the filter matches its name; everything it reports — through Context::measure /
 // record, and through report()/reportStats() while it runs (so existing code migrates by wrapping it in add()) —
-// becomes a row: printed as a BENCH line and written to the CSV with the CPU, build type and system load.
+// becomes a row: printed as a BENCH line and written to the CSV with the CPU, build type, preset and system load.
 // Median and p99 are over the timed repeats (nearest rank: with < 100 repeats p99 is the maximum).
+//
+// Per-block sample mode (T1.11-fix1, Q75 B), for benches whose call is one audio block (process(), ≥ ~1 µs):
+//   c.measureBlocks([&] { host.process(block); }, 64, "ns/sample");   // row "<name> [per block]"
+// times every call on its own (rdtsc) after a warm-up, so median / p99 / max describe single blocks (the tail a
+// device callback sees), not round averages; `--blocks N` samples (default 2000).
+//
+// Higher-is-better units ("x realtime", "…/s": higherIsBetter()): report the low tail in the p99 field (the speed 99 %
+// of rounds reached), min = the worst value, max = the best; summarizeHigherIsBetter() does that for raw samples.
+// The CSV's `better` column says which kind a row is, so tools/bench/append_results.py labels it right.
 //
 // Cross-thread benchmarks (T0.2-fix1): pin each thread to its own physical core and raise its priority so
 // the result doesn't depend on where the scheduler puts the threads or whether two land on SMT siblings,
@@ -65,6 +74,23 @@ inline Stats summarize(std::vector<double> v) {
   s.maxNs = v.back();
   s.samples = n;
   return s;
+}
+
+// The same for higher-is-better samples (speeds): p99Ns holds the 1st percentile (nearest rank from the bottom), the
+// tail that matters for a speed; min / median / max as usual.
+inline Stats summarizeHigherIsBetter(std::vector<double> v) {
+  Stats s = summarize(v);
+  if (v.empty()) return s;
+  std::sort(v.begin(), v.end());
+  const std::size_t n = v.size();
+  const std::size_t rank1 = (n + 99) / 100;  // ceil(0.01 n), 1-based
+  s.p99Ns = v[std::min(n, std::max<std::size_t>(rank1, 1)) - 1];
+  return s;
+}
+
+// Units where a larger number is better: "x realtime" style speeds and rates per second.
+inline bool higherIsBetter(std::string_view unit) noexcept {
+  return unit.find("realtime") != std::string_view::npos || (unit.size() >= 2 && unit.substr(unit.size() - 2) == "/s");
 }
 
 // Defeat dead-code elimination of a computed value.
@@ -113,11 +139,15 @@ inline void reportStats(const char* name, const Stats& s, const char* unit = "ns
 
 // ---- Runner (T1.11) ---------------------------------------------------------------------------------------------
 
+uint64_t rdtsc() noexcept;  // declared again below with the TSC helpers
+double tscTicksPerNs();
+
 struct RunOptions {
   std::string filter;        // ECMAScript regex searched in benchmark names; empty = all
   int repeats = 15;          // timed rounds per Context::measure
   int warmup = 3;            // untimed rounds first
   double minRoundNs = 2e6;   // each round repeats the call until it lasts this long
+  uint32_t blocks = 2000;    // Context::measureBlocks: timed single calls
   std::string csvPath;       // empty: no CSV
   bool list = false;         // print the names and exit
   bool pin = true;           // pin the main thread to physical core 1 and raise its priority
@@ -143,6 +173,25 @@ public:
   Stats measure(F&& f, uint64_t opsPerCall, const char* unit, std::string_view suffix = {}) {
     const Stats s = pq::bench::measure(std::forward<F>(f), opsPerCall, opt_.repeats, opt_.warmup, opt_.minRoundNs);
     record(s, unit, suffix);
+    return s;
+  }
+  // Per-block sample mode: `warmup` × 20 untimed calls, then options().blocks calls timed one by one (rdtsc), each
+  // reported per op (opsPerCall ops per call): median / p99 / max over single calls. For calls of ≥ ~1 µs (an audio
+  // block); the timer costs ~20 ns per call. Reported as `name [per block]` (or `name suffix [per block]`).
+  template <class F>
+  Stats measureBlocks(F&& f, uint64_t opsPerCall, const char* unit, std::string_view suffix = {}) {
+    for (int i = 0; i < opt_.warmup * 20; ++i) f();
+    std::vector<double> perOp;
+    perOp.reserve(opt_.blocks);
+    const double nsPerTick = 1.0 / tscTicksPerNs();
+    for (uint32_t i = 0; i < opt_.blocks; ++i) {
+      const uint64_t t0 = rdtsc();
+      f();
+      const uint64_t t1 = rdtsc();
+      perOp.push_back(static_cast<double>(t1 - t0) * nsPerTick / static_cast<double>(opsPerCall));
+    }
+    const Stats s = summarize(std::move(perOp));
+    record(s, unit, suffix.empty() ? std::string_view("[per block]") : suffix);
     return s;
   }
   // A result measured some other way (cross-thread samples, derived figures).
@@ -179,11 +228,15 @@ private:
 };
 
 // The CSV the runner writes: a header, then one line per row: suite, benchmark, name, unit, median, min, p99, max,
-// samples, load_percent, cpu, build (fields quoted when they contain a comma or a quote).
+// samples, load_percent, cpu, build, preset, better (fields quoted when they contain a comma or a quote). `better` is
+// "higher" for higherIsBetter() units (p99 then holds the low tail), else "lower".
 bool writeCsv(const std::string& path, const std::string& suite, const std::vector<Row>& rows);
 // The CPU brand string (cpuid) and "release" / "dev" (whether NDEBUG was set for the bench support library).
 std::string cpuBrand();
 const char* buildType();
+// The CMake preset the bench support library was compiled with: "ship" (/GL + /LTCG), "release" (no LTCG) or "dev",
+// from its compile flags (bench/CMakeLists.txt, T1.11-fix1). RESULTS.md baselines come from ship.
+const char* presetName();
 
 // ---- Thread placement (Windows; elsewhere the queries return empty / false and pinning is a no-op).
 

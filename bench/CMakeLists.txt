@@ -7,6 +7,16 @@ add_library(pq_bench_support STATIC  # thread pinning, TSC, system load; the T1.
   support/pq_bench_runner.cpp)
 target_include_directories(pq_bench_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 pq_target_defaults(pq_bench_support)
+# T1.11-fix1: the preset the benches were built with, from the compile flags (NDEBUG alone cannot tell ship from
+# release), for the CSV and tools/bench/append_results.py: ship = Release + /GL (LTCG), release = Release, dev = else.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND CMAKE_CXX_FLAGS_RELEASE MATCHES "/GL")
+  set(PQ_BENCH_PRESET ship)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(PQ_BENCH_PRESET release)
+else()
+  set(PQ_BENCH_PRESET dev)
+endif()
+target_compile_definitions(pq_bench_support PRIVATE PQ_BENCH_PRESET="${PQ_BENCH_PRESET}")
 
 function(pq_add_bench name)
   cmake_parse_arguments(A "" "" "SOURCES;DEPS" ${ARGN})
@@ -63,12 +73,21 @@ pq_add_bench(pq_bench_mos_wheel SOURCES views/bench_mos_wheel.cpp DEPS pq_views)
 pq_add_bench(pq_bench_mixer SOURCES views/bench_mixer.cpp DEPS pq_views)
 pq_add_bench(pq_bench_automation SOURCES views/bench_automation.cpp DEPS pq_views)
 # T1.11: the 32-op voice patch at 1/8/64 voices (interpreter, JIT) and the golden offline renders (T1.10).
+# T1.11-fix1: + the proto-Operator at 64 voices (interpreter, JIT, crossfade; SPEC §13 calibration, bench/patches).
 pq_add_bench(pq_bench_render SOURCES engine/bench_render.cpp DEPS pq_pqc)
 pq_use_build_paths(pq_bench_render)
 target_compile_definitions(pq_bench_render PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
 
-# The one bench test: the T1.11 runner's options and CSV output (a few ms of measuring, any build).
+# The bench tests: the T1.11 runner's options and CSV output (a few ms of measuring, any build), and
+# tools/bench/append_results.py's checks (T1.11-fix1; needs a Python 3 interpreter, skipped without one).
 add_test(NAME pq_bench_runner_smoke
   COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:pq_bench_dsp> -DCSV=${CMAKE_CURRENT_BINARY_DIR}/runner_smoke.csv
-          -P ${CMAKE_CURRENT_SOURCE_DIR}/runner_smoke.cmake)
+          -DPRESET=${PQ_BENCH_PRESET} -P ${CMAKE_CURRENT_SOURCE_DIR}/runner_smoke.cmake)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME pq_tools_append_results
+    COMMAND Python3::Interpreter -B -I ${PROJECT_SOURCE_DIR}/tools/bench/test_append_results.py)
+else()
+  message(STATUS "pqdaw: no Python 3 interpreter; the append_results.py test (pq_tools_append_results) is not registered")
+endif()
 pq_add_bench(pq_bench_piano_roll SOURCES views/bench_piano_roll.cpp DEPS pq_views)

@@ -581,6 +581,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Context: `Context::measure` times rounds (a round repeats the call until ≥ `--min-time`), so median/p99 describe round averages; with the default 15 repeats the "p99" is the maximum. Per-call timing would show tail latency of single blocks but adds timer overhead to sub-µs calls.
 - Options: A) rounds (as now; `--repeats 101` for a real p99 of rounds); B) a per-call sample mode for benches whose call is ≥ ~1 µs (a block of audio), reporting the distribution of single calls; C) both.
 - Provisional: A; benches that need tail latency (cross-thread round trips) already collect their own samples and report them with `ctx.record` / `reportStats`.
+- Resolution (T1.11-fix1, M1 review M20): C. Rounds stay the default; `Context::measureBlocks` (`--blocks N`, default 2000) times single calls with rdtsc for process()-style benches and reports them as `<name> [per block]` (patch32 and operator/ in pq_bench_render use it).
 ## Q77 · 2026-10-21 · T3.11 · Piano-roll labels, off-grid marking, scale highlight and fold
 - Context: SPEC §4.1 / Q2 fix "one row per step, equave markers labelled" but not the exact labels, how off-grid notes are marked, which scale "scale highlighting" uses for an EDO, or how fold combines with it.
 - Choices (all in `src/views/src/piano_roll/`, display only, nothing persisted):

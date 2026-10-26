@@ -4,6 +4,7 @@ Release build only. One row per measurement, appended (never edited), so regress
 Machine: i7-11700F (8C/16T, AVX2 + AVX-512), 16 GB, Windows 11, unless noted.
 Commit `abc1234 (was def5678)`: the measured commit def5678 was rebased away before merging; abc1234 is the merged commit with the same subject, and the measured module's code is identical in both (checked with `git diff` per module, T0.2-fix1). The measurement itself is unchanged.
 Cross-thread rows from T0.2-fix1 on: threads pinned to separate physical cores (never SMT siblings) at raised priority, min/median/p99/max over ≥ 5 runs (`pq_bench_core cross [runs]`, helpers in `bench/include/pq_bench.h`). Earlier cross-thread rows were unpinned.
+Rows appended by `tools/bench/append_results.py` from T1.11-fix1 on are baselines (ship preset, clean tree, system load ≤ 25 %) unless their Notes start with "indicative: <reasons>"; higher-is-better rows read `median (worst, p1, best, n)` (tools/README.md "Benchmarks"). Earlier runner rows (T1.11) printed the p99 of "x realtime" rows below the median and were recorded under load on a dirty tree; `tools/bench/rerecord_m1.ps1` re-records them.
 
 | Date | Commit | Benchmark | Config | Result | Notes |
 |---|---|---|---|---|---|

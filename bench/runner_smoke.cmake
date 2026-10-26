@@ -1,5 +1,6 @@
 # T1.11 runner smoke test (ctest pq_bench_runner_smoke): a filtered run writes a CSV with the expected header and
-# rows; a filter that matches nothing exits 1; --list works. -DEXE=<pq_bench_dsp> -DCSV=<file>
+# rows (with the build's preset, T1.11-fix1); a filter that matches nothing exits 1; --list works.
+# -DEXE=<pq_bench_dsp> -DCSV=<file> -DPRESET=<ship|release|dev>
 file(REMOVE "${CSV}")
 execute_process(COMMAND "${EXE}" --filter "^atom/(add|z1)$" --repeats 2 --warmup 0 --min-time 0 --no-pin --csv "${CSV}"
                 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
@@ -12,12 +13,19 @@ if(NOT n EQUAL 5)
   message(FATAL_ERROR "expected a header + 4 rows (add, z1 × L1, L8), got ${n} lines:\n${lines}")
 endif()
 list(GET lines 0 header)
-if(NOT header STREQUAL "suite,benchmark,name,unit,median,min,p99,max,samples,load_percent,cpu,build")
+if(NOT header STREQUAL "suite,benchmark,name,unit,median,min,p99,max,samples,load_percent,cpu,build,preset,better")
   message(FATAL_ERROR "unexpected CSV header: ${header}")
 endif()
 list(GET lines 1 first)
 if(NOT first MATCHES "^pq_bench_dsp,atom/add,atom/add L1,ns/sample,[0-9.e+-]+,")
   message(FATAL_ERROR "unexpected first row: ${first}")
+endif()
+if(NOT first MATCHES ",(release|dev),${PRESET},lower$")
+  message(FATAL_ERROR "the row does not name this build's preset '${PRESET}' and 'lower' (ns/sample): ${first}")
+endif()
+execute_process(COMMAND "${EXE}" --filter "^atom/add$" --blocks 0 --no-pin RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
+if(NOT rc EQUAL 2)
+  message(FATAL_ERROR "--blocks 0 must exit 2, got ${rc}")
 endif()
 execute_process(COMMAND "${EXE}" --filter "no such benchmark" --no-pin RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
 if(NOT rc EQUAL 1)
