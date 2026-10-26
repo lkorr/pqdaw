@@ -86,6 +86,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `device.paste` | `Ctrl+V` | devices | Editing | implemented (T4.1: after the selected device, else at the end) |
 | `device.duplicate` | `Ctrl+D` | devices | Editing | implemented (T4.1) |
 | `device.toggleActive` | `0` | devices | Editing (Activate/Deactivate) | implemented (T4.1: the device activator) |
+| (gesture) double-click a device's title | — | devices | — | T4.4-fix1: Open in Circuit View (also in the device's context menu, with Revert to Stock); the triangle folds |
 
 ## Handled by controls, not the keymap (T3.2, implemented)
 
@@ -106,13 +107,13 @@ These keys belong to the focused control and never reach a keymap while it has f
 
 ## Circuit editor (T4.4, handled by the editor window, not the keymap)
 
-View > Open Patch in Circuit View… opens a `.pqp` file in the editor (canvas left, text right). These keys work while the editor has focus (the canvas ones while the canvas has it); they are not keymap entries because the editor is a modal full-window popover.
+T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — right-click a device > Open in Circuit View, or double-click its title (the fold triangle folds the panel). Options > Developer > Open Patch File in Circuit View… opens a loose `.pqp` file (canvas left, text right). These keys work while the editor has focus (the canvas ones while the canvas has it); they are not keymap entries because the editor is a modal full-window popover.
 
 | Keys | Where | Effect |
 |---|---|---|
-| `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | editor | undo / redo (one history over canvas and text) |
-| `Ctrl+S` | editor | save (the drawn layout spliced into the file) |
-| `Ctrl+Enter` | editor | play / stop the shown patch (edits hot-swap while it plays) |
+| `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | editor | undo / redo (one history over canvas and text); on a project device: the project's undo / redo (one history with the Ableton view) |
+| `Ctrl+S` | editor | save (the drawn layout spliced into the file); a project device has no file (File > Save Set saves it) |
+| `Ctrl+Enter` | editor | play / stop the shown patch (edits hot-swap while it plays); a project device plays in the project |
 | `Esc` | text pane / editor | back to the canvas; closes the editor (twice when there are unsaved changes) |
 | drag a pin to a pin | canvas | connect (a loop with no delay gets a z⁻¹) |
 | drag a node | canvas | move the selection |
