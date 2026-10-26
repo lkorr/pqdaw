@@ -407,21 +407,21 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 ## M2/M3 follow-ups (from the M2/M3 review, docs/reviews/M3.md)
 
 **Bundle A — playback link and lowering (engine, document lowering, app)**
-- [ ] **T3.17-fix1 Idle gate, time base and link robustness** (`engine`, `app`). Depends on: T3.17.
+- [~] **T3.17-fix1 Idle gate, time base and link robustness** *(worker BP, branch task/T3.17-fix-playback)* (`engine`, `app`). Depends on: T3.17.
   - quiet() skips dead zombie slots and is computed inside ProjectProgram::process before quiescent() (C1);
     engine time monotonic across device reopens, auditions released in audioOffline (M15b); compile wait fails
     fast when the output is stopped (L11); metered / uiNotify / lastError races (L12); periodic collect() on UI
     idle, final meter poll at stop (L13).
   - Accept: a sleep-on test (remove a track, zombie dies, collect, publish a unit, 1000 blocks) under a poisoning
     deleter passes; an audition across a reconfigure ends on time; flush() with the output closed returns < 50 ms.
-- [ ] **T3.17-fix2 Mixer lowering cost + IR lowering with stable ids** (`document`, `graph`, `app`). Depends on: T3.17. Before M4.
+- [~] **T3.17-fix2 Mixer lowering cost + IR lowering with stable ids** *(worker BP, same branch)* (`document`, `graph`, `app`). Depends on: T3.17. Before M4.
   - Gains at block rate, per-sample smoothing only while moving; closed sends cost nothing; doc::lower builds
     graph::Patch IR directly with NodeIds from document ids (track, return); the return set is not part of a
     track's patch (H1, H2).
   - Accept: 64 tracks × 8 returns, silent, playing ≤ 3 % of a core (interpreter); adding a return while a chord is
     held recompiles only the return + master units and every held voice's state transfers (no re-attack, state
     keys equal); bench rows in RESULTS.
-- [ ] **T3.17-fix3 Lowering semantics** (`document`, `app`, `engine`). Depends on: T3.17.
+- [~] **T3.17-fix3 Lowering semantics** *(worker BP, same branch)* (`document`, `app`, `engine`). Depends on: T3.17.
   - Solo follows output routing (M1); return→return sends lowered with a cycle check or removed from model + UI
     (M2); mute lanes played, signal-less tuning lanes refused or note-on-evaluated (M3); automation overrides
     consumed (M4); > 128 MIDI tracks or a visible limit (M5); deactivated-group / return-to-group routing (L1, L2);
