@@ -601,3 +601,19 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Verified: two noise() voices |corr| 0.0006; LFO restarts at each note-on; shared(noise()) == old default bit for bit; interpreter == JIT. Same orchestrator runs.
 - Perf: per-voice LFO in proto-Operator ×64 +65 % (5.45 vs 3.3 ns/voice-sample, the filter's tan moves per voice) ≈ 1.7 % of a core.
 - Notes: pulse() fires at the start of the onset's block (Q112); noise repeats its sequence per note-on per lane.
+
+## 2026-10-25 · T2.6-fix2 · worker BK / task/T2.6-fix2-tuning-coverage
+- Did: M3 review H3/M7/M6. MosLinearTable per-boundary sides and windows (chain-safe nudge side), boundary-aware lookup with the region hint, rotation carried per interval (carryRotation == transferModeRotation, shared with the roll's morph and SetTuningParam); fixed a lookup rounding bug; tuning kernel substitutes live inputs; automation lanes bound to the tuning node's audio-rate inputs (taps) and other lanes rendered at block rate (identical values). Golden project_tuning_automation.wav regenerated (cycle error 0.031 ¢, was 0.072). Removed a wrong `jumps >= crossings` assertion (mode transfer makes some crossings continuous). Q113.
+- Verified: worker -Full dev + release 50/50; 126,300 boundary generators worst 7.3e-12 ¢; explorer mode-transfer fixture (real index.html) 784 pitches worst 5.7e-13 ¢; review boundary project 67,200/67,200 samples bit-equal static vs automated (212.505 Hz); crossing at the exact sample; revert evidence per fix. Orchestrator: rebased onto bc62e93 (T1b.2): build.ps1 -Full dev 50/50 and release -Full 50/50, 0 warnings.
+- Perf: block-rate automation lanes 3.7–18× cheaper (curved 1.50 → 0.344, tempo ramp 16.0 → 0.905 ns/lane-sample).
+
+## 2026-10-25 · T2.6-fix3 · worker BK / task/T2.6-fix2-tuning-coverage
+- Did: M3 review H4a/b/c, H5, M9: every note follows its tuning — ratio chains follow their root's signal, reference-relative Ratio/Cents notes scale with the reference, clip overrides to another main tuning select their own tuning node per voice (`voice.tuning`), held notes are retuned by Pitch events (never cut), glides compose with the node; an unmodulated node is a copy. NoteEvent 48 B (retune flag + tuning). Lowerings cached by sequence key (a reference drag recompiles nothing). Fixed a ProjectLink teardown use-after-free introduced by fix2. Q1 answered by implementation; Q100/Q105 updated.
+- Verified: anchored fifth held at 701.955 ¢ through the sweep; clip override and reference automation within ~2e-7 relative; held chord + reference drag: 0 note-offs, 0 lowerings, 0 compiles (RtScope); revert evidence per fix. Same orchestrator runs.
+- Notes: `voice.cents` now moves with the tuning (≤ 1.03e-4 ¢ rounding; reference term block-rate).
+
+## 2026-10-25 · T2.6-fix4 · worker BK / task/T2.6-fix2-tuning-coverage
+- Did: M3 review M8, L7–L10: tuning tables keyed by shape (shared shape cache), owned by their users and freed when unused, reset with the document, status message when all 256 are in use; images keep their tables alive until released; Scala value strictness (errors with line numbers); checked lcm (doc::lcmCapped); tuning param ranges from paramRange; Q105.3/.4 corrected; Q114.
+- Verified: 1000 tuning changes keep ≤ 6 tables alive; reset uses fresh tables; Scala/L9 tests. Same orchestrator runs.
+- Perf (ship, load 13–32 %, indicative): unmodulated node 0.97 ns/frame ×8 (copy); static kernel 12.1 ns/frame ×8 vs T2.6's 7.47 (at higher load) — the boundary windows / live inputs / node selection cost, accepted for correctness, follow-up to optimise.
+- Notes: Scala archive (5401 files) not re-run after the stricter parsing; append_results.py mislabels ship CSVs as "release" and flags "-dirty" when only RESULTS.md changed (fix in T1.11-fix1).

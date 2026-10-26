@@ -432,14 +432,14 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 
 
 **Bundle B — tuning signal coverage (tuning, dsp, document, app)**
-- [~] **T2.6-fix2 Region boundaries, mode transfer, audio-rate tuning automation** *(worker BK, branch task/T2.6-fix2-tuning-coverage)* (`tuning`, `dsp`, `engine`). Depends on: T2.6-fix1.
+- [x] **T2.6-fix2 Region boundaries, mode transfer, audio-rate tuning automation** *(merged 2026-10-25)* (`tuning`, `dsp`, `engine`). Depends on: T2.6-fix1.
   - Boundary side from the region hint (H3); transferModeRotation per interval in the table, shared with the roll's
     morph (M7); automation buffers bound to the tuning node's audio-rate inputs (M6; also renders one value per
     lane per block where nothing binds).
   - Accept: proj_boundary_auto == proj_boundary_static at the held 720 ¢ (bit-identical pitch); the T2.6 sweep
     includes boundary generators; a fixture with rotation ≠ 0 crossing 720 ¢ matches the explorer per degree;
     crossing lands on the exact sample (pitch_track.py lag 0).
-- [~] **T2.6-fix3 Every note follows its tuning** *(worker BK, same branch)* (`document`, `dsp`, `app`, `engine`). Depends on: T2.6-fix2.
+- [x] **T2.6-fix3 Every note follows its tuning** *(merged 2026-10-25)* (`document`, `dsp`, `app`, `engine`). Depends on: T2.6-fix2.
   - Ratio-on-note anchors follow the anchor's signal, reference-relative Ratio/Cents notes scale by ref(t)/ref₀
     (H4b/c; Q1 and Q100.1 unified); per-voice tuning selection for clip overrides to another main tuning (H4a);
     held notes retuned by Pitch events, never cut (H5); glides compose with the node (M9); description cache keyed
@@ -447,7 +447,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
   - Accept: proj_anchor_ratio keeps 702 ¢ to its anchor throughout; proj_clip_override follows its tuning's
     automation; proj_ref_auto_cents follows the reference; dragging the reference with a held Ratio chord emits no
     note-off (test).
-- [~] **T2.6-fix4 Tuning tables and small tuning fixes** *(worker BK, same branch)* (`app`, `tuning`, `document`). Depends on: T2.6-fix1.
+- [x] **T2.6-fix4 Tuning tables and small tuning fixes** *(merged 2026-10-25)* (`app`, `tuning`, `document`). Depends on: T2.6-fix1.
   - Tables keyed by shape, reset with the document, reclaimed by epoch, status when exhausted (M8); Scala value
     strictness (L7); checked lcm (L8); tuning param ranges from paramRange (L9); correct the Q105.3/Q105.4 claims (L10).
   - Accept: New → Open of another project uses no stale table; 1000 wheel size/mode changes keep the pool bounded;
