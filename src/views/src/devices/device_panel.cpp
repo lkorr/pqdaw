@@ -791,8 +791,11 @@ void DevicePanel::select(std::string_view selector, int32_t index) {
   index = std::clamp(index, 0, static_cast<int32_t>(s->values.size()) - 1);
   int32_t& cur = impl_->selection[s->name];
   if (cur == index) {
-    // Tabs flip on press: show the (unchanged) selection again.
-    impl_->bindAll();
+    // Tabs flip on press: show the (unchanged) selection on this selector's tabs again.
+    impl_->suppress = true;
+    for (Impl::Bound& b : impl_->bound)
+      if (b.desc->kind == ControlKind::Tabs && b.desc->selector == s->name) impl_->bindOne(b);
+    impl_->suppress = false;
     return;
   }
   cur = index;
@@ -829,6 +832,7 @@ void DevicePanel::setFolded(bool f) {
   setWidth(ui::Length::fixed(logicalWidth()));
   invalidateLayout();
   markDirty();
+  if (onSizeChanged) onSizeChanged();
 }
 
 float DevicePanel::logicalWidth() const noexcept { return folded_ ? kFoldedW : desc_.width + 2 * kPad; }

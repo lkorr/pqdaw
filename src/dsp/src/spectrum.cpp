@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <span>
 
+#include "pq/core/fast_math.h"
 #include "pq/dsp/fft.h"
 
 namespace pq::dsp {
@@ -71,28 +73,48 @@ struct SpectrumAnalyzer::Window {
 
   float sum3(int32_t k) const noexcept { return P(k - 1) + P(k) + P(k + 1); }
 
+  // The expected maximum of K noise bins + 7 (the crest test's threshold), for the usual window sizes.
+  float threshold(int32_t K) const noexcept {
+    if (K < static_cast<int32_t>(thresholds.size())) return thresholds[static_cast<size_t>(K)];
+    const float k = static_cast<float>(K);
+    return std::log(k) + 0.5772157f + 0.5f / k + 7.0f;
+  }
+
   // Tone weight from the crest test over bins [a, b].
   float crestWeight(int32_t a, int32_t b) const noexcept {
     a = std::max(a, 0);
     b = std::min(b, static_cast<int32_t>(bins) - 1);
     if (b - a < 4) return 0.0f;
-    double floorSum = 0.0;
+    float floorSum = 0.0f;
     int32_t strongest = a;
-    for (int32_t i = a; i <= b; ++i) {
-      if (p[static_cast<size_t>(i)] > p[static_cast<size_t>(strongest)]) strongest = i;
-      if (i + 2 <= b) floorSum += std::min(p[static_cast<size_t>(i)], p[static_cast<size_t>(i + 2)]);
-    }
-    const double F = 2.0 * floorSum / static_cast<double>(b - a - 1);
-    if (F <= 1e-30) return sum3(strongest) > 1e-30f ? 1.0f : 0.0f;
-    const double r = sum3(strongest) / F;
-    const double K = static_cast<double>(b - a + 1);
-    const double hk = std::log(K) + 0.5772157 + 0.5 / K;
-    return static_cast<float>(std::clamp((r - (hk + 7.0)) / 5.0, 0.0, 1.0));
+    const float* q = p.data();
+    for (int32_t i = a; i <= b - 2; ++i) floorSum += std::min(q[i], q[i + 2]);
+    for (int32_t i = a + 1; i <= b; ++i)
+      if (q[i] > q[strongest]) strongest = i;
+    const float F = 2.0f * floorSum / static_cast<float>(b - a - 1);
+    if (F <= 1e-30f) return sum3(strongest) > 1e-30f ? 1.0f : 0.0f;
+    const float r = sum3(strongest) / F;
+    return std::clamp((r - threshold(b - a + 1)) * 0.2f, 0.0f, 1.0f);
   }
 
-  // The power reading of a point at `centre` Hz spanning [lo, hi] Hz.
-  float read(float lo, float centre, float hi) noexcept {
-    const float blo = lo / binHz, bhi = hi / binHz, bc = centre / binHz;
+  // Per point, the span in this window's bins (constant: computed once).
+  struct Geo {
+    float blo, bhi, bc;
+  };
+  std::vector<Geo> geo;
+  void prepare(std::span<const float> lo, std::span<const float> centre, std::span<const float> hi) {
+    geo.resize(lo.size());
+    for (size_t i = 0; i < lo.size(); ++i) geo[i] = {lo[i] / binHz, hi[i] / binHz, centre[i] / binHz};
+    thresholds.assign(64, 0.0f);
+    for (int32_t K = 1; K < 64; ++K) {
+      const double k = K;
+      thresholds[static_cast<size_t>(K)] = static_cast<float>(std::log(k) + 0.5772157 + 0.5 / k + 7.0);
+    }
+  }
+
+  // The power reading of point `pt`.
+  float read(uint32_t pt) noexcept {
+    const float blo = geo[pt].blo, bhi = geo[pt].bhi, bc = geo[pt].bc;
     const float width = bhi - blo;
     // Noise level.
     float noise;
@@ -144,7 +166,7 @@ struct SpectrumAnalyzer::Window {
   float scale = 1.0f, peak3 = 1.5f;
   uint32_t bins = 0;
   int32_t half = 6;
-  std::vector<float> w, frame, p, crest;
+  std::vector<float> w, frame, p, crest, thresholds;
   std::vector<double> prefix;
 };
 
@@ -187,6 +209,8 @@ SpectrumAnalyzer::SpectrumAnalyzer(const SpectrumConfig& config) : cfg_(config) 
     const float u = std::clamp(std::log2(std::max(pointHz_[p], 1e-3f) / kCrossLoHz), 0.0f, 1.0f);
     lowWeight_[p] = lowN_ ? 1.0f - u * u * (3.0f - 2.0f * u) : 0.0f;
   }
+  main_->prepare(spanLo_, pointHz_, spanHi_);
+  if (low_) low_->prepare(spanLo_, pointHz_, spanHi_);
   levels_.resize(P);
   peaks_.resize(P);
   peakAge_.resize(P);
@@ -263,15 +287,17 @@ void SpectrumAnalyzer::analyse() noexcept {
   const float smoothHalf = 0.5f * cfg_.smoothingOct;
   for (uint32_t p = 0; p < P; ++p) {
     const float f = pointHz_[p];
-    float lo = spanLo_[p], hi = spanHi_[p];
-    float power = main_->read(lo, f, hi);
-    if (smoothHalf > 0.0f) {  // 1/N-octave smoothing where the band is wider than the window's resolution
-      const float slo = f * std::exp2(-smoothHalf), shi = f * std::exp2(smoothHalf);
-      if ((shi - slo) / main_->binHz >= main_->peak3) power = main_->meanPower(slo / main_->binHz, shi / main_->binHz);
+    const float lw = useLow ? lowWeight_[p] : 0.0f;
+    float power = 0.0f;
+    if (lw < 1.0f) {  // below the crossover the long window alone is read (the main reading would get weight 0)
+      power = main_->read(p);
+      if (smoothHalf > 0.0f) {  // 1/N-octave smoothing where the band is wider than the window's resolution
+        const float slo = f * std::exp2(-smoothHalf), shi = f * std::exp2(smoothHalf);
+        if ((shi - slo) / main_->binHz >= main_->peak3) power = main_->meanPower(slo / main_->binHz, shi / main_->binHz);
+      }
     }
-    const float lw = lowWeight_[p];
-    if (useLow && lw > 0.0f) {
-      float lp = low_->read(lo, f, hi);
+    if (lw > 0.0f) {
+      float lp = low_->read(p);
       if (smoothHalf > 0.0f) {
         const float slo = f * std::exp2(-smoothHalf), shi = f * std::exp2(smoothHalf);
         if ((shi - slo) / low_->binHz >= low_->noiseBins * low_->peak3)
@@ -280,7 +306,8 @@ void SpectrumAnalyzer::analyse() noexcept {
       power = lw * lp + (1.0f - lw) * power;
     }
     // Tilt only on signal: silence stays at the floor at every frequency.
-    const float db = power > 1e-14f ? std::max(10.0f * std::log10(power) + tilt_[p], cfg_.floorDb) : cfg_.floorDb;
+    // 10·log10 through the fast log2 (4.5e-6 absolute in log2: 1.4e-5 dB, far below what a display shows).
+    const float db = power > 1e-14f ? std::max(3.0102999566f * fastLog2(power) + tilt_[p], cfg_.floorDb) : cfg_.floorDb;
     reading_[p] = db;
     float& cur = levels_[p];
     cur += (db - cur) * (db > cur ? attackA_ : releaseA_);

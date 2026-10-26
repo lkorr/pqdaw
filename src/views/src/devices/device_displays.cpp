@@ -545,7 +545,7 @@ private:
   void compute(uint32_t n) {
     resp_.assign(n, 0.0f);
     selResp_.assign(n, 0.0f);
-    const double sr = 48000.0;
+    const double sr = impl_.sampleRate();
     const double os = globalValue("hq", 1.0) >= 1.5 ? 2.0 : 1.0;
     const double scale = globalValue("scale", 1.0);
     const bool adaptive = globalValue("adaptive", 0.0) >= 0.5;
@@ -565,8 +565,9 @@ private:
     for (uint32_t i = 0; i < n; ++i) {
       const double hz = axis_.hz(plot_.x0 + plot_.width() * static_cast<float>(i) / static_cast<float>(n - 1));
       std::complex<double> h = 1.0;
+      const double wf = math::eqWarp(hz, sr, os);
       for (size_t b = 0; b < bs.size(); ++b) {
-        const std::complex<double> hb = math::eqBandResponse(bs[b], cs[b], hz, sr, os);
+        const std::complex<double> hb = math::eqBandResponseWarped(bs[b], cs[b], wf);
         h *= hb;
         if (static_cast<int32_t>(b) == sel) selResp_[i] = static_cast<float>(20.0 * std::log10(std::max(std::abs(hb), 1e-9)));
       }

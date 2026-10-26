@@ -94,9 +94,11 @@ inline EqCoef eqCoef(const EqBand& b, bool adaptive, double scale, double sr, do
 
 // The digital response of one band at f Hz: the TPT SVF is the bilinear transform of the analog prototype, so
 // H(e^jω) = H_analog(s) with s = j·tan(π f / (os·sr)) / g.
-inline std::complex<double> eqBandResponse(const EqBand& b, const EqCoef& c, double f, double sr, double os) {
+// The prewarped frequency of f: tan(π f / (os·sr)) (one per display column, shared by the bands).
+inline double eqWarp(double f, double sr, double os) { return std::tan(kPi * std::min(f, 0.4999 * os * sr) / (os * sr)); }
+
+inline std::complex<double> eqBandResponseWarped(const EqBand& b, const EqCoef& c, double wf) {
   if (!b.on) return 1.0;
-  const double wf = std::tan(kPi * std::min(f, 0.4999 * os * sr) / (os * sr));
   const std::complex<double> s(0.0, wf / c.g);
   auto section = [&](double k, double m0, double m1, double m2) {
     const std::complex<double> den = s * s + k * s + 1.0;
@@ -108,6 +110,10 @@ inline std::complex<double> eqBandResponse(const EqBand& b, const EqCoef& c, dou
     for (double k : {c.k2, c.k3, c.k4}) h *= hp ? section(k, 1, -k, -1) : section(k, 0, 0, 1);
   }
   return h;
+}
+
+inline std::complex<double> eqBandResponse(const EqBand& b, const EqCoef& c, double f, double sr, double os) {
+  return eqBandResponseWarped(b, c, eqWarp(f, sr, os));
 }
 
 }  // namespace pq::views::devices::math

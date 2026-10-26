@@ -66,6 +66,7 @@ public:
   void setConst(std::string_view name, double value) override;
   void setActive(bool on) override;
   SpectrumFeed* outputSpectrum() override { return feed_.get(); }
+  double sampleRate() const override { return player_ ? player_->sampleRate() : 48000.0; }
 
   // Playback through the player (hot swaps follow structural changes while it plays).
   Status play();

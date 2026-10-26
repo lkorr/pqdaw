@@ -50,6 +50,8 @@ public:
   virtual void setActive(bool on) = 0;
   // The analysed output of the device for the spectrum displays, or null (no spectrum: the display shows its grid).
   virtual SpectrumFeed* outputSpectrum() { return nullptr; }
+  // The rate the device runs at (displays that show a digital response: EQ Eight's bilinear curves).
+  virtual double sampleRate() const { return 48000.0; }
 };
 
 class DevicePanel : public ui::Widget {
@@ -76,6 +78,7 @@ public:
   void setActive(bool on);  // programmatic (no target call)
   bool folded() const noexcept { return folded_; }
   void setFolded(bool f);
+  std::function<void()> onSizeChanged;  // folded / unfolded (the host re-lays out its chain)
   // Logical size of the whole panel as laid out now (folded: the title bar only).
   float logicalWidth() const noexcept;
   float logicalHeight() const noexcept;

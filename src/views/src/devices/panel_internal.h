@@ -59,6 +59,7 @@ struct DevicePanel::Impl {
   void refreshVisibility();
   bool conditionsHold(const ControlDesc& d) const;
   SpectrumFeed* spectrum() const { return panel.target_ ? panel.target_->outputSpectrum() : nullptr; }
+  double sampleRate() const { return panel.target_ ? panel.target_->sampleRate() : 48000.0; }
 };
 
 // A display in the panel body.

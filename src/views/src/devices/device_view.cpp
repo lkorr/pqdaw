@@ -356,6 +356,9 @@ public:
     panel_ = &panel;
     panel.setHeight(ui::Length::fixed(panel.logicalHeight()));
     row_->setWidth(ui::Length::fixed(panel.logicalWidth() + 8.0f));
+    panel.onSizeChanged = [this] {
+      if (panel_) row_->setWidth(ui::Length::fixed(panel_->logicalWidth() + 8.0f));
+    };
     setVisible(true);
     ctx_.setDetailVisible(true);
     ctx_.setDetailMode(DetailMode::Device);

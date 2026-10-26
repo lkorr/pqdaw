@@ -104,3 +104,7 @@ pq_add_bench(pq_bench_circuit SOURCES views/bench_circuit.cpp DEPS pq_views)
 pq_add_bench(pq_bench_circuit_editor SOURCES views/bench_circuit_editor.cpp DEPS pq_views)
 pq_use_build_paths(pq_bench_circuit_editor)
 target_compile_definitions(pq_bench_circuit_editor PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
+# T4.6: device panels (full paints, knob / EQ-dot drag frames, the spectrum frame and analysis, the tap's audio-side cost).
+pq_add_bench(pq_bench_device_panels SOURCES views/bench_device_panels.cpp DEPS pq_views)
+pq_use_build_paths(pq_bench_device_panels)
+target_compile_definitions(pq_bench_device_panels PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
