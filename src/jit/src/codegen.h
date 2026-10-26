@@ -22,7 +22,10 @@
 //   Regions of a voice stage whose ops are all inline and that run frame by frame (Block regions of inline ops,
 // including the simple stateful atoms since T1b.2, and per-sample Loop regions) are FUSED into one loop over
 // frames ("chains"): a per-sample feedback loop is latency-bound, and the oscillators feeding it fill its idle
-// issue slots; values cross the regions in registers.
+// issue slots; values cross the regions in registers. T1b.x-perf (QUESTIONS Q122): global stages get chains too —
+// from the first to the last of two or more per-sample loops, cheap Block regions between them run scalar per frame,
+// one sleep segment per chain, and a cap on the values held across the loop (codegen.cpp kMaxGlobalChainLive) — so
+// one feedback loop after another (filter cascades, crossovers, L/R and M/S channels) overlap instead of adding up.
 //
 //   Block regions and sub-blocked Loop regions ("slices" of frames):
 //     - runs of consecutive stateless element-wise ops (math, logic, mux/demux, select, sine, fast_ functions,

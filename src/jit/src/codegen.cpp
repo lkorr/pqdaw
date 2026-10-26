@@ -54,6 +54,15 @@ constexpr size_t kMaxRunInvariants = 16;       // distinct pattern operands (par
 // state overflowed the 4 KiB frame that needs no stack probes (Operator with every section on: chains of 372–740,
 // pair frames of 4.4 KiB; the corpus's chains are ≤ 232); such a stage runs group by group.
 constexpr uint32_t kMaxPairChainCost = 320;
+// T1b.x-perf (Q122): a Block region of a GLOBAL stage joins a chain only up to this cost. In a chain its ops run one
+// frame at a time (scalar) instead of 8 frames per vector, which is free while they fill the recursions' idle issue
+// slots and a loss once they outweigh them (measured: bench_devices, Saturator / EQ Eight).
+constexpr uint32_t kMaxGlobalChainBlockCost = 96;
+// ... and a global chain holds at most this many loop-invariant operands (params, constants, patterns: loaded once
+// before the loop) plus state words (carried from frame to frame). Past the register file they spill, and a spilled
+// state puts a store→load round trip on its recursion (measured: EQ Eight's 14 sections in one chain ran 2.3× slower
+// than one loop per section).
+constexpr size_t kMaxGlobalChainLive = 20;
 
 static_assert(offsetof(dsp::KernelArgs, in) == 0 && offsetof(dsp::KernelArgs, out) == 8 &&
               offsetof(dsp::KernelArgs, state) == 16 && offsetof(dsp::KernelArgs, resource) == 24 &&
@@ -266,11 +275,20 @@ private:
     // per-sample loop (whose dependency chain the other regions' independent work overlaps) and the whole body
     // stays below kMaxRunCost (a bigger body would not fit the out-of-order window either). One group: values
     // cross the regions in registers.
+    // T1b.x-perf (Q122): global stages too, where each feedback SCC is its own per-sample loop (an EQ's bands, a
+    // crossover, half-band allpasses: one latency-bound loop after another). A global chain runs from its first to
+    // its last per-sample loop (at least two; the Block regions before and after them stay vectorised over time),
+    // its Block regions are cheap (kMaxGlobalChainBlockCost: they turn scalar), and its regions share one sleep
+    // segment (or none), so one flag decides the whole chain. Independent recursions then overlap (L/R, M/S) and a
+    // cascade pipelines across frames: per frame the cost tends to the longest recursion, not the sum.
     chainEnd_.assign(s_.regions.size(), -1);
     chainCost_.assign(s_.stages.size(), 0);
     for (uint32_t sk = 0; sk < s_.stages.size(); ++sk) {
       const g::Stage& st = s_.stages[sk];
-      if (st.poly != g::Poly::Voice) continue;
+      const bool voice = st.poly == g::Poly::Voice;
+      auto segmentOf = [&](uint32_t r) {
+        return !voice && r < s_.sleep.regions.size() ? s_.sleep.regions[r].segment : g::kNone;
+      };
       auto chainable = [&](uint32_t r) {
         const g::Region& reg = s_.regions[r];
         if (reg.kind == g::RegionKind::Control) return false;
@@ -278,27 +296,42 @@ private:
         if (reg.kind != g::RegionKind::Block) return false;
         for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
           if (!inline_[i]) return false;
-        return true;
+        return voice || runCost(reg.firstOp, reg.firstOp + reg.numOps) <= kMaxGlobalChainBlockCost;
       };
+      auto isLoop = [&](uint32_t q) { return s_.regions[q].kind == g::RegionKind::Loop; };
       uint32_t r = st.firstRegion;
       const uint32_t end = st.firstRegion + st.numRegions;
       while (r < end) {
-        if (!chainable(r)) {
+        if (!chainable(r) || (!voice && !isLoop(r))) {
           ++r;
           continue;
         }
-        uint32_t last = r, cost = 0;
-        bool loop = false;
-        for (uint32_t q = r; q < end && chainable(q); ++q) {
+        uint32_t last = r, cost = 0, loops = 0, lastLoop = r;
+        std::set<std::pair<int, uint32_t>> live;  // global chains: values held across the loop (kMaxGlobalChainLive)
+        for (uint32_t q = r; q < end && chainable(q) && segmentOf(q) == segmentOf(r); ++q) {
           const g::Region& reg = s_.regions[q];
           const uint32_t c = runCost(reg.firstOp, reg.firstOp + reg.numOps);
           if (q > r && cost + c > kMaxRunCost) break;
+          if (!voice) {
+            std::set<std::pair<int, uint32_t>> more = live;
+            for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+              for (const g::Operand& o : s_.inputs(s_.ops[i]))
+                if (o.kind != g::Operand::Kind::None && isPattern(o)) more.insert({static_cast<int>(o.kind), o.index});
+              if (s_.ops[i].state != g::kNone) more.insert({-1, s_.ops[i].state});
+            }
+            if (q > r && more.size() > kMaxGlobalChainLive) break;
+            live = std::move(more);
+          }
           cost += c;
-          loop = loop || reg.kind == g::RegionKind::Loop;
+          if (isLoop(q)) {
+            ++loops;
+            lastLoop = q;
+          }
           last = q;
         }
-        if (last > r && loop) {
-          chainCost_[sk] = std::max(chainCost_[sk], cost);
+        if (!voice) last = lastLoop;  // a global chain ends with its last loop (trailing Block regions stay vectorised)
+        if (last > r && loops >= (voice ? 1u : 2u)) {
+          if (voice) chainCost_[sk] = std::max(chainCost_[sk], cost);
           chainEnd_[r] = static_cast<int32_t>(last);
           const int32_t id = next++;
           for (uint32_t q = r; q <= last; ++q)
@@ -398,14 +431,14 @@ private:
     for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
       Value* t0 = meterStart();  // T4.5: the region's (or chain's) time while a cost meter is shown
       const uint32_t first = r;
-      if (chainEnd_[r] >= 0) {
-        emitChain(r, static_cast<uint32_t>(chainEnd_[r]));
-        r = static_cast<uint32_t>(chainEnd_[r]);
-      } else if (!voice_ && r < s_.sleep.regions.size() && s_.sleep.regions[r].segment != g::kNone) {
-        emitSleepingRegion(r);
-      } else {
-        emitRegion(r);
-      }
+      const uint32_t last = chainEnd_[r] >= 0 ? static_cast<uint32_t>(chainEnd_[r]) : r;
+      auto body = [&] {
+        if (last > r) emitChain(r, last);
+        else emitRegion(r);
+      };
+      if (!voice_ && r < s_.sleep.regions.size() && s_.sleep.regions[r].segment != g::kNone) emitSleeping(r, last, body);
+      else body();
+      r = last;
       meterStop(first, t0);
     }
     if (vw == 16) stagePairState(false);
@@ -1216,10 +1249,12 @@ private:
     inv_.clear();
   }
 
-  // T1.x-silence: a sleepable region behind its segment's flag (the host decides it at the stage's start, image_host.h):
-  // asleep, its fill buffers are zeroed (the constant-output kernel) instead of running it. One branch per block.
-  void emitSleepingRegion(uint32_t r) {
-    const g::RegionSleep& rs = s_.sleep.regions[r];
+  // T1.x-silence: sleepable regions r0..r1 (one region, or a chain of one segment) behind their segment's flag (the
+  // host decides it at the stage's start, image_host.h): asleep, their fill buffers are zeroed (the constant-output
+  // kernel) instead of running them. One branch per block.
+  template <class Body>
+  void emitSleeping(uint32_t r0, uint32_t r1, Body&& body) {
+    const g::RegionSleep& rs = s_.sleep.regions[r0];
     Value* flag = B_.CreateAlignedLoad(i32_, B_.CreateConstInBoundsGEP1_64(f32_, aux_, L_.sleepOff + rs.segment),
                                        llvm::Align(4));
     llvm::BasicBlock* asleep = llvm::BasicBlock::Create(C_, "asleep", F_);
@@ -1228,8 +1263,7 @@ private:
     B_.CreateCondBr(B_.CreateICmpNE(flag, c32(0)), asleep, awake);
     B_.SetInsertPoint(asleep);
     llvm::Constant* zero8 = llvm::Constant::getNullValue(vecTy(8));
-    for (uint32_t k = rs.firstFill; k < rs.firstFill + rs.numFills; ++k) {
-      const uint32_t b = s_.sleep.fills[k];
+    for (const uint32_t b : fillsOf(r0, r1)) {
       const g::Buffer& buf = s_.buffers[b];
       // Whole 8-float chunks: a buffer is sized in 16-float units (image_host.cpp layoutMemory), so the rounded-up
       // tail stays inside it.
@@ -1243,14 +1277,26 @@ private:
     }
     B_.CreateBr(done);
     B_.SetInsertPoint(awake);
-    emitRegion(r);
+    body();
     B_.CreateBr(done);
     B_.SetInsertPoint(done);
   }
 
-  // Regions [r0, r1] of a voice stage as one loop over frames (a chain, analyse()): per frame, every region's ops
-  // in order (Block regions' inline ops, per-sample regions with their solves), values in one map.
+  // The buffers sleeping regions r0..r1 fill.
+  std::vector<uint32_t> fillsOf(uint32_t r0, uint32_t r1) const {
+    std::vector<uint32_t> f;
+    for (uint32_t r = r0; r <= r1; ++r) {
+      const g::RegionSleep& rs = s_.sleep.regions[r];
+      f.insert(f.end(), s_.sleep.fills.begin() + rs.firstFill, s_.sleep.fills.begin() + rs.firstFill + rs.numFills);
+    }
+    return f;
+  }
+
+  // Regions [r0, r1] of a stage as one loop over frames (a chain, analyse()): per frame, every region's ops in order
+  // (Block regions' inline ops, per-sample regions with their solves), values in one map. A voice chain runs one
+  // frame of the group's (pair's, lane's) voices per iteration, a global chain one frame (scalar).
   void emitChain(uint32_t r0, uint32_t r1) {
+    const unsigned w = voice_ ? vw_ : 1u;
     llvm::BasicBlock* body = llvm::BasicBlock::Create(C_, "chain", F_);
     hoistIP_ = B_.CreateBr(body);
     inv_.clear();
@@ -1260,10 +1306,10 @@ private:
       for (uint32_t r = r0; r <= r1; ++r) {
         const g::Region& reg = s_.regions[r];
         if (reg.kind == g::RegionKind::Block) {
-          const Frame fr{t, vw_, &m, true};
+          const Frame fr{t, w, &m, true};
           for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) emitInline(i, fr);
         } else {
-          emitPerFrame(reg, t, vw_, m, true);
+          emitPerFrame(reg, t, w, m, true);
         }
       }
     });

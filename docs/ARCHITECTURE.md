@@ -197,7 +197,10 @@ namespace pq::graph {
 // probes (it must not: a frame > 4 KiB touches guard pages on the audio thread).
 // Voice stages (T1b.2, CompileOptions::voiceCode, Q111): a voice value is one vector across voice lanes. The
 // simple stateful atoms are inline in voice block regions too, and consecutive voice regions that run frame by
-// frame (inline Block regions + per-sample loops) are fused into one loop over frames ("chains"). Every voice stage
+// frame (inline Block regions + per-sample loops) are fused into one loop over frames ("chains"); T1b.x-perf (Q122):
+// global stages too, from the first to the last of at least two per-sample loops, with cheap Block regions between
+// them (scalar per frame), one sleep segment, and at most 20 invariants + state words (more spill the recursions):
+// independent recursions (EQ Eight L/R, M/S) overlap and cascades pipeline across frames. Every voice stage
 // without sends or per-frame calls also gets a PAIR function (StageFn with group1/vstate1) that runs two occupied
 // groups as <16 x float>: one zmm per value on AVX-512 hosts (VoiceCode::Pairs512, the Auto choice there), two ymm
 // halves otherwise (Pairs256); a lone group runs the 8-lane function. Its stage-local voice values have a second copy
