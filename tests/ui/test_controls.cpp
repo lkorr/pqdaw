@@ -159,7 +159,7 @@ TEST_CASE("theme: a missing, unknown or malformed token fails with its name") {
     CHECK_MESSAGE(r.error().message.find("missing token \"" + name + "\"") != std::string::npos, r.error().message);
     ++checked;
   }
-  CHECK(checked == 57 + 16 + 19 + 20 + 25 + 17 + 17 + 21 + 18 + 5 + 15);  // + size.gutter (T3.x-fix-look), + 16 arrangement.* (T3.8), 19 roll.* (T3.11, T3.12), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10), 17 automation.* (T3.15), 21 circuit.* (T4.2), 18 code.* (T4.4)
+  CHECK(checked == 57 + 16 + 19 + 20 + 25 + 17 + 17 + 21 + 18 + 24 + 5 + 15);  // + size.gutter (T3.x-fix-look), + 16 arrangement.* (T3.8), 19 roll.* (T3.11, T3.12), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10), 17 automation.* (T3.15), 21 circuit.* (T4.2), 18 code.* (T4.4), 24 device.* (T4.6)
   {
     auto r = parseTheme(removeLine("\"name\":"));
     REQUIRE_FALSE(r.ok());
