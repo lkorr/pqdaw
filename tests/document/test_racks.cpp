@@ -404,6 +404,18 @@ TEST_CASE("racks: lowering — inline chains with stable ids, one runtime param 
     CHECK(fast[i].name == lp->params[i].name);
     CHECK(fast[i].value == lp->params[i].value);
   }
+  // The rack's circuit view (rackSubcircuit) is built by the same code: every entity node of it (devices, chains,
+  // mappings, the rack's params) is a node of the track patch with the same NodeId.
+  Result<pq::graph::Patch> sub = rackSubcircuit(r.doc(), rack, library().library());
+  REQUIRE_MESSAGE(sub.ok(), (sub.ok() ? std::string() : sub.error().message));
+  uint32_t entityNodes = 0;
+  for (pq::graph::NodeIndex n = 0; n < sub->nodeCount(); ++n) {
+    const uint32_t id = sub->node(n).id.value;
+    if (id < kEntityNodeBase) continue;
+    ++entityNodes;
+    CHECK_MESSAGE(has(id), "node " << id << " of the rack's subcircuit is not in the track patch");
+  }
+  CHECK(entityNodes > 20);
   // A macro turn changes no IR (no compile): the same patch object is shared.
   r.edit(ops::setMacroValue(r.doc(), rack, 0, 90.0));
   Result<LoweredProject> lp2 = lower(r.doc(), o, &*lp);
@@ -432,4 +444,12 @@ TEST_CASE("racks: lowering — inline chains with stable ids, one runtime param 
   REQUIRE(lp5.ok());
   CHECK_FALSE(lp5->patches[ti]->patch.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, util2.value, 0)}).has_value());
   CHECK(lp5->patches[ti]->patch.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, sat.value, 0)}).has_value());
+  // T4.12-fix1 with racks: an Instrument Rack's track takes the largest `voices` setting of its chains' instruments.
+  const DeviceId ir = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{r.inst})).devices.at(0);
+  const DeviceId op = r.edit(ops::addChainWithDevice(r.doc(), ids, ir, "operator", DeviceKind::Instrument)).devices.at(0);
+  r.edit(ops::setDeviceSetting(r.doc(), op, "voices", 12.0));
+  Result<LoweredProject> lp6 = lower(r.doc(), o);
+  REQUIRE(lp6.ok());
+  CHECK(lp6->graph.tracks[ti].role == pq::graph::TrackRole::Instrument);
+  CHECK(lp6->graph.tracks[ti].maxVoices == 12);
 }

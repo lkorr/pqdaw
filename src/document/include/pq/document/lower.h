@@ -39,9 +39,10 @@
 // an Instrument Rack's chains with an instrument first. Per chain c (nodes NodeRole::Chain, the chain's id):
 //   Audio Effect Rack   x → [gain(x, zs_c) when its select zone is on] → its devices → gain(·, pack(gl_c, gr_c)) →
 //                       summed over the chains (no chain at all: x passes; every chain muted: silence). The select
-//                       zone gates the chain's INPUT, so a chain the selector leaves sleeps once its tail has rung out.
-//   Instrument Rack     its instrument's voices · zk_c (key zone, on ln voice.hz) · zv_c (velocity zone) [· the
-//                       enclosing rack's per-voice gain, nested] → voice_sum → its effects (per-voice chains: the
+//                       zone gates the chain's INPUT (exact silence after its fade; whether it then sleeps is the
+//                       scheduler's segmenting: not yet, Q?-T4.8-a).
+//   Instrument Rack     gain(its instrument's voices, zk_c (key zone, on ln voice.hz) · zv_c (velocity zone) [· the
+//                       enclosing rack's per-voice gain, nested]) (per voice; smoothed when block rate) → voice_sum → its effects (per-voice chains: the
 //                       effects before voice_sum) → gain(·, pack(gl_c · zs_c, gr_c · zs_c)) → summed; `done` = and of
 //                       every chain's `done` (all of them must have one, else none).
 //   gl_c, gr_c          runtime params c<chain>_gl / _gr ("chain<id>:gl"): balance pan · volume, derived by the

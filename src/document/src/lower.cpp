@@ -1082,7 +1082,7 @@ PortRef audioRack(Build& b, uint32_t k, PortRef x, uint16_t& width) {
     PortRef y = x;
     uint16_t w = width;
     const PortRef sel = selectGain(b, k, *lc.chain);
-    // The zone gates the chain's input, so a chain the selector leaves sleeps after its tail (SPEC §7.7).
+    // The zone gates the chain's input: a chain the selector leaves hears exact silence once faded, its tail rings out.
     if (sel.node != graph::kNone) y = b.ir.atom("gain", {x, sel, b.time()}, id(kCInGain));
     y = chainOf(b, lc.devs, 0, y, w);
     y = chainMixer(b, cid, y, kPending);
@@ -1146,7 +1146,9 @@ Voices instrumentRack(Build& b, uint32_t k, PortRef outer) {
       if (w == graph::kWidthInfer) w = graph::kWidthMono;
       if (const auto done = b.ir.patch().findOutput(call, "done")) dones.emplace_back(PortRef{call, static_cast<uint16_t>(*done)}, cid);
       else allDone = false;
-      if (g.node != graph::kNone) y = b.ir.atom("mul", {y, g}, id(kCVoiceGain));
+      // Through a smoothed gain stage per voice: a zone edit while notes sound fades over ~2 ms (a velocity zone, block
+      // rate per voice; a key zone follows ln(voice.hz) per sample, so it is applied as it is: Q?-T4.8-a).
+      if (g.node != graph::kNone) y = b.ir.atom("gain", {y, g, b.time()}, id(kCVoiceGain));
       if (rack.voiceChains) {  // SPEC §8.2 voicechain: the chain's effects per voice, then the sum
         y = chainOf(b, lc.devs, 1, y, w);
         y = b.ir.atom("voice_sum", {y}, id(kCVoiceSum));

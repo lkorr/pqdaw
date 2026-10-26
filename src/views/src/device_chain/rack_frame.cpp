@@ -351,7 +351,10 @@ public:
       for (const doc::DeviceValue& v : d.params) values[v.name] = v.value;
       panel_ = &add<devices::DevicePanel>("panel", sig_, desc_, &target_, values);
       panel_->setFolded(folded);
-      panel_->onSizeChanged = [this] { relayout(); };
+      panel_->onSizeChanged = [this] {
+        applyVisibility();
+        relayout();
+      };
     }
     panel_->setActive(d.active);
     for (const devices::ParamInfo& p : sig_.params) panel_->setParamValue(p.name, paramValue(p.name));
@@ -363,6 +366,7 @@ public:
       list_->rows.clear();
       for (const doc::ChainPtr& c : rack_->chains) list_->rows.push_back(&list_->add<ChainRow>(*this, impl_, *c));
       list_->invalidateLayout();
+      list_->markDirty();
     }
     // The chain shown: the one picked (view state), else the first.
     const auto it = impl_.shownChain.find(id_.value);
@@ -370,11 +374,14 @@ public:
              : rack_->chains.empty()                                                    ? doc::ChainId{}
                                                                                          : rack_->chains.front()->id;
     for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
-    syncInner();
-    list_->setVisible(rack_->showChains);
-    zones_->setVisible(rack_->showChains && zoneTab().has_value());
+    const bool rebuilt = syncInner();
+    const bool shownBefore = list_->visible(), zonesBefore = zones_->visible();
+    applyVisibility();
     zones_->markDirty();
-    relayout();
+    strip_->markDirty();
+    // Only a change of what is shown re-lays the chain out; values repaint just their controls (T4.6's rule).
+    if (first || optionsChanged || !sameRows || rebuilt || shownBefore != list_->visible() || zonesBefore != zones_->visible())
+      relayout();
   }
   void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef>) override { update(d); }
 
@@ -386,7 +393,16 @@ public:
     syncInner();
     impl_.reindex();
     impl_.view.refreshRings();  // new panels: their rings and mapped values
+    list_->markDirty();
     relayout();
+  }
+  // What a fold, the chain list and the zone editor show.
+  void applyVisibility() {
+    const bool folded = panel_ != nullptr && panel_->folded();
+    for (size_t i = 0; i < childCount(); ++i) child(i).setVisible(!folded || &child(i) == panel_);
+    if (folded) return;
+    list_->setVisible(rack_->showChains);
+    zones_->setVisible(rack_->showChains && zoneTab().has_value());
   }
   void relayout() {
     invalidateLayout();
@@ -397,14 +413,10 @@ public:
   void arrange(ui::LayoutPass& pass) override {
     const ui::IRect r = rect();
     int32_t x = r.x;
-    const bool folded = panel_ != nullptr && panel_->folded();
-    for (size_t i = 0; i < childCount(); ++i) child(i).setVisible(!folded || &child(i) == panel_);
-    if (folded) {
+    if (panel_ != nullptr && panel_->folded()) {
       pass.place(*panel_, {r.x, r.y, pass.px(panel_->logicalWidth()), pass.px(panel_->logicalHeight())});
       return;
     }
-    list_->setVisible(rack_->showChains);
-    zones_->setVisible(rack_->showChains && zoneTab().has_value());
     pass.place(*strip_, {x, r.y, pass.px(kStripW), r.h});
     x += pass.px(kStripW);
     if (panel_ != nullptr) {
@@ -529,7 +541,7 @@ public:
 
 private:
   // The frames of the chain shown: rebuilt when its devices changed, else updated.
-  void syncInner() {
+  bool syncInner() {
     const doc::Chain* c = shownChainPtr();
     static const std::vector<doc::DevicePtr> kNone;
     const std::vector<doc::DevicePtr>& devs = c != nullptr ? c->devices : kNone;
@@ -550,6 +562,7 @@ private:
       }
     }
     innerShown_ = devs;
+    return !same;
   }
 
   RackTarget target_;

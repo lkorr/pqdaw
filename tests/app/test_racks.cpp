@@ -87,7 +87,7 @@ double peakOf(const golden::Channels& a) {
 // Renders a graph through the per-track compile path (the interpreter, or `backend`) with `notes` on slot 0.
 golden::Channels renderGraph(const graph::ProjectGraph& g, const std::vector<engine::ProjectParamLink>& links,
                              const std::vector<float>& values, uint32_t frames, std::vector<engine::TimedNote> notes,
-                             engine::UnitBackend backend = {}) {
+                             engine::UnitBackend backend = {}, uint64_t* asleepBlocks = nullptr) {
   engine::ProjectCompileOptions co;
   co.sampleRate = kRate;
   co.maxBlockFrames = kBlock;
@@ -119,6 +119,12 @@ golden::Channels renderGraph(const graph::ProjectGraph& g, const std::vector<eng
           }) == 0);
     out[0].insert(out[0].end(), l.begin(), l.end());
     out[1].insert(out[1].end(), r.begin(), r.end());
+  }
+  if (asleepBlocks != nullptr) {
+    *asleepBlocks = 0;
+    for (uint32_t u = 0; u < (*prog)->numUnits(); ++u)
+      if (const engine::ProgramImage* im = (*prog)->current(u))
+        if (const engine::SleepStats* st = im->sleepStats()) *asleepBlocks += st->asleepBlocks;
   }
   return out;
 }
@@ -265,7 +271,7 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
       "  lnhz = log(voice.hz)\n"
       "  ga = clip(min(lnhz * ka0 + ka1, lnhz * ka2 + ka3), 0, 1)\n"
       "  sa = BasicSynth()\n"
-      "  oa = gain(voice_sum(sa.out * ga), pack(gla, gra), 0.002)\n"
+      "  oa = gain(voice_sum(gain(sa.out, ga, 0.002)), pack(gla, gra), 0.002)\n"
       // chain B: velocity zone; macro 1 → bright (curve)
       "  gb = clip(min(voice.velocity * vb0 + vb1, voice.velocity * vb2 + vb3), 0, 1)\n"
       "  bx = m1a * " + num(1.0 / 127.0) + "\n"
@@ -273,7 +279,7 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
       "  bp = bs * " + num(0.9 - 0.2) + " + 0.2\n"
       "  bv = bp * 1.0 + 0.0\n"
       "  sb = BasicSynth(bright: bv)\n"
-      "  ob = gain(voice_sum(sb.out * gb), pack(glb, grb), 0.002)\n"
+      "  ob = gain(voice_sum(gain(sb.out, gb, 0.002)), pack(glb, grb), 0.002)\n"
       "  r1 = oa + ob\n"
       "  done = and(sa.done, sb.done)\n"
       // R2: macro 2 → its own selector; macro 1 → the saturator's drive (Log travel)
@@ -589,4 +595,49 @@ TEST_CASE("racks: nested racks, per-voice chains and degree zones render the sam
   CHECK(keyed("dev" + std::to_string(outer.value) + ":macro2") == 1);
   CHECK(keyed("chain" + std::to_string(co1.value) + ":k2") == 1);
   CHECK(keyed("chain" + std::to_string(ca2.value) + ":s0") == 0);
+}
+
+TEST_CASE("racks: a muted chain is not in the program; the selector gates a chain's input (sleep recorded)") {
+  auto lib = app::loadDeviceLibrary();
+  REQUIRE(lib.ok());
+  // A held note → (a group) Audio Effect Rack [c1: Saturator, select zone 0 … 63 | c2: EQ Eight → Saturator, select zone
+  // 64 … 127] at selector 0: c2 hears silence (its input gain stage is settled at 0) and falls asleep after its tail.
+  auto render = [&](bool zones, bool mute, uint64_t& asleep, size_t& nodes) {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId g = ids.track(), t = ids.track();
+    const ChainId c1 = ids.chain(), c2 = ids.chain();
+    const DeviceId eq = ids.device();
+    Batch b{"sleep", {}};
+    // The rack on a group (a unit of its own, global: its regions can sleep) fed by a MIDI track.
+    b.commands.push_back(AddTrack{playback_fixture::track(g, TrackKind::Group, "G"), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T", ids.device()), g, kAppend});
+    b.commands.push_back(AddDevice{g, makeRack(ids.device(), DeviceKind::AudioEffect,
+                                               {makeChain(c1, "1", {makeDevice(ids.device(), "saturator", DeviceKind::AudioEffect)}),
+                                                makeChain(c2, "2", {makeDevice(eq, "eq_eight", DeviceKind::AudioEffect),
+                                                                    makeDevice(ids.device(), "saturator", DeviceKind::AudioEffect)})}),
+                                   kAppend});
+    b.commands.push_back(SetDeviceSetting{eq, "on1", 1.0});
+    if (zones) {
+      b.commands.push_back(SetChainZone{c1, ZoneKind::Select, Zone{0, 0, 63, 63}});
+      b.commands.push_back(SetChainZone{c2, ZoneKind::Select, Zone{64, 64, 127, 127}});
+    }
+    if (mute) b.commands.push_back(SetChainActive{c2, false});
+    REQUIRE(store.dispatch(b).ok());
+    const Lowered l = lowerIt(*store.current(), **lib);
+    nodes = l.lp.patches[0]->patch.nodeCount();  // the group (first in track order)
+    const golden::Channels out = renderGraph(l.lp.graph, l.links, l.values, 48000, {{0, 48000, 220.0f, 0.8f, 0.5f}}, {}, &asleep);
+    CHECK(peakOf(out) > 0.01);
+  };
+  uint64_t awake = 0, gated = 0, muted = 0;
+  size_t nAwake = 0, nGated = 0, nMuted = 0;
+  render(false, false, awake, nAwake);
+  render(true, false, gated, nGated);
+  render(false, true, muted, nMuted);
+  // Recorded, not asserted: whether the gated chain's regions get a sleep segment of their own depends on the
+  // scheduler's segmenting (T1.x-silence), which today keeps the rack's chains in one segment with the sum (0 / 0
+  // measured): QUESTIONS Q?-T4.8-a item 5.
+  MESSAGE("asleep segment-blocks over 1 s: both chains playing " << awake << ", chain 2 left by the selector " << gated
+                                                                 << ", chain 2 muted " << muted);
+  CHECK(nMuted < nAwake);  // the muted chain's devices are not lowered at all: it costs nothing
 }
