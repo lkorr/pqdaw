@@ -1,0 +1,177 @@
+// Oversampling by 2×, 4× and 8× around a nonlinearity or a filter: polyphase IIR half-band filters (two parallel
+// chains of first-order allpasses; L. de Soras' "hiir" design, after the elliptic half-band of R. Lyons / Valenzuela
+// & Constantinides), written as base-rate subcircuits (QUESTIONS Q?-T4.9-a: SPEC §7.2's `oversample { … }` region
+// is not in patch language v0; these stages are its subcircuit form).
+//
+// Half-band H(z) = ½·(A0(z²) + z⁻¹·A1(z²)), each Ai a chain of allpasses (c + z⁻¹)/(1 + c·z⁻¹) at the low rate of
+// that stage. Polyphase, so every allpass runs at the stage's LOW rate:
+//   up    x → (A0(x), A1(x))                          two high-rate samples per low-rate sample, in time order
+//   down  (e, o) → ½·(A0(o) + A1(e))                  e = the earlier of the two high-rate samples
+// One allpass step is y = −c·y[n−1] + (c·x + x[n−1]): one multiply-add on the recursion, so the loop runs at one
+// FMA latency per step.
+//
+// Coefficients (hiir's designer, verified by tests/stdlib: passband ripple, stopband, alias rejection). Each stage
+// keeps 0 … 20 kHz (at 48 kHz) and rejects everything that would fold into it:
+//   stage 1  48 → 96 kHz    6 coefficients, transition 0.0833: stopband ≥ 96 dB, passband ripple < 1e-9 dB
+//   stage 2  96 → 192 kHz   3 coefficients, transition 0.2917: ≥ 101 dB
+//   stage 3  192 → 384 kHz  2 coefficients, transition 0.3958: ≥ 102 dB
+// The phase is not linear (an IIR: no latency, a few samples of group delay at 20 kHz, near zero in the bass).
+// Up then down is an allpass-like response within ±1e-9 dB to 20 kHz.
+//
+// Usage (4×):
+//   u = os_up2(x)                    d = os_down4_2(f(v.s0), f(v.s1), f(v.s2), f(v.s3))
+//   v = os_up2_4(u.s0, u.s1)         y = os_down2(d.s0, d.s1)
+// Stages 2 and 3 take the samples of the stage before in time order and run their allpasses through them one
+// after the other within each base-rate sample (state carried from s0 to s1 …).
+
+// ---- allpass building blocks ---------------------------------------------------------------------------------------
+// One first-order allpass (c + z⁻¹)/(1 + c·z⁻¹), one sample per tick.
+patch hb_ap1 {
+  in    x : audio
+  param c = 0.5 [-1..1]
+  out   y : audio
+
+  v = -c * z1(v) + (c * x + z1(x))
+  y = v
+}
+
+// The same allpass run over two consecutive samples per tick (s0 first).
+patch hb_ap2 {
+  in    s0 : audio
+  in    s1 : audio
+  param c = 0.5 [-1..1]
+  out   y0 : audio
+  out   y1 : audio
+
+  v0 = -c * z1(v1) + (c * s0 + z1(s1))
+  v1 = -c * v0 + (c * s1 + s0)
+  y0 = v0
+  y1 = v1
+}
+
+// The same allpass run over four consecutive samples per tick.
+patch hb_ap4 {
+  in    s0 : audio
+  in    s1 : audio
+  in    s2 : audio
+  in    s3 : audio
+  param c = 0.5 [-1..1]
+  out   y0 : audio
+  out   y1 : audio
+  out   y2 : audio
+  out   y3 : audio
+
+  v0 = -c * z1(v3) + (c * s0 + z1(s3))
+  v1 = -c * v0 + (c * s1 + s0)
+  v2 = -c * v1 + (c * s2 + s1)
+  v3 = -c * v2 + (c * s3 + s2)
+  y0 = v0
+  y1 = v1
+  y2 = v2
+  y3 = v3
+}
+
+// ---- stage 1: 48 ↔ 96 kHz ----------------------------------------------------------------------------------------
+// A0: c0 c2 c4, A1: c1 c3 c5.
+patch os_up2 {
+  in    x : audio
+  out   s0 : audio
+  out   s1 : audio
+
+  s0 = hb_ap1(hb_ap1(hb_ap1(x, c: 0.044181909085223188), c: 0.33074416170770549), c: 0.70205285207742341)
+  s1 = hb_ap1(hb_ap1(hb_ap1(x, c: 0.1641888597263377), c: 0.51508694250895914), c: 0.89488964220359257)
+}
+
+patch os_down2 {
+  in    s0 : audio
+  in    s1 : audio
+  out   y : audio
+
+  a = hb_ap1(hb_ap1(hb_ap1(s1, c: 0.044181909085223188), c: 0.33074416170770549), c: 0.70205285207742341)
+  b = hb_ap1(hb_ap1(hb_ap1(s0, c: 0.1641888597263377), c: 0.51508694250895914), c: 0.89488964220359257)
+  y = 0.5 * (a + b)
+}
+
+// ---- stage 2: 96 ↔ 192 kHz ---------------------------------------------------------------------------------------
+// A0: c0 c2, A1: c1. In: the two 96 kHz samples of one base sample; out: its four 192 kHz samples.
+patch os_up2_4 {
+  in    s0 : audio
+  in    s1 : audio
+  out   o0 : audio
+  out   o1 : audio
+  out   o2 : audio
+  out   o3 : audio
+
+  a0 = hb_ap2(s0, s1, c: 0.063787836824294675)
+  a  = hb_ap2(a0.y0, a0.y1, c: 0.66854879318358884)
+  b  = hb_ap2(s0, s1, c: 0.26678096249714506)
+  o0 = a.y0
+  o1 = b.y0
+  o2 = a.y1
+  o3 = b.y1
+}
+
+patch os_down4_2 {
+  in    s0 : audio
+  in    s1 : audio
+  in    s2 : audio
+  in    s3 : audio
+  out   o0 : audio
+  out   o1 : audio
+
+  a0 = hb_ap2(s1, s3, c: 0.063787836824294675)
+  a  = hb_ap2(a0.y0, a0.y1, c: 0.66854879318358884)
+  b  = hb_ap2(s0, s2, c: 0.26678096249714506)
+  o0 = 0.5 * (a.y0 + b.y0)
+  o1 = 0.5 * (a.y1 + b.y1)
+}
+
+// ---- stage 3: 192 ↔ 384 kHz --------------------------------------------------------------------------------------
+// A0: c0, A1: c1.
+patch os_up4_8 {
+  in    s0 : audio
+  in    s1 : audio
+  in    s2 : audio
+  in    s3 : audio
+  out   o0 : audio
+  out   o1 : audio
+  out   o2 : audio
+  out   o3 : audio
+  out   o4 : audio
+  out   o5 : audio
+  out   o6 : audio
+  out   o7 : audio
+
+  a  = hb_ap4(s0, s1, s2, s3, c: 0.11030120991226221)
+  b  = hb_ap4(s0, s1, s2, s3, c: 0.5367721236663745)
+  o0 = a.y0
+  o1 = b.y0
+  o2 = a.y1
+  o3 = b.y1
+  o4 = a.y2
+  o5 = b.y2
+  o6 = a.y3
+  o7 = b.y3
+}
+
+patch os_down8_4 {
+  in    s0 : audio
+  in    s1 : audio
+  in    s2 : audio
+  in    s3 : audio
+  in    s4 : audio
+  in    s5 : audio
+  in    s6 : audio
+  in    s7 : audio
+  out   o0 : audio
+  out   o1 : audio
+  out   o2 : audio
+  out   o3 : audio
+
+  a  = hb_ap4(s1, s3, s5, s7, c: 0.11030120991226221)
+  b  = hb_ap4(s0, s2, s4, s6, c: 0.5367721236663745)
+  o0 = 0.5 * (a.y0 + b.y0)
+  o1 = 0.5 * (a.y1 + b.y1)
+  o2 = 0.5 * (a.y2 + b.y2)
+  o3 = 0.5 * (a.y3 + b.y3)
+}

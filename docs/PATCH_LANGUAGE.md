@@ -136,6 +136,11 @@ Stock subcircuits are ordinary patches in this language; a patch imports the fil
 | `control/lfo.pqp` | `lfo(reset, rate, sync, beats, phase)` | `sine`, `tri`, `saw`, `square` (export `cycle`) |
 | `control/slew.pqp`, `smooth.pqp` | `slew(x, rise, fall)`, `smooth(x, time)` | `out` |
 | `dynamics/envfollow.pqp` | `envfollow(x, attack, release, rms)` | `out` |
+| `util/oversample.pqp` (T4.9) | polyphase IIR half-band stages: `os_up2(x)` / `os_down2(s0, s1)` (48 ↔ 96 kHz), `os_up2_4` / `os_down4_2`, `os_up4_8` / `os_down8_4` (later stages take the samples of the stage before, in time order); `hb_ap1/2/4`: one allpass over 1, 2, 4 samples per tick | `s0, s1` / `o0 …` / `y` |
+| `devices/utility.pqp` (T4.9) | `utility(x)`: Live's Utility (stereo); constants `bassMono`, `audition`, `dc` | `out` (exports `mid`, `side`, `bass`) |
+| `devices/saturator.pqp` (T4.9) | `saturator(x)`: Live's Saturator (stereo); constants `type` 0–8, `hq` 1/2/4/8, `color`, `softClip`; `sat_shape`: one curve sample | `out` (exports `driven`, `wet`) |
+
+Devices (`devices/`, T4.9/T4.10) take and return `audio stereo`; their structural settings (curve type, oversampling factor, band types, modes) are `in … : real const` inputs set by literal arguments at the call site, so only the chosen path is compiled (a change recompiles, SPEC §7.5); every knob is a `param` (any rate). The choices behind each device are in QUESTIONS Q?-T4.9-a.
 
 Conventions: cutoffs are in Hz and kept below 0.49·sr; `q` is the quality factor (0.7071 = Butterworth); `gain` is a dB param (so linear inside); times are seconds: `adsr` stage times are full-scale times (attack 0 → 1 linear; decay/release exponential, −80 dB after the stage time), `envfollow`/`smooth` times are time constants (63 %), `slew` times are per unit of change. Delay-line subcircuits take their buffer size as a constant `in maxTime : real const` (the second positional argument) and keep the delay ≥ 0.1 ms, so a feedback loop through them runs in sub-blocks whenever the delay has a known lower bound.
 

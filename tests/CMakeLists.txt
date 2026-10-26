@@ -236,7 +236,9 @@ pq_add_test(pq_tests_jit PERF
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
 # references (tests/stdlib/stdlib_reference.h, also the baseline of bench/jit/bench_stdlib.cpp), interpreter + JIT.
 pq_add_test(pq_tests_stdlib
-  SOURCES stdlib/test_stdlib.cpp
+  SOURCES
+    stdlib/test_stdlib.cpp
+    stdlib/test_devices.cpp  # T4.9 / T4.10: Utility, Saturator, EQ Eight vs device_reference.h
   DEPS pq_jit)
 
 pq_add_test(pq_tests_dsp

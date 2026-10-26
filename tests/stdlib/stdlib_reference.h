@@ -129,23 +129,25 @@ template <class V>
 struct SvfCore {
   V ic1{}, ic2{};
   struct Coef {
-    V a1, a2, a3;
+    V d1, b1, b2;  // 2·a1 − 2, 2·a2, 2·a3 (svf_core's state-update form)
   };
   static Coef coef(V g, V k) {
     Coef c;
-    c.a1 = V(1.0f) / fma_(g, g + k, V(1.0f));
-    c.a2 = g * c.a1;
-    c.a3 = g * c.a2;
+    const V gk = g + k;
+    const V a1 = V(1.0f) / fma_(g, gk, V(1.0f));
+    c.d1 = V(-2.0f) * g * gk * a1;
+    c.b1 = V(2.0f) * g * a1;
+    c.b2 = c.b1 * g;
     return c;
   }
   void tick(V x, const Coef& c, V& band, V& low) {
-    const V v3 = x - ic2;
-    const V v1 = fma_(c.a1, ic1, c.a2 * v3);
-    const V v2 = fma_(c.a3, v3, fma_(c.a2, ic1, ic2));
-    ic1 = V(2.0f) * v1 - ic1;
-    ic2 = V(2.0f) * v2 - ic2;
-    band = v1;
-    low = v2;
+    const V v = x - ic2;
+    const V n1 = fma_(c.b1, v, fma_(c.d1, ic1, ic1));
+    const V n2 = fma_(c.b2, v, fma_(c.b1, ic1, ic2));
+    band = V(0.5f) * (ic1 + n1);
+    low = V(0.5f) * (ic2 + n2);
+    ic1 = n1;
+    ic2 = n2;
   }
 };
 

@@ -8,7 +8,8 @@
 //   Stimulus st;  st.input = [](uint32_t ord, uint32_t voice, uint64_t t) { … };
 //   Outputs o = run(p, Backend::Jit, st);   o.at("y")[voice][t]
 //
-// Root `in`s are addressed by ordinal (declaration order); bool inputs are 0/1 (written as lane masks). Params are
+// Root `in`s are addressed by ordinal (declaration order; `inputCh` also by channel); bool inputs are 0/1 (written as
+// lane masks). Channel c > 0 of a multichannel output is named "<name>[c]". Params are
 // set by name (normalised units). Global patches use voice 0; patches with voice stages run `voices` voices in
 // ceil(voices / 8) groups (lanes past `voices` are left out of the lane mask). The transport plays at 120 BPM from
 // beat `transportBeat0`. Every process() call runs inside an RtScope (Outputs::rtViolations counts allocations).
@@ -157,6 +158,8 @@ struct Stimulus {
   uint32_t voices = 0;  // 0: no voice groups
   // Root input `ordinal` for `voice` (0 for global inputs) at sample t.
   std::function<double(uint32_t ordinal, uint32_t voice, uint64_t t)> input;
+  // Multichannel inputs (T4.9): when set, used instead of `input`, with the channel of the input's slot.
+  std::function<double(uint32_t ordinal, uint32_t channel, uint32_t voice, uint64_t t)> inputCh;
   // voice.* signals (Hz, Gate, …) per voice; default: 220 Hz, gate held, velocity 1.
   std::function<double(eng::VoiceSignal sig, uint32_t voice, uint64_t t)> voiceSignal;
   std::map<std::string, double> params;  // by name; others keep their defaults
@@ -206,6 +209,11 @@ inline Outputs run(const Program& p, Backend backend, const Stimulus& st) {
     return false;
   };
   auto outBool = [&](const eng::IoSlot& s) { return tp.inputType(s.node, 0).kind == g::Kind::Bool; };
+  // Output name; channel c > 0 of a multichannel output is "<name>[c]".
+  auto slotName = [&](const eng::IoSlot& s) {
+    const std::string n = tp.patch.nodeName(s.node);
+    return s.channel == 0 ? n : n + "[" + std::to_string(s.channel) + "]";
+  };
 
   std::vector<std::vector<float>> gIn(face.globalIn.size(), std::vector<float>(B)), gOut(face.globalOut.size(), std::vector<float>(B));
   std::vector<const float*> gInP;
@@ -254,9 +262,9 @@ inline Outputs run(const Program& p, Backend backend, const Stimulus& st) {
   for (uint32_t t0 = 0; t0 < st.frames; t0 += B) {
     const uint32_t n = std::min(B, st.frames - t0);
     for (uint32_t s = 0; s < face.globalIn.size(); ++s) {
-      const uint32_t ord = face.globalIn[s].ordinal;
+      const uint32_t ord = face.globalIn[s].ordinal, ch = face.globalIn[s].channel;
       const bool b = inBool(ord);
-      for (uint32_t f = 0; f < n; ++f) gIn[s][f] = toLane(b, st.input(ord, 0, t0 + f));
+      for (uint32_t f = 0; f < n; ++f) gIn[s][f] = toLane(b, st.inputCh ? st.inputCh(ord, ch, 0, t0 + f) : st.input(ord, 0, t0 + f));
     }
     for (uint32_t gi = 0; gi < groups; ++gi) {
       for (uint32_t sig = 0; sig < eng::kVoiceSignalCount; ++sig) {
@@ -269,12 +277,13 @@ inline Outputs run(const Program& p, Backend backend, const Stimulus& st) {
           }
       }
       for (uint32_t s = 0; s < face.voiceIn.size(); ++s) {
-        const uint32_t ord = face.voiceIn[s].ordinal;
+        const uint32_t ord = face.voiceIn[s].ordinal, ch = face.voiceIn[s].channel;
         const bool b = inBool(ord);
         for (uint32_t f = 0; f < n; ++f)
           for (uint32_t l = 0; l < 8; ++l) {
             const uint32_t v = gi * 8 + l;
-            vIn[gi][s][static_cast<size_t>(f) * 8 + l] = v < st.voices ? toLane(b, st.input(ord, v, t0 + f)) : 0.0f;
+            const double x = v < st.voices ? (st.inputCh ? st.inputCh(ord, ch, v, t0 + f) : st.input(ord, v, t0 + f)) : 0.0;
+            vIn[gi][s][static_cast<size_t>(f) * 8 + l] = v < st.voices ? toLane(b, x) : 0.0f;
           }
       }
     }
@@ -298,13 +307,13 @@ inline Outputs run(const Program& p, Backend backend, const Stimulus& st) {
       img.process(ctx);
     });
     for (uint32_t s = 0; s < face.globalOut.size(); ++s) {
-      auto& dst = res.byName[tp.patch.nodeName(face.globalOut[s].node)];
+      auto& dst = res.byName[slotName(face.globalOut[s])];
       dst.resize(1);
       const bool b = outBool(face.globalOut[s]);
       for (uint32_t f = 0; f < n; ++f) dst[0].push_back(b ? (pq::dsp::maskIsTrue(gOut[s][f]) ? 1.0f : 0.0f) : gOut[s][f]);
     }
     for (uint32_t s = 0; s < face.voiceOut.size(); ++s) {
-      auto& dst = res.byName[tp.patch.nodeName(face.voiceOut[s].node)];
+      auto& dst = res.byName[slotName(face.voiceOut[s])];
       dst.resize(st.voices);
       const bool b = outBool(face.voiceOut[s]);
       for (uint32_t v = 0; v < st.voices; ++v)
