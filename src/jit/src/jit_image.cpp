@@ -4,8 +4,6 @@
 #include "jit_image.h"
 
 #include <algorithm>
-#include <bit>
-#include <limits>
 #include <string>
 
 #include "pq/dsp/atoms.h"
@@ -25,18 +23,9 @@ JitImage::~JitImage() = default;
 void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
   if (!host_.begin(ctx)) return;
   float* buf = host_.buf();
-  {  // the memo regions' flag (Q126): this block's params bit for bit the previous block's
-    const auto n = static_cast<uint32_t>(lastParams_.size());
-    const uint32_t have = ctx.params != nullptr ? std::min(ctx.numParams, n) : 0u;
-    bool same = memoValid_;
-    for (uint32_t i = 0; i < n; ++i) {
-      const float v = i < have ? ctx.params[i] : std::numeric_limits<float>::quiet_NaN();  // NaN: the default
-      same = same && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(lastParams_[i]);
-      lastParams_[i] = v;
-    }
-    memoValid_ = true;
-    *reinterpret_cast<uint32_t*>(buf + layout_.memoOff) = same ? 1u : 0u;
-  }
+  // The memo regions' flag (Q126): this block's (clamped) params bit for bit the previous block's, as the host's
+  // param pass found (no second pass over the params).
+  *reinterpret_cast<uint32_t*>(buf + layout_.memoOff) = host_.paramsChanged() ? 0u : 1u;
   const float* aux = host_.aux();
   std::byte* gstate = host_.globalState();
   std::byte* vstate = host_.voiceState(0);
@@ -215,7 +204,6 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   }
   img->fns_.assign(s.stages.size(), nullptr);
   img->pairFns_.assign(s.stages.size(), nullptr);
-  img->lastParams_.assign(host.io().params.size(), 0.0f);
   return img;
 }
 

@@ -143,8 +143,6 @@ public:
   uint32_t numGlobalSites_ = 0;
   std::vector<uint32_t> voiceSiteBegin_;  // per group: first site (size maxGroups + 1)
   uint32_t maxSolveN_ = 0;
-  std::vector<float> lastParams_;  // the previous block's params (bitwise), for the memo regions
-  bool memoValid_ = false;         // the memo regions have run at least once
   bool shadow_ = false;            // SleepMode::Shadow (T1.x-silence)
   bool paramsSame_ = false;        // this block's params equal the previous block's
 
@@ -378,18 +376,9 @@ void InterpretedImage::runSolve(const SolveRun& s, uint32_t t) noexcept {  // RT
 
 void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
   if (!host_.begin(ctx)) return;
-  {  // the memo regions' inputs: the params (host_.begin clamps and splats them from ctx.params, deterministically)
-    const uint32_t n = static_cast<uint32_t>(lastParams_.size());
-    const uint32_t have = ctx.params != nullptr ? std::min(ctx.numParams, n) : 0u;
-    bool same = memoValid_;
-    for (uint32_t i = 0; i < n; ++i) {
-      const float v = i < have ? ctx.params[i] : std::numeric_limits<float>::quiet_NaN();  // NaN: the default
-      same = same && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(lastParams_[i]);
-      lastParams_[i] = v;
-    }
-    paramsSame_ = same;
-    memoValid_ = true;
-  }
+  // The memo regions' inputs are the params: unchanged (clamped, bit for bit) since the previous block, as the host's
+  // param pass found (T1b.x-perf: no second pass; the JIT reads the same flag).
+  paramsSame_ = !host_.paramsChanged();
   // Engine data → the records' pointer cells.
   for (uint32_t i = 0; i < numGlobalSites_; ++i) *sites_[i].target = host_.extPtr(sites_[i].ext, 0);
   for (uint32_t i = voiceSiteBegin_[0]; i < voiceSiteBegin_[host_.groups()]; ++i)
@@ -727,7 +716,6 @@ private:
   // Pointers into the final vectors.
   void finish() {
     InterpretedImage& im = *img_;
-    im.lastParams_.assign(im.host_.io().params.size(), 0.0f);
     for (Rec& r : im.recs_) {
       r.args.in = const_cast<const float* const*>(im.pool_.data() + r.inBase);
       r.args.out = im.pool_.data() + r.outBase;

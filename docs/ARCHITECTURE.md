@@ -209,7 +209,8 @@ namespace pq::graph {
 // bit-identical to the interpreter (tests/jit voice-code cases). VoiceCode::ScalarLanes is the benchmark baseline
 // (one voice lane per call, scalar code; refuses voice stages with calls). CompileStats::pairedStages.
 // T1b.x-perf (Q126): a global Control region of param / constant math only (the interpreter's memo rule) runs
-// behind a flag JitImage::process sets when the params equal the previous block's (HostLayout::memoOff), so a
+// behind a flag JitImage::process sets when the params equal the previous block's (ImageHost::paramsChanged, the
+// host's param pass, which the interpreter reads too; HostLayout::memoOff), so a
 // settled mixer costs no dB / pan math on the JIT either.
 namespace pq::jit {
   class Compiler {                                 // one per process; owns LLJIT; images may outlive it

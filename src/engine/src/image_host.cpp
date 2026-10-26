@@ -1235,6 +1235,7 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   run_.numSends = ctx.sends ? ctx.numSends : 0;
   // Params: clamped to the declared range (Q44), NaN → default, splatted once per block. Sleep (T1.x-silence): which
   // of them changed since the previous block.
+  bool anyChanged = firstBlock_;
   for (uint32_t i = 0; i < params_.size(); ++i) {
     const ParamRun& p = params_[i];
     float v = ctx.params != nullptr && i < ctx.numParams ? ctx.params[i] : p.def;
@@ -1247,8 +1248,10 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
     splat8(p.pattern, v);
     const uint32_t bits = std::bit_cast<uint32_t>(v);
     paramChanged_[i] = firstBlock_ || bits != paramBits_[i] ? 1 : 0;
+    anyChanged = anyChanged || bits != paramBits_[i];
     paramBits_[i] = bits;
   }
+  paramsChanged_ = anyChanged;
   // Engine data → the pointer table.
   const VoiceTable* vt = ctx.voices;
   voices_ = vt;

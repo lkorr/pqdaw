@@ -39,7 +39,8 @@
 //       state carried in registers through the run's loop.
 //   Memo Control regions (T1b.x-perf, QUESTIONS Q126): a global Control region that computes only from params and
 //   constants into buffers nothing else writes (the interpreter's memo rule) is behind one branch on a flag word
-//   (HostLayout::memoOff) that JitImage::process sets when the block's params equal the previous block's: a settled
+//   (HostLayout::memoOff) that JitImage::process sets when the block's params equal the previous block's
+//   (ImageHost::paramsChanged): a settled
 //   mixer's dB / pan math (exact transcendentals: SVML calls) then costs nothing, as in the interpreter.
 //   Control regions and per-sample Loop regions ("per frame"):
 //     - every op is generated inline for one frame (scalar for 1-lane ops, <8 x float> for 8-lane and Control

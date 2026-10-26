@@ -234,6 +234,9 @@ public:
   // Starts a block: false for frames == 0 (nothing to do) or frames > maxBlockFrames (every output zeroed, counted
   // in rejectedBlocks()). Otherwise splats the params and resolves the engine sources (extPtr / extTable).
   bool begin(const ProcessContext& ctx) noexcept;  // RT-safe
+  // T1b.x-perf (Q126): some param differs (bitwise, after clamping) from the previous block's, or this is the first
+  // block (after begin(); what the JIT's memo regions test).
+  bool paramsChanged() const noexcept { return paramsChanged_; }
   // Voice groups of this block's voice table that the image has records for (after begin()).
   uint32_t groups() const noexcept { return groups_; }
   float* extPtr(uint32_t ext, uint32_t group) const noexcept {  // RT-safe
@@ -404,6 +407,7 @@ private:
   std::vector<uint32_t> paramBits_;        // per param: lane 0 of its pattern in the previous block
   std::vector<uint8_t> paramChanged_;      // per param: changed this block (all of them in the first block)
   bool firstBlock_ = true;
+  bool paramsChanged_ = true;
   bool dormantCapable_ = false;
   bool planSegments_ = false;              // the schedule has sleep segments (whatever the mode)
   SleepStats sleepStats_;
