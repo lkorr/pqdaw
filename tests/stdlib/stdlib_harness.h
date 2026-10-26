@@ -139,16 +139,18 @@ inline pq::jit::Compiler& jitCompiler() {
 }
 
 inline pq::Result<std::unique_ptr<eng::ProgramImage>> build(const Program& p, Backend b, uint32_t maxBlock,
-                                                            uint32_t groups) {
+                                                            uint32_t groups, eng::SleepMode sleep = eng::SleepMode::On) {
   if (b == Backend::Jit) {
     pq::jit::CompileOptions o;
     o.maxBlockFrames = maxBlock;
     o.maxVoiceGroups = groups;
+    o.sleep = sleep;
     return jitCompiler().compile(p.sched, o);
   }
   eng::InterpretOptions o;
   o.maxBlockFrames = maxBlock;
   o.maxVoiceGroups = groups;
+  o.sleep = sleep;
   return eng::buildInterpreted(p.sched, o);
 }
 
@@ -165,6 +167,7 @@ struct Stimulus {
   std::map<std::string, double> params;  // by name; others keep their defaults
   double transportBeat0 = 0.0;
   double bpm = 120.0;
+  eng::SleepMode sleep = eng::SleepMode::On;  // T1.x-silence: the images sleep as the engine runs them by default
 };
 
 struct Outputs {
@@ -194,7 +197,7 @@ inline Outputs run(const Program& p, Backend backend, const Stimulus& st) {
   Outputs res;
   const uint32_t B = st.block;
   const uint32_t groups = st.voices ? (st.voices + 7) / 8 : 0;
-  auto built = build(p, backend, B, std::max<uint32_t>(groups, 1));
+  auto built = build(p, backend, B, std::max<uint32_t>(groups, 1), st.sleep);
   if (!built) {
     res.error = built.error().message;
     return res;

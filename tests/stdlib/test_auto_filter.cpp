@@ -361,6 +361,13 @@ double responseError(const Conf& c, const Params& p, double amp, double* atHz = 
   const Program prog = afProgram(c);
   Stimulus st = afStimulus(kLen, 64, [amp](uint32_t, uint64_t t) { return t == 0 ? amp : 0.0; });
   setParams(st, p);
+  // Sleep off for this measurement only (T1.x-silence, Q130): a silent-input segment's state is flushed once it is
+  // ≤ 2^-30 (≈ −180 dBFS absolute). The nonlinear models are measured at −100 dBFS (1e-5, to stay linear), where
+  // that cut is only 80 dB below the impulse, and a 24 dB model's high-Q section after the Clean pre-section (which
+  // sleeps on its own) lifts the truncation into the 0.1 dB budget at deep notch / stopband points. That is the
+  // engine's documented −180 dBFS approximation, not the filter's response; the test below holds the sleeping
+  // device to the non-sleeping one at full scale.
+  st.sleep = pq::engine::SleepMode::Off;
   const Outputs o = run(prog, Backend::Jit, st);
   REQUIRE_MESSAGE(o.error.empty(), o.error);
   double worst = 0.0;
@@ -420,6 +427,33 @@ static void responses(bool full) {
 
 TEST_CASE("Auto Filter: small-signal responses of every type and circuit model vs the analytic responses within 0.1 dB") { responses(false); }
 TEST_CASE("Auto Filter: small-signal responses, every type x model x slope x 3 settings" * doctest::test_suite("slow")) { responses(true); }
+
+TEST_CASE("Auto Filter: sleeping (T1.x-silence) only cuts tails below -160 dBFS; a ringing filter is never cut") {
+  // A full-scale click into each model at 12 and 24 dB, resonance 90 % at 150 Hz (a long tail), 0.7 s: the image
+  // that sleeps against one that never does. Measured: Clean segments sleep once their state is ≤ 2^-30 (the last
+  // samples they would have played are ≈ 1e-9); a 24 dB nonlinear model's Clean pre-section sleeps under its still
+  // ringing second section, which then misses ≤ 2.8e-9 of input; the solve / OSR sections themselves never sleep.
+  for (int circuit = 0; circuit < 5; ++circuit)
+    for (int slope = 0; slope < 2; ++slope)
+      for (const int type : {0, 1, 3}) {
+        Params p;
+        p.freq = 150.0f;
+        p.res = 0.9f;
+        const Conf c = conf(type, circuit, slope);
+        const Program prog = afProgram(c);
+        Stimulus st = afStimulus(32768, 64, [](uint32_t, uint64_t t) { return t == 0 ? 1.0 : 0.0; });
+        setParams(st, p);
+        const Outputs on = run(prog, Backend::Jit, st);
+        st.sleep = pq::engine::SleepMode::Off;
+        const Outputs off = run(prog, Backend::Jit, st);
+        REQUIRE(on.error.empty());
+        REQUIRE(off.error.empty());
+        double d = 0.0;
+        for (const char* n : {"y", "y[1]"})
+          for (size_t t = 0; t < on.at(n)[0].size(); ++t) d = std::max(d, std::fabs(static_cast<double>(on.at(n)[0][t]) - off.at(n)[0][t]));
+        CHECK_MESSAGE(d < 1e-8, label(c) << ": sleeping vs not, max difference " << d);
+      }
+}
 
 TEST_CASE("Auto Filter: DJ centre and dry/wet 0 pass the input exactly") {
   Params p = modParams(1.0f, 4.0f);
