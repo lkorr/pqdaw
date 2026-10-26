@@ -133,10 +133,11 @@ static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegen
 static_assert(sizeof(dsp::StateInit) == 24, "dsp::StateInit changed: update codegenDigest");
 static_assert(sizeof(g::StateEntry) == 64, "graph::StateEntry changed: update codegenDigest");
 static_assert(sizeof(g::StateLayout) == 40, "graph::StateLayout changed: update codegenDigest");
-static_assert(sizeof(g::Schedule) == 400 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::Schedule) == 424 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");
 static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
 static_assert(sizeof(g::RegionSleep) == 12, "graph::RegionSleep changed: update codegenDigest");
-static_assert(sizeof(HostLayout) == 184, "HostLayout changed: update codegenDigest");
+static_assert(sizeof(HostLayout) == 192, "HostLayout changed: update codegenDigest");
 
 Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots) {
   Stream h;
@@ -193,6 +194,12 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
     putOperand(h, x.value);
     h.put(x.poly), h.put(x.stage);
   }
+  // T4.5: probed values are stored by the generated code (store elimination treats them like outputs).
+  h.put(s.probes.size());
+  for (const g::ProbeRef& x : s.probes) {
+    putOperand(h, x.value);
+    h.put(x.poly), h.put(x.stage);
+  }
   // State: the layout codegen addresses, and what the host initialises it from, except the identities (the state key
   // and the noise seed, which is mixed with it): the host builds those from the image's own schedule.
   h.put(s.state.entries.size());
@@ -207,6 +214,7 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   for (const g::RegionSleep& x : s.sleep.regions) h.put(x.segment), h.put(x.firstFill), h.put(x.numFills);
   h.putU32s(s.sleep.fills);
   h.put(L.sleepOff);
+  h.put(L.meterOff), h.put(L.meterFlagOff);  // T4.5
   // Schedule::warnings, insertedDelays and rewritten are diagnostics and names: not read by code generation.
   h.put(L.maxBlock), h.put(L.groups);
   h.putU32s(L.bufOff);

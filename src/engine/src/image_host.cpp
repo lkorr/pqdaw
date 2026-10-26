@@ -260,7 +260,11 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
   io_.voiceTailFrames = s.sleep.voiceTailFrames;
   if (!validate(s) || !layoutMemory(s, o.extraBufFloats) || !externals(s)) return err_;
   specialOps(s);
-  if (!stages(s) || !sleepLayout(s, o.sleep)) return err_;
+  if (!stages(s) || !sleepLayout(s, o.sleep) || !probeLayout(s)) return err_;
+  meterFlag_ = reinterpret_cast<uint32_t*>(auxMem_.data() + L_.meterFlagOff);
+  *meterFlag_ = 0;
+  meterUnits_.resize(numRegions_);
+  for (uint32_t r = 0; r < numRegions_; ++r) meterUnits_[r] = r;
   return Ok{};
 }
 
@@ -379,6 +383,9 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   }
   L_.extraOff = off;
   off += roundUp(extraBufFloats, kFloatAlign);
+  L_.meterOff = off;  // T4.5: one uint64 per region (the backends time their regions into it while metered)
+  numRegions_ = static_cast<uint32_t>(s.regions.size());
+  off += roundUp(std::max<uint32_t>(numRegions_, 1u) * 2u, kFloatAlign);
   L_.bufFloats = std::max<uint32_t>(off, kFloatAlign);
   bufMem_ = AlignedBuffer<float>(L_.bufFloats);
   uint32_t aux = 0;
@@ -395,6 +402,8 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   aux = roundUp(aux, kFloatAlign);
   L_.sleepOff = aux;  // one flag word per sleep segment (T1.x-silence)
   aux += roundUp(std::max<uint32_t>(static_cast<uint32_t>(s.sleep.segments.size()), 1u), kFloatAlign);
+  L_.meterFlagOff = aux;  // T4.5
+  aux += kFloatAlign;
   L_.zeroOff = aux;
   aux += B * 8;
   L_.auxFloats = aux;
@@ -587,6 +596,8 @@ void ImageHost::enablePairs(const std::vector<uint8_t>& pairableStages, const st
     for (uint32_t gi = 0; gi < L_.groups; ++gi)
       for (uint32_t c = st.firstOut + gi * st.numOut; c < st.firstOut + (gi + 1) * st.numOut; ++c)
         if (outBuffer_[c] != g::kNone) outs_[c].srcAlt = alt(k, outBuffer_[c]);
+    for (uint32_t i = st.firstProbe; i < st.firstProbe + st.numProbes; ++i)  // T4.5
+      if (probes_[i].buffer != g::kNone && !bufPerGroup_[probes_[i].buffer]) probes_[i].alt = alt(k, probes_[i].buffer);
   }
 }
 
@@ -681,6 +692,180 @@ bool ImageHost::stages(const g::Schedule& s) {
     if (!found) return fail("voice output read at a stage that does not exist");
   }
   return true;
+}
+
+// ---- inspection (T4.5) -----------------------------------------------------------------------------------------
+
+bool ImageHost::probeLayout(const g::Schedule& s) {
+  probes_.clear();
+  std::vector<ProbeRun> globals;
+  std::vector<std::vector<ProbeRun>> perStage(s.stages.size());
+  for (const g::ProbeRef& pr : s.probes) {
+    if (!validOperand(s, pr.value)) return fail("probe with an invalid operand");
+    ProbeRun r;
+    r.id = pr.id;
+    r.isBool = pr.kind == g::Kind::Bool;
+    r.sum = pr.voiceSum;
+    r.region = pr.region < s.regions.size() ? pr.region : g::kNone;
+    switch (pr.value.kind) {
+      case g::Operand::Kind::Buffer:
+        r.buffer = pr.value.index;
+        r.perFrame = isPatternOperand(s, pr.value) ? 0u : lanesOfOperand(s, pr.value);
+        r.src = resolve(pr.value, 0);
+        break;
+      case g::Operand::Kind::External: {
+        const g::External& x = s.externals[pr.value.index];
+        r.ext = pr.value.index;
+        r.perFrame = x.rate == g::Rate::Audio ? (x.poly == g::Poly::Voice ? 8u : 1u) : 0u;
+        break;
+      }
+      case g::Operand::Kind::Param:
+      case g::Operand::Kind::Const:
+        r.src = resolve(pr.value, 0);
+        r.perFrame = 0;
+        break;
+      default: return fail("probe with an invalid operand");
+    }
+    r.voice = pr.poly == g::Poly::Voice;
+    if (r.voice) {
+      if (pr.stage >= s.stages.size() || s.stages[pr.stage].poly != g::Poly::Voice) return fail("voice probe outside a voice stage");
+      if (r.perFrame == 1) return fail("voice probe of a global block");
+      r.stage = pr.stage;
+      perStage[pr.stage].push_back(r);
+    } else {
+      if (r.perFrame == 8) return fail("global probe of a voice value");
+      globals.push_back(r);
+    }
+  }
+  for (uint32_t k = 0; k < perStage.size(); ++k) {
+    stages_[k].firstProbe = static_cast<uint32_t>(probes_.size());
+    stages_[k].numProbes = static_cast<uint32_t>(perStage[k].size());
+    probes_.insert(probes_.end(), perStage[k].begin(), perStage[k].end());
+  }
+  firstGlobalProbe_ = static_cast<uint32_t>(probes_.size());
+  numGlobalProbes_ = static_cast<uint32_t>(globals.size());
+  probes_.insert(probes_.end(), globals.begin(), globals.end());
+  const size_t stride = roundUp(L_.maxBlock, kFloatAlign);
+  probeScratch_ = AlignedBuffer<float>(std::max<size_t>(probes_.size(), 1) * stride);
+  for (size_t i = 0; i < probes_.size(); ++i) probes_[i].scratch = probeScratch_.data() + i * stride;
+  return true;
+}
+
+bool ImageHost::bindInspect(const InspectBinding& b) {
+  for (ProbeRun& p : probes_) {
+    p.ring = nullptr;
+    p.level = nullptr;
+    for (const ProbeTap& t : b.probes)
+      if (t.id == p.id) {
+        p.ring = t.ring;
+        p.level = t.level;
+        break;
+      }
+  }
+  meter_ = b.meter;
+  meterKey_ = b.meter ? b.meter->attach(meterUnits_) : 0u;
+  return true;
+}
+
+void ImageHost::probeStageBegin(const StageRun& st) noexcept {  // RT-safe
+  for (uint32_t i = st.firstProbe; i < st.firstProbe + st.numProbes; ++i) probes_[i].captured = false;
+}
+
+// After voice group gi ran: the newest voice's lane (or the sum over the group's sounding lanes) into the scratch.
+void ImageHost::probeGroup(const StageRun& st, uint32_t gi, uint32_t frames, bool second) noexcept {  // RT-safe
+  const VoiceTable* vt = voices_;
+  const uint32_t mask = vt->groups[gi].laneMask & 0xFFu;
+  const uint32_t G = L_.groups;
+  for (uint32_t i = st.firstProbe; i < st.firstProbe + st.numProbes; ++i) {
+    ProbeRun& p = probes_[i];
+    if (p.level == nullptr && (p.ring == nullptr || !p.ring->wanted())) continue;
+    uint32_t lane = 8;
+    if (!p.sum) {
+      if (vt->lastGroup != gi || vt->lastLane >= 8 || ((mask >> vt->lastLane) & 1u) == 0) continue;
+      lane = vt->lastLane;
+    }
+    const float* x = nullptr;
+    if (p.buffer != g::kNone) {
+      x = second && p.alt != nullptr ? p.alt
+                                     : bufMem_.data() + L_.bufOff[p.buffer] +
+                                           (bufPerGroup_[p.buffer] ? static_cast<size_t>(gi) * L_.bufSize[p.buffer] : 0u);
+    } else if (p.ext != g::kNone) {
+      x = extPtr_[static_cast<size_t>(p.ext) * G + gi];
+    } else {
+      x = p.src;
+    }
+    if (x == nullptr) continue;
+    const uint32_t step = p.perFrame == 0 ? 0u : 8u;
+    float* d = p.scratch;
+    if (!p.sum) {
+      for (uint32_t f = 0; f < frames; ++f) d[f] = x[f * step + lane];
+    } else if (p.isBool) {  // any sounding voice high
+      for (uint32_t f = 0; f < frames; ++f) {
+        const uint32_t bits = static_cast<uint32_t>(_mm256_movemask_ps(_mm256_loadu_ps(x + f * step))) & mask;
+        const bool high = bits != 0 || (p.captured && std::signbit(d[f]));
+        d[f] = dsp::boolMask(high);
+      }
+    } else {
+      const __m256 m = laneMaskVector(mask);
+      for (uint32_t f = 0; f < frames; ++f) {
+        const float v = horizontalSum(_mm256_and_ps(_mm256_loadu_ps(x + f * step), m));
+        d[f] = p.captured ? d[f] + v : v;
+      }
+    }
+    p.captured = true;
+  }
+}
+
+void ImageHost::probeStageEnd(const StageRun& st, uint32_t frames) noexcept {  // RT-safe
+  for (uint32_t i = st.firstProbe; i < st.firstProbe + st.numProbes; ++i) {
+    ProbeRun& p = probes_[i];
+    if (p.level == nullptr && (p.ring == nullptr || !p.ring->wanted())) continue;
+    if (!p.captured) std::memset(p.scratch, 0, frames * sizeof(float));  // no voice: silence
+    probeWrite(p, p.scratch, frames);
+  }
+}
+
+void ImageHost::probeGlobals(uint32_t frames) noexcept {  // RT-safe
+  for (uint32_t i = firstGlobalProbe_; i < firstGlobalProbe_ + numGlobalProbes_; ++i) {
+    ProbeRun& p = probes_[i];
+    if (p.level == nullptr && (p.ring == nullptr || !p.ring->wanted())) continue;
+    const float* x = p.ext != g::kNone ? extPtr_[static_cast<size_t>(p.ext) * L_.groups] : p.src;
+    if (p.region != g::kNone && regionAsleep(p.region)) {  // its region did not run: it outputs 0
+      std::memset(p.scratch, 0, frames * sizeof(float));
+      x = p.scratch;
+    } else if (p.perFrame == 0) {
+      const float v = x[0];
+      for (uint32_t f = 0; f < frames; ++f) p.scratch[f] = v;
+      x = p.scratch;
+    }
+    probeWrite(p, x, frames);
+  }
+}
+
+void ImageHost::probeWrite(ProbeRun& p, const float* data, uint32_t frames) noexcept {  // RT-safe
+  if (p.ring != nullptr) p.ring->write(&data, 1, frames);
+  if (p.level == nullptr || frames == 0) return;
+  if (p.isBool) {
+    bool any = false, all = true;
+    for (uint32_t f = 0; f < frames; ++f) {
+      const bool h = std::signbit(data[f]);
+      any = any || h;
+      all = all && h;
+    }
+    p.level->write(std::signbit(data[frames - 1]) ? 1.0f : 0.0f, all ? 1.0f : 0.0f, any ? 1.0f : 0.0f);
+    return;
+  }
+  float lo = data[0], hi = data[0];
+  for (uint32_t f = 1; f < frames; ++f) {
+    lo = std::min(lo, data[f]);
+    hi = std::max(hi, data[f]);
+  }
+  p.level->write(data[frames - 1], lo, hi);
+}
+
+void ImageHost::meterEnd(uint32_t frames) noexcept {  // RT-safe
+  const uint64_t total = __rdtsc() - meterT0_;
+  meter_->add(regionCycles(), numRegions_, total, frames);
 }
 
 // ---- sleep (T1.x-silence) ---------------------------------------------------------------------------------------
@@ -1031,12 +1216,20 @@ void ImageHost::initReducers(const StageRun& st, uint32_t frames, bool zero) noe
 
 bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   const uint32_t frames = ctx.frames;
+  metering_ = false;
   if (frames == 0) return false;
   if (frames > io_.maxBlockFrames) {
     ++rejected_;
     zeroOutputs(ctx);
     return false;
   }
+  // T4.5: cost meter. Unbound or not shown: this test and the flag store are all it costs.
+  if (meter_ != nullptr && meter_->wants(meterKey_)) {
+    metering_ = true;
+    meterT0_ = __rdtsc();
+    std::memset(regionCycles(), 0, static_cast<size_t>(numRegions_) * sizeof(uint64_t));
+  }
+  *meterFlag_ = metering_ ? 1u : 0u;
   const uint32_t G = L_.groups;
   run_.sends = ctx.sends;
   run_.numSends = ctx.sends ? ctx.numSends : 0;

@@ -48,6 +48,7 @@
 #include "pq/core/result.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch.h"
+#include "pq/graph/inspect.h"
 
 namespace pq::graph {
 
@@ -89,6 +90,8 @@ struct InferOptions {
   uint16_t ioChannels = 2;                // width of track.in, sidechain.in and clipPlayer
   std::span<const RootInput> inputs;      // per root `in`, in node order; missing entries = connected, declared
   SourceText source{};                    // optional
+  // T4.5 (pq/graph/inspect.h): values to locate in the flattened patch (InferResult::probeSources). Changes nothing else.
+  std::span<const ProbeTarget> probes;
 };
 
 inline constexpr uint32_t kMaxSubcircuitDepth = 64;  // nesting of subcircuit instances
@@ -141,6 +144,9 @@ struct TypedPatch {
 struct InferResult {
   TypedPatch typed;                     // complete only when diagnostics is empty
   std::vector<Diagnostic> diagnostics;  // located at the root patch node (the call site for errors inside callees)
+  // Per InferOptions::probes entry: the flat output port of typed.patch carrying that value (kNone: no such node or
+  // output, or unconnected). T4.5.
+  std::vector<uint32_t> probeSources;
   bool ok() const noexcept { return diagnostics.empty(); }
 };
 

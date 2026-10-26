@@ -137,7 +137,10 @@ public:
       normalise();
       check();
     }
-    if (diags_.empty()) emit(r.typed);
+    if (diags_.empty()) {
+      emit(r.typed);
+      locateProbes(r);
+    }
     r.diagnostics = std::move(diags_);
     return r;
   }
@@ -1050,6 +1053,35 @@ private:
           t = portType(out.inputType(n, i).kind == Kind::Bool ? Kind::Bool : Kind::Real, Rate::Const, Poly::Global,
                        kWidthMono);
       }
+  }
+
+  // T4.5: each probe target's value in the flattened patch: the instance by its call path, then the out-port of the
+  // node's output (a call's output is the callee's boundary node), followed through wired-through identities.
+  void locateProbes(InferResult& r) {
+    r.probeSources.assign(opt_.probes.size(), kNone);
+    for (size_t k = 0; k < opt_.probes.size(); ++k) {
+      const ProbeTarget& t = opt_.probes[k];
+      uint32_t inst = 0;
+      bool ok = true;
+      for (const NodeId id : t.path) {
+        const Inst& I = insts_[inst];
+        const std::optional<NodeIndex> n = I.patch->indexOf(id);
+        if (!n || gChild_[I.gbase + *n] == kNone) {
+          ok = false;
+          break;
+        }
+        inst = gChild_[I.gbase + *n];
+      }
+      if (!ok) continue;
+      const Inst& I = insts_[inst];
+      const std::optional<NodeIndex> n = I.patch->indexOf(t.node);
+      if (!n) continue;
+      const uint32_t o = sourceOf(I.gbase + *n, t.output);
+      if (o == kNone) continue;
+      const PortRef src = flatSource(o);
+      if (src.node == kNone) continue;
+      r.probeSources[k] = r.typed.patch.flatOutput(src.node, src.port);
+    }
   }
 
   // ---- state ----------------------------------------------------------------------------------------------------

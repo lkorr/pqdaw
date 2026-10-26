@@ -85,6 +85,17 @@ public:
         line(t + ")");
       }
     }
+    if (!s_.probes.empty()) {  // T4.5
+      line("probes:");
+      for (const ProbeRef& p : s_.probes) {
+        std::string t = "  probe " + std::to_string(p.id) + " <- " + operand(p.value) + " (" + std::string(toText(p.poly));
+        if (p.poly == Poly::Voice) t += std::string(", after each group of stage ") + std::to_string(s_.stages[p.stage].index);
+        if (p.region != kNone) t += ", region " + std::to_string(p.region);
+        if (p.kind == Kind::Bool) t += ", bool";
+        if (p.voiceSum) t += ", sum";
+        line(t + ")");
+      }
+    }
     state(Poly::Global, s_.state.globalBytes);
     state(Poly::Voice, s_.state.voiceBytes);
     for (const Diagnostic& w : s_.warnings) line("warning: " + w.message);

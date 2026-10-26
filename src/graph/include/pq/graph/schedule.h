@@ -90,6 +90,7 @@
 #include "pq/core/result.h"
 #include "pq/dsp/atoms.h"
 #include "pq/graph/infer.h"
+#include "pq/graph/inspect.h"
 
 namespace pq::graph {
 
@@ -301,6 +302,21 @@ struct SleepPlan {
   uint32_t voiceTailFrames = 0;
 };
 
+// A live probe (T4.5, pq/graph/inspect.h): a value the host copies into the probe's tap. Its value is kept alive past
+// its last read (and stored by generated code) until the host reads it: after the last stage for a global value, after
+// each voice group of `stage` for a voice value. Nothing else of the schedule depends on probes: the same patch
+// schedules to the same ops, regions, sleep plan and state layout with or without them (only buffer indices differ).
+struct ProbeRef {
+  uint32_t id = 0;          // ProbePoint::id
+  Operand value;            // Buffer, External, Param or Const
+  Poly poly = Poly::Global;
+  Kind kind = Kind::Real;   // Bool: lane masks
+  uint32_t stage = kNone;   // voice: Schedule::stages POSITION (not Stage::index) of the stage it is read at; global: kNone
+  uint32_t region = kNone;  // Schedule::regions index of the op that writes it (kNone: param, const, engine source):
+                            // a global value of a sleeping region reads 0
+  bool voiceSum = false;    // ProbePoint::voiceSum
+};
+
 // A z1 inserted by visualMode into a delay-free cycle.
 struct InsertedDelay {
   NodeIndex z1 = kNone;        // the new node (in *Schedule::rewritten)
@@ -330,6 +346,7 @@ struct Schedule {
   // whose indices follow the input's). Null otherwise: NodeIndex values refer to the input patch.
   std::shared_ptr<const TypedPatch> rewritten;
   SleepPlan sleep;                           // T1.x-silence (see "Sleep plan" above)
+  std::vector<ProbeRef> probes;              // T4.5: ScheduleOptions::probes that have a value (in request order)
 
   std::span<const Operand> inputs(const Op& op) const noexcept { return {operands.data() + op.firstOperand, op.numIn}; }
   std::span<const Operand> outputsOf(const Op& op) const noexcept {
@@ -354,6 +371,9 @@ struct ScheduleOptions {
   // T1.x-silence: build Schedule::sleep (false: nothing sleeps; the voice tail is computed either way).
   bool sleep = true;
   SourceText source{};                  // optional: errors as file:line:col (root-patch node spans)
+  // T4.5: values to keep readable for live probes (Schedule::probes). A point without a value (node kNone, a sink, an
+  // output that is never computed) is left out, not an error.
+  std::span<const ProbePoint> probes;
 };
 
 struct ScheduleResult {

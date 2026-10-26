@@ -1242,6 +1242,18 @@ private:
                                   Poly::Global, kWidthMono);
       }
     }
+    if (opt_.valueMap) {  // T4.5: where each input value ended up (resolve() follows the forwarding chain)
+      std::vector<uint32_t>& map = *opt_.valueMap;
+      map.assign(p_.portCount(), kNone);
+      for (NodeIndex v = 0; v < p_.nodeCount(); ++v)
+        for (uint32_t j = 0; j < nodes_[v].nOut; ++j) {
+          const uint32_t o = resolve(out(v, j));
+          if (o == kNone) continue;
+          const uint32_t u = owner(o);
+          if (!nodes_[u].alive || newIdx[u] == kNone) continue;
+          map[p_.flatOutput(v, j)] = q.flatOutput(newIdx[u], o - nodes_[u].firstOut);
+        }
+    }
     r.instances = std::move(tp_.instances);
     r.durationsInSamples = tp_.durationsInSamples;
     return r;

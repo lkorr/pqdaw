@@ -16,6 +16,8 @@
 
 #include "pq/engine/interpreter.h"
 
+#include <intrin.h>
+
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -120,6 +122,7 @@ public:
   StateArena stateArena() noexcept override { return host_.stateArena(); }
   uint64_t rejectedBlocks() const noexcept override { return host_.rejectedBlocks(); }
   const SleepStats* sleepStats() const noexcept override { return &host_.sleepStats(); }
+  bool bindInspect(const InspectBinding& b) override { return host_.bindInspect(b); }
 
   // ---- built by Builder ----
   host::ImageHost host_;
@@ -391,25 +394,43 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
   for (uint32_t i = voiceSiteBegin_[0]; i < voiceSiteBegin_[host_.groups()]; ++i)
     *sites_[i].target = host_.extPtr(sites_[i].ext, sites_[i].group);
   const uint32_t frames = ctx.frames;
+  const bool meter = host_.metering();  // T4.5: time each region (one test per region while no meter is shown)
+  auto globalRegion = [&](const RegionRun& rr) noexcept {
+    if (host_.regionAsleep(rr.schedRegion)) {  // T1.x-silence: the constant-output kernel instead
+      host_.fillRegion(rr.schedRegion, frames);
+      return;
+    }
+    runRegion(rr, frames);
+    if (shadow_ && host_.regionSegmentAsleep(rr.schedRegion) && !host_.regionFillsSilent(rr.schedRegion, frames))
+      host_.countViolation();
+  };
   host_.run(
       ctx,
       [&](uint32_t k) noexcept {
         const StageRegions& st = stages_[k];
         for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
           const RegionRun& rr = regions_[r];
-          if (host_.regionAsleep(rr.schedRegion)) {  // T1.x-silence: the constant-output kernel instead
-            host_.fillRegion(rr.schedRegion, frames);
+          if (!meter) {
+            globalRegion(rr);
             continue;
           }
-          runRegion(rr, frames);
-          if (shadow_ && host_.regionSegmentAsleep(rr.schedRegion) && !host_.regionFillsSilent(rr.schedRegion, frames))
-            host_.countViolation();
+          const uint64_t t0 = __rdtsc();
+          globalRegion(rr);
+          host_.addRegionCycles(rr.schedRegion, __rdtsc() - t0);
         }
       },
       [&](uint32_t k, uint32_t gi) noexcept {
         const StageRegions& st = stages_[k];
         const uint32_t base = st.firstRegion + gi * st.numRegions;
-        for (uint32_t r = base; r < base + st.numRegions; ++r) runRegion(regions_[r], frames);
+        for (uint32_t r = base; r < base + st.numRegions; ++r) {
+          if (!meter) {
+            runRegion(regions_[r], frames);
+            continue;
+          }
+          const uint64_t t0 = __rdtsc();
+          runRegion(regions_[r], frames);
+          host_.addRegionCycles(regions_[r].schedRegion, __rdtsc() - t0);
+        }
       });
 }
 

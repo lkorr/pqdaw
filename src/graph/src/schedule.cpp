@@ -1875,6 +1875,53 @@ private:
         s.outputs.push_back(o);
       }
     }
+    probes();
+  }
+
+  // T4.5: the operand of each probed value (pq/graph/inspect.h). Liveness is extended in allocateBuffers.
+  void probes() {
+    Schedule& s = S();
+    for (const ProbePoint& pp : opt_.probes) {
+      if (pp.node == kNone || pp.node >= P().nodeCount() || pp.output >= P().node(pp.node).numOutputs) continue;
+      const uint32_t fo = P().flatOutput(pp.node, pp.output);
+      if (outBase_[fo] == kNone) continue;  // never computed (a sink has no outputs; dead code is gone)
+      ProbeRef r;
+      r.id = pp.id;
+      r.voiceSum = pp.voiceSum;
+      r.kind = tp_->types[fo].kind == Kind::Bool ? Kind::Bool : Kind::Real;
+      r.value = outOperand(pp.node, pp.output, pp.channel);
+      switch (r.value.kind) {
+        case Operand::Kind::Buffer: {
+          const Val& v = vals_[r.value.index];
+          r.poly = v.poly;
+          if (v.def != kNone)
+            for (uint32_t ri = 0; ri < s.regions.size(); ++ri)
+              if (v.def >= s.regions[ri].firstOp && v.def < s.regions[ri].firstOp + s.regions[ri].numOps) {
+                r.region = ri;
+                break;
+              }
+          if (r.poly == Poly::Voice) {
+            for (uint32_t k = 0; k < s.stages.size(); ++k)
+              if (s.stages[k].index == v.defStage) r.stage = k;
+          }
+          break;
+        }
+        case Operand::Kind::External: r.poly = s.externals[r.value.index].poly; break;
+        case Operand::Kind::Param:
+        case Operand::Kind::Const: r.poly = Poly::Global; break;
+        default: continue;
+      }
+      if (r.poly == Poly::Voice && r.stage == kNone) {
+        // An engine voice source (voice.hz …): read at the last voice stage there is (none: no voice runs, no probe).
+        for (uint32_t k = static_cast<uint32_t>(s.stages.size()); k-- > 0;)
+          if (s.stages[k].poly == Poly::Voice) {
+            r.stage = k;
+            break;
+          }
+        if (r.stage == kNone) continue;
+      }
+      s.probes.push_back(r);
+    }
   }
 
   uint32_t lastVoiceStage() {
@@ -1944,6 +1991,18 @@ private:
         if (v.poly == Poly::Voice && o.stage != v.defStage) v.perGroup = true;
         const Stage* sg = stageOfIndex(o.stage);
         v.live = std::max(v.live, sg ? afterRange(sg->firstOp, sg->numOps) : kForever);
+      } else {
+        v.live = kForever;
+      }
+    }
+    // Probes (T4.5): read like outputs — a voice value after each group of its stage, a global one after the last
+    // stage. Only liveness changes (the value's buffer is not reused or overwritten in place before that).
+    for (const ProbeRef& pr : s.probes) {
+      if (pr.value.kind != Operand::Kind::Buffer) continue;
+      Val& v = vals_[pr.value.index];
+      if (pr.poly == Poly::Voice && pr.stage < s.stages.size()) {
+        const Stage& sg = s.stages[pr.stage];
+        v.live = std::max(v.live, afterRange(sg.firstOp, sg.numOps));
       } else {
         v.live = kForever;
       }
@@ -2040,6 +2099,7 @@ private:
       fix(e.rhs);
     }
     for (OutputRef& o : s.outputs) fix(o.value);
+    for (ProbeRef& p : s.probes) fix(p.value);
   }
 
   // ---- state layout -------------------------------------------------------------------------------------------

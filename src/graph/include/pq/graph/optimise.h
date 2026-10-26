@@ -47,6 +47,7 @@
 // voice reducers treat them differently), and never raises a rate.
 
 #include <cstdint>
+#include <vector>
 
 #include "pq/core/result.h"
 #include "pq/graph/infer.h"
@@ -59,6 +60,10 @@ struct OptimiseOptions {
   bool fuseMulAdd = true;       // pass 3 (one rounding instead of two: the JIT's `contract` policy)
   bool sinkSelects = true;      // select sinking in the sweep (off: for comparisons and benchmarks)
   uint32_t maxPasses = 16;      // cap of the sweep fixpoint
+  // T4.5 (out, optional; pq/graph/inspect.h): per flat port of the INPUT patch, the flat output port of the result that
+  // carries the same value (kNone: an input port, or the value has no node any more: dead, or fused into another op).
+  // Filling it changes nothing about the optimisation.
+  std::vector<uint32_t>* valueMap = nullptr;
 };
 
 struct OptimiseStats {

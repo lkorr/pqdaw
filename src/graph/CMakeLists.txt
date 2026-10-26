@@ -19,6 +19,7 @@ pq_add_module(pq_graph
     src/schedule.cpp
     src/schedule_dump.cpp
     src/sleep_plan.cpp
+    src/inspect.cpp
     src/project.cpp
   DEPS pq_core pq_dsp
 )

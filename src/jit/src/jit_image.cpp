@@ -170,6 +170,8 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   L.paramOff = HL.paramOff;
   L.constOff = HL.constOff;
   L.sleepOff = HL.sleepOff;
+  L.meterOff = HL.meterOff;
+  L.meterFlagOff = HL.meterFlagOff;
   L.pairable = pairable;
   L.altOff = altOff;
   for (uint32_t& a : L.altOff)

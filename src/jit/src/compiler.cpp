@@ -309,6 +309,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
     image->pairFns_ = code->pairFns;
     image->scalarLanes_ = go.scalarLanes;
     detail::finishPairs(*image, schedule);
+    image->host_.setMeterUnits(detail::meterUnits(schedule, image->layout_, go));  // T4.5
     image->tab_ = std::move(t);
     image->codeOwner_ = std::make_shared<ImageCode>(session_, code);
     st.source = source;

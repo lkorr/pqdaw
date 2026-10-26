@@ -55,6 +55,10 @@
 // later op in another run (or a call, a special op, a solve, an output copy) reads that buffer before it is
 // written again.
 //
+// Cost meters (T4.5): every region (or chain) is bracketed by a branch on the host's meter flag (aux, loaded once per
+// call); while it is raised, llvm.readcyclecounter before and after, the difference added to the region's uint64 in buf
+// (HostLayout::meterOff). The region code itself is the same with or without a meter.
+//
 // No relocations against process code: functions, resources and special-op records are reached through `tab`
 // (PtrTable slots), buffers/params/state through the base pointers. Not RT code: runs on the compiler thread.
 
@@ -93,5 +97,9 @@ struct GenResult {
 
 Result<GenResult> generate(const graph::Schedule& s, const HostLayout& layout, PtrTable& tab, llvm::Module& m,
                            const GenOptions& options);
+
+// T4.5 cost meters: per schedule region, the first region of the unit the generated code times it in (a voice stage's
+// fused chain of regions is one loop over frames, so one unit; every other region is its own). Not RT code.
+std::vector<uint32_t> meterUnits(const graph::Schedule& s, const HostLayout& layout, const GenOptions& options);
 
 }  // namespace pq::jit::detail

@@ -34,6 +34,10 @@
 #include "pq/graph/schedule.h"
 
 namespace pq::engine {
+struct InspectBinding;
+}
+
+namespace pq::engine {
 
 // voice.* sources (SPEC §7.2 "Events and voices"), the index into VoiceGroupIO::signals.
 // Degree / Equave (T2.6): a Degree note's degree and equave in its tuning signal (NaN for other notes), the inputs of
@@ -193,6 +197,10 @@ public:
   virtual uint64_t rejectedBlocks() const noexcept = 0;
   // T1.x-silence: the image's sleep statistics (null: the image does not sleep). RT-safe.
   virtual const SleepStats* sleepStats() const noexcept { return nullptr; }
+  // T4.5 (pq/engine/inspect.h): binds the image's probes (Schedule::probes, by id) to their taps and the image to a
+  // cost meter. Not RT-safe: call before the image is published (the bound taps and meter must outlive it). False:
+  // the image cannot be inspected (nothing is bound).
+  virtual bool bindInspect(const InspectBinding& /*binding*/) { return false; }
 };
 
 }  // namespace pq::engine

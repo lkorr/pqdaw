@@ -45,6 +45,13 @@
 //                (2^-30, −180 dBFS on the state, so ≤ −120 dBFS at the output through 60 dB of gain): the tail cut a
 //                decaying (feedback) segment gets; a feed-forward one ends exactly.
 //                After the last stage: ProcessContext::outSilent / tailsDone / dormant.
+//
+//   inspection   (T4.5, pq/engine/inspect.h) probes: after each voice group of a probed voice value's stage and after
+//                the last stage for global values, the bound probes' values are copied into their TapRing / ProbeLevel
+//                (a sleeping region's value reads 0). Cost meter: while the bound CostMeter wants this image, begin()
+//                reads the TSC and raises the aux flag word (layout().meterFlagOff) that tells the backends to time
+//                their regions into regionCycles() (buf, layout().meterOff: one uint64 per schedule region, zeroed per
+//                block); after the last stage the block's cycles go to the meter.
 // Threads: build() and the build-time accessors are not RT-safe (they allocate). begin(), run() and the special-op
 // kernels are RT-safe. The object must not move after build() (the special-op records point at its RunCtx): backends
 // hold it as a member of a heap-allocated image.
@@ -59,6 +66,7 @@
 #include "pq/core/result.h"
 #include "pq/dsp/kernel.h"
 #include "pq/dsp/tables.h"
+#include "pq/engine/inspect.h"
 #include "pq/engine/interpreter.h"
 #include "pq/engine/program_image.h"
 #include "pq/graph/schedule.h"
@@ -132,6 +140,8 @@ struct Layout {
   uint32_t globalStateBytes = 0, voiceStride = 0;
   uint32_t maxSolveN = 0;                 // unknowns of the largest solve block
   uint32_t sleepOff = 0;                  // aux: one flag word per sleep segment (non-zero bits: skip its regions)
+  uint32_t meterOff = 0;                  // buf: one uint64 per schedule region (2 floats each), T4.5
+  uint32_t meterFlagOff = 0;              // aux: one word, non-zero while this block is metered, T4.5
 };
 
 class ImageHost {
@@ -204,6 +214,17 @@ public:
   bool segmentAsleep(uint32_t segment) const noexcept { return segment < segs_.size() && segs_[segment].asleep; }
   const SleepStats& sleepStats() const noexcept { return sleepStats_; }
 
+  // ---- inspection (T4.5, pq/engine/inspect.h) ----
+  // Not RT-safe: binds the probes by id and the cost meter (call before the image is published).
+  bool bindInspect(const InspectBinding& b);
+  // Build time: per schedule region, the first region of the unit its time is counted in (default: itself).
+  void setMeterUnits(std::vector<uint32_t> units) { meterUnits_ = std::move(units); }
+  uint32_t numRegions() const noexcept { return numRegions_; }
+  // This block is metered (after begin()). RT-safe.
+  bool metering() const noexcept { return metering_; }
+  uint64_t* regionCycles() noexcept { return reinterpret_cast<uint64_t*>(bufMem_.data() + L_.meterOff); }
+  void addRegionCycles(uint32_t region, uint64_t cycles) noexcept { regionCycles()[region] += cycles; }  // RT-safe
+
   // ---- per block (RT-safe) ----
   // Starts a block: false for frames == 0 (nothing to do) or frames > maxBlockFrames (every output zeroed, counted
   // in rejectedBlocks()). Otherwise splats the params and resolves the engine sources (extPtr / extTable).
@@ -262,6 +283,23 @@ private:
     bool voice = false;
     uint32_t firstReduce = 0, numReduce = 0;
     uint32_t firstOut = 0, numOut = 0;  // voice: group g's output copies at firstOut + g · numOut
+    uint32_t firstProbe = 0, numProbes = 0;  // voice probes read after each group (T4.5), into probes_
+  };
+  // T4.5: one probe of Schedule::probes.
+  struct ProbeRun {
+    uint32_t id = 0;
+    uint32_t buffer = graph::kNone;  // a Buffer operand (per-group resolution for voice values)
+    uint32_t ext = graph::kNone;     // an External operand (resolved per block)
+    const float* src = nullptr;      // Param / Const pattern, or a global buffer
+    uint32_t perFrame = 1;           // floats per frame: 1 (global block), 8 (voice block), 0 (8-float pattern)
+    uint32_t region = graph::kNone;  // sleeping region: reads 0
+    uint32_t stage = graph::kNone;
+    float* alt = nullptr;            // pairs: the second group's copy of a stage-local value
+    bool voice = false, isBool = false, sum = false;
+    bool captured = false;           // voice: this block's value was taken (Last: the newest voice's group ran)
+    TapRing* ring = nullptr;
+    ProbeLevel* level = nullptr;
+    float* scratch = nullptr;        // maxBlock floats
   };
 
   // Sleep (T1.x-silence).
@@ -310,6 +348,14 @@ private:
   void initReducers(const StageRun& st, uint32_t frames, bool zero) noexcept;
   void setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept;  // RT-safe
   void copyGroupOut(const StageRun& st, const VoiceGroupIO& gr, uint32_t gi, uint32_t frames, bool alt) noexcept;
+  // T4.5 (RT-safe).
+  void probeStageBegin(const StageRun& st) noexcept;
+  void probeGroup(const StageRun& st, uint32_t gi, uint32_t frames, bool second) noexcept;
+  void probeStageEnd(const StageRun& st, uint32_t frames) noexcept;
+  void probeGlobals(uint32_t frames) noexcept;
+  void probeWrite(ProbeRun& p, const float* data, uint32_t frames) noexcept;
+  void meterEnd(uint32_t frames) noexcept;
+  bool probeLayout(const graph::Schedule& s);
 
   std::string who_ = "image";
   Error err_;
@@ -356,6 +402,17 @@ private:
   bool dormantCapable_ = false;
   bool planSegments_ = false;              // the schedule has sleep segments (whatever the mode)
   SleepStats sleepStats_;
+  // Inspection (T4.5).
+  std::vector<ProbeRun> probes_;           // voice probes grouped by stage (StageRun::firstProbe), then the global ones
+  uint32_t firstGlobalProbe_ = 0, numGlobalProbes_ = 0;
+  AlignedBuffer<float> probeScratch_;
+  uint32_t numRegions_ = 0;
+  std::vector<uint32_t> meterUnits_;
+  CostMeter* meter_ = nullptr;
+  uint32_t meterKey_ = 0;
+  bool metering_ = false;
+  uint64_t meterT0_ = 0;
+  uint32_t* meterFlag_ = nullptr;          // in aux
 };
 
 inline void ImageHost::setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept {  // RT-safe
@@ -399,6 +456,7 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
       continue;
     }
     initReducers(st, frames, false);
+    if (st.numProbes) probeStageBegin(st);
     bool any = false;
     const bool pairs = pairable(k);
     for (uint32_t gi = 0; gi < groups_; ++gi) {
@@ -412,14 +470,20 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
       if (!pairs || gb >= groups_) {
         voice(k, gi);
         copyGroupOut(st, gr, gi, frames, false);
+        if (st.numProbes) probeGroup(st, gi, frames, false);
         continue;
       }
       setRun(runB_, vt, gb);
       pair(k, gi, gb);
       copyGroupOut(st, gr, gi, frames, false);
       copyGroupOut(st, vt->groups[gb], gb, frames, true);
+      if (st.numProbes) {
+        probeGroup(st, gi, frames, false);
+        probeGroup(st, gb, frames, true);
+      }
       gi = gb;
     }
+    if (st.numProbes) probeStageEnd(st, frames);
     if (!any) initReducers(st, frames, true);
     anyVoice = anyVoice || any;
   }
@@ -430,6 +494,8 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
     if (ctx.out != nullptr && oc.slot < ctx.numOut && ctx.out[oc.slot] != nullptr) copyOut(oc, ctx.out[oc.slot], frames, false);
   }
   sleepReports(ctx, frames, anyVoice);
+  if (numGlobalProbes_) probeGlobals(frames);
+  if (metering_) meterEnd(frames);
 }
 
 }  // namespace pq::engine::host

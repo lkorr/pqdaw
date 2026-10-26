@@ -131,6 +131,17 @@ public:
     }
   }
 
+  // T4.5: per region, the first region of the unit generated code times it in (a chain is one loop: one unit).
+  std::vector<uint32_t> units() {
+    analyse();
+    std::vector<uint32_t> u(s_.regions.size());
+    for (uint32_t r = 0; r < u.size(); ++r) u[r] = r;
+    for (uint32_t r = 0; r < u.size(); ++r)
+      if (chainEnd_[r] >= 0)
+        for (uint32_t q = r + 1; q <= static_cast<uint32_t>(chainEnd_[r]) && q < u.size(); ++q) u[q] = r;
+    return u;
+  }
+
   Result<GenResult> run() {
     analyse();
     if (o_.scalarLanes)
@@ -303,6 +314,7 @@ private:
       if (o.kind == g::Operand::Kind::Buffer && o.index < always.size()) always[o.index] = true;
     };
     for (const g::OutputRef& o : s_.outputs) mark(o.value);
+    for (const g::ProbeRef& p : s_.probes) mark(p.value);  // T4.5: the host copies it after the stage
     for (const g::SolveUnknown& u : s_.unknowns) {
       mark(u.value);
       mark(u.init);
@@ -384,16 +396,17 @@ private:
     beginFunction(name, llvm::Function::ExternalLinkage, maxOperands);
     if (vw == 16) stagePairState(true);
     for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+      Value* t0 = meterStart();  // T4.5: the region's (or chain's) time while a cost meter is shown
+      const uint32_t first = r;
       if (chainEnd_[r] >= 0) {
         emitChain(r, static_cast<uint32_t>(chainEnd_[r]));
         r = static_cast<uint32_t>(chainEnd_[r]);
-        continue;
-      }
-      if (!voice_ && r < s_.sleep.regions.size() && s_.sleep.regions[r].segment != g::kNone) {
+      } else if (!voice_ && r < s_.sleep.regions.size() && s_.sleep.regions[r].segment != g::kNone) {
         emitSleepingRegion(r);
-        continue;
+      } else {
+        emitRegion(r);
       }
-      emitRegion(r);
+      meterStop(first, t0);
     }
     if (vw == 16) stagePairState(false);
     B_.CreateRetVoid();
@@ -459,6 +472,9 @@ private:
       group64_ = eb.CreateZExt(group32_, i64_);
       group1_64_ = eb.CreateZExt(group1_32, i64_);
       lane64_ = eb.CreateZExt(lane32, i64_);
+      meterOn_ = eb.CreateICmpNE(eb.CreateAlignedLoad(i32_, eb.CreateConstInBoundsGEP1_64(f32_, aux_, L_.meterFlagOff),
+                                                      llvm::Align(4)),
+                                 c32(0));
       kargs_ = eb.CreateAlloca(kargsTy_);
       inArr_ = eb.CreateAlloca(llvm::ArrayType::get(ptr_, maxOperands));
       outArr_ = eb.CreateAlloca(llvm::ArrayType::get(ptr_, maxOperands));
@@ -466,6 +482,35 @@ private:
       slot_->setAlignment(llvm::Align(32));
     }
     return F_;
+  }
+
+  // T4.5 cost meter (image_host.h): behind the flag the host raises for a metered block (loaded once per call), the TSC
+  // before a region and its cycles added to the region's uint64 counter in buf after it. Unmetered: one branch each.
+  Value* meterStart() {
+    llvm::BasicBlock* from = B_.GetInsertBlock();
+    llvm::BasicBlock* on = llvm::BasicBlock::Create(C_, "meter.start", F_);
+    llvm::BasicBlock* cont = llvm::BasicBlock::Create(C_, "meter.started", F_);
+    B_.CreateCondBr(meterOn_, on, cont);
+    B_.SetInsertPoint(on);
+    Value* t = B_.CreateIntrinsic(i64_, llvm::Intrinsic::readcyclecounter, llvm::ArrayRef<Value*>{});
+    B_.CreateBr(cont);
+    B_.SetInsertPoint(cont);
+    llvm::PHINode* phi = B_.CreatePHI(i64_, 2);
+    phi->addIncoming(c64(0), from);
+    phi->addIncoming(t, on);
+    return phi;
+  }
+  void meterStop(uint32_t region, Value* t0) {
+    llvm::BasicBlock* on = llvm::BasicBlock::Create(C_, "meter.stop", F_);
+    llvm::BasicBlock* cont = llvm::BasicBlock::Create(C_, "meter.stopped", F_);
+    B_.CreateCondBr(meterOn_, on, cont);
+    B_.SetInsertPoint(on);
+    Value* t1 = B_.CreateIntrinsic(i64_, llvm::Intrinsic::readcyclecounter, llvm::ArrayRef<Value*>{});
+    Value* p = B_.CreateConstInBoundsGEP1_64(i64_, B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.meterOff), region);
+    Value* old = B_.CreateAlignedLoad(i64_, p, llvm::Align(8));
+    B_.CreateAlignedStore(B_.CreateAdd(old, B_.CreateSub(t1, t0)), p, llvm::Align(8));
+    B_.CreateBr(cont);
+    B_.SetInsertPoint(cont);
   }
 
   llvm::Constant* c64(uint64_t v) const { return llvm::ConstantInt::get(i64_, v); }
@@ -1634,6 +1679,7 @@ private:
   Value *buf_ = nullptr, *aux_ = nullptr, *gstate_ = nullptr, *vstate_ = nullptr, *vstate1_ = nullptr, *ext_ = nullptr,
         *tabArg_ = nullptr;
   Value *group32_ = nullptr, *frames64_ = nullptr, *group64_ = nullptr, *group1_64_ = nullptr, *lane64_ = nullptr;
+  Value* meterOn_ = nullptr;  // i1: this block is metered (T4.5)
   llvm::AllocaInst *kargs_ = nullptr, *inArr_ = nullptr, *outArr_ = nullptr, *slot_ = nullptr;
   std::unordered_map<uint32_t, Value*> bufBase_, extPtr_, tabLoad_, statePtr_;
   llvm::Instruction* hoistIP_ = nullptr;
@@ -1645,6 +1691,13 @@ private:
 Result<GenResult> generate(const g::Schedule& s, const HostLayout& layout, PtrTable& tab, llvm::Module& m,
                            const GenOptions& options) {
   return Gen(s, layout, tab, m, options).run();
+}
+
+std::vector<uint32_t> meterUnits(const g::Schedule& s, const HostLayout& layout, const GenOptions& options) {
+  llvm::LLVMContext ctx;
+  llvm::Module mod("pq_units", ctx);
+  PtrTable tab;
+  return Gen(s, layout, tab, mod, options).units();
 }
 
 }  // namespace pq::jit::detail
