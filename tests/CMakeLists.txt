@@ -98,6 +98,7 @@ pq_add_test(pq_tests_playback
     app/test_jit_aot.cpp
     app/test_device_chains.cpp  # T4.1: device chains through the link (migration bit-identity, unit compiles, hand-built graph)
     app/test_wires.cpp  # T4.7: modulation wires (audible LFO wire, hand-built graph diff 0, interpreter == JIT, loops, taps)
+    app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -131,6 +132,7 @@ pq_add_test(pq_tests_views
     views/test_circuit_probes.cpp  # T4.5: probes and cost meters in the circuit editor
     views/test_device_chain.cpp  # T4.1: the Device view (chain edits, generic panels, the panel hook, golden)
     views/test_wiring.cpp  # T4.7: cables (jack → knob drags, across tracks, scrolling, badge, rings), golden
+    views/test_device_circuit.cpp  # T4.4-fix1: the circuit editor on a project device (fork, undo, probes), golden
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
@@ -297,6 +299,7 @@ pq_add_test(pq_tests_document
     document/test_main_tunings.cpp
     document/test_virtual_fundamental.cpp
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
+    document/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit, file, resolution, lowering, coalescing)
   DEPS pq_doc)
 
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it

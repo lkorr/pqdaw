@@ -404,10 +404,11 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   auto& saveButton = bar.add<ui::Button>("save", "Save");
   saveButton.setWidth(ui::Length::fixed(44));
   saveButton.onClick = [this] { (void)save(); };
+  save_ = &saveButton;
   auto& close = bar.add<ui::Button>("close", "Close");
   close.setWidth(ui::Length::fixed(48));
   close.onClick = [this] {
-    if (doc_->dirty() && !closeArmed_) {
+    if (!host_ && doc_->dirty() && !closeArmed_) {
       closeArmed_ = true;
       setStatus("Unsaved changes: Save keeps them; Close again closes without saving.");
       return;
@@ -458,10 +459,13 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
 CircuitEditor::~CircuitEditor() {
   *alive_ = false;
   if (doc_) {
+    doc_->onCommitted = nullptr;
     doc_->onChange = nullptr;
-    if (doc_->playing()) doc_->stop();  // a closed editor leaves nothing playing
+    if (doc_->playing()) doc_->stop();  // a closed editor leaves nothing playing (a project device: no probes)
     if (PatchPlayer* pl = doc_->player()) pl->setMetering(false);
+    doc_->setPlayer(nullptr);
   }
+  host_.reset();  // T4.4-fix1: then the host (it may own the player), before the document it observes
 }
 
 size_t CircuitEditor::shownIndex() const noexcept { return doc_->patchIndex(shown_); }
@@ -481,7 +485,7 @@ void CircuitEditor::setStatus(std::string s) {
 void CircuitEditor::updateTitle() {
   std::string file = doc_->path();
   if (const size_t k = file.find_last_of("/\\"); k != std::string::npos) file = file.substr(k + 1);
-  titleText_ = file + (doc_->dirty() ? " \xE2\x80\xA2" : "");
+  titleText_ = host_ ? host_->title() : file + (doc_->dirty() ? " \xE2\x80\xA2" : "");
   for (const std::string& q : backStack_) titleText_ += " \xE2\x80\xBA " + q;
   titleText_ += " \xE2\x80\xBA " + shown_;
   if (readOnly()) titleText_ += "  (imported: read-only)";
@@ -646,6 +650,12 @@ void CircuitEditor::scheduleCheck() {
 }
 
 void CircuitEditor::onTimer(uint32_t id) {
+  if (id == closeTimer_) {  // T4.4-fix1: closeSoon
+    closeTimer_ = 0;
+    if (doc_->playing()) doc_->stop();
+    if (ui::OverlayLayer* layer = ui::OverlayLayer::of(*this)) layer->close(*this);
+    return;  // `this` may be gone
+  }
   if (id == dwellTimer_) {  // T4.5: the pointer rested on a wire: probe it
     dwellTimer_ = 0;
     if (hoverWire_ != UINT32_MAX) probeWire(hoverWire_);
@@ -682,6 +692,9 @@ void CircuitEditor::checkNow() {
   if (!doc_->playing() && idx == graph::kNone) idx = 0;
   const Status s = doc_->check(idx);
   if (!s && doc_->playing()) setStatus("Not swapped (the last good version keeps playing): " + s.error().message);
+  else if (s && doc_->playing() && host_) {
+    if (statusText_.empty()) setStatus("The project plays the edit (only this track recompiles).");
+  }
   else if (s && doc_->playing()) setStatus("Playing " + doc_->playingPatch() + ": swapped in the edit");
 }
 
@@ -762,10 +775,26 @@ bool CircuitEditor::makeParam() {
   return true;
 }
 
-bool CircuitEditor::undo() { return doc_->undo(); }
-bool CircuitEditor::redo() { return doc_->redo(); }
+bool CircuitEditor::undo() { return host_ ? host_->undo() : doc_->undo(); }
+bool CircuitEditor::redo() { return host_ ? host_->redo() : doc_->redo(); }
+
+void CircuitEditor::setHost(std::unique_ptr<Host> host) {
+  host_ = std::move(host);
+  const bool device = host_ != nullptr;
+  if (save_) save_->setVisible(!device);
+  if (play_) play_->setVisible(!device);
+  updateTitle();
+}
+
+void CircuitEditor::closeSoon() {
+  if (!closeTimer_) closeTimer_ = requestTimer(0.0);
+}
 
 bool CircuitEditor::save() {
+  if (host_) {  // T4.4-fix1: the project holds the device's text
+    setStatus("This device's patch is part of the project: File > Save Set saves it.");
+    return false;
+  }
   if (Status s = doc_->save(); !s) {
     setStatus("Not saved: " + s.error().message);
     return false;
@@ -795,7 +824,8 @@ bool CircuitEditor::togglePlay() {
     updateTitle();
     return false;
   }
-  setStatus("Playing " + doc_->playingPatch() + ": edits swap in as you make them.");
+  setStatus(host_ ? "Edits play in the project at once; hover a wire to probe it as the project plays it, Cost to measure it."
+                  : "Playing " + doc_->playingPatch() + ": edits swap in as you make them.");
   refreshProbes(true);  // T4.5: the LED trace of the bool wires (a second, bit-identical program)
   if (costShown() && !costTimer_) costTimer_ = requestTimer(0.25);
   updateTitle();
@@ -908,7 +938,7 @@ bool CircuitEditor::onKey(const ui::KeyEvent& e) {
       if (tree()) tree()->setFocus(canvas_);
       return true;
     }
-    if (doc_->dirty() && !closeArmed_) {
+    if (!host_ && doc_->dirty() && !closeArmed_) {
       closeArmed_ = true;
       setStatus("Unsaved changes: Ctrl+S saves; Esc again closes without saving.");
       return true;
@@ -919,6 +949,11 @@ bool CircuitEditor::onKey(const ui::KeyEvent& e) {
 }
 
 ui::InfoText CircuitEditor::info() const {
+  if (host_)
+    return {"Circuit Editor: " + host_->title(),
+            "Drag pins to wire, drag nodes to move, double-click to add or rename. The text on the right is the same patch: "
+            "edit either. Edits play at once and belong to the project (the first one makes this device the track's own "
+            "copy); Ctrl+Z undoes them like any other edit."};
   return {"Circuit Editor",
           "Drag pins to wire, drag nodes to move, double-click to add or rename. The text on the right is the same patch: "
           "edit either. Ctrl+Z undoes both, Ctrl+S saves, Ctrl+Enter plays."};
@@ -1174,7 +1209,13 @@ void CircuitEditor::pollCost() {
   if (!pl->readCost(rd)) return;
   std::vector<graph::NodeId> path;
   CostMap cm;
-  if (!shownPath(path) || !attributeCost(*played, rd, path, cm)) {
+  const bool shown = shownPath(path);
+  if (shown && pl->external()) {  // T4.4-fix1: the patch is an instance inside the player's program (a project unit)
+    std::vector<graph::NodeId> full = pl->pathPrefix();
+    full.insert(full.end(), path.begin(), path.end());
+    path = std::move(full);
+  }
+  if (!shown || !attributeCost(*played, rd, path, cm)) {
     if (rd.generation == played->generation) {
       costTotal_ = costTotal_ > 0.0 ? 0.7 * costTotal_ + 0.3 * rd.totalNsPerFrame : rd.totalNsPerFrame;
       setStatus("Cost " + formatCostNs(costTotal_) + " per sample (the shown patch is not what plays)");

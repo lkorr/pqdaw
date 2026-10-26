@@ -236,9 +236,11 @@ struct PatchEditor::Impl {
   }
 
   // ---- text changes --------------------------------------------------------------------------------------------------
+  bool external = false;  // T4.4-fix1: resetText: the change came from the host, not from an edit here
+  uint64_t serial = 0;    // history steps recorded (stepSerial)
   void emit(const EditorChange& c) {
     if (self->onChange) self->onChange(c);
-    if (lowered && self->onCommitted) self->onCommitted(text, good);
+    if (lowered && !external && self->onCommitted) self->onCommitted(text, good);
   }
 
   // Replaces [offset, offset + removed) by `inserted`, re-parses (ids from idsFrom, else the last good parse) and tells
@@ -306,6 +308,7 @@ struct PatchEditor::Impl {
     s.inserted = std::move(inserted);
     s.typing = typing && !lineBreak;
     s.time = now;
+    ++serial;
     steps.push_back(std::move(s));
     if (steps.size() > kMaxHistory) steps.erase(steps.begin());
     cursor = steps.size();
@@ -442,6 +445,10 @@ struct PatchEditor::Impl {
           if (!sr.ok()) {
             addCheckDiags(sr.diagnostics);
             result = refuse("the patch does not schedule");
+          } else if (live && player->external()) {
+            // T4.4-fix1: the patch plays elsewhere (a project device): the check is the editor's; the program, its
+            // probes and its cost are the player's.
+            ++stats.swaps;
           } else if (live) {
             const graph::TypedPatch& scheduled = sr.schedule.rewritten ? *sr.schedule.rewritten : *opt;
             if (Status s = player->play(sr.schedule, scheduled); s) {
@@ -489,14 +496,15 @@ struct PatchEditor::Impl {
 PatchEditor::PatchEditor(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) { impl_->self = this; }
 PatchEditor::~PatchEditor() = default;
 
-Result<std::unique_ptr<PatchEditor>> PatchEditor::fromText(std::string path, std::string text) {
+Result<std::unique_ptr<PatchEditor>> PatchEditor::fromText(std::string path, std::string text,
+                                                           const graph::PatchFile* idsFrom) {
   auto impl = std::make_unique<Impl>();
   std::error_code ec;
   const fs::path full = fs::weakly_canonical(pathOf(path), ec);
   impl->path = ec ? path : utf8Of(full);
   impl->text = std::move(text);
   impl->fileText = impl->text;
-  impl->reparse(nullptr);
+  impl->reparse(idsFrom);
   if (impl->good.file.patches.empty()) {
     // Nothing lowered: an editor over broken text still opens (the text pane shows the errors), but a file whose
     // text never lowered has no circuit; refuse only an empty file.
@@ -530,6 +538,23 @@ const PatchEditor::CheckStats& PatchEditor::stats() const noexcept { return impl
 bool PatchEditor::canUndo() const noexcept { return impl_->cursor > 0; }
 bool PatchEditor::canRedo() const noexcept { return impl_->cursor < impl_->steps.size(); }
 size_t PatchEditor::historySize() const noexcept { return impl_->cursor; }
+uint64_t PatchEditor::stepSerial() const noexcept { return impl_->serial; }
+
+void PatchEditor::resetText(std::string text, const graph::PatchFile* idsFrom) {
+  Impl& m = *impl_;
+  if (text == m.text) return;
+  m.note.clear();
+  // The one replacement between the common prefix and suffix (the text pane keeps everything else).
+  size_t a = 0;
+  const size_t n = std::min(m.text.size(), text.size());
+  while (a < n && m.text[a] == text[a]) ++a;
+  size_t b = 0;
+  while (b < n - a && m.text[m.text.size() - 1 - b] == text[text.size() - 1 - b]) ++b;
+  m.external = true;
+  m.apply(static_cast<uint32_t>(a), static_cast<uint32_t>(m.text.size() - a - b),
+          std::string_view(text).substr(a, text.size() - a - b), EditSource::Undo, idsFrom, false, false);
+  m.external = false;
+}
 
 size_t PatchEditor::patchIndex(std::string_view name) const noexcept {
   const auto& ps = impl_->good.file.patches;
@@ -760,9 +785,15 @@ void PatchEditor::setProbes(std::vector<graph::ProbeTarget> targets, std::vector
   impl_->probeTargets = std::move(targets);
   impl_->probeIds = std::move(ids);
   impl_->probeIds.resize(impl_->probeTargets.size(), 0);
+  // T4.4-fix1: an external player compiles them into its own program (now; the editor's check has no program).
+  if (impl_->player && impl_->player->external() && !impl_->playingName.empty())
+    impl_->player->setProbeTargets(impl_->probeTargets, impl_->probeIds);
 }
 
-const PatchEditor::PlayedProgram* PatchEditor::played() const noexcept { return impl_->played.get(); }
+const PatchEditor::PlayedProgram* PatchEditor::played() const noexcept {
+  if (impl_->player && impl_->player->external()) return impl_->playingName.empty() ? nullptr : impl_->player->playedProgram();
+  return impl_->played.get();
+}
 
 Status PatchEditor::check(size_t patch) {
   Impl& m = *impl_;
@@ -778,6 +809,10 @@ Status PatchEditor::play(size_t patch) {
   const std::string was = m.playingName;
   m.playingName = m.good.file.patches[patch].name();
   Status s = m.runCheck(patch);
+  if (m.player->external()) {  // T4.4-fix1: it plays anyway (the project keeps its last good text): follow it
+    m.player->setProbeTargets(m.probeTargets, m.probeIds);
+    return Ok{};
+  }
   if (!s) m.playingName = was;
   return s;
 }

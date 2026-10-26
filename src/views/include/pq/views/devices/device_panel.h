@@ -84,6 +84,12 @@ public:
   float logicalHeight() const noexcept;
   // The source started playing: displays that show the output spectrum start drawing it (if shown).
   void wakeDisplays();
+  // T4.4-fix1: a user device (it plays its own patch, edited in the circuit editor): the title bar shows an "edited"
+  // marker after the title. A double-click on the title runs onTitleDoubleClick when set (the Device view: Open in
+  // Circuit View), else folds the panel as the triangle does.
+  void setEdited(bool e);
+  bool edited() const noexcept { return edited_; }
+  std::function<void()> onTitleDoubleClick;
 
   // ---- T4.7 hooks ----
   struct Jack {
@@ -117,6 +123,7 @@ private:
   mutable std::vector<Jack> jacks_;
   bool active_ = true;
   bool folded_ = false;
+  bool edited_ = false;
 };
 
 }  // namespace pq::views::devices

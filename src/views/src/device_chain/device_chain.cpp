@@ -14,6 +14,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/devices/panel_desc.h"
+#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/shell/shell.h"
 
 namespace pq::views {
@@ -70,7 +71,10 @@ struct DeviceChainView::Impl {
   int32_t frameIndex(doc::DeviceId id) const noexcept;
   // One panel template per device patch (signature + description), built on first use.
   std::map<std::string, std::unique_ptr<PanelTemplate>, std::less<>> templates;
-  const PanelTemplate* templateFor(const std::string& patch);
+  // T4.4-fix1: keyed by what the device plays — the stock patch's name, or a user device's own root (its name carries
+  // the device id and its graph's hash: a new graph, a new template); "" for a device with nothing to play.
+  static std::string templateKey(const doc::DeviceLibrary* lib, const doc::Device& d);
+  const PanelTemplate* templateFor(const doc::Device& d);
   void startDrag(doc::DeviceId id, const ui::PointerEvent& e) {
     drag.begin(e);
     dragging = id;
@@ -126,8 +130,9 @@ private:
 
 class DeviceFrame final : public ui::Widget {
 public:
-  DeviceFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d, const PanelTemplate* tpl)
-      : Widget("device[" + std::to_string(d.id.value) + "]"), impl_(impl), ctx_(ctx), id_(d.id), target_(impl, ctx, d.id) {
+  DeviceFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d, const PanelTemplate* tpl, std::string key)
+      : Widget("device[" + std::to_string(d.id.value) + "]"), impl_(impl), ctx_(ctx), id_(d.id), target_(impl, ctx, d.id),
+        key_(std::move(key)) {
     setLayout(ui::LayoutKind::Custom);
     if (tpl != nullptr) {
       std::map<std::string, double, std::less<>> values;
@@ -147,10 +152,22 @@ public:
       panel_->onJackDrag = [this](const ui::PointerEvent& e) {
         if (impl_.view.onJack) impl_.view.onJack(id_, {}, e);
       };
+      // T4.4-fix1: a user device's "edited" marker; a double-click on the title opens the device in the circuit view.
+      panel_->setEdited(d.edited());
+      panel_->onTitleDoubleClick = [this] { impl_.view.openInCircuitView(id_); };
     }
-    missing_ = tpl == nullptr ? "'" + d.patch + "' is not available: bypassed" : std::string();
+    if (tpl == nullptr && d.edited()) {
+      const doc::DeviceLibrary* lib = ctx.deviceLibrary();
+      const auto r = lib ? lib->resolve(d) : nullptr;
+      missing_ = "'" + d.patch + "' (edited) does not play: " +
+                 (r ? r->error.substr(0, r->error.find('\n')) : std::string("no device library")) +
+                 ". Right-click: Open in Circuit View, Revert to Stock.";
+    } else if (tpl == nullptr) {
+      missing_ = "'" + d.patch + "' is not available: bypassed";
+    }
     active_ = d.active;
   }
+  const std::string& key() const noexcept { return key_; }
 
   doc::DeviceId id() const noexcept { return id_; }
   devices::DevicePanel* panel() const noexcept { return panel_; }
@@ -230,6 +247,7 @@ private:
   ViewContext& ctx_;
   doc::DeviceId id_;
   DocTarget target_;
+  std::string key_;  // the template it was built from (Impl::templateKey)
   devices::DevicePanel* panel_ = nullptr;
   std::string missing_;
   bool active_ = true;
@@ -341,6 +359,13 @@ bool DeviceFrame::onPointer(const ui::PointerEvent& e) {
       const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
       const bool on = d != nullptr && d->active;
       std::vector<ui::MenuItem> items;
+      // T4.4-fix1 (SPEC §15 2026-10-26): the circuit editor on this device; a user device back to the stock patch.
+      const doc::DeviceId id = id_;
+      items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openInCircuitView(id); }));
+      ui::MenuItem revert = ui::MenuItem::item("Revert to Stock", [v] { v->revertSelectedToStock(); });
+      revert.enabled = d != nullptr && d->edited();
+      items.push_back(std::move(revert));
+      items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item(on ? "Deactivate" : "Activate", [v] { v->toggleSelectedActive(); }, "0"));
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item("Cut", [v] { v->cutSelected(); }, "Ctrl+X"));
@@ -390,21 +415,31 @@ int32_t DeviceChainView::Impl::frameIndex(doc::DeviceId id) const noexcept {
   return -1;
 }
 
-const PanelTemplate* DeviceChainView::Impl::templateFor(const std::string& patch) {
-  if (const auto it = templates.find(patch); it != templates.end()) return it->second.get();
+std::string DeviceChainView::Impl::templateKey(const doc::DeviceLibrary* lib, const doc::Device& d) {
+  if (!d.source) return d.patch;
+  const auto r = lib != nullptr ? lib->resolve(d) : nullptr;
+  return r && r->graph ? r->graph->root : std::string();
+}
+
+const PanelTemplate* DeviceChainView::Impl::templateFor(const doc::Device& d) {
   const doc::DeviceLibrary* lib = view.ctx_.deviceLibrary();
-  const graph::Patch* callee = lib != nullptr ? lib->library().find(patch) : nullptr;
+  const std::string key = templateKey(lib, d);
+  if (key.empty()) return nullptr;
+  if (const auto it = templates.find(key); it != templates.end()) return it->second.get();
+  std::shared_ptr<const doc::ResolvedDevice> hold;
+  const graph::Patch* callee = lib != nullptr ? lib->patchOf(d, hold) : nullptr;
   std::unique_ptr<PanelTemplate> t;
   if (callee != nullptr) {
     t = std::make_unique<PanelTemplate>();
     t->sig = devices::signatureOf(*callee);
-    const std::string file = lib->pathOf(patch);
+    // The stock panel while its bindings hold for the (edited) signature, else the generic one.
+    const std::string file = lib->pathOf(d.patch);
     auto desc = file.empty() ? Result<devices::PanelDesc>(Error{ErrorCode::NotFound, "", {}})
                              : devices::loadPanelDesc(devices::panelPathFor(file), t->sig);
-    const doc::DeviceInfo* info = lib->catalog().find(patch);
-    t->desc = desc ? std::move(*desc) : devices::autoPanel(t->sig, info != nullptr ? info->name : patch);
+    const doc::DeviceInfo* info = lib->catalog().find(d.patch);
+    t->desc = desc ? std::move(*desc) : devices::autoPanel(t->sig, info != nullptr ? info->name : d.patch);
   }
-  return (templates[patch] = std::move(t)).get();
+  return (templates[key] = std::move(t)).get();
 }
 
 void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
@@ -499,6 +534,13 @@ void DeviceChainView::sync(bool force) {
   const std::vector<doc::DevicePtr>& chain = t != nullptr ? t->devices : kNone;
   bool sameIds = !force && want == track_ && chain.size() == m.shown.size();
   for (size_t i = 0; sameIds && i < chain.size(); ++i) sameIds = chain[i]->id == m.shown[i]->id;
+  // T4.4-fix1: a device whose patch text changed (an edit in the circuit view, Revert to Stock) gets a new panel when
+  // what it plays changed (a comment or layout edit keeps the template, and the panel).
+  for (size_t i = 0; sameIds && i < chain.size(); ++i)
+    if (chain[i]->source != m.shown[i]->source) {
+      sameIds = Impl::templateKey(ctx_.deviceLibrary(), *chain[i]) == m.frames[i]->key();
+      if (sameIds && m.frames[i]->panel()) m.frames[i]->panel()->setEdited(chain[i]->edited());
+    }
   if (sameIds) {
     for (size_t i = 0; i < chain.size(); ++i)
       if (chain[i] != m.shown[i]) m.frames[i]->update(*chain[i]);
@@ -507,7 +549,7 @@ void DeviceChainView::sync(bool force) {
     for (DeviceFrame* f : m.frames) (void)m.content->removeChild(*f);
     m.frames.clear();
     for (const doc::DevicePtr& d : chain) {
-      auto f = std::make_unique<DeviceFrame>(m, ctx_, *d, m.templateFor(d->patch));
+      auto f = std::make_unique<DeviceFrame>(m, ctx_, *d, m.templateFor(*d), Impl::templateKey(ctx_.deviceLibrary(), *d));
       DeviceFrame* raw = f.get();
       m.content->addChild(std::move(f));  // placed by ChainContent::arrange, left of the add slot
       m.frames.push_back(raw);
@@ -638,6 +680,18 @@ bool DeviceChainView::toggleSelectedActive() {
 
 bool DeviceChainView::moveDevice(doc::DeviceId device, uint32_t index) {
   return impl_->run(doc::ops::moveDevice(*ctx_.doc(), device, {}, index));
+}
+
+bool DeviceChainView::openInCircuitView(doc::DeviceId device) {
+  return circuit::openDeviceInCircuitView(*this, ctx_, device) != nullptr;
+}
+
+bool DeviceChainView::revertSelectedToStock() {
+  if (selection_.empty()) return false;
+  const std::vector<doc::DeviceId> keep = selection_;
+  const bool r = impl_->run(doc::ops::revertDevicesToStock(*ctx_.doc(), keep));
+  select(keep);
+  return r;
 }
 
 ui::Widget* DeviceChainView::frameOf(doc::DeviceId device) const noexcept {

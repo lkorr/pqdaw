@@ -67,8 +67,10 @@ struct EditorChange {
 class PatchEditor {
 public:
   static Result<std::unique_ptr<PatchEditor>> open(const std::string& path);
-  // `path` names the file (imports resolve relative to it; save() writes it).
-  static Result<std::unique_ptr<PatchEditor>> fromText(std::string path, std::string text);
+  // `path` names the file (imports resolve relative to it; save() writes it). `idsFrom` (optional): the first parse
+  // takes its NodeIds from it (T4.4-fix1: a project device opens with the ids the project plays).
+  static Result<std::unique_ptr<PatchEditor>> fromText(std::string path, std::string text,
+                                                       const graph::PatchFile* idsFrom = nullptr);
   ~PatchEditor();
   PatchEditor(const PatchEditor&) = delete;
   PatchEditor& operator=(const PatchEditor&) = delete;
@@ -108,6 +110,14 @@ public:
   bool undo();
   bool redo();
   size_t historySize() const noexcept;  // steps that undo() can take
+  // T4.4-fix1: counts the history steps recorded so far; an edit that coalesced into the previous step (a typing run)
+  // leaves it unchanged. A host that keeps its own history (a project device: the document's) joins such edits into one
+  // undo step (DocumentStore::dispatchCoalescing).
+  uint64_t stepSerial() const noexcept;
+  // T4.4-fix1: the text becomes `text` from outside (the document's undo / redo of a project device): re-parsed with
+  // the ids of the last good parse (or `idsFrom`), no history step, onCommitted not called; listeners hear an Undo
+  // change (the text pane follows, its caret at the change).
+  void resetText(std::string text, const graph::PatchFile* idsFrom = nullptr);
   // A one-line note on the last edit (e.g. "inserted a z1: the wire closed a loop with no delay"), or "".
   const std::string& note() const noexcept;
 
@@ -131,18 +141,9 @@ public:
   // Probes compiled into the playing patch from its next check on (targets[i] gets ids[i]; call check() to apply them
   // now). Nothing else of the program changes (the audio is bit-identical with or without them).
   void setProbes(std::vector<graph::ProbeTarget> targets, std::vector<uint32_t> ids);
-  // What the player plays (the last schedule handed to it), for reading its cost: the schedule and, per node of the
-  // scheduled patch, where it was written — kept as NodeIds, so it stays valid while the text changes.
-  struct PlayedProgram {
-    uint64_t generation = 0;                  // PatchPlayer::generation() after it was played
-    graph::Schedule schedule;
-    std::vector<uint32_t> instanceParent;     // per instance (TypedPatch::instances): its caller (kNone: the root)
-    std::vector<graph::NodeId> instanceCall;  // … and the call node in the caller
-    std::vector<uint32_t> nodeInstance;       // per node of the scheduled patch: its instance
-    std::vector<graph::NodeId> nodeSource;    // … the node it comes from in that instance's patch (invalid: none)
-    std::vector<graph::NodeOrigin::What> nodeWhat;
-    std::vector<uint32_t> probeIds;           // the probes that have a value (Schedule::probes ids)
-  };
+  // What the player plays (patch_player.h PlayedProgram). T4.4-fix1: an external player's own program (a project unit:
+  // the played patch is the instance at PatchPlayer::pathPrefix() in it); the probe targets go to it directly.
+  using PlayedProgram = circuit::PlayedProgram;
   const PlayedProgram* played() const noexcept;  // null: nothing played yet
   // The last check's schedule statistics.
   struct CheckStats {

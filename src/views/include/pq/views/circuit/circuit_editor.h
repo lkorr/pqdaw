@@ -18,7 +18,8 @@
 // stops the shown patch. The text is checked ≈ 50 ms after the last edit (infer, optimise, schedule); while it plays a
 // clean result hot-swaps the running program; an error leaves the last good one playing and shows inline.
 //
-// View > Open Patch in Circuit View… (`view.openPatch`) opens a file in it. UI thread only.
+// Options > Developer > Open Patch File in Circuit View… (`view.openPatch`) opens a loose file in it; a device of the
+// project opens through pq/views/circuit/device_circuit.h (T4.4-fix1: a Host, the document as its history). UI thread only.
 
 #include <cstdint>
 #include <memory>
@@ -145,6 +146,25 @@ public:
   const std::vector<graph::ProbeTarget>& probeTargets() const noexcept { return compiledTargets_; }
   const std::vector<uint32_t>& probeIds() const noexcept { return compiledIds_; }
 
+  // ---- T4.4-fix1: an editor over a device of the project (pq/views/circuit/device_circuit.h) ----
+  // The host owns undo / redo (the document's: one history with the Ableton view) and the title; there is no file to
+  // save (the project holds the text: Save is hidden, closing never asks) and nothing to start (the project plays the
+  // device: Play is hidden; probes and cost follow the player the editor was opened with). It lives as long as the
+  // editor and goes first.
+  class Host {
+  public:
+    virtual ~Host() = default;
+    virtual bool undo() = 0;
+    virtual bool redo() = 0;
+    virtual std::string title() const = 0;  // in place of the file name
+  };
+  void setHost(std::unique_ptr<Host> host);
+  Host* host() const noexcept { return host_.get(); }
+  // Closes the editor at its next timer tick (safe from inside a callback the editor owns).
+  void closeSoon();
+  void refreshTitle() { updateTitle(); }
+  void showStatus(std::string s) { setStatus(std::move(s)); }  // the host's notes (e.g. the fork)
+
   bool onKey(const ui::KeyEvent& e) override;
   void onTimer(uint32_t id) override;
   ui::InfoText info() const override;
@@ -160,6 +180,9 @@ private:
   const graph::Patch* shownGraph();
 
   std::unique_ptr<PatchEditor> doc_;
+  std::unique_ptr<Host> host_;  // T4.4-fix1 (declared after doc_: destroyed first)
+  ui::Button* save_ = nullptr;
+  uint32_t closeTimer_ = 0;
   std::string shown_;
   std::vector<std::string> backStack_;
   std::vector<graph::NodeId> keepSelection_;

@@ -62,6 +62,11 @@ public:
   bool duplicateSelected();
   bool toggleSelectedActive();
   bool moveDevice(doc::DeviceId device, uint32_t index);  // index in the chain after removal
+  // T4.4-fix1 (SPEC §15 2026-10-26): the device's context menu "Open in Circuit View" (also a double-click on its
+  // title: pq/views/circuit/device_circuit.h) and "Revert to Stock" (the selected user devices back to their stock
+  // patch: one undo step). An edited device's title shows an "edited" marker.
+  bool openInCircuitView(doc::DeviceId device);
+  bool revertSelectedToStock();
 
   // The device menu (the + slot, a right-click on empty space): the catalog's instruments and audio effects.
   std::vector<ui::MenuItem> deviceMenu();

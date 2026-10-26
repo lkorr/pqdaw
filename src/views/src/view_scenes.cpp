@@ -17,6 +17,7 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
+#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
@@ -923,6 +924,49 @@ Status setupDeviceWiring(Shell& shell) {
   return Ok{};
 }
 
+// T4.4-fix1: the circuit editor opened from a device of the project (SPEC §15 2026-10-26): track "Keys" holds
+// Basic Synth → Saturator; the Basic Synth is opened in the circuit view (as its context menu / a double-click on its
+// title does) and edited once in the text pane (its `level` default 0.2 → 0.3), which forked it into the track's own
+// edited copy — the title bar names the device, its track and "(edited)"; there is no Save and no Play (the project
+// holds and plays it). Needs the device library.
+Status setupCircuitEditorDevice(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "circuit-editor-device: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) -> std::optional<doc::ops::Edit> {
+    if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
+    return *e;
+  };
+  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
+  if (!t) return Error{ErrorCode::Unknown, "circuit-editor-device: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  if (!run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect)))
+    return Error{ErrorCode::Unknown, "circuit-editor-device: addDevice failed", {}};
+  const doc::DeviceId inst = doc::findTrackPtr(*store.current(), track)->devices.at(0)->id;
+  ctx.setSelectedTrack(track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  shell.tree().layoutNow();
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "circuit-editor-device: the Device view is not installed", {}};
+  circuit::CircuitEditor* ed = circuit::openDeviceInCircuitView(*v, ctx, inst);
+  if (ed == nullptr) return Error{ErrorCode::Unknown, "circuit-editor-device: the device did not open", {}};
+  const std::string& text = ed->document().text();
+  const size_t at = text.find("param level   = 0.2");
+  if (at == std::string::npos) return Error{ErrorCode::NotFound, "circuit-editor-device: no `level` param", {}};
+  // As typed in the text pane: the pane holds the keystroke, the document gets it (and forks the device).
+  ed->textPane().replace(static_cast<uint32_t>(at + 18), 1, "3", static_cast<uint32_t>(at + 19));
+  ed->document().replaceText(static_cast<uint32_t>(at + 18), 1, "3", true);
+  ed->checkNow();
+  if (!doc::findDevice(*store.current(), inst).device->edited())
+    return Error{ErrorCode::Unknown, "circuit-editor-device: the edit did not fork the device", {}};
+  ed->refreshTitle();
+  shell.tree().layoutNow();
+  ed->canvas().fitAll();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -968,6 +1012,7 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-cost", 1280, 800, nullptr, setupCircuitEditorCost},    // T4.5: --project stdlib/filters/svf.pqp
     {"device-chain", 1280, 800, setupDeviceChain},
     {"device-wiring", 1280, 800, setupDeviceWiring},  // T4.7
+    {"circuit-editor-device", 1280, 800, setupCircuitEditorDevice},  // T4.4-fix1
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

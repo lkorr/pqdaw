@@ -96,9 +96,10 @@ bool shownNow(const ui::Widget& w) noexcept {
 // The rate class of a device export (CableLayer::Cable::rate): voice for an instrument's, audio when what drives it
 // reads the audio input or runs per sample on its own (a generator, memory, voice / transport / sample atoms, a
 // subcircuit), param when it is computed from params and constants only.
-uint8_t exportRate(const doc::Device& d, const graph::PatchLibrary* lib, std::string_view port) {
+uint8_t exportRate(const doc::Device& d, const doc::DeviceLibrary* lib, std::string_view port) {
   if (d.kind == doc::DeviceKind::Instrument) return 2;
-  const graph::Patch* p = lib != nullptr ? lib->find(d.patch) : nullptr;
+  std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: a user device plays its own patch
+  const graph::Patch* p = lib != nullptr ? lib->patchOf(d, hold) : nullptr;
   if (p == nullptr) return 1;
   const graph::Adjacency adj = p->adjacency();
   std::vector<uint8_t> seen(p->nodeCount(), 0);
@@ -134,8 +135,9 @@ std::string deviceName(const ViewContext& ctx, const doc::Project& p, doc::Devic
 
 std::string paramLabel(const ViewContext& ctx, const doc::Project& p, doc::DeviceId id, const std::string& param) {
   const doc::DeviceLoc l = doc::findDevice(p, id);
+  std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: an edited device's own labels
   const doc::DeviceInfo* info = l.device != nullptr && ctx.deviceLibrary() != nullptr
-                                    ? ctx.deviceLibrary()->catalog().find(l.device->patch) : nullptr;
+                                    ? ctx.deviceLibrary()->infoOf(*l.device, hold) : nullptr;
   const doc::DeviceParamInfo* pi = info != nullptr ? info->param(param) : nullptr;
   return pi != nullptr ? pi->label : param;
 }
@@ -392,7 +394,7 @@ void CableLayer::rebuildStatus() {
   const doc::Snapshot s = ctx_.doc();
   if (s == impl_->statesFrom) return;
   impl_->statesFrom = s;
-  impl_->states = ctx_.deviceLibrary() != nullptr ? doc::wireStates(*s, ctx_.deviceLibrary()->library())
+  impl_->states = ctx_.deviceLibrary() != nullptr ? doc::wireStates(*s, *ctx_.deviceLibrary())
                                                   : std::vector<doc::WireState>{};
 }
 
@@ -467,7 +469,7 @@ bool CableLayer::refresh() {
     c.a = *a;
     c.b = *b;
     c.status = statusOf(w.id);
-    c.rate = exportRate(*from.device, ctx_.deviceLibrary() != nullptr ? &ctx_.deviceLibrary()->library() : nullptr, w.port);
+    c.rate = exportRate(*from.device, ctx_.deviceLibrary(), w.port);
     ui::Vec2 pts[kSamples];
     cablePoints(c.a, c.b, s, pts);
     c.bounds = boundsOf(pts, kSamples, 3.0f * s + 2.0f);

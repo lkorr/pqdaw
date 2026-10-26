@@ -7,4 +7,5 @@ set(PQ_VIEWS_CIRCUIT_SOURCES
   src/circuit/symbol_sheet.cpp
   src/circuit/patch_editor.cpp
   src/circuit/circuit_editor.cpp
-  src/circuit/probes.cpp)
+  src/circuit/probes.cpp
+  src/circuit/device_circuit.cpp)  # T4.4-fix1: the editor on a device of the project

@@ -6,9 +6,10 @@
 // through the lock-free hot-swap path (T1.9: state transfer by state key, a 5–20 ms linear crossfade while audible).
 // A schedule that never arrives (a parse or check error) leaves the last good program playing.
 //
-// Seam for T4.1 / T4.13: a device in a track's chain is edited by the same PatchEditor; there the "player" is the
-// document: PatchEditor::onCommitted hands the new text to a `SetDevicePatch` command and the project's per-track
-// compile (ProjectLink) swaps the unit, so this interface is only the stand-alone preview's.
+// T4.4-fix1: a device in a track's chain is edited by the same PatchEditor; there the document plays it
+// (PatchEditor::onCommitted hands each new text to a `SetDevicePatch` command and the project's per-track compile swaps
+// the unit), and the player is EXTERNAL (external() below: app::DevicePlayer): it carries only the probes and the cost
+// of the device as the project plays it.
 
 #include <cstdint>
 #include <span>
@@ -18,9 +19,25 @@
 #include "pq/core/probe_level.h"
 #include "pq/core/result.h"
 #include "pq/core/tap_ring.h"
+#include "pq/graph/infer.h"
+#include "pq/graph/inspect.h"
 #include "pq/graph/schedule.h"
 
 namespace pq::views::circuit {
+
+// What a player plays (the last schedule handed to it), for reading its cost: the schedule and, per node of the
+// scheduled patch, where it was written — kept as NodeIds, so it stays valid while the text changes. (T4.5; T4.4-fix1:
+// moved here from PatchEditor so an external player — a project unit — can give its own.)
+struct PlayedProgram {
+  uint64_t generation = 0;                  // PatchPlayer::generation() after it was played
+  graph::Schedule schedule;
+  std::vector<uint32_t> instanceParent;     // per instance (TypedPatch::instances): its caller (kNone: the root)
+  std::vector<graph::NodeId> instanceCall;  // … and the call node in the caller
+  std::vector<uint32_t> nodeInstance;       // per node of the scheduled patch: its instance
+  std::vector<graph::NodeId> nodeSource;    // … the node it comes from in that instance's patch (invalid: none)
+  std::vector<graph::NodeOrigin::What> nodeWhat;
+  std::vector<uint32_t> probeIds;           // the probes that have a value (Schedule::probes ids)
+};
 
 class PatchPlayer {
 public:
@@ -66,6 +83,15 @@ public:
   virtual bool readCost(CostReading& /*out*/) { return false; }
   // Counts play() calls that published a program.
   virtual uint64_t generation() const noexcept { return 0; }
+
+  // ---- T4.4-fix1: an EXTERNAL player — the patch plays elsewhere (a device of the project, in the unit of its track):
+  // the editor still checks every edit (its diagnostics) but hands the player no schedule (play() only says the editor
+  // follows it); probes go to setProbeTargets (paths from the played patch, as ProbeTarget), and the cost readings
+  // belong to the player's own program (playedProgram), in which the played patch is the instance at pathPrefix().
+  virtual bool external() const { return false; }
+  virtual void setProbeTargets(std::span<const graph::ProbeTarget> /*targets*/, std::span<const uint32_t> /*ids*/) {}
+  virtual const PlayedProgram* playedProgram() const { return nullptr; }
+  virtual std::vector<graph::NodeId> pathPrefix() const { return {}; }
 };
 
 }  // namespace pq::views::circuit

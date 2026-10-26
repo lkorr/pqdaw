@@ -304,8 +304,18 @@ public:
     // Preset slot (placeholder until the M5 browser): a sunken field on the right.
     const ui::IRect p = presetRect();
     if (f) {
-      const ui::IRect t{fr.right() + ctx.scale.px(4), r.y, std::max(0, (p.w > 0 ? p.x : r.right()) - fr.right() - ctx.scale.px(8)), r.h};
-      paint::text(ctx, f->bodyStrong, t, title_, panel_.active() ? th->device.titleText : th->device.titleTextOff, ui::TextAlign::Left);
+      ui::IRect t{fr.right() + ctx.scale.px(4), r.y, std::max(0, (p.w > 0 ? p.x : r.right()) - fr.right() - ctx.scale.px(8)), r.h};
+      // T4.4-fix1: a user device — "● edited" after the title, in the accent colour (room kept for it first).
+      static constexpr std::string_view kEdited = "\xE2\x97\x8F edited";
+      int32_t markW = 0;
+      if (panel_.edited() && ctx.res.text) markW = ctx.res.text->measure(f->small, kEdited) + ctx.scale.px(6);
+      if (markW > t.w / 2) markW = 0;  // too narrow (folded): the title alone
+      t.w -= markW;
+      const int32_t adv =
+          paint::text(ctx, f->bodyStrong, t, title_, panel_.active() ? th->device.titleText : th->device.titleTextOff, ui::TextAlign::Left);
+      if (markW > 0)
+        paint::text(ctx, f->small, {t.x + adv + ctx.scale.px(6), r.y, markW, r.h}, kEdited,
+                    panel_.active() ? th->accent.primary : th->device.titleTextOff, ui::TextAlign::Left);
       if (p.w > 0) {
         paint::box(ctx.dl, p, 0.0f, th->field.fill, th->device.border);
         paint::text(ctx, f->small, p, "Default", th->text.disabled, ui::TextAlign::Left, ctx.scale.px(4), ctx.scale.px(4));
@@ -326,8 +336,13 @@ public:
       impl_.userActive(!panel_.active());
       return true;
     }
-    if (foldRect().contains(e.pos) || e.clickCount == 2) {
+    if (foldRect().contains(e.pos)) {
       panel_.setFolded(!panel_.folded());
+      return true;
+    }
+    if (e.clickCount == 2) {  // T4.4-fix1: the host's action (Open in Circuit View), else fold
+      if (panel_.onTitleDoubleClick) panel_.onTitleDoubleClick();
+      else panel_.setFolded(!panel_.folded());
       return true;
     }
     return false;
@@ -339,6 +354,10 @@ public:
     }
   }
   ui::InfoText info() const override {
+    if (panel_.onTitleDoubleClick)
+      return {title_ + (panel_.edited() ? " (edited)" : ""),
+              "Device title bar: the square switches the device on or off; the triangle folds it; a double-click opens "
+              "the device in the Circuit View (editing a stock device makes it this track's own, edited copy)."};
     return {title_, "Device title bar: the square switches the device on or off; the triangle (or a double-click) folds it."};
   }
 
@@ -837,6 +856,12 @@ int32_t DevicePanel::selected(std::string_view selector) const {
 void DevicePanel::setActive(bool on) {
   if (active_ == on) return;
   active_ = on;
+  markDirty();
+}
+
+void DevicePanel::setEdited(bool e) {
+  if (edited_ == e) return;
+  edited_ = e;
   markDirty();
 }
 

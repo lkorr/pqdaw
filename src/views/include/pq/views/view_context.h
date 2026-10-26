@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -45,6 +46,9 @@ namespace pq::views {
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 }  // namespace pq::views
+namespace pq::views::circuit {
+class PatchPlayer;  // pq/views/circuit/patch_player.h (T4.4-fix1: ViewContext::devicePlayers)
+}  // namespace pq::views::circuit
 namespace pq::doc {
 class DeviceLibrary;  // pq/document/devices.h
 }  // namespace pq::doc
@@ -191,6 +195,12 @@ public:
   // outlive its use. Notifies kModulation.
   void setModulationSource(ModulationSource* source);
   ModulationSource* modulationSource() const noexcept { return modulation_; }
+  // T4.4-fix1: the circuit editor's player for a device of the project — probes and cost through the project unit
+  // that plays it (the app's ProjectLink: app::DevicePlayer). Unset in tests and scenes without one: the editor then
+  // edits only. A player made here lives as long as the editor that asked for it.
+  using DevicePlayerFactory = std::function<std::unique_ptr<circuit::PatchPlayer>(doc::DeviceId)>;
+  void setDevicePlayers(DevicePlayerFactory f) { devicePlayers_ = std::move(f); }
+  const DevicePlayerFactory& devicePlayers() const noexcept { return devicePlayers_; }
   // What file.new / file.open / file.save / file.saveAs do: ask about unsaved changes, pick a path, then call the
   // explicit-path functions above. `then` runs after a successful operation (e.g. quit after "save and quit").
   void requestNew();
@@ -356,6 +366,7 @@ private:
   AudioPrefsPort* audioPrefs_ = nullptr;
   const doc::DeviceLibrary* devices_ = nullptr;
   ModulationSource* modulation_ = nullptr;
+  DevicePlayerFactory devicePlayers_;
   Ticks startMarker_ = 0;
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;
