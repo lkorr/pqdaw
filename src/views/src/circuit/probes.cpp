@@ -119,7 +119,14 @@ void paintProbeReadout(ui::PaintContext& ctx, const ProbeOverlay& o, ui::Vec2 an
     const ui::FontId font = ctx.res.uiFonts->small;
     const std::string label = o.hasData ? o.value : std::string("\xE2\x80\xA6");  // … while the probe compiles
     textH = std::round(ctx.scale.exact(14.0f));
-    (void)ctx.res.text->draw(ctx.dl, font, {x + pad, y + pad + textH - std::round(ctx.scale.exact(3.0f))}, label,
+    const float base = y + pad + textH - std::round(ctx.scale.exact(3.0f));
+    // The source's name on the left (dimmed), the value right-aligned.
+    const float vw = static_cast<float>(ctx.res.text->measure(font, label));
+    if (!o.source.empty())
+      (void)ctx.res.text->drawTruncated(ctx.dl, font, {x + pad, base}, o.source,
+                                        static_cast<int32_t>(std::max(0.0f, w - 3.0f * pad - vw)),
+                                        ui::mulAlpha(th->circuit.probeText, 0.6f));
+    (void)ctx.res.text->draw(ctx.dl, font, {x + w - pad - vw, base}, label,
                              o.isBool && o.hasData && o.value == "HIGH" ? th->circuit.wireBoolLit : th->circuit.probeText);
   }
   // Mini-scope.
@@ -192,18 +199,32 @@ void paintProbeReadout(ui::PaintContext& ctx, const ProbeOverlay& o, ui::Vec2 an
     ui::smoothPolyline(ctx.dl, mid.data(), static_cast<uint32_t>(mid.size()), th->circuit.probeTrace, ctx.scale.exact(1.0f));
 }
 
-void paintCostLabel(ui::PaintContext& ctx, ui::Vec2 at, const std::string& text, float heat, bool above) {
+void paintCostLabels(ui::PaintContext& ctx, std::span<const CostLabelAt> labels) {
   const ui::Theme* th = ctx.res.theme;
-  if (!th || !ctx.res.text || !ctx.res.uiFonts) return;
+  if (!th || !ctx.res.text || !ctx.res.uiFonts || labels.empty()) return;
   const ui::FontId font = ctx.res.uiFonts->small;
-  const float tw = static_cast<float>(ctx.res.text->measure(font, text));
   const float pad = std::round(ctx.scale.exact(3.0f)), lh = std::round(ctx.scale.exact(14.0f));
-  const float x = std::round(at.x - tw * 0.5f - pad), y = std::round(above ? at.y - lh - pad : at.y + pad);
-  const ui::Rect box{x, y, x + tw + 2.0f * pad, y + lh};
-  ctx.dl.addRoundedRectFilled(box, ctx.scale.exact(2.0f), th->circuit.costBg);
-  // Hot parts stand out: the label's text goes from the readout colour to the cost colour with the share.
-  const ui::Rgba c = ui::lerp(th->circuit.probeText, th->circuit.cost, std::clamp(0.35f + heat * 0.65f, 0.0f, 1.0f));
-  (void)ctx.res.text->draw(ctx.dl, font, {x + pad, y + lh - std::round(ctx.scale.exact(3.0f))}, text, c);
+  // Costliest first; a label that would overlap one already placed is left out (the status line has the total, and
+  // zooming in separates them).
+  std::vector<uint32_t> order(labels.size());
+  for (uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+  std::stable_sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) { return labels[x].heat > labels[y].heat; });
+  std::vector<ui::Rect> placed;
+  placed.reserve(labels.size());
+  for (const uint32_t i : order) {
+    const CostLabelAt& l = labels[i];
+    const float tw = static_cast<float>(ctx.res.text->measure(font, *l.text));
+    const float x = std::round(l.at.x - tw * 0.5f - pad), y = std::round(l.above ? l.at.y - lh - pad : l.at.y + pad);
+    const ui::Rect box{x, y, x + tw + 2.0f * pad, y + lh};
+    bool free = true;
+    for (const ui::Rect& r : placed) free = free && (box.x1 + 1.0f <= r.x0 || r.x1 + 1.0f <= box.x0 || box.y1 + 1.0f <= r.y0 || r.y1 + 1.0f <= box.y0);
+    if (!free) continue;
+    placed.push_back(box);
+    ctx.dl.addRoundedRectFilled(box, ctx.scale.exact(2.0f), th->circuit.costBg);
+    // Hot parts stand out: the text goes from the readout colour to the cost colour with the heat.
+    const ui::Rgba c = ui::lerp(th->circuit.probeText, th->circuit.cost, std::clamp(0.25f + l.heat * 0.75f, 0.0f, 1.0f));
+    (void)ctx.res.text->draw(ctx.dl, font, {x + pad, y + lh - std::round(ctx.scale.exact(3.0f))}, *l.text, c);
+  }
 }
 
 }  // namespace pq::views::circuit

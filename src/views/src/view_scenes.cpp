@@ -1,9 +1,15 @@
 #include "pq/views/view_scenes.h"
 
 #include <algorithm>
+#include <cmath>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "pq/dsp/kernel.h"
+#include "pq/graph/inspect.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
@@ -699,6 +705,142 @@ Status setupCircuitEditorError(Shell& shell, std::string_view file) {
   return Ok{};
 }
 
+// T4.5: a stand-in player for the probe and cost scenes (views have no engine): it "plays" any schedule, gives every
+// probe of it deterministic data — a decaying 500 Hz tone for real signals, a 30 %-duty square for bools, levels lit for
+// two of every three bool probes — and reports a cost of 0.3 ns per unit of graph::opCostWeight per region.
+class ScenePlayer final : public circuit::PatchPlayer {
+public:
+  void reset() {
+    playing_ = metering_ = false;
+    gen_ = 0;
+    rings_.clear();
+    levels_.clear();
+    signals_.clear();
+  }
+  double sampleRate() const override { return 48000.0; }
+  Status play(const graph::Schedule& s, const graph::TypedPatch&) override {
+    playing_ = true;
+    ++gen_;
+    rings_.clear();
+    levels_.clear();
+    constexpr uint32_t kFrames = 1024;
+    std::vector<float> buf(kFrames);
+    for (const graph::ProbeRef& p : s.probes) {
+      const bool b = p.kind == graph::Kind::Bool;
+      for (uint32_t k = 0; k < kFrames; ++k) {
+        const double t = static_cast<double>(k);
+        buf[k] = b ? (k % 200 < 60 ? dsp::boolMask(true) : 0.0f)
+                   : static_cast<float>(0.8 * std::sin(2.0 * 3.141592653589793 * t / 96.0) * (0.35 + 0.65 * std::exp(-t / 500.0)));
+      }
+      if (std::find(signals_.begin(), signals_.end(), p.id) != signals_.end()) {
+        auto ring = std::make_unique<TapRing>(1, 4096, 1024);
+        ring->addReader();
+        const float* ch = buf.data();
+        ring->write(&ch, 1, kFrames);
+        rings_.emplace_back(p.id, std::move(ring));
+      }
+      auto lv = std::make_unique<ProbeLevel>();
+      const float high = b ? (p.id % 3 != 0 ? 1.0f : 0.0f) : buf.back();
+      lv->write(high, b ? 0.0f : -0.8f, b ? high : 0.8f);
+      levels_.emplace_back(p.id, std::move(lv));
+    }
+    cost_ = CostReading{};
+    cost_.generation = gen_;
+    cost_.units.resize(s.regions.size());
+    cost_.regionNsPerFrame.assign(s.regions.size(), 0.0);
+    for (uint32_t r = 0; r < s.regions.size(); ++r) {
+      cost_.units[r] = r;
+      for (uint32_t i = s.regions[r].firstOp; i < s.regions[r].firstOp + s.regions[r].numOps; ++i)
+        cost_.regionNsPerFrame[r] += 0.3 * graph::opCostWeight(s, i);
+      cost_.totalNsPerFrame += cost_.regionNsPerFrame[r];
+    }
+    cost_.totalNsPerFrame += 1.5;
+    return Ok{};
+  }
+  void stop() override { playing_ = false; }
+  bool playing() const override { return playing_; }
+  const graph::StateLayout* stateLayout() const override { return nullptr; }
+  void setProbeSignals(std::span<const uint32_t> ids) override { signals_.assign(ids.begin(), ids.end()); }
+  TapRing* probeSignal(uint32_t id) noexcept override {
+    for (auto& [k, r] : rings_)
+      if (k == id) return r.get();
+    return nullptr;
+  }
+  const ProbeLevel* probeLevel(uint32_t id) const noexcept override {
+    for (const auto& [k, l] : levels_)
+      if (k == id) return l.get();
+    return nullptr;
+  }
+  void setMetering(bool on) override { metering_ = on; }
+  bool readCost(CostReading& out) override {
+    if (!metering_ || !playing_) return false;
+    out = cost_;
+    return true;
+  }
+  uint64_t generation() const noexcept override { return gen_; }
+
+private:
+  bool playing_ = false, metering_ = false;
+  uint64_t gen_ = 0;
+  std::vector<std::pair<uint32_t, std::unique_ptr<TapRing>>> rings_;
+  std::vector<std::pair<uint32_t, std::unique_ptr<ProbeLevel>>> levels_;
+  std::vector<uint32_t> signals_;
+  CostReading cost_;
+};
+
+ScenePlayer& scenePlayer() {
+  static ScenePlayer p;
+  return p;
+}
+
+// The editor over `file`, playing on the scene player.
+Result<circuit::CircuitEditor*> openPlayingEditor(Shell& shell, std::string_view file) {
+  if (file.empty()) return Error{ErrorCode::InvalidArgument, "circuit scenes need a .pqp file (--project <file.pqp>)", {}};
+  auto doc = circuit::PatchEditor::open(std::string(file));
+  if (!doc) return std::move(doc).error();
+  scenePlayer().reset();
+  circuit::CircuitEditor* e = circuit::openCircuitEditor(shell.overlay(), std::move(*doc), {}, &scenePlayer());
+  if (!e) return Error{ErrorCode::NotFound, "no patch in " + std::string(file), {}};
+  shell.tree().layoutNow();
+  if (!e->togglePlay()) return Error{ErrorCode::Unknown, "the scene's patch does not play: " + e->status(), {}};
+  shell.tree().layoutNow();
+  return e;
+}
+
+// T4.5: live probes on the stock ADSR — the bool wires' LED trace (some lit) and the readout of the hovered output wire
+// (its value and mini-scope).
+Status setupCircuitEditorProbe(Shell& shell, std::string_view file) {
+  auto e = openPlayingEditor(shell, file);
+  if (!e) return std::move(e).error();
+  circuit::CircuitEditor& ed = **e;
+  const auto& sc = ed.canvas().scene();
+  const graph::Patch* p = &ed.document().drawn(ed.shownIndex());
+  const auto out = p->findByName("out");
+  if (!sc || !out) return Error{ErrorCode::NotFound, "circuit-editor-probe: no `out` to probe", {}};
+  uint32_t wire = UINT32_MAX;
+  for (uint32_t w = 0; w < sc->wires.size() && wire == UINT32_MAX; ++w)
+    if (sc->pins[sc->wires[w].toPin].node == *out) wire = w;
+  if (wire == UINT32_MAX) return Error{ErrorCode::NotFound, "circuit-editor-probe: `out` is not wired", {}};
+  ed.probeWire(wire);
+  ed.pollProbes();
+  const circuit::SceneWire& sw = ed.canvas().scene()->wires[wire];
+  const graph::Point2 a = ed.canvas().scene()->points[sw.firstPoint + (sw.pointCount - 1) / 2];
+  const graph::Point2 b = ed.canvas().scene()->points[sw.firstPoint + (sw.pointCount - 1) / 2 + 1];
+  ed.canvas().setPointer(ed.canvas().toDevice({(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f}));
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// T4.5: the cost overlay on the stock SVF (its cores as subcircuit blocks): ns per sample per node and in total.
+Status setupCircuitEditorCost(Shell& shell, std::string_view file) {
+  auto e = openPlayingEditor(shell, file);
+  if (!e) return std::move(e).error();
+  (*e)->setCostShown(true);
+  (*e)->pollCost();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T4.1: the Device view of a MIDI track: Basic Synth → Saturator (Digital Clip, drive +6 dB, selected) → Utility (off),
 // generic panels. Needs the device library (renderViewScene's `devices`; pqdaw --screenshot loads the stock one).
 Status setupDeviceChain(Shell& shell) {
@@ -772,6 +914,8 @@ constexpr SceneEntry kScenes[] = {
     {"device-auto-filter", 1280, 800, nullptr, devices::setupDeviceScene},  // T4.11
     {"circuit-editor", 1280, 800, nullptr, setupCircuitEditor},
     {"circuit-editor-error", 1280, 800, nullptr, setupCircuitEditorError},
+    {"circuit-editor-probe", 1280, 800, nullptr, setupCircuitEditorProbe},  // T4.5: --project stdlib/envelopes/adsr.pqp
+    {"circuit-editor-cost", 1280, 800, nullptr, setupCircuitEditorCost},    // T4.5: --project stdlib/filters/svf.pqp
     {"device-chain", 1280, 800, setupDeviceChain},
 };
 

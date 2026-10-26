@@ -56,13 +56,14 @@ struct ProbeOverlay {
   uint32_t wire = UINT32_MAX;     // scene wire
   bool isBool = false;
   bool hasData = false;           // the probe is compiled in and data has arrived
+  std::string source;             // what it reads: the source's name ("next", "svf_core.low", "tanh")
   std::string value;              // "0.5124", "HIGH", "—"
   std::vector<float> samples;     // the most recent samples, oldest first (bools: lane masks)
   // Cost labels.
   struct Label {
     uint32_t item = UINT32_MAX;   // scene node or wire
     std::string text;
-    float heat = 0.0f;            // its share of the shown total, 0..1 (label emphasis)
+    float heat = 0.0f;            // relative to the costliest labelled part, 0..1 (label emphasis)
   };
   std::vector<Label> nodeLabels, wireLabels;
 };

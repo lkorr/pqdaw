@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "pq/graph/atoms.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
@@ -324,10 +325,11 @@ void EditCanvas::paintOverlay(ui::PaintContext& ctx) {
   }
   if (overlay_) {  // T4.5: cost labels, then the probe readout on top
     if (lod() != Lod::Far) {
+      std::vector<CostLabelAt> labels;
       for (const ProbeOverlay::Label& l : overlay_->nodeLabels) {
         if (l.item >= sc.nodes.size()) continue;
         const SceneNode& n = sc.nodes[l.item];
-        paintCostLabel(ctx, toDevice({n.x + n.w * 0.5f, n.y}), l.text, l.heat, true);
+        labels.push_back({toDevice({n.x + n.w * 0.5f, n.y}), &l.text, l.heat, true});
       }
       for (const ProbeOverlay::Label& l : overlay_->wireLabels) {
         if (l.item >= sc.wires.size()) continue;
@@ -335,8 +337,9 @@ void EditCanvas::paintOverlay(ui::PaintContext& ctx) {
         if (w.pointCount < 2) continue;
         const uint32_t k = w.firstPoint + (w.pointCount - 1) / 2;
         const graph::Point2 a = sc.points[k], b = sc.points[k + 1];
-        paintCostLabel(ctx, toDevice({(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f}), l.text, l.heat, false);
+        labels.push_back({toDevice({(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f}), &l.text, l.heat, false});
       }
+      paintCostLabels(ctx, labels);
     }
     if (overlay_->readout) paintProbeReadout(ctx, *overlay_, pointer_, r);
   }
@@ -1011,6 +1014,19 @@ void CircuitEditor::probeWire(uint32_t wire) {
   overlay_.wire = wire;
   overlay_.isBool = sc->wires[wire].style.boolean;
   overlay_.hasData = false;
+  overlay_.source.clear();
+  if (const graph::Patch* p = shownGraph()) {  // the readout's title: what the wire carries
+    const ScenePin& from = sc->pins[sc->wires[wire].fromPin];
+    const graph::Node& nd = p->node(from.node);
+    std::string name = p->nodeName(from.node);
+    if (nd.kind == graph::NodeKind::Subcircuit) {
+      const graph::SubcircuitRef& ref = p->subcircuit(from.node);
+      name = (name.empty() ? ref.patch : name) + "." + (from.port < ref.outputs.size() ? ref.outputs[from.port].name : "?");
+    } else if (name.empty() && nd.kind == graph::NodeKind::Atom) {
+      name = std::string(graph::atomSignature(nd.atom).name);
+    }
+    overlay_.source = std::move(name);
+  }
   overlay_.samples.clear();
   canvas_->markDirty();
   refreshProbes(true);
@@ -1180,7 +1196,10 @@ void CircuitEditor::pollCost() {
   if (!p || !sc) return;
   overlay_.nodeLabels.clear();
   overlay_.wireLabels.clear();
-  const double top = std::max(cm.shownNs, 1e-9);
+  double top = 1e-9;  // heat: relative to the costliest part
+  for (const CostMap::Entry& e : cm.nodes) top = std::max(top, e.ns);
+  for (const CostMap::Entry& e : cm.sumsInto) top = std::max(top, e.ns);
+  for (const CostMap::Entry& e : cm.copiesFrom) top = std::max(top, e.ns);
   for (const CostMap::Entry& e : cm.nodes) {
     const auto v = p->indexOf(e.node);
     if (!v || *v >= sc->nodes.size()) continue;

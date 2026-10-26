@@ -60,6 +60,10 @@ public:
     markDirty();
   }
   ui::Vec2 pointer() const noexcept { return pointer_; }  // the last pointer position over the canvas (device px)
+  void setPointer(ui::Vec2 p) {  // scenes and tests: where the readout is drawn
+    pointer_ = p;
+    markDirty();
+  }
 
   std::function<void(std::vector<uint32_t> nodes, float dx, float dy)> onMove;  // world units
   // A connection from an output pin to an input pin (scene pin indices; hidden pins included).
