@@ -94,6 +94,8 @@
 
 namespace pq::app {
 
+class DeviceInspector;  // pq/app/device_player.h (T4.4-fix1)
+
 // The stdlib directory: $PQ_STDLIB_DIR, else <exe dir>/stdlib, else the source tree's stdlib/.
 std::string stdlibDir();
 // T4.1: the device library the lowering calls (doc::loadDeviceLibrary: the stock devices, BasicSynth first) and its
@@ -172,6 +174,8 @@ struct LinkStats {
   uint32_t delayedWires = 0;
   uint32_t refusedWires = 0;
   uint64_t heldForJit = 0;  // T1b.x-perf: unit edits that kept the JIT image playing (LinkConfig::interpretBudget)
+  // T4.4-fix1: wires left out because a port they connect is not on the device (an edit of a user device removed it).
+  uint32_t invalidWires = 0;
 };
 
 class ProjectLink final : public views::TransportPort, public views::MeterSource, public views::ModulationSource {
@@ -281,6 +285,16 @@ public:
   // The wires as the last lowering placed them (doc::wireStates; UI thread, after a structural change).
   std::span<const doc::WireState> wireStates() const noexcept { return wireStates_; }
 
+  // ---- T4.4-fix1: the circuit editor on a device of the project (pq/app/device_player.h) ----
+  // UI thread. `inspect` true: the unit holding `device`'s track is compiled with the editor's probes (`targets`: paths
+  // from the device's patch, the ids the editor reads them by; may be empty) and its instance tree, its images bound to
+  // the inspector's taps and cost meter; false: back to the plain unit. A change recompiles that unit only (debounced
+  // like a structural edit; flush() runs it now); the audio is bit-identical with or without probes. One device at a
+  // time (the last call wins; a call for another device than the inspected one with `inspect` false is ignored).
+  void setDeviceInspect(doc::DeviceId device, std::vector<graph::ProbeTarget> targets, std::vector<uint32_t> ids,
+                        bool inspect);
+  DeviceInspector& inspector() noexcept { return *inspector_; }
+
 private:
   struct TuningTableEntry {
     doc::TuningId id;
@@ -357,6 +371,7 @@ private:
 
   LinkConfig cfg_;
   std::unique_ptr<doc::DeviceLibrary> devices_;
+  std::unique_ptr<DeviceInspector> inspector_;   // T4.4-fix1 (see the end of the class)
   std::vector<doc::DeviceId> missingReported_;   // UI thread: devices the status line named as missing
   std::unique_ptr<engine::Engine> engine_;
   std::unique_ptr<engine::ProjectCompiler> compiler_;
@@ -442,6 +457,14 @@ private:
   JitStats jitStats_;
   std::unique_ptr<engine::BackgroundCompiler> jit_;  // destroyed first (~ProjectLink): no delivery after it
   engine::BackgroundCompiler* jitWorker_ = nullptr;  // jit_, for its own worker's deliveries (never reassigned)
+
+  // T4.4-fix1: device inspection. inspect_ / inspectDirty_ under mutex_ (UI thread → compile path); the compiler's
+  // copy is set by the compile path (compileMutex_). (inspector_ is declared before the engine: it outlives every
+  // image bound to it and the JIT worker that binds them.)
+  std::optional<engine::TrackInspect> inspect_;
+  doc::DeviceId inspectDevice_;
+  std::vector<uint32_t> inspectDirty_;  // track ids whose units must recompile for an inspection change
+  bool inspectChanged_ = false;
 };
 
 }  // namespace pq::app

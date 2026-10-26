@@ -9,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "pq/app/device_player.h"
 #include "pq/app/startup.h"
 #include "pq/compile/compile.h"
 #include "pq/views/circuit/circuit_editor.h"
@@ -190,6 +191,11 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     app->link_->attach(*app->ctx_);
     app->ctx_->setDeviceLibrary(&app->link_->devices());  // T4.1: the device view's catalog (one load per process)
     app->ctx_->setModulationSource(app->link_.get());  // T4.7: the modulated knobs' live rings
+    // T4.4-fix1: the circuit editor on a project device probes and measures it in the project's own unit.
+    ProjectLink* link = app->link_.get();
+    app->ctx_->setDevicePlayers([link](doc::DeviceId d) -> std::unique_ptr<views::circuit::PatchPlayer> {
+      return std::make_unique<DevicePlayer>(*link, d);
+    });
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
     app->audio_ = std::make_unique<AudioDeviceManager>(*app->link_, audio, ManagerHooks{}, o.device);
@@ -229,6 +235,7 @@ ShellApp::~ShellApp() {
   if (ctx_) ctx_->setAudioPrefs(nullptr);
   if (ctx_) ctx_->setDeviceLibrary(nullptr);  // the link owns it
   if (ctx_) ctx_->setModulationSource(nullptr);
+  if (ctx_) ctx_->setDevicePlayers(nullptr);
   if (preview_) preview_->onActiveChanged = nullptr;
   audio_.reset();  // the device stops calling the engine (and the preview)
   if (link_) link_->detach();

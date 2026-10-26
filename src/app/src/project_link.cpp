@@ -19,6 +19,7 @@
 #include <limits>
 #include <sstream>
 
+#include "pq/app/device_player.h"
 #include "pq/compile/compile.h"
 #include "pq/document/audibility.h"
 #include "pq/document/clip_time.h"
@@ -379,6 +380,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   auto lib = loadDeviceLibrary(cfg_.stdlib.empty() ? stdlibDir() : cfg_.stdlib);
   if (!lib.ok()) return lib.error();
   devices_ = std::move(lib.value());
+  inspector_ = std::make_unique<DeviceInspector>();  // T4.4-fix1
   if (Status s = makeEngine(); !s.ok()) return s;
   written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
   automated_.assign(kProjectParams, 0);
@@ -442,8 +444,53 @@ Status ProjectLink::makeEngine() {
     const auto it = compileHeld_.find(index);
     return it != compileHeld_.end() ? it->second : nullptr;
   };
+  // T4.4-fix1: the circuit editor's device inspection (probe taps, cost meter) on the inspected unit's images.
+  co.onBind = [this](uint32_t, const engine::CompiledUnit& cu, engine::ProgramImage& image) { inspector_->bind(cu, image); };
+  {
+    std::lock_guard lock(mutex_);
+    if (inspect_) co.inspect.push_back(*inspect_);
+  }
   compiler_ = std::make_unique<engine::ProjectCompiler>(co);
   return Ok{};
+}
+
+void ProjectLink::setDeviceInspect(doc::DeviceId device, std::vector<graph::ProbeTarget> targets,
+                                   std::vector<uint32_t> ids, bool inspect) {
+  const doc::DeviceLoc l = current_ ? doc::findDevice(*current_, device) : doc::DeviceLoc{};
+  std::optional<engine::TrackInspect> want;
+  if (inspect && l.track != nullptr) {
+    engine::TrackInspect ti;
+    ti.trackId = l.track->id.value;
+    const graph::NodeId call{doc::nodeIdFor(doc::NodeRole::Device, device.value, 0)};
+    for (graph::ProbeTarget& t : targets) t.path.insert(t.path.begin(), call);  // paths from the track's patch
+    ti.targets = std::move(targets);
+    ti.ids = std::move(ids);
+    ti.ids.resize(ti.targets.size(), 0);
+    want = std::move(ti);
+  }
+  {
+    std::lock_guard lock(mutex_);
+    if (!inspect && inspectDevice_ != device) return;  // another device's editor is inspecting
+    auto same = [](const engine::TrackInspect& a, const engine::TrackInspect& b) {
+      if (a.trackId != b.trackId || a.ids != b.ids || a.targets.size() != b.targets.size()) return false;
+      for (size_t i = 0; i < a.targets.size(); ++i)
+        if (a.targets[i].path != b.targets[i].path || a.targets[i].node != b.targets[i].node ||
+            a.targets[i].output != b.targets[i].output)
+          return false;
+      return true;
+    };
+    if (want.has_value() == inspect_.has_value() && (!want || same(*want, *inspect_))) return;
+    if (inspect_) inspectDirty_.push_back(inspect_->trackId);
+    if (want) inspectDirty_.push_back(want->trackId);
+    inspect_ = std::move(want);
+    inspectDevice_ = inspect ? device : doc::DeviceId{};
+    inspectChanged_ = true;
+    // A compile of the snapshot the engine follows (no document change: only the inspected unit recompiles).
+    pending_ = true;
+    pendingSnap_ = current_;
+    pendingSince_ = nowSeconds();
+  }
+  cv_.notify_all();
 }
 
 Status ProjectLink::setSampleRate(double rate) {
@@ -579,7 +626,7 @@ uint32_t ProjectLink::eventSlot(doc::TrackId track) const {
 // ---- Document changes (UI thread) -------------------------------------------------------------------------------
 
 void ProjectLink::applyParams(const doc::Project& p, bool forceAll) {
-  for (const doc::LoweredParam& lp : doc::lowerParams(p, true, &devices_->library())) {
+  for (const doc::LoweredParam& lp : doc::lowerParams(p, true, *devices_)) {
     const uint32_t s = slotForParam(lp.key);
     if (s == kNone || automated_[s]) continue;  // automation owns an automated param
     if (!forceAll && written_[s] == lp.value) continue;
@@ -610,7 +657,8 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
     }
     const doc::DeviceLoc d = doc::findDevice(p, doc::DeviceId{ref.owner});
     if (d.device == nullptr) continue;
-    const graph::Patch* callee = devices_->library().find(d.device->patch);
+    std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: a user device plays its own patch
+    const graph::Patch* callee = devices_->patchOf(*d.device, hold);
     if (callee == nullptr) continue;  // bypassed (missing): nothing reads it
     for (graph::NodeIndex v = 0; v < callee->nodeCount(); ++v) {
       if (callee->node(v).kind != graph::NodeKind::Param) continue;
@@ -852,34 +900,50 @@ void ProjectLink::reportMissingDevices(const doc::Project& p) {
   std::vector<doc::DeviceId> missing;
   std::string first;
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-    for (const doc::DevicePtr& d : t.devices)
-      if (d->active && devices_->library().find(d->patch) == nullptr) {
-        if (missing.empty()) first = d->patch;
+    for (const doc::DevicePtr& d : t.devices) {
+      if (!d->active) continue;
+      if (d->edited()) {  // T4.4-fix1: a user device whose text does not play
+        const auto r = devices_->resolve(*d);
+        if (r && r->error.empty()) continue;
+        if (missing.empty()) {
+          const doc::DeviceInfo* info = devices_->catalog().find(d->patch);
+          const std::string why = r ? r->error.substr(0, r->error.find('\n')) : std::string("no device library");
+          first = "The edited " + (info ? info->name : d->patch) + " (" + t.name + ") does not play its text (" + why +
+                  (r && r->stale ? "): its last good version plays" : "): it is bypassed");
+        }
+        missing.push_back(d->id);
+      } else if (devices_->library().find(d->patch) == nullptr) {
+        if (missing.empty()) first = "Device '" + d->patch + "' is not available: it is bypassed";
         missing.push_back(d->id);
       }
+    }
   });
   if (missing == missingReported_) return;
   missingReported_ = std::move(missing);
   if (!missingReported_.empty() && ctx_ != nullptr)
-    ctx_->setStatus("Device '" + first + "' is not available: it is bypassed" +
+    ctx_->setStatus(first +
                     (missingReported_.size() > 1 ? " (and " + std::to_string(missingReported_.size() - 1) + " more)" : ""));
 }
 
 void ProjectLink::reportWires(const doc::Project& p) {
-  wireStates_ = doc::wireStates(p, devices_->library());
+  wireStates_ = doc::wireStates(p, *devices_);
   std::vector<doc::WireId> flagged;
   const doc::WireState* first = nullptr;
-  uint32_t delayed = 0, refused = 0;
+  uint32_t delayed = 0, refused = 0, invalid = 0;
   for (const doc::WireState& s : wireStates_) {
     if (s.status == doc::WireStatus::Delayed) ++delayed;
     if (s.status == doc::WireStatus::Refused) ++refused;
-    if (s.status != doc::WireStatus::Delayed && s.status != doc::WireStatus::Refused) continue;
+    if (s.status == doc::WireStatus::Invalid) ++invalid;
+    if (s.status != doc::WireStatus::Delayed && s.status != doc::WireStatus::Refused &&
+        s.status != doc::WireStatus::Invalid)
+      continue;
     flagged.push_back(s.id);
     const bool fresh = std::find(wiresReported_.begin(), wiresReported_.end(), s.id) == wiresReported_.end();
     if (first == nullptr && fresh) first = &s;
   }
   stats_.delayedWires = delayed;
   stats_.refusedWires = refused;
+  stats_.invalidWires = invalid;
   wiresReported_ = std::move(flagged);
   if (first == nullptr || ctx_ == nullptr) return;
   // SPEC §15 2026-10-24: a wire that closes a delay-free loop gets an automatic 1-sample delay, shown in the UI.
@@ -887,12 +951,22 @@ void ProjectLink::reportWires(const doc::Project& p) {
   auto name = [&](doc::DeviceId d) {
     const doc::DeviceLoc l = doc::findDevice(p, d);
     const doc::DeviceInfo* info = l.device != nullptr ? devices_->catalog().find(l.device->patch) : nullptr;
-    return (info != nullptr ? info->name : std::string("device")) + (l.track != nullptr ? " (" + l.track->name + ")" : "");
+    return (info != nullptr ? info->name : std::string("device")) + (l.device != nullptr && l.device->edited() ? " (edited)" : "") +
+           (l.track != nullptr ? " (" + l.track->name + ")" : "");
   };
   const std::string what = w != nullptr ? name(w->from) + " " + w->port + " \xE2\x86\x92 " + name(w->to) + " " + w->param : "a wire";
-  ctx_->setStatus(first->status == doc::WireStatus::Delayed
-                      ? "Feedback: the wire " + what + " closes a loop and is delayed by 1 sample (z-1)"
-                      : "The wire " + what + " is not played: it would close a loop through two instrument tracks");
+  switch (first->status) {
+    case doc::WireStatus::Delayed:
+      ctx_->setStatus("Feedback: the wire " + what + " closes a loop and is delayed by 1 sample (z-1)");
+      break;
+    case doc::WireStatus::Invalid:  // T4.4-fix1: an edit removed (or renamed) a port the wire connects
+      ctx_->setStatus("The wire " + what + " is not played: that port is not on the device any more (it plays again if "
+                      "the port comes back; Delete removes the wire)");
+      break;
+    default:
+      ctx_->setStatus("The wire " + what + " is not played: it would close a loop through two instrument tracks");
+      break;
+  }
 }
 
 void ProjectLink::reportDelayedSends(const doc::Project& p) {
@@ -1101,6 +1175,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   doc::LowerOptions lo;
   lo.library = &devices_->library();
   lo.externals = devices_->signatures();
+  lo.devices = devices_.get();  // T4.4-fix1: user devices
   lo.slotOf = [this](doc::TrackId id) { return slotForTrack(id); };
   lo.tuningTableOf = [this](doc::TuningId id, const doc::TuningDef& def) { return tuningTable(id, def); };
   auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);
@@ -1118,6 +1193,19 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     if (slot != kNone) links.push_back({p.track, p.name, slot});
   }
   compiler_->setParamLinks(std::move(links));
+  // T4.4-fix1: an inspection change (the circuit editor's probes on a device) recompiles the units of those tracks.
+  std::vector<uint32_t> inspectTracks;
+  {
+    std::lock_guard lock(mutex_);
+    if (inspectChanged_) {
+      std::vector<engine::TrackInspect> ins;
+      if (inspect_) ins.push_back(*inspect_);
+      compiler_->setInspect(std::move(ins));
+      inspectTracks = std::move(inspectDirty_);
+      inspectDirty_.clear();
+      inspectChanged_ = false;
+    }
+  }
   // Dirty tracks: a patch that is not shared with the previous lowering (new text or a new track).
   std::vector<uint32_t> dirty;
   for (uint32_t i = 0; i < lp.patches.size(); ++i) {
@@ -1125,6 +1213,8 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     if (lowered_)
       for (uint32_t j = 0; j < lowered_->patches.size() && !same; ++j)
         same = lowered_->trackIds[j] == lp.trackIds[i] && lowered_->patches[j] == lp.patches[i];
+    if (same && std::find(inspectTracks.begin(), inspectTracks.end(), lp.trackIds[i].value) != inspectTracks.end())
+      same = false;
     if (!same) dirty.push_back(i);
   }
   auto meterMap = [&](const engine::ProjectLayout& layout) {

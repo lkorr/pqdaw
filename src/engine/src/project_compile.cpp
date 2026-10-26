@@ -146,20 +146,70 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   InferOptions io;
   io.library = &up.value().library;
   io.voiceContext = up.value().voices;
-  auto inf = infer(up.value().patch, io);
-  if (!inf.ok()) return compileError(inf.error().code, who + inf.error().message);
+  // T4.4-fix1: an inspected track of this unit — its probes (paths from the track patch: the track's call node in
+  // front, whose NodeId is the track id) and its instance tree.
+  const TrackInspect* insp = nullptr;
+  for (const TrackInspect& ti : opt_.inspect)
+    for (uint32_t t : partition_.units[u].tracks)
+      if (g.tracks[t].id == ti.trackId) insp = &ti;
+  std::vector<ProbeTarget> targets;
+  if (insp != nullptr)
+    for (const ProbeTarget& t : insp->targets) {
+      ProbeTarget pt = t;
+      pt.path.insert(pt.path.begin(), NodeId{insp->trackId});
+      targets.push_back(std::move(pt));
+    }
+  io.probes = targets;
+  auto infd = inferDetailed(up.value().patch, io);
+  if (!infd.ok()) {
+    auto again = infer(up.value().patch, io);  // the formatted message
+    return compileError(again.ok() ? ErrorCode::Type : again.error().code, who + (again.ok() ? std::string("infer") : again.error().message));
+  }
+  auto inspect = insp != nullptr ? std::make_shared<UnitInspect>() : nullptr;
+  std::vector<const Patch*> instPatch;
+  if (inspect) {  // while the composed unit and the library are at hand
+    inspect->trackId = insp->trackId;
+    for (const InstanceInfo& in : infd.typed.instances) {
+      inspect->instanceParent.push_back(in.parent);
+      inspect->instanceCall.push_back(in.parent != kNone && in.parent < infd.typed.instances.size() &&
+                                              infd.typed.instances[in.parent].patch != nullptr
+                                          ? infd.typed.instances[in.parent].patch->node(in.callNode).id
+                                          : NodeId{});
+      instPatch.push_back(in.patch);
+    }
+  }
   OptimiseOptions oo;
   oo.sampleRate = opt_.sampleRate;
-  auto opt = optimise(std::move(inf.value()), oo);
+  std::vector<uint32_t> valueMap;
+  if (!infd.probeSources.empty()) oo.valueMap = &valueMap;
+  auto opt = optimise(std::move(infd.typed), oo);
   if (!opt.ok()) return compileError(opt.error().code, who + opt.error().message);
   ScheduleOptions so;
   so.sampleRate = opt_.sampleRate;
   so.visualMode = opt_.visualMode;
   so.previous = previous;
   so.sleep = opt_.sleep;
+  std::vector<ProbePoint> points;
+  if (!infd.probeSources.empty()) points = probePoints(opt.value().patch, infd.probeSources, valueMap, insp->ids);
+  so.probes = points;
   ScheduleResult sr = scheduleDetailed(opt.value(), so);
   if (!sr.ok()) return compileError(sr.diagnostics.front().code, who + sr.diagnostics.front().message);
   CompiledUnit cu;
+  if (inspect) {
+    const TypedPatch& scheduled = sr.schedule.rewritten ? *sr.schedule.rewritten : opt.value();
+    const size_t nn = scheduled.patch.nodeCount();
+    inspect->nodeInstance.assign(nn, kNone);
+    inspect->nodeSource.assign(nn, NodeId{});
+    inspect->nodeWhat.assign(nn, NodeOrigin::What::Node);
+    for (size_t n = 0; n < nn && n < scheduled.origin.size(); ++n) {
+      const NodeOrigin& o = scheduled.origin[n];
+      inspect->nodeInstance[n] = o.instance;
+      inspect->nodeWhat[n] = o.what;
+      if (o.instance < instPatch.size() && instPatch[o.instance] && o.node < instPatch[o.instance]->nodeCount())
+        inspect->nodeSource[n] = instPatch[o.instance]->node(o.node).id;
+    }
+    cu.inspect = std::move(inspect);
+  }
   for (const Diagnostic& d : sr.schedule.warnings) cu.warnings.push_back(d.message);
   cu.ops = static_cast<uint32_t>(sr.schedule.ops.size());
   cu.inBus = up.value().inBus;
@@ -180,8 +230,13 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   std::sort(cu.readKeys.begin(), cu.readKeys.end());
   std::sort(cu.writeKeys.begin(), cu.writeKeys.end());
   cu.idleAfterBlocks = idleAfterBlocks(opt.value(), opt_.maxBlockFrames);
-  const uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
-                        (uint64_t{voiceGroupsOf(cu)} << 33) ^ (uint64_t{cu.maxVoices} << 45);
+  uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
+                  (uint64_t{voiceGroupsOf(cu)} << 33) ^ (uint64_t{cu.maxVoices} << 45);
+  if (cu.inspect) {  // T4.4-fix1: an inspected unit is another program (probe copies, bound taps): another key
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (const ProbeRef& p : sr.schedule.probes) h = (h ^ (uint64_t{p.id} + 0x632BE59BD9B4E019ull)) * 0x100000001B3ull;
+    salt ^= h ^ 0xD6E8FEB86659FD93ull;
+  }
   cu.key = unitHash(opt.value(), salt);
   for (const ProjectParamLink& l : opt_.paramLinks)
     if (l.track < g.tracks.size() && partition_.unitOf[l.track] == u)
@@ -234,6 +289,7 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
         ui.keepAlive.push_back(std::move(owner));
     }
   }
+  if (opt_.onBind) opt_.onBind(u, cu, *image);  // T4.4-fix1: probe taps / cost meter of an inspected unit
   ui.image = std::move(image);
   return ui;
 }
