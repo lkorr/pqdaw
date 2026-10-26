@@ -91,6 +91,10 @@ struct ProjectGraph {
   std::vector<ProjectWire> wires;
   ProjectPort output;                     // what the device plays
   const PatchLibrary* library = nullptr;  // callees of the track patches (devices, stdlib); may be null
+  // T4.7: out/export ports that get a bus even when no other unit reads them (analysis taps: a modulated param's
+  // range, read by the views as a metered bus). Their buses come after the output's, so adding a tap never renumbers
+  // another bus. wholeProject() ignores them.
+  std::vector<ProjectPort> taps;
 };
 
 struct ProjectUnit {

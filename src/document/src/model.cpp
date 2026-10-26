@@ -140,7 +140,10 @@ bool isTrackParam(ParamKind k) noexcept {
 }
 
 // T4.1: device params are not automatable yet (their lanes arrive with device automation).
-bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo && k != ParamKind::DeviceParam; }
+// T4.7: nor are wire amounts.
+bool isAutomatable(ParamKind k) noexcept {
+  return k != ParamKind::TrackSolo && k != ParamKind::DeviceParam && k != ParamKind::WireAmount;
+}
 
 uint32_t deviceParamHash(std::string_view name) noexcept {
   uint32_t h = 2166136261u;
@@ -196,6 +199,7 @@ ParamRange paramRange(ParamKind k) noexcept {
     case ParamKind::MosPeriod: return {1.0, 12000.0};
     case ParamKind::MosStretch: return {-1199.0, 1200.0};
     case ParamKind::DeviceParam: return {-1e30, 1e30};  // the device patch's own range applies (DeviceCatalog)
+    case ParamKind::WireAmount: return {-1.0, 1.0};
   }
   return {};
 }
@@ -298,7 +302,19 @@ bool operator==(const Project& a, const Project& b) noexcept {
   if (&a == &b) return true;
   return deepEq(a.timeline, b.timeline) && deepEq(a.locators, b.locators) && a.loop == b.loop &&
          (a.tunings == b.tunings || (a.tunings && b.tunings && deepEqList(*a.tunings, *b.tunings))) &&
-         deepEqList(a.tracks, b.tracks) && deepEqList(a.returns, b.returns) && deepEq(a.master, b.master);
+         deepEqList(a.tracks, b.tracks) && deepEqList(a.returns, b.returns) && deepEq(a.master, b.master) &&
+         (a.wires == b.wires || wiresOf(a) == wiresOf(b));
+}
+
+const WireList& wiresOf(const Project& p) noexcept {
+  static const WireList kNone;
+  return p.wires ? *p.wires : kNone;
+}
+
+const Wire* findWire(const Project& p, WireId id) noexcept {
+  const WireList& w = wiresOf(p);
+  const auto it = std::lower_bound(w.begin(), w.end(), id, [](const Wire& a, WireId b) { return a.id < b; });
+  return it != w.end() && it->id == id ? &*it : nullptr;
 }
 
 Snapshot makeDefaultProject(IdSource& ids) {
@@ -319,6 +335,7 @@ uint32_t maxEntityId(const Project& p) {
   auto see = [&m](uint32_t v) { m = std::max(m, v); };
   for (const TuningSlotPtr& s : *p.tunings) see(s->id.value);
   for (const Locator& l : *p.locators) see(l.id.value);
+  for (const Wire& w : wiresOf(p)) see(w.id.value);
   forEachTrack(p, [&](const Track& t, const Track*) {
     see(t.id.value);
     for (const DevicePtr& d : t.devices) see(d->id.value);

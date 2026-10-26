@@ -1,0 +1,18 @@
+{
+  "format": "pqdaw-panel 1",
+  "patch": "lfo_device",
+  "title": "LFO",
+  "size": [192, 124],
+  "controls": [
+    {"type": "label", "text": "Shape", "rect": [0, 0, 72, 14]},
+    {"type": "chooser", "const": "shape", "label": "Shape", "items": ["Sine", "Triangle", "Saw Up", "Saw Down", "Square"],
+     "rect": [0, 14, 72, 18], "info": "The wave (a structural setting: changing it recompiles the device, crossfaded)."},
+    {"type": "toggle", "param": "sync", "text": "Sync", "rect": [0, 40, 72, 18],
+     "info": "Locks the cycle to the song: one cycle every Beats beats, through tempo changes and relocations."},
+    {"type": "knob", "param": "rate", "rect": [76, 0, 56, 58], "when": [{"param": "sync", "in": [0]}]},
+    {"type": "knob", "param": "beats", "rect": [76, 0, 56, 58], "when": [{"param": "sync", "in": [1]}]},
+    {"type": "knob", "param": "phase", "rect": [76, 66, 56, 58]},
+    {"type": "knob", "param": "depth", "rect": [136, 0, 56, 58]},
+    {"type": "knob", "param": "offset", "rect": [136, 66, 56, 58]}
+  ]
+}

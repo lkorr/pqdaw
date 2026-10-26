@@ -32,9 +32,10 @@ using json::Writer;
 // ---- Names -------------------------------------------------------------------------------------------------------
 
 constexpr std::array<std::string_view, 5> kTrackKindNames = {"midi", "group", "return", "master", "audio"};
-constexpr std::array<std::string_view, 11> kParamKindNames = {
+constexpr std::array<std::string_view, 12> kParamKindNames = {
     "trackVolume", "trackPan", "trackMute", "trackSolo", "trackSend",
-    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch", "deviceParam"};
+    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch", "deviceParam", "wireAmount"};
+constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "highest", "lowest", "loudest"};
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
@@ -154,6 +155,7 @@ public:
     trackList(PathSeg(&root, "returns"), "returns", p.returns);
     w_.key("master");
     track(PathSeg(&root, "master"), *p.master);
+    wires(PathSeg(&root, "wires"), wiresOf(p));
     viewState(p, view);
     w_.endObject();
     out_ += "\n";
@@ -405,6 +407,36 @@ private:
     }
     if (t.kind == TrackKind::Group || !t.children.empty()) trackList(PathSeg(&at, "children"), "children", t.children);
     w_.endObject();
+  }
+
+  // T4.7: the modulation wires, one line each (the key only when there are wires); `reducer` only when not "sum".
+  void wires(const PathSeg& at, const WireList& list) {
+    if (list.empty()) return;
+    w_.key("wires");
+    w_.beginArray(true);
+    for (size_t i = 0; i < list.size(); ++i) {
+      const Wire& wr = list[i];
+      const PathSeg el(&at, i);
+      w_.beginObject(false);
+      w_.key("id");
+      w_.integer(wr.id.value);
+      w_.key("from");
+      w_.integer(wr.from.value);
+      w_.key("port");
+      w_.string(PathSeg(&el, "port"), wr.port);
+      w_.key("to");
+      w_.integer(wr.to.value);
+      w_.key("param");
+      w_.string(PathSeg(&el, "param"), wr.param);
+      w_.key("amount");
+      w_.number(PathSeg(&el, "amount"), wr.amount);
+      if (wr.reducer != WireReducer::Sum) {
+        w_.key("reducer");
+        w_.string(el, kWireReducerNames[static_cast<size_t>(wr.reducer)]);
+      }
+      w_.endObject();
+    }
+    w_.endArray();
   }
 
   // T4.1: one line per device; params / settings as {name: value} (only those set), `active` only when false.
@@ -709,8 +741,8 @@ public:
   LoadedProject project() {
     const PathSeg root;
     static constexpr std::string_view K[] = {"schemaVersion", "timeline", "loop",    "locators", "tunings",
-                                             "tracks",        "returns",  "master",  "view"};
-    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView };
+                                             "tracks",        "returns",  "master",  "view",     "wires"};
+    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires };
     auto np = std::make_shared<Project>();
     LoadedProject out;
     Members m(r_, root, K);
@@ -731,6 +763,7 @@ public:
         case kReturns: np->returns = trackArray(at, TrackList::Returns, 1); break;
         case kMaster: np->master = track(at, TrackList::Master, 1); break;
         case kView: rawView = view(at); break;
+        case kWires: np->wires = wireList(at); break;
       }
     }
     m.require({kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster});
@@ -1211,6 +1244,35 @@ private:
     return v;
   }
 
+  // T4.7: the wires, sorted by id in the file (ends are checked against the devices in validate()).
+  std::shared_ptr<const WireList> wireList(const PathSeg& at) {
+    WireList v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "from", "port", "to", "param", "amount", "reducer"};
+      Wire w;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        switch (k) {
+          case 0: w.id = WireId{defineId(f)}; break;
+          case 1: w.from = DeviceId{ref(f)}; break;
+          case 2: w.port = str(f); break;
+          case 3: w.to = DeviceId{ref(f)}; break;
+          case 4: w.param = str(f); break;
+          case 5: w.amount = r_.readDouble(f); break;
+          case 6: w.reducer = static_cast<WireReducer>(name(f, kWireReducerNames, "wire reducer")); break;
+        }
+      }
+      m.require({0, 1, 2, 3, 4, 5});
+      check(el, detail::checkWire(w));
+      if (!v.empty() && !(v.back().id < w.id)) r_.failValue(PathSeg(&el, "id"), "wires must be sorted by id");
+      v.push_back(std::move(w));
+    }
+    return v.empty() ? nullptr : std::make_shared<const WireList>(std::move(v));
+  }
+
   // {name: number, …}: any key order in the file; sorted in the model.
   std::vector<DeviceValue> deviceValues(const PathSeg& at) {
     std::vector<DeviceValue> v;
@@ -1583,6 +1645,16 @@ private:
     walk(walk, PathSeg(&root, "returns"), p.returns);
     validateTrack(PathSeg(&root, "master"), p, *p.master, automated);
     if (Status s = detail::checkRouting(p); !s) json::fail(root, s.error().message);
+    const PathSeg wiresAt(&root, "wires");
+    const WireList& wl = wiresOf(p);
+    for (size_t i = 0; i < wl.size(); ++i) {
+      const PathSeg el(&wiresAt, i);
+      if (!findDevice(p, wl[i].from).track) json::fail(PathSeg(&el, "from"), "no device with this id");
+      if (!findDevice(p, wl[i].to).track) json::fail(PathSeg(&el, "to"), "no device with this id");
+      for (size_t j = 0; j < i; ++j)
+        if (wl[j].from == wl[i].from && wl[j].port == wl[i].port && wl[j].to == wl[i].to && wl[j].param == wl[i].param)
+          json::fail(el, "these two ports are already wired (wire " + std::to_string(wl[j].id.value) + ")");
+    }
 
     std::sort(ids_.begin(), ids_.end());
     const auto dup = std::adjacent_find(ids_.begin(), ids_.end());
@@ -1632,6 +1704,8 @@ private:
     for (size_t i = 0; i < p.tunings->size(); ++i) see((*p.tunings)[i]->id.value, PathSeg(&tuns, i));
     const PathSeg locs(&root, "locators");
     for (size_t i = 0; i < p.locators->size(); ++i) see((*p.locators)[i].id.value, PathSeg(&locs, i));
+    const PathSeg wiresAt(&root, "wires");
+    for (size_t i = 0; i < wiresOf(p).size(); ++i) see(wiresOf(p)[i].id.value, PathSeg(&wiresAt, i));
     auto walkTrack = [&](auto& self, const PathSeg& at, const Track& t) -> void {
       see(t.id.value, at);
       const PathSeg devs(&at, "devices");
@@ -1924,9 +1998,16 @@ private:
 
 Status migrateDefaultInstrumentToChain(nlohmann::json& doc) { return ChainAdder().run(doc); }
 
+// 3 → 4 (T4.7): schema 4 adds the optional top-level "wires" list; a schema-3 file has none, so nothing changes.
+Status migrateAddWires(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
+    {3, migrateAddWires},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

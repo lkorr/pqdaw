@@ -116,6 +116,8 @@ enum class ParamKind : uint8_t {
   // T4.1: a param of a device (owner = device id, target = deviceParamHash(name)). Its range, unit and default are
   // the device patch's (DeviceCatalog, devices.h); not automatable yet (device automation arrives with M4's panels).
   DeviceParam,
+  // T4.7: the amount of a modulation wire (owner = wire id), in [−1, 1]; a runtime param, not automatable yet.
+  WireAmount,
 };
 
 struct ParamRef {
@@ -127,6 +129,7 @@ struct ParamRef {
   static ParamRef track(ParamKind k, TrackId t, TrackId target = {}) { return {k, t.value, target.value}; }
   static ParamRef tuning(ParamKind k, TuningId t) { return {k, t.value, 0}; }
   static ParamRef device(DeviceId d, std::string_view param);  // {DeviceParam, d, deviceParamHash(param)}
+  static ParamRef wireAmount(WireId w) { return {ParamKind::WireAmount, w.value, 0}; }
 };
 // FNV-1a 32 of a device param's name: the ParamRef target of a device param (QUESTIONS Q129, item 2).
 uint32_t deviceParamHash(std::string_view name) noexcept;
@@ -300,6 +303,34 @@ inline constexpr std::string_view kDefaultInstrument = "BasicSynth";
 DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind);
 DevicePtr makeDefaultInstrument(DeviceId id);  // makeDevice(id, kDefaultInstrument, Instrument)
 
+// ---- Modulation wires (T4.7, SPEC §7.1, §7.4, §9, §15 2026-10-24; QUESTIONS Q129 item 5) -------------------------
+// A wire from a device's `export` (an output jack on top of the device) to a `param` of any device in the project
+// (the same device, another device of its chain, a device on another track). Wires are project entities, not track
+// entities: a wire may cross tracks, and moving a device to another track keeps its wires (they name device ids).
+// Removing a device (or its track) removes its wires in the same command.
+//
+// The modulation law (QUESTIONS Q?-T4.7-a): additive in the target's KNOB TRAVEL (the 0..1 position its knob shows:
+// linear in the value, in dB for gains, logarithmic for @curve(exp)), with the knob as the centre:
+//     position = clamp(knob position + Σ amount_i · source_i, 0, 1),  value = the param's value at that position.
+// A source of ±1 at amount 1 sweeps the whole travel; a negative amount inverts. The knob keeps the user's value (the
+// modulation never writes the document). A voice source into a global target is reduced per wire (`reducer`, SPEC
+// §7.4: sum by default). Wires add no delay; a wire that would close a delay-free cycle gets an automatic 1-sample
+// delay (SPEC §15 2026-10-24; decided by the lowering, lower.h).
+enum class WireReducer : uint8_t { Sum, Last, Highest, Lowest, Loudest };
+inline constexpr double kDefaultWireAmount = 0.5;
+
+struct Wire {
+  WireId id;
+  DeviceId from;      // the source device
+  std::string port;   // its export
+  DeviceId to;        // the target device (may be `from` itself)
+  std::string param;  // its param
+  double amount = kDefaultWireAmount;  // [−1, 1]: knob travel per unit of source
+  WireReducer reducer = WireReducer::Sum;
+  friend bool operator==(const Wire&, const Wire&) = default;
+};
+using WireList = std::vector<Wire>;  // sorted by id
+
 struct Track;
 using TrackPtr = std::shared_ptr<const Track>;
 
@@ -361,6 +392,7 @@ struct Project {
   std::vector<TrackPtr> tracks;   // the track tree (Midi + Group, nested)
   std::vector<TrackPtr> returns;  // Return tracks
   TrackPtr master;
+  std::shared_ptr<const WireList> wires;  // T4.7: modulation wires, sorted by id (null: none)
 };
 // Deep equality (pointer-equal subtrees are not descended into).
 bool operator==(const Project& a, const Project& b) noexcept;
@@ -407,6 +439,9 @@ struct DeviceLoc {
   uint32_t index = 0;  // in track->devices
 };
 DeviceLoc findDevice(const Project& p, DeviceId id) noexcept;
+// T4.7: the project's wires (an empty list when it has none) and one by id (nullptr: none).
+const WireList& wiresOf(const Project& p) noexcept;
+const Wire* findWire(const Project& p, WireId id) noexcept;
 
 // The tuning a track (and optionally one of its clips) plays in, following Inherit up the group chain. nullptr if a
 // Main reference is dangling (commands never produce that).

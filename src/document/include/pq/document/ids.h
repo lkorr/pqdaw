@@ -24,6 +24,7 @@ struct BreakpointTag {};
 struct TuningTag {};
 struct LocatorTag {};
 struct DeviceTag {};  // T4.1: a device instance in a track's chain
+struct WireTag {};    // T4.7: a cross-device modulation wire
 
 using TrackId = StableId<TrackTag>;
 using ClipId = StableId<ClipTag>;
@@ -33,6 +34,7 @@ using BreakpointId = StableId<BreakpointTag>;
 using TuningId = StableId<TuningTag>;
 using LocatorId = StableId<LocatorTag>;
 using DeviceId = StableId<DeviceTag>;
+using WireId = StableId<WireTag>;
 
 // The project-wide id counter. Not thread-safe (owned by the UI thread's DocumentStore).
 class IdSource {
@@ -52,6 +54,7 @@ public:
   TuningId tuning() noexcept { return next<TuningTag>(); }
   LocatorId locator() noexcept { return next<LocatorTag>(); }
   DeviceId device() noexcept { return next<DeviceTag>(); }
+  WireId wire() noexcept { return next<WireTag>(); }
 
   // The value next() would hand out.
   uint32_t peek() const noexcept { return next_; }

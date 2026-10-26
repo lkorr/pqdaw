@@ -50,6 +50,7 @@ struct Edit {
   std::vector<BreakpointId> points;
   std::vector<TuningId> tunings;  // main tunings created or kept (T3.19)
   std::vector<DeviceId> devices;  // devices created or kept (T4.1)
+  std::vector<WireId> wires;      // wires created or kept (T4.7)
 
   bool empty() const noexcept;    // the batch has no commands
   const Batch& batch() const noexcept;
@@ -312,5 +313,18 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> value);
 // One structural setting (nullopt: the default).
 EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setting, std::optional<double> value);
+
+// ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------------
+// One Batch = one undo step each. Ports are not checked against the device patches (the views offer only real ones).
+// Wires `from`.`port` (an export) to `to`.`param`; a second wire between the same two ports is refused.
+EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,
+                       double amount = kDefaultWireAmount);
+EditResult deleteWires(const Project& p, std::span<const WireId> wires);
+// One amount ([−1, 1], clamped). A drag is several of these inside one store gesture (Param: no compile).
+EditResult setWireAmount(const Project& p, WireId wire, double amount);
+EditResult setWireReducer(const Project& p, WireId wire, WireReducer reducer);
+// The wires into `device`.`param` / out of `device`.`port` (any order of the project's list: by id).
+std::vector<WireId> wiresInto(const Project& p, DeviceId device, std::string_view param);
+std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_view port);
 
 }  // namespace pq::doc::ops

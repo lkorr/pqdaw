@@ -305,7 +305,7 @@ std::string schema0Text() {
 }  // namespace
 
 TEST_CASE("serialize: migration hook table (n -> n+1)") {
-  const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0], builtinMigrations()[1]};
+  const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -332,14 +332,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 3");
+    const size_t at = newer.find("\"schemaVersion\": 4");
     REQUIRE(at != std::string::npos);
     newer.replace(at, 18, "\"schemaVersion\": 7");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 7; this build reads up to 3)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 7; this build reads up to 4)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -348,7 +348,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                    d.erase("bpm");
                                    return pq::Ok{};
                                  }},
-                                builtinMigrations()[0], builtinMigrations()[1]};
+                                builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -438,7 +438,7 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 3);
+  static_assert(kSchemaVersion == 4);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -447,7 +447,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 3,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 4,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
@@ -499,6 +499,65 @@ TEST_CASE("serialize: schema 1 -> 2 migration range errors") {
   Result<LoadedProject> edge = parseProject(withLoopStart(std::to_string(-(kMaxTicks / 8))));
   REQUIRE_MESSAGE(edge.ok(), (edge.ok() ? std::string() : edge.error().message));
   CHECK(edge->project->loop.start == -kMaxTicks);
+}
+
+// ---- Schema 3 -> 4 (T4.7: modulation wires) -------------------------------------------------------------------------
+
+// fixtures/schema3 is fixtures/full as the schema-3 build wrote it (main at 01210d7). Schema 4 only adds the optional
+// "wires" list, so the migrated project is the rich project itself and re-saves as fixtures/full.
+TEST_CASE("serialize: a schema-3 project loads unchanged into schema 4 (no wires)") {
+  const std::string oldText = readFile(fixturePath("schema3/project.pqd"));
+  REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 3,", 0) == 0);
+  Result<LoadedProject> r = loadProject(fixturePath("schema3"));
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  CHECK(r->fileSchemaVersion == 3);
+  RichProject f;
+  CHECK(*r->project == f.doc());
+  CHECK(wiresOf(*r->project).empty());
+  Result<std::string> again = serializeProject(*r->project, r->view);
+  REQUIRE(again.ok());
+  CHECK(*again == readFile(fixturePath("full/project.pqd")));
+}
+
+// T4.7: wires round-trip (ids, ends, ports, amounts to the bit, reducers), sorted by id; a broken file is refused.
+TEST_CASE("serialize: modulation wires round-trip and are validated") {
+  RichProject f;
+  IdSource& ids = f.store.ids();
+  std::vector<DeviceId> devs;
+  forEachTrack(f.doc(), [&](const Track& t, const Track*) {
+    for (const DevicePtr& d : t.devices) devs.push_back(d->id);
+  });
+  REQUIRE(devs.size() >= 2);
+  Batch b{"wires", {}};
+  Wire a{ids.wire(), devs[0], "lfo", devs[1], "cutoff", -1.0 / 3.0, WireReducer::Sum};
+  Wire c{ids.wire(), devs[1], "out2", devs[1], "level", 1.0, WireReducer::Loudest};
+  Wire d{ids.wire(), devs[1], "x", devs[0], "q", -0.0, WireReducer::Highest};
+  b.commands.push_back(AddWire{a});
+  b.commands.push_back(AddWire{c});
+  b.commands.push_back(AddWire{d});
+  REQUIRE(f.store.dispatch(b).ok());
+  const LoadedProject back = roundTrip(f.doc(), f.store.view());
+  CHECK(*back.project == f.doc());
+  REQUIRE(wiresOf(*back.project).size() == 3);
+  CHECK(wiresOf(*back.project)[0] == a);
+  CHECK(wiresOf(*back.project)[1] == c);
+  CHECK(std::signbit(wiresOf(*back.project)[2].amount));
+  Result<std::string> text = serializeProject(f.doc(), f.store.view());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"reducer\": \"loudest\"") != std::string::npos);
+  CHECK(text->find("\"reducer\": \"sum\"") == std::string::npos);  // the default is not written
+  auto broken = [&](const std::string& from, const std::string& to) {
+    std::string t = *text;
+    const size_t at = t.find(from);
+    REQUIRE(at != std::string::npos);
+    t.replace(at, from.size(), to);
+    return parseProject(t);
+  };
+  const std::string fromA = "\"from\": " + std::to_string(devs[0].value);
+  CHECK_FALSE(broken(fromA, "\"from\": 999999").ok());                       // no such device
+  CHECK_FALSE(broken("\"amount\": 1.0", "\"amount\": 1.5").ok());         // out of [-1, 1]
+  CHECK_FALSE(broken("\"reducer\": \"loudest\"", "\"reducer\": \"loud\"").ok());
+  CHECK_FALSE(broken("\"id\": " + std::to_string(c.id.value), "\"id\": " + std::to_string(a.id.value)).ok());  // duplicate id
 }
 
 // ---- Schema 2 -> 3 (T4.1: device chains) ---------------------------------------------------------------------------

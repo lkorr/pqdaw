@@ -144,6 +144,9 @@ public:
   virtual ~TreeObserver() = default;
   virtual void onHoverChanged(Widget* /*hovered*/) {}
   virtual void onPointerDown(Vec2 /*pos*/) {}
+  // T4.7: a layout pass ran (rects may have moved: a scroll, a splitter, a fold); called before the frame is painted,
+  // so an observer that draws over other widgets (the cable layer) can damage what it must repaint.
+  virtual void onLayout() {}
 };
 
 struct PaintContext {

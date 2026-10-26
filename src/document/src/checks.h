@@ -45,6 +45,8 @@ Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r);
 Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices);
 // A device param / setting name (non-empty) and value (finite, when set).
 Status checkDeviceValue(const std::string& name, const std::optional<double>& value);
+// T4.7: a wire's own fields (valid ids, non-empty port and param names, amount in [−1, 1], a known reducer).
+Status checkWire(const Wire& w);
 // Rejects routing cycles (outputs followed from every track must end at the master or a track with no output).
 Status checkRouting(const Project& p);
 

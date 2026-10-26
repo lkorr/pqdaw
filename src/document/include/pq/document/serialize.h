@@ -43,8 +43,10 @@ namespace pq::doc {
 
 // Schema history: 1 = ticks at PPQ 27,720; 2 = ticks at PPQ 221,760 (T0.5-fix1: migration 1 → 2 multiplies every
 // stored tick by 8); 3 = device chains (T4.1: every track has "devices"; migration 2 → 3 gives every MIDI track the
-// default instrument it played implicitly, with a new id above the file's largest, in track order).
-inline constexpr int32_t kSchemaVersion = 3;
+// default instrument it played implicitly, with a new id above the file's largest, in track order); 4 = modulation
+// wires (T4.7: an optional top-level "wires" list [{"id", "from", "port", "to", "param", "amount", "reducer"?}];
+// migration 3 → 4 changes nothing).
+inline constexpr int32_t kSchemaVersion = 4;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader
@@ -54,7 +56,8 @@ struct Migration {
   int32_t from = 0;
   MigrationFn fn = nullptr;
 };
-// The built-in table: one step per schema version (1 → 2: ticks × 8; 2 → 3: the default instrument as a device).
+// The built-in table: one step per schema version (1 → 2: ticks × 8; 2 → 3: the default instrument as a device;
+// 3 → 4: none, wires are new).
 std::span<const Migration> builtinMigrations() noexcept;
 
 struct LoadOptions {

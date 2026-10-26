@@ -88,6 +88,9 @@ void collectIds(const Track& t, ChangeSet& cs) {
   for (const TrackPtr& c : t.children) collectIds(*c, cs);
 }
 
+// T4.7: drops the wires touching a removed device (defined with the wire commands below).
+void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs);
+
 // Rebuilds every track for which fn returns a modified copy (and the ancestors of those), sharing the rest.
 // fn: std::optional<Track>(const Track&). Modified tracks are recorded in cs.tracks.
 template <class Fn>
@@ -277,6 +280,9 @@ Res apply_(const Snapshot& s, const RemoveTrack& c, ChangeSet& cs) {
   std::vector<TrackId> ids = removed.tracks;
   std::sort(ids.begin(), ids.end());
   cleanupAfterRemoval(*np, ids, cs);
+  std::vector<DeviceId> devs = removed.devices;
+  std::sort(devs.begin(), devs.end());
+  dropWiresOf(*np, devs, cs);  // T4.7: the removed devices' wires go with them
   cs.mark(kChangeStructural);
   cs.merge(removed);
   if (const Track* parent = parentOf(*s, loc->path)) cs.tracks.push_back(parent->id);
@@ -1211,8 +1217,14 @@ Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
     t.devices.erase(t.devices.begin() + loc->index);
     return ok();
   });
-  if (r) cs.devices.push_back(c.device);
-  return r;
+  if (!r) return r;
+  cs.devices.push_back(c.device);
+  const WireList& wires = wiresOf(**r);
+  if (std::none_of(wires.begin(), wires.end(), [&](const Wire& w) { return w.from == c.device || w.to == c.device; }))
+    return r;
+  auto np = std::make_shared<Project>(**r);  // T4.7: its wires go with it (one command, one undo step)
+  dropWiresOf(*np, std::vector<DeviceId>{c.device}, cs);
+  return Snapshot(std::move(np));
 }
 
 Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
@@ -1311,6 +1323,79 @@ Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
   return editDevice(s, *loc, std::move(d), cs, kChangeStructural);
 }
 
+// ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
+
+// np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
+void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs) {
+  if (!np.wires || gone.empty()) return;
+  auto touches = [&](const Wire& w) {
+    return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to);
+  };
+  if (std::none_of(np.wires->begin(), np.wires->end(), touches)) return;
+  WireList keep;
+  for (const Wire& w : *np.wires) {
+    if (touches(w)) cs.wires.push_back(w.id);
+    else keep.push_back(w);
+  }
+  np.wires = keep.empty() ? nullptr : std::make_shared<const WireList>(std::move(keep));
+}
+
+Res withWires(const Snapshot& s, WireList list, ChangeSet& cs, ChangeFlag flag, WireId touched) {
+  auto np = copyOf(s);
+  np->wires = list.empty() ? nullptr : std::make_shared<const WireList>(std::move(list));
+  cs.mark(flag);
+  cs.wires.push_back(touched);
+  return Snapshot(std::move(np));
+}
+
+Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
+  PQ_DOC_TRY(checkWire(c.wire));
+  if (!findDevice(*s, c.wire.from).track) return notFound("wire source device not found");
+  if (!findDevice(*s, c.wire.to).track) return notFound("wire target device not found");
+  const WireList& cur = wiresOf(*s);
+  for (const Wire& w : cur) {
+    if (w.id == c.wire.id) return invalid("wire id already in use");
+    if (w.from == c.wire.from && w.port == c.wire.port && w.to == c.wire.to && w.param == c.wire.param)
+      return invalid("these two ports are already wired");
+  }
+  WireList list = cur;
+  list.insert(std::upper_bound(list.begin(), list.end(), c.wire.id, [](WireId a, const Wire& b) { return a < b.id; }),
+              c.wire);
+  return withWires(s, std::move(list), cs, kChangeStructural, c.wire.id);
+}
+
+Res apply_(const Snapshot& s, const RemoveWire& c, ChangeSet& cs) {
+  if (!findWire(*s, c.wire)) return notFound("wire not found");
+  WireList list = wiresOf(*s);
+  std::erase_if(list, [&](const Wire& w) { return w.id == c.wire; });
+  return withWires(s, std::move(list), cs, kChangeStructural, c.wire);
+}
+
+template <class F>
+Res editWire(const Snapshot& s, WireId id, ChangeSet& cs, ChangeFlag flag, F&& f) {
+  const Wire* old = findWire(*s, id);
+  if (!old) return notFound("wire not found");
+  Wire w = *old;
+  f(w);
+  if (w == *old) return s;
+  PQ_DOC_TRY(checkWire(w));
+  WireList list = wiresOf(*s);
+  for (Wire& x : list)
+    if (x.id == id) x = w;
+  return withWires(s, std::move(list), cs, flag, id);
+}
+
+Res apply_(const Snapshot& s, const SetWireAmount& c, ChangeSet& cs) {
+  if (!finiteIn(c.amount, -1.0, 1.0)) return invalid("wire amount must be in [-1, 1]");
+  Res r = editWire(s, c.wire, cs, kChangeParam, [&](Wire& w) { w.amount = c.amount; });
+  if (r && *r != s) cs.params.push_back(ParamRef::wireAmount(c.wire));
+  return r;
+}
+
+Res apply_(const Snapshot& s, const SetWireReducer& c, ChangeSet& cs) {
+  return editWire(s, c.wire, cs, kChangeStructural, [&](Wire& w) { w.reducer = c.reducer; });
+}
+
 // ---- Batch ---------------------------------------------------------------------------------------------------------
 
 Res applyAny(const Snapshot& s, const Command& c, ChangeSet& cs);
@@ -1348,6 +1433,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
+    "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Batch"};
 
 }  // namespace

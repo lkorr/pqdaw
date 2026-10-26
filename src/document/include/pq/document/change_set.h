@@ -13,7 +13,8 @@
 //   Timeline    tempo map, time signatures, loop region: transport update.
 //   Structural  graph shape (tracks, routing, sends' tap point, activation, lanes added/removed — an automated
 //               param becomes an audio-rate signal — tuning slots and assignments, discrete tuning shape; T4.1:
-//               device chains, device activation and device settings):
+//               device chains, device activation and device settings; T4.7: wires added / removed, a wire's
+//               reducer; a wire's amount is a Param):
 //               debounced recompile + hot swap.
 
 #include <cstdint>
@@ -43,6 +44,7 @@ struct ChangeSet {
   std::vector<TuningId> tunings;
   std::vector<LocatorId> locators;
   std::vector<DeviceId> devices;  // T4.1: devices added, removed, moved or edited (their track is in `tracks` too)
+  std::vector<WireId> wires;      // T4.7: wires added, removed or edited (a removed device's wires too)
   std::vector<ParamRef> params;  // params whose value changed (Param class)
 
   bool empty() const noexcept { return flags == 0; }

@@ -135,7 +135,7 @@ struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningRefe
 // master hold audio effects only. Device ids are project-wide unique (pre-allocated from the IdSource).
 // Structural. Inserts `device` into `track`'s chain at `index` (kAppend: at the end).
 struct AddDevice { TrackId track; DevicePtr device; uint32_t index = kAppend; };
-// Structural. Removes a device (its values go with it; undo restores them).
+// Structural. Removes a device (its values and its wires go with it; undo restores them).
 struct RemoveDevice { DeviceId device; };
 // Structural. Moves a device to `toTrack` (invalid: its own track) at `index` (in the destination chain after removal;
 // kAppend: the end). Within one track only that track's unit recompiles (every device keeps its state: its NodeId is
@@ -147,6 +147,17 @@ struct SetDeviceActive { DeviceId device; bool active = true; };   // Structural
 struct SetDeviceParam { DeviceId device; std::string param; std::optional<double> value; };
 // Structural: a `real const` input (a literal at the call site; the unit recompiles). nullopt = the default.
 struct SetDeviceSetting { DeviceId device; std::string setting; std::optional<double> value; };
+
+// ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
+// Structural. Adds `wire` (its id pre-allocated). Both devices must exist; the amount must be in [−1, 1]; a wire with
+// the same source (device, export) and target (device, param) as an existing one is rejected. The ports are not
+// checked against the device patches (the document is library-free): a wire naming a port the patch does not have is
+// left out by the lowering.
+struct AddWire { Wire wire; };
+struct RemoveWire { WireId wire; };                                // Structural
+// Param (ParamRef::wireAmount): a runtime value, one param write, never a compile.
+struct SetWireAmount { WireId wire; double amount = kDefaultWireAmount; };
+struct SetWireReducer { WireId wire; WireReducer reducer = WireReducer::Sum; };  // Structural
 
 // ---- Compound --------------------------------------------------------------------------------------------------
 struct Command;
@@ -167,6 +178,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting,
+    AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     Batch>;
 
 struct Command {

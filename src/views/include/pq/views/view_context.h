@@ -43,6 +43,7 @@
 namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
+class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 }  // namespace pq::views
 namespace pq::doc {
 class DeviceLibrary;  // pq/document/devices.h
@@ -63,6 +64,7 @@ inline constexpr uint32_t kAutomation = 1u << 8;     // automation overridden / 
 inline constexpr uint32_t kSelection = 1u << 9;      // the selected track changed (T3.x-fix-look: the control bar's chip)
 inline constexpr uint32_t kInfo = 1u << 10;          // the hovered widget's info text changed in place (T3.19: the roll's pitch readout)
 inline constexpr uint32_t kDevices = 1u << 11;       // the device library changed (T4.1: the device menu, panels)
+inline constexpr uint32_t kModulation = 1u << 12;    // the modulation source changed (T4.7: the knobs' live rings)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -185,6 +187,10 @@ public:
   // chains without param controls and offers nothing to add). Must outlive its use. Notifies kDevices.
   void setDeviceLibrary(const doc::DeviceLibrary* lib);
   const doc::DeviceLibrary* deviceLibrary() const noexcept { return devices_; }
+  // T4.7: where the modulated knobs' live rings read their sweeps (the playback link; null: no rings move). Must
+  // outlive its use. Notifies kModulation.
+  void setModulationSource(ModulationSource* source);
+  ModulationSource* modulationSource() const noexcept { return modulation_; }
   // What file.new / file.open / file.save / file.saveAs do: ask about unsaved changes, pick a path, then call the
   // explicit-path functions above. `then` runs after a successful operation (e.g. quit after "save and quit").
   void requestNew();
@@ -319,6 +325,8 @@ public:
   // T4.1: the Device view's edits (installDeviceChain sets the handlers; scope "devices").
   static constexpr std::string_view kDeviceChainActions[] = {"device.delete", "device.copy",      "device.cut",
                                                              "device.paste",  "device.duplicate", "device.toggleActive"};
+  // T4.7: View > Cables (Show / Fade / Hide) and deleting the selected wire (installWiring sets the handlers).
+  static constexpr std::string_view kWiringActions[] = {"view.cycleCables", "wire.delete"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",
@@ -347,6 +355,7 @@ private:
   FileDialogs* dialogs_ = nullptr;
   AudioPrefsPort* audioPrefs_ = nullptr;
   const doc::DeviceLibrary* devices_ = nullptr;
+  ModulationSource* modulation_ = nullptr;
   Ticks startMarker_ = 0;
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;

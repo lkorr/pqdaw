@@ -419,6 +419,54 @@ std::vector<Case> cases() {
                }, S, [](Fixture& f, const ChangeSet&) {
                  CHECK(f.track(f.lead).devices.at(1)->setting("bassMono")->value == 1.0);
                }});
+  // ---- modulation wires (T4.7): withWire adds chain.wire = inst.lfo → fx.width.
+  static WireId wire;
+  auto withWire = [withChain](Fixture& f) {
+    withChain(f);
+    wire = f.store.ids().wire();
+    REQUIRE(f.store.dispatch(AddWire{Wire{wire, chain.inst, "lfo", chain.fx, "width", 0.25, WireReducer::Sum}}).ok());
+  };
+  c.push_back({"AddWire", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 wire = f.store.ids().wire();
+                 return AddWire{Wire{wire, chain.inst, "lfo", chain.fx, "width", -0.5, WireReducer::Last}};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.wires == std::vector<WireId>{wire});
+                 REQUIRE(findWire(f.doc(), wire));
+                 CHECK(findWire(f.doc(), wire)->amount == -0.5);
+               }});
+  c.push_back({"RemoveWire", [withWire](Fixture& f) -> Command {
+                 withWire(f);
+                 return RemoveWire{wire};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.wires == std::vector<WireId>{wire});
+                 CHECK(wiresOf(f.doc()).empty());
+               }});
+  c.push_back({"SetWireAmount", [withWire](Fixture& f) -> Command {
+                 withWire(f);
+                 return SetWireAmount{wire, -1.0};
+               }, P, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::wireAmount(wire)});
+                 CHECK(findWire(f.doc(), wire)->amount == -1.0);
+               }});
+  c.push_back({"SetWireReducer", [withWire](Fixture& f) -> Command {
+                 withWire(f);
+                 return SetWireReducer{wire, WireReducer::Highest};
+               }, S, [](Fixture& f, const ChangeSet&) { CHECK(findWire(f.doc(), wire)->reducer == WireReducer::Highest); }});
+  c.push_back({"RemoveDevice (takes its wires)", [withWire](Fixture& f) -> Command {
+                 withWire(f);
+                 return RemoveDevice{chain.fx};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.wires == std::vector<WireId>{wire});
+                 CHECK(wiresOf(f.doc()).empty());
+               }});
+  c.push_back({"RemoveTrack (takes its devices' wires)", [withWire](Fixture& f) -> Command {
+                 withWire(f);
+                 return RemoveTrack{f.lead};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.wires == std::vector<WireId>{wire});
+                 CHECK(wiresOf(f.doc()).empty());
+               }});
   // ---- compound
   c.push_back({"Batch (param + sequence)", [](Fixture& f) -> Command {
                  return Batch{"Mixed", {SetTrackVolume{f.lead, -1.0f},

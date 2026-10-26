@@ -121,6 +121,11 @@ void UiTree::layoutNow() {
   place(*root_, view);
   // Content may have moved under a still pointer (scroll, splitter, rebuilt view): keep hover truthful.
   if (pointerInside_ && !captured_) updateHover(pointer_);
+  for (size_t i = 0; i < observers_.size(); ++i) observers_[i]->onLayout();  // T4.7 (may damage, may not add observers)
+  if (layoutPending_) {  // an observer changed layout (a cable badge moved): place it now, once
+    layoutPending_ = false;
+    place(*root_, view);
+  }
 }
 
 void UiTree::place(Widget& w, const IRect& r) {

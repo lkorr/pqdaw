@@ -68,6 +68,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   declareViewActions(kCircuitActions);
   declareViewActions(kDeviceActions);
   declareViewActions(kDeviceChainActions);
+  declareViewActions(kWiringActions);
   syncLoop();
 }
 
@@ -121,6 +122,12 @@ void ViewContext::setDeviceLibrary(const doc::DeviceLibrary* lib) {
   if (devices_ == lib) return;
   devices_ = lib;
   notify(view_change::kDevices);
+}
+
+void ViewContext::setModulationSource(ModulationSource* source) {
+  if (modulation_ == source) return;
+  modulation_ = source;
+  notify(view_change::kModulation);
 }
 
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {

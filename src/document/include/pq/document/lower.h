@@ -74,6 +74,7 @@
 //
 // ---- Params ----------------------------------------------------------------------------------------------------
 // One LoweredParam per (track, patch param) with a stable string key (a device param "dev<device id>:<name>", T4.1;
+// a wire's amount "wire<wire id>:amount" (patch name w<wire id>, on the target's track), T4.7;
 // "<track id>:volume", ":pan", ":gate",
 // ":sendGate", ":mute"; a send "<sender id>:send:<return id>", a param `send<sender id>` of the RETURN's patch; a
 // tuning node's params "tuning:<tuning id>:reference", ":equave", ":generator", ":period", ":stretch" (patch names
@@ -132,12 +133,56 @@ enum class NodeRole : uint8_t {
   TuningNode = 0,  // entity: the tuning id; k: its params, the tuning_hz node, its table / node constants
   SendInput = 1,   // entity: the sending track's id; k: its input port, level param, dB → gain, gain_add, z1
   Device = 2,      // T4.1: entity: a device id; k = 0: the device's call node, k = 1: its mono → stereo adapter
+  // T4.7: entity: a wire id; k < kWireNodeSlots. Every entity kind draws its id from the one IdSource, so a wire id is
+  // never a tuning, track or device id: a wire's nodes take the k slots of all three role spaces (k / 16 picks it).
+  // k 0–15: the wire's own nodes; k 16–47: the nodes of the param it modulates (keyed by its lowest wire id).
+  Wire = 3,
 };
 inline constexpr uint32_t kEntityNodeBase = 1024;
 inline constexpr uint32_t kEntityNodeSlots = 16;  // k < 16 per (role, entity)
+inline constexpr uint32_t kWireNodeSlots = 48;    // NodeRole::Wire: k < 48
 // The NodeId (raw) of node k of `entity` in `role`, or 0 when it does not fit 32 bits (entity ids above
 // ≈ 89 million: lower() then fails with an error).
 uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
+
+// ---- Modulation wires (T4.7; model.h "Modulation wires") ----------------------------------------------------------
+// How a wire is lowered:
+//   Lowered   both ends on lowered devices (active, in the library, on active tracks), the source an `export` of its
+//             patch, the target a real `param` of its patch.
+//   Delayed   lowered, with an automatic 1-sample delay (z1) on the wire: it would close a delay-free cycle (SPEC §15
+//             2026-10-24). Wires are taken in id order, so the wire that closes a loop is the one delayed. Whether a
+//             path is delay-free is read from the device patches (an atom's PortSpec::delayed inputs — z1, delay
+//             lines, phasor's frequency — break it; an LFO's output does not depend on its audio input, so a wire
+//             from an LFO into an earlier device of its chain is not a loop), through the chains, the routing and the
+//             sends (a delayed send breaks a loop).
+//   Inactive  an end's device (or track) is deactivated, or its patch is missing: left out until it plays again.
+//   Invalid   the port or param is not one of the patch's (an edited patch lost it), or the param is a bool.
+//   Refused   across tracks, it would close a cycle through two instrument tracks, which the engine cannot run (one
+//             voice table per image, QUESTIONS Q84): left out, and the status line says so.
+// The math, per modulated param of a device `d<id>` (all wires into it summed; the knob is the centre):
+//   knob = param d<id>__<name> (the device's param, now a root param of the track patch: the same key and value as
+//          an unmodulated param, dev<id>:<name>);  pk = its knob position (param rate: once per block)
+//   s    = Σ w<wire>·src_i  (w<wire> = the wire's amount, a param "wire<id>:amount"; src = the source export's first
+//          channel, reduced over voices by the wire's reducer when a voice signal meets a global target, through a z1
+//          when delayed, arriving as the root `in m<wire>` / leaving as the root `export m<wire>` across tracks)
+//   p    = clip(pk + s, 0, 1);  value = lo + p·(hi − lo)  (Linear)  or  lo·e^(p·ln(hi/lo))  (Log: @curve(exp), dB
+//          gains with a positive floor), rounded for @steps params → the device's param pin
+//   tap  = export tap_d<id>_<name> = (max(p − pk, 0), max(pk − p, 0)): how far the modulation moved the param up and
+//          down; a metered bus (LoweredProject::taps) the views read for the knob's live ring. Zero exactly when the
+//          modulation is, so a silent modulation keeps its unit idle.
+enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
+struct WireState {
+  WireId id;
+  WireStatus status = WireStatus::Lowered;
+  friend bool operator==(const WireState&, const WireState&) = default;
+};
+// A modulated param's tap: the export `port` of graph track `track`.
+struct ModulationTap {
+  DeviceId device;
+  std::string param;
+  uint32_t track = 0;  // index into graph.tracks
+  std::string port;    // "tap_d<id>_<param>"
+};
 
 struct LoweredParam {
   std::string key;      // "<track id>:<name>"
@@ -161,7 +206,25 @@ struct LoweredProject {
   std::vector<DelayedSend> delayedSends;
   std::vector<TrackId> withoutSlot;                           // MIDI tracks lowered without notes (no event slot)
   std::vector<DeviceId> missingDevices;                       // bypassed: patch not in the library (or not its kind)
+  std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
+  std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
 };
+
+// T4.7: how every wire of `project` is lowered with `library` (the same answer lower() gives, without building the
+// graph; the views draw the delayed and inactive ones). In id order.
+std::vector<WireState> wireStates(const Project& project, const graph::PatchLibrary& library);
+
+// T4.7: the knob travel of a device param — what its panel knob shows (pq/views/devices/device_model.h toPosition /
+// fromPosition follow the same rule) and what modulation adds to: Log for @curve(exp) with positive ends and for dB
+// gains with a positive floor (linear in dB), else Linear; @steps (and integer ranges with them) round the value.
+struct ParamTravel {
+  bool log = false;
+  double lo = 0.0, hi = 1.0;
+  bool round = false;
+};
+ParamTravel paramTravel(const graph::ParamDecl& decl) noexcept;
+double travelPosition(const ParamTravel& t, double value) noexcept;  // [0, 1]
+double travelValue(const ParamTravel& t, double position) noexcept;  // position clamped to [0, 1]
 
 // Errors: no master, no library, an entity id too large for nodeIdFor, more setting constants in one track than the
 // pool holds. `previous` (optional): patches with equal IR are shared from it.

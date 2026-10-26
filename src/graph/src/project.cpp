@@ -65,6 +65,8 @@ Status validateGraph(const ProjectGraph& g) {
     if (Status s = checkPort(w.from, true, "wire source"); !s.ok()) return s;
     if (Status s = checkPort(w.to, false, "wire target"); !s.ok()) return s;
   }
+  for (const ProjectPort& t : g.taps)
+    if (Status s = checkPort(t, true, "tap"); !s.ok()) return s;
   return checkPort(g.output, true, "project output");
 }
 
@@ -165,7 +167,8 @@ bool cycleWithInstruments(const ProjectGraph& g, UnionFind& uf) {
 }
 
 // Units from the union-find sets, in dependency order; buses for every cross-unit wire and the output.
-Result<ProjectPartition> buildPartition(const ProjectGraph& g, UnionFind& uf, std::vector<std::string> notes) {
+Result<ProjectPartition> buildPartition(const ProjectGraph& g, UnionFind& uf, std::vector<std::string> notes,
+                                        bool taps) {
   const auto nt = static_cast<uint32_t>(g.tracks.size());
   std::vector<uint32_t> setIndex(nt, kNone);
   std::vector<std::vector<uint32_t>> members;
@@ -235,6 +238,8 @@ Result<ProjectPartition> buildPartition(const ProjectGraph& g, UnionFind& uf, st
   }
   part.outputBus = busFor(g.output);
   part.buses[part.outputBus].output = true;
+  if (taps)  // T4.7: after the output, so a tap never renumbers another bus
+    for (const ProjectPort& t : g.taps) busFor(t);
   for (ProjectBus& bus : part.buses) std::sort(bus.readers.begin(), bus.readers.end());
   return part;
 }
@@ -326,14 +331,14 @@ Result<ProjectPartition> partitionProject(const ProjectGraph& g) {
       notes.push_back("cycle merged into one unit: " + names);
     }
   }
-  return buildPartition(g, uf, std::move(notes));
+  return buildPartition(g, uf, std::move(notes), true);
 }
 
 Result<ProjectPartition> wholeProject(const ProjectGraph& g) {
   if (Status s = validateGraph(g); !s.ok()) return s.error();
   UnionFind uf(static_cast<uint32_t>(g.tracks.size()));
   for (uint32_t t = 1; t < g.tracks.size(); ++t) uf.unite(0, t);
-  return buildPartition(g, uf, {});
+  return buildPartition(g, uf, {}, false);
 }
 
 Result<UnitPatch> composeUnit(const ProjectGraph& g, const ProjectPartition& part, uint32_t unitIndex,

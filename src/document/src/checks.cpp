@@ -187,6 +187,16 @@ Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices) {
   return ok();
 }
 
+Status checkWire(const Wire& w) {
+  if (!w.id.valid()) return invalid("wire has no id");
+  if (!w.from.valid() || !w.to.valid()) return invalid("wire end has no device");
+  PQ_DOC_TRY(checkDeviceValue(w.port, std::nullopt));
+  PQ_DOC_TRY(checkDeviceValue(w.param, std::nullopt));
+  if (!finiteIn(w.amount, -1.0, 1.0)) return invalid("wire amount must be in [-1, 1]");
+  if (static_cast<uint8_t>(w.reducer) > static_cast<uint8_t>(WireReducer::Loudest)) return invalid("unknown wire reducer");
+  return ok();
+}
+
 // Rejects routing cycles: following each track's output (Default → parent group or master) must end at the
 // master or at a track with no output, within one step per track.
 Status checkRouting(const Project& p) {

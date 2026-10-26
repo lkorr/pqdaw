@@ -87,6 +87,7 @@
 #include "pq/engine/project_compile.h"
 #include "pq/engine/sequence.h"
 #include "pq/tuning/tuning.h"
+#include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/transport_port.h"
 #include "pq/views/view_context.h"
@@ -152,9 +153,13 @@ struct LinkStats {
   // so), and sends lowered with an automatic 1-sample delay (they close a loop), at the last change.
   uint32_t tracksWithoutSlot = 0;
   uint32_t delayedSends = 0;
+  // T4.7: wires lowered with an automatic 1-sample delay (they close a loop) and wires refused (a cycle through two
+  // instrument tracks), at the last structural change.
+  uint32_t delayedWires = 0;
+  uint32_t refusedWires = 0;
 };
 
-class ProjectLink final : public views::TransportPort, public views::MeterSource {
+class ProjectLink final : public views::TransportPort, public views::MeterSource, public views::ModulationSource {
 public:
   // Builds the engine and compiles `initial` synchronously (the first program is set before any audio runs).
   static Result<std::unique_ptr<ProjectLink>> create(const LinkConfig& config, const doc::Snapshot& initial);
@@ -253,6 +258,14 @@ public:
   bool live() const noexcept override;
   void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept override;
 
+  // ---- views::ModulationSource (UI thread; T4.7) ----
+  // The modulated params' tap buses (doc::LoweredProject::taps: metered on the audio thread like a track's out bus).
+  // Both consumers read the program's meters through one path (readLevels), so neither steals the other's peaks.
+  bool modulationLive() const noexcept override;
+  void readModulation(std::span<const views::ModTarget> targets, std::span<views::ModSweep> out) noexcept override;
+  // The wires as the last lowering placed them (doc::wireStates; UI thread, after a structural change).
+  std::span<const doc::WireState> wireStates() const noexcept { return wireStates_; }
+
 private:
   struct TuningTableEntry {
     doc::TuningId id;
@@ -297,6 +310,10 @@ private:
   void publishAutomation(const doc::Project& p);
   void reportDelayedSends(const doc::Project& p);
   void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
+  void reportWires(const doc::Project& p);  // UI thread (T4.7): a newly delayed or refused wire, in the status line
+  // T4.7: the program's bus meters for consumer `who` (0: track meters, 1: modulation taps): one program read of
+  // every metered bus, merged into both consumers' pending levels; `out` gets this consumer's since its last read.
+  void readLevels(int who, std::span<const uint32_t> buses, std::span<engine::BusLevel> out);
   void publishTempo(const doc::Project& p);
   void postTransport(const engine::TransportCommand& c);
   // Compile path (worker or flush()).
@@ -306,6 +323,7 @@ private:
     bool topology = false;
     engine::TopologyBuild topo;                      // topology
     std::unordered_map<uint32_t, uint32_t> meterMap;  // topology: track id → bus of its `out`
+    std::unordered_map<std::string, uint32_t> tapMap;  // topology (T4.7): "<device id>:<param>" → its tap bus
     std::vector<engine::UnitUpdate> units;           // otherwise: the changed units' images, in order
   };
   // Publishes deferred_ front to back (compileMutex_ held). While the audio thread runs it waits (bounded) for the
@@ -337,6 +355,8 @@ private:
   std::unordered_map<uint32_t, uint32_t> trackSlots_;  // track id → event slot
   std::vector<uint32_t> freeSlots_;               // FIFO: the least recently freed first
   std::unordered_map<uint32_t, uint32_t> meterBus_;    // track id → bus index of its `out` in the published layout
+  std::unordered_map<std::string, uint32_t> tapBus_;  // T4.7: "<device id>:<param>" → its tap bus (published layout)
+  uint64_t layoutSerial_ = 0;                         // bumped with every new bus map (readLevels drops its pending)
   uint32_t nextParam_ = 0, nextSlot_ = 0;
   // Tuning tables (mutex_; see the file comment). tuningViews_[i] is written when slot i gets a table, before any
   // lowering can name it, and resources_ (read by the compile path) spans the whole fixed array; live_[i] is the
@@ -368,6 +388,17 @@ private:
   bool loopSent_ = false;
   uint64_t reportSeq_ = 0;
   std::unordered_map<uint32_t, MeterState> meters_;
+  struct LevelAcc {
+    float peak[2] = {0.0f, 0.0f};
+    double msTime[2] = {0.0, 0.0};  // Σ mean square × seconds
+    double seconds = 0.0;
+    uint8_t channels = 0;
+  };
+  std::unordered_map<uint32_t, LevelAcc> pendingLevels_[2];  // per consumer, by bus (UI thread)
+  uint64_t levelsSerial_ = 0;
+  double lastLevelRead_ = 0.0;
+  std::vector<doc::WireState> wireStates_;  // T4.7 (UI thread)
+  std::vector<doc::WireId> wiresReported_;  // delayed / refused wires the status line last named
   double lastMeterRead_ = 0.0;
   bool metersLit_ = false;  // a meter read last time is above its floor (live() keeps the views polling)
   double lastCollect_ = 0.0;

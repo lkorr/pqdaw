@@ -97,6 +97,7 @@ pq_add_test(pq_tests_playback
     app/test_tuning_coverage.cpp
     app/test_jit_aot.cpp
     app/test_device_chains.cpp  # T4.1: device chains through the link (migration bit-identity, unit compiles, hand-built graph)
+    app/test_wires.cpp  # T4.7: modulation wires (audible LFO wire, hand-built graph diff 0, interpreter == JIT, loops, taps)
     golden/golden_audio.cpp
   DEPS pq_app)
 

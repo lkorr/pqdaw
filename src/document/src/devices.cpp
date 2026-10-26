@@ -89,6 +89,7 @@ constexpr StockDevice kStock[] = {
     {"devices/utility.pqp", "utility", "Utility"},
     {"devices/saturator.pqp", "saturator", "Saturator"},
     {"devices/eq_eight.pqp", "eq_eight", "EQ Eight"},
+    {"devices/lfo_device.pqp", "lfo_device", "LFO"},  // T4.7: a modulation source (its `lfo` jack)
 };
 
 }  // namespace

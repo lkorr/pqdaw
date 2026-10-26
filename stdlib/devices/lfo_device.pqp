@@ -1,0 +1,31 @@
+// LFO (T4.7, SPEC §7.3 / §9): a modulation source. The audio passes through untouched; the `lfo` export (the output
+// jack on top of the device) is a bipolar low-frequency wave that can be wired to any parameter of any device in the
+// project. Live has its LFO as a Max for Live device; this one is a stock device built from stdlib/control/lfo.pqp.
+//
+//   lfo = offset + depth · wave     wave ∈ [−1, 1]: Sine, Triangle, Saw Up, Saw Down, Square (`shape`, structural:
+//                                   only the chosen wave is compiled)
+//
+// Free-running at `rate` (a uint32 fixed-point phasor: it never drifts) or synced to the song (`sync`: one cycle every
+// `beats` beats, locked through tempo changes and relocations); `phase` offsets the cycle (0..1 = 0..360°). A wire
+// scales it by its own amount (the knob travel it sweeps at ±1), so depth and offset shape the wave before the wire.
+//
+// Cost: one phasor, the chosen wave and a multiply-add per sample (the audio is passed through as it is).
+import "../control/lfo.pqp"
+
+patch lfo_device {
+  in    x      : audio stereo
+  in    shape  : real const = 0     // 0 Sine, 1 Triangle, 2 Saw Up, 3 Saw Down, 4 Square
+  param rate   = 1Hz  [0.01Hz..40Hz] @unit(Hz) @curve(exp) @label("Rate")
+  param sync   = false                @label("Sync")
+  param beats  = 1    [1/16..64]      @curve(exp) @label("Beats")
+  param phase  = 0    [0..1]          @label("Phase")
+  param depth  = 100% [0%..100%]      @label("Depth")
+  param offset = 0    [-1..1]         @label("Offset")
+  out   out : audio stereo
+
+  l = lfo(rate: rate, sync: sync, beats: beats, phase: phase)
+  w = shape < 0.5 ? l.sine : shape < 1.5 ? l.tri : shape < 2.5 ? l.saw : shape < 3.5 ? -l.saw : l.square
+  out = x
+
+  export lfo = offset + depth * w
+}

@@ -395,6 +395,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   current_ = initial;
   conditionalSends_ = doc::conditionalSendsKey(*current_);
   reportDelayedSends(*current_);
+  reportWires(*current_);
   updateTuningTables(*current_);  // T2.6-fix1: before the first lowering names their indices
   applyParams(*current_, true);
   if (Status s = compileNow(current_); !s.ok()) return s;
@@ -473,6 +474,8 @@ Status ProjectLink::setSampleRate(double rate) {
   {
     std::lock_guard lock(mutex_);
     meterBus_.clear();  // the new program's layout is published by compileNow
+    tapBus_.clear();
+    ++layoutSerial_;
   }
   meters_.clear();
   written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
@@ -588,6 +591,20 @@ void ProjectLink::applyParams(const doc::Project& p, bool forceAll) {
 
 void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::ParamRef> params) {
   for (const doc::ParamRef& ref : params) {
+    if (ref.kind == doc::ParamKind::WireAmount) {  // T4.7
+      const doc::Wire* w = doc::findWire(p, doc::WireId{ref.owner});
+      if (w == nullptr) continue;
+      const auto value = static_cast<float>(w->amount);
+      const uint32_t s = slotForParam("wire" + std::to_string(ref.owner) + ":amount");
+      if (s == kNone || automated_[s] || written_[s] == value) continue;
+      if (engine_->setParam(s, value)) {
+        written_[s] = value;
+        ++stats_.paramWrites;
+      } else {
+        written_[s] = std::numeric_limits<float>::quiet_NaN();
+      }
+      continue;
+    }
     const doc::DeviceLoc d = doc::findDevice(p, doc::DeviceId{ref.owner});
     if (d.device == nullptr) continue;
     const graph::Patch* callee = devices_->library().find(d.device->patch);
@@ -761,13 +778,17 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
       for (const doc::DevicePtr& d : t.devices) devices.push_back(d->id.value);
     });
     std::sort(devices.begin(), devices.end());
+    std::vector<uint32_t> wires;  // T4.7: wire amounts ("wire<id>:amount") live while their wire does
+    for (const doc::Wire& w : doc::wiresOf(p)) wires.push_back(w.id.value);
     for (auto it = paramSlots_.begin(); it != paramSlots_.end();) {
       const bool tuningKey = it->first.starts_with("tuning:");
       const bool deviceKey = it->first.starts_with("dev");
+      const bool wireKey = it->first.starts_with("wire");
       const uint32_t id = static_cast<uint32_t>(
-          std::strtoul(it->first.c_str() + (tuningKey ? 7 : deviceKey ? 3 : 0), nullptr, 10));
+          std::strtoul(it->first.c_str() + (tuningKey ? 7 : deviceKey ? 3 : wireKey ? 4 : 0), nullptr, 10));
       const bool keep = tuningKey   ? std::binary_search(tunings.begin(), tunings.end(), id)
                          : deviceKey ? std::binary_search(devices.begin(), devices.end(), id)
+                         : wireKey   ? std::binary_search(wires.begin(), wires.end(), id)
                                      : live(id);
       if (!keep) {
         freeParams_.push_back(it->second);
@@ -785,10 +806,13 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     newTables = updateTuningTables(p, reset);  // a Reset (New / Open) never keeps an earlier project's tables
   // A send level can change the graph (T3.17-fix3): a return's send to another return, or a send that closes a loop,
   // is lowered only while it is stored (lower.h).
-  // T4.1: device params only (a device knob drag): write just those; nothing else depends on them.
+  // T4.1: device params only (a device knob drag): write just those; nothing else depends on them. T4.7: a wire's
+  // amount (a badge drag) the same way.
   const bool deviceParamsOnly =
       !reset && !structural && c.paramOnly() && !c.params.empty() &&
-      std::all_of(c.params.begin(), c.params.end(), [](const doc::ParamRef& r) { return r.kind == doc::ParamKind::DeviceParam; });
+      std::all_of(c.params.begin(), c.params.end(), [](const doc::ParamRef& r) {
+        return r.kind == doc::ParamKind::DeviceParam || r.kind == doc::ParamKind::WireAmount;
+      });
   if (deviceParamsOnly) {
     applyDeviceParams(p, c.params);
     return;
@@ -800,7 +824,10 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     conditionalSends_ = std::move(key);
     if (sendsChanged || structural) reportDelayedSends(p);
   }
-  if (structural) reportMissingDevices(p);
+  if (structural) {
+    reportMissingDevices(p);
+    reportWires(p);
+  }
   const bool compile = structural || newTables || sendsChanged;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
@@ -833,6 +860,36 @@ void ProjectLink::reportMissingDevices(const doc::Project& p) {
   if (!missingReported_.empty() && ctx_ != nullptr)
     ctx_->setStatus("Device '" + first + "' is not available: it is bypassed" +
                     (missingReported_.size() > 1 ? " (and " + std::to_string(missingReported_.size() - 1) + " more)" : ""));
+}
+
+void ProjectLink::reportWires(const doc::Project& p) {
+  wireStates_ = doc::wireStates(p, devices_->library());
+  std::vector<doc::WireId> flagged;
+  const doc::WireState* first = nullptr;
+  uint32_t delayed = 0, refused = 0;
+  for (const doc::WireState& s : wireStates_) {
+    if (s.status == doc::WireStatus::Delayed) ++delayed;
+    if (s.status == doc::WireStatus::Refused) ++refused;
+    if (s.status != doc::WireStatus::Delayed && s.status != doc::WireStatus::Refused) continue;
+    flagged.push_back(s.id);
+    const bool fresh = std::find(wiresReported_.begin(), wiresReported_.end(), s.id) == wiresReported_.end();
+    if (first == nullptr && fresh) first = &s;
+  }
+  stats_.delayedWires = delayed;
+  stats_.refusedWires = refused;
+  wiresReported_ = std::move(flagged);
+  if (first == nullptr || ctx_ == nullptr) return;
+  // SPEC §15 2026-10-24: a wire that closes a delay-free loop gets an automatic 1-sample delay, shown in the UI.
+  const doc::Wire* w = doc::findWire(p, first->id);
+  auto name = [&](doc::DeviceId d) {
+    const doc::DeviceLoc l = doc::findDevice(p, d);
+    const doc::DeviceInfo* info = l.device != nullptr ? devices_->catalog().find(l.device->patch) : nullptr;
+    return (info != nullptr ? info->name : std::string("device")) + (l.track != nullptr ? " (" + l.track->name + ")" : "");
+  };
+  const std::string what = w != nullptr ? name(w->from) + " " + w->port + " \xE2\x86\x92 " + name(w->to) + " " + w->param : "a wire";
+  ctx_->setStatus(first->status == doc::WireStatus::Delayed
+                      ? "Feedback: the wire " + what + " closes a loop and is delayed by 1 sample (z\xE2\x81\xBB\xC2\xB9)"
+                      : "The wire " + what + " is not played: it would close a loop through two instrument tracks");
 }
 
 void ProjectLink::reportDelayedSends(const doc::Project& p) {
@@ -996,6 +1053,8 @@ Status ProjectLink::drainDeferred(bool& drained) {
       auto info = program->publishTopology(d.topo.layout, std::move(d.topo.units));
       if (!info.ok()) return fail(info.error());
       meterBus_ = std::move(d.meterMap);
+      tapBus_ = std::move(d.tapMap);
+      ++layoutSerial_;
       ++stats_.topologyChanges;
     } else {
       while (!d.units.empty()) {
@@ -1073,9 +1132,20 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     }
     return m;
   };
+  // T4.7: the modulation taps ("<track id>:tap_d<device id>_<param>") → "<device id>:<param>".
+  auto tapMap = [&](const engine::ProjectLayout& layout) {
+    std::unordered_map<std::string, uint32_t> m;
+    for (const doc::ModulationTap& t : lp.taps) {
+      const std::string key = std::to_string(lp.trackIds[t.track].value) + ":" + t.port;
+      for (uint32_t b = 0; b < layout.busKey.size(); ++b)
+        if (layout.busKey[b] == key) m[std::to_string(t.device.value) + ":" + t.param] = b;
+    }
+    return m;
+  };
   auto metered = [](engine::ProjectLayout& layout) {
     layout.busMetered.assign(layout.busKey.size(), 0);
-    for (size_t b = 0; b < layout.busKey.size(); ++b) layout.busMetered[b] = layout.busKey[b].ends_with(":out") ? 1 : 0;
+    for (size_t b = 0; b < layout.busKey.size(); ++b)
+      layout.busMetered[b] = layout.busKey[b].ends_with(":out") || layout.busKey[b].find(":tap_d") != std::string::npos ? 1 : 0;
   };
   // Publishing: in order, after whatever earlier compiles left deferred (drainDeferred waits, bounded, for the
   // audio thread to take earlier images / topologies, because a refused publish would destroy the image; when the
@@ -1094,6 +1164,8 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     {
       std::lock_guard lock(mutex_);
       meterBus_ = meterMap(b.value().layout);
+      tapBus_ = tapMap(b.value().layout);
+      ++layoutSerial_;
     }
     engine_->setProgram(std::move(prog.value()));
   } else {
@@ -1106,6 +1178,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
       compiledUnits = tb.value().compiled;
       d.topology = true;
       d.meterMap = meterMap(tb.value().layout);
+      d.tapMap = tapMap(tb.value().layout);
       d.topo = std::move(tb.value());
     } else if (!upd.ok()) {
       return fail(upd.error());
@@ -1302,17 +1375,86 @@ void ProjectLink::auditionHz(float hz, float velocity, float durationMs) {
 
 bool ProjectLink::live() const noexcept { return !engine_->asleep() || metersLit_; }  // asleep ⇒ stopped
 
+void ProjectLink::readLevels(int who, std::span<const uint32_t> buses, std::span<engine::BusLevel> out) {
+  engine::ProjectProgram* program = engine_->program();
+  std::vector<uint32_t> all;
+  std::vector<engine::BusLevel> levels;
+  {
+    std::lock_guard lock(mutex_);  // the maps and the program's published layout change together (compileNow)
+    if (layoutSerial_ != levelsSerial_) {  // other bus indices: what is pending belongs to the old layout
+      pendingLevels_[0].clear();
+      pendingLevels_[1].clear();
+      levelsSerial_ = layoutSerial_;
+    }
+    // Every metered bus at once: the program restarts all of them at each read.
+    for (const auto& [id, b] : meterBus_) all.push_back(b);
+    for (const auto& [key, b] : tapBus_) all.push_back(b);
+    levels.resize(all.size());
+    if (program != nullptr) program->readMeters(all, levels);
+  }
+  const double now = nowSeconds();
+  const double dt = std::clamp(now - lastLevelRead_, 1e-3, 1.0);
+  lastLevelRead_ = now;
+  for (size_t i = 0; i < all.size(); ++i)
+    for (std::unordered_map<uint32_t, LevelAcc>& pending : pendingLevels_) {
+      LevelAcc& a = pending[all[i]];
+      a.channels = std::max(a.channels, levels[i].channels);
+      for (int c = 0; c < 2; ++c) {
+        a.peak[c] = std::max(a.peak[c], levels[i].peak[c]);
+        a.msTime[c] += static_cast<double>(levels[i].meanSquare[c]) * dt;
+      }
+      a.seconds += dt;
+    }
+  for (size_t i = 0; i < buses.size() && i < out.size(); ++i) {
+    engine::BusLevel l;
+    const auto it = pendingLevels_[who].find(buses[i]);
+    if (buses[i] != kNone && it != pendingLevels_[who].end()) {
+      l.channels = it->second.channels;
+      for (int c = 0; c < 2; ++c) {
+        l.peak[c] = it->second.peak[c];
+        l.meanSquare[c] = it->second.seconds > 0.0 ? static_cast<float>(it->second.msTime[c] / it->second.seconds) : 0.0f;
+      }
+      pendingLevels_[who].erase(it);
+    }
+    out[i] = l;
+  }
+}
+
+bool ProjectLink::modulationLive() const noexcept { return !engine_->asleep(); }
+
+void ProjectLink::readModulation(std::span<const views::ModTarget> targets, std::span<views::ModSweep> out) noexcept {
+  const size_t n = std::min(targets.size(), out.size());
+  std::vector<uint32_t> buses(n, kNone);
+  {
+    std::lock_guard lock(mutex_);
+    for (size_t i = 0; i < n; ++i)
+      if (auto it = tapBus_.find(std::to_string(targets[i].device.value) + ":" + targets[i].param); it != tapBus_.end())
+        buses[i] = it->second;
+  }
+  std::vector<engine::BusLevel> levels(n);
+  readLevels(1, buses, levels);
+  const bool asleep = engine_->asleep();
+  for (size_t i = 0; i < n; ++i) {
+    views::ModSweep s;
+    s.known = buses[i] != kNone;
+    if (s.known && !asleep && levels[i].channels >= 2) {  // tap = (up, down) ≥ 0: the peaks are the sweep
+      s.up = levels[i].peak[0];
+      s.down = levels[i].peak[1];
+    }
+    out[i] = s;
+  }
+}
+
 void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept {
   const size_t n = std::min(ids.size(), out.size());
-  engine::ProjectProgram* program = engine_->program();
   std::vector<uint32_t> buses(n, kNone);
   std::vector<engine::BusLevel> levels(n);
   {
-    std::lock_guard lock(mutex_);  // the map and the program's published layout change together (compileNow)
+    std::lock_guard lock(mutex_);
     for (size_t i = 0; i < n; ++i)
       if (auto it = meterBus_.find(ids[i].value); it != meterBus_.end()) buses[i] = it->second;
-    if (program != nullptr) program->readMeters(buses, levels);
   }
+  readLevels(0, buses, levels);
   // Asleep, nothing runs and every bus is silent; the program's published levels are those of the last block it ran
   // (it restarts the accumulation only when it runs again), which froze the meters lit (T3.17-fix1, M3 review L13).
   if (engine_->asleep())
