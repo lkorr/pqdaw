@@ -216,7 +216,7 @@ In TASKS.md format, for the orchestrator to schedule. The order is my priority: 
   - Accept: jit_image.cpp/runtime.cpp shrink to codegen-specific code; all interpreter, JIT, voice, hot-swap and golden tests
     pass unchanged; `pqdaw --play --backend jit` works.
 
-- [ ] **T1.x-silence Silence and sleep (SPEC §7.7)** (`graph` + `engine` + `jit`). Depends on: T1.x-arch1.
+- [~] **T1.x-silence Silence and sleep (SPEC §7.7)** *(worker BV, branch task/T1.x-silence)* (`graph` + `engine` + `jit`). Depends on: T1.x-arch1.
   - Per-node tail declarations; per-region silent-input detection at block boundaries; constant-output kernels while asleep;
     ABI field reporting output silence; voice end via the same mechanism.
   - Accept: an idle 30-track project with reverbs/delays costs ≤ 1 % of a core after tails end; waking is sample-accurate
@@ -498,7 +498,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
 ## M4: Devices and visual programming (plan: docs/plans/M4.md, approved 2026-10-24)
 Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b.3, T1b.4, and the M2/M3 review fixes.
 
-- [ ] **T4.1 Device chains in the model + Device view** (`document`, `views`, `app`)
+- [~] **T4.1 Device chains in the model + Device view** *(worker BW, branch task/T4.1-device-chains)* (`document`, `views`, `app`)
   - Each track holds an ordered device chain (instances of stdlib/user patches with their param values); lowering uses the chain instead of the fixed default instrument; the detail panel's Device tab shows the chain left → right with generic auto-generated panels (one control per param); add (device menu until the M5 browser), remove, reorder, deactivate, copy/paste; undo; serialization (schema bump + migration from "default instrument").
   - Accept: scripted add/reorder/remove/deactivate each one undo step; reorder recompiles only that track's unit; renders match a hand-built ProjectGraph; golden `device-chain`.
 
