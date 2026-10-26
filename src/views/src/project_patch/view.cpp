@@ -10,10 +10,12 @@
 
 #include "../common/paint.h"
 #include <cstdio>
+#include <unordered_map>
 #include "pq/document/edit_ops.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -396,12 +398,15 @@ void ProjectPatchView::rebuild() {
   const doc::DeviceLibrary* devlib = ctx_.deviceLibrary();
   doc::LowerOptions lo;
   lo.library = devlib != nullptr ? &devlib->library() : &emptyLibrary();
-  auto low = doc::lower(*snap, lo, lowered_.get());
-  if (!low) {
-    ctx_.setStatus("Project patch: " + low.error().message);
-    lowered_ = std::make_shared<doc::LoweredProject>();
-  } else {
-    lowered_ = std::make_shared<doc::LoweredProject>(std::move(*low));
+  if (!lowered_ || built_ != snap || loweredWith_ != devlib) {  // a nudge or an opened device: the same graph
+    auto low = doc::lower(*snap, lo, lowered_.get());
+    if (!low) {
+      ctx_.setStatus("Project patch: " + low.error().message);
+      lowered_ = std::make_shared<doc::LoweredProject>();
+    } else {
+      lowered_ = std::make_shared<doc::LoweredProject>(std::move(*low));
+    }
+    loweredWith_ = devlib;
   }
   built_ = snap;
   songEnd_ = 8 * kTicksPerWhole;
@@ -441,6 +446,7 @@ void ProjectPatchView::rebuild() {
         if (e.kind == EdgeKind::Modulation) selWires.push_back(e.wire);
       }
   patch_ = buildProjectPatch(*snap, *lowered_, devlib != nullptr ? &devlib->catalog() : nullptr, opt);
+  tracksOf_ = nullptr;  // bandTrack's table follows the new bands
   scene_ = buildProjectScene(patch_, inner);
   const circuit::CircuitCanvas::View keep = canvas_->view();
   canvas_->setScene(scene_.scene, !fitted_, true);
@@ -480,13 +486,11 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
   bool rebuildNeeded = c.structural() || c.has(doc::kChangeMeta);
   if (!rebuildNeeded && c.has(doc::kChangeParam)) {
     // A send turned on or off changes its wire's look (dim at −∞): a rebuild; any other value only repaints.
-    const doc::Project& p = *ctx_.doc();
     for (const Edge& ed : patch_.edges) {
       if (ed.kind != EdgeKind::Send) continue;
-      const Band& from = patch_.bands[patch_.nodes[ed.from].band];
       const Band& to = patch_.bands[patch_.nodes[ed.to].band];
       float level = doc::kMinVolumeDb;
-      if (const doc::Track* t = doc::findTrackPtr(p, from.track))
+      if (const doc::Track* t = bandTrack(patch_.nodes[ed.from].band))
         for (const doc::Send& s : t->mixer.sends)
           if (s.target == to.track) level = s.levelDb;
       if ((!(level > doc::kMinVolumeDb)) != ed.silent) {
@@ -504,6 +508,19 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
     built_ = ctx_.doc();  // same graph; the overlay reads the values
     canvas_->markDirty();
   }
+}
+
+const doc::Track* ProjectPatchView::bandTrack(uint32_t b) const noexcept {
+  const doc::Snapshot& snap = ctx_.doc();
+  if (tracksOf_ != snap || bandTracks_.size() != patch_.bands.size()) {
+    tracksOf_ = snap;
+    std::unordered_map<uint32_t, const doc::Track*> byId;
+    doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) { byId.emplace(t.id.value, &t); });
+    bandTracks_.assign(patch_.bands.size(), nullptr);
+    for (size_t i = 0; i < patch_.bands.size(); ++i)
+      if (const auto it = byId.find(patch_.bands[i].track.value); it != byId.end()) bandTracks_[i] = it->second;
+  }
+  return b < bandTracks_.size() ? bandTracks_[b] : nullptr;
 }
 
 // ---- semantic zoom --------------------------------------------------------------------------------------------------
@@ -1082,6 +1099,25 @@ project_patch::ProjectPatchView& installProjectPatch(Shell& shell) {
     if (mixer != nullptr && mixer->shown()) mixer->setShown(false);
   };
   ctx.setViewAction("view.togglePatch", [&view] { view.toggle(); });
+  // Open in Circuit View: until the project-device circuit editor (SPEC §15 2026-10-26) sets its own hook, the device's
+  // stock patch in the read-only circuit viewer (T4.2).
+  view.onOpenDevice = [&view, &ctx](doc::DeviceId id) {
+    const doc::DeviceLibrary* lib = ctx.deviceLibrary();
+    const doc::DeviceLoc loc = doc::findDevice(*ctx.doc(), id);
+    if (lib == nullptr || loc.device == nullptr) return;
+    const std::string path = lib->pathOf(loc.device->patch);
+    if (path.empty()) {
+      ctx.setStatus("Open in Circuit View: no file for " + loc.device->patch);
+      return;
+    }
+    auto document = circuit::loadPatchDocument(path);
+    if (!document) {
+      ctx.setStatus("Open in Circuit View: " + document.error().message);
+      return;
+    }
+    if (circuit::openCircuitViewer(view.canvas(), *document, loc.device->patch) == nullptr)
+      ctx.setStatus("Open in Circuit View: " + loc.device->patch + " not found in " + path);
+  };
   if (mixer != nullptr)  // the mixer view takes the track area from the patch view too
     ctx.setViewAction("view.toggleMixer", [&view, mixer] {
       if (view.shown()) view.setShown(false, false);

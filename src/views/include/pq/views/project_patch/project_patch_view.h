@@ -251,6 +251,9 @@ public:
   void onTimer(uint32_t id) override;
 
   // Internal (the canvas).
+  // The track of band `b` in the current document (null: gone). O(1) after the first call per document version (a
+  // per-snapshot table: painting never walks the track tree per band).
+  const doc::Track* bandTrack(uint32_t b) const noexcept;
   doc::Snapshot shownSnapshot() const noexcept { return built_; }
   Ticks songEnd() const noexcept { return songEnd_; }
   void updateReadout(uint32_t edge);
@@ -273,6 +276,7 @@ private:
   MeterSource* meters_ = nullptr;
   doc::Snapshot built_;               // the snapshot the model was built from
   std::shared_ptr<doc::LoweredProject> lowered_;
+  const doc::DeviceLibrary* loweredWith_ = nullptr;
   ProjectPatch patch_;
   ProjectScene scene_;
   bool stale_ = true;
@@ -285,6 +289,8 @@ private:
   Stats stats_;
   Readout readout_;
   uint32_t readoutTimer_ = 0;
+  mutable doc::Snapshot tracksOf_;                  // the snapshot bandTracks_ was filled from
+  mutable std::vector<const doc::Track*> bandTracks_;  // per band
   DeviceCostSource* costSource_ = nullptr;
   bool showCosts_ = false;
   std::vector<float> costs_;  // per model node (devices; < 0: none)

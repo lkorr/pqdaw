@@ -19,6 +19,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
@@ -579,6 +580,17 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   v.setDeviceExpanded(sat, false);
   u.d.advance(0.5);
   CHECK(v.scene().scene->nodes.size() == nodes);
+  // Its menu's Open in Circuit View shows the device's patch in the circuit viewer (read-only until the project-device
+  // editor sets the hook).
+  REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  u.choose(*m, "Open in Circuit View");
+  bool viewer = false;
+  for (size_t i = 0; i < u.shell->overlay().childCount(); ++i)
+    viewer = viewer || dynamic_cast<circuit::CircuitViewer*>(&u.shell->overlay().child(i)) != nullptr;
+  CHECK(viewer);
+  u.d.press("Escape");
   // Double-click on a band's empty space zooms onto it; F back to the project.
   v.fitAll(false);
   u.d.tree().layoutNow();

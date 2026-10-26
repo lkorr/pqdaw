@@ -137,7 +137,6 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   const float s = deviceScale();
   const float us = ctx.scale.factor;
   const float bar = std::max(2.0f, std::round(3.0f * us));
-  const doc::Project& p = *view_.context().doc();
   // Group containers first (outer before inner), then the band strips.
   for (const Band& b : pp.bands) {
     if (b.kind != doc::TrackKind::Group) continue;
@@ -152,7 +151,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     const Rect r = snapRect(deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
     if (!overlaps(r, clip)) continue;
     const Rgba col = ui::hex(b.colour);
-    const doc::Track* t = doc::findTrackPtr(p, b.track);
+    const doc::Track* t = view_.bandTrack(static_cast<uint32_t>(&b - pp.bands.data()));
     const bool dim = !b.active || (t != nullptr && t->mixer.mute);
     dl.addRectFilled(r, ui::lerp(th.circuit.background, col, dim ? 0.05f : 0.12f));
     dl.addRectFilled({r.x0, r.y0, r.x0 + bar, r.y1}, dim ? ui::mulAlpha(col, 0.4f) : col);
@@ -199,7 +198,6 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   const ui::IRect clip = ui::intersect(ctx.clip, rect());
   const float s = deviceScale();
   const float us = ctx.scale.factor;
-  const doc::Project& p = *view_.context().doc();
   const Lod level = lod();
   const bool text = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
   const double end = static_cast<double>(std::max<Ticks>(view_.songEnd(), 1));
@@ -215,7 +213,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         // The lane's clips as a strip: song time left → right.
         const Rect strip = snapRect(deviceRect(n.x + 12.0f, n.y + 20.0f, n.w - 24.0f, n.h - 28.0f));
         dl.addRectFilled(strip, th.arrangement.lane);
-        if (const doc::Track* t = doc::findTrackPtr(p, band.track)) {
+        if (const doc::Track* t = view_.bandTrack(n.band)) {
           const float w = strip.x1 - strip.x0;
           for (const doc::ClipSlot& c : t->clips) {
             const float x0 = strip.x0 + static_cast<float>(static_cast<double>(c.clip->start) / end) * w;
@@ -226,7 +224,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
           }
         }
       } else if (n.kind == NodeKind::Mixer) {
-        const doc::Track* t = doc::findTrackPtr(p, band.track);
+        const doc::Track* t = view_.bandTrack(n.band);
         if (t == nullptr) continue;
         const MixerAreas a = mixerAreas(i);
         const bool master = t->kind == doc::TrackKind::Master;
@@ -451,7 +449,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
         const MixerAreas a = mixerAreas(node);
         const doc::TrackId t = pp.bands[pp.nodes[node].band].track;
-        const doc::Track* tr = doc::findTrackPtr(*v.context().doc(), t);
+        const doc::Track* tr = v.bandTrack(pp.nodes[node].band);
         if (tr != nullptr && tr->kind != doc::TrackKind::Master && inside(a.mute, e.pos)) {
           (void)v.toggleMute(t);
           return true;

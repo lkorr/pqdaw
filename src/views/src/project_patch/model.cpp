@@ -77,10 +77,13 @@ struct Builder {
   std::unordered_map<uint32_t, std::vector<std::string>> modulatedParams;  // device id → params wires drive
   std::unordered_map<uint32_t, doc::WireStatus> wireStatus;
   std::unordered_map<uint32_t, uint32_t> modGraphWire;  // doc wire id → graph wire index (cross-track)
+  std::unordered_map<uint32_t, const doc::Track*> trackById;
+  std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>> paramsOf;
 
   const graph::PatchLibrary* library() const noexcept { return low.graph.library; }
 
   void prepare() {
+    doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { trackById.emplace(t.id.value, &t); });
     for (size_t i = 0; i < low.trackIds.size(); ++i) graphIndex[low.trackIds[i].value] = static_cast<uint32_t>(i);
     for (size_t i = 0; i < p.returns.size(); ++i) returnIndex[p.returns[i]->id.value] = i;
     for (const doc::WireState& s : low.wires) wireStatus[s.id.value] = s.status;
@@ -149,18 +152,20 @@ struct Builder {
     // Inputs: an instrument's notes, the audio inputs (`in`, a sidechain), the params a wire drives.
     if (n.instrument) n.inputs.push_back({"notes", ""});
     const auto modIt = modulatedParams.find(d.id.value);
-    auto isParam = [&](std::string_view name) {
-      if (callee != nullptr) {
-        const auto k = callee->findByName(name);
-        return k && callee->node(*k).kind == graph::NodeKind::Param;
-      }
-      return false;
-    };
+    // The callee's param names, once per patch (a big device has hundreds: no name search per port).
+    const std::unordered_set<std::string_view>* params = nullptr;
+    if (callee != nullptr) {
+      auto [it, fresh] = paramsOf.try_emplace(callee);
+      if (fresh)
+        for (graph::NodeIndex k = 0; k < callee->nodeCount(); ++k)
+          if (callee->node(k).kind == graph::NodeKind::Param) it->second.insert(callee->nodeName(k));
+      params = &it->second;
+    }
     bool firstAudio = true;
     for (const graph::SubcircuitPort& sp : sig.inputs) {
-      if (isParam(sp.name)) continue;
+      if (n.instrument) break;
       if (sp.type.rate == graph::Rate::Const) continue;  // a structural setting (a literal at the call)
-      if (n.instrument) continue;
+      if (params != nullptr && params->count(sp.name) != 0) continue;
       n.inputs.push_back({sp.name, firstAudio ? std::string() : sp.name});
       firstAudio = false;
     }
@@ -343,8 +348,8 @@ struct Builder {
       } else if ((gw.from.port == "post" || gw.from.port == "pre") && gw.to.port.size() > 1 && gw.to.port[0] == 's') {
         e.pre = gw.from.port == "pre";
         float level = doc::kMinVolumeDb;
-        if (const doc::Track* t = doc::findTrackPtr(p, from.track))
-          for (const doc::Send& s : t->mixer.sends)
+        if (const auto ti = trackById.find(from.track.value); ti != trackById.end())
+          for (const doc::Send& s : ti->second->mixer.sends)
             if (s.target == to.track) level = s.levelDb;
         e.silent = !(level > doc::kMinVolumeDb);
         e.delayed = delayed.count((uint64_t{from.track.value} << 32) | to.track.value) != 0;
@@ -631,7 +636,7 @@ struct Builder {
 
 ProjectPatch buildProjectPatch(const doc::Project& project, const doc::LoweredProject& lowered,
                                const doc::DeviceCatalog* catalog, const LayoutOptions& options) {
-  Builder b{project, lowered, catalog, options, {}, {}, {}, {}, {}, {}};
+  Builder b{project, lowered, catalog, options, {}, {}, {}, {}, {}, {}, {}, {}};
   b.run();
   return std::move(b.out);
 }
