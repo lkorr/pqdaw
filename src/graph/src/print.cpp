@@ -112,6 +112,12 @@ class PatchPrinter {
 public:
   PatchPrinter(const Patch& p, std::string& out) : p_(p), out_(out), adj_(p.adjacency()), ops_(OperatorAtoms::get()) {}
 
+  // Only the layout block (printLayout, spliceLayout).
+  void runLayout() {
+    plan();
+    layout();
+  }
+
   void run() {
     plan();
     out_ += "patch ";
@@ -223,16 +229,9 @@ private:
   void plan() {
     const uint32_t n = p_.nodeCount();
     inline_.assign(n, 0);
+    // Layout never changes what is inlined (T4.3): placed and routed anonymous nodes are named by their layout key.
     for (NodeIndex v = 0; v < n; ++v)
-      if (isExprNode(p_.node(v).kind) && p_.nodeName(v).empty() && adj_.outgoing(v).size() == 1 && !p_.layout(v).placed)
-        inline_[v] = 1;
-    for (WireIndex w = 0; w < p_.wireCount(); ++w) {
-      const Wire& wr = p_.wire(w);
-      if (!p_.wireVia(w).empty() && wr.from.node < n && wr.to.node < n) {
-        inline_[wr.from.node] = 0;
-        inline_[wr.to.node] = 0;
-      }
-    }
+      if (isExprNode(p_.node(v).kind) && p_.nodeName(v).empty() && adj_.outgoing(v).size() == 1) inline_[v] = 1;
     breakInlineCycles();
     limitDepth();
 
@@ -250,6 +249,18 @@ private:
       genName_[v] = std::move(name);
       taken.insert(genName_[v], v);
     }
+    // Layout keys of equations (T4.3): `_e<k>` for the k-th equation in print order (= text order), unique like the
+    // `_n` names. The parser reads `_e<k>` followed by any '_' as that equation when no node has the name.
+    eqName_.assign(n, {});
+    uint32_t eq = 0;
+    for (SolveIndex s = 0; s < p_.solveCount(); ++s)
+      for (NodeIndex v = 0; v < n; ++v) {
+        if (p_.node(v).kind != NodeKind::Equation || p_.node(v).payload != s) continue;
+        std::string name = "_e" + std::to_string(eq++);
+        while (taken.find(name)) name += '_';
+        eqName_[v] = std::move(name);
+        taken.insert(eqName_[v], v);
+      }
 
     // The order statements are printed in: declarations by kind, solve members, then named computed nodes. Parsing
     // the printed text creates nodes in this order, so layout lines sorted by it print identically next time.
@@ -521,6 +532,48 @@ private:
   }
 
   // ---- layout ----
+  // Every node's layout key (T4.3) and the canonical order layout lines are printed in: each printed statement in
+  // print order (rank), followed depth-first by the anonymous nodes inlined into it, through its inputs in port
+  // order. A statement's key is its name (`_e<k>` for an equation); an inlined node's key is its consumer's key, '.',
+  // and the consumer's input it drives. The order depends only on the printed text, so it survives a re-parse.
+  void layoutKeys() {
+    const uint32_t n = p_.nodeCount();
+    key_.assign(n, {});
+    keyPos_.assign(n, kNone);
+    keyOrder_.clear();
+    keyOrder_.reserve(n);
+    std::vector<NodeIndex> roots;
+    roots.reserve(n);
+    for (NodeIndex v = 0; v < n; ++v)
+      if (!inline_[v]) roots.push_back(v);
+    std::sort(roots.begin(), roots.end(), [&](NodeIndex a, NodeIndex b) { return rank_[a] < rank_[b]; });
+    std::vector<std::pair<NodeIndex, uint32_t>> stack;  // node, next input
+    for (const NodeIndex root : roots) {
+      key_[root] = p_.node(root).kind == NodeKind::Equation ? eqName_[root] : std::string(nameOf(root));
+      keyPos_[root] = static_cast<uint32_t>(keyOrder_.size());
+      keyOrder_.push_back(root);
+      stack.emplace_back(root, 0);
+      while (!stack.empty()) {
+        auto& [v, next] = stack.back();
+        if (next >= p_.node(v).numInputs) {
+          stack.pop_back();
+          continue;
+        }
+        const uint32_t k = next++;
+        if (!driven(v, k)) continue;
+        const NodeIndex c = driver(v, k).node;
+        if (!inline_[c] || keyPos_[c] != kNone) continue;
+        key_[c] = key_[v] + '.' + portTextName(p_, v, k, true);
+        keyPos_[c] = static_cast<uint32_t>(keyOrder_.size());
+        keyOrder_.push_back(c);
+        stack.emplace_back(c, 0);  // invalidates v/next: the loop re-reads the top
+      }
+    }
+    // Inlined nodes not reached from a statement (none in a well-formed patch) keep an empty key: never printed.
+    for (NodeIndex v = 0; v < n; ++v)
+      if (keyPos_[v] == kNone) keyPos_[v] = static_cast<uint32_t>(n + v);
+  }
+
   void layout() {
     const uint32_t n = p_.nodeCount();
     bool any = !p_.comments().empty();
@@ -528,13 +581,12 @@ private:
     for (WireIndex w = 0; w < p_.wireCount() && !any; ++w) any = !p_.wireVia(w).empty();
     if (!any) return;
     out_ += "  layout {\n";
-    std::vector<NodeIndex> nodes(n);
-    for (NodeIndex v = 0; v < n; ++v) nodes[rank_[v]] = v;
-    for (const NodeIndex v : nodes) {
+    layoutKeys();
+    for (const NodeIndex v : keyOrder_) {
       const NodeLayout& l = p_.layout(v);
-      if (!l.placed || nameOf(v).empty()) continue;
+      if (!l.placed || key_[v].empty()) continue;
       out_ += "    node ";
-      out_ += nameOf(v);
+      out_ += key_[v];
       out_ += " at (";
       appendFloat(out_, l.x);
       out_ += ", ";
@@ -547,24 +599,24 @@ private:
       if (l.flip) out_ += " flip";
       out_ += '\n';
     }
-    // Routed wires, by target (an input has one driver, so (target rank, input) is a unique, stable key).
+    // Routed wires, by target (an input has one driver, so (target's key order, input) is a unique, stable key).
     std::vector<std::pair<uint64_t, WireIndex>> routed;
     for (WireIndex w = 0; w < p_.wireCount(); ++w) {
       const Wire& wr = p_.wire(w);
       if (p_.wireVia(w).empty() || wr.from.node >= n || wr.to.node >= n) continue;
-      routed.emplace_back((static_cast<uint64_t>(rank_[wr.to.node]) << 16) | wr.to.port, w);
+      routed.emplace_back((static_cast<uint64_t>(keyPos_[wr.to.node]) << 16) | wr.to.port, w);
     }
     std::sort(routed.begin(), routed.end());
     for (const auto& [key, w] : routed) {
       const auto via = p_.wireVia(w);
       const Wire& wr = p_.wire(w);
-      if (nameOf(wr.from.node).empty() || nameOf(wr.to.node).empty()) continue;
+      if (key_[wr.from.node].empty() || key_[wr.to.node].empty()) continue;
       out_ += "    wire ";
-      out_ += nameOf(wr.from.node);
+      out_ += key_[wr.from.node];
       out_ += '.';
       out_ += portTextName(p_, wr.from.node, wr.from.port, false);
       out_ += " -> ";
-      out_ += nameOf(wr.to.node);
+      out_ += key_[wr.to.node];
       out_ += '.';
       out_ += portTextName(p_, wr.to.node, wr.to.port, true);
       out_ += " via (";
@@ -598,6 +650,10 @@ private:
   std::vector<uint32_t> depth_;
   std::vector<std::string> genName_;
   std::vector<uint32_t> rank_;  // print order (see plan())
+  std::vector<std::string> eqName_;  // equations: their layout key `_e<k>`
+  std::vector<std::string> key_;     // layoutKeys(): every node's layout key
+  std::vector<uint32_t> keyPos_;     // … its position in keyOrder_
+  std::vector<NodeIndex> keyOrder_;  // … the canonical order of layout lines
 };
 
 }  // namespace
@@ -606,6 +662,74 @@ std::string print(const Patch& patch) {
   std::string out;
   out.reserve(64 + static_cast<size_t>(patch.nodeCount()) * 24);
   PatchPrinter(patch, out).run();
+  return out;
+}
+
+std::string printLayout(const Patch& patch) {
+  std::string out;
+  PatchPrinter(patch, out).runLayout();
+  return out;
+}
+
+Result<std::string> spliceLayout(std::string_view source, const ParseResult& parsed, const PatchFile& laidOut) {
+  if (!parsed.ok() || parsed.patchSpans.size() != laidOut.patches.size())
+    return Error{ErrorCode::InvalidArgument, "spliceLayout: the source did not parse, or the patch counts differ", {}};
+  std::string out;
+  out.reserve(source.size() + 256);
+  size_t at = 0;  // source bytes copied so far
+  const bool crlf = source.find("\r\n") != std::string_view::npos;  // the block follows the file's line endings
+  for (size_t i = 0; i < laidOut.patches.size(); ++i) {
+    const PatchTextSpans& ps = parsed.patchSpans[i];
+    if (ps.close == kNone || ps.close > source.size() || ps.close < at)
+      return Error{ErrorCode::InvalidArgument, "spliceLayout: bad patch spans", {}};
+    std::string block = printLayout(laidOut.patches[i]);  // "  layout {\n … \n  }\n" or ""
+    if (crlf && !block.empty()) {
+      std::string b;
+      b.reserve(block.size() + 64);
+      for (const char c : block) {
+        if (c == '\n') b += '\r';
+        b += c;
+      }
+      block = std::move(b);
+    }
+    if (ps.layout.offset != kNone) {
+      // Replace from the `layout` keyword to its '}': the indentation before the keyword and whatever follows the
+      // '}' stay. Without a new block the whole line goes (when the block is alone on its lines).
+      size_t b = ps.layout.offset, e = static_cast<size_t>(ps.layout.offset) + ps.layout.length;
+      if (b < at || e > source.size()) return Error{ErrorCode::InvalidArgument, "spliceLayout: bad layout span", {}};
+      if (block.empty()) {
+        size_t lb = b;
+        while (lb > at && (source[lb - 1] == ' ' || source[lb - 1] == '\t')) --lb;
+        size_t le = e;
+        while (le < source.size() && (source[le] == ' ' || source[le] == '\t' || source[le] == '\r')) ++le;
+        if ((lb == 0 || source[lb - 1] == '\n') && le < source.size() && source[le] == '\n') {
+          b = lb;
+          e = le + 1;
+        }
+        out.append(source.substr(at, b - at));
+      } else {
+        out.append(source.substr(at, b - at));
+        // without the leading indent and the final line ending
+        out.append(std::string_view(block).substr(2, block.size() - 2 - (crlf ? 2 : 1)));
+      }
+      at = e;
+    } else if (!block.empty()) {
+      // Insert before the closing '}': at the start of its line when only blanks precede it, else on a new line.
+      size_t lb = ps.close;
+      while (lb > at && (source[lb - 1] == ' ' || source[lb - 1] == '\t')) --lb;
+      if (lb == 0 || source[lb - 1] == '\n') {
+        out.append(source.substr(at, lb - at));
+        out.append(block);  // no blank line added: removing the block again gives the original text back
+        at = lb;
+      } else {
+        out.append(source.substr(at, ps.close - at));
+        out += crlf ? "\r\n" : "\n";
+        out.append(block);
+        at = ps.close;
+      }
+    }
+  }
+  out.append(source.substr(at));
   return out;
 }
 

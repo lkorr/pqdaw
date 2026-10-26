@@ -66,9 +66,10 @@ arg         = [ Ident ":" ] expr ;                         (* positional args fi
 tuple       = "(" expr "," expr { "," expr } ")" ;          (* stereo/multichannel literal *)
 
 layout      = "layout" "{" { layoutItem } "}" ;
-layoutItem  = "node" Ident "at" point [ "rot" Int ] [ "flip" ]
-            | "wire" Ident "." Ident "->" Ident "." Ident [ "via" "(" pointList ")" ]
+layoutItem  = "node" key "at" point [ "rot" Int ] [ "flip" ]
+            | "wire" key "." Ident "->" key "." Ident [ "via" "(" pointList ")" ]   (* the last Ident is the port *)
             | "comment" string "at" point ;
+key         = Ident { "." Ident } ;                        (* a node name, then input steps (§2.2) *)
 pointList   = point { "," point } ;
 point       = "(" coord "," coord ")" ;
 coord       = [ "-" ] Number ;                             (* no unit; read as float32 *)
@@ -88,7 +89,16 @@ Decided while implementing the parser; the open ones are tracked in [QUESTIONS.m
 - **Solve blocks**: an equation is an expression whose top-level operator is `==`; each side is a real expression.
 - **Imports**: the string is recorded as written and resolved relative to the importing file by the compiler's loader (the parser does no file I/O); calls may use any patch of an imported file. `;` after an import is optional. Reading an `out` and negative literals: Q22.
 - **Limits**: an expression may be at most 128 levels deep (a sum of 128 terms) and nest at most 129 levels of brackets/arguments; deeper text is an error, never a crash.
-- **Printing**: `print` writes a canonical form (declarations, bindings, outputs, exports, solve blocks, layout), inlining every unnamed node that has exactly one consumer. `parse(print(f)) == f` for every parsed file, and `print` is stable under a second round trip.
+- **Printing**: `print` writes a canonical form (declarations, bindings, outputs, exports, solve blocks, layout), inlining every unnamed node that has exactly one consumer. `parse(print(f)) == f` for every parsed file, and `print` is stable under a second round trip. Placing or routing a node never changes how the rest of the patch prints (T4.3: before, a placed anonymous node got a generated `_n` name).
+
+### 2.2 The layout block (T4.3)
+The circuit diagram's layout (SPEC §7.3 "Layout is stored") is the `layout { … }` block at the end of a patch. The compiler never reads it; the printer keeps it; the circuit view (T4.2) draws it and the auto-layout / tidy command (T4.3, `pq/graph/layout.h`) writes it.
+- **Keys**: a layout line names its node by a *key*. A named node (a declaration or a binding) is its name. An anonymous node — one written inline inside an expression, the usual case (`y = tanh(x * g)` has two) — is the key of the node that consumes it, a dot, and the consumer's input it drives: in `y = tanh(x * g)` the `tanh` is `y.in` (the output `y`'s input is `in`) and the multiply is `y.in.x` (tanh's input is `x`). Input names are the ones calls use (`a`/`b` for binary operators, `in0`… for variadic ports, an `in`'s default is `name.default`, an `unknown`'s guess `name.init`). Nodes under a solve equation, which has no name, start at `_e<k>`: the k-th equation of the patch in text order (`_e0.lhs`, `_e1.rhs.x`); if the patch has a node of that name the printer appends `_` until it is free (`_e0_`), and the parser reads `_e<digits>` followed by any `_` as that equation whenever no node has the name.
+- **Wires**: `wire <key>.<output> -> <key>.<input> via ((x, y), …)` gives a wire's routing points (the pins are the ends; a wire with no `wire` line is drawn straight or as a Z). The last part of each end is the port.
+- **Order**: the printer writes node lines in a canonical order (each statement in print order, then depth-first the anonymous nodes inlined into it, input by input) and wire lines by target, so text → layout → text is byte-stable.
+- **Coordinates** are world units (the canvas's logical px at zoom 1), top-left corners; `rot` (0/90/180/270) and `flip` are kept but not drawn yet (QUESTIONS Q?-T4.2-a).
+- **Stale keys**: a key that names nothing is an error, or with `ParseOptions::lenientLayout` dropped and counted (a text pane edit must not fail on a layout line whose expression moved, T4.4); `graph::carryLayout` then gives nodes that kept their NodeId (T1.x-text-ids) their previous position.
+- **Hand-written files**: `graph::spliceLayout(source, parse, laidOut)` replaces only each patch's layout block in the original text (inserting one before the closing `}` where there was none), so the author's comments and formatting stay.
 
 ## 3. Semantics
 - **Bindings are a dataflow graph, not statements.** Order doesn't matter, and a name may be used before it is bound. Each binding is one node (or a subgraph of nodes).

@@ -12,6 +12,7 @@ pq_add_module(pq_graph
     src/text_common.cpp
     src/parse.cpp
     src/print.cpp
+    src/layout.cpp
     src/infer.cpp
     src/optimise.cpp
     src/schedule.cpp

@@ -95,13 +95,23 @@ struct SolveSyn {
   uint32_t tok = 0;  // 'solve'
 };
 
+// A layout key (T4.3): a node name, then `.input` steps through anonymous nodes (`out.in.a`: the node driving input
+// `a` of the node driving output `out`'s input). Its tokens are first, first + 2, … (dots in between).
+struct LayoutPathSyn {
+  uint32_t first = 0;
+  uint32_t parts = 0;
+  uint32_t part(uint32_t i) const noexcept { return first + 2 * i; }
+  uint32_t last() const noexcept { return part(parts - 1); }
+};
+
 struct LayoutNodeSyn {
-  uint32_t nameTok = 0;
+  LayoutPathSyn path;
   NodeLayout layout;
 };
 
+// `wire a.b.port -> c.port`: each end is a node key followed by a port name (its last part).
 struct LayoutWireSyn {
-  uint32_t fromTok = 0, fromPortTok = 0, toTok = 0, toPortTok = 0;
+  LayoutPathSyn from, to;
   std::vector<Point2> via;
 };
 
@@ -113,6 +123,9 @@ struct PatchSyn {
   std::vector<LayoutNodeSyn> layoutNodes;
   std::vector<LayoutWireSyn> layoutWires;
   std::vector<LayoutComment> comments;
+  uint32_t layoutTok = kNone;    // the `layout` keyword (kNone: no layout block)
+  uint32_t layoutClose = kNone;  // the layout block's '}'
+  uint32_t closeTok = kNone;     // the patch's '}'
 };
 
 struct ImportSyn {
@@ -263,7 +276,7 @@ private:
     for (;;) {
       if (diags_.full()) throw SyntaxError{};
       if (kind() == Tok::RBrace) {
-        advance();
+        p.closeTok = advance();
         return;
       }
       if (kind() == Tok::End) fail(open, "'{' of patch '" + std::string(text(p.nameTok)) + "' is never closed");
@@ -710,13 +723,27 @@ private:
     advance();
   }
 
+  // A layout key (T4.3): a name, then `.field` steps. `minParts` = 2 for a wire end (a node key + its port).
+  LayoutPathSyn layoutPath(std::string_view what, std::string_view dotContext, uint32_t minParts) {
+    LayoutPathSyn path;
+    path.first = expectName(what);
+    path.parts = 1;
+    if (minParts > 1) expect(Tok::Dot, dotContext);
+    else if (!accept(Tok::Dot)) return path;
+    for (;;) {
+      expectField();
+      ++path.parts;
+      if (!accept(Tok::Dot)) return path;
+    }
+  }
+
   void parseLayout(PatchSyn& p) {
-    advance();  // layout
+    p.layoutTok = advance();  // layout
     const uint32_t open = expect(Tok::LBrace, "after 'layout'");
     for (;;) {
       if (diags_.full()) throw SyntaxError{};
       if (kind() == Tok::RBrace) {
-        advance();
+        p.layoutClose = advance();
         break;
       }
       if (kind() == Tok::End) fail(open, "'{' of the layout block is never closed");
@@ -725,7 +752,7 @@ private:
         if (isWord(0, "node")) {
           advance();
           LayoutNodeSyn n;
-          n.nameTok = expectName("the node name");
+          n.path = layoutPath("the node name", {}, 1);
           expectWord("at", "after the node name");
           const Point2 pt = point();
           n.layout.placed = true;
@@ -749,13 +776,9 @@ private:
         } else if (isWord(0, "wire")) {
           advance();
           LayoutWireSyn w;
-          w.fromTok = expectName("the source node of the wire");
-          expect(Tok::Dot, "after the source node (wire a.out -> b.in)");
-          w.fromPortTok = expectField();
+          w.from = layoutPath("the source node of the wire", "after the source node (wire a.out -> b.in)", 2);
           expect(Tok::Arrow, "between the wire's ends");
-          w.toTok = expectName("the target node of the wire");
-          expect(Tok::Dot, "after the target node (wire a.out -> b.in)");
-          w.toPortTok = expectField();
+          w.to = layoutPath("the target node of the wire", "after the target node (wire a.out -> b.in)", 2);
           if (isWord(0, "via")) {
             advance();
             expect(Tok::LParen, "after 'via' (via ((x, y), …))");
@@ -1095,6 +1118,10 @@ public:
   Lowerer(std::string_view src, const std::vector<Token>& toks, const Parser& parser, const PatchTable& patches,
           Diags& diags)
       : src_(src), toks_(toks), ast_(parser.ast), args_(parser.args), patches_(patches), diags_(diags) {}
+
+  // ParseOptions::lenientLayout: layout entries that name nothing are dropped and counted instead of reported.
+  void setLenientLayout(bool on) noexcept { lenientLayout_ = on; }
+  uint32_t layoutDropped() const noexcept { return layoutDropped_; }
 
   // Builds `out` from `syn`; nodeSpan receives the source span of every node (for validation messages).
   void lower(const PatchSyn& syn, Patch& out, std::vector<Span>& nodeSpan) {
@@ -1636,59 +1663,123 @@ private:
     return {callNode, 0};
   }
 
-  std::optional<NodeIndex> layoutNode(uint32_t tok) {
-    const uint32_t* s = names_.find(text(tok));
-    if (!s) {
-      errorTok(tok, "layout: unknown node '" + std::string(text(tok)) + "'");
+  // A layout problem: an error, or with ParseOptions::lenientLayout a dropped entry (T4.3: text edits must not fail on
+  // a stale layout line; the text pane keeps the layout of what it can still find).
+  void layoutError(uint32_t offset, uint32_t length, std::string msg) {
+    if (lenientLayout_) {
+      ++layoutDropped_;
+      return;
+    }
+    diags_.add(offset, length, std::move(msg));
+  }
+  void layoutError(uint32_t tok, std::string msg) { layoutError(toks_[tok].offset, toks_[tok].length, std::move(msg)); }
+
+  // The text of `parts` names of a key, joined by dots, and its byte span.
+  std::string pathText(const LayoutPathSyn& path, uint32_t parts) const {
+    std::string s(text(path.first));
+    for (uint32_t i = 1; i < parts; ++i) {
+      s += '.';
+      s += text(path.part(i));
+    }
+    return s;
+  }
+  Span pathSpan(const LayoutPathSyn& path, uint32_t parts) const noexcept {
+    const uint32_t b = toks_[path.first].offset;
+    const Token& e = toks_[path.part(parts - 1)];
+    return {b, e.offset + e.length - b};
+  }
+
+  // The node a layout key names (its first `parts` names): a name (or `_e<k>`, the k-th equation in text order, for
+  // keys under an equation, which has no name), then each `.input` step goes to that input's driver (T4.3).
+  std::optional<NodeIndex> layoutNode(const LayoutPathSyn& path, uint32_t parts) {
+    const std::string_view root = text(path.first);
+    NodeIndex n = kNone;
+    if (const uint32_t* s = names_.find(root)) {
+      const Sym& sym = syms_[*s];
+      if (sym.st == Sym::Error || sym.value.node == kNone) return std::nullopt;
+      n = sym.value.node;
+    } else if (const std::optional<uint32_t> k = equationKey(root)) {
+      uint32_t seen = 0;
+      for (NodeIndex v = 0; v < p_->nodeCount() && n == kNone; ++v)
+        if (p_->node(v).kind == NodeKind::Equation && seen++ == *k) n = v;
+    }
+    if (n == kNone) {
+      layoutError(path.first, "layout: unknown node '" + std::string(root) + "'");
       return std::nullopt;
     }
-    const Sym& sym = syms_[*s];
-    if (sym.st == Sym::Error || sym.value.node == kNone) return std::nullopt;
-    return sym.value.node;
+    for (uint32_t i = 1; i < parts; ++i) {
+      const std::string_view field = text(path.part(i));
+      const auto in = findPortByText(*p_, n, field, true);
+      if (!in) {
+        layoutError(path.part(i), "layout: " + describeNode(n) + " has no input '" + std::string(field) + "'");
+        return std::nullopt;
+      }
+      const WireIndex w = byInput_[p_->flatInput(n, *in)];
+      if (w == kNone) {
+        const Span sp = pathSpan(path, i + 1);
+        layoutError(sp.offset, sp.length, "layout: input '" + std::string(field) + "' of " + describeNode(n) + " is not connected");
+        return std::nullopt;
+      }
+      n = p_->wire(w).from.node;
+    }
+    return n;
+  }
+
+  // `_e<k>` with optional trailing '_' (the printer appends them when the patch has a node of that name): k.
+  static std::optional<uint32_t> equationKey(std::string_view s) noexcept {
+    if (s.size() < 3 || s[0] != '_' || s[1] != 'e') return std::nullopt;
+    size_t i = 2;
+    uint64_t k = 0;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9' && k < 0xFFFFFFFFull) k = k * 10 + static_cast<uint64_t>(s[i++] - '0');
+    if (i == 2 || k >= 0xFFFFFFFFull) return std::nullopt;
+    while (i < s.size() && s[i] == '_') ++i;
+    if (i != s.size()) return std::nullopt;
+    return static_cast<uint32_t>(k);
   }
 
   void lowerLayout(const PatchSyn& syn) {
+    byInput_.assign(p_->portCount(), kNone);
+    for (WireIndex w = 0; w < p_->wireCount(); ++w) {
+      const Wire& wr = p_->wire(w);
+      byInput_[p_->flatInput(wr.to.node, wr.to.port)] = w;
+    }
     std::vector<uint8_t> placed(p_->nodeCount(), 0);
     for (const LayoutNodeSyn& ln : syn.layoutNodes) {
-      const auto n = layoutNode(ln.nameTok);
+      const auto n = layoutNode(ln.path, ln.path.parts);
       if (!n) continue;
       if (placed[*n]) {
-        errorTok(ln.nameTok, "layout: node '" + p_->nodeName(*n) + "' is placed twice");
+        const Span sp = pathSpan(ln.path, ln.path.parts);
+        layoutError(sp.offset, sp.length, "layout: node '" + pathText(ln.path, ln.path.parts) + "' is placed twice");
         continue;
       }
       placed[*n] = 1;
       p_->setLayout(*n, ln.layout);
     }
     if (!syn.layoutWires.empty()) {
-      std::vector<WireIndex> byInput(p_->portCount(), kNone);
-      for (WireIndex w = 0; w < p_->wireCount(); ++w) {
-        const Wire& wr = p_->wire(w);
-        byInput[p_->flatInput(wr.to.node, wr.to.port)] = w;
-      }
       std::vector<uint8_t> routed(p_->wireCount(), 0);
       for (const LayoutWireSyn& lw : syn.layoutWires) {
-        const auto from = layoutNode(lw.fromTok);
-        const auto to = layoutNode(lw.toTok);
+        const auto from = layoutNode(lw.from, lw.from.parts - 1);
+        const auto to = layoutNode(lw.to, lw.to.parts - 1);
         if (!from || !to) continue;
-        const auto out = findPortByText(*p_, *from, text(lw.fromPortTok), false);
+        const uint32_t fromPort = lw.from.last(), toPort = lw.to.last();
+        const auto out = findPortByText(*p_, *from, text(fromPort), false);
         if (!out) {
-          errorTok(lw.fromPortTok, "layout: " + describeNode(*from) + " has no output '" + std::string(text(lw.fromPortTok)) + "'");
+          layoutError(fromPort, "layout: " + describeNode(*from) + " has no output '" + std::string(text(fromPort)) + "'");
           continue;
         }
-        const auto in = findPortByText(*p_, *to, text(lw.toPortTok), true);
+        const auto in = findPortByText(*p_, *to, text(toPort), true);
         if (!in) {
-          errorTok(lw.toPortTok, "layout: " + describeNode(*to) + " has no input '" + std::string(text(lw.toPortTok)) + "'");
+          layoutError(toPort, "layout: " + describeNode(*to) + " has no input '" + std::string(text(toPort)) + "'");
           continue;
         }
-        const WireIndex w = byInput[p_->flatInput(*to, *in)];
+        const WireIndex w = byInput_[p_->flatInput(*to, *in)];
         if (w == kNone || !(p_->wire(w).from == PortRef{*from, static_cast<uint16_t>(*out)})) {
-          errorTok(lw.fromTok, "layout: there is no wire " + std::string(text(lw.fromTok)) + "." +
-                                   std::string(text(lw.fromPortTok)) + " -> " + std::string(text(lw.toTok)) + "." +
-                                   std::string(text(lw.toPortTok)));
+          layoutError(lw.from.first, "layout: there is no wire " + pathText(lw.from, lw.from.parts) + " -> " +
+                                         pathText(lw.to, lw.to.parts));
           continue;
         }
         if (routed[w]) {
-          errorTok(lw.fromTok, "layout: this wire is routed twice");
+          layoutError(lw.from.first, "layout: this wire is routed twice");
           continue;
         }
         routed[w] = 1;
@@ -1697,6 +1788,10 @@ private:
     }
     for (const LayoutComment& c : syn.comments) p_->addComment(c);
   }
+
+  bool lenientLayout_ = false;
+  uint32_t layoutDropped_ = 0;
+  std::vector<WireIndex> byInput_;  // lowerLayout: per flat input, its wire
 
   std::string_view src_;
   const std::vector<Token>& toks_;
@@ -1853,8 +1948,21 @@ ParseResult parseDetailed(std::string_view source, std::string_view fileName, co
   for (const SubcircuitRef& r : imported) table.add(r);
   if (!diags.list.empty()) return finish();
 
+  // Where each patch's layout block is (T4.3: spliceLayout rewrites only that text).
+  result.patchSpans.resize(patches.size());
+  for (size_t i = 0; i < patches.size(); ++i) {
+    PatchTextSpans& ps = result.patchSpans[i];
+    const PatchSyn& syn = patches[i];
+    if (syn.layoutTok != kNone && syn.layoutClose != kNone) {
+      const uint32_t b = toks[syn.layoutTok].offset;
+      ps.layout = {b, toks[syn.layoutClose].offset + toks[syn.layoutClose].length - b};
+    }
+    if (syn.closeTok != kNone) ps.close = toks[syn.closeTok].offset;
+  }
+
   // Lowering.
   Lowerer lowerer(source, toks, parser, table, diags);
+  lowerer.setLenientLayout(options.lenientLayout);
   std::vector<std::vector<Span>> nodeSpan(patches.size());
   std::vector<Span> patchSpan;
   result.file.patches.reserve(patches.size());
@@ -1864,6 +1972,7 @@ ParseResult parseDetailed(std::string_view source, std::string_view fileName, co
     lowerer.lower(patches[i], result.file.patches.back(), nodeSpan[i]);
     if (diags.full()) break;
   }
+  result.layoutDropped = lowerer.layoutDropped();
   if (!diags.list.empty()) return finish();
 
   if (options.validate) {

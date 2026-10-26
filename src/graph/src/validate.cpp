@@ -13,8 +13,8 @@
 //  - Names are identifiers, not keywords (except `in`/`out`, see isKeywordNotName), not `voice`/`transport`/`sr`, and unique within the patch (one namespace:
 //    a binding target may be an output, PATCH_LANGUAGE §2).
 //  - A name may bind one output (`y = svf(x).lp`) only on a multi-output-capable node, never on a declaration.
-//  - Layout placement needs a name (layout text refers to nodes by name), finite coordinates and a rotation that
-//    is a multiple of 90 in [0, 360).
+//  - Layout placement needs finite coordinates and a rotation that is a multiple of 90 in [0, 360). Anonymous nodes
+//    may be placed: layout text names them by key (T4.3, PATCH_LANGUAGE §2.2).
 // Wires ("dangling" = refers to something that does not exist)
 //  - Both endpoints exist: source is an existing output, target an existing input.
 //  - An input has at most one driver (summing is explicit: an add node).
@@ -176,8 +176,6 @@ private:
       }
       const NodeLayout& l = p_.layout(n);
       if (l.placed) {
-        if (p_.nodeName(n).empty())
-          fail(ErrorCode::InvalidArgument, p_.describe(n) + " has a layout position but no name to refer to it by");
         if (!std::isfinite(l.x) || !std::isfinite(l.y))
           fail(ErrorCode::InvalidArgument, p_.describe(n) + " has a non-finite layout position");
         if (l.rotation < 0 || l.rotation >= 360 || l.rotation % 90 != 0)

@@ -157,7 +157,7 @@ add_test(NAME pqdaw_screenshot_widgets COMMAND pqdaw --screenshot widgets ${CMAK
 add_test(NAME pqdaw_window_selftest_partial COMMAND pqdaw --window-selftest --scene lines-playhead)
 set_tests_properties(pqdaw_window_selftest_partial PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
 
-pq_add_test(pq_tests_graph
+pq_add_test(pq_tests_graph PERF
   SOURCES
     graph/test_types.cpp
     graph/test_atoms.cpp
@@ -174,6 +174,7 @@ pq_add_test(pq_tests_graph
     graph/test_optimise.cpp
     graph/test_schedule.cpp
     graph/test_voice_tuning.cpp
+    graph/test_layout.cpp
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,

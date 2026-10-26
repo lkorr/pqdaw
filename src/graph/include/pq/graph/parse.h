@@ -67,6 +67,16 @@ struct ParseOptions {
   // counterparts in it (inheritNodeIds, id_match.h; patches paired by name), so hot-swap state keys survive the
   // edit. Applied only to a result without diagnostics.
   const PatchFile* previous = nullptr;
+  // T4.3: layout entries whose key names no node, port or wire (a stale line after a text edit) are dropped and
+  // counted in ParseResult::layoutDropped instead of being errors. The layout is never read by the compiler, so a
+  // text pane can keep editing an expression whose layout key moved.
+  bool lenientLayout = false;
+};
+
+// Where a patch sits in its source text (T4.3: spliceLayout).
+struct PatchTextSpans {
+  SourceSpan layout;        // `layout { … }` from the keyword to its '}' (offset kNone: no layout block)
+  uint32_t close = kNone;   // offset of the patch's closing '}'
 };
 
 struct ParseResult {
@@ -76,6 +86,8 @@ struct ParseResult {
   // later phases (infer()) can report file:line:col. Empty when lowering did not run.
   std::vector<std::vector<SourceSpan>> nodeSpans;
   IdMatchStats idMatch;                  // with ParseOptions::previous: what kept its NodeId
+  std::vector<PatchTextSpans> patchSpans;  // [patch], filled when the syntax is valid
+  uint32_t layoutDropped = 0;            // ParseOptions::lenientLayout: layout entries dropped
   bool ok() const noexcept { return diagnostics.empty(); }
 };
 
@@ -89,11 +101,24 @@ Result<PatchFile> parse(std::string_view source, std::string_view fileName, cons
 
 // Canonical text of a file: imports, then each patch (declarations, bindings in node order, exports, solve blocks,
 // layout). Anonymous nodes with exactly one consumer are written inline; any other unnamed computed node (several
-// consumers, dead code, a cycle with no named node, an endpoint of a routed wire, nesting deeper than
-// kMaxExprDepth) gets a generated name `_n<index>`, so the output always parses, but parse(print(p)) == p holds
-// only for patches text can express (which every parsed patch is).
+// consumers, dead code, a cycle with no named node, nesting deeper than kMaxExprDepth) gets a generated name
+// `_n<index>`, so the output always parses, but parse(print(p)) == p holds only for patches text can express (which
+// every parsed patch is). Layout lines name an inlined node by its key (T4.3, PATCH_LANGUAGE §2.2): the key of its
+// consumer, a dot, and the consumer's input it drives (`out.in.a`); a node under a solve equation starts at `_e<k>`
+// (the k-th equation). Placing or routing a node never changes how the rest of the patch prints.
 std::string print(const PatchFile& file);
 std::string print(const Patch& patch);
+
+// The layout block of one patch exactly as print() writes it ("  layout {\n … \n  }\n"), or "" when the patch has
+// no layout (no placed node, routed wire or comment).
+std::string printLayout(const Patch& patch);
+
+// T4.3: `source` with each patch's layout block replaced by the one printLayout() writes for laidOut.patches[i] —
+// inserted before the patch's closing '}' when it had none, removed when the new one is empty — and every other byte
+// unchanged (comments, formatting, the order of members). `parsed` is parseDetailed(source) (its patchSpans);
+// `laidOut` has the same patches in the same order (normally parsed.file with layouts changed). Text → layout → text
+// is byte-stable: splicing the layout a parse of the result reads back gives the result again.
+Result<std::string> spliceLayout(std::string_view source, const ParseResult& parsed, const PatchFile& laidOut);
 
 // Signatures of every patch in a file (what an ImportLoader returns for it).
 std::vector<SubcircuitRef> signatures(const PatchFile& file);

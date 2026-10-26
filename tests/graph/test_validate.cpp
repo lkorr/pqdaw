@@ -408,8 +408,10 @@ TEST_CASE("validate: layout") {
   l.flip = true;
   p.setLayout(1, l);  // the named out
   CHECK_VALID(p);
+  // T4.3: an anonymous node may be placed (layout text names it by its key, `y.in`); the rule that a placed node
+  // needs a name is gone (PATCH_LANGUAGE §2.2), so this is valid now.
   p.setLayout(0, l);  // the anonymous const
-  CHECK_ERROR(p, "(const, #0) has a layout position but no name");
+  CHECK_VALID(p);
   p.setNodeName(0, "k");
   CHECK_VALID(p);
   l.rotation = 45;
