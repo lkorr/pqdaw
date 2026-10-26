@@ -37,8 +37,12 @@ void BackgroundCompiler::want(std::vector<BackgroundJob> jobs) {
       return false;
     };
     std::deque<BackgroundJob> next;
-    for (BackgroundJob& j : jobs)
+    bool runningListed = false;
+    for (BackgroundJob& j : jobs) {
+      runningListed = runningListed || (j.schedule != nullptr && j.schedule.get() == running_);
       if (j.schedule != nullptr && j.schedule.get() != running_ && !in(next, j.schedule.get())) next.push_back(std::move(j));
+    }
+    runningWanted_ = runningListed;
     for (const BackgroundJob& j : queue_) stats_.dropped += in(next, j.schedule.get()) ? 0u : 1u;
     for (const BackgroundJob& j : next) stats_.wanted += in(queue_, j.schedule.get()) ? 0u : 1u;
     queue_ = std::move(next);
@@ -71,10 +75,15 @@ void BackgroundCompiler::run() {
     BackgroundJob job = std::move(queue_.front());
     queue_.pop_front();
     running_ = job.schedule.get();
+    runningWanted_ = true;
     lock.unlock();
     if (cfg_.beforeBuild != nullptr) cfg_.beforeBuild(cfg_.user, job);
     const auto t0 = std::chrono::steady_clock::now();
+    bool refine = false;
     Result<std::unique_ptr<ProgramImage>> img = [&]() -> Result<std::unique_ptr<ProgramImage>> {
+      if (cfg_.backend.quick != nullptr && !job.refine)
+        return cfg_.backend.quick(cfg_.backend.user, *job.schedule, job.maxBlockFrames, job.maxVoiceGroups, job.resources,
+                                  &refine);
       if (cfg_.backend.fn != nullptr)
         return cfg_.backend.fn(cfg_.backend.user, *job.schedule, job.maxBlockFrames, job.maxVoiceGroups, job.resources);
       InterpretOptions io;
@@ -85,8 +94,21 @@ void BackgroundCompiler::run() {
     }();
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     const bool ok = img.ok();
+    job.first = ok && refine;
     if (cfg_.deliver != nullptr) cfg_.deliver(cfg_.user, job, std::move(img));
     lock.lock();
+    if (job.first && runningWanted_ && !quit_) {  // Q111 C: the final image after every queued first one
+      bool queued = false;
+      for (const BackgroundJob& j : queue_) queued = queued || j.schedule == job.schedule;
+      if (!queued) {
+        BackgroundJob r = job;
+        r.first = false;
+        r.refine = true;
+        queue_.push_back(std::move(r));
+        ++stats_.wanted;
+        ++stats_.refinements;
+      }
+    }
     running_ = nullptr;
     if (ok) {
       ++stats_.built;

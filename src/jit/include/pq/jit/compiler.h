@@ -65,6 +65,12 @@ struct CompileOptions {
                                    // interpreter (and unboundedly different in chaotic feedback loops)
   VoiceCode voiceCode = VoiceCode::Auto;
   engine::SleepMode sleep = engine::SleepMode::On;  // T1.x-silence (pq/engine/program_image.h); not part of the code
+  // T1b.x-perf (QUESTIONS Q111 option C): a quick FIRST image. When the voice code would give some voice stage a pair
+  // function and the cache has no image of these options, the image is compiled with VoiceCode::Groups instead
+  // (roughly half the compile of a big voice stage) and not stored on disk, and CompileStats::refine says so: compiling
+  // again without quickFirst gives the final image, bit-identical in output (so an Instant swap replaces the first).
+  // A cache hit, or options without pairs to add, give the final image at once (refine = false). Not in the key.
+  bool quickFirst = false;
 };
 
 struct CompileStats {
@@ -83,6 +89,7 @@ struct CompileStats {
   uint64_t objectBytes = 0;     // size of the machine-code object(s) linked
   bool stackProbes = false;     // the object calls __chkstk: some stage function has a frame > 4 KiB, whose guard-page
                                 // probes may fault on the audio thread the first time (must stay false; tests/jit)
+  bool refine = false;          // CompileOptions::quickFirst gave a first image: compile without it for the final one
 };
 
 // What the machine code is compiled for.
@@ -135,6 +142,11 @@ public:
 
 private:
   explicit Compiler(std::shared_ptr<Session> s) noexcept;
+  // compile() without quickFirst. cacheOnly: ErrorCode::NotFound instead of an LLVM compile on a cache miss; store:
+  // false keeps a compiled image off the disk cache.
+  Result<std::unique_ptr<engine::ProgramImage>> compileImpl(const graph::Schedule& schedule, const CompileOptions& options,
+                                                            CompileStats* stats, bool cacheOnly, bool store);
+  bool pairsPlanned(const graph::Schedule& schedule, const CompileOptions& options) const;
   std::shared_ptr<Session> session_;
 };
 

@@ -105,8 +105,13 @@ struct GenResult {
 Result<GenResult> generate(const graph::Schedule& s, const HostLayout& layout, PtrTable& tab, llvm::Module& m,
                            const GenOptions& options);
 
-// T4.5 cost meters: per schedule region, the first region of the unit the generated code times it in (a voice stage's
-// fused chain of regions is one loop over frames, so one unit; every other region is its own). Not RT code.
+// T4.5 cost meters: per schedule region, the first region of the unit the generated code times it in (a fused chain
+// of regions — voice stages, and global ones since T1b.x-perf — is one loop over frames, so one unit; every other
+// region is its own). Not RT code.
 std::vector<uint32_t> meterUnits(const graph::Schedule& s, const HostLayout& layout, const GenOptions& options);
+
+// T1b.x-perf (Q111 C): per stage, whether generate() with these options would give it a pair function (the same
+// analysis, no code generated).
+std::vector<uint8_t> pairPlan(const graph::Schedule& s, const HostLayout& layout, const GenOptions& options);
 
 }  // namespace pq::jit::detail

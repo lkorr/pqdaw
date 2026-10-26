@@ -200,7 +200,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     // T4.4: the circuit editor's patch preview plays through the same device, attached only while it plays.
     PreviewConfig pc;
     pc.sampleRate = app->link_->engine().config().sampleRate;
-    pc.jit = compile::jitUnitBackend();
+    pc.jit = compile::jitUnitBackend(true);  // Q111 C: a voice-group image first, the pair image after it
     app->preview_ = std::make_unique<PatchPreview>(pc);
     app->previewCallback_ = app->preview_->callback();
     ShellApp* raw = app.get();

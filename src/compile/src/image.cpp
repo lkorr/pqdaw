@@ -93,7 +93,38 @@ Result<std::unique_ptr<engine::ProgramImage>> jitUnitWith(void* compiler, const 
 }
 }  // namespace
 
-engine::UnitBackend jitUnitBackend() noexcept { return {&jitUnit, nullptr}; }
-engine::UnitBackend jitUnitBackend(jit::Compiler* compiler) noexcept { return {&jitUnitWith, compiler}; }
+namespace {
+// Q111 C: the quick first image (jit::CompileOptions::quickFirst) through `compiler` (null: the process compiler).
+Result<std::unique_ptr<engine::ProgramImage>> jitUnitQuick(void* compiler, const graph::Schedule& schedule,
+                                                           uint32_t maxBlockFrames, uint32_t maxVoiceGroups,
+                                                           const engine::Resources* resources, bool* refine) {
+  jit::Compiler* c = static_cast<jit::Compiler*>(compiler);
+  if (c == nullptr) {
+    auto jc = jitCompiler();
+    if (!jc) return Error{jc.error().code, "jit: " + jc.error().message, {}};
+    c = *jc;
+  }
+  jit::CompileOptions co;
+  co.maxBlockFrames = maxBlockFrames;
+  co.maxVoiceGroups = maxVoiceGroups;
+  co.resources = resources;
+  co.quickFirst = true;
+  jit::CompileStats st;
+  auto img = c->compile(schedule, co, &st);
+  if (refine != nullptr) *refine = img.ok() && st.refine;
+  return img;
+}
+}  // namespace
+
+engine::UnitBackend jitUnitBackend(bool quickFirst) noexcept {
+  engine::UnitBackend b{&jitUnit, nullptr};
+  if (quickFirst) b.quick = &jitUnitQuick;
+  return b;
+}
+engine::UnitBackend jitUnitBackend(jit::Compiler* compiler, bool quickFirst) noexcept {
+  engine::UnitBackend b{&jitUnitWith, compiler};
+  if (quickFirst) b.quick = &jitUnitQuick;
+  return b;
+}
 
 }  // namespace pq::compile

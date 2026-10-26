@@ -56,4 +56,12 @@ struct InterpretOptions {
 Result<std::unique_ptr<ProgramImage>> buildInterpreted(const graph::Schedule& schedule,
                                                        const InterpretOptions& options = {});
 
+// T1b.x-perf (the T4.12-fix1 follow-up): a rough estimate of what an interpreted image of `schedule` costs per frame
+// with `voiceGroups` occupied voice groups, in ns (ship build, this machine class): ≈ 1.1 ns per op and frame outside
+// Control regions (a record per op, block-wise or per sample alike), plus ≈ 15 ns per solve-body op and Newton
+// iteration (tangents, the update). Calibrated on bench/RESULTS.md's interpreter rows (EQ Eight, Auto Filter Clean /
+// MS2, Operator full); within about 2× of them. Callers compare it with a budget (ProjectLink: keep a unit's JIT image
+// instead of an interpreted one that would cost too much). Not RT-safe (it walks the schedule).
+double estimateInterpretedNsPerFrame(const graph::Schedule& schedule, uint32_t voiceGroups) noexcept;
+
 }  // namespace pq::engine

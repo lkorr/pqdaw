@@ -146,6 +146,53 @@ TEST_CASE("T1b.5: live playback (NullDevice) starts interpreted and swaps every 
                   << " stale");
 }
 
+// T1b.x-perf (the T4.12-fix1 follow-up): a unit whose interpreted image would cost more than LinkConfig::
+// interpretBudget keeps playing its JIT image through a structural edit until the edit's JIT image arrives; it never
+// runs interpreted (here every unit counts as heavy: a budget of ~0). With the default budget this light project
+// holds nothing. (Q111 option C rides along: ProjectLink's default backend builds quick first images, refined later.)
+TEST_CASE("T1b.x-perf: units above the interpreter budget keep their JIT image through an edit, never run interpreted") {
+  for (const float budget : {1e-9f, 0.25f}) {
+    CAPTURE(budget);
+    playback_fixture::Fixture f;
+    LinkConfig c;
+    c.compileThread = false;
+    c.sleepAfterMs = 0.0f;
+    c.jit = true;
+    c.interpretBudget = budget;
+    auto made = ProjectLink::create(c, f.snap());
+    REQUIRE(made.ok());
+    ProjectLink& l = *made.value();
+    [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { l.onDocumentChange(e); });
+    Player p(l);
+    l.play(0);
+    p.run(10);
+    REQUIRE(l.waitForJit(120.0));
+    p.run(20);
+    const uint32_t units = l.engine().program()->numUnits();
+    REQUIRE(unitsOn(l, engine::ImageBackend::Jit) == units);
+    // A structural edit of one track (a unit update, not a topology change).
+    REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(f.store.ids().device(), "utility", DeviceKind::AudioEffect), kAppend}).ok());
+    l.flush();
+    uint32_t interpretedBlocks = 0;
+    for (int b = 0; b < 400; ++b) {
+      p.run(1);
+      interpretedBlocks += unitsOn(l, engine::ImageBackend::Interpreter) > 0 ? 1u : 0u;
+      if (b == 200) REQUIRE(l.waitForJit(120.0));
+    }
+    CHECK(unitsOn(l, engine::ImageBackend::Jit) == units);
+    const app::JitStats js = l.jitStats();
+    CHECK(js.errors == 0);
+    CHECK(js.refineErrors == 0);
+    if (budget < 1e-6f) {
+      CHECK(l.stats().heldForJit >= 1);
+      CHECK(interpretedBlocks == 0);  // the edited unit went from its old JIT image straight to the new one
+    } else {
+      CHECK(l.stats().heldForJit == 0);  // the default budget: the edit plays interpreted at once, as before
+      CHECK(interpretedBlocks > 0);
+    }
+  }
+}
+
 // Was (T1b.5): a track whose generated patch text changed (a new return added a send to every main track) was
 // re-parsed with its previous parse to keep its NodeIds. Since T3.17-fix2 the lowering builds IR with NodeIds from
 // document ids and a new return does not change any track's patch: this checks that instead.

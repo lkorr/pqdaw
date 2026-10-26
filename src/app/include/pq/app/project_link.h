@@ -117,8 +117,16 @@ struct LinkConfig {
   bool idleUnits = true;
   // T1b.5: swap every unit to its JIT image once the background compile has it (false: interpreter images only).
   bool jit = true;
-  // T1b.4: what builds the JIT images (fn null: compile::jitUnitBackend(), the process compiler and its cache); tests
-  // and the AOT seed pass compile::jitUnitBackend(&theirCompiler).
+  // T1b.x-perf (the T4.12-fix1 follow-up): an edit of a unit that plays a JIT image keeps that image playing, instead
+  // of publishing the interpreted one, when the interpreted image would cost more than this fraction of a core
+  // (engine::estimateInterpretedNsPerFrame at the unit's full polyphony; e.g. Operator with a Newton filter at 64
+  // voices): the edit becomes audible when its JIT image arrives (a cache hit: about a millisecond; a compile: tens to
+  // hundreds of ms), crossfaded like any edit. A failed JIT publishes the interpreted image then. Topology changes
+  // always publish interpreted images. ≤ 0: never hold.
+  float interpretBudget = 0.25f;
+  // T1b.4: what builds the JIT images (fn null: compile::jitUnitBackend(true), the process compiler and its cache, with
+  // T1b.x-perf's quick first images: QUESTIONS Q111 option C); tests and the AOT seed pass
+  // compile::jitUnitBackend(&theirCompiler[, quickFirst]).
   engine::UnitBackend jitBackend;
   // Test hook (the "simulated slow compile"): called on the JIT worker before each compile; may block.
   void (*jitBeforeCompile)(void* user) = nullptr;
@@ -132,6 +140,12 @@ struct JitStats {
   uint64_t published = 0;   // ... and published into their unit
   uint64_t stale = 0;       // ... dropped: the unit had moved on to another schedule (or room never came)
   uint64_t errors = 0;      // JIT compiles that failed (the unit stays interpreted)
+  // T1b.x-perf (Q111 option C): of the published images, the quick first ones (voice groups, no pair functions);
+  // each is followed by a refinement build: the final image, published with an Instant swap (`refined`), dropped when
+  // its unit moved on (`refineStale`) or failed (`refineErrors`: the first image keeps playing). The counters above
+  // count first images and final images built at once (a cache hit, nothing to pair); refinements only these three.
+  uint64_t firstImages = 0;
+  uint64_t refined = 0, refineStale = 0, refineErrors = 0;
   double totalCompileMs = 0.0;
 };
 
@@ -157,6 +171,7 @@ struct LinkStats {
   // instrument tracks), at the last structural change.
   uint32_t delayedWires = 0;
   uint32_t refusedWires = 0;
+  uint64_t heldForJit = 0;  // T1b.x-perf: unit edits that kept the JIT image playing (LinkConfig::interpretBudget)
 };
 
 class ProjectLink final : public views::TransportPort, public views::MeterSource, public views::ModulationSource {
@@ -332,6 +347,7 @@ private:
   Status drainDeferred(bool& drained);
   void setError(std::string message);
   void collectIdle();  // UI thread: collect() at most every 200 ms
+  bool holdForJit(uint32_t unit, const std::shared_ptr<const graph::Schedule>& previous);  // compileMutex_ held
   void wantJit();  // compile path, compileMutex_ held: the schedules without a JIT image → the background compiler
   static void deliverJit(void* self, const engine::BackgroundJob& job, Result<std::unique_ptr<engine::ProgramImage>> img);
   static void beforeJit(void* self, const engine::BackgroundJob& job);
@@ -418,6 +434,10 @@ private:
   std::deque<Deferred> deferred_;                 // compileMutex_; see drainDeferred
   std::atomic<bool> anyDeferred_{false};          // deferred_ is not empty (read by the worker without the lock)
   std::vector<std::shared_ptr<const graph::Schedule>> jitDone_;  // schedules with a JIT image (or a failed JIT)
+  std::vector<std::shared_ptr<const graph::Schedule>> jitFirst_;  // ... with a quick first JIT image only (Q111 C)
+  // Schedules whose unit plays a JIT image: published ones, and held ones (interpretBudget: the unit still plays an
+  // earlier schedule's JIT image until this one's arrives; published then with a crossfade, not Instant).
+  std::vector<std::shared_ptr<const graph::Schedule>> jitLive_, jitHeld_;
   mutable std::mutex jitStatsMutex_;
   JitStats jitStats_;
   std::unique_ptr<engine::BackgroundCompiler> jit_;  // destroyed first (~ProjectLink): no delivery after it

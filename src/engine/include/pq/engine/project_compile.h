@@ -55,6 +55,13 @@ struct UnitBackend {
   Result<std::unique_ptr<ProgramImage>> (*fn)(void* user, const graph::Schedule& schedule, uint32_t maxBlockFrames,
                                               uint32_t maxVoiceGroups, const Resources* resources) = nullptr;
   void* user = nullptr;
+  // T1b.x-perf (QUESTIONS Q111 option C), optional, for background builds (BackgroundCompiler): a quicker FIRST image
+  // of the same output (the JIT's voice groups without pair functions). Sets *refine when the image is such a first
+  // one and `fn` would build a better final one; false when it already is the final image (a cache hit, nothing to
+  // pair). Null: `fn` only.
+  Result<std::unique_ptr<ProgramImage>> (*quick)(void* user, const graph::Schedule& schedule, uint32_t maxBlockFrames,
+                                                 uint32_t maxVoiceGroups, const Resources* resources,
+                                                 bool* refine) = nullptr;
 };
 
 // A project param bound to a unit param: `param` is the param's flattened name inside the track patch (e.g.

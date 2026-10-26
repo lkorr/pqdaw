@@ -329,20 +329,56 @@ bool insideBinary(const void* p, const detail::BinaryIdentity& bin) noexcept {
 
 }  // namespace
 
+namespace {
+VoiceCode resolveVoiceCode(VoiceCode vc, bool avx512) noexcept {
+  if (vc == VoiceCode::Auto) vc = avx512 ? VoiceCode::Pairs512 : VoiceCode::Pairs256;
+  if (vc == VoiceCode::Pairs512 && !avx512) vc = VoiceCode::Pairs256;
+  return vc;
+}
+}  // namespace
+
 Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Schedule& schedule, const CompileOptions& options,
                                                                 CompileStats* stats) {
+  if (!options.quickFirst) return compileImpl(schedule, options, stats, false, true);
+  CompileOptions o = options;
+  o.quickFirst = false;
+  const VoiceCode vc = resolveVoiceCode(o.voiceCode, session_->features.find("+avx512f") != std::string::npos);
+  if (vc != VoiceCode::Pairs256 && vc != VoiceCode::Pairs512) return compileImpl(schedule, o, stats, false, true);
+  // Q111 C: the final image if the cache has it (memory, disk, AOT seed: about a millisecond) …
+  auto cached = compileImpl(schedule, o, stats, true, true);
+  if (cached.ok() || cached.error().code != ErrorCode::NotFound) return cached;
+  // … else voice groups only, when pairs would add anything (else the final image is no slower to compile).
+  if (!pairsPlanned(schedule, o)) return compileImpl(schedule, o, stats, false, true);
+  CompileOptions q = o;
+  q.voiceCode = VoiceCode::Groups;
+  auto first = compileImpl(schedule, q, stats, false, false);
+  if (first.ok() && stats != nullptr) stats->refine = true;
+  return first;
+}
+
+bool Compiler::pairsPlanned(const graph::Schedule& schedule, const CompileOptions& options) const {
+  detail::PtrTable tab;
+  auto host = detail::buildHost(schedule, options.maxBlockFrames, options.maxVoiceGroups, options.resources, true, tab,
+                                options.sleep);
+  if (!host) return false;
+  detail::GenOptions go;
+  go.cpu = session_->cpu;
+  go.features = session_->features;
+  go.pairs = true;
+  for (uint8_t p : detail::pairPlan(schedule, (*host)->layout_, go))
+    if (p) return true;
+  return false;
+}
+
+Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph::Schedule& schedule, const CompileOptions& options,
+                                                                    CompileStats* stats, bool cacheOnly, bool storeEntry) {
   using clock = std::chrono::steady_clock;
   using Source = CompileStats::Source;
   const auto t0 = clock::now();
   CompileStats st;
   if (options.optLevel > 3) return Error{ErrorCode::InvalidArgument, "jit: optLevel must be 0..3", {}};
   // Voice code (T1b.2): pairs where possible; 512-bit pairs only where the target has AVX-512F.
-  auto resolve = [&](bool avx512) {
-    VoiceCode vc = options.voiceCode;
-    if (vc == VoiceCode::Auto) vc = avx512 ? VoiceCode::Pairs512 : VoiceCode::Pairs256;
-    if (vc == VoiceCode::Pairs512 && !avx512) vc = VoiceCode::Pairs256;
-    return vc;
-  };
+  auto resolve = [&](bool avx512) { return resolveVoiceCode(options.voiceCode, avx512); };
   const VoiceCode vc = resolve(session_->features.find("+avx512f") != std::string::npos);
   const VoiceCode baselineVc = resolve(false);  // what a Target::Baseline compiler makes of the same options
   const bool pairs = vc == VoiceCode::Pairs256 || vc == VoiceCode::Pairs512;
@@ -522,6 +558,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
     }
   }
   st.cacheMs = msSince(tc);
+  if (cacheOnly) return Error{ErrorCode::NotFound, "jit: not in the cache", {}};
 
   // 3. Compile.
   if (s.beforeCompile != nullptr) s.beforeCompile(s.beforeCompileUser);
@@ -592,7 +629,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Sch
   bool cacheable = bin.ok;
   for (const void* p : code->fnSlots) cacheable = cacheable && insideBinary(p, bin);
   if (!cacheable) ++s.counters.uncacheable;
-  const bool store = cacheable && !cc.dir.empty();
+  const bool store = cacheable && !cc.dir.empty() && storeEntry;
 
   t1 = clock::now();
   auto jd = s.jit->createJITDylib("pq_code" + std::to_string(s.nextId++));

@@ -120,7 +120,7 @@ struct Live {
   Rig* rig = nullptr;
   Gate* gate = nullptr;
   eng::SwapPolicy policy{eng::SwapMode::Instant};
-  std::atomic<int> published{0}, stale{0}, failed{0};
+  std::atomic<int> published{0}, stale{0}, failed{0}, firsts{0};
   static void before(void* self, const eng::BackgroundJob&) {
     Gate& gt = *static_cast<Live*>(self)->gate;
     std::unique_lock lock(gt.m);
@@ -141,8 +141,12 @@ struct Live {
       return;
     }
     auto bound = l.rig->compiler->bind(u, std::move(img.value()));
-    if (bound.ok() && l.rig->program->publish(u, std::move(bound.value()), l.policy).ok()) ++l.published;
-    else ++l.failed;
+    if (bound.ok() && l.rig->program->publish(u, std::move(bound.value()), l.policy).ok()) {
+      ++l.published;
+      if (job.first) ++l.firsts;
+    } else {
+      ++l.failed;
+    }
   }
 };
 
@@ -217,4 +221,41 @@ TEST_CASE("T1b.5: interpreted units swap to their background JIT images after a 
     CHECK(jit.stats().built == units + 1);
     live.program->collect();
   }
+}
+
+// T1b.x-perf (QUESTIONS Q111 option C): with UnitBackend::quick, each instrument unit gets a voice-group image first
+// and its pair image after every unit's first image; both swaps are Instant and the output stays the interpreted
+// project's, sample for sample.
+TEST_CASE("T1b.x-perf: quick first JIT images (voice groups), then the pair images, all Instant and sample-exact") {
+  Rig live, ref;
+  Live ctx;
+  ctx.rig = &live;
+  eng::BackgroundCompilerConfig bc;
+  bc.backend = pq::compile::jitUnitBackend(true);
+  bc.deliver = &Live::deliver;
+  bc.user = &ctx;
+  eng::BackgroundCompiler jit(bc);
+  const uint32_t units = live.compiler->numUnits();
+  jit.want(live.jobs());
+  std::vector<float> a, b;
+  for (int k = 0; k < 40 && !jit.waitIdle(0.0); ++k) {  // playing while the images arrive
+    live.render(25, a);
+    ref.render(25, b);
+  }
+  REQUIRE(jit.waitIdle(120.0));
+  live.render(400, a);
+  ref.render(400, b);
+  CHECK(ctx.failed == 0);
+  CHECK(ctx.stale == 0);
+  CHECK(ctx.firsts >= 1);  // the FM instruments (two voice groups each) have pair functions to add
+  CHECK(ctx.published == static_cast<int>(units) + ctx.firsts);  // one final image per unit, plus the first ones
+  CHECK(jit.stats().refinements == static_cast<uint64_t>(ctx.firsts.load()));
+  CHECK(live.allJit());
+  REQUIRE(a.size() == b.size());
+  size_t firstDiff = a.size();
+  for (size_t i = 0; i < a.size() && firstDiff == a.size(); ++i)
+    if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0) firstDiff = i;
+  CHECK_MESSAGE(firstDiff == a.size(), "first difference at sample " << firstDiff / 2);
+  CHECK(live.rtViolations == 0);
+  live.program->collect();
 }

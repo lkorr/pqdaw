@@ -8,7 +8,10 @@
 //                     time that takes (wall clock; the worker shares the machine)
 //   jit/steady        ns per block once every unit runs its JIT image (acceptance: below interp/steady)
 //   equal             the whole run vs a project that stays interpreted: samples that differ (acceptance: 0)
-// Release / ship build. Usage: pq_bench_live_swap [--blocks N]
+//   --quick           T1b.x-perf (QUESTIONS Q111 option C): the backend builds quick first images (voice groups) and
+//                     the pair images after them (compile::jitUnitBackend(true), what ProjectLink does); "promotion"
+//                     is then the time until every unit runs a JIT image, "final" until every unit runs its final one
+// Release / ship build. Usage: pq_bench_live_swap [--blocks N] [--quick]
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -50,7 +53,7 @@ struct Rig {
   std::vector<float> l = std::vector<float>(kBlock), r = std::vector<float>(kBlock);
   std::vector<float> out;
   int64_t time = 0;
-  std::atomic<uint32_t> published{0}, stale{0};
+  std::atomic<uint32_t> published{0}, stale{0}, finals{0};
 
   explicit Rig(const project_fixture::Options& fo) {
     proj = project_fixture::makeProject(fo);
@@ -103,8 +106,12 @@ struct Rig {
     }
     auto bound = rig.compiler->bind(u, std::move(img.value()));
     while (bound.ok() && !rig.program->canPublish(u)) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (bound.ok() && rig.program->publish(u, std::move(bound.value()), e::SwapPolicy{e::SwapMode::Instant}).ok()) ++rig.published;
-    else ++rig.stale;
+    if (bound.ok() && rig.program->publish(u, std::move(bound.value()), e::SwapPolicy{e::SwapMode::Instant}).ok()) {
+      ++rig.published;
+      if (!job.first) ++rig.finals;
+    } else {
+      ++rig.stale;
+    }
   }
 };
 
@@ -118,8 +125,11 @@ void printStats(const char* name, const std::vector<double>& v) {
 
 int main(int argc, char** argv) {
   uint32_t blocks = 3000;
-  for (int i = 1; i < argc; ++i)
+  bool quick = false;
+  for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--blocks") == 0 && i + 1 < argc) blocks = std::max(100, std::atoi(argv[++i]));
+    if (std::strcmp(argv[i], "--quick") == 0) quick = true;
+  }
   bench::pinCurrentThread(bench::cpuTopology().coreMask(1));
   bench::raisePriority();
   bench::printPlacement("audio thread", bench::cpuTopology().coreMask(1));
@@ -139,7 +149,7 @@ int main(int argc, char** argv) {
   for (uint32_t i = 0; i < blocks; ++i) interp.push_back(live.block());
 
   e::BackgroundCompilerConfig bc;
-  bc.backend = compile::jitUnitBackend();
+  bc.backend = compile::jitUnitBackend(quick);
   bc.deliver = &Rig::deliver;
   bc.user = &live;
   e::BackgroundCompiler worker(bc);
@@ -166,6 +176,12 @@ int main(int argc, char** argv) {
     while (std::chrono::steady_clock::now() < next) std::this_thread::yield();
   }
   const double promoteMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  while (live.finals.load() < units) {  // the final images (quick: the refinements), still at real-time pace
+    transition.push_back(live.block());
+    next += std::chrono::microseconds(1333);
+    while (std::chrono::steady_clock::now() < next) std::this_thread::yield();
+  }
+  const double finalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   worker.waitIdle();
   live.program->collect();
   for (uint32_t i = 0; i < blocks; ++i) jit.push_back(live.block());
@@ -183,9 +199,10 @@ int main(int argc, char** argv) {
   const e::BackgroundStats bs = worker.stats();
   std::printf("BENCH ratio interp/jit steady: median %.2f, p99 %.2f; transition max / interp max %.3f\n",
               si.medianNs / sj.medianNs, si.p99Ns / sj.p99Ns, st.maxNs / si.maxNs);
-  std::printf("BENCH promotion: all %u units on JIT images %.0f ms after the want (background builds %.0f ms total, %u "
-              "published, %u stale)\n",
-              units, promoteMs, bs.totalBuildMs, live.published.load(), live.stale.load());
+  std::printf("BENCH promotion%s: all %u units on JIT images %.0f ms after the want, on their final images %.0f ms "
+              "(background builds %.0f ms total, %u published, %u stale)\n",
+              quick ? " (quick first images)" : "", units, promoteMs, finalMs, bs.totalBuildMs, live.published.load(),
+              live.stale.load());
   std::printf("BENCH equal: %zu of %zu samples differ from the interpreted-only run\n", diff, live.out.size());
   std::printf("system load during the run: %.0f %%\n", load.busyPercent());
   return diff == 0 ? 0 : 6;

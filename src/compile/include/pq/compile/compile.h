@@ -103,10 +103,12 @@ Result<jit::Compiler*> jitCompiler();
 // exists; without a call the process compiler shares code in memory only (tests, pqc). pqdaw calls it at startup
 // (app::configureJitCache). Thread-safe.
 void setJitCache(const jit::CacheConfig& cache);
-// ProjectCompiler's backend through jitCompiler() (UnitBackend::user unused).
-engine::UnitBackend jitUnitBackend() noexcept;
+// ProjectCompiler's backend through jitCompiler() (UnitBackend::user unused). quickFirst (T1b.x-perf, QUESTIONS Q111
+// option C): also UnitBackend::quick (jit::CompileOptions::quickFirst), for background builds that deliver a voice-group
+// image first and the pair image after it (ProjectLink, the patch preview).
+engine::UnitBackend jitUnitBackend(bool quickFirst = false) noexcept;
 // The same through a given compiler (tests, the AOT seed: their own Compiler and cache); it must outlive the backend.
-engine::UnitBackend jitUnitBackend(jit::Compiler* compiler) noexcept;
+engine::UnitBackend jitUnitBackend(jit::Compiler* compiler, bool quickFirst = false) noexcept;
 
 // UTF-8 string → path (command-line arguments are UTF-8).
 std::filesystem::path pathFromUtf8(std::string_view s);

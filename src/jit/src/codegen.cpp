@@ -173,8 +173,7 @@ public:
       const std::string name = o_.prefix + "_stage" + std::to_string(k);
       stageFunction(k, name, voice ? (o_.scalarLanes ? 1u : 8u) : 0u);
       res_.stageFunctions.push_back(name);
-      if (voice && o_.pairs && k < L_.pairable.size() && L_.pairable[k] && !frameCalls(st) &&
-          chainCost_[k] <= kMaxPairChainCost) {
+      if (wantsPair(k)) {
         stageFunction(k, name + "_pair", 16);
         res_.pairFunctions[k] = name + "_pair";
       }
@@ -186,7 +185,23 @@ public:
     return res_;
   }
 
+  // T1b.x-perf (Q111 C): which stages run() gives a pair function, without generating any code.
+  std::vector<uint8_t> pairPlan() {
+    analyse();
+    std::vector<uint8_t> plan(s_.stages.size(), 0);
+    for (uint32_t k = 0; k < s_.stages.size(); ++k) plan[k] = wantsPair(k) ? 1 : 0;
+    return plan;
+  }
+
 private:
+  // A voice stage the host lets pair, without per-frame calls and without a chain too big for a pair's frame (after
+  // analyse()).
+  bool wantsPair(uint32_t k) const {
+    const g::Stage& st = s_.stages[k];
+    return st.poly == g::Poly::Voice && !o_.scalarLanes && o_.pairs && k < L_.pairable.size() && L_.pairable[k] &&
+           !frameCalls(st) && chainCost_[k] <= kMaxPairChainCost;
+  }
+
   // ================================================================================================================
   // Analysis: how each op is emitted, and which op outputs must reach memory.
   // ================================================================================================================
@@ -1800,6 +1815,13 @@ std::vector<uint32_t> meterUnits(const g::Schedule& s, const HostLayout& layout,
   llvm::Module mod("pq_units", ctx);
   PtrTable tab;
   return Gen(s, layout, tab, mod, options).units();
+}
+
+std::vector<uint8_t> pairPlan(const g::Schedule& s, const HostLayout& layout, const GenOptions& options) {
+  llvm::LLVMContext ctx;
+  llvm::Module m("pq_plan", ctx);
+  PtrTable tab;
+  return Gen(s, layout, tab, m, options).pairPlan();
 }
 
 }  // namespace pq::jit::detail

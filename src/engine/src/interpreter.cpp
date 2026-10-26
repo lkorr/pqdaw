@@ -789,4 +789,21 @@ Result<std::unique_ptr<ProgramImage>> buildInterpreted(const graph::Schedule& sc
   return Builder(schedule, options).build();
 }
 
+double estimateInterpretedNsPerFrame(const graph::Schedule& s, uint32_t voiceGroups) noexcept {
+  constexpr double kOpNs = 1.1, kSolveOpNs = 15.0;
+  double ns = 0.0;
+  for (const graph::Stage& st : s.stages) {
+    const double mult = st.poly == graph::Poly::Voice ? static_cast<double>(std::max<uint32_t>(voiceGroups, 1)) : 1.0;
+    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions && r < s.regions.size(); ++r) {
+      const graph::Region& reg = s.regions[r];
+      if (reg.kind == graph::RegionKind::Control) continue;  // once per block
+      double regionNs = kOpNs * reg.numOps;
+      for (uint32_t k = reg.firstSolve; k < reg.firstSolve + reg.numSolves && k < s.solves.size(); ++k)
+        regionNs += kSolveOpNs * s.solves[k].numOps * std::max<uint32_t>(s.solves[k].iterations, 1);
+      ns += mult * regionNs;
+    }
+  }
+  return ns;
+}
+
 }  // namespace pq::engine

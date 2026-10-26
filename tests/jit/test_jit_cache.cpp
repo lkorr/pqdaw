@@ -615,3 +615,45 @@ TEST_CASE("jit: freeing an image never waits for a compile in progress; its code
   imgB->process(ctx);
   CHECK(y[15] == doctest::Approx(std::sin(1.25) + 0.25).epsilon(1e-6));
 }
+
+// T1b.x-perf (QUESTIONS Q111 option C): CompileOptions::quickFirst gives a voice-groups image first when pairs would
+// add code and the cache has no final image; that first image is not stored, is bit-identical to the interpreter (so
+// to the final image), and a later compile without quickFirst gives (and stores) the final one. Once the final image
+// is cached, quickFirst returns it at once.
+TEST_CASE("jit: quickFirst compiles voice groups first, the final pair image later; a cached final image comes at once") {
+  TempDir dir("quick");
+  std::vector<std::string> skipped;
+  const auto voice = compileFile(text_util::casesDir() / "fm_voice.pqp", 48000.0, skipped);
+  REQUIRE(!voice.empty());
+  const Compiled& fm = voice.front();
+  REQUIRE(voicesFor(fm) > 0);
+  jit::CompileOptions quick = optionsFor(fm);
+  quick.quickFirst = true;
+  {
+    auto a = makeCompiler(cacheIn(dir.path));
+    jit::CompileStats st;
+    checkAgainstInterpreter(fm, *a, &st, quick);  // the first image plays exactly what the interpreter plays
+    CHECK(st.refine);
+    CHECK(st.pairedStages == 0);
+    CHECK(a->counters().stores == 0);  // a first image is never stored
+    jit::CompileStats fin;
+    checkAgainstInterpreter(fm, *a, &fin, optionsFor(fm));
+    CHECK_FALSE(fin.refine);
+    CHECK(fin.pairedStages > 0);
+    CHECK(a->counters().stores == 1);
+    // A global patch has nothing to pair: quickFirst compiles its final image directly.
+    const Compiled g = compileText("patch G { in x : audio\n out y : audio\n y = tanh(x * 3) }");
+    jit::CompileOptions gq;
+    gq.quickFirst = true;
+    jit::CompileStats gs;
+    REQUIRE(a->compile(g.sched, gq, &gs).ok());
+    CHECK_FALSE(gs.refine);
+  }
+  auto b = makeCompiler(cacheIn(dir.path));
+  jit::CompileStats st;
+  checkAgainstInterpreter(fm, *b, &st, quick);
+  CHECK_FALSE(st.refine);  // the final image, from the disk cache
+  CHECK(st.pairedStages > 0);
+  CHECK(st.source == jit::CompileStats::Source::Disk);
+  CHECK(b->counters().compiles == 0);
+}

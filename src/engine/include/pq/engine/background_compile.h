@@ -15,7 +15,13 @@
 //     structural compile, so a job for a schedule that was edited again (or whose unit was removed) is dropped
 //     before it starts. A compile already running is not interrupted (LLVM cannot be cancelled); its image is
 //     delivered and the caller drops it when the unit has moved on (stale);
-//   - a schedule is compiled once per want() that names it while it is neither queued nor running.
+//   - a schedule is compiled once per want() that names it while it is neither queued nor running;
+//   - T1b.x-perf (QUESTIONS Q111 option C): with a UnitBackend::quick, a job builds a quick first image when that is
+//     quicker (the JIT's voice groups; a cache hit or a unit without pairs gives the final image at once), delivers it
+//     marked `first`, and queues a refinement job (`refine`: the final image through UnitBackend::fn) at the END of
+//     the queue, so every unit gets its first image before any unit's final one. A refinement is queued only if no
+//     want() since the job started left its schedule out (the caller has moved on). want() takes refinement jobs too
+//     (the caller lists the schedules that have a first image only with `refine` set).
 //
 // Threads: construction, want(), waitIdle(), stats() and destruction from any non-RT thread (internally locked).
 // Nothing here runs on the audio thread.
@@ -42,6 +48,8 @@ struct BackgroundJob {
   uint32_t maxVoiceGroups = 1;
   const Resources* resources = nullptr;  // must outlive the image
   uint64_t tag = 0;                      // the caller's (e.g. the unit's compile-cache key)
+  bool refine = false;  // build the final image (UnitBackend::fn) even if the backend has a quick one (Q111 C)
+  bool first = false;   // set on delivery: a quick first image; a refinement job for the schedule is queued after it
 };
 
 struct BackgroundCompilerConfig {
@@ -60,6 +68,7 @@ struct BackgroundStats {
   uint64_t dropped = 0;     // queued jobs removed by a later want() before they started
   uint64_t built = 0;       // images built
   uint64_t failed = 0;      // builds that returned an error
+  uint64_t refinements = 0; // refinement jobs queued after a first image (Q111 C)
   double lastBuildMs = 0.0, totalBuildMs = 0.0;
 };
 
@@ -87,6 +96,7 @@ private:
   std::condition_variable cv_;
   std::deque<BackgroundJob> queue_;
   const graph::Schedule* running_ = nullptr;
+  bool runningWanted_ = false;  // no want() since the running job started left its schedule out
   bool quit_ = false;
   BackgroundStats stats_;
   std::thread worker_;

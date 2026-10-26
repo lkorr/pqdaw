@@ -82,7 +82,9 @@ struct Rig {
     if (jit) {  // room for the JIT publishes comes from blocks being run: drive the engine while it compiles
       for (int i = 0; i < 200000; ++i) {
         const app::JitStats js = link->jitStats();
-        if (js.published + js.errors + js.stale >= js.wanted) break;
+        // (T1b.x-perf, Q111 C: and every quick first image refined to its final one)
+        if (js.published + js.errors + js.stale >= js.wanted && js.refined + js.refineStale + js.refineErrors >= js.firstImages)
+          break;
         block();
       }
       link->collect();

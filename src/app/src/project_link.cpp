@@ -384,7 +384,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   automated_.assign(kProjectParams, 0);
   if (cfg_.jit) {  // T1b.5: before the first compile, which already wants JIT images
     engine::BackgroundCompilerConfig bc;
-    bc.backend = cfg_.jitBackend.fn != nullptr ? cfg_.jitBackend : compile::jitUnitBackend();
+    bc.backend = cfg_.jitBackend.fn != nullptr ? cfg_.jitBackend : compile::jitUnitBackend(true);
     bc.deliver = &ProjectLink::deliverJit;
     bc.beforeBuild = cfg_.jitBeforeCompile != nullptr ? &ProjectLink::beforeJit : nullptr;
     bc.user = this;
@@ -468,6 +468,9 @@ Status ProjectLink::setSampleRate(double rate) {
       return s;
     }
     jitDone_.clear();
+    jitFirst_.clear();
+    jitLive_.clear();
+    jitHeld_.clear();
     deferred_.clear();  // results for the old program (the new one is compiled from scratch below)
     anyDeferred_.store(false, std::memory_order_release);
   }
@@ -1170,6 +1173,8 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     engine_->setProgram(std::move(prog.value()));
   } else {
     Deferred d;
+    std::vector<std::shared_ptr<const graph::Schedule>> before;  // each unit's schedule before this compile
+    for (uint32_t u = 0; u < compiler_->numUnits(); ++u) before.push_back(compiler_->unit(u).schedule);
     auto upd = compiler_->update(lp.graph, dirty);
     if (!upd.ok() && upd.error().code == ErrorCode::Unsupported) {  // a topology change
       auto tb = compiler_->rebuild(lp.graph, dirty);
@@ -1186,6 +1191,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
       for (engine::UnitUpdate& u : upd.value()) {
         if (u.unchanged) continue;
         ++compiledUnits;
+        if (holdForJit(u.unit, u.unit < before.size() ? before[u.unit] : nullptr)) continue;
         d.units.push_back(std::move(u));
       }
     }
@@ -1208,10 +1214,24 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
 
 // ---- The interpreter → JIT live swap (T1b.5) --------------------------------------------------------------------
 
+// compileMutex_ held, after compiler_->update(): whether unit u's new schedule waits for its JIT image while the unit
+// keeps playing the JIT image of `previous` (LinkConfig::interpretBudget).
+bool ProjectLink::holdForJit(uint32_t u, const std::shared_ptr<const graph::Schedule>& previous) {
+  if (jit_ == nullptr || cfg_.interpretBudget <= 0.0f || previous == nullptr || !deferred_.empty()) return false;
+  auto in = [&](const auto& list) { return std::find(list.begin(), list.end(), previous) != list.end(); };
+  if (!in(jitLive_) && !in(jitHeld_)) return false;  // it plays an interpreted image: nothing to keep
+  const std::shared_ptr<const graph::Schedule>& sc = compiler_->unit(u).schedule;
+  const double ns = engine::estimateInterpretedNsPerFrame(*sc, compiler_->imageVoiceGroups(u));
+  if (ns * cfg_.sampleRate * 1e-9 <= cfg_.interpretBudget) return false;
+  jitHeld_.push_back(sc);
+  ++stats_.heldForJit;
+  return true;
+}
+
 void ProjectLink::wantJit() {
   if (jit_ == nullptr) return;
-  std::vector<std::shared_ptr<const graph::Schedule>> done;
-  std::vector<engine::BackgroundJob> jobs;
+  std::vector<std::shared_ptr<const graph::Schedule>> done, first;
+  std::vector<engine::BackgroundJob> jobs, refinements;
   for (uint32_t u = 0; u < compiler_->numUnits(); ++u) {
     const std::shared_ptr<const graph::Schedule>& sc = compiler_->unit(u).schedule;
     if (std::find(jitDone_.begin(), jitDone_.end(), sc) != jitDone_.end()) {
@@ -1224,9 +1244,26 @@ void ProjectLink::wantJit() {
     j.maxVoiceGroups = compiler_->imageVoiceGroups(u);
     j.resources = compiler_->options().resources;
     j.tag = compiler_->unit(u).key;
+    if (std::find(jitFirst_.begin(), jitFirst_.end(), sc) != jitFirst_.end()) {  // Q111 C: its final image, after
+      first.push_back(sc);                                                       // every unit's first one
+      j.refine = true;
+      refinements.push_back(std::move(j));
+      continue;
+    }
     jobs.push_back(std::move(j));
   }
   jitDone_ = std::move(done);  // schedules no unit runs any more are forgotten (and freed)
+  jitFirst_ = std::move(first);
+  auto running = [&](std::vector<std::shared_ptr<const graph::Schedule>>& list) {
+    std::erase_if(list, [&](const std::shared_ptr<const graph::Schedule>& sc) {
+      for (uint32_t u = 0; u < compiler_->numUnits(); ++u)
+        if (compiler_->unit(u).schedule == sc) return false;
+      return true;
+    });
+  };
+  running(jitLive_);
+  running(jitHeld_);
+  for (engine::BackgroundJob& j : refinements) jobs.push_back(std::move(j));
   {
     std::lock_guard lock(jitStatsMutex_);
     jitStats_.wanted += jobs.size();
@@ -1245,14 +1282,33 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
     std::lock_guard lock(link.jitStatsMutex_);
     f(link.jitStats_);
   };
+  auto forget = [&](std::vector<std::shared_ptr<const graph::Schedule>>& list) {  // compileMutex_ held
+    list.erase(std::remove(list.begin(), list.end(), job.schedule), list.end());
+  };
   if (!img.ok()) {
-    std::fprintf(stderr, "pqdaw: JIT: %s (the unit stays interpreted)\n", img.error().message.c_str());
-    count([](JitStats& st) { ++st.errors; });
+    std::fprintf(stderr, "pqdaw: JIT: %s (the unit stays %s)\n", img.error().message.c_str(),
+                 job.refine ? "on its first JIT image" : "interpreted");
+    count([&](JitStats& st) { ++(job.refine ? st.refineErrors : st.errors); });
     std::lock_guard lock(link.compileMutex_);
+    forget(link.jitFirst_);
     link.jitDone_.push_back(job.schedule);  // not retried
+    if (std::find(link.jitHeld_.begin(), link.jitHeld_.end(), job.schedule) == link.jitHeld_.end()) return;
+    // A held edit (interpretBudget) whose JIT failed: play it interpreted after all, as an ordinary edit would.
+    forget(link.jitHeld_);
+    engine::ProjectProgram* program = link.engine_->program();
+    const uint32_t u = program != nullptr ? link.compiler_->unitOf(job.schedule.get()) : engine::kNoUnit;
+    if (u == engine::kNoUnit) return;
+    engine::InterpretOptions io;
+    io.maxBlockFrames = job.maxBlockFrames;
+    io.maxVoiceGroups = job.maxVoiceGroups;
+    io.resources = job.resources;
+    auto interp = engine::buildInterpreted(*job.schedule, io);
+    if (!interp.ok()) return;
+    auto bound = link.compiler_->bind(u, std::move(interp.value()));
+    if (bound.ok() && program->canPublish(u)) (void)program->publish(u, std::move(bound.value()), engine::SwapPolicy{});
     return;
   }
-  count([&](JitStats& st) { ++st.built; });
+  if (!job.refine) count([&](JitStats& st) { ++st.built; });
   // Publish into the unit that still runs this schedule. A full unit queue or a pending topology means the audio
   // thread has not taken earlier images yet: retry without holding the lock (the compile path may need it, and on a
   // test's own thread the engine only runs once that path returns), for at most 5 s.
@@ -1267,12 +1323,23 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
       // JIT image filling the queue made the next compile wait for an audio thread that might not run).
       if (link.deferred_.empty() && program->canPublish(u) && program->queued(u) <= 1) {
         auto bound = link.compiler_->bind(u, std::move(img.value()));
-        // Bit-identical to the interpreted image (no contraction, T1b.1-fix1): an instant swap is sample-exact.
-        if (bound.ok() && program->publish(u, std::move(bound.value()), engine::SwapPolicy{engine::SwapMode::Instant}).ok()) {
-          link.jitDone_.push_back(job.schedule);
-          count([](JitStats& st) { ++st.published; });
+        // Bit-identical to the interpreted image (no contraction, T1b.1-fix1), and a first JIT image to its final one
+        // (Q111 C: voice groups and pairs compute the same bits): an instant swap is sample-exact. A held edit
+        // (interpretBudget) replaces an earlier schedule's image: the default policy (crossfaded while audible).
+        const bool held = std::find(link.jitHeld_.begin(), link.jitHeld_.end(), job.schedule) != link.jitHeld_.end();
+        const engine::SwapPolicy policy = held ? engine::SwapPolicy{} : engine::SwapPolicy{engine::SwapMode::Instant};
+        if (bound.ok() && program->publish(u, std::move(bound.value()), policy).ok()) {
+          forget(link.jitHeld_);
+          if (std::find(link.jitLive_.begin(), link.jitLive_.end(), job.schedule) == link.jitLive_.end())
+            link.jitLive_.push_back(job.schedule);
+          forget(link.jitFirst_);
+          (job.first ? link.jitFirst_ : link.jitDone_).push_back(job.schedule);
+          count([&](JitStats& st) {
+            if (job.refine) ++st.refined;
+            else ++st.published, st.firstImages += job.first ? 1 : 0;
+          });
         } else {
-          count([](JitStats& st) { ++st.errors; });
+          count([&](JitStats& st) { ++(job.refine ? st.refineErrors : st.errors); });
         }
         return;
       }
@@ -1280,7 +1347,7 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
     if (link.jitWorker_->stopping()) break;  // ~ProjectLink: the compiler object lives until its worker has joined
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  count([](JitStats& st) { ++st.stale; });
+  count([&](JitStats& st) { ++(job.refine ? st.refineStale : st.stale); });
 }
 
 bool ProjectLink::waitForJit(double timeoutSeconds) {
