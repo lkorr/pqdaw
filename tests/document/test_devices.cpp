@@ -237,6 +237,15 @@ TEST_CASE("devices: the stock device library and catalog") {
   CHECK(synth->param("attack")->defaultValue == doctest::Approx(0.005));  // 5ms in seconds
   CHECK(synth->param("attack")->unit == pq::graph::Unit::ms);
   CHECK(synth->params.size() == 6);
+  const DeviceInfo* op = cat.find("operator");  // T4.12: a stereo instrument
+  REQUIRE(op != nullptr);
+  CHECK(op->kind == DeviceKind::Instrument);
+  CHECK(op->name == "Operator");
+  CHECK(op->outWidth == 2);
+  REQUIRE(op->setting("algorithm") != nullptr);
+  CHECK(op->setting("algorithm")->defaultValue == 1.0);
+  CHECK(op->setting("onA")->defaultValue == 1.0);
+  CHECK(op->param("levelA")->unit == pq::graph::Unit::dB);
   const DeviceInfo* util = cat.find("utility");
   REQUIRE(util != nullptr);
   CHECK(util->kind == DeviceKind::AudioEffect);

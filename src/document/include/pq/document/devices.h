@@ -3,7 +3,7 @@
 // The device library and catalog (T4.1; QUESTIONS Q129, item 11).
 //
 // A device is an instance of a patch (SPEC §7.3: devices are subcircuits). The DEVICE LIBRARY is the set of patches
-// devices may call: the stock devices of stdlib/ (BasicSynth, Utility, Saturator, EQ Eight) with everything they
+// devices may call: the stock devices of stdlib/ (BasicSynth, Operator, Utility, Saturator, EQ Eight) with everything they
 // import, parsed once into one graph::PatchLibrary that the lowering (lower.h) calls into. The CATALOG describes each
 // device patch for the views and the edit builders: its kind (instrument / audio effect), its params (range, unit,
 // label, curve, steps: the patch's `param` declarations and attributes) and its settings (`real const` inputs:
@@ -84,6 +84,7 @@ struct StockDevice {
   std::string_view file;
   std::string_view patch;
   std::string_view name;
+  DeviceKind kind = DeviceKind::AudioEffect;  // what describeDevice finds (the AOT seed's stock chains use it)
 };
 // The stock devices in menu order (instruments first).
 std::span<const StockDevice> stockDevices() noexcept;

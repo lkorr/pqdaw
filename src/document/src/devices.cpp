@@ -84,7 +84,8 @@ fs::path utf8Path(std::string_view utf8) {
 }
 
 constexpr StockDevice kStock[] = {
-    {"instruments/basic_synth.pqp", "BasicSynth", "Basic Synth"},
+    {"instruments/basic_synth.pqp", "BasicSynth", "Basic Synth", DeviceKind::Instrument},
+    {"devices/operator.pqp", "operator", "Operator", DeviceKind::Instrument},  // T4.12
     {"devices/utility.pqp", "utility", "Utility"},
     {"devices/saturator.pqp", "saturator", "Saturator"},
     {"devices/eq_eight.pqp", "eq_eight", "EQ Eight"},
@@ -260,6 +261,10 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
   for (const auto& [patch, sd] : found) {
     auto info = describeDevice(*patch, std::string(sd->name));
     if (!info) return std::move(info).error();
+    if (info->kind != sd->kind)
+      return Error{ErrorCode::InvalidArgument, "device library: " + std::string(sd->patch) + " is listed as " +
+                                                   (sd->kind == DeviceKind::Instrument ? "an instrument" : "an audio effect") +
+                                                   " but its patch is not one", {}};
     lib->catalog_.add(std::move(*info));
   }
   return lib;

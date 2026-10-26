@@ -513,3 +513,89 @@ TEST_CASE("golden: a 5L2s generator automated across a region boundary (the pitc
   REQUIRE(pitches.value().clips[0].notes[0].hz);
   CHECK(pitches.value().clips[0].notes[0].signal == f.t);
 }
+
+// ---- T4.12: Operator as a track's instrument (device chain, T4.1) through the playback link -----------------------
+namespace {
+
+// One MIDI track following main tuning `slot`, Operator (defaults: operator A, a sine) as its instrument, one Degree
+// note per quarter (120 BPM: 0.5 s apart, 0.375 s long).
+struct OperatorTrack {
+  DocumentStore store;
+  TrackId track;
+  TuningId t;
+  DeviceId op;
+  OperatorTrack(const decltype(TuningDef::system)& system, const std::vector<int32_t>& degrees, int32_t perEquave) {
+    IdSource& ids = store.ids();
+    track = ids.track();
+    t = ids.tuning();
+    Batch b{"operator tuning fixture", {}};
+    TuningSlot s{t, "tuning", Colour{0x2266AA}, {}};
+    s.def.system = system;
+    b.commands.push_back(AddTuning{s});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Op"), {}, kAppend});
+    b.commands.push_back(SetTrackTuning{track, TuningAssignment::mainTuning(t)});
+    std::vector<Note> notes;
+    for (size_t i = 0; i < degrees.size(); ++i) {
+      const int32_t d = degrees[i];
+      const int32_t e = d >= 0 ? d / perEquave : -((-d + perEquave - 1) / perEquave);
+      notes.push_back(playback_fixture::note(ids, static_cast<pq::Ticks>(i) * pq::kPpq, pq::kPpq * 3 / 4, d - e * perEquave, e));
+    }
+    b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 4 * pq::kTicksPerWhole, notes, "Op")});
+    op = ids.device();
+    b.commands.push_back(AddDevice{track, makeDevice(op, "operator", DeviceKind::Instrument), 0});
+    const Status st = store.dispatch(b);
+    REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+  }
+};
+
+// The pitch of note i (zero crossings over 50 … 300 ms into it), left channel.
+double notePitch(const golden::Channels& out, size_t i) {
+  const size_t from = static_cast<size_t>((0.5 * static_cast<double>(i) + 0.05) * kRate);
+  const size_t to = static_cast<size_t>((0.5 * static_cast<double>(i) + 0.30) * kRate);
+  const std::vector<float> seg(out[0].begin() + static_cast<std::ptrdiff_t>(from), out[0].begin() + static_cast<std::ptrdiff_t>(to));
+  const std::vector<Cycle> cs = cycles(seg);
+  REQUIRE(cs.size() > 4);
+  double sum = 0.0;
+  for (const Cycle& c : cs) sum += c.hz;
+  return sum / static_cast<double>(cs.size());
+}
+
+}  // namespace
+
+TEST_CASE("tuning playback: an Operator chain plays 31edo and a MOS at the tuning signal's pitches (T4.12)") {
+  using pq::tuning::kDefaultReferenceHz;
+  // 31edo: degrees across two equaves.
+  const std::vector<int32_t> d31{-31, -13, 0, 5, 18, 31, 44};
+  {
+    OperatorTrack f(pq::tuning::Edo::make(31).value(), d31, 31);
+    auto link = makeLink(f.store.current());
+    CHECK(link->stats().compiles >= 1);
+    const golden::Channels out = render(*link, 0.5 * static_cast<double>(d31.size()));
+    double worst = 0.0;
+    for (size_t i = 0; i < d31.size(); ++i) {
+      const double want = kDefaultReferenceHz * std::exp2(static_cast<double>(d31[i]) / 31.0);
+      worst = std::max(worst, std::fabs(1200.0 * std::log2(notePitch(out, i) / want)));
+    }
+    MESSAGE("Operator in 31edo: max pitch error " << worst << " cents");
+    CHECK(worst < 0.01);
+  }
+  // 5L2s defined at 700 c, its generator moved to 696 c by a tuning param edit (no compile): Operator follows the
+  // signal, not the notes' static pitches.
+  const std::vector<int32_t> dMos{0, 1, 2, 3, 4, 5, 6, 7, 9};
+  OperatorTrack f(glideMos(700.0), dMos, 7);
+  auto link = makeLink(f.store.current());
+  [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  const uint64_t compiles = link->stats().compiles;
+  REQUIRE(f.store.dispatch(SetTuningParam{f.t, ParamKind::MosGenerator, 696.0}).ok());
+  link->flush();
+  CHECK(link->stats().compiles == compiles);
+  const golden::Channels out = render(*link, 0.5 * static_cast<double>(dMos.size()));
+  double worst = 0.0;
+  for (size_t i = 0; i < dMos.size(); ++i) {
+    const int32_t e = dMos[i] / 7;
+    const double want = kDefaultReferenceHz * std::exp2(degreeCents(696.0, dMos[i] - 7 * e) / 1200.0 + e);
+    worst = std::max(worst, std::fabs(1200.0 * std::log2(notePitch(out, i) / want)));
+  }
+  MESSAGE("Operator in 5L2s at 696 c: max pitch error " << worst << " cents");
+  CHECK(worst < 0.01);
+}

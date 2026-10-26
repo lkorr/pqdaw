@@ -211,3 +211,39 @@ TEST_CASE("T1b.4: pqdaw's cache configuration: the user directory (PQ_JIT_CACHE_
   CHECK(!c.verify);
   if (std::getenv("PQ_JIT_CACHE_DIR") == nullptr) CHECK(c.dir == jit::defaultCacheDir());
 }
+
+TEST_CASE("T4.12: a new Operator track (the stock instrument at its defaults) runs no JIT compile: the AOT seed has it") {
+  TempDir aot("seed-op"), user("user-op");
+  app::AotSeedOptions so;
+  so.sampleRates = {48000.0};
+  auto seeded = app::seedJitAot(aot.path, so);
+  REQUIRE_MESSAGE(seeded.ok(), (seeded.ok() ? std::string() : seeded.error().message));
+  jit::CacheConfig cc;
+  cc.dir = user.path;
+  cc.readOnly = {aot.path};
+  auto host = compilerWith(cc);
+  DocumentStore s;
+  auto l = link(s.current(), host.get());
+  [[maybe_unused]] const ListenerId sub = s.subscribe([&](const StoreEvent& e) { l->onDocumentChange(e); });
+  Player p(*l);
+  p.run(20);
+  // A MIDI track with Operator as its instrument (the seed's stock chain).
+  IdSource& ids = s.ids();
+  const TrackId t = ids.track();
+  REQUIRE(s.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "MIDI"), {}, kAppend}).ok());
+  REQUIRE(s.dispatch(AddDevice{t, makeDevice(ids.device(), "operator", DeviceKind::Instrument), 0}).ok());
+  std::vector<Note> notes;
+  for (int i = 0; i < 4; ++i) notes.push_back(playback_fixture::note(ids, i * kPpq, kPpq / 2, 4 * i, 0, 100.0f));
+  REQUIRE(s.dispatch(AddClip{t, playback_fixture::clip(ids, 0, kTicksPerWhole, notes, "clip")}).ok());
+  l->flush();
+  l->play(0);
+  p.run(40);
+  REQUIRE(l->waitForJit(60.0));
+  p.run(400);
+  const uint32_t units = l->engine().program()->numUnits();
+  CHECK(unitsOn(*l, engine::ImageBackend::Jit) == units);
+  const jit::CacheCounters c = host->counters();
+  CHECK(c.compiles == 0);
+  CHECK(c.aotHits >= units);
+  CHECK(peak(p.out) > 0.01f);
+}

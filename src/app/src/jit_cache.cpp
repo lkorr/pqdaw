@@ -65,12 +65,17 @@ Result<std::vector<Snapshot>> stockProjects() {
     uint32_t midi = 0, returns = 0;
     bool group = false;          // one more MIDI track inside a group
     std::string_view effect;     // T4.1 (Q116): the MIDI tracks' chain is the default instrument + this stock effect
+    std::string_view instrument; // T4.12: the MIDI tracks' instrument instead of the default one (e.g. Operator)
   };
   std::vector<Shape> shapes = {{0, 0, false, {}}, {1, 0, false, {}}, {2, 0, false, {}}, {4, 0, false, {}},
                                {8, 0, false, {}}, {1, 1, false, {}}, {2, 1, false, {}}, {1, 0, true, {}}};
   // Each stock audio effect as it is first added from the device menu: at its defaults after the default instrument.
-  for (const StockDevice& d : stockDevices())
-    if (d.patch != kDefaultInstrument) shapes.push_back({1, 0, false, d.patch});
+  // Each other stock instrument (T4.12: Operator) as the first device of a new MIDI track, at its defaults.
+  for (const StockDevice& d : stockDevices()) {
+    if (d.patch == kDefaultInstrument) continue;
+    if (d.kind == DeviceKind::Instrument) shapes.push_back({1, 0, false, {}, d.patch});
+    else shapes.push_back({1, 0, false, d.patch, {}});
+  }
   std::vector<Snapshot> out;
   for (const Shape& sh : shapes) {
     IdSource ids;
@@ -79,6 +84,11 @@ Result<std::vector<Snapshot>> stockProjects() {
     for (uint32_t r = 0; r < sh.returns; ++r) b.commands.push_back(AddTrack{newTrack(ids, TrackKind::Return, "Return"), {}, kAppend});
     for (uint32_t k = 0; k < sh.midi; ++k) {
       TrackPtr t = newTrack(ids, TrackKind::Midi, "MIDI");
+      if (!sh.instrument.empty()) {
+        Track withInstrument = *t;
+        withInstrument.devices.front() = makeDevice(ids.device(), std::string(sh.instrument), DeviceKind::Instrument);
+        t = std::make_shared<const Track>(std::move(withInstrument));
+      }
       if (!sh.effect.empty()) {
         Track withEffect = *t;
         withEffect.devices.push_back(makeDevice(ids.device(), std::string(sh.effect), DeviceKind::AudioEffect));
