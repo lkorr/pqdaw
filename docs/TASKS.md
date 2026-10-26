@@ -518,7 +518,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Hover a wire: value, logic level, or a mini-scope from an analysis tap (RT copy into a ring, no allocation); bool wires lit when high; per-subcircuit and per-wire ns/sample meters (§7.6).
   - Accept: probe taps RtScope-clean; tap cost when no probe is open = 0; meter values within 20 % of the bench numbers.
 
-- [ ] **T4.6 Device panels framework** (`views`, `stdlib`)
+- [~] **T4.6 Device panels framework** *(worker BU, branch task/T4.6-device-panels; + T4.9/T4.10 panels)* (`views`, `stdlib`)
   - A front panel over a subcircuit: a panel description (controls bound to param pins, layout, visualiser slots), Live-style device frame (title bar, activator, fold, preset slot), PQ Meter visualisers hosted in panels (spectrum, scope, transfer curves).
   - Accept: Utility's and Saturator's panels built from descriptions; goldens; panel repaint on param change damages only the control.
 
