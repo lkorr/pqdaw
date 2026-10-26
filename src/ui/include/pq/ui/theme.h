@@ -137,6 +137,11 @@ struct Theme {
         comment;
     bool operator==(const Circuit&) const = default;
   } circuit{};
+  struct Code {  // the circuit editor's text pane (T4.4): syntax colours on the field well, inline diagnostics
+    Rgba background, gutter, lineNumber, lineNumberCurrent, currentLine, text, keyword, number, string,
+        comment, name, punctuation, selection, caret, error, errorText, warning, stale;
+    bool operator==(const Code&) const = default;
+  } code{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;

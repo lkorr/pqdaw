@@ -51,8 +51,10 @@ public:
   explicit CircuitCanvas(std::string name = "circuit");
   ~CircuitCanvas() override;
 
-  // The scene to show (shared: a canvas never changes it). fit = frame the whole scene at the next layout.
-  void setScene(std::shared_ptr<const CircuitScene> scene, bool fit = true);
+  // The scene to show (shared: a canvas never changes it). fit = frame the whole scene at the next layout. keepTiles
+  // (T4.4: an edited patch's next scene): symbol body tiles stay (a body's pixels depend only on its bodyKey and the
+  // zoom), so an edit rasterises only the bodies that are new; the far-level chunks are rebuilt either way.
+  void setScene(std::shared_ptr<const CircuitScene> scene, bool fit = true, bool keepTiles = false);
   const std::shared_ptr<const CircuitScene>& scene() const noexcept;
 
   struct View {

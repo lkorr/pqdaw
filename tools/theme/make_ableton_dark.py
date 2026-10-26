@@ -212,6 +212,26 @@ colors = [
  ("circuit.rubberBand", "#FFC6581F"),
  ("circuit.rubberBandEdge", "#FFC658"),
  ("circuit.comment", "#BCC0AE"),
+ # Circuit editor text pane (T4.4; own values from the circuit and text tokens): code on the field well, keywords in a
+ # darker focus amber, numbers in the signal blue, strings in the bool green, inline errors in the automation red.
+ ("code.background", "#0F2026"),  # the text pane: the dark well of fields
+ ("code.gutter", "#16282E"),
+ ("code.lineNumber", "#5E7176"),
+ ("code.lineNumberCurrent", "#B0B5A3"),
+ ("code.currentLine", "#FFFFFF0A"),
+ ("code.text", "#D6CDA8"),  # text.primary
+ ("code.keyword", "#FFA33D"),  # the focus amber, a step down
+ ("code.number", "#78BEFF"),  # circuit.wireAudio
+ ("code.string", "#7FD98A"),  # circuit.wireBool
+ ("code.comment", "#82918F"),  # text.disabled
+ ("code.name", "#F2EDD8"),  # calls: atoms and subcircuits
+ ("code.punctuation", "#8E9C98"),  # circuit.wireParam
+ ("code.selection", "#2F566E"),  # text.selection
+ ("code.caret", "#F2EDD8"),  # text.caret
+ ("code.error", "#FF5A5F"),  # automation.led
+ ("code.errorText", "#FF8A8D"),
+ ("code.warning", "#FFC658"),  # circuit.selected
+ ("code.stale", "#0F202699"),  # veil over the canvas while the text does not parse
 ]
 # Sizes (T3.2-fix1): Live 12 at 100 % draws 7-px capitals (browser items, "Drop Files and Devices Here"); Inter 13 px
 # draws 9-10. Body text goes 13 -> 12 and titles 14 -> 13. Not smaller: 11 px is a size the scene fonts do not

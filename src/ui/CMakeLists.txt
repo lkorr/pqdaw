@@ -35,6 +35,7 @@ pq_add_module(pq_ui
     src/test_driver.cpp
     src/text.cpp
     src/text_edit.cpp
+    src/code_editor.cpp
     src/theme.cpp
     src/tile_atlas.cpp
     src/ui_tree.cpp

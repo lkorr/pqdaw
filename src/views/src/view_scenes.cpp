@@ -8,6 +8,7 @@
 #include "pq/ui/renderer.h"
 #include "pq/ui/scene_textures.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
@@ -643,6 +644,58 @@ Status setupCircuitSymbols(Shell& shell) {
   return Ok{};
 }
 
+// T4.4: the circuit editor (canvas + text pane) over a .pqp file's first patch, with its first atom selected.
+Result<circuit::CircuitEditor*> openEditorScene(Shell& shell, std::string_view file) {
+  if (file.empty()) return Error{ErrorCode::InvalidArgument, "circuit scenes need a .pqp file (--project <file.pqp>)", {}};
+  auto doc = circuit::PatchEditor::open(std::string(file));
+  if (!doc) return std::move(doc).error();
+  circuit::CircuitEditor* e = circuit::openCircuitEditor(shell.overlay(), std::move(*doc));
+  if (!e) return Error{ErrorCode::NotFound, "no patch in " + std::string(file), {}};
+  shell.tree().layoutNow();
+  return e;
+}
+Status setupCircuitEditor(Shell& shell, std::string_view file) {
+  auto e = openEditorScene(shell, file);
+  if (!e) return std::move(e).error();
+  const graph::Patch& p = (*e)->document().drawn((*e)->shownIndex());
+  for (graph::NodeIndex v = 0; v < p.nodeCount(); ++v)
+    if (p.node(v).kind == graph::NodeKind::Atom) {
+      const uint32_t one[1] = {v};
+      (*e)->canvas().select(one, {});
+      break;
+    }
+  (*e)->checkNow();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+// The same with a typing slip in the text pane: the inline error, and the canvas veiled over the last good version.
+Status setupCircuitEditorError(Shell& shell, std::string_view file) {
+  auto e = openEditorScene(shell, file);
+  if (!e) return std::move(e).error();
+  circuit::PatchEditor& d = (*e)->document();
+  // The first binding line of the patch (not a declaration, not a comment).
+  size_t at = std::string::npos;
+  for (size_t line = d.parsed().patchSpans.empty() ? 0 : d.parsed().patchSpans.front().begin; line < d.text().size();) {
+    const size_t end = std::min(d.text().find('\n', line), d.text().size());
+    const std::string_view l = std::string_view(d.text()).substr(line, end - line);
+    const size_t ind = l.find_first_not_of(' ');
+    const std::string_view body = ind == std::string_view::npos ? std::string_view() : l.substr(ind);
+    const size_t eq = l.find(" = ");
+    if (eq != std::string_view::npos && !body.starts_with("param") && !body.starts_with("//") && !body.starts_with("in ") &&
+        !body.starts_with("out ") && !body.starts_with("export")) {
+      at = line + eq;
+      break;
+    }
+    line = end + 1;
+  }
+  if (at == std::string::npos) return Error{ErrorCode::NotFound, "circuit-editor-error: no binding to break", {}};
+  d.replaceText(static_cast<uint32_t>(at + 1), 1, ":", false);  // `x : …` where `x = …` was
+  (*e)->textPane().setCaret(static_cast<uint32_t>(at + 2));
+  shell.tree().setFocus(&(*e)->textPane());
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -676,6 +729,8 @@ constexpr SceneEntry kScenes[] = {
     {"circuit", 1280, 800, nullptr, setupCircuit},
     {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},
     {"circuit-svf-core", 1280, 800, nullptr, setupCircuitSvfCore},
+    {"circuit-editor", 1280, 800, nullptr, setupCircuitEditor},
+    {"circuit-editor-error", 1280, 800, nullptr, setupCircuitEditorError},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

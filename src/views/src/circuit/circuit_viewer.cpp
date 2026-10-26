@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "pq/ui/controls.h"
+#include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 
@@ -235,6 +236,7 @@ CircuitViewer* openCircuitViewer(ui::Widget& from, std::shared_ptr<const PatchDo
 namespace {
 
 // Holds the view.openPatch handler for the shell's lifetime (a hidden child of a slot, like the preferences host).
+// T4.4: the file opens in the circuit editor (canvas + text pane), playing through the app's patch player.
 class CircuitViewerHost : public ui::Widget {
 public:
   explicit CircuitViewerHost(Shell& shell) : Widget("circuit-viewer-host"), ctx_(shell.context()), layer_(&shell.overlay()) {
@@ -245,16 +247,17 @@ public:
       std::weak_ptr<bool> alive = alive_;
       d->choosePatchFile([this, alive](std::string path) {
         if (alive.expired() || path.empty()) return;
-        auto doc = loadPatchDocument(path);
+        auto doc = PatchEditor::open(path);
         if (!doc) {
           ctx_.setStatus("Cannot open the patch: " + doc.error().message.substr(0, doc.error().message.find('\n')));
           return;
         }
-        if (!openCircuitViewer(*layer_, *doc)) ctx_.setStatus("The file has no patch to show");
+        if (!openCircuitEditor(*layer_, std::move(*doc), {}, player)) ctx_.setStatus("The file has no patch to show");
       });
     });
   }
   ~CircuitViewerHost() override { ctx_.clearViewAction("view.openPatch"); }
+  PatchPlayer* player = nullptr;
 
 private:
   ViewContext& ctx_;
@@ -265,5 +268,11 @@ private:
 }  // namespace
 
 void installCircuitViewer(Shell& shell) { shell.slot(ShellSlot::ClipDetail).add<CircuitViewerHost>(shell); }
+
+void setPatchPlayer(Shell& shell, PatchPlayer* player) {
+  ui::Widget& slot = shell.slot(ShellSlot::ClipDetail);
+  for (size_t i = 0; i < slot.childCount(); ++i)
+    if (auto* host = dynamic_cast<CircuitViewerHost*>(&slot.child(i))) host->player = player;
+}
 
 }  // namespace pq::views::circuit

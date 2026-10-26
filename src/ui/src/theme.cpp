@@ -85,6 +85,9 @@ const ColorToken kColors[] = {
     PQ_COLOR(circuit, wireBool), PQ_COLOR(circuit, wireParam), PQ_COLOR(circuit, wireAudio), PQ_COLOR(circuit, wireConst),
     PQ_COLOR(circuit, wireBoolLit), PQ_COLOR(circuit, selected), PQ_COLOR(circuit, hover), PQ_COLOR(circuit, rubberBand),
     PQ_COLOR(circuit, rubberBandEdge), PQ_COLOR(circuit, comment),
+    PQ_COLOR(code, background), PQ_COLOR(code, gutter), PQ_COLOR(code, lineNumber), PQ_COLOR(code, lineNumberCurrent), PQ_COLOR(code, currentLine), PQ_COLOR(code, text),
+    PQ_COLOR(code, keyword), PQ_COLOR(code, number), PQ_COLOR(code, string), PQ_COLOR(code, comment), PQ_COLOR(code, name), PQ_COLOR(code, punctuation),
+    PQ_COLOR(code, selection), PQ_COLOR(code, caret), PQ_COLOR(code, error), PQ_COLOR(code, errorText), PQ_COLOR(code, warning), PQ_COLOR(code, stale),
 };
 #undef PQ_COLOR
 

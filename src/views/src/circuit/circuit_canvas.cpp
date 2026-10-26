@@ -478,11 +478,11 @@ void CircuitCanvas::arrange(ui::LayoutPass& /*pass*/) {
 
 CircuitCanvas::~CircuitCanvas() = default;
 
-void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit) {
+void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit, bool keepTiles) {
   impl_->scene = std::move(scene);
   impl_->selection = {};
   impl_->hover = {};
-  impl_->tiles.clear();
+  if (!keepTiles) impl_->tiles.clear();
   impl_->chunks.clear();
   impl_->chunkScale = 0.0f;
   impl_->wireLit.clear();
