@@ -624,6 +624,53 @@ TEST_CASE("optimise: replacements never change a value's poly or width") {
   CHECK(atomName(r.after, driver(r.after, node(r.after, "ch"), 0)) == "voice.velocity");
 }
 
+// T1b.x-perf (QUESTIONS Q132): a structural switch that picks a literal (`on ? x : 0` with `on` constant false) used to
+// keep the select and everything feeding x when x was per voice or wider than the literal (a replacement may not
+// change poly or width). The picked literal now becomes a literal typed like the select, so the off section is gone.
+TEST_CASE("optimise: a constant select / mux picking a literal of another poly or width folds to a literal of its type") {
+  Run r;
+  optimiseText(r, R"(patch S {
+  out o : audio voice
+  out w : audio stereo
+  out m : audio voice
+  out g : audio global
+  s = sine(phasor(voice.hz))
+  t = sine(phasor(voice.hz * 2))
+  o = 0 >= 0.5 ? s * 2 : 0
+  w = 1 > 2 ? (sine(phasor(220Hz)), sine(phasor(330Hz))) : 0.25
+  m = mux(1, s, 0.5)
+  g = voice_sum(0 > 1 ? t : 0)
+})");
+  checkInvariants(r.before, r.after);
+  CHECK(countAtom(r.after, "phasor") == 0);  // every oscillator was in an off section
+  CHECK(countAtom(r.after, "sine") == 0);
+  CHECK(countAtom(r.after, "select") == 0);
+  CHECK(countAtom(r.after, "mux") == 0);
+  const NodeIndex o = driver(r.after, node(r.after, "o"), 0);
+  REQUIRE(o != kNone);
+  CHECK(constValue(r.after, o) == 0.0);
+  CHECK(r.after.outputType(o, 0).poly == Poly::Voice);
+  CHECK(r.after.outputType(o, 0).rate == Rate::Const);
+  const NodeIndex w = driver(r.after, node(r.after, "w"), 0);
+  REQUIRE(w != kNone);
+  CHECK(constValue(r.after, w) == 0.25);
+  CHECK(r.after.outputType(w, 0).width == 2);
+  CHECK(r.after.outputType(w, 0).poly == Poly::Global);
+  const NodeIndex m = driver(r.after, node(r.after, "m"), 0);
+  REQUIRE(m != kNone);
+  CHECK(constValue(r.after, m) == 0.5);
+  CHECK(r.after.outputType(m, 0).poly == Poly::Voice);
+  // A voice reducer of the per-voice literal stays a reducer (Σ over the voices of 0), and the patch schedules.
+  CHECK(countAtom(r.after, "voice_sum") == 1);
+  CHECK(schedule(r.after).ok());
+  // The literal arm of the same poly and width keeps folding to the shared literal, as before.
+  Run q;
+  optimiseText(q, "patch Q {\n  out y : audio\n  y = 0 > 1 ? sine(phasor(220Hz)) : 0\n}");
+  checkInvariants(q.before, q.after);
+  CHECK(countAtom(q.after, "phasor") == 0);
+  checkEquivalent(q);
+}
+
 TEST_CASE("optimise: a voice reducer of a global value passes it through") {
   Run r;
   optimiseText(r, R"(patch R {

@@ -1,0 +1,43 @@
+// T1b.x-perf: patches for the JIT corpus (interpreter == JIT bit for bit, both within 1e-5 of the reference).
+// OffSections: structural switches whose off branch is a literal of another poly (QUESTIONS Q132: folded to a
+// per-voice literal), into a voice output and a voice reducer. LoopCascade / StereoCascade: global per-sample
+// feedback loops one after the other, with element-wise work between them, and independent recursions side by side
+// (QUESTIONS Q122: fused into one loop over the frames).
+
+patch OffSections {
+  param p = 0.5 [0..1]
+  out o : audio voice
+  out g : audio
+  s = sine(phasor(voice.hz))
+  v = 0 >= 0.5 ? s * 2 : (1 > 0 ? s * p : 0)
+  o = v
+  g = voice_sum(0 > 1 ? s : 0) + voice_sum(v) + voice_sum(mux(1, s, 0.25))
+}
+
+patch LoopCascade {
+  in x : audio
+  param a = 0.3 [0..0.9]
+  out y : audio
+  out z : audio
+  l1 = x + z1(l1) * a
+  m1 = l1 * 0.5 + x * 0.25
+  l2 = m1 + z1(l2) * (a * 0.9)
+  m2 = fast_tanh(l2 * 0.7 - m1 * 0.1)
+  l3 = m2 - z1(l3) * 0.5
+  r1 = x * 0.3 + z1(r1) * 0.8
+  r2 = r1 + z1(r2) * a
+  y = l3 + r2
+  z = m2 * r1
+}
+
+patch StereoCascade {
+  in x : audio stereo
+  param a = 0.4 [0..0.9]
+  out y : audio stereo
+  b1 = x + z1(b1) * a
+  c1 = b1 * 0.6 + x * 0.2
+  b2 = c1 - z1(b2) * (a * 0.5)
+  c2 = max(min(b2 * 1.5, 0.9), -0.9)
+  b3 = c2 + z1(b3) * 0.25
+  y = b3 * 0.8 + c1 * 0.1
+}

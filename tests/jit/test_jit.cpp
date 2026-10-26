@@ -384,6 +384,28 @@ TEST_CASE("jit: every simple stateful atom inside a per-sample loop (inline per-
   }
 }
 
+// T1b.x-perf: tests/jit/patches/structural.pqp — off sections folded to per-voice literals (Q132), and cascades of
+// global per-sample loops (Q122) — bit-identical to the interpreter, within 1e-5 of the reference, every block size.
+TEST_CASE("jit: folded structural switches and global loop cascades match the interpreter bit for bit") {
+  std::vector<std::string> skipped;
+  const auto compiled = compileFile(jitPatchesDir() / "structural.pqp", 48000.0, skipped);
+  REQUIRE_MESSAGE(skipped.empty(), skipped.front());
+  REQUIRE(compiled.size() == 3);
+  for (const Compiled& c : compiled) {
+    INFO(c.name);
+    if (c.name == "OffSections") {  // every switch folded: no select or mux runs (the off arms are per-voice literals)
+      uint32_t switches = 0;
+      for (const Op& op : c.sched.ops)
+        switches += op.kind == OpKind::Kernel && (op.kernel == pq::dsp::Atom::Select || op.kernel == pq::dsp::Atom::Mux);
+      CHECK(switches == 0);
+    }
+    CorpusStats cs;
+    for (int paramSet = 0; paramSet < 2; ++paramSet)
+      checkPatch(c, voicesFor(c), paramSet, {}, cs, true, kBlocks, std::size(kBlocks));
+    CHECK(cs.maxVsInterp == 0.0);
+  }
+}
+
 // T1b.2: the ways of generating voice stages (one group per call; two groups per call on 256-bit halves or 512-bit
 // registers; the scalar-lane baseline) all compute the interpreter's bits. 19 voices = groups 0 and 1 as a pair,
 // group 2 (three voices) alone.

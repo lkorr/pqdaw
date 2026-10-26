@@ -350,6 +350,34 @@ private:
     return out(n);
   }
 
+  // T1b.x-perf (QUESTIONS Q132): n (a select / mux with a literal selector) picks `pick`, which cannot replace n because
+  // its poly or width differs (a global mono literal arm of a per-voice or stereo select). When `pick` is a literal (or
+  // an unconnected arm: its default), n becomes a literal of n's own type instead (a new Const node, never merged
+  // with the shared literals: the type differs), so the arms it did not pick are dead. A per-voice literal is the same
+  // value in every voice; a voice reducer of it still runs (it sums over the voices).
+  bool replaceByTypedLiteral(uint32_t n, uint32_t pick, uint32_t input) {
+    Constant c;
+    if (pick == kNone) {
+      const AtomSignature& sig = sigOf(nodes_[n].atom);
+      const float d = sig.inputs[std::min<size_t>(input, sig.inputs.size() - 1)].defaultValue;
+      c = outT_[out(n)].kind == Kind::Bool ? Constant::boolean(d != 0.0f) : Constant::real(d);
+    } else {
+      const uint32_t m = owner(resolve(pick));
+      if (nodes_[m].kind != NodeKind::Const) return false;
+      c = consts_[nodes_[m].payload];
+    }
+    const PortType& t = outT_[out(n)];
+    if (c.kind != t.kind || t.width == kWidthInfer) return false;
+    const uint32_t lit = addNode(NodeKind::Const, 0, {}, 1, portType(c.kind, Rate::Const, t.poly, t.width),
+                                 hashMix(nodes_[n].key, 0x7E1), nodes_[n].origin);
+    nodes_[lit].payload = static_cast<uint32_t>(consts_.size());
+    consts_.push_back(c);
+    facts_[out(lit)] = constFacts(c);
+    if (replaceNode(n, out(lit))) return true;
+    nodes_[lit].alive = false;  // (never expected: same kind, poly and width, const rate)
+    return false;
+  }
+
   // Forwards out-port o to t. Refused if that would change the value's kind, width or poly (pack concatenates
   // widths, and voice reducers treat a global value differently from N equal voices), raise its rate, or make a
   // value its own replacement.
@@ -840,7 +868,8 @@ private:
       bool c;
       if (litBool(n, 0, c)) {
         const uint32_t pick = c ? x : y;
-        return pick != kNone && simplified(replaceNode(n, pick));
+        if (pick != kNone && replaceNode(n, pick)) return simplified(true);
+        return simplified(replaceByTypedLiteral(n, pick, c ? 1u : 2u));
       }
       if (x != kNone && x == y) return simplified(replaceNode(n, x));
       return false;
@@ -855,7 +884,8 @@ private:
         k = f <= 0.0f ? 0u : f >= static_cast<float>(count - 1) ? count - 1 : static_cast<uint32_t>(f);
       }
       const uint32_t pick = in(n, 1 + k);
-      return pick != kNone && simplified(replaceNode(n, pick));
+      if (pick != kNone && replaceNode(n, pick)) return simplified(true);
+      return simplified(replaceByTypedLiteral(n, pick, 1 + k));
     }
     if (at == A_.channel) {
       if (a == kNone) return false;

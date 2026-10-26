@@ -163,7 +163,7 @@ namespace pq::graph {
   // params), exact algebraic simplification, select sinking (pure ops below a select/mux when the copies drop below
   // audio rate), CSE (literals keyed by unit) and DCE; then rate refinement (pure atoms = max of their inputs' rates)
   // and a·b + c → muladd fusion at equal rates. Stateful nodes keep stateKey, atom and types; replacements never
-  // change kind/width/poly. Errors: a folded channel index out of range; an `smp` literal through arithmetic into
+  // change kind/width/poly (T1b.x-perf, Q132: a constant select / mux whose picked arm is a literal of another poly or width becomes a literal of the select's own type, so a structural switch's off section is dead). Errors: a folded channel index out of range; an `smp` literal through arithmetic into
   // a duration input. OptimiseOptions: sampleRate (sr folds when known), maxPasses, fuseMulAdd.
   Result<TypedPatch> optimise(TypedPatch, const OptimiseOptions& = {}, OptimiseStats* = nullptr);
   // pq/graph/schedule.h (T1.5). Tarjan SCCs on wires + implicit equation→unknown edges of solve blocks; feedback SCCs
