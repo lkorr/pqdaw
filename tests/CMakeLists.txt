@@ -188,6 +188,7 @@ pq_add_test(pq_tests_graph PERF
     graph/test_voice_tuning.cpp
     graph/test_layout.cpp
     graph/test_edit.cpp
+    graph/test_probe.cpp
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
@@ -211,6 +212,7 @@ pq_add_test(pq_tests_engine PERF
     engine/test_tuning_signal.cpp
     engine/test_tuning_voices.cpp
     engine/test_silence.cpp
+    engine/test_probes.cpp  # T4.5: live probes and cost meters on images
   DEPS pq_engine nlohmann_json::nlohmann_json)
 
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).
@@ -248,6 +250,7 @@ pq_add_test(pq_tests_jit PERF
     jit/test_jit_cache.cpp  # T1b.4: the compile cache (memory, disk, read-only AOT directories)
     engine/test_silence.cpp  # T1.x-silence: the sleep suite again, on JIT images
     jit/test_jit_silence.cpp  # T1.x-silence: interpreter and JIT sleep identically
+    engine/test_probes.cpp  # T4.5: probes and cost meters again, on JIT images (and interpreter == JIT probe streams)
   DEPS pq_jit pq_compile)
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
