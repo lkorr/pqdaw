@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "pq/views/arrangement/automation.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/views/mixer/mixer.h"
 
 namespace pq::views {
@@ -246,7 +247,8 @@ std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t
     for (const doc::TuningSlotPtr& s : *p.tunings)
       for (doc::ParamKind k : {doc::ParamKind::TuningReference, doc::ParamKind::TuningEquave, doc::ParamKind::MosGenerator,
                                doc::ParamKind::MosPeriod, doc::ParamKind::MosStretch})
-        if (tuningParamFits(s->def, k)) add(doc::ParamRef::tuning(k, s->id), s->name, tuningParamLabel(k));
+        // T3.17-fix3: only a tuning with a signal (EDO, MOS) has a node a lane can drive (the model refuses others).
+        if (doc::hasTuningSignal(s->def) && tuningParamFits(s->def, k)) add(doc::ParamRef::tuning(k, s->id), s->name, tuningParamLabel(k));
   return out;
 }
 

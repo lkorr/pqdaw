@@ -1,6 +1,8 @@
 #include "shell_app.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -151,6 +153,9 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     const double t0 = msSinceMainEntry();
     LinkConfig lc;
     lc.sampleRate = audio.sampleRate;
+    // T3.17-fix3 (M3 review M16): chance rolls differently every session (and every playback, every loop repeat).
+    lc.chanceSeed = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
+                    reinterpret_cast<uintptr_t>(app.get());
     auto link = ProjectLink::create(lc, doc::makeDefaultProject(ids));
     if (!link && audio.sampleRate != 48000) {  // a rate the engine cannot take: start at 48 kHz
       lc.sampleRate = 48000;

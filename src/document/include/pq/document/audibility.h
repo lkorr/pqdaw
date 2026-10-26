@@ -29,6 +29,11 @@
 //     heard with what feeds it).
 //   - The master is always open (it has no activator or solo).
 //   - A soloed track that is muted stays silent (the activator wins).
+//   - Solo follows the routing (T3.17-fix3, M3 review M1): every group on a solo-related track's output chain is
+//     solo-related too, also one it is routed to explicitly (OutputKind::Track), so its signal reaches the master
+//     (its own other members stay closed); an audible return routed into a group opens that group's chain likewise.
+//   - The solo flag of a deactivated track, or of a track inside a deactivated group, is ignored: such a track is
+//     not played at all (T3.17-fix3, M3 review L3); a member of a deactivated group is closed like the group.
 //
 // Cost: computeAudibility is one pass over the track tree (O(tracks), one allocation for the result); the lookup
 // is a binary search. Not RT code: the audio thread sees only the gains T3.17 derives from it.
@@ -49,6 +54,12 @@ struct TrackAudibility {
   friend constexpr bool operator==(const TrackAudibility&, const TrackAudibility&) noexcept = default;
 };
 
+struct AudibilityOptions {
+  // T3.17-fix3: compute the gates as if no track were muted (the lowering applies the mute as its own param, so a
+  // mute lane can play; solo does not depend on other tracks' mutes, so gate × unmuted is the full rule).
+  bool ignoreMute = false;
+};
+
 // Every track's gates (main tree depth-first, then returns, then the master: forEachTrack order), plus a sorted index
 // for lookups by id.
 class AudibilityMap {
@@ -61,14 +72,14 @@ public:
   bool anyReturnSolo() const noexcept { return anyReturnSolo_; }
 
 private:
-  friend AudibilityMap computeAudibility(const Project& p);
+  friend AudibilityMap computeAudibility(const Project& p, const AudibilityOptions& options);
   std::vector<TrackAudibility> tracks_;
   std::vector<uint32_t> byId_;  // indices into tracks_, sorted by id
   bool anyMainSolo_ = false;
   bool anyReturnSolo_ = false;
 };
 
-AudibilityMap computeAudibility(const Project& p);
+AudibilityMap computeAudibility(const Project& p, const AudibilityOptions& options = {});
 
 // The output gate of one track (false for an unknown id). One pass over the project: for many tracks, compute the
 // map once.

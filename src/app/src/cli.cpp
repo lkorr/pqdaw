@@ -40,6 +40,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
   bool modeSet = false;
   std::string_view sineOnly;    // last flag seen that only --sine accepts
   std::string_view streamOnly;  // last flag seen that only the stream modes (--sine, --latency-test) accept
+  std::string_view renderOnly;  // last flag seen that only --render accepts (T3.17-fix3: --seed)
   bool backendFlag = false;
   bool programBackendFlag = false;  // --backend jit|interp (the program backend of --play)
   bool sceneFlag = false;
@@ -159,6 +160,12 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       if (Status s = setMode(Mode::JitAot, a); !s) return std::move(s).error();
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--jit-aot needs an output directory");
       o.outPath = std::string(args[++i]);
+    } else if (a == "--seed") {
+      double v = 0.0;
+      if (i + 1 >= args.size() || !parseNumber(args[++i], v) || !(v >= 0.0) || v > 9007199254740992.0 || v != std::floor(v))
+        return usageError("--seed needs a whole number >= 0");
+      o.seed = static_cast<uint64_t>(v);
+      renderOnly = a;
     } else if (a == "--project") {
       if (i + 1 >= args.size() || args[i + 1].empty()) return usageError("--project needs a project directory");
       o.project = std::string(args[++i]);
@@ -212,6 +219,7 @@ Result<CliOptions> parseCli(std::span<const std::string_view> args) {
       return usageError("--project and --idle-check need a view scene (e.g. shell), not '" + o.scene + "'");
   }
   if (render && o.project.empty()) return usageError("--render needs --project <dir>");
+  if (!renderOnly.empty() && !render) return usageError(std::string(renderOnly) + " only applies to --render");
   return o;
 }
 
@@ -275,10 +283,11 @@ std::string usage() {
          "                                           loaded until Enter (or for S seconds)\n"
          "  --latency-test [--seconds S] [--device ..] [--buffer N] [--level DBFS]\n"
          "                                           shared-mode output latency vs WASAPI loopback capture\n"
-         "  --project <dir> --render <out.wav> [--seconds S]\n"
+         "  --project <dir> --render <out.wav> [--seconds S] [--seed N]\n"
          "                                           render the project offline from the start through the\n"
          "                                           playback engine (32-bit float WAV, 48 kHz stereo);\n"
-         "                                           default length: the end of the last clip + 2 s\n"
+         "                                           default length: the end of the last clip + 2 s (at most\n"
+         "                                           4 h: longer needs --seconds); --seed: the chance seed (0)\n"
          "  --jit-aot <dir>                          compile the stock units (a new project, default instrument\n"
          "                                           tracks; 44.1/48/88.2/96 kHz) for the baseline CPU into the\n"
          "                                           AOT seed <dir> (replaced; pqdaw reads <exe dir>/jit-aot)\n"

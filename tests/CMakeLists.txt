@@ -87,6 +87,9 @@ pq_add_test(pq_tests_app
 pq_add_test(pq_tests_playback
   SOURCES
     app/test_playback.cpp
+    app/test_playback_link.cpp
+    app/test_playback_ir.cpp
+    app/test_playback_semantics.cpp
     app/test_tuning_playback.cpp
     app/test_live_jit.cpp
     app/test_tuning_coverage.cpp
@@ -254,6 +257,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_dsp_rt.cpp
     dsp/test_exact_lanes.cpp
     dsp/test_lane_state.cpp
+    dsp/test_gain.cpp
   DEPS pq_dsp)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

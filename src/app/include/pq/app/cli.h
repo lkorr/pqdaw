@@ -27,7 +27,7 @@ enum class Mode {
   Play,            // --play <file.pqp> [--patch <name>] [--notes "<keys>"] [--seconds <s>] [--level <dBFS>]
                    //   [--backend jit|interp] + the --sine stream flags
   AsioPanel,       // --asio-panel [--device <id|name>] [--seconds <s>]: open an ASIO driver's control panel (T0.6-fix2)
-  Render,          // --project <dir> --render <out.wav> [--seconds <s>]: offline render of a project (T3.17)
+  Render,          // --project <dir> --render <out.wav> [--seconds <s>] [--seed N]: offline render of a project (T3.17)
   JitAot,          // --jit-aot <dir>: compile the stock units into an AOT seed directory (T1b.4, app::seedJitAot)
 };
 
@@ -56,6 +56,7 @@ struct CliOptions {
   // idling (after a 1 s settle), prints them and exits 0 only for 0 frames at < 0.1 % CPU.
   std::string project;
   double idleCheckSeconds = 0.0;
+  uint64_t seed = 0;  // --render --seed N: the chance / velocity-range seed (T3.17-fix3; renders are seeded)
 
   // Audio (--list-devices, --sine).
   double sineHz = 440.0;

@@ -129,8 +129,14 @@ TEST_CASE("effectiveAudible: Ableton mute / solo table (nested groups, returns, 
       {"D:s G2:s", "G1 G2 C D R1 R2 M", "G1 G2 C D R1 R2"},
       // 23. Everything muted: only the master.
       {"A:m G1:m B:m G2:m C:m D:m R1:m R2:m", "M", ""},
-      // 24. Solo on a deactivated group: closed, but its members are still soloed through it.
-      {"G2:s G2:off", "G1 C R1 R2 M", "G1 C R1 R2"},
+      // 24. Solo on a deactivated group (T3.17-fix3, M3 review L3: was "closed, but its members are still soloed
+      //     through it", which silenced every other track while nothing soloed was played): a deactivated track's
+      //     solo is ignored, and its members are not played (closed with it).
+      {"G2:s G2:off", "A G1 B D R1 R2 M", "A G1 B D R1 R2"},
+      // 25. A soloed deactivated top-level track: ignored too (M3 review L3).
+      {"D:s D:off", "A G1 B G2 C R1 R2 M", "A G1 B G2 C R1 R2"},
+      // 26. A soloed member of a deactivated group: ignored (it is not played).
+      {"C:s G2:off", "A G1 B D R1 R2 M", "A G1 B D R1 R2"},
   };
   int n = 0;
   for (const Row& r : rows) {

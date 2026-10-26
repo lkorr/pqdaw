@@ -11,6 +11,7 @@
 #include <string>
 
 #include "pq/document/commands.h"
+#include "pq/document/pitch_resolve.h"
 #include "checks.h"
 
 namespace pq::doc {
@@ -807,6 +808,12 @@ Res apply_(const Snapshot& s, const AddAutomationLane& c, ChangeSet& cs) {
   Result<Loc> loc = locate(*s, c.track);
   if (!loc) return std::move(loc).error();
   PQ_DOC_TRY(checkLaneParam(*s, *loc->track, c.lane->param));
+  // T3.17-fix3 (M3 review M3): a tuning without a signal (Scala, MODMOS, out-of-range values) has no node for a lane
+  // to drive; a new lane on it would play nothing. (A file may still hold one: it loads, and playback says it is
+  // inert.)
+  if (!isTrackParam(c.lane->param.kind))
+    if (const TuningSlot* t = findTuning(*s, TuningId{c.lane->param.owner}); t != nullptr && !hasTuningSignal(t->def))
+      return invalid("this tuning has no signal (not an EDO or MOS): its parameters cannot be automated");
   PQ_DOC_TRY(checkPoints(c.lane->param.kind, c.lane->points));
   if (!std::is_sorted(c.lane->points.begin(), c.lane->points.end(), pointLess))
     return invalid("breakpoints must be sorted");

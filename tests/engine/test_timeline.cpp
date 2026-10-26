@@ -324,8 +324,12 @@ TEST_CASE("timeline: a note at tick t starts at exactly ticksToSamples(t) for bl
   auto tempo = tempoImage(tp);
   const pq::TempoMap& tm = tempo->tempo();
   std::vector<Played> want;
-  for (const auto& n : notes)
-    want.push_back({tm.ticksToSamples(n.start, kSr), tm.ticksToSamples(n.start + n.length, kSr), 0, n.hz, 0.0f});
+  // A note's off is at least one sample after its on (T3.17-fix3, M3 review L4: a note shorter than a sample used to
+  // end on its own onset sample and never sounded; this test expected that).
+  for (const auto& n : notes) {
+    const int64_t on = tm.ticksToSamples(n.start, kSr);
+    want.push_back({on, std::max(tm.ticksToSamples(n.start + n.length, kSr), on + 1), 0, n.hz, 0.0f});
+  }
   std::sort(want.begin(), want.end());
   const int64_t frames = tm.ticksToSamples(11 * kBar, kSr);
 
@@ -390,7 +394,9 @@ TEST_CASE("timeline: clip loops unrolled lazily match document clip_time semanti
         if (n.start >= s.contentFrom && n.start < s.contentTo) {
           const Ticks on = s.at + (n.start - s.contentFrom);
           const Ticks off = std::min(on + n.length, s.at + (s.contentTo - s.contentFrom));
-          want.push_back({tm.ticksToSamples(on, kSr), tm.ticksToSamples(off, kSr), 0, n.hz, 0.0f});
+          // ≥ 1 sample long (T3.17-fix3, M3 review L4: the 5-tick note used to end on its onset sample).
+          const int64_t onS = tm.ticksToSamples(on, kSr);
+          want.push_back({onS, std::max(tm.ticksToSamples(off, kSr), onS + 1), 0, n.hz, 0.0f});
         }
     });
     std::sort(want.begin(), want.end());

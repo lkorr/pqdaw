@@ -30,6 +30,10 @@ std::filesystem::path pathFromUtf8(const std::string& s) {
   return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
 }
 
+// M3 review L5: a project's default length is refused above this (a clip near the end of the tick range made
+// --render write ~10^10 s); --seconds renders any length up to its own 24 h limit.
+constexpr double kMaxDefaultRenderSeconds = 4.0 * 3600.0;
+
 double defaultRenderSeconds(const doc::Project& p) {
   Ticks end = 0;
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
@@ -47,15 +51,21 @@ int runRender(const CliOptions& o) {
     std::fprintf(stderr, "pqdaw: %s\n", loaded.error().message.c_str());
     return 1;
   }
+  const double seconds = o.secondsGiven ? o.seconds : defaultRenderSeconds(*loaded->project);
+  if (!o.secondsGiven && !(seconds <= kMaxDefaultRenderSeconds)) {
+    std::fprintf(stderr, "pqdaw: the project is %.0f s long (its last clip ends there): pass --seconds to render that much "
+                         "(the default is at most %.0f s)\n", seconds, kMaxDefaultRenderSeconds);
+    return 1;
+  }
   LinkConfig cfg;
   cfg.compileThread = false;
   cfg.sleepAfterMs = 0.0f;  // an offline render never sleeps
+  cfg.chanceSeed = o.seed;  // seeded: the same file and seed render the same way (M3 review M16)
   auto link = ProjectLink::create(cfg, loaded->project);
   if (!link) {
     std::fprintf(stderr, "pqdaw: %s\n", link.error().message.c_str());
     return 1;
   }
-  const double seconds = o.secondsGiven ? o.seconds : defaultRenderSeconds(*loaded->project);
   const auto frames = static_cast<uint64_t>(std::llround(seconds * cfg.sampleRate));
   WavSink sink{pathFromUtf8(o.outPath)};
   auto st = (*link)->renderOffline(0, frames, sink);
