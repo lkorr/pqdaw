@@ -104,6 +104,18 @@ std::set<uint64_t> stateKeys(engine::ProjectProgram& program, uint32_t u) {
   return keys;
 }
 
+// Waits for the background JIT while the engine runs (T1b.x-perf: an edit's interpreter image, its quick first JIT image
+// and its final one each need room in the unit's queue, which only the audio thread makes: waiting with the engine
+// stopped would leave the final image waiting for room, by design). False after ~60 s, or after 2000 blocks.
+constexpr uint32_t kRefBlocks = 3000;
+bool waitJitPlaying(ProjectLink& link, Driver& d) {
+  for (int i = 0; i < 200; ++i) {
+    if (link.waitForJit(0.3)) return true;
+    d.run(8);
+  }
+  return false;
+}
+
 // The instrument unit of track "A" or "B" (units come in track order: A's first).
 uint32_t unitOfTrack(ProjectLink& link, const char* name) {
   engine::ProjectProgram& p = *link.engine().program();
@@ -239,7 +251,7 @@ TEST_CASE("user devices: probes and cost through the project unit (interpreter a
     auto refLink = makeLink(ref.store.current());
     Driver r{*refLink};
     refLink->play(0);
-    r.run(300);
+    r.run(kRefBlocks);
 
     TwoKeys k;
     LinkConfig c;
@@ -252,7 +264,7 @@ TEST_CASE("user devices: probes and cost through the project unit (interpreter a
     Driver d{link};
     link.play(0);
     d.run(50);
-    if (jit) REQUIRE(link.waitForJit(60.0));  // every unit on its JIT image first (T1b.5's own swap)
+    if (jit) REQUIRE(waitJitPlaying(link, d));  // every unit on its final JIT image first (T1b.5's own swaps)
     d.run(50);
     engine::ProjectProgram& program = *link.engine().program();
     const uint32_t ub = unitOfTrack(link, "B");
@@ -274,7 +286,12 @@ TEST_CASE("user devices: probes and cost through the project unit (interpreter a
     link.flush();
     CHECK(link.lastError().empty());
     CHECK(link.stats().unitCompiles == s0.unitCompiles + 1);  // A's unit only
-    if (jit) REQUIRE(link.waitForJit(60.0));
+    if (jit) {
+      REQUIRE(waitJitPlaying(link, d));
+      const app::JitStats js = link.jitStats();
+      CHECK(js.refineStale == 0);  // the probed unit's quick and final JIT images both reached it
+      CHECK(js.stale == 0);
+    }
     d.run(200);
     CHECK(program.unitStats(ub).swaps == swapsB);
     // The level and the signal of the envelope while the chord is held.
@@ -286,6 +303,7 @@ TEST_CASE("user devices: probes and cost through the project unit (interpreter a
     CHECK(ring->written() > 0);
     // Bit-identical audio with the probe compiled in.
     double maxDiff = 0.0;
+    REQUIRE(d.out[0].size() <= r.out[0].size());
     for (size_t ch = 0; ch < 2; ++ch)
       for (size_t i = 0; i < d.out[ch].size(); ++i) maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(d.out[ch][i] - r.out[ch][i])));
     CHECK(maxDiff == 0.0);
@@ -312,7 +330,7 @@ TEST_CASE("user devices: probes and cost through the project unit (interpreter a
     player.reset();
     link.flush();
     CHECK(link.stats().unitCompiles == s1.unitCompiles + 1);
-    if (jit) REQUIRE(link.waitForJit(60.0));
+    if (jit) REQUIRE(waitJitPlaying(link, d));
     d.run(20);
   }
 }
