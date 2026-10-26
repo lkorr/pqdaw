@@ -522,7 +522,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - A front panel over a subcircuit: a panel description (controls bound to param pins, layout, visualiser slots), Live-style device frame (title bar, activator, fold, preset slot), PQ Meter visualisers hosted in panels (spectrum, scope, transfer curves).
   - Accept: Utility's and Saturator's panels built from descriptions; goldens; panel repaint on param change damages only the control.
 
-- [ ] **T4.7 Cross-device wiring** (`document`, `views`, `app`)
+- [~] **T4.7 Cross-device wiring** *(worker BZ, branch task/T4.7-wiring)* (`document`, `views`, `app`)
   - Export jacks on top of device panels; drag from a jack to any parameter anywhere (auto-scroll across tracks); bezier cables over the UI coloured by rate, show/hide/fade; modulated knobs show a live range ring; modulation wires in the document (ProjectWire) lowered through the per-track units (merging units per Q84 rules).
   - Accept: wiring an LFO export on track 1 into a filter cutoff on track 3 is audible next compile, one undo step; ring shows the live range; cables follow scrolling at frame rate. Wires add no delay; a wire that closes a delay-free cycle gets an automatic z⁻¹ (1 sample), drawn on the wire (SPEC §15 2026-10-24).
 
