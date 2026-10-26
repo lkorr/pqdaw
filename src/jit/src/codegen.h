@@ -37,6 +37,10 @@
 //       are already vectorised per block; the call costs ~nothing per sample), except the simple stateful atoms
 //       of VOICE runs (T1b.2): one frame of voices per chunk, so they are inline like in a per-sample loop, their
 //       state carried in registers through the run's loop.
+//   Memo Control regions (T1b.x-perf, QUESTIONS Q126): a global Control region that computes only from params and
+//   constants into buffers nothing else writes (the interpreter's memo rule) is behind one branch on a flag word
+//   (HostLayout::memoOff) that JitImage::process sets when the block's params equal the previous block's: a settled
+//   mixer's dB / pan math (exact transcendentals: SVML calls) then costs nothing, as in the interpreter.
 //   Control regions and per-sample Loop regions ("per frame"):
 //     - every op is generated inline for one frame (scalar for 1-lane ops, <8 x float> for 8-lane and Control
 //       ops), including the simple stateful atoms (z1 and its split read/write, rise/fall/change, sr/d/t

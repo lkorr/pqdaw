@@ -4,6 +4,8 @@
 #include "jit_image.h"
 
 #include <algorithm>
+#include <bit>
+#include <limits>
 #include <string>
 
 #include "pq/dsp/atoms.h"
@@ -23,6 +25,18 @@ JitImage::~JitImage() = default;
 void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
   if (!host_.begin(ctx)) return;
   float* buf = host_.buf();
+  {  // the memo regions' flag (Q126): this block's params bit for bit the previous block's
+    const auto n = static_cast<uint32_t>(lastParams_.size());
+    const uint32_t have = ctx.params != nullptr ? std::min(ctx.numParams, n) : 0u;
+    bool same = memoValid_;
+    for (uint32_t i = 0; i < n; ++i) {
+      const float v = i < have ? ctx.params[i] : std::numeric_limits<float>::quiet_NaN();  // NaN: the default
+      same = same && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(lastParams_[i]);
+      lastParams_[i] = v;
+    }
+    memoValid_ = true;
+    *reinterpret_cast<uint32_t*>(buf + layout_.memoOff) = same ? 1u : 0u;
+  }
   const float* aux = host_.aux();
   std::byte* gstate = host_.globalState();
   std::byte* vstate = host_.voiceState(0);
@@ -106,6 +120,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   for (const g::Op& op : s.ops)
     if (op.numIn > kStackCallOperands || op.numOut > kStackCallOperands) wide = std::max<uint32_t>(wide, op.numIn + op.numOut);
   const uint32_t callFloats = roundUp(wide * 2, kFloatAlign);  // 8-byte pointers
+  const uint32_t memoFloats = kFloatAlign;                      // the memo flag word (Q126), on its own line
   // Pairs (T1b.2): voice stages without sends, when there are at least two groups to pair; the second group's copy
   // of each of such a stage's own voice values (sized as the host sizes buffers: image_host.cpp layoutMemory).
   std::vector<uint8_t> pairable(s.stages.size(), 0);
@@ -139,7 +154,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   bo.maxVoiceGroups = maxVoiceGroups;
   bo.resources = resources;
   bo.sleep = sleep;
-  bo.extraBufFloats = solveFloats + callFloats + altFloats;
+  bo.extraBufFloats = solveFloats + callFloats + memoFloats + altFloats;
   if (Status st = host.build(s, bo); !st.ok()) return st.error();
 
   // Every kernel the generated code calls must exist for the lanes it uses (Control regions: 8-float patterns).
@@ -167,6 +182,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   L.solveOff = HL.extraOff;
   L.callOff = HL.extraOff + solveFloats;
   L.callPtrs = wide;
+  L.memoOff = HL.extraOff + solveFloats + callFloats;
   L.paramOff = HL.paramOff;
   L.constOff = HL.constOff;
   L.sleepOff = HL.sleepOff;
@@ -175,7 +191,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   L.pairable = pairable;
   L.altOff = altOff;
   for (uint32_t& a : L.altOff)
-    if (a != g::kNone) a += HL.extraOff + solveFloats + callFloats;
+    if (a != g::kNone) a += HL.extraOff + solveFloats + callFloats + memoFloats;
   // Resources and special-op records: one table slot per op that needs one.
   L.opInfo.assign(s.ops.size(), g::kNone);
   L.opInfoB.assign(s.ops.size(), g::kNone);
@@ -199,6 +215,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   }
   img->fns_.assign(s.stages.size(), nullptr);
   img->pairFns_.assign(s.stages.size(), nullptr);
+  img->lastParams_.assign(host.io().params.size(), 0.0f);
   return img;
 }
 

@@ -14,6 +14,7 @@
 #include <llvm/Support/ModRef.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <limits>
@@ -281,6 +282,8 @@ private:
     // its Block regions are cheap (kMaxGlobalChainBlockCost: they turn scalar), and its regions share one sleep
     // segment (or none), so one flag decides the whole chain. Independent recursions then overlap (L/R, M/S) and a
     // cascade pipelines across frames: per frame the cost tends to the longest recursion, not the sum.
+    memo_.assign(s_.regions.size(), 0);
+    for (uint32_t r = 0; r < s_.regions.size(); ++r) memo_[r] = memoizable(s_.regions[r]) ? 1 : 0;
     chainEnd_.assign(s_.regions.size(), -1);
     chainCost_.assign(s_.stages.size(), 0);
     for (uint32_t sk = 0; sk < s_.stages.size(); ++sk) {
@@ -431,6 +434,11 @@ private:
     for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
       Value* t0 = meterStart();  // T4.5: the region's (or chain's) time while a cost meter is shown
       const uint32_t first = r;
+      if (!voice_ && memo_[r]) {
+        emitMemo(r);
+        meterStop(first, t0);
+        continue;
+      }
       const uint32_t last = chainEnd_[r] >= 0 ? static_cast<uint32_t>(chainEnd_[r]) : r;
       auto body = [&] {
         if (last > r) emitChain(r, last);
@@ -1282,6 +1290,51 @@ private:
     B_.SetInsertPoint(done);
   }
 
+  // T1b.x-perf (Q126): a memo Control region (analyse()) runs only in a block whose params differ from the previous
+  // block's (the flag word JitImage::process writes); otherwise its buffers still hold this block's values. One
+  // branch per block: a settled mixer's dB / pan math (exact transcendentals) costs nothing, as in the interpreter.
+  void emitMemo(uint32_t r) {
+    Value* flag = B_.CreateAlignedLoad(i32_, B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.memoOff), llvm::Align(4));
+    llvm::BasicBlock* run = llvm::BasicBlock::Create(C_, "memo_run", F_);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "memo_after", F_);
+    B_.CreateCondBr(B_.CreateICmpEQ(flag, c32(0)), run, done);
+    B_.SetInsertPoint(run);
+    emitRegion(r);
+    B_.CreateBr(done);
+    B_.SetInsertPoint(done);
+  }
+
+  // A global Control region whose results stay valid while the params do (the interpreter's RegionRun::memo rule,
+  // src/engine/src/interpreter.cpp): no solve, every op a stateless kernel without a resource reading params,
+  // constants and values of the region itself, into buffers that no other op (and no solve unknown) writes.
+  bool memoizable(const g::Region& reg) const {
+    if (reg.kind != g::RegionKind::Control || reg.poly != g::Poly::Global || reg.numSolves != 0) return false;
+    std::vector<uint32_t> written;
+    for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+      const g::Op& op = s_.ops[i];
+      if (op.kind != g::OpKind::Kernel || op.state != g::kNone || op.resource != g::kNone) return false;
+      for (const g::Operand& o : s_.inputs(op)) {
+        if (o.kind == g::Operand::Kind::Param || o.kind == g::Operand::Kind::Const) continue;
+        if (o.kind != g::Operand::Kind::Buffer) return false;
+        if (std::find(written.begin(), written.end(), o.index) == written.end()) return false;
+      }
+      for (const g::Operand& o : s_.outputsOf(op)) {
+        if (o.kind != g::Operand::Kind::Buffer) return false;
+        written.push_back(o.index);
+      }
+    }
+    for (uint32_t i = 0; i < s_.ops.size(); ++i) {
+      if (i >= reg.firstOp && i < reg.firstOp + reg.numOps) continue;
+      for (const g::Operand& o : s_.outputsOf(s_.ops[i]))
+        if (o.kind == g::Operand::Kind::Buffer && std::find(written.begin(), written.end(), o.index) != written.end())
+          return false;
+    }
+    for (const g::SolveUnknown& u : s_.unknowns)
+      if (u.value.kind == g::Operand::Kind::Buffer && std::find(written.begin(), written.end(), u.value.index) != written.end())
+        return false;
+    return true;
+  }
+
   // The buffers sleeping regions r0..r1 fill.
   std::vector<uint32_t> fillsOf(uint32_t r0, uint32_t r1) const {
     std::vector<uint32_t> f;
@@ -1716,6 +1769,7 @@ private:
   std::vector<uint32_t> opRegion_;
   std::vector<int32_t> chainEnd_;  // per region: the last region of the chain it starts, or −1
   std::vector<uint32_t> chainCost_;  // per stage: the cost of its largest chain (T4.12: pair functions)
+  std::vector<uint8_t> memo_;        // per region: a memo Control region (Q126)
   // current function
   bool voice_ = false;             // a voice stage's function
   unsigned vw_ = 8;                // its voice width: 1 (scalar lanes), 8 (a group), 16 (a pair)

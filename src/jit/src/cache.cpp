@@ -137,7 +137,7 @@ static_assert(sizeof(g::Schedule) == 424 + sizeof(g::SleepPlan), "graph::Schedul
 static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");
 static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
 static_assert(sizeof(g::RegionSleep) == 12, "graph::RegionSleep changed: update codegenDigest");
-static_assert(sizeof(HostLayout) == 192, "HostLayout changed: update codegenDigest");
+static_assert(sizeof(HostLayout) == 192, "HostLayout changed: update codegenDigest");  // (memoOff fills padding)
 
 Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots) {
   Stream h;
@@ -220,6 +220,7 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   h.putU32s(L.bufOff);
   h.putU32s(L.bufSize);
   h.put(L.solveOff), h.put(L.maxSolveN), h.put(L.callOff), h.put(L.callPtrs), h.put(L.paramOff), h.put(L.constOff);
+  h.put(L.memoOff);
   h.putU32s(L.opInfo);
   h.putU32s(L.pairable);
   h.putU32s(L.altOff);

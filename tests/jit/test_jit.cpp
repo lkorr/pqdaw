@@ -629,6 +629,60 @@ TEST_CASE("jit: params are clamped to their declared range, NaN reads the defaul
   CHECK(o1[0] == 3.0f);
 }
 
+// T1b.x-perf (Q126): the param-only Control math (a mixer's dB / pan law) is skipped in blocks whose params equal the
+// previous block's, as in the interpreter: outputs stay bit-identical through runs of equal, changed, absent (NaN /
+// no block) and re-set params, and in the first block of an image.
+TEST_CASE("jit: memoised param math is recomputed exactly when a param changes, bit-identical to the interpreter") {
+  const Compiled c = compileText(R"(patch Strip {
+  in x : audio
+  param vol = 0 [-60..6]
+  param pan = 0 [-1..1]
+  param mute : bool = false
+  out l : audio
+  out r : audio
+  g = mute ? 0 : db_to_gain(vol)
+  a = (pan + 1) * 0.785398163
+  l = x * (g * sin(a + 1.570796327))
+  r = x * (g * sin(a))
+})");
+  auto jitImg = compileJit(c.sched);
+  REQUIRE(jitImg.ok());
+  eng::InterpretOptions io;
+  auto interpImg = eng::buildInterpreted(c.sched, io);
+  REQUIRE(interpImg.ok());
+  std::vector<float> x(32);
+  for (size_t i = 0; i < x.size(); ++i) x[i] = std::sin(0.3f * static_cast<float>(i));
+  const float* ins[1] = {x.data()};
+  struct Step {
+    float vol, pan, mute;
+    bool block;  // false: no param block (defaults)
+  };
+  const Step steps[] = {{-6, 0.2f, 0, true},  {-6, 0.2f, 0, true}, {-6, 0.2f, 0, true}, {-12, 0.2f, 0, true},
+                        {-12, 0.2f, 0, true}, {-12, -0.5f, 0, true}, {-12, -0.5f, 1, true}, {-12, -0.5f, 1, true},
+                        {-12, -0.5f, 0, true}, {NAN, -0.5f, 0, true}, {NAN, -0.5f, 0, true}, {0, 0, 0, false},
+                        {0, 0, 0, false},     {3, 0.9f, 0, true},  {3, 0.9f, 0, true}};
+  for (size_t k = 0; k < std::size(steps); ++k) {
+    CAPTURE(k);
+    std::vector<float> lj(32), rj(32), li(32), ri(32);
+    float* oj[2] = {lj.data(), rj.data()};
+    float* oi[2] = {li.data(), ri.data()};
+    const float params[3] = {steps[k].vol, steps[k].pan, steps[k].mute};
+    eng::ProcessContext ctx;
+    ctx.frames = 32;
+    ctx.in = ins;
+    ctx.numIn = 1;
+    ctx.numOut = 2;
+    ctx.params = steps[k].block ? params : nullptr;
+    ctx.numParams = steps[k].block ? 3u : 0u;
+    ctx.out = oj;
+    CHECK(pq::alloc_trap::countRtViolations([&] { (*jitImg)->process(ctx); }) == 0);
+    ctx.out = oi;
+    (*interpImg)->process(ctx);
+    CHECK(std::memcmp(lj.data(), li.data(), sizeof(float) * 32) == 0);
+    CHECK(std::memcmp(rj.data(), ri.data(), sizeof(float) * 32) == 0);
+  }
+}
+
 TEST_CASE("jit: a block above maxBlockFrames is rejected with silent outputs; frames = 0 does nothing") {
   const Compiled c = compileText("patch P { out y : audio\n y = sine(phasor(440Hz)) }");
   jit::CompileOptions o;

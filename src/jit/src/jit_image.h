@@ -55,6 +55,9 @@ struct HostLayout {
   uint32_t sleepOff = 0;                     // aux: the sleep segments' flag words (T1.x-silence, image_host.h)
   uint32_t meterOff = 0;                     // buf: per region (cycles, timings) as two uint64: the cost meter (T4.5)
   uint32_t meterFlagOff = 0;                 // aux: non-zero while the block is metered (T4.5)
+  // T1b.x-perf (Q126): buf: one word, non-zero when this block's params equal the previous block's (written by
+  // JitImage::process): the memo Control regions (codegen.h) are then skipped, their buffers still hold the values.
+  uint32_t memoOff = 0;
   std::vector<uint32_t> opInfo;              // per op: pointer-table slot of its resource / info record, or kNone
   // Pairs (T1b.2, codegen.h): per stage, whether it gets a two-group function; per buffer, the float offset of the
   // second group's copy of a pairable stage's own voice value (kNone: none); per op, the second group's record slot
@@ -113,6 +116,10 @@ public:
   std::vector<const void*> tab_;
   // Releases the machine code (set by the Compiler; runs in the destructor, off the audio thread).
   std::shared_ptr<void> codeOwner_;
+  // T1b.x-perf (Q126): the previous block's params, bitwise (NaN: absent), for the memo flag (HostLayout::memoOff);
+  // the interpreter's rule (pq/engine/interpreter.h), so both skip the same blocks.
+  std::vector<float> lastParams_;
+  bool memoValid_ = false;
 };
 
 // Builds the shared host (validation, memory, state, params, engine sources, outputs, special-op records,
