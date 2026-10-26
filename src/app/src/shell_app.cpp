@@ -28,6 +28,7 @@ struct Ticket {
 
 const SDL_DialogFileFilter kProjectFilter[] = {{"pqdaw project (project.pqd)", "pqd"}};
 const SDL_DialogFileFilter kScalaFilter[] = {{"Scala scale (*.scl)", "scl"}};
+const SDL_DialogFileFilter kPatchFilter[] = {{"pqdaw patch (*.pqp)", "pqp"}};  // T4.2: View > Open Patch in Circuit View
 
 void pushUser(uint32_t type, int32_t code, void* data1 = nullptr, void* data2 = nullptr) {
   SDL_Event ev{};
@@ -72,6 +73,11 @@ public:
   void chooseScalaFile(PathCallback done) override {
     pending_ = std::move(done);
     SDL_ShowOpenFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kScalaFilter, 1, nullptr,
+                           false);
+  }
+  void choosePatchFile(PathCallback done) override {
+    pending_ = std::move(done);
+    SDL_ShowOpenFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kPatchFilter, 1, nullptr,
                            false);
   }
   views::SaveChoice askSaveChanges(std::string_view projectName) override {

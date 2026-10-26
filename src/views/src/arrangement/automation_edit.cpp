@@ -10,6 +10,7 @@
 #include <cmath>
 #include <limits>
 
+#include "../common/drag.h"
 #include "internal.h"
 #include "pq/document/commands.h"
 #include "pq/views/arrangement/automation.h"
@@ -24,7 +25,6 @@ using arrangement::Model;
 
 namespace {
 
-constexpr float kClickSlop = 3.0f;  // logical px before a press becomes a drag
 // The id a point created by a click on the line has until the release dispatches it (the largest id: on a shared
 // tick it sorts last, as the fresh id the document gives it will).
 constexpr doc::BreakpointId kPendingPoint{std::numeric_limits<uint32_t>::max()};
@@ -642,7 +642,7 @@ void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b
 
 void ArrangementAutomation::dragTo(const PointerEvent& e) {
   const float scale = view_.tree() ? view_.tree()->scale() : 1.0f;
-  if (!drag_.moved && std::fabs(e.pos.x - drag_.press.x) <= kClickSlop * scale && std::fabs(e.pos.y - drag_.press.y) <= kClickSlop * scale)
+  if (!drag_.moved && !drag::beyondSlop(e.pos, drag_.press, scale))  // shared click slop (M17)
     return;
   const bool first = !drag_.moved;
   drag_.moved = true;

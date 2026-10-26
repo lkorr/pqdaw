@@ -79,6 +79,12 @@ const ColorToken kColors[] = {
     PQ_COLOR(automation, veil), PQ_COLOR(automation, selection), PQ_COLOR(automation, readout),
     PQ_COLOR(automation, readoutText), PQ_COLOR(automation, led), PQ_COLOR(automation, ledOverridden),
     PQ_COLOR(automation, reenable), PQ_COLOR(automation, reenableText),
+    PQ_COLOR(circuit, background), PQ_COLOR(circuit, grid), PQ_COLOR(circuit, symbolFill), PQ_COLOR(circuit, symbolStroke),
+    PQ_COLOR(circuit, symbolText), PQ_COLOR(circuit, pinText), PQ_COLOR(circuit, terminalFill), PQ_COLOR(circuit, paramFill),
+    PQ_COLOR(circuit, ioFill), PQ_COLOR(circuit, subcircuitFill), PQ_COLOR(circuit, subcircuitTitle),
+    PQ_COLOR(circuit, wireBool), PQ_COLOR(circuit, wireParam), PQ_COLOR(circuit, wireAudio), PQ_COLOR(circuit, wireConst),
+    PQ_COLOR(circuit, wireBoolLit), PQ_COLOR(circuit, selected), PQ_COLOR(circuit, hover), PQ_COLOR(circuit, rubberBand),
+    PQ_COLOR(circuit, rubberBandEdge), PQ_COLOR(circuit, comment),
 };
 #undef PQ_COLOR
 

@@ -97,6 +97,8 @@ public:
   virtual SaveChoice askSaveChanges(std::string_view projectName) = 0;
   // A Scala scale file (.scl) to import as a tuning (T3.14). The default implementation cancels (no dialogs).
   virtual void chooseScalaFile(PathCallback done) { done(std::string()); }
+  // A patch file (.pqp) to open in the circuit view (T4.2). The default implementation cancels (no dialogs).
+  virtual void choosePatchFile(PathCallback done) { done(std::string()); }
 };
 
 // What a file dialog returned → the project directory: "…/X/project.pqd" → "…/X"; "…/Song.pqd" → "…/Song" (a save
@@ -299,6 +301,8 @@ public:
   static constexpr std::string_view kPrefsActions[] = {"app.preferences"};
   // T3.19: Create > New Main Tuning (installTuningsPanel sets the handler: it shows the panel with the new tuning).
   static constexpr std::string_view kTuningsActions[] = {"tuning.newMain"};
+  // T4.2: View > Open Patch in Circuit View… (installCircuitViewer sets the handler: file dialog → circuit viewer).
+  static constexpr std::string_view kCircuitActions[] = {"view.openPatch"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",

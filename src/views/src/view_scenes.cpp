@@ -8,6 +8,7 @@
 #include "pq/ui/renderer.h"
 #include "pq/ui/scene_textures.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -28,6 +29,8 @@ struct SceneEntry {
   uint32_t width, height;  // default logical size
   // Extra setup after the shell is built (nullptr: the shell as loaded).
   Status (*setup)(Shell& shell);
+  // T4.2: scenes over a patch file instead of a project (renderViewScene's `projectDir` is then the .pqp path).
+  Status (*setupPatch)(Shell& shell, std::string_view patchFile) = nullptr;
 };
 
 ArrangementView* arrangementOf(Shell& shell) {
@@ -621,6 +624,25 @@ Status setupPianoRollNoteMenu(Shell& shell) {
   return Ok{};
 }
 
+// T4.2: the circuit viewer over the whole window, on a patch of a .pqp file (the first one, or `patch`).
+Status openPatchScene(Shell& shell, std::string_view file, std::string_view patch) {
+  if (file.empty()) return Error{ErrorCode::InvalidArgument, "circuit scenes need a .pqp file (--project <file.pqp>)", {}};
+  auto doc = circuit::loadPatchDocument(std::string(file));
+  if (!doc) return std::move(doc).error();
+  if (!circuit::openCircuitViewer(shell.overlay(), *doc, patch))
+    return Error{ErrorCode::NotFound, "no patch '" + std::string(patch) + "' in " + std::string(file), {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+Status setupCircuit(Shell& shell, std::string_view file) { return openPatchScene(shell, file, {}); }
+Status setupCircuitSvf(Shell& shell, std::string_view file) { return openPatchScene(shell, file, "svf"); }
+Status setupCircuitSvfCore(Shell& shell, std::string_view file) { return openPatchScene(shell, file, "svf_core"); }
+Status setupCircuitSymbols(Shell& shell) {
+  if (!circuit::openCircuitViewer(shell.overlay(), circuit::symbolSheet())) return Error{ErrorCode::NotFound, "no overlay", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -650,6 +672,10 @@ constexpr SceneEntry kScenes[] = {
     {"tunings-panel", 1280, 800, setupTuningsPanel},
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},
     {"pianoroll-note-menu", 1280, 800, setupPianoRollNoteMenu},
+    {"circuit-symbols", 1280, 800, setupCircuitSymbols},
+    {"circuit", 1280, 800, nullptr, setupCircuit},
+    {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},
+    {"circuit-svf-core", 1280, 800, nullptr, setupCircuitSvfCore},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};
@@ -675,13 +701,21 @@ void viewSceneDefaultSize(std::string_view scene, uint32_t& width, uint32_t& hei
   height = e ? e->height : 800;
 }
 
-Result<std::unique_ptr<Shell>> buildViewScene(std::string_view scene, ui::UiTree& tree, ViewContext& ctx) {
+bool isPatchScene(std::string_view scene) noexcept {
+  const SceneEntry* e = findScene(scene);
+  return e && e->setupPatch;
+}
+
+Result<std::unique_ptr<Shell>> buildViewScene(std::string_view scene, ui::UiTree& tree, ViewContext& ctx,
+                                              std::string_view patchFile) {
   const SceneEntry* e = findScene(scene);
   if (!e) return Error{ErrorCode::NotFound, "unknown view scene '" + std::string(scene) + "'", {}};
   auto shell = Shell::create(tree, ctx);
   if (!shell) return std::move(shell).error();
   if (e->setup)
     if (Status s = e->setup(**shell); !s) return std::move(s).error();
+  if (e->setupPatch)
+    if (Status s = e->setupPatch(**shell, patchFile); !s) return std::move(s).error();
   tree.layoutNow();
   return shell;
 }
@@ -692,7 +726,8 @@ Result<ui::Image> renderViewScene(std::string_view scene, std::string_view proje
   if (width == 0 || height == 0) return Error{ErrorCode::InvalidArgument, "renderViewScene: zero size", {}};
   FakeTransport transport;
   ViewContext ctx(transport);
-  if (!projectDir.empty())
+  const bool patchScene = isPatchScene(scene);  // T4.2: projectDir names a .pqp file
+  if (!projectDir.empty() && !patchScene)
     if (Status s = ctx.openProject(projectDir); !s) return std::move(s).error();
   ctx.setStatus({});
 
@@ -711,7 +746,7 @@ Result<ui::Image> renderViewScene(std::string_view scene, std::string_view proje
   ui::UiTree tree;
   tree.setViewport(dw, dh, scale);
   tree.setResources(&res);
-  auto shell = buildViewScene(scene, tree, ctx);
+  auto shell = buildViewScene(scene, tree, ctx, patchScene ? projectDir : std::string_view{});
   if (!shell) return std::move(shell).error();
   // Settle before the screenshot: run the frames and timers that change what is drawn (progressive work such as the
   // arrangement's note previews, a zoom settling), as the window would within its first frames.

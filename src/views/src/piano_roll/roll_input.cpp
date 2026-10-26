@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 
+#include "../common/drag.h"
 #include "pq/tuning/ji.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
@@ -34,11 +35,8 @@ using namespace pq::ui;
 
 namespace {
 
-constexpr float kClickSlop = 3.0f;  // device px the pointer may wander before a press becomes a drag
-
-bool moreThanSlop(Vec2 a, Vec2 b, float scale) noexcept {
-  return std::fabs(a.x - b.x) > kClickSlop * scale || std::fabs(a.y - b.y) > kClickSlop * scale;
-}
+// The click slop every editor shares (M17: views/src/common/drag.h).
+bool moreThanSlop(Vec2 a, Vec2 b, float scale) noexcept { return drag::beyondSlop(a, b, scale); }
 
 Ticks roundTicks(double t) noexcept { return static_cast<Ticks>(std::llround(t)); }
 

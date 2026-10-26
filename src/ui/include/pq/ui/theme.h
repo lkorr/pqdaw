@@ -130,6 +130,13 @@ struct Theme {
         selection, readout, readoutText, led, ledOverridden, reenable, reenableText;
     bool operator==(const Automation&) const = default;
   } automation{};
+  struct Circuit {  // circuit-diagram canvas (T4.2, SPEC §7.3): schematic symbols on the Live 12 surfaces, wires by
+                    // kind and rate (bool green-ish, param grey, audio the signal colour), selection in the focus amber
+    Rgba background, grid, symbolFill, symbolStroke, symbolText, pinText, terminalFill, paramFill, ioFill, subcircuitFill,
+        subcircuitTitle, wireBool, wireParam, wireAudio, wireConst, wireBoolLit, selected, hover, rubberBand, rubberBandEdge,
+        comment;
+    bool operator==(const Circuit&) const = default;
+  } circuit{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;

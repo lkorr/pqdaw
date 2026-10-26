@@ -91,3 +91,5 @@ else()
   message(STATUS "pqdaw: no Python 3 interpreter; the append_results.py test (pq_tools_append_results) is not registered")
 endif()
 pq_add_bench(pq_bench_piano_roll SOURCES views/bench_piano_roll.cpp DEPS pq_views)
+# T4.2 / T4.3: the circuit canvas over a 10k-atom patch (pan / zoom frames, tiles) and the auto-layout of 500-node patches.
+pq_add_bench(pq_bench_circuit SOURCES views/bench_circuit.cpp DEPS pq_views)

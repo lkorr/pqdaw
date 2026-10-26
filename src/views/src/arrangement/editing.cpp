@@ -13,6 +13,7 @@
 #include <cmath>
 #include <limits>
 
+#include "../common/drag.h"
 #include "internal.h"
 #include "pq/document/commands.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -25,7 +26,6 @@ using Selection = ArrangementView::Selection;
 
 namespace {
 
-constexpr float kClickSlop = 3.0f;      // logical px the pointer may wander before a press becomes a drag
 constexpr float kEdgeGrab = 4.0f;       // logical px at each clip end that resize instead of move
 constexpr size_t kMaxPreviewRects = 24;  // more dragged clips than this: their bounding box is damaged
 
@@ -492,9 +492,7 @@ void Editor::beginClipDrag(DragKind kind, const Hit& h) {
 
 void Editor::dragTo(const PointerEvent& e) {
   const float scale = view_.tree() ? view_.tree()->scale() : 1.0f;
-  if (!drag_.moved && std::fabs(e.pos.x - drag_.press.x) <= kClickSlop * scale &&
-      std::fabs(e.pos.y - drag_.press.y) <= kClickSlop * scale)
-    return;
+  if (!drag_.moved && !drag::beyondSlop(e.pos, drag_.press, scale)) return;  // shared click slop (M17)
   const bool first = !drag_.moved;
   drag_.moved = true;
   if (drag_.kind == DragKind::Range) {

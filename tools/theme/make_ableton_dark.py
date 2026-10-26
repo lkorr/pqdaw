@@ -188,6 +188,30 @@ colors = [
  ("automation.ledOverridden", "#7D8C90"),
  ("automation.reenable", "#FFA33D"),
  ("automation.reenableText", "#0F2026"),
+ # Circuit-diagram canvas (T4.2, SPEC §7.3; own values on the sampled surfaces): a dark sheet a step below the panel,
+ # symbols as dark wells with light strokes, wires by kind and rate (bool green-ish, param grey, audio the signal blue
+ # of PQ Meter's accent, consts dimmer than params), selection in the focus amber.
+ ("circuit.background", "#1B2D33"),
+ ("circuit.grid", "#2A3C42"),
+ ("circuit.symbolFill", "#0F2026"),
+ ("circuit.symbolStroke", "#B0B5A3"),
+ ("circuit.symbolText", "#D6CDA8"),
+ ("circuit.pinText", "#82918F"),
+ ("circuit.terminalFill", "#26383F"),
+ ("circuit.paramFill", "#3D4F55"),
+ ("circuit.ioFill", "#08191F"),
+ ("circuit.subcircuitFill", "#14272E"),
+ ("circuit.subcircuitTitle", "#3D4F55"),
+ ("circuit.wireBool", "#7FD98A"),
+ ("circuit.wireParam", "#8E9C98"),
+ ("circuit.wireAudio", "#78BEFF"),
+ ("circuit.wireConst", "#5E7176"),
+ ("circuit.wireBoolLit", "#C8FF8C"),
+ ("circuit.selected", "#FFC658"),
+ ("circuit.hover", "#F2EDD8"),
+ ("circuit.rubberBand", "#FFC6581F"),
+ ("circuit.rubberBandEdge", "#FFC658"),
+ ("circuit.comment", "#BCC0AE"),
 ]
 # Sizes (T3.2-fix1): Live 12 at 100 % draws 7-px capitals (browser items, "Drop Files and Devices Here"); Inter 13 px
 # draws 9-10. Body text goes 13 -> 12 and titles 14 -> 13. Not smaller: 11 px is a size the scene fonts do not
