@@ -39,6 +39,13 @@ constexpr double kRate = 48000.0;
 
 fs::path fixture(const std::string& name) { return fs::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / name; }
 
+// T4.1: a MIDI track with the default instrument (an empty chain plays nothing).
+TrackPtr midiTrack(TrackId id, IdSource& ids, const char* name) {
+  Track t = makeTrack(id, TrackKind::Midi, name);
+  t.devices.push_back(makeDefaultInstrument(ids.device()));
+  return std::make_shared<const Track>(std::move(t));
+}
+
 Snapshot load(const std::string& name) {
   auto l = loadProject(fixture(name).string());
   REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
@@ -167,7 +174,7 @@ TEST_CASE("mode transfer (M7): a live generator edit across 720 cents carries th
   mp.rotation = 2;
   s.def.system = mp;
   b.commands.push_back(AddTuning{s});
-  b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(tr, TrackKind::Midi, "Chord")), {}, kAppend});
+  b.commands.push_back(AddTrack{midiTrack(tr, ids, "Chord"), {}, kAppend});
   b.commands.push_back(SetTrackTuning{tr, TuningAssignment::mainTuning(t)});
   NoteClip c;
   c.id = ids.clip();
@@ -307,7 +314,7 @@ struct HeldChord {
     tuning = ids.tuning();
     Batch b{"held chord", {}};
     b.commands.push_back(AddTuning{TuningSlot{tuning, "T", Colour{0x4466AA}, def}});
-    b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(track, TrackKind::Midi, "Chord")), {}, kAppend});
+    b.commands.push_back(AddTrack{midiTrack(track, ids, "Chord"), {}, kAppend});
     b.commands.push_back(SetTrackTuning{track, TuningAssignment::mainTuning(tuning)});
     NoteClip c;
     c.id = ids.clip();
@@ -432,7 +439,7 @@ TuningId addOneTuning(DocumentStore& store, const TuningDef& def) {
   const TrackId tr = ids.track();
   Batch b{"one tuning", {}};
   b.commands.push_back(AddTuning{TuningSlot{t, "T", Colour{0x4466AA}, def}});
-  b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(tr, TrackKind::Midi, "M")), {}, kAppend});
+  b.commands.push_back(AddTrack{midiTrack(tr, ids, "M"), {}, kAppend});
   b.commands.push_back(SetTrackTuning{tr, TuningAssignment::mainTuning(t)});
   NoteClip c;
   c.id = ids.clip();
@@ -560,7 +567,7 @@ TEST_CASE("tuning tables (M8): every slot in use leaves further tunings static, 
     const TuningId t = ids.tuning();
     b.commands.push_back(AddTuning{TuningSlot{t, "T" + std::to_string(i), Colour{0x4466AA}, mosDef(7, 690.0 + 0.05 * i)}});
     const TrackId tr = ids.track();
-    b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(tr, TrackKind::Midi, "M")), {}, kAppend});
+    b.commands.push_back(AddTrack{midiTrack(tr, ids, "M"), {}, kAppend});
     b.commands.push_back(SetTrackTuning{tr, TuningAssignment::mainTuning(t)});
   }
   REQUIRE(store.dispatch(b).ok());

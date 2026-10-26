@@ -28,6 +28,7 @@ void ChangeSet::merge(const ChangeSet& o) {
   append(lanes, o.lanes);
   append(tunings, o.tunings);
   append(locators, o.locators);
+  append(devices, o.devices);
   append(params, o.params);
 }
 
@@ -38,6 +39,7 @@ void ChangeSet::normalize() {
   sortUnique(lanes);
   sortUnique(tunings);
   sortUnique(locators);
+  sortUnique(devices);
   sortUnique(params);
 }
 
@@ -49,6 +51,7 @@ void ChangeSet::clear() noexcept {
   lanes.clear();
   tunings.clear();
   locators.clear();
+  devices.clear();
   params.clear();
 }
 

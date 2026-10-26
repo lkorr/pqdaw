@@ -74,7 +74,7 @@ struct Chord {
     echo = ids.track();
     Batch b{"chord", {}};
     b.commands.push_back(AddTrack{playback_fixture::track(echo, TrackKind::Return, "Echo"), {}, kAppend});
-    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys"), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys", ids.device()), {}, kAppend});
     b.commands.push_back(SetSendLevel{track, echo, -6.0f});
     std::vector<Note> notes;
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 16 * kPpq, d));
@@ -177,10 +177,10 @@ TEST_CASE("idle units: silent units are skipped, bit-exactly; events, params and
 TEST_CASE("lowering: the mixer is gain / gain_add at block rate; a return holds one gain_add per sender") {
   playback_fixture::Fixture f;
   // The patches: Lead's has three gain stages (out, post, pre); Echo's one gain_add per sending track.
-  auto lib = app::loadInstrumentLibrary();
+  auto lib = app::loadDeviceLibrary();
   REQUIRE(lib.ok());
   LowerOptions lo;
-  lo.library = &(*lib)->library;
+  lo.library = &(*lib)->library();
   uint32_t slot = 0;
   lo.slotOf = [&](TrackId) { return slot++; };
   auto low = lower(*f.snap(), lo);

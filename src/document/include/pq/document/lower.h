@@ -13,24 +13,32 @@
 // state follows its document entity: adding, removing or reordering other entities never moves it. A lowering that
 // produces the same IR for a track (equal structure and ids: patchHash + operator==) shares the previous patch, so
 // the link knows exactly which tracks changed. The printed form (patchText) is only a debug dump.
-// M4's device chains plug in the same way: a device instance is a subcircuit call whose NodeId is
-// nodeIdFor(NodeRole::Device, device id), its ports are that callee's ports, and a cross-device wire inside the
-// track is a wire between those call nodes, so editing a chain keeps the state of every device it does not touch.
+// Device chains (T4.1, QUESTIONS Q?-T4.1-a): a device instance is a subcircuit call named `d<device id>` whose NodeId
+// is nodeIdFor(NodeRole::Device, device id, 0); its ports are that callee's ports (T4.7's cross-device wires will be
+// wires between those call nodes), so editing a chain keeps the state of every device it does not touch. The chain is
+// wired left → right: the signal so far → the device's first `in` (through `pack(x, x)`, k = 1, when a mono signal
+// meets a stereo input), its first `out` → the next device. Its params are left unconnected, so each is a runtime
+// param `d<id>__<name>` of the track patch, linked to the project param `dev<id>:<name>`: a param edit is a param
+// write. Its settings (`real const` inputs the user set) are literal constants at the call (stateless; ids from a
+// per-track pool below kEntityNodeBase): a change recompiles that track's unit. Deactivated devices are left out; a
+// device whose patch is not in the library (or not of its kind) is bypassed and listed in missingDevices.
 //
 // ---- Signal flow --------------------------------------------------------------------------------------------------
-//   MIDI track    BasicSynth (the M3 default instrument, stdlib/instruments/basic_synth.pqp; QUESTIONS Q15 A) →
-//                 voice_sum = x (mono) →
+//   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
+//                 stdlib/instruments/basic_synth.pqp; QUESTIONS Q15 A) → voice_sum → its audio effects = x (mono, or
+//                 stereo after a stereo effect; the pan law stays constant power) → (without an active instrument:
+//                 x = 0, no voices, no event slot)
 //                   out  = gain(x, (pl·g, pr·g)),  g  = vg · gate · m         (constant-power pan, centre −3 dB/side)
 //                   post = gain(x, (pl·s, pr·s)),  s  = vg · sendGate · m     (export: what post-fader sends read)
 //                   pre  = gain(x, (pl·q, pr·q)),  q  = sendGate · m          (export: what pre-fader sends read)
 //                 vg = volume ≤ −70 dB ? 0 : 10^(volume/20); m = mute < 0.5 (the activator, a param: its lane plays).
-//   Group         x = `in` (stereo: the sum of what is routed into it), balance pan (centre 0 dB), the same three
-//                 stages.
+//   Group         x = `in` (stereo: the sum of what is routed into it) → its audio effects, balance pan (centre
+//                 0 dB), the same three stages.
 //   Return        x = the sum of its sends: for each track k that sends to it, `in s<k>` (that track's post or pre
 //                 export) → gain_add(acc, s<k>, sg_k), sg_k = send<k> ≤ −70 ? 0 : 10^(send<k>/20). A send at −∞
-//                 costs nothing (gain_add passes the accumulator through, in place). Then balance → out / post /
-//                 pre as a group.
-//   Master        x = `in` → balance → out = gain(x, (pl·vg, pr·vg)) (the device output).
+//                 costs nothing (gain_add passes the accumulator through, in place). Then its audio effects, balance
+//                 → out / post / pre as a group.
+//   Master        x = `in` → its audio effects → balance → out = gain(x, (pl·vg, pr·vg)) (the device output).
 //   gain / gain_add (pq/dsp/atoms.h) apply a param gain at block rate and smooth it per sample (one-pole,
 //   smoothingMs) only while it moves, so a mixer move, a mute or a solo is click-free and a settled mixer costs one
 //   multiply per sample per channel (M3 review H1).
@@ -65,7 +73,8 @@
 //                 (doc::PitchFollow); private, Scala and MODMOS tunings keep their static Hz.
 //
 // ---- Params ----------------------------------------------------------------------------------------------------
-// One LoweredParam per (track, patch param) with a stable string key ("<track id>:volume", ":pan", ":gate",
+// One LoweredParam per (track, patch param) with a stable string key (a device param "dev<device id>:<name>", T4.1;
+// "<track id>:volume", ":pan", ":gate",
 // ":sendGate", ":mute"; a send "<sender id>:send:<return id>", a param `send<sender id>` of the RETURN's patch; a
 // tuning node's params "tuning:<tuning id>:reference", ":equave", ":generator", ":period", ":stretch" (patch names
 // tref<i>, tper<i>, tgen<i>, tst<i> for node i), one entry per track that follows the tuning, all with the same key)
@@ -91,9 +100,9 @@
 namespace pq::doc {
 
 struct LowerOptions {
-  const graph::PatchLibrary* library = nullptr;    // the instrument patch (and whatever track patches call)
+  // The device library (devices.h: every patch a device may name, and what those import). Required.
+  const graph::PatchLibrary* library = nullptr;
   std::span<const graph::SubcircuitRef> externals; // unused since T3.17-fix2 (the IR calls library patches directly)
-  std::string instrument = "BasicSynth";
   // The note-event slot of a MIDI track (Timeline::eventSource(k)); stable across lowerings (the app keeps the map).
   // kNone (graph::kNone): the track has no slot (more MIDI tracks than the engine has slots): it is lowered without
   // its notes.
@@ -122,7 +131,7 @@ uint64_t patchHash(const graph::Patch& p) noexcept;
 enum class NodeRole : uint8_t {
   TuningNode = 0,  // entity: the tuning id; k: its params, the tuning_hz node, its table / node constants
   SendInput = 1,   // entity: the sending track's id; k: its input port, level param, dB → gain, gain_add, z1
-  Device = 2,      // reserved for M4: entity: a device id; k = 0: the device's call node
+  Device = 2,      // T4.1: entity: a device id; k = 0: the device's call node, k = 1: its mono → stereo adapter
 };
 inline constexpr uint32_t kEntityNodeBase = 1024;
 inline constexpr uint32_t kEntityNodeSlots = 16;  // k < 16 per (role, entity)
@@ -151,17 +160,20 @@ struct LoweredProject {
   uint32_t master = 0;                                        // graph index of the master
   std::vector<DelayedSend> delayedSends;
   std::vector<TrackId> withoutSlot;                           // MIDI tracks lowered without notes (no event slot)
+  std::vector<DeviceId> missingDevices;                       // bypassed: patch not in the library (or not its kind)
 };
 
-// Errors: no master, an instrument missing from the library, an entity id too large for nodeIdFor. `previous`
-// (optional): patches with equal IR are shared from it.
+// Errors: no master, no library, an entity id too large for nodeIdFor, more setting constants in one track than the
+// pool holds. `previous` (optional): patches with equal IR are shared from it.
 Result<LoweredProject> lower(const Project& project, const LowerOptions& options,
                              const LoweredProject* previous = nullptr);
 
 // Every lowered param of a snapshot (keys, names, current values) without lowering the graph: the paramOnly fast
 // path (O(tracks + sends): solo changes other tracks' gates). `track` is the index the track would have in lower().
-// `tuningNodes`: as lower() with LowerOptions::tuningTableOf set (the tuning node params are included).
-std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes = false);
+// `tuningNodes`: as lower() with LowerOptions::tuningTableOf set (the tuning node params are included). `library`:
+// the device library lower() used (device params are included only with it; T4.1).
+std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes = false,
+                                      const graph::PatchLibrary* library = nullptr);
 
 // What, besides structural changes, decides the lowered graph: the sends that are lowered only while stored (return
 // → return sends, sends that close a loop) and which of them are delayed. A send level edit that changes this key

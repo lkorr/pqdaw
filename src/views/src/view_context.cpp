@@ -102,6 +102,7 @@ namespace {
 
 // Whether any lane automates `r` (a track parameter's lane lives on its own track).
 bool automated(const doc::Project& p, const doc::ParamRef& r) {
+  if (!doc::isAutomatable(r.kind)) return false;  // T4.1: device params (a knob drag walks no lanes)
   if (doc::isTrackParam(r.kind)) {
     const doc::Track* t = doc::findTrackPtr(p, doc::TrackId{r.owner});
     return t && std::any_of(t->lanes.begin(), t->lanes.end(), [&](const doc::LanePtr& l) { return l->param == r; });
@@ -114,6 +115,12 @@ bool automated(const doc::Project& p, const doc::ParamRef& r) {
 }
 
 }  // namespace
+
+void ViewContext::setDeviceLibrary(const doc::DeviceLibrary* lib) {
+  if (devices_ == lib) return;
+  devices_ = lib;
+  notify(view_change::kDevices);
+}
 
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
   if (e.kind == doc::StoreEventKind::Reset || !(e.before->loop == e.after->loop)) syncLoop();

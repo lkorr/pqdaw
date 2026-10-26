@@ -36,6 +36,8 @@
 #include "pq/ui/window.h"
 #include "pq/views/view_scenes.h"
 #include "pq/app/pipeline_cache.h"
+#include "pq/app/project_link.h"
+#include "pq/document/devices.h"
 #include "pq/app/startup.h"
 #include "file_watch.h"
 #include "shell_app.h"
@@ -52,7 +54,15 @@ int runScreenshot(const CliOptions& o) {
     else sceneDefaultSize(o.scene, w, h);
   }
   const UiScale scale(o.scale > 0.0f ? o.scale : 1.0f);
-  auto img = view ? views::renderViewScene(o.scene, o.project, w, h, scale) : renderSceneImage(o.scene, w, h, {}, scale);
+  // T4.1: the device view's catalog (the stock devices), loaded only for the DAW's views.
+  std::unique_ptr<doc::DeviceLibrary> devices;
+  if (view) {
+    auto lib = loadDeviceLibrary();
+    if (lib) devices = std::move(*lib);
+    else std::fprintf(stderr, "pqdaw: device library: %s\n", lib.error().message.c_str());
+  }
+  auto img = view ? views::renderViewScene(o.scene, o.project, w, h, scale, {}, devices.get())
+                  : renderSceneImage(o.scene, w, h, {}, scale);
   if (!img) {
     std::fprintf(stderr, "pqdaw: screenshot failed: %s\n", img.error().message.c_str());
     return 1;

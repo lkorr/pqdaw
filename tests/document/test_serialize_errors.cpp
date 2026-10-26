@@ -110,10 +110,10 @@ TEST_CASE("serialize errors: syntax") {
 }
 
 TEST_CASE("serialize errors: structure, types and ranges") {
-  expectError(replaced(minimalText(), "  \"schemaVersion\": 2,\n", ""), "$: missing key \"schemaVersion\"");
-  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 2", "\"schemaVersion\": \"2\"")).code ==
+  expectError(replaced(minimalText(), "  \"schemaVersion\": 3,\n", ""), "$: missing key \"schemaVersion\"");
+  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 3", "\"schemaVersion\": \"3\"")).code ==
         pq::ErrorCode::Type);
-  expectError(replaced(minimalText(), "\"schemaVersion\": 2", "\"schemaVersion\": \"2\""),
+  expectError(replaced(minimalText(), "\"schemaVersion\": 3", "\"schemaVersion\": \"3\""),
               "$.schemaVersion: expected an integer, found a string");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"bogus\": 1,"), "$.bogus: unknown key");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"tracks\": [],"), "$.tracks: duplicate key");
@@ -203,6 +203,7 @@ TEST_CASE("serialize errors: tracks, clips, notes, lanes and references") {
                  "$.tracks[2].mixer.output: output target must be another group track");
   expectDomError([](json& d) { d["tracks"][1]["mixer"]["output"] = {{"track", d["tracks"][2]["id"]}};
                                d["tracks"][2]["kind"] = "group"; d["tracks"][2].erase("clips");
+                               d["tracks"][2]["devices"] = json::array();  // T4.1: a group holds no instrument
                                d["tracks"][2]["children"] = json::array(); d["tracks"][2]["mixer"]["arm"] = false;
                                d["tracks"][2]["mixer"]["output"] = {{"track", d["tracks"][1]["id"]}}; },
                  "$: routing would create a cycle");

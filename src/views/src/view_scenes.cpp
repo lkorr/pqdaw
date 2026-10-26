@@ -780,11 +780,12 @@ Result<std::unique_ptr<Shell>> buildViewScene(std::string_view scene, ui::UiTree
 }
 
 Result<ui::Image> renderViewScene(std::string_view scene, std::string_view projectDir, uint32_t width, uint32_t height,
-                                  ui::UiScale scale, const ui::GpuOptions& options) {
+                                  ui::UiScale scale, const ui::GpuOptions& options, const doc::DeviceLibrary* devices) {
   if (!isViewScene(scene)) return Error{ErrorCode::NotFound, "unknown view scene '" + std::string(scene) + "'", {}};
   if (width == 0 || height == 0) return Error{ErrorCode::InvalidArgument, "renderViewScene: zero size", {}};
   FakeTransport transport;
   ViewContext ctx(transport);
+  ctx.setDeviceLibrary(devices);
   const bool patchScene = isPatchScene(scene);  // T4.2: projectDir names a .pqp file
   if (!projectDir.empty() && !patchScene)
     if (Status s = ctx.openProject(projectDir); !s) return std::move(s).error();

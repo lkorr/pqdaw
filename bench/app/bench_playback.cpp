@@ -25,6 +25,13 @@ using namespace pq::doc;
 
 namespace {
 
+// T4.1: a MIDI track with the default instrument, as ops::createTrack makes it.
+TrackPtr midiTrack(TrackId id, IdSource& ids) {
+  Track t = makeTrack(id, TrackKind::Midi, "T");
+  t.devices.push_back(makeDefaultInstrument(ids.device()));
+  return std::make_shared<const Track>(std::move(t));
+}
+
 constexpr uint32_t kBlock = 64;
 constexpr double kRate = 48000.0;
 
@@ -35,7 +42,7 @@ Snapshot project(DocumentStore& store, uint32_t tracks, uint32_t returns, bool n
     b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(ids.track(), TrackKind::Return, "R")), {}, kAppend});
   for (uint32_t t = 0; t < tracks; ++t) {
     const TrackId id = ids.track();
-    b.commands.push_back(AddTrack{std::make_shared<const Track>(makeTrack(id, TrackKind::Midi, "T")), {}, kAppend});
+    b.commands.push_back(AddTrack{midiTrack(id, ids), {}, kAppend});
     if (!notes) continue;
     NoteClip c;
     c.id = ids.clip();

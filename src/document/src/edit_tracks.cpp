@@ -88,6 +88,8 @@ EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId 
   if (name.empty()) name = defaultName(p, kind);
   Track t = makeTrack(ids.track(), kind, std::move(name));
   t.colour = colour;
+  // T4.1: a new MIDI track starts with the default instrument (until the M5 browser offers others).
+  if (kind == TrackKind::Midi) t.devices.push_back(makeDefaultInstrument(ids.device()));
   Edit e = makeEdit(kind == TrackKind::Return ? "Insert Return Track"
                                               : (kind == TrackKind::Group ? "Insert Group Track" : "Insert MIDI Track"));
   e.tracks.push_back(t.id);

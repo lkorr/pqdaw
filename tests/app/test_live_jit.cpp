@@ -119,8 +119,8 @@ TEST_CASE("T1b.5: live playback (NullDevice) starts interpreted and swaps every 
   CHECK(unitsOn(*lj, engine::ImageBackend::Interpreter) == units);
   // A structural edit meanwhile (a new track: a topology change compiling 3 units, interpreted, audible at once): the
   // JIT wants are renewed for the new schedules; the in-flight one may come back stale.
-  REQUIRE(fj.store.dispatch(AddTrack{playback_fixture::track(fj.store.ids().track(), TrackKind::Midi, "New"), {}, kAppend}).ok());
-  REQUIRE(fi.store.dispatch(AddTrack{playback_fixture::track(fi.store.ids().track(), TrackKind::Midi, "New"), {}, kAppend}).ok());
+  REQUIRE(fj.store.dispatch(AddTrack{playback_fixture::track(fj.store.ids().track(), TrackKind::Midi, "New", fj.store.ids().device()), {}, kAppend}).ok());
+  REQUIRE(fi.store.dispatch(AddTrack{playback_fixture::track(fi.store.ids().track(), TrackKind::Midi, "New", fi.store.ids().device()), {}, kAppend}).ok());
   lj->flush();
   li->flush();
   pj.run(94);
@@ -150,12 +150,12 @@ TEST_CASE("T1b.5: live playback (NullDevice) starts interpreted and swaps every 
 // re-parsed with its previous parse to keep its NodeIds. Since T3.17-fix2 the lowering builds IR with NodeIds from
 // document ids and a new return does not change any track's patch: this checks that instead.
 TEST_CASE("lowering: a new return leaves every track patch as it was; NodeIds come from document ids") {
-  auto lib = app::loadInstrumentLibrary();
+  auto lib = app::loadDeviceLibrary();
   REQUIRE(lib.ok());
   playback_fixture::Fixture f;
   LowerOptions lo;
-  lo.library = &(*lib)->library;
-  lo.externals = (*lib)->signatures;
+  lo.library = &(*lib)->library();
+  lo.externals = (*lib)->signatures();
   uint32_t nextSlot = 0;
   lo.slotOf = [&](TrackId) { return nextSlot++; };
   auto a = lower(*f.snap(), lo);

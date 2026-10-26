@@ -70,12 +70,14 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/document/devices.h"
 #include "pq/document/lower.h"
 #include "pq/document/model.h"
 #include "pq/document/store.h"
@@ -91,17 +93,12 @@
 
 namespace pq::app {
 
-// The instrument library the lowering calls (stdlib/instruments/basic_synth.pqp, Q15 A).
-struct InstrumentLibrary {
-  std::string text;
-  graph::PatchFile file;
-  graph::PatchLibrary library;
-  std::vector<graph::SubcircuitRef> signatures;
-};
 // The stdlib directory: $PQ_STDLIB_DIR, else <exe dir>/stdlib, else the source tree's stdlib/.
 std::string stdlibDir();
-// Not RT-safe (file I/O, parsing). The result must stay at a fixed address (the library points into it).
-Result<std::unique_ptr<InstrumentLibrary>> loadInstrumentLibrary(const std::string& stdlib = stdlibDir());
+// T4.1: the device library the lowering calls (doc::loadDeviceLibrary: the stock devices, BasicSynth first) and its
+// catalog (the views' device menu and panels). Not RT-safe (file I/O, parsing); fixed address (the library points
+// into it).
+Result<std::unique_ptr<doc::DeviceLibrary>> loadDeviceLibrary(const std::string& stdlib = stdlibDir());
 
 struct LinkConfig {
   double sampleRate = 48000.0;
@@ -200,6 +197,8 @@ public:
   // images after a compile (T3.17-fix1, M3 review L13), so nothing waits for the next publish to be freed.
   void collect();
   const LinkConfig& config() const noexcept { return cfg_; }
+  // T4.1: the device library the link lowers with (the window gives its catalog to the views: one load per process).
+  const doc::DeviceLibrary& devices() const noexcept { return *devices_; }
   // Offline render of the current state from `fromTick` (transport playing) for `frames` frames into `sink`; must not
   // run while a device drives the engine. Flushes pending compiles first.
   Result<engine::RenderStats> renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink);
@@ -283,6 +282,8 @@ private:
   Status makeEngine();  // engine_ + compiler_ at cfg_.sampleRate
   // UI thread.
   void applyParams(const doc::Project& p, bool forceAll);
+  // T4.1: a change of device params only (a knob drag): writes just those, O(changed params).
+  void applyDeviceParams(const doc::Project& p, std::span<const doc::ParamRef> params);
   // onlyIfChanged: publish only when a track's description changed (after a tuning param change).
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
   engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);
@@ -294,7 +295,8 @@ private:
   const EntryPtr* tuningEntry(doc::TuningId id, const doc::TuningDef& def) const;  // held; caller holds mutex_
   const float** liveTap(const doc::Project& p, const doc::ParamRef& ref);  // UI thread (T2.6-fix2)
   void publishAutomation(const doc::Project& p);
-  void reportDelayedSends(const doc::Project& p);  // UI thread: the status line names a newly delayed send
+  void reportDelayedSends(const doc::Project& p);
+  void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
   void publishTempo(const doc::Project& p);
   void postTransport(const engine::TransportCommand& c);
   // Compile path (worker or flush()).
@@ -320,7 +322,8 @@ private:
   uint32_t slotForTrack(doc::TrackId id);         // allocates (mutex_)
 
   LinkConfig cfg_;
-  std::unique_ptr<InstrumentLibrary> instruments_;
+  std::unique_ptr<doc::DeviceLibrary> devices_;
+  std::vector<doc::DeviceId> missingReported_;   // UI thread: devices the status line named as missing
   std::unique_ptr<engine::Engine> engine_;
   std::unique_ptr<engine::ProjectCompiler> compiler_;
   std::optional<doc::LoweredProject> lowered_;   // compile path

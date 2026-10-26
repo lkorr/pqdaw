@@ -1,18 +1,20 @@
 ﻿{
   "master": {
     "mixer": {"output": "default", "sends": [], "arm": false, "solo": false, "mute": false, "pan": 0, "volumeDb": -3},
-    "tuning": "inherit", "active": true, "colour": "#abcdef", "name": "Master", "kind": "master", "id": 2
+    "tuning": "inherit", "active": true, "colour": "#abcdef", "name": "Master", "kind": "master", "id": 2,
+    "devices": [{"kind": "audioEffect", "patch": "utility", "id": 41, "active": false, "settings": {"dc": 1}}]
   },
   "tunings": [
     {"def": {"referenceHz": 440, "equaveCents": 1200.5, "n": 31, "kind": "edo"}, "colour": "#5e9bd6", "name": "31", "id": 1}
   ],
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "view": {"lanes": [], "tracks": [{"height": 0, "folded": true, "id": 10}]},
   "returns": [],
   "tracks": [
     {
       "id": 10, "kind": "midi", "name": "Café 🎹 \"lead\"", "colour": "#FF0000", "active": true,
       "tuning": {"main": 1},
+      "devices": [{"params": {"release": 0.5, "level": 0.25}, "kind": "instrument", "patch": "BasicSynth", "id": 40}],
       "mixer": {"volumeDb": 0, "pan": 0, "mute": false, "solo": false, "arm": true, "sends": [], "output": "master"},
       "clips": [
         {

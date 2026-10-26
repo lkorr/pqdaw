@@ -140,6 +140,14 @@ struct RichProject : Fixture {
     b.commands.push_back(RenameTuning{tScale, "Scala \xF0\x9F\x8E\xB5"});
     const pq::Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    // T4.1: every MIDI track's default instrument, with ids after every other entity in track order: exactly what the
+    // schema 2 -> 3 migration gives fixtures/schema2 (fixtures/full as schema 2 wrote it).
+    Batch inst{"default instruments", {}};
+    forEachTrack(*store.current(), [&](const Track& t, const Track*) {
+      if (t.kind == TrackKind::Midi) inst.commands.push_back(AddDevice{t.id, makeDefaultInstrument(ids.device()), 0});
+    });
+    const pq::Status si = store.dispatch(inst);
+    REQUIRE_MESSAGE(si.ok(), (si.ok() ? std::string() : si.error().message));
     // View state (not undoable, saved with the project).
     store.view().tracks[drums] = TrackView{true, 0};
     store.view().tracks[lead] = TrackView{false, 120};

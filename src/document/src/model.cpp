@@ -139,7 +139,47 @@ bool isTrackParam(ParamKind k) noexcept {
   }
 }
 
-bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo; }
+// T4.1: device params are not automatable yet (their lanes arrive with device automation).
+bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo && k != ParamKind::DeviceParam; }
+
+uint32_t deviceParamHash(std::string_view name) noexcept {
+  uint32_t h = 2166136261u;
+  for (const char c : name) h = (h ^ static_cast<unsigned char>(c)) * 16777619u;
+  return h;
+}
+
+ParamRef ParamRef::device(DeviceId d, std::string_view param) {
+  return {ParamKind::DeviceParam, d.value, deviceParamHash(param)};
+}
+
+namespace {
+const DeviceValue* findValue(const std::vector<DeviceValue>& v, std::string_view name) noexcept {
+  const auto it = std::lower_bound(v.begin(), v.end(), name,
+                                   [](const DeviceValue& a, std::string_view n) { return a.name < n; });
+  return it != v.end() && it->name == name ? &*it : nullptr;
+}
+}  // namespace
+
+const DeviceValue* Device::param(std::string_view name) const noexcept { return findValue(params, name); }
+const DeviceValue* Device::setting(std::string_view name) const noexcept { return findValue(settings, name); }
+
+DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
+  auto d = std::make_shared<Device>();
+  d->id = id;
+  d->patch = std::move(patch);
+  d->kind = kind;
+  return d;
+}
+
+DevicePtr makeDefaultInstrument(DeviceId id) {
+  return makeDevice(id, std::string(kDefaultInstrument), DeviceKind::Instrument);
+}
+
+int32_t Track::deviceIndex(DeviceId device) const noexcept {
+  for (size_t i = 0; i < devices.size(); ++i)
+    if (devices[i]->id == device) return static_cast<int32_t>(i);
+  return -1;
+}
 
 ParamRange paramRange(ParamKind k) noexcept {
   switch (k) {
@@ -155,6 +195,7 @@ ParamRange paramRange(ParamKind k) noexcept {
     case ParamKind::MosGenerator: return {-12000.0, 12000.0};
     case ParamKind::MosPeriod: return {1.0, 12000.0};
     case ParamKind::MosStretch: return {-1199.0, 1200.0};
+    case ParamKind::DeviceParam: return {-1e30, 1e30};  // the device patch's own range applies (DeviceCatalog)
   }
   return {};
 }
@@ -227,7 +268,8 @@ bool operator==(const Track& a, const Track& b) noexcept {
   if (a.id != b.id || a.kind != b.kind || a.name != b.name || a.colour != b.colour || !(a.tuning == b.tuning) ||
       !(a.mixer == b.mixer) || a.active != b.active)
     return false;
-  if (!deepEqList(a.children, b.children) || !deepEqList(a.lanes, b.lanes)) return false;
+  if (!deepEqList(a.children, b.children) || !deepEqList(a.lanes, b.lanes) || !deepEqList(a.devices, b.devices))
+    return false;
   if (a.clips.size() != b.clips.size()) return false;
   for (size_t i = 0; i < a.clips.size(); ++i)
     if (a.clips[i].id != b.clips[i].id || !deepEq(a.clips[i].clip, b.clips[i].clip)) return false;
@@ -279,6 +321,7 @@ uint32_t maxEntityId(const Project& p) {
   for (const Locator& l : *p.locators) see(l.id.value);
   forEachTrack(p, [&](const Track& t, const Track*) {
     see(t.id.value);
+    for (const DevicePtr& d : t.devices) see(d->id.value);
     for (const LanePtr& l : t.lanes) {
       see(l->id.value);
       for (const Breakpoint& b : l->points) see(b.id.value);
@@ -332,6 +375,17 @@ int32_t findClipIndex(const Track& t, ClipId id) noexcept {
   for (size_t i = 0; i < t.clips.size(); ++i)
     if (t.clips[i].id == id) return static_cast<int32_t>(i);
   return -1;
+}
+
+DeviceLoc findDevice(const Project& p, DeviceId id) noexcept {
+  DeviceLoc out;
+  if (!id.valid()) return out;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    if (out.track) return;
+    const int32_t i = t.deviceIndex(id);
+    if (i >= 0) out = DeviceLoc{&t, t.devices[static_cast<size_t>(i)].get(), static_cast<uint32_t>(i)};
+  });
+  return out;
 }
 
 const TuningDef* effectiveTuning(const Project& p, const TrackPath& path, const NoteClip* clip) noexcept {

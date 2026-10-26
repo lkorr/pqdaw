@@ -148,6 +148,45 @@ Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r) {
   return ok();
 }
 
+Status checkDeviceValue(const std::string& name, const std::optional<double>& value) {
+  // A patch identifier ([A-Za-z_][A-Za-z0-9_]*, PATCH_LANGUAGE §1): it is a JSON key in the project file.
+  bool ident = !name.empty() && !(name[0] >= '0' && name[0] <= '9');
+  for (const char c : name)
+    ident = ident && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+  if (!ident) return invalid("'" + name + "' is not a device param or setting name");
+  if (value && !std::isfinite(*value)) return invalid("device value '" + name + "' is not finite");
+  return ok();
+}
+
+namespace {
+Status checkValues(const std::vector<DeviceValue>& v, const char* what) {
+  for (size_t i = 0; i < v.size(); ++i) {
+    PQ_DOC_TRY(checkDeviceValue(v[i].name, v[i].value));
+    if (i > 0 && !(v[i - 1].name < v[i].name))
+      return invalid(std::string("device ") + what + " must be sorted by name, one per name");
+  }
+  return ok();
+}
+}  // namespace
+
+Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices) {
+  for (size_t i = 0; i < devices.size(); ++i) {
+    const DevicePtr& d = devices[i];
+    if (!d) return invalid("null device");
+    if (!d->id.valid()) return invalid("device has no id");
+    if (d->patch.empty()) return invalid("device has no patch");
+    for (size_t j = 0; j < i; ++j)
+      if (devices[j]->id == d->id) return invalid("device id twice in a chain");
+    if (d->kind == DeviceKind::Instrument) {
+      if (kind != TrackKind::Midi) return invalid("instruments go on MIDI tracks");
+      if (i != 0) return invalid("the instrument must be the first device of a MIDI track");
+    }
+    PQ_DOC_TRY(checkValues(d->params, "params"));
+    PQ_DOC_TRY(checkValues(d->settings, "settings"));
+  }
+  return ok();
+}
+
 // Rejects routing cycles: following each track's output (Default → parent group or master) must end at the
 // master or at a track with no output, within one step per track.
 Status checkRouting(const Project& p) {

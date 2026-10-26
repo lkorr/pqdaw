@@ -18,6 +18,7 @@
 // The ChangeSet classification of each kind is documented at the struct (see change_set.h for the classes).
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -129,6 +130,24 @@ struct SetTuningDef { TuningId tuning; TuningDef def; };
 // Param. Sets one continuous parameter (the ParamKind must be a tuning param that applies to the tuning's kind).
 struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningReference; double value = 0.0; };
 
+// ---- Devices (T4.1; QUESTIONS Q?-T4.1-a) -----------------------------------------------------------------------
+// The chain rule: a MIDI track holds at most one instrument, at index 0, then audio effects; groups, returns and the
+// master hold audio effects only. Device ids are project-wide unique (pre-allocated from the IdSource).
+// Structural. Inserts `device` into `track`'s chain at `index` (kAppend: at the end).
+struct AddDevice { TrackId track; DevicePtr device; uint32_t index = kAppend; };
+// Structural. Removes a device (its values go with it; undo restores them).
+struct RemoveDevice { DeviceId device; };
+// Structural. Moves a device to `toTrack` (invalid: its own track) at `index` (in the destination chain after removal;
+// kAppend: the end). Within one track only that track's unit recompiles (every device keeps its state: its NodeId is
+// its id); between tracks both do, and the device starts fresh there (state lives per track).
+struct MoveDevice { DeviceId device; TrackId toTrack; uint32_t index = kAppend; };
+struct SetDeviceActive { DeviceId device; bool active = true; };   // Structural (left out of the graph when off)
+// Param (ParamRef::device(device, param)): a runtime value, one param write, never a compile. `value` in the
+// param's normalised unit; nullopt = back to the patch's default.
+struct SetDeviceParam { DeviceId device; std::string param; std::optional<double> value; };
+// Structural: a `real const` input (a literal at the call site; the unit recompiles). nullopt = the default.
+struct SetDeviceSetting { DeviceId device; std::string setting; std::optional<double> value; };
+
 // ---- Compound --------------------------------------------------------------------------------------------------
 struct Command;
 // Several commands as one undo step, applied in order; fails as a whole if any fails. ChangeSet = union.
@@ -147,6 +166,7 @@ using CommandVariant = std::variant<
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
+    AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting,
     Batch>;
 
 struct Command {

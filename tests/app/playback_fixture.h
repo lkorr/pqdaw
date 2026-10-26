@@ -1,7 +1,8 @@
 #pragma once
 
 // T3.17: the playback fixture project, built through document commands (and committed as
-// tests/app/fixtures/playback/project.pqd, regenerated with PQ_UPDATE_GOLDENS=1):
+// tests/app/fixtures/playback/project.pqd, regenerated with PQ_UPDATE_GOLDENS=1; T4.1: the committed file is still
+// schema 2 — the migration to device chains must give exactly this project):
 //   tunings  12-EDO (default), 31-EDO, 5L2s (MOS, generator 705 c)
 //   Lead     MIDI in 31-EDO: degrees 0, 10, 18, 31 (one equave) as quarter notes, then a 2-note dyad;
 //            send to Echo at −6 dB (post-fader)
@@ -48,8 +49,12 @@ inline ClipPtr clip(IdSource& ids, pq::Ticks start, pq::Ticks length, std::vecto
   return std::make_shared<const NoteClip>(std::move(c));
 }
 
-inline TrackPtr track(TrackId id, TrackKind kind, std::string name) {
-  return std::make_shared<const Track>(makeTrack(id, kind, std::move(name)));
+// T4.1: a MIDI track plays only with an instrument in its chain; a valid `instrument` id gives it the default one
+// (BasicSynth, as ops::createTrack does).
+inline TrackPtr track(TrackId id, TrackKind kind, std::string name, DeviceId instrument = {}) {
+  Track t = makeTrack(id, kind, std::move(name));
+  if (instrument.valid()) t.devices.push_back(makeDefaultInstrument(instrument));
+  return std::make_shared<const Track>(std::move(t));
 }
 
 struct Fixture {
@@ -119,6 +124,10 @@ struct Fixture {
     vol.param = ParamRef::track(ParamKind::TrackVolume, grp);
     vol.points = {{0, -18.0f, 0.4f, ids.breakpoint()}, {2 * kPpq, 0.0f, 0.0f, ids.breakpoint()}};
     b.commands.push_back(AddAutomationLane{grp, std::make_shared<const AutomationLane>(vol)});
+
+    // T4.1: the default instruments, with ids after every other entity and in track order (Lead, Mos inside Grp,
+    // Muted): exactly what the schema 2 → 3 migration gives the committed (schema-2) fixture file.
+    for (const TrackId t : {lead, mos, muted}) b.commands.push_back(AddDevice{t, makeDefaultInstrument(ids.device()), 0});
 
     const pq::Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));

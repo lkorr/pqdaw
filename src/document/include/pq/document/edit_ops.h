@@ -49,6 +49,7 @@ struct Edit {
   std::vector<NoteKey> notes;     // keys as they are in the resulting snapshot
   std::vector<BreakpointId> points;
   std::vector<TuningId> tunings;  // main tunings created or kept (T3.19)
+  std::vector<DeviceId> devices;  // devices created or kept (T4.1)
 
   bool empty() const noexcept;    // the batch has no commands
   const Batch& batch() const noexcept;
@@ -284,5 +285,32 @@ struct ShapeParams {
 // Sine uses 16 linear segments per cycle; Square and Saw use jumps.
 EditResult insertShape(const Project& p, IdSource& ids, TrackId track, LaneId lane, Ticks start, Ticks end,
                        const ShapeParams& shape);
+
+// ---- Devices (T4.1; QUESTIONS Q?-T4.1-a) -----------------------------------------------------------------------
+// Each builder is one Batch = one undo step. Device kinds come from the catalog entry (devices.h); the chain rule
+// (commands.h) holds after every edit.
+
+// Adds a new device of `patch` / `kind` (normally a catalog entry) to `track` at `index` (kAppend: the end; clamped to
+// after the instrument). An instrument goes first; on a MIDI track that has one, it replaces it (Live). Instruments
+// only go on MIDI tracks.
+EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string patch, DeviceKind kind,
+                     uint32_t index = kAppend);
+// Removes the devices (any tracks).
+EditResult deleteDevices(const Project& p, std::span<const DeviceId> devices);
+// Moves a device to `toTrack` (invalid: its own track) at `index` (the destination chain after removal).
+EditResult moveDevice(const Project& p, DeviceId device, TrackId toTrack, uint32_t index);
+EditResult setDevicesActive(const Project& p, std::span<const DeviceId> devices, bool active);
+// Deactivates the devices if any is active, else activates them all (Live's device activator on a selection).
+EditResult toggleDevicesActive(const Project& p, std::span<const DeviceId> devices);
+// Pastes copies (fresh ids, the same values) of `devices` into `track` at `index` (kAppend: the end). An instrument
+// among them replaces the track's instrument (MIDI tracks only); the rest keep their order.
+EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::span<const DevicePtr> devices,
+                        uint32_t index = kAppend);
+// Ctrl+D: copies of the devices right after the last of them on its track (instruments are not duplicated).
+EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
+// One param value (nullopt: back to the patch's default). A drag is several of these inside one store gesture.
+EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> value);
+// One structural setting (nullopt: the default).
+EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setting, std::optional<double> value);
 
 }  // namespace pq::doc::ops

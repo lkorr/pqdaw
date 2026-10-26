@@ -209,6 +209,8 @@ struct GlideFixture {
     lane.points = {{0, static_cast<float>(kGenFrom), 0.0f, ids.breakpoint()},
                    {kTicksPerWhole, static_cast<float>(kGenTo), 0.0f, ids.breakpoint()}};
     b.commands.push_back(AddAutomationLane{glide, std::make_shared<const AutomationLane>(lane)});
+    // T4.1: the default instrument with the id the schema 2 → 3 migration gives the committed fixture (the next one).
+    b.commands.push_back(AddDevice{glide, makeDefaultInstrument(ids.device()), 0});
     const Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
   }
@@ -237,12 +239,12 @@ std::vector<Cycle> cycles(const std::vector<float>& x) {
 }  // namespace
 
 TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning node and its params") {
-  auto lib = app::loadInstrumentLibrary();
+  auto lib = app::loadDeviceLibrary();
   REQUIRE_MESSAGE(lib.ok(), (lib.ok() ? std::string() : lib.error().message));
   playback_fixture::Fixture f;
   LowerOptions lo;
-  lo.library = &(*lib)->library;
-  lo.externals = (*lib)->signatures;
+  lo.library = &(*lib)->library();
+  lo.externals = (*lib)->signatures();
   uint32_t nextSlot = 0;
   lo.slotOf = [&](TrackId) { return nextSlot++; };
   std::vector<std::pair<TuningId, TuningDef>> asked;
@@ -287,8 +289,8 @@ TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning n
   CHECK(paramOf(lp, tuningKey(t12, "equave")) != nullptr);
   CHECK(paramOf(lp, tuningKey(f.tMos, "equave")) == nullptr);  // not a MOS param
   CHECK(paramKey(ParamRef::tuning(ParamKind::MosGenerator, f.tMos)) == tuningKey(f.tMos, "generator"));
-  CHECK(lowerParams(*f.snap(), true).size() == lp.params.size());
-  CHECK(lowerParams(*f.snap()).size() < lp.params.size());  // without tuning nodes (lower() without tuningTableOf)
+  CHECK(lowerParams(*f.snap(), true, &(*lib)->library()).size() == lp.params.size());
+  CHECK(lowerParams(*f.snap(), false, &(*lib)->library()).size() < lp.params.size());  // without tuning nodes (lower() without tuningTableOf)
 
   // A continuous tuning change is a param: no patch text changes.
   REQUIRE(f.store.dispatch(SetTuningParam{f.tMos, ParamKind::MosGenerator, 690.0}).ok());

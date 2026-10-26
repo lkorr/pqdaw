@@ -84,6 +84,7 @@ void collectIds(const Track& t, ChangeSet& cs) {
   cs.tracks.push_back(t.id);
   for (const ClipSlot& c : t.clips) cs.clips.push_back(c.id);
   for (const LanePtr& l : t.lanes) cs.lanes.push_back(l->id);
+  for (const DevicePtr& d : t.devices) cs.devices.push_back(d->id);
   for (const TrackPtr& c : t.children) collectIds(*c, cs);
 }
 
@@ -180,6 +181,11 @@ Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids
     PQ_DOC_TRY(checkPoints(l->param.kind, l->points));
     if (!std::is_sorted(l->points.begin(), l->points.end(), pointLess)) return invalid("breakpoints must be sorted");
   }
+  PQ_DOC_TRY(checkChain(t.kind, t.devices));
+  for (const DevicePtr& d : t.devices) {
+    if (findDevice(p, d->id).track) return invalid("device id already in use");
+    ids.push_back(d->id.value);  // unique within the subtree too (one id counter for every entity)
+  }
   for (const TrackPtr& c : t.children) {
     if (!c) return invalid("null child track");
     if (c->kind == TrackKind::Return) return invalid("return tracks cannot be grouped");
@@ -223,7 +229,7 @@ Res apply_(const Snapshot& s, const AddTrack& c, ChangeSet& cs) {
   std::vector<uint32_t> ids;
   PQ_DOC_TRY(checkSubtree(p, *c.track, ids));
   std::sort(ids.begin(), ids.end());
-  if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return invalid("duplicate track id in subtree");
+  if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return invalid("duplicate track or device id in subtree");
 
   TrackList list = TrackList::Main;
   TrackPath parentPath = rootPath(TrackList::Main);
@@ -1167,6 +1173,144 @@ Res apply_(const Snapshot& s, const SetTuningParam& c, ChangeSet& cs) {
   return Snapshot(withSlot(s, static_cast<size_t>(i), std::move(n)));
 }
 
+// ---- Devices (T4.1) ------------------------------------------------------------------------------------------------
+
+struct DevLoc {
+  TrackPath path;
+  const Track* track = nullptr;
+  uint32_t index = 0;
+};
+Result<DevLoc> locateDevice(const Project& p, DeviceId id) {
+  const DeviceLoc d = findDevice(p, id);
+  if (!d.track) return notFound("device not found");
+  const auto path = findTrack(p, d.track->id);
+  return DevLoc{*path, d.track, d.index};
+}
+
+Res apply_(const Snapshot& s, const AddDevice& c, ChangeSet& cs) {
+  if (!c.device) return invalid("no device");
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  if (findDevice(*s, c.device->id).track) return invalid("device id already in use");
+  std::vector<DevicePtr> chain = loc->track->devices;
+  const size_t at = std::min<size_t>(c.index, chain.size());
+  chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(at), c.device);
+  PQ_DOC_TRY(checkChain(loc->track->kind, chain));
+  Res r = editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) {
+    t.devices = std::move(chain);
+    return ok();
+  });
+  if (r) cs.devices.push_back(c.device->id);
+  return r;
+}
+
+Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
+  Result<DevLoc> loc = locateDevice(*s, c.device);
+  if (!loc) return std::move(loc).error();
+  Res r = editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) {
+    t.devices.erase(t.devices.begin() + loc->index);
+    return ok();
+  });
+  if (r) cs.devices.push_back(c.device);
+  return r;
+}
+
+Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
+  Result<DevLoc> from = locateDevice(*s, c.device);
+  if (!from) return std::move(from).error();
+  const TrackId toId = c.toTrack.valid() ? c.toTrack : from->track->id;
+  const DevicePtr dev = from->track->devices[from->index];
+  if (toId == from->track->id) {
+    std::vector<DevicePtr> chain = from->track->devices;
+    chain.erase(chain.begin() + from->index);
+    const size_t at = std::min<size_t>(c.index, chain.size());
+    if (at == from->index) return s;  // where it is
+    chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(at), dev);
+    PQ_DOC_TRY(checkChain(from->track->kind, chain));
+    Res r = editTrack(s, from->path, cs, kChangeStructural, [&](Track& t) {
+      t.devices = std::move(chain);
+      return ok();
+    });
+    if (r) cs.devices.push_back(c.device);
+    return r;
+  }
+  Result<Loc> to = locate(*s, toId);
+  if (!to) return std::move(to).error();
+  std::vector<DevicePtr> dst = to->track->devices;
+  const size_t at = std::min<size_t>(c.index, dst.size());
+  dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(at), dev);
+  PQ_DOC_TRY(checkChain(to->track->kind, dst));
+  std::vector<DevicePtr> src = from->track->devices;
+  src.erase(src.begin() + from->index);
+  auto np = copyOf(s);
+  mutableTrack(*np, from->path).devices = std::move(src);
+  mutableTrack(*np, to->path).devices = std::move(dst);
+  cs.mark(kChangeStructural);
+  cs.tracks.push_back(from->track->id);
+  cs.tracks.push_back(toId);
+  cs.devices.push_back(c.device);
+  return Snapshot(std::move(np));
+}
+
+// Replaces device `index` of the track at `path` by `d` (path-copying the track).
+Res editDevice(const Snapshot& s, const DevLoc& loc, Device d, ChangeSet& cs, ChangeFlag flag) {
+  const DeviceId id = d.id;
+  Res r = editTrack(s, loc.path, cs, flag, [&](Track& t) {
+    t.devices[loc.index] = std::make_shared<const Device>(std::move(d));
+    return ok();
+  });
+  if (r) cs.devices.push_back(id);
+  return r;
+}
+
+Res apply_(const Snapshot& s, const SetDeviceActive& c, ChangeSet& cs) {
+  Result<DevLoc> loc = locateDevice(*s, c.device);
+  if (!loc) return std::move(loc).error();
+  const Device& old = *loc->track->devices[loc->index];
+  if (old.active == c.active) return s;
+  Device d = old;
+  d.active = c.active;
+  return editDevice(s, *loc, std::move(d), cs, kChangeStructural);
+}
+
+// Sets or clears (nullopt) `name` in a sorted value list; false when nothing changes.
+bool setValue(std::vector<DeviceValue>& v, const std::string& name, const std::optional<double>& value) {
+  const auto it = std::lower_bound(v.begin(), v.end(), name,
+                                   [](const DeviceValue& a, const std::string& n) { return a.name < n; });
+  const bool present = it != v.end() && it->name == name;
+  if (!value) {
+    if (!present) return false;
+    v.erase(it);
+    return true;
+  }
+  if (present) {
+    if (it->value == *value) return false;
+    it->value = *value;
+    return true;
+  }
+  v.insert(it, DeviceValue{name, *value});
+  return true;
+}
+
+Res apply_(const Snapshot& s, const SetDeviceParam& c, ChangeSet& cs) {
+  Result<DevLoc> loc = locateDevice(*s, c.device);
+  if (!loc) return std::move(loc).error();
+  PQ_DOC_TRY(checkDeviceValue(c.param, c.value));
+  Device d = *loc->track->devices[loc->index];
+  if (!setValue(d.params, c.param, c.value)) return s;
+  cs.params.push_back(ParamRef::device(c.device, c.param));
+  return editDevice(s, *loc, std::move(d), cs, kChangeParam);
+}
+
+Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
+  Result<DevLoc> loc = locateDevice(*s, c.device);
+  if (!loc) return std::move(loc).error();
+  PQ_DOC_TRY(checkDeviceValue(c.setting, c.value));
+  Device d = *loc->track->devices[loc->index];
+  if (!setValue(d.settings, c.setting, c.value)) return s;
+  return editDevice(s, *loc, std::move(d), cs, kChangeStructural);
+}
+
 // ---- Batch ---------------------------------------------------------------------------------------------------------
 
 Res applyAny(const Snapshot& s, const Command& c, ChangeSet& cs);
@@ -1203,6 +1347,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Add Automation Lane", "Delete Automation Lane", "Add Breakpoints", "Delete Breakpoints", "Edit Breakpoints",
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
+    "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
     "Batch"};
 
 }  // namespace

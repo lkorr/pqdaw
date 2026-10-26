@@ -23,6 +23,7 @@ struct LaneTag {};
 struct BreakpointTag {};
 struct TuningTag {};
 struct LocatorTag {};
+struct DeviceTag {};  // T4.1: a device instance in a track's chain
 
 using TrackId = StableId<TrackTag>;
 using ClipId = StableId<ClipTag>;
@@ -31,6 +32,7 @@ using LaneId = StableId<LaneTag>;
 using BreakpointId = StableId<BreakpointTag>;
 using TuningId = StableId<TuningTag>;
 using LocatorId = StableId<LocatorTag>;
+using DeviceId = StableId<DeviceTag>;
 
 // The project-wide id counter. Not thread-safe (owned by the UI thread's DocumentStore).
 class IdSource {
@@ -49,6 +51,7 @@ public:
   BreakpointId breakpoint() noexcept { return next<BreakpointTag>(); }
   TuningId tuning() noexcept { return next<TuningTag>(); }
   LocatorId locator() noexcept { return next<LocatorTag>(); }
+  DeviceId device() noexcept { return next<DeviceTag>(); }
 
   // The value next() would hand out.
   uint32_t peek() const noexcept { return next_; }

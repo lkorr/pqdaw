@@ -188,6 +188,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   if (app->link_) {
     const double t1 = msSinceMainEntry();
     app->link_->attach(*app->ctx_);
+    app->ctx_->setDeviceLibrary(&app->link_->devices());  // T4.1: the device view's catalog (one load per process)
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
     app->audio_ = std::make_unique<AudioDeviceManager>(*app->link_, audio, ManagerHooks{}, o.device);
@@ -225,6 +226,7 @@ ShellApp::~ShellApp() {
   tree_.setRoot(std::make_unique<ui::Widget>());
   shell_.reset();
   if (ctx_) ctx_->setAudioPrefs(nullptr);
+  if (ctx_) ctx_->setDeviceLibrary(nullptr);  // the link owns it
   if (preview_) preview_->onActiveChanged = nullptr;
   audio_.reset();  // the device stops calling the engine (and the preview)
   if (link_) link_->detach();

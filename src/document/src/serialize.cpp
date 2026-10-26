@@ -32,9 +32,10 @@ using json::Writer;
 // ---- Names -------------------------------------------------------------------------------------------------------
 
 constexpr std::array<std::string_view, 5> kTrackKindNames = {"midi", "group", "return", "master", "audio"};
-constexpr std::array<std::string_view, 10> kParamKindNames = {
+constexpr std::array<std::string_view, 11> kParamKindNames = {
     "trackVolume", "trackPan", "trackMute", "trackSolo", "trackSend",
-    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch"};
+    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch", "deviceParam"};
+constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
 
@@ -389,6 +390,12 @@ private:
     for (size_t i = 0; i < t.lanes.size(); ++i) lane(PathSeg(&lanes, i), *t.lanes[i]);
     w_.endArray();
 
+    const PathSeg devs(&at, "devices");
+    w_.key("devices");
+    w_.beginArray(true);
+    for (size_t i = 0; i < t.devices.size(); ++i) device(PathSeg(&devs, i), *t.devices[i]);
+    w_.endArray();
+
     if (t.kind == TrackKind::Midi || !t.clips.empty()) {
       const PathSeg clips(&at, "clips");
       w_.key("clips");
@@ -397,6 +404,35 @@ private:
       w_.endArray();
     }
     if (t.kind == TrackKind::Group || !t.children.empty()) trackList(PathSeg(&at, "children"), "children", t.children);
+    w_.endObject();
+  }
+
+  // T4.1: one line per device; params / settings as {name: value} (only those set), `active` only when false.
+  void device(const PathSeg& at, const Device& d) {
+    w_.beginObject(false);
+    w_.key("id");
+    w_.integer(d.id.value);
+    w_.key("patch");
+    w_.string(PathSeg(&at, "patch"), d.patch);
+    w_.key("kind");
+    w_.string(at, kDeviceKindNames[static_cast<size_t>(d.kind)]);
+    if (!d.active) {
+      w_.key("active");
+      w_.boolean(false);
+    }
+    auto values = [&](const char* key, const std::vector<DeviceValue>& v) {
+      if (v.empty()) return;
+      const PathSeg vat(&at, key);
+      w_.key(key);
+      w_.beginObject(false);
+      for (const DeviceValue& x : v) {
+        w_.key(x.name);
+        w_.number(PathSeg(&vat, x.name), x.value);
+      }
+      w_.endObject();
+    };
+    values("params", d.params);
+    values("settings", d.settings);
     w_.endObject();
   }
 
@@ -1083,11 +1119,11 @@ private:
   }
 
   TrackPtr track(const PathSeg& at, TrackList list, uint32_t depth) {
-    static constexpr std::string_view K[] = {"id",     "kind",  "name",  "colour", "active",
-                                             "tuning", "mixer", "lanes", "clips",  "children"};
-    enum { kId, kKind, kName, kColour, kActive, kTuning, kMixer, kLanes, kClips, kChildren };
+    static constexpr std::string_view K[] = {"id",     "kind",  "name",  "colour", "active",  "tuning",
+                                             "mixer", "lanes", "clips", "children", "devices"};
+    enum { kId, kKind, kName, kColour, kActive, kTuning, kMixer, kLanes, kClips, kChildren, kDevices };
     auto t = std::make_shared<Track>();
-    std::array<size_t, 10> pos{};
+    std::array<size_t, 11> pos{};
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
@@ -1107,10 +1143,11 @@ private:
                         ErrorCode::InvalidArgument);
           t->children = trackArray(f, TrackList::Main, depth + 1);
           break;
+        case kDevices: t->devices = devices(f); break;
       }
       pos[static_cast<size_t>(k)] = r_.valueStart();
     }
-    m.require({kId, kKind, kName, kColour, kActive, kTuning, kMixer});
+    m.require({kId, kKind, kName, kColour, kActive, kTuning, kMixer, kDevices});
     auto failKey = [&](int k, std::string msg) {
       json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), std::move(msg), ErrorCode::InvalidArgument,
                  pos[static_cast<size_t>(k)]);
@@ -1131,6 +1168,7 @@ private:
     }
     if (m.has(kChildren) && kind != TrackKind::Group) failKey(kChildren, "only groups have child tracks");
     if (m.has(kClips) && kind != TrackKind::Midi) failKey(kClips, "only MIDI tracks hold note clips");
+    if (Status s = detail::checkChain(kind, t->devices); !s) failKey(kDevices, s.error().message);
     if (t->tuning.mode != TuningMode::Inherit && kind != TrackKind::Midi && kind != TrackKind::Group)
       failKey(kTuning, "only MIDI and group tracks have a tuning");
     const Mixer& mx = t->mixer;
@@ -1142,6 +1180,54 @@ private:
       if (mx.output.kind != OutputKind::Default) failKey(kMixer, "the master's output is the device (\"default\")");
     }
     return t;
+  }
+
+  // T4.1: the device chain.
+  std::vector<DevicePtr> devices(const PathSeg& at) {
+    std::vector<DevicePtr> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "patch", "kind", "active", "params", "settings"};
+      auto d = std::make_shared<Device>();
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        switch (k) {
+          case 0: d->id = DeviceId{defineId(f)}; break;
+          case 1:
+            d->patch = str(f);
+            if (d->patch.empty()) r_.failValue(f, "must not be empty");
+            break;
+          case 2: d->kind = static_cast<DeviceKind>(name(f, kDeviceKindNames, "device kind")); break;
+          case 3: d->active = r_.readBool(f); break;
+          case 4: d->params = deviceValues(f); break;
+          case 5: d->settings = deviceValues(f); break;
+        }
+      }
+      m.require({0, 1, 2});
+      v.push_back(std::move(d));
+    }
+    return v;
+  }
+
+  // {name: number, …}: any key order in the file; sorted in the model.
+  std::vector<DeviceValue> deviceValues(const PathSeg& at) {
+    std::vector<DeviceValue> v;
+    r_.beginObject(at);
+    std::string_view key;
+    while (r_.nextKey(at, key)) {
+      DeviceValue x;
+      x.name = std::string(key);
+      const PathSeg f(&at, x.name);
+      x.value = r_.readDouble(f);
+      check(f, detail::checkDeviceValue(x.name, x.value));
+      v.push_back(std::move(x));
+    }
+    std::sort(v.begin(), v.end(), [](const DeviceValue& a, const DeviceValue& b) { return a.name < b.name; });
+    for (size_t i = 1; i < v.size(); ++i)
+      if (v[i - 1].name == v[i].name) r_.failHere(PathSeg(&at, v[i].name), "duplicate key");
+    return v;
   }
 
   Mixer mixer(const PathSeg& at) {
@@ -1548,6 +1634,8 @@ private:
     for (size_t i = 0; i < p.locators->size(); ++i) see((*p.locators)[i].id.value, PathSeg(&locs, i));
     auto walkTrack = [&](auto& self, const PathSeg& at, const Track& t) -> void {
       see(t.id.value, at);
+      const PathSeg devs(&at, "devices");
+      for (size_t i = 0; i < t.devices.size(); ++i) see(t.devices[i]->id.value, PathSeg(&devs, i));
       const PathSeg lanes(&at, "lanes");
       for (size_t i = 0; i < t.lanes.size(); ++i) {
         const PathSeg la(&lanes, i);
@@ -1783,8 +1871,62 @@ private:
 
 Status migrateTicksPpq27720To221760(nlohmann::json& doc) { return TickScaler().run(doc); }
 
+// Schema 2 → 3 (T4.1, QUESTIONS Q?-T4.1-a): device chains. Before, every MIDI track played the default instrument
+// implicitly; now it is the first device of its chain. Every track gets "devices": MIDI tracks
+// [{"id": <new>, "patch": "BasicSynth", "kind": "instrument"}], every other track []. New ids continue above the
+// largest "id" anywhere in the file (one counter for every entity), in track order: tracks depth-first, returns,
+// master. Members of the wrong shape are left for the decoder to report.
+class ChainAdder {
+public:
+  Status run(nlohmann::json& doc) {
+    if (!doc.is_object()) return Ok{};
+    maxId(doc);
+    for (const char* list : {"tracks", "returns"})
+      if (auto it = doc.find(list); it != doc.end() && it->is_array())
+        for (nlohmann::json& t : *it) track(t);
+    if (auto it = doc.find("master"); it != doc.end()) track(*it);
+    if (next_ > 0xFFFFFFFEull) return Error{ErrorCode::InvalidArgument, "no id left for the default instruments", {}};
+    return Ok{};
+  }
+
+private:
+  void maxId(const nlohmann::json& node) {
+    if (node.is_object()) {
+      for (auto it = node.begin(); it != node.end(); ++it) {
+        if (it.key() == "id" && it->is_number_unsigned()) {
+          next_ = std::max<uint64_t>(next_, it->get<uint64_t>() + 1);
+        } else if (it.key() == "id" && it->is_number_integer()) {
+          const int64_t v = it->get<int64_t>();
+          if (v >= 0) next_ = std::max<uint64_t>(next_, static_cast<uint64_t>(v) + 1);
+        }
+        maxId(*it);
+      }
+    } else if (node.is_array()) {
+      for (const nlohmann::json& e : node) maxId(e);
+    }
+  }
+  void track(nlohmann::json& t) {
+    if (!t.is_object() || t.contains("devices")) return;
+    nlohmann::json chain = nlohmann::json::array();
+    if (auto k = t.find("kind"); k != t.end() && k->is_string() && k->get<std::string>() == "midi") {
+      nlohmann::json d = nlohmann::json::object();
+      d["id"] = next_++;
+      d["patch"] = std::string(kDefaultInstrument);
+      d["kind"] = "instrument";
+      chain.push_back(std::move(d));
+    }
+    if (auto c = t.find("children"); c != t.end() && c->is_array())
+      for (nlohmann::json& child : *c) track(child);
+    t["devices"] = std::move(chain);
+  }
+  uint64_t next_ = 1;
+};
+
+Status migrateDefaultInstrumentToChain(nlohmann::json& doc) { return ChainAdder().run(doc); }
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
+    {2, migrateDefaultInstrumentToChain},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

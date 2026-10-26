@@ -3,6 +3,7 @@
 // Validation helpers shared by command application (apply.cpp) and the project loader (serialize.cpp), so a loaded
 // project satisfies exactly the invariants the commands maintain. Private to pq_doc.
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,12 @@ bool tuningParamApplies(const TuningDef& d, ParamKind k);
 bool trackHasSends(TrackKind k);
 // Whether `host` may carry a lane for `r` (see AddAutomationLane).
 Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r);
+// T4.1: a track's device chain: devices present with valid ids, unique in the chain; the chain rule (a MIDI track holds
+// at most one instrument, at index 0, then audio effects; other tracks audio effects only); each device's patch name
+// non-empty and its params / settings sorted by name, unique, named and finite.
+Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices);
+// A device param / setting name (non-empty) and value (finite, when set).
+Status checkDeviceValue(const std::string& name, const std::optional<double>& value);
 // Rejects routing cycles (outputs followed from every track must end at the master or a track with no output).
 Status checkRouting(const Project& p);
 

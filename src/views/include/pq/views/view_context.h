@@ -43,6 +43,11 @@
 namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
+}  // namespace pq::views
+namespace pq::doc {
+class DeviceLibrary;  // pq/document/devices.h
+}  // namespace pq::doc
+namespace pq::views {
 
 // Bits passed to ctx.observe() callbacks: which part of the view state changed.
 namespace view_change {
@@ -57,6 +62,7 @@ inline constexpr uint32_t kTuningPreview = 1u << 7;  // the MOS wheel's live tun
 inline constexpr uint32_t kAutomation = 1u << 8;     // automation overridden / re-enabled (T3.15)
 inline constexpr uint32_t kSelection = 1u << 9;      // the selected track changed (T3.x-fix-look: the control bar's chip)
 inline constexpr uint32_t kInfo = 1u << 10;          // the hovered widget's info text changed in place (T3.19: the roll's pitch readout)
+inline constexpr uint32_t kDevices = 1u << 11;       // the device library changed (T4.1: the device menu, panels)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -174,6 +180,11 @@ public:
   // T3.18: the app's audio device manager, for the preferences window (Ctrl+,); null in tests and scenes without one.
   void setAudioPrefs(AudioPrefsPort* p) noexcept { audioPrefs_ = p; }
   AudioPrefsPort* audioPrefs() const noexcept { return audioPrefs_; }
+  // T4.1: the device library (pq/document/devices.h: the catalog the device view's menu and generic panels are built
+  // from). The app sets the playback link's; null in bare tests and scenes without one (the device view then shows
+  // chains without param controls and offers nothing to add). Must outlive its use. Notifies kDevices.
+  void setDeviceLibrary(const doc::DeviceLibrary* lib);
+  const doc::DeviceLibrary* deviceLibrary() const noexcept { return devices_; }
   // What file.new / file.open / file.save / file.saveAs do: ask about unsaved changes, pick a path, then call the
   // explicit-path functions above. `then` runs after a successful operation (e.g. quit after "save and quit").
   void requestNew();
@@ -332,6 +343,7 @@ private:
 
   FileDialogs* dialogs_ = nullptr;
   AudioPrefsPort* audioPrefs_ = nullptr;
+  const doc::DeviceLibrary* devices_ = nullptr;
   Ticks startMarker_ = 0;
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;

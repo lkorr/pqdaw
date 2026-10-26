@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -304,7 +305,7 @@ std::string schema0Text() {
 }  // namespace
 
 TEST_CASE("serialize: migration hook table (n -> n+1)") {
-  const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0]};
+  const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0], builtinMigrations()[1]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -331,14 +332,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 2");
+    const size_t at = newer.find("\"schemaVersion\": 3");
     REQUIRE(at != std::string::npos);
     newer.replace(at, 18, "\"schemaVersion\": 7");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 7; this build reads up to 2)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 7; this build reads up to 3)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -347,7 +348,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                    d.erase("bpm");
                                    return pq::Ok{};
                                  }},
-                                builtinMigrations()[0]};
+                                builtinMigrations()[0], builtinMigrations()[1]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -358,8 +359,10 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
 
 namespace {
 
-// Walks the schema-1 document and its re-saved schema-2 form in parallel: same structure and values everywhere,
-// except schemaVersion (1 -> 2) and every tick member, which must be exactly 8x the old value.
+// Walks the schema-1 document and its re-saved form in parallel: same structure and values everywhere, except
+// schemaVersion (1 -> the current one) and every tick member, which must be exactly 8x the old value. (T4.1: the
+// re-saved form passes 2 -> 3 as well, which adds "devices" to every track; the caller strips them first and checks
+// them on their own.)
 struct ScaleCheck {
   size_t scaled = 0;              // tick values compared
   size_t scaledNonZero = 0;       // of which != 0 (so the factor is really observed)
@@ -385,7 +388,7 @@ struct ScaleCheck {
       if (!b.is_number_integer()) return fail(path, "type differs");
       const int64_t x = a.get<int64_t>(), y = b.get<int64_t>();
       if (path == "$.schemaVersion") {
-        if (x != 1 || y != 2) fail(path, "schema version");
+        if (x != 1 || y != kSchemaVersion) fail(path, "schema version");
       } else if (isTickKey(key)) {
         ++scaled;
         if (x != 0) ++scaledNonZero;
@@ -409,8 +412,33 @@ struct ScaleCheck {
 // fixtures/schema1 is fixtures/full as the schema-1 build wrote it (main at 39797d7), except that its two edge notes
 // at ±2^52 (kMaxTicks) are reduced to ±2^49, the largest schema-1 ticks that still fit kMaxTicks after × 8, and the
 // return track got an automation lane (ids 365–367) so every place a tick can live is covered.
-TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as schema 2") {
-  static_assert(kSchemaVersion == 2);
+// T4.1: the device chains the 2 -> 3 step adds, removed from every track of a re-saved document (and counted).
+struct StrippedDevices {
+  size_t midi = 0, other = 0;  // tracks whose chain was [BasicSynth] / []
+  size_t unexpected = 0;       // any other chain
+};
+void stripDevices(nlohmann::json& t, StrippedDevices& s) {
+  if (!t.is_object()) return;
+  if (auto it = t.find("devices"); it != t.end()) {
+    const bool midi = t.value("kind", std::string()) == "midi";
+    if (midi && it->size() == 1 && (*it)[0].value("patch", std::string()) == "BasicSynth") ++s.midi;
+    else if (!midi && it->empty()) ++s.other;
+    else ++s.unexpected;
+    t.erase(it);
+  }
+  if (auto c = t.find("children"); c != t.end() && c->is_array())
+    for (nlohmann::json& child : *c) stripDevices(child, s);
+}
+StrippedDevices stripAllDevices(nlohmann::json& doc) {
+  StrippedDevices s;
+  for (const char* list : {"tracks", "returns"})
+    for (nlohmann::json& t : doc[list]) stripDevices(t, s);
+  stripDevices(doc["master"], s);
+  return s;
+}
+
+TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
+  static_assert(kSchemaVersion == 3);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -419,10 +447,14 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 2,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 3,", 0) == 0);
 
+  nlohmann::json resaved = nlohmann::json::parse(*again);
+  const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
+  CHECK(sd.midi > 0);
+  CHECK(sd.unexpected == 0);
   ScaleCheck c;
-  c.walk(nlohmann::json::parse(oldText), nlohmann::json::parse(*again), {}, "$");
+  c.walk(nlohmann::json::parse(oldText), resaved, {}, "$");
   for (const std::string& m : c.mismatches) MESSAGE(m);
   CHECK(c.mismatches.empty());
   MESSAGE(c.scaled << " tick values scaled (" << c.scaledNonZero << " non-zero)");
@@ -435,7 +467,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   // The re-saved file is current: it loads without migration to the same project.
   Result<LoadedProject> back = parseProject(*again);
   REQUIRE(back.ok());
-  CHECK(back->fileSchemaVersion == 2);
+  CHECK(back->fileSchemaVersion == kSchemaVersion);
   CHECK(*back->project == *r->project);
   CHECK(viewEq(back->view, r->view));
   // Musical positions are unchanged: the old loop (bar 2 to bar 4 at PPQ 27720) is bar 2 to bar 4 now.
@@ -467,4 +499,126 @@ TEST_CASE("serialize: schema 1 -> 2 migration range errors") {
   Result<LoadedProject> edge = parseProject(withLoopStart(std::to_string(-(kMaxTicks / 8))));
   REQUIRE_MESSAGE(edge.ok(), (edge.ok() ? std::string() : edge.error().message));
   CHECK(edge->project->loop.start == -kMaxTicks);
+}
+
+// ---- Schema 2 -> 3 (T4.1: device chains) ---------------------------------------------------------------------------
+
+// fixtures/schema2 is fixtures/full as the schema-2 build wrote it (main at f775b67). Before T4.1 every MIDI track
+// played the default instrument implicitly; the migration makes it the first device of the track's chain, with new
+// ids above the file's largest id in track order, and gives every other track an empty chain.
+namespace {
+// The largest "id" anywhere in a JSON text (what the 2 -> 3 migration continues after).
+uint32_t maxJsonId(const nlohmann::json& v) {
+  uint32_t m = 0;
+  if (v.is_object()) {
+    for (const auto& [k, x] : v.items()) {
+      if (k == "id" && x.is_number_unsigned()) m = std::max(m, x.get<uint32_t>());
+      m = std::max(m, maxJsonId(x));
+    }
+  } else if (v.is_array()) {
+    for (const nlohmann::json& x : v) m = std::max(m, maxJsonId(x));
+  }
+  return m;
+}
+}  // namespace
+
+TEST_CASE("serialize: a schema-2 project migrates to device chains (the default instrument on every MIDI track)") {
+  const std::string oldText = readFile(fixturePath("schema2/project.pqd"));
+  REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 2,", 0) == 0);
+  Result<LoadedProject> r = loadProject(fixturePath("schema2"));
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  CHECK(r->fileSchemaVersion == 2);
+
+  // The rich project gives its MIDI tracks their default instruments last (ids after everything, in track order):
+  // the migrated file is exactly it.
+  RichProject f;
+  size_t midiTracks = 0;
+  forEachTrack(f.doc(), [&](const Track& t, const Track*) {
+    if (t.kind != TrackKind::Midi) {
+      CHECK(t.devices.empty());
+      return;
+    }
+    ++midiTracks;
+    REQUIRE(t.devices.size() == 1);
+    CHECK(t.devices[0]->patch == kDefaultInstrument);
+    CHECK(t.devices[0]->id.value > maxJsonId(nlohmann::json::parse(oldText)));
+  });
+  REQUIRE(midiTracks >= 2);
+  CHECK(*r->project == f.doc());
+  CHECK(viewEq(r->view, f.store.view()));
+
+  // Re-saved, it is the current schema and loads to the same project without migration.
+  Result<std::string> again = serializeProject(*r->project, r->view);
+  REQUIRE(again.ok());
+  Result<LoadedProject> back = parseProject(*again);
+  REQUIRE(back.ok());
+  CHECK(back->fileSchemaVersion == kSchemaVersion);
+  CHECK(*back->project == *r->project);
+  // Apart from the chains, the re-saved file is the old one value for value.
+  nlohmann::json resaved = nlohmann::json::parse(*again);
+  nlohmann::json old = nlohmann::json::parse(oldText);
+  const StrippedDevices sd = stripAllDevices(resaved);
+  CHECK(sd.midi == midiTracks);
+  CHECK(sd.unexpected == 0);
+  resaved["schemaVersion"] = 2;
+  CHECK(resaved == old);
+}
+
+TEST_CASE("serialize: device chains round-trip; the reader checks the chain rule and the values") {
+  RichProject f;
+  IdSource& ids = f.store.ids();
+  const Snapshot s = f.store.current();
+  TrackId midi, other;
+  forEachTrack(*s, [&](const Track& t, const Track*) {
+    if (t.kind == TrackKind::Midi && !midi.valid()) midi = t.id;
+    if (t.kind == TrackKind::Group && !other.valid()) other = t.id;
+  });
+  REQUIRE(midi.valid());
+  const DeviceId old = findTrackPtr(*s, midi)->devices.at(0)->id;
+  Device inst = *makeDefaultInstrument(ids.device());
+  inst.params = {{"attack", 0.02}, {"level", 0.5}};
+  Device fx = *makeDevice(ids.device(), "saturator", DeviceKind::AudioEffect);
+  fx.active = false;
+  fx.settings = {{"hq", 4.0}, {"type", 6.0}};
+  fx.params = {{"drive", 3.981071705534973}};
+  Batch b{"chain", {RemoveDevice{old}, AddDevice{midi, std::make_shared<const Device>(inst), 0},
+                    AddDevice{midi, std::make_shared<const Device>(fx), kAppend}}};
+  if (other.valid()) b.commands.push_back(AddDevice{other, makeDevice(ids.device(), "utility", DeviceKind::AudioEffect), 0});
+  REQUIRE(f.store.dispatch(b).ok());
+  std::string text;
+  const LoadedProject back = roundTrip(*f.store.current(), f.store.view(), &text);
+  CHECK(*back.project == *f.store.current());
+  CHECK(text.find("{\"id\": " + std::to_string(fx.id.value) +
+                  ", \"patch\": \"saturator\", \"kind\": \"audioEffect\", \"active\": false, \"params\": {\"drive\": "
+                  "3.981071705534973}, \"settings\": {\"hq\": 4.0, \"type\": 6.0}}") != std::string::npos);
+
+  auto withChain = [&](const std::string& chain) {
+    std::string t = text;
+    const std::string key = "\"id\": " + std::to_string(inst.id.value) + ", \"patch\": \"BasicSynth\"";
+    const size_t at = t.find(key);
+    REQUIRE(at != std::string::npos);
+    const size_t open = t.rfind('[', at), close = t.find("]\n", at);
+    t.replace(open, close + 1 - open, chain);
+    return t;
+  };
+  auto fails = [&](const std::string& chain, const std::string& message) {
+    Result<LoadedProject> r = parseProject(withChain(chain));
+    REQUIRE_FALSE(r.ok());
+    CHECK(r.error().message.find(message) != std::string::npos);
+    if (r.error().message.find(message) == std::string::npos) MESSAGE(r.error().message);
+  };
+  const std::string idA = std::to_string(inst.id.value), idB = std::to_string(fx.id.value);
+  fails("[{\"id\": " + idB + ", \"patch\": \"utility\", \"kind\": \"audioEffect\"}, {\"id\": " + idA +
+            ", \"patch\": \"BasicSynth\", \"kind\": \"instrument\"}]",
+        "the instrument must be the first device of a MIDI track");
+  fails("[{\"id\": " + idA + ", \"patch\": \"\", \"kind\": \"instrument\"}]", "must not be empty");
+  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"midiEffect\"}]", "device kind must be");
+  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"instrument\", \"params\": {\"a b\": 1}}]",
+        "is not a device param or setting name");
+  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"instrument\", \"params\": {\"a\": 1, \"a\": 2}}]",
+        "duplicate key");
+  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"instrument\"}, {\"id\": " + idA +
+            ", \"patch\": \"y\", \"kind\": \"audioEffect\"}]",
+        "device id twice in a chain");
+  fails("[{\"patch\": \"x\", \"kind\": \"instrument\"}]", "missing key \"id\"");
 }

@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -112,6 +113,9 @@ enum class ParamKind : uint8_t {
   MosGenerator,     // owner = MOS tuning, cents
   MosPeriod,        // owner = MOS tuning, cents
   MosStretch,       // owner = MOS tuning, cents added to the 1200-cent octave
+  // T4.1: a param of a device (owner = device id, target = deviceParamHash(name)). Its range, unit and default are
+  // the device patch's (DeviceCatalog, devices.h); not automatable yet (device automation arrives with M4's panels).
+  DeviceParam,
 };
 
 struct ParamRef {
@@ -122,7 +126,10 @@ struct ParamRef {
 
   static ParamRef track(ParamKind k, TrackId t, TrackId target = {}) { return {k, t.value, target.value}; }
   static ParamRef tuning(ParamKind k, TuningId t) { return {k, t.value, 0}; }
+  static ParamRef device(DeviceId d, std::string_view param);  // {DeviceParam, d, deviceParamHash(param)}
 };
+// FNV-1a 32 of a device param's name: the ParamRef target of a device param (QUESTIONS Q?-T4.1-a, item 2).
+uint32_t deviceParamHash(std::string_view name) noexcept;
 bool isTrackParam(ParamKind k) noexcept;
 bool isAutomatable(ParamKind k) noexcept;
 struct ParamRange {
@@ -258,6 +265,41 @@ struct Mixer {
   friend bool operator==(const Mixer&, const Mixer&) noexcept = default;
 };
 
+// ---- Devices (T4.1, SPEC §7.3, §8; QUESTIONS Q?-T4.1-a) ----------------------------------------------------------
+
+// What a device is, fixed when it is created from the catalog (devices.h), so the document can enforce the chain
+// rule without the device library: a MIDI track holds at most one instrument, at index 0, then audio effects; groups,
+// returns and the master hold audio effects only.
+enum class DeviceKind : uint8_t { Instrument, AudioEffect };
+
+// A value the user set on a device: a param (runtime, in the param's normalised unit: Hz, seconds, linear gain for a
+// dB param, a fraction for %, 0/1 for a bool) or a setting (a `real const` input of the device patch: structural).
+struct DeviceValue {
+  std::string name;
+  double value = 0.0;
+  friend bool operator==(const DeviceValue&, const DeviceValue&) = default;
+};
+
+// One device instance in a track's chain: a call of `patch` (a patch of the device library) with the values the user
+// set. Ports are the patch's signature and are not stored; params / settings not listed play the patch's defaults.
+struct Device {
+  DeviceId id;
+  std::string patch;
+  DeviceKind kind = DeviceKind::AudioEffect;
+  bool active = true;                // deactivated: left out of the graph (structural, zero CPU)
+  std::vector<DeviceValue> params;   // sorted by name, unique
+  std::vector<DeviceValue> settings; // sorted by name, unique
+  const DeviceValue* param(std::string_view name) const noexcept;    // nullptr: the patch's default
+  const DeviceValue* setting(std::string_view name) const noexcept;  // nullptr: the patch's default
+  friend bool operator==(const Device&, const Device&) = default;
+};
+using DevicePtr = std::shared_ptr<const Device>;
+
+// The M3 default instrument (QUESTIONS Q15 A): every MIDI track ops::createTrack makes starts with it.
+inline constexpr std::string_view kDefaultInstrument = "BasicSynth";
+DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind);
+DevicePtr makeDefaultInstrument(DeviceId id);  // makeDevice(id, kDefaultInstrument, Instrument)
+
 struct Track;
 using TrackPtr = std::shared_ptr<const Track>;
 
@@ -272,9 +314,14 @@ struct Track {
   std::vector<TrackPtr> children;  // Group only
   std::vector<ClipSlot> clips;     // Midi only, sorted by (start, id)
   std::vector<LanePtr> lanes;      // automation lanes shown under this track
+  std::vector<DevicePtr> devices;  // T4.1: the device chain, signal left → right (MIDI: instrument first)
+  // Index of the device in `devices`, or −1.
+  int32_t deviceIndex(DeviceId device) const noexcept;
 };
 bool operator==(const Track& a, const Track& b) noexcept;
 
+// A track with an empty device chain (a MIDI track plays nothing until it has an instrument: ops::createTrack adds
+// the default instrument; builders add makeDefaultInstrument(ids.device()) themselves).
 Track makeTrack(TrackId id, TrackKind kind, std::string name);
 
 // ---- Timeline (SPEC §9.2) --------------------------------------------------------------------------------------
@@ -353,6 +400,13 @@ const Track* parentOf(const Project& p, const TrackPath& path) noexcept;
 const TuningSlot* findTuning(const Project& p, TuningId id) noexcept;
 // Index of the clip in track.clips, or −1.
 int32_t findClipIndex(const Track& t, ClipId id) noexcept;
+// The track holding device `id` (nullptr: none) and the device.
+struct DeviceLoc {
+  const Track* track = nullptr;
+  const Device* device = nullptr;
+  uint32_t index = 0;  // in track->devices
+};
+DeviceLoc findDevice(const Project& p, DeviceId id) noexcept;
 
 // The tuning a track (and optionally one of its clips) plays in, following Inherit up the group chain. nullptr if a
 // Main reference is dangling (commands never produce that).

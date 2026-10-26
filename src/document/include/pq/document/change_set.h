@@ -5,14 +5,15 @@
 // Classes, cheapest first. A ChangeSet can carry several (a batch, a gesture); the engine link does the work of
 // every class present, and Structural subsumes the others (a recompile rebuilds params, sequences and automation).
 //   Meta        names, colours, clip signatures, locators, record arm: no engine work (views only).
-//   Param       values in the param block (volume, pan, mute, solo, sends, continuous tuning params): EngineCommand
+//   Param       values in the param block (volume, pan, mute, solo, sends, continuous tuning params, device params): EngineCommand
 //               param writes, listed in `params`. Never recompiles (SPEC §2).
 //   Sequence    clip/note data: rebuild and publish the SequenceImage of the touched tracks (T3.16).
 //   Automation  breakpoints of existing lanes: rebuild the AutomationImage of the touched lanes. Kept apart from
 //               Sequence so a breakpoint drag does not rebuild note sequences (and vice versa).
 //   Timeline    tempo map, time signatures, loop region: transport update.
 //   Structural  graph shape (tracks, routing, sends' tap point, activation, lanes added/removed — an automated
-//               param becomes an audio-rate signal — tuning slots and assignments, discrete tuning shape):
+//               param becomes an audio-rate signal — tuning slots and assignments, discrete tuning shape; T4.1:
+//               device chains, device activation and device settings):
 //               debounced recompile + hot swap.
 
 #include <cstdint>
@@ -41,6 +42,7 @@ struct ChangeSet {
   std::vector<LaneId> lanes;
   std::vector<TuningId> tunings;
   std::vector<LocatorId> locators;
+  std::vector<DeviceId> devices;  // T4.1: devices added, removed, moved or edited (their track is in `tracks` too)
   std::vector<ParamRef> params;  // params whose value changed (Param class)
 
   bool empty() const noexcept { return flags == 0; }

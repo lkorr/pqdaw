@@ -124,12 +124,12 @@ Snapshot audibilityReference(DocumentStore& store) {
 }  // namespace
 
 TEST_CASE("lowering: the fixture's tracks, routing, sends and params; unchanged tracks share their patches") {
-  auto lib = app::loadInstrumentLibrary();
+  auto lib = app::loadDeviceLibrary();
   REQUIRE_MESSAGE(lib.ok(), (lib.ok() ? std::string() : lib.error().message));
   playback_fixture::Fixture f;
   LowerOptions lo;
-  lo.library = &(*lib)->library;
-  lo.externals = (*lib)->signatures;
+  lo.library = &(*lib)->library();
+  lo.externals = (*lib)->signatures();
   uint32_t nextSlot = 0;
   lo.slotOf = [&](TrackId) { return nextSlot++; };
   auto low = lower(*f.snap(), lo);
@@ -195,7 +195,7 @@ TEST_CASE("lowering: the fixture's tracks, routing, sends and params; unchanged 
   auto again = lower(*f.snap(), lo, &lp);
   REQUIRE(again.ok());
   for (size_t i = 0; i < lp.patches.size(); ++i) CHECK(again.value().patches[i] == lp.patches[i]);
-  CHECK(lowerParams(*f.snap()).size() == lp.params.size());
+  CHECK(lowerParams(*f.snap(), false, &(*lib)->library()).size() == lp.params.size());
 
   // Deactivating the group leaves it and its member out (structural, Q15).
   REQUIRE(f.store.dispatch(SetTrackActive{f.grp, false}).ok());
@@ -326,7 +326,7 @@ TEST_CASE("adding a track: exactly one compile, a click-free swap; unchanged uni
   db.run(150);
   const app::LinkStats s0 = a->stats();
   const TrackId added = fa.store.ids().track();
-  REQUIRE(fa.store.dispatch(AddTrack{playback_fixture::track(added, TrackKind::Midi, "New"), {}, kAppend}).ok());
+  REQUIRE(fa.store.dispatch(AddTrack{playback_fixture::track(added, TrackKind::Midi, "New", fa.store.ids().device()), {}, kAppend}).ok());
   a->flush();
   CHECK(a->stats().compiles == s0.compiles + 1);
   CHECK(a->stats().topologyChanges == s0.topologyChanges + 1);
@@ -436,7 +436,7 @@ TEST_CASE("a structural edit on the compile thread is debounced into one compile
   const app::LinkStats s0 = link->stats();
   // Three structural edits in quick succession (well inside the debounce): one compile.
   for (int i = 0; i < 3; ++i)
-    REQUIRE(f.store.dispatch(AddTrack{playback_fixture::track(f.store.ids().track(), TrackKind::Midi, "T"), {}, kAppend}).ok());
+    REQUIRE(f.store.dispatch(AddTrack{playback_fixture::track(f.store.ids().track(), TrackKind::Midi, "T", f.store.ids().device()), {}, kAppend}).ok());
   link->flush();
   CHECK(link->stats().compiles == s0.compiles + 1);
   CHECK(link->stats().compileErrors == 0);

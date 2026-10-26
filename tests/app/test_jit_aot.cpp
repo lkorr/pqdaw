@@ -108,7 +108,7 @@ float peak(const std::vector<float>& v) {
 void addStockTrack(DocumentStore& store) {
   IdSource& ids = store.ids();
   const TrackId t = ids.track();
-  REQUIRE(store.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "MIDI"), {}, kAppend}).ok());
+  REQUIRE(store.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "MIDI", store.ids().device()), {}, kAppend}).ok());
   std::vector<Note> notes;
   for (int i = 0; i < 4; ++i) notes.push_back(playback_fixture::note(ids, i * kPpq, kPpq / 2, 4 * i, 0, 100.0f));
   REQUIRE(store.dispatch(AddClip{t, playback_fixture::clip(ids, 0, kTicksPerWhole, notes, "clip")}).ok());

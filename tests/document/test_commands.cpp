@@ -368,6 +368,57 @@ std::vector<Case> cases() {
   c.push_back({"SetTuningParam MOS stretch", [](Fixture& f) -> Command {
                  return SetTuningParam{f.tMos, ParamKind::MosStretch, 3.0};
                }, P, noCheck});
+  // ---- devices (T4.1): the fixture's tracks start with empty chains; withChain gives lead [instrument, utility].
+  struct Chain {
+    DeviceId inst, fx;
+  };
+  static Chain chain;
+  auto withChain = [](Fixture& f) {
+    chain.inst = f.store.ids().device();
+    chain.fx = f.store.ids().device();
+    REQUIRE(f.store.dispatch(Batch{"chain", {AddDevice{f.lead, makeDefaultInstrument(chain.inst), 0},
+                                             AddDevice{f.lead, makeDevice(chain.fx, "utility", DeviceKind::AudioEffect), kAppend}}})
+                .ok());
+  };
+  c.push_back({"AddDevice", [](Fixture& f) -> Command {
+                 return AddDevice{f.lead, makeDefaultInstrument(f.store.ids().device()), 0};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{f.lead});
+                 CHECK(cs.devices.size() == 1);
+                 CHECK(f.track(f.lead).devices.size() == 1);
+               }});
+  c.push_back({"RemoveDevice", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return RemoveDevice{chain.inst};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{chain.inst});
+                 CHECK(f.track(f.lead).devices.size() == 1);
+               }});
+  c.push_back({"MoveDevice (to another track)", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return MoveDevice{chain.fx, f.bass, 0};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(contains(cs.tracks, f.lead));
+                 CHECK(contains(cs.tracks, f.bass));
+                 CHECK(f.track(f.bass).devices.at(0)->id == chain.fx);
+               }});
+  c.push_back({"SetDeviceActive", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return SetDeviceActive{chain.fx, false};
+               }, S, [](Fixture& f, const ChangeSet&) { CHECK_FALSE(f.track(f.lead).devices.at(1)->active); }});
+  c.push_back({"SetDeviceParam", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return SetDeviceParam{chain.fx, "width", 1.5};
+               }, P, [](Fixture&, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::device(chain.fx, "width")});
+                 CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
+               }});
+  c.push_back({"SetDeviceSetting", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return SetDeviceSetting{chain.fx, "bassMono", 1.0};
+               }, S, [](Fixture& f, const ChangeSet&) {
+                 CHECK(f.track(f.lead).devices.at(1)->setting("bassMono")->value == 1.0);
+               }});
   // ---- compound
   c.push_back({"Batch (param + sequence)", [](Fixture& f) -> Command {
                  return Batch{"Mixed", {SetTrackVolume{f.lead, -1.0f},

@@ -12,11 +12,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
 #include "pq/document/commands.h"
+#include "pq/document/devices.h"
 #include "pq/document/model.h"
 
 namespace pq::app {
@@ -48,8 +51,11 @@ namespace {
 
 using namespace pq::doc;
 
+// As ops::createTrack makes them: a MIDI track starts with the default instrument (T4.1).
 doc::TrackPtr newTrack(IdSource& ids, TrackKind kind, const char* name) {
-  return std::make_shared<const Track>(makeTrack(ids.track(), kind, name));
+  Track t = makeTrack(ids.track(), kind, name);
+  if (kind == TrackKind::Midi) t.devices.push_back(makeDefaultInstrument(ids.device()));
+  return std::make_shared<const Track>(std::move(t));
 }
 
 // The stock projects: a new project (master only) and new projects with default-instrument MIDI tracks, a group and a
@@ -57,17 +63,29 @@ doc::TrackPtr newTrack(IdSource& ids, TrackKind kind, const char* name) {
 Result<std::vector<Snapshot>> stockProjects() {
   struct Shape {
     uint32_t midi = 0, returns = 0;
-    bool group = false;  // one more MIDI track inside a group
+    bool group = false;          // one more MIDI track inside a group
+    std::string_view effect;     // T4.1 (Q116): the MIDI tracks' chain is the default instrument + this stock effect
   };
-  const Shape shapes[] = {{0, 0, false}, {1, 0, false}, {2, 0, false}, {4, 0, false}, {8, 0, false},
-                          {1, 1, false}, {2, 1, false}, {1, 0, true}};
+  std::vector<Shape> shapes = {{0, 0, false, {}}, {1, 0, false, {}}, {2, 0, false, {}}, {4, 0, false, {}},
+                               {8, 0, false, {}}, {1, 1, false, {}}, {2, 1, false, {}}, {1, 0, true, {}}};
+  // Each stock audio effect as it is first added from the device menu: at its defaults after the default instrument.
+  for (const StockDevice& d : stockDevices())
+    if (d.patch != kDefaultInstrument) shapes.push_back({1, 0, false, d.patch});
   std::vector<Snapshot> out;
   for (const Shape& sh : shapes) {
     IdSource ids;
     Snapshot s = makeDefaultProject(ids);
     Batch b{"stock project", {}};
     for (uint32_t r = 0; r < sh.returns; ++r) b.commands.push_back(AddTrack{newTrack(ids, TrackKind::Return, "Return"), {}, kAppend});
-    for (uint32_t k = 0; k < sh.midi; ++k) b.commands.push_back(AddTrack{newTrack(ids, TrackKind::Midi, "MIDI"), {}, kAppend});
+    for (uint32_t k = 0; k < sh.midi; ++k) {
+      TrackPtr t = newTrack(ids, TrackKind::Midi, "MIDI");
+      if (!sh.effect.empty()) {
+        Track withEffect = *t;
+        withEffect.devices.push_back(makeDevice(ids.device(), std::string(sh.effect), DeviceKind::AudioEffect));
+        t = std::make_shared<const Track>(std::move(withEffect));
+      }
+      b.commands.push_back(AddTrack{std::move(t), {}, kAppend});
+    }
     if (sh.group) {
       TrackPtr g = newTrack(ids, TrackKind::Group, "Group");
       const TrackId gid = g->id;

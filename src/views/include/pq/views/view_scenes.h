@@ -37,7 +37,9 @@ Result<std::unique_ptr<Shell>> buildViewScene(std::string_view scene, ui::UiTree
 // project), the scene built at width×height logical px and UI scale `scale`, painted once and read back. The status
 // line is cleared after loading so goldens do not depend on its wording. For a patch scene `projectDir` is the .pqp
 // file to show (no project is loaded).
+// `devices` (T4.1, optional): the device library the scene's context uses (the device view's catalog).
 Result<ui::Image> renderViewScene(std::string_view scene, std::string_view projectDir, uint32_t width, uint32_t height,
-                                  ui::UiScale scale = {}, const ui::GpuOptions& options = {});
+                                  ui::UiScale scale = {}, const ui::GpuOptions& options = {},
+                                  const doc::DeviceLibrary* devices = nullptr);
 
 }  // namespace pq::views

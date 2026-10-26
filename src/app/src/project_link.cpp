@@ -360,20 +360,8 @@ std::string stdlibDir() {
 #endif
 }
 
-Result<std::unique_ptr<InstrumentLibrary>> loadInstrumentLibrary(const std::string& stdlib) {
-  const fs::path path = fs::path(stdlib) / "instruments" / "basic_synth.pqp";
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return linkError(ErrorCode::NotFound, "cannot read the default instrument " + path.string());
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  auto lib = std::make_unique<InstrumentLibrary>();
-  lib->text = ss.str();
-  auto parsed = graph::parse(lib->text, path.string());
-  if (!parsed.ok()) return parsed.error();
-  lib->file = std::move(parsed.value());
-  lib->library.add(lib->file);
-  lib->signatures = graph::signatures(lib->file);
-  return lib;
+Result<std::unique_ptr<doc::DeviceLibrary>> loadDeviceLibrary(const std::string& stdlib) {
+  return doc::loadDeviceLibrary(stdlib);
 }
 
 // ---- Construction -----------------------------------------------------------------------------------------------
@@ -388,9 +376,9 @@ Result<std::unique_ptr<ProjectLink>> ProjectLink::create(const LinkConfig& confi
 
 Status ProjectLink::init(const doc::Snapshot& initial) {
   if (!initial) return linkError(ErrorCode::InvalidArgument, "no project");
-  auto lib = loadInstrumentLibrary(cfg_.stdlib.empty() ? stdlibDir() : cfg_.stdlib);
+  auto lib = loadDeviceLibrary(cfg_.stdlib.empty() ? stdlibDir() : cfg_.stdlib);
   if (!lib.ok()) return lib.error();
-  instruments_ = std::move(lib.value());
+  devices_ = std::move(lib.value());
   if (Status s = makeEngine(); !s.ok()) return s;
   written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
   automated_.assign(kProjectParams, 0);
@@ -581,7 +569,7 @@ uint32_t ProjectLink::eventSlot(doc::TrackId track) const {
 // ---- Document changes (UI thread) -------------------------------------------------------------------------------
 
 void ProjectLink::applyParams(const doc::Project& p, bool forceAll) {
-  for (const doc::LoweredParam& lp : doc::lowerParams(p, true)) {
+  for (const doc::LoweredParam& lp : doc::lowerParams(p, true, &devices_->library())) {
     const uint32_t s = slotForParam(lp.key);
     if (s == kNone || automated_[s]) continue;  // automation owns an automated param
     if (!forceAll && written_[s] == lp.value) continue;
@@ -590,6 +578,31 @@ void ProjectLink::applyParams(const doc::Project& p, bool forceAll) {
       ++stats_.paramWrites;
     } else {
       written_[s] = std::numeric_limits<float>::quiet_NaN();  // ring full: retried at the next change
+    }
+  }
+}
+
+void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::ParamRef> params) {
+  for (const doc::ParamRef& ref : params) {
+    const doc::DeviceLoc d = doc::findDevice(p, doc::DeviceId{ref.owner});
+    if (d.device == nullptr) continue;
+    const graph::Patch* callee = devices_->library().find(d.device->patch);
+    if (callee == nullptr) continue;  // bypassed (missing): nothing reads it
+    for (graph::NodeIndex v = 0; v < callee->nodeCount(); ++v) {
+      if (callee->node(v).kind != graph::NodeKind::Param) continue;
+      const std::string& name = callee->nodeName(v);
+      if (doc::deviceParamHash(name) != ref.target) continue;
+      const doc::DeviceValue* set = d.device->param(name);
+      const auto value = static_cast<float>(set != nullptr ? set->value : callee->paramDecl(v).defaultValue.value());
+      const uint32_t s = slotForParam("dev" + std::to_string(ref.owner) + ":" + name);
+      if (s == kNone || automated_[s] || written_[s] == value) break;
+      if (engine_->setParam(s, value)) {
+        written_[s] = value;
+        ++stats_.paramWrites;
+      } else {
+        written_[s] = std::numeric_limits<float>::quiet_NaN();
+      }
+      break;
     }
   }
 }
@@ -739,10 +752,20 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     std::vector<uint32_t> tunings;  // tuning node params ("tuning:<id>:<name>") live while their tuning does
     for (const doc::TuningSlotPtr& t : *p.tunings) tunings.push_back(t->id.value);
     std::sort(tunings.begin(), tunings.end());
+    std::vector<uint32_t> devices;  // T4.1: device params ("dev<id>:<name>") live while their device does
+    doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+      for (const doc::DevicePtr& d : t.devices) devices.push_back(d->id.value);
+    });
+    std::sort(devices.begin(), devices.end());
     for (auto it = paramSlots_.begin(); it != paramSlots_.end();) {
       const bool tuningKey = it->first.starts_with("tuning:");
-      const uint32_t id = static_cast<uint32_t>(std::strtoul(it->first.c_str() + (tuningKey ? 7 : 0), nullptr, 10));
-      if (tuningKey ? !std::binary_search(tunings.begin(), tunings.end(), id) : !live(id)) {
+      const bool deviceKey = it->first.starts_with("dev");
+      const uint32_t id = static_cast<uint32_t>(
+          std::strtoul(it->first.c_str() + (tuningKey ? 7 : deviceKey ? 3 : 0), nullptr, 10));
+      const bool keep = tuningKey   ? std::binary_search(tunings.begin(), tunings.end(), id)
+                         : deviceKey ? std::binary_search(devices.begin(), devices.end(), id)
+                                     : live(id);
+      if (!keep) {
         freeParams_.push_back(it->second);
         written_[it->second] = std::numeric_limits<float>::quiet_NaN();
         it = paramSlots_.erase(it);
@@ -758,6 +781,14 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     newTables = updateTuningTables(p, reset);  // a Reset (New / Open) never keeps an earlier project's tables
   // A send level can change the graph (T3.17-fix3): a return's send to another return, or a send that closes a loop,
   // is lowered only while it is stored (lower.h).
+  // T4.1: device params only (a device knob drag): write just those; nothing else depends on them.
+  const bool deviceParamsOnly =
+      !reset && !structural && c.paramOnly() && !c.params.empty() &&
+      std::all_of(c.params.begin(), c.params.end(), [](const doc::ParamRef& r) { return r.kind == doc::ParamKind::DeviceParam; });
+  if (deviceParamsOnly) {
+    applyDeviceParams(p, c.params);
+    return;
+  }
   bool sendsChanged = false;
   if (reset || structural || c.has(doc::kChangeParam)) {
     std::vector<uint64_t> key = doc::conditionalSendsKey(p);
@@ -765,6 +796,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     conditionalSends_ = std::move(key);
     if (sendsChanged || structural) reportDelayedSends(p);
   }
+  if (structural) reportMissingDevices(p);
   const bool compile = structural || newTables || sendsChanged;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
@@ -780,6 +812,23 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     }
     cv_.notify_all();
   }
+}
+
+void ProjectLink::reportMissingDevices(const doc::Project& p) {
+  std::vector<doc::DeviceId> missing;
+  std::string first;
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    for (const doc::DevicePtr& d : t.devices)
+      if (d->active && devices_->library().find(d->patch) == nullptr) {
+        if (missing.empty()) first = d->patch;
+        missing.push_back(d->id);
+      }
+  });
+  if (missing == missingReported_) return;
+  missingReported_ = std::move(missing);
+  if (!missingReported_.empty() && ctx_ != nullptr)
+    ctx_->setStatus("Device '" + first + "' is not available: it is bypassed" +
+                    (missingReported_.size() > 1 ? " (and " + std::to_string(missingReported_.size() - 1) + " more)" : ""));
 }
 
 void ProjectLink::reportDelayedSends(const doc::Project& p) {
@@ -984,8 +1033,8 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     }
   } endJob{*this};
   doc::LowerOptions lo;
-  lo.library = &instruments_->library;
-  lo.externals = instruments_->signatures;
+  lo.library = &devices_->library();
+  lo.externals = devices_->signatures();
   lo.slotOf = [this](doc::TrackId id) { return slotForTrack(id); };
   lo.tuningTableOf = [this](doc::TuningId id, const doc::TuningDef& def) { return tuningTable(id, def); };
   auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);

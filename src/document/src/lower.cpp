@@ -60,15 +60,19 @@ const Send* storedSend(const Track& t, TrackId ret) {
   return nullptr;
 }
 
+// T4.1: whether a MIDI track lowers an instrument (its first active device, found in the library as one).
+bool lowersInstrument(const Track& t, const graph::PatchLibrary* lib) noexcept;
+
 // The lowered nodes of a project (active tracks), in forEachTrack order: main tree depth-first, returns, master;
 // their routing and their sends. `tableOf` (optional): MIDI tracks following a tuning signal get a tuning node with
-// that table.
-Plan plan(const Project& p, const TableOf* tableOf) {
+// that table (only those that lower an instrument with `lib`: the node feeds its voices).
+Plan plan(const Project& p, const TableOf* tableOf, const graph::PatchLibrary* lib) {
   Plan pl;
   struct Walk {
     const Project& p;
     std::vector<Node>& nodes;
     const TableOf* tableOf;
+    const graph::PatchLibrary* lib;
     void operator()(const std::vector<TrackPtr>& list, const Track* parent, TrackPath path) {
       for (uint32_t i = 0; i < list.size(); ++i) {
         const TrackPtr& t = list[i];
@@ -80,7 +84,7 @@ Plan plan(const Project& p, const TableOf* tableOf) {
         n.track = t.get();
         n.kind = t->kind == TrackKind::Midi ? Kind::Midi : Kind::Group;
         n.parent = parent;
-        if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth)
+        if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth && lowersInstrument(*t, lib))
           for (const TuningId id : trackTuningSignals(p, here)) {
             const TuningSlot* slot = findTuning(p, id);
             n.tunings.push_back(TuningNode{id, &slot->def, (*tableOf)(id, slot->def)});
@@ -89,7 +93,7 @@ Plan plan(const Project& p, const TableOf* tableOf) {
         if (t->kind == TrackKind::Group) (*this)(t->children, t.get(), here);
       }
     }
-  } walk{p, pl.nodes, tableOf};
+  } walk{p, pl.nodes, tableOf, lib};
   walk(p.tracks, nullptr, TrackPath{});
   const auto mainCount = static_cast<uint32_t>(pl.nodes.size());
   for (const TrackPtr& r : p.returns)
@@ -196,6 +200,7 @@ enum Fixed : uint32_t {
   kOutL = 48, kOutR, kOutPack, kOutGain, kPostL, kPostR, kPostPack, kPostGain, kPreL, kPreR, kPrePack, kPreGain,
   kVDegree = 64, kVEquave, kVHz, kVCents, kVTuning, kTuneVoices,
   kSendAcc = 72,
+  kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
 enum TuningK : uint32_t { kTRef, kTPer, kTGen, kTSt, kTNode, kTTable, kTIndex };
@@ -224,6 +229,17 @@ public:
     consts_.emplace_back(id, port);
     return port;
   }
+  // A literal of a device setting (T4.1): its own node, its id from the track's constant pool (stateless: the id
+  // only has to be unique in the patch).
+  PortRef literal(double v) {
+    if (nextLiteral_ >= kEntityNodeBase) {
+      failed_ = true;
+      overflow_ = true;
+      return PortRef{take(p_.addConst(graph::Constant::real(v)), 0), 0};
+    }
+    return PortRef{take(p_.addConst(graph::Constant::real(v)), nextLiteral_++), 0};
+  }
+  bool literalOverflow() const noexcept { return overflow_; }
   PortRef param(const std::string& name, double def, double lo, double hi, uint32_t id) {
     graph::ParamDecl d;
     d.defaultValue = graph::Constant::real(def);
@@ -264,7 +280,9 @@ private:
   graph::Patch p_;
   std::vector<uint32_t> ids_;
   std::vector<std::pair<uint32_t, PortRef>> consts_;
+  uint32_t nextLiteral_ = kLiteralPool;
   bool failed_ = false;
+  bool overflow_ = false;
 };
 
 // The gain stages (see lower.h): x → out (and for senders post / pre exports).
@@ -315,11 +333,118 @@ std::string patchName(const Node& n) {
   return id;
 }
 
-Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const graph::Patch& instrument) {
+// ---- Device chains (T4.1) ------------------------------------------------------------------------------------------
+
+// What a device patch is, read from its declarations (devices.h describeDevice applies the same rule): an instrument
+// has no non-const `in` and a per-voice first `out`.
+bool calleeIsInstrument(const graph::Patch& p) noexcept {
+  bool audioIn = false, voiceOut = false, haveOut = false;
+  for (graph::NodeIndex v = 0; v < p.nodeCount(); ++v) {
+    const graph::Node& nd = p.node(v);
+    if (nd.kind == graph::NodeKind::Input && p.outputType(v, 0).rate != graph::Rate::Const) audioIn = true;
+    if (nd.kind == graph::NodeKind::Output && !haveOut) {
+      haveOut = true;
+      voiceOut = p.inputType(v, 0).poly == graph::Poly::Voice;
+    }
+  }
+  return !audioIn && voiceOut;
+}
+
+bool lowersInstrument(const Track& t, const graph::PatchLibrary* lib) noexcept {
+  for (const DevicePtr& d : t.devices) {
+    if (!d->active) continue;
+    if (d->kind != DeviceKind::Instrument || lib == nullptr) return false;
+    const graph::Patch* callee = lib->find(d->patch);
+    return callee != nullptr && calleeIsInstrument(*callee);
+  }
+  return false;
+}
+
+struct LDev {
+  const Device* device = nullptr;
+  const graph::Patch* callee = nullptr;
+};
+
+// The devices of a track that are lowered, in chain order: active, their patch in the library and of their kind (an
+// instrument only first on a MIDI track). The rest are bypassed; with `missing`, those not found / of the wrong kind
+// are listed there.
+std::vector<LDev> loweredDevices(const Node& n, const graph::PatchLibrary* lib, std::vector<DeviceId>* missing) {
+  std::vector<LDev> out;
+  for (const DevicePtr& d : n.track->devices) {
+    if (!d->active) continue;
+    const graph::Patch* callee = lib != nullptr ? lib->find(d->patch) : nullptr;
+    const bool instrument = d->kind == DeviceKind::Instrument;
+    if (callee == nullptr || calleeIsInstrument(*callee) != instrument || (instrument && (n.kind != Kind::Midi || !out.empty()))) {
+      if (missing != nullptr) missing->push_back(d->id);
+      continue;
+    }
+    out.push_back(LDev{d.get(), callee});
+  }
+  return out;
+}
+
+// A device's call node: named d<id>, NodeId nodeIdFor(Device, id, 0); the settings the user set become literals at
+// their `real const` inputs; params stay unconnected (runtime params d<id>__<name>, linked by the app).
+graph::NodeIndex callDevice(Ir& ir, const LDev& d) {
+  const graph::NodeIndex c = ir.call(graph::subcircuitSignature(*d.callee), nodeIdFor(NodeRole::Device, d.device->id.value, 0));
+  graph::Patch& p = ir.patch();
+  p.setNodeName(c, "d" + std::to_string(d.device->id.value));
+  for (const DeviceValue& v : d.device->settings) {
+    const auto in = p.findInput(c, v.name);
+    if (!in || p.inputType(c, *in).rate != graph::Rate::Const) continue;  // not a setting of this patch (any more)
+    p.connect(ir.literal(v.value), PortRef{c, static_cast<uint16_t>(*in)});
+  }
+  return c;
+}
+
+// The audio effects of `devs` from `first` on, wired left → right after `x` (declared width `width`).
+PortRef effectChain(Ir& ir, std::span<const LDev> devs, size_t first, PortRef x, uint16_t width) {
+  for (size_t k = first; k < devs.size(); ++k) {
+    const LDev& d = devs[k];
+    // The first non-const `in` (its port index = its ordinal among the callee's `in`s) and the first `out`.
+    uint32_t inPort = 0, ordinal = 0;
+    uint16_t inWidth = 0, outWidth = 0;
+    bool haveIn = false, haveOut = false;
+    for (graph::NodeIndex v = 0; v < d.callee->nodeCount(); ++v) {
+      const graph::Node& nd = d.callee->node(v);
+      if (nd.kind == graph::NodeKind::Input) {
+        if (!haveIn && d.callee->outputType(v, 0).rate != graph::Rate::Const) {
+          haveIn = true;
+          inPort = ordinal;
+          inWidth = d.callee->outputType(v, 0).width;
+        }
+        ++ordinal;
+      } else if (nd.kind == graph::NodeKind::Output && !haveOut) {
+        haveOut = true;
+        outWidth = d.callee->inputType(v, 0).width;
+      }
+    }
+    const uint32_t id = d.device->id.value;
+    if (width == graph::kWidthMono && inWidth == graph::kWidthStereo)  // a mono signal into a stereo input
+      x = ir.atom("pack", {x, x}, nodeIdFor(NodeRole::Device, id, 1), 2);
+    const graph::NodeIndex c = callDevice(ir, d);
+    ir.patch().connect(x, PortRef{c, static_cast<uint16_t>(inPort)});
+    x = PortRef{c, 0};
+    if (outWidth != graph::kWidthInfer) width = outWidth;
+    else if (inWidth == graph::kWidthStereo) width = graph::kWidthStereo;
+  }
+  return x;
+}
+
+Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, bool& voices,
+                                std::vector<DeviceId>* missing) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   PortRef x;
-  if (n.kind == Kind::Midi) {
+  const std::vector<LDev> devs = loweredDevices(n, o.library, missing);
+  const bool instrument = n.kind == Kind::Midi && !devs.empty() && devs.front().device->kind == DeviceKind::Instrument;
+  voices = instrument;
+  size_t firstEffect = 0;
+  uint16_t width = graph::kWidthStereo;
+  if (n.kind == Kind::Midi && !instrument) {
+    x = ir.konst(0.0, kC0);  // no instrument: nothing plays (its effects still run)
+    width = graph::kWidthMono;
+  } else if (n.kind == Kind::Midi) {
     if (!n.tunings.empty()) {
       // The tuning nodes (T2.6-fix1; one per tuning signal, chained, each taking the voices that select it: T2.6-fix3):
       // param defaults are fixed (the values arrive as params), so the IR only depends on the tunings' kinds, ids
@@ -352,13 +477,19 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
       }
       ir.atom("tune_voices", {hz, cents}, kTuneVoices);
     }
-    const NodeIndex syn = ir.call(graph::subcircuitSignature(instrument), kInstrument);
-    const auto out = ir.patch().findOutput(syn, "out");
-    const auto done = ir.patch().findOutput(syn, "done");
-    if (!out || !done) return Error{ErrorCode::InvalidArgument, "lower: the instrument has no out / done", {}};
-    x = ir.atom("voice_sum", {PortRef{syn, static_cast<uint16_t>(*out)}}, kVoiceSum);
-    ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
-              PortRef{syn, static_cast<uint16_t>(*done)}, kDone);
+    // The instrument (T4.1: the chain's first device; its first `out` is the voice signal, `done` ends voices).
+    const NodeIndex syn = callDevice(ir, devs.front());
+    x = ir.atom("voice_sum", {PortRef{syn, 0}}, kVoiceSum);
+    if (const auto done = ir.patch().findOutput(syn, "done"))
+      ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
+                PortRef{syn, static_cast<uint16_t>(*done)}, kDone);
+    firstEffect = 1;
+    width = graph::kWidthMono;
+    for (graph::NodeIndex v = 0; v < devs.front().callee->nodeCount(); ++v)
+      if (devs.front().callee->node(v).kind == graph::NodeKind::Output) {
+        if (devs.front().callee->inputType(v, 0).width == graph::kWidthStereo) width = graph::kWidthStereo;
+        break;
+      }
   } else if (n.kind == Kind::Return) {
     // The sum of the sends into it (T3.17-fix2): one input and one gain_add per sender, ids from the sender.
     const PortRef c0 = ir.konst(0.0, kC0);
@@ -380,17 +511,35 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   } else {
     x = ir.input("in", ir.konst(0.0, kC0), kIn);
   }
+  x = effectChain(ir, devs, firstEffect, x, width);
   gainStages(ir, n.kind, x, o.smoothingMs);
+  if (ir.literalOverflow())
+    return Error{ErrorCode::Overflow, "lower: track " + std::to_string(n.track->id.value) + ": more than " +
+                                          std::to_string(kEntityNodeBase - kLiteralPool) + " device settings", {}};
   if (!ir.finish())
     return Error{ErrorCode::Overflow, "lower: track " + std::to_string(n.track->id.value) +
                                           ": a document id too large for a stable node id (nodeIdFor)", {}};
   return std::move(ir.patch());
 }
 
-void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::vector<LoweredParam>& out) {
+void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::vector<LoweredParam>& out,
+               const graph::PatchLibrary* lib) {
   const Node& n = pl.nodes[index];
   const Track& t = *n.track;
   const std::string id = std::to_string(t.id.value);
+  // T4.1: every param of every lowered device (unconnected at the call: d<id>__<name> in the track patch).
+  if (lib != nullptr)
+    for (const LDev& d : loweredDevices(n, lib, nullptr)) {
+      const std::string dev = std::to_string(d.device->id.value);
+      for (graph::NodeIndex v = 0; v < d.callee->nodeCount(); ++v) {
+        if (d.callee->node(v).kind != graph::NodeKind::Param) continue;
+        const std::string& name = d.callee->nodeName(v);
+        const DeviceValue* set = d.device->param(name);
+        const double value = set != nullptr ? set->value : d.callee->paramDecl(v).defaultValue.value();
+        out.push_back(LoweredParam{"dev" + dev + ":" + name, index, "d" + dev + "__" + name, static_cast<float>(value),
+                                   ParamRef::device(d.device->id, name)});
+      }
+    }
   auto add = [&](const std::string& name, float v, std::optional<ParamRef> ref) {
     out.push_back(LoweredParam{id + ":" + name, index, name, v, ref});
   };
@@ -556,10 +705,8 @@ uint32_t tuningNodeIndex(std::span<const TuningId> signals, TuningId t) noexcept
 
 Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const LoweredProject* previous) {
   if (!p.master) return Error{ErrorCode::InvalidArgument, "lower: the project has no master", {}};
-  const graph::Patch* instrument = o.library != nullptr ? o.library->find(o.instrument) : nullptr;
-  if (instrument == nullptr)
-    return Error{ErrorCode::NotFound, "lower: the instrument '" + o.instrument + "' is not in the library", {}};
-  const Plan pl = plan(p, &o.tuningTableOf);
+  if (o.library == nullptr) return Error{ErrorCode::InvalidArgument, "lower: no device library", {}};
+  const Plan pl = plan(p, &o.tuningTableOf, o.library);
   const AudibilityMap aud = computeAudibility(p, AudibilityOptions{true});
   LoweredProject out;
   out.graph.library = o.library;
@@ -568,7 +715,8 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     for (size_t j = 0; j < previous->trackIds.size(); ++j) prev.emplace(previous->trackIds[j].value, previous->patches[j]);
   for (uint32_t i = 0; i < pl.nodes.size(); ++i) {
     const Node& n = pl.nodes[i];
-    auto built = buildPatch(pl, i, o, *instrument);
+    bool voices = false;
+    auto built = buildPatch(pl, i, o, voices, &out.missingDevices);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());
@@ -587,11 +735,12 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     pt.id = n.track->id.value;
     pt.name = n.track->name;
     pt.patch = &out.patches.back()->patch;
-    pt.role = roleOf(n.kind);
-    pt.eventSlot = n.kind == Kind::Midi && o.slotOf ? o.slotOf(n.track->id) : graph::kNone;
-    if (n.kind == Kind::Midi && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
+    // T4.1: a MIDI track without an active instrument is a plain audio track (no voices, no notes).
+    pt.role = n.kind == Kind::Midi && !voices ? graph::TrackRole::Audio : roleOf(n.kind);
+    pt.eventSlot = voices && o.slotOf ? o.slotOf(n.track->id) : graph::kNone;
+    if (voices && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
     out.graph.tracks.push_back(std::move(pt));
-    addParams(pl, i, aud, out.params);
+    addParams(pl, i, aud, out.params, o.library);
   }
   out.master = pl.master;
   // Wires: outputs, then sends (wire order = summing order).
@@ -607,17 +756,17 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   return out;
 }
 
-std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes) {
+std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const graph::PatchLibrary* library) {
   const TableOf anyTable = [](TuningId, const TuningDef&) { return 0u; };  // the index does not change a param
-  const Plan pl = plan(p, tuningNodes ? &anyTable : nullptr);
+  const Plan pl = plan(p, tuningNodes ? &anyTable : nullptr, library);
   const AudibilityMap aud = computeAudibility(p, AudibilityOptions{true});
   std::vector<LoweredParam> out;
-  for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out);
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out, library);
   return out;
 }
 
 std::vector<DelayedSend> delayedSends(const Project& p) {
-  const Plan pl = plan(p, nullptr);
+  const Plan pl = plan(p, nullptr, nullptr);
   std::vector<DelayedSend> out;
   for (const SendLink& l : pl.sends)
     if (l.delayed) out.push_back(DelayedSend{pl.nodes[l.from].track->id, pl.nodes[l.to].track->id});
@@ -625,7 +774,7 @@ std::vector<DelayedSend> delayedSends(const Project& p) {
 }
 
 std::vector<uint64_t> conditionalSendsKey(const Project& p) {
-  const Plan pl = plan(p, nullptr);
+  const Plan pl = plan(p, nullptr, nullptr);
   std::vector<uint64_t> key;
   for (const SendLink& l : pl.sends)
     if (l.conditional)

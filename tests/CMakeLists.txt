@@ -95,6 +95,7 @@ pq_add_test(pq_tests_playback
     app/test_live_jit.cpp
     app/test_tuning_coverage.cpp
     app/test_jit_aot.cpp
+    app/test_device_chains.cpp  # T4.1: device chains through the link (migration bit-identity, unit compiles, hand-built graph)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -278,6 +279,7 @@ pq_add_test(pq_tests_document
     document/test_audibility.cpp
     document/test_main_tunings.cpp
     document/test_virtual_fundamental.cpp
+    document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
   DEPS pq_doc)
 
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it
