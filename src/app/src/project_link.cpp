@@ -1137,7 +1137,9 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
       const uint32_t u = program != nullptr ? link.compiler_->unitOf(job.schedule.get()) : engine::kNoUnit;
       if (u == engine::kNoUnit) break;  // stale: the unit was recompiled or removed meanwhile
       // Deferred publishes first: until they are in, the program's units are not yet the compiler's.
-      if (link.deferred_.empty() && program->canPublish(u)) {
+      // … and only while the queue keeps room for the compile path's next image (T3.17-fix2: the JIT image is optional; a
+      // JIT image filling the queue made the next compile wait for an audio thread that might not run).
+      if (link.deferred_.empty() && program->canPublish(u) && program->queued(u) <= 1) {
         auto bound = link.compiler_->bind(u, std::move(img.value()));
         // Bit-identical to the interpreted image (no contraction, T1b.1-fix1): an instant swap is sample-exact.
         if (bound.ok() && program->publish(u, std::move(bound.value()), engine::SwapPolicy{engine::SwapMode::Instant}).ok()) {

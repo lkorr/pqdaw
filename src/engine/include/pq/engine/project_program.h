@@ -213,6 +213,8 @@ public:
   // Non-RT: publish(unit, …) would not be refused for lack of room (no topology pending, the unit's ring not full).
   // A refused publish destroys the image it was given: wait for this first.
   bool canPublish(uint32_t unit) const;
+  // Non-RT: images published to the unit that the audio thread has not taken yet (approximate).
+  uint32_t queued(uint32_t unit) const;
   // Non-RT (one reader thread): the levels of buses of the last published layout since the previous call, then a reset
   // request (the audio thread restarts the accumulation at its next block).
   void readMeters(std::span<const uint32_t> buses, std::span<BusLevel> out);

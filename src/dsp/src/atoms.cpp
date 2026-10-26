@@ -3,6 +3,7 @@
 #include "pq/dsp/atoms.h"
 
 #include <bit>
+#include <cstddef>
 #include <cmath>
 #include <cstring>
 
@@ -167,6 +168,9 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};
+    // gain / gain_add: target, d, tau, r are [8] arrays; rpow / r8 cache lane 0's powers for the 1-lane path only.
+    case Atom::Gain:
+    case Atom::GainAdd: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(GainState, rpow))};
     case Atom::DelayLinear:
     case Atom::DelayCubic:
     case Atom::DelayAllpass:

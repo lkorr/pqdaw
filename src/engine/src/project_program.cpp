@@ -635,6 +635,11 @@ bool ProjectProgram::canPublish(uint32_t unit) const {
   return U.ring.sizeApprox() + 1 < std::bit_ceil(std::max(2u, cfg_.maxPendingPerUnit));
 }
 
+uint32_t ProjectProgram::queued(uint32_t unit) const {
+  std::lock_guard lock(mutex_);
+  return unit < units_.size() ? static_cast<uint32_t>(units_[unit]->ring.sizeApprox()) : 0u;
+}
+
 bool ProjectProgram::topologyPending() const {
   std::lock_guard lock(mutex_);
   return !topoInflight_.empty() && topoInflight_.back()->seq > topoCurrent_.load(std::memory_order_acquire);
