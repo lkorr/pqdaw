@@ -27,7 +27,7 @@ using namespace device_chain;
 
 namespace {
 
-constexpr float kStripW = 22.0f;     // the button strip
+constexpr float kStripW = 30.0f;     // the button strip
 constexpr float kMacroCell = 56.0f;  // a macro knob's cell (w and h)
 constexpr float kListW = 220.0f;     // the chain list
 constexpr float kRowH = 22.0f;       // a chain row
@@ -57,6 +57,7 @@ devices::DeviceSignature rackSignature(const doc::Device& d) {
     p.label = doc::macroDisplayName(*d.rack, k);
     p.min = 0.0;
     p.max = doc::kMacroMax;
+    p.steps = 128;  // shown and dragged in whole steps 0 … 127 (Live's macros); the param itself is continuous
     s.params.push_back(std::move(p));
   }
   devices::ParamInfo sel;
@@ -64,6 +65,7 @@ devices::DeviceSignature rackSignature(const doc::Device& d) {
   sel.label = "Chain";
   sel.min = 0.0;
   sel.max = doc::kSelectMax;
+  sel.steps = 128;
   s.params.push_back(std::move(sel));
   return s;
 }
@@ -251,8 +253,9 @@ public:
   ui::IRect buttonRect(uint32_t b) const {
     const ui::IRect r = rect();
     const float s = tree() ? tree()->scale() : 1.0f;
-    const int32_t sz = static_cast<int32_t>(std::lround(18.0f * s)), step = static_cast<int32_t>(std::lround(22.0f * s));
-    return {r.x + (r.w - sz) / 2, r.y + static_cast<int32_t>(std::lround(kTitleH * s)) + static_cast<int32_t>(b) * step, sz, sz};
+    const int32_t w = static_cast<int32_t>(std::lround(26.0f * s)), h = static_cast<int32_t>(std::lround(18.0f * s));
+    const int32_t step = static_cast<int32_t>(std::lround(22.0f * s));
+    return {r.x + (r.w - w) / 2, r.y + static_cast<int32_t>(std::lround((kTitleH + 4.0f) * s)) + static_cast<int32_t>(b) * step, w, h};
   }
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
@@ -292,6 +295,15 @@ public:
     for (const doc::DeviceValue& v : params_)
       if (v.name == name) return v.value;
     return 0.0;
+  }
+  // The selector the chains hear: its knob, or where the macro mapped to it puts it.
+  double selectorValue() const {
+    for (const doc::MacroMapping& m : rack_->mappings)
+      if (m.device == id_ && m.param == doc::kSelectParam) {
+        const double pos = m.min + (m.max - m.min) * automationShape(paramValue(doc::macroParamName(m.macro)) / doc::kMacroMax, m.curve);
+        return std::clamp(pos, 0.0, 1.0) * doc::kSelectMax;
+      }
+    return paramValue(doc::kSelectParam);
   }
   ChainList& list() noexcept { return *list_; }
   RackStrip& strip() noexcept { return *strip_; }
@@ -373,6 +385,7 @@ public:
     for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
     syncInner();
     impl_.reindex();
+    impl_.view.refreshRings();  // new panels: their rings and mapped values
     relayout();
   }
   void relayout() {
@@ -574,6 +587,7 @@ ChainRow::ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::Chai
   vs.unit = "dB";
   vol_ = &add<ui::DragBox>("volume", vs);
   vol_->formatter = [](double v) { return fmtDb(v); };
+  vol_->setSpec(vs);  // shows the value through the formatter
   ui::ValueSpec ps;
   ps.min = -1.0;
   ps.max = 1.0;
@@ -582,6 +596,7 @@ ChainRow::ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::Chai
   ps.dragPixels = 100.0;
   pan_ = &add<ui::DragBox>("pan", ps);
   pan_->formatter = [](double v) { return fmtPan(v); };
+  pan_->setSpec(ps);
   auto begin = [this] {
     if (!impl_.ctx().store().inGesture()) (void)impl_.ctx().store().beginGesture("Chain Mixer");
   };
@@ -784,7 +799,7 @@ void ZoneEditor::paint(ui::PaintContext& ctx) {
   }
   // The selector's marker (Chain tab), above the bars.
   if (tab == doc::ZoneKind::Select) {
-    const float x = toX(rack_.paramValue(doc::kSelectParam));
+    const float x = toX(rack_.selectorValue());
     const float yb = static_cast<float>(r.y + tb);
     const float s = ctx.scale.exact(4.0f);
     ctx.dl.addTriangleFilled({x - s, yb - s}, {x + s, yb - s}, {x, yb}, th->accent.focus);
@@ -854,8 +869,16 @@ bool ZoneEditor::onPointer(const ui::PointerEvent& e) {
     auto snap = [&](double x) { return a.log ? x : std::round(x); };  // velocity / selector / degrees: whole steps
     doc::Zone z = start_;
     switch (grab_) {
-      case Grab::Lo: z.lo = std::min(clampV(snap(v)), z.fadeLo); break;
-      case Grab::Hi: z.hi = std::max(clampV(snap(v)), z.fadeHi); break;
+      case Grab::Lo:  // the end pushes its fade along (Live)
+        z.lo = std::min(clampV(snap(v)), z.hi);
+        z.fadeLo = std::clamp(z.fadeLo, z.lo, z.hi);
+        z.fadeHi = std::max(z.fadeHi, z.fadeLo);
+        break;
+      case Grab::Hi:
+        z.hi = std::max(clampV(snap(v)), z.lo);
+        z.fadeHi = std::clamp(z.fadeHi, z.lo, z.hi);
+        z.fadeLo = std::min(z.fadeLo, z.fadeHi);
+        break;
       case Grab::FadeLo: z.fadeLo = std::clamp(snap(v), z.lo, z.fadeHi); break;
       case Grab::FadeHi: z.fadeHi = std::clamp(snap(v), z.fadeLo, z.hi); break;
       case Grab::Move: {
@@ -1180,6 +1203,7 @@ void DeviceChainView::showZones(doc::DeviceId rack, std::optional<doc::ZoneKind>
     if (const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), rack); l.device != nullptr) f->update(*l.device);
   }
   impl_->reindex();
+  refreshRings();
   impl_->content->invalidateLayout();
 }
 

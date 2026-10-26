@@ -224,6 +224,19 @@ public:
     }
   }
   void setParam(std::string_view param, double value) override {
+    // T4.8: a knob a macro drives turns its macro (the inverse of the mapping), as Live's mapped controls follow theirs.
+    if (const doc::MappingLoc m = doc::mappingOf(*ctx_.doc(), id_, param); m.mapping != nullptr) {
+      FrameBase* f = impl_.frameOf(id_);
+      const devices::ParamInfo* info = f != nullptr && f->panel() != nullptr ? f->panel()->signature().findParam(param) : nullptr;
+      if (info == nullptr) return;
+      const doc::MacroMapping& mm = *m.mapping;
+      const double span = mm.max - mm.min;
+      const double s = std::abs(span) < 1e-9 ? 0.0 : std::clamp((devices::toPosition(*info, value) - mm.min) / span, 0.0, 1.0);
+      const double k = kAutomationCurveK * mm.curve;
+      const double x = std::abs(k) < kAutomationLinearK ? s : std::log1p(s * std::expm1(k)) / k;  // shape⁻¹
+      impl_.live(doc::ops::setMacroValue(*ctx_.doc(), m.rack->id, mm.macro, std::clamp(x, 0.0, 1.0) * doc::kMacroMax));
+      return;
+    }
     // Inside the gesture each change is applied at once (live param writes); outside it is one undo step of its own.
     impl_.live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param), value));
   }
@@ -920,6 +933,8 @@ void DeviceChainView::refreshRings() {
         ring.lo = static_cast<float>(std::min(mm.min, mm.max));
         ring.hi = static_cast<float>(std::max(mm.min, mm.max));
         ring.current = pk;
+        // The knob shows what the macro sets (its own stored value is not played while mapped).
+        panel->setParamValue(info.name, devices::fromPosition(info, pk));
       }
       for (size_t i = 0; i < m.ringTargets.size(); ++i) {
         if (m.ringTargets[i].device != f->id() || m.ringTargets[i].param != info.name) continue;

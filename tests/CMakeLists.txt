@@ -136,6 +136,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_wiring.cpp  # T4.7: cables (jack → knob drags, across tracks, scrolling, badge, rings), golden
     views/test_device_circuit.cpp  # T4.4-fix1: the circuit editor on a project device (fork, undo, probes), golden
     views/test_project_patch.cpp  # T4.13: the project patch view (graph match, layout, edits, morph, zoom), goldens
+    views/test_racks_view.cpp  # T4.8: racks in the Device view (chains, drops, map mode, macro / mixer / zone drags), goldens
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell

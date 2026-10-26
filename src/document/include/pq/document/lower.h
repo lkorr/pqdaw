@@ -31,6 +31,34 @@
 // editor shows); the call's NodeId is the same, so a fork, an edit and Revert to Stock keep every state the patch
 // still has. graph.library is then LoweredProject::userLibrary.
 //
+// ---- Racks (T4.8, SPEC §8.2; model.h "Racks"; QUESTIONS Q?-T4.8-a) ------------------------------------------------
+// A rack lowers INLINE into its track's patch (the compiler flattens subcircuits anyway, so this is the same machine
+// code as a nested call, and every device inside keeps nodeIdFor(Device, its id, 0): its state survives moves between
+// chains, in and out of racks, within the track). rackSubcircuit() builds the same nodes as a patch of their own for the
+// circuit view. Chains that play: active, soloed if any chain of the rack is (muted chains have no node: zero cost);
+// an Instrument Rack's chains with an instrument first. Per chain c (nodes NodeRole::Chain, the chain's id):
+//   Audio Effect Rack   x → [gain(x, zs_c) when its select zone is on] → its devices → gain(·, pack(gl_c, gr_c)) →
+//                       summed over the chains (no chain at all: x passes; every chain muted: silence). The select
+//                       zone gates the chain's INPUT, so a chain the selector leaves sleeps once its tail has rung out.
+//   Instrument Rack     its instrument's voices · zk_c (key zone, on ln voice.hz) · zv_c (velocity zone) [· the
+//                       enclosing rack's per-voice gain, nested] → voice_sum → its effects (per-voice chains: the
+//                       effects before voice_sum) → gain(·, pack(gl_c · zs_c, gr_c · zs_c)) → summed; `done` = and of
+//                       every chain's `done` (all of them must have one, else none).
+//   gl_c, gr_c          runtime params c<chain>_gl / _gr ("chain<id>:gl"): balance pan · volume, derived by the
+//                       document (a chain mixer drag is two param writes; the `gain` stage smooths it).
+//   zone gain           clip(min(v·a1 + b1, v·a2 + b2), 0, 1), linear ramps lo → fadeLo and fadeHi → hi with ε-inclusive
+//                       edges; a1 … b2 runtime params c<chain>_s0 … s3 / v0 … / k0 … the document derives from the zone
+//                       (a zone drag is a param write; key zones in degrees are converted with the track's tuning, so a
+//                       tuning edit moves them). A zone that is off (its whole range) has no node.
+// Rack params ("macro1" … "macro16", "select"): a root param d<rack>__<name> (key dev<rack>:<name>) when the rack reads it
+// (a mapping of that macro, a select zone) or a wire modulates it; else none. A macro turn is one param write whatever
+// it drives. Mapped params (a MacroMapping onto a device param or a nested rack's param): the macro's value m →
+// pos = min + (max − min)·shape(m / 127, curve) (pq/core/automation_curve.h) → the param's knob travel map → the pin
+// (nodes NodeRole::Mapping, the mapping's id; constants folded at compile time, the math hoisted to block rate while the
+// macro is not audio-rate modulated). A mapped param is no longer a param of its own (no dev<id>:<name>). Wires into a
+// mapped param add to the mapped position (Q135's law with the mapping as the centre); wires into a macro modulate the
+// macro (and so everything it drives).
+//
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
 //                 stdlib/instruments/basic_synth.pqp; QUESTIONS Q15 A) → voice_sum → its audio effects = x (mono, or

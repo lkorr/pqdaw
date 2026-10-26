@@ -992,6 +992,108 @@ Status setupProjectPatch(Shell& shell, bool band) {
 Status setupProjectPatchOverview(Shell& shell) { return setupProjectPatch(shell, false); }
 Status setupProjectPatchBand(Shell& shell) { return setupProjectPatch(shell, true); }
 
+// T4.8: racks in the Device view. audio-rack: Keys = Basic Synth → an Audio Effect Rack [Dry: Utility | Crunch:
+// Saturator (shown) | Wide: Utility], Chain zones crossfading over the selector (the zone editor on its Chain tab),
+// macros named and mapped (Drive → Crunch's drive, Width → Wide's width, Blend → the rack's own selector).
+// instrument-rack: an Instrument Rack [Low: Basic Synth, key zone up to 300 Hz fading out to 400 Hz | High: Operator,
+// key zone fading in from 300 Hz | Soft: Basic Synth, velocity zone up to 64] → Saturator; the zone editor on its Key
+// tab, per-voice chains on, two variations stored.
+Status setupAudioRack(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "audio-rack: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) { return runEdit(store, e); };
+  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
+  if (!t) return Error{ErrorCode::Unknown, "audio-rack: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  const auto dry = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  const auto sat = run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect));
+  const auto wide = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  if (!dry || !sat || !wide) return Error{ErrorCode::Unknown, "audio-rack: addDevice failed", {}};
+  const doc::DeviceId d = dry->devices[0], s = sat->devices[0], w = wide->devices[0];
+  const auto rack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{d}));
+  if (!rack) return Error{ErrorCode::Unknown, "audio-rack: group failed", {}};
+  const doc::DeviceId r = rack->devices[0];
+  bool ok = run(doc::ops::moveDeviceToNewChain(*store.current(), store.ids(), s, r)).has_value() &&
+            run(doc::ops::moveDeviceToNewChain(*store.current(), store.ids(), w, r)).has_value();
+  if (!ok) return Error{ErrorCode::Unknown, "audio-rack: chains failed", {}};
+  const doc::Rack& rk = *doc::findDevice(*store.current(), r).device->rack;
+  const doc::ChainId c1 = rk.chains[0]->id, c2 = rk.chains[1]->id, c3 = rk.chains[2]->id;
+  ok = run(doc::ops::renameChain(*store.current(), c1, "Dry")) && run(doc::ops::renameChain(*store.current(), c2, "Crunch")) &&
+       run(doc::ops::renameChain(*store.current(), c3, "Wide")) &&
+       run(doc::ops::setChainZone(*store.current(), c1, doc::ZoneKind::Select, {0, 0, 32, 64})) &&
+       run(doc::ops::setChainZone(*store.current(), c2, doc::ZoneKind::Select, {32, 64, 64, 96})) &&
+       run(doc::ops::setChainZone(*store.current(), c3, doc::ZoneKind::Select, {64, 96, 127, 127})) &&
+       run(doc::ops::setChainMixer(*store.current(), c2, -3.0f, 0.0f)) &&
+       run(doc::ops::setChainMixer(*store.current(), c3, -6.0f, 0.3f)) &&
+       run(doc::ops::renameMacro(*store.current(), r, 0, "Drive")) && run(doc::ops::renameMacro(*store.current(), r, 1, "Width")) &&
+       run(doc::ops::renameMacro(*store.current(), r, 2, "Blend")) &&
+       run(doc::ops::mapMacro(*store.current(), store.ids(), r, 0, s, "drive", 40.0)) &&
+       run(doc::ops::mapMacro(*store.current(), store.ids(), r, 1, w, "width", 70.0)) &&
+       run(doc::ops::mapMacro(*store.current(), store.ids(), r, 2, r, std::string(doc::kSelectParam), 52.0)) &&
+       run(doc::ops::setDeviceSetting(*store.current(), s, "type", 6.0));
+  if (!ok) return Error{ErrorCode::Unknown, "audio-rack: rack edits failed", {}};
+  ctx.setSelectedTrack(track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "audio-rack: the Device view is not installed", {}};
+  v->showChain(r, c2);
+  v->showZones(r, doc::ZoneKind::Select);
+  const doc::DeviceId one[1] = {r};
+  v->select(one);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+Status setupInstrumentRack(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "instrument-rack: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) { return runEdit(store, e); };
+  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Split"));
+  if (!t) return Error{ErrorCode::Unknown, "instrument-rack: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  const doc::DeviceId inst = doc::findTrackPtr(*store.current(), track)->devices.at(0)->id;
+  const auto rack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{inst}));
+  if (!rack) return Error{ErrorCode::Unknown, "instrument-rack: group failed", {}};
+  const doc::DeviceId r = rack->devices[0];
+  if (!run(doc::ops::addChainWithDevice(*store.current(), store.ids(), r, "operator", doc::DeviceKind::Instrument)) ||
+      !run(doc::ops::addChainWithDevice(*store.current(), store.ids(), r, std::string(doc::kDefaultInstrument),
+                                        doc::DeviceKind::Instrument)) ||
+      !run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect)))
+    return Error{ErrorCode::Unknown, "instrument-rack: chains failed", {}};
+  const doc::Rack& rk = *doc::findDevice(*store.current(), r).device->rack;
+  const doc::ChainId lo = rk.chains[0]->id, hi = rk.chains[1]->id, soft = rk.chains[2]->id;
+  const doc::DeviceId op = rk.chains[1]->devices[0]->id;
+  const bool ok =
+      run(doc::ops::renameChain(*store.current(), lo, "Low")) && run(doc::ops::renameChain(*store.current(), hi, "High")) &&
+      run(doc::ops::renameChain(*store.current(), soft, "Soft")) &&
+      run(doc::ops::setChainZone(*store.current(), lo, doc::ZoneKind::Key, {1, 1, 300, 400})) &&
+      run(doc::ops::setChainZone(*store.current(), hi, doc::ZoneKind::Key, {300, 400, 100000, 100000})) &&
+      run(doc::ops::setChainZone(*store.current(), soft, doc::ZoneKind::Velocity, {0, 0, 48, 64})) &&
+      run(doc::ops::setChainMixer(*store.current(), soft, -4.5f, -0.4f)) &&
+      run(doc::ops::setVoiceChains(*store.current(), r, true)) &&
+      run(doc::ops::renameMacro(*store.current(), r, 0, "Bright")) &&
+      run(doc::ops::mapMacro(*store.current(), store.ids(), r, 0, inst, "bright", 80.0)) &&
+      run(doc::ops::mapMacro(*store.current(), store.ids(), r, 1, op, "filterFreq", 60.0)) &&
+      run(doc::ops::storeVariation(*store.current(), r, "Warm")) &&
+      run(doc::ops::setMacroValue(*store.current(), r, 0, 20.0)) &&
+      run(doc::ops::storeVariation(*store.current(), r, "Dark"));
+  if (!ok) return Error{ErrorCode::Unknown, "instrument-rack: rack edits failed", {}};
+  ctx.setSelectedTrack(track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "instrument-rack: the Device view is not installed", {}};
+  v->showChain(r, lo);
+  v->showZones(r, doc::ZoneKind::Key);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
@@ -1040,6 +1142,8 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-device", 1280, 800, setupCircuitEditorDevice},  // T4.4-fix1
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
+    {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
+    {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
 };
 
 std::string_view kNames[std::size(kScenes)] = {};
