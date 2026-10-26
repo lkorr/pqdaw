@@ -502,15 +502,15 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Each track holds an ordered device chain (instances of stdlib/user patches with their param values); lowering uses the chain instead of the fixed default instrument; the detail panel's Device tab shows the chain left → right with generic auto-generated panels (one control per param); add (device menu until the M5 browser), remove, reorder, deactivate, copy/paste; undo; serialization (schema bump + migration from "default instrument").
   - Accept: scripted add/reorder/remove/deactivate each one undo step; reorder recompiles only that track's unit; renders match a hand-built ProjectGraph; golden `device-chain`.
 
-- [~] **T4.2 Circuit canvas** *(worker BR, branch task/T4.2-circuit-canvas)* (`ui`, `views`)
+- [!] **T4.2 Circuit canvas** *(merged 2026-10-25; partial: pan p99 2.91 ms at 2× scale fully zoomed out)* (`ui`, `views`)
   - Zoomable, pannable canvas widget: schematic symbol library (gates, op-amp triangles, z⁻¹/delay boxes, filter boxes with response glyphs, oscillator circles, IC rectangles, const/param terminals), orthogonal wires with junction dots, colours/thickness by kind and rate (bool/param/audio/poly/modulation dashed), selection and hit testing, level-of-detail and cached tiles (as T3.8-fix1) so 10k atoms stay fast.
   - Accept: goldens of the symbol sheet and a stock filter opened to atoms; pan/zoom frame < 2 ms at 2560×1440 with 10k atoms; idle 0 % CPU.
 
-- [~] **T4.3 Layout + auto-route** *(worker BR, same branch)* (`graph`, `views`)
+- [x] **T4.3 Layout + auto-route** *(merged 2026-10-25)* (`graph`, `views`)
   - Stored layout (a layout section in the .pqp text, ignored by the compiler and preserved by the printer), automatic layered placement for patches without layout, Manhattan router with crossing minimisation, a tidy command.
   - Accept: every stdlib patch opens laid out without overlaps; round trip text → layout → text is byte-stable; routing a 500-node patch < 50 ms.
 
-- [ ] **T4.4 Circuit editing + text pane, two-way** (`views`, `graph`)
+- [~] **T4.4 Circuit editing + text pane, two-way** *(worker BT, branch task/T4.4-circuit-editing)* (`views`, `graph`)
   - Add/delete/connect/disconnect, make subcircuit / open / close, param pins, rename; a text pane (code editor widget: syntax colouring, inline errors from the parser and checker) synced both ways through the T1.x-text-ids diff; one undo history across both; edits hot-swap the running unit.
   - Accept: scripted edits in either pane update the other; state kept across edits (T1.x-text-ids criterion); hot swap click-free; parse errors never break the running audio.
 

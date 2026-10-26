@@ -1068,7 +1068,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **User decision (2026-10-25)**: A — keep the 47 MB exe as it is: no pruning (optLevel 2/3 stay), asmjit not planned now. The `irreader` component removal (0 bytes) stays.
 - Status: answered (A)
 
-## Q?-T4.3-a · 2026-10-25 · T4.3 · How the stored layout names anonymous nodes; what auto-layout stores; wide patches
+## Q120 · 2026-10-25 · T4.3 · How the stored layout names anonymous nodes; what auto-layout stores; wide patches
 - Context: SPEC §7.3 "Layout is stored"; PATCH_LANGUAGE had `node <name> at …` only, and the printer gave a placed anonymous node a generated `_n<i>` name (rewriting `y = tanh(x * g)` into `_n5 = x * g` … the moment a diagram stored its position). Almost every node of a stock patch is anonymous (operators, literals inside expressions).
 - Choices (provisional, PATCH_LANGUAGE §2.2):
   1. **Keys by path** (`y.in.x` = the node driving input `x` of the node driving output `y`'s input): stable under re-parsing (they depend only on the text's structure), readable, and placing a node never changes the expressions. Equations, which have no name, are `_e<k>` (k-th equation). Alternatives: (B) name every placed node (`_n5`, the old behaviour: the text the user wrote changes shape); (C) NodeIds in the text (not stable across edits: ids are not in the text by design, T1.x-text-ids). Validation's "a placed node needs a name" rule is gone (its test updated with this reason).
@@ -1078,7 +1078,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Open problem — wide patches: the layered layout gives every output pin one trunk through every layer its consumers span. A param read all over a big patch (or a value read at both ends of a long chain) therefore adds a vertical track to every channel it crosses. bench_circuit's 10k-atom patch (100 strands of 100 atoms, 3 params per strand) lays out 138k × 15k world units (≈ 160 tracks per channel); with 24 params shared by all strands it was several times wider again (measured before the as-late-as-possible layering). Proposed fix (not done): **net labels** — draw a terminal's far consumers with a short stub tagged with the source's name instead of a wire (as schematics do for power and global nets), stored as `wire p.out -> x.in label`. Needs a PATCH_LANGUAGE addition; T4.4 / T4.13 decide.
 - Status: open
 
-## Q?-T4.2-a · 2026-10-25 · T4.2 · Circuit canvas: choices the task text did not fix
+## Q119 · 2026-10-25 · T4.2 · Circuit canvas: choices the task text did not fix
 - Choices (provisional):
   1. **Every node is drawn**, literals included (a const terminal per literal: faithful to the graph and to the text; busy in svf). Alternative: draw a literal inside its consumer's pin ("× 2") — fewer symbols, but the canvas would no longer show every node T4.4 can select.
   2. **Wire styles from a local inference** (declared types, atom signatures, forward max of rates; per-voice from voice.* / `voice` inputs; dashed = an audio-rate value into a subcircuit's `param` pin). The compiler's inference (graph::infer) flattens subcircuits and needs the callees' library; the canvas shows one level. Differences are possible where a subcircuit's output rate depends on its body (drawn as the max of its inputs).
