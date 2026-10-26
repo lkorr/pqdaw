@@ -514,7 +514,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Add/delete/connect/disconnect, make subcircuit / open / close, param pins, rename; a text pane (code editor widget: syntax colouring, inline errors from the parser and checker) synced both ways through the T1.x-text-ids diff; one undo history across both; edits hot-swap the running unit.
   - Accept: scripted edits in either pane update the other; state kept across edits (T1.x-text-ids criterion); hot swap click-free; parse errors never break the running audio.
 
-- [~] **T4.5 Live probing + cost meters** *(worker CA, branch task/T4.5-probing)* (`engine`, `views`)
+- [x] **T4.5 Live probing + cost meters** *(merged 2026-10-26)* (`engine`, `views`)
   - Hover a wire: value, logic level, or a mini-scope from an analysis tap (RT copy into a ring, no allocation); bool wires lit when high; per-subcircuit and per-wire ns/sample meters (§7.6).
   - Accept: probe taps RtScope-clean; tap cost when no probe is open = 0; meter values within 20 % of the bench numbers.
 
