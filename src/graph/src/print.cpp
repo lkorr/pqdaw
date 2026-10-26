@@ -166,12 +166,14 @@ public:
     gap();
 
     for (NodeIndex v = 0; v < n; ++v) {
-      if (p_.node(v).kind != NodeKind::Export || !driven(v, 0)) continue;
+      if (p_.node(v).kind != NodeKind::Export) continue;
       line();
       out_ += "export ";
       out_ += nameOf(v);
-      out_ += " = ";
-      ref(driver(v, 0), kPrecTernary);
+      if (driven(v, 0)) {  // an undriven export is `export e` (T4.4)
+        out_ += " = ";
+        ref(driver(v, 0), kPrecTernary);
+      }
       out_ += '\n';
       section = true;
     }

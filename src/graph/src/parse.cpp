@@ -329,8 +329,12 @@ private:
         Member m;
         m.kind = MemberKind::Export;
         m.nameTok = expectName("the export name");
-        expect(Tok::Assign, "after the export name");
-        m.expr = parseExpr();
+        // T4.4: `export e` without a value is an undriven export (validation reports it); the circuit editor adds
+        // the jack before the wire into it.
+        if (kind() == Tok::Assign) {
+          advance();
+          m.expr = parseExpr();
+        }
         p.members.push_back(m);
         return;
       }
@@ -1121,6 +1125,7 @@ public:
 
   // ParseOptions::lenientLayout: layout entries that name nothing are dropped and counted instead of reported.
   void setLenientLayout(bool on) noexcept { lenientLayout_ = on; }
+  void setDeferMissingInputs(bool on) noexcept { deferMissingInputs_ = on; }
   uint32_t layoutDropped() const noexcept { return layoutDropped_; }
 
   // Builds `out` from `syn`; nodeSpan receives the source span of every node (for validation messages).
@@ -1157,7 +1162,7 @@ public:
         case MemberKind::Export: {
           const NodeIndex n = track(p_->addExport(std::string(text(m.nameTok))), m.nameTok);
           declare(m.nameTok, Sym::Unreadable, {n, 0});
-          bind(m.expr, {n, 0});
+          if (m.expr != kNone) bind(m.expr, {n, 0});
           break;
         }
         case MemberKind::Unknown: {
@@ -1234,12 +1239,14 @@ public:
       }
       p_->connect(v, w.to);
     }
-    // 6. Every call has its required inputs.
-    for (const auto& [node, tok] : calls_)
-      for (uint32_t k = 0; k < p_->node(node).numInputs; ++k)
-        if (!claimed({node, static_cast<uint16_t>(k)}) && !p_->inputOptional(node, k))
-          errorTok(tok, "missing argument '" + portTextName(*p_, node, k, true) + "' in the call to '" +
-                            std::string(text(tok)) + "'");
+    // 6. Every call has its required inputs (ParseOptions::deferMissingInputs: validation reports them).
+    if (!deferMissingInputs_) {
+      for (const auto& [node, tok] : calls_)
+        for (uint32_t k = 0; k < p_->node(node).numInputs; ++k)
+          if (!claimed({node, static_cast<uint16_t>(k)}) && !p_->inputOptional(node, k))
+            errorTok(tok, "missing argument '" + portTextName(*p_, node, k, true) + "' in the call to '" +
+                              std::string(text(tok)) + "'");
+    }
     // 7. Layout.
     lowerLayout(syn);
   }
@@ -1790,6 +1797,7 @@ private:
   }
 
   bool lenientLayout_ = false;
+  bool deferMissingInputs_ = false;
   uint32_t layoutDropped_ = 0;
   std::vector<WireIndex> byInput_;  // lowerLayout: per flat input, its wire
 
@@ -1958,11 +1966,13 @@ ParseResult parseDetailed(std::string_view source, std::string_view fileName, co
       ps.layout = {b, toks[syn.layoutClose].offset + toks[syn.layoutClose].length - b};
     }
     if (syn.closeTok != kNone) ps.close = toks[syn.closeTok].offset;
+    if (syn.nameTok > 0) ps.begin = toks[syn.nameTok - 1].offset;
   }
 
   // Lowering.
   Lowerer lowerer(source, toks, parser, table, diags);
   lowerer.setLenientLayout(options.lenientLayout);
+  lowerer.setDeferMissingInputs(options.deferMissingInputs);
   std::vector<std::vector<Span>> nodeSpan(patches.size());
   std::vector<Span> patchSpan;
   result.file.patches.reserve(patches.size());
@@ -1974,6 +1984,7 @@ ParseResult parseDetailed(std::string_view source, std::string_view fileName, co
   }
   result.layoutDropped = lowerer.layoutDropped();
   if (!diags.list.empty()) return finish();
+  result.lowered = true;
 
   if (options.validate) {
     for (Error& e : result.file.validateAll()) {
@@ -1986,7 +1997,7 @@ ParseResult parseDetailed(std::string_view source, std::string_view fileName, co
   for (size_t i = 0; i < nodeSpan.size(); ++i) nodeSpan[i].resize(result.file.patches[i].nodeCount());
   result.nodeSpans = std::move(nodeSpan);
   // Dense order (and so nodeSpans) is unchanged by the id inheritance.
-  if (options.previous && diags.list.empty()) result.idMatch = inheritNodeIds(result.file, *options.previous);
+  if (options.previous) result.idMatch = inheritNodeIds(result.file, *options.previous);
   return finish();
 }
 

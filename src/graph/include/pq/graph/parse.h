@@ -65,18 +65,24 @@ struct ParseOptions {
   bool validate = true;
   // The previous parse of this text (T1.x-text-ids): when set, the result's nodes inherit the NodeIds of their
   // counterparts in it (inheritNodeIds, id_match.h; patches paired by name), so hot-swap state keys survive the
-  // edit. Applied only to a result without diagnostics.
+  // edit. Applied to every result whose lowering succeeded (ParseResult::lowered; validation errors do not change
+  // the graph's structure, so a circuit editor keeps its NodeIds while the text has a dangling port, T4.4).
   const PatchFile* previous = nullptr;
   // T4.3: layout entries whose key names no node, port or wire (a stale line after a text edit) are dropped and
   // counted in ParseResult::layoutDropped instead of being errors. The layout is never read by the compiler, so a
   // text pane can keep editing an expression whose layout key moved.
   bool lenientLayout = false;
+  // T4.4: a call without one of its required arguments is not a lowering error; validation reports the input as a
+  // dangling port instead (located at the node). The circuit editor prints graphs whose required inputs are not wired
+  // yet (`t = tanh()`), and their text must still lower to the same graph.
+  bool deferMissingInputs = false;
 };
 
 // Where a patch sits in its source text (T4.3: spliceLayout).
 struct PatchTextSpans {
   SourceSpan layout;        // `layout { … }` from the keyword to its '}' (offset kNone: no layout block)
   uint32_t close = kNone;   // offset of the patch's closing '}'
+  uint32_t begin = kNone;   // offset of the `patch` keyword (T4.4: a circuit edit reprints [begin, close])
 };
 
 struct ParseResult {
@@ -88,6 +94,9 @@ struct ParseResult {
   IdMatchStats idMatch;                  // with ParseOptions::previous: what kept its NodeId
   std::vector<PatchTextSpans> patchSpans;  // [patch], filled when the syntax is valid
   uint32_t layoutDropped = 0;            // ParseOptions::lenientLayout: layout entries dropped
+  // T4.4: syntax, names and lowering succeeded, so `file` holds the whole graph; any diagnostics are validation
+  // errors (dangling ports, declared types, signatures).
+  bool lowered = false;
   bool ok() const noexcept { return diagnostics.empty(); }
 };
 

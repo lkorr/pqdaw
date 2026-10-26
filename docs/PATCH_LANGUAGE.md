@@ -35,7 +35,7 @@ range       = "[" expr ".." expr "]" ;
 attr        = "@" Ident [ "(" [ argList ] ")" ] ;          (* @unit(Hz) @curve(exp) @label("Cutoff") @steps(4) @hidden *)
 input       = "in"  Ident ":" portType [ "=" expr ] ;      (* default used when unconnected *)
 output      = "out" Ident ":" portType ;
-export      = "export" Ident "=" expr ;                   (* a device jack on top of the device *)
+export      = "export" Ident [ "=" expr ] ;               (* a device jack on top of the device; without a value: not driven yet (T4.4) *)
 binding     = target "=" expr ;
 target      = Ident | Ident "." Ident ;                    (* output name, or local *)
 

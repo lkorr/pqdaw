@@ -176,6 +176,7 @@ pq_add_test(pq_tests_graph PERF
     graph/test_schedule.cpp
     graph/test_voice_tuning.cpp
     graph/test_layout.cpp
+    graph/test_edit.cpp
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
