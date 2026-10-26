@@ -124,6 +124,9 @@ public:
 protected:
   // Drawn over the scene, inside the canvas (editing previews, probes).
   virtual void paintOverlay(ui::PaintContext& /*ctx*/) {}
+  // T4.13: drawn under the scene (after the background, before wires and symbols; at every level of detail, so not
+  // cached in the Far chunks): the project patch view's bands and group containers.
+  virtual void paintUnderlay(ui::PaintContext& /*ctx*/) {}
 
 private:
   struct Impl;

@@ -16,6 +16,7 @@
     {"scope": "global", "keys": "Ctrl+Alt+L", "action": "view.toggleDetail", "status": "implemented", "task": "T3.7"},
     {"scope": "global", "keys": "Ctrl+Alt+B", "action": "view.toggleBrowser", "status": "deferred:M5"},
     {"scope": "global", "keys": "Ctrl+Alt+M", "action": "view.toggleMixer", "status": "implemented", "task": "T3.10"},
+    {"scope": "global", "keys": "Ctrl+Alt+P", "action": "view.togglePatch", "status": "implemented", "task": "T4.13"},
     {"scope": "global", "keys": "Ctrl+Shift+F", "action": "view.toggleFollow", "status": "implemented", "task": "T3.8"},
     {"scope": "global", "keys": "Ctrl+1", "action": "grid.narrow", "status": "implemented", "task": "T3.11"},
     {"scope": "global", "keys": "Ctrl+2", "action": "grid.widen", "status": "implemented", "task": "T3.11"},

@@ -10,6 +10,7 @@
 //   T4.6  devices::installDeviceView(shell);    → ShellSlot::DeviceDetail (device panels), the view.openDevice action
 //   T4.1  installDeviceChain(shell);   → ShellSlot::DeviceDetail (the Device view), the device.* actions
 //   T4.7  installWiring(shell);        → ShellSlot::Cables (the cables over the UI), view.cycleCables, wire.delete
+//   T4.13 installProjectPatch(shell);  → ShellSlot::Patch (the project patch view), view.togglePatch
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
 #include "pq/views/arrangement/arrangement.h"
@@ -21,6 +22,7 @@
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/prefs/audio_prefs.h"
+#include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/tunings/tunings_panel.h"
 #include "shell_widgets.h"
@@ -39,6 +41,7 @@ void installDefaultContent(Shell& shell) {
   installDeviceChain(shell);          // the selected track's chain …
   devices::installDeviceView(shell);  // … under T4.6's stand-alone preview, which covers it while one is open
   installWiring(shell);               // the cables between its jacks and knobs
+  installProjectPatch(shell);         // after the mixer: each one's toggle hides the other
 }
 
 }  // namespace pq::views

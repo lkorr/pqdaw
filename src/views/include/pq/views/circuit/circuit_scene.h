@@ -118,6 +118,12 @@ struct SceneOptions {
 std::shared_ptr<CircuitScene> buildScene(const graph::Patch& patch, const SceneOptions& options = {},
                                          graph::Patch* laidOut = nullptr);
 
+// The derived parts of a scene whose nodes, pins, points, wires (with their nets), segments and labels are filled in:
+// junction dots (per net, where three or more directions meet), the bounds and the spatial grid. buildScene() ends
+// with it; T4.13's project patch view builds its scene directly and calls it too. `include` (optional): a world rect
+// {x0, y0, x1, y1} the bounds must contain as well (what the caller draws around the nodes).
+void indexScene(CircuitScene& scene, const float* include = nullptr);
+
 // The "tidy" command (T4.3): `patch` with every node re-placed and every wire re-routed by graph::autoLayout with this
 // symbol library's geometry.
 graph::AutoLayoutStats tidy(graph::Patch& patch, const graph::AutoLayoutOptions& options = {});

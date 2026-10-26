@@ -37,9 +37,17 @@ struct LaneView {
   bool visible = true;
   int32_t height = 0;
 };
+// T4.13: a manual nudge of the project patch view's automatic layout (QUESTIONS Q129 item 7): world units (logical px
+// at zoom 1) added to where the layout puts a band (key: its track id) or a device block (key: its device id).
+struct PatchNudge {
+  float dx = 0.0f;
+  float dy = 0.0f;
+  friend bool operator==(const PatchNudge&, const PatchNudge&) noexcept = default;
+};
 struct ViewState {
   std::unordered_map<TrackId, TrackView> tracks;
   std::unordered_map<LaneId, LaneView> lanes;
+  std::unordered_map<uint32_t, PatchNudge> patchNudges;  // T4.13: by raw track or device id
 };
 
 enum class StoreEventKind : uint8_t {

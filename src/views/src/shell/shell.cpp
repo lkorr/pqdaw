@@ -25,6 +25,7 @@ struct Shell::Impl {
   ViewContext::Subscription layoutSub;
   SlotHost* trackArea = nullptr;
   SlotHost* mixer = nullptr;
+  SlotHost* patch = nullptr;  // T4.13
   SlotHost* browser = nullptr;
   SlotHost* tunings = nullptr;
   Widget* bottom = nullptr;
@@ -76,6 +77,8 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   m.trackArea->setClipChildren(true);
   m.mixer = &m.trackArea->add<SlotHost>("mixer", SlotHost::Fill::Panel);
   m.mixer->setVisible(false);
+  m.patch = &m.trackArea->add<SlotHost>("patch", SlotHost::Fill::Panel);  // T4.13: the project patch view
+  m.patch->setVisible(false);
 
   auto& bottom = body.add<Splitter>("bottom", Splitter::Axis::Horizontal, 200.0f, Splitter::Anchor::First);
   bottom.setLimits(120, 480, 200);
@@ -124,6 +127,7 @@ Widget& Shell::slot(ShellSlot s) const noexcept {
     case ShellSlot::Browser: return *impl_->browser;
     case ShellSlot::Tunings: return *impl_->tunings;
     case ShellSlot::Cables: return *impl_->cables;
+    case ShellSlot::Patch: return *impl_->patch;
   }
   return *impl_->trackArea;
 }

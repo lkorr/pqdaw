@@ -25,6 +25,7 @@
 //   ShellSlot::Browser       main/body/top/browser              M5 (hidden: ViewContext::browserVisible)
 //   ShellSlot::Tunings       main/body/top/tunings              T3.19's Tunings panel (hidden: ViewContext::tuningsVisible)
 //   ShellSlot::Cables        cables (the root, over main)       T4.7's cable layer (not hittable: the pointer passes)
+//   ShellSlot::Patch         main/body/top/track-area/patch     T4.13's project patch view (hidden until Ctrl+Alt+P)
 // Views install themselves in installDefaultContent() (src/views/src/shell/default_content.cpp; one call per view)
 // so the shell itself does not change as views arrive.
 //
@@ -43,7 +44,7 @@
 
 namespace pq::views {
 
-enum class ShellSlot : uint8_t { TrackArea, Mixer, ClipDetail, DeviceDetail, Browser, Tunings, Cables };
+enum class ShellSlot : uint8_t { TrackArea, Mixer, ClipDetail, DeviceDetail, Browser, Tunings, Cables, Patch };
 
 struct ShellOptions {
   // Keymap to bind; null = assets/keymaps/ableton.json (ViewContext::applyDefaultKeymap).

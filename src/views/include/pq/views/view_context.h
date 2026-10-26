@@ -337,6 +337,8 @@ public:
                                                              "device.paste",  "device.duplicate", "device.toggleActive"};
   // T4.7: View > Cables (Show / Fade / Hide) and deleting the selected wire (installWiring sets the handlers).
   static constexpr std::string_view kWiringActions[] = {"view.cycleCables", "wire.delete"};
+  // T4.13: View > Project Patch (Ctrl+Alt+P): the project patch view in the track area (installProjectPatch sets it).
+  static constexpr std::string_view kPatchActions[] = {"view.togglePatch"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",

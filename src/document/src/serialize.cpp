@@ -710,6 +710,32 @@ private:
       w_.endObject();
     }
     w_.endArray();
+    // T4.13: the project patch view's nudges, only when there are any (files without them are unchanged).
+    std::vector<uint32_t> entityIds = trackIds;
+    forEachTrack(p, [&](const Track& t, const Track*) {
+      for (const DevicePtr& d : t.devices) entityIds.push_back(d->id.value);
+    });
+    std::sort(entityIds.begin(), entityIds.end());
+    std::vector<std::pair<uint32_t, PatchNudge>> nv;
+    for (const auto& [id, n] : v.patchNudges)
+      if (live(entityIds, id) && (n.dx != 0.0f || n.dy != 0.0f)) nv.emplace_back(id, n);
+    std::sort(nv.begin(), nv.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (!nv.empty()) {
+      w_.key("patch");
+      w_.beginArray(true);
+      const PathSeg at(nullptr, "patch");
+      for (const auto& [id, n] : nv) {
+        w_.beginObject(false);
+        w_.key("id");
+        w_.integer(id);
+        w_.key("dx");
+        w_.number(at, n.dx);
+        w_.key("dy");
+        w_.number(at, n.dy);
+        w_.endObject();
+      }
+      w_.endArray();
+    }
     w_.endObject();
   }
 
@@ -1801,16 +1827,40 @@ private:
     int32_t height;
     size_t pos;
   };
+  struct RawNudge {
+    uint32_t id;
+    PatchNudge nudge;
+    size_t pos;
+  };
   struct RawView {
     std::vector<RawViewEntry> tracks, lanes;
+    std::vector<RawNudge> nudges;  // T4.13 (optional "patch")
   };
 
   RawView view(const PathSeg& at) {
     RawView v;
-    static constexpr std::string_view K[] = {"tracks", "lanes"};
+    static constexpr std::string_view K[] = {"tracks", "lanes", "patch"};
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg list(&at, K[static_cast<size_t>(k)]);
+      if (k == 2) {
+        r_.beginArray(list);
+        for (size_t i = 0; r_.nextElement(list); ++i) {
+          const PathSeg el(&list, i);
+          static constexpr std::string_view N[] = {"id", "dx", "dy"};
+          RawNudge e{0, {}, r_.pos()};
+          Members em(r_, el, N);
+          for (int q; (q = em.next()) >= 0;) {
+            const PathSeg f(&el, N[static_cast<size_t>(q)]);
+            if (q == 0) e.id = ref(f);
+            if (q == 1) e.nudge.dx = r_.readFloat(f);
+            if (q == 2) e.nudge.dy = r_.readFloat(f);
+          }
+          em.require({0, 1, 2});
+          v.nudges.push_back(e);
+        }
+        continue;
+      }
       std::vector<RawViewEntry>& out = k == 0 ? v.tracks : v.lanes;
       r_.beginArray(list);
       for (size_t i = 0; r_.nextElement(list); ++i) {
@@ -1860,6 +1910,24 @@ private:
         const bool fresh = k == 0 ? v.tracks.emplace(TrackId{e.id}, TrackView{e.flag, e.height}).second
                                   : v.lanes.emplace(LaneId{e.id}, LaneView{e.flag, e.height}).second;
         if (!fresh) json::fail(el, "duplicate view entry for this id", ErrorCode::InvalidArgument, e.pos);
+      }
+    }
+    if (!raw.nudges.empty()) {  // T4.13: by track or device id
+      std::vector<uint32_t> entityIds = trackIds;
+      forEachTrack(p, [&](const Track& t, const Track*) {
+        for (const DevicePtr& d : t.devices) entityIds.push_back(d->id.value);
+      });
+      std::sort(entityIds.begin(), entityIds.end());
+      const PathSeg list(&at, "patch");
+      for (size_t i = 0; i < raw.nudges.size(); ++i) {
+        const RawNudge& e = raw.nudges[i];
+        const PathSeg el(&list, i);
+        if (!std::binary_search(entityIds.begin(), entityIds.end(), e.id))
+          json::fail(PathSeg(&el, "id"), "no track or device has this id", ErrorCode::InvalidArgument, e.pos);
+        if (!std::isfinite(e.nudge.dx) || !std::isfinite(e.nudge.dy))
+          json::fail(el, "a nudge must be finite", ErrorCode::InvalidArgument, e.pos);
+        if (!v.patchNudges.emplace(e.id, e.nudge).second)
+          json::fail(el, "duplicate view entry for this id", ErrorCode::InvalidArgument, e.pos);
       }
     }
     return v;

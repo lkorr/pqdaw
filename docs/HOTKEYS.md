@@ -23,6 +23,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `view.toggleDetail` | `Ctrl+Alt+L` | global | Showing and Hiding Views | implemented (T3.7) |
 | `view.toggleBrowser` | `Ctrl+Alt+B` | global | Showing and Hiding Views | M5 (browser) |
 | `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | implemented (T3.10; the mixer view takes the track area while shown, Q89) |
+| `view.togglePatch` | `Ctrl+Alt+P` | global | — (pqdaw; SPEC §15 2026-10-24) | implemented (T4.13; the project patch view takes the track area while shown, morphing from the arrangement and back; View > Arrangement / Project Patch) |
 | `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | implemented (T3.8; the arrangement owns the switch until the piano roll follows too) |
 | `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
@@ -134,6 +135,27 @@ T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — 
 | drag the badge up / down (`Shift`: fine), double-click | a cable's badge | the wire's amount (−100 … +100 %, one undo step); back to 50 % |
 | `Delete` / `Backspace` | a selected badge | delete the wire (also `wire.delete`, and the badge's right-click menu) |
 | View > Cables | menu | `view.cycleCables`: Show → Fade → Hide (no default chord) |
+
+## Project patch view (T4.13, handled by its canvas, not the keymap)
+
+`Ctrl+Alt+P` (View > Arrangement / Project Patch) shows the whole project as one circuit in the track area. These keys and gestures work while its canvas has focus; navigation (wheel, `Ctrl`+wheel, middle / `Alt` drag, `=` / `-`) is the circuit canvas's.
+
+| Keys / gesture | Where | Effect |
+|---|---|---|
+| `F`, `Esc` (nothing selected), double-click outside the bands | canvas | zoom to the whole project (animated) |
+| double-click a band (its empty space or name) | canvas | zoom onto that band |
+| double-click a device block / its frame | canvas | open it to its atoms in place (read-only) / close it |
+| double-click a mixer strip | canvas | expand it (each send's level beside its pin) / collapse |
+| drag an export pin (right side of a device, under its output) onto a device or a param pin | canvas | modulation wire (a menu of the device's params when dropped on its body); one undo step |
+| drag a mixer's `out` pin onto a group's, return's or the master's Σ | canvas | route the track there (a return: its send to 0 dB); one undo step |
+| drag a send pin (A, B …) onto its return | canvas | turn the send on (0 dB) |
+| drag a device block along its band or onto another band | canvas | move it (reorder / to that track); one undo step |
+| `Delete` / `Backspace` | a selection | delete the selected devices; wires: a modulation wire is removed, a send goes to −∞, a route becomes Sends Only (one undo step for all) |
+| `0` | selected devices | toggle their activators |
+| click M / S on a mixer strip (`Ctrl`: additive solo) | canvas | the track's activator (mute) / solo |
+| drag a mixer strip's volume bar / pan / send bar sideways (`Shift`: fine) | canvas | volume / pan / send level (one undo step per drag; `Esc` cancels) |
+| drag a band's title strip, `Ctrl`+drag a device block | canvas | nudge the layout (view state, saved with the project, not undoable); band menu: Reset Layout |
+| right-click a band / a block / a wire | canvas | Add Device ▸, Zoom to Band / Project, Reset Layout; Delete, Activate, Open to Atoms, Open in Circuit View, Output ▸; Delete Wire / Send to −inf / Sends Only |
 
 ## Not bound yet
 

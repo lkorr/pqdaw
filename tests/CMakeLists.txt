@@ -109,7 +109,7 @@ pq_add_test(pq_tests_audio
   DEPS pq_app)
 
 # views (T3.7): ViewContext (project I/O, undo, transport routing), the shell (layout, hotkeys, control bar), goldens.
-pq_add_test(pq_tests_views
+pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock checks (64 tracks: paint, morph)
   SOURCES
     views/test_view_context.cpp
     views/test_shell.cpp
@@ -133,6 +133,7 @@ pq_add_test(pq_tests_views
     views/test_device_chain.cpp  # T4.1: the Device view (chain edits, generic panels, the panel hook, golden)
     views/test_wiring.cpp  # T4.7: cables (jack → knob drags, across tracks, scrolling, badge, rings), golden
     views/test_device_circuit.cpp  # T4.4-fix1: the circuit editor on a project device (fork, undo, probes), golden
+    views/test_project_patch.cpp  # T4.13: the project patch view (graph match, layout, edits, morph, zoom), goldens
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell

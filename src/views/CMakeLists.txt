@@ -13,6 +13,7 @@
 #   include/pq/views/circuit/      src/circuit/       circuit canvas, symbols, patch viewer (T4.2, T4.3)
 #   include/pq/views/devices/      src/devices/       device panels, displays, the Device view (T4.6)
 #   include/pq/views/device_chain/ src/device_chain/  the Device view: device chain, generic panels, panel hook (T4.1)
+#   include/pq/views/project_patch/ src/project_patch/  the project patch view (T4.13)
 #   src/common/                                       private drawing helpers shared by every view
 # A subtree lists its sources in its own src/<subtree>/sources.cmake as
 #   set(PQ_VIEWS_<SUBTREE>_SOURCES src/<subtree>/a.cpp ...)   # paths relative to this directory
@@ -25,7 +26,7 @@ set(PQ_VIEWS_SOURCES
   src/shell/menu_bar.cpp
   src/shell/panels.cpp
   src/shell/default_content.cpp)
-foreach(sub arrangement mixer piano_roll mos_wheel prefs tunings circuit devices device_chain)
+foreach(sub arrangement mixer piano_roll mos_wheel prefs tunings circuit devices device_chain project_patch)
   include(${CMAKE_CURRENT_SOURCE_DIR}/src/${sub}/sources.cmake OPTIONAL)
   string(TOUPPER ${sub} _sub)
   list(APPEND PQ_VIEWS_SOURCES ${PQ_VIEWS_${_sub}_SOURCES})

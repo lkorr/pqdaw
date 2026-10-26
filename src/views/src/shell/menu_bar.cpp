@@ -238,6 +238,7 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       break;
     case 3:  // View
       v.push_back(act("Arrangement / Mixer", "view.toggleMixer"));
+      v.push_back(act("Arrangement / Project Patch", "view.togglePatch"));  // T4.13
       v.push_back(check(act("Detail View", "view.toggleDetail"), ctx_.detailVisible()));
       v.push_back(act("Clip / Device View", "view.toggleClipDevice"));
       v.push_back(check(act("Tunings", "view.toggleTunings"), ctx_.tuningsVisible()));

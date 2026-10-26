@@ -69,6 +69,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   declareViewActions(kDeviceActions);
   declareViewActions(kDeviceChainActions);
   declareViewActions(kWiringActions);
+  declareViewActions(kPatchActions);
   syncLoop();
 }
 

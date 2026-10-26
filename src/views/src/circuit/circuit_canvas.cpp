@@ -723,6 +723,8 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     }
   }
 
+  paintUnderlay(ctx);
+
   // Visible world rect (+ the margin of captions and AA).
   const Point2 w0 = toWorld({static_cast<float>(clip.x), static_cast<float>(clip.y)});
   const Point2 w1 = toWorld({static_cast<float>(clip.right()), static_cast<float>(clip.bottom())});

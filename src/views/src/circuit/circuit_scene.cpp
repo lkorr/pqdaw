@@ -203,6 +203,104 @@ graph::AutoLayoutStats tidy(graph::Patch& patch, const graph::AutoLayoutOptions&
   return graph::autoLayout(patch, geometryOf(patch, specs), options);
 }
 
+void indexScene(CircuitScene& sc, const float* include) {
+  sc.junctions.clear();
+  sc.junctionWire.clear();
+  uint32_t nets = 0;
+  for (const SceneWire& sw : sc.wires) nets = std::max(nets, sw.net + 1);
+  // Junctions: per net, every segment end where three or more directions meet.
+  {
+    std::vector<std::vector<uint32_t>> netSegs(nets);
+    for (uint32_t s = 0; s < sc.segments.size(); ++s) netSegs[sc.wires[sc.segments[s].wire].net].push_back(s);
+    std::vector<Point2> cand;
+    for (const auto& segs : netSegs) {
+      if (segs.size() < 3) continue;
+      cand.clear();
+      for (const uint32_t s : segs) {
+        const uint32_t i = sc.segments[s].point;
+        cand.push_back(sc.points[i]);
+        cand.push_back(sc.points[i + 1]);
+      }
+      std::sort(cand.begin(), cand.end(), [](const Point2& a, const Point2& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+      cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
+      for (const Point2& c : cand) {
+        uint8_t mask = 0;
+        for (const uint32_t s : segs) {
+          const Point2 a = sc.points[sc.segments[s].point], b = sc.points[sc.segments[s].point + 1];
+          if (a == c) mask |= dirMask(c, b);
+          else if (b == c) mask |= dirMask(c, a);
+          else if (a.x == b.x && a.x == c.x && c.y > std::min(a.y, b.y) && c.y < std::max(a.y, b.y)) mask |= 4 | 8;
+          else if (a.y == b.y && a.y == c.y && c.x > std::min(a.x, b.x) && c.x < std::max(a.x, b.x)) mask |= 1 | 2;
+        }
+        const int dirs = ((mask & 1) != 0) + ((mask & 2) != 0) + ((mask & 4) != 0) + ((mask & 8) != 0);
+        if (dirs >= 3) {
+          sc.junctions.push_back(c);
+          sc.junctionWire.push_back(sc.segments[segs[0]].wire);
+        }
+      }
+    }
+  }
+
+  // Bounds (labels above nodes included through a margin).
+  bool any = false;
+  if (include != nullptr) {
+    sc.x0 = include[0], sc.y0 = include[1], sc.x1 = include[2], sc.y1 = include[3];
+    any = true;
+  }
+  auto grow = [&](float ax0, float ay0, float ax1, float ay1) {
+    if (!any) {
+      sc.x0 = ax0, sc.y0 = ay0, sc.x1 = ax1, sc.y1 = ay1;
+      any = true;
+      return;
+    }
+    sc.x0 = std::min(sc.x0, ax0), sc.y0 = std::min(sc.y0, ay0), sc.x1 = std::max(sc.x1, ax1), sc.y1 = std::max(sc.y1, ay1);
+  };
+  for (const SceneNode& sn : sc.nodes) grow(sn.x, sn.y - 12, sn.x + sn.w, sn.y + sn.h);
+  for (const SceneWire& sw : sc.wires) grow(sw.x0, sw.y0, sw.x1, sw.y1);
+  for (const SceneLabel& lb : sc.labels)
+    if (lb.role == SceneLabel::Role::Comment) grow(lb.x0, lb.y - 8, lb.x0 + 6.0f * static_cast<float>(sc.strings[lb.text].size()), lb.y + 8);
+
+  // Spatial grid.
+  SpatialGrid& g = sc.grid;
+  g.x0 = sc.x0;
+  g.y0 = sc.y0;
+  g.cols = std::max<uint32_t>(1, static_cast<uint32_t>(std::ceil((sc.x1 - sc.x0 + 1) / g.cell)));
+  g.rows = std::max<uint32_t>(1, static_cast<uint32_t>(std::ceil((sc.y1 - sc.y0 + 1) / g.cell)));
+  const uint32_t cells = g.cols * g.rows;
+  auto fill = [&](std::vector<uint32_t>& begin, std::vector<uint32_t>& items, uint32_t count, auto&& boxOf) {
+    begin.assign(cells + 1, 0);
+    for (int pass = 0; pass < 2; ++pass) {
+      std::vector<uint32_t> cursor;
+      if (pass == 1) {
+        for (uint32_t c = 0; c < cells; ++c) begin[c + 1] += begin[c];
+        items.resize(begin[cells]);
+        cursor.assign(begin.begin(), begin.end() - 1);
+      }
+      for (uint32_t i = 0; i < count; ++i) {
+        float bx0, by0, bx1, by1;
+        boxOf(i, bx0, by0, bx1, by1);
+        uint32_t c0, r0, c1, r1;
+        g.cellRange(bx0, by0, bx1, by1, c0, r0, c1, r1);
+        for (uint32_t r = r0; r <= r1; ++r)
+          for (uint32_t c = c0; c <= c1; ++c) {
+            const uint32_t cell = r * g.cols + c;
+            if (pass == 0) ++begin[cell + 1];
+            else items[cursor[cell]++] = i;
+          }
+      }
+    }
+  };
+  fill(g.nodeBegin, g.nodeItems, static_cast<uint32_t>(sc.nodes.size()), [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {
+    const SceneNode& sn = sc.nodes[i];
+    bx0 = sn.x, by0 = sn.y - 12, bx1 = sn.x + sn.w, by1 = sn.y + sn.h;
+  });
+  fill(g.segBegin, g.segItems, static_cast<uint32_t>(sc.segments.size()),
+       [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {
+         const Point2 a = sc.points[sc.segments[i].point], b = sc.points[sc.segments[i].point + 1];
+         bx0 = std::min(a.x, b.x), by0 = std::min(a.y, b.y), bx1 = std::max(a.x, b.x), by1 = std::max(a.y, b.y);
+       });
+}
+
 std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const SceneOptions& options, graph::Patch* laidOut) {
   auto scene = std::make_shared<CircuitScene>();
   CircuitScene& sc = *scene;
@@ -398,93 +496,7 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
     sc.points.insert(sc.points.end(), pts.begin(), pts.end());
   }
 
-  // Junctions: per net, every segment end where three or more directions meet.
-  {
-    std::vector<std::vector<uint32_t>> netSegs(netOf.size());
-    for (uint32_t s = 0; s < sc.segments.size(); ++s) netSegs[sc.wires[sc.segments[s].wire].net].push_back(s);
-    std::vector<Point2> cand;
-    for (const auto& segs : netSegs) {
-      if (segs.size() < 3) continue;
-      cand.clear();
-      for (const uint32_t s : segs) {
-        const uint32_t i = sc.segments[s].point;
-        cand.push_back(sc.points[i]);
-        cand.push_back(sc.points[i + 1]);
-      }
-      std::sort(cand.begin(), cand.end(), [](const Point2& a, const Point2& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
-      cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
-      for (const Point2& c : cand) {
-        uint8_t mask = 0;
-        for (const uint32_t s : segs) {
-          const Point2 a = sc.points[sc.segments[s].point], b = sc.points[sc.segments[s].point + 1];
-          if (a == c) mask |= dirMask(c, b);
-          else if (b == c) mask |= dirMask(c, a);
-          else if (a.x == b.x && a.x == c.x && c.y > std::min(a.y, b.y) && c.y < std::max(a.y, b.y)) mask |= 4 | 8;
-          else if (a.y == b.y && a.y == c.y && c.x > std::min(a.x, b.x) && c.x < std::max(a.x, b.x)) mask |= 1 | 2;
-        }
-        const int dirs = ((mask & 1) != 0) + ((mask & 2) != 0) + ((mask & 4) != 0) + ((mask & 8) != 0);
-        if (dirs >= 3) {
-          sc.junctions.push_back(c);
-          sc.junctionWire.push_back(sc.segments[segs[0]].wire);
-        }
-      }
-    }
-  }
-
-  // Bounds (labels above nodes included through a margin).
-  bool any = false;
-  auto grow = [&](float ax0, float ay0, float ax1, float ay1) {
-    if (!any) {
-      sc.x0 = ax0, sc.y0 = ay0, sc.x1 = ax1, sc.y1 = ay1;
-      any = true;
-      return;
-    }
-    sc.x0 = std::min(sc.x0, ax0), sc.y0 = std::min(sc.y0, ay0), sc.x1 = std::max(sc.x1, ax1), sc.y1 = std::max(sc.y1, ay1);
-  };
-  for (const SceneNode& sn : sc.nodes) grow(sn.x, sn.y - 12, sn.x + sn.w, sn.y + sn.h);
-  for (const SceneWire& sw : sc.wires) grow(sw.x0, sw.y0, sw.x1, sw.y1);
-  for (const SceneLabel& lb : sc.labels)
-    if (lb.role == SceneLabel::Role::Comment) grow(lb.x0, lb.y - 8, lb.x0 + 6.0f * static_cast<float>(sc.strings[lb.text].size()), lb.y + 8);
-
-  // Spatial grid.
-  SpatialGrid& g = sc.grid;
-  g.x0 = sc.x0;
-  g.y0 = sc.y0;
-  g.cols = std::max<uint32_t>(1, static_cast<uint32_t>(std::ceil((sc.x1 - sc.x0 + 1) / g.cell)));
-  g.rows = std::max<uint32_t>(1, static_cast<uint32_t>(std::ceil((sc.y1 - sc.y0 + 1) / g.cell)));
-  const uint32_t cells = g.cols * g.rows;
-  auto fill = [&](std::vector<uint32_t>& begin, std::vector<uint32_t>& items, uint32_t count, auto&& boxOf) {
-    begin.assign(cells + 1, 0);
-    for (int pass = 0; pass < 2; ++pass) {
-      std::vector<uint32_t> cursor;
-      if (pass == 1) {
-        for (uint32_t c = 0; c < cells; ++c) begin[c + 1] += begin[c];
-        items.resize(begin[cells]);
-        cursor.assign(begin.begin(), begin.end() - 1);
-      }
-      for (uint32_t i = 0; i < count; ++i) {
-        float bx0, by0, bx1, by1;
-        boxOf(i, bx0, by0, bx1, by1);
-        uint32_t c0, r0, c1, r1;
-        g.cellRange(bx0, by0, bx1, by1, c0, r0, c1, r1);
-        for (uint32_t r = r0; r <= r1; ++r)
-          for (uint32_t c = c0; c <= c1; ++c) {
-            const uint32_t cell = r * g.cols + c;
-            if (pass == 0) ++begin[cell + 1];
-            else items[cursor[cell]++] = i;
-          }
-      }
-    }
-  };
-  fill(g.nodeBegin, g.nodeItems, n, [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {
-    const SceneNode& sn = sc.nodes[i];
-    bx0 = sn.x, by0 = sn.y - 12, bx1 = sn.x + sn.w, by1 = sn.y + sn.h;
-  });
-  fill(g.segBegin, g.segItems, static_cast<uint32_t>(sc.segments.size()),
-       [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {
-         const Point2 a = sc.points[sc.segments[i].point], b = sc.points[sc.segments[i].point + 1];
-         bx0 = std::min(a.x, b.x), by0 = std::min(a.y, b.y), bx1 = std::max(a.x, b.x), by1 = std::max(a.y, b.y);
-       });
+  indexScene(sc);
   if (laidOut) *laidOut = std::move(p);
   return scene;
 }

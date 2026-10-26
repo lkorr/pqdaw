@@ -28,6 +28,7 @@
 #include "pq/views/mos_wheel/mos_circle.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/prefs/audio_prefs.h"
+#include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/tunings/tunings_panel.h"
 #include "pq/document/edit_ops.h"
 #include "shell/shell_widgets.h"
@@ -966,6 +967,30 @@ Status setupCircuitEditorDevice(Shell& shell) {
   shell.tree().layoutNow();
   return Ok{};
 }
+// T4.13: the project patch view over the user's sketch project (project_patch::buildSketchProject): the whole project
+// (overview), and zoomed onto the Keys band with its mixer strip expanded (band).
+Status setupProjectPatch(Shell& shell, bool band) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch: no device library", {}};
+  if (Status s = project_patch::buildSketchProject(ctx.store()); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  if (band) {
+    const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+    if (keys == nullptr) return Error{ErrorCode::NotFound, "project-patch: no Keys track", {}};
+    v->setMixerExpanded(keys->id, true);
+    v->focusBand(keys->id, false);
+  } else {
+    v->fitAll(false);
+  }
+  shell.tree().layoutNow();
+  return Ok{};
+}
+Status setupProjectPatchOverview(Shell& shell) { return setupProjectPatch(shell, false); }
+Status setupProjectPatchBand(Shell& shell) { return setupProjectPatch(shell, true); }
 
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
 constexpr SceneEntry kScenes[] = {
@@ -1013,6 +1038,8 @@ constexpr SceneEntry kScenes[] = {
     {"device-chain", 1280, 800, setupDeviceChain},
     {"device-wiring", 1280, 800, setupDeviceWiring},  // T4.7
     {"circuit-editor-device", 1280, 800, setupCircuitEditorDevice},  // T4.4-fix1
+    {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
+    {"project-patch-band", 1280, 800, setupProjectPatchBand},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};
