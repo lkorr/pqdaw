@@ -1,0 +1,35 @@
+// T4.12: the SPEC §13 calibration patches of pq_bench_render's operator/stock benchmarks: the stock Operator
+// (stdlib/devices/operator.pqp) as an instrument, in three configurations.
+//   OpDefault  the device as it loads: operator A, a sine, its envelope; everything else off
+//   OpFull     all four operators (algorithm 1, sines), feedback, pitch envelope, a per-voice LFO into pitch and
+//              filter, the 24 dB low-pass with its envelope, glide: every per-voice path on except spread
+//   OpSpread   OpFull with spread (a second set of operators and filter for the right channel)
+import "../../stdlib/devices/operator.pqp"
+
+patch OpDefault {
+  out out  : audio voice stereo
+  out done : bool voice
+  o    = operator()
+  out  = o
+  done = o.done
+}
+
+patch OpFull {
+  out out  : audio voice stereo
+  out done : bool voice
+  o    = operator(algorithm: 1, onA: 1, onB: 1, onC: 1, onD: 1, pitchEnvOn: 1, lfoOn: 1, filterOn: 1, filterSlope: 1,
+                  glideOn: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB, feedback: 30%, penvAmount: 200c,
+                  lfoFilter: 1200c, fenvAmount: 2400c, sustainA: -6dB, sustainB: -12dB)
+  out  = o
+  done = o.done
+}
+
+patch OpSpread {
+  out out  : audio voice stereo
+  out done : bool voice
+  o    = operator(algorithm: 1, onA: 1, onB: 1, onC: 1, onD: 1, pitchEnvOn: 1, lfoOn: 1, filterOn: 1, filterSlope: 1,
+                  glideOn: 1, spreadOn: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB, feedback: 30%, penvAmount: 200c,
+                  lfoFilter: 1200c, fenvAmount: 2400c, sustainA: -6dB, sustainB: -12dB, spread: 50%)
+  out  = o
+  done = o.done
+}

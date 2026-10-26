@@ -9,9 +9,16 @@
 //                          voices through a ProgramHost (as on the device): ns per frame (rounds and single blocks),
 //                          "core" = % of one core at 48 kHz (the §13 target: < 10 %), and the blocks of a 20 ms
 //                          crossfade to a fresh image of the same program (both images run: the cost of every edit)
+//   operator/stock-<config> <backend> xN   T4.12, SPEC §13 calibration of the stock Operator (stdlib/devices/
+//                          operator.pqp through bench/patches/operator_calibration.pqp): default (operator A only),
+//                          full (four operators, feedback, pitch envelope, per-voice LFO, 24 dB filter with its
+//                          envelope, glide) and spread (full + spread) at 1 / 8 / 64 held voices through a ProgramHost;
+//                          ns per frame, per voice-sample, "core" and, at 64 voices, the crossfade blocks as above
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -173,17 +180,40 @@ const g::Schedule& operatorSchedule() {
   return s;
 }
 
-// 64 notes on at frame 0 (distinct pitches, all held for the whole run).
-void operatorNotes(void*, int64_t t, uint32_t, e::EventBuffer& out) noexcept {
+// T4.12: the stock Operator's calibration patches (bench/patches/operator_calibration.pqp).
+const g::Schedule& stockSchedule(const char* patch) {
+  static const std::unique_ptr<pqc::SourceFile> src = [] {
+    auto s = pqc::SourceFile::load(std::filesystem::path(PQ_SOURCE_DIR) / "bench" / "patches" / "operator_calibration.pqp");
+    if (!s) die(s.error().message);
+    return std::move(s.value());
+  }();
+  static std::map<std::string, g::Schedule> cache;
+  auto it = cache.find(patch);
+  if (it == cache.end()) {
+    auto idx = src->findPatch(patch);
+    if (!idx) die(idx.error().message);
+    auto compiled = pqc::compilePatch(*src, *idx);
+    if (!compiled) die(compiled.error().message);
+    std::printf("PATCH  %s: %zu ops\n", patch, compiled->schedule.ops.size());
+    it = cache.emplace(patch, std::move(compiled->schedule)).first;
+  }
+  return it->second;
+}
+
+// N notes on at frame 0 (distinct pitches, all held for the whole run); N in the source's user pointer.
+void operatorNotes(void* user, int64_t t, uint32_t, e::EventBuffer& out) noexcept {
   if (t != 0) return;
-  for (uint32_t v = 0; v < kOperatorVoices; ++v)
+  const uint32_t n = user ? *static_cast<const uint32_t*>(user) : kOperatorVoices;
+  for (uint32_t v = 0; v < n; ++v)
     out.push(e::noteOn(0, v + 1, 55.0f * std::exp2(static_cast<float>(v % 48) / 12.0f + 0.0001f * static_cast<float>(v)),
                        0.8f));
 }
 
-void benchOperator(bench::Context& c, bool jit) {
-  const g::Schedule& s = operatorSchedule();
-  const uint32_t groups = e::voiceGroupsFor(kOperatorVoices);
+// `voices` held voices of schedule `s` through a ProgramHost; crossfade rows when `fades`.
+void benchVoicePatch(bench::Context& c, const g::Schedule& s, bool jit, uint32_t voices, bool fades) {
+  static uint32_t noteCount = 0;
+  noteCount = voices;
+  const uint32_t groups = e::voiceGroupsFor(std::max(voices, kOperatorVoices));
   e::HostConfig hc;
   hc.sampleRate = kRate;
   hc.maxBlockFrames = kBlock;
@@ -192,7 +222,7 @@ void benchOperator(bench::Context& c, bool jit) {
   hc.voices = true;
   hc.voice.maxVoices = kOperatorVoices;
   hc.voice.compact = false;
-  hc.events = {&operatorNotes, nullptr};
+  hc.events = {&operatorNotes, &noteCount};
   e::ProgramHost host(hc);
   if (!host.publish(buildImage(s, jit, groups)).ok()) die("operator: publish failed");
   std::vector<float> o0(kBlock), o1(kBlock);
@@ -210,8 +240,14 @@ void benchOperator(bench::Context& c, bool jit) {
     bench::doNotOptimize(o0[kBlock - 1]);
   };
   for (int i = 0; i < 16; ++i) block();  // notes on, attacks under way
-  if (host.voices()->liveVoices() != kOperatorVoices) die("operator: voices did not start");
+  if (host.voices()->liveVoices() != voices) die("operator: voices did not start");
   const bench::Stats st = c.measure(block, kBlock, "ns/sample");
+  bench::Stats per = st;
+  per.medianNs /= voices;
+  per.minNs /= voices;
+  per.p99Ns /= voices;
+  per.maxNs /= voices;
+  c.record(per, "ns/voice-sample", "per voice");
   const bench::Stats blocks = c.measureBlocks(block, kBlock, "ns/sample");
   // SPEC §13: share of one core at 48 kHz (1 / 48000 s of CPU per sample = 100 %).
   const double nsPerSample = 1e9 / kRate;
@@ -221,6 +257,7 @@ void benchOperator(bench::Context& c, bool jit) {
   core.p99Ns = 100.0 * st.p99Ns / nsPerSample;
   core.maxNs = 100.0 * st.maxNs / nsPerSample;
   c.record(core, "% of one core at 48 kHz", "core");
+  if (!fades) return;
   // Crossfades: a fresh image of the same program, 20 ms (15 blocks of 64), every block of the fade timed (from the
   // swap block on). Images are built before timing (a JIT compile takes ~0.1 s).
   constexpr int kRounds = 12;
@@ -250,6 +287,8 @@ void benchOperator(bench::Context& c, bool jit) {
   ratio.samples = f.samples;
   c.record(ratio, "x steady block", "crossfade ratio");
 }
+
+void benchOperator(bench::Context& c, bool jit) { benchVoicePatch(c, operatorSchedule(), jit, kOperatorVoices, true); }
 
 void benchRender(bench::Context& c, const char* file, const char* notes, bool jit) {
   const std::filesystem::path path = std::filesystem::path(PQ_SOURCE_DIR) / "tests" / "golden" / "patches" / file;
@@ -331,5 +370,15 @@ int main(int argc, char** argv) {
   for (bool jit : {false, true})
     r.add(std::string("operator/") + (jit ? "jit" : "interp") + " x64",
           [jit](bench::Context& c) { benchOperator(c, jit); });
+  struct Stock {
+    const char* name;
+    const char* patch;
+  };
+  static const Stock stock[] = {{"default", "OpDefault"}, {"full", "OpFull"}, {"spread", "OpSpread"}};
+  for (const Stock& sc : stock)
+    for (bool jit : {false, true})
+      for (uint32_t v : {1u, 8u, 64u})
+        r.add(std::string("operator/stock-") + sc.name + " " + (jit ? "jit" : "interp") + " x" + std::to_string(v),
+              [&sc, jit, v](bench::Context& c) { benchVoicePatch(c, stockSchedule(sc.patch), jit, v, v == 64); });
   return r.main(argc, argv);
 }

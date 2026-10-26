@@ -1,0 +1,79 @@
+// Multi-stage envelope (SPEC §7.2 "multi-stage env"; Operator's envelope, SPEC §8, T4.12): Initial → Peak →
+// Sustain → End levels with attack, decay and release times, and Live Operator's loop modes. A composite of logic,
+// math and memory atoms, like adsr.
+//
+//   attack   linear from Initial (a note's first sample) to Peak; `a` is the time for the whole Initial → Peak
+//            move (a retrigger moves at the same rate from where the level is: no click)
+//   decay    exponential from Peak towards Sustain; −80 dB of the distance after `d`
+//   sustain  `sus` while the note is held (moving `sus` glides there at the decay rate)
+//   release  exponential towards End once the note is released (also from attack or decay); −80 dB after `r`
+//
+// `mode` (a structural constant: only the chosen logic is compiled):
+//   0 None     the stages above
+//   1 Loop     while the note is held: once the decay has settled (within 0.001 of Sustain), wait `rep` seconds,
+//              then attack again from the current level (Live: "returns to Initial in Repeat time and restarts";
+//              here the level holds Sustain for `rep` and the attack rises from there)
+//   2 Beat     while held: restart the attack every `rep` beats from the note's start (transport tempo)
+//   3 Sync     while held: restart the attack at every `rep`-beat line of the song (transport.beat)
+//   4 Trigger  the note-off is ignored: attack, decay, then release once the decay has settled
+// `soft` (structural, default 1): a note start begins at max(Initial, current level), so retriggering a sounding
+// voice never jumps down; 0 always jumps to Initial (pitch envelopes, whose Initial may be below the level).
+//
+// Levels are plain numbers (amplitude 0..1, or bipolar for a pitch or filter envelope). `done` is true while the
+// note is released and the level is below −80 dB (1e-4): wire it to an instrument's `done` out (SPEC §7.7; with
+// End above 1e-4 the voice never ends by itself). Stage times are param-rate: their coefficients run once per
+// block; per sample the envelope is a few compares, selects and one multiply-add.
+patch msenv {
+  in    gate : bool
+  in    mode : real const = 0
+  in    soft : real const = 1
+  param a    = 0ms   [0ms..60s]  @unit(s) @curve(exp) @label("Attack")
+  param d    = 600ms [1ms..60s]  @unit(s) @curve(exp) @label("Decay")
+  param r    = 50ms  [1ms..60s]  @unit(s) @curve(exp) @label("Release")
+  param init = 0     [-1..1]     @label("Initial")
+  param peak = 1     [-1..1]     @label("Peak")
+  param sus  = 1     [-1..1]     @label("Sustain")
+  param end  = 0     [-1..1]     @label("End")
+  param rep  = 1     [0.001..64] @curve(exp) @label("Repeat")   // Loop: seconds; Beat / Sync: beats
+  out   out  : audio
+  out   done : bool
+
+  start0 = rise(gate)
+
+  // Retriggers while the note is held, one per mode. (Each structural choice selects between two per-voice
+  // values, so the unused logic folds away.)
+  settled   = z1(held && !att && abs(next - sus) <= 0.001)   // the decay had settled at the previous sample
+  loopTrig  = fall(timer(rise(settled), rep))
+  beatPh    = phasor(transport.bpm / (60 * rep), start0)
+  beatTrig  = beatPh < z1(beatPh)
+  songPh    = frac(transport.beat / rep)
+  syncTrig  = songPh < z1(songPh)
+  held      = mode >= 3.5 ? srff(start0, settled) : gate
+  start     = mode >= 3.5 ? start0
+            : mode >= 2.5 ? start0 || held && syncTrig
+            : mode >= 1.5 ? start0 || held && beatTrig
+            : mode >= 0.5 ? start0 || held && loopTrig
+            : start0
+
+  rate  = max(abs(peak - init), 0.001) / max(a * sr, 1)        // attack step per sample
+  dcoef = exp(-9.210340371976184 / max(d * sr, 1))              // e^(−ln 10⁴ / samples): −80 dB per stage time
+  rcoef = exp(-9.210340371976184 / max(r * sr, 1))
+
+  // What does not depend on the level is computed outside the per-sample recursion: the exponential stage's target
+  // and coefficient (decay while held, release after), the attack's start, the soft start's floor (levels are ≥ −1).
+  target = held ? sus : end
+  coef   = held ? dcoef : rcoef
+  startH = held && start
+  lvl    = z1(next)
+  b      = soft >= 0.5 ? max(lvl, start0 ? init : -2) : (start0 ? init : lvl)
+
+  inAtt = startH || held && z1(att)
+  dist  = peak - b
+  reach = abs(dist) <= rate
+  aNext = reach ? peak : b + clip(dist, -rate, rate)
+  next  = inAtt ? aNext : target + (b - target) * coef
+  att   = inAtt && !reach
+
+  out  = next
+  done = !held && next < 0.0001
+}

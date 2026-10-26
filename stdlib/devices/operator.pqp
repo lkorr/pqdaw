@@ -1,0 +1,714 @@
+// Operator (SPEC §8; Ableton Live's Operator, T4.12): four oscillators ("operators" A–D) in one of 11 phase-
+// modulation algorithms, each with its own waveform, ratio or fixed frequency, multi-stage envelope, level and
+// velocity / key sensitivity; feedback on the top operator (D); a pitch envelope, an LFO, a filter with its own
+// envelope, glide, spread, transpose and the voice's pitch from the tuning signal. Live does not publish its
+// algorithms or curves: everything below is our reading of the manual and of how the device sounds (SPEC §15
+// 2026-10-24: no Live renders yet, adjustable later); QUESTIONS Q?-T4.12-a lists each choice.
+//
+// PITCH. The voice's pitch is voice.hz: the tuning-resolved Hz of the note (SPEC §3.1), so 31edo, MOS and ratio
+// notes play their true pitches; a track's tuning node (tune_voices) rebinds it. An operator in ratio mode plays
+// voice.hz · transpose · (coarse + fine/1000) / den: `coarse` is the harmonic number (0 = ½), `den` divides it, so
+// coarse/den is an exact just ratio (3/2, 7/4: two integers, rounded to float32 only at the multiply); `fine` adds
+// thousandths. Fixed mode plays `freq` Hz whatever the note. Pitch envelope, LFO, glide and spread add cents
+// (one fast exp2 per operator and sample, only while one of them is on; 2e-7 relative, 0.0003 ¢).
+//
+// ALGORITHMS (`algorithm`, structural 1–11). "X → Y": X's output phase-modulates Y; carriers are summed to the
+// output. D is the top operator in every algorithm (its feedback is always available):
+//    1  D → C → B → A                 carrier A          (the classic serial stack)
+//    2  (C + D) → B → A               carrier A
+//    3  D → C → A,  B → A             carrier A
+//    4  C → B → A,  D → A             carrier A
+//    5  (B + C + D) → A               carrier A
+//    6  D → C → B,  A                 carriers B, A
+//    7  D → C,  B → A                 carriers C, A      (two two-operator stacks)
+//    8  (C + D) → B,  A               carriers B, A
+//    9  D → C,  B,  A                 carriers C, B, A
+//   10  D → C,  D → B,  D → A         carriers C, B, A   (one modulator, three carriers)
+//   11  A,  B,  C,  D                 carriers A–D       (additive)
+//
+//   The same as stacks (each operator modulates the one below it; the bottom row is heard):
+//       1      2      3      4      5      6      7      8      9      10       11
+//       D     C D     D      C             D
+//       C      B     C B    B D   B C D    C     D B    C D     D      D
+//       B      A      A      A      A     B A    C A    B A   C B A  C B A   A B C D
+//       A
+//   (3: D → C, then B and C → A;  4: C → B, then B and D → A;  8: C and D → B, A alone;  10: D → each of C, B, A)
+//
+// OPERATOR. phase = phasor(hz) + 0.5 · Σ modulators (a modulator at full level moves the phase ±½ cycle, ±π rad);
+// D's phase also gets feedback · ¼ · (y[n−1] + y[n−2]) of its own raw waveform (the mean of two samples, as in the
+// DX7, so high feedback hisses instead of oscillating between two states). Output = wave(phase) · envelope ·
+// level · velocity · key, where velocity = max(0, 1 + vel·(velocity − 1)) and key = 2^(key · octaves from the
+// reference, C3: ±6 dB per octave at ±100 %). An operator switched off (`onX`, structural) costs nothing and
+// its output is 0.
+// WAVEFORMS (`waveX`, structural): 0 Sine, 1 Sine 4 bit, 2 Sine 8 bit, 3–9 Saw 3/4/6/8/16/32/64, 10 Saw D,
+// 11–17 Square 3/4/6/8/16/32/64, 18 Square D, 19 Triangle, 20 Noise Looped, 21 Noise White, 22 User. SawN /
+// SquareN / Triangle / Noise Looped are band-limited built-in wavetables (pq/dsp/tables.h: N partials, mipmapped);
+// Saw D / Square D are the naive "digital" shapes (they alias, as in Live); Sine 4/8 bit quantise the sine to
+// ±7 / ±127 steps; Noise White is per-voice white noise (no pitch); User sums 16 partials (uX1 … uX16, the panel's
+// partial editor) by the Chebyshev recurrence sin((h+1)θ) = 2cosθ·sin(hθ) − sin((h−1)θ), each partial only while it
+// lies below 0.45·sr (no aliasing).
+//
+// ENVELOPES (stdlib/envelopes/msenv.pqp): Initial → Peak → Sustain → End with Attack / Decay / Release times and
+// Live's loop modes (`loopX`: 0 None, 1 Loop, 2 Beat, 3 Sync, 4 Trigger; `rep` = Repeat). Amplitude levels are dB
+// knobs (−70 dB = −inf). `time` scales every envelope time. The voice ends (`done`) once every carrier's envelope
+// has released below −80 dB.
+//
+// PITCH ENVELOPE (`pitchEnvOn`): its own msenv (bipolar levels) · `penvAmount` cents into the operators whose
+// `penvToX` is on. LFO (`lfoOn`): `lfoWave` 0 Sine, 1 Square, 2 Triangle, 3 Saw Up, 4 Saw Down, 5 Sample & Hold,
+// 6 Noise; rate in Hz or, synced, one cycle per `lfoBeats` beats at the song tempo; `lfoRetrig` 1: one LFO per
+// voice from its note-on, 0: one free-running LFO shared by every voice; · `lfoAmount` into the pitch (`lfoPitch`
+// cents, operators with `lfoToX` on) and the filter cutoff (`lfoFilter` cents).
+// FILTER (`filterOn`): `filterType` 0 Low-pass, 1 High-pass, 2 Band-pass, 3 Notch, 4 Morph (LP → BP → HP → Notch →
+// LP over `morph` 0..1); `filterSlope` 0 12 dB/oct (one TPT state-variable filter), 1 24 dB (two: a Butterworth
+// stage then the resonant one). Cutoff = `filterFreq` · 2^(cents/1200), cents = filter envelope · `fenvAmount` +
+// LFO · `lfoFilter` + key tracking `filterKey` · (note cents from C3) + `filterVel` · velocity; per voice and
+// sample. Live's circuit models (OSR, MS2, SMP, PRD) are not here: this is the Clean circuit (Q?-T4.12-a).
+// GLIDE (`glideOn`): each new note slides from the previous note's pitch (the newest note started before it, in
+// any voice) to its own, linearly in cents over `glideTime`. SPREAD (`spreadOn`): a second set of the four
+// operators and the filter; the left channel plays the first set `spread` · 10 ¢ flat, the right one the second
+// set as much sharp (Live: two voices per note, panned apart). Off, both channels are the same signal.
+// OUTPUT: stereo, · `volume` (−70 dB = −inf) · the balance law of `pan` (min(1, 1 ∓ pan): centre = unity).
+//
+// Structural settings are constants (`in … : real const`): a change recompiles and crossfades (SPEC §7.5), and only
+// the chosen paths exist in the program (QUESTIONS Q121). `voices` is the polyphony the host gives the device
+// (VoiceConfig::maxVoices; the patch itself does not read it).
+//
+// Exports: `opA` … `opD` (each operator's output after envelope and level; the left set with spread), `lfo`,
+// `pitchEnv`, `filterEnv`.
+import "../envelopes/msenv.pqp"
+import "../filters/svf_fast.pqp"
+
+patch operator {
+  // Structural settings
+  in    algorithm   : real const = 1     // 1 … 11 (above)
+  in    onA         : real const = 1
+  in    onB         : real const = 0
+  in    onC         : real const = 0
+  in    onD         : real const = 0
+  in    waveA       : real const = 0     // 0 Sine … 22 User
+  in    waveB       : real const = 0     // 0 Sine … 22 User
+  in    waveC       : real const = 0     // 0 Sine … 22 User
+  in    waveD       : real const = 0     // 0 Sine … 22 User
+  in    loopA       : real const = 0     // envelope mode: 0 None, 1 Loop, 2 Beat, 3 Sync, 4 Trigger
+  in    loopB       : real const = 0     // envelope mode: 0 None, 1 Loop, 2 Beat, 3 Sync, 4 Trigger
+  in    loopC       : real const = 0     // envelope mode: 0 None, 1 Loop, 2 Beat, 3 Sync, 4 Trigger
+  in    loopD       : real const = 0     // envelope mode: 0 None, 1 Loop, 2 Beat, 3 Sync, 4 Trigger
+  in    pitchEnvOn  : real const = 0
+  in    pitchLoop   : real const = 0
+  in    lfoOn       : real const = 0
+  in    lfoWave     : real const = 0     // 0 Sine, 1 Square, 2 Triangle, 3 Saw Up, 4 Saw Down, 5 S&H, 6 Noise
+  in    lfoRetrig   : real const = 1
+  in    filterOn    : real const = 0
+  in    filterType  : real const = 0     // 0 LP, 1 HP, 2 BP, 3 Notch, 4 Morph
+  in    filterSlope : real const = 0     // 0 12 dB/oct, 1 24 dB/oct
+  in    filterLoop  : real const = 0
+  in    glideOn     : real const = 0
+  in    spreadOn    : real const = 0
+  in    voices      : real const = 6     // the host's polyphony (VoiceConfig::maxVoices); not read here
+
+  // Operators
+  param coarseA  = 1      [0..48]        @steps(49) @label("Coarse")
+  param denA     = 1      [1..32]        @steps(32) @label("Ratio /")
+  param fineA    = 0      [0..1000]      @label("Fine")
+  param fixedA   = false                 @label("Fixed")
+  param freqA    = 1kHz   [1Hz..20kHz]   @unit(Hz) @curve(exp) @label("Freq")
+  param levelA   = 0dB    [-70dB..0dB]   @unit(dB) @label("Level")
+  param velA     = 0%     [-100%..100%]  @label("Vel")
+  param keyA     = 0%     [-100%..100%]  @label("Key")
+  param attackA  = 0ms    [0ms..60s]     @unit(s) @curve(exp) @label("Attack")
+  param decayA   = 600ms  [1ms..60s]     @unit(s) @curve(exp) @label("Decay")
+  param releaseA = 50ms   [1ms..60s]     @unit(s) @curve(exp) @label("Release")
+  param initialA = -70dB  [-70dB..0dB]   @unit(dB) @label("Initial")
+  param peakA    = 0dB    [-70dB..0dB]   @unit(dB) @label("Peak")
+  param sustainA = 0dB    [-70dB..0dB]   @unit(dB) @label("Sustain")
+  param endA     = -70dB  [-70dB..0dB]   @unit(dB) @label("End")
+  param repeatA  = 1      [0.001..64]    @curve(exp) @label("Repeat")
+  param penvToA  = true                  @label("Pitch Env")
+  param lfoToA   = true                  @label("LFO")
+  param uA1      = 1      [0..1]         @hidden @label("Partial 1")
+  param uA2      = 0      [0..1]         @hidden @label("Partial 2")
+  param uA3      = 0      [0..1]         @hidden @label("Partial 3")
+  param uA4      = 0      [0..1]         @hidden @label("Partial 4")
+  param uA5      = 0      [0..1]         @hidden @label("Partial 5")
+  param uA6      = 0      [0..1]         @hidden @label("Partial 6")
+  param uA7      = 0      [0..1]         @hidden @label("Partial 7")
+  param uA8      = 0      [0..1]         @hidden @label("Partial 8")
+  param uA9      = 0      [0..1]         @hidden @label("Partial 9")
+  param uA10     = 0      [0..1]         @hidden @label("Partial 10")
+  param uA11     = 0      [0..1]         @hidden @label("Partial 11")
+  param uA12     = 0      [0..1]         @hidden @label("Partial 12")
+  param uA13     = 0      [0..1]         @hidden @label("Partial 13")
+  param uA14     = 0      [0..1]         @hidden @label("Partial 14")
+  param uA15     = 0      [0..1]         @hidden @label("Partial 15")
+  param uA16     = 0      [0..1]         @hidden @label("Partial 16")
+
+  param coarseB  = 1      [0..48]        @steps(49) @label("Coarse")
+  param denB     = 1      [1..32]        @steps(32) @label("Ratio /")
+  param fineB    = 0      [0..1000]      @label("Fine")
+  param fixedB   = false                 @label("Fixed")
+  param freqB    = 1kHz   [1Hz..20kHz]   @unit(Hz) @curve(exp) @label("Freq")
+  param levelB   = -70dB  [-70dB..0dB]   @unit(dB) @label("Level")
+  param velB     = 0%     [-100%..100%]  @label("Vel")
+  param keyB     = 0%     [-100%..100%]  @label("Key")
+  param attackB  = 0ms    [0ms..60s]     @unit(s) @curve(exp) @label("Attack")
+  param decayB   = 600ms  [1ms..60s]     @unit(s) @curve(exp) @label("Decay")
+  param releaseB = 50ms   [1ms..60s]     @unit(s) @curve(exp) @label("Release")
+  param initialB = -70dB  [-70dB..0dB]   @unit(dB) @label("Initial")
+  param peakB    = 0dB    [-70dB..0dB]   @unit(dB) @label("Peak")
+  param sustainB = 0dB    [-70dB..0dB]   @unit(dB) @label("Sustain")
+  param endB     = -70dB  [-70dB..0dB]   @unit(dB) @label("End")
+  param repeatB  = 1      [0.001..64]    @curve(exp) @label("Repeat")
+  param penvToB  = true                  @label("Pitch Env")
+  param lfoToB   = true                  @label("LFO")
+  param uB1      = 1      [0..1]         @hidden @label("Partial 1")
+  param uB2      = 0      [0..1]         @hidden @label("Partial 2")
+  param uB3      = 0      [0..1]         @hidden @label("Partial 3")
+  param uB4      = 0      [0..1]         @hidden @label("Partial 4")
+  param uB5      = 0      [0..1]         @hidden @label("Partial 5")
+  param uB6      = 0      [0..1]         @hidden @label("Partial 6")
+  param uB7      = 0      [0..1]         @hidden @label("Partial 7")
+  param uB8      = 0      [0..1]         @hidden @label("Partial 8")
+  param uB9      = 0      [0..1]         @hidden @label("Partial 9")
+  param uB10     = 0      [0..1]         @hidden @label("Partial 10")
+  param uB11     = 0      [0..1]         @hidden @label("Partial 11")
+  param uB12     = 0      [0..1]         @hidden @label("Partial 12")
+  param uB13     = 0      [0..1]         @hidden @label("Partial 13")
+  param uB14     = 0      [0..1]         @hidden @label("Partial 14")
+  param uB15     = 0      [0..1]         @hidden @label("Partial 15")
+  param uB16     = 0      [0..1]         @hidden @label("Partial 16")
+
+  param coarseC  = 1      [0..48]        @steps(49) @label("Coarse")
+  param denC     = 1      [1..32]        @steps(32) @label("Ratio /")
+  param fineC    = 0      [0..1000]      @label("Fine")
+  param fixedC   = false                 @label("Fixed")
+  param freqC    = 1kHz   [1Hz..20kHz]   @unit(Hz) @curve(exp) @label("Freq")
+  param levelC   = -70dB  [-70dB..0dB]   @unit(dB) @label("Level")
+  param velC     = 0%     [-100%..100%]  @label("Vel")
+  param keyC     = 0%     [-100%..100%]  @label("Key")
+  param attackC  = 0ms    [0ms..60s]     @unit(s) @curve(exp) @label("Attack")
+  param decayC   = 600ms  [1ms..60s]     @unit(s) @curve(exp) @label("Decay")
+  param releaseC = 50ms   [1ms..60s]     @unit(s) @curve(exp) @label("Release")
+  param initialC = -70dB  [-70dB..0dB]   @unit(dB) @label("Initial")
+  param peakC    = 0dB    [-70dB..0dB]   @unit(dB) @label("Peak")
+  param sustainC = 0dB    [-70dB..0dB]   @unit(dB) @label("Sustain")
+  param endC     = -70dB  [-70dB..0dB]   @unit(dB) @label("End")
+  param repeatC  = 1      [0.001..64]    @curve(exp) @label("Repeat")
+  param penvToC  = true                  @label("Pitch Env")
+  param lfoToC   = true                  @label("LFO")
+  param uC1      = 1      [0..1]         @hidden @label("Partial 1")
+  param uC2      = 0      [0..1]         @hidden @label("Partial 2")
+  param uC3      = 0      [0..1]         @hidden @label("Partial 3")
+  param uC4      = 0      [0..1]         @hidden @label("Partial 4")
+  param uC5      = 0      [0..1]         @hidden @label("Partial 5")
+  param uC6      = 0      [0..1]         @hidden @label("Partial 6")
+  param uC7      = 0      [0..1]         @hidden @label("Partial 7")
+  param uC8      = 0      [0..1]         @hidden @label("Partial 8")
+  param uC9      = 0      [0..1]         @hidden @label("Partial 9")
+  param uC10     = 0      [0..1]         @hidden @label("Partial 10")
+  param uC11     = 0      [0..1]         @hidden @label("Partial 11")
+  param uC12     = 0      [0..1]         @hidden @label("Partial 12")
+  param uC13     = 0      [0..1]         @hidden @label("Partial 13")
+  param uC14     = 0      [0..1]         @hidden @label("Partial 14")
+  param uC15     = 0      [0..1]         @hidden @label("Partial 15")
+  param uC16     = 0      [0..1]         @hidden @label("Partial 16")
+
+  param coarseD  = 1      [0..48]        @steps(49) @label("Coarse")
+  param denD     = 1      [1..32]        @steps(32) @label("Ratio /")
+  param fineD    = 0      [0..1000]      @label("Fine")
+  param fixedD   = false                 @label("Fixed")
+  param freqD    = 1kHz   [1Hz..20kHz]   @unit(Hz) @curve(exp) @label("Freq")
+  param levelD   = -70dB  [-70dB..0dB]   @unit(dB) @label("Level")
+  param velD     = 0%     [-100%..100%]  @label("Vel")
+  param keyD     = 0%     [-100%..100%]  @label("Key")
+  param attackD  = 0ms    [0ms..60s]     @unit(s) @curve(exp) @label("Attack")
+  param decayD   = 600ms  [1ms..60s]     @unit(s) @curve(exp) @label("Decay")
+  param releaseD = 50ms   [1ms..60s]     @unit(s) @curve(exp) @label("Release")
+  param initialD = -70dB  [-70dB..0dB]   @unit(dB) @label("Initial")
+  param peakD    = 0dB    [-70dB..0dB]   @unit(dB) @label("Peak")
+  param sustainD = 0dB    [-70dB..0dB]   @unit(dB) @label("Sustain")
+  param endD     = -70dB  [-70dB..0dB]   @unit(dB) @label("End")
+  param repeatD  = 1      [0.001..64]    @curve(exp) @label("Repeat")
+  param penvToD  = true                  @label("Pitch Env")
+  param lfoToD   = true                  @label("LFO")
+  param uD1      = 1      [0..1]         @hidden @label("Partial 1")
+  param uD2      = 0      [0..1]         @hidden @label("Partial 2")
+  param uD3      = 0      [0..1]         @hidden @label("Partial 3")
+  param uD4      = 0      [0..1]         @hidden @label("Partial 4")
+  param uD5      = 0      [0..1]         @hidden @label("Partial 5")
+  param uD6      = 0      [0..1]         @hidden @label("Partial 6")
+  param uD7      = 0      [0..1]         @hidden @label("Partial 7")
+  param uD8      = 0      [0..1]         @hidden @label("Partial 8")
+  param uD9      = 0      [0..1]         @hidden @label("Partial 9")
+  param uD10     = 0      [0..1]         @hidden @label("Partial 10")
+  param uD11     = 0      [0..1]         @hidden @label("Partial 11")
+  param uD12     = 0      [0..1]         @hidden @label("Partial 12")
+  param uD13     = 0      [0..1]         @hidden @label("Partial 13")
+  param uD14     = 0      [0..1]         @hidden @label("Partial 14")
+  param uD15     = 0      [0..1]         @hidden @label("Partial 15")
+  param uD16     = 0      [0..1]         @hidden @label("Partial 16")
+
+  param feedback   = 0%     [0%..100%]     @label("Feedback")
+
+  // Pitch envelope
+  param penvAmount  = 0c     [-4800c..4800c] @label("Amount")
+  param penvAttack  = 0ms    [0ms..60s]      @unit(s) @curve(exp) @label("Attack")
+  param penvDecay   = 300ms  [1ms..60s]      @unit(s) @curve(exp) @label("Decay")
+  param penvRelease = 50ms   [1ms..60s]      @unit(s) @curve(exp) @label("Release")
+  param penvInitial = 0      [-1..1]         @label("Initial")
+  param penvPeak    = 1      [-1..1]         @label("Peak")
+  param penvSustain = 0      [-1..1]         @label("Sustain")
+  param penvEnd     = 0      [-1..1]         @label("End")
+  param penvRepeat  = 1      [0.001..64]     @curve(exp) @label("Repeat")
+
+  // LFO
+  param lfoRate    = 1Hz    [0.01Hz..40Hz]  @unit(Hz) @curve(exp) @label("Rate")
+  param lfoSync    = false                  @label("Sync")
+  param lfoBeats   = 1      [1/16..64]      @curve(exp) @label("Beats")
+  param lfoAmount  = 100%   [0%..100%]      @label("Amount")
+  param lfoPitch   = 100c   [0c..4800c]     @label("Pitch")
+  param lfoFilter  = 0c     [-4800c..4800c] @label("Filter")
+
+  // Filter
+  param filterFreq = 2kHz   [20Hz..20kHz]   @unit(Hz) @curve(exp) @label("Freq")
+  param filterRes  = 20%    [0%..100%]      @label("Res")
+  param morph      = 0      [0..1]          @label("Morph")
+  param filterKey  = 0%     [0%..100%]      @label("Key")
+  param filterVel  = 0c     [-4800c..4800c] @label("Vel")
+  param fenvAmount = 0c     [-7200c..7200c] @label("Env")
+  param fenvAttack  = 0ms   [0ms..60s]      @unit(s) @curve(exp) @label("Attack")
+  param fenvDecay   = 600ms [1ms..60s]      @unit(s) @curve(exp) @label("Decay")
+  param fenvRelease = 50ms  [1ms..60s]      @unit(s) @curve(exp) @label("Release")
+  param fenvInitial = 0     [-1..1]         @label("Initial")
+  param fenvPeak    = 1     [-1..1]         @label("Peak")
+  param fenvSustain = 0     [-1..1]         @label("Sustain")
+  param fenvEnd     = 0     [-1..1]         @label("End")
+  param fenvRepeat  = 1     [0.001..64]     @curve(exp) @label("Repeat")
+
+  // Global
+  param volume     = -12dB  [-70dB..6dB]    @unit(dB) @label("Volume")
+  param pan        = 0      [-1..1]         @label("Pan")
+  param transpose  = 0c     [-4800c..4800c] @label("Transpose")
+  param time       = 1      [0.1..10]       @curve(exp) @label("Time")
+  param spread     = 0%     [0%..100%]      @label("Spread")
+  param glideTime  = 100ms  [1ms..10s]      @unit(s) @curve(exp) @label("Glide")
+
+  out   out  : audio voice stereo
+  out   done : bool voice
+
+  // ---- Note, key and velocity ----
+  kc    = clip(voice.cents, -9600, 9600)           // the note in cents from the reference (C3)
+  vel   = voice.velocity
+  base0 = voice.hz * cents_to_hz(transpose, 1)       // transpose: one exact exp2 per block
+
+  // ---- Glide: from the newest note started before this one (any voice), linearly in cents ----
+  trigN  = gate_to_real(voice.trigger)
+  sumN   = voice_sum(trigN)                           // notes starting at this sample (global)
+  sumC   = voice_sum(voice.trigger ? kc : 0)
+  newest = z1(cur)
+  cur    = sumN > 0.5 ? sumC / sumN : newest           // the newest note's cents
+  prevC  = sumN > 0.5 ? newest : z1(prevC)             // the note before it
+  played = z1(srff(sumN > 0.5, false))                 // a note started before this sample
+  gStart = samplehold(played ? prevC - kc : 0, voice.trigger)
+  gStep  = 1 / max(glideTime * sr, 1)
+  gRamp  = voice.trigger ? 1 : max(z1(gRamp) - gStep, 0)
+  glideC = gStart * gRamp
+  base   = glideOn >= 0.5 ? fast_cents_to_hz(glideC, base0) : base0
+
+  // ---- Envelopes ----
+  gate = voice.gate
+  envA = msenv(gate, mode: loopA, a: attackA * time, d: decayA * time, r: releaseA * time,
+               init: lin(initialA), peak: lin(peakA), sus: lin(sustainA), end: lin(endA), rep: repeatA)
+  envB = msenv(gate, mode: loopB, a: attackB * time, d: decayB * time, r: releaseB * time,
+               init: lin(initialB), peak: lin(peakB), sus: lin(sustainB), end: lin(endB), rep: repeatB)
+  envC = msenv(gate, mode: loopC, a: attackC * time, d: decayC * time, r: releaseC * time,
+               init: lin(initialC), peak: lin(peakC), sus: lin(sustainC), end: lin(endC), rep: repeatC)
+  envD = msenv(gate, mode: loopD, a: attackD * time, d: decayD * time, r: releaseD * time,
+               init: lin(initialD), peak: lin(peakD), sus: lin(sustainD), end: lin(endD), rep: repeatD)
+  penv = msenv(gate, mode: pitchLoop, soft: 0, a: penvAttack * time, d: penvDecay * time, r: penvRelease * time,
+               init: penvInitial, peak: penvPeak, sus: penvSustain, end: penvEnd, rep: penvRepeat)
+  fenv = msenv(gate, mode: filterLoop, soft: 0, a: fenvAttack * time, d: fenvDecay * time, r: fenvRelease * time,
+               init: fenvInitial, peak: fenvPeak, sus: fenvSustain, end: fenvEnd, rep: fenvRepeat)
+
+  // ---- LFO ----
+  lfoHz   = lfoSync ? transport.bpm / (60 * lfoBeats) : lfoRate
+  zv      = 0 * vel                                   // a per-voice 0 (param rate: once per block)
+  lfoPh   = lfoRetrig >= 0.5 ? phasor(lfoHz) : shared(phasor(lfoHz)) + zv
+  lfoWrap = lfoPh < z1(lfoPh) || voice.trigger
+  lfoRaw  = mux(lfoWave, sine(lfoPh), lfoPh < 0.5 ? 1 : -1, 4 * abs(frac(lfoPh + 0.75) - 0.5) - 1,
+                2 * frac(lfoPh + 0.5) - 1, 1 - 2 * frac(lfoPh + 0.5), samplehold(noise(seed: 11), lfoWrap), noise(seed: 12))
+  lfoSig  = lfoRaw * lfoAmount
+
+  // ---- Pitch per operator (cents of pitch envelope and LFO; spread adds ∓ spread · 10 ¢ per channel) ----
+  // (Every structural choice below selects between two per-voice values, so the unused one folds away.)
+  modOn = pitchEnvOn >= 0.5 || lfoOn >= 0.5
+  spC   = spread * 10
+  hzA  = fixedA ? freqA : base * (((coarseA < 0.5 ? 0.5 : coarseA) + fineA * 0.001) / denA)
+  peA  = penvToA ? penv * penvAmount : 0
+  lfA  = lfoToA ? lfoSig * lfoPitch : 0
+  cA   = pitchEnvOn >= 0.5 && lfoOn >= 0.5 ? peA + lfA : pitchEnvOn >= 0.5 ? peA : lfA
+  hmA  = modOn ? fast_cents_to_hz(cA, hzA) : hzA
+  hzB  = fixedB ? freqB : base * (((coarseB < 0.5 ? 0.5 : coarseB) + fineB * 0.001) / denB)
+  peB  = penvToB ? penv * penvAmount : 0
+  lfB  = lfoToB ? lfoSig * lfoPitch : 0
+  cB   = pitchEnvOn >= 0.5 && lfoOn >= 0.5 ? peB + lfB : pitchEnvOn >= 0.5 ? peB : lfB
+  hmB  = modOn ? fast_cents_to_hz(cB, hzB) : hzB
+  hzC  = fixedC ? freqC : base * (((coarseC < 0.5 ? 0.5 : coarseC) + fineC * 0.001) / denC)
+  peC  = penvToC ? penv * penvAmount : 0
+  lfC  = lfoToC ? lfoSig * lfoPitch : 0
+  cC   = pitchEnvOn >= 0.5 && lfoOn >= 0.5 ? peC + lfC : pitchEnvOn >= 0.5 ? peC : lfC
+  hmC  = modOn ? fast_cents_to_hz(cC, hzC) : hzC
+  hzD  = fixedD ? freqD : base * (((coarseD < 0.5 ? 0.5 : coarseD) + fineD * 0.001) / denD)
+  peD  = penvToD ? penv * penvAmount : 0
+  lfD  = lfoToD ? lfoSig * lfoPitch : 0
+  cD   = pitchEnvOn >= 0.5 && lfoOn >= 0.5 ? peD + lfD : pitchEnvOn >= 0.5 ? peD : lfD
+  hmD  = modOn ? fast_cents_to_hz(cD, hzD) : hzD
+
+  // ---- Amplitudes: envelope · level · velocity · key (an operator that is off never reads its own) ----
+  ampA = envA * (lin(levelA) * max(0, 1 + velA * (vel - 1))) * fast_cents_to_hz(keyA * kc, 1)
+  ampB = envB * (lin(levelB) * max(0, 1 + velB * (vel - 1))) * fast_cents_to_hz(keyB * kc, 1)
+  ampC = envC * (lin(levelC) * max(0, 1 + velC * (vel - 1))) * fast_cents_to_hz(keyC * kc, 1)
+  ampD = envD * (lin(levelD) * max(0, 1 + velD * (vel - 1))) * fast_cents_to_hz(keyD * kc, 1)
+
+  // ---- The operators (a second set for the right channel with spread) ----
+  bankL = op_bank(hzA: hmA, hzB: hmB,
+                hzC: hmC, hzD: hmD,
+                ampA: ampA, ampB: ampB, ampC: ampC, ampD: ampD,
+                feedback: feedback, algorithm: algorithm,
+                onA: onA, onB: onB, onC: onC, onD: onD,
+                waveA: waveA, waveB: waveB, waveC: waveC, waveD: waveD,
+                uA1: uA1, uA2: uA2, uA3: uA3, uA4: uA4, uA5: uA5, uA6: uA6, uA7: uA7, uA8: uA8,
+                uA9: uA9, uA10: uA10, uA11: uA11, uA12: uA12, uA13: uA13, uA14: uA14, uA15: uA15, uA16: uA16,
+                uB1: uB1, uB2: uB2, uB3: uB3, uB4: uB4, uB5: uB5, uB6: uB6, uB7: uB7, uB8: uB8,
+                uB9: uB9, uB10: uB10, uB11: uB11, uB12: uB12, uB13: uB13, uB14: uB14, uB15: uB15, uB16: uB16,
+                uC1: uC1, uC2: uC2, uC3: uC3, uC4: uC4, uC5: uC5, uC6: uC6, uC7: uC7, uC8: uC8,
+                uC9: uC9, uC10: uC10, uC11: uC11, uC12: uC12, uC13: uC13, uC14: uC14, uC15: uC15, uC16: uC16,
+                uD1: uD1, uD2: uD2, uD3: uD3, uD4: uD4, uD5: uD5, uD6: uD6, uD7: uD7, uD8: uD8,
+                uD9: uD9, uD10: uD10, uD11: uD11, uD12: uD12, uD13: uD13, uD14: uD14, uD15: uD15, uD16: uD16)
+  bankS = op_bank(hzA: modOn ? fast_cents_to_hz(cA - spC, hzA) : fast_cents_to_hz(-spC, hzA), hzB: modOn ? fast_cents_to_hz(cB - spC, hzB) : fast_cents_to_hz(-spC, hzB),
+                hzC: modOn ? fast_cents_to_hz(cC - spC, hzC) : fast_cents_to_hz(-spC, hzC), hzD: modOn ? fast_cents_to_hz(cD - spC, hzD) : fast_cents_to_hz(-spC, hzD),
+                ampA: ampA, ampB: ampB, ampC: ampC, ampD: ampD,
+                feedback: feedback, algorithm: algorithm,
+                onA: onA, onB: onB, onC: onC, onD: onD,
+                waveA: waveA, waveB: waveB, waveC: waveC, waveD: waveD,
+                uA1: uA1, uA2: uA2, uA3: uA3, uA4: uA4, uA5: uA5, uA6: uA6, uA7: uA7, uA8: uA8,
+                uA9: uA9, uA10: uA10, uA11: uA11, uA12: uA12, uA13: uA13, uA14: uA14, uA15: uA15, uA16: uA16,
+                uB1: uB1, uB2: uB2, uB3: uB3, uB4: uB4, uB5: uB5, uB6: uB6, uB7: uB7, uB8: uB8,
+                uB9: uB9, uB10: uB10, uB11: uB11, uB12: uB12, uB13: uB13, uB14: uB14, uB15: uB15, uB16: uB16,
+                uC1: uC1, uC2: uC2, uC3: uC3, uC4: uC4, uC5: uC5, uC6: uC6, uC7: uC7, uC8: uC8,
+                uC9: uC9, uC10: uC10, uC11: uC11, uC12: uC12, uC13: uC13, uC14: uC14, uC15: uC15, uC16: uC16,
+                uD1: uD1, uD2: uD2, uD3: uD3, uD4: uD4, uD5: uD5, uD6: uD6, uD7: uD7, uD8: uD8,
+                uD9: uD9, uD10: uD10, uD11: uD11, uD12: uD12, uD13: uD13, uD14: uD14, uD15: uD15, uD16: uD16)
+  bankR = op_bank(hzA: modOn ? fast_cents_to_hz(cA + spC, hzA) : fast_cents_to_hz(spC, hzA), hzB: modOn ? fast_cents_to_hz(cB + spC, hzB) : fast_cents_to_hz(spC, hzB),
+                hzC: modOn ? fast_cents_to_hz(cC + spC, hzC) : fast_cents_to_hz(spC, hzC), hzD: modOn ? fast_cents_to_hz(cD + spC, hzD) : fast_cents_to_hz(spC, hzD),
+                ampA: ampA, ampB: ampB, ampC: ampC, ampD: ampD,
+                feedback: feedback, algorithm: algorithm,
+                onA: onA, onB: onB, onC: onC, onD: onD,
+                waveA: waveA, waveB: waveB, waveC: waveC, waveD: waveD,
+                uA1: uA1, uA2: uA2, uA3: uA3, uA4: uA4, uA5: uA5, uA6: uA6, uA7: uA7, uA8: uA8,
+                uA9: uA9, uA10: uA10, uA11: uA11, uA12: uA12, uA13: uA13, uA14: uA14, uA15: uA15, uA16: uA16,
+                uB1: uB1, uB2: uB2, uB3: uB3, uB4: uB4, uB5: uB5, uB6: uB6, uB7: uB7, uB8: uB8,
+                uB9: uB9, uB10: uB10, uB11: uB11, uB12: uB12, uB13: uB13, uB14: uB14, uB15: uB15, uB16: uB16,
+                uC1: uC1, uC2: uC2, uC3: uC3, uC4: uC4, uC5: uC5, uC6: uC6, uC7: uC7, uC8: uC8,
+                uC9: uC9, uC10: uC10, uC11: uC11, uC12: uC12, uC13: uC13, uC14: uC14, uC15: uC15, uC16: uC16,
+                uD1: uD1, uD2: uD2, uD3: uD3, uD4: uD4, uD5: uD5, uD6: uD6, uD7: uD7, uD8: uD8,
+                uD9: uD9, uD10: uD10, uD11: uD11, uD12: uD12, uD13: uD13, uD14: uD14, uD15: uD15, uD16: uD16)
+  monoL = spreadOn >= 0.5 ? bankS : bankL
+  monoR = spreadOn >= 0.5 ? bankR : bankL
+
+  // ---- Filter ----
+  fc0   = fenv * fenvAmount + filterKey * kc + filterVel * vel
+  fcC   = lfoOn >= 0.5 ? fc0 + lfoSig * lfoFilter : fc0
+  fc    = fast_cents_to_hz(fcC, filterFreq)
+  fg    = fast_tan(3.141592653589793 * clip(fc, 10, 0.49 * sr) / sr)
+  fk    = 2 - 1.98 * filterRes
+  fL    = op_filter(monoL, g: fg, k: fk, morph: morph, type: filterType, slope: filterSlope)
+  fR    = op_filter(monoR, g: fg, k: fk, morph: morph, type: filterType, slope: filterSlope)
+  yL    = filterOn >= 0.5 ? fL : monoL
+  yR    = spreadOn >= 0.5 ? (filterOn >= 0.5 ? fR : monoR) : yL
+
+  // ---- Output ----
+  vol  = lin(volume)
+  out  = (yL * (vol * min(1, 1 - pan)), yR * (vol * min(1, 1 + pan)))
+
+  // The voice ends once every carrier that is on has released (algorithm table above); with no carrier on,
+  // at the note-off.
+  dA = onA >= 0.5 ? envA.done : !gate
+  dB = onB >= 0.5 && (algorithm == 6 || algorithm == 8 || algorithm == 9 || algorithm == 10 || algorithm == 11) ? dA && envB.done : dA
+  dC = onC >= 0.5 && (algorithm == 7 || algorithm == 9 || algorithm == 10 || algorithm == 11) ? dB && envC.done : dB
+  dD = onD >= 0.5 && (algorithm == 11) ? dC && envD.done : dC
+  done = dD
+
+  export opA = spreadOn >= 0.5 ? bankS.opA : bankL.opA
+  export opB = spreadOn >= 0.5 ? bankS.opB : bankL.opB
+  export opC = spreadOn >= 0.5 ? bankS.opC : bankL.opC
+  export opD = spreadOn >= 0.5 ? bankS.opD : bankL.opD
+  export lfo = lfoSig
+  export pitchEnv = penv
+  export filterEnv = fenv
+}
+
+// A dB knob's linear gain with −70 dB (its minimum) read as −inf.
+patch lin {
+  param x = 1 [0..4]
+  out   y : real
+  y = x < 0.00031623 ? 0 : x
+}
+
+// The four operators of one channel: phases, phase modulation by the algorithm, waveforms, amplitudes; the
+// carriers' sum. `hzX` the operator's frequency, `ampX` envelope · level · velocity · key.
+patch op_bank {
+  in    hzA  : audio
+  in    hzB  : audio
+  in    hzC  : audio
+  in    hzD  : audio
+  in    ampA : audio
+  in    ampB : audio
+  in    ampC : audio
+  in    ampD : audio
+  in    algorithm : real const = 1
+  in    onA  : real const = 1
+  in    onB  : real const = 1
+  in    onC  : real const = 1
+  in    onD  : real const = 1
+  in    waveA : real const = 0
+  in    waveB : real const = 0
+  in    waveC : real const = 0
+  in    waveD : real const = 0
+  param feedback = 0 [0..1]
+  param uA1 = 1 [0..1]
+  param uA2 = 0 [0..1]
+  param uA3 = 0 [0..1]
+  param uA4 = 0 [0..1]
+  param uA5 = 0 [0..1]
+  param uA6 = 0 [0..1]
+  param uA7 = 0 [0..1]
+  param uA8 = 0 [0..1]
+  param uA9 = 0 [0..1]
+  param uA10 = 0 [0..1]
+  param uA11 = 0 [0..1]
+  param uA12 = 0 [0..1]
+  param uA13 = 0 [0..1]
+  param uA14 = 0 [0..1]
+  param uA15 = 0 [0..1]
+  param uA16 = 0 [0..1]
+  param uB1 = 1 [0..1]
+  param uB2 = 0 [0..1]
+  param uB3 = 0 [0..1]
+  param uB4 = 0 [0..1]
+  param uB5 = 0 [0..1]
+  param uB6 = 0 [0..1]
+  param uB7 = 0 [0..1]
+  param uB8 = 0 [0..1]
+  param uB9 = 0 [0..1]
+  param uB10 = 0 [0..1]
+  param uB11 = 0 [0..1]
+  param uB12 = 0 [0..1]
+  param uB13 = 0 [0..1]
+  param uB14 = 0 [0..1]
+  param uB15 = 0 [0..1]
+  param uB16 = 0 [0..1]
+  param uC1 = 1 [0..1]
+  param uC2 = 0 [0..1]
+  param uC3 = 0 [0..1]
+  param uC4 = 0 [0..1]
+  param uC5 = 0 [0..1]
+  param uC6 = 0 [0..1]
+  param uC7 = 0 [0..1]
+  param uC8 = 0 [0..1]
+  param uC9 = 0 [0..1]
+  param uC10 = 0 [0..1]
+  param uC11 = 0 [0..1]
+  param uC12 = 0 [0..1]
+  param uC13 = 0 [0..1]
+  param uC14 = 0 [0..1]
+  param uC15 = 0 [0..1]
+  param uC16 = 0 [0..1]
+  param uD1 = 1 [0..1]
+  param uD2 = 0 [0..1]
+  param uD3 = 0 [0..1]
+  param uD4 = 0 [0..1]
+  param uD5 = 0 [0..1]
+  param uD6 = 0 [0..1]
+  param uD7 = 0 [0..1]
+  param uD8 = 0 [0..1]
+  param uD9 = 0 [0..1]
+  param uD10 = 0 [0..1]
+  param uD11 = 0 [0..1]
+  param uD12 = 0 [0..1]
+  param uD13 = 0 [0..1]
+  param uD14 = 0 [0..1]
+  param uD15 = 0 [0..1]
+  param uD16 = 0 [0..1]
+  out   y : audio
+  out   opA : audio
+  out   opB : audio
+  out   opC : audio
+  out   opD : audio
+
+  alg = algorithm - 1
+  zv  = 0 * voice.velocity          // a per-voice 0 (param rate: once per block; the seed of an empty sum)
+  // Which operator modulates which, by algorithm 1 … 11 (above); folded to constants
+  rBA = mux(alg, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0) >= 0.5 && onB >= 0.5
+  rCA = mux(alg, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0) >= 0.5 && onC >= 0.5
+  rDA = mux(alg, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0) >= 0.5 && onD >= 0.5
+  rCB = mux(alg, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0) >= 0.5 && onC >= 0.5
+  rDB = mux(alg, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0) >= 0.5 && onD >= 0.5
+  rDC = mux(alg, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0) >= 0.5 && onD >= 0.5
+  kA  = mux(alg, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1) >= 0.5 && onA >= 0.5
+  kB  = mux(alg, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1) >= 0.5 && onB >= 0.5
+  kC  = mux(alg, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1) >= 0.5 && onC >= 0.5
+  kD  = mux(alg, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1) >= 0.5 && onD >= 0.5
+
+  // Phases: the phasor plus ½ · each modulator's output (accumulated, so an absent term costs nothing)
+  fbD = feedback * 0.25 * (z1(wD) + z1(z1(wD)))   // D: feedback from its own raw waveform (mean of two samples)
+  a0 = phasor(hzA)
+  a1 = rBA ? a0 + 0.5 * oB : a0
+  a2 = rCA ? a1 + 0.5 * oC : a1
+  a3 = rDA ? a2 + 0.5 * oD : a2
+  pA = a3
+  b0 = phasor(hzB)
+  b1 = rCB ? b0 + 0.5 * oC : b0
+  b2 = rDB ? b1 + 0.5 * oD : b1
+  pB = b2
+  c0 = phasor(hzC)
+  c1 = rDC ? c0 + 0.5 * oD : c0
+  pC = c1
+  pD = phasor(hzD) + fbD
+  wA = op_wave(pA, 0.45 * sr / max(abs(hzA), 1), wave: waveA,
+              u1: uA1, u2: uA2, u3: uA3, u4: uA4, u5: uA5, u6: uA6, u7: uA7, u8: uA8,
+              u9: uA9, u10: uA10, u11: uA11, u12: uA12, u13: uA13, u14: uA14, u15: uA15, u16: uA16)
+  oA = wA * ampA
+  wB = op_wave(pB, 0.45 * sr / max(abs(hzB), 1), wave: waveB,
+              u1: uB1, u2: uB2, u3: uB3, u4: uB4, u5: uB5, u6: uB6, u7: uB7, u8: uB8,
+              u9: uB9, u10: uB10, u11: uB11, u12: uB12, u13: uB13, u14: uB14, u15: uB15, u16: uB16)
+  oB = wB * ampB
+  wC = op_wave(pC, 0.45 * sr / max(abs(hzC), 1), wave: waveC,
+              u1: uC1, u2: uC2, u3: uC3, u4: uC4, u5: uC5, u6: uC6, u7: uC7, u8: uC8,
+              u9: uC9, u10: uC10, u11: uC11, u12: uC12, u13: uC13, u14: uC14, u15: uC15, u16: uC16)
+  oC = wC * ampC
+  wD = op_wave(pD, 0.45 * sr / max(abs(hzD), 1), wave: waveD,
+              u1: uD1, u2: uD2, u3: uD3, u4: uD4, u5: uD5, u6: uD6, u7: uD7, u8: uD8,
+              u9: uD9, u10: uD10, u11: uD11, u12: uD12, u13: uD13, u14: uD14, u15: uD15, u16: uD16)
+  oD = wD * ampD
+
+  // The carriers' sum
+  y0 = kA ? oA : zv
+  y1 = kB ? y0 + oB : y0
+  y2 = kC ? y1 + oC : y1
+  y  = kD ? y2 + oD : y2
+  opA = onA >= 0.5 ? oA : zv
+  opB = onB >= 0.5 ? oB : zv
+  opC = onC >= 0.5 ? oC : zv
+  opD = onD >= 0.5 ? oD : zv
+}
+
+// One waveform sample at phase `p` (cycles; any real: phase modulation is added before). `nmax` = the highest
+// harmonic below the band limit (User partials).
+patch op_wave {
+  in    p    : audio
+  in    nmax : audio
+  in    wave : real const = 0
+  param u1 = 1 [0..1]
+  param u2 = 0 [0..1]
+  param u3 = 0 [0..1]
+  param u4 = 0 [0..1]
+  param u5 = 0 [0..1]
+  param u6 = 0 [0..1]
+  param u7 = 0 [0..1]
+  param u8 = 0 [0..1]
+  param u9 = 0 [0..1]
+  param u10 = 0 [0..1]
+  param u11 = 0 [0..1]
+  param u12 = 0 [0..1]
+  param u13 = 0 [0..1]
+  param u14 = 0 [0..1]
+  param u15 = 0 [0..1]
+  param u16 = 0 [0..1]
+  out   y : audio
+
+  s = sine(p)
+  t = frac(p)
+  y = mux(wave, s,
+          floor(s * 7 + 0.5) * 0.14285714285714285, floor(s * 127 + 0.5) * 0.007874015748031496,
+          wavetable(p, table: 65536), wavetable(p, table: 65537), wavetable(p, table: 65538), wavetable(p, table: 65539),
+          wavetable(p, table: 65540), wavetable(p, table: 65541), wavetable(p, table: 65542),
+          1 - 2 * t,
+          wavetable(p, table: 65543), wavetable(p, table: 65544), wavetable(p, table: 65545), wavetable(p, table: 65546),
+          wavetable(p, table: 65547), wavetable(p, table: 65548), wavetable(p, table: 65549),
+          t < 0.5 ? 1 : -1, wavetable(p, table: 65550), wavetable(p, table: 65551), noise(seed: 21),
+          op_partials(s, 2 * sine(p + 0.25), nmax, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16))
+}
+
+// Σ_h u_h·sin(hθ) for h = 1 … 16 from s = sin θ and c2 = 2·cos θ (Chebyshev recurrence), each partial only
+// while h < nmax.
+patch op_partials {
+  in    s    : audio
+  in    c2   : audio
+  in    nmax : audio
+  param u1 = 0 [0..1]
+  param u2 = 0 [0..1]
+  param u3 = 0 [0..1]
+  param u4 = 0 [0..1]
+  param u5 = 0 [0..1]
+  param u6 = 0 [0..1]
+  param u7 = 0 [0..1]
+  param u8 = 0 [0..1]
+  param u9 = 0 [0..1]
+  param u10 = 0 [0..1]
+  param u11 = 0 [0..1]
+  param u12 = 0 [0..1]
+  param u13 = 0 [0..1]
+  param u14 = 0 [0..1]
+  param u15 = 0 [0..1]
+  param u16 = 0 [0..1]
+  out   y : audio
+
+  s1 = s
+  s2 = c2 * s1
+  s3 = c2 * s2 - s1
+  s4 = c2 * s3 - s2
+  s5 = c2 * s4 - s3
+  s6 = c2 * s5 - s4
+  s7 = c2 * s6 - s5
+  s8 = c2 * s7 - s6
+  s9 = c2 * s8 - s7
+  s10 = c2 * s9 - s8
+  s11 = c2 * s10 - s9
+  s12 = c2 * s11 - s10
+  s13 = c2 * s12 - s11
+  s14 = c2 * s13 - s12
+  s15 = c2 * s14 - s13
+  s16 = c2 * s15 - s14
+  y = (nmax > 1 ? u1 * s1 : 0) + (nmax > 2 ? u2 * s2 : 0) + (nmax > 3 ? u3 * s3 : 0) + (nmax > 4 ? u4 * s4 : 0) +
+      (nmax > 5 ? u5 * s5 : 0) + (nmax > 6 ? u6 * s6 : 0) + (nmax > 7 ? u7 * s7 : 0) + (nmax > 8 ? u8 * s8 : 0) +
+      (nmax > 9 ? u9 * s9 : 0) + (nmax > 10 ? u10 * s10 : 0) + (nmax > 11 ? u11 * s11 : 0) + (nmax > 12 ? u12 * s12 : 0) +
+      (nmax > 13 ? u13 * s13 : 0) + (nmax > 14 ? u14 * s14 : 0) + (nmax > 15 ? u15 * s15 : 0) + (nmax > 16 ? u16 * s16 : 0)
+}
+
+// The filter of one channel: TPT state-variable filters (stdlib/filters/svf_fast.pqp), 12 or 24 dB/oct.
+// `g` = tan(π·fc/sr), `k` = 1/Q (resonance).
+patch op_filter {
+  in    x     : audio
+  param g     = 0.0655 [0..100]
+  param k     = 1.4142 [0.02..2]
+  param morph = 0      [0..1]
+  in    type  : real const = 0
+  in    slope : real const = 0
+  out   y : audio
+
+  // Morph weights: LP → BP → HP → Notch → LP over 0..1 (param rate)
+  mt  = morph * 4
+  wLP = max(0, 1 - mt) + max(0, mt - 3)
+  wBP = max(0, 1 - abs(mt - 1))
+  wHP = max(0, 1 - abs(mt - 2))
+  wN  = max(0, 1 - abs(mt - 3))
+
+  // 24 dB: a Butterworth stage (k = √2) first, then the resonant one
+  a  = svf_core_fast(x, g: g, k: 1.4142135623730951)
+  a0 = mux(type, a.low, x - 1.4142135623730951 * a.band - a.low, 1.4142135623730951 * a.band, x - 1.4142135623730951 * a.band,
+           wLP * a.low + wBP * (1.4142135623730951 * a.band) + wHP * (x - 1.4142135623730951 * a.band - a.low) + wN * (x - 1.4142135623730951 * a.band))
+  xi = slope >= 0.5 ? a0 : x
+  b  = svf_core_fast(xi, g: g, k: k)
+  y  = mux(type, b.low, xi - k * b.band - b.low, k * b.band, xi - k * b.band,
+           wLP * b.low + wBP * (k * b.band) + wHP * (xi - k * b.band - b.low) + wN * (xi - k * b.band))
+}

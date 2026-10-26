@@ -256,6 +256,7 @@ pq_add_test(pq_tests_stdlib
   SOURCES
     stdlib/test_stdlib.cpp
     stdlib/test_devices.cpp  # T4.9 / T4.10: Utility, Saturator, EQ Eight vs device_reference.h
+    stdlib/test_operator.cpp  # T4.12: Operator + msenv vs operator_reference.h, tuned playback
   DEPS pq_jit)
 
 pq_add_test(pq_tests_dsp
