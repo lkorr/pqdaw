@@ -293,6 +293,85 @@ TEST_CASE("project patch: deactivated tracks and devices, missing devices, neste
   for (const Edge& e : pp.edges) CHECK_FALSE((e.kind == EdgeKind::Route && pp.nodes[e.from].band == pp.bandOf(grp)));
 }
 
+// T4.8: racks are drawn as plain blocks; the devices inside them (racks lower inline) belong to the rack's block, and
+// wires into / out of them end on it.
+TEST_CASE("project patch: racks (nested, instrument, wired into and out of) match the graph as one block each") {
+  doc::DocumentStore store;
+  REQUIRE(buildSketchProject(store).ok());
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::TrackId keys = named(*store.current(), "Keys")->id, pad = named(*store.current(), "Pad")->id;
+  // Keys: its effects grouped into an Audio Effect Rack; a second chain holding a nested rack with a Utility.
+  std::vector<doc::DeviceId> fx;
+  for (const doc::DevicePtr& d : named(*store.current(), "Keys")->devices)
+    if (d->kind == doc::DeviceKind::AudioEffect) fx.push_back(d->id);
+  REQUIRE_FALSE(fx.empty());
+  const doc::DeviceId rack = run(doc::ops::groupDevices(*store.current(), store.ids(), fx)).devices.at(0);
+  const doc::DeviceId util = run(doc::ops::addDevice(*store.current(), store.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
+  const doc::DeviceId inner = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{util})).devices.at(0);
+  run(doc::ops::moveDeviceToNewChain(*store.current(), store.ids(), inner, rack));
+  // Pad: its instrument in an Instrument Rack.
+  const doc::DeviceId padInst = named(*store.current(), "Pad")->devices.at(0)->id;
+  const doc::DeviceId irack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{padInst})).devices.at(0);
+  // Wires from the Mod track's LFO into the nested Utility's width and into the outer rack's first macro.
+  const doc::DeviceId lfo = named(*store.current(), "Mod")->devices[0]->id;
+  const doc::WireId toUtil = run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", util, "width", 0.3)).wires.at(0);
+  const doc::WireId toMacro = run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", rack, "macro1", 0.2)).wires.at(0);
+
+  const doc::Project& p = *store.current();
+  const doc::LoweredProject low = lowerOf(p);
+  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  CHECK(checkAgainstGraph(pp, p, low) == "");
+  const uint32_t rn = pp.nodeOf(rack);
+  REQUIRE(rn != kNone);
+  const Node& r = pp.nodes[rn];
+  CHECK(r.rack);
+  CHECK(r.lowered);
+  CHECK_FALSE(r.missing);
+  CHECK(r.title == "Audio Effect Rack");
+  CHECK(r.band == pp.bandOf(keys));
+  CHECK(std::find(r.inner.begin(), r.inner.end(), util) != r.inner.end());
+  CHECK(std::find(r.inner.begin(), r.inner.end(), inner) != r.inner.end());
+  CHECK(pp.nodeOf(util) == rn);  // a device inside a rack: the rack's block
+  CHECK(pp.nodeOf(inner) == rn);
+  const std::string utilPort = "width@" + std::to_string(util.value);
+  CHECK(r.input(utilPort) >= 0);
+  CHECK(r.input("macro1") >= 0);
+  int wiresIn = 0;
+  for (const Edge& e : pp.edges)
+    if (e.kind == EdgeKind::Modulation && (e.wire == toUtil || e.wire == toMacro)) {
+      CHECK(e.to == rn);
+      ++wiresIn;
+    }
+  CHECK(wiresIn == 2);
+  // The chain runs through the rack's block.
+  bool chained = false;
+  for (const Edge& e : pp.edges) chained = chained || (e.kind == EdgeKind::Chain && e.to == rn);
+  CHECK(chained);
+  const uint32_t ir = pp.nodeOf(irack);
+  REQUIRE(ir != kNone);
+  CHECK(pp.nodes[ir].rack);
+  CHECK(pp.nodes[ir].instrument);
+  CHECK(pp.nodes[ir].lowered);
+  CHECK(pp.nodes[ir].band == pp.bandOf(pad));
+  bool notes = false;
+  for (const Edge& e : pp.edges) notes = notes || (e.kind == EdgeKind::Notes && e.to == ir);
+  CHECK(notes);
+  // A rack with nothing that plays (an Instrument Rack whose chain was muted) is drawn but not lowered.
+  run(doc::ops::setChainActive(*store.current(), doc::findDevice(*store.current(), irack).device->rack->chains.at(0)->id, false));
+  const doc::LoweredProject low2 = lowerOf(*store.current());
+  const ProjectPatch pp2 = buildProjectPatch(*store.current(), low2, &library().catalog());
+  CHECK(checkAgainstGraph(pp2, *store.current(), low2) == "");
+  CHECK_FALSE(pp2.nodes[pp2.nodeOf(irack)].lowered);
+  // A broken model is caught: the rack drawn as not lowered while its devices play.
+  ProjectPatch broken = pp;
+  broken.nodes[rn].lowered = false;
+  CHECK(checkAgainstGraph(broken, p, low) != "");
+}
+
 TEST_CASE("project patch: the layout mirrors the arrangement (lane order, groups as containers, left → right)") {
   doc::DocumentStore store;
   REQUIRE(buildWideProject(store, 20).ok());

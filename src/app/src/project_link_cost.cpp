@@ -92,9 +92,8 @@ void ProjectLink::readDeviceCosts(std::span<const doc::DeviceId> devices, std::s
     // Device ids by their call's NodeId, per track.
     std::unordered_map<uint64_t, uint32_t> deviceOf;  // (track id << 32 | call NodeId) → device id
     if (current_)
-      doc::forEachTrack(*current_, [&](const doc::Track& t, const doc::Track*) {
-        for (const doc::DevicePtr& d : t.devices)
-          deviceOf[(uint64_t{t.id.value} << 32) | doc::nodeIdFor(doc::NodeRole::Device, d->id.value, 0)] = d->id.value;
+      doc::forEachDevice(*current_, [&](const doc::Device& d, const doc::Track& t) {  // T4.8: inside racks too
+        deviceOf[(uint64_t{t.id.value} << 32) | doc::nodeIdFor(doc::NodeRole::Device, d.id.value, 0)] = d.id.value;
       });
     std::unordered_set<const graph::Schedule*> running;
     for (uint32_t u = 0; u < compiler_->numUnits(); ++u) {

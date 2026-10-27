@@ -36,6 +36,8 @@ uint32_t ProjectPatch::bandOf(doc::TrackId t) const noexcept {
 uint32_t ProjectPatch::nodeOf(doc::DeviceId d) const noexcept {
   for (uint32_t i = 0; i < nodes.size(); ++i)
     if (nodes[i].kind == NodeKind::Device && nodes[i].device == d) return i;
+  for (uint32_t i = 0; i < nodes.size(); ++i)  // T4.8: inside a rack
+    if (nodes[i].rack && std::find(nodes[i].inner.begin(), nodes[i].inner.end(), d) != nodes[i].inner.end()) return i;
   return kNone;
 }
 
@@ -107,6 +109,50 @@ struct Builder {
   doc::WireStatus statusOf(doc::WireId id) const {
     const auto it = wireStatus.find(id.value);
     return it == wireStatus.end() ? doc::WireStatus::Inactive : it->second;
+  }
+
+  // T4.8: the port of `node` a wire end on `device`.`port` uses: the port itself, or on a rack's block for a device
+  // inside it "<port>@<device id>".
+  static std::string portKey(const Node& node, doc::DeviceId device, const std::string& port) {
+    return node.device == device ? port : port + "@" + std::to_string(device.value);
+  }
+
+  // T4.8: a rack as one block (Node::rack).
+  Node rackNode(uint32_t band, const doc::Device& d, const graph::Patch* tp) {
+    Node n;
+    n.kind = NodeKind::Device;
+    n.band = band;
+    n.device = d.id;
+    n.active = d.active;
+    n.instrument = d.kind == doc::DeviceKind::Instrument;
+    n.rack = true;
+    n.title = n.instrument ? "Instrument Rack" : "Audio Effect Rack";
+    bool plays = false;
+    doc::forEachDeviceIn(d, [&](const doc::Device& x) {
+      if (x.id == d.id) return;
+      n.inner.push_back(x.id);
+      if (!x.rack && callOf(tp, x.id) != graph::kNone) plays = true;
+    });
+    // An Audio Effect Rack with no device that plays passes its input (or is silent): it is in the signal path.
+    n.lowered = tp != nullptr && d.active && (plays || !n.instrument);
+    if (n.instrument) n.inputs.push_back({"notes", ""});
+    else n.inputs.push_back({"in", ""});
+    auto mods = [&](doc::DeviceId dev) {
+      const auto it = modulatedParams.find(dev.value);
+      if (it == modulatedParams.end()) return;
+      for (const std::string& prm : it->second) n.inputs.push_back({portKey(n, dev, prm), prm});
+    };
+    mods(d.id);  // its macros
+    for (const doc::DeviceId x : n.inner) mods(x);
+    n.outputs.push_back({"out", ""});
+    for (const doc::Wire& w : doc::wiresOf(p)) {  // exports of devices inside it that wires use
+      if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
+      if (std::find(n.inner.begin(), n.inner.end(), w.from) == n.inner.end()) continue;
+      const std::string key = portKey(n, w.from, w.port);
+      if (n.output(key) < 0) n.outputs.push_back({key, w.port});
+    }
+    sizeBlock(n, 120.0f);
+    return n;
   }
 
   // ---- nodes ----------------------------------------------------------------------------------------------------
@@ -274,7 +320,7 @@ struct Builder {
       out.bands[bi].source = addNode(std::move(s));
     }
     for (const doc::DevicePtr& d : t.devices) {
-      const uint32_t n = addNode(deviceNode(bi, *d, tp));
+      const uint32_t n = addNode(d->rack ? rackNode(bi, *d, tp) : deviceNode(bi, *d, tp));
       out.bands[bi].devices.push_back(n);
     }
     out.bands[bi].mixer = addNode(mixerNode(bi, t, lowered));
@@ -381,7 +427,8 @@ struct Builder {
       e.delayed = st == doc::WireStatus::Delayed;
       e.voice = out.nodes[a].instrument;
       if (const auto it = modGraphWire.find(w.id.value); it != modGraphWire.end()) e.graphWire = it->second;
-      addEdge(EdgeKind::Modulation, a, out.nodes[a].output(w.port), b, out.nodes[b].input(w.param), e);
+      addEdge(EdgeKind::Modulation, a, out.nodes[a].output(portKey(out.nodes[a], w.from, w.port)), b,
+              out.nodes[b].input(portKey(out.nodes[b], w.to, w.param)), e);
     }
   }
 
@@ -686,6 +733,14 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       bool found = false;
       for (const uint32_t d : b.devices) {
         const Node& nd = pp.nodes[d];
+        if (nd.rack && std::find(nd.inner.begin(), nd.inner.end(), id) != nd.inner.end()) {  // T4.8: inside a rack
+          if (!nd.lowered) return "device " + name + " of " + b.name + ": inside a rack drawn as not lowered";
+          if (tp.node(n).id.value != doc::nodeIdFor(doc::NodeRole::Device, id.value, 0))
+            return "device " + name + " of " + b.name + ": its call is not the device's node";
+          --calls;  // counted with its rack's block, not as a block of its own
+          found = true;
+          continue;
+        }
         if (nd.device != id) continue;
         if (!nd.lowered || nd.call != tp.node(n).id) return "device " + name + " of " + b.name + ": not drawn as its call";
         found = true;
@@ -693,7 +748,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       if (!found) return "device call " + name + " of " + b.name + " has no block";
     }
     uint32_t lowered = 0;
-    for (const uint32_t d : b.devices) lowered += pp.nodes[d].lowered ? 1u : 0u;
+    for (const uint32_t d : b.devices) lowered += pp.nodes[d].lowered && !pp.nodes[d].rack ? 1u : 0u;
     if (lowered != calls) return "band " + b.name + ": " + std::to_string(lowered) + " lowered blocks, " + std::to_string(calls) + " calls";
   }
   for (const Band& b : pp.bands)
@@ -745,9 +800,17 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       const Band& band = pp.bands[a.band];
       if (band.graphTrack == kNone) return "a lowered modulation wire on a band without a graph track";
       const graph::Patch& tp = *g.tracks[band.graphTrack].patch;
-      const auto call = tp.indexOf(b.call);
+      std::string pin = b.inputs[e.toPort].name;
+      graph::NodeId callId = b.call;
+      if (b.rack) {  // T4.8: "<param>@<device>" is that device's call inside the rack (no "@": the rack's own macro)
+        const size_t at = pin.rfind('@');
+        if (at == std::string::npos) continue;  // a macro: the rack's own param, read by its mappings
+        callId = graph::NodeId{doc::nodeIdFor(doc::NodeRole::Device, static_cast<uint32_t>(std::stoul(pin.substr(at + 1))), 0)};
+        pin.resize(at);
+      }
+      const auto call = tp.indexOf(callId);
       if (!call) return "a modulation wire into a block without a call";
-      const auto in = tp.findInput(*call, b.inputs[e.toPort].name);
+      const auto in = tp.findInput(*call, pin);
       if (!in) return "a modulation wire into a param the call does not have";
       if (tp.adjacency().driver[tp.flatInput(*call, *in)] == graph::kNone)
         return "a modulation wire into a param pin the track patch leaves unconnected";
