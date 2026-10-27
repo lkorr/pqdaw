@@ -474,8 +474,7 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
 }
 
 CircuitEditor::~CircuitEditor() {
-  *alive_ = false;
-  hideNodeTooltip();
+  *alive_ = false;  // (a node tooltip still shown goes with the next hover change or press: the layer may be going too)
   if (doc_) {
     doc_->setLayoutBase(nullptr);
     doc_->onCommitted = nullptr;
