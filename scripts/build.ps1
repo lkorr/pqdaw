@@ -22,11 +22,12 @@
   ./scripts/build.ps1 -Full                  # default + slow tiers (everything except perf)
   ./scripts/build.ps1 -Preset release -Perf  # only the opt-in wall-clock perf checks (ctest label `perf`)
   ./scripts/build.ps1 -Target pq_tests_core -TestRegex core
+  ./scripts/build.ps1 -Full -Target pq_tests_document,pq_tests_views -TestRegex 'pq_tests_(document|views)'   # affected tests only
   ./scripts/build.ps1 -NoTests
 #>
 param(
   [ValidateSet('dev', 'release', 'ship')] [string] $Preset = 'dev',
-  [string] $Target = '',
+  [string[]] $Target = @(),   # one or more targets: -Target a,b (from Git Bash: -Target a,b as one comma list)
   [string] $TestRegex = '',
   [switch] $NoTests,
   [switch] $Full,
@@ -101,7 +102,8 @@ try {
   }
 
   $buildArgs = @('--build', '--preset', $Preset)
-  if ($Target) { $buildArgs += @('--target', $Target) }
+  $targets = @($Target | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+  if ($targets.Count -gt 0) { $buildArgs += @('--target') + $targets }
   $sw = [Diagnostics.Stopwatch]::StartNew()
   cmake @buildArgs
   $buildExit = $LASTEXITCODE
