@@ -65,6 +65,7 @@ struct Node {
   bool lowered = true;         // Device: its call is in the track patch (active, in the library, of its kind)
   bool active = true;          // Device: its activator
   bool missing = false;        // Device: its patch is not in the library
+  bool edited = false;         // Device: a user device (its own patch text, T4.4-fix1); the title says "(edited)"
   bool instrument = false;     // Device: an instrument
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
   graph::NodeId call;          // Device (lowered): the call node's NodeId in the track patch

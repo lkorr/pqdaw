@@ -12,7 +12,7 @@
 //   zoom       Ctrl+wheel / = / − / F (fit), the wheel pans, middle or Alt drag pans (the canvas's). Semantic zoom:
 //              zoomed out, boxes and the bands' names; in, symbols, then titles and pin labels; double-click a band's
 //              empty space (or its name) to zoom onto that band, Esc / F back to the whole project; double-click a
-//              device to open it to its atoms in place (the stock patch, read-only here: editing a device's patch is
+//              device to open it to its atoms in place (what it plays, read-only here: editing a device's patch is
 //              the circuit editor's, "Open in Circuit View" in its menu) and again on its frame to close it.
 //   edits      (each one undo step, shown at once in the arrangement, mixer and Device view: one document)
 //                wire        drag a device's export pin (right side) onto a device → its params (a menu), or onto a
@@ -221,9 +221,10 @@ public:
   // The label of model node n (its ns per sample, smoothed), or < 0 for none.
   float deviceCost(uint32_t node) const noexcept { return node < costs_.size() ? costs_[node] : -1.0f; }
   void pollCosts();
-  // "Open in Circuit View" on a device block (the circuit editor on the project's device, SPEC §15 2026-10-26; the app
-  // or the circuit editor's installer sets it; null: the item is disabled).
-  std::function<void(doc::DeviceId)> onOpenDevice;
+  // "Open in Circuit View" on a device block: the project-device circuit editor (T4.4-fix1,
+  // circuit::openDeviceInCircuitView; SPEC §15 2026-10-26): its edits are document commands, editing a stock device
+  // forks it into a user device. False: no device library, or the device is gone.
+  bool openInCircuitView(doc::DeviceId device);
   // Set by installProjectPatch: hides the other views of the track area (the mixer) when this one is shown.
   std::function<void()> hideOthers;
   // T4.8 hook: racks are devices whose block will open to their chains; until then a rack is a block like any device.
@@ -284,7 +285,9 @@ private:
   Ticks songEnd_ = 0;
   std::vector<doc::DeviceId> expanded_;
   std::vector<doc::TrackId> expandedMixers_;
-  std::vector<std::pair<std::string, std::shared_ptr<const circuit::CircuitScene>>> innerCache_;  // by device patch
+  // Expanded devices' scenes by the patch they play (a user device's resolved root name: one per text); bounded.
+  static constexpr size_t kInnerCacheMax = 32;
+  std::vector<std::pair<std::string, std::shared_ptr<const circuit::CircuitScene>>> innerCache_;
   bool valueGesture_ = false;
   Stats stats_;
   Readout readout_;

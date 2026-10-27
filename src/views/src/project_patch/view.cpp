@@ -15,7 +15,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
-#include "pq/views/circuit/circuit_viewer.h"
+#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -398,6 +398,7 @@ void ProjectPatchView::rebuild() {
   const doc::DeviceLibrary* devlib = ctx_.deviceLibrary();
   doc::LowerOptions lo;
   lo.library = devlib != nullptr ? &devlib->library() : &emptyLibrary();
+  lo.devices = devlib;  // user devices (T4.4-fix1) as the link resolves them
   if (!lowered_ || built_ != snap || loweredWith_ != devlib) {  // a nudge or an opened device: the same graph
     auto low = doc::lower(*snap, lo, lowered_.get());
     if (!low) {
@@ -420,14 +421,19 @@ void ProjectPatchView::rebuild() {
   std::erase_if(expanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   for (const doc::DeviceId d : expanded_) {
     const doc::DeviceLoc loc = doc::findDevice(*snap, d);
-    const graph::Patch* callee = lo.library->find(loc.device->patch);
+    // What the device plays: the stock patch, or a user device's resolved root (its name carries its graph hash, so
+    // an edited text gets its own cache entry).
+    std::shared_ptr<const doc::ResolvedDevice> hold;
+    const graph::Patch* callee = devlib != nullptr ? devlib->patchOf(*loc.device, hold) : nullptr;
     if (callee == nullptr) continue;
+    const std::string key = hold && hold->graph ? hold->graph->root : loc.device->patch;
     std::shared_ptr<const circuit::CircuitScene> sc;
     for (const auto& [name, s] : innerCache_)
-      if (name == loc.device->patch) sc = s;
+      if (name == key) sc = s;
     if (!sc) {
+      if (innerCache_.size() >= kInnerCacheMax) innerCache_.erase(innerCache_.begin());  // oldest first
       sc = circuit::buildScene(*callee);
-      innerCache_.emplace_back(loc.device->patch, sc);
+      innerCache_.emplace_back(key, sc);
     }
     sizes.push_back({d, sc->x1 - sc->x0, sc->y1 - sc->y0});
     inner.push_back({d, sc});
@@ -665,6 +671,10 @@ bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, u
   return apply(doc::ops::addDevice(*ctx_.doc(), ctx_.store().ids(), track, patch, kind, index), "Add Device");
 }
 
+bool ProjectPatchView::openInCircuitView(doc::DeviceId device) {
+  return circuit::openDeviceInCircuitView(*canvas_, ctx_, device) != nullptr;
+}
+
 bool ProjectPatchView::moveDevice(doc::DeviceId device, doc::TrackId toTrack, uint32_t index) {
   return apply(doc::ops::moveDevice(*ctx_.doc(), device, toTrack, index), "Move Device");
 }
@@ -835,11 +845,15 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
     ui::MenuItem open = ui::MenuItem::item(deviceExpanded(d) ? "Close Atoms" : "Open to Atoms", [this, d] { setDeviceExpanded(d, !deviceExpanded(d)); });
     open.enabled = !n.missing;
     items.push_back(std::move(open));
-    ui::MenuItem circuit = ui::MenuItem::item("Open in Circuit View", [this, d] {
-      if (onOpenDevice) onOpenDevice(d);
-    });
-    circuit.enabled = static_cast<bool>(onOpenDevice) && !n.missing;
+    // The project-device circuit editor (T4.4-fix1): edits go into the document; editing a stock device forks it.
+    ui::MenuItem circuit = ui::MenuItem::item("Open in Circuit View", [this, d] { (void)openInCircuitView(d); });
+    circuit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing;
     items.push_back(std::move(circuit));
+    if (n.edited)
+      items.push_back(ui::MenuItem::item("Revert to Stock", [this, d] {
+        const doc::DeviceId one[1] = {d};
+        (void)apply(doc::ops::revertDevicesToStock(*ctx_.doc(), one), "Revert to Stock");
+      }));
     ui::MenuItem reset = ui::MenuItem::item("Reset Position", [this, d] {
       auto& nudges = ctx_.store().view().patchNudges;
       if (nudges.erase(d.value) != 0) {
@@ -915,7 +929,8 @@ ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string&
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
   const doc::Project& p = *ctx_.doc();
   const doc::DeviceLoc loc = doc::findDevice(p, n.device);
-  const doc::DeviceInfo* info = lib != nullptr && loc.device != nullptr ? lib->catalog().find(loc.device->patch) : nullptr;
+  std::shared_ptr<const doc::ResolvedDevice> hold;  // a user device's params are its own text's (T4.4-fix1)
+  const doc::DeviceInfo* info = lib != nullptr && loc.device != nullptr ? lib->infoOf(*loc.device, hold) : nullptr;
   if (info == nullptr) {
     ctx_.setStatus("Wire: no parameters known for " + n.title);
     return nullptr;
@@ -1099,25 +1114,6 @@ project_patch::ProjectPatchView& installProjectPatch(Shell& shell) {
     if (mixer != nullptr && mixer->shown()) mixer->setShown(false);
   };
   ctx.setViewAction("view.togglePatch", [&view] { view.toggle(); });
-  // Open in Circuit View: until the project-device circuit editor (SPEC §15 2026-10-26) sets its own hook, the device's
-  // stock patch in the read-only circuit viewer (T4.2).
-  view.onOpenDevice = [&view, &ctx](doc::DeviceId id) {
-    const doc::DeviceLibrary* lib = ctx.deviceLibrary();
-    const doc::DeviceLoc loc = doc::findDevice(*ctx.doc(), id);
-    if (lib == nullptr || loc.device == nullptr) return;
-    const std::string path = lib->pathOf(loc.device->patch);
-    if (path.empty()) {
-      ctx.setStatus("Open in Circuit View: no file for " + loc.device->patch);
-      return;
-    }
-    auto document = circuit::loadPatchDocument(path);
-    if (!document) {
-      ctx.setStatus("Open in Circuit View: " + document.error().message);
-      return;
-    }
-    if (circuit::openCircuitViewer(view.canvas(), *document, loc.device->patch) == nullptr)
-      ctx.setStatus("Open in Circuit View: " + loc.device->patch + " not found in " + path);
-  };
   if (mixer != nullptr)  // the mixer view takes the track area from the patch view too
     ctx.setViewAction("view.toggleMixer", [&view, mixer] {
       if (view.shown()) view.setShown(false, false);

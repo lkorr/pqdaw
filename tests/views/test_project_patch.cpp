@@ -19,8 +19,9 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
-#include "pq/views/circuit/circuit_viewer.h"
+#include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/device_chain/device_chain.h"
+#include "pq/views/device_chain/wiring.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -106,6 +107,11 @@ struct Ui {
     d.tree().layoutNow();
   }
   size_t history() const { return ctx.store().history().cursor(); }
+  circuit::CircuitEditor* editor() const {
+    for (size_t i = 0; i < shell->overlay().childCount(); ++i)
+      if (auto* e = dynamic_cast<circuit::CircuitEditor*>(&shell->overlay().child(i))) return e;
+    return nullptr;
+  }
   const doc::Track& track(std::string_view name) const { return *named(*ctx.doc(), name); }
   const ProjectPatch& pp() const { return view().patch(); }
   uint32_t deviceNode(doc::DeviceId id) const {
@@ -142,6 +148,33 @@ struct Ui {
         return;
       }
     FAIL("no menu item " << std::string(label));
+  }
+  static Vec2 mid(const IRect& r) { return {r.x + r.w * 0.5f, r.y + r.h * 0.5f}; }
+  // The Ableton view (the mixer view: Ctrl+Alt+M hides the patch view) and one track's strip in it.
+  MixerStrip& mixerStrip(std::string_view name) {
+    MixerView* m = findMixer(*shell);
+    REQUIRE(m != nullptr);
+    if (!m->shown()) REQUIRE(d.press("Ctrl+Alt+M") == KeyResult::Action);
+    d.tree().layoutNow();
+    d.step();
+    CHECK_FALSE(view().shown());
+    MixerStrip* s = m->strip(named(*ctx.doc(), name)->id);
+    REQUIRE(s != nullptr);
+    return *s;
+  }
+  // The Device view of a track (the arrangement with its detail area) and the cables T4.7 draws there.
+  const CableLayer::Cable* deviceViewCable(doc::TrackId t, doc::WireId w) {
+    view().setShown(false, false);
+    ctx.setSelectedTrack(t);
+    ctx.setDetailVisible(true);
+    ctx.setDetailMode(DetailMode::Device);
+    d.tree().layoutNow();
+    d.step();
+    CableLayer* l = findCableLayer(*shell);
+    REQUIRE(l != nullptr);
+    for (const CableLayer::Cable& c : l->cables())
+      if (c.wire == w) return &c;
+    return nullptr;
   }
   // Zoomed so blocks and pins are big enough to hit reliably.
   void zoomTo(std::string_view track) {
@@ -427,8 +460,12 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     for (const doc::DeviceParamInfo& pi : info->params)
       if ((pi.label.empty() ? pi.name : pi.label) == first) param = pi.name;
     CHECK_FALSE(doc::ops::wiresInto(*u.ctx.doc(), eq, param).empty());
-    // The Device view (Ableton view) shows the wire's cable on Pad's chain: the target knob is modulated.
     CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+    // The Device view (Ableton view) draws the new wire's cable into Pad's EQ Eight (docked on its knob, or on the
+    // panel's frame when that knob is on another band's page).
+    const doc::WireId made = doc::ops::wiresInto(*u.ctx.doc(), eq, param).at(0);
+    const CableLayer::Cable* cable = u.deviceViewCable(pad, made);
+    CHECK(cable != nullptr);
     REQUIRE(u.ctx.undo());
     CHECK(u.ctx.doc() == start);
   }
@@ -439,7 +476,7 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     CHECK(u.history() == h0 + 1);
     CHECK(u.track("Mod").mixer.output.kind == doc::OutputKind::Track);
     CHECK(u.track("Mod").mixer.output.track == grp);
-    // The model now draws the route into the group's Σ, and the arrangement header's output chooser shows the group.
+    // The model now draws the route into the group's Σ.
     bool routed = false;
     for (const Edge& e : u.pp().edges)
       routed = routed || (e.kind == EdgeKind::Route && u.pp().nodes[e.from].band == u.pp().bandOf(mod) &&
@@ -450,6 +487,20 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     bool on = false;
     for (const doc::Send& s : u.track("Mod").mixer.sends) on = on || (s.target == space && s.levelDb == 0.0f);
     CHECK(on);
+    // The mixer (Ableton view) shows both: Mod's output menu has Group checked, its send to Space is at 0 dB.
+    MixerStrip& ms = u.mixerStrip("Mod");
+    REQUIRE(ms.output() != nullptr);
+    u.d.click(u.mid(ms.output()->rect()));
+    Menu* om = u.openMenu();
+    REQUIRE(om != nullptr);
+    bool groupChecked = false;
+    for (const MenuItem& it : om->items()) groupChecked = groupChecked || (it.label == "Group" && it.checked);
+    CHECK(groupChecked);
+    u.d.press("Escape");
+    bool sendShown = false;
+    for (size_t i = 0; i < ms.sendCount(); ++i)
+      if (ms.sendTarget(i) == space) sendShown = ms.send(i)->valueText() == formatVolume(0.0);
+    CHECK(sendShown);
     REQUIRE(u.ctx.undo());
     REQUIRE(u.ctx.undo());
     CHECK(u.ctx.doc() == start);
@@ -521,6 +572,11 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     CHECK(u.track("Keys").mixer.volumeDb < vol);
     CHECK(st.lastChanges().paramOnly());
     CHECK(u.view().stats().rebuilds == rebuilds);  // param changes repaint; no lowering, no new scene
+    // The mixer (Ableton view) shows all three.
+    MixerStrip& ks = u.mixerStrip("Keys");
+    CHECK_FALSE(ks.activator()->on());  // muted
+    CHECK(ks.solo()->on());
+    CHECK(ks.volume()->valueText() == formatVolume(u.track("Keys").mixer.volumeDb));
     for (int k = 0; k < 3; ++k) REQUIRE(u.ctx.undo());
     CHECK(u.ctx.doc() == start);
   }
@@ -553,6 +609,51 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
   }
 }
 
+TEST_CASE("project patch: a device edited in the circuit editor (a user device) — drawn as it plays, one model") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  REQUIRE(v.openInCircuitView(sat));
+  circuit::CircuitEditor* ed = u.editor();
+  REQUIRE(ed != nullptr);
+  // One edit in the text pane forks the device (SPEC §15 2026-10-26): one undo step; the patch view follows.
+  const size_t h0 = u.history();
+  const std::string& text = ed->document().text();
+  const size_t at = text.find("param output     = 0dB");
+  REQUIRE(at != std::string::npos);
+  ed->document().replaceText(static_cast<uint32_t>(at + 19), 1, "1", true);  // 0dB -> 1dB
+  ed->checkNow();
+  REQUIRE(doc::findDevice(*u.ctx.doc(), sat).device->edited());
+  CHECK(u.history() == h0 + 1);
+  ed->closeSoon();
+  u.d.step();
+  const uint32_t n = v.patch().nodeOf(sat);
+  REQUIRE(n != kNone);
+  CHECK(v.patch().nodes[n].edited);
+  CHECK(v.patch().nodes[n].lowered);
+  CHECK_FALSE(v.patch().nodes[n].missing);
+  CHECK(v.patch().nodes[n].title.find("(edited)") != std::string::npos);
+  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
+  // Opened to its atoms: the user device's own patch (as resolved for the lowering).
+  const size_t nodes = v.scene().scene->nodes.size();
+  v.setDeviceExpanded(sat, true);
+  u.d.advance(0.5);
+  CHECK(v.scene().scene->nodes.size() > nodes + 10);
+  v.setDeviceExpanded(sat, false);
+  u.d.advance(0.5);
+  // Revert to Stock from its block's menu: one step, back to the stock device.
+  REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  u.choose(*m, "Revert to Stock");
+  CHECK(u.history() == h0 + 2);
+  CHECK_FALSE(doc::findDevice(*u.ctx.doc(), sat).device->edited());
+  u.d.step();
+  CHECK_FALSE(v.patch().nodes[v.patch().nodeOf(sat)].edited);
+  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
+}
+
 TEST_CASE("project patch: semantic zoom — the whole project, one band, a device's atoms") {
   Ui u;
   u.show();
@@ -580,17 +681,18 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   v.setDeviceExpanded(sat, false);
   u.d.advance(0.5);
   CHECK(v.scene().scene->nodes.size() == nodes);
-  // Its menu's Open in Circuit View shows the device's patch in the circuit viewer (read-only until the project-device
-  // editor sets the hook).
+  // Its menu's Open in Circuit View opens the project-device circuit editor on it (T4.4-fix1; the next case edits).
   REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
   Menu* m = u.openMenu();
   REQUIRE(m != nullptr);
   u.choose(*m, "Open in Circuit View");
-  bool viewer = false;
-  for (size_t i = 0; i < u.shell->overlay().childCount(); ++i)
-    viewer = viewer || dynamic_cast<circuit::CircuitViewer*>(&u.shell->overlay().child(i)) != nullptr;
-  CHECK(viewer);
-  u.d.press("Escape");
+  circuit::CircuitEditor* ed = u.editor();
+  REQUIRE(ed != nullptr);
+  CHECK(ed->host() != nullptr);  // on the project's device (no Save, no Play)
+  CHECK(ed->shownPatch() == "saturator");
+  ed->closeSoon();
+  u.d.step();
+  CHECK(u.editor() == nullptr);
   // Double-click on a band's empty space zooms onto it; F back to the project.
   v.fitAll(false);
   u.d.tree().layoutNow();

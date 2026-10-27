@@ -81,6 +81,11 @@ struct Builder {
   std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>> paramsOf;
 
   const graph::PatchLibrary* library() const noexcept { return low.graph.library; }
+  const doc::ResolvedDevice* userDevice(doc::DeviceId id) const noexcept {
+    for (const auto& r : low.userDevices)
+      if (r && r->device == id) return r.get();
+    return nullptr;
+  }
 
   void prepare() {
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { trackById.emplace(t.id.value, &t); });
@@ -137,13 +142,21 @@ struct Builder {
     n.device = d.id;
     n.active = d.active;
     n.instrument = d.kind == doc::DeviceKind::Instrument;
-    const doc::DeviceInfo* info = catalog ? catalog->find(d.patch) : nullptr;
+    // A user device (T4.4-fix1: the instance's own patch text) plays its resolution's renamed root: its callee and its
+    // description come from the resolution the lowering made; a stock device's from the library and the catalog.
+    const doc::ResolvedDevice* user = d.edited() ? userDevice(d.id) : nullptr;
+    const doc::DeviceInfo* info = user != nullptr && user->graph ? &user->info : catalog ? catalog->find(d.patch) : nullptr;
+    n.edited = d.edited();
     n.title = info ? info->name : d.patch;
-    const graph::Patch* callee = library() ? library()->find(d.patch) : nullptr;
-    n.missing = callee == nullptr;
+    if (n.edited) n.title += " (edited)";
     const graph::NodeIndex call = callOf(tp, d.id);
     n.lowered = call != graph::kNone;
     if (n.lowered) n.call = tp->node(call).id;
+    const graph::Patch* callee = nullptr;
+    if (n.lowered && library() != nullptr) callee = library()->find(tp->subcircuit(call).patch);  // what the graph calls
+    else if (user != nullptr) callee = user->root();
+    else if (!d.edited() && library() != nullptr) callee = library()->find(d.patch);
+    n.missing = callee == nullptr;
     for (const ExpandedSize& e : opt.expanded)
       if (e.device == d.id && callee != nullptr) n.expanded = true;
     graph::SubcircuitRef sig;
