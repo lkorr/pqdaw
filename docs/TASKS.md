@@ -530,7 +530,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Export jacks on top of device panels; drag from a jack to any parameter anywhere (auto-scroll across tracks); bezier cables over the UI coloured by rate, show/hide/fade; modulated knobs show a live range ring; modulation wires in the document (ProjectWire) lowered through the per-track units (merging units per Q84 rules).
   - Accept: wiring an LFO export on track 1 into a filter cutoff on track 3 is audible next compile, one undo step; ring shows the live range; cables follow scrolling at frame rate. Wires add no delay; a wire that closes a delay-free cycle gets an automatic z⁻¹ (1 sample), drawn on the wire (SPEC §15 2026-10-24).
 
-- [~] **T4.8 Racks + macros** *(worker CE, branch task/T4.8-racks)* (`document`, `views`, `stdlib`)
+- [x] **T4.8 Racks + macros** *(merged 2026-10-26; partial items in Q?-T4.8-a: Instrument Rack zones are per-voice gains, gated chains don't sleep)* (`document`, `views`, `stdlib`)
   - Audio Effect Rack and Instrument Rack as subcircuits: parallel chains with chain mixer (volume/pan/mute/solo), chain-select zones with fades, Instrument Rack pitch zones in Hz or the track's tuning and velocity zones; 16 macros (targets with min/max/curve; macros are signals, so modulatable); macro variations (store/recall/randomise with exclusions); nesting; openable in the circuit editor.
   - Accept: zone crossfades click-free; a macro driving 8 targets costs one param write; rack ⇄ circuit view edits stay in sync; goldens `audio-rack`, `instrument-rack`.
 
