@@ -286,7 +286,7 @@ TEST_CASE("rack view: a macro drag is one step of Param changes; a chain volume 
 }
 
 TEST_CASE("render: audio-rack and instrument-rack match the golden images") {
-  for (const char* scene : {"audio-rack", "instrument-rack"}) {
+  for (const std::string scene : {"audio-rack", "instrument-rack"}) {
     CAPTURE(scene);
     uint32_t w = 0, h = 0;
     viewSceneDefaultSize(scene, w, h);

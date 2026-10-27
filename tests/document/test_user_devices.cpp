@@ -327,6 +327,77 @@ TEST_CASE("user devices: lowering plays the device's own patch; only its track c
   CHECK(l5->patches[ia]->patch == l0->patches[ia]->patch);
 }
 
+// T4.8 x T4.4-fix1: a device inside a rack forks, plays its own text and saves like a device of the track's chain;
+// a rack itself has no text.
+TEST_CASE("user devices: a device inside a rack forks, lowers (the track patch and the rack's subcircuit) and saves") {
+  auto lib = freshLibrary();
+  Two t;
+  auto run = [&](Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(t.store.dispatch(e->command).ok());
+    return *e;
+  };
+  const DeviceId irack = run(ops::groupDevices(*t.store.current(), t.store.ids(), std::vector<DeviceId>{t.synA})).devices.at(0);
+  const DeviceId arack = run(ops::groupDevices(*t.store.current(), t.store.ids(), std::vector<DeviceId>{t.sat})).devices.at(0);
+  REQUIRE(t.dev(irack).isRack());
+  REQUIRE(findDevice(*t.store.current(), t.synA).chain != nullptr);  // nested
+  CHECK(ops::editDevicePatch(*t.store.current(), irack, louderSynth(*lib)).error().code == pq::ErrorCode::InvalidArgument);
+  CHECK_FALSE(t.store.dispatch(SetDevicePatch{arack, std::make_shared<UserPatch>(UserPatch{lib->stockText("saturator"), {}})}).ok());
+
+  const size_t steps = t.store.history().cursor();
+  run(ops::editDevicePatch(*t.store.current(), t.synA, louderSynth(*lib)));
+  CHECK(t.store.history().cursor() == steps + 1);
+  REQUIRE(t.dev(t.synA).edited());
+  CHECK_FALSE(t.dev(t.synB).edited());
+  run(ops::editDevicePatch(*t.store.current(), t.sat, "// mine\n" + lib->stockText("saturator")));
+
+  LowerOptions lo;
+  lo.library = &lib->library();
+  lo.devices = lib.get();
+  uint32_t slot = 0;
+  lo.slotOf = [&](TrackId) { return slot++; };
+  auto l = lower(*t.store.current(), lo);
+  REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
+  CHECK(l->missingDevices.empty());
+  CHECK(l->deviceErrors.empty());
+  REQUIRE(l->userDevices.size() == 2);
+  const pq::graph::Patch& pa = l->patches[graphIndex(*l, t.a)]->patch;
+  const auto call = pa.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, t.synA.value, 0)});
+  REQUIRE(call.has_value());  // inline in the track patch, with the device's own node id
+  const std::string root = lib->resolve(t.dev(t.synA))->graph->root;
+  CHECK(pa.subcircuit(*call).patch == root);
+  CHECK(paramOf(*l, "dev" + std::to_string(t.synA.value) + ":level")->value == doctest::Approx(0.3f));
+  CHECK(lowerParams(*t.store.current(), false, *lib).size() == l->params.size());
+
+  // The rack's subcircuit (its circuit view) calls the same user patch; without a device library it is left out.
+  auto sub = rackSubcircuit(*t.store.current(), irack, lib->library(), lib.get());
+  REQUIRE_MESSAGE(sub.ok(), (sub.ok() ? std::string() : sub.error().message));
+  const auto subCall = sub->indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, t.synA.value, 0)});
+  REQUIRE(subCall.has_value());
+  CHECK(sub->subcircuit(*subCall).patch == root);
+  auto bare = rackSubcircuit(*t.store.current(), irack, lib->library());
+  REQUIRE(bare.ok());
+  CHECK_FALSE(bare->indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, t.synA.value, 0)}).has_value());
+
+  // The file keeps the nested texts.
+  Result<std::string> saved = serializeProject(*t.store.current(), t.store.view());
+  REQUIRE(saved.ok());
+  Result<LoadedProject> back = parseProject(*saved);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == *t.store.current());
+  CHECK(findDevice(*back->project, t.synA).device->source->text == louderSynth(*lib));
+
+  // Revert to Stock inside the rack: one step, the stock call again.
+  run(ops::revertDevicesToStock(*t.store.current(), std::vector<DeviceId>{t.synA, t.sat}));
+  CHECK_FALSE(t.dev(t.synA).edited());
+  CHECK_FALSE(t.dev(t.sat).edited());
+  auto l2 = lower(*t.store.current(), lo, &*l);
+  REQUIRE(l2.ok());
+  CHECK((l2->userLibrary == nullptr));
+  const pq::graph::Patch& pa2 = l2->patches[graphIndex(*l2, t.a)]->patch;
+  CHECK(pa2.subcircuit(*pa2.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, t.synA.value, 0)})).patch == "BasicSynth");
+}
+
 TEST_CASE("user devices: a wire into a param an edit removed is Invalid (kept, not lowered) until the param is back") {
   auto lib = freshLibrary();
   Two t;

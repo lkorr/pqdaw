@@ -172,6 +172,18 @@ bool CircuitViewer::show(std::string_view patchName) {
   return true;
 }
 
+bool CircuitViewer::replaceDocument(std::shared_ptr<const PatchDocument> doc) {
+  if (!doc || doc->parsed.file.patches.empty()) return false;
+  const std::string name = shown_ ? shown_->name() : std::string();
+  doc_ = std::move(doc);
+  backStack_.clear();
+  const graph::Patch* p = name.empty() ? nullptr : doc_->find(name);
+  const bool same = p != nullptr;
+  if (!p) p = &doc_->parsed.file.patches.front();
+  present(*p, !same);
+  return true;
+}
+
 bool CircuitViewer::openNode(uint32_t node) {
   if (!shown_ || node >= laidOut_.nodeCount() || laidOut_.node(node).kind != graph::NodeKind::Subcircuit) return false;
   const graph::Patch* callee = doc_->find(laidOut_.subcircuit(node).patch);

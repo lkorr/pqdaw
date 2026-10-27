@@ -69,7 +69,8 @@ public:
   bool revertSelectedToStock();
   // T4.8: Ctrl+G — the selected devices (of one list) into a new rack (pq/document/edit_ops.h groupDevices).
   bool groupSelected();
-  // T4.8: opens a rack's lowered subcircuit in the circuit viewer (read-only; rack_frame.cpp, Q?-T4.8-a).
+  // T4.8: opens a rack's lowered subcircuit in the circuit viewer (read-only; rebuilt while open after a structural
+  // or meta edit of the rack, closed when the rack is removed; rack_frame.cpp, Q?-T4.8-a).
   bool openRackCircuit(doc::DeviceId rack);
 
   // ---- T4.8: racks (rack_frame.cpp) --------------------------------------------------------------------------------

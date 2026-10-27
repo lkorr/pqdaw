@@ -18,7 +18,9 @@
 #include "pq/ui/image.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
+#include "pq/document/lower.h"
 #include "pq/views/circuit/circuit_editor.h"
+#include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/devices/device_panel.h"
@@ -219,6 +221,126 @@ TEST_CASE("device circuit view: a double-click on the device's title opens it") 
   ed->closeSoon();
   u.d.advance(0.1);
   CHECK(u.editor() == nullptr);
+}
+
+// T4.8 x T4.4-fix1: a device inside a rack opens in the circuit view like one of the track's chain (its frame inside
+// the rack frame: menu and title double-click), its first edit forks it in place (one step) and its nested panel is
+// rebuilt with the marker; the rack's own menu opens the rack's lowered subcircuit and has no Revert to Stock.
+TEST_CASE("device circuit view: a device inside a rack opens, forks in place and shows its marker") {
+  Ui u;
+  doc::DocumentStore& st = u.ctx.store();
+  auto e = doc::ops::groupDevices(*st.current(), st.ids(), std::vector<doc::DeviceId>{u.inst});
+  REQUIRE(e.ok());
+  REQUIRE(st.dispatch(e->command).ok());
+  const doc::DeviceId rack = e->devices.at(0);
+  u.d.step();
+  u.d.tree().layoutNow();
+  REQUIRE(doc::findDevice(*u.ctx.doc(), u.inst).chain != nullptr);
+  devices::DevicePanel* nested = u.view().panelOf(u.inst);
+  REQUIRE(nested != nullptr);  // the rack frame shows its first chain: the instrument's panel
+  REQUIRE(nested->onTitleDoubleClick);
+  CHECK_FALSE(nested->edited());
+
+  // The rack's context menu: its circuit (read-only), no Revert to Stock.
+  Widget* rackFrame = u.view().frameOf(rack);
+  REQUIRE(rackFrame != nullptr);
+  const IRect rr = rackFrame->rect();
+  u.d.click({static_cast<float>(rr.x + 4), static_cast<float>(rr.y + rr.h / 2)}, mod::kNone, PointerButton::Right);
+  Menu* menu = u.openMenu();
+  REQUIRE(menu != nullptr);
+  CHECK(u.itemIndex(*menu, "Open in Circuit View") >= 0);
+  CHECK(u.itemIndex(*menu, "Revert to Stock") < 0);
+  u.shell->overlay().closeAll();
+  u.d.step();
+
+  // The nested device's menu: Open in Circuit View opens the device's own patch.
+  Widget* frame = u.view().frameOf(u.inst);
+  REQUIRE(frame != nullptr);
+  u.d.click(mid(frame->rect()), mod::kNone, PointerButton::Right);
+  menu = u.openMenu();
+  REQUIRE(menu != nullptr);
+  const int32_t open = u.itemIndex(*menu, "Open in Circuit View");
+  REQUIRE(open >= 0);
+  REQUIRE(u.itemIndex(*menu, "Revert to Stock") >= 0);
+  menu->choose(open);
+  u.d.step();
+  circuit::CircuitEditor* ed = u.editor();
+  REQUIRE(ed != nullptr);
+  CHECK(ed->shownPatch() == "BasicSynth");
+  CHECK(ed->document().text() == stockText());
+
+  // The first edit forks the nested instance in place: one step, still inside its chain; the panel shows the marker.
+  const size_t h0 = u.history();
+  const uint32_t at = static_cast<uint32_t>(ed->document().text().find("param level   = 0.2") + 18);
+  u.type(*ed, at + 1, 0, "5");
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.dev(u.inst).edited());
+  CHECK(doc::findDevice(*u.ctx.doc(), u.inst).rack != nullptr);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.inst).rack->id == rack);
+  CHECK_FALSE(u.dev(u.otherInst).edited());
+  u.d.step();
+  REQUIRE(u.view().panelOf(u.inst) != nullptr);
+  CHECK(u.view().panelOf(u.inst)->edited());
+  // The rack's circuit view calls the edited copy, and can open it.
+  REQUIRE(u.view().openRackCircuit(rack));
+  u.d.step();
+  circuit::CircuitViewer* rv = nullptr;
+  for (size_t i = 0; i < u.shell->overlay().childCount() && rv == nullptr; ++i)
+    rv = dynamic_cast<circuit::CircuitViewer*>(&u.shell->overlay().child(i));
+  REQUIRE(rv != nullptr);
+  REQUIRE(rv->shownPatch() != nullptr);
+  const auto call = rv->shownPatch()->indexOf(graph::NodeId{doc::nodeIdFor(doc::NodeRole::Device, u.inst.value, 0)});
+  REQUIRE(call.has_value());
+  CHECK(rv->shownPatch()->subcircuit(*call).patch.find("BasicSynth__u") == 0);
+  // rack -> circuit view: a structural edit of the rack (a new chain with an instrument) shows in the open viewer.
+  const std::string rackPatch = rv->shownPatch()->name();
+  const uint32_t nodesBefore = rv->shownPatch()->nodeCount();
+  auto chain = doc::ops::addChainWithDevice(*st.current(), st.ids(), rack, "operator", doc::DeviceKind::Instrument);
+  REQUIRE(chain.ok());
+  REQUIRE(st.dispatch(chain->command).ok());
+  u.d.step();
+  REQUIRE(rv->shownPatch() != nullptr);
+  CHECK(rv->shownPatch()->name() == rackPatch);
+  CHECK(rv->shownPatch()->nodeCount() > nodesBefore);
+  const doc::DeviceId op = doc::findDevice(*u.ctx.doc(), rack).device->rack->chains.at(1)->devices.at(0)->id;
+  CHECK(rv->shownPatch()->indexOf(graph::NodeId{doc::nodeIdFor(doc::NodeRole::Device, op.value, 0)}).has_value());
+  // A param-only edit (a macro turn) does not rebuild it.
+  const graph::Patch* shownNow = rv->shownPatch();
+  REQUIRE(st.dispatch(doc::ops::setMacroValue(*st.current(), rack, 0, 64.0)->command).ok());
+  CHECK(rv->shownPatch() == shownNow);
+  // The user patch opens from the rack's view (its renamed patches come with the document).
+  const auto call2 = rv->shownPatch()->indexOf(graph::NodeId{doc::nodeIdFor(doc::NodeRole::Device, u.inst.value, 0)});
+  REQUIRE(call2.has_value());
+  CHECK(rv->openNode(*call2));
+  REQUIRE(st.undo());  // the macro turn
+  REQUIRE(st.undo());  // the new chain
+  CHECK(doc::findDevice(*u.ctx.doc(), rack).device->rack->chains.size() == 1);
+  u.d.step();
+  u.shell->overlay().close(*rv);
+  u.d.step();
+  // Undo: the stock reference; the editor and the panel follow.
+  REQUIRE(ed->undo());
+  CHECK_FALSE(u.dev(u.inst).edited());
+  CHECK(ed->document().text() == stockText());
+  u.d.step();
+  REQUIRE(u.view().panelOf(u.inst) != nullptr);
+  CHECK_FALSE(u.view().panelOf(u.inst)->edited());
+  ed->closeSoon();
+  u.d.advance(0.1);
+  CHECK(u.editor() == nullptr);
+  // The rack removed: its open viewer closes.
+  REQUIRE(u.view().openRackCircuit(rack));
+  u.d.step();
+  auto viewers = [&] {
+    int n = 0;
+    for (size_t i = 0; i < u.shell->overlay().childCount(); ++i)
+      n += dynamic_cast<circuit::CircuitViewer*>(&u.shell->overlay().child(i)) != nullptr ? 1 : 0;
+    return n;
+  };
+  CHECK(viewers() == 1);
+  REQUIRE(st.dispatch(doc::ops::deleteDevices(*st.current(), std::vector<doc::DeviceId>{rack})->command).ok());
+  u.d.advance(0.1);
+  CHECK(viewers() == 0);
 }
 
 namespace {

@@ -53,6 +53,10 @@ public:
   // Opens the callee of a subcircuit node of the shown patch (pushes the shown patch). False when it is not found.
   bool openNode(uint32_t node);
   bool back();
+  // T4.8: shows `doc` instead (a rack's subcircuit rebuilt after an edit): the patch of the same name stays shown
+  // without refitting the view, else the document's first patch; the back stack is cleared. False when it is empty.
+  bool replaceDocument(std::shared_ptr<const PatchDocument> doc);
+  const PatchDocument& document() const noexcept { return *doc_; }
   const graph::Patch* shownPatch() const noexcept { return shown_; }
   const graph::Patch& laidOut() const noexcept { return laidOut_; }  // the shown patch with its drawn layout
   // Re-places and re-routes the shown patch (graph::autoLayout with the symbol geometry), in memory.

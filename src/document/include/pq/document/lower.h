@@ -309,7 +309,8 @@ std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes, 
 
 // T4.8: a rack's lowered subcircuit on its own — `patch AudioEffectRack<id> { in in; … out out }` (an Instrument Rack:
 // no input, voices inside, `done`) built by the same code that lowers it inside its track (chains, zones, chain mixers,
-// mappings; its macros and selector as params of the patch). The circuit view of a rack (read-only; Q?-T4.8-a).
+// mappings; its macros and selector as params of the patch). The circuit view of a rack (read-only, follows the
+// document while open; Q?-T4.8-a).
 // Wires into the rack are not part of it (they belong to the track patch). With `devices`, user devices inside it
 // (T4.4-fix1) call their own renamed roots as lower() does (else they are left out, as lower() bypasses them without
 // one). Errors: NotFound (no such rack).

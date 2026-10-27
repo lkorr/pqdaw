@@ -1226,34 +1226,114 @@ std::optional<doc::ZoneKind> DeviceChainView::zonesShown(doc::DeviceId rack) con
   return static_cast<doc::ZoneKind>(it->second);
 }
 
-bool DeviceChainView::openRackCircuit(doc::DeviceId rack) {
-  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  if (lib == nullptr) return false;
-  Result<graph::Patch> sub = doc::rackSubcircuit(*ctx_.doc(), rack, lib->library(), lib);
-  if (!sub) {
-    ctx_.setStatus(sub.error().message);
-    return false;
-  }
-  // A read-only document of the lowered rack (Q?-T4.8-a): the patch (its text is the printed IR), with the device
-  // files it calls as imports so a double-click opens them.
+namespace {
+
+// A read-only document of a rack's lowered subcircuit (Q?-T4.8-a): the patch (its text is the printed IR), with the
+// device files it calls as imports so a double-click opens them.
+Result<std::shared_ptr<circuit::PatchDocument>> rackDocument(const doc::Project& project, const doc::DeviceLibrary& lib,
+                                                            doc::DeviceId rack) {
+  Result<graph::Patch> sub = doc::rackSubcircuit(project, rack, lib.library(), &lib);
+  if (!sub) return std::move(sub).error();
   auto d = std::make_shared<circuit::PatchDocument>();
   d->path = sub->name() + ".pqp";
   d->source = graph::print(*sub);
-  const std::string name = sub->name();
   std::vector<std::string> files;
   for (graph::NodeIndex n = 0; n < sub->nodeCount(); ++n) {
     if (sub->node(n).kind != graph::NodeKind::Subcircuit) continue;
-    const std::string f = lib->pathOf(sub->subcircuit(n).patch);
+    const std::string f = lib.pathOf(sub->subcircuit(n).patch);
     if (!f.empty() && std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
   }
   d->parsed.file.patches.push_back(std::move(*sub));
   d->parsed.lowered = true;
+  // T4.4-fix1: a user device inside the rack calls its own renamed patches: they come from its resolution (printed
+  // as the project plays them), with the stock file's imports for what they call.
+  if (const doc::Device* rd = doc::findDevice(project, rack).device) {
+    doc::forEachDeviceIn(*rd, [&](const doc::Device& x) {
+      if (!x.source) return;
+      const auto r = lib.resolve(x);
+      if (!r || !r->graph) return;
+      auto u = std::make_shared<circuit::PatchDocument>();
+      u->path = lib.pathOf(x.patch);
+      for (const graph::Patch& pp : r->graph->file.patches) u->source += graph::print(pp);
+      u->parsed.file = r->graph->file;
+      u->parsed.lowered = true;
+      if (!u->path.empty())
+        if (auto stock = circuit::loadPatchDocument(u->path)) u->imports = (*stock)->imports;
+      d->imports.push_back(std::move(u));
+    });
+  }
   for (const std::string& f : files)
     if (auto imp = circuit::loadPatchDocument(f)) d->imports.push_back(std::move(*imp));
-  if (circuit::openCircuitViewer(*this, std::move(d), name) == nullptr) {
+  return d;
+}
+
+// Keeps an open rack viewer in step with the document (a hidden child of the viewer: it lives as long as the viewer).
+// A structural or meta edit that changes the rack's subcircuit rebuilds it (rack -> circuit view in sync); param-only
+// edits (macro turns, mixer and zone drags) change runtime values, not the drawn structure, and cost nothing here.
+// The rack removed: the viewer closes.
+class RackViewerSync final : public ui::Widget {
+public:
+  RackViewerSync(circuit::CircuitViewer& viewer, ViewContext& ctx, doc::DeviceId rack)
+      : Widget("rack-sync"), viewer_(viewer), ctx_(ctx), rack_(rack) {
+    setVisible(false);
+    sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onStore(e); });
+  }
+
+private:
+  void onStore(const doc::StoreEvent& e) {
+    const doc::DeviceLoc now = doc::findDevice(*e.after, rack_);
+    if (now.device == nullptr || !now.device->rack) {
+      // Closed on the next timer tick, not here: the edit may come from an event the viewer is dispatching.
+      if (!closeTimer_) {
+        ctx_.setStatus("The rack was removed: its circuit view closed.");
+        closeTimer_ = requestTimer(0.0);
+      }
+      return;
+    }
+    if (!e.changes.has(doc::kChangeStructural) && !e.changes.has(doc::kChangeMeta)) return;
+    const doc::DeviceLoc was = doc::findDevice(*e.before, rack_);
+    if (was.device == now.device) return;  // the rack and everything in it unchanged
+    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+    if (lib == nullptr) return;
+    auto d = rackDocument(*e.after, *lib, rack_);
+    if (!d) return;
+    const auto& oldPatches = viewer_.document().parsed.file.patches;
+    if (!oldPatches.empty() && oldPatches.front() == (*d)->parsed.file.patches.front() &&
+        viewer_.document().imports.size() == (*d)->imports.size())
+      return;  // the same subcircuit (an edit that does not change what the rack plays)
+    (void)viewer_.replaceDocument(std::move(*d));
+  }
+
+  void onTimer(uint32_t id) override {
+    if (id != closeTimer_) return;
+    closeTimer_ = 0;
+    if (ui::OverlayLayer* layer = ui::OverlayLayer::of(viewer_)) layer->close(viewer_);  // destroys this
+  }
+
+  circuit::CircuitViewer& viewer_;
+  ViewContext& ctx_;
+  doc::DeviceId rack_;
+  uint32_t closeTimer_ = 0;
+  ViewContext::Subscription sub_;
+};
+
+}  // namespace
+
+bool DeviceChainView::openRackCircuit(doc::DeviceId rack) {
+  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+  if (lib == nullptr) return false;
+  auto d = rackDocument(*ctx_.doc(), *lib, rack);
+  if (!d) {
+    ctx_.setStatus(d.error().message);
+    return false;
+  }
+  const std::string name = (*d)->parsed.file.patches.front().name();
+  circuit::CircuitViewer* v = circuit::openCircuitViewer(*this, std::move(*d), name);
+  if (v == nullptr) {
     ctx_.setStatus("The rack cannot be shown");
     return false;
   }
+  v->add<RackViewerSync>(*v, ctx_, rack);
   return true;
 }
 
