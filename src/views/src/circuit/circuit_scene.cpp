@@ -111,7 +111,9 @@ void SpatialGrid::cellRange(float wx0, float wy0, float wx1, float wy1, uint32_t
   r1 = clampRow(wy1);
 }
 
-std::vector<WireStyle> wireStyles(const graph::Patch& p) {
+namespace {
+
+std::vector<PortStyle> portStyles(const graph::Patch& p) {
   const uint32_t n = p.nodeCount();
   const graph::Adjacency adj = p.adjacency();
   std::vector<PortStyle> out(p.portCount());  // per flat output port
@@ -182,6 +184,26 @@ std::vector<WireStyle> wireStyles(const graph::Patch& p) {
     }
     if (!changed) break;
   }
+  return out;
+}
+
+}  // namespace
+
+std::vector<WireStyle> outputStyles(const graph::Patch& p) {
+  const std::vector<PortStyle> ps = portStyles(p);
+  std::vector<WireStyle> styles(ps.size());
+  for (graph::NodeIndex v = 0; v < p.nodeCount(); ++v)
+    for (uint32_t k = 0; k < p.node(v).numOutputs; ++k) {
+      const uint32_t o = p.flatOutput(v, k);
+      styles[o].boolean = ps[o].kind == graph::Kind::Bool;
+      styles[o].rate = ps[o].rate;
+      styles[o].poly = ps[o].poly;
+    }
+  return styles;
+}
+
+std::vector<WireStyle> wireStyles(const graph::Patch& p) {
+  const std::vector<PortStyle> out = portStyles(p);
   std::vector<WireStyle> styles(p.wireCount());
   for (WireIndex w = 0; w < p.wireCount(); ++w) {
     const graph::Wire& wr = p.wire(w);
@@ -255,8 +277,10 @@ void indexScene(CircuitScene& sc, const float* include) {
     }
     sc.x0 = std::min(sc.x0, ax0), sc.y0 = std::min(sc.y0, ay0), sc.x1 = std::max(sc.x1, ax1), sc.y1 = std::max(sc.y1, ay1);
   };
-  for (const SceneNode& sn : sc.nodes) grow(sn.x, sn.y - 12, sn.x + sn.w, sn.y + sn.h);
-  for (const SceneWire& sw : sc.wires) grow(sw.x0, sw.y0, sw.x1, sw.y1);
+  for (const SceneNode& sn : sc.nodes)
+    if (!sn.hidden) grow(sn.x, sn.y - 12, sn.x + sn.w, sn.y + sn.h);
+  for (const SceneWire& sw : sc.wires)
+    if (!sw.hidden) grow(sw.x0, sw.y0, sw.x1, sw.y1);
   for (const SceneLabel& lb : sc.labels)
     if (lb.role == SceneLabel::Role::Comment) grow(lb.x0, lb.y - 8, lb.x0 + 6.0f * static_cast<float>(sc.strings[lb.text].size()), lb.y + 8);
 
@@ -278,7 +302,7 @@ void indexScene(CircuitScene& sc, const float* include) {
       }
       for (uint32_t i = 0; i < count; ++i) {
         float bx0, by0, bx1, by1;
-        boxOf(i, bx0, by0, bx1, by1);
+        if (!boxOf(i, bx0, by0, bx1, by1)) continue;  // hidden
         uint32_t c0, r0, c1, r1;
         g.cellRange(bx0, by0, bx1, by1, c0, r0, c1, r1);
         for (uint32_t r = r0; r <= r1; ++r)
@@ -293,12 +317,56 @@ void indexScene(CircuitScene& sc, const float* include) {
   fill(g.nodeBegin, g.nodeItems, static_cast<uint32_t>(sc.nodes.size()), [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {
     const SceneNode& sn = sc.nodes[i];
     bx0 = sn.x, by0 = sn.y - 12, bx1 = sn.x + sn.w, by1 = sn.y + sn.h;
+    return !sn.hidden;
   });
   fill(g.segBegin, g.segItems, static_cast<uint32_t>(sc.segments.size()),
        [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {
          const Point2 a = sc.points[sc.segments[i].point], b = sc.points[sc.segments[i].point + 1];
          bx0 = std::min(a.x, b.x), by0 = std::min(a.y, b.y), bx1 = std::max(a.x, b.x), by1 = std::max(a.y, b.y);
+         return true;
        });
+}
+
+graph::AutoLayoutStats layoutSubset(graph::Patch& p, std::span<const uint8_t> keep, const graph::AutoLayoutOptions& options) {
+  const uint32_t n = p.nodeCount();
+  if (keep.size() != n) return {};
+  // The symbols as the whole patch draws them (an arm whose driver is hidden keeps its pin).
+  const std::vector<SymbolSpec> specs = describeAll(p);
+  const graph::LayoutGeometry full = geometryOf(p, specs);
+  graph::Patch sub = p;
+  std::vector<NodeIndex> drop, oldOf;
+  for (NodeIndex v = 0; v < n; ++v) {
+    if (keep[v]) oldOf.push_back(v);
+    else drop.push_back(v);
+  }
+  if (oldOf.empty()) return {};
+  sub.eraseNodes(drop);  // keeps the relative order: kept node k is oldOf[k]
+  graph::LayoutGeometry g;
+  g.shape.resize(sub.nodeCount());
+  g.inPinY.assign(sub.portCount(), 0.0f);
+  g.outPinY.assign(sub.portCount(), 0.0f);
+  for (NodeIndex k = 0; k < sub.nodeCount(); ++k) {
+    const NodeIndex v = oldOf[k];
+    g.shape[k] = full.shape[v];
+    for (uint32_t i = 0; i < sub.node(k).numInputs; ++i) g.inPinY[sub.flatInput(k, i)] = full.inPin(p, v, i);
+    for (uint32_t j = 0; j < sub.node(k).numOutputs; ++j) g.outPinY[sub.flatOutput(k, j)] = full.outPin(p, v, j);
+  }
+  const graph::AutoLayoutStats st = graph::autoLayout(sub, g, options);
+  for (NodeIndex k = 0; k < sub.nodeCount(); ++k) p.setLayout(oldOf[k], sub.layout(k));
+  // Wires by their target port (an input has one driver).
+  std::unordered_map<uint64_t, WireIndex> byTarget;
+  for (WireIndex w = 0; w < p.wireCount(); ++w) {
+    const graph::Wire& wr = p.wire(w);
+    byTarget.emplace((static_cast<uint64_t>(wr.to.node) << 16) | wr.to.port, w);
+  }
+  for (WireIndex w = 0; w < sub.wireCount(); ++w) {
+    const graph::Wire& wr = sub.wire(w);
+    const auto it = byTarget.find((static_cast<uint64_t>(oldOf[wr.to.node]) << 16) | wr.to.port);
+    if (it == byTarget.end()) continue;
+    const std::span<const Point2> via = sub.wireVia(w);
+    p.setWireVia(it->second, std::vector<Point2>(via.begin(), via.end()));
+  }
+  return st;
 }
 
 std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const SceneOptions& options, graph::Patch* laidOut) {
@@ -311,6 +379,17 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
   sc.autoPlaced = graph::completeLayout(p, geo, options.layout);
   const graph::Adjacency adj = p.adjacency();
   const uint32_t n = p.nodeCount();
+  // T4.15: inactive and hidden parts.
+  const bool anyInactive = options.inactiveNodes.size() == n && options.inactiveWires.size() == p.wireCount() &&
+                           std::find(options.inactiveNodes.begin(), options.inactiveNodes.end(), uint8_t{1}) != options.inactiveNodes.end();
+  const bool hide = anyInactive && options.hideInactive;
+  auto nodeInactive = [&](NodeIndex v) { return anyInactive && options.inactiveNodes[v] != 0; };
+  auto wireInactive = [&](WireIndex w) { return anyInactive && options.inactiveWires[w] != 0; };
+  if (hide && options.relayoutVisible) {
+    std::vector<uint8_t> keep(n);
+    for (NodeIndex v = 0; v < n; ++v) keep[v] = nodeInactive(v) ? 0 : 1;
+    (void)layoutSubset(p, keep, options.layout);
+  }
 
   auto addString = [&](std::string s) {
     sc.strings.push_back(std::move(s));
@@ -329,6 +408,9 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
     sn.h = spec.h;
     sn.spec = v;
     sn.node = v;
+    sn.inactive = nodeInactive(v);
+    sn.hidden = hide && sn.inactive;
+    sc.hiddenNodes += sn.hidden ? 1u : 0u;
     sn.firstPin = static_cast<uint32_t>(sc.pins.size());
     for (uint32_t i = 0; i < spec.inputs.size(); ++i) {
       ScenePin pin;
@@ -377,6 +459,7 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
   for (NodeIndex v = 0; v < n; ++v) {
     const SymbolSpec& spec = sc.specs[v];
     const SceneNode& sn = sc.nodes[v];
+    if (sn.hidden) continue;
     std::string title = spec.title;
     float tx0 = sn.x + 8, tx1 = sn.x + sn.w - 8, ty = sn.y + sn.h * 0.5f;
     switch (spec.symbol) {
@@ -472,20 +555,28 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
     const SceneNode& b = sc.nodes[wr.to.node];
     const uint32_t fromPin = a.firstPin + static_cast<uint32_t>(sc.specs[wr.from.node].inputs.size()) + wr.from.port;
     const uint32_t toPin = b.firstPin + wr.to.port;
+    SceneWire& sw = sc.wires[w];
+    sw.style = styles[w];
+    sw.wire = w;
+    sw.fromPin = fromPin;
+    sw.toPin = toPin;
+    sw.inactive = wireInactive(w);
+    sw.hidden = hide && sw.inactive;
+    sw.net = netOf.emplace(p.flatOutput(wr.from.node, wr.from.port), static_cast<uint32_t>(netOf.size())).first->second;
+    if (sw.hidden) {  // no points: nothing draws or hits it
+      ++sc.hiddenWires;
+      sw.firstPoint = static_cast<uint32_t>(sc.points.size());
+      sw.x0 = sw.x1 = sc.pins[fromPin].x;
+      sw.y0 = sw.y1 = sc.pins[fromPin].y;
+      continue;
+    }
     pts.clear();
     pts.push_back({sc.pins[fromPin].x, sc.pins[fromPin].y});
     for (const Point2& q : p.wireVia(w)) pts.push_back(q);
     pts.push_back({sc.pins[toPin].x, sc.pins[toPin].y});
     orthogonalise(pts);
-    SceneWire& sw = sc.wires[w];
     sw.firstPoint = static_cast<uint32_t>(sc.points.size());
     sw.pointCount = static_cast<uint32_t>(pts.size());
-    sw.style = styles[w];
-    sw.wire = w;
-    sw.fromPin = fromPin;
-    sw.toPin = toPin;
-    const uint32_t port = p.flatOutput(wr.from.node, wr.from.port);
-    sw.net = netOf.emplace(port, static_cast<uint32_t>(netOf.size())).first->second;
     sw.x0 = sw.x1 = pts[0].x;
     sw.y0 = sw.y1 = pts[0].y;
     for (const Point2& q : pts) {

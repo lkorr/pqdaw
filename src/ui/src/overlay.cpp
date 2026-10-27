@@ -35,30 +35,48 @@ void popupFrame(PaintContext& ctx, const IRect& r, const Theme& th, Rgba fill, R
   detail::box(ctx.dl, r, rad, fill, border);
 }
 
-// The tooltip popup: one line of small text on the tooltip fill. Never hit.
+// The tooltip popup: small text on the tooltip fill, one line per '\n' (T4.15: the circuit editor's node tooltips).
+// Never hit.
 class TooltipWidget : public Widget {
 public:
   explicit TooltipWidget(std::string text) : Widget("tooltip"), text_(std::move(text)) {
     setHittable(false);
     setVisualOverflow(kPopupOverflow);
+    for (size_t b = 0;;) {
+      const size_t e = text_.find('\n', b);
+      lines_.emplace_back(text_.data() + b, (e == std::string::npos ? text_.size() : e) - b);
+      if (e == std::string::npos) break;
+      b = e + 1;
+    }
   }
   ISize contentExtent(ISize) const override {
     const UiScale s = tree() ? tree()->uiScale() : UiScale{};
     const PaintResources* res = tree() ? tree()->resources() : nullptr;
-    int32_t w = static_cast<int32_t>(text_.size()) * s.px(7);
-    if (res && res->text && res->uiFonts) w = res->text->measure(res->uiFonts->small, text_);
-    return {w + 2 * s.px(6), s.px(20)};
+    int32_t w = 0;
+    for (const std::string_view l : lines_) {
+      int32_t lw = static_cast<int32_t>(l.size()) * s.px(7);
+      if (res && res->text && res->uiFonts) lw = res->text->measure(res->uiFonts->small, l);
+      w = std::max(w, lw);
+    }
+    return {w + 2 * s.px(6), s.px(4) + static_cast<int32_t>(lines_.size()) * s.px(16)};
   }
   void paint(PaintContext& ctx) override {
     const Theme* th = ctx.res.theme;
     if (!th) return;
-    popupFrame(ctx, rect(), *th, th->tooltip.fill, th->tooltip.border);
-    if (const ThemeFonts* f = ctx.res.uiFonts)
-      detail::drawText(ctx, f->small, rect(), text_, th->tooltip.text, TextAlign::Left, ctx.scale.px(6), ctx.scale.px(4));
+    const IRect r = rect();
+    popupFrame(ctx, r, *th, th->tooltip.fill, th->tooltip.border);
+    const ThemeFonts* f = ctx.res.uiFonts;
+    if (!f) return;
+    const int32_t lh = ctx.scale.px(16);
+    for (size_t i = 0; i < lines_.size(); ++i) {
+      const IRect box{r.x, r.y + ctx.scale.px(2) + static_cast<int32_t>(i) * lh, r.w, lh};
+      detail::drawText(ctx, f->small, box, lines_[i], th->tooltip.text, TextAlign::Left, ctx.scale.px(6), ctx.scale.px(4));
+    }
   }
 
 private:
   std::string text_;
+  std::vector<std::string_view> lines_;  // into text_
 };
 
 IRect placeRect(const IRect& vp, const IRect& a, Placement p, ISize sz) {

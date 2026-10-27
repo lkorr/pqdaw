@@ -273,6 +273,28 @@ TEST_CASE("settings: round trip; other sections are kept; invalid fields fall ba
   CHECK(loadAudioSettings(path).error().code == ErrorCode::Parse);
 }
 
+TEST_CASE("settings: the view prefs section (T4.15) round-trips next to the audio section; defaults when absent") {
+  const fs::path dir = tempDir("viewprefs");
+  const std::string path = (dir / "settings.json").string();
+  CHECK_FALSE(loadViewPrefs(path).circuitShowInactive);  // no file
+  AudioSettings s;
+  s.sampleRate = 96000;
+  REQUIRE(saveAudioSettings(path, s).ok());
+  CHECK(loadViewPrefs(path) == views::ViewPrefs{});  // no section
+  views::ViewPrefs v;
+  v.circuitShowInactive = true;
+  REQUIRE(saveViewPrefs(path, v).ok());
+  CHECK(loadViewPrefs(path) == v);
+  REQUIRE(loadAudioSettings(path).ok());
+  CHECK(loadAudioSettings(path)->settings.sampleRate == 96000);  // the audio section survives
+  REQUIRE(saveAudioSettings(path, s).ok());
+  CHECK(loadViewPrefs(path) == v);  // and the views section the audio save
+  { std::ofstream(path) << R"({"views": {"circuitShowInactive": "yes"}})"; }
+  CHECK_FALSE(loadViewPrefs(path).circuitShowInactive);  // the wrong type keeps the default
+  { std::ofstream(path) << "not json"; }
+  CHECK_FALSE(loadViewPrefs(path).circuitShowInactive);
+}
+
 TEST_CASE("startup settings: the settings file, then this run's command-line device flags") {
   const fs::path dir = tempDir("startup");
   const std::string path = (dir / "settings.json").string();

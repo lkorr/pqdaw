@@ -10,7 +10,8 @@
 //       "outputDevice": "Focusrite USB ASIO",  "outputName": "Focusrite USB ASIO",
 //       "inputDevice": "",                      "inputName": "",
 //       "sampleRate": 48000, "bufferFrames": 64, "inputChannels": 2, "outputChannels": 2
-//     }
+//     },
+//     "views": { "circuitShowInactive": false }          (T4.15: views::ViewPrefs)
 //   }
 //
 // Saving keeps every other top-level key (later settings sections), writes a temporary file, flushes it and
@@ -25,6 +26,7 @@
 
 #include "pq/core/result.h"
 #include "pq/views/prefs/audio_prefs.h"
+#include "pq/views/view_context.h"
 
 namespace pq::app {
 
@@ -42,5 +44,10 @@ Status saveAudioSettings(const std::string& path, const views::AudioSettings& s)
 
 // The JSON text of one settings object (tests).
 std::string audioSettingsJson(const views::AudioSettings& s);
+
+// T4.15: the "views" section (views::ViewPrefs). Loading is lenient like the audio section (a missing file or section
+// gives the defaults, a field of the wrong type keeps its default); saving keeps every other section.
+views::ViewPrefs loadViewPrefs(const std::string& path);
+Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs);
 
 }  // namespace pq::app

@@ -12,6 +12,16 @@ namespace pq::views::circuit {
 
 namespace {
 
+std::vector<graph::ConstArg> argsOf(const std::vector<doc::DeviceValue>& vs) {
+  std::vector<graph::ConstArg> out;
+  out.reserve(vs.size());
+  for (const doc::DeviceValue& v : vs) out.push_back({v.name, v.value});
+  return out;
+}
+
+// T4.15: what the editor hides and its tooltips follow the instance (its settings and param values).
+void showInstance(CircuitEditor& ed, const doc::Device& d) { ed.setInstance(d.patch, argsOf(d.settings), argsOf(d.params)); }
+
 // The device's text as the project holds it: its own, or the stock file's.
 std::string projectText(const doc::DeviceLibrary& lib, const doc::Device& d) {
   return d.source ? d.source->text : lib.stockText(d.patch);
@@ -66,6 +76,7 @@ private:
       editor_.closeSoon();
       return;
     }
+    showInstance(editor_, *d);  // settings re-hide (no compile), param values show in tooltips
     if (d->source == seen_) return;  // the text did not change (a param, another device, another view)
     seen_ = d->source;
     editor_.refreshTitle();  // edited / stock
@@ -89,6 +100,15 @@ private:
 };
 
 }  // namespace
+
+void followViewPrefs(CircuitEditor& editor, ViewContext& ctx) {
+  editor.setShowInactive(ctx.viewPrefs().circuitShowInactive);
+  editor.onShowInactiveChanged = [&ctx](bool on) {
+    ViewPrefs p = ctx.viewPrefs();
+    p.circuitShowInactive = on;
+    ctx.setViewPrefs(p);
+  };
+}
 
 std::string deviceEditorTitle(const ViewContext& ctx, doc::DeviceId device) {
   const doc::DeviceLoc l = doc::findDevice(*ctx.doc(), device);
@@ -134,6 +154,8 @@ CircuitEditor* openDeviceInCircuitView(ui::Widget& from, ViewContext& ctx, doc::
     return nullptr;
   }
   ed->setHost(std::make_unique<DeviceHost>(*ed, ctx, device, std::move(player)));
+  followViewPrefs(*ed, ctx);
+  showInstance(*ed, *d);
   if (raw != nullptr) (void)ed->togglePlay();  // follow the project: LED trace, hover probes, Cost
   ed->refreshTitle();
   return ed;

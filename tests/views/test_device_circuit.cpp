@@ -343,6 +343,53 @@ TEST_CASE("device circuit view: a device inside a rack opens, forks in place and
   CHECK(viewers() == 0);
 }
 
+TEST_CASE("device circuit view: the device's settings decide what is hidden (T4.15); the toggle goes to the view prefs") {
+  Ui u;
+  doc::DocumentStore& st = u.ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE(e.ok());
+    REQUIRE(st.dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::DeviceId sat =
+      run(doc::ops::addDevice(*st.current(), st.ids(), u.keys, "saturator", doc::DeviceKind::AudioEffect)).devices[0];
+  run(doc::ops::setDeviceSetting(*st.current(), sat, "hq", 2.0));
+  u.d.tree().layoutNow();
+  circuit::CircuitEditor* ed = circuit::openDeviceInCircuitView(u.view(), u.ctx, sat);
+  REQUIRE(ed != nullptr);
+  const graph::Patch& p = ed->document().drawn(ed->shownIndex());
+  auto hidden = [&](const char* n) { return ed->canvas().scene()->nodes[*p.findByName(n)].hidden; };
+  CHECK_FALSE(hidden("y2"));  // the instance's hq 2, not the patch's default 1
+  CHECK(hidden("y1"));
+  CHECK(hidden("y4"));
+  // A setting changed on the device panel re-hides at once; nothing is compiled by the editor for it.
+  const uint64_t checks = ed->document().stats().checks;
+  run(doc::ops::setDeviceSetting(*st.current(), sat, "hq", 4.0));
+  CHECK_FALSE(hidden("y4"));
+  CHECK(hidden("y2"));
+  CHECK(ed->document().stats().checks == checks);
+  CHECK_FALSE(u.dev(sat).edited());  // hiding never forks the device
+  // The toggle is remembered in the context's view prefs.
+  CHECK_FALSE(u.ctx.viewPrefs().circuitShowInactive);
+  u.d.step();
+  Widget* toggle = ed->find("bar/inactive");
+  REQUIRE(toggle != nullptr);
+  u.d.click(mid(toggle->rect()));
+  CHECK(ed->showInactive());
+  CHECK(u.ctx.viewPrefs().circuitShowInactive);
+  ed->closeSoon();
+  u.d.advance(0.1);
+  // The next editor starts with it on.
+  ed = circuit::openDeviceInCircuitView(u.view(), u.ctx, sat);
+  REQUIRE(ed != nullptr);
+  CHECK(ed->showInactive());
+  const graph::Patch& q = ed->document().drawn(ed->shownIndex());
+  CHECK(ed->canvas().scene()->nodes[*q.findByName("y1")].inactive);
+  CHECK_FALSE(ed->canvas().scene()->nodes[*q.findByName("y1")].hidden);
+  ed->closeSoon();
+  u.d.advance(0.1);
+}
+
 namespace {
 
 // An external player that records what the editor gives it (the app's is app::DevicePlayer over the project).

@@ -15,6 +15,13 @@
 // `… voice` inputs and what they feed) are drawn doubled. An audio-rate signal into a subcircuit's param pin is
 // modulation: dashed. The scene's styles are plain data, so T4.5 can light bool wires and T4.13 can colour project
 // wires the same way.
+//
+// Inactive parts (T4.15): SceneOptions::inactiveNodes / inactiveWires (graph::analyseStructure: what a structural
+// constant switches off) mark nodes and wires inactive. With hideInactive they are HIDDEN: they keep their index (so
+// selection, probes and edits address the same nodes) but are in no grid cell, have no segments, labels or junctions,
+// and do not count for the bounds, so nothing draws, hits or frames them; with relayoutVisible the visible nodes are
+// laid out on their own (graph::autoLayout of the visible subgraph: the hidden branches leave no holes), else they
+// keep the stored positions. Without hideInactive they are drawn dimmed where they are.
 
 #include <cstdint>
 #include <memory>
@@ -55,6 +62,8 @@ struct SceneNode {
   uint32_t spec = 0;                              // into CircuitScene::specs
   uint32_t firstPin = 0, pinCount = 0;            // into CircuitScene::pins (inputs, then outputs)
   graph::NodeIndex node = graph::kNone;
+  bool inactive = false;  // T4.15: switched off by a structural constant (drawn dimmed)
+  bool hidden = false;    // … and hidden (not drawn, not hit)
 };
 
 struct SceneWire {
@@ -64,6 +73,8 @@ struct SceneWire {
   graph::WireIndex wire = graph::kNone;
   uint32_t fromPin = 0, toPin = 0;          // into CircuitScene::pins
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // bounding box
+  bool inactive = false;  // T4.15 (see SceneNode)
+  bool hidden = false;    // no points, no segments
 };
 
 // Text drawn at a world position: centred in [x0, x1] at y (the cap-centre line) when it fits, else hidden.
@@ -107,10 +118,16 @@ struct CircuitScene {
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // bounds of everything
   SpatialGrid grid;
   uint32_t autoPlaced = 0;  // nodes completeLayout placed
+  uint32_t hiddenNodes = 0, hiddenWires = 0;  // T4.15
+  uint32_t visibleNodes() const noexcept { return static_cast<uint32_t>(nodes.size()) - hiddenNodes; }
 };
 
 struct SceneOptions {
   graph::AutoLayoutOptions layout;
+  // T4.15 (see above): per node / per wire of the patch, 1 = inactive (empty: none).
+  std::span<const uint8_t> inactiveNodes, inactiveWires;
+  bool hideInactive = true;
+  bool relayoutVisible = false;  // with hideInactive: lay out the visible nodes on their own
 };
 
 // The scene of `patch` as stored, completing a missing or partial layout (see above). `laidOut` (optional) receives the
@@ -130,5 +147,12 @@ graph::AutoLayoutStats tidy(graph::Patch& patch, const graph::AutoLayoutOptions&
 
 // Wire styles of every wire of `patch` (the local inference described above).
 std::vector<WireStyle> wireStyles(const graph::Patch& patch);
+// The same inference per flat output port (Patch::flatOutput; other entries are default): what a node's value is (T4.15
+// tooltips). `modulation` is never set.
+std::vector<WireStyle> outputStyles(const graph::Patch& patch);
+
+// T4.15: places only the nodes with keep[v] (and routes the wires between them) by graph::autoLayout of that subgraph
+// with this symbol library's geometry; the other nodes and wires keep their layout.
+graph::AutoLayoutStats layoutSubset(graph::Patch& patch, std::span<const uint8_t> keep, const graph::AutoLayoutOptions& options = {});
 
 }  // namespace pq::views::circuit

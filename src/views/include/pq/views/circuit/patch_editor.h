@@ -104,7 +104,14 @@ public:
   // Returns the new patch's index.
   Result<size_t> makeSubcircuit(size_t patch, std::span<const graph::NodeIndex> nodes, std::string name = {});
   Status moveNodes(size_t patch, std::span<const graph::NodeIndex> nodes, float dx, float dy);
-  Status tidy(size_t patch);
+  // `only` (T4.15, one flag per node): re-place just those nodes and the wires between them (the visible ones while
+  // inactive branches are hidden); the others keep their positions. Empty: the whole patch.
+  Status tidy(size_t patch, std::span<const uint8_t> only = {});
+  // T4.15: where circuit edits of a patch start from when a view draws it with another layout than drawn(patch) (the
+  // circuit editor while it hides inactive branches lays the visible nodes out on their own): `base(patch)` returns a
+  // patch with the same nodes and wires (or null: drawn(patch) as is); its node positions and wire routes replace the
+  // drawn ones in every circuit edit (and save), so an edit keeps what the view shows. Null function: none.
+  void setLayoutBase(std::function<const graph::Patch*(size_t patch)> base);
   bool canUndo() const noexcept;
   bool canRedo() const noexcept;
   bool undo();

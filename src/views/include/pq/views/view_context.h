@@ -120,6 +120,12 @@ std::string projectDirFromPickedPath(std::string_view picked);
 // The display name of a project directory: its last path component ("Untitled" for an empty path).
 std::string projectNameOf(std::string_view dirUtf8);
 
+// T4.15: view preferences that are not part of a project (kept by the app in its user settings).
+struct ViewPrefs {
+  bool circuitShowInactive = false;  // the circuit editor's Inactive toggle: draw switched-off branches (dimmed)
+  bool operator==(const ViewPrefs&) const = default;
+};
+
 class ViewContext {
 public:
   // A new default project (doc::makeDefaultProject). `transport` must outlive the context.
@@ -201,6 +207,15 @@ public:
   using DevicePlayerFactory = std::function<std::unique_ptr<circuit::PatchPlayer>(doc::DeviceId)>;
   void setDevicePlayers(DevicePlayerFactory f) { devicePlayers_ = std::move(f); }
   const DevicePlayerFactory& devicePlayers() const noexcept { return devicePlayers_; }
+  // T4.15: view preferences the app keeps in its user settings (the "views" section, pq/app/user_settings.h). A change
+  // calls the listener (the app saves them); tests and scenes have none.
+  const ViewPrefs& viewPrefs() const noexcept { return viewPrefs_; }
+  void setViewPrefs(const ViewPrefs& p) {
+    if (p == viewPrefs_) return;
+    viewPrefs_ = p;
+    if (viewPrefsListener_) viewPrefsListener_(viewPrefs_);
+  }
+  void setViewPrefsListener(std::function<void(const ViewPrefs&)> fn) { viewPrefsListener_ = std::move(fn); }
   // What file.new / file.open / file.save / file.saveAs do: ask about unsaved changes, pick a path, then call the
   // explicit-path functions above. `then` runs after a successful operation (e.g. quit after "save and quit").
   void requestNew();
@@ -371,6 +386,8 @@ private:
   const doc::DeviceLibrary* devices_ = nullptr;
   ModulationSource* modulation_ = nullptr;
   DevicePlayerFactory devicePlayers_;
+  ViewPrefs viewPrefs_;
+  std::function<void(const ViewPrefs&)> viewPrefsListener_;
   Ticks startMarker_ = 0;
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;

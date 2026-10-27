@@ -37,4 +37,8 @@ CircuitEditor* openDeviceInCircuitView(ui::Widget& from, ViewContext& ctx, doc::
 // The title the editor shows for `device`: "<device name> · <track name>", "(edited)" for a user device.
 std::string deviceEditorTitle(const ViewContext& ctx, doc::DeviceId device);
 
+// T4.15: the editor's Inactive toggle starts as ctx's view prefs say and a flip of it is remembered there (ctx must
+// outlive the editor, as the shell's context does).
+void followViewPrefs(CircuitEditor& editor, ViewContext& ctx);
+
 }  // namespace pq::views::circuit

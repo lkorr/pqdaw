@@ -27,6 +27,7 @@ using ui::Vec2;
 namespace {
 
 constexpr uint32_t kTileBuildTexelsPerFrame = 1u << 20;
+constexpr float kInactiveAlpha = 0.3f;  // T4.15: inactive parts shown with Show Inactive
 
 // One body's two coverage tiles at one scale.
 struct BodyTile {
@@ -377,7 +378,7 @@ struct CircuitCanvas::Impl {
     };
     if (cells * 2 >= static_cast<uint64_t>(g.cols) * g.rows) {  // most of the scene: a linear pass, no dedupe
       for (uint32_t i = 0; i < sc.nodes.size(); ++i)
-        if (nodeIn(i)) visNodes.push_back(i);
+        if (!sc.nodes[i].hidden && nodeIn(i)) visNodes.push_back(i);
       for (uint32_t i = 0; i < sc.segments.size(); ++i)
         if (segIn(i)) visSegs.push_back(i);
       return;
@@ -736,7 +737,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   // ---- wires ----
   const float thin = std::max(1.0f, std::round(us));
   const float thick = std::max(2.0f, std::round(2.0f * us));
-  auto wireColour = [&](uint32_t w) {
+  auto baseWireColour = [&](uint32_t w) {
     if (m.wireSel[w]) return C.selected;
     if (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w) return C.hover;
     const WireStyle& ws = sc.wires[w].style;
@@ -747,6 +748,12 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       case WireRate::Audio: return C.wireAudio;
     }
     return C.wireParam;
+  };
+  // T4.15: an inactive part shown (Show Inactive) is drawn faint; selected or hovered it is drawn as usual.
+  auto wireColour = [&](uint32_t w) {
+    const Rgba c = baseWireColour(w);
+    const bool emphasised = m.wireSel[w] || (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w);
+    return sc.wires[w].inactive && !emphasised ? ui::mulAlpha(c, kInactiveAlpha) : c;
   };
   if (lod == Lod::Far) {
     missing = m.paintFar(dl, *theme, clip, atlas, thin);
@@ -804,8 +811,9 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   auto strokeOf = [&](uint32_t v) {
     if (m.nodeSel[v]) return C.selected;
     if (m.hover.kind == CanvasHit::Kind::Node && m.hover.index == v) return C.hover;
-    return C.symbolStroke;
+    return sc.nodes[v].inactive ? ui::mulAlpha(C.symbolStroke, kInactiveAlpha) : C.symbolStroke;
   };
+  auto dimIf = [&](uint32_t v, Rgba c) { return sc.nodes[v].inactive ? ui::mulAlpha(c, kInactiveAlpha) : c; };
   if (lod == Lod::Far) {
     // The selection and the hovered node over the cached picture (the chunks hold the unselected look).
     const double ox = std::round(r.x - m.view.x * s), oy = std::round(r.y - m.view.y * s);
@@ -815,7 +823,8 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
                         static_cast<float>(std::round(ox + (n.x + n.w) * s)), static_cast<float>(std::round(oy + (n.y + n.h) * s))};
       if (rr.x1 > rr.x0 && rr.y1 > rr.y0) dl.addRectStroke(rr, col, 1.0f);
     };
-    for (const uint32_t v : m.selection.nodes) outline(v, C.selected);
+    for (const uint32_t v : m.selection.nodes)
+      if (v < sc.nodes.size() && !sc.nodes[v].hidden) outline(v, C.selected);
     if (m.hover.kind == CanvasHit::Kind::Node) outline(m.hover.index, C.hover);
     for (const uint32_t w : m.selection.wires) m.farWire(dl, w, ox, oy, s, thin, C.selected);
     if (m.hover.kind == CanvasHit::Kind::Wire) m.farWire(dl, m.hover.index, ox, oy, s, thin, C.hover);
@@ -848,7 +857,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       const SceneNode& n = sc.nodes[v];
       const SymbolSpec& spec = sc.specs[n.spec];
       const Vec2 o{std::round(m.devX(n.x)), std::round(m.devY(n.y))};
-      const Rgba fillCol = fillColour(*theme, spec.symbol), strokeCol = strokeOf(v);
+      const Rgba fillCol = dimIf(v, fillColour(*theme, spec.symbol)), strokeCol = strokeOf(v);
       bool drawn = false;
       if (atlas) {
         auto it = m.tiles.find(spec.bodyKey);
@@ -895,7 +904,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       const float bw = std::max(1.0f, std::round(strokeWidth(s)));
       const float x0 = o.x + std::round(8.0f * s) + bw, x1 = o.x + std::round((n.w - 8.0f) * s) - bw;
       const float y0 = o.y + bw, y1 = o.y + std::round(16.0f * s) - std::ceil(bw * 0.5f);
-      if (x1 > x0 && y1 > y0) dl.addRectFilled({x0, y0, x1, y1}, C.subcircuitTitle);
+      if (x1 > x0 && y1 > y0) dl.addRectFilled({x0, y0, x1, y1}, dimIf(v, C.subcircuitTitle));
     }
   }
 
@@ -927,6 +936,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       Rgba col = C.symbolText;
       if (lb.role == SceneLabel::Role::Caption || lb.role == SceneLabel::Role::Pin) col = C.pinText;
       if (lb.role == SceneLabel::Role::Comment) col = C.comment;
+      if (lb.node != UINT32_MAX && lb.node < sc.nodes.size()) col = dimIf(lb.node, col);
       const ui::ClipRect tc{std::max(clip.x, static_cast<int32_t>(std::floor(x0))), clip.y,
                             std::min(clip.right(), static_cast<int32_t>(std::ceil(x1)) + (lb.role == SceneLabel::Role::Comment ? 4096 : 0)),
                             clip.bottom()};
@@ -1050,11 +1060,11 @@ bool CircuitCanvas::onPointer(const ui::PointerEvent& e) {
         if (m.scene) {
           for (uint32_t v = 0; v < m.scene->nodes.size(); ++v) {
             const SceneNode& n = m.scene->nodes[v];
-            if (n.x <= b.x && n.x + n.w >= a.x && n.y <= b.y && n.y + n.h >= a.y) s.nodes.push_back(v);
+            if (!n.hidden && n.x <= b.x && n.x + n.w >= a.x && n.y <= b.y && n.y + n.h >= a.y) s.nodes.push_back(v);
           }
           for (uint32_t w = 0; w < m.scene->wires.size(); ++w) {
             const SceneWire& sw = m.scene->wires[w];
-            if (sw.x0 >= a.x && sw.x1 <= b.x && sw.y0 >= a.y && sw.y1 <= b.y) s.wires.push_back(w);
+            if (!sw.hidden && sw.x0 >= a.x && sw.x1 <= b.x && sw.y0 >= a.y && sw.y1 <= b.y) s.wires.push_back(w);
           }
         }
         for (auto* v : {&s.nodes, &s.wires}) {

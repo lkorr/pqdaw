@@ -10,6 +10,7 @@
 
 #include "pq/ui/controls.h"
 #include "pq/views/circuit/circuit_editor.h"
+#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 
@@ -264,7 +265,9 @@ public:
           ctx_.setStatus("Cannot open the patch: " + doc.error().message.substr(0, doc.error().message.find('\n')));
           return;
         }
-        if (!openCircuitEditor(*layer_, std::move(*doc), {}, player)) ctx_.setStatus("The file has no patch to show");
+        CircuitEditor* ed = openCircuitEditor(*layer_, std::move(*doc), {}, player);
+        if (!ed) ctx_.setStatus("The file has no patch to show");
+        else followViewPrefs(*ed, ctx_);  // T4.15
       });
     });
   }

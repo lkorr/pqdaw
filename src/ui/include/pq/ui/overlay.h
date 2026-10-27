@@ -73,10 +73,12 @@ public:
   std::string uniqueName(std::string_view base) const;
 
   // Tooltips: shown `delay` s after the pointer comes to rest on a widget with Widget::tooltip() text,
-  // hidden on hover change or any press. Default 0.6 s.
+  // hidden on hover change or any press. Default 0.6 s. The text may hold several lines ('\n').
   void setTooltipDelay(double seconds) noexcept { tooltipDelay_ = seconds; }
+  double tooltipDelay() const noexcept { return tooltipDelay_; }
   bool tooltipVisible() const noexcept { return tooltip_ != nullptr; }
-  // Shows a tooltip now (galleries / tests): text at device position p.
+  // Shows a tooltip now: text at device position p (galleries, tests; T4.15: a widget that shows tooltips for parts
+  // of itself, as the circuit canvas does for its nodes, after its own tooltipDelay() rest).
   void showTooltip(std::string_view text, Vec2 p);
   void hideTooltip();
 

@@ -18,6 +18,15 @@
 // stops the shown patch. The text is checked ≈ 50 ms after the last edit (infer, optimise, schedule); while it plays a
 // clean result hot-swaps the running program; an error leaves the last good one playing and shows inline.
 //
+// Legibility (T4.15, SPEC §15 2026-10-26): resting the pointer on a node shows its tooltip after the overlay's tooltip
+// delay (pq/views/circuit/node_info.h: what it is, a description, its value's rate and poly, a constant's recognised
+// form), built when it shows, never per frame. Branches that a structural constant switches off (graph::analyseStructure
+// with the shown instance's arguments: a device's settings, carried down the call stack into opened subcircuits) are
+// hidden; the title bar's Inactive toggle (remembered in the view prefs) draws them dimmed instead. Hiding is view-only:
+// the text, its layout block and what is compiled stay as they are, and neither hovering nor the toggle compiles
+// anything. While hidden, a patch with no stored positions for its visible nodes shows them laid out on their own;
+// a circuit edit made then stores that layout (PatchEditor::setLayoutBase) and Tidy re-places only the visible nodes.
+//
 // Options > Developer > Open Patch File in Circuit View… (`view.openPatch`) opens a loose file in it; a device of the
 // project opens through pq/views/circuit/device_circuit.h (T4.4-fix1: a Host, the document as its history). UI thread only.
 
@@ -27,6 +36,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/graph/structure.h"
 #include "pq/ui/code_editor.h"
 #include "pq/ui/overlay.h"
 #include "pq/views/circuit/circuit_canvas.h"
@@ -165,6 +175,23 @@ public:
   void refreshTitle() { updateTitle(); }
   void showStatus(std::string s) { setStatus(std::move(s)); }  // the host's notes (e.g. the fork)
 
+  // ---- T4.15: tooltips and inactive branches ----
+  // The Inactive toggle: draw the branches a structural constant switches off, dimmed (off, the default: hidden).
+  void setShowInactive(bool on);
+  bool showInactive() const noexcept { return showInactive_; }
+  std::function<void(bool on)> onShowInactiveChanged;  // the user flipped the toggle (the view prefs remember it)
+  // The instance the editor shows (a device of the project): its structural settings and param values by name, for
+  // patch `patch` (the device's patch). Settings decide what is inactive there and in what it calls; param values show
+  // in tooltips. A change of the settings re-hides (no compile); of params, nothing until the next tooltip.
+  void setInstance(std::string patch, std::vector<graph::ConstArg> settings, std::vector<graph::ConstArg> params);
+  // The shown patch's structural constants and inactive nodes / wires (with the arguments it is shown with).
+  const graph::StructuralInfo& structure() const noexcept { return structure_; }
+  const std::vector<graph::ConstArg>& shownArguments() const noexcept { return shownArgs_; }
+  // The tooltip of scene node `node` (what a hover shows after the delay).
+  std::string nodeTooltipText(uint32_t node);
+  // Shows it now at device position `at`, as a rest of the pointer would (tests, scenes). False without an overlay.
+  bool showNodeTooltip(uint32_t node, ui::Vec2 at);
+
   bool onKey(const ui::KeyEvent& e) override;
   void onTimer(uint32_t id) override;
   ui::InfoText info() const override;
@@ -221,6 +248,23 @@ private:
   uint32_t dwellTimer_ = 0, graceTimer_ = 0, pollTimer_ = 0, costTimer_ = 0;
   std::vector<std::pair<uint64_t, double>> costSmooth_;  // NodeId (wires: | 1 << 63 sums, | 1 << 62 copies) → ns
   double costTotal_ = 0.0;
+
+  // T4.15.
+  std::vector<graph::ConstArg> argsForShown() const;
+  const graph::Patch* patchNamed(std::string_view name) const;
+  bool storedPlacesVisible() const;
+  void hideNodeTooltip();
+  std::string describeCallee(std::string_view callee) const;
+  ui::Toggle* inactive_ = nullptr;
+  bool showInactive_ = false;
+  graph::StructuralInfo structure_;
+  std::vector<graph::ConstArg> shownArgs_;
+  std::string instancePatch_;
+  std::vector<graph::ConstArg> instanceSettings_, instanceParams_;
+  graph::Patch viewPatch_;     // the shown patch as laid out while hidden branches leave the visible ones on their own
+  bool viewOverride_ = false;  // viewPatch_ is the base of circuit edits (PatchEditor::setLayoutBase)
+  uint32_t tipTimer_ = 0, tipNode_ = UINT32_MAX;
+  bool tipShown_ = false;
 };
 
 // Opens an editor over the whole window of `from`'s tree (its overlay layer). nullptr without an overlay layer or when

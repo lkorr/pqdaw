@@ -97,7 +97,10 @@ Result<LoadedAudioSettings> loadAudioSettings(const std::string& path) {
   return out;
 }
 
-Status saveAudioSettings(const std::string& path, const views::AudioSettings& s) {
+namespace {
+
+// Replaces one top-level section of the settings file (the others are kept), atomically.
+Status saveSection(const std::string& path, const char* key, json section) {
   const fs::path p = utf8Path(path);
   json root = json::object();
   {
@@ -110,7 +113,7 @@ Status saveAudioSettings(const std::string& path, const views::AudioSettings& s)
     }
   }
   root["schemaVersion"] = 1;
-  root["audio"] = json::parse(audioSettingsJson(s));
+  root[key] = std::move(section);
   std::error_code ec;
   fs::create_directories(p.parent_path(), ec);
   const fs::path tmp = fs::path(p).concat(L".tmp");
@@ -131,6 +134,32 @@ Status saveAudioSettings(const std::string& path, const views::AudioSettings& s)
   if (!MoveFileExW(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
     return settingsError(ErrorCode::Io, "cannot replace " + path + " (error " + std::to_string(GetLastError()) + ")");
   return Ok{};
+}
+
+}  // namespace
+
+Status saveAudioSettings(const std::string& path, const views::AudioSettings& s) {
+  return saveSection(path, "audio", json::parse(audioSettingsJson(s)));
+}
+
+views::ViewPrefs loadViewPrefs(const std::string& path) {
+  views::ViewPrefs prefs;
+  std::ifstream in(utf8Path(path), std::ios::binary);
+  if (!in) return prefs;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const json root = json::parse(ss.str(), nullptr, false);
+  if (root.is_discarded() || !root.is_object()) return prefs;
+  const auto it = root.find("views");
+  if (it == root.end() || !it->is_object()) return prefs;
+  if (const auto f = it->find("circuitShowInactive"); f != it->end() && f->is_boolean()) prefs.circuitShowInactive = f->get<bool>();
+  return prefs;
+}
+
+Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
+  json v = json::object();
+  v["circuitShowInactive"] = prefs.circuitShowInactive;
+  return saveSection(path, "views", std::move(v));
 }
 
 }  // namespace pq::app

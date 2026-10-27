@@ -31,9 +31,9 @@
 #include <string>
 #include <vector>
 
-#include "pq/core/denormal_guard.h"
 #include "pq/dsp/atoms.h"
 #include "pq/graph/kernel_map.h"
+#include "fold.h"
 
 namespace pq::graph {
 
@@ -58,7 +58,7 @@ struct Facts {
   bool signClear = false;  // the sign bit is clear whenever the value is not NaN (so it is never −0)
 };
 
-constexpr uint32_t kMaxFoldPorts = 64;
+using detail::kMaxFoldPorts;
 
 // Value-numbering table: 64-bit structural hash → node, open addressing with linear probing. Cleared every sweep;
 // a hash collision between different nodes only costs a missed merge (callers compare the nodes).
@@ -155,42 +155,6 @@ bool isPure(const AtomSignature& sig) noexcept { return !sig.has(kStateful) && !
 
 bool isVoiceReducer(const AtomSignature& sig) noexcept {
   return sig.category == AtomCategory::Structure && sig.name.starts_with("voice_");
-}
-
-// Runs a stateless kernel for one frame and returns lane 0: the value a const- or param-rate evaluation of the node
-// produces at runtime. Those nodes run in Control regions, which both backends execute with the 8-lane kernels
-// (schedule.h; the JIT calls the same kernels there), so folding uses the 8-lane kernel too: the 1-lane kernels
-// call the CRT for the exact transcendentals and differ from the 8-lane SVML ones by an ulp on about a third of
-// the arguments (M1 review M4). FTZ/DAZ as on the audio thread.
-bool evalKernel(dsp::Atom k, const float* in, uint32_t nIn, float* out, uint32_t nOut) {
-  constexpr uint32_t kLanes = 8;
-  static_assert(dsp::kPatternFloats == kLanes, "one Blk frame of 8 lanes fills one pattern slot");
-  const dsp::KernelFn fn = dsp::findKernel(k, kLanes, 0);
-  if (!fn) return false;
-  struct alignas(32) Slot {
-    float v[dsp::kPatternFloats];
-  };
-  Slot ib[kMaxFoldPorts], ob[kMaxFoldPorts];
-  const float* ip[kMaxFoldPorts];
-  float* op[kMaxFoldPorts];
-  for (uint32_t i = 0; i < nIn; ++i) {
-    std::fill(std::begin(ib[i].v), std::end(ib[i].v), in[i]);
-    ip[i] = ib[i].v;
-  }
-  for (uint32_t j = 0; j < nOut; ++j) op[j] = ob[j].v;
-  dsp::KernelArgs a;
-  a.in = ip;
-  a.out = op;
-  a.frames = 1;
-  a.numIn = static_cast<uint16_t>(nIn);
-  a.numOut = static_cast<uint16_t>(nOut);
-  a.splMask = 0;
-  {
-    DenormalGuard guard;
-    fn(a);
-  }
-  for (uint32_t j = 0; j < nOut; ++j) out[j] = ob[j].v[0];
-  return true;
 }
 
 class Optimiser {
@@ -720,13 +684,7 @@ private:
     float ins[kMaxFoldPorts], outs[kMaxFoldPorts];
     for (uint32_t i = 0; i < w.nIn; ++i)  // first: most nodes have a computed input and stop here
       if (!lit(n, i, ins[i])) return false;
-    const KernelMapping& km = kernelMapping(w.atom);
-    if (km.lowering != Lowering::Kernel) return false;
-    const dsp::KernelInfo& ki = dsp::kernelInfo(km.kernel);
-    if (ki.resource != dsp::Resource::None || ki.splRequired != 0 || ki.stateSize != 0) return false;
-    for (const ArgMap& am : km.args)
-      if (am.use != ArgUse::Input) return false;
-    if (!evalKernel(km.kernel, ins, w.nIn, outs, w.nOut)) return false;
+    if (!detail::foldPureAtom(w.atom, ins, w.nIn, outs, w.nOut)) return false;
     // Literals are finite (Patch::validate); an inf/NaN result stays a computation (same value at runtime).
     for (uint32_t j = 0; j < w.nOut; ++j)
       if (outT_[out(n, j)].kind == Kind::Real && !std::isfinite(outs[j])) return false;
@@ -877,12 +835,7 @@ private:
     if (at == A_.mux) {
       float idx;
       if (!lit(n, 0, idx)) return false;
-      const uint32_t count = nodes_[n].nIn - 1u;
-      uint32_t k = 0;
-      if (!std::isnan(idx)) {
-        const float f = std::floor(idx);
-        k = f <= 0.0f ? 0u : f >= static_cast<float>(count - 1) ? count - 1 : static_cast<uint32_t>(f);
-      }
+      const uint32_t k = detail::muxPick(idx, nodes_[n].nIn - 1u);
       const uint32_t pick = in(n, 1 + k);
       if (pick != kNone && replaceNode(n, pick)) return simplified(true);
       return simplified(replaceByTypedLiteral(n, pick, 1 + k));

@@ -680,6 +680,56 @@ Status setupCircuitEditor(Shell& shell, std::string_view file) {
   shell.tree().layoutNow();
   return Ok{};
 }
+// T4.15: Saturator's curve — sat_shape opened from the 1× path (`y1`) of the stock Saturator (--project
+// stdlib/devices/saturator.pqp) at its defaults (Medium Curve): with Inactive off only the active branch is drawn (the
+// other eight curves are hidden, the visible nodes laid out on their own); with it on, all nine, the switched-off ones
+// dimmed.
+Result<circuit::CircuitEditor*> openSatShapeScene(Shell& shell, std::string_view file, bool showInactive) {
+  auto e = openEditorScene(shell, file);
+  if (!e) return std::move(e).error();
+  (*e)->setShowInactive(showInactive);
+  const graph::Patch& p = (*e)->document().drawn((*e)->shownIndex());
+  const auto y1 = p.findByName("y1");
+  if (!y1 || !(*e)->openNode(*y1)) return Error{ErrorCode::NotFound, "circuit-inactive: no `y1 = sat_shape(…)` to open", {}};
+  shell.tree().layoutNow();
+  (*e)->canvas().fitAll();
+  shell.tree().layoutNow();
+  return *e;
+}
+Status setupCircuitInactiveHidden(Shell& shell, std::string_view file) {
+  auto e = openSatShapeScene(shell, file, false);
+  return e ? Status(Ok{}) : Status(std::move(e).error());
+}
+Status setupCircuitInactiveShown(Shell& shell, std::string_view file) {
+  auto e = openSatShapeScene(shell, file, true);
+  return e ? Status(Ok{}) : Status(std::move(e).error());
+}
+// The same with Inactive on, zoomed in on Analog Clip (switched off, dimmed) and the pointer resting on its 4/27: the
+// constant's tooltip with its recognised form.
+Status setupCircuitTooltip(Shell& shell, std::string_view file) {
+  auto e = openSatShapeScene(shell, file, true);
+  if (!e) return std::move(e).error();
+  circuit::CircuitEditor& ed = **e;
+  const graph::Patch& p = ed.document().drawn(ed.shownIndex());
+  for (graph::NodeIndex v = 0; v < p.nodeCount(); ++v) {
+    if (p.node(v).kind != graph::NodeKind::Const || std::fabs(p.constant(v).literal - 4.0 / 27.0) > 1e-12) continue;
+    const circuit::SceneNode& n = ed.canvas().scene()->nodes[v];
+    const float s = shell.tree().scale();
+    const ui::IRect cr = ed.canvas().rect();
+    circuit::CircuitCanvas::View view;
+    view.zoom = 1.25;
+    view.x = n.x + n.w * 0.5 - cr.w / s * 0.5 / view.zoom;
+    view.y = n.y + n.h * 0.5 - cr.h / s * 0.5 / view.zoom;
+    ed.canvas().setView(view);
+    shell.tree().layoutNow();
+    const ui::Vec2 at = ed.canvas().toDevice({n.x + n.w * 0.5f, n.y + n.h * 0.5f});
+    if (!ed.showNodeTooltip(v, {at.x + 10.0f * s, at.y + 18.0f * s})) break;
+    shell.tree().layoutNow();
+    return Ok{};
+  }
+  return Error{ErrorCode::NotFound, "circuit-tooltip: no 4/27 constant in sat_shape", {}};
+}
+
 // The same with a typing slip in the text pane: the inline error, and the canvas veiled over the last good version.
 Status setupCircuitEditorError(Shell& shell, std::string_view file) {
   auto e = openEditorScene(shell, file);
@@ -1144,6 +1194,9 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
+    {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp
+    {"circuit-inactive-shown", 1280, 800, nullptr, setupCircuitInactiveShown},
+    {"circuit-tooltip", 1280, 800, nullptr, setupCircuitTooltip},
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

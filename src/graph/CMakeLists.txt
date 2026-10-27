@@ -15,7 +15,9 @@ pq_add_module(pq_graph
     src/layout.cpp
     src/edit.cpp
     src/infer.cpp
+    src/fold.cpp
     src/optimise.cpp
+    src/structure.cpp
     src/schedule.cpp
     src/schedule_dump.cpp
     src/sleep_plan.cpp

@@ -11,6 +11,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
 #include "pq/views/circuit/circuit_scene.h"
+#include "pq/views/circuit/node_info.h"
 #include "probe_paint.h"
 
 namespace pq::views::circuit {
@@ -154,6 +155,7 @@ uint32_t EditCanvas::pinNear(ui::Vec2 d, bool wantInput) const {
   }
   for (uint32_t v = 0; v < sc.nodes.size(); ++v) {
     const SceneNode& n = sc.nodes[v];
+    if (n.hidden) continue;  // T4.15
     if (w.x < n.x - radius || w.x > n.x + n.w + radius || w.y < n.y - radius || w.y > n.y + n.h + radius) continue;
     consider(v, false);
   }
@@ -395,6 +397,17 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   cost_ = &bar.add<ui::Toggle>("cost", "Cost", ui::ToggleStyle::Accent, false);  // T4.5: ns per sample per part
   cost_->setWidth(ui::Length::fixed(44));
   cost_->onToggle = [this](bool on) { setCostShown(on); };
+  // T4.15: the branches a structural constant switches off: hidden, or (on) drawn dimmed.
+  inactive_ = &bar.add<ui::Toggle>("inactive", "Inactive", ui::ToggleStyle::Accent, false);
+  inactive_->setWidth(ui::Length::fixed(60));
+  inactive_->setTooltip("Show the branches a structural constant switches off (dimmed)");
+  inactive_->onToggle = [this](bool on) {
+    setShowInactive(on);
+    const std::string n = std::to_string(structure_.inactiveNodes);
+    setStatus(on ? n + " nodes that a structural constant switches off are shown dimmed (they are not compiled)."
+                 : n + " nodes that a structural constant switches off are hidden (Inactive shows them).");
+    if (onShowInactiveChanged) onShowInactiveChanged(on);
+  };
   auto& tidyButton = bar.add<ui::Button>("tidy", "Tidy");
   tidyButton.setWidth(ui::Length::fixed(44));
   tidyButton.onClick = [this] { (void)tidy(); };
@@ -454,11 +467,17 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   canvas_->onRename = [this](uint32_t node) { beginRename(node); };
   canvas_->onHoverChanged = [this](const CanvasHit& h) { hoverChanged(h); };
   canvas_->setProbeOverlay(&overlay_);
+  // T4.15: while hidden branches leave the visible nodes laid out on their own, circuit edits start from that layout.
+  doc_->setLayoutBase([this](size_t patch) -> const graph::Patch* {
+    return viewOverride_ && patch == shownIndex() ? &viewPatch_ : nullptr;
+  });
 }
 
 CircuitEditor::~CircuitEditor() {
   *alive_ = false;
+  hideNodeTooltip();
   if (doc_) {
+    doc_->setLayoutBase(nullptr);
     doc_->onCommitted = nullptr;
     doc_->onChange = nullptr;
     if (doc_->playing()) doc_->stop();  // a closed editor leaves nothing playing (a project device: no probes)
@@ -515,6 +534,7 @@ void CircuitEditor::present(const std::string& patch, bool fit) {
     text_->setReadOnly(false);
   }
   // T4.5: another patch: its probes (ids are per shown patch) and the hover state start afresh.
+  hideNodeTooltip();
   probeIdOf_.clear();
   hoverWire_ = probeWire_ = hoverProbe_ = UINT32_MAX;
   rebuildScene(fit);
@@ -583,7 +603,22 @@ void CircuitEditor::rebuildScene(bool fit) {
     }
     if (!p) return;
   }
-  canvas_->setScene(buildScene(*p), fit, true);
+  // T4.15: what a structural constant switches off (the shown instance's arguments), hidden or dimmed.
+  hideNodeTooltip();
+  shownArgs_ = argsForShown();
+  structure_ = graph::analyseStructure(*p, shownArgs_);
+  SceneOptions so;
+  so.inactiveNodes = structure_.nodeInactive;
+  so.inactiveWires = structure_.wireInactive;
+  so.hideInactive = !showInactive_;
+  const bool hiding = so.hideInactive && structure_.inactiveNodes > 0;
+  so.relayoutVisible = hiding && !storedPlacesVisible();
+  graph::Patch laid;
+  canvas_->setScene(buildScene(*p, so, &laid), fit, true);
+  viewOverride_ = so.relayoutVisible && shownIndex() != graph::kNone;
+  if (viewOverride_) viewPatch_ = std::move(laid);
+  else viewPatch_ = graph::Patch{};
+  inactive_->setEnabled(structure_.inactiveNodes > 0);
   // T4.5: wire indices change with the scene: the hover probe follows its source (by NodeId), the LEDs are re-read.
   lit_.clear();
   overlay_.nodeLabels.clear();
@@ -596,7 +631,7 @@ void CircuitEditor::rebuildScene(bool fit) {
   for (NodeIndex v = 0; v < p->nodeCount(); ++v) lastIds_.push_back(p->node(v).id);
   std::vector<uint32_t> sel;
   for (const graph::NodeId id : ids)
-    if (auto v = p->indexOf(id)) sel.push_back(*v);
+    if (auto v = p->indexOf(id); v && !canvas_->scene()->nodes[*v].hidden) sel.push_back(*v);
   if (!sel.empty()) canvas_->select(sel, {});
 }
 
@@ -655,6 +690,15 @@ void CircuitEditor::onTimer(uint32_t id) {
     if (doc_->playing()) doc_->stop();
     if (ui::OverlayLayer* layer = ui::OverlayLayer::of(*this)) layer->close(*this);
     return;  // `this` may be gone
+  }
+  if (id == tipTimer_) {  // T4.15: the pointer rested on a node
+    tipTimer_ = 0;
+    const ui::UiTree* t = tree();
+    if (t && tipNode_ != UINT32_MAX && !canvas_->captured()) {
+      const ui::Vec2 pp = t->pointerPos();
+      (void)showNodeTooltip(tipNode_, {pp.x + 10.0f * t->scale(), pp.y + 18.0f * t->scale()});
+    }
+    return;
   }
   if (id == dwellTimer_) {  // T4.5: the pointer rested on a wire: probe it
     dwellTimer_ = 0;
@@ -836,12 +880,16 @@ bool CircuitEditor::tidy() {
   const size_t idx = shownIndex();
   if (idx == graph::kNone) {
     (void)circuit::tidy(importedShown_);
-    canvas_->setScene(buildScene(importedShown_), false, true);
-    lastIds_.clear();
-    for (NodeIndex v = 0; v < importedShown_.nodeCount(); ++v) lastIds_.push_back(importedShown_.node(v).id);
+    rebuildScene(false);
     return true;
   }
-  if (Status s = doc_->tidy(idx); !s) {
+  // T4.15: while inactive branches are hidden, only the visible nodes are re-placed (the hidden ones keep theirs).
+  std::vector<uint8_t> only;
+  if (!showInactive_ && structure_.inactiveNodes > 0 && structure_.nodeInactive.size() == doc_->drawn(idx).nodeCount()) {
+    only.resize(structure_.nodeInactive.size());
+    for (size_t v = 0; v < only.size(); ++v) only[v] = structure_.nodeInactive[v] ? 0 : 1;
+  }
+  if (Status s = doc_->tidy(idx, only); !s) {
     setStatus(s.error().message);
     return false;
   }
@@ -953,10 +1001,12 @@ ui::InfoText CircuitEditor::info() const {
     return {"Circuit Editor: " + host_->title(),
             "Drag pins to wire, drag nodes to move, double-click to add or rename. The text on the right is the same patch: "
             "edit either. Edits play at once and belong to the project (the first one makes this device the track's own "
-            "copy); Ctrl+Z undoes them like any other edit."};
+            "copy); Ctrl+Z undoes them like any other edit. Rest the pointer on a node to see what it is; Inactive shows "
+            "the branches a structural constant switches off."};
   return {"Circuit Editor",
           "Drag pins to wire, drag nodes to move, double-click to add or rename. The text on the right is the same patch: "
-          "edit either. Ctrl+Z undoes both, Ctrl+S saves, Ctrl+Enter plays."};
+          "edit either. Ctrl+Z undoes both, Ctrl+S saves, Ctrl+Enter plays. Rest the pointer on a node to see what it is; "
+          "Inactive shows the branches a structural constant switches off."};
 }
 
 // ---- T4.5: live probes and cost meters -------------------------------------------------------------------------------
@@ -999,6 +1049,21 @@ uint32_t CircuitEditor::probeIdFor(graph::NodeId node, uint16_t port) {
 }
 
 void CircuitEditor::hoverChanged(const CanvasHit& hit) {
+  // T4.15: a node (or one of its pins) under the pointer gets its tooltip after the overlay's delay.
+  {
+    uint32_t node = UINT32_MAX;
+    const auto& sc = canvas_->scene();
+    if (hit.kind == CanvasHit::Kind::Node) node = hit.index;
+    else if (hit.kind == CanvasHit::Kind::Pin && sc && hit.index < sc->pins.size()) node = sc->pins[hit.index].node;
+    if (node != tipNode_) {
+      hideNodeTooltip();
+      tipNode_ = node;
+      if (node != UINT32_MAX) {
+        const ui::OverlayLayer* layer = ui::OverlayLayer::of(*this);
+        tipTimer_ = requestTimer(layer ? layer->tooltipDelay() : 0.6);
+      }
+    }
+  }
   const uint32_t wire = hit.kind == CanvasHit::Kind::Wire ? hit.index : UINT32_MAX;
   if (wire == hoverWire_) return;
   hoverWire_ = wire;
@@ -1280,6 +1345,136 @@ void CircuitEditor::pollCost() {
   char pct[48];
   std::snprintf(pct, sizeof pct, "%.2f %% of a core at %.0f kHz", costTotal_ * sr * 1e-7, sr / 1000.0);
   setStatus("Cost " + formatCostNs(costTotal_) + " per sample (" + pct + ")");
+}
+
+// ---- T4.15: tooltips and inactive branches ----------------------------------------------------------------------------
+
+const graph::Patch* CircuitEditor::patchNamed(std::string_view name) const {
+  const size_t idx = doc_->patchIndex(name);
+  if (idx != graph::kNone && idx < doc_->parsed().file.patches.size()) return &doc_->parsed().file.patches[idx];
+  return doc_->findCallee(name);
+}
+
+std::vector<graph::ConstArg> CircuitEditor::argsForShown() const {
+  // From the patch the editor was opened at (a device: its settings) down the call stack to the shown patch.
+  const std::string& root = backStack_.empty() ? shown_ : backStack_.front();
+  std::vector<graph::ConstArg> args;
+  if (!instancePatch_.empty() && root == instancePatch_) args = instanceSettings_;
+  for (size_t i = 0; i < backStack_.size(); ++i) {
+    const graph::Patch* q = patchNamed(backStack_[i]);
+    if (!q || i >= callStack_.size()) return {};
+    const auto v = q->indexOf(callStack_[i]);
+    if (!v) return {};
+    const graph::StructuralInfo info = graph::analyseStructure(*q, args);
+    args = graph::callArguments(*q, info, *v);
+  }
+  return args;
+}
+
+bool CircuitEditor::storedPlacesVisible() const {
+  // The positions the text stores (not the completed layout the canvas draws otherwise).
+  const graph::Patch* stored = patchNamed(shown_);
+  if (!stored || stored->nodeCount() != structure_.nodeInactive.size()) return false;
+  for (NodeIndex v = 0; v < stored->nodeCount(); ++v)
+    if (!structure_.nodeInactive[v] && stored->layout(v).placed) return true;
+  return false;
+}
+
+void CircuitEditor::setShowInactive(bool on) {
+  if (inactive_->on() != on) inactive_->setOn(on);
+  if (showInactive_ == on) return;
+  showInactive_ = on;
+  // The selection survives by NodeId (hidden nodes drop out of it).
+  const auto& sc = canvas_->scene();
+  keepSelection_.clear();
+  if (sc && lastIds_.size() == sc->nodes.size())
+    for (const uint32_t v : canvas_->selection().nodes)
+      if (v < lastIds_.size()) keepSelection_.push_back(lastIds_[v]);
+  rebuildScene(structure_.inactiveNodes > 0);  // the layout may change: frame it again
+}
+
+void CircuitEditor::setInstance(std::string patch, std::vector<graph::ConstArg> settings, std::vector<graph::ConstArg> params) {
+  instanceParams_ = std::move(params);
+  if (patch == instancePatch_ && settings == instanceSettings_) return;
+  instancePatch_ = std::move(patch);
+  instanceSettings_ = std::move(settings);
+  const uint32_t before = structure_.inactiveNodes;
+  const auto& sc = canvas_->scene();
+  keepSelection_.clear();
+  if (sc && lastIds_.size() == sc->nodes.size())
+    for (const uint32_t v : canvas_->selection().nodes)
+      if (v < lastIds_.size()) keepSelection_.push_back(lastIds_[v]);
+  rebuildScene(false);
+  if (!showInactive_ && structure_.inactiveNodes != before) canvas_->fitAll();
+}
+
+void CircuitEditor::hideNodeTooltip() {
+  if (tipTimer_) cancelTimer(tipTimer_);
+  tipTimer_ = 0;
+  tipNode_ = UINT32_MAX;
+  if (!tipShown_) return;
+  tipShown_ = false;
+  if (ui::OverlayLayer* layer = ui::OverlayLayer::of(*this); layer && layer->tooltipVisible()) layer->hideTooltip();
+}
+
+std::string CircuitEditor::describeCallee(std::string_view callee) const {
+  const size_t idx = doc_->patchIndex(callee);
+  if (idx != graph::kNone) {
+    if (!doc_->textLowered() || idx >= doc_->parsed().patchSpans.size()) return {};
+    return patchDescription(doc_->text(), doc_->parsed().patchSpans[idx].begin);
+  }
+  const graph::Patch* p = doc_->findCallee(callee);
+  if (!p) return {};
+  for (const auto& d : doc_->imports())
+    if (const PatchDocument* owner = d->owner(*p)) {
+      const auto& ps = owner->parsed.file.patches;
+      for (size_t k = 0; k < ps.size(); ++k)
+        if (ps[k].name() == callee && k < owner->parsed.patchSpans.size())
+          return patchDescription(owner->source, owner->parsed.patchSpans[k].begin);
+    }
+  return {};
+}
+
+std::string CircuitEditor::nodeTooltipText(uint32_t node) {
+  const graph::Patch* p = shownGraph();
+  if (!p || node >= p->nodeCount()) return {};
+  TooltipContext c;
+  c.patch = p;
+  c.structure = structure_.nodeInactive.size() == p->nodeCount() ? &structure_ : nullptr;
+  if (backStack_.empty() && shown_ == instancePatch_) c.paramValues = instanceParams_;
+  const size_t idx = shownIndex();
+  if (idx != graph::kNone) {
+    if (doc_->textLowered() && idx < doc_->parsed().nodeSpans.size()) {
+      c.source = doc_->text();
+      c.spans = doc_->parsed().nodeSpans[idx];
+    }
+  } else if (const graph::Patch* callee = doc_->findCallee(shown_)) {
+    for (const auto& d : doc_->imports())
+      if (const PatchDocument* owner = d->owner(*callee)) {
+        const auto& ps = owner->parsed.file.patches;
+        for (size_t k = 0; k < ps.size(); ++k)
+          if (ps[k].name() == shown_ && k < owner->parsed.nodeSpans.size()) {
+            c.source = owner->source;
+            c.spans = owner->parsed.nodeSpans[k];
+          }
+        break;
+      }
+  }
+  const std::vector<WireStyle> styles = outputStyles(*p);
+  c.outputStyles = styles;
+  c.describeCallee = [this](std::string_view callee) { return describeCallee(callee); };
+  return nodeTooltip(c, node);
+}
+
+bool CircuitEditor::showNodeTooltip(uint32_t node, ui::Vec2 at) {
+  ui::OverlayLayer* layer = ui::OverlayLayer::of(*this);
+  if (!layer) return false;
+  const std::string text = nodeTooltipText(node);
+  if (text.empty()) return false;
+  layer->showTooltip(text, at);
+  tipShown_ = true;
+  tipNode_ = node;
+  return true;
 }
 
 CircuitEditor* openCircuitEditor(ui::Widget& from, std::unique_ptr<PatchEditor> document, std::string_view patch,

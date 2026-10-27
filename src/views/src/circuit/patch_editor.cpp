@@ -323,10 +323,23 @@ struct PatchEditor::Impl {
   // The file as drawn: every computed drawn patch with its completed layout (the base of circuit edits).
   PatchFile drawnFile() {
     PatchFile f = good.file;
-    for (size_t i = 0; i < f.patches.size() && i < drawn.size(); ++i)
-      if (drawn[i]) f.patches[i] = *drawn[i];
+    for (size_t i = 0; i < f.patches.size() && i < drawn.size(); ++i) {
+      if (!drawn[i]) continue;
+      f.patches[i] = *drawn[i];
+      // T4.15: the layout a view shows instead (the same nodes and wires, other positions and routes).
+      const graph::Patch* b = layoutBase ? layoutBase(i) : nullptr;
+      graph::Patch& q = f.patches[i];
+      if (!b || b->nodeCount() != q.nodeCount() || b->wireCount() != q.wireCount()) continue;
+      for (NodeIndex v = 0; v < q.nodeCount(); ++v) q.setLayout(v, b->layout(v));
+      for (graph::WireIndex w = 0; w < q.wireCount(); ++w) {
+        if (!(b->wire(w) == q.wire(w))) continue;
+        const std::span<const graph::Point2> via = b->wireVia(w);
+        q.setWireVia(w, std::vector<graph::Point2>(via.begin(), via.end()));
+      }
+    }
     return f;
   }
+  std::function<const graph::Patch*(size_t)> layoutBase;
 
   std::string lineEnding() const { return text.find("\r\n") != std::string::npos ? "\r\n" : "\n"; }
 
@@ -531,6 +544,7 @@ const std::vector<std::shared_ptr<const PatchDocument>>& PatchEditor::imports() 
 const std::string& PatchEditor::note() const noexcept { return impl_->note; }
 bool PatchEditor::checkPending() const noexcept { return impl_->checkPending; }
 void PatchEditor::setPlayer(PatchPlayer* player) noexcept { impl_->player = player; }
+void PatchEditor::setLayoutBase(std::function<const graph::Patch*(size_t patch)> base) { impl_->layoutBase = std::move(base); }
 PatchPlayer* PatchEditor::player() const noexcept { return impl_->player; }
 bool PatchEditor::playing() const noexcept { return !impl_->playingName.empty(); }
 const std::string& PatchEditor::playingPatch() const noexcept { return impl_->playingName; }
@@ -723,14 +737,15 @@ Status PatchEditor::moveNodes(size_t patch, std::span<const NodeIndex> nodes, fl
   return m.commitLayout(laid);
 }
 
-Status PatchEditor::tidy(size_t patch) {
+Status PatchEditor::tidy(size_t patch, std::span<const uint8_t> only) {
   Impl& m = *impl_;
   m.note.clear();
   if (Status s = m.needLowered(); !s) return s;
   if (patch >= m.good.file.patches.size()) return refuse("no such patch");
   (void)m.drawnPatch(patch);
   PatchFile laid = m.drawnFile();
-  (void)circuit::tidy(laid.patches[patch]);
+  if (only.size() == laid.patches[patch].nodeCount()) (void)circuit::layoutSubset(laid.patches[patch], only);
+  else (void)circuit::tidy(laid.patches[patch]);
   return m.commitLayout(laid);
 }
 
