@@ -73,8 +73,17 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override;
+  ui::Cursor cursorAt(ui::Vec2 p) const override;  // T4.16b: what a press there would drag
 
 private:
+  // What a press at `p` grabs (the press and the cursor share it): StartMarker, EndMarker, LoopBrace (with its
+  // edge and snapping origin) or RulerZoom.
+  struct Hit {
+    DragKind kind = DragKind::RulerZoom;
+    BraceEdge brace = BraceEdge::Both;
+    Ticks origin = 0;
+  };
+  Hit hitAt(ui::Vec2 p) const;
   RollState& s_;
 };
 
@@ -86,6 +95,7 @@ public:
   void onCaptureLost() override;
   void onHoverChanged(bool hovered) override;
   ui::InfoText info() const override;  // the hovered row's pitch readout (T3.19)
+  ui::Cursor cursorAt(ui::Vec2 p) const override;  // T4.16b: Pointer (click auditions), ↔ while zooming the rows
 
 private:
   void paintScaleKeys(ui::PaintContext& ctx, const ui::IRect& r, const ui::IRect& vis);  // T3.12
@@ -104,6 +114,9 @@ public:
   void onFocusChanged(bool focused) override;
   void onHoverChanged(bool hovered) override;
   ui::InfoText info() const override;  // the pitch readout under the pointer (T3.19)
+  // T4.16b: the part a press would grab (RollState::noteAt, as pressNote): body = Move, start / end = ResizeEW, empty
+  // space = Arrow (selection rectangle); Draw Mode = Crosshair everywhere; a drag keeps its own.
+  ui::Cursor cursorAt(ui::Vec2 p) const override;
   // The right-click menu at device `at` (T3.19).
   ui::Menu* openMenu(ui::Vec2 at);
 
@@ -138,12 +151,15 @@ public:
   bool onPointer(const ui::PointerEvent& e) override;
   bool onKey(const ui::KeyEvent& e) override;
   void onCaptureLost() override;
+  ui::Cursor cursorAt(ui::Vec2 p) const override;  // T4.16b: ↕ over a stem a press would grab
 
   // Value ↔ lane y (device px) for the lane's current rect.
   float yOfValue(float value) const noexcept;
   float valueRange() const noexcept;
 
 private:
+  // The stem a press at `p` grabs: the nearest within reach; among stems at the same x the one whose head is closest.
+  const doc::Note* stemAt(ui::Vec2 p) const;
   RollState& s_;
 };
 

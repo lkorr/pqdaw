@@ -14,6 +14,7 @@ using namespace pq::ui;
 Overview::Overview(ArrangementView& view) : Control("overview"), view_(view) {
   setInfo("Arrangement Overview",
           "The whole arrangement; the frame is the part shown below. Click or drag to move the view.");
+  setCursor(Cursor::Move);  // T4.16b: a drag moves the view
 }
 
 void Overview::attachScroll(ScrollView& sv) {

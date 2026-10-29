@@ -12,6 +12,8 @@
 //               vertical drag zooms time around the pointer and a horizontal drag scrolls.
 //   velocity    drag a stem (or chance bar) up / down: every selected note changes by the same amount.
 // Every gesture is previewed and dispatched once on release: one undo step.
+// T4.16b: every part's cursorAt asks the same hit test its press uses (noteAt, RulerWidget::hitAt, stemAt), so the
+// cursor always says what a press would do; the note area highlights the note part a press would grab.
 
 #include <algorithm>
 #include <charconv>
@@ -212,6 +214,7 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       }
       if (e.button != PointerButton::Left) return false;
       if (tree()) tree()->setFocus(this);
+      s_.setHoverPart({});  // a gesture shows its own preview
       int zone = 0;
       const doc::Note* n = s_.noteAt(e.pos, &zone);
       if (n && (s_.ctx.drawMode() || (e.clickCount >= 2 && !(e.mods & (mod::kShift | mod::kCtrl))))) {
@@ -243,25 +246,34 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         dragTo(e.pos);
         return true;
       }
-      if (!captured()) s_.hoverAt(e.pos, false);
+      if (!captured()) {
+        s_.hoverAt(e.pos, false);
+        s_.hoverPartAt(e.pos);
+      }
       return false;
     case PointerType::Up: {
       if (e.button == PointerButton::Right) return true;
       if (e.button != PointerButton::Left) return false;
       DragState& d = s_.drag;
-      if (d.kind == DragKind::None) return true;
+      if (d.kind == DragKind::None) {
+        s_.hoverPartAt(e.pos);
+        return true;
+      }
       if (!d.moved && (d.kind == DragKind::Move || d.kind == DragKind::Copy) && d.pressedWasSelected &&
           !(e.mods & (mod::kShift | mod::kCtrl))) {
         s_.drag = {};
         s_.selectOnly(d.pressed);  // a click on a note of a multiple selection selects just it (Live)
+        s_.hoverPartAt(e.pos);
         return true;
       }
       if (!d.moved && d.kind != DragKind::Draw) {
         s_.drag = {};
         s_.markNotesDirty();
+        s_.hoverPartAt(e.pos);
         return true;
       }
       s_.commitDrag();
+      s_.hoverPartAt(e.pos);  // where the gesture left the notes (the edit repaints the area)
       return true;
     }
     case PointerType::Wheel: {
@@ -295,7 +307,27 @@ void NoteAreaWidget::onCaptureLost() { s_.abortDrag(); }
 
 void NoteAreaWidget::onHoverChanged(bool hovered) {
   Control::onHoverChanged(hovered);
-  if (!hovered) s_.clearHover();
+  if (!hovered) {
+    s_.clearHover();
+    s_.clearHoverPart();
+  }
+}
+
+Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
+  if (!s_.hasClip()) return Cursor::Inherit;
+  if (captured()) switch (s_.drag.kind) {
+      case DragKind::Move:
+      case DragKind::Copy: return Cursor::Move;
+      case DragKind::ResizeStart:
+      case DragKind::ResizeEnd: return Cursor::ResizeEW;
+      case DragKind::Draw: return Cursor::Crosshair;
+      case DragKind::Rubber: return Cursor::Arrow;
+      default: break;
+    }
+  if (s_.ctx.drawMode()) return Cursor::Crosshair;  // a click adds a cell's note (or deletes the one under it)
+  int zone = 0;
+  if (!s_.noteAt(p, &zone)) return Cursor::Arrow;  // a drag draws the selection rectangle
+  return zone != 0 ? Cursor::ResizeEW : Cursor::Move;
 }
 
 InfoText NoteAreaWidget::info() const {
@@ -429,6 +461,7 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
     }
     case PointerType::Move:
       if (captured() && d.kind == DragKind::KeysZoom) {
+        d.moved = d.moved || e.pos.x != d.press.x;
         const float scale = tree() ? tree()->scale() : 1.0f;
         const float dx = (e.pos.x - d.press.x) / scale;
         s_.setRowHeight(d.zoomRowPx + static_cast<int32_t>(std::lround(dx / 6.0f)));
@@ -445,6 +478,11 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
       return true;
     default: return false;
   }
+}
+
+Cursor KeysWidget::cursorAt(Vec2) const {
+  if (!s_.hasClip() || s_.rows().empty()) return Cursor::Inherit;
+  return captured() && s_.drag.kind == DragKind::KeysZoom && s_.drag.moved ? Cursor::ResizeEW : Cursor::Pointer;
 }
 
 void KeysWidget::onCaptureLost() {
@@ -468,6 +506,59 @@ RulerWidget::RulerWidget(RollState& s) : Control("ruler"), s_(s) {
                         "start and end. Drag up/down elsewhere to zoom, left/right to scroll.");
 }
 
+RulerWidget::Hit RulerWidget::hitAt(Vec2 p) const {
+  Hit h;
+  const float scale = tree() ? tree()->scale() : 1.0f;
+  const float grab = 5.0f * scale;
+  if (p.y >= static_cast<float>(rect().y) + kBraceHeight * scale) return h;  // under the brace strip: zoom / scroll
+  const doc::ClipLoop loop = s_.shownLoop();
+  const float sx = s_.xOfTick(static_cast<double>(s_.shownContentStart()));
+  const float ex = s_.xOfTick(static_cast<double>(s_.shownContentStart() + s_.shownLength()));
+  const float lx0 = s_.xOfTick(static_cast<double>(loop.start)), lx1 = s_.xOfTick(static_cast<double>(loop.end));
+  if (p.x >= sx - 1.0f && p.x <= sx + 2.0f * grab) {
+    h.kind = DragKind::StartMarker;
+    h.origin = s_.shownContentStart();
+  } else if (!loop.enabled && std::fabs(p.x - ex) <= 2.0f * grab) {
+    h.kind = DragKind::EndMarker;
+    h.origin = s_.shownContentStart() + s_.shownLength();
+  } else if (std::fabs(p.x - lx0) <= grab) {
+    h.kind = DragKind::LoopBrace;
+    h.brace = BraceEdge::Start;
+    h.origin = loop.start;
+  } else if (std::fabs(p.x - lx1) <= grab) {
+    h.kind = DragKind::LoopBrace;
+    h.brace = BraceEdge::End;
+    h.origin = loop.end;
+  } else if (p.x > lx0 && p.x < lx1) {
+    h.kind = DragKind::LoopBrace;
+    h.brace = BraceEdge::Both;
+    h.origin = loop.start;
+  }
+  return h;
+}
+
+// The flags and the brace's ends drag sideways (↔), the whole brace moves; elsewhere a drag zooms (↕; sideways it
+// scrolls).
+Cursor RulerWidget::cursorAt(Vec2 p) const {
+  if (!s_.hasClip()) return Cursor::Inherit;
+  DragKind kind = DragKind::None;
+  BraceEdge brace = BraceEdge::Both;
+  if (captured() && s_.drag.kind != DragKind::None) {
+    kind = s_.drag.kind;
+    brace = s_.drag.brace;
+  } else {
+    const Hit h = hitAt(p);
+    kind = h.kind;
+    brace = h.brace;
+  }
+  switch (kind) {
+    case DragKind::StartMarker:
+    case DragKind::EndMarker: return Cursor::ResizeEW;
+    case DragKind::LoopBrace: return brace == BraceEdge::Both ? Cursor::Move : Cursor::ResizeEW;
+    default: return Cursor::ResizeNS;
+  }
+}
+
 bool RulerWidget::onPointer(const PointerEvent& e) {
   if (!s_.hasClip()) return false;
   DragState& d = s_.drag;
@@ -478,32 +569,11 @@ bool RulerWidget::onPointer(const PointerEvent& e) {
       d = {};
       d.press = d.last = e.pos;
       d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
-      const float grab = 5.0f * scale;
-      const bool inBrace = e.pos.y < static_cast<float>(rect().y) + kBraceHeight * scale;
-      const doc::ClipLoop loop = s_.shownLoop();
-      const float sx = s_.xOfTick(static_cast<double>(s_.shownContentStart()));
-      const float ex = s_.xOfTick(static_cast<double>(s_.shownContentStart() + s_.shownLength()));
-      const float lx0 = s_.xOfTick(static_cast<double>(loop.start)), lx1 = s_.xOfTick(static_cast<double>(loop.end));
-      if (inBrace && e.pos.x >= sx - 1.0f && e.pos.x <= sx + 2.0f * grab) {
-        d.kind = DragKind::StartMarker;
-        d.originTick = s_.shownContentStart();
-      } else if (inBrace && !loop.enabled && std::fabs(e.pos.x - ex) <= 2.0f * grab) {
-        d.kind = DragKind::EndMarker;
-        d.originTick = s_.shownContentStart() + s_.shownLength();
-      } else if (inBrace && std::fabs(e.pos.x - lx0) <= grab) {
-        d.kind = DragKind::LoopBrace;
-        d.brace = BraceEdge::Start;
-        d.originTick = loop.start;
-      } else if (inBrace && std::fabs(e.pos.x - lx1) <= grab) {
-        d.kind = DragKind::LoopBrace;
-        d.brace = BraceEdge::End;
-        d.originTick = loop.end;
-      } else if (inBrace && e.pos.x > lx0 && e.pos.x < lx1) {
-        d.kind = DragKind::LoopBrace;
-        d.brace = BraceEdge::Both;
-        d.originTick = loop.start;
-      } else {
-        d.kind = DragKind::RulerZoom;
+      const Hit h = hitAt(e.pos);
+      d.kind = h.kind;
+      d.brace = h.brace;
+      d.originTick = h.origin;
+      if (d.kind == DragKind::RulerZoom) {
         d.zoomPxPerTick = s_.pxPerTick();
         d.zoomTick = s_.tickAtX(e.pos.x);
         d.pressScrollTick = s_.scrollTick();
@@ -563,21 +633,7 @@ bool VelocityLaneWidget::onPointer(const PointerEvent& e) {
     case PointerType::Down: {
       if (e.button != PointerButton::Left) return false;
       if (s_.noteArea && tree()) tree()->setFocus(s_.noteArea);
-      // The stem nearest the pointer within reach; among stems at the same x the one whose head is closest.
-      const float grab = kStemGrab * scale;
-      const doc::Note* best = nullptr;
-      float bestScore = 1e30f;
-      const Ticks t0 = roundTicks(s_.tickAtX(e.pos.x - grab)) - 1, t1 = roundTicks(s_.tickAtX(e.pos.x + grab)) + 1;
-      s_.forNotesIn(t0, t1, [&](const doc::Note& n) {
-        if (n.start < t0 || n.start > t1) return;
-        const float x = s_.xOfTick(static_cast<double>(n.start));
-        if (std::fabs(x - e.pos.x) > grab) return;
-        const float score = std::fabs(x - e.pos.x) * 4.0f + std::fabs(yOfValue(s_.previewValue(n)) - e.pos.y);
-        if (score < bestScore) {
-          bestScore = score;
-          best = &n;
-        }
-      });
+      const doc::Note* best = stemAt(e.pos);
       d = {};
       if (!best) {
         if (!(e.mods & (mod::kShift | mod::kCtrl))) s_.clearSelection();
@@ -614,6 +670,30 @@ bool VelocityLaneWidget::onPointer(const PointerEvent& e) {
       return true;
     default: return false;
   }
+}
+
+const doc::Note* VelocityLaneWidget::stemAt(Vec2 p) const {
+  const float grab = kStemGrab * (tree() ? tree()->scale() : 1.0f);
+  const doc::Note* best = nullptr;
+  float bestScore = 1e30f;
+  const Ticks t0 = roundTicks(s_.tickAtX(p.x - grab)) - 1, t1 = roundTicks(s_.tickAtX(p.x + grab)) + 1;
+  s_.forNotesIn(t0, t1, [&](const doc::Note& n) {
+    if (n.start < t0 || n.start > t1) return;
+    const float x = s_.xOfTick(static_cast<double>(n.start));
+    if (std::fabs(x - p.x) > grab) return;
+    const float score = std::fabs(x - p.x) * 4.0f + std::fabs(yOfValue(s_.previewValue(n)) - p.y);
+    if (score < bestScore) {
+      bestScore = score;
+      best = &n;
+    }
+  });
+  return best;
+}
+
+Cursor VelocityLaneWidget::cursorAt(Vec2 p) const {
+  if (!s_.hasClip()) return Cursor::Inherit;
+  if (captured() && s_.drag.kind == DragKind::Velocity) return Cursor::ResizeNS;
+  return stemAt(p) ? Cursor::ResizeNS : Cursor::Arrow;
 }
 
 bool VelocityLaneWidget::onKey(const KeyEvent& e) {

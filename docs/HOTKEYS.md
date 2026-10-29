@@ -43,8 +43,13 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `arrangement.zoomBack` | `X` | arrangement | Arrangement View Commands | implemented (T3.8) |
 | `arrangement.zoomIn` | `=` | arrangement | Zooming, Display and Selection | implemented (T3.8; Live's `+`, unshifted) |
 | `arrangement.zoomOut` | `-` | arrangement | Zooming, Display and Selection | implemented (T3.8) |
-| `arrangement.markerLeft` | `Left` | arrangement | Arrangement View Commands | implemented (T3.x-fix-look; the insert marker one grid cell earlier, the selected tracks kept) |
-| `arrangement.markerRight` | `Right` | arrangement | Arrangement View Commands | implemented (T3.x-fix-look; one grid cell later) |
+| `arrangement.markerLeft` | `Left` | arrangement | Arrangement View Commands | implemented (T3.x-fix-look; the insert marker one grid cell earlier, the selected tracks kept; T4.16b: with clips selected, not a range, the clips one grid cell earlier instead, one undo step) |
+| `arrangement.markerRight` | `Right` | arrangement | Arrangement View Commands | implemented (T3.x-fix-look; one grid cell later; T4.16b: the selected clips likewise) |
+| `arrangement.nudgeFineLeft` | `Alt+Left` | arrangement | Arrangement View Commands | implemented (T4.16b; the selected clips a 1/128 note earlier, off the grid; one undo step) |
+| `arrangement.nudgeFineRight` | `Alt+Right` | arrangement | Arrangement View Commands | implemented (T4.16b; a 1/128 note later) |
+| `arrangement.extendLeft` | `Shift+Left` | arrangement | Zooming, Display and Selection | implemented (T4.16b; the time selection's end one grid cell earlier, never before its start) |
+| `arrangement.extendRight` | `Shift+Right` | arrangement | Zooming, Display and Selection | implemented (T4.16b; the end one grid cell later; from the insert marker it becomes a range over the selected tracks, selecting the clips it touches) |
+| `arrangement.deselect` | `Escape` | arrangement | — (pqdaw; Live has no binding) | implemented (T4.16b; drops the clip, time and breakpoint selection, the tracks stay; a running drag is cancelled first by the view) |
 | `arrangement.trackUp` | `Up` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track above, scrolled into view) |
 | `arrangement.trackDown` | `Down` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track below) |
 | `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | implemented (T3.10; any parents, nesting allowed) |
@@ -77,6 +82,11 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `pianoroll.stepUp` | `Up` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
 | `pianoroll.nudgeLeft` | `Left` | pianoroll | MIDI Note Editor | implemented (T3.x-fix-look; the selected notes one grid cell earlier, one undo step) |
 | `pianoroll.nudgeRight` | `Right` | pianoroll | MIDI Note Editor | implemented (T3.x-fix-look; one grid cell later) |
+| `pianoroll.nudgeFineLeft` | `Alt+Left` | pianoroll | MIDI Note Editor | implemented (T4.16b; the selected notes a 1/128 note earlier, off the grid; one undo step) |
+| `pianoroll.nudgeFineRight` | `Alt+Right` | pianoroll | MIDI Note Editor | implemented (T4.16b; a 1/128 note later) |
+| `pianoroll.shorten` | `Shift+Left` | pianoroll | MIDI Note Editor | implemented (T4.16b; the selected notes' ends one grid cell earlier, measured at the earliest note's end; the shortest keeps at least one cell; one undo step) |
+| `pianoroll.lengthen` | `Shift+Right` | pianoroll | MIDI Note Editor | implemented (T4.16b; one grid cell longer) |
+| `pianoroll.deselect` | `Escape` | pianoroll | — (pqdaw; Live has no binding) | implemented (T4.16b; with nothing selected Esc falls through) |
 | `pianoroll.stepDown` | `Down` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
 | `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
@@ -120,6 +130,36 @@ These keys belong to the focused control and never reach a keymap while it has f
 | Popover | `Esc` | dismiss |
 | any | `Tab` / `Shift+Tab` | focus traversal (T3.1) when no binding takes the chord |
 | Code editor (the circuit editor's text pane, T4.4) | arrows (`Ctrl`: by word), `Home` / `End` (`Ctrl`: of the text), `Page Up` / `Page Down`, `Shift` selects; `Backspace` / `Delete` (`Ctrl`: word); `Enter` keeps the indent; `Tab` / `Shift+Tab` indent / outdent; `Ctrl+A` / `C` / `X` / `V` | editing; `Ctrl+Z` / `Ctrl+Y` go to the editor's one history |
+
+## Pointer affordances: arrangement, piano roll, automation (T4.16b)
+
+Every part shows the cursor of what a press there does (the same hit test the press uses), and the part a press would grab is highlighted, as in Live. Modifier changes with the pointer still re-evaluate it (Alt over an envelope).
+
+| Part | Cursor | Hover highlight | Press / drag |
+|---|---|---|---|
+| Note body | Move | note brightened | select, drag moves (Alt copies) |
+| Note start / end (4 px) | ↔ | note brightened + the edge marked | drag resizes that edge |
+| Note area, empty | Arrow | — | selection rectangle; double-click adds a note |
+| Note area in Draw Mode (B) | Crosshair | note body | click adds a cell's note / deletes the note under it |
+| Velocity / chance stem | ↕ | — | drag changes the selected notes' values |
+| Keys | Pointer | — | click auditions, selects the row (horizontal drag zooms: ↔ while dragging) |
+| Clip ruler: start / end flag, loop brace ends | ↔ | — | drag moves it |
+| Clip ruler: loop brace | Move | — | drag moves the loop |
+| Clip ruler: lower strip | ↕ | — | drag zooms (sideways scrolls) |
+| Clip title strip | Move | strip brightened | drag moves (Alt copies) |
+| Clip start / end | ↔ | the edge marked | drag trims |
+| Clip body, empty lane | Arrow | — | a time selection (Live) |
+| Beat ruler: loop brace ends | ↔ | — | drag moves the loop start / end (one undo step; Esc cancels) |
+| Beat ruler: loop brace | Move | — | drag moves the loop |
+| Beat ruler: locator flag | ↔ | — | drag moves the locator; click jumps there |
+| Beat ruler: numbers / elsewhere | ↕ | — | click locates; drag zooms (sideways scrolls) |
+| Overview | Move | — | click / drag moves the view |
+| Track header / lane header bottom edge | ↕ | — | drag resizes the row / lane |
+| Fold triangle, lanes toggle, parameter choosers, lane + / −, Re-enable Automation | Pointer | (their own) | click |
+| Breakpoint | Move | handle enlarged | drag moves the selected points |
+| Envelope line | Pointer | — | click adds a breakpoint (dragged on from there) |
+| Envelope segment with Alt | ↕ | — | drag bends it |
+| Lane / automation band elsewhere (or Shift / Ctrl on the line) | Arrow | — | a time selection |
 
 ## Circuit editor (T4.4, handled by the editor window, not the keymap)
 

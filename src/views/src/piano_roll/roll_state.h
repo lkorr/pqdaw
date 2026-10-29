@@ -283,6 +283,11 @@ public:
   // on the harmonics of the clip's virtual fundamental (doc::virtualFundamental, kept by the document: T3.6-fix1).
   void stepSelection(int32_t steps, doc::ops::StepUnit unit);
   void nudgeSelection(int32_t cells);
+  // T4.16b (Live's MIDI editor keys): Alt+Left / Right move the selected notes by kFineNudge off the grid; Shift+Left /
+  // Right shorten / lengthen them by a grid cell (from the earliest note's end; a note never gets shorter than one
+  // cell this way). One undo step each.
+  void nudgeSelectionFine(int32_t dir);
+  void lengthenSelection(int32_t cells);
   void copySelection();
   void cutSelection();
   void paste();
@@ -392,6 +397,24 @@ public:
   // deviation, the overlay EDO's nearest step), as hoverAt formats it. Also used for the hovered note.
   std::string pitchReadout(double cents, bool nearestRatio = true) const;
 
+  // --- hover affordance (T4.16b) ---
+  // The note part a press at the pointer would grab (Live brightens the note and shows the edge it would trim):
+  // note id (0: none) and zone (−1 start, +1 end, 0 body). The note area draws it over the notes; a change damages
+  // only the two notes' rects. Not shown while a gesture runs.
+  struct HoverPart {
+    uint32_t note = 0;
+    int8_t zone = 0;
+    bool operator==(const HoverPart&) const = default;
+  };
+  const HoverPart& hoverPart() const noexcept { return hoverPart_; }
+  void setHoverPart(HoverPart h);
+  // From the pointer at device `p` over the note area (Draw Mode: the body only, a press deletes the note).
+  void hoverPartAt(ui::Vec2 p);
+  // The pointer left the note area.
+  void clearHoverPart();
+  // After a document change moved the notes: recompute at the last pointer position (no damage: everything repaints).
+  void refreshHoverPart();
+
   // --- audition ---
   void audition(const tuning::PitchId& p, float velocity, Ticks contentStart, Ticks length);
 
@@ -462,6 +485,8 @@ private:
   bool hoverKeys_ = false;
   const void* hoverSnap_ = nullptr;  // the snapshot it was formatted for
   std::string hoverTitle_, hoverBody_;
+  HoverPart hoverPart_;
+  std::optional<ui::Vec2> hoverPartPos_;  // the pointer's last position over the note area (none: outside)
   std::shared_ptr<RollState*> self_;
   mutable const doc::NoteClip* vfClip_ = nullptr;  // virtualFundamental() cache (per clip snapshot)
   mutable std::optional<tuning::Rational> vf_;

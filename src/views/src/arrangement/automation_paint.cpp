@@ -156,12 +156,17 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
     const bool all = count * au::kHandleMinSpacing * ctx.scale.factor <= static_cast<float>(b.rect.w);
     const bool sameLane = selParam_ == b.param && selTrack_ == b.track;
     const float r = au::kPointRadius * ctx.scale.factor;
-    for (auto it = (all || (sameLane && !selIds_.empty())) ? first : last; it != last; ++it) {  // nothing to draw: no walk
+    // T4.16b: the breakpoint a press would grab, enlarged (shown even where the level of detail hides handles).
+    const bool hoverBand = hover_.valid() && drag_.kind == DragKind::None && hover_.param == b.param && hover_.track == b.track &&
+                           hover_.overClips == b.overClips;
+    for (auto it = (all || hoverBand || (sameLane && !selIds_.empty())) ? first : last; it != last; ++it) {  // nothing to draw: no walk
       const bool sel = sameLane && std::binary_search(selIds_.begin(), selIds_.end(), it->id.value);
-      if (!all && !sel) continue;
+      const bool hov = hoverBand && it->id == hover_.point;
+      if (!all && !sel && !hov) continue;
       const Vec2 c{xOf(it->tick), yOf(it->value)};
-      dl.addCircleFilled(c, r + ctx.scale.factor, at.pointEdge);
-      dl.addCircleFilled(c, r, sel ? at.pointSelected : lineCol);
+      const float rr = hov ? r + 1.5f * ctx.scale.factor : r;
+      dl.addCircleFilled(c, rr + ctx.scale.factor, hov ? at.pointSelected : at.pointEdge);
+      dl.addCircleFilled(c, rr, sel ? at.pointSelected : lineCol);
       ++stats_.handles;
     }
   }
@@ -406,6 +411,17 @@ void LaneHeader::paint(PaintContext& ctx) {
   }
 }
 
+bool LaneHeader::onResizeEdge(Vec2 p) const noexcept {
+  const float scale = tree() ? tree()->scale() : 1.0f;
+  return p.y >= static_cast<float>(rect().bottom()) - std::max(2.0f, am::kResizeGrab * scale) - 1.0f;
+}
+
+Cursor LaneHeader::cursorAt(Vec2 p) const {
+  if (resizing_ || onResizeEdge(p)) return Cursor::ResizeNS;
+  if (chooserRect().contains(p) || addRect().contains(p) || hideRect().contains(p)) return Cursor::Pointer;
+  return Cursor::Inherit;  // a click selects the track
+}
+
 bool LaneHeader::onPointer(const PointerEvent& e) {
   const float scale = tree() ? tree()->scale() : 1.0f;
   ArrangementAutomation& a = view_.automation();
@@ -420,8 +436,7 @@ bool LaneHeader::onPointer(const PointerEvent& e) {
     }
   }
   if (e.type != PointerType::Down) return e.type == PointerType::Up;
-  const IRect r = rect();
-  if (e.button == PointerButton::Left && e.pos.y >= static_cast<float>(r.bottom()) - std::max(2.0f, am::kResizeGrab * scale) - 1.0f) {
+  if (e.button == PointerButton::Left && onResizeEdge(e.pos)) {
     resizing_ = true;
     resizeStartY_ = e.pos.y;
     resizeStartH_ = a.laneHeight(lane_.track, lane_.param);
@@ -454,6 +469,7 @@ ParamChooser::ParamChooser(ArrangementView& view) : Control("automation"), view_
   setInfo("Automation Control Chooser",
           "The parameter whose automation is shown over this track's clips in Automation Mode (A): the track's mixer "
           "controls and the main tunings' parameters.");
+  setCursor(Cursor::Pointer);  // T4.16b: opens a menu
 }
 
 void ParamChooser::set(doc::TrackId track, std::string label, bool automated, bool overridden) {
@@ -491,6 +507,7 @@ bool ParamChooser::onPointer(const PointerEvent& e) {
 
 LanesToggle::LanesToggle(ArrangementView& view) : Control("lanes"), view_(view) {
   setInfo("Show / Hide Automation Lanes", "Shows this track's automation lanes under it, one per parameter.");
+  setCursor(Cursor::Pointer);
 }
 
 void LanesToggle::set(doc::TrackId track, bool shown) {
@@ -527,6 +544,7 @@ ReenableButton::ReenableButton(ArrangementView& view) : Control("reenable-automa
           "Some automated parameters were changed by hand, which switched their automation off (their envelopes are "
           "grey). Click to switch it back on.");
   setVisible(false);
+  setCursor(Cursor::Pointer);
 }
 
 void ReenableButton::paint(PaintContext& ctx) {

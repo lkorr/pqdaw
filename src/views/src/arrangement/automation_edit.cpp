@@ -469,27 +469,115 @@ void ArrangementAutomation::abortDrag() {
   if (range) clearSelection();
 }
 
+std::optional<AutomationBand> ArrangementAutomation::pressBand(Vec2 p) const {
+  std::optional<AutomationBand> b = bandAt(p);
+  if (!b) return std::nullopt;
+  if (b->overClips && !b->pinned) {
+    // Over the clips the title strips stay the clips' (move, Alt-copy, select): T3.9's editor takes them.
+    const int32_t row = view_.rowAt(p.y);
+    const ArrangementRow& ar = view_.rows()[static_cast<size_t>(row)];
+    if (!ar.group && !ar.track->clips.empty()) {
+      const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
+      const IRect lane = view_.rowLaneRect(row);
+      if (p.y < static_cast<float>(lane.y + 1 + s.px(am::kClipTitleHeight))) {
+        const ClipIndex& ix = view_.model().clips(*ar.track);
+        const auto t = static_cast<Ticks>(std::floor(view_.tickAtX(p.x)));
+        const auto [a, z] = ix.visible(t, t + 1);
+        if (a < z) return std::nullopt;
+      }
+    }
+  }
+  return b;
+}
+
+int32_t ArrangementAutomation::pointAt(const AutomationBand& b, std::span<const doc::Breakpoint> pts, Vec2 p) const {
+  const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
+  int32_t hit = -1;
+  const float grab = static_cast<float>(s.px(au::kPointGrab));
+  float best = grab * grab;
+  const auto t0 = static_cast<Ticks>(std::floor(view_.tickAtX(p.x - grab)));
+  const auto t1 = static_cast<Ticks>(std::ceil(view_.tickAtX(p.x + grab)));
+  auto it = std::lower_bound(pts.begin(), pts.end(), t0, [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
+  for (; it != pts.end() && it->tick <= t1; ++it) {
+    const float dx = view_.xOfTick(static_cast<double>(it->tick)) - p.x;
+    const float dy = yOfValue(b, it->value) - p.y;
+    if (dx * dx + dy * dy <= best) {
+      best = dx * dx + dy * dy;
+      hit = static_cast<int32_t>(it - pts.begin());
+    }
+  }
+  return hit;
+}
+
+bool ArrangementAutomation::segmentAt(std::span<const doc::Breakpoint> pts, double t) noexcept {
+  if (pts.size() < 2) return false;
+  auto it = std::upper_bound(pts.begin(), pts.end(), t, [](double x, const doc::Breakpoint& bp) { return x < static_cast<double>(bp.tick); });
+  return it != pts.begin() && it != pts.end() && it->tick > (it - 1)->tick;
+}
+
+bool ArrangementAutomation::onLine(const AutomationBand& b, std::span<const doc::Breakpoint> pts, Vec2 p) const {
+  const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
+  const double tick = std::max(0.0, view_.tickAtX(p.x));
+  const double fallback = currentParamValue(*view_.shown(), b.param);
+  const double lineValue = pts.empty() ? fallback : pq::evalAutomation(pts, tick, fallback);
+  return std::fabs(yOfValue(b, lineValue) - p.y) <= static_cast<float>(s.px(au::kLineGrab));
+}
+
+std::optional<Cursor> ArrangementAutomation::cursorAt(Vec2 p, Mods mods) const {
+  switch (drag_.kind) {
+    case DragKind::Points: return Cursor::Move;
+    case DragKind::Curve: return Cursor::ResizeNS;
+    case DragKind::Range: return Cursor::Arrow;
+    case DragKind::None: break;
+  }
+  const std::optional<AutomationBand> b = pressBand(p);
+  if (!b) return std::nullopt;
+  const std::span<const doc::Breakpoint> pts = b->lane ? std::span<const doc::Breakpoint>(b->lane->points) : std::span<const doc::Breakpoint>{};
+  // The same order as press(): Alt bends a segment (or does nothing), a breakpoint moves, the line adds one.
+  if ((mods & mod::kAlt) && pts.size() >= 2) return segmentAt(pts, std::max(0.0, view_.tickAtX(p.x))) ? Cursor::ResizeNS : Cursor::Arrow;
+  if (pointAt(*b, pts, p) >= 0) return Cursor::Move;
+  if (!(mods & (mod::kCtrl | mod::kShift)) && onLine(*b, pts, p)) return Cursor::Pointer;
+  return Cursor::Arrow;
+}
+
+void ArrangementAutomation::setHover(doc::TrackId track, const doc::ParamRef& param, bool overClips, doc::BreakpointId point, Ticks tick) {
+  if (hover_.point == point && hover_.track == track && hover_.param == param && hover_.overClips == overClips) return;
+  // The enlarged handle's columns (old and new) in the bands showing the parameter.
+  const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
+  const int32_t reach = s.px(au::kPointRadius + 4.0f) + 2;
+  auto damage = [&](const Hover& h) {
+    if (!h.valid()) return;
+    const auto x = static_cast<int32_t>(std::lround(view_.xOfTick(static_cast<double>(h.tick))));
+    damageColumns(h.param, x - reach, x + reach);
+  };
+  damage(hover_);
+  hover_ = {track, param, overClips, point, tick};
+  damage(hover_);
+}
+
+bool ArrangementAutomation::hoverAt(Vec2 p, Mods mods) {
+  if (drag_.kind != DragKind::None) return true;
+  const std::optional<AutomationBand> b = pressBand(p);
+  if (!b) {
+    clearHover();
+    return false;
+  }
+  const std::span<const doc::Breakpoint> pts = b->lane ? std::span<const doc::Breakpoint>(b->lane->points) : std::span<const doc::Breakpoint>{};
+  const int32_t hit = (mods & mod::kAlt) ? -1 : pointAt(*b, pts, p);  // Alt: a press bends the segment instead
+  if (hit < 0) clearHover();
+  else setHover(b->track, b->param, b->overClips, pts[static_cast<size_t>(hit)].id, pts[static_cast<size_t>(hit)].tick);
+  return true;
+}
+
+void ArrangementAutomation::clearHover() { setHover({}, {}, false, {}, 0); }
+
 bool ArrangementAutomation::pointer(const PointerEvent& e) {
   switch (e.type) {
     case PointerType::Down: {
       if (e.button != PointerButton::Left && e.button != PointerButton::Right) return false;
-      const std::optional<AutomationBand> b = bandAt(e.pos);
+      const std::optional<AutomationBand> b = pressBand(e.pos);
       if (!b) return false;
-      if (b->overClips && !b->pinned) {
-        // Over the clips the title strips stay the clips' (move, Alt-copy, select): T3.9's editor takes them.
-        const int32_t row = view_.rowAt(e.pos.y);
-        const ArrangementRow& ar = view_.rows()[static_cast<size_t>(row)];
-        if (!ar.group && !ar.track->clips.empty()) {
-          const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
-          const IRect lane = view_.rowLaneRect(row);
-          if (e.pos.y < static_cast<float>(lane.y + 1 + s.px(am::kClipTitleHeight))) {
-            const ClipIndex& ix = view_.model().clips(*ar.track);
-            const auto t = static_cast<Ticks>(std::floor(view_.tickAtX(e.pos.x)));
-            const auto [a, z] = ix.visible(t, t + 1);
-            if (a < z) return false;
-          }
-        }
-      }
+      clearHover();  // the gesture shows its own preview
       press(e, *b);
       return true;
     }
@@ -509,28 +597,12 @@ void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b
   if (UiTree* t = view_.tree()) t->setFocus(&view_);
   if (drag_.kind != DragKind::None) cancelDrag();
   drag_ = {};
-  const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
   const std::span<const doc::Breakpoint> pts = b.lane ? std::span<const doc::Breakpoint>(b.lane->points) : std::span<const doc::Breakpoint>{};
   const bool ctrl = (e.mods & mod::kCtrl) != 0, shift = (e.mods & mod::kShift) != 0, alt = (e.mods & mod::kAlt) != 0;
   const bool sameLane = selParam_ == b.param && selTrack_ == b.track;
 
   // The breakpoint under the pointer (the nearest within the grab radius; later points win ties: drawn on top).
-  int32_t hit = -1;
-  {
-    const float grab = static_cast<float>(s.px(au::kPointGrab));
-    float best = grab * grab;
-    const auto t0 = static_cast<Ticks>(std::floor(view_.tickAtX(e.pos.x - grab)));
-    const auto t1 = static_cast<Ticks>(std::ceil(view_.tickAtX(e.pos.x + grab)));
-    auto it = std::lower_bound(pts.begin(), pts.end(), t0, [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
-    for (; it != pts.end() && it->tick <= t1; ++it) {
-      const float dx = view_.xOfTick(static_cast<double>(it->tick)) - e.pos.x;
-      const float dy = yOfValue(b, it->value) - e.pos.y;
-      if (dx * dx + dy * dy <= best) {
-        best = dx * dx + dy * dy;
-        hit = static_cast<int32_t>(it - pts.begin());
-      }
-    }
-  }
+  const int32_t hit = pointAt(b, pts, e.pos);
 
   if (e.button == PointerButton::Right) {
     if (hit >= 0 && !(sameLane && containsId(selIds_, pts[static_cast<size_t>(hit)].id.value)))
@@ -617,8 +689,7 @@ void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b
   }
 
   // On the line: a new breakpoint there (snapped in time, on the envelope's value), dragged on from here.
-  const double lineValue = pts.empty() ? fallback : pq::evalAutomation(pts, tick, fallback);
-  if (!ctrl && !shift && std::fabs(yOfValue(b, lineValue) - e.pos.y) <= static_cast<float>(s.px(au::kLineGrab))) {
+  if (!ctrl && !shift && onLine(b, pts, e.pos)) {
     const Ticks at = std::max<Ticks>(0, grid().snap(static_cast<Ticks>(std::llround(tick))));
     const double v = pts.empty() ? fallback : pq::evalAutomation(pts, static_cast<double>(at), fallback);
     const doc::Breakpoint np{at, static_cast<float>(v), 0.0f, kPendingPoint};

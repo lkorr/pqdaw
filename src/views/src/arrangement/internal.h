@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -233,6 +234,29 @@ public:
   // the start marker; the selected tracks stay), the track selection one row up / down.
   void nudgeMarker(int32_t cells);
   void stepTrack(int32_t rows);
+  // T4.16b keys (Live): whether Left / Right move the selected clips (clips selected, not a range drag) instead of
+  // the marker; the clips by grid cells / by drag::kFineNudge (Alt) off the grid (one undo step each); Shift+Left /
+  // Right move the time selection's end by a grid cell (the clips it then touches are selected, as a range drag);
+  // Esc drops the clips and the time selection (the tracks stay selected).
+  bool clipsNudgeable() const noexcept { return !sel_.clips.empty() && !sel_.range; }
+  bool nudgeClips(int32_t cells);
+  bool nudgeClipsFine(int32_t dir);
+  void extendTime(int32_t cells);
+  bool deselect();
+
+  // --- affordances (T4.16b) ---
+  // The cursor for the pointer at `p`: a drag's own, else what a press there would do (hitTest, as press()).
+  ui::Cursor cursorAt(ui::Vec2 p) const;
+  // The clip part a press would grab, highlighted (Live): the title strip (move) or an edge (resize). zone as Hit
+  // (−1 / +1 edges, 0 title; the body selects time and is not highlighted). A change damages the two clips' boxes.
+  struct HoverPart {
+    doc::ClipRef ref{};
+    int8_t zone = 0;
+    bool operator==(const HoverPart& o) const noexcept { return ref.clip == o.ref.clip && ref.track == o.ref.track && zone == o.zone; }
+  };
+  const HoverPart& hoverPart() const noexcept { return hover_; }
+  void hoverAt(ui::Vec2 p);
+  void clearHover();
 
   // --- paint queries ---
   DragKind dragKind() const noexcept { return drag_.moved ? drag_.kind : DragKind::None; }
@@ -312,6 +336,11 @@ private:
     int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body
   };
   Hit hitTest(ui::Vec2 p) const;
+  void setHover(HoverPart h);
+  // Clips of rows r0 … r1 (with selectedTracksOnly: only the selected tracks' rows) meeting [s, e), plus `base`;
+  // sorted and de-duplicated by id.
+  std::vector<doc::ClipRef> clipsMeeting(int32_t r0, int32_t r1, bool selectedTracksOnly, Ticks s, Ticks e,
+                                         std::vector<doc::ClipRef> base) const;
   Grid grid() const noexcept;
   Ticks snapTick(Ticks t) const noexcept;
   Ticks tickAt(float x) const noexcept;
@@ -344,6 +373,7 @@ private:
   std::vector<uint32_t> ids_;       // selected clip ids, sorted
   std::vector<uint32_t> trackIds_;  // selected track ids, sorted
   Drag drag_;
+  HoverPart hover_;
   Clipboard clipboard_;
   std::optional<TickRange> lastPaste_;  // the range the last paste selected (pasting again goes after it)
 };
@@ -368,9 +398,12 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override;
+  void onHoverChanged(bool hovered) override;
+  ui::Cursor cursorAt(ui::Vec2 p) const override;  // T4.16b: the automation-mode envelopes' parts
 
 private:
   ArrangementView& view_;
+  ui::Mods mods_ = ui::mod::kNone;  // of the last pointer event (the cursor's modifier variants)
 };
 
 // Content of the vertical ScrollView: the lane canvas and the headers, placed from the rows.
@@ -393,6 +426,13 @@ public:
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override;
   void onFrame(double now) override;
+  void onHoverChanged(bool hovered) override;
+  // T4.16b: the cursor of what a press would do (the automation's parts first, as onPointer asks them first), and
+  // the hover highlight of the clip part / breakpoint a press would grab.
+  ui::Cursor cursorAt(ui::Vec2 p) const override;
+  // The modifiers changed with the pointer still (a key event in the arrangement): Alt turns a breakpoint press into
+  // a curve drag, Ctrl / Shift a line press into a selection, so the hover follows.
+  void modsChanged(ui::Mods m);
   // Builds missing previews (and, once the zoom has settled, preview tiles: T3.8-fix1) of the visible clips within
   // one frame's budgets; true when none is missing.
   bool buildAhead();
@@ -405,19 +445,38 @@ private:
   bool repaintWhenBuilt_ = false;  // a paint drew a clip approximately: repaint once everything is built
   uint64_t latchBuilds_ = 0;       // previews + tiles built when repaintWhenBuilt_ was set
   uint64_t paintFrame_ = 0;        // PaintContext::frame of the last paint (stats and budgets are per frame)
+  ui::Mods mods_ = ui::mod::kNone;     // held at the last pointer / key event
+  std::optional<ui::Vec2> pointer_;    // the pointer over the canvas (none: outside)
+  void updateHover();
 };
 
 // Loop brace, bar numbers, ticks, locators, tempo / signature markers, start marker, playhead. Click locates,
-// drag zooms (vertical) and scrolls (horizontal).
+// drag zooms (vertical) and scrolls (horizontal). T4.16b: the loop brace's ends and the brace itself, and the
+// locators, drag (snapped relative to the grid, previewed, one undo step on release; Esc cancels).
 class Ruler : public ui::Control {
 public:
   explicit Ruler(ArrangementView& view);
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
-  void onCaptureLost() override { pressed_ = false; }
+  void onCaptureLost() override { cancelDrag(); }
+  ui::Cursor cursorAt(ui::Vec2 p) const override;
+  // Esc: drops a brace / locator drag (true when one ran).
+  bool cancelDrag();
+  // What a press at `p` grabs.
+  enum class Grab : uint8_t { Zoom, LoopStart, LoopEnd, Loop, Locator };
+  struct Hit {
+    Grab grab = Grab::Zoom;
+    uint32_t locator = 0;  // index into the project's locators (Grab::Locator)
+  };
+  Hit hitAt(ui::Vec2 p) const;
+  // The loop and a locator's tick as drawn now (a drag's preview applied).
+  doc::LoopRegion shownLoop() const noexcept;
+  Ticks shownLocator(uint32_t index) const noexcept;
 
 private:
   ArrangementView& view_;
+  Hit grab_{};
+  Ticks dt_ = 0;  // the dragged part's snapped delta
   struct Marker {
     Ticks tick;
     uint8_t kind;  // 0 locator, 1 time signature, 2 tempo
@@ -493,6 +552,8 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override { resizing_ = false; }
+  ui::Cursor cursorAt(ui::Vec2 p) const override;  // T4.16b: ↕ at the bottom edge, Pointer over its buttons
+  bool onResizeEdge(ui::Vec2 p) const noexcept;
 
 private:
   ArrangementView& view_;

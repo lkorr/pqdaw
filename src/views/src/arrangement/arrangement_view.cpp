@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 
+#include "../common/drag.h"
 #include "internal.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/shell/shell.h"
@@ -29,6 +30,9 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.toggleActive",
     // T3.x-fix-look: arrow keys
     "arrangement.markerLeft", "arrangement.markerRight", "arrangement.trackUp", "arrangement.trackDown",
+    // T4.16b: Alt / Shift arrows, Esc
+    "arrangement.nudgeFineLeft", "arrangement.nudgeFineRight", "arrangement.extendLeft", "arrangement.extendRight",
+    "arrangement.deselect",
     // T3.10
     "track.newMidi", "track.newReturn", "track.group", "track.ungroup", "arrangement.rename",
     // T3.15
@@ -171,9 +175,21 @@ void ArrangementView::registerActions() {
   });
   edit("arrangement.rename", [ed] { (void)ed->renameSelection(); }, hasTracks);
   // T3.x-fix-look: arrow keys (Live): Left / Right move the insert marker by a grid cell, Up / Down select the track
-  // above / below (Shift extends the selection).
-  edit("arrangement.markerLeft", [ed] { ed->nudgeMarker(-1); }, {});
-  edit("arrangement.markerRight", [ed] { ed->nudgeMarker(1); }, {});
+  // above / below (Shift extends the selection). T4.16b: with clips selected (not a range) Left / Right move them by
+  // a grid cell instead, Alt+Left / Right off the grid; Shift+Left / Right move the time selection's end; Esc drops
+  // the clip / time / breakpoint selection.
+  edit("arrangement.markerLeft", [ed] { ed->clipsNudgeable() ? (void)ed->nudgeClips(-1) : ed->nudgeMarker(-1); }, {});
+  edit("arrangement.markerRight", [ed] { ed->clipsNudgeable() ? (void)ed->nudgeClips(1) : ed->nudgeMarker(1); }, {});
+  edit("arrangement.nudgeFineLeft", [ed] { (void)ed->nudgeClipsFine(-1); }, [ed] { return ed->clipsNudgeable(); });
+  edit("arrangement.nudgeFineRight", [ed] { (void)ed->nudgeClipsFine(1); }, [ed] { return ed->clipsNudgeable(); });
+  edit("arrangement.extendLeft", [ed] { ed->extendTime(-1); }, {});
+  edit("arrangement.extendRight", [ed] { ed->extendTime(1); }, {});
+  edit("arrangement.deselect",
+       [ed, au] {
+         au->clearSelection();
+         (void)ed->deselect();
+       },
+       [ed, au] { return au->hasSelection() || !ed->selection().clips.empty() || ed->selection().time.has_value(); });
   edit("arrangement.trackUp", [ed] { ed->stepTrack(-1); }, {});
   edit("arrangement.trackDown", [ed] { ed->stepTrack(1); }, {});
   // T3.15: A toggles automation mode (Live).
@@ -230,7 +246,19 @@ IRect ArrangementView::clipRect(const doc::ClipRef& ref) const noexcept {
   return editor_->clipBox(row, c.start, c.start + c.length);
 }
 
+ArrangementView::ClipHover ArrangementView::clipHover() const noexcept {
+  const arrangement::Editor::HoverPart& h = editor_->hoverPart();
+  return {h.ref, h.zone};
+}
+
 bool ArrangementView::onKey(const KeyEvent& e) {
+  // T4.16b: a modifier pressed or released with the pointer still changes what a press would do (Alt over a segment
+  // curves it): the lanes' hover and cursor follow. Not consumed (the keymap ignores lone modifiers anyway).
+  if (isModifierKey(e.key)) lanes_->modsChanged(drag::modsAfterKey(e));
+  if (e.down && e.key == key::kEscape && ruler_->cancelDrag()) {
+    if (tree() && tree()->captured()) tree()->releaseCapture();
+    return true;
+  }
   if (e.down && e.key == key::kEscape && automation_->dragging()) {
     automation_->abortDrag();
     if (tree() && tree()->captured()) tree()->releaseCapture();

@@ -614,6 +614,41 @@ Status setupPianoRollRatios(Shell& shell) {
   return Ok{};
 }
 
+// T4.16b: the pointer resting on the end of Bass B (bars 5–8): the edge a drag would trim is marked (Live).
+Status setupArrangementHover(Shell& shell) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  shell.tree().layoutNow();
+  doc::ClipRef ref{};
+  doc::forEachTrack(*shell.context().doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Bass" && t.clips.size() > 1) ref = {t.id, t.clips[1].id};
+  });
+  if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "arrangement-hover: needs the arrangement fixture", {}};
+  const ui::IRect box = a->clipRect(ref);
+  ui::PointerEvent e;
+  e.type = ui::PointerType::Move;
+  e.pos = {static_cast<float>(box.right()) - 2.0f, static_cast<float>(box.y + box.h / 2)};
+  shell.tree().dispatchPointer(e);
+  if (!a->clipHover().clip.clip.valid()) return Error{ErrorCode::Unknown, "arrangement-hover: no hover", {}};
+  return Ok{};
+}
+
+// T4.16b: the pointer resting on the end of an unselected note: the note brightened, its end marked.
+Status setupPianoRollHover(Shell& shell) {
+  if (Status s = openFirstClip(shell); !s) return s;
+  shell.tree().layoutNow();
+  auto* v = dynamic_cast<ClipView*>(shell.tree().find("main/body/bottom/detail/clip/clip-view"));
+  if (!v) return Error{ErrorCode::NotFound, "pianoroll-hover: no clip view", {}};
+  const ui::IRect r = v->noteRect(doc::NoteId{100});
+  if (r.empty()) return Error{ErrorCode::NotFound, "pianoroll-hover: needs the pianoroll-12edo fixture", {}};
+  ui::PointerEvent e;
+  e.type = ui::PointerType::Move;
+  e.pos = {static_cast<float>(r.right()) - 2.0f, static_cast<float>(r.y + r.h / 2)};
+  shell.tree().dispatchPointer(e);
+  if (v->noteHover().zone != 1) return Error{ErrorCode::Unknown, "pianoroll-hover: no edge hover", {}};
+  return Ok{};
+}
+
 // T3.19: the note menu (right-click on the chord's 3/2): convert to Degree / Ratio / Cents, Set Pitch…, Lock
 // Fundamental ▸, Row Labels ▸.
 Status setupPianoRollNoteMenu(Shell& shell) {
@@ -1197,6 +1232,8 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp
     {"circuit-inactive-shown", 1280, 800, nullptr, setupCircuitInactiveShown},
     {"circuit-tooltip", 1280, 800, nullptr, setupCircuitTooltip},
+    {"arrangement-hover", 1280, 800, setupArrangementHover},  // T4.16b
+    {"pianoroll-hover", 1280, 800, setupPianoRollHover},      // T4.16b: --project tests/views/fixtures/pianoroll-12edo
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

@@ -391,6 +391,13 @@ public:
   ui::Menu* openContextMenu(ui::Vec2 at);
   // Device rect of a clip's lane box in window coordinates (empty when its track is not a row).
   ui::IRect clipRect(const doc::ClipRef& clip) const noexcept;
+  // T4.16b: the clip part highlighted under the pointer (the one a press would grab): zone −1 / +1 an edge, 0 the
+  // title strip; an invalid clip when none.
+  struct ClipHover {
+    doc::ClipRef clip{};
+    int zone = 0;
+  };
+  ClipHover clipHover() const noexcept;
   // Double-click on a clip: installArrangement sets this to show the detail view and focus the clip view.
   std::function<void()> onOpenClip;
 

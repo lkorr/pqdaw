@@ -325,6 +325,24 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     for (const ZNote& z : zNotes) sorted[count[z.key]++] = z;  // stable: time order within one z
     for (const ZNote& z : sorted) drawNote(dl, {z.x0, z.x1, z.y0, z.y1, z.fill, z.border, z.offGrid}, th->roll.offGrid);
   }
+  // T4.16b: the part of the note a press would grab (Live): the note brightened (inside its border,
+  // under its label), the edge it would trim marked.
+  if (const RollState::HoverPart& hp = s_.hoverPart(); hp.note != 0 && dr.kind == DragKind::None)
+    if (const doc::Note* n = s_.findNote(doc::NoteId{hp.note}))
+      if (const NotePlace pl = s_.place(n->pitch); pl.ok) {
+        const float x0 = std::round(s_.xOfTick(static_cast<double>(n->start)));
+        const float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(n->start + n->length))));
+        const float y0 = static_cast<float>(s_.screenY(pl.top)), y1 = static_cast<float>(s_.screenY(pl.bottom));
+        if (x1 > vx0 && x0 < vx1 && y1 > vy0 && y0 < vy1) {
+          if (x1 - x0 > 2.0f && y1 - y0 > 2.0f) dl.addRectFilled(frect(x0 + 1, y0 + 1, x1 - 1, y1 - 1), withAlpha(th->text.primary, 40));
+          if (hp.zone != 0) {
+            const float w = std::min(std::max(2.0f, std::round(2.0f * ctx.scale.factor)), (x1 - x0) * 0.5f);
+            const float ex = hp.zone > 0 ? x1 - w : x0;
+            dl.addRectFilled(frect(ex, y0, ex + w, y1), th->text.primary);
+          }
+        }
+      }
+
   if (!labels.empty()) paintNoteLabels(ctx);
 
   // Draw-mode preview: the notes the drag will add.

@@ -346,10 +346,18 @@ bool LaneCanvas::buildAhead() {
 
 bool LaneCanvas::onPointer(const PointerEvent& e) {
   if (e.type != PointerType::Wheel) {
+    mods_ = static_cast<Mods>(e.mods & mod::kChordMask);
+    if (e.type != PointerType::Leave) pointer_ = e.pos;
     // T3.15: automation lanes and, in automation mode, the envelopes over the rows take their presses first.
-    if (view_.automation().pointer(e)) return true;
-    if (e.type == PointerType::Down) view_.automation().clearSelection();
-    return view_.editor().pointer(e);  // selection and drags (T3.9)
+    bool handled = view_.automation().pointer(e);
+    if (!handled) {
+      if (e.type == PointerType::Down) view_.automation().clearSelection();
+      handled = view_.editor().pointer(e);  // selection and drags (T3.9)
+    }
+    // T4.16b: the hover highlight follows the pointer between gestures (a press clears it; after a release it shows
+    // what the next press would grab).
+    if (e.type == PointerType::Move || e.type == PointerType::Up) updateHover();
+    return handled;
   }
   if (e.mods & mod::kCtrl) {
     view_.zoomAt(e.pos.x, std::pow(1.25, static_cast<double>(e.wheel.y)));
@@ -369,6 +377,37 @@ bool LaneCanvas::onPointer(const PointerEvent& e) {
 void LaneCanvas::onCaptureLost() {
   view_.editor().abortDrag();
   view_.automation().abortDrag();
+}
+
+void LaneCanvas::onHoverChanged(bool hovered) {
+  if (hovered) return;
+  pointer_.reset();
+  view_.editor().clearHover();
+  view_.automation().clearHover();
+}
+
+void LaneCanvas::updateHover() {
+  ArrangementAutomation& au = view_.automation();
+  Editor& ed = view_.editor();
+  if (!pointer_ || au.dragging() || ed.dragging()) return;
+  // The automation takes the press first where it would (onPointer's order): then no clip part is highlighted.
+  if (au.hoverAt(*pointer_, mods_)) ed.clearHover();
+  else ed.hoverAt(*pointer_);
+}
+
+void LaneCanvas::modsChanged(Mods m) {
+  m = static_cast<Mods>(m & mod::kChordMask);
+  if (m == mods_) return;
+  mods_ = m;
+  updateHover();
+}
+
+Cursor LaneCanvas::cursorAt(Vec2 p) const {
+  const ArrangementAutomation& au = view_.automation();
+  const Editor& ed = view_.editor();
+  if (ed.dragging() && !au.dragging()) return ed.cursorAt(p);
+  if (const std::optional<Cursor> c = au.cursorAt(p, mods_)) return *c;
+  return ed.cursorAt(p);
 }
 
 namespace {
@@ -619,9 +658,11 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
 }
 
 // A clip: border, title strip with the name, body with the note preview (looped content repeated). `g` is where it
-// is drawn (its own bounds, or a drag preview's); a selected clip gets a light outline (T3.9).
+// is drawn (its own bounds, or a drag preview's); a selected clip gets a light outline (T3.9). `hover` (T4.16b): the
+// part a press would grab, highlighted (0 the title strip, −1 / +1 an edge; kNoHover none).
+constexpr int kNoHover = -2;
 void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive,
-               const ClipGeom& g, bool selected) {
+               const ClipGeom& g, bool selected, int hover = kNoHover) {
   const doc::NoteClip& clip = *clipPtr;
   DrawList& dl = lp.ctx.dl;
   // Playback geometry for the segments: the clip itself, or (a preview) a copy of its timing without notes.
@@ -696,6 +737,15 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
     const Rgba border = lp.th.clip.border;
     if (cx0 >= vx0) rect({cx0, top, cx0 + 1.0f, bottom}, border);
     if (cx1 <= vx1) rect({cx1 - 1.0f, top, cx1, bottom}, border);
+  }
+  // T4.16b: the title strip brightened (a drag moves the clip) or the edge a drag trims (Live).
+  if (hover == 0) {
+    rect({vx0, top, vx1, titleB}, withAlpha(lp.th.text.primary, 56));
+  } else if (hover == -1 || hover == 1) {
+    const float w = std::min(static_cast<float>(std::max(2, lp.ctx.scale.px(3.0f))), std::floor((cx1 - cx0) * 0.5f));
+    const float ex = hover < 0 ? cx0 : cx1 - w;
+    const float a = std::max(ex, vx0), b = std::min(ex + w, vx1);
+    if (b > a) rect({a, top, b, bottom}, lp.th.text.primary);
   }
 }
 
@@ -826,12 +876,15 @@ void LaneCanvas::paint(PaintContext& ctx) {
     const ClipIndex& ix = m.clips(t);
     const auto [a, b] = ix.visible(lp.from, lp.to);
     const bool active = rowActive(rows, *it);
+    const Editor::HoverPart& hp = ed.hoverPart();
+    const bool hoverRow = !ed.dragging() && hp.ref.clip.valid() && hp.ref.track == it->id;
     for (size_t j = a; j < b; ++j) {
       const doc::ClipPtr& clip = t.clips[j].clip;
       if (ed.hiddenWhileDragging(clip->id)) continue;  // drawn at its drag target below
       // Deferred tile quads may not cross a clip drawn over them: overlapping clips (later on top) flush first.
       if (j > 0 && ix.start[j] < ix.maxEnd[j - 1]) flushTiles(lp);
-      paintClip(lp, *it, clip, y0 + 1.0f, y1 - 1.0f, active, {clip->start, clip->length, clip->contentStart}, ed.selected(clip->id));
+      paintClip(lp, *it, clip, y0 + 1.0f, y1 - 1.0f, active, {clip->start, clip->length, clip->contentStart}, ed.selected(clip->id),
+                hoverRow && t.clips[j].id == hp.ref.clip ? hp.zone : kNoHover);
     }
   }
   flushTiles(lp);
@@ -931,8 +984,20 @@ BottomLanes::BottomLanes(ArrangementView& view) : Widget("lanes"), view_(view) {
 
 void BottomLanes::onCaptureLost() { view_.automation().abortDrag(); }
 
+void BottomLanes::onHoverChanged(bool hovered) {
+  if (!hovered) view_.automation().clearHover();
+}
+
+Cursor BottomLanes::cursorAt(Vec2 p) const { return view_.automation().cursorAt(p, mods_).value_or(Cursor::Arrow); }
+
 bool BottomLanes::onPointer(const PointerEvent& e) {
-  if (e.type != PointerType::Wheel) return view_.automation().pointer(e);  // T3.15: automation mode over the rows
+  if (e.type != PointerType::Wheel) {
+    mods_ = static_cast<Mods>(e.mods & mod::kChordMask);
+    const bool handled = view_.automation().pointer(e);  // T3.15: automation mode over the rows
+    if ((e.type == PointerType::Move || e.type == PointerType::Up) && !view_.automation().dragging())
+      (void)view_.automation().hoverAt(e.pos, mods_);
+    return handled;
+  }
   if (e.mods & mod::kCtrl) {
     view_.zoomAt(e.pos.x, std::pow(1.25, static_cast<double>(e.wheel.y)));
     return true;

@@ -46,6 +46,14 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   bind("pianoroll.toggleScale", [](ClipView& v) { v.setScaleHighlight(!v.scaleHighlight()); });
   bind("pianoroll.nudgeLeft", [](ClipView& v) { v.nudgeSelection(-1); });  // T3.x-fix-look: arrow keys (Live)
   bind("pianoroll.nudgeRight", [](ClipView& v) { v.nudgeSelection(1); });
+  // T4.16b (Live's MIDI editor keys): Alt+arrows nudge off the grid, Shift+arrows change the length, Esc deselects.
+  ctx_.setViewAction("pianoroll.nudgeFineLeft", [this] { state_->nudgeSelectionFine(-1); }, [this] { return hasClip(); });
+  ctx_.setViewAction("pianoroll.nudgeFineRight", [this] { state_->nudgeSelectionFine(1); }, [this] { return hasClip(); });
+  ctx_.setViewAction("pianoroll.shorten", [this] { state_->lengthenSelection(-1); }, [this] { return hasClip(); });
+  ctx_.setViewAction("pianoroll.lengthen", [this] { state_->lengthenSelection(1); }, [this] { return hasClip(); });
+  // Only with a selection: else Esc falls through (Q27).
+  ctx_.setViewAction("pianoroll.deselect", [this] { state_->clearSelection(); },
+                     [this] { return hasClip() && !state_->selection().empty(); });
 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { onDocument(); });
   viewSub_ = ctx_.observe([this](uint32_t bits) { onView(bits); });
@@ -70,6 +78,7 @@ void ClipView::onDocument() {
     }
     setVisible(s.hasClip());
     s.markAllDirty();
+    s.refreshHoverPart();  // the notes moved under a still pointer (an arrow key, undo)
   }
 }
 
@@ -86,6 +95,7 @@ void ClipView::onView(uint32_t bits) {
     s.markNotesDirty();
   }
   if ((bits & view_change::kTool) && s.cornerPanel) s.cornerPanel->markDirty();
+  if (bits & view_change::kTool) s.refreshHoverPart();  // Draw Mode shows no edges
   if (bits & view_change::kTuningPreview) onDocument();  // the MOS wheel's live tuning (T3.14)
 }
 
@@ -193,6 +203,8 @@ Vec2 ClipView::stemHead(doc::NoteId id) const {
   if (!n || !s.laneView) return {-1.0f, -1.0f};
   return {std::round(s.xOfTick(static_cast<double>(n->start))), s.laneView->yOfValue(s.previewValue(*n))};
 }
+
+ClipView::NoteHover ClipView::noteHover() const noexcept { return {state_->hoverPart().note, state_->hoverPart().zone}; }
 
 void ClipView::stepSelection(int32_t steps, doc::ops::StepUnit unit) { state_->stepSelection(steps, unit); }
 void ClipView::nudgeSelection(int32_t cells) { state_->nudgeSelection(cells); }

@@ -105,6 +105,13 @@ public:
   ui::IRect noteRect(doc::NoteId id) const;
   // The head of the note's velocity (or chance) stem.
   ui::Vec2 stemHead(doc::NoteId id) const;
+  // T4.16b: the note part highlighted under the pointer (the one a press would grab): note id 0 = none; zone −1 the
+  // start, +1 the end, 0 the body.
+  struct NoteHover {
+    uint32_t note = 0;
+    int zone = 0;
+  };
+  NoteHover noteHover() const noexcept;
 
   // --- commands (also the pianoroll actions) ---
   void stepSelection(int32_t steps, doc::ops::StepUnit unit);

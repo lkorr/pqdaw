@@ -276,6 +276,17 @@ public:
   // ---- internal (the arrangement's widgets) -------------------------------------------------------------------
   // Pointer input from the lanes (and the pinned rows): true when the automation took it.
   bool pointer(const ui::PointerEvent& e);
+  // T4.16b: the cursor for the pointer at `p` with `mods` held: a drag's own (points Move, curve ↕, time selection
+  // Arrow), else what a press there would do as press() decides it (a breakpoint: Move; the line: Pointer, a click
+  // adds a point; Alt over a segment: ↕ curve; elsewhere Arrow: a time selection); nullopt where the automation would
+  // not take the press (the clips' title strips in automation mode, no band).
+  std::optional<ui::Cursor> cursorAt(ui::Vec2 p, ui::Mods mods) const;
+  // The breakpoint a press would grab drawn enlarged (Live); true when the automation would take a press at `p`.
+  // A change damages the point's columns only.
+  bool hoverAt(ui::Vec2 p, ui::Mods mods);
+  void clearHover();
+  // The highlighted breakpoint (invalid: none).
+  doc::BreakpointId hoveredPoint() const noexcept { return hover_.point; }
   // Paints the bands meeting ctx.clip: lanes (main rows) or the pinned rows' automation-mode bands.
   void paintLanes(ui::PaintContext& ctx, const ui::IRect& canvas);
   void paintPinned(ui::PaintContext& ctx, const ui::IRect& canvas);
@@ -350,6 +361,16 @@ private:
   const TrackState* findState(doc::TrackId t) const noexcept;
   void initLanes(TrackState& s, doc::TrackId t);
   void relayout();
+  // The band a press at `p` goes to (bandAt, minus the clips' title strips in automation mode).
+  std::optional<AutomationBand> pressBand(ui::Vec2 p) const;
+  // The breakpoint a press at `p` grabs in `b` (index into its lane's points; −1 none): the nearest within kPointGrab,
+  // later points winning ties (drawn on top).
+  int32_t pointAt(const AutomationBand& b, std::span<const doc::Breakpoint> pts, ui::Vec2 p) const;
+  // Whether an Alt-press at tick `t` bends a segment (one starts at or before it and ends after it).
+  static bool segmentAt(std::span<const doc::Breakpoint> pts, double t) noexcept;
+  // Whether a press at `p` lands on the line (within kLineGrab of the envelope's value there).
+  bool onLine(const AutomationBand& b, std::span<const doc::Breakpoint> pts, ui::Vec2 p) const;
+  void setHover(doc::TrackId track, const doc::ParamRef& param, bool overClips, doc::BreakpointId point, Ticks tick);
   void press(const ui::PointerEvent& e, const AutomationBand& b);
   void dragTo(const ui::PointerEvent& e);
   void release();
@@ -414,6 +435,16 @@ private:
   std::optional<TickRange> selRange_;
   bool selOverClips_ = false;
   Drag drag_;
+  // T4.16b hover: the breakpoint a press would grab (band identity + id; tick for its damage).
+  struct Hover {
+    doc::TrackId track;
+    doc::ParamRef param;
+    bool overClips = false;
+    doc::BreakpointId point{};
+    Ticks tick = 0;
+    bool valid() const noexcept { return point.valid(); }
+  };
+  Hover hover_;
   std::string readoutText_;
   std::optional<std::pair<doc::TrackId, size_t>> pendingHide_;
   // Paint scratch (kept: painting does not allocate once warm).

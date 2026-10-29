@@ -1,6 +1,8 @@
 // The arrangement's ruler (T3.8): loop brace, bar numbers and ticks, locators, tempo / time-signature markers, the
 // start marker and the playhead. A click locates; a drag zooms (vertical) and scrolls (horizontal) around the
-// pressed tick, like Live's beat-time ruler.
+// pressed tick, like Live's beat-time ruler. T4.16b: the loop brace's ends, the brace itself and the locators drag
+// (relative to the grid; previewed in the ruler, one SetLoop / UpdateLocator on release; a click on a locator jumps
+// there); the cursor shows which.
 
 #include <algorithm>
 #include <charconv>
@@ -8,6 +10,7 @@
 #include <cstdio>
 
 #include "internal.h"
+#include "pq/document/commands.h"
 
 namespace pq::views::arrangement {
 
@@ -33,8 +36,82 @@ std::string_view formatBpm(double bpm, std::span<char> buf) {
 Ruler::Ruler(ArrangementView& view) : Control("ruler"), view_(view) {
   setInfo("Beat Time Ruler",
           "Click to set the start marker and jump there (snapped to the grid). Drag up or down to zoom around the "
-          "pressed position, left or right to scroll. Ctrl+wheel zooms, the wheel scrolls. Z zooms to the "
-          "selection, X zooms back.");
+          "pressed position, left or right to scroll. Drag the loop brace or its ends to move or resize the loop, a "
+          "locator to move it. Ctrl+wheel zooms, the wheel scrolls. Z zooms to the selection, X zooms back.");
+}
+
+Ruler::Hit Ruler::hitAt(Vec2 p) const {
+  Hit h;
+  const doc::Project* proj = view_.shown().get();
+  if (!proj) return h;
+  const doc::Project& pr = *proj;
+  const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+  const float loopY = static_cast<float>(rect().y + s.px(am::kRulerNumberRow));
+  const float markY = loopY + static_cast<float>(s.px(am::kRulerLoopRow));
+  const float grab = static_cast<float>(s.px(4.0f));
+  if (p.y >= loopY && p.y < markY && pr.loop.end > pr.loop.start) {
+    const float lx0 = std::round(view_.xOfTick(static_cast<double>(pr.loop.start)));
+    const float lx1 = std::round(view_.xOfTick(static_cast<double>(pr.loop.end)));
+    // The nearer end wins when the brace is narrow; a brace too narrow for a body is all ends.
+    if (std::fabs(p.x - lx0) <= grab && std::fabs(p.x - lx0) <= std::fabs(p.x - lx1)) h.grab = Grab::LoopStart;
+    else if (std::fabs(p.x - lx1) <= grab) h.grab = Grab::LoopEnd;
+    else if (p.x > lx0 && p.x < lx1) h.grab = Grab::Loop;
+    return h;
+  }
+  if (p.y >= markY && pr.locators) {
+    // The flag drawn last (the latest at or before the pointer) wins: its triangle spans [x, x + 0.6 · row height].
+    const float w = std::max(grab, std::round((static_cast<float>(rect().bottom() - 1) - markY - 4.0f) * 0.6f));
+    for (size_t i = 0; i < pr.locators->size(); ++i) {
+      const float x = std::floor(view_.xOfTick(static_cast<double>((*pr.locators)[i].tick)));
+      if (p.x >= x - 2.0f && p.x <= x + w) {
+        h.grab = Grab::Locator;
+        h.locator = static_cast<uint32_t>(i);
+      }
+    }
+  }
+  return h;
+}
+
+doc::LoopRegion Ruler::shownLoop() const noexcept {
+  doc::LoopRegion l = view_.shown()->loop;
+  if (!pressed_ || !dragging_) return l;
+  switch (grab_.grab) {
+    case Grab::LoopStart: l.start += dt_; break;
+    case Grab::LoopEnd: l.end += dt_; break;
+    case Grab::Loop:
+      l.start += dt_;
+      l.end += dt_;
+      break;
+    default: break;
+  }
+  return l;
+}
+
+Ticks Ruler::shownLocator(uint32_t index) const noexcept {
+  const doc::Project& p = *view_.shown();
+  const Ticks t = (*p.locators)[index].tick;
+  return pressed_ && dragging_ && grab_.grab == Grab::Locator && grab_.locator == index ? t + dt_ : t;
+}
+
+Cursor Ruler::cursorAt(Vec2 p) const {
+  const Grab g = pressed_ ? grab_.grab : hitAt(p).grab;
+  switch (g) {
+    case Grab::LoopStart:
+    case Grab::LoopEnd:
+    case Grab::Locator: return Cursor::ResizeEW;
+    case Grab::Loop: return Cursor::Move;
+    case Grab::Zoom: break;
+  }
+  return Cursor::ResizeNS;  // a drag zooms (sideways: scrolls); a click locates
+}
+
+bool Ruler::cancelDrag() {
+  const bool was = pressed_ && dragging_ && grab_.grab != Grab::Zoom;
+  pressed_ = dragging_ = false;
+  grab_ = {};
+  dt_ = 0;
+  if (was) markDirty();
+  return was;
 }
 
 void Ruler::paint(PaintContext& ctx) {
@@ -101,11 +178,12 @@ void Ruler::paint(PaintContext& ctx) {
 
   // Loop brace (Live: a bar between two light edges under the numbers, with notched ends; dim when off).
   {
-    const float lx0 = std::round(X(static_cast<double>(p.loop.start)));
-    const float lx1 = std::round(X(static_cast<double>(p.loop.end)));
+    const doc::LoopRegion loop = shownLoop();  // T4.16b: a brace drag's preview
+    const float lx0 = std::round(X(static_cast<double>(loop.start)));
+    const float lx1 = std::round(X(static_cast<double>(loop.end)));
     if (lx1 > rx0 - 2.0f && lx0 < rx1 + 2.0f && lx1 > lx0) {
-      const Rgba fill = p.loop.enabled ? at.loopFill : at.loopOffFill;
-      const Rgba edge = p.loop.enabled ? at.loopEdge : at.loopOffEdge;
+      const Rgba fill = loop.enabled ? at.loopFill : at.loopOffFill;
+      const Rgba edge = loop.enabled ? at.loopEdge : at.loopOffEdge;
       const float a = std::max(lx0, rx0 - 2.0f), b = std::min(lx1, rx1 + 2.0f);
       const float top = loopY + 1.0f, bot = markY - 1.0f;
       dl.addRectFilled({a, top, b, bot}, fill);
@@ -129,7 +207,7 @@ void Ruler::paint(PaintContext& ctx) {
   auto& mk = markers_;
   mk.clear();
   if (p.locators)
-    for (size_t i = 0; i < p.locators->size(); ++i) mk.push_back({(*p.locators)[i].tick, 0, static_cast<uint32_t>(i)});
+    for (size_t i = 0; i < p.locators->size(); ++i) mk.push_back({shownLocator(static_cast<uint32_t>(i)), 0, static_cast<uint32_t>(i)});
   if (sigs.changeCount() > 1)
     for (size_t i = 0; i < sigs.changeCount(); ++i) mk.push_back({sigs.changeStartTick(i), 1, static_cast<uint32_t>(i)});
   const auto& tempo = p.timeline->tempo;
@@ -199,12 +277,48 @@ bool Ruler::onPointer(const PointerEvent& e) {
       pressPos_ = e.pos;
       pressTick_ = view_.tickAtX(e.pos.x);
       pressZoom_ = view_.pxPerTick();
+      grab_ = hitAt(e.pos);
+      dt_ = 0;
+      if (UiTree* t = tree()) t->setFocus(&view_);  // the arrangement's keys (Esc cancels a brace drag)
       return true;
     case PointerType::Move: {
       if (!pressed_) return false;
       const float dx = e.pos.x - pressPos_.x, dy = e.pos.y - pressPos_.y;
       if (!dragging_ && std::max(std::abs(dx), std::abs(dy)) < kClickSlop * scale) return true;
       dragging_ = true;
+      if (grab_.grab != Grab::Zoom) {
+        // A brace / locator drag: relative snap from the dragged edge (Live), kept in range.
+        const doc::Project& p = *view_.shown();
+        const Grid g(view_.context().grid(), p.timeline->sigMap, view_.pxPerTick());
+        const auto raw = static_cast<Ticks>(std::llround(view_.tickAtX(e.pos.x) - pressTick_));
+        Ticks origin = 0, lo = 0, hi = doc::kMaxTicks / 2;
+        switch (grab_.grab) {
+          case Grab::LoopStart:
+            origin = p.loop.start;
+            lo = -p.loop.start;
+            hi = p.loop.end - p.loop.start - 1;
+            break;
+          case Grab::LoopEnd:
+            origin = p.loop.end;
+            lo = p.loop.start + 1 - p.loop.end;
+            break;
+          case Grab::Loop:
+            origin = p.loop.start;
+            lo = -p.loop.start;
+            break;
+          case Grab::Locator:
+            origin = (*p.locators)[grab_.locator].tick;
+            lo = -origin;
+            break;
+          case Grab::Zoom: break;
+        }
+        const Ticks dt = std::clamp(g.snapping() ? g.snapDelta(origin, raw) : raw, lo, hi);
+        if (dt != dt_) {
+          dt_ = dt;
+          markDirty();
+        }
+        return true;
+      }
       // The pressed tick stays under the pointer: vertical distance zooms, horizontal movement scrolls.
       const double zoom = std::clamp(pressZoom_ * std::exp(static_cast<double>(dy / scale) * kDragZoomPerPx), am::kMinPxPerTick,
                                      am::kMaxPxPerTick);
@@ -212,12 +326,37 @@ bool Ruler::onPointer(const PointerEvent& e) {
       view_.setTimeView(pressTick_ - (static_cast<double>(e.pos.x) - static_cast<double>(view_.lanesViewport().x)) / dk, zoom);
       return true;
     }
-    case PointerType::Up:
+    case PointerType::Up: {
       if (!pressed_ || e.button != PointerButton::Left) return false;
-      pressed_ = false;
-      if (!dragging_) view_.locateAt(static_cast<Ticks>(std::floor(pressTick_)));
-      dragging_ = false;
+      const doc::Project& p = *view_.shown();
+      if (dragging_ && grab_.grab != Grab::Zoom) {
+        // One command, one undo step; the preview stays drawn until the document change repaints the ruler.
+        const doc::LoopRegion loop = shownLoop();
+        const Ticks locTick = grab_.grab == Grab::Locator ? shownLocator(grab_.locator) : 0;
+        const Hit g = grab_;
+        const Ticks dt = dt_;
+        cancelDrag();
+        if (dt != 0) {
+          ViewContext& ctx = view_.context();
+          doc::Locator l;
+          if (g.grab == Grab::Locator) {
+            l = (*p.locators)[g.locator];
+            l.tick = locTick;
+          }
+          const Status st = g.grab == Grab::Locator ? ctx.store().dispatch(doc::UpdateLocator{l}) : ctx.store().dispatch(doc::SetLoop{loop});
+          if (!st) ctx.setStatus("Ruler: " + st.error().message);
+        }
+        return true;
+      }
+      const bool click = !dragging_;
+      const Hit g = grab_;
+      pressed_ = dragging_ = false;
+      grab_ = {};
+      // A click on a locator jumps there (Live); elsewhere it locates at the pointer.
+      if (click && g.grab == Grab::Locator) view_.locateAt((*p.locators)[g.locator].tick, false);
+      else if (click) view_.locateAt(static_cast<Ticks>(std::floor(pressTick_)));
       return true;
+    }
     case PointerType::Wheel:
       if (e.mods & mod::kCtrl) {
         view_.zoomAt(e.pos.x, std::pow(1.25, static_cast<double>(e.wheel.y)));

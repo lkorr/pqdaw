@@ -285,6 +285,7 @@ void Editor::damageSelection(const Selection& a, const Selection& b) {
 void Editor::afterDocumentChange(const doc::StoreEvent& e) {
   if (e.kind == doc::StoreEventKind::Reset) {
     drag_ = {};
+    hover_ = {};
     sel_ = {};
     ids_.clear();
     trackIds_.clear();
@@ -325,19 +326,127 @@ void Editor::selectTrack(doc::TrackId id, Mods mods) {
 
 void Editor::nudgeMarker(int32_t cells) {
   const Ticks from = sel_.time ? sel_.time->start : ctx_.startMarker();
-  const Grid g = grid();
-  Ticks t = from;
-  for (int32_t i = 0; i < std::abs(cells); ++i) {
-    if (!g.enabled()) t += (cells > 0 ? 1 : -1) * (kTicksPerWhole / 16);
-    else t = cells > 0 ? g.lineAfter(t) : g.lineAtOrBefore(t - 1);
-  }
-  t = std::max<Ticks>(0, t);
+  const Ticks t = std::max<Ticks>(0, drag::stepByCells(grid(), from, cells));
   Selection s;
   s.tracks = sel_.tracks;
   s.time = TickRange{t, t};
   setSelection(std::move(s), false);
   view_.revealTick(t);
 }
+
+// T4.16b: the clips move by whole grid cells measured from the earliest one's start (as the piano roll nudges notes);
+// moveClipsBy overwrites what lies at the destination, as a drag does.
+bool Editor::nudgeClips(int32_t cells) {
+  if (sel_.clips.empty() || cells == 0) return false;
+  const doc::Project& p = *ctx_.doc();
+  Ticks first = std::numeric_limits<Ticks>::max();
+  for (const doc::ClipRef& r : sel_.clips)
+    if (const doc::NoteClip* c = findClip(p, r)) first = std::min(first, c->start);
+  if (first == std::numeric_limits<Ticks>::max()) return false;
+  const Ticks dt = std::max<Ticks>(0, drag::stepByCells(grid(), first, cells)) - first;
+  if (dt == 0) return false;
+  return apply(doc::ops::moveClipsBy(p, ctx_.store().ids(), sel_.clips, dt), "Move", true);
+}
+
+bool Editor::nudgeClipsFine(int32_t dir) {
+  if (sel_.clips.empty() || dir == 0) return false;
+  const doc::Project& p = *ctx_.doc();
+  Ticks first = std::numeric_limits<Ticks>::max();
+  for (const doc::ClipRef& r : sel_.clips)
+    if (const doc::NoteClip* c = findClip(p, r)) first = std::min(first, c->start);
+  if (first == std::numeric_limits<Ticks>::max()) return false;
+  const Ticks dt = std::max<Ticks>(dir * drag::kFineNudge, -first);
+  if (dt == 0) return false;
+  return apply(doc::ops::moveClipsBy(p, ctx_.store().ids(), sel_.clips, dt), "Move", true);
+}
+
+// Shift+Left / Right (Live): the time selection's end one grid cell later / earlier (never before its start); from
+// the insert marker it becomes a range. The selected tracks stay; the clips the range touches are selected.
+void Editor::extendTime(int32_t cells) {
+  const Ticks start = sel_.time ? sel_.time->start : std::max<Ticks>(0, ctx_.startMarker());
+  const Ticks end = sel_.time ? sel_.time->end : start;
+  const Ticks e = std::max(start, drag::stepByCells(grid(), end, cells));
+  Selection s;
+  s.tracks = sel_.tracks;
+  s.time = TickRange{start, e};
+  s.range = e > start;
+  if (s.range) s.clips = clipsMeeting(0, static_cast<int32_t>(view_.rows().size()) - 1, true, start, e, {});
+  setSelection(std::move(s), false);
+  view_.revealTick(e);
+}
+
+bool Editor::deselect() {
+  if (sel_.clips.empty() && !sel_.time) return false;
+  Selection s;
+  s.tracks = sel_.tracks;
+  setSelection(std::move(s), false);
+  return true;
+}
+
+std::vector<doc::ClipRef> Editor::clipsMeeting(int32_t r0, int32_t r1, bool selectedTracksOnly, Ticks s, Ticks e,
+                                               std::vector<doc::ClipRef> clips) const {
+  const auto rows = view_.rows();
+  if (e > s)
+    for (int32_t i = std::max(0, r0); i <= r1 && static_cast<size_t>(i) < rows.size(); ++i) {
+      const ArrangementRow& row = rows[static_cast<size_t>(i)];
+      if (row.group || row.track->clips.empty() || (selectedTracksOnly && !trackSelected(row.id))) continue;
+      const ClipIndex& ix = view_.model().clips(*row.track);
+      const auto [a, b] = ix.visible(s, e);
+      for (size_t j = a; j < b; ++j)
+        if (ix.start[j] < e && ix.end[j] > s) clips.push_back({row.id, row.track->clips[j].id});
+    }
+  // De-duplicated by id (a base may repeat clips the range covers).
+  std::sort(clips.begin(), clips.end(), [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip.value < b.clip.value; });
+  clips.erase(std::unique(clips.begin(), clips.end(), [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip == b.clip; }),
+              clips.end());
+  return clips;
+}
+
+// --- affordances (T4.16b) -------------------------------------------------------------------------------------
+
+Cursor Editor::cursorAt(Vec2 p) const {
+  if (drag_.kind != DragKind::None) {
+    switch (drag_.kind) {
+      case DragKind::Move: return Cursor::Move;
+      case DragKind::Resize: return Cursor::ResizeEW;
+      default: return Cursor::Arrow;  // a time selection
+    }
+  }
+  const Hit h = hitTest(p);
+  if (!h.clip) return Cursor::Arrow;  // empty lane space: a drag selects time
+  if (h.zone == 0) return Cursor::Move;
+  return h.zone == 2 ? Cursor::Arrow : Cursor::ResizeEW;  // the body selects time (Live); the ends trim
+}
+
+void Editor::setHover(HoverPart h) {
+  if (h == hover_) return;
+  if (UiTree* tr = view_.tree()) {
+    const IRect lv = view_.lanesViewport();
+    const doc::Project& p = *view_.shown();
+    for (const HoverPart* x : {&hover_, &h}) {
+      if (!x->ref.clip.valid()) continue;
+      const int32_t row = rowOf(x->ref.track);
+      const doc::NoteClip* c = row >= 0 ? findClip(p, x->ref) : nullptr;
+      if (!c) continue;
+      const IRect b = clipBox(row, c->start, c->start + c->length);
+      if (const IRect v = intersect(IRect{b.x - 1, b.y, b.w + 2, b.h}, lv); !v.empty()) tr->damage().add(v.toRect());
+    }
+  }
+  hover_ = h;
+}
+
+void Editor::hoverAt(Vec2 p) {
+  if (drag_.kind != DragKind::None) return;
+  const Hit h = hitTest(p);
+  HoverPart hp;
+  if (h.clip && h.zone != 2) {
+    hp.ref = h.ref;
+    hp.zone = static_cast<int8_t>(h.zone);
+  }
+  setHover(hp);
+}
+
+void Editor::clearHover() { setHover({}); }
 
 void Editor::stepTrack(int32_t rows) {
   const auto rs = view_.rows();
@@ -374,6 +483,7 @@ bool Editor::pointer(const PointerEvent& e) {
 void Editor::press(const PointerEvent& e) {
   if (UiTree* t = view_.tree()) t->setFocus(&view_);
   if (drag_.kind != DragKind::None) cancelDrag();
+  clearHover();  // the gesture shows its own preview
   pressSel_ = sel_;
   drag_ = {};
   drag_.press = e.pos;
@@ -593,24 +703,11 @@ void Editor::updateRange(Vec2 p) {
   Selection sel;
   sel.time = TickRange{s, e};
   sel.range = e > s;
-  std::vector<doc::ClipRef> clips = drag_.additive ? drag_.base : std::vector<doc::ClipRef>{};
-  for (int32_t i = r0; i <= r1; ++i) {
-    const ArrangementRow& row = rows[static_cast<size_t>(i)];
-    sel.tracks.push_back(row.id);
-    if (row.group || e <= s || row.track->clips.empty()) continue;
-    const ClipIndex& ix = view_.model().clips(*row.track);
-    const auto [a, b] = ix.visible(s, e);
-    for (size_t j = a; j < b; ++j)
-      if (ix.start[j] < e && ix.end[j] > s) clips.push_back({row.id, row.track->clips[j].id});
-  }
+  for (int32_t i = r0; i <= r1; ++i) sel.tracks.push_back(rows[static_cast<size_t>(i)].id);
+  sel.clips = clipsMeeting(r0, r1, false, s, e, drag_.additive ? drag_.base : std::vector<doc::ClipRef>{});
   if (drag_.additive)
     for (const doc::ClipRef& c : drag_.base)
       if (std::find(sel.tracks.begin(), sel.tracks.end(), c.track) == sel.tracks.end()) sel.tracks.push_back(c.track);
-  // Clips (de-duplicated by id: the additive base may repeat ones the band covers).
-  std::sort(clips.begin(), clips.end(), [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip.value < b.clip.value; });
-  clips.erase(std::unique(clips.begin(), clips.end(), [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip == b.clip; }),
-              clips.end());
-  sel.clips = std::move(clips);
   const bool sameClips = std::equal(sel.clips.begin(), sel.clips.end(), sel_.clips.begin(), sel_.clips.end(),
                                     [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip == b.clip && a.track == b.track; });
   if (sameClips && sel.tracks == sel_.tracks && sel.time == sel_.time && sel.range == sel_.range) return;

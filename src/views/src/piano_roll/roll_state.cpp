@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <numeric>
 
+#include "../common/drag.h"
 #include "pq/document/commands.h"
 #include "pq/tuning/ji.h"
 #include "pq/ui/overlay.h"
@@ -683,6 +684,39 @@ void RollState::clearHover() {
   ctx.infoChanged();
 }
 
+// T4.16b: only the two notes' boxes repaint (the highlight is drawn inside the note's rect).
+void RollState::setHoverPart(HoverPart h) {
+  if (h == hoverPart_) return;
+  ui::UiTree* tree = noteArea ? noteArea->tree() : nullptr;
+  if (tree)
+    for (const uint32_t id : {hoverPart_.note, h.note})
+      if (id != 0)
+        if (const doc::Note* n = findNote(doc::NoteId{id}))
+          if (const ui::IRect r = intersect(screenRectOf(n->start, n->length, n->pitch), area()); !r.empty()) tree->damage().add(r.toRect());
+  hoverPart_ = h;
+}
+
+void RollState::hoverPartAt(ui::Vec2 p) {
+  hoverPartPos_ = p;
+  int zone = 0;
+  const doc::Note* n = noteAt(p, &zone);
+  HoverPart h;
+  if (n) {
+    h.note = n->id.value;
+    h.zone = static_cast<int8_t>(ctx.drawMode() ? 0 : zone);  // Draw Mode: a press deletes the note (no edges)
+  }
+  setHoverPart(h);
+}
+
+void RollState::clearHoverPart() {
+  hoverPartPos_.reset();
+  setHoverPart({});
+}
+
+void RollState::refreshHoverPart() {
+  if (hoverPartPos_ && drag.kind == DragKind::None) hoverPartAt(*hoverPartPos_);
+}
+
 void RollState::buildAnchorIndex() const {
   anchorIndex_.clear();
   if (clip_)
@@ -1179,15 +1213,49 @@ void RollState::nudgeSelection(int32_t cells) {
     if (selected(n.id)) first = std::min(first, n.start);
   // One grid cell from the earliest note's start (on the grid: the next line; off it: to the line), or a sixteenth
   // with the grid off.
-  const Grid g = grid();
-  Ticks to = first;
-  for (int32_t i = 0; i < std::abs(cells); ++i) {
-    if (!g.enabled()) to += (cells > 0 ? 1 : -1) * (kTicksPerWhole / 16);
-    else to = cells > 0 ? g.lineAfter(to) : g.lineAtOrBefore(to - 1);
-  }
+  const Ticks to = drag::stepByCells(grid(), first, cells);
   const Ticks dt = std::max<Ticks>(to, 0) - first;
   if (dt == 0) return;
   (void)apply(doc::ops::moveNotes(*ctx.doc(), ref_, keys, dt, 0, overlay()), "Move Notes");
+}
+
+void RollState::nudgeSelectionFine(int32_t dir) {
+  if (!clip_ || dir == 0) return;
+  const std::vector<doc::NoteKey> keys = selectionKeys();
+  if (keys.empty()) return;
+  Ticks first = INT64_MAX;
+  for (const doc::Note& n : clip_->notes)
+    if (selected(n.id)) first = std::min(first, n.start);
+  const Ticks dt = std::max<Ticks>(dir * drag::kFineNudge, -first);  // the earliest note stops at the clip's start
+  if (dt == 0) return;
+  (void)apply(doc::ops::moveNotes(*ctx.doc(), ref_, keys, dt, 0, overlay()), "Move Notes");
+}
+
+void RollState::lengthenSelection(int32_t cells) {
+  if (!clip_ || cells == 0) return;
+  const std::vector<doc::NoteKey> keys = selectionKeys();
+  if (keys.empty()) return;
+  // The step is measured at the earliest note's end (as nudgeSelection measures at its start).
+  Ticks first = INT64_MAX, pivot = 0, minLen = INT64_MAX;
+  for (const doc::Note& n : clip_->notes)
+    if (selected(n.id)) {
+      if (n.start < first) {
+        first = n.start;
+        pivot = n.start + n.length;
+      }
+      minLen = std::min(minLen, n.length);
+    }
+  Ticks dt = drag::stepByCells(grid(), pivot, cells) - pivot;
+  if (dt < 0) {
+    // Shortening stops at one step: the shortest note keeps at least the length of the step (Live stops at the grid).
+    const Ticks step = -dt;
+    const Ticks room = minLen - step;
+    if (room <= 0) return;
+    dt = -std::min(step, room);
+  }
+  if (dt == 0) return;
+  (void)apply(doc::ops::resizeNotes(*ctx.doc(), ref_, keys, doc::ops::NoteEdge::End, dt),
+              dt > 0 ? "Lengthen Notes" : "Shorten Notes");
 }
 
 void RollState::copySelection() {

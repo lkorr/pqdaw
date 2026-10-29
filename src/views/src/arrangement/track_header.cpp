@@ -279,6 +279,7 @@ namespace arrangement {
 FoldButton::FoldButton(ArrangementView& view) : Control("fold"), view_(view) {
   setCursor(Cursor::Pointer);  // T4.16a
   setInfo("Fold / Unfold Group", "Shows or hides the tracks inside this group.");
+  setCursor(Cursor::Pointer);  // T4.16b
 }
 
 void FoldButton::setTrack(doc::TrackId id, bool folded) {
