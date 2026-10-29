@@ -249,6 +249,13 @@ public:
   bool focused() const noexcept { return has(kFocused); }
   bool captured() const noexcept { return has(kCaptured); }
 
+  // Mouse cursor (pq/ui/input.h Cursor): what this widget wants under the pointer at `pos` (device px). The default
+  // returns the shape set with setCursor (Inherit = ask the parent). Override for widgets whose parts differ (a
+  // note's body vs its edges). While a widget holds the pointer capture (a drag), its cursorAt decides alone.
+  void setCursor(Cursor c) noexcept { cursor_ = c; }
+  Cursor cursor() const noexcept { return cursor_; }
+  virtual Cursor cursorAt(Vec2 /*pos*/) const { return cursor_; }
+
   // Keymap scope that is active while focus is inside this widget's subtree (kNoScope = none).
   void setKeyScope(ScopeId s) noexcept { keyScope_ = s; }
   ScopeId keyScope() const noexcept { return keyScope_; }
@@ -335,6 +342,7 @@ private:
   Align mainAlign_ = Align::Start;
   Align crossAlign_ = Align::Start;
   ScopeId keyScope_ = kNoScope;
+  Cursor cursor_ = Cursor::Inherit;
   uint32_t indexInParent_ = 0;
   uint32_t flags_ = kVisible | kEnabled | kHittable | kArrangeDirty;
   int32_t mainSize_ = 0;  // layout scratch
@@ -363,6 +371,7 @@ public:
   bool onPointer(const PointerEvent& e) override;
   void onCaptureLost() override;
   void paint(PaintContext& ctx) override;
+  Cursor cursorAt(Vec2 pos) const override;
 
 private:
   Axis axis_;
@@ -498,6 +507,10 @@ public:
   Widget* hovered() const noexcept { return hovered_; }
   Widget* captured() const noexcept { return captured_; }
   Widget* focus() const noexcept { return focus_; }
+  // The cursor for the pointer now: the captured widget's (during a drag) or the hovered widget's, asking ancestors
+  // while a widget says Inherit; Arrow when nothing asks or the pointer is outside the window. Cheap (a walk up
+  // the hovered widget's ancestors); the app compares it with what it last applied after each event and frame.
+  Cursor cursor() const;
   // `keyboard`: focus moved by the keyboard (Tab, menu navigation), so controls show a focus ring
   // (focusVisible()); focus from a pointer press does not.
   void setFocus(Widget* w, bool keyboard = false);

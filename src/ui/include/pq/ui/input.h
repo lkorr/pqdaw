@@ -87,6 +87,24 @@ constexpr bool isModifierKey(Key k) noexcept {
   return (k >= key::kLCtrl && k <= key::kRSuper) || k == key::kCapsLock;
 }
 
+// --- pointer cursor -------------------------------------------------------------------------------------
+// The mouse cursor shape a widget asks for under the pointer (Widget::cursorAt; UiTree::cursor resolves it, the
+// app applies it). Inherit: ask the parent (the root falls back to Arrow). The set is what every desktop has.
+enum class Cursor : uint8_t {
+  Inherit,
+  Arrow,
+  Pointer,     // a hand: something clickable (fold triangle, link-like button, menu-opening header)
+  Text,        // I-beam: text entry
+  Crosshair,   // precise placement (drawing notes / automation points, wiring from a jack)
+  Move,        // four arrows: drag to move (a note body, a clip, a node, a device title)
+  ResizeEW,    // ↔: a vertical edge or splitter that resizes left/right (note / clip start or end)
+  ResizeNS,    // ↕: a horizontal edge or splitter (track height, detail view), a vertical value drag
+  ResizeNWSE,  // ⤡ corner
+  ResizeNESW,  // ⤢ corner
+  NotAllowed,  // a drop that would be refused
+  Wait,
+};
+
 // --- events ---------------------------------------------------------------------------------------------
 enum class PointerButton : uint8_t { None = 0, Left = 1, Middle = 2, Right = 3, X1 = 4, X2 = 5 };  // SDL numbering
 

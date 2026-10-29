@@ -478,6 +478,16 @@ void UiTree::updateHover(Vec2 p) {
   for (TreeObserver* o : observers_) o->onHoverChanged(hovered_);
 }
 
+Cursor UiTree::cursor() const {
+  const Widget* w = captured_ ? captured_ : (pointerInside_ ? hovered_ : nullptr);
+  for (; w; w = w->parent_) {
+    if (!w->enabled()) continue;
+    const Cursor c = w->cursorAt(pointer_);
+    if (c != Cursor::Inherit) return c;
+  }
+  return Cursor::Arrow;
+}
+
 bool UiTree::bubblePointer(Widget* from, const PointerEvent& e) {
   for (Widget* w = from; w; w = w->parent_) {
     if (!w->enabled() || !w->onPointer(e)) continue;

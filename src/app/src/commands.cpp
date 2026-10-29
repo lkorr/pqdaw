@@ -198,6 +198,7 @@ struct WindowApp {
     window->pixelSize(w, h);
     if (w && h) ui->setViewport(w, h, scale);
     ui->update(now());
+    applyCursor(ui->cursor());  // a layout or state change can move what is under a still pointer
     takeUiDamage();
   }
 
@@ -355,6 +356,7 @@ struct WindowApp {
     if (ui) {
       InputEvent in;
       if (translateEvent(e, window->pixelDensity(), in)) consumed = ui->dispatch(in);
+      applyCursor(ui->cursor());
     }
     if (shell && shell->handleEvent(e, consumed)) return;
     if (consumed && e.type == SDL_EVENT_KEY_DOWN) return;  // e.g. Esc closed a menu, 'a' typed into a field

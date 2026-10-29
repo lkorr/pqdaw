@@ -334,6 +334,11 @@ bool Splitter::onPointer(const PointerEvent& e) {
 
 void Splitter::onCaptureLost() { dragging_ = false; }
 
+Cursor Splitter::cursorAt(Vec2 pos) const {
+  if (!dragging_ && !handle_.contains(pos)) return Widget::cursorAt(pos);
+  return axis_ == Axis::Horizontal ? Cursor::ResizeEW : Cursor::ResizeNS;
+}
+
 void Splitter::paint(PaintContext& ctx) {
   if (alphaOf(handleColor_) != 0 && !handle_.empty()) ctx.dl.addRectFilled(handle_.toRect(), handleColor_);
 }

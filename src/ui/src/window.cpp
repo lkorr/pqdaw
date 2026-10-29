@@ -107,6 +107,31 @@ std::string SdlClipboard::text() {
 
 void SdlClipboard::setText(std::string_view utf8) { SDL_SetClipboardText(std::string(utf8).c_str()); }
 
+void applyCursor(Cursor c) noexcept {
+  static SDL_Cursor* cache[static_cast<size_t>(Cursor::Wait) + 1] = {};
+  static Cursor applied = Cursor::Inherit;
+  if (c == Cursor::Inherit) c = Cursor::Arrow;
+  if (c == applied) return;
+  SDL_SystemCursor id = SDL_SYSTEM_CURSOR_DEFAULT;
+  switch (c) {
+    case Cursor::Inherit:
+    case Cursor::Arrow: id = SDL_SYSTEM_CURSOR_DEFAULT; break;
+    case Cursor::Pointer: id = SDL_SYSTEM_CURSOR_POINTER; break;
+    case Cursor::Text: id = SDL_SYSTEM_CURSOR_TEXT; break;
+    case Cursor::Crosshair: id = SDL_SYSTEM_CURSOR_CROSSHAIR; break;
+    case Cursor::Move: id = SDL_SYSTEM_CURSOR_MOVE; break;
+    case Cursor::ResizeEW: id = SDL_SYSTEM_CURSOR_EW_RESIZE; break;
+    case Cursor::ResizeNS: id = SDL_SYSTEM_CURSOR_NS_RESIZE; break;
+    case Cursor::ResizeNWSE: id = SDL_SYSTEM_CURSOR_NWSE_RESIZE; break;
+    case Cursor::ResizeNESW: id = SDL_SYSTEM_CURSOR_NESW_RESIZE; break;
+    case Cursor::NotAllowed: id = SDL_SYSTEM_CURSOR_NOT_ALLOWED; break;
+    case Cursor::Wait: id = SDL_SYSTEM_CURSOR_WAIT; break;
+  }
+  SDL_Cursor*& cur = cache[static_cast<size_t>(c)];
+  if (!cur) cur = SDL_CreateSystemCursor(id);
+  if (cur && SDL_SetCursor(cur)) applied = c;
+}
+
 bool translateEvent(const SDL_Event& e, float density, InputEvent& out) noexcept {
   out = InputEvent{};
   PointerEvent& p = out.pointer;

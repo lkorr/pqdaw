@@ -631,3 +631,61 @@ TEST_CASE("widgets: TestDriver renders through the offscreen target") {
   CHECK(px[1] == 24);
   CHECK(px[2] == 32);
 }
+
+namespace {
+// A widget whose right edge (last 4 px) resizes; the rest moves.
+class EdgeProbe : public Probe {
+public:
+  using Probe::Probe;
+  Cursor cursorAt(Vec2 p) const override { return p.x >= static_cast<float>(rect().x + rect().w - 4) ? Cursor::ResizeEW : Cursor::Move; }
+};
+}  // namespace
+
+TEST_CASE("widgets: the cursor comes from the hovered widget or its ancestors, and from the captured one while dragging") {
+  TestDriver d(300, 100);
+  Widget& root = d.setRoot<Widget>();
+  root.setLayout(LayoutKind::Row);
+  Widget& group = root.add<Widget>("group");
+  group.setSize(Length::fixed(200), Length::flex());
+  group.setLayout(LayoutKind::Row);
+  group.setCursor(Cursor::Pointer);
+  Probe& a = probe(group, "a", Length::fixed(100));  // Inherit: the group's
+  EdgeProbe& b = group.add<EdgeProbe>("b");
+  b.setSize(Length::fixed(100), Length::flex());
+  CHECK(d.tree().cursor() == Cursor::Arrow);  // the pointer was never inside
+  d.move(d.center("group/a"));
+  CHECK(d.tree().cursor() == Cursor::Pointer);
+  a.setCursor(Cursor::Text);
+  CHECK(d.tree().cursor() == Cursor::Text);
+  d.move(d.center("group/b"));
+  CHECK(d.tree().cursor() == Cursor::Move);
+  const IRect rb = b.rect();
+  const Vec2 edge{static_cast<float>(rb.x + rb.w - 2), d.center("group/b").y};
+  d.move(edge);
+  CHECK(d.tree().cursor() == Cursor::ResizeEW);
+  // A drag keeps the captured widget's cursor wherever the pointer goes.
+  d.down(edge);
+  d.move(d.center("group/a"));
+  CHECK(d.tree().cursor() == Cursor::Move);  // over a (Text), but b holds the capture: b's rule at that point
+  d.move({280, 50});
+  CHECK(d.tree().cursor() == Cursor::ResizeEW);  // right of b's edge: b's rule still decides
+  d.up({280, 50});
+  CHECK(d.tree().cursor() == Cursor::Arrow);  // over the root
+  // A disabled widget is skipped (its ancestors decide).
+  a.setEnabled(false);
+  d.move(d.center("group/a"));
+  CHECK(d.tree().cursor() == Cursor::Pointer);
+}
+
+TEST_CASE("widgets: a splitter's handle shows the resize cursor of its axis") {
+  TestDriver d(300, 200);
+  Splitter& s = d.setRoot<Splitter>("split", Splitter::Axis::Vertical, 100.0f);
+  probe(s, "top");
+  probe(s, "bottom");
+  d.tree().layoutNow();
+  const IRect h = s.handleRect();
+  d.move({static_cast<float>(h.x + h.w / 2), static_cast<float>(h.y + h.h / 2)});
+  CHECK(d.tree().cursor() == Cursor::ResizeNS);
+  d.move(d.center("top"));
+  CHECK(d.tree().cursor() == Cursor::Arrow);
+}

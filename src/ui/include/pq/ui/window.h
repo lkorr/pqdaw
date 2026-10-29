@@ -65,6 +65,10 @@ private:
 // only arrive between SDL_StartTextInput / SDL_StopTextInput (the app toggles that with text focus).
 bool translateEvent(const SDL_Event& e, float pixelDensity, InputEvent& out) noexcept;
 
+// Sets the system mouse cursor (SDL system cursors, created once and kept). Call on the UI thread when
+// UiTree::cursor() differs from what was last applied; repeated calls with the same shape are cheap.
+void applyCursor(Cursor c) noexcept;
+
 // The desktop clipboard through SDL (UiTree::setClipboard). Needs SDL's video subsystem (a Window).
 class SdlClipboard final : public Clipboard {
 public:
