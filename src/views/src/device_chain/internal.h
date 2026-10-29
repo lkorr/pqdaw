@@ -45,6 +45,9 @@ struct DropTarget {
   doc::DeviceId rack;   // NewChain: the rack that gets a new chain
   ui::IRect marker;     // device px: what paintOver draws (a line, or a row outline)
   bool row = false;     // the marker outlines a row (a chain) instead of being an insertion line
+  // T4.16c: the drop would be refused (a rack into itself or a rack inside it, an instrument into an Audio Effect
+  // Rack): no marker, the NotAllowed cursor, nothing happens on release (the status line says why).
+  const char* refused = nullptr;
 };
 
 }  // namespace device_chain
@@ -133,6 +136,11 @@ public:
   virtual bool isRack() const noexcept { return false; }
   // Adds itself (and what it shows inside: a rack's frames) to `all`.
   virtual void collect(std::map<uint32_t, FrameBase*>& all) { all[id_.value] = this; }
+  // T4.16c: itself, then (a rack) the frames of the chain it shows, in display order (left → right): the order Left /
+  // Right walk. A folded rack shows none of its devices.
+  virtual void appendShown(std::vector<FrameBase*>& out) { out.push_back(this); }
+  // T4.16c: items the right-click menu at `p` adds first (a rack: Rename Macro over a macro knob).
+  virtual void contextItems(ui::Vec2 /*p*/, std::vector<ui::MenuItem>& /*items*/) {}
   // T4.8: a drop for a dragged device at `p` inside this frame (racks: their chain list and shown chain).
   virtual bool dropAt(ui::Vec2 /*p*/, DropTarget& /*out*/) { return false; }
   // The title-bar band a reorder drag starts from.
@@ -142,6 +150,8 @@ public:
 
   bool onPointer(const ui::PointerEvent& e) override;
   void paintOver(ui::PaintContext& ctx) override;
+  // T4.16c: the title bar moves the device (a reorder drag); the rest inherits (the panel's parts decide).
+  ui::Cursor cursorAt(ui::Vec2 p) const override;
 
 protected:
   DeviceChainView::Impl& impl_;

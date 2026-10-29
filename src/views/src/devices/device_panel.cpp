@@ -26,6 +26,7 @@ public:
   explicit PanelKnob(std::string name) : ValueControl(std::move(name), {}) {
     setFocusable(true);
     focusRingOnPointerFocus_ = true;
+    setCursor(ui::Cursor::ResizeNS);  // T4.16c: a vertical drag sets it (Live's knobs)
   }
   void bind(const ParamInfo& p, std::string label) {
     info_ = p;
@@ -256,6 +257,10 @@ public:
     return false;
   }
   void onCaptureLost() override { pressed_ = false; }
+  // T4.16c: a jack starts a cable (drag it onto a knob).
+  ui::Cursor cursorAt(ui::Vec2 p) const override {
+    return pressed_ || jackAt(p) >= 0 ? ui::Cursor::Crosshair : ui::Cursor::Inherit;
+  }
   void onHoverChanged(bool h) override {
     if (!h && hover_ >= 0) {
       hover_ = -1;
@@ -352,6 +357,11 @@ public:
       hoverFold_ = false;
       markDirty();
     }
+  }
+  // T4.16c: the activator and the fold triangle are buttons; the rest of the bar is the host's (the Device view: a drag
+  // there moves the device).
+  ui::Cursor cursorAt(ui::Vec2 p) const override {
+    return activatorRect().contains(p) || foldRect().contains(p) ? ui::Cursor::Pointer : ui::Cursor::Inherit;
   }
   ui::InfoText info() const override {
     if (panel_.onTitleDoubleClick)

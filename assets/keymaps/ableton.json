@@ -80,6 +80,16 @@
     {"scope": "devices", "keys": "Ctrl+V", "action": "device.paste", "status": "implemented", "task": "T4.1"},
     {"scope": "devices", "keys": "Ctrl+D", "action": "device.duplicate", "status": "implemented", "task": "T4.1"},
     {"scope": "devices", "keys": "0", "action": "device.toggleActive", "status": "implemented", "task": "T4.1"},
-    {"scope": "devices", "keys": "Ctrl+G", "action": "device.group", "status": "implemented", "task": "T4.8"}
+    {"scope": "devices", "keys": "Ctrl+G", "action": "device.group", "status": "implemented", "task": "T4.8"},
+    {"scope": "devices", "keys": "Left", "action": "device.selectPrev", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Right", "action": "device.selectNext", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Shift+Left", "action": "device.extendPrev", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Shift+Right", "action": "device.extendNext", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Home", "action": "device.selectFirst", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "End", "action": "device.selectLast", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Ctrl+Left", "action": "device.moveLeft", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Ctrl+Right", "action": "device.moveRight", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Up", "action": "device.chainUp", "status": "implemented", "task": "T4.16c"},
+    {"scope": "devices", "keys": "Down", "action": "device.chainDown", "status": "implemented", "task": "T4.16c"}
   ]
 }

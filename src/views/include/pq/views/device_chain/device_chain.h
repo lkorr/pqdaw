@@ -69,6 +69,20 @@ public:
   bool revertSelectedToStock();
   // T4.8: Ctrl+G — the selected devices (of one list) into a new rack (pq/document/edit_ops.h groupDevices).
   bool groupSelected();
+  // ---- T4.16c: keyboard (Live's Device view; docs/HOTKEYS.md) -------------------------------------------------------
+  // Left / Right (device.selectPrev / Next): the neighbouring device in display order — a rack, then the devices of the
+  // chain it shows, then what follows the rack — so the arrows walk into and out of rack chains; nothing selected: the
+  // first / last. Shift (device.extendPrev / Next): adds the neighbour in the lead device's own list to the selection (or
+  // steps back out of it), the devices Ctrl+G groups. Home / End: the first / last device of the selected device's list
+  // (else the track's chain). Ctrl+Left / Right (device.moveLeft / Right): moves the one selected device a step along its
+  // list (one undo step; the instrument stays first). Up / Down (device.chainUp / Down): the selected rack, or the rack
+  // around the selected device, shows its previous / next chain. The selection is scrolled into view.
+  bool selectNeighbour(int32_t dir, bool extend);
+  bool selectEnd(bool last);
+  bool moveSelected(int32_t dir);
+  bool showNeighbourChain(int32_t dir);
+  std::vector<doc::DeviceId> shownOrder() const;  // every device shown, in display order
+  void revealDevice(doc::DeviceId device);        // scrolls the chain so the device's frame is in view
   // T4.8: opens a rack's lowered subcircuit in the circuit viewer (read-only; rebuilt while open after a structural
   // or meta edit of the rack, closed when the rack is removed; rack_frame.cpp, Q?-T4.8-a).
   bool openRackCircuit(doc::DeviceId rack);

@@ -84,6 +84,9 @@ public:
 
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override;
+  // T4.16c (what a press would do): a pin Crosshair (drag a wire), a node Move, panning Move; while a wire is dragged
+  // Crosshair, while nodes are moved Move. Read-only or stale: the canvas's (Arrow, Move while panning).
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
 
   // The input / output pin nearest a device point on the node under it or within 8 px (hidden pins included);
   // UINT32_MAX = none.

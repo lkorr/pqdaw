@@ -316,3 +316,45 @@ TEST_CASE("circuit editor: a file whose text does not parse opens in the text pa
   CHECK(e->shownPatch() == "P");
   CHECK(e->canvas().editable());
 }
+
+TEST_CASE("circuit editor cursors (T4.16c): node Move, pin Crosshair (a wire), empty Arrow, pan Move, text pane its own") {
+  Rig r;
+  r.d.tree().layoutNow();
+  const graph::NodeIndex t = r.atom("tanh");
+  auto at = [&](Vec2 p) {
+    r.d.move(p);
+    return r.d.tree().cursor();
+  };
+  CHECK(at(r.centre(t)) == Cursor::Move);
+  CHECK(r.canvas().hovered().kind == CanvasHit::Kind::Node);  // and drawn in the hover colour
+  const Vec2 out = r.pin(r.named("x"), false, 0);
+  CHECK(at(out) == Cursor::Crosshair);
+  CHECK(r.canvas().hovered().kind == CanvasHit::Kind::Pin);  // the hovered pin is ringed
+  const IRect cr = r.canvas().rect();
+  const Vec2 empty{static_cast<float>(cr.x + 6), static_cast<float>(cr.bottom() - 6)};
+  CHECK(at(empty) == Cursor::Arrow);
+  // A press on the pin drags a wire: Crosshair all the way; the drop connects (the cursor promised a wire).
+  const std::string before = r.editor->document().text();
+  r.d.down(out);
+  r.d.move({out.x + 20, out.y + 20});
+  CHECK(r.d.tree().cursor() == Cursor::Crosshair);
+  r.d.move(r.pin(t, true, 0));
+  r.d.up(r.pin(t, true, 0));
+  CHECK(r.editor->document().text() != before);
+  // A node drag: Move while it runs.
+  r.d.tree().layoutNow();
+  const Vec2 c = r.centre(r.atom("tanh"));
+  r.d.down(c);
+  r.d.move({c.x + 30, c.y});
+  CHECK(r.d.tree().cursor() == Cursor::Move);
+  r.d.up({c.x + 30, c.y});
+  // A middle drag pans: Move while it runs.
+  r.d.down(empty, PointerButton::Middle);
+  r.d.move({empty.x + 20, empty.y - 10});
+  CHECK(r.d.tree().cursor() == Cursor::Move);
+  r.d.up({empty.x + 20, empty.y - 10}, PointerButton::Middle);
+  // The text pane's cursor is the code editor's own (nothing of the canvas leaks into it).
+  const Vec2 tp{static_cast<float>(r.editor->textPane().rect().x + 40), static_cast<float>(r.editor->textPane().rect().y + 40)};
+  const Cursor own = r.editor->textPane().cursorAt(tp);
+  CHECK(at(tp) == (own == Cursor::Inherit ? Cursor::Arrow : own));
+}

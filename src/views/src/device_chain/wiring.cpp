@@ -177,8 +177,15 @@ public:
     if (std::fabs(a1 - a0) > 1e-3f)
       ctx.dl.addArcStroke(c, rad - ctx.scale.exact(1.5f), std::min(a0, a1), std::max(a0, a1),
                           ui::withAlpha(col, static_cast<uint32_t>(255 * alpha)), ctx.scale.exact(2.5f));
-    ctx.dl.addCircleStroke(c, rad, ui::withAlpha(selected_ || focused() ? th->accent.focus : col, static_cast<uint32_t>(220 * alpha)),
-                           ctx.scale.exact(selected_ ? 1.6f : 1.0f));
+    // T4.16c: hovered (or selected), the ring is lit and thicker; the layer lights the cable too.
+    ctx.dl.addCircleStroke(c, rad, ui::withAlpha(selected_ || focused() || hovered() ? th->accent.focus : col, static_cast<uint32_t>(220 * alpha)),
+                           ctx.scale.exact(selected_ || hovered() ? 1.6f : 1.0f));
+  }
+  // T4.16c: drag up / down sets the amount.
+  ui::Cursor cursorAt(ui::Vec2) const override { return ui::Cursor::ResizeNS; }
+  void onHoverChanged(bool h) override {
+    markDirty();
+    layer_.hoverBadge(wire_, h);
   }
 
   bool onPointer(const ui::PointerEvent& e) override {
@@ -545,9 +552,10 @@ void CableLayer::paint(ui::PaintContext& ctx) {
     const bool off = c.status == doc::WireStatus::Inactive || c.status == doc::WireStatus::Invalid ||
                      c.status == doc::WireStatus::Refused;
     ui::Rgba col = off ? th->text.disabled : rateColour(c.rate);
-    if (c.wire == selected_) col = ui::lerp(col, ui::rgba(255, 255, 255), 0.35f);
-    col = ui::withAlpha(col, static_cast<uint32_t>((off ? 150.0f : 230.0f) * alpha));
-    const float w = ctx.scale.exact(c.wire == selected_ ? kCable + 1.0f : kCable);
+    const bool hot = c.wire == hoverWire_;  // T4.16c: its badge is hovered
+    if (c.wire == selected_ || hot) col = ui::lerp(col, ui::rgba(255, 255, 255), c.wire == selected_ ? 0.35f : 0.25f);
+    col = ui::withAlpha(col, static_cast<uint32_t>((off ? 150.0f : 230.0f) * (hot ? 1.0f : alpha)));
+    const float w = ctx.scale.exact(c.wire == selected_ || hot ? kCable + 1.0f : kCable);
     if (off) {  // dashed: every other run of 4 points
       for (int i = 0; i + 1 < kSamples; i += 8) ui::smoothPolyline(ctx.dl, pts + i, static_cast<uint32_t>(std::min(5, kSamples - i)), col, w);
     } else {
@@ -600,6 +608,7 @@ void CableLayer::beginDrag(doc::DeviceId from, std::string port, ui::Vec2 pos) {
   drag_.pos = pos;
   drag_.hoverTrack = {};
   drag_.hoverTicks = 0;
+  drag_.cursor = ui::Cursor::Crosshair;  // over the jack it starts from
   setHittable(true);  // from the first move on, the layer takes the pointer (the jack strip may be rebuilt meanwhile)
   setFocusable(true);
   if (tree()) tree()->setFocus(this);  // Esc cancels
@@ -626,10 +635,36 @@ void CableLayer::endDrag(bool commit, ui::Vec2 pos) {
   if (ctx_.store().dispatch(e->command).ok() && !e->wires.empty()) select(e->wires.front());
 }
 
+void CableLayer::hoverBadge(doc::WireId w, bool on) {
+  const doc::WireId next = on ? w : (hoverWire_ == w ? doc::WireId{} : hoverWire_);
+  if (next == hoverWire_ || !tree()) return;
+  // Only the two cables repaint.
+  for (const Cable& c : cables_)
+    if (c.wire == hoverWire_ || c.wire == next) tree()->damage().add(c.bounds.toRect());
+  hoverWire_ = next;
+}
+
+ui::Cursor CableLayer::cursorAt(ui::Vec2) const {
+  // T4.16c: while a cable is dragged, what a release here would do: wire a knob (Crosshair), nothing over the
+  // arrangement's rows (hovering them shows that track's chain: Arrow), else nothing at all (NotAllowed).
+  if (!drag_.active) return ui::Cursor::Inherit;
+  return drag_.cursor;
+}
+
+void CableLayer::updateDragCursor() {
+  if (targetAt(drag_.pos).device.valid()) {
+    drag_.cursor = ui::Cursor::Crosshair;
+    return;
+  }
+  ArrangementView* arr = impl_->arrangement();
+  drag_.cursor = arr != nullptr && shownNow(*arr) && arr->rect().contains(drag_.pos) ? ui::Cursor::Arrow : ui::Cursor::NotAllowed;
+}
+
 bool CableLayer::onPointer(const ui::PointerEvent& e) {
   if (!drag_.active) return false;
   if (e.type == ui::PointerType::Move) {
     drag_.pos = e.pos;
+    updateDragCursor();
     markDirty();
     return true;
   }
@@ -683,6 +718,7 @@ void CableLayer::onTimer(uint32_t id) {
       else if (drag_.pos.x > static_cast<float>(vp.right()) - edge) chain->scrollChainBy(static_cast<int32_t>(std::lround(12.0f * s)));
     }
   }
+  updateDragCursor();  // the chain may have scrolled (or switched tracks) under a still pointer
   markDirty();
   drag_.timer = requestTimer(1.0 / 60.0);
 }

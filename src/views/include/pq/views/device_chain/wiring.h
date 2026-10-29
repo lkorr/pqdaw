@@ -137,6 +137,11 @@ public:
   void onTimer(uint32_t id) override;
   void onCaptureLost() override;
   void onInteractionCancelled() override;
+  // T4.16c: while dragging, Crosshair over a knob it can wire, Arrow over the arrangement's rows, else NotAllowed.
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
+  // T4.16c: a hovered badge lights its cable (only the old and new cables repaint).
+  void hoverBadge(doc::WireId w, bool on);
+  doc::WireId hoveredWire() const noexcept { return hoverWire_; }
 
   struct Impl;
 
@@ -145,6 +150,7 @@ private:
   void onStore(const doc::StoreEvent& e);
   void rebuildStatus();
   void endDrag(bool commit, ui::Vec2 pos);
+  void updateDragCursor();
 
   ViewContext& ctx_;
   std::unique_ptr<Impl> impl_;
@@ -160,7 +166,9 @@ private:
     doc::TrackId hoverTrack;
     uint32_t hoverTicks = 0;  // drag ticks (1/60 s) over hoverTrack
     uint32_t timer = 0;
+    ui::Cursor cursor = ui::Cursor::Crosshair;  // what a release at `pos` would do (updated on each move)
   } drag_;
+  doc::WireId hoverWire_;
 };
 
 // Installs the cable layer into ShellSlot::Cables and the view.cycleCables / wire.delete actions; links the Device

@@ -688,6 +688,67 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
   }
 }
 
+TEST_CASE("project patch cursors (T4.16c): blocks Move, out pins Crosshair, M / S Pointer, bars ResizeEW; a refused drop NotAllowed") {
+  Ui u;
+  u.show();
+  const doc::TrackId keys = u.track("Keys").id, mod = u.track("Mod").id;
+  const doc::DeviceId lfo = u.track("Mod").devices[0]->id, eq = u.track("Pad").devices[1]->id;
+  auto at = [&](Vec2 p) {
+    u.d.move(p);
+    return u.d.tree().cursor();
+  };
+  // A mixer strip: M and S are buttons, the volume bar a sideways drag (also while it runs).
+  u.zoomTo("Keys");
+  const Node& mn = u.pp().nodes[u.pp().bands[u.pp().bandOf(keys)].mixer];
+  CHECK(at(u.dev(mn.x + 16.0f, mn.y + 25.0f)) == Cursor::Pointer);
+  CHECK(at(u.dev(mn.x + 30.0f, mn.y + 25.0f)) == Cursor::Pointer);
+  const Vec2 vol = u.dev(mn.x + 30.0f, mn.y + 39.0f);
+  CHECK(at(vol) == Cursor::ResizeEW);
+  const size_t h0 = u.history();
+  u.d.down(vol);
+  u.d.move({vol.x - 15.0f, vol.y + 30.0f});
+  CHECK(u.d.tree().cursor() == Cursor::ResizeEW);
+  u.d.up({vol.x - 15.0f, vol.y + 30.0f});
+  CHECK(u.history() == h0 + 1);  // the drag set the volume, as the cursor said
+  // The band's title strip nudges the band.
+  const Band& kb = u.pp().bands[u.pp().bandOf(keys)];
+  CHECK(at(u.dev(kb.x0 + 4.0f, kb.y + 2.0f)) == Cursor::Move);
+  // Device blocks move; an export pin (and a mixer's out) starts a wire.
+  u.view().fitAll(false);
+  u.d.tree().layoutNow();
+  CHECK(at(u.centre(u.deviceNode(eq))) == Cursor::Move);
+  CHECK(at(u.outPin(u.deviceNode(lfo), "lfo")) == Cursor::Crosshair);
+  const Vec2 out = u.outPin(u.pp().bands[u.pp().bandOf(mod)].mixer, "out");
+  CHECK(at(out) == Cursor::Crosshair);
+  // Dragging Mod's out: over the Group's Σ a route (Crosshair); over a MIDI track (Keys) refused: NotAllowed, and the
+  // release there changes nothing.
+  u.d.down(out);
+  u.d.move(u.sumOf("Group"));
+  CHECK(u.d.tree().cursor() == Cursor::Crosshair);
+  u.d.move(u.sumOf("Keys"));
+  CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+  u.d.up(u.sumOf("Keys"));
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.ctx.status().find("Route") != std::string::npos);
+  // What a pointer move costs with the cursor worked out (indicative: a dev build on a shared machine).
+  {
+    const Vec2 p0 = u.centre(u.deviceNode(eq));
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int k = 0; k < 400; ++k) {
+      u.d.move({p0.x + static_cast<float>(k % 40), p0.y});
+      (void)u.d.tree().cursor();
+    }
+    const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / 400.0;
+    MESSAGE("project patch: pointer move + cursor: " << us << " us (" << u.pp().nodes.size() << " nodes)");
+  }
+  // A middle drag pans: Move.
+  const Vec2 c = u.centre(u.deviceNode(eq));
+  u.d.down(c, PointerButton::Middle);
+  u.d.move({c.x + 20.0f, c.y});
+  CHECK(u.d.tree().cursor() == Cursor::Move);
+  u.d.up({c.x + 20.0f, c.y}, PointerButton::Middle);
+}
+
 TEST_CASE("project patch: a device edited in the circuit editor (a user device) — drawn as it plays, one model") {
   Ui u;
   u.show();

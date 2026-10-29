@@ -91,6 +91,13 @@ public:
   void onCaptureLost() override;
   void onInteractionCancelled() override;
   ui::InfoText info() const override;
+  // T4.16c: what a press would do — M / S Pointer, the volume / pan / send bars ResizeEW, an output pin (wire)
+  // Crosshair, a device block or a band's title Move, panning Move; while dragging: a wire Crosshair (NotAllowed where
+  // the drop would be refused), a block Move (NotAllowed off the bands), a bar ResizeEW. Worked out on each move (the
+  // same tests as a press), so cursorAt itself costs nothing.
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
+  // The status message a wire dropped at `pos` would be refused with (nullptr: it would be made, or nothing happens).
+  const char* wireRefusal(ui::Vec2 pos) const;
 
   // A pin of the scene nearest a device point (within 8 px; hidden pins included), and which side.
   struct PinHit {
@@ -122,6 +129,7 @@ private:
     std::vector<ui::Rect> sends;  // expanded strips: one bar per send pin
   };
   MixerAreas mixerAreas(uint32_t node) const;
+  ui::Cursor pressCursor(ui::Vec2 pos) const;  // T4.16c: the cursor for what a left press at `pos` would start
   void finishWire(ui::Vec2 pos);
   void finishDeviceMove(ui::Vec2 pos);
 
@@ -135,6 +143,8 @@ private:
   double dragStart_ = 0.0;         // the value at the press (volume fader position, pan, send position)
   ui::Vec2 pointer_{0, 0};         // the last pointer position (the readout is drawn there)
   bool gesture_ = false;
+  ui::Cursor hoverCursor_ = ui::Cursor::Arrow;     // T4.16c: pressCursor at the last move
+  ui::Cursor wireCursor_ = ui::Cursor::Crosshair;  // T4.16c: during a wire drag
 };
 
 class ProjectPatchView : public ui::Widget {

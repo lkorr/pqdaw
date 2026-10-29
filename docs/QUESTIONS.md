@@ -1340,3 +1340,19 @@ Agents: add questions here instead of guessing on anything important. Use this f
   7. **Recognised forms**: within one float ulp (relative 2^-23) of p/q (p ≤ 12, q ≤ 32), pπ/q (q ∈ 1,2,3,4,6,8,12, p ≤ 24), p/(qπ) (q ≤ 8, p ≤ 4), √2, 1/√2, √3, 1/√3, √3/2, 2^(±1/12), e, 1/e, ln 2, 1/ln 2, ln 10, 1/ln 10, log₁₀ 2, 20/ln 10, ln 10/20, whole dB −120 … +48; values with ≤ 6 significant digits get none (0.5, 0.001, 0.7071 read as written). 20 000 random 17-digit values: no match (test).
 - Open: the Far zoom level (< 0.3) draws inactive parts undimmed (its cached chunks are one colour); rate / poly in tooltips is the local inference (a call site's actual rates come with the compiled program, T4.5's probe path, not used for this); an `oversample { … }` region (SPEC §15) stays deferred.
 - Status: open
+
+## Q?-T4.16c-a · 2026-10-28 · T4.16c · Device view keys and cursors: what Live does that pqdaw copies, and what it adds
+- Context: TASKS T4.16 (T4.16c), the user's request 2026-10-28 (arrow keys like Ableton, cursors that say what a press does, discoverable racks). Files: `src/views/src/device_chain/device_chain.cpp`, `rack_frame.cpp`, `wiring.cpp`, `src/views/src/circuit/circuit_editor.cpp`, `src/views/src/project_patch/canvas.cpp`; docs/HOTKEYS.md, docs/REVIEW.md (the cursor table).
+- Choices (provisional, the most reversible):
+  1. **Left / Right** walk the devices in display order (the rack, then the devices of the chain it shows, then the next device after the rack), which is how Live 12 moves into and out of an expanded rack (from memory). A folded rack is one stop.
+  2. **Shift+Left / Right** extend along the lead device's own list only (the track's chain, or one rack chain): the devices Ctrl+G can group. Stepping back over the selection shrinks it.
+  3. **Home / End**: first / last of the selected device's list (a rack chain is its own list), else the track's chain. Alternative: the whole display order.
+  4. **Ctrl+Left / Right** move the one selected device a step along its list (one undo step; the instrument stays first; no move into or out of racks — drag for that). Live has no shortcut for this; alternatives: Alt+arrows, or none (drag only). Several selected: refused with a status message (a block move would need a batched op).
+  5. **Up / Down** step the selected rack (or the rack around the selected device) through its chains, like Live's chain list; a focused knob takes Up / Down first (its value). A device inside the old chain hands the selection to the first device of the new one.
+  6. **After Delete** the next device in display order (else the previous) is selected, so Delete / the arrows go on from there.
+  7. **Cursors** come from the same test a press runs; a drop the document would refuse shows NotAllowed (no marker) and does nothing on release (the status line says why) rather than trying and failing. A cable dragged over empty space shows NotAllowed (over the arrangement's rows Arrow: hovering switches the track).
+- Not built (new features, proposed):
+  - **Ungroup** (Live: Ctrl+Shift+G on a rack): needs a document op `ungroupDevices` (a one-chain rack → its devices in its place, mappings dropped, wires kept; Live refuses on several chains, from memory) and `device.ungroup` in the devices scope.
+  - **Device names** (Live: Ctrl+R renames a device): the document has no per-device name; would need a Meta field and command.
+  - **Alt-hover pan cursor** on the canvases: `UiTree::cursor()` has no modifier state; would need the tree to track modifiers (a T4.16a / ui change).
+- Status: open

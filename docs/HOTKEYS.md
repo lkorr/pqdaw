@@ -88,7 +88,18 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `device.duplicate` | `Ctrl+D` | devices | Editing | implemented (T4.1) |
 | `device.toggleActive` | `0` | devices | Editing (Activate/Deactivate) | implemented (T4.1: the device activator) |
 | (gesture) double-click a device's title | — | devices | — | T4.4-fix1: Open in Circuit View (also in the device's context menu, with Revert to Stock); the triangle folds |
-| `device.group` | `Ctrl+G` | devices | Editing (Group) | implemented (T4.8: the selected devices of one chain into a new rack; with the instrument: an Instrument Rack) |
+| `device.group` | `Ctrl+G` | devices | Editing (Group) | implemented (T4.8: the selected devices of one chain into a new rack; with the instrument: an Instrument Rack. T4.16c: a selection of two or more devices of one list says so in the status line) |
+| `device.selectPrev` | `Left` | devices | Device View (Live: arrow keys select devices) | implemented (T4.16c: the previous device in display order — out of a rack's chain to the rack, then on to the devices before it; nothing selected: the last; scrolled into view) |
+| `device.selectNext` | `Right` | devices | Device View | implemented (T4.16c: the next device in display order — a rack, then the devices of the chain it shows (not when folded), then what follows the rack; nothing selected: the first) |
+| `device.extendPrev` | `Shift+Left` | devices | Device View (Shift: extend the selection) | implemented (T4.16c: adds the previous device of the lead device's own list, or steps back out of the selection; then Ctrl+G groups it) |
+| `device.extendNext` | `Shift+Right` | devices | Device View | implemented (T4.16c: adds the next device of the lead device's own list, or steps back) |
+| `device.selectFirst` | `Home` | devices | Device View | implemented (T4.16c: the first device of the selected device's list — a rack chain is its own list — else of the track's chain) |
+| `device.selectLast` | `End` | devices | Device View | implemented (T4.16c: the last device of that list) |
+| `device.moveLeft` | `Ctrl+Left` | devices | — (pqdaw; Live moves devices by dragging only, Q?-T4.16c-a) | implemented (T4.16c: the one selected device a step left along its list, one undo step; the instrument stays first) |
+| `device.moveRight` | `Ctrl+Right` | devices | — (pqdaw, Q?-T4.16c-a) | implemented (T4.16c: a step right) |
+| `device.chainUp` | `Up` | devices | Device View (Live: the chain list's Up / Down) | implemented (T4.16c: the selected rack, or the rack around the selected device, shows its previous chain; a device inside hands the selection to the first device of the chain shown; a focused knob takes Up / Down first) |
+| `device.chainDown` | `Down` | devices | Device View | implemented (T4.16c: the next chain) |
+| (gesture) double-click a chain's name | — | devices | Rack chain list | T4.16c: rename the chain in place (also its right-click menu's Rename); `Enter` commits, `Esc` cancels, one undo step |
 
 ## Handled by controls, not the keymap (T3.2, implemented)
 

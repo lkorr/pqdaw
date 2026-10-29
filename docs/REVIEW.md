@@ -246,7 +246,7 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   - Live: `pqdaw`; on a MIDI track select devices and press Ctrl+G (or the device menu's Audio Effect Rack / Instrument Rack). The strip on the rack's left: M / C / Z show the macros, the chain list, the zone editor; Map: click a macro (it gets the focus outline), then knobs inside the rack (a second click unmaps; Esc or Map ends); Rnd randomizes the visible macros not excluded; Var: store / recall / overwrite / delete variations, exclude macros from Rand, macros shown (1 … 16), per-voice chains (Instrument Rack). Drag a device's title bar onto a chain row (into that chain), onto the empty list below the rows (a new chain), between the shown chain's devices, or out to the track. Chain rows: activator, S (solo, exclusive), volume and pan boxes; right-click for duplicate / delete / move. Zone editor: drag a bar's ends (the fade moves with them), its body, or in its upper part the fade edges; Key tab: click "Hz" to switch to degrees of the track's tuning. Right-click a rack > Open in Circuit View: its lowered subcircuit (read-only).
 - What was matched against: SPEC §8.2; Live 12's racks from memory (rack strip, macro knobs, chain list with chain mixer, zone editor with Key / Vel / Chain tabs and fades, Map mode, macro variations with Rand and exclusions, Ctrl+G).
 - To judge (QUESTIONS Q?-T4.8-a): the zone fade law (linear amplitude ramps; key fades linear in log frequency) — equal-power might suit crossfading unrelated chains better; Chain zones gate the chain's input (its tail rings out after the selector leaves) where Live may cut the output; macros 0 … 127 shown in whole steps; the chain selector as a knob in the macro panel (Live shows it only in the zone editor); a mapped knob shows the macro-driven value and turning it turns its macro (Live greys mapped controls out); the strip's look (text buttons, not Live's icons); chain mute / solo recompile (click-free crossfade) rather than being params.
-- Known gaps: Drum Rack (M5); rack presets (M5 browser); chain and macro names can't be typed yet (the device view has no text-entry popup: renameChain / renameMacro exist in the document); mapping ranges (min / max / curve) are edited through the document only (no mapping browser yet); Instrument Rack zones are per-voice gains, so an out-of-zone voice still runs its chain's instrument (the engine has no per-chain note routing), and a key zone dragged while notes sound may click (it follows the voice's pitch per sample; velocity and chain zones are smoothed); the circuit view of a rack is read-only (its devices open in the circuit editor from their own frames and fork in place; the rack's structure is edited in the Device view); it follows edits of the rack while open.
+- Known gaps: Drum Rack (M5); rack presets (M5 browser); chain and macro names can't be typed yet (the device view has no text-entry popup: renameChain / renameMacro exist in the document; T4.16c: now they can — double-click a chain's name, right-click a macro > Rename Macro); mapping ranges (min / max / curve) are edited through the document only (no mapping browser yet); Instrument Rack zones are per-voice gains, so an out-of-zone voice still runs its chain's instrument (the engine has no per-chain note routing), and a key zone dragged while notes sound may click (it follows the voice's pitch per sample; velocity and chain zones are smoothed); the circuit view of a rack is read-only (its devices open in the circuit editor from their own frames and fork in place; the rack's structure is edited in the Device view); it follows edits of the rack while open.
 
 ## T4.15 Circuit-view legibility · 2026-10-26 (👁)
 - What to look at:
@@ -259,3 +259,46 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What was matched against: SPEC §15 2026-10-26 (tooltip on any node: what it is, a description, rate / poly, a constant's recognised form; branches a structural constant switches off hidden, shown again with a toggle; stock devices unchanged).
 - To judge (QUESTIONS Q?-T4.15-a): the dim level (alpha 0.3); the tooltip lines and wording; params and literals that only feed a dead arm hiding with it; the compact layout of the visible part vs the stored full layout (and that the first edit while hidden stores the compact one); one app-wide toggle state; the recognised-form table (which forms; nothing for values with ≤ 6 digits).
 - Known gaps: at the Far zoom level (< 0.3) inactive parts are drawn undimmed; rate / poly in a tooltip is the canvas's local inference, not the compiled call site's; nothing is evaluated through a subcircuit's outputs (a constant computed inside a callee does not hide anything in the caller).
+
+## T4.16c Interaction affordances: devices, racks, circuit editor, project patch · 2026-10-28 (👁)
+- What to look at (live: `pqdaw`, a MIDI track with a few devices, Ctrl+G one into a rack; right-click a device > Open in Circuit View; Ctrl+Alt+P):
+  - Cursors (each is what a press there does; tests hover every part with TestDriver and press it):
+
+    | Part | Cursor | Hover feedback |
+    |---|---|---|
+    | Device / rack title bar (outside its buttons) | Move (drag to reorder); while dragging Move, NotAllowed where the drop would be refused (a rack into a rack inside it, an instrument into an Audio Effect Rack: no marker, nothing happens, the status line says why) | drop marker (existing) |
+    | Activator, fold triangle | Pointer | fold triangle lit (existing) |
+    | Export jacks | Crosshair (drag a cable) | jack ring lit (existing) |
+    | Device knobs (panel knobs, macros) | ResizeNS | track lit (existing) |
+    | EQ Eight / Auto Filter dots, Operator envelope points | Move | dot lit (existing) |
+    | Operator algorithm cells | Pointer | cell outlined (existing) |
+    | Operator partials display | Crosshair (click / drag draws) | bar lit (existing) |
+    | Add slot, a rack's chain slot | Pointer (menu) | raised (existing) |
+    | Rack strip buttons (M C Z Map Rnd Var) | Pointer; the strip's empty part Arrow | — |
+    | Chain list + | Pointer | — |
+    | Chain row (its name) | Pointer (shows the chain; double-click renames) | — |
+    | Zone editor: bar ends, fade edges | ResizeEW | — |
+    | Zone editor: bar body | Move | — |
+    | Zone editor: tabs, Hz / Degrees | Pointer | — |
+    | Zone editor: Chain tab header (selector marker) | ResizeEW | — |
+    | Map mode: macros, knobs inside the rack, Map button | Pointer; the rest of the chain Arrow | the target under the pointer outlined in the focus colour (only the two outlines repaint) |
+    | Cable badge | ResizeNS (drag the amount) | badge ring lit and its cable lit and thicker (only that cable repaints) |
+    | Dragged cable | Crosshair over a knob it can wire, Arrow over the arrangement's rows (hover switches the track), NotAllowed elsewhere | target knob outlined (existing) |
+    | Circuit editor: node | Move | node in the hover colour (existing) |
+    | Circuit editor: pin | Crosshair (drag a wire; Crosshair all through the drag) | the hovered pin ringed in the hover colour (new, Mid / Near levels) |
+    | Circuit editor: wire, empty canvas | Arrow | wire in the hover colour (existing) |
+    | Any circuit canvas: middle / Alt drag | Move while panning | — |
+    | Circuit viewer (read-only) | Arrow; Move while panning | as above |
+    | Text pane | the code editor's own (T4.16a) | — |
+    | Project patch: device block, band title strip | Move | — |
+    | Project patch: device export pin, mixer out / send pin | Crosshair; dragging: Crosshair, NotAllowed over a refused drop (out onto a MIDI track, a send not onto its return, a device's main out) | pin ringed (canvas) |
+    | Project patch: mixer M / S | Pointer | — |
+    | Project patch: volume / pan / send bars | ResizeEW (also while dragging) | — |
+    | Project patch: block being dragged | Move; NotAllowed off the bands | ghost (existing) |
+    | Project patch: Σ, source node, wires | Arrow | hover colour (canvas) |
+  - Keys (Device view focused; docs/HOTKEYS.md): Left / Right select the neighbouring device in display order — a rack, the devices of the chain it shows, then what follows the rack (so the arrows walk into and out of rack chains; a folded rack is stepped over); Shift+Left / Right extend the selection along the lead device's own list (then Ctrl+G); Home / End the first / last of that list; Ctrl+Left / Right move the one selected device a step (one undo step; the instrument stays first); Up / Down step the selected rack (or the rack around the selected device) through its chains. The selection scrolls into view. After Delete the next device (else the previous) is selected.
+  - Discoverability: two or more devices of one list selected (Ctrl+click or Shift+arrows) → the status line says "N devices selected: Ctrl+G (or right-click > Group) groups them into a rack"; the device menu shows Group with Ctrl+G (already did); every add menu now lists both racks (the empty-rack slot's menu lacked them); the device's info text names the arrow keys and Ctrl+G.
+  - Renaming: double-click a chain's name (or its menu's Rename) edits it in place; right-click a macro knob > Rename Macro. Enter commits (one undo step), Esc cancels.
+- What was matched against: Live 12 from memory (arrow keys select devices left / right in the Device view, into a rack's shown chain and out; Shift extends; chain list Up / Down; double-click renames chains; system cursors: move over device title bars, resize over zone edges). Not checked against a running Live 12.
+- To judge (QUESTIONS Q?-T4.16c-a): Ctrl+Left / Right to move a device (Live has no key for it; drag only); Shift-extend staying inside one list (Live's selection range is per chain as well, from memory); Home / End scoped to the selected device's list; Up / Down for chains even when the chain list is hidden (C off); NotAllowed rather than Arrow for a cable dragged over empty space; Move for the whole title bar (Live shows the arrow there and moves on drag).
+- Known gaps: Ungroup (Ctrl+Shift+G) needs a document op (QUESTIONS); device renaming (devices have no name of their own yet); Alt held over a canvas does not switch the cursor to Move before the press (cursors are resolved without modifier state); the cable itself is not hoverable (its badge is: the cable layer is not hit-tested, by design).

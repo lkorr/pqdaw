@@ -82,6 +82,10 @@ public:
 
   // Topmost pin, else node, else wire under a device point (pins within 5 px, wires within 4 px).
   CanvasHit hitTest(ui::Vec2 device) const noexcept;
+  // T4.16c: what the pointer rests on (the last move's hit test, as drawn in the hover colour; not updated during a
+  // drag), and whether a middle / Alt drag is panning the view now (subclasses' cursorAt).
+  const CanvasHit& hovered() const noexcept;
+  bool panning() const noexcept;
 
   struct Selection {
     std::vector<uint32_t> nodes, wires;  // sorted
@@ -120,6 +124,9 @@ public:
   void onCaptureLost() override;
   void onInteractionCancelled() override;
   ui::InfoText info() const override;
+  // T4.16c: Move while panning; otherwise inherited (the read-only viewer: Arrow). The hovered pin is ringed, the
+  // hovered node and wire drawn in the hover colour.
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
 
 protected:
   // Drawn over the scene, inside the canvas (editing previews, probes).

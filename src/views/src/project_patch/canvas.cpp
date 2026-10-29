@@ -488,6 +488,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         if (n.kind == NodeKind::Device || n.kind == NodeKind::Mixer) {
           drag_ = Drag::Wire;
           from_ = pin;
+          wireCursor_ = ui::Cursor::Crosshair;
           markDirty();
           return true;
         }
@@ -522,10 +523,16 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       return CircuitCanvas::onPointer(e);
     }
     case ui::PointerType::Move: {
-      if (drag_ == Drag::None) return CircuitCanvas::onPointer(e);
+      if (drag_ == Drag::None) {
+        hoverCursor_ = pressCursor(e.pos);  // T4.16c: what a press here would do (cursorAt returns it)
+        return CircuitCanvas::onPointer(e);
+      }
       last_ = e.pos;
       switch (drag_) {
         case Drag::Wire:
+          wireCursor_ = wireRefusal(e.pos) != nullptr ? ui::Cursor::NotAllowed : ui::Cursor::Crosshair;
+          markDirty();
+          break;
         case Drag::MoveDevice:
         case Drag::Nudge: markDirty(); break;
         case Drag::MaybeMoveDevice:
@@ -603,27 +610,86 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       }
       dragNode_ = dragBand_ = kNone;
       from_ = {};
+      hoverCursor_ = pressCursor(e.pos);
       markDirty();
       return true;
     }
     case ui::PointerType::Leave:
       view_.updateReadout(kNone);
+      hoverCursor_ = ui::Cursor::Arrow;
       return CircuitCanvas::onPointer(e);
     default: return CircuitCanvas::onPointer(e);
   }
+}
+
+const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
+  const ProjectPatch& pp = view_.patch();
+  if (!from_.valid() || from_.node >= pp.nodes.size()) return nullptr;
+  const Node& a = pp.nodes[from_.node];
+  if (a.kind == NodeKind::Device)
+    return from_.port == 0 ? "Wire: drag an export (the device's jacks under its output) onto a parameter" : nullptr;
+  if (a.kind != NodeKind::Mixer) return nullptr;
+  const uint32_t to = nodeAt(pos);
+  const uint32_t band = to != kNone ? pp.nodes[to].band : bandAt(pos);
+  if (band == kNone) return nullptr;
+  const Band& tb = pp.bands[band];
+  const std::string_view port = a.outputs[from_.port].name;
+  if (port == "out")
+    return tb.kind == doc::TrackKind::Midi ? "Route: a track's output goes to a group, a return (its send) or the master" : nullptr;
+  // A send pin goes onto its return ("s<return id>").
+  const bool itsReturn = tb.kind == doc::TrackKind::Return && port.size() > 1 && port[0] == 's' &&
+                         port.substr(1) == std::to_string(tb.track.value);
+  return itsReturn ? nullptr : "Send: drop it on its return's input";
+}
+
+ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
+  switch (drag_) {
+    case Drag::Wire: return wireCursor_;
+    case Drag::MoveDevice: return bandAt(pos) == kNone ? ui::Cursor::NotAllowed : ui::Cursor::Move;
+    case Drag::MaybeMoveDevice:
+    case Drag::Nudge: return ui::Cursor::Move;
+    case Drag::Volume:
+    case Drag::Pan:
+    case Drag::Send: return ui::Cursor::ResizeEW;
+    case Drag::None: break;
+  }
+  if (panning() || !scene()) return CircuitCanvas::cursorAt(pos);
+  return hoverCursor_;
+}
+
+ui::Cursor ProjectCanvas::pressCursor(Vec2 pos) const {
+  // The order of onPointer's left press (Alt and the middle button pan: the canvas's).
+  const ProjectPatch& pp = view_.patch();
+  const uint32_t node = nodeAt(pos);
+  if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
+    const MixerAreas a = mixerAreas(node);
+    const doc::Track* tr = view_.bandTrack(pp.nodes[node].band);
+    if (tr != nullptr && tr->kind != doc::TrackKind::Master && (inside(a.mute, pos) || inside(a.solo, pos))) return ui::Cursor::Pointer;
+    if (tr != nullptr && (inside(a.volume, pos) || inside(a.pan, pos))) return ui::Cursor::ResizeEW;
+    for (const Rect& r : a.sends)
+      if (tr != nullptr && inside(r, pos)) return ui::Cursor::ResizeEW;
+  }
+  if (const PinHit pin = pinAt(pos); pin.valid() && !pin.input &&
+                                     (pp.nodes[pin.node].kind == NodeKind::Device || pp.nodes[pin.node].kind == NodeKind::Mixer))
+    return ui::Cursor::Crosshair;
+  if (node == kNone) {
+    if (const uint32_t b = bandAt(pos); b != kNone && toWorld(pos).y <= pp.bands[b].y + metrics::kTitle) return ui::Cursor::Move;
+    return ui::Cursor::Arrow;
+  }
+  return pp.nodes[node].kind == NodeKind::Device ? ui::Cursor::Move : ui::Cursor::Arrow;
 }
 
 void ProjectCanvas::finishWire(Vec2 pos) {
   ProjectPatchView& v = view_;
   const ProjectPatch& pp = v.patch();
   if (!from_.valid()) return;
+  if (const char* why = wireRefusal(pos)) {
+    v.context().setStatus(why);
+    return;
+  }
   const Node& a = pp.nodes[from_.node];
   const Band& fromBand = pp.bands[a.band];
   if (a.kind == NodeKind::Device) {
-    if (from_.port == 0) {
-      v.context().setStatus("Wire: drag an export (the device's jacks under its output) onto a parameter");
-      return;
-    }
     const std::string port = a.outputs[from_.port].name;
     const PinHit target = pinAt(pos);
     if (target.valid() && target.input && pp.nodes[target.node].kind == NodeKind::Device && target.port > 0 &&
@@ -645,21 +711,8 @@ void ProjectCanvas::finishWire(Vec2 pos) {
     uint32_t band = to != kNone ? pp.nodes[to].band : bandAt(pos);
     if (band == kNone) return;
     const Band& tb = pp.bands[band];
-    const std::string& port = a.outputs[from_.port].name;
-    if (port == "out") {
-      if (tb.kind == doc::TrackKind::Midi) {
-        v.context().setStatus("Route: a track's output goes to a group, a return (its send) or the master");
-        return;
-      }
-      (void)v.routeTo(fromBand.track, tb.track);
-      return;
-    }
-    // A send pin: onto its return.
-    if (tb.kind == doc::TrackKind::Return && port == "s" + std::to_string(tb.track.value)) {
-      (void)v.sendOn(fromBand.track, tb.track);
-      return;
-    }
-    v.context().setStatus("Send: drop it on its return's input");
+    if (a.outputs[from_.port].name == "out") (void)v.routeTo(fromBand.track, tb.track);
+    else (void)v.sendOn(fromBand.track, tb.track);  // a send pin onto its return (wireRefusal checked it)
   }
 }
 

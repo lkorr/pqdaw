@@ -449,6 +449,8 @@ public:
   void onCaptureLost() override {
     if (drag_ >= 0) endDrag();
   }
+  // T4.16c: a band's dot moves (frequency sideways, gain up / down).
+  ui::Cursor cursorAt(ui::Vec2) const override { return drag_ >= 0 || hover_ >= 0 ? ui::Cursor::Move : ui::Cursor::Inherit; }
   void onHoverChanged(bool h) override {
     if (!h && hover_ >= 0) {
       hover_ = -1;
@@ -732,6 +734,8 @@ public:
   void onCaptureLost() override {
     if (drag_) endDrag();
   }
+  // T4.16c: the dot moves (cutoff sideways, resonance up / down).
+  ui::Cursor cursorAt(ui::Vec2) const override { return drag_ || hover_ ? ui::Cursor::Move : ui::Cursor::Inherit; }
   void onHoverChanged(bool h) override {
     if (!h && hover_) {
       hover_ = false;

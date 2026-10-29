@@ -842,6 +842,14 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
         dl.addHLine(std::min(x0, x1), std::max(x0, x1), y, col, stubT);
       }
     }
+    // T4.16c: the hovered pin (a press there starts a wire in the editor) is ringed in the hover colour.
+    if (m.hover.kind == CanvasHit::Kind::Pin && m.hover.index < sc.pins.size()) {
+      const ScenePin& pin = sc.pins[m.hover.index];
+      if (pin.visible) {
+        const float rr = std::max(3.0f, std::round(3.0f * us));
+        dl.addCircleStroke({m.devX(pin.x), m.devY(pin.y)}, rr, C.hover, std::max(1.0f, std::round(1.5f * us)));
+      }
+    }
     // Bodies: from tiles (two quads), else directly. Tile quads are grouped per page and layer to keep draw commands
     // few: bodies never overlap, so the order between them does not matter.
     struct Quad {
@@ -1150,6 +1158,11 @@ void CircuitCanvas::onInteractionCancelled() {
   m.mode = Impl::DragMode::None;
   m.tracker.end();
 }
+
+const CanvasHit& CircuitCanvas::hovered() const noexcept { return impl_->hover; }
+bool CircuitCanvas::panning() const noexcept { return impl_->mode == Impl::DragMode::Pan; }
+
+ui::Cursor CircuitCanvas::cursorAt(ui::Vec2 /*pos*/) const { return panning() ? ui::Cursor::Move : ui::Cursor::Inherit; }
 
 ui::InfoText CircuitCanvas::info() const {
   const Impl& m = *impl_;

@@ -336,6 +336,45 @@ TEST_CASE("wiring: the views' knob travel is the lowering's (every stock device 
   }
 }
 
+TEST_CASE("wiring cursors (T4.16c): jacks Crosshair; a dragged cable Crosshair over a knob, NotAllowed over nothing; badges ↕ and lit") {
+  Ui u;
+  auto at = [&](Vec2 p) {
+    u.d.move(p);
+    return u.d.tree().cursor();
+  };
+  const Vec2 from = u.jack(u.lfoB), to = u.knob(u.util, "width");
+  CHECK(at(from) == Cursor::Crosshair);
+  u.d.down(from);
+  CHECK(u.d.tree().cursor() == Cursor::Crosshair);
+  const IRect vr = u.view().rect();
+  const Vec2 nothing{static_cast<float>(vr.right() - 20), static_cast<float>(vr.y + vr.h / 2)};  // right of the chain
+  u.d.move({from.x + 5.0f, from.y + 5.0f});
+  u.d.move(nothing);
+  CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+  u.d.move(to);
+  CHECK(u.d.tree().cursor() == Cursor::Crosshair);
+  u.d.up(to);
+  REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == 1);  // the drop wired it, as the cursor said
+  const doc::WireId w = doc::wiresOf(*u.ctx.doc())[0].id;
+  u.d.step();
+  // The badge: a vertical drag sets the amount; hovering it lights its cable (only that cable repaints).
+  REQUIRE(u.cable(w) != nullptr);
+  const Vec2 b = mid(u.cable(w)->badge);
+  u.d.move({b.x + 60.0f, b.y + 60.0f});
+  u.d.step();
+  CHECK_FALSE(u.layer().hoveredWire().valid());
+  CHECK(at(b) == Cursor::ResizeNS);
+  CHECK(u.layer().hoveredWire() == w);
+  IRect rects[Damage::kMaxRects];
+  int64_t area = 0;
+  const uint32_t n = u.d.tree().damageRects(rects, area);
+  bool covers = false;
+  for (uint32_t i = 0; i < n; ++i) covers = covers || ui::intersect(rects[i], u.cable(w)->bounds) == u.cable(w)->bounds;
+  CHECK(covers);
+  u.d.move({b.x + 60.0f, b.y + 60.0f});
+  CHECK_FALSE(u.layer().hoveredWire().valid());
+}
+
 TEST_CASE("render: device-wiring matches the golden image") {
   uint32_t w = 0, h = 0;
   viewSceneDefaultSize("device-wiring", w, h);

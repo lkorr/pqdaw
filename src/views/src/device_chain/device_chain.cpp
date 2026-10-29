@@ -168,7 +168,18 @@ void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
     const int32_t pad = static_cast<int32_t>(std::lround(kChainPad * s));
     d.marker = {x - w / 2, r.y + pad, w, r.h - 2 * pad};
   }
-  if (d.kind != drop.kind || d.index != drop.index || d.chain != drop.chain || d.rack != drop.rack) {
+  // T4.16c: a drop the document would refuse shows NotAllowed instead of a marker.
+  if (d.kind == DropTarget::Kind::Chain || d.kind == DropTarget::Kind::NewChain) {
+    const doc::Project& p = doc();
+    const doc::DeviceLoc moving = doc::findDevice(p, dragging);
+    const doc::Device* into = d.kind == DropTarget::Kind::NewChain ? doc::findDevice(p, d.rack).device : doc::findChain(p, d.chain).rack;
+    if (moving.device != nullptr && into != nullptr) {
+      if (into == moving.device || doc::deviceContains(*moving.device, into->id)) d.refused = "A rack cannot go inside itself";
+      else if (moving.device->kind == doc::DeviceKind::Instrument && into->kind != doc::DeviceKind::Instrument)
+        d.refused = "An instrument goes into an Instrument Rack, not an Audio Effect Rack";
+    }
+  }
+  if (d.kind != drop.kind || d.index != drop.index || d.chain != drop.chain || d.rack != drop.rack || d.refused != drop.refused) {
     drop = d;
     content->markDirty();
   }
@@ -185,6 +196,10 @@ void DeviceChainView::Impl::endDrag(bool commit) {
     content->markDirty();
   }
   if (!commit || !moved || d.kind == DropTarget::Kind::None) return;
+  if (d.refused != nullptr) {
+    view.ctx_.setStatus(d.refused);
+    return;
+  }
   const doc::DeviceLoc loc = doc::findDevice(doc(), id);
   if (loc.device == nullptr) return;
   switch (d.kind) {
@@ -337,9 +352,10 @@ public:
   }
 
   ui::InfoText info() const override {
-    return {"Device", "Drag the title bar to move the device in the chain or into a rack's chain. Delete removes it, 0 "
-                      "turns it on or off, Ctrl+C / Ctrl+V / Ctrl+D copy, paste and duplicate it, Ctrl+G groups the "
-                      "selected devices into a rack. Right-click for more."};
+    return {"Device", "Drag the title bar to move the device in the chain or into a rack's chain. Left / Right select the "
+                      "neighbouring device (Shift: add it to the selection), Ctrl+Left / Right move it. Delete removes "
+                      "it, 0 turns it on or off, Ctrl+C / Ctrl+V / Ctrl+D copy, paste and duplicate it. Ctrl+click or "
+                      "Shift+Right selects several: Ctrl+G groups them into a rack. Right-click for more."};
   }
 
   void arrange(ui::LayoutPass& pass) override {
@@ -380,6 +396,7 @@ public:
   explicit AddSlot(DeviceChainView& view) : Control("add"), view_(view) {
     setInfo("Add Device", "Opens the device menu: instruments, audio effects and racks (until the browser arrives). A "
                           "new device goes after the selected one, else at the end of the chain.");
+    setCursor(ui::Cursor::Pointer);  // T4.16c: opens a menu
   }
   void setHint(std::string h) {
     if (h == hint_) return;
@@ -450,7 +467,7 @@ public:
   }
   void paintOver(ui::PaintContext& ctx) override {
     const DropTarget& d = impl_.drop;
-    if (d.kind == DropTarget::Kind::None || !ctx.res.theme) return;
+    if (d.kind == DropTarget::Kind::None || d.refused != nullptr || !ctx.res.theme) return;
     // The drop marker: a 2-px accent line in the gap where the dragged device lands, or an outlined chain row.
     if (d.row) paint::box(ctx.dl, d.marker, 0.0f, 0, ctx.res.theme->accent.primary);
     else ctx.dl.addRectFilled(d.marker.toRect(), ctx.res.theme->accent.primary);
@@ -482,6 +499,13 @@ void FrameBase::paintOver(ui::PaintContext& ctx) {
   paint::box(ctx.dl, rect(), 0.0f, 0, ctx.res.theme->accent.focus);
 }
 
+ui::Cursor FrameBase::cursorAt(ui::Vec2 p) const {
+  // A reorder drag in progress (this frame holds the pointer): Move, or NotAllowed where nothing would land.
+  if (impl_.dragging == id_ && impl_.drag.active && impl_.drag.moved)
+    return impl_.drop.kind == DropTarget::Kind::None || impl_.drop.refused != nullptr ? ui::Cursor::NotAllowed : ui::Cursor::Move;
+  return inTitle(p) ? ui::Cursor::Move : ui::Cursor::Inherit;
+}
+
 bool FrameBase::onPointer(const ui::PointerEvent& e) {
   DeviceChainView& view = impl_.view;
   if (e.type == ui::PointerType::Down) {
@@ -498,6 +522,7 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // T4.4-fix1 (SPEC §15 2026-10-26): the circuit editor on this device; a user device back to the stock patch.
       // T4.8: a rack opens its lowered subcircuit (read-only) instead.
       const doc::DeviceId id = id_;
+      contextItems(e.pos, items);  // T4.16c
       if (loc.device != nullptr && loc.device->rack) {
         items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openRackCircuit(id); }));
       } else {
@@ -669,9 +694,144 @@ void DeviceChainView::onStore(const doc::StoreEvent& e) {
 }
 
 void DeviceChainView::select(std::span<const doc::DeviceId> devices) {
+  const size_t before = selection_.size();
   selection_.assign(devices.begin(), devices.end());
   for (auto& [id, f] : impl_->all)
     f->setSelected(std::find(selection_.begin(), selection_.end(), doc::DeviceId{id}) != selection_.end());
+  // T4.16c (discoverability): a selection of several devices of one list names what Ctrl+G does with it.
+  if (selection_.size() >= 2 && selection_.size() != before) {
+    const doc::Project& p = *ctx_.doc();
+    const doc::DeviceLoc first = doc::findDevice(p, selection_.front());
+    bool oneList = first.device != nullptr;
+    for (const doc::DeviceId id : selection_) {
+      const doc::DeviceLoc l = doc::findDevice(p, id);
+      oneList = oneList && l.device != nullptr && l.track == first.track && l.chain == first.chain;
+    }
+    if (oneList)
+      ctx_.setStatus(std::to_string(selection_.size()) + " devices selected: Ctrl+G (or right-click > Group) groups them into a rack");
+  }
+}
+
+// ---- T4.16c: keyboard navigation (Live's Device view) ------------------------------------------------------------------
+
+std::vector<doc::DeviceId> DeviceChainView::shownOrder() const {
+  std::vector<FrameBase*> frames;
+  for (FrameBase* f : impl_->frames) f->appendShown(frames);
+  std::vector<doc::DeviceId> ids;
+  ids.reserve(frames.size());
+  for (const FrameBase* f : frames) ids.push_back(f->id());
+  return ids;
+}
+
+void DeviceChainView::revealDevice(doc::DeviceId device) {
+  if (tree() != nullptr) tree()->layoutNow();  // a structural edit re-laid the chain out
+  const FrameBase* f = impl_->frameOf(device);
+  if (f == nullptr) return;
+  const ui::IRect vp = chainViewport(), r = f->rect();
+  const int32_t pad = tree() != nullptr ? tree()->uiScale().px(kChainPad) : 4;
+  int32_t dx = 0;
+  if (r.x < vp.x + pad) dx = r.x - vp.x - pad;
+  else if (r.right() > vp.right() - pad) dx = std::min(r.right() - vp.right() + pad, r.x - vp.x - pad);  // its left edge stays
+  if (dx != 0) scrollChainBy(dx);
+}
+
+bool DeviceChainView::selectNeighbour(int32_t dir, bool extend) {
+  const std::vector<doc::DeviceId> order = shownOrder();
+  if (order.empty()) return false;
+  const doc::DeviceId lead = selection_.empty() ? doc::DeviceId{} : selection_.back();
+  if (extend && lead.valid()) {
+    // Shift: grow (or shrink back) the selection along the lead device's own list — the devices Ctrl+G can group.
+    const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), lead);
+    if (l.device == nullptr) return false;
+    const auto& list = l.list();
+    const int64_t at = static_cast<int64_t>(l.index) + dir;
+    if (at < 0 || at >= static_cast<int64_t>(list.size())) return true;  // at the list's end: nothing to add
+    const doc::DeviceId next = list[static_cast<size_t>(at)]->id;
+    std::vector<doc::DeviceId> sel = selection_;
+    if (std::find(sel.begin(), sel.end(), next) != sel.end()) {
+      sel.pop_back();  // stepping back over the selection: the lead leaves it
+      std::erase(sel, next);
+      sel.push_back(next);  // … and its neighbour leads
+    } else {
+      sel.push_back(next);
+    }
+    select(sel);
+    revealDevice(next);
+    return true;
+  }
+  const auto it = lead.valid() ? std::find(order.begin(), order.end(), lead) : order.end();
+  size_t to = 0;
+  if (it == order.end()) to = dir > 0 ? 0 : order.size() - 1;
+  else {
+    const auto i = static_cast<int64_t>(it - order.begin()) + dir;
+    to = static_cast<size_t>(std::clamp<int64_t>(i, 0, static_cast<int64_t>(order.size()) - 1));
+  }
+  const doc::DeviceId one[1] = {order[to]};
+  select(one);
+  revealDevice(order[to]);
+  return true;
+}
+
+bool DeviceChainView::selectEnd(bool last) {
+  // Within the list of the selected device (a rack chain is its own list), else the track's chain.
+  const doc::Track* t = impl_->track();
+  if (t == nullptr) return false;
+  const std::vector<doc::DevicePtr>* list = &t->devices;
+  if (!selection_.empty())
+    if (const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), selection_.back()); l.device != nullptr) list = &l.list();
+  if (list->empty()) return false;
+  const doc::DeviceId one[1] = {last ? list->back()->id : list->front()->id};
+  select(one);
+  revealDevice(one[0]);
+  return true;
+}
+
+bool DeviceChainView::moveSelected(int32_t dir) {
+  if (selection_.size() != 1) {
+    if (!selection_.empty()) ctx_.setStatus("Move: select one device (Ctrl+Left / Right move it along its chain)");
+    return false;
+  }
+  const doc::DeviceId id = selection_.front();
+  const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), id);
+  if (l.device == nullptr) return false;
+  const auto& list = l.list();
+  const int64_t to = static_cast<int64_t>(l.index) + dir;
+  if (to < 0 || to >= static_cast<int64_t>(list.size())) return false;
+  // The instrument stays first (the track's chain, an Instrument Rack's chain): neither it nor an effect passes it.
+  if (list.front()->kind == doc::DeviceKind::Instrument && (l.index == 0 || to == 0)) {
+    ctx_.setStatus("The instrument stays first in the chain");
+    return false;
+  }
+  const bool r = l.chain != nullptr ? impl_->run(doc::ops::moveDevice(*ctx_.doc(), id, {}, static_cast<uint32_t>(to), l.chain->id))
+                                    : impl_->run(doc::ops::moveDevice(*ctx_.doc(), id, track_, static_cast<uint32_t>(to)));
+  if (r) revealDevice(id);
+  return r;
+}
+
+bool DeviceChainView::showNeighbourChain(int32_t dir) {
+  // The selected rack, or the rack whose shown chain holds the selected device: Up / Down step through its chains (Live's
+  // chain list); a device inside the old chain hands the selection to the first device of the new one.
+  if (selection_.size() != 1) return false;
+  const doc::Project& p = *ctx_.doc();
+  const doc::DeviceLoc l = doc::findDevice(p, selection_.front());
+  if (l.device == nullptr) return false;
+  const doc::Device* rack = l.device->rack ? l.device : l.rack;
+  if (rack == nullptr || rack->rack->chains.empty()) return false;
+  const auto& chains = rack->rack->chains;
+  const doc::ChainId cur = shownChain(rack->id);
+  int64_t at = 0;
+  for (size_t i = 0; i < chains.size(); ++i)
+    if (chains[i]->id == cur) at = static_cast<int64_t>(i);
+  const int64_t to = std::clamp<int64_t>(at + dir, 0, static_cast<int64_t>(chains.size()) - 1);
+  if (to == at) return true;
+  const doc::Chain& next = *chains[static_cast<size_t>(to)];
+  showChain(rack->id, next.id);
+  if (rack != l.device) {
+    const doc::DeviceId one[1] = {next.devices.empty() ? rack->id : next.devices.front()->id};
+    select(one);
+  }
+  revealDevice(selection_.front());
+  return true;
 }
 
 std::vector<ui::MenuItem> DeviceChainView::deviceMenu() {
@@ -695,8 +855,28 @@ bool DeviceChainView::addDevice(const doc::DeviceInfo& info) {
 bool DeviceChainView::deleteSelected() {
   if (selection_.empty()) return false;
   const std::vector<doc::DeviceId> sel = selection_;
+  // T4.16c (Live): the device after the deleted ones takes the selection (else the one before), so Delete and the
+  // arrow keys go on from there.
+  const std::vector<doc::DeviceId> order = shownOrder();
+  doc::DeviceId next, prev;
+  bool seen = false;
+  for (const doc::DeviceId id : order) {
+    const bool gone = std::find(sel.begin(), sel.end(), id) != sel.end() ||
+                      [&] {  // inside a deleted rack
+                        for (const doc::DeviceId s : sel)
+                          if (const doc::Device* d = doc::findDevice(*ctx_.doc(), s).device; d != nullptr && doc::deviceContains(*d, id)) return true;
+                        return false;
+                      }();
+    if (gone) seen = true;
+    else if (!seen) prev = id;
+    else if (!next.valid()) next = id;
+  }
   if (!impl_->run(doc::ops::deleteDevices(*ctx_.doc(), sel))) return false;
   selection_.clear();
+  if (const doc::DeviceId keep = next.valid() ? next : prev; keep.valid() && impl_->frameOf(keep) != nullptr) {
+    const doc::DeviceId one[1] = {keep};
+    select(one);
+  }
   return true;
 }
 
@@ -821,6 +1001,18 @@ DeviceChainView& installDeviceChain(Shell& shell) {
   ctx.setViewAction("device.duplicate", [p] { p->duplicateSelected(); }, has);
   ctx.setViewAction("device.toggleActive", [p] { p->toggleSelectedActive(); }, has);
   ctx.setViewAction("device.group", [p] { p->groupSelected(); }, has);  // T4.8
+  // T4.16c: Live's arrow keys in the Device view.
+  auto chain = [p] { return p->track().valid(); };
+  ctx.setViewAction("device.selectPrev", [p] { p->selectNeighbour(-1, false); }, chain);
+  ctx.setViewAction("device.selectNext", [p] { p->selectNeighbour(1, false); }, chain);
+  ctx.setViewAction("device.extendPrev", [p] { p->selectNeighbour(-1, true); }, chain);
+  ctx.setViewAction("device.extendNext", [p] { p->selectNeighbour(1, true); }, chain);
+  ctx.setViewAction("device.selectFirst", [p] { p->selectEnd(false); }, chain);
+  ctx.setViewAction("device.selectLast", [p] { p->selectEnd(true); }, chain);
+  ctx.setViewAction("device.moveLeft", [p] { p->moveSelected(-1); }, has);
+  ctx.setViewAction("device.moveRight", [p] { p->moveSelected(1); }, has);
+  ctx.setViewAction("device.chainUp", [p] { p->showNeighbourChain(-1); }, has);
+  ctx.setViewAction("device.chainDown", [p] { p->showNeighbourChain(1); }, has);
   return v;
 }
 

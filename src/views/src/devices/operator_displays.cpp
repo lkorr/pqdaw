@@ -159,6 +159,8 @@ public:
   void onCaptureLost() override {
     if (drag_ >= 0) endDrag();
   }
+  // T4.16c: a breakpoint moves.
+  ui::Cursor cursorAt(ui::Vec2) const override { return drag_ >= 0 || hover_ >= 0 ? ui::Cursor::Move : ui::Cursor::Inherit; }
   void onHoverChanged(bool h) override {
     if (!h && hover_ >= 0) {
       hover_ = -1;
@@ -368,6 +370,7 @@ public:
       markDirty();
     }
   }
+  ui::Cursor cursorAt(ui::Vec2) const override { return hover_ >= 0 ? ui::Cursor::Pointer : ui::Cursor::Inherit; }  // T4.16c: picks it
   // Tests: the centre of algorithm k's cell (device px).
   ui::Vec2 cellCentre(int k) const {
     const ui::Rect c = cell(k);
@@ -521,6 +524,8 @@ public:
     }
   }
   void onCaptureLost() override { drawing_ = false; }
+  // T4.16c: click or drag across draws the levels.
+  ui::Cursor cursorAt(ui::Vec2) const override { return names_.empty() ? ui::Cursor::Inherit : ui::Cursor::Crosshair; }
   void onHoverChanged(bool h) override {
     if (!h && hover_ >= 0) {
       hover_ = -1;
