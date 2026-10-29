@@ -17,6 +17,9 @@
 //     onGestureBegin (lazily, at the first actual change), onChange per change, onGestureEnd once; a drag,
 //     a type-in, a Delete reset or one arrow key are each one gesture = one undo step (T3.4 History).
 //   - Info view / tooltip text: Control::setInfo / setTooltip (Widget::info(), Widget::tooltip()).
+//   - Mouse cursor (T4.16a): what a press does. Buttons, toggles, dropdowns: Pointer; value controls: ResizeNS (a
+//     vertical drag; a horizontal fader ResizeEW); text fields and a number box's type-in: Text; a scrollbar's thumb:
+//     the resize cursor of its axis; a meter's clip lamps (when they reset): Pointer. Disabled controls: their parent's.
 //
 // UI thread only. Nothing here is RT-safe. Painting does not allocate once text runs are cached; value
 // changes format their display text once per change, never per frame.
@@ -209,6 +212,11 @@ struct ValueSpec {
 
 // Shared value model, gestures and keys of DragBox, Fader and Knob. Keys when focused: Up/Down (+Shift: fine)
 // step, Delete / Backspace = default (Live's "Delete returns a parameter to its default").
+// Mouse wheel over the control (T4.16a; Knob / Fader / DragBox call handleWheel, subclasses with their own onPointer
+// may too): one key step per notch (Shift: fine; Ctrl / Alt pass the wheel on, e.g. to zoom). A run of notches is one
+// gesture (one undo step): it ends kWheelGestureSeconds after the last notch, or at once when the pointer leaves, a
+// drag or key starts, or the type-in opens; Esc cancels it. setWheelAdjusts(false) leaves the wheel to the parent
+// (the arrangement headers' boxes: the wheel scrolls the tracks there).
 class ValueControl : public Control {
 public:
   ValueControl(std::string name, ValueSpec spec);
@@ -234,14 +242,27 @@ public:
   // Type-in parser (default: a decimal number, optionally followed by the unit; "-inf" when min is −inf).
   std::function<std::optional<double>(std::string_view text)> parser;
 
+  // The wheel adjusts the value (default on; see above).
+  void setWheelAdjusts(bool on) noexcept { wheelAdjusts_ = on; }
+  bool wheelAdjusts() const noexcept { return wheelAdjusts_; }
+  static constexpr double kWheelGestureSeconds = 0.4;
+  // The user's "return to default" (Delete, a knob's or fader's double-click): one gesture.
+  void resetToDefault();
+
   const std::string& valueText() const noexcept { return text_; }
   std::optional<double> parse(std::string_view text) const;
 
   bool onKey(const KeyEvent& e) override;
   void onCaptureLost() override;
   void onInteractionCancelled() override { (void)cancelGesture(); }
+  void onHoverChanged(bool hovered) override;
+  void onTimer(uint32_t id) override;
 
 protected:
+  // A Wheel event: steps the value (see above). False when the wheel is not the control's (pass it on).
+  bool handleWheel(const PointerEvent& e);
+  // Ends a wheel gesture now (no-op when none is running).
+  void finishWheel();
   double clampQuantise(double v) const noexcept;
   // A user edit: starts the gesture if needed, sets, notifies.
   void userSet(double v);
@@ -262,10 +283,14 @@ protected:
   bool gesture_ = false;
   double gestureStart_ = 0.0;  // value_ when the current gesture began (cancelGesture restores it)
   std::string text_;
+  double wheelRaw_ = 0.0;     // unquantised accumulator of the current wheel run (trackpads send fractions)
+  uint32_t wheelTimer_ = 0;   // the wheel gesture's end (0: no wheel gesture)
+  bool wheelAdjusts_ = true;
 };
 
-// Live's numeric box: vertical drag (Shift fine), double-click to type a value (Enter commits, Esc cancels,
-// focus loss commits), Delete = default, Up/Down step.
+// Live's numeric box: vertical drag (Shift fine), double-click (or Enter, or a digit / '.' / '-' typed while focused:
+// the type-in starts with it) to type a value (Enter commits, Esc cancels, focus loss commits), Delete = default,
+// Up/Down step, wheel (see ValueControl).
 class DragBox : public ValueControl {
 public:
   DragBox(std::string name, ValueSpec spec, TextAlign align = TextAlign::Center);
@@ -288,6 +313,7 @@ public:
   bool onKey(const KeyEvent& e) override;
   bool onText(const TextEvent& e) override;
   void onFocusChanged(bool focused) override;
+  Cursor cursorAt(Vec2 pos) const override { return editing_ ? Cursor::Text : ValueControl::cursorAt(pos); }
 
 private:
   void endEdit();
@@ -298,7 +324,7 @@ private:
 };
 
 // Fader: a track with a value fill and a thumb. Dragging the thumb is relative (the thumb follows the pointer;
-// Shift: fine); pressing the track elsewhere jumps there first, then drags.
+// Shift: fine); pressing the track elsewhere jumps there first, then drags. Double-click: the default value.
 class Fader : public ValueControl {
 public:
   enum class Orientation : uint8_t { Vertical, Horizontal };
@@ -328,7 +354,7 @@ struct ModulationRing {
 };
 
 // Rotary knob, Live style: track arc, value arc (from the minimum, or from 0 for bipolar ranges), needle.
-// Vertical drag over spec.dragPixels sweeps the range (Shift: fine).
+// Vertical drag over spec.dragPixels sweeps the range (Shift: fine). Double-click: the default value.
 class Knob : public ValueControl {
 public:
   Knob(std::string name, ValueSpec spec);
@@ -428,6 +454,7 @@ public:
   void paint(PaintContext& ctx) override;
   bool onPointer(const PointerEvent& e) override;
   void onCaptureLost() override;
+  Cursor cursorAt(Vec2 pos) const override;
 
 private:
   void onScrollChanged() noexcept override { markDirty(); }
@@ -466,6 +493,7 @@ public:
 
   void paint(PaintContext& ctx) override;
   bool onPointer(const PointerEvent& e) override;
+  Cursor cursorAt(Vec2 pos) const override;
 
 private:
   struct Px {

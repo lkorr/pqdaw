@@ -41,6 +41,10 @@ CodeEditor::CodeEditor(std::string name) : Widget(std::move(name)) {
 
 CodeEditor::~CodeEditor() = default;
 
+Cursor CodeEditor::cursorAt(Vec2 pos) const {
+  return pos.x >= static_cast<float>(rect().x + gutterW_) ? Cursor::Text : Cursor::Arrow;
+}
+
 // ---- text model ------------------------------------------------------------------------------------------------------
 
 void CodeEditor::rebuildLines() {

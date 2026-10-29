@@ -271,6 +271,7 @@ void LiveBox::paint(PaintContext& ctx) {
 // --- Chooser ----------------------------------------------------------------------------------------------------------
 
 Chooser::Chooser(std::string name) : Control(std::move(name)) {
+  setCursor(Cursor::Pointer);  // a press opens the menu
   setInfo("Audio To", "Where the track's output goes: the master, a group track, or nowhere (Sends Only).");
 }
 

@@ -765,6 +765,43 @@ void MosCircle::cancelDrag() {
   if (tree() && tree()->captured() == this) tree()->releaseCapture();
 }
 
+MosCircle::Part MosCircle::partAt(Vec2 p) const {
+  if (!sel_) return Part::None;
+  ensureModel();
+  ensureGeometry();
+  const UiScale s(geoScale_);
+  const Geometry& g = geo_;
+  if (g.genDown.contains(p) || g.genUp.contains(p) || g.stepDown.contains(p) || g.stepUp.contains(p)) return Part::Button;
+  const float pad = s.exact(mcc::kArrowR + 10.0f);
+  if (model_->parent && std::fabs(p.x - g.parentArrow.x) < pad && std::fabs(p.y - g.parentArrow.y) < pad) return Part::Button;
+  if (model_->child && std::fabs(p.x - g.childArrow.x) < pad && std::fabs(p.y - g.childArrow.y) < pad) return Part::Button;
+  const float sp = s.exact(mcc::kSliderPad);
+  if (p.x >= static_cast<float>(g.slider.x) - sp && p.x <= static_cast<float>(g.slider.right()) + sp &&
+      p.y >= static_cast<float>(g.slider.y) - sp && p.y <= static_cast<float>(g.slider.bottom()) + sp)
+    return Part::Slider;
+  if (g.allIntervals.contains(p) || (model_->hasModmos && g.reset.contains(p))) return Part::Button;
+  const int32_t dot = dotAt(p);
+  if (dot < 0) return Part::None;
+  return model_->origDegs[static_cast<size_t>(dot)] == 0 ? Part::Tonic : Part::Dot;
+}
+
+Cursor MosCircle::cursorAt(Vec2 pos) const {
+  switch (drag_) {
+    case Drag::Slider: return Cursor::ResizeEW;
+    case Drag::Modmos: return Cursor::Move;
+    case Drag::None:
+    case Drag::Pending: break;
+  }
+  switch (partAt(pos)) {
+    case Part::Button:
+    case Part::Tonic: return Cursor::Pointer;
+    case Part::Slider: return Cursor::ResizeEW;
+    case Part::Dot: return Cursor::Move;
+    case Part::None: break;
+  }
+  return Widget::cursorAt(pos);
+}
+
 bool MosCircle::onPointer(const PointerEvent& e) {
   ensureModel();
   ensureGeometry();

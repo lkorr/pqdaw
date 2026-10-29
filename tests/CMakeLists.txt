@@ -64,6 +64,7 @@ pq_add_test(pq_tests_ui PERF
     ui/test_widgets.cpp
     ui/test_hidpi.cpp
     ui/test_controls.cpp
+    ui/test_control_affordances.cpp  # T4.16a: cursors, wheel, double-click default, typed numbers
     ui/test_partial_redraw.cpp
     ui/test_tile_atlas.cpp
     ui/test_pipeline_cache.cpp
@@ -115,6 +116,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
   SOURCES
     views/test_view_context.cpp
     views/test_shell.cpp
+    views/test_shell_affordances.cpp  # T4.16a: cursors of the shell, headers, mixer, tunings, prefs, MOS wheel; wheel; typed tempo
     views/test_arrangement.cpp
     views/test_arrangement_editing.cpp
     views/test_arrangement_tiles.cpp

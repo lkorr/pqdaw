@@ -100,6 +100,8 @@ bool MenuBar::onPointer(const PointerEvent& e) {
   }
 }
 
+Cursor MenuBar::cursorAt(Vec2 pos) const { return hover_ >= 0 ? Cursor::Pointer : Widget::cursorAt(pos); }
+
 void MenuBar::onHoverChanged(bool hovered) {
   if (!hovered && hover_ >= 0) {
     hover_ = -1;

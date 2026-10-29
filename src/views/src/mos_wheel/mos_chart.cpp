@@ -881,6 +881,33 @@ InfoText MosChart::info() const {
 
 // --- input --------------------------------------------------------------------------------------------------------
 
+bool MosChart::onGeneratorHandle(Vec2 p) const noexcept {
+  if (selected_ < 0 || !selection_) return false;
+  ensureLayout();
+  const UiScale s(tree() ? tree()->scale() : 1.0f);
+  const tu::MosRegion& sel = regions_.regions[static_cast<size_t>(selected_)];
+  const double cc = reduce(centsAtX(p.x));
+  if (p.y <= static_cast<float>(geo_.r.y + s.px(mcm::kAxisHitBottom)) && cc >= sel.lowCents && cc <= sel.highCents) return true;  // the axis
+  if (p.y < static_cast<float>(geo_.r.y + s.px(mcm::kAxisY - 4.0f))) return false;
+  for (int32_t k = 0; k < periodReps(); ++k)  // a marker (one per period repetition)
+    if (std::fabs(xOfCents(selection_->generatorCents + k * config_.period) - p.x) <= s.exact(mcm::kMarkerGrabPx)) return true;
+  return false;
+}
+
+Cursor MosChart::cursorAt(Vec2 pos) const {
+  switch (drag_) {
+    case Drag::Generator: return Cursor::ResizeEW;
+    case Drag::Pan: return Cursor::Move;
+    case Drag::Scrollbar: return Cursor::ResizeNS;
+    case Drag::None:
+    case Drag::Pending: break;
+  }
+  if (scrollbarRect().contains(pos)) return thumbRect().contains(pos) ? Cursor::ResizeNS : Widget::cursorAt(pos);
+  if (onGeneratorHandle(pos)) return Cursor::ResizeEW;
+  if (hovered_ >= 0) return Cursor::Pointer;  // a band: a click selects it (kept by updateHover)
+  return Widget::cursorAt(pos);
+}
+
 bool MosChart::onPointer(const PointerEvent& e) {
   const UiScale s(tree() ? tree()->scale() : 1.0f);
   switch (e.type) {
@@ -926,21 +953,15 @@ bool MosChart::onPointer(const PointerEvent& e) {
         onPointer(PointerEvent{PointerType::Move, PointerButton::None, 0, e.mods, e.pos, {}});
         return true;
       }
-      if (selected_ >= 0 && selection_) {
+      if (onGeneratorHandle(e.pos)) {
         const tu::MosRegion& sel = regions_.regions[static_cast<size_t>(selected_)];
         const double cc = reduce(centsAtX(e.pos.x));
         const bool onAxis = e.pos.y <= static_cast<float>(geo_.r.y + s.px(mcm::kAxisHitBottom)) && cc >= sel.lowCents &&
-                            cc <= sel.highCents;
-        bool onMarker = false;
-        if (e.pos.y >= static_cast<float>(geo_.r.y + s.px(mcm::kAxisY - 4.0f)))
-          for (int32_t k = 0; k < periodReps() && !onMarker; ++k)
-            onMarker = std::fabs(xOfCents(selection_->generatorCents + k * config_.period) - e.pos.x) <= s.exact(mcm::kMarkerGrabPx);
-        if (onAxis || onMarker) {
-          drag_ = Drag::Generator;
-          if (onAxis) dragGenerator(e.pos.x, (e.mods & mod::kAlt) == 0);
-          if (selection_ != pressSelection_) emit(MosGesture::Live);
-          return true;
-        }
+                            cc <= sel.highCents;  // a marker press keeps the generator until the pointer moves
+        drag_ = Drag::Generator;
+        if (onAxis) dragGenerator(e.pos.x, (e.mods & mod::kAlt) == 0);
+        if (selection_ != pressSelection_) emit(MosGesture::Live);
+        return true;
       }
       drag_ = Drag::Pending;
       return true;

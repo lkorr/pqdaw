@@ -138,6 +138,8 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onHoverChanged(bool hovered) override;
+  // T4.16a: the pointer hand over a title (the hovered title, kept by onPointer: O(1)).
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
 
   // Opens menu i (0 = File … 5 = Help) below its title, closing any other; returns it (nullptr without an overlay).
   ui::Menu* open(int32_t i);

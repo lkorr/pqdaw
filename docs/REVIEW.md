@@ -302,3 +302,26 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What was matched against: Live 12 from memory (arrow keys select devices left / right in the Device view, into a rack's shown chain and out; Shift extends; chain list Up / Down; double-click renames chains; system cursors: move over device title bars, resize over zone edges). Not checked against a running Live 12.
 - To judge (QUESTIONS Q?-T4.16c-a): Ctrl+Left / Right to move a device (Live has no key for it; drag only); Shift-extend staying inside one list (Live's selection range is per chain as well, from memory); Home / End scoped to the selected device's list; Up / Down for chains even when the chain list is hidden (C off); NotAllowed rather than Arrow for a cable dragged over empty space; Move for the whole title bar (Live shows the arrow there and moves on drag).
 - Known gaps: Ungroup (Ctrl+Shift+G) needs a document op (QUESTIONS); device renaming (devices have no name of their own yet); Alt held over a canvas does not switch the cursor to Move before the press (cursors are resolved without modifier state); the cable itself is not hoverable (its badge is: the cable layer is not hit-tested, by design).
+
+## T4.16a Controls + shell affordances · 2026-10-28 (👁)
+- What to look at (live: `pqdaw`, move the pointer over each part; no goldens changed — the cursor is not drawn):
+
+  | Part | Cursor |
+  |---|---|
+  | Button, toggle (incl. track activator / solo / arm / Pre-Post, status-line Clip / Device, transport play / stop / loop), dropdown, output chooser, tuning chip, tunings swatch, palette colour | Pointer |
+  | Knob, vertical fader, number box (tempo, signature, loop start / length, volume / pan / send boxes, tuning params, prefs test-tone boxes) | ResizeNS (horizontal fader: ResizeEW) |
+  | Text field, a number box being typed into, code editor text | Text (code editor gutter: Arrow) |
+  | Menu-bar title | Pointer (hover highlight already there) |
+  | Splitters (detail view top edge, info / detail split) | ResizeNS / ResizeEW |
+  | Track header bottom edge (height drag), during the drag anywhere | ResizeNS |
+  | Track header fold triangle, automation-mode parameter chooser, lanes toggle | Pointer |
+  | Track title, position display, CPU meter, labels, disabled controls (Record) | Arrow |
+  | Scrollbar thumb / track | ResizeNS or EW / Arrow |
+  | Meter clip lamps | Pointer only when a reset is wired (none is yet, Q?-T4.16a-a) |
+  | MOS wheel popover title band | Move (and while moving) |
+  | MOS chart: selected generator's axis / marker; a band; scrollbar thumb | ResizeEW; Pointer; ResizeNS |
+  | MOS circle: mode / step buttons, parent / child arrows, All Intervals / Reset, tonic; hardness slider; other degree dots | Pointer; ResizeEW; Move |
+
+- QoL added: the mouse wheel steps knobs, faders and number boxes (Shift fine; one undo step per run; Esc cancels; the arrangement headers' boxes leave the wheel to the track scroll); double-click returns a knob / fader to its default; typing a digit / '.' / '-' into a focused number box starts its type-in (click the tempo, type 128, Enter); the tunings swatch gets a hover ring.
+- To judge (Q?-T4.16a-a): ResizeNS over knobs (Live keeps the arrow); the wheel adjusting controls in the mixer and device views (and not in the arrangement headers); double-click = default on knobs / faders; digits typing into a focused header box instead of reaching `0` / `-`.
+- Known gaps: the deferred list in Q?-T4.16a-a (knob type-in, drag across toggles, editable position, Alt+menus, panel fold buttons, width drags, multi-track height); device-panel knobs (T4.16c's area) show ResizeNS but get the wheel / double-click only once their own pointer code calls the base.

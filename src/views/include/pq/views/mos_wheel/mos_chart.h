@@ -204,6 +204,9 @@ public:
   void onHoverChanged(bool hovered) override;
   void onCaptureLost() override;
   ui::InfoText info() const override;
+  // T4.16a: what a press does under the pointer: the generator axis / marker of the selection ResizeEW (drags the
+  // generator), the scrollbar thumb ResizeNS, a band Pointer (selects it); during a drag the drag's own cursor.
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
 
 private:
   enum class Drag : uint8_t { None, Pending, Pan, Generator, Scrollbar };
@@ -248,6 +251,8 @@ private:
   void refreshSelectionValue();
   double snapGenerator(double gen, float pointerX) const noexcept;
   const MosChartEdoMarker* edoMarkerAt(ui::Vec2 p) const noexcept;
+  // A press at p would drag the selected region's generator (on the axis inside the region, or on a marker).
+  bool onGeneratorHandle(ui::Vec2 p) const noexcept;
   void handleClick(ui::Vec2 p);
   void dragGenerator(float x, bool snap);
   void updateHover(ui::Vec2 p, bool force);

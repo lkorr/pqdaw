@@ -94,6 +94,7 @@ std::optional<Ticks> parseDuration(const TimeSigMap& sigs, Ticks at, std::string
 
 TransportButton::TransportButton(std::string name, Icon icon) : Control(std::move(name)), icon_(icon) {
   setFocusable(false);
+  setCursor(ui::Cursor::Pointer);
 }
 
 void TransportButton::setOn(bool on) {

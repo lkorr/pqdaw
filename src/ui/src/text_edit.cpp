@@ -216,6 +216,7 @@ TextEdit::TextEdit(std::string name, std::string text) : Control(std::move(name)
   setFocusable(true);
   setAcceptsTextInput(true);
   focusRingOnPointerFocus_ = true;
+  setCursor(Cursor::Text);
   buf_.setText(std::move(text));
   committed_ = buf_.text();
 }

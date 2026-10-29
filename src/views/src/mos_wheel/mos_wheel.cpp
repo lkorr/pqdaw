@@ -469,11 +469,21 @@ std::optional<Vec2> gWheelPos;  // logical px; UI thread only (the session's las
 std::optional<Vec2> MosWheelPopover::rememberedPosition() noexcept { return gWheelPos; }
 void MosWheelPopover::forgetPosition() noexcept { gWheelPos.reset(); }
 
+namespace {
+constexpr float kTitleBand = 30.0f;  // logical px at the top that move the popover
+}  // namespace
+
+Cursor MosWheelPopover::cursorAt(Vec2 pos) const {
+  const float sc = tree() ? tree()->scale() : 1.0f;
+  if (moving_ || pos.y < static_cast<float>(rect().y) + kTitleBand * sc) return Cursor::Move;
+  return Popover::cursorAt(pos);
+}
+
 bool MosWheelPopover::onPointer(const PointerEvent& e) {
   UiTree* tree = this->tree();
   const float sc = tree ? tree->scale() : 1.0f;
   const IRect r = rect();
-  if (e.type == PointerType::Down && e.button == PointerButton::Left && e.pos.y < static_cast<float>(r.y) + 30.0f * sc) {
+  if (e.type == PointerType::Down && e.button == PointerButton::Left && e.pos.y < static_cast<float>(r.y) + kTitleBand * sc) {
     moving_ = true;
     moveGrab_ = {e.pos.x - static_cast<float>(r.x), e.pos.y - static_cast<float>(r.y)};
     return true;

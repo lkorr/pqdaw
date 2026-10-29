@@ -220,7 +220,11 @@ void MixerStrip::build(doc::TrackKind kind) {
   meter_ = nullptr;
   MixerController* ctl = ctl_.get();
   const bool master = kind == doc::TrackKind::Master;
-  auto valueHooks = [ctl](ValueControl& v, const char* label) {
+  // T4.16a: in the arrangement's headers the wheel scrolls the tracks (it would otherwise change whatever box passes
+  // under the pointer); the mixer view's controls take it, as Live's mixer does.
+  const bool wheel = layout_ == StripLayout::Vertical;
+  auto valueHooks = [ctl, wheel](ValueControl& v, const char* label) {
+    v.setWheelAdjusts(wheel);
     v.onGestureBegin = [ctl, label] { ctl->beginGesture(label); };
     v.onGestureEnd = [ctl] { ctl->endGesture(); };
     v.onGestureCancel = [ctl] { ctl->cancelGesture(); };
@@ -323,6 +327,7 @@ void MixerStrip::syncSends(const doc::Project& p, const doc::Track& t) {
         for (size_t k = letter; k > 0; k = (k - 1) / 26) l.insert(l.begin(), static_cast<char>('A' + (k - 1) % 26));
         auto& box = add<LiveBox>("send[" + std::to_string(sends_.size()) + "]", LiveBox::Kind::Send, l);
         const doc::TrackId target = r->id;
+        box.setWheelAdjusts(layout_ == StripLayout::Vertical);  // as build(): the headers leave the wheel to the scroll
         box.onGestureBegin = [ctl] { ctl->beginGesture("Send Level"); };
         box.onGestureEnd = [ctl] { ctl->endGesture(); };
         box.onGestureCancel = [ctl] { ctl->cancelGesture(); };

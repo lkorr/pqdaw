@@ -54,6 +54,8 @@ public:
       if (cur || i == hovered_) ctx.dl.addRectStroke(c.toRect(), cur ? th->clip.selectedBorder : th->mixer.boxBorder);
     }
   }
+  // T4.16a: the pointer hand over a colour (the hovered cell, kept by onPointer).
+  ui::Cursor cursorAt(ui::Vec2 pos) const override { return hovered_ != UINT32_MAX ? ui::Cursor::Pointer : Control::cursorAt(pos); }
   bool onPointer(const ui::PointerEvent& e) override {
     const ui::PaintResources* res = tree() ? tree()->resources() : nullptr;
     const uint32_t n = res && res->theme ? static_cast<uint32_t>(std::min<size_t>(res->theme->clipPalette.size(), ui::kClipPaletteSize)) : 0;

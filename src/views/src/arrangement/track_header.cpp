@@ -28,6 +28,9 @@ TrackHeader::TrackHeader(std::string name, ArrangementView& view) : Control(std:
   chooser_->setVisible(false);
   lanesToggle_ = &add<arrangement::LanesToggle>(view);
   lanesToggle_->setVisible(false);
+  // T4.16a: both open / flip something on a click.
+  chooser_->setCursor(Cursor::Pointer);
+  lanesToggle_->setCursor(Cursor::Pointer);
   setInfo("Track Title Bar",
           "Click to select the track (Shift adds, Ctrl toggles); drag its bottom edge to resize it; right-click for "
           "rename, insert, group and colour. A group's triangle folds or unfolds its tracks.");
@@ -179,8 +182,17 @@ void TrackHeader::paint(PaintContext& ctx) {
   }
 }
 
+bool TrackHeader::onResizeEdge(Vec2 pos) const noexcept {
+  const float scale = tree() ? tree()->scale() : 1.0f;
+  return rect().contains(pos) && pos.y >= static_cast<float>(rect().bottom()) - std::max(2.0f, am::kResizeGrab * scale) - 1.0f;
+}
+
+Cursor TrackHeader::cursorAt(Vec2 pos) const {
+  if (resizing_ || onResizeEdge(pos)) return Cursor::ResizeNS;
+  return Control::cursorAt(pos);
+}
+
 bool TrackHeader::onPointer(const PointerEvent& e) {
-  const IRect r = rect();
   const float scale = tree() ? tree()->scale() : 1.0f;
   // Height resize: the bottom edge (Live drags the track's lower border).
   if (resizing_) {
@@ -193,8 +205,7 @@ bool TrackHeader::onPointer(const PointerEvent& e) {
       return true;
     }
   }
-  if (e.type == PointerType::Down && e.button == PointerButton::Left &&
-      e.pos.y >= static_cast<float>(r.bottom()) - std::max(2.0f, am::kResizeGrab * scale) - 1.0f) {
+  if (e.type == PointerType::Down && e.button == PointerButton::Left && onResizeEdge(e.pos)) {
     resizing_ = true;
     resizeStartY_ = e.pos.y;
     resizeStartH_ = view_.trackHeight(id_);
@@ -266,6 +277,7 @@ void TrackHeader::onFrame(double) {
 namespace arrangement {
 
 FoldButton::FoldButton(ArrangementView& view) : Control("fold"), view_(view) {
+  setCursor(Cursor::Pointer);  // T4.16a
   setInfo("Fold / Unfold Group", "Shows or hides the tracks inside this group.");
 }
 

@@ -160,6 +160,9 @@ public:
   void onCaptureLost() override;
   void onHoverChanged(bool hovered) override;
   ui::InfoText info() const override;
+  // T4.16a: the mode / step buttons, the parent / child arrows, the toggles and the tonic (audition) Pointer; the
+  // hardness slider ResizeEW; a degree's dot Move (drags its MODMOS alteration); during a drag the drag's cursor.
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
 
   struct Model;  // the cached scale model (mos_circle.cpp)
 
@@ -189,6 +192,9 @@ private:
   void dragModmos(ui::Vec2 p);
   void cancelDrag();
   int32_t dotAt(ui::Vec2 p) const;
+  // What a left press at p hits, in onPointer's order (cursorAt).
+  enum class Part : uint8_t { None, Button, Slider, Tonic, Dot };
+  Part partAt(ui::Vec2 p) const;
 
   MosChartConfig config_;
   tuning::MosRegionSet regions_;

@@ -86,6 +86,8 @@ public:
   // Dragging the title band moves the popover (T3.x-fix-look, the M3 review's UI §7: at 920 × 580 it covered the very
   // piano roll whose morph it shows). The position is remembered for the next wheel in this session.
   bool onPointer(const ui::PointerEvent& e) override;
+  // T4.16a: the move cursor over the title band (what a press there does) and during the move.
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
   ui::InfoText info() const override;
   // Where the next wheel opens (logical px from the window's top-left; none: centred / under its chip).
   static std::optional<ui::Vec2> rememberedPosition() noexcept;
@@ -142,6 +144,8 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   bool onKey(const ui::KeyEvent& e) override;
+  // T4.16a: the pointer hand while a click opens the wheel (a target is set).
+  ui::Cursor cursorAt(ui::Vec2 pos) const override { return target_ ? ui::Cursor::Pointer : Control::cursorAt(pos); }
   void open();
 
   // Whether a document event can change what a chip shows (a tuning, an assignment, the tree: Structural; tuning

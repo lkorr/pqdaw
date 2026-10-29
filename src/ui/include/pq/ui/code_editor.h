@@ -101,6 +101,8 @@ public:
   bool onText(const TextEvent& e) override;
   void onFocusChanged(bool focused) override;
   InfoText info() const override;
+  // T4.16a: the I-beam over the text, the arrow over the line-number gutter.
+  Cursor cursorAt(Vec2 pos) const override;
 
 private:
   void rebuildLines();

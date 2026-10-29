@@ -100,7 +100,10 @@ void Label::paint(PaintContext& ctx) {
 
 // --- Button ---------------------------------------------------------------------------------------------
 
-Button::Button(std::string name, std::string text) : Control(std::move(name)), text_(std::move(text)) { setFocusable(true); }
+Button::Button(std::string name, std::string text) : Control(std::move(name)), text_(std::move(text)) {
+  setFocusable(true);
+  setCursor(Cursor::Pointer);
+}
 
 void Button::setText(std::string text) {
   if (text == text_) return;
@@ -169,6 +172,7 @@ void Button::onCaptureLost() {
 Toggle::Toggle(std::string name, std::string text, ToggleStyle style, bool on)
     : Control(std::move(name)), text_(std::move(text)), style_(style), on_(on) {
   setFocusable(true);
+  setCursor(Cursor::Pointer);
 }
 
 void Toggle::setOn(bool on) {
@@ -242,6 +246,7 @@ void Toggle::onCaptureLost() { setPressed(false); }
 
 ValueControl::ValueControl(std::string name, ValueSpec spec) : Control(std::move(name)), spec_(std::move(spec)) {
   setFocusable(true);
+  setCursor(Cursor::ResizeNS);  // a vertical value drag
   focusRingOnPointerFocus_ = true;
   value_ = clampQuantise(spec_.def);
   refreshText();
@@ -343,6 +348,7 @@ void ValueControl::endGesture() {
 }
 
 void ValueControl::dragStart(Vec2 pos) {
+  finishWheel();
   dragging_ = true;
   last_ = pos;
   raw_ = value_;
@@ -370,6 +376,10 @@ void ValueControl::dragEnd() {
 void ValueControl::onCaptureLost() { dragEnd(); }
 
 bool ValueControl::cancelGesture() {
+  if (wheelTimer_) {  // a wheel run: cancelled like a drag (the value returns to where the run began)
+    cancelTimer(wheelTimer_);
+    wheelTimer_ = 0;
+  }
   if (!dragging_ && !gesture_) return false;
   const bool hadGesture = gesture_;
   if (dragging_) {
@@ -397,11 +407,11 @@ bool ValueControl::onKey(const KeyEvent& e) {
   const Mods chord = e.mods & mod::kChordMask;
   if (e.key == key::kEscape && chord == mod::kNone && (dragging_ || gesture_)) return cancelGesture();
   if ((e.key == key::kDelete || e.key == key::kBackspace) && chord == mod::kNone) {
-    userSet(spec_.def);
-    endGesture();
+    resetToDefault();
     return true;
   }
   if ((e.key == key::kUp || e.key == key::kDown) && (chord & ~mod::kShift) == 0) {
+    finishWheel();  // a key step is its own gesture
     double d = keyStep() * ((chord & mod::kShift) ? spec_.fineFactor : 1.0);
     if (spec_.step > 0.0) d = std::max(d, spec_.step);
     userSet(value_ + (e.key == key::kUp ? d : -d));
@@ -411,12 +421,53 @@ bool ValueControl::onKey(const KeyEvent& e) {
   return false;
 }
 
+void ValueControl::resetToDefault() {
+  finishWheel();
+  userSet(spec_.def);
+  endGesture();
+}
+
+bool ValueControl::handleWheel(const PointerEvent& e) {
+  if (e.type != PointerType::Wheel || !wheelAdjusts_ || dragging_) return false;
+  if ((e.mods & (mod::kCtrl | mod::kAlt | mod::kSuper)) != 0 || e.wheel.y == 0.0f) return false;
+  if (!wheelTimer_) wheelRaw_ = value_;  // a new run
+  double d = keyStep() * ((e.mods & mod::kShift) ? spec_.fineFactor : 1.0);
+  if (spec_.step > 0.0) d = std::max(d, spec_.step);
+  const double lo = std::min(spec_.min, spec_.max), hi = std::max(spec_.min, spec_.max);
+  wheelRaw_ = std::clamp(wheelRaw_ + d * static_cast<double>(e.wheel.y), lo, hi);
+  userSet(wheelRaw_);
+  if (gesture_) {  // (re)arm the run's end; nothing to end while the value has not moved (at a limit)
+    if (wheelTimer_) cancelTimer(wheelTimer_);
+    wheelTimer_ = requestTimer(kWheelGestureSeconds);
+  }
+  return true;  // consumed even at a limit: the view under the control does not scroll instead
+}
+
+void ValueControl::finishWheel() {
+  if (!wheelTimer_) return;
+  cancelTimer(wheelTimer_);
+  wheelTimer_ = 0;
+  endGesture();
+}
+
+void ValueControl::onTimer(uint32_t id) {
+  if (id != wheelTimer_) return;
+  wheelTimer_ = 0;
+  endGesture();
+}
+
+void ValueControl::onHoverChanged(bool hovered) {
+  if (!hovered) finishWheel();
+  markDirty();
+}
+
 // --- DragBox --------------------------------------------------------------------------------------------
 
 DragBox::DragBox(std::string name, ValueSpec spec, TextAlign align) : ValueControl(std::move(name), std::move(spec)), align_(align) {}
 
 void DragBox::beginEdit() {
   if (editing_) return;
+  finishWheel();
   editing_ = true;
   // The number alone (no unit), like Live's type-in.
   char buf[64];
@@ -488,6 +539,15 @@ bool DragBox::onKey(const KeyEvent& e) {
     beginEdit();
     return true;
   }
+  // T4.16a: typing a number into a focused box starts the type-in with that character (Live: click the tempo, type
+  // 128, Enter). The key, not a TextEvent: text input is off until the type-in opens.
+  if (e.down && !e.repeat && (e.mods & mod::kChordMask) == 0 &&
+      ((e.key >= '0' && e.key <= '9') || e.key == '.' || e.key == '-')) {
+    beginEdit();
+    edit_.setText(std::string(1, static_cast<char>(e.key)));
+    markDirty();
+    return true;
+  }
   return ValueControl::onKey(e);
 }
 
@@ -536,6 +596,7 @@ bool DragBox::onPointer(const PointerEvent& e) {
       if (e.button != PointerButton::Left || !dragging()) return false;
       dragEnd();
       return true;
+    case PointerType::Wheel: return handleWheel(e);
     default: return false;
   }
 }
@@ -606,7 +667,9 @@ FaderGeom faderGeom(const IRect& r, Fader::Orientation o, double norm, float sca
 }
 }  // namespace
 
-Fader::Fader(std::string name, ValueSpec spec, Orientation o) : ValueControl(std::move(name), std::move(spec)), orient_(o) {}
+Fader::Fader(std::string name, ValueSpec spec, Orientation o) : ValueControl(std::move(name), std::move(spec)), orient_(o) {
+  if (o == Orientation::Horizontal) setCursor(Cursor::ResizeEW);
+}
 
 IRect Fader::thumbRect() const noexcept { return faderGeom(rect(), orient_, normalized(), tree() ? tree()->scale() : 1.0f).thumb; }
 
@@ -617,6 +680,10 @@ bool Fader::onPointer(const PointerEvent& e) {
   switch (e.type) {
     case PointerType::Down: {
       if (e.button != PointerButton::Left) return false;
+      if (e.clickCount >= 2) {  // the default value (the first click's drag has ended)
+        resetToDefault();
+        return true;
+      }
       const FaderGeom g = faderGeom(rect(), orient_, normalized(), tree() ? tree()->scale() : 1.0f);
       if (!g.thumb.contains(e.pos) && g.travel > 0) {
         // Jump: centre the thumb on the pointer, then drag from there.
@@ -638,6 +705,7 @@ bool Fader::onPointer(const PointerEvent& e) {
       if (e.button != PointerButton::Left || !dragging()) return false;
       dragEnd();
       return true;
+    case PointerType::Wheel: return handleWheel(e);
     default: return false;
   }
 }
@@ -690,6 +758,10 @@ bool Knob::onPointer(const PointerEvent& e) {
   switch (e.type) {
     case PointerType::Down:
       if (e.button != PointerButton::Left) return false;
+      if (e.clickCount >= 2) {  // the default value (the first click's drag has ended)
+        resetToDefault();
+        return true;
+      }
       dragStart(e.pos);
       return true;
     case PointerType::Move: {
@@ -702,6 +774,7 @@ bool Knob::onPointer(const PointerEvent& e) {
       if (e.button != PointerButton::Left || !dragging()) return false;
       dragEnd();
       return true;
+    case PointerType::Wheel: return handleWheel(e);
     default: return false;
   }
 }
@@ -755,6 +828,7 @@ Dropdown::Dropdown(std::string name, std::vector<std::string> items, int32_t ind
     : Control(std::move(name)), items_(std::move(items)), index_(items_.empty() ? -1 : std::clamp(index, 0, static_cast<int32_t>(items_.size()) - 1)),
       alive_(std::make_shared<Dropdown*>(this)) {
   setFocusable(true);
+  setCursor(Cursor::Pointer);
 }
 
 Dropdown::~Dropdown() {
@@ -939,6 +1013,12 @@ bool Scrollbar::onPointer(const PointerEvent& e) {
   }
 }
 
+Cursor Scrollbar::cursorAt(Vec2 pos) const {
+  // The thumb drags along the axis; the track (paging on press) keeps the arrow, as desktop scrollbars do.
+  if (dragging_ || thumbRect().contains(pos)) return axis_ == Axis::Vertical ? Cursor::ResizeNS : Cursor::ResizeEW;
+  return Control::cursorAt(pos);
+}
+
 void Scrollbar::onCaptureLost() {
   dragging_ = false;
   setPressed(false);
@@ -996,6 +1076,11 @@ bool Meter::onPointer(const PointerEvent& e) {
   if (e.type != PointerType::Down || e.button != PointerButton::Left) return false;
   if (e.pos.y < static_cast<float>(rect().y + lampHeight() + 2) && onResetClip) onResetClip();
   return true;
+}
+
+Cursor Meter::cursorAt(Vec2 pos) const {
+  if (onResetClip && pos.y < static_cast<float>(rect().y + lampHeight() + 2)) return Cursor::Pointer;  // the clip lamps
+  return Control::cursorAt(pos);
 }
 
 void Meter::paint(PaintContext& ctx) {

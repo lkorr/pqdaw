@@ -76,6 +76,7 @@ public:
   Swatch(TuningsPanel& panel, doc::TuningId id) : Control("colour"), panel_(panel), id_(id) {
     setSize(Length::fixed(14), Length::fixed(14));
     setFocusable(false);
+    setCursor(Cursor::Pointer);  // T4.16a: a click opens the palette
     setInfo("Tuning Colour", "The colour of this main tuning's chips on the tracks and clips that follow it. Click to choose.");
   }
   void setColour(uint32_t rgb) {
@@ -88,7 +89,13 @@ public:
     if (!th) return;
     const IRect r = rect();
     const float rad = static_cast<float>(r.w) / 2.0f;
-    ctx.dl.addCircleFilled({static_cast<float>(r.x) + rad, static_cast<float>(r.y) + static_cast<float>(r.h) / 2.0f}, rad - 1.0f, hex(rgb_));
+    const Vec2 c{static_cast<float>(r.x) + rad, static_cast<float>(r.y) + static_cast<float>(r.h) / 2.0f};
+    if (hovered()) {  // T4.16a: hover feedback (clickable): a light ring around the colour
+      ctx.dl.addCircleFilled(c, rad, th->text.primary);
+      ctx.dl.addCircleFilled(c, rad - 1.0f - ctx.scale.exact(1.0f), hex(rgb_));
+      return;
+    }
+    ctx.dl.addCircleFilled(c, rad - 1.0f, hex(rgb_));
   }
   bool onPointer(const PointerEvent& e) override {
     if (e.type == PointerType::Down && e.button == PointerButton::Left) {

@@ -228,6 +228,10 @@ public:
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override { resizing_ = false; }
   void onFrame(double now) override;
+  // T4.16a: ResizeNS over the bottom edge (the height drag) and while resizing; else the arrow (a click selects).
+  ui::Cursor cursorAt(ui::Vec2 pos) const override;
+  // Whether a press at pos (device px) grabs the bottom edge that resizes the row (kResizeGrab).
+  bool onResizeEdge(ui::Vec2 pos) const noexcept;
 
 private:
   void endRename(bool commit);
