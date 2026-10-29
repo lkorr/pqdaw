@@ -805,3 +805,8 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a.
 - CPU-efficiency check: cursorAt / hover only on input, O(log n + items near the pointer), no allocation; idle 0 frames (tested).
 - Notes/blockers: deferred (Q?-T4.16b-a): drawing a loop in the empty loop row, Ctrl+arrows, Home/End, clips between tracks with Up/Down, breakpoint arrow nudges, velocity-stem highlight, copy cursor, minutes-ruler interaction; fades/gain/loop handles wait for audio clips (M6); Alt fine-nudge chord/amount to check against Live (Q48).
+
+## 2026-10-28 · T4.16-fix1 · orchestrator / task/T4.16-fix1-leftovers
+- Did: the T4.16 leftovers: device-panel knobs (PanelKnob) take the wheel (handleWheel: a run = one undo step) and double-click = default like ui::Knob; mixer meter clip lamps latch until clicked, as in Live (`MeterSource::resetClip(id)`, ProjectLink + FixedMeterSource; they used to clear after the 1.5 s hold, so the info text's "click to reset" did nothing); `UiTree::mods()` (from the last pointer / key event incl. the modifier key itself) and the circuit / project canvases show Move while Alt is held (an Alt press pans). Tests: wheel + double-click on a panel knob, clip-lamp click, mods with a still pointer.
+- Verified: dev -Full pq_tests_ui/views/app + pqdaw_* 19/19, pq_tests_playback 2/2; release -Full pq_tests_ui/views/app/playback + pqdaw_* 21/21; 0 warnings.
+- Perf: n/a. CPU-efficiency check: mods tracking is one store per event; reset is a map lookup on click.
