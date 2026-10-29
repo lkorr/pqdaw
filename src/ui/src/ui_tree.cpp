@@ -518,6 +518,7 @@ bool UiTree::dispatchPointer(const PointerEvent& e) {
   }
   layoutNow();  // hit testing needs current rects
   pointer_ = e.pos;
+  mods_ = static_cast<Mods>(e.mods & mod::kChordMask);
   pointerInside_ = true;
   if (e.type == PointerType::Down) {
     buttonsHeld_ |= buttonBit(e.button);
@@ -575,6 +576,16 @@ bool UiTree::runBinding(ScopeId scope, const KeyEvent& e, KeyResult& result) con
 }
 
 KeyResult UiTree::dispatchKey(const KeyEvent& e) {
+  {
+    Mods m = static_cast<Mods>(e.mods & mod::kChordMask);
+    Mods bit = 0;
+    if (e.key == key::kLShift || e.key == key::kRShift) bit = mod::kShift;
+    else if (e.key == key::kLCtrl || e.key == key::kRCtrl) bit = mod::kCtrl;
+    else if (e.key == key::kLAlt || e.key == key::kRAlt) bit = mod::kAlt;
+    else if (e.key == key::kLSuper || e.key == key::kRSuper) bit = mod::kSuper;
+    if (bit) m = static_cast<Mods>(e.down ? (m | bit) : (m & ~bit));
+    mods_ = m;
+  }
   // 1. The focused widget, then its ancestors. A focused text field claims printable keys outright.
   Widget* f = focus_;
   if (f) {

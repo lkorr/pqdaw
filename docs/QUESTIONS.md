@@ -1354,7 +1354,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Not built (new features, proposed):
   - **Ungroup** (Live: Ctrl+Shift+G on a rack): needs a document op `ungroupDevices` (a one-chain rack → its devices in its place, mappings dropped, wires kept; Live refuses on several chains, from memory) and `device.ungroup` in the devices scope.
   - **Device names** (Live: Ctrl+R renames a device): the document has no per-device name; would need a Meta field and command.
-  - **Alt-hover pan cursor** on the canvases: `UiTree::cursor()` has no modifier state; would need the tree to track modifiers (a T4.16a / ui change).
+  - **Alt-hover pan cursor** on the canvases: `UiTree::cursor()` has no modifier state; would need the tree to track modifiers (a T4.16a / ui change). — done in T4.16-fix1: `UiTree::mods()`, canvases show Move while Alt is held.
 
 ## Q?-T4.16a-a · 2026-10-28 · T4.16a · Controls and shell affordances: cursor conventions, the wheel on value controls, double-click default, typed numbers; deferred features
 - Context: TASKS T4.16 (user request 2026-10-28: cursors that show what a press does, hover feedback, everyday Live QoL). Files: `pq/ui/controls.h` (ValueControl, DragBox, Fader, Knob, Button, Toggle, Dropdown, TextEdit, Scrollbar, Meter), `pq/ui/code_editor.h`, shell (control bar, menu bar), mixer strips, track headers, tunings panel, colour grid, MOS wheel popover / chart / circle.
@@ -1371,7 +1371,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   5. Fold / show buttons on the panel edges (Live's small triangles that hide the browser, detail view and info view).
   6. Width drags: mixer-view strip widths and the arrangement header's mixer section width (Live widens the mixer strips by dragging).
   7. Resizing every selected track's height at once (Live: with several tracks selected, a height drag applies to all; Alt+drag all tracks — to confirm against Live 12).
-- Found, not fixed (outside a sweep fix): the mixer meters' info says "Click to reset the clip lamps" but nothing resets them — `Meter::onResetClip` is never set and `MeterSource` has no reset (the clip state comes from the app's taps). Needs `MeterSource::resetClip(ids)` and the app side. The lamp shows the pointer only once `onResetClip` is set, so it does not promise a click that does nothing.
+- Found, not fixed (outside a sweep fix): the mixer meters' info says "Click to reset the clip lamps" but nothing resets them — `Meter::onResetClip` is never set and `MeterSource` has no reset (the clip state comes from the app's taps). Needs `MeterSource::resetClip(ids)` and the app side. The lamp shows the pointer only once `onResetClip` is set, so it does not promise a click that does nothing. — done in T4.16-fix1: `MeterSource::resetClip(id)` (ProjectLink, FixedMeterSource); the lamps latch until clicked, as in Live (they used to clear after the 1.5 s hold).
 - Note for T4.16c: `PanelKnob` (device panels) derives from ValueControl but has its own onPointer, so it shows ResizeNS but gets neither the wheel nor double-click until it calls `handleWheel` / `resetToDefault`.
 
 ## Q?-T4.16b-a · 2026-10-28 · T4.16b · Arrangement / piano roll / automation affordances: cursor choices, the new keys, what is deferred

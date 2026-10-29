@@ -504,3 +504,24 @@ TEST_CASE("rack chains: a double-click on a chain's name renames it in place (on
   CHECK(doc::macroDisplayName(u.rackOf(u.rack), 1) == "Tone");
   CHECK(u.view().frameOf(u.rack)->find("macro-rename") == nullptr);
 }
+
+TEST_CASE("device panel knobs: the wheel steps them (a run = one undo step), a double-click returns the default (T4.16-fix1)") {
+  Ui u;
+  devices::DevicePanel* p = u.view().panelOf(u.util);
+  REQUIRE(p != nullptr);
+  u.d.tree().layoutNow();
+  auto* knob = dynamic_cast<ui::ValueControl*>(p->controlFor("width"));
+  REQUIRE(knob != nullptr);
+  const double v0 = knob->value();
+  const Vec2 c = mid(knob->rect());
+  const size_t h0 = u.history();
+  u.d.move(c);
+  u.d.wheel(c, -1.0f);
+  u.d.wheel(c, -1.0f);
+  CHECK(knob->value() < v0);
+  u.d.advance(ui::ValueControl::kWheelGestureSeconds + 0.1);
+  CHECK(u.history() == h0 + 1);
+  u.d.doubleClick(c);
+  CHECK(knob->value() == doctest::Approx(v0));
+  CHECK(u.history() == h0 + 2);
+}

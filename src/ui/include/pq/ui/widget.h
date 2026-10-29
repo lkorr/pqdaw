@@ -511,6 +511,11 @@ public:
   // while a widget says Inherit; Arrow when nothing asks or the pointer is outside the window. Cheap (a walk up
   // the hovered widget's ancestors); the app compares it with what it last applied after each event and frame.
   Cursor cursor() const;
+  // The modifier keys held now (kChordMask bits), from the last pointer or key event, including the modifier key that
+  // event pressed or released. cursorAt overrides read it to show what a press with them would do (Alt on a
+  // canvas: pan); the app re-applies the cursor after key events too, so the cursor follows a modifier with the pointer
+  // still (T4.16-fix1).
+  Mods mods() const noexcept { return mods_; }
   // `keyboard`: focus moved by the keyboard (Tab, menu navigation), so controls show a focus ring
   // (focusVisible()); focus from a pointer press does not.
   void setFocus(Widget* w, bool keyboard = false);
@@ -591,6 +596,7 @@ private:
   std::unique_ptr<Clipboard> localClipboard_;
   std::vector<TreeObserver*> observers_;
   uint8_t buttonsHeld_ = 0;  // bit (button - 1)
+  Mods mods_ = mod::kNone;  // mods()
   Vec2 pointer_{-1e9f, -1e9f};
   bool pointerInside_ = false;
 

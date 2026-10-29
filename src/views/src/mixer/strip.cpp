@@ -292,6 +292,11 @@ void MixerStrip::build(doc::TrackKind kind) {
   }
   meter_ = &add<Meter>("meter");
   meter_->setInfo("Track Meter", "Peak and RMS level of the track's output (PQ Meter style). Click to reset the clip lamps.");
+  meter_->onResetClip = [this] {  // T4.16-fix1: the lamps latch until this click
+    if (!ctl_->source) return;
+    ctl_->source->resetClip(id_);
+    ctl_->pollMeters();
+  };
 }
 
 void MixerStrip::resyncToggles() {

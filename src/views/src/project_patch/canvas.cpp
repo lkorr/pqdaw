@@ -653,7 +653,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::Send: return ui::Cursor::ResizeEW;
     case Drag::None: break;
   }
-  if (panning() || !scene()) return CircuitCanvas::cursorAt(pos);
+  if (panning() || altHeld() || !scene()) return CircuitCanvas::cursorAt(pos);
   return hoverCursor_;
 }
 

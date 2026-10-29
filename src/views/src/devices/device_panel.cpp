@@ -59,6 +59,10 @@ public:
     switch (e.type) {
       case ui::PointerType::Down:
         if (e.button != ui::PointerButton::Left) return false;
+        if (e.clickCount >= 2) {  // T4.16-fix1: the default value, as ui::Knob
+          resetToDefault();
+          return true;
+        }
         dragStart(e.pos);
         return true;
       case ui::PointerType::Move: {
@@ -71,6 +75,7 @@ public:
         if (e.button != ui::PointerButton::Left || !dragging()) return false;
         dragEnd();
         return true;
+      case ui::PointerType::Wheel: return handleWheel(e);  // T4.16-fix1: one step per notch, a run = one undo step
       default: return false;
     }
   }

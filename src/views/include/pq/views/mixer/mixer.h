@@ -64,6 +64,8 @@ public:
   virtual bool live() const noexcept = 0;
   // Levels for `ids` into `out` (same size): one call per poll for every strip. Unknown ids read as silence.
   virtual void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept = 0;
+  // Clears a track's clip lamps (they latch until clicked, as in Live; T4.16-fix1). The next read shows it.
+  virtual void resetClip(doc::TrackId /*id*/) noexcept {}
 };
 
 // Fixed levels per track (tests, screenshot scenes, benchmarks).
@@ -73,6 +75,7 @@ public:
   void setLive(bool live) noexcept { live_ = live; }
   bool live() const noexcept override { return live_; }
   void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept override;
+  void resetClip(doc::TrackId id) noexcept override;
   uint64_t reads() const noexcept { return reads_; }
 
 private:

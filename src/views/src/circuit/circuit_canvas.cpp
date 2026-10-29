@@ -1162,7 +1162,9 @@ void CircuitCanvas::onInteractionCancelled() {
 const CanvasHit& CircuitCanvas::hovered() const noexcept { return impl_->hover; }
 bool CircuitCanvas::panning() const noexcept { return impl_->mode == Impl::DragMode::Pan; }
 
-ui::Cursor CircuitCanvas::cursorAt(ui::Vec2 /*pos*/) const { return panning() ? ui::Cursor::Move : ui::Cursor::Inherit; }
+bool CircuitCanvas::altHeld() const noexcept { return tree() && (tree()->mods() & ui::mod::kAlt) != 0; }
+
+ui::Cursor CircuitCanvas::cursorAt(ui::Vec2 /*pos*/) const { return panning() || altHeld() ? ui::Cursor::Move : ui::Cursor::Inherit; }
 
 ui::InfoText CircuitCanvas::info() const {
   const Impl& m = *impl_;

@@ -1670,8 +1670,7 @@ void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLev
         st.holdDb[c] = pk;
         st.holdUntil[c] = now + kHoldSeconds;
       }
-      if (l.channels > c && l.peak[c] >= 1.0f) st.clip[c] = true;
-      if (now >= st.holdUntil[c]) st.clip[c] = false;
+      if (l.channels > c && l.peak[c] >= 1.0f) st.clip[c] = true;  // latched until resetClip (a click), as in Live
       m.peakDb[c] = st.peakDb[c] < -199.0f ? -200.0f : st.peakDb[c];
       m.rmsDb[c] = rms;
       m.holdDb[c] = st.holdDb[c];
@@ -1683,6 +1682,10 @@ void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLev
   }
   metersLit_ = lit;
   collectIdle();
+}
+
+void ProjectLink::resetClip(doc::TrackId id) noexcept {
+  if (auto it = meters_.find(id.value); it != meters_.end()) it->second.clip[0] = it->second.clip[1] = false;
 }
 
 // ---- Offline ------------------------------------------------------------------------------------------------

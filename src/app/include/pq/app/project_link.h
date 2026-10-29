@@ -280,6 +280,7 @@ public:
   // to the floor (T3.17-fix1, M3 review L13: the meters' last poll after a stop shows them falling, not frozen lit).
   bool live() const noexcept override;
   void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept override;
+  void resetClip(doc::TrackId id) noexcept override;
 
   // ---- views::ModulationSource (UI thread; T4.7) ----
   // The modulated params' tap buses (doc::LoweredProject::taps: metered on the audio thread like a track's out bus).

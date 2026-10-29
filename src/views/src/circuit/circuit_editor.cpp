@@ -271,7 +271,7 @@ bool EditCanvas::onPointer(const ui::PointerEvent& e) {
 ui::Cursor EditCanvas::cursorAt(ui::Vec2 pos) const {
   if (drag_ == Drag::Wire) return ui::Cursor::Crosshair;
   if (drag_ == Drag::MaybeMove || drag_ == Drag::Move) return ui::Cursor::Move;
-  if (panning() || !scene() || !editable_ || stale_) return CircuitCanvas::cursorAt(pos);
+  if (panning() || altHeld() || !scene() || !editable_ || stale_) return CircuitCanvas::cursorAt(pos);
   switch (hitTest(pos).kind) {  // the hit test a press runs (the scene's spatial grid: a few cells, no allocation)
     case CanvasHit::Kind::Pin: return ui::Cursor::Crosshair;
     case CanvasHit::Kind::Node: return ui::Cursor::Move;

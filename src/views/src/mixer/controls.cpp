@@ -110,6 +110,11 @@ void FixedMeterSource::read(std::span<const doc::TrackId> ids, std::span<MeterLe
   }
 }
 
+void FixedMeterSource::resetClip(doc::TrackId id) noexcept {
+  const auto it = std::lower_bound(levels_.begin(), levels_.end(), id, [](const auto& e, doc::TrackId v) { return e.first < v; });
+  if (it != levels_.end() && it->first == id) it->second.clip[0] = it->second.clip[1] = false;
+}
+
 namespace mixer {
 
 namespace {

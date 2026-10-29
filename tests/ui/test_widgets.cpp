@@ -689,3 +689,35 @@ TEST_CASE("widgets: a splitter's handle shows the resize cursor of its axis") {
   d.move(d.center("top"));
   CHECK(d.tree().cursor() == Cursor::Arrow);
 }
+
+namespace {
+// Move while Alt is held (a press would pan), else the arrow.
+class AltProbe : public Probe {
+public:
+  using Probe::Probe;
+  Cursor cursorAt(Vec2) const override { return tree() && (tree()->mods() & mod::kAlt) ? Cursor::Move : Cursor::Inherit; }
+};
+}  // namespace
+
+TEST_CASE("widgets: UiTree::mods follows modifier keys with the pointer still, so the cursor can show them") {
+  TestDriver d(200, 100);
+  AltProbe& a = d.setRoot<AltProbe>("a");
+  (void)a;
+  d.move({50, 50});
+  CHECK(d.tree().mods() == mod::kNone);
+  CHECK(d.tree().cursor() == Cursor::Arrow);
+  KeyEvent down;
+  down.key = key::kLAlt;
+  down.mods = mod::kNone;  // SDL reports the state before the key on its own key-down
+  d.tree().dispatchKey(down);
+  CHECK(d.tree().mods() == mod::kAlt);
+  CHECK(d.tree().cursor() == Cursor::Move);
+  KeyEvent up = down;
+  up.down = false;
+  up.mods = mod::kAlt;
+  d.tree().dispatchKey(up);
+  CHECK(d.tree().mods() == mod::kNone);
+  CHECK(d.tree().cursor() == Cursor::Arrow);
+  d.move({60, 50}, mod::kShift | mod::kAlt);
+  CHECK(d.tree().mods() == (mod::kShift | mod::kAlt));
+}

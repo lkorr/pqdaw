@@ -543,6 +543,26 @@ TEST_CASE("mixer: meters poll the MeterSource only while it is live, in one batc
   f.mixer->setMeterSource(nullptr);
 }
 
+TEST_CASE("mixer: a click on a meter's clip lamps resets them (they latch, as in Live; T4.16-fix1)") {
+  Fixture f;
+  FixedMeterSource src;
+  MeterLevels hot;
+  hot.peakDb[0] = hot.peakDb[1] = 0.5f;
+  hot.clip[0] = true;
+  src.set(f.track("Drums").id, hot);
+  f.mixer->setMeterSource(&src);
+  Meter* m = f.strip("Drums").meter();
+  REQUIRE(m != nullptr);
+  CHECK(m->levels().clip[0]);
+  const IRect r = m->rect();
+  const Vec2 lamp{static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + 1)};
+  f.d.move(lamp);
+  CHECK(f.d.tree().cursor() == Cursor::Pointer);
+  f.d.click(lamp);
+  CHECK_FALSE(m->levels().clip[0]);
+  f.mixer->setMeterSource(nullptr);
+}
+
 TEST_CASE("mixer: the output chooser routes the track (one structural step)") {
   Fixture f;
   Control* out = f.strip("Drums").output();

@@ -86,6 +86,8 @@ public:
   // drag), and whether a middle / Alt drag is panning the view now (subclasses' cursorAt).
   const CanvasHit& hovered() const noexcept;
   bool panning() const noexcept;
+  // Alt is held: a left press pans (T4.16-fix1: the cursor shows it before the press).
+  bool altHeld() const noexcept;
 
   struct Selection {
     std::vector<uint32_t> nodes, wires;  // sorted
