@@ -791,3 +791,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: project patch pointer move + cursor resolution 1.5 µs (dev, indicative).
 - CPU-efficiency check: cursors resolved only on input/frames; hit tests reuse spatial grids without allocation; hover highlights damage only changed rects; idle 0 frames.
 - Notes/blockers: deferred in Q?-T4.16c-a: Ungroup (needs a document op), device names (no document field), Alt-hover pan cursor (cursor lookup has no modifier state).
+
+## 2026-10-28 · T4.16a 👁 · worker CH / task/T4.16a-controls-shell
+- Did: cursors for every interactive part of the controls and shell (Button/Toggle/Dropdown/transport/menu-bar titles/fold triangles Pointer; knob/fader/number box ResizeNS, horizontal fader EW; text fields, number-box type-in, code editor Text; scrollbar thumb resize; track header bottom edge ResizeNS; mixer, tunings, prefs, MOS wheel parts). QoL: wheel on value controls (one undo step per run, Esc cancels, arrangement header boxes opt out so the tracks scroll), double-click = default on Knob/Fader, a digit/./- typed into a focused number box starts its type-in, swatch hover ring. ARCHITECTURE cursor conventions, HOTKEYS, REVIEW table, Q?-T4.16a-a (7 deferred features; meter clip-lamp reset unwired; PanelKnob lacks wheel/double-click).
+- Verified: worker: affected set (pq_tests_ui/views/app + pqdaw_*) -Full dev and release 19/19, 0 warnings. Orchestrator: rebased onto 43875c5 (T4.16c; docs conflicts only, both kept), same affected set -Full dev 19/19, release 19/19 (re-run after a low-memory kill), 0 warnings.
+- Perf: n/a (UI input path only).
+- CPU-efficiency check: cursorAt O(1) or a cheap hit test on cached geometry, no allocation, nothing per frame while idle (the wheel run's end is one timer).
+- Notes/blockers: knob/fader type-in, drag-across toggles, editable position, Alt menus, panel fold buttons, width drags, multi-track height deferred.
