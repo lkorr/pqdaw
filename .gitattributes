@@ -9,3 +9,5 @@
 tests/tuning/fixtures/scl/*.scl -text
 # Project-file fixtures: byte-exact goldens (and a CRLF hand-edited file)
 tests/document/fixtures/**/*.pqd -text
+# T5.3: the golden lowering text is compared byte for byte
+tests/app/fixtures/lowering/*.pqp -text
