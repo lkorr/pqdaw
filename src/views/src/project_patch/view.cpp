@@ -16,6 +16,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -418,8 +419,23 @@ void ProjectPatchView::rebuild() {
   std::vector<ExpandedSize> sizes;
   std::vector<InnerScene> inner;
   std::erase_if(expanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
+  std::erase_if(bandExpanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
+  if (openBand_.valid() && doc::findTrackPtr(*snap, openBand_) == nullptr) openBand_ = {};
+  rackCircuits_.clear();
   for (const doc::DeviceId d : expanded_) {
     const doc::DeviceLoc loc = doc::findDevice(*snap, d);
+    if (loc.device->rack) {  // T5.x-circuit-chain: a rack opens to its chains (nested frames), its devices to atoms
+      circuit::ChainOptions co;
+      co.devices = devlib;
+      co.cache = &chainCache_;
+      auto cc = std::make_shared<const circuit::ChainCircuit>(circuit::buildRackCircuit(*snap, d, co));
+      if (cc->boxes.empty()) continue;
+      const circuit::CircuitScene& rs = *cc->scene;
+      sizes.push_back({d, rs.x1 - rs.x0, rs.y1 - rs.y0});
+      inner.push_back({d, std::shared_ptr<const circuit::CircuitScene>(cc, cc->scene.get())});
+      rackCircuits_.emplace_back(d, std::move(cc));
+      continue;
+    }
     // What the device plays: the stock patch, or a user device's resolved root (its name carries its graph hash, so
     // an edited text gets its own cache entry).
     std::shared_ptr<const doc::ResolvedDevice> hold;
@@ -482,6 +498,9 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
     expanded_.clear();
     expandedMixers_.clear();
     innerCache_.clear();
+    chainCache_.clear();
+    bandExpanded_.clear();
+    openBand_ = {};
     fitted_ = false;
     stale_ = true;
     if (shown()) sync();
@@ -553,6 +572,7 @@ circuit::CircuitCanvas::View fitRect(const ui::IRect& r, float us, float x0, flo
 }  // namespace
 
 void ProjectPatchView::fitAll(bool animate) {
+  closeBand();  // T5.x-circuit-chain: the whole project again (an opened band's devices close)
   sync();
   if (!canvas_->scene()) return;
   const circuit::CircuitScene& s = *canvas_->scene();
@@ -573,11 +593,44 @@ void ProjectPatchView::focusBand(doc::TrackId track, bool animate) {
   else canvas_->setView(v);
 }
 
+void ProjectPatchView::openBand(doc::TrackId track, bool animate) {
+  sync();
+  const doc::Track* t = doc::findTrackPtr(*ctx_.doc(), track);
+  if (t == nullptr) return;
+  if (openBand_ != track) closeBand();
+  openBand_ = track;
+  for (const doc::DevicePtr& d : t->devices)
+    if (!deviceExpanded(d->id)) {
+      expanded_.push_back(d->id);
+      bandExpanded_.push_back(d->id);
+    }
+  stale_ = true;
+  sync();
+  focusBand(track, animate);
+}
+
+void ProjectPatchView::closeBand() {
+  if (!openBand_.valid() && bandExpanded_.empty()) return;
+  openBand_ = {};
+  if (bandExpanded_.empty()) return;
+  std::erase_if(expanded_, [&](doc::DeviceId d) { return std::find(bandExpanded_.begin(), bandExpanded_.end(), d) != bandExpanded_.end(); });
+  bandExpanded_.clear();
+  stale_ = true;
+  if (shown()) sync();
+}
+
+const circuit::ChainCircuit* ProjectPatchView::rackCircuit(doc::DeviceId rack) const noexcept {
+  for (const auto& [d, c] : rackCircuits_)
+    if (d == rack) return c.get();
+  return nullptr;
+}
+
 void ProjectPatchView::setDeviceExpanded(doc::DeviceId device, bool on) {
   const auto it = std::find(expanded_.begin(), expanded_.end(), device);
   if (on == (it != expanded_.end())) return;
   if (on) expanded_.push_back(device);
   else expanded_.erase(it);
+  if (!on) std::erase(bandExpanded_, device);
   stale_ = true;
   sync();
   // Zoomed onto the opened device (semantic zoom: band → atoms); closing goes back to its band.
@@ -671,7 +724,15 @@ bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, u
 }
 
 bool ProjectPatchView::openInCircuitView(doc::DeviceId device) {
+  return circuit::openDeviceChainCircuit(*canvas_, ctx_, device) != nullptr;
+}
+
+bool ProjectPatchView::editDeviceCircuit(doc::DeviceId device) {
   return circuit::openDeviceInCircuitView(*canvas_, ctx_, device) != nullptr;
+}
+
+bool ProjectPatchView::openTrackCircuitView(doc::TrackId track) {
+  return circuit::openTrackCircuit(*canvas_, ctx_, track) != nullptr;
 }
 
 bool ProjectPatchView::moveDevice(doc::DeviceId device, doc::TrackId toTrack, uint32_t index) {
@@ -814,7 +875,9 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   items.push_back(std::move(sub));
   items.push_back(ui::MenuItem::sep());
   const doc::TrackId track = b.track;
+  items.push_back(ui::MenuItem::item("Open Band", [this, track] { openBand(track); }));  // T5.x-circuit-chain
   items.push_back(ui::MenuItem::item("Zoom to Band", [this, track] { focusBand(track); }));
+  items.push_back(ui::MenuItem::item("Track Circuit View", [this, track] { (void)openTrackCircuitView(track); }, "Ctrl+Alt+C"));
   items.push_back(ui::MenuItem::item("Zoom to Project", [this] { fitAll(); }, "F"));
   ui::MenuItem reset = ui::MenuItem::item("Reset Layout", [this] { resetLayout(); });
   reset.enabled = !ctx_.store().view().patchNudges.empty();
@@ -844,10 +907,16 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
     ui::MenuItem open = ui::MenuItem::item(deviceExpanded(d) ? "Close Atoms" : "Open to Atoms", [this, d] { setDeviceExpanded(d, !deviceExpanded(d)); });
     open.enabled = !n.missing;
     items.push_back(std::move(open));
-    // The project-device circuit editor (T4.4-fix1): edits go into the document; editing a stock device forks it.
+    // T5.x-circuit-chain: the track's chain as one circuit, focused on this device (racks too); the project-device
+    // circuit editor (T4.4-fix1: edits go into the document; editing a stock device forks it).
     ui::MenuItem circuit = ui::MenuItem::item("Open in Circuit View", [this, d] { (void)openInCircuitView(d); });
-    circuit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing;
+    circuit.enabled = ctx_.deviceLibrary() != nullptr;
     items.push_back(std::move(circuit));
+    if (!n.rack) {
+      ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [this, d] { (void)editDeviceCircuit(d); });
+      edit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing;
+      items.push_back(std::move(edit));
+    }
     if (n.edited)
       items.push_back(ui::MenuItem::item("Revert to Stock", [this, d] {
         const doc::DeviceId one[1] = {d};

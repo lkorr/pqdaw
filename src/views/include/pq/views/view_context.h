@@ -415,7 +415,8 @@ public:
   // T3.19: Create > New Main Tuning (installTuningsPanel sets the handler: it shows the panel with the new tuning).
   static constexpr std::string_view kTuningsActions[] = {"tuning.newMain"};
   // T4.2: View > Open Patch in Circuit View… (installCircuitViewer sets the handler: file dialog → circuit viewer).
-  static constexpr std::string_view kCircuitActions[] = {"view.openPatch"};
+  // T5.x-circuit-chain: View > Track Circuit (Ctrl+Alt+C): the selected track's chain as one circuit (the same host).
+  static constexpr std::string_view kCircuitActions[] = {"view.openPatch", "view.trackCircuit"};
   // T4.6: View > Open Device… (installDeviceView sets the handler: a menu of the stock devices → the Device tab).
   static constexpr std::string_view kDeviceActions[] = {"view.openDevice"};
   // T4.1: the Device view's edits (installDeviceChain sets the handlers; scope "devices").

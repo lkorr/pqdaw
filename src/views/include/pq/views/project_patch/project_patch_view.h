@@ -11,9 +11,13 @@
 //              it to show each send's level beside its pin).
 //   zoom       Ctrl+wheel / = / − / F (fit), the wheel pans, middle or Alt drag pans (the canvas's). Semantic zoom:
 //              zoomed out, boxes and the bands' names; in, symbols, then titles and pin labels; double-click a band's
-//              empty space (or its name) to zoom onto that band, Esc / F back to the whole project; double-click a
-//              device to open it to its atoms in place (what it plays, read-only here: editing a device's patch is
-//              the circuit editor's, "Open in Circuit View" in its menu) and again on its frame to close it.
+//              empty space (or its name) to OPEN the band (T5.x-circuit-chain): zoomed onto it with every device of
+//              its chain opened to its atoms in place, each in its labelled frame (racks as nested frames with their
+//              chains stacked: circuit::buildRackCircuit) — project → track → devices → atoms; Esc / F back to the
+//              whole project (the band's devices close again). Double-click one device to open it alone (and again
+//              on its frame to close it); what is drawn is what plays, read-only here: editing a device's patch is the
+//              circuit editor's ("Open in Circuit View" in its menu: the track's chain as one circuit; "Edit Device
+//              Circuit": the device's editor).
 //   edits      (each one undo step, shown at once in the arrangement, mixer and Device view: one document)
 //                wire        drag a device's export pin (right side) onto a device → its params (a menu), or onto a
 //                            param pin: T4.7's modulation wire (ops::connectWire)
@@ -51,6 +55,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
+#include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_scene.h"
 #include "pq/views/project_patch/device_cost.h"
@@ -177,6 +182,13 @@ public:
   // ---- semantic zoom ------------------------------------------------------------------------------------------
   void fitAll(bool animate = true);
   void focusBand(doc::TrackId track, bool animate = true);
+  // T5.x-circuit-chain: the band opened (every device of its chain opened to its atoms, then zoomed onto it); a band
+  // opened before closes its devices (those the user did not open one by one). closeBand: they close again.
+  void openBand(doc::TrackId track, bool animate = true);
+  void closeBand();
+  doc::TrackId openedBand() const noexcept { return openBand_; }
+  // The circuit drawn inside an opened rack's frame (nested boxes), null when the rack is not opened.
+  const circuit::ChainCircuit* rackCircuit(doc::DeviceId rack) const noexcept;
   // A device opened to its atoms in place (read-only), or closed again. View state of this session.
   void setDeviceExpanded(doc::DeviceId device, bool expanded);
   bool deviceExpanded(doc::DeviceId device) const noexcept;
@@ -235,6 +247,11 @@ public:
   // circuit::openDeviceInCircuitView; SPEC §15 2026-10-26): its edits are document commands, editing a stock device
   // forks it into a user device. False: no device library, or the device is gone.
   bool openInCircuitView(doc::DeviceId device);
+  // T5.x-circuit-chain: Open in Circuit View is the track's whole chain as one circuit focused on the device
+  // (circuit::openDeviceChainCircuit); Edit Device Circuit the device's own editor (above); the band menu's Track
+  // Circuit View the track's chain.
+  bool editDeviceCircuit(doc::DeviceId device);
+  bool openTrackCircuitView(doc::TrackId track);
   // Set by installProjectPatch: hides the other views of the track area (the mixer) when this one is shown.
   std::function<void()> hideOthers;
   // T4.8 hook: racks are devices whose block will open to their chains; until then a rack is a block like any device.
@@ -298,6 +315,12 @@ private:
   // Expanded devices' scenes by the patch they play (a user device's resolved root name: one per text); bounded.
   static constexpr size_t kInnerCacheMax = 32;
   std::vector<std::pair<std::string, std::shared_ptr<const circuit::CircuitScene>>> innerCache_;
+  // T5.x-circuit-chain: opened racks' circuits (rebuilt with the model), their devices' scenes; the opened band and
+  // the devices it opened.
+  std::vector<std::pair<doc::DeviceId, std::shared_ptr<const circuit::ChainCircuit>>> rackCircuits_;
+  circuit::ChainSceneCache chainCache_;
+  doc::TrackId openBand_;
+  std::vector<doc::DeviceId> bandExpanded_;
   bool valueGesture_ = false;
   Stats stats_;
   Readout readout_;

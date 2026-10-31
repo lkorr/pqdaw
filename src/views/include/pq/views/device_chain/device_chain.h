@@ -65,7 +65,11 @@ public:
   // T4.4-fix1 (SPEC §15 2026-10-26): the device's context menu "Open in Circuit View" (also a double-click on its
   // title: pq/views/circuit/device_circuit.h) and "Revert to Stock" (the selected user devices back to their stock
   // patch: one undo step). An edited device's title shows an "edited" marker.
+  // T5.x-circuit-chain: Open in Circuit View is the track's whole chain as one circuit, focused on the device
+  // (pq/views/circuit/track_circuit.h, the Track level); editDeviceCircuit (the menu's Edit Device Circuit) the
+  // device's own editor (the Device level).
   bool openInCircuitView(doc::DeviceId device);
+  bool editDeviceCircuit(doc::DeviceId device);
   bool revertSelectedToStock();
   // T4.8: Ctrl+G — the selected devices (of one list) into a new rack (pq/document/edit_ops.h groupDevices).
   bool groupSelected();

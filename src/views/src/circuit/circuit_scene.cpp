@@ -225,15 +225,18 @@ graph::AutoLayoutStats tidy(graph::Patch& patch, const graph::AutoLayoutOptions&
   return graph::autoLayout(patch, geometryOf(patch, specs), options);
 }
 
-void indexScene(CircuitScene& sc, const float* include) {
-  sc.junctions.clear();
-  sc.junctionWire.clear();
+void indexScene(CircuitScene& sc, const float* include, uint32_t junctionNetsFrom) {
+  if (junctionNetsFrom == 0) {
+    sc.junctions.clear();
+    sc.junctionWire.clear();
+  }
   uint32_t nets = 0;
   for (const SceneWire& sw : sc.wires) nets = std::max(nets, sw.net + 1);
   // Junctions: per net, every segment end where three or more directions meet.
   {
     std::vector<std::vector<uint32_t>> netSegs(nets);
-    for (uint32_t s = 0; s < sc.segments.size(); ++s) netSegs[sc.wires[sc.segments[s].wire].net].push_back(s);
+    for (uint32_t s = 0; s < sc.segments.size(); ++s)
+      if (const uint32_t n = sc.wires[sc.segments[s].wire].net; n >= junctionNetsFrom) netSegs[n].push_back(s);
     std::vector<Point2> cand;
     for (const auto& segs : netSegs) {
       if (segs.size() < 3) continue;

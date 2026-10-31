@@ -138,8 +138,11 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& patch, const SceneO
 // The derived parts of a scene whose nodes, pins, points, wires (with their nets), segments and labels are filled in:
 // junction dots (per net, where three or more directions meet), the bounds and the spatial grid. buildScene() ends
 // with it; T4.13's project patch view builds its scene directly and calls it too. `include` (optional): a world rect
-// {x0, y0, x1, y1} the bounds must contain as well (what the caller draws around the nodes).
-void indexScene(CircuitScene& scene, const float* include = nullptr);
+// {x0, y0, x1, y1} the bounds must contain as well (what the caller draws around the nodes). `junctionNetsFrom`
+// (T5.x-circuit-chain): junctions are worked out only for nets from this one; the scene's junctions so far are kept (a
+// composition of scenes copies each part's junctions, translated, instead of searching its nets again: the search is
+// quadratic in a net's segments, ≈ 2 ms for a whole chain with Operator).
+void indexScene(CircuitScene& scene, const float* include = nullptr, uint32_t junctionNetsFrom = 0);
 
 // The "tidy" command (T4.3): `patch` with every node re-placed and every wire re-routed by graph::autoLayout with this
 // symbol library's geometry.

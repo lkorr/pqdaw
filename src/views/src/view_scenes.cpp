@@ -22,6 +22,7 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
@@ -1182,6 +1183,43 @@ Status setupProjectPatch(Shell& shell, bool band) {
 }
 Status setupProjectPatchOverview(Shell& shell) { return setupProjectPatch(shell, false); }
 Status setupProjectPatchBand(Shell& shell) { return setupProjectPatch(shell, true); }
+// T5.x-circuit-chain: zooming into a band of the project patch view (a double-click on it): the sketch project's Keys
+// band opened — Operator → Saturator, each opened to its atoms in its labelled frame, wired through to the mixer.
+Status setupProjectPatchZoom(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-zoom: no device library", {}};
+  if (Status s = project_patch::buildSketchProject(ctx.store()); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-zoom: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  if (keys == nullptr) return Error{ErrorCode::NotFound, "project-patch-zoom: no Keys track", {}};
+  v->openBand(keys->id, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+// T5.x-circuit-chain: the circuit view at the Track level — Keys = Operator → Auto Filter, the whole chain as one
+// circuit (each device in its labelled boundary, Operator's output wired into the Auto Filter's input, through to the
+// track's mixer), fitted as View > Track Circuit opens it.
+Status setupCircuitTrackChain(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "circuit-track-chain: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys", doc::Colour{0xF6A23B}));
+  if (!t) return Error{ErrorCode::Unknown, "circuit-track-chain: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  if (!runEdit(store, doc::ops::addDevice(*store.current(), store.ids(), track, "operator", doc::DeviceKind::Instrument)) ||
+      !runEdit(store, doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect)))
+    return Error{ErrorCode::Unknown, "circuit-track-chain: addDevice failed", {}};
+  ctx.setSelectedTrack(track);
+  shell.tree().layoutNow();
+  if (circuit::openTrackCircuit(shell.overlay(), ctx, track) == nullptr)
+    return Error{ErrorCode::Unknown, "circuit-track-chain: the view did not open", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
 
 // T4.8: racks in the Device view. audio-rack: Keys = Basic Synth → an Audio Effect Rack [Dry: Utility | Crunch:
 // Saturator (shown) | Wide: Utility], Chain zones crossfading over the selector (the zone editor on its Chain tab),
@@ -1334,6 +1372,8 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-device", 1280, 800, setupCircuitEditorDevice},  // T4.4-fix1
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
+    {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
+    {"circuit-track-chain", 1280, 800, setupCircuitTrackChain},  // T5.x-circuit-chain
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp

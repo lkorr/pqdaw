@@ -22,6 +22,7 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/devices/device_panel.h"
 #include "pq/views/fake_transport.h"
@@ -115,14 +116,16 @@ std::string stockText() { return library().stockText("BasicSynth"); }
 
 TEST_CASE("device circuit view: open from the context menu; the first edit forks; undo is the document's") {
   Ui u;
-  // The device's context menu: Open in Circuit View, and Revert to Stock (greyed: a stock device).
+  // The device's context menu: Open in Circuit View (T5.x-circuit-chain: the track's chain, focused on the device),
+  // Edit Device Circuit (this editor), and Revert to Stock (greyed: a stock device).
   Widget* frame = u.view().frameOf(u.inst);
   REQUIRE(frame != nullptr);
   u.d.tree().layoutNow();
   u.d.click(mid(frame->rect()), mod::kNone, PointerButton::Right);
   Menu* menu = u.openMenu();
   REQUIRE(menu != nullptr);
-  const int32_t open = u.itemIndex(*menu, "Open in Circuit View"), revert = u.itemIndex(*menu, "Revert to Stock");
+  const int32_t open = u.itemIndex(*menu, "Edit Device Circuit"), revert = u.itemIndex(*menu, "Revert to Stock");
+  REQUIRE(u.itemIndex(*menu, "Open in Circuit View") >= 0);
   REQUIRE(open >= 0);
   REQUIRE(revert >= 0);
   CHECK_FALSE(menu->items()[static_cast<size_t>(revert)].enabled);
@@ -231,9 +234,19 @@ TEST_CASE("device circuit view: a double-click on the device's title opens it") 
   const IRect r = title->rect();
   u.d.doubleClick({static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)});
   u.d.step();
+  // T5.x-circuit-chain: the circuit view opens at the Track level, focused on the device; its Device level is the
+  // editor (Enter, a double-click in the device's boundary, the title bar's Device).
+  circuit::TrackCircuitView* chain = nullptr;
+  for (size_t i = 0; i < u.shell->overlay().childCount(); ++i)
+    if (auto* t = dynamic_cast<circuit::TrackCircuitView*>(&u.shell->overlay().child(i))) chain = t;
+  REQUIRE(chain != nullptr);
+  CHECK(chain->focused() == u.inst);
+  CHECK_FALSE(panel->folded());  // a double-click no longer folds a chain device (the triangle does)
+  CHECK(u.d.press("Enter") != KeyResult::Unhandled);
+  u.d.advance(0.1);
   circuit::CircuitEditor* ed = u.editor();
   REQUIRE(ed != nullptr);
-  CHECK_FALSE(panel->folded());  // a double-click no longer folds a chain device (the triangle does)
+  CHECK(ed->shownPatch() == "BasicSynth");
   ed->closeSoon();
   u.d.advance(0.1);
   CHECK(u.editor() == nullptr);
@@ -269,13 +282,14 @@ TEST_CASE("device circuit view: a device inside a rack opens, forks in place and
   u.shell->overlay().closeAll();
   u.d.step();
 
-  // The nested device's menu: Open in Circuit View opens the device's own patch.
+  // The nested device's menu: Edit Device Circuit opens the device's own patch (Open in Circuit View: its track's chain).
   Widget* frame = u.view().frameOf(u.inst);
   REQUIRE(frame != nullptr);
   u.d.click(mid(frame->rect()), mod::kNone, PointerButton::Right);
   menu = u.openMenu();
   REQUIRE(menu != nullptr);
-  const int32_t open = u.itemIndex(*menu, "Open in Circuit View");
+  CHECK(u.itemIndex(*menu, "Open in Circuit View") >= 0);
+  const int32_t open = u.itemIndex(*menu, "Edit Device Circuit");
   REQUIRE(open >= 0);
   REQUIRE(u.itemIndex(*menu, "Revert to Stock") >= 0);
   menu->choose(open);

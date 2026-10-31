@@ -31,6 +31,7 @@
 // project opens through pq/views/circuit/device_circuit.h (T4.4-fix1: a Host, the document as its history). UI thread only.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -176,6 +177,10 @@ public:
   // Closes the editor at its next timer tick (safe from inside a callback the editor owns).
   void closeSoon();
   void refreshTitle() { updateTitle(); }
+  // T5.x-circuit-chain: the breadcrumb's Track level (pq/views/circuit/track_circuit.h: the device's whole chain,
+  // read-only): a "Track" button before the title while an action is set (the project-device editor sets it).
+  void setTrackAction(std::function<void()> action);
+  bool hasTrackAction() const noexcept { return static_cast<bool>(trackAction_); }
   void showStatus(std::string s) { setStatus(std::move(s)); }  // the host's notes (e.g. the fork)
 
   // ---- T4.15: tooltips and inactive branches ----
@@ -212,6 +217,8 @@ private:
   std::unique_ptr<PatchEditor> doc_;
   std::unique_ptr<Host> host_;  // T4.4-fix1 (declared after doc_: destroyed first)
   ui::Button* save_ = nullptr;
+  ui::Button* track_ = nullptr;  // T5.x-circuit-chain
+  std::function<void()> trackAction_;
   uint32_t closeTimer_ = 0;
   std::string shown_;
   std::vector<std::string> backStack_;

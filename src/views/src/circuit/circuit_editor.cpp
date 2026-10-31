@@ -400,6 +400,14 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   back_ = &bar.add<ui::Button>("back", "Back");
   back_->setWidth(ui::Length::fixed(48));
   back_->onClick = [this] { (void)back(); };
+  // T5.x-circuit-chain: Track · (this) Device, the breadcrumb's levels; Track is shown only for a project device.
+  track_ = &bar.add<ui::Button>("track", "Track");
+  track_->setWidth(ui::Length::fixed(48));
+  track_->setTooltip("The whole track's chain as one circuit (read-only), focused on this device");
+  track_->setVisible(false);
+  track_->onClick = [this] {
+    if (trackAction_) trackAction_();
+  };
   title_ = &bar.add<ui::Label>("title", "", ui::FontRoleId::Small, ui::TextTone::Primary);
   title_->setWidth(ui::Length::flex());
   play_ = &bar.add<ui::Toggle>("play", "Play", ui::ToggleStyle::Accent, false);
@@ -839,6 +847,11 @@ void CircuitEditor::setHost(std::unique_ptr<Host> host) {
   if (save_) save_->setVisible(!device);
   if (play_) play_->setVisible(!device);
   updateTitle();
+}
+
+void CircuitEditor::setTrackAction(std::function<void()> action) {
+  trackAction_ = std::move(action);
+  track_->setVisible(static_cast<bool>(trackAction_));
 }
 
 void CircuitEditor::closeSoon() {

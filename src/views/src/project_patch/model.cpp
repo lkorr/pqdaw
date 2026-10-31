@@ -152,6 +152,13 @@ struct Builder {
       if (n.output(key) < 0) n.outputs.push_back({key, w.port});
     }
     sizeBlock(n, 120.0f);
+    // T5.x-circuit-chain: opened, a rack's frame holds its circuit (circuit::buildRackCircuit: chains, nested frames).
+    for (const ExpandedSize& e : opt.expanded)
+      if (e.device == d.id) {
+        n.expanded = true;
+        n.w = roundUp4(std::max(n.w, e.w + 2.0f * m::kExpandedPad));
+        n.h = roundUp4(std::max(n.h, e.h + 2.0f * m::kExpandedPad + 16.0f));
+      }
     return n;
   }
 

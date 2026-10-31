@@ -11,6 +11,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/theme.h"
 #include "pq/views/circuit/probes.h"
+#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
@@ -44,9 +45,28 @@ Rect snapRect(Rect r) noexcept { return {std::round(r.x0), std::round(r.y0), std
 
 bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x < r.x1 && p.y >= r.y0 && p.y < r.y1; }
 
+// T5.x-circuit-chain: the opened band's name pill (device px; empty when none is drawn: no opened band, or its title
+// strip is tall enough to hold the name). Drawn over its opened devices; their frames' title pills start right of it.
+Rect openedBandPill(const ProjectCanvas& c, const ProjectPatchView& v, const ui::PaintContext& ctx) {
+  const ProjectPatch& pp = v.patch();
+  const uint32_t ob = v.openedBand().valid() ? pp.bandOf(v.openedBand()) : kNone;
+  if (ob == kNone || ctx.res.uiFonts == nullptr || ctx.res.text == nullptr) return {};
+  const ui::FontId font = ctx.res.uiFonts->small;
+  const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
+  if (metrics::kTitle * c.deviceScale() >= px + 2.0f) return {};
+  const float us = ctx.scale.factor;
+  const Band& b = pp.bands[ob];
+  const Rect r = snapRect(c.deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
+  const float pad = std::round(3.0f * us), lh = std::round(px + 4.0f * us), bar = std::max(2.0f, std::round(3.0f * us));
+  const float w = static_cast<float>(ctx.res.text->shape(font, b.name).advance) + 2.0f * pad + bar;
+  return {r.x0 + bar + 1.0f, r.y0 + 1.0f, r.x0 + bar + 1.0f + w, r.y0 + 1.0f + lh};
+}
+
 }  // namespace
 
 ProjectCanvas::ProjectCanvas(ProjectPatchView& view) : CircuitCanvas("patch-canvas"), view_(view) {
+  setPinStubsNearOnly(true);  // M4 review L13: the overview reads as blocks and wires
+  setTerminalPillMinZoom(kFarZoom);  // T5.x-circuit-chain: opened devices' terminals named from Mid up
   onHoverChanged = [this](const circuit::CanvasHit& hit) {
     uint32_t edge = kNone;
     const ProjectScene& ps = view_.scene();
@@ -153,10 +173,13 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     const Rgba col = ui::hex(b.colour);
     const doc::Track* t = view_.bandTrack(static_cast<uint32_t>(&b - pp.bands.data()));
     const bool dim = !b.active || (t != nullptr && t->mixer.mute);
-    dl.addRectFilled(r, ui::lerp(th.circuit.background, col, dim ? 0.05f : 0.12f));
+    // M4 review L13: the track's own colour, lighter (a grey blend of a dark colour read as mud): the body a light
+    // alpha of it, the title strip a stronger one.
+    const float stripH = metrics::kTitle * s;
+    dl.addRectFilled(r, ui::lerp(th.circuit.background, col, dim ? 0.05f : 0.15f));
+    if (!dim) dl.addRectFilled({r.x0, r.y0, r.x1, std::min(r.y1, std::round(r.y0 + stripH))}, ui::lerp(th.circuit.background, col, 0.30f));
     dl.addRectFilled({r.x0, r.y0, r.x0 + bar, r.y1}, dim ? ui::mulAlpha(col, 0.4f) : col);
     // The name in the title strip, at every zoom where the strip is readable (the overview's labels).
-    const float stripH = metrics::kTitle * s;
     if (names) {
       const ui::FontId font = ctx.res.uiFonts->small;
       const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
@@ -179,14 +202,36 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     }
     const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
     if (!overlaps(r, clip)) continue;
+    // T5.x-circuit-chain: the frame is a labelled boundary with the kind's accent (as in the track circuit view).
+    const Rgba accent = n.rack ? th.accent.solo : n.instrument ? th.accent.primary : th.circuit.wireAudio;
+    const float stripH = std::round(16.0f * s);
     dl.addRectFilled(r, ui::lerp(th.circuit.background, th.circuit.subcircuitFill, 0.5f));
-    dl.addRectFilled({r.x0, r.y0, r.x1, r.y0 + std::round(16.0f * s)}, th.circuit.subcircuitTitle);
-    dl.addRectStroke(r, th.circuit.symbolStroke, std::max(1.0f, std::round(circuit::strokeWidth(s))));
-    if (names && lod() != Lod::Far) {
-      const ui::IRect box{static_cast<int32_t>(r.x0 + 6.0f), static_cast<int32_t>(r.y0), static_cast<int32_t>(r.x1 - r.x0 - 12.0f),
-                          static_cast<int32_t>(std::round(16.0f * s))};
-      paint::text(ctx, ctx.res.uiFonts->small, box, n.title + "  (atoms, read-only)", th.circuit.symbolText, ui::TextAlign::Left);
+    dl.addRectFilled({r.x0, r.y0, r.x1, r.y0 + stripH}, ui::lerp(th.circuit.background, accent, 0.22f));
+    dl.addRectStroke(r, ui::mulAlpha(accent, 0.9f), std::max(1.0f, std::round(circuit::strokeWidth(s))));
+    dl.addRectFilled({r.x0, r.y0, r.x0 + bar, r.y1}, accent);
+    if (names) {
+      const ui::FontId font = ctx.res.uiFonts->small;
+      const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
+      if (stripH >= px + 2.0f) {
+        const ui::IRect box{static_cast<int32_t>(r.x0 + bar + 6.0f), static_cast<int32_t>(r.y0), static_cast<int32_t>(r.x1 - r.x0 - bar - 12.0f),
+                            static_cast<int32_t>(stripH)};
+        paint::text(ctx, font, box, n.title + "  (read-only)", th.circuit.symbolText, ui::TextAlign::Left);
+      } else if (r.x1 - r.x0 >= 28.0f * us) {  // zoomed out: the name in a pill at the frame's corner
+        const float pad = std::round(3.0f * us), lh = std::round(px + 4.0f * us);
+        float x0 = r.x0 + bar + 1.0f;
+        if (const Rect bp = openedBandPill(*this, view_, ctx); bp.x1 > bp.x0 && bp.y1 > r.y0 && bp.y0 < r.y0 + lh && bp.x1 > x0 && bp.x0 < r.x1)
+          x0 = bp.x1 + std::round(4.0f * us);  // right of the band's name
+        const ui::TextRun run = ctx.res.text->shapeTruncated(font, n.title, static_cast<int32_t>(r.x1 - x0 - 2.0f * pad - 4.0f));
+        const Rect pb{x0, r.y0 + 1.0f, x0 + static_cast<float>(run.advance) + 2.0f * pad, r.y0 + 1.0f + lh};
+        dl.addRoundedRectFilled(pb, 2.0f * us, ui::withAlpha(th.surface.sunken, 230));
+        ui::TextSystem::drawRun(dl, run, {pb.x0 + pad, static_cast<float>(paint::capCentredBaseline(static_cast<int32_t>(pb.y0), static_cast<int32_t>(lh), static_cast<uint32_t>(px)))},
+                                th.circuit.symbolText);
+      }
     }
+    // T5.x-circuit-chain: an opened rack's chains and devices as nested frames.
+    if (n.rack)
+      if (const circuit::ChainCircuit* cc = view_.rackCircuit(n.device))
+        circuit::paintChainBoxes(ctx, *this, *cc, n.x + metrics::kExpandedPad - cc->scene->x0, n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0);
   }
 }
 
@@ -201,6 +246,23 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   const Lod level = lod();
   const bool text = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
   const double end = static_cast<double>(std::max<Ticks>(view_.songEnd(), 1));
+  // T5.x-circuit-chain: opened racks' deactivated chains and devices veiled.
+  for (const Node& n : pp.nodes)
+    if (n.rack && n.expanded)
+      if (const circuit::ChainCircuit* cc = view_.rackCircuit(n.device))
+        circuit::paintChainVeils(ctx, *this, *cc, n.x + metrics::kExpandedPad - cc->scene->x0, n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0);
+  // The opened band's name over its opened devices when its strip is too thin to show it under them (zoomed out).
+  if (const Rect pb = openedBandPill(*this, view_, ctx); pb.x1 > pb.x0 && overlaps(pb, clip)) {
+    const Band& b = pp.bands[pp.bandOf(view_.openedBand())];
+    const ui::FontId font = ctx.res.uiFonts->small;
+    const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
+    const float pad = std::round(3.0f * us), bar = std::max(2.0f, std::round(3.0f * us));
+    dl.addRoundedRectFilled(pb, 2.0f * us, ui::withAlpha(th.surface.sunken, 235));
+    dl.addRectFilled({pb.x0, pb.y0, pb.x0 + bar, pb.y1}, ui::hex(b.colour));
+    ui::TextSystem::drawRun(dl, ctx.res.text->shape(font, b.name),
+                            {pb.x0 + bar + pad, static_cast<float>(paint::capCentredBaseline(static_cast<int32_t>(pb.y0), static_cast<int32_t>(pb.y1 - pb.y0), static_cast<uint32_t>(px)))},
+                            th.circuit.symbolText);
+  }
 
   if (level != Lod::Far) {
     for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
@@ -276,24 +338,40 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         }
       }
     }
-    // Titles at the middle level of detail (the canvas writes them only from the near level, in the title band, where
-    // they do not fit yet): a device's name at the top of its body (its pin labels are not drawn at this level), the
-    // MIDI source's above its clip strip. Mixer strips are known by their controls.
-    if (level == Lod::Mid && ctx.res.uiFonts != nullptr && ctx.res.text != nullptr) {
+  }
+  if (level != Lod::Near) {
+    // M4 review L13: every block labelled below the near level (the canvas writes titles in the blocks from Near): its
+    // name in a pill over the top of the block, as wide as the name (never cut), centred; a pill that would overlap
+    // one already placed is left out (bands first in lane order, so the earlier block keeps its label).
+    if (ctx.res.uiFonts != nullptr && ctx.res.text != nullptr) {
+      ui::TextSystem& ts = *ctx.res.text;
       const ui::FontId font = ctx.res.uiFonts->small;
-      const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
+      const auto px = static_cast<float>(ts.metrics(font).pixelSize);
+      const float pad = std::round(3.0f * us), lh = std::round(px + 4.0f * us);
+      std::vector<Rect> placed;
       for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
         const Node& n = pp.nodes[i];
-        if (n.kind != NodeKind::Device && n.kind != NodeKind::Source) continue;
-        if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;
-        const float top = n.kind == NodeKind::Source ? 1.0f : 18.0f;
-        const float room = (n.kind == NodeKind::Source ? 19.0f : n.h - 20.0f) * s;
-        if (room < px + 2.0f) continue;
-        const Rect r = deviceRect(n.x + 8.0f, n.y + top, n.w - 16.0f, (px + 2.0f) / s);
-        if (!overlaps(r, clip)) continue;
-        paint::text(ctx, font, toIRect(r), n.title, th.circuit.symbolText, ui::TextAlign::Center);
+        if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
+        if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output) continue;  // the symbol / the canvas's pill says it
+        const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
+        if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
+        const ui::TextRun run = ts.shape(font, n.title);
+        const float w = static_cast<float>(run.advance) + 2.0f * pad;
+        const float cx = std::round((nr.x0 + nr.x1) * 0.5f);
+        // Inside the block's top where it is tall enough, else just above it.
+        const float y0 = nr.y1 - nr.y0 >= lh + 2.0f ? std::round(nr.y0 + 1.0f) : std::round(nr.y0 - lh - 1.0f);
+        const Rect box{std::round(cx - w * 0.5f), y0, std::round(cx - w * 0.5f) + w, y0 + lh};
+        bool free = true;
+        for (const Rect& q : placed) free = free && (box.x1 <= q.x0 || q.x1 <= box.x0 || box.y1 <= q.y0 || q.y1 <= box.y0);
+        if (!free) continue;
+        placed.push_back(box);
+        dl.addRoundedRectFilled(box, 2.0f * us, ui::withAlpha(th.surface.sunken, 225));
+        ui::TextSystem::drawRun(dl, run, {box.x0 + pad, static_cast<float>(paint::capCentredBaseline(static_cast<int32_t>(box.y0), static_cast<int32_t>(lh), static_cast<uint32_t>(px)))},
+                                th.circuit.symbolText);
       }
     }
+  }
+  {
     // z⁻¹ on wires with an automatic 1-sample delay (SPEC §15 2026-10-24).
     if (text)
       for (const Edge& e : pp.edges) {
@@ -438,7 +516,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           return true;
         }
         if (node == kNone) {
-          if (const uint32_t b = bandAt(e.pos); b != kNone) v.focusBand(pp.bands[b].track);
+          if (const uint32_t b = bandAt(e.pos); b != kNone) v.openBand(pp.bands[b].track);  // T5.x-circuit-chain
           else v.fitAll();
           return true;
         }
@@ -788,7 +866,7 @@ ui::InfoText ProjectCanvas::info() const {
   if (ro.edge != kNone) return {ro.title, ro.value};
   return {"Project Patch",
           "The whole project as one circuit. Drag an export onto a device to wire it, a mixer's output onto a group, return "
-          "or the master to route it; double-click a band to zoom onto it, a device to open it to its atoms. Ctrl+Alt+P "
+          "or the master to route it; double-click a band to open it (zoomed onto it, its devices opened to their atoms), a device to open it alone. Ctrl+Alt+P "
           "returns to the arrangement."};
 }
 

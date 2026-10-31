@@ -20,6 +20,7 @@
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_editor.h"
+#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/fake_transport.h"
@@ -780,7 +781,7 @@ TEST_CASE("project patch: a device edited in the circuit editor (a user device) 
   u.show();
   ProjectPatchView& v = u.view();
   const doc::DeviceId sat = u.track("Keys").devices[1]->id;
-  REQUIRE(v.openInCircuitView(sat));
+  REQUIRE(v.editDeviceCircuit(sat));  // T5.x-circuit-chain: the Device level (openInCircuitView: the track's chain)
   circuit::CircuitEditor* ed = u.editor();
   REQUIRE(ed != nullptr);
   // One edit in the text pane forks the device (SPEC §15 2026-10-26): one undo step; the patch view follows.
@@ -847,11 +848,23 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   v.setDeviceExpanded(sat, false);
   u.d.advance(0.5);
   CHECK(v.scene().scene->nodes.size() == nodes);
-  // Its menu's Open in Circuit View opens the project-device circuit editor on it (T4.4-fix1; the next case edits).
+  // Its menu's Open in Circuit View opens its track's chain as one circuit focused on it (T5.x-circuit-chain); Edit
+  // Device Circuit the project-device circuit editor on it (T4.4-fix1; the next case edits).
   REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
   Menu* m = u.openMenu();
   REQUIRE(m != nullptr);
   u.choose(*m, "Open in Circuit View");
+  circuit::TrackCircuitView* chain = nullptr;
+  for (size_t i = 0; i < u.shell->overlay().childCount(); ++i)
+    if (auto* t = dynamic_cast<circuit::TrackCircuitView*>(&u.shell->overlay().child(i))) chain = t;
+  REQUIRE(chain != nullptr);
+  CHECK(chain->focused() == sat);
+  chain->closeSoon();
+  u.d.step();
+  REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
+  m = u.openMenu();
+  REQUIRE(m != nullptr);
+  u.choose(*m, "Edit Device Circuit");
   circuit::CircuitEditor* ed = u.editor();
   REQUIRE(ed != nullptr);
   CHECK(ed->host() != nullptr);  // on the project's device (no Save, no Play)
@@ -859,13 +872,23 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   ed->closeSoon();
   u.d.step();
   CHECK(u.editor() == nullptr);
-  // Double-click on a band's empty space zooms onto it; F back to the project.
+  // Double-click on a band's empty space opens it (T5.x-circuit-chain: zoomed onto it, its devices opened to their
+  // atoms, so the band is larger than its blocks were: the view frames it, it does not zoom in by a fixed factor); F
+  // back to the project (the band's devices closed again).
   v.fitAll(false);
   u.d.tree().layoutNow();
   const Band& pad = v.patch().bands[v.patch().bandOf(u.track("Pad").id)];
   u.d.doubleClick(u.dev(pad.x1 - 6.0f, pad.y + pad.h - 4.0f));
   u.d.advance(0.5);
-  CHECK(v.canvas().view().zoom > whole * 1.5);
+  CHECK(v.openedBand() == u.track("Pad").id);
+  {
+    const Band& opened = v.patch().bands[v.patch().bandOf(u.track("Pad").id)];
+    const Vec2 a = u.dev(opened.x0, opened.y), b = u.dev(opened.x1, opened.y + opened.h);
+    const IRect cr = v.canvas().rect();
+    CHECK(a.x >= static_cast<float>(cr.x) - 1.0f);
+    CHECK(b.x <= static_cast<float>(cr.right()) + 1.0f);
+    CHECK(std::max(b.x - a.x, b.y - a.y) >= std::min(static_cast<float>(cr.w), static_cast<float>(cr.h)) * 0.5f);
+  }
   CHECK(u.d.press("F") != KeyResult::Unhandled);
   u.d.advance(0.5);
   CHECK(v.canvas().view().zoom == doctest::Approx(whole));

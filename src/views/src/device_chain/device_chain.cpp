@@ -16,6 +16,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/devices/panel_desc.h"
 #include "pq/views/shell/shell.h"
 
@@ -556,10 +557,13 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // T4.8: a rack opens its lowered subcircuit (read-only) instead.
       const doc::DeviceId id = id_;
       contextItems(e.pos, items);  // T4.16c
+      // T5.x-circuit-chain: Open in Circuit View shows the whole track's chain as one circuit focused on this device
+      // (the Track level); Edit Device Circuit goes straight to the device's own editor (the Device level).
+      items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openInCircuitView(id); }));
       if (loc.device != nullptr && loc.device->rack) {
-        items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openRackCircuit(id); }));
+        items.push_back(ui::MenuItem::item("Open Lowered Rack Patch", [v, id] { v->openRackCircuit(id); }));
       } else {
-        items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openInCircuitView(id); }));
+        items.push_back(ui::MenuItem::item("Edit Device Circuit", [v, id] { v->editDeviceCircuit(id); }));
         ui::MenuItem revert = ui::MenuItem::item("Revert to Stock", [v] { v->revertSelectedToStock(); });
         revert.enabled = loc.device != nullptr && loc.device->edited();
         items.push_back(std::move(revert));
@@ -1071,6 +1075,10 @@ bool DeviceChainView::moveDevice(doc::DeviceId device, uint32_t index) {
 }
 
 bool DeviceChainView::openInCircuitView(doc::DeviceId device) {
+  return circuit::openDeviceChainCircuit(*this, ctx_, device) != nullptr;
+}
+
+bool DeviceChainView::editDeviceCircuit(doc::DeviceId device) {
   return circuit::openDeviceInCircuitView(*this, ctx_, device) != nullptr;
 }
 

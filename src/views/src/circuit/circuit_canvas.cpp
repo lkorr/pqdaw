@@ -48,6 +48,8 @@ struct CircuitCanvas::Impl {
   View view;
   bool fitPending = false;
   bool fitReadable = false;  // M15: the pending / next fit is an open (readable), not F (the whole patch)
+  bool stubsNearOnly = false;  // T5.x-circuit-chain
+  double pillMinZoom = 0.0;    // T5.x-circuit-chain
   Stats stats;
 
   Selection selection;
@@ -603,6 +605,18 @@ void CircuitCanvas::clearSelection() {
   impl_->selectionChanged();
 }
 
+void CircuitCanvas::setPinStubsNearOnly(bool on) {
+  if (impl_->stubsNearOnly == on) return;
+  impl_->stubsNearOnly = on;
+  markDirty();
+}
+bool CircuitCanvas::pinStubsNearOnly() const noexcept { return impl_->stubsNearOnly; }
+void CircuitCanvas::setTerminalPillMinZoom(double zoom) {
+  if (impl_->pillMinZoom == zoom) return;
+  impl_->pillMinZoom = zoom;
+  markDirty();
+}
+
 void CircuitCanvas::setWireLit(uint32_t wire, bool lit) {
   if (wire >= impl_->wireLit.size() || (impl_->wireLit[wire] != 0) == lit) return;
   impl_->wireLit[wire] = lit ? 1 : 0;
@@ -860,8 +874,9 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     if (m.hover.kind == CanvasHit::Kind::Wire) m.farWire(dl, m.hover.index, ox, oy, s, thin, C.hover);
   } else {
     const float stubT = std::max(1.0f, std::round(strokeWidth(s)));
-    // Pin stubs (crisp, snapped like the wires).
+    // Pin stubs (crisp, snapped like the wires); T5.x-circuit-chain: only from Near when the view asks.
     for (const uint32_t v : m.visNodes) {
+      if (m.stubsNearOnly && lod != Lod::Near) break;
       const SceneNode& n = sc.nodes[v];
       const Rgba col = strokeOf(v);
       for (uint32_t k = 0; k < n.pinCount; ++k) {
@@ -985,7 +1000,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
 
   // M4 review M15: below Near the terminals (inputs, params, sources, outputs, exports) keep their names, in small
   // pills over their symbols; a pill that would overlap one already placed is left out.
-  if (lod != Lod::Near && ctx.res.text && ctx.res.uiFonts) {
+  if (lod != Lod::Near && m.view.zoom >= m.pillMinZoom && ctx.res.text && ctx.res.uiFonts) {
     ui::TextSystem& ts = *ctx.res.text;
     const ui::FontId font = ctx.res.uiFonts->small;
     const float pillPad = std::round(ctx.scale.exact(3.0f)), lh = std::round(ctx.scale.exact(13.0f));

@@ -278,8 +278,10 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     }
     for (uint32_t q = 0; q <= maxNet; ++q) netOf((1u << 31) | (netBase + q));  // keep later nets unique
     // Connectors: frame pin → the terminal of that name (inputs: `in`, params; outputs: `out`, exports).
+    // Searched from the end: a patch declares each name once; a rack's circuit (T5.x-circuit-chain) appends its own
+    // terminals after its devices' scenes, whose `in` / `out` must not be taken for the rack's.
     auto terminal = [&](std::string_view name, bool input) -> uint32_t {
-      for (uint32_t v = 0; v < in->nodes.size(); ++v) {
+      for (uint32_t v = static_cast<uint32_t>(in->nodes.size()); v-- > 0;) {
         const SymbolSpec& s = in->specs[in->nodes[v].spec];
         const bool isIn = s.symbol == Symbol::Input || s.symbol == Symbol::Param;
         const bool isOut = s.symbol == Symbol::Output || s.symbol == Symbol::Export;

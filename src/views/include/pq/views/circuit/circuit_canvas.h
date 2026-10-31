@@ -107,6 +107,14 @@ public:
   std::function<void(uint32_t node)> onOpen;  // double-click on a subcircuit or filter
   // T4.5 (bool wires lit when high): drawn in circuit.wireBoolLit. Repaints only when the flag changes.
   void setWireLit(uint32_t wire, bool lit);
+  // T5.x-circuit-chain (M4 review L13): pin stubs drawn only from the Near level (the overviews built on the canvas: the
+  // project patch view and the track chain circuit read as boxes and wires when zoomed out). Off by default.
+  void setPinStubsNearOnly(bool on);
+  bool pinStubsNearOnly() const noexcept;
+  // ... and the terminal name pills (M15: below Near, inputs / params / outputs / exports keep their names) only from
+  // this zoom (0, the default: at every level). The overviews set kFarZoom: zoomed far out, a whole device's
+  // terminals would bury its boundary's title.
+  void setTerminalPillMinZoom(double zoom);
 
   struct Stats {
     uint32_t nodesPainted = 0, nodesFromTiles = 0, nodesStretched = 0, nodesDirect = 0;

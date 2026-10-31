@@ -6,6 +6,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views::circuit {
@@ -176,6 +177,15 @@ CircuitEditor* openDeviceInCircuitView(ui::Widget& from, ViewContext& ctx, doc::
     return nullptr;
   }
   ed->setHost(std::make_unique<DeviceHost>(*ed, ctx, device, std::move(player)));
+  // T5.x-circuit-chain: the Track level of the breadcrumb (the whole chain, focused on this device); this editor closes.
+  // The editor closes first (closing an overlay closes what was opened above it; it is destroyed at the next frame).
+  ed->setTrackAction([ed, &ctx, device] {
+    ui::OverlayLayer* layer = ui::OverlayLayer::of(*ed);
+    if (layer == nullptr) return;
+    if (ed->document().playing()) ed->document().stop();
+    layer->close(*ed);
+    (void)openDeviceChainCircuit(*layer, ctx, device);
+  });
   followViewPrefs(*ed, ctx);
   showInstance(*ed, *d);
   if (raw != nullptr) (void)ed->togglePlay();  // follow the project: LED trace, hover probes, Cost

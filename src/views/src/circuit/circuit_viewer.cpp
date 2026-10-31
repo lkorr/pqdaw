@@ -1,6 +1,7 @@
 // The read-only circuit viewer (T4.2/T4.3): .pqp loading with imports, the full-window viewer, View > Open Patch.
 
 #include "pq/views/circuit/circuit_viewer.h"
+#include "pq/views/circuit/track_circuit.h"
 
 #include <filesystem>
 #include <fstream>
@@ -270,8 +271,13 @@ public:
         else followViewPrefs(*ed, ctx_);  // T4.15
       });
     });
+    // T5.x-circuit-chain: the selected track's whole chain as one circuit.
+    ctx_.setViewAction("view.trackCircuit", [this] { (void)openTrackCircuit(*layer_, ctx_, ctx_.selectedTrack()); });
   }
-  ~CircuitViewerHost() override { ctx_.clearViewAction("view.openPatch"); }
+  ~CircuitViewerHost() override {
+    ctx_.clearViewAction("view.openPatch");
+    ctx_.clearViewAction("view.trackCircuit");
+  }
   PatchPlayer* player = nullptr;
 
 private:

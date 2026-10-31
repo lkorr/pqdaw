@@ -18,6 +18,7 @@
     {"scope": "global", "keys": "Ctrl+F", "action": "browser.search", "status": "implemented", "task": "T5.10"},
     {"scope": "global", "keys": "Ctrl+Alt+M", "action": "view.toggleMixer", "status": "implemented", "task": "T3.10"},
     {"scope": "global", "keys": "Ctrl+Alt+P", "action": "view.togglePatch", "status": "implemented", "task": "T4.13"},
+    {"scope": "global", "keys": "Ctrl+Alt+C", "action": "view.trackCircuit", "status": "implemented", "task": "T5.x-circuit-chain"},
     {"scope": "global", "keys": "Ctrl+Shift+F", "action": "view.toggleFollow", "status": "implemented", "task": "T3.8"},
     {"scope": "global", "keys": "Ctrl+1", "action": "grid.narrow", "status": "implemented", "task": "T3.11"},
     {"scope": "global", "keys": "Ctrl+2", "action": "grid.widen", "status": "implemented", "task": "T3.11"},

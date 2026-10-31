@@ -115,6 +115,8 @@ Menu* Editor::openTrackMenu(doc::TrackId id, Vec2 at) {
   items.push_back(MenuItem::sep());
   items.push_back(MenuItem::item("Colour…", [this, at] { (void)openColourPicker(at); }));
   items.push_back(MenuItem::sep());
+  items.push_back(action("Open Track Circuit", "view.trackCircuit", "Ctrl+Alt+C"));  // T5.x-circuit-chain
+  items.push_back(MenuItem::sep());
   MenuItem del = MenuItem::item("Delete", [this] { (void)deleteTracks(); }, "Delete");
   del.enabled = !master;
   items.push_back(std::move(del));

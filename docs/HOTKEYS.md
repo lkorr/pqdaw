@@ -27,6 +27,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `browser.search` | `Ctrl+F` | global | Browser | implemented (T5.10; shows the browser and puts the cursor in its search field) |
 | `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | implemented (T3.10; the mixer view takes the track area while shown, Q89) |
 | `view.togglePatch` | `Ctrl+Alt+P` | global | — (pqdaw; SPEC §15 2026-10-24) | implemented (T4.13; the project patch view takes the track area while shown, morphing from the arrangement and back; View > Arrangement / Project Patch) |
+| `view.trackCircuit` | `Ctrl+Alt+C` | global | — (pqdaw) | implemented (T5.x-circuit-chain; the selected track's whole device chain as one circuit, read-only, in a full-window view; View > Track Circuit, the track header's menu) |
 | `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | implemented (T3.8; the arrangement owns the switch until the piano roll follows too) |
 | `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
@@ -216,8 +217,8 @@ T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — 
 | Keys / gesture | Where | Effect |
 |---|---|---|
 | `F`, `Esc` (nothing selected), double-click outside the bands | canvas | zoom to the whole project (animated) |
-| double-click a band (its empty space or name) | canvas | zoom onto that band |
-| double-click a device block / its frame | canvas | open it to its atoms in place (read-only) / close it |
+| double-click a band (its empty space or name) | canvas | open the band (T5.x-circuit-chain): zoom onto it with every device of its chain opened to its atoms in labelled frames (racks: nested frames, chains stacked); `F` / `Esc` close them again |
+| double-click a device or rack block / its frame | canvas | open it to its atoms in place (read-only; a rack to its chains) / close it |
 | double-click a mixer strip | canvas | expand it (each send's level beside its pin) / collapse |
 | drag an export pin (right side of a device, under its output) onto a device or a param pin | canvas | modulation wire (a menu of the device's params when dropped on its body); one undo step |
 | drag a mixer's `out` pin onto a group's, return's or the master's Σ | canvas | route the track there (a return: its send to 0 dB); one undo step |
@@ -228,7 +229,17 @@ T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — 
 | click M / S on a mixer strip (`Ctrl`: additive solo) | canvas | the track's activator (mute) / solo |
 | drag a mixer strip's volume bar / pan / send bar sideways (`Shift`: fine) | canvas | volume / pan / send level (one undo step per drag; `Esc` cancels) |
 | drag a band's title strip, `Ctrl`+drag a device block | canvas | nudge the layout (view state, saved with the project, not undoable); band menu: Reset Layout |
-| right-click a band / a block / a wire | canvas | Add Device ▸, Zoom to Band / Project, Reset Layout; Delete, Activate, Open to Atoms, Open in Circuit View, Output ▸; Delete Wire / Send to −inf / Sends Only |
+| right-click a band / a block / a wire | canvas | Add Device ▸, Open Band, Zoom to Band / Project, Track Circuit View, Reset Layout; Delete, Activate, Open to Atoms, Open in Circuit View (the track's chain), Edit Device Circuit, Output ▸; Delete Wire / Send to −inf / Sends Only |
+
+## Track circuit view (T5.x-circuit-chain, handled by the view, not the keymap)
+
+A device's "Open in Circuit View" (its menu, a double-click on its title, the project patch view's block menu), `Ctrl+Alt+C` (`view.trackCircuit`, View > Track Circuit, the track header's menu) show the track's whole device chain as one circuit: each device's own circuit in a labelled boundary, left → right, wired `out` → `in`; racks as nested boundaries. Read-only; navigation is the circuit canvas's (`F` fits the track).
+
+| Keys / gesture | Where | Effect |
+|---|---|---|
+| double-click inside a device's boundary, `Enter` (a node of it selected, else the focused device), the title bar's Device | canvas | the Device level: that device's circuit editor (editable; this view closes) |
+| the circuit editor's Track button | editor title bar | back to the Track level, focused on that device |
+| `Esc` (nothing selected), Close | view | close |
 
 ## Drops and the browser (T5.7, T5.10; handled by the widgets, not the keymap)
 

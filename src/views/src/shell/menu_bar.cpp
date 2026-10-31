@@ -271,6 +271,7 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
     case 3:  // View
       v.push_back(act("Arrangement / Mixer", "view.toggleMixer"));
       v.push_back(act("Arrangement / Project Patch", "view.togglePatch"));  // T4.13
+      v.push_back(act("Track Circuit", "view.trackCircuit"));  // T5.x-circuit-chain
       v.push_back(check(act("Detail View", "view.toggleDetail"), ctx_.detailVisible()));
       v.push_back(act("Clip / Device View", "view.toggleClipDevice"));
       v.push_back(check(act("Browser", "view.toggleBrowser"), ctx_.browserVisible()));  // T5.10
