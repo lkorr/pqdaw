@@ -1,0 +1,478 @@
+{
+  "schemaVersion": 7,
+  "timeline": {
+    "tempo": [
+      {
+        "tick": 0,
+        "bpm": 120.0,
+        "curve": "step"
+      }
+    ],
+    "signatures": [
+      {
+        "bar": 0,
+        "numerator": 4,
+        "denominator": 4
+      }
+    ]
+  },
+  "loop": {
+    "start": 0,
+    "end": 3548160,
+    "enabled": false
+  },
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 10,
+      "kind": "audio",
+      "name": "Drums",
+      "colour": "#E8A33D",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "arm": false,
+        "sends": [],
+        "output": "default"
+      },
+      "lanes": [],
+      "devices": [],
+      "clips": [
+        {
+          "kind": "audio",
+          "id": 20,
+          "name": "beat",
+          "colour": "#E8A33D",
+          "start": 0,
+          "length": 887040,
+          "sample": 3,
+          "warp": "off",
+          "contentStartFrame": 0.0,
+          "seconds": 2.0,
+          "contentStart": 0,
+          "loop": {
+            "enabled": false,
+            "start": 0,
+            "end": 887040
+          },
+          "sourceBpm": 120.0,
+          "gainDb": 0.0,
+          "transpose": {
+            "cents": 0.0
+          },
+          "detuneCents": 0.0,
+          "reverse": false,
+          "fadeIn": {
+            "length": 27720,
+            "curve": 0.0
+          },
+          "fadeOut": {
+            "length": 110880,
+            "curve": -0.5
+          },
+          "crossfadeIn": 0,
+          "tuning": "inherit",
+          "active": true
+        },
+        {
+          "kind": "audio",
+          "id": 21,
+          "name": "beat",
+          "colour": "#E8A33D",
+          "start": 887040,
+          "length": 887040,
+          "sample": 3,
+          "warp": "off",
+          "contentStartFrame": 0.0,
+          "seconds": 2.0,
+          "contentStart": 0,
+          "loop": {
+            "enabled": false,
+            "start": 0,
+            "end": 887040
+          },
+          "sourceBpm": 120.0,
+          "gainDb": -6.0,
+          "transpose": {
+            "cents": 0.0
+          },
+          "detuneCents": 0.0,
+          "reverse": false,
+          "fadeIn": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "fadeOut": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "crossfadeIn": 110880,
+          "tuning": "inherit",
+          "active": true
+        },
+        {
+          "kind": "audio",
+          "id": 22,
+          "name": "beat rev",
+          "colour": "#E8A33D",
+          "start": 2217600,
+          "length": 443520,
+          "sample": 3,
+          "warp": "off",
+          "contentStartFrame": 44100.0,
+          "seconds": 1.0,
+          "contentStart": 0,
+          "loop": {
+            "enabled": false,
+            "start": 0,
+            "end": 887040
+          },
+          "sourceBpm": 120.0,
+          "gainDb": 0.0,
+          "transpose": {
+            "cents": 700.0
+          },
+          "detuneCents": 0.0,
+          "reverse": true,
+          "fadeIn": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "fadeOut": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "crossfadeIn": 0,
+          "tuning": "inherit",
+          "active": true
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "kind": "audio",
+      "name": "Vox",
+      "colour": "#5E9BD6",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "arm": false,
+        "sends": [],
+        "output": "default"
+      },
+      "lanes": [],
+      "devices": [],
+      "clips": [
+        {
+          "kind": "audio",
+          "id": 23,
+          "name": "vox",
+          "colour": "#5E9BD6",
+          "start": 443520,
+          "length": 1774080,
+          "sample": 4,
+          "warp": "rePitch",
+          "contentStartFrame": 0.0,
+          "seconds": 1.0,
+          "contentStart": 0,
+          "loop": {
+            "enabled": true,
+            "start": 0,
+            "end": 665280
+          },
+          "sourceBpm": 100.0,
+          "gainDb": 6.0,
+          "transpose": {
+            "cents": 0.0
+          },
+          "detuneCents": 0.0,
+          "reverse": false,
+          "fadeIn": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "fadeOut": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "crossfadeIn": 0,
+          "tuning": "inherit",
+          "active": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "kind": "midi",
+      "name": "Keys",
+      "colour": "#7BC47F",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "arm": false,
+        "sends": [],
+        "output": "default"
+      },
+      "lanes": [],
+      "devices": [
+        {
+          "id": 13,
+          "patch": "BasicSynth",
+          "kind": "instrument"
+        }
+      ],
+      "clips": [
+        {
+          "id": 30,
+          "name": "chords",
+          "colour": "#7BC47F",
+          "start": 0,
+          "length": 887040,
+          "contentStart": 0,
+          "loop": {
+            "enabled": false,
+            "start": 0,
+            "end": 887040
+          },
+          "signature": {
+            "numerator": 4,
+            "denominator": 4
+          },
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {
+              "id": 40,
+              "start": 0,
+              "length": 110880,
+              "pitch": {
+                "degree": 0,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 41,
+              "start": 110880,
+              "length": 110880,
+              "pitch": {
+                "degree": 4,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 42,
+              "start": 221760,
+              "length": 110880,
+              "pitch": {
+                "degree": 7,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 43,
+              "start": 332640,
+              "length": 110880,
+              "pitch": {
+                "degree": 4,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 44,
+              "start": 443520,
+              "length": 110880,
+              "pitch": {
+                "degree": 2,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 45,
+              "start": 554400,
+              "length": 110880,
+              "pitch": {
+                "degree": 5,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 46,
+              "start": 665280,
+              "length": 110880,
+              "pitch": {
+                "degree": 9,
+                "equave": 0
+              },
+              "velocity": 100.0
+            },
+            {
+              "id": 47,
+              "start": 776160,
+              "length": 110880,
+              "pitch": {
+                "degree": 5,
+                "equave": 0
+              },
+              "velocity": 100.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "kind": "audio",
+      "name": "Lost",
+      "colour": "#B0B0B0",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "arm": false,
+        "sends": [],
+        "output": "default"
+      },
+      "lanes": [],
+      "devices": [],
+      "clips": [
+        {
+          "kind": "audio",
+          "id": 24,
+          "name": "missing",
+          "colour": "#B0B0B0",
+          "start": 887040,
+          "length": 443520,
+          "sample": 5,
+          "warp": "off",
+          "contentStartFrame": 0.0,
+          "seconds": 1.0,
+          "contentStart": 0,
+          "loop": {
+            "enabled": false,
+            "start": 0,
+            "end": 887040
+          },
+          "sourceBpm": 120.0,
+          "gainDb": 0.0,
+          "transpose": {
+            "cents": 0.0
+          },
+          "detuneCents": 0.0,
+          "reverse": false,
+          "fadeIn": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "fadeOut": {
+            "length": 0,
+            "curve": 0.0
+          },
+          "crossfadeIn": 0,
+          "tuning": "inherit",
+          "active": true
+        }
+      ]
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {
+      "volumeDb": 0.0,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "arm": false,
+      "sends": [],
+      "output": "default"
+    },
+    "lanes": [],
+    "devices": []
+  },
+  "samples": [
+    {
+      "id": 3,
+      "path": "samples/beat.wav",
+      "name": "beat",
+      "hash": "00c3f9764c295457",
+      "size": 352844,
+      "frames": 88200,
+      "rate": 44100.0,
+      "channels": 2
+    },
+    {
+      "id": 4,
+      "path": "samples/vox.wav",
+      "name": "vox",
+      "hash": "6b05fe41faf25209",
+      "size": 144044,
+      "frames": 72000,
+      "rate": 48000.0,
+      "channels": 1
+    },
+    {
+      "id": 5,
+      "path": "samples/missing.wav",
+      "name": "missing",
+      "hash": "0000000000000001",
+      "size": 1000,
+      "frames": 48000,
+      "rate": 48000.0,
+      "channels": 1
+    }
+  ],
+  "view": {
+    "tracks": [
+      {
+        "id": 10,
+        "folded": false,
+        "height": 72
+      },
+      {
+        "id": 11,
+        "folded": false,
+        "height": 60
+      }
+    ],
+    "lanes": []
+  }
+}

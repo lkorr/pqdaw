@@ -45,6 +45,7 @@
 namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
+class Waveforms;       // pq/views/waveforms.h (T5.5)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 }  // namespace pq::views
 namespace pq::views::circuit {
@@ -71,6 +72,7 @@ inline constexpr uint32_t kInfo = 1u << 10;          // the hovered widget's inf
 inline constexpr uint32_t kDevices = 1u << 11;       // the device library changed (T4.1: the device menu, panels)
 inline constexpr uint32_t kModulation = 1u << 12;    // the modulation source changed (T4.7: the knobs' live rings)
 inline constexpr uint32_t kSamples = 1u << 13;       // the samples were resolved again (T5.4: the playback link)
+inline constexpr uint32_t kWaveforms = 1u << 14;     // a waveform overview arrived or grew (T5.5: views drawing audio)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -343,6 +345,14 @@ public:
   // Posts a function to the UI thread (the app: an SDL user event); null: background work runs synchronously.
   using UiPoster = std::function<void(std::function<void()>)>;
   void setUiPoster(UiPoster post) { post_ = std::move(post); }
+  const UiPoster& uiPoster() const noexcept { return post_; }
+
+  // --- waveform overviews (T5.5; pq/views/waveforms.h) ---
+  // The overviews of the project's samples (the arrangement's audio clips, the audio clip view). Cleared on new /
+  // open; entries whose file changed are dropped when the samples are resolved again.
+  Waveforms& waveforms() noexcept { return *waveforms_; }
+  // Waveforms calls this when an overview arrived or grew (notifies kWaveforms).
+  void waveformsChanged() { notify(view_change::kWaveforms); }
 
   // --- status line ---
   void setStatus(std::string text);
@@ -456,6 +466,7 @@ private:
   std::shared_ptr<const doc::SampleList> resolvedFor_;  // the table sampleRes_ describes
   std::string resolvedDir_;                              // and the project directory it was resolved in
   UiPoster post_;
+  std::unique_ptr<Waveforms> waveforms_;  // T5.5
   struct CollectJob;
   std::unique_ptr<CollectJob> collectWorker_;
   std::shared_ptr<char> life_ = std::make_shared<char>();  // posted work checks it (the context may be gone)

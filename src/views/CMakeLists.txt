@@ -1,4 +1,4 @@
-# pq_views (T3.7): the DAW's views, composed from ui + document (+ tuning, core). Never depends on engine: the
+# pq_views (T3.7): the DAW's views, composed from ui + document (+ tuning, core; T5.5: media, for waveform overviews). Never depends on engine: the
 # transport is reached through pq/views/transport_port.h, which app implements (docs/ARCHITECTURE.md §1).
 #
 # Layout (one subtree per view family, so parallel tasks do not touch each other's files):
@@ -21,6 +21,7 @@
 set(PQ_VIEWS_SOURCES
   src/view_context.cpp
   src/view_scenes.cpp
+  src/waveforms.cpp
   src/shell/shell.cpp
   src/shell/control_bar.cpp
   src/shell/menu_bar.cpp
@@ -34,5 +35,5 @@ endforeach()
 
 pq_add_module(pq_views
   SOURCES ${PQ_VIEWS_SOURCES}
-  DEPS pq_ui pq_doc pq_graph pq_dsp pq_tuning pq_core
+  DEPS pq_ui pq_doc pq_graph pq_dsp pq_tuning pq_media pq_core
   PRIVATE_DEPS nlohmann_json::nlohmann_json)  # T4.6: panel descriptions (JSON)

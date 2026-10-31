@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "pq/document/serialize.h"
+#include "pq/views/waveforms.h"
 
 namespace pq::views {
 
@@ -58,6 +59,7 @@ std::string projectNameOf(std::string_view dir) {
 // --- construction ---------------------------------------------------------------------------------------
 
 ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
+  waveforms_ = std::make_unique<Waveforms>(*this);
   saved_ = store_.current();
   storeListener_ = store_.subscribe([this](const doc::StoreEvent& e) { onStoreEvent(e); });
   // Scopes of the default keymap, interned now so views can set them before the keymap file is applied.
@@ -90,6 +92,7 @@ struct ViewContext::CollectJob {
 
 ViewContext::~ViewContext() {
   collectWorker_.reset();  // joins a running copy
+  waveforms_.reset();      // joins its workers
   store_.unsubscribe(storeListener_);
 }
 
@@ -214,6 +217,7 @@ void ViewContext::afterLoad() {
   startMarker_ = 0;
   transport_.locate(0);
   syncLoop();
+  waveforms_->clear();  // T5.5: another project (its own cache folder)
   refreshSamples();
   notify(view_change::kProject | view_change::kTransport);
 }
@@ -305,6 +309,7 @@ void ViewContext::refreshSamples(bool relocate) {
               " \xE2\x80\x94 Relink\xE2\x80\xA6");
   else if (before != 0)
     setStatus("All samples found");
+  waveforms_->samplesResolved();  // T5.5: overviews of files that changed are dropped
   notify(view_change::kSamples);  // T5.4: the playback link follows which samples can play
 }
 

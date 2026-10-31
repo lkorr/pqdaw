@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -20,6 +21,8 @@
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/app/audio_manager.h"
 #include "pq/app/user_settings.h"
+#include "pq/app/pipeline_cache.h"
+#include "pq/views/waveforms.h"
 
 namespace pq::app {
 
@@ -195,6 +198,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   app->ctx_->setUiPoster([type = app->userEvent_](std::function<void()> fn) {
     pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn)));
   });
+  // T5.5: waveform overviews go to the project's cache/ folder, or (an untitled project) per user (LRU 1 GiB).
+  app->ctx_->waveforms().setProjectCache(true);
+  if (const std::string dir = localCacheDir(); !dir.empty())
+    app->ctx_->waveforms().setSharedCacheDir(std::filesystem::path(std::u8string(dir.begin(), dir.end())) / "waveforms");
   if (!o.project.empty()) {
     if (Status s = app->ctx_->openProject(o.project); !s) return std::move(s).error();
     markStartupPhase("project loaded");
