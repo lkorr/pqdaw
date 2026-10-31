@@ -497,7 +497,7 @@ TEST_CASE("library: index speed, 2k files (indicative)") {
   CHECK(s.loadMs < 150);
 }
 
-TEST_CASE("library: index speed, 200k files: revalidate <= 2 s, load <= 150 ms" * doctest::test_suite("slow")) {
+TEST_CASE("library: index speed, 200k files: revalidate <= 2 s, load <= 150 ms" * doctest::test_suite("perf")) {
   const SpeedResult s = indexSpeed(200000);
   CHECK(s.revalidateMs <= 2000);
   CHECK(s.loadMs <= 150);
