@@ -614,6 +614,7 @@ Each task's full description and acceptance criteria are in docs/plans/M5.md und
 - [x] **T5.8 Project samples: copy on save, collect all, missing files, relink** *(merged 2026-10-31; samples referenced by default; not built: per-project always-collect option, full-file hash, NTFS-file-ID relink — Q145 item 10)* (docs/plans/M5.md)
 - [x] **T5.9 Browser index: places, indexer, watcher, search** *(merged 2026-10-31; 200k revalidate 224 ms, load 19 ms, search median 2.5–3.4 ms; no dir-mtime subtree skip, preset categories sniffed until T5.11 (Q153); app wiring + panel = T5.10)* (docs/plans/M5.md)
 - [x] **T5.10 Browser panel + preview through a cue bus** 👁 *(merged 2026-10-31; cue via AudioOutput::setCueSource + Cue Out pref; free-tag + duration/BPM/rate/channel filter chips, tag editing and resizable width moved to T5.11; Q158)* (docs/plans/M5.md)
+- [x] **T5.x-perf-audio** *(merged 2026-10-31; Q152 (b) 64 audio tracks 1.68 → 0.98–0.99 % of a core (no margin; Q159), resampler mips for resident samples above rate 2 (+24 st 21.3 → 13.6 ns), loop-wrap pre-claim (0 underruns), 10k audio clips save + load 46–48 ms)*
 - [ ] **T5.11 User library: presets, racks, user devices, tunings, clips; default presets; hot-swap** (+ from T5.10: free-tag and filter chips, tag editing, resizable browser width) (docs/plans/M5.md)
 - [ ] **T5.12 Drag out: arrangement → browser, → Explorer** (docs/plans/M5.md)
 - [ ] **T5.13 M5 review** (docs/plans/M5.md)
