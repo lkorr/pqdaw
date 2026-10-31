@@ -72,6 +72,10 @@ target_compile_definitions(pq_bench_devices PRIVATE PQ_TEST_DATA_DIR=pq_build_te
 pq_add_bench(pq_bench_inspect SOURCES jit/bench_inspect.cpp DEPS pq_jit)
 pq_use_build_paths(pq_bench_inspect)
 target_compile_definitions(pq_bench_inspect PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
+# T5.1 / T5.2: decode throughput per format, probes, PCM conversion, content hashes, the RT streaming read side.
+pq_add_bench(pq_bench_media SOURCES media/bench_media.cpp DEPS pq_media)
+pq_use_build_paths(pq_bench_media)
+target_compile_definitions(pq_bench_media PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
 pq_add_bench(pq_bench_hot_swap SOURCES engine/bench_hot_swap.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_timeline SOURCES engine/bench_timeline.cpp DEPS pq_engine)
 # T2.6: per-voice pitch cost of tuning as a signal (the tuning_hz kernel; a tuned track through the VoiceEngine).

@@ -18,6 +18,7 @@ pq_add_module(pq_media
     src/file_io.cpp
     src/probe.cpp
     src/decoder.cpp
+    src/sample_pool.cpp
   DEPS pq_core pq_dsp
   PRIVATE_DEPS pq_media_codecs
 )

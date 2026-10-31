@@ -122,6 +122,7 @@ Runner benches so far:
 | `pq_bench_core` | `spsc/…`, `mpsc/…`, `rtlog/…`, `baseline/…`, `cross/…` (pinned cross-thread throughput and round trips; `--runs N` per variant, default 11), `pool/…`, `arena/…`, `epoch/…`. The old `pq_bench_core cross [runs] [substring]` still works. |
 | `pq_bench_dsp` | `atom/<name>[ (spl…)]`: every leaf atom kernel at L1 (ns/sample) and L8 (ns/frame of 8 voices), plus the markdown table; `--pad N` as before. |
 | `pq_bench_render` | `patch32/interp xN`, `patch32/jit xN` (N = 1, 8, 64): a 32-op per-voice patch through the VoiceEngine, ns/sample, ns/voice-sample and `[per block]`; `render/<golden> interp|jit`: offline render of each golden patch, ns/frame and × realtime; `operator/interp|jit x64` (T1.11-fix1): the proto-Operator (`bench/patches/proto_operator.pqp`) at 64 held voices through a ProgramHost: ns/sample (rounds, `[per block]`), `core` = % of one core at 48 kHz (SPEC §13: < 10 %), `crossfade [per block]` and `crossfade ratio` (a 20 ms swap to a fresh image of the same program). |
+| `pq_bench_media` | T5.1 / T5.2: `decode/<fixture>` (ns/frame, MB/s of float32 output and of file input, × realtime), `probe/<fixture>` (µs/file), `pcm/<S16|S24|S32|F32> stereo` (the conversion kernel, both byte orders), `hash/…`, `stream/span 64` (one RT span from a filled ring), `stream/cursor x64` (64 streamed SampleCursors reading one 64-frame block, `[per block]` and per stream). |
 
 Recording results (ship preset; RESULTS.md is append-only):
 
