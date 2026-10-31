@@ -845,3 +845,17 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: resolution only when the table or directory changes; hashing ≤ 192 KiB per file.
 - Notes/blockers: not built: per-project always-collect, full-file hash, NTFS-file-ID relink (Q145 item 10); media's content hash must match the document's (Q145 item 8, T5.1 worker told).
 
+## 2026-10-31 · T5.1 · worker / task/T5.1-media
+- Did: new media module (pq_media; ARCHITECTURE §1): probe (format, rate, channels, exact length, acid/smpl/INST, file-name BPM, NTFS identity, MP3 Xing/LAME gapless), decoders (own AVX2 PCM reader for WAV/RF64/W64/AIFF from a mapped file; dr_wav for ADPCM/A-law/µ-law; dr_flac; MP3 on dr_mp3's frame decoder with our own frame table for exact seeks; stb_vorbis with a comment-header pre-check), content hash = doc::fileIdentity (Q145 item 8), wav_file moved from engine. dr_libs dfe8377 + stb 2c980bb pinned by SHA-256. Fixtures via tools/fixtures/make_audio_fixtures.py (python-soundfile). Q146, Q147.
+- Verified: worker -Full dev 53/53 and release 53/53, 0 warnings (on 73fced1); lossless bit-exact; MP3 55.1/45.9 dB; Vorbis 39.5 dB (libvorbis ceiling; = libvorbis decode at 139.6 dB); 1000 seeks/format exact; probe 47–58 µs; malformed corpus 6552 + fuzz 70k, no crash, ≤ 65 MiB. Orchestrator: fast-forward.
+- Perf: ship pq_bench_media (load ~14 %): PCM 0.19–0.22 ns/frame, FLAC 8.7/10.6, MP3 ~14, OGG 30 ns/frame.
+- CPU-efficiency check: header-only probes; one AVX2 pass from the mapping to planar float; decoders off the audio/UI threads; codec heaps capped.
+- Notes/blockers: bump dr_libs after 2026-11-13 (Q147).
+
+## 2026-10-31 · T5.2 · worker / task/T5.1-media
+- Did: SamplePool (resident ≤ 32 MiB; 2^17-frame head + streaming otherwise; .f32 decode cache for compressed files, LRU-capped; 2 GiB budget with LRU demotion via the EpochReclaimer), StreamPool (256 slots, lock-free free list, prefetch adoption), header-only RT read side + SampleCursor (both directions), disk thread (overlapped 256 KiB reads, 2 ms polling while engaged, blocks when idle), waitFilled for offline renders. Q148 (refill rule), Q149 (app ownership → T5.4).
+- Verified: as T5.1; RtScope on the read side; stress 10^6 cycles 0 wrong; 64 × 10-min streams at buffer 64 for 2 min: 0 underruns (release, perf, load 7 %, with prefetch); locate → ready 0.2–0.3 ms; streamed = resident reads bit-identical; idle disk thread 0 wakeups / 10 s.
+- Perf: ship: span(64) 9.5 ns; 64 streams × 64 frames 4.9 µs/block (p99 5.9).
+- CPU-efficiency check: one acquire load + one release store per stream per block, data read in place, small files never stream, idle disk thread costs nothing.
+- Notes/blockers: streams starting past the head underrun without prefetch — T5.4 must prefetch on locate (Q149).
+

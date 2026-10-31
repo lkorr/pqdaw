@@ -604,10 +604,10 @@ M4 closes with the safety fixes H1/H2 (+L4), the device fixes H3/H5 (+L11) and t
 ## M5: Audio tracks, browser, user library (plan: docs/plans/M5.md, approved by the user 2026-10-30; M5b Simpler / Drum Rack skipped for now, user 2026-10-31)
 Each task's full description and acceptance criteria are in docs/plans/M5.md under the same id. Schema 7 goes to T5.3 (T4.17's paused branch renumbers on rebase). T5.6 does not wait for T4.17 (deferred).
 
-- [ ] **T5.1 Audio file decoding: the `media` module** (docs/plans/M5.md)
-- [ ] **T5.2 Sample pool + RT-safe disk streaming** (docs/plans/M5.md)
+- [x] **T5.1 Audio file decoding: the `media` module** *(merged 2026-10-31; Vorbis SNR 39 dB (encoder ceiling, Q146))* (docs/plans/M5.md)
+- [x] **T5.2 Sample pool + RT-safe disk streaming** *(merged 2026-10-31; app ownership of the pool / prefetch on locate / disk indicator moved to T5.4 (Q149))* (docs/plans/M5.md)
 - [x] **T5.3 Audio tracks + audio clips in the document** *(merged 2026-10-31; audible playback = T5.4, arrangement editing = T5.6; Q145)* (docs/plans/M5.md)
-- [ ] **T5.4 Clip player + resampler** (docs/plans/M5.md)
+- [ ] **T5.4 Clip player + resampler** (+ app owns the SamplePool / disk thread, prefetch on locate, disk indicator: Q149) (docs/plans/M5.md)
 - [ ] **T5.5 Waveform overviews** (docs/plans/M5.md)
 - [ ] **T5.6 Audio clips in the arrangement + the audio Clip View** (docs/plans/M5.md)
 - [ ] **T5.7 Drag in: drag sessions + files from Explorer** (docs/plans/M5.md)
