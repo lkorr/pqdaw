@@ -212,6 +212,7 @@ inline double voiceSignal(uint32_t sig, uint32_t v, uint64_t t) {
     case eng::VoiceSignal::Index: return static_cast<double>(v % 3);
     case eng::VoiceSignal::Degree: return static_cast<double>(v % 7);
     case eng::VoiceSignal::Equave: return static_cast<double>(v % 3) - 1.0;
+    case eng::VoiceSignal::NoteHz: return f32(110.0 * (1.0 + 0.37 * v));
     default: return 0.0;
   }
 }

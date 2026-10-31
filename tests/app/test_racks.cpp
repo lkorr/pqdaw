@@ -267,8 +267,8 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
       "  param gla = 1 [0..4]\n  param gra = 1 [0..4]\n  param glb = 1 [0..4]\n  param grb = 1 [0..4]\n"
       "  param gl1 = 1 [0..4]\n  param gr1 = 1 [0..4]\n  param gl2 = 1 [0..4]\n  param gr2 = 1 [0..4]\n"
       "  out out : audio global stereo\n  out done : bool voice mono\n"
-      // R1, chain A: key zone on ln(voice.hz)
-      "  lnhz = log(voice.hz)\n"
+      // R1, chain A: key zone on ln(voice.noteHz) (T4.17: the pitch held from the note-on)
+      "  lnhz = log(voice.noteHz)\n"
       "  ga = clip(min(lnhz * ka0 + ka1, lnhz * ka2 + ka3), 0, 1)\n"
       "  sa = BasicSynth()\n"
       "  oa = gain(voice_sum(gain(sa.out, ga, 0.002)), pack(gla, gra), 0.002)\n"
@@ -539,6 +539,70 @@ TEST_CASE("racks: chain-select crossfades are click-free (a sweep, a jump, a cha
   MESSAGE("largest sample step: steady " << steady << ", during crossfades and jumps " << changes << " (level ×" << scale << ")");
   CHECK(steady > 0.0);
   CHECK(changes <= 1.5 * steady * scale);
+}
+
+TEST_CASE("racks: a key zone edit while a note sounds is click-free (T4.17: zones decided at note-on, block rate)") {
+  // A held sine-like note (BasicSynth, bright 0, degree 0 ≈ 261.6 Hz) in an Instrument Rack chain whose key zone is
+  // moved while it sounds: from covering the note (gain 1) to leaving it out (gain 0) and back, then to a fade. Key zones
+  // read the voice's pitch held from its note-on (voice.noteHz, param rate), so the per-voice gain stage smooths each
+  // zone edit over ≈ 2 ms; with ln(voice.hz) per sample (T4.8) the gain stepped and clicked.
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId t = ids.track();
+  const DeviceId rack = ids.device(), inst = ids.device();
+  const ChainId c = ids.chain();
+  Batch b{"zone", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+  b.commands.push_back(AddDevice{t, makeRack(rack, DeviceKind::Instrument, {makeChain(c, "A", {makeDefaultInstrument(inst)})}), 0});
+  b.commands.push_back(SetDeviceParam{inst, "bright", 0.0});
+  b.commands.push_back(SetDeviceParam{inst, "sustain", 1.0});
+  b.commands.push_back(SetChainZone{c, ZoneKind::Key, Zone{1.0, 1.0, 400.0, 500.0}});
+  std::vector<Note> notes{playback_fixture::note(ids, 0, 16 * kPpq, 0)};
+  b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "held")});
+  REQUIRE(store.dispatch(b).ok());
+  auto link = makeLink(store.current());
+  [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  Driver d{*link};
+  link->play(0);
+  d.run(static_cast<uint32_t>(0.3 * kRate / kBlock));  // the attack settles
+  const size_t steadyFrom = d.out[0].size();
+  d.run(static_cast<uint32_t>(0.2 * kRate / kBlock));
+  const size_t steadyTo = d.out[0].size();
+  const app::LinkStats s0 = link->stats();
+  auto zone = [&](Zone z) {
+    REQUIRE(store.dispatch(ops::setChainZone(*store.current(), c, ZoneKind::Key, z)->command).ok());
+    CHECK(store.lastChanges().paramOnly());  // a zone drag is a param write
+    link->flush();
+    d.run(static_cast<uint32_t>(0.1 * kRate / kBlock));
+  };
+  zone(Zone{1.0, 1.0, 100.0, 120.0});  // the note leaves the zone: gain 1 → 0
+  const size_t silentFrom = d.out[0].size() - kBlock * 4;
+  const size_t silentTo = d.out[0].size();
+  zone(Zone{1.0, 1.0, 400.0, 500.0});  // back in: 0 → 1
+  zone(Zone{1.0, 1.0, 200.0, 300.0});  // into a fade
+  CHECK(link->stats().compiles == s0.compiles);
+  auto maxD1 = [&](size_t from, size_t to) {
+    double m = 0.0;
+    for (size_t ch = 0; ch < 2; ++ch)
+      for (size_t i = std::max<size_t>(from, 1); i < to; ++i)
+        m = std::max(m, std::fabs(static_cast<double>(d.out[ch][i]) - d.out[ch][i - 1]));
+    return m;
+  };
+  auto maxAbs = [&](size_t from, size_t to) {
+    double m = 0.0;
+    for (size_t ch = 0; ch < 2; ++ch)
+      for (size_t i = from; i < to; ++i) m = std::max(m, std::fabs(static_cast<double>(d.out[ch][i])));
+    return m;
+  };
+  const double steady = maxD1(steadyFrom, steadyTo);
+  const double changes = maxD1(steadyTo, d.out[0].size());
+  MESSAGE("largest sample step: steady " << steady << ", during key zone edits " << changes << " (peak "
+                                         << maxAbs(steadyFrom, steadyTo) << ")");
+  CHECK(steady > 0.0);
+  CHECK(maxAbs(steadyFrom, steadyTo) > 20.0 * steady);  // a step of the full gain would be far above the note's own
+  CHECK(changes <= 1.5 * steady);
+  CHECK(maxAbs(silentFrom, silentTo) < 1e-4 * maxAbs(steadyFrom, steadyTo));  // out of the zone: silent once faded
+  CHECK(link->lastError().empty());
 }
 
 TEST_CASE("racks: nested racks, per-voice chains and degree zones render the same on the JIT and the interpreter") {

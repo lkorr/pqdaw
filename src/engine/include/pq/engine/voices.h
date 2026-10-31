@@ -23,7 +23,7 @@
 //   voice.hz, voice.cents     audio rate, per lane and sample: the note's Hz from k; Pitch events step or glide
 //   voice.gate                lane mask: true from the note-on frame, false from the note-off frame
 //   voice.trigger             lane mask: true at the note-on frame only (also on a same-note retrigger)
-//   voice.velocity, .release, .ratio, .harmonic, .unisonCount, .index
+//   voice.velocity, .release, .ratio, .harmonic, .unisonCount, .index, .noteHz (T4.17: the note-on's Hz)
 //                             param rate (8-float pattern, read at frame 0): the values of the lane's latest
 //                             note-on / note-off in this block hold for the whole block
 // A free lane reads hz = referenceHz (cents 0: finite, so `1 / voice.hz` stays finite in idle lanes), gate and
@@ -330,6 +330,7 @@ private:
   std::vector<uint32_t> fadeLeft_;    // > 0 while fading: frames to go
   std::vector<float> fadeFrom_;       // gain when the fade started
   std::vector<float> velocity_, release_, ratio_, harmonic_, unison_, index_, degree_, equave_, tuning_;
+  std::vector<float> onsetHz_;  // T4.17: voice.noteHz, the Hz of the lane's latest note-on
 
   // Per block scratch.
   std::vector<LaneOp> ops_, sortedOps_;

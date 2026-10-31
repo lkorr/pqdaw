@@ -46,6 +46,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "tuning_hz", "tune_voices", "voice.degree", "voice.equave",
       // T2.6-fix3: which of a track patch's tuning nodes a note follows.
       "voice.tuning",
+      // T4.17: the pitch held from the note-on (an Instrument Rack's key zones).
+      "voice.noteHz",
       // T3.17-fix2 (the mixer): smoothed gains.
       "gain", "gain_add",
   };

@@ -1376,8 +1376,8 @@ Voices instrumentRack(Build& b, uint32_t k0, PortRef outer0) {
       if (w == graph::kWidthInfer) w = graph::kWidthMono;
       if (const auto done = b.ir.patch().findOutput(call, "done")) f.dones.emplace_back(PortRef{call, static_cast<uint16_t>(*done)}, cid);
       else f.allDone = false;
-      // Through a smoothed gain stage per voice: a zone edit while notes sound fades over ~2 ms (a velocity zone, block
-      // rate per voice; a key zone follows ln(voice.hz) per sample, so it is applied as it is: Q?-T4.8-a).
+      // Through a smoothed gain stage per voice: a zone edit while notes sound fades over ~2 ms (key and velocity zones
+      // are decided at note-on, T4.17).
       if (g.node != graph::kNone) y = b.ir.atom("gain", {y, g, b.time()}, id(kCVoiceGain));
       if (rack.voiceChains) {  // SPEC §8.2 voicechain: the chain's effects per voice, then the sum
         y = chainOf(b, lc.devs, 1, y, w);
