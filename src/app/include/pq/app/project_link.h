@@ -391,7 +391,8 @@ private:
     void operator()(CostState* s) const noexcept;
   };
   static CostState* newCostState();
-  void bindCost(engine::ProgramImage& image, const std::shared_ptr<const graph::Schedule>& schedule);  // compileMutex_
+  // compileMutex_. Returns the meter (null: none), which the image keeps alive (UnitImage::keepAlive).
+  std::shared_ptr<const void> bindCost(engine::ProgramImage& image, const std::shared_ptr<const graph::Schedule>& schedule);
   LinkConfig cfg_;
   std::unique_ptr<CostState, CostStateDeleter> cost_{newCostState()};
   std::unique_ptr<doc::DeviceLibrary> devices_;

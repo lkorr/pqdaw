@@ -289,7 +289,8 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
         ui.keepAlive.push_back(std::move(owner));
     }
   }
-  if (opt_.onBind) opt_.onBind(u, cu, *image);  // T4.4-fix1: probe taps / cost meter of an inspected unit
+  if (opt_.onBind)  // T4.4-fix1: probe taps / cost meter; their owner lives as long as the image (M4 review H2, L4)
+    if (std::shared_ptr<const void> owner = opt_.onBind(u, cu, *image)) ui.keepAlive.push_back(std::move(owner));
   ui.image = std::move(image);
   return ui;
 }

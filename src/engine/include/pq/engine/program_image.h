@@ -35,6 +35,7 @@
 
 namespace pq::engine {
 struct InspectBinding;
+class CostMeter;
 }
 
 namespace pq::engine {
@@ -201,6 +202,8 @@ public:
   // cost meter. Not RT-safe: call before the image is published (the bound taps and meter must outlive it). False:
   // the image cannot be inspected (nothing is bound).
   virtual bool bindInspect(const InspectBinding& /*binding*/) { return false; }
+  // The cost meter bindInspect bound (null: none). For lifetime checks in tests (M4 review H2).
+  virtual const CostMeter* boundMeter() const noexcept { return nullptr; }
 };
 
 }  // namespace pq::engine

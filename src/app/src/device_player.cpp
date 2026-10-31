@@ -2,18 +2,11 @@
 #include "pq/app/device_player.h"
 
 #include <algorithm>
-#include <chrono>
 
 #include "pq/app/project_link.h"
 #include "pq/document/lower.h"
 
 namespace pq::app {
-
-namespace {
-double nowSeconds() {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-}  // namespace
 
 // ---- DeviceInspector -------------------------------------------------------------------------------------------------
 
@@ -31,10 +24,14 @@ void DeviceInspector::setSignals(std::span<const uint32_t> ids) {
   wantSignals_.assign(ids.begin(), ids.end());
 }
 
-// Under mutex_ (as app::PatchPreview::bindProbes): frees the slots of probes that are gone (they rest kProbeTapRest
-// seconds before reuse: an image that still writes them may run until its crossfade ends) and binds a slot per probe.
+// Under mutex_: frees the slots of probes that are gone and binds a slot per probe. A freed slot is reused only once
+// no image that was bound to it is alive (M4 review L4): each image holds the leases of the slots it writes
+// (bind()'s return value goes to UnitImage::keepAlive, released by the program's epoch reclaimer after the audio thread
+// has left that image), so a slot's lease count back at 1 (ours) means nothing can write it any more. When every ring
+// is still leased (a re-inspection while an older image plays on, e.g. an edit held for its JIT image) the pool grows,
+// up to kMaxProbeRings; the levels' pool (kProbeLevels) is large enough not to need that.
 void DeviceInspector::bindProbes(const graph::Schedule& schedule) {
-  const double now = nowSeconds();
+  bindingLeases_.reset();  // the previous binding's images hold their own copies
   auto has = [](const auto& v, uint32_t id) { return std::find(v.begin(), v.end(), id) != v.end(); };
   std::vector<uint32_t> ids;
   for (const graph::ProbeRef& p : schedule.probes) ids.push_back(p.id);
@@ -42,24 +39,24 @@ void DeviceInspector::bindProbes(const graph::Schedule& schedule) {
     TapSlot& sl = ringSlots_[i];
     if (sl.bound && (!has(ids, sl.id) || !has(wantSignals_, sl.id))) {
       sl.bound = false;
-      sl.freedAt = now;
       rings_[i]->removeReader();
     }
   }
   for (TapSlot& sl : levelSlots_)
-    if (sl.bound && !has(ids, sl.id)) {
-      sl.bound = false;
-      sl.freedAt = now;
-    }
-  auto slotFor = [&](std::vector<TapSlot>& slots, uint32_t id, bool& fresh) -> int {
+    if (sl.bound && !has(ids, sl.id)) sl.bound = false;
+  std::vector<std::shared_ptr<const void>> leases;  // the slots this binding writes
+  auto slotFor = [&](std::vector<TapSlot>& slots, uint32_t id, bool& fresh, bool rings) -> int {
     fresh = false;
     for (uint32_t i = 0; i < slots.size(); ++i)
       if (slots[i].bound && slots[i].id == id) return static_cast<int>(i);
     int best = -1;
-    for (uint32_t i = 0; i < slots.size(); ++i)
-      if (!slots[i].bound && now - slots[i].freedAt >= kProbeTapRest &&
-          (best < 0 || slots[i].freedAt < slots[static_cast<uint32_t>(best)].freedAt))
-        best = static_cast<int>(i);
+    for (uint32_t i = 0; i < slots.size() && best < 0; ++i)
+      if (!slots[i].bound && slots[i].lease.use_count() == 1) best = static_cast<int>(i);  // no image holds it
+    if (best < 0 && rings && slots.size() < kMaxProbeRings) {  // all leased: one more ring (allocates; not RT)
+      rings_.push_back(std::make_unique<TapRing>(1, kProbeRingFrames, 1024));
+      slots.emplace_back();
+      best = static_cast<int>(slots.size() - 1);
+    }
     if (best >= 0) {
       slots[static_cast<uint32_t>(best)].bound = true;
       slots[static_cast<uint32_t>(best)].id = id;
@@ -72,18 +69,23 @@ void DeviceInspector::bindProbes(const graph::Schedule& schedule) {
     engine::ProbeTap t;
     t.id = id;
     bool fresh = false;
-    if (const int l = slotFor(levelSlots_, id, fresh); l >= 0) t.level = &levels_[static_cast<uint32_t>(l)];
+    if (const int l = slotFor(levelSlots_, id, fresh, false); l >= 0) {
+      t.level = &levels_[static_cast<uint32_t>(l)];
+      leases.push_back(levelSlots_[static_cast<uint32_t>(l)].lease);
+    }
     if (has(wantSignals_, id))
-      if (const int r = slotFor(ringSlots_, id, fresh); r >= 0) {
+      if (const int r = slotFor(ringSlots_, id, fresh, true); r >= 0) {
         t.ring = rings_[static_cast<uint32_t>(r)].get();
+        leases.push_back(ringSlots_[static_cast<uint32_t>(r)].lease);
         if (fresh) t.ring->addReader();
       }
     binding_.push_back(t);
   }
+  bindingLeases_ = std::make_shared<const std::vector<std::shared_ptr<const void>>>(std::move(leases));
 }
 
-void DeviceInspector::bind(const engine::CompiledUnit& cu, engine::ProgramImage& image) {
-  if (!cu.inspect || !cu.schedule) return;  // not the inspected unit: nothing bound, nothing measured
+std::shared_ptr<const void> DeviceInspector::bind(const engine::CompiledUnit& cu, engine::ProgramImage& image) {
+  if (!cu.inspect || !cu.schedule) return nullptr;  // not the inspected unit: nothing bound, nothing measured
   std::lock_guard lock(mutex_);
   if (cu.schedule.get() != lastSchedule_) {  // a new program of the unit: a new generation (the JIT image: the same)
     lastSchedule_ = cu.schedule.get();
@@ -107,7 +109,8 @@ void DeviceInspector::bind(const engine::CompiledUnit& cu, engine::ProgramImage&
   engine::InspectBinding b;
   b.probes = binding_;
   b.meter = &meter_;
-  (void)image.bindInspect(b);  // an image that cannot be inspected plays without probes
+  if (!image.bindInspect(b)) return nullptr;  // an image that cannot be inspected plays without probes (writes nothing)
+  return bindingLeases_;  // the image holds the leases of the tap slots it writes (M4 review L4)
 }
 
 TapRing* DeviceInspector::probeSignal(uint32_t id) noexcept {

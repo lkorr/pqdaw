@@ -217,6 +217,7 @@ public:
   // ---- inspection (T4.5, pq/engine/inspect.h) ----
   // Not RT-safe: binds the probes by id and the cost meter (call before the image is published).
   bool bindInspect(const InspectBinding& b);
+  const CostMeter* boundMeter() const noexcept { return meter_; }
   // Build time: per schedule region, the first region of the unit its time is counted in (default: itself).
   void setMeterUnits(std::vector<uint32_t> units) { meterUnits_ = std::move(units); }
   uint32_t numRegions() const noexcept { return numRegions_; }

@@ -123,6 +123,7 @@ public:
   uint64_t rejectedBlocks() const noexcept override { return host_.rejectedBlocks(); }
   const SleepStats* sleepStats() const noexcept override { return &host_.sleepStats(); }
   bool bindInspect(const InspectBinding& b) override { return host_.bindInspect(b); }
+  const CostMeter* boundMeter() const noexcept override { return host_.boundMeter(); }
 
   // ---- built by Builder ----
   host::ImageHost host_;

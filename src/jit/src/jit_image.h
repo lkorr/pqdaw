@@ -107,6 +107,7 @@ public:
   uint64_t rejectedBlocks() const noexcept override { return host_.rejectedBlocks(); }
   const engine::SleepStats* sleepStats() const noexcept override { return &host_.sleepStats(); }
   bool bindInspect(const engine::InspectBinding& b) override { return host_.bindInspect(b); }
+  const engine::CostMeter* boundMeter() const noexcept override { return host_.boundMeter(); }
 
   // ---- built by buildHost() / Compiler ----
   engine::host::ImageHost host_;

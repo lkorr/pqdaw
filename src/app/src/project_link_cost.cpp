@@ -2,8 +2,11 @@
 // schedule, bound to every image of that schedule (the interpreter's and the JIT's) when it is published, and the
 // T4.5 region → node attribution (views::circuit::attributeCost) run per member track, so each device call `d<id>`
 // of a track gets its whole instance's ns per sample. See pq/app/project_link.h.
+// Lifetime (M4 review H2): every image bound to a meter holds it (UnitImage::keepAlive, released by the program's epoch
+// reclaimer once the audio thread can no longer run that image), so a meter is never freed while an image may write
+// it, however long an edit is held for its JIT image (interpretBudget). The link's map drops its own reference once the
+// schedule no longer runs and no image holds the meter any more.
 
-#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -15,20 +18,16 @@
 namespace pq::app {
 
 namespace {
-double nowSeconds() {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
 uint64_t tagOf(const graph::Schedule* s) noexcept { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(s)); }
 }  // namespace
 
 struct ProjectLink::CostState {
   // Meters outlive every image bound to them (an image reads its meter's flag each block, also while retired and
-  // fading): a meter whose schedule no longer runs is freed kRetireSeconds later.
-  static constexpr double kRetireSeconds = 10.0;
+  // fading): each image holds its meter (bindCost's return value goes to UnitImage::keepAlive). The map keeps one
+  // reference so a later image of the same schedule gets the same meter and setCostMetering reaches every live one.
   struct Meter {
     std::shared_ptr<const graph::Schedule> schedule;  // keeps the key's address from being reused
-    std::unique_ptr<engine::CostMeter> meter;
-    double unusedSince = -1.0;
+    std::shared_ptr<engine::CostMeter> meter;
   };
   std::unordered_map<const graph::Schedule*, Meter> meters;  // compileMutex_
   bool on = false;                                           // compileMutex_
@@ -46,17 +45,18 @@ void ProjectLink::CostStateDeleter::operator()(CostState* s) const noexcept { de
 ProjectLink::CostState* ProjectLink::newCostState() { return new CostState; }
 
 // Compile path / JIT delivery, compileMutex_ held: before `image` is published.
-void ProjectLink::bindCost(engine::ProgramImage& image, const std::shared_ptr<const graph::Schedule>& schedule) {
-  if (!schedule) return;
+std::shared_ptr<const void> ProjectLink::bindCost(engine::ProgramImage& image,
+                                                  const std::shared_ptr<const graph::Schedule>& schedule) {
+  if (!schedule) return nullptr;
   CostState::Meter& m = cost_->meters[schedule.get()];
   if (!m.meter) {
-    m.meter = std::make_unique<engine::CostMeter>();
+    m.meter = std::make_shared<engine::CostMeter>();
     m.schedule = schedule;
     m.meter->setEnabled(cost_->on);
   }
-  m.unusedSince = -1.0;
   m.meter->setTag(tagOf(schedule.get()));
   (void)image.bindInspect(engine::InspectBinding{{}, m.meter.get()});
+  return m.meter;  // held by the image (UnitImage::keepAlive) for as long as it can run
 }
 
 void ProjectLink::setCostMetering(bool on) {
@@ -153,21 +153,14 @@ void ProjectLink::readDeviceCosts(std::span<const doc::DeviceId> devices, std::s
             cs.deviceNs[d->second] = static_cast<float>(e.ns);
       }
     }
-    // Schedules that stopped running: their attribution goes now, their meter after kRetireSeconds.
-    const double now = nowSeconds();
+    // Schedules that stopped running: their attribution goes now; the map's reference to their meter once no image
+    // holds it any more (use_count 1: only the map; images are bound under compileMutex_, which this holds, and only
+    // from the map, so the count cannot rise again). Dropping it earlier would be safe too (the images hold it), but
+    // this way a held edit's old image, which still plays, keeps following setCostMetering.
     for (auto it = cs.attribution.begin(); it != cs.attribution.end();)
       it = running.count(it->first) ? std::next(it) : cs.attribution.erase(it);
-    for (auto it = cs.meters.begin(); it != cs.meters.end();) {
-      if (running.count(it->first)) {
-        it->second.unusedSince = -1.0;
-        ++it;
-      } else if (it->second.unusedSince < 0.0) {
-        it->second.unusedSince = now;
-        ++it;
-      } else {
-        it = now - it->second.unusedSince > CostState::kRetireSeconds ? cs.meters.erase(it) : std::next(it);
-      }
-    }
+    for (auto it = cs.meters.begin(); it != cs.meters.end();)
+      it = running.count(it->first) == 0 && it->second.meter.use_count() == 1 ? cs.meters.erase(it) : std::next(it);
   }
   for (size_t i = 0; i < devices.size() && i < out.size(); ++i)
     if (const auto it = cost_->deviceNs.find(devices[i].value); it != cost_->deviceNs.end()) out[i] = it->second;

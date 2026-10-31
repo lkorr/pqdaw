@@ -117,8 +117,10 @@ struct ProjectCompileOptions {
   // T4.4-fix1 (optional): the inspected tracks (see TrackInspect; ProjectCompiler::setInspect), and a hook every image
   // passes through in bind() before it is returned — the compile path's and a background (JIT) image's alike — so the
   // owner can bind probe taps and a cost meter (ProgramImage::bindInspect) to the images of an inspected unit.
+  // T4.x-fix-safety (M4 review H2, L4): what it returns (may be null) goes to UnitImage::keepAlive, so whatever the image
+  // writes on the audio thread (a meter, probe tap slots) lives until the program's epoch reclaimer frees the image.
   std::vector<TrackInspect> inspect;
-  std::function<void(uint32_t unit, const CompiledUnit& cu, ProgramImage& image)> onBind;
+  std::function<std::shared_ptr<const void>(uint32_t unit, const CompiledUnit& cu, ProgramImage& image)> onBind;
 };
 
 struct CompiledUnit {
@@ -192,7 +194,7 @@ public:
   void setParamLinks(std::vector<ProjectParamLink> links) { opt_.paramLinks = std::move(links); }
   // T4.4-fix1: the inspected tracks from the next compile on (update() with the track dirty recompiles its unit).
   void setInspect(std::vector<TrackInspect> inspect) { opt_.inspect = std::move(inspect); }
-  void setOnBind(std::function<void(uint32_t, const CompiledUnit&, ProgramImage&)> fn) { opt_.onBind = std::move(fn); }
+  void setOnBind(std::function<std::shared_ptr<const void>(uint32_t, const CompiledUnit&, ProgramImage&)> fn) { opt_.onBind = std::move(fn); }
   // The bus key of graph port `p` ("<track id>:<port>").
   static std::string busKey(const graph::ProjectGraph& graph, const graph::ProjectPort& p);
 
