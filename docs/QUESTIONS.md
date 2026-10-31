@@ -1437,7 +1437,6 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Provisional: A (most reversible; the tests pin small-signal unity, not the large-signal level). Needs the user's ear (and Live 12 renders, M9) to choose B or C.
 - Status: open
 
-
 ## Q151 · 2026-10-31 · T5.4 · Clip player choices: pitch-up without mip copies, the declick setting, envelope and placement details
 - Context: docs/plans/M5.md T5.4 and Q145 (audio clip semantics in the document), Q148/Q149 (streaming, pool ownership).
 - Choices (provisional, all reversible):
