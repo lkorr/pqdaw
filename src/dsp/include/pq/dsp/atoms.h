@@ -122,8 +122,10 @@
 //   gain (x, g, time, start)          x · y, where y follows g as a one-pole with time constant `time` (samples;
 //                                     ≤ 0: no smoothing): y_k = g + (y₀ − g)·e^(−k/time) over a block's frames
 //                                     k = 0, 1, … (y₀ = the previous block's last value, so a frame reads y before
-//                                     its update), evaluated in closed form. Within 3e-8 of g (≈ −150 dB) y snaps
-//                                     onto g; a settled gain costs one multiply per sample (g = 0: a zero fill).
+//                                     its update; 1 lane: frame by frame, y = g + d, d ← d·e^(−1/time), so any split
+//                                     of the frames into calls gives the same bits, T4.x-fix-dsp). Within 3e-8 of g
+//                                     (≈ −150 dB) y snaps onto g; a settled gain costs one multiply per sample (g = 0:
+//                                     a zero fill).
 //                                     `g` is normally a param (Spl): a block-rate target. A Blk (audio-rate) g is
 //                                     used as it is, unsmoothed. Non-finite g counts as 0. With `start` 0, y starts
 //                                     at 0, so a new instance (a voice lane after its reset) fades in from silence;
