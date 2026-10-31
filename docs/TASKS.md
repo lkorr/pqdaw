@@ -546,7 +546,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Live 12 filter types and circuit models (Clean, OSR, MS2, SMP, PRD, approximated), drive, morph, LFO, envelope follower, sidechain.
   - Accept: responses per model vs published/known model behaviour (listening notes in REVIEW); modulation click-free; panel golden.
 
-- [x] **T4.12 Operator** *(merged 2026-10-26; the partial items (voices setting, interpreter window over §13) were fixed by T4.12-fix1 and T1b.x-perf)* (`stdlib`, `views`)
+- [x] **T4.12 Operator** *(merged 2026-10-26; voices setting fixed by T4.12-fix1; interpreter window: unit edits held since T1b.x-perf (Q137); topology rebuilds that continue a unit (e.g. Operator `voices`) held since T4.x-fix-engine (M4 review M3); still interpreted at first: cold opens without a JIT cache, and units with a new member set (a new track, a wire that merges units))* (`stdlib`, `views`)
   - 4 oscillators, 11 algorithms, ratio/fixed (coarse ratios as JI harmonics), per-osc envelopes, pitch envelope, LFO, filter, user waveforms, glide, spread, voices; exported oscillator outputs; pitch follows the tuning signal.
   - Accept: algorithm routing tests; SPEC §13 calibration row (64 voices, interpreter and JIT, with crossfade numbers) ≤ the budget; panel golden; tuned playback in 31edo and a MOS.
 
@@ -595,7 +595,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
 
 ## M4 deferred (user 2026-10-30: finish M4 fast, tackle these later)
 M4 closes with the safety fixes H1/H2 (+L4), the device fixes H3/H5 (+L11) and the boundary test runs. Everything below is open, with details in docs/reviews/M4.md:
-- **Safety / engine**: M1–M3 JIT delivery (images lost while the output is stopped, held-compile failure fallback, hold for topology rebuilds); M9 deep rack nesting without stack overflow (user: no depth cap, iterative walks); M4 params past 16,384 slots play defaults; L1 idle param compares; L5 CostMeter key switch; L17 Q14 warning; L18 tuning-slot reuse.
+- **Safety / engine**: done in T4.x-fix-engine (merged 2026-10-31: M1–M4, M9 iterative walks at any depth, L1, L4, L5, L17, L18). Open (Q156): ≤ ~32k rack chains per track patch (16-bit ports), Device view frames 24 nested racks inline, file indent capped at 32 levels.
 - **Devices / DSP**: done in T4.x-fix-dsp (merged 2026-10-31: M10, M11, M12 levels, M13, L10, L11, Auto Filter renders; comb in tune). Open: Q150 Auto Filter OSR/SMP/PRD drive at 0 dBFS (−10/−22 dB at +12/+24 dB drive), needs the user's ear; OSR/SMP self-oscillation 24–76 ¢ flat (nonlinear, documented); voice-rate gains stay kernel calls.
 - **UI (T4.x-fix-ui)**: M5 latched clip lamp keeps the idle UI at 30 Hz; M6/L2 zone-editor and device-reorder drags lack cancel; M7 Instrument Rack key zones read untuned Hz; M8 user-device rename/kind commit guard; M14 Edit menu ignores the Device view; M15 circuit editor fit view unreadable; M16 zone editor axis; L3, L12–L15; UI list items 2–7.
 - **Features**: T4.17 remainder (branch task/T4.17-qol-leftovers: device names + ungroup document side done; voice.noteHz WIP with 2 failing checks; views items not started); T4.18 device automation (H4).
