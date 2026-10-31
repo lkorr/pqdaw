@@ -234,3 +234,38 @@ TEST_CASE("meters keep being polled after a stop until they have fallen (L13)" *
   CHECK(lv[0].holdDb[0] <= ui::signal_theme::kMeterFloorDb);
   CHECK_FALSE(lv[0].clip[0]);
 }
+
+// M4 review M5: a latched clip lamp kept live() true, so the views' 30 Hz meter poll never stopped after any 0 dBFS peak
+// (until the lamp was clicked). The lamp now stays latched without keeping the poll alive.
+TEST_CASE("meters: a latched clip lamp does not keep the meter poll alive (M4 review M5)" * doctest::test_suite("slow")) {
+  playback_fixture::Fixture f;
+  // The Lead track through a Utility at +35 dB: its peaks pass 0 dBFS.
+  const DeviceId util = f.store.ids().device();
+  REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend}).ok());
+  REQUIRE(f.store.dispatch(SetDeviceParam{util, "gain", 35.0}).ok());
+  auto link = makeLink(f.snap(), 250.0f);
+  Driver d{*link};
+  link->play(0);
+  d.run(200);
+  std::vector<TrackId> ids{f.lead};
+  std::vector<ui::MeterLevels> lv(1);
+  link->read(ids, lv);
+  REQUIRE(lv[0].clip[0]);
+  link->stop();
+  for (int i = 0; i < 3000 && !link->engine().asleep(); ++i) d.run(1);
+  REQUIRE(link->engine().asleep());
+  bool stopped = false;
+  for (int poll = 0; poll < 30 * 12 && !stopped; ++poll) {
+    link->read(ids, lv);
+    stopped = !link->live();
+    if (!stopped) std::this_thread::sleep_for(std::chrono::milliseconds(33));
+  }
+  CHECK(stopped);       // the poll ends once the bars have fallen ...
+  CHECK(lv[0].clip[0]);  // ... with the lamp still latched
+  link->read(ids, lv);
+  CHECK_FALSE(link->live());
+  link->resetClip(f.lead);
+  link->read(ids, lv);
+  CHECK_FALSE(lv[0].clip[0]);
+  CHECK_FALSE(link->live());
+}

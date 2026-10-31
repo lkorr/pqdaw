@@ -285,6 +285,64 @@ TEST_CASE("rack view: a macro drag is one step of Param changes; a chain volume 
   CHECK(doc::zoneOff(u.rackOf(u.rack).chains[0]->select, doc::ZoneKind::Select, doc::KeyZoneUnit::Hz));
 }
 
+// M4 review M6 / L2: a zone drag and a device reorder drag cancel on a lost focus (alt-tab) and on Esc: the document is
+// as before, no undo step, and a pointer that comes back with the button down drives nothing.
+TEST_CASE("rack view: zone and reorder drags cancel on focus loss and Esc (M4 review M6, L2)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  v.showZones(u.rack, doc::ZoneKind::Select);
+  Widget* zones = u.in(u.rack, "zones");
+  REQUIRE(zones != nullptr);
+  const IRect zr = zones->rect();
+  const float rowY = static_cast<float>(zr.y + 20 + 15);
+  const Vec2 end{static_cast<float>(zr.right() - 6), rowY};
+  const doc::Snapshot before = u.ctx.doc();
+  const size_t h0 = u.history();
+  auto zoneDrag = [&] {
+    u.d.move(end);
+    u.d.down(end);
+    u.d.move({end.x - 80.0f, rowY});
+    REQUIRE(u.ctx.store().inGesture());
+    CHECK_FALSE(doc::zoneOff(u.rackOf(u.rack).chains[0]->select, doc::ZoneKind::Select, doc::KeyZoneUnit::Hz));
+  };
+  // Focus loss mid-drag.
+  zoneDrag();
+  u.shell->cancelInteraction();
+  CHECK_FALSE(u.ctx.store().inGesture());
+  CHECK(u.d.tree().captured() == nullptr);
+  CHECK(u.ctx.doc() == before);
+  u.d.move({end.x - 160.0f, rowY});  // hover moves after the cancel: nothing follows the pointer
+  u.d.up({end.x - 160.0f, rowY});
+  CHECK(u.ctx.doc() == before);
+  CHECK(u.history() == h0);
+  // Esc mid-drag (the focus elsewhere: Esc goes to the widget holding the pointer).
+  zoneDrag();
+  CHECK(u.d.keyDown(key::kEscape) == KeyResult::Widget);
+  CHECK_FALSE(u.ctx.store().inGesture());
+  u.d.move({end.x - 160.0f, rowY});
+  u.d.up({end.x - 160.0f, rowY});
+  CHECK(u.ctx.doc() == before);
+  CHECK(u.history() == h0);
+  // A device reorder drag (Utility to the end of the chain): focus loss, then Esc; nothing moves, a later click does
+  // not drop it.
+  for (int k = 0; k < 2; ++k) {
+    CAPTURE(k);
+    const Vec2 from = u.title(u.util);
+    const IRect last = u.frame(u.rack);
+    const Vec2 to{static_cast<float>(last.right() + 30), from.y};
+    u.d.move(from);
+    u.d.down(from);
+    u.d.move({from.x + 40.0f, from.y});
+    u.d.move(to);
+    if (k == 0) u.shell->cancelInteraction();
+    else CHECK(u.d.keyDown(key::kEscape) == KeyResult::Widget);
+    u.d.up(to);
+    u.d.click(to);
+    CHECK(u.ctx.doc() == before);
+    CHECK(u.history() == h0);
+  }
+}
+
 TEST_CASE("render: audio-rack and instrument-rack match the golden images") {
   for (const std::string scene : {"audio-rack", "instrument-rack"}) {
     CAPTURE(scene);

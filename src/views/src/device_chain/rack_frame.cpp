@@ -232,8 +232,24 @@ public:
   // T4.16c: the ends and fade edges resize (↔), the body moves, the tabs and the key unit are buttons; the Chain tab's
   // header drags the selector's marker (↔).
   ui::Cursor cursorAt(ui::Vec2 p) const override;
+  // M4 review M6: Esc or a lost focus (alt-tab) cancel a zone / selector drag (the zone goes back, no undo step); a
+  // capture lost otherwise keeps what the drag did (one step), and nothing follows an unpressed pointer.
+  bool onKey(const ui::KeyEvent& e) override {
+    if (!e.down || e.key != ui::key::kEscape || grab_ == Grab::None) return Widget::onKey(e);
+    cancel();
+    return true;
+  }
+  void onInteractionCancelled() override { cancel(); }
+  void onCaptureLost() override {
+    if (grab_ != Grab::None && impl_.ctx().store().inGesture()) (void)impl_.ctx().store().commitGesture();
+    grab_ = Grab::None;
+  }
 
 private:
+  void cancel() {
+    if (grab_ != Grab::None && impl_.ctx().store().inGesture()) (void)impl_.ctx().store().cancelGesture();
+    grab_ = Grab::None;
+  }
   enum class Grab : uint8_t { None, Lo, Hi, FadeLo, FadeHi, Move, Selector, Tab, Unit };
   // What a press at `p` grabs (the row's chain in *row); the one rule for onPointer and cursorAt.
   Grab grabAt(ui::Vec2 p, size_t* row) const;

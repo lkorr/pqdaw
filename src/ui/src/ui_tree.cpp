@@ -631,6 +631,8 @@ KeyResult UiTree::dispatchKey(const KeyEvent& e) {
     }
     if (isModifierKey(e.key)) updateDrag(drag_->pos, mods_);
   }
+  // M4 review M6 / L2: Esc goes first to the widget holding the pointer (it cancels its drag), wherever the focus is.
+  if (captured_ && e.down && e.key == key::kEscape && captured_->enabled() && captured_->onKey(e)) return KeyResult::Widget;
   // 1. The focused widget, then its ancestors. A focused text field claims printable keys outright.
   Widget* f = focus_;
   if (f) {

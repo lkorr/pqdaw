@@ -151,6 +151,10 @@ public:
   bool selected() const noexcept { return selected_; }
 
   bool onPointer(const ui::PointerEvent& e) override;
+  // M4 review L2: Esc, a lost capture or focus (alt-tab) cancel a reorder drag (nothing moves).
+  bool onKey(const ui::KeyEvent& e) override;
+  void onCaptureLost() override;
+  void onInteractionCancelled() override;
   void paintOver(ui::PaintContext& ctx) override;
   // T4.16c: the title bar moves the device (a reorder drag); the rest inherits (the panel's parts decide).
   ui::Cursor cursorAt(ui::Vec2 p) const override;

@@ -461,6 +461,96 @@ void ValueControl::onHoverChanged(bool hovered) {
   markDirty();
 }
 
+// --- type-in over a Knob / Fader (T4.17) ----------------------------------------------------------------
+
+bool ValueControl::typeInKey(const KeyEvent& e) {
+  if (typing_) {
+    if (!e.down) return true;
+    if (e.key == key::kReturn) {
+      endTypeIn(true);
+      return true;
+    }
+    if (e.key == key::kEscape) {
+      endTypeIn(false);
+      return true;
+    }
+    if (e.key == key::kTab) {
+      endTypeIn(true);
+      return false;  // focus traversal continues
+    }
+    bool changed = false;
+    if (tree() && typeIn_.handleKey(e, tree()->clipboard(), changed)) {
+      markDirty();
+      return true;
+    }
+    return true;  // nothing else while typing (no step keys, no shortcuts)
+  }
+  // A number typed into the focused control opens the type-in with that character. The key, not a TextEvent: text
+  // input is off until the type-in opens.
+  if (e.down && !e.repeat && (e.mods & mod::kChordMask) == 0 && enabled() &&
+      ((e.key >= '0' && e.key <= '9') || e.key == '.' || e.key == '-')) {
+    finishWheel();
+    if (dragging_) return false;
+    typing_ = true;
+    typeIn_.setText(std::string(1, static_cast<char>(e.key)));
+    setAcceptsTextInput(true);
+    markDirty();
+    return true;
+  }
+  return false;
+}
+
+bool ValueControl::typeInText(const TextEvent& e) {
+  if (!typing_) return false;
+  typeIn_.insert(e.text());
+  markDirty();
+  return true;
+}
+
+void ValueControl::typeInFocus(bool focused) {
+  if (!focused && typing_) endTypeIn(true);
+  markDirty();
+}
+
+void ValueControl::endTypeIn(bool commit) {
+  if (!typing_) return;
+  typing_ = false;
+  setAcceptsTextInput(false);
+  markDirty();
+  if (!commit) return;
+  if (const std::optional<double> v = parse(typeIn_.text())) {  // an unparsable entry reverts (Live)
+    userSet(*v);
+    endGesture();
+  }
+}
+
+void ValueControl::paintTypeIn(PaintContext& ctx) {
+  if (!typing_) return;
+  const Theme* th = ctx.res.theme;
+  const ThemeFonts* f = ctx.res.uiFonts;
+  if (!th || !f || !ctx.res.text) return;
+  const IRect c = rect();
+  // A field across the control, centred on it (inside its rect: what a repaint of the control covers).
+  const int32_t h = std::min(c.h, ctx.scale.px(18.0f));
+  const IRect r{c.x, c.y + (c.h - h) / 2, c.w, h};
+  box(ctx.dl, r, ctx.scale.exact(th->radius.control), th->surface.sunken, th->field.borderFocus);
+  TextSystem& ts = *ctx.res.text;
+  const TextRun run = ts.shape(f->numeric, typeIn_.text());
+  const int32_t pad = ctx.scale.px(4);
+  const int32_t x0 = std::max(r.x + (r.w - run.advance) / 2, r.x + pad - std::max(0, run.advance - (r.w - 2 * pad)));
+  ctx.dl.pushClip(detail::inset(r, 1).toRect());
+  const float y0 = static_cast<float>(r.y + ctx.scale.px(3)), y1 = static_cast<float>(r.bottom() - ctx.scale.px(3));
+  if (typeIn_.hasSelection()) {
+    const float a = static_cast<float>(x0 + run.caretX(typeIn_.selBegin())), b = static_cast<float>(x0 + run.caretX(typeIn_.selEnd()));
+    ctx.dl.addRectFilled({a, y0, b, y1}, th->text.selection);
+  }
+  const int32_t base = detail::capCentredBaseline(r.y, r.h, ts.metrics(f->numeric).pixelSize);
+  TextSystem::drawRun(ctx.dl, run, {static_cast<float>(x0), static_cast<float>(base)}, th->text.primary);
+  const float cx = static_cast<float>(x0 + run.caretX(typeIn_.caret()));
+  ctx.dl.addRectFilled({cx, y0, cx + 1.0f, y1}, th->text.caret);
+  ctx.dl.popClip();
+}
+
 // --- DragBox --------------------------------------------------------------------------------------------
 
 DragBox::DragBox(std::string name, ValueSpec spec, TextAlign align) : ValueControl(std::move(name), std::move(spec)), align_(align) {}

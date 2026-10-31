@@ -198,6 +198,22 @@ TEST_CASE("device circuit view: open from the context menu; the first edit forks
   u.type(*ed, 0, 7, "");
   CHECK(u.history() == h1);  // back to the same text: nothing new
 
+  // M4 review M8: a text that parses but renames the device's patch is refused (the library would reject it: it played
+  // stale for the session and the device was bypassed after a reload); the editor keeps it and says why.
+  {
+    const size_t h2 = u.history();
+    const std::string good = u.dev(u.inst).source->text;
+    const uint32_t name = static_cast<uint32_t>(ed->document().text().find("patch BasicSynth") + 16);
+    u.type(*ed, name, 0, "X");  // patch BasicSynthX
+    REQUIRE(ed->document().textLowered());
+    CHECK(u.history() == h2);
+    CHECK(u.dev(u.inst).source->text == good);
+    CHECK(ed->status().find("Not applied") != std::string::npos);
+    CHECK(ed->status().find("no patch 'BasicSynth'") != std::string::npos);
+    u.type(*ed, name, 1, "");  // back to a text that resolves: it commits again
+    CHECK(u.dev(u.inst).source->text == ed->document().text());
+  }
+
   // The device deleted: the editor closes.
   REQUIRE(u.ctx.store().dispatch(doc::ops::deleteDevices(*u.ctx.doc(), std::vector<doc::DeviceId>{u.inst})->command).ok());
   u.d.advance(0.1);

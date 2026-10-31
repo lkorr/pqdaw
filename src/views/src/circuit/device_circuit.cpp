@@ -48,8 +48,28 @@ private:
   void commit(const std::string& text, const graph::ParseResult& parsed) {
     const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
     if (d == nullptr) return;
-    if (!d->source && ctx_.deviceLibrary() && text == ctx_.deviceLibrary()->stockText(d->patch)) return;  // nothing new
-    auto e = doc::ops::editDevicePatch(*ctx_.doc(), device_, text, std::make_shared<const graph::PatchFile>(parsed.file));
+    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+    if (!d->source && lib && text == lib->stockText(d->patch)) return;  // nothing new
+    auto ids = std::make_shared<const graph::PatchFile>(parsed.file);
+    // M4 review M8: a text the device library would reject (it renames the device's patch, changes its kind, or its
+    // root does not describe a device) is not committed: the last good text keeps playing and is what is saved (a
+    // committed rejected text played stale for the session and bypassed the device after a reload). The editor keeps
+    // the text and says why; the next text that resolves commits.
+    if (lib != nullptr) {
+      doc::Device candidate = *d;
+      auto src = std::make_shared<doc::UserPatch>();
+      src->text = text;
+      src->ids = ids;
+      candidate.source = std::move(src);
+      const std::shared_ptr<const doc::ResolvedDevice> r = lib->resolve(candidate);
+      if (r && !r->error.empty()) {
+        const std::string why = "Not applied to the device: " + r->error + " (the device keeps its last good text)";
+        editor_.showStatus(why);
+        ctx_.setStatus(why);
+        return;
+      }
+    }
+    auto e = doc::ops::editDevicePatch(*ctx_.doc(), device_, text, std::move(ids));
     if (!e) {
       ctx_.setStatus(e.error().message);
       return;
@@ -148,7 +168,9 @@ CircuitEditor* openDeviceInCircuitView(ui::Widget& from, ViewContext& ctx, doc::
   // Probes and cost through the project unit that plays the device (the app's player), when there is one.
   std::unique_ptr<PatchPlayer> player = ctx.devicePlayers() ? ctx.devicePlayers()(device) : nullptr;
   PatchPlayer* raw = player.get();
-  CircuitEditor* ed = openCircuitEditor(from, std::move(*editor), d->patch, raw);
+  // M4 review M8: a text without the device's patch (an older file, a hand edit) opens on its first patch.
+  const bool hasPatch = (*editor)->patchIndex(d->patch) != graph::kNone;
+  CircuitEditor* ed = openCircuitEditor(from, std::move(*editor), hasPatch ? std::string_view(d->patch) : std::string_view{}, raw);
   if (ed == nullptr) {
     ctx.setStatus("Cannot open the device: no patch '" + d->patch + "' in its text");
     return nullptr;
@@ -158,6 +180,7 @@ CircuitEditor* openDeviceInCircuitView(ui::Widget& from, ViewContext& ctx, doc::
   showInstance(*ed, *d);
   if (raw != nullptr) (void)ed->togglePlay();  // follow the project: LED trace, hover probes, Cost
   ed->refreshTitle();
+  if (!hasPatch) ed->showStatus("This text has no patch '" + d->patch + "' (the device's): its first patch is shown");
   return ed;
 }
 

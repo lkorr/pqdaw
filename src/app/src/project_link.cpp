@@ -1922,7 +1922,9 @@ void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLev
       m.holdDb[c] = st.holdDb[c];
       m.clip[c] = st.clip[c];
       constexpr float kFloor = ui::signal_theme::kMeterFloorDb;  // nothing below it is drawn
-      lit = lit || m.peakDb[c] > kFloor || m.rmsDb[c] > kFloor || m.holdDb[c] > kFloor || m.clip[c];
+      // M4 review M5: a latched clip lamp is not "lit": it is static once drawn (its reset is a click, which redraws),
+      // so it must not keep the 30 Hz meter poll (live()) running on an idle UI.
+      lit = lit || m.peakDb[c] > kFloor || m.rmsDb[c] > kFloor || m.holdDb[c] > kFloor;
     }
     out[i] = m;
   }

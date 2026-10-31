@@ -258,7 +258,19 @@ public:
   void onHoverChanged(bool hovered) override;
   void onTimer(uint32_t id) override;
 
+  // T4.17: a type-in over a focused Knob or Fader (Live: select a parameter, type a value). A digit, '.' or '-' typed
+  // while focused opens a field over the control holding it; Enter commits (one gesture), Esc cancels, focus loss
+  // commits; an unparsable entry reverts. DragBox has its own (inside its box).
+  bool typingIn() const noexcept { return typing_; }
+  const TextBuffer& typeInBuffer() const noexcept { return typeIn_; }
+
 protected:
+  // The type-in's keys / text (false: not the type-in's) and its field, drawn over the control (paintOver).
+  bool typeInKey(const KeyEvent& e);
+  bool typeInText(const TextEvent& e);
+  void typeInFocus(bool focused);
+  void paintTypeIn(PaintContext& ctx);
+  void endTypeIn(bool commit);
   // A Wheel event: steps the value (see above). False when the wheel is not the control's (pass it on).
   bool handleWheel(const PointerEvent& e);
   // Ends a wheel gesture now (no-op when none is running).
@@ -286,6 +298,8 @@ protected:
   double wheelRaw_ = 0.0;     // unquantised accumulator of the current wheel run (trackpads send fractions)
   uint32_t wheelTimer_ = 0;   // the wheel gesture's end (0: no wheel gesture)
   bool wheelAdjusts_ = true;
+  bool typing_ = false;       // T4.17: the type-in is open (Knob, Fader)
+  TextBuffer typeIn_;
 };
 
 // Live's numeric box: vertical drag (Shift fine), double-click (or Enter, or a digit / '.' / '-' typed while focused:
@@ -334,7 +348,11 @@ public:
   IRect thumbRect() const noexcept;
 
   void paint(PaintContext& ctx) override;
+  void paintOver(PaintContext& ctx) override { paintTypeIn(ctx); }
   bool onPointer(const PointerEvent& e) override;
+  bool onKey(const KeyEvent& e) override { return typeInKey(e) || ValueControl::onKey(e); }
+  bool onText(const TextEvent& e) override { return typeInText(e); }
+  void onFocusChanged(bool focused) override { typeInFocus(focused); }
 
 private:
   int32_t trackLength() const noexcept;  // device px of travel
@@ -365,7 +383,11 @@ public:
   static constexpr float kSweep = 4.71238898f;       // 1.5 π
 
   void paint(PaintContext& ctx) override;
+  void paintOver(PaintContext& ctx) override { paintTypeIn(ctx); }
   bool onPointer(const PointerEvent& e) override;
+  bool onKey(const KeyEvent& e) override { return typeInKey(e) || ValueControl::onKey(e); }
+  bool onText(const TextEvent& e) override { return typeInText(e); }
+  void onFocusChanged(bool focused) override { typeInFocus(focused); }
 
 private:
   ModulationRing mod_;

@@ -612,6 +612,22 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
   return e.type == ui::PointerType::Up;
 }
 
+bool FrameBase::onKey(const ui::KeyEvent& e) {
+  if (e.down && e.key == ui::key::kEscape && impl_.dragging == id_ && impl_.drag.active) {
+    impl_.endDrag(false);
+    return true;
+  }
+  return Widget::onKey(e);
+}
+
+void FrameBase::onCaptureLost() {
+  if (impl_.dragging == id_ && impl_.drag.active) impl_.endDrag(false);
+}
+
+void FrameBase::onInteractionCancelled() {
+  if (impl_.dragging == id_ && impl_.drag.active) impl_.endDrag(false);
+}
+
 std::unique_ptr<FrameBase> device_chain::makeFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d) {
   if (d.rack) return makeRackFrame(impl, ctx, d);
   return std::make_unique<DeviceFrame>(impl, ctx, d, impl.templateFor(d),
