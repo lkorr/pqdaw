@@ -989,3 +989,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a (UI thread only).
 - CPU-efficiency check: one extra folder comparison per place when places change; nothing per frame.
 - Notes/blockers: decision in REVIEW: with the default folder, saved clips keep samples in Clips/Samples/ (T5.11 layout).
+
+## 2026-10-31 · T5.x-circuit-chain 👁 · worker / task/T5.x-circuit-chain
+- Did: circuit view at the Track level (user request): the whole device chain as one read-only circuit, a labelled box per device, nested rack boxes (split + Σ), audio wires device → device → Mixer, modulation wires in a gutter, focus on the opened device; double-click / Enter / Device button → the device editor, Track button back; "Edit Device Circuit"; view.trackCircuit Ctrl+Alt+C. Project patch view: band double-click opens every device in place (F / Esc close), L13 (labels below Near, stubs only from Near, track-colour tints). Goldens circuit-track-chain, project-patch-zoom new; project-patch-overview / -band, circuit-editor-device re-recorded. Q164.
+- Verified: ./scripts/build.ps1 -Affected (check; everything, tests/CMakeLists.txt changed): 0 warnings, 77/77 (default + slow); 159 s build + 85 s tests. Goldens viewed.
+- Perf: 2560×1440, check, load 2–4 %: Operator > Auto Filter > EQ Eight > Saturator (1284 nodes) fitted full paint 134 µs (shell 127), pan 132; zoom 1 257 / 269 µs; rebuild 1.05 ms; cold 9.6 ms.
+- CPU-efficiency check: layout once per structure change, device scenes cached, junctions copied instead of a quadratic net search, grid culling + far chunks; idle = no frames.
+- Notes/blockers: Q164 (read-only Track level; Open in Circuit View now opens the chain; full device circuits shown; no cross-track modulation at Track level; band modulation-wire routing not done).
