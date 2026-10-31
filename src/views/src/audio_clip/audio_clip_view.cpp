@@ -114,6 +114,7 @@ namespace audio_clip {
 class SampleDisplay : public Control {
 public:
   explicit SampleDisplay(AudioClipView& v) : Control("sample"), v_(v) {
+    setFocusable(true);  // a press focuses it, so Esc reaches the view during a drag (M5 review M8)
     setInfo("Sample", "The whole sample, the part this clip plays lit. Drag the start marker in the strip above it to "
                       "choose where the clip starts in the file; in Re-Pitch, drag the loop brace or its ends (1/16 notes; "
                       "Shift: free). Each drag is one undo step.");
@@ -126,6 +127,7 @@ public:
     const Drag d = hit(p);
     return d == Drag::None ? Cursor::Arrow : d == Drag::Brace ? Cursor::Move : Cursor::ResizeEW;
   }
+  bool dragging() const noexcept { return drag_ != Drag::None; }
   bool cancel() {
     if (drag_ == Drag::None) return false;
     drag_ = Drag::None;
@@ -327,7 +329,8 @@ void SampleDisplay::dragTo(const PointerEvent& e) {
     } else {
       const double f = fpt();
       if (!(f > 0.0)) return;
-      n.contentStart = std::max<Ticks>(0, snapTicks(static_cast<double>(c0.contentStart) + df / f));
+      const auto fileTicks = static_cast<Ticks>(std::floor(static_cast<double>(s->frames) / f));
+      n.contentStart = std::clamp<Ticks>(snapTicks(static_cast<double>(c0.contentStart) + df / f), 0, std::max<Ticks>(0, fileTicks - 1));
       if (n.contentStart == v_.clip_->contentStart) return;
     }
     doc::Batch b;
@@ -341,11 +344,16 @@ void SampleDisplay::dragTo(const PointerEvent& e) {
   const auto dt = static_cast<Ticks>(std::llround(df / f));
   doc::ClipLoop loop = c0.loop;
   const Ticks minLen = free ? 1 : grid;
-  if (drag_ == Drag::LoopStart) loop.start = std::clamp<Ticks>(snapTicks(static_cast<double>(c0.loop.start + dt)), 0, loop.end - minLen);
-  else if (drag_ == Drag::LoopEnd) loop.end = std::max<Ticks>(snapTicks(static_cast<double>(c0.loop.end + dt)), loop.start + minLen);
-  else {
+  // L12: bounds ordered (a Shift-made loop can be shorter than minLen), and nothing past the file's end.
+  const auto fileTicks = std::max<Ticks>(minLen, static_cast<Ticks>(std::floor(static_cast<double>(s->frames) / f)));
+  if (drag_ == Drag::LoopStart) {
+    loop.start = std::clamp<Ticks>(snapTicks(static_cast<double>(c0.loop.start + dt)), 0, std::max<Ticks>(0, loop.end - minLen));
+  } else if (drag_ == Drag::LoopEnd) {
+    loop.end = std::clamp<Ticks>(snapTicks(static_cast<double>(c0.loop.end + dt)), loop.start + minLen,
+                                 std::max(fileTicks, loop.start + minLen));
+  } else {
     const Ticks len = c0.loop.end - c0.loop.start;
-    loop.start = std::max<Ticks>(0, snapTicks(static_cast<double>(c0.loop.start + dt)));
+    loop.start = std::clamp<Ticks>(snapTicks(static_cast<double>(c0.loop.start + dt)), 0, std::max<Ticks>(0, fileTicks - len));
     loop.end = loop.start + len;
   }
   if (loop == v_.clip_->loop) return;
@@ -355,6 +363,16 @@ void SampleDisplay::dragTo(const PointerEvent& e) {
 }  // namespace audio_clip
 
 // ---- the view ---------------------------------------------------------------------------------------------------
+
+bool AudioClipView::dragging() const noexcept { return display_ != nullptr && display_->dragging(); }
+
+bool AudioClipView::onKey(const KeyEvent& e) {
+  if (e.down && e.key == key::kEscape && display_ != nullptr && display_->cancel()) {
+    if (tree() && tree()->captured()) tree()->releaseCapture();
+    return true;
+  }
+  return false;
+}
 
 AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_(ctx) {
   setLayout(LayoutKind::Custom);

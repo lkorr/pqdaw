@@ -69,3 +69,39 @@ TEST_CASE("drag out: the temp folder (PQ_DRAGOUT_DIR in tests) is created and cl
   _putenv_s("PQ_DRAGOUT_DIR", "");
   fs::remove_all(dir, ec);
 }
+
+// M5 review H9: a clip dragged out of the window (an OLE drag of our own data object) and back in. Our drop target
+// used to read its CF_HDROP (forcing the lazy render of a long clip while hovering) and, on release, imported the
+// drag-out temp WAV as a new clip, a file deleted at exit. It now refuses our own data object without producing it;
+// a data object of another process (Explorer, another pqdaw) is unaffected.
+TEST_CASE("drag out: our own drop target refuses our own drag (never renders it); other data objects still drop") {
+  REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
+  int calls = 0;
+  void* obj = app::makeFileDataObject([] { return std::vector<std::string>{"C:/temp/pqdaw/dragout/Clip.wav"}; }, &calls);
+  CHECK(app::isOwnDragData(obj));
+  int events = 0;
+  auto t = app::OsDropTarget::unregistered([&](const app::OsDragEvent&) { ++events; return ui::DropEffect::Copy; },
+                                           [](int32_t sx, int32_t sy, float& x, float& y) {
+                                             x = static_cast<float>(sx);
+                                             y = static_cast<float>(sy);
+                                           });
+  auto* target = static_cast<IDropTarget*>(t->comTarget());
+  auto* data = static_cast<IDataObject*>(obj);
+  DWORD fx = DROPEFFECT_COPY;
+  REQUIRE(target->DragEnter(data, 0, POINTL{10, 10}, &fx) == S_OK);
+  CHECK(fx == DROPEFFECT_NONE);
+  fx = DROPEFFECT_COPY;
+  REQUIRE(target->DragOver(0, POINTL{20, 20}, &fx) == S_OK);
+  CHECK(fx == DROPEFFECT_NONE);
+  fx = DROPEFFECT_COPY;
+  REQUIRE(target->Drop(data, 0, POINTL{20, 20}, &fx) == S_OK);
+  CHECK(fx == DROPEFFECT_NONE);
+  CHECK(events == 0);
+  CHECK(calls == 0);  // the files were never produced (no render)
+  // Its files are still there for other targets (Explorer).
+  CHECK(app::filesOfDataObject(obj).size() == 1);
+  CHECK(calls == 1);
+  app::releaseComObject(obj);
+  t.reset();
+  OleUninitialize();
+}

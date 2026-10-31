@@ -370,6 +370,27 @@ double dropHundred(Fixture& f) {
   return ms;
 }
 
+// M5 review M16: leaving and re-entering while files are still queued for probing. clear() (every re-hover) emptied
+// the queue but kept the entries Pending, so request() never queued them again: the drop waited forever and the
+// arrangement refused every later drop. Repeated leave / re-enter with 200 files, then a drop that commits.
+TEST_CASE("file drop: leaving and re-entering mid-probe never strands a file; the drop commits") {
+  Fixture f("rehover");
+  std::vector<std::string> paths;
+  for (int i = 0; i < 200; ++i) paths.push_back(makeWav(f.dir, "r" + std::to_string(i) + ".wav", 0.05));
+  DragPayload p;
+  p.paths = paths;
+  for (int k = 0; k < 6; ++k) {
+    f.d.tree().dragEnter(p, f.at(f.audio, kBar), 0);
+    f.d.tree().dragExit();
+  }
+  f.d.tree().dragEnter(p, f.at(f.audio, kBar), mod::kCtrl);
+  CHECK(f.ctx.fileProbes().wait(p.paths, std::chrono::seconds(20)));
+  const size_t h0 = f.history();
+  CHECK(f.d.tree().dragDrop(f.at(f.audio, kBar), mod::kCtrl) == DropEffect::Copy);
+  CHECK(f.history() == h0 + 1);
+  CHECK_FALSE(f.arr->dropHovering());
+}
+
 TEST_CASE("file drop: 100 files are probed in parallel and committed as one undo step") {
   Fixture f("hundred");
   (void)dropHundred(f);

@@ -56,6 +56,15 @@ bool isHdrop(const FORMATETC* f) {
   return f && f->cfFormat == CF_HDROP && (f->tymed & TYMED_HGLOBAL) && f->dwAspect == DVASPECT_CONTENT;
 }
 
+CLIPFORMAT ownFormat() {
+  static const auto cf = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"pqdaw.DragOut"));
+  return cf;
+}
+
+bool isOwn(const FORMATETC* f) {
+  return f && ownFormat() != 0 && f->cfFormat == ownFormat() && (f->tymed & TYMED_HGLOBAL) && f->dwAspect == DVASPECT_CONTENT;
+}
+
 struct DataObject final : IDataObject {
   std::atomic<ULONG> refs{1};
   FileProvider provider;
@@ -81,6 +90,16 @@ struct DataObject final : IDataObject {
   }
   HRESULT STDMETHODCALLTYPE GetData(FORMATETC* f, STGMEDIUM* m) override {
     if (!m) return E_INVALIDARG;
+    if (isOwn(f)) {  // the process id (never produces the files)
+      HGLOBAL g = GlobalAlloc(GHND, sizeof(DWORD));
+      if (!g) return E_OUTOFMEMORY;
+      *static_cast<DWORD*>(GlobalLock(g)) = GetCurrentProcessId();
+      GlobalUnlock(g);
+      m->tymed = TYMED_HGLOBAL;
+      m->hGlobal = g;
+      m->pUnkForRelease = nullptr;
+      return S_OK;
+    }
     if (!isHdrop(f)) return DV_E_FORMATETC;
     if (!produced) {  // lazily: the first time a target wants the files
       produced = true;
@@ -96,7 +115,7 @@ struct DataObject final : IDataObject {
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* f) override { return isHdrop(f) ? S_OK : DV_E_FORMATETC; }
+  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* f) override { return isHdrop(f) || isOwn(f) ? S_OK : DV_E_FORMATETC; }
   HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override {
     if (out) out->ptd = nullptr;
     return E_NOTIMPL;
@@ -105,8 +124,9 @@ struct DataObject final : IDataObject {
   HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD dir, IEnumFORMATETC** out) override {
     if (!out) return E_POINTER;
     if (dir != DATADIR_GET) return E_NOTIMPL;
-    FORMATETC f{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-    return SHCreateStdEnumFmtEtc(1, &f, out);
+    FORMATETC f[2] = {{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL},
+                      {ownFormat(), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}};
+    return SHCreateStdEnumFmtEtc(ownFormat() != 0 ? 2 : 1, f, out);
   }
   HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
   HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
@@ -146,6 +166,23 @@ void* makeFileDataObject(FileProvider provider, int* calls) {
   d->provider = std::move(provider);
   d->calls = calls;
   return static_cast<IDataObject*>(d);
+}
+
+bool isOwnDragData(void* dataObject) {
+  auto* d = static_cast<IDataObject*>(dataObject);
+  if (!d || ownFormat() == 0) return false;
+  FORMATETC f{ownFormat(), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  if (d->QueryGetData(&f) != S_OK) return false;
+  STGMEDIUM m{};
+  if (d->GetData(&f, &m) != S_OK) return false;
+  bool own = false;
+  if (m.tymed == TYMED_HGLOBAL && GlobalSize(m.hGlobal) >= sizeof(DWORD))
+    if (const auto* pid = static_cast<const DWORD*>(GlobalLock(m.hGlobal))) {
+      own = *pid == GetCurrentProcessId();
+      GlobalUnlock(m.hGlobal);
+    }
+  ReleaseStgMedium(&m);
+  return own;
 }
 
 void releaseComObject(void* object) {

@@ -393,6 +393,24 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK(f.get(rev).start == r0.start);
   CHECK(f.get(rev).length == r0.length);
   CHECK(f.history() == h + 1);
+
+  // M5 review M8: Esc during a marker drag cancels it (the clip back as it was, no undo step, capture released).
+  const doc::AudioClip r1 = f.get(rev);
+  h = f.history();
+  const float mx2 = v.xOfFrame(v.startMarkerFrame());
+  f.d.move({mx2, static_cast<float>(ru.y + 3)});
+  f.d.down({mx2, static_cast<float>(ru.y + 3)});
+  f.d.move({mx2 + 25.0f, static_cast<float>(ru.y + 3)});
+  f.d.move({mx2 + 50.0f, static_cast<float>(ru.y + 3)});
+  CHECK(v.dragging());
+  CHECK(f.get(rev).contentStartFrame != r1.contentStartFrame);
+  CHECK(f.d.press("Escape") == KeyResult::Widget);
+  CHECK_FALSE(v.dragging());
+  CHECK(f.get(rev).contentStartFrame == r1.contentStartFrame);
+  CHECK(f.history() == h);
+  CHECK_FALSE(f.d.tree().captured());
+  f.d.up({mx2 + 50.0f, static_cast<float>(ru.y + 3)});
+  CHECK(f.history() == h);
 }
 
 namespace {

@@ -157,6 +157,9 @@ bool FileProbes::wait(std::span<const std::string> paths, std::chrono::milliseco
 
 void FileProbes::clear() {
   std::lock_guard lock(mutex_);
+  // M5 review M16: queued (not yet in flight) files are forgotten with their queue entry. They stayed Pending, so a
+  // re-hover's request() never queued them again and a drop waiting for them never committed.
+  for (const std::string& p : queue_) files_.erase(p);
   queue_.clear();
   std::erase_if(files_, [](const auto& kv) { return kv.second.state != ProbedFile::State::Pending; });
 }

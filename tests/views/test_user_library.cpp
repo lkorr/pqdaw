@@ -376,6 +376,37 @@ TEST_CASE("user library: clips save and load (an audio clip copies its sample); 
   CHECK(l.ctx.doc()->tracks.size() == tracks + 1);
   // Alt (render) without a renderer: refused with a status message, nothing written.
   CHECK(l.browser().saveDroppedClips(p, l.path("Clips"), true).empty());
+  // M5 review M18: a different file with the same name and size (another pack's vox.wav) gets its own copy; the
+  // first clip's sample is not reused for it. The same file again reuses its copy.
+  {
+    const fs::path other = fs::path(l.path("Other")) / "vox.wav";
+    fs::create_directories(other.parent_path());
+    fs::copy_file(fs::path(std::u8string(wav.begin(), wav.end())), other);
+    {
+      std::fstream g(other, std::ios::binary | std::ios::in | std::ios::out);
+      g.seekp(-16, std::ios::end);
+      g.write("0123456789abcdef", 16);  // same size, different bytes
+    }
+    doc::SampleRef s2 = s;
+    s2.id = l.ctx.store().ids().sample();
+    const std::u8string ou = other.u8string();
+    s2.path = std::string(ou.begin(), ou.end());
+    const doc::ops::NewAudioClip n2{l.audio, kPpq * 16, s2.id, "Kick2"};
+    const doc::ClipRef ac2 = l.run(doc::ops::addAudioClips(*l.ctx.doc(), l.ctx.store().ids(), std::span<const doc::SampleRef>(&s2, 1),
+                                                           std::span<const doc::ops::NewAudioClip>(&n2, 1))).clips[0];
+    DragPayload p2;
+    p2.kind = DragKind::Clips;
+    p2.ids = {packClipRef(ac2), packClipRef(ac)};
+    REQUIRE(l.browser().saveDroppedClips(p2, l.path("Clips"), false).size() == 2);
+    auto k2 = l.ctx.library().readClip(l.path("Clips\\Kick2.pqclip"));
+    REQUIRE(k2.ok());
+    REQUIRE(k2->sample.has_value());
+    CHECK_FALSE(fs::equivalent(fs::path(std::u8string(k2->sample->path.begin(), k2->sample->path.end())),
+                               fs::path(std::u8string(copied.begin(), copied.end()))));
+    int wavs = 0;
+    for (const auto& e : fs::directory_iterator(fs::path(l.path("Clips\\Samples")))) wavs += e.path().extension() == ".wav" ? 1 : 0;
+    CHECK(wavs == 2);  // vox.wav and the other pack's copy; the first file's second save reused its own
+  }
 }
 
 TEST_CASE("arrangement: clips dragged out of the arrangement become a Clips drag session") {

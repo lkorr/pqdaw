@@ -1,6 +1,8 @@
 // T5.11: the User Library's files in the views (pq/views/browser/library.h "T5.11").
 
 #include <algorithm>
+#include <vector>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -15,6 +17,26 @@ namespace pq::views {
 namespace fs = std::filesystem;
 
 namespace {
+
+// Whether two files hold the same bytes (sizes first, then 1 MiB chunks).
+bool sameFileBytes(const fs::path& a, const fs::path& b) {
+  std::error_code ec;
+  if (!fs::exists(a, ec) || !fs::exists(b, ec)) return false;
+  const auto sa = fs::file_size(a, ec);
+  if (ec) return false;
+  const auto sb = fs::file_size(b, ec);
+  if (ec || sa != sb) return false;
+  std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+  if (!fa || !fb) return false;
+  std::vector<char> ba(1u << 20), bb(1u << 20);
+  for (;;) {
+    fa.read(ba.data(), static_cast<std::streamsize>(ba.size()));
+    fb.read(bb.data(), static_cast<std::streamsize>(bb.size()));
+    const std::streamsize na = fa.gcount(), nb = fb.gcount();
+    if (na != nb || std::memcmp(ba.data(), bb.data(), static_cast<size_t>(na)) != 0) return false;
+    if (na == 0 || !fa || !fb) return na == nb && fa.eof() == fb.eof();
+  }
+}
 
 fs::path pathOf(std::string_view utf8) { return fs::path(std::u8string(utf8.begin(), utf8.end())); }
 std::string utf8Of(const fs::path& p) {
@@ -37,6 +59,22 @@ std::string safeStem(std::string_view name) {
                                      ? '_'
                                      : c;
   while (!s.empty() && (s.back() == '.' || s.back() == ' ')) s.pop_back();
+  // L20: capped (a path segment past ~255 characters cannot be created) and never a reserved device name (CON, NUL,
+  // COM1 …: ordinary files on this Windows 11 build, failures on Windows 10).
+  if (s.size() > 120) {
+    size_t n = 120;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;  // not inside a UTF-8 sequence
+    s.resize(n);
+  }
+  std::string upper;
+  for (const char c : s.substr(0, s.find('.'))) upper += static_cast<char>(c >= 'a' && c <= 'z' ? c - 32 : c);
+  static const char* kReserved[] = {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+                                    "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+  for (const char* r : kReserved)
+    if (upper == r) {
+      s.insert(0, "_");
+      break;
+    }
   return s.empty() ? std::string("Untitled") : s;
 }
 
@@ -181,9 +219,10 @@ Result<std::string> Library::saveClip(const doc::Project& p, const doc::ClipSlot
     if (!below) {
       const std::string samples = join(dir, "Samples");
       fs::create_directories(pathOf(samples), ec);
-      // Reuse a copy with the same name and size; else a free name.
+      // Reuse a copy with the same name and the same bytes (M5 review M18: name and size alone let two one-shots of
+      // one name and length from different packs share a file); else a free name.
       const std::string same = join(samples, utf8Of(src.filename()));
-      if (fs::exists(pathOf(same), ec) && fs::file_size(pathOf(same), ec) == fs::file_size(src, ec)) {
+      if (sameFileBytes(pathOf(same), src)) {
         target = same;
       } else {
         target = uniqueFile(samples, utf8Of(src.stem()), utf8Of(src.extension()));

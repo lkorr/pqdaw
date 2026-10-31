@@ -80,6 +80,8 @@ public:
 
   void paint(ui::PaintContext& ctx) override;
   void arrange(ui::LayoutPass& pass) override;
+  bool onKey(const ui::KeyEvent& e) override;  // Esc cancels a marker / loop drag (M5 review M8)
+  bool dragging() const noexcept;
 
   // Internal (the display).
   ViewContext& context() noexcept { return ctx_; }

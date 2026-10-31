@@ -1,6 +1,7 @@
 // T5.7: our OLE drop target (pq/app/os_drop.h).
 
 #include "pq/app/os_drop.h"
+#include "pq/app/os_drag.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -93,6 +94,10 @@ std::vector<std::string> filesOfDataObject(void* dataObject) {
   if (d->QueryGetData(&f) != S_OK) return out;
   STGMEDIUM m{};
   if (d->GetData(&f, &m) != S_OK) return out;
+  if (m.tymed != TYMED_HGLOBAL) {  // L21: only an HGLOBAL holds an HDROP
+    ReleaseStgMedium(&m);
+    return out;
+  }
   if (auto drop = static_cast<HDROP>(GlobalLock(m.hGlobal))) {
     const UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
     out.reserve(n);
@@ -144,6 +149,11 @@ struct OsDropTarget::Com final : IDropTarget {
   // IDropTarget
   HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD keys, POINTL pt, DWORD* effect) override {
     if (!effect) return E_INVALIDARG;
+    if (isOwnDragData(data)) {  // M5 review H9: our own drag out, back over the window: refused, never rendered
+      active = false;
+      *effect = DROPEFFECT_NONE;
+      return S_OK;
+    }
     OsDragEvent e = event(OsDragEvent::Type::Enter, keys, pt);
     e.paths = filesOfDataObject(data);
     active = !e.paths.empty();
