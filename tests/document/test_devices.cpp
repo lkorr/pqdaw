@@ -265,6 +265,20 @@ TEST_CASE("devices: the stock device library and catalog") {
   CHECK(eq->settings.size() == 34);
   CHECK(eq->setting("type8")->defaultValue == 7.0);
   CHECK(eq->params.size() == 51);
+  // M4 review H5: Auto Filter is a stock audio effect (stereo in and out; `sc`, its sidechain input, is not the audio
+  // input and is no setting).
+  const DeviceInfo* af = cat.find("auto_filter");
+  REQUIRE(af != nullptr);
+  CHECK(af->kind == DeviceKind::AudioEffect);
+  CHECK(af->name == "Auto Filter");
+  CHECK(af->inWidth == 2);
+  CHECK(af->outWidth == 2);
+  REQUIRE(af->setting("circuit") != nullptr);
+  CHECK(af->setting("circuit")->defaultValue == 0.0);
+  CHECK(af->setting("sc") == nullptr);
+  CHECK(af->param("sc") == nullptr);
+  REQUIRE(af->param("freq") != nullptr);
+  CHECK(af->param("freq")->exponential);
   // The value a device plays: set, else the default.
   Device d = *makeDevice(DeviceId{5}, "utility", DeviceKind::AudioEffect);
   CHECK(deviceParamValue(d, *util->param("width")) == doctest::Approx(1.0));
@@ -277,6 +291,36 @@ TEST_CASE("devices: the stock device library and catalog") {
   // A stdlib directory without a device file leaves it out.
   auto none = loadDeviceLibrary(std::string(PQ_TEST_DATA_DIR) + "/document");
   CHECK_FALSE(none.ok());
+}
+
+TEST_CASE("devices: Auto Filter from the device menu lowers with its sidechain input unconnected (silence)") {
+  // M4 review H5: added as the device menu adds it (ops::addDevice at its defaults after the default instrument).
+  Chains c;
+  const ops::Edit a = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "auto_filter", DeviceKind::AudioEffect));
+  REQUIRE(a.devices.size() == 1);
+  const DeviceId af = a.devices[0];
+  LowerOptions lo;
+  lo.library = &library().library();
+  uint32_t slot = 0;
+  lo.slotOf = [&](TrackId) { return slot++; };
+  auto low = lower(*c.store.current(), lo);
+  REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
+  CHECK(low->missingDevices.empty());
+  uint32_t ti = 0;
+  while (low->trackIds[ti] != c.midi) ++ti;
+  const pq::graph::Patch& patch = low->patches[ti]->patch;
+  const auto call = patch.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, af.value, 0)});
+  REQUIRE(call.has_value());
+  CHECK(patch.subcircuit(*call).patch == "auto_filter");
+  // `sc` is not wired: the callee reads its default, (0, 0).
+  const auto scIn = patch.findInput(*call, "sc");
+  REQUIRE(scIn.has_value());
+  for (const pq::graph::Wire& w : patch.wires()) CHECK_FALSE((w.to.node == *call && w.to.port == *scIn));
+  // Its params are runtime params at their defaults.
+  bool freq = false;
+  for (const LoweredParam& p : low->params)
+    if (p.key == "dev" + std::to_string(af.value) + ":freq") freq = p.value == doctest::Approx(1000.0f);
+  CHECK(freq);
 }
 
 TEST_CASE("devices: lowering a chain — stable NodeIds, params as runtime params, settings as literals") {

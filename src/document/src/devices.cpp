@@ -92,6 +92,7 @@ constexpr StockDevice kStock[] = {
     {"devices/utility.pqp", "utility", "Utility"},
     {"devices/saturator.pqp", "saturator", "Saturator"},
     {"devices/eq_eight.pqp", "eq_eight", "EQ Eight"},
+    {"devices/auto_filter.pqp", "auto_filter", "Auto Filter"},  // T4.11 (M4 review H5); its `sc` input is the sidechain
     {"devices/lfo_device.pqp", "lfo_device", "LFO"},  // T4.7: a modulation source (its `lfo` jack)
 };
 

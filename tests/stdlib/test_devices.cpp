@@ -814,12 +814,18 @@ std::complex<double> eqAnalytic(int type, double f, const devref::EqBand& b, boo
   const double k = 1.0 / b.q, kb = 1.0 / qe, sA = std::sqrt(A);
   const std::complex<double> s2 = s * s;
   auto sec = [&](double kk, bool hp) { return (hp ? s2 : std::complex<double>(1.0)) / (s2 + kk * s + 1.0); };
-  const double f48[4] = {1.3870398453221475, 1.1758756024193588, 0.7856949583871023, 0.2758993792829431};
   switch (type) {
     case 0:
     case 7: {
+      // An 8th-order Butterworth (section dampings 2·sin((2i − 1)π/16), from its pole angles) whose least damped
+      // section alone carries the resonance: its damping × 0.7071/q (M4 review H3). Derived here from the poles, not
+      // from the device's constants (T4.10's version of this test shared the device's law, so it could not see that
+      // scaling all four sections multiplied their peaks).
       std::complex<double> h = 1.0;
-      for (double fi : f48) h *= sec(fi * k, type == 0);
+      for (int i = 1; i <= 4; ++i) {
+        const double d = 2.0 * std::sin((2 * i - 1) * kPi / 16.0);
+        h *= sec(i == 1 ? d * std::sqrt(0.5) * k : d, type == 0);
+      }
       return h;
     }
     case 1: return sec(k, true);
@@ -915,6 +921,53 @@ static void eqMagnitudes(bool full) {
 }
 
 TEST_CASE("EQ Eight: magnitude responses vs the analytic responses within 0.1 dB") { eqMagnitudes(false); }
+
+// M4 review H3: the 48 dB cuts' resonance. Their peak gain (rendered impulse response, measured on a fine grid around
+// the corner) stays within 1 dB above Low Cut 12's at the same q, over the whole Q range: one resonance, not four
+// multiplied (T4.10's law gave +105 dB at q 18 against LC12's +25 dB).
+static double eqPeakDb(int type, double q) {
+  constexpr uint32_t kLen = 16384;
+  constexpr double kFc = 1000.0;
+  devref::EqConf c;
+  for (int i = 0; i < 8; ++i) c.on[0][i] = c.on[1][i] = false;
+  c.type[0][3] = type;
+  c.on[0][3] = true;
+  devref::EqParams p;
+  p.band[0][3] = {static_cast<float>(kFc), 1.0f, static_cast<float>(q)};
+  const Program prog = eqProgram(c);
+  Stimulus st = eqStimulus(kLen, 64, [](uint32_t, uint64_t t) { return t == 0 ? 1.0 : 0.0; });
+  setEqParams(st, p);
+  const Outputs o = run(prog, Backend::Jit, st);
+  REQUIRE_MESSAGE(o.error.empty(), o.error);
+  const auto& y = o.at("y")[0];
+  // Coarse: 1.2 % steps over fc/8 … 8·fc; then 1/40 of a step around the coarse maximum (a q-18 peak is 5.5 % wide).
+  const std::vector<double> coarse = logFreqs(kFc / 8.0, kFc * 8.0, 361);
+  size_t best = 0;
+  double top = -1e9;
+  for (size_t i = 0; i < coarse.size(); ++i)
+    if (const double m = magDb(y, 0, coarse[i]); m > top) top = m, best = i;
+  const double lo = coarse[best > 0 ? best - 1 : 0], hi = coarse[std::min(best + 1, coarse.size() - 1)];
+  for (const double f : logFreqs(lo, hi, 81)) top = std::max(top, magDb(y, 0, f));
+  return top;
+}
+
+static void eqCutPeaks(const std::vector<double>& qs) {
+  for (const double q : qs) {
+    const double lc12 = eqPeakDb(1, q), lc48 = eqPeakDb(0, q), hc48 = eqPeakDb(7, q);
+    MESSAGE("q " << q << ": peak LC12 " << lc12 << " dB, LC48 " << lc48 << " dB, HC48 " << hc48 << " dB");
+    CHECK_MESSAGE(lc48 <= lc12 + 1.0, "q " << q << ": LC48 peak " << lc48 << " dB vs LC12 " << lc12 << " dB");
+    CHECK_MESSAGE(hc48 <= lc12 + 1.0, "q " << q << ": HC48 peak " << hc48 << " dB vs LC12 " << lc12 << " dB");
+    // and the resonance is still there: within 1 dB below LC12's as well once LC12 resonates
+    if (lc12 > 1.0) CHECK_MESSAGE(lc48 >= lc12 - 1.0, "q " << q << ": LC48 peak " << lc48 << " dB vs LC12 " << lc12 << " dB");
+  }
+}
+
+TEST_CASE("EQ Eight: the 48 dB cuts resonate no more than Low Cut 12 (peak within +1 dB) at q 0.1, 1.5, 18") {
+  eqCutPeaks({0.1, 1.5, 18.0});
+}
+TEST_CASE("EQ Eight: the 48 dB cuts' peak within +1 dB of Low Cut 12 over q 0.1 … 18" * doctest::test_suite("slow")) {
+  eqCutPeaks({0.1, 0.2, 0.4, 0.7071, 0.85, 1.0, 1.25, 2.0, 3.0, 4.0, 6.0, 9.0, 13.0, 18.0});
+}
 TEST_CASE("EQ Eight: magnitude responses of 22 settings x 1x / 2x within 0.1 dB" * doctest::test_suite("slow")) { eqMagnitudes(true); }
 
 TEST_CASE("EQ Eight: HQ keeps high bells closer to the analog shape") {

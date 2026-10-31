@@ -74,21 +74,21 @@ inline EqCoef eqCoef(const EqBand& b, bool adaptive, double scale, double sr, do
   const double qe = adaptive ? b.q * std::sqrt(std::max(ge, 1.0 / ge)) : b.q;
   const double w = std::tan(kPi * std::clamp(b.freq, 0.0, 0.49 * sr) / (os * sr));
   const double kc = 1.0 / std::max(b.q, 0.01), kb = 1.0 / std::max(qe, 0.01), sA = std::sqrt(A);
-  constexpr double kB1 = 1.3870398453221475;
+  constexpr double kB1 = 1.9615705608064609;  // the 48s: sections 1–3 Butterworth-8, section 4 carries q (M4 review H3)
   EqCoef c{};
   switch (b.type) {
-    case kLowCut48: c = {w, kB1 * kc, 1, -kB1 * kc, -1, 0, 0, 0}; break;
+    case kLowCut48: c = {w, kB1, 1, -kB1, -1, 0, 0, 0}; break;
     case kLowCut12: c = {w, kc, 1, -kc, -1, 0, 0, 0}; break;
     case kLowShelf: c = {w / sA, kb, 1, kb * (A - 1), ge - 1, 0, 0, 0}; break;
     case kBell: c = {w, kb / A, 1, kb / A * (ge - 1), 0, 0, 0, 0}; break;
     case kNotch: c = {w, kc, 1, -kc, 0, 0, 0, 0}; break;
     case kHighShelf: c = {w * sA, kb, ge, kb * (1 - A) * A, 1 - ge, 0, 0, 0}; break;
     case kHighCut12: c = {w, kc, 0, 0, 1, 0, 0, 0}; break;
-    default: c = {w, kB1 * kc, 0, 0, 1, 0, 0, 0}; break;
+    default: c = {w, kB1, 0, 0, 1, 0, 0, 0}; break;
   }
-  c.k2 = 1.1758756024193588 * kc;
-  c.k3 = 0.7856949583871023 * kc;
-  c.k4 = 0.2758993792829431 * kc;
+  c.k2 = 1.6629392246050905;
+  c.k3 = 1.1111404660392046;
+  c.k4 = 0.27589937928294295 * kc;
   return c;
 }
 

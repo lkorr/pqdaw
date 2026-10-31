@@ -361,20 +361,21 @@ inline EqCoef eqCoef(int type, float os, const EqBand& b, bool adaptive, float s
   const float w = stdref::vtan(3.141592653589793f * std::clamp(b.freq, 0.0f, 0.49f * sr) / (os * sr));
   const float kc = 1.0f / std::max(b.q, 0.01f), kb = 1.0f / std::max(qe, 0.01f), sA = std::sqrt(A);
   EqCoef c{};
-  constexpr float f1 = 1.3870398453221475f;
+  // The 48s (M4 review H3): sections 1–3 at the Butterworth-8 dampings, section 4 carries q.
+  constexpr float f1 = 1.9615705608064609f;
   switch (type) {
-    case kLC48: c = {w, f1 * kc, 1, -f1 * kc, -1}; break;
+    case kLC48: c = {w, f1, 1, -f1, -1}; break;
     case kLC12: c = {w, kc, 1, -kc, -1}; break;
     case kLS: c = {w / sA, kb, 1, kb * (A - 1), ge - 1}; break;
     case kBell: c = {w, kb / A, 1, kb / A * (ge - 1), 0}; break;
     case kNotch: c = {w, kc, 1, -kc, 0}; break;
     case kHS: c = {w * sA, kb, ge, kb * (1 - A) * A, 1 - ge}; break;
     case kHC12: c = {w, kc, 0, 0, 1}; break;
-    default: c = {w, f1 * kc, 0, 0, 1}; break;
+    default: c = {w, f1, 0, 0, 1}; break;
   }
-  c.k2 = 1.1758756024193588f * kc;
-  c.k3 = 0.7856949583871023f * kc;
-  c.k4 = 0.2758993792829431f * kc;
+  c.k2 = 1.6629392246050905f;
+  c.k3 = 1.1111404660392046f;
+  c.k4 = 0.27589937928294295f * kc;
   return c;
 }
 
