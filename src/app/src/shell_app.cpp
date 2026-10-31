@@ -1,12 +1,5 @@
 #include "shell_app.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <shellapi.h>
-#include <shlobj.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -79,15 +72,6 @@ void startTimer(uint32_t eventType, int32_t code, double seconds) {
 // --- SDL file dialogs -----------------------------------------------------------------------------------
 
 class SdlFileDialogs final : public views::FileDialogs {
-  static std::wstring wide(const std::string& s) {
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-    for (wchar_t& c : w)
-      if (c == L'/') c = L'\\';
-    return w;
-  }
-
 public:
   SdlFileDialogs(SDL_Window* window, uint32_t eventType) : window_(window), eventType_(eventType) {}
 
@@ -116,23 +100,9 @@ public:
     SDL_ShowOpenFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kPatchFilter, 1, nullptr,
                            false);
   }
-  // T5.10: the browser's context menu.
-  void showInExplorer(const std::string& path) override {
-    const std::wstring w = wide(path);
-    PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(w.c_str());
-    if (!pidl) return;
-    (void)SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
-    ILFree(pidl);
-  }
-  bool recycle(const std::string& path) override {
-    std::wstring from = wide(path);
-    from.push_back(L'\0');  // double-NUL terminated list
-    SHFILEOPSTRUCTW op{};
-    op.wFunc = FO_DELETE;
-    op.pFrom = from.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
-    return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
-  }
+  // T5.10: the browser's context menu (pq/app/os_drop.h).
+  void showInExplorer(const std::string& path) override { app::showInExplorer(path); }
+  bool recycle(const std::string& path) override { return moveToRecycleBin(path); }
   views::SaveChoice askSaveChanges(std::string_view projectName) override {
     const std::string msg = "Save changes to \"" + std::string(projectName) + "\" before closing it?";
     const SDL_MessageBoxButtonData buttons[] = {

@@ -126,8 +126,10 @@ pq_add_test(pq_tests_playback
 
 # T3.18: the audio device manager (settings file, startup settings, device switching / hot-plug / ASIO driver resets
 # over scripted devices, test tone, CPU meter). Real devices only with PQ_TEST_AUDIO_DEVICE=1.
-pq_add_test(pq_tests_audio
-  SOURCES app/test_audio_manager.cpp
+pq_add_test(pq_tests_audio PERF  # T5.10: the cold preview start (perf)
+  SOURCES
+    app/test_audio_manager.cpp
+    app/test_preview_service.cpp  # T5.10: the browser preview through AudioOutput's cue source, Cue Out, library settings
   DEPS pq_app)
 
 # views (T3.7): ViewContext (project I/O, undo, transport routing), the shell (layout, hotkeys, control bar), goldens.

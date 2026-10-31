@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <ole2.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include <atomic>
 #include <cstdio>
@@ -50,6 +51,35 @@ DWORD effectOf(ui::DropEffect e, DWORD allowed) {
 }
 
 }  // namespace
+
+namespace {
+std::wstring wideOf(const std::string& s) {
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+  std::wstring w(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+  for (wchar_t& c : w)
+    if (c == L'/') c = L'\\';
+  return w;
+}
+}  // namespace
+
+void showInExplorer(const std::string& path) {
+  const std::wstring w = wideOf(path);
+  PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(w.c_str());
+  if (!pidl) return;
+  (void)SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+  ILFree(pidl);
+}
+
+bool moveToRecycleBin(const std::string& path) {
+  std::wstring from = wideOf(path);
+  from.push_back(L'\0');  // a double-NUL terminated list
+  SHFILEOPSTRUCTW op{};
+  op.wFunc = FO_DELETE;
+  op.pFrom = from.c_str();
+  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+  return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
 
 std::vector<std::string> filesOfDataObject(void* dataObject) {
   std::vector<std::string> out;

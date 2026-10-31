@@ -61,6 +61,11 @@ private:
   void* hwnd_ = nullptr;
 };
 
+// T5.10 (the browser's context menu): opens Explorer at the file's folder with the file selected; moves a file to the
+// Recycle Bin (undoable there; false when it failed).
+void showInExplorer(const std::string& pathUtf8);
+bool moveToRecycleBin(const std::string& pathUtf8);
+
 // The files of an OLE data object (CF_HDROP), as absolute UTF-8 paths. `dataObject` is an IDataObject*. Empty when it
 // carries no files.
 std::vector<std::string> filesOfDataObject(void* dataObject);
