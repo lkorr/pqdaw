@@ -17,6 +17,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/document/serialize.h"
+#include "pq/core/alloc_trap.h"
 #include "pq/document/store.h"
 
 using namespace pq::doc;
@@ -452,4 +453,68 @@ TEST_CASE("racks: lowering — inline chains with stable ids, one runtime param 
   REQUIRE(lp6.ok());
   CHECK(lp6->graph.tracks[ti].role == pq::graph::TrackRole::Instrument);
   CHECK(lp6->graph.tracks[ti].maxVoices == 12);
+}
+
+// M4 review H1: MoveDevice took `Track& ft = mutableTrack(from)`, then `mutableTrack(to)`. With `to` a child of the
+// group `from`, the second call re-copied the group and freed the object `ft` referred to; pruneMappings(ft.devices)
+// then ran on freed memory and the rack kept its mapping onto the moved device (a file checkRack refuses on load).
+// Under the poisoning deleter a read of the freed group sees 0xDD… pointers and crashes deterministically.
+TEST_CASE("racks: moving a mapped device out of a rack between a group and its tracks (M4 review H1)") {
+  REQUIRE(pq::alloc_trap::installed());
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  auto edit = [&](Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    const pq::Status st = store.dispatch(e->command);
+    REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    return *e;
+  };
+  const TrackId a = edit(ops::createTrack(*store.current(), ids, TrackKind::Midi)).tracks.at(0);
+  const TrackId b = edit(ops::createTrack(*store.current(), ids, TrackKind::Midi)).tracks.at(0);
+  edit(ops::groupTracks(*store.current(), ids, std::vector<TrackId>{a, b}));
+  TrackId g;
+  for (const TrackPtr& t : store.current()->tracks)
+    if (t->kind == TrackKind::Group) g = t->id;
+  REQUIRE(g.valid());
+  REQUIRE(findTrackPtr(*store.current(), a) != nullptr);
+
+  // A rack on `host` holding a Utility mapped to macro 1, then the Utility moved to `dest` (out of the rack).
+  auto moveOut = [&](TrackId host, TrackId dest) {
+    const DeviceId rack =
+        edit(ops::addDevice(*store.current(), ids, host, std::string(kAudioEffectRack), DeviceKind::AudioEffect)).devices.at(0);
+    const DeviceId u = edit(ops::addChainWithDevice(*store.current(), ids, rack, "utility", DeviceKind::AudioEffect)).devices.at(0);
+    edit(ops::mapMacro(*store.current(), ids, rack, 0, u, "width"));
+    const Snapshot before = store.current();
+    {
+      pq::alloc_trap::PoisonFrees poison;
+      edit(ops::moveDevice(*store.current(), u, dest, kAppend));
+      const Project& p = *store.current();
+      const DeviceLoc where = findDevice(p, u);
+      REQUIRE(where.track != nullptr);
+      CHECK(where.track->id == dest);
+      CHECK(where.rack == nullptr);
+      CHECK(mappingOf(p, u, "width").mapping == nullptr);  // pruned in the same step
+      CHECK(findDevice(p, rack).device->rack->mappings.empty());
+      // The input snapshot is untouched (undo target): the Utility is still in the rack, mapped.
+      CHECK(findDevice(*before, u).rack != nullptr);
+      CHECK(mappingOf(*before, u, "width").mapping != nullptr);
+      // Save + reopen: the file loads (checkRack refuses a mapping onto a device outside its rack).
+      Result<std::string> text = serializeProject(p);
+      REQUIRE(text.ok());
+      Result<LoadedProject> back = parseProject(*text);
+      REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+      CHECK(findDevice(*back->project, u).track->id == dest);
+    }
+    REQUIRE(store.undo());
+    CHECK(mappingOf(*store.current(), u, "width").mapping != nullptr);
+    REQUIRE(store.redo());
+  };
+  SUBCASE("group -> its child") { moveOut(g, a); }
+  SUBCASE("child -> its group") { moveOut(a, g); }
+  SUBCASE("sibling -> sibling") { moveOut(a, b); }
+  SUBCASE("group -> its child, then back, then to a sibling (repeated path copies)") {
+    moveOut(g, b);
+    moveOut(b, g);
+    moveOut(g, a);
+  }
 }

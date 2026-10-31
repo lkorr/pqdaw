@@ -1500,14 +1500,16 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
   }
   auto np = copyOf(s);
   std::vector<MappingId> pruned;
+  // No Track& is held across a mutableTrack call (M4 review H1): mutableTrack re-copies every ancestor on its path, so
+  // when the destination is a child of the source group, a reference to the source taken before the second call points
+  // at a copy the new ancestor chain no longer owns (freed). Each step re-resolves its track; the paths stay valid
+  // because only device lists change. The extra Track copies cost a few hundred bytes on the UI thread.
   // The source first (removing may path-copy the racks on the way to the destination too, when both are in one track).
-  Track& ft = mutableTrack(*np, from->path);
-  (void)takeFromTree(ft.devices, c.device);
-  Track& tt = to->track == from->track ? ft : mutableTrack(*np, to->path);
-  std::vector<DevicePtr>* dst = listIn(tt, *to);
+  (void)takeFromTree(mutableTrack(*np, from->path).devices, c.device);
+  std::vector<DevicePtr>* dst = listIn(mutableTrack(*np, to->path), *to);
   if (dst == nullptr) return invalid("the destination chain is inside the moved device");
   dst->insert(dst->begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst->size())), dev);
-  pruneMappings(ft.devices, pruned);  // mappings of the racks it left
+  pruneMappings(mutableTrack(*np, from->path).devices, pruned);  // mappings of the racks it left
   cs.mark(kChangeStructural);
   cs.tracks.push_back(from->track->id);
   cs.tracks.push_back(to->track->id);
