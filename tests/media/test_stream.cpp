@@ -571,6 +571,58 @@ TEST_CASE("pool: ring and head memory stay within the documented budget; LRU dem
   fs::remove_all(dir, ec);
 }
 
+// M5 review M2: demotion picked the earliest-loaded sample (lastUse_ was set by load() only, touch() had no caller), so
+// a sample playing every bar could be demoted and stream mid-note. markInUse (the link calls it with every image it
+// publishes) touches the image's samples and keeps them resident; the least recently used of the rest goes.
+TEST_CASE("pool: budget demotion never takes a sample the playing image reads; LRU follows use") {
+  const fs::path dir = tempDir("pq_media_budget_inuse");
+  EpochReclaimer reclaimer(1);
+  PoolConfig cfg;
+  cfg.headFrames = 4096;
+  cfg.streamSlots = 8;
+  cfg.residentLimitBytes = 4u << 20;
+  cfg.budgetBytes = 5u << 20;  // room for two 2.2 MB resident files
+  cfg.reclaimer = &reclaimer;
+  cfg.decodedCacheDir = dir / "cache";
+  SamplePool pool(cfg);
+  std::vector<SampleRef> refs;
+  auto load = [&](uint32_t i) {
+    const fs::path f = dir / ("f" + std::to_string(i) + ".wav");
+    writePatternWav(f, 48000 * 6, 2, i);
+    auto s = pool.load(f);
+    REQUIRE(s.ok());
+    refs.push_back(*s);
+  };
+  load(0);
+  load(1);
+  // The image plays f0 (the oldest load): a third file demotes f1, not f0.
+  const PooledSample* playing[] = {refs[0].get()};
+  pool.markInUse(playing);
+  load(2);
+  CHECK_FALSE(refs[0]->view().streamed());
+  CHECK(refs[1]->view().streamed());
+  CHECK_FALSE(refs[2]->view().streamed());
+  // Only playing samples left resident: the budget is exceeded rather than demote one of them.
+  const PooledSample* both[] = {refs[0].get(), refs[2].get()};
+  pool.markInUse(both);
+  load(3);
+  CHECK_FALSE(refs[0]->view().streamed());
+  CHECK_FALSE(refs[2]->view().streamed());
+  // A new image without f0: it is the least recently used now.
+  const PooledSample* later[] = {refs[2].get(), refs[3].get()};
+  pool.markInUse(later);
+  load(4);
+  CHECK(refs[0]->view().streamed());
+  CHECK_FALSE(refs[2]->view().streamed());
+  refs.clear();
+  auto reader = reclaimer.registerReader();
+  reclaimer.quiescent(*reader);
+  (void)reclaimer.collect();
+  reclaimer.unregisterReader(*reader);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 // T5.x-perf-audio (Q151 item 1): decimated copies of a resident sample: built on demand, level by level (each frame m
 // of level L the decimator's output at 2^L·m, computed from level L − 1 with its guards), counted in the budget,
 // replaced through the reclaimer when more levels are asked for, retired by a demotion, released with the sample.

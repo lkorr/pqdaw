@@ -305,6 +305,12 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
     return;
   }
   const engine::AudioSequenceImage* raw = img.value().get();
+  if (pool_ != nullptr) {  // M5 review M2: demotion's LRU follows use, and the samples this image plays stay resident
+    std::vector<const media::PooledSample*> used;
+    used.reserve(raw->numSamples());
+    for (uint32_t i = 0; i < raw->numSamples(); ++i) used.push_back(raw->sample(i).pooled.get());
+    pool_->markInUse(used);
+  }
   // Q151 item 1: the mip levels each resident sample's fastest clip needs (rates above 2).
   std::vector<double> fastest(raw->numSamples(), 0.0);
   for (uint32_t slot = 0; slot < raw->numSlots(); ++slot)

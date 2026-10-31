@@ -335,6 +335,16 @@ void SamplePool::touch(const SampleRef& s) {
   s->lastUse_ = ++tick_;
 }
 
+void SamplePool::markInUse(std::span<const PooledSample* const> samples) {
+  std::lock_guard lock(mutex_);
+  ++useEpoch_;
+  for (const PooledSample* s : samples)
+    if (s != nullptr) {
+      s->lastUse_ = ++tick_;
+      s->inUse_ = useEpoch_;
+    }
+}
+
 bool SamplePool::buildMips(const PooledSample& s, uint32_t levels) {
   levels = std::min(levels, dsp::kMaxMipLevels);
   if (levels == 0) return true;
@@ -548,7 +558,7 @@ void SamplePool::enforceBudget(uint64_t incoming, const PooledSample* keep) {
       for (auto& [k, w] : entries_) {
         SampleRef e = w.lock();
         if (!e) continue;
-        if (e.get() != keep && e->streamSource_ == 0 && e->lastUse_ < oldest) {
+        if (e.get() != keep && e->streamSource_ == 0 && e->inUse_ != useEpoch_ && e->lastUse_ < oldest) {
           oldest = e->lastUse_;
           victim = e;
         }

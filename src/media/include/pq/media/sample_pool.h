@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -114,7 +115,8 @@ private:
   mutable std::unique_ptr<SampleMips> ownedMips_;  // retired, not freed, when replaced or demoted
   mutable uint64_t mipBytes_ = 0;
   mutable uint32_t streamSource_ = 0;
-  mutable uint64_t lastUse_ = 0;              // pool tick of the last load()/touch()
+  mutable uint64_t lastUse_ = 0;              // pool tick of the last load()/touch()/markInUse()
+  mutable uint64_t inUse_ = 0;                // == the pool's useEpoch_: the playing image reads it (never demoted)
   mutable uint64_t bytes_ = 0;                // what this entry counts toward the budget
 };
 
@@ -133,6 +135,10 @@ public:
   Result<SampleRef> load(const std::filesystem::path& path);
   // Marks a sample as used now (LRU for demotion).
   void touch(const SampleRef& s);
+  // The samples the audio image now being published reads (M5 review M2): each is touched, and budget demotion never
+  // picks one of them (it demotes the least recently used of the rest; with only these left, the budget is exceeded
+  // rather than make a playing sample stream mid-note). Replaces the previous set. Thread-safe.
+  void markInUse(std::span<const PooledSample* const> samples);
   // Builds the decimated copies 1 … levels (clamped to dsp::kMaxMipLevels) of a fully resident sample, if it does not
   // have them yet. Not RT-safe: decimates the whole file (~200 multiply-adds per frame and channel for level 1, half
   // that per further level; tens of ms for a 32 MiB file). Thread-safe; serialised with demotions. False: the sample
@@ -201,6 +207,7 @@ private:
   std::unordered_map<uint32_t, std::shared_ptr<Source>> sources_;
   uint32_t nextSource_ = 1;
   uint64_t tick_ = 0;
+  uint64_t useEpoch_ = 1;  // markInUse's current set (entries start at 0: not in use)
   uint64_t residentBytes_ = 0;
   uint64_t headBytes_ = 0;
   uint64_t demotions_ = 0;
