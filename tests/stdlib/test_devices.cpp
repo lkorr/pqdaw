@@ -1244,7 +1244,7 @@ double stepClick(const Program& prog, const std::string& param, double from, dou
 
 }  // namespace
 
-TEST_CASE("Saturator and EQ Eight: param jumps glide (smoothed gains) instead of clicking") {
+TEST_CASE("Saturator, EQ Eight and Utility: param jumps glide (smoothed gains) instead of clicking") {
   struct Case {
     std::string what;
     const Program* prog;
@@ -1257,7 +1257,9 @@ TEST_CASE("Saturator and EQ Eight: param jumps glide (smoothed gains) instead of
   const Program eq = eqProgram(ec);
   ec.type[0][3] = 6;  // band 4 a High Cut 12
   const Program eqHc = eqProgram(ec);
+  const Program util = utilityProgram(false, false, false);
   const std::vector<Case> cases = {
+      {"utility gain 0 -> -12 dB", &util, "u__gain", 1.0, 0.251, 220.0, 2.0, {}},
       {"saturator drive 0 -> +12 dB", &sat1, "s__drive", 1.0, 3.981, 220.0, 2.0, {}},
       {"saturator output 0 -> -12 dB", &sat1, "s__output", 1.0, 0.251, 220.0, 2.0, {}},
       {"saturator dry/wet 100 -> 30 % (HQ 2x)", &sat2, "s__dryWet", 1.0, 0.3, 220.0, 2.0, {{"s__drive", 3.981}}},

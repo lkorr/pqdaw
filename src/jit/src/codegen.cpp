@@ -220,6 +220,27 @@ private:
     }
     return false;
   }
+  // T4.x-fix-dsp: a global smoothed gain with a param (Spl) target is generated inline: per frame its frame-by-frame
+  // definition (kernels_gain.cpp; per-sample loops, chains, a run's moving path), in a vectorised run its settled
+  // form (emitFused branches on it once per block), after the call's prologue (dsp::gainPrologue). The device mixes
+  // (EQ Eight's sections between their SVF loops, the Saturator's oversampled samples) then stay in one chain / run
+  // instead of splitting it around a call. Voice gains and audio-rate targets stay kernel calls.
+  bool inlineGain(uint32_t i) const {
+    const g::Op& op = s_.ops[i];
+    if (op.kind != g::OpKind::Kernel || (op.kernel != Atom::Gain && op.kernel != Atom::GainAdd) || op.lanes != 1) return false;
+    if (op.state == g::kNone || (i < body_.size() && body_[i])) return false;
+    const uint32_t kA = op.kernel == Atom::GainAdd ? 1u : 0u;
+    return ((op.splMask >> (kA + 1)) & 1u) != 0 && ((op.splMask >> (kA + 2)) & 1u) != 0 && op.numIn >= kA + 3;
+  }
+  // Input k of op i is read only by an inline gain's prologue (its target, time and start: not in the frame loop, so
+  // not a register the loop holds).
+  bool prologueOnly(uint32_t i, uint32_t k) const {
+    if (i >= inline_.size() || !inline_[i] || (s_.ops[i].kernel != Atom::Gain && s_.ops[i].kernel != Atom::GainAdd)) return false;
+    return k >= (s_.ops[i].kernel == Atom::GainAdd ? 2u : 1u);
+  }
+  // While emitting a frame loop's settled copy (emitGainBranch): inline gains take their settled form.
+  bool gainsSettled_ = false;
+  std::unordered_map<uint32_t, Value*> gainTarget_;  // op → its target, loaded after its prologue (before the loops)
   bool perFrame(const g::Region& r) const noexcept {
     return r.kind == g::RegionKind::Control || (r.kind == g::RegionKind::Loop && (r.subBlock <= 1 || r.numSolves > 0));
   }
@@ -254,7 +275,7 @@ private:
         const bool voiceSlice = !pf && r.poly == g::Poly::Voice && op.lanes == 8;
         inline_[i] = kernel && !wideCall(op) &&
                      ((isElementwise(op.kernel) && (pf || exactOf(op.kernel) < 0 || (voiceSlice && o_.scalarLanes))) ||
-                      ((pf || voiceSlice) && isSimpleStateful(op.kernel)));
+                      ((pf || voiceSlice) && isSimpleStateful(op.kernel)) || (r.poly == g::Poly::Global && inlineGain(i)));
         if (pf) {
           grp_[i] = inline_[i] && !body_[i] ? regionGroup : -1;
           continue;
@@ -271,8 +292,13 @@ private:
         // spill: with one constant per op, the review's mux probe spilled 15 KB and needed stack probes).
         const uint32_t c = opCost(i);
         uint32_t newInv = 0;
-        for (const g::Operand& o : s_.inputs(op))
-          if (isPattern(o) && o.kind != g::Operand::Kind::None && !runInv.count({static_cast<int>(o.kind), o.index})) ++newInv;
+        const auto opIns = s_.inputs(op);
+        for (uint32_t k = 0; k < opIns.size(); ++k) {
+          const g::Operand& o = opIns[k];
+          if (isPattern(o) && o.kind != g::Operand::Kind::None && !prologueOnly(i, k) &&
+              !runInv.count({static_cast<int>(o.kind), o.index}))
+            ++newInv;
+        }
         if (run < 0 || runLanes != op.lanes || (runSize > 0 && runSize + c > kMaxRunCost) ||
             (runSize > 0 && runInv.size() + newInv > kMaxRunInvariants)) {
           run = next++;
@@ -281,8 +307,9 @@ private:
           runInv.clear();
         }
         runSize += c;
-        for (const g::Operand& o : s_.inputs(op))
-          if (isPattern(o) && o.kind != g::Operand::Kind::None) runInv.insert({static_cast<int>(o.kind), o.index});
+        for (uint32_t k = 0; k < opIns.size(); ++k)
+          if (isPattern(opIns[k]) && opIns[k].kind != g::Operand::Kind::None && !prologueOnly(i, k))
+            runInv.insert({static_cast<int>(opIns[k].kind), opIns[k].index});
         grp_[i] = run;
       }
     }
@@ -333,8 +360,10 @@ private:
           if (!voice) {
             std::set<std::pair<int, uint32_t>> more = live;
             for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
-              for (const g::Operand& o : s_.inputs(s_.ops[i]))
-                if (o.kind != g::Operand::Kind::None && isPattern(o)) more.insert({static_cast<int>(o.kind), o.index});
+              const auto opIns = s_.inputs(s_.ops[i]);
+              for (uint32_t k = 0; k < opIns.size(); ++k)
+                if (opIns[k].kind != g::Operand::Kind::None && isPattern(opIns[k]) && !prologueOnly(i, k))
+                  more.insert({static_cast<int>(opIns[k].kind), opIns[k].index});
               if (s_.ops[i].state != g::kNone) more.insert({-1, s_.ops[i].state});
             }
             if (q > r && more.size() > kMaxGlobalChainLive) break;
@@ -429,6 +458,7 @@ private:
           maxOperands = std::max<uint32_t>(maxOperands, std::max<uint32_t>(s_.ops[i].numIn, s_.ops[i].numOut));
     voice_ = vw != 0;
     vw_ = voice_ ? vw : 8u;
+    gainTarget_.clear();
     local_ = vw == 16 ? stageLocalBuffers(s_, k) : std::vector<uint8_t>(s_.buffers.size(), 0);
     staged_.assign(s_.state.entries.size(), 0);
     if (vw == 16) {
@@ -1074,6 +1104,30 @@ private:
     // ---- stateful (one frame per evaluation) ----
     const uint32_t sp = op.state;
     switch (op.kernel) {
+      case Atom::Gain:
+      case Atom::GainAdd: {  // inlineGain(): per frame the kernel's definition, vectorised the settled form
+        const bool add = op.kernel == Atom::GainAdd;
+        Value* x = a[add ? 1 : 0];
+        Value* acc = add ? a[0] : v.zero();
+        Vx s1(B_, 1);
+        const auto pre = gainTarget_.find(i);  // loaded after the prologue, before the loop (the settled form's)
+        Value* tgt = pre != gainTarget_.end() && (fr.w != 1 || gainsSettled_)
+                         ? pre->second
+                         : ldF(sp, static_cast<uint32_t>(offsetof(dsp::GainState, target)), s1);
+        if (fr.w == 1 && !gainsSettled_) {
+          Value* d = ldF(sp, static_cast<uint32_t>(offsetof(dsp::GainState, d)), s1);
+          Value* r = ldF(sp, static_cast<uint32_t>(offsetof(dsp::GainState, r)), s1);
+          Value* y = v.fma(x, v.add(tgt, d), acc);
+          out(v.select(v.band(v.eq(d, v.zero()), v.eq(tgt, v.zero())), acc, y));
+          Value* dn = v.mul(d, r);
+          st(sp, static_cast<uint32_t>(offsetof(dsp::GainState, d)),
+             v.select(v.lt(v.abs(dn), v.cf(dsp::kGainSettled)), v.zero(), dn), s1);
+          return;
+        }
+        Value* t = splatScalar(tgt, fr.w);
+        out(v.select(splatScalar(s1.eq(tgt, s1.zero()), fr.w), acc, v.fma(x, t, acc)));
+        return;
+      }
       case Atom::Z1: {
         out(ldF(sp, 0, v));
         st(sp, 0, a[0], v);
@@ -1257,9 +1311,11 @@ private:
     if (reg.kind == g::RegionKind::Block) {
       emitSlice(reg.firstOp, reg.firstOp + reg.numOps, c64(0), frames64_);
     } else if (perFrame(reg)) {
-      forLoop(c64(0), frames64_, 1, [&](Value* t) {
-        Map m;
-        emitPerFrame(reg, t, lanes, m, true);
+      emitGainBranch(voice_ ? nullptr : emitRegionGainPrologues(ri, ri), [&] {
+        forLoop(c64(0), frames64_, 1, [&](Value* t) {
+          Map m;
+          emitPerFrame(reg, t, lanes, m, true);
+        });
       });
     } else {
       const uint32_t sub = reg.subBlock;
@@ -1369,17 +1425,19 @@ private:
     hoistIP_ = B_.CreateBr(body);
     inv_.clear();
     B_.SetInsertPoint(body);
-    forLoop(c64(0), frames64_, 1, [&](Value* t) {
-      Map m;
-      for (uint32_t r = r0; r <= r1; ++r) {
-        const g::Region& reg = s_.regions[r];
-        if (reg.kind == g::RegionKind::Block) {
-          const Frame fr{t, w, &m, true};
-          for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) emitInline(i, fr);
-        } else {
-          emitPerFrame(reg, t, w, m, true);
+    emitGainBranch(voice_ ? nullptr : emitRegionGainPrologues(r0, r1), [&] {
+      forLoop(c64(0), frames64_, 1, [&](Value* t) {
+        Map m;
+        for (uint32_t r = r0; r <= r1; ++r) {
+          const g::Region& reg = s_.regions[r];
+          if (reg.kind == g::RegionKind::Block) {
+            const Frame fr{t, w, &m, true};
+            for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) emitInline(i, fr);
+          } else {
+            emitPerFrame(reg, t, w, m, true);
+          }
         }
-      }
+      });
     });
     hoistIP_ = nullptr;
     inv_.clear();
@@ -1409,6 +1467,7 @@ private:
       case Atom::TanFast: case Atom::TanhFast: case Atom::DbToGainFast: case Atom::GainToDbFast: case Atom::SinePhase:
         return 22;
       case Atom::Mux: case Atom::Demux: return 2 * s_.ops[i].numIn + 2 * s_.ops[i].numOut;
+      case Atom::Gain: case Atom::GainAdd: return 4;
       default: return 2;
     }
   }
@@ -1455,7 +1514,103 @@ private:
   // exist (vmaskmov), so one body serves full and partial chunks. Every op is element-wise and none of them is an
   // exact transcendental (those are calls in slices), so the masked lanes compute exactly what the kernels' scalar
   // tail does: results stay bit-identical.
+  // The prologues of the inline gains among ops [a, b) (dsp::gainPrologue: prepare, retarget, start), at the insert
+  // point; returns whether all of them are settled (their residual is 0), or nullptr if there are none.
+  Value* emitGainPrologues(uint32_t a, uint32_t b) {
+    Value* settled = nullptr;
+    for (uint32_t i = a; i < b; ++i) {
+      if (!inline_[i] || (s_.ops[i].kernel != Atom::Gain && s_.ops[i].kernel != Atom::GainAdd)) continue;
+      const g::Op& op = s_.ops[i];
+      const auto ins = s_.inputs(op);
+      const uint32_t kA = op.kernel == Atom::GainAdd ? 1u : 0u;
+      const Frame f0{c64(0), 1, nullptr, false};
+      Value* g = read(ins[kA + 1], f0);
+      Value* tau = read(ins[kA + 2], f0);
+      Value* start = ins.size() > kA + 3 ? read(ins[kA + 3], f0) : static_cast<Value*>(llvm::ConstantFP::get(f32_, 0.0));
+      // The steady case needs no call: started, the same target and the same time constant leave the state as it is
+      // (retarget and prepare change nothing then).
+      auto field = [&](size_t off) {
+        return B_.CreateAlignedLoad(f32_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtr(op.state), off),
+                                    llvm::Align(4));
+      };
+      Value* steady = B_.CreateAnd(B_.CreateFCmpUNE(field(offsetof(dsp::GainState, started)), llvm::ConstantFP::get(f32_, 0.0)),
+                                   B_.CreateAnd(B_.CreateFCmpOEQ(field(offsetof(dsp::GainState, target)), g),
+                                                B_.CreateFCmpOEQ(field(offsetof(dsp::GainState, tau)), tau)));
+      llvm::BasicBlock* call = llvm::BasicBlock::Create(C_, "gain_prologue", F_);
+      llvm::BasicBlock* after = llvm::BasicBlock::Create(C_, "gain_ready", F_);
+      B_.CreateCondBr(steady, after, call);
+      B_.SetInsertPoint(call);
+      llvm::FunctionType* ty = llvm::FunctionType::get(llvm::Type::getVoidTy(C_), {ptr_, f32_, f32_, f32_}, false);
+      callPtr(ty, tabLoad(reinterpret_cast<const void*>(&dsp::gainPrologue)), {statePtr(op.state), g, tau, start});
+      B_.CreateBr(after);
+      B_.SetInsertPoint(after);
+      Value* d = B_.CreateAlignedLoad(
+          f32_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtr(op.state), offsetof(dsp::GainState, d)),
+          llvm::Align(4));
+      Value* z = B_.CreateFCmpOEQ(d, llvm::ConstantFP::get(f32_, 0.0));
+      settled = settled ? B_.CreateAnd(settled, z) : z;
+      gainTarget_[i] = B_.CreateAlignedLoad(
+          f32_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtr(op.state), offsetof(dsp::GainState, target)),
+          llvm::Align(4));
+    }
+    return settled;
+  }
+  // ... of the inline gains of regions [r0, r1] (a chain or a per-sample loop: before its frame loop).
+  Value* emitRegionGainPrologues(uint32_t r0, uint32_t r1) {
+    Value* settled = nullptr;
+    for (uint32_t r = r0; r <= r1; ++r)
+      if (Value* s = emitGainPrologues(s_.regions[r].firstOp, s_.regions[r].firstOp + s_.regions[r].numOps))
+        settled = settled ? B_.CreateAnd(settled, s) : s;
+    return settled;
+  }
+  // A frame loop whose body has inline gains: once per block, settled (every residual 0: the gains are a multiply-add
+  // each) or moving (their per-frame definition). `loop` emits the loop at the insert point.
+  template <class Loop>
+  void emitGainBranch(Value* settled, Loop&& loop) {
+    if (!settled) {
+      loop();
+      return;
+    }
+    llvm::BasicBlock* fast = llvm::BasicBlock::Create(C_, "gains_settled", F_);
+    llvm::BasicBlock* slow = llvm::BasicBlock::Create(C_, "gains_moving", F_);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "gains_after", F_);
+    B_.CreateCondBr(settled, fast, slow);
+    B_.SetInsertPoint(slow);
+    loop();
+    B_.CreateBr(done);
+    B_.SetInsertPoint(fast);
+    gainsSettled_ = true;
+    loop();
+    gainsSettled_ = false;
+    B_.CreateBr(done);
+    B_.SetInsertPoint(done);
+  }
+
   void emitFused(uint32_t a, uint32_t b, Value* t0, Value* n) {
+    if (Value* settled = emitGainPrologues(a, b)) {
+      // A gain is moving (rare: ~20 time constants after a change): the run frame by frame, every gain per its
+      // definition; else the vectorised run with the gains' settled form.
+      llvm::BasicBlock* fast = llvm::BasicBlock::Create(C_, "gains_settled", F_);
+      llvm::BasicBlock* slow = llvm::BasicBlock::Create(C_, "gains_moving", F_);
+      llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "gains_after", F_);
+      B_.CreateCondBr(settled, fast, slow);
+      B_.SetInsertPoint(slow);
+      forLoop(c64(0), n, 1, [&](Value* f) {
+        Map m;
+        const Frame fr{B_.CreateAdd(t0, f, "", true, true), 1, &m, true};
+        for (uint32_t i = a; i < b; ++i) emitInline(i, fr);
+      });
+      B_.CreateBr(done);
+      B_.SetInsertPoint(fast);
+      emitFusedRun(a, b, t0, n);
+      B_.CreateBr(done);
+      B_.SetInsertPoint(done);
+      return;
+    }
+    emitFusedRun(a, b, t0, n);
+  }
+
+  void emitFusedRun(uint32_t a, uint32_t b, Value* t0, Value* n) {
     const unsigned lanes = s_.ops[a].lanes;
     const uint64_t chunk = lanes == 8 ? 1 : 8;  // frames per <8 x float>
     // 8 chunks: a 64-frame block of a 1-lane run is one iteration with eight independent chains (measured: 4 chunks

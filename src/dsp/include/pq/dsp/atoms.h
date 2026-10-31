@@ -194,6 +194,13 @@ const KernelInfo& kernelInfo(Atom a) noexcept;  // RT-safe
 // nullptr for an unsupported combination. RT-safe (table lookup), though callers normally do it off-thread.
 KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept;
 
+// gain / gain_add, 1 lane, param g (T4.x-fix-dsp): what a call does before its frames (prepare the coefficient for
+// `tau` samples, retarget to g, honour `start`), so that generated code can run the frames inline (the per-frame
+// definition in kernels_gain.cpp: y = target + d; out = (d == 0 && target == 0) ? (acc or 0) : fma(x, y, acc or 0);
+// d = d·r, snapped to 0 below kGainSettled). Idempotent within a block (same g, tau, start). RT-safe.
+inline constexpr float kGainSettled = 3e-8f;  // |residual| below this (≈ −150 dB): settled (exactly the target)
+void gainPrologue(void* state, float g, float tau, float start) noexcept;
+
 struct StateInit {
   double sampleRate = 48000.0;
   uint32_t lanes = 1;            // 1 or 8 (only the delay line's ring layout depends on it)

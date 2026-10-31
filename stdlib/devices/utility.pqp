@@ -3,8 +3,9 @@
 // choices Live does not document are in QUESTIONS Q121.
 //
 // Everything but bass mono and the DC filter is linear and memoryless, so it collapses into one 2 × 2 matrix that
-// is computed once per block from the params (the Control region) and smoothed per sample (one-pole, 2 ms, like
-// the mixer's gain, so knob moves and automation never zipper or click):
+// is computed once per block from the params (the Control region) and applied through smoothed gains (`gain` /
+// `gain_add`, one-pole, 2 ms, like the mixer's, starting at their first value: so knob moves and automation never
+// zipper or click, and a new Utility starts at its settings, M4 review L10):
 //
 //   channel mode   Stereo (L, R) · Left (L, L) · Right (R, R) · Swap (R, L)              `chan` = 0 … 3
 //   phase          L·(invL ? −1 : 1), R·(invR ? −1 : 1)
@@ -25,8 +26,8 @@
 //
 // Exports: the mid and side signals (after the matrix, before bass mono) and the bass band.
 //
-// Cost (no bass mono): per sample one 4-channel smoothing step (the per-sample loop) and 4 multiply-adds; with bass
-// mono three SVF cores more.
+// Cost (no bass mono): settled, 4 multiply-adds per sample (vectorised; the smoothing runs only while a coefficient
+// moves); with bass mono three SVF cores more.
 import "../filters/svf_fast.pqp"
 import "../filters/dcblock.pqp"
 
@@ -69,29 +70,16 @@ patch utility {
   oL  = g * min(1, 1 - balance)
   oR  = g * min(1, 1 + balance)
 
-  // ---- smoothing: 2 ms one-pole on every coefficient ----
-  // Kept as the distance to the target: e ← (e + t[n−1] − t[n])·c, value = t + e, c = e^(−1/(2 ms·sr)). The
-  // distance decays to 0 (and flushes), so a settled coefficient is exactly its target: unity gain is
-  // bit-transparent. (v ← v + (t − v)·(1 − c) would stall up to ulp/(2(1 − c)) ≈ 48 ulps from it.) Per sample the
-  // loop is one multiply-add per coefficient; the target steps only at block boundaries. `f` (z1(1): 0 at the first
-  // sample, then 1) makes the first sample's distance 0, so a new Utility starts at its target instead of fading in
-  // from 0 (M4 review L10).
-  k = exp(-1 / (0.002 * sr))
-  f = z1(1)
+  // ---- the matrix through smoothed gains (2 ms one-pole per coefficient, from its first value) ----
+  // The gain atom keeps the distance to the target and snaps it to 0, so a settled coefficient is exactly its target:
+  // unity gain is bit-transparent (x · 1, and a settled gain_add at 0 passes the accumulator).
   // Without bass mono: out L = aLL·L + aLR·R, out R = aRL·L + aRR·R.
-  direct = (oL * (mL + sL), oL * (mR + sR), oR * (mL - sL), oR * (mR - sR))
-  dd     = z1(dn)
-  dn     = dd * k + (z1(direct) - direct) * f * k
-  sd     = direct + dn
-  plain  = (sd[0] * L + sd[1] * R, sd[2] * L + sd[3] * R)
+  plain = (gain_add(gain(L, oL * (mL + sL), start: 1), R, oL * (mR + sR), start: 1),
+           gain_add(gain(L, oR * (mL - sL), start: 1), R, oR * (mR - sR), start: 1))
 
   // With bass mono: M and S, filtered, then out = (oL·(M' + S'), oR·(M' − S')).
-  split = (mL, mR, sL, sR, oL, oR)
-  sp    = z1(sn)
-  sn    = sp * k + (z1(split) - split) * f * k
-  ss    = split + sn
-  M     = ss[0] * L + ss[1] * R
-  S     = ss[2] * L + ss[3] * R
+  M     = gain_add(gain(L, mL, start: 1), R, mR, start: 1)
+  S     = gain_add(gain(L, sL, start: 1), R, sR, start: 1)
   // LR4 crossover from Butterworth SVF cores (svf_core_fast) (k = √2): allpass = x − 2k·band, hp = x − k·band − low, lp = low.
   gx    = tan(3.141592653589793 * clip(bassFreq, 0, 0.49 * sr) / sr)
   ap    = svf_core_fast(M, g: gx, k: 1.4142135623730951)
@@ -101,7 +89,7 @@ patch utility {
   h2    = svf_core_fast(S1, g: gx, k: 1.4142135623730951)
   Sp    = S1 - 1.4142135623730951 * h2.band - h2.low
   low   = svf_core_fast(svf_core_fast(M, g: gx, k: 1.4142135623730951).low, g: gx, k: 1.4142135623730951).low
-  bm    = audition >= 0.5 ? (ss[4] * low, ss[5] * low) : (ss[4] * (Mp + Sp), ss[5] * (Mp - Sp))
+  bm    = audition >= 0.5 ? (gain(low, oL, start: 1), gain(low, oR, start: 1)) : (gain(Mp + Sp, oL, start: 1), gain(Mp - Sp, oR, start: 1))
 
   out = bassMono >= 0.5 ? bm : plain
 

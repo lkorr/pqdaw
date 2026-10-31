@@ -1,8 +1,15 @@
 // Smoothed gains (T3.17-fix2, M3 review H1): gain (x, g, time) and gain_add (acc, x, g, time). Semantics in
 // pq/dsp/atoms.h. The mixer's hot path: a gain that is not moving costs one multiply per sample (nothing at all for
 // gain_add at 0: the accumulator passes through, in place when the scheduler gave the output the accumulator's
-// buffer); a moving one costs one more multiply-add, evaluated in closed form (vectorised over time), never a
-// per-sample loop of interpreted ops.
+// buffer); a moving one costs one more multiply-add (8 lanes: per lane and frame; 1 lane: a scalar recurrence per
+// frame, only while it moves: ~20 time constants after a change).
+//
+// The 1-lane param path (T4.x-fix-dsp) is defined frame by frame, so that the result does not depend on how a block
+// is split into calls and the JIT can generate the same arithmetic inline (in a per-sample loop or a chain, per
+// frame; in a vectorised run, its settled form): at the call's start gainPrologue (prepare, retarget); then per frame
+//   y = target + d;  out = (d == 0 && target == 0) ? (gain_add ? acc : 0) : fma(x, y, acc or 0);
+//   d = d·r;  d = |d| < kGainSettled ? 0 : d.
+// While d is 0 for the whole call this is the settled vector path (one multiply-add per sample, or a copy / fill).
 //
 // State: the target the gain is heading for and the residual d (gain = target + d). Keeping d itself, rather than
 // the gain, lets it decay to the snap threshold exactly: a gain stored as a float stalls about an ulp of the target
@@ -21,7 +28,7 @@ namespace pq::dsp::detail {
 namespace {
 
 // Below this distance from the target (absolute: ≈ −150 dB) a moving gain snaps onto it and is settled.
-constexpr float kSettled = 3e-8f;
+constexpr float kSettled = kGainSettled;
 
 // r = e^(−1/τ) for τ samples (0: no smoothing), and its powers for the 1-lane closed form, cached per τ.
 inline void prepare(GainState& st, uint32_t lane, float tau) noexcept {
@@ -115,7 +122,7 @@ struct Gain {
     st.started[0] = 1.0f;
   }
 
-  // A param gain: closed form, vectorised over time.
+  // A param gain (the frame-by-frame definition in the header comment).
   template <bool accSpl, bool xSpl>
   static void param1(const KernelArgs& a) noexcept {  // RT-safe
     auto& st = *static_cast<GainState*>(a.state);
@@ -125,9 +132,8 @@ struct Gain {
     float* out = a.out[0];
     auto accAt8 = [&](uint32_t i) noexcept { return kAdd ? load8<accSpl>(acc, i) : _mm256_setzero_ps(); };
     auto accAt1 = [&](uint32_t i) noexcept { return kAdd ? load1<accSpl>(acc, i) : 0.0f; };
-    prepare(st, 0, a.in[kA + 2][0]);
     const float gv = finiteOr0(a.in[kA + 1][0]);
-    float d = retarget(st, 0, gv, startAt(a, 0));
+    float d = prologue1(st, gv, a.in[kA + 2][0], startAt(a, 0));
     if (d == 0.0f) {  // settled
       if (gv == 0.0f) {
         if constexpr (kAdd) {
@@ -149,21 +155,23 @@ struct Gain {
       for (uint32_t i = vecEnd; i < n; ++i) out[i] = std::fma(load1<xSpl>(x, i), gv, accAt1(i));
       return;
     }
-    // Moving: gain_k = gv + d·r^k for the block's frames k = 0, 1, … (the first frame uses the previous block's end
-    // value, as a one-pole y ← y + (g − y)(1 − r) read before its update).
-    const __m256 gv8 = _mm256_set1_ps(gv);
-    const __m256 rp = _mm256_loadu_ps(st.rpow);
+    // Moving: frame by frame (gain_k = gv + d_k, d_{k+1} = d_k·r snapped; the first frame uses the previous
+    // block's end value, as a one-pole y ← y + (g − y)(1 − r) read before its update).
     const float r = st.r[0];
-    for (uint32_t i = 0; i < vecEnd; i += 8) {
-      const __m256 y = _mm256_fmadd_ps(_mm256_set1_ps(d), rp, gv8);
-      _mm256_storeu_ps(out + i, _mm256_fmadd_ps(load8<xSpl>(x, i), y, accAt8(i)));
-      d *= st.r8;
-    }
-    for (uint32_t i = vecEnd; i < n; ++i) {
-      out[i] = std::fma(load1<xSpl>(x, i), gv + d, accAt1(i));
+    for (uint32_t i = 0; i < n; ++i) {
+      const float s = accAt1(i);
+      const float y = std::fma(load1<xSpl>(x, i), gv + d, s);
+      out[i] = d == 0.0f && gv == 0.0f ? (kAdd ? s : 0.0f) : y;
       d *= r;
+      d = std::fabs(d) < kSettled ? 0.0f : d;
     }
-    st.d[0] = std::fabs(d) < kSettled ? 0.0f : d;
+    st.d[0] = d;
+  }
+
+  // The start of a 1-lane param call: prepare, retarget; returns the residual (0: settled).
+  static float prologue1(GainState& st, float gv, float tau, bool startAtTarget) noexcept {  // RT-safe
+    prepare(st, 0, tau);
+    return retarget(st, 0, gv, startAtTarget);
   }
 
   // ---- 8 lanes (one voice group): per-lane one-pole per sample ----
@@ -239,3 +247,11 @@ KernelFn findGainKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept {
 }
 
 }  // namespace pq::dsp::detail
+
+namespace pq::dsp {
+
+void gainPrologue(void* state, float g, float tau, float start) noexcept {  // RT-safe
+  (void)detail::Gain<false>::prologue1(*static_cast<GainState*>(state), std::isfinite(g) ? g : 0.0f, tau, start >= 0.5f);
+}
+
+}  // namespace pq::dsp

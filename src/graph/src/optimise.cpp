@@ -665,7 +665,16 @@ private:
     const AtomSignature& sig = sigOf(nodes_[n].atom);
     for (uint32_t i = 0; i < nodes_[n].nIn; ++i) in(n, i);  // resolve
     if (!isPure(sig)) {
-      if (!cyclic_[n] && nodes_[n].nOut > 0) facts_[out(n)] = atomFacts(n);
+      // A smoothed gain that starts at a literal target is that (pure) multiply (T4.x-fix-dsp): rewritten here, it
+      // goes on as the pure atom it became.
+      if ((nodes_[n].atom == a_.gain || nodes_[n].atom == a_.gainAdd) && simplify(n)) return;
+      if (!isPure(sigOf(nodes_[n].atom))) {
+        if (!cyclic_[n] && nodes_[n].nOut > 0) facts_[out(n)] = atomFacts(n);
+        return;
+      }
+      if (fold(n)) return;
+      if (nodes_[n].nOut > 0 && !cyclic_[n]) facts_[out(n)] = atomFacts(n);
+      cse(n);
       return;
     }
     if (fold(n)) return;

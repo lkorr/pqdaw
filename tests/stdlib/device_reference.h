@@ -112,6 +112,7 @@ struct Utility {
       L = dcL.tick(L, rc);
       R = dcR.tick(R, rc);
     }
+    // The coefficients through smoothed gains (gain / gain_add, start 1): settled, out = R·b + L·a (one multiply-add).
     if (!conf.bassMono) {
       float sd[4];
       for (int i = 0; i < 4; ++i) {
@@ -119,8 +120,8 @@ struct Utility {
         td[i] = direct[i];
         sd[i] = direct[i] + ed[i];
       }
-      out[0] = fma_(sd[0], L, sd[1] * R);
-      out[1] = fma_(sd[2], L, sd[3] * R);
+      out[0] = fma_(R, sd[1], L * sd[0]);
+      out[1] = fma_(R, sd[3], L * sd[2]);
       mid = 0.5f * (out[0] + out[1]);
       side = 0.5f * (out[0] - out[1]);
       bass = 0.0f;
@@ -132,7 +133,7 @@ struct Utility {
       ts[i] = split[i];
       ss[i] = split[i] + es[i];
     }
-    const float M = fma_(ss[0], L, ss[1] * R), S = fma_(ss[2], L, ss[3] * R);
+    const float M = fma_(R, ss[1], L * ss[0]), S = fma_(R, ss[3], L * ss[2]);
     const float o4 = ss[4], o5 = ss[5];
     float band, low;
     ap.tick(M, bc, band, low);
