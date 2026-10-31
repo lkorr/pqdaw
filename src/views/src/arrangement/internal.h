@@ -253,7 +253,6 @@ public:
   // Overlay geometry (fade curves, crossfades, handles) of clips whose waveform is a queued tile: appended to the
   // draw list by flushTiles after the quads. Untextured geometry only.
   ui::DrawList overlay;
-  ui::DrawList scratch;  // a tile's waveform before it is rasterised (clip-local)
 
   // Clip-name colour per clip colour (clipTextFor is not for per-frame use).
   ui::Rgba clipTextColour(const ui::Theme& th, ui::Rgba fill);

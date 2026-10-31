@@ -69,6 +69,13 @@ struct WaveformStats {
 };
 
 WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const WaveformDraw& d);
+// The same columns written straight into an 8-bit coverage image (255 where drawWaveform's strips cover a pixel
+// centre; pixels are never cleared): a tile of the waveform without tessellating and rasterising triangles (a few
+// stores per column instead of a triangle setup per column). `d.rect` is in the image's pixels; columns outside
+// [0, width) are skipped. Matches rasterizeCoverage of drawWaveform's geometry except for pixel centres exactly on a
+// strip edge (the GPU's fill rule), which the tests bound.
+WaveformStats rasterWaveform(const WaveformData& data, const WaveformDraw& d, uint8_t* dst, uint32_t width, uint32_t height,
+                             uint32_t rowPitch);
 
 // The level drawWaveform reads at `framesPerPx` (−1 = samples wanted: below the finest level).
 int32_t waveformLevelFor(const WaveformData& data, double framesPerPx) noexcept;

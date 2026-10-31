@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <tuple>
 #include <vector>
 
 #include "golden_check.h"
@@ -210,6 +211,34 @@ TEST_CASE("waveform: below 256 frames per px the samples are drawn (min / max, t
   c.reset(200, 64);
   st = drawWaveform(c, wd, d);
   CHECK(st.approx);
+}
+
+TEST_CASE("waveform: rasterWaveform writes the pixels drawWaveform's strips cover (CPU raster of the geometry)") {
+  for (const auto& [frames, fpp, gain] : {std::tuple{uint64_t{1} << 20, 700.0, 1.0f}, std::tuple{uint64_t{1} << 18, 300.0, 1.7f},
+                                          std::tuple{uint64_t{1} << 22, 9000.0, 0.4f}}) {
+    Synth s(frames, 2);
+    constexpr uint32_t W = 300, H = 57;
+    WaveformDraw d;
+    d.frame0 = 1234.5;
+    d.frame1 = d.frame0 + fpp * 280.0;
+    d.rect = {7, 3, 287, 54};
+    d.gain = gain;
+    d.reverse = fpp > 1000.0;
+    DrawList dl;
+    dl.reset(W, H);
+    (void)drawWaveform(dl, s.wd, d);
+    const auto geom = raster(dl, W, H);
+    std::vector<uint8_t> direct(static_cast<size_t>(W) * H, 0);
+    (void)rasterWaveform(s.wd, d, direct.data(), W, H, W);
+    int differ = 0, covered = 0;
+    for (size_t i = 0; i < direct.size(); ++i) {
+      covered += geom[i] > 127 ? 1 : 0;
+      differ += (geom[i] > 127) != (direct[i] == 255) ? 1 : 0;
+    }
+    CAPTURE(fpp);
+    CHECK(covered > 1000);
+    CHECK(differ <= covered / 200);  // only centres exactly on an edge (the fill rule) may differ
+  }
 }
 
 TEST_CASE("render: waveform-lod matches the golden image") {

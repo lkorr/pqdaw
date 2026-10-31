@@ -19,7 +19,6 @@
 #include "pq/core/clip_time.h"
 #include "pq/document/audio_clip.h"
 #include "pq/ui/lines.h"
-#include "pq/ui/raster.h"
 #include "pq/ui/waveform.h"
 #include "pq/views/waveforms.h"
 
@@ -46,14 +45,12 @@ int32_t localWidth(Ticks length, double k) noexcept {
   return std::max<int32_t>(1, static_cast<int32_t>(std::clamp(std::floor(static_cast<double>(length) * k + 0.5), 1.0, 1073741824.0)));
 }
 
-// Draws one linear piece (clip-local px [xa, xb) showing source frames [fa, fb), mirrored when reversed) with the clip's
-// left edge at device x `x0`. Columns are the whole px whose centre lies in the piece.
-WaveformStats drawPiece(DrawList& dl, const WaveformData& data, const AudioPiece& p, float x0, float by0, float by1, float gain,
-                        Rgba col, float lo, float hi) {
+// The draw of one linear piece (clip-local px [xa, xb) showing source frames [fa, fb), mirrored when reversed) with
+// the clip's left edge at x `x0`. Columns are the whole px whose centre lies in the piece. False: no column.
+bool pieceDraw(const AudioPiece& p, float x0, float by0, float by1, float gain, Rgba col, float lo, float hi, WaveformDraw& d) {
   const double ia = std::ceil(p.xa - 0.5), ib = std::ceil(p.xb - 0.5);
-  if (ib <= ia || !(p.fb > p.fa)) return {};
+  if (ib <= ia || !(p.fb > p.fa)) return false;
   const double s = (p.fb - p.fa) / (p.xb - p.xa);
-  WaveformDraw d;
   if (!p.reverse) {
     d.frame0 = p.fa + (ia - p.xa) * s;
     d.frame1 = p.fa + (ib - p.xa) * s;
@@ -67,6 +64,13 @@ WaveformStats drawPiece(DrawList& dl, const WaveformData& data, const AudioPiece
   d.colour = col;
   d.clipX0 = lo;
   d.clipX1 = hi;
+  return true;
+}
+
+WaveformStats drawPiece(DrawList& dl, const WaveformData& data, const AudioPiece& p, float x0, float by0, float by1, float gain,
+                        Rgba col, float lo, float hi) {
+  WaveformDraw d;
+  if (!pieceDraw(p, x0, by0, by1, gain, col, lo, hi, d)) return {};
   return drawWaveform(dl, data, d);
 }
 
@@ -101,13 +105,14 @@ bool buildAudioTile(TileAtlas& tiles, AudioLayout& L, const media::WaveformOverv
   }
   WaveformLevel lv[kMaxOverviewLevels];
   const WaveformData data = waveformData(ov, nullptr, lv);
-  m.scratch.reset(static_cast<uint32_t>(width), static_cast<uint32_t>(bodyH));
-  forEachAudioPiece(c, L, *L.tempo, k, 0.0, static_cast<double>(width), [&](const AudioPiece& p) {
-    (void)drawPiece(m.scratch, data, p, 0.0f, 0.0f, static_cast<float>(bodyH), clipGainLinear(c.gainDb), rgba(255, 255, 255), -3e38f, 3e38f);
-  });
   uint8_t* dst = tiles.write(tile);
   const uint32_t pitch = TileAtlas::rowPitch(tile);
-  rasterizeCoverage(m.scratch, dst + pitch + 1, static_cast<uint32_t>(width), static_cast<uint32_t>(bodyH), pitch, {0.0f, 0.0f});
+  // The strips' coverage written directly (ui::rasterWaveform: the pixels drawWaveform covers, without triangles).
+  forEachAudioPiece(c, L, *L.tempo, k, 0.0, static_cast<double>(width), [&](const AudioPiece& p) {
+    WaveformDraw d;
+    if (pieceDraw(p, 0.0f, 0.0f, static_cast<float>(bodyH), clipGainLinear(c.gainDb), rgba(255, 255, 255), -3e38f, 3e38f, d))
+      (void)rasterWaveform(data, d, dst + pitch + 1, static_cast<uint32_t>(width), static_cast<uint32_t>(bodyH), pitch);
+  });
   t.tile = tile;
   t.state = PreviewTile::State::Ready;
   ++m.stats.tilesBuilt;

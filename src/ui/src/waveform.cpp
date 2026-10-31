@@ -33,18 +33,29 @@ int32_t waveformLevelFor(const WaveformData& data, double framesPerPx) noexcept 
   return best;
 }
 
-WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const WaveformDraw& d) {
+namespace {
+
+// The columns of a draw: [c0, c0 + ncol) from rect.x0, per channel min / max in the scratch; ok = something to draw.
+struct Prep {
   WaveformStats st;
+  uint32_t channels = 0;
+  int32_t c0 = 0;
+  size_t ncol = 0;
+  bool ok = false;
+};
+
+Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& clip) {
+  Prep pr;
+  WaveformStats& st = pr.st;
   const uint32_t channels = std::min(data.channels, kMaxWaveformChannels);
   const float width = d.rect.x1 - d.rect.x0;
-  if (channels == 0 || data.frames == 0 || !(width > 0.0f) || !(d.frame1 > d.frame0) || d.rect.y1 <= d.rect.y0) return st;
-  const ClipRect clip = dl.clip();
+  if (channels == 0 || data.frames == 0 || !(width > 0.0f) || !(d.frame1 > d.frame0) || d.rect.y1 <= d.rect.y0) return pr;
   const auto ncols = static_cast<int32_t>(std::ceil(width));
   const float lx = std::max(static_cast<float>(clip.x0), d.clipX0), rx = std::min(static_cast<float>(clip.x1), d.clipX1);
-  if (!(rx > lx)) return st;
+  if (!(rx > lx)) return pr;
   const int32_t c0 = std::max(0, static_cast<int32_t>(std::max(-1.0e9f, std::floor(lx - d.rect.x0))));
   const int32_t c1 = std::min(ncols, static_cast<int32_t>(std::min(1.0e9f, std::ceil(rx - d.rect.x0))));
-  if (c1 <= c0 || static_cast<float>(clip.y1) <= d.rect.y0 || static_cast<float>(clip.y0) >= d.rect.y1) return st;
+  if (c1 <= c0 || static_cast<float>(clip.y1) <= d.rect.y0 || static_cast<float>(clip.y0) >= d.rect.y1) return pr;
   const double fpp = (d.frame1 - d.frame0) / static_cast<double>(width);
   // The frames column c shows: [fa, fb).
   auto colFrames = [&](int32_t c, double& fa, double& fb) {
@@ -67,7 +78,7 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
     const double lo = std::max(0.0, std::min(fa, ga) - 1.0), hi = std::min(static_cast<double>(data.frames), std::max(fb, gb) + 1.0);
     const bool covered = sm.frames > 0 && static_cast<double>(sm.frame0) <= lo && static_cast<double>(sm.frame0 + sm.frames) >= hi;
     if (!covered) {
-      if (data.levels.empty()) return st;
+      if (data.levels.empty()) return pr;
       level = 0;
       st.approx = true;
     }
@@ -85,30 +96,42 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
 
   if (level >= 0) {
     const WaveformLevel& lv = data.levels[static_cast<size_t>(level)];
-    const double fpb = static_cast<double>(lv.framesPerBucket);
+    // Buckets are 256 · 4^L frames: multiplying by the inverse is exact (a power of two), and cheaper than dividing.
+    const double invFpb = 1.0 / static_cast<double>(lv.framesPerBucket);
     const auto valid = static_cast<int64_t>(lv.buckets);
+    float* const los = s.lo.data();
+    float* const his = s.hi.data();
+    uint8_t* const has = s.has.data();
     for (int32_t c = c0; c < c1; ++c) {
       const size_t i = static_cast<size_t>(c - c0);
       double fa = 0, fb = 0;
       colFrames(c, fa, fb);
-      fa = std::max(fa, 0.0);
-      fb = std::min(fb, total);
-      const auto k0 = static_cast<int64_t>(std::floor(fa / fpb));
-      const int64_t k1 = std::min(valid, static_cast<int64_t>(std::ceil(fb / fpb)));
-      if (fb <= fa || k1 <= k0) {
-        s.has[i] = 0;
+      fa = fa > 0.0 ? fa : 0.0;
+      fb = fb < total ? fb : total;
+      if (!(fb > fa)) {
+        has[i] = 0;
         continue;
       }
-      s.has[i] = 1;
+      // fa, fb ≥ 0: truncation is floor (no library rounding calls in this loop).
+      const double xa = fa * invFpb, xb = fb * invFpb;
+      const auto k0 = static_cast<int64_t>(xa);
+      auto k1 = static_cast<int64_t>(xb);
+      k1 += static_cast<double>(k1) < xb ? 1 : 0;
+      k1 = k1 < valid ? k1 : valid;
+      if (k1 <= k0) {
+        has[i] = 0;
+        continue;
+      }
+      has[i] = 1;
       for (uint32_t ch = 0; ch < channels; ++ch) {
-        const int16_t* mm = lv.minMax[ch];
-        int16_t lo = mm[2 * k0], hi = mm[2 * k0 + 1];
-        for (int64_t k = k0 + 1; k < k1; ++k) {
-          lo = std::min(lo, mm[2 * k]);
-          hi = std::max(hi, mm[2 * k + 1]);
+        const int16_t* mm = lv.minMax[ch] + 2 * k0;
+        int32_t lo = mm[0], hi = mm[1];
+        for (int64_t k = 1; k < k1 - k0; ++k) {
+          lo = mm[2 * k] < lo ? mm[2 * k] : lo;
+          hi = mm[2 * k + 1] > hi ? mm[2 * k + 1] : hi;
         }
-        s.lo[ch * ncol + i] = static_cast<float>(lo) * kInt16;
-        s.hi[ch * ncol + i] = static_cast<float>(hi) * kInt16;
+        los[ch * ncol + i] = static_cast<float>(lo) * kInt16;
+        his[ch * ncol + i] = static_cast<float>(hi) * kInt16;
       }
     }
   } else {
@@ -161,6 +184,34 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
       }
     }
   }
+  pr.channels = channels;
+  pr.c0 = c0;
+  pr.ncol = ncol;
+  pr.ok = true;
+  return pr;
+}
+
+// A column's covered span in lane [y0, y1) (at least 1 px tall), as the strip draws it.
+inline void columnSpan(float lo, float hi, float centre, float half, float y0, float y1, float& top, float& bottom) noexcept {
+  top = std::clamp(centre - hi * half, y0, y1);
+  bottom = std::clamp(centre - lo * half, y0, y1);
+  if (bottom - top < 1.0f) {
+    const float m = std::clamp(0.5f * (top + bottom), y0 + 0.5f, y1 - 0.5f);
+    top = m - 0.5f;
+    bottom = m + 0.5f;
+  }
+}
+
+}  // namespace
+
+WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const WaveformDraw& d) {
+  const Prep pr = prepare(data, d, dl.clip());
+  WaveformStats st = pr.st;
+  if (!pr.ok) return st;
+  Scratch& s = scratch();
+  const uint32_t channels = pr.channels;
+  const int32_t c0 = pr.c0;
+  const size_t ncol = pr.ncol;
 
   // Emit one strip per channel and run of columns with data.
   const Vec2 uv = dl.whiteUv();
@@ -172,15 +223,7 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
     const float half = 0.5f * laneH * d.gain;
     const float* lo = s.lo.data() + ch * ncol;
     const float* hi = s.hi.data() + ch * ncol;
-    auto span = [&](size_t i, float& top, float& bottom) {
-      top = std::clamp(centre - hi[i] * half, y0, y1);
-      bottom = std::clamp(centre - lo[i] * half, y0, y1);
-      if (bottom - top < 1.0f) {
-        const float m = std::clamp(0.5f * (top + bottom), y0 + 0.5f, y1 - 0.5f);
-        top = m - 0.5f;
-        bottom = m + 0.5f;
-      }
-    };
+    auto span = [&](size_t i, float& top, float& bottom) { columnSpan(lo[i], hi[i], centre, half, y0, y1, top, bottom); };
     size_t i = 0;
     while (i < ncol) {
       if (!s.has[i]) {
@@ -223,6 +266,36 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
       st.vertices += 2 * pairs;
       if (ch == 0) st.columns += m;
       i = e;
+    }
+  }
+  return st;
+}
+
+WaveformStats rasterWaveform(const WaveformData& data, const WaveformDraw& d, uint8_t* dst, uint32_t width, uint32_t height,
+                             uint32_t rowPitch) {
+  const Prep pr = prepare(data, d, ClipRect{0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height)});
+  WaveformStats st = pr.st;
+  if (!pr.ok) return st;
+  Scratch& s = scratch();
+  const float laneH = (d.rect.y1 - d.rect.y0) / static_cast<float>(pr.channels);
+  for (uint32_t ch = 0; ch < pr.channels; ++ch) {
+    const float y0 = d.rect.y0 + laneH * static_cast<float>(ch);
+    const float y1 = y0 + laneH;
+    const float centre = 0.5f * (y0 + y1);
+    const float half = 0.5f * laneH * d.gain;
+    const float* lo = s.lo.data() + ch * pr.ncol;
+    const float* hi = s.hi.data() + ch * pr.ncol;
+    for (size_t i = 0; i < pr.ncol; ++i) {
+      if (!s.has[i]) continue;
+      const int32_t x = static_cast<int32_t>(d.rect.x0) + pr.c0 + static_cast<int32_t>(i);
+      if (x < 0 || x >= static_cast<int32_t>(width)) continue;
+      float top = 0, bottom = 0;
+      columnSpan(lo[i], hi[i], centre, half, y0, y1, top, bottom);
+      // Rows whose centre lies in [top, bottom): what the GPU covers sampling at pixel centres.
+      const int32_t r0 = std::max(0, static_cast<int32_t>(std::ceil(top - 0.5f)));
+      const int32_t r1 = std::min(static_cast<int32_t>(height), static_cast<int32_t>(std::ceil(bottom - 0.5f)));
+      for (int32_t y = r0; y < r1; ++y) dst[static_cast<size_t>(y) * rowPitch + static_cast<size_t>(x)] = 255;
+      if (ch == 0) ++st.columns;
     }
   }
   return st;
