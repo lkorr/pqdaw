@@ -825,3 +825,9 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: same 4 SVF sections per 48 dB band, no new per-sample work.
 - Notes/blockers: deferred L11, M10, M11, M12, M13, L10 with render findings (TASKS "M4 deferred"); dev pqc renders: EQ Eight within 0.005 dB of the bilinear prototypes, HQ flat to 0.48·sr; Operator and Saturator as documented.
 
+## 2026-10-31 · M4 boundary · orchestrator
+- Did: closed M4 at the user's request ("finish up 4"): partial review (docs/reviews/M4.md), fixes H1, H2, L4 (T4.x-fix-safety), H3, H5 (T4.x-fix-devices) merged; all other findings, T4.17's remainder, T4.18 device automation and the 30-track gate re-measure listed in TASKS "M4 deferred".
+- Verified: on main 70ce131, fresh build dirs: ./scripts/build.ps1 -Preset release -Full: 0 warnings, 51/51 (tests 171 s); ./scripts/build.ps1 -Preset ship -Full: 0 warnings, 51/51 (tests 168 s). Two M5 workers were building at the same time.
+- Perf: n/a.
+- Notes: M5 started (T5.1/T5.2, T5.3/T5.8 workers running).
+

@@ -591,7 +591,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
 - [ ] **T4.18 Device automation** (`document`, `views`, `app`; M4 review H4): automation lanes for device params, macros, chain mixers and wire amounts.
 - [ ] **T4.x-gate** (orchestrator, idle machine): 30-track pq_bench_live_swap on ship (perf task if > 25 %); decide M17 (do or defer explicitly); tracking pass (review L16, L19); then release + ship -Full boundary runs.
 
-- [~] **T4.14 M4 review** *(partial, 2026-10-30: docs/reviews/M4.md; stopped early at the user's request; unchecked items listed there and folded into the tasks above)* (after T4.8, T4.13, T4.15, T4.16; then a full `ship`-preset test run; also re-measure the 30-track fixture on the JIT with the machine as idle as possible) (independent review agent, as for M0–M3; critique implementation, UI, aesthetic).
+- [x] **T4.14 M4 review** *(M4 closed 2026-10-31: review partial (2026-10-30), H1/H2/H3/H5 fixed, boundary runs on 70ce131 release -Full 51/51 + ship -Full 51/51; everything else in "M4 deferred"; review was docs/reviews/M4.md; stopped early at the user's request; unchecked items listed there and folded into the tasks above)* (after T4.8, T4.13, T4.15, T4.16; then a full `ship`-preset test run; also re-measure the 30-track fixture on the JIT with the machine as idle as possible) (independent review agent, as for M0–M3; critique implementation, UI, aesthetic).
 
 ## M4 deferred (user 2026-10-30: finish M4 fast, tackle these later)
 M4 closes with the safety fixes H1/H2 (+L4), the device fixes H3/H5 (+L11) and the boundary test runs. Everything below is open, with details in docs/reviews/M4.md:
