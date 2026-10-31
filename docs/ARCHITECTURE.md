@@ -209,6 +209,14 @@ namespace pq::graph {
 // records: ImageHost::reduceInfoB), exact transcendentals are one 8-wide SVML call per half: every mode is
 // bit-identical to the interpreter (tests/jit voice-code cases). VoiceCode::ScalarLanes is the benchmark baseline
 // (one voice lane per call, scalar code; refuses voice stages with calls). CompileStats::pairedStages.
+// Smoothed gains (T4.x-fix-dsp): a global gain / gain_add with a param target is generated inline, so the device
+// mixes it scales (EQ Eight's sections between their SVF loops, the Saturator's oversampled samples, Utility's
+// matrix) stay in their chain / fused run. Before a run's (chain's, per-sample loop's) frames: per gain, if it is not
+// steady (started, same target and time constant), a call to dsp::gainPrologue (the kernel's prepare / retarget);
+// then one branch per block: every residual 0 → the loop with each gain as fma(x, target, acc) (a target of 0: acc /
+// 0), else the loop with the kernel's per-frame definition (kernels_gain.cpp). The 1-lane kernel computes the same
+// frame by frame, so interpreter == JIT bit for bit however the frames are split. Voice gains and audio-rate targets
+// stay kernel calls.
 // T1b.x-perf (Q126): a global Control region of param / constant math only (the interpreter's memo rule) runs
 // behind a flag JitImage::process sets when the params equal the previous block's (ImageHost::paramsChanged, the
 // host's param pass, which the interpreter reads too; HostLayout::memoOff), so a
