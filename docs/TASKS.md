@@ -607,7 +607,7 @@ Each task's full description and acceptance criteria are in docs/plans/M5.md und
 - [x] **T5.1 Audio file decoding: the `media` module** *(merged 2026-10-31; Vorbis SNR 39 dB (encoder ceiling, Q146))* (docs/plans/M5.md)
 - [x] **T5.2 Sample pool + RT-safe disk streaming** *(merged 2026-10-31; app ownership of the pool / prefetch on locate / disk indicator moved to T5.4 (Q149))* (docs/plans/M5.md)
 - [x] **T5.3 Audio tracks + audio clips in the document** *(merged 2026-10-31; audible playback = T5.4, arrangement editing = T5.6; Q145)* (docs/plans/M5.md)
-- [ ] **T5.4 Clip player + resampler** (+ app owns the SamplePool / disk thread, prefetch on locate, disk indicator: Q149) (docs/plans/M5.md)
+- [x] **T5.4 Clip player + resampler** *(merged 2026-10-31; app owns pool + disk thread + prefetch + DISK indicator (Q149); no mip copies (cost ∝ rate above +12 st, Q151); 64-track ≤ 1 % met by the clip player (0.22 %) but whole track 1.63 % is mixer-bound (Q152); looped RePitch on streamed samples can underrun at wraps)* (docs/plans/M5.md)
 - [ ] **T5.5 Waveform overviews** (docs/plans/M5.md)
 - [ ] **T5.6 Audio clips in the arrangement + the audio Clip View** (docs/plans/M5.md)
 - [ ] **T5.7 Drag in: drag sessions + files from Explorer** (docs/plans/M5.md)
