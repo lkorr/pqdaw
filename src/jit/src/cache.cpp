@@ -185,8 +185,24 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   for (const g::External& x : s.externals) {
     h.put(x.source), h.put(x.index), h.put(x.atom), h.put(x.channel), h.put(x.rate), h.put(x.poly);
   }
+  // Constants: code generation reads a constant's value only through an operand (as an immediate); one no operand
+  // refers to (e.g. a clipPlayer's `clip` slot, which only names the external) is the host's (aux) and is left out, so
+  // units that differ only there share their code (T5.x-perf-audio: 64 audio tracks, one JIT code instead of 64).
+  std::vector<uint8_t> constRead(s.constants.size(), 0);
+  auto markConst = [&](const g::Operand& o) {
+    if (o.kind == g::Operand::Kind::Const && o.index < constRead.size()) constRead[o.index] = 1;
+  };
+  for (const g::Operand& o : s.operands) markConst(o);
+  for (const g::SolveUnknown& x : s.unknowns) markConst(x.value), markConst(x.init);
+  for (const g::SolveEquation& x : s.equations) markConst(x.lhs), markConst(x.rhs);
+  for (const g::OutputRef& x : s.outputs) markConst(x.value);
+  for (const g::ProbeRef& x : s.probes) markConst(x.value);
   h.put(s.constants.size());
-  for (const g::ConstValue& x : s.constants) h.put(x.value), h.put(x.kind);  // the bits (−0, NaN payloads)
+  for (size_t i = 0; i < s.constants.size(); ++i) {
+    const g::ConstValue& x = s.constants[i];
+    h.put(constRead[i]);
+    if (constRead[i]) h.put(x.value), h.put(x.kind);  // the bits (−0, NaN payloads)
+  }
   h.put(s.params.size());
   for (const g::ParamSlot& x : s.params) {  // not `key` / `node`
     h.put(x.kind), h.put(x.defaultValue), h.put(x.hasRange), h.put(x.rangeMin), h.put(x.rangeMax);

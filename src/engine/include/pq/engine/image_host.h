@@ -341,7 +341,8 @@ private:
   bool sleepLayout(const graph::Schedule& s, SleepMode mode);
   void decideSleep(uint32_t stage, const ProcessContext& ctx, uint32_t frames) noexcept;
   bool segmentQuiescent(SegRun& g) noexcept;
-  void sleepReports(ProcessContext& ctx, uint32_t frames, bool anyVoice) noexcept;
+  // outsSilent: every global out written this block is exactly ±0 (copyGlobalOut's reports; ctx.outSilent is set).
+  void sleepReports(ProcessContext& ctx, bool anyVoice, bool outsSilent) noexcept;
 
   bool fail(std::string msg);
   bool validate(const graph::Schedule& s);
@@ -352,7 +353,10 @@ private:
   bool outCopy(const graph::Schedule& s, const graph::OutputRef& o, uint32_t slot, uint32_t group);
 
   float* resolveGlobal(ExtRun& e, const ProcessContext& ctx, uint32_t frames) noexcept;
+  void resolveExternals(const ProcessContext& ctx, uint32_t frames) noexcept;
   void copyOut(const OutCopy& c, float* dst, uint32_t frames, bool voice) noexcept;
+  // A global out: the copy and its silence check in one pass (T5.x-perf-audio). Returns whether dst is all ±0.
+  bool copyGlobalOut(const OutCopy& c, float* dst, uint32_t frames) noexcept;
   void zeroOutputs(const ProcessContext& ctx) noexcept;
   void initReducers(const StageRun& st, uint32_t frames, bool zero) noexcept;
   void setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept;  // RT-safe
@@ -500,11 +504,15 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
   }
   run_.laneMask = 0;
   run_.gain = nullptr;
+  bool outsSilent = true;
   for (uint32_t c = firstGlobalOut_; c < outs_.size(); ++c) {
     const OutCopy& oc = outs_[c];
-    if (ctx.out != nullptr && oc.slot < ctx.numOut && ctx.out[oc.slot] != nullptr) copyOut(oc, ctx.out[oc.slot], frames, false);
+    if (ctx.out == nullptr || oc.slot >= ctx.numOut || ctx.out[oc.slot] == nullptr) continue;
+    const bool z = copyGlobalOut(oc, ctx.out[oc.slot], frames);
+    if (ctx.outSilent != nullptr) ctx.outSilent[oc.slot] = z ? 1 : 0;
+    outsSilent = outsSilent && z;
   }
-  sleepReports(ctx, frames, anyVoice);
+  sleepReports(ctx, anyVoice, outsSilent);
   if (numGlobalProbes_) probeGlobals(frames);
   if (metering_) meterEnd(frames);
 }

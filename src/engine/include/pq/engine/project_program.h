@@ -265,7 +265,9 @@ public:
     ++paramGen_;
     return {params_, numParams_};
   }
-  std::span<float> params(uint32_t unit) noexcept;           // the unit's current image's param block
+  // The unit's current image's param block (a write through it is seen at the next block: the call marks the block
+  // as changed).
+  std::span<float> params(uint32_t unit) noexcept;
   TransportSnapshot& transport() noexcept { return transport_; }
   // The last block's values (frames floats) of a bus of the topology the audio thread runs.
   const float* bus(uint32_t b, uint16_t channel) const noexcept;

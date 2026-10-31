@@ -123,6 +123,9 @@ struct ProcessContext {
   uint32_t numClipSlots = 0;
   const float* params = nullptr;        // the parameter block, indexed by ParamSlot (null: defaults)
   uint32_t numParams = 0;
+  // T5.x-perf-audio: the caller knows `params` holds bit for bit the values of this image's previous block (a project
+  // with no param written since): the image may skip reading them. False: it reads them (always correct).
+  bool paramsUnchanged = false;
   const EventList* events = nullptr;
   const VoiceTable* voices = nullptr;   // null or 0 groups: voice stages do not run (voice reducers read 0)
   const SendBus* sends = nullptr;       // indexed by bus number

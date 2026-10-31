@@ -236,6 +236,46 @@ TEST_CASE("jit cache: identities are not in the key: equal code is shared in mem
   CHECK(c->counters().compiles == 2);  // nothing alive held it: compiled again (no disk cache here)
 }
 
+// T5.x-perf-audio: a constant no operand reads (a clipPlayer's `clip` slot only names the external the host resolves)
+// is not in the key, so audio tracks that differ only in their clip slot share one JIT code (64 tracks: one compile
+// instead of 64, and one copy of the code in the caches while they run). Each image still reads its own slot.
+TEST_CASE("jit cache: units that differ only in their clip slot share code and read their own slot") {
+  auto patchFor = [](int slot) {
+    return compileText("patch P {\n  out out : real audio global stereo\n  out = clipPlayer(" + std::to_string(slot) +
+                       ") * 0.5\n}\n");
+  };
+  const Compiled a = patchFor(3), b = patchFor(5);
+  auto c = makeCompiler(jit::CacheConfig{});  // memory only
+  jit::CompileOptions o;
+  o.maxBlockFrames = 64;
+  o.maxVoiceGroups = 1;
+  auto ia = c->compile(a.sched, o);
+  auto ib = c->compile(b.sched, o);
+  REQUIRE(ia.ok());
+  REQUIRE(ib.ok());
+  CHECK(c->counters().compiles == 1);
+  CHECK(c->counters().memoryHits == 1);
+  CHECK((*ia)->io().clipSlots == std::vector<uint32_t>{3});
+  CHECK((*ib)->io().clipSlots == std::vector<uint32_t>{5});
+  std::vector<float> l(64), r(64), c3(64), c5(64);
+  for (int i = 0; i < 64; ++i) c3[i] = static_cast<float>(i), c5[i] = -2.0f * static_cast<float>(i);
+  std::vector<const float*> clipIn(12, nullptr);
+  clipIn[6] = clipIn[7] = c3.data();
+  clipIn[10] = clipIn[11] = c5.data();
+  float* outs[2] = {l.data(), r.data()};
+  pq::engine::ProcessContext ctx;
+  ctx.frames = 64;
+  ctx.out = outs;
+  ctx.numOut = 2;
+  ctx.clipIn = clipIn.data();
+  ctx.numClipSlots = 6;
+  (*ia)->process(ctx);
+  for (int i = 0; i < 64; ++i) REQUIRE(l[i] == 0.5f * c3[i]);
+  (*ib)->process(ctx);
+  for (int i = 0; i < 64; ++i) REQUIRE(l[i] == 0.5f * c5[i]);
+  // A constant an operand does read is still in the key (the next test: other constants miss).
+}
+
 TEST_CASE("jit cache: whatever code generation reads is in the key: other constants, layouts and options miss") {
   TempDir dir("key");
   const char* text = "patch P { in x : audio\n param g = 0.5 [0..1]\n out y : audio\n y = tanh(x * %s) * g }";

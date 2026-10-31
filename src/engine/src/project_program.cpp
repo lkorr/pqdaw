@@ -41,6 +41,7 @@ struct ProjectProgram::Packet {
   uint32_t idleAfter = 0;                                 // UnitImage::idleAfterBlocks
   std::vector<float> linked;                              // the linked params' values in the last block
   uint64_t linkedGen = ~uint64_t{0};                      // the param generation `linked` was read at (L1)
+  uint64_t paramsGen = ~uint64_t{0};                      // the generation `params` was last written at (T5.x-perf-audio)
   uint32_t paramsNeeded = 0;                              // 1 + the highest project param it links (M4)
   std::vector<const BusStore*> inStores;                  // the distinct buses it reads
   std::vector<uint32_t> clipSlots;                        // T5.4: the clip slots it reads (io().clipSlots)
@@ -140,15 +141,15 @@ void levelOf(const float* x, uint32_t n, float& peak, double& sumSq) noexcept {
     m = _mm256_max_ps(m, _mm256_and_ps(v, absMask));
     sq = _mm256_fmadd_ps(v, v, sq);
   }
-  alignas(32) float tm[8], ts[8];
-  _mm256_store_ps(tm, m);
-  _mm256_store_ps(ts, sq);
-  float p = 0.0f;
-  double s = 0.0;
-  for (int i = 0; i < 8; ++i) {
-    p = std::max(p, tm[i]);
-    s += ts[i];
-  }
+  // T5.x-perf-audio: the lanes reduced in registers (the max exactly; the 8 partial sums in double, pairwise), not
+  // through memory one by one (one call per metered bus channel per block: 128 for 64 tracks).
+  __m128 m4 = _mm_max_ps(_mm256_castps256_ps128(m), _mm256_extractf128_ps(m, 1));
+  m4 = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
+  m4 = _mm_max_ss(m4, _mm_shuffle_ps(m4, m4, 1));
+  float p = _mm_cvtss_f32(m4);
+  const __m256d d4 = _mm256_add_pd(_mm256_cvtps_pd(_mm256_castps256_ps128(sq)), _mm256_cvtps_pd(_mm256_extractf128_ps(sq, 1)));
+  const __m128d d2 = _mm_add_pd(_mm256_castpd256_pd128(d4), _mm256_extractf128_pd(d4, 1));
+  double s = _mm_cvtsd_f64(_mm_add_sd(d2, _mm_unpackhi_pd(d2, d2)));
   for (; f < n; ++f) {
     p = std::max(p, std::fabs(x[f]));
     s += static_cast<double>(x[f]) * x[f];
@@ -778,7 +779,9 @@ const ProgramImage* ProjectProgram::lastPublished(uint32_t unit) const {
 
 std::span<float> ProjectProgram::params(uint32_t unit) noexcept {  // RT-safe
   Packet* p = units_[unit]->cur;
-  return p != nullptr ? std::span<float>(p->params) : std::span<float>();
+  if (p == nullptr) return {};
+  p->paramsGen = ~uint64_t{0};  // the caller may write: the next block reads them all
+  return std::span<float>(p->params);
 }
 
 const ProgramImage* ProjectProgram::current(uint32_t unit) const noexcept {  // RT-safe
@@ -832,6 +835,7 @@ void ProjectProgram::install(Unit& U, const Slot& s, Packet* p) noexcept {  // R
     if (groupMask == nullptr || groupMask[g] != 0) bytes += p->plan.voiceBytes;
   U.stats.transferBytes = bytes;
   for (const auto& [dst, src] : p->paramMap) p->params[dst] = old->params[src];
+  p->paramsGen = ~uint64_t{0};
   if (U.voices) U.voices->attach(p->binding.get(), fade ? old->binding.get() : nullptr);
   U.cur = p;
   if (fade) {
@@ -914,7 +918,13 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
       for (float* ch : s.own)
         if (ch >= b->data.data() && ch < b->data.data() + b->data.size()) b->silent = false;
   }
-  for (const auto& [slot, param] : p->paramLinks) p->params[slot] = params_[param];
+  // T5.x-perf-audio: no project param written since this packet's params were last refreshed (the same generation the
+  // idle-unit scan uses): they are unchanged, and the image is told so (it skips its param pass).
+  const bool paramsSame = p->paramsGen == blockGen_;
+  if (!paramsSame) {
+    for (const auto& [slot, param] : p->paramLinks) p->params[slot] = params_[param];
+    p->paramsGen = blockGen_;
+  }
   for (size_t k = 0; k < p->inStoreOf.size(); ++k) p->inSilent[k] = p->inStoreOf[k] == nullptr || p->inStoreOf[k]->silent;
   ProcessContext ctx;
   ctx.frames = frames;
@@ -929,6 +939,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.numOut = static_cast<uint32_t>(p->outPtrs.size());
   ctx.params = p->params.data();
   ctx.numParams = static_cast<uint32_t>(p->params.size());
+  ctx.paramsUnchanged = paramsSame && !U.voices;  // a voice engine's images get their own contexts
   ctx.clipIn = cfg_.clipIn;  // T5.4
   ctx.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
   ProcessContext fctx;
@@ -941,6 +952,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     fctx.numOut = static_cast<uint32_t>(old->fadePtrs.size());
     fctx.params = old->params.data();
     fctx.numParams = static_cast<uint32_t>(old->params.size());
+    fctx.paramsUnchanged = false;
     fctx.inSilent = nullptr;
     fctx.outSilent = nullptr;
   }

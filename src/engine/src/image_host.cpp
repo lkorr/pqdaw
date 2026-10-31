@@ -1115,15 +1115,7 @@ void ImageHost::decideSleep(uint32_t stage, const ProcessContext& ctx, uint32_t 
   }
 }
 
-void ImageHost::sleepReports(ProcessContext& ctx, uint32_t frames, bool anyVoice) noexcept {  // RT-safe
-  bool outsSilent = true;
-  for (uint32_t c = firstGlobalOut_; c < outs_.size(); ++c) {
-    const OutCopy& oc = outs_[c];
-    if (ctx.out == nullptr || oc.slot >= ctx.numOut || ctx.out[oc.slot] == nullptr) continue;
-    const bool z = allSilent(ctx.out[oc.slot], frames);
-    if (ctx.outSilent != nullptr) ctx.outSilent[oc.slot] = z ? 1 : 0;
-    outsSilent = outsSilent && z;
-  }
+void ImageHost::sleepReports(ProcessContext& ctx, bool anyVoice, bool outsSilent) noexcept {  // RT-safe
   bool asleep = sleepMode_ != SleepMode::Off || !planSegments_;  // Off: tails are never known to be done
   for (const SegRun& g : segs_) asleep = asleep && g.asleep;
   ctx.tailsDone = asleep;
@@ -1178,6 +1170,27 @@ float* ImageHost::resolveGlobal(ExtRun& e, const ProcessContext& ctx, uint32_t f
   if (!e.pattern) return const_cast<float*>(src);  // read-only by contract: ops never write their inputs
   splat8(e.own, src[0]);
   return e.own;
+}
+
+bool ImageHost::copyGlobalOut(const OutCopy& c, float* dst, uint32_t frames) noexcept {  // RT-safe
+  const float* src = c.src ? c.src : extPtr(c.ext, c.group);
+  if (c.srcLanes == 0) {
+    for (uint32_t f = 0; f < frames; ++f) dst[f] = src[0];
+    return frames == 0 || (std::bit_cast<uint32_t>(src[0]) & 0x7FFFFFFFu) == 0;
+  }
+  __m256i acc = _mm256_setzero_si256();
+  uint32_t f = 0;
+  for (; f + 8 <= frames; f += 8) {
+    const __m256 v = _mm256_loadu_ps(src + f);
+    _mm256_storeu_ps(dst + f, v);
+    acc = _mm256_or_si256(acc, _mm256_castps_si256(v));
+  }
+  uint32_t tail = 0;
+  for (; f < frames; ++f) {
+    dst[f] = src[f];
+    tail |= std::bit_cast<uint32_t>(src[f]);
+  }
+  return _mm256_testz_si256(acc, _mm256_set1_epi32(0x7FFFFFFF)) != 0 && (tail & 0x7FFFFFFFu) == 0;
 }
 
 void ImageHost::copyOut(const OutCopy& c, float* dst, uint32_t frames, bool voice) noexcept {  // RT-safe
@@ -1240,11 +1253,16 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
     std::memset(regionCycles(), 0, static_cast<size_t>(numRegions_) * 2 * sizeof(uint64_t));
   }
   *meterFlag_ = metering_ ? 1u : 0u;
-  const uint32_t G = L_.groups;
   run_.sends = ctx.sends;
   run_.numSends = ctx.sends ? ctx.numSends : 0;
   // Params: clamped to the declared range (Q44), NaN → default, splatted once per block. Sleep (T1.x-silence): which
   // of them changed since the previous block.
+  // T5.x-perf-audio: the caller vouches that the params are the previous block's, and that block changed none of them
+  // (paramChanged_ is all 0 already): nothing to read, clamp or splat.
+  if (ctx.paramsUnchanged && !firstBlock_ && !paramsChanged_) {
+    resolveExternals(ctx, frames);
+    return true;
+  }
   bool anyChanged = firstBlock_;
   for (uint32_t i = 0; i < params_.size(); ++i) {
     const ParamRun& p = params_[i];
@@ -1262,6 +1280,12 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
     paramBits_[i] = bits;
   }
   paramsChanged_ = anyChanged;
+  resolveExternals(ctx, frames);
+  return true;
+}
+
+void ImageHost::resolveExternals(const ProcessContext& ctx, uint32_t frames) noexcept {  // RT-safe
+  const uint32_t G = L_.groups;
   // Engine data → the pointer table.
   const VoiceTable* vt = ctx.voices;
   voices_ = vt;
@@ -1283,7 +1307,6 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
       extPtr_[static_cast<size_t>(x) * G + gi] = const_cast<float*>(p);  // read-only by contract
     }
   }
-  return true;
 }
 
 }  // namespace pq::engine::host
