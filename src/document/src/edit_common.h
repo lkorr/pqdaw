@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "checks.h"
+#include "pq/document/audio_clip.h"
 #include "pq/document/automation_curve.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/edit_ops.h"
@@ -25,10 +26,17 @@ Batch& batchOf(Edit& e);
 struct ClipFound {
   TrackPath path;
   const Track* track = nullptr;
-  ClipPtr clip;
+  ClipPtr clip;        // the note clip (null for an audio clip)
+  AudioClipPtr audio;  // T5.3: the audio clip (null for a note clip)
+  ClipSlot slot() const { return ClipSlot{audio ? audio->id : clip->id, clip, audio}; }
 };
+// A note clip (an audio clip: InvalidArgument).
 Result<ClipFound> findClip(const Project& p, const ClipRef& r);
+// T5.3: a clip of either kind.
+Result<ClipFound> findAnyClip(const Project& p, const ClipRef& r);
 Result<const Track*> findMidiTrack(const Project& p, TrackId id);
+// T5.3: a track that holds clips (MIDI or audio).
+Result<const Track*> findClipTrack(const Project& p, TrackId id);
 const AutomationLane* findLane(const Track& t, LaneId id);
 // The clip's effective tuning, built (allocates for MOS/Scale).
 Result<tuning::Tuning> clipTuning(const Project& p, const ClipFound& c);
@@ -48,36 +56,52 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying);
 // Builds a sequence from notes known to be valid with unique ids.
 NoteSeq seqOf(std::vector<Note> notes);
 
-// A working copy of one track's clip list; the final list is diffed against the track to emit commands.
+// T5.3: a copy of a clip of either kind with fresh ids (an audio clip: a fresh clip id; a note clip: cloneClip).
+ClipSlot cloneSlot(const ClipSlot& c, IdSource& ids, bool onlyPlaying);
+
+// A working copy of one track's clip list (note or audio clips); the final list is diffed against the track to emit
+// commands.
 class ClipEditor {
 public:
-  explicit ClipEditor(const Track& t);
+  ClipEditor(const Project& p, const Track& t);
   TrackId id() const noexcept { return track_->id; }
   const Track& track() const noexcept { return *track_; }
 
-  std::vector<ClipPtr>& clips() noexcept { return clips_; }
-  ClipPtr find(ClipId id) const;
+  std::vector<ClipSlot>& clips() noexcept { return clips_; }
+  const ClipSlot* find(ClipId id) const;
   void remove(ClipId id);
-  void add(ClipPtr c) { clips_.push_back(std::move(c)); }
-  void replace(ClipId id, ClipPtr c);
+  void add(ClipSlot c) { clips_.push_back(std::move(c)); }
+  void replace(ClipId id, ClipSlot c);
+  // The clip with arrangement bounds [s, e) (e > s), every note / source frame keeping its absolute time
+  // (withBounds; audio_clip.h audioWithBounds with this track's tuning and the clip's sample rate).
+  ClipSlot bounded(const ClipSlot& c, Ticks s, Ticks e) const;
+  // Splits at t (start < t < end): left keeps the id, right gets `rightId`.
+  std::pair<ClipSlot, ClipSlot> split(const ClipSlot& c, Ticks t, ClipId rightId, IdSource& ids) const;
+  // The clip at a new start (an audio Off clip's length re-derived there).
+  ClipSlot moved(const ClipSlot& c, Ticks start) const;
   // Overwrites [a, b): covered clips are removed, partly covered ones trimmed or split (new ids for right pieces).
   // Clips whose id is in `keep` are left alone.
   void clearRange(Ticks a, Ticks b, IdSource& ids, std::span<const ClipId> keep = {});
-  // Appends commands turning the track's clips into the working list: RemoveClip to `removes`, SetClipBounds to
-  // `updates`, AddClip to `adds` (changed clips that are more than a bounds change are removed and re-added).
+  // Appends commands turning the track's clips into the working list: RemoveClip to `removes`, SetClipBounds (note
+  // clips) / SetAudioClip (audio clips) to `updates`, AddClip to `adds` (changed note clips that are more than a
+  // bounds change are removed and re-added).
   void emit(Batch& removes, Batch& updates, Batch& adds) const;
 
 private:
+  double rateOf(const AudioClip& c) const noexcept;
+  double ratioOf(const AudioClip& c) const;
+  const Project* p_;
   const Track* track_;
-  std::vector<ClipPtr> clips_;
+  TrackPath path_;
+  std::vector<ClipSlot> clips_;
 };
 
 // A set of ClipEditors keyed by track, emitting in one go (removes, then bounds changes, then adds).
 class ClipEdits {
 public:
   explicit ClipEdits(const Project& p) : p_(p) {}
-  Result<ClipEditor*> editor(TrackId t);  // must be a MIDI track
-  ClipEditor& editor(const Track& t);     // t must be a MIDI track of p
+  Result<ClipEditor*> editor(TrackId t);  // must be a MIDI or audio track
+  ClipEditor& editor(const Track& t);     // t must be a MIDI or audio track of p
   void emit(Batch& out) const;
   bool empty() const noexcept { return eds_.empty(); }
 

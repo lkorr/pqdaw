@@ -237,16 +237,114 @@ inline constexpr int64_t kComputeOwnDenominators = -2;
 std::optional<tuning::Rational> virtualFundamental(const NoteClip& clip,
                                                    int64_t ownDenominators = kComputeOwnDenominators);
 
+// ---- Samples and audio clips (T5.3, T5.8; SPEC §9.4, §12; docs/plans/M5.md) -------------------------------------
+
+// One entry of the project's sample table: a file many audio clips may play. The document never decodes it: `path` is
+// what the project file stores (UTF-8, '/' separators: project-relative "samples/…" — anything not absolute is
+// relative to the project directory — or absolute), the rest is what a probe of the file said when it entered the
+// project (samples.h SampleProbe: media's probe in the app, the test WAV reader in tests). Which entries are missing on
+// this machine is not document state (samples.h resolveSamples; the app keeps it).
+struct SampleRef {
+  SampleId id;
+  std::string path;
+  uint64_t contentHash = 0;  // samples.h sampleContentHash (0 = unknown: resolution then trusts name + size)
+  uint64_t size = 0;         // bytes
+  int64_t frames = 1;        // >= 1
+  double rate = 48000.0;     // Hz, > 0
+  uint32_t channels = 1;     // >= 1
+  std::string displayName;   // the file name without its extension, unless renamed
+  friend bool operator==(const SampleRef&, const SampleRef&) = default;
+};
+using SampleList = std::vector<SampleRef>;  // sorted by id
+
+// How an audio clip's source follows the arrangement (M5: Off and Re-Pitch; M6 adds Beats / Tones / Texture / Complex).
+//   Off      the clip keeps its duration in SECONDS (user answer 2026-10-30, plan Q1): its arrangement length follows
+//            the tempo map from `start` (a tempo edit moves its end; AudioClip::length is derived, see below). The source
+//            plays at its own rate, sped up by the transpose: the source frame at song time tau (seconds) is
+//            contentStartFrame + (tau - tau(start)) * rate * k, k = the transpose and detune ratio (audioRateRatio). The
+//            transpose changes how fast the source is read, never the clip's duration.
+//   RePitch  the clip follows the tempo like a note clip: `length`, `contentStart` and `loop` are in ticks of CONTENT,
+//            content tick 0 = source frame 0, one content quarter = 60 / sourceBpm seconds of source (the frame of
+//            content tick c is c * rate * 60 / (sourceBpm * kPpq)); playback speed (and pitch) follows tempo / sourceBpm.
+//            Transpose and detune do not apply (as in Live, which greys them out in Re-Pitch).
+enum class AudioWarp : uint8_t { Off, RePitch };
+// The transpose of an audio clip (plan: cents, steps of the clip's tuning, or an exact ratio).
+enum class TransposeUnit : uint8_t { Cents, Steps, Ratio };
+inline constexpr double kMaxTransposeCents = 4800.0;  // +-48 semitones (a resolved Steps transpose is clamped to it)
+inline constexpr int32_t kMaxTransposeSteps = 1024;   // degrees of the clip's tuning
+inline constexpr double kMaxDetuneCents = 50.0;
+inline constexpr float kMinClipGainDb = -70.0f;       // the floor is -inf (silence), as on the faders
+inline constexpr float kMaxClipGainDb = 24.0f;
+struct AudioTranspose {
+  TransposeUnit unit = TransposeUnit::Cents;
+  double cents = 0.0;          // Cents: [-kMaxTransposeCents, kMaxTransposeCents]
+  int32_t steps = 0;           // Steps: degrees of the clip's effective tuning, resolved when lowered (follows retuning)
+  tuning::Rational ratio{1};   // Ratio: positive, within +-kMaxTransposeCents
+  friend bool operator==(const AudioTranspose&, const AudioTranspose&) = default;
+};
+// A fade at a clip edge: `length` ticks (0 = none), `curve` in [-1, 1] (0 = linear in gain; the automation curve law).
+struct AudioFade {
+  Ticks length = 0;
+  float curve = 0.0f;
+  friend constexpr bool operator==(const AudioFade&, const AudioFade&) noexcept = default;
+};
+
+// An audio clip (audio tracks only). Reverse mirrors the clip in time: offset o plays what the forward clip plays at
+// offset length - o, read backwards (non-destructive; plan "Decisions").
+struct AudioClip {
+  ClipId id;
+  std::string name;
+  Colour colour;
+  Ticks start = 0;
+  // Arrangement length. RePitch: stored. Off: DERIVED from `seconds` and the tempo map (the nearest tick to
+  // tau(start) + seconds, minus start, >= 1): commands keep it in sync (audio_clip.h syncedLength) whenever the start,
+  // the duration or the tempo map changes, so every generic clip edit can use start + length.
+  Ticks length = kTicksPerWhole;
+  SampleId sample;
+  AudioWarp warp = AudioWarp::Off;
+  // Off: the source frame playing at the clip start (fractional, so splits and trims keep every frame where it plays)
+  // and the duration in seconds (> 0).
+  double contentStartFrame = 0.0;
+  double seconds = 1.0;
+  // RePitch: the start marker and the loop brace in content ticks (as NoteClip), and the tempo of the source.
+  Ticks contentStart = 0;
+  ClipLoop loop;
+  double sourceBpm = 120.0;  // [kMinBpm, kMaxBpm]
+  float gainDb = 0.0f;       // [kMinClipGainDb, kMaxClipGainDb]; at the floor: silence
+  AudioTranspose transpose;  // Off only
+  float detuneCents = 0.0f;  // Off only; [-kMaxDetuneCents, kMaxDetuneCents]
+  bool reverse = false;
+  AudioFade fadeIn, fadeOut;  // the lowering clamps them to the clip (fadeIn first)
+  // A crossfade with the clip that ends exactly at `start` on the same track: its length in ticks, centred on the
+  // boundary (0 = none). A command that leaves the two clips no longer adjacent drops it in the same step.
+  Ticks crossfadeIn = 0;
+  TuningAssignment tuning;  // the tuning of a Steps transpose (Inherit = the track's)
+  bool active = true;
+  friend bool operator==(const AudioClip& a, const AudioClip& b) noexcept = default;
+};
+using AudioClipPtr = std::shared_ptr<const AudioClip>;
+
 // A track's clips, sorted by (start, id). The id is kept next to the pointer so finding a clip by id scans a
-// contiguous array instead of dereferencing every clip.
+// contiguous array instead of dereferencing every clip. T5.3: exactly one of `clip` (a note clip, MIDI tracks) and
+// `audio` (an audio clip, audio tracks) is set; the accessors serve the edits that treat both alike (select, move,
+// copy, split, duplicate, delete, rename, colour, activate, time edits).
 struct ClipSlot {
   ClipId id;
   ClipPtr clip;
+  AudioClipPtr audio;
+
+  bool isAudio() const noexcept { return audio != nullptr; }
+  Ticks start() const noexcept { return audio ? audio->start : clip->start; }
+  Ticks length() const noexcept { return audio ? audio->length : clip->length; }
+  Ticks end() const noexcept { return start() + length(); }
+  bool active() const noexcept { return audio ? audio->active : clip->active; }
+  const std::string& name() const noexcept { return audio ? audio->name : clip->name; }
+  Colour colour() const noexcept { return audio ? audio->colour : clip->colour; }
 };
 
 // ---- Tracks and mixer (SPEC §9.3) ------------------------------------------------------------------------------
 
-enum class TrackKind : uint8_t { Midi, Group, Return, Master, Audio /* reserved for M6: rejected by commands */ };
+enum class TrackKind : uint8_t { Midi, Group, Return, Master, Audio /* T5.3: audio clips, audio effects only */ };
 
 struct Send {
   TrackId target;  // a Return track
@@ -478,11 +576,11 @@ struct Track {
   TrackKind kind = TrackKind::Midi;
   std::string name;
   Colour colour;
-  TuningAssignment tuning;  // used by Midi tracks (and inherited through groups)
+  TuningAssignment tuning;  // used by Midi tracks and audio clips' Steps transposes (inherited through groups)
   Mixer mixer;
   bool active = true;  // deactivate (`0`): structural (Q15)
   std::vector<TrackPtr> children;  // Group only
-  std::vector<ClipSlot> clips;     // Midi only, sorted by (start, id)
+  std::vector<ClipSlot> clips;     // Midi (note clips) and Audio (audio clips) only, sorted by (start, id)
   std::vector<LanePtr> lanes;      // automation lanes shown under this track
   std::vector<DevicePtr> devices;  // T4.1: the device chain, signal left → right (MIDI: instrument first)
   // Index of the device in `devices`, or −1.
@@ -528,10 +626,11 @@ struct Project {
   std::shared_ptr<const TuningList> tunings;    // never empty (the first is the default for Inherit)
   std::shared_ptr<const LocatorList> locators;  // sorted by (tick, id)
   LoopRegion loop;
-  std::vector<TrackPtr> tracks;   // the track tree (Midi + Group, nested)
+  std::vector<TrackPtr> tracks;   // the track tree (Midi + Audio + Group, nested)
   std::vector<TrackPtr> returns;  // Return tracks
   TrackPtr master;
   std::shared_ptr<const WireList> wires;  // T4.7: modulation wires, sorted by id (null: none)
+  std::shared_ptr<const SampleList> samples;  // T5.3: the sample table, sorted by id (null: none)
 };
 // Deep equality (pointer-equal subtrees are not descended into).
 bool operator==(const Project& a, const Project& b) noexcept;
@@ -614,6 +713,9 @@ bool deviceContains(const Device& outer, DeviceId inner) noexcept;
 // T4.7: the project's wires (an empty list when it has none) and one by id (nullptr: none).
 const WireList& wiresOf(const Project& p) noexcept;
 const Wire* findWire(const Project& p, WireId id) noexcept;
+// T5.3: the project's sample table (an empty list when it has none) and one entry by id (nullptr: none).
+const SampleList& samplesOf(const Project& p) noexcept;
+const SampleRef* findSample(const Project& p, SampleId id) noexcept;
 
 // The tuning a track (and optionally one of its clips) plays in, following Inherit up the group chain. nullptr if a
 // Main reference is dangling (commands never produce that).

@@ -110,10 +110,10 @@ TEST_CASE("serialize errors: syntax") {
 }
 
 TEST_CASE("serialize errors: structure, types and ranges") {
-  expectError(replaced(minimalText(), "  \"schemaVersion\": 6,\n", ""), "$: missing key \"schemaVersion\"");
-  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 6", "\"schemaVersion\": \"3\"")).code ==
+  expectError(replaced(minimalText(), "  \"schemaVersion\": 7,\n", ""), "$: missing key \"schemaVersion\"");
+  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 7", "\"schemaVersion\": \"3\"")).code ==
         pq::ErrorCode::Type);
-  expectError(replaced(minimalText(), "\"schemaVersion\": 6", "\"schemaVersion\": \"3\""),
+  expectError(replaced(minimalText(), "\"schemaVersion\": 7", "\"schemaVersion\": \"3\""),
               "$.schemaVersion: expected an integer, found a string");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"bogus\": 1,"), "$.bogus: unknown key");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"tracks\": [],"), "$.tracks: duplicate key");
@@ -152,7 +152,7 @@ TEST_CASE("serialize errors: structure, types and ranges") {
   expectError(replaced(minimalText(), "{\"id\": 1, \"name\": \"12-EDO\", \"colour\": \"#5E9BD6\",\n     \"def\": {\"kind\": \"edo\", \"n\": 12, \"equave\": \"2/1\", \"referenceHz\": 261.626}}", ""),
               "$.tunings: a project needs at least one main tuning");
   expectError(replaced(minimalText(), "\"kind\": \"master\"", "\"kind\": \"midi\""), "$.master.kind: must be \"master\" here");
-  CHECK(expectFail(replaced(minimalText(), "\"kind\": \"master\"", "\"kind\": \"audio\"")).code == pq::ErrorCode::Unsupported);
+  expectError(replaced(minimalText(), "\"kind\": \"master\"", "\"kind\": \"audio\""), "$.master.kind: must be \"master\" here");
   expectError(replaced(minimalText(), "\"mute\": false", "\"mute\": true"), "$.master.mixer: the master track has no mute or solo");
   expectError(replaced(minimalText(), "\"volumeDb\": 0.0", "\"volumeDb\": 7.0"),
               "$.master.mixer.volumeDb: parameter value out of range");

@@ -32,6 +32,11 @@ Status checkLoop(const ClipLoop& l);
 // Everything about a clip except note validity (validated where notes enter: NoteSeq::fromNotes, note commands).
 Status checkClip(const Project& p, const NoteClip& c);
 Status checkFundamental(const ClipFundamental& f);  // T3.6-fix1: lock > 0; steps sorted by note id, in range
+// T5.3: an audio clip's own fields and its sample (in the project's table); its Off length is not checked (commands
+// derive it: audio_clip.h syncedClip).
+Status checkAudioClip(const Project& p, const AudioClip& c);
+// T5.3: a sample table entry's own fields (id, non-empty path, frames >= 1, rate in (0, 10 MHz], 1 to 1024 channels).
+Status checkSampleRef(const SampleRef& r);
 // Breakpoint ids valid and unique, ticks bounded, values in the parameter's range, curves in [-1, 1].
 Status checkPoints(ParamKind k, const std::vector<Breakpoint>& pts);
 bool pointLess(const Breakpoint& a, const Breakpoint& b);  // (tick, id)

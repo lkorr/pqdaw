@@ -215,11 +215,11 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         dl.addRectFilled(strip, th.arrangement.lane);
         if (const doc::Track* t = view_.bandTrack(n.band)) {
           const float w = strip.x1 - strip.x0;
-          for (const doc::ClipSlot& c : t->clips) {
-            const float x0 = strip.x0 + static_cast<float>(static_cast<double>(c.clip->start) / end) * w;
-            const float x1 = strip.x0 + static_cast<float>(static_cast<double>(c.clip->start + c.clip->length) / end) * w;
+          for (const doc::ClipSlot& c : t->clips) {  // T5.3: note and audio clips alike
+            const float x0 = strip.x0 + static_cast<float>(static_cast<double>(c.start()) / end) * w;
+            const float x1 = strip.x0 + static_cast<float>(static_cast<double>(c.end()) / end) * w;
             if (x0 >= strip.x1) break;
-            const Rgba col = c.clip->active && !t->mixer.mute ? ui::hex(c.clip->colour.rgb) : th.circuit.pinText;
+            const Rgba col = c.active() && !t->mixer.mute ? ui::hex(c.colour().rgb) : th.circuit.pinText;
             dl.addRectFilled({std::round(x0), strip.y0 + 1.0f, std::max(std::round(x0) + 1.0f, std::round(std::min(x1, strip.x1))), strip.y1 - 1.0f}, col);
           }
         }

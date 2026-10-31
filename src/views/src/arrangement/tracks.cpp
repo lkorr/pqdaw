@@ -41,7 +41,9 @@ bool Editor::newTrack(doc::TrackKind kind) {
     colour.rgb = (static_cast<uint32_t>(redOf(c)) << 16) | (static_cast<uint32_t>(greenOf(c)) << 8) | blueOf(c);
   }
   const auto e = doc::ops::createTrack(p, ctx_.store().ids(), kind, after, {}, colour);
-  const char* what = kind == doc::TrackKind::Return ? "Insert Return Track" : "Insert MIDI Track";
+  const char* what = kind == doc::TrackKind::Return  ? "Insert Return Track"
+                     : kind == doc::TrackKind::Audio ? "Insert Audio Track"
+                                                     : "Insert MIDI Track";
   if (!apply(e, what, false)) return false;
   selectTracks(e->tracks);
   return true;
@@ -104,6 +106,7 @@ Menu* Editor::openTrackMenu(doc::TrackId id, Vec2 at) {
   std::vector<MenuItem> items;
   items.push_back(action("Rename", "arrangement.rename", "Ctrl+R"));
   items.push_back(MenuItem::sep());
+  items.push_back(action("Insert Audio Track", "track.newAudio", "Ctrl+T"));
   items.push_back(action("Insert MIDI Track", "track.newMidi", "Ctrl+Shift+T"));
   items.push_back(action("Insert Return Track", "track.newReturn", "Ctrl+Alt+T"));
   items.push_back(MenuItem::sep());

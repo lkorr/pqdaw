@@ -41,8 +41,8 @@ struct ClipRef {
 
 // ---- Tracks ----------------------------------------------------------------------------------------------------
 // Structural. Inserts `track` (with its whole subtree, e.g. a pasted group) under `parent` (a Group; invalid =
-// top level) at `index`. Return tracks go to the returns list (parent must be invalid). Master and Audio are
-// rejected.
+// top level) at `index`. Return tracks go to the returns list (parent must be invalid). Master is rejected. T5.3:
+// audio tracks hold audio clips (their Off lengths are re-derived from the project's tempo map on insertion).
 struct AddTrack { TrackPtr track; TrackId parent; uint32_t index = kAppend; };
 // Structural. Removes a track and its subtree. Sends to a removed return, lanes automating them and outputs routed
 // to a removed group are cleaned up (those tracks are listed as touched).
@@ -70,18 +70,36 @@ struct GroupTracks { std::vector<TrackId> tracks; TrackPtr group; };
 struct UngroupTracks { TrackId group; };
 
 // ---- Clips -----------------------------------------------------------------------------------------------------
-struct AddClip { TrackId track; ClipPtr clip; };                  // Sequence (the track must be Midi)
-struct RemoveClip { ClipRef clip; };                              // Sequence
-// Sequence. Moves to `start` on `toTrack` (may be the same track; another Midi track).
+// T5.3: exactly one of `clip` (a note clip: the track must be Midi) and `audio` (an audio clip: the track must be Audio,
+// its sample in the table; an Off clip's length is re-derived from the tempo map) is set. Audio commands also drop the
+// crossfades their edit leaves without an adjacent left neighbour (model.h AudioClip::crossfadeIn).
+struct AddClip { TrackId track; ClipPtr clip; AudioClipPtr audio; };  // Sequence
+struct RemoveClip { ClipRef clip; };                              // Sequence (either kind)
+// Sequence. Moves to `start` on `toTrack` (may be the same track; another track of the same kind). Either kind.
 struct MoveClip { ClipRef clip; TrackId toTrack; Ticks start = 0; };
-// Sequence. Sets arrangement start/length and the content start marker (T3.6 resize keeps notes in place).
+// Sequence. Sets arrangement start/length and the content start marker (T3.6 resize keeps notes in place). Note clips.
 struct SetClipBounds { ClipRef clip; Ticks start = 0; Ticks length = 1; Ticks contentStart = 0; };
-struct SetClipLoop { ClipRef clip; ClipLoop loop; };              // Sequence
-struct SetClipTuning { ClipRef clip; TuningAssignment tuning; };  // Structural (see SetTrackTuning)
-struct RenameClip { ClipRef clip; std::string name; };            // Meta
-struct SetClipColour { ClipRef clip; Colour colour; };            // Meta
-struct SetClipSignature { ClipRef clip; TimeSignature signature; };  // Meta (display only)
-struct SetClipActive { ClipRef clip; bool active = true; };       // Sequence
+struct SetClipLoop { ClipRef clip; ClipLoop loop; };              // Sequence (note clips)
+// Structural for a note clip (see SetTrackTuning); T5.3: Sequence for an audio clip (its Steps transpose's tuning).
+struct SetClipTuning { ClipRef clip; TuningAssignment tuning; };
+struct RenameClip { ClipRef clip; std::string name; };            // Meta (either kind)
+struct SetClipColour { ClipRef clip; Colour colour; };            // Meta (either kind)
+struct SetClipSignature { ClipRef clip; TimeSignature signature; };  // Meta (display only; note clips)
+struct SetClipActive { ClipRef clip; bool active = true; };       // Sequence (either kind)
+// T5.3: Sequence. Replaces an audio clip with `audio` (same id; any other field may change: bounds, gain, transpose,
+// detune, reverse, warp, source BPM, fades, crossfade, sample). The audio-specific edits (edit_ops.h) are built from it;
+// never a compile (runtime data of the clip player).
+struct SetAudioClip { ClipRef clip; AudioClipPtr audio; };
+
+// ---- Samples (T5.3, T5.8) ----------------------------------------------------------------------------------------
+// Meta. Adds an entry to the sample table (id pre-allocated, unique; samples.h). Dropping a file adds its sample and
+// its clip in one Batch.
+struct AddSample { SampleRef sample; };
+// Meta. Removes an entry no clip uses (refused while one does).
+struct RemoveSample { SampleId sample; };
+// Replaces an entry (matched by id): Meta; Sequence too when its rate changed (the Off clips playing it are re-derived).
+// Path updates after Collect All / relink are not undo steps: DocumentStore::relocateSamples.
+struct SetSample { SampleRef sample; };
 // Meta (not audible). The steps / lock the clip's virtual fundamental is derived from (T3.6-fix1); written by the
 // Up/Down and drag builders (ops::transposeNotes / moveNotes) and the lock builders (ops::lockFundamental).
 struct SetClipFundamental { ClipRef clip; ClipFundamental fundamental; };
@@ -221,7 +239,7 @@ using CommandVariant = std::variant<
     SetTrackSolo, SetTrackArm, SetSendLevel, SetSendPreFader, SetTrackOutput, SetTrackActive, SetTrackTuning,
     GroupTracks, UngroupTracks,
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,
-    SetClipSignature, SetClipActive, SetClipFundamental,
+    SetClipSignature, SetClipActive, SetClipFundamental, SetAudioClip, AddSample, RemoveSample, SetSample,
     AddNotes, RemoveNotes, UpdateNotes, MoveNote, ResizeNote, SetNoteProperty,
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,

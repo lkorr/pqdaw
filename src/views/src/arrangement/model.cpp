@@ -29,9 +29,9 @@ const ClipIndex& Model::clips(const doc::Track& t) {
   ix.maxEnd.resize(n);
   Ticks m = INT64_MIN;
   for (size_t i = 0; i < n; ++i) {
-    const doc::NoteClip& c = *t.clips[i].clip;
-    ix.start[i] = c.start;
-    ix.end[i] = c.start + c.length;
+    const doc::ClipSlot& c = t.clips[i];  // T5.3: audio clips too (their bounds; drawing them is T5.6)
+    ix.start[i] = c.start();
+    ix.end[i] = c.end();
     m = std::max(m, ix.end[i]);
     ix.maxEnd[i] = m;
   }
@@ -183,7 +183,8 @@ void Model::afterDocumentChange(size_t clipsInProject) {
     live.reserve(clipsInProject);
     doc::forEachTrack(*shown, [&](const doc::Track& tr, const doc::Track*) {
       liveTracks.insert(tr.id.value);
-      for (const doc::ClipSlot& s : tr.clips) live.insert(s.clip.get());
+      for (const doc::ClipSlot& s : tr.clips)
+        if (s.clip) live.insert(s.clip.get());
     });
     std::erase_if(previews_, [&](const auto& kv) { return !live.contains(kv.first); });
     recountNotes();

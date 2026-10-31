@@ -37,7 +37,7 @@ constexpr double kMaxDefaultRenderSeconds = 4.0 * 3600.0;
 double defaultRenderSeconds(const doc::Project& p) {
   Ticks end = 0;
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-    for (const doc::ClipSlot& c : t.clips) end = std::max(end, doc::clipEnd(*c.clip));
+    for (const doc::ClipSlot& c : t.clips) end = std::max(end, c.end());
   });
   const double s = p.timeline->tempoMap.ticksToSeconds(end) + 2.0;  // + release tails
   return std::max(s, 2.0);

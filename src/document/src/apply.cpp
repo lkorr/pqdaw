@@ -10,6 +10,7 @@
 #include <cmath>
 #include <string>
 
+#include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
 #include "pq/document/pitch_resolve.h"
 #include "checks.h"
@@ -174,9 +175,9 @@ Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids
   if (findTrackPtr(p, t.id)) return invalid("track id already in use");
   ids.push_back(t.id.value);
   if (t.kind == TrackKind::Master) return invalid("a project has exactly one master track");
-  if (t.kind == TrackKind::Audio) return unsupported("audio tracks arrive in M6");
   if (!t.children.empty() && t.kind != TrackKind::Group) return invalid("only groups have child tracks");
-  if (!t.clips.empty() && t.kind != TrackKind::Midi) return invalid("only MIDI tracks hold note clips");
+  if (!t.clips.empty() && t.kind != TrackKind::Midi && t.kind != TrackKind::Audio)
+    return invalid("only MIDI and audio tracks hold clips");
   PQ_DOC_TRY(checkVolume(t.mixer.volumeDb));
   PQ_DOC_TRY(checkParamValue(ParamKind::TrackPan, t.mixer.pan));
   if (!t.mixer.sends.empty() && !trackHasSends(t.kind)) return invalid("this track has no sends");
@@ -192,12 +193,15 @@ Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids
   PQ_DOC_TRY(checkAssignment(p, t.tuning));
   for (size_t i = 0; i < t.clips.size(); ++i) {
     const ClipSlot& c = t.clips[i];
-    if (!c.clip || c.clip->id != c.id) return invalid("clip slot does not match its clip");
-    PQ_DOC_TRY(checkClip(p, *c.clip));
-    if (i > 0) {
-      const NoteClip& a = *t.clips[i - 1].clip;
-      if (std::pair(a.start, a.id) >= std::pair(c.clip->start, c.id)) return invalid("clips must be sorted");
+    if (t.kind == TrackKind::Audio) {  // T5.3
+      if (c.clip || !c.audio || c.audio->id != c.id) return invalid("an audio track's clip slot must hold its audio clip");
+      PQ_DOC_TRY(checkAudioClip(p, *c.audio));
+    } else {
+      if (c.audio || !c.clip || c.clip->id != c.id) return invalid("clip slot does not match its clip");
+      PQ_DOC_TRY(checkClip(p, *c.clip));
     }
+    if (i > 0 && std::pair(t.clips[i - 1].start(), t.clips[i - 1].id) >= std::pair(c.start(), c.id))
+      return invalid("clips must be sorted");
   }
   for (const LanePtr& l : t.lanes) {
     if (!l || !l->id.valid()) return invalid("lane has no id");
@@ -236,11 +240,34 @@ Result<Loc> locate(const Project& p, TrackId id) {
 }
 
 bool clipLess(const ClipSlot& a, const ClipSlot& b) {
-  return a.clip->start != b.clip->start ? a.clip->start < b.clip->start : a.id < b.id;
+  return a.start() != b.start() ? a.start() < b.start() : a.id < b.id;
 }
 void insertClipSorted(std::vector<ClipSlot>& v, ClipSlot s) {
   v.insert(std::upper_bound(v.begin(), v.end(), s, clipLess), std::move(s));
 }
+
+// ---- Audio clips (T5.3) ------------------------------------------------------------------------------------------
+
+AudioClipPtr syncedPtr(const Timeline& tl, AudioClip c) {
+  return std::make_shared<const AudioClip>(syncedClip(tl, std::move(c)));
+}
+
+// Drops the crossfades of `t`'s audio clips whose left neighbour does not end exactly at their start (in the command
+// that broke the adjacency; model.h AudioClip::crossfadeIn).
+void dropLooseCrossfades(Track& t, ChangeSet& cs) {
+  if (t.kind != TrackKind::Audio) return;
+  for (size_t i = 0; i < t.clips.size(); ++i) {
+    ClipSlot& sl = t.clips[i];
+    if (!sl.audio || sl.audio->crossfadeIn == 0) continue;
+    if (i > 0 && t.clips[i - 1].end() == sl.audio->start) continue;
+    AudioClip c = *sl.audio;
+    c.crossfadeIn = 0;
+    sl.audio = std::make_shared<const AudioClip>(std::move(c));
+    cs.clips.push_back(sl.id);
+  }
+}
+
+const TuningAssignment& slotTuning(const ClipSlot& s) noexcept { return s.audio ? s.audio->tuning : s.clip->tuning; }
 
 // ---- Tracks --------------------------------------------------------------------------------------------------------
 
@@ -270,7 +297,7 @@ Res apply_(const Snapshot& s, const AddTrack& c, ChangeSet& cs) {
   auto np = copyOf(s);
   std::vector<TrackPtr>& dst = mutableList(*np, list, parentPath);
   const size_t at = std::min<size_t>(c.index, dst.size());
-  dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(at), c.track);
+  dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(at), syncedTrack(*s->timeline, c.track));  // T5.3
   PQ_DOC_TRY(checkRouting(*np));
   cs.mark(kChangeStructural);
   collectIds(*c.track, cs);
@@ -577,14 +604,16 @@ struct ClipLoc {
   TrackPath path;
   const Track* track;
   int32_t index;
-  const ClipPtr* clip;
+  const ClipPtr* clip;   // null pointer inside for an audio clip
+  const ClipSlot* slot;
 };
 Result<ClipLoc> locateClip(const Project& p, const ClipRef& r) {
   Result<Loc> loc = locate(p, r.track);
   if (!loc) return std::move(loc).error();
   const int32_t i = findClipIndex(*loc->track, r.clip);
   if (i < 0) return notFound("clip not found on this track");
-  return ClipLoc{loc->path, loc->track, i, &loc->track->clips[static_cast<size_t>(i)].clip};
+  const ClipSlot& slot = loc->track->clips[static_cast<size_t>(i)];
+  return ClipLoc{loc->path, loc->track, i, &slot.clip, &slot};
 }
 
 // Replaces one clip. f(const NoteClip&) → Result<ClipPtr>, nullptr = unchanged.
@@ -592,6 +621,7 @@ template <class F>
 Res editClip(const Snapshot& s, const ClipRef& r, ChangeSet& cs, ChangeFlag flag, F&& f) {
   Result<ClipLoc> loc = locateClip(*s, r);
   if (!loc) return std::move(loc).error();
+  if (!*loc->clip) return invalid("not a note clip");
   Result<ClipPtr> nc = f(**loc->clip);
   if (!nc) return std::move(nc).error();
   if (!*nc) return s;
@@ -622,7 +652,65 @@ Res editClipHeader(const Snapshot& s, const ClipRef& r, ChangeSet& cs, ChangeFla
   });
 }
 
+// T5.3: edits one audio clip. modify(AudioClip&) → Status; the result is synced (Off length), validated, re-sorted, and
+// the track's loose crossfades dropped. Unchanged → no-op.
+template <class F>
+Res editAudio(const Snapshot& s, const ClipRef& r, ChangeSet& cs, ChangeFlag flag, F&& modify) {
+  Result<ClipLoc> loc = locateClip(*s, r);
+  if (!loc) return std::move(loc).error();
+  const ClipSlot& slot = *loc->slot;
+  if (!slot.audio) return invalid("not an audio clip");
+  AudioClip c = *slot.audio;
+  PQ_DOC_TRY(modify(c));
+  c = syncedClip(*s->timeline, std::move(c));
+  if (c == *slot.audio) return s;
+  if (c.id != r.clip) return invalid("a clip's id cannot change");
+  PQ_DOC_TRY(checkAudioClip(*s, c));
+  auto np = copyOf(s);
+  Track& t = mutableTrack(*np, loc->path);
+  const auto i = static_cast<size_t>(loc->index);
+  auto nc = std::make_shared<const AudioClip>(std::move(c));
+  if (nc->start != slot.audio->start) {
+    t.clips.erase(t.clips.begin() + static_cast<std::ptrdiff_t>(i));
+    insertClipSorted(t.clips, ClipSlot{r.clip, nullptr, std::move(nc)});
+  } else {
+    t.clips[i].audio = std::move(nc);
+  }
+  cs.mark(flag);
+  cs.tracks.push_back(r.track);
+  cs.clips.push_back(r.clip);
+  return Snapshot(std::move(np));
+}
+
+// A header field both clip kinds have (name, colour, active, start): set(auto& clip) on a copy.
+template <class F>
+Res editEither(const Snapshot& s, const ClipRef& r, ChangeSet& cs, ChangeFlag flag, F&& set) {
+  Result<ClipLoc> loc = locateClip(*s, r);
+  if (!loc) return std::move(loc).error();
+  if (loc->slot->audio)
+    return editAudio(s, r, cs, flag, [&](AudioClip& a) {
+      set(a);
+      return ok();
+    });
+  return editClipHeader(s, r, cs, flag, [&](NoteClip& n) { set(n); });
+}
+
 Res apply_(const Snapshot& s, const AddClip& c, ChangeSet& cs) {
+  if (c.audio) {  // T5.3
+    if (c.clip) return invalid("a clip is either a note clip or an audio clip");
+    Result<Loc> loc = locate(*s, c.track);
+    if (!loc) return std::move(loc).error();
+    if (loc->track->kind != TrackKind::Audio) return invalid("audio clips live on audio tracks");
+    PQ_DOC_TRY(checkAudioClip(*s, *c.audio));
+    if (findClipIndex(*loc->track, c.audio->id) >= 0) return invalid("clip id already on this track");
+    auto np = copyOf(s);
+    Track& t = mutableTrack(*np, loc->path);
+    insertClipSorted(t.clips, ClipSlot{c.audio->id, nullptr, syncedPtr(*s->timeline, *c.audio)});
+    cs.mark(kChangeSequence);
+    cs.tracks.push_back(c.track);
+    cs.clips.push_back(c.audio->id);
+    return Snapshot(std::move(np));
+  }
   if (!c.clip) return invalid("no clip");
   Result<Loc> loc = locate(*s, c.track);
   if (!loc) return std::move(loc).error();
@@ -653,24 +741,29 @@ Res apply_(const Snapshot& s, const RemoveClip& c, ChangeSet& cs) {
 Res apply_(const Snapshot& s, const MoveClip& c, ChangeSet& cs) {
   PQ_DOC_TRY(checkTick(c.start, "clip start"));
   if (c.toTrack == c.clip.track || !c.toTrack.valid()) {
-    return editClipHeader(s, c.clip, cs, kChangeSequence, [&](NoteClip& n) { n.start = c.start; });
+    return editEither(s, c.clip, cs, kChangeSequence, [&](auto& n) { n.start = c.start; });
   }
   Result<ClipLoc> loc = locateClip(*s, c.clip);
   if (!loc) return std::move(loc).error();
   Result<Loc> to = locate(*s, c.toTrack);
   if (!to) return std::move(to).error();
-  if (to->track->kind != TrackKind::Midi) return invalid("note clips live on MIDI tracks");
-  ClipPtr moved = *loc->clip;
-  if (moved->start != c.start) {
-    NoteClip n = withNotes(*moved, moved->notes);
-    n.start = c.start;
-    moved = std::make_shared<const NoteClip>(std::move(n));
+  ClipSlot moved = *loc->slot;
+  if (moved.audio) {  // T5.3
+    if (to->track->kind != TrackKind::Audio) return invalid("audio clips live on audio tracks");
+    moved.audio = std::make_shared<const AudioClip>(audioMovedTo(*s->timeline, *moved.audio, c.start));
+  } else {
+    if (to->track->kind != TrackKind::Midi) return invalid("note clips live on MIDI tracks");
+    if (moved.clip->start != c.start) {
+      NoteClip n = withNotes(*moved.clip, moved.clip->notes);
+      n.start = c.start;
+      moved.clip = std::make_shared<const NoteClip>(std::move(n));
+    }
   }
   auto np = copyOf(s);
   Track& from = mutableTrack(*np, loc->path);
   from.clips.erase(from.clips.begin() + loc->index);
   Track& dst = mutableTrack(*np, to->path);  // paths are unchanged: only clip lists were edited
-  insertClipSorted(dst.clips, ClipSlot{c.clip.clip, std::move(moved)});
+  insertClipSorted(dst.clips, std::move(moved));
   cs.mark(kChangeSequence);
   cs.tracks.push_back(c.clip.track);
   cs.tracks.push_back(c.toTrack);
@@ -691,17 +784,26 @@ Res apply_(const Snapshot& s, const SetClipLoop& c, ChangeSet& cs) {
 }
 
 Res apply_(const Snapshot& s, const SetClipTuning& c, ChangeSet& cs) {
+  if (Result<ClipLoc> loc = locateClip(*s, c.clip); loc && loc->slot->audio) {  // T5.3: runtime data of the player
+    PQ_DOC_TRY(checkAssignment(*s, c.tuning));
+    Res r = editAudio(s, c.clip, cs, kChangeSequence, [&](AudioClip& a) {
+      a.tuning = c.tuning;
+      return ok();
+    });
+    if (r && *r != s && c.tuning.mode == TuningMode::Main) cs.tunings.push_back(c.tuning.main);
+    return r;
+  }
   Res r = editClipHeader(s, c.clip, cs, kChangeStructural, [&](NoteClip& n) { n.tuning = c.tuning; });
   if (r && *r != s && c.tuning.mode == TuningMode::Main) cs.tunings.push_back(c.tuning.main);
   return r;
 }
 
 Res apply_(const Snapshot& s, const RenameClip& c, ChangeSet& cs) {
-  return editClipHeader(s, c.clip, cs, kChangeMeta, [&](NoteClip& n) { n.name = c.name; });
+  return editEither(s, c.clip, cs, kChangeMeta, [&](auto& n) { n.name = c.name; });
 }
 
 Res apply_(const Snapshot& s, const SetClipColour& c, ChangeSet& cs) {
-  return editClipHeader(s, c.clip, cs, kChangeMeta, [&](NoteClip& n) { n.colour = c.colour; });
+  return editEither(s, c.clip, cs, kChangeMeta, [&](auto& n) { n.colour = c.colour; });
 }
 
 Res apply_(const Snapshot& s, const SetClipSignature& c, ChangeSet& cs) {
@@ -713,7 +815,94 @@ Res apply_(const Snapshot& s, const SetClipFundamental& c, ChangeSet& cs) {
 }
 
 Res apply_(const Snapshot& s, const SetClipActive& c, ChangeSet& cs) {
-  return editClipHeader(s, c.clip, cs, kChangeSequence, [&](NoteClip& n) { n.active = c.active; });
+  return editEither(s, c.clip, cs, kChangeSequence, [&](auto& n) { n.active = c.active; });
+}
+
+Res apply_(const Snapshot& s, const SetAudioClip& c, ChangeSet& cs) {
+  if (!c.audio) return invalid("no clip");
+  Res r = editAudio(s, c.clip, cs, kChangeSequence, [&](AudioClip& a) {
+    a = *c.audio;
+    return ok();
+  });
+  if (r && *r != s && c.audio->sample.valid()) cs.samples.push_back(c.audio->sample);
+  return r;
+}
+
+// ---- Samples (T5.3) ----------------------------------------------------------------------------------------------
+
+bool sampleUsed(const Project& p, SampleId id) {
+  bool used = false;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const ClipSlot& sl : t.clips)
+      if (sl.audio && sl.audio->sample == id) used = true;
+  });
+  return used;
+}
+
+Res apply_(const Snapshot& s, const AddSample& c, ChangeSet& cs) {
+  PQ_DOC_TRY(checkSampleRef(c.sample));
+  if (findSample(*s, c.sample.id)) return invalid("sample id already in use");
+  auto np = copyOf(s);
+  SampleList list = samplesOf(*s);
+  list.insert(std::lower_bound(list.begin(), list.end(), c.sample.id,
+                               [](const SampleRef& a, SampleId b) { return a.id < b; }),
+              c.sample);
+  np->samples = std::make_shared<const SampleList>(std::move(list));
+  cs.mark(kChangeMeta);
+  cs.samples.push_back(c.sample.id);
+  return Snapshot(std::move(np));
+}
+
+Res apply_(const Snapshot& s, const RemoveSample& c, ChangeSet& cs) {
+  if (!findSample(*s, c.sample)) return notFound("sample not found");
+  if (sampleUsed(*s, c.sample)) return invalid("the sample is still played by an audio clip");
+  auto np = copyOf(s);
+  SampleList list = samplesOf(*s);
+  std::erase_if(list, [&](const SampleRef& r) { return r.id == c.sample; });
+  np->samples = list.empty() ? nullptr : std::make_shared<const SampleList>(std::move(list));
+  cs.mark(kChangeMeta);
+  cs.samples.push_back(c.sample);
+  return Snapshot(std::move(np));
+}
+
+// Re-derives the Off clips of every audio track (after a tempo map or sample rate change); `only`: just those playing
+// that sample. Touched tracks and clips go to `cs`; returns whether any changed.
+bool resyncAudioClips(Project& np, ChangeSet& cs, SampleId only = {}) {
+  bool any = false;
+  const Timeline& tl = *np.timeline;
+  rewriteAll(np, [&](const Track& t) -> std::optional<Track> {
+    if (t.kind != TrackKind::Audio) return std::nullopt;
+    std::optional<Track> copy;
+    for (size_t i = 0; i < t.clips.size(); ++i) {
+      const ClipSlot& sl = t.clips[i];
+      if (!sl.audio || sl.audio->warp != AudioWarp::Off || (only.valid() && sl.audio->sample != only)) continue;
+      AudioClip c = syncedClip(tl, *sl.audio);
+      if (c == *sl.audio) continue;
+      if (!copy) copy = t;
+      copy->clips[i].audio = std::make_shared<const AudioClip>(std::move(c));
+      cs.clips.push_back(sl.id);
+    }
+    if (!copy) return std::nullopt;
+    any = true;
+    return copy;
+  }, cs);
+  return any;
+}
+
+Res apply_(const Snapshot& s, const SetSample& c, ChangeSet& cs) {
+  const SampleRef* old = findSample(*s, c.sample.id);
+  if (!old) return notFound("sample not found");
+  PQ_DOC_TRY(checkSampleRef(c.sample));
+  if (*old == c.sample) return s;
+  auto np = copyOf(s);
+  SampleList list = samplesOf(*s);
+  for (SampleRef& r : list)
+    if (r.id == c.sample.id) r = c.sample;
+  np->samples = std::make_shared<const SampleList>(std::move(list));
+  cs.mark(kChangeMeta);
+  cs.samples.push_back(c.sample.id);
+  if (old->rate != c.sample.rate && resyncAudioClips(*np, cs, c.sample.id)) cs.mark(kChangeSequence);
+  return Snapshot(std::move(np));
 }
 
 // ---- Notes ---------------------------------------------------------------------------------------------------------
@@ -939,6 +1128,7 @@ Res apply_(const Snapshot& s, const SetTempoMap& c, ChangeSet& cs) {
   auto np = copyOf(s);
   np->timeline = std::make_shared<const Timeline>(std::move(tl));
   cs.mark(kChangeTimeline);
+  if (resyncAudioClips(*np, cs)) cs.mark(kChangeSequence);  // T5.3: warp-Off clips keep their seconds
   return Snapshot(std::move(np));
 }
 
@@ -1061,7 +1251,7 @@ Res apply_(const Snapshot& s, const RemoveTuning& c, ChangeSet& cs) {
   forEachTrack(*s, [&](const Track& t, const Track*) {
     if (uses(t.tuning)) used = true;
     for (const ClipSlot& cl : t.clips)
-      if (uses(cl.clip->tuning)) used = true;
+      if (uses(slotTuning(cl))) used = true;
   });
   if (used) return invalid("tuning is still used by a track or clip");
   auto np = copyOf(s);
@@ -1919,7 +2109,8 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Mute", "Solo", "Arm", "Set Send", "Send Pre/Post", "Set Output", "Activate Track", "Track Tuning",
     "Group Tracks", "Ungroup Tracks",
     "Add Clip", "Delete Clip", "Move Clip", "Resize Clip", "Clip Loop", "Clip Tuning", "Rename Clip",
-    "Clip Colour", "Clip Signature", "Activate Clip", "Clip Fundamental",
+    "Clip Colour", "Clip Signature", "Activate Clip", "Clip Fundamental", "Edit Audio Clip", "Add Sample",
+    "Delete Sample", "Edit Sample",
     "Add Notes", "Delete Notes", "Edit Notes", "Move Note", "Resize Note", "Note Property",
     "Add Automation Lane", "Delete Automation Lane", "Add Breakpoints", "Delete Breakpoints", "Edit Breakpoints",
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
@@ -1951,9 +2142,38 @@ std::string_view label(const Command& c) noexcept {
   return kLabels[c.v.index()];
 }
 
+namespace {
+// T5.3: after the whole command (a Batch's steps may separate two clips and join them again), the crossfades whose
+// clips are no longer adjacent are dropped, on the audio tracks the command touched.
+Snapshot finishCrossfades(const Snapshot& s, ChangeSet& cs) {
+  std::shared_ptr<Project> np;
+  for (const TrackId id : cs.tracks) {
+    const auto path = findTrack(np ? *np : *s, id);
+    if (!path) continue;
+    const Track& t = trackAt(np ? *np : *s, *path);
+    if (t.kind != TrackKind::Audio) continue;
+    bool loose = false;
+    for (size_t i = 0; i < t.clips.size() && !loose; ++i) {
+      const ClipSlot& sl = t.clips[i];
+      loose = sl.audio && sl.audio->crossfadeIn != 0 && (i == 0 || t.clips[i - 1].end() != sl.audio->start);
+    }
+    if (!loose) continue;
+    if (!np) np = copyOf(s);
+    dropLooseCrossfades(mutableTrack(*np, *path), cs);
+  }
+  return np ? Snapshot(std::move(np)) : s;
+}
+}  // namespace
+
 Result<Snapshot> apply(const Snapshot& s, const Command& c, ChangeSet& changes) {
   Res r = applyAny(s, c, changes);
-  if (r) changes.normalize();
+  if (!r) return r;
+  changes.normalize();
+  if (*r != s && changes.has(kChangeSequence)) {
+    Snapshot done = finishCrossfades(*r, changes);
+    changes.normalize();
+    return done;
+  }
   return r;
 }
 

@@ -43,7 +43,9 @@ bool tuningParamFits(const doc::TuningDef& d, doc::ParamKind k) noexcept {
   }
 }
 
-bool hasSends(doc::TrackKind k) noexcept { return k == doc::TrackKind::Midi || k == doc::TrackKind::Group || k == doc::TrackKind::Return; }
+bool hasSends(doc::TrackKind k) noexcept {
+  return k == doc::TrackKind::Midi || k == doc::TrackKind::Audio || k == doc::TrackKind::Group || k == doc::TrackKind::Return;
+}
 
 const char* tuningParamLabel(doc::ParamKind k) noexcept {
   switch (k) {

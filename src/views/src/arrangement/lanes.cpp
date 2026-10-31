@@ -306,7 +306,7 @@ bool LaneCanvas::buildAhead() {
       const int32_t bodyH = it->h - 3 - titleH;
       for (size_t j = a; j < b; ++j) {
         const doc::ClipPtr& clip = t.clips[j].clip;
-        if (clip->notes.empty()) continue;
+        if (!clip || clip->notes.empty()) continue;  // T5.3: audio clips have no note preview
         const float w = X(ix.end[j]) - X(ix.start[j]);
         if (w < minW) continue;
         if (view_.zooming() && w < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip->notes.size())) continue;
@@ -781,13 +781,13 @@ void paintGroupSummary(LanePaint& lp, const doc::Track& group, float top, float 
     const ClipIndex& ix = lp.m.clips(t);
     const auto [a, b] = ix.visible(lp.from, lp.to);
     for (size_t j = a; j < b; ++j) {
-      const doc::NoteClip& c = *t.clips[j].clip;
+      const doc::ClipSlot& c = t.clips[j];  // T5.3: note and audio clips alike
       const float x0 = std::max(std::round(lp.X(static_cast<double>(ix.start[j]))),
                                 std::max(static_cast<float>(lp.c.x) - 1.0f, static_cast<float>(lp.r.x)));
       const float x1 = std::min(std::max(std::round(lp.X(static_cast<double>(ix.end[j]))), x0 + 1.0f),
                                 std::min(static_cast<float>(lp.c.right()) + 1.0f, static_cast<float>(lp.r.right())));
       if (x1 <= x0) continue;
-      const Rgba col = (c.active && sounds(t) && sounds(group)) ? rgbOf(c.colour) : inactiveColour();
+      const Rgba col = (c.active() && sounds(t) && sounds(group)) ? rgbOf(c.colour()) : inactiveColour();
       // Translucent body with a solid top edge: reads as a summary, not as clips (Live's group lane).
       lp.ctx.dl.addRectFilled({x0, y0, x1, y1}, withAlpha(col, 95));
       if (y1 - y0 >= 3.0f) lp.ctx.dl.addRectFilled({x0, y0, x1, y0 + 1.0f}, withAlpha(col, 230));
@@ -880,6 +880,17 @@ void LaneCanvas::paint(PaintContext& ctx) {
     const bool hoverRow = !ed.dragging() && hp.ref.clip.valid() && hp.ref.track == it->id;
     for (size_t j = a; j < b; ++j) {
       const doc::ClipPtr& clip = t.clips[j].clip;
+      if (!clip) {  // T5.3: an audio clip, drawn as a plain block until T5.6 draws waveforms and handles
+        const doc::ClipSlot& audio = t.clips[j];
+        const float x0 = std::max(std::round(lp.X(static_cast<double>(ix.start[j]))), cx0);
+        const float x1 = std::min(std::max(std::round(lp.X(static_cast<double>(ix.end[j]))), x0 + 1.0f), cx1);
+        if (x1 > x0) {
+          const Rgba col = audio.active() && active ? rgbOf(audio.colour()) : inactiveColour();
+          dl.addRectFilled({x0, y0 + 1.0f, x1, y1 - 1.0f}, withAlpha(col, 150));
+          dl.addRectFilled({x0, y0 + 1.0f, x1, std::min(y1 - 1.0f, y0 + 3.0f)}, col);
+        }
+        continue;
+      }
       if (ed.hiddenWhileDragging(clip->id)) continue;  // drawn at its drag target below
       // Deferred tile quads may not cross a clip drawn over them: overlapping clips (later on top) flush first.
       if (j > 0 && ix.start[j] < ix.maxEnd[j - 1]) flushTiles(lp);

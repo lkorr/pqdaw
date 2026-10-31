@@ -7,7 +7,8 @@
 //   Meta        names, colours, clip signatures, locators, record arm: no engine work (views only).
 //   Param       values in the param block (volume, pan, mute, solo, sends, continuous tuning params, device params): EngineCommand
 //               param writes, listed in `params`. Never recompiles (SPEC §2).
-//   Sequence    clip/note data: rebuild and publish the SequenceImage of the touched tracks (T3.16).
+//   Sequence    clip/note data: rebuild and publish the SequenceImage of the touched tracks (T3.16); T5.3: audio clips
+//               (every field, also a tempo edit that re-derives warp-Off lengths): the tracks' audio sequences.
 //   Automation  breakpoints of existing lanes: rebuild the AutomationImage of the touched lanes. Kept apart from
 //               Sequence so a breakpoint drag does not rebuild note sequences (and vice versa).
 //   Timeline    tempo map, time signatures, loop region: transport update.
@@ -45,6 +46,7 @@ struct ChangeSet {
   std::vector<LocatorId> locators;
   std::vector<DeviceId> devices;  // T4.1: devices added, removed, moved or edited (their track is in `tracks` too)
   std::vector<WireId> wires;      // T4.7: wires added, removed or edited (a removed device's wires too)
+  std::vector<SampleId> samples;  // T5.3: sample table entries added, removed or replaced
   std::vector<ParamRef> params;  // params whose value changed (Param class)
 
   bool empty() const noexcept { return flags == 0; }

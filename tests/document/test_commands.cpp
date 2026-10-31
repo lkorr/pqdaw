@@ -179,6 +179,58 @@ std::vector<Case> cases() {
                }, M, [](Fixture& f, const ChangeSet&) {
                  CHECK(f.clip(f.lead, f.clipA).fundamental.lock == pq::tuning::Rational(1, 8));
                }});
+  // ---- audio clips and samples (T5.3)
+  auto sampleOf = [](Fixture& f) {
+    SampleRef r;
+    r.id = f.store.ids().sample();
+    r.path = "C:/x.wav";
+    r.frames = 48000;
+    r.rate = 48000.0;
+    r.channels = 2;
+    return r;
+  };
+  c.push_back({"AddSample", [sampleOf](Fixture& f) -> Command { return AddSample{sampleOf(f)}; }, M,
+               [](Fixture& f, const ChangeSet& cs) {
+                 REQUIRE(cs.samples.size() == 1);
+                 CHECK(findSample(f.doc(), cs.samples[0]));
+               }});
+  c.push_back({"RemoveSample", [sampleOf](Fixture& f) -> Command {
+                 const SampleRef r = sampleOf(f);
+                 REQUIRE(f.store.dispatch(AddSample{r}).ok());
+                 return RemoveSample{r.id};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 REQUIRE(cs.samples.size() == 1);
+                 CHECK(samplesOf(f.doc()).empty());
+               }});
+  c.push_back({"SetSample", [sampleOf](Fixture& f) -> Command {
+                 SampleRef r = sampleOf(f);
+                 REQUIRE(f.store.dispatch(AddSample{r}).ok());
+                 r.path = "D:/moved.wav";
+                 return SetSample{r};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 REQUIRE(cs.samples.size() == 1);
+                 CHECK(findSample(f.doc(), cs.samples[0])->path == "D:/moved.wav");
+               }});
+  c.push_back({"SetAudioClip", [sampleOf](Fixture& f) -> Command {
+                 IdSource& ids = f.store.ids();
+                 const SampleRef r = sampleOf(f);
+                 const TrackId t = ids.track();
+                 AudioClip a;
+                 a.id = ids.clip();
+                 a.sample = r.id;
+                 REQUIRE(f.store.dispatch(Batch{"setup", {AddSample{r}, AddTrack{makeTrackPtr(t, TrackKind::Audio, "A"), {}, kAppend},
+                                                           AddClip{t, nullptr, std::make_shared<const AudioClip>(a)}}}).ok());
+                 a.gainDb = -6.0f;
+                 a.start = pq::kPpq;
+                 return SetAudioClip{{t, a.id}, std::make_shared<const AudioClip>(a)};
+               }, Q, [](Fixture& f, const ChangeSet& cs) {
+                 REQUIRE(cs.clips.size() == 1);
+                 const Track& t = *f.doc().tracks.back();
+                 REQUIRE(t.clips.size() == 1);
+                 CHECK(t.clips[0].audio->gainDb == -6.0f);
+                 CHECK(t.clips[0].start() == pq::kPpq);
+                 CHECK(t.clips[0].length() == pq::kPpq * 2);  // 1 s at 120 BPM (warp Off)
+               }});
   // ---- notes
   c.push_back({"AddNotes", [](Fixture& f) -> Command {
                  return AddNotes{{f.lead, f.clipB}, {makeNote(f.store.ids(), 3 * pq::kPpq, 5)}};
@@ -766,7 +818,7 @@ TEST_CASE("commands: invalid commands fail and leave the document untouched") {
       MoveTrack{f.drums, f.kick, 0},                                  // into a MIDI track
       MoveTrack{f.drums, f.drums, 0},                                 // into itself
       AddTrack{makeTrackPtr(f.lead, TrackKind::Midi, "dup"), {}, 0},  // id in use
-      AddTrack{makeTrackPtr(ids.track(), TrackKind::Audio, "a"), {}, 0},
+      AddClip{f.lead, makeClip(ids, 0, 10, {}), std::make_shared<const AudioClip>()},  // T5.3: both kinds at once
       AddTrack{makeTrackPtr(ids.track(), TrackKind::Master, "m"), {}, 0},
       AddTrack{makeTrackPtr(ids.track(), TrackKind::Return, "r"), f.drums, 0},
       AddClip{f.drums, makeClip(ids, 0, 10, {})},                     // clips only on MIDI tracks

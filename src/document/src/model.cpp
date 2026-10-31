@@ -389,7 +389,9 @@ bool operator==(const Track& a, const Track& b) noexcept {
     return false;
   if (a.clips.size() != b.clips.size()) return false;
   for (size_t i = 0; i < a.clips.size(); ++i)
-    if (a.clips[i].id != b.clips[i].id || !deepEq(a.clips[i].clip, b.clips[i].clip)) return false;
+    if (a.clips[i].id != b.clips[i].id || !deepEq(a.clips[i].clip, b.clips[i].clip) ||
+        !deepEq(a.clips[i].audio, b.clips[i].audio))
+      return false;
   return true;
 }
 
@@ -416,7 +418,18 @@ bool operator==(const Project& a, const Project& b) noexcept {
   return deepEq(a.timeline, b.timeline) && deepEq(a.locators, b.locators) && a.loop == b.loop &&
          (a.tunings == b.tunings || (a.tunings && b.tunings && deepEqList(*a.tunings, *b.tunings))) &&
          deepEqList(a.tracks, b.tracks) && deepEqList(a.returns, b.returns) && deepEq(a.master, b.master) &&
-         (a.wires == b.wires || wiresOf(a) == wiresOf(b));
+         (a.wires == b.wires || wiresOf(a) == wiresOf(b)) && (a.samples == b.samples || samplesOf(a) == samplesOf(b));
+}
+
+const SampleList& samplesOf(const Project& p) noexcept {
+  static const SampleList kNone;
+  return p.samples ? *p.samples : kNone;
+}
+
+const SampleRef* findSample(const Project& p, SampleId id) noexcept {
+  const SampleList& v = samplesOf(p);
+  const auto it = std::lower_bound(v.begin(), v.end(), id, [](const SampleRef& a, SampleId b) { return a.id < b; });
+  return it != v.end() && it->id == id ? &*it : nullptr;
 }
 
 const WireList& wiresOf(const Project& p) noexcept {
@@ -449,6 +462,7 @@ uint32_t maxEntityId(const Project& p) {
   for (const TuningSlotPtr& s : *p.tunings) see(s->id.value);
   for (const Locator& l : *p.locators) see(l.id.value);
   for (const Wire& w : wiresOf(p)) see(w.id.value);
+  for (const SampleRef& r : samplesOf(p)) see(r.id.value);
   forEachTrack(p, [&](const Track& t, const Track*) {
     see(t.id.value);
     forEachDeviceIn(t.devices, [&](const Device& d) {
@@ -463,7 +477,8 @@ uint32_t maxEntityId(const Project& p) {
     }
     for (const ClipSlot& c : t.clips) {
       see(c.id.value);
-      for (const Note& n : c.clip->notes) see(n.id.value);
+      if (c.clip)
+        for (const Note& n : c.clip->notes) see(n.id.value);
     }
   });
   return m;

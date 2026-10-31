@@ -185,6 +185,32 @@ struct Ui {
 
 }  // namespace
 
+TEST_CASE("project patch: an audio track's source is its clip player (T5.3), the view still matches the graph") {
+  doc::DocumentStore store;
+  REQUIRE(buildSketchProject(store).ok());
+  auto t = doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio, {}, "Loop");
+  REQUIRE(t.ok());
+  REQUIRE(store.dispatch(t->command).ok());
+  auto d = doc::ops::addDevice(*store.current(), store.ids(), t->tracks.at(0), "utility", doc::DeviceKind::AudioEffect);
+  REQUIRE(d.ok());
+  REQUIRE(store.dispatch(d->command).ok());
+  const doc::Project& p = *store.current();
+  doc::LowerOptions o;
+  o.library = &library().library();
+  o.clipSlotOf = [](doc::TrackId) { return 0u; };
+  auto low = doc::lower(p, o);
+  REQUIRE(low.ok());
+  const ProjectPatch pp = buildProjectPatch(p, *low, &library().catalog());
+  CHECK(checkAgainstGraph(pp, p, *low) == "");
+  const auto band = std::find_if(pp.bands.begin(), pp.bands.end(), [](const Band& b) { return b.name == "Loop"; });
+  REQUIRE(band != pp.bands.end());
+  CHECK(band->kind == doc::TrackKind::Audio);
+  REQUIRE(band->source != kNone);
+  CHECK(pp.nodes[band->source].kind == NodeKind::Source);
+  CHECK(pp.nodes[band->source].title == "Clips");
+  REQUIRE(band->devices.size() == 1);
+}
+
 TEST_CASE("project patch: the sketch project's view is its lowered ProjectGraph, node for node and wire for wire") {
   doc::DocumentStore store;
   REQUIRE(buildSketchProject(store).ok());

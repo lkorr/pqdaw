@@ -10,7 +10,9 @@ using namespace detail;
 
 namespace {
 
-bool canSend(TrackKind k) noexcept { return k == TrackKind::Midi || k == TrackKind::Group || k == TrackKind::Return; }
+bool canSend(TrackKind k) noexcept {
+  return k == TrackKind::Midi || k == TrackKind::Audio || k == TrackKind::Group || k == TrackKind::Return;
+}
 
 const Send* sendTo(const Mixer& m, TrackId target) noexcept {
   for (const Send& s : m.sends)

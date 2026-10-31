@@ -179,6 +179,7 @@ Editor::Hit Editor::hitTest(Vec2 p) const {
     const float x0 = std::round(view_.xOfTick(static_cast<double>(ix.start[j])));
     const float x1 = std::max(x0 + 1.0f, std::round(view_.xOfTick(static_cast<double>(ix.end[j]))));
     if (p.x < x0 || p.x >= x1) continue;
+    if (!t.clips[j].clip) continue;  // T5.3: audio clips are not editable here until T5.6
     h.clip = t.clips[j].clip.get();
     h.ref = {t.id, t.clips[j].id};
     const float edge = std::min(static_cast<float>(s.px(kEdgeGrab)), std::floor((x1 - x0) / 4.0f));
@@ -393,7 +394,7 @@ std::vector<doc::ClipRef> Editor::clipsMeeting(int32_t r0, int32_t r1, bool sele
       const ClipIndex& ix = view_.model().clips(*row.track);
       const auto [a, b] = ix.visible(s, e);
       for (size_t j = a; j < b; ++j)
-        if (ix.start[j] < e && ix.end[j] > s) clips.push_back({row.id, row.track->clips[j].id});
+        if (ix.start[j] < e && ix.end[j] > s && row.track->clips[j].clip) clips.push_back({row.id, row.track->clips[j].id});
     }
   // De-duplicated by id (a base may repeat clips the range covers).
   std::sort(clips.begin(), clips.end(), [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip.value < b.clip.value; });

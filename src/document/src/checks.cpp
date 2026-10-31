@@ -76,6 +76,51 @@ Status checkClip(const Project& p, const NoteClip& c) {
   return checkAssignment(p, c.tuning);
 }
 
+Status checkAudioClip(const Project& p, const AudioClip& c) {
+  if (!c.id.valid()) return invalid("clip has no id");
+  PQ_DOC_TRY(checkTick(c.start, "clip start"));
+  PQ_DOC_TRY(checkLength(c.length, "clip length"));
+  if (!findSample(p, c.sample)) return notFound("unknown sample id " + std::to_string(c.sample.value));
+  if (c.warp != AudioWarp::Off && c.warp != AudioWarp::RePitch) return invalid("unknown warp mode");
+  if (!std::isfinite(c.contentStartFrame) || std::abs(c.contentStartFrame) > 9.0e15)
+    return invalid("content start frame out of range");
+  if (!finiteIn(c.seconds, 1e-9, 1.0e8)) return invalid("clip duration must be positive (seconds)");
+  PQ_DOC_TRY(checkTick(c.contentStart, "clip content start"));
+  PQ_DOC_TRY(checkLoop(c.loop));
+  if (!finiteIn(c.sourceBpm, kMinBpm, kMaxBpm)) return invalid("source BPM out of range");
+  if (!finiteIn(c.gainDb, kMinClipGainDb, kMaxClipGainDb)) return invalid("clip gain out of range");
+  switch (c.transpose.unit) {
+    case TransposeUnit::Cents:
+      if (!finiteIn(c.transpose.cents, -kMaxTransposeCents, kMaxTransposeCents)) return invalid("transpose out of range");
+      break;
+    case TransposeUnit::Steps:
+      if (c.transpose.steps < -kMaxTransposeSteps || c.transpose.steps > kMaxTransposeSteps)
+        return invalid("transpose steps out of range");
+      break;
+    case TransposeUnit::Ratio:
+      if (!c.transpose.ratio.isPositive() || std::abs(tuning::cents(c.transpose.ratio)) > kMaxTransposeCents + 1e-9)
+        return invalid("transpose ratio out of range");
+      break;
+    default: return invalid("unknown transpose unit");
+  }
+  if (!finiteIn(c.detuneCents, -kMaxDetuneCents, kMaxDetuneCents)) return invalid("detune out of range");
+  for (const AudioFade* f : {&c.fadeIn, &c.fadeOut}) {
+    if (f->length < 0 || f->length > kMaxTicks) return invalid("fade length out of range");
+    if (!finiteIn(f->curve, -1.0, 1.0)) return invalid("fade curve must be in [-1, 1]");
+  }
+  if (c.crossfadeIn < 0 || c.crossfadeIn > kMaxTicks) return invalid("crossfade length out of range");
+  return checkAssignment(p, c.tuning);
+}
+
+Status checkSampleRef(const SampleRef& r) {
+  if (!r.id.valid()) return invalid("sample has no id");
+  if (r.path.empty()) return invalid("sample path is empty");
+  if (r.frames < 1) return invalid("sample frames must be at least 1");
+  if (!finiteIn(r.rate, 1e-3, 1.0e7)) return invalid("sample rate out of range");
+  if (r.channels < 1 || r.channels > 1024) return invalid("sample channels out of range");
+  return ok();
+}
+
 Status checkFundamental(const ClipFundamental& f) {
   if (f.lock && !f.lock->isPositive()) return invalid("a fundamental lock must be positive");
   for (size_t i = 0; i < f.steps.size(); ++i) {
@@ -123,7 +168,9 @@ bool tuningParamApplies(const TuningDef& d, ParamKind k) {
   }
 }
 
-bool trackHasSends(TrackKind k) { return k == TrackKind::Midi || k == TrackKind::Group || k == TrackKind::Return; }
+bool trackHasSends(TrackKind k) {
+  return k == TrackKind::Midi || k == TrackKind::Audio || k == TrackKind::Group || k == TrackKind::Return;
+}
 
 // Whether `host` may carry a lane for `r` (see AddAutomationLane).
 Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r) {

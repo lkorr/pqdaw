@@ -103,6 +103,7 @@ pq_add_test(pq_tests_playback
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them
     app/test_racks.cpp  # T4.8: racks (hand-built graph diff 0, interpreter == JIT, key zones, macro = one write, click-free)
+    app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -312,6 +313,7 @@ pq_add_test(pq_tests_document
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
     document/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit, file, resolution, lowering, coalescing)
     document/test_racks.cpp    # T4.8: racks (rules, builders, file, lowering)
+    document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
   DEPS pq_doc)
 
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it

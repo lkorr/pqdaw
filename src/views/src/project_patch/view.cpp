@@ -259,7 +259,7 @@ void ProjectPatchView::captureArrangement() {
     const double end = static_cast<double>(std::max<Ticks>(songEnd_, 1));
     for (uint32_t b = 0; b < patch_.bands.size() && morph_.clips.size() < 1024; ++b) {
       const Band& band = patch_.bands[b];
-      if (band.kind != doc::TrackKind::Midi || laneOf[b] < 0) continue;
+      if ((band.kind != doc::TrackKind::Midi && band.kind != doc::TrackKind::Audio) || laneOf[b] < 0) continue;
       const doc::Track* t = doc::findTrackPtr(p, band.track);
       if (t == nullptr) continue;
       for (const doc::ClipSlot& c : t->clips) {
@@ -269,9 +269,9 @@ void ProjectPatchView::captureArrangement() {
         Morph::ClipGeom g;
         g.lane = v.toRect();
         g.band = b;
-        g.u0 = static_cast<float>(static_cast<double>(c.clip->start) / end);
-        g.u1 = static_cast<float>(static_cast<double>(c.clip->start + c.clip->length) / end);
-        g.colour = c.clip->colour.rgb;
+        g.u0 = static_cast<float>(static_cast<double>(c.start()) / end);
+        g.u1 = static_cast<float>(static_cast<double>(c.end()) / end);
+        g.colour = c.colour().rgb;
         morph_.clips.push_back(g);
         if (morph_.clips.size() >= 1024) break;
       }
@@ -412,8 +412,7 @@ void ProjectPatchView::rebuild() {
   built_ = snap;
   songEnd_ = 8 * kTicksPerWhole;
   doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
-    if (!t.clips.empty()) songEnd_ = std::max(songEnd_, t.clips.back().clip->start + t.clips.back().clip->length);
-    for (const doc::ClipSlot& c : t.clips) songEnd_ = std::max(songEnd_, c.clip->start + c.clip->length);
+    for (const doc::ClipSlot& c : t.clips) songEnd_ = std::max(songEnd_, c.end());
   });
   // Expanded devices: their patches' own scenes (cached per patch name).
   std::vector<ExpandedSize> sizes;

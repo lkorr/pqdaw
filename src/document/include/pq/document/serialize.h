@@ -51,7 +51,13 @@ namespace pq::doc {
 // "solo"?, "key"? / "velocity"? / "select"?: [lo, fadeLo, fadeHi, hi]}], "mappings"?: [{"id", "macro" 1…16, "device",
 // "param", "min", "max", "curve"?}], "macroNames"?, "visibleMacros"?, "variations"?, "randomizeExclude"?, "keyUnit"?,
 // "voiceChains"?, "showChains"?, "showMacros"?}; migration 5 → 6 changes nothing: racks are new).
-inline constexpr int32_t kSchemaVersion = 6;
+// 7 = audio (T5.3): "kind": "audio" tracks in the main tree, whose "clips" hold audio clips tagged "kind": "audio" (one
+// line each: "sample", "warp" "off" | "rePitch", "contentStartFrame", "seconds", "contentStart", "loop", "sourceBpm",
+// "gainDb", "transpose" {"cents" | "steps" | "ratio"}, "detuneCents", "reverse", "fadeIn" / "fadeOut" {"length",
+// "curve"}, "crossfadeIn", "tuning", "active"; a warp-Off clip's "length" is re-derived from the tempo map on load), and
+// an optional top-level "samples" table [{"id", "path", "name", "hash" (16 hex digits), "size", "frames", "rate",
+// "channels"}]; migration 6 → 7 changes nothing: audio is new.
+inline constexpr int32_t kSchemaVersion = 7;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader
@@ -62,7 +68,8 @@ struct Migration {
   MigrationFn fn = nullptr;
 };
 // The built-in table: one step per schema version (1 → 2: ticks × 8; 2 → 3: the default instrument as a device;
-// 3 → 4: none, wires are new; 4 → 5: none, user device texts are new; 5 → 6: none, racks are new).
+// 3 → 4: none, wires are new; 4 → 5: none, user device texts are new; 5 → 6: none, racks are new; 6 → 7: none, audio
+// tracks, audio clips and the sample table are new).
 std::span<const Migration> builtinMigrations() noexcept;
 
 struct LoadOptions {

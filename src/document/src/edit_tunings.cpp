@@ -45,7 +45,7 @@ EditResult removeMainTuning(const Project& p, TuningId tuning, TuningId replacem
       touched = true;
     }
     for (const ClipSlot& c : t.clips)
-      if (uses(c.clip->tuning)) {
+      if (uses(c.audio ? c.audio->tuning : c.clip->tuning)) {
         b.commands.push_back(SetClipTuning{{t.id, c.id}, TuningAssignment::mainTuning(replacement)});
         touched = true;
       }

@@ -75,6 +75,7 @@ EditResult insertEmptyClip(const Project& p, IdSource& ids, TrackId track, Ticks
   ClipEdits ed(p);
   Result<ClipEditor*> te = ed.editor(track);
   if (!te) return std::move(te).error();
+  if ((*te)->track().kind != TrackKind::Midi) return invalid("MIDI clips live on MIDI tracks");
   (*te)->clearRange(start, end, ids);
   NoteClip c;
   c.id = ids.clip();
@@ -83,7 +84,7 @@ EditResult insertEmptyClip(const Project& p, IdSource& ids, TrackId track, Ticks
   c.start = start;
   c.length = end - start;
   c.loop = ClipLoop{true, 0, end - start};
-  (*te)->add(std::make_shared<const NoteClip>(c));
+  (*te)->add(ClipSlot{c.id, std::make_shared<const NoteClip>(c), nullptr});
   Edit e = makeEdit("Insert MIDI Clip");
   ed.emit(batchOf(e));
   e.clips.push_back({track, c.id});
@@ -94,7 +95,7 @@ EditResult deleteClips(const Project& p, std::span<const ClipRef> clips) {
   Edit e = makeEdit(clips.size() == 1 ? "Delete Clip" : "Delete Clips");
   std::vector<ClipId> done;
   for (const ClipRef& r : clips) {
-    Result<ClipFound> f = findClip(p, r);
+    Result<ClipFound> f = findAnyClip(p, r);
     if (!f) return std::move(f).error();
     if (std::find(done.begin(), done.end(), r.clip) != done.end()) continue;
     done.push_back(r.clip);
@@ -107,7 +108,7 @@ EditResult moveClips(const Project& p, IdSource& ids, std::span<const ClipMove> 
   const uint32_t firstNew = ids.peek();
   ClipEdits ed(p);
   struct M {
-    ClipPtr src;
+    ClipSlot src;
     ClipEditor* from;
     ClipEditor* to;
     Ticks start;
@@ -115,31 +116,32 @@ EditResult moveClips(const Project& p, IdSource& ids, std::span<const ClipMove> 
   std::vector<M> ms;
   ms.reserve(moves.size());
   for (const ClipMove& mv : moves) {
-    Result<ClipFound> f = findClip(p, mv.clip);
+    Result<ClipFound> f = findAnyClip(p, mv.clip);
     if (!f) return std::move(f).error();
     PQ_DOC_TRY(checkTick(mv.start, "clip start"));
     for (const M& m : ms)
-      if (m.src->id == mv.clip.clip) return invalid("a clip is listed twice");
+      if (m.src.id == mv.clip.clip) return invalid("a clip is listed twice");
     Result<ClipEditor*> from = ed.editor(mv.clip.track);
     if (!from) return std::move(from).error();
     Result<ClipEditor*> to = ed.editor(mv.toTrack.valid() ? mv.toTrack : mv.clip.track);
     if (!to) return std::move(to).error();
-    ms.push_back({f->clip, *from, *to, mv.start});
+    if ((*to)->track().kind != (*from)->track().kind)  // T5.3
+      return invalid(f->audio ? "audio clips live on audio tracks" : "note clips live on MIDI tracks");
+    ms.push_back({f->slot(), *from, *to, mv.start});
   }
   Edit e = makeEdit(opt.copy ? (ms.size() == 1 ? "Copy Clip" : "Copy Clips") : (ms.size() == 1 ? "Move Clip" : "Move Clips"));
   if (!opt.copy)
-    for (const M& m : ms) m.from->remove(m.src->id);
-  std::vector<ClipPtr> placed;
+    for (const M& m : ms) m.from->remove(m.src.id);
+  std::vector<ClipSlot> placed;
   placed.reserve(ms.size());
   for (const M& m : ms) {
-    NoteClip c = opt.copy ? cloneClip(*m.src, ids, false) : withNotes(*m.src, m.src->notes);
-    c.start = m.start;
-    m.to->clearRange(c.start, clipEnd(c), ids);
-    placed.push_back(std::make_shared<const NoteClip>(std::move(c)));
+    const ClipSlot c = m.to->moved(opt.copy ? cloneSlot(m.src, ids, false) : m.src, m.start);
+    m.to->clearRange(c.start(), c.end(), ids);
+    placed.push_back(c);
   }
   for (size_t i = 0; i < ms.size(); ++i) {
     ms[i].to->add(placed[i]);
-    e.clips.push_back({ms[i].to->id(), placed[i]->id});
+    e.clips.push_back({ms[i].to->id(), placed[i].id});
   }
   ed.emit(batchOf(e));
 
@@ -152,8 +154,8 @@ EditResult moveClips(const Project& p, IdSource& ids, std::span<const ClipMove> 
     for (const Track* t : tracks) {
       std::vector<RangeMove> rm;
       for (const M& m : ms)
-        if (m.from == m.to && &m.from->track() == t && m.start != m.src->start)
-          rm.push_back({m.src->start, m.start, m.src->length});
+        if (m.from == m.to && &m.from->track() == t && m.start != m.src.start())
+          rm.push_back({m.src.start(), m.start, m.src.length()});
       if (!rm.empty()) followAutomation(*t, rm, opt.copy, ids, firstNew, batchOf(e));
     }
   }
@@ -165,9 +167,9 @@ EditResult moveClipsBy(const Project& p, IdSource& ids, std::span<const ClipRef>
   std::vector<ClipMove> moves;
   moves.reserve(clips.size());
   for (const ClipRef& r : clips) {
-    Result<ClipFound> f = findClip(p, r);
+    Result<ClipFound> f = findAnyClip(p, r);
     if (!f) return std::move(f).error();
-    moves.push_back({r, r.track, f->clip->start + delta});
+    moves.push_back({r, r.track, f->slot().start() + delta});
   }
   return moveClips(p, ids, moves, opt);
 }
@@ -182,20 +184,20 @@ EditResult resizeClips(const Project& p, IdSource& ids, std::span<const ClipRef>
   std::vector<ClipId> keep;
   Edit e = makeEdit(clips.size() == 1 ? "Resize Clip" : "Resize Clips");
   for (const ClipRef& r : clips) {
-    Result<ClipFound> f = findClip(p, r);
+    Result<ClipFound> f = findAnyClip(p, r);
     if (!f) return std::move(f).error();
     Result<ClipEditor*> te = ed.editor(r.track);
     if (!te) return std::move(te).error();
-    const NoteClip& c = *f->clip;
-    Ticks s = c.start, en = clipEnd(c);
+    const ClipSlot c = f->slot();
+    Ticks s = c.start(), en = c.end();
     if (edge == ClipEdge::Start)
-      s = std::min(c.start + delta, en - 1);
+      s = std::min(c.start() + delta, en - 1);
     else
-      en = std::max(en + delta, c.start + 1);
+      en = std::max(en + delta, c.start() + 1);
     PQ_DOC_TRY(checkTick(s, "clip start"));
     PQ_DOC_TRY(checkTick(en, "clip end"));
-    (*te)->replace(c.id, std::make_shared<const NoteClip>(withBounds(c, s, en)));
-    rs.push_back({*te, c.start, clipEnd(c), s, en});
+    (*te)->replace(c.id, (*te)->bounded(c, s, en));
+    rs.push_back({*te, c.start(), c.end(), s, en});
     keep.push_back(c.id);
     e.clips.push_back(r);
   }
@@ -215,23 +217,23 @@ EditResult splitClips(const Project& p, IdSource& ids, std::span<const ClipRef> 
   Edit e = makeEdit("Split");
   std::vector<ClipId> done;
   for (const ClipRef& r : clips) {
-    Result<ClipFound> f = findClip(p, r);
+    Result<ClipFound> f = findAnyClip(p, r);
     if (!f) return std::move(f).error();
     if (std::find(done.begin(), done.end(), r.clip) != done.end()) continue;
     done.push_back(r.clip);
     Result<ClipEditor*> te = ed.editor(r.track);
     if (!te) return std::move(te).error();
-    NoteClip piece = withNotes(*f->clip, f->clip->notes);
+    ClipSlot piece = f->slot();
     bool first = true;
     for (Ticks t : cuts) {
-      if (t <= piece.start || t >= clipEnd(piece)) continue;
-      auto [l, rr] = splitClipAt(piece, t, ids.clip(), ids);
+      if (t <= piece.start() || t >= piece.end()) continue;
+      auto [l, rr] = (*te)->split(piece, t, ids.clip(), ids);
       e.clips.push_back({r.track, l.id});
       if (first) {
-        (*te)->replace(r.clip, std::make_shared<const NoteClip>(std::move(l)));
+        (*te)->replace(r.clip, std::move(l));
         first = false;
       } else {
-        (*te)->add(std::make_shared<const NoteClip>(std::move(l)));
+        (*te)->add(std::move(l));
       }
       piece = std::move(rr);
     }
@@ -240,7 +242,7 @@ EditResult splitClips(const Project& p, IdSource& ids, std::span<const ClipRef> 
       continue;
     }
     e.clips.push_back({r.track, piece.id});
-    (*te)->add(std::make_shared<const NoteClip>(std::move(piece)));
+    (*te)->add(std::move(piece));
   }
   ed.emit(batchOf(e));
   return e;
@@ -250,11 +252,11 @@ EditResult duplicateClips(const Project& p, IdSource& ids, std::span<const ClipR
   std::vector<ClipFound> found;
   Ticks s = kMaxTicks, en = -kMaxTicks;
   for (const ClipRef& r : clips) {
-    Result<ClipFound> f = findClip(p, r);
+    Result<ClipFound> f = findAnyClip(p, r);
     if (!f) return std::move(f).error();
-    if (std::any_of(found.begin(), found.end(), [&](const ClipFound& x) { return x.clip->id == r.clip; })) continue;
-    s = std::min(s, f->clip->start);
-    en = std::max(en, clipEnd(*f->clip));
+    if (std::any_of(found.begin(), found.end(), [&](const ClipFound& x) { return x.slot().id == r.clip; })) continue;
+    s = std::min(s, f->slot().start());
+    en = std::max(en, f->slot().end());
     found.push_back(std::move(f).value());
   }
   Edit e = makeEdit(found.size() == 1 ? "Duplicate Clip" : "Duplicate Clips");
@@ -262,16 +264,15 @@ EditResult duplicateClips(const Project& p, IdSource& ids, std::span<const ClipR
   const Ticks len = en - s;
   PQ_DOC_TRY(checkTick(en + len, "clip end"));
   ClipEdits ed(p);
-  std::vector<std::pair<ClipEditor*, ClipPtr>> copies;
+  std::vector<std::pair<ClipEditor*, ClipSlot>> copies;
   for (const ClipFound& f : found) {
-    NoteClip c = cloneClip(*f.clip, ids, false);
-    c.start += len;
     ClipEditor& te = ed.editor(*f.track);
-    te.clearRange(c.start, clipEnd(c), ids);
-    copies.emplace_back(&te, std::make_shared<const NoteClip>(std::move(c)));
+    const ClipSlot c = te.moved(cloneSlot(f.slot(), ids, false), f.slot().start() + len);
+    te.clearRange(c.start(), c.end(), ids);
+    copies.emplace_back(&te, c);
   }
   for (auto& [te, c] : copies) {
-    e.clips.push_back({te->id(), c->id});
+    e.clips.push_back({te->id(), c.id});
     te->add(std::move(c));
   }
   ed.emit(batchOf(e));
@@ -287,8 +288,9 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
   };
   std::vector<Group> groups;
   for (const ClipRef& r : clips) {
-    Result<ClipFound> f = findClip(p, r);
+    Result<ClipFound> f = findAnyClip(p, r);
     if (!f) return std::move(f).error();
+    if (f->audio) return unsupported("consolidating audio clips is not supported yet (it renders them; SPEC §9.4)");
     auto it = std::find_if(groups.begin(), groups.end(), [&](const Group& g) { return g.track == f->track; });
     if (it == groups.end()) {
       groups.push_back({f->track});
@@ -330,7 +332,7 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
     ClipEditor& te = ed.editor(*g.track);
     te.clearRange(g.start, g.end, ids);
     e.clips.push_back({g.track->id, c.id});
-    te.add(std::make_shared<const NoteClip>(std::move(c)));
+    te.add(ClipSlot{c.id, std::make_shared<const NoteClip>(std::move(c)), nullptr});
   }
   ed.emit(batchOf(e));
   return e;

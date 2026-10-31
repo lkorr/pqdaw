@@ -345,9 +345,8 @@ TEST_CASE("view context: the default keymap binds every implemented action; scop
   CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+Y")) == "edit.redo");
   CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+S")) == "file.save");
   CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Shift+Tab")) == "view.toggleClipDevice");
-  // Deferred bindings stay unbound: Ctrl+T (audio tracks, M6) since T3.x-fix-look follows Live 12; the MIDI track is
-  // Ctrl+Shift+T.
-  CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+T")).empty());
+  // Live 12: Ctrl+T inserts an audio track (T5.3), Ctrl+Shift+T a MIDI track (T3.x-fix-look).
+  CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+T")) == "track.newAudio");
   CHECK(ctx.keymap().lookup(ui::kGlobalScope, chord("Ctrl+Shift+T")) == "track.newMidi");
   // Applying again (after more views registered actions) replaces the bindings instead of failing on duplicates.
   REQUIRE(ctx.applyDefaultKeymap().ok());

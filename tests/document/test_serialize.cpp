@@ -306,7 +306,7 @@ std::string schema0Text() {
 
 TEST_CASE("serialize: migration hook table (n -> n+1)") {
   const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
-                             builtinMigrations()[3], builtinMigrations()[4]};
+                             builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -333,14 +333,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 6");
+    const size_t at = newer.find("\"schemaVersion\": 7");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 18, "\"schemaVersion\": 7");
+    newer.replace(at, 18, "\"schemaVersion\": 8");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 7; this build reads up to 6)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 8; this build reads up to 7)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -350,7 +350,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                    return pq::Ok{};
                                  }},
                                 builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
-                                builtinMigrations()[3], builtinMigrations()[4]};
+                                builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -440,7 +440,7 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 6);
+  static_assert(kSchemaVersion == 7);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -449,7 +449,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 6,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 7,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below

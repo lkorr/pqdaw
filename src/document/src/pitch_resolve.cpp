@@ -145,6 +145,11 @@ Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id, const Res
   out.clips.reserve(track.clips.size());
   std::unordered_map<const TuningDef*, std::optional<tuning::Tuning>> built;  // clips share their track's tuning
   for (const ClipSlot& slot : track.clips) {
+    if (!slot.clip) {  // T5.3: an audio clip has no notes (keeps out.clips aligned with track.clips)
+      out.clips.push_back(ClipPitches{});
+      out.clips.back().clip = slot.id;
+      continue;
+    }
     const NoteClip& clip = *slot.clip;
     ClipPitches cp;
     cp.clip = clip.id;

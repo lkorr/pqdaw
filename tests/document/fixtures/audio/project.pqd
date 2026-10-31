@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 7,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "linear"},
+      {"tick": 1774080, "bpm": 90.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 3,
+      "kind": "midi",
+      "name": "1 MIDI",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {"id": 4, "patch": "BasicSynth", "kind": "instrument"}
+      ],
+      "clips": []
+    },
+    {
+      "id": 5,
+      "kind": "audio",
+      "name": "1 Audio",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [],
+      "clips": [
+        {"kind": "audio", "id": 9, "name": "loop", "colour": "#808080", "start": 31680, "length": 802160, "sample": 7, "warp": "off", "contentStartFrame": 1681.0650514468166, "seconds": 1.9284125860975623, "contentStart": 0, "loop": {"enabled": false, "start": 0, "end": 887040}, "sourceBpm": 120.0, "gainDb": -3.5, "transpose": {"cents": -1250.25}, "detuneCents": 12.5, "reverse": false, "fadeIn": {"length": 73920, "curve": 0.25}, "fadeOut": {"length": 110880, "curve": -0.75}, "crossfadeIn": 0, "tuning": "inherit", "active": true},
+        {"kind": "audio", "id": 10, "name": "Kick \"808\" — ünïcode", "colour": "#808080", "start": 833840, "length": 379424, "sample": 8, "warp": "off", "contentStartFrame": 0.0, "seconds": 1.0, "contentStart": 0, "loop": {"enabled": false, "start": 0, "end": 887040}, "sourceBpm": 120.0, "gainDb": 0.0, "transpose": {"ratio": "5/4"}, "detuneCents": 0.0, "reverse": true, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 55440, "tuning": "inherit", "active": true}
+      ]
+    },
+    {
+      "id": 6,
+      "kind": "audio",
+      "name": "2 Audio",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [],
+      "clips": [
+        {"kind": "audio", "id": 11, "name": "re-pitched", "colour": "#808080", "start": 887040, "length": 729610, "sample": 7, "warp": "rePitch", "contentStartFrame": 0.0, "seconds": 2.0, "contentStart": 0, "loop": {"enabled": true, "start": 221760, "end": 665280}, "sourceBpm": 87.5, "gainDb": 0.0, "transpose": {"steps": -5}, "detuneCents": 0.0, "reverse": false, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 0, "tuning": {
+            "private": {
+              "kind": "edo",
+              "n": 19,
+              "equave": "2/1",
+              "referenceHz": 261.626
+            }
+          }, "active": false}
+      ]
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": []
+  },
+  "samples": [
+    {"id": 7, "path": "C:/samples/loop.wav", "name": "loop", "hash": "0123456789abcdef", "size": 384044, "frames": 96000, "rate": 48000.0, "channels": 2},
+    {"id": 8, "path": "samples/imported/Kick (2).flac", "name": "Kick \"808\" — ünïcode", "hash": "fedcba9876543210", "size": 1234567, "frames": 44100, "rate": 44100.0, "channels": 1}
+  ],
+  "view": {
+    "tracks": [],
+    "lanes": []
+  }
+}

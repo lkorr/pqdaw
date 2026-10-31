@@ -69,6 +69,14 @@
 //                   post = gain(x, (pl·s, pr·s)),  s  = vg · sendGate · m     (export: what post-fader sends read)
 //                   pre  = gain(x, (pl·q, pr·q)),  q  = sendGate · m          (export: what pre-fader sends read)
 //                 vg = volume ≤ −70 dB ? 0 : 10^(volume/20); m = mute < 0.5 (the activator, a param: its lane plays).
+//   Audio         (T5.3) x = clipPlayer(clip: <slot>) (LowerOptions::clipSlotOf; global stereo audio: the engine's player of
+//                 that slot's audio sequence, audio_sequence.h; a mono sample is duplicated) → its audio effects →
+//                 balance pan (centre 0 dB) and the same three stages as a MIDI track (sends, groups, solo, mute and
+//                 audibility as for MIDI tracks). Its role is graph::TrackRole::Audio (no voices, no event slot). The
+//                 clips themselves are not in the graph: an audio clip edit (gain, fades, transpose, reverse, warp,
+//                 crossfade, bounds) changes only the sequence data (ChangeSet Sequence: no compile); creating the track
+//                 or editing its chain compiles its unit. Until T5.4 the engine binds clipPlayer to silence
+//                 (engine/src/image_host.cpp), so audio tracks compile, route and meter but play nothing.
 //   Group         x = `in` (stereo: the sum of what is routed into it) → its audio effects, balance pan (centre
 //                 0 dB), the same three stages.
 //   Return        x = the sum of its sends: for each track k that sends to it, `in s<k>` (that track's post or pre
@@ -154,6 +162,10 @@ struct LowerOptions {
   // kNone (graph::kNone): the track has no slot (more MIDI tracks than the engine has slots): it is lowered without
   // its notes.
   std::function<uint32_t(TrackId)> slotOf;
+  // T5.3: the clip-player slot of an audio track (the engine's audio sequence its `clipPlayer` plays; stable across
+  // lowerings: the app shares the event-slot allocator). Unset or kNone: the track is lowered without its clips (its
+  // effects still run) and listed in LoweredProject::withoutSlot.
+  std::function<uint32_t(TrackId)> clipSlotOf;
   float smoothingMs = 2.0f;                        // gain smoothing time constant
   // T2.6-fix1: the index into Resources::tunings of the tuning node's table for main tuning `id` with definition
   // `def` (always one with a signal). An index whose entry is null is allowed (the node then passes the static
@@ -256,7 +268,7 @@ struct LoweredProject {
   std::vector<LoweredParam> params;
   uint32_t master = 0;                                        // graph index of the master
   std::vector<DelayedSend> delayedSends;
-  std::vector<TrackId> withoutSlot;                           // MIDI tracks lowered without notes (no event slot)
+  std::vector<TrackId> withoutSlot;                           // MIDI / audio tracks lowered without notes / clips (no slot)
   std::vector<DeviceId> missingDevices;                       // bypassed: patch not in the library (or not its kind)
   std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)

@@ -30,6 +30,7 @@ void ChangeSet::merge(const ChangeSet& o) {
   append(locators, o.locators);
   append(devices, o.devices);
   append(wires, o.wires);
+  append(samples, o.samples);
   append(params, o.params);
 }
 
@@ -42,6 +43,7 @@ void ChangeSet::normalize() {
   sortUnique(locators);
   sortUnique(devices);
   sortUnique(wires);
+  sortUnique(samples);
   sortUnique(params);
 }
 
@@ -55,6 +57,7 @@ void ChangeSet::clear() noexcept {
   locators.clear();
   devices.clear();
   wires.clear();
+  samples.clear();
   params.clear();
 }
 

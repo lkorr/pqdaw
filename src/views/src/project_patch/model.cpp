@@ -308,6 +308,15 @@ struct Builder {
       s.w = m::kSourceW;
       s.h = m::kSourceH;
       band.source = addNode(std::move(s));
+    } else if (t.kind == doc::TrackKind::Audio) {  // T5.3: the clip player (graph: clipPlayer → its chain)
+      Node s;
+      s.kind = NodeKind::Source;
+      s.band = bi;
+      s.title = "Clips";
+      s.outputs.push_back({"out", ""});
+      s.w = m::kSourceW;
+      s.h = m::kSourceH;
+      band.source = addNode(std::move(s));
     } else {
       Node s;
       s.kind = NodeKind::Sum;
@@ -470,7 +479,8 @@ struct Builder {
     // x
     float mainEnd = m::kLeft;
     for (uint32_t i = 0; i < out.bands.size(); ++i)
-      if (out.bands[i].depth == 0 && (out.bands[i].kind == doc::TrackKind::Midi || out.bands[i].kind == doc::TrackKind::Group))
+      if (out.bands[i].depth == 0 && (out.bands[i].kind == doc::TrackKind::Midi || out.bands[i].kind == doc::TrackKind::Audio ||
+                                      out.bands[i].kind == doc::TrackKind::Group))
         mainEnd = std::max(mainEnd, placeMain(i));
     const float busRoom = 8.0f * static_cast<float>(p.returns.size());
     float retEnd = mainEnd;
@@ -605,7 +615,7 @@ struct Builder {
     std::unordered_map<uint32_t, float> busX;
     for (uint32_t i = 0; i < out.bands.size(); ++i) {
       const Band& b = out.bands[i];
-      if (b.kind == doc::TrackKind::Midi) continue;
+      if (b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Audio) continue;  // no summing input
       float x = out.nodes[b.source].x - 16.0f;
       if (b.kind == doc::TrackKind::Return) {
         const auto ri = returnIndex.find(b.track.value);

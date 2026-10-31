@@ -231,6 +231,7 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       break;
     }
     case 2:  // Create
+      v.push_back(act("Insert Audio Track", "track.newAudio"));
       v.push_back(act("Insert MIDI Track", "track.newMidi"));
       v.push_back(act("Insert Return Track", "track.newReturn"));
       v.push_back(MenuItem::sep());

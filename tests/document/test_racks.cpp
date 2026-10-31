@@ -314,7 +314,7 @@ TEST_CASE("racks: the project file (schema 6) round-trips racks; broken racks ar
 
   Result<std::string> text = serializeProject(r.doc(), r.store.view());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 6,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": " + std::to_string(kSchemaVersion) + ",", 0) == 0);
   Result<LoadedProject> back = parseProject(*text);
   REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
   CHECK(*back->project == r.doc());
@@ -339,9 +339,10 @@ TEST_CASE("racks: the project file (schema 6) round-trips racks; broken racks ar
   CHECK_FALSE(broken("\"patch\": \"AudioEffectRack\"", "\"patch\": \"InstrumentRack\"").ok());
   CHECK_FALSE(broken("\"id\": " + std::to_string(c2.value), "\"id\": " + std::to_string(c1.value)).ok());  // duplicate
 
-  // fixtures/schema4 / schema5 are fixtures/full as the schema-4 build (main at 9619d7a) and the schema-5 build (main
-  // at d2daf37: user devices) wrote it: schema 6 only adds racks, so both re-save as fixtures/full.
-  for (const int32_t v : {4, 5}) {
+  // fixtures/schema4 / schema5 / schema6 are fixtures/full as the schema-4 build (main at 9619d7a), the schema-5 build
+  // (main at d2daf37: user devices) and the schema-6 build (main at 70ce131: racks) wrote it: schemas 6 and 7 only add
+  // racks and audio (T5.3), so all three re-save as fixtures/full.
+  for (const int32_t v : {4, 5, 6}) {
     CAPTURE(v);
     const std::string dir = "schema" + std::to_string(v);
     const std::string oldText = readFile(fixturePath(dir + "/project.pqd"));

@@ -50,11 +50,10 @@ void Overview::rebuildCache(const IRect& r) {
   const auto rows = view_.rows();
   auto addTrack = [&](const doc::Track& t, int32_t y0, int32_t y1, bool parentActive) {
     const size_t first = blocks_.size();
-    for (const doc::ClipSlot& s : t.clips) {
-      const doc::NoteClip& c = *s.clip;
-      const auto x0 = static_cast<int32_t>(std::floor(static_cast<double>(c.start - rg.start) * xScale));
-      const auto x1 = std::max(x0 + 1, static_cast<int32_t>(std::ceil(static_cast<double>(c.start + c.length - rg.start) * xScale)));
-      const Rgba col = (c.active && sounds(t) && parentActive) ? rgbOf(c.colour) : inactiveColour();
+    for (const doc::ClipSlot& c : t.clips) {  // T5.3: note and audio clips alike
+      const auto x0 = static_cast<int32_t>(std::floor(static_cast<double>(c.start() - rg.start) * xScale));
+      const auto x1 = std::max(x0 + 1, static_cast<int32_t>(std::ceil(static_cast<double>(c.end() - rg.start) * xScale)));
+      const Rgba col = (c.active() && sounds(t) && parentActive) ? rgbOf(c.colour()) : inactiveColour();
       if (blocks_.size() > first) {
         Block& last = blocks_.back();
         if (last.col == col && x0 <= last.x1) {

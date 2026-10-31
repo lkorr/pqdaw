@@ -1,0 +1,25 @@
+patch Audio4 {
+  param volume = 0 [-70..6]
+  param pan = 0 [-1..1]
+  param gate = 1 [0..1]
+  param sendGate = 1 [0..1]
+  param mute = 0 [0..1]
+  out out : real audio global stereo
+
+  d5 = utility(clipPlayer(3))
+  _n5 = 0
+  _n6 = 1
+  _n7 = 0.002
+  _n11 = volume <= -70 ? _n5 : db_to_gain(volume)
+  _n13 = min(_n6, _n6 - pan)
+  _n15 = min(_n6, _n6 + pan)
+  _n20 = mute < 0.5
+  _n22 = _n20 ? sendGate : _n5
+  _n23 = _n11 * (_n20 ? gate : _n5)
+  _n29 = _n11 * _n22
+  out = gain(d5, (_n13 * _n23, _n15 * _n23), _n7)
+
+  export post = gain(d5, (_n13 * _n29, _n15 * _n29), _n7)
+  export pre = gain(d5, (_n13 * _n22, _n15 * _n22), _n7)
+
+}

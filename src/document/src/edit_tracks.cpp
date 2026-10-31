@@ -58,6 +58,7 @@ std::string defaultName(const Project& p, TrackKind kind) {
   forEachTrack(p, [&](const Track& t, const Track*) { n += t.kind == kind ? 1u : 0u; });
   switch (kind) {
     case TrackKind::Group: return std::to_string(n + 1) + " Group";
+    case TrackKind::Audio: return std::to_string(n + 1) + " Audio";
     case TrackKind::Return: {
       std::string s;
       for (uint32_t k = n + 1; k > 0; k = (k - 1) / 26) s.insert(s.begin(), static_cast<char>('A' + (k - 1) % 26));
@@ -72,8 +73,8 @@ const std::vector<TrackPtr>& listOf(const Project& p, TrackList l) { return l ==
 }  // namespace
 
 EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId after, std::string name, Colour colour) {
-  if (kind != TrackKind::Midi && kind != TrackKind::Group && kind != TrackKind::Return)
-    return invalid("only MIDI, group and return tracks can be created");
+  if (kind != TrackKind::Midi && kind != TrackKind::Audio && kind != TrackKind::Group && kind != TrackKind::Return)
+    return invalid("only MIDI, audio, group and return tracks can be created");
   TrackId parent;
   uint32_t index = kAppend;
   if (after.valid()) {
@@ -90,8 +91,10 @@ EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId 
   t.colour = colour;
   // T4.1: a new MIDI track starts with the default instrument (until the M5 browser offers others).
   if (kind == TrackKind::Midi) t.devices.push_back(makeDefaultInstrument(ids.device()));
-  Edit e = makeEdit(kind == TrackKind::Return ? "Insert Return Track"
-                                              : (kind == TrackKind::Group ? "Insert Group Track" : "Insert MIDI Track"));
+  Edit e = makeEdit(kind == TrackKind::Return  ? "Insert Return Track"
+                    : kind == TrackKind::Group ? "Insert Group Track"
+                    : kind == TrackKind::Audio ? "Insert Audio Track"
+                                               : "Insert MIDI Track");
   e.tracks.push_back(t.id);
   batchOf(e).commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), parent, index});
   return e;

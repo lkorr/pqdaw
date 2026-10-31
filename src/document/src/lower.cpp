@@ -27,7 +27,7 @@ namespace {
 using graph::NodeIndex;
 using graph::PortRef;
 
-enum class Kind : uint8_t { Midi, Group, Return, Master };
+enum class Kind : uint8_t { Midi, Group, Return, Master, Audio };
 
 // A MIDI track's tuning node (T2.6-fix1).
 struct TuningNode {
@@ -139,12 +139,12 @@ Plan plan(const Project& p, const TableOf* tableOf, const Callees* lib) {
       for (uint32_t i = 0; i < list.size(); ++i) {
         const TrackPtr& t = list[i];
         if (!t->active) continue;  // deactivated: left out with its members (Q15)
-        if (t->kind != TrackKind::Midi && t->kind != TrackKind::Group) continue;
+        if (t->kind != TrackKind::Midi && t->kind != TrackKind::Group && t->kind != TrackKind::Audio) continue;
         TrackPath here = path;
         if (here.depth < kMaxTrackDepth) here.index[here.depth++] = i;
         Node n;
         n.track = t.get();
-        n.kind = t->kind == TrackKind::Midi ? Kind::Midi : Kind::Group;
+        n.kind = t->kind == TrackKind::Midi ? Kind::Midi : t->kind == TrackKind::Audio ? Kind::Audio : Kind::Group;
         n.parent = parent;
         if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth && lowersInstrument(*t, lib))
           for (const TuningId id : trackTuningSignals(p, here)) {
@@ -263,6 +263,7 @@ enum Fixed : uint32_t {
   kVDegree = 64, kVEquave, kVHz, kVCents, kVTuning, kTuneVoices,
   kSendAcc = 72,
   kZoneHz = 76, kZoneLnHz, kZoneVelocity,  // T4.8: the voice values key / velocity zones read (one each per patch)
+  kClipPlayer = 80, kClipSlot,             // T5.3: an audio track's source and its slot constant
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -400,6 +401,7 @@ std::string patchName(const Node& n) {
     case Kind::Group: return "Group" + id;
     case Kind::Return: return "Return" + id;
     case Kind::Master: return "Master" + id;
+    case Kind::Audio: return "Audio" + id;
   }
   return id;
 }
@@ -860,7 +862,9 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       }
       return x;
     };
-    const uint32_t x = flow(flow, std::span<const uint32_t>(td.top), pl.nodes[n].kind != Kind::Midi ? nodeBase[n] : graph::kNone);
+    // A MIDI track's chain starts at its instrument, an audio track's at its clip player (T5.3): neither reads `in`.
+    const bool ownSource = pl.nodes[n].kind == Kind::Midi || pl.nodes[n].kind == Kind::Audio;
+    const uint32_t x = flow(flow, std::span<const uint32_t>(td.top), ownSource ? graph::kNone : nodeBase[n]);
     if (x != graph::kNone) adj[x].push_back(nodeBase[n] + 1);
     if (pl.dest[n] != graph::kNone) adj[nodeBase[n] + 1].push_back(nodeBase[pl.dest[n]]);
   }
@@ -1410,7 +1414,7 @@ bool declaresParam(const TrackDevs& td, uint32_t dev, std::string_view name, con
 
 Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const TrackDevs& devs,
                                 const WirePlan& wp, bool& voices, uint32_t& polyphony, uint32_t track,
-                                std::vector<ModulationTap>* taps) {
+                                std::vector<ModulationTap>* taps, uint32_t clipSlot) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
@@ -1424,7 +1428,16 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
       if (devs[k].rack < 0 && devs[k].device->kind == DeviceKind::Instrument) polyphony = std::max(polyphony, devicePolyphony(devs[k]));
   size_t firstEffect = 0;
   uint16_t width = graph::kWidthStereo;
-  if (n.kind == Kind::Midi && !instrument) {
+  if (n.kind == Kind::Audio) {
+    // T5.3: the clip player of slot `clipSlot` (stereo; the player duplicates a mono source), then the chain. Without a
+    // slot nothing plays (its effects still run).
+    if (clipSlot != graph::kNone) {
+      x = ir.atom("clipPlayer", {ir.konst(static_cast<double>(clipSlot), kClipSlot)}, kClipPlayer);
+    } else {
+      x = ir.konst(0.0, kC0);
+      width = graph::kWidthMono;
+    }
+  } else if (n.kind == Kind::Midi && !instrument) {
     x = ir.konst(0.0, kC0);  // no instrument: nothing plays (its effects still run)
     width = graph::kWidthMono;
   } else if (n.kind == Kind::Midi) {
@@ -1678,6 +1691,7 @@ graph::TrackRole roleOf(Kind k) {
     case Kind::Group: return graph::TrackRole::Group;
     case Kind::Return: return graph::TrackRole::Return;
     case Kind::Master: return graph::TrackRole::Master;
+    case Kind::Audio: return graph::TrackRole::Audio;
   }
   return graph::TrackRole::Audio;
 }
@@ -1833,7 +1847,7 @@ std::vector<TuningId> trackTuningSignals(const Project& p, const TrackPath& path
   if (const TuningId t = trackTuningSignal(p, path); t.valid()) out.push_back(t);
   std::vector<TuningId> overrides;
   for (const ClipSlot& c : trackAt(p, path).clips) {
-    if (c.clip->tuning.mode != TuningMode::Main) continue;
+    if (!c.clip || c.clip->tuning.mode != TuningMode::Main) continue;
     const EffectiveTuning e = effectiveTuningRef(p, path, c.clip.get());
     if (e.main.valid() && e.def != nullptr && hasTuningSignal(*e.def)) overrides.push_back(e.main);
   }
@@ -1872,7 +1886,10 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     const Node& n = pl.nodes[i];
     bool voices = false;
     uint32_t polyphony = 0;
-    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, i, &out.taps);
+    // T5.3: an audio track's clip slot (the engine's audio sequence it plays; LowerOptions::clipSlotOf).
+    const uint32_t clipSlot = n.kind == Kind::Audio && o.clipSlotOf ? o.clipSlotOf(n.track->id) : graph::kNone;
+    if (n.kind == Kind::Audio && clipSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
+    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, i, &out.taps, clipSlot);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());

@@ -448,7 +448,9 @@ void TuningCard::refresh(const doc::Project& p, const doc::TuningSlot& slot, siz
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
     if (t.tuning.mode == doc::TuningMode::Main && t.tuning.main == id_) ++tracks;
     for (const doc::ClipSlot& cl : t.clips)
-      if (cl.clip->tuning.mode == doc::TuningMode::Main && cl.clip->tuning.main == id_) ++clips;
+      if (const doc::TuningAssignment& a = cl.audio ? cl.audio->tuning : cl.clip->tuning;
+          a.mode == doc::TuningMode::Main && a.main == id_)
+        ++clips;
   });
   std::string u = index == 0 ? "Default" : "";
   auto part = [&](uint32_t n, const char* one, const char* many) {

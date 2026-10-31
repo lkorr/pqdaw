@@ -32,7 +32,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `grid.toggleFixed` | `Ctrl+5` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `edit.toggleDrawMode` | `B` | global | Editing | implemented (T3.11) |
 | `track.newMidi` | `Ctrl+Shift+T` | global | Commands for Tracks | implemented (T3.10; after the last selected track; Live 12's chord since T3.x-fix-look, user confirmed 2026-10-24: was Ctrl+T) |
-| `track.newAudio` | `Ctrl+T` | global | Commands for Tracks | M6 (audio tracks; Live 12: Ctrl+T inserts an audio track) |
+| `track.newAudio` | `Ctrl+T` | global | Commands for Tracks | implemented (T5.3; after the last selected track, empty chain; also in the track context menu and Create menu) |
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
 | `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the first main tuning; pressed again: closes it, keeping the change) |
 | `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window, Audio tab; pressed again: closes it) |

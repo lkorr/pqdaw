@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include "checks.h"
+#include "pq/document/audio_clip.h"
 #include "json_io.h"
 
 namespace pq::doc {
@@ -39,6 +40,25 @@ constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "h
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
+constexpr std::array<std::string_view, 2> kWarpNames = {"off", "rePitch"};  // T5.3
+
+// T5.3: a 64-bit content hash as 16 lower-case hex digits (JSON integers stop at int64 in many readers).
+std::string hashText(uint64_t h) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string s(16, '0');
+  for (int i = 15; i >= 0; --i, h >>= 4) s[static_cast<size_t>(i)] = kHex[h & 15];
+  return s;
+}
+std::optional<uint64_t> parseHashText(std::string_view t) {
+  if (t.size() != 16) return std::nullopt;
+  uint64_t v = 0;
+  for (const char c : t) {
+    const int h = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : -1;
+    if (h < 0) return std::nullopt;
+    v = (v << 4) | static_cast<uint64_t>(h);
+  }
+  return v;
+}
 
 template <size_t N>
 int indexOf(const std::array<std::string_view, N>& names, std::string_view v) {
@@ -156,6 +176,7 @@ public:
     w_.key("master");
     track(PathSeg(&root, "master"), *p.master);
     wires(PathSeg(&root, "wires"), wiresOf(p));
+    samples(PathSeg(&root, "samples"), samplesOf(p));
     viewState(p, view);
     w_.endObject();
     out_ += "\n";
@@ -398,15 +419,48 @@ private:
     for (size_t i = 0; i < t.devices.size(); ++i) device(PathSeg(&devs, i), *t.devices[i]);
     w_.endArray();
 
-    if (t.kind == TrackKind::Midi || !t.clips.empty()) {
+    if (t.kind == TrackKind::Midi || t.kind == TrackKind::Audio || !t.clips.empty()) {
       const PathSeg clips(&at, "clips");
       w_.key("clips");
       w_.beginArray(true);
-      for (size_t i = 0; i < t.clips.size(); ++i) clip(PathSeg(&clips, i), *t.clips[i].clip);
+      for (size_t i = 0; i < t.clips.size(); ++i) {
+        if (t.clips[i].audio) audioClip(PathSeg(&clips, i), *t.clips[i].audio);  // T5.3
+        else clip(PathSeg(&clips, i), *t.clips[i].clip);
+      }
       w_.endArray();
     }
     if (t.kind == TrackKind::Group || !t.children.empty()) trackList(PathSeg(&at, "children"), "children", t.children);
     w_.endObject();
+  }
+
+  // T5.3: the sample table, one line each (the key only when there are samples).
+  void samples(const PathSeg& at, const SampleList& list) {
+    if (list.empty()) return;
+    w_.key("samples");
+    w_.beginArray(true);
+    for (size_t i = 0; i < list.size(); ++i) {
+      const SampleRef& r = list[i];
+      const PathSeg el(&at, i);
+      w_.beginObject(false);
+      w_.key("id");
+      w_.integer(r.id.value);
+      w_.key("path");
+      w_.string(PathSeg(&el, "path"), r.path);
+      w_.key("name");
+      w_.string(PathSeg(&el, "name"), r.displayName);
+      w_.key("hash");
+      w_.string(el, hashText(r.contentHash));
+      w_.key("size");
+      w_.integer(static_cast<int64_t>(r.size));
+      w_.key("frames");
+      w_.integer(r.frames);
+      w_.key("rate");
+      w_.number(PathSeg(&el, "rate"), r.rate);
+      w_.key("channels");
+      w_.integer(r.channels);
+      w_.endObject();
+    }
+    w_.endArray();
   }
 
   // T4.7: the modulation wires, one line each (the key only when there are wires); `reducer` only when not "sum".
@@ -729,6 +783,85 @@ private:
     w_.endObject();
   }
 
+  // T5.3: an audio clip, tagged "kind": "audio", one line; every field written (the derived Off length too, which the
+  // reader re-derives from the tempo map).
+  void audioClip(const PathSeg& at, const AudioClip& c) {
+    w_.beginObject(false);
+    w_.key("kind");
+    w_.string(at, "audio");
+    w_.key("id");
+    w_.integer(c.id.value);
+    w_.key("name");
+    w_.string(PathSeg(&at, "name"), c.name);
+    w_.key("colour");
+    w_.string(at, colourText(c.colour));
+    w_.key("start");
+    w_.integer(c.start);
+    w_.key("length");
+    w_.integer(c.length);
+    w_.key("sample");
+    w_.integer(c.sample.value);
+    w_.key("warp");
+    w_.string(at, kWarpNames[static_cast<size_t>(c.warp)]);
+    w_.key("contentStartFrame");
+    w_.number(PathSeg(&at, "contentStartFrame"), c.contentStartFrame);
+    w_.key("seconds");
+    w_.number(PathSeg(&at, "seconds"), c.seconds);
+    w_.key("contentStart");
+    w_.integer(c.contentStart);
+    w_.key("loop");
+    w_.beginObject(false);
+    w_.key("enabled");
+    w_.boolean(c.loop.enabled);
+    w_.key("start");
+    w_.integer(c.loop.start);
+    w_.key("end");
+    w_.integer(c.loop.end);
+    w_.endObject();
+    w_.key("sourceBpm");
+    w_.number(PathSeg(&at, "sourceBpm"), c.sourceBpm);
+    w_.key("gainDb");
+    w_.number(PathSeg(&at, "gainDb"), c.gainDb);
+    const PathSeg tp(&at, "transpose");
+    w_.key("transpose");
+    w_.beginObject(false);
+    switch (c.transpose.unit) {
+      case TransposeUnit::Cents:
+        w_.key("cents");
+        w_.number(tp, c.transpose.cents);
+        break;
+      case TransposeUnit::Steps:
+        w_.key("steps");
+        w_.integer(c.transpose.steps);
+        break;
+      case TransposeUnit::Ratio:
+        w_.key("ratio");
+        w_.string(tp, ratioText(c.transpose.ratio.num(), c.transpose.ratio.den()));
+        break;
+    }
+    w_.endObject();
+    w_.key("detuneCents");
+    w_.number(PathSeg(&at, "detuneCents"), c.detuneCents);
+    w_.key("reverse");
+    w_.boolean(c.reverse);
+    for (const auto& [key, f] : {std::pair<const char*, const AudioFade*>{"fadeIn", &c.fadeIn}, {"fadeOut", &c.fadeOut}}) {
+      w_.key(key);
+      w_.beginObject(false);
+      w_.key("length");
+      w_.integer(f->length);
+      w_.key("curve");
+      w_.number(PathSeg(&at, key), f->curve);
+      w_.endObject();
+    }
+    w_.key("crossfadeIn");
+    w_.integer(c.crossfadeIn);
+    w_.key("tuning");
+    assignment(PathSeg(&at, "tuning"), c.tuning);
+    w_.key("active");
+    w_.boolean(c.active);
+    w_.endObject();
+  }
+
   // One line per note; fields at their default (release 64, chance 1, range 0, enabled) are omitted.
   void note(const PathSeg& at, const Note& n) {
     w_.beginObject(false);
@@ -924,8 +1057,8 @@ public:
   LoadedProject project() {
     const PathSeg root;
     static constexpr std::string_view K[] = {"schemaVersion", "timeline", "loop",    "locators", "tunings",
-                                             "tracks",        "returns",  "master",  "view",     "wires"};
-    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires };
+                                             "tracks",        "returns",  "master",  "view",     "wires", "samples"};
+    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires, kSamples };
     auto np = std::make_shared<Project>();
     LoadedProject out;
     Members m(r_, root, K);
@@ -947,10 +1080,14 @@ public:
         case kMaster: np->master = track(at, TrackList::Master, 1); break;
         case kView: rawView = view(at); break;
         case kWires: np->wires = wireList(at); break;
+        case kSamples: np->samples = sampleList(at); break;
       }
     }
     m.require({kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster});
     r_.expectEnd(root);
+    // T5.3: warp-Off lengths are derived from the tempo map (whatever the file says).
+    for (std::vector<TrackPtr>* list : {&np->tracks, &np->returns})
+      for (TrackPtr& t : *list) t = syncedTrack(*np->timeline, t);
 
     validate(root, *np);
     out.project = np;
@@ -1369,11 +1506,10 @@ private:
                  pos[static_cast<size_t>(k)]);
     };
     const TrackKind kind = t->kind;
-    if (kind == TrackKind::Audio)
-      json::fail(PathSeg(&at, "kind"), "audio tracks are not supported yet (M6)", ErrorCode::Unsupported, pos[kKind]);
     switch (list) {
       case TrackList::Main:
-        if (kind != TrackKind::Midi && kind != TrackKind::Group) failKey(kKind, "must be \"midi\" or \"group\" here");
+        if (kind != TrackKind::Midi && kind != TrackKind::Group && kind != TrackKind::Audio)
+          failKey(kKind, "must be \"midi\", \"audio\" or \"group\" here");
         break;
       case TrackList::Returns:
         if (kind != TrackKind::Return) failKey(kKind, "must be \"return\" here");
@@ -1383,10 +1519,15 @@ private:
         break;
     }
     if (m.has(kChildren) && kind != TrackKind::Group) failKey(kChildren, "only groups have child tracks");
-    if (m.has(kClips) && kind != TrackKind::Midi) failKey(kClips, "only MIDI tracks hold note clips");
+    if (m.has(kClips) && kind != TrackKind::Midi && kind != TrackKind::Audio)
+      failKey(kClips, "only MIDI and audio tracks hold clips");
+    for (const ClipSlot& c : t->clips)  // T5.3
+      if ((kind == TrackKind::Audio) != c.isAudio())
+        failKey(kClips, kind == TrackKind::Audio ? "an audio track holds audio clips only" : "a MIDI track holds note clips only");
     if (Status s = detail::checkChain(kind, t->devices); !s) failKey(kDevices, s.error().message);
-    if (t->tuning.mode != TuningMode::Inherit && kind != TrackKind::Midi && kind != TrackKind::Group)
-      failKey(kTuning, "only MIDI and group tracks have a tuning");
+    if (t->tuning.mode != TuningMode::Inherit && kind != TrackKind::Midi && kind != TrackKind::Group &&
+        kind != TrackKind::Audio)
+      failKey(kTuning, "only MIDI, audio and group tracks have a tuning");
     const Mixer& mx = t->mixer;
     if (mx.arm && kind != TrackKind::Midi) failKey(kMixer, "only MIDI tracks can be armed");
     if (!mx.sends.empty() && !detail::trackHasSends(kind)) failKey(kMixer, "this track has no sends");
@@ -1611,6 +1752,46 @@ private:
     return r;
   }
 
+  // T5.3: the sample table, sorted by id in the file.
+  std::shared_ptr<const SampleList> sampleList(const PathSeg& at) {
+    SampleList v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "path", "name", "hash", "size", "frames", "rate", "channels"};
+      SampleRef s;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        switch (k) {
+          case 0: s.id = SampleId{defineId(f)}; break;
+          case 1: s.path = str(f); break;
+          case 2: s.displayName = str(f); break;
+          case 3: {
+            const std::optional<uint64_t> h = parseHashText(str(f));
+            if (!h) r_.failValue(f, "hash must be 16 lower-case hex digits");
+            s.contentHash = *h;
+            break;
+          }
+          case 4: {
+            const int64_t bytes = r_.readInt(f);
+            if (bytes < 0) r_.failValue(f, "size must be >= 0");
+            s.size = static_cast<uint64_t>(bytes);
+            break;
+          }
+          case 5: s.frames = r_.readInt(f); break;
+          case 6: s.rate = r_.readDouble(f); break;
+          case 7: s.channels = u32(f); break;
+        }
+      }
+      m.require({0, 1, 2, 3, 4, 5, 6, 7});
+      check(el, detail::checkSampleRef(s));
+      if (!v.empty() && !(v.back().id < s.id)) r_.failValue(PathSeg(&el, "id"), "samples must be sorted by id");
+      v.push_back(std::move(s));
+    }
+    return v.empty() ? nullptr : std::make_shared<const SampleList>(std::move(v));
+  }
+
   // T4.7: the wires, sorted by id in the file (ends are checked against the devices in validate()).
   std::shared_ptr<const WireList> wireList(const PathSeg& at) {
     WireList v;
@@ -1809,22 +1990,48 @@ private:
     for (size_t i = 0; r_.nextElement(at); ++i) {
       const PathSeg el(&at, i);
       const size_t start = r_.pos();
-      ClipPtr c = clip(el);
-      if (!v.empty() && std::pair(v.back().clip->start, v.back().id) >= std::pair(c->start, c->id))
+      ClipSlot c = clip(el);
+      if (!v.empty() && std::pair(v.back().start(), v.back().id) >= std::pair(c.start(), c.id))
         json::fail(el, "clips must be sorted by (start, id)", ErrorCode::InvalidArgument, start);
-      v.push_back(ClipSlot{c->id, std::move(c)});
+      v.push_back(std::move(c));
     }
     return v;
   }
 
-  ClipPtr clip(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"id",        "name",   "colour", "start",  "length", "contentStart",
-                                             "loop",      "signature", "tuning", "active", "notes", "fundamental"};
+  // A note clip, or (T5.3) an audio clip tagged "kind": "audio": one key list for both (a pull reader meets the tag
+  // wherever it is), each kind requiring its own keys and refusing the other's.
+  ClipSlot clip(const PathSeg& at) {
+    static constexpr std::string_view K[] = {
+        "id",     "name",    "colour", "start",  "length",  "contentStart", "loop",   "signature", "tuning",
+        "active", "notes",   "fundamental",
+        "kind",   "sample",  "warp",   "contentStartFrame", "seconds", "sourceBpm", "gainDb", "transpose",
+        "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn"};
+    enum { kKind = 12, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune, kReverse, kFadeIn, kFadeOut, kXfade };
     auto c = std::make_shared<NoteClip>();
+    AudioClip a;
+    bool audio = false;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
       switch (k) {
+        case kKind: {
+          const std::string kind = str(f);
+          if (kind != "audio") r_.failValue(f, "clip kind must be \"audio\" (note clips have no kind)");
+          audio = true;
+          break;
+        }
+        case kSample: a.sample = SampleId{ref(f)}; break;
+        case kWarp: a.warp = static_cast<AudioWarp>(name(f, kWarpNames, "warp mode")); break;
+        case kFrame: a.contentStartFrame = r_.readDouble(f); break;
+        case kSeconds: a.seconds = r_.readDouble(f); break;
+        case kBpm: a.sourceBpm = r_.readDouble(f); break;
+        case kGain: a.gainDb = r_.readFloat(f); break;
+        case kTranspose: a.transpose = transpose(f); break;
+        case kDetune: a.detuneCents = r_.readFloat(f); break;
+        case kReverse: a.reverse = r_.readBool(f); break;
+        case kFadeIn: a.fadeIn = fade(f); break;
+        case kFadeOut: a.fadeOut = fade(f); break;
+        case kXfade: a.crossfadeIn = r_.readInt(f); break;
         case 0: c->id = ClipId{defineId(f)}; break;
         case 1: c->name = str(f); break;
         case 2: c->colour = colour(f); break;
@@ -1867,8 +2074,68 @@ private:
         }
       }
     }
-    m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
-    return c;
+    if (!audio) {
+      for (int k = kSample; k <= kXfade; ++k)
+        if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only audio clips have this key");
+      m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+      return ClipSlot{c->id, std::move(c), nullptr};
+    }
+    for (int k : {7, 10, 11})
+      if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only note clips have this key");
+    m.require({0, 1, 2, 3, 4, 5, 6, 8, 9, kKind, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune,
+               kReverse, kFadeIn, kFadeOut, kXfade});
+    a.id = c->id;
+    a.name = std::move(c->name);
+    a.colour = c->colour;
+    a.start = c->start;
+    a.length = c->length;
+    a.contentStart = c->contentStart;
+    a.loop = c->loop;
+    a.tuning = c->tuning;
+    a.active = c->active;
+    return ClipSlot{a.id, nullptr, std::make_shared<const AudioClip>(std::move(a))};
+  }
+
+  // T5.3: {"cents": x} | {"steps": n} | {"ratio": "n/d"} (exactly one).
+  AudioTranspose transpose(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"cents", "steps", "ratio"};
+    AudioTranspose t;
+    int count = 0;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      ++count;
+      if (k == 0) {
+        t.unit = TransposeUnit::Cents;
+        t.cents = r_.readDouble(f);
+      } else if (k == 1) {
+        t.unit = TransposeUnit::Steps;
+        t.steps = i32(f);
+      } else {
+        std::string s;
+        r_.readString(f, s);
+        const std::optional<tuning::Rational> q = parseRatioText(s);
+        if (!q || !q->isPositive()) r_.failValue(f, "ratio must be a positive \"n/d\"");
+        t.unit = TransposeUnit::Ratio;
+        t.ratio = *q;
+      }
+    }
+    if (count != 1) json::fail(at, "a transpose has exactly one of \"cents\", \"steps\", \"ratio\"");
+    return t;
+  }
+
+  // T5.3: {"length": ticks, "curve": number}.
+  AudioFade fade(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"length", "curve"};
+    AudioFade fd;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) fd.length = r_.readInt(f);
+      else fd.curve = r_.readFloat(f);
+    }
+    m.require({0, 1});
+    return fd;
   }
 
   // T3.6-fix1: {"lock": "n/d", "steps": [{"note": id, "denominator": D, "ratio": "n/d"}]}, both optional.
@@ -2062,10 +2329,15 @@ private:
     }
     const PathSeg clips(&at, "clips");
     for (size_t i = 0; i < t.clips.size(); ++i) {
-      if (Status s = detail::checkAssignment(p, t.clips[i].clip->tuning); !s) {
-        const PathSeg cl(&clips, i);
-        json::fail(PathSeg(&cl, "tuning"), s.error().message);
+      const PathSeg cl(&clips, i);
+      if (const AudioClip* a = t.clips[i].audio.get()) {  // T5.3
+        if (!findSample(p, a->sample))
+          json::fail(PathSeg(&cl, "sample"), "unknown sample id " + std::to_string(a->sample.value));
+        if (Status s = detail::checkAudioClip(p, *a); !s) json::fail(cl, s.error().message);
+        continue;
       }
+      if (Status s = detail::checkAssignment(p, t.clips[i].clip->tuning); !s)
+        json::fail(PathSeg(&cl, "tuning"), s.error().message);
     }
   }
 
@@ -2081,6 +2353,8 @@ private:
     for (size_t i = 0; i < p.locators->size(); ++i) see((*p.locators)[i].id.value, PathSeg(&locs, i));
     const PathSeg wiresAt(&root, "wires");
     for (size_t i = 0; i < wiresOf(p).size(); ++i) see(wiresOf(p)[i].id.value, PathSeg(&wiresAt, i));
+    const PathSeg samplesAt(&root, "samples");
+    for (size_t i = 0; i < samplesOf(p).size(); ++i) see(samplesOf(p)[i].id.value, PathSeg(&samplesAt, i));
     auto walkTrack = [&](auto& self, const PathSeg& at, const Track& t) -> void {
       see(t.id.value, at);
       const PathSeg devs(&at, "devices");
@@ -2113,7 +2387,8 @@ private:
         const PathSeg cl(&clips, i);
         see(t.clips[i].id.value, cl);
         const PathSeg notes(&cl, "notes");
-        for (const Note& n : t.clips[i].clip->notes) see(n.id.value, notes);
+        if (t.clips[i].clip)
+          for (const Note& n : t.clips[i].clip->notes) see(n.id.value, notes);
       }
       const PathSeg kids(&at, "children");
       for (size_t i = 0; i < t.children.size(); ++i) self(self, PathSeg(&kids, i), *t.children[i]);
@@ -2452,12 +2727,21 @@ Status migrateAddRacks(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 6 → 7 (T5.3): schema 7 adds audio tracks ("kind": "audio"), audio clips (tagged "kind": "audio" in a track's
+// "clips") and the optional top-level "samples" table; a schema-6 file has none of them, so nothing changes.
+// Self-contained (renumber, do not merge, if another schema step lands first).
+Status migrateAddAudio(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
     {3, migrateAddWires},
     {4, migrateAddUserDeviceSource},
     {5, migrateAddRacks},
+    {6, migrateAddAudio},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");
@@ -2470,7 +2754,7 @@ Result<std::string> serializeProject(const Project& p, const ViewState& view) {
   std::string out;
   size_t notes = 0;
   forEachTrack(p, [&](const Track& t, const Track*) {
-    for (const ClipSlot& c : t.clips) notes += c.clip->notes.size();
+    for (const ClipSlot& c : t.clips) notes += c.clip ? c.clip->notes.size() : 0;
   });
   out.reserve(4096 + notes * 112);
   try {

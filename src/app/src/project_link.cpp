@@ -1213,6 +1213,9 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   lo.externals = devices_->signatures();
   lo.devices = devices_.get();  // T4.4-fix1: user devices
   lo.slotOf = [this](doc::TrackId id) { return slotForTrack(id); };
+  // T5.3: an audio track's clip-player slot shares the event-slot allocator (stable per track, freed with it); the
+  // engine binds clipPlayer to silence until T5.4 publishes the audio sequences.
+  lo.clipSlotOf = lo.slotOf;
   lo.tuningTableOf = [this](doc::TuningId id, const doc::TuningDef& def) { return tuningTable(id, def); };
   auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);
   auto fail = [&](const Error& e) {

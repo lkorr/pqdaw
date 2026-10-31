@@ -25,7 +25,7 @@
     {"scope": "global", "keys": "Ctrl+5", "action": "grid.toggleFixed", "status": "implemented", "task": "T3.11"},
     {"scope": "global", "keys": "B", "action": "edit.toggleDrawMode", "status": "implemented", "task": "T3.11"},
     {"scope": "global", "keys": "Ctrl+Shift+T", "action": "track.newMidi", "status": "implemented", "task": "T3.10"},
-    {"scope": "global", "keys": "Ctrl+T", "action": "track.newAudio", "status": "deferred:M6"},
+    {"scope": "global", "keys": "Ctrl+T", "action": "track.newAudio", "status": "implemented", "task": "T5.3"},
     {"scope": "global", "keys": "Ctrl+Alt+T", "action": "track.newReturn", "status": "implemented", "task": "T3.10"},
     {"scope": "global", "keys": "Ctrl+Shift+W", "action": "tuning.openMosWheel", "status": "implemented", "task": "T3.14"},
     {"scope": "global", "keys": "Ctrl+,", "action": "app.preferences", "status": "implemented", "task": "T3.18"},

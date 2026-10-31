@@ -59,9 +59,10 @@ using EditResult = Result<Edit>;
 
 // ---- Tracks ----------------------------------------------------------------------------------------------------
 
-// Ctrl+Shift+T (Midi) / Ctrl+Alt+G-style group / return. Inserted right after `after` among its siblings (invalid `after`:
-// at the end of the top level; Return tracks always go to the returns list, after `after` if it is a return).
-// An empty name gets Live-style defaults: "<n> MIDI", "<n> Group", "<letter> Return".
+// Ctrl+Shift+T (Midi) / Ctrl+T (Audio, T5.3) / Ctrl+Alt+G-style group / return. Inserted right after `after` among its
+// siblings (invalid `after`: at the end of the top level; Return tracks always go to the returns list, after `after` if
+// it is a return). An empty name gets Live-style defaults: "<n> MIDI", "<n> Audio", "<n> Group", "<letter> Return". A
+// MIDI track starts with the default instrument, an audio track with an empty chain (audio effects only).
 EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId after = {}, std::string name = {},
                        Colour colour = {});
 // Deletes the tracks (a selected group takes its members with it). The master is refused.
@@ -149,6 +150,42 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
 EditResult loopClipToSelection(const Project& p, ClipRef clip, Ticks contentStart, Ticks contentEnd);
 // Ctrl+L in the arrangement: arrangement loop = [start, end), on.
 EditResult loopArrangementToSelection(const Project& p, Ticks start, Ticks end);
+
+// ---- Audio clips (T5.3; model.h "Samples and audio clips") ----------------------------------------------------------
+// The generic clip edits above (delete, move / Alt-copy, resize, split, duplicate, time edits) take audio clips too:
+// every source frame keeps the absolute time it plays at (audio_clip.h), clips move only between tracks of their kind.
+// Each builder below is one Batch = one undo step; a drag is several inside one store gesture. None compiles anything
+// (ChangeSet Sequence: runtime data of the clip player).
+
+// A clip to place: `sample` names an entry of the table or of `newSamples`; the clip plays the whole file, warp Off,
+// from `start` (an empty name: the sample's display name; the colour: the track's).
+struct NewAudioClip {
+  TrackId track;
+  Ticks start = 0;
+  SampleId sample;
+  std::string name;
+};
+// Adds `newSamples` to the table (their ids drawn by the caller from the store's IdSource) and the clips (fresh ids),
+// each overwriting what lies under it on its audio track (Live's drop). Several files dropped at once are one step.
+EditResult addAudioClips(const Project& p, IdSource& ids, std::span<const SampleRef> newSamples,
+                         std::span<const NewAudioClip> clips);
+// Clip gain in dB (clamped to [kMinClipGainDb, kMaxClipGainDb]; the floor is silence).
+EditResult setAudioClipGain(const Project& p, std::span<const ClipRef> clips, float gainDb);
+// Transpose (Cents clamped to ±kMaxTransposeCents; Steps to ±kMaxTransposeSteps; a Ratio must be positive and within
+// ±kMaxTransposeCents: InvalidArgument otherwise) and detune (clamped to ±kMaxDetuneCents). Warp Off only plays them.
+EditResult setAudioClipTranspose(const Project& p, std::span<const ClipRef> clips, AudioTranspose transpose);
+EditResult setAudioClipDetune(const Project& p, std::span<const ClipRef> clips, float cents);
+EditResult setAudioClipsReverse(const Project& p, std::span<const ClipRef> clips, bool reverse);
+// Warp Off / Re-Pitch (sourceBpm: the source tempo for Re-Pitch, clamped to [kMinBpm, kMaxBpm]; also how a Re-Pitch
+// clip's source BPM is changed): the audio at each clip's start stays (audio_clip.h withWarp).
+EditResult setAudioClipWarp(const Project& p, std::span<const ClipRef> clips, AudioWarp warp, double sourceBpm = 120.0);
+// Fade lengths clamped to [0, clip length] (the fade-in first), curves to [−1, 1].
+EditResult setAudioClipFades(const Project& p, ClipRef clip, AudioFade fadeIn, AudioFade fadeOut);
+// The crossfade with the clip ending exactly at this clip's start (0 removes it; clamped to both clips' lengths).
+// Refused (InvalidArgument) when there is no such adjacent clip.
+EditResult setAudioClipCrossfade(const Project& p, ClipRef clip, Ticks length);
+// A Re-Pitch clip's loop brace in content ticks (warp Off clips have none: InvalidArgument).
+EditResult setAudioClipLoop(const Project& p, ClipRef clip, ClipLoop loop);
 
 // ---- Notes -----------------------------------------------------------------------------------------------------
 

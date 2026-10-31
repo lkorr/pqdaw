@@ -41,13 +41,27 @@ Batch& batchOf(Edit& e) { return std::get<Batch>(e.command.v); }
 
 // ---- Lookups ---------------------------------------------------------------------------------------------------
 
-Result<ClipFound> findClip(const Project& p, const ClipRef& r) {
+Result<ClipFound> findAnyClip(const Project& p, const ClipRef& r) {
   const auto path = findTrack(p, r.track);
   if (!path) return notFound("track not found");
   const Track& t = trackAt(p, *path);
   const int32_t i = findClipIndex(t, r.clip);
   if (i < 0) return notFound("clip not found on this track");
-  return ClipFound{*path, &t, t.clips[static_cast<size_t>(i)].clip};
+  const ClipSlot& s = t.clips[static_cast<size_t>(i)];
+  return ClipFound{*path, &t, s.clip, s.audio};
+}
+
+Result<ClipFound> findClip(const Project& p, const ClipRef& r) {
+  Result<ClipFound> f = findAnyClip(p, r);
+  if (f && !f->clip) return invalid("not a note clip");
+  return f;
+}
+
+Result<const Track*> findClipTrack(const Project& p, TrackId id) {
+  const Track* t = findTrackPtr(p, id);
+  if (!t) return notFound("track not found");
+  if (t->kind != TrackKind::Midi && t->kind != TrackKind::Audio) return invalid("clips live on MIDI and audio tracks");
+  return t;
 }
 
 Result<const Track*> findMidiTrack(const Project& p, TrackId id) {
@@ -61,6 +75,16 @@ const AutomationLane* findLane(const Track& t, LaneId id) {
   for (const LanePtr& l : t.lanes)
     if (l->id == id) return l.get();
   return nullptr;
+}
+
+ClipSlot cloneSlot(const ClipSlot& c, IdSource& ids, bool onlyPlaying) {
+  if (c.audio) {
+    AudioClip a = *c.audio;
+    a.id = ids.clip();
+    return ClipSlot{a.id, nullptr, std::make_shared<const AudioClip>(std::move(a))};
+  }
+  auto n = std::make_shared<const NoteClip>(cloneClip(*c.clip, ids, onlyPlaying));
+  return ClipSlot{n->id, std::move(n), nullptr};
 }
 
 Result<tuning::Tuning> clipTuning(const Project& p, const ClipFound& c) {
@@ -159,49 +183,83 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
 
 // ---- ClipEditor ----------------------------------------------------------------------------------------------------
 
-ClipEditor::ClipEditor(const Track& t) : track_(&t) {
+ClipEditor::ClipEditor(const Project& p, const Track& t) : p_(&p), track_(&t) {
+  if (const auto path = findTrack(p, t.id)) path_ = *path;
+  clips_ = t.clips;
   clips_.reserve(t.clips.size() + 4);
-  for (const ClipSlot& s : t.clips) clips_.push_back(s.clip);
 }
 
-ClipPtr ClipEditor::find(ClipId id) const {
-  for (const ClipPtr& c : clips_)
-    if (c->id == id) return c;
+const ClipSlot* ClipEditor::find(ClipId id) const {
+  for (const ClipSlot& c : clips_)
+    if (c.id == id) return &c;
   return nullptr;
 }
 
 void ClipEditor::remove(ClipId id) {
-  std::erase_if(clips_, [&](const ClipPtr& c) { return c->id == id; });
+  std::erase_if(clips_, [&](const ClipSlot& c) { return c.id == id; });
 }
 
-void ClipEditor::replace(ClipId id, ClipPtr c) {
-  for (ClipPtr& x : clips_)
-    if (x->id == id) {
+void ClipEditor::replace(ClipId id, ClipSlot c) {
+  for (ClipSlot& x : clips_)
+    if (x.id == id) {
       x = std::move(c);
       return;
     }
 }
 
+double ClipEditor::rateOf(const AudioClip& c) const noexcept {
+  const SampleRef* r = findSample(*p_, c.sample);
+  return r != nullptr ? r->rate : 48000.0;
+}
+
+double ClipEditor::ratioOf(const AudioClip& c) const { return audioRateRatio(*p_, path_, c); }
+
+ClipSlot ClipEditor::bounded(const ClipSlot& c, Ticks s, Ticks e) const {
+  if (c.audio) {
+    auto a = std::make_shared<const AudioClip>(
+        audioWithBounds(*p_->timeline, *c.audio, s, e, rateOf(*c.audio), ratioOf(*c.audio)));
+    return ClipSlot{c.id, nullptr, std::move(a)};
+  }
+  return ClipSlot{c.id, std::make_shared<const NoteClip>(withBounds(*c.clip, s, e)), nullptr};
+}
+
+std::pair<ClipSlot, ClipSlot> ClipEditor::split(const ClipSlot& c, Ticks t, ClipId rightId, IdSource& ids) const {
+  if (c.audio) {
+    auto [l, r] = splitAudioAt(*p_->timeline, *c.audio, t, rightId, rateOf(*c.audio), ratioOf(*c.audio));
+    return {ClipSlot{l.id, nullptr, std::make_shared<const AudioClip>(std::move(l))},
+            ClipSlot{r.id, nullptr, std::make_shared<const AudioClip>(std::move(r))}};
+  }
+  auto [l, r] = splitClipAt(*c.clip, t, rightId, ids);
+  return {ClipSlot{l.id, std::make_shared<const NoteClip>(std::move(l)), nullptr},
+          ClipSlot{r.id, std::make_shared<const NoteClip>(std::move(r)), nullptr}};
+}
+
+ClipSlot ClipEditor::moved(const ClipSlot& c, Ticks start) const {
+  if (c.audio) return ClipSlot{c.id, nullptr, std::make_shared<const AudioClip>(audioMovedTo(*p_->timeline, *c.audio, start))};
+  NoteClip n = withNotes(*c.clip, c.clip->notes);
+  n.start = start;
+  return ClipSlot{c.id, std::make_shared<const NoteClip>(std::move(n)), nullptr};
+}
+
 void ClipEditor::clearRange(Ticks a, Ticks b, IdSource& ids, std::span<const ClipId> keep) {
   if (b <= a) return;
-  std::vector<ClipPtr> out;
+  std::vector<ClipSlot> out;
   out.reserve(clips_.size() + 1);
-  for (ClipPtr& cp : clips_) {
-    const NoteClip& c = *cp;
-    const Ticks s = c.start;
-    const Ticks e = clipEnd(c);
+  for (ClipSlot& c : clips_) {
+    const Ticks s = c.start();
+    const Ticks e = c.end();
     if (e <= a || s >= b || std::find(keep.begin(), keep.end(), c.id) != keep.end()) {
-      out.push_back(std::move(cp));
+      out.push_back(std::move(c));
     } else if (a <= s && e <= b) {
       // covered: dropped
     } else if (s < a && e <= b) {
-      out.push_back(std::make_shared<const NoteClip>(withBounds(c, s, a)));
+      out.push_back(bounded(c, s, a));
     } else if (a <= s) {
-      out.push_back(std::make_shared<const NoteClip>(withBounds(c, b, e)));
+      out.push_back(bounded(c, b, e));
     } else {  // s < a, b < e: keep both ends
-      auto [l, r] = splitClipAt(c, b, ids.clip(), ids);
-      out.push_back(std::make_shared<const NoteClip>(withBounds(l, s, a)));
-      out.push_back(std::make_shared<const NoteClip>(std::move(r)));
+      auto [l, r] = split(c, b, ids.clip(), ids);
+      out.push_back(bounded(l, s, a));
+      out.push_back(std::move(r));
     }
   }
   clips_ = std::move(out);
@@ -210,15 +268,15 @@ void ClipEditor::clearRange(Ticks a, Ticks b, IdSource& ids, std::span<const Cli
 void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
   struct E {
     ClipId id;
-    const ClipPtr* clip;
+    const ClipSlot* slot;
   };
   auto byId = [](const E& x, const E& y) { return x.id < y.id; };
   std::vector<E> before;
   before.reserve(track_->clips.size());
-  for (const ClipSlot& s : track_->clips) before.push_back({s.id, &s.clip});
+  for (const ClipSlot& s : track_->clips) before.push_back({s.id, &s});
   std::vector<E> after;
   after.reserve(clips_.size());
-  for (const ClipPtr& c : clips_) after.push_back({c->id, &c});
+  for (const ClipSlot& c : clips_) after.push_back({c.id, &c});
   std::sort(before.begin(), before.end(), byId);
   std::sort(after.begin(), after.end(), byId);
   const TrackId tid = track_->id;
@@ -228,12 +286,17 @@ void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
       removes.commands.push_back(RemoveClip{{tid, before[i].id}});
       ++i;
     } else if (i == before.size() || after[j].id < before[i].id) {
-      adds.commands.push_back(AddClip{tid, *after[j].clip});
+      adds.commands.push_back(AddClip{tid, after[j].slot->clip, after[j].slot->audio});
+      ++j;
+    } else if (after[j].slot->audio) {  // T5.3: an audio clip is replaced whole
+      if (before[i].slot->audio != after[j].slot->audio && !(*before[i].slot->audio == *after[j].slot->audio))
+        updates.commands.push_back(SetAudioClip{{tid, after[j].id}, after[j].slot->audio});
+      ++i;
       ++j;
     } else {
-      const NoteClip& o = **before[i].clip;
-      const NoteClip& n = **after[j].clip;
-      if (before[i].clip->get() != after[j].clip->get()) {
+      const NoteClip& o = *before[i].slot->clip;
+      const NoteClip& n = *after[j].slot->clip;
+      if (before[i].slot->clip.get() != after[j].slot->clip.get()) {
         const bool boundsOnly = o.name == n.name && o.colour == n.colour && o.loop == n.loop &&
                                 o.signature == n.signature && o.tuning == n.tuning && o.active == n.active &&
                                 sameNotes(o.notes, n.notes);
@@ -242,7 +305,7 @@ void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
             updates.commands.push_back(SetClipBounds{{tid, n.id}, n.start, n.length, n.contentStart});
         } else {
           removes.commands.push_back(RemoveClip{{tid, o.id}});
-          adds.commands.push_back(AddClip{tid, *after[j].clip});
+          adds.commands.push_back(AddClip{tid, after[j].slot->clip, nullptr});
         }
       }
       ++i;
@@ -254,16 +317,16 @@ void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
 Result<ClipEditor*> ClipEdits::editor(TrackId t) {
   for (auto& e : eds_)
     if (e->id() == t) return e.get();
-  Result<const Track*> tr = findMidiTrack(p_, t);
+  Result<const Track*> tr = findClipTrack(p_, t);
   if (!tr) return std::move(tr).error();
-  eds_.push_back(std::make_unique<ClipEditor>(**tr));
+  eds_.push_back(std::make_unique<ClipEditor>(p_, **tr));
   return eds_.back().get();
 }
 
 ClipEditor& ClipEdits::editor(const Track& t) {
   for (auto& e : eds_)
     if (e->id() == t.id) return *e;
-  eds_.push_back(std::make_unique<ClipEditor>(t));
+  eds_.push_back(std::make_unique<ClipEditor>(p_, t));
   return *eds_.back();
 }
 

@@ -35,6 +35,8 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.deselect",
     // T3.10
     "track.newMidi", "track.newReturn", "track.group", "track.ungroup", "arrangement.rename",
+    // T5.3
+    "track.newAudio",
     // T3.15
     "arrangement.toggleAutomationMode"};
 
@@ -166,6 +168,7 @@ void ArrangementView::registerActions() {
   // T3.10 tracks. Ctrl+Shift+T / Ctrl+Alt+T are global chords (Live inserts tracks from anywhere).
   auto hasTracks = [ed] { return !ed->selection().tracks.empty(); };
   edit("track.newMidi", [ed] { (void)ed->newTrack(doc::TrackKind::Midi); }, {});
+  edit("track.newAudio", [ed] { (void)ed->newTrack(doc::TrackKind::Audio); }, {});  // T5.3: Ctrl+T
   edit("track.newReturn", [ed] { (void)ed->newTrack(doc::TrackKind::Return); }, {});
   edit("track.group", [ed] { (void)ed->groupSelection(); }, hasTracks);
   edit("track.ungroup", [ed] { (void)ed->ungroupSelection(); }, [this, ed] {
@@ -242,8 +245,8 @@ IRect ArrangementView::clipRect(const doc::ClipRef& ref) const noexcept {
   const doc::Track& t = *model_->rows[static_cast<size_t>(row)].track;
   const int32_t i = doc::findClipIndex(t, ref.clip);
   if (i < 0) return {};
-  const doc::NoteClip& c = *t.clips[static_cast<size_t>(i)].clip;
-  return editor_->clipBox(row, c.start, c.start + c.length);
+  const doc::ClipSlot& c = t.clips[static_cast<size_t>(i)];
+  return editor_->clipBox(row, c.start(), c.end());
 }
 
 ArrangementView::ClipHover ArrangementView::clipHover() const noexcept {

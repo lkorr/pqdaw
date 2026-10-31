@@ -69,21 +69,17 @@ Points timeEditEnvelope(std::span<const Breakpoint> pts, const TimeEdit& te, IdS
 
 // Opens a gap of `len` at `at` in one track's clips: clips across `at` are split, later ones move.
 void openGap(ClipEditor& ed, Ticks at, Ticks len, IdSource& ids) {
-  std::vector<ClipPtr> out;
+  std::vector<ClipSlot> out;
   out.reserve(ed.clips().size() + 1);
-  for (ClipPtr& cp : ed.clips()) {
-    const NoteClip& c = *cp;
-    if (clipEnd(c) <= at) {
-      out.push_back(std::move(cp));
-    } else if (c.start >= at) {
-      NoteClip m = withNotes(c, c.notes);
-      m.start += len;
-      out.push_back(std::make_shared<const NoteClip>(std::move(m)));
+  for (ClipSlot& c : ed.clips()) {
+    if (c.end() <= at) {
+      out.push_back(std::move(c));
+    } else if (c.start() >= at) {
+      out.push_back(ed.moved(c, c.start() + len));
     } else {
-      auto [l, r] = splitClipAt(c, at, ids.clip(), ids);
-      r.start += len;
-      out.push_back(std::make_shared<const NoteClip>(std::move(l)));
-      out.push_back(std::make_shared<const NoteClip>(std::move(r)));
+      auto [l, r] = ed.split(c, at, ids.clip(), ids);
+      out.push_back(std::move(l));
+      out.push_back(ed.moved(r, r.start() + len));
     }
   }
   ed.clips() = std::move(out);
@@ -92,38 +88,32 @@ void openGap(ClipEditor& ed, Ticks at, Ticks len, IdSource& ids) {
 void editClips(const Project& p, const TimeEdit& te, IdSource& ids, Batch& out) {
   ClipEdits ed(p);
   forEachTrack(p, [&](const Track& t, const Track*) {
-    if (t.kind != TrackKind::Midi || t.clips.empty()) return;
+    if ((t.kind != TrackKind::Midi && t.kind != TrackKind::Audio) || t.clips.empty()) return;  // T5.3: audio too
     const Ticks from = te.a;
     // Clips are sorted by start; anything ending at or before `from` is untouched. A quick check on the last clips
     // avoids creating editors for tracks that end before the edit.
-    const bool touched = std::any_of(t.clips.rbegin(), t.clips.rend(),
-                                     [&](const ClipSlot& s) { return clipEnd(*s.clip) > from; });
+    const bool touched =
+        std::any_of(t.clips.rbegin(), t.clips.rend(), [&](const ClipSlot& s) { return s.end() > from; });
     if (!touched) return;
     ClipEditor& e = ed.editor(t);
     switch (te.op) {
       case TimeOp::Insert: openGap(e, te.a, te.len, ids); break;
       case TimeOp::Delete: {
         e.clearRange(te.a, te.b, ids);
-        for (ClipPtr& cp : e.clips())
-          if (cp->start >= te.b) {
-            NoteClip m = withNotes(*cp, cp->notes);
-            m.start -= te.len;
-            cp = std::make_shared<const NoteClip>(std::move(m));
-          }
+        for (ClipSlot& c : e.clips())
+          if (c.start() >= te.b) c = e.moved(c, c.start() - te.len);
         break;
       }
       case TimeOp::Duplicate: {
-        std::vector<ClipPtr> copies;
-        for (const ClipPtr& cp : e.clips()) {
-          const NoteClip& c = *cp;
-          if (clipEnd(c) <= te.a || c.start >= te.b) continue;
-          NoteClip part = withBounds(c, std::max(c.start, te.a), std::min(clipEnd(c), te.b));
-          NoteClip copy = cloneClip(part, ids, true);
-          copy.start += te.len;
-          copies.push_back(std::make_shared<const NoteClip>(std::move(copy)));
+        std::vector<ClipSlot> copies;
+        for (const ClipSlot& c : e.clips()) {
+          if (c.end() <= te.a || c.start() >= te.b) continue;
+          const ClipSlot part = e.bounded(c, std::max(c.start(), te.a), std::min(c.end(), te.b));
+          const ClipSlot copy = cloneSlot(part, ids, true);
+          copies.push_back(e.moved(copy, copy.start() + te.len));
         }
         openGap(e, te.b, te.len, ids);
-        for (ClipPtr& c : copies) e.add(std::move(c));
+        for (ClipSlot& c : copies) e.add(std::move(c));
         break;
       }
     }

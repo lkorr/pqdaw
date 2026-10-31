@@ -18,6 +18,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "pq/document/audio_clip.h"
 #include "pq/document/serialize.h"
 #include "pq_bench.h"
 
@@ -64,6 +65,51 @@ Snapshot buildProject(IdSource& ids, size_t& noteCount) {
     }
     p->tracks.push_back(std::make_shared<const Track>(std::move(tr)));
   }
+  return p;
+}
+
+// T5.3: 10,000 audio clips (100 audio tracks x 100 clips, every field set, half warp Off, half Re-Pitch) on 64 samples.
+Snapshot buildAudioProject(IdSource& ids) {
+  auto p = std::const_pointer_cast<Project>(makeDefaultProject(ids));
+  SampleList samples;
+  for (int s = 0; s < 64; ++s) {
+    SampleRef r;
+    r.id = ids.sample();
+    r.path = "C:/Samples/Pack " + std::to_string(s / 8) + "/sample " + std::to_string(s) + ".wav";
+    r.contentHash = 0x9e3779b97f4a7c15ull * static_cast<uint64_t>(s + 1);
+    r.size = 1000000 + static_cast<uint64_t>(s);
+    r.frames = 480000;
+    r.rate = 48000.0;
+    r.channels = 2;
+    r.displayName = "sample " + std::to_string(s);
+    samples.push_back(std::move(r));
+  }
+  for (int t = 0; t < 100; ++t) {
+    Track tr = makeTrack(ids.track(), TrackKind::Audio, "Audio " + std::to_string(t));
+    for (int c = 0; c < 100; ++c) {
+      AudioClip a;
+      a.id = ids.clip();
+      a.name = "Clip " + std::to_string(c);
+      a.start = static_cast<pq::Ticks>(c) * pq::kTicksPerWhole;
+      a.length = pq::kTicksPerWhole;
+      a.sample = samples[static_cast<size_t>((t * 7 + c) % 64)].id;
+      a.warp = c % 2 ? AudioWarp::RePitch : AudioWarp::Off;
+      a.contentStartFrame = 12345.678 * (c % 13);
+      a.seconds = 2.0;
+      a.contentStart = (c % 5) * pq::kPpq;
+      a.loop = ClipLoop{c % 4 == 1, 0, 2 * pq::kPpq};
+      a.sourceBpm = 97.5;
+      a.gainDb = -0.25f * static_cast<float>(c % 17);
+      a.transpose.cents = 3.5 * (c % 9);
+      a.detuneCents = 1.25f;
+      a.reverse = c % 3 == 0;
+      a.fadeIn = {pq::kPpq / 8, 0.25f};
+      a.fadeOut = {pq::kPpq / 4, -0.5f};
+      tr.clips.push_back(ClipSlot{a.id, nullptr, std::make_shared<const AudioClip>(syncedClip(*p->timeline, a))});
+    }
+    p->tracks.push_back(std::make_shared<const Track>(std::move(tr)));
+  }
+  p->samples = std::make_shared<const SampleList>(std::move(samples));
   return p;
 }
 
@@ -132,6 +178,28 @@ int main() {
     nlohmann::json d = nlohmann::json::parse(text);
     if (d.empty()) std::abort();
   });
+  // T5.3 acceptance: 10k audio clips save + load <= 50 ms (release).
+  {
+    IdSource aids;
+    const Snapshot ap = buildAudioProject(aids);
+    const std::string atext = serializeProject(*ap, view).value();
+    std::printf("audio project: 10000 clips, %.2f MB
+", static_cast<double>(atext.size()) / 1e6);
+    {
+      if (!saveProject(dir, *ap, view).ok()) std::abort();
+      Result<LoadedProject> r = loadProject(dir);
+      if (!r.ok() || !(*r->project == *ap)) std::abort();  // checked once, outside the timing
+    }
+    timeIt("audio 10k clips: saveProject", kReps, [&] {
+      if (!saveProject(dir, *ap, view).ok()) std::abort();
+    });
+    timeIt("audio 10k clips: loadProject", kReps, [&] {
+      if (!loadProject(dir).ok()) std::abort();
+    });
+    timeIt("audio 10k clips: save + load", kReps, [&] {
+      if (!saveProject(dir, *ap, view).ok() || !loadProject(dir).ok()) std::abort();
+    });
+  }
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
   return 0;

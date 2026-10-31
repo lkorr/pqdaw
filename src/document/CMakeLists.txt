@@ -2,6 +2,8 @@ pq_add_module(pq_doc
   SOURCES
     src/note_seq.cpp
     src/model.cpp
+    src/audio_clip.cpp
+    src/audio_sequence.cpp
     src/change_set.cpp
     src/checks.cpp
     src/apply.cpp
@@ -17,6 +19,7 @@ pq_add_module(pq_doc
     src/edit_automation.cpp
     src/edit_mixer.cpp
     src/edit_tunings.cpp
+    src/edit_audio.cpp
     src/edit_devices.cpp
     src/edit_racks.cpp
     src/devices.cpp
