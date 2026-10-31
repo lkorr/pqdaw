@@ -24,6 +24,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <thread>
 
 #include "pq/core/cache_line.h"
 
@@ -335,7 +336,10 @@ inline StreamPool::Request StreamPool::request(uint32_t i) const noexcept {
   const Slot& s = slots_[i];
   for (;;) {
     const uint32_t q1 = s.seq.load(std::memory_order_acquire);
-    if (q1 & 1u) continue;  // a claim or release is being written (a few instructions)
+    if (q1 & 1u) {  // a claim or release is being written (a few instructions; the writer may be preempted)
+      std::this_thread::yield();
+      continue;
+    }
     Request r;
     r.active = s.state.load(std::memory_order_relaxed) == kActive;
     r.source = s.source.load(std::memory_order_relaxed);

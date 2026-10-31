@@ -164,7 +164,8 @@ private:
 
   mutable std::mutex mutex_;  // entries_ and the budget accounting (non-RT threads only)
   std::unordered_map<std::string, std::weak_ptr<const PooledSample>> entries_;  // identity key → entry
-  std::mutex sourcesMutex_;   // sources_ (taken by the disk thread briefly; never held across I/O)
+  std::mutex budgetMutex_;    // serialises enforceBudget / demote (taken before mutex_, never under it)
+  std::mutex sourcesMutex_;  // sources_ (taken by the disk thread briefly; never held across I/O)
   std::unordered_map<uint32_t, std::shared_ptr<Source>> sources_;
   uint32_t nextSource_ = 1;
   uint64_t tick_ = 0;

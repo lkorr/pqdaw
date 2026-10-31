@@ -472,6 +472,7 @@ Status SamplePool::makeStreamed(PooledSample& s, Decoder* d, const Residency* fr
 // Demotes least-recently-used fully resident samples (not `keep`) until `incoming` more bytes fit the budget.
 void SamplePool::enforceBudget(uint64_t incoming, const PooledSample* keep) {
   if (!config_.reclaimer) return;
+  std::lock_guard budget(budgetMutex_);  // one demotion at a time (concurrent loads would pick the same victim)
   for (;;) {
     SampleRef victim;
     std::vector<SampleRef> alive;  // dropped after the lock: a last reference must not destroy under it
