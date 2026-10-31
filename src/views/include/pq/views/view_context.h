@@ -424,7 +424,8 @@ public:
       "device.delete",     "device.copy",       "device.cut",         "device.paste",      "device.duplicate",
       "device.toggleActive", "device.group",    "device.selectPrev",  "device.selectNext", "device.extendPrev",
       "device.extendNext", "device.selectFirst", "device.selectLast", "device.moveLeft",   "device.moveRight",
-      "device.chainUp",    "device.chainDown",  "device.ungroup",     "device.rename"};
+      "device.chainUp",    "device.chainDown",  "device.ungroup",     "device.rename",
+      "device.addInstrumentRack", "device.addAudioEffectRack"};
   // T4.7: View > Cables (Show / Fade / Hide) and deleting the selected wire (installWiring sets the handlers).
   static constexpr std::string_view kWiringActions[] = {"view.cycleCables", "wire.delete"};
   // T4.13: View > Project Patch (Ctrl+Alt+P): the project patch view in the track area (installProjectPatch sets it).

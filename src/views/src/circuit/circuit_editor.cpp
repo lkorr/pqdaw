@@ -514,9 +514,10 @@ void CircuitEditor::setStatus(std::string s) {
 void CircuitEditor::updateTitle() {
   std::string file = doc_->path();
   if (const size_t k = file.find_last_of("/\\"); k != std::string::npos) file = file.substr(k + 1);
-  titleText_ = host_ ? host_->title() : file + (doc_->dirty() ? " \xE2\x80\xA2" : "");
+  titleText_ = host_ ? host_->title() : file;
   for (const std::string& q : backStack_) titleText_ += " \xE2\x80\xBA " + q;
   titleText_ += " \xE2\x80\xBA " + shown_;
+  if (!host_ && doc_->dirty()) titleText_ += " \xE2\x80\xA2";  // M4 review L14: the unsaved dot after the breadcrumb
   if (readOnly()) titleText_ += "  (imported: read-only)";
   title_->setText(titleText_);
   back_->setEnabled(!backStack_.empty());
@@ -1415,7 +1416,7 @@ void CircuitEditor::setInstance(std::string patch, std::vector<graph::ConstArg> 
     for (const uint32_t v : canvas_->selection().nodes)
       if (v < lastIds_.size()) keepSelection_.push_back(lastIds_[v]);
   rebuildScene(false);
-  if (!showInactive_ && structure_.inactiveNodes != before) canvas_->fitAll();
+  if (!showInactive_ && structure_.inactiveNodes != before) canvas_->fitToRead();  // M15: as an open
 }
 
 void CircuitEditor::hideNodeTooltip() {

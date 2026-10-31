@@ -84,6 +84,8 @@ public:
   // in its title bar (Enter: one undo step). False when there is nothing to do (the reason in the status line).
   bool ungroupSelected();
   bool renameSelected();
+  // M4 review UI item 6 (Create menu): an empty Instrument / Audio Effect Rack after the selected device, else at the end.
+  bool addRack(bool instrument);
   // ---- T4.16c: keyboard (Live's Device view; docs/HOTKEYS.md) -------------------------------------------------------
   // Left / Right (device.selectPrev / Next): the neighbouring device in display order — a rack, then the devices of the
   // chain it shows, then what follows the rack — so the arrows walk into and out of rack chains; nothing selected: the

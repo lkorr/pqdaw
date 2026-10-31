@@ -378,8 +378,10 @@ public:
     }
   }
   float logicalWidth() const override { return panel_ ? panel_->logicalWidth() : 160.0f; }
+  // M4 review UI item 3: an open panel fills the Device view's height (its background continues below its controls, as
+  // Live's devices do); folded, the title bar only.
   float logicalHeight(float available) const override {
-    return panel_ ? std::min(available, panel_->logicalHeight()) : available;
+    return panel_ && panel_->folded() ? std::min(available, panel_->logicalHeight()) : available;
   }
 
   ui::InfoText info() const override {
@@ -1086,6 +1088,18 @@ bool DeviceChainView::groupSelected() {
   return impl_->run(doc::ops::groupDevices(*ctx_.doc(), ctx_.store().ids(), sel));
 }
 
+bool DeviceChainView::addRack(bool instrument) {
+  const doc::Track* t = track_.valid() ? doc::findTrackPtr(*ctx_.doc(), track_) : nullptr;
+  if (t == nullptr) return false;
+  uint32_t index = static_cast<uint32_t>(t->devices.size());
+  if (selection_.size() == 1)
+    for (size_t i = 0; i < t->devices.size(); ++i)
+      if (t->devices[i]->id == selection_.front()) index = static_cast<uint32_t>(i + 1);
+  return impl_->run(doc::ops::addDevice(*ctx_.doc(), ctx_.store().ids(), track_,
+                                        std::string(instrument ? doc::kInstrumentRack : doc::kAudioEffectRack),
+                                        instrument ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect, index));
+}
+
 bool DeviceChainView::ungroupSelected() {
   if (selection_.size() != 1) {
     if (!selection_.empty()) ctx_.setStatus("Ungroup: select one rack");
@@ -1178,6 +1192,9 @@ DeviceChainView& installDeviceChain(Shell& shell) {
   ctx.setViewAction("device.group", [p] { p->groupSelected(); }, has);  // T4.8
   ctx.setViewAction("device.ungroup", [p] { p->ungroupSelected(); }, has);  // T4.17
   ctx.setViewAction("device.rename", [p] { p->renameSelected(); }, has);    // T4.17
+  // M4 review UI item 6: Create > Instrument Rack / Audio Effect Rack (after the selected device, else at the end).
+  ctx.setViewAction("device.addInstrumentRack", [p] { p->addRack(true); }, [p] { return p->track().valid(); });
+  ctx.setViewAction("device.addAudioEffectRack", [p] { p->addRack(false); }, [p] { return p->track().valid(); });
   // T4.16c: Live's arrow keys in the Device view.
   auto chain = [p] { return p->track().valid(); };
   ctx.setViewAction("device.selectPrev", [p] { p->selectNeighbour(-1, false); }, chain);
@@ -1296,7 +1313,18 @@ void DeviceChainView::refreshRings() {
       float pk = static_cast<float>(devices::toPosition(info, panel->paramValue(info.name)));
       if (const doc::MappingLoc ml = doc::mappingOf(p, f->id(), info.name); ml.mapping != nullptr) {
         const doc::MacroMapping& mm = *ml.mapping;
-        const double macro = doc::rackParamValue(*ml.rack, doc::macroParamName(mm.macro)) / doc::kMacroMax;
+        // M4 review L3: the macro as played: when an outer rack's macro maps this rack's macro (and so on), the value
+        // comes down the chain of mappings from the outermost one (the stored value of a mapped macro does not play).
+        std::vector<const doc::MacroMapping*> outer;
+        const doc::Device* top = ml.rack;
+        for (doc::MappingLoc up = doc::mappingOf(p, top->id, doc::macroParamName(mm.macro)); up.mapping != nullptr && outer.size() < 64;
+             up = doc::mappingOf(p, top->id, doc::macroParamName(up.mapping->macro))) {
+          outer.push_back(up.mapping);
+          top = up.rack;
+        }
+        double macro = doc::rackParamValue(*top, doc::macroParamName(outer.empty() ? mm.macro : outer.back()->macro)) / doc::kMacroMax;
+        for (auto it = outer.rbegin(); it != outer.rend(); ++it)
+          macro = (*it)->min + ((*it)->max - (*it)->min) * automationShape(macro, (*it)->curve);
         pk = static_cast<float>(mm.min + (mm.max - mm.min) * automationShape(macro, mm.curve));
         ring.active = true;
         ring.lo = static_cast<float>(std::min(mm.min, mm.max));

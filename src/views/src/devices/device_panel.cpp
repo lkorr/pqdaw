@@ -1029,6 +1029,10 @@ std::span<const DevicePanel::Jack> DevicePanel::jacks() const noexcept {
 void DevicePanel::paint(ui::PaintContext& ctx) {
   const ui::Theme* th = ctx.res.theme;
   if (!th) return;
+  // UI item 3: a panel taller than its controls (the Device view's height) continues its background below them.
+  if (body_ != nullptr && body_->visible() && body_->rect().bottom() < rect().bottom())
+    ctx.dl.addRectFilled(ui::IRect{rect().x, body_->rect().bottom(), rect().w, rect().bottom() - body_->rect().bottom()}.toRect(),
+                         th->device.background);
   if (!jacks_.empty() && childCount() > 0) ctx.dl.addRectFilled(child(0).rect().toRect(), th->device.jackStrip);
 }
 

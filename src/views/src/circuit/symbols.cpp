@@ -195,6 +195,21 @@ SymbolSpec describe(const graph::Patch& p, NodeIndex n, const std::vector<uint8_
       for (PinSpec& pin : s.inputs)
         if (pin.label == "x" || pin.label == "in") pin.label.clear();
   }
+  // M4 review L15: a mux numbers its data inputs (and a demux its outputs) next to the pins: "#" the index, then 0, 1, …;
+  // a select's condition "?", then the input taken when true ("1") and when false ("0").
+  if (s.symbol == Symbol::Mux && nd.kind == NodeKind::Atom) {
+    const std::string_view atom = graph::atomSignature(nd.atom).name;
+    if (atom == "select" && nd.numInputs == 3) {
+      s.inputs[0].label = "?";
+      s.inputs[1].label = "1";
+      s.inputs[2].label = "0";
+    } else if (atom == "mux") {
+      for (uint32_t i = 0; i < nd.numInputs; ++i) s.inputs[i].label = i == 0 ? std::string("#") : std::to_string(i - 1);
+    } else if (atom == "demux" && nd.numInputs >= 1) {
+      s.inputs[0].label = "#";
+      for (uint32_t i = 0; i < nd.numOutputs; ++i) s.outputs[i].label = std::to_string(i);
+    }
+  }
   const uint32_t vi = visibleCount(s.inputs), vo = visibleCount(s.outputs);
   const uint32_t rows = std::max<uint32_t>({vi, vo, 1});
   switch (s.symbol) {
@@ -254,7 +269,7 @@ SymbolSpec describe(const graph::Patch& p, NodeIndex n, const std::vector<uint8_
       setStubs(s.outputs, 8);
       break;
     case Symbol::Mux:
-      s.w = 32;
+      s.w = 40;  // L15: room for the input numbers inside the body
       s.h = std::max(32.0f, kPitch * static_cast<float>(rows) + 8.0f);
       distribute(s.inputs, 0, s.h);
       distribute(s.outputs, 0, s.h);
@@ -664,10 +679,11 @@ void paintBody(ui::DrawList& dl, const SymbolSpec& spec, ui::Vec2 origin, float 
           p.add(14, 21);
           p.add(21, 21);
           p.stroke();
-          p.line(10, 8, 13, 8);
-          p.line(11.5f, 6.5f, 11.5f, 9.5f);
-          p.line(10, 24, 13, 24);
-          if (spec.glyph == Glyph::Plus) p.line(11.5f, 22.5f, 11.5f, 25.5f);
+          // L15: the signs a little larger, so add (+ +) and sub (+ −) read apart at a glance.
+          p.line(9.5f, 8, 14, 8);
+          p.line(11.75f, 5.75f, 11.75f, 10.25f);
+          p.line(9.5f, 24, 14, 24);
+          if (spec.glyph == Glyph::Plus) p.line(11.75f, 21.75f, 11.75f, 26.25f);
         }
       }
       break;
@@ -730,8 +746,8 @@ void paintBody(ui::DrawList& dl, const SymbolSpec& spec, ui::Vec2 origin, float 
     case Symbol::Mux:
       p.begin();
       p.add(8, 0);
-      p.add(24, 6);
-      p.add(24, h - 6);
+      p.add(w - 8, 6);
+      p.add(w - 8, h - 6);
       p.add(8, h);
       shape();
       break;

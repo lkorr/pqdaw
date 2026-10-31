@@ -71,6 +71,9 @@ public:
   const View& view() const noexcept;
   void setView(const View& v);
   void fitAll();                                // the whole scene, centred, at most zoom 2
+  // M4 review M15: the view a patch opens at: fitAll when that is readable (≥ kNearZoom), else kNearZoom on the
+  // outputs (setScene(…, fit = true) does this).
+  void fitToRead();
   void zoomAt(ui::Vec2 device, double factor);  // keeps the world point under `device` where it is
   void panBy(float dxDevice, float dyDevice);
   float deviceScale() const noexcept;           // device px per world unit (zoom × UI scale)

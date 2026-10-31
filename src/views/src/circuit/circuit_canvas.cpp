@@ -47,6 +47,7 @@ struct CircuitCanvas::Impl {
   std::shared_ptr<const CircuitScene> scene;
   View view;
   bool fitPending = false;
+  bool fitReadable = false;  // M15: the pending / next fit is an open (readable), not F (the whole patch)
   Stats stats;
 
   Selection selection;
@@ -345,9 +346,27 @@ struct CircuitCanvas::Impl {
     const double lw = r.w / static_cast<double>(uiScale()), lh = r.h / static_cast<double>(uiScale());
     double z = std::min(lw / std::max(bw, 1.0), lh / std::max(bh, 1.0));
     z = std::clamp(z, kMinZoom, 2.0);
-    view.zoom = z;
     view.x = static_cast<double>(scene->x0 + scene->x1) * 0.5 - lw / z * 0.5;
     view.y = static_cast<double>(scene->y0 + scene->y1) * 0.5 - lh / z * 0.5;
+    // M4 review M15: a patch opened (not F) never opens below the zoom where names show: too large to fit, it opens
+    // at the Near zoom on its outputs (the right edge, vertically on the output terminals), as a schematic is read.
+    if (fitReadable && z < kNearZoom) {
+      z = kNearZoom;
+      float oy0 = scene->y1, oy1 = scene->y0;
+      for (const SceneNode& n : scene->nodes)
+        if (scene->specs[n.spec].symbol == Symbol::Output || scene->specs[n.spec].symbol == Symbol::Export) {
+          oy0 = std::min(oy0, n.y);
+          oy1 = std::max(oy1, n.y + n.h);
+        }
+      const double cy = oy1 >= oy0 ? 0.5 * static_cast<double>(oy0 + oy1) : 0.5 * static_cast<double>(scene->y0 + scene->y1);
+      view.x = static_cast<double>(scene->x1) + margin - lw / z;
+      if (bh * z <= lh) view.y = static_cast<double>(scene->y0 + scene->y1) * 0.5 - lh / z * 0.5;  // fits: centred
+      else
+        view.y = std::clamp(cy - lh / z * 0.5, static_cast<double>(scene->y0) - margin,
+                            std::max(static_cast<double>(scene->y0) - margin, static_cast<double>(scene->y1) + margin - lh / z));
+    }
+    fitReadable = false;
+    view.zoom = z;
     self.markDirty();
   }
 
@@ -488,7 +507,10 @@ void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit
   impl_->chunkScale = 0.0f;
   impl_->wireLit.clear();
   impl_->resetSelectionFlags();
-  if (fit) impl_->fit();
+  if (fit) {
+    impl_->fitReadable = true;
+    impl_->fit();
+  }
   markDirty();
 }
 
@@ -506,8 +528,16 @@ void CircuitCanvas::setView(const View& v) {
   else markDirty();
 }
 
+void CircuitCanvas::fitToRead() {
+  const double z = impl_->view.zoom;
+  impl_->fitReadable = true;
+  impl_->fit();
+  if (impl_->view.zoom != z) impl_->zoomed();
+}
+
 void CircuitCanvas::fitAll() {
   const double z = impl_->view.zoom;
+  impl_->fitReadable = false;
   impl_->fit();
   if (impl_->view.zoom != z) impl_->zoomed();
 }
@@ -949,6 +979,39 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
                             std::min(clip.right(), static_cast<int32_t>(std::ceil(x1)) + (lb.role == SceneLabel::Role::Comment ? 4096 : 0)),
                             clip.bottom()};
       ui::TextSystem::drawRunClipped(dl, run, {std::round(x), baseline}, col, tc);
+      ++st.labelsPainted;
+    }
+  }
+
+  // M4 review M15: below Near the terminals (inputs, params, sources, outputs, exports) keep their names, in small
+  // pills over their symbols; a pill that would overlap one already placed is left out.
+  if (lod != Lod::Near && ctx.res.text && ctx.res.uiFonts) {
+    ui::TextSystem& ts = *ctx.res.text;
+    const ui::FontId font = ctx.res.uiFonts->small;
+    const float pillPad = std::round(ctx.scale.exact(3.0f)), lh = std::round(ctx.scale.exact(13.0f));
+    std::vector<ui::Rect> placed;
+    for (const SceneLabel& lb : sc.labels) {
+      if (lb.role != SceneLabel::Role::Title || lb.node >= sc.nodes.size()) continue;
+      const SceneNode& n = sc.nodes[lb.node];
+      const Symbol sym = sc.specs[n.spec].symbol;
+      if (sym != Symbol::Input && sym != Symbol::Param && sym != Symbol::Source && sym != Symbol::Output && sym != Symbol::Export)
+        continue;
+      const float cx = m.devX(n.x + n.w * 0.5f), cy = m.devY(n.y + n.h * 0.5f);
+      if (cx < static_cast<float>(clip.x) - 200.0f || cx > static_cast<float>(clip.right()) + 200.0f || cy < static_cast<float>(clip.y) - lh ||
+          cy > static_cast<float>(clip.bottom()) + lh)
+        continue;
+      const ui::TextRun run = ts.shape(font, sc.strings[lb.text]);
+      const float w = static_cast<float>(run.advance) + 2.0f * pillPad;
+      // Inputs read leftwards from their symbol, outputs rightwards (the pill's inner edge at the symbol's centre).
+      const bool left = sym == Symbol::Input || sym == Symbol::Param || sym == Symbol::Source;
+      const float x0 = std::round(left ? cx - w : cx), y0 = std::round(cy - lh * 0.5f);
+      const ui::Rect box{x0, y0, x0 + w, y0 + lh};
+      bool free = true;
+      for (const ui::Rect& q : placed) free = free && (box.x1 <= q.x0 || q.x1 <= box.x0 || box.y1 <= q.y0 || q.y1 <= box.y0);
+      if (!free) continue;
+      placed.push_back(box);
+      dl.addRoundedRectFilled(box, ctx.scale.exact(2.0f), ui::withAlpha(theme->surface.sunken, 225));
+      ui::TextSystem::drawRun(dl, run, {x0 + pillPad, std::round(y0 + lh - std::round(ctx.scale.exact(3.5f)))}, dimIf(lb.node, C.symbolText));
       ++st.labelsPainted;
     }
   }

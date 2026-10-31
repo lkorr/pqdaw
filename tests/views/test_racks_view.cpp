@@ -114,13 +114,24 @@ TEST_CASE("rack view: the frame shows macros, chain rows with their mixer, and t
   Ui u;
   DeviceChainView& v = u.view();
   REQUIRE(v.frameOf(u.rack) != nullptr);
-  // The macro panel is the rack's panel: 8 macros and the chain selector.
+  // The macro panel is the rack's panel. M4 review UI item 2: a rack with no macro in use shows one column of four
+  // (always one free macro past the highest mapped or named one, up to visibleMacros); the chain selector is the zone
+  // editor's (its Chain tab), not a knob.
   devices::DevicePanel* p = v.panelOf(u.rack);
   REQUIRE(p != nullptr);
   CHECK(p->controlFor("macro1") != nullptr);
+  CHECK(p->controlFor("macro4") != nullptr);
+  CHECK(p->controlFor("macro5") == nullptr);
+  CHECK(p->controlFor("select") == nullptr);
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 3, u.sat, "drive"));  // macro 4 in use
+  p = v.panelOf(u.rack);
+  REQUIRE(p != nullptr);
+  CHECK(p->controlFor("macro5") != nullptr);  // the next column: a free macro to map next
   CHECK(p->controlFor("macro8") != nullptr);
-  CHECK(p->controlFor("macro9") == nullptr);
-  CHECK(p->controlFor("select") != nullptr);
+  CHECK(p->controlFor("macro9") == nullptr);  // visibleMacros (8) caps it
+  REQUIRE(u.ctx.undo());
+  p = v.panelOf(u.rack);
+  REQUIRE(p != nullptr);
   // The chain shown is the first; its device has a frame and a panel nested in the rack's frame.
   const doc::ChainId c1 = u.rackOf(u.rack).chains[0]->id;
   CHECK(v.shownChain(u.rack) == c1);
@@ -399,6 +410,28 @@ TEST_CASE("rack view: Ctrl+R renames a device in its title bar; Ctrl+Shift+G ung
   CHECK(v.selection()[0] == u.sat);
   REQUIRE(u.ctx.undo());
   CHECK(doc::findDevice(*u.ctx.doc(), u.rack).device);
+}
+
+// M4 review L3: a knob mapped to a macro that an outer rack's macro maps shows the value as played (down the chain of
+// mappings from the outer macro), not the inner macro's stored value.
+TEST_CASE("rack view: a knob under nested macro mappings shows the played value (M4 review L3)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  const doc::DeviceId outer = u.run(doc::ops::groupDevices(*u.ctx.doc(), u.ctx.store().ids(), std::vector<doc::DeviceId>{u.rack})).devices.at(0);
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.sat, "drive"));  // inner macro 1 -> drive
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), outer, 0, u.rack, "macro1"));  // outer macro 1 -> inner macro 1
+  u.run(doc::ops::setDeviceParam(*u.ctx.doc(), outer, "macro1", doc::kMacroMax));  // the inner macro's stored value stays 0
+  u.d.tree().layoutNow();
+  v.refreshRings();
+  devices::DevicePanel* sat = v.panelOf(u.sat);
+  REQUIRE(sat != nullptr);
+  const doc::MappingLoc m = doc::mappingOf(*u.ctx.doc(), u.sat, "drive");
+  REQUIRE(m.mapping != nullptr);
+  const devices::ParamInfo* info = nullptr;
+  for (const devices::ParamInfo& pi : sat->signature().params)
+    if (pi.name == "drive") info = &pi;
+  REQUIRE(info != nullptr);
+  CHECK(devices::toPosition(*info, sat->paramValue("drive")) == doctest::Approx(m.mapping->max).epsilon(1e-6));
 }
 
 TEST_CASE("render: audio-rack and instrument-rack match the golden images") {

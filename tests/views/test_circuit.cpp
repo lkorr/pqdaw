@@ -348,13 +348,23 @@ TEST_CASE("circuit: level of detail; idle after a zoom settles; pan and zoom rep
     (void)rig.draw(rig.res);
     return rig.canvas->lod();
   };
+  // M4 review M15: below Near only the terminals (in / out / param / source / export) keep their names (pills).
+  const CircuitScene& scn = *rig.canvas->scene();
+  size_t terminals = 0;
+  for (const SceneNode& n : scn.nodes) {
+    const Symbol sym = scn.specs[n.spec].symbol;
+    terminals += sym == Symbol::Input || sym == Symbol::Param || sym == Symbol::Source || sym == Symbol::Output || sym == Symbol::Export;
+  }
+  REQUIRE(terminals > 0);
   CHECK(lodAt(0.2) == CircuitCanvas::Lod::Far);
-  CHECK(rig.canvas->stats().labelsPainted == 0);
+  CHECK(rig.canvas->stats().labelsPainted > 0);
+  CHECK(rig.canvas->stats().labelsPainted <= terminals);
   CHECK(rig.canvas->stats().junctionsPainted == 0);
   CHECK(lodAt(0.5) == CircuitCanvas::Lod::Mid);
-  CHECK(rig.canvas->stats().labelsPainted == 0);
-  CHECK(lodAt(1.2) == CircuitCanvas::Lod::Near);
   CHECK(rig.canvas->stats().labelsPainted > 0);
+  CHECK(rig.canvas->stats().labelsPainted <= terminals);
+  CHECK(lodAt(1.2) == CircuitCanvas::Lod::Near);
+  CHECK(rig.canvas->stats().labelsPainted > terminals);
   // A zoom step: frames are requested only until the settle timer fires and the tiles are built; then idle again.
   rig.canvas->zoomAt({400, 250}, 1.25);
   CHECK(rig.canvas->zooming());
@@ -399,9 +409,10 @@ TEST_CASE("circuit: hit testing, click / Shift / Ctrl selection, rubber band, Es
   const Vec2 mid = canvas.toDevice({(q0.x + q1.x) * 0.5f, (q0.y + q1.y) * 0.5f});
   const CanvasHit wh = canvas.hitTest({mid.x, mid.y + 2});
   CHECK(wh.kind != CanvasHit::Kind::None);
-  // Clicking empty space clears; a band over everything selects every node.
+  // Clicking empty space clears; a band over everything (F: the whole patch in view) selects every node.
   d.click({2, 2});
   CHECK(canvas.selection().nodes.empty());
+  canvas.fitAll();
   d.drag({1, 1}, {799, 599}, 6);
   CHECK(canvas.selection().nodes.size() == sc.nodes.size());
   d.press("Escape");
@@ -415,6 +426,8 @@ TEST_CASE("circuit: Ctrl+wheel zooms at the pointer, the wheel pans, middle-drag
   canvas.setScene(buildScene(*doc->find("svf_core")));
   d.tree().layoutNow();
   const CircuitCanvas::View fitted = canvas.view();
+  // M4 review M15: opened, a patch too large to fit readably shows at the Near zoom (names visible), on its outputs.
+  CHECK(fitted.zoom >= CircuitCanvas::kNearZoom);
   const Vec2 at{300, 200};
   const graph::Point2 before = canvas.toWorld(at);
   d.wheel(at, 2.0f, 0.0f, mod::kCtrl);
@@ -430,8 +443,14 @@ TEST_CASE("circuit: Ctrl+wheel zooms at the pointer, the wheel pans, middle-drag
   CHECK(canvas.view().x == doctest::Approx(p0.x - 50.0 / p0.zoom));
   CHECK(canvas.view().y == doctest::Approx(p0.y - 30.0 / p0.zoom));
   d.tree().setFocus(&canvas);
-  d.press("F");
-  CHECK(canvas.view() == fitted);
+  d.press("F");  // the whole patch
+  const CircuitScene& sc = *canvas.scene();
+  const Vec2 tl = canvas.toDevice({sc.x0, sc.y0}), br = canvas.toDevice({sc.x1, sc.y1});
+  CHECK(tl.x >= 0.0f);
+  CHECK(tl.y >= 0.0f);
+  CHECK(br.x <= 800.0f);
+  CHECK(br.y <= 600.0f);
+  CHECK(canvas.view().zoom <= fitted.zoom);
 }
 
 TEST_CASE("circuit viewer: double-click a subcircuit opens its callee, Back returns; the action needs a file") {

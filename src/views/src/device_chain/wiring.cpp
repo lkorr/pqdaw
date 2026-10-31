@@ -609,6 +609,8 @@ void CableLayer::beginDrag(doc::DeviceId from, std::string port, ui::Vec2 pos) {
   drag_.hoverTrack = {};
   drag_.hoverTicks = 0;
   drag_.cursor = ui::Cursor::Crosshair;  // over the jack it starts from
+  // M4 review UI item 6: what a jack drag does, in the status line.
+  ctx_.setStatus("Drop the cable on any knob to modulate it (another track's: hover its row first); Esc cancels.");
   setHittable(true);  // from the first move on, the layer takes the pointer (the jack strip may be rebuilt meanwhile)
   setFocusable(true);
   if (tree()) tree()->setFocus(this);  // Esc cancels

@@ -31,6 +31,7 @@ constexpr float kStripW = 30.0f;     // the button strip
 constexpr float kMacroCell = 56.0f;  // a macro knob's cell (w and h)
 constexpr float kListW = 220.0f;     // the chain list
 constexpr float kRowH = 22.0f;       // a chain row
+constexpr float kAxisH = 14.0f;      // M4 review M16: the zone editor's axis row
 constexpr float kZoneW = 230.0f;     // the zone editor
 constexpr float kSlotW = 112.0f;     // the add / drop slot after the shown chain
 constexpr float kPad = 6.0f;         // T4.6's panel padding
@@ -70,8 +71,21 @@ devices::DeviceSignature rackSignature(const doc::Device& d) {
   return s;
 }
 
-// The macro panel's layout: the visible macros in columns of four, then the chain selector's knob in a column of its
-// own; only the title bar when the macros are hidden.
+// M4 review UI item 2: how many macros the panel shows: up to the rack's visibleMacros, but only the columns of four
+// up to one past the highest macro in use (mapped or renamed: never a value, so a macro drag does not rebuild the
+// panel under the pointer), at least one column: a new rack shows four, and there is always a free macro to map next.
+// The chain selector is the zone editor's (its Chain tab's marker).
+uint32_t shownMacros(const doc::Device& d) {
+  const doc::Rack& r = *d.rack;
+  int32_t used = -1;
+  for (const doc::MacroMapping& m : r.mappings) used = std::max(used, static_cast<int32_t>(m.macro));
+  for (uint32_t k = 0; k < doc::kMacroCount; ++k)
+    if (!r.macroNames[k].empty()) used = std::max(used, static_cast<int32_t>(k));
+  const auto want = static_cast<uint32_t>((used + 2 + 3) / 4 * 4);  // one past the highest used, whole columns
+  return std::clamp<uint32_t>(std::min<uint32_t>(r.visibleMacros, std::max(4u, want)), 1, doc::kMacroCount);
+}
+
+// The macro panel's layout: the shown macros in columns of four; only the title bar when the macros are hidden.
 devices::PanelDesc rackPanel(const doc::Device& d, const devices::DeviceSignature& sig) {
   devices::PanelDesc p;
   p.patch = sig.patch;
@@ -82,7 +96,7 @@ devices::PanelDesc rackPanel(const doc::Device& d, const devices::DeviceSignatur
     p.height = 0.0f;
     return p;
   }
-  const uint32_t n = std::clamp<uint32_t>(r.visibleMacros, 1, doc::kMacroCount);
+  const uint32_t n = shownMacros(d);
   const uint32_t rows = std::min<uint32_t>(4, n), cols = (n + 3) / 4;
   for (uint32_t k = 0; k < n; ++k) {
     devices::ControlDesc c;
@@ -95,16 +109,7 @@ devices::PanelDesc rackPanel(const doc::Device& d, const devices::DeviceSignatur
     c.info = "A macro: drives every param mapped to it (Map, then the macro, then a knob).";
     p.controls.push_back(std::move(c));
   }
-  devices::ControlDesc c;
-  c.kind = devices::ControlKind::Knob;
-  c.param = c.id = std::string(doc::kSelectParam);
-  c.x = static_cast<float>(cols) * kMacroCell;
-  c.y = 0.0f;
-  c.w = kMacroCell - 4.0f;
-  c.h = kMacroCell;
-  c.info = "The chain selector: chains play where their Chain zone covers it (with their fades).";
-  p.controls.push_back(std::move(c));
-  p.width = static_cast<float>(cols + 1) * kMacroCell;
+  p.width = std::max(144.0f, static_cast<float>(cols) * kMacroCell);  // room for the title
   p.height = static_cast<float>(rows) * kMacroCell;
   return p;
 }
@@ -223,10 +228,16 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   ui::InfoText info() const override {
+    if (!hoverTitle_.empty()) return {hoverTitle_, hoverBody_};  // M4 review M16: the hovered bar's range
     return {"Zones", "Where each chain plays: drag a bar's ends, its body, or (in its upper part) its fade edges. Key "
-                     "zones are pitch ranges (Hz, or degrees of the track's tuning), Velocity zones 0 … 127, Chain "
+                     "zones are pitch ranges (Hz, or degrees of each note's own tuning), Velocity zones 0 … 127, Chain "
                      "zones the chain selector's range (drag the marker above them)."};
   }
+  void onHoverChanged(bool hovered) override {
+    if (!hovered) setHoverRow(-1);
+  }
+  // M4 review M16: the value text of an axis (Hz: 220 / 1.5k; degrees, velocity, selector: whole numbers).
+  static std::string valueText(double v, bool hz);
   double toValue(float x) const;
   float toX(double v) const;
   // T4.16c: the ends and fade edges resize (↔), the body moves, the tabs and the key unit are buttons; the Chain tab's
@@ -253,8 +264,11 @@ private:
   enum class Grab : uint8_t { None, Lo, Hi, FadeLo, FadeHi, Move, Selector, Tab, Unit };
   // What a press at `p` grabs (the row's chain in *row); the one rule for onPointer and cursorAt.
   Grab grabAt(ui::Vec2 p, size_t* row) const;
+  void setHoverRow(int32_t row);
   RackFrame& rack_;
   DeviceChainView::Impl& impl_;
+  int32_t hoverRow_ = -1;  // M16: the row under the pointer (its range in the info view)
+  std::string hoverTitle_, hoverBody_;
   Grab grab_ = Grab::None;
   doc::ChainId chain_;
   doc::Zone start_;
@@ -375,7 +389,9 @@ public:
   void update(const doc::Device& d) override {
     const bool first = rack_ == nullptr;
     const bool optionsChanged = first || d.rack->macroNames != rack_->macroNames ||
-                                d.rack->visibleMacros != rack_->visibleMacros || d.rack->showMacros != rack_->showMacros;
+                                d.rack->visibleMacros != rack_->visibleMacros || d.rack->showMacros != rack_->showMacros ||
+                                shownMacros(d) != shownMacros_;
+    shownMacros_ = shownMacros(d);
     rack_ = d.rack;
     kind_ = d.kind;
     active_ = d.active;
@@ -679,6 +695,7 @@ private:
   RackStrip* strip_ = nullptr;
   ChainList* list_ = nullptr;
   ZoneEditor* zones_ = nullptr;
+  uint32_t shownMacros_ = 0;  // UI item 2: the macros the panel shows (rebuilt when it changes)
   ChainSlot* slot_ = nullptr;
   doc::ChainId shown_;
   std::vector<FrameBase*> inner_;
@@ -946,14 +963,46 @@ void ZoneEditor::paint(ui::PaintContext& ctx) {
     if (tab == doc::ZoneKind::Key)
       paint::text(ctx, ctx.res.uiFonts->small, {x, r.y, r.right() - x - ctx.scale.px(4.0f), tb},
                   rack_.rack().keyUnit == doc::KeyZoneUnit::Hz ? "Hz" : "Degrees", th->text.secondary, ui::TextAlign::Right);
+    if (tab == doc::ZoneKind::Select)  // UI item 2: the chain selector lives here (its marker), its value beside the tabs
+      paint::text(ctx, ctx.res.uiFonts->small, {x, r.y, r.right() - x - ctx.scale.px(4.0f), tb},
+                  "Selector " + valueText(rack_.selectorValue(), false), th->text.secondary, ui::TextAlign::Right);
   }
   const ui::Rgba zoneFill = ui::withAlpha(th->accent.primary, 110), solidFill = ui::withAlpha(th->accent.primary, 200);
   const doc::Rack& rack = rack_.rack();
+  // M4 review M16: an axis along the bottom (ticks and values in the tab's unit) with faint lines up through the rows.
+  const int32_t axisH = ctx.scale.px(kAxisH);
+  const int32_t axisY = r.bottom() - axisH;
+  const Axis ax = axisOf(tab, rack.keyUnit);
+  {
+    static constexpr double kHzTicks[] = {20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000};
+    std::vector<double> ticks;
+    if (ax.log) ticks.assign(std::begin(kHzTicks), std::end(kHzTicks));
+    else if (tab == doc::ZoneKind::Key) for (double d = ax.lo; d <= ax.hi + 1e-9; d += 12.0) ticks.push_back(d);
+    else ticks = {0, 32, 64, 96, 127};
+    ctx.dl.addRectFilled(ui::IRect{r.x + 1, axisY, r.w - 1, 1}.toRect(), th->surface.divider);
+    int32_t lastRight = r.x - r.w;
+    for (const double v : ticks) {
+      const float x = std::round(toX(v));
+      ctx.dl.addRectFilled({x, static_cast<float>(r.y + tb), x + 1.0f, static_cast<float>(axisY)}, ui::withAlpha(th->surface.divider, 120));
+      ctx.dl.addRectFilled({x, static_cast<float>(axisY), x + 1.0f, static_cast<float>(axisY + ctx.scale.px(3.0f))}, th->text.secondary);
+      if (!ctx.res.uiFonts || !ctx.res.text) continue;
+      const std::string label = valueText(v, ax.log);
+      const int32_t w = ctx.res.text->measure(ctx.res.uiFonts->small, label);
+      int32_t lx = static_cast<int32_t>(x) - w / 2;
+      lx = std::clamp(lx, r.x + ctx.scale.px(2.0f), r.right() - w - ctx.scale.px(2.0f));
+      if (lx < lastRight + ctx.scale.px(4.0f)) continue;  // no overlapping labels
+      paint::text(ctx, ctx.res.uiFonts->small, {lx, axisY + ctx.scale.px(2.0f), w, axisH - ctx.scale.px(2.0f)}, label,
+                  th->text.secondary, ui::TextAlign::Left);
+      lastRight = lx + w;
+    }
+  }
   for (size_t i = 0; i < rack.chains.size(); ++i) {
     const doc::Chain& c = *rack.chains[i];
     const int32_t y = r.y + tb + static_cast<int32_t>(i) * ctx.scale.px(kRowH);
     const int32_t h = ctx.scale.px(kRowH);
-    if (y + h > r.bottom()) break;
+    if (y + h > axisY) break;
+    if (static_cast<int32_t>(i) == hoverRow_)
+      ctx.dl.addRectFilled(ui::IRect{r.x + 1, y, r.w - 1, h - 1}.toRect(), ui::withAlpha(th->text.primary, 14));
     ctx.dl.addRectFilled(ui::IRect{r.x, y + h - 1, r.w, 1}.toRect(), th->surface.divider);
     const doc::Zone& z = c.zone(tab);
     const float xl = toX(z.lo), xfl = toX(z.fadeLo), xfh = toX(z.fadeHi), xh = toX(z.hi);
@@ -963,6 +1012,15 @@ void ZoneEditor::paint(ui::PaintContext& ctx) {
     if (xh > xfh) ctx.dl.addTriangleFilled({xfh, y0}, {xh, y1}, {xfh, y1}, zoneFill);
     if (xfh > xfl) ctx.dl.addRectFilled({xfl, y0, xfh, y1}, c.active ? solidFill : zoneFill);
     else ctx.dl.addRectFilled({xfl - 1.0f, y0, xfl + 1.0f, y1}, solidFill);
+    // M16: the bar's range on it when it fits (its ends' values).
+    if (ctx.res.uiFonts && ctx.res.text) {
+      const std::string label = valueText(z.lo, ax.log) + " \xE2\x80\x93 " + valueText(z.hi, ax.log);
+      const int32_t w = ctx.res.text->measure(ctx.res.uiFonts->small, label);
+      if (static_cast<float>(w + ctx.scale.px(6.0f)) < xh - xl)
+        paint::text(ctx, ctx.res.uiFonts->small,
+                    {static_cast<int32_t>(xl), static_cast<int32_t>(y0), static_cast<int32_t>(xh - xl), static_cast<int32_t>(y1 - y0)},
+                    label, th->text.onAccent, ui::TextAlign::Center);
+    }
   }
   // The selector's marker (Chain tab), above the bars.
   if (tab == doc::ZoneKind::Select) {
@@ -989,6 +1047,7 @@ ZoneEditor::Grab ZoneEditor::grabAt(ui::Vec2 p, size_t* rowOut) const {
     if (tab == doc::ZoneKind::Key && p.x > static_cast<float>(r.right()) - 60.0f * s) return Grab::Unit;
     return tab == doc::ZoneKind::Select ? Grab::Selector : Grab::None;
   }
+  if (p.y >= static_cast<float>(r.bottom()) - kAxisH * s) return Grab::None;  // M16: the axis row
   const auto row = static_cast<size_t>((p.y - static_cast<float>(r.y + tb)) / static_cast<float>(rh));
   if (row >= rack_.rack().chains.size()) return Grab::None;
   if (rowOut != nullptr) *rowOut = row;
@@ -1019,11 +1078,50 @@ ui::Cursor ZoneEditor::cursorAt(ui::Vec2 p) const {
   return ui::Cursor::Arrow;
 }
 
+std::string ZoneEditor::valueText(double v, bool hz) {
+  char buf[32];
+  if (!hz) std::snprintf(buf, sizeof buf, "%d", static_cast<int>(std::lround(v)));
+  else if (v >= 1000.0) std::snprintf(buf, sizeof buf, std::fmod(v, 1000.0) < 1.0 ? "%.0fk" : "%.1fk", v / 1000.0);
+  else std::snprintf(buf, sizeof buf, v < 100.0 && std::fabs(v - std::round(v)) >= 0.05 ? "%.1f" : "%.0f", v);
+  return buf;
+}
+
+void ZoneEditor::setHoverRow(int32_t row) {
+  const doc::Rack& rack = rack_.rack();
+  if (row >= static_cast<int32_t>(rack.chains.size())) row = -1;
+  if (row == hoverRow_) return;
+  hoverRow_ = row;
+  hoverTitle_.clear();
+  hoverBody_.clear();
+  if (row >= 0) {
+    const doc::ZoneKind tab = rack_.zoneTab().value_or(doc::ZoneKind::Select);
+    const bool hz = axisOf(tab, rack.keyUnit).log;
+    const char* unit = tab == doc::ZoneKind::Key ? (hz ? " Hz" : " degrees") : "";
+    const doc::Chain& c = *rack.chains[static_cast<size_t>(row)];
+    const doc::Zone& z = c.zone(tab);
+    hoverTitle_ = (c.name.empty() ? std::string("Chain") : c.name) + ": " + valueText(z.lo, hz) + " \xE2\x80\x93 " +
+                  valueText(z.hi, hz) + unit;
+    hoverBody_ = "Full level " + valueText(z.fadeLo, hz) + " \xE2\x80\x93 " + valueText(z.fadeHi, hz) + unit +
+                 "; fades in from " + valueText(z.lo, hz) + " and out to " + valueText(z.hi, hz) +
+                 ". Drag the bar's ends, its body, or (in its upper part) its fade edges.";
+  }
+  markDirty();
+  impl_.ctx().infoChanged();
+}
+
 bool ZoneEditor::onPointer(const ui::PointerEvent& e) {
   const ui::IRect r = rect();
   const float s = tree() ? tree()->scale() : 1.0f;
   const doc::ZoneKind tab = rack_.zoneTab().value_or(doc::ZoneKind::Select);
   doc::DocumentStore& store = impl_.ctx().store();
+  if (e.type == ui::PointerType::Move && grab_ == Grab::None) {  // M16: the hovered row
+    const int32_t tb = static_cast<int32_t>(std::lround(kTitleH * s)), rh = static_cast<int32_t>(std::lround(kRowH * s));
+    const float axisY = static_cast<float>(r.bottom()) - kAxisH * s;
+    int32_t row = -1;
+    if (r.contains(e.pos) && e.pos.y >= static_cast<float>(r.y + tb) && e.pos.y < axisY)
+      row = static_cast<int32_t>((e.pos.y - static_cast<float>(r.y + tb)) / static_cast<float>(rh));
+    setHoverRow(row);
+  }
   if (e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left) {
     size_t row = 0;
     const Grab g = grabAt(e.pos, &row);
@@ -1387,6 +1485,9 @@ std::unique_ptr<ui::Widget> device_chain::makeMapOverlay(DeviceChainView::Impl& 
 }
 
 void DeviceChainView::Impl::setMapMode(doc::DeviceId rack) {
+  // M4 review UI item 6: Map mode says what to do next.
+  if (rack.valid() && !mapRack.valid())
+    view.ctx_.setStatus("Map: click a macro, then each parameter it should drive (again: unmaps it); Esc or Map ends.");
   mapRack = rack;
   mapMacro = -1;
   if (rack.valid() && mapOverlay == nullptr) mapOverlay = &content->addChild(makeMapOverlay(*this));

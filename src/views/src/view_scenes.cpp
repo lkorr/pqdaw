@@ -820,7 +820,7 @@ Result<circuit::CircuitEditor*> openSatShapeScene(Shell& shell, std::string_view
   const auto y1 = p.findByName("y1");
   if (!y1 || !(*e)->openNode(*y1)) return Error{ErrorCode::NotFound, "circuit-inactive: no `y1 = sat_shape(…)` to open", {}};
   shell.tree().layoutNow();
-  (*e)->canvas().fitAll();
+  (*e)->canvas().fitToRead();  // M4 review M15: as the editor opens it
   shell.tree().layoutNow();
   return *e;
 }
@@ -1141,7 +1141,7 @@ Status setupCircuitEditorDevice(Shell& shell) {
     return Error{ErrorCode::Unknown, "circuit-editor-device: the edit did not fork the device", {}};
   ed->refreshTitle();
   shell.tree().layoutNow();
-  ed->canvas().fitAll();
+  ed->canvas().fitToRead();  // M4 review M15: as the editor opens it
   shell.tree().layoutNow();
   return Ok{};
 }
