@@ -923,7 +923,7 @@ static void eqMagnitudes(bool full) {
 TEST_CASE("EQ Eight: magnitude responses vs the analytic responses within 0.1 dB") { eqMagnitudes(false); }
 
 // M4 review H3: the 48 dB cuts' resonance. Their peak gain (rendered impulse response, measured on a fine grid around
-// the corner) stays within 1 dB above Low Cut 12's at the same q, over the whole Q range: one resonance, not four
+// the corner, fc/8 … 8·fc) stays within 1 dB above Low Cut 12's at the same q (or the 0 dB passband), over the whole Q range: one resonance, not four
 // multiplied (T4.10's law gave +105 dB at q 18 against LC12's +25 dB).
 static double eqPeakDb(int type, double q) {
   constexpr uint32_t kLen = 16384;
@@ -953,7 +953,9 @@ static double eqPeakDb(int type, double q) {
 
 static void eqCutPeaks(const std::vector<double>& qs) {
   for (const double q : qs) {
-    const double lc12 = eqPeakDb(1, q), lc48 = eqPeakDb(0, q), hc48 = eqPeakDb(7, q);
+    // Every cut's passband is unity (0 dB); at low q LC12's gain is still below it at 8·fc, so the bound is the larger
+    // of LC12's peak and the passband.
+    const double lc12 = std::max(eqPeakDb(1, q), 0.0), lc48 = eqPeakDb(0, q), hc48 = eqPeakDb(7, q);
     MESSAGE("q " << q << ": peak LC12 " << lc12 << " dB, LC48 " << lc48 << " dB, HC48 " << hc48 << " dB");
     CHECK_MESSAGE(lc48 <= lc12 + 1.0, "q " << q << ": LC48 peak " << lc48 << " dB vs LC12 " << lc12 << " dB");
     CHECK_MESSAGE(hc48 <= lc12 + 1.0, "q " << q << ": HC48 peak " << hc48 << " dB vs LC12 " << lc12 << " dB");
