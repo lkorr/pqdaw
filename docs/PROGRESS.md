@@ -810,3 +810,11 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Did: the T4.16 leftovers: device-panel knobs (PanelKnob) take the wheel (handleWheel: a run = one undo step) and double-click = default like ui::Knob; mixer meter clip lamps latch until clicked, as in Live (`MeterSource::resetClip(id)`, ProjectLink + FixedMeterSource; they used to clear after the 1.5 s hold, so the info text's "click to reset" did nothing); `UiTree::mods()` (from the last pointer / key event incl. the modifier key itself) and the circuit / project canvases show Move while Alt is held (an Alt press pans). Tests: wheel + double-click on a panel knob, clip-lamp click, mods with a still pointer.
 - Verified: dev -Full pq_tests_ui/views/app + pqdaw_* 19/19, pq_tests_playback 2/2; release -Full pq_tests_ui/views/app/playback + pqdaw_* 21/21; 0 warnings.
 - Perf: n/a. CPU-efficiency check: mods tracking is one store per event; reset is a map lookup on click.
+
+## 2026-10-31 · T4.x-fix-safety (H1, H2, L4; M1–M3, M9 deferred) · worker / task/T4.x-fix-safety
+- Did: H1 MoveDevice use-after-free (group → child): apply.cpp re-resolves the track via mutableTrack for each step instead of holding a Track& across a path copy. H2/L4: ProjectCompileOptions::onBind returns an owner kept in UnitImage::keepAlive; CostMeters are shared_ptr held by every bound image (wall-clock retire removed); DeviceInspector tap slots are leased by the images that write them (ring pool grows 8 → max 32 while old images hold rings). Test accessor ProgramImage::boundMeter(). ARCHITECTURE updated. Scope narrowed by the user: M1–M3 and M9 deferred.
+- Verified: H1 test red on old apply.cpp, green now; test_inspect_lifetime H2 (slow, 11 s, PoisonFrees) and L4 red against the old behaviour, green now. Worker: -Full dev affected set (document, views, engine, project, timeline, jit, stdlib, render, playback, app, audio, pqdaw_*) 0 warnings 35/35; release same set 35/35. Orchestrator: rebased onto 030655c (docs only), fast-forward without re-run.
+- Perf: n/a (no audio-thread code changed).
+- CPU-efficiency check: ownership rides on the existing keepAlive vector (one shared_ptr per bind, off the audio thread); ring growth bounded (≤ 32 × 64 KB), allocated at bind time.
+- Notes/blockers: app::PatchPreview still reuses tap slots after 1 s (no JIT hold there).
+
