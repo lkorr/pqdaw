@@ -283,6 +283,19 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port) : Popover("preference
       choose(std::move(s));
     };
   }
+  {
+    auto& r = row(page, "cue", "Cue Out");
+    cue_ = &r.add<Dropdown>("chooser", std::vector<std::string>{}, 0);
+    cue_->setWidth(Length::fixed(156));
+    cue_->setInfo("Cue Out", "Where the browser's preview plays: with the master on outputs 1/2, or on another output "
+                             "pair (headphones on a second pair: open enough Output Channels first).");
+    cue_->onChange = [this](int32_t i) {
+      if (i < 0) return;
+      AudioSettings s = shown_;
+      s.cueOutput = static_cast<uint32_t>(i);
+      choose(std::move(s));
+    };
+  }
 
   section(page, "rate-section", "Sample Rate");
   {
@@ -492,6 +505,13 @@ void PreferencesWindow::rebuildChoosers() {
     std::vector<std::string> items;
     for (uint32_t n : outCounts_) items.push_back(std::to_string(n) + (n == 1 ? " output" : " outputs"));
     outChannels_->setItems(std::move(items), indexOf(outCounts_, shown_.outputChannels));
+  }
+  {  // T5.10: the cue pair among the opened outputs
+    std::vector<std::string> items{"1/2 (Master)"};
+    for (uint32_t k = 1; 2 * k + 2 <= shown_.outputChannels; ++k)
+      items.push_back(std::to_string(2 * k + 1) + "/" + std::to_string(2 * k + 2));
+    const auto idx = static_cast<int32_t>(shown_.cueOutput < items.size() ? shown_.cueOutput : 0);
+    cue_->setItems(std::move(items), idx);
   }
 }
 

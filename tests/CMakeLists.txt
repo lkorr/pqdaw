@@ -165,6 +165,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_device_affordances.cpp  # T4.16c: Device view keys (arrows, Shift, Ctrl, Home / End, chains), cursors, rename
     views/test_affordances.cpp  # T4.16b: cursors, hover highlights and editing keys (arrangement, piano roll, automation)
     views/test_file_drop.cpp  # T5.7: files / browser items dropped on the arrangement (rules, ghosts, one undo step, 100 files)
+    views/test_browser.cpp  # T5.10: the browser panel (tree, search, keys, preview strip, drag out, goldens, 200k rows)
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
@@ -266,6 +267,7 @@ pq_add_test(pq_tests_timeline
   SOURCES
     engine/test_timeline.cpp
     engine/test_clip_player.cpp  # T5.4: the clip player, the audio sequence image, streamed reads
+    engine/test_preview_player.cpp  # T5.10: the browser preview player (cue bus)
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on

@@ -8,6 +8,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shlobj.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +57,7 @@ std::string audioSettingsJson(const views::AudioSettings& s) {
   a["bufferFrames"] = s.bufferFrames;
   a["inputChannels"] = s.inputChannels;
   a["outputChannels"] = s.outputChannels;
+  a["cueOutput"] = s.cueOutput;  // T5.10
   return a.dump(2, ' ', false, json::error_handler_t::replace);  // never throws on a bad driver-name byte
 }
 
@@ -94,6 +96,7 @@ Result<LoadedAudioSettings> loadAudioSettings(const std::string& path) {
   num("bufferFrames", s.bufferFrames, 16, 8192);
   num("inputChannels", s.inputChannels, 0, 64);
   num("outputChannels", s.outputChannels, 1, 64);
+  num("cueOutput", s.cueOutput, 0, 31);  // T5.10
   return out;
 }
 
@@ -160,6 +163,61 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   json v = json::object();
   v["circuitShowInactive"] = prefs.circuitShowInactive;
   return saveSection(path, "views", std::move(v));
+}
+
+std::vector<std::string> loadLibraryFolders(const std::string& path) {
+  std::vector<std::string> out;
+  std::ifstream in(utf8Path(path), std::ios::binary);
+  if (!in) return out;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const json root = json::parse(ss.str(), nullptr, false);
+  if (root.is_discarded() || !root.is_object()) return out;
+  const auto it = root.find("library");
+  if (it == root.end() || !it->is_object()) return out;
+  const auto f = it->find("folders");
+  if (f == it->end() || !f->is_array()) return out;
+  for (const json& v : *f)
+    if (v.is_string()) out.push_back(v.get<std::string>());
+  return out;
+}
+
+Status saveLibraryFolders(const std::string& path, const std::vector<std::string>& folders) {
+  json v = json::object();
+  v["folders"] = folders;
+  return saveSection(path, "library", std::move(v));
+}
+
+namespace {
+std::string envUtf8(const wchar_t* name) {
+  wchar_t buf[MAX_PATH];
+  const DWORD n = GetEnvironmentVariableW(name, buf, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return {};
+  return pathUtf8(fs::path(buf));
+}
+std::string ensureDir(const fs::path& p) {
+  std::error_code ec;
+  fs::create_directories(p, ec);
+  return fs::is_directory(p, ec) ? pathUtf8(p) : std::string();
+}
+}  // namespace
+
+std::string libraryDataDir() {
+  if (std::string d = envUtf8(L"PQ_LIBRARY_DIR"); !d.empty()) return ensureDir(utf8Path(d));
+  if (std::string s = envUtf8(L"PQ_SETTINGS_DIR"); !s.empty()) return ensureDir(utf8Path(s) / "library");
+  const std::string local = envUtf8(L"LOCALAPPDATA");
+  if (local.empty()) return {};
+  return ensureDir(utf8Path(local) / "pqdaw" / "library");
+}
+
+std::string userLibraryDir() {
+  if (std::string d = envUtf8(L"PQ_USER_LIBRARY"); !d.empty()) return ensureDir(utf8Path(d));
+  if (!envUtf8(L"PQ_SETTINGS_DIR").empty()) return {};
+  PWSTR docs = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) || !docs) return {};
+  const fs::path p = fs::path(docs) / L"pqdaw" / L"User Library";
+  CoTaskMemFree(docs);
+  return ensureDir(p);
 }
 
 }  // namespace pq::app

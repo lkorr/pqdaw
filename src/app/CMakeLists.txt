@@ -21,6 +21,7 @@ pq_add_module(pq_app
     src/patch_preview.cpp
     src/device_player.cpp
     src/os_drop.cpp
+    src/preview_service.cpp
   DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine pq_compile nlohmann_json::nlohmann_json
   PRIVATE_DEPS SDL3::SDL3-static ole32 shell32)
 target_compile_options(pq_app PRIVATE /external:W0)

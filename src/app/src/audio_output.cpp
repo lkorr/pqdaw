@@ -173,6 +173,16 @@ void AudioOutput::setExtraSource(const engine::AudioCallback* cb) {
   cv_.notify_all();
 }
 
+void AudioOutput::setCueSource(const engine::AudioCallback* cb) {
+  cue_.store(cb);
+  while (inCue_.load() != 0) std::this_thread::yield();  // a callback still using the previous source finishes
+  {
+    std::lock_guard lock(mutex_);
+    wakeRequest_ = wakeRequest_ || cb != nullptr;  // a suspended stream starts for the preview
+  }
+  cv_.notify_all();
+}
+
 Status AudioOutput::controlPanel() {
   std::unique_lock lock(mutex_);
   if (!device_ || device_->backend() != engine::Backend::Asio || fallback_)
@@ -197,6 +207,18 @@ void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  
   e.numOut = outs;
   o.adapter_.process(e);
   for (uint32_t c = outs; c < b.numOut; ++c) std::memset(b.out[c], 0, sizeof(float) * b.frames);
+  // T5.10: the cue source at the device's buffer, into its output pair (announced as in setExtraSource's handshake).
+  o.inCue_.store(1);
+  if (const engine::AudioCallback* cue = o.cue_.load()) {
+    uint32_t first = 2 * o.cuePair_.load(std::memory_order_relaxed);
+    if (first + 2 > b.numOut) first = 0;
+    const uint32_t n = b.numOut > first + 1 ? 2u : 1u;
+    float* pair[2] = {b.out[first], b.out[first + n - 1]};
+    cue->fn(cue->user, engine::AudioBlock{nullptr, 0, pair, n, b.frames, b.frameTime});
+    for (uint32_t c = 0; c < n; ++c)
+      for (uint32_t f = 0; f < b.frames; ++f) pair[c][f] = std::clamp(pair[c][f], -1.0f, 1.0f);
+  }
+  o.inCue_.store(0, std::memory_order_release);
 }
 
 void AudioOutput::addTone(const engine::AudioBlock& b) noexcept {  // RT-safe
@@ -506,7 +528,8 @@ void AudioOutput::controlMain() {
     if (!streamRunning_.load(std::memory_order_relaxed)) {  // suspended: block until a wake (no periodic work)
       cv_.wait(lock, [&] {
         return quit_ || closeRequest_ || pending_.has_value() || hwChanged_ || panelRequest_ || wakeRequest_ ||
-               toneOn_.load(std::memory_order_relaxed) || extra_.load(std::memory_order_relaxed) != nullptr;
+               toneOn_.load(std::memory_order_relaxed) || extra_.load(std::memory_order_relaxed) != nullptr ||
+               cue_.load(std::memory_order_relaxed) != nullptr;
       });
       if (quit_ || closeRequest_ || pending_ || hwChanged_ || panelRequest_) continue;
       wakeRequest_ = false;
@@ -552,7 +575,7 @@ void AudioOutput::controlMain() {
       continue;
     }
     if (wakeRequest_ || toneOn_.load(std::memory_order_relaxed) || extra_.load(std::memory_order_relaxed) != nullptr ||
-        !engine_.load()->asleep()) {
+        cue_.load(std::memory_order_relaxed) != nullptr || !engine_.load()->asleep()) {
       wakeRequest_ = false;
       wasAsleep = false;
       continue;

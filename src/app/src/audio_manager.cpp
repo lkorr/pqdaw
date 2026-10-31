@@ -90,6 +90,7 @@ AudioDeviceManager::AudioDeviceManager(ProjectLink& link, const views::AudioSett
   c.sampleRate = engineRate(link_);
   settings_.sampleRate = c.sampleRate;
   output_ = std::make_unique<AudioOutput>(link_.engine(), c, hooks_.factory);
+  output_->setCuePair(settings_.cueOutput);
   output_->setNotify(&AudioDeviceManager::onOutput, this);
 }
 
@@ -160,9 +161,21 @@ void AudioDeviceManager::apply(const views::AudioSettings& in) {
   const OutputStatus st = output_->status();
   const bool noDevice = st.state == OutputStatus::State::Fallback || st.state == OutputStatus::State::Closed;
   if (s == settings_ && !noDevice) return;
+  {  // T5.10: only the cue pair changed: no reopen
+    views::AudioSettings sameCue = s;
+    sameCue.cueOutput = settings_.cueOutput;
+    if (sameCue == settings_ && !noDevice) {
+      settings_ = s;
+      output_->setCuePair(s.cueOutput);
+      save();
+      if (listener_) listener_();
+      return;
+    }
+  }
   if (s.driver != settings_.driver || s.outputDevice != settings_.outputDevice) cliDeviceIndex_ = engine::kDefaultDevice;
   lastError_.clear();
   settings_ = s;
+  output_->setCuePair(settings_.cueOutput);
   open(settings_);
   save();
 }

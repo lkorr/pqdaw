@@ -12,10 +12,12 @@
 //   T4.1  installDeviceChain(shell);   → ShellSlot::DeviceDetail (the Device view), the device.* actions
 //   T4.7  installWiring(shell);        → ShellSlot::Cables (the cables over the UI), view.cycleCables, wire.delete
 //   T4.13 installProjectPatch(shell);  → ShellSlot::Patch (the project patch view), view.togglePatch
+//   T5.10 installBrowser(shell);       → ShellSlot::Browser (the browser panel), browser.search
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/audio_clip/audio_clip_view.h"
+#include "pq/views/browser/browser_panel.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
@@ -45,6 +47,7 @@ void installDefaultContent(Shell& shell) {
   devices::installDeviceView(shell);  // … under T4.6's stand-alone preview, which covers it while one is open
   installWiring(shell);               // the cables between its jacks and knobs
   installProjectPatch(shell);         // after the mixer: each one's toggle hides the other
+  installBrowser(shell);
 }
 
 }  // namespace pq::views

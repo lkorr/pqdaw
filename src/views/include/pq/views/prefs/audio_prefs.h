@@ -90,6 +90,9 @@ struct AudioSettings {
   uint32_t bufferFrames = 256;
   uint32_t inputChannels = 0;   // 0 = no input
   uint32_t outputChannels = 2;  // the master plays on outputs 1/2; further outputs get silence
+  // T5.10: where the browser's preview plays ("Cue Out"): 0 = with the master on outputs 1/2; k >= 1 = outputs 2k+1 /
+  // 2k+2 (when the stream opens that many outputs; else 1/2).
+  uint32_t cueOutput = 0;
   bool operator==(const AudioSettings&) const = default;
 };
 
@@ -237,6 +240,7 @@ public:
   ui::Dropdown* bufferChooser() const noexcept { return buffer_; }
   ui::Dropdown* inputChannelsChooser() const noexcept { return inChannels_; }
   ui::Dropdown* outputChannelsChooser() const noexcept { return outChannels_; }
+  ui::Dropdown* cueChooser() const noexcept { return cue_; }  // T5.10
   ui::Toggle* toneToggle() const noexcept { return tone_; }
   ui::DragBox* toneVolume() const noexcept { return toneDb_; }
   ui::DragBox* toneFrequency() const noexcept { return toneHz_; }
@@ -259,7 +263,7 @@ private:
   std::vector<AudioDeviceEntry> outputs_, inputs_;
   std::vector<uint32_t> rates_, buffers_, inCounts_, outCounts_;
   ui::Dropdown *driver_ = nullptr, *output_ = nullptr, *input_ = nullptr, *rate_ = nullptr, *buffer_ = nullptr,
-               *inChannels_ = nullptr, *outChannels_ = nullptr;
+               *inChannels_ = nullptr, *outChannels_ = nullptr, *cue_ = nullptr;
   ui::Widget *outputRow_ = nullptr, *inputRow_ = nullptr, *panelRow_ = nullptr;
   ui::Label *outputLabel_ = nullptr, *statusLabel_ = nullptr, *latency_ = nullptr, *cpu_ = nullptr;
   ui::Button* panel_ = nullptr;

@@ -50,4 +50,17 @@ std::string audioSettingsJson(const views::AudioSettings& s);
 views::ViewPrefs loadViewPrefs(const std::string& path);
 Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs);
 
+// T5.10: the "library" section: the folders the user added to the browser's Places ({"folders": ["C:\\…", …]}).
+// Lenient like the others (a missing file or section: none).
+std::vector<std::string> loadLibraryFolders(const std::string& path);
+Status saveLibraryFolders(const std::string& path, const std::vector<std::string>& folders);
+
+// T5.10: where the browser keeps its index and tags.json: $PQ_LIBRARY_DIR, else <settings dir>/library when
+// $PQ_SETTINGS_DIR is set (test runs of the exe never touch the user's %LOCALAPPDATA%), else
+// %LOCALAPPDATA%\pqdaw\library. Empty when none can be made.
+std::string libraryDataDir();
+// The User Library (Documents\pqdaw\User Library, QUESTIONS Q4 / plan answer 4; created when missing). Empty under
+// $PQ_SETTINGS_DIR (test runs) unless $PQ_USER_LIBRARY names one.
+std::string userLibraryDir();
+
 }  // namespace pq::app

@@ -18,6 +18,7 @@ pq_add_module(pq_engine
     src/note_list.cpp
     src/null_device.cpp
     src/offline_render.cpp
+    src/preview_player.cpp
     src/program_host.cpp
     src/project_program.cpp
     src/project_compile.cpp

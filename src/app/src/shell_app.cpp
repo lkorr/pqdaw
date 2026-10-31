@@ -1,5 +1,12 @@
 #include "shell_app.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#include <shlobj.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -22,6 +29,7 @@
 #include "pq/app/audio_manager.h"
 #include "pq/app/user_settings.h"
 #include "pq/app/pipeline_cache.h"
+#include "pq/views/browser/library.h"
 #include "pq/views/waveforms.h"
 
 namespace pq::app {
@@ -71,6 +79,15 @@ void startTimer(uint32_t eventType, int32_t code, double seconds) {
 // --- SDL file dialogs -----------------------------------------------------------------------------------
 
 class SdlFileDialogs final : public views::FileDialogs {
+  static std::wstring wide(const std::string& s) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    for (wchar_t& c : w)
+      if (c == L'/') c = L'\\';
+    return w;
+  }
+
 public:
   SdlFileDialogs(SDL_Window* window, uint32_t eventType) : window_(window), eventType_(eventType) {}
 
@@ -98,6 +115,23 @@ public:
     pending_ = std::move(done);
     SDL_ShowOpenFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kPatchFilter, 1, nullptr,
                            false);
+  }
+  // T5.10: the browser's context menu.
+  void showInExplorer(const std::string& path) override {
+    const std::wstring w = wide(path);
+    PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(w.c_str());
+    if (!pidl) return;
+    (void)SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+    ILFree(pidl);
+  }
+  bool recycle(const std::string& path) override {
+    std::wstring from = wide(path);
+    from.push_back(L'\0');  // double-NUL terminated list
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
   }
   views::SaveChoice askSaveChanges(std::string_view projectName) override {
     const std::string msg = "Save changes to \"" + std::string(projectName) + "\" before closing it?";
@@ -248,6 +282,11 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       if (raw->audio_) raw->audio_->output().setExtraSource(on ? &raw->previewCallback_ : nullptr);
     };
     views::circuit::setPatchPlayer(*app->shell_, app->preview_.get());
+    // T5.10: the browser's preview plays through the link's sample pool into the output's cue pair.
+    app->browserPreview_ = std::make_unique<PreviewService>(
+        app->link_->samplePool(), app->link_->engine().config().sampleRate, &app->audio_->output(),
+        [type = app->userEvent_](std::function<void()> fn) { pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn))); });
+    app->ctx_->library().setPreview(app->browserPreview_.get());
     views::devices::setDeviceLibrary(*app->shell_, stdlibDir() + "/devices", app->preview_.get());  // T4.6
     // T5.7: files a drag brings in start loading into the link's pool while they hover.
     app->ctx_->setSamplePreloader([link](const std::string& path) { link->preloadSample(path); });
@@ -263,6 +302,29 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     auto drop = OsDropTarget::registerOn(hwnd, [raw](const OsDragEvent& e) { return raw->onOsDrag(e); });
     if (drop) app->drop_ = std::move(*drop);
     else std::fprintf(stderr, "pqdaw: file drops unavailable: %s\n", drop.error().message.c_str());
+  }
+  {  // T5.10: the browser's places (persisted folders), index (background indexer) and tags
+    views::Library& lib = app->ctx_->library();
+    lib.setUserLibrary(userLibraryDir());
+    lib.setFolders(loadLibraryFolders(userSettingsPath()));
+    lib.setFoldersListener([](const std::vector<std::string>& folders) {
+      if (Status s = saveLibraryFolders(userSettingsPath(), folders); !s)
+        std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
+    });
+    library::IndexerConfig ic;
+    if (const std::string data = libraryDataDir(); !data.empty()) {
+      ic.dataDir = std::filesystem::path(std::u8string(data.begin(), data.end()));
+      if (Status s = lib.setTagFile(ic.dataDir / "tags.json"); !s)
+        std::fprintf(stderr, "pqdaw: tags: %s\n", s.error().message.c_str());
+    }
+    ic.places = lib.places();
+    app->indexer_ = std::make_unique<library::Indexer>(std::move(ic));
+    ShellApp* raw = app.get();
+    app->indexer_->setOnChange([raw, type = app->userEvent_](uint64_t) {
+      pushUser(type, kRunOnUi, new std::function<void()>([raw] { raw->ctx_->library().indexChanged(); }));
+    });
+    app->indexer_->start();
+    lib.setIndexer(app->indexer_.get());
   }
   ShellApp* self = app.get();
   app->tempoSub_ = app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
@@ -285,6 +347,12 @@ ShellApp::~ShellApp() {
   if (ctx_) ctx_->setModulationSource(nullptr);
   if (ctx_) ctx_->setDevicePlayers(nullptr);
   if (preview_) preview_->onActiveChanged = nullptr;
+  if (ctx_) {  // T5.10: the browser's services go before what they use (the output, the pool, the context)
+    ctx_->library().setPreview(nullptr);
+    ctx_->library().setIndexer(nullptr);
+  }
+  browserPreview_.reset();
+  indexer_.reset();
   audio_.reset();  // the device stops calling the engine (and the preview)
   if (link_) link_->detach();
 }
@@ -293,6 +361,7 @@ ShellApp::~ShellApp() {
 void ShellApp::syncPreviewRate() {
   if (!preview_ || !link_ || !audio_) return;
   const double rate = link_->engine().config().sampleRate;
+  if (browserPreview_) browserPreview_->setSampleRate(rate);  // T5.10
   if (rate == preview_->sampleRate()) return;
   audio_->output().setExtraSource(nullptr);
   preview_->setSampleRate(rate);
@@ -432,6 +501,9 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
     }
     case SDL_EVENT_WINDOW_FOCUS_LOST:
       if (shell_) shell_->cancelInteraction();
+      return false;
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:  // T5.10: network / removable places have no watch: rescan them now
+      if (indexer_) indexer_->rescanUnwatched();
       return false;
     case SDL_EVENT_KEY_DOWN:
       return true;  // the shell's keys are all in its keymap; the test scenes' window keys (Esc quits, A animates) are off

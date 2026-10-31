@@ -14,7 +14,11 @@
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
 #include "pq/ui/scene_textures.h"
+#include "pq/media/probe.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/browser/browser_panel.h"
+#include "pq/views/browser/demo_index.h"
+#include "pq/views/browser/library.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
@@ -650,6 +654,41 @@ Status setupArrangementAudio(Shell& shell) {
   return Ok{};
 }
 
+// T5.10: the browser over browserDemoIndex (the audio fixture's samples as the User Library): a folder open, a sample
+// selected with its waveform in the preview strip, sorted by name.
+Status setupBrowserPanel(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  ctx.library().setIndex(browserDemoIndex(ctx.projectDir() + "/samples"));
+  ctx.setBrowserVisible(true);
+  shell.tree().layoutNow();
+  BrowserPanel* b = findBrowser(shell);
+  if (!b) return Error{ErrorCode::NotFound, "browser-panel: no browser", {}};
+  b->setSource({BrowserSource::Kind::Place, 0});
+  for (size_t i = 0; i < b->rows().size(); ++i)
+    if (b->rows()[i].dir && b->index()->dirName(b->rows()[i].id) == "Drums") b->setFolderOpen(b->rows()[i].id, true);
+  for (size_t i = 0; i < b->rows().size(); ++i)
+    if (!b->rows()[i].dir && b->index()->name(b->rows()[i].id) == "vox.wav") b->select(static_cast<int32_t>(i), false);
+  shell.tree().setFocus(&b->listWidget());
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// T5.10: a search ("vo") in the Samples category over every place: best matches first, the first selected.
+Status setupBrowserSearch(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  ctx.library().setIndex(browserDemoIndex(ctx.projectDir() + "/samples"));
+  ctx.setBrowserVisible(true);
+  shell.tree().layoutNow();
+  BrowserPanel* b = findBrowser(shell);
+  if (!b) return Error{ErrorCode::NotFound, "browser-search: no browser", {}};
+  b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Samples)});
+  b->setQuery("vo");
+  b->select(0, false);
+  shell.tree().setFocus(&b->searchField());
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T5.6: the audio Clip View on the Re-Pitch clip (tests/views/fixtures/audio): the box (gain, transpose greyed,
 // warp, BPM, loop, fades), the whole sample with the clip's region, the start marker and the loop brace.
 Status setupClipViewAudio(Shell& shell) {
@@ -1271,6 +1310,8 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-hover", 1280, 800, setupPianoRollHover},      // T4.16b: --project tests/views/fixtures/pianoroll-12edo
     {"arrangement-audio", 1280, 800, setupArrangementAudio},  // T5.6: --project tests/views/fixtures/audio
     {"clip-view-audio", 1280, 800, setupClipViewAudio},        // T5.6: the same --project
+    {"browser-panel", 1280, 800, setupBrowserPanel},           // T5.10: the same --project (its samples as the User Library)
+    {"browser-search", 1280, 800, setupBrowserSearch},         // T5.10
 };
 
 std::string_view kNames[std::size(kScenes)] = {};
@@ -1364,6 +1405,72 @@ Result<ui::Image> renderViewScene(std::string_view scene, std::string_view proje
   if (img && (*gpu)->validationErrorCount() != 0)
     return Error{ErrorCode::Device, std::to_string((*gpu)->validationErrorCount()) + " Vulkan validation error(s)", {}};
   return img;  // the shell and the tree are destroyed before the context they subscribe to (declaration order)
+}
+
+std::shared_ptr<const library::Index> browserDemoIndex(std::string_view samplesDir, uint32_t extraFiles) {
+  auto ix = std::make_shared<library::Index>();
+  std::string root(samplesDir);
+  for (char& c : root)
+    if (c == '/') c = '\\';
+  ix->places.push_back({root, library::PlaceKind::UserLibrary, "User Library"});
+  ix->places.push_back({"C:\\pq_demo\\Field Recordings", library::PlaceKind::Folder, "Field Recordings"});
+  ix->placeOnline = {1, 1};
+  auto sample = [](std::string name, double seconds, uint32_t rate, uint16_t ch, float bpm = 0) {
+    library::EntryRecord r;
+    r.name = std::move(name);
+    r.kind = library::ItemKind::Sample;
+    r.category = library::Category::Samples;
+    r.rate = rate;
+    r.channels = ch;
+    r.frames = static_cast<uint64_t>(seconds * rate);
+    r.bits = 24;
+    r.bpm = bpm;
+    r.size = r.frames * ch * 3;
+    return r;
+  };
+  auto real = [&](const char* name) {
+    library::EntryRecord r = sample(name, 1.0, 48000, 2);
+    const std::string path = std::string(samplesDir) + "/" + name;
+    if (auto info = media::probe(std::filesystem::path(std::u8string(path.begin(), path.end())))) {
+      r.frames = info->frames;
+      r.rate = info->sampleRate;
+      r.channels = static_cast<uint16_t>(info->channels);
+      r.bits = static_cast<uint8_t>(info->bitsPerSample);
+      r.bpm = static_cast<float>(info->bpm);
+    }
+    return r;
+  };
+  // Place 0: the root's subfolders first (depth-first, name order), each with its files right after it.
+  const uint32_t r0 = ix->addDir(library::Index::kNone, "", 0, 0);
+  ix->addEntry(r0, real("beat.wav"));
+  ix->addEntry(r0, real("vox.wav"));
+  const uint32_t drums = ix->addDir(r0, "Drums", 0, 1);
+  ix->addEntry(drums, sample("Hat Open.aif", 0.42, 44100, 1));
+  ix->addEntry(drums, sample("Kick 01.wav", 0.31, 44100, 1));
+  ix->addEntry(drums, sample("Snare Tight.wav", 0.27, 48000, 2));
+  if (extraFiles > 0) {
+    const uint32_t gen = ix->addDir(r0, "Generated", 0, 1);
+    char buf[32];
+    for (uint32_t i = 0; i < extraFiles; ++i) {
+      std::snprintf(buf, sizeof buf, "gen %06u.wav", i);
+      ix->addEntry(gen, sample(buf, 0.5 + (i % 97) * 0.1, i % 3 == 0 ? 44100 : 48000, 2, (i % 5 == 0) ? 120.0f : 0.0f));
+    }
+  }
+  const uint32_t loops = ix->addDir(r0, "Loops", 0, 1);
+  ix->addEntry(loops, sample("Funk Break 98bpm.wav", 9.8, 44100, 2, 98.0f));
+  ix->addEntry(loops, sample("Pad Swell.flac", 12.5, 48000, 2));
+  const uint32_t presets = ix->addDir(r0, "Presets", 0, 1);
+  const uint32_t op = ix->addDir(presets, "Operator", 0, 2);
+  library::EntryRecord pr;
+  pr.name = "Bright Pad.pqpreset";
+  pr.kind = library::ItemKind::Preset;
+  pr.category = library::Category::Instruments;
+  ix->addEntry(op, pr);
+  // Place 1.
+  const uint32_t r1 = ix->addDir(library::Index::kNone, "", 1, 0);
+  ix->addEntry(r1, sample("Rain on Roof.wav", 64.0, 96000, 2));
+  ix->addEntry(r1, sample("Vocal Chop.wav", 1.6, 48000, 1, 120.0f));
+  return ix;
 }
 
 }  // namespace pq::views

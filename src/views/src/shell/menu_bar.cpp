@@ -247,6 +247,7 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       v.push_back(act("Arrangement / Project Patch", "view.togglePatch"));  // T4.13
       v.push_back(check(act("Detail View", "view.toggleDetail"), ctx_.detailVisible()));
       v.push_back(act("Clip / Device View", "view.toggleClipDevice"));
+      v.push_back(check(act("Browser", "view.toggleBrowser"), ctx_.browserVisible()));  // T5.10
       v.push_back(check(act("Tunings", "view.toggleTunings"), ctx_.tuningsVisible()));
       v.push_back(act("MOS Wheel", "tuning.openMosWheel"));
       v.push_back(act("Cables: Show / Fade / Hide", "view.cycleCables"));  // T4.7

@@ -120,6 +120,10 @@ public:
   virtual void choosePatchFile(PathCallback done) { done(std::string()); }
   // T5.8: a folder to search for missing samples (Relink). The default implementation cancels (no dialogs).
   virtual void chooseFolder(PathCallback done) { done(std::string()); }
+  // T5.10: the browser's context menu: show a file in Explorer (selected), move a file to the Recycle Bin (false: not
+  // done). The defaults do nothing (tests, scenes).
+  virtual void showInExplorer(const std::string& /*pathUtf8*/) {}
+  virtual bool recycle(const std::string& /*pathUtf8*/) { return false; }
 };
 
 // What a file dialog returned → the project directory: "…/X/project.pqd" → "…/X"; "…/Song.pqd" → "…/Song" (a save
@@ -423,12 +427,15 @@ public:
   static constexpr std::string_view kWiringActions[] = {"view.cycleCables", "wire.delete"};
   // T4.13: View > Project Patch (Ctrl+Alt+P): the project patch view in the track area (installProjectPatch sets it).
   static constexpr std::string_view kPatchActions[] = {"view.togglePatch"};
+  // T5.10: Ctrl+F: shows the browser and focuses its search field (installBrowser sets the handler).
+  static constexpr std::string_view kBrowserActions[] = {"browser.search"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",
       "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
       "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
-      "grid.toggleFixed",   "view.toggleTunings", "file.collectAllAndSave", "file.relinkSamples"};
+      "grid.toggleFixed",   "view.toggleTunings", "file.collectAllAndSave", "file.relinkSamples",
+      "view.toggleBrowser"};
 
 private:
   void notify(uint32_t bits);

@@ -78,6 +78,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   declareViewActions(kDeviceChainActions);
   declareViewActions(kWiringActions);
   declareViewActions(kPatchActions);
+  declareViewActions(kBrowserActions);
   syncLoop();
   library_ = std::make_unique<Library>(*this);  // last: it observes the context
 }
@@ -788,6 +789,7 @@ void ViewContext::registerGlobalActions() {
   add("grid.toggleSnap", [this] { setGrid(grid_.snapToggled()); });
   add("grid.toggleFixed", [this] { setGrid(grid_.modeToggled()); });
   add("view.toggleTunings", [this] { setTuningsVisible(!tuningsVisible_); });
+  add("view.toggleBrowser", [this] { setBrowserVisible(!browserVisible_); });  // T5.10
   // T5.8: File > Collect All and Save (an untitled project is saved first) and Relink Missing Samples.
   add("file.collectAllAndSave",
       [this] {
