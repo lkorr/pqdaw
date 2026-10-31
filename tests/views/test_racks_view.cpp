@@ -434,6 +434,33 @@ TEST_CASE("rack view: a knob under nested macro mappings shows the played value 
   CHECK(devices::toPosition(*info, sat->paramValue("drive")) == doctest::Approx(m.mapping->max).epsilon(1e-6));
 }
 
+// M4 review M16: the zone editor's hovered bar shows its range in the info view; UI item 6: Create > Insert Audio
+// Effect Rack adds an empty rack after the selected device (one undo step).
+TEST_CASE("rack view: a hovered zone shows its range (M16); Create inserts a rack (UI item 6)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  v.showZones(u.rack, doc::ZoneKind::Select);
+  Widget* zones = u.in(u.rack, "zones");
+  REQUIRE(zones != nullptr);
+  const IRect zr = zones->rect();
+  const Vec2 row0{static_cast<float>(zr.x + zr.w / 2), static_cast<float>(zr.y + 20 + 11)};
+  u.d.move(row0);
+  const InfoText info = zones->info();
+  CHECK(std::string(info.title).find("0 \xE2\x80\x93 127") != std::string::npos);
+  CHECK(std::string(info.body).find("Full level") != std::string::npos);
+  u.d.move({static_cast<float>(zr.x + zr.w / 2), static_cast<float>(zr.bottom() - 3)});  // the axis row: no bar
+  CHECK(std::string(zones->info().title) == "Zones");
+  // Create > Insert Audio Effect Rack: after the selected Utility.
+  const doc::DeviceId one[1] = {u.util};
+  v.select(one);
+  const size_t h0 = u.history();
+  REQUIRE(u.ctx.actions().invoke(u.ctx.actions().find("device.addAudioEffectRack")));
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.track().devices.size() == 4);
+  CHECK(u.track().devices[2]->isRack());
+  CHECK(u.track().devices[2]->kind == doc::DeviceKind::AudioEffect);
+}
+
 TEST_CASE("render: audio-rack and instrument-rack match the golden images") {
   for (const std::string scene : {"audio-rack", "instrument-rack"}) {
     CAPTURE(scene);
