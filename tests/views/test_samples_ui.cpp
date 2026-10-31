@@ -16,7 +16,9 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/samples.h"
 #include "pq/document/serialize.h"
+#include "pq/ui/test_driver.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 #include "views_test_util.h"
 
@@ -158,6 +160,82 @@ TEST_CASE("samples ui: Collect All and Save copies on a worker; the UI thread is
   auto back = doc::loadProject(u8(root / "Song"));
   REQUIRE(back.ok());
   CHECK(*back->project == *ctx.doc());
+  ctx.setUiPoster(nullptr);
+  std::error_code ec;
+  fs::remove_all(root, ec);
+}
+
+// M5 review M12: T5.8's criterion is "while 1 GB is copied, the UI's max frame stays <= 16 ms"; the test above copies
+// 64 MB and times queue draining only. Here a 1 GiB file is collected while the shell runs real frames: every frame
+// drains the UI poster and repaints the whole window (invalidateAll + TestDriver::step: layout and paint), and the
+// frame that starts the collect counts too. Wall clock on a shared machine: `perf`.
+TEST_CASE("samples ui (perf): while 1 GiB is collected, every UI frame (full repaint) stays <= 16 ms" * doctest::test_suite("perf")) {
+  FakeTransport port;
+  ViewContext ctx(port);
+  ui::TestDriver d(1280, 800);
+  const fs::path root = test::tempDir("samples_collect_1g");
+  const fs::path file = root / "ext" / "huge.wav";
+  {
+    fs::create_directories(file.parent_path());
+    std::ofstream out(file, std::ios::binary);
+    std::vector<char> chunk(size_t{16} << 20);
+    uint32_t x = 12345u;
+    for (char& c : chunk) {
+      x = x * 1664525u + 1013904223u;
+      c = static_cast<char>(x >> 24);
+    }
+    for (int i = 0; i < 64; ++i) {  // 64 × 16 MiB
+      chunk[0] = static_cast<char>(i);
+      out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    }
+  }
+  REQUIRE(fs::file_size(file) == uint64_t{1} << 30);
+  REQUIRE(ctx.saveProjectAs(u8(root / "Song")).ok());
+  (void)addSample(ctx, file);
+  REQUIRE(d.enableGpu().ok());  // fonts and textures: frames paint text as the app's do
+  auto s = Shell::create(d.tree(), ctx);
+  REQUIRE(s.ok());
+  auto shell = std::move(*s);
+  d.tree().layoutNow();
+  d.step();
+  const uint64_t drawn0 = d.framesDrawn();
+  std::mutex m;
+  std::vector<std::function<void()>> queue;
+  ctx.setUiPoster([&](std::function<void()> fn) {
+    std::lock_guard lock(m);
+    queue.push_back(std::move(fn));
+  });
+  std::vector<double> frames;
+  auto frame = [&](auto&& extra) {
+    const auto f0 = std::chrono::steady_clock::now();
+    extra();
+    std::vector<std::function<void()>> work;
+    {
+      std::lock_guard lock(m);
+      work.swap(queue);
+    }
+    for (auto& fn : work) fn();
+    d.tree().invalidateAll();
+    (void)d.step();
+    frames.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - f0).count());
+  };
+  const auto t0 = std::chrono::steady_clock::now();
+  frame([&] { REQUIRE(ctx.collectAllAndSave().ok()); });
+  for (int i = 0; ctx.collecting() && i < 200000; ++i) {
+    frame([] {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+  }
+  frame([] {});  // the frame that applies the end (the save)
+  const double totalS = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  REQUIRE_FALSE(ctx.collecting());
+  CHECK(fs::file_size(root / "Song" / "samples" / "imported" / "huge.wav") == uint64_t{1} << 30);
+  std::vector<double> sorted = frames;
+  std::sort(sorted.begin(), sorted.end());
+  MESSAGE("1 GiB collected in " << totalS << " s over " << frames.size() << " frames: max frame " << sorted.back()
+                                << " ms, median " << sorted[sorted.size() / 2] << " ms, first (starts the copy) " << frames.front() << " ms");
+  CHECK(d.framesDrawn() - drawn0 == frames.size());  // every frame painted
+  CHECK(sorted.back() <= 16.0);
+  d.tree().setRoot(std::make_unique<ui::Widget>());
   ctx.setUiPoster(nullptr);
   std::error_code ec;
   fs::remove_all(root, ec);
