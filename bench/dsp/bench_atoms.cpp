@@ -22,6 +22,8 @@
 
 using pq::dsp::Atom;
 
+void addResampleBenches(pq::bench::Runner& runner);  // bench_resample.cpp (T5.4)
+
 namespace {
 
 constexpr uint32_t kFrames = 64;
@@ -216,6 +218,7 @@ int main(int argc, char** argv) {
                  Atom::DbToGain, Atom::GainToDb})
     runner.add(std::string("atom/") + pq::dsp::kernelInfo(a).name + " (1-lane tail)",
                [&fx, a](pq::bench::Context& c) { benchScalarTail(c, fx, a); });
+  addResampleBenches(runner);
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   if (code != 0 || rows.empty()) return code;
 

@@ -125,7 +125,10 @@ static_assert(sizeof(g::SolveBlock) == 36, "graph::SolveBlock changed: update co
 static_assert(sizeof(g::SolveUnknown) == 28, "graph::SolveUnknown changed: update codegenDigest");
 static_assert(sizeof(g::SolveEquation) == 24, "graph::SolveEquation changed: update codegenDigest");
 static_assert(sizeof(g::Buffer) == 3, "graph::Buffer changed: update codegenDigest");
-static_assert(sizeof(g::External) == 20, "graph::External changed: update codegenDigest");
+// T5.4: External::clip is not hashed: the generated code reads every external through the host's pointer table, which
+// the host builds from the requesting schedule (the slot never reaches the code), so units differing only in their clip
+// slot share their JIT code.
+static_assert(sizeof(g::External) == 24, "graph::External changed: update codegenDigest");
 static_assert(sizeof(g::ConstValue) == 8, "graph::ConstValue changed: update codegenDigest");
 static_assert(sizeof(g::ParamSlot) == 40, "graph::ParamSlot changed: update codegenDigest");
 static_assert(sizeof(g::OutputRef) == 24, "graph::OutputRef changed: update codegenDigest");

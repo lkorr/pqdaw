@@ -305,6 +305,7 @@ void ViewContext::refreshSamples(bool relocate) {
               " \xE2\x80\x94 Relink\xE2\x80\xA6");
   else if (before != 0)
     setStatus("All samples found");
+  notify(view_change::kSamples);  // T5.4: the playback link follows which samples can play
 }
 
 bool ViewContext::sampleAvailable(doc::SampleId id) const noexcept {

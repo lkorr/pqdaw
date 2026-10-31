@@ -59,6 +59,9 @@ ProjectConfig Engine::projectConfig() noexcept {
   pc.hook = timeline_->blockHook();
   pc.numProjectParams = cfg_.numProjectParams;
   pc.idleUnits = cfg_.idleUnits;
+  pc.clipIn = timeline_->clipPlayer().channels();  // T5.4
+  pc.clipActive = timeline_->clipPlayer().active();
+  pc.numClipSlots = timeline_->clipPlayer().numSlots();
   pc.eventSources.reserve(slots_.size());
   for (SlotSource& s : slots_) pc.eventSources.push_back({&Engine::onSlot, &s});
   return pc;

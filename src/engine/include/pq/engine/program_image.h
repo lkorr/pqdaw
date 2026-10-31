@@ -101,6 +101,9 @@ struct SendBus {
 struct EventList;  // pq/engine/note_events.h (T1.8): the block's sorted note events; read by the VoiceEngine,
                    // never by a ProgramImage
 
+// T5.4: channels per clip slot (a clip player plays stereo; a mono sample is on both).
+inline constexpr uint32_t kClipChannels = 2;
+
 struct ProcessContext {
   uint32_t frames = 0;
   double sampleRate = 0.0;              // informational: the program is specialised for io().sampleRate
@@ -114,6 +117,10 @@ struct ProcessContext {
   uint32_t numTrackIn = 0;
   const float* const* sidechainIn = nullptr;  // sidechain.in channels
   uint32_t numSidechainIn = 0;
+  // T5.4: the clip players' audio (pq/engine/clip_player.h): for clip slot k (a clipPlayer atom's `clip` constant),
+  // channel c is clipIn[k · kClipChannels + c]. Null, a null entry or k ≥ numClipSlots: silence.
+  const float* const* clipIn = nullptr;
+  uint32_t numClipSlots = 0;
   const float* params = nullptr;        // the parameter block, indexed by ParamSlot (null: defaults)
   uint32_t numParams = 0;
   const EventList* events = nullptr;
@@ -174,6 +181,9 @@ struct ImageInterface {
   // T1.x-silence: frames a released voice may still sound after its outputs fell silent (the voice stages' longest
   // delay line, graph::SleepPlan::voiceTailFrames): the VoiceEngine's silence window is at least this long.
   uint32_t voiceTailFrames = 0;
+  // T5.4: the clip slots the image's clipPlayer atoms read (ProcessContext::clipIn), sorted, unique. A unit whose
+  // clip slots have no audio this block can stay idle (pq/engine/project_program.h).
+  std::vector<uint32_t> clipSlots;
 };
 
 // Where the program's state lives (for T1.9's state transfer by graph::StateLayout): the global arena and one

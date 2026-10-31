@@ -307,6 +307,8 @@ views::AudioStatus AudioDeviceManager::status() {
   return a;
 }
 
+uint64_t AudioDeviceManager::diskUnderruns() { return link_.diskUnderruns(); }  // T5.4
+
 double AudioDeviceManager::cpuLoad() {
   const auto now = std::chrono::steady_clock::now();
   if (!output_->running()) {

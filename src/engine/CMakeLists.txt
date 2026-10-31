@@ -1,6 +1,8 @@
 pq_add_module(pq_engine
   SOURCES
     src/asio_convert.cpp
+    src/audio_sequence.cpp
+    src/clip_player.cpp
     src/asio_device.cpp
     src/audio_device.cpp
     src/automation.cpp

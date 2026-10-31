@@ -125,6 +125,8 @@ public:
   // Audio callback time / buffer period over the interval since the previous call, in percent; 0 while no stream
   // runs. The window calls it at 2 Hz while open.
   virtual double cpuLoad() = 0;
+  // T5.4: streamed sample reads that came late (played silence) since the start: the control bar's disk indicator.
+  virtual uint64_t diskUnderruns() { return 0; }
   // Test tone (Live's Test Tone / Tone Volume / Tone Frequency): a sine added to outputs 1/2 while on.
   virtual void setTestTone(bool on, float levelDb, float hz) = 0;
   virtual bool testTone() = 0;

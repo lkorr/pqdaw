@@ -508,8 +508,12 @@ bool ImageHost::externals(const g::Schedule& s) {
         else if (name == "transport.playing") r.src = Src::TransportPlaying;
         else if (name == "track.in") r.src = Src::TrackIn;
         else if (name == "sidechain.in") r.src = Src::Sidechain;
-        else if (name == "clipPlayer") r.src = Src::Silence;  // clip players arrive with the warp engine (§9.4)
-        else return fail("unknown engine source '" + std::string(name) + "'");
+        else if (name == "clipPlayer") {  // T5.4: the clip slot's audio, rendered by the timeline's clip player
+          r.src = ex.channel < kClipChannels ? Src::Clip : Src::Silence;
+          r.index = ex.clip * kClipChannels + ex.channel;
+          if (std::find(io_.clipSlots.begin(), io_.clipSlots.end(), ex.clip) == io_.clipSlots.end())
+            io_.clipSlots.insert(std::upper_bound(io_.clipSlots.begin(), io_.clipSlots.end(), ex.clip), ex.clip);
+        } else return fail("unknown engine source '" + std::string(name) + "'");
       }
     }
     exts_.push_back(r);
@@ -1145,6 +1149,7 @@ float* ImageHost::resolveGlobal(ExtRun& e, const ProcessContext& ctx, uint32_t f
     case Src::RootGlobal: src = channelOf(ctx.in, ctx.numIn); break;
     case Src::TrackIn: src = channelOf(ctx.trackIn, ctx.numTrackIn); break;
     case Src::Sidechain: src = channelOf(ctx.sidechainIn, ctx.numSidechainIn); break;
+    case Src::Clip: src = channelOf(ctx.clipIn, ctx.numClipSlots * kClipChannels); break;
     case Src::TransportBpm:
       if (e.pattern) {
         splat8(e.own, static_cast<float>(tr.bpm));

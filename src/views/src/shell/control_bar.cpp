@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -186,19 +187,33 @@ void PositionDisplay::paint(PaintContext& ctx) {
 CpuMeter::CpuMeter(ViewContext& ctx) : Control("cpu"), ctx_(ctx) {
   setFocusable(false);
   setInfo("CPU Load Meter", "How much of the audio callback's time the engine uses while it plays (the share of each "
-                            "audio buffer spent computing it). It updates twice a second during playback.");
+                            "audio buffer spent computing it). It updates twice a second during playback. It reads "
+                            "DISK for two seconds when the disk could not deliver a streamed sample in time (that part "
+                            "played silence).");
+  if (AudioPrefsPort* port = ctx_.audioPrefs()) underruns_ = port->diskUnderruns();
 }
 
 void CpuMeter::poll() {
   AudioPrefsPort* port = ctx_.audioPrefs();
   std::string t = "CPU \xE2\x80\x93";
+  bool disk = false;
   if (port) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "CPU %.0f %%", std::clamp(port->cpuLoad(), 0.0, 999.0));
     t = buf;
+    const uint64_t u = port->diskUnderruns();  // T5.4: the disk indicator
+    const double now = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                               std::chrono::steady_clock::now().time_since_epoch()).count()) * 1e-3;
+    if (u > underruns_) diskUntil_ = now + 2.0;
+    underruns_ = u;
+    if (now < diskUntil_) {
+      t = "DISK";
+      disk = true;
+    }
   }
-  if (t != text_) {
+  if (t != text_ || disk != disk_) {
     text_ = std::move(t);
+    disk_ = disk;
     markDirty();
   }
 }
@@ -228,7 +243,8 @@ void CpuMeter::paint(PaintContext& ctx) {
   const IRect r = rect();
   paint::box(ctx.dl, r, ctx.scale.exact(th->radius.control), th->surface.panel, th->field.border);
   if (const ThemeFonts* f = ctx.res.uiFonts)
-    paint::text(ctx, f->numeric, r, text_, th->text.primary, TextAlign::Center, ctx.scale.px(4), ctx.scale.px(4));
+    paint::text(ctx, f->numeric, r, text_, disk_ ? th->accent.arm : th->text.primary, TextAlign::Center,
+                ctx.scale.px(4), ctx.scale.px(4));
 }
 
 // --- ControlBar -----------------------------------------------------------------------------------------

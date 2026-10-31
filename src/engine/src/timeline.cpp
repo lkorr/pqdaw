@@ -99,18 +99,37 @@ Timeline::Timeline(const TimelineConfig& config)
   automation_.prepare(cfg_.maxAutomationLanes, cfg_.maxBlockFrames);
   tickBuf_ = AlignedBuffer<double>(cfg_.maxBlockFrames);
   updateLoopSamples();
+  ClipPlayerConfig cp;  // T5.4
+  cp.slots = cfg_.clipSlots != 0 ? cfg_.clipSlots : cfg_.maxTracks;
+  cp.maxBlockFrames = cfg_.maxBlockFrames;
+  cp.sampleRate = cfg_.sampleRate;
+  cp.maxVoices = cfg_.maxClipVoices;
+  cp.streamBuffers = cfg_.clipStreamBuffers;
+  cp.streams = cfg_.streams;
+  cp.lookaheadSeconds = cfg_.clipLookaheadSeconds;
+  cp.declickSeconds = cfg_.clipDeclickSeconds;
+  clips_ = std::make_unique<ClipPlayer>(cp);
+  if (cfg_.sampleReclaimer != nullptr) {
+    if (auto r = cfg_.sampleReclaimer->registerReader()) {
+      sampleReclaimer_ = cfg_.sampleReclaimer;
+      sampleReader_ = *r;
+    }
+  }
 }
 
 Timeline::~Timeline() {
   if (auto_ != nullptr)  // audio-rate consumers must not keep pointers into this timeline's buffers
     for (const AutomationImage::Lane& l : auto_->lanes())
       if (l.tap != nullptr) *l.tap = nullptr;
+  clips_.reset();  // T5.4: its voices release their streams; they read the audio images below
   delete pubSeq_.exchange(nullptr);
   delete pubAuto_.exchange(nullptr);
   delete pubTempo_.exchange(nullptr);
+  delete pubAudio_.exchange(nullptr);
   for (const auto& [p, deleter] : held_) deleter(p);
   held_.clear();
   reclaimer_.unregisterReader(reader_);
+  if (sampleReclaimer_ != nullptr) sampleReclaimer_->unregisterReader(sampleReader_);
 }
 
 Status Timeline::publishSequence(std::unique_ptr<SequenceImage> image) {
@@ -143,6 +162,19 @@ Status Timeline::publishTempo(std::unique_ptr<TempoImage> image) {
   if (image == nullptr) return Error{ErrorCode::InvalidArgument, "Timeline: null tempo image", {}};
   if (TempoImage* old = pubTempo_.exchange(image.release(), std::memory_order_seq_cst))
     retireImage(old, [](void* q) noexcept { delete static_cast<TempoImage*>(q); });
+  collect();
+  return Ok{};
+}
+
+Status Timeline::publishAudio(std::unique_ptr<AudioSequenceImage> image) {  // T5.4
+  if (image == nullptr) return Error{ErrorCode::InvalidArgument, "Timeline: null audio image", {}};
+  if (image->numSlots() > clips_->numSlots())
+    return Error{ErrorCode::InvalidArgument,
+                 "Timeline: " + std::to_string(image->numSlots()) + " clip slots (maximum " +
+                     std::to_string(clips_->numSlots()) + ")",
+                 {}};
+  if (AudioSequenceImage* old = pubAudio_.exchange(image.release(), std::memory_order_seq_cst))
+    retireImage(old, [](void* q) noexcept { delete static_cast<AudioSequenceImage*>(q); });
   collect();
   return Ok{};
 }
@@ -275,6 +307,21 @@ void Timeline::pickUpImages() noexcept {  // RT-safe
   }
   hazard_[1].cur.store(auto_, std::memory_order_seq_cst);
   hazard_[1].cand.store(nullptr, std::memory_order_release);
+  // T5.4: an audio image is taken only once the voices of the one before have faded out (ClipPlayer::swapping); the
+  // image they read stays protected (hazard 4) until then.
+  if (!clips_->swapping()) {
+    const AudioSequenceImage* au =
+        acquireImage(pubAudio_, hazard_[3], audio_, static_cast<const AudioSequenceImage*>(nullptr));
+    if (au != audio_) {
+      hazard_[4].cur.store(audio_, std::memory_order_seq_cst);  // before cur moves on: never unprotected
+      clips_->setImage(au, pos_, playing_);
+      audio_ = au;
+      ++stats_.audioSwaps;
+    }
+  }
+  hazard_[3].cur.store(audio_, std::memory_order_seq_cst);
+  hazard_[3].cand.store(nullptr, std::memory_order_release);
+  hazard_[4].cur.store(clips_->previousImage(), std::memory_order_seq_cst);
 }
 
 void Timeline::swapTempo(const TempoImage* next) noexcept {  // RT-safe
@@ -284,6 +331,8 @@ void Timeline::swapTempo(const TempoImage* next) noexcept {  // RT-safe
   pos_ = next->tempo().ticksToSamples(t, cfg_.sampleRate);
   minNextDirty_ = true;
   updateLoopSamples();
+  if (playing_) clips_->releaseAll(0);  // T5.4: the clips' sample positions moved with the map
+  clips_->seek(pos_);
   snapshotDirty_ = true;
   holdValid_ = false;
   lastTickSample_ = INT64_MIN;
@@ -533,6 +582,7 @@ Ticks Timeline::offTick(Ticks on, Ticks off) const noexcept {  // RT-safe
 }
 
 void Timeline::releaseAll(uint32_t frame) noexcept {  // RT-safe
+  clips_->releaseAll(frame);  // T5.4: sounding clips fade out from `frame`
   for (uint32_t k = 0; k < cfg_.maxTracks; ++k) {
     TrackState& t = tracks_[k];
     while (t.heapSize != 0) emitOff(k, heapPop(t), frame);
@@ -648,6 +698,7 @@ void Timeline::playBlock(uint32_t frames) noexcept {  // RT-safe
         }
       }
     }
+    clips_->play(f, pos_, len);  // T5.4
     renderAutomation(f, pos_, len, f == 0 && len == frames);
     f += len;
     if (wrap) {
@@ -659,6 +710,7 @@ void Timeline::playBlock(uint32_t frames) noexcept {  // RT-safe
       if (f < frames) {
         releaseAll(f);
         seekAll(loopStart_);
+        clips_->seek(pos_);
       } else {  // the wrap sample is the next block's frame 0
         releasePending_ = true;
         seekPending_ = true;
@@ -738,6 +790,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     std::memset(eventCount_.data(), 0, sizeof(uint32_t) * eventCount_.size());
     anyEvents_ = false;
   }
+  clips_->beginBlock(frames);
   drainCommands();
   pickUpImages();
   if (releasePending_) {
@@ -746,6 +799,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
   }
   if (seekPending_) {
     seekAll(resolveTick());
+    clips_->seek(pos_);
     seekPending_ = false;
   }
   if (playing_ || snapshotDirty_) {
@@ -769,14 +823,19 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     if (playing_) {
       playBlock(frames);
       holdValid_ = false;
-    } else if (!holdValid_) {
-      if (automation_.numLanes() != 0) automation_.renderHold(static_cast<double>(resolveTick()), 0, frames, true);
-      holdValid_ = true;  // renderHold(wholeBlock) filled whole buffers: nothing to do until something changes
+    } else {
+      if (clips_->liveVoices() != 0) clips_->idle(frames);  // T5.4: fades after a stop
+      if (!holdValid_) {
+        if (automation_.numLanes() != 0) automation_.renderHold(static_cast<double>(resolveTick()), 0, frames, true);
+        holdValid_ = true;  // renderHold(wholeBlock) filled whole buffers: nothing to do until something changes
+      }
     }
   }
+  clips_->endBlock();
   framesSinceReport_ += frames;
   ++stats_.blocks;
   reclaimer_.quiescent(reader_);
+  if (sampleReclaimer_ != nullptr) sampleReclaimer_->quiescent(sampleReader_);
 }
 
 void Timeline::writeAutomatedParams(std::span<float> params) const noexcept {  // RT-safe

@@ -60,6 +60,7 @@ uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames
   const Adjacency adj = p.adjacency();
   const AtomId gain = atomId("gain"), gainAdd = atomId("gain_add"), voiceSum = atomId("voice_sum");
   const AtomId mul = atomId("mul");
+  const AtomId clipPlayer = atomId("clipPlayer");  // T5.4: an engine source; silent in a block without clip audio
   auto global = [&](NodeIndex n) {
     for (uint32_t o = 0; o < p.node(n).numOutputs; ++o)
       if (typed.outputType(n, o).poly == Poly::Voice) return false;
@@ -70,6 +71,7 @@ uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames
   for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
     const Node& nd = p.node(n);
     if (nd.kind != NodeKind::Atom || !global(n) || !atomSignature(nd.atom).has(atom_flags::kStateful)) continue;
+    if (nd.atom == clipPlayer) continue;  // its state is the engine's (the timeline's clip player)
     if (nd.atom != gain && nd.atom != gainAdd) return 0;
     const uint32_t timeIn = nd.atom == gain ? 2u : 3u;
     const WireIndex w = adj.driver[p.flatInput(n, timeIn)];
@@ -100,8 +102,8 @@ uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames
       case NodeKind::Const: z = p.constant(n).value() == 0.0; break;
       case NodeKind::Atom: {
         const std::string_view name = atomSignature(nd.atom).name;
-        if (nd.atom == voiceSum) {
-          z = true;  // no voice sounds
+        if (nd.atom == voiceSum || nd.atom == clipPlayer) {
+          z = true;  // no voice sounds; no clip of its slot has audio (ProjectConfig::clipActive)
         } else if (nd.atom == mul) {
           z = inputZero(self, n, 0) || inputZero(self, n, 1);
         } else if (nd.atom == gain) {

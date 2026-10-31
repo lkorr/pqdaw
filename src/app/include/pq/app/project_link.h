@@ -62,10 +62,27 @@
 // computes the pitch from the params otherwise. Unmodulated projects therefore render bit-identically to static
 // pitches; after a live edit the pitch is computed from the float32 param (a float32 generator is within half an ulp,
 // ~3e-5 ¢ at 700 ¢, so degree k is within k times that: ~7e-4 ¢ at k = 24; QUESTIONS Q105.4).
+//
+// ---- Audio clips (T5.4; src/app/src/project_link_audio.cpp) ---------------------------------------------------------
+// The link owns the sample pool (media::SamplePool, its disk thread, and the epoch reclaimer its residency demotions
+// retire through; the engine's timeline reads samples as one of its readers). Every audio track with a clip slot
+// (the event-slot allocator: LowerOptions::clipSlotOf) is lowered by doc::lowerAudioTrack (cached per track: track
+// node, tempo map, tunings, sample table, resolution) into the engine's AudioSequenceImage, published at once like the
+// note sequences: on Sequence and Timeline changes, a sample relocation or re-resolution (views::view_change::kSamples),
+// and when a tuning param changes (a Steps transpose follows its tuning; republished only if a description changed).
+// No clip edit compiles anything. Samples are loaded by the link's loader thread (SamplePool::load: probe + decode or
+// head + stream); a clip whose sample is still loading plays silence and the image is published again when it is in
+// (the UI poster runs that on the UI thread; without one, flush() / playhead() pick it up). A missing sample (the
+// context's resolution; without a context, LinkConfig::projectDir) plays silence.
+// Streaming: the link engages the disk thread while the transport plays, prefetches the streams of the clips under
+// the playhead when it is located while stopped (and at the loop start) so Play starts with data ready, and offline
+// renders install a blocking fill (SamplePool::waitFilled) so they never depend on disk speed. diskUnderruns() feeds
+// the control bar's disk indicator (AudioPrefsPort::diskUnderruns); the status line names a burst.
 #include <array>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -77,15 +94,18 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/document/audio_sequence.h"
 #include "pq/document/devices.h"
 #include "pq/document/lower.h"
 #include "pq/document/model.h"
+#include "pq/document/samples.h"
 #include "pq/document/store.h"
 #include "pq/dsp/tuning_table.h"
 #include "pq/engine/background_compile.h"
 #include "pq/engine/engine.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/sequence.h"
+#include "pq/media/sample_pool.h"
 #include "pq/tuning/tuning.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
@@ -134,6 +154,11 @@ struct LinkConfig {
   // Test hook (the "simulated slow compile"): called on the JIT worker before each compile; may block.
   void (*jitBeforeCompile)(void* user) = nullptr;
   void* jitUser = nullptr;
+  // T5.4: audio clips.
+  bool edgeDeclick = true;           // 2 ms fades at clip edges without a longer fade or a crossfade (plan "Decisions")
+  std::string projectDir;            // without a ViewContext (--render): resolves the project's sample paths
+  media::PoolConfig pool;            // the sample pool (its reclaimer is the link's)
+  double clipLookaheadSeconds = 0.5; // a streamed clip claims its stream this long before it starts
 };
 
 // T1b.5 counters (written by the JIT worker; jitStats() returns a consistent copy).
@@ -177,6 +202,10 @@ struct LinkStats {
   uint64_t heldForJit = 0;  // T1b.x-perf: unit edits that kept the JIT image playing (LinkConfig::interpretBudget)
   // T4.4-fix1: wires left out because a port they connect is not on the device (an edit of a user device removed it).
   uint32_t invalidWires = 0;
+  // T5.4: audio sequence images published; audio tracks lowered again (the per-track cache missed); sample loads.
+  uint64_t audioPublishes = 0, audioLowerings = 0;
+  uint64_t samplesLoaded = 0, sampleLoadErrors = 0;
+  uint64_t prefetches = 0;           // streams prefetched for a locate / the loop start
 };
 
 class ProjectLink final : public views::TransportPort,
@@ -228,8 +257,25 @@ public:
   // T4.1: the device library the link lowers with (the window gives its catalog to the views: one load per process).
   const doc::DeviceLibrary& devices() const noexcept { return *devices_; }
   // Offline render of the current state from `fromTick` (transport playing) for `frames` frames into `sink`; must not
-  // run while a device drives the engine. Flushes pending compiles first.
-  Result<engine::RenderStats> renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink);
+  // run while a device drives the engine. Flushes pending compiles first. T5.4: waits for the samples being loaded;
+  // streamed samples are read with blocking fills (deterministic whatever the disk). `blockFrames` = the device block
+  // the render loop drives the engine with (0: the engine block).
+  Result<engine::RenderStats> renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
+                                            uint32_t blockFrames = 0);
+
+  // ---- T5.4: audio clips (see the file comment) ----
+  media::SamplePool& samplePool() noexcept { return *pool_; }
+  // Spans that read silence because the disk thread was late, since the link was created. Any thread.
+  uint64_t diskUnderruns() const;
+  // Posts work to the UI thread (the window: an SDL user event): a finished sample load republishes the audio
+  // sequences there. Null: flush() and playhead() pick finished loads up.
+  void setUiPoster(std::function<void(std::function<void()>)> post);
+  // UI thread: waits (at most the timeout) until every sample load requested so far has finished, then publishes the
+  // audio sequences again if any did. flush() calls it. False on timeout.
+  bool waitForSamples(double timeoutSeconds = 60.0);
+  // The audio sequence image the link published last (owned by the engine's timeline; valid until the next publish).
+  // UI thread (tests).
+  const engine::AudioSequenceImage* audioImage() const noexcept { return lastAudio_; }
 
   static constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
   // Note-event slots: MIDI tracks the engine can play at once (T3.17-fix3, M3 review M5: was 128, silently). A track
@@ -361,6 +407,16 @@ private:
   void readLevels(int who, std::span<const uint32_t> buses, std::span<engine::BusLevel> out);
   void publishTempo(const doc::Project& p);
   void postTransport(const engine::TransportCommand& c);
+  // T5.4 (project_link_audio.cpp). UI thread.
+  // Publishes the audio sequence image when a description or a sample changed (force: always; a new engine).
+  void publishAudio(const doc::Project& p, bool force = false);
+  std::string samplePathOf(const doc::Project& p, doc::SampleId id);  // "" = missing
+  void requestLoad(const std::string& path);
+  void loaderMain();
+  void takeLoadedSamples();       // UI thread: republish if loads finished
+  void prefetchAt(Ticks tick);    // UI thread: streams for the clips under `tick` (and the loop start)
+  void engageDisk(bool on);
+  void reportDisk();              // UI thread: a burst of underruns names itself in the status line
   // Compile path (worker or flush()).
   Status compileNow(const doc::Snapshot& s);
   // A compile's result for the program, published in order (compileMutex_).
@@ -395,6 +451,45 @@ private:
   std::shared_ptr<const void> bindCost(engine::ProgramImage& image, const std::shared_ptr<const graph::Schedule>& schedule);
   LinkConfig cfg_;
   std::unique_ptr<CostState, CostStateDeleter> cost_{newCostState()};
+  // T5.4: the sample pool and the reclaimer its demotions retire through (the timeline is a reader). Declared before
+  // the engine: they outlive every image and voice that reads a sample.
+  EpochReclaimer sampleReclaimer_{4};
+  std::unique_ptr<media::SamplePool> pool_;
+  struct LoadedSample {
+    media::SampleRef ref;
+    bool done = false;
+    std::string error;
+  };
+  std::mutex loadMutex_;
+  std::condition_variable loadCv_;
+  std::deque<std::string> loadQueue_;
+  std::unordered_map<std::string, LoadedSample> loaded_;  // by absolute path (loadMutex_)
+  uint32_t loadsPending_ = 0;
+  bool loaderQuit_ = false;
+  std::atomic<bool> samplesArrived_{false};
+  std::thread loader_;
+  std::function<void(std::function<void()>)> post_;
+  std::shared_ptr<int> alive_ = std::make_shared<int>(0);  // posted callbacks check it (the link may be gone)
+  struct AudioCacheEntry {
+    const doc::Track* track = nullptr;
+    const void* tempo = nullptr;
+    const void* tunings = nullptr;
+    const void* samples = nullptr;
+    uint64_t resolution = 0;
+    doc::Snapshot from;  // keeps the keyed nodes alive (no address reuse)
+    doc::AudioTrackDesc desc;
+  };
+  std::unordered_map<uint32_t, AudioCacheEntry> audioCache_;  // track id (UI thread)
+  uint64_t resolution_ = 1;             // bumped when sample resolution changes what can play
+  std::vector<std::pair<uint32_t, doc::AudioTrackDesc>> audioKey_;  // the last published descriptions, by slot
+  std::vector<const void*> audioSamplesKey_;                       // ... and their samples
+  const engine::AudioSequenceImage* lastAudio_ = nullptr;
+  std::vector<doc::SampleResolution> resolved_;  // without a context: resolveSamples(LinkConfig::projectDir)
+  const void* resolvedFor_ = nullptr;
+  bool engaged_ = false;
+  Ticks prefetchedAt_ = INT64_MIN;  // the tick the current prefetches are for
+  uint64_t diskSeen_ = 0;
+  double diskReported_ = -1e9;
   std::unique_ptr<doc::DeviceLibrary> devices_;
   std::unique_ptr<DeviceInspector> inspector_;   // T4.4-fix1 (see the end of the class)
   std::vector<doc::DeviceId> missingReported_;   // UI thread: devices the status line named as missing

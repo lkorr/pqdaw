@@ -381,6 +381,13 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   if (!lib.ok()) return lib.error();
   devices_ = std::move(lib.value());
   inspector_ = std::make_unique<DeviceInspector>();  // T4.4-fix1
+  {  // T5.4: the sample pool (its disk thread blocks while nothing streams) and the loader thread
+    media::PoolConfig pc = cfg_.pool;
+    pc.reclaimer = &sampleReclaimer_;
+    pool_ = std::make_unique<media::SamplePool>(pc);
+    pool_->startDiskThread();
+    loader_ = std::thread([this] { loaderMain(); });
+  }
   if (Status s = makeEngine(); !s.ok()) return s;
   written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
   automated_.assign(kProjectParams, 0);
@@ -403,6 +410,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   if (Status s = compileNow(current_); !s.ok()) return s;
   publishTempo(*current_);
   publishSequences(*current_);
+  publishAudio(*current_);
   publishAutomation(*current_);
   if (cfg_.compileThread) worker_ = std::thread([this] { workerMain(); });
   return Ok{};
@@ -427,6 +435,10 @@ Status ProjectLink::makeEngine() {
   ec.idleUnits = cfg_.idleUnits;
   ec.timeline.reportEveryFrames = cfg_.blockFrames;  // the playhead within one engine block
   ec.timeline.reportCapacity = 1024;               // > 1 s of reports between two UI polls
+  // T5.4: the clip player streams through the pool; its demotions retire through the link's sample reclaimer.
+  ec.timeline.streams = pool_ != nullptr ? &pool_->streams() : nullptr;
+  ec.timeline.sampleReclaimer = &sampleReclaimer_;
+  ec.timeline.clipLookaheadSeconds = cfg_.clipLookaheadSeconds;
   auto eng = engine::Engine::create(ec);
   if (!eng.ok()) return eng.error();
   engine_ = std::move(eng.value());
@@ -542,6 +554,8 @@ Status ProjectLink::setSampleRate(double rate) {
   const Status compiled = compileNow(current_);
   publishTempo(*current_);
   publishSequences(*current_);
+  lastAudio_ = nullptr;
+  publishAudio(*current_, true);  // T5.4: the new engine's timeline has no audio image yet
   publishAutomation(*current_);
   if (loopSent_) postTransport({engine::TransportCommandKind::SetLoop, loop_.enabled, 0, loop_.start, loop_.end});
   postTransport({ph.playing ? engine::TransportCommandKind::Play : engine::TransportCommandKind::Locate, false, ph.tick, 0, 0});
@@ -560,10 +574,21 @@ ProjectLink::~ProjectLink() {
   cv_.notify_all();
   if (worker_.joinable()) worker_.join();  // no compile path (and so no wantJit) after this
   jit_.reset();  // then no JIT delivery (a running JIT compile finishes first; a waiting delivery gives up)
+  {  // T5.4: no sample load after this
+    std::lock_guard lock(loadMutex_);
+    loaderQuit_ = true;
+  }
+  loadCv_.notify_all();
+  if (loader_.joinable()) loader_.join();
+  engageDisk(false);
   // The engine before the tuning tables: its images point into them, and its timeline clears the automation taps
-  // that point at their live inputs (T2.6-fix2).
+  // that point at their live inputs (T2.6-fix2). T5.4: and before the sample pool (its images hold samples).
   compiler_.reset();
   engine_.reset();
+  audioCache_.clear();
+  loaded_.clear();
+  sampleReclaimer_.collect();
+  pool_.reset();
 }
 
 void ProjectLink::attach(views::ViewContext& ctx) {
@@ -573,6 +598,10 @@ void ProjectLink::attach(views::ViewContext& ctx) {
   // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
   observer_ = ctx.observe([this](uint32_t what) {
     if ((what & views::view_change::kAutomation) != 0 && current_) publishAutomation(*current_);
+    if ((what & views::view_change::kSamples) != 0 && current_) {  // T5.4: which samples can play changed
+      ++resolution_;
+      publishAudio(*current_);
+    }
   });
   if (ctx.doc() != current_) {  // follow the context's document
     const doc::ChangeSet none;
@@ -836,6 +865,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   if (!next || next == current_) return;
   const doc::ChangeSet& c = e.changes;
   const bool reset = e.kind == doc::StoreEventKind::Reset;
+  const bool relocated = e.kind == doc::StoreEventKind::SamplesRelocated;  // T5.4: sample paths changed
   const bool structural = reset || c.structural();
   current_ = next;
   const doc::Project& p = *current_;
@@ -922,6 +952,13 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
   if (reset || compile || c.has(doc::kChangeSequence)) publishSequences(p);
   else if (c.has(doc::kChangeParam) && !c.tunings.empty()) publishSequences(p, true);  // static pitches only
+  // T5.4: audio clips (edits are runtime data, never a compile); a tuning param can move a Steps transpose, a tempo
+  // edit the clips' samples. Published only when something an audio track plays changed.
+  if (reset || compile || relocated || c.has(doc::kChangeSequence) || c.has(doc::kChangeTimeline) ||
+      (c.has(doc::kChangeParam) && !c.tunings.empty())) {
+    if (reset || relocated) ++resolution_;
+    publishAudio(p);
+  }
   if (reset || compile || c.has(doc::kChangeAutomation)) publishAutomation(p);  // taps follow the tables
   if (compile) {
     {
@@ -1109,13 +1146,18 @@ std::string ProjectLink::lastError() const {
   return lastError_;
 }
 
-void ProjectLink::collect() { engine_->collect(); }
+void ProjectLink::collect() {
+  engine_->collect();
+  sampleReclaimer_.collect();  // T5.4: residencies a demotion replaced
+}
 
 void ProjectLink::collectIdle() {
   const double now = nowSeconds();
   if (now - lastCollect_ < 0.2) return;
   lastCollect_ = now;
   collect();
+  takeLoadedSamples();  // T5.4: loads finished without a UI poster
+  reportDisk();
 }
 
 Status ProjectLink::drainDeferred(bool& drained) {
@@ -1501,6 +1543,8 @@ void ProjectLink::postTransport(const engine::TransportCommand& c) {
 }
 
 void ProjectLink::play(Ticks from) {
+  if (!playhead().playing) prefetchAt(from);  // T5.4: usually done already by the locate that set `from`
+  engageDisk(true);
   postTransport({engine::TransportCommandKind::Play, false, from, 0, 0});
   optimistic_ = {true, from, 0};
 }
@@ -1509,16 +1553,21 @@ void ProjectLink::stop() {
   const views::PlayheadSnapshot now = playhead();
   postTransport({engine::TransportCommandKind::Stop, false, 0, 0, 0});
   optimistic_ = {false, now.tick, 0};
+  engageDisk(false);  // T5.4: the disk thread blocks again once no stream is claimed
+  prefetchAt(now.tick);
 }
 
 void ProjectLink::continuePlayback() {
   const views::PlayheadSnapshot now = playhead();
+  if (!now.playing) prefetchAt(now.tick);
+  engageDisk(true);
   postTransport({engine::TransportCommandKind::Continue, false, 0, 0, 0});
   optimistic_ = {true, now.tick, 0};
 }
 
 void ProjectLink::locate(Ticks tick) {
   const views::PlayheadSnapshot now = playhead();
+  if (!now.playing) prefetchAt(tick);  // T5.4: Play then starts with the streams filled
   postTransport({engine::TransportCommandKind::Locate, false, tick, 0, 0});
   optimistic_ = {now.playing, tick, 0};
 }
@@ -1526,9 +1575,14 @@ void ProjectLink::locate(Ticks tick) {
 void ProjectLink::setLoop(const views::TransportLoop& loop) {
   const views::PlayheadSnapshot now = playhead();
   postTransport({engine::TransportCommandKind::SetLoop, loop.enabled, 0, loop.start, loop.end});
+  const bool loopStartMoved = loop.enabled && (!loopSent_ || !loop_.enabled || loop_.start != loop.start);
   loop_ = loop;
   loopSent_ = true;
   optimistic_ = now;
+  if (loopStartMoved && !now.playing) {  // T5.4: the loop start's streams too
+    prefetchedAt_ = INT64_MIN;
+    prefetchAt(now.tick);
+  }
 }
 
 views::PlayheadSnapshot ProjectLink::playhead() {
@@ -1694,15 +1748,5 @@ void ProjectLink::resetClip(doc::TrackId id) noexcept {
 
 // ---- Offline ------------------------------------------------------------------------------------------------
 
-Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink) {
-  flush();
-  engine::TransportCommand play{engine::TransportCommandKind::Play, false, fromTick, 0, 0};
-  if (!engine_->post(play)) return linkError(ErrorCode::Overflow, "transport ring full");
-  ++commandsPosted_;
-  auto r = engine_->renderOffline(frames, sink, cfg_.blockFrames);
-  engine::TransportCommand stopCmd{engine::TransportCommandKind::Stop, false, 0, 0, 0};
-  if (engine_->post(stopCmd)) ++commandsPosted_;
-  return r;
-}
 
 }  // namespace pq::app

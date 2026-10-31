@@ -115,6 +115,7 @@ pq_add_test(pq_tests_playback
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them
     app/test_racks.cpp  # T4.8: racks (hand-built graph diff 0, interpreter == JIT, key zones, macro = one write, click-free)
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
+    app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -254,7 +255,9 @@ pq_add_test(pq_tests_project
 
 # T3.16: the engine timeline (transport, note sequencer, automation renderer), with the VoiceEngine and renderOffline.
 pq_add_test(pq_tests_timeline
-  SOURCES engine/test_timeline.cpp
+  SOURCES
+    engine/test_timeline.cpp
+    engine/test_clip_player.cpp  # T5.4: the clip player, the audio sequence image, streamed reads
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on
@@ -305,6 +308,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_gain.cpp
     dsp/test_spectrum.cpp
     dsp/test_silence.cpp
+    dsp/test_resample.cpp
   DEPS pq_dsp)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

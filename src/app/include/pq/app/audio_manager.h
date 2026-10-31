@@ -80,6 +80,7 @@ public:
   void apply(const views::AudioSettings& s) override;
   views::AudioStatus status() override;
   double cpuLoad() override;
+  uint64_t diskUnderruns() override;  // T5.4: the link's sample pool
   void setTestTone(bool on, float levelDb, float hz) override;
   bool testTone() override { return output_->testTone(); }
   bool openControlPanel() override;

@@ -183,6 +183,7 @@ struct External {
   Rate rate = Rate::Audio;  // Audio: a block buffer; Param/Const: an 8-float pattern
   Poly poly = Poly::Global; // Voice: per voice group (8 lanes)
   NodeIndex node = kNone;
+  uint32_t clip = 0;      // Engine clipPlayer (T5.4): its `clip` constant, the clip slot whose audio the engine reads
 };
 
 struct ConstValue {

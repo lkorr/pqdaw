@@ -68,6 +68,11 @@ private:
   ViewContext& ctx_;
   std::string text_ = "CPU \xE2\x80\x93";
   uint32_t timer_ = 0;
+  // T5.4: the disk indicator. When streamed reads came late since the last poll, the meter reads "DISK" (in the
+  // theme's arm (red) colour) for 2 s.
+  uint64_t underruns_ = 0;
+  double diskUntil_ = 0.0;
+  bool disk_ = false;
 };
 
 // "1. 1. 1": bar, beat, sixteenth (1-based, Live's position display) at tick t.

@@ -53,6 +53,16 @@
 // replaced or the timeline destroyed); automation(lane) is the audio-rate buffer. Lanes without a tap and with
 // AutomationLaneDesc::perSample false render only their frame-0 value.
 //
+// ---- Audio clips (T5.4) -------------------------------------------------------------------------------------------
+// The timeline owns the clip player (pq/engine/clip_player.h) and plays it on the same runs as the notes: every run of
+// the playing transport plays the clips under [P, P + frames) of each clip slot; a stop, a locate and an arrangement
+// loop wrap fade the sounding clips out (2 ms) and start the clips under the new position with a fade in; while
+// stopped only those fades run. publishAudio swaps the AudioSequenceImage like the other images (an image whose voices
+// still fade out after a swap stays held: hazards cur + prev). A tempo swap while playing fades the clips over too
+// (their sample positions moved). clipPlayer() exposes the slots' audio for ProcessContext::clipIn. Pooled samples:
+// the audio thread reads their residency (media::PooledSample::view) under TimelineConfig::sampleReclaimer, on which it
+// announces a quiescent state at the end of every process() like on its own reclaimer.
+//
 // ---- Integration -----------------------------------------------------------------------------------------------
 // process(sampleTime, frames) runs once per engine block (calls with the same engine sampleTime are no-ops, so the
 // hooks below can all trigger it). blockHook() is an ImageRunner/ProgramHost/renderOffline BlockHook: it advances the
@@ -70,7 +80,9 @@
 #include "pq/core/result.h"
 #include "pq/core/spsc_ring.h"
 #include "pq/core/time.h"
+#include "pq/engine/audio_sequence.h"
 #include "pq/engine/automation.h"
+#include "pq/engine/clip_player.h"
 #include "pq/engine/image_runner.h"
 #include "pq/engine/note_events.h"
 #include "pq/engine/program_image.h"
@@ -138,6 +150,14 @@ struct TimelineConfig {
   uint32_t reportCapacity = 64;         // audio → UI reports (power of two)
   uint32_t reportEveryFrames = 256;     // while playing: a report at most every this many frames (0: every block);
                                         // transport commands always report at the next block
+  // T5.4: the clip player (ClipPlayerConfig). clipSlots 0 = maxTracks.
+  uint32_t clipSlots = 0;
+  uint32_t maxClipVoices = 512;
+  uint32_t clipStreamBuffers = 128;
+  double clipLookaheadSeconds = 0.5;
+  double clipDeclickSeconds = 0.002;
+  media::StreamPool* streams = nullptr;   // the sample pool's streams (null: streamed samples play their head only)
+  EpochReclaimer* sampleReclaimer = nullptr;  // the sample pool's reclaimer (residency demotions); outlives the timeline
 };
 
 struct TimelineStats {
@@ -149,7 +169,7 @@ struct TimelineStats {
   uint64_t orphanedNotes = 0;      // sounding notes of a track missing from a new image
   uint64_t keptOnSwap = 0, stoppedOnSwap = 0;
   uint64_t retunedOnSwap = 0;      // kept notes whose pitch changed: a Pitch event (kNoteEventRetune) at frame 0
-  uint64_t sequenceSwaps = 0, automationSwaps = 0, tempoSwaps = 0;
+  uint64_t sequenceSwaps = 0, automationSwaps = 0, tempoSwaps = 0, audioSwaps = 0;
   uint64_t loopWraps = 0;
   uint64_t droppedReports = 0;
 };
@@ -168,6 +188,8 @@ public:
   Status publishSequence(std::unique_ptr<SequenceImage> image);
   Status publishAutomation(std::unique_ptr<AutomationImage> image);
   Status publishTempo(std::unique_ptr<TempoImage> image);
+  // T5.4. Errors: null image, more clip slots than configured.
+  Status publishAudio(std::unique_ptr<AudioSequenceImage> image);
   // Frees retired images every reader has passed; returns how many. publish*() calls it too.
   size_t collect();
   size_t pendingImages() const { return reclaimer_.pending() + held_.size(); }
@@ -188,8 +210,14 @@ public:
   // Lets collect() free images while the audio thread is not running (device stopped). RT-safe. The images the
   // audio thread holds (the ones its last block used: it keeps them across a stop) are never freed while they are
   // held, offline or not (T3.17-fix1: see Timeline::Hazard).
-  void audioOffline() noexcept { reclaimer_.goOffline(reader_); }
-  void audioOnline() noexcept { reclaimer_.goOnline(reader_); }
+  void audioOffline() noexcept {
+    reclaimer_.goOffline(reader_);
+    if (sampleReclaimer_ != nullptr) sampleReclaimer_->goOffline(sampleReader_);
+  }
+  void audioOnline() noexcept {
+    reclaimer_.goOnline(reader_);
+    if (sampleReclaimer_ != nullptr) sampleReclaimer_->goOnline(sampleReader_);
+  }
 
   // Results of the last block (audio thread). RT-safe.
   EventList events(uint32_t track) const noexcept {
@@ -208,6 +236,10 @@ public:
   uint32_t soundingNotes(uint32_t track) const noexcept { return tracks_[track].heapSize; }
   const TimelineStats& stats() const noexcept { return stats_; }
   const SequenceImage* sequence() const noexcept { return seq_; }
+  const AudioSequenceImage* audio() const noexcept { return audio_; }
+  // T5.4: the clip player (its outputs: channels() / active(); stats). The accessors are RT-safe; setStreamFill is not.
+  ClipPlayer& clipPlayer() noexcept { return *clips_; }
+  const ClipPlayer& clipPlayer() const noexcept { return *clips_; }
   const TempoImage& tempoImage() const noexcept { return *tempo_; }
 
 private:
@@ -277,6 +309,7 @@ private:
   std::atomic<SequenceImage*> pubSeq_{nullptr};
   std::atomic<AutomationImage*> pubAuto_{nullptr};
   std::atomic<TempoImage*> pubTempo_{nullptr};
+  std::atomic<AudioSequenceImage*> pubAudio_{nullptr};  // T5.4
   // T3.17-fix1: which images the audio thread holds, per kind (sequence, automation, tempo): `cur` = the one it uses
   // (kept across blocks and across a device stop), `cand` = a newer one it is about to take (hazard-pointer
   // protocol: store the candidate, re-read the published pointer, take it only if it did not change; bounded, else
@@ -289,7 +322,7 @@ private:
     std::atomic<const void*> cur{nullptr};
     std::atomic<const void*> cand{nullptr};
   };
-  Hazard hazard_[3];
+  Hazard hazard_[5];  // sequence, automation, tempo, audio, the audio image whose voices still fade out (T5.4)
   std::vector<std::pair<void*, void (*)(void*) noexcept>> held_;
   void retireImage(void* old, void (*deleter)(void*) noexcept);
   bool hazardous(const void* p) const noexcept;
@@ -305,6 +338,10 @@ private:
   const SequenceImage* seq_ = nullptr;
   const AutomationImage* auto_ = nullptr;
   const TempoImage* tempo_ = nullptr;
+  const AudioSequenceImage* audio_ = nullptr;  // T5.4
+  std::unique_ptr<ClipPlayer> clips_;
+  EpochReclaimer* sampleReclaimer_ = nullptr;
+  EpochReclaimer::ReaderId sampleReader_{0};
   // Transport.
   bool playing_ = false;
   bool releasePending_ = false;  // release every sounding note at the next block's frame 0 (stop, locate, wrap)

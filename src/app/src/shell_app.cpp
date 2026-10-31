@@ -207,6 +207,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   views::devices::setDeviceLibrary(*app->shell_, stdlibDir() + "/devices", nullptr);
   if (app->link_) {
     const double t1 = msSinceMainEntry();
+    // T5.4: a finished sample load republishes the audio sequences on the UI thread.
+    app->link_->setUiPoster([type = app->userEvent_](std::function<void()> fn) {
+      pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn)));
+    });
     app->link_->attach(*app->ctx_);
     app->ctx_->setDeviceLibrary(&app->link_->devices());  // T4.1: the device view's catalog (one load per process)
     app->ctx_->setModulationSource(app->link_.get());  // T4.7: the modulated knobs' live rings

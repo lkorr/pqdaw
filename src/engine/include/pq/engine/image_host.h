@@ -260,11 +260,11 @@ public:
 private:
   enum class Src : uint8_t {
     RootGlobal, RootVoice, VoiceSig, TransportBpm, TransportBeat, TransportBarPhase, TransportPlaying, TrackIn,
-    Sidechain, Silence
+    Sidechain, Clip, Silence
   };
   struct ExtRun {
     Src src = Src::Silence;
-    uint32_t index = 0;    // slot / voice signal / channel
+    uint32_t index = 0;    // slot / voice signal / channel (Clip: clip slot · kClipChannels + channel)
     bool pattern = false;  // param/const rate: an 8-float pattern
     bool voice = false;
     float* own = nullptr;  // global: own pattern (8 floats) or frames buffer for transport ramps

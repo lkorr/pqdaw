@@ -62,7 +62,9 @@
 // unchanged for more than idleAfterBlocks blocks of that kind (so its gains have settled: running it would change
 // nothing, the skip is bit-exact). Its bus channels are zeroed once and marked silent, so the units reading them can
 // go idle too: a silent project costs a few compares per unit per block. Any event, param change, voice, new image
-// or non-silent input runs it again at once.
+// or non-silent input runs it again at once. T5.4: a unit reading clip slots (clipPlayer atoms) is quiet only in blocks
+// where none of its slots has audio (ProjectConfig::clipActive), so an audio track sleeps while no clip is under the
+// playhead and wakes in the block its clip starts.
 // T1.x-silence: a unit is skipped the same way while its image reported itself dormant after the last block it ran
 // (ProcessContext::dormant: every sleepable region asleep — its reverbs' and delays' tails done —, its outputs
 // silent, nothing else in it keeping state). Every run marks the buses the unit produces silent or not from its
@@ -157,6 +159,12 @@ struct ProjectConfig {
   std::vector<EventSource> eventSources;  // indexed by UnitLayout::eventSlot
   uint32_t eventCapacity = 1024;          // note events per unit per image block
   bool idleUnits = true;                  // skip idle units ("Idle units"; false: run every unit, for measurements)
+  // T5.4: the clip players' audio (Timeline's ClipPlayer: channels and per-slot activity, fixed addresses for the
+  // program's life), passed to every image as ProcessContext::clipIn. A unit whose clip slots have no audio in a block
+  // counts as quiet (idle units) like one whose input buses are silent.
+  const float* const* clipIn = nullptr;
+  const uint8_t* clipActive = nullptr;
+  uint32_t numClipSlots = 0;
 };
 
 struct UnitStats {

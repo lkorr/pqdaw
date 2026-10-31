@@ -61,6 +61,7 @@ int runRender(const CliOptions& o) {
   cfg.compileThread = false;
   cfg.sleepAfterMs = 0.0f;  // an offline render never sleeps
   cfg.chanceSeed = o.seed;  // seeded: the same file and seed render the same way (M3 review M16)
+  cfg.projectDir = o.project;  // T5.4: project-relative sample paths resolve here
   auto link = ProjectLink::create(cfg, loaded->project);
   if (!link) {
     std::fprintf(stderr, "pqdaw: %s\n", link.error().message.c_str());

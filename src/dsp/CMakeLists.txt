@@ -10,5 +10,6 @@ pq_add_module(pq_dsp
     src/tables.cpp
     src/fft.cpp
     src/spectrum.cpp
+    src/resample.cpp
   DEPS pq_core
 )

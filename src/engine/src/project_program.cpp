@@ -41,6 +41,7 @@ struct ProjectProgram::Packet {
   uint32_t idleAfter = 0;                                 // UnitImage::idleAfterBlocks
   std::vector<float> linked;                              // the linked params' values in the last block
   std::vector<const BusStore*> inStores;                  // the distinct buses it reads
+  std::vector<uint32_t> clipSlots;                        // T5.4: the clip slots it reads (io().clipSlots)
   // Silence (T1.x-silence): ProcessContext::inSilent / outSilent and the buses behind them.
   std::vector<const BusStore*> inStoreOf;                 // per global in slot (null: reads zeros)
   std::vector<uint8_t> inSilent, outSilent;               // per global in / out slot
@@ -291,6 +292,8 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
   p->paramLinks = std::move(ui.paramLinks);
   p->keepAlive = std::move(ui.keepAlive);
   p->idleAfter = ui.idleAfterBlocks;
+  for (uint32_t k : io.clipSlots)  // T5.4
+    if (k < cfg_.numClipSlots) p->clipSlots.push_back(k);
   p->linked.assign(p->paramLinks.size(), std::numeric_limits<float>::quiet_NaN());
   for (const BusRef& r : ui.in)
     if (r.bus != kNoBus && std::find(p->inStores.begin(), p->inStores.end(), stores[r.bus].get()) == p->inStores.end())
@@ -841,6 +844,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     // every sleepable region asleep, nothing else keeping state, outputs silent).
     bool quiet = old == nullptr && (!U.voices || (U.voices->liveVoices() == 0 && U.eventBuf.list().count == 0));
     for (const BusStore* b : p->inStores) quiet = quiet && b->silent;
+    for (uint32_t k : p->clipSlots) quiet = quiet && cfg_.clipActive[k] == 0;  // T5.4: no audio from its clips
     for (size_t i = 0; i < p->paramLinks.size(); ++i) {
       const float v = projectParams_[p->paramLinks[i].second];
       quiet = quiet && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(p->linked[i]);
@@ -882,6 +886,8 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.numOut = static_cast<uint32_t>(p->outPtrs.size());
   ctx.params = p->params.data();
   ctx.numParams = static_cast<uint32_t>(p->params.size());
+  ctx.clipIn = cfg_.clipIn;  // T5.4
+  ctx.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
   ProcessContext fctx;
   if (old != nullptr) {
     for (const auto& [slot, param] : old->paramLinks) old->params[slot] = projectParams_[param];
