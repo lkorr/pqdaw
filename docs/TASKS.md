@@ -612,7 +612,7 @@ Each task's full description and acceptance criteria are in docs/plans/M5.md und
 - [ ] **T5.6 Audio clips in the arrangement + the audio Clip View** (docs/plans/M5.md)
 - [ ] **T5.7 Drag in: drag sessions + files from Explorer** (docs/plans/M5.md)
 - [x] **T5.8 Project samples: copy on save, collect all, missing files, relink** *(merged 2026-10-31; samples referenced by default; not built: per-project always-collect option, full-file hash, NTFS-file-ID relink — Q145 item 10)* (docs/plans/M5.md)
-- [ ] **T5.9 Browser index: places, indexer, watcher, search** (docs/plans/M5.md)
+- [x] **T5.9 Browser index: places, indexer, watcher, search** *(merged 2026-10-31; 200k revalidate 224 ms, load 19 ms, search median 2.5–3.4 ms; no dir-mtime subtree skip, preset categories sniffed until T5.11 (Q153); app wiring + panel = T5.10)* (docs/plans/M5.md)
 - [ ] **T5.10 Browser panel + preview through a cue bus** (docs/plans/M5.md)
 - [ ] **T5.11 User library: presets, racks, user devices, tunings, clips; default presets; hot-swap** (docs/plans/M5.md)
 - [ ] **T5.12 Drag out: arrangement → browser, → Explorer** (docs/plans/M5.md)

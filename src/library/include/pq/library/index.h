@@ -213,7 +213,7 @@ Category categorize(ItemKind kind, PlaceKind place, std::string_view relDir, std
 
 // The kind a preset or user device file declares, from its first bytes (`head`, up to 4 KiB): a "rack" key → Racks;
 // else the first "kind" value: "instrument" → Instruments, "audioEffect" → AudioEffects; else None. Provisional until
-// T5.11 fixes the preset format (QUESTIONS Q?-T5.9-a).
+// T5.11 fixes the preset format (QUESTIONS Q153).
 Category sniffDeviceCategory(std::string_view head) noexcept;
 
 // A stock device as a category item (Instruments / Audio Effects list the stock devices themselves, as in Live).
