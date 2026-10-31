@@ -818,3 +818,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: ownership rides on the existing keepAlive vector (one shared_ptr per bind, off the audio thread); ring growth bounded (≤ 32 × 64 KB), allocated at bind time.
 - Notes/blockers: app::PatchPreview still reuses tap slots after 1 s (no JIT hold there).
 
+## 2026-10-31 · T4.x-fix-devices (narrowed to H3 + H5) · worker / task/T4.x-fix-devices
+- Did: H3 EQ Eight 48 dB law (sections 1–3 Butterworth-8 dampings, section 4 carries q) in eq_eight.pqp, devref, device_math.h; the T4.10 analytic test now derives from the Butterworth poles (it had copied the device's constants); new peak test (LC48/HC48 ≤ max(LC12 peak, 0 dB) + 1 dB, q 0.1…18; worst +0.14 dB; was +105 dB at q 18). H5 Auto Filter in kStock (+ AOT seed via stockDevices()); catalog, lowering (sc unwired) and AOT tests. Q123 note.
+- Verified: worker -Full dev and release on pq_tests_{stdlib,jit,render,document,project,views,ui,app,playback} + pqdaw_*: 0 warnings, 31/31 each; ship pq_bench_dsp linked. Orchestrator: rebased onto 8bd6ce7 (T4.x-fix-safety) cleanly; covered by the M4 boundary run.
+- Perf: n/a (no kernel change; three dampings became constants).
+- CPU-efficiency check: same 4 SVF sections per 48 dB band, no new per-sample work.
+- Notes/blockers: deferred L11, M10, M11, M12, M13, L10 with render findings (TASKS "M4 deferred"); dev pqc renders: EQ Eight within 0.005 dB of the bilinear prototypes, HQ flat to 0.48·sr; Operator and Saturator as documented.
+
