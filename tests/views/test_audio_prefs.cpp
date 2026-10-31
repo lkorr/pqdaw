@@ -255,6 +255,37 @@ TEST_CASE("prefs: the Library tab moves the User Library and adds / removes Plac
   p.ctx.setFileDialogs(nullptr);
 }
 
+TEST_CASE("prefs: the Samples Folder follows the User Library until chosen; a folder outside it is a place of its own") {
+  Prefs p;
+  PickFolder dialogs;
+  p.ctx.setFileDialogs(&dialogs);
+  Library& lib = p.ctx.library();
+  lib.setUserLibrary("C:\\Library");
+  lib.setFolders({"F:\\Kits"});
+  std::string saved;
+  lib.setSamplesFolderListener([&](const std::string& root) { saved = root; });
+  PreferencesWindow& w = p.open();
+  w.showTab(PreferencesWindow::Tab::Library);
+  // The default lies in the User Library: no place of its own.
+  CHECK(w.samplesFolderText() == "C:\\Library\\Samples");
+  CHECK(lib.places().size() == 2);
+  dialogs.next = "E:/Samples/";
+  w.browseSamplesFolder()->onClick();
+  CHECK(saved == "E:\\Samples");
+  CHECK(lib.samplesFolder() == "E:\\Samples");
+  CHECK(w.samplesFolderText() == "E:\\Samples");
+  REQUIRE(lib.places().size() == 3);  // User Library, Samples, F:\Kits
+  CHECK(lib.places()[1].root == "E:\\Samples");
+  CHECK(lib.places()[1].name == "Samples");
+  CHECK(lib.folders() == std::vector<std::string>{"F:\\Kits"});  // not an added folder
+  // Inside an added folder (or equal to one): not repeated.
+  dialogs.next = "F:\\Kits\\One Shots";
+  w.browseSamplesFolder()->onClick();
+  CHECK(lib.samplesFolder() == "F:\\Kits\\One Shots");
+  CHECK(lib.places().size() == 2);
+  p.ctx.setFileDialogs(nullptr);
+}
+
 TEST_CASE("render: audio-prefs (ASIO, Focusrite-like device list) matches the golden image") { checkGolden("audio-prefs"); }
 
 TEST_CASE("render: audio-prefs-wasapi (WASAPI exclusive, idle stream) matches the golden image") { checkGolden("audio-prefs-wasapi"); }

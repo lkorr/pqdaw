@@ -32,7 +32,9 @@
 //
 //   │ Audio   │ User Library                                                     │
 //   │ Library │   Location        D:\Music\pqdaw User Library        [Browse…]   │
-//   │         │ Places                                                           │
+//   │         │ Samples Folder                                                   │
+//   │         │   Location        E:\Samples                         [Browse…]   │
+//   │         │ Places                                                         │
 //   │         │   ┌ C:\Samples\Drums ───────────────────────────────┐            │
 //   │         │   │ D:\Splice                                       │            │
 //   │         │   └─────────────────────────────────────────────────┘            │
@@ -40,7 +42,9 @@
 //
 // Browse… and Add Folder… open the folder picker (FileDialogs::chooseFolder). The location applies at once
 // (Library::changeUserLibrary: the browser's User Library place re-points and re-indexes; saves go there) and the app
-// keeps it in the settings file; the Places list is the browser's added folders (Library::addPlace / removePlace).
+// keeps it in the settings file; the Samples Folder likewise (Library::changeSamplesFolder; shown: the default
+// <User Library>\Samples until one is chosen); the Places list is the browser's added folders (Library::addPlace /
+// removePlace).
 //
 // Every choice applies at once (as in Live): the port reopens the stream (stop → reopen → resume with the Program
 // kept) and persists the settings. The window is a popover in the shell's overlay layer: closed, it does not exist
@@ -266,6 +270,8 @@ public:
   void showTab(Tab t);
   Tab tab() const noexcept { return tab_; }
   ui::Button* browseUserLibrary() const noexcept { return browse_; }
+  ui::Button* browseSamplesFolder() const noexcept { return browseSamples_; }  // T5.x-samples-folder
+  const std::string& samplesFolderText() const;
   ui::Button* addFolder() const noexcept { return addFolder_; }
   ui::Button* removeFolder() const noexcept { return removeFolder_; }
   const std::string& userLibraryText() const;
@@ -301,8 +307,8 @@ private:
   ViewContext* ctx_ = nullptr;
   Tab tab_ = Tab::Audio;
   ui::Widget *tabs_ = nullptr, *audioPage_ = nullptr, *libraryPage_ = nullptr;
-  ui::Label *audioTab_ = nullptr, *libraryTab_ = nullptr, *userLibrary_ = nullptr;
-  ui::Button *browse_ = nullptr, *addFolder_ = nullptr, *removeFolder_ = nullptr;
+  ui::Label *audioTab_ = nullptr, *libraryTab_ = nullptr, *userLibrary_ = nullptr, *samplesFolder_ = nullptr;
+  ui::Button *browse_ = nullptr, *browseSamples_ = nullptr, *addFolder_ = nullptr, *removeFolder_ = nullptr;
   ui::Widget* folderList_ = nullptr;
   ViewContext::Subscription librarySub_;
   uint32_t timer_ = 0;

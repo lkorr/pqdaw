@@ -337,7 +337,9 @@ bool Sidebar::onPointer(const PointerEvent& e) {
       const library::Index* ix = panel_.index();
       const auto& places = ix ? ix->places : lib.places();
       std::vector<MenuItem> menu{addFolder()};
-      if (p < places.size() && places[p].kind == library::PlaceKind::Folder) {
+      // An added folder (not the Samples folder's place: Preferences → Library sets that one).
+      if (p < places.size() && places[p].kind == library::PlaceKind::Folder &&
+          placeKey(places[p].root) != placeKey(lib.samplesFolder())) {
         const std::string root = places[p].root;
         menu.push_back(MenuItem::item("Remove from Places", [&lib, root] { (void)lib.removePlace(root); }));
       }

@@ -12,7 +12,8 @@
 //       "sampleRate": 48000, "bufferFrames": 64, "inputChannels": 2, "outputChannels": 2
 //     },
 //     "views": { "circuitShowInactive": false },         (T4.15: views::ViewPrefs)
-//     "library": { "folders": ["C:\\Samples"], "userLibrary": "D:\\pqdaw User Library" }   (T5.10, T5.x-library-prefs)
+//     "library": { "folders": ["C:\\Samples"], "userLibrary": "D:\\pqdaw User Library",   (T5.10, T5.x-library-prefs)
+//                  "samplesFolder": "E:\\Samples" }                                         (T5.x-samples-folder)
 //   }
 //
 // Saving keeps every other top-level key (later settings sections), writes a temporary file, flushes it and
@@ -59,6 +60,9 @@ Status saveLibraryFolders(const std::string& path, const std::vector<std::string
 // section); "" = none chosen.
 std::string loadUserLibrarySetting(const std::string& path);
 Status saveUserLibrarySetting(const std::string& path, const std::string& rootUtf8);
+// T5.x-samples-folder: the Samples folder chosen in Preferences → Library ({"samplesFolder": "E:\\…"}); "" = none.
+std::string loadSamplesFolderSetting(const std::string& path);
+Status saveSamplesFolderSetting(const std::string& path, const std::string& rootUtf8);
 
 // T5.10: where the browser keeps its index and tags.json: $PQ_LIBRARY_DIR, else <settings dir>/library when
 // $PQ_SETTINGS_DIR is set (test runs of the exe never touch the user's %LOCALAPPDATA%), else
@@ -68,5 +72,9 @@ std::string libraryDataDir();
 // (loadUserLibrarySetting; skipped when it cannot be created), else Documents\pqdaw\User Library (QUESTIONS Q4 / plan
 // answer 4). Under $PQ_SETTINGS_DIR (test runs) there is no default: empty unless one of the first two names one.
 std::string userLibraryDir();
+// The Samples folder the app starts with: $PQ_SAMPLES_DIR, else loadSamplesFolderSetting (created when missing; skipped
+// when it cannot be). "" = the default, <User Library>\Samples (views::Library::samplesFolder resolves it, so it follows
+// a moved User Library).
+std::string samplesFolderDir();
 
 }  // namespace pq::app

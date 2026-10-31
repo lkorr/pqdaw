@@ -231,3 +231,29 @@ TEST_CASE("user settings: the User Library location round-trips next to the fold
   _putenv_s("PQ_SETTINGS_DIR", "");
   fs::remove_all(dir, ec);
 }
+
+TEST_CASE("user settings: the Samples folder round-trips next to the User Library; $PQ_SAMPLES_DIR wins over it") {
+  const fs::path dir = fs::temp_directory_path() / "pq_settings_samples";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  const std::string path = (dir / "settings.json").string();
+  CHECK(loadSamplesFolderSetting(path).empty());
+  const std::string chosen = (dir / "Chosen Samples").string(), env = (dir / "Env Samples").string();
+  REQUIRE(saveUserLibrarySetting(path, "D:\\Library").ok());
+  REQUIRE(saveSamplesFolderSetting(path, chosen).ok());
+  REQUIRE(saveLibraryFolders(path, {"C:\\Kits"}).ok());  // keeps both
+  CHECK(loadSamplesFolderSetting(path) == chosen);
+  CHECK(loadUserLibrarySetting(path) == "D:\\Library");
+  // Precedence: $PQ_SAMPLES_DIR, then the setting (made when missing), then "" (the default: <User Library>\Samples).
+  _putenv_s("PQ_SETTINGS_DIR", dir.string().c_str());
+  CHECK(samplesFolderDir() == chosen);
+  CHECK(fs::is_directory(chosen));
+  _putenv_s("PQ_SAMPLES_DIR", env.c_str());
+  CHECK(samplesFolderDir() == env);
+  _putenv_s("PQ_SAMPLES_DIR", "");
+  REQUIRE(saveSamplesFolderSetting(path, "").ok());
+  CHECK(samplesFolderDir().empty());
+  _putenv_s("PQ_SETTINGS_DIR", "");
+  fs::remove_all(dir, ec);
+}

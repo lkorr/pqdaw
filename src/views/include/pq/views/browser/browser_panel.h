@@ -177,10 +177,10 @@ public:
   ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
   // T5.12: arrangement clips dropped on the list: saved as .pqclip files into the folder under the pointer (a folder row,
   // a file's folder, else the place shown / the User Library's Clips folder); Alt = rendered to WAV instead
-  // (setClipRenderer). Returns the files written.
+  // (setClipRenderer; with no folder under the pointer, into the Samples folder). Returns the files written.
   std::vector<std::string> saveDroppedClips(const ui::DragPayload& p, std::string_view folder, bool render);
-  // The folder a drop at `pos` (device px) goes to ("" none).
-  std::string dropFolderAt(ui::Vec2 pos) const;
+  // The folder a drop at `pos` (device px) goes to ("" none); `render`: an Alt-drop (rendered WAV files).
+  std::string dropFolderAt(ui::Vec2 pos, bool render = false) const;
   void onTimer(uint32_t id) override;
 
   // --- helpers the parts share ---

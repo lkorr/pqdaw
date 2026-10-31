@@ -920,8 +920,9 @@ bool BrowserPanel::onKey(const KeyEvent& e) {
 
 // --- drops onto the panel (folders become places) ---------------------------------------------------------------------
 
-DropFeedback BrowserPanel::dragOver(const DragPayload& p, Vec2 pos, Mods) {
-  if (p.kind == DragKind::Clips) return {dropFolderAt(pos).empty() ? DropEffect::None : DropEffect::Copy, Cursor::Arrow};  // T5.12
+DropFeedback BrowserPanel::dragOver(const DragPayload& p, Vec2 pos, Mods mods) {
+  if (p.kind == DragKind::Clips)  // T5.12
+    return {dropFolderAt(pos, (mods & mod::kAlt) != 0).empty() ? DropEffect::None : DropEffect::Copy, Cursor::Arrow};
   if (p.kind != DragKind::Files) return {};
   for (const std::string& s : p.paths) {
     std::error_code ec;
@@ -933,9 +934,10 @@ DropFeedback BrowserPanel::dragOver(const DragPayload& p, Vec2 pos, Mods) {
 
 DropEffect BrowserPanel::drop(const DragPayload& p, Vec2 pos, Mods mods) {
   if (p.kind == DragKind::Clips) {  // T5.12: arrangement clips → .pqclip files (Alt: rendered WAV files)
-    const std::string folder = dropFolderAt(pos);
+    const bool render = (mods & mod::kAlt) != 0;
+    const std::string folder = dropFolderAt(pos, render);
     if (folder.empty()) return DropEffect::None;
-    const std::vector<std::string> made = saveDroppedClips(p, folder, (mods & mod::kAlt) != 0);
+    const std::vector<std::string> made = saveDroppedClips(p, folder, render);
     return made.empty() ? DropEffect::None : DropEffect::Copy;
   }
   uint32_t added = 0;
@@ -950,7 +952,7 @@ DropEffect BrowserPanel::drop(const DragPayload& p, Vec2 pos, Mods mods) {
 
 // --- T5.12: clips dropped from the arrangement --------------------------------------------------------------------------
 
-std::string BrowserPanel::dropFolderAt(Vec2 pos) const {
+std::string BrowserPanel::dropFolderAt(Vec2 pos, bool render) const {
   if (index_ && list_->rect().contains(pos)) {
     const int32_t row = list_->rowAt(pos);
     if (row >= 0) {
@@ -961,8 +963,8 @@ std::string BrowserPanel::dropFolderAt(Vec2 pos) const {
       return index_->places[source_.index].root;  // empty space below a place's tree: its root
     }
   }
-  // Anywhere else on the panel: the User Library's Clips folder.
-  return lib_.userPath("Clips");
+  // Anywhere else on the panel: the User Library's Clips folder; rendered WAV files go to the Samples folder.
+  return render ? lib_.samplesFolder() : lib_.userPath("Clips");
 }
 
 std::vector<std::string> BrowserPanel::saveDroppedClips(const DragPayload& p, std::string_view folder, bool render) {

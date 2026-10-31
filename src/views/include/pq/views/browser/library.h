@@ -59,13 +59,24 @@ public:
   Library& operator=(const Library&) = delete;
 
   // --- places ---
-  // In sidebar order: the User Library (if set), the project (if titled), then the added folders.
+  // In sidebar order: the User Library (if set), the Samples folder (if a place of its own), the project (if titled),
+  // then the added folders.
   const std::vector<library::PlaceSpec>& places() const noexcept { return places_; }
   void setUserLibrary(std::string rootUtf8);  // the app: Documents\pqdaw\User Library ("" = none)
   // Preferences → Library: moves the User Library place to another folder (the indexer re-indexes it; later saves go
   // there) and calls the user library listener (the app saves the choice). False when it is already there.
   bool changeUserLibrary(std::string_view rootUtf8);
   void setUserLibraryListener(std::function<void(const std::string&)> fn) { userLibraryListener_ = std::move(fn); }
+  // T5.x-samples-folder: where new sample files go (Alt-dropped clips rendered to WAV, the samples of clips saved to the
+  // User Library's Clips/). The folder set (setSamplesFolder / changeSamplesFolder), else <User Library>\Samples; ""
+  // with neither. Outside the User Library and every other place it is a place of its own ("Samples", second).
+  std::string samplesFolder() const;
+  const std::string& samplesFolderSetting() const noexcept { return samplesFolder_; }  // "" = the default
+  void setSamplesFolder(std::string rootUtf8);  // the app's choice at start ("" = the default; no listener call)
+  // Preferences → Library: another Samples folder (re-indexed when it is a place) and the samples folder listener (the
+  // app saves the choice). False when it is already the folder.
+  bool changeSamplesFolder(std::string_view rootUtf8);
+  void setSamplesFolderListener(std::function<void(const std::string&)> fn) { samplesFolderListener_ = std::move(fn); }
   // The added folders, as the app loaded them (no listener call).
   void setFolders(std::vector<std::string> rootsUtf8);
   const std::vector<std::string>& folders() const noexcept { return folders_; }
@@ -124,7 +135,8 @@ public:
   Result<std::string> saveTuning(const doc::TuningFile& f);
   // A clip as `dir`/<name>.pqclip; an audio clip's sample is copied into `dir`/Samples/ (unless it already lies below
   // `dir`) and stored relative to `dir`. `sampleFile`: where the audio clip's sample is on this machine
-  // (ViewContext::samplePath). `dir` "" = Clips/ of the User Library.
+  // (ViewContext::samplePath). `dir` "" = Clips/ of the User Library; there, with a Samples folder set
+  // (samplesFolderSetting), the sample is copied into that folder instead (unless it already lies below it).
   Result<std::string> saveClip(const doc::Project& p, const doc::ClipSlot& c, std::string_view sampleFile = {},
                                std::string_view dir = {});
   // A library clip file read back: its clip, with the sample path resolved against the file's folder.
@@ -177,6 +189,8 @@ private:
   std::vector<library::PlaceSpec> places_;
   std::function<void(const std::vector<std::string>&)> foldersListener_;
   std::function<void(const std::string&)> userLibraryListener_;
+  std::string samplesFolder_;
+  std::function<void(const std::string&)> samplesFolderListener_;
   library::Indexer* indexer_ = nullptr;
   std::shared_ptr<const library::Index> fixed_;
   uint64_t generation_ = 0;

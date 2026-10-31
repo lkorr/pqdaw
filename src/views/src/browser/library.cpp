@@ -44,6 +44,16 @@ void Library::rebuildPlaces() {
   if (!userLibrary_.empty()) p.push_back({userLibrary_, library::PlaceKind::UserLibrary, "User Library"});
   if (!project_.empty()) p.push_back({nativePath(project_), library::PlaceKind::Project, lastComponent(project_)});
   for (const std::string& f : folders_) p.push_back({f, library::PlaceKind::Folder, lastComponent(f)});
+  // T5.x-samples-folder: the Samples folder second, unless another place already holds it (the default lies in the
+  // User Library).
+  if (const std::string s = samplesFolder(); !s.empty()) {
+    const std::string key = placeKey(s);
+    const bool covered = std::any_of(p.begin(), p.end(), [&](const library::PlaceSpec& q) {
+      const std::string k = placeKey(q.root);
+      return key == k || (key.size() > k.size() && key.compare(0, k.size(), k) == 0 && key[k.size()] == '\\');
+    });
+    if (!covered) p.insert(p.begin() + (userLibrary_.empty() ? 0 : 1), {s, library::PlaceKind::Folder, "Samples"});
+  }
   if (p == places_) return;
   places_ = std::move(p);
   if (indexer_) indexer_->setPlaces(places_);
@@ -60,6 +70,21 @@ bool Library::changeUserLibrary(std::string_view root) {
   if (n.empty() || placeKey(n) == placeKey(userLibrary_)) return false;
   setUserLibrary(n);
   if (userLibraryListener_) userLibraryListener_(userLibrary_);
+  return true;
+}
+
+std::string Library::samplesFolder() const { return samplesFolder_.empty() ? userPath("Samples") : samplesFolder_; }
+
+void Library::setSamplesFolder(std::string root) {
+  samplesFolder_ = root.empty() ? std::string() : nativePath(root);
+  rebuildPlaces();
+}
+
+bool Library::changeSamplesFolder(std::string_view root) {
+  const std::string n = nativePath(root);
+  if (n.empty() || placeKey(n) == placeKey(samplesFolder())) return false;
+  setSamplesFolder(n);
+  if (samplesFolderListener_) samplesFolderListener_(samplesFolder_);
   return true;
 }
 

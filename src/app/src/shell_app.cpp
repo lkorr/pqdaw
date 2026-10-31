@@ -288,6 +288,11 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       if (Status s = saveUserLibrarySetting(userSettingsPath(), root); !s)
         std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
     });
+    lib.setSamplesFolder(samplesFolderDir());  // T5.x-samples-folder
+    lib.setSamplesFolderListener([](const std::string& root) {
+      if (Status s = saveSamplesFolderSetting(userSettingsPath(), root); !s)
+        std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
+    });
     library::IndexerConfig ic;
     if (const std::string data = libraryDataDir(); !data.empty()) {
       ic.dataDir = std::filesystem::path(std::u8string(data.begin(), data.end()));

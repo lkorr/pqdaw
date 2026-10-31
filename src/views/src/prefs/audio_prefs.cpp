@@ -510,6 +510,35 @@ void PreferencesWindow::buildLibraryTab(Widget& body) {
                  TextTone::Secondary);
   }
 
+  section(page, "samples-section", "Samples Folder");  // T5.x-samples-folder
+  {
+    auto& r = page.add<Widget>("samples-location");
+    r.setLayout(LayoutKind::Row);
+    r.setHeight(Length::fixed(kRowHeight));
+    samplesFolder_ = &r.add<Label>("path", "", FontRoleId::Small, TextTone::Primary);
+    samplesFolder_->setInfo("Samples Folder", "Where new sample files go: clips Alt-dropped on the browser and rendered "
+                                              "to WAV, and the samples of clips saved to the User Library. The browser "
+                                              "shows it under Places (inside the User Library: there).");
+  }
+  {
+    auto& r = page.add<Widget>("samples-browse-row");
+    r.setLayout(LayoutKind::Row);
+    r.setHeight(Length::fixed(kRowHeight));
+    r.setGap(8);
+    browseSamples_ = &r.add<Button>("browse", "Browse\xE2\x80\xA6");
+    browseSamples_->setWidth(Length::fixed(88));
+    browseSamples_->setInfo("Browse", "Chooses another folder for new samples. It applies at once (the browser indexes "
+                                      "it); files already saved stay where they are.");
+    browseSamples_->onClick = [this] {
+      if (FileDialogs* d = ctx_->fileDialogs())
+        d->chooseFolder([&l = ctx_->library()](std::string folder) {
+          if (!folder.empty()) (void)l.changeSamplesFolder(folder);
+        });
+    };
+    r.add<Label>("note", "Rendered clips and the samples of saved clips go here.", FontRoleId::Small,
+                 TextTone::Secondary);
+  }
+
   section(page, "places-section", "Places");
   {
     auto& list = page.add<FolderList>(lib);
@@ -554,6 +583,8 @@ void PreferencesWindow::updateLibrary() {
   const Library& lib = ctx_->library();
   const std::string path = lib.userLibrary().empty() ? std::string("No User Library") : lib.userLibrary();
   if (userLibrary_->text() != path) userLibrary_->setText(path);
+  const std::string samples = lib.samplesFolder().empty() ? std::string("No Samples Folder") : lib.samplesFolder();
+  if (samplesFolder_->text() != samples) samplesFolder_->setText(samples);
   auto* list = static_cast<FolderList*>(folderList_);
   if (list->selected >= static_cast<int32_t>(lib.folders().size())) list->selected = -1;
   removeFolder_->setEnabled(list->selected >= 0);
@@ -573,6 +604,11 @@ void PreferencesWindow::showTab(Tab t) {
 const std::string& PreferencesWindow::userLibraryText() const {
   static const std::string kNone;
   return userLibrary_ ? userLibrary_->text() : kNone;
+}
+
+const std::string& PreferencesWindow::samplesFolderText() const {
+  static const std::string kNone;
+  return samplesFolder_ ? samplesFolder_->text() : kNone;
 }
 
 int32_t PreferencesWindow::selectedFolder() const noexcept {

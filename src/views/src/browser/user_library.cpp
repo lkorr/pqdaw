@@ -214,10 +214,15 @@ Result<std::string> Library::saveClip(const doc::Project& p, const doc::ClipSlot
     if (!fs::exists(src, ec)) return Error{ErrorCode::NotFound, "the clip's sample is missing: " + s->path, {}};
     const std::string srcUtf8 = utf8Of(src);
     std::string target = srcUtf8;
-    const std::string rel = doc::relativeLibraryPath(dir, srcUtf8);
-    const bool below = rel.find(':') == std::string::npos && rel.rfind("//", 0) != 0;
-    if (!below) {
-      const std::string samples = join(dir, "Samples");
+    const auto below = [&srcUtf8](const std::string& base) {
+      const std::string rel = doc::relativeLibraryPath(base, srcUtf8);
+      return rel.find(':') == std::string::npos && rel.rfind("//", 0) != 0;
+    };
+    // T5.x-samples-folder: a clip saved to the User Library's Clips/ copies its sample into the Samples folder when
+    // one is set (else Clips/Samples/, the T5.11 layout); a clip saved elsewhere keeps its sample next to it.
+    const bool toSamplesFolder = !samplesFolder_.empty() && placeKey(dir) == placeKey(userPath("Clips"));
+    const std::string samples = toSamplesFolder ? samplesFolder_ : join(dir, "Samples");
+    if (!below(dir) && !(toSamplesFolder && below(samples))) {
       fs::create_directories(pathOf(samples), ec);
       // Reuse a copy with the same name and the same bytes (M5 review M18: name and size alone let two one-shots of
       // one name and length from different packs share a file); else a free name.

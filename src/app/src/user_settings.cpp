@@ -213,6 +213,15 @@ Status saveUserLibrarySetting(const std::string& path, const std::string& rootUt
   return saveSection(path, "library", json(rootUtf8), "userLibrary");
 }
 
+std::string loadSamplesFolderSetting(const std::string& path) {
+  const json f = libraryField(path, "samplesFolder");
+  return f.is_string() ? f.get<std::string>() : std::string();
+}
+
+Status saveSamplesFolderSetting(const std::string& path, const std::string& rootUtf8) {
+  return saveSection(path, "library", json(rootUtf8), "samplesFolder");
+}
+
 namespace {
 std::string envUtf8(const wchar_t* name) {
   wchar_t buf[MAX_PATH];
@@ -245,6 +254,12 @@ std::string userLibraryDir() {
   const fs::path p = fs::path(docs) / L"pqdaw" / L"User Library";
   CoTaskMemFree(docs);
   return ensureDir(p);
+}
+
+std::string samplesFolderDir() {
+  if (std::string d = envUtf8(L"PQ_SAMPLES_DIR"); !d.empty()) return ensureDir(utf8Path(d));
+  if (const std::string set = loadSamplesFolderSetting(userSettingsPath()); !set.empty()) return ensureDir(utf8Path(set));
+  return {};
 }
 
 }  // namespace pq::app
