@@ -1,7 +1,7 @@
 // T5.1 / T5.2: media decoding and streaming. Runner benchmarks (pq_bench.h):
 //   decode/<fixture>        decode the whole fixture (seek 0 + read in 4096-frame chunks into planar float; the decoder
 //                           is opened once): MB/s of decoded float32 output and MB/s of file input, × realtime
-//   probe/<fixture>         probe() of the file (map, parse headers, identity): µs per file (warm OS cache)
+//   probe/<fixture>         probe() of the file (map, parse headers, identity): ns per file (warm OS cache)
 //   pcm/<encoding> stereo   the interleaved → planar conversion kernel (pq/media/pcm.h): ns per stereo frame
 //   hash/content 1 GiB      contentHashBytes on a 1 GiB buffer (three 64 KiB windows); hash/bytes 64 MiB: GB/s
 //   stream/span 64          StreamPool::span of 64 frames from a filled ring (the audio thread's per-block cost)
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
   for (const char* name : kFixtures) {
     r.add(std::string("probe/") + name, [name](bench::Context& c) {
       const fs::path p = fixture(name);
-      c.measure([&] { bench::doNotOptimize(probe(p)->frames); }, 1, "us/file");
+      c.measure([&] { bench::doNotOptimize(probe(p)->frames); }, 1, "ns/file");
     });
   }
 
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
 
   r.add("hash/content 1 GiB", [](bench::Context& c) {
     std::vector<uint8_t> big(std::size_t{1} << 30, 1);
-    c.measure([&] { bench::doNotOptimize(contentHashBytes(big)); }, 1, "us/file");
+    c.measure([&] { bench::doNotOptimize(contentHashBytes(big)); }, 1, "ns/file");
   });
   r.add("hash/bytes 64 MiB", [](bench::Context& c) {
     std::vector<uint8_t> buf(std::size_t{64} << 20, 3);
@@ -121,6 +121,7 @@ int main(int argc, char** argv) {
   r.add("stream/span 64", [](bench::Context& c) {
     StreamPool pool(1, 2 * 196608);
     VirtualAlloc(pool.ring(0), pool.ringFloats() * sizeof(float), MEM_COMMIT, PAGE_READWRITE);
+    std::memset(pool.ring(0), 0, pool.ringFloats() * sizeof(float));  // the disk thread writes rings first
     const StreamId id = pool.claim(1, 0, Direction::Forward, 2, int64_t{1} << 39);
     int64_t pos = 0;
     c.measure(
@@ -140,6 +141,7 @@ int main(int argc, char** argv) {
     std::vector<SampleCursor<FakeSample>> cur(kStreams);
     for (uint32_t i = 0; i < kStreams; ++i) {
       VirtualAlloc(pool.ring(i), pool.ringFloats() * sizeof(float), MEM_COMMIT, PAGE_READWRITE);
+      std::memset(pool.ring(i), 0, pool.ringFloats() * sizeof(float));  // the disk thread writes rings first
       FakeSample& s = samples[i];
       s.v.channels = 2;
       s.v.frames = int64_t{1} << 38;

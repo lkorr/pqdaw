@@ -528,11 +528,15 @@ Status parseOgg(const View& v, SampleInfo& info) {
   const uint64_t size = v.b.size();
   const uint64_t from = size > (64u << 10) ? size - (64u << 10) : 0;
   int64_t last = -1;
-  for (uint64_t pos = from; pos + 27 <= size; ++pos) {
-    if (v.b[pos] != 'O') continue;
-    if (oggPageHeader(v, pos) == 0 || v.le32(pos + 14) != serial) continue;
-    const auto granule = static_cast<int64_t>(v.le64(pos + 6));
-    if (granule >= 0) last = granule;
+  for (uint64_t pos = size >= 27 ? size - 27 : 0; pos + 1 > from && pos + 27 <= size; --pos) {  // from the end back
+    if (v.b[pos] == 'O' && oggPageHeader(v, pos) != 0 && v.le32(pos + 14) == serial) {
+      const auto granule = static_cast<int64_t>(v.le64(pos + 6));
+      if (granule >= 0) {
+        last = granule;
+        break;
+      }
+    }
+    if (pos == 0) break;
   }
   if (last < 0) return parseError("OGG: no final granule position");
   info.frames = static_cast<uint64_t>(last);
