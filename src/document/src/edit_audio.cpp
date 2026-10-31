@@ -148,9 +148,11 @@ EditResult setAudioClipCrossfade(const Project& p, ClipRef clip, Ticks length) {
     }
     const Track& t = *f.track;
     const int32_t i = findClipIndex(t, c.id);
-    if (i <= 0 || t.clips[static_cast<size_t>(i) - 1].end() != c.start)
+    // The left neighbour ends exactly at the start (or after it: warp-Off clips a tempo increase lengthened, M5 H7).
+    const ClipSlot& l = t.clips[static_cast<size_t>(i > 0 ? i - 1 : 0)];
+    if (i <= 0 || l.end() < c.start || l.start() >= c.start)
       return invalid("a crossfade needs a clip ending exactly where this one starts");
-    const Ticks left = t.clips[static_cast<size_t>(i) - 1].length();
+    const Ticks left = c.start - l.start();
     c.crossfadeIn = std::min({length, c.length, left});
     return ok();
   });

@@ -173,6 +173,7 @@ private:
   struct Piece {
     uint32_t at = 0, frames = 0;  // output frames [at, at + frames) of the run
     int64_t pos = 0, step = 0;    // 32.32 source position of the first frame, per frame
+    bool wrap = false;            // RePitch: the piece starts at a loop wrap
   };
 
   bool hasVoice(uint32_t slot, const AudioSequenceImage::Clip* c) const noexcept;

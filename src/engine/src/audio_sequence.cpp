@@ -55,14 +55,20 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
       c.sample = d.playable && d.sample < img->samples_.size() && d.gain > 0.0f ? d.sample : kNoSample;
       c.warp = d.warp;
       c.reverse = d.reverse;
+      if (d.cutEnd != 0 && (d.cutEnd <= d.start || d.cutEnd > d.start + d.length))
+        return audioError("clip " + std::to_string(d.id) + ": cut end outside the clip");
       c.bodyStart = tempo.ticksToSamples(d.start, sr);
-      c.bodyEnd = std::max(tempo.ticksToSamples(d.start + d.length, sr), c.bodyStart + 1);
+      // The whole clip's end: the content laws (anchors, the reverse mapping) use it, so a cut keeps every instant.
+      const SampleTime fullEnd = std::max(tempo.ticksToSamples(d.start + d.length, sr), c.bodyStart + 1);
+      const bool cut = d.cutEnd != 0 && d.cutEnd < d.start + d.length;
+      c.bodyEnd = cut ? std::min(std::max(tempo.ticksToSamples(d.cutEnd, sr), c.bodyStart + 1), fullEnd) : fullEnd;
       c.playStart = c.bodyStart;
       c.playEnd = c.bodyEnd;
       c.gain = d.gain;
       // Crossfade with the previous clip (the document keeps one only while the two are adjacent).
-      const bool xin = d.crossfadeIn > 0 && i > 0 && tr.clips[i - 1].start + tr.clips[i - 1].length == d.start &&
-                       img->clips_.size() > first;
+      const AudioClipDesc& pd = tr.clips[i > 0 ? i - 1 : 0];
+      const Ticks prevEnd = pd.cutEnd != 0 ? pd.cutEnd : pd.start + pd.length;
+      const bool xin = d.crossfadeIn > 0 && i > 0 && prevEnd == d.start && img->clips_.size() > first;
       if (xin) {
         const Ticks half = d.crossfadeIn / 2;
         c.xinStart = tempo.ticksToSamples(d.start - half, sr);
@@ -88,7 +94,8 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
         c.inEnd = c.bodyStart + std::clamp<SampleTime>(f, 0, body);
       }
       {
-        SampleTime f = c.bodyEnd - tempo.ticksToSamples(d.start + d.length - d.fadeOut, sr);
+        // A cut clip ends with the edge declick (its fade-out belongs to the end it no longer reaches).
+        SampleTime f = cut ? 0 : c.bodyEnd - tempo.ticksToSamples(d.start + d.length - d.fadeOut, sr);
         c.outCurve = d.fadeOutCurve;
         if (f < D) {
           f = D;
@@ -101,7 +108,7 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
         c.step = toFixed(k);
         const int64_t a = toFixed(d.contentStartFrame);
         if (d.reverse) {
-          c.anchor = a + (body - 1) * c.step;  // f(S1 − 1) = contentStartFrame exactly
+          c.anchor = a + (fullEnd - c.bodyStart - 1) * c.step;  // f(S1 − 1) = contentStartFrame exactly (S1: whole clip)
           c.step = -c.step;
         } else {
           c.anchor = a;
@@ -136,6 +143,21 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
         }
       }
       img->clips_.push_back(c);
+    }
+    // M5 review M7: a crossfade between two clips that read the same sample with one continuous source law (a split
+    // crossfaded back together) is equal gain; equal power would add +3 dB to identical material.
+    for (size_t i = first + 1; i < img->clips_.size(); ++i) {
+      Clip& c = img->clips_[i];
+      Clip& p = img->clips_[i - 1];
+      if (c.xinEnd <= c.xinStart || p.xoutStart != c.xinStart || c.sample != p.sample || c.sample == kNoSample ||
+          c.warp != p.warp || c.reverse != p.reverse)
+        continue;
+      bool same = true;
+      for (const SampleTime s : {c.xinStart, (c.xinStart + c.xinEnd) / 2, c.xinEnd - 1}) {
+        const std::optional<double> a = img->sourceFrame(p, s), b = img->sourceFrame(c, s);
+        same = same && a && b && std::abs(*a - *b) <= 1e-3;
+      }
+      c.xinLinear = p.xoutLinear = same;
     }
     for (size_t i = first; i < img->clips_.size(); ++i) {  // where the static envelope is exactly `gain`
       Clip& c = img->clips_[i];

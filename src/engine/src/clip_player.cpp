@@ -14,7 +14,7 @@ namespace pq::engine {
 namespace {
 
 constexpr int64_t kOne = dsp::kFixedOne;
-constexpr uint32_t kMaxPieces = 16;
+constexpr uint32_t kMaxPieces = 64;  // a run: up to maxBlock / kRePitchGrid + 1 cells, plus loop wraps
 constexpr uint32_t kNone = 0xFFFFFFFFu;
 constexpr int64_t kSlack = 8;  // history frames kept below what the filter needs (rounding of re-anchored rates)
 
@@ -51,57 +51,133 @@ float staticShape(const AudioSequenceImage::Clip& c, SampleTime t) noexcept {
     g *= automationShape(static_cast<double>(t - c.bodyStart) / static_cast<double>(c.inEnd - c.bodyStart), c.inCurve);
   if (t >= c.outStart && t < c.bodyEnd)
     g *= 1.0 - automationShape(static_cast<double>(t - c.outStart) / static_cast<double>(c.bodyEnd - c.outStart), c.outCurve);
-  if (t >= c.xinStart && t < c.xinEnd)
-    g *= std::sin(0.5 * std::numbers::pi * (static_cast<double>(t - c.xinStart) + 0.5) / static_cast<double>(c.xinEnd - c.xinStart));
-  if (t >= c.xoutStart && t < c.xoutEnd)
-    g *= std::cos(0.5 * std::numbers::pi * (static_cast<double>(t - c.xoutStart) + 0.5) / static_cast<double>(c.xoutEnd - c.xoutStart));
+  if (t >= c.xinStart && t < c.xinEnd) {
+    const double u = (static_cast<double>(t - c.xinStart) + 0.5) / static_cast<double>(c.xinEnd - c.xinStart);
+    g *= c.xinLinear ? u : std::sin(0.5 * std::numbers::pi * u);
+  }
+  if (t >= c.xoutStart && t < c.xoutEnd) {
+    const double u = (static_cast<double>(t - c.xoutStart) + 0.5) / static_cast<double>(c.xoutEnd - c.xoutStart);
+    g *= c.xoutLinear ? 1.0 - u : std::cos(0.5 * std::numbers::pi * u);
+  }
   return static_cast<float>(g);
 }
 
-// RePitch: the source pieces of a run of n output frames from song sample s (block-linear content position, split
-// where the loop wraps). Returns the count; *wrapAfter = the sample of the next wrap after the run (INT64_MAX: none).
-uint32_t repitchPieces(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s, uint32_t n,
-                       int64_t* pos, int64_t* step, uint32_t* at, SampleTime* wrapAfter) noexcept {  // RT-safe
-  const double oA = img.repitchOffset(c, s), oB = img.repitchOffset(c, s + n);
+// RePitch content positions are linear on a fixed grid of kRePitchGrid song samples (M5 review M3): each cell
+// [g, g + G) of the song gets the law through its two ends, whatever the engine block or run boundaries are, so a
+// render is bit-identical across block sizes. Inside a cell the position is base + j · step − m · span (32.32,
+// wrapping), with m the loop folds since the cell start; pieces split where m changes (a wrap) and at cell edges.
+constexpr SampleTime kRePitchGrid = 256;
+
+struct RePitchCell {
+  SampleTime g = 0;   // the cell's first song sample
+  double pA = 0.0;    // unfolded content position (ticks) at g
+  double dp = 0.0;    // per song sample
+  int64_t base = 0;   // 32.32 source frame of the folded pA
+  int64_t step = 0;   // 32.32 per song sample
+  int64_t m0 = 0;     // folds of pA
+};
+
+// How many loop spans p is folded by (foldContent(p) = p − foldCount(p) · span). RT-safe.
+int64_t foldCount(double p, const ContentLoop& l) noexcept {
+  if (!contentLooped(l) || p < static_cast<double>(l.end)) return 0;
+  return static_cast<int64_t>(std::floor((p - static_cast<double>(l.end)) / static_cast<double>(l.end - l.start))) + 1;
+}
+
+RePitchCell rePitchCell(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime t) noexcept {  // RT-safe
+  RePitchCell k;
+  k.g = (t >= 0 ? t : t - (kRePitchGrid - 1)) / kRePitchGrid * kRePitchGrid;
   const auto L = static_cast<double>(c.length);
-  const double pA = static_cast<double>(c.contentStart) + (c.reverse ? L - oA : oA);
+  const double oA = img.repitchOffset(c, k.g), oB = img.repitchOffset(c, k.g + kRePitchGrid);
+  k.pA = static_cast<double>(c.contentStart) + (c.reverse ? L - oA : oA);
   const double pB = static_cast<double>(c.contentStart) + (c.reverse ? L - oB : oB);
-  const double dp = (pB - pA) / static_cast<double>(n);
-  const int64_t st = toFixed(dp * c.framesPerTick);
-  *wrapAfter = INT64_MAX;
-  if (!c.looped || dp == 0.0) {
-    pos[0] = toFixed(pA * c.framesPerTick);
-    step[0] = st;
-    at[0] = 0;
-    return 1;
-  }
-  const auto end = static_cast<double>(c.loop.end), span = static_cast<double>(c.loop.end - c.loop.start);
-  // The first output index at or past the next boundary from index i (boundaries end + k·span, k ≥ 0).
-  auto boundaryIndex = [&](double p) noexcept -> double {
-    if (dp > 0.0) {
-      const double b = p < end ? end : end + span * (std::floor((p - end) / span) + 1.0);
-      return std::ceil((b - pA) / dp);
-    }
-    if (p <= end) return 1e300;
-    const double b = end + span * (std::ceil((p - end) / span) - 1.0);
-    return std::floor((pA - b) / -dp) + 1.0;
-  };
-  uint32_t k = 0, i = 0;
-  while (i < n && k < kMaxPieces) {
-    const double p = pA + static_cast<double>(i) * dp;
-    double e = boundaryIndex(p);
-    if (!(e > static_cast<double>(i))) e = static_cast<double>(i) + 1.0;
-    const auto next = static_cast<uint32_t>(std::min<double>(e, n));
-    at[k] = i;
-    pos[k] = toFixed(foldContent(p, c.loop) * c.framesPerTick);
-    step[k] = st;
-    ++k;
-    i = k == kMaxPieces ? n : next;
-  }
-  // The first wrap after the run's last frame (it may fall on the next run's first frame).
-  const double e = boundaryIndex(pA + static_cast<double>(n - 1) * dp);
-  if (e < 1e299) *wrapAfter = s + static_cast<SampleTime>(e);
+  k.dp = (pB - k.pA) / static_cast<double>(kRePitchGrid);
+  k.step = toFixed(k.dp * c.framesPerTick);
+  k.base = toFixed(foldContent(k.pA, c.loop) * c.framesPerTick);
+  k.m0 = foldCount(k.pA, c.loop);
   return k;
+}
+
+int64_t cellFolds(const RePitchCell& k, const AudioSequenceImage::Clip& c, SampleTime t) noexcept {  // RT-safe
+  return c.looped ? foldCount(k.pA + static_cast<double>(t - k.g) * k.dp, c.loop) : 0;
+}
+
+// The first sample after t (exclusive) in [t + 1, limit) where the fold count of the cell's law differs from m;
+// limit when none. RT-safe.
+SampleTime nextFoldChange(const RePitchCell& k, const AudioSequenceImage::Clip& c, SampleTime t, int64_t m,
+                          SampleTime limit) noexcept {
+  if (!c.looped || k.dp == 0.0 || t + 1 >= limit) return limit;
+  const auto end = static_cast<double>(c.loop.end), span = static_cast<double>(c.loop.end - c.loop.start);
+  double j = 0.0;
+  if (k.dp > 0.0) {  // the count becomes m + 1 at p = end + m · span
+    j = std::ceil((end + static_cast<double>(m) * span - k.pA) / k.dp);
+  } else {  // the count becomes m − 1 below p = end + (m − 1) · span
+    if (m == 0) return limit;
+    j = std::floor((k.pA - (end + static_cast<double>(m - 1) * span)) / -k.dp) + 1.0;
+  }
+  const double rel = static_cast<double>(limit - k.g);
+  SampleTime x = j >= rel ? limit : k.g + static_cast<SampleTime>(std::max(j, 0.0));
+  if (x <= t) x = t + 1;
+  // The formula can be one off where p lands on a boundary: settle it on the count itself (monotonic in t).
+  while (x > t + 1 && cellFolds(k, c, x - 1) != m) --x;
+  while (x < limit && cellFolds(k, c, x) == m) ++x;
+  return x;
+}
+
+// RePitch: the source pieces of a run of n output frames from song sample s (wrap[i]: piece i starts at a loop wrap).
+// Returns the count; *wrapAfter = the next wrap after the run, exact when it is within `horizon` samples of the run's
+// end (the declick needs it), else an estimate beyond that (stream look-ahead only; INT64_MAX: none).
+uint32_t repitchPieces(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s, uint32_t n,
+                       SampleTime horizon, int64_t* pos, int64_t* step, uint32_t* at, bool* wrap,
+                       SampleTime* wrapAfter) noexcept {  // RT-safe
+  const SampleTime end = s + n;
+  const int64_t spanF = c.looped ? toFixed(static_cast<double>(c.loop.end - c.loop.start) * c.framesPerTick) : 0;
+  RePitchCell k = rePitchCell(img, c, s);
+  // The fold count of the sample before the run, by its own cell's law (a wrap may fall on the run's first frame).
+  int64_t prevM = 0;
+  if (c.looped) {
+    const RePitchCell kp = s - 1 >= k.g ? k : rePitchCell(img, c, s - 1);
+    prevM = cellFolds(kp, c, s - 1);
+  }
+  uint32_t count = 0;
+  SampleTime t = s;
+  while (t < end && count < kMaxPieces) {
+    if (t >= k.g + kRePitchGrid) k = rePitchCell(img, c, t);
+    const SampleTime cellEnd = std::min(k.g + kRePitchGrid, end);
+    const int64_t m = cellFolds(k, c, t);
+    const SampleTime next = count + 1 == kMaxPieces ? end : nextFoldChange(k, c, t, m, cellEnd);
+    at[count] = static_cast<uint32_t>(t - s);
+    pos[count] = static_cast<int64_t>(static_cast<uint64_t>(k.base) + static_cast<uint64_t>(t - k.g) * static_cast<uint64_t>(k.step) -
+                                      static_cast<uint64_t>(m - k.m0) * static_cast<uint64_t>(spanF));
+    step[count] = k.step;
+    wrap[count] = c.looped && m != prevM;
+    ++count;
+    prevM = m;  // the count of the piece's last sample (constant over the piece)
+    t = next;
+  }
+  *wrapAfter = INT64_MAX;
+  if (!c.looped || k.dp == 0.0) return count;
+  // Exactly, over the cells up to `horizon` past the run.
+  const SampleTime limit = end + std::max<SampleTime>(horizon, 0);
+  for (SampleTime u = end; u <= limit;) {
+    if (u >= k.g + kRePitchGrid || u < k.g) k = rePitchCell(img, c, u);
+    const int64_t m = cellFolds(k, c, u);
+    if (m != prevM) {
+      *wrapAfter = u;
+      return count;
+    }
+    const SampleTime cellEnd = std::min(k.g + kRePitchGrid, limit + 1);
+    const SampleTime x = nextFoldChange(k, c, u, m, cellEnd);
+    if (x < cellEnd) {
+      *wrapAfter = x;
+      return count;
+    }
+    prevM = m;
+    u = cellEnd;
+  }
+  // Beyond the horizon: the last cell's law extended (an estimate, kept past the horizon).
+  const SampleTime far = nextFoldChange(k, c, limit, cellFolds(k, c, limit), INT64_MAX / 4);
+  if (far < INT64_MAX / 4) *wrapAfter = std::max(far, limit + 1);
+  return count;
 }
 
 }  // namespace
@@ -410,30 +486,38 @@ uint32_t ClipPlayer::pieces(Voice& v, SampleTime s, uint32_t n, Piece* out, Samp
   }
   int64_t pos[kMaxPieces], step[kMaxPieces];
   uint32_t at[kMaxPieces];
-  const uint32_t k = repitchPieces(*v.img, c, s, n, pos, step, at, nextWrap);
-  for (uint32_t i = 0; i < k; ++i) out[i] = {at[i], (i + 1 < k ? at[i + 1] : n) - at[i], pos[i], step[i]};
+  bool wrap[kMaxPieces];
+  const uint32_t k = repitchPieces(*v.img, c, s, n, static_cast<SampleTime>(declick_) + 1, pos, step, at, wrap, nextWrap);
+  for (uint32_t i = 0; i < k; ++i) out[i] = {at[i], (i + 1 < k ? at[i + 1] : n) - at[i], pos[i], step[i], wrap[i]};
   return k;
 }
 
 void ClipPlayer::renderRun(Voice& v, uint32_t frame, SampleTime s, uint32_t n) noexcept {  // RT-safe
   const AudioSequenceImage::Clip& c = *v.clip;
   const media::SampleView& view = v.img->sample(c.sample).view();
-  if (v.nextWrap <= s) v.lastWrap = v.nextWrap;  // the wrap the last run saw coming fell on this run's first frame
   Piece pc[kMaxPieces];
   SampleTime wrapAfter = INT64_MAX;
   const uint32_t np = pieces(v, s, n, pc, &wrapAfter);
   const SampleTime D = declick_;
+  bool anyWrap = false;
+  for (uint32_t k = 0; k < np; ++k) anyWrap = anyWrap || pc[k].wrap;
   const bool wrapNear = c.looped && D > 0 &&
-                        (np > 1 || (v.lastWrap != INT64_MIN && s - v.lastWrap <= D) ||
+                        (anyWrap || (v.lastWrap != INT64_MIN && s - v.lastWrap <= D) ||
                          (wrapAfter != INT64_MAX && wrapAfter - (s + n) <= D));
   const bool flat = s >= c.flatStart && s + n <= c.flatEnd && v.inLen == 0 && v.state != State::Releasing &&
                     v.rampLen == 0 && !wrapNear;
   const float* env = nullptr;
   if (!flat) {
     float* e = env_.data();
+    SampleTime lastWrap = v.lastWrap;
     for (uint32_t k = 0; k < np; ++k) {
-      const SampleTime lastWrap = k == 0 ? v.lastWrap : s + pc[k].at;
-      const SampleTime nextWrap = k + 1 < np ? s + pc[k + 1].at : wrapAfter;
+      if (pc[k].wrap) lastWrap = s + pc[k].at;
+      SampleTime nextWrap = wrapAfter;
+      for (uint32_t q = k + 1; q < np; ++q)
+        if (pc[q].wrap) {
+          nextWrap = s + pc[q].at;
+          break;
+        }
       for (uint32_t i = pc[k].at; i < pc[k].at + pc[k].frames; ++i) {
         const SampleTime t = s + i;
         float g = staticShape(c, t);
@@ -453,7 +537,8 @@ void ClipPlayer::renderRun(Voice& v, uint32_t frame, SampleTime s, uint32_t n) n
     }
     env = e;
   }
-  if (np > 1) v.lastWrap = s + pc[np - 1].at;
+  for (uint32_t k = 0; k < np; ++k)
+    if (pc[k].wrap) v.lastWrap = s + pc[k].at;
   v.nextWrap = wrapAfter;
   // Q151 item 7: a wrap within the look-ahead on a streamed sample: its next pass is claimed now.
   if (c.looped && wrapAfter != INT64_MAX && wrapAfter - (s + n) <= lookahead_ && view.streamed())
@@ -694,8 +779,9 @@ std::optional<ClipPlayer::StreamStart> ClipPlayer::streamStart(const AudioSequen
   } else {
     int64_t ps[kMaxPieces], st[kMaxPieces];
     uint32_t at[kMaxPieces];
+    bool wr[kMaxPieces];
     SampleTime w = 0;
-    (void)repitchPieces(img, c, vs, std::max(blockFrames, 1u), ps, st, at, &w);
+    (void)repitchPieces(img, c, vs, std::max(blockFrames, 1u), 0, ps, st, at, wr, &w);
     pos = ps[0];
     step = st[0];
   }

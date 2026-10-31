@@ -28,7 +28,11 @@
 //   × fade in   over [S0, S0 + F_in)      the automation curve law (Q39, pq/core/automation_curve.h) from 0 to 1
 //   × fade out  over [S1 − F_out, S1)     the same law from 1 to 0
 //   × crossfade in / out                  equal power (sin / cos of π/2 · u over the window; the two clips' windows
-//                                         are the same samples, so the gains are exactly complementary in power)
+//                                         are the same samples, so the gains are exactly complementary in power) for
+//                                         unrelated material; equal gain (u / 1 − u: complementary in amplitude) when
+//                                         the two clips read the same sample with one continuous source law across the
+//                                         window (a split crossfaded back together: the material is identical, so
+//                                         equal power would swell by +3 dB; M5 review M7, QUESTIONS Q?-T5.x-fix-a)
 //   × loop-wrap declick (RePitch loops)   linear over `declick` frames on both sides of every wrap
 // Edge declicks (AudioBuildOptions::edgeDeclick, the plan's "create fades on clip edges", 2 ms): an edge without a
 // crossfade whose user fade is shorter than the declick gets a linear declick of that length instead. An edge with a
@@ -89,6 +93,7 @@ struct AudioClipDesc {
   Ticks fadeIn = 0, fadeOut = 0;
   float fadeInCurve = 0.0f, fadeOutCurve = 0.0f;
   Ticks crossfadeIn = 0;           // with the previous clip of the slot (adjacent: it ends at `start`)
+  Ticks cutEnd = 0;                // > 0: the clip stops sounding here (the next clip's start); content laws keep `length`
 };
 
 struct AudioTrackDesc {
@@ -116,7 +121,9 @@ public:
     SampleTime bodyStart = 0, bodyEnd = 0;
     SampleTime playStart = 0, playEnd = 0;
     // Envelope: fade in over [bodyStart, inEnd) (curve inCurve; 0 = linear), fade out over [outStart, bodyEnd),
-    // equal-power windows [xinStart, xinEnd) (in) and [xoutStart, xoutEnd) (out; empty: none).
+    // crossfade windows [xinStart, xinEnd) (in) and [xoutStart, xoutEnd) (out; empty: none), equal power unless
+    // xinLinear / xoutLinear (equal gain: the two clips continue one source law).
+    bool xinLinear = false, xoutLinear = false;
     float gain = 1.0f;
     float inCurve = 0.0f, outCurve = 0.0f;
     SampleTime inEnd = 0, outStart = 0;

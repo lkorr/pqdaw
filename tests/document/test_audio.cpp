@@ -194,6 +194,93 @@ TEST_CASE("audio: a tempo edit moves the end of an Off clip and leaves a Re-Pitc
   CHECK(f.store.current() == before);
 }
 
+// M5 review H7: a tempo increase lengthens warp-Off clips (they keep their seconds), so back-to-back Off clips overlap.
+// They used to play summed and the crossfade was dropped for good. Now the left clip ends at the right one's start in
+// the lowering, the crossfade stays, every instant plays the frame it played before, and the edit is reversible.
+TEST_CASE("audio: a tempo increase keeps adjacent warp-Off clips from overlapping and keeps their crossfade") {
+  AudioProject f;
+  const ClipRef a = f.drop(f.audio, 0);
+  const ClipRef b = f.drop(f.audio, kBar);  // 2 s at 120 BPM = one bar: adjacent
+  commit(f.store, ops::setAudioClipCrossfade(f.doc(), b, kPpq / 2));
+  const AudioTrackDesc at120 = f.lowered(f.audio);
+  const TempoMap tm120 = f.doc().timeline->tempoMap;
+  REQUIRE(f.store.dispatch(SetTempoMap{{TempoPoint{0, 240.0, TempoCurve::Step}}}).ok());
+  const Track& t = f.track(f.audio);
+  REQUIRE(t.clips.size() == 2);
+  CHECK(t.clips[0].end() > t.clips[1].start());  // the document overlaps (a keeps its 2 s)
+  CHECK(f.clip(f.audio, b.clip).crossfadeIn == kPpq / 2);  // kept
+  const AudioTrackDesc d = f.lowered(f.audio);
+  REQUIRE(d.clips.size() == 2);
+  CHECK(d.clips[0].cutEnd == t.clips[1].start());
+  CHECK(d.clips[1].crossfadeIn == kPpq / 2);
+  // At most one clip sounds at any instant outside the crossfade (sourceFrameAt: the clip's own law).
+  const TempoMap& tm = f.doc().timeline->tempoMap;
+  int both = 0;
+  for (int i = 0; i < 1000; ++i) {
+    const double tau = 4.0 * (i + 0.5) / 1000.0;
+    int n = 0;
+    for (const AudioClipDesc& c : d.clips) n += sourceFrameAt(c, tm, tau) ? 1 : 0;
+    both += n > 1;
+  }
+  CHECK(both == 0);
+  // b plays the frames it played at 120 BPM, measured from its start (an Off clip's law is in seconds from its start).
+  {
+    const double s240 = tm.ticksToSeconds(d.clips[1].start), s120 = tm120.ticksToSeconds(at120.clips[1].start);
+    for (double x : {0.0, 0.3, 1.1, 1.9}) {
+      CAPTURE(x);
+      const auto f240 = sourceFrameAt(d.clips[1], tm, s240 + x);
+      const auto f120 = sourceFrameAt(at120.clips[1], tm120, s120 + x);
+      REQUIRE(f240);
+      REQUIRE(f120);
+      CHECK(*f240 == doctest::Approx(*f120));
+    }
+  }
+  // The clip a plays its own frames up to b's start, not past it.
+  CHECK(sourceFrameAt(d.clips[0], tm, tm.ticksToSeconds(t.clips[1].start()) - 0.01).has_value());
+  CHECK_FALSE(sourceFrameAt(d.clips[0], tm, tm.ticksToSeconds(t.clips[1].start()) + 0.01).has_value());
+  // Back to 120 BPM (a new edit, not an undo): adjacent again, the crossfade still there, the same lowering.
+  REQUIRE(f.store.dispatch(SetTempoMap{{TempoPoint{0, 120.0, TempoCurve::Step}}}).ok());
+  CHECK(f.track(f.audio).clips[0].end() == f.track(f.audio).clips[1].start());
+  CHECK(f.clip(f.audio, b.clip).crossfadeIn == kPpq / 2);
+  {
+    const AudioTrackDesc back = f.lowered(f.audio);
+    REQUIRE(back.clips.size() == 2);
+    CHECK(back.clips[0].cutEnd == 0);
+    CHECK(back.clips[1].crossfadeIn == at120.clips[1].crossfadeIn);
+    CHECK(back.clips[0].length == at120.clips[0].length);
+    sameFrames(back, f.doc().timeline->tempoMap, at120, tm120, 0.0, 4.0);
+  }
+  // A tempo decrease opens a gap: then the crossfade has no neighbour and is dropped (as a move away drops it).
+  REQUIRE(f.store.dispatch(SetTempoMap{{TempoPoint{0, 60.0, TempoCurve::Step}}}).ok());
+  CHECK(f.clip(f.audio, b.clip).crossfadeIn == 0);
+  (void)a;
+}
+
+// Several overlapping audio clips (here three back-to-back Off clips under a 4× tempo; a file may also hold them,
+// fuzz case 202 stacked 200 and rendered at +44 dBFS): only one clip sounds at any instant.
+TEST_CASE("audio: overlapping audio clips never sound together") {
+  AudioProject f;
+  (void)f.drop(f.audio, 0);
+  (void)f.drop(f.audio, kBar);
+  (void)f.drop(f.audio, 2 * kBar);
+  REQUIRE(f.store.dispatch(SetTempoMap{{TempoPoint{0, 480.0, TempoCurve::Step}}}).ok());  // each clip now 4 bars long
+  const Track& t = f.track(f.audio);
+  REQUIRE(t.clips.size() == 3);
+  CHECK(t.clips[0].end() > t.clips[2].start());  // clip 0 overlaps both others
+  const AudioTrackDesc d = f.lowered(f.audio);
+  REQUIRE(d.clips.size() == 3);
+  CHECK(d.clips[0].cutEnd == t.clips[1].start());
+  CHECK(d.clips[1].cutEnd == t.clips[2].start());
+  CHECK(d.clips[2].cutEnd == 0);
+  const TempoMap& tm = f.doc().timeline->tempoMap;
+  for (int i = 0; i < 1000; ++i) {
+    const double tau = 6.0 * (i + 0.5) / 1000.0;
+    int n = 0;
+    for (const AudioClipDesc& c : d.clips) n += sourceFrameAt(c, tm, tau) ? 1 : 0;
+    CHECK(n <= 1);
+  }
+}
+
 TEST_CASE("audio: split and trim keep the frame that plays at every absolute time (Off, Re-Pitch, reverse, transpose)") {
   for (const bool rePitch : {false, true})
     for (const bool reverse : {false, true}) {

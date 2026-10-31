@@ -54,6 +54,10 @@ struct AudioClipDesc {
   Ticks fadeIn = 0, fadeOut = 0;   // clamped: fadeIn <= length, fadeOut <= length - fadeIn
   float fadeInCurve = 0.0f, fadeOutCurve = 0.0f;
   Ticks crossfadeIn = 0;           // with the previous clip (adjacent); clamped to both clips' lengths
+  // M5 review H7: where the clip stops sounding (ticks; 0 = its end). Set when the next clip on the track starts before
+  // this one ends (a tempo increase lengthens warp-Off clips, which keep their seconds); the content laws still use
+  // the whole clip (so `seconds` and the audio at every instant stay), the clip just ends at the next one's start.
+  Ticks cutEnd = 0;
   friend bool operator==(const AudioClipDesc&, const AudioClipDesc&) = default;
 };
 

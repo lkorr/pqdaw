@@ -262,14 +262,20 @@ AudioClipPtr syncedPtr(const Timeline& tl, AudioClip c) {
   return std::make_shared<const AudioClip>(syncedClip(tl, std::move(c)));
 }
 
-// Drops the crossfades of `t`'s audio clips whose left neighbour does not end exactly at their start (in the command
-// that broke the adjacency; model.h AudioClip::crossfadeIn).
+// Whether clip i's crossfade has no left neighbour reaching its start (model.h AudioClip::crossfadeIn: the neighbour
+// ends exactly there, or after it once a tempo increase lengthened a warp-Off clip; M5 review H7).
+bool looseCrossfade(const Track& t, size_t i) {
+  const ClipSlot& sl = t.clips[i];
+  if (!sl.audio || sl.audio->crossfadeIn == 0) return false;
+  return i == 0 || t.clips[i - 1].start() >= sl.audio->start || t.clips[i - 1].end() < sl.audio->start;
+}
+
+// Drops the crossfades of `t`'s audio clips that lost their left neighbour (in the command that broke it).
 void dropLooseCrossfades(Track& t, ChangeSet& cs) {
   if (t.kind != TrackKind::Audio) return;
   for (size_t i = 0; i < t.clips.size(); ++i) {
     ClipSlot& sl = t.clips[i];
-    if (!sl.audio || sl.audio->crossfadeIn == 0) continue;
-    if (i > 0 && t.clips[i - 1].end() == sl.audio->start) continue;
+    if (!looseCrossfade(t, i)) continue;
     AudioClip c = *sl.audio;
     c.crossfadeIn = 0;
     sl.audio = std::make_shared<const AudioClip>(std::move(c));
@@ -2227,10 +2233,7 @@ Snapshot finishCrossfades(const Snapshot& s, ChangeSet& cs) {
     const Track& t = trackAt(np ? *np : *s, *path);
     if (t.kind != TrackKind::Audio) continue;
     bool loose = false;
-    for (size_t i = 0; i < t.clips.size() && !loose; ++i) {
-      const ClipSlot& sl = t.clips[i];
-      loose = sl.audio && sl.audio->crossfadeIn != 0 && (i == 0 || t.clips[i - 1].end() != sl.audio->start);
-    }
+    for (size_t i = 0; i < t.clips.size() && !loose; ++i) loose = looseCrossfade(t, i);
     if (!loose) continue;
     if (!np) np = copyOf(s);
     dropLooseCrossfades(mutableTrack(*np, *path), cs);

@@ -57,7 +57,7 @@ bool sameClip(const doc::AudioClipDesc& a, const doc::AudioClipDesc& b) {
          a.rateRatio == b.rateRatio && a.contentStart == b.contentStart && a.loop.enabled == b.loop.enabled &&
          a.loop.start == b.loop.start && a.loop.end == b.loop.end && a.framesPerTick == b.framesPerTick &&
          a.gain == b.gain && a.fadeIn == b.fadeIn && a.fadeOut == b.fadeOut && a.fadeInCurve == b.fadeInCurve &&
-         a.fadeOutCurve == b.fadeOutCurve && a.crossfadeIn == b.crossfadeIn;
+         a.fadeOutCurve == b.fadeOutCurve && a.crossfadeIn == b.crossfadeIn && a.cutEnd == b.cutEnd;
 }
 
 bool sameKey(const std::vector<std::pair<uint32_t, doc::AudioTrackDesc>>& a,
@@ -93,6 +93,7 @@ engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, boo
   c.fadeInCurve = d.fadeInCurve;
   c.fadeOutCurve = d.fadeOutCurve;
   c.crossfadeIn = d.crossfadeIn;
+  c.cutEnd = d.cutEnd;
   return c;
 }
 

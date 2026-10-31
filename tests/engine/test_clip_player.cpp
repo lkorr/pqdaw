@@ -225,6 +225,62 @@ TEST_CASE("clip player: renders are bit-identical across engine blocks 32 / 64 /
   CHECK(peak > 0.3);  // it played
 }
 
+// M5 review M3: Re-Pitch content positions were linearised between the ends of each run, so they depended on the
+// engine block (−20 dBFS differences at 1024 under a ramp, 0.008 at a constant tempo). They are now linear on a fixed
+// grid of song samples: bit-identical across blocks, at a constant tempo, under a ramp, looped (wraps declicked) and
+// reversed.
+TEST_CASE("clip player: Re-Pitch renders are bit-identical across engine blocks 32 / 64 / 256 / 1024 (ramps, loops)") {
+  auto noise = [](uint32_t c, int64_t i) {
+    return static_cast<float>(std::sin(0.0137 * static_cast<double>(i) + c) * 0.5 + 0.3 * std::sin(0.71 * static_cast<double>(i)));
+  };
+  const std::vector<std::vector<pq::TempoPoint>> tempos = {
+      {{0, 128.0, pq::TempoCurve::Step}},
+      {{0, 90.0, pq::TempoCurve::Linear}, {kPpq * 8, 170.0, pq::TempoCurve::Linear}, {kPpq * 16, 60.0, pq::TempoCurve::Step}}};
+  for (const auto& tp : tempos) {
+    std::vector<std::vector<float>> results;
+    for (uint32_t block : {32u, 64u, 256u, 1024u}) {
+      CAPTURE(block);
+      Rig rig(block);
+      rig.tempo(tp);
+      const double fpt = kSr * 60.0 / (100.0 * static_cast<double>(kPpq));  // a 100 BPM source
+      e::AudioClipDesc a;
+      a.id = 1;
+      a.warp = e::ClipWarp::RePitch;
+      a.start = kPpq / 3;
+      a.length = kPpq * 6;
+      a.contentStart = kPpq / 7;
+      a.framesPerTick = fpt;
+      a.gain = 0.8f;
+      e::AudioClipDesc b = a;  // looped, crossfaded in
+      b.id = 2;
+      b.start = a.start + a.length;
+      b.length = kPpq * 6;
+      b.loop = {true, kPpq / 2, kPpq / 2 + kPpq * 3 / 5};
+      b.contentStart = kPpq / 2;
+      b.crossfadeIn = kPpq / 3;
+      e::AudioClipDesc r = a;  // reversed
+      r.id = 3;
+      r.start = b.start + b.length;
+      r.length = kPpq * 3;
+      r.reverse = true;
+      rig.audio({{1, {a, b, r}}}, {makeSample(400000, 2, noise)});
+      rig.command(e::TransportCommandKind::Play, 0);
+      std::vector<float> rr;
+      std::vector<float> l = rig.render(static_cast<uint64_t>(kSr * 9.0), 0, 0, &rr);
+      l.insert(l.end(), rr.begin(), rr.end());
+      results.push_back(std::move(l));
+    }
+    for (size_t i = 1; i < results.size(); ++i) {
+      size_t diff = 0;
+      for (size_t k = 0; k < results[0].size(); ++k) diff += results[i][k] != results[0][k] ? 1u : 0u;
+      CHECK(diff == 0);
+    }
+    double peak = 0.0;
+    for (float v : results[0]) peak = std::max(peak, static_cast<double>(std::abs(v)));
+    CHECK(peak > 0.3);
+  }
+}
+
 TEST_CASE("clip player: gain, fade curves, equal-power crossfade, edge declicks") {
   Rig rig(64);
   rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
@@ -273,6 +329,57 @@ TEST_CASE("clip player: gain, fade curves, equal-power crossfade, edge declicks"
   CHECK(o2[s1 - 1] == doctest::Approx(1.0 / 96.0).epsilon(1e-5));
   CHECK(o2[s1] == 0.0f);
   CHECK(maxStep(o2, 0, o2.size()) <= 1.0 / 96.0 + 1e-6);
+}
+
+// M5 review M7: a clip split and crossfaded back together (one sample, one continuous source law) reads the same
+// frames from both sides of the window; equal power summed them to +3 dB (a DC source peaked at 1.4142). Equal gain
+// keeps it at unity. A crossfade between different material stays equal power (the case above).
+TEST_CASE("clip player: a crossfade across a split is equal gain (no swell); a cut clip ends at the next one's start") {
+  Rig rig(64);
+  rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  // The left half plays frames [0, 2·24000), the right half continues at 48000 (a split at 2 beats).
+  e::AudioClipDesc a = offClip(1, 0, kPpq * 2);
+  e::AudioClipDesc b = offClip(2, kPpq * 2, kPpq * 2, kSr, 48000.0);
+  b.crossfadeIn = kPpq / 2;
+  rig.audio({{1, {a, b}}}, {makeSample(400000, 1, [](uint32_t, int64_t) { return 1.0f; })});
+  rig.command(e::TransportCommandKind::Play, 0);
+  const std::vector<float> out = rig.render(static_cast<uint64_t>(kSr * 1.8));
+  const SampleTime x0 = rig.map.ticksToSamples(kPpq * 2 - kPpq / 4, kSr), x1 = rig.map.ticksToSamples(kPpq * 2 + kPpq / 4, kSr);
+  float peak = 0.0f, low = 2.0f;
+  for (SampleTime t = x0 - 100; t < x1 + 100; ++t) {
+    peak = std::max(peak, out[static_cast<size_t>(t)]);
+    low = std::min(low, out[static_cast<size_t>(t)]);
+  }
+  CHECK(peak <= 1.0f + 1e-6f);
+  CHECK(low >= 1.0f - 1e-6f);
+  // A different content position on the right (not a continuation): equal power, the +3 dB of identical DC shows.
+  Rig r2(64);
+  r2.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  e::AudioClipDesc b2 = b;
+  b2.contentStartFrame = 9000.0;
+  r2.audio({{1, {a, b2}}}, {makeSample(400000, 1, [](uint32_t, int64_t) { return 1.0f; })});
+  r2.command(e::TransportCommandKind::Play, 0);
+  const std::vector<float> o2 = r2.render(static_cast<uint64_t>(kSr * 1.8));
+  CHECK(o2[static_cast<size_t>((x0 + x1) / 2)] == doctest::Approx(std::sqrt(2.0)).epsilon(1e-3));
+  // M5 review H7: a clip cut at the next clip's start (cutEnd) stops there with the edge declick and keeps its law
+  // (a reversed clip still plays, at every instant, what the whole clip would).
+  Rig r3(64, 0.0);
+  r3.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  e::AudioClipDesc rev = offClip(1, 0, kPpq * 2, kSr, 1000.0);
+  rev.reverse = true;
+  e::AudioClipDesc whole = rev;
+  rev.cutEnd = kPpq;  // half of it
+  auto ramp = [](uint32_t, int64_t i) { return static_cast<float>(i) * 1e-5f; };
+  r3.audio({{1, {rev}}}, {makeSample(100000, 1, ramp)}, false);
+  r3.command(e::TransportCommandKind::Play, 0);
+  const std::vector<float> cut = r3.render(48000);
+  Rig r4(64, 0.0);
+  r4.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  r4.audio({{1, {whole}}}, {makeSample(100000, 1, ramp)}, false);
+  r4.command(e::TransportCommandKind::Play, 0);
+  const std::vector<float> full = r4.render(48000);
+  for (size_t i = 0; i < 24000; ++i) REQUIRE(cut[i] == full[i]);
+  for (size_t i = 24000; i < cut.size(); ++i) REQUIRE(cut[i] == 0.0f);
 }
 
 TEST_CASE("clip player: reverse reads the forward frames backwards; transpose resamples; stereo and mono") {

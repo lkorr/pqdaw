@@ -15,10 +15,19 @@ AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const Au
   if (t.kind != TrackKind::Audio) return out;
   const TempoMap& tempo = p.timeline->tempoMap;
   out.clips.reserve(t.clips.size());
+  const ClipSlot* prev = nullptr;  // the last clip lowered (its audible part ends at or before this one's start)
   for (size_t i = 0; i < t.clips.size(); ++i) {
     const ClipSlot& sl = t.clips[i];
     if (!sl.audio) continue;
     const AudioClip& c = *sl.audio;
+    // M5 review H7: clips never sound on top of each other. Commands keep an audio track free of overlaps, but a tempo
+    // increase lengthens warp-Off clips (they keep their seconds) and a file may hold overlaps: a clip ends where the
+    // next one starts, and one the next covers from its start does not play.
+    Ticks cut = 0;
+    if (i + 1 < t.clips.size() && t.clips[i + 1].start() < c.start + std::max<Ticks>(c.length, 1)) {
+      if (t.clips[i + 1].start() <= c.start) continue;
+      cut = t.clips[i + 1].start();
+    }
     const SampleRef* sample = findSample(p, c.sample);
     const double rate = sample != nullptr ? sample->rate : 48000.0;
     AudioClipDesc d;
@@ -46,15 +55,19 @@ AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const Au
     d.fadeOut = std::clamp<Ticks>(c.fadeOut.length, 0, d.length - d.fadeIn);
     d.fadeInCurve = std::clamp(c.fadeIn.curve, -1.0f, 1.0f);
     d.fadeOutCurve = std::clamp(c.fadeOut.curve, -1.0f, 1.0f);
-    // The crossfade with an adjacent left neighbour (commands keep it only while adjacent), at most either clip.
-    if (c.crossfadeIn > 0 && i > 0 && t.clips[i - 1].end() == c.start)
-      d.crossfadeIn = std::min({c.crossfadeIn, d.length, std::max<Ticks>(t.clips[i - 1].length(), 1)});
+    d.cutEnd = cut;
+    // The crossfade with the left neighbour that reaches this clip's start (commands keep it only while it does), at
+    // most either clip's audible length.
+    if (c.crossfadeIn > 0 && prev != nullptr && prev == &t.clips[i - 1] && prev->end() >= c.start)
+      d.crossfadeIn = std::min({c.crossfadeIn, cut > 0 ? cut - c.start : d.length, std::max<Ticks>(c.start - prev->start(), 1)});
     out.clips.push_back(d);
+    prev = &sl;
   }
   return out;
 }
 
 std::optional<double> sourceFrameAt(const AudioClipDesc& c, const TempoMap& tempo, double tau) {
+  if (c.cutEnd > 0 && tempo.secondsToTicks(tau) >= static_cast<double>(c.cutEnd)) return std::nullopt;
   if (c.warp == AudioWarp::Off) {
     const double x = tau - c.startSeconds;
     if (x < 0.0 || x >= c.seconds) return std::nullopt;

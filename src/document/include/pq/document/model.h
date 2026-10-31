@@ -316,7 +316,10 @@ struct AudioClip {
   bool reverse = false;
   AudioFade fadeIn, fadeOut;  // the lowering clamps them to the clip (fadeIn first)
   // A crossfade with the clip that ends exactly at `start` on the same track: its length in ticks, centred on the
-  // boundary (0 = none). A command that leaves the two clips no longer adjacent drops it in the same step.
+  // boundary (0 = none). A command that leaves the two clips no longer adjacent drops it in the same step. A tempo
+  // increase that makes a warp-Off left neighbour (which keeps its seconds) run past `start` keeps it: the lowering
+  // ends that clip at `start` (audio_sequence.h AudioClipDesc::cutEnd; M5 review H7), so the two stay crossfaded and
+  // the tempo edit is reversible.
   Ticks crossfadeIn = 0;
   TuningAssignment tuning;  // the tuning of a Steps transpose (Inherit = the track's)
   bool active = true;
