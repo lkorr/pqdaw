@@ -327,7 +327,7 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   AudioClipView& v = f.view();
   REQUIRE(v.hasClip());
   CHECK(v.clip()->warp == doc::AudioWarp::RePitch);
-  CHECK_FALSE(v.box().find("transpose-row/transpose")->enabled());  // greyed in Re-Pitch (Q145)
+  CHECK_FALSE(v.box().find("props/clip/transpose-row/transpose")->enabled());  // greyed in Re-Pitch (Q145)
 
   // Transpose parsing.
   CHECK(parseTranspose("7")->unit == doc::TransposeUnit::Steps);
@@ -344,7 +344,7 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   size_t h = f.history();
   CHECK(v.setWarp(doc::AudioWarp::Off));
   CHECK(v.clip()->warp == doc::AudioWarp::Off);
-  CHECK(v.box().find("transpose-row/transpose")->enabled());
+  CHECK(v.box().find("props/clip/transpose-row/transpose")->enabled());
   CHECK(v.setTranspose("3/2"));
   CHECK(v.clip()->transpose.unit == doc::TransposeUnit::Ratio);
   CHECK_FALSE(v.setTranspose("nonsense"));
@@ -359,7 +359,7 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
 
   // The gain box: a drag is one undo step.
   h = f.history();
-  const IRect gb = f.d.rect(std::string("main/body/bottom/detail/clip/audio-clip-view/audio-box/gain-row/gain"));
+  const IRect gb = f.d.rect(std::string("main/body/bottom/detail/clip/audio-clip-view/audio-box/props/clip/gain-row/gain"));
   const Vec2 gc{static_cast<float>(gb.x + gb.w / 2), static_cast<float>(gb.y + gb.h / 2)};
   f.d.drag(gc, {gc.x, gc.y - 40.0f}, 8);
   CHECK(f.get(vox).gainDb > -3.0f);

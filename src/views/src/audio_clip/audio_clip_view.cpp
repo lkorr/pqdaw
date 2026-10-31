@@ -23,7 +23,7 @@ using namespace pq::ui;
 
 namespace {
 
-constexpr float kBoxWidth = 210.0f;   // logical px
+constexpr float kBoxWidth = 352.0f;   // logical px: two property columns (M5 review UI 2)
 constexpr float kRulerH = 16.0f;
 constexpr float kGrab = 5.0f;          // logical px around the marker / brace ends
 
@@ -249,7 +249,9 @@ void SampleDisplay::paint(PaintContext& ctx) {
     d.frame0 = 0.0;
     d.frame1 = frames();
     d.rect = w.toRect();
-    d.gain = c.gainDb <= doc::kMinClipGainDb ? 0.0f : static_cast<float>(std::pow(10.0, static_cast<double>(c.gainDb) / 20.0));
+    // M5 review UI 2: the sample at unity (the clip gain scaled +6 dB into the box edges and looked clipped); the gain
+    // is a readout in the corner instead.
+    d.gain = 1.0f;
     d.colour = lerp(colour, rgba(0, 0, 0), 0.72f);
     if (waveformLevelFor(data, frames() / std::max(1, w.w)) < 0)
       if (const media::SampleWindow* sw = v_.ctx_.waveforms().window(c.sample, 0, static_cast<int64_t>(frames())))
@@ -275,12 +277,23 @@ void SampleDisplay::paint(PaintContext& ctx) {
       dl.addRectFilled({lb - 2.0f, by0, lb, static_cast<float>(u.bottom())}, braceCol);
     }
   }
-  // The start marker: a flag in the strip and a line over the waveform.
+  // The clip gain as a readout (the waveform is drawn at unity).
+  if (c.gainDb != 0.0f && font != kNoFont) {
+    char g[32];
+    if (c.gainDb <= doc::kMinClipGainDb) std::snprintf(g, sizeof g, "Gain -inf dB");
+    else std::snprintf(g, sizeof g, "Gain %+.1f dB", static_cast<double>(c.gainDb));
+    paint::text(ctx, font, {w.x, w.y + ctx.scale.px(4.0f), w.w, ctx.scale.px(16.0f)}, g, th->text.primary, TextAlign::Right,
+                ctx.scale.px(8.0f), ctx.scale.px(8.0f));
+  }
+  // The start marker (M5 review UI 2: a 1-px line was indistinguishable from the region's edge): a flag in the accent
+  // colour filling the strip, and a 2-px line over the waveform.
   const float mx = std::round(xOf(markerFrame()));
-  const float sz = static_cast<float>(ctx.scale.px(6.0f));
-  dl.addTriangleFilled({mx, static_cast<float>(u.y + 1)}, {mx + sz, static_cast<float>(u.y + 1)}, {mx, static_cast<float>(u.y + 1) + sz},
-                       th->text.primary);
-  dl.addRectFilled({mx, static_cast<float>(u.y), mx + 1.0f, static_cast<float>(w.bottom())}, th->text.primary);
+  const float fh = static_cast<float>(u.h);
+  const float sz = std::max(static_cast<float>(ctx.scale.px(9.0f)), fh * 0.75f);
+  const float lw = static_cast<float>(std::max(2, ctx.scale.px(2.0f)));
+  const Rgba flag = th->accent.primary;
+  dl.addTriangleFilled({mx, static_cast<float>(u.y)}, {mx + sz, static_cast<float>(u.y) + 0.5f * fh}, {mx, static_cast<float>(u.bottom())}, flag);
+  dl.addRectFilled({mx, static_cast<float>(u.y), mx + lw, static_cast<float>(w.bottom())}, flag);
 }
 
 bool SampleDisplay::onPointer(const PointerEvent& e) {
@@ -388,8 +401,23 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   file_->setHeight(Length::fixed(16));
   format_ = &box_->add<Label>("format", "", FontRoleId::Small, TextTone::Secondary);
   format_->setHeight(Length::fixed(18));
-  auto row = [this](const char* name, const char* text) -> Widget& {
-    Widget& w = box_->add<Widget>(name);
+  // M5 review UI 2: the properties in two groups side by side, as Live's Sample and Clip boxes (one long form ran
+  // down the panel): Clip (gain, transpose, detune, reverse, fades) and Sample (warp, tempo, loop).
+  Widget& props = box_->add<Widget>("props");
+  props.setLayout(LayoutKind::Row);
+  props.setGap(12);
+  props.setHeight(Length::flex(1));
+  props.setAlign(Align::Start, Align::Start);
+  Widget* clipCol = &props.add<Widget>("clip");
+  Widget* sampleCol = &props.add<Widget>("sample");
+  for (Widget* col : {clipCol, sampleCol}) {
+    col->setLayout(LayoutKind::Column);
+    col->setWidth(Length::flex(1));
+    col->setAlign(Align::Start, Align::Start);
+  }
+  Widget* rowParent = clipCol;
+  auto row = [&rowParent](const char* name, const char* text) -> Widget& {
+    Widget& w = rowParent->add<Widget>(name);
     w.setLayout(LayoutKind::Row);
     w.setHeight(Length::fixed(20));
     w.setPadding({0, 2, 0, 0});
@@ -445,6 +473,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   reverse_->setInfo("Reverse", "Plays the clip backwards (the file is not changed).");
   reverse_->onToggle = [this](bool on) { (void)setReverse(on); };
 
+  rowParent = sampleCol;
   warp_ = &row("warp-row", "Warp").add<Dropdown>("warp", std::vector<std::string>{"Off", "Re-Pitch"}, 0);
   warp_->setWidth(Length::fixed(84));
   warp_->setFocusable(false);
@@ -466,6 +495,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   loop_->setInfo("Loop", "Re-Pitch: repeats the part under the loop brace.");
   loop_->onToggle = [this](bool on) { (void)setLoopEnabled(on); };
 
+  rowParent = clipCol;
   ValueSpec fs;
   fs.min = 0.0;
   fs.max = 60000.0;

@@ -1,6 +1,6 @@
 // Audio clips in the arrangement (T5.6): the waveform (from the sample's overview, pq/views/waveforms.h, drawn by
 // ui::drawWaveform: scaled by the clip gain, mirrored when reversed), fade curves, the crossfade X, badges (transpose,
-// detune, warp, reverse, gain), handles (fades, gain) and the red "missing" overlay.
+// detune, warp, reverse, gain), handles (fades, gain) and the hatched "missing" body.
 //
 // The waveform of a clip is cached like a note preview (T3.8-fix1): rasterised once per (clip snapshot, device px per
 // tick, body height, overview progress) into the renderer's TileAtlas and drawn as one quad afterwards; tiles are built
@@ -170,11 +170,57 @@ std::string badgeText(const doc::AudioClip& c) {
 
 // Fade shading + curve (fade-in from the left edge, fade-out to the right edge), the crossfade X and the handles, into
 // `o` (the overlay list).
+// A clip whose file is missing: a dark body with light diagonal hatching (it reads as "nothing here" at any width) and
+// "Missing" in white, centred, where it fits (M5 review UI 1: the red badge on the title strip was 1.39:1).
+void paintMissingBody(LanePaint& lp, const ClipCols& cc, float by0, float by1) {
+  DrawList& dl = lp.ctx.dl;
+  dl.addRectFilled({cc.vx0, by0, cc.vx1, by1}, rgba(36, 36, 38));
+  const float step = static_cast<float>(std::max(4, lp.ctx.scale.px(7.0f)));
+  const float h = by1 - by0;
+  const Rgba hatch = rgba(255, 255, 255, 34);
+  const float lw = std::max(1.0f, std::round(lp.ctx.scale.factor));
+  dl.pushClip({cc.vx0, by0, cc.vx1, by1});
+  // Stripes rising to the right, anchored to the clip (they scroll with it).
+  const float first = cc.cx0 + std::floor((cc.vx0 - h - cc.cx0) / step) * step;
+  for (float x = first; x < cc.vx1; x += step) {
+    const Vec2 seg[2] = {{x, by1}, {x + h, by0}};
+    smoothPolyline(dl, seg, 2, hatch, lw);
+  }
+  dl.popClip();
+  if (lp.font != kNoFont && lp.ctx.res.text && h >= static_cast<float>(lp.ctx.scale.px(12.0f))) {
+    TextSystem& ts = *lp.ctx.res.text;
+    const TextRun run = ts.shape(lp.font, "Missing");
+    const float vis0 = std::max(cc.vx0, cc.cx0), vis1 = std::min(cc.vx1, cc.cx1);
+    const float pad = static_cast<float>(lp.ctx.scale.px(4.0f));
+    if (vis1 - vis0 >= static_cast<float>(run.advance) + 2.0f * pad) {
+      const float x = std::floor(0.5f * (vis0 + vis1 - static_cast<float>(run.advance)));
+      const float y = std::floor(0.5f * (by0 + by1) + static_cast<float>(lp.baselineOff) - 0.5f * static_cast<float>(lp.titleH));
+      dl.addRectFilled({x - pad, y - static_cast<float>(lp.baselineOff) + 1.0f, x + static_cast<float>(run.advance) + pad,
+                        y - static_cast<float>(lp.baselineOff) + static_cast<float>(lp.titleH) - 1.0f},
+                       rgba(36, 36, 38));
+      TextSystem::drawRun(dl, run, {x, y}, rgba(240, 240, 240));
+    }
+  }
+}
+
+// M5 review UI 3: fade curves and the crossfade X in a dark shade of the clip colour (they were opaque white over the
+// waveform), the faded part a translucent darkening; the X only while the clip is selected or hovered (the window is
+// shaded lightly otherwise, so a crossfade stays visible).
+Rgba fadeLineColour(Rgba clip) { return withAlpha(lerp(clip, rgba(0, 0, 0), 0.62f), 235); }
+
+void crossfadeMarks(DrawList& o, float xa, float xb, float by0, float by1, Rgba line, float lw, bool x) {
+  o.addRectFilled({xa, by0, xb, by1}, rgba(0, 0, 0, 36));
+  if (!x) return;
+  const Vec2 a[2] = {{xa, by0}, {xb, by1}}, b[2] = {{xa, by1}, {xb, by0}};
+  smoothPolyline(o, a, 2, line, lw);
+  smoothPolyline(o, b, 2, line, lw);
+}
+
 void paintOverlays(DrawList& o, LanePaint& lp, const doc::AudioClip& c, const ClipCols& cc, float by0, float by1, bool handles,
-                   int hover) {
+                   int hover, Rgba colour) {
   const float scale = lp.ctx.scale.factor;
-  const Rgba shade = rgba(0, 0, 0, 80);
-  const Rgba line = rgba(255, 255, 255, 190);
+  const Rgba shade = rgba(0, 0, 0, 64);
+  const Rgba line = fadeLineColour(colour);
   const float lw = std::max(1.0f, std::round(scale));
   const AudioFadesPx f = audioFadesPx(c, lp.k);
   Vec2 pts[65];
@@ -208,12 +254,10 @@ void paintOverlays(DrawList& o, LanePaint& lp, const doc::AudioClip& c, const Cl
   };
   if (c.crossfadeIn == 0) fade(cc.cx0, f.in, c.fadeIn.curve, true);
   fade(cc.cx1 - f.out, f.out, c.fadeOut.curve, false);
-  if (c.crossfadeIn > 0) {  // the X centred on the boundary (both clips' parts of the window)
+  if (c.crossfadeIn > 0) {  // centred on the boundary (both clips' parts of the window)
     const float xa = cc.cx0 - static_cast<float>(static_cast<double>(c.crossfadeIn / 2) * lp.k);
     const float xb = cc.cx0 + static_cast<float>(static_cast<double>(c.crossfadeIn - c.crossfadeIn / 2) * lp.k);
-    const Vec2 a[2] = {{xa, by0}, {xb, by1}}, b[2] = {{xa, by1}, {xb, by0}};
-    smoothPolyline(o, a, 2, line, lw);
-    smoothPolyline(o, b, 2, line, lw);
+    crossfadeMarks(o, xa, xb, by0, by1, line, lw, handles);
   }
   if (!handles) return;
   const AudioHandleRects h = audioHandles(c, cc.cx0, cc.cx1, by0, by1, lp.k, scale);
@@ -240,8 +284,8 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
   const float titleB = paintClipChrome(lp, cc, top, bottom, colour, own.name);
 
   // Badges, right-aligned in the title strip when they fit beside the name.
-  if (lp.font != kNoFont && lp.ctx.res.text) {
-    const std::string b = available ? badgeText(own) : std::string("Missing");
+  if (lp.font != kNoFont && lp.ctx.res.text && available) {
+    const std::string b = badgeText(own);
     if (!b.empty()) {
       TextSystem& ts = *lp.ctx.res.text;
       const TextRun run = ts.shape(lp.font, b);
@@ -250,14 +294,14 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
       if (x >= cc.cx0 + static_cast<float>(lp.ctx.scale.px(40.0f)) && x >= static_cast<float>(lp.r.x) &&
           x + static_cast<float>(run.advance) <= static_cast<float>(lp.c.right()) + pad)
         TextSystem::drawRun(dl, run, {std::floor(x), top + static_cast<float>(lp.baselineOff)},
-                            available ? withAlpha(lp.m.clipTextColour(lp.th, colour), 170) : rgba(255, 90, 80));
+                            withAlpha(lp.m.clipTextColour(lp.th, colour), 170));
     }
   }
 
   const float by0 = titleB, by1 = bottom - 1.0f;
   const int32_t bodyH = static_cast<int32_t>(by1 - by0);
-  if (!available) {  // the red "missing" overlay over the body (the clip plays silence)
-    if (by1 > by0) dl.addRectFilled({cc.vx0, by0, cc.vx1, by1}, rgba(200, 40, 35, 120));
+  if (!available) {  // the clip plays silence: a dark hatched body with "Missing" (M5 review UI 1)
+    if (by1 > by0) paintMissingBody(lp, cc, by0, by1);
     paintClipBorder(lp, cc, top, bottom, titleB, selected, hover >= -1 && hover <= 1 ? hover : kNoHover, false);
     return;
   }
@@ -336,10 +380,10 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
   }
   paintClipBorder(lp, cc, top, bottom, titleB, selected, hover >= -1 && hover <= 1 ? hover : kNoHover, deferred);
   const bool handles = selected || hover != kNoHover;
-  paintOverlays(lp.m.overlay, lp, c, cc, by0, by1, handles, hover);
+  paintOverlays(lp.m.overlay, lp, c, cc, by0, by1, handles, hover, colour);
 }
 
-void paintAudioCrossfade(LanePaint& lp, const doc::AudioClip& c, float top, float bottom) {
+void paintAudioCrossfade(LanePaint& lp, const doc::AudioClip& c, float top, float bottom, bool marked) {
   if (c.crossfadeIn <= 0 || !lp.view.context().sampleAvailable(c.sample)) return;
   ClipCols cc;
   cc.cx0 = std::round(lp.X(static_cast<double>(c.start)));
@@ -348,11 +392,8 @@ void paintAudioCrossfade(LanePaint& lp, const doc::AudioClip& c, float top, floa
   const float xa = cc.cx0 - static_cast<float>(static_cast<double>(c.crossfadeIn / 2) * lp.k);
   const float xb = cc.cx0 + static_cast<float>(static_cast<double>(c.crossfadeIn - c.crossfadeIn / 2) * lp.k);
   if (xb < static_cast<float>(lp.c.x) - 1.0f || xa > static_cast<float>(lp.c.right()) + 1.0f || by1 <= by0) return;
-  const Rgba line = rgba(255, 255, 255, 190);
   const float lw = std::max(1.0f, std::round(lp.ctx.scale.factor));
-  const Vec2 a[2] = {{xa, by0}, {xb, by1}}, b[2] = {{xa, by1}, {xb, by0}};
-  smoothPolyline(lp.m.overlay, a, 2, line, lw);
-  smoothPolyline(lp.m.overlay, b, 2, line, lw);
+  crossfadeMarks(lp.m.overlay, xa, xb, by0, by1, fadeLineColour(rgbOf(c.colour)), lw, marked);
 }
 
 bool buildAudioTiles(LaneCanvas& canvas, ArrangementView& view, TileAtlas& tiles, const IRect& visible, size_t& texels, bool& builtOne) {
