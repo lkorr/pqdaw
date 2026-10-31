@@ -153,7 +153,8 @@ int main() {
   std::printf("project: %zu notes\n", notes);
 
   std::string text = serializeProject(*p, view).value();
-  std::printf("project.pqd: %.2f MB\n", static_cast<double>(text.size()) / 1e6);
+  std::printf("project.pqd: %.2f MB
+", static_cast<double>(text.size()) / 1e6);
   constexpr int kReps = 9;
 
   timeIt("serializeProject (to string)", kReps, [&] { text = serializeProject(*p, view).value(); });
