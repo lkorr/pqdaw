@@ -716,7 +716,7 @@ Status setupCircuitEditor(Shell& shell, std::string_view file) {
   return Ok{};
 }
 // T4.15: Saturator's curve — sat_shape opened from the 1× path (`y1`) of the stock Saturator (--project
-// stdlib/devices/saturator.pqp) at its defaults (Medium Curve): with Inactive off only the active branch is drawn (the
+// stdlib/devices/saturator.pqp) at its defaults (Analog Clip): with Inactive off only the active branch is drawn (the
 // other eight curves are hidden, the visible nodes laid out on their own); with it on, all nine, the switched-off ones
 // dimmed.
 Result<circuit::CircuitEditor*> openSatShapeScene(Shell& shell, std::string_view file, bool showInactive) {

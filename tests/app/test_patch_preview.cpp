@@ -272,7 +272,7 @@ TEST_CASE("patch preview: a device panel's preview plays the Saturator; a curve 
   REQUIRE(dev.play().ok());
   std::vector<float> y;
   int64_t t = 0;
-  render(preview, 60, y, t);  // the arpeggio through the Saturator (Medium Curve)
+  render(preview, 60, y, t);  // the arpeggio through the Saturator (Analog Clip)
   float peak = 0.0f;
   for (float v : y) peak = std::max(peak, std::fabs(v));
   CHECK(peak > 0.05f);

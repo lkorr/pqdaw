@@ -14,7 +14,7 @@ inline constexpr double kPi = 3.14159265358979323846;
 
 // ---- Saturator (saturator.pqp: sat_shape, then dry/wet) --------------------------------------------------------------
 struct SaturatorState {
-  int type = 3;           // 0 Analog Clip … 8 Shaper
+  int type = 0;           // 0 Analog Clip (the default, M4 review L11) … 8 Shaper
   bool softClip = false;
   double drive = 1.0, output = 1.0, dryWet = 1.0;  // linear
   double wsDrive = 0.5, wsLin = 0.5, wsCurve = 0.5, wsDamp = 0.0, wsDepth = 0.0, wsPeriod = 0.0;  // fractions
@@ -131,6 +131,12 @@ inline double autoFilterCutoff(const AutoFilterState& s, double sr) {
   return std::clamp(base, 10.0, 0.49 * sr);
 }
 
+// Clean's damping (auto_filter.pqp af_kclean; M4 review M12: the nonlinear models' √2·(1 − res) up to 90 %, then down
+// to 0.02 at 125 %).
+inline double autoFilterCleanK(double res) {
+  return res < 0.9 ? std::sqrt(2.0) * (1.0 - res) : 0.1414213562373095 * std::exp(-5.545177444479562 * (res - 0.9));
+}
+
 // The response at f Hz for small signals (the nonlinear models are linear there: tanh(v) ≈ v, below the OSR diode's
 // knee). The TPT filters are the bilinear transforms of their analog prototypes: s = j·tan(πf/sr)/tan(πfc/sr).
 // Resampling: the sample-and-hold's in-band (zero-order hold) magnitude at the new rate 2·fc.
@@ -150,7 +156,7 @@ inline std::complex<double> autoFilterResponse(const AutoFilterState& st, double
     const double wLP = w[type][0], wBP = w[type][1], wHP = w[type][2], wN = w[type][3], hn = wHP + wN;
     const int model = type > kAfMorph ? 0 : st.circuit;
     C h;
-    if (model == 4) {  // PRD: the ladder's pole mixing over 1 + k·G⁴
+    if (model == 4) {  // PRD: the ladder's pole mixing (+ the passband compensation k·(wLP + wN)·G⁴) over 1 + k·G⁴
       const double k = 4.0 * st.res;
       const C G = 1.0 / (1.0 + s);
       double c[5];
@@ -159,6 +165,7 @@ inline std::complex<double> autoFilterResponse(const AutoFilterState& st, double
       } else {
         c[0] = hn, c[1] = 2 * wBP - 2 * hn, c[2] = wLP - 2 * wBP + wHP + 2 * wN, c[3] = 0, c[4] = 0;
       }
+      c[4] += k * (wLP + wN);  // M4 review M12: unity passband for the lowpass and notch
       C num = 0.0, gn = 1.0;
       for (double ci : c) {
         num += ci * gn;
@@ -167,7 +174,7 @@ inline std::complex<double> autoFilterResponse(const AutoFilterState& st, double
       h = num / (1.0 + k * G * G * G * G);
     } else {  // the SVF models: (hn·D + (kb·wBP − k·hn)·s + wLP − wHP) / D per section, D = s² + k·s + 1
       const bool clean = model == 0;
-      const double k12 = clean ? std::max(std::sqrt(2.0) * (1.0 - 0.8 * st.res), 0.02) : std::sqrt(2.0) * (1.0 - st.res);
+      const double k12 = clean ? autoFilterCleanK(st.res) : std::sqrt(2.0) * (1.0 - st.res);
       const double kB = st.slope ? 0.541196100146197 * k12 : k12;
       const double kbB = clean ? kB : std::max(kB, 0.25);
       auto sec = [&](double k, double kb) {
@@ -189,7 +196,7 @@ inline std::complex<double> autoFilterResponse(const AutoFilterState& st, double
     return u < 1e-9 ? 1.0 : std::sin(u) / u;
   }
   if (type == kAfNotchLp) {
-    const double k = std::max(std::sqrt(2.0) * (1.0 - 0.8 * st.res), 0.02);
+    const double k = autoFilterCleanK(st.res);
     const C s2 = sAt(std::min(2.0 * fc, 0.49 * sr));
     return (s * s + 1.0) / (s * s + k * s + 1.0) / (s2 * s2 + std::sqrt(2.0) * s2 + 1.0);
   }

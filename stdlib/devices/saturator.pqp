@@ -74,7 +74,8 @@ patch saturator {
   wg = 0.01 * wsDamp * wsDamp + 1e-30       // (0.1·damp)² + ε
 
   // 1× (no oversampling)
-  h1 = sat_mix(pre, x, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  y1 = sat_shape(u, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  h1 = gain_add(x, y1 - x, dryWet, start: 1)
 
   // 2×: the dry samples are the input's own upsampled samples (the colour EQ's up chain is the input's when the
   // colour is off), so the dry and wet paths share the half-bands' phase (M4 review M10).
@@ -130,11 +131,11 @@ patch saturator {
   out = hq >= 7.5 ? y8 : hq >= 3.5 ? y4 : hq >= 1.5 ? y2 : h1
 
   export driven = u
-  export wet    = hq >= 7.5 ? w8 : hq >= 3.5 ? w4 : hq >= 1.5 ? w2 : h1.w
+  export wet    = hq >= 7.5 ? w8 : hq >= 3.5 ? w4 : hq >= 1.5 ? w2 : y1
 }
 
-// One (oversampled) sample: drive, curve, output, soft clip, then the dry/wet mix with the dry sample `d` at the
-// same rate. `p` is the colour EQ's output (the input itself without colour). Drive, output and dry/wet are
+// One oversampled sample (the 1× path does the same at the top level): drive, curve, output, soft clip, then the
+// dry/wet mix with the dry sample `d` at the same rate. `p` is the colour EQ's output (the input itself without colour). Drive, output and dry/wet are
 // smoothed gains (M4 review M13: 2 ms, starting at their first value; settled, each is one multiply).
 patch sat_mix {
   in    p        : audio

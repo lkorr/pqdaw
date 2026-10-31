@@ -1300,3 +1300,43 @@ TEST_CASE("Utility starts at its target: an impulse at sample 0 comes out at onc
     }
   }
 }
+
+TEST_CASE("Stock devices with smoothed params still sleep on silence (SPEC 7.7), and sleeping changes nothing") {
+  // A 0.2 s burst, a param change in the silence (it must wake the smoother, which settles and sleeps again), then
+  // silence: every device's segments sleep (stats.sleeps > 0) and the output equals a run that never sleeps.
+  struct Dev {
+    const char* what;
+    const Program* prog;
+    const char* param;
+    double value;
+  };
+  devref::EqConf ec;
+  const Program sat2 = saturatorProgram(0, 2, false, false), sat1 = saturatorProgram(3, 1, true, false), eq = eqProgram(ec),
+                util = utilityProgram(false, false, false);
+  const Dev devs[] = {{"saturator hq 2", &sat2, "s__output", 0.5},
+                      {"saturator hq 1 colour", &sat1, "s__drive", 2.0},
+                      {"eq eight", &eq, "e__gain4", 2.0},
+                      {"utility", &util, "u__gain", 0.5}};
+  for (const Dev& d : devs) {
+    Stimulus st;
+    st.frames = 48000;
+    st.inputCh = [](uint32_t ord, uint32_t ch, uint32_t, uint64_t t) {
+      return ord == 0 && t < 9600 ? 0.5 * std::sin(2.0 * kPi * 330.0 * static_cast<double>(t) / kSr + ch) : ord == 0 ? 0.0 : 120.0;
+    };
+    st.input = [](uint32_t, uint32_t, uint64_t) { return 0.0; };
+    const std::string param = d.param;
+    const double value = d.value;
+    st.paramAt = [param, value](const std::string& name, uint64_t t0) { return name == param && t0 >= 24000 ? value : NAN; };
+    st.sleep = pq::engine::SleepMode::On;
+    const Outputs on = runBoth(*d.prog, st, std::string(d.what) + " sleep on");
+    st.sleep = pq::engine::SleepMode::Off;
+    const Outputs off = run(*d.prog, Backend::Jit, st);
+    REQUIRE(off.error.empty());
+    MESSAGE(std::string(d.what) << ": sleeps " << on.sleep.sleeps << ", wakes " << on.sleep.wakes << ", asleep blocks " << on.sleep.asleepBlocks);
+    CHECK_MESSAGE(on.sleep.sleeps >= 2, d.what);  // after the burst, and again after the param change in the silence
+    double worst = 0.0;
+    for (const char* n : {"y", "y[1]"})
+      for (size_t t = 0; t < st.frames; ++t) worst = std::max(worst, std::fabs(static_cast<double>(on.at(n)[0][t]) - off.at(n)[0][t]));
+    CHECK_MESSAGE(worst <= 1e-6, d.what << ": sleeping vs not " << worst);
+  }
+}

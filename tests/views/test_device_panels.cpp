@@ -701,7 +701,7 @@ TEST_CASE("device preview: param edits are param writes; structural edits re-che
   REQUIRE_MESSAGE(pv.ok(), (pv.ok() ? "" : pv.error().message));
   DevicePreview& p = **pv;
   CHECK(p.panelDesc().title == "Saturator");
-  CHECK(p.hostText().find("saturator(x: (pq_mono, pq_mono), type: 3, hq: 1") != std::string::npos);
+  CHECK(p.hostText().find("saturator(x: (pq_mono, pq_mono), type: 0, hq: 1") != std::string::npos);
   REQUIRE(p.play().ok());
   CHECK(player.plays == 1);
   CHECK(std::find(player.paramNames.begin(), player.paramNames.end(), "drive") != player.paramNames.end());

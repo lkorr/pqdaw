@@ -176,6 +176,7 @@ struct Stimulus {
 struct Outputs {
   std::map<std::string, std::vector<std::vector<float>>> byName;  // [voice][t]
   uint64_t rtViolations = 0;
+  eng::SleepStats sleep;  // the image's sleep statistics after the run (T4.x-fix-dsp)
   std::string error;
   const std::vector<std::vector<float>>& at(const std::string& n) const {
     const auto it = byName.find(n);
@@ -334,6 +335,7 @@ inline Outputs run(const Program& p, Backend backend, const Stimulus& st) {
         }
     }
   }
+  if (const eng::SleepStats* ss = img.sleepStats()) res.sleep = *ss;
   return res;
 }
 

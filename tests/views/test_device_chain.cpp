@@ -225,7 +225,7 @@ TEST_CASE("device view: a param drag is one undo step of Param changes; a const 
   CHECK(doc::findDevice(*u.ctx.doc(), sat).device->setting("type")->value == 6.0);
   CHECK(u.view().panelOf(sat)->constValue("type") == 6.0);
   REQUIRE(u.ctx.undo());
-  CHECK(u.view().panelOf(sat)->constValue("type") == 3.0);  // undo comes back to the panel
+  CHECK(u.view().panelOf(sat)->constValue("type") == 0.0);  // undo comes back to the panel (Analog Clip: M4 review L11)
 }
 
 TEST_CASE("device view: a param change from elsewhere repaints only its control") {

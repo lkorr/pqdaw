@@ -176,9 +176,10 @@ TEST_CASE("structure: Saturator's curve: only the chosen curve is active, as the
   const ParseResult r = parseOk(text);
   const Patch& p = r.file.patches[0];
   REQUIRE(p.name() == "sat_shape");
-  const StructuralInfo s = analyseStructure(p);  // type 3 (Medium Curve), softClip 0
-  CHECK_FALSE(inactive(s, p, "medium"));
-  for (const char* off : {"analog", "softsine", "bass", "hard", "fold", "digital", "ws", "drawn", "ca", "av", "v2", "gate"})
+  const StructuralInfo s = analyseStructure(p);  // type 0 (Analog Clip, the default since M4 review L11), softClip 0
+  CHECK_FALSE(inactive(s, p, "analog"));
+  CHECK_FALSE(inactive(s, p, "ca"));
+  for (const char* off : {"softsine", "bass", "medium", "hard", "fold", "digital", "ws", "drawn", "av", "v2", "gate"})
     CHECK_MESSAGE(inactive(s, p, off), off);
   // Each curve in turn.
   const char* curves[] = {"analog", "softsine", "bass", "medium", "hard", "fold", "digital", "ws", "drawn"};
@@ -208,8 +209,11 @@ TEST_CASE("structure: Saturator's curve: only the chosen curve is active, as the
     const NodeOrigin& o = opt->origin[v];
     if (o.instance == 0 && o.what == NodeOrigin::What::Node && o.node != kNone) kept.insert(o.node);
   }
-  for (const NodeIndex v : kept)  // params stay in the program either way (its interface: knobs, never folded)
-    if (p.node(v).kind != NodeKind::Param) CHECK_MESSAGE(s.nodeInactive[v] == 0, p.describe(v));
+  // Params stay in the program either way (its interface: knobs, never folded); literals are merged by value, so a
+  // kept literal may carry the origin of an equal one in an inactive curve (the `1` of `gain(…, start: 1)` and
+  // the digital clip's 1, T4.x-fix-dsp): the check is on the atoms.
+  for (const NodeIndex v : kept)
+    if (p.node(v).kind != NodeKind::Param && p.node(v).kind != NodeKind::Const) CHECK_MESSAGE(s.nodeInactive[v] == 0, p.describe(v));
   for (NodeIndex v = 0; v < p.nodeCount(); ++v)
     if (s.nodeInactive[v] && p.node(v).kind == NodeKind::Atom) CHECK_MESSAGE(kept.count(v) == 0, p.describe(v));
 }

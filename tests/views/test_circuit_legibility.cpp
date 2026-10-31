@@ -319,22 +319,25 @@ TEST_CASE("legibility: Saturator at its defaults shows only its active path; Ina
   // hq 1: the 2×, 4×, 8× paths (their 1 + 2 + 4 + 8 … sat_shape calls and oversampling stages) are hidden.
   for (const char* off : {"y2", "y4", "y8", "a", "b4", "e8"}) CHECK_MESSAGE(top.nodes[r.named(off)].hidden, off);
   CHECK_FALSE(top.nodes[r.named("y1")].hidden);
-  CHECK(total == 81);
-  CHECK(countIf(top, true) == 34);  // 47 visible
-  CHECK(top.visibleNodes() == 47);
-  // The curve: only Medium Curve's branch.
+  // T4.x-fix-dsp: 145 (was 81): the HQ paths mix dry/wet per oversampled sample (sat_mix, the input's own up
+  // chains), drive and dry/wet are smoothed gains (their `start: 1` literals), the `wet` export has its own down chains.
+  CHECK(total == 145);
+  CHECK(countIf(top, true) == 88);  // 57 visible
+  CHECK(top.visibleNodes() == 57);
+  // The curve: only Analog Clip's branch (the default since M4 review L11).
   r.open("y1");
   REQUIRE(r.editor->shownPatch() == "sat_shape");
-  CHECK(r.editor->shownArguments().size() == 2);  // type 3 and softClip 0 from the root's defaults
+  CHECK(r.editor->shownArguments().size() == 2);  // type 0 and softClip 0 from the root's defaults
   const uint32_t curveTotal = static_cast<uint32_t>(r.scene().nodes.size());
-  MESSAGE("sat_shape: " << curveTotal << " nodes, " << r.scene().visibleNodes() << " visible at type 3");
-  CHECK_FALSE(r.scene().nodes[r.named("medium")].hidden);
-  for (const char* off : {"analog", "softsine", "bass", "hard", "fold", "digital", "ws", "drawn"})
+  MESSAGE("sat_shape: " << curveTotal << " nodes, " << r.scene().visibleNodes() << " visible at type 0");
+  CHECK_FALSE(r.scene().nodes[r.named("analog")].hidden);
+  for (const char* off : {"softsine", "bass", "medium", "hard", "fold", "digital", "ws", "drawn"})
     CHECK_MESSAGE(r.scene().nodes[r.named(off)].hidden, off);
-  // v, type, softClip (and their default literals), outGain, medium = fast_tanh(v), the mux, · outGain, the soft-clip
-  // select with its comparison and 0.5, y: 13 of 84.
-  CHECK(curveTotal == 84);
-  CHECK(r.scene().visibleNodes() == 13);
+  // v, type, softClip (and their default literals), outGain, Analog Clip (ca = clip(v, −1.5, 1.5) with its two
+  // literals, ca − 4/27·ca·ca·ca: three multiplies, the subtraction, the literal), the mux, the output gain
+  // gain(…, outGain, start: 1) and its literal, the soft-clip select with its comparison and 0.5, y: 21 of 85.
+  CHECK(curveTotal == 85);
+  CHECK(r.scene().visibleNodes() == 21);
   r.editor->setShowInactive(true);
   CHECK(r.scene().hiddenNodes == 0);
   CHECK(r.scene().visibleNodes() == curveTotal);
@@ -347,7 +350,7 @@ TEST_CASE("legibility: Operator at its defaults: the unused operators, waveforms
   REQUIRE(r.editor->shownPatch() == "operator");
   const uint32_t total = static_cast<uint32_t>(r.scene().nodes.size());
   MESSAGE("operator: " << total << " nodes, " << r.scene().hiddenNodes << " hidden");
-  CHECK(total == 712);
+  CHECK(total == 720);  // T4.x-fix-dsp: + min(key · kc, 0) and its 0 per operator (M4 review M11)
   CHECK(r.scene().hiddenNodes == 254);  // 458 visible
   for (const char* off : {"bankS", "bankR", "fL", "fR"}) CHECK_MESSAGE(r.scene().nodes[r.named(off)].hidden, off);
   CHECK_FALSE(r.scene().nodes[r.named("bankL")].hidden);
@@ -390,14 +393,18 @@ TEST_CASE("legibility: a device's settings decide what is hidden; the view prefs
   CHECK(r.scene().hiddenNodes != at1);
   // Its params' current values in the tooltips.
   CHECK(r.editor->nodeTooltipText(r.named("drive")).find("now 6.0 dB") != std::string::npos);
-  // Into a curve of the 4× path: type 0 (Analog Clip) arrives there.
+  // Into a curve of the 4× path (an oversampled sample's sat_mix, then its sat_shape): type 0 (Analog Clip) arrives
+  // there.
   const graph::Patch& p = r.patch();
   graph::NodeIndex call = graph::kNone;
   for (graph::NodeIndex v = 0; v < p.nodeCount() && call == graph::kNone; ++v)
-    if (p.node(v).kind == graph::NodeKind::Subcircuit && p.subcircuit(v).patch == "sat_shape" && !r.scene().nodes[v].hidden)
+    if (p.node(v).kind == graph::NodeKind::Subcircuit && p.subcircuit(v).patch == "sat_mix" && !r.scene().nodes[v].hidden)
       call = v;
   REQUIRE(call != graph::kNone);
   REQUIRE(r.editor->openNode(call));
+  REQUIRE(r.editor->shownPatch() == "sat_mix");
+  r.open("v");
+  REQUIRE(r.editor->shownPatch() == "sat_shape");
   CHECK_FALSE(r.scene().nodes[r.named("analog")].hidden);
   CHECK(r.scene().nodes[r.named("medium")].hidden);
 
