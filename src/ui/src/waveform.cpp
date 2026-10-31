@@ -2,8 +2,11 @@
 
 #include "pq/ui/waveform.h"
 
+#include <immintrin.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace pq::ui {
@@ -16,6 +19,7 @@ constexpr float kInt16 = 1.0f / 32767.0f;
 struct Scratch {
   std::vector<float> lo, hi;  // [channel * columns + col]
   std::vector<uint8_t> has;   // [col]
+  std::vector<int32_t> k0, nb;  // [col]: the level path's first bucket and bucket count
 };
 Scratch& scratch() {
   static thread_local Scratch s;
@@ -102,40 +106,78 @@ Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& cl
     float* const los = s.lo.data();
     float* const his = s.hi.data();
     uint8_t* const has = s.has.data();
+    if (s.k0.size() < ncol) {
+      s.k0.resize(ncol);
+      s.nb.resize(ncol);
+    }
+    int32_t* const k0s = s.k0.data();
+    int32_t* const nbs = s.nb.data();
+    // M5 review M5: first the bucket range of every column (no channel work), then per channel a reduction with a
+    // fixed trip count (kFixed lanes, the ones past the column's buckets repeat its first): no data-dependent branch
+    // per column. At the level chosen a column spans fewer than 6 buckets (framesPerPx < 4 · framesPerBucket); the
+    // top level can span more (a whole file in a few px): those take the loop.
+    constexpr int32_t kFixed = 5;
+    bool wide = false;
     for (int32_t c = c0; c < c1; ++c) {
       const size_t i = static_cast<size_t>(c - c0);
       double fa = 0, fb = 0;
       colFrames(c, fa, fb);
       fa = fa > 0.0 ? fa : 0.0;
       fb = fb < total ? fb : total;
-      if (!(fb > fa)) {
-        has[i] = 0;
-        continue;
-      }
       // fa, fb ≥ 0: truncation is floor (no library rounding calls in this loop).
       const double xa = fa * invFpb, xb = fb * invFpb;
       const auto k0 = static_cast<int64_t>(xa);
       auto k1 = static_cast<int64_t>(xb);
       k1 += static_cast<double>(k1) < xb ? 1 : 0;
       k1 = k1 < valid ? k1 : valid;
-      if (k1 <= k0) {
-        has[i] = 0;
-        continue;
+      const bool any = fb > fa && k1 > k0;
+      has[i] = any ? 1 : 0;
+      k0s[i] = any ? static_cast<int32_t>(k0) : 0;  // word 0 exists whenever a column has data (valid > 0)
+      nbs[i] = any ? static_cast<int32_t>(k1 - k0) : 1;
+      wide = wide || (any && k1 - k0 > kFixed);
+    }
+    if (valid <= 0 || valid > (int64_t{1} << 30)) wide = true;  // gathers index with int32
+    // Eight columns at a time: a column's (min, max) pairs are 32-bit words, gathered kFixed per column (lanes past
+    // its buckets re-read its first word); 16-bit min / max on the words keeps min in the low and max in the high
+    // half. 2× faster than the per-column loop (measured: 17.7 → 8.6 µs for 2560 stereo columns).
+    const size_t n8 = wide ? 0 : ncol / 8 * 8;
+    const __m256 scale = _mm256_set1_ps(kInt16);
+    for (uint32_t ch = 0; ch < channels; ++ch) {
+      const int16_t* const base = lv.minMax[ch];
+      const int* const words = reinterpret_cast<const int*>(base);
+      float* const lo_ = los + ch * ncol;
+      float* const hi_ = his + ch * ncol;
+      for (size_t i = 0; i < n8; i += 8) {
+        const __m256i k0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(k0s + i));
+        const __m256i nb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(nbs + i));
+        const __m256i w = _mm256_i32gather_epi32(words, k0, 4);
+        __m256i mn = w, mx = w;
+        for (int32_t k = 1; k < kFixed; ++k) {
+          const __m256i kk = _mm256_set1_epi32(k);
+          const __m256i at = _mm256_add_epi32(k0, _mm256_and_si256(_mm256_cmpgt_epi32(nb, kk), kk));
+          const __m256i g = _mm256_i32gather_epi32(words, at, 4);
+          mn = _mm256_min_epi16(mn, g);
+          mx = _mm256_max_epi16(mx, g);
+        }
+        _mm256_storeu_ps(lo_ + i, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_srai_epi32(_mm256_slli_epi32(mn, 16), 16)), scale));
+        _mm256_storeu_ps(hi_ + i, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_srai_epi32(mx, 16)), scale));
       }
-      has[i] = 1;
-      for (uint32_t ch = 0; ch < channels; ++ch) {
-        const int16_t* mm = lv.minMax[ch] + 2 * k0;
+      for (size_t i = n8; i < ncol; ++i) {
+        const int16_t* mm = base + 2 * static_cast<int64_t>(k0s[i]);
         int32_t lo = mm[0], hi = mm[1];
-        for (int64_t k = 1; k < k1 - k0; ++k) {
+        for (int32_t k = 1; k < nbs[i]; ++k) {
           lo = mm[2 * k] < lo ? mm[2 * k] : lo;
           hi = mm[2 * k + 1] > hi ? mm[2 * k + 1] : hi;
         }
-        los[ch * ncol + i] = static_cast<float>(lo) * kInt16;
-        his[ch * ncol + i] = static_cast<float>(hi) * kInt16;
+        lo_[i] = static_cast<float>(lo) * kInt16;
+        hi_[i] = static_cast<float>(hi) * kInt16;
       }
     }
   } else {
+    // M5 review M5: per column the sample indices once (not per channel), no library rounding calls, and the
+    // min / max of a column's samples 8 at a time (2560 stereo px at 40 frames per px: 114 → 64 µs).
     const auto w0 = static_cast<double>(sm.frame0), wn = static_cast<double>(sm.frames);
+    const int64_t last = sm.frames - 1;
     for (int32_t c = c0; c < c1; ++c) {
       const size_t i = static_cast<size_t>(c - c0);
       double fa = 0, fb = 0;
@@ -149,38 +191,67 @@ Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& cl
       s.has[i] = 1;
       // Window-relative positions; sample j sits at position j.
       const double a = fa - w0, b = fb - w0;
-      for (uint32_t ch = 0; ch < channels; ++ch) {
-        const float* x = sm.channel[ch];
-        auto at = [&](double p) {  // linear interpolation between samples, clamped to the window
-          p = std::clamp(p, 0.0, wn - 1.0);
-          const auto j = static_cast<int64_t>(std::floor(p));
-          const auto t = static_cast<float>(p - static_cast<double>(j));
-          const float v0 = x[j];
-          const float v1 = x[std::min<int64_t>(j + 1, sm.frames - 1)];
-          return v0 + (v1 - v0) * t;
-        };
-        float lo, hi;
-        if (fpp >= 1.0) {
-          const auto j0 = std::clamp<int64_t>(static_cast<int64_t>(std::floor(a)), 0, sm.frames - 1);
-          const auto j1 = std::clamp<int64_t>(static_cast<int64_t>(std::ceil(b)), j0 + 1, sm.frames);
-          lo = hi = x[j0];
-          for (int64_t j = j0 + 1; j < j1; ++j) {
-            lo = std::min(lo, x[j]);
-            hi = std::max(hi, x[j]);
+      if (fpp >= 1.0) {
+        const int64_t fl = a >= 0.0 ? static_cast<int64_t>(a) : static_cast<int64_t>(std::floor(a));
+        const int64_t j0 = std::clamp<int64_t>(fl, 0, last);
+        auto cb = static_cast<int64_t>(b);
+        cb += static_cast<double>(cb) < b ? 1 : 0;  // ceil (b > a ≥ 0 here, or clamped below)
+        const int64_t j1 = std::clamp<int64_t>(cb, j0 + 1, sm.frames);
+        for (uint32_t ch = 0; ch < channels; ++ch) {
+          const float* x = sm.channel[ch];
+          float lo = x[j0], hi = x[j0];
+          int64_t k = j0 + 1;
+          if (j1 - k >= 8) {
+            __m256 vmn = _mm256_set1_ps(lo), vmx = vmn;
+            for (; k + 8 <= j1; k += 8) {
+              const __m256 v = _mm256_loadu_ps(x + k);
+              vmn = _mm256_min_ps(vmn, v);
+              vmx = _mm256_max_ps(vmx, v);
+            }
+            __m128 m4 = _mm_min_ps(_mm256_castps256_ps128(vmn), _mm256_extractf128_ps(vmn, 1));
+            __m128 x4 = _mm_max_ps(_mm256_castps256_ps128(vmx), _mm256_extractf128_ps(vmx, 1));
+            m4 = _mm_min_ps(m4, _mm_movehl_ps(m4, m4));
+            x4 = _mm_max_ps(x4, _mm_movehl_ps(x4, x4));
+            m4 = _mm_min_ss(m4, _mm_shuffle_ps(m4, m4, 1));
+            x4 = _mm_max_ss(x4, _mm_shuffle_ps(x4, x4, 1));
+            lo = _mm_cvtss_f32(m4);
+            hi = _mm_cvtss_f32(x4);
           }
-        } else {
-          lo = hi = at(a);
-          const float vb = at(b);
+          for (; k < j1; ++k) {
+            lo = std::min(lo, x[k]);
+            hi = std::max(hi, x[k]);
+          }
+          s.lo[ch * ncol + i] = lo;
+          s.hi[ch * ncol + i] = hi;
+        }
+      } else {
+        // The interpolation points (clamped to the window): a, b and the one sample between them, if any.
+        const double pa = std::clamp(a, 0.0, wn - 1.0), pb = std::clamp(b, 0.0, wn - 1.0);
+        const auto ja = static_cast<int64_t>(pa), jb = static_cast<int64_t>(pb);
+        const auto ta = static_cast<float>(pa - static_cast<double>(ja)), tb = static_cast<float>(pb - static_cast<double>(jb));
+        const int64_t ja1 = std::min<int64_t>(ja + 1, last), jb1 = std::min<int64_t>(jb + 1, last);
+        auto cj = static_cast<int64_t>(a);
+        if (a < 0.0) cj = static_cast<int64_t>(std::ceil(a));
+        else cj += static_cast<double>(cj) < a ? 1 : 0;  // ceil(a)
+        const bool mid = static_cast<double>(cj) < b;  // fpp < 1: at most one sample lies inside the column
+        const double pm = std::clamp(static_cast<double>(cj), 0.0, wn - 1.0);
+        const auto jm = static_cast<int64_t>(pm);
+        const auto tm = static_cast<float>(pm - static_cast<double>(jm));
+        const int64_t jm1 = std::min<int64_t>(jm + 1, last);
+        for (uint32_t ch = 0; ch < channels; ++ch) {
+          const float* x = sm.channel[ch];
+          float lo = x[ja] + (x[ja1] - x[ja]) * ta, hi = lo;
+          const float vb = x[jb] + (x[jb1] - x[jb]) * tb;
           lo = std::min(lo, vb);
           hi = std::max(hi, vb);
-          for (auto j = static_cast<int64_t>(std::ceil(a)); static_cast<double>(j) < b; ++j) {
-            const float v = at(static_cast<double>(j));
+          if (mid) {
+            const float v = x[jm] + (x[jm1] - x[jm]) * tm;
             lo = std::min(lo, v);
             hi = std::max(hi, v);
           }
+          s.lo[ch * ncol + i] = lo;
+          s.hi[ch * ncol + i] = hi;
         }
-        s.lo[ch * ncol + i] = lo;
-        s.hi[ch * ncol + i] = hi;
       }
     }
   }
@@ -242,7 +313,34 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
       v[0] = {{xl, top}, uv, d.colour};
       v[1] = {{xl, bottom}, uv, d.colour};
       v += 2;
-      for (size_t k = i; k < e; ++k) {
+      size_t k = i;
+      {  // eight spans per AVX pass, the same arithmetic as columnSpan (M5 review M5)
+        const __m256 vc = _mm256_set1_ps(centre), vh = _mm256_set1_ps(half), vy0 = _mm256_set1_ps(y0), vy1 = _mm256_set1_ps(y1);
+        const __m256 vy0h = _mm256_set1_ps(y0 + 0.5f), vy1h = _mm256_set1_ps(y1 - 0.5f);
+        const __m256 one = _mm256_set1_ps(1.0f), halfPx = _mm256_set1_ps(0.5f);
+        alignas(32) float tops[8], bots[8];
+        for (; k + 8 <= e; k += 8) {
+          __m256 t = _mm256_min_ps(_mm256_max_ps(_mm256_sub_ps(vc, _mm256_mul_ps(_mm256_loadu_ps(hi + k), vh)), vy0), vy1);
+          __m256 b = _mm256_min_ps(_mm256_max_ps(_mm256_sub_ps(vc, _mm256_mul_ps(_mm256_loadu_ps(lo + k), vh)), vy0), vy1);
+          const __m256 thin = _mm256_cmp_ps(_mm256_sub_ps(b, t), one, _CMP_LT_OQ);
+          const __m256 mid = _mm256_min_ps(_mm256_max_ps(_mm256_mul_ps(_mm256_add_ps(t, b), halfPx), vy0h), vy1h);
+          t = _mm256_blendv_ps(t, _mm256_sub_ps(mid, halfPx), thin);
+          b = _mm256_blendv_ps(b, _mm256_add_ps(mid, halfPx), thin);
+          _mm256_store_ps(tops, t);
+          _mm256_store_ps(bots, b);
+          for (int j = 0; j < 8; ++j) {
+            const float x = d.rect.x0 + static_cast<float>(c0) + static_cast<float>(k + static_cast<size_t>(j)) + 0.5f;
+            v[0] = {{x, tops[j]}, uv, d.colour};
+            v[1] = {{x, bots[j]}, uv, d.colour};
+            v += 2;
+          }
+        }
+        if (k > i) {
+          top = tops[7];
+          bottom = bots[7];
+        }
+      }
+      for (; k < e; ++k) {
         span(k, top, bottom);
         const float x = d.rect.x0 + static_cast<float>(c0) + static_cast<float>(k) + 0.5f;
         v[0] = {{x, top}, uv, d.colour};
@@ -253,7 +351,23 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
       v[0] = {{xr, top}, uv, d.colour};
       v[1] = {{xr, bottom}, uv, d.colour};
       uint32_t* ix = sp.i;
-      for (uint32_t q = 0; q + 1 < pairs; ++q) {
+      // Four quads (24 indices) per three 8-lane stores (M5 review M5: the index writes were a third of the draw).
+      uint32_t q = 0;
+      {
+        const __m256i p0 = _mm256_setr_epi32(0, 2, 3, 0, 3, 1, 2, 4);
+        const __m256i p1 = _mm256_setr_epi32(5, 2, 5, 3, 4, 6, 7, 4);
+        const __m256i p2 = _mm256_setr_epi32(7, 5, 6, 8, 9, 6, 9, 7);
+        __m256i a = _mm256_set1_epi32(static_cast<int>(sp.base));
+        const __m256i eight = _mm256_set1_epi32(8);
+        for (; q + 4 < pairs; q += 4) {
+          _mm256_storeu_si256(reinterpret_cast<__m256i*>(ix), _mm256_add_epi32(a, p0));
+          _mm256_storeu_si256(reinterpret_cast<__m256i*>(ix + 8), _mm256_add_epi32(a, p1));
+          _mm256_storeu_si256(reinterpret_cast<__m256i*>(ix + 16), _mm256_add_epi32(a, p2));
+          a = _mm256_add_epi32(a, eight);
+          ix += 24;
+        }
+      }
+      for (; q + 1 < pairs; ++q) {
         const uint32_t a = sp.base + 2 * q;
         ix[0] = a;
         ix[1] = a + 2;

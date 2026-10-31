@@ -253,7 +253,7 @@ TEST_CASE("render: waveform-lod matches the golden image") {
   CHECK(pass);
 }
 
-TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 50 us" * doctest::test_suite("perf")) {
+TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 50 us (sample level <= 100 us)" * doctest::test_suite("perf")) {
   Synth s(10ull * 60 * 48000, 2);
   DrawList dl;
   WaveformDraw d;
@@ -270,4 +270,31 @@ TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 50 us" * doct
   std::sort(us.begin(), us.end());
   MESSAGE("2560-px stereo waveform: median " << us[100] << " us, p99 " << us[198] << " us");
   CHECK(us[100] <= 50.0);
+  // M5 review M5: the sample-level path too (deep zoom: 0.5 and 40 frames per px from a sample window). It reads
+  // the samples themselves (40 frames per px: 800 KiB of floats), so its bound is twice the overview path's.
+  std::vector<float> x[2];
+  for (uint32_t c = 0; c < 2; ++c) {
+    x[c].resize(1u << 18);
+    for (size_t i = 0; i < x[c].size(); ++i) x[c][i] = std::sin(static_cast<float>(i) * 0.01f + static_cast<float>(c)) * 0.7f;
+  }
+  WaveformData wd = s.wd;
+  wd.samples.frame0 = 0;
+  wd.samples.frames = static_cast<int64_t>(x[0].size());
+  wd.samples.channel[0] = x[0].data();
+  wd.samples.channel[1] = x[1].data();
+  for (const double fpp : {0.5, 40.0}) {
+    d.frame0 = 1000.0;
+    d.frame1 = 1000.0 + 2560.0 * fpp;
+    std::vector<double> t;
+    for (int i = 0; i < 200; ++i) {
+      dl.reset(2560, 80);
+      const double t0 = pq::test::threadCpuUs();
+      const WaveformStats st = drawWaveform(dl, wd, d);
+      t.push_back(pq::test::threadCpuUs() - t0);
+      REQUIRE(st.level == -1);
+    }
+    std::sort(t.begin(), t.end());
+    MESSAGE("2560-px stereo waveform at " << fpp << " frames/px (samples): median " << t[100] << " us");
+    CHECK(t[100] <= 100.0);
+  }
 }
