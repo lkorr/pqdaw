@@ -85,18 +85,31 @@ uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames
     if (!(t >= 0.0) || t > 1e7) return 0;
     maxTime = std::max(maxTime, t);
   }
-  // Zero propagation (memoised; -1 unknown, 0 not zero, 1 zero). Cycles count as not zero.
+  // Zero propagation (memoised; -1 unknown, 0 not zero, 1 zero). Cycles count as not zero. M4 review M9: evaluated on
+  // an explicit stack (a deep rack nest is a long chain of mixers), in the recursive version's order, short-circuits
+  // included (so a cycle reads "in progress" exactly where it did).
   std::vector<int8_t> zero(p.nodeCount(), -1);
-  auto inputZero = [&](auto& self, NodeIndex n, uint32_t i) -> bool {
-    const WireIndex w = adj.driver[p.flatInput(n, i)];
-    if (w == kNone) return false;  // an unconnected input reads a default (not 0 in general)
-    return self(self, p.wire(w).from.node);
+  enum class Op : uint8_t { And, Or };
+  struct Eval {
+    NodeIndex n;
+    Op op = Op::And;
+    uint32_t inputs[8] = {};  // the inputs to read, in order (at most 8 here; others use `first`/`count`)
+    uint32_t count = 0;       // inputs to read
+    bool list = false;        // inputs[] holds them; else 0 … count − 1
+    uint32_t pos = 0;
+    bool acc = true;
   };
-  auto isZero = [&](auto& self, NodeIndex n) -> bool {
-    if (zero[n] >= 0) return zero[n] == 1;
+  std::vector<Eval> stack;
+  // Starts evaluating `n`: false when its value is known at once (into *out).
+  auto enter = [&](NodeIndex n, bool& out) -> bool {
+    if (zero[n] >= 0) {
+      out = zero[n] == 1;
+      return false;
+    }
     zero[n] = 0;  // in progress: a cycle is not zero
     const Node& nd = p.node(n);
-    bool z = false;
+    Eval e{n};
+    bool leaf = true, z = false;
     switch (nd.kind) {
       case NodeKind::Input: z = true; break;  // a root input: its bus is silent
       case NodeKind::Const: z = p.constant(n).value() == 0.0; break;
@@ -105,31 +118,63 @@ uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames
         if (nd.atom == voiceSum || nd.atom == clipPlayer) {
           z = true;  // no voice sounds; no clip of its slot has audio (ProjectConfig::clipActive)
         } else if (nd.atom == mul) {
-          z = inputZero(self, n, 0) || inputZero(self, n, 1);
+          leaf = false, e.op = Op::Or, e.acc = false, e.count = 2;
         } else if (nd.atom == gain) {
-          z = inputZero(self, n, 0);
+          leaf = false, e.count = 1;
         } else if (nd.atom == gainAdd) {
-          z = inputZero(self, n, 0) && inputZero(self, n, 1);
+          leaf = false, e.count = 2;
         } else if (name == "select") {
-          z = inputZero(self, n, 1) && inputZero(self, n, 2);
+          leaf = false, e.list = true, e.inputs[0] = 1, e.inputs[1] = 2, e.count = 2;
         } else if (name == "add" || name == "sub" || name == "neg" || name == "abs" || name == "pack" ||
                    name == "channel" || name == "min" || name == "max") {
-          z = true;
-          const uint32_t ins = name == "channel" ? 1u : nd.numInputs;
-          for (uint32_t i = 0; i < ins && z; ++i) z = inputZero(self, n, i);
+          leaf = false, e.count = name == "channel" ? 1u : nd.numInputs;
         }
         break;
       }
       default: break;
     }
-    zero[n] = z ? 1 : 0;
-    return z;
+    if (leaf || e.count == 0) {
+      out = leaf ? z : e.acc;
+      zero[n] = out ? 1 : 0;
+      return false;
+    }
+    stack.push_back(e);
+    return true;
+  };
+  // inputZero of input `i` of `n` (an unconnected input reads a default: not 0 in general).
+  auto isInputZero = [&](NodeIndex n0, uint32_t i0) -> bool {
+    const WireIndex w0 = adj.driver[p.flatInput(n0, i0)];
+    if (w0 == kNone) return false;
+    bool result = false;
+    if (!enter(p.wire(w0).from.node, result)) return result;
+    while (!stack.empty()) {
+      Eval& e = stack.back();
+      const bool done = e.pos == e.count || (e.op == Op::And ? !e.acc : e.acc);
+      if (done) {
+        result = e.acc;
+        zero[e.n] = result ? 1 : 0;
+        stack.pop_back();
+        if (!stack.empty()) {
+          Eval& parent = stack.back();
+          parent.acc = parent.op == Op::And ? parent.acc && result : parent.acc || result;
+        }
+        continue;
+      }
+      const uint32_t i = e.list ? e.inputs[e.pos] : e.pos;
+      ++e.pos;
+      const WireIndex w = adj.driver[p.flatInput(e.n, i)];
+      bool r = false;
+      if (w != kNone && enter(p.wire(w).from.node, r)) continue;  // `e` may move: re-read next turn
+      Eval& top = stack.back();
+      top.acc = top.op == Op::And ? top.acc && r : top.acc || r;
+    }
+    return result;
   };
   for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
     const NodeKind k = p.node(n).kind;
     if (k != NodeKind::Output && k != NodeKind::Export) continue;
     if (typed.inputType(n, 0).poly == Poly::Voice) continue;  // voice outputs: not produced without voices
-    if (!inputZero(isZero, n, 0)) return 0;
+    if (!isInputZero(n, 0)) return 0;
   }
   // |residual| ≤ a few units decays below the 3e-8 snap threshold within 20 time constants (e^-20 ≈ 2e-9).
   const double frames = std::ceil(20.0 * std::max(maxTime, 1.0));

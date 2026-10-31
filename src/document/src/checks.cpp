@@ -226,27 +226,36 @@ ListKind chainListKind(const Device& rack) noexcept {
   return rack.kind == DeviceKind::Instrument ? ListKind::InstrumentRackChain : ListKind::AudioRackChain;
 }
 
+// M4 review M9: iterative (an explicit list of device lists still to check), so racks nest as deep as memory allows. A
+// rack's own fields are checked by checkRackOwn when it is met; its chains' lists are queued.
 Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
-  for (size_t i = 0; i < devices.size(); ++i) {
-    const DevicePtr& d = devices[i];
-    if (!d) return invalid("null device");
-    if (!d->id.valid()) return invalid("device has no id");
-    if (d->patch.empty()) return invalid("device has no patch");
-    for (size_t j = 0; j < i; ++j)
-      if (devices[j]->id == d->id) return invalid("device id twice in a chain");
-    if (d->kind == DeviceKind::Instrument) {
-      if (kind == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks");
-      if (kind == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
-      if (i != 0)
-        return invalid(kind == ListKind::MidiTrack ? "the instrument must be the first device of a MIDI track"
-                                                   : "the instrument must be the first device of its chain");
-    }
-    PQ_DOC_TRY(checkValues(d->params, "params"));
-    PQ_DOC_TRY(checkValues(d->settings, "settings"));
-    if (d->rack) {
-      PQ_DOC_TRY(checkRack(*d));
-    } else if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack) {
-      return invalid("'" + d->patch + "' is a rack and needs its chains");
+  std::vector<std::pair<ListKind, const std::vector<DevicePtr>*>> work{{kind, &devices}};
+  while (!work.empty()) {
+    const auto [k, listPtr] = work.back();
+    work.pop_back();
+    const std::vector<DevicePtr>& list = *listPtr;
+    for (size_t i = 0; i < list.size(); ++i) {
+      const DevicePtr& d = list[i];
+      if (!d) return invalid("null device");
+      if (!d->id.valid()) return invalid("device has no id");
+      if (d->patch.empty()) return invalid("device has no patch");
+      for (size_t j = 0; j < i; ++j)
+        if (list[j]->id == d->id) return invalid("device id twice in a chain");
+      if (d->kind == DeviceKind::Instrument) {
+        if (k == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks");
+        if (k == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
+        if (i != 0)
+          return invalid(k == ListKind::MidiTrack ? "the instrument must be the first device of a MIDI track"
+                                                  : "the instrument must be the first device of its chain");
+      }
+      PQ_DOC_TRY(checkValues(d->params, "params"));
+      PQ_DOC_TRY(checkValues(d->settings, "settings"));
+      if (d->rack) {
+        PQ_DOC_TRY(checkRackOwn(*d));
+        for (size_t c = d->rack->chains.size(); c-- > 0;) work.emplace_back(chainListKind(*d), &d->rack->chains[c]->devices);
+      } else if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack) {
+        return invalid("'" + d->patch + "' is a rack and needs its chains");
+      }
     }
   }
   return ok();
@@ -263,6 +272,12 @@ Status checkMapping(const MacroMapping& m) {
 }
 
 Status checkRack(const Device& d) {
+  PQ_DOC_TRY(checkRackOwn(d));
+  for (const ChainPtr& c : d.rack->chains) PQ_DOC_TRY(checkList(chainListKind(d), c->devices));
+  return ok();
+}
+
+Status checkRackOwn(const Device& d) {
   const Rack& r = *d.rack;
   const bool instrument = d.kind == DeviceKind::Instrument;
   if (d.patch != (instrument ? kInstrumentRack : kAudioEffectRack)) return invalid("a rack's patch must name its kind");
@@ -289,7 +304,6 @@ Status checkRack(const Device& d) {
       if (!zoneValid(c->zone(k), k, r.keyUnit)) return invalid("chain zone out of order or out of range");
     if (!instrument && (!zoneOff(c->key, ZoneKind::Key, r.keyUnit) || !zoneOff(c->velocity, ZoneKind::Velocity, r.keyUnit)))
       return invalid("key and velocity zones are Instrument Rack zones");
-    PQ_DOC_TRY(checkList(chainListKind(d), c->devices));
   }
   for (size_t i = 0; i < r.mappings.size(); ++i) {
     const MacroMapping& m = r.mappings[i];

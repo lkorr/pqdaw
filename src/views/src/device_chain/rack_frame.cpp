@@ -294,7 +294,8 @@ private:
 class RackFrame final : public FrameBase {
 public:
   RackFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d)
-      : FrameBase("rack[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), target_(impl, d.id) {
+      : FrameBase("rack[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), target_(impl, d.id),
+        nesting_(impl.nestingBuilt) {
     setLayout(ui::LayoutKind::Custom);
     strip_ = &add<RackStrip>(*this, impl);
     list_ = &add<ChainList>(*this, impl);
@@ -623,7 +624,9 @@ private:
   bool syncInner() {
     const doc::Chain* c = shownChainPtr();
     static const std::vector<doc::DevicePtr> kNone;
-    const std::vector<doc::DevicePtr>& devs = c != nullptr ? c->devices : kNone;
+    // M4 review M9: below kMaxNestedRackFrames nested racks, the chain's devices are not framed.
+    const bool deep = nesting_ + 1 >= DeviceChainView::kMaxNestedRackFrames;
+    const std::vector<doc::DevicePtr>& devs = c != nullptr && !deep ? c->devices : kNone;
     bool same = devs.size() == innerShown_.size();
     for (size_t i = 0; same && i < devs.size(); ++i)
       same = devs[i]->id == innerShown_[i]->id && devs[i]->isRack() == innerShown_[i]->isRack() &&
@@ -634,17 +637,21 @@ private:
     } else {
       for (FrameBase* f : inner_) (void)removeChild(*f);
       inner_.clear();
+      const uint32_t outer = impl_.nestingBuilt;
+      impl_.nestingBuilt = nesting_ + 1;  // the racks framed here are one level deeper
       for (const doc::DevicePtr& d : devs) {
         auto f = makeFrame(impl_, ctx_, *d);
         inner_.push_back(f.get());
         addChild(std::move(f));
       }
+      impl_.nestingBuilt = outer;
     }
     innerShown_ = devs;
     return !same;
   }
 
   RackTarget target_;
+  uint32_t nesting_ = 0;  // racks around this one in the Device view (0: on the track's chain)
   std::shared_ptr<const doc::Rack> rack_;
   doc::DeviceKind kind_ = doc::DeviceKind::AudioEffect;
   bool active_ = true;

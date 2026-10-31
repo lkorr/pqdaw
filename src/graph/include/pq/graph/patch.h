@@ -50,6 +50,7 @@ enum class NodeKind : uint8_t { Atom, Const, Param, Input, Output, Export, Subci
 std::string_view toText(NodeKind) noexcept;
 
 inline constexpr uint16_t kWholeNode = 0xFFFF;  // Node::nameOutput when the name refers to the node itself
+inline constexpr uint32_t kMaxPorts = 0xFFFF;   // inputs (or outputs) of one node: Node's port counts are 16-bit
 inline constexpr uint32_t kMaxSolveIterations = 64;
 
 struct Node {

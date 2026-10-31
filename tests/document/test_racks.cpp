@@ -519,3 +519,114 @@ TEST_CASE("racks: moving a mapped device out of a rack between a group and its t
     moveOut(g, a);
   }
 }
+
+// M4 review M9 (the user: no depth cap, "it should be able to go forever as one pleases"): racks nested 20,000 deep load,
+// save, round-trip, lower and edit without a stack overflow (every rack walk is iterative; the destructor of a nest
+// frees it level by level). An Audio Effect Rack nest with a Utility at the bottom (after the track's instrument), and
+// an Instrument Rack nest with the instrument at the bottom; the outer racks' macro 1 maps each inner rack's macro 1
+// in a shallower nest (a mapping chain through every level).
+TEST_CASE("racks: 20,000 nested racks load, save, round-trip, lower and edit without a stack overflow (M9)" * doctest::test_suite("slow")) {
+  constexpr int kDepth = 20000;
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId fx = ids.track(), inst = ids.track();
+  DeviceId bottomUtil, bottomSynth, outerFx;
+  {
+    // Inside out: no recursion while building either.
+    bottomUtil = ids.device();
+    DevicePtr inner = makeDevice(bottomUtil, "utility", DeviceKind::AudioEffect);
+    for (int k = 0; k < kDepth; ++k) {
+      const DeviceId id = ids.device();
+      inner = makeRack(id, DeviceKind::AudioEffect, {makeChain(ids.chain(), "C", {inner})});
+      outerFx = id;
+    }
+    Track t = makeTrack(fx, TrackKind::Midi, "Fx");
+    t.devices = {makeDefaultInstrument(ids.device()), inner};
+    bottomSynth = ids.device();
+    DevicePtr in2 = makeDefaultInstrument(bottomSynth);
+    for (int k = 0; k < kDepth; ++k) in2 = makeRack(ids.device(), DeviceKind::Instrument, {makeChain(ids.chain(), "C", {in2})});
+    Track t2 = makeTrack(inst, TrackKind::Midi, "Inst");
+    t2.devices = {in2};
+    Batch b{"nests", {}};
+    b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), {}, kAppend});
+    b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t2)), {}, kAppend});
+    REQUIRE(dispatch(store, b).ok());
+  }
+  // Save, load, compare (deep equality is iterative too), save again: the same text.
+  const Result<std::string> text = serializeProject(*store.current());
+  REQUIRE_MESSAGE(text.ok(), (text.ok() ? std::string() : text.error().message));
+  MESSAGE("20,000-deep nest: " << text->size() / 1024 << " KB of project text");
+  CHECK(text->size() < 64u * 1024 * 1024);  // the indentation stops growing (not O(depth²))
+  Result<LoadedProject> loaded = parseProject(*text);
+  REQUIRE_MESSAGE(loaded.ok(), (loaded.ok() ? std::string() : loaded.error().message));
+  CHECK(*loaded->project == *store.current());
+  const Result<std::string> again = serializeProject(*loaded->project);
+  REQUIRE(again.ok());
+  CHECK(*again == *text);
+  // Lowering: the bottom devices are called, inside every rack.
+  LowerOptions o;
+  o.library = &library().library();
+  o.slotOf = [](TrackId) { return 0u; };
+  {
+    Result<LoweredProject> lp = lower(*loaded->project, o);
+    REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
+    for (size_t i = 0; i < lp->trackIds.size(); ++i) {
+      const pq::graph::Patch& patch = lp->patches[i]->patch;
+      if (lp->trackIds[i] == fx) CHECK(patch.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, bottomUtil.value, 0)}).has_value());
+      if (lp->trackIds[i] == inst) CHECK(patch.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, bottomSynth.value, 0)}).has_value());
+    }
+  }
+  // Edits at the bottom: a param (path copy down 20,000 levels), then the Utility moved out to the track (taken from
+  // the tree, mappings pruned on the way up), then undone; a duplicate of the whole nest (a deep clone).
+  {
+    auto e = ops::setDeviceParam(*store.current(), bottomUtil, "gain", -6.0);
+    REQUIRE(e.ok());
+    REQUIRE(dispatch(store, e->command).ok());
+    CHECK(findDevice(*store.current(), bottomUtil).device->param("gain")->value == -6.0);
+  }
+  {
+    auto e = ops::moveDevice(*store.current(), bottomUtil, fx, kAppend);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(dispatch(store, e->command).ok());
+    const DeviceLoc l = findDevice(*store.current(), bottomUtil);
+    CHECK(l.rack == nullptr);  // now on the track's own list
+    REQUIRE(store.undo());
+    CHECK(findDevice(*store.current(), bottomUtil).rack != nullptr);
+  }
+  {
+    const DeviceId one[] = {outerFx};
+    auto e = ops::duplicateDevices(*store.current(), ids, one);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(dispatch(store, e->command).ok());
+    size_t devices = 0;
+    forEachDeviceIn(findTrackPtr(*store.current(), fx)->devices, [&](const Device&) { ++devices; });
+    CHECK(devices == 2u * (kDepth + 1) + 1);
+  }
+  // A mapping chain through 2,000 levels (each rack's macro 1 maps the next inner rack's macro 1): lowered as one
+  // chain of mapped values (the lowering follows it iteratively).
+  {
+    DocumentStore s2;
+    IdSource& i2 = s2.ids();
+    const TrackId t = i2.track();
+    DevicePtr inner = makeDevice(i2.device(), "utility", DeviceKind::AudioEffect);
+    DeviceId innerId = inner->id;
+    std::string innerParam = "gain";
+    for (int k = 0; k < 2000; ++k) {
+      DevicePtr r = makeRack(i2.device(), DeviceKind::AudioEffect, {makeChain(i2.chain(), "C", {inner})});
+      Device d = *r;
+      Rack rk = *d.rack;
+      rk.mappings.push_back(MacroMapping{i2.mapping(), 0, innerId, innerParam, 0.0, 1.0, 0.0});
+      d.rack = std::make_shared<const Rack>(std::move(rk));
+      innerId = d.id;
+      innerParam = "macro1";
+      inner = std::make_shared<const Device>(std::move(d));
+    }
+    Track tr = makeTrack(t, TrackKind::Midi, "Map");
+    tr.devices = {makeDefaultInstrument(i2.device()), inner};
+    REQUIRE(dispatch(s2, AddTrack{std::make_shared<const Track>(std::move(tr)), {}, kAppend}).ok());
+    Result<LoweredProject> lp = lower(*s2.current(), o);
+    REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
+    const auto params = std::count_if(lp->params.begin(), lp->params.end(), [](const LoweredParam& p) { return p.key.ends_with(":macro1"); });
+    CHECK(params == 1);  // only the outermost macro is a param: every inner one is mapped
+  }
+}

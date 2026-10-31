@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <numeric>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pq/dsp/atoms.h"
@@ -439,20 +440,35 @@ private:
     stamp_[op] = gen_;
     return true;
   }
+  // M4 review M9: iterative (an explicit stack of (op, next input)), in the recursive walk's order: a chain of values
+  // as long as a deep rack nest's signal path does not deepen the call stack.
   template <class OnSource>
   void walk(uint32_t region, uint32_t value, OnSource&& onSource) {
-    const uint32_t j = valOp_[value];
-    if (!visit(j)) return;
-    const uint32_t rj = regionOf_[j];
-    if (rj != kNone && cand_[rj]) {
-      join(region, rj);
-      return;
-    }
-    for (uint32_t k = 0; k < s_.ops[j].numIn; ++k) {
+    std::vector<std::pair<uint32_t, uint32_t>>& stack = walkStack_;
+    stack.clear();
+    auto enter = [&](uint32_t v) {
+      const uint32_t j = valOp_[v];
+      if (!visit(j)) return;
+      const uint32_t rj = regionOf_[j];
+      if (rj != kNone && cand_[rj]) {
+        join(region, rj);
+        return;
+      }
+      stack.emplace_back(j, 0u);
+    };
+    enter(value);
+    while (!stack.empty()) {
+      const uint32_t j = stack.back().first;
+      const uint32_t k = stack.back().second;
+      if (k == s_.ops[j].numIn) {
+        stack.pop_back();
+        continue;
+      }
+      ++stack.back().second;
       if (!relied(j, k)) continue;
       const In& x = in(j, k);
       if (x.kind == InKind::Source) onSource(x);
-      else if (x.kind == InKind::Value) walk(region, x.value, onSource);
+      else if (x.kind == InKind::Value) enter(x.value);
     }
   }
   void unite() {
@@ -476,17 +492,31 @@ private:
     }
   }
 
-  // Params whose values the K value x is computed from.
-  void kParams(const In& x, std::vector<uint32_t>& out, std::vector<uint32_t>& seen, uint32_t gen) const {
-    if (x.kind == InKind::Param) {
-      out.push_back(x.index);
-      return;
+  // Params whose values the K value x is computed from (pre-order; iterative, M4 review M9).
+  void kParams(const In& x0, std::vector<uint32_t>& out, std::vector<uint32_t>& seen, uint32_t gen) const {
+    std::vector<std::pair<uint32_t, uint32_t>> stack;  // (op, next input)
+    auto enter = [&](const In& x) {
+      if (x.kind == InKind::Param) {
+        out.push_back(x.index);
+        return;
+      }
+      if ((x.kind != InKind::Value && x.kind != InKind::Source) || x.value == kNone) return;
+      const uint32_t j = valOp_[x.value];
+      if (seen[j] == gen) return;
+      seen[j] = gen;
+      stack.emplace_back(j, 0u);
+    };
+    enter(x0);
+    while (!stack.empty()) {
+      const uint32_t j = stack.back().first;
+      const uint32_t k = stack.back().second;
+      if (k == s_.ops[j].numIn) {
+        stack.pop_back();
+        continue;
+      }
+      ++stack.back().second;
+      enter(in(j, k));
     }
-    if ((x.kind != InKind::Value && x.kind != InKind::Source) || x.value == kNone) return;
-    const uint32_t j = valOp_[x.value];
-    if (seen[j] == gen) return;
-    seen[j] = gen;
-    for (uint32_t k = 0; k < s_.ops[j].numIn; ++k) kParams(in(j, k), out, seen, gen);
   }
 
   void build() {
@@ -640,6 +670,7 @@ private:
   std::vector<uint8_t> cand_;       // per region
   std::vector<uint32_t> uf_;
   std::vector<uint32_t> stamp_;     // walk(): per op, the generation that visited it
+  std::vector<std::pair<uint32_t, uint32_t>> walkStack_;  // walk()'s stack (reused)
   uint32_t gen_ = 0;
 };
 

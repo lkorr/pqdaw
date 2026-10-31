@@ -1,5 +1,6 @@
 #include "json_io.h"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -480,8 +481,11 @@ void Reader::expectEnd(const PathSeg& at) {
 // ---- Writer ------------------------------------------------------------------------------------------------------
 
 void Writer::indent(size_t depth) {
+  // M4 review M9: the indentation stops growing at kMaxIndent levels, so a deep rack nest is written in O(size), not
+  // O(depth²) (20,000 nested racks would otherwise need gigabytes of spaces). Shallower files are unchanged.
+  constexpr size_t kMaxIndent = 32;
   out_ += '\n';
-  out_.append(depth * 2, ' ');
+  out_.append(std::min(depth, kMaxIndent) * 2, ' ');
 }
 
 void Writer::separator(Level& l) {

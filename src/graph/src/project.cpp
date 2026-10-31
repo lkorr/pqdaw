@@ -368,6 +368,13 @@ Result<UnitPatch> composeUnit(const ProjectGraph& g, const ProjectPartition& par
   for (uint32_t t : unit.tracks) {
     const ProjectTrack& tr = g.tracks[t];
     sig[t] = subcircuitSignature(*tr.patch);
+    // A call node has 16-bit port counts (Node::numInputs): a track whose patch has more inputs and params than that
+    // (e.g. tens of thousands of rack chains, two mixer params each) cannot be one call. M4 review M9: refused here,
+    // with an error, instead of a call that does not match its signature.
+    if (sig[t].inputs.size() > kMaxPorts || sig[t].outputs.size() > kMaxPorts)
+      return projectError(ErrorCode::Unsupported, "track '" + tr.name + "' has " + std::to_string(sig[t].inputs.size()) +
+                                                      " inputs and params (at most " + std::to_string(kMaxPorts) +
+                                                      " in one track patch: e.g. 32,767 rack chains)");
     P.reserveIdsThrough(NodeId{tr.id - 1});
     const NodeIndex n = P.addSubcircuit(sig[t]);
     if (P.node(n).id.value != tr.id) return projectError(ErrorCode::Unknown, "internal: call node id");

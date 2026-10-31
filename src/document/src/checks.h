@@ -59,6 +59,8 @@ ListKind chainListKind(const Device& rack) noexcept;  // the kind of the lists i
 Status checkList(ListKind kind, const std::vector<DevicePtr>& devices);
 // T4.8: one rack (as checkList checks every rack of a list; the chains' lists included).
 Status checkRack(const Device& rack);
+// A rack's own fields (its chains, zones, mappings), not the devices in its chains (checkList queues those: M4 M9).
+Status checkRackOwn(const Device& rack);
 Status checkMapping(const MacroMapping& m);  // its own fields
 // A device param / setting name (non-empty) and value (finite, when set).
 Status checkDeviceValue(const std::string& name, const std::optional<double>& value);

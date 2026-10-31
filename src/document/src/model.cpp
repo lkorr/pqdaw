@@ -228,22 +228,94 @@ const Chain* Rack::findChain(ChainId id) const noexcept {
   return nullptr;
 }
 
-bool operator==(const Chain& a, const Chain& b) noexcept {
-  return a.id == b.id && a.name == b.name && a.volumeDb == b.volumeDb && a.pan == b.pan && a.active == b.active &&
-         a.solo == b.solo && a.key == b.key && a.velocity == b.velocity && a.select == b.select &&
-         deepEqList(a.devices, b.devices);
+// M4 review M9: the deep comparisons of devices, chains and racks are iterative (an explicit stack of rack pairs still
+// to compare), so racks nested to any depth compare without deep recursion. Each level compares its own fields
+// ("shallow") and pushes the pairs of nested racks that are not the same object.
+namespace {
+
+bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
+  return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
+         a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr);
 }
 
-bool operator==(const Rack& a, const Rack& b) noexcept {
-  return deepEqList(a.chains, b.chains) && a.mappings == b.mappings && a.macroNames == b.macroNames &&
+bool shallowChainEq(const Chain& a, const Chain& b) noexcept {
+  return a.id == b.id && a.name == b.name && a.volumeDb == b.volumeDb && a.pan == b.pan && a.active == b.active &&
+         a.solo == b.solo && a.key == b.key && a.velocity == b.velocity && a.select == b.select &&
+         a.devices.size() == b.devices.size();
+}
+
+bool shallowRackEq(const Rack& a, const Rack& b) noexcept {
+  return a.chains.size() == b.chains.size() && a.mappings == b.mappings && a.macroNames == b.macroNames &&
          a.visibleMacros == b.visibleMacros && a.variations == b.variations && a.randomizeExclude == b.randomizeExclude &&
          a.keyUnit == b.keyUnit && a.voiceChains == b.voiceChains && a.showChains == b.showChains &&
          a.showMacros == b.showMacros;
 }
 
+using RackPairs = std::vector<std::pair<const Rack*, const Rack*>>;
+
+// Compares two device lists level by level; nested rack pairs go to `pending`.
+bool devicesEq(const std::vector<DevicePtr>& a, const std::vector<DevicePtr>& b, RackPairs& pending) noexcept {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i] == b[i]) continue;
+    if (!a[i] || !b[i] || !shallowDeviceEq(*a[i], *b[i])) return false;
+    if (a[i]->rack != b[i]->rack) pending.emplace_back(a[i]->rack.get(), b[i]->rack.get());
+  }
+  return true;
+}
+
+bool racksEq(RackPairs& pending) noexcept {
+  while (!pending.empty()) {
+    const auto [x, y] = pending.back();
+    pending.pop_back();
+    if (x == y) continue;
+    if (!shallowRackEq(*x, *y)) return false;
+    for (size_t i = 0; i < x->chains.size(); ++i) {
+      const ChainPtr& cx = x->chains[i];
+      const ChainPtr& cy = y->chains[i];
+      if (cx == cy) continue;
+      if (!cx || !cy || !shallowChainEq(*cx, *cy) || !devicesEq(cx->devices, cy->devices, pending)) return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+bool operator==(const Chain& a, const Chain& b) noexcept {
+  RackPairs pending;
+  return shallowChainEq(a, b) && devicesEq(a.devices, b.devices, pending) && racksEq(pending);
+}
+
+bool operator==(const Rack& a, const Rack& b) noexcept {
+  RackPairs pending{{&a, &b}};
+  return racksEq(pending);
+}
+
 bool operator==(const Device& a, const Device& b) noexcept {
-  return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
-         a.settings == b.settings && deepEq(a.source, b.source) && deepEq(a.rack, b.rack);
+  if (!shallowDeviceEq(a, b)) return false;
+  if (a.rack == b.rack) return true;
+  RackPairs pending{{a.rack.get(), b.rack.get()}};
+  return racksEq(pending);
+}
+
+Rack::~Rack() {
+  // Racks destroyed on this thread inside the outermost one hand their chains to it (`pending`) instead of destroying
+  // them in their own destructor: the depth of the destructor calls stays one rack whatever the nesting.
+  thread_local std::vector<ChainPtr>* pending = nullptr;
+  if (pending != nullptr) {
+    for (ChainPtr& c : chains)
+      if (c) pending->push_back(std::move(c));
+    return;
+  }
+  std::vector<ChainPtr> work = std::move(chains);
+  pending = &work;
+  while (!work.empty()) {
+    ChainPtr c = std::move(work.back());
+    work.pop_back();
+    c.reset();  // its devices' racks (if this was the last owner) push their chains onto `work`
+  }
+  pending = nullptr;
 }
 
 DevicePtr makeRack(DeviceId id, DeviceKind kind, std::vector<ChainPtr> chains) {
@@ -528,20 +600,36 @@ int32_t findClipIndex(const Track& t, ClipId id) noexcept {
 }
 
 namespace {
-// Searches `list` (held by `chain` of `rack`, or the track's own chain) and the racks in it.
-bool findIn(const std::vector<DevicePtr>& list, DeviceId id, const Chain* chain, const Device* rack, DeviceLoc& out) noexcept {
-  for (size_t i = 0; i < list.size(); ++i) {
-    const Device& d = *list[i];
+// Searches `list` (the track's own chain) and the racks in it, depth-first in chain order. Iterative (M4 review M9).
+bool findIn(const std::vector<DevicePtr>& list, DeviceId id, DeviceLoc& out) {
+  struct Frame {
+    const DevicePtr* begin;
+    const DevicePtr* next;
+    const DevicePtr* end;
+    const Chain* chain;   // the chain holding the list (null: the track's)
+    const Device* rack;   // … and its rack
+  };
+  std::vector<Frame> stack{{list.data(), list.data(), list.data() + list.size(), nullptr, nullptr}};
+  while (!stack.empty()) {
+    Frame& f = stack.back();
+    if (f.next == f.end) {
+      stack.pop_back();
+      continue;
+    }
+    const DevicePtr* at = f.next++;
+    const Device& d = **at;
     if (d.id == id) {
       out.device = &d;
-      out.index = static_cast<uint32_t>(i);
-      out.chain = chain;
-      out.rack = rack;
+      out.index = static_cast<uint32_t>(at - f.begin);
+      out.chain = f.chain;
+      out.rack = f.rack;
       return true;
     }
     if (d.rack)
-      for (const ChainPtr& c : d.rack->chains)
-        if (findIn(c->devices, id, c.get(), &d, out)) return true;
+      for (size_t i = d.rack->chains.size(); i-- > 0;) {
+        const Chain& c = *d.rack->chains[i];
+        stack.push_back({c.devices.data(), c.devices.data(), c.devices.data() + c.devices.size(), &c, &d});
+      }
   }
   return false;
 }
@@ -552,7 +640,7 @@ DeviceLoc findDevice(const Project& p, DeviceId id) noexcept {
   if (!id.valid()) return out;
   forEachTrack(p, [&](const Track& t, const Track*) {
     if (out.track) return;
-    if (findIn(t.devices, id, nullptr, nullptr, out)) out.track = &t;
+    if (findIn(t.devices, id, out)) out.track = &t;
   });
   return out;
 }

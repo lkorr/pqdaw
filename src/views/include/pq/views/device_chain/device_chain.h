@@ -141,6 +141,10 @@ public:
   // Reads the sweeps once and updates the rings (the 30 Hz timer's work; tests and scenes call it directly).
   void pollRings();
 
+  // M4 review M9: rack frames show their chain's devices inline down to this many nested racks; a deeper rack shows its
+  // strip, macros and chain list but not its chain's devices, so the widget tree stays shallow however deep racks nest.
+  static constexpr uint32_t kMaxNestedRackFrames = 24;
+
   struct Impl;
 
 private:

@@ -6,9 +6,11 @@
 // Nothing reachable from the input snapshot is ever written.
 
 #include <algorithm>
+#include <deque>
 #include <array>
 #include <cmath>
 #include <string>
+#include <unordered_set>
 
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
@@ -92,18 +94,26 @@ void collectIds(const Track& t, ChangeSet& cs) {
 // T4.8: the ids of `list`'s devices (racks: their chains, mappings and inner devices) into `ids`; none may name an
 // entity of its kind that exists in `p`.
 Status checkNewDeviceIds(const Project& p, const std::vector<DevicePtr>& list, std::vector<uint32_t>& ids) {
+  // The project's device, chain and mapping ids once (M4 review M9: a lookup per new id walked the whole project).
+  std::unordered_set<uint32_t> devices, chains, mappings;
+  forEachDevice(p, [&](const Device& d, const Track&) {
+    devices.insert(d.id.value);
+    if (!d.rack) return;
+    for (const ChainPtr& c : d.rack->chains) chains.insert(c->id.value);
+    for (const MacroMapping& m : d.rack->mappings) mappings.insert(m.id.value);
+  });
   Status st = ok();
   forEachDeviceIn(list, [&](const Device& d) {
     if (!st) return;
-    if (findDevice(p, d.id).track) st = invalid("device id already in use");
+    if (devices.count(d.id.value) != 0) st = invalid("device id already in use");
     ids.push_back(d.id.value);
     if (!d.rack) return;
     for (const ChainPtr& c : d.rack->chains) {
-      if (findChain(p, c->id).chain) st = invalid("chain id already in use");
+      if (chains.count(c->id.value) != 0) st = invalid("chain id already in use");
       ids.push_back(c->id.value);
     }
     for (const MacroMapping& m : d.rack->mappings) {
-      if (findMapping(p, m.id).mapping) st = invalid("mapping id already in use");
+      if (mappings.count(m.id.value) != 0) st = invalid("mapping id already in use");
       ids.push_back(m.id.value);
     }
   });
@@ -1393,74 +1403,112 @@ Res apply_(const Snapshot& s, const SetTuningParam& c, ChangeSet& cs) {
 // Every helper works on a FRESH copy of a track's top-level list (Track::devices of a mutableTrack): it replaces the
 // racks / chains on the way down by fresh copies and never writes a node reachable from the input snapshot.
 
+// M4 review M9: every helper here is iterative (explicit stacks / paths on the heap), so racks nest as deep as memory
+// allows; a path-copying edit finds its path first (one walk), then copies the nodes along it (O(depth)).
+
 // Whether rack device `d` holds chain `chain` (at any depth).
-bool holdsChain(const Device& d, ChainId chain) noexcept {
-  if (!d.rack) return false;
-  for (const ChainPtr& c : d.rack->chains) {
-    if (c->id == chain) return true;
-    for (const DevicePtr& x : c->devices)
-      if (holdsChain(*x, chain)) return true;
+bool holdsChain(const Device& d, ChainId chain) {
+  bool found = false;
+  forEachDeviceIn(d, [&](const Device& x) {
+    if (!found && x.rack)
+      for (const ChainPtr& c : x.rack->chains) found = found || c->id == chain;
+  });
+  return found;
+}
+
+// One step down a device tree: the device at `device` of the current list, then its rack's chain `chain`.
+struct TreeStep {
+  size_t device = 0;
+  size_t chain = 0;
+};
+
+// Finds the device `id` (pre-order, chains in order) or, with `chain` valid, the rack holding chain `chain`: the steps
+// from `list` to the list holding it, and its index there (`chainIndex`: the chain's index in that rack). False: not
+// in `list`.
+bool findInTree(const std::vector<DevicePtr>& list, DeviceId id, ChainId chain, std::vector<TreeStep>& path,
+                size_t& index, size_t& chainIndex) {
+  struct Open {
+    const std::vector<DevicePtr>* list;
+    size_t device = 0;
+    size_t chain = 0;  // the device's next chain to look in
+  };
+  std::vector<Open> stack{{&list}};
+  while (!stack.empty()) {
+    Open& f = stack.back();
+    if (f.device >= f.list->size()) {
+      stack.pop_back();
+      if (!stack.empty()) ++stack.back().chain;
+      continue;
+    }
+    const Device& d = *(*f.list)[f.device];
+    if (f.chain == 0) {  // first visit of this device
+      bool hit = !chain.valid() && d.id == id;
+      if (chain.valid() && d.rack)
+        for (size_t c = 0; c < d.rack->chains.size() && !hit; ++c)
+          if (d.rack->chains[c]->id == chain) {
+            hit = true;
+            chainIndex = c;
+          }
+      if (hit) {
+        path.clear();
+        for (size_t i = 0; i + 1 < stack.size(); ++i) path.push_back({stack[i].device, stack[i].chain});
+        index = f.device;
+        return true;
+      }
+    }
+    if (d.rack && f.chain < d.rack->chains.size()) {
+      const std::vector<DevicePtr>* inner = &d.rack->chains[f.chain]->devices;
+      stack.push_back({inner});  // invalidates f
+      continue;
+    }
+    ++f.device;
+    f.chain = 0;
   }
   return false;
+}
+
+// Path-copies `list` along `path` (fresh copies of each device, rack and chain on the way) and returns the fresh list
+// at its end.
+std::vector<DevicePtr>* copyAlong(std::vector<DevicePtr>& list, const std::vector<TreeStep>& path) {
+  std::vector<DevicePtr>* cur = &list;
+  for (const TreeStep& s : path) {
+    DevicePtr& slot = (*cur)[s.device];
+    auto dev = std::make_shared<Device>(*slot);
+    auto rack = std::make_shared<Rack>(*dev->rack);
+    auto chain = std::make_shared<Chain>(*rack->chains[s.chain]);
+    cur = &chain->devices;
+    rack->chains[s.chain] = std::move(chain);
+    dev->rack = std::move(rack);
+    slot = std::move(dev);
+  }
+  return cur;
 }
 
 // Path-copies `list` down to chain `chain` and returns its (fresh, mutable) device list; `kind` gets the list's kind,
 // `rack` the id of the rack holding it. nullptr: not in this list.
 std::vector<DevicePtr>* mutableChainList(std::vector<DevicePtr>& list, ChainId chain, ListKind& kind, DeviceId& rackId) {
-  for (DevicePtr& d : list) {
-    if (!holdsChain(*d, chain)) continue;
-    auto dev = std::make_shared<Device>(*d);
-    auto rack = std::make_shared<Rack>(*d->rack);
-    std::vector<DevicePtr>* out = nullptr;
-    for (ChainPtr& c : rack->chains) {
-      const bool here = c->id == chain;
-      if (!here && std::none_of(c->devices.begin(), c->devices.end(), [&](const DevicePtr& x) { return holdsChain(*x, chain); }))
-        continue;
-      auto copy = std::make_shared<Chain>(*c);
-      if (here) {
-        kind = chainListKind(*dev);
-        rackId = dev->id;
-        out = &copy->devices;
-      } else {
-        out = mutableChainList(copy->devices, chain, kind, rackId);
-      }
-      c = std::move(copy);
-      break;
-    }
-    dev->rack = std::move(rack);
-    d = std::move(dev);
-    return out;
-  }
-  return nullptr;
+  std::vector<TreeStep> path;
+  size_t index = 0, chainIndex = 0;
+  if (!findInTree(list, {}, chain, path, index, chainIndex)) return nullptr;
+  std::vector<DevicePtr>* holder = copyAlong(list, path);  // the fresh list holding the rack
+  std::vector<DevicePtr>* out = copyAlong(*holder, std::vector<TreeStep>{{index, chainIndex}});
+  const Device& rackDev = *(*holder)[index];
+  kind = chainListKind(rackDev);
+  rackId = rackDev.id;
+  return out;
 }
 
 // Path-copies `list` down to device `id` and returns a fresh mutable copy of it (installed in the tree). nullptr: not in
 // this list.
 Device* mutableDevice(std::vector<DevicePtr>& list, DeviceId id) {
-  for (DevicePtr& d : list) {
-    if (d->id == id) {
-      auto copy = std::make_shared<Device>(*d);
-      Device* raw = copy.get();
-      d = std::move(copy);
-      return raw;
-    }
-    if (!d->rack || !deviceContains(*d, id)) continue;
-    auto dev = std::make_shared<Device>(*d);
-    auto rack = std::make_shared<Rack>(*d->rack);
-    Device* out = nullptr;
-    for (ChainPtr& c : rack->chains) {
-      if (std::none_of(c->devices.begin(), c->devices.end(), [&](const DevicePtr& x) { return deviceContains(*x, id); }))
-        continue;
-      auto copy = std::make_shared<Chain>(*c);
-      out = mutableDevice(copy->devices, id);
-      c = std::move(copy);
-      break;
-    }
-    dev->rack = std::move(rack);
-    d = std::move(dev);
-    return out;
-  }
-  return nullptr;
+  std::vector<TreeStep> path;
+  size_t index = 0, chainIndex = 0;
+  if (!findInTree(list, id, {}, path, index, chainIndex)) return nullptr;
+  std::vector<DevicePtr>* at = copyAlong(list, path);
+  auto copy = std::make_shared<Device>(*(*at)[index]);
+  Device* raw = copy.get();
+  (*at)[index] = std::move(copy);
+  return raw;
 }
 
 // A rack device's rack, made mutable (a fresh copy installed in the device).
@@ -1485,68 +1533,84 @@ Chain* mutableChainOf(Rack& r, ChainId id) {
 
 // Removes device `id` from the tree (path-copying on the way) and returns it (null: not here).
 DevicePtr takeFromTree(std::vector<DevicePtr>& list, DeviceId id) {
-  for (size_t i = 0; i < list.size(); ++i)
-    if (list[i]->id == id) {
-      DevicePtr d = list[i];
-      list.erase(list.begin() + static_cast<std::ptrdiff_t>(i));
-      return d;
-    }
-  for (DevicePtr& d : list) {
-    if (!d->rack || !deviceContains(*d, id)) continue;
-    auto dev = std::make_shared<Device>(*d);
-    Rack& rack = mutableRack(*dev);
-    DevicePtr out;
-    for (ChainPtr& c : rack.chains) {
-      if (std::none_of(c->devices.begin(), c->devices.end(), [&](const DevicePtr& x) { return deviceContains(*x, id); }))
-        continue;
-      auto copy = std::make_shared<Chain>(*c);
-      out = takeFromTree(copy->devices, id);
-      c = std::move(copy);
-      break;
-    }
-    d = std::move(dev);
-    return out;
-  }
-  return nullptr;
+  std::vector<TreeStep> path;
+  size_t index = 0, chainIndex = 0;
+  if (!findInTree(list, id, {}, path, index, chainIndex)) return nullptr;
+  std::vector<DevicePtr>* at = copyAlong(list, path);
+  DevicePtr d = (*at)[index];
+  at->erase(at->begin() + static_cast<std::ptrdiff_t>(index));
+  return d;
 }
 
 // Drops every mapping whose target is no longer inside its rack (after devices left a rack or were removed); their ids
-// go to `gone`. Path-copies only racks that change.
-bool pruneMappings(std::vector<DevicePtr>& list, std::vector<MappingId>& gone) {
+// go to `gone`. Path-copies only racks that change. Post-order (inner racks first), iterative: each open level works on
+// a copy of a chain's device list, which replaces the chain's list when something in it changed.
+bool pruneMappings(std::vector<DevicePtr>& top, std::vector<MappingId>& gone) {
+  struct Open {
+    std::vector<DevicePtr>* list = nullptr;  // the list being pruned
+    size_t device = 0;
+    size_t chain = 0;                        // the device's next chain
+    std::shared_ptr<Device> copy;            // the device's fresh copy, once it or something inside it changes
+    Rack* rack = nullptr;                    // copy's fresh rack
+    std::vector<DevicePtr> inner;            // the working copy of chain `chain − 1`'s devices
+    bool changed = false;                    // a device of `list` was replaced
+  };
+  std::deque<Open> stack;
+  stack.emplace_back().list = &top;
   bool changed = false;
-  for (DevicePtr& d : list) {
-    if (!d->rack) continue;
-    std::shared_ptr<Device> dev;
-    Rack* rack = nullptr;
-    auto own = [&]() -> Rack& {
-      if (!dev) {
-        dev = std::make_shared<Device>(*d);
-        rack = &mutableRack(*dev);
+  while (!stack.empty()) {
+    Open& f = stack.back();
+    if (f.device == f.list->size()) {
+      const bool listChanged = f.changed;
+      stack.pop_back();
+      if (stack.empty()) {
+        changed = listChanged;
+        break;
       }
-      return *rack;
-    };
-    for (size_t j = 0; j < d->rack->chains.size(); ++j) {
-      std::vector<DevicePtr> inner = (dev ? rack->chains[j] : d->rack->chains[j])->devices;
-      if (!pruneMappings(inner, gone)) continue;
-      Rack& r = own();
-      auto copy = std::make_shared<Chain>(*r.chains[j]);
-      copy->devices = std::move(inner);
-      r.chains[j] = std::move(copy);
+      Open& p = stack.back();
+      if (listChanged) {  // the parent device's chain `chain − 1` takes the pruned list
+        if (!p.copy) {
+          p.copy = std::make_shared<Device>(*(*p.list)[p.device]);
+          p.rack = &mutableRack(*p.copy);
+        }
+        auto c = std::make_shared<Chain>(*p.rack->chains[p.chain - 1]);
+        c->devices = std::move(p.inner);
+        p.rack->chains[p.chain - 1] = std::move(c);
+      }
+      continue;
     }
-    const Device& now = dev ? *dev : *d;
+    const DevicePtr& d = (*f.list)[f.device];
+    if (!d->rack) {
+      ++f.device;
+      continue;
+    }
+    const Rack& cur = f.copy ? *f.rack : *d->rack;
+    if (f.chain < cur.chains.size()) {
+      f.inner = cur.chains[f.chain++]->devices;
+      Open& c = stack.emplace_back();  // `f` stays valid (deque), and so does f.inner while the level above runs
+      c.list = &f.inner;
+      continue;
+    }
+    const Device& now = f.copy ? *f.copy : *d;
     const auto keep = [&](const MacroMapping& m) {
       return m.device == now.id ? m.param == kSelectParam : deviceContains(now, m.device);
     };
     if (!std::all_of(now.rack->mappings.begin(), now.rack->mappings.end(), keep)) {
-      Rack& r = own();
-      for (const MacroMapping& m : r.mappings)
+      if (!f.copy) {
+        f.copy = std::make_shared<Device>(*d);
+        f.rack = &mutableRack(*f.copy);
+      }
+      for (const MacroMapping& m : f.rack->mappings)
         if (!keep(m)) gone.push_back(m.id);
-      std::erase_if(r.mappings, [&](const MacroMapping& m) { return !keep(m); });
+      std::erase_if(f.rack->mappings, [&](const MacroMapping& m) { return !keep(m); });
     }
-    if (dev) {
-      d = std::move(dev);
-      changed = true;
+    if (f.copy) {
+      (*f.list)[f.device] = std::move(f.copy);
+      f.rack = nullptr;
+      f.changed = true;
     }
+    ++f.device;
+    f.chain = 0;
   }
   return changed;
 }

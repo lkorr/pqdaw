@@ -641,3 +641,61 @@ TEST_CASE("racks: a muted chain is not in the program; the selector gates a chai
                                                                  << ", chain 2 muted " << muted);
   CHECK(nMuted < nAwake);  // the muted chain's devices are not lowered at all: it costs nothing
 }
+
+// M4 review M9: a project whose racks nest thousands deep opens and plays (the link lowers and compiles it: the
+// document walks, the lowering and the compile passes run without deep recursion). A held note through an Instrument
+// Rack nest 2,000 deep, then an Audio Effect Rack nest 20,000 deep with a Utility at the bottom (−6 dB): the output is
+// the plain track's output (every chain mixer at unity), so nothing in the nest is lost. One track patch holds at most
+// 65,535 inputs and params (graph::kMaxPorts: two mixer params per chain), so 40,000 chains on one track are refused
+// with an error, not a crash.
+TEST_CASE("racks: a project with racks nested 20,000 deep opens and plays like the flat chain (M9)" * doctest::test_suite("slow")) {
+  constexpr int kInstrumentDepth = 2000, kEffectDepth = 20000;
+  auto project = [&](bool nested, int instrumentDepth, int effectDepth) {
+    auto store = std::make_unique<DocumentStore>();
+    IdSource& ids = store->ids();
+    const TrackId t = ids.track();
+    DevicePtr synth = makeDefaultInstrument(ids.device());
+    Device u = *makeDevice(ids.device(), "utility", DeviceKind::AudioEffect);
+    u.params = {DeviceValue{"gain", 0.5}};  // linear (−6 dB)
+    DevicePtr util = std::make_shared<const Device>(std::move(u));
+    if (nested) {
+      for (int k = 0; k < instrumentDepth; ++k)
+        synth = makeRack(ids.device(), DeviceKind::Instrument, {makeChain(ids.chain(), "I", {synth})});
+      for (int k = 0; k < effectDepth; ++k) util = makeRack(ids.device(), DeviceKind::AudioEffect, {makeChain(ids.chain(), "A", {util})});
+    }
+    Track tr = makeTrack(t, TrackKind::Midi, "Deep");
+    tr.devices = {synth, util};
+    Batch b{"deep", {}};
+    b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(tr)), {}, kAppend});
+    b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 0, 16 * kPpq, 0)}, "n")});
+    REQUIRE(store->dispatch(b).ok());
+    return store;
+  };
+  auto flat = project(false, 0, 0), deep = project(true, kInstrumentDepth, kEffectDepth);
+  auto lf = makeLink(flat->current()), ld = makeLink(deep->current());
+  Driver df{*lf}, dd{*ld};
+  lf->play(0);
+  ld->play(0);
+  df.run(100);
+  dd.run(100);
+  float peak = 0.0f;
+  double diff = 0.0;
+  // After the chain mixers' first fades (each level's gain stage starts from 0 over ~2 ms; thousands of them in series).
+  const size_t from = df.out[0].size() / 2;
+  for (size_t c = 0; c < 2; ++c)
+    for (size_t i = from; i < df.out[c].size(); ++i) {
+      peak = std::max(peak, std::fabs(df.out[c][i]));
+      diff = std::max(diff, static_cast<double>(std::fabs(df.out[c][i] - dd.out[c][i])));
+    }
+  MESSAGE("flat vs nested racks: peak " << peak << ", max |diff| " << diff);
+  CHECK(peak > 0.01f);
+  CHECK(diff < 1e-4 * peak);  // unity chain mixers (gains of 1, centre pan) leave the signal as the flat chain makes it
+  // Too many chains for one track patch: an error (the link is not made), no crash.
+  auto huge = project(true, 20000, 20000);
+  LinkConfig c;
+  c.compileThread = false;
+  c.jit = false;
+  auto l = ProjectLink::create(c, huge->current());
+  REQUIRE_FALSE(l.ok());
+  CHECK(l.error().message.find("inputs and params") != std::string::npos);
+}

@@ -525,6 +525,15 @@ struct Rack {
   bool showChains = true;  // the chain list is shown (Meta)
   bool showMacros = true;  // the macro knobs are shown (Meta)
   const Chain* findChain(ChainId id) const noexcept;
+
+  Rack() = default;
+  Rack(const Rack&) = default;
+  Rack(Rack&&) noexcept = default;
+  Rack& operator=(const Rack&) = default;
+  Rack& operator=(Rack&&) noexcept = default;
+  // M4 review M9: frees nested racks iteratively (a rack inside one being destroyed hands its chains to the outermost
+  // destructor instead of destroying them itself), so a nest of any depth is freed without deep recursion.
+  ~Rack();
 };
 bool operator==(const Rack& a, const Rack& b) noexcept;
 
@@ -700,14 +709,13 @@ struct MappingLoc {
 MappingLoc findMapping(const Project& p, MappingId id) noexcept;
 // T4.8: the mapping driving `device`.`param` (nullptr: unmapped) and its rack.
 MappingLoc mappingOf(const Project& p, DeviceId device, std::string_view param) noexcept;
-// T4.8: visits `d` and every device inside it (racks: chains in order, depth-first): f(const Device&).
+// T4.8: visits `d` and every device inside it (racks: chains in order, depth-first): f(const Device&). M4 review M9:
+// iterative (an explicit stack on the heap), so racks nest as deep as memory allows.
 template <class F>
 void forEachDeviceIn(const Device& d, F&& f);
-// Visits every device of a list (and inside racks), depth-first in chain order.
+// Visits every device of a list (and inside racks), depth-first in chain order (iterative, as above).
 template <class F>
-void forEachDeviceIn(const std::vector<DevicePtr>& list, F&& f) {
-  for (const DevicePtr& d : list) forEachDeviceIn(*d, f);
-}
+void forEachDeviceIn(const std::vector<DevicePtr>& list, F&& f);
 // Whether `inner` is `outer` or inside it (a rack).
 bool deviceContains(const Device& outer, DeviceId inner) noexcept;
 // T4.7: the project's wires (an empty list when it has none) and one by id (nullptr: none).
@@ -738,11 +746,49 @@ void forEachTrack(const Project& p, F&& f) {
   if (p.master) f(*p.master, static_cast<const Track*>(nullptr));
 }
 
+namespace detail {
+// The device lists still to visit (a range each); a rack's chains are pushed in reverse, so chain 0 comes next.
+struct DeviceRange {
+  const DevicePtr* next;
+  const DevicePtr* end;
+};
+inline void pushChains(std::vector<DeviceRange>& stack, const Device& d) {
+  if (!d.rack) return;
+  const std::vector<ChainPtr>& chains = d.rack->chains;
+  for (size_t i = chains.size(); i-- > 0;) {
+    const std::vector<DevicePtr>& list = chains[i]->devices;
+    if (!list.empty()) stack.push_back({list.data(), list.data() + list.size()});
+  }
+}
+template <class F>
+void walkDevices(std::vector<DeviceRange>& stack, F& f) {
+  while (!stack.empty()) {
+    DeviceRange& top = stack.back();
+    if (top.next == top.end) {
+      stack.pop_back();
+      continue;
+    }
+    const Device& d = **top.next++;  // before a push moves `top`
+    f(d);
+    pushChains(stack, d);
+  }
+}
+}  // namespace detail
+
+template <class F>
+void forEachDeviceIn(const std::vector<DevicePtr>& list, F&& f) {
+  if (list.empty()) return;
+  std::vector<detail::DeviceRange> stack{{list.data(), list.data() + list.size()}};
+  detail::walkDevices(stack, f);
+}
+
 template <class F>
 void forEachDeviceIn(const Device& d, F&& f) {
   f(d);
-  if (d.rack)
-    for (const ChainPtr& c : d.rack->chains) forEachDeviceIn(c->devices, f);
+  if (!d.rack) return;
+  std::vector<detail::DeviceRange> stack;
+  detail::pushChains(stack, d);
+  detail::walkDevices(stack, f);
 }
 
 // T4.8: visits every device of the project, nested ones too: f(const Device&, const Track&).

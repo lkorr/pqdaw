@@ -68,6 +68,8 @@ struct DeviceChainView::Impl {
   static constexpr uint8_t kZonesHidden = 0xFF;
   std::map<uint32_t, doc::ChainId> shownChain;
   std::map<uint32_t, uint8_t> zoneTab;
+  // M4 review M9 (DeviceChainView::kMaxNestedRackFrames): the nesting of the rack frame being built (its ctor reads it).
+  uint32_t nestingBuilt = 0;
   // T4.8: macro map mode — the rack whose Map is on, and the macro picked (−1: none yet).
   doc::DeviceId mapRack;
   int32_t mapMacro = -1;

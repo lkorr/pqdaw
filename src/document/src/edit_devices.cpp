@@ -58,48 +58,71 @@ Result<Slot> slotFor(const ListView& l, DeviceKind kind, uint32_t index) {
 
 }  // namespace
 
+// M4 review M9: iterative (explicit stacks), in the recursive version's id order: devices and chains pre-order (a
+// device, then per chain its id and its devices), then the mappings pre-order (a rack's own, then its chains' racks).
 DevicePtr cloneDevice(const Device& d, IdSource& ids) {
   std::unordered_map<uint32_t, DeviceId> remap;  // old device id → new (racks: mapping targets follow)
-  struct Clone {
-    IdSource& ids;
-    std::unordered_map<uint32_t, DeviceId>& remap;
-    std::shared_ptr<Device> operator()(const Device& src) {
-      auto c = std::make_shared<Device>(src);
-      c->id = ids.device();
-      remap[src.id.value] = c->id;
-      if (!src.rack) return c;
-      auto r = std::make_shared<Rack>(*src.rack);
-      for (ChainPtr& ch : r->chains) {
-        auto cc = std::make_shared<Chain>(*ch);
-        cc->id = ids.chain();
-        for (DevicePtr& x : cc->devices) x = (*this)(*x);
-        ch = std::move(cc);
-      }
-      c->rack = std::move(r);
-      return c;
+  auto fresh = [&](const Device& src) {
+    auto c = std::make_shared<Device>(src);
+    c->id = ids.device();
+    remap[src.id.value] = c->id;
+    return c;
+  };
+  // A rack being copied: its fresh rack, its next chain, the chain being filled and its next device.
+  struct Open {
+    std::shared_ptr<Device> device;
+    std::shared_ptr<Rack> rack;
+    size_t chain = 0;
+    std::shared_ptr<Chain> current;
+    size_t next = 0;
+  };
+  std::shared_ptr<Device> out = fresh(d);
+  std::vector<Open> stack;
+  if (out->rack) stack.push_back(Open{out, std::make_shared<Rack>(*out->rack)});
+  while (!stack.empty()) {
+    Open& f = stack.back();
+    if (f.current && f.next < f.current->devices.size()) {
+      DevicePtr& slot = f.current->devices[f.next++];
+      std::shared_ptr<Device> c = fresh(*slot);
+      slot = c;
+      if (c->rack) stack.push_back(Open{c, std::make_shared<Rack>(*c->rack)});  // invalidates f
+      continue;
     }
-    // Mappings after every device has its new id.
-    void fixMappings(Device& dev) {
-      if (!dev.rack) return;
-      auto r = std::make_shared<Rack>(*dev.rack);
-      for (MacroMapping& m : r->mappings) {
-        m.id = ids.mapping();
-        if (const auto it = remap.find(m.device.value); it != remap.end()) m.device = it->second;
-      }
-      for (ChainPtr& ch : r->chains) {
-        auto cc = std::make_shared<Chain>(*ch);
-        for (DevicePtr& x : cc->devices) {
-          auto xc = std::make_shared<Device>(*x);
-          fixMappings(*xc);
-          x = std::move(xc);
-        }
-        ch = std::move(cc);
-      }
-      dev.rack = std::move(r);
+    if (f.current) f.rack->chains[f.chain - 1] = std::move(f.current);
+    if (f.chain < f.rack->chains.size()) {
+      f.current = std::make_shared<Chain>(*f.rack->chains[f.chain++]);
+      f.current->id = ids.chain();
+      f.next = 0;
+      continue;
     }
-  } clone{ids, remap};
-  std::shared_ptr<Device> out = clone(d);
-  clone.fixMappings(*out);
+    f.device->rack = std::move(f.rack);
+    stack.pop_back();
+  }
+  // Mappings after every device has its new id (the tree is this function's own: its racks are rewritten in place,
+  // as fresh copies).
+  std::vector<Device*> todo{out.get()};
+  while (!todo.empty()) {
+    Device& dev = *todo.back();
+    todo.pop_back();
+    if (!dev.rack) continue;
+    auto r = std::make_shared<Rack>(*dev.rack);
+    for (MacroMapping& m : r->mappings) {
+      m.id = ids.mapping();
+      if (const auto it = remap.find(m.device.value); it != remap.end()) m.device = it->second;
+    }
+    std::vector<Device*> inner;
+    for (ChainPtr& ch : r->chains) {
+      auto cc = std::make_shared<Chain>(*ch);
+      for (DevicePtr& x : cc->devices) {
+        auto xc = std::make_shared<Device>(*x);
+        inner.push_back(xc.get());
+        x = std::move(xc);
+      }
+      ch = std::move(cc);
+    }
+    dev.rack = std::move(r);
+    todo.insert(todo.end(), inner.rbegin(), inner.rend());  // the first inner device next (pre-order)
+  }
   return out;
 }
 

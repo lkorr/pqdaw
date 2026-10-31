@@ -303,3 +303,34 @@ TEST_CASE("render: audio-rack and instrument-rack match the golden images") {
     MESSAGE(scene << ": " << pq::ui::test::describe(d));
   }
 }
+
+// M4 review M9: a rack nest 20,000 deep in the Device view. The frames nest inline down to kMaxNestedRackFrames
+// racks (the widget tree, its layout, painting and hit tests stay shallow); deeper racks are not framed. Building,
+// laying out, drawing frames and clicking work; nothing recurses through the whole nest.
+TEST_CASE("racks view: a rack nest 20,000 deep shows its first levels and stays responsive (M9)" * doctest::test_suite("slow")) {
+  Ui u;
+  doc::DocumentStore& st = u.ctx.store();
+  std::vector<doc::DeviceId> racks;  // outermost first
+  {
+    doc::DevicePtr inner = doc::makeDevice(st.ids().device(), "utility", doc::DeviceKind::AudioEffect);
+    for (int k = 0; k < 20000; ++k) {
+      inner = doc::makeRack(st.ids().device(), doc::DeviceKind::AudioEffect, {doc::makeChain(st.ids().chain(), "C", {inner})});
+      racks.push_back(inner->id);
+    }
+    std::reverse(racks.begin(), racks.end());
+    REQUIRE(st.dispatch(doc::AddDevice{u.keys, inner, doc::kAppend}).ok());
+  }
+  u.d.tree().layoutNow();
+  u.d.advance(0.1);  // a few frames drawn
+  constexpr uint32_t kMax = DeviceChainView::kMaxNestedRackFrames;
+  CHECK(u.view().frameOf(racks[0]) != nullptr);
+  CHECK(u.view().frameOf(racks[kMax - 1]) != nullptr);  // the deepest framed rack (its devices are not)
+  CHECK(u.view().frameOf(racks[kMax]) == nullptr);
+  // Pointer moves over the chain (hit tests through the nested frames) and a scroll: drawn again, no deep recursion.
+  const IRect vp = u.view().chainViewport();
+  const uint64_t drawn = u.d.framesDrawn();
+  for (int x = vp.x + 10; x < vp.x + vp.w; x += vp.w / 8) u.d.move({static_cast<float>(x), mid(vp).y});
+  u.view().scrollChainBy(vp.w);
+  u.d.advance(0.05);
+  CHECK(u.d.framesDrawn() > drawn);
+}

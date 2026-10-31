@@ -40,6 +40,10 @@ NodeIndex Patch::addNode(NodeKind kind, std::string name, uint32_t payload, uint
 
 NodeIndex Patch::addNode(NodeKind kind, std::string name, uint32_t payload, std::span<const PortType> inputs,
                          std::span<const PortType> outputs) {
+  // Port counts are 16-bit (Node): more ports than that are cut off here (never written past the node's ports; M4
+  // review M9), and the patch's checks then refuse the node (its ports do not match what it was made from).
+  inputs = inputs.first(std::min<size_t>(inputs.size(), kMaxPorts));
+  outputs = outputs.first(std::min<size_t>(outputs.size(), kMaxPorts));
   const NodeIndex n = addNode(kind, std::move(name), payload, static_cast<uint16_t>(inputs.size()),
                               static_cast<uint16_t>(outputs.size()));
   PortType* p = ports_.data() + nodes_[n].firstPort;
@@ -93,11 +97,13 @@ NodeIndex Patch::addExport(std::string name) {
 
 NodeIndex Patch::addSubcircuit(SubcircuitRef ref) {
   const auto payload = static_cast<uint32_t>(subcircuits_.size());
-  const auto numIn = static_cast<uint16_t>(ref.inputs.size()), numOut = static_cast<uint16_t>(ref.outputs.size());
+  // Port counts are 16-bit (see addNode): never written past the node's ports.
+  const auto numIn = static_cast<uint16_t>(std::min<size_t>(ref.inputs.size(), kMaxPorts));
+  const auto numOut = static_cast<uint16_t>(std::min<size_t>(ref.outputs.size(), kMaxPorts));
   const NodeIndex n = addNode(NodeKind::Subcircuit, {}, payload, numIn, numOut);
   PortType* p = ports_.data() + nodes_[n].firstPort;
-  for (const SubcircuitPort& sp : ref.inputs) *p++ = sp.type;
-  for (const SubcircuitPort& sp : ref.outputs) *p++ = sp.type;
+  for (uint16_t i = 0; i < numIn; ++i) *p++ = ref.inputs[i].type;
+  for (uint16_t i = 0; i < numOut; ++i) *p++ = ref.outputs[i].type;
   subcircuits_.push_back(std::move(ref));
   return n;
 }
