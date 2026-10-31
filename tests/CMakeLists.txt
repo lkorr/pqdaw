@@ -138,6 +138,7 @@ pq_add_test(pq_tests_audio PERF  # T5.10: the cold preview start (perf)
 pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock checks (64 tracks: paint, morph)
   SOURCES
     views/test_view_context.cpp
+    views/test_bug_report.cpp  # T5.x-bugreport: report.md round trip, the writer, the input ring, the pointer crop
     views/test_samples_ui.cpp  # T5.8: missing samples, relink, Collect All and Save through the ViewContext
     views/test_waveforms.cpp  # T5.5: the views' waveform overviews (sync / worker + poster, caches, windows)
     views/test_shell.cpp

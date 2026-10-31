@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -35,6 +36,7 @@
 #include "pq/ui/widget.h"
 #include "pq/ui/window.h"
 #include "pq/views/view_scenes.h"
+#include "pq/app/bug_reporter.h"
 #include "pq/app/pipeline_cache.h"
 #include "pq/app/project_link.h"
 #include "pq/document/devices.h"
@@ -136,6 +138,51 @@ struct WindowApp {
   std::vector<std::string> extraLines;
   // T3.7: the DAW shell (view scenes) runs in `ui`; declared last so it is destroyed before the tree.
   std::unique_ptr<ShellApp> shell;
+  // T5.x-bugreport: the pointer as the tree last saw it (device px), for the shot's pointer crop and widget path.
+  Vec2 pointer{0, 0};
+  bool pointerInside = false;
+
+  // F12 (pq/app/bug_reporter.h): the frame on screen is read back only when the reporter wants a shot.
+  void bugReportKey(bool shift) {
+    BugReporter* bug = shell ? shell->bugReporter() : nullptr;
+    if (!bug) return;
+    BugWindowInfo info;
+    const VkExtent2D ext = swapchain->extent();
+    info.width = ext.width;
+    info.height = ext.height;
+    info.uiScale = scale.factor;
+    info.pixelDensity = window->pixelDensity();
+    info.pointer = pointer;
+    info.pointerInside = pointerInside && pointer.x >= 0 && pointer.y >= 0 && pointer.x < static_cast<float>(ext.width) &&
+                         pointer.y < static_cast<float>(ext.height);
+    info.frameBeginMs = lastTiming.beginMs;
+    info.frameBuildMs = lastTiming.buildMs;
+    info.frameEndMs = lastTiming.endMs;
+    info.framesPresented = framesPresented;
+    Result<Image> frame = Error{ErrorCode::InvalidArgument, "no shot for this key", {}};
+    if (bug->wantsShot(shift)) {
+      const auto t0 = Clock::now();
+      frame = swapchain->readLastFrame();
+      info.readbackMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      // What the driver says about itself (Vulkan 1.2 core: VkPhysicalDeviceDriverProperties).
+      VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+      VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+      props.pNext = &drv;
+      vkGetPhysicalDeviceProperties2(gpu->physicalDevice(), &props);
+      info.gpu = gpu->deviceName() + ", driver " + drv.driverName + " " + drv.driverInfo;
+      switch (swapchain->presentMode()) {
+        case VK_PRESENT_MODE_MAILBOX_KHR: info.presentMode = "MAILBOX"; break;
+        case VK_PRESENT_MODE_IMMEDIATE_KHR: info.presentMode = "IMMEDIATE"; break;
+        case VK_PRESENT_MODE_FIFO_KHR: info.presentMode = "FIFO"; break;
+        default: info.presentMode = std::to_string(static_cast<int>(swapchain->presentMode())); break;
+      }
+    }
+    bug->onKey(shift, std::move(frame), info);
+    if (ui) {
+      updateUi();  // the panel opened or closed: lay out and draw it now
+      applyCursor(ui->cursor());
+    }
+  }
 
   // T0.7-fix1 partial redraw. A frame redraws only the damage rects of the swapchain's persistent image when
   // the scene can say what changed: widget trees (painted with the damage as clip) and layered scenes (a
@@ -352,10 +399,28 @@ struct WindowApp {
       themeCheckDue = true;
       return;
     }
+    // T5.x-bugreport: F12 / Shift+F12 before the tree, so it works whatever has focus (a text field, an open menu).
+    if (shell && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F12) {
+      if (!e.key.repeat && !inFrame) bugReportKey((e.key.mod & SDL_KMOD_SHIFT) != 0);
+      return;
+    }
     bool consumed = false;
     if (ui) {
       InputEvent in;
-      if (translateEvent(e, window->pixelDensity(), in)) consumed = ui->dispatch(in);
+      if (translateEvent(e, window->pixelDensity(), in)) {
+        consumed = ui->dispatch(in);
+        if (shell) {
+          shell->recordInput(in);  // the bug report's recent input: a few stores (pq/views/bug_report/input_log.h)
+          if (in.kind == InputKind::Pointer) {
+            if (in.pointer.type == PointerType::Leave) {
+              pointerInside = false;
+            } else {
+              pointer = in.pointer.pos;
+              pointerInside = true;
+            }
+          }
+        }
+      }
       applyCursor(ui->cursor());
     }
     if (shell && shell->handleEvent(e, consumed)) return;
@@ -629,6 +694,40 @@ int selfTest(WindowApp& app, Clock::time_point windowStart) {
     std::printf("  first frame %.1f ms after the window app started (runWindow), %.1f ms after process creation\n",
                 fromWindow, fromProcess);
     check(fromProcess < 0 || fromProcess >= fromWindow, "first-frame time from process creation includes the app's");
+  }
+
+  // T5.x-bugreport: F12 reads back exactly the presented frame (Swapchain::readLastFrame), with one blocking submit and
+  // nothing left behind for the frame path.
+  {
+    const uint64_t blockingBefore = app.gpu->blockingSubmits();
+    const auto t0 = Clock::now();
+    auto img = app.swapchain->readLastFrame();
+    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    const VkExtent2D ext = app.swapchain->extent();
+    check(img.ok() && img->width == ext.width && img->height == ext.height, "the presented frame reads back at the swapchain's size");
+    if (!img) std::printf("    error: %s\n", img.error().message.c_str());
+    bool opaque = img.ok(), varied = false;
+    if (img)
+      for (size_t i = 0; i < img->rgba.size(); i += 4) {
+        opaque = opaque && img->rgba[i + 3] == 255;
+        varied = varied || std::memcmp(&img->rgba[i], img->rgba.data(), 3) != 0;
+      }
+    check(opaque && varied, "the read-back frame is opaque and shows the scene");
+    check(app.gpu->blockingSubmits() == blockingBefore + 1, "the readback is one blocking submit");
+    std::printf("  frame readback %ux%u: %.2f ms\n", ext.width, ext.height, ms);
+    // A plain scene (no widget tree, no layers) is the same picture rendered offscreen at the same size and scale.
+    if (img && !app.ui && !app.layered && !app.damage.animating()) {
+      const UiScale s = app.scale;
+      const auto lw = static_cast<uint32_t>(std::lround(ext.width / s.factor)), lh = static_cast<uint32_t>(std::lround(ext.height / s.factor));
+      auto ref = renderSceneImage(app.scene, lw, lh, {}, s);
+      if (ref && ref->width == img->width && ref->height == img->height) {
+        const ImageDiff d = compareImages(*img, *ref, GoldenTolerance{}.channel);
+        check(passesGolden(d), "the read-back frame matches the scene rendered offscreen");
+      } else {
+        std::printf("  (offscreen comparison skipped: %s)\n", ref ? "sizes differ at this scale" : ref.error().message.c_str());
+      }
+    }
+    frame("a frame after the readback presents");
   }
 
   const struct {

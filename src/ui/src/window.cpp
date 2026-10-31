@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace pq::ui {
@@ -589,6 +590,68 @@ Status Swapchain::endFrame(Renderer& renderer, const FrameDesc& frame) {
     return vkError("vkQueuePresentKHR", r);
   }
   return Ok{};
+}
+
+Result<Image> Swapchain::readLastFrame() {
+  if (frameOpen_) return Error{ErrorCode::InvalidArgument, "readLastFrame inside a frame", {}};
+  if (!preserved_ || !persistent_ || extent_.width == 0 || extent_.height == 0)
+    return Error{ErrorCode::InvalidArgument, "readLastFrame: no frame has been presented at this size", {}};
+  const VkDevice dev = gpu_->device();
+  // The frames in flight finish first: the persistent image then holds the last submitted frame, in
+  // TRANSFER_SRC_OPTIMAL (where every frame leaves it), and no command buffer of ours still uses it.
+  if (VkResult e = vkWaitForFences(dev, framesInFlight_, inFlight_, VK_TRUE, UINT64_MAX); e != VK_SUCCESS)
+    return vkError("vkWaitForFences(readLastFrame)", e);
+  const uint32_t w = extent_.width, h = extent_.height;
+  VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bci.size = VkDeviceSize(w) * h * 4;
+  bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  VmaAllocationCreateInfo rci{};
+  rci.usage = VMA_MEMORY_USAGE_AUTO;
+  rci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;  // cached for CPU reads
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VmaAllocation alloc = nullptr;
+  VmaAllocationInfo info{};
+  if (VkResult e = vmaCreateBuffer(gpu_->allocator(), &bci, &rci, &buffer, &alloc, &info); e != VK_SUCCESS)
+    return vkError("vmaCreateBuffer(frame readback)", e);
+  const VkImage image = persistent_;
+  Status s = gpu_->submitAndWait([&](VkCommandBuffer cb) {
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+    VkBufferMemoryBarrier2 bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    bb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    bb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    bb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    bb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bb.buffer = buffer;
+    bb.size = VK_WHOLE_SIZE;
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.bufferMemoryBarrierCount = 1;
+    di.pBufferMemoryBarriers = &bb;
+    vkCmdPipelineBarrier2(cb, &di);
+  });
+  if (!s) {
+    vmaDestroyBuffer(gpu_->allocator(), buffer, alloc);
+    return std::move(s).error();
+  }
+  vmaInvalidateAllocation(gpu_->allocator(), alloc, 0, VK_WHOLE_SIZE);
+  Image img;
+  img.width = w;
+  img.height = h;
+  img.rgba.resize(size_t(w) * h * 4);
+  const auto* src = static_cast<const uint8_t*>(info.pMappedData);
+  const bool bgra = format_ == VK_FORMAT_B8G8R8A8_UNORM || format_ == VK_FORMAT_B8G8R8A8_SRGB;
+  uint8_t* dst = img.rgba.data();
+  for (size_t i = 0, n = size_t(w) * h; i < n; ++i, src += 4, dst += 4) {
+    dst[0] = bgra ? src[2] : src[0];
+    dst[1] = src[1];
+    dst[2] = bgra ? src[0] : src[2];
+    dst[3] = 255;  // the window is opaque (VK_COMPOSITE_ALPHA_OPAQUE): what blending left in alpha is not shown
+  }
+  vmaDestroyBuffer(gpu_->allocator(), buffer, alloc);
+  return img;
 }
 
 }  // namespace pq::ui

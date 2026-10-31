@@ -12,6 +12,9 @@
 # private reference material (contains other people's chat logs/screenshots; repo is public)
 /reference/inspiration/
 
+# F12 bug reports (T5.x-bugreport): screenshots and project copies of the user's sessions, never published
+/bug_reports/
+
 # local caches
 /cache/
 .vs/

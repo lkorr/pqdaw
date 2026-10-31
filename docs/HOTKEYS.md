@@ -264,6 +264,14 @@ A device's "Open in Circuit View" (its menu, a double-click on its title, the pr
 | Arrangement clips | drag out of the window | T5.12: Explorer receives WAV files rendered as the clips play (MIDI clips: M11) |
 | Browser preview | click in the waveform | plays from there (scrub) |
 
+## Bug report (T5.x-bugreport, handled by the window loop before the widget tree, not the keymap)
+
+| Keys | What |
+|---|---|
+| `F12` | photographs the window as presented and opens the bug report panel (panel open: hides it, the draft is kept) |
+| `Shift+F12` | after Add another / Esc: back to the panel without a new shot (otherwise as F12) |
+| `Esc` / `Ctrl+Enter` in the panel | hide it keeping the draft / submit |
+
 ## Not bound yet
 
 - Wiring (T4.7): `view.cycleCables` and `wire.delete` have no default chord (Live has none); the View menu and the badge run them.

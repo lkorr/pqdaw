@@ -33,7 +33,7 @@ namespace pq::app {
 namespace {
 
 // Codes of the shell's SDL user event (SDL_UserEvent::code).
-enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5, kOsDrag = 6 };
+enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5, kOsDrag = 6, kBugScript = 7 };
 
 // File dialogs run their callback on another thread on some platforms: results are posted to the UI thread as a
 // user event carrying the path (owned by the event until delivered) and the request id.
@@ -325,8 +325,20 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     ShellApp* raw = app.get();
     tree.setDragOutHandler([raw](ui::DragPayload p) { raw->onDragOut(std::move(p)); });
   }
+  // T5.x-bugreport: F12. Costs nothing until the key: a few stores per input event, an append per status change.
+  app->bug_ = std::make_unique<BugReporter>(*app->shell_, app->link_.get(), app->audio_.get(), bugReportRoot());
+  if (const char* script = std::getenv("PQ_BUGREPORT_SCRIPT"); script && *script) {
+    std::string_view s(script);
+    while (!s.empty()) {
+      const size_t semi = s.find(';');
+      std::string step(s.substr(0, semi));
+      if (!step.empty()) app->bugScript_.push_back(std::move(step));
+      s = semi == std::string_view::npos ? std::string_view{} : s.substr(semi + 1);
+    }
+    std::reverse(app->bugScript_.begin(), app->bugScript_.end());  // popped from the back
+  }
   ShellApp* self = app.get();
-  app->tempoSub_ = app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
+  app->tempoSub_ =app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
   app->onTempoMaybeChanged();
   app->titleSub_ = app->ctx_->observe([self](uint32_t what) {
     if (what & views::view_change::kProject) self->updateTitle();
@@ -469,6 +481,7 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
         break;
       }
       case kOsDrag: drainOsDrags(); break;
+      case kBugScript: runBugScriptStep(); break;
       case kAudioChanged:
         if (audio_) audio_->poll();
         syncPreviewRate();
@@ -647,6 +660,98 @@ void ShellApp::onFramePresented() {
     settleEvents_ = events_;
     startTimer(userEvent_, kIdleStart, 1.0);
   }
+  if (!bugScript_.empty()) startTimer(userEvent_, kBugScript, 1.5);  // the window settles first
+}
+
+// PQ_BUGREPORT_SCRIPT (pq/app/bug_reporter.h): one step per tick, through the same paths as a user (F12 and pointer
+// events go through the SDL queue and the window loop).
+void ShellApp::runBugScriptStep() {
+  if (bugScript_.empty() || !bug_) return;
+  std::string step = bugScript_.back();
+  const float density = SDL_GetWindowPixelDensity(window_) > 0 ? SDL_GetWindowPixelDensity(window_) : 1.0f;
+  auto value = [&](std::string_view prefix) { return step.substr(prefix.size()); };
+  auto pushKey = [&](SDL_Keycode k, SDL_Keymod mod) {
+    for (bool down : {true, false}) {
+      SDL_Event ev{};
+      ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+      ev.key.windowID = SDL_GetWindowID(window_);
+      ev.key.key = k;
+      ev.key.mod = mod;
+      ev.key.down = down;
+      ev.key.timestamp = SDL_GetTicksNS();
+      SDL_PushEvent(&ev);
+    }
+  };
+  auto pushMouse = [&](Uint32 type, float x, float y) {
+    SDL_Event ev{};
+    ev.type = type;
+    if (type == SDL_EVENT_MOUSE_MOTION) {
+      ev.motion.windowID = SDL_GetWindowID(window_);
+      ev.motion.x = x / density;
+      ev.motion.y = y / density;
+      ev.motion.timestamp = SDL_GetTicksNS();
+    } else {
+      ev.button.windowID = SDL_GetWindowID(window_);
+      ev.button.button = SDL_BUTTON_LEFT;
+      ev.button.down = type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+      ev.button.clicks = 1;
+      ev.button.x = x / density;
+      ev.button.y = y / density;
+      ev.button.timestamp = SDL_GetTicksNS();
+    }
+    SDL_PushEvent(&ev);
+  };
+  auto xy = [&](std::string_view v, float& x, float& y) {
+    const size_t c = v.find(',');
+    x = std::strtof(std::string(v.substr(0, c)).c_str(), nullptr);
+    y = c == std::string_view::npos ? 0.0f : std::strtof(std::string(v.substr(c + 1)).c_str(), nullptr);
+  };
+  views::bugreport::BugReportPanel* panel = bug_->panel();
+  std::printf("pqdaw: bug report script: %s\n", step.c_str());
+  bool again = false;  // run this step again at the next tick (waiting for a write)
+  if (step == "f12") {
+    pushKey(SDLK_F12, SDL_KMOD_NONE);
+  } else if (step == "shift+f12") {
+    pushKey(SDLK_F12, SDL_KMOD_LSHIFT);
+  } else if (step.rfind("move:", 0) == 0) {
+    float x = 0, y = 0;
+    xy(value("move:"), x, y);
+    pushMouse(SDL_EVENT_MOUSE_MOTION, x, y);
+  } else if (step.rfind("click:", 0) == 0) {
+    float x = 0, y = 0;
+    xy(value("click:"), x, y);
+    pushMouse(SDL_EVENT_MOUSE_MOTION, x, y);
+    pushMouse(SDL_EVENT_MOUSE_BUTTON_DOWN, x, y);
+    pushMouse(SDL_EVENT_MOUSE_BUTTON_UP, x, y);
+  } else if (step.rfind("key:", 0) == 0) {  // one plain key by name ("key:space")
+    pushKey(SDL_GetKeyFromName(value("key:").c_str()), SDL_KMOD_NONE);
+  } else if (step.rfind("text:", 0) == 0 && panel) {
+    bug_->draft().text = value("text:");
+    panel->description().setText(bug_->draft().text, static_cast<uint32_t>(bug_->draft().text.size()));
+  } else if (step.rfind("tag:", 0) == 0 && panel) {
+    panel->addTag(value("tag:"));
+  } else if (step.rfind("ticket:", 0) == 0 && panel) {
+    panel->selectTicket(std::atoi(value("ticket:").c_str()));
+  } else if (step == "suggestions" && panel) {
+    panel->setSuggestions(true);
+  } else if (step == "bugs" && panel) {
+    panel->setSuggestions(false);
+  } else if (step == "add") {
+    bug_->addAnother();
+  } else if (step == "close") {
+    bug_->close();
+  } else if (step == "submit") {
+    bug_->submit();
+  } else if (step == "discard") {
+    bug_->discard();
+  } else if (step == "quit") {
+    if (bug_->writing()) again = true;
+    else pushUser(SDL_EVENT_QUIT, 0);
+  } else if (step != "wait") {
+    std::fprintf(stderr, "pqdaw: PQ_BUGREPORT_SCRIPT: step \"%s\" not understood (or no panel open)\n", step.c_str());
+  }
+  if (!again) bugScript_.pop_back();
+  if (!bugScript_.empty()) startTimer(userEvent_, kBugScript, 0.6);
 }
 
 }  // namespace pq::app

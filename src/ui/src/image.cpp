@@ -43,40 +43,88 @@ uint8_t paeth(int a, int b, int c) {
   return static_cast<uint8_t>(c);
 }
 
-// Applies filter `f` to `row` (prev = previous raw row or null), writing into out.
-void filterRow(int f, const uint8_t* row, const uint8_t* prev, size_t n, size_t bpp, uint8_t* out) {
-  for (size_t i = 0; i < n; ++i) {
-    const int a = i >= bpp ? row[i - bpp] : 0;
-    const int b = prev ? prev[i] : 0;
-    const int c = (prev && i >= bpp) ? prev[i - bpp] : 0;
-    int pred = 0;
-    switch (f) {
-      case 1: pred = a; break;
-      case 2: pred = b; break;
-      case 3: pred = (a + b) / 2; break;
-      case 4: pred = paeth(a, b, c); break;
-      default: break;
-    }
-    out[i] = static_cast<uint8_t>(row[i] - pred);
+}  // namespace
+
+std::vector<uint8_t> encodePng(const Image& img) { return encodePng(img, PngOptions{}); }
+
+namespace {
+
+// One row through filter f (1..4), bytes per pixel `bpp`; prev = the previous raw row or null. Specialised per filter
+// (no switch per byte): this runs over every byte of a screenshot up to five times.
+void filterRowFast(int f, const uint8_t* row, const uint8_t* prev, size_t n, size_t bpp, uint8_t* out) {
+  switch (f) {
+    case 0: std::memcpy(out, row, n); break;
+    case 1:
+      for (size_t i = 0; i < bpp && i < n; ++i) out[i] = row[i];
+      for (size_t i = bpp; i < n; ++i) out[i] = static_cast<uint8_t>(row[i] - row[i - bpp]);
+      break;
+    case 2:
+      if (!prev) {
+        std::memcpy(out, row, n);
+      } else {
+        for (size_t i = 0; i < n; ++i) out[i] = static_cast<uint8_t>(row[i] - prev[i]);
+      }
+      break;
+    case 3:
+      for (size_t i = 0; i < n; ++i) {
+        const int a = i >= bpp ? row[i - bpp] : 0;
+        const int b = prev ? prev[i] : 0;
+        out[i] = static_cast<uint8_t>(row[i] - ((a + b) >> 1));
+      }
+      break;
+    default:
+      if (!prev) {  // Paeth with no row above is Sub
+        for (size_t i = 0; i < bpp && i < n; ++i) out[i] = row[i];
+        for (size_t i = bpp; i < n; ++i) out[i] = static_cast<uint8_t>(row[i] - row[i - bpp]);
+      } else {
+        for (size_t i = 0; i < bpp && i < n; ++i) out[i] = static_cast<uint8_t>(row[i] - prev[i]);
+        for (size_t i = bpp; i < n; ++i) out[i] = static_cast<uint8_t>(row[i] - paeth(row[i - bpp], prev[i], prev[i - bpp]));
+      }
+      break;
   }
+}
+
+uint64_t absSum(const uint8_t* p, size_t n) noexcept {
+  uint64_t sum = 0;
+  for (size_t i = 0; i < n; ++i) sum += static_cast<uint64_t>(std::abs(static_cast<int8_t>(p[i])));
+  return sum;
 }
 
 }  // namespace
 
-std::vector<uint8_t> encodePng(const Image& img) {
-  const size_t stride = size_t(img.width) * 4;
+std::vector<uint8_t> encodePng(const Image& img, const PngOptions& o) {
+  const size_t bpp = o.rgb ? 3 : 4;
+  const size_t stride = size_t(img.width) * bpp;
+  // RGB: the pixels without their alpha bytes, one row at a time (the filters read the previous raw row).
+  std::vector<uint8_t> rowsRgb;
+  if (o.rgb) {
+    rowsRgb.resize(stride * img.height);
+    const uint8_t* s = img.rgba.data();
+    uint8_t* d = rowsRgb.data();
+    for (size_t i = 0, n = size_t(img.width) * img.height; i < n; ++i, s += 4, d += 3) {
+      d[0] = s[0];
+      d[1] = s[1];
+      d[2] = s[2];
+    }
+  }
+  const uint8_t* pixels = o.rgb ? rowsRgb.data() : img.rgba.data();
   std::vector<uint8_t> raw((stride + 1) * img.height);
   std::vector<uint8_t> trial(stride);
+  const int fixed = o.filter == PngOptions::Filter::Adaptive ? -1 : static_cast<int>(o.filter) - 1;
   for (uint32_t y = 0; y < img.height; ++y) {
-    const uint8_t* row = img.rgba.data() + y * stride;
+    const uint8_t* row = pixels + y * stride;
     const uint8_t* prev = y ? row - stride : nullptr;
     uint8_t* dst = raw.data() + y * (stride + 1);
+    if (fixed >= 0) {
+      dst[0] = static_cast<uint8_t>(fixed);
+      filterRowFast(fixed, row, prev, stride, bpp, dst + 1);
+      continue;
+    }
     // Standard heuristic (libpng's): pick the filter whose output has the smallest sum of |signed byte|.
     uint64_t best = UINT64_MAX;
     for (int f = 0; f < 5; ++f) {
-      filterRow(f, row, prev, stride, 4, trial.data());
-      uint64_t sum = 0;
-      for (uint8_t v : trial) sum += static_cast<uint64_t>(std::abs(static_cast<int8_t>(v)));
+      filterRowFast(f, row, prev, stride, bpp, trial.data());
+      const uint64_t sum = absSum(trial.data(), stride);
       if (sum < best) {
         best = sum;
         dst[0] = static_cast<uint8_t>(f);
@@ -84,11 +132,20 @@ std::vector<uint8_t> encodePng(const Image& img) {
       }
     }
   }
-  uLongf zlen = compressBound(static_cast<uLong>(raw.size()));
-  std::vector<uint8_t> z(zlen);
-  if (compress2(z.data(), &zlen, raw.data(), static_cast<uLong>(raw.size()), 6) != Z_OK) return {};  // out of memory
+  z_stream zs{};
+  if (deflateInit2(&zs, std::clamp(o.level, 0, 9), Z_DEFLATED, 15, 9, o.strategy) != Z_OK) return {};
+  std::vector<uint8_t> z(deflateBound(&zs, static_cast<uLong>(raw.size())));
+  zs.next_in = raw.data();
+  zs.avail_in = static_cast<uInt>(raw.size());
+  zs.next_out = z.data();
+  zs.avail_out = static_cast<uInt>(z.size());
+  const int zr = deflate(&zs, Z_FINISH);
+  const size_t zlen = zs.total_out;
+  deflateEnd(&zs);
+  if (zr != Z_STREAM_END) return {};  // out of memory
 
   std::vector<uint8_t> out(kSignature, kSignature + 8);
+  out.reserve(zlen + 64);
   uint8_t ihdr[13];
   ihdr[0] = static_cast<uint8_t>(img.width >> 24);
   ihdr[1] = static_cast<uint8_t>(img.width >> 16);
@@ -98,11 +155,11 @@ std::vector<uint8_t> encodePng(const Image& img) {
   ihdr[5] = static_cast<uint8_t>(img.height >> 16);
   ihdr[6] = static_cast<uint8_t>(img.height >> 8);
   ihdr[7] = static_cast<uint8_t>(img.height);
-  ihdr[8] = 8;   // bit depth
-  ihdr[9] = 6;   // colour type RGBA
-  ihdr[10] = 0;  // deflate
-  ihdr[11] = 0;  // adaptive filtering
-  ihdr[12] = 0;  // no interlace
+  ihdr[8] = 8;                     // bit depth
+  ihdr[9] = o.rgb ? 2 : 6;         // colour type RGB / RGBA
+  ihdr[10] = 0;                    // deflate
+  ihdr[11] = 0;                    // adaptive filtering
+  ihdr[12] = 0;                    // no interlace
   putChunk(out, "IHDR", ihdr, 13);
   putChunk(out, "IDAT", z.data(), zlen);
   putChunk(out, "IEND", nullptr, 0);

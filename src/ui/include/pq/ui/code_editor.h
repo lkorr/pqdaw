@@ -63,6 +63,9 @@ public:
   void setMarks(std::vector<CodeMark> marks);
   const std::vector<CodeMark>& marks() const noexcept { return marks_; }
   void setReadOnly(bool r) noexcept { readOnly_ = r; }
+  // T5.x-bugreport: off = no line-number gutter (a plain multi-line text box, e.g. the bug report's description).
+  void setLineNumbers(bool on);
+  bool lineNumbers() const noexcept { return lineNumbers_; }
   bool readOnly() const noexcept { return readOnly_; }
 
   uint32_t caret() const noexcept { return caret_; }
@@ -128,6 +131,7 @@ private:
   int32_t goalX_ = -1;           // remembered x for vertical moves
   int32_t scrollX_ = 0, scrollY_ = 0;
   bool readOnly_ = false;
+  bool lineNumbers_ = true;
   bool selecting_ = false;
   bool pendingReveal_ = false;
   // Device metrics from the last paint / measurement.

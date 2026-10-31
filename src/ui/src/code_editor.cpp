@@ -217,8 +217,15 @@ bool CodeEditor::metrics() {
   pad_ = sc.px(6);
   charW_ = std::max(1, res->text->measure(font_, "0"));
   const uint32_t digits = lineCount() >= 10000 ? 5 : lineCount() >= 1000 ? 4 : 3;
-  gutterW_ = static_cast<int32_t>(digits) * charW_ + sc.px(16);
+  gutterW_ = lineNumbers_ ? static_cast<int32_t>(digits) * charW_ + sc.px(16) : 0;
   return true;
+}
+
+void CodeEditor::setLineNumbers(bool on) {
+  if (on == lineNumbers_) return;
+  lineNumbers_ = on;
+  if (!on) gutterW_ = 0;
+  markDirty();
 }
 
 int32_t CodeEditor::lineHeight() const noexcept { return lineH_; }
@@ -318,7 +325,7 @@ void CodeEditor::paint(PaintContext& ctx) {
   if (pendingReveal_) keepCaretVisible();
   TextSystem& ts = *ctx.res.text;
   const IRect gutter{r.x, r.y, gutterW_, r.h};
-  ctx.dl.addRectFilled(gutter.toRect(), c.gutter);
+  if (gutterW_ > 0) ctx.dl.addRectFilled(gutter.toRect(), c.gutter);
   const int32_t codeX = r.x + gutterW_;
   const int32_t x0 = codeX + pad_ - scrollX_;
   const uint32_t lines = lineCount();
@@ -405,6 +412,7 @@ void CodeEditor::paint(PaintContext& ctx) {
     }
     ctx.dl.popClip();
     // Gutter: line number, a dot for a marked line.
+    if (!lineNumbers_) continue;
     char num[12];
     const int len = std::snprintf(num, sizeof num, "%u", line + 1);
     const int32_t nw = ts.measure(font_, std::string_view(num, static_cast<size_t>(len)));

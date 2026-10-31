@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 
+#include "pq/app/bug_reporter.h"
 #include "pq/app/cli.h"
 #include "pq/app/os_drop.h"
 #include "pq/app/patch_preview.h"
@@ -46,6 +47,13 @@ public:
 
   views::ViewContext& context() noexcept { return *ctx_; }
 
+  // T5.x-bugreport: the F12 bug report (pq/app/bug_reporter.h); the window loop calls it for F12 and records every
+  // input event the tree dispatched into it.
+  BugReporter* bugReporter() noexcept { return bug_.get(); }
+  void recordInput(const ui::InputEvent& e) noexcept {
+    if (bug_) bug_->recordInput(e);
+  }
+
 private:
   ShellApp(ui::UiTree& tree, SDL_Window* window);
   void updateTitle();
@@ -74,6 +82,10 @@ private:
   std::unique_ptr<views::ViewContext> ctx_;
   std::unique_ptr<SdlFileDialogs> dialogs_;
   std::unique_ptr<views::Shell> shell_;
+  std::unique_ptr<BugReporter> bug_;  // T5.x-bugreport (after shell_: destroyed first)
+  // PQ_BUGREPORT_SCRIPT: the steps still to run (bug_reporter.h), one per timer tick.
+  std::vector<std::string> bugScript_;
+  void runBugScriptStep();
   views::ViewContext::Subscription titleSub_, tempoSub_;
   const void* tempoTimeline_ = nullptr;
   bool textInput_ = false;

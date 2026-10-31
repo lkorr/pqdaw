@@ -24,9 +24,32 @@ pq_add_module(pq_app
     src/os_drag.cpp
     src/clip_export.cpp
     src/preview_service.cpp
+    src/bug_reporter.cpp
+    src/build_info.cpp
   DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine pq_compile nlohmann_json::nlohmann_json
   PRIVATE_DEPS SDL3::SDL3-static ole32 shell32)
 target_compile_options(pq_app PRIVATE /external:W0)
+
+# T5.x-bugreport: the commit (and dirty state, preset) the executable was built from, for the bug report's build line.
+# A header generated in the build directory at every build and rewritten only when it changes; only build_info.cpp
+# includes it, so a new commit recompiles that one file. No absolute path goes into a compile definition.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND CMAKE_CXX_FLAGS_RELEASE MATCHES "/GL")
+  set(_pq_preset ship)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT CMAKE_CXX_FLAGS_RELEASE MATCHES "NDEBUG")
+  set(_pq_preset check)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(_pq_preset release)
+else()
+  set(_pq_preset dev)
+endif()
+set(_pq_build_info_dir "${CMAKE_CURRENT_BINARY_DIR}/build_info")
+add_custom_target(pq_build_info
+  COMMAND ${CMAKE_COMMAND} -DSRC=${PQ_SOURCE_DIR} -DOUT=${_pq_build_info_dir}/pq_build_info.h -DPRESET=${_pq_preset}
+          -P ${PQ_SOURCE_DIR}/cmake/PqBuildInfo.cmake
+  BYPRODUCTS ${_pq_build_info_dir}/pq_build_info.h
+  VERBATIM)
+add_dependencies(pq_app pq_build_info)
+set_source_files_properties(src/build_info.cpp PROPERTIES INCLUDE_DIRECTORIES ${_pq_build_info_dir})
 # T3.17: the stdlib fallback location (pq::app::stdlibDir) for dev builds and tests.
 pq_use_build_paths(pq_app)
 target_compile_definitions(pq_app PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)

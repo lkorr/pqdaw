@@ -22,6 +22,16 @@ struct Image {
 // PNG (8-bit RGBA, non-interlaced). Encoder picks a filter per row (min sum of abs heuristic) and
 // deflates with zlib level 6. Returns an empty vector only if zlib runs out of memory.
 std::vector<uint8_t> encodePng(const Image& img);
+
+// T5.x-bugreport: encoder choices for large opaque images (window screenshots). The defaults are encodePng(img)'s.
+struct PngOptions {
+  enum class Filter : uint8_t { Adaptive, None, Sub, Up, Paeth };
+  int level = 6;              // zlib 0..9
+  bool rgb = false;           // colour type 2: alpha dropped (an opaque image; 3/4 of the raw bytes)
+  Filter filter = Filter::Adaptive;  // Adaptive: per row, the filter with the smallest sum of |signed byte| (libpng's)
+  int strategy = 0;           // zlib strategy: 0 Z_DEFAULT_STRATEGY, 1 Z_FILTERED, 3 Z_RLE
+};
+std::vector<uint8_t> encodePng(const Image& img, const PngOptions& options);
 // Decodes 8-bit greyscale / grey+alpha / RGB / RGBA / palette PNGs (non-interlaced) into RGBA8, which covers
 // everything our encoder and common tools write for golden files. Other variants return Unsupported.
 Result<Image> decodePng(const uint8_t* data, size_t size);

@@ -97,6 +97,12 @@ Toolchain facts (verified during setup):
 
 To generate fixtures from the JS references, run them with Node (`node` is available via the music-website repo's toolchain; if it's missing, record that as a blocker). Commit the fixture-generating script under `tools/fixtures/` and the generated JSON under `tests/<module>/fixtures/`.
 
+## Bug reports (F12)
+The user files bugs and wishes from the running app with F12 (`pq/app/bug_reporter.h`, `pq/views/bug_report/`). Each is a folder `bug_reports/<YYYY-MM-DD_HH-MM-SS>/` in the checkout (git-ignored, never commit it): `report.md` (title, `tags:` line, description, one `### Shot N` section per picture with the widget under the pointer, focus, views, selection and transport, then `## Context` and `## Recent input`, the steps that led there), `shot_N.png` (the whole window as presented), `shot_N_cursor.png` (1:1 crop around the pointer with a crosshair) and optionally `project.pqd` (the document at the first shot; open it with `pqdaw --project <folder>`). Ideas go to `bug_reports/suggestions/<stamp>/`.
+- Open tickets are the folders directly in `bug_reports/`; find them by tag with `grep -l "^tags:.*\bui\b" bug_reports/*/report.md`. Look at the cursor crop when the full shot is downscaled.
+- When you work on one, append a `## Progress` section to its report.md (date, commit, what changed, what is still open). Never edit the user's description or shot sections.
+- Once the fix is merged to main, move the folder to `bug_reports/fixed/`. Never delete a ticket or a picture.
+
 ## Logging your work
 Append to `docs/PROGRESS.md` (newest at the bottom):
 ```

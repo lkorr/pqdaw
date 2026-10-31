@@ -12,6 +12,7 @@
 #include "pq/core/result.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/gpu.h"
+#include "pq/ui/image.h"
 #include "pq/ui/input.h"
 #include "pq/ui/renderer.h"
 #include "pq/ui/widget.h"
@@ -114,6 +115,13 @@ public:
   const GpuFrameStats& lastFrameStats() const noexcept { return lastStats_; }
   // Forces a recreate at the next beginFrame (e.g. after a resize event).
   void invalidate() noexcept { dirty_ = true; }
+  // T5.x-bugreport (F12): the last presented frame as RGBA8 (alpha 255), read back from the persistent image, so it is
+  // exactly what is on screen: open menus, hover states, drag ghosts, never a re-render. UI thread, between frames.
+  // Waits for the frames in flight, then one temporary host-visible buffer and one blocking copy
+  // (GpuContext::submitAndWait); nothing is allocated or waited for on the frame path. Fails before the first frame
+  // and after a recreate until the next frame has been presented (preserved() false).
+  Result<Image> readLastFrame();
+  VkExtent2D extent() const noexcept { return extent_; }
 
 private:
   Swapchain() = default;
