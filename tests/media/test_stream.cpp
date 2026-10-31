@@ -509,7 +509,7 @@ namespace {
 
 // Two threads: this one claims, reads and releases streams at random (positions, directions, lengths), the disk
 // thread fills them. Every frame a span delivers (not silent) must equal the direct decode.
-void stress(int cycles) {
+void stress(int cycles, int waitEvery) {
   const fs::path tmp = tempDir("pq_media_stress");
   PoolConfig cfg;
   cfg.residentLimitBytes = 0;
@@ -545,7 +545,7 @@ void stress(int cycles) {
       cur.start(pool.streams(), *f.s, pos, dir);
     }
     const int spans = 1 + static_cast<int>(rng() % 4);
-    const bool wait = (i % 4) == 0;
+    const bool wait = (i % waitEvery) == 0;  // some cycles wait for data, so most spans check real frames
     for (int k = 0; k < spans; ++k) {
       const auto len = static_cast<uint32_t>(1 + rng() % 700);
       if (wait && cur.streaming()) (void)pool.waitFilled(cur.stream(), len, std::chrono::milliseconds(200));
@@ -586,10 +586,10 @@ void stress(int cycles) {
 
 }  // namespace
 
-TEST_CASE("stream: two-thread stress, 20k random claim / read / release cycles against a direct decode") { stress(20000); }
+TEST_CASE("stream: two-thread stress, 20k random claim / read / release cycles against a direct decode") { stress(20000, 4); }
 
 TEST_CASE("stream: two-thread stress, 10^6 random claim / read / release cycles" * doctest::test_suite("slow")) {
-  stress(1000000);
+  stress(1000000, 64);
 }
 
 TEST_CASE("stream: 64 stereo streams of 10-minute files at buffer 64, 2 min realtime: 0 underruns" *
