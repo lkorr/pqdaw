@@ -30,7 +30,7 @@
 // how early the nonlinearity bites (the nonlinear terms see the signal × drive and their output is divided by
 // drive: drive changes the character, not the level of small signals; a loud signal saturates at the input stage's
 // knee, 1/drive, so OSR and SMP keep a 0 dBFS tone near −1.8 / −10 / −22 dB at drive 0 / +12 / +24 dB, PRD near 0 / −4
-// / −15 dB, MS2 at 0 dB: QUESTIONS Q?-T4.x-fix-dsp-a).
+// / −15 dB, MS2 at 0 dB: QUESTIONS Q150).
 //   Clean  TPT state-variable filter (af_svf: svf_core_fast with g per channel), k = √2·(1 − res) up to 90 % (the
 //          nonlinear SVF models' law: one resonance law at the knob, M4 review M12), then exponentially down to 0.02
 //          at 125 % (af_kclean): never self-oscillates (Q 0.71 … 50); drive unused (as in Live).
