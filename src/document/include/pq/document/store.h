@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -57,6 +58,7 @@ enum class StoreEventKind : uint8_t {
   GestureCommit,  // the document did not change (before == after); `changes` = the whole gesture's union
   GestureCancel,  // the document went back to the pre-gesture snapshot; `changes` = what the gesture had touched
   Reset,          // a new document was loaded; `changes` is empty (listeners rebuild everything)
+  SamplesRelocated,  // T5.8: sample paths changed outside the history (relocateSamples); `changes`: Meta + samples
 };
 
 struct StoreEvent {
@@ -108,6 +110,12 @@ public:
 
   // Replaces the document (open/new) and clears the history; ids continue after the new document's largest id.
   void reset(Snapshot s);
+
+  // T5.8: replaces sample table entries (matched by id) in the current snapshot AND every snapshot of the history (and
+  // an open gesture's base), so a relink or a Collect All and Save is not an undo step and no undo brings the old
+  // path back (samples.h). Entries a snapshot does not hold are skipped there. No history entry; listeners hear
+  // SamplesRelocated. Snapshots shared between entries stay shared.
+  void relocateSamples(std::span<const SampleRef> updated);
 
   ListenerId subscribe(Listener l);
   void unsubscribe(ListenerId id) noexcept;

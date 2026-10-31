@@ -117,6 +117,7 @@ pq_add_test(pq_tests_audio
 pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock checks (64 tracks: paint, morph)
   SOURCES
     views/test_view_context.cpp
+    views/test_samples_ui.cpp  # T5.8: missing samples, relink, Collect All and Save through the ViewContext
     views/test_shell.cpp
     views/test_shell_affordances.cpp  # T4.16a: cursors of the shell, headers, mixer, tunings, prefs, MOS wheel; wheel; typed tempo
     views/test_arrangement.cpp
@@ -314,6 +315,7 @@ pq_add_test(pq_tests_document
     document/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit, file, resolution, lowering, coalescing)
     document/test_racks.cpp    # T4.8: racks (rules, builders, file, lowering)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
+    document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
   DEPS pq_doc)
 
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it

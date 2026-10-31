@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
+#include <memory>
 #include <vector>
 #include <string_view>
 #include <utility>
@@ -24,7 +26,7 @@ namespace pq::app {
 namespace {
 
 // Codes of the shell's SDL user event (SDL_UserEvent::code).
-enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4 };
+enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5 };
 
 // File dialogs run their callback on another thread on some platforms: results are posted to the UI thread as a
 // user event carrying the path (owned by the event until delivered) and the request id.
@@ -44,7 +46,10 @@ void pushUser(uint32_t type, int32_t code, void* data1 = nullptr, void* data2 = 
   ev.user.data1 = data1;
   ev.user.data2 = data2;
   ev.user.timestamp = SDL_GetTicksNS();
-  if (!SDL_PushEvent(&ev) && code == kDialogResult) delete static_cast<std::string*>(data1);
+  if (!SDL_PushEvent(&ev)) {
+    if (code == kDialogResult) delete static_cast<std::string*>(data1);
+    if (code == kRunOnUi) delete static_cast<std::function<void()>*>(data1);
+  }
 }
 
 Uint32 SDLCALL idleTimer(void* user, SDL_TimerID, Uint32) {
@@ -81,6 +86,10 @@ public:
     pending_ = std::move(done);
     SDL_ShowOpenFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kScalaFilter, 1, nullptr,
                            false);
+  }
+  void chooseFolder(PathCallback done) override {  // T5.8: Relink Missing Samples
+    pending_ = std::move(done);
+    SDL_ShowOpenFolderDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, nullptr, false);
   }
   void choosePatchFile(PathCallback done) override {
     pending_ = std::move(done);
@@ -182,6 +191,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   });
   app->dialogs_ = std::make_unique<SdlFileDialogs>(window, app->userEvent_);
   app->ctx_->setFileDialogs(app->dialogs_.get());
+  // T5.8: background work (Collect All and Save's copy) comes back to the UI thread as a user event.
+  app->ctx_->setUiPoster([type = app->userEvent_](std::function<void()> fn) {
+    pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn)));
+  });
   if (!o.project.empty()) {
     if (Status s = app->ctx_->openProject(o.project); !s) return std::move(s).error();
     markStartupPhase("project loaded");
@@ -291,6 +304,11 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
   if (e.type == userEvent_) {
     switch (e.user.code) {
       case kDialogResult: dialogs_->deliver(e.user); break;
+      case kRunOnUi: {
+        std::unique_ptr<std::function<void()>> fn(static_cast<std::function<void()>*>(e.user.data1));
+        if (fn && *fn) (*fn)();
+        break;
+      }
       case kAudioChanged:
         if (audio_) audio_->poll();
         syncPreviewRate();

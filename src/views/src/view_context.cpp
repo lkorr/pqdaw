@@ -1,9 +1,12 @@
 #include "pq/views/view_context.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 #include "pq/document/serialize.h"
 
@@ -73,7 +76,22 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   syncLoop();
 }
 
-ViewContext::~ViewContext() { store_.unsubscribe(storeListener_); }
+// T5.8: a Collect All and Save in progress (the copy on its worker thread).
+struct ViewContext::CollectJob {
+  doc::CollectPlan plan;
+  std::string dir;
+  doc::CollectOptions options;
+  Status result = Ok{};
+  std::thread thread;
+  ~CollectJob() {
+    if (thread.joinable()) thread.join();
+  }
+};
+
+ViewContext::~ViewContext() {
+  collectWorker_.reset();  // joins a running copy
+  store_.unsubscribe(storeListener_);
+}
 
 ViewContext::Subscription ViewContext::subscribe(doc::Listener listener) {
   const doc::ListenerId id = store_.subscribe(std::move(listener));
@@ -133,6 +151,10 @@ void ViewContext::setModulationSource(ModulationSource* source) {
 
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
   if (e.kind == doc::StoreEventKind::Reset || !(e.before->loop == e.after->loop)) syncLoop();
+  // T5.8: the sample table changed (a drop, undo / redo of one): resolve it again (cheap: a file check per entry).
+  if (e.kind != doc::StoreEventKind::SamplesRelocated && e.kind != doc::StoreEventKind::Reset &&
+      e.after->samples != resolvedFor_)
+    refreshSamples();
   // T3.15: a hand-made change of an automated parameter overrides its automation (Live); undo / redo do not.
   bool overridesChanged = false;
   if (e.kind == doc::StoreEventKind::Reset) {
@@ -192,6 +214,7 @@ void ViewContext::afterLoad() {
   startMarker_ = 0;
   transport_.locate(0);
   syncLoop();
+  refreshSamples();
   notify(view_change::kProject | view_change::kTransport);
 }
 
@@ -210,7 +233,7 @@ Status ViewContext::openProject(std::string_view dirUtf8) {
   }
   projectDir_ = std::string(dirUtf8);
   afterLoad();
-  setStatus("Opened " + projectName());
+  if (missing_.empty()) setStatus("Opened " + projectName());  // else the status line says which samples are missing
   return Ok{};
 }
 
@@ -222,6 +245,18 @@ Status ViewContext::saveProject() {
 
 Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
   if (dirUtf8.empty()) return Error{ErrorCode::InvalidArgument, "save: empty project directory", {}};
+  if (projectDir_ != dirUtf8 && !projectDir_.empty()) {
+    // T5.8: a project-relative sample stays where it is: saved elsewhere, the project references it by its absolute path
+    // (Collect All and Save copies it into the new project).
+    std::vector<doc::SampleRef> abs;
+    for (const doc::SampleRef& r : doc::samplesOf(*store_.current()))
+      if (!doc::isAbsoluteSamplePath(r.path)) {
+        doc::SampleRef n = r;
+        n.path = doc::absoluteSamplePath(r.path, projectDir_);
+        abs.push_back(std::move(n));
+      }
+    store_.relocateSamples(abs);
+  }
   if (Status s = doc::saveProject(dirUtf8, store_); !s) {
     setStatus("Could not save " + std::string(dirUtf8) + ": " + s.error().message);
     return s;
@@ -233,8 +268,139 @@ Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
   const bool wasDirty = lastDirty_;
   lastDirty_ = false;
   if (renamed || wasDirty) notify(view_change::kProject);
+  if (renamed) refreshSamples();
   setStatus("Saved " + projectName());
   return Ok{};
+}
+
+// --- project samples (T5.8) -------------------------------------------------------------------------------
+
+void ViewContext::setSampleSearchFolders(std::vector<std::string> folders) {
+  sampleFolders_ = std::move(folders);
+  refreshSamples();
+}
+
+void ViewContext::refreshSamples() {
+  const doc::Project& p = *store_.current();
+  sampleRes_ = doc::resolveSamples(p, doc::SampleSearch{projectDir_, sampleFolders_});
+  std::vector<doc::SampleRef> moved;
+  for (const doc::SampleResolution& r : sampleRes_)
+    if (r.relocated)
+      if (const doc::SampleRef* old = doc::findSample(p, r.id)) {
+        doc::SampleRef n = *old;
+        n.path = *r.relocated;
+        moved.push_back(std::move(n));
+      }
+  if (!moved.empty()) {
+    const bool clean = store_.current() == saved_;
+    store_.relocateSamples(moved);  // not an undo step; a project that was clean stays clean
+    if (clean) saved_ = store_.current();
+  }
+  resolvedFor_ = store_.current()->samples;
+  resolvedDir_ = projectDir_;
+  const size_t before = missing_.size();
+  missing_ = doc::missingSamples(*store_.current(), sampleRes_);
+  if (!missing_.empty())
+    setStatus(std::to_string(missing_.size()) + (missing_.size() == 1 ? " sample missing" : " samples missing") +
+              " \xE2\x80\x94 Relink\xE2\x80\xA6");
+  else if (before != 0)
+    setStatus("All samples found");
+}
+
+bool ViewContext::sampleAvailable(doc::SampleId id) const noexcept {
+  for (const doc::SampleResolution& r : sampleRes_)
+    if (r.id == id) return !r.path.empty();
+  return false;
+}
+
+std::string ViewContext::samplePath(doc::SampleId id) const {
+  for (const doc::SampleResolution& r : sampleRes_)
+    if (r.id == id) return r.path;
+  return {};
+}
+
+uint32_t ViewContext::relinkMissingSamples(std::string_view folder) {
+  if (folder.empty()) return 0;
+  const size_t wanted = missing_.size();
+  const std::vector<doc::SampleRef> found = doc::relinkSamples(*store_.current(), missing_, folder, projectDir_);
+  if (std::find(sampleFolders_.begin(), sampleFolders_.end(), folder) == sampleFolders_.end())
+    sampleFolders_.emplace_back(folder);
+  store_.relocateSamples(found);  // not an undo step
+  refreshSamples();
+  setStatus("Relinked " + std::to_string(found.size()) + " of " + std::to_string(wanted) +
+            (wanted == 1 ? " missing sample" : " missing samples") +
+            (missing_.empty() ? std::string() : " (" + std::to_string(missing_.size()) + " still missing)"));
+  return static_cast<uint32_t>(found.size());
+}
+
+Status ViewContext::collectAllAndSave(const doc::CollectOptions& options) {
+  if (collectWorker_) return Error{ErrorCode::InvalidArgument, "Collect All and Save is already running", {}};
+  if (projectDir_.empty()) return Error{ErrorCode::InvalidArgument, "the project has no location yet (Save As)", {}};
+  Result<doc::CollectPlan> plan = doc::planCollect(*store_.current(), projectDir_, sampleRes_);
+  if (!plan) {
+    setStatus("Collect All and Save: " + plan.error().message);
+    return std::move(plan).error();
+  }
+  auto job = std::make_unique<CollectJob>();
+  job->plan = std::move(*plan);
+  job->dir = projectDir_;
+  job->options = options;
+  if (!post_ || job->plan.bytes == 0) {  // nothing to copy, or no UI thread to come back to: here
+    job->result = doc::runCollect(job->plan, job->options);
+    Status st = job->result;
+    collectWorker_ = std::move(job);
+    finishCollect();
+    return st;
+  }
+  // The copy on a worker; progress to the status line at most every 50 ms; the end back on the UI thread.
+  CollectJob* raw = job.get();
+  const std::weak_ptr<char> life = life_;
+  const UiPoster post = post_;
+  const doc::CollectOptions user = options;
+  raw->options.progress = [life, post, this, user, last = std::chrono::steady_clock::time_point{}](
+                              uint64_t done, uint64_t total) mutable {
+    if (user.progress) user.progress(done, total);
+    const auto now = std::chrono::steady_clock::now();
+    if (done < total && now - last < std::chrono::milliseconds(50)) return;
+    last = now;
+    post([life, this, done, total] {
+      if (life.expired() || !collectWorker_) return;
+      const int pct = total ? static_cast<int>(100.0 * static_cast<double>(done) / static_cast<double>(total)) : 100;
+      setStatus("Collecting samples\xE2\x80\xA6 " + std::to_string(pct) + " %");
+    });
+  };
+  collectWorker_ = std::move(job);
+  raw->thread = std::thread([raw, life, post, this] {
+    raw->result = doc::runCollect(raw->plan, raw->options);
+    post([life, this] {
+      if (!life.expired()) finishCollect();
+    });
+  });
+  setStatus("Collecting samples\xE2\x80\xA6");
+  return Ok{};
+}
+
+void ViewContext::waitForCollect() {
+  if (!collectWorker_) return;
+  if (collectWorker_->thread.joinable()) collectWorker_->thread.join();
+  finishCollect();
+}
+
+void ViewContext::finishCollect() {
+  if (!collectWorker_) return;
+  if (collectWorker_->thread.joinable()) collectWorker_->thread.join();
+  std::unique_ptr<CollectJob> job = std::move(collectWorker_);
+  if (!job->result) {
+    setStatus("Collect All and Save failed: " + job->result.error().message);
+    return;
+  }
+  store_.relocateSamples(doc::collectedRefs(*store_.current(), job->plan));
+  if (Status s = saveProjectAs(job->dir); !s) return;  // the status line has the error
+  size_t copied = 0;
+  for (const doc::CollectItem& it : job->plan.items) copied += it.copy ? 1 : 0;
+  refreshSamples();
+  setStatus("Collected " + std::to_string(copied) + (copied == 1 ? " sample" : " samples") + " and saved " +
+            projectName());
 }
 
 // --- dialogs --------------------------------------------------------------------------------------------
@@ -610,6 +776,18 @@ void ViewContext::registerGlobalActions() {
   add("grid.toggleSnap", [this] { setGrid(grid_.snapToggled()); });
   add("grid.toggleFixed", [this] { setGrid(grid_.modeToggled()); });
   add("view.toggleTunings", [this] { setTuningsVisible(!tuningsVisible_); });
+  // T5.8: File > Collect All and Save (an untitled project is saved first) and Relink Missing Samples.
+  add("file.collectAllAndSave",
+      [this] {
+        if (projectDir_.empty()) requestSaveAs([this] { (void)collectAllAndSave(); });
+        else (void)collectAllAndSave();
+      },
+      [this] { return !collecting() && (dialogs_ != nullptr || !projectDir_.empty()); });
+  add("file.relinkSamples",
+      [this] {
+        if (dialogs_) dialogs_->chooseFolder([this](std::string folder) { (void)relinkMissingSamples(folder); });
+      },
+      [this] { return dialogs_ != nullptr && !missing_.empty(); });
 }
 
 }  // namespace pq::views

@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -44,6 +45,8 @@ public:
   std::string_view redoLabel() const noexcept { return canRedo() ? std::string_view(entries_[cursor_].label) : ""; }
 
   void clear() noexcept;
+  // T5.8 (DocumentStore::relocateSamples): every entry's snapshots replaced by f(snapshot).
+  void remap(const std::function<Snapshot(const Snapshot&)>& f);
   // T4.4-fix1 (DocumentStore::dispatchCoalescing): the last entry, when it is the one undo would take next, now ends
   // at `after` and also touched `more`.
   void amendLast(Snapshot after, const ChangeSet& more);

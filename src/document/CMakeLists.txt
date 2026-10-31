@@ -11,6 +11,7 @@ pq_add_module(pq_doc
     src/json_io.cpp
     src/serialize.cpp
     src/project_io.cpp
+    src/samples.cpp
     src/edit_common.cpp
     src/edit_tracks.cpp
     src/edit_clips.cpp

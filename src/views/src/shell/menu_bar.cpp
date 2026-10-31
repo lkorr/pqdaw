@@ -196,6 +196,9 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       v.push_back(MenuItem::sep());
       v.push_back(act("Save Set", "file.save"));
       v.push_back(act("Save Set As\xE2\x80\xA6", "file.saveAs"));
+      v.push_back(act("Collect All and Save", "file.collectAllAndSave"));  // T5.8
+      v.push_back(MenuItem::sep());
+      v.push_back(act("Relink Missing Samples\xE2\x80\xA6", "file.relinkSamples"));
       break;
     case 1: {  // Edit
       const doc::History& h = ctx_.store().history();

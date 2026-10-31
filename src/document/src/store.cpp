@@ -1,6 +1,7 @@
 #include "pq/document/store.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 #include "pq/document/history.h"
 
@@ -20,6 +21,13 @@ void History::amendLast(Snapshot after, const ChangeSet& more) {
   e.after = std::move(after);
   e.changes.merge(more);
   e.changes.normalize();
+}
+
+void History::remap(const std::function<Snapshot(const Snapshot&)>& f) {
+  for (Entry& e : entries_) {
+    e.before = f(e.before);
+    e.after = f(e.after);
+  }
 }
 
 void History::clear() noexcept {
@@ -155,6 +163,45 @@ void DocumentStore::reset(Snapshot s) {
   Snapshot before = std::move(current_);
   current_ = std::move(s);
   notify(StoreEventKind::Reset, before, current_, empty_);
+}
+
+void DocumentStore::relocateSamples(std::span<const SampleRef> updated) {
+  if (updated.empty()) return;
+  // Old snapshot → new one, so entries sharing a snapshot (entry i's after = entry i + 1's before) keep sharing it.
+  std::unordered_map<const Project*, Snapshot> done;
+  auto remap = [&](const Snapshot& s) -> Snapshot {
+    if (!s) return s;
+    if (const auto it = done.find(s.get()); it != done.end()) return it->second;
+    Snapshot out = s;
+    if (s->samples) {
+      SampleList list = *s->samples;
+      bool changed = false;
+      for (const SampleRef& u : updated)
+        for (SampleRef& r : list)
+          if (r.id == u.id && !(r == u)) {
+            r = u;
+            changed = true;
+          }
+      if (changed) {
+        auto np = std::make_shared<Project>(*s);
+        np->samples = std::make_shared<const SampleList>(std::move(list));
+        out = std::move(np);
+      }
+    }
+    done.emplace(s.get(), out);
+    return out;
+  };
+  Snapshot before = current_;
+  current_ = remap(current_);
+  history_.remap(remap);
+  if (gesture_) gesture_->base = remap(gesture_->base);
+  if (current_ == before) return;
+  step_.clear();
+  step_.mark(kChangeMeta);
+  for (const SampleRef& u : updated) step_.samples.push_back(u.id);
+  step_.normalize();
+  last_ = &step_;
+  notify(StoreEventKind::SamplesRelocated, before, current_, step_);
 }
 
 ListenerId DocumentStore::subscribe(Listener l) {

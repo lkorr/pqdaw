@@ -36,6 +36,7 @@
 #include "pq/core/grid.h"
 #include "pq/core/result.h"
 #include "pq/document/model.h"
+#include "pq/document/samples.h"
 #include "pq/document/store.h"
 #include "pq/ui/actions.h"
 #include "pq/ui/keymap_file.h"
@@ -111,6 +112,8 @@ public:
   virtual void chooseScalaFile(PathCallback done) { done(std::string()); }
   // A patch file (.pqp) to open in the circuit view (T4.2). The default implementation cancels (no dialogs).
   virtual void choosePatchFile(PathCallback done) { done(std::string()); }
+  // T5.8: a folder to search for missing samples (Relink). The default implementation cancels (no dialogs).
+  virtual void chooseFolder(PathCallback done) { done(std::string()); }
 };
 
 // What a file dialog returned → the project directory: "…/X/project.pqd" → "…/X"; "…/Song.pqd" → "…/Song" (a save
@@ -309,6 +312,37 @@ public:
   // this; the info view re-reads infoFor(hovered). Notifies kInfo.
   void infoChanged() { notify(view_change::kInfo); }
 
+  // --- project samples (T5.8; pq/document/samples.h) ---
+  // Samples are referenced where they are; on open (and whenever the table or the folders change) each is resolved:
+  // a sample found elsewhere (moved with the project's folders, in a search folder) gets its new path without an undo
+  // step, and the clips of samples that stay missing play silence; the status line then says "N samples missing —
+  // Relink…" (file.relinkSamples).
+  // Folders searched after the project folder (library places, the last relink folder). Re-resolves.
+  void setSampleSearchFolders(std::vector<std::string> folders);
+  const std::vector<std::string>& sampleSearchFolders() const noexcept { return sampleFolders_; }
+  // The resolution of every table entry, in table order (absolute paths; empty = missing).
+  const std::vector<doc::SampleResolution>& sampleResolutions() const noexcept { return sampleRes_; }
+  // The missing samples that a clip plays.
+  const std::vector<doc::SampleId>& missingSamples() const noexcept { return missing_; }
+  // Whether a sample can play (resolved), and its absolute path ("" when missing or unknown).
+  bool sampleAvailable(doc::SampleId id) const noexcept;
+  std::string samplePath(doc::SampleId id) const;
+  // Searches `folder` (recursively, by name; size and hash verified) for every missing sample and relinks those found
+  // (not an undo step); the folder becomes a search folder. Returns how many were relinked.
+  uint32_t relinkMissingSamples(std::string_view folder);
+  // File → Collect All and Save: copies every used sample from outside the project into samples/imported/, then saves
+  // with the new paths (project.pqd last: a failure leaves the saved project as it was). The copy runs on a worker
+  // thread when the app installed a UI poster (setUiPoster): this returns at once, progress goes to the status line,
+  // and the relocation + save happen on the UI thread when the copy is done; without a poster it runs here. Fails for
+  // an untitled project (Save As first) and while a collect runs.
+  Status collectAllAndSave(const doc::CollectOptions& options = {});
+  bool collecting() const noexcept { return collectWorker_ != nullptr; }
+  // Waits for a running collect's copy to finish and runs its completion (tests, quitting).
+  void waitForCollect();
+  // Posts a function to the UI thread (the app: an SDL user event); null: background work runs synchronously.
+  using UiPoster = std::function<void(std::function<void()>)>;
+  void setUiPoster(UiPoster post) { post_ = std::move(post); }
+
   // --- status line ---
   void setStatus(std::string text);
   const std::string& status() const noexcept { return status_; }
@@ -366,13 +400,15 @@ public:
       "transport.playStop", "transport.continue", "edit.undo",   "edit.redo",          "file.new",
       "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
       "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
-      "grid.toggleFixed",   "view.toggleTunings"};
+      "grid.toggleFixed",   "view.toggleTunings", "file.collectAllAndSave", "file.relinkSamples"};
 
 private:
   void notify(uint32_t bits);
   void onStoreEvent(const doc::StoreEvent& e);
   void syncLoop();
   void afterLoad();
+  void refreshSamples();  // T5.8: resolve the table, relocate what moved (no undo step), update the missing set
+  void finishCollect();   // T5.8: the UI-thread end of a collect (relocate, save, status)
   void registerGlobalActions();
   void declareViewActions(std::span<const std::string_view> ids);
   // Asks about unsaved changes; runs `proceed` when it may go ahead (possibly after an asynchronous save-as).
@@ -409,6 +445,17 @@ private:
   std::string status_;
   TransportLoop loopSent_{};
   bool loopSentValid_ = false;
+
+  // T5.8: project samples.
+  std::vector<std::string> sampleFolders_;
+  std::vector<doc::SampleResolution> sampleRes_;
+  std::vector<doc::SampleId> missing_;
+  std::shared_ptr<const doc::SampleList> resolvedFor_;  // the table sampleRes_ describes
+  std::string resolvedDir_;                              // and the project directory it was resolved in
+  UiPoster post_;
+  struct CollectJob;
+  std::unique_ptr<CollectJob> collectWorker_;
+  std::shared_ptr<char> life_ = std::make_shared<char>();  // posted work checks it (the context may be gone)
 
   ui::ActionRegistry actions_;
   ui::Keymap keymap_;
