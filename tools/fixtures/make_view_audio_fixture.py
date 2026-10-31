@@ -3,7 +3,7 @@ its clips play, for the `arrangement-audio` and `clip-view-audio` goldens and th
 
     python tools/fixtures/make_view_audio_fixture.py
 
-Writes tests/views/fixtures/audio/project.pqd (schema 7) and samples/beat.wav (stereo 16-bit 44.1 kHz, 2 s: four
+Writes tests/views/fixtures/audio/project.pqd (schema 8) and samples/beat.wav (stereo 16-bit 44.1 kHz, 2 s: four
 kicks and hats) and samples/vox.wav (mono 16-bit 48 kHz, 1.5 s: three vowel-like tones). A fourth sample entry points at
 samples/missing.wav, which is not written (the "missing" overlay). Deterministic; standard library only.
 
@@ -146,7 +146,7 @@ def main():
          "tuning": "inherit", "active": True, "notes": notes}], [{"id": 13, "patch": "BasicSynth", "kind": "instrument"}])
     lost = track(14, "audio", "Lost", grey, [audio_clip(24, "missing", grey, WHOLE, 5, seconds=1.0, length=SEC)])
     project = {
-        "schemaVersion": 7,
+        "schemaVersion": 8,
         "timeline": {"tempo": [{"tick": 0, "bpm": 120.0, "curve": "step"}],
                      "signatures": [{"bar": 0, "numerator": 4, "denominator": 4}]},
         "loop": {"start": 0, "end": 4 * WHOLE, "enabled": False},

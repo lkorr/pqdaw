@@ -164,8 +164,8 @@ const DeviceValue* findValue(const std::vector<DeviceValue>& v, std::string_view
 }
 }  // namespace
 
-const DeviceValue* Device::param(std::string_view name) const noexcept { return findValue(params, name); }
-const DeviceValue* Device::setting(std::string_view name) const noexcept { return findValue(settings, name); }
+const DeviceValue* Device::param(std::string_view key) const noexcept { return findValue(params, key); }
+const DeviceValue* Device::setting(std::string_view key) const noexcept { return findValue(settings, key); }
 
 DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
   auto d = std::make_shared<Device>();
@@ -235,7 +235,7 @@ namespace {
 
 bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
   return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
-         a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr);
+         a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name;
 }
 
 bool shallowChainEq(const Chain& a, const Chain& b) noexcept {

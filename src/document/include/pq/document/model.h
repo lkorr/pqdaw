@@ -423,9 +423,12 @@ struct Device {
   // edit copies the Device but never the text. Racks: always null (a rack has no patch text).
   UserPatchPtr source;
   std::shared_ptr<const Rack> rack;  // T4.8: non-null for a rack
+  // T4.17: the instance's own name (Live: Ctrl+R renames a device), shown in its title bar; "" = the patch's default
+  // name (the catalog's / the panel description's title). Meta.
+  std::string name;
   bool edited() const noexcept { return source != nullptr; }
-  const DeviceValue* param(std::string_view name) const noexcept;    // nullptr: the patch's default
-  const DeviceValue* setting(std::string_view name) const noexcept;  // nullptr: the patch's default
+  const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
+  const DeviceValue* setting(std::string_view key) const noexcept;  // nullptr: the patch's default
   bool isRack() const noexcept { return rack != nullptr; }
 };
 bool operator==(const Device& a, const Device& b) noexcept;  // deep (racks by content, user texts by text)

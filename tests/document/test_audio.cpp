@@ -426,7 +426,7 @@ TEST_CASE("audio: fixtures/audio — save → load is deep-equal with every fiel
   RichAudio f;
   Result<std::string> text = serializeProject(f.doc(), f.store.view());
   REQUIRE_MESSAGE(text.ok(), (text.ok() ? std::string() : text.error().message));
-  CHECK(text->rfind("{\n  \"schemaVersion\": 7,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 8,", 0) == 0);
   const std::string path = fixturePath("audio/project.pqd");
   if (std::getenv("PQ_UPDATE_FIXTURES")) {
     std::ofstream(path, std::ios::binary) << *text;

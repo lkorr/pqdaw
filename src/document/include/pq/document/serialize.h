@@ -57,7 +57,8 @@ namespace pq::doc {
 // "curve"}, "crossfadeIn", "tuning", "active"; a warp-Off clip's "length" is re-derived from the tempo map on load), and
 // an optional top-level "samples" table [{"id", "path", "name", "hash" (16 hex digits), "size", "frames", "rate",
 // "channels"}]; migration 6 → 7 changes nothing: audio is new.
-inline constexpr int32_t kSchemaVersion = 7;
+// 8 = device names (T4.17: a device may carry "name", written only when set; migration 7 → 8 changes nothing).
+inline constexpr int32_t kSchemaVersion = 8;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

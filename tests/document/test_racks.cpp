@@ -339,10 +339,11 @@ TEST_CASE("racks: the project file (schema 6) round-trips racks; broken racks ar
   CHECK_FALSE(broken("\"patch\": \"AudioEffectRack\"", "\"patch\": \"InstrumentRack\"").ok());
   CHECK_FALSE(broken("\"id\": " + std::to_string(c2.value), "\"id\": " + std::to_string(c1.value)).ok());  // duplicate
 
-  // fixtures/schema4 / schema5 / schema6 are fixtures/full as the schema-4 build (main at 9619d7a), the schema-5 build
-  // (main at d2daf37: user devices) and the schema-6 build (main at 70ce131: racks) wrote it: schemas 6 and 7 only add
-  // racks and audio (T5.3), so all three re-save as fixtures/full.
-  for (const int32_t v : {4, 5, 6}) {
+  // fixtures/schema4 / schema5 / schema6 / schema7 are fixtures/full as the schema-4 build (main at 9619d7a), the
+  // schema-5 build (main at d2daf37: user devices), the schema-6 build (main at 70ce131: racks) and the schema-7 build
+  // (main at bd44882: audio) wrote it: schemas 6, 7 and 8 only add racks, audio (T5.3) and device names (T4.17), so all
+  // four re-save as fixtures/full.
+  for (const int32_t v : {4, 5, 6, 7}) {
     CAPTURE(v);
     const std::string dir = "schema" + std::to_string(v);
     const std::string oldText = readFile(fixturePath(dir + "/project.pqd"));
@@ -629,4 +630,108 @@ TEST_CASE("racks: 20,000 nested racks load, save, round-trip, lower and edit wit
     const auto params = std::count_if(lp->params.begin(), lp->params.end(), [](const LoweredParam& p) { return p.key.ends_with(":macro1"); });
     CHECK(params == 1);  // only the outermost macro is a param: every inner one is mapped
   }
+
+TEST_CASE("racks: Ungroup (T4.17) — a one-chain rack becomes its devices in place, ids / wires kept, one undo step") {
+  Racks r;
+  IdSource& ids = r.store.ids();
+  const DeviceId lfo = r.add(r.midi, "lfo_device");
+  const DeviceId sat = r.add(r.midi, "saturator");
+  const DeviceId util = r.add(r.midi, "utility");
+  const DeviceId tail = r.add(r.midi, "utility");
+  const WireId w = r.edit(ops::connectWire(r.doc(), ids, lfo, "lfo", sat, "drive", 0.25)).wires.at(0);
+  const DeviceId rack = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{sat, util})).devices.at(0);
+  r.edit(ops::mapMacro(r.doc(), ids, rack, 0, util, "width", 90.0));
+  // A wire into the rack's own macro goes with the rack.
+  const WireId toMacro = r.edit(ops::connectWire(r.doc(), ids, lfo, "lfo", rack, "macro2", 0.5)).wires.at(0);
+  r.edit(ops::setDeviceParam(r.doc(), sat, "drive", 0.7));
+  const Snapshot before = r.store.current();
+
+  const ops::Edit e = r.edit(ops::ungroupDevices(r.doc(), rack));
+  CHECK(e.devices == std::vector<DeviceId>{sat, util});  // the selection after the edit
+  {
+    const Track& t = r.track(r.midi);
+    REQUIRE(t.devices.size() == 5);
+    CHECK(t.devices[1]->id == lfo);
+    CHECK(t.devices[2]->id == sat);  // in the rack's place, in their order
+    CHECK(t.devices[3]->id == util);
+    CHECK(t.devices[4]->id == tail);
+  }
+  CHECK_FALSE(findDevice(r.doc(), rack).device);
+  CHECK(r.device(sat).param("drive")->value == 0.7);       // values kept
+  REQUIRE(findWire(r.doc(), w) != nullptr);                // the wire into a former inner device kept (same id)
+  CHECK(findWire(r.doc(), toMacro) == nullptr);            // the wire into the rack's macro dropped
+  CHECK_FALSE(mappingOf(r.doc(), util, "width").mapping);  // the rack's mapping dropped
+  // One undo step restores the rack exactly.
+  REQUIRE(r.store.undo());
+  CHECK(r.store.current() == before);
+
+  SUBCASE("nested: the devices go into the outer rack's chain; the outer rack's mappings onto them survive") {
+    const DeviceId outer = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{rack})).devices.at(0);
+    r.edit(ops::mapMacro(r.doc(), ids, outer, 3, sat, "drive"));
+    r.edit(ops::ungroupDevices(r.doc(), rack));
+    const Chain& oc = *r.rack(outer).chains.at(0);
+    REQUIRE(oc.devices.size() == 2);
+    CHECK(oc.devices[0]->id == sat);
+    CHECK(oc.devices[1]->id == util);
+    REQUIRE(mappingOf(r.doc(), sat, "drive").mapping);
+    CHECK(mappingOf(r.doc(), sat, "drive").rack->id == outer);
+  }
+  SUBCASE("an Instrument Rack gives the track its instrument back") {
+    const DeviceId ir = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{r.inst})).devices.at(0);
+    CHECK(r.track(r.midi).devices[0]->id == ir);
+    r.edit(ops::ungroupDevices(r.doc(), ir));
+    CHECK(r.track(r.midi).devices[0]->id == r.inst);
+    CHECK(r.track(r.midi).devices[0]->kind == DeviceKind::Instrument);
+  }
+  SUBCASE("several chains: refused; no chain: the rack is removed") {
+    r.edit(ops::addChain(r.doc(), ids, rack));
+    const Result<ops::Edit> refused = ops::ungroupDevices(r.doc(), rack);
+    REQUIRE_FALSE(refused.ok());
+    CHECK(refused.error().code == pq::ErrorCode::InvalidArgument);
+    CHECK_FALSE(ops::ungroupDevices(r.doc(), sat).ok());  // not a rack
+    const DeviceId empty = r.add(r.midi, std::string(kAudioEffectRack).c_str());
+    r.edit(ops::ungroupDevices(r.doc(), empty));
+    CHECK_FALSE(findDevice(r.doc(), empty).device);
+  }
+}
+
+TEST_CASE("devices: names (T4.17) — Rename Device is one Meta step; the file (schema 8) keeps them; schema 7 loads") {
+  Racks r;
+  const DeviceId sat = r.add(r.midi, "saturator");
+  CHECK(r.device(sat).name.empty());  // the patch's default name
+  r.edit(ops::renameDevice(r.doc(), sat, "Grit"));
+  CHECK(r.store.lastChanges().flags == kChangeMeta);
+  CHECK(r.store.history().undoLabel() == "Rename Device");
+  CHECK(r.device(sat).name == "Grit");
+  CHECK(ops::renameDevice(r.doc(), sat, "Grit")->empty());  // unchanged: an empty edit
+  // Names live at any depth (a device inside a rack) and travel with copies.
+  const DeviceId rack = r.edit(ops::groupDevices(r.doc(), r.store.ids(), std::vector<DeviceId>{sat})).devices.at(0);
+  r.edit(ops::renameDevice(r.doc(), rack, "Dirt Rack"));
+  CHECK(r.device(sat).name == "Grit");
+  const DevicePtr copy = ops::cloneDevice(r.device(rack), r.store.ids());
+  CHECK(copy->name == "Dirt Rack");
+  CHECK(copy->rack->chains[0]->devices[0]->name == "Grit");
+
+  Result<std::string> text = serializeProject(r.doc());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"name\": \"Grit\"") != std::string::npos);
+  CHECK(text->find("\"name\": \"Dirt Rack\"") != std::string::npos);
+  Result<LoadedProject> back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == r.doc());
+  r.edit(ops::renameDevice(r.doc(), sat, ""));  // back to the default: nothing written
+  Result<std::string> plain = serializeProject(r.doc());
+  REQUIRE(plain.ok());
+  CHECK(plain->find("\"name\": \"Grit\"") == std::string::npos);
+
+  // fixtures/schema7 is fixtures/full as the schema-7 build (main at bd44882: audio) wrote it: schema 8 only adds
+  // device names, so it re-saves as fixtures/full.
+  const std::string oldText = readFile(fixturePath("schema7/project.pqd"));
+  REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 7,", 0) == 0);
+  Result<LoadedProject> old = loadProject(fixturePath("schema7"));
+  REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));
+  CHECK(old->fileSchemaVersion == 7);
+  Result<std::string> resaved = serializeProject(*old->project, old->view);
+  REQUIRE(resaved.ok());
+  CHECK(*resaved == readFile(fixturePath("full/project.pqd")));
 }

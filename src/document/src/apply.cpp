@@ -2069,6 +2069,16 @@ Res apply_(const Snapshot& s, const SetDevicePatch& c, ChangeSet& cs) {
   });
 }
 
+Res apply_(const Snapshot& s, const RenameDevice& c, ChangeSet& cs) {
+  const DeviceLoc loc = findDevice(*s, c.device);  // at any depth
+  if (!loc.track) return notFound("device not found");
+  if (loc.device->name == c.name) return s;
+  return editDeviceAt(s, c.device, cs, kChangeMeta, [&](Device& d) {
+    d.name = c.name;
+    return ok();
+  });
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 // np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
@@ -2180,7 +2190,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch",
+    "Edit Device Patch", "Rename Device",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",

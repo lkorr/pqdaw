@@ -366,6 +366,9 @@ EditResult editDevicePatch(const Project& p, DeviceId device, std::string text,
 // "Revert to Stock": the devices' own texts are dropped (the library's patch plays again; id, values and wires stay).
 // Devices that are not edited are skipped (none edited: an empty edit).
 EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devices);
+// T4.17 (Live: Ctrl+R): the device's own name (Device::name; "" = the patch's default name). One Meta step; an unchanged
+// name is an empty edit.
+EditResult renameDevice(const Project& p, DeviceId device, std::string name);
 
 // ---- User library (T5.11; pq/document/library_files.h) -----------------------------------------------------------
 // Hot-swap: `with` (a preset's device) replaces `device` in place: the same position and id (so wires, mappings and the
@@ -401,6 +404,12 @@ std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_vie
 // their order, placed where the first of them was. With the list's instrument among them: an Instrument Rack (the
 // instrument first in its chain), else an Audio Effect Rack. The devices keep their ids (state, wires, mappings).
 EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
+// T4.17 (Live: Ctrl+Shift+G): the inverse of groupDevices for a rack with one chain — its devices take the rack's place
+// in its list, in their order, keeping their ids (state, values, wires between them and to the outside, mappings of
+// outer racks onto them). What belonged to the rack itself goes: its macro mappings and macro values, its chain's mixer
+// and zones, wires into or out of the rack's own params. A rack without chains is removed (it passed its input). A rack
+// with several chains is refused (InvalidArgument; the view says so in the status line).
+EditResult ungroupDevices(const Project& p, DeviceId rack);
 // Adds an empty chain ("Chain <n>") to the rack at `index` (kAppend: the end).
 EditResult addChain(const Project& p, IdSource& ids, DeviceId rack, uint32_t index = kAppend, std::string name = {});
 // Adds a chain holding a new device of `patch` / `kind` (a device dropped on the rack's chain list: Live).

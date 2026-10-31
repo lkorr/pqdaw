@@ -174,6 +174,8 @@ struct SetDeviceSetting { DeviceId device; std::string setting; std::optional<do
 // the library's stock patch). The id, values and wires stay: state keys follow the device id, so only that track's
 // unit recompiles and every state the edit kept carries over. An equal text is a no-op.
 struct SetDevicePatch { DeviceId device; UserPatchPtr source; };
+// T4.17: Meta. The device's own name ("" = the patch's default name, Device::name).
+struct RenameDevice { DeviceId device; std::string name; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
 // Structural. Adds `wire` (its id pre-allocated). Both devices must exist; the amount must be in [−1, 1]; a wire with
@@ -244,7 +246,7 @@ using CommandVariant = std::variant<
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
-    AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch,
+    AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
     AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,

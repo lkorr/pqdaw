@@ -481,6 +481,13 @@ std::vector<Case> cases() {
                  REQUIRE(f.track(f.lead).devices.at(1)->edited());
                  CHECK(f.track(f.lead).devices.at(1)->patch == "utility");
                }});
+  c.push_back({"RenameDevice", [withChain](Fixture& f) -> Command {  // T4.17
+                 withChain(f);
+                 return RenameDevice{chain.fx, "Wide"};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
+                 CHECK(f.track(f.lead).devices.at(1)->name == "Wide");
+               }});
   // ---- modulation wires (T4.7): withWire adds chain.wire = inst.lfo → fx.width.
   static WireId wire;
   auto withWire = [withChain](Fixture& f) {

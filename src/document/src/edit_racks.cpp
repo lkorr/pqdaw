@@ -87,6 +87,37 @@ EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceI
   return e;
 }
 
+EditResult ungroupDevices(const Project& p, DeviceId rack) {
+  Result<const Device*> rr = rackOf(p, rack);
+  if (!rr) return std::move(rr).error();
+  const Rack& r = *(*rr)->rack;
+  if (r.chains.size() > 1) return invalid("only a rack with one chain can be ungrouped");
+  const DeviceLoc loc = findDevice(p, rack);
+  const std::vector<DevicePtr> inner = r.chains.empty() ? std::vector<DevicePtr>{} : r.chains.front()->devices;
+  Edit e = makeEdit("Ungroup Devices");
+  Batch& b = batchOf(e);
+  // The rack goes with everything inside it (their wires, outer mappings onto them); the devices come back with their
+  // ids where it was, then the wires and outer mappings that touch them (not those of the rack itself).
+  b.commands.push_back(RemoveDevice{rack});
+  std::vector<DeviceId> gone;
+  for (const DevicePtr& d : inner) forEachDeviceIn(*d, [&](const Device& x) { gone.push_back(x.id); });
+  std::sort(gone.begin(), gone.end());
+  const ChainId into = loc.chain ? loc.chain->id : ChainId{};
+  for (size_t i = 0; i < inner.size(); ++i) {
+    b.commands.push_back(AddDevice{loc.track->id, inner[i], static_cast<uint32_t>(loc.index + i), into});
+    e.devices.push_back(inner[i]->id);
+  }
+  auto in = [&](DeviceId id) { return std::binary_search(gone.begin(), gone.end(), id); };
+  for (const Wire& w : wiresOf(p))
+    if ((in(w.from) || in(w.to)) && w.from != rack && w.to != rack) b.commands.push_back(AddWire{w});
+  forEachDevice(p, [&](const Device& d, const Track&) {
+    if (!d.rack || d.id == rack || in(d.id)) return;
+    for (const MacroMapping& m : d.rack->mappings)
+      if (in(m.device)) b.commands.push_back(AddMacroMapping{d.id, m});
+  });
+  return e;
+}
+
 EditResult addChain(const Project& p, IdSource& ids, DeviceId rack, uint32_t index, std::string name) {
   Result<const Device*> r = rackOf(p, rack);
   if (!r) return std::move(r).error();

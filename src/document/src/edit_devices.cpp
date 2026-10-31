@@ -323,6 +323,15 @@ EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devi
   return e;
 }
 
+EditResult renameDevice(const Project& p, DeviceId device, std::string name) {
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  Edit e = makeEdit("Rename Device");
+  e.devices.push_back(device);
+  if (l.device->name != name) batchOf(e).commands.push_back(RenameDevice{device, std::move(name)});
+  return e;
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,

@@ -659,6 +659,10 @@ private:
     w_.string(PathSeg(&at, "patch"), d.patch);
     w_.key("kind");
     w_.string(at, kDeviceKindNames[static_cast<size_t>(d.kind)]);
+    if (!d.name.empty()) {  // T4.17 (schema 8): the device's own name
+      w_.key("name");
+      w_.string(PathSeg(&at, "name"), d.name);
+    }
     if (!d.active) {
       w_.key("active");
       w_.boolean(false);
@@ -1829,7 +1833,7 @@ private:
   // the heap, their path segments in a deque (stable addresses for the Members readers and the inner levels' paths) —
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
-                                                     "settings", "source", "crlf", "rack"};
+                                                     "settings", "source", "crlf", "rack", "name"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2004,6 +2008,7 @@ private:
         break;
       }
       case 7: crlf = r_.readBool(f); break;
+      case 9: d.name = str(f); break;  // T4.17 (schema 8)
     }
   }
 
@@ -3147,6 +3152,13 @@ Status migrateAddAudio(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 7 → 8 (T4.17): schema 8 lets a device carry its own "name"; a schema-7 file has none (every device shows its patch's
+// default name), so nothing changes. Self-contained (renumber, do not merge, if another schema step lands first).
+Status migrateAddDeviceNames(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3154,6 +3166,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {4, migrateAddUserDeviceSource},
     {5, migrateAddRacks},
     {6, migrateAddAudio},
+    {7, migrateAddDeviceNames},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");
