@@ -711,6 +711,44 @@ TEST_CASE("pool: with no active stream the disk thread makes 0 wakeups in 10 s" 
   pool.stopDiskThread();
 }
 
+// M5 review M1: after Stop the link holds a prefetch for the clip under the playhead. The disk thread used to poll at
+// ~415 Hz forever (any claimed slot counted as busy, even with its ring full). Once the ring is full it now sleeps
+// with no timeout, and the prefetch still has its data when playback engages.
+TEST_CASE("pool: a prefetch held while stopped fills its ring, then the disk thread sleeps (no polling)") {
+  const fs::path dir = tempDir("pq_media_idle_prefetch");
+  PoolConfig cfg;
+  cfg.residentLimitBytes = 0;  // streams
+  cfg.headFrames = 1024;
+  cfg.streamSlots = 4;
+  cfg.ringFloats = 2 * 65536;
+  cfg.decodedCacheDir = dir / "cache";
+  SamplePool pool(cfg);
+  writePatternWav(dir / "long.wav", 48000 * 20, 2, 7);
+  auto s = pool.load(dir / "long.wav");
+  REQUIRE(s.ok());
+  REQUIRE((*s)->view().streamed());
+  pool.startDiskThread();
+  REQUIRE(pool.prefetch(**s, 48000 * 5, Direction::Forward));
+  // Fills (a few passes), then settles.
+  const auto t0 = std::chrono::steady_clock::now();
+  uint64_t reads = 0;
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const uint64_t r = pool.stats().diskReads;
+    if (r == reads && r > 0) break;
+    reads = r;
+    REQUIRE(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10));
+  }
+  const uint64_t w0 = pool.stats().diskWakeups;
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  CHECK(pool.stats().diskWakeups - w0 <= 1);  // was ~415 per second
+  CHECK(pool.stats().diskReads == reads);
+  pool.stopDiskThread();
+  s = Error{};
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 namespace {
 
 // Two threads: this one claims, reads and releases streams at random (positions, directions, lengths), the disk

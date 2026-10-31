@@ -687,13 +687,14 @@ void SamplePool::diskMain() {
     }
     wakeups_.fetch_add(1, std::memory_order_relaxed);
     if (stop_.load()) break;
-    diskPass();
-    busy = false;
-    for (const auto& l : disk_->local) busy |= l.active;
+    // M5 review M1: poll again only while some stream still had room for a read. A claimed but unengaged stream (a
+    // prefetch held after Stop) with a full ring cannot advance: it needs no polling (engage() and new claims wake
+    // the thread), so the thread sleeps without a timeout again instead of waking at 500 Hz.
+    busy = diskPass();
   }
 }
 
-void SamplePool::diskPass() {
+bool SamplePool::diskPass() {
   struct Job {
     uint32_t slot;
     uint32_t gen;
@@ -755,7 +756,7 @@ void SamplePool::diskPass() {
       jobs.push_back({i, r.gen, l.frontier - n, n, have, {}});
     }
   }
-  if (jobs.empty()) return;
+  if (jobs.empty()) return false;
   std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) { return a.urgency < b.urgency; });
   if (jobs.size() > kMaxInflight) jobs.resize(kMaxInflight);
   // Issue every read, then complete them in order.
@@ -812,6 +813,7 @@ void SamplePool::diskPass() {
     filledAny = true;
   }
   if (filledAny && waiters_.load() > 0) SetEvent(filledEvent_);
+  return true;
 }
 
 }  // namespace pq::media

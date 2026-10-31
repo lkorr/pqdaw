@@ -188,7 +188,7 @@ private:
   void enforceBudget(uint64_t incoming, const PooledSample* keep);
   void demote(PooledSample& s);
   void diskMain();
-  void diskPass();
+  bool diskPass();  // true: a stream had room for a read (poll again soon)
   std::shared_ptr<Source> source(uint32_t id);
 
   PoolConfig config_;
