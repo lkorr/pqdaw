@@ -100,7 +100,6 @@ IRect FileDrop::ghostBounds() const {
   if (!hovering_ || plan_.items.empty()) return {};
   const IRect lr = view_.lanes().rect();
   const auto rows = view_.rows();
-  const double k = view_.devicePxPerTick();
   const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
   const int32_t newH = s.px(am::kTrackHeight);
   Ticks t0 = INT64_MAX, t1 = INT64_MIN;
@@ -121,7 +120,6 @@ IRect FileDrop::ghostBounds() const {
   }
   const float x0 = view_.xOfTick(static_cast<double>(t0)) - 2.0f;
   const float x1 = static_cast<float>(view_.xOfTick(static_cast<double>(t1))) + 2.0f;
-  (void)k;
   IRect b{static_cast<int32_t>(std::floor(x0)), lr.y + y0, static_cast<int32_t>(std::ceil(x1 - std::floor(x0))), y1 - y0};
   return intersect(b, lr);
 }
