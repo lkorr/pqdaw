@@ -51,6 +51,7 @@ pq_add_test(pq_tests_media PERF
     media/test_decode.cpp
     media/test_malformed.cpp
     media/test_stream.cpp
+    media/test_waveform.cpp
   DEPS pq_media pq_engine pq_doc)  # pq_doc: the content hash is checked against doc::fileIdentity
 
 # Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.

@@ -19,6 +19,7 @@ pq_add_module(pq_media
     src/probe.cpp
     src/decoder.cpp
     src/sample_pool.cpp
+    src/waveform.cpp
   DEPS pq_core pq_dsp
   PRIVATE_DEPS pq_media_codecs
 )
