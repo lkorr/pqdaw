@@ -281,6 +281,20 @@ TEST_CASE("user library: hot-swap replaces the device's preset in place, keeping
   l.d.tree().setFocus(&b.listWidget());
   l.d.press("Escape");
   CHECK(b.hotSwap().kind == HotSwapTarget::Kind::None);
+  // M5 review M10: Enter after selecting leaves the mode without loading again (it added a second undo step and lost
+  // knob changes made after the selection).
+  panel->onPresetClick();
+  REQUIRE(b.hotSwap().kind == HotSwapTarget::Kind::Device);
+  const size_t h1 = l.history();
+  b.select(0);
+  CHECK(l.history() == h1 + 1);
+  l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.3));  // a knob change after selecting
+  const size_t h2 = l.history();
+  l.d.tree().setFocus(&b.listWidget());
+  l.d.press("Enter");
+  CHECK(b.hotSwap().kind == HotSwapTarget::Kind::None);
+  CHECK(l.history() == h2);
+  CHECK(doc::findDevice(*l.ctx.doc(), l.sat).device->param("drive")->value == doctest::Approx(0.3));
 }
 
 TEST_CASE("user library: tunings save to the library and hot-swap onto a track") {

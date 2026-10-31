@@ -405,6 +405,9 @@ public:
   std::function<void(const std::string&)> onChange;  // every edit
   std::function<void(const std::string&)> onCommit;
   std::function<void()> onCancel;
+  std::function<void()> onEnter;  // Enter only (after onCommit; focus loss commits without it)
+  // false: Esc keeps the text and only calls onCancel (a live search field, whose every edit already applied).
+  bool revertOnEscape = true;
 
   const std::string& text() const noexcept { return buf_.text(); }
   void setText(std::string text);  // programmatic: also the new committed text, no callbacks

@@ -65,6 +65,11 @@ public:
   void waitIdle();
   // Requests made (tests: a cached overview is not requested twice).
   uint64_t requests() const noexcept { return requests_; }
+  // Sample-window reads started (tests: a settled deep-zoom paint starts none).
+  uint64_t windowReads() const noexcept { return windowReads_; }
+  // Bytes held by sample windows; the least recently used windows are dropped past kWindowCacheBytes (M5 review M9).
+  uint64_t windowBytes() const noexcept { return windowBytes_; }
+  inline static constexpr uint64_t kWindowCacheBytes = uint64_t{128} << 20;
 
 private:
   struct Entry {
@@ -75,6 +80,10 @@ private:
     bool injected = false;
     media::SampleWindowPtr window;
     int64_t pendingFrom = 0, pendingTo = 0;  // a window read in flight
+    int64_t fileFrames = -1;                 // the file's length once known (window requests are clamped to it)
+    bool windowFailed = false;               // a read failed: not retried on every paint (M5 review H3)
+    uint64_t windowUse = 0;                  // windowClock_ at the last use (LRU of the window cache)
+    bool windowInjected = false;             // putWindow: not counted, never evicted
   };
   struct Arrival;
   struct Inbox;
@@ -82,6 +91,7 @@ private:
   Entry& entry(doc::SampleId id);
   void request(doc::SampleId id, Entry& e);
   void drain();
+  void storeWindow(Entry& e, media::SampleWindowPtr w);  // keeps the windows within kWindowCacheBytes
 
   ViewContext& ctx_;
   std::filesystem::path sharedDir_;
@@ -90,6 +100,9 @@ private:
   std::unordered_map<uint32_t, Entry> entries_;
   uint64_t revision_ = 1;
   uint64_t requests_ = 0;
+  uint64_t windowReads_ = 0;
+  uint64_t windowClock_ = 0;
+  uint64_t windowBytes_ = 0;  // all entries' windows
   uint64_t generation_ = 0;  // bumps on clear(): results of older requests are dropped
   std::shared_ptr<Inbox> inbox_;
   std::unique_ptr<media::AnalysisWorker> builds_, reads_;

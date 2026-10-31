@@ -32,6 +32,7 @@
 //
 // UI thread only.
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -226,6 +227,7 @@ private:
   std::vector<BrowserDeviceRow> deviceRows_;
   std::vector<std::string> openDevices_;  // patches of the unfolded device rows
   HotSwapTarget hotSwap_;
+  std::string hotSwapLoaded_;  // the item hot-swap last loaded (Enter does not load it again: M5 review M10)
   BrowserFilters filters_;
   std::vector<std::string> allTags_;
 
@@ -251,6 +253,10 @@ private:
   media::OverviewPtr overview_;
   std::string overviewFor_;
   uint64_t overviewGen_ = 0;
+  // M5 review H6: one background-priority worker builds the preview overviews; a newer selection cancels the running
+  // build and makes queued ones return at once (their flags), and the destructor joins it.
+  std::shared_ptr<std::atomic<bool>> overviewCancel_;  // the newest job's flag
+  std::unique_ptr<media::AnalysisWorker> overviewWorker_;
   uint32_t pollTimer_ = 0;
   std::shared_ptr<char> life_ = std::make_shared<char>();
   Stats stats_;

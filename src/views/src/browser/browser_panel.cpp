@@ -43,11 +43,6 @@ std::string extensionOf(std::string_view name) {
   return e;
 }
 
-// A worker for the preview overviews (one at a time: the newest selection wins).
-struct OverviewJob {
-  media::AnalysisWorker worker{true};
-};
-
 }  // namespace
 
 // --- construction ---------------------------------------------------------------------------------------------------
@@ -68,6 +63,18 @@ BrowserPanel::BrowserPanel(Shell& shell)
   search_->setInfo("Search", "Finds files by name and tag as you type (letters in order; word starts count most). "
                              "Up / Down move the selection, Enter loads it.");
   search_->onChange = [this](const std::string& t) { setQuery(t); };
+  // M5 review H5: Enter in the field loads the selection ("type, then Enter"); Esc stops the preview (then leaves
+  // hot-swap), and only an Esc with nothing else to stop clears the query.
+  search_->onEnter = [this] { (void)loadSelection(); };
+  search_->revertOnEscape = false;
+  search_->onCancel = [this] {
+    if (previewPlaying()) stopPreview();
+    else if (hotSwap_.kind != HotSwapTarget::Kind::None) setHotSwap({});
+    else if (!query_.empty()) {
+      search_->setText({});
+      setQuery({});
+    }
+  };
   chips_ = &top.add<browser::Chips>(*this);
   chips_->setHeight(Length::fixed(bm::kChipSize + 2));
   filterChips_ = &top.add<browser::FilterChips>(*this);  // T5.11
@@ -110,6 +117,8 @@ BrowserPanel::BrowserPanel(Shell& shell)
 }
 
 BrowserPanel::~BrowserPanel() {
+  if (overviewCancel_) overviewCancel_->store(true, std::memory_order_relaxed);  // a running build ends; join below
+  overviewWorker_.reset();
   lib_.setHotSwapHandler(nullptr);
   if (pollTimer_) cancelTimer(pollTimer_);
   if (PreviewPort* p = lib_.preview(); p && p->playing()) p->stop();
@@ -232,6 +241,7 @@ void BrowserPanel::setFilters(BrowserFilters f) {
 
 void BrowserPanel::setHotSwap(HotSwapTarget t) {
   hotSwap_ = std::move(t);
+  hotSwapLoaded_.clear();
   hotSwapBar_->setVisible(hotSwap_.kind != HotSwapTarget::Kind::None);
   hotSwapBar_->markDirty();
   invalidateLayout();
@@ -573,6 +583,7 @@ void BrowserPanel::select(int32_t row, bool preview) {
 void BrowserPanel::loadInPlace() {
   const std::string path = selectedPath();
   if (path.empty() || selected_ < 0) return;
+  hotSwapLoaded_ = path;
   const std::string name(index_->stem(rows_[static_cast<size_t>(selected_)].id));
   if (hotSwap_.kind == HotSwapTarget::Kind::Device) {
     if (Status s = hotSwapDevice(ctx_, hotSwap_.device, path); !s) ctx_.setStatus("Hot-Swap: " + s.error().message);
@@ -617,16 +628,21 @@ void BrowserPanel::requestOverview() {
     if (auto o = media::loadOrBuildOverview(req)) overview_ = *o;
     return;
   }
-  // A background thread per request (cheap: a header read and a cache hit, or one decode pass); the newest wins.
-  std::thread([req, gen, post = ctx_.uiPoster(), alive = std::weak_ptr<char>(life_), this] {
-    auto o = media::loadOrBuildOverview(req);
-    if (!o) return;
+  // One background-priority worker (M5 review H6: it was a detached normal-priority thread per selection, so holding
+  // Down ran N full decodes at once). A newer selection makes queued jobs return at once and cancels a running build.
+  if (!overviewWorker_) overviewWorker_ = std::make_unique<media::AnalysisWorker>(true);
+  if (overviewCancel_) overviewCancel_->store(true, std::memory_order_relaxed);
+  overviewCancel_ = std::make_shared<std::atomic<bool>>(false);
+  overviewWorker_->post([req, gen, cancel = overviewCancel_, post = ctx_.uiPoster(), alive = std::weak_ptr<char>(life_), this] {
+    if (cancel->load(std::memory_order_relaxed)) return;  // a newer selection came first
+    auto o = media::loadOrBuildOverview(req, {}, cancel.get());
+    if (!o || cancel->load(std::memory_order_relaxed)) return;
     post([o = *o, gen, alive, this] {
       if (!alive.lock() || gen != overviewGen_) return;
       overview_ = o;
       strip_->markDirty();
     });
-  }).detach();
+  });
 }
 
 double BrowserPanel::previewLength() const noexcept {
@@ -773,7 +789,8 @@ bool BrowserPanel::loadSelection() {
     return true;
   }
   if (hotSwap_.kind != HotSwapTarget::Kind::None) {  // T5.11: Enter in hot-swap mode: load in place, leave the mode
-    loadInPlace();
+    // M10: selecting already loaded it; loading again added a second undo step and lost later knob changes.
+    if (selectedPath() != hotSwapLoaded_) loadInPlace();
     setHotSwap({});
     return true;
   }
@@ -890,10 +907,13 @@ bool BrowserPanel::onKey(const KeyEvent& e) {
     }
   }
   // Typing while the browser has focus goes to the search field.
-  if (isPrintableKey(e) && tree() && tree()->focus() != search_) {
+  // M5 review H4: the key is consumed (it used to fall through to the keymaps, so B toggled Draw Mode and a digit ran
+  // its binding while also starting a search); the text event that follows lands in the field. Space is left to the
+  // transport: a query never starts with one.
+  if (isPrintableKey(e) && e.key != key::kSpace && tree() && tree()->focus() != search_) {
     tree()->setFocus(search_, true);
     search_->buffer().end(false);
-    return false;  // the text event that follows lands in the field
+    return true;
   }
   return false;
 }

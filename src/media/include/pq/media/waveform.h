@@ -151,6 +151,7 @@ struct SampleWindow {
   int64_t frame0 = 0;
   int64_t frames = 0;
   uint32_t channels = 0;
+  int64_t fileFrames = 0;   // the whole file's length (callers clamp later requests to it)
   std::vector<float> data;  // channel c at data[c · frames …]
   const float* channel(uint32_t c) const noexcept { return data.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(frames); }
 };

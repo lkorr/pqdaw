@@ -285,6 +285,11 @@ bool TextEdit::onKey(const KeyEvent& e) {
   if (e.key == key::kReturn && m == mod::kNone) {
     committed_ = buf_.text();
     if (onCommit) onCommit(committed_);
+    if (onEnter) onEnter();
+    return true;
+  }
+  if (e.key == key::kEscape && m == mod::kNone && !revertOnEscape) {
+    if (onCancel) onCancel();
     return true;
   }
   if (e.key == key::kEscape && m == mod::kNone) {

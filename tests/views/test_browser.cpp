@@ -7,6 +7,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -182,6 +183,65 @@ TEST_CASE("browser keys: Up / Down select and auto-preview; Left / Right fold; E
   f.d.tree().setFocus(&f.b->listWidget());
   f.d.press("Down");
   CHECK(f.preview.played.size() == played);
+}
+
+// M5 review H4: a printable key typed with the list focused starts a search and nothing else (it also ran its global
+// binding: B toggled Draw Mode); Space stays the transport's.
+TEST_CASE("browser keys: typing into the list searches without firing global shortcuts; Space plays") {
+  Fixture f;
+  f.b->setSource({BrowserSource::Kind::Place, 0});
+  const bool draw0 = f.ctx.drawMode();
+  for (const char* k : {"B", "1", "2", "W"}) {
+    CAPTURE(k);
+    f.b->setQuery("");
+    f.d.tree().setFocus(&f.b->listWidget());
+    const std::string text(1, static_cast<char>(std::tolower(static_cast<unsigned char>(k[0]))));
+    CHECK(f.d.press(k) == KeyResult::Widget);
+    f.d.type(text);
+    CHECK(f.d.tree().focus() == &f.b->searchField());
+    CHECK(f.b->query() == text);
+    CHECK(f.ctx.drawMode() == draw0);
+  }
+  f.b->setQuery("");
+  f.d.tree().setFocus(&f.b->listWidget());
+  const size_t calls = f.port.calls.size();
+  f.d.press("Space");
+  CHECK(f.port.calls.size() > calls);  // the transport got it
+  CHECK(f.b->query().empty());
+  CHECK(f.d.tree().focus() == &f.b->listWidget());
+}
+
+// M5 review H5: Enter in the search field loads the selection; Esc stops the preview and keeps the query, and an Esc
+// with nothing playing clears the query.
+TEST_CASE("browser keys: Enter in the search field loads; Esc stops the preview first, then clears the query") {
+  Fixture f;
+  f.b->setSource({BrowserSource::Kind::Place, 0});
+  f.d.tree().setFocus(&f.b->searchField());
+  f.d.type("beat");
+  CHECK(f.b->query() == "beat");
+  f.b->waitForSearch();
+  f.d.tree().layoutNow();
+  REQUIRE(f.rowOf("beat.wav") >= 0);
+  f.b->select(f.rowOf("beat.wav"), false);
+  f.d.tree().setFocus(&f.b->searchField());
+  const size_t h0 = f.ctx.store().history().cursor();
+  CHECK(f.d.press("Enter") == KeyResult::Widget);
+  CHECK(f.ctx.store().history().cursor() == h0 + 1);
+  const doc::Track* t = doc::findTrackPtr(*f.ctx.doc(), f.audio);
+  REQUIRE(t != nullptr);
+  CHECK(t->clips.size() == 1);
+  // Esc while previewing: stops, the query stays.
+  f.preview.isPlaying = true;
+  const int stops = f.preview.stops;
+  f.d.press("Escape");
+  CHECK(f.preview.stops == stops + 1);
+  CHECK(f.b->query() == "beat");
+  CHECK(f.b->searchField().text() == "beat");
+  // Esc again (nothing playing): clears the query.
+  f.preview.isPlaying = false;
+  f.d.press("Escape");
+  CHECK(f.b->query().empty());
+  CHECK(f.b->searchField().text().empty());
 }
 
 TEST_CASE("browser: Enter loads a sample as a clip at the start marker on the selected audio track (one undo step)") {

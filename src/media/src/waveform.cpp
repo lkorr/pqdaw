@@ -305,8 +305,10 @@ Status saveOverview(const WaveformOverview& o, const fs::path& file) {
   h.dataBytes = o.bytes();
   h.bucketFrames = kOverviewBucketFrames;
   h.mipFactor = kOverviewMipFactor;
+  // Unique per writer (M5 review H6: the browser's worker and the views' could write one `.part` at once); the
+  // rename stays atomic, the last complete writer wins.
   fs::path part = file;
-  part += ".part";
+  part += "." + std::to_string(GetCurrentProcessId()) + "." + std::to_string(GetCurrentThreadId()) + ".part";
   {
     std::ofstream out(part, std::ios::binary | std::ios::trunc);
     if (!out) return Error{ErrorCode::Io, "waveform overview: cannot write " + part.string(), {}};
@@ -437,6 +439,7 @@ Result<SampleWindowPtr> readSampleWindow(const fs::path& path, int64_t frame0, i
   w->frame0 = a;
   w->frames = e - a;
   w->channels = info.channels;
+  w->fileFrames = total;
   w->data.assign(static_cast<std::size_t>(w->frames) * info.channels, 0.0f);
   if (w->frames > 0) {
     if (auto s = (*d)->seek(static_cast<uint64_t>(a)); !s) return std::move(s).error();
