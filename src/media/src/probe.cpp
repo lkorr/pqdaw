@@ -418,7 +418,7 @@ uint64_t skipId3(const View& v) noexcept { return detail::skipId3(v.b); }
 
 // ---- FLAC ---------------------------------------------------------------------------------------------------------
 
-Status parseFlac(const View& v, uint64_t start, SampleInfo& info) {
+Status parseFlac(const View& v, uint64_t start, SampleInfo& info, bool headersOnly) {
   info.container = Container::Flac;
   uint64_t pos = start + 4;
   bool haveInfo = false;
@@ -444,6 +444,10 @@ Status parseFlac(const View& v, uint64_t start, SampleInfo& info) {
   if (info.bitsPerSample < 4 || info.bitsPerSample > 32) return parseError("FLAC: bad bit depth");
   // A length the file cannot hold is not trusted: count by decoding, as for an unknown length.
   if (info.frames > (v.b.size() + 1) * kMaxFramesPerByte) info.frames = 0;
+  if (info.frames == 0 && headersOnly) {
+    info.framesEstimated = true;  // unknown; the decoder counts it when the file is loaded
+    return Ok{};
+  }
   if (info.frames == 0) {
     // Length not in STREAMINFO (a stream that was never finalised): count by decoding once.
     detail::CappedHeap heap(kCodecHeapLimit);
@@ -558,6 +562,7 @@ struct Mp3Header {
   uint32_t rate = 0;
   uint32_t channels = 0;
   uint32_t sideInfo = 0;  // layer III side-info bytes
+  uint32_t bitrate = 0;   // bits per second
   bool mpeg1 = false;
   bool layer3 = false;
   bool crc = false;
@@ -592,6 +597,7 @@ bool mp3Header(const uint8_t* h, Mp3Header& out) noexcept {
   out.rate = rate;
   out.channels = ((h[3] >> 6) == 3) ? 1 : 2;
   out.crc = (h[1] & 1) == 0;
+  out.bitrate = br;
   if (layerIdx == 0) {
     out.samples = 384;
     out.frameBytes = (12 * br / rate + pad) * 4;
@@ -625,7 +631,7 @@ bool findMp3Sync(const View& v, uint64_t pos, uint64_t end, uint64_t limit, uint
   return false;
 }
 
-Status parseMp3(const View& v, SampleInfo& info, bool extensionMp3) {
+Status parseMp3(const View& v, SampleInfo& info, bool extensionMp3, bool headersOnly) {
   info.container = Container::Mp3;
   const uint64_t start = skipId3(v);
   const uint64_t end = mp3End(v);
@@ -670,6 +676,23 @@ Status parseMp3(const View& v, SampleInfo& info, bool extensionMp3) {
     }
     info.delayFrames = info.paddingFrames = 0;
   }
+  if (headersOnly) {
+    // T5.x-index-progressive: no scan. A VBRI header (Fraunhofer VBR; 32 bytes after the first frame's header) has a
+    // frame count; else the first frame's bitrate over the audio bytes (exact for CBR). Both capped like a Xing count.
+    const uint64_t audio = end > info.dataOffset ? end - info.dataOffset : 0;
+    const uint64_t maxFrames = audio / kMinMp3FrameBytes + 1;
+    const uint64_t vbri = first + 4 + 32;
+    uint64_t count = 0;
+    if (vbri + 18 <= frameEnd && v.tag(vbri, "VBRI") && v.be32(vbri + 14) <= maxFrames) {
+      count = uint64_t{v.be32(vbri + 14)} * h.samples;
+    } else if (h.bitrate > 0) {
+      // samples per frame / bytes per frame = 8 · rate / bitrate (in double: no overflow for any file size)
+      count = static_cast<uint64_t>(static_cast<double>(audio) * 8.0 * h.rate / h.bitrate);
+    }
+    info.frames = std::min<uint64_t>(count, maxFrames * h.samples);
+    info.framesEstimated = true;
+    return Ok{};
+  }
   // No frame count: scan every frame header once (what dr_mp3 outputs when it has no Xing count).
   uint64_t total = 0;
   uint64_t p = info.dataOffset;  // past a Xing / Info frame (it carries no audio; the decoder starts after it)
@@ -697,7 +720,7 @@ bool iequalsExt(std::string_view name, std::string_view ext) noexcept {
   return true;
 }
 
-Result<SampleInfo> parseAny(Bytes file, std::string_view fileName) {
+Result<SampleInfo> parseAny(Bytes file, std::string_view fileName, bool headersOnly) {
   const View v{file};
   SampleInfo info;
   Status s = Ok{};
@@ -712,8 +735,8 @@ Result<SampleInfo> parseAny(Bytes file, std::string_view fileName) {
     s = parseOgg(v, info);
   } else {
     const uint64_t afterId3 = skipId3(v);
-    if (v.tag(afterId3, "fLaC")) s = parseFlac(v, afterId3, info);
-    else s = parseMp3(v, info, iequalsExt(fileName, ".mp3"));
+    if (v.tag(afterId3, "fLaC")) s = parseFlac(v, afterId3, info, headersOnly);
+    else s = parseMp3(v, info, iequalsExt(fileName, ".mp3"), headersOnly);
   }
   if (!s) return std::move(s).error();
   const std::size_t slash = fileName.find_last_of("/\\");
@@ -779,15 +802,16 @@ double bpmFromFileName(std::string_view name) noexcept {
   return 0;
 }
 
-Result<SampleInfo> probeBytes(std::span<const uint8_t> file, std::string_view fileName) {
-  return parseAny(file, fileName);
+Result<SampleInfo> probeBytes(std::span<const uint8_t> file, std::string_view fileName, ProbeOptions options) {
+  return parseAny(file, fileName, options.headersOnly);
 }
 
-Result<SampleInfo> probe(const std::filesystem::path& path) {
+Result<SampleInfo> probe(const std::filesystem::path& path, ProbeOptions options) {
   auto m = detail::MappedFile::open(path);
   if (!m) return std::move(m).error();
-  auto info = parseAny(m->bytes(), path.filename().string());
-  if (!info) return Error{info.error().code, path.string() + ": " + info.error().message, {}};
+  // T5.x-index-progressive: path::string() threw std::system_error for a name outside the ANSI code page (Greek, CJK).
+  auto info = parseAny(m->bytes(), detail::pathUtf8(path.filename()), options.headersOnly);
+  if (!info) return Error{info.error().code, detail::pathUtf8(path) + ": " + info.error().message, {}};
   info->identity = m->identity();
   return info;
 }

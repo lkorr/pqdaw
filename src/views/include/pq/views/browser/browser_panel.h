@@ -99,6 +99,7 @@ class PreviewStrip;
 class Chips;
 class FilterChips;
 class HotSwapBar;
+class IndexStatus;
 }  // namespace browser
 
 class BrowserPanel : public ui::Widget {
@@ -161,6 +162,13 @@ public:
   // The list widget (focus, scrolling) and a row's device-px rect (tests, scenes).
   ui::Widget& listWidget() const noexcept;
   ui::IRect rowRect(int32_t row) const noexcept;
+  // T5.x-index-progressive: the indexing line under the column header ("" = hidden): "Indexing Samples: 12,345 /
+  // 118,842" while the indexer probes, "Listing Samples: 45,678 files" while a rebuild has listed for > 300 ms.
+  // Polled from Indexer::progress() on each library change and every 250 ms while the indexer is busy.
+  const std::string& indexingText() const noexcept { return indexingText_; }
+  float indexingFraction() const noexcept { return indexingFraction_; }  // probed / to probe; < 0 = no bar
+  bool indexingShown() const noexcept;  // the line is visible
+  void updateIndexing();
 
   struct Stats {
     uint64_t rebuilds = 0;     // row arrays built
@@ -224,6 +232,10 @@ private:
   browser::PreviewStrip* strip_ = nullptr;
   browser::FilterChips* filterChips_ = nullptr;
   browser::HotSwapBar* hotSwapBar_ = nullptr;
+  browser::IndexStatus* indexStatus_ = nullptr;
+  std::string indexingText_;
+  float indexingFraction_ = -1.0f;
+  uint32_t indexTimer_ = 0;
   std::vector<BrowserDeviceRow> deviceRows_;
   std::vector<std::string> openDevices_;  // patches of the unfolded device rows
   HotSwapTarget hotSwap_;

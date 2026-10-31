@@ -51,6 +51,9 @@ struct SampleInfo {
   // MP3 without a Xing/Info header: the length was counted by scanning every frame header once (exact for the
   // frames the decoder outputs, but no gapless information: delay/padding are 0).
   bool framesScanned = false;
+  // ProbeOptions::headersOnly: `frames` is an estimate (an MP3 without a usable Xing/Info count: its VBRI count, else
+  // its first frame's bitrate × the audio bytes) or 0 = unknown (a FLAC stream without a length).
+  bool framesEstimated = false;
   uint16_t bitsPerSample = 0;  // as stored (lossless containers); 0 for MP3 / Vorbis
   bool isFloat = false;
 

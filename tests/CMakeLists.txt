@@ -352,11 +352,12 @@ pq_add_test(pq_tests_document
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index
 # file + journal, the change watcher (latency in `perf`), search vs a brute-force reference scorer (200k-entry
-# keystroke timing in `perf`), tags across renames.
+# keystroke timing in `perf`), tags across renames, progressive indexing (tree first, probes later; odd names).
 pq_add_test(pq_tests_library PERF SLOW_SHARDS 4
   SOURCES
     library/test_index.cpp
     library/test_indexer.cpp
+    library/test_progressive.cpp
     library/test_search.cpp
     library/test_tags.cpp
   DEPS pq_library)

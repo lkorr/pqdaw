@@ -14,6 +14,9 @@
 namespace pq::media::detail {
 
 Error ioError(const std::filesystem::path& path, const char* what);  // message includes GetLastError's code
+// A path as UTF-8 (never throws: path::string() converts to the ANSI code page and throws std::system_error for a name
+// it cannot map, such as Greek or CJK file names on a Western system).
+std::string pathUtf8(const std::filesystem::path& path);
 
 class File {
 public:

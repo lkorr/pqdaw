@@ -17,6 +17,17 @@
 // wakeup). A change of the place list or of a place's online state writes the snapshot at once (journal records only
 // describe directories). stop() writes a pending snapshot.
 //
+// Progressive indexing (T5.x-index-progressive): a rebuild probes new files inline only for its first probeBudgetMs
+// (listing included) and lists the rest unprobed (scan.h), so the first scan of a large folder publishes its whole tree
+// as soon as the listing is done (167k files: about a second warm). The probe pass then fills in the unprobed entries
+// in index order on probeThreads threads (the first open of a file is latency-bound: 8 overlap ~15×), in slices of
+// ~50 ms between which the thread handles commands and change notifications, and
+// publishes a copy of the index with the results every probePublishMs or probePublishFiles probes, whichever comes
+// first. A rebuild first publishes the probes made so far (entry numbers change), then the pass restarts from the
+// first entry still unprobed; an unprobed record that a rebuild reuses (or a rename matches) stays unprobed. While the
+// pass runs the snapshot is rewritten at most every probeSnapshotIntervalMs (the journal only records listings);
+// stop() writes it. progress() reports the listing and the pass (the browser's indexing line).
+//
 // Thread safety: every public member may be called from any thread (non-RT; a mutex guards the published index).
 
 #include <atomic>
@@ -42,6 +53,30 @@ struct IndexerConfig {
   uint32_t snapshotIntervalMs = 5000;
   bool backgroundPriority = true;
   ProbeFn probe;  // empty = probeFile
+  // Progressive indexing (above).
+  uint32_t probeBudgetMs = 250;
+  uint32_t probePublishMs = 1000;
+  uint32_t probePublishFiles = 4000;
+  uint32_t probeSnapshotIntervalMs = 30000;
+  uint32_t probeThreads = 8;  // the probe pass's threads, the indexer thread included (indexer.cpp: ProbePool)
+};
+
+// What the indexer is doing (progress(); polled by the browser).
+struct IndexerProgress {
+  enum class Phase : uint8_t {
+    Idle,     // nothing to do
+    Pending,  // a command or change is queued, or the thread has not started its first scan yet
+    Listing,  // a rebuild runs
+    Probing,  // the probe pass runs
+  };
+  Phase phase = Phase::Idle;
+  double phaseMs = 0;         // how long the current Listing / Probing phase has run
+  std::string placeName;      // Listing: the place being listed; Probing: the place of the next file to probe
+  std::string placeRoot;
+  uint32_t filesListed = 0;   // Listing: entries listed so far in this rebuild; else the index's entry count
+  uint32_t filesProbed = 0;   // Probing: probed so far in this pass
+  uint32_t filesToProbe = 0;  // Probing: this pass's total (probed + still unprobed)
+  bool busy() const noexcept { return phase != Phase::Idle; }
 };
 
 struct IndexerStats {
@@ -54,9 +89,12 @@ struct IndexerStats {
   double loadMs = 0;             // index.pqi + journal load at start
   double revalidateMs = 0;       // the startup revalidation of every place
   ScanStats lastScan;            // of the most recent rebuild
+  uint64_t filesProbedLater = 0; // by the probe pass
+  uint64_t probePublishes = 0;   // publishes of probe results
   uint32_t watchedPlaces = 0;
-  bool idle = false;             // blocked with no coalescing window open (a snapshot timer may be armed: it fires
-                                 // once, ≤ snapshotIntervalMs after the last change, and then the wait has no timeout)
+  bool idle = false;             // blocked with no coalescing window open and no probe pass running (a snapshot timer
+                                 // may be armed: it fires once, ≤ snapshotIntervalMs after the last change, and then
+                                 // the wait has no timeout)
 };
 
 class Indexer {
@@ -87,6 +125,7 @@ public:
   void flush();                                   // write the snapshot now if anything is unsaved
 
   IndexerStats stats() const;
+  IndexerProgress progress() const;
 
 private:
   struct Impl;

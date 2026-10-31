@@ -73,6 +73,11 @@ inline constexpr uint8_t kFlagFramesScanned = 1u << 1; // media::SampleInfo::fra
 inline constexpr uint8_t kFlagHasLoop = 1u << 2;       // a sustain loop in the file
 inline constexpr uint8_t kFlagOffline = 1u << 3;       // a cloud placeholder (recall on access): never opened
 inline constexpr uint8_t kFlagBpmFromName = 1u << 4;   // bpm came from the file name, not an acid chunk
+inline constexpr uint8_t kFlagLengthEstimated = 1u << 5;  // media::SampleInfo::framesEstimated (frames 0 = unknown)
+// Listed but not probed yet (T5.x-index-progressive): probe fields zero, category from the path alone. The indexer's
+// probe pass fills them in; until then the browser leaves the columns blank and duration / BPM / rate / channel
+// filters leave the entry out (it has no value to match).
+inline constexpr uint8_t kFlagUnprobed = 1u << 6;
 
 using FileIdBytes = std::array<uint8_t, 16>;
 

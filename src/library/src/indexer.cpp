@@ -22,6 +22,106 @@ namespace {
 
 constexpr DWORD kWatchBufferBytes = 64u << 10;  // the maximum for network shares too
 constexpr std::size_t kMaxWatches = MAXIMUM_WAIT_OBJECTS - 1;  // one handle is the command event
+constexpr uint32_t kProbeBatchPerThread = 4;  // probe jobs per pool thread in one batch of the probe pass
+
+// The probe pass's threads (T5.x-index-progressive). A probe is latency-bound, not CPU-bound: the first open of a file
+// costs ~11 ms on the user's SATA SSD (measured: open + 4 KiB read of files not in the cache; the on-access malware
+// scan of the open dominates), 0.2 ms once cached, and the cost overlaps almost perfectly: 1 / 4 / 8 / 16 threads gave
+// 11.5 / 2.35 / 0.74 / 0.50 ms per file. The pool's threads run at below-normal CPU priority but normal I/O priority:
+// in background mode (very low I/O priority, as the indexer thread itself) 8 threads probed ~320 cold files/s on that
+// drive, at normal I/O priority ~1,500/s (its 119k probes: 80 s instead of ~6 min). The probes are small reads (the
+// headers, a 64 KiB tail at most); the audio thread does no I/O, and the sample pool's disk thread reads ahead. The
+// indexer thread does not probe itself when it runs in background mode (it would be the batch's straggler); the other
+// threads block on a condition variable between batches (no wakeups while idle) and are joined by the destructor.
+class ProbePool {
+public:
+  struct Job {
+    uint32_t entry = 0;
+    const PlaceSpec* place = nullptr;
+    std::string rel;
+    std::string path;
+    EntryRecord record;
+    bool done = false;
+  };
+
+  // `threads` probing threads in all: the caller is one of them unless `callerBackground`.
+  ProbePool(uint32_t threads, bool callerBackground, const ProbeFn& probe)
+      : probe_(probe), callerWorks_(!callerBackground || threads <= 1) {
+    for (uint32_t i = callerWorks_ ? 1 : 0; i < threads; ++i)
+      threads_.emplace_back([this] {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        work();
+      });
+  }
+  ~ProbePool() {
+    {
+      std::lock_guard lock(mutex_);
+      quit_ = true;
+    }
+    wake_.notify_all();
+    for (std::thread& t : threads_) t.join();
+  }
+  ProbePool(const ProbePool&) = delete;
+  ProbePool& operator=(const ProbePool&) = delete;
+
+  uint32_t threads() const noexcept { return static_cast<uint32_t>(threads_.size()) + (callerWorks_ ? 1 : 0); }
+
+  // Probes every job (Job::done), or stops early once `cancel` is set (the rest keep done = false).
+  void run(std::vector<Job>& jobs, const std::atomic<bool>& cancel) {
+    if (jobs.empty()) return;
+    {
+      std::lock_guard lock(mutex_);
+      jobs_ = &jobs;
+      cancel_ = &cancel;
+      next_.store(0, std::memory_order_relaxed);
+      busy_ = threads_.size();
+      ++epoch_;
+    }
+    wake_.notify_all();
+    if (callerWorks_) drain();
+    std::unique_lock lock(mutex_);
+    done_.wait(lock, [&] { return busy_ == 0; });
+    jobs_ = nullptr;
+  }
+
+private:
+  void drain() {
+    std::vector<Job>& jobs = *jobs_;
+    for (;;) {
+      const std::size_t i = next_.fetch_add(1, std::memory_order_relaxed);
+      if (i >= jobs.size() || cancel_->load(std::memory_order_relaxed)) return;
+      Job& j = jobs[i];
+      probe_(j.path, *j.place, j.rel, j.record);
+      j.done = true;
+    }
+  }
+  void work() {
+    uint64_t seen = 0;
+    for (;;) {
+      {
+        std::unique_lock lock(mutex_);
+        wake_.wait(lock, [&] { return quit_ || epoch_ != seen; });
+        if (quit_) return;
+        seen = epoch_;
+      }
+      drain();
+      std::lock_guard lock(mutex_);
+      if (--busy_ == 0) done_.notify_one();
+    }
+  }
+
+  const ProbeFn& probe_;
+  const bool callerWorks_;
+  std::vector<std::thread> threads_;
+  std::mutex mutex_;
+  std::condition_variable wake_, done_;
+  std::vector<Job>* jobs_ = nullptr;
+  const std::atomic<bool>* cancel_ = nullptr;
+  std::atomic<std::size_t> next_{0};
+  std::size_t busy_ = 0;
+  uint64_t epoch_ = 0;
+  bool quit_ = false;
+};
 
 // Local fixed (or RAM) drives get a change watch; network and removable drives are rescanned on window focus.
 bool watchable(const std::string& root) {
@@ -93,6 +193,23 @@ struct Indexer::Impl {
   uint64_t sequence = 0;
   Journal journal;
   std::filesystem::path pqi, pqj;
+
+  // The probe pass (indexer thread).
+  bool probing = false;
+  uint32_t probeCursor = 0;  // next entry of `current` to look at
+  uint32_t probeDone = 0;    // probed in this pass
+  std::vector<std::pair<uint32_t, EntryRecord>> probed;  // results not published yet (entries of `current`)
+  double lastProbePublish = 0;
+  uint32_t probeRelDir = Index::kNone;  // the directory probeRel is of
+  std::string probeRel;
+
+  // Progress (written by the indexer thread, read by progress()).
+  ScanProgress scan;
+  std::atomic<uint8_t> phase{0};  // IndexerProgress::Phase: Listing or Probing while they run, else Idle
+  std::atomic<double> phaseStart{0};
+  std::atomic<uint32_t> probePlace{0}, probedCount{0}, toProbe{0}, entryCount{0};
+  std::vector<PlaceSpec> progressPlaces;  // the places progress() names (guarded by Indexer::mutex_)
+  std::atomic<bool> running{false};       // between start() and stop()
 };
 
 Indexer::Indexer(IndexerConfig config) : config_(std::move(config)), impl_(std::make_unique<Impl>()) {
@@ -112,6 +229,7 @@ void Indexer::start() {
     impl_->stop = false;
   }
   impl_->cancel.store(false);
+  impl_->running.store(true);
   thread_ = std::thread([this] { run(); });
 }
 
@@ -124,6 +242,7 @@ void Indexer::stop() {
   impl_->cancel.store(true);
   SetEvent(impl_->command);
   thread_.join();
+  impl_->running.store(false);
 }
 
 std::shared_ptr<const Index> Indexer::index() const {
@@ -190,6 +309,32 @@ void Indexer::flush() {
 IndexerStats Indexer::stats() const {
   std::lock_guard lock(mutex_);
   return stats_;
+}
+
+IndexerProgress Indexer::progress() const {
+  const Impl& m = *impl_;
+  IndexerProgress p;
+  p.phase = static_cast<IndexerProgress::Phase>(m.phase.load(std::memory_order_acquire));
+  uint32_t place = 0;
+  if (p.phase == IndexerProgress::Phase::Listing) {
+    place = m.scan.place.load(std::memory_order_relaxed);
+    p.filesListed = m.scan.filesListed.load(std::memory_order_relaxed);
+  } else {
+    p.filesListed = m.entryCount.load(std::memory_order_relaxed);
+  }
+  if (p.phase == IndexerProgress::Phase::Probing) {
+    place = m.probePlace.load(std::memory_order_relaxed);
+    p.filesProbed = m.probedCount.load(std::memory_order_relaxed);
+    p.filesToProbe = m.toProbe.load(std::memory_order_relaxed);
+  }
+  if (p.phase != IndexerProgress::Phase::Idle) p.phaseMs = nowMs() - m.phaseStart.load(std::memory_order_relaxed);
+  std::lock_guard lock(mutex_);
+  if (p.phase == IndexerProgress::Phase::Idle && m.running.load(std::memory_order_relaxed) && !stats_.idle) p.phase = IndexerProgress::Phase::Pending;
+  if (place < m.progressPlaces.size()) {
+    p.placeName = m.progressPlaces[place].name;
+    p.placeRoot = m.progressPlaces[place].root;
+  }
+  return p;
 }
 
 void Indexer::publish(std::shared_ptr<const Index> index) {
@@ -286,17 +431,129 @@ void Indexer::run() {
     }
   };
 
+  auto setPhase = [&](IndexerProgress::Phase p) {
+    if (m.phase.load(std::memory_order_relaxed) == static_cast<uint8_t>(p)) return;
+    m.phaseStart.store(nowMs(), std::memory_order_relaxed);
+    m.phase.store(static_cast<uint8_t>(p), std::memory_order_release);
+  };
+
+  // ---- The probe pass ----
+  // Publishes the probe results gathered so far as a new index (a copy of the current one with their columns set).
+  // `announce` false (stopping): only the snapshot gets them, no publish.
+  auto flushProbes = [&](bool announce) {
+    if (m.probed.empty() || !m.current) return;
+    auto next = std::make_shared<Index>(*m.current);
+    Index::Entries& E = next->entries;
+    for (const auto& [e, r] : m.probed) {
+      E.category[e] = static_cast<uint8_t>(r.category);
+      E.flags[e] = r.flags;
+      E.frames[e] = r.frames;
+      E.rate[e] = r.rate;
+      E.channels[e] = r.channels;
+      E.bits[e] = r.bits;
+      E.container[e] = r.container;
+      E.rootKey[e] = r.rootKey;
+      E.bpm[e] = r.bpm;
+    }
+    m.probed.clear();
+    m.current = std::move(next);
+    m.snapshotDirty = true;
+    m.lastProbePublish = nowMs();
+    if (!announce) return;
+    {
+      std::lock_guard lock(mutex_);
+      ++stats_.probePublishes;
+    }
+    publish(m.current);
+  };
+  // Starts (or continues) the pass over the current index: counts what is still unprobed.
+  auto restartProbes = [&] {
+    m.probeCursor = 0;
+    m.probeRelDir = Index::kNone;
+    uint32_t remaining = 0;
+    if (m.current)
+      for (const uint8_t f : m.current->entries.flags) remaining += (f & kFlagUnprobed) ? 1u : 0u;
+    if (remaining == 0) m.probeDone = 0;
+    m.probing = remaining > 0;
+    m.entryCount.store(m.current ? m.current->entryCount() : 0, std::memory_order_relaxed);
+    m.probedCount.store(m.probeDone, std::memory_order_relaxed);
+    m.toProbe.store(m.probeDone + remaining, std::memory_order_relaxed);
+    if (m.probing && m.probeDone == 0) m.lastProbePublish = nowMs();
+    setPhase(m.probing ? IndexerProgress::Phase::Probing : IndexerProgress::Phase::Idle);
+  };
+  // Probes unprobed entries of the current index for up to `sliceMs`.
+  // Batches of probeBatchPerThread jobs per pool thread, until the slice's time is up.
+  std::unique_ptr<ProbePool> pool;
+  std::vector<ProbePool::Job> jobs;
+  auto probeSlice = [&](double sliceMs) {
+    const Index& ix = *m.current;
+    const uint32_t n = ix.entryCount();
+    if (!pool) pool = std::make_unique<ProbePool>(std::max<uint32_t>(config_.probeThreads, 1), config_.backgroundPriority, probe);
+    const std::size_t batch = std::size_t{kProbeBatchPerThread} * pool->threads();
+    const double t0 = nowMs();
+    uint64_t done = 0;
+    while (m.probeCursor < n && !m.cancel.load(std::memory_order_relaxed)) {
+      jobs.clear();
+      while (m.probeCursor < n && jobs.size() < batch) {
+        const uint32_t e = m.probeCursor++;
+        if (!(ix.entries.flags[e] & kFlagUnprobed)) continue;
+        const uint32_t d = ix.entries.dir[e];
+        if (d != m.probeRelDir) {
+          m.probeRelDir = d;
+          m.probeRel = ix.dirRelPath(d);
+        }
+        const uint32_t place = ix.dirs.place[d];
+        ProbePool::Job& j = jobs.emplace_back();
+        j.entry = e;
+        j.place = &ix.places[place];
+        j.rel = m.probeRel;
+        j.record = ix.record(e);
+        j.record.flags &= static_cast<uint8_t>(kFlagOffline);  // the probe sets the rest
+        j.path = detail::joinPath(detail::joinPath(j.place->root, j.rel), j.record.name);
+        m.probePlace.store(place, std::memory_order_relaxed);
+      }
+      pool->run(jobs, m.cancel);
+      for (ProbePool::Job& j : jobs) {
+        if (!j.done) {  // cancelled (stopping): stays unprobed
+          m.probeCursor = std::min(m.probeCursor, j.entry);
+          continue;
+        }
+        m.probed.emplace_back(j.entry, std::move(j.record));
+        ++m.probeDone;
+        ++done;
+      }
+      m.probedCount.store(m.probeDone, std::memory_order_relaxed);
+      if (nowMs() - t0 >= sliceMs) break;
+    }
+    std::lock_guard lock(mutex_);
+    stats_.filesProbedLater += done;
+  };
+
   // Rebuilds with the given request; publishes and persists when something changed.
   auto rebuildWith = [&](ScanRequest& req) -> bool {
+    flushProbes(true);  // entry numbers change in a rebuild
     req.places = m.places;
     req.cancel = &m.cancel;
+    req.probeBudgetMs = config_.probeBudgetMs;
+    req.progress = &m.scan;
+    {
+      std::lock_guard lock(mutex_);
+      m.progressPlaces = m.places;
+    }
+    m.scan.place.store(0, std::memory_order_relaxed);
+    m.scan.filesListed.store(0, std::memory_order_relaxed);
+    m.scan.dirsListed.store(0, std::memory_order_relaxed);
+    setPhase(IndexerProgress::Phase::Listing);
     ScanResult r = rebuild(m.current.get(), req, m.disk, probe);
     {
       std::lock_guard lock(mutex_);
       ++stats_.rebuilds;
       stats_.lastScan = r.stats;
     }
-    if (r.stats.cancelled) return false;
+    if (r.stats.cancelled) {
+      setPhase(IndexerProgress::Phase::Idle);
+      return false;
+    }
     if (r.stats.changed || !m.current) {
       const bool structural = !m.current || m.current->places != r.index->places ||
                               m.current->placeOnline != r.index->placeOnline;
@@ -304,6 +561,7 @@ void Indexer::run() {
       publish(m.current);
       persistChanges(r.changes, structural);
     }
+    restartProbes();
     return true;
   };
 
@@ -360,18 +618,24 @@ void Indexer::run() {
 
   // ---- Event loop ----
   std::vector<HANDLE> handles;
+  // While the probe pass runs, the probe results alone rewrite the snapshot less often (it is the whole index).
+  auto snapshotInterval = [&] {
+    return static_cast<double>(m.probing ? std::max(config_.snapshotIntervalMs, config_.probeSnapshotIntervalMs)
+                                         : config_.snapshotIntervalMs);
+  };
   for (;;) {
     double deadline = std::numeric_limits<double>::infinity();
     if (m.hasPending) deadline = std::min(deadline, m.coalesceDeadline);
-    if (m.snapshotDirty && persist) deadline = std::min(deadline, m.lastSnapshotMs + config_.snapshotIntervalMs);
+    if (m.snapshotDirty && persist) deadline = std::min(deadline, m.lastSnapshotMs + snapshotInterval());
     DWORD timeout = INFINITE;
-    if (deadline != std::numeric_limits<double>::infinity())
+    if (m.probing) timeout = 0;  // poll: handle what came in, then probe the next slice
+    else if (deadline != std::numeric_limits<double>::infinity())
       timeout = static_cast<DWORD>(std::clamp(deadline - nowMs() + 0.999, 0.0, 3600000.0));
 
     handles.clear();
     handles.push_back(m.command);
     for (const auto& w : m.watches) handles.push_back(w->event);
-    if (!m.hasPending) {  // a pending snapshot timer (one wakeup, then none) still counts as idle
+    if (!m.hasPending && !m.probing) {  // a pending snapshot timer (one wakeup, then none) still counts as idle
       {
         std::lock_guard lock(mutex_);
         stats_.idle = !m.newPlaces && !m.flush && !m.rescanAll && !m.rescanUnwatched && !m.stop;
@@ -463,10 +727,20 @@ void Indexer::run() {
       resetPending();
       if (!rebuildWith(req)) break;  // cancelled: stopping
     }
-    if (persist && m.snapshotDirty && now >= m.lastSnapshotMs + config_.snapshotIntervalMs) writeSnapshot();
+    if (m.probing && !m.cancel.load(std::memory_order_relaxed)) {
+      probeSlice(50.0);
+      const bool end = m.probeCursor >= m.current->entryCount();
+      if (end || nowMs() - m.lastProbePublish >= config_.probePublishMs || m.probed.size() >= config_.probePublishFiles) {
+        flushProbes(true);
+        if (end) restartProbes();  // anything left unprobed (nothing, unless a probe was cancelled) starts over
+      }
+    }
+    if (persist && m.snapshotDirty && nowMs() >= m.lastSnapshotMs + snapshotInterval()) writeSnapshot();
   }
 
   closeWatches();
+  flushProbes(false);
+  setPhase(IndexerProgress::Phase::Idle);
   if (m.snapshotDirty) writeSnapshot();
   m.journal.close();
 }

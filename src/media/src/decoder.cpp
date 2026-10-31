@@ -357,14 +357,14 @@ Decoder::~Decoder() = default;
 Result<std::unique_ptr<Decoder>> Decoder::open(const std::filesystem::path& path) {
   auto m = detail::MappedFile::open(path);
   if (!m) return std::move(m).error();
-  auto info = probeBytes(m->bytes(), path.filename().string());
-  if (!info) return Error{info.error().code, path.string() + ": " + info.error().message, {}};
+  auto info = probeBytes(m->bytes(), detail::pathUtf8(path.filename()));
+  if (!info) return Error{info.error().code, detail::pathUtf8(path) + ": " + info.error().message, {}};
   info->identity = m->identity();
   Source src;
   src.bytes = m->bytes();
   src.map = std::move(*m);
   auto d = openSource(std::move(src), *info);
-  if (!d) return Error{d.error().code, path.string() + ": " + d.error().message, {}};
+  if (!d) return Error{d.error().code, detail::pathUtf8(path) + ": " + d.error().message, {}};
   return d;
 }
 

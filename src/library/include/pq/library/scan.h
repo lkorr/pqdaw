@@ -12,11 +12,16 @@
 // edits made while pqdaw was closed. A listing returns sizes, mtimes and file IDs of a whole directory in one call
 // (FileIdExtdDirectoryInfo), which makes the full listing about as cheap as the stat a skip would need.
 //
+// Probing can be deferred (T5.x-index-progressive): with ScanRequest::probeBudgetMs set, files that still need a probe
+// once the rebuild has run that long are listed without one (kFlagUnprobed), so a first scan of a large folder
+// publishes its whole tree after the listing alone; the indexer probes them afterwards (indexer.h).
+//
 // Not RT code. rebuild() runs on the indexer thread (or a test's thread); it allocates.
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -59,11 +64,23 @@ private:
 };
 
 // Fills a record's probe fields and category for the file at `absPath` (UTF-8). The default (probeFile) runs
-// media::probe on Samples (headers only, never decodes) and reads the first 4 KiB of presets and user devices; other
-// kinds only get their category. Tests inject counting or failing probes.
+// media::probe with headersOnly on Samples (never decodes or scans: an MP3 without a frame count gets an estimated
+// length, kFlagLengthEstimated) and reads the first 4 KiB of presets and user devices; other kinds only get their
+// category. Tests inject counting, slow or failing probes. The indexer's probe pass calls it from several threads at
+// once (each call on its own record): it must be thread-safe.
 using ProbeFn = std::function<void(const std::string& absPath, const PlaceSpec& place, std::string_view relDir,
                                    EntryRecord& r)>;
 void probeFile(const std::string& absPath, const PlaceSpec& place, std::string_view relDir, EntryRecord& r);
+
+// A record listed without its probe: kFlagUnprobed, probe fields zero, the category its kind and path give.
+void markUnprobed(const PlaceSpec& place, std::string_view relDir, EntryRecord& r);
+
+// Live counters of a running rebuild (written by it, read by other threads; relaxed).
+struct ScanProgress {
+  std::atomic<uint32_t> place{0};        // the place being listed
+  std::atomic<uint32_t> filesListed{0};  // entries in the index being built so far
+  std::atomic<uint32_t> dirsListed{0};   // directories in it so far
+};
 
 struct ScanRequest {
   std::vector<PlaceSpec> places;
@@ -76,6 +93,10 @@ struct ScanRequest {
   // Checked once per directory: when it becomes true the rebuild stops (ScanStats::cancelled; the result is partial and
   // must be discarded). The indexer sets it on stop().
   const std::atomic<bool>* cancel = nullptr;
+  // Files needing a probe once the rebuild has run this long (from its start, listing included) are listed unprobed
+  // (markUnprobed). Infinity (the default): every file is probed inline.
+  double probeBudgetMs = std::numeric_limits<double>::infinity();
+  ScanProgress* progress = nullptr;  // optional
 };
 
 struct ScanStats {
@@ -85,6 +106,7 @@ struct ScanStats {
   uint32_t filesProbed = 0;
   uint32_t filesReused = 0;   // same name, size, mtime
   uint32_t filesMoved = 0;    // matched by file ID (rename / move)
+  uint32_t filesDeferred = 0; // listed unprobed (ScanRequest::probeBudgetMs ran out)
   bool changed = false;       // the new index differs from the old one
   bool cancelled = false;
 };

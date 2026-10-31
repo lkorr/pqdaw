@@ -7,13 +7,17 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <thread>
 
 #include "../ui/golden_check.h"
 #include "pq/document/edit_ops.h"
+#include "pq/library/indexer.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -420,4 +424,84 @@ TEST_CASE("browser: a 200k-row list builds and paints only its visible rows") {
   CHECK(f.b->rows().size() == 200009);
   f.d.step();
   CHECK(f.b->stats().rowsPainted < 100);
+}
+
+// T5.x-index-progressive: a large place's folders show as soon as they are listed; while the indexer probes, a line
+// under the column header says how far it is (and goes away when it is done).
+TEST_CASE("browser: nested folders show before the probes finish; the indexing line counts them") {
+  Fixture f;
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() /
+                        ("pq_browser_indexing_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())) /
+                        "Pack";
+  constexpr int kFiles = 30;
+  for (int i = 0; i < kFiles; ++i) {
+    const fs::path dir = i % 2 ? root / "Kits" : root / "Kits" / "Deep" / "Deeper";
+    fs::create_directories(dir);
+    std::ofstream(dir / ("hit " + std::to_string(i) + ".wav")).put('x');  // listing goes by the extension alone
+  }
+  std::atomic<int> probes{0};
+  library::IndexerConfig ic;
+  ic.probe = [&](const std::string&, const library::PlaceSpec& place, std::string_view rel, library::EntryRecord& r) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    r.frames = 48000;
+    r.rate = 48000;
+    r.channels = 1;
+    r.category = library::categorize(r.kind, place.kind, rel, r.name, library::Category::None);
+    ++probes;
+  };
+  ic.probeBudgetMs = 0;
+  ic.probeThreads = 1;
+  ic.probePublishMs = 100;
+  ic.backgroundPriority = false;
+  library::Indexer indexer(ic);
+  Library& lib = f.ctx.library();
+  REQUIRE(lib.addPlace(root.string()));
+  lib.setIndexer(&indexer);  // hands it the places
+  indexer.start();
+  REQUIRE(indexer.waitForGeneration(0, std::chrono::seconds(5)) >= 1);
+  lib.indexChanged();  // the app posts this on each publish
+  f.d.step();
+  const library::Index* ix = f.b->index();
+  REQUIRE(ix != nullptr);
+  uint32_t place = library::Index::kNone;
+  for (uint32_t p = 0; p < ix->places.size(); ++p)
+    if (ix->places[p].name == "Pack") place = p;
+  REQUIRE(place != library::Index::kNone);
+  f.b->setSource({BrowserSource::Kind::Place, place});
+  CHECK(f.names() == std::vector<std::string>{"Kits/"});
+  f.b->setFolderOpen(f.b->rows()[0].id, true);
+  REQUIRE(f.rowOf("Deep/") >= 0);
+  f.b->setFolderOpen(f.b->rows()[static_cast<size_t>(f.rowOf("Deep/"))].id, true);
+  REQUIRE(f.rowOf("Deeper/") >= 0);
+  CHECK(probes < kFiles);  // all of that before the probes were done
+
+  // The indexing line while the pass runs; a file not probed yet has blank columns.
+  f.b->updateIndexing();
+  if (indexer.progress().phase == library::IndexerProgress::Phase::Probing) {
+    CHECK(f.b->indexingText().rfind("Indexing Pack: ", 0) == 0);
+    CHECK(f.b->indexingText().find(" / 30") != std::string::npos);
+    CHECK(f.b->indexingShown());
+    CHECK(f.b->indexingFraction() >= 0.0f);
+  }
+  {
+    const int32_t row = f.rowOf("hit 1.wav");
+    REQUIRE(row >= 0);
+    const BrowserRow& r = f.b->rows()[static_cast<size_t>(row)];
+    if (ix->entries.flags[r.id] & library::kFlagUnprobed) CHECK(f.b->cellText(r, BrowserColumn::Duration).empty());
+  }
+  REQUIRE(indexer.waitIdle(std::chrono::seconds(10)));
+  lib.indexChanged();
+  f.d.step();
+  CHECK(f.b->indexingText().empty());
+  CHECK_FALSE(f.b->indexingShown());
+  {
+    const int32_t row = f.rowOf("hit 1.wav");
+    REQUIRE(row >= 0);
+    CHECK(f.b->cellText(f.b->rows()[static_cast<size_t>(row)], BrowserColumn::Duration) == "1.00 s");
+  }
+  lib.setIndexer(nullptr);
+  indexer.stop();
+  std::error_code ec;
+  fs::remove_all(root.parent_path(), ec);
 }

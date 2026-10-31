@@ -79,6 +79,17 @@ private:
   BrowserPanel& panel_;
 };
 
+// T5.x-index-progressive: "Indexing Samples: 12,345 / 118,842" under the column header while the indexer probes (or
+// lists for more than 300 ms), with a thin progress line along its bottom edge. Hidden otherwise.
+class IndexStatus : public ui::Control {
+public:
+  explicit IndexStatus(BrowserPanel& panel);
+  void paint(ui::PaintContext& ctx) override;
+
+private:
+  BrowserPanel& panel_;
+};
+
 // T5.11: the browser's right edge: drag to resize (the width goes to ViewPrefs::browserWidth; double-click: default).
 class WidthHandle : public ui::Control {
 public:

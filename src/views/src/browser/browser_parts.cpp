@@ -202,6 +202,33 @@ bool HotSwapBar::onPointer(const PointerEvent& e) {
   return e.type == PointerType::Down;
 }
 
+// --- IndexStatus (T5.x-index-progressive) ------------------------------------------------------------------------------
+
+IndexStatus::IndexStatus(BrowserPanel& panel) : Control("indexStatus"), panel_(panel) {
+  setInfo("Indexing", "The browser is reading this place's files. Folders and names are all there already; the "
+                      "Dur, BPM and Rate columns fill in as each file is read (until then duration, BPM and rate "
+                      "filters leave a file out).");
+}
+
+void IndexStatus::paint(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  const ThemeFonts* f = ctx.res.uiFonts;
+  if (!th) return;
+  const IRect r = rect();
+  ctx.dl.addRectFilled(r.toRect(), th->surface.raised);
+  const float frac = panel_.indexingFraction();
+  if (frac >= 0.0f) {
+    const float h = std::max(1.0f, std::round(2.0f * ctx.scale.factor));
+    const float y1 = static_cast<float>(r.bottom());
+    ctx.dl.addRectFilled({static_cast<float>(r.x), y1 - h, static_cast<float>(r.right()), y1}, th->surface.sunken);
+    const float w = std::round(static_cast<float>(r.w) * std::clamp(frac, 0.0f, 1.0f));
+    ctx.dl.addRectFilled({static_cast<float>(r.x), y1 - h, static_cast<float>(r.x) + w, y1}, th->accent.primary);
+  }
+  if (!f) return;
+  paint::text(ctx, f->small, r, panel_.indexingText(), th->text.secondary, TextAlign::Left, ctx.scale.px(6.0f),
+              ctx.scale.px(4.0f));
+}
+
 // --- WidthHandle (T5.11) -----------------------------------------------------------------------------------------------
 
 WidthHandle::WidthHandle(ViewContext& ctx, Widget& slot) : Control("resize"), ctx_(ctx), slot_(slot) {

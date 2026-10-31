@@ -10,6 +10,7 @@
 
 #include "browser_parts.h"
 #include "pq/document/model.h"
+#include "pq/library/indexer.h"
 #include "pq/library/tags.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
@@ -93,6 +94,9 @@ BrowserPanel::BrowserPanel(Shell& shell)
   content.setLayout(LayoutKind::Column);
   content.setWidth(Length::flex(1));
   content.add<browser::ColumnHeader>(*this).setHeight(Length::fixed(bm::kHeaderHeight));
+  indexStatus_ = &content.add<browser::IndexStatus>(*this);  // T5.x-index-progressive: shown while indexing
+  indexStatus_->setHeight(Length::fixed(bm::kRowHeight));
+  indexStatus_->setVisible(false);
   auto& scroll = content.add<ScrollView>("scroll", false, true);
   scroll.setHeight(Length::flex(1));
   scroll.setWheelStep(bm::kRowHeight * 3);
@@ -121,6 +125,7 @@ BrowserPanel::~BrowserPanel() {
   overviewWorker_.reset();
   lib_.setHotSwapHandler(nullptr);
   if (pollTimer_) cancelTimer(pollTimer_);
+  if (indexTimer_) cancelTimer(indexTimer_);
   if (PreviewPort* p = lib_.preview(); p && p->playing()) p->stop();
 }
 
@@ -147,6 +152,7 @@ void BrowserPanel::onLibrary() {
     source_ = {BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Samples)};
   if (!index_ && idx && !idx->places.empty() && source_.kind == BrowserSource::Kind::Category && rows_.empty())
     source_ = {BrowserSource::Kind::Place, 0};  // the first index: start on the first place (the User Library)
+  updateIndexing();
   if (idx == index_ && tags == tags_) {
     sidebar_->rebuild();
     takePendingRename();
@@ -158,6 +164,49 @@ void BrowserPanel::onLibrary() {
   result_.reset();
   refresh();
   takePendingRename();
+}
+
+namespace {
+
+std::string withThousands(uint32_t n) {
+  std::string digits = std::to_string(n);
+  std::string out;
+  for (size_t i = 0; i < digits.size(); ++i) {
+    if (i > 0 && (digits.size() - i) % 3 == 0) out.push_back(',');
+    out.push_back(digits[i]);
+  }
+  return out;
+}
+
+}  // namespace
+
+bool BrowserPanel::indexingShown() const noexcept { return indexStatus_->visible(); }
+
+void BrowserPanel::updateIndexing() {
+  std::string text;
+  float frac = -1.0f;
+  bool busy = false;
+  if (const library::Indexer* ix = lib_.indexer()) {
+    const library::IndexerProgress p = ix->progress();
+    busy = p.busy();
+    const std::string& name = p.placeName.empty() ? p.placeRoot : p.placeName;
+    if (p.phase == library::IndexerProgress::Phase::Probing && p.filesToProbe > 0) {
+      text = "Indexing " + name + ": " + withThousands(p.filesProbed) + " / " + withThousands(p.filesToProbe);
+      frac = static_cast<float>(p.filesProbed) / static_cast<float>(p.filesToProbe);
+    } else if (p.phase == library::IndexerProgress::Phase::Listing && p.phaseMs >= 300.0) {
+      text = "Listing " + name + ": " + withThousands(p.filesListed) + " files";
+    }
+  }
+  if (text != indexingText_ || frac != indexingFraction_) {
+    if (text.empty() != indexingText_.empty()) {
+      indexStatus_->setVisible(!text.empty());
+      invalidateLayout();
+    }
+    indexingText_ = std::move(text);
+    indexingFraction_ = frac;
+    indexStatus_->markDirty();
+  }
+  if (busy && !indexTimer_) indexTimer_ = requestTimer(0.25);
 }
 
 // T5.11: a file just saved ("Save Preset", "Save as New Device", "Save to Library") is renamed inline once the index
@@ -691,6 +740,11 @@ void BrowserPanel::scrubTo(double seconds) {
 }
 
 void BrowserPanel::onTimer(uint32_t id) {
+  if (id != 0 && id == indexTimer_) {
+    indexTimer_ = 0;
+    updateIndexing();
+    return;
+  }
   if (id != pollTimer_) return;
   pollTimer_ = 0;
   strip_->markDirty();  // the playhead

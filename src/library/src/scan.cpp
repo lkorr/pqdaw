@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -139,7 +140,9 @@ bool DiskSource::list(uint32_t /*placeIndex*/, const PlaceSpec& place, std::stri
 void probeFile(const std::string& absPath, const PlaceSpec& place, std::string_view relDir, EntryRecord& r) {
   Category sniffed = Category::None;
   if (r.kind == ItemKind::Sample && !(r.flags & kFlagOffline)) {
-    auto info = media::probe(std::filesystem::path(winPath(absPath)));
+    // headersOnly (T5.x-index-progressive): an MP3 without a frame count used to be scanned frame by frame (the whole
+    // file), which made the first scan of a large sample folder take many minutes.
+    auto info = media::probe(std::filesystem::path(winPath(absPath)), media::ProbeOptions{.headersOnly = true});
     if (info) {
       r.frames = info->frames;
       r.rate = info->sampleRate;
@@ -149,6 +152,7 @@ void probeFile(const std::string& absPath, const PlaceSpec& place, std::string_v
       r.rootKey = static_cast<int8_t>(info->rootKey >= 0 && info->rootKey <= 127 ? info->rootKey : -1);
       r.bpm = static_cast<float>(info->bpm);
       if (info->framesScanned) r.flags |= kFlagFramesScanned;
+      if (info->framesEstimated) r.flags |= kFlagLengthEstimated;
       if (info->hasLoop()) r.flags |= kFlagHasLoop;
       if (info->bpmSource == media::BpmSource::FileName) r.flags |= kFlagBpmFromName;
     } else {
@@ -165,6 +169,18 @@ void probeFile(const std::string& absPath, const PlaceSpec& place, std::string_v
     }
   }
   r.category = categorize(r.kind, place.kind, relDir, r.name, sniffed);
+}
+
+void markUnprobed(const PlaceSpec& place, std::string_view relDir, EntryRecord& r) {
+  r.flags = static_cast<uint8_t>((r.flags & kFlagOffline) | kFlagUnprobed);
+  r.frames = 0;
+  r.rate = 0;
+  r.channels = 0;
+  r.bits = 0;
+  r.container = 0;
+  r.rootKey = -1;
+  r.bpm = 0;
+  r.category = categorize(r.kind, place.kind, relDir, r.name, Category::None);
 }
 
 // ---- Rebuild --------------------------------------------------------------------------------------------------------
@@ -209,7 +225,7 @@ void takeProbe(EntryRecord& to, const EntryRecord& from) {
 class Builder {
 public:
   Builder(const Index* old, const ScanRequest& req, ListingSource& src, const ProbeFn& probe, ScanResult& res)
-      : old_(old), req_(req), src_(src), probe_(probe), res_(res), out_(*res.index) {
+      : old_(old), req_(req), src_(src), probe_(probe), res_(res), out_(*res.index), start_(detail::nowMs()) {
     if (old_) {
       const uint32_t n = old_->dirCount();
       childStart_.assign(n + 1, 0);
@@ -261,6 +277,7 @@ public:
       }
       placeIndex_ = p;
       place_ = &place;
+      if (req_.progress) req_.progress->place.store(p, std::memory_order_relaxed);
       const bool wasOnline = oldPlace == Index::kNone || oldPlace >= old_->placeOnline.size() ||
                              old_->placeOnline[oldPlace] != 0;
       emit(std::string(), std::string_view(), oldRoot, Index::kNone, 0, full_);
@@ -269,6 +286,10 @@ public:
     if (old_ && (old_->entryCount() != out_.entryCount() || old_->dirCount() != out_.dirCount()))
       res_.stats.changed = true;
     if (!old_) res_.stats.changed = true;
+    if (req_.progress) {
+      req_.progress->filesListed.store(out_.entryCount(), std::memory_order_relaxed);
+      req_.progress->dirsListed.store(out_.dirCount(), std::memory_order_relaxed);
+    }
   }
 
 private:
@@ -344,6 +365,10 @@ private:
       return;
     }
     const uint32_t newDir = out_.addDir(parentNew, name, static_cast<uint16_t>(placeIndex_), depth);
+    if (req_.progress) {
+      req_.progress->filesListed.store(out_.entryCount(), std::memory_order_relaxed);
+      req_.progress->dirsListed.store(out_.dirCount(), std::memory_order_relaxed);
+    }
     bool recursive = false;
     const bool dirty = isDirty(rel, &recursive);
     const bool childListAll = listAll || recursive;
@@ -447,6 +472,14 @@ private:
       takeProbe(f, *m);
       return;
     }
+    if (!deferring_ && req_.probeBudgetMs != std::numeric_limits<double>::infinity() &&
+        detail::nowMs() - start_ >= req_.probeBudgetMs)
+      deferring_ = true;
+    if (deferring_) {
+      ++res_.stats.filesDeferred;
+      markUnprobed(*place_, rel, f);
+      return;
+    }
     ++res_.stats.filesProbed;
     if (probe_) probe_(joinPath(joinPath(place_->root, rel), f.name), *place_, rel, f);
     else probeFile(joinPath(joinPath(place_->root, rel), f.name), *place_, rel, f);
@@ -467,6 +500,8 @@ private:
   bool byIdBuilt_ = false;
   std::unordered_map<IdKey, uint32_t, IdKeyHash> byId_;
   EntryRecord movedScratch_;
+  double start_ = 0;
+  bool deferring_ = false;
 };
 
 // Replays recorded listings.

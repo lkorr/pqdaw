@@ -3,6 +3,8 @@
 
 #include <doctest/doctest.h>
 
+#include <windows.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -198,3 +200,93 @@ TEST_CASE("probe: an MP3 without a Xing/Info frame is scanned once, flagged, and
   CHECK_FALSE((*d)->truncated());
 }
 
+
+// T5.x-index-progressive: the browser's indexer probes with headersOnly, which never reads the middle of a file.
+namespace {
+
+// MPEG-1 layer III, 128 kb/s, 44.1 kHz, stereo, no padding: 417-byte frames of 1152 samples.
+constexpr uint8_t kMp3Header[4] = {0xFF, 0xFB, 0x90, 0x00};
+constexpr std::size_t kMp3FrameBytes = 417;
+
+void putFrame(uint8_t* p) {
+  std::memset(p, 0, kMp3FrameBytes);
+  std::memcpy(p, kMp3Header, 4);
+}
+
+}  // namespace
+
+TEST_CASE("probe: headersOnly estimates an MP3 without a frame count from its bitrate, no scan") {
+  constexpr std::size_t kFrames = 300;
+  std::vector<uint8_t> bytes(kFrames * kMp3FrameBytes);
+  for (std::size_t f = 0; f < kFrames; ++f) putFrame(bytes.data() + f * kMp3FrameBytes);
+  auto exact = probeBytes(bytes, "cbr.mp3");
+  REQUIRE(exact.ok());
+  CHECK(exact->framesScanned);
+  CHECK_FALSE(exact->framesEstimated);
+  CHECK(exact->frames == kFrames * 1152);
+  auto quick = probeBytes(bytes, "cbr.mp3", ProbeOptions{.headersOnly = true});
+  REQUIRE(quick.ok());
+  CHECK_FALSE(quick->framesScanned);
+  CHECK(quick->framesEstimated);
+  CHECK(quick->sampleRate == 44100);
+  CHECK(quick->channels == 2);
+  // 417 bytes per frame at 128 kb/s is 1149.4 samples per frame by bitrate (the real 417.96 is rounded down): ≤ 0.3 %.
+  CHECK(static_cast<double>(quick->frames) == doctest::Approx(static_cast<double>(exact->frames)).epsilon(0.003));
+  // A file with a Xing count is exact either way.
+  const std::vector<uint8_t> vbr = readBytes(fixture("mp3_vbr.mp3"));
+  auto a = probeBytes(vbr, "x.mp3");
+  auto b = probeBytes(vbr, "x.mp3", ProbeOptions{.headersOnly = true});
+  REQUIRE(a.ok());
+  REQUIRE(b.ok());
+  CHECK(a->frames == b->frames);
+  CHECK_FALSE(b->framesEstimated);
+}
+
+// An MP3 whose Xing count is implausible (M5 review H1) used to make the probe scan every frame header: the whole
+// file. Here the file's middle is reserved but not committed (PAGE_NOACCESS): any read of it is an access violation,
+// so the probe passing proves it read only the first and the last 64 KiB.
+TEST_CASE("probe: headersOnly reads only the head and tail of an MP3 with a bogus Xing count") {
+  constexpr std::size_t kSize = std::size_t{64} << 20;  // 64 MiB
+  constexpr std::size_t kEdge = std::size_t{64} << 10;
+  auto* base = static_cast<uint8_t*>(VirtualAlloc(nullptr, kSize, MEM_RESERVE, PAGE_NOACCESS));
+  REQUIRE(base != nullptr);
+  REQUIRE(VirtualAlloc(base, kEdge, MEM_COMMIT, PAGE_READWRITE) != nullptr);
+  REQUIRE(VirtualAlloc(base + kSize - kEdge, kEdge, MEM_COMMIT, PAGE_READWRITE) != nullptr);
+  for (std::size_t f = 0; (f + 1) * kMp3FrameBytes <= kEdge; ++f) putFrame(base + f * kMp3FrameBytes);
+  // The first frame carries a Xing tag (after the header and 32 bytes of side info) whose count is 2^32 − 1.
+  std::memcpy(base + 36, "Xing", 4);
+  base[43] = 1;  // flags: frame count present
+  std::memset(base + 44, 0xFF, 4);
+  {
+    DWORD old = 0;  // the head and tail are read-only from here on, as a mapped file would be
+    VirtualProtect(base, kEdge, PAGE_READONLY, &old);
+    VirtualProtect(base + kSize - kEdge, kEdge, PAGE_READONLY, &old);
+  }
+  auto info = probeBytes(std::span<const uint8_t>(base, kSize), "bogus.mp3", ProbeOptions{.headersOnly = true});
+  REQUIRE(info.ok());
+  CHECK(info->framesEstimated);
+  CHECK_FALSE(info->framesScanned);
+  // The estimate: the audio after the Xing frame at 128 kb/s, capped by the file size like a Xing count.
+  const double expected = static_cast<double>(kSize - kMp3FrameBytes) * 8.0 * 44100.0 / 128000.0;
+  CHECK(static_cast<double>(info->frames) == doctest::Approx(expected).epsilon(1e-6));
+  VirtualFree(base, 0, MEM_RELEASE);
+}
+
+TEST_CASE("probe: a file name outside the ANSI code page probes (path::string() threw)") {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("pq_probe_unicode_" + std::to_string(GetCurrentProcessId()));
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path file = dir / L"Κουφονήσι 八.wav";
+  std::filesystem::copy_file(fixture("wav_pcm16.wav"), file, std::filesystem::copy_options::overwrite_existing);
+  auto info = probe(file);
+  CHECK(info.ok());
+  if (info) CHECK(info->frames == 6000);
+  auto missing = probe(dir / L"八 missing.wav");
+  REQUIRE_FALSE(missing.ok());
+  CHECK(missing.error().code == ErrorCode::Io);
+  {
+    auto d = Decoder::open(file);  // the decoder took the file name the same way
+    CHECK(d.ok());
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}

@@ -122,7 +122,7 @@ std::string identityKey(const std::filesystem::path& path, const FileIdentity& i
     k = hex(id.volumeSerial);
     for (uint8_t b : id.fileId) k += hex(b).substr(14);
   } else {
-    k = std::filesystem::absolute(path).string();
+    k = detail::pathUtf8(std::filesystem::absolute(path));
   }
   return k + ':' + hex(id.size) + ':' + hex(static_cast<uint64_t>(id.mtime));
 }
@@ -272,9 +272,9 @@ Result<SampleRef> SamplePool::load(const std::filesystem::path& path) {
   Decoder& d = **decoder;
   const SampleInfo& info = d.info();
   if (info.channels > kMaxStreamChannels)
-    return Error{ErrorCode::Unsupported, path.string() + ": more than 8 channels", {}};
+    return Error{ErrorCode::Unsupported, detail::pathUtf8(path) + ": more than 8 channels", {}};
   if (info.frames >= (uint64_t{1} << StreamPool::kFrameBits))
-    return Error{ErrorCode::Unsupported, path.string() + ": too long", {}};
+    return Error{ErrorCode::Unsupported, detail::pathUtf8(path) + ": too long", {}};
   const std::string key = identityKey(path, info.identity);
   {
     std::lock_guard lock(mutex_);

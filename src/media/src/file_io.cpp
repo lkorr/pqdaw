@@ -6,9 +6,18 @@
 
 namespace pq::media::detail {
 
+std::string pathUtf8(const std::filesystem::path& path) {
+  const std::wstring& w = path.native();
+  if (w.empty()) return {};
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+  std::string s(static_cast<std::size_t>(n > 0 ? n : 0), '\0');
+  if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
+  return s;
+}
+
 Error ioError(const std::filesystem::path& path, const char* what) {
   const DWORD code = GetLastError();
-  return Error{ErrorCode::Io, std::string(what) + " " + path.string() + " (Win32 error " + std::to_string(code) + ")", {}};
+  return Error{ErrorCode::Io, std::string(what) + " " + pathUtf8(path) + " (Win32 error " + std::to_string(code) + ")", {}};
 }
 
 namespace {
@@ -107,7 +116,7 @@ Result<std::size_t> File::readAt(uint64_t offset, void* dst, std::size_t n) cons
 Status File::readExact(uint64_t offset, void* dst, std::size_t n) const {
   auto r = readAt(offset, dst, n);
   if (!r) return std::move(r).error();
-  if (*r != n) return Error{ErrorCode::Io, "unexpected end of file " + path_.string(), {}};
+  if (*r != n) return Error{ErrorCode::Io, "unexpected end of file " + pathUtf8(path_), {}};
   return Ok{};
 }
 
