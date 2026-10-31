@@ -88,6 +88,9 @@ public:
   // After an edit of tags(): saves (when a file is set), rebuilds the search's view, notifies kLibrary.
   void tagsChanged();
   std::shared_ptr<const library::EntryTags> entryTags();
+  // The same for a given index snapshot (M5 review M15: index() may publish a newer one between two calls; a search
+  // must pair the tags with the index it searches).
+  std::shared_ptr<const library::EntryTags> entryTags(const std::shared_ptr<const library::Index>& idx);
 
   // --- preview ---
   void setPreview(PreviewPort* p) noexcept { preview_ = p; }

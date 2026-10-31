@@ -132,7 +132,7 @@ void BrowserPanel::paint(PaintContext& ctx) {
 
 void BrowserPanel::onLibrary() {
   const auto idx = lib_.index();
-  const auto tags = lib_.entryTags();
+  const auto tags = lib_.entryTags(idx);  // M5 review M15: the tags of this very index
   if (std::vector<std::string> all = lib_.tags().allTags(); all != allTags_) {  // T5.11: the tag chips
     std::sort(all.begin(), all.end(), [](const std::string& a, const std::string& b) { return library::compareFolded(a, b) < 0; });
     allTags_ = std::move(all);

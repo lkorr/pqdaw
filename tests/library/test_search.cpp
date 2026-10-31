@@ -296,3 +296,22 @@ TEST_CASE("library: search keystrokes over 200k entries, median <= 5 ms (release
   CHECK(median <= 5.0);
 #endif
 }
+
+// M5 review M15: EntryTags built for another index snapshot (BrowserPanel paired lib_.index() with lib_.entryTags(),
+// which reads index() again: the indexer may publish in between). search() read tags->combo[e] past its end (0xC0000005
+// with 1 entry's tags over 2M entries). Mismatched tags are now ignored: the search runs as without tags.
+TEST_CASE("library: search ignores tags built for another index (no out-of-bounds read)") {
+  auto tiny = syntheticIndex(1, 1);
+  TagStore ts;
+  ts.setCollection(tagKeyOf(*tiny, 0), 1, true);
+  auto tags = buildEntryTags(*tiny, ts);
+  REQUIRE(tags->combo.size() == 1);
+  auto big = syntheticIndex(200000, 7);
+  SearchQuery q{"s", {}};
+  const SearchResult withMismatch = search(big, tags, q);
+  const SearchResult without = search(big, nullptr, q);
+  CHECK(withMismatch.total == without.total);
+  CHECK(withMismatch.hits.size() == without.hits.size());
+  q.filter.collections = 2;  // needs the tags: none apply
+  CHECK(search(big, tags, q).total == 0);
+}

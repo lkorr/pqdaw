@@ -123,8 +123,9 @@ void Library::tagsChanged() {
   ctx_.libraryChanged();
 }
 
-std::shared_ptr<const library::EntryTags> Library::entryTags() {
-  const auto idx = index();
+std::shared_ptr<const library::EntryTags> Library::entryTags() { return entryTags(index()); }
+
+std::shared_ptr<const library::EntryTags> Library::entryTags(const std::shared_ptr<const library::Index>& idx) {
   if (!idx) return nullptr;
   if (!entryTags_ || tagsFor_ != idx || tagsVersion_ != tags_->version()) {
     entryTags_ = library::buildEntryTags(*idx, *tags_);

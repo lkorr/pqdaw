@@ -90,6 +90,30 @@ TEST_CASE("library: tag store edits and tags.json round trip") {
   writeText(file, "{ not json");
   TagStore broken(file);
   CHECK_FALSE(broken.load());
+  // M5 review M17: it was overwritten by the next tag edit (every stored tag lost). It is moved aside first.
+  CHECK_FALSE(fs::exists(file));
+  int aside = 0;
+  for (const auto& e : fs::directory_iterator(file.parent_path()))
+    aside += e.path().filename().string().rfind("tags.json.corrupt-", 0) == 0 ? 1 : 0;
+  CHECK(aside == 1);
+  CHECK_FALSE(broken.saveBlocked());
+  // A file that exists but cannot be read (another process holds it without sharing): no save this session.
+  REQUIRE(s.save());
+  {
+    HANDLE h = CreateFileW(file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    TagStore locked(file);
+    const Status st = locked.load();
+    CHECK_FALSE(st);
+    if (!st) CHECK(st.error().code == ErrorCode::Io);
+    CHECK(locked.saveBlocked());
+    locked.addTag(a, "new");
+    CHECK_FALSE(locked.save());
+    CloseHandle(h);
+  }
+  TagStore again(file);
+  REQUIRE(again.load());
+  CHECK(again.items().size() == 2);  // intact
 }
 
 TEST_CASE("library: tags survive a rename (watcher, file ID) and follow the path") {

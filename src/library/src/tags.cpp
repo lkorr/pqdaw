@@ -1,6 +1,7 @@
 #include "pq/library/tags.h"
 
 #include <algorithm>
+#include <ctime>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -248,16 +249,31 @@ bool TagStore::reconcile(const Index& index) {
 Status TagStore::load() {
   items_.clear();
   for (uint32_t c = 0; c < kCollectionCount; ++c) names_[c] = std::string(kDefaultNames[c]);
+  saveBlocked_ = false;
   std::ifstream in(file_, std::ios::binary);
   if (!in) {
     rebuildMaps();
-    return Ok{};  // no file yet
+    std::error_code ec;
+    if (!std::filesystem::exists(file_, ec) && !ec) return Ok{};  // no file yet
+    saveBlocked_ = true;
+    return Error{ErrorCode::Io, "cannot read the tags file " + detail::toUtf8(file_.native()) +
+                                    " (tag edits are not saved this session)", {}};
   }
   std::stringstream ss;
   ss << in.rdbuf();
+  in.close();
   const nlohmann::json j = nlohmann::json::parse(ss.str(), nullptr, false);
-  if (j.is_discarded() || !j.is_object())
-    return Error{ErrorCode::Parse, "tags file " + detail::toUtf8(file_.native()) + " is not valid JSON", {}};
+  if (j.is_discarded() || !j.is_object()) {
+    rebuildMaps();
+    std::filesystem::path aside = file_;
+    aside += ".corrupt-" + std::to_string(static_cast<long long>(std::time(nullptr)));
+    std::error_code ec;
+    std::filesystem::rename(file_, aside, ec);
+    if (ec) saveBlocked_ = true;
+    return Error{ErrorCode::Parse, "tags file " + detail::toUtf8(file_.native()) + " is not valid JSON" +
+                                       (ec ? std::string(" (tag edits are not saved this session)")
+                                           : " (moved aside to " + detail::toUtf8(aside.filename().native()) + ")"), {}};
+  }
   if (auto c = j.find("collections"); c != j.end() && c->is_array())
     for (uint32_t i = 0; i < kCollectionCount && i < c->size(); ++i)
       if ((*c)[i].is_string()) names_[i] = (*c)[i].get<std::string>();
@@ -294,6 +310,8 @@ Status TagStore::load() {
 }
 
 Status TagStore::save() const {
+  if (saveBlocked_)
+    return Error{ErrorCode::Io, "the tags file " + detail::toUtf8(file_.native()) + " could not be read: not overwritten", {}};
   nlohmann::json j;
   j["version"] = 1;
   j["collections"] = nlohmann::json::array();

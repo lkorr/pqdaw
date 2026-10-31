@@ -48,6 +48,7 @@ struct IndexerStats {
   uint64_t wakeups = 0;          // returns from the thread's wait (each command, notification or timer)
   uint64_t rebuilds = 0;
   uint64_t snapshotsWritten = 0;
+  uint64_t snapshotFailures = 0; // snapshot writes that failed (retried after a doubling back-off, 1 s … 60 s)
   uint64_t journalAppends = 0;
   uint64_t overflows = 0;        // change buffers that overflowed (place rescanned)
   double loadMs = 0;             // index.pqi + journal load at start

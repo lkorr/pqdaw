@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include <chrono>
+#include <fstream>
 #include <thread>
 
 #include "library_test_util.h"
@@ -167,6 +168,60 @@ TEST_CASE("library: indexer start, watcher, idle, persistence") {
     CHECK_FALSE(again.stats().lastScan.changed);
     CHECK(again.stats().lastScan.filesProbed == 0);
     MESSAGE("restart: load " << again.stats().loadMs << " ms, revalidate " << again.stats().revalidateMs << " ms");
+  }
+}
+
+// M5 review M14: when the snapshot cannot be written (here the data folder's path runs through a file), the indexer
+// retried at once in a loop: ~2700 wakeups and a full core in 2 s. It now backs off (1 s, doubling to 60 s).
+// M5 review H8: a corrupt index.pqi is deleted at start (it was met again on every launch).
+TEST_CASE("library: indexer backs off when the snapshot cannot be written; a corrupt snapshot is deleted") {
+  TempTree tree("indexer_spin");
+  const fs::path lib = tree.root() / "lib";
+  for (int i = 0; i < 20; ++i) writeWav(lib / ("s" + std::to_string(i) + ".wav"), 50 + i);
+  writeText(tree.root() / "file", "a file, not a folder");
+  {
+    IndexerConfig cfg;
+    cfg.dataDir = tree.root() / "file" / "data";  // cannot be created
+    cfg.places = {{utf8(lib), PlaceKind::Folder, "Lib"}};
+    cfg.snapshotIntervalMs = 100;
+    Indexer ix(cfg);
+    ix.start();
+    REQUIRE(ix.waitIdle(10s));
+    const uint64_t w0 = ix.stats().wakeups;
+    std::this_thread::sleep_for(2s);
+    const IndexerStats st = ix.stats();
+    CHECK(st.snapshotsWritten == 0);
+    CHECK(st.snapshotFailures >= 1);
+    CHECK(st.snapshotFailures <= 3);       // at most the first try and two back-off retries (1 s, 2 s)
+    CHECK(st.wakeups - w0 <= 4);
+    ix.stop();
+  }
+  // A snapshot whose header was corrupted: refused, deleted, and the index rebuilt from the place.
+  {
+    IndexerConfig cfg;
+    cfg.dataDir = tree.root() / "data";
+    cfg.places = {{utf8(lib), PlaceKind::Folder, "Lib"}};
+    {
+      Indexer ix(cfg);
+      ix.start();
+      REQUIRE(ix.waitIdle(10s));
+      ix.stop();
+    }
+    const fs::path pqi = cfg.dataDir / "index.pqi";
+    REQUIRE(fs::exists(pqi));
+    {
+      std::fstream f(pqi, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(32);  // the entry count
+      const uint32_t huge = 0x40000000u;
+      f.write(reinterpret_cast<const char*>(&huge), 4);
+    }
+    CHECK_FALSE(loadIndex(pqi));
+    Indexer ix(cfg);
+    ix.start();
+    REQUIRE(ix.waitIdle(10s));
+    CHECK(ix.index()->entryCount() == 20);
+    ix.stop();
+    CHECK(loadIndex(pqi));  // written again, valid
   }
 }
 

@@ -3,6 +3,8 @@
 
 #include <doctest/doctest.h>
 
+#include <cstring>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -352,6 +354,29 @@ TEST_CASE("library: index file round trip, corruption, journal replay") {
     }
     writeBytes(tree.root() / "short.pqi", bytes.data(), bytes.size() / 3);
     CHECK_FALSE(loadIndex(tree.root() / "short.pqi"));
+    // M5 review H8: one flipped bit in the header's counts (bytes 24–47) is caught by the checksum, before anything is
+    // sized from them (it used to commit gigabytes and throw bad_alloc on the indexer thread). Every bit of bytes
+    // 8–63, and the same flips with the checksum recomputed the old way (payload only), which the count bounds catch.
+    for (std::size_t byte = 8; byte < 64; ++byte)
+      for (int bit = 0; bit < 8; ++bit) {
+        CAPTURE(byte);
+        CAPTURE(bit);
+        std::vector<char> bad = bytes;
+        bad[byte] ^= static_cast<char>(1 << bit);
+        writeBytes(tree.root() / "hdr.pqi", bad.data(), bad.size());
+        auto b = loadIndex(tree.root() / "hdr.pqi");
+        CHECK_FALSE(b);
+      }
+    for (const std::size_t at : {std::size_t{28}, std::size_t{32}, std::size_t{40}})
+      for (const uint32_t v : {1u << 23, 1u << 27, 1u << 31, 0xFFFFFFFFu}) {
+        std::vector<char> bad = bytes;
+        uint32_t x = 0;
+        std::memcpy(&x, bad.data() + at, 4);
+        x ^= v;
+        std::memcpy(bad.data() + at, &x, 4);
+        writeBytes(tree.root() / "hdr.pqi", bad.data(), bad.size());
+        CHECK_FALSE(loadIndex(tree.root() / "hdr.pqi"));
+      }
   }
 
   // Journal: changes after the snapshot, replayed on load.

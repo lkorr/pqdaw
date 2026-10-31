@@ -29,7 +29,8 @@
 
 namespace pq::library {
 
-inline constexpr uint32_t kIndexFormatVersion = 1;
+// 2 (M5 review H8): the checksum covers the header's counts (bytes 8–55) too.
+inline constexpr uint32_t kIndexFormatVersion = 2;
 
 // %LOCALAPPDATA%\pqdaw\library (not created here); empty when LOCALAPPDATA is not set.
 std::filesystem::path defaultLibraryDataDir();

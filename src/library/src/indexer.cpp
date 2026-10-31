@@ -89,6 +89,7 @@ struct Indexer::Impl {
   double coalesceDeadline = 0;
   bool snapshotDirty = false;
   double lastSnapshotMs = -std::numeric_limits<double>::infinity();
+  double snapshotBackoffMs = 0;  // after a failed write (M5 review M14)
   uint64_t sequence = 0;
   Journal journal;
   std::filesystem::path pqi, pqj;
@@ -223,6 +224,13 @@ void Indexer::run() {
   const double t0 = nowMs();
   if (persist) {
     auto loaded = loadIndex(m.pqi);
+    if (!loaded && loaded.error().code == ErrorCode::Parse) {
+      // M5 review H8: a corrupt snapshot is deleted (with its journal), so it is not met again on every launch; the
+      // revalidation below rebuilds the index from the places.
+      std::error_code ec;
+      std::filesystem::remove(m.pqi, ec);
+      std::filesystem::remove(m.pqj, ec);
+    }
     if (loaded) {
       std::shared_ptr<Index> idx = loaded->index;
       m.sequence = loaded->sequence;
@@ -248,8 +256,16 @@ void Indexer::run() {
       (void)m.journal.reset(m.pqj, m.sequence);
       m.lastSnapshotMs = nowMs();
       m.snapshotDirty = false;
+      m.snapshotBackoffMs = 0;
       std::lock_guard lock(mutex_);
       ++stats_.snapshotsWritten;
+    } else {
+      // M5 review M14: a write that fails (full disk, read-only or locked data folder) used to leave the timer due at
+      // once, so the thread re-serialised the whole index in a loop at a full core. Retry after a doubling back-off.
+      m.snapshotBackoffMs = std::clamp(m.snapshotBackoffMs * 2.0, 1000.0, 60000.0);
+      m.lastSnapshotMs = nowMs() + m.snapshotBackoffMs - static_cast<double>(config_.snapshotIntervalMs);
+      std::lock_guard lock(mutex_);
+      ++stats_.snapshotFailures;
     }
   };
 
@@ -258,7 +274,8 @@ void Indexer::run() {
   auto persistChanges = [&](const std::vector<DirChange>& changes, bool structural) {
     if (!persist) return;
     m.snapshotDirty = true;
-    if (structural || changes.empty() || nowMs() - m.lastSnapshotMs >= config_.snapshotIntervalMs) {
+    const bool elapsed = nowMs() - m.lastSnapshotMs >= config_.snapshotIntervalMs;
+    if (m.snapshotBackoffMs == 0 ? structural || changes.empty() || elapsed : elapsed) {
       writeSnapshot();
       return;
     }

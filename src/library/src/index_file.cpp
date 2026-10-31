@@ -4,6 +4,7 @@
 #include <shlobj.h>
 
 #include <cstring>
+#include <new>
 #include <type_traits>
 
 #include "win_util.h"
@@ -62,6 +63,8 @@ public:
   Reader(const uint8_t* p, std::size_t n) : p_(p), n_(n) {}
   bool ok() const noexcept { return ok_; }
   std::size_t pos() const noexcept { return at_; }
+  std::size_t remaining() const noexcept { return n_ - at_; }
+  void fail() noexcept { ok_ = false; }
   bool raw(void* dst, std::size_t n) {
     if (!ok_ || n > n_ - at_) return ok_ = false;
     if (n) std::memcpy(dst, p_ + at_, n);
@@ -88,6 +91,12 @@ private:
   std::size_t at_ = 0;
   bool ok_ = true;
 };
+
+// The snapshot checksum: header bytes 8–55 (version, sizes, sequence, every count) and the payload (M5 review H8: the
+// counts were outside it, so one flipped bit sized the columns in gigabytes).
+uint64_t snapshotHash(const uint8_t* file, std::size_t payloadBytes) noexcept {
+  return hashWords(file + 8, 48) * 0x9E3779B97F4A7C15ull ^ hashWords(file + kHeaderBytes, payloadBytes);
+}
 
 Error parseError(const std::filesystem::path& file, const char* what) {
   return Error{ErrorCode::Parse, std::string("library index ") + toUtf8(file.native()) + ": " + what, {}};
@@ -202,7 +211,6 @@ Status saveIndex(const Index& index, uint64_t sequence, const std::filesystem::p
   w.align8();
 
   const uint64_t payloadBytes = w.bytes.size() - kHeaderBytes;
-  const uint64_t hash = hashWords(w.bytes.data() + kHeaderBytes, payloadBytes);
   uint8_t* h = w.bytes.data();
   std::memcpy(h, kSnapshotMagic, 8);
   const uint32_t version = kIndexFormatVersion, headerBytes = kHeaderBytes;
@@ -218,6 +226,7 @@ Status saveIndex(const Index& index, uint64_t sequence, const std::filesystem::p
   std::memcpy(h + 36, &reserved, 4);
   std::memcpy(h + 40, &strings, 8);
   std::memcpy(h + 48, &payloadBytes, 8);
+  const uint64_t hash = snapshotHash(h, payloadBytes);
   std::memcpy(h + 56, &hash, 8);
 
   std::error_code ec;
@@ -227,7 +236,21 @@ Status saveIndex(const Index& index, uint64_t sequence, const std::filesystem::p
   return Ok{};
 }
 
+namespace {
+Result<LoadedIndex> loadIndexImpl(const std::filesystem::path& file);
+}  // namespace
+
 Result<LoadedIndex> loadIndex(const std::filesystem::path& file) {
+  // The indexer's thread loads it: out of memory (a file far larger than any index) is a parse error, not a crash.
+  try {
+    return loadIndexImpl(file);
+  } catch (const std::bad_alloc&) {
+    return parseError(file, "too large");
+  }
+}
+
+namespace {
+Result<LoadedIndex> loadIndexImpl(const std::filesystem::path& file) {
   std::vector<uint8_t> bytes;
   DWORD err = 0;
   if (!readWholeFile(file, bytes, &err)) {
@@ -251,7 +274,11 @@ Result<LoadedIndex> loadIndex(const std::filesystem::path& file) {
   if (version != kIndexFormatVersion) return parseError(file, "unsupported version");
   if (headerBytes != kHeaderBytes || payloadBytes != bytes.size() - kHeaderBytes)
     return parseError(file, "size mismatch");
-  if (hashWords(bytes.data() + kHeaderBytes, payloadBytes) != hash) return parseError(file, "checksum mismatch");
+  if (snapshotHash(bytes.data(), payloadBytes) != hash) return parseError(file, "checksum mismatch");
+  // Counts are bounded by the payload before anything is sized from them (a hash collision must not allocate either).
+  if (uint64_t{places} * 10 > payloadBytes || uint64_t{dirs} > payloadBytes || uint64_t{entries} > payloadBytes ||
+      strings > payloadBytes)
+    return parseError(file, "counts exceed the file");
 
   auto idx = std::make_shared<Index>();
   Reader rd(bytes.data() + kHeaderBytes, payloadBytes);
@@ -269,6 +296,7 @@ Result<LoadedIndex> loadIndex(const std::filesystem::path& file) {
   }
   rd.align8();
   auto col = [&](auto& v, std::size_t n) {
+    if (!rd.ok() || n > rd.remaining() / sizeof(v[0])) return rd.fail();  // never sized past the bytes that remain
     v.resize(n);
     rd.raw(v.data(), n * sizeof(v[0]));
     rd.align8();
@@ -297,6 +325,7 @@ Result<LoadedIndex> loadIndex(const std::filesystem::path& file) {
   }
   return LoadedIndex{std::move(idx), sequence};
 }
+}  // namespace
 
 // ---- Journal ------------------------------------------------------------------------------------------------------
 

@@ -53,8 +53,12 @@ public:
   explicit TagStore(std::filesystem::path file);
 
   const std::filesystem::path& file() const noexcept { return file_; }
-  Status load();  // a missing file = empty store
-  Status save() const;  // atomic (tmp + rename)
+  // A missing file = empty store. M5 review M17: a file that exists but cannot be read (a sharing violation from a
+  // sync tool or AV) is an Io error and blocks save() for the session (it would replace every stored tag); one that
+  // does not parse is moved aside (tags.json.corrupt-<unix time>) first, then the store starts empty.
+  Status load();
+  Status save() const;  // atomic (tmp + rename); refused while saveBlocked()
+  bool saveBlocked() const noexcept { return saveBlocked_; }
 
   const std::array<std::string, kCollectionCount>& collectionNames() const noexcept { return names_; }
   void renameCollection(uint32_t c, std::string name);
@@ -87,6 +91,7 @@ private:
   void rebuildMaps();
 
   std::filesystem::path file_;
+  bool saveBlocked_ = false;
   std::array<std::string, kCollectionCount> names_;
   std::vector<TagItem> items_;
   struct IdKey {

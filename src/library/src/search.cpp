@@ -195,7 +195,9 @@ SearchResult search(const std::shared_ptr<const Index>& indexPtr, const std::sha
   res.query = query;
   if (!indexPtr) return res;
   const Index& index = *indexPtr;
-  const EntryTags* tags = tagsPtr.get();
+  // M5 review M15: tags built for another index snapshot (a race between index() and entryTags()) are not used:
+  // combo[e] would read past their end, or attach tags to the wrong files.
+  const EntryTags* tags = tagsPtr && tagsPtr->combo.size() == index.entryCount() ? tagsPtr.get() : nullptr;
   const SearchFilter& f = query.filter;
   const std::vector<Term> terms = splitTerms(query.text);
   const bool hasText = !terms.empty();
