@@ -4,15 +4,21 @@
 //                                   Eight → gain — a return with a comb/allpass reverb, a master) after its chords
 //                                   and every tail have died away: every unit asleep (acceptance: ≤ 1 % of a core)
 //   idle/30 tracks <backend> nosleep  the same project compiled without sleep plans (what it cost before)
+//   idle/30 tracks <backend> links  the idle project with every track's params linked to project params (vol, the
+//                                   synth's and EQ Eight's: ~100 links per unit, as ProjectLink links device params):
+//                                   M4 review L1 (an idle unit compares its links only after a param write)
 //   awake/30-track fixture <backend> sleep|nosleep   tests/engine/project_fixture.h (30 FM tracks × 28 effects, chords
 //                                   held): everything sounds, so every segment is awake every block: the cost of the
 //                                   sleep bookkeeping on non-silent playback (the source scans, per-region flags)
 // Backends: interp and jit (every unit's image from compile::jitUnitBackend()). ns per block; "% of a core" =
 // ns / 1 333 333 (one block period). Release / ship build. Usage: pq_bench_silence [runner options]
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../../tests/engine/idle_project_fixture.h"
@@ -41,7 +47,7 @@ struct Rig {
   int64_t time = 0;
   uint32_t units = 0;
 
-  Rig(bool idleProject, bool jit, bool sleep) {
+  Rig(bool idleProject, bool jit, bool sleep, bool links = false) {
     const graph::ProjectGraph* g = nullptr;
     uint32_t tracks = 30;
     if (idleProject) {
@@ -59,6 +65,23 @@ struct Rig {
     co.voice.maxVoices = 8;
     co.sleep = sleep;
     if (jit) co.backend = compile::jitUnitBackend();
+    uint32_t numParams = 0;
+    if (links && idleProject) {  // vol, and every param of the synth and the EQ the track patch leaves unconnected
+      auto paramsOf = [&](std::string_view name) {
+        std::vector<std::string> out;
+        if (const graph::Patch* d = idle->library.find(name))
+          for (graph::NodeIndex v = 0; v < d->nodeCount(); ++v)
+            if (d->node(v).kind == graph::NodeKind::Param) out.push_back(d->nodeName(v));
+        return out;
+      };
+      const std::vector<std::string> syn = paramsOf("BasicSynth"), eq = paramsOf("eq_eight");
+      for (uint32_t t = 0; t < tracks; ++t) {
+        co.paramLinks.push_back({t, "vol", numParams++});
+        for (const std::string& n : syn)
+          if (n != "release") co.paramLinks.push_back({t, "syn__" + n, numParams++});
+        for (const std::string& n : eq) co.paramLinks.push_back({t, "eq__" + n, numParams++});
+      }
+    }
     e::ProjectCompiler compiler(co);
     auto b = compiler.build(*g);
     if (!b.ok()) {
@@ -69,6 +92,7 @@ struct Rig {
     pc.sampleRate = kSr;
     pc.maxBlockFrames = kBlock;
     pc.numOut = 2;
+    pc.numProjectParams = numParams;
     for (uint32_t k = 0; k < tracks; ++k) {
       std::vector<e::TimedNote> n = idleProject ? idle_fixture::chord(k)
                                                 : std::vector<e::TimedNote>{{0, 48000 * 600, 110.0f * (1.0f + 0.125f * (k % 8)), 0.8f, 0.5f},
@@ -82,6 +106,10 @@ struct Rig {
     units = static_cast<uint32_t>(b.value().images.size());
     for (uint32_t u = 0; u < units; ++u)
       if (!program->publish(u, std::move(b.value().images[u])).ok()) std::exit(4);
+    if (numParams > 0) {  // the params at their patches' defaults would do too; any value: nothing changes after this
+      std::span<float> pp = program->projectParams();
+      std::fill(pp.begin(), pp.end(), 0.5f);
+    }
     // The idle project: past every tail (chords at 0, the echoes ring ≈ 7 s); the busy one: settled.
     const uint64_t warm = idleProject ? 48000 * 14 : 48000;
     for (uint64_t t = 0; t < warm; t += kBlock) block();
@@ -108,15 +136,16 @@ int main(int argc, char** argv) {
   DenormalGuard dg;
   bench::Runner runner("pq_bench_silence");
   struct Case {
-    bool idle, jit, sleep;
+    bool idle, jit, sleep, links = false;
   };
   const Case cases[] = {{true, false, true},  {true, true, true},   {true, false, false}, {true, true, false},
+                        {true, false, true, true}, {true, true, true, true},
                         {false, false, true}, {false, false, false}, {false, true, true}, {false, true, false}};
   for (const Case& k : cases) {
     const std::string name = std::string(k.idle ? "idle/30 tracks" : "awake/30-track fixture") + (k.jit ? " jit" : " interp") +
-                             (k.idle ? (k.sleep ? "" : " nosleep") : (k.sleep ? " sleep" : " nosleep"));
+                             (k.idle ? (k.sleep ? "" : " nosleep") : (k.sleep ? " sleep" : " nosleep")) + (k.links ? " links" : "");
     runner.add(name, [k, name](bench::Context& c) {
-      Rig rig(k.idle, k.jit, k.sleep);
+      Rig rig(k.idle, k.jit, k.sleep, k.links);
       const uint32_t asleep = rig.asleepUnits();
       const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
       std::printf("  %s: %.3f %% of a core (median), %u of %u units asleep\n", name.c_str(),
