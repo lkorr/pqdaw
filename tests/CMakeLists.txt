@@ -333,6 +333,17 @@ pq_add_test(pq_tests_document
     document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
   DEPS pq_doc)
 
+# library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index
+# file + journal, the change watcher (latency in `perf`), search vs a brute-force reference scorer (200k-entry
+# keystroke timing in `perf`), tags across renames.
+pq_add_test(pq_tests_library PERF
+  SOURCES
+    library/test_index.cpp
+    library/test_indexer.cpp
+    library/test_search.cpp
+    library/test_tags.cpp
+  DEPS pq_library)
+
 # T0.9-fix1: pq::ui's line primitives vs PQ Meter's own code, compiled from the PQ Meter source tree when it
 # exists on this machine (skipped otherwise). See the file for how and why.
 include(ui/pqmeter_diff.cmake)
