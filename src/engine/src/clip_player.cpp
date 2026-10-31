@@ -66,7 +66,7 @@ float staticShape(const AudioSequenceImage::Clip& c, SampleTime t) noexcept {
 // [g, g + G) of the song gets the law through its two ends, whatever the engine block or run boundaries are, so a
 // render is bit-identical across block sizes. Inside a cell the position is base + j · step − m · span (32.32,
 // wrapping), with m the loop folds since the cell start; pieces split where m changes (a wrap) and at cell edges.
-constexpr SampleTime kRePitchGrid = 256;
+constexpr SampleTime kRePitchGrid = 64;  // 1.3 ms: a ramp's chord error stays ~1e-3 frames (256 gave ~0.02)
 
 struct RePitchCell {
   SampleTime g = 0;   // the cell's first song sample
