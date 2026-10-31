@@ -71,13 +71,15 @@ struct alignas(32) PhasorState {
 };
 
 // gain / gain_add (T3.17-fix2): per lane the target the gain heads for and the residual d (gain = target + d; 0 when
-// settled), the time constant its coefficient was computed for, the coefficient r = e^(−1/τ), and for the 1-lane
+// settled), the time constant its coefficient was computed for, the coefficient r = e^(−1/τ), whether the lane
+// has run (T4.x-fix-dsp: with `start` 1 its first block starts at the target instead of at 0), and for the 1-lane
 // closed form r^0 … r^7 and r^8 (lane 0's).
 struct alignas(32) GainState {
   float target[8];
   float d[8];
   float tau[8];
   float r[8];
+  float started[8];  // 0 until the lane's first block (initState and a voice's lane reset clear it)
   float rpow[8];
   float r8;
   float pad_[7];

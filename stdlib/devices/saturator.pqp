@@ -6,9 +6,16 @@
 // Signal flow (stereo, every channel alike):
 //   pre  = colour ? bell(lowshelf(x, 200 Hz, base), colorFreq, colorWidth, depth) : x      (TPT SVFs, base rate)
 //   u    = pre · drive
-//   wet  = down(shape(up(u)))  with shape(v) = softClip ? tanh(output · curve(v)) : output · curve(v)
-//          (`hq` = 2, 4, 8: polyphase IIR oversampling, stdlib/util/oversample.pqp; 1 = none)
+//   wet  = shape(u)  with shape(v) = softClip ? tanh(output · curve(v)) : output · curve(v)
 //   out  = x + dryWet · (wet − x)
+// With HQ (`hq` = 2, 4, 8: polyphase IIR oversampling, stdlib/util/oversample.pqp; 1 = none) all of this but the
+// colour EQ runs on every oversampled sample, the dry/wet mix included: out = down(up(x) + dryWet·(shape(up(pre) ·
+// drive) − up(x))). The dry signal then goes through the same half-bands as the wet one (down(up(x)) is an allpass
+// flat to 20 kHz), so a partial dry/wet does not comb (M4 review M10: mixing the plain x with the oversampled wet
+// path was −4.1 dB at 5 kHz and −9.8 dB at 10 kHz at 2×, 50 %). Without colour up(pre) is up(x): one up chain;
+// with colour the input gets its own (one more up chain, the price of the alignment).
+// Drive, output and dry/wet are smoothed gains (`gain`, 2 ms, starting at their first value: M4 review M13), so a
+// knob jump or an automation step does not click; settled, each is one multiply per sample.
 //
 // Curves (u = the driven input; every one odd-symmetric, slope 1 at 0 unless noted):
 //   0 Analog Clip    c − 4/27·c³,  c = clip(u, −1.5, 1.5)          cubic soft knee, hard ceiling ±1 from |u| = 1.5
@@ -28,17 +35,19 @@
 // tanh is fast_tanh (2.5e-7 relative), sin the `sine` atom (fast_sin, 1.5e-7): far below the float32 noise floor.
 //
 // Structural settings are constants (a change recompiles and crossfades, SPEC §7.5; only the chosen curve and
-// oversampling factor exist in the compiled program): `type` 0 … 8, `hq` 1 / 2 / 4 / 8, `color`, `softClip`.
+// oversampling factor exist in the compiled program): `type` 0 … 8 (default 0 Analog Clip, as Live loads it),
+// `hq` 1 / 2 / 4 / 8, `color`, `softClip`.
 // Everything else is a param (any rate: drive, output and the waveshaper knobs may be modulated
 // at audio rate).
 //
-// Exports: `driven` (the signal into the curve, base rate) and `wet` (after the curve, output and soft clip).
+// Exports: `driven` (the signal into the curve, base rate) and `wet` (after the curve, output and soft clip; with
+// HQ its own down chain, built only when something reads it).
 import "../filters/svf.pqp"
 import "../util/oversample.pqp"
 
 patch saturator {
   in    x           : audio stereo
-  in    type        : real const = 3     // 0 Analog Clip … 8 Shaper (above)
+  in    type        : real const = 0     // 0 Analog Clip (Live's default, M4 review L11) … 8 Shaper (above)
   in    hq          : real const = 1     // oversampling factor: 1 (off), 2, 4, 8
   in    color       : real const = 0     // 1: colour EQ on
   in    softClip    : real const = 0     // 1: tanh soft clip after the output gain
@@ -58,56 +67,102 @@ patch saturator {
   out   out : audio stereo
 
   pre = color >= 0.5 ? svf(svf(x, cutoff: 200Hz, q: 0.7071067811865476, gain: base).lowshelf, cutoff: colorFreq, q: colorWidth, gain: depth).bell : x
-  u   = pre * drive
+  u   = gain(pre, drive, start: 1)
 
   // Waveshaper coefficients (param rate unless modulated).
   wf = 0.5 + 7.5 * wsPeriod                 // sine cycles over t ∈ [0, 1] (the `sine` atom's phase units)
   wg = 0.01 * wsDamp * wsDamp + 1e-30       // (0.1·damp)² + ε
 
   // 1× (no oversampling)
-  y1 = sat_shape(u, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  h1 = sat_mix(pre, x, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
 
-  // 2×
-  a  = os_up2(u)
-  y2 = os_down2(sat_shape(a.s0, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                sat_shape(a.s1, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg))
+  // 2×: the dry samples are the input's own upsampled samples (the colour EQ's up chain is the input's when the
+  // colour is off), so the dry and wet paths share the half-bands' phase (M4 review M10).
+  a  = os_up2(pre)
+  ax = os_up2(x)
+  a0 = color >= 0.5 ? ax.s0 : a.s0
+  a1 = color >= 0.5 ? ax.s1 : a.s1
+  m0 = sat_mix(a.s0, a0, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  m1 = sat_mix(a.s1, a1, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  y2 = os_down2(m0, m1)
+  w2 = os_down2(m0.w, m1.w)
 
   // 4×
-  b  = os_up2(u)
+  b  = os_up2(pre)
   b4 = os_up2_4(b.s0, b.s1)
-  c4 = os_down4_2(sat_shape(b4.o0, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(b4.o1, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(b4.o2, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(b4.o3, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg))
+  bx = os_up2(x)
+  bx4 = os_up2_4(bx.s0, bx.s1)
+  d0 = color >= 0.5 ? bx4.o0 : b4.o0
+  d1 = color >= 0.5 ? bx4.o1 : b4.o1
+  d2 = color >= 0.5 ? bx4.o2 : b4.o2
+  d3 = color >= 0.5 ? bx4.o3 : b4.o3
+  n0 = sat_mix(b4.o0, d0, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  n1 = sat_mix(b4.o1, d1, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  n2 = sat_mix(b4.o2, d2, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  n3 = sat_mix(b4.o3, d3, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  c4 = os_down4_2(n0, n1, n2, n3)
   y4 = os_down2(c4.o0, c4.o1)
+  cw = os_down4_2(n0.w, n1.w, n2.w, n3.w)
+  w4 = os_down2(cw.o0, cw.o1)
 
   // 8×
-  e  = os_up2(u)
+  e  = os_up2(pre)
   e4 = os_up2_4(e.s0, e.s1)
   e8 = os_up4_8(e4.o0, e4.o1, e4.o2, e4.o3)
-  f8 = os_down8_4(sat_shape(e8.o0, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(e8.o1, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(e8.o2, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(e8.o3, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(e8.o4, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(e8.o5, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(e8.o6, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg),
-                  sat_shape(e8.o7, type, softClip, output, wsDrive, wsLin, wsCurve, wsDepth, wf, wg))
+  ex = os_up2(x)
+  ex4 = os_up2_4(ex.s0, ex.s1)
+  ex8 = os_up4_8(ex4.o0, ex4.o1, ex4.o2, ex4.o3)
+  q0 = sat_mix(e8.o0, color >= 0.5 ? ex8.o0 : e8.o0, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  q1 = sat_mix(e8.o1, color >= 0.5 ? ex8.o1 : e8.o1, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  q2 = sat_mix(e8.o2, color >= 0.5 ? ex8.o2 : e8.o2, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  q3 = sat_mix(e8.o3, color >= 0.5 ? ex8.o3 : e8.o3, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  q4 = sat_mix(e8.o4, color >= 0.5 ? ex8.o4 : e8.o4, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  q5 = sat_mix(e8.o5, color >= 0.5 ? ex8.o5 : e8.o5, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  q6 = sat_mix(e8.o6, color >= 0.5 ? ex8.o6 : e8.o6, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  q7 = sat_mix(e8.o7, color >= 0.5 ? ex8.o7 : e8.o7, type, softClip, drive, output, dryWet, wsDrive, wsLin, wsCurve, wsDepth, wf, wg)
+  f8 = os_down8_4(q0, q1, q2, q3, q4, q5, q6, q7)
   f4 = os_down4_2(f8.o0, f8.o1, f8.o2, f8.o3)
   y8 = os_down2(f4.o0, f4.o1)
+  g8 = os_down8_4(q0.w, q1.w, q2.w, q3.w, q4.w, q5.w, q6.w, q7.w)
+  g4 = os_down4_2(g8.o0, g8.o1, g8.o2, g8.o3)
+  w8 = os_down2(g4.o0, g4.o1)
 
-  w   = hq >= 7.5 ? y8 : hq >= 3.5 ? y4 : hq >= 1.5 ? y2 : y1
-  out = x + dryWet * (w - x)
+  out = hq >= 7.5 ? y8 : hq >= 3.5 ? y4 : hq >= 1.5 ? y2 : h1
 
   export driven = u
-  export wet    = w
+  export wet    = hq >= 7.5 ? w8 : hq >= 3.5 ? w4 : hq >= 1.5 ? w2 : h1.w
+}
+
+// One (oversampled) sample: drive, curve, output, soft clip, then the dry/wet mix with the dry sample `d` at the
+// same rate. `p` is the colour EQ's output (the input itself without colour). Drive, output and dry/wet are
+// smoothed gains (M4 review M13: 2 ms, starting at their first value; settled, each is one multiply).
+patch sat_mix {
+  in    p        : audio
+  in    d        : audio
+  in    type     : real const = 0
+  in    softClip : real const = 0
+  param drive   = 1    [0..100]
+  param outGain = 1    [0..100]
+  param dryWet  = 1    [0..1]
+  param wsD     = 0.5  [0..1]
+  param wsLin   = 0.5  [0..1]
+  param wsCurve = 0.5  [0..1]
+  param wsDepth = 0    [0..1]
+  param wsFreq  = 0.5  [0..8]
+  param wsGate  = 1e-30 [0..1]
+  out   y : audio
+  out   w : audio
+
+  v = sat_shape(gain(p, drive, start: 1), type, softClip, outGain, wsD, wsLin, wsCurve, wsDepth, wsFreq, wsGate)
+  y = gain_add(d, v - d, dryWet, start: 1)
+  w = v
 }
 
 // One sample of the wet path: curve `type`, output gain, optional soft clip. Stateless, so the oversampled paths
 // call it once per high-rate sample.
 patch sat_shape {
   in    v        : audio
-  in    type     : real const = 3
+  in    type     : real const = 0
   in    softClip : real const = 0
   param outGain = 1    [0..100]
   param wsD     = 0.5  [0..1]
@@ -144,6 +199,6 @@ patch sat_shape {
   drawn = shaper(v)
 
   c = mux(type, analog, softsine, bass, medium, hard, fold, digital, ws, drawn)
-  g = c * outGain
+  g = gain(c, outGain, start: 1)
   y = softClip >= 0.5 ? fast_tanh(g) : g
 }

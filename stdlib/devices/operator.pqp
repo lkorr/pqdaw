@@ -37,9 +37,13 @@
 // OPERATOR. phase = phasor(hz) + 0.5 · Σ modulators (a modulator at full level moves the phase ±½ cycle, ±π rad);
 // D's phase also gets feedback · ¼ · (y[n−1] + y[n−2]) of its own raw waveform (the mean of two samples, as in the
 // DX7, so high feedback hisses instead of oscillating between two states). Output = wave(phase) · envelope ·
-// level · velocity · key, where velocity = max(0, 1 + vel·(velocity − 1)) and key = 2^(key · octaves from the
-// reference, C3: ±6 dB per octave at ±100 %). An operator switched off (`onX`, structural) costs nothing and
-// its output is 0.
+// level · velocity · key, where velocity = max(0, 1 + vel·(velocity − 1)) and key = 2^min(key · octaves from the
+// reference C3, 0): key scaling only attenuates (M4 review M11), 6 dB per octave at ±100 %: a positive Key
+// attenuates the notes below C3 (the high notes keep their level), a negative one the notes above C3 (the classic
+// use: tame a modulator's index up the keyboard). Never a boost, as on FM synths (a DX7's level scaling cannot raise
+// an operator past its output level): an unbounded 2^(key · octaves) gave +24 dB four octaves up at 100 % and drove
+// the modulators far past the ±π phase index. An operator switched off (`onX`, structural) costs nothing and its
+// output is 0.
 // WAVEFORMS (`waveX`, structural): 0 Sine, 1 Sine 4 bit, 2 Sine 8 bit, 3–9 Saw 3/4/6/8/16/32/64, 10 Saw D,
 // 11–17 Square 3/4/6/8/16/32/64, 18 Square D, 19 Triangle, 20 Noise Looped, 21 Noise White, 22 User. SawN /
 // SquareN / Triangle / Noise Looped are band-limited built-in wavetables (pq/dsp/tables.h: N partials, mipmapped);
@@ -373,10 +377,10 @@ patch operator {
   hmD  = modOn ? fast_cents_to_hz(cD, hzD) : hzD
 
   // ---- Amplitudes: envelope · level · velocity · key (an operator that is off never reads its own) ----
-  ampA = envA * (lin(levelA) * max(0, 1 + velA * (vel - 1))) * fast_cents_to_hz(keyA * kc, 1)
-  ampB = envB * (lin(levelB) * max(0, 1 + velB * (vel - 1))) * fast_cents_to_hz(keyB * kc, 1)
-  ampC = envC * (lin(levelC) * max(0, 1 + velC * (vel - 1))) * fast_cents_to_hz(keyC * kc, 1)
-  ampD = envD * (lin(levelD) * max(0, 1 + velD * (vel - 1))) * fast_cents_to_hz(keyD * kc, 1)
+  ampA = envA * (lin(levelA) * max(0, 1 + velA * (vel - 1))) * fast_cents_to_hz(min(keyA * kc, 0), 1)
+  ampB = envB * (lin(levelB) * max(0, 1 + velB * (vel - 1))) * fast_cents_to_hz(min(keyB * kc, 0), 1)
+  ampC = envC * (lin(levelC) * max(0, 1 + velC * (vel - 1))) * fast_cents_to_hz(min(keyC * kc, 0), 1)
+  ampD = envD * (lin(levelD) * max(0, 1 + velD * (vel - 1))) * fast_cents_to_hz(min(keyD * kc, 0), 1)
 
   // ---- The operators (a second set for the right channel with spread) ----
   bankL = op_bank(hzA: hmA, hzB: hmB,

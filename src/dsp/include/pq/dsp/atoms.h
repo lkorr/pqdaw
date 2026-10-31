@@ -119,15 +119,17 @@
 //                                     reference₀); a Degree lane's hz input over its static degree pitch (a note's
 //                                     ratio to its anchor, a glide) multiplies the computed pitch (kernels_tuning.cpp).
 // Smoothed gains (T3.17-fix2, M3 review H1; the mixer's gain stages and sends, kernels_gain.cpp):
-//   gain (x, g, time)                 x · y, where y follows g as a one-pole with time constant `time` (samples;
+//   gain (x, g, time, start)          x · y, where y follows g as a one-pole with time constant `time` (samples;
 //                                     ≤ 0: no smoothing): y_k = g + (y₀ − g)·e^(−k/time) over a block's frames
 //                                     k = 0, 1, … (y₀ = the previous block's last value, so a frame reads y before
 //                                     its update), evaluated in closed form. Within 3e-8 of g (≈ −150 dB) y snaps
 //                                     onto g; a settled gain costs one multiply per sample (g = 0: a zero fill).
 //                                     `g` is normally a param (Spl): a block-rate target. A Blk (audio-rate) g is
-//                                     used as it is, unsmoothed. Non-finite g counts as 0. y starts at 0, so a new
-//                                     instance fades in from silence. `time` must be Spl.
-//   gain_add (acc, x, g, time)        acc + x · y, y as in gain. Settled at g = 0 it is a copy of acc: nothing at
+//                                     used as it is, unsmoothed. Non-finite g counts as 0. With `start` 0, y starts
+//                                     at 0, so a new instance (a voice lane after its reset) fades in from silence;
+//                                     with `start` 1 (T4.x-fix-dsp: device params) its first block starts at g.
+//                                     `time` and `start` must be Spl (start may be omitted: numIn 3 reads it as 0).
+//   gain_add (acc, x, g, time, start) acc + x · y, y as in gain. Settled at g = 0 it is a copy of acc: nothing at
 //                                     all when the output took the accumulator's buffer (in place), so a chain of
 //                                     gain_adds (a return's sends) costs nothing for its closed inputs.
 

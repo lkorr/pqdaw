@@ -28,6 +28,13 @@
 // Exports: `a`, `b` (each set's output), `band1` … `band8` (after each band of the A set; with HQ the first of the
 // two oversampled samples).
 //
+// Smoothing (M4 review M13): each section's output mix (m0, m1, m2) and the output gain are smoothed gains
+// (`gain` / `gain_add`, 2 ms, starting at their first value), so a gain or Q jump (which moves m1, m2) and an
+// automation step glide instead of stepping the output; a mix coefficient a structural constant fixes (most of them:
+// m0 = 1 and m2 = 0 for a bell) folds to a plain multiply or nothing. The SVF core's g and k still step once per
+// block: its states are the analog filter's, so a cutoff or damping step changes the output's slope, not its value
+// (the analog filter under a knob jump does the same; measured in tests/stdlib/test_devices.cpp).
+//
 // Cost per band per channel: one SVF core (about ten multiply-adds) plus two or three multiply-adds per sample
 // (four cores for the 48s); coefficients once per block unless freq / gain / q are modulated.
 import "../filters/svf_fast.pqp"
@@ -129,7 +136,7 @@ patch eq_eight {
   ca = eq8_chain(mode >= 1.5 ? M : x[0], hq, type1, type2, type3, type4, type5, type6, type7, type8, on1, on2, on3, on4, on5, on6, on7, on8, freq1, freq2, freq3, freq4, freq5, freq6, freq7, freq8, gain1, gain2, gain3, gain4, gain5, gain6, gain7, gain8, q1, q2, q3, q4, q5, q6, q7, q8, adaptive, scale)
   cb = eq8_chain(mode >= 1.5 ? S : x[1], hq, typeB1, typeB2, typeB3, typeB4, typeB5, typeB6, typeB7, typeB8, onB1, onB2, onB3, onB4, onB5, onB6, onB7, onB8, freqB1, freqB2, freqB3, freqB4, freqB5, freqB6, freqB7, freqB8, gainB1, gainB2, gainB3, gainB4, gainB5, gainB6, gainB7, gainB8, qB1, qB2, qB3, qB4, qB5, qB6, qB7, qB8, adaptive, scale)
   lr = mode >= 1.5 ? (ca + cb, ca - cb) : (ca, cb)
-  out = (mode >= 0.5 ? lr : st) * outGain
+  out = gain(mode >= 0.5 ? lr : st, outGain, start: 1)
 
   export a = mode >= 0.5 ? ca : st
   export b = mode >= 0.5 ? cb : 0
@@ -265,7 +272,7 @@ patch eq8_coef {
   k4 = 0.27589937928294295 * kc
 }
 
-// One section: y = m0·x + m1·band + m2·low of an SVF core.
+// One section: y = m0·x + m1·band + m2·low of an SVF core (the mix coefficients smoothed, M13).
 patch eq8_sec {
   in    x  : audio
   param g  = 0.0655 [0..100]
@@ -276,7 +283,7 @@ patch eq8_sec {
   out   y : audio
 
   f = svf_core_fast(x, g: g, k: k)
-  y = m0 * x + m1 * f.band + m2 * f.low
+  y = gain_add(gain_add(gain(x, m0, start: 1), f.band, m1, start: 1), f.low, m2, start: 1)
 }
 
 // A band at the base rate.
@@ -346,8 +353,8 @@ patch eq8_sec2 {
   out   y1 : audio
 
   f  = eq8_svf2(x0, x1, g: g, k: k)
-  y0 = m0 * x0 + m1 * f.band0 + m2 * f.low0
-  y1 = m0 * x1 + m1 * f.band1 + m2 * f.low1
+  y0 = gain_add(gain_add(gain(x0, m0, start: 1), f.band0, m1, start: 1), f.low0, m2, start: 1)
+  y1 = gain_add(gain_add(gain(x1, m0, start: 1), f.band1, m1, start: 1), f.low1, m2, start: 1)
 }
 
 // A band at 2× (two samples per tick).

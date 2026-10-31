@@ -278,6 +278,9 @@ std::complex<double> sAt(double f, double fc) {
   return {0.0, std::tan(kPi * f / kSr) / std::tan(kPi * fcc / kSr)};
 }
 
+// Clean's damping (af_kclean, M4 review M12): √2·(1 − res) up to 90 %, then exponentially down to 0.02 at 125 %.
+double kCleanD(double res) { return res < 0.9 ? std::sqrt(2.0) * (1.0 - res) : 0.1414213562373095 * std::exp(-5.545177444479562 * (res - 0.9)); }
+
 // The analytic response of the device at small signal levels (linear: tanh(v) ≈ v, below the OSR diode's knee).
 std::complex<double> analytic(const Conf& c, const Params& p, double f) {
   using C = std::complex<double>;
@@ -308,10 +311,11 @@ std::complex<double> analytic(const Conf& c, const Params& p, double f) {
         num += ci * Gn;
         Gn *= G;
       }
+      num += k * (wLP + wN) * G * G * G * G;  // the passband compensation (M4 review M12)
       h = num / (1.0 + k * G * G * G * G);
     } else {
       const bool clean = model == 0;
-      const double k12 = clean ? std::max(std::sqrt(2.0) * (1.0 - 0.8 * p.res), 0.02) : std::sqrt(2.0) * (1.0 - p.res);
+      const double k12 = clean ? kCleanD(p.res) : std::sqrt(2.0) * (1.0 - p.res);
       const double kB = c.slope ? 0.541196100146197 * k12 : k12;
       const double kbB = clean ? kB : std::max(kB, 0.25);
       auto sec = [&](double k, double kb) {
@@ -329,7 +333,7 @@ std::complex<double> analytic(const Conf& c, const Params& p, double f) {
     return std::sqrt(1.0 - fb * fb) / (1.0 - fb * std::polar(1.0, -2.0 * kPi * f / kSr * T));
   }
   if (type == 8) {
-    const double k = std::max(std::sqrt(2.0) * (1.0 - 0.8 * p.res), 0.02);
+    const double k = kCleanD(p.res);
     const C notch = (s * s + 1.0) / (s * s + k * s + 1.0);
     const C s2 = sAt(f, std::min(2.0 * base, 0.49 * kSr));
     return notch / (s2 * s2 + std::sqrt(2.0) * s2 + 1.0);
@@ -741,7 +745,7 @@ TEST_CASE("Auto Filter: square-LFO cutoff jumps click no more than the analog fi
     double maxStep = 0.0;
     for (size_t t = 4800; t < y.size(); ++t) maxStep = std::max(maxStep, std::fabs(static_cast<double>(y[t]) - y[t - 1]));
     if (circuit == 0) {
-      const double kB = 0.541196100146197 * std::sqrt(2.0) * (1.0 - 0.8 * 0.5);
+      const double kB = 0.541196100146197 * kCleanD(0.5);
       const std::vector<double> a = analogLp24(o.at("cutoff")[0], kB, sine);
       double aStep = 0.0, err = 0.0, pk = 0.0;
       for (size_t t = 4800; t < y.size(); ++t) {
@@ -907,3 +911,245 @@ TEST_CASE("Auto Filter: the envelope follower moves the cutoff; the sidechain re
   CHECK(std::log2(half / 300.0) == doctest::Approx(0.5 * std::log2(full / 300.0)).epsilon(0.02));
 }
 
+
+// ================================================================================================================
+// M4 review M12, M13 and the stability / tuning renders (T4.x-fix-dsp)
+// ================================================================================================================
+
+namespace {
+
+// |H(f)| in dB of `prog`'s impulse response (amplitude `amp`: every model is linear there) at the listed frequencies.
+std::vector<double> smallSignalDb(const Program& prog, const Params& p, const std::vector<double>& freqs, double sr = kSr) {
+  constexpr double kAmp = 1e-4;
+  const auto len = static_cast<uint32_t>(sr);  // 1 s: the resonances have rung out (−∞ dB well before)
+  Stimulus st = afStimulus(len, 64, [](uint32_t, uint64_t t) { return t == 0 ? kAmp : 0.0; });
+  setParams(st, p);
+  const Outputs o = run(prog, Backend::Jit, st);
+  REQUIRE_MESSAGE(o.error.empty(), o.error);
+  const auto& y = o.at("y")[0];
+  std::vector<double> r;
+  for (const double f : freqs) {
+    std::complex<double> acc = 0.0, rot = 1.0;
+    const std::complex<double> step = std::polar(1.0, -2.0 * kPi * f / sr);
+    for (size_t t = 0; t < y.size(); ++t) {
+      acc += static_cast<double>(y[t]) * rot;
+      rot *= step;
+    }
+    r.push_back(20.0 * std::log10(std::max(std::abs(acc) / kAmp, 1e-30)));
+  }
+  return r;
+}
+
+// The amplitude of the `hz` component of y over [from, from + n) (a whole number of cycles), by a DFT.
+double toneAmp(const std::vector<float>& y, size_t from, size_t n, double hz, double sr = kSr) {
+  std::complex<double> acc = 0.0;
+  for (size_t t = 0; t < n; ++t) acc += static_cast<double>(y[from + t]) * std::polar(1.0, -2.0 * kPi * hz * static_cast<double>(t) / sr);
+  return 2.0 * std::abs(acc) / static_cast<double>(n);
+}
+
+// As test_devices.cpp's stepClick: the largest sample-to-sample step of the output in the 10 ms after a param step
+// over the steady one before / after (a sine 1.3 rad into its cycle at the step).
+double stepClick(const Program& prog, const std::string& param, double from, double to, double hz, const Params& p) {
+  constexpr uint64_t kStep = 9600, kLen = 19200;
+  Stimulus st = afStimulus(static_cast<uint32_t>(kLen), 64, [hz](uint32_t, uint64_t t) {
+    return 0.5 * std::sin(2.0 * kPi * hz * (static_cast<double>(t) - static_cast<double>(kStep)) / kSr + 1.3);
+  });
+  setParams(st, p);
+  st.params[param] = from;
+  st.paramAt = [&](const std::string& name, uint64_t t0) { return name == param && t0 >= kStep ? to : NAN; };
+  const Outputs o = runBoth(prog, st, "step " + param);
+  const auto& y = o.at("y")[0];
+  auto d1 = [&](uint64_t t) { return std::fabs(static_cast<double>(y[t]) - y[t - 1]); };
+  double steady = 0.0, click = 0.0;
+  for (uint64_t t = kStep - 4800; t < kStep; ++t) steady = std::max(steady, d1(t));
+  for (uint64_t t = kStep + 4800; t < kLen; ++t) steady = std::max(steady, d1(t));
+  for (uint64_t t = kStep; t < kStep + 480; ++t) click = std::max(click, d1(t));
+  return click / steady;
+}
+
+}  // namespace
+
+TEST_CASE("Auto Filter: the circuit models' levels match at the default resonance (M4 review M12)") {
+  // Small signal, resonance 30 % (the default), cutoff 1 kHz: the passbands (LP and notch at 40 Hz, HP at 16 kHz)
+  // and, for LP and notch, the level of the whole response (the mean power gain over 20 Hz … 20 kHz, log-spaced:
+  // what a broadband signal hears) of every model within 1 dB of Clean's, at 12 and 24 dB.
+  const std::vector<double> freqs = logFreqs(20.0, 20000.0, 121);
+  for (int slope = 0; slope < 2; ++slope)
+    for (const int type : {0, 1, 3}) {
+      double lo[5], mean[5];
+      std::string line;
+      for (int circuit = 0; circuit < 5; ++circuit) {
+        Params p;
+        p.freq = 1000.0f;
+        const std::vector<double> db = smallSignalDb(afProgram(conf(type, circuit, slope)), p, freqs);
+        double pw = 0.0;
+        for (const double d : db) pw += std::pow(10.0, d / 10.0);
+        mean[circuit] = 10.0 * std::log10(pw / static_cast<double>(db.size()));
+        lo[circuit] = type == 1 ? db[freqs.size() - 9] : db[6];  // 16.2 kHz / 40 Hz
+        line += std::string(" ") + kCircuitNames[circuit] + " " + std::to_string(lo[circuit]) + " / " + std::to_string(mean[circuit]);
+      }
+      MESSAGE(std::string(kTypeNames[type]) << (slope ? " 24" : " 12") << " passband / mean power gain (dB):" << line);
+      for (int circuit = 1; circuit < 5; ++circuit) {
+        CHECK_MESSAGE(std::fabs(lo[circuit] - lo[0]) <= 1.0, std::string(kCircuitNames[circuit]) << " passband " << lo[circuit] << " vs Clean " << lo[0]);
+        // The ladder's high-pass is its own shape below the cutoff (pole mixing; its passband matches): the mean power
+        // gain is compared for the lowpass and the notch, which the passband compensation affects.
+        if (type != 1)
+          CHECK_MESSAGE(std::fabs(mean[circuit] - mean[0]) <= 1.0, std::string(kCircuitNames[circuit]) << " level " << mean[circuit] << " vs Clean " << mean[0]);
+      }
+    }
+}
+
+TEST_CASE("Auto Filter: drive keeps small signals at their level; the level of a 0 dBFS tone (documented)") {
+  // 220 Hz through LP 12 dB at 2 kHz, resonance 30 %: the fundamental at −40 dBFS stays within 0.5 dB of Clean at
+  // every drive (the nonlinear terms see drive·v and are divided by drive); at 0 dBFS a saturating input stage keeps
+  // the level near its knee (1/drive), so OSR and SMP lose level with drive (measured here and documented).
+  for (const double amp : {0.01, 1.0}) {
+    std::string line;
+    for (int circuit = 0; circuit < 5; ++circuit) {
+      line += std::string(" ") + kCircuitNames[circuit] + ":";
+      for (const double driveDb : {0.0, 12.0, 24.0}) {
+        if (circuit == 0 && driveDb > 0.0) continue;
+        Params p;
+        p.freq = 2000.0f;
+        p.drive = static_cast<float>(std::pow(10.0, driveDb / 20.0));
+        Stimulus st = afStimulus(24000, 64, [amp](uint32_t, uint64_t t) { return amp * std::sin(2.0 * kPi * 220.0 * static_cast<double>(t) / kSr); });
+        setParams(st, p);
+        const Outputs o = run(afProgram(conf(0, circuit, 0)), Backend::Jit, st);
+        REQUIRE(o.error.empty());
+        const double lvl = 20.0 * std::log10(toneAmp(o.at("y")[0], 24000 - 2400 * 4, 2400 * 4, 220.0) / amp);
+        line += " " + std::to_string(lvl);
+        if (amp < 0.1) CHECK_MESSAGE(std::fabs(lvl) < 0.5, kCircuitNames[circuit] << " drive " << driveDb << " dB: " << lvl << " dB");
+      }
+    }
+    MESSAGE("fundamental gain (dB) at " << 20.0 * std::log10(amp) << " dBFS, drive 0 / 12 / 24 dB:" << line);
+  }
+}
+
+TEST_CASE("Auto Filter: param jumps glide or keep the output continuous (M4 review M13)") {
+  struct Case {
+    const char* what;
+    Conf c;
+    const char* param;
+    double from, to, hz;
+    Params p;
+  };
+  Params base;
+  Params morph;
+  Params prd;
+  prd.res = 0.6f;
+  const Case cases[] = {
+      {"LP 12 Clean freq 1 -> 4 kHz", conf(0, 0, 0), "a__freq", 1000.0, 4000.0, 300.0, base},
+      {"HP 12 Clean res 30 -> 90 %", conf(1, 0, 0), "a__res", 0.3, 0.9, 2000.0, base},
+      {"BP 24 MS2 res 30 -> 90 %", conf(2, 2, 1), "a__res", 0.3, 0.9, 1000.0, base},
+      {"LP 24 PRD res 60 -> 10 %", conf(0, 4, 1), "a__res", 0.6, 0.1, 300.0, prd},
+      {"Morph 12 Clean morph 0 -> 60 %", conf(4, 0, 0), "a__morph", 0.0, 0.6, 700.0, morph},
+      {"LP 12 Clean output 0 -> -12 dB", conf(0, 0, 0), "a__output", 1.0, 0.251, 220.0, base},
+      {"LP 12 OSR dry/wet 100 -> 20 %", conf(0, 1, 0), "a__dryWet", 1.0, 0.2, 2500.0, base},
+  };
+  for (const Case& k : cases) {
+    const double r = stepClick(afProgram(k.c), k.param, k.from, k.to, k.hz, k.p);
+    MESSAGE(std::string(k.what) << ": click " << r << " x the steady sample-to-sample step");
+    CHECK_MESSAGE(r < 2.0, k.what << ": " << r);
+  }
+}
+
+// Stability and self-oscillation at 22.05, 48 and 192 kHz: every model, 12 / 24 dB, resonance 100 % and 125 %,
+// drive 0 / +24 dB, cutoff 1 kHz and 0.45·sr; a click, 0.5 s of 0 dBFS noise, then 0.5 s of silence. Everything stays
+// finite and bounded; a self-oscillating model keeps oscillating near the cutoff (its pitch is measured); Clean rings
+// out (default tier: a subset at each rate).
+static void stabilityRenders(bool full) {
+  for (const double sr : {22050.0, 48000.0, 192000.0}) {
+    const auto len = static_cast<uint32_t>(sr);
+    for (int circuit = 0; circuit < 5; ++circuit)
+      for (int slope = 0; slope < 2; ++slope)
+        for (const float res : {1.0f, 1.25f})
+          for (const double driveDb : {0.0, 24.0})
+            for (const double fcRel : {0.0, 0.45}) {
+              if (!full && (slope != circuit % 2 || res != 1.25f || (driveDb > 0.0) != (circuit >= 3) || fcRel > 0.0)) continue;
+              Params p;
+              p.res = res;
+              p.drive = static_cast<float>(std::pow(10.0, driveDb / 20.0));
+              p.freq = static_cast<float>(fcRel > 0.0 ? std::min(fcRel * sr, 20000.0) : 1000.0);
+              const Conf c = conf(0, circuit, slope);
+              const Program prog = compile(afProgramText(c, false), sr);
+              // Impulse, 0.25 s of free ringing (where a self-oscillation's pitch is measured), 0.25 s of 0 dBFS
+              // noise, 0.5 s of silence.
+              const uint32_t ringEnd = len / 4, noiseEnd = len / 2;
+              Stimulus st = afStimulus(len, 64, [ringEnd, noiseEnd](uint32_t ch, uint64_t t) {
+                if (t < 4) return 0.5;
+                return t >= ringEnd && t < noiseEnd ? noise(t, 5 + ch) : 0.0;
+              });
+              setParams(st, p);
+              const Outputs o = run(prog, Backend::Jit, st);
+              REQUIRE_MESSAGE(o.error.empty(), o.error);
+              const auto& y = o.at("y")[0];
+              double pk = 0.0, tail = 0.0;
+              bool finite = true;
+              for (size_t t = 0; t < y.size(); ++t) {
+                finite &= std::isfinite(y[t]);
+                pk = std::max(pk, std::fabs(static_cast<double>(y[t])));
+                if (t >= len - len / 4) tail = std::max(tail, std::fabs(static_cast<double>(y[t])));
+              }
+              // Self-oscillation pitch: zero crossings over the last half of the free ringing.
+              double first = -1.0, last = -1.0;
+              int n = 0;
+              for (size_t t = ringEnd / 2 + 1; t < ringEnd; ++t)
+                if (y[t - 1] < 0.0f && y[t] >= 0.0f) {
+                  const double x = static_cast<double>(t - 1) + y[t - 1] / (static_cast<double>(y[t - 1]) - y[t]);
+                  if (first < 0.0) first = x;
+                  last = x;
+                  ++n;
+                }
+              const double hz = n > 1 ? (n - 1) * sr / (last - first) : 0.0;
+              const std::string lb = label(c) + " sr " + std::to_string(static_cast<int>(sr)) + " res " + std::to_string(res) + " drive " +
+                                     std::to_string(static_cast<int>(driveDb)) + " dB fc " + std::to_string(static_cast<int>(p.freq));
+              MESSAGE(lb << ": peak " << pk << ", last 250 ms " << tail << ", ringing at " << hz << " Hz ("
+                         << (hz > 0.0 ? 1200.0 * std::log2(hz / p.freq) : 0.0) << " c from the cutoff)");
+              CHECK_MESSAGE(finite, lb);
+              CHECK_MESSAGE(pk < 16.0, lb << ": peak " << pk);  // the passband-compensated ladder's oscillation is the loudest
+              if (circuit == 0) CHECK_MESSAGE(tail < 1e-3, lb << ": Clean must ring out, " << tail);
+            }
+  }
+}
+
+TEST_CASE("Auto Filter: stability at 22.05 / 48 / 192 kHz with drive (self-oscillation bounded, Clean rings out)") { stabilityRenders(false); }
+TEST_CASE("Auto Filter: stability at 22.05 / 48 / 192 kHz, every model x slope x res x drive x cutoff" * doctest::test_suite("slow")) {
+  stabilityRenders(true);
+}
+
+TEST_CASE("Auto Filter: the comb's impulse response repeats every 1/fc (tuning)") {
+  // Comb type: the echoes of an impulse must come every sr/fc samples: the first echo's peak (with the delay line's
+  // linear interpolation, the energy centre of the two taps around it) at sr/fc, and the spectrum's peaks at
+  // multiples of fc. Measured as the pitch of the impulse response's autocorrelation peak.
+  for (const double fc : {100.0, 440.0, 1000.0, 2500.0, 7000.0}) {
+    Params p;
+    p.freq = static_cast<float>(fc);
+    p.res = 1.0f;  // fb 0.79
+    const Program prog = afProgram(conf(6, 0, 0));
+    Stimulus st = afStimulus(16384, 64, [](uint32_t, uint64_t t) { return t == 0 ? 1.0 : 0.0; });
+    setParams(st, p);
+    const Outputs o = run(prog, Backend::Jit, st);
+    REQUIRE(o.error.empty());
+    const auto& y = o.at("y")[0];
+    // The first echo: the energy centre of the samples around sr/fc (y[0] is the direct impulse).
+    const double T = kSr / fc;
+    const auto from = static_cast<size_t>(std::max(1.0, std::floor(T) - 2.0)), to = static_cast<size_t>(std::ceil(T) + 3.0);
+    double m0 = 0.0, m1 = 0.0;
+    for (size_t t = from; t <= to; ++t) {
+      m0 += std::fabs(static_cast<double>(y[t]));
+      m1 += std::fabs(static_cast<double>(y[t])) * static_cast<double>(t);
+    }
+    const double echo = m1 / m0;
+    // The spectral peak nearest fc (parabolic interpolation over a fine DFT grid).
+    double best = 0.0, bestF = fc;
+    for (double f = fc * 0.9; f <= fc * 1.1; f += fc * 0.0005) {
+      std::complex<double> acc = 0.0;
+      for (size_t t = 0; t < y.size(); ++t) acc += static_cast<double>(y[t]) * std::polar(1.0, -2.0 * kPi * f * static_cast<double>(t) / kSr);
+      if (std::abs(acc) > best) best = std::abs(acc), bestF = f;
+    }
+    const double cents = 1200.0 * std::log2(bestF / fc);
+    MESSAGE("comb fc " << fc << " Hz: first echo at " << echo << " samples (sr/fc " << T << "), spectral peak " << bestF << " Hz ("
+                       << cents << " c)");
+    CHECK_MESSAGE(std::fabs(cents) < 5.0, "comb fc " << fc << ": " << cents << " c");
+  }
+}

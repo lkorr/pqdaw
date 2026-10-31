@@ -69,6 +69,7 @@ struct UtilityConf {
 
 struct Utility {
   float ed[4] = {}, es[6] = {}, td[4] = {}, ts[6] = {};  // smoothing distances and the previous targets
+  bool started = false;  // the first sample starts at the targets (M4 review L10)
   FastSvfCore ap, h1, h2, l1, l2;
   stdref::DcBlock<float> dcL, dcR;
   UtilityConf conf;
@@ -102,6 +103,11 @@ struct Utility {
 
   // One sample with the prepared coefficients.
   void process(float L, float R) {
+    if (!started) {
+      std::copy(direct, direct + 4, td);
+      std::copy(split, split + 6, ts);
+      started = true;
+    }
     if (conf.dc) {
       L = dcL.tick(L, rc);
       R = dcR.tick(R, rc);
@@ -240,6 +246,47 @@ struct Oversampler {
   }
 };
 
+// Up- and down-sampling chains of the three stages, run separately (the Saturator's dry/wet mix inside the
+// oversampled region, M4 review M10: two up chains (the colour EQ's output, the dry input) and two down chains (the
+// mix, the `wet` export)).
+struct OsUp {
+  HbUp<3, 3> up1;
+  HbUp<2, 1> up2;
+  HbUp<1, 1> up3;
+  // x → `factor` samples in time order (factor 2, 4, 8).
+  void tick(float x, int factor, float* o) {
+    float s[2];
+    up1.tick(x, kHb1P0, kHb1P1, s[0], s[1]);
+    if (factor == 2) {
+      o[0] = s[0], o[1] = s[1];
+      return;
+    }
+    float q[4];
+    for (int i = 0; i < 2; ++i) up2.tick(s[i], kHb2P0, kHb2P1, q[2 * i], q[2 * i + 1]);
+    if (factor == 4) {
+      for (int i = 0; i < 4; ++i) o[i] = q[i];
+      return;
+    }
+    for (int i = 0; i < 4; ++i) up3.tick(q[i], kHb3P0, kHb3P1, o[2 * i], o[2 * i + 1]);
+  }
+};
+struct OsDown {
+  HbDown<3, 3> down1;
+  HbDown<2, 1> down2;
+  HbDown<1, 1> down3;
+  float tick(const float* in, int factor) {
+    float r[4], d[2];
+    if (factor == 2) return down1.tick(in[0], in[1], kHb1P0, kHb1P1);
+    if (factor == 4) {
+      for (int i = 0; i < 4; ++i) r[i] = in[i];
+    } else {
+      for (int i = 0; i < 4; ++i) r[i] = down3.tick(in[2 * i], in[2 * i + 1], kHb3P0, kHb3P1);
+    }
+    for (int i = 0; i < 2; ++i) d[i] = down2.tick(r[2 * i], r[2 * i + 1], kHb2P0, kHb2P1);
+    return down1.tick(d[0], d[1], kHb1P0, kHb1P1);
+  }
+};
+
 // ---- Saturator (stdlib/devices/saturator.pqp) ----------------------------------------------------------------------
 struct SatParams {
   float drive = 1.0f, output = 1.0f, dryWet = 1.0f;  // linear
@@ -247,7 +294,7 @@ struct SatParams {
   float wsDrive = 0.5f, wsLin = 0.5f, wsCurve = 0.5f, wsDamp = 0.0f, wsDepth = 0.0f, wsPeriod = 0.0f;
 };
 struct SatConf {
-  int type = 3, hq = 1;
+  int type = 0, hq = 1;  // Analog Clip (M4 review L11: Live's default)
   bool color = false, softClip = false;
 };
 
@@ -288,7 +335,8 @@ inline float satCurve(int type, float v, const SatParams& p) {
 struct Saturator {
   SatConf conf;
   float sr = 48000.0f;
-  Oversampler os[2];
+  OsUp upP[2], upX[2];    // the colour EQ's output; the dry input (with colour only: else upP's samples)
+  OsDown downY[2], downW[2];  // the mix; the `wet` export
   stdref::Svf<float> shelf[2], bell[2];
   stdref::Svf<float>::Coef shelfC{}, bellC{};
   SatParams p{};
@@ -307,7 +355,7 @@ struct Saturator {
     return conf.softClip ? fastTanh(g) : g;
   }
   // One stereo sample with the prepared params (the curve type as a template argument, as a hand-written
-  // saturator would specialise it).
+  // saturator would specialise it). Drive, curve, output and the dry/wet mix on every (oversampled) sample.
   template <int kType>
   void processT(const float (&x)[2]) {
     for (int ch = 0; ch < 2; ++ch) {
@@ -316,11 +364,23 @@ struct Saturator {
         pre = shelf[ch].tick(pre, shelfC).lowshelf;
         pre = bell[ch].tick(pre, bellC).bell;
       }
-      const float u = pre * p.drive;
-      driven[ch] = u;
-      const float w = os[ch].tick(u, conf.hq, [&](float v) { return shape<kType>(v); });
-      wet[ch] = w;
-      out[ch] = fma_(p.dryWet, w - x[ch], x[ch]);
+      driven[ch] = pre * p.drive;
+      if (conf.hq <= 1) {
+        const float w = shape<kType>(driven[ch]);
+        wet[ch] = w;
+        out[ch] = fma_(p.dryWet, w - x[ch], x[ch]);
+        continue;
+      }
+      float ps[8], ds[8], ws[8], ys[8];
+      upP[ch].tick(pre, conf.hq, ps);
+      if (conf.color) upX[ch].tick(x[ch], conf.hq, ds);
+      else std::copy(ps, ps + 8, ds);
+      for (int i = 0; i < conf.hq; ++i) {
+        ws[i] = shape<kType>(ps[i] * p.drive);
+        ys[i] = fma_(p.dryWet, ws[i] - ds[i], ds[i]);
+      }
+      out[ch] = downY[ch].tick(ys, conf.hq);
+      wet[ch] = downW[ch].tick(ws, conf.hq);
     }
   }
   void process(const float (&x)[2]) {
@@ -379,15 +439,15 @@ inline EqCoef eqCoef(int type, float os, const EqBand& b, bool adaptive, float s
   return c;
 }
 
-// One section (eq8_sec): y = m0·x + m1·band + m2·low, fused as the optimiser fuses it: with m0 the literal 1
-// (every type but the high shelf) m1·band + x is one multiply-add, else m0·x + m1·band; then m2·low + that.
+// One section (eq8_sec): y = m0·x + m1·band + m2·low as the smoothed gains compute it (M4 review M13; settled):
+// m2·low + (m1·band + m0·x), each a multiply-add (m0·x is x for the literal m0 = 1; a literal 0 term is left out,
+// which is the same value).
 struct EqSec {
   FastSvfCore core;
-  float tick(float x, const FastSvfCore::Coef& c, bool m0One, float m0, float m1, float m2) {
+  float tick(float x, const FastSvfCore::Coef& c, bool, float m0, float m1, float m2) {
     float band, low;
     core.tick(x, c, band, low);
-    const float v = m0One ? fma_(m1, band, x) : fma_(m0, x, m1 * band);
-    return fma_(m2, low, v);
+    return fma_(low, m2, fma_(band, m1, x * m0));
   }
 };
 
@@ -689,6 +749,10 @@ struct AutoFilter {
   float out[2] = {}, cutoff[2] = {}, lfo[2] = {}, envelope = 0;
 
   bool mod() const { return conf.lfo || conf.env; }
+  // af_kclean: Clean's damping (one resonance law with the nonlinear models up to 90 %, M4 review M12).
+  static float kClean(float res) {
+    return res < 0.9f ? 1.4142135623730951f * (1.0f - res) : 0.1414213562373095f * fastExp(-5.545177444479562f * (res - 0.9f));
+  }
   static float pick(int i, std::initializer_list<float> v) { return v.begin()[std::clamp<int>(i, 0, static_cast<int>(v.size()) - 1)]; }
 
   void prepare(const AfParams& q) {
@@ -707,7 +771,7 @@ struct AutoFilter {
     const int model = type > 4 ? 0 : conf.circuit;
     d = conf.circuit >= 1 ? p.drive : 1.0f;
     const bool clean = model == 0;
-    k12 = clean ? std::max(1.4142135623730951f * (1.0f - 0.8f * p.res), 0.02f) : 1.4142135623730951f * (1.0f - p.res);
+    k12 = clean ? kClean(p.res) : 1.4142135623730951f * (1.0f - p.res);
     kB = conf.slope >= 1 ? 0.541196100146197f * k12 : k12;
     kbB = clean ? kB : std::max(kB, 0.25f);
     kL = 4.0f * p.res;
@@ -725,6 +789,7 @@ struct AutoFilter {
       c[3] = 0.0f;
       c[4] = 0.0f;
     }
+    c[4] = fma_(kL, wLP + wN, c[4]);  // PRD's passband compensation (M4 review M12)
     ca = stdref::EnvFollow<float>::coef(p.attack, sr);
     cr = stdref::EnvFollow<float>::coef(p.release, sr);
     const float djc = p.dj < 0.0f ? 20000.0f * fastExp(6.684611727667927f * p.dj) : 15.0f * fastExp(6.907755278982137f * p.dj);
@@ -823,7 +888,7 @@ struct AutoFilter {
       rsPrevTrig[ch] = trig;
       w = rsHeld[ch];
     } else if (type == 8) {
-      const float k = std::max(1.4142135623730951f * (1.0f - 0.8f * p.res), 0.02f);
+      const float k = kClean(p.res);
       float band, low;
       nlp1[ch].tick(xi, AfSvfCoef::make(m.g, k), band, low);
       const float nt = xi - k * band;

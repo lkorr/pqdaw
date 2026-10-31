@@ -7,6 +7,10 @@
 // State: the target the gain is heading for and the residual d (gain = target + d). Keeping d itself, rather than
 // the gain, lets it decay to the snap threshold exactly: a gain stored as a float stalls about an ulp of the target
 // away, where target + d·r rounds back to the same float (a plain one-pole's float fixed point).
+//
+// `start` (T4.x-fix-dsp, the last input, a const): 0 = a new instance (or a voice lane after its reset) fades in
+// from 0, as the mixer's gain stages do; 1 = its first block starts at the target (devices: a knob's value is
+// there from the first sample). Either way one compare per block and lane.
 
 #include <cmath>
 #include <cstring>
@@ -34,8 +38,17 @@ inline void prepare(GainState& st, uint32_t lane, float tau) noexcept {
 
 inline float finiteOr0(float v) noexcept { return std::isfinite(v) ? v : 0.0f; }
 
-// The residual towards a (new) target g: the gain stays where it is, the residual moves.
-inline float retarget(GainState& st, uint32_t lane, float g) noexcept {
+// The residual towards a (new) target g: the gain stays where it is, the residual moves. A lane's first block with
+// `start` set begins at g.
+inline float retarget(GainState& st, uint32_t lane, float g, bool startAtTarget) noexcept {
+  if (st.started[lane] == 0.0f) {
+    st.started[lane] = 1.0f;
+    if (startAtTarget) {
+      st.target[lane] = g;
+      st.d[lane] = 0.0f;
+      return 0.0f;
+    }
+  }
   if (st.target[lane] != g) {
     st.d[lane] = (st.target[lane] + st.d[lane]) - g;
     st.target[lane] = g;
@@ -55,11 +68,17 @@ inline float load1(const float* p, uint32_t i) noexcept {
   else return p[i];
 }
 
-// kAdd: gain_add (input 0 is the accumulator). SM bits: [acc,] x, g (time must be Spl: splRequired).
+// kAdd: gain_add (input 0 is the accumulator). SM bits: [acc,] x, g (time and start must be Spl: splRequired).
 template <bool kAdd>
 struct Gain {
   static constexpr uint32_t kA = kAdd ? 1u : 0u;  // index of x
   static constexpr uint32_t kSpec = kA + 2;
+  static constexpr uint32_t kStart = kA + 3;  // index of start
+
+  // Lane l's `start` (a Spl pattern; absent when a caller passes only the T3.17-fix2 inputs: 0).
+  static bool startAt(const KernelArgs& a, uint32_t lane) noexcept {
+    return a.numIn > kStart && a.in[kStart][lane] >= 0.5f;
+  }
 
   template <class S, uint32_t SM>
   static void run(const KernelArgs& a) noexcept {  // RT-safe
@@ -93,6 +112,7 @@ struct Gain {
     for (uint32_t i = vecEnd; i < n; ++i) out[i] = std::fma(load1<xSpl>(x, i), g[i], kAdd ? load1<accSpl>(acc, i) : 0.0f);
     st.target[0] = finiteOr0(g[n - 1]);
     st.d[0] = 0.0f;
+    st.started[0] = 1.0f;
   }
 
   // A param gain: closed form, vectorised over time.
@@ -107,7 +127,7 @@ struct Gain {
     auto accAt1 = [&](uint32_t i) noexcept { return kAdd ? load1<accSpl>(acc, i) : 0.0f; };
     prepare(st, 0, a.in[kA + 2][0]);
     const float gv = finiteOr0(a.in[kA + 1][0]);
-    float d = retarget(st, 0, gv);
+    float d = retarget(st, 0, gv, startAt(a, 0));
     if (d == 0.0f) {  // settled
       if (gv == 0.0f) {
         if constexpr (kAdd) {
@@ -173,6 +193,7 @@ struct Gain {
     for (uint32_t l = 0; l < 8; ++l) {
       st.target[l] = finiteOr0(g[8 * (n - 1) + l]);
       st.d[l] = 0.0f;
+      st.started[l] = 1.0f;
     }
   }
 
@@ -188,7 +209,7 @@ struct Gain {
     bool moving = false;
     for (uint32_t l = 0; l < 8; ++l) {
       prepare(st, l, t[l]);
-      moving = retarget(st, l, finiteOr0(g[l])) != 0.0f || moving;
+      moving = retarget(st, l, finiteOr0(g[l]), startAt(a, l)) != 0.0f || moving;
     }
     const __m256 gv = _mm256_load_ps(st.target);
     if (!moving) {

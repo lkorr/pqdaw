@@ -363,8 +363,10 @@ struct Filter {
         c[3] = 0.0f;
         c[4] = 0.0f;
       }
+      const float fb = 2.0f * (2.0f - k);
+      c[4] = fma_(fb, w.lp + w.n, c[4]);  // the passband compensation (M4 review M12)
       float tap[5];
-      lad.tick(x, g / (1.0f + g), 2.0f * (2.0f - k), d, 1, false, tap);
+      lad.tick(x, g / (1.0f + g), fb, d, 1, false, tap);
       return fma_(c[4], tap[4], fma_(c[3], tap[3], fma_(c[2], tap[2], fma_(c[1], tap[1], c[0] * tap[0]))));
     }
     float xi = x;
@@ -503,7 +505,7 @@ struct Operator {
         const float lf = op.lfoTo ? lfoSig * prm.lfoPitch : 0.0f;
         c[i] = cfg.pitchEnvOn && cfg.lfoOn ? pe + lf : cfg.pitchEnvOn ? pe : lf;
         const float lv = lin(op.level) * std::max(0.0f, fma_(op.vel, vel - 1.0f, 1.0f));
-        amp[i] = e[i] * lv * fastCentsToHz(op.key * kc, 1.0f);
+        amp[i] = e[i] * lv * fastCentsToHz(std::min(op.key * kc, 0.0f), 1.0f);  // attenuation only (M4 review M11)
       }
       std::array<float, 4> hm{};
       for (size_t i = 0; i < 4; ++i) hm[i] = modOn ? fastCentsToHz(c[i], hz[i]) : hz[i];

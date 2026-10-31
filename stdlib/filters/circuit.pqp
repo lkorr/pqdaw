@@ -91,7 +91,12 @@ patch af_smp {
 
 // PRD: four TPT one-poles (G = g/(1 + g)) after a saturating input pair, u = tanh(d·(x − k·y4))/d. With
 // H = 1 − G and the stage states s1 … s4: y4 = G⁴·u + S, S = ((H·s1·G + H·s2)·G + H·s3)·G + H·s4.
-// Output: Xpander pole mixing of (u, y1 … y4) for the 12 or 24 dB response of each weight.
+// Output: Xpander pole mixing of (u, y1 … y4) for the 12 or 24 dB response of each weight, plus the passband
+// compensation k·(wLP + wN)·y4 (M4 review M12): the feedback divides the low passband by 1 + k (−6.8 dB at Auto
+// Filter's default 30 %, −14 dB at 100 %), and adding k·y4 (= k·u at DC) restores unity there for the lowpass and
+// the notch, so switching circuit models keeps the level (the resonance peak rises with the passband, as on a
+// bass-compensated ladder). High-pass and band-pass are left alone (their passbands are not divided).
+// The mix coefficients are smoothed gains (M4 review M13: resonance and morph move them).
 patch af_ladder {
   in    x     : audio
   in    slope : real const = 0
@@ -131,5 +136,6 @@ patch af_ladder {
   c2  = slope >= 0.5 ? 4 * wBP + 6 * wHP + 8 * wN : wLP - 2 * wBP + wHP + 2 * wN
   c3  = slope >= 0.5 ? -8 * wBP - 4 * wHP - 8 * wN : 0
   c4  = slope >= 0.5 ? wLP + 4 * wBP + wHP + 4 * wN : 0
-  y   = c0 * u + c1 * y1 + c2 * y2 + c3 * y3 + c4 * y4
+  cK  = c4 + k * (wLP + wN)                          // + the passband compensation (M12)
+  y   = gain_add(gain_add(gain_add(gain_add(gain(u, c0, start: 1), y1, c1, start: 1), y2, c2, start: 1), y3, c3, start: 1), y4, cK, start: 1)
 }

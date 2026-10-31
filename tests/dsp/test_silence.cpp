@@ -51,6 +51,7 @@ float coefficient(Atom atom, uint32_t i, const pq::dsp::KernelInfo& info, std::m
     case Atom::Gain:
     case Atom::GainAdd:
       if (i == (atom == Atom::Gain ? 2u : 3u)) return std::uniform_real_distribution<float>(0.0f, 200.0f)(rng);  // time
+      if (i == (atom == Atom::Gain ? 3u : 4u)) return coin(rng) ? 1.0f : 0.0f;  // start (T4.x-fix-dsp)
       break;
     default: break;
   }
@@ -197,24 +198,22 @@ TEST_CASE("dsp silence: every declaration holds for its kernel (T1.x-silence)") 
           if (si.rule == SilenceRule::Smoother) {
             // Random residual: the output is still ±0 for a silent signal.
             pq::dsp::initState(atom, state.data(), init);
-            const float g0 = coefficient(atom, numIn - 2, info, rng), t0 = coefficient(atom, numIn - 1, info, rng);
+            // Inputs: …, g, time, start (T4.x-fix-dsp).
+            const uint32_t gi = numIn - 3, ti = numIn - 2, si0 = numIn - 1;
+            const float g0 = coefficient(atom, gi, info, rng), t0 = coefficient(atom, ti, info, rng);
+            const float s0 = coefficient(atom, si0, info, rng);
+            auto fixedIn = [&](uint32_t i, float other) { return i == gi ? g0 : i == ti ? t0 : i == si0 ? s0 : other; };
             runKernel(k, state.data(), 16, r, [&](uint32_t i, uint32_t, uint32_t) {
-              if (i == numIn - 2) return g0;
-              if (i == numIn - 1) return t0;
-              return ((si.inputs >> i) & 1u) ? silentValue(rng) : 0.5f;
+              return fixedIn(i, ((si.inputs >> i) & 1u) ? silentValue(rng) : 0.5f);
             });
             for (uint32_t x = 0; x < 16 * lanes; ++x) REQUIRE(silent(r.out[0][x]));
             // Settle (a fixed target and time), then: unchanged state bit for bit, ±0 out.
             for (int b = 0; b < 400; ++b)
-              runKernel(k, state.data(), 64, r, [&](uint32_t i, uint32_t, uint32_t) {
-                return i == numIn - 2 ? g0 : i == numIn - 1 ? t0 : silentValue(rng);
-              });
+              runKernel(k, state.data(), 64, r, [&](uint32_t i, uint32_t, uint32_t) { return fixedIn(i, silentValue(rng)); });
             const auto* gs = reinterpret_cast<const pq::dsp::GainState*>(state.data());
             for (uint32_t l = 0; l < lanes; ++l) REQUIRE(silent(gs->d[l]));
             std::vector<uint32_t> before(state.data(), state.data() + bytes / 4);
-            runKernel(k, state.data(), 33, r, [&](uint32_t i, uint32_t, uint32_t) {
-              return i == numIn - 2 ? g0 : i == numIn - 1 ? t0 : silentValue(rng);
-            });
+            runKernel(k, state.data(), 33, r, [&](uint32_t i, uint32_t, uint32_t) { return fixedIn(i, silentValue(rng)); });
             for (uint32_t x = 0; x < 33 * lanes; ++x) REQUIRE(silent(r.out[0][x]));
             CHECK(std::memcmp(before.data(), state.data(), bytes) == 0);
             continue;

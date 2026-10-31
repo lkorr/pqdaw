@@ -33,8 +33,9 @@ constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U:
                                 {U::Resource, 0},                                            // stretch, reference, table,
                                 {U::Input, 8},    {U::Input, 9}};                            // select, node
 
-constexpr ArgMap kGain[] = {{U::Input, 0}, {U::Input, 1}, {U::InputSeconds, 2}};                  // x, g, time
-constexpr ArgMap kGainAdd[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::InputSeconds, 3}};  // acc, x, g, time
+constexpr ArgMap kGain[] = {{U::Input, 0}, {U::Input, 1}, {U::InputSeconds, 2}, {U::Input, 3}};  // x, g, time, start
+constexpr ArgMap kGainAdd[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::InputSeconds, 3},  // acc, x, g, time,
+                               {U::Input, 4}};                                                     // start
 
 struct Special {
   std::string_view atom;

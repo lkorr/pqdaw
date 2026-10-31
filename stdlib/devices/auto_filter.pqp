@@ -137,7 +137,7 @@ patch auto_filter {
   vowel = af_vowel(x, fc, res, morph)
   w     = mux(type, filt, filt, filt, filt, filt, djOut, comb, rsmp, nlp, vowel)
 
-  out = (x + dryWet * (w - x)) * output
+  out = gain(gain_add(x, w - x, dryWet, start: 1), output, start: 1)
 
   export cutoff    = fc
   export lfoSignal = l
@@ -206,7 +206,7 @@ patch af_filter {
   out   y : audio
 
   clean = model < 0.5
-  k12 = clean ? max(1.4142135623730951 * (1 - 0.8 * res), 0.02) : 1.4142135623730951 * (1 - res)
+  k12 = clean ? af_kclean(res) : 1.4142135623730951 * (1 - res)
   kB  = slope >= 0.5 ? 0.541196100146197 * k12 : k12
   kbB = clean ? kB : max(kB, 0.25)
   a   = af_sec(x, 0, g, 1.8477590650225735, 1.8477590650225735, 1, wLP, wBP, wHP, wN)
@@ -236,7 +236,17 @@ patch af_sec {
   bp = mux(model, c.band, o.band, m.band, s.band)
   lp = mux(model, c.low, o.low, m.low, s.low)
   hn = wHP + wN
-  y  = hn * x + (kb * wBP - k * hn) * bp + (wLP - wHP) * lp
+  y  = gain_add(gain_add(gain(x, hn, start: 1), bp, kb * wBP - k * hn, start: 1), lp, wLP - wHP, start: 1)
+}
+
+// Clean's damping (M4 review M12: one resonance law): k = √2·(1 − res), the nonlinear models' law, up to 90 %
+// (Q 0.71 … 7.1); above, where those self-oscillate, Clean's k falls exponentially to 0.02 at 125 % (Q 50) and stays
+// a stable linear filter.
+patch af_kclean {
+  param res = 0.3 [0..1.25]
+  out   k : audio
+
+  k = res < 0.9 ? 1.4142135623730951 * (1 - res) : 0.1414213562373095 * fast_exp(-5.545177444479562 * (res - 0.9))
 }
 
 // Comb: y = x + fb·y[n − T], T = 1/fc (fc 20 Hz … 10 kHz), fb = 0.792·res; the output scaled by √(1 − fb²).
@@ -259,7 +269,7 @@ patch af_notch_lp {
   param res = 0.3    [0..1.25]
   out   y : audio
 
-  k  = max(1.4142135623730951 * (1 - 0.8 * res), 0.02)
+  k  = af_kclean(res)
   n  = af_svf(x, g, k)
   nt = x - k * n.band
   g2 = fast_tan(3.141592653589793 * min(2 * fc, 0.49 * sr) / sr)

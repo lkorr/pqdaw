@@ -81,8 +81,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // Every input may be Spl or Blk; the kernel reads KernelArgs::splMask (kernels_tuning.cpp).
     {"tuning_hz", 10, 2, false, false, 0, 0, 0x3FFu, 0, 0, Resource::Tuning, false},
     // T3.17-fix2 (kernels_gain.cpp): stateful, but element-wise in time, so the output may take an input's buffer.
-    {"gain", 3, 1, false, false, 0, 0, kB0 | kB1, kB2, sizeof(GainState), Resource::None, true},
-    {"gain_add", 4, 1, false, false, 0, 0, kB0 | kB1 | kB2, kB3, sizeof(GainState), Resource::None, true},
+    // T4.x-fix-dsp: a fourth (fifth) input, `start` (a const).
+    {"gain", 4, 1, false, false, 0, 0, kB0 | kB1, kB2 | kB3, sizeof(GainState), Resource::None, true},
+    {"gain_add", 5, 1, false, false, 0, 0, kB0 | kB1 | kB2, kB3 | kB4, sizeof(GainState), Resource::None, true},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -168,7 +169,8 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};
-    // gain / gain_add: target, d, tau, r are [8] arrays; rpow / r8 cache lane 0's powers for the 1-lane path only.
+    // gain / gain_add: target, d, tau, r, started are [8] arrays; rpow / r8 cache lane 0's powers for the 1-lane path
+    // only.
     case Atom::Gain:
     case Atom::GainAdd: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(GainState, rpow))};
     case Atom::DelayLinear:

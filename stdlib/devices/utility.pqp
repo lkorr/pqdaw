@@ -73,19 +73,22 @@ patch utility {
   // Kept as the distance to the target: e ← (e + t[n−1] − t[n])·c, value = t + e, c = e^(−1/(2 ms·sr)). The
   // distance decays to 0 (and flushes), so a settled coefficient is exactly its target: unity gain is
   // bit-transparent. (v ← v + (t − v)·(1 − c) would stall up to ulp/(2(1 − c)) ≈ 48 ulps from it.) Per sample the
-  // loop is one multiply-add per coefficient; the target steps only at block boundaries.
+  // loop is one multiply-add per coefficient; the target steps only at block boundaries. `f` (z1(1): 0 at the first
+  // sample, then 1) makes the first sample's distance 0, so a new Utility starts at its target instead of fading in
+  // from 0 (M4 review L10).
   k = exp(-1 / (0.002 * sr))
+  f = z1(1)
   // Without bass mono: out L = aLL·L + aLR·R, out R = aRL·L + aRR·R.
   direct = (oL * (mL + sL), oL * (mR + sR), oR * (mL - sL), oR * (mR - sR))
   dd     = z1(dn)
-  dn     = dd * k + (z1(direct) - direct) * k
+  dn     = dd * k + (z1(direct) - direct) * f * k
   sd     = direct + dn
   plain  = (sd[0] * L + sd[1] * R, sd[2] * L + sd[3] * R)
 
   // With bass mono: M and S, filtered, then out = (oL·(M' + S'), oR·(M' − S')).
   split = (mL, mR, sL, sR, oL, oR)
   sp    = z1(sn)
-  sn    = sp * k + (z1(split) - split) * k
+  sn    = sp * k + (z1(split) - split) * f * k
   ss    = split + sn
   M     = ss[0] * L + ss[1] * R
   S     = ss[2] * L + ss[3] * R

@@ -1,5 +1,6 @@
 // T3.17-fix2: the smoothed gain kernels (gain, gain_add; pq/dsp/atoms.h) against a double one-pole reference, at
-// every Spl mask and lane count, across block sizes; the settled fast paths; in-place gain_add.
+// every Spl mask and lane count, across block sizes; the settled fast paths; in-place gain_add. T4.x-fix-dsp: the
+// `start` input (1: the first block starts at the target).
 #include <doctest/doctest.h>
 
 #include <cmath>
@@ -19,7 +20,8 @@ struct Rig {
   Atom atom;
   uint32_t lanes;
   pq::AlignedBuffer<float> state{1024};
-  Rig(Atom a, uint32_t l) : atom(a), lanes(l) {
+  float start = 0.0f;  // the `start` input
+  Rig(Atom a, uint32_t l, float startIn = 0.0f) : atom(a), lanes(l), start(startIn) {
     pq::dsp::StateInit init;
     init.lanes = l;
     pq::dsp::initState(a, state.data(), init);
@@ -28,8 +30,9 @@ struct Rig {
   void run(const float* acc, bool accSpl, const float* x, bool xSpl, const float* g, bool gSpl, float* out,
            uint32_t frames) {
     const float tau[8] = {kTau, kTau, kTau, kTau, kTau, kTau, kTau, kTau};
+    const float st[8] = {start, start, start, start, start, start, start, start};
     const bool add = atom == Atom::GainAdd;
-    const float* in[4];
+    const float* in[5];
     uint32_t mask = 0, k = 0;
     if (add) {
       in[k] = acc;
@@ -43,6 +46,9 @@ struct Rig {
     mask |= gSpl ? 1u << k : 0u;
     ++k;
     in[k] = tau;
+    mask |= 1u << k;
+    ++k;
+    in[k] = st;
     mask |= 1u << k;
     ++k;
     const pq::dsp::KernelFn fn = pq::dsp::findKernel(atom, lanes, mask);
@@ -132,4 +138,59 @@ TEST_CASE("gain_add: closed at 0 it is the accumulator, untouched in place; open
   for (float& v : one) v = 1.0f;
   for (int b = 0; b < 100; ++b) r.run(acc.data(), false, x.data(), false, one, true, out.data(), 64);
   for (int i = 0; i < 64; ++i) CHECK_MESSAGE(out[i] == static_cast<float>(i) + 1.0f, out[i]);
+}
+
+TEST_CASE("gain / gain_add with start 1: the first block is at the target (no fade-in), then smoothed as before") {
+  for (const uint32_t lanes : {1u, 8u}) {
+    CAPTURE(lanes);
+    Rig r(Atom::Gain, lanes, 1.0f);
+    std::vector<float> x(8 * 64, 1.0f), out(8 * 64);
+    float g[8];
+    for (float& v : g) v = 0.7f;
+    r.run(nullptr, false, x.data(), false, g, true, out.data(), 64);
+    for (uint32_t i = 0; i < 64 * lanes; ++i) CHECK_MESSAGE(out[i] == 0.7f, i << ": " << out[i]);
+    // A later change is smoothed from 0.7 (the first frame still reads the old value).
+    for (float& v : g) v = 0.2f;
+    r.run(nullptr, false, x.data(), false, g, true, out.data(), 64);
+    CHECK(out[0] == doctest::Approx(0.7f));
+    CHECK(out[lanes * 63] > 0.2f);
+    CHECK(out[lanes * 63] < 0.7f);
+    // Settled again after enough blocks: exactly the target.
+    for (int b = 0; b < 100; ++b) r.run(nullptr, false, x.data(), false, g, true, out.data(), 64);
+    for (uint32_t i = 0; i < 64 * lanes; ++i) CHECK(out[i] == 0.2f);
+  }
+  {  // without start (0): the T3.17-fix2 fade-in from 0
+    Rig r(Atom::Gain, 1, 0.0f);
+    std::vector<float> x(64, 1.0f), out(64);
+    float g[8];
+    for (float& v : g) v = 0.7f;
+    r.run(nullptr, false, x.data(), false, g, true, out.data(), 64);
+    CHECK(out[0] == 0.0f);
+    CHECK(out[63] < 0.7f);
+  }
+  {  // gain_add: acc + x · g at once
+    Rig r(Atom::GainAdd, 1, 1.0f);
+    std::vector<float> acc(64, 1.0f), x(64, 2.0f), out(64);
+    float g[8];
+    for (float& v : g) v = 0.5f;
+    r.run(acc.data(), false, x.data(), false, g, true, out.data(), 64);
+    for (float v : out) CHECK(v == 2.0f);
+  }
+  {  // a voice lane reset (the per-lane words back to initState's) starts at the target again
+    Rig r(Atom::Gain, 8, 1.0f);
+    std::vector<float> x(8 * 16, 1.0f), out(8 * 16);
+    float g[8];
+    for (float& v : g) v = 0.5f;
+    r.run(nullptr, false, x.data(), false, g, true, out.data(), 16);
+    auto& st = *reinterpret_cast<pq::dsp::GainState*>(r.state.data());
+    st.target[3] = 0.0f;  // lane 3's reset
+    st.d[3] = 0.0f;
+    st.started[3] = 0.0f;
+    for (float& v : g) v = 0.9f;
+    r.run(nullptr, false, x.data(), false, g, true, out.data(), 16);
+    CHECK(out[3] == 0.9f);        // the new voice: at its target
+    CHECK(out[2] == 0.5f);        // the others glide from 0.5
+    CHECK(out[8 * 15 + 2] > 0.5f);
+    CHECK(out[8 * 15 + 2] < 0.9f);
+  }
 }

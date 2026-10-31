@@ -866,8 +866,8 @@ TEST_CASE("Operator: velocity and key sensitivity scale an operator's level as d
   opref::Params prm;
   prm.volume = 1.0f;
   prm.op[0].vel = 1.0f;
-  prm.op[0].key = 0.5f;  // +3 dB per octave
-  const std::vector<Note> notes{{261.626 * 2.0, 0, 4000, 0.5}, {261.626, 0, 4000, 1.0}};
+  prm.op[0].key = 0.5f;  // 3 dB per octave below C3; above C3 no boost (M4 review M11: key scaling only attenuates)
+  const std::vector<Note> notes{{261.626 * 2.0, 0, 4000, 0.5}, {261.626, 0, 4000, 1.0}, {261.626 * 0.5, 0, 4000, 1.0}};
   const Program prog = compile(operatorText(cfg), kSr);
   Stimulus st = noteStimulus(notes, 4000, 64);
   setParams(st, prog, prm);
@@ -878,7 +878,8 @@ TEST_CASE("Operator: velocity and key sensitivity scale an operator's level as d
     return m;
   };
   CHECK(peakOf(1) == doctest::Approx(1.0).epsilon(1e-3));                  // velocity 1 at the reference: 0 dB
-  CHECK(peakOf(0) == doctest::Approx(0.5 * std::sqrt(2.0)).epsilon(1e-3));  // velocity ½, one octave up: ½ · 2^½
+  CHECK(peakOf(0) == doctest::Approx(0.5).epsilon(1e-3));                  // velocity ½, one octave up: ½ (no boost)
+  CHECK(peakOf(2) == doctest::Approx(std::sqrt(0.5)).epsilon(1e-3));       // one octave down: 2^−½ (−3 dB)
 }
 
 // ================================================================================================================

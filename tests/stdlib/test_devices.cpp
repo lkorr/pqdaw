@@ -218,7 +218,7 @@ TEST_CASE("Utility: every mode x every param set vs the C++ reference" * doctest
 
 TEST_CASE("Utility: analytic identities (width, mid/side, mono, channel modes, phase, balance, gain, mute)") {
   const Program prog = utilityProgram(false, false, false);
-  // The coefficients are smoothed from 0 (2 ms time constant): compare after 100 ms (e^−50: settled exactly).
+  // The coefficients start at their targets (L10) and are smoothed (2 ms) only when they change; compare after 100 ms.
   constexpr size_t kSettle = 4800, kLen = 8192;
   auto runWith = [&](const devref::UtilityParams& p) {
     Stimulus st;
@@ -611,20 +611,38 @@ TEST_CASE("Saturator: oversampling removes the aliasing (HQ off / 2x / 4x / 8x)"
   }
 }
 
-TEST_CASE("Saturator: dry/wet 0 is the input exactly; waveshaper drive 0 is the identity") {
+// M4 review M10: with HQ the dry/wet mix runs on the oversampled samples, so dry/wet 0 is the input through the
+// half-bands' up + down chain (an allpass, flat to 20 kHz), exactly as devref computes it; without HQ it is the input
+// bit for bit. (Before M10 it was the input bit for bit at every HQ, and the partial settings combed.)
+TEST_CASE("Saturator: dry/wet 0 is the input exactly (HQ off) or the half-bands' allpass of it (HQ on); waveshaper drive 0 is the identity") {
   devref::SatParams p;
   p.dryWet = 0.0f;
   p.drive = 15.0f;
-  const Program prog = saturatorProgram(6, 2, true, true);
   Stimulus st;
   st.frames = 4096;
   st.inputCh = [](uint32_t ord, uint32_t ch, uint32_t, uint64_t t) { return ord == 0 ? stereoSignal(ch, t) : 1.0; };
   st.input = [](uint32_t, uint32_t, uint64_t) { return 0.0; };
   setSatParams(st, p);
-  const Outputs o = runBoth(prog, st, "dry");
-  for (uint32_t t = 0; t < st.frames; ++t) {
-    CHECK(o.at("y")[0][t] == static_cast<float>(stereoSignal(0, t)));
-    CHECK(o.at("y[1]")[0][t] == static_cast<float>(stereoSignal(1, t)));
+  {
+    const Outputs o = runBoth(saturatorProgram(6, 1, true, true), st, "dry 1x");
+    for (uint32_t t = 0; t < st.frames; ++t) {
+      CHECK(o.at("y")[0][t] == static_cast<float>(stereoSignal(0, t)));
+      CHECK(o.at("y[1]")[0][t] == static_cast<float>(stereoSignal(1, t)));
+    }
+  }
+  for (const int hq : {2, 8}) {
+    const Outputs o = runBoth(saturatorProgram(6, hq, true, true), st, "dry hq");
+    devref::OsUp up[2];
+    devref::OsDown down[2];
+    double worst = 0.0;
+    for (uint32_t t = 0; t < st.frames; ++t)
+      for (int ch = 0; ch < 2; ++ch) {
+        float s8[8];
+        up[ch].tick(static_cast<float>(stereoSignal(ch, t)), hq, s8);
+        const double want = down[ch].tick(s8, hq);
+        worst = std::max(worst, std::fabs(o.at(ch ? "y[1]" : "y")[0][t] - want));
+      }
+    CHECK_MESSAGE(worst == 0.0, "hq " << hq << ": dry/wet 0 differs from down(up(x)) by " << worst);
   }
   devref::SatParams w;
   w.wsDrive = 0.0f;
@@ -1149,5 +1167,136 @@ TEST_CASE("EQ Eight: all eight bands modulated at audio rate stay finite and rin
     MESSAGE("eq full modulation hq " << hq << ": peak " << peak << ", last 250 ms peak " << tail);
     CHECK(finite);
     CHECK(tail < 1e-6);
+  }
+}
+
+// ================================================================================================================
+// M4 review M10, M13, L10 (T4.x-fix-dsp): HQ dry/wet alignment, smoothed params, Utility's start value
+// ================================================================================================================
+
+TEST_CASE("Saturator: HQ dry/wet 50 % is flat within 0.1 dB to 18 kHz (2x / 4x / 8x)") {
+  // Small signal (an impulse of 1e-3: every curve is linear there, Analog Clip's cubic term is 1e-7 of it), so the
+  // wet path is the half-bands' allpass and dry + wet must not comb.
+  constexpr double kAmp = 1e-3;
+  constexpr uint32_t kLen = 8192;
+  for (const int hq : {2, 4, 8}) {
+    const Program prog = saturatorProgram(0, hq, false, false);
+    Stimulus st;
+    st.frames = kLen;
+    st.inputCh = [](uint32_t ord, uint32_t, uint32_t, uint64_t t) { return ord == 0 && t == 0 ? kAmp : 0.0; };
+    st.input = [](uint32_t, uint32_t, uint64_t) { return 0.0; };
+    st.params["s__dryWet"] = 0.5;
+    const Outputs o = runBoth(prog, st, "dry/wet 50 % hq " + std::to_string(hq));
+    // What mixing the plain input with the oversampled wet path gave (before M10): x/2 + down(up(x))/2.
+    std::vector<float> old(kLen);
+    devref::OsUp up;
+    devref::OsDown down;
+    for (uint32_t t = 0; t < kLen; ++t) {
+      const float x = t == 0 ? static_cast<float>(kAmp) : 0.0f;
+      float s8[8];
+      up.tick(x, hq, s8);
+      old[t] = 0.5f * x + 0.5f * down.tick(s8, hq);
+    }
+    double worst = 0.0, worstAt = 0.0, oldWorst = 0.0, oldAt = 0.0;
+    for (const double f : logFreqs(20.0, 18000.0, 160)) {
+      const double e = magDb(o.at("y")[0], 0, f) - 20.0 * std::log10(kAmp);
+      const double eo = magDb(old, 0, f) - 20.0 * std::log10(kAmp);
+      if (std::fabs(e) > std::fabs(worst)) worst = e, worstAt = f;
+      if (std::fabs(eo) > std::fabs(oldWorst)) oldWorst = eo, oldAt = f;
+    }
+    MESSAGE("hq " << hq << " dry/wet 50 %: worst " << worst << " dB at " << worstAt << " Hz (unaligned dry: " << oldWorst
+                  << " dB at " << oldAt << " Hz; 5 kHz " << magDb(old, 0, 5000.0) - 20.0 * std::log10(kAmp) << " dB, 10 kHz "
+                  << magDb(old, 0, 10000.0) - 20.0 * std::log10(kAmp) << " dB)");
+    CHECK(std::fabs(worst) <= 0.1);
+  }
+}
+
+namespace {
+
+// The click of a param step: the largest |first difference| (sample-to-sample step) of the output in the 10 ms after
+// the step (at a block boundary, 1.3 rad into the sine's cycle, so the step does not hide in a zero crossing), over
+// the largest one in the steady stretches before the step and after it has settled (a sine in: the steady first
+// difference is 2π·f/sr · amplitude). An output that jumps by Δ steps by Δ in one sample: many times the steady
+// value; a 2 ms one-pole glide spreads Δ over ~100 samples, and a filter whose coefficients step at a block boundary
+// keeps a continuous output (its states are the analog filter's), so both stay near 1.
+double stepClick(const Program& prog, const std::string& param, double from, double to, double hz, double amp = 0.5,
+                 const std::map<std::string, double>& params = {}, const std::string& out = "y") {
+  constexpr uint64_t kStep = 9600, kLen = 19200;
+  Stimulus st;
+  st.frames = kLen;
+  st.block = 64;
+  st.inputCh = [&](uint32_t ord, uint32_t, uint32_t, uint64_t t) {
+    return ord == 0 ? amp * std::sin(2.0 * kPi * hz * (static_cast<double>(t) - static_cast<double>(kStep)) / kSr + 1.3) : 0.0;
+  };
+  st.input = [](uint32_t, uint32_t, uint64_t) { return 0.0; };
+  st.params = params;
+  st.params[param] = from;
+  st.paramAt = [&](const std::string& name, uint64_t t0) { return name == param && t0 >= kStep ? to : NAN; };
+  const Outputs o = runBoth(prog, st, "step " + param);
+  const auto& y = o.at(out)[0];
+  auto d1 = [&](uint64_t t) { return std::fabs(static_cast<double>(y[t]) - y[t - 1]); };
+  double steady = 0.0, click = 0.0;
+  for (uint64_t t = kStep - 4800; t < kStep; ++t) steady = std::max(steady, d1(t));
+  for (uint64_t t = kStep + 4800; t < kLen; ++t) steady = std::max(steady, d1(t));
+  for (uint64_t t = kStep; t < kStep + 480; ++t) click = std::max(click, d1(t));
+  return click / steady;
+}
+
+}  // namespace
+
+TEST_CASE("Saturator and EQ Eight: param jumps glide (smoothed gains) instead of clicking") {
+  struct Case {
+    std::string what;
+    const Program* prog;
+    std::string param;
+    double from, to, hz, limit;
+    std::map<std::string, double> params;
+  };
+  const Program sat1 = saturatorProgram(0, 1, false, false), sat2 = saturatorProgram(0, 2, false, false);
+  devref::EqConf ec;
+  const Program eq = eqProgram(ec);
+  ec.type[0][3] = 6;  // band 4 a High Cut 12
+  const Program eqHc = eqProgram(ec);
+  const std::vector<Case> cases = {
+      {"saturator drive 0 -> +12 dB", &sat1, "s__drive", 1.0, 3.981, 220.0, 2.0, {}},
+      {"saturator output 0 -> -12 dB", &sat1, "s__output", 1.0, 0.251, 220.0, 2.0, {}},
+      {"saturator dry/wet 100 -> 30 % (HQ 2x)", &sat2, "s__dryWet", 1.0, 0.3, 220.0, 2.0, {{"s__drive", 3.981}}},
+      {"eq eight band 4 gain 0 -> +12 dB (1 kHz bell)", &eq, "e__gain4", 1.0, 3.981, 1000.0, 2.0, {}},
+      {"eq eight band 4 q 0.71 -> 4 at +12 dB", &eq, "e__q4", 0.7071, 4.0, 1000.0, 2.0, {{"e__gain4", 3.981}}},
+      {"eq eight band 4 freq 1 -> 2 kHz at +12 dB", &eq, "e__freq4", 1000.0, 2000.0, 1500.0, 2.0, {{"e__gain4", 3.981}}},
+      {"eq eight output 0 -> -12 dB", &eq, "e__outGain", 1.0, 0.251, 220.0, 2.0, {}},
+      {"eq eight band 4 high cut 12 freq 4 -> 1 kHz", &eqHc, "e__freq4", 4000.0, 1000.0, 700.0, 2.0, {{"e__q4", 2.0}}},
+  };
+  for (const Case& c : cases) {
+    const double r = stepClick(*c.prog, c.param, c.from, c.to, c.hz, 0.5, c.params);
+    MESSAGE(c.what << ": click " << r << " x the steady sample-to-sample step");
+    CHECK_MESSAGE(r < c.limit, c.what << ": " << r);
+  }
+}
+
+TEST_CASE("Utility starts at its target: an impulse at sample 0 comes out at once (M4 review L10)") {
+  for (const bool bassMono : {false, true}) {
+    const Program prog = utilityProgram(bassMono, false, false);
+    Stimulus st;
+    st.frames = 256;
+    st.inputCh = [](uint32_t ord, uint32_t ch, uint32_t, uint64_t t) { return ord == 0 ? (t == 0 ? (ch ? -0.5 : 1.0) : 0.0) : 120.0; };
+    st.input = [](uint32_t, uint32_t, uint64_t) { return 0.0; };
+    devref::UtilityParams p;
+    p.gain = 0.5f;
+    p.width = 2.0f;
+    setUtilityParams(st, p);
+    const Outputs o = runBoth(prog, st, "utility start");
+    if (!bassMono) {
+      // M = 0.25, S = 0.75; out = gain · (M ± width·S).
+      CHECK(o.at("y")[0][0] == doctest::Approx(0.5 * (0.25 + 1.5)).epsilon(1e-6));
+      CHECK(o.at("y[1]")[0][0] == doctest::Approx(0.5 * (0.25 - 1.5)).epsilon(1e-6));
+    } else {
+      devref::Utility ref;
+      ref.conf.bassMono = true;
+      p.bassFreq = 120.0f;
+      ref.tick(1.0f, -0.5f, p);
+      CHECK(o.at("y")[0][0] == doctest::Approx(ref.out[0]).epsilon(1e-6));
+      CHECK(std::fabs(ref.out[0]) > 0.1);
+    }
   }
 }

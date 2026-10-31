@@ -19,6 +19,9 @@
 //   channel(x, i) → x for a mono x;  channel(pack(…), literal i) → the pack input holding channel i, if it is mono
 //   voice_*(x) → x for a global x (the registry: "a global x passes through unchanged")
 //   f(…, select(c, a, b), …) → select(c, f(…, a, …), f(…, b, …)) when the copies are below f's rate (sinkSelect)
+//   gain(x, c, t, start: 1) → x · c;  gain_add(acc, x, c, t, start: 1) → muladd(x, c, acc) (acc for c = 0) for a
+//                           literal c: a gain that starts at a target that never moves is that multiply
+//                           (T4.x-fix-dsp: device mixes whose coefficients a structural constant fixes)
 // "Finite"/"sign bit clear" come from a small forward analysis (Facts): literals, and atoms whose range is known
 // (phasor, gate_to_real, abs, clip with finite literal bounds, …). Params and engine inputs are never assumed finite.
 
@@ -125,7 +128,7 @@ struct WNode {
 struct Atoms {
   AtomId add, sub, mul, div, neg, pow, abs, min, max, muladd, and_, or_, xor_, not_, select, mux, channel, pack, sr;
   AtomId phasor, gateToReal, noise, sineHz, sine, sin, tanh, fastTanh, sign, counter, floor, frac, clip,
-      exp, sqrt, fastExp, fastSqrt, voiceSum;
+      exp, sqrt, fastExp, fastSqrt, voiceSum, gain, gainAdd;
   Atoms() {
     add = atomId("add"); sub = atomId("sub"); mul = atomId("mul"); div = atomId("div"); neg = atomId("neg");
     pow = atomId("pow"); abs = atomId("abs"); min = atomId("min"); max = atomId("max"); muladd = atomId("muladd");
@@ -136,7 +139,7 @@ struct Atoms {
     tanh = atomId("tanh"); fastTanh = atomId("fast_tanh"); sign = atomId("sign"); counter = atomId("counter");
     floor = atomId("floor"); frac = atomId("frac"); clip = atomId("clip"); exp = atomId("exp");
     sqrt = atomId("sqrt"); fastExp = atomId("fast_exp"); fastSqrt = atomId("fast_sqrt");
-    voiceSum = atomId("voice_sum");
+    voiceSum = atomId("voice_sum"); gain = atomId("gain"); gainAdd = atomId("gain_add");
   }
 };
 
@@ -750,6 +753,25 @@ private:
           if (replaceNode(n, lp)) return simplified(true);
         }
       }
+      return false;
+    }
+    if (at == A_.gain || at == A_.gainAdd) {
+      const bool add = at == A_.gainAdd;
+      const uint32_t gi = add ? 2u : 1u;
+      float gv, sv;
+      if (!lit(n, gi + 2, sv) || !(sv >= 0.5f) || !lit(n, gi, gv) || in(n, gi) == kNone) return false;
+      const uint32_t x = in(n, gi - 1);
+      if (x == kNone) return false;
+      if (!add) {
+        rewrite(n, A_.mul, {x, in(n, gi)});
+        ++st_.simplified;
+        return simplify(n);
+      }
+      const uint32_t acc = in(n, 0);
+      if (acc == kNone) return false;
+      if (gv == 0.0f && replaceNode(n, acc)) return simplified(true);
+      rewrite(n, A_.muladd, {x, in(n, gi), acc});
+      ++st_.simplified;
       return false;
     }
     if (at == A_.div) {

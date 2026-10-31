@@ -165,6 +165,9 @@ struct Stimulus {
   // voice.* signals (Hz, Gate, …) per voice; default: 220 Hz, gate held, velocity 1.
   std::function<double(eng::VoiceSignal sig, uint32_t voice, uint64_t t)> voiceSignal;
   std::map<std::string, double> params;  // by name; others keep their defaults
+  // Block-rate automation (T4.x-fix-dsp): when set, called at each block's first frame for every param; a finite
+  // result replaces the param's value from that block on (NaN: keep it).
+  std::function<double(const std::string& name, uint64_t t0)> paramAt;
   double transportBeat0 = 0.0;
   double bpm = 120.0;
   eng::SleepMode sleep = eng::SleepMode::On;  // T1.x-silence: the images sleep as the engine runs them by default
@@ -264,6 +267,11 @@ inline Outputs run(const Program& p, Backend backend, const Stimulus& st) {
 
   for (uint32_t t0 = 0; t0 < st.frames; t0 += B) {
     const uint32_t n = std::min(B, st.frames - t0);
+    if (st.paramAt)
+      for (size_t i = 0; i < params.size(); ++i) {
+        const double v = st.paramAt(tp.patch.nodeName(face.params[i].node), t0);
+        if (std::isfinite(v)) params[i] = static_cast<float>(v);
+      }
     for (uint32_t s = 0; s < face.globalIn.size(); ++s) {
       const uint32_t ord = face.globalIn[s].ordinal, ch = face.globalIn[s].channel;
       const bool b = inBool(ord);
