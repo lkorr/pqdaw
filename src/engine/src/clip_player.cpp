@@ -136,7 +136,13 @@ ClipPlayer::ClipPlayer(const ClipPlayerConfig& config) : cfg_(config) {
 }
 
 ClipPlayer::~ClipPlayer() {
-  for (uint32_t idx : live_) voices_[idx].reader.cursor.stop();
+  for (uint32_t idx : live_) stopReader(voices_[idx].reader);
+}
+
+void ClipPlayer::stopReader(Reader& r) noexcept {  // RT-safe
+  r.cursor.stop();
+  r.ahead.stop();
+  r.aheadValid = false;
 }
 
 // ---- block framing ----------------------------------------------------------------------------------------------
@@ -201,6 +207,7 @@ void ClipPlayer::startVoice(uint32_t slot, const AudioSequenceImage::Clip& c, Sa
   v.nextWrap = INT64_MAX;
   v.reader.buf = kNone;
   v.reader.started = false;
+  v.reader.aheadValid = false;
   if (c.playStart >= s0) {
     v.state = State::Pending;
     v.vs = c.playStart;
@@ -230,7 +237,7 @@ void ClipPlayer::startVoice(uint32_t slot, const AudioSequenceImage::Clip& c, Sa
 void ClipPlayer::endVoice(uint32_t i) noexcept {  // RT-safe
   const uint32_t idx = live_[i];
   Voice& v = voices_[idx];
-  v.reader.cursor.stop();
+  stopReader(v.reader);
   if (v.reader.buf != kNone) freeBuffers_.push_back(v.reader.buf);
   v.reader.buf = kNone;
   v.reader.started = false;
@@ -448,6 +455,9 @@ void ClipPlayer::renderRun(Voice& v, uint32_t frame, SampleTime s, uint32_t n) n
   }
   if (np > 1) v.lastWrap = s + pc[np - 1].at;
   v.nextWrap = wrapAfter;
+  // Q151 item 7: a wrap within the look-ahead on a streamed sample: its next pass is claimed now.
+  if (c.looped && wrapAfter != INT64_MAX && wrapAfter - (s + n) <= lookahead_ && view.streamed())
+    claimAhead(v, view, pc[np - 1].step);
   if (v.inLen != 0) {
     v.inPos += n;
     if (v.inPos >= v.inLen) v.inLen = v.inPos = 0;
@@ -549,11 +559,24 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
     }
     stats_.missingFrames += sp.missing;
   };
+  // A jump (a loop wrap) that lands where the claimed next pass starts: adopt it (its frames are being fetched since
+  // the claim), reading from its first frame (the few frames before `first` are read and kept).
+  auto adopt = [&](media::Direction dir, bool lands) noexcept {
+    if (!r.aheadValid || r.aheadDir != dir || !lands) return false;
+    r.cursor.swap(r.ahead);
+    r.ahead.stop();
+    r.aheadValid = false;
+    r.lo = r.hi = r.aheadFrame;
+    ++stats_.loopAdopts;
+    return true;
+  };
   if (forward) {
     if (!r.started || r.dir != media::Direction::Forward || first < r.lo || first > r.hi) {
-      r.cursor.start(*cfg_.streams, sample, first, media::Direction::Forward);
+      if (!adopt(media::Direction::Forward, first >= r.aheadFrame && first - r.aheadFrame <= cap / 2)) {
+        r.cursor.start(*cfg_.streams, sample, first, media::Direction::Forward);
+        r.lo = r.hi = first;
+      }
       r.dir = media::Direction::Forward;
-      r.lo = r.hi = first;
       r.off = 0;
       r.started = true;
     }
@@ -577,9 +600,11 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
     }
   } else {
     if (!r.started || r.dir != media::Direction::Reverse || last > r.hi || last < r.lo) {
-      r.cursor.start(*cfg_.streams, sample, last, media::Direction::Reverse);
+      if (!adopt(media::Direction::Reverse, last <= r.aheadFrame && r.aheadFrame - last <= cap / 2)) {
+        r.cursor.start(*cfg_.streams, sample, last, media::Direction::Reverse);
+        r.lo = r.hi = last;
+      }
       r.dir = media::Direction::Reverse;
-      r.lo = r.hi = last;
       r.off = cap;
       r.started = true;
     }
@@ -607,6 +632,37 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
   base[1] = ch == 2 ? b[1] + r.off : b[0] + r.off;
   *baseFrame = r.lo;
   return true;
+}
+
+// Q151 item 7: the next pass of a looped RePitch voice whose wrap is near (renderRun: within the look-ahead). After a
+// forward wrap the content reads from just past the loop start, after a reverse one from just below the loop end;
+// the cursor starts a little outside the filter's reach there (2 kSlack frames: the per-block rate rounding), so the
+// jump lands inside what it fetched. One claim at a time (the predicted wrap sample moves by a frame or so from block to
+// block with the re-anchored rate: re-claiming per block would restart the fetch every time).
+void ClipPlayer::claimAhead(Voice& v, const media::SampleView& view, int64_t step) noexcept {  // RT-safe
+  Reader& r = v.reader;
+  if (r.aheadValid || cfg_.streams == nullptr || step == 0) return;
+  const ClipSample& cs = v.img->sample(v.clip->sample);
+  if (cs.pooled == nullptr) return;
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const dsp::SincTable& tb =
+      dsp::sincTableAtLeast(dsp::ResampleQuality::High, dsp::sincStretchQ(static_cast<double>(step) / 4294967296.0));
+  const bool fwd = step > 0;
+  int64_t frame = 0;
+  if (fwd) {
+    frame = static_cast<int64_t>(std::floor(static_cast<double>(c.loop.start) * c.framesPerTick)) -
+            static_cast<int64_t>(tb.center) - 2 * kSlack;
+  } else {
+    frame = static_cast<int64_t>(std::floor(static_cast<double>(c.loop.end) * c.framesPerTick)) -
+            static_cast<int64_t>(tb.center) + 1 + static_cast<int64_t>(tb.taps) + 2 * kSlack;
+  }
+  frame = std::clamp<int64_t>(frame, 0, view.frames);
+  const media::Direction dir = fwd ? media::Direction::Forward : media::Direction::Reverse;
+  r.ahead.start(*cfg_.streams, *cs.pooled, frame, dir);
+  r.aheadFrame = frame;
+  r.aheadDir = dir;
+  r.aheadValid = true;
+  ++stats_.loopClaims;
 }
 
 std::optional<ClipPlayer::StreamStart> ClipPlayer::streamStart(const AudioSequenceImage& img,

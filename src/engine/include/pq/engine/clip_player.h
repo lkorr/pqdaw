@@ -32,7 +32,11 @@
 // A fully resident sample is read in place (its guard frames cover the filter's reach at the edges; reads further out
 // are gathered into a scratch buffer with zeros). A streamed one (media::SamplePool: resident head + disk stream) is
 // read through a media::SampleCursor into the voice's history buffer (the frames the filter still needs plus the new
-// ones; at most `historyFrames`, runs are cut into chunks that fit), so the ring is read once, in order. Frames the
+// ones; at most `historyFrames`, runs are cut into chunks that fit), so the ring is read once, in order. A looped
+// RePitch voice jumps back at every wrap: `lookaheadSeconds` before a wrap it claims a second cursor at the loop's
+// other end (a little before the first frame the filter will need there), which the disk thread fills meanwhile, and
+// the wrap adopts it (T5.x-perf-audio, Q151 item 7: the wrap used to claim a fresh stream and underrun). Loops inside
+// the resident head need neither. Frames the
 // disk thread has not delivered read as silence (counted: media::StreamPool::underruns, ClipPlayerStats::missingFrames).
 // Offline renders install a StreamFill that blocks until the stream has the frames (SamplePool::waitFilled), so a
 // render never depends on disk speed.
@@ -77,6 +81,8 @@ struct ClipPlayerStats {
   uint64_t swaps = 0, kept = 0, faded = 0;   // image swaps; voices kept / faded out by them
   uint64_t copyFrames = 0, sincFrames = 0;   // output frames rendered by each path (per voice)
   uint64_t scans = 0;             // runs that looked for clips to start (the rest cost one compare)
+  uint64_t loopClaims = 0;        // looped RePitch voices on streamed samples: next loop passes claimed ahead (Q151)
+  uint64_t loopAdopts = 0;        // ... and taken over at their wrap
 };
 
 // Offline renders: called before a voice reads `frames` frames that a stream (still) has to deliver; it should block
@@ -138,6 +144,13 @@ private:
     media::Direction dir = media::Direction::Forward;
     bool started = false;
     media::SampleCursor<media::PooledSample> cursor;  // streamed samples are pool entries (stable across swaps)
+    // Looped RePitch (Q151 item 7): the next loop pass, claimed ahead of a wrap (valid until a wrap adopts it; every
+    // pass starts at the same place, so a claim no wrap needed stays good for the next one). Forward: it reads from
+    // aheadFrame on; reverse: its reads end at aheadFrame.
+    media::SampleCursor<media::PooledSample> ahead;
+    int64_t aheadFrame = 0;
+    media::Direction aheadDir = media::Direction::Forward;
+    bool aheadValid = false;
   };
   struct Voice {
     const AudioSequenceImage* img = nullptr;
@@ -171,6 +184,8 @@ private:
   void read(Voice& v, const media::SampleView& view, const Piece& p, float* const* out, const float* env, float gain) noexcept;
   bool ensure(Voice& v, const media::SampleView& view, int64_t first, int64_t last, bool forward, const float** base,
               int64_t* baseFrame) noexcept;
+  void claimAhead(Voice& v, const media::SampleView& view, int64_t step) noexcept;  // Q151 item 7
+  static void stopReader(Reader& r) noexcept;
   float* touch(uint32_t slot) noexcept;  // the slot's channel 0 (channel 1 follows), cleared on its first write
   void seekCursors(SampleTime s) noexcept;
 

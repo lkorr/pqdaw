@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <thread>
+#include <utility>
 
 #include "pq/core/cache_line.h"
 
@@ -423,6 +424,16 @@ public:
     stream_ = {};
   }
   ~SampleCursor() { stop(); }
+
+  // Exchanges two cursors (position, direction, sample and stream): a player's prepared second cursor becomes its
+  // current one. RT-safe.
+  void swap(SampleCursor& o) noexcept {
+    std::swap(pool_, o.pool_);
+    std::swap(sample_, o.sample_);
+    std::swap(pos_, o.pos_);
+    std::swap(dir_, o.dir_);
+    std::swap(stream_, o.stream_);
+  }
 
   int64_t position() const noexcept { return pos_; }
   bool streaming() const noexcept { return stream_.valid(); }

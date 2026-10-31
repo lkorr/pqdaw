@@ -7,7 +7,8 @@
 //   - sleep: no voice and no scan before a clip's look-ahead window; the slot is inactive outside its clips
 //   - click-free swaps (gain ramp, moved clip, identical republish bit-exact), stop / locate fades
 //   - streamed samples (media::SamplePool + disk thread): offline blocking fills equal a resident render bit for bit;
-//     a locate prefetch lets playback start with data ready
+//     a locate prefetch lets playback start with data ready; a looped RePitch clip past the resident head wraps
+//     without underruns in real time (its next loop pass is claimed ahead, Q151 item 7), forward and reverse
 //   - the clipPlayer atom reads its slot through ProcessContext::clipIn
 //   - RtScope over every RT entry point (clip boundaries, crossfades, loop wraps, swaps, underruns)
 #include <doctest/doctest.h>
@@ -630,6 +631,79 @@ TEST_CASE("clip player: streamed samples — offline blocking fills equal a resi
     pool.disengage();
     pool.clearPrefetches();
     rig.tl.reset();
+    pool.stopDiskThread();
+  }
+  std::error_code ec;
+  fs::remove_all(wav.parent_path(), ec);
+}
+
+// T5.x-perf-audio (Q151 item 7): a looped RePitch clip on a streamed sample whose loop lies past the resident head,
+// played in real time (one 64-frame block per 1.33 ms of wall clock, the disk thread polling as in playback): every
+// wrap reads data the disk thread fetched ahead (the voice's second cursor, claimed ~0.5 s before the wrap), so no
+// frame is missing. Before: each wrap claimed a fresh stream at the loop start and underran.
+TEST_CASE("clip player: a looped RePitch clip on a streamed sample wraps without underruns (real time)") {
+  auto fn = [](uint32_t c, int64_t i) { return static_cast<float>(0.5 * std::sin(0.0137 * static_cast<double>(i) + c)); };
+  const fs::path wav = writeWav("loopwrap.wav", 400000, 2, fn);
+  for (const bool reverse : {false, true}) {
+    CAPTURE(reverse);
+    pq::media::PoolConfig pc;
+    pc.residentLimitBytes = 0;
+    pc.headFrames = 4000;
+    pc.streamSlots = 16;
+    pc.ringFloats = 2 * 65536;
+    pq::media::SamplePool pool(pc);
+    pool.startDiskThread();
+    auto s = pool.load(wav);
+    REQUIRE(s.ok());
+    REQUIRE((*s)->view().streamed());
+    {
+      Rig rig(64, 0.002, &pool.streams());
+      rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+      const double fpt = 1.07 * kSr * 60.0 / (120.0 * static_cast<double>(kPpq));  // +1.2 st: the sinc path
+      e::AudioClipDesc c;
+      c.id = 1;
+      c.warp = e::ClipWarp::RePitch;
+      c.reverse = reverse;
+      c.start = 0;
+      // 4.1 s; not a whole number of loop passes, so a reverse clip (which starts at the content's end, folded into the
+      // loop) does not begin exactly on a wrap (that would be a locate onto a wrap: the locate prefetch covers the start
+      // position only).
+      c.length = kPpq * 8 + kPpq / 4;
+      c.contentStart = kPpq * 8;  // ≈ 4.3 s into the file: far past the 4000-frame head
+      c.loop = {true, kPpq * 8, kPpq * 9};  // half a second of content: a wrap every ≈ 0.5 s
+      c.framesPerTick = fpt;
+      e::ClipSample cs;
+      cs.pooled = *s;
+      rig.audio({{1, {c}}}, {cs});
+      pool.engage();
+      // Data at the clip's start is ready (a locate prefetch, as the app does before Play).
+      auto img = rig.build({{1, {c}}}, {cs});
+      const auto st = e::ClipPlayer::streamStart(*img, img->clips(0)[0], 0, 64);
+      REQUIRE(st.has_value());
+      REQUIRE(pool.prefetch(**s, st->frame, st->dir));
+      for (int i = 0; i < 500 && pool.stats().diskReads == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      rig.command(e::TransportCommandKind::Play, 0);
+      const uint64_t before = pool.stats().underruns;
+      const auto t0 = std::chrono::steady_clock::now();
+      const int blocks = static_cast<int>(2.2 * kSr / 64);  // ≈ 4 wraps
+      double peak = 0.0;
+      for (int b = 0; b < blocks; ++b) {
+        rig.tl->process(rig.time, 64);
+        rig.time += 64;
+        const float* l = rig.tl->clipPlayer().channels()[0];
+        for (int i = 0; i < 64; ++i) peak = std::max(peak, static_cast<double>(std::abs(l[i])));
+        const auto due = t0 + std::chrono::nanoseconds(static_cast<int64_t>((b + 1) * 64 * 1e9 / kSr));
+        while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+      }
+      CHECK(peak > 0.3);
+      CHECK(rig.tl->clipPlayer().stats().missingFrames == 0);
+      CHECK(pool.stats().underruns == before);
+      CHECK(rig.tl->clipPlayer().stats().loopAdopts >= 3);
+      pool.disengage();
+      pool.clearPrefetches();
+      rig.tl.reset();
+    }
     pool.stopDiskThread();
   }
   std::error_code ec;
