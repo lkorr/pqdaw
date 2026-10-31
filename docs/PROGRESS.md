@@ -906,3 +906,18 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: idle units compare one generation instead of every link; param block / ring growth is one atomic load per block and one memcpy per growth; parked JIT images cost nothing while waiting; iterative walks use one heap stack per call (no per-level allocation); lowering asks each Instrument Rack once (O(devices), was O(depth²)); checkNewDeviceIds hashes existing ids once (was a project walk per new id).
 - Notes/blockers: limits left: one track patch ≤ 65,535 inputs + params (~32k rack chains; refused with an error), Device view frames 24 nested racks (Q156). UI widget-tree recursion left as is (bounded by that cap).
 - Orchestrator: merged ff at ea48b62 (rebased on bf12d79, whole suite -Full dev + release 55/55). T4.12 note in TASKS corrected per M3.
+
+## 2026-10-31 · T5.7 👁 · worker / task/T5.7-T5.10-browser
+- Did: ui drag sessions (pq/ui/drag.h: Files/BrowserItems/Clips/Device payloads, dragOver/dragLeave/drop/autoScrollDrag, internal + OS sessions, ghost); own OLE IDropTarget (pq/app/os_drop.h; SDL 3.4's lacks file names while hovering, refusal and key state — Q157); views FileProbes (parallel probe+hash workers, sample preloader → ProjectLink::preloadSample), sample_drop.h rules + one-Batch edit, arrangement FileDrop (ghost clips, insertion line, horizontal auto-scroll, folders → places); ArrangementView::dropPlan/dropHovering. ARCHITECTURE, HOTKEYS, REVIEW.
+- Verified: after rebase onto 9a47dd5: build.ps1 -Full (dev) 54/55, 0 warnings (the failure: my drop-playback test's load-sensitive block bound, fixed; -Full re-run of pq_tests_playback 2/2); build.ps1 -Preset release -Full 55/55, 0 warnings.
+- Perf: 100 dropped files probed + committed 12.3–14.2 ms (release, load ~1 %; ≤ 300 ms).
+- CPU-efficiency check: probes read headers + ≤192 KiB hash on 2–8 workers, never the UI thread; ghost damage is the ghosts' bounds only; preload overlaps decoding with the hover; one Batch per drop.
+- Notes/blockers: real Explorer drop = REVIEW hand check; Clips/Device payloads defined for T5.11/T5.12 (nothing produces them yet).
+
+## 2026-10-31 · T5.10 👁 · worker / task/T5.7-T5.10-browser
+- Did: views Library (places/index/tags/preview port in the ViewContext; kLibrary), BrowserPanel (sidebar, tree/flat list, sort, collection chips, preview strip, keys, context menu, drag out, folder drop), view.toggleBrowser + browser.search (Ctrl+F), View > Browser; engine PreviewPlayer (one-slot ClipPlayer, SPSC commands, sleeps); app PreviewService + AudioOutput::setCueSource + Cue Out preference (audio.cueOutput); indexer/tags/places wiring (libraryDataDir, userLibraryDir, settings "library"). Goldens browser-panel, browser-search; audio-prefs(-wasapi) re-recorded. Q158.
+- Verified: as T5.7 (dev -Full 54/55 then fixed, release -Full 55/55, 0 warnings); release perf cases run. Pre-rebase dev run had one known NVIDIA driver-thread crash in pq_tests_views (passed on re-run).
+- Perf: 200k-row list paint median 0.065 ms, max 0.11 ms; cold WAV preview start 4.3 ms; first sample in the next device callback (release, load ~1 %).
+- CPU-efficiency check: rows are a 4-byte index array rebuilt only on change, paint O(visible rows); search on library::Searcher when a poster exists; preview sleeps (one ring check) and is detached when stopped; overview built off the UI thread into the shared cache.
+- Notes/blockers: not built: free-tag/filter chips, tag editing, hot-swap (T5.11), resizable width.
+- Orchestrator: merged ff at f609ff2 (rebased on 9a47dd5). The missing chips / tag editing / width moved into T5.11. Worker note: shared view headers must not include pq/library/* (namespace `library` clashes with test helpers).

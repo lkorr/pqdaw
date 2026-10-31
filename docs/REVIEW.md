@@ -356,7 +356,7 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   - Press Play right after a drop: the sample sounds at once (it was loaded while you hovered).
   - Near the lanes' edges the view scrolls while you hold the drag there (left/right: time; top/bottom: tracks).
 - What was matched against: Live 12 from memory; the user said exact parity is not required.
-- To judge (Q?-T5.7-a): the first file on the aimed-at track vs every file on a new track; folders added at once vs a confirmation; the ghost look (accent-coloured clip with its name, the insertion line).
+- To judge (Q157): the first file on the aimed-at track vs every file on a new track; folders added at once vs a confirmation; the ghost look (accent-coloured clip with its name, the insertion line).
 - Known gaps: clip and device drags (T5.11 / T5.12); presets on a device chain (T5.11); MIDI import (M11).
 
 ## T5.10 Browser panel + preview · 2026-10-31 (👁)
@@ -364,5 +364,5 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   - Goldens: `tests/views/golden/browser-panel.png` (the audio fixture's samples as the User Library: the Drums folder open, vox.wav selected with its waveform in the preview strip, the sidebar's Collections / Categories / Places) and `tests/views/golden/browser-search.png` ("vo" typed: vox.wav and Vocal Chop.wav, best first). `audio-prefs.png` / `audio-prefs-wasapi.png` were re-recorded: the new "Cue Out" row.
   - Live: `pqdaw`, Ctrl+Alt+B (or View > Browser). Add a folder of samples (drop it on the browser). Click a sample: it plays (Prev on); Up / Down walk and preview; Left / Right fold folders; Enter puts the sample on the selected audio track at the start marker; drag one onto the arrangement. Type to search (Ctrl+F jumps to the field). Click in the waveform: the preview jumps there. Sync: a file with a BPM (acid chunk or "120bpm" in its name) follows the project tempo (re-pitched). Right-click: Collections, Show in Explorer, Rename / Delete (User Library only). Preferences > Cue Out: put the preview on outputs 3/4 (open 4 Output Channels first).
 - What was matched against: Live 12's browser from memory (sidebar sections, preview strip with Raw / Sync, colour collections); the user said exact parity is not required.
-- To judge (Q?-T5.10-a): the panel width (440 px, fixed) and its density; the list columns; the chips (collections only); auto-preview on by default at −6 dB; Delete without a confirmation (Recycle Bin).
+- To judge (Q158): the panel width (440 px, fixed) and its density; the list columns; the chips (collections only); auto-preview on by default at −6 dB; Delete without a confirmation (Recycle Bin).
 - Known gaps: free-tag and filter chips (duration, BPM, rate) are not on the panel; no tag editing; no hot-swap mode (T5.11); the browser width cannot be dragged.
