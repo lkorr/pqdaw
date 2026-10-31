@@ -967,3 +967,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: waveform columns via AVX2 gathers and 8-wide span/index emission; Re-Pitch grid kept at 64 samples (256 cost accuracy); ClipPlayer::Piece made trivial after measuring a regression (zeroed 2 KiB stack array per voice/block); disk thread no longer polls full rings; markInUse is O(samples) per publish only.
 - Notes/blockers: open: M4, M6 margin, M11, M13, L1–L5, L7–L11, L13–L19, UI 4–9, part of UI 2 (selected body colour, sample-display ruler/zoom); overlapping Off clips still drawn full length.
 - Orchestrator: merged ff (rebased on 455b3f6, whole suite -Full dev + release 55/55). M5 closed. T4.18 stopped by the user's wrap-up request (WIP branch kept). Next: T0.x-buildspeed2 (check preset, shared sccache, test sharding, -Affected).
+
+## 2026-10-31 · T5.x-library-prefs 👁 · worker / task/T5.x-library-prefs
+- Did: Preferences → Library tab (User Library location with Browse…, Places list with Add Folder… / Remove), sidebar Add Folder…, Library::changeUserLibrary, setting library.userLibrary (precedence PQ_USER_LIBRARY env → setting → Documents default); library section saves merge instead of replacing. Golden library-prefs; audio-prefs(-wasapi) re-recorded. REVIEW, HOTKEYS.
+- Verified (light, at the user's request): release build pqdaw + pq_tests_views + pq_tests_audio 0 warnings; settings tests 2 cases, prefs/browser/golden tests 32 cases pass. No full suite.
+- Perf: n/a (UI thread only).
+- CPU-efficiency check: work only when the library changes.
+- Notes/blockers: Places list shows 9 rows, no scroll; an env override isn't shown in the window.
