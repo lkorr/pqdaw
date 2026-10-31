@@ -376,7 +376,7 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   - Right-click a tuning chip or a Tunings-panel card: Save to Library, Hot-Swap Tuning… (selecting a tuning gives the clip / track / main tuning that tuning).
   - Chips: Dur / BPM / Rate / Ch step through ranges on click (right-click: Any); right-click a file → Tags → New Tag…, then its #tag chip filters. Drag the browser's right edge to resize it (double-click: 440 px).
 - What was matched against: Live 12 from memory (the hot-swap button and preset slot, presets under their device, Save as Default Preset); the user said exact parity is not required.
-- To judge (Q?-T5.11-a): the preset slot as the hot-swap button (no separate icon); hot-swap loading on every selection; user devices showing their stock name in the title bar; the chips' ranges.
+- To judge (Q160): the preset slot as the hot-swap button (no separate icon); hot-swap loading on every selection; user devices showing their stock name in the title bar; the chips' ranges.
 - Known gaps: modulation wires inside a saved rack are not stored in the preset (only the rack's own chains / mappings); a preset renamed in Explorer keeps its old "name" inside (the browser shows file names).
 
 ## T5.12 Drag out: arrangement → browser, → Explorer · 2026-10-31 (👁)
@@ -384,4 +384,4 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   - Drag an audio clip from the arrangement onto a browser folder: a `.pqclip` appears there, its sample copied into `<folder>/Samples/`; hold Alt while dropping: a WAV of the clip as it plays (gain, fades, transpose, reverse) instead. A MIDI clip saves as .pqclip; with Alt it is refused (status line).
   - Drag an audio clip (or a browser sample) out of the window onto an Explorer folder or the desktop: the WAV / the original file is copied there. A clip longer than 60 s renders only when Explorer asks for it (a short pause when the pointer enters Explorer). Play while dragging: the audio does not stop; meters and the playhead freeze during the drag and resume after it. Preference (settings "views.dragOut24Bit"): 24-bit instead of 32-bit float.
   - A MIDI clip dragged out of the window: refused, the status line says MIDI export comes with M11.
-- To judge (Q?-T5.12-a): the clip move turning into a drag once it leaves the arrangement (the clip snaps back home); the temp files' location; no in-window preference UI for the bit depth yet.
+- To judge (Q161): the clip move turning into a drag once it leaves the arrangement (the clip snaps back home); the temp files' location; no in-window preference UI for the bit depth yet.

@@ -1528,7 +1528,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   5. **Serializer**: the text is reserved for audio clips too, key lookup tries the next expected key first, clips are parsed on the stack. Save −8 %, load −5 % (ship): save + load 46–48 ms, under 50 ms but disk-flush sensitive (the outliers are the flush). The remaining big items are `std::from_chars` for long doubles and the writer's per-character appends; a faster float parser would be a new dependency.
 - Status: open (orchestrator: whether ≈ 1.0 % with little margin is enough for T5.4's criterion, or an engine follow-up for the per-unit footprint is wanted).
 
-## Q?-T5.11-a · 2026-10-31 · T5.11 · User library choices: formats, user devices, default presets, hot-swap, chips
+## Q160 · 2026-10-31 · T5.11 · User library choices: formats, user devices, default presets, hot-swap, chips
 - Context: docs/plans/M5.md T5.11 and the T5.10 leftovers (free-tag and filter chips, tag editing, resizable width); the user said exact Live parity is not required.
 - Choices (provisional, reversible):
   1. **Formats** (`pq/document/library_files.h`, ARCHITECTURE §4): `{"format", "schemaVersion", "name", …}` written by the project serializer's writers. A preset holds one device in a `"devices"` array (the project's device-list code, racks nested to any depth); the device object follows the name, so `"kind"` / `"rack"` stay in the first 4 KiB (Q153's sniffer is unchanged). Library files are read strictly, from schema 7 up; a newer schema is refused with "saved by a newer pqdaw". No migration table of their own yet (they start at 7).
@@ -1543,7 +1543,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   10. **Width**: a 4-px handle on the browser's right edge, 300–900 px, saved as `views.browserWidth` with the view preferences.
 - Status: open (the user to judge 3, 6 and 9 with REVIEW's T5.11 entry).
 
-## Q?-T5.12-a · 2026-10-31 · T5.12 · Drag out: how a clip drag becomes a drag out, what Explorer receives
+## Q161 · 2026-10-31 · T5.12 · Drag out: how a clip drag becomes a drag out, what Explorer receives
 - Context: docs/plans/M5.md T5.12.
 - Choices (provisional, reversible):
   1. **A clip move that leaves the arrangement's rect becomes a `Clips` drag** (the move is abandoned, the clip stays where it was); over the browser it saves the clips as .pqclip into the folder under the pointer (a folder row, a file's folder, the place shown, else the User Library's `Clips/`), Alt = rendered WAV files. Leaving the window hands the payload to the app (`UiTree::setDragOutHandler`), which runs `DoDragDrop`.
