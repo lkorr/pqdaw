@@ -105,7 +105,9 @@ struct CacheHeader {
   uint64_t frames;
   uint64_t sourceSize;
   uint64_t sourceHash;
+  int64_t sourceMtime;  // version 2 (M5 review H2): the source's last-write time, part of the cache key
 };
+constexpr uint32_t kCacheVersion = 2;
 
 std::string hex(uint64_t v) {
   static const char* d = "0123456789abcdef";
@@ -414,17 +416,25 @@ Status SamplePool::makeStreamed(PooledSample& s, Decoder* d, const Residency* fr
     // Compressed: decode once into the cache (or reuse it), filling the head on the way.
     std::error_code ec;
     std::filesystem::create_directories(config_.decodedCacheDir, ec);
-    const std::filesystem::path cache =
-        config_.decodedCacheDir / (hex(s.contentHash_) + "-" + hex(info.identity.size) + ".f32");
+    // M5 review H2: the content hash samples three windows, so two files of one size that differ elsewhere (a
+    // re-exported CBR MP3, A-law, IMA ADPCM) share it. The key also carries the source's last-write time: an edited
+    // or re-exported file has a new one, while copies and moved projects keep theirs (and their cache).
+    const std::filesystem::path cache = config_.decodedCacheDir / (hex(s.contentHash_) + "-" + hex(info.identity.size) +
+                                                                   "-" + hex(static_cast<uint64_t>(info.identity.mtime)) + ".f32");
     bool reuse = false;
     if (auto f = detail::File::open(cache, detail::File::Access::Random)) {
       CacheHeader h{};
-      if (f->readExact(0, &h, sizeof h) && std::memcmp(h.magic, kCacheMagic, 8) == 0 && h.version == 1 &&
+      const uint64_t frameBytes = uint64_t{info.channels} * 4;
+      const uint64_t size = f->size();
+      // L6: frames bounded before multiplying (a corrupt count cannot wrap the size check).
+      if (f->readExact(0, &h, sizeof h) && std::memcmp(h.magic, kCacheMagic, 8) == 0 && h.version == kCacheVersion &&
           h.channels == info.channels && h.sampleRate == info.sampleRate && h.sourceSize == info.identity.size &&
-          h.sourceHash == s.contentHash_ && f->size() >= kCacheHeaderBytes + h.frames * info.channels * 4) {
+          h.sourceHash == s.contentHash_ && h.sourceMtime == info.identity.mtime && h.frames > 0 &&
+          h.frames < (uint64_t{1} << 40) && size >= kCacheHeaderBytes && h.frames <= (size - kCacheHeaderBytes) / frameBytes) {
         reuse = true;
         src->frames = static_cast<int64_t>(h.frames);
         r->view.frames = src->frames;
+        r->view.residentFrames = std::min<int64_t>(head, src->frames);
       }
     }
     if (reuse) {
@@ -432,11 +442,12 @@ Status SamplePool::makeStreamed(PooledSample& s, Decoder* d, const Residency* fr
       // The head from the cache file (plain reads).
       auto f = detail::File::open(cache, detail::File::Access::Sequential);
       if (!f) return std::move(f).error();
-      std::vector<uint8_t> raw(static_cast<std::size_t>(head) * info.channels * 4);
+      const int64_t headRead = r->view.residentFrames;  // L6: never past the cached frames
+      std::vector<uint8_t> raw(static_cast<std::size_t>(headRead) * info.channels * 4);
       if (auto st = f->readExact(kCacheHeaderBytes, raw.data(), raw.size()); !st) return st;
       float* ptrs[kMaxStreamChannels];
       for (uint32_t c = 0; c < info.channels; ++c) ptrs[c] = const_cast<float*>(r->view.data[c]);
-      pcmToPlanar(PcmEncoding::F32, false, raw.data(), info.channels, static_cast<std::size_t>(head), ptrs);
+      pcmToPlanar(PcmEncoding::F32, false, raw.data(), info.channels, static_cast<std::size_t>(headRead), ptrs);
     } else {
       const std::filesystem::path tmp =
           cache.string() + "." + std::to_string(GetCurrentProcessId()) + "." + std::to_string(GetCurrentThreadId()) + ".tmp";
@@ -480,12 +491,13 @@ Status SamplePool::makeStreamed(PooledSample& s, Decoder* d, const Residency* fr
       if (st) {
         CacheHeader ch{};
         std::memcpy(ch.magic, kCacheMagic, 8);
-        ch.version = 1;
+        ch.version = kCacheVersion;
         ch.channels = info.channels;
         ch.sampleRate = info.sampleRate;
         ch.frames = static_cast<uint64_t>(written);
         ch.sourceSize = info.identity.size;
         ch.sourceHash = s.contentHash_;
+        ch.sourceMtime = info.identity.mtime;
         LARGE_INTEGER zero{};
         if (!SetFilePointerEx(h, zero, nullptr, FILE_BEGIN)) st = detail::ioError(tmp, "cannot seek");
         if (st) st = writeAll(h, &ch, sizeof ch, tmp);

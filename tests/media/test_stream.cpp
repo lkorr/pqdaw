@@ -21,8 +21,10 @@
 #include "pq/core/rt_scope.h"
 #include "pq/engine/null_device.h"
 #include "pq/media/decoder.h"
+#include "pq/media/hash.h"
 #include "pq/media/sample_pool.h"
 #include "pq/media/stream.h"
+#include "pq/media/waveform.h"
 
 using namespace pq;
 using namespace pq::media;
@@ -390,6 +392,88 @@ TEST_CASE("pool: streamed WAV and FLAC read through the disk thread equal a dire
   pool.stopDiskThread();
   std::error_code ec;
   fs::remove_all(cacheDir, ec);
+}
+
+// M5 review H2: two A-law WAVs (decoded through the .f32 cache, 1 byte per frame, so an edit keeps the size, like
+// a CBR MP3 re-export) that differ only outside the content hash's three windows. They used to share one cache file,
+// so the second played the first one's audio. A third load of the first file reuses its own cache file.
+TEST_CASE("pool: two compressed files with one sampled hash and size never share a decoded cache file") {
+  const fs::path dir = tempDir("pq_media_cache_identity");
+  auto alaw = [](const std::vector<uint8_t>& frames) {
+    std::vector<uint8_t> h;
+    auto le16 = [&](uint16_t v) { h.push_back(uint8_t(v)), h.push_back(uint8_t(v >> 8)); };
+    auto le32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) h.push_back(uint8_t(v >> (8 * i))); };
+    h.insert(h.end(), {'R', 'I', 'F', 'F'});
+    le32(36 + static_cast<uint32_t>(frames.size()));
+    h.insert(h.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
+    le32(16), le16(6), le16(1), le32(48000), le32(48000), le16(1), le16(8);  // A-law, mono
+    h.insert(h.end(), {'d', 'a', 't', 'a'});
+    le32(static_cast<uint32_t>(frames.size()));
+    h.insert(h.end(), frames.begin(), frames.end());
+    return h;
+  };
+  std::mt19937 rng(1);
+  std::vector<uint8_t> fa(1u << 20);
+  for (auto& x : fa) x = static_cast<uint8_t>(rng());
+  std::vector<uint8_t> fb = fa;
+  for (std::size_t i = 100000; i < 120000; ++i) fb[i] ^= 0x55;  // outside the start, middle and end windows
+  const fs::path a = dir / "take1.wav", b = dir / "take2.wav";
+  writeBytes(a, alaw(fa));
+  writeBytes(b, alaw(fb));
+  fs::last_write_time(b, fs::last_write_time(a) + std::chrono::seconds(5));  // a later export
+  REQUIRE(*contentHash(a) == *contentHash(b));  // the collision this test is about
+  PoolConfig cfg;
+  cfg.residentLimitBytes = 0;  // stream: decoded into the cache
+  cfg.headFrames = 1u << 17;  // the head covers the edited frames
+  cfg.streamSlots = 4;
+  cfg.ringFloats = 2 * 4096;
+  cfg.decodedCacheDir = dir / "cache";
+  auto headMatches = [](const SampleView& v, const fs::path& file) {
+    auto d = Decoder::open(file);
+    REQUIRE(d.ok());
+    const Planar ref = decodeAll(**d);
+    REQUIRE(v.residentFrames == 1 << 17);
+    std::size_t wrong = 0;
+    for (std::size_t f = 0; f < static_cast<std::size_t>(v.residentFrames); ++f) wrong += v.data[0][f] != ref[0][f];
+    return wrong;
+  };
+  {
+    SamplePool pool(cfg);
+    auto sa = pool.load(a);
+    auto sb = pool.load(b);
+    REQUIRE(sa.ok());
+    REQUIRE(sb.ok());
+    REQUIRE((*sb)->view().streamed());
+    CHECK(headMatches((*sa)->view(), a) == 0);
+    CHECK(headMatches((*sb)->view(), b) == 0);
+  }
+  int files = 0;
+  for (const auto& e : fs::directory_iterator(dir / "cache")) files += e.path().extension() == ".f32";
+  CHECK(files == 2);
+  {  // a new session: each file reuses its own cache file
+    SamplePool pool(cfg);
+    auto sb = pool.load(b);
+    REQUIRE(sb.ok());
+    CHECK(headMatches((*sb)->view(), b) == 0);
+    auto sa = pool.load(a);
+    REQUIRE(sa.ok());
+    CHECK(headMatches((*sa)->view(), a) == 0);
+  }
+  files = 0;
+  for (const auto& e : fs::directory_iterator(dir / "cache")) files += e.path().extension() == ".f32";
+  CHECK(files == 2);
+  // The waveform overview cache has the same key: one file each.
+  for (const fs::path& f : {a, b, a}) {
+    OverviewRequest r;
+    r.path = f;
+    r.cacheDir = dir / "pqwf";
+    REQUIRE(loadOrBuildOverview(r).ok());
+  }
+  files = 0;
+  for (const auto& e : fs::directory_iterator(dir / "pqwf")) files += e.path().extension() == ".pqwf";
+  CHECK(files == 2);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
 }
 
 TEST_CASE("pool: a locate prefetches; Play adopts the stream with data ready (≤ 50 ms, indicative)") {

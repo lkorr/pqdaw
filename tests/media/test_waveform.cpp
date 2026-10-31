@@ -215,7 +215,7 @@ TEST_CASE("waveform overview: loadOrBuild builds once, then reads the cache; the
   auto a = loadOrBuildOverview(r);
   REQUIRE(a.ok());
   const uint64_t hash = *contentHash(wavs[0]);
-  const fs::path f0 = overviewCacheFile(cache, hash, fs::file_size(wavs[0]));
+  const fs::path f0 = overviewCacheFile(cache, hash, fs::file_size(wavs[0]), sourceMtimeOf(wavs[0]));
   REQUIRE(fs::exists(f0));
   CHECK((*a)->contentHash() == hash);
   // A second request reads the file: same data, and a marker written into the cache file's header is what comes back.

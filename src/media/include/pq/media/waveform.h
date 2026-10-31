@@ -41,6 +41,8 @@ class Decoder;
 inline constexpr uint32_t kOverviewBucketFrames = 256;
 inline constexpr uint32_t kOverviewMipFactor = 4;
 inline constexpr uint64_t kOverviewPublishFrames = uint64_t{1} << 20;
+// No overview is built or loaded for more frames than this (a corrupt header; M5 review H1).
+inline constexpr uint64_t kMaxOverviewFrames = uint64_t{1} << 40;
 inline constexpr float kOverviewScale = 32767.0f;  // int16 full scale (sample 1.0)
 
 // The int16 value of a bucket's min / max (floor / ceil of x · 32767, clamped; NaN reads as 0).
@@ -58,6 +60,8 @@ public:
   // Storage for a file of `frames` frames (≥ 1) and `channels` channels (≥ 1), nothing built yet.
   static std::shared_ptr<WaveformOverview> create(uint32_t channels, uint64_t frames, uint32_t sampleRate,
                                                   uint64_t contentHash);
+  // The byte size create() would allocate for these dimensions, without allocating (validates cache headers).
+  static uint64_t bytesFor(uint32_t channels, uint64_t frames) noexcept;
 
   uint32_t channels() const noexcept { return channels_; }
   uint64_t frames() const noexcept { return frames_; }
@@ -126,7 +130,12 @@ Result<std::shared_ptr<WaveformOverview>> buildOverview(Decoder& decoder, uint64
                                                         const std::atomic<bool>* cancel = nullptr);
 
 // ---- disk cache -------------------------------------------------------------------------------------------------
-std::filesystem::path overviewCacheFile(const std::filesystem::path& dir, uint64_t contentHash, uint64_t fileSize);
+// The cache file of a source with this content hash, size and last-write time (sourceMtimeOf; 0 = not in the key).
+// The mtime keeps two files whose sampled content hash and size collide apart (M5 review H2).
+std::filesystem::path overviewCacheFile(const std::filesystem::path& dir, uint64_t contentHash, uint64_t fileSize,
+                                        int64_t sourceMtime = 0);
+// A file's last-write time as file_time_type ticks (0 when it cannot be read).
+int64_t sourceMtimeOf(const std::filesystem::path& file) noexcept;
 // Writes a complete overview (atomically: `.part` then rename). Creates the directory.
 Status saveOverview(const WaveformOverview& o, const std::filesystem::path& file);
 // Reads an overview file; fails unless its header is consistent and names `contentHash` (0: any). Re-stamps the file's

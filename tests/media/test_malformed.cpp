@@ -17,6 +17,8 @@
 #include "pq/media/decoder.h"
 #include "pq/media/hash.h"
 #include "pq/media/probe.h"
+#include "pq/media/sample_pool.h"
+#include "pq/media/waveform.h"
 
 using namespace pq;
 using namespace pq::media;
@@ -129,27 +131,41 @@ TEST_CASE("malformed: truncations, zero length, absurd sizes and random bytes ne
   }
   {
     std::vector<uint8_t> b = readBytes(fixture("flac_16.flac"));
-    // STREAMINFO total samples (36 bits) → maximum: the decoder stops where the data ends.
+    // STREAMINFO total samples 600,000 (100× too long, but a length the file could hold): the decoder stops where the
+    // data ends.
     const std::size_t si = find(b, "fLaC") + 4 + 4;
-    b[si + 13] |= 0x0F;
-    for (int i = 14; i < 18; ++i) b[si + i] = 0xFF;
-    auto d = Decoder::openMemory(b, "x.flac");
+    std::vector<uint8_t> big = b;
+    big[si + 13] = static_cast<uint8_t>(big[si + 13] & 0xF0);
+    const uint32_t declared = 600000;
+    for (int i = 0; i < 4; ++i) big[si + 14 + i] = static_cast<uint8_t>(declared >> (24 - 8 * i));
+    auto d = Decoder::openMemory(big, "x.flac");
     REQUIRE(d.ok());
+    CHECK((*d)->info().frames == declared);
     const Planar all = decodeAll(**d);
     CHECK(all[0].size() == 6000);
     CHECK((*d)->truncated());
+    // → the 36-bit maximum, more than the file can hold (M5 review H1): not trusted, counted by decoding.
+    b[si + 13] |= 0x0F;
+    for (int i = 14; i < 18; ++i) b[si + i] = 0xFF;
+    auto m = Decoder::openMemory(b, "x.flac");
+    REQUIRE(m.ok());
+    CHECK((*m)->info().frames == 6000);
+    CHECK(decodeAll(**m)[0].size() == 6000);
   }
   {
     std::vector<uint8_t> b = readBytes(fixture("mp3_vbr.mp3"));
-    put32be(b, find(b, "Xing") + 8, 0x7FFFFFFFu);  // Xing frame count: the decoder ends with the frames
+    // Xing frame count 2^31: more frames than the file can hold (M5 review H1: it used to be trusted, 2^40+ frames,
+    // and the overview builder sized a buffer from it). The count is ignored and the frame headers are scanned.
+    put32be(b, find(b, "Xing") + 8, 0x7FFFFFFFu);
     auto d = Decoder::openMemory(b, "x.mp3");
     REQUIRE(d.ok());
-    CHECK((*d)->info().frames > (1ull << 40));
+    CHECK((*d)->info().frames < (1ull << 20));
     const Planar all = decodeAll(**d);
     CHECK(all[0].size() > 48000);  // the padding is not cut when the count is wrong
     CHECK(all[0].size() < 48000 + 2304);
-    CHECK((*d)->truncated());
-    CHECK((*d)->seek(1u << 20).ok());  // past the frames: reads nothing
+    CHECK(all[0].size() <= (*d)->info().frames);
+    CHECK_FALSE((*d)->seek(1u << 20).ok());  // past the (scanned) length
+    CHECK((*d)->seek((*d)->info().frames).ok());  // at the end: reads nothing
     float l[16], r[16];
     float* p[2] = {l, r};
     CHECK(*(*d)->read(p, 16) == 0);
@@ -180,6 +196,128 @@ TEST_CASE("malformed: truncations, zero length, absurd sizes and random bytes ne
   const std::size_t grew = peakCommit() - peakBefore;
   MESSAGE(cases << " malformed cases; peak commit grew by " << grew / (1 << 20) << " MiB");
   CHECK(grew < (256u << 20));
+}
+
+namespace {
+
+// What the app does with a file the browser selects or a drop / project names: probe → SamplePool::load → the
+// waveform overview (load or build, with the disk cache). Any step may fail; none may throw or allocate wildly.
+void throughPoolAndOverview(SamplePool& pool, const fs::path& dir, const std::vector<uint8_t>& bytes, const char* name,
+                            int n) {
+  const fs::path p = dir / (std::to_string(n) + "_" + name);
+  writeBytes(p, bytes);
+  (void)pool.load(p);
+  OverviewRequest r;
+  r.path = p;
+  r.cacheDir = dir / "pqwf";
+  r.cacheLimitBytes = 64u << 20;
+  Result<OverviewPtr> o = loadOrBuildOverview(r);
+  if (o) CHECK((*o)->bytes() < (64u << 20));
+  std::error_code ec;
+  fs::remove(p, ec);
+}
+
+}  // namespace
+
+// M5 review H1: the corpus above only reached Decoder; the frame counts it produced flowed unchecked into the pool and
+// the overview builder (terabyte allocations, bad_alloc on a detached thread = std::terminate). Here the header
+// absurdities go the whole way, and a corrupt .pqwf cache file is loaded.
+TEST_CASE("malformed: header absurdities through SamplePool::load and the waveform overview never throw or over-allocate") {
+  const fs::path dir = fs::temp_directory_path() / "pq_media_malformed_pool";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  const std::size_t peakBefore = peakCommit();
+  {
+    PoolConfig pc;
+    pc.decodedCacheDir = dir / "decoded";
+    pc.streamSlots = 4;
+    pc.ringFloats = 2 * 4096;
+    SamplePool pool(pc);
+    int n = 0;
+    // The review's probe: a 1668-byte MP3 whose Xing count is 2^32 − 1 (it probed as 4.9e12 frames).
+    {
+      std::vector<uint8_t> f;
+      for (int k = 0; k < 4; ++k) {
+        std::vector<uint8_t> fr(417, 0);  // MPEG-1 layer III, 128 kb/s, 44.1 kHz, stereo: 417-byte frames
+        fr[0] = 0xFF, fr[1] = 0xFB, fr[2] = 0x90, fr[3] = 0x00;
+        if (k == 0) {
+          std::memcpy(fr.data() + 36, "Xing", 4);
+          fr[43] = 0x01;
+          fr[44] = fr[45] = fr[46] = fr[47] = 0xFF;
+        }
+        f.insert(f.end(), fr.begin(), fr.end());
+      }
+      auto info = probeBytes(f, "tiny.mp3");
+      REQUIRE(info.ok());
+      CHECK(info->frames <= 4 * 1152);
+      throughPoolAndOverview(pool, dir, f, "tiny.mp3", n++);
+    }
+    // FLAC STREAMINFO total = 2^36 − 1, Ogg final granule 2^40.
+    {
+      std::vector<uint8_t> b = readBytes(fixture("flac_16.flac"));
+      const std::size_t si = find(b, "fLaC") + 4 + 4;
+      b[si + 13] |= 0x0F;
+      for (int i = 14; i < 18; ++i) b[si + i] = 0xFF;
+      auto info = probeBytes(b, "x.flac");
+      REQUIRE(info.ok());
+      CHECK(info->frames == 6000);  // not trusted: counted by decoding
+      throughPoolAndOverview(pool, dir, b, "x.flac", n++);
+    }
+    {
+      std::vector<uint8_t> b = readBytes(fixture("ogg_vorbis.ogg"));
+      std::size_t last = 0;
+      for (std::size_t p = find(b, "OggS"); p != std::string::npos; p = find(b, "OggS", p + 1)) last = p;
+      const uint64_t g = 1ull << 40;
+      std::memcpy(b.data() + last + 6, &g, 8);
+      auto info = probeBytes(b, "x.ogg");
+      REQUIRE(info.ok());
+      CHECK(info->frames <= (b.size() + 1) * 8192);
+      throughPoolAndOverview(pool, dir, b, "x.ogg", n++);
+    }
+    // Every 32-bit word of the first 256 bytes set to absurd values, for every fixture.
+    for (const char* name : kFiles) {
+      CAPTURE(std::string(name));
+      const std::vector<uint8_t> orig = readBytes(fixture(name));
+      for (std::size_t at = 0; at + 4 <= std::min<std::size_t>(orig.size(), 256); at += 4)
+        for (uint32_t v : {0xFFFFFFFFu, 0x7FFFFFFFu}) {
+          CAPTURE(at);
+          std::vector<uint8_t> b = orig;
+          put32le(b, at, v);
+          throughPoolAndOverview(pool, dir, b, name, n++);
+          put32be(b, at, v);
+          throughPoolAndOverview(pool, dir, b, name, n++);
+        }
+    }
+    MESSAGE(n << " files through the pool and the overview builder");
+  }
+  // A corrupt overview cache file: 2^60 frames declared, 0 data bytes (the size check alone passed it).
+  {
+    std::vector<uint8_t> h(64, 0);
+    std::memcpy(h.data(), "PQWF", 4);
+    const uint32_t version = 1, channels = 2, rate = 48000, bucket = kOverviewBucketFrames, mip = kOverviewMipFactor;
+    const uint64_t frames = 1ull << 60, hash = 0x9abc;
+    std::memcpy(h.data() + 4, &version, 4);
+    std::memcpy(h.data() + 8, &channels, 4);
+    std::memcpy(h.data() + 12, &rate, 4);
+    std::memcpy(h.data() + 16, &frames, 8);
+    std::memcpy(h.data() + 24, &hash, 8);
+    std::memcpy(h.data() + 40, &bucket, 4);
+    std::memcpy(h.data() + 44, &mip, 4);
+    writeBytes(dir / "x.pqwf", h);
+    auto o = loadOverview(dir / "x.pqwf", hash);
+    CHECK_FALSE(o.ok());
+    // The same with dataBytes = the 8 bytes that follow: inconsistent with the frames, refused before allocating.
+    const uint64_t eight = 8;
+    std::memcpy(h.data() + 32, &eight, 8);
+    h.resize(72, 0);
+    writeBytes(dir / "y.pqwf", h);
+    CHECK_FALSE(loadOverview(dir / "y.pqwf", hash).ok());
+  }
+  const std::size_t grew = peakCommit() - peakBefore;
+  MESSAGE("peak commit grew by " << grew / (1 << 20) << " MiB");
+  CHECK(grew < (256u << 20));
+  fs::remove_all(dir, ec);
 }
 
 TEST_CASE("malformed: mutation fuzz, 10k cases per format" * doctest::test_suite("slow")) {

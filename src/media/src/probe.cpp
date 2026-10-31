@@ -60,6 +60,12 @@ struct View {
 };
 
 constexpr uint32_t kMaxChunks = 4096;  // a chunk walk gives up after this many chunks (malformed files loop otherwise)
+// M5 review H1: a compressed file's declared length (FLAC STREAMINFO, the last Ogg granule) is capped by the file size
+// at a ratio no real encoder reaches (FLAC's best case, a constant 65535-frame block, is ~4,700 frames per byte;
+// Vorbis' 1-byte 4096-frame packets ~2,000), so a corrupt header can never make a consumer size buffers in terabytes.
+constexpr uint64_t kMaxFramesPerByte = 8192;
+// The smallest MPEG audio frame (MPEG-2 layer III at 8 kb/s, 24 kHz: 24 bytes; 16 leaves room): caps a Xing count.
+constexpr uint64_t kMinMp3FrameBytes = 16;
 
 bool sane(uint32_t rate, uint32_t channels) noexcept {
   return rate >= 1 && rate <= 1536000 && channels >= 1 && channels <= kMaxDecodeChannels;
@@ -436,6 +442,8 @@ Status parseFlac(const View& v, uint64_t start, SampleInfo& info) {
   if (!haveInfo) return parseError("FLAC: no STREAMINFO");
   if (!sane(info.sampleRate, info.channels)) return parseError("FLAC: bad sample rate or channel count");
   if (info.bitsPerSample < 4 || info.bitsPerSample > 32) return parseError("FLAC: bad bit depth");
+  // A length the file cannot hold is not trusted: count by decoding, as for an unknown length.
+  if (info.frames > (v.b.size() + 1) * kMaxFramesPerByte) info.frames = 0;
   if (info.frames == 0) {
     // Length not in STREAMINFO (a stream that was never finalised): count by decoding once.
     detail::CappedHeap heap(kCodecHeapLimit);
@@ -539,7 +547,7 @@ Status parseOgg(const View& v, SampleInfo& info) {
     if (pos == 0) break;
   }
   if (last < 0) return parseError("OGG: no final granule position");
-  info.frames = static_cast<uint64_t>(last);
+  info.frames = std::min<uint64_t>(static_cast<uint64_t>(last), (size + 1) * kMaxFramesPerByte);
   return Ok{};
 }
 
@@ -652,7 +660,9 @@ Status parseMp3(const View& v, SampleInfo& info, bool extensionMp3) {
       info.delayFrames = static_cast<uint32_t>(delay);
       info.paddingFrames = static_cast<uint32_t>(std::max(padding, 0));
     }
-    if (frames >= 0) {
+    // A count more frames than the file can hold is not trusted: scan the frame headers instead (below).
+    const uint64_t maxFrames = (end > first ? end - first : 0) / kMinMp3FrameBytes + 1;
+    if (frames >= 0 && static_cast<uint64_t>(frames) <= maxFrames) {
       const uint64_t total = static_cast<uint64_t>(frames) * h.samples;
       const uint64_t cut = uint64_t{info.delayFrames} + info.paddingFrames;
       info.frames = total > cut ? total - cut : 0;
@@ -662,7 +672,7 @@ Status parseMp3(const View& v, SampleInfo& info, bool extensionMp3) {
   }
   // No frame count: scan every frame header once (what dr_mp3 outputs when it has no Xing count).
   uint64_t total = 0;
-  uint64_t p = first;
+  uint64_t p = info.dataOffset;  // past a Xing / Info frame (it carries no audio; the decoder starts after it)
   while (p + 4 <= end) {
     Mp3Header f;
     if (!mp3Header(v.at(p), f)) {

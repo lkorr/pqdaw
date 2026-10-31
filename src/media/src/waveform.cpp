@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <new>
 #include <system_error>
 
 #ifndef NOMINMAX
@@ -41,6 +42,18 @@ int16_t quantiseMax(float x) noexcept {
 }
 
 // ---- WaveformOverview ---------------------------------------------------------------------------------------------
+
+uint64_t WaveformOverview::bytesFor(uint32_t channels, uint64_t frames) noexcept {
+  const uint64_t ch = std::max<uint32_t>(1, channels);
+  uint64_t buckets = (std::max<uint64_t>(1, frames) + kOverviewBucketFrames - 1) / kOverviewBucketFrames;
+  uint64_t values = 0;
+  for (;;) {
+    values += buckets * 2 * ch;
+    if (buckets <= 1) break;
+    buckets = (buckets + kOverviewMipFactor - 1) / kOverviewMipFactor;
+  }
+  return values * sizeof(int16_t);
+}
 
 std::shared_ptr<WaveformOverview> WaveformOverview::create(uint32_t channels, uint64_t frames, uint32_t sampleRate,
                                                            uint64_t contentHash) {
@@ -212,7 +225,16 @@ Result<std::shared_ptr<WaveformOverview>> buildOverview(Decoder& decoder, uint64
   const SampleInfo& info = decoder.info();
   if (info.channels == 0 || info.frames == 0)
     return Error{ErrorCode::Unsupported, "waveform overview: the file has no audio frames", {}};
-  std::shared_ptr<WaveformOverview> o = WaveformOverview::create(info.channels, info.frames, info.sampleRate, contentHash);
+  // M5 review H1: the probe caps declared lengths by the file size; this bound is the last line (an overview of more
+  // than 2^40 frames, 290 days at 44.1 kHz, is a corrupt header, and its buffer would not fit in memory).
+  if (info.frames > kMaxOverviewFrames || info.channels > 64)
+    return Error{ErrorCode::Unsupported, "waveform overview: implausible length or channel count", {}};
+  std::shared_ptr<WaveformOverview> o;
+  try {
+    o = WaveformOverview::create(info.channels, info.frames, info.sampleRate, contentHash);
+  } catch (const std::bad_alloc&) {
+    return Error{ErrorCode::Overflow, "waveform overview: out of memory", {}};
+  }
   OverviewBuilder b(*o, onPublish ? std::function<void()>([&] { onPublish(o); }) : std::function<void()>{});
   if (auto s = decoder.seek(0); !s) return std::move(s).error();
   constexpr uint64_t kChunk = 1u << 16;
@@ -252,11 +274,21 @@ constexpr uint32_t kVersion = 1;
 
 }  // namespace
 
-fs::path overviewCacheFile(const fs::path& dir, uint64_t contentHash, uint64_t fileSize) {
-  char name[64];
-  std::snprintf(name, sizeof name, "%016llx-%llx.pqwf", static_cast<unsigned long long>(contentHash),
-                static_cast<unsigned long long>(fileSize));
+fs::path overviewCacheFile(const fs::path& dir, uint64_t contentHash, uint64_t fileSize, int64_t sourceMtime) {
+  char name[96];
+  if (sourceMtime == 0)
+    std::snprintf(name, sizeof name, "%016llx-%llx.pqwf", static_cast<unsigned long long>(contentHash),
+                  static_cast<unsigned long long>(fileSize));
+  else
+    std::snprintf(name, sizeof name, "%016llx-%llx-%llx.pqwf", static_cast<unsigned long long>(contentHash),
+                  static_cast<unsigned long long>(fileSize), static_cast<unsigned long long>(sourceMtime));
   return dir / name;
+}
+
+int64_t sourceMtimeOf(const fs::path& file) noexcept {
+  std::error_code ec;
+  const auto t = fs::last_write_time(file, ec);
+  return ec ? 0 : static_cast<int64_t>(t.time_since_epoch().count());
 }
 
 Status saveOverview(const WaveformOverview& o, const fs::path& file) {
@@ -302,7 +334,15 @@ Result<std::shared_ptr<WaveformOverview>> loadOverview(const fs::path& file, uin
   std::error_code ec;
   const uint64_t size = fs::file_size(file, ec);
   if (ec || size != sizeof h + h.dataBytes) return Error{ErrorCode::Parse, "waveform overview: truncated cache file " + file.string(), {}};
-  std::shared_ptr<WaveformOverview> o = WaveformOverview::create(h.channels, h.frames, h.sampleRate, h.contentHash);
+  // M5 review H1: the header's frames must match its data size *before* anything is allocated from them.
+  if (h.frames > kMaxOverviewFrames || WaveformOverview::bytesFor(h.channels, h.frames) != h.dataBytes)
+    return Error{ErrorCode::Parse, "waveform overview: inconsistent cache file " + file.string(), {}};
+  std::shared_ptr<WaveformOverview> o;
+  try {
+    o = WaveformOverview::create(h.channels, h.frames, h.sampleRate, h.contentHash);
+  } catch (const std::bad_alloc&) {
+    return Error{ErrorCode::Overflow, "waveform overview: out of memory", {}};
+  }
   if (o->bytes() != h.dataBytes) return Error{ErrorCode::Parse, "waveform overview: inconsistent cache file " + file.string(), {}};
   in.read(reinterpret_cast<char*>(o->dataMut().data()), static_cast<std::streamsize>(h.dataBytes));
   if (!in) return Error{ErrorCode::Io, "waveform overview: read failed " + file.string(), {}};
@@ -336,8 +376,10 @@ void trimOverviewCache(const fs::path& dir, uint64_t limitBytes) {
   }
 }
 
-Result<OverviewPtr> loadOrBuildOverview(const OverviewRequest& r, const std::function<void(const OverviewPtr&)>& onPublish,
-                                        const std::atomic<bool>* cancel) {
+namespace {
+
+Result<OverviewPtr> loadOrBuild(const OverviewRequest& r, const std::function<void(const OverviewPtr&)>& onPublish,
+                                const std::atomic<bool>* cancel) {
   uint64_t hash = r.contentHash;
   if (hash == 0) {
     Result<uint64_t> h = contentHash(r.path);
@@ -349,7 +391,7 @@ Result<OverviewPtr> loadOrBuildOverview(const OverviewRequest& r, const std::fun
   if (ec) return Error{ErrorCode::NotFound, "waveform overview: cannot read " + r.path.string(), {}};
   fs::path cacheFile;
   if (!r.cacheDir.empty()) {
-    cacheFile = overviewCacheFile(r.cacheDir, hash, size);
+    cacheFile = overviewCacheFile(r.cacheDir, hash, size, sourceMtimeOf(r.path));  // H2: mtime in the key
     if (fs::exists(cacheFile, ec)) {
       Result<std::shared_ptr<WaveformOverview>> o = loadOverview(cacheFile, hash, r.cacheLimitBytes > 0);
       if (o) {
@@ -367,6 +409,19 @@ Result<OverviewPtr> loadOrBuildOverview(const OverviewRequest& r, const std::fun
     if (saveOverview(**o, cacheFile)) trimOverviewCache(r.cacheDir, r.cacheLimitBytes);
   }
   return OverviewPtr(std::move(*o));
+}
+
+}  // namespace
+
+Result<OverviewPtr> loadOrBuildOverview(const OverviewRequest& r, const std::function<void(const OverviewPtr&)>& onPublish,
+                                        const std::atomic<bool>* cancel) {
+  // Runs on worker threads, where an escaping exception terminates the app (M5 review H1): out of memory on a huge
+  // (or corrupt) file is an error for that file, nothing more.
+  try {
+    return loadOrBuild(r, onPublish, cancel);
+  } catch (const std::bad_alloc&) {
+    return Error{ErrorCode::Overflow, "waveform overview: out of memory for " + r.path.string(), {}};
+  }
 }
 
 // ---- sample windows -----------------------------------------------------------------------------------------------
