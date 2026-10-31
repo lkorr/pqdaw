@@ -126,6 +126,12 @@ void ProjectLink::requestLoad(const std::string& path) {
   loadCv_.notify_all();
 }
 
+bool ProjectLink::sampleLoadFinished(const std::string& path) const {
+  std::lock_guard lock(loadMutex_);
+  const auto it = loaded_.find(path);
+  return it != loaded_.end() && it->second.done;
+}
+
 void ProjectLink::loaderMain() {
   for (;;) {
     std::string path;

@@ -67,7 +67,8 @@ ArrangementView::ArrangementView(ViewContext& ctx)
       ctx_(ctx),
       model_(std::make_unique<Model>()),
       editor_(std::make_unique<arrangement::Editor>(*this)),
-      automation_(std::make_unique<ArrangementAutomation>(*this)) {
+      automation_(std::make_unique<ArrangementAutomation>(*this)),
+      fileDrop_(std::make_unique<arrangement::FileDrop>(*this)) {
   setLayout(LayoutKind::Custom);
   setClipChildren(true);
   setFocusable(true);

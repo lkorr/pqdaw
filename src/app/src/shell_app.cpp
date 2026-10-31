@@ -29,7 +29,7 @@ namespace pq::app {
 namespace {
 
 // Codes of the shell's SDL user event (SDL_UserEvent::code).
-enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5 };
+enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5, kOsDrag = 6 };
 
 // File dialogs run their callback on another thread on some platforms: results are posted to the UI thread as a
 // user event carrying the path (owned by the event until delivered) and the request id.
@@ -249,7 +249,20 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     };
     views::circuit::setPatchPlayer(*app->shell_, app->preview_.get());
     views::devices::setDeviceLibrary(*app->shell_, stdlibDir() + "/devices", app->preview_.get());  // T4.6
+    // T5.7: files a drag brings in start loading into the link's pool while they hover.
+    app->ctx_->setSamplePreloader([link](const std::string& path) { link->preloadSample(path); });
     markStartupPhase("link attached, audio device opening in the background");
+  }
+  // T5.7: Explorer drops through our own OLE drop target (SDL's reports file names only at the drop and no key state:
+  // pq/app/os_drop.h). Turning SDL's drop events off revokes its target; ours takes the window.
+  for (SDL_EventType t : {SDL_EVENT_DROP_FILE, SDL_EVENT_DROP_TEXT, SDL_EVENT_DROP_BEGIN, SDL_EVENT_DROP_COMPLETE,
+                          SDL_EVENT_DROP_POSITION})
+    SDL_SetEventEnabled(t, false);
+  if (void* hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr)) {
+    ShellApp* raw = app.get();
+    auto drop = OsDropTarget::registerOn(hwnd, [raw](const OsDragEvent& e) { return raw->onOsDrag(e); });
+    if (drop) app->drop_ = std::move(*drop);
+    else std::fprintf(stderr, "pqdaw: file drops unavailable: %s\n", drop.error().message.c_str());
   }
   ShellApp* self = app.get();
   app->tempoSub_ = app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
@@ -263,6 +276,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
 }
 
 ShellApp::~ShellApp() {
+  drop_.reset();  // T5.7: no OLE callback reaches a half-destroyed shell
   // The shell's widgets subscribe to the context: destroy them first.
   tree_.setRoot(std::make_unique<ui::Widget>());
   shell_.reset();
@@ -320,6 +334,7 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
         if (fn && *fn) (*fn)();
         break;
       }
+      case kOsDrag: drainOsDrags(); break;
       case kAudioChanged:
         if (audio_) audio_->poll();
         syncPreviewRate();
@@ -421,6 +436,60 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
     case SDL_EVENT_KEY_DOWN:
       return true;  // the shell's keys are all in its keymap; the test scenes' window keys (Esc quits, A animates) are off
     default: return false;
+  }
+}
+
+// T5.7: called by OLE on the UI thread from inside the message pump; must return at once. Moves coalesce (the latest
+// position wins); the loop plays them into the tree (drainOsDrags) and the answer is what the tree said last.
+ui::DropEffect ShellApp::onOsDrag(const OsDragEvent& e) {
+  if (e.type == OsDragEvent::Type::Enter) dropEffect_ = ui::DropEffect::Copy;  // until the tree has seen it
+  if (e.type == OsDragEvent::Type::Over && !dropQueue_.empty() && dropQueue_.back().type == OsDragEvent::Type::Over)
+    dropQueue_.back() = e;
+  else
+    dropQueue_.push_back(e);
+  if (!dropPosted_) {
+    dropPosted_ = true;
+    pushUser(userEvent_, kOsDrag);
+  }
+  return e.type == OsDragEvent::Type::Drop ? ui::DropEffect::Copy : dropEffect_;
+}
+
+void ShellApp::drainOsDrags() {
+  dropPosted_ = false;
+  std::vector<OsDragEvent> q;
+  q.swap(dropQueue_);
+  const float density = SDL_GetWindowPixelDensity(window_);
+  const float k = density > 0 ? density : 1.0f;
+  for (const OsDragEvent& e : q) {
+    const ui::Vec2 pos{e.x * k, e.y * k};
+    switch (e.type) {
+      case OsDragEvent::Type::Enter: {
+        ui::DragPayload p;
+        p.kind = ui::DragKind::Files;
+        p.paths = e.paths;
+        if (p.paths.size() == 1) {
+          const size_t s = p.paths[0].find_last_of("/\\");
+          p.label = s == std::string::npos ? p.paths[0] : p.paths[0].substr(s + 1);
+        } else {
+          p.label = std::to_string(p.paths.size()) + " files";
+        }
+        tree_.dragEnter(std::move(p), pos, e.mods);
+        dropEffect_ = tree_.dropFeedback().effect;
+        break;
+      }
+      case OsDragEvent::Type::Over: dropEffect_ = tree_.dragMove(pos, e.mods); break;
+      case OsDragEvent::Type::Leave: tree_.dragExit(); break;
+      case OsDragEvent::Type::Drop:
+        if (!tree_.dragging()) {  // the Enter was coalesced away or never seen: start the session here
+          ui::DragPayload p;
+          p.kind = ui::DragKind::Files;
+          p.paths = e.paths;
+          tree_.dragEnter(std::move(p), pos, e.mods);
+        }
+        (void)tree_.dragDrop(pos, e.mods);
+        dropEffect_ = ui::DropEffect::None;
+        break;
+    }
   }
 }
 

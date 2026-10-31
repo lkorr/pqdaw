@@ -30,7 +30,7 @@ constexpr float kCardPad = 6.0f;
 constexpr float kCardGap = 2.0f;
 constexpr float kPanelHeader = 26.0f;
 
-std::string quoted(std::string_view s) { return "\xE2\x80\x9C" + std::string(s) + "\xE2\x80\x9D"; }
+std::string quoteName(std::string_view s) { return "\xE2\x80\x9C" + std::string(s) + "\xE2\x80\x9D"; }
 
 // "2/1", or the cents ("1901.96 ¢") when the equave is not that ratio.
 std::string equaveText(const doc::TuningDef* def, double cents) {
@@ -622,7 +622,7 @@ bool TuningsPanel::removeTuning(doc::TuningId id) {
     ctx_.setStatus("Delete Tuning: " + st.error().message);
     return false;
   }
-  ctx_.setStatus("Deleted " + quoted(name) + (moved ? "; its tracks and clips now follow " + quoted(toName) : std::string()));
+  ctx_.setStatus("Deleted " + quoteName(name) + (moved ? "; its tracks and clips now follow " + quoteName(toName) : std::string()));
   return true;
 }
 

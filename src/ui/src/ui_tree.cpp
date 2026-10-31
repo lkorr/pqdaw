@@ -6,6 +6,7 @@
 #include <limits>
 
 #include "pq/ui/widget.h"
+#include "drag_state.h"
 
 namespace pq::ui {
 
@@ -45,6 +46,7 @@ inline uint8_t buttonBit(PointerButton b) noexcept {
 UiTree::UiTree() = default;
 
 UiTree::~UiTree() {
+  drag_.reset();
   hovered_ = captured_ = focus_ = nullptr;
   frameRequests_.clear();
   timers_.clear();
@@ -312,10 +314,13 @@ void UiTree::update(double now) {
       if (Widget* w = frameWork_[i]) w->onFrame(now);
     frameWork_.clear();
   }
+  if (drag_) autoScrollDrag(now);
   layoutNow();
 }
 
-bool UiTree::needsFrame() const noexcept { return damage_.needsFrame() || !frameRequests_.empty() || layoutPending_; }
+bool UiTree::needsFrame() const noexcept {
+  return damage_.needsFrame() || !frameRequests_.empty() || layoutPending_ || (drag_ && drag_->scrolling);
+}
 
 double UiTree::nextWakeTime() const noexcept {
   double t = std::numeric_limits<double>::infinity();
@@ -333,6 +338,7 @@ void UiTree::paint(DrawList& dl, const PaintResources& res, double now, const IR
   ctx.frame = ++paintSerial_;
   stats_.widgetsPainted = 0;
   if (root_) paintWidget(*root_, ctx);
+  if (drag_) paintGhost(ctx);
   damage_.clear();
   ++stats_.framesPainted;
 }
@@ -350,6 +356,7 @@ void UiTree::paint(DrawList& dl, const PaintResources& res, double now, std::spa
     // once per damage rect it reaches: a pass's commands reach only their own rect).
     dl.pushClip(ctx.clip.toRect());
     paintWidget(*root_, ctx);
+    if (drag_) paintGhost(ctx);
     dl.popClip();
   }
   damage_.clear();
@@ -428,6 +435,7 @@ void UiTree::clearInteraction(Widget& w) noexcept {
     hovered_ = nullptr;
     h->onHoverChanged(false);
   }
+  if (drag_ && !drag_->payload.external && inside(captured_)) endDrag(false);  // the drag's source went away
   if (inside(captured_)) {
     Widget* c = captured_;
     captured_ = nullptr;
@@ -436,6 +444,7 @@ void UiTree::clearInteraction(Widget& w) noexcept {
     c->onCaptureLost();
   }
   if (inside(focus_)) setFocus(nullptr);
+  if (drag_ && inside(drag_->target)) drag_->target = nullptr;  // removed under a drag: no dragLeave on a dead widget
 }
 
 void UiTree::detachSubtree(Widget& w) noexcept {
@@ -479,6 +488,10 @@ void UiTree::updateHover(Vec2 p) {
 }
 
 Cursor UiTree::cursor() const {
+  if (drag_) {
+    if (drag_->feedback.effect == DropEffect::None) return Cursor::NotAllowed;
+    return drag_->feedback.cursor == Cursor::Inherit ? Cursor::Arrow : drag_->feedback.cursor;
+  }
   const Widget* w = captured_ ? captured_ : (pointerInside_ ? hovered_ : nullptr);
   for (; w; w = w->parent_) {
     if (!w->enabled()) continue;
@@ -525,6 +538,18 @@ bool UiTree::dispatchPointer(const PointerEvent& e) {
     for (TreeObserver* o : observers_) o->onPointerDown(e.pos);
   }
   if (e.type == PointerType::Up) buttonsHeld_ &= static_cast<uint8_t>(~buttonBit(e.button));
+
+  // T5.7: an internal drag owns the pointer: moves retarget it, the last release drops it (the source then loses the
+  // capture). The wheel still scrolls whatever is under the pointer.
+  if (drag_ && !drag_->payload.external && e.type != PointerType::Wheel) {
+    if (e.type == PointerType::Move || e.type == PointerType::Down) updateDrag(e.pos, mods_);
+    if (e.type == PointerType::Up && buttonsHeld_ == 0) {
+      updateDrag(e.pos, mods_);
+      endDrag(true);
+      releaseCapture();
+    }
+    return true;
+  }
 
   if (captured_ && e.type != PointerType::Wheel) {
     Widget* c = captured_;
@@ -585,6 +610,15 @@ KeyResult UiTree::dispatchKey(const KeyEvent& e) {
     else if (e.key == key::kLSuper || e.key == key::kRSuper) bit = mod::kSuper;
     if (bit) m = static_cast<Mods>(e.down ? (m | bit) : (m & ~bit));
     mods_ = m;
+  }
+  // T5.7: Esc cancels an internal drag; modifier changes retarget it (Ctrl changes what a drop does).
+  if (drag_ && !drag_->payload.external) {
+    if (e.down && e.key == key::kEscape) {
+      endDrag(false);
+      releaseCapture();
+      return KeyResult::Widget;
+    }
+    if (isModifierKey(e.key)) updateDrag(drag_->pos, mods_);
   }
   // 1. The focused widget, then its ancestors. A focused text field claims printable keys outright.
   Widget* f = focus_;
@@ -664,12 +698,14 @@ void UiTree::removeObserver(TreeObserver* o) noexcept {
 }
 
 void UiTree::cancelInteraction() {
+  if (drag_ && !drag_->payload.external) endDrag(false);
   if (!captured_) return;
   captured_->onInteractionCancelled();
   releaseCapture();
 }
 
 void UiTree::releaseCapture() {
+  if (drag_ && !drag_->payload.external) endDrag(false);
   if (!captured_) return;
   Widget* c = captured_;
   captured_ = nullptr;

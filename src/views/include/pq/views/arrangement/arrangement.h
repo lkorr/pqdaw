@@ -107,6 +107,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/automation.h"
+#include "pq/views/sample_drop.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -116,6 +117,7 @@ class ArrangementView;
 
 namespace arrangement {
 class Model;
+class FileDrop;
 class Editor;
 class LaneCanvas;
 class Ruler;
@@ -472,6 +474,10 @@ public:
   arrangement::Model& model() const noexcept { return *model_; }
   arrangement::Editor& editor() const noexcept { return *editor_; }
   arrangement::LaneCanvas& lanes() const noexcept { return *lanes_; }
+  arrangement::FileDrop& fileDrop() const noexcept { return *fileDrop_; }  // T5.7
+  // T5.7: the plan of the files hovering over the lanes (empty: none) and whether a drag hovers (tests).
+  const SampleDropPlan& dropPlan() const noexcept;
+  bool dropHovering() const noexcept;
   ui::ScrollView& trackScroll() const noexcept { return *scroll_; }
   void markAxisDirty();  // the horizontal axis changed: ruler, overview and lanes repaint
   void syncHeaderSelection();  // the selected tracks changed: their headers' tint
@@ -497,6 +503,7 @@ private:
   std::unique_ptr<arrangement::Model> model_;
   std::unique_ptr<arrangement::Editor> editor_;
   std::unique_ptr<ArrangementAutomation> automation_;
+  std::unique_ptr<arrangement::FileDrop> fileDrop_;  // T5.7
   ViewContext::Subscription docSub_, viewSub_;
   arrangement::Overview* overview_ = nullptr;
   arrangement::Ruler* ruler_ = nullptr;

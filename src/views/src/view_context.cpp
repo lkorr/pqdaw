@@ -9,6 +9,8 @@
 #include <thread>
 
 #include "pq/document/serialize.h"
+#include "pq/views/browser/library.h"
+#include "pq/views/file_probes.h"
 #include "pq/views/waveforms.h"
 
 namespace pq::views {
@@ -60,6 +62,7 @@ std::string projectNameOf(std::string_view dir) {
 
 ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   waveforms_ = std::make_unique<Waveforms>(*this);
+  probes_ = std::make_unique<FileProbes>(*this);
   saved_ = store_.current();
   storeListener_ = store_.subscribe([this](const doc::StoreEvent& e) { onStoreEvent(e); });
   // Scopes of the default keymap, interned now so views can set them before the keymap file is applied.
@@ -76,6 +79,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   declareViewActions(kWiringActions);
   declareViewActions(kPatchActions);
   syncLoop();
+  library_ = std::make_unique<Library>(*this);  // last: it observes the context
 }
 
 // T5.8: a Collect All and Save in progress (the copy on its worker thread).
@@ -91,8 +95,10 @@ struct ViewContext::CollectJob {
 };
 
 ViewContext::~ViewContext() {
+  library_.reset();        // T5.10: unsubscribes from this context first
   collectWorker_.reset();  // joins a running copy
   waveforms_.reset();      // joins its workers
+  probes_.reset();         // T5.7: joins the probe workers
   store_.unsubscribe(storeListener_);
 }
 

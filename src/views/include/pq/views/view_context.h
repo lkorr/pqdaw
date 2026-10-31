@@ -46,6 +46,8 @@ namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
 class Waveforms;       // pq/views/waveforms.h (T5.5)
+class FileProbes;      // pq/views/file_probes.h (T5.7)
+class Library;         // pq/views/browser/library.h (T5.10)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 }  // namespace pq::views
 namespace pq::views::circuit {
@@ -73,6 +75,7 @@ inline constexpr uint32_t kDevices = 1u << 11;       // the device library chang
 inline constexpr uint32_t kModulation = 1u << 12;    // the modulation source changed (T4.7: the knobs' live rings)
 inline constexpr uint32_t kSamples = 1u << 13;       // the samples were resolved again (T5.4: the playback link)
 inline constexpr uint32_t kWaveforms = 1u << 14;     // a waveform overview arrived or grew (T5.5: views drawing audio)
+inline constexpr uint32_t kLibrary = 1u << 15;       // the browser's places, index or tags changed (T5.10)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -354,6 +357,20 @@ public:
   // Waveforms calls this when an overview arrived or grew (notifies kWaveforms).
   void waveformsChanged() { notify(view_change::kWaveforms); }
 
+  // --- drops (T5.7; pq/views/file_probes.h, pq/views/sample_drop.h) ---
+  // What dragged files are, probed off the UI thread while they hover.
+  FileProbes& fileProbes() noexcept { return *probes_; }
+  // Called with the absolute path (doc::absoluteSamplePath form) of every audio file a drag brings in, the first time
+  // it hovers: the app loads it into the playback link's sample pool so it plays at once after the drop. Null: none.
+  using SamplePreloader = std::function<void(const std::string& absPath)>;
+  void setSamplePreloader(SamplePreloader fn) { preload_ = std::move(fn); }
+  const SamplePreloader& samplePreloader() const noexcept { return preload_; }
+
+  // --- the browser's data (T5.10; pq/views/browser/library.h) ---
+  Library& library() noexcept { return *library_; }
+  // Library calls this when places, the index or tags changed (notifies kLibrary).
+  void libraryChanged() { notify(view_change::kLibrary); }
+
   // --- status line ---
   void setStatus(std::string text);
   const std::string& status() const noexcept { return status_; }
@@ -467,6 +484,9 @@ private:
   std::string resolvedDir_;                              // and the project directory it was resolved in
   UiPoster post_;
   std::unique_ptr<Waveforms> waveforms_;  // T5.5
+  std::unique_ptr<FileProbes> probes_;    // T5.7
+  std::unique_ptr<Library> library_;      // T5.10
+  SamplePreloader preload_;
   struct CollectJob;
   std::unique_ptr<CollectJob> collectWorker_;
   std::shared_ptr<char> life_ = std::make_shared<char>();  // posted work checks it (the context may be gone)

@@ -8,6 +8,7 @@
 #   include/pq/views/mixer/        src/mixer/         mixer view (T3.10)
 #   include/pq/views/piano_roll/   src/piano_roll/    clip view / piano roll (T3.11, T3.12)
 #   include/pq/views/audio_clip/   src/audio_clip/    the audio clip view (T5.6)
+#   include/pq/views/browser/      src/browser/       the browser panel, its data and the preview port (T5.10)
 #   include/pq/views/mos_wheel/    src/mos_wheel/     MOS wheel chart, circle, popover (T3.13, T3.14)
 #   include/pq/views/prefs/        src/prefs/         preferences window (T3.18)
 #   include/pq/views/tunings/      src/tunings/       Tunings panel (T3.19)
@@ -23,12 +24,14 @@ set(PQ_VIEWS_SOURCES
   src/view_context.cpp
   src/view_scenes.cpp
   src/waveforms.cpp
+  src/file_probes.cpp
+  src/sample_drop.cpp
   src/shell/shell.cpp
   src/shell/control_bar.cpp
   src/shell/menu_bar.cpp
   src/shell/panels.cpp
   src/shell/default_content.cpp)
-foreach(sub arrangement audio_clip mixer piano_roll mos_wheel prefs tunings circuit devices device_chain project_patch)
+foreach(sub arrangement audio_clip browser mixer piano_roll mos_wheel prefs tunings circuit devices device_chain project_patch)
   include(${CMAKE_CURRENT_SOURCE_DIR}/src/${sub}/sources.cmake OPTIONAL)
   string(TOUPPER ${sub} _sub)
   list(APPEND PQ_VIEWS_SOURCES ${PQ_VIEWS_${_sub}_SOURCES})
@@ -36,5 +39,5 @@ endforeach()
 
 pq_add_module(pq_views
   SOURCES ${PQ_VIEWS_SOURCES}
-  DEPS pq_ui pq_doc pq_graph pq_dsp pq_tuning pq_media pq_core
+  DEPS pq_ui pq_doc pq_graph pq_dsp pq_tuning pq_media pq_library pq_core
   PRIVATE_DEPS nlohmann_json::nlohmann_json)  # T4.6: panel descriptions (JSON)

@@ -15,6 +15,7 @@
 #include <string>
 
 #include "pq/app/cli.h"
+#include "pq/app/os_drop.h"
 #include "pq/app/patch_preview.h"
 #include "pq/app/project_link.h"
 #include "pq/app/sim_transport.h"
@@ -49,6 +50,9 @@ private:
   void syncTextInput();
   void onTempoMaybeChanged();
   void syncPreviewRate();
+  // T5.7: files dragged in from Explorer (pq/app/os_drop.h): queued from the OLE callback, played into the tree here.
+  ui::DropEffect onOsDrag(const OsDragEvent& e);
+  void drainOsDrags();
 
   ui::UiTree& tree_;
   SDL_Window* window_;
@@ -68,6 +72,10 @@ private:
   const void* tempoTimeline_ = nullptr;
   bool textInput_ = false;
   uint32_t userEvent_ = 0;  // SDL user event type for dialog results and idle-check timers
+  std::unique_ptr<OsDropTarget> drop_;  // T5.7
+  std::vector<OsDragEvent> dropQueue_;
+  ui::DropEffect dropEffect_ = ui::DropEffect::None;  // what the tree said last (the OLE callback's answer)
+  bool dropPosted_ = false;
   uint64_t quitAskedAt_ = 0;  // SDL ticks (ns) when the user was last asked about unsaved changes on quit
   bool quitAnswer_ = true;
 

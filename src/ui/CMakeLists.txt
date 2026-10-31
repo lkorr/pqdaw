@@ -20,6 +20,7 @@ pq_add_module(pq_ui
     src/atlas.cpp
     src/colormap.cpp
     src/controls.cpp
+    src/drag.cpp
     src/draw_list.cpp
     src/frame_pacer.cpp
     src/gpu.cpp

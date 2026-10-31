@@ -36,6 +36,7 @@
 
 #include "pq/ui/actions.h"
 #include "pq/ui/damage.h"
+#include "pq/ui/drag.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/input.h"
 #include "pq/ui/ui_scale.h"
@@ -302,6 +303,17 @@ public:
   virtual InfoText info() const { return {}; }
   // Tooltip text shown after a hover delay by the OverlayLayer (pq/ui/overlay.h). Empty: none.
   virtual std::string_view tooltip() const { return {}; }
+  // --- drag and drop (T5.7, pq/ui/drag.h) ---
+  // A drag is over this widget at `pos` (device px) with modifiers `mods`: what a drop would do. Effect None = not a
+  // target for this payload (the tree asks the parent). Called on every move of the session.
+  virtual DropFeedback dragOver(const DragPayload& /*payload*/, Vec2 /*pos*/, Mods /*mods*/) { return {}; }
+  // The session left this target (the pointer moved to another one, left the window, or the drag was cancelled).
+  virtual void dragLeave() {}
+  // The payload was released here (after a dragOver that accepted it). Returns the effect it had (None: nothing done).
+  virtual DropEffect drop(const DragPayload& /*payload*/, Vec2 /*pos*/, Mods /*mods*/) { return DropEffect::None; }
+  // A drag rests at `pos`: scroll your own axis if `pos` is near your edge, by `dt` seconds' worth (0: only report).
+  // Returns whether you scrolled (or, with dt = 0, would): the tree keeps frames coming while any widget says so.
+  virtual bool autoScrollDrag(Vec2 /*pos*/, double /*dt*/) { return false; }
 
 protected:
   enum Flag : uint32_t {
@@ -420,6 +432,10 @@ public:
 
   void arrange(LayoutPass& pass) override;
   bool onPointer(const PointerEvent& e) override;
+  // T5.7: a drag near the viewport's edges scrolls (up to kDragScrollSpeed logical px/s at the edge).
+  bool autoScrollDrag(Vec2 pos, double dt) override;
+  static constexpr float kDragScrollZone = 24.0f;    // logical px from the edge
+  static constexpr float kDragScrollSpeed = 900.0f;  // logical px per second at the edge itself
 
 private:
   void notifyDependents() noexcept;
@@ -428,6 +444,7 @@ private:
   int32_t scrollX_ = 0, scrollY_ = 0;
   ISize content_{};
   float wheelStep_ = 48.0f;
+  float dragAccX_ = 0, dragAccY_ = 0;  // T5.7: auto-scroll fractions (device px)
 };
 
 // --- tree -----------------------------------------------------------------------------------------------
@@ -530,6 +547,26 @@ public:
   // releaseCapture. Its drag ends without an edit (M3 review L19).
   void cancelInteraction();
 
+  // --- drag and drop (T5.7, pq/ui/drag.h) ---
+  // Starts an internal drag of `payload` from the widget holding the pointer capture (false without one: a drag
+  // starts only inside a pointer gesture). The session follows the pointer until the release (drop), Esc or a lost
+  // capture (cancel).
+  bool beginDrag(DragPayload payload);
+  // An external (OS) drag entered the window, moved, left, or was dropped (device px). dragMove / dragDrop return the
+  // target's effect (None: refused).
+  void dragEnter(DragPayload payload, Vec2 pos, Mods mods);
+  DropEffect dragMove(Vec2 pos, Mods mods);
+  void dragExit();
+  DropEffect dragDrop(Vec2 pos, Mods mods);
+  // Ends a session without dropping (dragLeave on the target).
+  void cancelDrag();
+  bool dragging() const noexcept { return drag_ != nullptr; }
+  const DragPayload* dragPayload() const noexcept;
+  Widget* dropTarget() const noexcept;
+  DropFeedback dropFeedback() const noexcept;
+  // Device-px rect of the ghost as last laid out (empty: none).
+  IRect dragGhostRect() const noexcept;
+
   // --- actions and keymaps ---
   // Uses `actions` and `keymap` for key routing (both must outlive the tree or be replaced). Resolves every
   // binding's action id now; ids with no registered action are kept unresolved and do nothing.
@@ -599,6 +636,15 @@ private:
   Mods mods_ = mod::kNone;  // mods()
   Vec2 pointer_{-1e9f, -1e9f};
   bool pointerInside_ = false;
+
+  // T5.7: the drag session (null: none).
+  struct DragState;
+  std::unique_ptr<DragState> drag_;
+  void updateDrag(Vec2 pos, Mods mods);
+  void endDrag(bool dropIt);
+  void autoScrollDrag(double now);
+  IRect ghostRectAt(Vec2 pos) const;
+  void paintGhost(PaintContext& ctx);
 
   std::vector<Widget*> frameRequests_;
   std::vector<Widget*> frameWork_;

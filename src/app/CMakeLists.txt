@@ -20,8 +20,9 @@ pq_add_module(pq_app
     src/jit_cache.cpp
     src/patch_preview.cpp
     src/device_player.cpp
+    src/os_drop.cpp
   DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine pq_compile nlohmann_json::nlohmann_json
-  PRIVATE_DEPS SDL3::SDL3-static)
+  PRIVATE_DEPS SDL3::SDL3-static ole32 shell32)
 target_compile_options(pq_app PRIVATE /external:W0)
 # T3.17: the stdlib fallback location (pq::app::stdlibDir) for dev builds and tests.
 pq_use_build_paths(pq_app)

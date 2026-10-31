@@ -7,6 +7,7 @@ set(PQ_VIEWS_ARRANGEMENT_SOURCES
   src/arrangement/automation_paint.cpp
   src/arrangement/automation_tiles.cpp
   src/arrangement/editing.cpp
+  src/arrangement/file_drop.cpp
   src/arrangement/lanes.cpp
   src/arrangement/model.cpp
   src/arrangement/overview.cpp

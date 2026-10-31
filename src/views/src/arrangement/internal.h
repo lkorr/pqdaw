@@ -23,6 +23,7 @@
 #include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/sample_drop.h"
 
 namespace pq::views::arrangement {
 
@@ -566,9 +567,64 @@ private:
 };
 
 // Clips, grid, group summaries, playhead: one virtualised widget for all rows.
+struct LanePaint;
+
+// T5.7: files from Explorer and browser items dropped onto the lanes (pq/views/sample_drop.h has the rules). While a
+// payload hovers, its audio files are probed (FileProbes) and drawn as ghost clips at their probed lengths where the
+// drop would put them (new tracks: under an insertion line); other kinds explain themselves in the status line
+// (MIDI, presets) or, for folders, become browser places. The drop commits once every audio file is probed: at once
+// when they are, else when the last probe arrives (the status line says so meanwhile).
+class FileDrop {
+public:
+  explicit FileDrop(ArrangementView& view);
+  ~FileDrop();
+  ui::DropFeedback over(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods);
+  void leave();
+  ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods);
+  // Ghost clips and the insertion line (after the clips, before the overlay).
+  void paint(LanePaint& lp);
+  bool hovering() const noexcept { return hovering_; }
+  bool committing() const noexcept { return pendingCommit_; }
+  const SampleDropPlan& plan() const noexcept { return plan_; }
+  // Horizontal auto-scroll near the lanes' left / right edges (the track scroll view does the vertical).
+  bool autoScroll(ui::Vec2 pos, double dt);
+
+private:
+  void classify(const ui::DragPayload& p);
+  void retarget(ui::Vec2 pos, ui::Mods mods);
+  void replan();
+  void damageGhosts();
+  ui::IRect ghostBounds() const;
+  void commit();
+  void probesArrived();
+  // The track rows' local y (device px from the lanes' top) where new tracks are inserted, and the target row.
+  int32_t insertY() const;
+
+  ArrangementView& view_;
+  std::vector<std::string> paths_;   // the hovering payload's paths (a new session when they change)
+  std::vector<std::string> audio_;   // its audio files, in order
+  std::vector<std::string> folders_;
+  uint32_t midi_ = 0, presets_ = 0, others_ = 0;
+  std::vector<ProbedFile> probed_;   // of audio_, refreshed on every move / probe arrival
+  SampleDropTarget target_;
+  int32_t row_ = -1;                 // the target row (−1: below the last track)
+  Ticks at_ = 0;
+  bool oneTrack_ = false;
+  bool hovering_ = false;
+  bool pendingCommit_ = false;       // dropped before every probe finished: commit when they have
+  SampleDropPlan plan_;
+  ui::IRect painted_{};              // the ghosts' bounds as last damaged
+  float autoScrollAcc_ = 0;
+};
+
 class LaneCanvas : public ui::Widget {
 public:
   explicit LaneCanvas(ArrangementView& view);
+  // T5.7: drops (FileDrop).
+  ui::DropFeedback dragOver(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
+  void dragLeave() override;
+  ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
+  bool autoScrollDrag(ui::Vec2 pos, double dt) override;
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override;

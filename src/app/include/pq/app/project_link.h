@@ -286,6 +286,12 @@ public:
   // UI thread: waits (at most the timeout) until every sample load requested so far has finished, then publishes the
   // audio sequences again if any did. flush() calls it. False on timeout.
   bool waitForSamples(double timeoutSeconds = 60.0);
+  // T5.7: starts loading a file a drag brings in (the views' sample preloader: ViewContext::setSamplePreloader), so it
+  // is in the pool when the drop commits and plays at once. `absPath` is in doc::absoluteSamplePath form (the path a
+  // later publish asks for). UI thread.
+  void preloadSample(const std::string& absPath) { requestLoad(absPath); }
+  // Whether the load of `absPath` has finished (successfully or not). Any thread (tests).
+  bool sampleLoadFinished(const std::string& absPath) const;
   // The audio sequence image the link published last (owned by the engine's timeline; valid until the next publish).
   // UI thread (tests).
   const engine::AudioSequenceImage* audioImage() const noexcept { return lastAudio_; }
@@ -493,7 +499,7 @@ private:
     bool done = false;
     std::string error;
   };
-  std::mutex loadMutex_;
+  mutable std::mutex loadMutex_;
   std::condition_variable loadCv_;
   std::deque<std::string> loadQueue_;
   std::unordered_map<std::string, LoadedSample> loaded_;  // by absolute path (loadMutex_)

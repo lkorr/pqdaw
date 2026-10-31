@@ -81,6 +81,7 @@ pq_add_test(pq_tests_ui PERF
     ui/test_tile_atlas.cpp
     ui/test_pipeline_cache.cpp
     ui/test_waveform.cpp  # T5.5: drawWaveform, the waveform-lod golden
+    ui/test_drag.cpp  # T5.7: drag sessions (internal, external, ghost, auto-scroll)
     ui/thread_cpu.cpp
   DEPS pq_ui pq_ui_scenes)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR=pq_build_source_assets_dir)
@@ -94,6 +95,7 @@ pq_add_test(pq_tests_app
     app/test_startup.cpp
     app/test_patch_preview.cpp
     app/test_probe_preview.cpp  # T4.5: probes and cost meters through the editor and the preview
+    app/test_os_drop.cpp  # T5.7: the OLE drop target (CF_HDROP data object, effects, registration)
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
@@ -118,6 +120,7 @@ pq_add_test(pq_tests_playback
     app/test_racks.cpp  # T4.8: racks (hand-built graph diff 0, interpreter == JIT, key zones, macro = one write, click-free)
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
+    app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -161,6 +164,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_circuit_legibility.cpp  # T4.15: node tooltips, inactive branches, recognised constants, goldens
     views/test_device_affordances.cpp  # T4.16c: Device view keys (arrows, Shift, Ctrl, Home / End, chains), cursors, rename
     views/test_affordances.cpp  # T4.16b: cursors, hover highlights and editing keys (arrangement, piano roll, automation)
+    views/test_file_drop.cpp  # T5.7: files / browser items dropped on the arrangement (rules, ghosts, one undo step, 100 files)
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
