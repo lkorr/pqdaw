@@ -259,6 +259,67 @@ void gainCopy(const float* const* in, uint32_t channels, int64_t first, int32_t 
   }
 }
 
+namespace {
+
+// The decimator (resample.h "Decimated copies"): 2J + 1 taps, padded with zeros to a multiple of 4.
+constexpr uint32_t kDecTaps = 2 * kDecimatorHalfTaps + 1;
+constexpr uint32_t kDecPadded = (kDecTaps + 3) / 4 * 4;
+
+struct Decimator {
+  alignas(32) double h[kDecPadded] = {};
+  Decimator() {
+    constexpr double fc = 0.23, beta = 11.7;
+    const double J = kDecimatorHalfTaps;
+    const double i0b = besselI0(beta);
+    double sum = 0.0;
+    for (uint32_t k = 0; k < kDecTaps; ++k) {
+      const double j = static_cast<double>(k) - J;
+      const double x = j / (J + 1.0);
+      const double win = besselI0(beta * std::sqrt(1.0 - x * x)) / i0b;
+      const double a = 2.0 * fc * j;
+      const double sinc = a == 0.0 ? 1.0 : std::sin(std::numbers::pi * a) / (std::numbers::pi * a);
+      h[k] = 2.0 * fc * sinc * win;
+      sum += h[k];
+    }
+    for (uint32_t k = 0; k < kDecTaps; ++k) h[k] /= sum;
+  }
+};
+
+const Decimator& decimator() {
+  static const Decimator d;
+  return d;
+}
+
+}  // namespace
+
+const double* decimatorTaps() noexcept { return decimator().h; }
+
+void decimate2(const float* x, int64_t xFirst, int64_t xLast, float* y, int64_t mFirst, int64_t count) noexcept {
+  const double* h = decimator().h;
+  const auto J = static_cast<int64_t>(kDecimatorHalfTaps);
+  for (int64_t i = 0; i < count; ++i) {
+    const int64_t lo = 2 * (mFirst + i) - J;  // y = Σ_k h_k · x[lo + k] (h is symmetric)
+    double acc = 0.0;
+    if (lo >= xFirst && lo + static_cast<int64_t>(kDecPadded) <= xLast) {
+      const float* p = x + lo;
+      __m256d a0 = _mm256_setzero_pd(), a1 = _mm256_setzero_pd();
+      uint32_t k = 0;
+      for (; k + 8 <= kDecPadded; k += 8) {
+        a0 = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(p + k)), _mm256_load_pd(h + k), a0);
+        a1 = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(p + k + 4)), _mm256_load_pd(h + k + 4), a1);
+      }
+      for (; k < kDecPadded; k += 4) a0 = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(p + k)), _mm256_load_pd(h + k), a0);
+      const __m256d s = _mm256_add_pd(a0, a1);
+      const __m128d t = _mm_add_pd(_mm256_castpd256_pd128(s), _mm256_extractf128_pd(s, 1));
+      acc = _mm_cvtsd_f64(_mm_add_sd(t, _mm_unpackhi_pd(t, t)));
+    } else {  // near the ends: only the frames that exist
+      const int64_t k0 = std::max<int64_t>(0, xFirst - lo), k1 = std::min<int64_t>(kDecTaps, xLast - lo);
+      for (int64_t k = k0; k < k1; ++k) acc += h[k] * static_cast<double>(x[lo + k]);
+    }
+    y[i] = static_cast<float>(acc);
+  }
+}
+
 const float* sincPrototypeTable(ResampleQuality quality) noexcept {
   (void)prepareSincTable(quality, 256);
   // The prototype is held by build()'s static; rebuild a copy for tests through a static of our own.

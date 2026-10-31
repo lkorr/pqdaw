@@ -10,16 +10,20 @@
 //     a locate prefetch lets playback start with data ready; a looped RePitch clip past the resident head wraps
 //     without underruns in real time (its next loop pass is claimed ahead, Q151 item 7), forward and reverse
 //   - the clipPlayer atom reads its slot through ProcessContext::clipIn
+//   - above rate 2 a resident pooled sample with mips is read on its decimated copies (Q151 item 1): the same audio as
+//     the direct read within the resampler's error, allocation-free; without mips, or streamed, it reads directly
 //   - RtScope over every RT entry point (clip boundaries, crossfades, loop wraps, swaps, underruns)
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <chrono>
 #include <numbers>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -632,6 +636,66 @@ TEST_CASE("clip player: streamed samples — offline blocking fills equal a resi
     pool.clearPrefetches();
     rig.tl.reset();
     pool.stopDiskThread();
+  }
+  std::error_code ec;
+  fs::remove_all(wav.parent_path(), ec);
+}
+
+// T5.x-perf-audio (Q151 item 1): +19 st and +40 st Off clips (rates 3.0 and 10.1) and a reverse +24 st one on a
+// resident pooled sample: with mips (levels 1 … 3) the player reads the decimated copies (ClipPlayerStats::mipFrames)
+// and renders what the direct read renders within the resampler's error (both are band-limited reads of the same
+// signal: a low sine and a mid one, far from the band edge), allocation-free; a pool that has no mips reads directly.
+TEST_CASE("clip player: above rate 2 a resident sample's mips are read (same audio, allocation-free)") {
+  REQUIRE(pq::alloc_trap::installed());
+  auto fn = [](uint32_t c, int64_t i) {
+    return static_cast<float>(0.4 * std::sin(2.0 * std::numbers::pi * 97.0 * static_cast<double>(i) / kSr + c) +
+                              0.3 * std::sin(2.0 * std::numbers::pi * 613.0 * static_cast<double>(i) / kSr));
+  };
+  const fs::path wav = writeWav("mips.wav", 48000 * 12, 2, fn);
+  auto render = [&](bool mips, double semitones, bool reverse, uint64_t* mipFrames) {
+    pq::media::PoolConfig pc;
+    pc.residentLimitBytes = 1ull << 30;
+    pq::media::SamplePool pool(pc);
+    auto s = pool.load(wav);
+    REQUIRE(s.ok());
+    REQUIRE_FALSE((*s)->view().streamed());
+    if (mips) REQUIRE(pool.buildMips(**s, pq::dsp::kMaxMipLevels));
+    Rig rig(64, 0.002, &pool.streams());
+    rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+    e::ClipSample cs;
+    cs.pooled = *s;
+    e::AudioClipDesc c = offClip(1, 0, kPpq * 2, kSr * std::pow(2.0, semitones / 12.0), reverse ? 100000.0 : 1000.0);
+    c.reverse = reverse;
+    rig.audio({{1, {c}}}, {cs});
+    rig.command(e::TransportCommandKind::Play, 0);
+    (void)rig.render(64);  // the image is taken outside the scope
+    std::vector<float> out(32768 - 64);
+    CHECK(pq::alloc_trap::countRtViolations([&] {
+            for (size_t at = 0; at < out.size(); at += 64) {
+              rig.tl->process(rig.time, 64);
+              rig.time += 64;
+              std::memcpy(out.data() + at, rig.tl->clipPlayer().channels()[0], 64 * sizeof(float));
+            }
+          }) == 0);
+    *mipFrames = rig.tl->clipPlayer().stats().mipFrames;
+    return out;
+  };
+  for (const auto& [st, reverse] : std::vector<std::pair<double, bool>>{{19.0, false}, {40.0, false}, {24.0, true}}) {
+    CAPTURE(st);
+    CAPTURE(reverse);
+    uint64_t withMips = 0, without = 0;
+    const std::vector<float> a = render(true, st, reverse, &withMips);
+    const std::vector<float> b = render(false, st, reverse, &without);
+    CHECK(withMips > 30000);
+    CHECK(without == 0);
+    double worst = 0.0, peak = 0.0;
+    for (size_t i = 200; i < a.size() - 200; ++i) {  // away from the 2 ms edge declicks
+      worst = std::max(worst, static_cast<double>(std::abs(a[i] - b[i])));
+      peak = std::max(peak, static_cast<double>(std::abs(b[i])));
+    }
+    MESSAGE("+", st, " st", std::string(reverse ? " reverse" : ""), ": mip read vs direct read, max |difference| ", worst, " (peak ", peak, ")");
+    CHECK(peak > 0.3);
+    CHECK(worst < 1e-4);
   }
   std::error_code ec;
   fs::remove_all(wav.parent_path(), ec);

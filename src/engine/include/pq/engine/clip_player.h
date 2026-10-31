@@ -25,7 +25,9 @@
 // (pq/engine/project_program.h). A voice renders its run in one fused pass per contiguous source piece: the source
 // position law (pq/engine/audio_sequence.h) gives a 32.32 start and step; step = ±1 frame from an integer position is a
 // straight copy (dsp::gainCopy), anything else the windowed-sinc resampler (dsp::sincResample, stretched for rates
-// above 1); the envelope is one constant gain over its flat middle, else one per-frame buffer computed for the run.
+// above 1; above rate 2 on a resident sample's decimated copies when it has them, media::SampleMips, so the cost stays
+// that of a read at rate ≤ 2); the envelope is one constant gain over its flat middle, else one per-frame buffer
+// computed for the run.
 // The block is split at clip boundaries and loop wraps, never tested per sample.
 //
 // ---- Sources ----------------------------------------------------------------------------------------------------------
@@ -83,6 +85,7 @@ struct ClipPlayerStats {
   uint64_t scans = 0;             // runs that looked for clips to start (the rest cost one compare)
   uint64_t loopClaims = 0;        // looped RePitch voices on streamed samples: next loop passes claimed ahead (Q151)
   uint64_t loopAdopts = 0;        // ... and taken over at their wrap
+  uint64_t mipFrames = 0;         // output frames read from a sample's decimated copies (Q151 item 1)
 };
 
 // Offline renders: called before a voice reads `frames` frames that a stream (still) has to deliver; it should block

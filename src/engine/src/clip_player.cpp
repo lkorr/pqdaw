@@ -475,8 +475,25 @@ void ClipPlayer::renderRun(Voice& v, uint32_t frame, SampleTime s, uint32_t n) n
   }
 }
 
-void ClipPlayer::read(Voice& v, const media::SampleView& view, const Piece& p, float* const* out, const float* env,
-                      float gain) noexcept {  // RT-safe
+void ClipPlayer::read(Voice& v, const media::SampleView& sampleView, const Piece& piece, float* const* out,
+                      const float* env, float gain) noexcept {  // RT-safe
+  // Q151 item 1: faster than rate 2, a fully resident sample with decimated copies is read on the level L that brings
+  // the rate to rate / 2^L ≤ 2 (media::SampleMips: frame m of level L is the sample at 2^L·m, so the 32.32 position and
+  // step scale by 2^−L): the cost of a +12 st read at most.
+  const media::SampleView* vp = &sampleView;
+  Piece p = piece;
+  if ((p.step > 2 * kOne || p.step < -2 * kOne) && !sampleView.streamed()) {
+    const ClipSample& cs = v.img->sample(v.clip->sample);
+    if (cs.pooled != nullptr)
+      if (const media::SampleMips* m = cs.pooled->mips(); m != nullptr && m->level[0].channels == sampleView.channels) {
+        const uint32_t L = dsp::mipLevelFor(static_cast<double>(p.step) / 4294967296.0, m->levels);
+        vp = &m->level[L - 1];
+        p.pos >>= L;  // arithmetic: positions may be negative (a reverse read near the start)
+        p.step >>= L;
+        stats_.mipFrames += p.frames;
+      }
+  }
+  const media::SampleView& view = *vp;
   const bool copy = (p.step == kOne || p.step == -kOne) && (p.pos & 0xFFFFFFFF) == 0;
   const dsp::SincTable* tb = copy ? nullptr
                                   : &dsp::sincTableAtLeast(dsp::ResampleQuality::High,

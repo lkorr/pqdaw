@@ -130,10 +130,13 @@ public:
     ContentLoop loop;
     double framesPerTick = 0.0;
     double maxRate = 1.0;            // the largest |rate| the clip can read at (its stretch tables are prepared)
+    double peakRate = 1.0;           // the same without the tables' margin (T5.x-perf-audio: which mips it needs)
   };
 
   // Not RT-safe. `slots[k]` = clip slot k's clips; `samples` are shared by every slot. Prepares every resampler table
-  // the clips can need (pq/dsp/resample.h). Errors: a clip with a non-positive length or speed.
+  // the clips can need (pq/dsp/resample.h), reading the sample itself or, above rate 2, a mip level (rate / 2^L for
+  // every level up to the one the rate wants: the player uses whatever levels the sample has). Errors: a clip with a
+  // non-positive length or speed.
   static Result<std::unique_ptr<AudioSequenceImage>> build(std::span<const AudioTrackDesc> slots,
                                                             std::vector<ClipSample> samples, const TempoMap& tempo,
                                                             const AudioBuildOptions& options);

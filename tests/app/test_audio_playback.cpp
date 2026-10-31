@@ -314,6 +314,39 @@ TEST_CASE("audio playback: a Steps transpose follows its tuning (re-lowered, no 
   CHECK(link->stats().audioPublishes == publishes + 1);
 }
 
+// T5.x-perf-audio (Q151 item 1): a clip two octaves up on a resident sample: the link asks its loader for the mip level
+// the rate needs, a render waits for it (the same frames whatever the timing), and the player reads it: the expected
+// sine, four times faster.
+TEST_CASE("audio playback: a clip above an octave reads the mip level the link builds for it") {
+  Song song("pq_audio_playback_mips");
+  const SampleRef s = song.sample("tone.wav", 96000, 1, 48000.0, [](uint32_t, int64_t i) {
+    return static_cast<float>(0.5 * std::sin(2 * std::numbers::pi * 200 * static_cast<double>(i) / 48000.0));
+  });
+  const TrackId t = song.track();
+  const ClipRef c = song.clip(t, 0, s);
+  song.apply(ops::setAudioClipTranspose(*song.store.current(), std::span<const ClipRef>(&c, 1),
+                                        AudioTranspose{TransposeUnit::Cents, 2400.0, 0, {1}}));
+  auto link = makeLink(song.store.current());
+  const golden::Channels out = render(*link, 0.4);
+  CHECK(link->samplePool().stats().mipBuilds == 1);
+  const media::SampleMips* m = nullptr;
+  {
+    const engine::AudioSequenceImage* img = link->audioImage();
+    REQUIRE(img != nullptr);
+    REQUIRE(img->numSamples() == 1);
+    m = img->sample(0).pooled->mips();
+  }
+  REQUIRE(m != nullptr);
+  CHECK(m->levels == 1);  // rate 4: level 1 reads it at rate 2
+  CHECK(link->engine().timeline().clipPlayer().stats().mipFrames > 0);
+  double worst = 0.0;
+  for (size_t i = 4800; i < out[0].size(); ++i)  // after the edge declick and the new mixer stage's fade in
+    worst = std::max(worst, std::fabs(out[0][i] - 0.5 * std::sin(2 * std::numbers::pi * 800 * static_cast<double>(i) / 48000.0)));
+  MESSAGE("+24 st through the mip: max |error| against the ideal sine ", worst);
+  CHECK(worst < 1e-4);
+  CHECK(link->lastError().empty());
+}
+
 TEST_CASE("audio playback: streamed samples render like resident ones; a locate prefetches their streams") {
   GoldenSong song;
   auto resident = makeLink(song.store.current());

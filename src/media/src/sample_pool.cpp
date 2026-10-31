@@ -244,7 +244,8 @@ void SamplePool::removeEntry(PooledSample* s) noexcept {
       headBytes_ -= s->bytes_;
       --streamedSamples_;
     } else {
-      residentBytes_ -= s->bytes_;
+      residentBytes_ -= s->bytes_ + s->mipBytes_;
+      mipBytes_ -= s->mipBytes_;
     }
   }
   if (s->streamSource_) {
@@ -330,6 +331,58 @@ Result<SampleRef> SamplePool::load(const std::filesystem::path& path) {
 void SamplePool::touch(const SampleRef& s) {
   std::lock_guard lock(mutex_);
   s->lastUse_ = ++tick_;
+}
+
+bool SamplePool::buildMips(const PooledSample& s, uint32_t levels) {
+  levels = std::min(levels, dsp::kMaxMipLevels);
+  if (levels == 0) return true;
+  std::lock_guard budget(budgetMutex_);  // the residency read below must not be demoted meanwhile
+  if (s.pool_ != this || s.streamSource_ != 0) return false;
+  const SampleMips* have = s.ownedMips_.get();
+  if (have != nullptr && have->levels >= levels) return true;
+  if (have != nullptr && config_.reclaimer == nullptr) return false;
+  const SampleView& src = s.owned_->view;
+  const auto G = static_cast<int64_t>(kSampleGuardFrames);
+  int64_t frames[dsp::kMaxMipLevels];
+  size_t total = 0;
+  for (uint32_t l = 0; l < levels; ++l) {
+    const int64_t prev = l == 0 ? src.frames : frames[l - 1];
+    frames[l] = (prev + 1) / 2;
+    total += static_cast<size_t>(frames[l] + 2 * G) * src.channels;
+  }
+  const uint64_t bytes = total * sizeof(float);
+  {
+    std::lock_guard lock(mutex_);
+    if (residentBytes_ + headBytes_ - s.mipBytes_ + bytes > config_.budgetBytes) return false;
+  }
+  auto m = std::make_unique<SampleMips>();
+  m->levels = levels;
+  m->storage = AlignedBuffer<float>(total);
+  float* at = m->storage.data();
+  for (uint32_t l = 0; l < levels; ++l) {
+    SampleView& v = m->level[l];
+    const SampleView& from = l == 0 ? src : m->level[l - 1];
+    v.frames = v.residentFrames = frames[l];
+    v.channels = src.channels;
+    v.sampleRate = src.sampleRate >> (l + 1);
+    // Level 0 is exactly zero outside [0, frames); a level above it holds real values in its guards.
+    const int64_t lo = l == 0 ? 0 : -G, hi = l == 0 ? from.frames : from.frames + G;
+    for (uint32_t c = 0; c < src.channels; ++c) {
+      v.data[c] = at + G;
+      dsp::decimate2(from.data[c], lo, hi, at, -G, frames[l] + 2 * G);
+      at += frames[l] + 2 * G;
+    }
+  }
+  std::unique_ptr<SampleMips> old = std::move(s.ownedMips_);
+  s.ownedMips_ = std::move(m);
+  s.mips_.store(s.ownedMips_.get(), std::memory_order_release);
+  if (old) config_.reclaimer->retire(old.release());  // the audio thread may still read the old levels this block
+  std::lock_guard lock(mutex_);
+  residentBytes_ = residentBytes_ - s.mipBytes_ + bytes;
+  mipBytes_ = mipBytes_ - s.mipBytes_ + bytes;
+  s.mipBytes_ = bytes;
+  ++mipBuilds_;
+  return true;
 }
 
 // Head + stream source for `s`. `d` decodes (at its start) when given; else `from` is the sample's current resident
@@ -509,8 +562,12 @@ void SamplePool::demote(PooledSample& s) {
   s.streamSource_ = tmp.streamSource_;
   s.residency_.store(s.owned_.get(), std::memory_order_release);
   config_.reclaimer->retire(retired.release());  // the audio thread may still read the old frames this block
+  s.mips_.store(nullptr, std::memory_order_release);  // a streamed sample has no mips
+  if (s.ownedMips_) config_.reclaimer->retire(s.ownedMips_.release());
   std::lock_guard lock(mutex_);
-  residentBytes_ -= oldBytes;
+  residentBytes_ -= oldBytes + s.mipBytes_;
+  mipBytes_ -= s.mipBytes_;
+  s.mipBytes_ = 0;
   headBytes_ += tmp.bytes_;
   s.bytes_ = tmp.bytes_;
   ++streamedSamples_;
@@ -588,6 +645,8 @@ SamplePool::Stats SamplePool::stats() const {
       if (!w.expired()) ++s.samples;
     s.streamedSamples = streamedSamples_;
     s.residentBytes = residentBytes_;
+    s.mipBytes = mipBytes_;
+    s.mipBuilds = mipBuilds_;
     s.headBytes = headBytes_;
     s.demotions = demotions_;
   }

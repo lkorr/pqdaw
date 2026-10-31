@@ -487,6 +487,128 @@ TEST_CASE("pool: ring and head memory stay within the documented budget; LRU dem
   fs::remove_all(dir, ec);
 }
 
+// T5.x-perf-audio (Q151 item 1): decimated copies of a resident sample: built on demand, level by level (each frame m
+// of level L the decimator's output at 2^L·m, computed from level L − 1 with its guards), counted in the budget,
+// replaced through the reclaimer when more levels are asked for, retired by a demotion, released with the sample.
+TEST_CASE("pool: mips of a resident sample (levels, guards, budget, reclaimer, demotion)") {
+  const fs::path dir = tempDir("pq_media_mips");
+  EpochReclaimer reclaimer(1);
+  auto reader = reclaimer.registerReader();
+  REQUIRE(reader);
+  PoolConfig cfg;
+  cfg.headFrames = 4096;
+  cfg.streamSlots = 8;
+  cfg.residentLimitBytes = 8u << 20;
+  cfg.reclaimer = &reclaimer;
+  cfg.decodedCacheDir = dir / "cache";
+  SamplePool pool(cfg);
+  const fs::path f = dir / "m.wav";
+  writePatternWav(f, 48001, 2, 3);  // odd length: level frames round up
+  auto s = pool.load(f);
+  REQUIRE(s.ok());
+  const PooledSample& smp = **s;
+  CHECK(smp.mips() == nullptr);
+  const uint64_t base = pool.stats().residentBytes;
+  REQUIRE(pool.buildMips(smp, 1));
+  const SampleMips* m1 = smp.mips();
+  REQUIRE(m1 != nullptr);
+  CHECK(m1->levels == 1);
+  CHECK(m1->level[0].frames == 24001);
+  CHECK(m1->level[0].channels == 2);
+  CHECK(m1->level[0].sampleRate == 24000);
+  const uint64_t one = (24001 + 2 * kSampleGuardFrames) * 2 * sizeof(float);
+  CHECK(pool.stats().mipBytes == one);
+  CHECK(pool.stats().residentBytes == base + one);
+  // Level 1 is the decimator over the sample (zero outside it), guards included.
+  const SampleView& v = smp.view();
+  for (uint32_t c = 0; c < 2; ++c) {
+    std::vector<float> want(24001 + 2 * kSampleGuardFrames);
+    dsp::decimate2(v.data[c], 0, v.frames, want.data(), -kSampleGuardFrames, static_cast<int64_t>(want.size()));
+    bool same = true;
+    for (int64_t k = -kSampleGuardFrames; k < 24001 + kSampleGuardFrames; ++k)
+      same = same && m1->level[0].data[c][k] == want[static_cast<size_t>(k + kSampleGuardFrames)];
+    CHECK(same);
+  }
+  CHECK(pool.buildMips(smp, 1));  // already there: nothing rebuilt
+  CHECK(smp.mips() == m1);
+  CHECK(pool.stats().mipBuilds == 1);
+  // More levels: a new set replaces the old one, which waits for the reader's quiescent state.
+  REQUIRE(pool.buildMips(smp, 5));  // clamped to kMaxMipLevels
+  const SampleMips* m3 = smp.mips();
+  REQUIRE(m3 != nullptr);
+  CHECK(m3->levels == dsp::kMaxMipLevels);
+  CHECK(m3->level[1].frames == 12001);
+  CHECK(m3->level[2].frames == 6001);
+  CHECK(m3->level[0].data[0][100] == m1->level[0].data[0][100]);
+  for (uint32_t c = 0; c < 2; ++c) {  // level 3 from level 2, guards included
+    std::vector<float> want(6001);
+    dsp::decimate2(m3->level[1].data[c], -kSampleGuardFrames, 12001 + kSampleGuardFrames, want.data(), 0, 6001);
+    CHECK(std::equal(want.begin(), want.end(), m3->level[2].data[c]));
+  }
+  CHECK(reclaimer.pending() == 1);
+  reclaimer.quiescent(*reader);
+  CHECK(reclaimer.collect() == 1);
+  const uint64_t all = one + (12001 + 6001 + 4 * kSampleGuardFrames) * 2 * sizeof(float);
+  CHECK(pool.stats().mipBytes == all);
+  CHECK(pool.stats().residentBytes == base + all);
+  // No room in the budget: none built.
+  {
+    PoolConfig tight = cfg;
+    tight.budgetBytes = base + one / 2;
+    SamplePool small(tight);
+    auto t = small.load(f);
+    REQUIRE(t.ok());
+    CHECK_FALSE(small.buildMips(**t, 1));
+    CHECK((*t)->mips() == nullptr);
+    CHECK(small.stats().mipBytes == 0);
+  }
+  // Released with the sample.
+  s = Error{};
+  CHECK(pool.stats().mipBytes == 0);
+  CHECK(pool.stats().residentBytes == 0);
+  reclaimer.unregisterReader(*reader);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+TEST_CASE("pool: a demotion retires a sample's mips; a streamed sample gets none") {
+  const fs::path dir = tempDir("pq_media_mips_demote");
+  EpochReclaimer reclaimer(1);
+  auto reader = reclaimer.registerReader();
+  REQUIRE(reader);
+  PoolConfig cfg;
+  cfg.headFrames = 4096;
+  cfg.streamSlots = 8;
+  cfg.residentLimitBytes = 4u << 20;
+  cfg.budgetBytes = 4u << 20;  // room for one 2.2 MB file and its level-1 mip, not for two files
+  cfg.reclaimer = &reclaimer;
+  cfg.decodedCacheDir = dir / "cache";
+  SamplePool pool(cfg);
+  const fs::path a = dir / "a.wav", b = dir / "b.wav";
+  writePatternWav(a, 48000 * 6, 2, 1);
+  writePatternWav(b, 48000 * 6, 2, 2);
+  auto sa = pool.load(a);
+  REQUIRE(sa.ok());
+  REQUIRE(pool.buildMips(**sa, 1));
+  CHECK(pool.stats().mipBytes > 0);
+  auto sb = pool.load(b);  // demotes a (LRU), mips and all
+  REQUIRE(sb.ok());
+  CHECK((*sa)->view().streamed());
+  CHECK((*sa)->mips() == nullptr);
+  CHECK(pool.stats().mipBytes == 0);
+  CHECK(pool.stats().residentBytes + pool.stats().headBytes <= cfg.budgetBytes);
+  CHECK(reclaimer.pending() == 2);  // the residency and the mips
+  reclaimer.quiescent(*reader);
+  CHECK(reclaimer.collect() == 2);
+  CHECK_FALSE(pool.buildMips(**sa, 1));  // streamed: no mips
+  CHECK((*sa)->mips() == nullptr);
+  sa = Error{};
+  sb = Error{};
+  reclaimer.unregisterReader(*reader);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 TEST_CASE("pool: with no active stream the disk thread makes 0 wakeups in 10 s" * doctest::test_suite("slow")) {
   SamplePool pool;
   pool.startDiskThread();

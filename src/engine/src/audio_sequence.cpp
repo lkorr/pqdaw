@@ -106,8 +106,9 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
         } else {
           c.anchor = a;
         }
-        c.maxRate = k;
+        c.maxRate = c.peakRate = k;
         qs.insert(dsp::sincStretchQ(k));
+        for (uint32_t L = 1; L <= dsp::mipLevelFor(k, dsp::kMaxMipLevels); ++L) qs.insert(dsp::sincStretchQ(std::ldexp(k, -static_cast<int>(L))));
       } else {
         c.start = d.start;
         c.length = d.length;
@@ -124,7 +125,15 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
           hi = std::max(hi, r);
         }
         c.maxRate = hi * 1.02;
+        c.peakRate = hi;
         for (uint32_t q = dsp::sincStretchQ(hi * 1.02); q <= dsp::sincStretchQ(lo * 0.98); ++q) qs.insert(q);
+        // A read at rate r > 2^L may use level L (at r / 2^L ∈ (1, 2] when the sample has the level it wants, above
+        // when it has fewer levels).
+        for (uint32_t L = 1; L <= dsp::mipLevelFor(hi * 1.02, dsp::kMaxMipLevels); ++L) {
+          const double s = std::ldexp(1.0, -static_cast<int>(L));
+          for (uint32_t q = dsp::sincStretchQ(hi * 1.02 * s); q <= dsp::sincStretchQ(std::max(lo * 0.98 * s, 1.0 + 1e-9)); ++q)
+            qs.insert(q);
+        }
       }
       img->clips_.push_back(c);
     }

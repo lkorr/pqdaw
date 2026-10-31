@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "pq/app/project_link.h"
+#include "pq/dsp/resample.h"
 #include "pq/engine/clip_player.h"
 
 namespace pq::app {
@@ -132,15 +133,44 @@ bool ProjectLink::sampleLoadFinished(const std::string& path) const {
   return it != loaded_.end() && it->second.done;
 }
 
+void ProjectLink::requestMips(const media::SampleRef& s, uint32_t levels) {
+  {
+    std::lock_guard lock(loadMutex_);
+    for (const auto& [q, l] : mipQueue_)
+      if (q == s && l >= levels) return;
+    mipQueue_.emplace_back(s, levels);
+    ++loadsPending_;
+  }
+  loadCv_.notify_all();
+}
+
 void ProjectLink::loaderMain() {
   for (;;) {
     std::string path;
+    media::SampleRef mipSample;
+    uint32_t mipLevels = 0;
     {
       std::unique_lock lock(loadMutex_);
-      loadCv_.wait(lock, [&] { return loaderQuit_ || !loadQueue_.empty(); });
+      loadCv_.wait(lock, [&] { return loaderQuit_ || !loadQueue_.empty() || !mipQueue_.empty(); });
       if (loaderQuit_) return;
-      path = std::move(loadQueue_.front());
-      loadQueue_.pop_front();
+      if (!loadQueue_.empty()) {
+        path = std::move(loadQueue_.front());
+        loadQueue_.pop_front();
+      } else {
+        mipSample = std::move(mipQueue_.front().first);
+        mipLevels = mipQueue_.front().second;
+        mipQueue_.pop_front();
+      }
+    }
+    if (mipSample != nullptr) {  // no republish: the player reads PooledSample::mips() itself
+      (void)pool_->buildMips(*mipSample, mipLevels);
+      mipSample.reset();
+      {
+        std::lock_guard lock(loadMutex_);
+        --loadsPending_;
+      }
+      loadCv_.notify_all();
+      continue;
     }
     auto r = pool_->load(pathFromUtf8(path));  // probe + decode (or head + stream source): may take a while
     std::function<void(std::function<void()>)> post;
@@ -174,13 +204,18 @@ void ProjectLink::takeLoadedSamples() {
 }
 
 bool ProjectLink::waitForSamples(double timeoutSeconds) {
-  bool ok = true;
-  {
-    std::unique_lock lock(loadMutex_);
-    ok = loadCv_.wait_for(lock, std::chrono::duration<double>(timeoutSeconds), [&] { return loadsPending_ == 0; });
+  const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeoutSeconds);
+  for (;;) {  // the publish after the loads may ask for mips: wait for those too
+    bool ok = true;
+    {
+      std::unique_lock lock(loadMutex_);
+      ok = loadCv_.wait_until(lock, until, [&] { return loadsPending_ == 0; });
+    }
+    takeLoadedSamples();
+    if (!ok) return false;
+    std::lock_guard lock(loadMutex_);
+    if (loadsPending_ == 0) return true;
   }
-  takeLoadedSamples();
-  return ok;
 }
 
 void ProjectLink::publishAudio(const doc::Project& p, bool force) {
@@ -269,6 +304,18 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
     return;
   }
   const engine::AudioSequenceImage* raw = img.value().get();
+  // Q151 item 1: the mip levels each resident sample's fastest clip needs (rates above 2).
+  std::vector<double> fastest(raw->numSamples(), 0.0);
+  for (uint32_t slot = 0; slot < raw->numSlots(); ++slot)
+    for (const engine::AudioSequenceImage::Clip& c : raw->clips(slot))
+      if (c.sample != engine::AudioSequenceImage::kNoSample) fastest[c.sample] = std::max(fastest[c.sample], c.peakRate);
+  for (uint32_t i = 0; i < raw->numSamples(); ++i) {
+    const media::SampleRef& ref = raw->sample(i).pooled;
+    const uint32_t levels = dsp::mipLevelFor(fastest[i], dsp::kMaxMipLevels);
+    if (levels == 0 || ref == nullptr || ref->view().streamed()) continue;
+    const media::SampleMips* have = ref->mips();
+    if (have == nullptr || have->levels < levels) requestMips(ref, levels);
+  }
   if (Status s = engine_->timeline().publishAudio(std::move(img.value())); !s.ok()) {
     setError(s.error().message);
     return;

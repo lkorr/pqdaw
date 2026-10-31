@@ -284,7 +284,8 @@ public:
   // sequences there. Null: flush() and playhead() pick finished loads up.
   void setUiPoster(std::function<void(std::function<void()>)> post);
   // UI thread: waits (at most the timeout) until every sample load requested so far has finished, then publishes the
-  // audio sequences again if any did. flush() calls it. False on timeout.
+  // audio sequences again if any did, and until the mips those publishes asked for are built (T5.x-perf-audio: a
+  // render reads the same frames whatever the timing). flush() calls it. False on timeout.
   bool waitForSamples(double timeoutSeconds = 60.0);
   // T5.7: starts loading a file a drag brings in (the views' sample preloader: ViewContext::setSamplePreloader), so it
   // is in the pool when the drop commits and plays at once. `absPath` is in doc::absoluteSamplePath form (the path a
@@ -432,6 +433,10 @@ private:
   void publishAudio(const doc::Project& p, bool force = false);
   std::string samplePathOf(const doc::Project& p, doc::SampleId id);  // "" = missing
   void requestLoad(const std::string& path);
+  // T5.x-perf-audio (Q151 item 1): decimated copies for a resident sample some clip reads faster than rate 2, built
+  // on the loader thread (the player uses them from the block after they are published; until then it reads the
+  // sample itself, at the stretched kernel's cost).
+  void requestMips(const media::SampleRef& s, uint32_t levels);
   void loaderMain();
   void takeLoadedSamples();       // UI thread: republish if loads finished
   void prefetchAt(Ticks tick);    // UI thread: streams for the clips under `tick` (and the loop start)
@@ -502,6 +507,7 @@ private:
   mutable std::mutex loadMutex_;
   std::condition_variable loadCv_;
   std::deque<std::string> loadQueue_;
+  std::deque<std::pair<media::SampleRef, uint32_t>> mipQueue_;  // (sample, levels) for the loader (loadMutex_)
   std::unordered_map<std::string, LoadedSample> loaded_;  // by absolute path (loadMutex_)
   uint32_t loadsPending_ = 0;
   bool loaderQuit_ = false;

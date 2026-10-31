@@ -16,6 +16,13 @@
 // Memory: stream rings = streamSlots · ringFloats floats, reserved at construction, committed per slot on first use;
 // heads = streamed files · headFrames · channels floats; both are in Stats.
 //
+// Mips (T5.x-perf-audio, QUESTIONS Q151 item 1): buildMips(sample, levels) adds 2×, 4×, 8× decimated copies of a fully
+// resident sample (pq/dsp/resample.h "Decimated copies"), so a player reading it faster than rate 2 (a transpose above
+// an octave) reads a copy at rate / 2^L ≤ 2 instead: the cost of a +12 st read at most. Built on demand (the playback
+// link asks for the levels its clips' rates need, on its loader thread), never at load: +50 % of the sample's memory
+// for level 1, +87.5 % for all three, counted in residentBytes; skipped when the budget has no room. A demotion
+// retires them with the residency. Streamed samples have none (Q151: the reasons are in the T5.x-perf-audio notes).
+//
 // Disk thread (startDiskThread): THREAD_PRIORITY_ABOVE_NORMAL; 256 KiB overlapped reads (FILE_FLAG_SEQUENTIAL_SCAN)
 // into a staging buffer, converted into the rings (pq/media/pcm.h). It refills a ring as soon as one whole read fits
 // (256 KiB, or a quarter of a small ring), most-starved first, up to 32 reads in flight (QUESTIONS Q?-T5.2-a: the
@@ -37,6 +44,7 @@
 #include "pq/core/aligned_buffer.h"
 #include "pq/core/epoch_reclaimer.h"
 #include "pq/core/result.h"
+#include "pq/dsp/resample.h"
 #include "pq/media/sample_info.h"
 #include "pq/media/stream.h"
 
@@ -63,6 +71,16 @@ struct Residency {
   AlignedBuffer<float> storage;  // channels · (residentFrames + 2 · guard)
 };
 
+// A fully resident sample's decimated copies (immutable once published). level[L − 1] is the 2^L× copy: frame m is the
+// sample at frame 2^L·m (zero phase; frames = ceil(frames / 2^L)), sampleRate = the file's / 2^L, readable on
+// [−kSampleGuardFrames, frames + kSampleGuardFrames) like a residency (the guards hold the filter's real spill-over,
+// beyond them it is zero to within the filter's tail).
+struct SampleMips {
+  uint32_t levels = 0;  // 1 … dsp::kMaxMipLevels
+  SampleView level[dsp::kMaxMipLevels];
+  AlignedBuffer<float> storage;
+};
+
 class SamplePool;
 
 class PooledSample {
@@ -73,6 +91,9 @@ public:
 
   // The current residency's view. RT-safe: one acquire load; valid until the caller's next quiescent state.
   const SampleView& view() const noexcept { return residency_.load(std::memory_order_acquire)->view; }
+  // The decimated copies (SamplePool::buildMips), or null. RT-safe: one acquire load; valid until the caller's next
+  // quiescent state. Only meaningful while view() is fully resident.
+  const SampleMips* mips() const noexcept { return mips_.load(std::memory_order_acquire); }
   const SampleInfo& info() const noexcept { return info_; }
   const std::filesystem::path& path() const noexcept { return path_; }
   uint64_t contentHash() const noexcept { return contentHash_; }
@@ -89,6 +110,9 @@ private:
   // Pool-managed (under the pool mutex), hence mutable behind the shared const references.
   mutable std::atomic<const Residency*> residency_{nullptr};
   mutable std::unique_ptr<Residency> owned_;  // the current residency (retired, not freed, when replaced)
+  mutable std::atomic<const SampleMips*> mips_{nullptr};
+  mutable std::unique_ptr<SampleMips> ownedMips_;  // retired, not freed, when replaced or demoted
+  mutable uint64_t mipBytes_ = 0;
   mutable uint32_t streamSource_ = 0;
   mutable uint64_t lastUse_ = 0;              // pool tick of the last load()/touch()
   mutable uint64_t bytes_ = 0;                // what this entry counts toward the budget
@@ -109,6 +133,12 @@ public:
   Result<SampleRef> load(const std::filesystem::path& path);
   // Marks a sample as used now (LRU for demotion).
   void touch(const SampleRef& s);
+  // Builds the decimated copies 1 … levels (clamped to dsp::kMaxMipLevels) of a fully resident sample, if it does not
+  // have them yet. Not RT-safe: decimates the whole file (~200 multiply-adds per frame and channel for level 1, half
+  // that per further level; tens of ms for a 32 MiB file). Thread-safe; serialised with demotions. False: the sample
+  // is streamed, the budget has no room, or more levels were asked of a sample that has some already and the pool has
+  // no reclaimer to retire them (without one, a sample's mips are built once).
+  bool buildMips(const PooledSample& s, uint32_t levels);
 
   StreamPool& streams() noexcept { return streams_; }
 
@@ -142,6 +172,8 @@ public:
     uint64_t diskReads = 0;
     uint64_t diskBytesRead = 0;
     uint64_t underruns = 0;
+    uint64_t mipBytes = 0;          // decimated copies (included in residentBytes)
+    uint64_t mipBuilds = 0;
   };
   Stats stats() const;
   const PoolConfig& config() const noexcept { return config_; }
@@ -173,6 +205,8 @@ private:
   uint64_t headBytes_ = 0;
   uint64_t demotions_ = 0;
   uint64_t streamedSamples_ = 0;
+  uint64_t mipBytes_ = 0;
+  uint64_t mipBuilds_ = 0;
 
   std::unique_ptr<DiskState> disk_;
   std::thread diskThread_;

@@ -30,6 +30,16 @@
 // prepared reads as null, and sincTableAtLeast falls back to the nearest prepared one with less stretch (q = 256 at
 // worst: aliasing, never a crash or an allocation). Prepared tables live until the process ends.
 //
+// ---- Decimated copies (mips; T5.x-perf-audio, QUESTIONS Q151 item 1) -----------------------------------------------------
+// The cost of a stretched read is proportional to its rate. Above rate 2 a player can read a 2^L× decimated copy of the
+// sample instead (level L: frame m is the source at 2^L·m, zero phase) at rate / 2^L ∈ (1, 2]: the cost of a read at
+// +12 st at most, whatever the transpose up to the 16× cap (L ≤ kMaxMipLevels = 3). decimate2 makes level L + 1 from
+// level L: y[m] = Σ_{|j| ≤ J} h_j · x[2m − j], a Kaiser-windowed sinc (J = 96: 193 taps; cutoff 0.23 cycles per input
+// frame, β = 11.7), double accumulation: flat within 1e-4 dB to 0.21 (what the strongest-stretched read above it can
+// pass: 0.42 / 2) and below −115 dB from 0.25 (the new Nyquist) on, so the cascade (decimations + the final read) keeps
+// the direct read's quality (tests/dsp/test_resample.cpp). Not RT code: run once per sample and level, off the audio
+// thread (media::SamplePool::buildMips).
+
 // ---- Straight copies ------------------------------------------------------------------------------------------------
 // A read at exactly ±1 frame per frame from an integer position needs no filter: gainCopy is a plain (reversed) copy
 // with the envelope applied, the common case of a clip at the device rate without transpose (≤ 1 ns per stereo frame).
@@ -89,5 +99,25 @@ void gainCopy(const float* const* in, uint32_t channels, int64_t first, int32_t 
 
 // The prototype itself at 1/256-frame resolution (F above, 512·W + 1 values), for tests.
 const float* sincPrototypeTable(ResampleQuality quality) noexcept;
+
+inline constexpr uint32_t kMaxMipLevels = 3;     // 2×, 4×, 8×: rates up to the 16× cap read at ≤ 2 on a mip
+inline constexpr uint32_t kDecimatorHalfTaps = 96;  // J: the decimator reads input frames 2m − J … 2m + J
+
+// The decimator's 2J + 1 taps h_{−J} … h_J (symmetric, DC gain exactly 1 in double), for tests.
+const double* decimatorTaps() noexcept;
+// y[i] = Σ_{|j| ≤ J} h_j · x[2·(mFirst + i) − j] for i < count, where x[k] is read for k in [xFirst, xLast) and is zero
+// elsewhere (`x` points at frame 0). Not RT-safe (thread-safe; allocates nothing; AVX2, double accumulation).
+void decimate2(const float* x, int64_t xFirst, int64_t xLast, float* y, int64_t mFirst, int64_t count) noexcept;
+// The mip level a read at |rate| uses when levels 1 … available exist: the smallest L with |rate| / 2^L ≤ 2, at most
+// `available` (0: read the sample itself). RT-safe.
+inline uint32_t mipLevelFor(double rate, uint32_t available) noexcept {
+  uint32_t l = 0;
+  double r = rate < 0.0 ? -rate : rate;
+  while (r > 2.0 && l < available) {
+    r *= 0.5;
+    ++l;
+  }
+  return l;
+}
 
 }  // namespace pq::dsp

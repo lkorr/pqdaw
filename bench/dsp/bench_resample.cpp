@@ -6,6 +6,9 @@
 //   resample/sinc rate 1.06 mono  one input channel added to both outputs
 //   resample/sinc rate 1.06 env   with a per-frame envelope
 //   resample/draft rate 0.92      the 16-tap browser-scrub quality
+//   resample/mip rate R           T5.x-perf-audio (Q151 item 1): a read at R > 2 as the clip player does it on a resident
+//                                 sample with mips: on level L = mipLevelFor(R) at R / 2^L (ns per output frame)
+//   resample/decimate2            building a mip level: ns per output frame and channel (off the audio thread)
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -109,4 +112,21 @@ void addResampleBenches(pq::bench::Runner& runner) {
         kOut, "ns/frame");
   });
   runner.add("resample/draft rate 0.92", sinc("", ResampleQuality::Draft, 0.91875, 2, false));
+  for (double r : {2.8284271247461903, 4.0, 8.0, 16.0}) {
+    char name[64];
+    std::snprintf(name, sizeof name, "resample/mip rate %.4g", r);
+    runner.add(name, sinc(name, ResampleQuality::High, std::ldexp(r, -static_cast<int>(pq::dsp::mipLevelFor(r, pq::dsp::kMaxMipLevels))), 2, false));
+  }
+  runner.add("resample/decimate2", [](pq::bench::Context& c) {
+    constexpr int64_t kM = 1024;
+    std::vector<float> y(kM);
+    int64_t m = 2048;
+    c.measure(
+        [&] {
+          pq::dsp::decimate2(b.in[0].data(), 0, kIn, y.data(), m, kM);
+          m = m + 2 * kM < kIn / 2 - 2048 ? m + kM : 2048;
+          pq::bench::doNotOptimize(y[kM - 1]);
+        },
+        kM, "ns/frame");
+  });
 }

@@ -13,10 +13,14 @@
 //                                of a shared resident stereo 48 kHz sample; the mixer is pq_bench_playback's): rate 1
 //                                (straight copies), +3 st and +7 st (stretched sinc), -5 st (sinc), 44.1 kHz file
 //                                (sinc), no clip under the playhead (the clips start 10 min in): per block and per
-//                                track-frame
+//                                track-frame. T5.x-perf-audio (Q151 item 1): +24 st and +36 st read directly (the
+//                                stretched kernel) and "… mips" from the sample's decimated copies (a pooled resident
+//                                sample with media::SamplePool::buildMips; the loop is shortened so the reads stay
+//                                inside the file)
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,6 +30,8 @@
 #include "pq/engine/automation.h"
 #include "pq/engine/sequence.h"
 #include "pq/engine/timeline.h"
+#include "pq/media/sample_pool.h"
+#include "pq/media/wav_file.h"
 #include "pq_bench.h"
 
 using namespace pq;
@@ -109,11 +115,15 @@ int main(int argc, char** argv) {
     const char* name;
     double rate;
     bool later;
+    bool mips = false;
+    Ticks loop = 60 * kPpq;  // 30 s at 120 BPM
   };
   for (const ClipCase& cc : {ClipCase{"rate 1", 1.0, false}, ClipCase{"+3 st", std::pow(2.0, 3.0 / 12.0), false},
                              ClipCase{"+7 st", std::pow(2.0, 7.0 / 12.0), false},
                              ClipCase{"-5 st", std::pow(2.0, -5.0 / 12.0), false},
-                             ClipCase{"44.1 kHz file", 44100.0 / 48000.0, false}, ClipCase{"no clip under the playhead", 1.0, true}}) {
+                             ClipCase{"44.1 kHz file", 44100.0 / 48000.0, false}, ClipCase{"no clip under the playhead", 1.0, true},
+                             ClipCase{"+24 st", 4.0, false, false, 24 * kPpq}, ClipCase{"+24 st mips", 4.0, false, true, 24 * kPpq},
+                             ClipCase{"+36 st", 8.0, false, false, 12 * kPpq}, ClipCase{"+36 st mips", 8.0, false, true, 12 * kPpq}}) {
     r.add(std::string("clips/64 ") + cc.name, [cc](pq::bench::Context& c) {
       static pq::AlignedBuffer<float> data;
       const int64_t frames = static_cast<int64_t>(60 * kRate), g = pq::media::kSampleGuardFrames;
@@ -130,6 +140,29 @@ int main(int argc, char** argv) {
       smp.fixed.frames = smp.fixed.residentFrames = frames;
       smp.fixed.channels = 2;
       smp.fixed.sampleRate = 48000;
+      // The mips rows: the same frames as a pooled resident sample with its decimated copies.
+      static std::unique_ptr<pq::media::SamplePool> pool;
+      static pq::media::SampleRef pooled;
+      if (cc.mips) {
+        if (!pooled) {
+          const std::filesystem::path p = std::filesystem::temp_directory_path() / "pq_bench_timeline_60s.wav";
+          std::vector<std::vector<float>> ch(2, std::vector<float>(static_cast<size_t>(frames)));
+          for (int64_t i = 0; i < frames; ++i) {
+            ch[0][static_cast<size_t>(i)] = smp.fixed.data[0][i];
+            ch[1][static_cast<size_t>(i)] = smp.fixed.data[1][i];
+          }
+          if (!pq::media::writeWav(p, ch, 48000).ok()) die("write wav");
+          pq::media::PoolConfig pc;
+          pc.residentLimitBytes = 1ull << 30;
+          pool = std::make_unique<pq::media::SamplePool>(pc);
+          auto s = pool->load(p);
+          if (!s) die(s.error().message);
+          pooled = std::move(s.value());
+          if (!pool->buildMips(*pooled, pq::dsp::kMaxMipLevels)) die("mips");
+        }
+        smp = {};
+        smp.pooled = pooled;
+      }
       std::vector<e::AudioTrackDesc> slots(64);
       for (uint32_t k = 0; k < 64; ++k) {
         e::AudioClipDesc d;
@@ -151,7 +184,7 @@ int main(int argc, char** argv) {
       loop.kind = e::TransportCommandKind::SetLoop;
       loop.loopEnabled = true;
       loop.loopStart = 0;
-      loop.loopEnd = 60 * kPpq;  // 30 s at 120 BPM
+      loop.loopEnd = cc.loop;
       tl.apply(loop);
       tl.apply(play(0));
       int64_t clock = 0;
@@ -168,9 +201,10 @@ int main(int argc, char** argv) {
       per.p99Ns /= n;
       per.maxNs /= n;
       c.record(per, "ns/track-frame", "per track-frame");
-      std::printf("INFO   clips/64 %s: %.2f %% of a core; %llu voices started\n", cc.name,
+      std::printf("INFO   clips/64 %s: %.2f %% of a core; %llu voices started; %llu frames read from mips\n", cc.name,
                   100.0 * s.medianNs / (1e9 * kBlock / kRate),
-                  static_cast<unsigned long long>(tl.clipPlayer().stats().voicesStarted));
+                  static_cast<unsigned long long>(tl.clipPlayer().stats().voicesStarted),
+                  static_cast<unsigned long long>(tl.clipPlayer().stats().mipFrames));
     });
   }
 

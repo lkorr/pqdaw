@@ -5,6 +5,8 @@
 //     ±0.1 dB in the passband, everything else (images, aliases, interpolation error) ≤ −80 dBFS; the ±48 st extremes
 //     measured and printed
 //   - reads stay inside sincReach; reverse reads mirror forward reads; the straight copies; RtScope
+//   - T5.x-perf-audio (Q151 item 1): the mip decimator's response (flat to 0.21, below −110 dB from 0.25 cycles per
+//     input frame); sines read at +13 … +48 st through 2^L× decimated copies meet the same criteria as direct reads
 #include <doctest/doctest.h>
 
 #include <cmath>
@@ -188,6 +190,104 @@ TEST_CASE("resample: sines from −24 to +24 semitones and file-rate conversions
     }
     MESSAGE(st, " st: images / aliases at most ", worst, " dBFS");
   }
+}
+
+namespace {
+
+// The same read as readSine, through mip levels as the clip player does it: levels 1 … L of the sine built by
+// decimate2 (each from the one before), then the read at rate / 2^L from position / 2^L.
+std::vector<double> readSineMip(double fSrc, double rate, uint32_t outFrames, uint32_t* levelOut) {
+  const uint32_t L = mipLevelFor(rate, kMaxMipLevels);
+  *levelOut = L;
+  const double scale = std::ldexp(1.0, -static_cast<int>(L));
+  const int64_t pos = fixedOf(5000.37) >> L;  // the player's shift of the 32.32 position and step
+  const int64_t step = fixedOf(rate) >> L;
+  const SincTable& t = prepareSincTable(ResampleQuality::High, sincStretchQ(rate * scale));
+  const SincReach reach = sincReach(t, pos, step, outFrames);
+  REQUIRE(reach.first >= 0);
+  // Level 0 long enough that level L covers the reach with room for the decimators' spread at the end.
+  const auto n0 = static_cast<int64_t>((reach.last + 512) << L);
+  std::vector<float> x(static_cast<size_t>(n0));
+  for (size_t i = 0; i < x.size(); ++i)
+    x[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * fSrc / kSr * static_cast<double>(i)));
+  int64_t n = n0;
+  for (uint32_t l = 0; l < L; ++l) {
+    std::vector<float> y(static_cast<size_t>(n / 2));
+    decimate2(x.data(), 0, n, y.data(), 0, n / 2);
+    x = std::move(y);
+    n /= 2;
+  }
+  REQUIRE(reach.last + 16 <= n);
+  std::vector<float> l(outFrames, 0.0f), r(outFrames, 0.0f);
+  const float* in[2] = {x.data(), x.data()};
+  float* out[2] = {l.data(), r.data()};
+  sincResample(t, in, 2, pos, step, outFrames, nullptr, 1.0f, out);
+  return {l.begin(), l.end()};
+}
+
+}  // namespace
+
+TEST_CASE("resample: the mip decimator's passband and stopband") {
+  const double* h = decimatorTaps();
+  const auto J = static_cast<int>(kDecimatorHalfTaps);
+  double dc = 0.0;
+  for (int k = 0; k <= 2 * J; ++k) dc += h[k];
+  CHECK(std::abs(dc - 1.0) < 1e-12);
+  for (int k = 0; k < J; ++k) REQUIRE(h[k] == h[2 * J - k]);  // symmetric: zero phase about input frame 2m
+  auto response = [&](double f) {  // cycles per input frame
+    double s = 0.0;
+    for (int k = 0; k <= 2 * J; ++k) s += h[k] * std::cos(2.0 * std::numbers::pi * f * (k - J));
+    return s;
+  };
+  double worstPass = 0.0, worstStop = -400.0;
+  for (double f = 0.0; f <= 0.21 + 1e-12; f += 0.0005) worstPass = std::max(worstPass, std::abs(20.0 * std::log10(std::abs(response(f)))));
+  for (double f = 0.25; f <= 0.5 + 1e-12; f += 0.0002) worstStop = std::max(worstStop, 20.0 * std::log10(std::abs(response(f)) + 1e-30));
+  MESSAGE("mip decimator: passband to 0.21 within ", worstPass, " dB; stopband from 0.25 at most ", worstStop, " dB");
+  CHECK(worstPass <= 1e-3);
+  CHECK(worstStop <= -110.0);
+}
+
+TEST_CASE("resample: pitch-up above an octave through mip levels meets the direct read's criteria") {
+  double worstResidual = -400.0, worstGain = 0.0, worstDirect = -400.0;
+  for (int st : {13, 19, 24, 31, 36, 43, 47}) {
+    const double rate = std::pow(2.0, st / 12.0);
+    uint32_t L = 0;
+    for (double fSrc : {50.0, 440.0, 1000.0, 3000.0, 7000.0, 11000.0, 15000.0, 19000.0, 20000.0}) {
+      const double fOut = fSrc * rate;
+      const std::vector<double> y = readSineMip(fSrc, rate, 8192, &L);
+      const std::vector<double> direct = readSine(fSrc, rate, 8192);
+      const double rq = 256.0 / sincStretchQ(rate);  // the direct read's stretch (the mip read's band edge is the same)
+      const double stopSrc = 0.5 * kSr / rq;
+      if (fOut <= 20000.0) {
+        const Fit fit = fitSine(y, 2.0 * std::numbers::pi * fOut / kSr);
+        const double gainDb = 20.0 * std::log10(fit.amplitude);
+        const double res = dbfs(fit.residualRms);
+        INFO("+", st, " st (level ", L, ") f ", fSrc, " Hz → ", fOut, " Hz: gain ", gainDb, " dB, residual ", res, " dBFS");
+        CHECK(std::abs(gainDb) <= 0.1);
+        CHECK(res <= -80.0);
+        worstResidual = std::max(worstResidual, res);
+        worstGain = std::max(worstGain, std::abs(gainDb));
+        worstDirect = std::max(worstDirect, dbfs(fitSine(direct, 2.0 * std::numbers::pi * fOut / kSr).residualRms));
+      } else if (fSrc >= stopSrc) {
+        const double all = dbfs(fitSine(y, 0.0).rms);
+        INFO("+", st, " st (level ", L, ") f ", fSrc, " Hz (above the read's Nyquist): output ", all, " dBFS");
+        CHECK(all <= -80.0);
+        worstResidual = std::max(worstResidual, all);
+        worstDirect = std::max(worstDirect, dbfs(fitSine(direct, 0.0).rms));
+      }
+    }
+    CHECK(L == mipLevelFor(rate, kMaxMipLevels));
+    CHECK(L >= 1);
+  }
+  MESSAGE("+13 … +47 st through mips: passband gain within ", worstGain, " dB, images / aliases / error at most ",
+          worstResidual, " dBFS (direct reads of the same sines: ", worstDirect, " dBFS)");
+  CHECK(mipLevelFor(2.0, 3) == 0);
+  CHECK(mipLevelFor(2.01, 3) == 1);
+  CHECK(mipLevelFor(-4.0, 3) == 1);
+  CHECK(mipLevelFor(4.5, 3) == 2);
+  CHECK(mipLevelFor(16.0, 3) == 3);
+  CHECK(mipLevelFor(40.0, 3) == 3);
+  CHECK(mipLevelFor(40.0, 1) == 1);
 }
 
 TEST_CASE("resample: reads stay inside sincReach") {
