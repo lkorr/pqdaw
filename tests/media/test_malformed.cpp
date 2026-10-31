@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "media_test_util.h"
+#include "pq/document/samples.h"
 #include "pq/media/decoder.h"
 #include "pq/media/hash.h"
 #include "pq/media/probe.h"
@@ -213,25 +214,40 @@ TEST_CASE("malformed: mutation fuzz, 10k cases per format" * doctest::test_suite
   CHECK(grew < (256u << 20));
 }
 
-TEST_CASE("hash: content hashes of files and bytes agree; windows; full hash") {
-  for (const char* name : {"wav_pcm16.wav", "ogg_vorbis.ogg"}) {
-    const std::vector<uint8_t> b = readBytes(fixture(name));
-    auto h = contentHash(fixture(name));
+TEST_CASE("hash: the content hash is doc::fileIdentity's hash (one identity per sample), files and bytes agree") {
+  const fs::path dir = fs::temp_directory_path() / "pq_media_hash";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  std::mt19937 rng(1);
+  // Empty, one partial window, exactly one window, overlapping windows, three separate windows.
+  for (std::size_t size : {std::size_t{0}, std::size_t{1000}, std::size_t{65536}, std::size_t{65537},
+                           std::size_t{150000}, std::size_t{1} << 20}) {
+    CAPTURE(size);
+    std::vector<uint8_t> b(size);
+    for (auto& x : b) x = static_cast<uint8_t>(rng());
+    const fs::path p = dir / ("f" + std::to_string(size) + ".bin");
+    writeBytes(p, b);
+    auto h = contentHash(p);
     REQUIRE(h.ok());
     CHECK(*h == contentHashBytes(b));
-    auto full = fullContentHash(fixture(name));
-    REQUIRE(full.ok());
-    CHECK(*full == fullContentHashBytes(b));
+    auto id = doc::fileIdentity(p.string());
+    REQUIRE(id.ok());
+    CHECK(id->size == size);
+    CHECK(id->hash == *h);
   }
-  // A large buffer: the fast hash reads three 64 KiB windows; a byte outside them doesn't change it, inside does.
+  for (const char* name : {"wav_pcm16.wav", "ogg_vorbis.ogg"}) {
+    auto id = doc::fileIdentity(fixture(name).string());
+    REQUIRE(id.ok());
+    CHECK(id->hash == *contentHash(fixture(name)));
+  }
+  // Only the three windows count: a byte outside them doesn't change the hash, inside does; so does the size.
   std::vector<uint8_t> big(1u << 20);
-  std::mt19937 rng(1);
   for (auto& x : big) x = static_cast<uint8_t>(rng());
   const uint64_t h0 = contentHashBytes(big);
   std::vector<uint8_t> outside = big;
   outside[200000] ^= 1;
   CHECK(contentHashBytes(outside) == h0);
-  CHECK_FALSE(fullContentHashBytes(outside) == fullContentHashBytes(big));
   for (std::size_t at : {std::size_t{10}, big.size() / 2, big.size() - 1}) {
     std::vector<uint8_t> inside = big;
     inside[at] ^= 1;
@@ -240,13 +256,5 @@ TEST_CASE("hash: content hashes of files and bytes agree; windows; full hash") {
   std::vector<uint8_t> longer = big;
   longer.push_back(0);
   CHECK(contentHashBytes(longer) != h0);
-  // Streaming and one-shot hashing agree across odd split points (fullContentHash reads 1 MiB chunks).
-  const fs::path p = fs::temp_directory_path() / "pq_media_hash.bin";
-  std::vector<uint8_t> odd(3u * (1u << 20) + 17);
-  for (auto& x : odd) x = static_cast<uint8_t>(rng());
-  writeBytes(p, odd);
-  auto full = fullContentHash(p);
-  REQUIRE(full.ok());
-  CHECK(*full == fullContentHashBytes(odd));
-  fs::remove(p);
+  fs::remove_all(dir, ec);
 }

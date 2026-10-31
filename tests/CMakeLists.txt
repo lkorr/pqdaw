@@ -51,7 +51,7 @@ pq_add_test(pq_tests_media PERF
     media/test_decode.cpp
     media/test_malformed.cpp
     media/test_stream.cpp
-  DEPS pq_media pq_engine)
+  DEPS pq_media pq_engine pq_doc)  # pq_doc: the content hash is checked against doc::fileIdentity
 
 # Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.
 add_executable(pq_alloc_trap_abort_probe core/alloc_trap_abort_probe.cpp)

@@ -1,10 +1,12 @@
 #pragma once
 
-// Content hashes of audio files (T5.1). Not cryptographic; collisions only cost a redundant copy or a wrong cache
-// hit, and every key also carries the file size.
-//   contentHash: fast identity of a file's content for caches (decoded / waveform caches, the browser): the size
-//                plus three 64 KiB windows (start, middle, end). Reads ≤ 192 KiB whatever the file size.
-//   fullContentHash: every byte, 128 bits, for deduplication when collecting samples into a project.
+// The content hash of a sample file (T5.1). It is the project's one sample content identity: bit for bit the hash of
+// doc::fileIdentity (pq/document/samples.h, T5.3/T5.8; QUESTIONS Q145 item 8), so the hashes the document stores,
+// the sample pool's keys and the decoded-cache file names agree. `media` cannot include `document` (it sits below),
+// so the definition is repeated here and a test checks both against each other:
+//   FNV-1a 64 over the file size (8 bytes, little endian), then the bytes of three 64 KiB windows: the start
+//   (the whole file when it is ≤ 64 KiB, then only that window), the middle ((size − 64 KiB) / 2) and the end
+//   (size − 64 KiB). Reads ≤ 192 KiB whatever the file size. Not cryptographic: keys also carry the size.
 
 #include <cstddef>
 #include <cstdint>
@@ -15,21 +17,10 @@
 
 namespace pq::media {
 
-struct Hash128 {
-  uint64_t lo = 0;
-  uint64_t hi = 0;
-  friend bool operator==(const Hash128&, const Hash128&) = default;
-};
-
 inline constexpr std::size_t kContentHashWindow = 64u << 10;
-
-// 64-bit hash of a byte range (4 independent multiply-xorshift lanes; ~10 GB/s). Pure function, RT-safe.
-uint64_t hashBytes(const void* data, std::size_t size, uint64_t seed) noexcept;
 
 Result<uint64_t> contentHash(const std::filesystem::path& path);
 // The same on a whole file in memory (identical result to contentHash of that file).
 uint64_t contentHashBytes(std::span<const uint8_t> file) noexcept;
-Result<Hash128> fullContentHash(const std::filesystem::path& path);
-Hash128 fullContentHashBytes(std::span<const uint8_t> file) noexcept;
 
 }  // namespace pq::media

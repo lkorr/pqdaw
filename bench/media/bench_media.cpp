@@ -3,7 +3,7 @@
 //                           is opened once): MB/s of decoded float32 output and MB/s of file input, × realtime
 //   probe/<fixture>         probe() of the file (map, parse headers, identity): ns per file (warm OS cache)
 //   pcm/<encoding> stereo   the interleaved → planar conversion kernel (pq/media/pcm.h): ns per stereo frame
-//   hash/content 1 GiB      contentHashBytes on a 1 GiB buffer (three 64 KiB windows); hash/bytes 64 MiB: GB/s
+//   hash/content 1 MiB      contentHashBytes = doc::fileIdentity's hash (FNV-1a over the size + three 64 KiB windows)
 //   stream/span 64          StreamPool::span of 64 frames from a filled ring (the audio thread's per-block cost)
 //   stream/cursor x64       64 SampleCursors (streamed samples, the T5.2 64-stream case) each reading 64 frames: one
 //                           audio block, ns per block and per stream
@@ -107,14 +107,9 @@ int main(int argc, char** argv) {
     });
   }
 
-  r.add("hash/content 1 GiB", [](bench::Context& c) {
-    std::vector<uint8_t> big(std::size_t{1} << 30, 1);
-    c.measure([&] { bench::doNotOptimize(contentHashBytes(big)); }, 1, "ns/file");
-  });
-  r.add("hash/bytes 64 MiB", [](bench::Context& c) {
-    std::vector<uint8_t> buf(std::size_t{64} << 20, 3);
-    const bench::Stats s = c.measure([&] { bench::doNotOptimize(hashBytes(buf.data(), buf.size(), 1)); }, buf.size(), "ns/byte");
-    c.record({1.0 / s.medianNs, 1.0 / s.maxNs, 1.0 / s.p99Ns, 1.0 / s.minNs, s.samples}, "GB/s");
+  r.add("hash/content 1 MiB", [](bench::Context& c) {  // three full windows: 192 KiB of FNV-1a
+    std::vector<uint8_t> buf(std::size_t{1} << 20, 3);
+    c.measure([&] { bench::doNotOptimize(contentHashBytes(buf)); }, 1, "ns/file");
   });
 
   // The audio thread's side: spans from filled rings (a fake disk side fills them once, then keeps them "full").
