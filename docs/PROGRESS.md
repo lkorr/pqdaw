@@ -982,3 +982,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: one verification build instead of two; cross-worktree cache hits instead of cold compiles; the deps check is a single in-process parse of .ninja_deps (ms); shards and ctest -j8 use idle cores.
 - Notes/blockers: load flakes under -j8 (pq_tests_library idle-wakeup once; pq_tests_views SIGSEGV in arrangement audio / device panels) — RUN_SERIAL if they recur; cache-hit objects keep the other tree's paths in debug info / __FILE__.
 - Orchestrator: rebased onto a3355b8 (clean), moved the 200k-file library index test to `perf` (its bounds are wall-clock; it was the suite's floor). Check: pq_tests_library -Full in the orchestrator checkout with the shared cache: build 7.5 s (111/112 hits, 111 deps rewritten), tests 11 s (library_slow 141–155 s → 0.1 s).
+
+## 2026-10-31 · T5.x-samples-folder 👁 · worker / task/T5.x-samples-folder
+- Did: library.samplesFolder setting (PQ_SAMPLES_DIR env → setting → default <User Library>\Samples, default not stored so it follows the User Library), Library::samplesFolder / changeSamplesFolder (live), browser "Samples" place (second under Places, hidden when inside the User Library or another place), Preferences → Library "Samples Folder" row. Destinations: Alt-drop renders with no folder under the pointer; .pqclip saves into Clips/ copy their sample into an explicitly chosen samples folder (default keeps Clips/Samples/). Project samples/imported/ unchanged. library-prefs golden re-recorded; REVIEW.
+- Verified (light, at the user's request): release build pqdaw + pq_tests_views + pq_tests_audio 0 warnings; user settings 3/3, prefs/library-prefs/audio-prefs 10/10, browser/library/clip-file/drop cases 46/46.
+- Perf: n/a (UI thread only).
+- CPU-efficiency check: one extra folder comparison per place when places change; nothing per frame.
+- Notes/blockers: decision in REVIEW: with the default folder, saved clips keep samples in Clips/Samples/ (T5.11 layout).
