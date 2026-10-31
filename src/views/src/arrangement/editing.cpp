@@ -394,7 +394,8 @@ std::vector<doc::ClipRef> Editor::clipsMeeting(int32_t r0, int32_t r1, bool sele
       const ClipIndex& ix = view_.model().clips(*row.track);
       const auto [a, b] = ix.visible(s, e);
       for (size_t j = a; j < b; ++j)
-        if (ix.start[j] < e && ix.end[j] > s && row.track->clips[j].clip) clips.push_back({row.id, row.track->clips[j].id});
+        if (ix.start[j] < e && ix.end[j] > s && row.track->clips[j].clip)  // T5.3: audio clips: T5.6
+          clips.push_back({row.id, row.track->clips[j].id});
     }
   // De-duplicated by id (a base may repeat clips the range covers).
   std::sort(clips.begin(), clips.end(), [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip.value < b.clip.value; });

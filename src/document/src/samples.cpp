@@ -307,8 +307,10 @@ Result<CollectPlan> planCollect(const Project& p, std::string_view projectDir, s
       }
       if (t != taken.end()) {
         if (!(t->second == *idf)) continue;  // a different file has this name: try the next suffix
-        item.copy = std::none_of(plan.items.begin(), plan.items.end(), [&](const CollectItem& x) { return nameKey(pathOf(x.to)) == key; }) &&
-                    !fileExists(to);  // identical file: reuse it (or the item already copying it)
+        // An identical file: reuse it (on disk, or the earlier item that copies it).
+        const bool planned = std::any_of(plan.items.begin(), plan.items.end(),
+                                         [&](const CollectItem& x) { return nameKey(pathOf(x.to)) == key; });
+        item.copy = !planned && !fileExists(to);
       } else {
         taken.emplace(key, *idf);
       }
