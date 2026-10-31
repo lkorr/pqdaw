@@ -1461,7 +1461,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Ranking**: a word-start bonus (24) outweighs a consecutive-run bonus (16), so "sn" ranks "S_n…" above "Snare"; name-start (40) dominates. Weights are constants in `search.h` and easy to tune once T5.10 shows real results.
 - **First-time indexing** of a large new place publishes only when its scan ends (200k files: 12 s on this machine, mostly probes); a partial publish every few seconds would let the browser fill progressively. Left for T5.10 if it matters in use.
 - Provisional: all of the above (each is local to `library`). Status: open
-## Q?-T5.5-a · 2026-10-31 · T5.5 · Where the overview worker lives; which caches are written; the draw budget
+## Q154 · 2026-10-31 · T5.5 · Where the overview worker lives; which caches are written; the draw budget
 - Context: docs/plans/M5.md T5.5 ("`app` analysis worker", caches in `cache/waveforms/` and `%LOCALAPPDATA%\pqdaw\waveforms\` LRU 1 GiB).
 - Choices (provisional, reversible):
   1. **The worker is media's `AnalysisWorker`, owned by `views::Waveforms` in the `ViewContext`**, not an app-owned thread behind a port: the views need overviews in scenes and tests without the app (there they build synchronously, as T5.8's collect does without a poster), and the app only supplies the UI poster and the cache directories. Two workers (overviews; deep-zoom sample windows) so a window read never waits behind a long build. Alternative: an app-side service behind a `WaveformPort`, as `TransportPort`.
@@ -1471,7 +1471,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   5. **The 2560-px draw criterion (≤ 50 µs) is met with a small margin** (47–48 µs, release, low load; RESULTS). Further room would need SIMD column reduction or fewer vertices per column (the strip's 2 vertices + 6 indices per column per channel are most of the cost).
 - Status: open (orchestrator to confirm 1).
 
-## Q?-T5.6-a · 2026-10-31 · T5.6 · Audio clip interaction choices in the arrangement and the Clip View
+## Q155 · 2026-10-31 · T5.6 · Audio clip interaction choices in the arrangement and the Clip View
 - Context: docs/plans/M5.md T5.6; the user said exact Live parity is not required (decide sensibly).
 - Choices (provisional, all reversible):
   1. **Handles** sit at the top of the body: fade-in at the fade's end (the crossfade's end for a crossfaded start), fade-out at its start, gain at the centre; hit-testable whenever the clip is ≥ 5 handle widths wide, drawn only on the hovered or selected clip. Drag = length (unsnapped ticks), **Alt at the press = curve** (vertical, 0.01 per px), gain = 0.2 dB per px (Shift 0.02), double-click = 0 dB. Each drag is one store gesture (the document follows live, so the sound changes while dragging; one undo step; Esc restores).
