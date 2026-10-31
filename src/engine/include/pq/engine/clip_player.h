@@ -62,7 +62,7 @@ struct ClipPlayerConfig {
   uint32_t maxBlockFrames = 1024;   // the engine block
   double sampleRate = 48000.0;
   uint32_t maxVoices = 512;         // voices alive at once over every slot (beyond: a clip does not start, counted)
-  uint32_t streamBuffers = 128;     // streamed voices at once (each has a history buffer)
+  uint32_t streamBuffers = 64;      // streamed voices at once (each has a history buffer)
   uint32_t historyFrames = 8192;    // per streamed voice (stereo planar floats: 64 KiB)
   media::StreamPool* streams = nullptr;  // null: frames past a streamed sample's head read as silence
   double lookaheadSeconds = 0.5;    // a clip's voice exists (and claims its stream) this long before it starts
@@ -120,13 +120,14 @@ public:
 
   // Where a voice of clip `c` (of `img`) starting at song sample s claims its stream: the cursor's first frame and
   // direction (media::SampleCursor::start), exactly as the player computes it, for SamplePool::prefetch. nullopt: the
-  // clip is not under s, or has no sample. `blockFrames` = the engine block (RePitch rates are per block). Not RT.
+  // clip is not under s, or has no sample. `blockFrames` = the engine block (RePitch rates are per block). RT-safe
+  // (the player computes its own claims with it).
   struct StreamStart {
     int64_t frame = 0;
     media::Direction dir = media::Direction::Forward;
   };
   static std::optional<StreamStart> streamStart(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
-                                                SampleTime s, uint32_t blockFrames);
+                                                SampleTime s, uint32_t blockFrames) noexcept;  // RT-safe
 
 private:
   enum class State : uint8_t { Pending, Playing, Releasing };

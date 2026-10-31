@@ -611,7 +611,7 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
 
 std::optional<ClipPlayer::StreamStart> ClipPlayer::streamStart(const AudioSequenceImage& img,
                                                               const AudioSequenceImage::Clip& c, SampleTime s,
-                                                              uint32_t blockFrames) {
+                                                              uint32_t blockFrames) noexcept {  // RT-safe
   if (c.sample == AudioSequenceImage::kNoSample || s >= c.playEnd) return std::nullopt;
   const SampleTime vs = std::max(s, c.playStart);
   int64_t pos = 0, step = 0;

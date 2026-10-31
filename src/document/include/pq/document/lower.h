@@ -75,8 +75,8 @@
 //                 audibility as for MIDI tracks). Its role is graph::TrackRole::Audio (no voices, no event slot). The
 //                 clips themselves are not in the graph: an audio clip edit (gain, fades, transpose, reverse, warp,
 //                 crossfade, bounds) changes only the sequence data (ChangeSet Sequence: no compile); creating the track
-//                 or editing its chain compiles its unit. Until T5.4 the engine binds clipPlayer to silence
-//                 (engine/src/image_host.cpp), so audio tracks compile, route and meter but play nothing.
+//                 or editing its chain compiles its unit. T5.4: the engine's clip player renders the slot's clips
+//                 (pq/engine/clip_player.h), published by the app from lowerAudioTrack (audio_sequence.h).
 //   Group         x = `in` (stereo: the sum of what is routed into it) → its audio effects, balance pan (centre
 //                 0 dB), the same three stages.
 //   Return        x = the sum of its sends: for each track k that sends to it, `in s<k>` (that track's post or pre

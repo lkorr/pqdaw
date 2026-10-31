@@ -1,7 +1,7 @@
 // T5.3: audio tracks through the lowering and the playback link — the golden lowering text (clipPlayer → chain →
 // mixer stages), the clip-player slot, audio clip edits change runtime data only (no compile), routing / sends /
-// meters as a MIDI track's. Audible playback is T5.4's: until then the engine binds clipPlayer to silence, which is
-// checked here so the seam is explicit.
+// meters as a MIDI track's. Audible playback (T5.4) is tests/app/test_audio_playback.cpp's; here the sample file does
+// not exist, so the track renders silence.
 #include <doctest/doctest.h>
 
 #include <cmath>
@@ -129,7 +129,7 @@ TEST_CASE("audio tracks: golden lowering text audio-track.pqp (clipPlayer → ch
   CHECK(patchText(*noSlot->patches[gi]).find("clipPlayer(") == std::string::npos);
 }
 
-TEST_CASE("audio tracks: the link compiles the track once; clip edits are runtime data (no compile); silence until T5.4") {
+TEST_CASE("audio tracks: the link compiles the track once; clip edits are runtime data (no compile); a missing file is silent") {
   AudioSong song;
   auto link = makeLink(song.store.current());
   const uint64_t compiles = link->stats().compiles;
@@ -155,8 +155,8 @@ TEST_CASE("audio tracks: the link compiles the track once; clip edits are runtim
   CHECK(link->stats().compiles == compiles);  // nothing recompiled
   CHECK(link->lastError().empty());
   (void)s0;
-  // T5.4 seam: the engine binds clipPlayer to silence for now, so the song renders silent (the clip is under the
-  // playhead for the whole second).
+  // The sample (C:/nowhere/loop.wav) is missing: the clip plays silence although it is under the playhead for the whole
+  // second (T5.4: missing samples are silent).
   engine::BufferSink sink;
   auto st = link->renderOffline(0, 48000, sink);
   REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));

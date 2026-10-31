@@ -9,12 +9,20 @@
 //                                straight, curved, and a ramping tempo (exact per-sample ticks); "…, block rate":
 //                                the same lanes with AutomationLaneDesc::perSample false (T2.6-fix2: lanes whose
 //                                consumers read params render only their frame-0 value)
+//   clips/64 <kind>              T5.4: the clip player alone (Timeline::process with 64 clip slots, each playing one clip
+//                                of a shared resident stereo 48 kHz sample; the mixer is pq_bench_playback's): rate 1
+//                                (straight copies), +3 st and +7 st (stretched sinc), -5 st (sinc), 44.1 kHz file
+//                                (sinc), no clip under the playhead (the clips start 10 min in): per block and per
+//                                track-frame
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "pq/core/aligned_buffer.h"
+#include "pq/engine/audio_sequence.h"
 #include "pq/engine/automation.h"
 #include "pq/engine/sequence.h"
 #include "pq/engine/timeline.h"
@@ -95,6 +103,76 @@ e::TransportCommand play(Ticks t) {
 
 int main(int argc, char** argv) {
   pq::bench::Runner r("pq_bench_timeline");
+
+  // T5.4: the clip player. One 60 s stereo sample shared by 64 slots; the transport loops over the first 30 s.
+  struct ClipCase {
+    const char* name;
+    double rate;
+    bool later;
+  };
+  for (const ClipCase& cc : {ClipCase{"rate 1", 1.0, false}, ClipCase{"+3 st", std::pow(2.0, 3.0 / 12.0), false},
+                             ClipCase{"+7 st", std::pow(2.0, 7.0 / 12.0), false},
+                             ClipCase{"-5 st", std::pow(2.0, -5.0 / 12.0), false},
+                             ClipCase{"44.1 kHz file", 44100.0 / 48000.0, false}, ClipCase{"no clip under the playhead", 1.0, true}}) {
+    r.add(std::string("clips/64 ") + cc.name, [cc](pq::bench::Context& c) {
+      static pq::AlignedBuffer<float> data;
+      const int64_t frames = static_cast<int64_t>(60 * kRate), g = pq::media::kSampleGuardFrames;
+      if (data.size() == 0) {
+        data = pq::AlignedBuffer<float>(static_cast<size_t>(2 * (frames + 2 * g)));
+        for (int64_t i = 0; i < frames; ++i) {
+          data[static_cast<size_t>(g + i)] = static_cast<float>(0.3 * std::sin(0.031 * static_cast<double>(i)));
+          data[static_cast<size_t>(3 * g + frames + i)] = static_cast<float>(0.3 * std::sin(0.017 * static_cast<double>(i)));
+        }
+      }
+      e::ClipSample smp;
+      smp.fixed.data[0] = data.data() + g;
+      smp.fixed.data[1] = data.data() + 3 * g + frames;
+      smp.fixed.frames = smp.fixed.residentFrames = frames;
+      smp.fixed.channels = 2;
+      smp.fixed.sampleRate = 48000;
+      std::vector<e::AudioTrackDesc> slots(64);
+      for (uint32_t k = 0; k < 64; ++k) {
+        e::AudioClipDesc d;
+        d.id = k + 1;
+        d.start = cc.later ? 1200 * kPpq : 0;
+        d.length = 110 * kPpq;
+        d.speed = kRate * cc.rate;
+        d.contentStartFrame = 0.0;
+        slots[k].id = k + 1;
+        slots[k].clips.push_back(d);
+      }
+      e::Timeline tl(config(64));
+      e::AudioBuildOptions o;
+      o.sampleRate = kRate;
+      auto img = e::AudioSequenceImage::build(slots, {smp}, TempoMap{}, o);
+      if (!img) die(img.error().message);
+      if (!tl.publishAudio(std::move(img.value()))) die("publish");
+      e::TransportCommand loop;
+      loop.kind = e::TransportCommandKind::SetLoop;
+      loop.loopEnabled = true;
+      loop.loopStart = 0;
+      loop.loopEnd = 60 * kPpq;  // 30 s at 120 BPM
+      tl.apply(loop);
+      tl.apply(play(0));
+      int64_t clock = 0;
+      auto block = [&] {
+        tl.process(clock, kBlock);
+        clock += kBlock;
+      };
+      for (int i = 0; i < 100; ++i) block();
+      const pq::bench::Stats s = c.measure(block, 1, "ns/block", "per block");
+      pq::bench::Stats per = s;
+      const double n = 64.0 * kBlock;
+      per.medianNs /= n;
+      per.minNs /= n;
+      per.p99Ns /= n;
+      per.maxNs /= n;
+      c.record(per, "ns/track-frame", "per track-frame");
+      std::printf("INFO   clips/64 %s: %.2f %% of a core; %llu voices started\n", cc.name,
+                  100.0 * s.medianNs / (1e9 * kBlock / kRate),
+                  static_cast<unsigned long long>(tl.clipPlayer().stats().voicesStarted));
+    });
+  }
 
   // No events: every note is beyond bar 190; the playhead stays in bars 0..~2 (clips exist, cursors are parked on
   // the far notes). A loop keeps the measurement there however many blocks the runner calls.

@@ -153,7 +153,7 @@ struct TimelineConfig {
   // T5.4: the clip player (ClipPlayerConfig). clipSlots 0 = maxTracks.
   uint32_t clipSlots = 0;
   uint32_t maxClipVoices = 512;
-  uint32_t clipStreamBuffers = 128;
+  uint32_t clipStreamBuffers = 64;      // streamed clips playing at once (64 KiB of history each)
   double clipLookaheadSeconds = 0.5;
   double clipDeclickSeconds = 0.002;
   media::StreamPool* streams = nullptr;   // the sample pool's streams (null: streamed samples play their head only)
