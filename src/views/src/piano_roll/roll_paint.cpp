@@ -712,6 +712,16 @@ void VelocityLaneWidget::paint(PaintContext& ctx) {
     dl.addRectFilled(frect(x - std::floor(head * 0.5f) + 1.0f, y - std::floor(head * 0.5f) + 1.0f,
                            x - std::floor(head * 0.5f) + head - 1.0f, y - std::floor(head * 0.5f) + head - 1.0f),
                      c);
+    if (n.id.value == hoverStem_ && dr.kind != DragKind::Velocity) {  // T4.17: the stem a press would grab
+      const float h0 = std::floor(head * 0.5f) + std::max(1.0f, std::round(scale));
+      const float w = std::max(1.0f, std::round(scale));
+      const Rgba hc = th->accent.primary;
+      dl.addRectFilled(frect(x - h0, y - h0, x + h0 + 1.0f, y - h0 + w), hc);
+      dl.addRectFilled(frect(x - h0, y + h0 + 1.0f - w, x + h0 + 1.0f, y + h0 + 1.0f), hc);
+      dl.addRectFilled(frect(x - h0, y - h0, x - h0 + w, y + h0 + 1.0f), hc);
+      dl.addRectFilled(frect(x + h0 + 1.0f - w, y - h0, x + h0 + 1.0f, y + h0 + 1.0f), hc);
+      if (baseY > y + h0 + 1.0f) dl.addRectFilled(frect(x, y + h0 + 1.0f, x + 1.0f + w, baseY), hc);
+    }
   };
   const Ticks lookFrom = shifting ? std::min(from, from - dr.dt) : from;
   const Ticks lookTo = shifting ? std::max(to, to - dr.dt) : to;

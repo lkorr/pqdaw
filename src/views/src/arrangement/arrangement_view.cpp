@@ -30,6 +30,7 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.toggleActive",
     // T3.x-fix-look: arrow keys
     "arrangement.markerLeft", "arrangement.markerRight", "arrangement.trackUp", "arrangement.trackDown",
+    "arrangement.markerHome", "arrangement.markerEnd", "arrangement.pointsUpFine", "arrangement.pointsDownFine",
     // T4.16b: Alt / Shift arrows, Esc
     "arrangement.nudgeFineLeft", "arrangement.nudgeFineRight", "arrangement.extendLeft", "arrangement.extendRight",
     "arrangement.deselect",
@@ -182,10 +183,20 @@ void ArrangementView::registerActions() {
   // above / below (Shift extends the selection). T4.16b: with clips selected (not a range) Left / Right move them by
   // a grid cell instead, Alt+Left / Right off the grid; Shift+Left / Right move the time selection's end; Esc drops
   // the clip / time / breakpoint selection.
-  edit("arrangement.markerLeft", [ed] { ed->clipsNudgeable() ? (void)ed->nudgeClips(-1) : ed->nudgeMarker(-1); }, {});
-  edit("arrangement.markerRight", [ed] { ed->clipsNudgeable() ? (void)ed->nudgeClips(1) : ed->nudgeMarker(1); }, {});
+  // T4.17: selected breakpoints first (one selection at a time), then clips, then the marker.
+  auto points = [au] { return !au->selectedPoints().empty(); };
+  edit("arrangement.markerLeft", [ed, au] {
+    if (!au->selectedPoints().empty()) (void)au->nudgeSelected(-1, 0.0);
+    else ed->clipsNudgeable() ? (void)ed->nudgeClips(-1) : ed->nudgeMarker(-1);
+  }, {});
+  edit("arrangement.markerRight", [ed, au] {
+    if (!au->selectedPoints().empty()) (void)au->nudgeSelected(1, 0.0);
+    else ed->clipsNudgeable() ? (void)ed->nudgeClips(1) : ed->nudgeMarker(1);
+  }, {});
   edit("arrangement.nudgeFineLeft", [ed] { (void)ed->nudgeClipsFine(-1); }, [ed] { return ed->clipsNudgeable(); });
   edit("arrangement.nudgeFineRight", [ed] { (void)ed->nudgeClipsFine(1); }, [ed] { return ed->clipsNudgeable(); });
+  edit("arrangement.pointsUpFine", [au] { (void)au->nudgeSelected(0, 0.1); }, points);
+  edit("arrangement.pointsDownFine", [au] { (void)au->nudgeSelected(0, -0.1); }, points);
   edit("arrangement.extendLeft", [ed] { ed->extendTime(-1); }, {});
   edit("arrangement.extendRight", [ed] { ed->extendTime(1); }, {});
   edit("arrangement.deselect",
@@ -194,8 +205,17 @@ void ArrangementView::registerActions() {
          (void)ed->deselect();
        },
        [ed, au] { return au->hasSelection() || !ed->selection().clips.empty() || ed->selection().time.has_value(); });
-  edit("arrangement.trackUp", [ed] { ed->stepTrack(-1); }, {});
-  edit("arrangement.trackDown", [ed] { ed->stepTrack(1); }, {});
+  // T4.17: with clips selected, Up / Down move them to the neighbouring track that takes them (Live).
+  edit("arrangement.trackUp", [ed, au] {
+    if (!au->selectedPoints().empty()) (void)au->nudgeSelected(0, 1.0);  // T4.17: the selected breakpoints' value
+    else ed->clipsNudgeable() ? (void)ed->moveClipsRows(-1) : ed->stepTrack(-1);
+  }, {});
+  edit("arrangement.trackDown", [ed, au] {
+    if (!au->selectedPoints().empty()) (void)au->nudgeSelected(0, -1.0);
+    else ed->clipsNudgeable() ? (void)ed->moveClipsRows(1) : ed->stepTrack(1);
+  }, {});
+  edit("arrangement.markerHome", [ed] { ed->markerTo(false); }, {});  // T4.17
+  edit("arrangement.markerEnd", [ed] { ed->markerTo(true); }, {});
   // T3.15: A toggles automation mode (Live).
   edit("arrangement.toggleAutomationMode", [au] { au->setMode(!au->mode()); }, {});
 }

@@ -891,6 +891,41 @@ bool ArrangementAutomation::deleteSelected() {
   return true;
 }
 
+bool ArrangementAutomation::nudgeSelected(int32_t cells, double steps) {
+  if (selPoints_.empty() || (cells == 0 && steps == 0.0)) return false;
+  const LaneLookup l = view_.model().lane(selParam_);
+  if (!l.lane) return false;
+  Ticks first = std::numeric_limits<Ticks>::max();
+  double v0 = 0.0;
+  for (const doc::Breakpoint& pt : l.lane->points)
+    if (std::binary_search(selIds_.begin(), selIds_.end(), pt.id.value) && pt.tick < first) {
+      first = pt.tick;
+      v0 = pt.value;
+    }
+  if (first == std::numeric_limits<Ticks>::max()) return false;
+  Ticks dt = 0;
+  if (cells != 0) {
+    const Grid g(ctx_.grid(), view_.shown()->timeline->sigMap, view_.pxPerTick());
+    dt = std::max<Ticks>(0, drag::stepByCells(g, first, cells)) - first;
+  }
+  double dv = 0.0;
+  if (steps != 0.0) {  // a step of the display range, measured at the earliest point (as a drag measures at its press)
+    const auto disp = paramDisplay(*view_.shown(), selParam_);
+    dv = displayValue(disp, std::clamp(displayNorm(disp, v0) + 0.01 * steps, 0.0, 1.0)) - v0;
+  }
+  if (dt == 0 && dv == 0.0) return false;
+  AutomationBand b;
+  b.track = selTrack_;
+  b.param = selParam_;
+  b.owner = l.owner;
+  b.lane = l.lane;
+  const std::vector<doc::BreakpointId> ids = selPoints_;
+  return editLane(b, ids.size() == 1 ? "Move Breakpoint" : "Move Breakpoints",
+                  [&](const doc::Project& p, doc::TrackId owner, doc::LaneId lane) {
+                    return doc::ops::moveBreakpoints(p, owner, lane, ids, dt, dv);
+                  });
+}
+
 bool ArrangementAutomation::insertShape(doc::ops::ShapeKind kind) {
   if (!selRange_ || selRange_->end <= selRange_->start) {
     ctx_.setStatus("Insert Shape: make a time selection in an automation lane first");

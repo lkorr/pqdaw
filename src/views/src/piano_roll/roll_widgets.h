@@ -152,6 +152,9 @@ public:
   bool onKey(const ui::KeyEvent& e) override;
   void onCaptureLost() override;
   ui::Cursor cursorAt(ui::Vec2 p) const override;  // T4.16b: ↕ over a stem a press would grab
+  void onHoverChanged(bool hovered) override;
+  // T4.17: the stem a press would grab is highlighted (its head ringed) while the pointer rests over it.
+  uint32_t hoveredStem() const noexcept { return hoverStem_; }
 
   // Value ↔ lane y (device px) for the lane's current rect.
   float yOfValue(float value) const noexcept;
@@ -160,7 +163,9 @@ public:
 private:
   // The stem a press at `p` grabs: the nearest within reach; among stems at the same x the one whose head is closest.
   const doc::Note* stemAt(ui::Vec2 p) const;
+  void setHoverStem(uint32_t id);
   RollState& s_;
+  uint32_t hoverStem_ = 0;  // note id (0: none)
 };
 
 // Shared paint helpers.

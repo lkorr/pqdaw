@@ -53,8 +53,13 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `arrangement.extendLeft` | `Shift+Left` | arrangement | Zooming, Display and Selection | implemented (T4.16b; the time selection's end one grid cell earlier, never before its start) |
 | `arrangement.extendRight` | `Shift+Right` | arrangement | Zooming, Display and Selection | implemented (T4.16b; the end one grid cell later; from the insert marker it becomes a range over the selected tracks, selecting the clips it touches) |
 | `arrangement.deselect` | `Escape` | arrangement | — (pqdaw; Live has no binding) | implemented (T4.16b; drops the clip, time and breakpoint selection, the tracks stay; a running drag is cancelled first by the view) |
-| `arrangement.trackUp` | `Up` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track above, scrolled into view) |
-| `arrangement.trackDown` | `Down` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track below) |
+| `arrangement.trackUp` | `Up` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track above, scrolled into view. T4.17: with clips selected (not a range), moves them to the nearest track above that takes every one of them — MIDI clips onto MIDI tracks, audio clips onto audio tracks, groups skipped — same start, one undo step) |
+| `arrangement.trackDown` | `Down` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track below. T4.17: with clips selected, moves them down as Up does) |
+| `arrangement.markerHome` | `Home` | arrangement | Arrangement View Commands | implemented (T4.17: the insert marker to the arrangement's start, scrolled into view; the selected tracks stay) |
+| `arrangement.markerEnd` | `End` | arrangement | Arrangement View Commands | implemented (T4.17: the insert marker to the end of the last clip) |
+| `arrangement.pointsUpFine` | `Shift+Up` | arrangement | Automation (fine) | implemented (T4.17: the selected breakpoints' value up by a thousandth of the lane's range, one undo step) |
+| `arrangement.pointsDownFine` | `Shift+Down` | arrangement | Automation (fine) | implemented (T4.17: down by a thousandth) |
+| (T4.17) `Left` / `Right` / `Up` / `Down` with breakpoints selected | — | arrangement | Automation | the selected breakpoints one grid cell earlier / later (from the earliest), their value up / down by a hundredth of the lane's display range; one undo step each (breakpoints take the arrow keys before clips and the marker) |
 | `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | implemented (T3.10; any parents, nesting allowed) |
 | `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | implemented (T3.10) |
 | `arrangement.rename` | `Ctrl+R` | arrangement | Editing | implemented (T3.10; the selected track's title, Enter commits, Esc cancels) |

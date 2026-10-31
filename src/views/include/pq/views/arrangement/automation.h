@@ -255,6 +255,9 @@ public:
 
   // ---- edits (each = one undo step; false when there was nothing to do or it failed: the reason in the status line)
   bool deleteSelected();
+  // T4.17: arrow keys on the selected breakpoints: Left / Right by `cells` grid cells (from the earliest one), Up /
+  // Down by `steps` hundredths of the lane's display range (Shift: thousandths); one undo step each.
+  bool nudgeSelected(int32_t cells, double steps);
   // Replaces the envelope over the time selection with a shape spanning the lane's display range (periodic shapes:
   // one cycle per 4/4 bar of the selection, at least one).
   bool insertShape(doc::ops::ShapeKind kind);

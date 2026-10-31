@@ -81,12 +81,15 @@ public:
   void setLabel(std::string_view s);
   ui::Mods pressMods() const noexcept { return mods_; }
   void paint(ui::PaintContext& ctx) override;
+  // T4.17 (Live): a press flips the toggle; dragging on across other tracks' toggles of the same kind (activator, solo,
+  // arm) sets each one it crosses to the pressed one's new state (solo and arm additively), one undo step each.
   bool onPointer(const ui::PointerEvent& e) override;
 
 private:
   Kind kind_;
   std::string label_;
   ui::Mods mods_ = 0;
+  bool target_ = false;  // the state a drag-across sets
 };
 
 // A Live number box: the value as a bar (volume and sends from the left, pan from the centre) under the number.

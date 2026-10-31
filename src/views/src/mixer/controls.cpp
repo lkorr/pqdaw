@@ -159,7 +159,19 @@ void LiveToggle::setLabel(std::string_view s) {
 }
 
 bool LiveToggle::onPointer(const PointerEvent& e) {
-  if (e.type == PointerType::Down) mods_ = e.mods;
+  if (e.type == PointerType::Down && e.button == PointerButton::Left) {
+    mods_ = e.mods;
+    target_ = !on();
+  }
+  if (e.type == PointerType::Move && captured() && kind_ != Kind::Post && tree() != nullptr) {
+    auto* o = dynamic_cast<LiveToggle*>(tree()->hitTest(e.pos));
+    if (o != nullptr && o != this && o->kind_ == kind_ && o->enabled() && o->on() != target_) {
+      o->mods_ = mod::kCtrl;  // solo / arm: added to what the drag set so far
+      o->setOn(target_);
+      if (o->onToggle) o->onToggle(target_);
+    }
+    return true;
+  }
   return Toggle::onPointer(e);
 }
 

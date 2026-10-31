@@ -197,7 +197,12 @@ bool TrackHeader::onPointer(const PointerEvent& e) {
   // Height resize: the bottom edge (Live drags the track's lower border).
   if (resizing_) {
     if (e.type == PointerType::Move) {
-      view_.setTrackHeight(id_, resizeStartH_ + (e.pos.y - resizeStartY_) / scale);
+      const float h = resizeStartH_ + (e.pos.y - resizeStartY_) / scale;
+      // T4.17 (Live): the edge of a selected track resizes every selected track to the same height.
+      if (view_.editor().trackSelected(id_))
+        for (const doc::TrackId t : view_.selection().tracks)
+          if (t != id_) view_.setTrackHeight(t, h);
+      view_.setTrackHeight(id_, h);
       return true;
     }
     if (e.type == PointerType::Up && e.button == PointerButton::Left) {

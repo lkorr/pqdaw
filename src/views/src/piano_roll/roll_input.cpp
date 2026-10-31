@@ -651,7 +651,12 @@ bool VelocityLaneWidget::onPointer(const PointerEvent& e) {
       return true;
     }
     case PointerType::Move: {
-      if (!captured() || d.kind != DragKind::Velocity) return false;
+      if (!captured()) {  // T4.17: hover highlight of the stem a press would grab
+        const doc::Note* n = stemAt(e.pos);
+        setHoverStem(n != nullptr ? n->id.value : 0u);
+        return false;
+      }
+      if (d.kind != DragKind::Velocity) return false;
       const float usable = std::max(1.0f, static_cast<float>(rect().h) - 8.0f * scale);
       float dv = -(e.pos.y - d.press.y) / usable * valueRange();
       if (e.mods & mod::kShift) dv *= 0.1f;  // fine
@@ -688,6 +693,17 @@ const doc::Note* VelocityLaneWidget::stemAt(Vec2 p) const {
     }
   });
   return best;
+}
+
+void VelocityLaneWidget::setHoverStem(uint32_t id) {
+  if (id == hoverStem_) return;
+  hoverStem_ = id;
+  markDirty();  // the lane is short: one repaint of it per hover change (none while the pointer rests)
+}
+
+void VelocityLaneWidget::onHoverChanged(bool hovered) {
+  if (!hovered) setHoverStem(0);
+  Control::onHoverChanged(hovered);
 }
 
 Cursor VelocityLaneWidget::cursorAt(Vec2 p) const {

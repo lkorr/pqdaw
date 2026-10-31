@@ -49,7 +49,9 @@ Ruler::Hit Ruler::hitAt(Vec2 p) const {
   const float loopY = static_cast<float>(rect().y + s.px(am::kRulerNumberRow));
   const float markY = loopY + static_cast<float>(s.px(am::kRulerLoopRow));
   const float grab = static_cast<float>(s.px(4.0f));
-  if (p.y >= loopY && p.y < markY && pr.loop.end > pr.loop.start) {
+  if (p.y >= loopY && p.y < markY) {
+    h.grab = Grab::LoopNew;  // T4.17: off the brace, a drag draws a new loop
+    if (pr.loop.end <= pr.loop.start) return h;
     const float lx0 = std::round(view_.xOfTick(static_cast<double>(pr.loop.start)));
     const float lx1 = std::round(view_.xOfTick(static_cast<double>(pr.loop.end)));
     // The nearer end wins when the brace is narrow; a brace too narrow for a body is all ends.
@@ -82,6 +84,13 @@ doc::LoopRegion Ruler::shownLoop() const noexcept {
       l.start += dt_;
       l.end += dt_;
       break;
+    case Grab::LoopNew:
+      if (newHi_ > newLo_) {
+        l.start = newLo_;
+        l.end = newHi_;
+        l.enabled = true;
+      }
+      break;
     default: break;
   }
   return l;
@@ -98,6 +107,7 @@ Cursor Ruler::cursorAt(Vec2 p) const {
   switch (g) {
     case Grab::LoopStart:
     case Grab::LoopEnd:
+    case Grab::LoopNew:
     case Grab::Locator: return Cursor::ResizeEW;
     case Grab::Loop: return Cursor::Move;
     case Grab::Zoom: break;
@@ -110,6 +120,7 @@ bool Ruler::cancelDrag() {
   pressed_ = dragging_ = false;
   grab_ = {};
   dt_ = 0;
+  newLo_ = newHi_ = 0;
   if (was) markDirty();
   return was;
 }
@@ -290,6 +301,22 @@ bool Ruler::onPointer(const PointerEvent& e) {
         // A brace / locator drag: relative snap from the dragged edge (Live), kept in range.
         const doc::Project& p = *view_.shown();
         const Grid g(view_.context().grid(), p.timeline->sigMap, view_.pxPerTick());
+        if (grab_.grab == Grab::LoopNew) {  // T4.17: both ends on the grid (the cell under each end when snapping)
+          const double a = std::max(0.0, std::min(pressTick_, view_.tickAtX(e.pos.x)));
+          const double b = std::max(0.0, std::max(pressTick_, view_.tickAtX(e.pos.x)));
+          Ticks lo = static_cast<Ticks>(std::floor(a)), hi = static_cast<Ticks>(std::ceil(b));
+          if (g.snapping()) {
+            lo = g.snap(lo);
+            hi = std::max(g.snap(hi), lo + 1);
+          }
+          if (lo != newLo_ || hi != newHi_ || dt_ == 0) {
+            newLo_ = lo;
+            newHi_ = hi;
+            dt_ = 1;  // something to commit
+            markDirty();
+          }
+          return true;
+        }
         const auto raw = static_cast<Ticks>(std::llround(view_.tickAtX(e.pos.x) - pressTick_));
         Ticks origin = 0, lo = 0, hi = doc::kMaxTicks / 2;
         switch (grab_.grab) {
@@ -310,7 +337,8 @@ bool Ruler::onPointer(const PointerEvent& e) {
             origin = (*p.locators)[grab_.locator].tick;
             lo = -origin;
             break;
-          case Grab::Zoom: break;
+          case Grab::Zoom:
+          case Grab::LoopNew: break;
         }
         const Ticks dt = std::clamp(g.snapping() ? g.snapDelta(origin, raw) : raw, lo, hi);
         if (dt != dt_) {

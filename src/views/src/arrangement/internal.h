@@ -381,6 +381,12 @@ public:
   bool clipsNudgeable() const noexcept { return !sel_.clips.empty() && !sel_.range; }
   bool nudgeClips(int32_t cells);
   bool nudgeClipsFine(int32_t dir);
+  // T4.17 (Live): Up / Down with clips selected move them to the nearest track above / below that takes every one of
+  // them (MIDI clips onto MIDI tracks, audio clips onto audio tracks; groups skipped), same start, one undo step; the
+  // moved clips stay selected. False when no track takes them.
+  bool moveClipsRows(int32_t dir);
+  // T4.17: Home / End put the insert marker at the arrangement's start / at the end of its last clip.
+  void markerTo(bool end);
   void extendTime(int32_t cells);
   bool deselect();
 
@@ -669,7 +675,8 @@ public:
   // Esc: drops a brace / locator drag (true when one ran).
   bool cancelDrag();
   // What a press at `p` grabs.
-  enum class Grab : uint8_t { Zoom, LoopStart, LoopEnd, Loop, Locator };
+  // LoopNew (T4.17): a drag in the loop row off the brace draws a new loop (both ends on the grid; the loop switches on).
+  enum class Grab : uint8_t { Zoom, LoopStart, LoopEnd, Loop, Locator, LoopNew };
   struct Hit {
     Grab grab = Grab::Zoom;
     uint32_t locator = 0;  // index into the project's locators (Grab::Locator)
@@ -683,6 +690,7 @@ private:
   ArrangementView& view_;
   Hit grab_{};
   Ticks dt_ = 0;  // the dragged part's snapped delta
+  Ticks newLo_ = 0, newHi_ = 0;  // T4.17: a drawn loop's snapped range (Grab::LoopNew)
   struct Marker {
     Ticks tick;
     uint8_t kind;  // 0 locator, 1 time signature, 2 tempo

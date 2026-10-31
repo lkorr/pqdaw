@@ -398,6 +398,63 @@ bool Editor::nudgeClipsFine(int32_t dir) {
   return apply(doc::ops::moveClipsBy(p, ctx_.store().ids(), sel_.clips, dt), "Move", true);
 }
 
+bool Editor::moveClipsRows(int32_t dir) {
+  if (sel_.clips.empty() || dir == 0) return false;
+  const doc::Project& p = *ctx_.doc();
+  const auto rows = view_.rows();
+  struct Item {
+    doc::ClipRef ref;
+    int32_t row;
+    bool audio;
+    Ticks start;
+  };
+  std::vector<Item> items;
+  for (const doc::ClipRef& r : sel_.clips) {
+    const doc::ClipSlot* c = findClip(p, r);
+    const int32_t row = rowOf(r.track);
+    if (c == nullptr || row < 0) return false;  // a clip of a hidden (folded) track: nothing moves
+    items.push_back({r, row, c->audio != nullptr, c->start()});
+  }
+  const auto n = static_cast<int32_t>(rows.size());
+  auto takes = [&](const Item& it, int32_t to) {
+    if (to < 0 || to >= n) return false;
+    const ArrangementRow& row = rows[static_cast<size_t>(to)];
+    if (row.group || row.track == nullptr) return false;
+    return it.audio ? row.track->kind == doc::TrackKind::Audio : row.track->kind == doc::TrackKind::Midi;
+  };
+  for (int32_t d = dir; std::abs(d) < n; d += dir) {
+    bool ok = true, inside = false;
+    for (const Item& it : items) {
+      ok = ok && takes(it, it.row + d);
+      inside = inside || (it.row + d >= 0 && it.row + d < n);
+    }
+    if (!inside) break;
+    if (!ok) continue;
+    std::vector<doc::ops::ClipMove> moves;
+    moves.reserve(items.size());
+    for (const Item& it : items) moves.push_back({it.ref, rows[static_cast<size_t>(it.row + d)].id, it.start});
+    if (!apply(doc::ops::moveClips(p, ctx_.store().ids(), moves), "Move", true)) return false;
+    view_.revealRow(std::clamp(items.front().row + d, 0, n - 1));
+    return true;
+  }
+  ctx_.setStatus(dir < 0 ? "No track above takes the selected clips" : "No track below takes the selected clips");
+  return false;
+}
+
+void Editor::markerTo(bool end) {
+  Ticks t = 0;
+  if (end) {
+    doc::forEachTrack(*ctx_.doc(), [&](const doc::Track& tr, const doc::Track*) {
+      if (!tr.clips.empty()) t = std::max(t, view_.model().clips(tr).maxEnd.back());
+    });
+  }
+  Selection s;
+  s.tracks = sel_.tracks;
+  s.time = TickRange{t, t};
+  setSelection(std::move(s), false);
+  view_.revealTick(t);
+}
+
 // Shift+Left / Right (Live): the time selection's end one grid cell later / earlier (never before its start); from
 // the insert marker it becomes a range. The selected tracks stay; the clips the range touches are selected.
 void Editor::extendTime(int32_t cells) {

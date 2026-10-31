@@ -21,9 +21,11 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/arrangement/automation.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
+#include "../../src/views/src/piano_roll/roll_widgets.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
 
@@ -664,4 +666,186 @@ TEST_CASE("render: arrangement-hover (a clip's end edge under the pointer) match
 
 TEST_CASE("render: pianoroll-hover (a note's end under the pointer) matches the golden image") {
   checkGolden("pianoroll-hover", "pianoroll-12edo");
+}
+
+// ---- T4.17 QoL leftovers ------------------------------------------------------------------------------------------
+
+TEST_CASE("T4.17: Up / Down move selected clips to the neighbouring track that takes them (groups skipped); Home / End") {
+  Arr f;
+  // Rows: Drums, Bass, Keys (group), Piano, Pads (group), Strings, FX (group, folded: Riser hidden).
+  const doc::ClipRef strings = f.clip("Strings", 0);
+  const Ticks s0 = f.get(strings).start;
+  f.d.click(f.title(strings, kBar));
+  REQUIRE(f.arr->selection().clips.size() == 1);
+  const size_t h = f.history();
+  auto onTrack = [&](std::string_view name) {
+    for (const doc::ClipSlot& c : f.track(name).clips)
+      if (c.id == strings.clip) return true;
+    return false;
+  };
+  CHECK(f.d.press("Up") == KeyResult::Action);  // over the Pads group to Piano
+  CHECK(f.history() == h + 1);
+  CHECK(onTrack("Piano"));
+  CHECK_FALSE(onTrack("Strings"));
+  REQUIRE(f.arr->selection().clips.size() == 1);
+  CHECK(f.arr->selection().clips[0].clip == strings.clip);  // still selected: the keys keep moving it
+  CHECK(f.d.press("Down") == KeyResult::Action);
+  CHECK(onTrack("Strings"));
+  CHECK(f.history() == h + 2);
+  const doc::ClipRef moved{f.track("Strings").id, strings.clip};
+  CHECK(f.get(moved).start == s0);
+  CHECK(f.d.press("Down") == KeyResult::Action);  // below: the folded FX group (Riser hidden): refused, no step
+  CHECK(onTrack("Strings"));
+  CHECK(f.history() == h + 2);
+  // Home / End (no clips selected): the insert marker to the start / the end of the last clip.
+  CHECK(f.d.press("Escape") == KeyResult::Action);
+  Ticks last = 0;
+  doc::forEachTrack(*f.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    for (const doc::ClipSlot& c : t.clips) last = std::max(last, c.end());
+  });
+  CHECK(f.d.press("End") == KeyResult::Action);
+  REQUIRE(f.arr->selection().time.has_value());
+  CHECK(*f.arr->selection().time == TickRange{last, last});
+  CHECK(f.d.press("Home") == KeyResult::Action);
+  CHECK(*f.arr->selection().time == TickRange{0, 0});
+  CHECK(f.history() == h + 2);
+}
+
+TEST_CASE("T4.17: Up / Down move audio clips between audio tracks only (a MIDI track between is skipped)") {
+  Arr f("audio");
+  // Rows: Drums (audio), Vox (audio), Keys (MIDI), Lost (audio).
+  const doc::ClipRef vox = f.clip("Vox", 0);
+  const doc::Track& voxTrack = f.track("Vox");
+  const Vec2 at{f.x(voxTrack.clips[0].start() + kQ) + 0.5f, static_cast<float>(f.arr->rowLaneRect(f.row(vox.track)).y + 7)};
+  f.d.click(at);
+  REQUIRE(f.arr->selection().clips.size() == 1);
+  const size_t h = f.history();
+  auto on = [&](std::string_view name) {
+    for (const doc::ClipSlot& c : f.track(name).clips)
+      if (c.id == vox.clip) return true;
+    return false;
+  };
+  CHECK(f.d.press("Down") == KeyResult::Action);
+  CHECK(on("Lost"));
+  CHECK(f.d.press("Up") == KeyResult::Action);
+  CHECK(on("Vox"));
+  CHECK(f.d.press("Up") == KeyResult::Action);
+  CHECK(on("Drums"));
+  CHECK(f.history() == h + 3);
+}
+
+TEST_CASE("T4.17: arrow keys nudge the selected breakpoints (grid cells, a hundredth of the range; Shift: fine)") {
+  Arr f("automation");
+  ArrangementAutomation& au = f.arr->automation();
+  const doc::Track& drums = f.track("Drums");
+  au.showLanes(drums.id, true);
+  f.d.tree().layoutNow();
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, drums.id);
+  auto band = au.band(drums.id, vol, false);
+  REQUIRE(band.has_value());
+  REQUIRE(band->lane != nullptr);
+  const doc::Breakpoint p1 = band->lane->points[1];
+  f.d.click(*au.pointPos(*band, p1.id));
+  REQUIRE(au.selectedPoints().size() == 1);
+  f.d.tree().setFocus(f.arr);
+  auto point = [&] {
+    auto b = au.band(drums.id, vol, false);
+    REQUIRE(b.has_value());
+    for (const doc::Breakpoint& p : b->lane->points)
+      if (p.id == p1.id) return p;
+    FAIL("breakpoint gone");
+    return doc::Breakpoint{};
+  };
+  const size_t h = f.history();
+  CHECK(f.d.press("Right") == KeyResult::Action);
+  CHECK(point().tick == p1.tick + kBar / 4);
+  CHECK(f.d.press("Left") == KeyResult::Action);
+  CHECK(point().tick == p1.tick);
+  const double v0 = point().value;
+  CHECK(f.d.press("Up") == KeyResult::Action);
+  const double v1 = point().value;
+  CHECK(v1 > v0);
+  CHECK(f.d.press("Shift+Down") == KeyResult::Action);
+  const double v2 = point().value;
+  CHECK(v2 < v1);
+  CHECK(v2 > v0);  // a tenth of the step
+  CHECK(f.history() == h + 4);
+  CHECK(au.selectedPoints().size() == 1);  // the keys keep acting on it
+}
+
+TEST_CASE("T4.17: a drag in the empty loop row draws a new loop (on the grid, switched on; one undo step)") {
+  Arr f;
+  namespace am = arrangement_metrics;
+  const IRect ruler = f.d.rect(std::string(kArr) + "/ruler");
+  const float yLoop = static_cast<float>(ruler.y) + am::kRulerNumberRow + am::kRulerLoopRow * 0.5f;
+  REQUIRE(f.ctx.doc()->loop == doc::LoopRegion{4 * kBar, 8 * kBar, true});
+  CHECK(f.cursorAt({f.x(10 * kBar), yLoop}) == Cursor::ResizeEW);
+  const size_t h = f.history();
+  f.d.drag({f.x(10 * kBar) + 2.0f, yLoop}, {f.x(12 * kBar) + 3.0f, yLoop}, 6);
+  CHECK(f.history() == h + 1);
+  CHECK(f.ctx.doc()->loop == doc::LoopRegion{10 * kBar, 12 * kBar, true});
+  // Right to left works too; Esc cancels.
+  f.d.drag({f.x(15 * kBar) + 2.0f, yLoop}, {f.x(13 * kBar) + 2.0f, yLoop}, 6);
+  CHECK(f.ctx.doc()->loop == doc::LoopRegion{13 * kBar, 15 * kBar, true});
+  const Vec2 a{f.x(1 * kBar) + 2.0f, yLoop};
+  f.d.move(a);
+  f.d.down(a);
+  f.d.move({a.x + 80.0f, yLoop});
+  CHECK(f.d.press("Escape") == KeyResult::Widget);
+  f.d.up({a.x + 80.0f, yLoop});
+  CHECK(f.ctx.doc()->loop == doc::LoopRegion{13 * kBar, 15 * kBar, true});
+  CHECK(f.history() == h + 2);
+}
+
+TEST_CASE("T4.17: dragging across header activators flips each; a selected track's edge resizes every selected track") {
+  Arr f;
+  const doc::TrackId drums = f.track("Drums").id, bass = f.track("Bass").id;
+  TrackHeader* hd = f.arr->header(drums);
+  TrackHeader* hb = f.arr->header(bass);
+  REQUIRE(hd != nullptr);
+  REQUIRE(hb != nullptr);
+  auto activatorOf = [](TrackHeader* h) {
+    auto& strip = static_cast<MixerStrip&>(h->mixerSection().child(0));
+    REQUIRE(strip.activator() != nullptr);
+    return strip.activator()->rect();
+  };
+  f.d.tree().layoutNow();
+  const IRect a0 = activatorOf(hd), a1 = activatorOf(hb);
+  REQUIRE_FALSE(f.track("Drums").mixer.mute);
+  REQUIRE_FALSE(f.track("Bass").mixer.mute);
+  const size_t h = f.history();
+  const Vec2 from{static_cast<float>(a0.x + a0.w / 2), static_cast<float>(a0.y + a0.h / 2)};
+  const Vec2 to{static_cast<float>(a1.x + a1.w / 2), static_cast<float>(a1.y + a1.h / 2)};
+  f.d.drag(from, to, 8);
+  CHECK(f.track("Drums").mixer.mute);
+  CHECK(f.track("Bass").mixer.mute);
+  CHECK(f.history() == h + 2);
+  // Resize: Drums and Bass selected, Bass's bottom edge dragged: both rows take the new height.
+  f.d.click({static_cast<float>(hd->rect().x) + 30.0f, static_cast<float>(hd->rect().y) + 8.0f});
+  f.d.click({static_cast<float>(hb->rect().x) + 30.0f, static_cast<float>(hb->rect().y) + 8.0f}, mod::kShift);
+  REQUIRE(f.arr->selection().tracks.size() == 2);
+  const IRect r = hb->rect();
+  const Vec2 e{static_cast<float>(r.x) + 20.0f, static_cast<float>(r.bottom()) - 1.0f};
+  const float h0 = f.arr->trackHeight(bass);
+  f.d.drag(e, {e.x, e.y + 30.0f}, 5);
+  CHECK(f.arr->trackHeight(bass) == doctest::Approx(h0 + 30.0f).epsilon(0.05));
+  CHECK(f.arr->trackHeight(drums) == doctest::Approx(f.arr->trackHeight(bass)));
+}
+
+TEST_CASE("T4.17: the velocity stem a press would grab is highlighted while hovered") {
+  Roll r("pianoroll-12edo");
+  auto* lane = dynamic_cast<roll::VelocityLaneWidget*>(r.d.find(std::string(kClip) + "/velocity"));
+  REQUIRE(lane != nullptr);
+  const Vec2 head = r.view->stemHead(doc::NoteId{100});
+  REQUIRE(head.x >= 0.0f);
+  r.d.move(head);
+  CHECK(lane->hoveredStem() == 100u);
+  r.d.step();
+  r.d.tree().damage().clear();
+  r.d.move({head.x, head.y + 1.0f});  // the same stem: nothing repaints
+  CHECK(lane->hoveredStem() == 100u);
+  CHECK_FALSE(r.d.tree().needsPaint());
+  const IRect lr = lane->rect();
+  r.d.move({static_cast<float>(lr.right()) - 3.0f, static_cast<float>(lr.y) + 4.0f});
+  CHECK(lane->hoveredStem() == 0u);
 }
