@@ -1480,7 +1480,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   4. **Range edits on audio tracks** (delete, cut / copy a time range) carve by split + delete, now for both kinds (MIDI used insertEmptyClip + remove; results are the same: the existing T3.9 tests pass). Paste puts a clip only on a track of its kind; others are dropped with a status message.
   5. **Clip View**: fades in milliseconds at the clip's tempo; Transpose typed ("7" steps, "700c", "+7st", "3/2"), greyed with Detune in Re-Pitch (Q145 item 2); switching to Re-Pitch seeds the BPM from the file's tempo (acid chunk / name) else the tempo at which the file is a whole number of 4/4 bars nearest 120 BPM; the sample display always shows the whole file (no zoom); start marker and loop brace snap to 1/16 notes in Re-Pitch (Shift: free).
   6. **Drawing**: dark waveform on the clip colour (like note previews), stereo as two lanes; warp-Off clips under a tempo ramp drawn in 32-px linear pieces (exact at their ends); the bit depth in the Clip View comes from a header probe of the file (once per file, on the UI thread: a few small reads).
-  7. **Not done**: T4.17's keys for clips (Up / Down to the neighbouring track, Home / End): T4.17 is paused. Consolidate still refuses audio clips (document, Q145 item 7).
+  7. **Not done**: ~~T4.17's keys for clips (Up / Down to the neighbouring track, Home / End): T4.17 is paused~~ (done in T4.17, merged 2026-10-31). Consolidate still refuses audio clips (document, Q145 item 7).
 - Status: open (user to judge 1 and 2 with REVIEW's T5.5 + T5.6 entry).
 
 ## Q156 · 2026-10-31 · T4.x-fix-engine · Limits left by "racks nest without a cap" (M4 review M9), and the topology hold (M3)
@@ -1553,7 +1553,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   5. **Note clips** are refused out of the window (status: "MIDI clips drag out as .mid files with M11"); dropped on the browser they save as .pqclip.
 - Status: open (the user to judge 1 and 4).
 
-## Q?-T4.17-a · 2026-10-31 · T4.17 · Key zones at note-on (with M4 review M7), clip keys, toggles, loop drawing: choices
+## Q162 · 2026-10-31 · T4.17 · Key zones at note-on (with M4 review M7), clip keys, toggles, loop drawing: choices
 - Context: TASKS T4.17 (Live parity loose, user 2026-10-30), M4 review M7.
 - Choices (provisional, all reversible):
   1. **Key zones are decided at note-on** from two new param-rate voice signals held from the note-on: `voice.noteHz` (the note's Hz as resolved in its own effective tuning, a clip's override included) for Hz zones, `voice.noteDegree` (its absolute degree `equave · size + degree` in that tuning; for a Ratio / Cents pitch the position between the two degrees around it, linear in log frequency; NaN for notes from outside the document, read as degree 0) for Degree zones. Glides, Pitch events and retunes no longer move a sounding note between chains; a zone edit fades over the per-voice gain's smoothing; the per-voice zone gain starts at its target (`gain(…, start: 1)`), so a new note never fades in from the lane's previous note. Engine cost: two floats per lane, written at note-on (NoteEvent 48 → 52 bytes, the sequence's Note 64 → 72).
@@ -1567,7 +1567,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   9. **Device names**: shown in the title bar instead of the patch's name; Ctrl+R renames in place; an empty name keeps the old one. Schema 8 (renumbered after T5.3's 7).
 - Status: open (user to judge 1–2 and 6).
 
-## Q?-T4.x-fix-ui-a · 2026-10-31 · T4.x-fix-ui · M4 review UI fixes: what was decided and what is left
+## Q163 · 2026-10-31 · T4.x-fix-ui · M4 review UI fixes: what was decided and what is left
 - Context: M4 review M5–M8, M14–M16, L2, L3, L12–L15, UI list items 2–7; the user said exact Live parity is not required.
 - Choices (provisional):
   1. **Circuit editor open (M15)**: a patch that does not fit readably opens at the Near zoom (0.75, every name drawn) on its outputs (right edge; centred vertically when it fits, else on the output terminals); the Fit button / F still fits the whole patch. Below Near, the terminals (in, param, source, out, export) keep their names in small pills, collision-culled. Cost labels were already collision-culled (costliest first).

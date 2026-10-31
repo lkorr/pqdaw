@@ -944,3 +944,18 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - CPU-efficiency check: render uses the engine's copy path at rate 1, sample read in place from the pool; long clips render only when a target asks; the modal DoDragDrop loop is on the UI thread only, the audio thread is untouched.
 - Notes/blockers: real Explorer drag-out not hand-checked by the worker (REVIEW); MIDI clips refused until M11.
 - Orchestrator: merged ff at 27e90ef (rebased on bd44882, whole suite -Full dev + release 55/55). No schema bump. Next: T5.13 M5 review once T4.17/T4.x-fix-ui lands or in parallel.
+
+## 2026-10-31 · T4.17 · worker / task/T4.17-qol-leftovers
+- Did: rebased (device names → schema 8, no-op 7→8 migration, fixtures/schema7); voice.noteHz + voice.noteDegree (param-rate, held from note-on; NoteEvent 52 B, sequence Note 72 B; doc NotePitch::keyDegree) so Instrument Rack key zones are decided at note-on (with M4 review M7: Hz zones on the note's pitch in its own tuning, Degree zones on its own degree), per-voice zone gain start 1; Ctrl+R rename in the title bar, Ctrl+Shift+G ungroup; type-in on focused knobs / faders / panel knobs; arrangement Up/Down clip moves (audio onto audio tracks), Home/End marker, breakpoint arrow nudges, drawing a loop in the empty loop row, drag-across header toggles, resize all selected tracks, velocity-stem hover highlight. HOTKEYS, ARCHITECTURE, PATCH_LANGUAGE, REVIEW, Q162.
+- Verified: build.ps1 -Full (dev) 0 warnings, 54/55 → views goldens re-recorded after the T5.11 rebase, pq_tests_views 385/385; build.ps1 -Preset release -Full 0 warnings 55/55.
+- Perf: n/a (no hot-path kernel change; voice engine writes 2 more floats per lane per block).
+- CPU-efficiency check: zone inputs became param rate (block rate per voice instead of a per-sample log of voice.hz); keyDegree is computed once per note off-thread at lowering; Degree zones dropped the track-tuning rebuild in addParams.
+- Notes/blockers: tuning automation at note-on not reflected in noteHz (Q162 item 2).
+
+## 2026-10-31 · T4.x-fix-ui 👁 · worker / task/T4.17-qol-leftovers
+- Did: M5, M6/L2 (+ Esc to the captured widget), M8, M14, M15, M16, L3, L12, L14 (contrast, breadcrumb), L15 (mux numbering, signs), UI items 2, 3, 6; goldens regenerated and viewed.
+- Verified: as T4.17 (same runs); new tests for M5 (slow), M6/L2, M8, M14, M15 (LOD / open zoom), M16, L3, UI 2, UI 6.
+- Perf: n/a.
+- CPU-efficiency check: the clip lamp no longer keeps the 30 Hz poll alive (idle 0 %); terminal pills and axis labels are drawn only on repaint, nothing per frame.
+- Notes/blockers: not done: L13 / UI 4, L14 soft wrap and error line, UI 7 monospace, live mux-input highlight, reorder auto-scroll, a circuit-view glyph in title bars (Q163 item 9).
+- Orchestrator: merged ff at 025d05e (rebased on 169c5fe; release -Full 55/55; the final rebase pulled docs only). Q155 item 7 note closed. The T5.x-fix worker (M5 review) must rebase onto schema 8.
