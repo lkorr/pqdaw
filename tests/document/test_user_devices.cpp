@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <ostream>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,14 @@ std::unique_ptr<DeviceLibrary> freshLibrary() {
   auto r = loadDeviceLibrary(stdlibDir());
   REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
   return std::move(*r);
+}
+
+// Every whole-word `drive` of the Saturator's text renamed `drv` (the param and all its uses: since T4.x-fix-dsp the
+// drive reaches the 1× path and every oversampled sample's sat_mix).
+std::string renamedDrive(const std::string& s) {
+  std::string out = std::regex_replace(s, std::regex("\\bdrive\\b"), "drv");
+  REQUIRE(out.find("param drv") != std::string::npos);
+  return out;
 }
 
 std::string replaced(std::string s, const std::string& from, const std::string& to) {
@@ -413,8 +422,7 @@ TEST_CASE("user devices: a wire into a param an edit removed is Invalid (kept, n
   REQUIRE(states.size() == 1);
   CHECK(states[0].status == WireStatus::Lowered);
   // The edit renames `drive`: the wire stays in the document but is not lowered.
-  const std::string noDrive = replaced(replaced(lib->stockText("saturator"), "param drive      = 0dB", "param drv        = 0dB"),
-                                       "u   = pre * drive", "u   = pre * drv");
+  const std::string noDrive = renamedDrive(lib->stockText("saturator"));
   auto ed = ops::editDevicePatch(*t.store.current(), t.sat, noDrive);
   REQUIRE(ed.ok());
   REQUIRE(t.store.dispatch(ed->command).ok());

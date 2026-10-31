@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <set>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,14 @@ struct TwoKeys {
     REQUIRE(store.dispatch(batch).ok());
   }
 };
+
+// Every whole-word `drive` of the Saturator's text renamed `drv` (the param and all its uses: since T4.x-fix-dsp the
+// drive reaches the 1× path and every oversampled sample's sat_mix).
+std::string renamedDrive(const std::string& s) {
+  std::string out = std::regex_replace(s, std::regex("\\bdrive\\b"), "drv");
+  REQUIRE(out.find("param drv") != std::string::npos);
+  return out;
+}
 
 std::string replaced(std::string s, const std::string& from, const std::string& to) {
   const size_t at = s.find(from);
@@ -349,9 +358,7 @@ TEST_CASE("user devices: a wire into a param an edit removed is reported and lef
   CHECK(link->stats().invalidWires == 0);
   REQUIRE(link->wireStates().size() == 1);
   CHECK(link->wireStates()[0].status == WireStatus::Lowered);
-  const std::string noDrive = replaced(replaced(link->devices().stockText("saturator"), "param drive      = 0dB",
-                                                "param drv        = 0dB"),
-                                       "u   = pre * drive", "u   = pre * drv");
+  const std::string noDrive = renamedDrive(link->devices().stockText("saturator"));
   REQUIRE(k.store.dispatch(ops::editDevicePatch(*k.store.current(), sat, noDrive)->command).ok());
   link->flush();
   CHECK(link->lastError().empty());
