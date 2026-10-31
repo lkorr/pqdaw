@@ -492,7 +492,7 @@ SpeedResult indexSpeed(uint32_t files) {
 
 TEST_CASE("library: index speed, 2k files (indicative)") {
   const SpeedResult s = indexSpeed(2000);
-  // Generous bounds only (load-independent sanity); the criteria are checked on 200k files in `slow`.
+  // Generous bounds only (load-independent sanity); the criteria are checked on 200k files in `perf`.
   CHECK(s.revalidateMs < 2000);
   CHECK(s.loadMs < 150);
 }
