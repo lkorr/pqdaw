@@ -154,7 +154,7 @@ void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
   // T5.8: the sample table changed (a drop, undo / redo of one): resolve it again (cheap: a file check per entry).
   if (e.kind != doc::StoreEventKind::SamplesRelocated && e.kind != doc::StoreEventKind::Reset &&
       e.after->samples != resolvedFor_)
-    refreshSamples();
+    refreshSamples(false);  // inside a notification: resolve only (a relocation would notify again)
   // T3.15: a hand-made change of an automated parameter overrides its automation (Live); undo / redo do not.
   bool overridesChanged = false;
   if (e.kind == doc::StoreEventKind::Reset) {
@@ -280,7 +280,7 @@ void ViewContext::setSampleSearchFolders(std::vector<std::string> folders) {
   refreshSamples();
 }
 
-void ViewContext::refreshSamples() {
+void ViewContext::refreshSamples(bool relocate) {
   const doc::Project& p = *store_.current();
   sampleRes_ = doc::resolveSamples(p, doc::SampleSearch{projectDir_, sampleFolders_});
   std::vector<doc::SampleRef> moved;
@@ -291,7 +291,7 @@ void ViewContext::refreshSamples() {
         n.path = *r.relocated;
         moved.push_back(std::move(n));
       }
-  if (!moved.empty()) {
+  if (relocate && !moved.empty()) {
     const bool clean = store_.current() == saved_;
     store_.relocateSamples(moved);  // not an undo step; a project that was clean stays clean
     if (clean) saved_ = store_.current();

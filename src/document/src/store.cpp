@@ -196,12 +196,13 @@ void DocumentStore::relocateSamples(std::span<const SampleRef> updated) {
   history_.remap(remap);
   if (gesture_) gesture_->base = remap(gesture_->base);
   if (current_ == before) return;
-  step_.clear();
-  step_.mark(kChangeMeta);
-  for (const SampleRef& u : updated) step_.samples.push_back(u.id);
-  step_.normalize();
-  last_ = &step_;
-  notify(StoreEventKind::SamplesRelocated, before, current_, step_);
+  // Its own ChangeSet: a relocation may run inside another notification (a listener resolving a dropped sample), whose
+  // event still refers to step_; lastChanges() keeps describing the last dispatch.
+  ChangeSet cs;
+  cs.mark(kChangeMeta);
+  for (const SampleRef& u : updated) cs.samples.push_back(u.id);
+  cs.normalize();
+  notify(StoreEventKind::SamplesRelocated, before, current_, cs);
 }
 
 ListenerId DocumentStore::subscribe(Listener l) {

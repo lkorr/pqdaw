@@ -407,7 +407,9 @@ private:
   void onStoreEvent(const doc::StoreEvent& e);
   void syncLoop();
   void afterLoad();
-  void refreshSamples();  // T5.8: resolve the table, relocate what moved (no undo step), update the missing set
+  // T5.8: resolve the table, relocate what moved (no undo step; not from inside a store notification), update the
+  // missing set.
+  void refreshSamples(bool relocate = true);
   void finishCollect();   // T5.8: the UI-thread end of a collect (relocate, save, status)
   void registerGlobalActions();
   void declareViewActions(std::span<const std::string_view> ids);
