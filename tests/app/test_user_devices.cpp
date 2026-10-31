@@ -347,6 +347,9 @@ TEST_CASE("user devices: probes and cost through the project unit (interpreter a
 TEST_CASE("user devices: a wire into a param an edit removed is reported and left out until the param is back") {
   TwoKeys k;
   auto link = makeLink(k.store.current());
+  // No audio thread runs here: say so, or every topology publish waits out its bound for one (5000 x 1-ms sleeps,
+  // ~78 s at the default timer resolution) before it stays queued, which is where it ends up either way.
+  link->engine().audioOffline();
   [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   auto addSat = ops::addDevice(*k.store.current(), k.store.ids(), k.a, "saturator", DeviceKind::AudioEffect);
   REQUIRE(k.store.dispatch(addSat->command).ok());

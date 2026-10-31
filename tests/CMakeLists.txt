@@ -103,7 +103,7 @@ pq_add_test(pq_tests_app
 # solo/mute vs effectiveAudible, topology swaps, the NullDevice end-to-end playhead); T2.6-fix1: the tuning signal in
 # playback (tests/app/fixtures/tuning_automation, the bit-identical static render, live tuning params); T1b.4: the AOT
 # seed and the disk cache under ProjectLink (a stock track compiles nothing; a second load of a project neither).
-pq_add_test(pq_tests_playback PERF SHARDS 6  # T5.12: the 60-s clip render (perf)
+pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf)
   SOURCES
     app/test_playback.cpp
     app/test_playback_link.cpp
