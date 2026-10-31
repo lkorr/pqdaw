@@ -13,7 +13,7 @@ namespace pq::ui {
 
 namespace {
 
-constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core", "primitives", "widgets", kPlayheadScene};
+constexpr std::string_view kNames[] = {"test-pattern", "text", "lines", "widgets-core", "primitives", "widgets", kPlayheadScene, "waveform-lod"};
 
 // The T0.7 acceptance scene: every primitive and pipeline the renderer offers, laid out in an 800×480 design
 // space and scaled to the target. Colours are PQ Meter's signal-display tokens.
@@ -164,6 +164,10 @@ bool buildScene(std::string_view name, DrawList& dl, const SceneTextures& textur
   }
   if (name == "widgets") {
     detail::controlsScene(dl, textures, timeSeconds);
+    return true;
+  }
+  if (name == "waveform-lod") {  // T5.5
+    detail::waveformScene(dl, textures, timeSeconds);
     return true;
   }
   if (sceneIsLayered(name)) {

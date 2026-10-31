@@ -12,5 +12,6 @@ void linesScene(DrawList& dl, const SceneTextures& tex, double time);
 void widgetsScene(DrawList& dl, const SceneTextures& tex, double time);  // T3.1 (scene_widgets.cpp)
 void primitivesScene(DrawList& dl, const SceneTextures& tex, double time);
 void controlsScene(DrawList& dl, const SceneTextures& tex, double time);  // T3.2 (scene_controls.cpp)
+void waveformScene(DrawList& dl, const SceneTextures& tex, double time);  // T5.5 (scene_waveform.cpp)
 
 }  // namespace pq::ui::detail

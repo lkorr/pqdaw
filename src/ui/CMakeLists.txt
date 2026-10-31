@@ -40,6 +40,7 @@ pq_add_module(pq_ui
     src/tile_atlas.cpp
     src/ui_tree.cpp
     src/vma_impl.cpp
+    src/waveform.cpp
     src/widget.cpp
     src/window.cpp
     ${_pq_ui_spv}

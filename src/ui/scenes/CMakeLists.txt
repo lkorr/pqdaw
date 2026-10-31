@@ -7,6 +7,7 @@ pq_add_module(pq_ui_scenes
     src/scene_primitives.cpp
     src/scene_text.cpp
     src/scene_widgets.cpp
+    src/scene_waveform.cpp
     src/scenes.cpp
   DEPS pq_ui)
 # The control gallery paints with pq_ui's private control-painting helpers (src/ui/src/controls_paint.h).
