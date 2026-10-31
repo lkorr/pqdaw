@@ -13,32 +13,33 @@ This document fixes the module layout and the interfaces between modules so that
    ┌─────────┐           │            ┌──────────┐   ┌────────┐
    │  views  │ (T3.7)    │            │  engine  │   │  io    │ (inside engine/ for now: audio + MIDI devices)
    └──┬───┬──┘           │            └────┬─────┘   └────────┘
-      │   └──────────┐   │                 ├────────────┐
-      ▼              ▼   ▼                 │            ▲
-   ┌─────────┐     ┌──────────┐            │        ┌───────┐
-   │   ui    │     │ document │            │        │  jit  │
-   └────┬────┘     └────┬─────┘            ▼        └───┬───┘
-        │               │              ┌───────┐        │
-        │               └─────────────▶│ graph │◀───────┘
-        │                              └───┬───┘
-        │                      ┌───────────┴────────┐
-        │                      ▼                    ▼
-        │                 ┌────────┐           ┌────────┐
-        │                 │ tuning │           │  dsp   │
-        │                 └───┬────┘           └───┬────┘
-        ▼                     ▼                    ▼
-   ┌──────────────────────────────────────────────────────┐
-   │                         core                         │
-   └──────────────────────────────────────────────────────┘
+      │   └──────────┐   │                 ├────────────┬──────────────────┐
+      ▼              ▼   ▼                 │            ▲                  │
+   ┌─────────┐     ┌──────────┐            │        ┌───────┐              │
+   │   ui    │     │ document │            │        │  jit  │              │
+   └────┬────┘     └────┬─────┘            ▼        └───┬───┘              │
+        │               │              ┌───────┐        │                  │
+        │               └─────────────▶│ graph │◀───────┘                  │
+        │                              └───┬───┘                           ▼
+        │                      ┌───────────┴────────┐                 ┌─────────┐
+        │                      ▼                    ▼                 │  media  │ (T5.1: decoding, sample pool, streaming)
+        │                 ┌────────┐           ┌────────┐             └────┬────┘
+        │                 │ tuning │           │  dsp   │◀─────────────────┤
+        │                 └───┬────┘           └───┬────┘                  │
+        ▼                     ▼                    ▼                       ▼
+   ┌───────────────────────────────────────────────────────────────────────────┐
+   │                                    core                                   │
+   └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `jit` sits above `engine` (T1b.1): it produces `engine::ProgramImage`s, so it includes engine headers; the engine never includes `jit` — whoever owns the compiler worker (the app) hands compiled images to the engine (QUESTIONS Q63). `compile` (T1.x-arch2) sits above `engine` + `jit`: the one file → Schedule → image pipeline and the process's JIT compiler, used by `tools/pqc` and `app`. `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (`ProjectLink` over the engine since T3.17; the wall-clock `SimulatedTransport` remains only as a fallback when playback cannot start). `app` depends on `views` + `engine` + `compile`. `document` depends on `graph` for the project → graph lowering (T3.17, `pq/document/lower.h`); it never includes `engine`.
+Arrows point at dependencies. A module may only include headers from modules below it. **No cycles.** `jit` sits above `engine` (T1b.1): it produces `engine::ProgramImage`s, so it includes engine headers; the engine never includes `jit` — whoever owns the compiler worker (the app) hands compiled images to the engine (QUESTIONS Q63). `compile` (T1.x-arch2) sits above `engine` + `jit`: the one file → Schedule → image pipeline and the process's JIT compiler, used by `tools/pqc` and `app`. `ui` does not depend on `document` or `engine`. `views` (T3.7) composes `ui` + `document` (+ `tuning`, `core`) and never depends on `engine`: it reaches the transport through the plain-data `TransportPort` interface, which `app` implements (`ProjectLink` over the engine since T3.17; the wall-clock `SimulatedTransport` remains only as a fallback when playback cannot start). `app` depends on `views` + `engine` + `compile`. `document` depends on `graph` for the project → graph lowering (T3.17, `pq/document/lower.h`); it never includes `engine`. `media` (T5.1) depends on `core` + `dsp` only; `engine` depends on it (the RT read side of streaming is its header-only `pq/media/stream.h`; `pq/engine/wav_file.h` forwards to `pq/media/wav_file.h`), and `views` / `library` will (M5 plan).
 
 | Module | CMake target | Namespace | Contents |
 |---|---|---|---|
 | `src/core` | `pq_core` | `pq` | RT-safe primitives: SPSC/MPSC queues, pools, arena, epoch reclamation, allocation trap, denormal guard, aligned buffers, fast math approximations, `Ticks`/time types, stable IDs, non-RT logging plus an RT log ring, analysis taps (`pq/core/tap_ring.h`, T4.6: the audio thread copies a signal into a lossy ring that one analysis thread reads; nothing is copied while no reader is registered), probe levels (`pq/core/probe_level.h`, T4.5: last / min / max of a block, one writer, any reader) |
 | `src/tuning` | `pq_tuning` | `pq::tuning` | EDO, MOS (port of mos-explorer), Scala, JI (ratios, monzos, naming), pitch identities, resolution to Hz, the tuning-as-signal coefficient form |
 | `src/dsp` | `pq_dsp` | `pq::dsp` | Native leaf-atom kernels (scalar + SIMD), table resources (`pq/dsp/tables.h`; T4.12: built-in band-limited waveform tables, `builtinWavetable(k)`, read by a wavetable atom whose `table` is `kBuiltinWavetableBase` + k), FFT (`pq/dsp/fft.h`, T4.6: radix-2 real FFT on split arrays), the spectrum analyser (`pq/dsp/spectrum.h`, T4.6: PQ Meter's spectrum behaviour, reimplemented), analysers ported from PQ Meter (spectrum grid, NSDF pitch, LUFS…), sample-rate conversion, warp engines later |
+| `src/media` | `pq_media` (+ `pq_media_codecs`: the third-party decoders, warnings off) | `pq::media` | T5.1: probing (`pq/media/probe.h`: `SampleInfo` from headers: container, rate, channels, exact frames, bit depth, acid/smpl/INST tempo, root and loop, file-name BPM, NTFS identity; MP3 Xing/LAME gapless), decoding (`pq/media/decoder.h`: one `Decoder` interface, planar float32; own PCM reader for WAV/RF64/W64/AIFF/AIFC, dr_wav for ADPCM/A-law/µ-law, dr_flac, dr_mp3's frame decoder with our own frame table for exact seeks, stb_vorbis; files memory-mapped; third-party heaps capped), PCM conversion kernels (`pq/media/pcm.h`, AVX2), content hashes (`pq/media/hash.h`), WAV read/write for goldens and renders (`pq/media/wav_file.h`, moved from engine). T5.2: the sample pool and disk streaming (`pq/media/sample_pool.h`: `SamplePool`, `PooledSample`, residency and budget, the disk thread; `pq/media/stream.h`: `StreamPool` slots and `SampleCursor`, the RT read side, header-only) |
 | `src/graph` | `pq_graph` | `pq::graph` | Patch IR, patch-language parser/printer, inference (rate/kind/poly/width), optimiser, scheduler, `Program` description (the interpreter backend is in `engine`: it builds a ProgramImage), the project graph: per-track compile units (partition, composition, unit hash; T1.x-arch1), circuit-diagram layout (T4.3: layered auto-layout, Manhattan channel router, `pq/graph/layout.h`), inspection (T4.5, `pq/graph/inspect.h`: probe targets through infer / optimise / schedule, the ops' cost weights), structural constants of a patch as written (T4.15, `pq/graph/structure.h`: read-only, for the circuit editor) |
 | `src/jit` | `pq_jit` | `pq::jit` | LLVM IR generation from a schedule into an `engine::ProgramImage` (depends on `engine`), ORC LLJIT, the compile cache (T1b.4, `pq/jit/cache.h`: code shared in memory, a disk cache, read-only AOT seed directories) and the baseline-CPU target the AOT seed is compiled for |
 | `src/compile` | `pq_compile` | `pq::compile` | T1.x-arch2 (Q73 B): `SourceFile` (a .pqp with its imports), `compilePatch` (infer → optimise → schedule), `buildImage` (interpreter or JIT), the process's `jitCompiler()` (its cache: `setJitCache`, T1b.4) and `jitUnitBackend()` / `jitUnitBackend(compiler)` (`pq/compile/compile.h`). Depends on `engine` + `jit` |
@@ -60,7 +61,7 @@ Arrows point at dependencies. A module may only include headers from modules bel
 | UI / main | no | document snapshots, UI state, Vulkan | posts `EngineCommand`s (SPSC), receives `EngineReport`s (SPSC, lossy) |
 | Audio | **yes** | the current `Program`, voice state, param blocks | lock-free only |
 | Compiler worker | no | graph lowering, inference, optimisation, JIT | publishes `ProgramHandle` (atomic pointer swap + epoch) |
-| Disk | no | sample streaming, recording writer | SPSC rings per stream |
+| Disk | no | sample streaming (T5.2: `SamplePool`'s disk thread, above normal priority; owned by whoever owns the pool, the app), recording writer | one ring per stream slot: the consumer claims / reads / releases lock-free; the disk thread polls the slots every 2 ms while engaged or while a stream is claimed and otherwise blocks on an event only non-RT code sets |
 | Analysis | no | analysers (spectrum, scope, LUFS), indexer, transient/tempo detection | reads tap rings filled by the audio thread |
 
 ## 3. Key interfaces (sketches; the real headers are authoritative once written)
@@ -508,7 +509,7 @@ The interpreter's op record is `{KernelFn, KernelArgs}`; the JIT reproduces the 
 - **Project**: a directory: `project.pqd` (JSON, UTF-8, `"schemaVersion"` first, currently 7 (3 = device chains (T4.1: every track's `"devices"`; 2 → 3 gives every MIDI track the default instrument with new ids); 4 = modulation wires (T4.7); 5 = user devices (T4.4-fix1: a device's own patch text, `"source"`); 6 = racks (T4.8: a device's `"rack"`); 7 = audio (T5.3: `"kind": "audio"` tracks, audio clips tagged `"kind": "audio"`, the top-level `"samples"` table; golden `tests/document/fixtures/audio/project.pqd`)) and ticks at PPQ 221,760, older files migrate on load (1 → 2 multiplies every tick by 8; `tools/fixtures/migrate_pqd_schema1.py` does the same to fixture text); layout in `pq/document/serialize.h` and the golden `tests/document/fixtures/full/project.pqd`: ticks and ids as integers, rationals as `"n/d"`, floating point as shortest round-trip numbers, embedded tuning definitions), `patches/*.pqp`, `samples/` (T5.8: samples are referenced where they are; Collect All and Save copies the used ones into `samples/imported/`), `cache/`.
 - **JIT cache entries** (T1b.4, `src/jit/src/cache.cpp`): `<32 hex digits of the key>.pqjit` in the user cache or the AOT seed: a 64-byte header (magic `PQJITCCH`, format version, key, payload size, xxh3-128 of the payload), then the stage function names, the pointer-table description (host slots, kernel offsets into the executable), the IR hash (verify), statistics and the COFF object. Valid only for the executable that wrote it (its file hash is part of the key). Deletable at any time.
 - **Patches**: `.pqp` text in the patch language ([PATCH_LANGUAGE.md](PATCH_LANGUAGE.md)). The visual layout is stored in the same file in a `layout { }` block (T4.3: keys for anonymous nodes, PATCH_LANGUAGE §2.2; written into hand-written files by `graph::spliceLayout`, which changes only that block).
-- **Golden audio** for tests: 32-bit float mono/stereo WAV (`pq/engine/wav_file.h` writes and reads them), 48 kHz, ≤ 1 MB each, in `tests/golden/audio/` from the patches in `tests/golden/patches/`, compared by `tests/golden/golden_audio.h` with a tolerance per test: absolute (max |Δ|, default 1e-4) AND spectral (Hann STFT of 4096, semitone bands from 20 Hz, dB re a full-scale sine floored at −80 dB, default 0.2 dB). Both backends must match the same goldens (T1.10; regeneration and pqc commands in `tools/README.md`).
+- **Golden audio** for tests: 32-bit float mono/stereo WAV (`pq/media/wav_file.h` writes and reads them; `pq/engine/wav_file.h` forwards), 48 kHz, ≤ 1 MB each, in `tests/golden/audio/` from the patches in `tests/golden/patches/`, compared by `tests/golden/golden_audio.h` with a tolerance per test: absolute (max |Δ|, default 1e-4) AND spectral (Hann STFT of 4096, semitone bands from 20 Hz, dB re a full-scale sine floored at −80 dB, default 0.2 dB). Both backends must match the same goldens (T1.10; regeneration and pqc commands in `tools/README.md`).
 
 ## 5. Build configurations
 - **Generator**: Ninja via `CMakePresets.json`. **Compiler**: MSVC v143 (cl.exe), x64. **Language**: C++20 (`/std:c++20`).

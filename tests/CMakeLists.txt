@@ -42,6 +42,16 @@ pq_add_test(pq_tests_tuning
     tuning/test_ji_fixtures.cpp
   DEPS pq_tuning nlohmann_json::nlohmann_json)
 
+# media (T5.1, T5.2): probing, decoding (bit-exact lossless, lossy SNR, random seeks), malformed files (+ a `slow`
+# mutation fuzz), content hashes, the sample pool and RT-safe disk streaming (RtScope, two-thread stress, the
+# 64-stream realtime run in `perf`). Fixtures: tests/media/fixtures (tools/fixtures/make_audio_fixtures.py).
+pq_add_test(pq_tests_media PERF
+  SOURCES
+    media/test_probe.cpp
+    media/test_decode.cpp
+    media/test_malformed.cpp
+  DEPS pq_media)
+
 # Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.
 add_executable(pq_alloc_trap_abort_probe core/alloc_trap_abort_probe.cpp)
 target_link_libraries(pq_alloc_trap_abort_probe PRIVATE pq_alloc_trap)

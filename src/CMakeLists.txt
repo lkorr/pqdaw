@@ -2,6 +2,7 @@
 add_subdirectory(core)
 add_subdirectory(tuning)
 add_subdirectory(dsp)
+add_subdirectory(media)
 add_subdirectory(graph)
 add_subdirectory(engine)
 add_subdirectory(jit)

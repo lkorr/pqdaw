@@ -246,3 +246,26 @@ add_library(pq_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
 target_include_directories(pq_harfbuzz SYSTEM PUBLIC ${harfbuzz_SOURCE_DIR}/src)
 target_compile_definitions(pq_harfbuzz PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(pq_harfbuzz PRIVATE /bigobj /W0 /utf-8)
+
+# --- dr_libs (public domain or MIT-0): dr_wav, dr_flac, dr_mp3 for pq_media (T5.1) ----------------------------
+# Single-header C decoders. No release archives: GitHub's archive of one master commit (2026-08-31, dr_wav 0.14.6 /
+# dr_flac 0.13.4 / dr_mp3 0.7.4 in development, the newest commit at least two weeks old), SHA-256 pinned.
+# Populated only (its own CMake project builds tests); each header is compiled once in its own C file in
+# src/media/third_party/ with warnings off for that file only (target pq_media_codecs).
+pq_fetch_declare(dr_libs
+  URL      https://github.com/mackron/dr_libs/archive/dfe8377631000664666519fdb83da193fd8037f4.tar.gz
+  URL_HASH SHA256=4654acb029f4f2a43ac2edb60c4cb09f40615b4b5bee9709954f910cb979e5fd
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR  pq-no-cmake
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(dr_libs)
+
+# --- stb (public domain or MIT): stb_vorbis (OGG Vorbis decoding) for pq_media (T5.1) -------------------------
+# stb_vorbis.c v1.22 (unchanged since 2021) from one stb master commit (2026-08-02), SHA-256 pinned; populated only.
+pq_fetch_declare(stb
+  URL      https://github.com/nothings/stb/archive/2c980bb59875b0d32144a71867fbdebb2f77cd20.tar.gz
+  URL_HASH SHA256=9a955b1b49a4410088a2e0ee2a9c057c3c907d0c1d75454144cb980aca0ba515
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR  pq-no-cmake
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(stb)

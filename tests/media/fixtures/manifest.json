@@ -1,0 +1,85 @@
+{
+  "generator": "tools/fixtures/make_audio_fixtures.py",
+  "encoder": "python-soundfile 0.14.0, libsndfile 1.2.2 (bundled libFLAC, LAME, libvorbis), numpy 2.5.4",
+  "rate": 48000,
+  "framesLossless": 6000,
+  "framesLossy": 48000,
+  "files": {
+    "aiff_pcm16.aiff": {
+      "bytes": 24054,
+      "sha256": "382a2b1eca0e4097df89dea8b2edd2d5f1aa89690c417193465b67fa47c7e5ce"
+    },
+    "aiff_pcm24.aiff": {
+      "bytes": 36054,
+      "sha256": "0cf5f084f2c0c94cd91ab6dfd45b6845eb81295705a83f8c30cbd5234c0e2026"
+    },
+    "flac_16.flac": {
+      "bytes": 10523,
+      "sha256": "944d6a7bd369ddc9187eefdea378a134e2e9e97098d4922157aaec52a65be747"
+    },
+    "flac_24.flac": {
+      "bytes": 18334,
+      "sha256": "d48a996c7c816670ae7b37a2caa931824ec0b43bd9cf3d6c8e6a1e83d40581c1"
+    },
+    "meta_smpl_acid.wav": {
+      "bytes": 24144,
+      "sha256": "7f4596521b9b48ddc14017d686982bbe11c97d6225cd98f4a616fde3b18e37ed"
+    },
+    "mp3_cbr320.mp3": {
+      "bytes": 42240,
+      "sha256": "13bde971e014f2e2d0c27941fa92179208243205ed9b1d23dfdb68eba4bb66ce"
+    },
+    "mp3_vbr.mp3": {
+      "bytes": 37632,
+      "sha256": "b96ae0fe426cd8701cdc816df01f975d033b429e0fa4751197d69d9e66528ce1"
+    },
+    "ogg_vorbis.ogg": {
+      "bytes": 50436,
+      "sha256": "3ff5285d27e03e0dd47c5ddd4445fac2b456d5233d6c49c936c0299b7c0d28f6"
+    },
+    "ogg_vorbis_libvorbis_f32.raw": {
+      "bytes": 48000,
+      "sha256": "2a1607c66ea952b719a492455e02a1a9f4024a80f6fc50b142ba9c0daeedb097"
+    },
+    "ref_f32.raw": {
+      "bytes": 48000,
+      "sha256": "1636188097093c3e73b211ba5bc73c7b45303760bdf7c1b341e46f96e2dcf24f"
+    },
+    "ref_pcm16.raw": {
+      "bytes": 24000,
+      "sha256": "466a4c0fed8e7eccf387506897c4996fb96e8cb960f78074a666900f1ff1a49f"
+    },
+    "ref_pcm24.raw": {
+      "bytes": 48000,
+      "sha256": "6c92436478c2228a988158a5648ef8d1a858aa832aa07b2d05878db3633e6c04"
+    },
+    "ref_pcm32.raw": {
+      "bytes": 48000,
+      "sha256": "f00d0ab582f66efaac941053d984561aac2be4f5504ab4435f1f9fee91a77506"
+    },
+    "rf64_pcm16.rf64": {
+      "bytes": 24104,
+      "sha256": "b42982ccadeeedd5ace367881a2501700ddf24e8172b956c17165b1ae3cb59fb"
+    },
+    "wav_f32.wav": {
+      "bytes": 48088,
+      "sha256": "4e2e3ebd46f2632d245821d26506c7a0eedba48ffbd45711e1933ecaf7844a3e"
+    },
+    "wav_pcm16.wav": {
+      "bytes": 24044,
+      "sha256": "74e73f7a87bd5b3afabee7e0c015471bee5d2c67b8d3f3adf3796cc831bf4c13"
+    },
+    "wav_pcm24.wav": {
+      "bytes": 36044,
+      "sha256": "e4428bbac8b66d883d5482c0559303801243d70720052f84254d301f8adb2e24"
+    },
+    "wav_pcm32.wav": {
+      "bytes": 48044,
+      "sha256": "497cf8f8ab1163567818956b165bd514f68a6364cabab839e41853930acba938"
+    },
+    "wavex_pcm24.wav": {
+      "bytes": 36080,
+      "sha256": "68753785f5f633ebe80e6db98342253035f434ebc0e62089b1dfe88e808eb606"
+    }
+  }
+}

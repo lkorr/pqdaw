@@ -27,7 +27,6 @@ pq_add_module(pq_engine
     src/tuning_signal.cpp
     src/voices.cpp
     src/wasapi_device.cpp
-    src/wav_file.cpp
-  DEPS pq_core pq_dsp pq_graph pq_tuning
+  DEPS pq_core pq_dsp pq_media pq_graph pq_tuning
   PRIVATE_DEPS rtaudio ole32 avrt advapi32 user32
 )

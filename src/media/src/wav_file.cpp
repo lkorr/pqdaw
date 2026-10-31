@@ -1,11 +1,11 @@
-#include "pq/engine/wav_file.h"
+#include "pq/media/wav_file.h"
 
 #include <algorithm>
 #include <cstring>
 #include <iterator>
 #include <limits>
 
-namespace pq::engine {
+namespace pq::media {
 
 namespace {
 
@@ -229,4 +229,4 @@ Status WavWriter::close() {
   return Ok{};
 }
 
-}  // namespace pq::engine
+}  // namespace pq::media
