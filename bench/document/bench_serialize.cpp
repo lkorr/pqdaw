@@ -153,8 +153,7 @@ int main() {
   std::printf("project: %zu notes\n", notes);
 
   std::string text = serializeProject(*p, view).value();
-  std::printf("project.pqd: %.2f MB
-", static_cast<double>(text.size()) / 1e6);
+  std::printf("project.pqd: %.2f MB\n", static_cast<double>(text.size()) / 1e6);
   constexpr int kReps = 9;
 
   timeIt("serializeProject (to string)", kReps, [&] { text = serializeProject(*p, view).value(); });
@@ -184,8 +183,7 @@ int main() {
     IdSource aids;
     const Snapshot ap = buildAudioProject(aids);
     const std::string atext = serializeProject(*ap, view).value();
-    std::printf("audio project: 10000 clips, %.2f MB
-", static_cast<double>(atext.size()) / 1e6);
+    std::printf("audio project: 10000 clips, %.2f MB\n", static_cast<double>(atext.size()) / 1e6);
     {
       if (!saveProject(dir, *ap, view).ok()) std::abort();
       Result<LoadedProject> r = loadProject(dir);
