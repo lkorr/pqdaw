@@ -105,8 +105,8 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `device.extendNext` | `Shift+Right` | devices | Device View | implemented (T4.16c: adds the next device of the lead device's own list, or steps back) |
 | `device.selectFirst` | `Home` | devices | Device View | implemented (T4.16c: the first device of the selected device's list — a rack chain is its own list — else of the track's chain) |
 | `device.selectLast` | `End` | devices | Device View | implemented (T4.16c: the last device of that list) |
-| `device.moveLeft` | `Ctrl+Left` | devices | — (pqdaw; Live moves devices by dragging only, Q?-T4.16c-a) | implemented (T4.16c: the one selected device a step left along its list, one undo step; the instrument stays first) |
-| `device.moveRight` | `Ctrl+Right` | devices | — (pqdaw, Q?-T4.16c-a) | implemented (T4.16c: a step right) |
+| `device.moveLeft` | `Ctrl+Left` | devices | — (pqdaw; Live moves devices by dragging only, Q142) | implemented (T4.16c: the one selected device a step left along its list, one undo step; the instrument stays first) |
+| `device.moveRight` | `Ctrl+Right` | devices | — (pqdaw, Q142) | implemented (T4.16c: a step right) |
 | `device.chainUp` | `Up` | devices | Device View (Live: the chain list's Up / Down) | implemented (T4.16c: the selected rack, or the rack around the selected device, shows its previous chain; a device inside hands the selection to the first device of the chain shown; a focused knob takes Up / Down first) |
 | `device.chainDown` | `Down` | devices | Device View | implemented (T4.16c: the next chain) |
 | (gesture) double-click a chain's name | — | devices | Rack chain list | T4.16c: rename the chain in place (also its right-click menu's Rename); `Enter` commits, `Esc` cancels, one undo step |

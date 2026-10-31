@@ -485,7 +485,7 @@ Open decisions for M3 are collected in docs/QUESTIONS.md Q15.
     hover pitch readout (H7).
   - Accept: scripted: create "Tuning B: 22edo", assign a track, automate its generator, enter 5/4 → Up → 6/4 → 7/4,
     convert a Degree note to Ratio and back, each one undo step; goldens.
-- [ ] **M4-prep gate** (orchestrator): merge T1.x-arch2 + T1b.5 (pqdaw plays JIT images); merge T1.x-text-ids; T1b.3
+- [x] **M4-prep gate** *(items merged 2026-10-24…26; the 30-track ≤ 25 % JIT figure was last measured at 0.66–0.82 ms of a 1.33 ms block under load (PROGRESS 2026-10-25), before T1b.x-perf: re-measured idle by T4.14)* (orchestrator): merge T1.x-arch2 + T1b.5 (pqdaw plays JIT images); merge T1.x-text-ids; T1b.3
   stdlib filters/envelopes with C++ references; T1b.4; T1.x-silence (replaces the whole-engine idle gate, M15a);
   T3.17-fix2's IR lowering; a QUESTIONS design note for the document device model (devices, ports, wires, macros,
   layout as document entities with stable ids; how the project patch view and the Ableton view edit one model);
@@ -530,7 +530,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Export jacks on top of device panels; drag from a jack to any parameter anywhere (auto-scroll across tracks); bezier cables over the UI coloured by rate, show/hide/fade; modulated knobs show a live range ring; modulation wires in the document (ProjectWire) lowered through the per-track units (merging units per Q84 rules).
   - Accept: wiring an LFO export on track 1 into a filter cutoff on track 3 is audible next compile, one undo step; ring shows the live range; cables follow scrolling at frame rate. Wires add no delay; a wire that closes a delay-free cycle gets an automatic z⁻¹ (1 sample), drawn on the wire (SPEC §15 2026-10-24).
 
-- [x] **T4.8 Racks + macros** *(merged 2026-10-26; partial items in Q?-T4.8-a: Instrument Rack zones are per-voice gains, gated chains don't sleep)* (`document`, `views`, `stdlib`)
+- [x] **T4.8 Racks + macros** *(merged 2026-10-26; partial items in Q140: Instrument Rack zones are per-voice gains, gated chains don't sleep)* (`document`, `views`, `stdlib`)
   - Audio Effect Rack and Instrument Rack as subcircuits: parallel chains with chain mixer (volume/pan/mute/solo), chain-select zones with fades, Instrument Rack pitch zones in Hz or the track's tuning and velocity zones; 16 macros (targets with min/max/curve; macros are signals, so modulatable); macro variations (store/recall/randomise with exclusions); nesting; openable in the circuit editor.
   - Accept: zone crossfades click-free; a macro driving 8 targets costs one param write; rack ⇄ circuit view edits stay in sync; goldens `audio-rack`, `instrument-rack`.
 
@@ -546,7 +546,7 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Live 12 filter types and circuit models (Clean, OSR, MS2, SMP, PRD, approximated), drive, morph, LFO, envelope follower, sidechain.
   - Accept: responses per model vs published/known model behaviour (listening notes in REVIEW); modulation click-free; panel golden.
 
-- [!] **T4.12 Operator** *(merged 2026-10-26; partial: interpreter over §13 in full configs; voices setting not lowered)* (`stdlib`, `views`)
+- [x] **T4.12 Operator** *(merged 2026-10-26; the partial items (voices setting, interpreter window over §13) were fixed by T4.12-fix1 and T1b.x-perf)* (`stdlib`, `views`)
   - 4 oscillators, 11 algorithms, ratio/fixed (coarse ratios as JI harmonics), per-osc envelopes, pitch envelope, LFO, filter, user waveforms, glide, spread, voices; exported oscillator outputs; pitch follows the tuning signal.
   - Accept: algorithm routing tests; SPEC §13 calibration row (64 voices, interpreter and JIT, with crossfade numbers) ≤ the budget; panel golden; tuned playback in 31edo and a MOS.
 
@@ -570,18 +570,25 @@ Prerequisites: T1.x-arch2, T1b.5, T1.x-text-ids (done), T1b.2, T1.x-silence, T1b
   - Hovering any node (atom, subcircuit, param, input/output, constant) shows a tooltip after the usual delay: name and kind, a one-line description (atoms: a description table next to the atom signatures; subcircuits: the first comment line(s) of the patch definition; params: label, unit, range, current value), and the inferred rate/poly. Constants show their value and, where one matches within float precision, a recognised form (small rationals p/q, multiples/fractions of π and 2π, √2 and 1/√2, ln 2, dB-ish values). Branches that a structural constant (`real const` input with a literal argument, folded `select`/`mux`/`?:`) switches off are hidden by default — nodes reachable only through a dead branch and their wires — with a visible "show inactive" toggle (per editor, remembered in prefs) that draws them dimmed; hiding never changes the document, the text pane or the compiled program.
   - Accept: tooltip for each node kind (view tests); recognised-form table tested (4/27, 1/2π, 1/√2, …, and no false match for arbitrary values); Saturator at its defaults shows only its active path (node count asserted) and all 9 curves with the toggle; Operator at defaults likewise; toggling and hovering cost no recompile and keep idle CPU at 0 %; goldens `circuit-tooltip`, `circuit-inactive-hidden`, `circuit-inactive-shown`.
 
-- [x] **T4.16 Interaction affordances + QoL sweep** *(merged 2026-10-28: T4.16a/b/c; deferred items in Q?-T4.16a-a/b-a/c-a; 👁 review pending)* (`ui`, `views`; user request 2026-10-28). Depends on: T4.x-cursor-api (merged: `Widget::setCursor` / `cursorAt`, `UiTree::cursor`). Three parts, one worker each:
+- [x] **T4.16 Interaction affordances + QoL sweep** *(merged 2026-10-28: T4.16a/b/c; deferred items in Q143/b-a/c-a; 👁 review pending)* (`ui`, `views`; user request 2026-10-28). Depends on: T4.x-cursor-api (merged: `Widget::setCursor` / `cursorAt`, `UiTree::cursor`). Three parts, one worker each:
   - **T4.16a controls + shell**: every control and shell part shows the cursor for what a press would do (knob / fader / number box: vertical drag ↕; text fields I-beam; fold triangles, header buttons, dropdowns, menu-opening parts: pointer; scrollbars, splitters, track-height and panel edges: resize), hover states where Live has them, and the missing everyday QoL of the control bar, mixer, preferences, tunings panel, MOS wheel, menus.
   - **T4.16b arrangement + piano roll + automation**: notes and clips show which part is grabbed (body = move, start / end edges = resize ↔, fades / loop / clip-gain handles, velocity bars ↕) with a hover highlight of that edge/handle as in Live; loop brace and locators; lane-height edges; automation breakpoints and segments; draw mode = crosshair/pencil; keyboard: arrow keys nudge/transpose the selected notes and clips by grid / semitone (Shift = octave / fine as Live), Ctrl+arrows, Alt-drag, and other clearly-missing Live editing behaviours.
   - **T4.16c devices + circuit + project patch**: Device view arrow keys move the selected device left / right along the chain (and into / out of rack chains) as in Live, Home/End, Enter/F2 where Live has them; device title = move cursor, fold triangle / activator = pointer, export jacks = crosshair, rack chain list / zone editor / macro mapping parts; circuit canvas and project patch view: node move, pin / wire-drag crosshair, pan (middle / Alt drag) move cursor, hovered wire / pin highlight.
   - Accept (each part): a table in the worker's report and docs/REVIEW.md of every interactive part touched and its cursor; tests that hover each part through `TestDriver` and check `tree().cursor()`; keyboard behaviours tested and listed in docs/HOTKEYS.md; anything larger than a sweep fix (a new feature) recorded in QUESTIONS instead of built; no golden changes except where a hover highlight is part of a golden scene (regenerated, viewed); idle CPU stays 0 % (cursor resolution only on input / frame).
 
-- [ ] **T4.14 M4 review** (after T4.8, T4.13, T4.15, T4.16; then a full `ship`-preset test run) (independent review agent, as for M0–M3; critique implementation, UI, aesthetic).
+- [ ] **T4.17 M4 QoL leftovers** (`document`, `views`, `ui`; user 2026-10-30: Live parity need not be exact, decide and build). The deferred features of Q140/Q142/Q143/Q144 that are small and need no audio clips:
+  - Ungroup (Ctrl+Shift+G: a one-chain rack → its devices in place, mappings dropped, wires kept; several chains: refused with a status message); device names (Meta field + rename command, Ctrl+R, shown in the title bar; schema bump + no-op migration).
+  - Typing a value into a selected knob / fader (type-in field over the control); drag across track-header toggles flips each; resize every selected track's height at once.
+  - Arrangement: draw a new loop by dragging the empty loop row; Home / End for the insert marker; Up / Down move selected clips to the neighbouring track; arrow-key nudges of selected automation breakpoints; velocity-stem hover highlight.
+  - Instrument Rack key zones decided at note-on (hold the voice's pitch from note-on at block rate, so a zone edit never steps a sounding voice).
+  - Accept: each behaviour tested through `TestDriver` (one undo step where it edits), HOTKEYS/REVIEW updated, affected tests -Full dev + release.
+
+- [ ] **T4.14 M4 review** (after T4.8, T4.13, T4.15, T4.16; then a full `ship`-preset test run; also re-measure the 30-track fixture on the JIT with the machine as idle as possible) (independent review agent, as for M0–M3; critique implementation, UI, aesthetic).
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
-- **M5**: browser + user library, Simpler, Drum Rack. 👁
-- **M6**: audio clips, warp, recording, take lanes, Capture MIDI, PDC, metronome.
+- **M5** (re-scoped by the user 2026-10-30, SPEC §15): **audio tracks + audio clips** (pulled forward from M6: samples dragged in from the browser or Explorer play on the timeline, without warping beyond Re-Pitch), **browser + user library** (index, search, preview, drag in/out, saving presets / user devices / racks). Plan: docs/plans/M5.md. Simpler and Drum Rack follow (M5b) once sample playback exists. 👁
+- **M6**: warp modes beyond Re-Pitch, recording, take lanes, Capture MIDI, PDC, metronome.
 - **M7**: JI objects. 👁
 - **M8**: macro mode, MIDI/key mapping.
 - **M9**: remaining devices + parity suite (needs Live 12 reference renders from the user).
