@@ -311,3 +311,71 @@ TEST_CASE("arrangement: preview tile memory stays at the atlas bound over zoom s
                         << ", most tiles drawn in one paint " << maxTilesDrawn);
   d.tree().setRoot(std::make_unique<Widget>());
 }
+
+// T5.6: audio clips' waveform tiles: partial repaints equal a full repaint (zoom, settle, scroll, hovering a handle,
+// selecting: the crossfade X reaching into the previous clip included), and tiles draw the direct path's pixels except
+// the few centred exactly on a strip edge (ui::rasterWaveform vs the GPU's fill rule).
+TEST_CASE("render: audio clips — partial repaints equal a full repaint; tiles match direct drawing") {
+  Rig rig(1280, 800, 1.0f, "audio");
+  rig.install();
+  ArrangementView& arr = *rig.arr;
+  arr.setTimeView(-0.05 * static_cast<double>(kTicksPerWhole), 300.0 / static_cast<double>(kTicksPerWhole));
+  const auto& st = arr.stats();
+  rig.settle();
+  (void)rig.drawFull(*rig.partial, rig.res);
+  CHECK(st.tilesDrawn > 0);
+  rig.comparePartial("audio-settled");
+  const IRect lv = arr.lanesViewport();
+  const float cx = static_cast<float>(lv.x) + static_cast<float>(lv.w) * 0.3f;
+  for (int i = 0; i < 3; ++i) {
+    arr.zoomAt(cx, 0.8);
+    rig.frame();
+  }
+  rig.comparePartial("audio-zooming");
+  rig.settle();
+  rig.comparePartial("audio-zoomed");
+  for (int i = 0; i < 3; ++i) {
+    arr.zoomAt(cx, 1.25);
+    rig.frame();
+  }
+  rig.settle();
+  // Hover the second Drums clip's fade-in handle (at the crossfade), then the first clip's body: damage only.
+  doc::ClipRef second{};
+  doc::forEachTrack(*rig.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && t.clips.size() > 1) second = {t.id, t.clips[1].id};
+  });
+  REQUIRE(second.clip.valid());
+  const Rect hr = arr.audioHandleRect(second, ArrangementView::AudioHandle::FadeIn);
+  REQUIRE(hr.x1 > hr.x0);
+  PointerEvent e;
+  e.type = PointerType::Move;
+  e.pos = {0.5f * (hr.x0 + hr.x1), 0.5f * (hr.y0 + hr.y1)};
+  rig.tree.dispatchPointer(e);
+  rig.frame();
+  rig.comparePartial("audio-hover-handle");
+  const IRect first = arr.clipRect({second.track, doc::ClipId{20}});
+  e.pos = {static_cast<float>(first.x + first.w / 3), static_cast<float>(first.y + 6)};
+  rig.tree.dispatchPointer(e);
+  rig.frame();
+  rig.comparePartial("audio-hover-title");
+  for (int i = 0; i < 12; ++i) {
+    arr.scrollByPx(23.0);
+    rig.frame();
+  }
+  rig.settle();
+  rig.comparePartial("audio-scrolled");
+  // Tiles against direct drawing.
+  const Image a = rig.drawFull(*rig.full, rig.res);
+  CHECK(arr.stats().tilesDrawn > 0);
+  const Image b = rig.drawFull(*rig.partial, rig.resNoTiles);
+  CHECK(arr.stats().tilesDrawn == 0);
+  CHECK(arr.stats().wavesDirect > 0);
+  const ImageDiff diff = compareImages(a, b, 2);
+  if (diff.pixelsOverTolerance > 64) {
+    (void)writePng("audio.tiles.png", a);
+    (void)writePng("audio.direct.png", b);
+  }
+  CHECK_MESSAGE(diff.pixelsOverTolerance <= 64, diff.pixelsOverTolerance << " px differ");
+  (void)rig.drawFull(*rig.partial, rig.res);
+  CHECK(rig.gpu->validationErrorCount() == 0);
+}

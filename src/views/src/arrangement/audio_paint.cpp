@@ -339,6 +339,22 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
   paintOverlays(lp.m.overlay, lp, c, cc, by0, by1, handles, hover);
 }
 
+void paintAudioCrossfade(LanePaint& lp, const doc::AudioClip& c, float top, float bottom) {
+  if (c.crossfadeIn <= 0 || !lp.view.context().sampleAvailable(c.sample)) return;
+  ClipCols cc;
+  cc.cx0 = std::round(lp.X(static_cast<double>(c.start)));
+  cc.cx1 = std::max(cc.cx0 + 1.0f, std::round(lp.X(static_cast<double>(c.start + c.length))));
+  const float by0 = std::min(bottom, top + static_cast<float>(lp.titleH)), by1 = bottom - 1.0f;
+  const float xa = cc.cx0 - static_cast<float>(static_cast<double>(c.crossfadeIn / 2) * lp.k);
+  const float xb = cc.cx0 + static_cast<float>(static_cast<double>(c.crossfadeIn - c.crossfadeIn / 2) * lp.k);
+  if (xb < static_cast<float>(lp.c.x) - 1.0f || xa > static_cast<float>(lp.c.right()) + 1.0f || by1 <= by0) return;
+  const Rgba line = rgba(255, 255, 255, 190);
+  const float lw = std::max(1.0f, std::round(lp.ctx.scale.factor));
+  const Vec2 a[2] = {{xa, by0}, {xb, by1}}, b[2] = {{xa, by1}, {xb, by0}};
+  smoothPolyline(lp.m.overlay, a, 2, line, lw);
+  smoothPolyline(lp.m.overlay, b, 2, line, lw);
+}
+
 bool buildAudioTiles(LaneCanvas& canvas, ArrangementView& view, TileAtlas& tiles, const IRect& visible, size_t& texels, bool& builtOne) {
   Model& m = view.model();
   const IRect r = canvas.rect();

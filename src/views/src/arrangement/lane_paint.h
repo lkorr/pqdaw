@@ -53,6 +53,9 @@ void paintClipBorder(LanePaint& lp, const ClipCols& cc, float top, float bottom,
 // waveform was queued as a tile (its overlays then wait for flushTiles).
 void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioClipPtr& clip, const ClipGeom& g, float top,
                     float bottom, bool trackActive, bool selected, int hover);
+// The crossfade X of an audio clip whose own columns are outside the painted part (the X reaches half its length into
+// the previous clip: a partial repaint of that clip must draw it again).
+void paintAudioCrossfade(LanePaint& lp, const doc::AudioClip& clip, float top, float bottom);
 // Builds the missing waveform tiles of the visible audio clips within `texelBudget` (onFrame); false: more to build.
 bool buildAudioTiles(LaneCanvas& canvas, ArrangementView& view, ui::TileAtlas& tiles, const ui::IRect& visible, size_t& texels,
                      bool& builtOne);

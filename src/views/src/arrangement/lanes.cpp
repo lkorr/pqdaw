@@ -914,6 +914,10 @@ void LaneCanvas::paint(PaintContext& ctx) {
       paintClip(lp, *it, clip, y0 + 1.0f, y1 - 1.0f, active, {clip->start, clip->length, clip->contentStart}, ed.selected(clip->id),
                 hover);
     }
+    // T5.6: a crossfade X reaches into the clip before it: the next clip's X when only that one is in the painted part.
+    for (size_t j = b; j < t.clips.size() && j < b + 2; ++j)
+      if (const doc::AudioClipPtr& next = t.clips[j].audio; next && !ed.hiddenWhileDragging(t.clips[j].id))
+        paintAudioCrossfade(lp, *next, y0 + 1.0f, y1 - 1.0f);
   }
   flushTiles(lp);
 
