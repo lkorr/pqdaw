@@ -121,14 +121,22 @@ TEST_CASE("library: indexer start, watcher, idle, persistence") {
   ms = waitUntil(ix, [](const Index& i) { return entryNamed(i, "moved.wav") == Index::kNone; }, 5000ms);
   CHECK(ms < 5000);
 
-  // Back to idle: the journal holds the changes (the snapshot interval has not passed).
+  // Back to idle: the journal holds the changes (the snapshot interval has not passed). NTFS may deliver the last
+  // notifications of the directory delete a little later (a real change, handled like any other), so first wait
+  // until the counter has been still for 300 ms; from then on an idle indexer must not wake at all.
   REQUIRE(ix.waitIdle(5s));
+  for (int i = 0; i < 20; ++i) {
+    const uint64_t w = ix.stats().wakeups;
+    std::this_thread::sleep_for(300ms);
+    if (ix.waitIdle(5s) && ix.stats().wakeups == w) break;
+  }
   st = ix.stats();
+  CHECK(st.idle);
   CHECK(st.journalAppends >= 1);
   CHECK(st.snapshotsWritten == 1);
   {
     const uint64_t before = st.wakeups;
-    std::this_thread::sleep_for(500ms);
+    std::this_thread::sleep_for(1s);
     CHECK(ix.stats().wakeups == before);
   }
 
