@@ -11,6 +11,7 @@ pq_add_module(pq_doc
     src/json_io.cpp
     src/serialize.cpp
     src/project_io.cpp
+    src/library_io.cpp
     src/samples.cpp
     src/edit_common.cpp
     src/edit_tracks.cpp
@@ -23,6 +24,7 @@ pq_add_module(pq_doc
     src/edit_audio.cpp
     src/edit_devices.cpp
     src/edit_racks.cpp
+    src/edit_library.cpp
     src/devices.cpp
     src/audibility.cpp
     src/lower.cpp

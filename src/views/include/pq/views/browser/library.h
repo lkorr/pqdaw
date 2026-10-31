@@ -18,11 +18,13 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "pq/document/library_files.h"
 #include "pq/library/index.h"
 #include "pq/library/search.h"
 #include "pq/library/tags.h"
@@ -36,6 +38,18 @@ namespace pq::views {
 
 class ViewContext;
 class PreviewPort;
+
+// T5.11: what the browser hot-swaps (the device title bar's preset slot, a tuning chip): while set, the list shows only
+// what fits (the device's presets, or the tunings) and selecting an item loads it in place (one undo step each).
+struct HotSwapTarget {
+  enum class Kind : uint8_t { None, Device, Tuning };
+  Kind kind = Kind::None;
+  doc::DeviceId device;     // Device
+  std::string patch;        // Device: whose presets are listed
+  TuningTarget tuning;      // Tuning
+  std::string label;        // shown in the hot-swap bar ("Saturator", "Track “Bass”")
+};
+
 
 class Library {
 public:
@@ -79,8 +93,75 @@ public:
   void setPreview(PreviewPort* p) noexcept { preview_ = p; }
   PreviewPort* preview() const noexcept { return preview_; }
 
+  // --- T5.11: the User Library's files (pq/document/library_files.h; layout in docs/plans/M5.md T5.11) ---
+  //   Presets/<Device>/*.pqpreset   device presets          Defaults/<Device>.pqpreset   default presets
+  //   Racks/*.pqpreset              rack presets            Devices/*.pqdevice           user devices
+  //   Tunings/*.pqtuning            tunings                 Clips/*.pqclip (+ Clips/Samples/)   clips
+  // <Device> is the device's display name ("EQ Eight"). Every save goes through doc::writeTextFileAtomic; the
+  // indexer's watcher puts the file in the browser (≤ 500 ms). Errors: no User Library (tests set one in %TEMP%), I/O.
+  const std::string& userLibrary() const noexcept { return userLibrary_; }
+  // `sub` below the User Library (UTF-8, '\' separators); "" without one.
+  std::string userPath(std::string_view sub) const;
+  // A free file "<stem><ext>" in `dir` ("<stem> 2<ext>", … when taken; characters Windows refuses in names become '_').
+  static std::string uniqueFile(std::string_view dir, std::string_view stem, std::string_view ext);
+  // Device presets ("Save Preset": Presets/<deviceName>/<name or deviceName>.pqpreset; a rack: Racks/…).
+  Result<std::string> savePreset(const doc::Device& d, std::string_view deviceName, std::string_view name = {});
+  // "Save as Default Preset": Defaults/<deviceName>.pqpreset (replaced).
+  Result<std::string> saveDefaultPreset(const doc::Device& d, std::string_view deviceName);
+  // The default preset of a device (by display name) when it exists and is for `patch`; null otherwise. Cached by the
+  // file's write time, so a new device costs one stat when nothing changed.
+  doc::DevicePtr defaultPreset(std::string_view deviceName, std::string_view patch);
+  // "Save as New Device": Devices/<name>.pqdevice.
+  Result<std::string> saveUserDevice(const doc::UserDeviceFile& f);
+  // "Save to Library" (a tuning): Tunings/<name>.pqtuning.
+  Result<std::string> saveTuning(const doc::TuningFile& f);
+  // A clip as `dir`/<name>.pqclip; an audio clip's sample is copied into `dir`/Samples/ (unless it already lies below
+  // `dir`) and stored relative to `dir`. `sampleFile`: where the audio clip's sample is on this machine
+  // (ViewContext::samplePath). `dir` "" = Clips/ of the User Library.
+  Result<std::string> saveClip(const doc::Project& p, const doc::ClipSlot& c, std::string_view sampleFile = {},
+                               std::string_view dir = {});
+  // A library clip file read back: its clip, with the sample path resolved against the file's folder.
+  Result<doc::ClipFile> readClip(std::string_view pathUtf8) const;
+  // The user devices of the index (*.pqdevice in any place), parsed; re-read when the index changes.
+  struct UserDeviceEntry {
+    std::string path;
+    doc::UserDeviceFile file;
+  };
+  const std::vector<UserDeviceEntry>& userDevices();
+  // The patch a preset file is for: its device's "patch" in the first 4 KiB ("" unreadable). Cached by path + write time.
+  std::string presetPatch(std::string_view pathUtf8);
+  // The browser renames this file inline as soon as the index shows it (a preset just saved; the panel clears it).
+  std::string pendingRename;
+  // T5.12: renders an audio clip as it plays (gain, fades, transpose, reverse; no track devices) to a WAV file in
+  // `folder` and returns its path: the app's offline clip render (null in tests and scenes without one).
+  using ClipRenderer = std::function<Result<std::string>(const doc::ClipRef& clip, std::string_view folder)>;
+  void setClipRenderer(ClipRenderer r) { clipRenderer_ = std::move(r); }
+  const ClipRenderer& clipRenderer() const noexcept { return clipRenderer_; }
+  // T5.11: hot-swap requests (the Device view, tuning chips) go to the browser panel (installBrowser sets the handler).
+  // False when there is no browser.
+  void setHotSwapHandler(std::function<void(const HotSwapTarget&)> fn) { hotSwapHandler_ = std::move(fn); }
+  bool requestHotSwap(const HotSwapTarget& t) {
+    if (!hotSwapHandler_) return false;
+    hotSwapHandler_(t);
+    return true;
+  }
+  // The preset a device last loaded from the library (view state for the title bar's preset slot; "" = none).
+  const std::string& presetName(doc::DeviceId d) const;
+  void setPresetName(doc::DeviceId d, std::string name);
+
 private:
   void rebuildPlaces();
+  struct CachedPreset {
+    int64_t mtime = 0;
+    doc::DevicePtr device;
+    std::string patch;
+  };
+  std::map<std::string, CachedPreset, std::less<>> presetCache_;  // by folded path
+  std::vector<UserDeviceEntry> userDevices_;
+  std::shared_ptr<const library::Index> userDevicesFor_;
+  ClipRenderer clipRenderer_;
+  std::function<void(const HotSwapTarget&)> hotSwapHandler_;
+  std::map<uint32_t, std::string> presetNames_;
 
   ViewContext& ctx_;
   std::string userLibrary_;

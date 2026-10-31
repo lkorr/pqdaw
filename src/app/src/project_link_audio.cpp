@@ -368,6 +368,83 @@ void ProjectLink::reportDisk() {
   if (ctx_ != nullptr) ctx_->setStatus(m);
 }
 
+Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Project& p, doc::ClipRef ref) {
+  const std::optional<doc::TrackPath> path = doc::findTrack(p, ref.track);
+  if (!path) return Error{ErrorCode::NotFound, "renderClip: no such track", {}};
+  const doc::Track& t = doc::trackAt(p, *path);
+  const int32_t ci = doc::findClipIndex(t, ref.clip);
+  if (ci < 0 || !t.clips[static_cast<size_t>(ci)].audio) return Error{ErrorCode::InvalidArgument, "renderClip: not an audio clip", {}};
+  const doc::AudioClip& clip = *t.clips[static_cast<size_t>(ci)].audio;
+  const std::string file = samplePathOf(p, clip.sample);
+  if (file.empty()) return Error{ErrorCode::NotFound, "the clip's sample is missing", {}};
+  if (pool_ == nullptr) return Error{ErrorCode::Unsupported, "renderClip: no sample pool", {}};
+  auto sample = pool_->load(pathFromUtf8(file));
+  if (!sample) return std::move(sample).error();
+  // The track's lowering of this clip (its tuning resolves a Steps transpose), alone: no crossfade.
+  const doc::AudioTrackDesc desc = doc::lowerAudioTrack(p, *path);
+  const doc::AudioClipDesc* d = nullptr;
+  for (const doc::AudioClipDesc& c : desc.clips)
+    if (c.id == clip.id) d = &c;
+  if (d == nullptr) return Error{ErrorCode::NotFound, "renderClip: the clip did not lower", {}};
+  engine::AudioTrackDesc one;
+  one.id = t.id.value;
+  one.clips.push_back(toEngine(*d, 0, d->playable));
+  one.clips.back().crossfadeIn = 0;
+  std::vector<engine::ClipSample> samples(1);
+  samples[0].pooled = *sample;
+  const uint32_t channels = std::min<uint32_t>(2, std::max<uint32_t>(1, (*sample)->view().channels));
+  engine::AudioBuildOptions bo;
+  bo.sampleRate = cfg_.sampleRate;
+  bo.edgeDeclick = cfg_.edgeDeclick;
+  auto img = engine::AudioSequenceImage::build(std::span<const engine::AudioTrackDesc>(&one, 1), std::move(samples),
+                                               p.timeline->tempoMap, bo);
+  if (!img) return std::move(img).error();
+  const engine::AudioSequenceImage& image = **img;
+  if (image.clips(0).empty()) return std::vector<std::vector<float>>(channels);
+  const engine::AudioSequenceImage::Clip& c = image.clips(0)[0];
+  const SampleTime s0 = c.bodyStart, s1 = c.bodyEnd;
+  // From the engine block at or before the look-ahead (the voice exists before the clip starts, as in playback).
+  const uint32_t block = cfg_.blockFrames;
+  const auto ahead = static_cast<SampleTime>(std::ceil(cfg_.clipLookaheadSeconds * cfg_.sampleRate));
+  SampleTime s = std::max<SampleTime>(0, s0 - ahead);
+  s -= s % block;
+  engine::ClipPlayerConfig pc;
+  pc.slots = 1;
+  pc.maxBlockFrames = block;
+  pc.sampleRate = cfg_.sampleRate;
+  pc.maxVoices = 8;
+  pc.streamBuffers = 2;
+  pc.streams = &pool_->streams();
+  pc.lookaheadSeconds = cfg_.clipLookaheadSeconds;
+  engine::ClipPlayer player(pc);
+  player.setStreamFill(&waitFill, pool_.get());
+  const bool wasEngaged = engaged_;
+  engageDisk(true);
+  std::vector<std::vector<float>> out(channels, std::vector<float>(static_cast<size_t>(std::max<SampleTime>(0, s1 - s0)), 0.0f));
+  bool first = true;
+  while (s < s1) {
+    const auto n = static_cast<uint32_t>(std::min<SampleTime>(block, s1 - s));
+    player.beginBlock(n);
+    if (first) {
+      player.setImage(&image, s, true);
+      player.seek(s);
+      first = false;
+    }
+    player.play(0, s, n);
+    player.endBlock();
+    if (player.active()[0] != 0) {
+      const SampleTime a = std::max(s, s0);
+      for (uint32_t ch = 0; ch < channels; ++ch) {
+        const float* src = player.channels()[ch];
+        std::copy(src + (a - s), src + n, out[ch].begin() + (a - s0));
+      }
+    }
+    s += n;
+  }
+  engageDisk(wasEngaged);
+  return out;
+}
+
 Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
                                                         uint32_t blockFrames) {
   flush();

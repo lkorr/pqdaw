@@ -90,6 +90,13 @@ public:
   void setEdited(bool e);
   bool edited() const noexcept { return edited_; }
   std::function<void()> onTitleDoubleClick;
+  // T5.11: the title bar's preset slot shows `name` ("Default" when empty); with onPresetClick set, a click on it runs
+  // it (the Device view: the browser hot-swaps this device's presets).
+  void setPresetName(std::string name);
+  const std::string& presetName() const noexcept { return presetName_; }
+  std::function<void()> onPresetClick;
+  // The preset slot's device-px rect (empty: folded or too narrow; tests).
+  ui::IRect presetSlotRect() const;
 
   // ---- T4.7 hooks ----
   struct Jack {
@@ -124,6 +131,8 @@ private:
   bool active_ = true;
   bool folded_ = false;
   bool edited_ = false;
+  std::string presetName_;
+  ui::Widget* title_ = nullptr;
 };
 
 }  // namespace pq::views::devices

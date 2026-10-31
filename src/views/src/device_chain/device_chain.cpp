@@ -9,6 +9,8 @@
 #include "../common/paint.h"
 #include "pq/core/automation_curve.h"
 #include "internal.h"
+#include "pq/views/browser/library.h"
+#include "pq/views/browser/library_load.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/theme.h"
@@ -97,8 +99,14 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
     return items;
   }
   DeviceChainView* v = &view;
-  auto add = [this, v, trackId, chain, index](std::string patch, doc::DeviceKind kind) {
-    run(doc::ops::addDevice(doc(), v->ctx_.store().ids(), trackId, std::move(patch), kind, index, chain));
+  // T5.11: a new device applies its default preset (the User Library's Defaults/<Device>.pqpreset) when there is one.
+  auto add = [v, trackId, chain, index](std::string patch, doc::DeviceKind kind) {
+    auto r = addCatalogDevice(v->ctx_, patch, kind, DeviceSlot{trackId, index, chain});
+    if (!r) v->ctx_.setStatus("Add Device: " + r.error().message);
+    else {
+      const doc::DeviceId one[1] = {*r};
+      v->select(one);
+    }
   };
   for (const doc::DeviceKind kind : {doc::DeviceKind::Instrument, doc::DeviceKind::AudioEffect}) {
     ui::MenuItem head = ui::MenuItem::item(kind == doc::DeviceKind::Instrument ? "Instruments" : "Audio Effects");
@@ -119,6 +127,23 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
                                            });
     rack.enabled = !instrumentRack || instruments;
     items.push_back(std::move(rack));
+  }
+  // T5.11: the user devices of the library ("Save as New Device"), for every project.
+  const auto& users = view.ctx_.library().userDevices();
+  if (!users.empty()) {
+    items.push_back(ui::MenuItem::sep());
+    ui::MenuItem head = ui::MenuItem::item("User Devices");
+    head.enabled = false;
+    items.push_back(std::move(head));
+    for (const Library::UserDeviceEntry& u : users) {
+      const std::string path = u.path;
+      ui::MenuItem it = ui::MenuItem::item("   " + u.file.name, [v, path, trackId, chain, index] {
+        auto r = loadDeviceItem(v->ctx_, path, DeviceSlot{trackId, index, chain});
+        if (!r) v->ctx_.setStatus("Add Device: " + r.error().message);
+      });
+      it.enabled = u.file.kind == doc::DeviceKind::AudioEffect || instruments;
+      items.push_back(std::move(it));
+    }
   }
   return items;
 }
@@ -302,6 +327,9 @@ public:
       // T4.4-fix1: a user device's "edited" marker; a double-click on the title opens the device in the circuit view.
       panel_->setEdited(d.edited());
       panel_->onTitleDoubleClick = [this] { impl_.view.openInCircuitView(id_); };
+      // T5.11: the preset slot names the last preset loaded here; a click hot-swaps the device's presets in the browser.
+      panel_->setPresetName(ctx.library().presetName(d.id));
+      panel_->onPresetClick = [this] { impl_.view.hotSwap(id_); };
     }
     if (tpl == nullptr && d.edited()) {
       const doc::DeviceLibrary* lib = ctx.deviceLibrary();
@@ -326,6 +354,7 @@ public:
     if (!panel_) return;
     panel_->setActive(d.active);
     panel_->setEdited(d.edited());
+    panel_->setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& p : panel_->signature().params) {
       const doc::DeviceValue* v = d.param(p.name);
       panel_->setParamValue(p.name, v != nullptr ? v->value : p.def);
@@ -531,6 +560,16 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
         revert.enabled = loc.device != nullptr && loc.device->edited();
         items.push_back(std::move(revert));
       }
+      // T5.11: the user library.
+      items.push_back(ui::MenuItem::sep());
+      items.push_back(ui::MenuItem::item("Save Preset", [v, id] { v->savePreset(id, false); }));
+      if (loc.device != nullptr && !loc.device->rack) {
+        items.push_back(ui::MenuItem::item("Save as Default Preset", [v, id] { v->savePreset(id, true); }));
+        ui::MenuItem asNew = ui::MenuItem::item("Save as New Device", [v, id] { v->saveAsNewDevice(id); });
+        asNew.enabled = loc.device->edited();
+        items.push_back(std::move(asNew));
+      }
+      items.push_back(ui::MenuItem::item("Hot-Swap Presets\xE2\x80\xA6", [v, id] { v->hotSwap(id); }));
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item(on ? "Deactivate" : "Activate", [v] { v->toggleSelectedActive(); }, "0"));
       items.push_back(ui::MenuItem::sep());
@@ -599,6 +638,10 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
       sync(true);
     }
     else if (bits & (view_change::kSelection | view_change::kDetailClip)) follow();
+    if (bits & view_change::kLibrary)  // T5.11: preset names in the title bars
+      for (auto& [id, f] : impl_->all)
+        if (devices::DevicePanel* panel = f->panel(); panel != nullptr && !f->isRack())
+          panel->setPresetName(ctx_.library().presetName(doc::DeviceId{id}));
     if (bits & view_change::kModulation) refreshRings();
   });
   sync(true);
@@ -849,7 +892,84 @@ bool DeviceChainView::addDevice(const doc::DeviceInfo& info) {
   uint32_t index = doc::kAppend;
   for (size_t i = 0; i < t->devices.size(); ++i)
     if (!selection_.empty() && t->devices[i]->id == selection_.back()) index = static_cast<uint32_t>(i + 1);
-  return impl_->run(doc::ops::addDevice(*ctx_.doc(), ctx_.store().ids(), track_, info.patch, info.kind, index));
+  // T5.11: with its default preset when the User Library has one.
+  auto r = addCatalogDevice(ctx_, info.patch, info.kind, DeviceSlot{track_, index, {}});
+  if (!r) {
+    ctx_.setStatus("Add Device: " + r.error().message);
+    return false;
+  }
+  const doc::DeviceId one[1] = {*r};
+  select(one);
+  return true;
+}
+
+// ---- T5.11: the user library ------------------------------------------------------------------------------------------
+
+bool DeviceChainView::savePreset(doc::DeviceId device, bool asDefault) {
+  auto r = saveDevicePreset(ctx_, device, asDefault);
+  if (!r) {
+    ctx_.setStatus((asDefault ? "Save as Default Preset: " : "Save Preset: ") + r.error().message);
+    return false;
+  }
+  ctx_.setStatus((asDefault ? "Default preset saved: " : "Preset saved: ") + *r);
+  return true;
+}
+
+bool DeviceChainView::saveAsNewDevice(doc::DeviceId device) {
+  auto r = views::saveAsNewDevice(ctx_, device);
+  if (!r) {
+    ctx_.setStatus("Save as New Device: " + r.error().message);
+    return false;
+  }
+  ctx_.setStatus("Saved as a new device: " + *r);
+  return true;
+}
+
+bool DeviceChainView::hotSwap(doc::DeviceId device) {
+  const doc::Device* d = doc::findDevice(*ctx_.doc(), device).device;
+  if (d == nullptr) return false;
+  HotSwapTarget t;
+  t.kind = HotSwapTarget::Kind::Device;
+  t.device = device;
+  t.patch = d->patch;
+  t.label = deviceDisplayName(ctx_, *d);
+  if (!ctx_.library().requestHotSwap(t)) {
+    ctx_.setStatus("Hot-Swap needs the browser");
+    return false;
+  }
+  return true;
+}
+
+ui::DropFeedback DeviceChainView::dragOver(const ui::DragPayload& p, ui::Vec2, ui::Mods) {
+  if ((p.kind != ui::DragKind::BrowserItems && p.kind != ui::DragKind::Files) || p.paths.empty() || !track_.valid())
+    return {};
+  for (const std::string& s : p.paths) {
+    const LibraryItem k = libraryItemOf(s);
+    if (k != LibraryItem::CatalogDevice && k != LibraryItem::Preset && k != LibraryItem::UserDevice) return {};
+  }
+  return {ui::DropEffect::Copy, ui::Cursor::Arrow};
+}
+
+ui::DropEffect DeviceChainView::drop(const ui::DragPayload& p, ui::Vec2, ui::Mods) {
+  if (dragOver(p, {}, ui::mod::kNone).effect == ui::DropEffect::None) return ui::DropEffect::None;
+  // After the selected device of the shown chain, else at the end (one undo step per item).
+  uint32_t index = doc::kAppend;
+  if (const doc::Track* t = impl_->track())
+    for (size_t i = 0; i < t->devices.size(); ++i)
+      if (!selection_.empty() && t->devices[i]->id == selection_.back()) index = static_cast<uint32_t>(i + 1);
+  std::vector<doc::DeviceId> made;
+  for (const std::string& s : p.paths) {
+    auto r = loadDeviceItem(ctx_, s, DeviceSlot{track_, index, {}});
+    if (!r) {
+      ctx_.setStatus("Could not load " + s + ": " + r.error().message);
+      continue;
+    }
+    made.push_back(*r);
+    if (index != doc::kAppend) ++index;
+  }
+  if (made.empty()) return ui::DropEffect::None;
+  select(made);
+  return ui::DropEffect::Copy;
 }
 
 bool DeviceChainView::deleteSelected() {

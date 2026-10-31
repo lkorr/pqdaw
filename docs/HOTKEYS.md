@@ -229,10 +229,17 @@ T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — 
 | Arrangement / browser | drop a folder | adds it to the browser's Places |
 | Browser (focus inside) | `Up` / `Down` | select the previous / next item (a sample previews while Preview is on) |
 | Browser | `Right` / `Left` | unfold a folder or enter it / fold it or go to its folder |
-| Browser | `Enter`, double-click | load: a sample becomes a clip at the start marker on the selected audio track (else a new one); a folder folds |
-| Browser | `Esc` | stops the preview |
+| Browser | `Enter`, double-click | load: a sample becomes a clip at the start marker on the selected audio track (else a new one); a folder folds. T5.11: a device (Instruments / Audio Effects), preset or user device goes at the end of the selected track's chain (a new device with its default preset); a tuning becomes a new main tuning; a clip lands at the start marker on the selected track (or a new track of its kind); in hot-swap mode Enter loads in place and leaves the mode |
+| Browser (hot-swap) | `Up` / `Down`, click | loads the selected preset / tuning in place (one undo step each) |
+| Browser chips | click / right-click | a filter chip (Dur, BPM, Rate, Ch) steps to its next range / back to Any; a tag chip toggles that tag |
+| Browser right edge | drag, double-click | resizes the browser / back to the default width |
+| Browser | `Esc` | stops the preview; T5.11: leaves hot-swap mode |
 | Browser | a printable key | goes to the search field |
-| Browser list | drag | carries the item (drop it on the arrangement) |
+| Browser list | drag | carries the item (drop it on the arrangement; T5.11: a device, preset or user device on a device chain; T5.12: out of the window, a file goes to Explorer) |
+| Device title bar | click on the preset slot | hot-swap: the browser lists the device's presets (T5.11) |
+| Device / tuning chip / tunings card | right-click | T5.11: Save Preset, Save as Default Preset, Save as New Device, Hot-Swap Presets…; Save to Library, Hot-Swap Tuning… |
+| Arrangement clips | drag onto the browser | T5.12: saves them as .pqclip into the folder under the pointer (`Alt`: renders audio clips to WAV) |
+| Arrangement clips | drag out of the window | T5.12: Explorer receives WAV files rendered as the clips play (MIDI clips: M11) |
 | Browser preview | click in the waveform | plays from there (scrub) |
 
 ## Not bound yet

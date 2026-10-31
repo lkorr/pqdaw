@@ -21,6 +21,7 @@
 
 #include "checks.h"
 #include "pq/document/audio_clip.h"
+#include "pq/document/library_files.h"
 #include "json_io.h"
 
 namespace pq::doc {
@@ -183,7 +184,90 @@ public:
     out_ += "\n";
   }
 
+  // ---- T5.11: user-library files (library_files.h) ----
+  void libraryHead(const PathSeg& root, std::string_view format, std::string_view name) {
+    w_.beginObject(true);
+    w_.key("format");
+    w_.string(root, format);
+    w_.key("schemaVersion");
+    w_.integer(kSchemaVersion);
+    w_.key("name");
+    w_.string(PathSeg(&root, "name"), name);
+  }
+  void presetFile(const Device& d, std::string_view name) {
+    const PathSeg root;
+    libraryHead(root, "pqpreset", name);
+    const std::vector<DevicePtr> one{std::shared_ptr<const Device>(std::shared_ptr<const Device>(), &d)};
+    const PathSeg devs(&root, "devices");
+    w_.key("devices");
+    w_.beginArray(true);
+    deviceList(devs, one);
+    w_.endArray();
+    w_.endObject();
+    out_ += "\n";
+  }
+  void userDeviceFile(const UserDeviceFile& f) {
+    const PathSeg root;
+    libraryHead(root, "pqdevice", f.name);
+    w_.key("kind");
+    w_.string(root, kDeviceKindNames[static_cast<size_t>(f.kind)]);
+    w_.key("patch");
+    w_.string(PathSeg(&root, "patch"), f.patch);
+    w_.key("origin");
+    w_.string(PathSeg(&root, "origin"), f.origin);
+    lines(root, "source", f.text, true);
+    if (!f.panel.empty()) lines(root, "panel", f.panel, false);
+    w_.endObject();
+    out_ += "\n";
+  }
+  void tuningFile(const TuningFile& f) {
+    const PathSeg root;
+    libraryHead(root, "pqtuning", f.name);
+    w_.key("colour");
+    w_.string(root, colourText(f.colour));
+    w_.key("def");
+    tuningDef(PathSeg(&root, "def"), f.def);
+    w_.endObject();
+    out_ += "\n";
+  }
+  void clipFile(const ClipFile& f) {
+    const PathSeg root;
+    libraryHead(root, "pqclip", f.name);
+    w_.key("clip");
+    const PathSeg at(&root, "clip");
+    if (f.clip.audio) audioClip(at, *f.clip.audio);
+    else clip(at, *f.clip.clip);
+    if (f.sample) samples(PathSeg(&root, "samples"), SampleList{*f.sample});
+    w_.endObject();
+    out_ += "\n";
+  }
+
 private:
+  // A text as one string per line ("crlf": true first when every line ends in "\r\n"; `crlfKey` false: the caller's
+  // text must not use "\r\n" lines then, they are written with their '\r').
+  void lines(const PathSeg& root, const char* key, std::string_view text, bool crlfKey) {
+    bool crlf = crlfKey && text.find('\n') != std::string_view::npos;
+    for (size_t b = text.find('\n'); crlf && b != std::string_view::npos; b = text.find('\n', b + 1))
+      crlf = b > 0 && text[b - 1] == '\r';
+    if (crlf) {
+      w_.key("crlf");
+      w_.boolean(true);
+    }
+    const PathSeg at(&root, key);
+    w_.key(key);
+    w_.beginArray(true);
+    size_t line = 0;
+    for (size_t a = 0;; ++line) {
+      const size_t b = text.find('\n', a);
+      std::string_view l = text.substr(a, b == std::string_view::npos ? std::string_view::npos : b - a);
+      if (crlf && b != std::string_view::npos) l.remove_suffix(1);
+      w_.string(PathSeg(&at, line), l);
+      if (b == std::string_view::npos) break;
+      a = b + 1;
+    }
+    w_.endArray();
+  }
+
   void timeline(const PathSeg& at, const Timeline& t) {
     w_.key("timeline");
     w_.beginObject(true);
@@ -1154,7 +1238,149 @@ public:
     return out;
   }
 
+  // ---- T5.11: user-library files (library_files.h). Keys 0, 1, 2 are "format", "schemaVersion", "name". ----
+  void libraryKey(int k, const PathSeg& f, std::string_view format, std::string& name) {
+    if (k == 0) {
+      if (str(f) != format) r_.failValue(f, "format must be \"" + std::string(format) + "\"");
+    } else if (k == 1) {
+      const int64_t v = r_.readInt(f);
+      if (v > kSchemaVersion)
+        r_.failValue(f, "the file was saved by a newer pqdaw (schema " + std::to_string(v) + "; this build reads up to " +
+                            std::to_string(kSchemaVersion) + ")", ErrorCode::Unsupported);
+      if (v < 7) r_.failValue(f, "library files start at schema 7");
+    } else {
+      name = str(f);
+    }
+  }
+  void finishLibrary(const PathSeg& root) {
+    r_.expectEnd(root);
+    std::sort(ids_.begin(), ids_.end());
+    if (std::adjacent_find(ids_.begin(), ids_.end()) != ids_.end())
+      json::fail(root, "id " + std::to_string(*std::adjacent_find(ids_.begin(), ids_.end())) + " is used twice");
+  }
+  PresetFile presetFile() {
+    const PathSeg root;
+    static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "devices"};
+    PresetFile out;
+    Members m(r_, root, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&root, K[static_cast<size_t>(k)]);
+      if (k < 3) {
+        libraryKey(k, f, "pqpreset", out.name);
+        continue;
+      }
+      const size_t pos = r_.valueStart();
+      std::vector<DevicePtr> list = devices(f);
+      if (list.size() != 1) json::fail(f, "a preset holds exactly one device", ErrorCode::InvalidArgument, pos);
+      out.device = std::move(list[0]);
+    }
+    m.require({0, 1, 2, 3});
+    finishLibrary(root);
+    // A rack's mappings target devices inside it.
+    forEachDeviceIn(*out.device, [&](const Device& d) {
+      if (!d.rack) return;
+      for (const MacroMapping& mp : d.rack->mappings)
+        if (!deviceContains(d, mp.device) || mp.device == d.id)
+          json::fail(PathSeg(&root, "devices"), "a mapping of rack " + std::to_string(d.id.value) +
+                                                      " targets device " + std::to_string(mp.device.value) +
+                                                      ", which is not inside it");
+    });
+    return out;
+  }
+  UserDeviceFile userDeviceFile() {
+    const PathSeg root;
+    static constexpr std::string_view K[] = {"format", "schemaVersion", "name",   "kind", "patch",
+                                             "origin", "crlf",          "source", "panel"};
+    UserDeviceFile out;
+    bool crlf = false;
+    Members m(r_, root, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&root, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0:
+        case 1:
+        case 2: libraryKey(k, f, "pqdevice", out.name); break;
+        case 3: out.kind = static_cast<DeviceKind>(name(f, kDeviceKindNames, "device kind")); break;
+        case 4:
+          out.patch = str(f);
+          if (out.patch.empty()) r_.failValue(f, "must not be empty");
+          break;
+        case 5: out.origin = str(f); break;
+        case 6: crlf = r_.readBool(f); break;
+        case 7: out.text = joinedLines(f); break;
+        case 8: out.panel = joinedLines(f); break;
+      }
+    }
+    m.require({0, 1, 2, 3, 4, 5, 7});
+    if (out.text.empty()) json::fail(PathSeg(&root, "source"), "must not be empty");
+    if (crlf) {
+      std::string t;
+      t.reserve(out.text.size() + out.text.size() / 32);
+      for (const char ch : out.text) {
+        if (ch == '\n') t += '\r';
+        t += ch;
+      }
+      out.text = std::move(t);
+    }
+    finishLibrary(root);
+    return out;
+  }
+  TuningFile tuningFile() {
+    const PathSeg root;
+    static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "colour", "def"};
+    TuningFile out;
+    Members m(r_, root, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&root, K[static_cast<size_t>(k)]);
+      if (k < 3) libraryKey(k, f, "pqtuning", out.name);
+      if (k == 3) out.colour = colour(f);
+      if (k == 4) out.def = tuningDef(f);
+    }
+    m.require({0, 1, 2, 3, 4});
+    finishLibrary(root);
+    return out;
+  }
+  ClipFile clipFile() {
+    const PathSeg root;
+    static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "clip", "samples"};
+    ClipFile out;
+    std::shared_ptr<const SampleList> table;
+    Members m(r_, root, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&root, K[static_cast<size_t>(k)]);
+      if (k < 3) libraryKey(k, f, "pqclip", out.name);
+      if (k == 3) out.clip = clip(f);
+      if (k == 4) table = sampleList(f);
+    }
+    m.require({0, 1, 2, 3});
+    const PathSeg clipAt(&root, "clip");
+    if (out.clip.audio) {
+      if (!table || table->size() != 1 || table->front().id != out.clip.audio->sample)
+        json::fail(PathSeg(&root, "samples"), "an audio clip carries exactly its own sample");
+      out.sample = table->front();
+    } else if (table) {
+      json::fail(PathSeg(&root, "samples"), "only audio clips carry a sample");
+    }
+    // The clip file has no main tunings.
+    const TuningAssignment& ta = out.clip.audio ? out.clip.audio->tuning : out.clip.clip->tuning;
+    if (ta.mode == TuningMode::Main) json::fail(PathSeg(&clipAt, "tuning"), "a clip file has no main tunings");
+    finishLibrary(root);
+    return out;
+  }
+
 private:
+  std::string joinedLines(const PathSeg& f) {
+    std::string text, line;
+    r_.beginArray(f);
+    for (size_t j = 0; r_.nextElement(f); ++j) {
+      line.clear();
+      r_.readString(PathSeg(&f, j), line);
+      if (j > 0) text += '\n';
+      text += line;
+    }
+    return text;
+  }
+
   // ---- Scalars ----
   uint32_t defineId(const PathSeg& at) {
     const uint32_t id = ref(at);
@@ -3010,6 +3236,104 @@ Result<LoadedProject> parseProject(std::string_view text, const LoadOptions& opt
   } catch (const std::bad_alloc&) {
     return Error{ErrorCode::Unknown, "out of memory while loading the project", {std::string(options.fileName), 0, 0}};
   }
+}
+
+}  // namespace pq::doc
+
+// ==== T5.11: user-library files (library_files.h) ==================================================================
+
+namespace pq::doc {
+
+namespace {
+
+template <class F>
+Result<std::string> encodeLibrary(F&& f) {
+  std::string out;
+  try {
+    Encoder e(out);
+    f(e);
+  } catch (const json::JsonFail& fail) {
+    return Error{fail.code, fail.path + ": " + fail.message, {}};
+  } catch (const std::bad_alloc&) {
+    return Error{ErrorCode::Unknown, "out of memory while writing a library file", {}};
+  }
+  return out;
+}
+
+template <class T, class F>
+Result<T> decodeLibrary(std::string_view text, std::string_view fileName, F&& f) {
+  if (text.size() >= 3 && text.substr(0, 3) == "\xEF\xBB\xBF") text.remove_prefix(3);
+  try {
+    Decoder d(text);
+    return f(d);
+  } catch (const json::JsonFail& fail) {
+    return toError(fail, text, fileName, true);
+  } catch (const std::bad_alloc&) {
+    return Error{ErrorCode::Unknown, "out of memory while reading a library file", {std::string(fileName), 0, 0}};
+  }
+}
+
+// A clip's Main tuning as a private one (the file has no main tunings).
+TuningAssignment portable(const TuningAssignment& a, const Project* p) {
+  if (a.mode != TuningMode::Main) return a;
+  const TuningSlot* s = p ? findTuning(*p, a.main) : nullptr;
+  return s ? TuningAssignment::privateTuning(s->def) : TuningAssignment::inherit();
+}
+
+}  // namespace
+
+Result<std::string> serializePreset(const Device& device, std::string_view name) {
+  return encodeLibrary([&](Encoder& e) { e.presetFile(device, name); });
+}
+Result<PresetFile> parsePreset(std::string_view text, std::string_view fileName) {
+  return decodeLibrary<PresetFile>(text, fileName, [](Decoder& d) { return d.presetFile(); });
+}
+Result<std::string> serializeUserDevice(const UserDeviceFile& f) {
+  if (f.text.empty()) return Error{ErrorCode::InvalidArgument, "$.source: must not be empty", {}};
+  if (f.patch.empty()) return Error{ErrorCode::InvalidArgument, "$.patch: must not be empty", {}};
+  return encodeLibrary([&](Encoder& e) { e.userDeviceFile(f); });
+}
+Result<UserDeviceFile> parseUserDevice(std::string_view text, std::string_view fileName) {
+  return decodeLibrary<UserDeviceFile>(text, fileName, [](Decoder& d) { return d.userDeviceFile(); });
+}
+DevicePtr makeUserDevice(DeviceId id, const UserDeviceFile& f) {
+  auto d = std::make_shared<Device>();
+  d->id = id;
+  d->patch = f.patch;
+  d->kind = f.kind;
+  auto src = std::make_shared<UserPatch>();
+  src->text = f.text;
+  d->source = std::move(src);
+  return d;
+}
+Result<std::string> serializeTuning(const TuningFile& f) {
+  return encodeLibrary([&](Encoder& e) { e.tuningFile(f); });
+}
+Result<TuningFile> parseTuning(std::string_view text, std::string_view fileName) {
+  return decodeLibrary<TuningFile>(text, fileName, [](Decoder& d) { return d.tuningFile(); });
+}
+Result<std::string> serializeClip(const ClipFile& f, const Project* p) {
+  ClipFile g = f;
+  if (g.clip.audio) {
+    if (!g.sample || g.sample->id != g.clip.audio->sample)
+      return Error{ErrorCode::InvalidArgument, "$.samples: an audio clip needs its sample", {}};
+    if (g.clip.audio->tuning.mode == TuningMode::Main) {
+      AudioClip a = *g.clip.audio;
+      a.tuning = portable(a.tuning, p);
+      g.clip.audio = std::make_shared<const AudioClip>(std::move(a));
+    }
+  } else if (!g.clip.clip) {
+    return Error{ErrorCode::InvalidArgument, "$.clip: no clip", {}};
+  } else if (g.clip.clip->tuning.mode == TuningMode::Main) {
+    NoteClip c = withNotes(*g.clip.clip, g.clip.clip->notes);
+    c.tuning = portable(c.tuning, p);
+    g.clip.clip = std::make_shared<const NoteClip>(std::move(c));
+  }
+  if (!g.clip.audio) g.sample.reset();
+  return encodeLibrary([&](Encoder& e) { e.clipFile(g); });
+}
+Result<ClipFile> parseClip(std::string_view text, std::string_view fileName) {
+  return decodeLibrary<ClipFile>(text, fileName, [](Decoder& d) { return d.clipFile(); });
 }
 
 }  // namespace pq::doc

@@ -82,6 +82,8 @@ public:
   ui::Button& wheelButton() const noexcept { return *wheel_; }
   const std::string& summary() const noexcept { return summary_->text(); }
   const std::string& usage() const noexcept { return usage_->text(); }
+  // T5.11: a right-click on the card (outside its controls): Save to Library, Hot-Swap Tuning… (mos_wheel.h).
+  bool onPointer(const ui::PointerEvent& e) override;
   // The row of a parameter (nullopt: the EDO size), or nullptr when this kind has none.
   TuningParamRow* row(std::optional<doc::ParamKind> param) const noexcept;
   void paint(ui::PaintContext& ctx) override;

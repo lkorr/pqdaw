@@ -1,6 +1,9 @@
 #include "pq/media/wav_file.h"
 
 #include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <vector>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -226,6 +229,68 @@ Status WavWriter::close() {
   const bool ok = static_cast<bool>(out_);
   out_.close();
   if (!ok || out_.fail()) return ioError(path_, "cannot write");
+  return Ok{};
+}
+
+// T5.12: 24-bit integer PCM (WAVE_FORMAT_PCM for 1–2 channels, EXTENSIBLE above), rounded and clamped, no dither.
+Status writeWavPcm24(const std::filesystem::path& path, const std::vector<std::vector<float>>& channels,
+                     uint32_t sampleRate) {
+  if (channels.empty() || channels.size() > kMaxWavChannels || sampleRate == 0)
+    return Error{ErrorCode::InvalidArgument, "writeWavPcm24: bad format", {}};
+  const size_t frames = channels.front().size();
+  for (const auto& c : channels)
+    if (c.size() != frames) return Error{ErrorCode::InvalidArgument, "writeWavPcm24: channel lengths differ", {}};
+  const auto nch = static_cast<uint32_t>(channels.size());
+  const uint64_t dataBytes = static_cast<uint64_t>(frames) * nch * 3;
+  if (dataBytes > 0xFFFFFFFFull - 80) return Error{ErrorCode::InvalidArgument, "writeWavPcm24: too long for a WAV file", {}};
+  const bool ext = nch > 2;
+  std::vector<uint8_t> h;
+  auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) h.push_back(static_cast<uint8_t>(v >> (8 * i))); };
+  auto u16 = [&](uint16_t v) { h.push_back(static_cast<uint8_t>(v)); h.push_back(static_cast<uint8_t>(v >> 8)); };
+  auto tag = [&](const char* t) { h.insert(h.end(), t, t + 4); };
+  const uint32_t fmtBytes = ext ? 40 : 16;
+  tag("RIFF");
+  u32(static_cast<uint32_t>(4 + 8 + fmtBytes + 8 + dataBytes));
+  tag("WAVE");
+  tag("fmt ");
+  u32(fmtBytes);
+  u16(ext ? 0xFFFE : 1);
+  u16(static_cast<uint16_t>(nch));
+  u32(sampleRate);
+  u32(sampleRate * nch * 3);
+  u16(static_cast<uint16_t>(nch * 3));
+  u16(24);
+  if (ext) {
+    u16(22);
+    u16(24);
+    u32(0);  // no speaker mask
+    static constexpr uint8_t kPcmGuid[16] = {1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71};
+    h.insert(h.end(), kPcmGuid, kPcmGuid + 16);
+  }
+  tag("data");
+  u32(static_cast<uint32_t>(dataBytes));
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return ioError(path, "cannot write");
+  out.write(reinterpret_cast<const char*>(h.data()), static_cast<std::streamsize>(h.size()));
+  std::vector<uint8_t> buf;
+  constexpr size_t kChunk = 1u << 15;
+  for (size_t off = 0; off < frames; off += kChunk) {
+    const size_t n = std::min(kChunk, frames - off);
+    buf.resize(n * nch * 3);
+    uint8_t* o = buf.data();
+    for (size_t i = 0; i < n; ++i)
+      for (uint32_t c = 0; c < nch; ++c) {
+        const float x = channels[c][off + i];
+        const double v = std::nearbyint(static_cast<double>(x) * 8388608.0);
+        const auto q = static_cast<int32_t>(v > 8388607.0 ? 8388607.0 : (v < -8388608.0 || v != v ? (v != v ? 0.0 : -8388608.0) : v));
+        *o++ = static_cast<uint8_t>(q);
+        *o++ = static_cast<uint8_t>(q >> 8);
+        *o++ = static_cast<uint8_t>(q >> 16);
+      }
+    out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+  }
+  out.flush();
+  if (!out) return ioError(path, "cannot write");
   return Ok{};
 }
 

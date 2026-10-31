@@ -326,22 +326,31 @@ public:
       if (markW > 0)
         paint::text(ctx, f->small, {t.x + adv + ctx.scale.px(6), r.y, markW, r.h}, kEdited,
                     panel_.active() ? th->accent.primary : th->device.titleTextOff, ui::TextAlign::Left);
-      if (p.w > 0) {
-        paint::box(ctx.dl, p, 0.0f, th->field.fill, th->device.border);
-        paint::text(ctx, f->small, p, "Default", th->text.disabled, ui::TextAlign::Left, ctx.scale.px(4), ctx.scale.px(4));
+      if (p.w > 0) {  // T5.11: the preset name; a click hot-swaps (the host's onPresetClick)
+        const bool live = static_cast<bool>(panel_.onPresetClick);
+        paint::box(ctx.dl, p, 0.0f, hoverPreset_ && live ? th->surface.raised : th->field.fill, th->device.border);
+        const std::string& name = panel_.presetName();
+        paint::text(ctx, f->small, p, name.empty() ? std::string("Default") : name,
+                    live ? th->device.titleText : th->text.disabled, ui::TextAlign::Left, ctx.scale.px(4), ctx.scale.px(4));
       }
     }
   }
   bool onPointer(const ui::PointerEvent& e) override {
     if (e.type == ui::PointerType::Move) {
       const bool h = foldRect().contains(e.pos);
-      if (h != hoverFold_) {
+      const bool hp = presetRect().contains(e.pos);
+      if (h != hoverFold_ || hp != hoverPreset_) {
         hoverFold_ = h;
+        hoverPreset_ = hp;
         markDirty();
       }
       return false;
     }
     if (e.type != ui::PointerType::Down || e.button != ui::PointerButton::Left) return false;
+    if (panel_.onPresetClick && presetRect().contains(e.pos)) {  // T5.11: hot-swap
+      panel_.onPresetClick();
+      return true;
+    }
     if (activatorRect().contains(e.pos)) {
       impl_.userActive(!panel_.active());
       return true;
@@ -358,16 +367,20 @@ public:
     return false;
   }
   void onHoverChanged(bool h) override {
-    if (!h && hoverFold_) {
+    if (!h && (hoverFold_ || hoverPreset_)) {
       hoverFold_ = false;
+      hoverPreset_ = false;
       markDirty();
     }
   }
   // T4.16c: the activator and the fold triangle are buttons; the rest of the bar is the host's (the Device view: a drag
-  // there moves the device).
+  // there moves the device). T5.11: the preset slot too, when it hot-swaps.
   ui::Cursor cursorAt(ui::Vec2 p) const override {
-    return activatorRect().contains(p) || foldRect().contains(p) ? ui::Cursor::Pointer : ui::Cursor::Inherit;
+    return activatorRect().contains(p) || foldRect().contains(p) || (panel_.onPresetClick && presetRect().contains(p))
+               ? ui::Cursor::Pointer
+               : ui::Cursor::Inherit;
   }
+  ui::IRect presetSlot() const { return presetRect(); }
   ui::InfoText info() const override {
     if (panel_.onTitleDoubleClick)
       return {title_ + (panel_.edited() ? " (edited)" : ""),
@@ -401,6 +414,7 @@ private:
   DevicePanel::Impl& impl_;
   std::string title_;
   bool hoverFold_ = false;
+  bool hoverPreset_ = false;
 };
 
 // The body: controls at their description rects (logical px × UI scale).
@@ -682,7 +696,8 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
     j.setHeight(ui::Length::fixed(kJackStripH));
     for (const std::string& e : sig_.exports) jacks_.push_back({e, {}});
   }
-  add<TitleBar>(*this, im, desc_.title).setHeight(ui::Length::fixed(kTitleH));
+  title_ = &add<TitleBar>(*this, im, desc_.title);
+  title_->setHeight(ui::Length::fixed(kTitleH));
   auto& body = add<PanelBody>(*this);
   body.setHeight(ui::Length::fixed(desc_.height + 2 * kPad));
   body_ = &body;
@@ -878,6 +893,17 @@ void DevicePanel::setEdited(bool e) {
   if (edited_ == e) return;
   edited_ = e;
   markDirty();
+}
+
+void DevicePanel::setPresetName(std::string name) {
+  if (presetName_ == name) return;
+  presetName_ = std::move(name);
+  if (title_) title_->markDirty();
+}
+
+ui::IRect DevicePanel::presetSlotRect() const {
+  const auto* t = dynamic_cast<const TitleBar*>(title_);
+  return t ? t->presetSlot() : ui::IRect{};
 }
 
 void DevicePanel::setFolded(bool f) {

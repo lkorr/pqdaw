@@ -560,6 +560,10 @@ public:
   DropEffect dragDrop(Vec2 pos, Mods mods);
   // Ends a session without dropping (dragLeave on the target).
   void cancelDrag();
+  // T5.12: an internal drag whose pointer leaves the window ends here (the target sees dragLeave, the source loses the
+  // capture) and its payload goes to `handler` (the app starts an OS drag with it: Explorer then owns the gesture; the
+  // handler may run a modal loop). Without a handler the session simply follows the pointer outside the window.
+  void setDragOutHandler(std::function<void(DragPayload)> handler) { dragOut_ = std::move(handler); }
   bool dragging() const noexcept { return drag_ != nullptr; }
   const DragPayload* dragPayload() const noexcept;
   Widget* dropTarget() const noexcept;
@@ -640,6 +644,7 @@ private:
   // T5.7: the drag session (null: none).
   struct DragState;
   std::unique_ptr<DragState> drag_;
+  std::function<void(DragPayload)> dragOut_;  // T5.12
   void updateDrag(Vec2 pos, Mods mods);
   void endDrag(bool dropIt);
   void autoScrollDrag(double now);

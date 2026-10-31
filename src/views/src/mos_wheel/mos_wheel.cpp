@@ -14,8 +14,11 @@
 #include "../common/paint.h"
 #include "pq/tuning/mos_data.h"
 #include "pq/tuning/scala.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
+#include "pq/views/browser/library.h"
+#include "pq/views/browser/library_load.h"
 
 namespace pq::views {
 
@@ -659,7 +662,29 @@ void TuningChip::paint(PaintContext& ctx) {
   }
 }
 
+// T5.11: the chip's library menu (right-click): save the tuning to the User Library; hot-swap it from the browser.
+void openTuningLibraryMenu(Widget& from, ViewContext& ctx, const TuningTarget& target, Vec2 at) {
+  ViewContext* c = &ctx;
+  std::vector<MenuItem> items;
+  items.push_back(MenuItem::item("Save to Library", [c, target] {
+    auto r = saveTuningToLibrary(*c, target);
+    c->setStatus(r ? "Tuning saved: " + *r : "Save to Library: " + r.error().message);
+  }));
+  items.push_back(MenuItem::item("Hot-Swap Tuning\xE2\x80\xA6", [c, target] {
+    HotSwapTarget t;
+    t.kind = HotSwapTarget::Kind::Tuning;
+    t.tuning = target;
+    t.label = tuningTargetLabel(*c->doc(), target);
+    if (!c->library().requestHotSwap(t)) c->setStatus("Hot-Swap needs the browser");
+  }));
+  (void)openContextMenu(from, at, std::move(items));
+}
+
 bool TuningChip::onPointer(const PointerEvent& e) {
+  if (e.type == PointerType::Down && e.button == PointerButton::Right && target_) {
+    openTuningLibraryMenu(*this, ctx_, *target_, e.pos);
+    return true;
+  }
   if (e.type == PointerType::Down && e.button == PointerButton::Left && target_) {
     setPressed(true);
     return true;

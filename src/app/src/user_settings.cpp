@@ -156,12 +156,16 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
   const auto it = root.find("views");
   if (it == root.end() || !it->is_object()) return prefs;
   if (const auto f = it->find("circuitShowInactive"); f != it->end() && f->is_boolean()) prefs.circuitShowInactive = f->get<bool>();
+  if (const auto f = it->find("browserWidth"); f != it->end() && f->is_number()) prefs.browserWidth = f->get<float>();
+  if (const auto f = it->find("dragOut24Bit"); f != it->end() && f->is_boolean()) prefs.dragOut24Bit = f->get<bool>();
   return prefs;
 }
 
 Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   json v = json::object();
   v["circuitShowInactive"] = prefs.circuitShowInactive;
+  v["browserWidth"] = prefs.browserWidth;
+  v["dragOut24Bit"] = prefs.dragOut24Bit;
   return saveSection(path, "views", std::move(v));
 }
 

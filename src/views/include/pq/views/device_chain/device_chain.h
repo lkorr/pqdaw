@@ -69,6 +69,17 @@ public:
   bool revertSelectedToStock();
   // T4.8: Ctrl+G — the selected devices (of one list) into a new rack (pq/document/edit_ops.h groupDevices).
   bool groupSelected();
+  // ---- T5.11: the user library (pq/views/browser/library_load.h) ---------------------------------------------------
+  // The device's context menu: "Save Preset" (the browser then renames it inline), "Save as Default Preset" (a new
+  // device of its kind starts from it), "Save as New Device" (an edited device joins the device menu and the browser
+  // for every project). "Hot-Swap Presets…" and a click on the title bar's preset slot put the browser in hot-swap mode
+  // for the device. Presets, user devices and catalog devices dragged from the browser (or Explorer) onto the chain load
+  // after the selected device (one undo step each).
+  bool savePreset(doc::DeviceId device, bool asDefault);
+  bool saveAsNewDevice(doc::DeviceId device);
+  bool hotSwap(doc::DeviceId device);
+  ui::DropFeedback dragOver(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
+  ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
   // ---- T4.16c: keyboard (Live's Device view; docs/HOTKEYS.md) -------------------------------------------------------
   // Left / Right (device.selectPrev / Next): the neighbouring device in display order — a rack, then the devices of the
   // chain it shows, then what follows the rack — so the arrows walk into and out of rack chains; nothing selected: the

@@ -689,6 +689,25 @@ Status setupBrowserSearch(Shell& shell) {
   return Ok{};
 }
 
+// T5.11: hot-swap mode for an Operator (the demo index's Presets/Operator folder): the hot-swap bar over the device's
+// presets, the list focused.
+Status setupBrowserHotSwap(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  ctx.library().setIndex(browserDemoIndex(ctx.projectDir() + "/samples"));
+  ctx.setBrowserVisible(true);
+  shell.tree().layoutNow();
+  BrowserPanel* b = findBrowser(shell);
+  if (!b) return Error{ErrorCode::NotFound, "browser-hotswap: no browser", {}};
+  HotSwapTarget t;
+  t.kind = HotSwapTarget::Kind::Device;
+  t.patch = "operator";
+  t.label = "Operator";
+  b->setHotSwap(t);
+  shell.tree().setFocus(&b->listWidget());
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T5.6: the audio Clip View on the Re-Pitch clip (tests/views/fixtures/audio): the box (gain, transpose greyed,
 // warp, BPM, loop, fades), the whole sample with the clip's region, the start marker and the loop brace.
 Status setupClipViewAudio(Shell& shell) {
@@ -1312,6 +1331,7 @@ constexpr SceneEntry kScenes[] = {
     {"clip-view-audio", 1280, 800, setupClipViewAudio},        // T5.6: the same --project
     {"browser-panel", 1280, 800, setupBrowserPanel},           // T5.10: the same --project (its samples as the User Library)
     {"browser-search", 1280, 800, setupBrowserSearch},         // T5.10
+    {"browser-hotswap", 1280, 800, setupBrowserHotSwap},       // T5.11: the same --project
 };
 
 std::string_view kNames[std::size(kScenes)] = {};
@@ -1466,6 +1486,10 @@ std::shared_ptr<const library::Index> browserDemoIndex(std::string_view samplesD
   pr.kind = library::ItemKind::Preset;
   pr.category = library::Category::Instruments;
   ix->addEntry(op, pr);
+  for (const char* n : {"Glass Bell.pqpreset", "Sub Pluck.pqpreset", "Warm Keys.pqpreset"}) {  // T5.11: hot-swap
+    pr.name = n;
+    ix->addEntry(op, pr);
+  }
   // Place 1.
   const uint32_t r1 = ix->addDir(library::Index::kNone, "", 1, 0);
   ix->addEntry(r1, sample("Rain on Roof.wav", 64.0, 96000, 2));

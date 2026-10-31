@@ -55,6 +55,8 @@ private:
   // T5.7: files dragged in from Explorer (pq/app/os_drop.h): queued from the OLE callback, played into the tree here.
   ui::DropEffect onOsDrag(const OsDragEvent& e);
   void drainOsDrags();
+  // T5.12: an internal drag left the window: files (browser items) or clips (rendered to WAV) go out as an OLE drag.
+  void onDragOut(ui::DragPayload p);
 
   ui::UiTree& tree_;
   SDL_Window* window_;

@@ -69,6 +69,184 @@ bool Chips::onPointer(const PointerEvent& e) {
   return false;
 }
 
+// --- FilterChips (T5.11) ----------------------------------------------------------------------------------------------
+
+FilterChips::FilterChips(BrowserPanel& panel) : Control("filters"), panel_(panel) {
+  setInfo("Filters and Tags", "Duration, BPM, sample rate and channels: a click steps to the next range, a right-click "
+                              "back to Any. Tags: a click shows only files with that tag (several: all of them). Give "
+                              "a file tags from its right-click menu.");
+  setCursor(Cursor::Pointer);
+}
+
+std::string FilterChips::chipLabel(size_t i) const {
+  const BrowserFilters& f = panel_.filters();
+  if (i < 4) {
+    const uint8_t st[4] = {f.duration, f.bpm, f.rate, f.channels};
+    return filterChipLabel(static_cast<uint32_t>(i), st[i]);
+  }
+  const auto& tags = panel_.allTags();
+  return i - 4 < tags.size() ? "#" + tags[i - 4] : std::string();
+}
+
+void FilterChips::invalidateChips() {
+  rects_.clear();
+  invalidateArrange();
+  markDirty();
+}
+
+void FilterChips::arrange(LayoutPass&) { layoutChips(); }
+
+IRect FilterChips::chipRect(size_t i) const noexcept {
+  if (rects_.size() != 4 + panel_.allTags().size()) layoutChips();
+  return i < rects_.size() ? rects_[i] : IRect{};
+}
+
+void FilterChips::layoutChips() const {
+  rects_.clear();
+  const IRect r = rect();
+  const float s = tree() ? tree()->scale() : 1.0f;
+  const PaintResources* res = tree() ? tree()->resources() : nullptr;
+  const int32_t pad = static_cast<int32_t>(std::lround(5.0f * s)), gap = static_cast<int32_t>(std::lround(4.0f * s));
+  int32_t x = r.x;
+  const size_t n = 4 + panel_.allTags().size();
+  for (size_t i = 0; i < n; ++i) {
+    const std::string label = chipLabel(i);
+    int32_t w = static_cast<int32_t>(std::lround(6.0f * s * static_cast<float>(label.size())));
+    if (res && res->text && res->uiFonts) w = res->text->measure(res->uiFonts->small, label);
+    w += 2 * pad;
+    if (x + w > r.right()) {
+      rects_.push_back({});
+      continue;
+    }
+    rects_.push_back({x, r.y, w, r.h});
+    x += w + gap;
+  }
+}
+
+void FilterChips::paint(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  const ThemeFonts* f = ctx.res.uiFonts;
+  if (!th || !f) return;
+  if (rects_.size() != 4 + panel_.allTags().size()) layoutChips();
+  const BrowserFilters& fl = panel_.filters();
+  const uint8_t st[4] = {fl.duration, fl.bpm, fl.rate, fl.channels};
+  for (size_t i = 0; i < rects_.size(); ++i) {
+    const IRect cr = rects_[i];
+    if (cr.empty()) continue;
+    bool on = i < 4 ? st[i] != 0 : false;
+    if (i >= 4) {
+      const std::string& t = panel_.allTags()[i - 4];
+      on = std::find(fl.tags.begin(), fl.tags.end(), t) != fl.tags.end();
+    }
+    paint::box(ctx.dl, cr, static_cast<float>(cr.h) * 0.5f, on ? th->accent.primary : th->surface.sunken,
+               on ? th->accent.primary : th->surface.divider);
+    paint::text(ctx, f->small, cr, chipLabel(i), on ? th->text.onAccent : th->text.secondary, TextAlign::Center, 2, 2);
+  }
+}
+
+bool FilterChips::onPointer(const PointerEvent& e) {
+  if (e.type != PointerType::Down || (e.button != PointerButton::Left && e.button != PointerButton::Right)) return false;
+  if (rects_.size() != 4 + panel_.allTags().size()) layoutChips();
+  for (size_t i = 0; i < rects_.size(); ++i) {
+    if (rects_[i].empty() || !rects_[i].contains(e.pos)) continue;
+    BrowserFilters f = panel_.filters();
+    if (i < 4) {
+      uint8_t* st[4] = {&f.duration, &f.bpm, &f.rate, &f.channels};
+      *st[i] = e.button == PointerButton::Right ? 0 : static_cast<uint8_t>((*st[i] + 1) % kFilterSteps[i]);
+    } else {
+      const std::string& t = panel_.allTags()[i - 4];
+      const auto it = std::find(f.tags.begin(), f.tags.end(), t);
+      if (it != f.tags.end()) f.tags.erase(it);
+      else if (e.button == PointerButton::Left) f.tags.push_back(t);
+    }
+    panel_.setFilters(std::move(f));
+    invalidateChips();
+    return true;
+  }
+  return true;
+}
+
+// --- HotSwapBar (T5.11) ------------------------------------------------------------------------------------------------
+
+HotSwapBar::HotSwapBar(BrowserPanel& panel) : Control("hotswap"), panel_(panel) {
+  setInfo("Hot-Swap", "Selecting an item loads it in place of the device's preset (or the tuning). Enter loads it and "
+                      "leaves hot-swap; Esc or the cross leaves without a change.");
+}
+
+IRect HotSwapBar::closeRect() const noexcept {
+  const IRect r = rect();
+  const float s = tree() ? tree()->scale() : 1.0f;
+  const int32_t sz = static_cast<int32_t>(std::lround(14.0f * s));
+  return {r.right() - sz - static_cast<int32_t>(std::lround(6.0f * s)), r.y + (r.h - sz) / 2, sz, sz};
+}
+
+void HotSwapBar::paint(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  const ThemeFonts* f = ctx.res.uiFonts;
+  if (!th) return;
+  const IRect r = rect();
+  ctx.dl.addRectFilled(r.toRect(), th->accent.primary);
+  if (!f) return;
+  const HotSwapTarget& h = panel_.hotSwap();
+  const std::string what = h.kind == HotSwapTarget::Kind::Tuning ? "tunings for " : "presets of ";
+  paint::text(ctx, f->small, {r.x, r.y, closeRect().x - r.x, r.h}, "Hot-Swap: " + what + h.label, th->text.onAccent,
+              TextAlign::Left, ctx.scale.px(8.0f), ctx.scale.px(4.0f));
+  paint::text(ctx, f->small, closeRect(), "\xC3\x97", th->text.onAccent, TextAlign::Center, 0, 0);
+}
+
+bool HotSwapBar::onPointer(const PointerEvent& e) {
+  if (e.type == PointerType::Down && e.button == PointerButton::Left && closeRect().contains(e.pos)) {
+    panel_.setHotSwap({});
+    return true;
+  }
+  return e.type == PointerType::Down;
+}
+
+// --- WidthHandle (T5.11) -----------------------------------------------------------------------------------------------
+
+WidthHandle::WidthHandle(ViewContext& ctx, Widget& slot) : Control("resize"), ctx_(ctx), slot_(slot) {
+  setInfo("Browser Width", "Drag to make the browser wider or narrower; double-click for the default width.");
+}
+
+void WidthHandle::paint(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  if (!th) return;
+  ctx.dl.addRectFilled(rect().toRect(), dragging_ || visualState().hover ? th->accent.primary : th->surface.divider);
+}
+
+bool WidthHandle::onPointer(const PointerEvent& e) {
+  const float s = tree() ? tree()->scale() : 1.0f;
+  auto apply = [&](float w) {
+    w = clampBrowserWidth(w);
+    slot_.setWidth(Length::fixed(w));
+    if (Widget* p = slot_.parent()) p->invalidateLayout();
+    ViewPrefs prefs = ctx_.viewPrefs();
+    prefs.browserWidth = w;
+    ctx_.setViewPrefs(prefs);
+  };
+  switch (e.type) {
+    case PointerType::Down:
+      if (e.button != PointerButton::Left) return false;
+      if (e.clickCount >= 2) {
+        apply(bm::kPanelWidth);
+        return true;
+      }
+      dragging_ = true;
+      pressX_ = e.pos.x;
+      startW_ = static_cast<float>(slot_.rect().w) / s;
+      markDirty();
+      return true;
+    case PointerType::Move:
+      if (dragging_) apply(startW_ + (e.pos.x - pressX_) / s);
+      return dragging_;
+    case PointerType::Up:
+      dragging_ = false;
+      markDirty();
+      return true;
+    default: return false;
+  }
+}
+
 // --- Sidebar ---------------------------------------------------------------------------------------------------------
 
 Sidebar::Sidebar(BrowserPanel& panel) : Control("sidebar"), panel_(panel) {
@@ -286,8 +464,8 @@ void List::paint(PaintContext& ctx) {
     if (!f) continue;
     const Rgba tc = isSel ? th->selection.text : th->text.primary;
     const int32_t ind = pad + row.depth * indent;
-    if (row.dir) {  // fold triangle + folder name
-      const bool open = panel_.folderOpen(row.id);
+    if (row.dir || row.device) {  // fold triangle + folder (T5.11: or device) name
+      const bool open = panel_.rowOpen(row);
       const float cx = static_cast<float>(rr.x + ind + ctx.scale.px(4.0f)), cy = static_cast<float>(rr.y + h / 2);
       const float a = 3.5f * ctx.scale.factor;
       if (open) ctx.dl.addTriangleFilled({cx - a, cy - a * 0.6f}, {cx + a, cy - a * 0.6f}, {cx, cy + a * 0.8f}, th->text.secondary);
@@ -320,13 +498,14 @@ bool List::onPointer(const PointerEvent& e) {
       if (e.button != PointerButton::Left) return false;
       if (row < 0) return true;
       const BrowserRow br = panel_.rows()[static_cast<size_t>(row)];
-      if (br.dir) {
-        // The triangle (or a double-click) folds; a click elsewhere selects.
+      if (br.dir || br.device) {
+        // The triangle (or a double-click on a folder) folds; a click elsewhere selects. T5.11: a device row folds its
+        // presets with the triangle; a double-click on it loads the device.
         const int32_t ind = static_cast<int32_t>(std::lround((6.0f + bm::kIndent * br.depth) * (tree() ? tree()->scale() : 1.0f)));
         const bool onTriangle = e.pos.x < static_cast<float>(rect().x + ind) + 14.0f * (tree() ? tree()->scale() : 1.0f);
-        if (onTriangle || e.clickCount >= 2) {
+        if (onTriangle || (br.dir && e.clickCount >= 2)) {
           panel_.select(row, false);
-          panel_.setFolderOpen(br.id, !panel_.folderOpen(br.id));
+          panel_.setRowOpen(br, !panel_.rowOpen(br));
           return true;
         }
       }
@@ -357,9 +536,25 @@ bool List::onPointer(const PointerEvent& e) {
   }
 }
 
+void List::beginTagEdit(int32_t row) {
+  if (rename_ || row < 0) return;
+  renameRow_ = row;
+  tagEdit_ = true;
+  rename_ = &add<TextEdit>("tag", "");
+  rename_->setPlaceholder("New tag");
+  rename_->onCommit = [this](const std::string&) { endRename(true); };
+  rename_->onCancel = [this] { endRename(false); };
+  invalidateArrange();
+  if (tree()) {
+    tree()->layoutNow();
+    tree()->setFocus(rename_, true);
+  }
+}
+
 void List::beginRename(int32_t row) {
   if (rename_ || row < 0) return;
   renameRow_ = row;
+  tagEdit_ = false;
   const BrowserRow br = panel_.rows()[static_cast<size_t>(row)];
   std::string name = panel_.cellText(br, BrowserColumn::Name);
   rename_ = &add<TextEdit>("rename", name);
@@ -383,6 +578,21 @@ void List::endRename(bool commit) {
   TextEdit* field = rename_;
   rename_ = nullptr;
   renameRow_ = -1;
+  if (tagEdit_ && commit && row >= 0 && static_cast<size_t>(row) < panel_.rows().size() && panel_.index()) {
+    // T5.11: a free tag for the row's file (trimmed; empty: nothing).
+    const BrowserRow br = panel_.rows()[static_cast<size_t>(row)];
+    std::string tag = text;
+    while (!tag.empty() && (tag.back() == ' ' || tag.back() == '#')) tag.pop_back();
+    while (!tag.empty() && (tag.front() == ' ' || tag.front() == '#')) tag.erase(tag.begin());
+    if (!tag.empty() && !br.dir && !br.device) {
+      Library& lib = panel_.context().library();
+      lib.tags().addTag(library::tagKeyOf(*panel_.index(), br.id), tag);
+      lib.tagsChanged();
+      panel_.context().setStatus("Tagged \"" + tag + "\"");
+    }
+    commit = false;
+  }
+  tagEdit_ = false;
   if (commit && row >= 0 && static_cast<size_t>(row) < panel_.rows().size() && panel_.index()) {
     const BrowserRow br = panel_.rows()[static_cast<size_t>(row)];
     const std::string from = panel_.index()->path(br.id);
@@ -515,3 +725,21 @@ void PreviewStrip::paint(PaintContext& ctx) {
 }
 
 }  // namespace pq::views::browser
+
+namespace pq::views {
+
+std::string filterChipLabel(uint32_t chip, uint8_t state) {
+  static constexpr const char* kDur[5] = {"Dur: Any", "< 1 s", "1\xE2\x80\x93" "10 s", "10\xE2\x80\x93" "60 s", "> 60 s"};
+  static constexpr const char* kBpm[4] = {"BPM: Any", "< 100", "100\xE2\x80\x93" "130", "> 130"};
+  static constexpr const char* kRate[5] = {"Rate: Any", "44.1k", "48k", "88.2/96k", "> 96k"};
+  static constexpr const char* kCh[3] = {"Ch: Any", "Mono", "Stereo"};
+  switch (chip) {
+    case 0: return kDur[state < 5 ? state : 0];
+    case 1: return kBpm[state < 4 ? state : 0];
+    case 2: return kRate[state < 5 ? state : 0];
+    case 3: return kCh[state < 3 ? state : 0];
+    default: return {};
+  }
+}
+
+}  // namespace pq::views

@@ -18,6 +18,7 @@
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/browser/library_load.h"
 
 namespace pq::views::arrangement {
 
@@ -795,6 +796,9 @@ void Editor::dragTo(const PointerEvent& e) {
     updateRange(e.pos);
     return;
   }
+  // T5.12: clips dragged out of the arrangement (onto the browser, or out of the window to Explorer) become a Clips
+  // drag session: the move is abandoned and the tree routes the payload to drop targets from here on.
+  if (drag_.kind == DragKind::Move && !view_.rect().contains(e.pos) && dragClipsOut()) return;
   const Ticks raw = static_cast<Ticks>(std::llround(view_.tickAtX(e.pos.x) - view_.tickAtX(drag_.press.x)));
   const Grid g = grid();
   const Ticks dt = std::clamp(g.snapping() ? g.snapDelta(drag_.origin, raw) : raw, drag_.minDt, drag_.maxDt);
@@ -918,6 +922,18 @@ void Editor::release(const PointerEvent& e) {
     return;
   }
   commitDrag();
+}
+
+bool Editor::dragClipsOut() {
+  UiTree* tr = view_.tree();
+  if (tr == nullptr || drag_.clips.empty()) return false;
+  DragPayload p;
+  p.kind = ui::DragKind::Clips;
+  for (const DragClip& c : drag_.clips) p.ids.push_back(packClipRef(c.ref));
+  p.label = drag_.clips.size() == 1 ? (drag_.clips[0].clip.name().empty() ? std::string("Clip") : drag_.clips[0].clip.name())
+                                    : std::to_string(drag_.clips.size()) + " clips";
+  cancelDrag();
+  return tr->beginDrag(std::move(p));
 }
 
 void Editor::cancelDrag() {

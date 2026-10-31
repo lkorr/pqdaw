@@ -13,7 +13,10 @@
 #include "pq/library/tags.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
+#include "pq/document/devices.h"
+#include "pq/document/edit_ops.h"
 #include "pq/views/browser/library.h"
+#include "pq/views/browser/library_load.h"
 #include "pq/views/browser/preview_port.h"
 #include "pq/views/file_probes.h"
 #include "pq/views/sample_drop.h"
@@ -56,7 +59,7 @@ BrowserPanel::BrowserPanel(Shell& shell)
   setClipChildren(true);
   auto& top = add<Widget>("top");
   top.setLayout(LayoutKind::Column);
-  top.setHeight(Length::fixed(48));
+  top.setHeight(Length::fixed(66));
   top.setPadding({6, 6, 6, 2});
   top.setGap(4);
   search_ = &top.add<TextEdit>("search");
@@ -67,6 +70,11 @@ BrowserPanel::BrowserPanel(Shell& shell)
   search_->onChange = [this](const std::string& t) { setQuery(t); };
   chips_ = &top.add<browser::Chips>(*this);
   chips_->setHeight(Length::fixed(bm::kChipSize + 2));
+  filterChips_ = &top.add<browser::FilterChips>(*this);  // T5.11
+  filterChips_->setHeight(Length::fixed(bm::kFilterChipHeight));
+  hotSwapBar_ = &add<browser::HotSwapBar>(*this);  // T5.11: shown while hot-swapping
+  hotSwapBar_->setHeight(Length::fixed(bm::kRowHeight + 4));
+  hotSwapBar_->setVisible(false);
 
   auto& body = add<Widget>("body");
   body.setLayout(LayoutKind::Row);
@@ -102,6 +110,7 @@ BrowserPanel::BrowserPanel(Shell& shell)
 }
 
 BrowserPanel::~BrowserPanel() {
+  lib_.setHotSwapHandler(nullptr);
   if (pollTimer_) cancelTimer(pollTimer_);
   if (PreviewPort* p = lib_.preview(); p && p->playing()) p->stop();
 }
@@ -115,6 +124,14 @@ void BrowserPanel::paint(PaintContext& ctx) {
 void BrowserPanel::onLibrary() {
   const auto idx = lib_.index();
   const auto tags = lib_.entryTags();
+  if (std::vector<std::string> all = lib_.tags().allTags(); all != allTags_) {  // T5.11: the tag chips
+    std::sort(all.begin(), all.end(), [](const std::string& a, const std::string& b) { return library::compareFolded(a, b) < 0; });
+    allTags_ = std::move(all);
+    std::erase_if(filters_.tags, [&](const std::string& t) {
+      return std::none_of(allTags_.begin(), allTags_.end(), [&](const std::string& a) { return a == t; });
+    });
+    filterChips_->invalidateChips();
+  }
   // The places are the index's (the indexer was given the library's; a fixed index brings its own).
   const size_t places = idx ? idx->places.size() : lib_.places().size();
   if (source_.kind == BrowserSource::Kind::Place && source_.index >= places)
@@ -123,6 +140,7 @@ void BrowserPanel::onLibrary() {
     source_ = {BrowserSource::Kind::Place, 0};  // the first index: start on the first place (the User Library)
   if (idx == index_ && tags == tags_) {
     sidebar_->rebuild();
+    takePendingRename();
     return;
   }
   index_ = idx;
@@ -130,6 +148,34 @@ void BrowserPanel::onLibrary() {
   tags_ = tags;
   result_.reset();
   refresh();
+  takePendingRename();
+}
+
+// T5.11: a file just saved ("Save Preset", "Save as New Device", "Save to Library") is renamed inline once the index
+// has it: the browser shows it (its place's tree, its folders unfolded) and opens the name field.
+void BrowserPanel::takePendingRename() {
+  if (lib_.pendingRename.empty() || !index_ || hotSwap_.kind != HotSwapTarget::Kind::None) return;
+  const uint32_t e = index_->findPath(lib_.pendingRename);
+  if (e == library::Index::kNone) return;
+  lib_.pendingRename.clear();
+  ctx_.setBrowserVisible(true);
+  query_.clear();
+  if (search_->text() != query_) search_->setText(query_);
+  collections_ = 0;
+  filters_ = {};
+  source_ = {BrowserSource::Kind::Place, index_->placeOf(e)};
+  sidebar_->markDirty();
+  for (uint32_t d = index_->entries.dir[e]; d != library::Index::kNone; d = index_->dirs.parent[d]) {
+    const auto it = std::lower_bound(openDirs_.begin(), openDirs_.end(), d);
+    if (it == openDirs_.end() || *it != d) openDirs_.insert(it, d);
+  }
+  openFor_ = index_->places[index_->placeOf(e)].root;
+  buildTree();
+  const int32_t row = rowOf(index_->path(e));
+  if (row < 0) return;
+  select(row, false);
+  if (UiTree* t = tree()) t->layoutNow();
+  list_->beginRename(row);
 }
 
 void BrowserPanel::setSource(BrowserSource s) {
@@ -166,13 +212,76 @@ void BrowserPanel::setSort(BrowserColumn c, bool descending) {
 }
 
 bool BrowserPanel::searching() const noexcept {
-  return !query_.empty() || source_.kind != BrowserSource::Kind::Place || collections_ != 0;
+  return !query_.empty() || source_.kind != BrowserSource::Kind::Place || collections_ != 0 || filters_.any();
+}
+
+// T5.11: Instruments / Audio Effects without a search text or filter: each device with its presets under it (Live).
+bool BrowserPanel::deviceTreeMode() const noexcept {
+  if (source_.kind != BrowserSource::Kind::Category || !query_.empty() || collections_ != 0 || filters_.any()) return false;
+  return source_.index == static_cast<uint32_t>(library::Category::Instruments) ||
+         source_.index == static_cast<uint32_t>(library::Category::AudioEffects);
+}
+
+void BrowserPanel::setFilters(BrowserFilters f) {
+  if (f == filters_) return;
+  filters_ = std::move(f);
+  filterChips_->invalidateChips();
+  result_.reset();
+  refresh();
+}
+
+void BrowserPanel::setHotSwap(HotSwapTarget t) {
+  hotSwap_ = std::move(t);
+  hotSwapBar_->setVisible(hotSwap_.kind != HotSwapTarget::Kind::None);
+  hotSwapBar_->markDirty();
+  invalidateLayout();
+  if (hotSwap_.kind != HotSwapTarget::Kind::None) ctx_.setBrowserVisible(true);
+  selected_ = -1;
+  selectedKey_.clear();
+  refresh(false);
+  list_->reveal(0);
+  if (hotSwap_.kind != HotSwapTarget::Kind::None)
+    if (UiTree* t2 = tree()) t2->setFocus(list_);
+}
+
+int32_t BrowserPanel::rowOf(std::string_view path) const {
+  if (!index_) return -1;
+  const std::string key = library::foldedPathKey(path);
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    const BrowserRow& r = rows_[i];
+    if (r.device) {
+      if (r.id < deviceRows_.size() && catalogItemPath(deviceRows_[r.id].patch) == path) return static_cast<int32_t>(i);
+      continue;
+    }
+    if (library::foldedPathKey(r.dir ? index_->dirPath(r.id) : index_->path(r.id)) == key) return static_cast<int32_t>(i);
+  }
+  return -1;
 }
 
 library::SearchQuery BrowserPanel::currentQuery() const {
   library::SearchQuery q;
   q.text = query_;
   q.filter.collections = collections_;
+  // T5.11: the filter chips.
+  static constexpr double kDur[5][2] = {{0, 0}, {0, 1}, {1, 10}, {10, 60}, {60, 1e300}};
+  if (filters_.duration) {
+    q.filter.minSeconds = std::max(1e-9, kDur[filters_.duration][0]);
+    q.filter.maxSeconds = kDur[filters_.duration][1];
+  }
+  static constexpr float kBpm[4][2] = {{0, 0}, {1, 99.999f}, {100, 130}, {130.001f, 1e30f}};
+  if (filters_.bpm) {
+    q.filter.minBpm = kBpm[filters_.bpm][0];
+    q.filter.maxBpm = kBpm[filters_.bpm][1];
+  }
+  switch (filters_.rate) {
+    case 1: q.filter.rates = {44100}; break;
+    case 2: q.filter.rates = {48000}; break;
+    case 3: q.filter.rates = {88200, 96000}; break;
+    case 4: q.filter.rates = {176400, 192000, 352800, 384000}; break;
+    default: break;
+  }
+  q.filter.channels = filters_.channels;
+  q.filter.tags = filters_.tags;
   switch (source_.kind) {
     case BrowserSource::Kind::Place: q.filter.places = source_.index < 64 ? (1ull << source_.index) : ~0ull; break;
     case BrowserSource::Kind::Category: q.filter.categories = 1u << source_.index; break;
@@ -190,8 +299,16 @@ void BrowserPanel::refresh(bool keepSelection) {
     list_->markDirty();
     return;
   }
+  if (hotSwap_.kind != HotSwapTarget::Kind::None) {
+    buildHotSwap();
+    return;
+  }
   if (!searching()) {
     buildTree();
+    return;
+  }
+  if (deviceTreeMode()) {
+    buildDeviceTree();
     return;
   }
   const library::SearchQuery q = currentQuery();
@@ -313,6 +430,115 @@ void BrowserPanel::buildTree() {
   list_->markDirty();
 }
 
+// Keeps the selection on the same item after a rebuild (selectedKey_).
+static int32_t findKey(const library::Index& ix, std::span<const BrowserRow> rows, const std::vector<BrowserDeviceRow>& devs,
+                       const std::string& key) {
+  if (key.empty()) return -1;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const BrowserRow& r = rows[i];
+    const std::string p = r.device ? catalogItemPath(devs[r.id].patch) : r.dir ? ix.dirPath(r.id) : ix.path(r.id);
+    if (p == key) return static_cast<int32_t>(i);
+  }
+  return -1;
+}
+
+void BrowserPanel::buildDeviceTree() {
+  rows_.clear();
+  deviceRows_.clear();
+  const library::Index& ix = *index_;
+  const bool instruments = source_.index == static_cast<uint32_t>(library::Category::Instruments);
+  const doc::DeviceKind kind = instruments ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
+  if (const doc::DeviceLibrary* dl = ctx_.deviceLibrary()) {
+    for (const doc::DeviceInfo& d : dl->catalog().devices())
+      if (d.kind == kind) deviceRows_.push_back({d.name, d.patch, d.kind});
+  } else {
+    for (const doc::StockDevice& d : doc::stockDevices())
+      if (d.kind == kind) deviceRows_.push_back({std::string(d.name), std::string(d.patch), d.kind});
+  }
+  deviceRows_.push_back({instruments ? "Instrument Rack" : "Audio Effect Rack",
+                         std::string(instruments ? doc::kInstrumentRack : doc::kAudioEffectRack), kind});
+  // Presets by the patch they are for; user devices and presets of unknown devices after the devices.
+  std::vector<std::vector<BrowserRow>> presets(deviceRows_.size());
+  std::vector<BrowserRow> rest;
+  const auto cat = static_cast<library::Category>(source_.index);
+  for (uint32_t e = 0; e < ix.entryCount(); ++e) {
+    const library::ItemKind k = ix.kind(e);
+    if (k == library::ItemKind::Preset) {
+      const std::string patch = lib_.presetPatch(ix.path(e));
+      bool placed = false;
+      for (size_t d = 0; d < deviceRows_.size() && !placed; ++d)
+        if (!patch.empty() && deviceRows_[d].patch == patch) {
+          presets[d].push_back({e, 1, false, false});
+          placed = true;
+        }
+      if (!placed && ix.category(e) == cat) rest.push_back({e, 0, false, false});
+    } else if (k == library::ItemKind::Device && ix.category(e) == cat) {
+      rest.push_back({e, 0, false, false});
+    }
+  }
+  for (size_t d = 0; d < deviceRows_.size(); ++d) {
+    const BrowserRow dr{static_cast<uint32_t>(d), 0, false, true};
+    rows_.push_back(dr);
+    if (!rowOpen(dr)) continue;
+    std::sort(presets[d].begin(), presets[d].end(),
+              [&](const BrowserRow& a, const BrowserRow& b) { return library::compareFolded(ix.name(a.id), ix.name(b.id)) < 0; });
+    rows_.insert(rows_.end(), presets[d].begin(), presets[d].end());
+  }
+  sortFiles(rest);
+  rows_.insert(rows_.end(), rest.begin(), rest.end());
+  ++stats_.rebuilds;
+  selected_ = findKey(ix, rows_, deviceRows_, selectedKey_);
+  list_->invalidateLayout();
+  list_->markDirty();
+}
+
+void BrowserPanel::buildHotSwap() {
+  rows_.clear();
+  deviceRows_.clear();
+  const library::Index& ix = *index_;
+  for (uint32_t e = 0; e < ix.entryCount(); ++e) {
+    const library::ItemKind k = ix.kind(e);
+    if (hotSwap_.kind == HotSwapTarget::Kind::Tuning) {
+      if (k == library::ItemKind::Tuning) rows_.push_back({e, 0, false, false});
+      continue;
+    }
+    if (k == library::ItemKind::Preset && lib_.presetPatch(ix.path(e)) == hotSwap_.patch) rows_.push_back({e, 0, false, false});
+  }
+  if (!query_.empty()) {  // the search text narrows the list (fuzzy, as the search scores names)
+    std::string folded;
+    for (char c : query_)
+      if (c != ' ') folded += library::foldChar(c);
+    std::vector<int32_t> scratch;
+    if (!folded.empty())
+      std::erase_if(rows_, [&](const BrowserRow& r) { return library::fuzzyScore(folded, ix.stem(r.id), scratch) == library::kNoMatch; });
+  }
+  std::stable_sort(rows_.begin(), rows_.end(),
+                   [&](const BrowserRow& a, const BrowserRow& b) { return library::compareFolded(ix.name(a.id), ix.name(b.id)) < 0; });
+  ++stats_.rebuilds;
+  selected_ = findKey(ix, rows_, deviceRows_, selectedKey_);
+  list_->invalidateLayout();
+  list_->markDirty();
+}
+
+bool BrowserPanel::rowOpen(const BrowserRow& r) const noexcept {
+  if (r.device)
+    return r.id < deviceRows_.size() &&
+           std::find(openDevices_.begin(), openDevices_.end(), deviceRows_[r.id].patch) != openDevices_.end();
+  return r.dir && folderOpen(r.id);
+}
+
+void BrowserPanel::setRowOpen(const BrowserRow& r, bool open) {
+  if (r.dir) {
+    setFolderOpen(r.id, open);
+    return;
+  }
+  if (!r.device || r.id >= deviceRows_.size() || rowOpen(r) == open) return;
+  const std::string patch = deviceRows_[r.id].patch;
+  if (open) openDevices_.push_back(patch);
+  else std::erase(openDevices_, patch);
+  if (deviceTreeMode()) buildDeviceTree();
+}
+
 bool BrowserPanel::folderOpen(uint32_t dir) const noexcept { return std::binary_search(openDirs_.begin(), openDirs_.end(), dir); }
 
 void BrowserPanel::setFolderOpen(uint32_t dir, bool open) {
@@ -327,6 +553,7 @@ void BrowserPanel::setFolderOpen(uint32_t dir, bool open) {
 std::string BrowserPanel::selectedPath() const {
   if (selected_ < 0 || static_cast<size_t>(selected_) >= rows_.size() || !index_) return {};
   const BrowserRow& r = rows_[static_cast<size_t>(selected_)];
+  if (r.device) return r.id < deviceRows_.size() ? catalogItemPath(deviceRows_[r.id].patch) : std::string();
   return r.dir ? index_->dirPath(r.id) : index_->path(r.id);
 }
 
@@ -339,6 +566,21 @@ void BrowserPanel::select(int32_t row, bool preview) {
   list_->markDirty();
   if (row >= 0) list_->reveal(row);
   selectionChanged(preview);
+  if (row >= 0 && hotSwap_.kind != HotSwapTarget::Kind::None) loadInPlace();  // T5.11: hot-swap loads on selection
+}
+
+// T5.11: the selected item replaces the hot-swap target's preset / tuning (one undo step).
+void BrowserPanel::loadInPlace() {
+  const std::string path = selectedPath();
+  if (path.empty() || selected_ < 0) return;
+  const std::string name(index_->stem(rows_[static_cast<size_t>(selected_)].id));
+  if (hotSwap_.kind == HotSwapTarget::Kind::Device) {
+    if (Status s = hotSwapDevice(ctx_, hotSwap_.device, path); !s) ctx_.setStatus("Hot-Swap: " + s.error().message);
+    else ctx_.setStatus("Hot-Swap: " + hotSwap_.label + " \xE2\x86\x90 " + name);
+    return;
+  }
+  auto r = loadTuningItem(ctx_, path, &hotSwap_.tuning);
+  ctx_.setStatus(r ? "Hot-Swap: " + *r : "Hot-Swap: " + r.error().message);
 }
 
 void BrowserPanel::selectionChanged(bool preview) {
@@ -350,7 +592,7 @@ void BrowserPanel::selectionChanged(bool preview) {
     return;
   }
   const BrowserRow& r = rows_[static_cast<size_t>(selected_)];
-  if (r.dir || !isSample(*index_, r.id)) {
+  if (r.dir || r.device || !isSample(*index_, r.id)) {
     if (port && previewOn_ && port->playing()) port->stop();
     strip_->markDirty();
     return;
@@ -390,14 +632,14 @@ void BrowserPanel::requestOverview() {
 double BrowserPanel::previewLength() const noexcept {
   if (selected_ < 0 || !index_) return 0.0;
   const BrowserRow& r = rows_[static_cast<size_t>(selected_)];
-  return r.dir ? 0.0 : index_->seconds(r.id);
+  return r.dir || r.device ? 0.0 : index_->seconds(r.id);
 }
 
 void BrowserPanel::startPreview(double from) {
   PreviewPort* port = lib_.preview();
   if (!port || selected_ < 0 || !index_) return;
   const BrowserRow& r = rows_[static_cast<size_t>(selected_)];
-  if (r.dir || !isSample(*index_, r.id)) return;
+  if (r.dir || r.device || !isSample(*index_, r.id)) return;
   PreviewRequest req;
   req.path = index_->path(r.id);
   req.startSeconds = from;
@@ -468,6 +710,12 @@ DragPayload BrowserPanel::selectionPayload() const {
   p.kind = DragKind::BrowserItems;
   if (selected_ < 0 || !index_) return p;
   const BrowserRow& r = rows_[static_cast<size_t>(selected_)];
+  if (r.device) {  // T5.11: a catalog device (drag it onto a device chain)
+    p.paths.push_back(selectedPath());
+    p.ids.push_back(r.id);
+    p.label = deviceRows_[r.id].name;
+    return p;
+  }
   p.paths.push_back(r.dir ? index_->dirPath(r.id) : index_->path(r.id));
   p.ids.push_back(r.id);
   p.label = std::string(r.dir ? index_->dirName(r.id) : index_->name(r.id));
@@ -477,6 +725,13 @@ DragPayload BrowserPanel::selectionPayload() const {
 std::string BrowserPanel::cellText(const BrowserRow& r, BrowserColumn c) const {
   if (!index_) return {};
   const library::Index& ix = *index_;
+  if (r.device) {
+    if (r.id >= deviceRows_.size()) return {};
+    const BrowserDeviceRow& d = deviceRows_[r.id];
+    if (c == BrowserColumn::Name) return d.name;
+    if (c == BrowserColumn::Type) return d.patch == doc::kAudioEffectRack || d.patch == doc::kInstrumentRack ? "rack" : "device";
+    return {};
+  }
   if (r.dir) return c == BrowserColumn::Name ? std::string(ix.dirName(r.id)) : std::string();
   char buf[32];
   switch (c) {
@@ -512,16 +767,48 @@ std::string BrowserPanel::cellText(const BrowserRow& r, BrowserColumn c) const {
 
 bool BrowserPanel::loadSelection() {
   if (selected_ < 0 || !index_) return false;
-  const BrowserRow& r = rows_[static_cast<size_t>(selected_)];
+  const BrowserRow r = rows_[static_cast<size_t>(selected_)];
   if (r.dir) {
     setFolderOpen(r.id, !folderOpen(r.id));
     return true;
   }
+  if (hotSwap_.kind != HotSwapTarget::Kind::None) {  // T5.11: Enter in hot-swap mode: load in place, leave the mode
+    loadInPlace();
+    setHotSwap({});
+    return true;
+  }
+  // T5.11: devices, presets, user devices, tunings and clips.
+  const std::string item = selectedPath();
+  const std::string name = r.device ? deviceRows_[r.id].name : std::string(index_->stem(r.id));
+  switch (libraryItemOf(item)) {
+    case LibraryItem::CatalogDevice:
+    case LibraryItem::Preset:
+    case LibraryItem::UserDevice: {
+      const doc::TrackId track = ctx_.selectedTrack();
+      if (!track.valid()) {
+        ctx_.setStatus("Select a track to load " + name + " into");
+        return false;
+      }
+      auto d = loadDeviceItem(ctx_, item, DeviceSlot{track, doc::kAppend, {}});
+      ctx_.setStatus(d ? name + " loaded" : "Could not load " + name + ": " + d.error().message);
+      return d.ok();
+    }
+    case LibraryItem::Tuning: {
+      auto t = loadTuningItem(ctx_, item, nullptr);
+      ctx_.setStatus(t ? *t : "Could not load the tuning: " + t.error().message);
+      return t.ok();
+    }
+    case LibraryItem::Clip: {
+      auto c = loadClipItem(ctx_, item, ctx_.selectedTrack(), ctx_.startMarker());
+      ctx_.setStatus(c ? name + " added" : "Could not load the clip: " + c.error().message);
+      return c.ok();
+    }
+    case LibraryItem::None: break;
+  }
+  if (r.device) return false;
   const library::ItemKind k = index_->kind(r.id);
   if (k != library::ItemKind::Sample) {
-    ctx_.setStatus(k == library::ItemKind::Preset || k == library::ItemKind::Device
-                       ? "Presets and devices load with the user library (not yet)"
-                       : "Only samples load from the browser yet");
+    ctx_.setStatus("This kind of file does not load from the browser yet");
     return false;
   }
   const std::string path = index_->path(r.id);
@@ -568,15 +855,17 @@ bool BrowserPanel::onKey(const KeyEvent& e) {
       if (tree() && tree()->focus() == search_) return false;  // the caret moves in the field
       if (selected_ < 0) return true;
       const BrowserRow r = rows_[static_cast<size_t>(selected_)];
+      const bool foldable = r.dir || r.device;
       if (e.key == key::kRight) {
-        if (r.dir && !folderOpen(r.id)) setFolderOpen(r.id, true);
-        else if (r.dir && static_cast<size_t>(selected_) + 1 < rows_.size()) select(selected_ + 1);
+        if (foldable && !rowOpen(r)) setRowOpen(r, true);
+        else if (foldable && static_cast<size_t>(selected_) + 1 < rows_.size()) select(selected_ + 1);
       } else {
-        if (r.dir && folderOpen(r.id)) {
-          setFolderOpen(r.id, false);
+        if (foldable && rowOpen(r)) {
+          setRowOpen(r, false);
         } else {  // to the containing folder (and fold it)
           for (int32_t i = selected_; i-- > 0;)
-            if (rows_[static_cast<size_t>(i)].dir && rows_[static_cast<size_t>(i)].depth + 1 == r.depth) {
+            if ((rows_[static_cast<size_t>(i)].dir || rows_[static_cast<size_t>(i)].device) &&
+                rows_[static_cast<size_t>(i)].depth + 1 == r.depth) {
               select(i, false);
               break;
             }
@@ -593,6 +882,10 @@ bool BrowserPanel::onKey(const KeyEvent& e) {
         stopPreview();
         return true;
       }
+      if (hotSwap_.kind != HotSwapTarget::Kind::None) {  // T5.11: leaves hot-swap mode
+        setHotSwap({});
+        return true;
+      }
       return false;
     }
   }
@@ -607,7 +900,8 @@ bool BrowserPanel::onKey(const KeyEvent& e) {
 
 // --- drops onto the panel (folders become places) ---------------------------------------------------------------------
 
-DropFeedback BrowserPanel::dragOver(const DragPayload& p, Vec2, Mods) {
+DropFeedback BrowserPanel::dragOver(const DragPayload& p, Vec2 pos, Mods) {
+  if (p.kind == DragKind::Clips) return {dropFolderAt(pos).empty() ? DropEffect::None : DropEffect::Copy, Cursor::Arrow};  // T5.12
   if (p.kind != DragKind::Files) return {};
   for (const std::string& s : p.paths) {
     std::error_code ec;
@@ -617,7 +911,13 @@ DropFeedback BrowserPanel::dragOver(const DragPayload& p, Vec2, Mods) {
   return {};
 }
 
-DropEffect BrowserPanel::drop(const DragPayload& p, Vec2, Mods) {
+DropEffect BrowserPanel::drop(const DragPayload& p, Vec2 pos, Mods mods) {
+  if (p.kind == DragKind::Clips) {  // T5.12: arrangement clips → .pqclip files (Alt: rendered WAV files)
+    const std::string folder = dropFolderAt(pos);
+    if (folder.empty()) return DropEffect::None;
+    const std::vector<std::string> made = saveDroppedClips(p, folder, (mods & mod::kAlt) != 0);
+    return made.empty() ? DropEffect::None : DropEffect::Copy;
+  }
   uint32_t added = 0;
   for (const std::string& s : p.paths) {
     std::error_code ec;
@@ -628,12 +928,61 @@ DropEffect BrowserPanel::drop(const DragPayload& p, Vec2, Mods) {
   return added ? DropEffect::Link : DropEffect::None;
 }
 
+// --- T5.12: clips dropped from the arrangement --------------------------------------------------------------------------
+
+std::string BrowserPanel::dropFolderAt(Vec2 pos) const {
+  if (index_ && list_->rect().contains(pos)) {
+    const int32_t row = list_->rowAt(pos);
+    if (row >= 0) {
+      const BrowserRow& r = rows_[static_cast<size_t>(row)];
+      if (r.dir) return index_->dirPath(r.id);
+      if (!r.device) return index_->dirPath(index_->entries.dir[r.id]);
+    } else if (source_.kind == BrowserSource::Kind::Place && source_.index < index_->places.size()) {
+      return index_->places[source_.index].root;  // empty space below a place's tree: its root
+    }
+  }
+  // Anywhere else on the panel: the User Library's Clips folder.
+  return lib_.userPath("Clips");
+}
+
+std::vector<std::string> BrowserPanel::saveDroppedClips(const DragPayload& p, std::string_view folder, bool render) {
+  std::vector<std::string> made;
+  const doc::Snapshot snap = ctx_.doc();
+  std::string error;
+  for (const uint64_t packed : p.ids) {
+    const doc::ClipRef ref = unpackClipRef(packed);
+    const doc::Track* t = doc::findTrackPtr(*snap, ref.track);
+    const int32_t i = t ? doc::findClipIndex(*t, ref.clip) : -1;
+    if (i < 0) continue;
+    const doc::ClipSlot& c = t->clips[static_cast<size_t>(i)];
+    Result<std::string> r = Error{ErrorCode::Unknown, "", {}};
+    if (render) {
+      if (!c.audio) r = Error{ErrorCode::Unsupported, "MIDI clips render to audio with M11's MIDI export (not yet)", {}};
+      else if (!lib_.clipRenderer()) r = Error{ErrorCode::Unsupported, "rendering is not available here", {}};
+      else r = lib_.clipRenderer()(ref, folder);
+    } else {
+      r = lib_.saveClip(*snap, c, c.audio ? ctx_.samplePath(c.audio->sample) : std::string(), folder);
+    }
+    if (r) made.push_back(std::move(*r));
+    else error = r.error().message;
+  }
+  if (!made.empty()) {
+    lib_.pendingRename = made.size() == 1 ? made.front() : std::string();
+    ctx_.setStatus(std::to_string(made.size()) + (made.size() == 1 ? " clip saved to " : " clips saved to ") + std::string(folder) +
+                   (error.empty() ? std::string() : " (" + error + ")"));
+  } else if (!error.empty()) {
+    ctx_.setStatus("Could not save the clip: " + error);
+  }
+  return made;
+}
+
 // --- context menu ---------------------------------------------------------------------------------------------------------
 
 void BrowserPanel::openContextMenu(int32_t row, Vec2 at) {
   if (row < 0 || !index_) return;
   select(row, false);
   const BrowserRow r = rows_[static_cast<size_t>(row)];
+  if (r.device) return;  // T5.11: a catalog device has no file
   std::vector<MenuItem> items;
   const std::string path = r.dir ? index_->dirPath(r.id) : index_->path(r.id);
   if (!r.dir) {
@@ -651,6 +1000,21 @@ void BrowserPanel::openContextMenu(int32_t row, Vec2 at) {
       cols.push_back(std::move(mi));
     }
     items.push_back(MenuItem::sub("Collections", std::move(cols)));
+    // T5.11: free tags (toggle the ones in use; New Tag... edits a name in place).
+    std::vector<MenuItem> tagItems;
+    for (const std::string& t : allTags_) {
+      const bool on = item && std::any_of(item->tags.begin(), item->tags.end(), [&](const std::string& x) { return x == t; });
+      MenuItem mi = MenuItem::item(t, [this, key, t, on] {
+        if (on) lib_.tags().removeTag(key, t);
+        else lib_.tags().addTag(key, t);
+        lib_.tagsChanged();
+      });
+      mi.checked = on;
+      tagItems.push_back(std::move(mi));
+    }
+    if (!tagItems.empty()) tagItems.push_back(MenuItem::sep());
+    tagItems.push_back(MenuItem::item("New Tag\xE2\x80\xA6", [this, row] { list_->beginTagEdit(row); }));
+    items.push_back(MenuItem::sub("Tags", std::move(tagItems)));
   }
   items.push_back(MenuItem::item("Show in Explorer", [this, path] {
     if (FileDialogs* d = ctx_.fileDialogs()) d->showInExplorer(path);
@@ -679,11 +1043,16 @@ IRect BrowserPanel::rowRect(int32_t row) const noexcept { return list_->rowRect(
 
 BrowserPanel& installBrowser(Shell& shell) {
   Widget& slot = shell.slot(ShellSlot::Browser);
-  slot.setWidth(Length::fixed(bm::kPanelWidth));
+  // T5.11: the width is the user's (the handle on the right edge; saved with the view preferences).
+  slot.setWidth(Length::fixed(browser::clampBrowserWidth(shell.context().viewPrefs().browserWidth)));
   slot.setClipChildren(true);
+  slot.setLayout(LayoutKind::Row);
   auto& panel = slot.add<BrowserPanel>(shell);
+  panel.setWidth(Length::flex(1));
+  slot.add<browser::WidthHandle>(shell.context(), slot).setWidth(Length::fixed(bm::kHandleWidth));
   BrowserPanel* p = &panel;
   shell.context().setViewAction("browser.search", [p] { p->focusSearch(); });
+  shell.context().library().setHotSwapHandler([p](const HotSwapTarget& t) { p->setHotSwap(t); });  // T5.11
   return panel;
 }
 

@@ -363,6 +363,9 @@ public:
   // --- input (LaneCanvas forwards everything but the wheel) ---
   bool pointer(const ui::PointerEvent& e);
   void cancelDrag();
+  // T5.12: the clips being moved leave the arrangement: a Clips drag session (pq/ui/drag.h) takes over. False when none
+  // could start (the move goes on).
+  bool dragClipsOut();
   // The user abandoned the drag (Esc, capture or window focus lost: T3.x-fix-edit, M3 review L19): as cancelDrag, and
   // a time-selection drag puts back the selection from before its press (not the partial band).
   void abortDrag();

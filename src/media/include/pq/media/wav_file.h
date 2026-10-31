@@ -40,6 +40,10 @@ Result<WavData> parseWav(const uint8_t* bytes, size_t size);
 Status writeWav(const std::filesystem::path& path, const std::vector<std::vector<float>>& channels,
                 uint32_t sampleRate);
 
+// T5.12: writes `channels` as 24-bit integer PCM (rounded to the nearest step, clamped to full scale; no dither).
+Status writeWavPcm24(const std::filesystem::path& path, const std::vector<std::vector<float>>& channels,
+                     uint32_t sampleRate);
+
 // Streams a 32-bit float WAV file. open() → write()* → close(); the destructor closes (ignoring errors).
 class WavWriter {
 public:

@@ -366,3 +366,22 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What was matched against: Live 12's browser from memory (sidebar sections, preview strip with Raw / Sync, colour collections); the user said exact parity is not required.
 - To judge (Q158): the panel width (440 px, fixed) and its density; the list columns; the chips (collections only); auto-preview on by default at −6 dB; Delete without a confirmation (Recycle Bin).
 - Known gaps: free-tag and filter chips (duration, BPM, rate) are not on the panel; no tag editing; no hot-swap mode (T5.11); the browser width cannot be dragged.
+
+## T5.11 User library + hot-swap · 2026-10-31 (👁)
+- What to look at:
+  - Golden: `tests/views/golden/browser-hotswap.png` (hot-swap mode for an Operator: the accent bar "Hot-Swap: presets of Operator ×" over the device's presets). `browser-panel.png` / `browser-search.png` were re-recorded: the new filter / tag chip row under the colour chips and the width handle on the browser's right edge.
+  - Live (`pqdaw`; the User Library is `Documents\pqdaw\User Library`): right-click a device's title → Save Preset: the browser opens on `Presets/<Device>/` with the new file's name selected for typing. Save as Default Preset, then add the same device from the + menu: it starts from those values. Edit a stock device in the circuit view, then Save as New Device: it appears under "User Devices" in the + menu and in the browser's Audio Effects / Instruments; a project using it opens without the library (the text is in the project).
+  - Click the preset slot on a device's title bar ("Default", or the last preset loaded): the browser switches to hot-swap mode; Up / Down load each preset in place (wires and macro mappings stay; Ctrl+Z steps back through them); Enter or Esc leaves.
+  - Browser → Audio Effects / Instruments: each device with a fold triangle and its presets under it; double-click a device to add it, drag a preset onto the Device view.
+  - Right-click a tuning chip or a Tunings-panel card: Save to Library, Hot-Swap Tuning… (selecting a tuning gives the clip / track / main tuning that tuning).
+  - Chips: Dur / BPM / Rate / Ch step through ranges on click (right-click: Any); right-click a file → Tags → New Tag…, then its #tag chip filters. Drag the browser's right edge to resize it (double-click: 440 px).
+- What was matched against: Live 12 from memory (the hot-swap button and preset slot, presets under their device, Save as Default Preset); the user said exact parity is not required.
+- To judge (Q?-T5.11-a): the preset slot as the hot-swap button (no separate icon); hot-swap loading on every selection; user devices showing their stock name in the title bar; the chips' ranges.
+- Known gaps: modulation wires inside a saved rack are not stored in the preset (only the rack's own chains / mappings); a preset renamed in Explorer keeps its old "name" inside (the browser shows file names).
+
+## T5.12 Drag out: arrangement → browser, → Explorer · 2026-10-31 (👁)
+- What to look at (live; a hand check of a real drag to Explorer is part of this task):
+  - Drag an audio clip from the arrangement onto a browser folder: a `.pqclip` appears there, its sample copied into `<folder>/Samples/`; hold Alt while dropping: a WAV of the clip as it plays (gain, fades, transpose, reverse) instead. A MIDI clip saves as .pqclip; with Alt it is refused (status line).
+  - Drag an audio clip (or a browser sample) out of the window onto an Explorer folder or the desktop: the WAV / the original file is copied there. A clip longer than 60 s renders only when Explorer asks for it (a short pause when the pointer enters Explorer). Play while dragging: the audio does not stop; meters and the playhead freeze during the drag and resume after it. Preference (settings "views.dragOut24Bit"): 24-bit instead of 32-bit float.
+  - A MIDI clip dragged out of the window: refused, the status line says MIDI export comes with M11.
+- To judge (Q?-T5.12-a): the clip move turning into a drag once it leaves the arrangement (the clip snaps back home); the temp files' location; no in-window preference UI for the bit depth yet.

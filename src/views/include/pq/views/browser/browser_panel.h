@@ -39,11 +39,13 @@
 #include <string>
 #include <vector>
 
+#include "pq/document/model.h"
 #include "pq/library/index.h"
 #include "pq/library/search.h"
 #include "pq/media/waveform.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/widget.h"
+#include "pq/views/browser/library.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -62,16 +64,40 @@ struct BrowserSource {
 enum class BrowserColumn : uint8_t { Name, Type, Duration, Bpm, Rate, Relevance };
 
 struct BrowserRow {
-  uint32_t id = 0;     // an entry, or (dir) a directory of the index
+  uint32_t id = 0;     // an entry, or (dir) a directory of the index, or (device) a catalog device (deviceRows())
   uint16_t depth = 0;  // tree indent
   bool dir = false;
+  bool device = false;  // T5.11: a catalog device (Instruments / Audio Effects list its presets under it)
 };
+
+// T5.11: a catalog device as a row of the Instruments / Audio Effects tree.
+struct BrowserDeviceRow {
+  std::string name;   // "EQ Eight", "Audio Effect Rack"
+  std::string patch;
+  doc::DeviceKind kind = doc::DeviceKind::AudioEffect;
+};
+
+// T5.11: the filter chips (duration, BPM, rate, channels): each cycles through a few ranges (0 = any).
+struct BrowserFilters {
+  uint8_t duration = 0;  // 0 any, 1 < 1 s, 2 1–10 s, 3 10–60 s, 4 > 60 s
+  uint8_t bpm = 0;       // 0 any, 1 < 100, 2 100–130, 3 > 130
+  uint8_t rate = 0;      // 0 any, 1 44.1 kHz, 2 48 kHz, 3 88.2 / 96 kHz, 4 above
+  uint8_t channels = 0;  // 0 any, 1 mono, 2 stereo
+  std::vector<std::string> tags;  // free tags the entries must have (all of them)
+  bool any() const noexcept { return duration || bpm || rate || channels || !tags.empty(); }
+  bool operator==(const BrowserFilters&) const = default;
+};
+inline constexpr uint8_t kFilterSteps[4] = {5, 4, 5, 3};  // states per chip (duration, BPM, rate, channels)
+// "Dur: 1–10 s", "BPM: Any", … (chip 0 … 3 at state s).
+std::string filterChipLabel(uint32_t chip, uint8_t state);
 
 namespace browser {
 class Sidebar;
 class List;
 class PreviewStrip;
 class Chips;
+class FilterChips;
+class HotSwapBar;
 }  // namespace browser
 
 class BrowserPanel : public ui::Widget {
@@ -95,6 +121,22 @@ public:
   // Folders: open / closed (a place's root is always open).
   bool folderOpen(uint32_t dir) const noexcept;
   void setFolderOpen(uint32_t dir, bool open);
+  // T5.11: a foldable row (a folder, or a catalog device with its presets) open / closed.
+  bool rowOpen(const BrowserRow& r) const noexcept;
+  void setRowOpen(const BrowserRow& r, bool open);
+  const std::vector<BrowserDeviceRow>& deviceRows() const noexcept { return deviceRows_; }
+  // The row of a path (an entry's, or a catalog item path), −1 when not shown.
+  int32_t rowOf(std::string_view path) const;
+
+  // ---- T5.11 ----
+  // Hot-swap mode (see HotSwapTarget): shows the browser on the matching items; None leaves it.
+  void setHotSwap(HotSwapTarget t);
+  const HotSwapTarget& hotSwap() const noexcept { return hotSwap_; }
+  // Filter chips (duration, BPM, rate, channels, free tags).
+  void setFilters(BrowserFilters f);
+  const BrowserFilters& filters() const noexcept { return filters_; }
+  // The free tags of the library (the tag chips), sorted.
+  const std::vector<std::string>& allTags() const noexcept { return allTags_; }
   // Selection (−1: none). Selecting a sample loads its head; with preview on it plays.
   int32_t selected() const noexcept { return selected_; }
   void select(int32_t row, bool preview = true);
@@ -113,6 +155,8 @@ public:
   ui::DragPayload selectionPayload() const;
   ui::TextEdit& searchField() const noexcept { return *search_; }
   browser::List& list() const noexcept { return *list_; }
+  browser::FilterChips& filterChips() const noexcept { return *filterChips_; }
+  browser::HotSwapBar& hotSwapBar() const noexcept { return *hotSwapBar_; }
   // The list widget (focus, scrolling) and a row's device-px rect (tests, scenes).
   ui::Widget& listWidget() const noexcept;
   ui::IRect rowRect(int32_t row) const noexcept;
@@ -130,6 +174,12 @@ public:
   void paint(ui::PaintContext& ctx) override;
   ui::DropFeedback dragOver(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
   ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
+  // T5.12: arrangement clips dropped on the list: saved as .pqclip files into the folder under the pointer (a folder row,
+  // a file's folder, else the place shown / the User Library's Clips folder); Alt = rendered to WAV instead
+  // (setClipRenderer). Returns the files written.
+  std::vector<std::string> saveDroppedClips(const ui::DragPayload& p, std::string_view folder, bool render);
+  // The folder a drop at `pos` (device px) goes to ("" none).
+  std::string dropFolderAt(ui::Vec2 pos) const;
   void onTimer(uint32_t id) override;
 
   // --- helpers the parts share ---
@@ -146,6 +196,11 @@ public:
   bool previewPlaying();
 
 private:
+  void buildDeviceTree();
+  void buildHotSwap();
+  bool deviceTreeMode() const noexcept;
+  void takePendingRename();
+  void loadInPlace();
   void onLibrary();
   void refresh(bool keepSelection = true);   // runs (or submits) the search / rebuilds the tree
   void applyResult(std::shared_ptr<const library::SearchResult> r);
@@ -166,6 +221,13 @@ private:
   browser::Sidebar* sidebar_ = nullptr;
   browser::List* list_ = nullptr;
   browser::PreviewStrip* strip_ = nullptr;
+  browser::FilterChips* filterChips_ = nullptr;
+  browser::HotSwapBar* hotSwapBar_ = nullptr;
+  std::vector<BrowserDeviceRow> deviceRows_;
+  std::vector<std::string> openDevices_;  // patches of the unfolded device rows
+  HotSwapTarget hotSwap_;
+  BrowserFilters filters_;
+  std::vector<std::string> allTags_;
 
   std::shared_ptr<const library::Index> index_;
   std::shared_ptr<const library::EntryTags> tags_;

@@ -61,7 +61,9 @@ struct Fixture {
   ~Fixture() { d.tree().setRoot(std::make_unique<Widget>()); }
   std::vector<std::string> names() const {
     std::vector<std::string> v;
-    for (const BrowserRow& r : b->rows()) v.push_back(r.dir ? std::string(b->index()->dirName(r.id)) + "/" : std::string(b->index()->name(r.id)));
+    for (const BrowserRow& r : b->rows())
+      v.push_back(r.dir ? std::string(b->index()->dirName(r.id)) + "/"
+                        : r.device ? b->cellText(r, BrowserColumn::Name) : std::string(b->index()->name(r.id)));
     return v;
   }
   int32_t rowOf(std::string_view n) const {
@@ -101,8 +103,17 @@ TEST_CASE("browser: categories, search (best first), collections, sorting") {
   Fixture f;
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Samples)});
   CHECK(f.names().size() == 9);  // every sample of every place, in path order
+  // T5.11: Instruments lists the devices (no device library here: the stock list) with their presets under them; the
+  // demo's presets lie in Presets/Operator (the User Library's layout names their device).
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Instruments)});
+  CHECK(f.names() == std::vector<std::string>{"Basic Synth", "Operator", "Instrument Rack"});
+  f.b->setRowOpen(f.b->rows()[1], true);
+  CHECK(f.names() == std::vector<std::string>{"Basic Synth", "Operator", "Bright Pad.pqpreset", "Glass Bell.pqpreset",
+                                              "Sub Pluck.pqpreset", "Warm Keys.pqpreset", "Instrument Rack"});
+  // A search text lists matching files flat, as before.
+  f.b->setQuery("bright");
   CHECK(f.names() == std::vector<std::string>{"Bright Pad.pqpreset"});
+  f.b->setQuery("");
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Samples)});
   f.b->setQuery("kick");
   REQUIRE_FALSE(f.names().empty());
@@ -188,7 +199,7 @@ TEST_CASE("browser: Enter loads a sample as a clip at the start marker on the se
   REQUIRE(t->clips[0].audio != nullptr);
   CHECK(t->clips[0].audio->start == kTicksPerWhole);
   CHECK(t->clips[0].audio->name == "beat");
-  // A preset: not yet (status), nothing changes.
+  // T5.11: an instrument (the first Instruments row) onto the selected audio track: refused (status), nothing changes.
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Instruments)});
   f.b->select(0, false);
   CHECK_FALSE(f.b->loadSelection());
@@ -284,9 +295,10 @@ TEST_CASE("browser: the context menu toggles a collection") {
   REQUIRE(menu != nullptr);
   REQUIRE(menu->items().size() >= 3);
   CHECK(menu->items()[0].label == "Collections");
-  CHECK(menu->items()[1].label == "Show in Explorer");
+  CHECK(menu->items()[1].label == "Tags");  // T5.11
+  CHECK(menu->items()[2].label == "Show in Explorer");
   // Rename / Delete: the User Library only (place 0 is one).
-  CHECK(menu->items()[2].enabled);
+  CHECK(menu->items()[3].enabled);
   menu->items()[0].submenu[2].onChoose();  // Yellow
   const library::Index& ix = *f.b->index();
   const library::TagItem* it = f.ctx.library().tags().find(library::tagKeyOf(ix, f.b->rows()[static_cast<size_t>(row)].id));

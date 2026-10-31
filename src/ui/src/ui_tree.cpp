@@ -542,6 +542,17 @@ bool UiTree::dispatchPointer(const PointerEvent& e) {
   // T5.7: an internal drag owns the pointer: moves retarget it, the last release drops it (the source then loses the
   // capture). The wheel still scrolls whatever is under the pointer.
   if (drag_ && !drag_->payload.external && e.type != PointerType::Wheel) {
+    // T5.12: out of the window: the app's OS drag takes the payload over.
+    if (e.type == PointerType::Move && dragOut_ &&
+        (e.pos.x < 0.0f || e.pos.y < 0.0f || e.pos.x >= static_cast<float>(width_) || e.pos.y >= static_cast<float>(height_))) {
+      DragPayload payload = drag_->payload;
+      endDrag(false);
+      buttonsHeld_ = 0;
+      releaseCapture();
+      const auto handler = dragOut_;  // the handler may replace itself
+      handler(std::move(payload));
+      return true;
+    }
     if (e.type == PointerType::Move || e.type == PointerType::Down) updateDrag(e.pos, mods_);
     if (e.type == PointerType::Up && buttonsHeld_ == 0) {
       updateDrag(e.pos, mods_);

@@ -276,6 +276,14 @@ public:
   Result<engine::RenderStats> renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
                                             uint32_t blockFrames = 0);
 
+  // T5.12: one audio clip rendered as it plays alone — gain, fades, transpose, reverse, warp, the edge declicks; no
+  // crossfade with a neighbour, no track devices, no mixer — through its own clip player (the engine's code, offline:
+  // its sample loaded into the pool, streamed reads waited for). The frames of the clip's body [start, end) at the engine
+  // rate, one channel per channel of the sample (at most 2). Blocks are aligned to the engine block from song sample 0,
+  // as in a render of the project, so the frames equal what the clip's track plays when it is alone in the project.
+  // Any thread except the audio thread (the link's pool is thread-safe; nothing of the playing engine is touched).
+  Result<std::vector<std::vector<float>>> renderClip(const doc::Project& p, doc::ClipRef clip);
+
   // ---- T5.4: audio clips (see the file comment) ----
   media::SamplePool& samplePool() noexcept { return *pool_; }
   // Spans that read silence because the disk thread was late, since the link was created. Any thread.

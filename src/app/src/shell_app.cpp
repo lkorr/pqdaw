@@ -23,6 +23,9 @@
 #include "pq/app/user_settings.h"
 #include "pq/app/pipeline_cache.h"
 #include "pq/views/browser/library.h"
+#include "pq/views/browser/library_load.h"
+#include "pq/app/clip_export.h"
+#include "pq/app/os_drag.h"
 #include "pq/views/waveforms.h"
 
 namespace pq::app {
@@ -295,6 +298,23 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     });
     app->indexer_->start();
     lib.setIndexer(app->indexer_.get());
+    // T5.12: Alt-drops of clips on a browser folder render them to WAV files there.
+    if (app->link_) {
+      ProjectLink* link = app->link_.get();
+      views::ViewContext* ctx = app->ctx_.get();
+      lib.setClipRenderer([link, ctx](const doc::ClipRef& clip, std::string_view folder) -> Result<std::string> {
+        const std::filesystem::path dir(std::u8string(folder.begin(), folder.end()));
+        const std::filesystem::path out = clipWavPath(*ctx->doc(), clip, dir);
+        if (Status s = writeClipWav(*link, *ctx->doc(), clip, out, ctx->viewPrefs().dragOut24Bit); !s) return std::move(s).error();
+        const std::u8string u = out.u8string();
+        return std::string(u.begin(), u.end());
+      });
+    }
+  }
+  {  // T5.12: drags out of the window (OLE); the temporary WAV files of earlier sessions go now.
+    cleanDragOutFolder();
+    ShellApp* raw = app.get();
+    tree.setDragOutHandler([raw](ui::DragPayload p) { raw->onDragOut(std::move(p)); });
   }
   ShellApp* self = app.get();
   app->tempoSub_ = app->ctx_->subscribe([self](const doc::StoreEvent&) { self->onTempoMaybeChanged(); });
@@ -309,6 +329,8 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
 
 ShellApp::~ShellApp() {
   drop_.reset();  // T5.7: no OLE callback reaches a half-destroyed shell
+  tree_.setDragOutHandler(nullptr);  // T5.12
+  cleanDragOutFolder();
   // The shell's widgets subscribe to the context: destroy them first.
   tree_.setRoot(std::make_unique<ui::Widget>());
   shell_.reset();
@@ -325,6 +347,70 @@ ShellApp::~ShellApp() {
   indexer_.reset();
   audio_.reset();  // the device stops calling the engine (and the preview)
   if (link_) link_->detach();
+}
+
+// T5.12: an internal drag left the window. Browser items go out as their files; audio clips as WAV files rendered as
+// they play (short ones now, long ones when the drop target asks: os_drag.h); MIDI clips wait for M11's .mid export.
+// DoDragDrop's modal loop pumps the window's messages until the drop; the audio thread is not involved.
+void ShellApp::onDragOut(ui::DragPayload p) {
+  std::vector<std::string> files;
+  std::vector<doc::ClipRef> lazy;
+  const doc::Snapshot snap = ctx_->doc();
+  const bool pcm24 = ctx_->viewPrefs().dragOut24Bit;
+  std::string refused;
+  if (p.kind == ui::DragKind::Files || p.kind == ui::DragKind::BrowserItems) {
+    for (const std::string& f : p.paths) {
+      std::error_code ec;
+      if (views::catalogPatchOf(f).empty() && std::filesystem::exists(std::filesystem::path(std::u8string(f.begin(), f.end())), ec))
+        files.push_back(f);
+    }
+  } else if (p.kind == ui::DragKind::Clips) {
+    for (const uint64_t packed : p.ids) {
+      const doc::ClipRef ref = views::unpackClipRef(packed);
+      const doc::Track* t = doc::findTrackPtr(*snap, ref.track);
+      const int32_t i = t ? doc::findClipIndex(*t, ref.clip) : -1;
+      if (i < 0) continue;
+      if (!t->clips[static_cast<size_t>(i)].audio) {
+        refused = "MIDI clips drag out as .mid files with M11 (not yet)";
+        continue;
+      }
+      if (!link_) {
+        refused = "no playback engine to render the clip";
+        continue;
+      }
+      if (clipSeconds(*snap, ref) > kLazyRenderSeconds) {
+        lazy.push_back(ref);
+        continue;
+      }
+      const std::filesystem::path out = clipWavPath(*snap, ref, dragOutFolder());
+      if (Status s = writeClipWav(*link_, *snap, ref, out, pcm24); !s) {
+        refused = s.error().message;
+        continue;
+      }
+      const std::u8string u = out.u8string();
+      files.emplace_back(u.begin(), u.end());
+    }
+  }
+  if (files.empty() && lazy.empty()) {
+    if (!refused.empty()) ctx_->setStatus("Drag out: " + refused);
+    return;
+  }
+  ProjectLink* link = link_.get();
+  const ui::DropEffect fx = dragFilesOut([files, lazy, snap, link, pcm24]() {
+    std::vector<std::string> all = files;
+    for (const doc::ClipRef& ref : lazy) {
+      const std::filesystem::path out = clipWavPath(*snap, ref, dragOutFolder());
+      if (writeClipWav(*link, *snap, ref, out, pcm24)) {
+        const std::u8string u = out.u8string();
+        all.emplace_back(u.begin(), u.end());
+      }
+    }
+    return all;
+  });
+  tree_.damage().addAll();  // the modal loop painted nothing: repaint once (meters and the playhead resume)
+  ctx_->setStatus(fx == ui::DropEffect::None ? std::string("Drag out cancelled")
+                                             : (refused.empty() ? std::string("Dragged out")
+                                                                : "Dragged out (" + refused + ")"));
 }
 
 // T4.4: the project engine was rebuilt at another rate: the preview follows (it stops; the next edit or Play restarts it).

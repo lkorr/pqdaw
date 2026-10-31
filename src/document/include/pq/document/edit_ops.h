@@ -367,6 +367,21 @@ EditResult editDevicePatch(const Project& p, DeviceId device, std::string text,
 // Devices that are not edited are skipped (none edited: an empty edit).
 EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devices);
 
+// ---- User library (T5.11; pq/document/library_files.h) -----------------------------------------------------------
+// Hot-swap: `with` (a preset's device) replaces `device` in place: the same position and id (so wires, mappings and the
+// engine's state key follow it); everything inside `with` (a rack's chains, mappings, inner devices) gets fresh ids.
+// Wires into params the new device still has (`params`: its patch's params; a rack's macros and selector) and every
+// wire out of it are kept, as are the mappings of the racks around it onto those params; the rest go. The kinds must
+// match. One undo step ("Hot-Swap Preset").
+EditResult replaceDevice(const Project& p, IdSource& ids, DeviceId device, const Device& with,
+                         std::span<const std::string> params);
+// A library clip placed at `start` on `track` (note clips on MIDI tracks, audio clips on audio tracks) with fresh ids,
+// overwriting what lies under it (an audio clip's warp-Off length re-derived there; no crossfade). `newSample`: the
+// audio clip's sample is new to the project (its id drawn by the caller) and is added in the same step; else the clip's
+// own sample id must be in the table. Edit::clips = the new clip.
+EditResult placeClip(const Project& p, IdSource& ids, TrackId track, const ClipSlot& clip, Ticks start,
+                     const std::optional<SampleRef>& newSample = std::nullopt);
+
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------------
 // One Batch = one undo step each. Ports are not checked against the device patches (the views offer only real ones).
 // Wires `from`.`port` (an export) to `to`.`param`; a second wire between the same two ports is refused.

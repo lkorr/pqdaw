@@ -136,6 +136,8 @@ std::string projectNameOf(std::string_view dirUtf8);
 // T4.15: view preferences that are not part of a project (kept by the app in its user settings).
 struct ViewPrefs {
   bool circuitShowInactive = false;  // the circuit editor's Inactive toggle: draw switched-off branches (dimmed)
+  float browserWidth = 440.0f;       // T5.11: the browser's width (logical px; its right edge is a resize handle)
+  bool dragOut24Bit = false;         // T5.12: clips dragged out to Explorer render as 24-bit WAV (else 32-bit float)
   bool operator==(const ViewPrefs&) const = default;
 };
 

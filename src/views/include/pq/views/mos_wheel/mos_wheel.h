@@ -132,8 +132,13 @@ MosWheelPopover* openMosWheelPopover(const ui::Widget& w);
 // Installs the tuning.openMosWheel action handler (Ctrl+Shift+W). One line in installDefaultContent.
 void installMosWheel(Shell& shell);
 
+// T5.11: "Save to Library" and "Hot-Swap Tuning…" for `target` (a tuning chip's and a tunings-panel card's right-click).
+void openTuningLibraryMenu(ui::Widget& from, ViewContext& ctx, const TuningTarget& target, ui::Vec2 at);
+
 // A tuning chip: a colour swatch (the main tuning's colour; none for a private tuning) and the tuning's name. A
-// click opens the MOS wheel for its target. The text follows the document and the live preview.
+// click opens the MOS wheel for its target; T5.11: a right-click offers Save to Library and Hot-Swap Tuning… (the
+// browser lists the library's tunings; selecting one gives the target that tuning). The text follows the document and
+// the live preview.
 class TuningChip : public ui::Control {
 public:
   TuningChip(std::string name, ViewContext& ctx);

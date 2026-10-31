@@ -397,6 +397,12 @@ TuningCard::TuningCard(std::string name, TuningsPanel& panel, const doc::TuningS
   setHeight(Length::fixed(height_));
 }
 
+bool TuningCard::onPointer(const PointerEvent& e) {
+  if (e.type != PointerType::Down || e.button != PointerButton::Right) return false;
+  openTuningLibraryMenu(*this, panel_.context(), TuningTarget::forMain(id_), e.pos);
+  return true;
+}
+
 TuningParamRow* TuningCard::row(std::optional<doc::ParamKind> param) const noexcept {
   for (TuningParamRow* r : rows_)
     if (r->param() == param) return r;

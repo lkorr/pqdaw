@@ -96,13 +96,14 @@ pq_add_test(pq_tests_app
     app/test_patch_preview.cpp
     app/test_probe_preview.cpp  # T4.5: probes and cost meters through the editor and the preview
     app/test_os_drop.cpp  # T5.7: the OLE drop target (CF_HDROP data object, effects, registration)
+    app/test_os_drag.cpp  # T5.12: the OLE drag source's data object (CF_HDROP, lazy files), the drag-out temp folder
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
 # solo/mute vs effectiveAudible, topology swaps, the NullDevice end-to-end playhead); T2.6-fix1: the tuning signal in
 # playback (tests/app/fixtures/tuning_automation, the bit-identical static render, live tuning params); T1b.4: the AOT
 # seed and the disk cache under ProjectLink (a stock track compiles nothing; a second load of a project neither).
-pq_add_test(pq_tests_playback
+pq_add_test(pq_tests_playback PERF  # T5.12: the 60-s clip render (perf)
   SOURCES
     app/test_playback.cpp
     app/test_playback_link.cpp
@@ -121,6 +122,7 @@ pq_add_test(pq_tests_playback
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
+    app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -168,6 +170,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_affordances.cpp  # T4.16b: cursors, hover highlights and editing keys (arrangement, piano roll, automation)
     views/test_file_drop.cpp  # T5.7: files / browser items dropped on the arrangement (rules, ghosts, one undo step, 100 files)
     views/test_browser.cpp  # T5.10: the browser panel (tree, search, keys, preview strip, drag out, goldens, 200k rows)
+    views/test_user_library.cpp  # T5.11 / T5.12: user library, hot-swap, chips, width, clips dragged to the browser
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
@@ -343,6 +346,7 @@ pq_add_test(pq_tests_document
     document/test_racks.cpp    # T4.8: racks (rules, builders, file, lowering)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
     document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
+    document/test_library_files.cpp  # T5.11: user-library files, hot-swap, library clips
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index
