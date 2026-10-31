@@ -97,6 +97,12 @@ public:
   std::function<void()> onPresetClick;
   // The preset slot's device-px rect (empty: folded or too narrow; tests).
   ui::IRect presetSlotRect() const;
+  // T4.17: the title (the device's own name, or the description's) and an in-place rename: a field over the title
+  // (Enter commits through `commit` with the text, Esc or an empty text cancels, focus loss commits).
+  void setTitle(std::string title);
+  const std::string& title() const noexcept;
+  void beginRename(std::function<void(const std::string&)> commit);
+  bool renaming() const noexcept;
 
   // ---- T4.7 hooks ----
   struct Jack {

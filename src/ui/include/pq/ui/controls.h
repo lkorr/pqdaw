@@ -269,7 +269,8 @@ protected:
   bool typeInKey(const KeyEvent& e);
   bool typeInText(const TextEvent& e);
   void typeInFocus(bool focused);
-  void paintTypeIn(PaintContext& ctx);
+  // `area`: where the field goes (empty: centred across the control).
+  void paintTypeIn(PaintContext& ctx, IRect area = {});
   void endTypeIn(bool commit);
   // A Wheel event: steps the value (see above). False when the wheel is not the control's (pass it on).
   bool handleWheel(const PointerEvent& e);

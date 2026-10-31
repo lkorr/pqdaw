@@ -80,6 +80,10 @@ public:
   bool hotSwap(doc::DeviceId device);
   ui::DropFeedback dragOver(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
   ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
+  // T4.17: Ctrl+Shift+G: the selected rack (one chain) becomes its devices in place; Ctrl+R: renames the selected device
+  // in its title bar (Enter: one undo step). False when there is nothing to do (the reason in the status line).
+  bool ungroupSelected();
+  bool renameSelected();
   // ---- T4.16c: keyboard (Live's Device view; docs/HOTKEYS.md) -------------------------------------------------------
   // Left / Right (device.selectPrev / Next): the neighbouring device in display order — a rack, then the devices of the
   // chain it shows, then what follows the rack — so the arrows walk into and out of rack chains; nothing selected: the

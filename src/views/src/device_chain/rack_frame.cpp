@@ -400,6 +400,7 @@ public:
       };
     }
     panel_->setActive(d.active);
+    panel_->setTitle(d.name.empty() ? desc_.title : d.name);  // T4.17
     for (const devices::ParamInfo& p : sig_.params) panel_->setParamValue(p.name, paramValue(p.name));
     // The chain rows.
     bool sameRows = list_->rows.size() == rack_->chains.size();

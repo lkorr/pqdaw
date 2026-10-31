@@ -17,12 +17,18 @@ namespace {
 constexpr float kTitlePad = 8.0f;  // logical px each side of a title
 constexpr float kBarInset = 4.0f;  // logical px before the first title
 
-// Whether the focus is inside the clip view (Edit acts on the focused editor).
-bool focusInClipView(const UiTree* tree) {
-  if (!tree) return false;
-  for (const Widget* w = tree->focus(); w; w = w->parent())
-    if (w->name() == "clip-view") return true;
-  return false;
+// What the Edit menu acts on: the editor holding the focus (M4 review M14: the Device view, the circuit editor and the
+// project patch view too, not only the arrangement and the piano roll).
+enum class EditScope : uint8_t { Arrangement, PianoRoll, Devices, Circuit, ProjectPatch };
+EditScope editScope(const UiTree* tree) {
+  if (!tree) return EditScope::Arrangement;
+  for (const Widget* w = tree->focus(); w; w = w->parent()) {
+    if (w->name() == "clip-view") return EditScope::PianoRoll;
+    if (w->name() == "chain-view") return EditScope::Devices;
+    if (w->name().rfind("circuit-editor", 0) == 0) return EditScope::Circuit;
+    if (w->name() == "project-patch") return EditScope::ProjectPatch;
+  }
+  return EditScope::Arrangement;
 }
 
 }  // namespace
@@ -205,7 +211,23 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       v.push_back(act(h.canUndo() ? "Undo " + std::string(h.undoLabel()) : std::string("Undo"), "edit.undo"));
       v.push_back(act(h.canRedo() ? "Redo " + std::string(h.redoLabel()) : std::string("Redo"), "edit.redo"));
       v.push_back(MenuItem::sep());
-      const bool roll = focusInClipView(tree());
+      const EditScope scope = editScope(tree());
+      if (scope == EditScope::Devices) {  // the selected devices (Live's Edit menu in the Device view)
+        v.push_back(act("Cut", "device.cut"));
+        v.push_back(act("Copy", "device.copy"));
+        v.push_back(act("Paste", "device.paste"));
+        v.push_back(act("Duplicate", "device.duplicate"));
+        v.push_back(act("Delete", "device.delete"));
+        v.push_back(MenuItem::sep());
+        v.push_back(act("Rename", "device.rename"));
+        v.push_back(act("Group", "device.group"));
+        v.push_back(act("Ungroup", "device.ungroup"));
+        v.push_back(MenuItem::sep());
+        v.push_back(act("Activate / Deactivate", "device.toggleActive"));
+        break;
+      }
+      if (scope == EditScope::Circuit || scope == EditScope::ProjectPatch) break;  // their edits are in their canvases
+      const bool roll = scope == EditScope::PianoRoll;
       const std::string pre = roll ? "pianoroll." : "arrangement.";
       v.push_back(act("Cut", pre + "cut"));
       v.push_back(act("Copy", pre + "copy"));

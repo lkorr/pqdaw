@@ -22,6 +22,7 @@
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/devices/device_panel.h"
 #include "pq/views/fake_transport.h"
+#include "../../src/views/src/shell/shell_widgets.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
 #include "../ui/golden_check.h"
@@ -341,6 +342,63 @@ TEST_CASE("rack view: zone and reorder drags cancel on focus loss and Esc (M4 re
     CHECK(u.ctx.doc() == before);
     CHECK(u.history() == h0);
   }
+}
+
+// T4.17: Ctrl+R renames the selected device in its title bar (one undo step; the title shows the name); Ctrl+Shift+G
+// ungroups the selected one-chain rack (its devices take its place and become the selection). M4 review M14: with the
+// Device view focused, the Edit menu acts on the devices (no arrangement-only items).
+TEST_CASE("rack view: Ctrl+R renames a device in its title bar; Ctrl+Shift+G ungroups; Edit follows the focus (T4.17, M14)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  const doc::DeviceId one[1] = {u.rack};
+  v.select(one);
+  u.d.tree().setFocus(&v);
+  // Edit menu: the device actions.
+  auto* bar = dynamic_cast<shell::MenuBar*>(u.d.find("main/menu-bar"));
+  REQUIRE(bar != nullptr);
+  const std::vector<MenuItem> edit = bar->items(1);
+  auto has = [&](std::string_view action) {
+    return std::any_of(edit.begin(), edit.end(), [&](const MenuItem& m) { return m.action == action; });
+  };
+  CHECK(has("device.copy"));
+  CHECK(has("device.delete"));
+  CHECK(has("device.ungroup"));
+  CHECK_FALSE(has("arrangement.copy"));
+  CHECK_FALSE(has("arrangement.split"));
+  CHECK_FALSE(has("arrangement.insertTime"));
+  // Rename: a field over the title; typing replaces the selected name; Enter: one step.
+  const size_t h0 = u.history();
+  CHECK(u.d.press("Ctrl+R") == KeyResult::Action);
+  devices::DevicePanel* p = v.panelOf(u.rack);
+  REQUIRE(p != nullptr);
+  CHECK(p->renaming());
+  CHECK(u.d.type("Dirt"));
+  u.d.press("Return");
+  u.d.step();
+  CHECK_FALSE(p->renaming());
+  CHECK(u.history() == h0 + 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.rack).device->name == "Dirt");
+  CHECK(v.panelOf(u.rack)->title() == "Dirt");
+  // Esc cancels.
+  u.d.tree().setFocus(&v);
+  u.d.press("Ctrl+R");
+  CHECK(u.d.type("Nope"));
+  u.d.press("Escape");
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.rack).device->name == "Dirt");
+  // Ungroup: the Saturator back in the track's chain where the rack was, selected; one step.
+  u.d.tree().setFocus(&v);
+  v.select(one);
+  CHECK(u.d.press("Ctrl+Shift+G") == KeyResult::Action);
+  CHECK(u.history() == h0 + 2);
+  CHECK_FALSE(doc::findDevice(*u.ctx.doc(), u.rack).device);
+  REQUIRE(u.track().devices.size() == 3);
+  CHECK(u.track().devices[2]->id == u.sat);
+  REQUIRE(v.selection().size() == 1);
+  CHECK(v.selection()[0] == u.sat);
+  REQUIRE(u.ctx.undo());
+  CHECK(doc::findDevice(*u.ctx.doc(), u.rack).device);
 }
 
 TEST_CASE("render: audio-rack and instrument-rack match the golden images") {

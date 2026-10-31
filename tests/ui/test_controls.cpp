@@ -635,6 +635,51 @@ TEST_CASE("knob: vertical drag over dragPixels sweeps the range; modulation ring
   CHECK_FALSE(f.d.tree().needsPaint());
 }
 
+// T4.17: a number typed into a focused knob or fader opens a type-in with it; Enter sets the value (one gesture), Esc
+// cancels, focus loss commits, junk reverts; while typing no step keys or shortcuts run.
+TEST_CASE("knob and fader: typing a number opens a type-in (Enter commits one gesture, Esc cancels, focus loss commits)") {
+  Fixture f;
+  ValueSpec s;
+  s.min = -50;
+  s.max = 50;
+  s.def = 0;
+  auto& k = f.add<Knob>(40, 40, "knob", s);
+  auto& fd = f.add<Fader>(20, 100, "fader", spec0to100(10));
+  GestureLog g;
+  g.attach(k);
+  f.d.tree().setFocus(&k);
+  CHECK(f.d.press("1") == KeyResult::Widget);
+  REQUIRE(k.typingIn());
+  CHECK(k.typeInBuffer().text() == "1");
+  CHECK(f.d.press("Up") == KeyResult::Widget);  // no step while typing
+  CHECK(k.value() == 0.0);
+  f.d.type("2.5");
+  CHECK(k.typeInBuffer().text() == "12.5");
+  f.d.press("Enter");
+  CHECK_FALSE(k.typingIn());
+  CHECK(k.value() == doctest::Approx(12.5));
+  CHECK(g.begins == 1);
+  CHECK(g.ends == 1);
+  f.d.press("-");
+  f.d.type("7");
+  f.d.press("Escape");
+  CHECK_FALSE(k.typingIn());
+  CHECK(k.value() == doctest::Approx(12.5));
+  f.d.press("4");
+  f.d.type("x");
+  f.d.press("Enter");
+  CHECK(k.value() == doctest::Approx(12.5));  // unparsable: reverted
+  CHECK(g.begins == 1);
+  // A fader: focus loss commits.
+  f.d.tree().setFocus(&fd);
+  f.d.press("6");
+  f.d.type("6");
+  REQUIRE(fd.typingIn());
+  f.d.tree().setFocus(&k);
+  CHECK_FALSE(fd.typingIn());
+  CHECK(fd.value() == doctest::Approx(66.0));
+}
+
 // --- buttons / toggles ----------------------------------------------------------------------------------
 
 TEST_CASE("button and toggle: click semantics, keyboard, disabled, focus ring only after keyboard focus") {

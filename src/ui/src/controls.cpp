@@ -524,7 +524,7 @@ void ValueControl::endTypeIn(bool commit) {
   }
 }
 
-void ValueControl::paintTypeIn(PaintContext& ctx) {
+void ValueControl::paintTypeIn(PaintContext& ctx, IRect area) {
   if (!typing_) return;
   const Theme* th = ctx.res.theme;
   const ThemeFonts* f = ctx.res.uiFonts;
@@ -532,7 +532,7 @@ void ValueControl::paintTypeIn(PaintContext& ctx) {
   const IRect c = rect();
   // A field across the control, centred on it (inside its rect: what a repaint of the control covers).
   const int32_t h = std::min(c.h, ctx.scale.px(18.0f));
-  const IRect r{c.x, c.y + (c.h - h) / 2, c.w, h};
+  const IRect r = area.w > 0 && area.h > 0 ? area : IRect{c.x, c.y + (c.h - h) / 2, c.w, h};
   box(ctx.dl, r, ctx.scale.exact(th->radius.control), th->surface.sunken, th->field.borderFocus);
   TextSystem& ts = *ctx.res.text;
   const TextRun run = ts.shape(f->numeric, typeIn_.text());

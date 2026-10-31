@@ -79,6 +79,15 @@ public:
       default: return false;
     }
   }
+  // T4.17: a number typed into the focused knob: a type-in over its value row (Enter commits, Esc cancels).
+  bool onKey(const ui::KeyEvent& e) override { return typeInKey(e) || ValueControl::onKey(e); }
+  bool onText(const ui::TextEvent& e) override { return typeInText(e); }
+  void onFocusChanged(bool focused) override { typeInFocus(focused); }
+  void paintOver(ui::PaintContext& ctx) override {
+    const ui::IRect r = rect();
+    const int32_t lh = ctx.scale.px(kLabelH);
+    paintTypeIn(ctx, {r.x, r.bottom() - lh, r.w, lh});
+  }
 
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
@@ -294,7 +303,45 @@ private:
 class TitleBar final : public ui::Widget {
 public:
   TitleBar(DevicePanel& panel, DevicePanel::Impl& impl, std::string title)
-      : Widget("title"), panel_(panel), impl_(impl), title_(std::move(title)) {}
+      : Widget("title"), panel_(panel), impl_(impl), title_(std::move(title)) {
+    setLayout(ui::LayoutKind::Custom);  // T4.17: the rename field over the title
+  }
+  const std::string& title() const noexcept { return title_; }
+  void setTitle(std::string t) {
+    if (t == title_) return;
+    title_ = std::move(t);
+    markDirty();
+  }
+  bool renaming() const noexcept { return rename_ != nullptr && !renameDone_; }
+  void beginRename(std::function<void(const std::string&)> commit) {
+    if (rename_ != nullptr) return;
+    renameCommit_ = std::move(commit);
+    rename_ = &add<ui::TextEdit>("rename", title_);
+    renameDone_ = false;
+    rename_->buffer().selectAll();
+    rename_->onCommit = [this](const std::string&) { endRename(true); };
+    rename_->onCancel = [this] { endRename(false); };
+    invalidateArrange();
+    markDirty();
+    if (ui::UiTree* t = tree()) {
+      t->layoutNow();
+      t->setFocus(rename_, true);
+    }
+  }
+  void arrange(ui::LayoutPass& pass) override {
+    if (rename_ == nullptr) return;
+    const ui::IRect r = rect(), fr = foldRect(), p = presetRect();
+    const int32_t x = fr.right() + pass.px(2.0f);
+    pass.place(*rename_, {x, r.y + 1, std::max(0, (p.w > 0 ? p.x - pass.px(4.0f) : r.right() - pass.px(4.0f)) - x), r.h - 2});
+  }
+  void onFrame(double) override {
+    if (rename_ != nullptr && renameDone_) {
+      (void)removeChild(*rename_);
+      rename_ = nullptr;
+      renameDone_ = false;
+      markDirty();
+    }
+  }
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     const ui::ThemeFonts* f = ctx.res.uiFonts;
@@ -321,9 +368,9 @@ public:
       if (panel_.edited() && ctx.res.text) markW = ctx.res.text->measure(f->small, kEdited) + ctx.scale.px(6);
       if (markW > t.w / 2) markW = 0;  // too narrow (folded): the title alone
       t.w -= markW;
-      const int32_t adv =
+      const int32_t adv = rename_ != nullptr ? 0 :  // T4.17: the rename field draws the name
           paint::text(ctx, f->bodyStrong, t, title_, panel_.active() ? th->device.titleText : th->device.titleTextOff, ui::TextAlign::Left);
-      if (markW > 0)
+      if (markW > 0 && rename_ == nullptr)
         paint::text(ctx, f->small, {t.x + adv + ctx.scale.px(6), r.y, markW, r.h}, kEdited,
                     panel_.active() ? th->accent.primary : th->device.titleTextOff, ui::TextAlign::Left);
       if (p.w > 0) {  // T5.11: the preset name; a click hot-swaps (the host's onPresetClick)
@@ -410,11 +457,27 @@ private:
     const int32_t h = static_cast<int32_t>(std::lround(14.0f * s));
     return {r.right() - w - static_cast<int32_t>(std::lround(5.0f * s)), r.y + (r.h - h) / 2, w, h};
   }
+  void endRename(bool commit) {
+    if (rename_ == nullptr || renameDone_) return;
+    renameDone_ = true;
+    const std::string text = rename_->text();
+    requestFrame();  // removed at the next frame: this may run inside the field's own callback
+    if (ui::UiTree* t = tree(); t != nullptr && t->focus() == rename_) {
+      ui::Widget* back = parent();
+      while (back != nullptr && !back->focusable()) back = back->parent();
+      t->setFocus(back);
+    }
+    if (commit && !text.empty() && text != title_ && renameCommit_) renameCommit_(text);
+  }
+
   DevicePanel& panel_;
   DevicePanel::Impl& impl_;
   std::string title_;
   bool hoverFold_ = false;
   bool hoverPreset_ = false;
+  ui::TextEdit* rename_ = nullptr;  // T4.17
+  bool renameDone_ = false;
+  std::function<void(const std::string&)> renameCommit_;
 };
 
 // The body: controls at their description rects (logical px × UI scale).
@@ -888,6 +951,13 @@ void DevicePanel::setActive(bool on) {
   active_ = on;
   markDirty();
 }
+
+void DevicePanel::setTitle(std::string title) { static_cast<TitleBar*>(title_)->setTitle(std::move(title)); }
+const std::string& DevicePanel::title() const noexcept { return static_cast<const TitleBar*>(title_)->title(); }
+void DevicePanel::beginRename(std::function<void(const std::string&)> commit) {
+  static_cast<TitleBar*>(title_)->beginRename(std::move(commit));
+}
+bool DevicePanel::renaming() const noexcept { return static_cast<const TitleBar*>(title_)->renaming(); }
 
 void DevicePanel::setEdited(bool e) {
   if (edited_ == e) return;

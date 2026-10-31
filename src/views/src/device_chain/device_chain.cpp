@@ -326,6 +326,7 @@ public:
       };
       // T4.4-fix1: a user device's "edited" marker; a double-click on the title opens the device in the circuit view.
       panel_->setEdited(d.edited());
+      if (!d.name.empty()) panel_->setTitle(d.name);  // T4.17
       panel_->onTitleDoubleClick = [this] { impl_.view.openInCircuitView(id_); };
       // T5.11: the preset slot names the last preset loaded here; a click hot-swaps the device's presets in the browser.
       panel_->setPresetName(ctx.library().presetName(d.id));
@@ -352,6 +353,7 @@ public:
   void update(const doc::Device& d) override {
     source_ = d.source;
     if (!panel_) return;
+    panel_->setTitle(d.name.empty() ? panel_->desc().title : d.name);  // T4.17
     panel_->setActive(d.active);
     panel_->setEdited(d.edited());
     panel_->setPresetName(ctx_.library().presetName(d.id));
@@ -579,7 +581,11 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       items.push_back(ui::MenuItem::item("Duplicate", [v] { v->duplicateSelected(); }, "Ctrl+D"));
       items.push_back(ui::MenuItem::item("Delete", [v] { v->deleteSelected(); }, "Delete"));
       items.push_back(ui::MenuItem::sep());
+      items.push_back(ui::MenuItem::item("Rename", [v] { v->renameSelected(); }, "Ctrl+R"));  // T4.17
+      items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item("Group", [v] { v->groupSelected(); }, "Ctrl+G"));  // T4.8
+      if (loc.device != nullptr && loc.device->rack)
+        items.push_back(ui::MenuItem::item("Ungroup", [v] { v->ungroupSelected(); }, "Ctrl+Shift+G"));  // T4.17
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::sub("Add Device", view.deviceMenu()));
       ui::openContextMenu(*this, e.pos, std::move(items));
@@ -1080,6 +1086,39 @@ bool DeviceChainView::groupSelected() {
   return impl_->run(doc::ops::groupDevices(*ctx_.doc(), ctx_.store().ids(), sel));
 }
 
+bool DeviceChainView::ungroupSelected() {
+  if (selection_.size() != 1) {
+    if (!selection_.empty()) ctx_.setStatus("Ungroup: select one rack");
+    return false;
+  }
+  const doc::Device* d = doc::findDevice(*ctx_.doc(), selection_.front()).device;
+  if (d == nullptr || !d->rack) {
+    ctx_.setStatus("Ungroup: the selected device is not a rack");
+    return false;
+  }
+  const doc::DeviceId rack = d->id;
+  // The rack's devices take its place; they become the selection (Live).
+  std::vector<doc::DeviceId> inner;
+  if (d->rack->chains.size() == 1)
+    for (const doc::DevicePtr& x : d->rack->chains.front()->devices) inner.push_back(x->id);
+  if (!impl_->run(doc::ops::ungroupDevices(*ctx_.doc(), rack))) return false;
+  select(inner);
+  return true;
+}
+
+bool DeviceChainView::renameSelected() {
+  if (selection_.size() != 1) return false;
+  const doc::DeviceId id = selection_.front();
+  FrameBase* f = impl_->frameOf(id);
+  devices::DevicePanel* p = f != nullptr ? f->panel() : nullptr;
+  if (p == nullptr) return false;
+  if (p->folded()) p->setFolded(false);
+  ViewContext* c = &ctx_;
+  Impl* im = impl_.get();
+  p->beginRename([c, im, id](const std::string& name) { im->run(doc::ops::renameDevice(*c->doc(), id, name)); });
+  return true;
+}
+
 ui::Widget* DeviceChainView::frameOf(doc::DeviceId device) const noexcept { return impl_->frameOf(device); }
 
 devices::DeviceTarget* DeviceChainView::targetOf(doc::DeviceId device) const noexcept {
@@ -1137,6 +1176,8 @@ DeviceChainView& installDeviceChain(Shell& shell) {
   ctx.setViewAction("device.duplicate", [p] { p->duplicateSelected(); }, has);
   ctx.setViewAction("device.toggleActive", [p] { p->toggleSelectedActive(); }, has);
   ctx.setViewAction("device.group", [p] { p->groupSelected(); }, has);  // T4.8
+  ctx.setViewAction("device.ungroup", [p] { p->ungroupSelected(); }, has);  // T4.17
+  ctx.setViewAction("device.rename", [p] { p->renameSelected(); }, has);    // T4.17
   // T4.16c: Live's arrow keys in the Device view.
   auto chain = [p] { return p->track().valid(); };
   ctx.setViewAction("device.selectPrev", [p] { p->selectNeighbour(-1, false); }, chain);
