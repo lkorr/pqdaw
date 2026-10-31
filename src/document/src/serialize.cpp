@@ -1071,21 +1071,24 @@ public:
     r_.beginObject(at_);
     start_ = r_.valueStart();
   }
-  // Index of the next key in `names`, or −1 at the end of the object.
+  // Index of the next key in `names`, or −1 at the end of the object. T5.x-perf-audio: the name after the previous
+  // match is tried first (files list most keys in `names` order), then all of them.
   int next() {
     std::string_view k;
     if (!r_.nextKey(at_, k)) return -1;
-    for (size_t i = 0; i < names_.size(); ++i) {
-      if (names_[i] == k) {
-        if (seen_ & (uint64_t{1} << i)) r_.failHere(PathSeg(&at_, names_[i]), "duplicate key");
-        seen_ |= uint64_t{1} << i;
-        return static_cast<int>(i);
-      }
-    }
+    if (hint_ < names_.size() && names_[hint_] == k) return take(hint_);
+    for (size_t i = 0; i < names_.size(); ++i)
+      if (names_[i] == k) return take(i);
     const std::string key(k);
     r_.failHere(PathSeg(&at_, key), "unknown key", ErrorCode::InvalidArgument);
   }
   bool has(int i) const noexcept { return (seen_ & (uint64_t{1} << i)) != 0; }
+  int take(size_t i) {
+    if (seen_ & (uint64_t{1} << i)) r_.failHere(PathSeg(&at_, names_[i]), "duplicate key");
+    seen_ |= uint64_t{1} << i;
+    hint_ = i + 1;
+    return static_cast<int>(i);
+  }
   // Errors for the first of `required` that did not appear.
   void require(std::initializer_list<int> required) const {
     for (int i : required)
@@ -1101,6 +1104,7 @@ private:
   std::span<const std::string_view> names_;
   uint64_t seen_ = 0;
   size_t start_ = 0;
+  size_t hint_ = 0;
 };
 
 constexpr uint32_t kMaxId = 0xFFFFFFFEu;  // so IdSource::reserveThrough(maxEntityId) never wraps to 0
@@ -2169,7 +2173,8 @@ private:
         "kind",   "sample",  "warp",   "contentStartFrame", "seconds", "sourceBpm", "gainDb", "transpose",
         "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn"};
     enum { kKind = 12, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune, kReverse, kFadeIn, kFadeOut, kXfade };
-    auto c = std::make_shared<NoteClip>();
+    NoteClip note;  // the fields both kinds have are read into it (T5.x-perf-audio: on the stack, not the heap)
+    NoteClip* c = &note;
     AudioClip a;
     bool audio = false;
     Members m(r_, at, K);
@@ -2240,7 +2245,8 @@ private:
       for (int k = kSample; k <= kXfade; ++k)
         if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only audio clips have this key");
       m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
-      return ClipSlot{c->id, std::move(c), nullptr};
+      const ClipId id = note.id;
+      return ClipSlot{id, std::make_shared<const NoteClip>(std::move(note)), nullptr};
     }
     for (int k : {7, 10, 11})
       if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only note clips have this key");
@@ -2932,11 +2938,14 @@ std::span<const Migration> builtinMigrations() noexcept { return kBuiltinMigrati
 
 Result<std::string> serializeProject(const Project& p, const ViewState& view) {
   std::string out;
-  size_t notes = 0;
+  size_t notes = 0, audio = 0;
   forEachTrack(p, [&](const Track& t, const Track*) {
-    for (const ClipSlot& c : t.clips) notes += c.clip ? c.clip->notes.size() : 0;
+    for (const ClipSlot& c : t.clips) {
+      notes += c.clip ? c.clip->notes.size() : 0;
+      audio += c.audio ? 1 : 0;
+    }
   });
-  out.reserve(4096 + notes * 112);
+  out.reserve(4096 + notes * 112 + audio * 560);  // T5.x-perf-audio: an audio clip line is ~520 bytes
   try {
     Encoder e(out);
     e.project(p, view);
