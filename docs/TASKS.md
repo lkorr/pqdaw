@@ -601,7 +601,24 @@ M4 closes with the safety fixes H1/H2 (+L4), the device fixes H3/H5 (+L11) and t
 - **Features**: T4.17 remainder (branch task/T4.17-qol-leftovers: device names + ungroup document side done; voice.noteHz WIP with 2 failing checks; views items not started); T4.18 device automation (H4).
 - **Process / tracking**: M4-prep gate 30-track ≤ 25 % JIT (best 37 %), M17 ViewContext split; M17 (review) T4.15 optimiser change merged without a release run (covered by the boundary run); L6–L9, L16, L19.
 
- (outline: refine into tasks before starting; most need user review)
+## M5: Audio tracks, browser, user library (plan: docs/plans/M5.md, approved by the user 2026-10-30; M5b Simpler / Drum Rack skipped for now, user 2026-10-31)
+Each task's full description and acceptance criteria are in docs/plans/M5.md under the same id. Schema 7 goes to T5.3 (T4.17's paused branch renumbers on rebase). T5.6 does not wait for T4.17 (deferred).
+
+- [ ] **T5.1 Audio file decoding: the `media` module** (docs/plans/M5.md)
+- [ ] **T5.2 Sample pool + RT-safe disk streaming** (docs/plans/M5.md)
+- [ ] **T5.3 Audio tracks + audio clips in the document** (docs/plans/M5.md)
+- [ ] **T5.4 Clip player + resampler** (docs/plans/M5.md)
+- [ ] **T5.5 Waveform overviews** (docs/plans/M5.md)
+- [ ] **T5.6 Audio clips in the arrangement + the audio Clip View** (docs/plans/M5.md)
+- [ ] **T5.7 Drag in: drag sessions + files from Explorer** (docs/plans/M5.md)
+- [ ] **T5.8 Project samples: copy on save, collect all, missing files, relink** (docs/plans/M5.md)
+- [ ] **T5.9 Browser index: places, indexer, watcher, search** (docs/plans/M5.md)
+- [ ] **T5.10 Browser panel + preview through a cue bus** (docs/plans/M5.md)
+- [ ] **T5.11 User library: presets, racks, user devices, tunings, clips; default presets; hot-swap** (docs/plans/M5.md)
+- [ ] **T5.12 Drag out: arrangement → browser, → Explorer** (docs/plans/M5.md)
+- [ ] **T5.13 M5 review** (docs/plans/M5.md)
+
+## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5** (re-scoped by the user 2026-10-30, SPEC §15): **audio tracks + audio clips** (pulled forward from M6: samples dragged in from the browser or Explorer play on the timeline, without warping beyond Re-Pitch), **browser + user library** (index, search, preview, drag in/out, saving presets / user devices / racks). Plan: docs/plans/M5.md. Simpler and Drum Rack follow (M5b) once sample playback exists. 👁
 - **M6**: warp modes beyond Re-Pitch, recording, take lanes, Capture MIDI, PDC, metronome.
