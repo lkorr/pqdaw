@@ -41,17 +41,19 @@
 //                       summed over the chains (no chain at all: x passes; every chain muted: silence). The select
 //                       zone gates the chain's INPUT (exact silence after its fade; whether it then sleeps is the
 //                       scheduler's segmenting: not yet, Q?-T4.8-a).
-//   Instrument Rack     gain(its instrument's voices, zk_c (key zone, on ln voice.noteHz: the pitch held from the note-on,
-//                       T4.17) · zv_c (velocity zone) [· the enclosing rack's per-voice gain, nested]) (per voice, block
-//                       rate: a zone edit while notes sound fades over the smoothing time) → voice_sum → its effects (per-voice chains: the
+//   Instrument Rack     gain(its instrument's voices, zk_c (key zone: Hz unit on ln voice.noteHz, Degree unit on
+//                       voice.noteDegree (NaN → 0): the note's pitch / degree in its own tuning, held from the note-on,
+//                       T4.17 + M4 review M7) · zv_c (velocity zone) [· the enclosing rack's per-voice gain, nested],
+//                       start 1) (per voice, block rate: a zone edit while notes sound fades over the smoothing time; a
+//                       note starts at its gain) → voice_sum → its effects (per-voice chains: the
 //                       effects before voice_sum) → gain(·, pack(gl_c · zs_c, gr_c · zs_c)) → summed; `done` = and of
 //                       every chain's `done` (all of them must have one, else none).
 //   gl_c, gr_c          runtime params c<chain>_gl / _gr ("chain<id>:gl"): balance pan · volume, derived by the
 //                       document (a chain mixer drag is two param writes; the `gain` stage smooths it).
 //   zone gain           clip(min(v·a1 + b1, v·a2 + b2), 0, 1), linear ramps lo → fadeLo and fadeHi → hi with ε-inclusive
 //                       edges; a1 … b2 runtime params c<chain>_s0 … s3 / v0 … / k0 … the document derives from the zone
-//                       (a zone drag is a param write; key zones in degrees are converted with the track's tuning, so a
-//                       tuning edit moves them). A zone that is off (its whole range) has no node.
+//                       (a zone drag is a param write; Degree key zones are in degrees, Hz key zones in ln Hz). A zone
+//                       that is off (its whole range) has no node.
 // Rack params ("macro1" … "macro16", "select"): a root param d<rack>__<name> (key dev<rack>:<name>) when the rack reads it
 // (a mapping of that macro, a select zone) or a wire modulates it; else none. A macro turn is one param write whatever
 // it drives. Mapped params (a MacroMapping onto a device param or a nested rack's param): the macro's value m →

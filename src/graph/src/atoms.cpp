@@ -285,6 +285,8 @@ const AtomSignature kAtoms[] = {
     // T4.17: an Instrument Rack's key zones read it (decided at note-on; a zone edit never steps a sounding voice).
     {"voice.noteHz", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
      "the note's Hz at its note-on (param rate: glides, pitch events and retunes do not move it)"},
+    {"voice.noteDegree", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
+     "the note's absolute degree in its own tuning at its note-on (fractional between degrees; NaN if unknown)"},
     // Tuning as a signal (T2.6). infer() consumes tune_voices: within every subcircuit the calling patch
     // instantiates, voice.hz reads `hz` and (when connected) voice.cents reads `cents`.
     {"tuning_hz", C::Math, pTuningHz, pTuningHzOut, 0, 0, 0, {},

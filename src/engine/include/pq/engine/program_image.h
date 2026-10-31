@@ -45,10 +45,11 @@ namespace pq::engine {
 // the tuning node (`tuning_hz`). Tuning (T2.6-fix3): which tuning node of the track patch the note follows (1, 2, …;
 // 0: a static pitch). NoteHz (T4.17): the note's Hz at its note-on, param rate (glides, Pitch events and retunes do not
 // move it): what an Instrument Rack's key zones read, so a zone is decided at note-on and a zone edit fades over the
-// rack's smoothing instead of stepping a sounding voice.
+// rack's smoothing instead of stepping a sounding voice. NoteDegree (T4.17, M4 review M7): the note's absolute degree
+// in its own tuning (NoteEvent::noteDegree; NaN: unknown), param rate, what an Instrument Rack's Degree zones read.
 enum class VoiceSignal : uint8_t {
   Hz, Cents, Gate, Trigger, Velocity, Release, Ratio, Harmonic, UnisonCount, Index, Degree, Equave, Tuning, NoteHz,
-  Count_
+  NoteDegree, Count_
 };
 inline constexpr uint32_t kVoiceSignalCount = static_cast<uint32_t>(VoiceSignal::Count_);
 

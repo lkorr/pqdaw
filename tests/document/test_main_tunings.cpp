@@ -209,6 +209,26 @@ void checkClip(const Project& p, const TrackPitches& tp, TrackId track, ClipId c
     REQUIRE(want.has_value());
     REQUIRE(np.hz.has_value());
     CHECK(*np.hz == *want);  // the same double computation
+    // T4.17 (M4 review M7): the degree an Instrument Rack's Degree zones see, in the clip's own tuning: a Degree
+    // identity's absolute degree; any other pitch between the two degrees around it, linear in log frequency.
+    REQUIRE(np.keyDegree.has_value());
+    {
+      auto t = buildTuning(def);
+      REQUIRE(t.ok());
+      const auto hzOf = [&](double d) {
+        return *pq::tuning::resolveHzDouble(PitchId::fromDegree(static_cast<int32_t>(d), 0), t.value(), {});
+      };
+      const double kd = *np.keyDegree;
+      if (n.pitch.kind() == pq::tuning::PitchKind::Degree) {
+        CHECK(kd == std::round(kd));
+        CHECK(hzOf(kd) == doctest::Approx(*np.hz).epsilon(1e-12));
+      } else {
+        const double lo = std::floor(kd);
+        CHECK(hzOf(lo) <= *np.hz);
+        CHECK(hzOf(lo + 1) > *np.hz);
+        CHECK(hzOf(lo) * std::pow(hzOf(lo + 1) / hzOf(lo), kd - lo) == doctest::Approx(*np.hz).epsilon(1e-9));
+      }
+    }
     // T2.6-fix3: Ratio-on-note, Ratio-on-reference and Cents notes follow the signal too (they used to be static).
     const Follow f = main.valid() && hasTuningSignal(def) ? expectedFollow(nc, n) : Follow{};
     CHECK(np.follow == f.follow);

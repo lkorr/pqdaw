@@ -265,6 +265,7 @@ enum Fixed : uint32_t {
   kSendAcc = 72,
   kZoneHz = 76, kZoneLnHz, kZoneVelocity,  // T4.8: the voice values key / velocity zones read (one each per patch)
   kClipPlayer = 80, kClipSlot,             // T5.3: an audio track's source and its slot constant
+  kZoneDegree = 82, kZoneDegreeOk, kZoneDegreeSafe,  // T4.17: voice.noteDegree, not NaN, NaN → 0 (Degree key zones)
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -1140,7 +1141,7 @@ struct Build {
   const TrackDevs& td;
   std::vector<NodeIndex> calls;  // per lowered device: its call node (kNone: a rack)
   std::map<std::pair<uint32_t, uint32_t>, std::vector<PortRef>> rackPins;  // (rack dev, param) → the inputs reading it
-  PortRef vel = kPending, lnHz = kPending;  // shared voice values the zones read (made on first use)
+  PortRef vel = kPending, lnHz = kPending, degree = kPending;  // shared voice values the zones read (made on first use)
   PortRef c0() { return ir.konst(0.0, kC0); }
   PortRef c1() { return ir.konst(1.0, kC1); }
   PortRef time() { return ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime); }
@@ -1355,8 +1356,20 @@ Voices instrumentRack(Build& b, uint32_t k0, PortRef outer0) {
       PortRef g = f.outer;
       auto times = [&](PortRef z, uint32_t slot) { g = g.node == graph::kNone ? z : b.ir.atom("mul", {g, z}, id(slot)); };
       if (!zoneOff(lc.chain->key, ZoneKind::Key, rack.keyUnit)) {
-        if (b.lnHz.node == graph::kNone) b.lnHz = b.ir.atom("log", {b.ir.atom("voice.hz", {}, kZoneHz)}, kZoneLnHz);
-        times(zoneGain(b, cid, 'k', kCZoneKey, b.lnHz, nullptr), kCOuterMul);
+        // T4.17 + M4 review M7: decided at note-on (param rate, held: glides, Pitch events and retunes do not move a
+        // sounding note between chains). Hz zones read ln(voice.noteHz), the note's pitch as resolved in its own
+        // tuning (a clip's tuning included); Degree zones read voice.noteDegree, its degree in that tuning (NaN, a
+        // note from outside the document: degree 0).
+        if (rack.keyUnit == KeyZoneUnit::Degree) {
+          if (b.degree.node == graph::kNone) {
+            const PortRef d = b.ir.atom("voice.noteDegree", {}, kZoneDegree);
+            b.degree = b.ir.atom("select", {b.ir.atom("eq", {d, d}, kZoneDegreeOk), d, b.c0()}, kZoneDegreeSafe);
+          }
+          times(zoneGain(b, cid, 'k', kCZoneKey, b.degree, nullptr), kCOuterMul);
+        } else {
+          if (b.lnHz.node == graph::kNone) b.lnHz = b.ir.atom("log", {b.ir.atom("voice.noteHz", {}, kZoneHz)}, kZoneLnHz);
+          times(zoneGain(b, cid, 'k', kCZoneKey, b.lnHz, nullptr), kCOuterMul);
+        }
       }
       if (!zoneOff(lc.chain->velocity, ZoneKind::Velocity, rack.keyUnit)) {
         if (b.vel.node == graph::kNone) b.vel = b.ir.atom("voice.velocity", {}, kZoneVelocity);
@@ -1377,8 +1390,9 @@ Voices instrumentRack(Build& b, uint32_t k0, PortRef outer0) {
       if (const auto done = b.ir.patch().findOutput(call, "done")) f.dones.emplace_back(PortRef{call, static_cast<uint16_t>(*done)}, cid);
       else f.allDone = false;
       // Through a smoothed gain stage per voice: a zone edit while notes sound fades over ~2 ms (key and velocity zones
-      // are decided at note-on, T4.17).
-      if (g.node != graph::kNone) y = b.ir.atom("gain", {y, g, b.time()}, id(kCVoiceGain));
+      // are decided at note-on, block rate per voice, T4.17); `start` 1: a note starts at its zone's gain (its lane is
+      // reset at the note-on), not faded in from the lane's last note.
+      if (g.node != graph::kNone) y = b.ir.atom("gain", {y, g, b.time(), b.c1()}, id(kCVoiceGain));
       if (rack.voiceChains) {  // SPEC §8.2 voicechain: the chain's effects per voice, then the sum
         y = chainOf(b, lc.devs, 1, y, w);
         y = b.ir.atom("voice_sum", {y}, id(kCVoiceSum));
@@ -1762,17 +1776,8 @@ std::array<double, 4> zoneCoefficients(double lo, double fadeLo, double fadeHi, 
   return c;
 }
 
-// The Hz of degree `d` (rounded) of a track's tuning (key zones in degrees).
-double degreeHz(const tuning::Tuning* t, double d) noexcept {
-  if (t == nullptr) return 0.0;
-  const std::optional<double> hz =
-      tuning::resolveHzDouble(tuning::PitchId::fromDegree(static_cast<int32_t>(std::lround(d)), 0), *t, {});
-  return hz ? *hz : 0.0;
-}
-
 // The derived params of one lowered chain: its mixer (gl, gr) and its zones that are on (as zoneGain names them).
-void chainParams(const Rack& rack, const Chain& c, bool instrumentRack, const tuning::Tuning* trackTuning, uint32_t index,
-                 std::vector<LoweredParam>& out) {
+void chainParams(const Rack& rack, const Chain& c, bool instrumentRack, uint32_t index, std::vector<LoweredParam>& out) {
   const std::string key = "chain" + std::to_string(c.id.value) + ":";
   auto add = [&](std::string_view what, double v, uint32_t ref) {
     out.push_back(LoweredParam{key + std::string(what), index, chainParamName(c.id, what), static_cast<float>(v),
@@ -1787,13 +1792,10 @@ void chainParams(const Rack& rack, const Chain& c, bool instrumentRack, const tu
     if (zoneOff(z, k, rack.keyUnit)) return;
     const ZoneRange r = zoneRange(k, rack.keyUnit);
     std::array<double, 4> co{};
-    if (k == ZoneKind::Key) {  // in ln(Hz)
-      auto ln = [&](double v) {
-        const double hz = rack.keyUnit == KeyZoneUnit::Hz ? v : degreeHz(trackTuning, v);
-        return std::log(std::max(hz, 1e-3));
-      };
+    if (k == ZoneKind::Key && rack.keyUnit == KeyZoneUnit::Hz) {  // in ln(Hz)
+      auto ln = [&](double v) { return std::log(std::max(v, 1e-3)); };
       co = zoneCoefficients(ln(z.lo), ln(z.fadeLo), ln(z.fadeHi), ln(z.hi), z.lo <= r.min, z.hi >= r.max, kZoneEpsLog);
-    } else {
+    } else {  // velocity, select, and Degree key zones (T4.17, M7: in the note's own degrees, voice.noteDegree)
       co = zoneCoefficients(z.lo, z.fadeLo, z.fadeHi, z.hi, z.lo <= r.min, z.hi >= r.max, kZoneEps);
       if (k == ZoneKind::Velocity) {  // the graph reads voice.velocity in 0 … 1
         co[0] *= kVelocityMax;
@@ -1810,7 +1812,7 @@ void chainParams(const Rack& rack, const Chain& c, bool instrumentRack, const tu
 }
 
 void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::vector<LoweredParam>& out,
-               const Callees* lib, const WirePlan& wp, const TrackDevs& td, const Project& project) {
+               const Callees* lib, const WirePlan& wp, const TrackDevs& td) {
   const Node& n = pl.nodes[index];
   const Track& t = *n.track;
   const std::string id = std::to_string(t.id.value);
@@ -1825,8 +1827,6 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
   // not a mapped one (the macro drives its pin), and a rack's params when the patch declares them; each lowered chain's
   // derived params.
   if (lib != nullptr) {
-    std::optional<tuning::Tuning> trackTuning;
-    bool tuningBuilt = false;
     for (uint32_t k = 0; k < td.size(); ++k) {
       const LDev& d = td[k];
       const std::string dev = std::to_string(d.device->id.value);
@@ -1839,14 +1839,8 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
         }
         const Rack& rack = *d.device->rack;
         const bool instrument = d.device->kind == DeviceKind::Instrument;
-        if (instrument && rack.keyUnit == KeyZoneUnit::Degree && !tuningBuilt) {
-          tuningBuilt = true;
-          if (const auto path = findTrack(project, t.id))
-            if (const TuningDef* def = effectiveTuning(project, *path))
-              if (Result<tuning::Tuning> built = buildTuning(*def)) trackTuning = std::move(*built);
-        }
         for (const LChain& c : td.racks[static_cast<size_t>(d.rack)].chains)
-          chainParams(rack, *c.chain, instrument, trackTuning ? &*trackTuning : nullptr, index, out);
+          chainParams(rack, *c.chain, instrument, index, out);
         continue;
       }
       for (graph::NodeIndex v = 0; v < d.callee->nodeCount(); ++v) {
@@ -2128,7 +2122,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     pt.maxVoices = polyphony;  // T4.12-fix1: the instrument's `voices` setting (0: the link's default)
     if (voices && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
     out.graph.tracks.push_back(std::move(pt));
-    addParams(pl, i, aud, out.params, lib, wp, devs[i], p);
+    addParams(pl, i, aud, out.params, lib, wp, devs[i]);
   }
   out.master = pl.master;
   // Wires: outputs, then sends (wire order = summing order).
@@ -2165,7 +2159,7 @@ std::vector<LoweredParam> paramsWith(const Project& p, bool tuningNodes, const C
     wp = planWires(p, pl, devs, deps);
   }
   std::vector<LoweredParam> out;
-  for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out, lib, wp, devs[i], p);
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out, lib, wp, devs[i]);
   return out;
 }
 
@@ -2233,12 +2227,7 @@ std::vector<LoweredParam> chainParamValues(const Project& p, ChainId chain) {
   if (!c.chain) return out;
   const Rack& rack = *c.rack->rack;
   const bool instrument = c.rack->kind == DeviceKind::Instrument;
-  std::optional<tuning::Tuning> t;
-  if (instrument && rack.keyUnit == KeyZoneUnit::Degree)
-    if (const auto path = findTrack(p, c.track->id))
-      if (const TuningDef* def = effectiveTuning(p, *path))
-        if (Result<tuning::Tuning> built = buildTuning(*def)) t = std::move(*built);
-  chainParams(rack, *c.chain, instrument, t ? &*t : nullptr, 0, out);
+  chainParams(rack, *c.chain, instrument, 0, out);
   return out;
 }
 

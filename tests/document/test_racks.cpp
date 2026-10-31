@@ -630,6 +630,7 @@ TEST_CASE("racks: 20,000 nested racks load, save, round-trip, lower and edit wit
     const auto params = std::count_if(lp->params.begin(), lp->params.end(), [](const LoweredParam& p) { return p.key.ends_with(":macro1"); });
     CHECK(params == 1);  // only the outermost macro is a param: every inner one is mapped
   }
+}
 
 TEST_CASE("racks: Ungroup (T4.17) — a one-chain rack becomes its devices in place, ids / wires kept, one undo step") {
   Racks r;

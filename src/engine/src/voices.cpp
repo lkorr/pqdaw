@@ -27,8 +27,8 @@ namespace pq::engine {
 namespace {
 
 constexpr uint32_t kAudioSignals = 4;  // hz, cents, gate, trigger
-// velocity, release, ratio, harmonic, unisonCount, index, degree, equave, tuning, noteHz (T4.17)
-constexpr uint32_t kParamSignals = 10;
+// velocity, release, ratio, harmonic, unisonCount, index, degree, equave, tuning, noteHz, noteDegree (T4.17)
+constexpr uint32_t kParamSignals = 11;
 
 uint32_t roundUp(uint32_t n, uint32_t a) noexcept { return (n + a - 1) / a * a; }
 
@@ -240,6 +240,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
     sp[static_cast<uint32_t>(VoiceSignal::Equave)] = p + 56;
     sp[static_cast<uint32_t>(VoiceSignal::Tuning)] = p + 64;
     sp[static_cast<uint32_t>(VoiceSignal::NoteHz)] = p + 72;
+    sp[static_cast<uint32_t>(VoiceSignal::NoteDegree)] = p + 80;
   }
 
   // Per lane and group state.
@@ -275,6 +276,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   equave_.assign(lanes_, std::numeric_limits<float>::quiet_NaN());
   tuning_.assign(lanes_, 0.0f);
   onsetHz_.assign(lanes_, idleHz_);
+  onsetDegree_.assign(lanes_, std::numeric_limits<float>::quiet_NaN());
   validFrames_.assign(groups_, 0);
   groupDirty_.assign(groups_, 0);
   carryDirty_.assign(groups_, 1);
@@ -757,6 +759,7 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
       equave_[lane] = e.equave;
       tuning_[lane] = e.tuning;
       onsetHz_[lane] = e.hz;
+      onsetDegree_[lane] = e.noteDegree;
       if (writeTrigger) {
         float* trig = audioSig_.data() + (static_cast<size_t>(lane >> 3) * kAudioSignals + 3) * groupStride_;
         trig[op.frame * 8 + (lane & 7u)] = kTrueMask;
@@ -851,6 +854,7 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
     p[56 + l] = equave_[l0 + l];
     p[64 + l] = tuning_[l0 + l];
     p[72 + l] = onsetHz_[l0 + l];
+    p[80 + l] = onsetDegree_[l0 + l];
   }
   // Constant over time only if nothing changed in this block and nothing keeps changing.
   bool moving = false;
@@ -913,6 +917,7 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   equave_[b] = equave_[a];
   tuning_[b] = tuning_[a];
   onsetHz_[b] = onsetHz_[a];
+  onsetDegree_[b] = onsetDegree_[a];
   setStatus(b, status_[a]);
   setStatus(a, LaneStatus::Free);
   hasPending_[a] = 0;

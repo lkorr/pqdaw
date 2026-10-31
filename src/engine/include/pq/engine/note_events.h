@@ -56,8 +56,12 @@ struct NoteEvent {
   float degree = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.degree (T2.6; NaN = no Degree identity)
   float equave = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.equave
   float tuning = 0.0f;            // NoteOn: voice.tuning (T2.6-fix3: the tuning node the note follows; 0 = none)
+  // NoteOn: voice.noteDegree (T4.17, M4 review M7): the note's absolute degree (equave · size + degree) in its own
+  // tuning, fractional between degrees for a pitch that is not one; NaN = unknown (an Instrument Rack's Degree zones
+  // then see degree 0).
+  float noteDegree = std::numeric_limits<float>::quiet_NaN();
 };
-static_assert(sizeof(NoteEvent) == 48);
+static_assert(sizeof(NoteEvent) == 52);
 
 inline NoteEvent noteOn(uint32_t frame, uint32_t noteId, float hz, float velocity) noexcept {  // RT-safe
   NoteEvent e;

@@ -52,6 +52,10 @@ struct NotePitch {
   PitchFollow follow = PitchFollow::Static;
   int32_t degree = 0;        // Degree: the (root anchor's) Degree identity
   int32_t equave = 0;
+  // T4.17 (M4 review M7): the note's absolute degree in its clip's tuning (equave · size + degree for a Degree identity;
+  // between two degrees, fractional in log frequency, for any other pitch): what an Instrument Rack's Degree key zones
+  // compare (voice.noteDegree). nullopt with `hz`.
+  std::optional<double> keyDegree;
 };
 
 struct ClipPitches {

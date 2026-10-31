@@ -565,6 +565,7 @@ void Timeline::emitOff(uint32_t track, const Sounding& s, uint32_t frame) noexce
 void Timeline::setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept {  // RT-safe
   e.ratio = n.ratio;
   e.harmonic = n.harmonic;
+  e.noteDegree = n.keyDegree;
   if (n.pitch.tuning != 0) {  // T2.6: a note following a tuning signal (T2.6-fix3: which node, and how)
     e.tuning = static_cast<float>(n.pitch.node);
     if (n.pitch.kind == PitchFollowKind::Degree) {

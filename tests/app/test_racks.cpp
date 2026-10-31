@@ -271,7 +271,7 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
       "  lnhz = log(voice.noteHz)\n"
       "  ga = clip(min(lnhz * ka0 + ka1, lnhz * ka2 + ka3), 0, 1)\n"
       "  sa = BasicSynth()\n"
-      "  oa = gain(voice_sum(gain(sa.out, ga, 0.002)), pack(gla, gra), 0.002)\n"
+      "  oa = gain(voice_sum(gain(sa.out, ga, 0.002, 1)), pack(gla, gra), 0.002)\n"
       // chain B: velocity zone; macro 1 → bright (curve)
       "  gb = clip(min(voice.velocity * vb0 + vb1, voice.velocity * vb2 + vb3), 0, 1)\n"
       "  bx = m1a * " + num(1.0 / 127.0) + "\n"
@@ -279,7 +279,7 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
       "  bp = bs * " + num(0.9 - 0.2) + " + 0.2\n"
       "  bv = bp * 1.0 + 0.0\n"
       "  sb = BasicSynth(bright: bv)\n"
-      "  ob = gain(voice_sum(gain(sb.out, gb, 0.002)), pack(glb, grb), 0.002)\n"
+      "  ob = gain(voice_sum(gain(sb.out, gb, 0.002, 1)), pack(glb, grb), 0.002)\n"
       "  r1 = oa + ob\n"
       "  done = and(sa.done, sb.done)\n"
       // R2: macro 2 → its own selector; macro 1 → the saturator's drive (Log travel)
@@ -602,6 +602,58 @@ TEST_CASE("racks: a key zone edit while a note sounds is click-free (T4.17: zone
   CHECK(maxAbs(steadyFrom, steadyTo) > 20.0 * steady);  // a step of the full gain would be far above the note's own
   CHECK(changes <= 1.5 * steady);
   CHECK(maxAbs(silentFrom, silentTo) < 1e-4 * maxAbs(steadyFrom, steadyTo));  // out of the zone: silent once faded
+  CHECK(link->lastError().empty());
+}
+
+// M4 review M7: Degree key zones compared the note's Hz with the track tuning's degrees, so a clip with its own tuning
+// went to the wrong chains. They now read voice.noteDegree, the note's degree in its own tuning. The track is in 12-EDO,
+// the zone covers degrees 0 … 5. Clip 1 (the track's tuning): degree 3 plays. Clip 2 (24-EDO): degree 8 = 400 ¢, whose
+// Hz lies inside the 12-EDO zone (the old reading played it), is out. Clip 3 (24-EDO): degree 3 plays.
+TEST_CASE("racks: Degree key zones read each note's degree in its own tuning (a clip's tuning; M4 review M7)") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId t = ids.track();
+  const DeviceId rack = ids.device(), inst = ids.device();
+  const ChainId c = ids.chain();
+  Batch b{"degree zones", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+  DevicePtr r = makeRack(rack, DeviceKind::Instrument, {makeChain(c, "A", {makeDefaultInstrument(inst)})});
+  RackOptions o = rackOptions(*r->rack);
+  o.keyUnit = KeyZoneUnit::Degree;
+  b.commands.push_back(AddDevice{t, r, 0});
+  b.commands.push_back(SetRackOptions{rack, o});
+  b.commands.push_back(SetDeviceParam{inst, "sustain", 1.0});
+  b.commands.push_back(SetChainZone{c, ZoneKind::Key, Zone{0.0, 0.0, 5.0, 5.0}});
+  Result<tuning::Edo> edo24 = tuning::Edo::make(24);
+  REQUIRE(edo24.ok());
+  TuningDef def24;
+  def24.system = *edo24;
+  constexpr Ticks kBar = 4 * kPpq;
+  auto clipAt = [&](Ticks start, int32_t degree, bool own) {
+    NoteClip cl = *playback_fixture::clip(ids, start, kBar, {playback_fixture::note(ids, 0, kBar - kPpq / 2, degree)}, "c");
+    if (own) cl.tuning = TuningAssignment::privateTuning(def24);
+    return std::make_shared<const NoteClip>(std::move(cl));
+  };
+  b.commands.push_back(AddClip{t, clipAt(0, 3, false)});
+  b.commands.push_back(AddClip{t, clipAt(kBar, 8, true)});
+  b.commands.push_back(AddClip{t, clipAt(2 * kBar, 3, true)});
+  REQUIRE(store.dispatch(b).ok());
+  auto link = makeLink(store.current());
+  Driver d{*link};
+  link->play(0);
+  const double bar = 2.0;  // 120 bpm
+  d.run(static_cast<uint32_t>(3.0 * bar * kRate / kBlock));
+  auto energy = [&](double from, double to) {
+    double e = 0.0;
+    for (size_t i = static_cast<size_t>(from * kRate); i < static_cast<size_t>(to * kRate); ++i)
+      e += static_cast<double>(d.out[0][i]) * d.out[0][i];
+    return e;
+  };
+  const double e1 = energy(0.2, 1.6), e2 = energy(bar + 0.2, bar + 1.6), e3 = energy(2 * bar + 0.2, 2 * bar + 1.6);
+  MESSAGE("energy: 12-EDO degree 3 " << e1 << ", 24-EDO degree 8 " << e2 << ", 24-EDO degree 3 " << e3);
+  CHECK(e1 > 1.0);
+  CHECK(e3 > 1.0);
+  CHECK(e2 < 1e-7 * e1);  // the old reading: e2 ≈ e1
   CHECK(link->lastError().empty());
 }
 

@@ -30,6 +30,7 @@
 // per sample. `hz` stays the static pitch (and the fallback where no tuning node is bound).
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <vector>
@@ -66,6 +67,7 @@ struct NoteDesc {
   float ratio = 1.0f;             // voice.ratio
   float harmonic = 0.0f;          // voice.harmonic
   PitchSource pitch;
+  float keyDegree = std::numeric_limits<float>::quiet_NaN();  // voice.noteDegree (T4.17; NaN: unknown)
   bool enabled = true;            // disabled notes are kept in the document but never play
 };
 
@@ -108,8 +110,9 @@ public:
     float velocity, releaseVelocity, chance, velocityRange;
     float ratio, harmonic;
     PitchSource pitch;
+    float keyDegree;        // T4.17: voice.noteDegree (NaN: unknown)
   };
-  static_assert(sizeof(Note) == 64);
+  static_assert(sizeof(Note) == 72);
 
   // A clip as stored (after trimming overlaps). Arrangement ticks unless noted.
   struct Clip {

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <climits>
+#include <cmath>
 #include <unordered_map>
 #include <utility>
 
@@ -105,6 +107,46 @@ private:
   std::vector<Resolved> out_;
 };
 
+// Degrees per equave of a tuning (0: none).
+int64_t degreesPerEquave(const tuning::Tuning& t) noexcept {
+  if (const tuning::Edo* e = t.edo()) return static_cast<int64_t>(e->n());
+  if (const tuning::Mos* m = t.mos()) return m->size();
+  if (const tuning::Scale* s = t.scale()) return s->size();
+  return 0;
+}
+
+// NotePitch::keyDegree: a Degree identity's absolute degree; any other pitch's position between the two degrees around
+// it, linear in log frequency (the tuning's degrees rise monotonically). Bounded: a pitch more than 64 degrees from the
+// equave estimate, or a degenerate tuning, has none.
+std::optional<double> keyDegreeOf(const tuning::PitchId& p, double hz, const tuning::Tuning& t) noexcept {
+  const int64_t size = degreesPerEquave(t);
+  if (size <= 0) return std::nullopt;
+  if (p.kind() == tuning::PitchKind::Degree) return static_cast<double>(p.equave()) * static_cast<double>(size) + p.degree();
+  auto hzOf = [&](int64_t d) {
+    if (d < INT32_MIN || d > INT32_MAX) return std::optional<double>{};
+    return tuning::resolveHzDouble(tuning::PitchId::fromDegree(static_cast<int32_t>(d), 0), t, {});
+  };
+  const std::optional<double> ref = hzOf(0), eq = hzOf(size);
+  if (!ref || !eq || !(*eq > *ref) || !(hz > 0.0)) return std::nullopt;
+  const double est = std::floor(std::log(hz / *ref) / std::log(*eq / *ref) * static_cast<double>(size));
+  if (!std::isfinite(est) || std::fabs(est) > 1e9) return std::nullopt;
+  int64_t d = static_cast<int64_t>(est);
+  std::optional<double> lo = hzOf(d), hi = hzOf(d + 1);
+  for (int i = 0; i < 64 && lo && hi; ++i) {  // the estimate is exact for an EDO and within a step or two otherwise
+    if (*lo > hz) {
+      hi = lo;
+      lo = hzOf(--d);
+    } else if (*hi <= hz) {
+      lo = hi;
+      hi = hzOf(++d + 1);
+    } else {
+      break;
+    }
+  }
+  if (!lo || !hi || !(*lo <= hz && hz < *hi)) return std::nullopt;
+  return static_cast<double>(d) + std::log(hz / *lo) / std::log(*hi / *lo);
+}
+
 }  // namespace
 
 EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, const NoteClip* clip) noexcept {
@@ -178,6 +220,7 @@ Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id, const Res
         if (v.follow != PitchFollow::Static) np.signal = cp.tuning.main;
         np.degree = v.degree;
         np.equave = v.equave;
+        if (v.hz) np.keyDegree = keyDegreeOf(r.note(i).pitch, *v.hz, *t);
         cp.notes.push_back(np);
       }
     } else {

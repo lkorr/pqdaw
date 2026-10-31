@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
@@ -56,7 +57,8 @@ Error linkError(ErrorCode c, const std::string& m) { return Error{c, "playback: 
 bool sameNote(const engine::NoteDesc& a, const engine::NoteDesc& b) {
   return a.start == b.start && a.length == b.length && a.id == b.id && a.hz == b.hz && a.velocity == b.velocity &&
          a.releaseVelocity == b.releaseVelocity && a.chance == b.chance && a.velocityRange == b.velocityRange &&
-         a.ratio == b.ratio && a.harmonic == b.harmonic && a.pitch == b.pitch && a.enabled == b.enabled;
+         a.ratio == b.ratio && a.harmonic == b.harmonic && a.pitch == b.pitch && a.enabled == b.enabled &&
+         std::bit_cast<uint32_t>(a.keyDegree) == std::bit_cast<uint32_t>(b.keyDegree);  // NaN: unknown
 }
 
 bool sameDesc(const engine::TrackSequenceDesc& a, const engine::TrackSequenceDesc& b) {
@@ -183,6 +185,7 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
         nd.length = std::max<Ticks>(n.length, 1);
         nd.id = n.id.value;
         nd.hz = static_cast<float>(hz);
+        if (np.keyDegree) nd.keyDegree = static_cast<float>(*np.keyDegree);
         nd.velocity = std::clamp(n.velocity, 1.0f, 127.0f);
         nd.releaseVelocity = std::clamp(n.releaseVelocity, 0.0f, 127.0f);
         nd.chance = std::clamp(n.chance, 0.0f, 1.0f);

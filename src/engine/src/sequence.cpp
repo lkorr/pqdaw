@@ -103,6 +103,7 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
         n.ratio = nd.ratio;
         n.harmonic = nd.harmonic;
         n.pitch = nd.pitch;
+        n.keyDegree = nd.keyDegree;
         img->notes_.push_back(n);
       }
       c.noteEnd = static_cast<uint32_t>(img->notes_.size());
