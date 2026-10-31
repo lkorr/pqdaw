@@ -136,7 +136,7 @@
           "length": 443520,
           "sample": 3,
           "warp": "off",
-          "contentStartFrame": 44100.0,
+          "contentStartFrame": 0.0,
           "seconds": 1.0,
           "contentStart": 0,
           "loop": {
@@ -199,7 +199,7 @@
           "loop": {
             "enabled": true,
             "start": 0,
-            "end": 665280
+            "end": 443520
           },
           "sourceBpm": 100.0,
           "gainDb": 6.0,

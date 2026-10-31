@@ -10,8 +10,8 @@ samples/missing.wav, which is not written (the "missing" overlay). Deterministic
 Clips (120 BPM, a 4/4 bar = 2 s = 887040 ticks):
   Drums  beat   bar 1        whole file, fade-in 1/32 note, fade-out 1/8 (curve -0.5)
          beat   bar 2        adjacent, crossfade 1/8, gain -6 dB
-         beat   bar 3.5      the second half (1 s), reversed, +7 st
-  Vox    vox    bar 1.5      Re-Pitch at 100 BPM, loop over its first 3 beats, +6 dB
+         beat   bar 3.5      1 s from the start (at +7 st: 1.5 s of the file), reversed
+  Vox    vox    bar 1.5      Re-Pitch at 100 BPM, loop over its first 2 beats, +6 dB
   Keys   (MIDI) bar 1        a note clip (mixed MIDI + audio rows)
   Lost   missing bar 2       a sample that is not on disk
 """
@@ -130,13 +130,13 @@ def main():
         audio_clip(20, "beat", orange, 0, 3, seconds=2.0, length=2 * SEC,
                    fadeIn={"length": WHOLE // 32, "curve": 0.0}, fadeOut={"length": WHOLE // 8, "curve": -0.5}),
         audio_clip(21, "beat", orange, WHOLE, 3, seconds=2.0, length=2 * SEC, gain=-6.0, xfade=WHOLE // 8),
-        audio_clip(22, "beat rev", orange, WHOLE * 5 // 2, 3, seconds=1.0, length=SEC, csf=44100.0, reverse=True,
+        audio_clip(22, "beat rev", orange, WHOLE * 5 // 2, 3, seconds=1.0, length=SEC, csf=0.0, reverse=True,
                    transpose={"cents": 700.0}),
     ])
-    # Re-Pitch at 100 BPM: content tick c plays frame c * 48000 * 60 / (100 * PPQ); the loop is the first 3 beats.
+    # Re-Pitch at 100 BPM: content tick c plays frame c * 48000 * 60 / (100 * PPQ); the loop is the first 2 beats.
     vox_t = track(11, "audio", "Vox", blue, [
         audio_clip(23, "vox", blue, WHOLE // 2, 4, warp="rePitch", bpm=100.0, length=2 * WHOLE, gain=6.0,
-                   loop={"enabled": True, "start": 0, "end": 3 * PPQ}),
+                   loop={"enabled": True, "start": 0, "end": 2 * PPQ}),
     ])
     notes = [{"id": 40 + i, "start": i * PPQ // 2, "length": PPQ // 2, "pitch": {"degree": d, "equave": 0}, "velocity": 100.0}
              for i, d in enumerate([0, 4, 7, 4, 2, 5, 9, 5])]

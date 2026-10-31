@@ -55,6 +55,15 @@
 //   Partial redraw: a selection change damages the selected rows over the changed time span only (whole rows when
 //   the selected tracks change); a drag frame damages the dragged clips' old and new rects.
 //
+// Audio clips (T5.6; src/arrangement/audio_paint.cpp): the waveform (pq/views/waveforms.h overviews, drawn by
+// ui::drawWaveform scaled by the clip gain, mirrored when reversed; per clip a tile like the note previews, the samples
+// themselves below 256 frames per px), fade curves, the crossfade X, badges (transpose, detune, Re-Pitch BPM, Rev,
+// gain) and the red "missing" overlay. Every generic clip edit applies (move / copy between audio tracks, trim, split,
+// duplicate, delete, clipboard, range delete); trimming stops at the file's ends (warp Off, unlooped Re-Pitch). Handles
+// at the top of the body (shown on the selected or hovered clip): fade-in / fade-out (drag = length, Alt-drag = curve;
+// dragged past the edge onto an adjacent clip: that boundary's crossfade), gain (vertical drag, Shift fine,
+// double-click = 0 dB). Each handle drag is one store gesture (the document follows the pointer: one undo step).
+//
 // Track headers, groups, returns and master (T3.10):
 //   rows        the main track tree scrolls; the return tracks and the master are pinned at the bottom (`bottom`,
 //               Live's layout) with their own lanes (grid only: automation lanes come with T3.15) and headers.
@@ -391,6 +400,10 @@ public:
   ui::Menu* openContextMenu(ui::Vec2 at);
   // Device rect of a clip's lane box in window coordinates (empty when its track is not a row).
   ui::IRect clipRect(const doc::ClipRef& clip) const noexcept;
+  // T5.6: an audio clip's handles (fade-in, fade-out, gain) as drawn and hit-tested, device px (empty: the clip is not
+  // an audio clip on a row, or too small for handles). ClipHover::zone is 3 / 4 / 5 over them.
+  enum class AudioHandle : uint8_t { FadeIn, FadeOut, Gain };
+  ui::Rect audioHandleRect(const doc::ClipRef& clip, AudioHandle which) const noexcept;
   // T4.16b: the clip part highlighted under the pointer (the one a press would grab): zone −1 / +1 an edge, 0 the
   // title strip; an invalid clip when none.
   struct ClipHover {
@@ -435,6 +448,9 @@ public:
     uint32_t tilesMissing = 0;
     uint64_t tilesBuilt = 0;
     uint64_t tileFailures = 0;
+    // T5.6, last lanes paint: audio clips whose waveform was drawn directly (no tile) and the columns they drew.
+    uint32_t wavesDirect = 0;
+    uint32_t waveColumns = 0;
   };
   const Stats& stats() const noexcept;
   size_t previewCacheSize() const noexcept;

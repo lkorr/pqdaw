@@ -3,6 +3,7 @@
 //   T3.8  installArrangement(shell);   → ShellSlot::TrackArea
 //   T3.10 installMixer(shell);         → ShellSlot::Mixer
 //   T3.11 installClipView(shell);      → ShellSlot::ClipDetail
+//   T5.6  installAudioClipView(shell); → ShellSlot::ClipDetail (shown instead of the piano roll for audio clips)
 //   T3.14 installMosWheel(shell);      → shell.overlay() (popover), the tuning.openMosWheel action
 //   T3.18 installPreferences(shell);   → shell.overlay() (the preferences window), the app.preferences action
 //   T3.19 installTuningsPanel(shell);  → ShellSlot::Tunings (View > Tunings), the tuning.newMain action
@@ -14,6 +15,7 @@
 // Until a view is installed its slot shows a placeholder: a background and, for the detail view, an empty-state line.
 
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/audio_clip/audio_clip_view.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
@@ -34,6 +36,7 @@ void installDefaultContent(Shell& shell) {
   installMixer(shell);
   static_cast<shell::SlotHost&>(shell.slot(ShellSlot::ClipDetail)).setHint("No clip selected");
   installClipView(shell);
+  installAudioClipView(shell);
   installMosWheel(shell);
   installPreferences(shell);
   installTuningsPanel(shell);

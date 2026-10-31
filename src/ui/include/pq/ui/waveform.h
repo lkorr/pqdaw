@@ -6,8 +6,8 @@
 //   drawWaveform(dl, data, {frame0, frame1, rect, gain, reverse, colour})
 //
 // draws source frames [frame0, frame1) across `rect` (left to right; mirrored when `reverse`). Columns are whole
-// device px from rect.x0 (an integer, as clip edges are); only the columns inside the draw list's current clip rect are
-// generated, so the cost is proportional to the visible pixels, never to the file length. Level of detail: with f
+// device px from rect.x0 (an integer, as clip edges are); only the columns inside the draw list's current clip rect (and
+// [clipX0, clipX1)) are generated, so the cost is proportional to the visible pixels, never to the file length. Level of detail: with f
 // frames per device px, the coarsest level whose bucket is ≤ f (each column reduces ≤ 5 buckets); below the finest
 // level's 256 frames per px, the samples themselves when `data.samples` covers the columns (≥ 1 frame per px: min /
 // max of the frames; < 1: the line between samples), else the finest level stretched (WaveformStats::approx).
@@ -55,6 +55,10 @@ struct WaveformDraw {
   float gain = 1.0f;
   bool reverse = false;
   Rgba colour = 0xffffffffu;
+  // Columns are generated only inside [clipX0, clipX1) (and the draw list's clip rect): a caller that clips without
+  // pushing a clip rect (which would split draw commands per clip).
+  float clipX0 = -3.0e38f;
+  float clipX1 = 3.0e38f;
 };
 
 struct WaveformStats {

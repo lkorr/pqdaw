@@ -249,6 +249,26 @@ IRect ArrangementView::clipRect(const doc::ClipRef& ref) const noexcept {
   return editor_->clipBox(row, c.start(), c.end());
 }
 
+Rect ArrangementView::audioHandleRect(const doc::ClipRef& ref, AudioHandle which) const noexcept {
+  int32_t row = -1;
+  for (size_t i = 0; i < model_->rows.size(); ++i)
+    if (model_->rows[i].id == ref.track) row = static_cast<int32_t>(i);
+  if (row < 0) return {};
+  const doc::Track& t = *model_->rows[static_cast<size_t>(row)].track;
+  const int32_t i = doc::findClipIndex(t, ref.clip);
+  if (i < 0 || !t.clips[static_cast<size_t>(i)].audio) return {};
+  const doc::AudioClip& a = *t.clips[static_cast<size_t>(i)].audio;
+  const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+  const IRect lane = rowLaneRect(row);
+  const float x0 = std::round(xOfTick(static_cast<double>(a.start)));
+  const float x1 = std::max(x0 + 1.0f, std::round(xOfTick(static_cast<double>(a.start + a.length))));
+  const float top = static_cast<float>(lane.y + 1), bottom = static_cast<float>(lane.bottom() - 1);
+  const float titleB = std::min(bottom, top + static_cast<float>(s.px(arrangement_metrics::kClipTitleHeight)));
+  const arrangement::AudioHandleRects h = arrangement::audioHandles(a, x0, x1, titleB, bottom - 1.0f, devicePxPerTick(), s.factor);
+  if (!h.show) return {};
+  return which == AudioHandle::FadeIn ? h.fadeIn : which == AudioHandle::FadeOut ? h.fadeOut : h.gain;
+}
+
 ArrangementView::ClipHover ArrangementView::clipHover() const noexcept {
   const arrangement::Editor::HoverPart& h = editor_->hoverPart();
   return {h.ref, h.zone};
@@ -325,6 +345,8 @@ void ArrangementView::onViewChange(uint32_t bits) {
     lanes_->markDirty();
     ruler_->markDirty();
   }
+  // T5.6: an overview arrived or grew, or a sample was found / lost (the missing overlay): the audio clips repaint.
+  if (bits & (view_change::kWaveforms | view_change::kSamples)) lanes_->markDirty();
   if (bits & view_change::kAutomation) {
     // T3.15: overridden envelopes turn grey, the LEDs too; "Re-enable Automation" shows while any is overridden.
     automation_->damageAll();

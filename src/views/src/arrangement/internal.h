@@ -11,12 +11,15 @@
 #include <unordered_map>
 #include <vector>
 
+#include "pq/core/clip_time.h"
+#include "pq/document/audio_clip.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
 #include "pq/tuning/tuning.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
+#include "pq/ui/draw_list.h"
 #include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -65,6 +68,127 @@ struct Preview {
   uint64_t lastUsed = 0;                   // Model::paintSerial of the last paint that drew it
   PreviewTile tile;                        // the last tile rendered for it (T3.8-fix1)
 };
+
+// T5.6: an audio clip's waveform tile (as PreviewTile, keyed also by how much of the overview was built).
+struct AudioTile {
+  ui::TileAtlas::Tile tile;
+  double k = 0.0;
+  int32_t width = 0;
+  int32_t bodyH = 0;
+  uint64_t built = 0;  // the overview's builtFrames when rendered
+  PreviewTile::State state = PreviewTile::State::None;
+  bool matches(double k2, int32_t bodyH2, uint64_t built2) const noexcept { return k == k2 && bodyH == bodyH2 && built == built2; }
+};
+
+// T5.6: how an audio clip's arrangement span maps to source frames, resolved once per clip snapshot and tempo map
+// (the Steps transpose resolves through the clip's tuning, which is not per-paint work), and its tile.
+struct AudioLayout {
+  doc::AudioClipPtr clip;           // key (its address) and keeps it alive
+  const TempoMap* tempo = nullptr;  // key
+  double rate = 48000.0;            // the sample's rate
+  int64_t frames = 1;
+  uint32_t channels = 1;
+  double ratio = 1.0;               // Off: transpose x detune speed ratio
+  double fpt = 0.0;                 // RePitch: source frames per content tick
+  double startSec = 0.0;            // Off: tau(start)
+  bool constantTempo = true;        // Off: one tempo over the whole song (the clip is one linear piece)
+  uint64_t lastUsed = 0;
+  AudioTile tile;
+};
+// The layout of `clip` on `track` (no cache: drag previews, the clip view).
+AudioLayout makeAudioLayout(const doc::Project& p, doc::TrackId track, const doc::AudioClipPtr& clip);
+
+// Linear gain of a clip gain in dB (the floor is silence, as the clip player plays it).
+inline float clipGainLinear(float db) noexcept {
+  return db <= doc::kMinClipGainDb ? 0.0f : static_cast<float>(std::pow(10.0, static_cast<double>(db) / 20.0));
+}
+
+// One linear piece of an audio clip's waveform: clip-local device px [xa, xb) show source frames [fa, fb) (mirrored,
+// fb at xa, when reverse).
+struct AudioPiece {
+  double xa = 0, xb = 0;
+  double fa = 0, fb = 0;
+  bool reverse = false;
+};
+
+// Calls f(const AudioPiece&) for the pieces of clip `c` (layout L, device px per tick k) meeting the clip-local window
+// [xFrom, xTo). Off: one piece under a single tempo, else pieces of 32 px whose ends are exact (the tempo map); RePitch:
+// one per pass over the content (the loop), mirrored for a reversed clip.
+template <class F>
+void forEachAudioPiece(const doc::AudioClip& c, const AudioLayout& L, const TempoMap& tm, double k, double xFrom, double xTo, F&& f) {
+  const double W = static_cast<double>(c.length) * k;
+  xFrom = std::max(0.0, xFrom);
+  xTo = std::min(W, xTo);
+  if (!(xTo > xFrom) || !(k > 0.0)) return;
+  if (c.warp == doc::AudioWarp::Off) {
+    const double speed = L.rate * L.ratio;
+    const double total = c.seconds * speed;
+    auto offAt = [&](double x) {  // source frames after the content start at local x (forward)
+      const double tick = static_cast<double>(c.start) + x / k;
+      const double t0 = std::floor(tick);
+      const double s0 = tm.ticksToSeconds(static_cast<Ticks>(t0)), s1 = tm.ticksToSeconds(static_cast<Ticks>(t0) + 1);
+      return (s0 + (s1 - s0) * (tick - t0) - L.startSec) * speed;
+    };
+    auto emit = [&](double xa, double xb) {
+      const double oa = offAt(xa), ob = offAt(xb);
+      if (!c.reverse) f(AudioPiece{xa, xb, c.contentStartFrame + oa, c.contentStartFrame + ob, false});
+      else f(AudioPiece{xa, xb, c.contentStartFrame + total - ob, c.contentStartFrame + total - oa, true});
+    };
+    if (L.constantTempo) {
+      emit(xFrom, xTo);
+      return;
+    }
+    constexpr double kStep = 32.0;
+    for (double xa = std::floor(xFrom / kStep) * kStep; xa < xTo; xa += kStep) emit(std::max(xa, xFrom), std::min(xa + kStep, xTo));
+    return;
+  }
+  // RePitch: content ticks to frames; the window mirrored for a reversed clip.
+  const double a = c.reverse ? W - xTo : xFrom, b = c.reverse ? W - xFrom : xTo;
+  const Ticks from = c.start + static_cast<Ticks>(std::floor(a / k)), to = c.start + static_cast<Ticks>(std::ceil(b / k)) + 1;
+  forEachClipSegment(c.start, c.length, c.contentStart, doc::contentLoop(c), from, to, [&](const ClipSegment& seg) {
+    const double xa = static_cast<double>(seg.at - c.start) * k;
+    const double xb = xa + static_cast<double>(seg.contentTo - seg.contentFrom) * k;
+    const double fa = static_cast<double>(seg.contentFrom) * L.fpt, fb = static_cast<double>(seg.contentTo) * L.fpt;
+    if (!c.reverse) f(AudioPiece{xa, xb, fa, fb, false});
+    else f(AudioPiece{W - xb, W - xa, fa, fb, true});
+  });
+}
+
+// Fade lengths in device px as the clip player plays them (clamped: the fade-in first, then the fade-out).
+struct AudioFadesPx {
+  float in = 0.0f, out = 0.0f;
+};
+inline AudioFadesPx audioFadesPx(const doc::AudioClip& c, double k) noexcept {
+  const Ticks fi = std::clamp<Ticks>(c.fadeIn.length, 0, c.length);
+  const Ticks fo = std::clamp<Ticks>(c.fadeOut.length, 0, c.length - fi);
+  return {static_cast<float>(static_cast<double>(fi) * k), static_cast<float>(static_cast<double>(fo) * k)};
+}
+
+// The audio handles (hit zones beyond Editor::Hit's -1 / 0 / +1 / 2): the fade-in and fade-out handles at the top of
+// the body where each fade ends (the crossfade's end for a crossfaded start), the gain handle at the top centre.
+inline constexpr int kZoneFadeIn = 3;
+inline constexpr int kZoneFadeOut = 4;
+inline constexpr int kZoneGain = 5;
+struct AudioHandleRects {
+  ui::Rect fadeIn{}, fadeOut{}, gain{};
+  bool show = false;  // the clip is wide and tall enough for handles
+};
+inline AudioHandleRects audioHandles(const doc::AudioClip& c, float cx0, float cx1, float by0, float by1, double k, float scale) noexcept {
+  AudioHandleRects h;
+  const float hs = std::max(4.0f, std::round(6.0f * scale));
+  if (cx1 - cx0 < 5.0f * hs || by1 - by0 < hs + 2.0f) return h;
+  h.show = true;
+  const AudioFadesPx f = audioFadesPx(c, k);
+  float xin = c.crossfadeIn > 0 ? cx0 + static_cast<float>(static_cast<double>(c.crossfadeIn - c.crossfadeIn / 2) * k) : cx0 + f.in;
+  xin = std::clamp(xin, cx0 + 0.5f * hs, cx1 - 1.5f * hs);
+  const float xout = std::clamp(cx1 - f.out, xin + hs, cx1 - 0.5f * hs);
+  const float x0 = std::round(xin - 0.5f * hs), x1 = std::round(xout - 0.5f * hs);
+  h.fadeIn = {x0, by0, x0 + hs, by0 + hs};
+  h.fadeOut = {x1, by0, x1 + hs, by0 + hs};
+  const float mid = std::round(0.5f * (cx0 + cx1)), gw = std::round(2.5f * hs);
+  h.gain = {mid - std::round(0.5f * gw), by0, mid - std::round(0.5f * gw) + gw, by0 + std::max(3.0f, std::round(0.6f * hs))};
+  return h;
+}
 
 class Model {
 public:
@@ -122,6 +246,15 @@ public:
   size_t cachedNotes() const noexcept { return cachedNotes_; }
   void setCacheLimit(size_t notes) noexcept { cacheLimitNotes_ = notes; }
 
+  // T5.6: the audio layout of a clip on a row (cached by clip snapshot and tempo map).
+  AudioLayout& audioLayout(const ArrangementRow& row, const doc::AudioClipPtr& clip);
+  AudioLayout* cachedAudioLayout(const doc::AudioClip* clip) noexcept;
+  size_t audioLayoutCount() const noexcept { return audio_.size(); }
+  // Overlay geometry (fade curves, crossfades, handles) of clips whose waveform is a queued tile: appended to the
+  // draw list by flushTiles after the quads. Untextured geometry only.
+  ui::DrawList overlay;
+  ui::DrawList scratch;  // a tile's waveform before it is rasterised (clip-local)
+
   // Clip-name colour per clip colour (clipTextFor is not for per-frame use).
   ui::Rgba clipTextColour(const ui::Theme& th, ui::Rgba fill);
 
@@ -154,6 +287,7 @@ private:
 
   std::unordered_map<uint32_t, ClipIndex> clipIndex_;            // by raw track id
   std::unordered_map<const doc::NoteClip*, Preview> previews_;
+  std::unordered_map<const doc::AudioClip*, AudioLayout> audio_;  // T5.6
   uint64_t paintSerial_ = 0;
   uint32_t budgetLeft_ = 0;
   bool unlimited_ = true;
@@ -180,6 +314,9 @@ enum class DragKind : uint8_t {
   Move,    // the selected clips by (dt, rows); Alt held = Copy (the originals stay)
   Resize,  // one edge of every selected clip by dt
   Range,   // a time selection over rows (selects the clips it touches)
+  // T5.6, audio clips (one store gesture each, edited live: the document follows the pointer, one undo step):
+  Fade,    // a fade handle: its length (Alt at the press: its curve); past the edge onto an adjacent clip: a crossfade
+  Gain,    // the gain handle: vertical, Shift fine
 };
 
 // Where a clip is drawn: its own bounds, or a drag preview's.
@@ -189,18 +326,18 @@ struct ClipGeom {
   Ticks contentStart = 0;
 };
 
-// A clip of a Move / Resize drag as it was at the press, and the row it was on.
+// A clip of a Move / Resize drag as it was at the press, and the row it was on (T5.6: a note or an audio clip).
 struct DragClip {
   doc::ClipRef ref;
-  doc::ClipPtr clip;
+  doc::ClipSlot clip;
   int32_t row = -1;
 };
 
 // In-process clipboard: clips (copies, starts relative to the copied range) and the rows they came from, as offsets
-// among the MIDI rows.
+// among the clip rows (MIDI and audio tracks; T5.6: a clip pastes only onto a track of its kind).
 struct ClipboardEntry {
   uint32_t rowOffset = 0;
-  doc::ClipPtr clip;  // start = offset from the clipboard origin
+  doc::ClipSlot clip;  // start = offset from the clipboard origin
 };
 struct Clipboard {
   std::vector<ClipboardEntry> clips;
@@ -328,12 +465,16 @@ private:
     // A press on a clip of a multiple selection: on release without a move, select just it (Live).
     doc::ClipRef pressed{};
     bool collapseOnClick = false;
+    // T5.6 Fade / Gain: the clip, its state at the press, which handle, and how (Alt: the curve).
+    doc::AudioClipPtr audio;
+    int zone = 0;
+    bool curve = false;
   };
   struct Hit {
     int32_t row = -1;
     doc::ClipRef ref{};
-    const doc::NoteClip* clip = nullptr;
-    int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body
+    const doc::ClipSlot* clip = nullptr;
+    int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body; T5.6 audio: kZoneFadeIn / FadeOut / Gain
   };
   Hit hitTest(ui::Vec2 p) const;
   void setHover(HoverPart h);
@@ -350,6 +491,11 @@ private:
   void dragTo(const ui::PointerEvent& e);
   void release(const ui::PointerEvent& e);
   void beginClipDrag(DragKind kind, const Hit& h);
+  // T5.6: the audio handles (one store gesture per drag).
+  void beginAudioDrag(const Hit& h, ui::Mods mods);
+  void audioDragTo(const ui::PointerEvent& e);
+  // Trim limits of an audio clip (warp Off / unlooped RePitch: the file's ends), as deltas of its start / end edge.
+  void audioTrimLimits(const doc::AudioClip& c, Ticks& minStartDt, Ticks& maxEndDt) const;
   void updateRange(ui::Vec2 p);
   void commitDrag();
   void damageDragPreview();
@@ -358,7 +504,9 @@ private:
   bool spanOf(const ArrangementView::Selection& s, double& t0, double& t1) const;
   // Selected tracks expanded to MIDI tracks (a selected group stands for its MIDI members, folded or not).
   std::vector<doc::TrackId> midiTracks() const;
-  // The MIDI rows (row indices of non-group rows).
+  // T5.6: the same with audio tracks too (the tracks clips live on).
+  std::vector<doc::TrackId> clipTracks() const;
+  // The clip rows (row indices of non-group rows: MIDI and audio tracks).
   std::vector<int32_t> midiRows() const;
   bool dispatch(doc::Batch batch, std::string_view what);
   bool apply(const doc::ops::EditResult& e, std::string_view what, bool adoptClips);

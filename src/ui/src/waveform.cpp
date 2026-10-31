@@ -40,8 +40,10 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
   if (channels == 0 || data.frames == 0 || !(width > 0.0f) || !(d.frame1 > d.frame0) || d.rect.y1 <= d.rect.y0) return st;
   const ClipRect clip = dl.clip();
   const auto ncols = static_cast<int32_t>(std::ceil(width));
-  const int32_t c0 = std::max(0, static_cast<int32_t>(std::floor(static_cast<float>(clip.x0) - d.rect.x0)));
-  const int32_t c1 = std::min(ncols, static_cast<int32_t>(std::ceil(static_cast<float>(clip.x1) - d.rect.x0)));
+  const float lx = std::max(static_cast<float>(clip.x0), d.clipX0), rx = std::min(static_cast<float>(clip.x1), d.clipX1);
+  if (!(rx > lx)) return st;
+  const int32_t c0 = std::max(0, static_cast<int32_t>(std::max(-1.0e9f, std::floor(lx - d.rect.x0))));
+  const int32_t c1 = std::min(ncols, static_cast<int32_t>(std::min(1.0e9f, std::ceil(rx - d.rect.x0))));
   if (c1 <= c0 || static_cast<float>(clip.y1) <= d.rect.y0 || static_cast<float>(clip.y0) >= d.rect.y1) return st;
   const double fpp = (d.frame1 - d.frame0) / static_cast<double>(width);
   // The frames column c shows: [fa, fb).

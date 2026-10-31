@@ -15,6 +15,7 @@
 
 #include "../common/drag.h"
 #include "internal.h"
+#include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
 #include "pq/views/arrangement/arrangement.h"
 
@@ -73,22 +74,41 @@ struct Chain {
   }
 };
 
-bool overlaps(const doc::NoteClip& c, Ticks s, Ticks e) noexcept { return c.start < e && doc::clipEnd(c) > s; }
+bool overlaps(const doc::ClipSlot& c, Ticks s, Ticks e) noexcept { return c.start() < e && c.end() > s; }
 
-// Removes whatever lies in [s, e) on a MIDI track (clips across the edges are trimmed / split): an empty clip over
-// the range (insertEmptyClip overwrites, T3.6) that is then removed. Nothing is added when no clip meets the range.
+// Removes whatever lies in [s, e) on a MIDI or audio track (T5.6: either kind): the clips crossing the edges are split
+// there (each piece plays what the clip played), then the pieces inside are deleted. Nothing when no clip meets the range.
 bool carve(Chain& ch, doc::IdSource& ids, doc::TrackId track, Ticks s, Ticks e) {
   const doc::Track* t = doc::findTrackPtr(*ch.snap, track);
-  if (!t || t->kind != doc::TrackKind::Midi || e <= s) return true;
-  if (std::none_of(t->clips.begin(), t->clips.end(), [&](const doc::ClipSlot& c) { return overlaps(*c.clip, s, e); }))
-    return true;
-  const doc::ops::EditResult ed = doc::ops::insertEmptyClip(*ch.snap, ids, track, s, e);
-  if (!ch.run(ed)) return false;
-  return ch.run(doc::RemoveClip{ed->clips.at(0)});
+  if (!t || (t->kind != doc::TrackKind::Midi && t->kind != doc::TrackKind::Audio) || e <= s) return true;
+  std::vector<doc::ClipRef> crossing;
+  for (const doc::ClipSlot& c : t->clips)
+    if (overlaps(c, s, e) && (c.start() < s || c.end() > e)) crossing.push_back({track, c.id});
+  if (!crossing.empty()) {
+    const Ticks cuts[] = {s, e};
+    if (!ch.run(doc::ops::splitClips(*ch.snap, ids, crossing, cuts))) return false;
+    t = doc::findTrackPtr(*ch.snap, track);
+  }
+  std::vector<doc::ClipRef> inside;
+  for (const doc::ClipSlot& c : t->clips)
+    if (c.start() >= s && c.end() <= e) inside.push_back({track, c.id});
+  if (inside.empty()) return true;
+  return ch.run(doc::ops::deleteClips(*ch.snap, inside));
 }
 
-// A copy of a clip with fresh clip and note ids at `start` (as doc::ops copies clips).
-doc::ClipPtr cloneFresh(const doc::NoteClip& c, doc::IdSource& ids, Ticks start) {
+// A copy of a clip with fresh clip and note ids at `start` (as doc::ops copies clips). T5.6: an audio clip keeps its
+// audio (warp Off: its length re-derived at the new start).
+doc::ClipSlot cloneFresh(const doc::ClipSlot& slot, doc::IdSource& ids, Ticks start, const doc::Timeline& timeline) {
+  doc::ClipSlot out;
+  if (slot.audio) {
+    doc::AudioClip a = doc::audioMovedTo(timeline, *slot.audio, start);
+    a.id = ids.clip();
+    a.crossfadeIn = 0;  // a pasted clip has no neighbour yet
+    out.id = a.id;
+    out.audio = std::make_shared<const doc::AudioClip>(std::move(a));
+    return out;
+  }
+  const doc::NoteClip& c = *slot.clip;
   std::vector<doc::Note> notes;
   notes.reserve(c.notes.size());
   for (const doc::Note& n : c.notes) {
@@ -97,25 +117,27 @@ doc::ClipPtr cloneFresh(const doc::NoteClip& c, doc::IdSource& ids, Ticks start)
     notes.push_back(m);
   }
   Result<doc::NoteSeq> seq = doc::NoteSeq::fromNotes(std::move(notes));
-  doc::NoteClip out = doc::withNotes(c, seq ? std::move(*seq) : doc::NoteSeq{});
-  out.id = ids.clip();
-  out.start = start;
-  return std::make_shared<const doc::NoteClip>(std::move(out));
+  doc::NoteClip nc = doc::withNotes(c, seq ? std::move(*seq) : doc::NoteSeq{});
+  nc.id = ids.clip();
+  nc.start = start;
+  out.id = nc.id;
+  out.clip = std::make_shared<const doc::NoteClip>(std::move(nc));
+  return out;
 }
 
-const doc::NoteClip* findClip(const doc::Project& p, const doc::ClipRef& r) noexcept {
+const doc::ClipSlot* findClip(const doc::Project& p, const doc::ClipRef& r) noexcept {
   const doc::Track* t = doc::findTrackPtr(p, r.track);
   if (!t) return nullptr;
   const int32_t i = doc::findClipIndex(*t, r.clip);
-  return i < 0 ? nullptr : t->clips[static_cast<size_t>(i)].clip.get();
+  return i < 0 ? nullptr : &t->clips[static_cast<size_t>(i)];
 }
 
-void collectMidi(const doc::Track& t, std::vector<doc::TrackId>& out) {
-  if (t.kind == doc::TrackKind::Midi) {
+void collectMidi(const doc::Track& t, std::vector<doc::TrackId>& out, bool audioToo = false) {
+  if (t.kind == doc::TrackKind::Midi || (audioToo && t.kind == doc::TrackKind::Audio)) {
     if (std::find(out.begin(), out.end(), t.id) == out.end()) out.push_back(t.id);
     return;
   }
-  for (const doc::TrackPtr& c : t.children) collectMidi(*c, out);
+  for (const doc::TrackPtr& c : t.children) collectMidi(*c, out, audioToo);
 }
 
 }  // namespace
@@ -179,11 +201,22 @@ Editor::Hit Editor::hitTest(Vec2 p) const {
     const float x0 = std::round(view_.xOfTick(static_cast<double>(ix.start[j])));
     const float x1 = std::max(x0 + 1.0f, std::round(view_.xOfTick(static_cast<double>(ix.end[j]))));
     if (p.x < x0 || p.x >= x1) continue;
-    if (!t.clips[j].clip) continue;  // T5.3: audio clips are not editable here until T5.6
-    h.clip = t.clips[j].clip.get();
+    h.clip = &t.clips[j];
     h.ref = {t.id, t.clips[j].id};
     const float edge = std::min(static_cast<float>(s.px(kEdgeGrab)), std::floor((x1 - x0) / 4.0f));
     const float titleB = top + static_cast<float>(s.px(am::kClipTitleHeight));
+    // T5.6: an audio clip's handles (fades, gain) at the top of its body take the press before the edges.
+    if (const doc::AudioClipPtr& ac = t.clips[j].audio; ac && p.y >= titleB && ctx_.sampleAvailable(ac->sample)) {
+      const AudioHandleRects hr = audioHandles(*ac, x0, x1, titleB, bottom - 1.0f, view_.devicePxPerTick(), s.factor);
+      const float slop = std::max(1.0f, std::round(2.0f * s.factor));
+      auto in = [&](const Rect& r) { return p.x >= r.x0 - slop && p.x < r.x1 + slop && p.y >= r.y0 - slop && p.y < r.y1 + slop; };
+      if (hr.show) {
+        if (in(hr.gain)) h.zone = kZoneGain;
+        else if (in(hr.fadeIn)) h.zone = kZoneFadeIn;
+        else if (in(hr.fadeOut)) h.zone = kZoneFadeOut;
+        if (h.zone >= kZoneFadeIn) return h;
+      }
+    }
     if (edge >= 1.0f && p.x < x0 + edge) h.zone = -1;
     else if (edge >= 1.0f && p.x >= x1 - edge) h.zone = 1;
     else h.zone = (p.y < titleB || bottom - titleB < 4.0f) ? 0 : 2;  // a body under 4 px: the clip is all title
@@ -199,12 +232,12 @@ Selection Editor::selectionOfClips(std::vector<doc::ClipRef> clips) const {
   const doc::Project& p = *ctx_.doc();
   Ticks lo = std::numeric_limits<Ticks>::max(), hi = std::numeric_limits<Ticks>::min();
   for (const doc::ClipRef& r : clips) {
-    const doc::NoteClip* c = findClip(p, r);
+    const doc::ClipSlot* c = findClip(p, r);
     if (!c) continue;
     if (std::any_of(s.clips.begin(), s.clips.end(), [&](const doc::ClipRef& x) { return x.clip == r.clip; })) continue;
     s.clips.push_back(r);
-    lo = std::min(lo, c->start);
-    hi = std::max(hi, doc::clipEnd(*c));
+    lo = std::min(lo, c->start());
+    hi = std::max(hi, c->end());
     if (std::find(s.tracks.begin(), s.tracks.end(), r.track) == s.tracks.end()) s.tracks.push_back(r.track);
   }
   std::stable_sort(s.tracks.begin(), s.tracks.end(), [&](doc::TrackId a, doc::TrackId b) {
@@ -242,9 +275,9 @@ bool Editor::spanOf(const Selection& s, double& t0, double& t1) const {
   }
   const doc::Project& p = *view_.shown();
   for (const doc::ClipRef& r : s.clips)
-    if (const doc::NoteClip* c = findClip(p, r)) {
-      t0 = std::min(t0, static_cast<double>(c->start));
-      t1 = std::max(t1, static_cast<double>(doc::clipEnd(*c)));
+    if (const doc::ClipSlot* c = findClip(p, r)) {
+      t0 = std::min(t0, static_cast<double>(c->start()));
+      t1 = std::max(t1, static_cast<double>(c->end()));
       any = true;
     }
   return any;
@@ -294,6 +327,9 @@ void Editor::afterDocumentChange(const doc::StoreEvent& e) {
     return;
   }
   if (drag_.kind == DragKind::Move || drag_.kind == DragKind::Resize) drag_ = {};  // the clips changed under it
+  // T5.6: an audio handle drag edits the document itself (its own gesture); anything else ending the gesture (undo)
+  // ends the drag.
+  if ((drag_.kind == DragKind::Fade || drag_.kind == DragKind::Gain) && !ctx_.store().inGesture()) drag_ = {};
   // Drop what no longer exists (undo of a creation, a deleted track). The lanes repaint fully after a document
   // change, so nothing needs damaging here.
   const doc::Project& p = *ctx_.doc();
@@ -342,7 +378,7 @@ bool Editor::nudgeClips(int32_t cells) {
   const doc::Project& p = *ctx_.doc();
   Ticks first = std::numeric_limits<Ticks>::max();
   for (const doc::ClipRef& r : sel_.clips)
-    if (const doc::NoteClip* c = findClip(p, r)) first = std::min(first, c->start);
+    if (const doc::ClipSlot* c = findClip(p, r)) first = std::min(first, c->start());
   if (first == std::numeric_limits<Ticks>::max()) return false;
   const Ticks dt = std::max<Ticks>(0, drag::stepByCells(grid(), first, cells)) - first;
   if (dt == 0) return false;
@@ -354,7 +390,7 @@ bool Editor::nudgeClipsFine(int32_t dir) {
   const doc::Project& p = *ctx_.doc();
   Ticks first = std::numeric_limits<Ticks>::max();
   for (const doc::ClipRef& r : sel_.clips)
-    if (const doc::NoteClip* c = findClip(p, r)) first = std::min(first, c->start);
+    if (const doc::ClipSlot* c = findClip(p, r)) first = std::min(first, c->start());
   if (first == std::numeric_limits<Ticks>::max()) return false;
   const Ticks dt = std::max<Ticks>(dir * drag::kFineNudge, -first);
   if (dt == 0) return false;
@@ -394,7 +430,7 @@ std::vector<doc::ClipRef> Editor::clipsMeeting(int32_t r0, int32_t r1, bool sele
       const ClipIndex& ix = view_.model().clips(*row.track);
       const auto [a, b] = ix.visible(s, e);
       for (size_t j = a; j < b; ++j)
-        if (ix.start[j] < e && ix.end[j] > s && row.track->clips[j].clip)  // T5.3: audio clips: T5.6
+        if (ix.start[j] < e && ix.end[j] > s)
           clips.push_back({row.id, row.track->clips[j].id});
     }
   // De-duplicated by id (a base may repeat clips the range covers).
@@ -411,12 +447,16 @@ Cursor Editor::cursorAt(Vec2 p) const {
     switch (drag_.kind) {
       case DragKind::Move: return Cursor::Move;
       case DragKind::Resize: return Cursor::ResizeEW;
+      case DragKind::Fade: return drag_.curve ? Cursor::ResizeNS : Cursor::ResizeEW;
+      case DragKind::Gain: return Cursor::ResizeNS;
       default: return Cursor::Arrow;  // a time selection
     }
   }
   const Hit h = hitTest(p);
   if (!h.clip) return Cursor::Arrow;  // empty lane space: a drag selects time
   if (h.zone == 0) return Cursor::Move;
+  if (h.zone == kZoneGain) return Cursor::ResizeNS;
+  if (h.zone == kZoneFadeIn || h.zone == kZoneFadeOut) return Cursor::ResizeEW;
   return h.zone == 2 ? Cursor::Arrow : Cursor::ResizeEW;  // the body selects time (Live); the ends trim
 }
 
@@ -428,9 +468,13 @@ void Editor::setHover(HoverPart h) {
     for (const HoverPart* x : {&hover_, &h}) {
       if (!x->ref.clip.valid()) continue;
       const int32_t row = rowOf(x->ref.track);
-      const doc::NoteClip* c = row >= 0 ? findClip(p, x->ref) : nullptr;
+      const doc::ClipSlot* c = row >= 0 ? findClip(p, x->ref) : nullptr;
       if (!c) continue;
-      const IRect b = clipBox(row, c->start, c->start + c->length);
+      IRect b = clipBox(row, c->start(), c->end());
+      if (c->audio && c->audio->crossfadeIn > 0) {  // the X reaches into the previous clip
+        const auto xf = static_cast<int32_t>(std::ceil(static_cast<double>(c->audio->crossfadeIn) * view_.devicePxPerTick()));
+        b = {b.x - xf, b.y, b.w + xf, b.h};
+      }
       if (const IRect v = intersect(IRect{b.x - 1, b.y, b.w + 2, b.h}, lv); !v.empty()) tr->damage().add(v.toRect());
     }
   }
@@ -495,6 +539,17 @@ void Editor::press(const PointerEvent& e) {
   if (e.button == PointerButton::Right) {
     if (h.clip && !selected(h.ref.clip)) setSelection(selectionOfClips({h.ref}), true);
     (void)openContextMenu(e.pos);
+    return;
+  }
+
+  // T5.6: an audio clip's handles: a drag edits the fade / gain (double-click on the gain handle: 0 dB).
+  if (h.clip && h.clip->audio && h.zone >= kZoneFadeIn && e.button == PointerButton::Left) {
+    if (!selected(h.ref.clip)) setSelection(selectionOfClips({h.ref}), true);
+    if (h.zone == kZoneGain && e.clickCount >= 2) {
+      (void)apply(doc::ops::setAudioClipGain(*ctx_.doc(), std::span<const doc::ClipRef>(&h.ref, 1), 0.0f), "Clip Gain", false);
+      return;
+    }
+    beginAudioDrag(h, e.mods);
     return;
   }
 
@@ -570,20 +625,27 @@ void Editor::beginClipDrag(DragKind kind, const Hit& h) {
   drag_.kind = kind;
   drag_.pressRow = h.row;
   drag_.edge = h.zone < 0 ? doc::ops::ClipEdge::Start : doc::ops::ClipEdge::End;
-  drag_.origin = (kind == DragKind::Move || h.zone < 0) ? h.clip->start : doc::clipEnd(*h.clip);
+  drag_.origin = (kind == DragKind::Move || h.zone < 0) ? h.clip->start() : h.clip->end();
   const doc::Project& p = *ctx_.doc();
   Ticks minStart = std::numeric_limits<Ticks>::max(), maxEnd = 0, minLen = std::numeric_limits<Ticks>::max();
+  Ticks trimLeft = std::numeric_limits<Ticks>::min(), trimRight = std::numeric_limits<Ticks>::max();
   drag_.clips.clear();
   drag_.clips.reserve(sel_.clips.size());
   for (const doc::ClipRef& r : sel_.clips) {
     const doc::Track* t = doc::findTrackPtr(p, r.track);
     const int32_t i = t ? doc::findClipIndex(*t, r.clip) : -1;
     if (i < 0) continue;
-    const doc::ClipPtr& c = t->clips[static_cast<size_t>(i)].clip;
+    const doc::ClipSlot& c = t->clips[static_cast<size_t>(i)];
     drag_.clips.push_back({r, c, rowOf(r.track)});
-    minStart = std::min(minStart, c->start);
-    maxEnd = std::max(maxEnd, doc::clipEnd(*c));
-    minLen = std::min(minLen, c->length);
+    minStart = std::min(minStart, c.start());
+    maxEnd = std::max(maxEnd, c.end());
+    minLen = std::min(minLen, c.length());
+    if (c.audio && kind == DragKind::Resize) {  // T5.6: trimming stops at the file's ends
+      Ticks lo = 0, hi = 0;
+      audioTrimLimits(*c.audio, lo, hi);
+      trimLeft = std::max(trimLeft, lo);
+      trimRight = std::min(trimRight, hi);
+    }
   }
   if (drag_.clips.empty()) {
     drag_.kind = DragKind::None;
@@ -594,12 +656,130 @@ void Editor::beginClipDrag(DragKind kind, const Hit& h) {
     drag_.minDt = -minStart;
     drag_.maxDt = std::max<Ticks>(0, far - maxEnd);
   } else if (drag_.edge == doc::ops::ClipEdge::Start) {
-    drag_.minDt = -minStart;
+    drag_.minDt = std::min<Ticks>(0, std::max(-minStart, trimLeft));
     drag_.maxDt = minLen - 1;
   } else {
     drag_.minDt = 1 - minLen;
-    drag_.maxDt = std::max<Ticks>(0, far - maxEnd);
+    drag_.maxDt = std::max<Ticks>(0, std::min(far - maxEnd, trimRight));
   }
+}
+
+// Off: the window of source frames may grow until it meets the file's start or end (a reversed clip's left edge shows
+// the window's end); RePitch without a loop: content ticks [0, file length); a looped RePitch clip extends through its
+// loop (no limit).
+void Editor::audioTrimLimits(const doc::AudioClip& c, Ticks& minStartDt, Ticks& maxEndDt) const {
+  minStartDt = std::numeric_limits<Ticks>::min();
+  maxEndDt = std::numeric_limits<Ticks>::max();
+  const doc::Project& p = *ctx_.doc();
+  const doc::SampleRef* sref = doc::findSample(p, c.sample);
+  if (!sref) return;
+  const auto frames = static_cast<double>(sref->frames);
+  if (c.warp == doc::AudioWarp::Off) {
+    const std::optional<doc::TrackPath> path = [&]() -> std::optional<doc::TrackPath> {
+      for (const doc::ClipRef& r : sel_.clips)
+        if (r.clip == c.id) return doc::findTrack(p, r.track);
+      return std::nullopt;
+    }();
+    const double speed = sref->rate * (path ? doc::audioRateRatio(p, *path, c) : 1.0);
+    if (!(speed > 0.0)) return;
+    const double head = std::max(0.0, c.contentStartFrame) / speed;                       // seconds before the window
+    const double tail = std::max(0.0, frames - c.contentStartFrame - c.seconds * speed) / speed;  // after it
+    const double left = c.reverse ? tail : head, right = c.reverse ? head : tail;
+    const TempoMap& tm = p.timeline->tempoMap;
+    const double t0 = tm.ticksToSeconds(c.start), t1 = tm.ticksToSeconds(c.start + c.length);
+    minStartDt = static_cast<Ticks>(std::ceil(tm.secondsToTicks(t0 - left) - 1e-6)) - c.start;
+    maxEndDt = static_cast<Ticks>(std::floor(tm.secondsToTicks(t1 + right) + 1e-6)) - (c.start + c.length);
+    return;
+  }
+  if (contentLooped(doc::contentLoop(c))) return;
+  const double fpt = doc::framesPerContentTick(sref->rate, c.sourceBpm);
+  if (!(fpt > 0.0)) return;
+  const auto contentLen = static_cast<Ticks>(std::floor(frames / fpt));
+  const Ticks before = std::max<Ticks>(0, c.contentStart), after = std::max<Ticks>(0, contentLen - (c.contentStart + c.length));
+  minStartDt = -(c.reverse ? after : before);
+  maxEndDt = c.reverse ? before : after;
+}
+
+// --- audio handles (T5.6) -------------------------------------------------------------------------------------
+
+void Editor::beginAudioDrag(const Hit& h, Mods mods) {
+  drag_.kind = h.zone == kZoneGain ? DragKind::Gain : DragKind::Fade;
+  drag_.audio = h.clip->audio;
+  drag_.zone = h.zone;
+  drag_.curve = (mods & mod::kAlt) != 0 && h.zone != kZoneGain;
+  drag_.pressed = h.ref;
+  drag_.pressRow = h.row;
+  (void)ctx_.store().beginGesture(h.zone == kZoneGain ? "Clip Gain" : "Clip Fade");
+}
+
+void Editor::audioDragTo(const PointerEvent& e) {
+  const doc::AudioClip& c0 = *drag_.audio;
+  const doc::Snapshot snap = ctx_.doc();  // held: the dispatches below replace the store's current snapshot
+  const doc::Project& p = *snap;
+  const doc::ClipRef ref = drag_.pressed;
+  const doc::ClipSlot* now = findClip(p, ref);
+  if (!now || !now->audio) return;
+  const doc::AudioClip& c = *now->audio;
+  const float scale = view_.tree() ? view_.tree()->scale() : 1.0f;
+  if (drag_.kind == DragKind::Gain) {
+    const double perPx = ((e.mods & mod::kShift) ? 0.02 : 0.2) / static_cast<double>(scale);
+    const double db = std::clamp(static_cast<double>(c0.gainDb) - static_cast<double>(e.pos.y - drag_.press.y) * perPx,
+                                 static_cast<double>(doc::kMinClipGainDb), static_cast<double>(doc::kMaxClipGainDb));
+    if (static_cast<float>(db) != c.gainDb) (void)apply(doc::ops::setAudioClipGain(p, std::span<const doc::ClipRef>(&ref, 1), static_cast<float>(db)), "Clip Gain", false);
+    return;
+  }
+  const bool in = drag_.zone == kZoneFadeIn;
+  if (drag_.curve) {  // Alt: the curve (up = slower start for a fade-in; as the automation curve law)
+    const float dc = static_cast<float>(drag_.press.y - e.pos.y) * 0.01f / scale;
+    doc::AudioFade fi = c.fadeIn, fo = c.fadeOut;
+    if (in) fi.curve = std::clamp(c0.fadeIn.curve + dc, -1.0f, 1.0f);
+    else fo.curve = std::clamp(c0.fadeOut.curve - dc, -1.0f, 1.0f);
+    if (!(fi == c.fadeIn) || !(fo == c.fadeOut)) (void)apply(doc::ops::setAudioClipFades(p, ref, fi, fo), "Clip Fade", false);
+    return;
+  }
+  const Ticks t = tickAt(e.pos.x);
+  const doc::Track* track = doc::findTrackPtr(p, ref.track);
+  if (!track) return;
+  if (in) {
+    // The clip ending exactly at this one's start (the crossfade's partner).
+    const bool leftNeighbour = std::any_of(track->clips.begin(), track->clips.end(),
+                                           [&](const doc::ClipSlot& o) { return o.id != c.id && o.audio && o.end() == c.start; });
+    if (c0.crossfadeIn > 0 || (t < c.start && leftNeighbour)) {
+      const Ticks x = std::clamp<Ticks>(2 * std::abs(t - c.start), 0, 2 * c.length);
+      if (x != c.crossfadeIn) {
+        doc::ops::EditResult r = doc::ops::setAudioClipCrossfade(p, ref, leftNeighbour ? x : 0);
+        if (r) (void)apply(r, "Clip Fade", false);
+      }
+      return;
+    }
+    doc::AudioFade fi = c.fadeIn;
+    fi.length = std::clamp<Ticks>(t - c.start, 0, c.length);
+    if (!(fi == c.fadeIn)) (void)apply(doc::ops::setAudioClipFades(p, ref, fi, c.fadeOut), "Clip Fade", false);
+    return;
+  }
+  // Fade-out; past the end onto the clip starting there: that clip's crossfade.
+  const doc::ClipSlot* right = nullptr;
+  for (const doc::ClipSlot& o : track->clips)
+    if (o.id != c.id && o.audio && o.start() == doc::clipEnd(c)) right = &o;
+  const Ticks cEnd = doc::clipEnd(c);
+  if (right && t > cEnd) {
+    const doc::ClipRef rr{ref.track, right->id};
+    const Ticks x = std::clamp<Ticks>(2 * (t - cEnd), 0, 2 * c.length);
+    if (x != right->audio->crossfadeIn) (void)apply(doc::ops::setAudioClipCrossfade(p, rr, x), "Clip Fade", false);
+    if (c.fadeOut.length != 0) {
+      doc::AudioFade fo = c.fadeOut;
+      fo.length = 0;
+      (void)apply(doc::ops::setAudioClipFades(*ctx_.doc(), ref, c.fadeIn, fo), "Clip Fade", false);
+    }
+    return;
+  }
+  if (right && right->audio->crossfadeIn > 0 && c0.fadeOut.length == 0 && t <= cEnd)
+    (void)apply(doc::ops::setAudioClipCrossfade(p, {ref.track, right->id}, 0), "Clip Fade", false);
+  const doc::ClipSlot* cur = findClip(*ctx_.doc(), ref);
+  if (!cur || !cur->audio) return;
+  doc::AudioFade fo = cur->audio->fadeOut;
+  fo.length = std::clamp<Ticks>(cur->audio->start + cur->audio->length - t, 0, cur->audio->length);
+  if (!(fo == cur->audio->fadeOut)) (void)apply(doc::ops::setAudioClipFades(*ctx_.doc(), ref, cur->audio->fadeIn, fo), "Clip Fade", false);
 }
 
 void Editor::dragTo(const PointerEvent& e) {
@@ -607,6 +787,10 @@ void Editor::dragTo(const PointerEvent& e) {
   if (!drag_.moved && !drag::beyondSlop(e.pos, drag_.press, scale)) return;  // shared click slop (M17)
   const bool first = !drag_.moved;
   drag_.moved = true;
+  if (drag_.kind == DragKind::Fade || drag_.kind == DragKind::Gain) {
+    audioDragTo(e);
+    return;
+  }
   if (drag_.kind == DragKind::Range) {
     updateRange(e.pos);
     return;
@@ -644,20 +828,20 @@ void Editor::dragTo(const PointerEvent& e) {
 
 bool Editor::preview(const DragClip& c, int32_t& row, ClipGeom& g) const noexcept {
   if (c.row < 0 || !drag_.moved) return false;
-  const doc::NoteClip& clip = *c.clip;
+  const doc::ClipSlot& slot = c.clip;
   row = c.row;
-  g = {clip.start, clip.length, clip.contentStart};
+  g = {slot.start(), slot.length(), slot.clip ? slot.clip->contentStart : 0};
   if (drag_.kind == DragKind::Move) {
     row += drag_.drow;
     g.start += drag_.dt;
   } else if (drag_.kind == DragKind::Resize) {
     if (drag_.edge == doc::ops::ClipEdge::Start) {
-      const Ticks end = doc::clipEnd(clip);
-      g.start = std::min(clip.start + drag_.dt, end - 1);
-      g.contentStart = contentStartAfter(clip, g.start);
+      const Ticks end = slot.end();
+      g.start = std::min(slot.start() + drag_.dt, end - 1);
+      if (slot.clip) g.contentStart = contentStartAfter(*slot.clip, g.start);
       g.length = end - g.start;
     } else {
-      g.length = std::max<Ticks>(1, clip.length + drag_.dt);
+      g.length = std::max<Ticks>(1, slot.length() + drag_.dt);
     }
   } else {
     return false;
@@ -718,6 +902,11 @@ void Editor::updateRange(Vec2 p) {
 
 void Editor::release(const PointerEvent& e) {
   if (drag_.kind == DragKind::None) return;
+  if (drag_.kind == DragKind::Fade || drag_.kind == DragKind::Gain) {
+    drag_ = {};
+    if (ctx_.store().inGesture()) (void)ctx_.store().commitGesture();
+    return;
+  }
   if (!drag_.moved) {
     const Drag d = std::move(drag_);
     drag_ = {};
@@ -733,6 +922,11 @@ void Editor::release(const PointerEvent& e) {
 
 void Editor::cancelDrag() {
   if (drag_.kind == DragKind::None) return;
+  if (drag_.kind == DragKind::Fade || drag_.kind == DragKind::Gain) {  // Esc: back to where the gesture began
+    drag_ = {};
+    if (ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
+    return;
+  }
   const bool clipDrag = drag_.moved && drag_.kind != DragKind::Range;
   std::vector<IRect> rects = std::move(drag_.damage);
   drag_ = {};
@@ -765,7 +959,7 @@ void Editor::commitDrag() {
     for (const DragClip& c : d.clips) {
       doc::ops::ClipMove m;
       m.clip = c.ref;
-      m.start = c.clip->start + d.dt;
+      m.start = c.clip.start() + d.dt;
       if (d.drow != 0 && c.row >= 0) m.toTrack = rows[static_cast<size_t>(c.row + d.drow)].id;
       moves.push_back(m);
     }
@@ -821,6 +1015,14 @@ std::vector<doc::TrackId> Editor::midiTracks() const {
   return out;
 }
 
+std::vector<doc::TrackId> Editor::clipTracks() const {
+  std::vector<doc::TrackId> out;
+  const doc::Project& p = *ctx_.doc();
+  for (doc::TrackId id : sel_.tracks)
+    if (const doc::Track* t = doc::findTrackPtr(p, id)) collectMidi(*t, out, true);
+  return out;
+}
+
 std::vector<int32_t> Editor::midiRows() const {
   std::vector<int32_t> out;
   const auto rows = view_.rows();
@@ -833,7 +1035,7 @@ bool Editor::deleteSelection() {
   doc::IdSource& ids = ctx_.store().ids();
   if (sel_.range && sel_.time && sel_.time->end > sel_.time->start) {
     Chain ch(ctx_.doc(), "Delete");
-    for (doc::TrackId t : midiTracks()) carve(ch, ids, t, sel_.time->start, sel_.time->end);
+    for (doc::TrackId t : clipTracks()) carve(ch, ids, t, sel_.time->start, sel_.time->end);
     if (!ch.error.empty()) {
       ctx_.setStatus("Delete: " + ch.error);
       return false;
@@ -868,20 +1070,19 @@ bool Editor::fillClipboard(Clipboard& out) const {
   };
   struct Src {
     int32_t index;
-    doc::ClipPtr clip;
+    doc::ClipSlot clip;
   };
   std::vector<Src> src;
   Ticks origin = 0;
   if (sel_.range && sel_.time && sel_.time->end > sel_.time->start) {
     const Ticks s = sel_.time->start, e = sel_.time->end;
     Chain ch(ctx_.doc(), "Copy");
-    const std::vector<doc::TrackId> tracks = midiTracks();
+    const std::vector<doc::TrackId> tracks = clipTracks();
     std::vector<doc::ClipRef> crossing;
     for (doc::TrackId id : tracks)
       if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
         for (const doc::ClipSlot& c : t->clips)
-          if ((c.clip->start < s && doc::clipEnd(*c.clip) > s) || (c.clip->start < e && doc::clipEnd(*c.clip) > e))
-            crossing.push_back({id, c.id});
+          if ((c.start() < s && c.end() > s) || (c.start() < e && c.end() > e)) crossing.push_back({id, c.id});
     const Ticks cuts[] = {s, e};
     if (!crossing.empty() && !ch.run(doc::ops::splitClips(*ch.snap, ctx_.store().ids(), crossing, cuts))) return false;
     for (doc::TrackId id : tracks) {
@@ -889,7 +1090,7 @@ bool Editor::fillClipboard(Clipboard& out) const {
       const doc::Track* t = doc::findTrackPtr(*ch.snap, id);
       if (mi < 0 || !t) continue;
       for (const doc::ClipSlot& c : t->clips)
-        if (c.clip->start >= s && doc::clipEnd(*c.clip) <= e) src.push_back({mi, c.clip});
+        if (c.start() >= s && c.end() <= e) src.push_back({mi, c});
     }
     origin = s;
     out.length = e - s;
@@ -908,10 +1109,10 @@ bool Editor::fillClipboard(Clipboard& out) const {
       const int32_t i = t ? doc::findClipIndex(*t, r.clip) : -1;
       const int32_t mi = midiIndex(r.track);
       if (i < 0 || mi < 0) continue;
-      const doc::ClipPtr& c = t->clips[static_cast<size_t>(i)].clip;
+      const doc::ClipSlot& c = t->clips[static_cast<size_t>(i)];
       src.push_back({mi, c});
-      lo = std::min(lo, c->start);
-      hi = std::max(hi, doc::clipEnd(*c));
+      lo = std::min(lo, c.start());
+      hi = std::max(hi, c.end());
       first = std::min(first, mi);
     }
     if (src.empty()) return false;
@@ -920,8 +1121,16 @@ bool Editor::fillClipboard(Clipboard& out) const {
     for (Src& x : src) x.index -= first;
   }
   for (const Src& x : src) {
-    auto c = std::make_shared<doc::NoteClip>(doc::withNotes(*x.clip, x.clip->notes));
-    c->start -= origin;
+    doc::ClipSlot c = x.clip;
+    if (c.audio) {  // the start relative to the origin; pasting re-derives a warp-Off clip's length at its new start
+      auto a = std::make_shared<doc::AudioClip>(*c.audio);
+      a->start -= origin;
+      c.audio = std::move(a);
+    } else {
+      auto n = std::make_shared<doc::NoteClip>(doc::withNotes(*c.clip, c.clip->notes));
+      n->start -= origin;
+      c.clip = std::move(n);
+    }
     out.clips.push_back({static_cast<uint32_t>(x.index), std::move(c)});
   }
   return !out.clips.empty() || out.length > 0;
@@ -954,19 +1163,25 @@ bool Editor::pasteAt(const Clipboard& cb, Ticks at, int32_t firstMidi, std::stri
       ++dropped;
       continue;
     }
-    const doc::TrackId track = rows[static_cast<size_t>(mrows[mi])].id;
-    const Ticks start = at + e.clip->start;
-    if (!carve(ch, ids, track, start, start + e.clip->length)) break;
-    doc::ClipPtr c = cloneFresh(*e.clip, ids, start);
-    const doc::ClipRef ref{track, c->id};
-    if (!ch.run(doc::AddClip{track, std::move(c)})) break;
+    const ArrangementRow& row = rows[static_cast<size_t>(mrows[mi])];
+    const doc::TrackId track = row.id;
+    // T5.6: a clip goes only onto a track of its kind (note clips: MIDI, audio clips: audio).
+    if ((e.clip.audio != nullptr) != (row.track->kind == doc::TrackKind::Audio)) {
+      ++dropped;
+      continue;
+    }
+    const Ticks start = at + e.clip.start();
+    doc::ClipSlot c = cloneFresh(e.clip, ids, start, *ch.snap->timeline);
+    if (!carve(ch, ids, track, start, start + c.length())) break;
+    const doc::ClipRef ref{track, c.id};
+    if (!ch.run(doc::AddClip{track, c.clip, c.audio})) break;
     made.push_back(ref);
   }
   if (!ch.error.empty()) {
     ctx_.setStatus(std::string(what) + ": " + ch.error);
     return false;
   }
-  if (dropped) ctx_.setStatus(std::string(what) + ": " + std::to_string(dropped) + " clip(s) had no MIDI track to go to");
+  if (dropped) ctx_.setStatus(std::string(what) + ": " + std::to_string(dropped) + " clip(s) had no track of their kind to go to");
   if (!dispatch(std::move(ch.batch), what)) return false;
   Selection s = selectionOfClips(made);
   s.time = TickRange{at, at + cb.length};
@@ -994,7 +1209,7 @@ bool Editor::paste() {
       break;
     }
   if (first < 0) {
-    ctx_.setStatus("Paste: no MIDI track there");
+    ctx_.setStatus("Paste: no clip track there");
     return false;
   }
   // Pasting again right after a paste goes after it (the pasted clips are still selected), like the clip view.
@@ -1041,10 +1256,10 @@ bool Editor::splitSelection() {
   else return false;  // whole clips selected: nothing to cut at (Live)
   const doc::Project& p = *ctx_.doc();
   std::vector<doc::ClipRef> clips;
-  for (doc::TrackId id : midiTracks())
+  for (doc::TrackId id : clipTracks())
     if (const doc::Track* t = doc::findTrackPtr(p, id))
       for (const doc::ClipSlot& c : t->clips)
-        if (std::any_of(at.begin(), at.end(), [&](Ticks x) { return c.clip->start < x && doc::clipEnd(*c.clip) > x; }))
+        if (std::any_of(at.begin(), at.end(), [&](Ticks x) { return c.start() < x && c.end() > x; }))
           clips.push_back({id, c.id});
   if (clips.empty()) return false;
   const doc::ops::EditResult e = doc::ops::splitClips(p, ctx_.store().ids(), clips, at);
@@ -1054,7 +1269,7 @@ bool Editor::splitSelection() {
   if (s.range) {
     const doc::Project& q = *ctx_.doc();
     for (const doc::ClipRef& r : e->clips)
-      if (const doc::NoteClip* c = findClip(q, r); c && c->start >= s.time->start && doc::clipEnd(*c) <= s.time->end)
+      if (const doc::ClipSlot* c = findClip(q, r); c && c->start() >= s.time->start && c->end() <= s.time->end)
         s.clips.push_back(r);
   }
   setSelection(std::move(s), false);
@@ -1071,15 +1286,14 @@ bool Editor::consolidateSelection() {
     for (doc::TrackId id : tracks)
       if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
         for (const doc::ClipSlot& c : t->clips)
-          if ((c.clip->start < s && doc::clipEnd(*c.clip) > s) || (c.clip->start < e && doc::clipEnd(*c.clip) > e))
-            crossing.push_back({id, c.id});
+          if ((c.start() < s && c.end() > s) || (c.start() < e && c.end() > e)) crossing.push_back({id, c.id});
     const Ticks cuts[] = {s, e};
     if (!crossing.empty()) (void)ch.run(doc::ops::splitClips(*ch.snap, ids, crossing, cuts));
     std::vector<doc::ClipRef> inside;
     for (doc::TrackId id : tracks)
       if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
         for (const doc::ClipSlot& c : t->clips)
-          if (c.clip->start >= s && doc::clipEnd(*c.clip) <= e) inside.push_back({id, c.id});
+          if (c.start() >= s && c.end() <= e) inside.push_back({id, c.id});
     if (inside.empty()) return false;
     const doc::ops::EditResult r = doc::ops::consolidateClips(*ch.snap, ids, inside);
     (void)ch.run(r);
@@ -1170,7 +1384,7 @@ bool Editor::toggleActive() {
   if (!sel_.clips.empty()) {
     bool anyActive = false;
     for (const doc::ClipRef& r : sel_.clips)
-      if (const doc::NoteClip* c = findClip(p, r)) anyActive = anyActive || c->active;
+      if (const doc::ClipSlot* c = findClip(p, r)) anyActive = anyActive || c->active();
     doc::Batch b;
     b.label = anyActive ? "Deactivate Clips" : "Activate Clips";
     for (const doc::ClipRef& r : sel_.clips) b.commands.push_back(doc::SetClipActive{r, !anyActive});
@@ -1183,7 +1397,7 @@ bool Editor::toggleActive() {
 void Editor::selectAll() {
   std::vector<doc::ClipRef> all;
   doc::forEachTrack(*ctx_.doc(), [&](const doc::Track& t, const doc::Track*) {
-    if (t.kind != doc::TrackKind::Midi) return;
+    if (t.kind != doc::TrackKind::Midi && t.kind != doc::TrackKind::Audio) return;
     for (const doc::ClipSlot& c : t.clips) all.push_back({t.id, c.id});
   });
   Selection s = selectionOfClips(std::move(all));

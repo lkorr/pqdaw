@@ -9,6 +9,7 @@
 #include <span>
 
 #include "internal.h"
+#include "lane_paint.h"
 
 namespace pq::views::arrangement {
 
@@ -37,6 +38,8 @@ const doc::TuningDef* clipTuning(const ArrangementRow& row, const doc::NoteClip&
   return row.tuning;
 }
 
+}  // namespace
+
 // Solid rects in one reservation (the note preview: thousands per frame when zoomed out).
 void emitRects(DrawList& dl, std::span<const Model::RectOut> rs) {
   size_t n = 0;
@@ -64,6 +67,8 @@ void emitRects(DrawList& dl, std::span<const Model::RectOut> rs) {
     base += 4;
   }
 }
+
+namespace {
 
 // --- Note runs (T3.8-fix1) ---------------------------------------------------------------------------------
 // A clip's preview is generated in clip-local device px: column 0 = the clip's left edge, row 0 = the top of its
@@ -327,6 +332,8 @@ bool LaneCanvas::buildAhead() {
   // Pass 2: previews within the note budget, tiles within the texel budget (at least one of each per frame).
   size_t texels = 0;
   bool builtTile = false;
+  // T5.6: the audio clips' waveform tiles share the texel budget.
+  if (tiles && !buildAudioTiles(*this, view_, *tiles, view_.lanesViewport(), texels, builtTile)) return false;
   return forVisible([&](const ArrangementRow& row, const doc::ClipPtr& clip, int32_t bodyH) {
     Preview* pv = m.preview(clip, clipTuning(row, *clip, *m.shown));
     if (!pv) return false;
@@ -411,25 +418,6 @@ Cursor LaneCanvas::cursorAt(Vec2 p) const {
 }
 
 namespace {
-
-// Everything one lanes paint needs, computed once.
-struct LanePaint {
-  PaintContext& ctx;
-  const Theme& th;
-  Model& m;
-  ArrangementView& view;
-  const doc::Project& p;
-  IRect r;      // canvas rect
-  IRect c;      // visible part being painted
-  double k;     // device px per tick
-  double origin;
-  Ticks from, to;  // ticks meeting c (a pixel of slack each side)
-  int32_t titleH;
-  FontId font = kNoFont;
-  int32_t baselineOff = 0;  // title strip top → name baseline
-
-  float X(double tick) const noexcept { return static_cast<float>(static_cast<double>(r.x) + (tick - origin) * k); }
-};
 
 void paintGrid(LanePaint& lp, float y0, float y1) {
   DrawList& dl = lp.ctx.dl;
@@ -551,10 +539,79 @@ void queueTile(LanePaint& lp, const TileAtlas& tiles, const PreviewTile& t, floa
                             static_cast<float>(t.tile.y + static_cast<uint32_t>(t.bodyH)) * inv, noteCol});
 }
 
-// Emits the queued tile quads (one draw command per page) and then the borders of their clips.
+}  // namespace
+
+bool clipColumns(const LanePaint& lp, Ticks start, Ticks length, ClipCols& out) noexcept {
+  out.cx0 = std::round(lp.X(static_cast<double>(start)));
+  out.cx1 = std::round(lp.X(static_cast<double>(start + length)));
+  if (out.cx1 <= out.cx0) out.cx1 = out.cx0 + 1.0f;
+  // Geometry is limited to the painted region (plus a pixel): huge clips at deep zoom stay in float range.
+  // Never past the canvas (the divider to the headers is the next column: a clip drawn over it would change with
+  // state the canvas's damage does not cover, e.g. the selection outline).
+  const float rx0 = static_cast<float>(lp.r.x), rx1 = static_cast<float>(lp.r.right());
+  out.vx0 = std::max(out.cx0, std::max(static_cast<float>(lp.c.x) - 1.0f, rx0));
+  out.vx1 = std::min(out.cx1, std::min(static_cast<float>(lp.c.right()) + 1.0f, rx1));
+  return out.vx1 > out.vx0;
+}
+
+float paintClipChrome(LanePaint& lp, const ClipCols& cc, float top, float bottom, Rgba colour, std::string_view name) {
+  DrawList& dl = lp.ctx.dl;
+  const Rgba body = clipBodyColour(colour);
+  const float titleB = std::min(bottom, top + static_cast<float>(lp.titleH));
+  dl.addRectFilled({cc.vx0, top, cc.vx1, titleB}, colour);
+  if (bottom > titleB) dl.addRectFilled({cc.vx0, titleB, cc.vx1, bottom}, body);
+  // Name: sticky at the lanes' left edge when the clip starts off-screen, cut at the clip's right edge.
+  if (lp.font != kNoFont && lp.ctx.res.text && cc.cx1 - cc.cx0 >= 10.0f) {
+    const float pad = static_cast<float>(lp.ctx.scale.px(3.0f));
+    const float nx = std::max(cc.cx0, static_cast<float>(lp.r.x)) + pad;
+    // Cut at the canvas edge too: a name running past it would paint the divider column, which the lanes' damage
+    // does not cover (partial repaints then differed from full ones while zooming; T3.8-fix1).
+    const float maxRight = std::min(cc.cx1 - pad, static_cast<float>(lp.r.right()));
+    if (nx < static_cast<float>(lp.c.right()) && maxRight > nx)
+      drawTextUpTo(dl, *lp.ctx.res.text, lp.font, name, nx, top + static_cast<float>(lp.baselineOff), maxRight,
+                   lp.m.clipTextColour(lp.th, colour));
+  }
+  return titleB;
+}
+
+void paintClipBorder(LanePaint& lp, const ClipCols& cc, float top, float bottom, float titleB, bool selected, int hover,
+                     bool deferred) {
+  DrawList& dl = lp.ctx.dl;
+  auto rect = [&](const Rect& rc, Rgba col) {
+    if (deferred) lp.m.deferredRects.push_back({rc.x0, rc.y0, rc.x1, rc.y1, col});
+    else dl.addRectFilled(rc, col);
+  };
+  const float cx0 = cc.cx0, cx1 = cc.cx1, vx0 = cc.vx0, vx1 = cc.vx1;
+  // Border: dark edges separate adjacent clips (Live draws clips with a thin dark outline); a selected clip is
+  // outlined all round in the light selection colour.
+  if (selected) {
+    const Rgba sel = lp.th.clip.selectedBorder;
+    const float w = static_cast<float>(std::max(1, lp.ctx.scale.px(1.0f)));
+    rect({vx0, top, vx1, top + w}, sel);
+    rect({vx0, bottom - w, vx1, bottom}, sel);
+    if (cx0 >= vx0) rect({cx0, top, cx0 + w, bottom}, sel);
+    if (cx1 <= vx1) rect({cx1 - w, top, cx1, bottom}, sel);
+  } else if (cx1 - cx0 >= 3.0f) {
+    const Rgba border = lp.th.clip.border;
+    if (cx0 >= vx0) rect({cx0, top, cx0 + 1.0f, bottom}, border);
+    if (cx1 <= vx1) rect({cx1 - 1.0f, top, cx1, bottom}, border);
+  }
+  // T4.16b: the title strip brightened (a drag moves the clip) or the edge a drag trims (Live).
+  if (hover == 0) {
+    rect({vx0, top, vx1, titleB}, withAlpha(lp.th.text.primary, 56));
+  } else if (hover == -1 || hover == 1) {
+    const float w = std::min(static_cast<float>(std::max(2, lp.ctx.scale.px(3.0f))), std::floor((cx1 - cx0) * 0.5f));
+    const float ex = hover < 0 ? cx0 : cx1 - w;
+    const float a = std::max(ex, vx0), b = std::min(ex + w, vx1);
+    if (b > a) rect({a, top, b, bottom}, lp.th.text.primary);
+  }
+}
+
+// Emits the queued tile quads (one draw command per page), then the borders of their clips and (T5.6) the overlays of
+// audio clips (fades, crossfades, handles).
 void flushTiles(LanePaint& lp) {
   Model& m = lp.m;
-  if (m.tileQuads.empty() && m.deferredRects.empty()) return;
+  if (m.tileQuads.empty() && m.deferredRects.empty() && m.overlay.empty()) return;
   DrawList& dl = lp.ctx.dl;
   const TextureId prev = dl.texture();
   for (uint32_t page = 0; page < kMaxTilePages; ++page) {
@@ -585,9 +642,19 @@ void flushTiles(LanePaint& lp) {
   }
   dl.setTexture(prev);
   emitRects(dl, m.deferredRects);
+  if (!m.overlay.empty()) {  // untextured geometry: copied with its indices rebased
+    const auto vs = m.overlay.vertices();
+    const auto is = m.overlay.indices();
+    const DrawList::PrimSpan sp = dl.primReserveSpan(static_cast<uint32_t>(is.size()), static_cast<uint32_t>(vs.size()));
+    std::memcpy(sp.v, vs.data(), vs.size_bytes());
+    for (size_t i = 0; i < is.size(); ++i) sp.i[i] = is[i] + sp.base;
+    m.overlay.reset(dl.targetWidth(), dl.targetHeight());
+  }
   m.tileQuads.clear();
   m.deferredRects.clear();
 }
+
+namespace {
 
 // A clip's notes (T3.8-fix1): from its tile when it has one at this zoom and body height; else (until onFrame has
 // built it) from its previous tile stretched, or directly within the paint's fallback budget, or not at all. Clips
@@ -660,11 +727,9 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
 // A clip: border, title strip with the name, body with the note preview (looped content repeated). `g` is where it
 // is drawn (its own bounds, or a drag preview's); a selected clip gets a light outline (T3.9). `hover` (T4.16b): the
 // part a press would grab, highlighted (0 the title strip, −1 / +1 an edge; kNoHover none).
-constexpr int kNoHover = -2;
 void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive,
                const ClipGeom& g, bool selected, int hover = kNoHover) {
   const doc::NoteClip& clip = *clipPtr;
-  DrawList& dl = lp.ctx.dl;
   // Playback geometry for the segments: the clip itself, or (a preview) a copy of its timing without notes.
   std::optional<doc::NoteClip> moved;
   if (g.start != clip.start || g.length != clip.length || g.contentStart != clip.contentStart) {
@@ -675,78 +740,29 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
     moved->loop = clip.loop;
   }
   const doc::NoteClip& timing = moved ? *moved : clip;
-  const float cx0 = std::round(lp.X(static_cast<double>(g.start)));
-  float cx1 = std::round(lp.X(static_cast<double>(g.start + g.length)));
-  if (cx1 <= cx0) cx1 = cx0 + 1.0f;
-  // Geometry is limited to the painted region (plus a pixel): huge clips at deep zoom stay in float range.
-  // Never past the canvas (the divider to the headers is the next column: a clip drawn over it would change with
-  // state the canvas's damage does not cover, e.g. the selection outline).
-  const float rx0 = static_cast<float>(lp.r.x), rx1 = static_cast<float>(lp.r.right());
-  const float vx0 = std::max(cx0, std::max(static_cast<float>(lp.c.x) - 1.0f, rx0));
-  const float vx1 = std::min(cx1, std::min(static_cast<float>(lp.c.right()) + 1.0f, rx1));
-  if (vx1 <= vx0) return;
+  ClipCols cc;
+  if (!clipColumns(lp, g.start, g.length, cc)) return;
   ++lp.m.stats.clipsPainted;
 
   const bool active = clip.active && trackActive;
   const Rgba colour = active ? rgbOf(clip.colour) : inactiveColour();
-  const Rgba body = clipBodyColour(colour);
-  const float titleB = std::min(bottom, top + static_cast<float>(lp.titleH));
-  dl.addRectFilled({vx0, top, vx1, titleB}, colour);
-  if (bottom > titleB) dl.addRectFilled({vx0, titleB, vx1, bottom}, body);
-
-  // Name: sticky at the lanes' left edge when the clip starts off-screen, cut at the clip's right edge.
-  if (lp.font != kNoFont && lp.ctx.res.text && cx1 - cx0 >= 10.0f) {
-    const float pad = static_cast<float>(lp.ctx.scale.px(3.0f));
-    const float nx = std::max(cx0, static_cast<float>(lp.r.x)) + pad;
-    // Cut at the canvas edge too: a name running past it would paint the divider column, which the lanes' damage
-    // does not cover (partial repaints then differed from full ones while zooming; T3.8-fix1).
-    const float maxRight = std::min(cx1 - pad, rx1);
-    if (nx < static_cast<float>(lp.c.right()) && maxRight > nx)
-      drawTextUpTo(dl, *lp.ctx.res.text, lp.font, clip.name, nx, top + static_cast<float>(lp.baselineOff), maxRight,
-                   lp.m.clipTextColour(lp.th, colour));
-  }
+  const float titleB = paintClipChrome(lp, cc, top, bottom, colour, clip.name);
 
   // Notes.
   const float by0 = titleB, by1 = bottom - 1.0f;
   const int32_t bodyH = static_cast<int32_t>(by1 - by0);
   // Level of detail: a clip narrower than 12 logical px shows only its colours (a preview there is a few unreadable
   // pixels, and at whole-song zoom it would cost tens of thousands of rects per frame).
-  const bool detailed = cx1 - cx0 >= static_cast<float>(lp.ctx.scale.px(12.0f));
+  const bool detailed = cc.cx1 - cc.cx0 >= static_cast<float>(lp.ctx.scale.px(12.0f));
   // While the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw no notes directly (their notes are a few
   // pixels each there; the frame stays cheap however far out the zoom goes); the lanes repaint once it settles.
   const bool dense = lp.view.zooming() &&
-                     cx1 - cx0 < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip.notes.size());
+                     cc.cx1 - cc.cx0 < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip.notes.size());
   // A tile quad and its clip's border go after the rows (flushTiles); everything else is drawn now.
   bool deferred = false;
   if (detailed && bodyH >= 3 && !clip.notes.empty())
-    deferred = paintNotes(lp, row, clipPtr, timing, g, cx0, cx1, vx0, vx1, by0, bodyH, dense, clipNoteColour(colour));
-  auto rect = [&](const Rect& rc, Rgba col) {
-    if (deferred) lp.m.deferredRects.push_back({rc.x0, rc.y0, rc.x1, rc.y1, col});
-    else dl.addRectFilled(rc, col);
-  };
-  // Border: dark edges separate adjacent clips (Live draws clips with a thin dark outline); a selected clip is
-  // outlined all round in the light selection colour.
-  if (selected) {
-    const Rgba sel = lp.th.clip.selectedBorder;
-    const float w = static_cast<float>(std::max(1, lp.ctx.scale.px(1.0f)));
-    rect({vx0, top, vx1, top + w}, sel);
-    rect({vx0, bottom - w, vx1, bottom}, sel);
-    if (cx0 >= vx0) rect({cx0, top, cx0 + w, bottom}, sel);
-    if (cx1 <= vx1) rect({cx1 - w, top, cx1, bottom}, sel);
-  } else if (cx1 - cx0 >= 3.0f) {
-    const Rgba border = lp.th.clip.border;
-    if (cx0 >= vx0) rect({cx0, top, cx0 + 1.0f, bottom}, border);
-    if (cx1 <= vx1) rect({cx1 - 1.0f, top, cx1, bottom}, border);
-  }
-  // T4.16b: the title strip brightened (a drag moves the clip) or the edge a drag trims (Live).
-  if (hover == 0) {
-    rect({vx0, top, vx1, titleB}, withAlpha(lp.th.text.primary, 56));
-  } else if (hover == -1 || hover == 1) {
-    const float w = std::min(static_cast<float>(std::max(2, lp.ctx.scale.px(3.0f))), std::floor((cx1 - cx0) * 0.5f));
-    const float ex = hover < 0 ? cx0 : cx1 - w;
-    const float a = std::max(ex, vx0), b = std::min(ex + w, vx1);
-    if (b > a) rect({a, top, b, bottom}, lp.th.text.primary);
-  }
+    deferred = paintNotes(lp, row, clipPtr, timing, g, cc.cx0, cc.cx1, cc.vx0, cc.vx1, by0, bodyH, dense, clipNoteColour(colour));
+  paintClipBorder(lp, cc, top, bottom, titleB, selected, hover, deferred);
 }
 
 // The track's own activator and its groups' (a deactivated or muted group silences its members; T3.10: the
@@ -823,8 +839,13 @@ void LaneCanvas::paint(PaintContext& ctx) {
   m.fallbackRects = 0;
   m.tileQuads.clear();
   m.deferredRects.clear();
+  m.overlay.reset(ctx.dl.targetWidth(), ctx.dl.targetHeight());  // T5.6: audio overlays of this paint
   if (c.empty()) return;
-  if (newFrame) m.beginPaint(previewBudget_);
+  if (newFrame) {
+    m.beginPaint(previewBudget_);
+    m.stats.wavesDirect = 0;
+    m.stats.waveColumns = 0;
+  }
   paintFrame_ = ctx.frame;
   const double k = view_.devicePxPerTick();
   const double origin = view_.originTick();
@@ -879,23 +900,19 @@ void LaneCanvas::paint(PaintContext& ctx) {
     const Editor::HoverPart& hp = ed.hoverPart();
     const bool hoverRow = !ed.dragging() && hp.ref.clip.valid() && hp.ref.track == it->id;
     for (size_t j = a; j < b; ++j) {
-      const doc::ClipPtr& clip = t.clips[j].clip;
-      if (!clip) {  // T5.3: an audio clip, drawn as a plain block until T5.6 draws waveforms and handles
-        const doc::ClipSlot& audio = t.clips[j];
-        const float x0 = std::max(std::round(lp.X(static_cast<double>(ix.start[j]))), cx0);
-        const float x1 = std::min(std::max(std::round(lp.X(static_cast<double>(ix.end[j]))), x0 + 1.0f), cx1);
-        if (x1 > x0) {
-          const Rgba col = audio.active() && active ? rgbOf(audio.colour()) : inactiveColour();
-          dl.addRectFilled({x0, y0 + 1.0f, x1, y1 - 1.0f}, withAlpha(col, 150));
-          dl.addRectFilled({x0, y0 + 1.0f, x1, std::min(y1 - 1.0f, y0 + 3.0f)}, col);
-        }
-        continue;
-      }
-      if (ed.hiddenWhileDragging(clip->id)) continue;  // drawn at its drag target below
+      const doc::ClipSlot& slot = t.clips[j];
+      if (ed.hiddenWhileDragging(slot.id)) continue;  // drawn at its drag target below
       // Deferred tile quads may not cross a clip drawn over them: overlapping clips (later on top) flush first.
       if (j > 0 && ix.start[j] < ix.maxEnd[j - 1]) flushTiles(lp);
+      const int hover = hoverRow && slot.id == hp.ref.clip ? hp.zone : kNoHover;
+      if (slot.audio) {  // T5.6: waveform, fades, crossfade, handles
+        paintAudioClip(lp, *it, slot.audio, {slot.audio->start, slot.audio->length, 0}, y0 + 1.0f, y1 - 1.0f, active,
+                       ed.selected(slot.id), hover);
+        continue;
+      }
+      const doc::ClipPtr& clip = slot.clip;
       paintClip(lp, *it, clip, y0 + 1.0f, y1 - 1.0f, active, {clip->start, clip->length, clip->contentStart}, ed.selected(clip->id),
-                hoverRow && t.clips[j].id == hp.ref.clip ? hp.zone : kNoHover);
+                hover);
     }
   }
   flushTiles(lp);
@@ -920,7 +937,8 @@ void LaneCanvas::paint(PaintContext& ctx) {
     const ArrangementRow& row = rows[static_cast<size_t>(ri)];
     const float y0 = static_cast<float>(r.y + row.y), y1 = static_cast<float>(r.y + row.y + row.h);
     if (y1 <= static_cast<float>(c.y) || y0 >= static_cast<float>(c.bottom())) continue;
-    paintClip(lp, row, dc.clip, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), g, true);
+    if (dc.clip.audio) paintAudioClip(lp, row, dc.clip.audio, g, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), true, kNoHover);
+    else paintClip(lp, row, dc.clip.clip, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), g, true);
     flushTiles(lp);  // drag previews overlap other clips: each one complete before the next
   }
 

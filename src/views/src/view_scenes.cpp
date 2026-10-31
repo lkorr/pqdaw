@@ -633,6 +633,41 @@ Status setupArrangementHover(Shell& shell) {
   return Ok{};
 }
 
+// T5.6: audio clips (tests/views/fixtures/audio): waveforms (stereo, mono, gain, reverse, Re-Pitch loop), fades, a
+// crossfade, badges, the missing overlay, a MIDI row between; the first clip selected (its handles shown). Waveforms
+// are built synchronously (no UI poster in scenes).
+Status setupArrangementAudio(Shell& shell) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  a->setTimeView(-0.1 * static_cast<double>(kTicksPerWhole), 210.0 / static_cast<double>(kTicksPerWhole));
+  doc::ClipRef ref{};
+  doc::forEachTrack(*shell.context().doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && !t.clips.empty()) ref = {t.id, t.clips[0].id};
+  });
+  if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "arrangement-audio: needs the audio fixture", {}};
+  a->selectClips(std::span<const doc::ClipRef>(&ref, 1), false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// T5.6: the audio Clip View on the Re-Pitch clip (tests/views/fixtures/audio): the box (gain, transpose greyed,
+// warp, BPM, loop, fades), the whole sample with the clip's region, the start marker and the loop brace.
+Status setupClipViewAudio(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  doc::ClipRef ref{};
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Vox" && !t.clips.empty()) ref = {t.id, t.clips[0].id};
+  });
+  if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "clip-view-audio: needs the audio fixture", {}};
+  if (ArrangementView* a = arrangementOf(shell)) a->selectClips(std::span<const doc::ClipRef>(&ref, 1), true);
+  ctx.setDetailClip(ref);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Clip);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(440.0f);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T4.16b: the pointer resting on the end of an unselected note: the note brightened, its end marked.
 Status setupPianoRollHover(Shell& shell) {
   if (Status s = openFirstClip(shell); !s) return s;
@@ -1234,6 +1269,8 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-tooltip", 1280, 800, nullptr, setupCircuitTooltip},
     {"arrangement-hover", 1280, 800, setupArrangementHover},  // T4.16b
     {"pianoroll-hover", 1280, 800, setupPianoRollHover},      // T4.16b: --project tests/views/fixtures/pianoroll-12edo
+    {"arrangement-audio", 1280, 800, setupArrangementAudio},  // T5.6: --project tests/views/fixtures/audio
+    {"clip-view-audio", 1280, 800, setupClipViewAudio},        // T5.6: the same --project
 };
 
 std::string_view kNames[std::size(kScenes)] = {};

@@ -5,6 +5,7 @@
 #include <unordered_set>
 
 #include "internal.h"
+#include "pq/document/audio_clip.h"
 
 namespace pq::views::arrangement {
 
@@ -139,6 +140,43 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
   return &pv;
 }
 
+// --- audio layouts (T5.6) ---------------------------------------------------------------------------------
+
+AudioLayout makeAudioLayout(const doc::Project& p, doc::TrackId track, const doc::AudioClipPtr& clip) {
+  AudioLayout L;
+  L.clip = clip;
+  L.tempo = &p.timeline->tempoMap;
+  if (const doc::SampleRef* s = doc::findSample(p, clip->sample)) {
+    L.rate = s->rate;
+    L.frames = std::max<int64_t>(1, s->frames);
+    L.channels = std::max<uint32_t>(1, s->channels);
+  }
+  if (clip->warp == doc::AudioWarp::Off) {
+    if (const std::optional<doc::TrackPath> path = doc::findTrack(p, track)) L.ratio = doc::audioRateRatio(p, *path, *clip);
+    L.startSec = p.timeline->tempoMap.ticksToSeconds(clip->start);
+    L.constantTempo = p.timeline->tempo.size() == 1;
+  } else {
+    L.fpt = doc::framesPerContentTick(L.rate, clip->sourceBpm);
+  }
+  return L;
+}
+
+AudioLayout* Model::cachedAudioLayout(const doc::AudioClip* clip) noexcept {
+  const auto it = audio_.find(clip);
+  if (it == audio_.end() || it->second.tempo != &shown->timeline->tempoMap) return nullptr;
+  it->second.lastUsed = paintSerial_;
+  return &it->second;
+}
+
+AudioLayout& Model::audioLayout(const ArrangementRow& row, const doc::AudioClipPtr& clip) {
+  AudioLayout& L = audio_[clip.get()];
+  if (L.clip != clip || L.tempo != &shown->timeline->tempoMap) {
+    L = makeAudioLayout(*shown, row.id, clip);  // a reused entry's tile showed another clip: reset with it
+  }
+  L.lastUsed = paintSerial_;
+  return L;
+}
+
 void Model::beginPaint(uint32_t buildBudgetNotes) noexcept {
   ++paintSerial_;
   unlimited_ = buildBudgetNotes == 0;
@@ -155,6 +193,11 @@ void Model::endPaint() {
   peakNotes_ = std::max<size_t>(peakNotes_, drawn);
   if (paintSerial_ < nextTrim_) return;
   nextTrim_ = paintSerial_ + 64;
+  // T5.6: audio layouts (a few hundred bytes each) beyond 4096 entries: those not drawn lately go.
+  if (audio_.size() > 4096) {
+    const uint64_t keep = paintSerial_ > arrangement_metrics::kPreviewMaxAgePaints ? paintSerial_ - arrangement_metrics::kPreviewMaxAgePaints : 0;
+    std::erase_if(audio_, [&](const auto& kv) { return kv.second.lastUsed < keep; });
+  }
   const size_t cap = std::max(cacheLimitNotes_, 3 * peakNotes_);
   peakNotes_ = drawn;
   if (cachedNotes_ <= cap) return;
@@ -177,15 +220,20 @@ void Model::afterDocumentChange(size_t clipsInProject) {
   tunings_.clear();
   // The caches hold entries for clips/tracks that may no longer exist; drop them once they clearly outgrow the
   // project (keeps memory bounded without a sweep per edit).
-  if (previews_.size() > 2 * clipsInProject + 256 || clipIndex_.size() > 2 * rows.size() + 256) {
+  if (previews_.size() > 2 * clipsInProject + 256 || clipIndex_.size() > 2 * rows.size() + 256 ||
+      audio_.size() > 2 * clipsInProject + 256) {
     std::unordered_set<const doc::NoteClip*> live;
+    std::unordered_set<const doc::AudioClip*> liveAudio;
     std::unordered_set<uint32_t> liveTracks;
     live.reserve(clipsInProject);
     doc::forEachTrack(*shown, [&](const doc::Track& tr, const doc::Track*) {
       liveTracks.insert(tr.id.value);
-      for (const doc::ClipSlot& s : tr.clips)
+      for (const doc::ClipSlot& s : tr.clips) {
         if (s.clip) live.insert(s.clip.get());
+        if (s.audio) liveAudio.insert(s.audio.get());
+      }
     });
+    std::erase_if(audio_, [&](const auto& kv) { return !liveAudio.contains(kv.first); });
     std::erase_if(previews_, [&](const auto& kv) { return !live.contains(kv.first); });
     recountNotes();
     std::erase_if(clipIndex_, [&](const auto& kv) { return !liveTracks.contains(kv.first); });
@@ -195,6 +243,7 @@ void Model::afterDocumentChange(size_t clipsInProject) {
 void Model::clear() {
   clipIndex_.clear();
   previews_.clear();
+  audio_.clear();
   cachedNotes_ = 0;
   tunings_.clear();
 }
