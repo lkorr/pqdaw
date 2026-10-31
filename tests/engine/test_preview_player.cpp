@@ -6,12 +6,14 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <thread>
 #include <vector>
 
+#include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
 #include "pq/engine/preview_player.h"
@@ -229,4 +231,85 @@ TEST_CASE("preview player: a streamed file plays past its resident head (disk th
     (void)run(p, 4);
   }
   pool.stopDiskThread();
+}
+
+// M5 review C1: play() on the UI thread while the audio thread is inside the first process() of the previous preview.
+// collect() used to free that image (its command was acknowledged, but using_[] was published only after rendering),
+// so the audio thread read a freed Clip / ClipSample. Two threads, PoisonFrees (a freed block reads 0xDD…: NaN floats,
+// wild pointers), and one long device callback (a resampled 44.1 kHz file, 2^17 frames) to widen the window, as the
+// review's probe did. Each trial waits until the audio thread has applied X's command and is still in that same
+// process() call, then plays Y: X must still be held. A second phase plays as fast as the ring allows while the audio
+// thread runs ordinary 64-frame blocks.
+TEST_CASE("preview player: play() during the previous preview's first callback never frees its image (two threads)") {
+  alloc_trap::PoisonFrees poison;
+  media::SamplePool pool(poolConfig());
+  auto s = pool.load(writeWav("race441.wav", 44100 * 8, 44100));
+  REQUIRE(s.ok());
+  engine::PreviewConfig pc;
+  pc.sampleRate = kSr;
+  pc.maxBlockFrames = 1024;
+  pc.streams = &pool.streams();
+  engine::PreviewPlayer p(pc);
+  std::atomic<uint32_t> blockFrames{1u << 17};
+  std::atomic<int> inProcess{0};
+  std::atomic<uint64_t> calls{0};
+  std::atomic<bool> quit{false};
+  std::atomic<bool> bad{false};  // a non-finite or out-of-range output sample (a read of poisoned memory)
+  std::thread audio([&] {
+    std::vector<float> l(1u << 17), r(1u << 17);
+    DenormalGuard dg;
+    while (!quit.load(std::memory_order_acquire)) {
+      const uint32_t n = blockFrames.load(std::memory_order_acquire);
+      std::fill_n(l.begin(), n, 0.0f);
+      std::fill_n(r.begin(), n, 0.0f);
+      float* o[2] = {l.data(), r.data()};
+      inProcess.store(1, std::memory_order_release);
+      p.process(o, 2, n);
+      calls.fetch_add(1, std::memory_order_acq_rel);
+      inProcess.store(0, std::memory_order_release);
+      for (uint32_t i = 0; i < n; ++i)
+        if (!(std::fabs(l[i]) <= 1.0f) || !(std::fabs(r[i]) <= 1.0f)) bad.store(true, std::memory_order_relaxed);
+      std::this_thread::yield();
+    }
+  });
+  const auto waitFor = [](auto&& cond) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!cond()) {
+      if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10)) return false;
+      std::this_thread::yield();
+    }
+    return true;
+  };
+  int hits = 0, freed = 0;
+  for (int t = 0; t < 40 && hits < 8; ++t) {
+    p.stop();
+    REQUIRE(waitFor([&] { return p.state() == engine::PreviewPlayer::State::Stopped; }));
+    (void)p.collect();
+    // No process() call ends between reading `call` and the checks below: then the call that applied X's command
+    // (it pops the ring at its start, after the push) is the one still running when Y is played.
+    const uint64_t call = calls.load(std::memory_order_acquire);
+    REQUIRE(p.play(*s, 1.0, {}).ok());  // image X
+    REQUIRE(waitFor([&] { return p.positionSeconds() >= 0.0; }));  // the audio thread applied X's command
+    if (calls.load(std::memory_order_acquire) != call) continue;
+    const size_t before = p.collect();  // X and whatever the player still fades
+    REQUIRE(p.play(*s, 2.0, {}).ok());  // image Y; play() runs collect()
+    const size_t after = p.collect();
+    if (calls.load(std::memory_order_acquire) != call || inProcess.load(std::memory_order_acquire) != 1) continue;
+    ++hits;  // still inside X's first process(): X must not have been freed
+    if (after < before + 1) ++freed;
+  }
+  CHECK(hits > 0);  // the window was hit (a 2^17-frame resampled callback takes milliseconds)
+  CHECK(freed == 0);
+  // Phase 2: ordinary blocks, a play() storm (auto-preview while holding Down) with scrubs and stops in between.
+  blockFrames.store(64, std::memory_order_release);
+  for (int i = 0; i < 3000; ++i) {
+    if (i % 97 == 0) p.stop();
+    else if (i % 13 == 0) (void)p.scrub(0.5);
+    else (void)p.play(*s, 0.001 * (i % 500), {});  // a full ring is fine (Overflow)
+    if (i % 4 == 0) std::this_thread::yield();
+  }
+  quit.store(true, std::memory_order_release);
+  audio.join();
+  CHECK_FALSE(bad.load());
+  CHECK(p.collect() >= 1);
 }

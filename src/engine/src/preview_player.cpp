@@ -187,6 +187,11 @@ bool PreviewPlayer::apply(const Command& c) noexcept {  // RT-safe
       playing_ = false;
       break;
   }
+  // M5 review C1: publish the images the clip player now reads *before* acknowledging the command. collect() loads
+  // acked_ (acquire) and then using_[], so once it sees this command acknowledged it also sees the new image (and the
+  // one fading out) as in use, and never frees an image this block is about to render.
+  using_[0].store(player_.image(), std::memory_order_release);
+  using_[1].store(player_.previousImage(), std::memory_order_release);
   pos_.store(playing_ ? s_ : -1, std::memory_order_release);
   busy_.store(playing_ || player_.liveVoices() != 0, std::memory_order_release);
   acked_.store(c.seq, std::memory_order_release);
