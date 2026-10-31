@@ -1,12 +1,13 @@
 # Compiler cache, cache-friendly debug info, no module scanning (T0.x-buildspeed). Included after project(), before any target.
 #
 # sccache (scripts/get-sccache.ps1, pinned, SHA-256 checked) is the C/C++ compiler launcher when installed;
-# builds work the same without it. scripts/build.ps1 sets its environment: one cache directory and one sccache
-# server per checkout (%LOCALAPPDATA%\pqdaw\sccache-v3\<hash>). Sharing objects across worktrees returned the
-# other worktree's /showIncludes output with them, which broke Ninja's header dependencies (T0.x-buildspeed-fix2/fix3).
-# Absolute paths still stay out of compiled code (pq_build_paths, below, compiled without the launcher), so the
-# sharing can come back if a launcher rewrites the dependency output; the test main prints file names without
-# directories for the same reason.
+# builds work the same without it. scripts/build.ps1 sets its environment (T0.x-buildspeed2): one cache directory
+# (%LOCALAPPDATA%\pqdaw\sccache-shared) and one sccache server for every checkout, whose base directories are all
+# checkout roots, so a fresh worktree gets the other worktrees' objects. A hit replays the other checkout's
+# /showIncludes output, which once made Ninja track the wrong headers (T0.x-buildspeed-fix2/fix3); build.ps1 now
+# repairs Ninja's dependency log after every build (scripts/NinjaDeps.cs). Absolute paths of this checkout stay out
+# of cached objects (pq_build_paths, below, compiled without the launcher); the test main prints file names without
+# directories because __FILE__ in a cached object may name another worktree.
 
 set(PQ_SCCACHE "" CACHE STRING
   "sccache executable used as the compiler launcher. Empty: %LOCALAPPDATA%/pqdaw/tools/sccache/sccache.exe if it exists (scripts/get-sccache.ps1). OFF: no compiler cache.")

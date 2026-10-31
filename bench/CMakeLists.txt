@@ -8,9 +8,12 @@ add_library(pq_bench_support STATIC  # thread pinning, TSC, system load; the T1.
 target_include_directories(pq_bench_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 pq_target_defaults(pq_bench_support)
 # T1.11-fix1: the preset the benches were built with, from the compile flags (NDEBUG alone cannot tell ship from
-# release), for the CSV and tools/bench/append_results.py: ship = Release + /GL (LTCG), release = Release, dev = else.
+# release), for the CSV and tools/bench/append_results.py: ship = Release + /GL (LTCG), check = Release with
+# asserts (no /DNDEBUG), release = Release, dev = else.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND CMAKE_CXX_FLAGS_RELEASE MATCHES "/GL")
   set(PQ_BENCH_PRESET ship)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT CMAKE_CXX_FLAGS_RELEASE MATCHES "NDEBUG")
+  set(PQ_BENCH_PRESET check)
 elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
   set(PQ_BENCH_PRESET release)
 else()
@@ -23,6 +26,13 @@ function(pq_add_bench name)
   add_executable(${name} ${A_SOURCES})
   target_link_libraries(${name} PRIVATE pq_bench_support ${A_DEPS})
   pq_target_defaults(${name})
+  set(_dirs "")
+  foreach(_s IN LISTS A_SOURCES)
+    cmake_path(ABSOLUTE_PATH _s BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    cmake_path(GET _s PARENT_PATH _p)
+    list(APPEND _dirs "${_p}")
+  endforeach()
+  pq_graph_record(bench ${name} ${_dirs})
   # T0.x-buildsize: in dev, benches are built only on request (`build.ps1 -Target <bench>`), or all of them with
   # -DPQ_DEV_BENCHES=ON. Recorded numbers come from ship anyway; dev bench binaries cost ~0.5 GB each when they link
   # LLVM. pq_bench_dsp stays in `all` (the runner smoke test runs it).

@@ -973,7 +973,7 @@ TEST_CASE("jit (perf): a 100-node patch compiles in <= 100 ms and the 1200-input
   MESSAGE("100-step chain (" << chain.sched.ops.size() << " ops): " << a.totalMs << " ms (machine code " << a.machineCodeMs
                              << "); 1200-input mux (" << mux.sched.ops.size() << " ops): " << b.totalMs << " ms (machine code "
                              << b.machineCodeMs << ", " << b.objectBytes << " B of code)");
-#ifdef NDEBUG
+#ifdef PQ_OPTIMIZED
   CHECK(a.totalMs <= 100.0);
   CHECK(b.totalMs <= 300.0);
 #endif

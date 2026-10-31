@@ -25,7 +25,9 @@ set(PQ_CXX_FLAGS
   /W4 /WX /permissive- /Zc:__cplusplus /Zc:preprocessor /utf-8 /arch:AVX2 /fp:precise /EHsc
   /wd4324  # structure padded due to alignment specifier: intentional (cache-line padding)
 )
-set(PQ_CXX_DEFS NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+# PQ_OPTIMIZED: an optimised build (check, release, ship). Use it, not NDEBUG, for checks that need optimised code
+# (wall-clock bounds): the check preset is optimised with asserts on.
+set(PQ_CXX_DEFS NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS $<$<CONFIG:Release>:PQ_OPTIMIZED=1>)
 
 function(pq_target_defaults target)
   get_target_property(_type ${target} TYPE)

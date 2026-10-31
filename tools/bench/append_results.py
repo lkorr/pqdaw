@@ -120,7 +120,7 @@ def higher_is_better(unit):
     return "realtime" in u or u.endswith("/s") or u.endswith("per second")
 
 
-PRESET_LABEL = {"ship": "ship (LTCG)", "release": "release (no LTCG)", "dev": "dev"}
+PRESET_LABEL = {"ship": "ship (LTCG)", "release": "release (no LTCG)", "check": "check (release + asserts)", "dev": "dev"}
 
 
 def result_text(r, higher):

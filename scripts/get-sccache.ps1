@@ -5,7 +5,7 @@
 .DESCRIPTION
   Optional: builds work without it. When the binary is present, CMake uses it as the compiler launcher
   (cmake/PqCompilerCache.cmake) and scripts/build.ps1 prints its cache statistics. One cache directory,
-  %LOCALAPPDATA%\pqdaw\sccache, is shared by every checkout and worktree. See docs/DEPENDENCIES.md.
+  %LOCALAPPDATA%\pqdaw\sccache-shared, is shared by every checkout and worktree (scripts/build.ps1). See docs/DEPENDENCIES.md.
 
   The archive is checked against the SHA-256 pinned below before anything is extracted. Re-running is a
   no-op when the binary already exists. Existing build trees pick sccache up after `build.ps1 -Reconfigure`.

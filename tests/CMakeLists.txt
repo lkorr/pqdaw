@@ -103,7 +103,7 @@ pq_add_test(pq_tests_app
 # solo/mute vs effectiveAudible, topology swaps, the NullDevice end-to-end playhead); T2.6-fix1: the tuning signal in
 # playback (tests/app/fixtures/tuning_automation, the bit-identical static render, live tuning params); T1b.4: the AOT
 # seed and the disk cache under ProjectLink (a stock track compiles nothing; a second load of a project neither).
-pq_add_test(pq_tests_playback PERF  # T5.12: the 60-s clip render (perf)
+pq_add_test(pq_tests_playback PERF SHARDS 6  # T5.12: the 60-s clip render (perf)
   SOURCES
     app/test_playback.cpp
     app/test_playback_link.cpp
@@ -289,7 +289,7 @@ target_compile_definitions(pq_tests_render PRIVATE PQC_EXE=pq_build_pqc_exe)
 
 # jit (T1b.1): the LLVM backend against the interpreter and the reference evaluator over the T1.7 corpus, plus the
 # ProgramImage contract cases and compile times.
-pq_add_test(pq_tests_jit PERF
+pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
   SOURCES
     jit/test_jit.cpp
     engine/test_voices.cpp  # the T1.8 voice suite again, on JIT images (rigImageBuilder, set in test_jit.cpp)
@@ -303,7 +303,7 @@ pq_add_test(pq_tests_jit PERF
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
 # references (tests/stdlib/stdlib_reference.h, also the baseline of bench/jit/bench_stdlib.cpp), interpreter + JIT.
-pq_add_test(pq_tests_stdlib
+pq_add_test(pq_tests_stdlib SHARDS 4 SLOW_SHARDS 4
   SOURCES
     stdlib/test_stdlib.cpp
     stdlib/test_devices.cpp  # T4.9 / T4.10: Utility, Saturator, EQ Eight vs device_reference.h
@@ -352,7 +352,7 @@ pq_add_test(pq_tests_document
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index
 # file + journal, the change watcher (latency in `perf`), search vs a brute-force reference scorer (200k-entry
 # keystroke timing in `perf`), tags across renames.
-pq_add_test(pq_tests_library PERF
+pq_add_test(pq_tests_library PERF SLOW_SHARDS 4
   SOURCES
     library/test_index.cpp
     library/test_indexer.cpp

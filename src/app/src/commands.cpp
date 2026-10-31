@@ -720,7 +720,7 @@ int selfTest(WindowApp& app, Clock::time_point windowStart) {
   // loop made no blocking GPU submit (the pre-T0.8-fix1 path waited for the device and submitted the upload
   // separately).
   {
-#ifdef NDEBUG
+#ifdef PQ_OPTIMIZED
     const bool enforceTiming = perfChecks;
 #else
     const bool enforceTiming = false;

@@ -292,7 +292,7 @@ TEST_CASE("library: search keystrokes over 200k entries, median <= 5 ms (release
   const double median = times[times.size() / 2];
   MESSAGE("200k entries: " << times.size() << " keystrokes, median " << median << " ms, p90 "
                            << times[times.size() * 9 / 10] << " ms, worst " << worst << " ms");
-#ifdef NDEBUG
+#ifdef PQ_OPTIMIZED
   CHECK(median <= 5.0);
 #endif
 }

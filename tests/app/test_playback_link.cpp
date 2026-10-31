@@ -152,7 +152,7 @@ TEST_CASE("flush() with the output stopped returns at once; the result is publis
   link->flush();
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   MESSAGE("flush with the output stopped: " << ms << " ms");
-#ifdef NDEBUG
+#ifdef PQ_OPTIMIZED
   CHECK(ms < 50.0);
 #else
   CHECK(ms < 200.0);  // dev (/Od): the compile of the three changed units alone takes tens of ms
