@@ -656,6 +656,46 @@ TEST_CASE("schedule: a phasor / sine_hz reset fed by voice.gate is warned about 
   checkStructure(s, c.typed);
 }
 
+// M4 review L17: the gate is followed through a subcircuit's input and through expressions that keep it a level held
+// for the whole note; not through edge detection (rise), state (latch) or an inversion (not), which restart or free
+// the oscillator once per note.
+TEST_CASE("schedule: the level-sensitive reset warning follows voice.gate through subcircuit inputs and expressions (L17)") {
+  Compiled c;
+  compile(c, R"(patch R {
+  in x : audio
+  param on = true
+  out y : audio voice
+  a = Osc(voice.gate, hz: voice.hz)
+  b = sine(phasor(voice.hz * 2, reset: voice.gate || on))
+  d = sine_hz(voice.hz * 3, reset: on ? voice.gate : false)
+  e = Osc(rise(voice.gate), hz: voice.hz * 4)
+  f = sine(phasor(voice.hz * 5, reset: !voice.gate))
+  g = sine(phasor(voice.hz * 6, reset: rise(voice.gate) || on))
+  h = sine(phasor(voice.hz * 7, reset: x > 0.5 ? voice.gate : false))
+  y = a + b + d + e + f + g + h
+}
+
+patch Osc {
+  in r : bool = false
+  param hz = 440Hz [1Hz..20000Hz]
+  out o : audio
+  o = sine(phasor(hz, reset: r))
+}
+)");
+  const Schedule& s = ok(c);
+  std::string all;
+  for (const auto& w : s.warnings) all += w.message + "\n";
+  MESSAGE(all);
+  // a (through Osc's input), b (or), d (select's data input), h (select's data input, a signal condition) warn; e
+  // (rise), f (not) and g (rise, then or) do not.
+  CHECK(s.warnings.size() == 4);
+  for (const auto& w : s.warnings) {
+    CHECK(w.message.find("level-sensitive") != std::string::npos);
+    CHECK(w.message.find("rise(voice.gate)") != std::string::npos);
+  }
+  checkStructure(s, c.typed);
+}
+
 TEST_CASE("schedule: visual mode inserts a z1 into a delay-free cycle and warns") {
   ScheduleOptions so;
   so.visualMode = true;

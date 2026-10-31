@@ -31,6 +31,13 @@
 // else it is stale and dropped), with an Instant swap: interpreter and JIT images are bit-identical by default
 // (T1b.1-fix1) and the swap transfers every state word, so the output is sample-exact through it (tested). The JIT
 // publish does not wake a sleeping engine: the packet waits for the next block that runs.
+// M4 review M1: a JIT image that cannot be published yet (the output is stopped, earlier compile results wait for the
+// audio thread, the unit's queue is full) is PARKED, not dropped: the compile worker (or flush() / waitForJit())
+// publishes it after the deferred results, while its unit still runs that schedule. M3: the interpretBudget hold also
+// covers topology rebuilds — a rebuilt unit that continues an earlier one playing a JIT image (the same member tracks;
+// e.g. Operator's `voices` setting, which makes a new unit) and would cost more than the budget interpreted keeps the
+// whole topology change queued until that unit's JIT image arrives; the change is then published with the JIT image in
+// place of the interpreted one (a later compile, or a failed JIT, publishes it interpreted).
 //
 // ---- Threads ------------------------------------------------------------------------------------------------------
 //   UI thread      onDocumentChange (or attach()'s subscription), the TransportPort and MeterSource calls
@@ -144,8 +151,10 @@ struct LinkConfig {
   // of publishing the interpreted one, when the interpreted image would cost more than this fraction of a core
   // (engine::estimateInterpretedNsPerFrame at the unit's full polyphony; e.g. Operator with a Newton filter at 64
   // voices): the edit becomes audible when its JIT image arrives (a cache hit: about a millisecond; a compile: tens to
-  // hundreds of ms), crossfaded like any edit. A failed JIT publishes the interpreted image then. Topology changes
-  // always publish interpreted images. ≤ 0: never hold.
+  // hundreds of ms), crossfaded like any edit. A failed JIT publishes the interpreted image then (M4 review M2: through
+  // the deferred queue). M4 review M3: a topology change holds the same way for a rebuilt unit with the same member
+  // tracks as one playing a JIT image (the whole change waits for that image); new units publish interpreted images.
+  // ≤ 0: never hold.
   float interpretBudget = 0.25f;
   // T1b.4: what builds the JIT images (fn null: compile::jitUnitBackend(true), the process compiler and its cache, with
   // T1b.x-perf's quick first images: QUESTIONS Q111 option C); tests and the AOT seed pass
@@ -200,6 +209,10 @@ struct LinkStats {
   uint32_t delayedWires = 0;
   uint32_t refusedWires = 0;
   uint64_t heldForJit = 0;  // T1b.x-perf: unit edits that kept the JIT image playing (LinkConfig::interpretBudget)
+  uint64_t heldTopologies = 0;  // M4 review M3: topology changes queued for a continued unit's JIT image
+  uint64_t parkedJit = 0;       // M4 review M1: JIT images parked until they could be published
+  // M4 review M4: the project param slots in use, and the capacity of the engine's param block (it grows on demand).
+  uint32_t paramSlots = 0, paramCapacity = 0;
   // T4.4-fix1: wires left out because a port they connect is not on the device (an edit of a user device removed it).
   uint32_t invalidWires = 0;
   // T5.4: audio sequence images published; audio tracks lowered again (the per-track cache missed); sample loads.
@@ -397,7 +410,8 @@ private:
   // for an unchanged key); true when one was built (its index is new: a compile).
   bool updateTuningTables(const doc::Project& p, bool fresh = false);
   const EntryPtr* tuningEntry(doc::TuningId id, const doc::TuningDef& def) const;  // held; caller holds mutex_
-  const float** liveTap(const doc::Project& p, const doc::ParamRef& ref);  // UI thread (T2.6-fix2)
+  // UI thread (T2.6-fix2). *slot: the table slot whose live inputs it drives (L18).
+  const float** liveTap(const doc::Project& p, const doc::ParamRef& ref, uint32_t* slot = nullptr);
   void publishAutomation(const doc::Project& p);
   void reportDelayedSends(const doc::Project& p);
   void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
@@ -426,7 +440,22 @@ private:
     std::unordered_map<uint32_t, uint32_t> meterMap;  // topology: track id → bus of its `out`
     std::unordered_map<std::string, uint32_t> tapMap;  // topology (T4.7): "<device id>:<param>" → its tap bus
     std::vector<engine::UnitUpdate> units;           // otherwise: the changed units' images, in order
+    // M4 review M3 (topology): schedules of continued heavy units whose JIT image replaces the interpreted one in
+    // topo.units before the topology is published; drainDeferred stops at it while any is waited for.
+    std::vector<std::shared_ptr<const graph::Schedule>> waiting;
   };
+  // M4 review M1: a JIT image waiting for room (compileMutex_).
+  struct ParkedJit {
+    std::shared_ptr<const graph::Schedule> schedule;
+    bool first = false, refine = false;
+    std::unique_ptr<engine::ProgramImage> image;
+  };
+  enum class JitPublish { Published, Failed, Stale, NoRoom };
+  // compileMutex_ held: publishes a JIT image of `schedule` into the unit running it, if there is room now (never waits).
+  JitPublish publishJit(const std::shared_ptr<const graph::Schedule>& schedule, bool first, bool refine,
+                        std::unique_ptr<engine::ProgramImage>& image);
+  void park(ParkedJit p);  // compileMutex_ held
+  void notifyWorker();     // compileMutex_ may be held: wakes the compile worker for deferred / parked work
   // Publishes deferred_ front to back (compileMutex_ held). While the audio thread runs it waits (bounded) for the
   // room a publish needs; when it does not run (Engine::audioStopped), it stops at the first publish that needs it
   // and leaves the rest queued: ok() with `drained` false. An error drops the queue (a compile then rebuilds).
@@ -438,7 +467,11 @@ private:
   static void deliverJit(void* self, const engine::BackgroundJob& job, Result<std::unique_ptr<engine::ProgramImage>> img);
   static void beforeJit(void* self, const engine::BackgroundJob& job);
   void workerMain();
-  uint32_t slotForParam(const std::string& key);  // allocates (mutex_)
+  uint32_t slotForParam(const std::string& key);  // allocates (mutex_); grows the engine's param block (M4)
+  // UI thread (M4): written_ / automated_ cover slot s, and the engine's param ring the slots in use.
+  void coverSlot(uint32_t s);
+  // UI thread: writes `value` to slot `s` (no automation, unchanged values skipped); false: the ring was full.
+  bool writeParam(uint32_t s, float value);
   uint32_t slotForTrack(doc::TrackId id);         // allocates (mutex_)
 
   // T4.13 (project_link_cost.cpp): the cost meters. Declared before engine_ so they outlive every image bound to them.
@@ -509,6 +542,9 @@ private:
   std::unordered_map<std::string, uint32_t> tapBus_;  // T4.7: "<device id>:<param>" → its tap bus (published layout)
   uint64_t layoutSerial_ = 0;                         // bumped with every new bus map (readLevels drops its pending)
   uint32_t nextParam_ = 0, nextSlot_ = 0;
+  uint32_t paramCapacity_ = 0;  // M4: the engine's param block (grows: reserveProjectParams)
+  bool paramsExhausted_ = false;  // kMaxProjectParams reached (the status line says so once)
+  bool paramsReported_ = false;   // UI thread
   // Tuning tables (mutex_; see the file comment). tuningViews_[i] is written when slot i gets a table, before any
   // lowering can name it, and resources_ (read by the compile path) spans the whole fixed array; live_[i] is the
   // audio thread's (automation taps), stable for the link's life.
@@ -519,6 +555,9 @@ private:
   std::vector<std::pair<uint64_t, std::weak_ptr<const dsp::TuningShape>>> shapes_;  // (kind, n) → shape
   std::array<const dsp::TuningTableView*, kTuningTables> tuningViews_{};
   std::array<dsp::TuningLiveInputs, kTuningTables> live_{};
+  // M4 review L18: the table slots whose live inputs the last published automation image drives (UI thread); a slot is
+  // not given to a new table while it is in here.
+  std::array<uint8_t, kTuningTables> tapped_{};
   engine::Resources resources_;
 
   // UI thread state.
@@ -567,7 +606,8 @@ private:
   // T1b.5. compileMutex_ serialises the compile path's use of compiler_ / program publishes with JIT deliveries.
   std::mutex compileMutex_;
   std::deque<Deferred> deferred_;                 // compileMutex_; see drainDeferred
-  std::atomic<bool> anyDeferred_{false};          // deferred_ is not empty (read by the worker without the lock)
+  std::vector<ParkedJit> parked_;                 // compileMutex_ (M4 review M1)
+  std::atomic<bool> anyDeferred_{false};          // deferred_ or parked_ is not empty (read by the worker unlocked)
   std::vector<std::shared_ptr<const graph::Schedule>> jitDone_;  // schedules with a JIT image (or a failed JIT)
   std::vector<std::shared_ptr<const graph::Schedule>> jitFirst_;  // ... with a quick first JIT image only (Q111 C)
   // Schedules whose unit plays a JIT image: published ones, and held ones (interpretBudget: the unit still plays an

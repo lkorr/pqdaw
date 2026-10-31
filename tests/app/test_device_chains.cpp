@@ -404,3 +404,61 @@ TEST_CASE("device chains: a device missing from the library is bypassed and name
   for (float v : d.out[0]) peak = std::max(peak, std::fabs(v));
   CHECK(peak > 0.001f);  // the instrument still sounds through the bypassed device
 }
+
+// M4 review M4: past 16,384 project params a new param got no slot and played its declared default (a muted Utility
+// played unmuted). The engine's param block now grows. 96 tracks of Operator → Utility (mute on), each a held note:
+// about 190 params per track, so the last tracks' params lie beyond the old limit; every track is muted, so the
+// render must be silent, and each Utility's mute slot holds 1.
+TEST_CASE("device chains: a project with more than 16,384 params plays every stored value (M4)" * doctest::test_suite("slow")) {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  constexpr int kTracks = 96;
+  std::vector<DeviceId> utilities;
+  {
+    Batch b{"many", {}};
+    for (int k = 0; k < kTracks; ++k) {
+      const TrackId id = ids.track();
+      Track t = makeTrack(id, TrackKind::Midi, "T" + std::to_string(k));
+      t.devices.push_back(makeDevice(ids.device(), "operator", DeviceKind::Instrument));
+      Device u = *makeDevice(ids.device(), "utility", DeviceKind::AudioEffect);
+      u.params = {DeviceValue{"mute", 1.0}};
+      utilities.push_back(u.id);
+      t.devices.push_back(std::make_shared<const Device>(std::move(u)));
+      b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), {}, kAppend});
+      b.commands.push_back(AddClip{id, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 0, 16 * kPpq, k % 12)}, "n")});
+    }
+    REQUIRE(store.dispatch(b).ok());
+  }
+  auto link = makeLink(store.current(), false);
+  CHECK(link->stats().paramSlots > 16384);
+  CHECK(link->stats().paramCapacity >= link->stats().paramSlots);
+  const uint32_t last = link->paramSlot("dev" + std::to_string(utilities.back().value) + ":mute");
+  REQUIRE(last != ProjectLink::kNoSlot);
+  CHECK(last >= 16384);
+  Driver d{*link};
+  link->play(0);
+  d.run(200);
+  for (const DeviceId u : utilities) {
+    const uint32_t s = link->paramSlot("dev" + std::to_string(u.value) + ":mute");
+    REQUIRE(s != ProjectLink::kNoSlot);
+    CHECK(link->engine().program()->projectParams()[s] == 1.0f);
+  }
+  float peak = 0.0f;
+  for (const auto& ch : d.out)
+    for (float v : ch) peak = std::max(peak, std::fabs(v));
+  CHECK(peak == 0.0f);  // every track muted by its Utility
+  // An edit of a param beyond the old limit plays: unmute the last track.
+  {
+    auto e = ops::setDeviceParam(*store.current(), utilities.back(), "mute", 0.0);
+    REQUIRE(e.ok());
+    [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& ev) { link->onDocumentChange(ev); });
+    REQUIRE(store.dispatch(e->command).ok());
+  }
+  d.out = golden::Channels(2);
+  d.run(200);
+  peak = 0.0f;
+  for (const auto& ch : d.out)
+    for (float v : ch) peak = std::max(peak, std::fabs(v));
+  CHECK(peak > 0.001f);
+  CHECK(link->engine().droppedParams() == 0);
+}

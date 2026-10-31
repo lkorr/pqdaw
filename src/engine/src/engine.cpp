@@ -32,7 +32,6 @@ Result<std::unique_ptr<Engine>> Engine::create(const EngineConfig& config) {
 
 Engine::Engine(const EngineConfig& config)
     : cfg_(config),
-      params_(std::bit_ceil(std::max(config.paramRing, 2u))),
       auditionIn_(std::bit_ceil(std::max(config.auditionRing, 2u))) {
   TimelineConfig tc = cfg_.timeline;
   tc.sampleRate = cfg_.sampleRate;
@@ -40,6 +39,9 @@ Engine::Engine(const EngineConfig& config)
   tc.maxTracks = cfg_.maxSlots;
   timeline_ = std::make_unique<Timeline>(tc);
   for (uint32_t k = 0; k < cfg_.maxSlots; ++k) slots_.push_back({this, k});
+  paramRings_.push_back(std::make_unique<ParamRing>(std::bit_ceil(std::max(cfg_.paramRing, 2u))));
+  paramProducer_ = paramConsumer_ = paramRings_.back().get();
+  paramConsumed_.store(paramConsumer_, std::memory_order_relaxed);
   auditions_.resize(std::max(cfg_.maxAuditions, 1u));
   sleepFrames_ = cfg_.sleepAfterMs > 0.0f
                      ? static_cast<uint64_t>(std::ceil(static_cast<double>(cfg_.sleepAfterMs) * 1e-3 * cfg_.sampleRate))
@@ -76,13 +78,23 @@ bool Engine::post(const TransportCommand& c) noexcept {  // UI thread (wait-free
 }
 
 bool Engine::setParam(uint32_t index, float value) noexcept {  // UI thread (wait-free push + wake hook)
-  if (!params_.tryPush(ParamWrite{index, value})) {
+  if (!paramProducer_->ring.tryPush(ParamWrite{index, value})) {
     droppedParams_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
   wake();
   return true;
 }
+
+void Engine::growParamRing(uint32_t capacity) {  // UI thread (the producer)
+  if (capacity <= paramProducer_->ring.capacity()) return;
+  auto r = std::make_unique<ParamRing>(std::bit_ceil(std::min(capacity, 1u << 31)));
+  paramProducer_->next.store(r.get(), std::memory_order_release);  // after every push into the old ring
+  paramProducer_ = r.get();
+  paramRings_.push_back(std::move(r));
+}
+
+uint32_t Engine::paramRingCapacity() const noexcept { return paramProducer_->ring.capacity(); }
 
 bool Engine::audition(uint32_t slot, float hz, float velocity, uint32_t durationFrames) noexcept {  // UI thread (wait-free push + wake hook)
   if (slot >= cfg_.maxSlots || !(hz > 0.0f) || !std::isfinite(hz)) return false;
@@ -92,6 +104,9 @@ bool Engine::audition(uint32_t slot, float hz, float velocity, uint32_t duration
 }
 
 void Engine::collect() {
+  // M4: rings the audio thread has left (it reads paramConsumed_ and every ring after it).
+  const ParamRing* reading = paramConsumed_.load(std::memory_order_acquire);
+  while (paramRings_.size() > 1 && paramRings_.front().get() != reading) paramRings_.erase(paramRings_.begin());
   timeline_->collect();
   if (program_) program_->collect();
 }
@@ -157,11 +172,26 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   bool activity = false;
   ParamWrite pw;
   if (program_) {
-    std::span<float> pp = program_->projectParams();
-    while (params_.tryPop(pw)) {
-      if (pw.index < pp.size()) pp[pw.index] = pw.value;
-      ++stats_.paramWrites;
-      activity = true;
+    std::span<float> pp;
+    auto drain = [&](ParamRing& r) noexcept {
+      while (r.ring.tryPop(pw)) {
+        if (pp.empty()) pp = program_->projectParams();  // only in blocks with writes (L1: it counts as a change)
+        if (pw.index >= pp.size()) {  // M4: a slot of a block reserved since this block started
+          program_->adoptProjectParams();
+          pp = program_->projectParams();
+        }
+        if (pw.index < pp.size()) pp[pw.index] = pw.value;
+        ++stats_.paramWrites;
+        activity = true;
+      }
+    };
+    for (;;) {  // M4: a grown ring is chained behind the old one; the old one's writes come first
+      drain(*paramConsumer_);
+      ParamRing* next = paramConsumer_->next.load(std::memory_order_acquire);
+      if (next == nullptr) break;
+      drain(*paramConsumer_);  // what was pushed before `next` was set is visible now
+      paramConsumer_ = next;
+      paramConsumed_.store(next, std::memory_order_release);
     }
   }
   AuditionRequest ar;

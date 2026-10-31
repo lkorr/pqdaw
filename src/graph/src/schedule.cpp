@@ -235,29 +235,57 @@ private:
 
   // ---- lint ---------------------------------------------------------------------------------------------------
   // Q14 / M1 review: phasor, sine_hz and sample_read resets are level-sensitive (held at the start while high). Fed
-  // straight from voice.gate, that holds the oscillator or playhead at its start for the whole note, which is
-  // almost never meant: warn and point at rise(). (Edge behaviour stays a subcircuit choice; the kernels are
-  // unchanged.)
+  // from voice.gate, that holds the oscillator or playhead at its start for the whole note, which is almost never
+  // meant: warn and point at rise(). (Edge behaviour stays a subcircuit choice; the kernels are unchanged.) M4 review
+  // L17: the gate is followed through what keeps it a level that is high while the note is held — a subcircuit's
+  // input (inlined: the wire goes on), and stateless expressions whose output follows it (and / or / min / max / mul,
+  // gate_to_real, a select's or mux's data inputs) — but not through anything stateful (rise(), a latch, a delay) or
+  // that inverts it (not, a comparison).
   void lintLevelResets() {
     static const AtomId gateId = atomId("voice.gate");
     static const AtomId resettable[] = {atomId("phasor"), atomId("sine_hz"), atomId("sample_read_linear"),
                                         atomId("sample_read_cubic")};
+    static const AtomId followAll[] = {atomId("and"), atomId("or"), atomId("min"), atomId("max"), atomId("mul"),
+                                       atomId("gate_to_real")};
+    static const AtomId selectId = atomId("select"), muxId = atomId("mux");
     const Patch& p = P();
+    std::vector<NodeIndex> stack;
+    std::vector<uint8_t> seen;
+    // Whether `from` carries voice.gate as a level (iterative: any expression depth).
+    auto followsGate = [&](NodeIndex from) {
+      stack.assign(1, from);
+      seen.assign(p.nodeCount(), 0);
+      while (!stack.empty()) {
+        const NodeIndex n = stack.back();
+        stack.pop_back();
+        if (n == kNone || seen[n]) continue;
+        seen[n] = 1;
+        const Node& nd = p.node(n);
+        uint32_t first = 0;
+        if (nd.kind == NodeKind::Atom) {
+          if (nd.atom == gateId) return true;
+          if (nd.atom == selectId || nd.atom == muxId) first = 1;  // not the condition / selector
+          else if (std::find(std::begin(followAll), std::end(followAll), nd.atom) == std::end(followAll)) continue;
+        } else if (nd.kind != NodeKind::Input && nd.kind != NodeKind::Output && nd.kind != NodeKind::Subcircuit) {
+          continue;
+        }
+        for (uint32_t i = first; i < nd.numInputs; ++i) stack.push_back(driverNode(n, i));
+      }
+      return false;
+    };
     for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
       const Node& nd = p.node(n);
       if (nd.kind != NodeKind::Atom) continue;
       if (std::find(std::begin(resettable), std::end(resettable), nd.atom) == std::end(resettable)) continue;
       const std::optional<uint32_t> in = p.findInput(n, "reset");
       if (!in) continue;
-      const WireIndex w = adj_.driver[p.flatInput(n, *in)];
-      if (w == kNone) continue;
-      const NodeIndex src = p.wire(w).from.node;
-      if (p.node(src).kind != NodeKind::Atom || p.node(src).atom != gateId) continue;
+      const NodeIndex src = driverNode(n, *in);
+      if (src == kNone || !followsGate(src)) continue;
+      const bool direct = p.node(src).kind == NodeKind::Atom && p.node(src).atom == gateId;
       S().warnings.push_back(makeDiag(
           n, ErrorCode::Type,
-          "the reset of " + label(n) +
-              " is level-sensitive: voice.gate holds it at its start for the whole note; use rise(voice.gate) to "
-              "restart it once per note"));
+          "the reset of " + label(n) + " is level-sensitive: voice.gate" + (direct ? "" : " (through " + label(src) + ")") +
+              " holds it at its start for the whole note; use rise(voice.gate) to restart it once per note"));
     }
   }
 

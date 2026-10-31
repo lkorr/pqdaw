@@ -125,9 +125,10 @@ public:
   // Non-RT. Hands `image` to the audio thread, to become current at a block boundary (policy as above; ignored for
   // the first image, which starts instantly). Errors: null image, a sample rate / block size / voice geometry other
   // than the host's, a plan error, too many packets pending (ErrorCode::Overflow: retry after the audio thread has
-  // taken some). Calls collect() first.
+  // taken some). Calls collect() first. `keepAlive` (M4 review L4): owners of what the image writes outside itself
+  // (probe tap slots), released by the first collect() after the audio thread has run the image for the last time.
   Result<PublishInfo> publish(std::unique_ptr<ProgramImage> image, const SwapPolicy& policy = {},
-                              const VoiceSlots& slots = {});
+                              const VoiceSlots& slots = {}, std::vector<std::shared_ptr<const void>> keepAlive = {});
   // Non-RT. Retires the packets the audio thread has let go of and frees those every reader has passed; returns how
   // many images were freed by this call. Call it periodically (the T3.17 controller), or rely on publish().
   size_t collect();

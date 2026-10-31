@@ -768,6 +768,7 @@ bool ImageHost::bindInspect(const InspectBinding& b) {
   }
   meter_ = b.meter;
   meterKey_ = b.meter ? b.meter->attach(meterUnits_) : 0u;
+  meterActivated_ = false;
   return true;
 }
 
@@ -1229,6 +1230,10 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
     return false;
   }
   // T4.5: cost meter. Unbound or not shown: this test and the flag store are all it costs.
+  if (meter_ != nullptr && !meterActivated_) {  // M4 review L5: the meter follows the image that runs
+    meter_->activate(meterKey_);
+    meterActivated_ = true;
+  }
   if (meter_ != nullptr && meter_->wants(meterKey_)) {
     metering_ = true;
     meterT0_ = __rdtsc();

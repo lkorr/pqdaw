@@ -15,6 +15,7 @@ namespace pq::engine {
 
 struct ProgramHost::Packet {
   uint64_t seq = 0;
+  std::vector<std::shared_ptr<const void>> keepAlive;  // released after the image (M4 review L4)
   std::unique_ptr<ProgramImage> image;
   TransferPlan plan;                                  // from the previous packet's image (empty for the first)
   SwapMode mode = SwapMode::Auto;
@@ -59,7 +60,7 @@ ProgramHost::~ProgramHost() {
 }
 
 Result<PublishInfo> ProgramHost::publish(std::unique_ptr<ProgramImage> image, const SwapPolicy& policy,
-                                         const VoiceSlots& voiceSlots) {
+                                         const VoiceSlots& voiceSlots, std::vector<std::shared_ptr<const void>> keepAlive) {
   if (image == nullptr) return hostError(ErrorCode::InvalidArgument, "no image");
   collect();
   std::lock_guard lock(mutex_);
@@ -68,6 +69,7 @@ Result<PublishInfo> ProgramHost::publish(std::unique_ptr<ProgramImage> image, co
     return hostError(ErrorCode::InvalidArgument, "the image's sample rate / maxBlockFrames differ from the host's");
   auto p = std::make_unique<Packet>();
   p->seq = nextSeq_;
+  p->keepAlive = std::move(keepAlive);
   p->image = std::move(image);
   ProgramImage& img = *p->image;
   p->mode = policy.mode;
@@ -137,6 +139,9 @@ size_t ProgramHost::collect() {
   const uint64_t through = retiredThrough_.load(std::memory_order_acquire);
   size_t k = 0;
   while (k < inflight_.size() && inflight_[k]->seq <= through) {
+    // M4 review L4: the audio thread has run this image for the last time (retire() comes after its last process),
+    // so whatever it wrote outside itself is free now; the packet itself waits for the epoch.
+    inflight_[k]->keepAlive.clear();
     reclaimer_.retire(inflight_[k], [](void* q) noexcept { delete static_cast<Packet*>(q); });
     ++k;
   }

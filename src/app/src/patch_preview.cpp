@@ -3,7 +3,6 @@
 #include "pq/app/patch_preview.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 
 #include "pq/engine/interpreter.h"
@@ -14,9 +13,6 @@ namespace pq::app {
 namespace {
 constexpr float kPreviewArpHz[] = {261.626f, 329.628f, 391.995f, 523.251f};
 
-double nowSeconds() {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
 }
 
 PatchPreview::PatchPreview(const PreviewConfig& config)
@@ -93,14 +89,17 @@ Status PatchPreview::play(const graph::Schedule& schedule, const graph::TypedPat
   const int kind = (*image)->io().hasVoiceStages ? 1 : 0;
   std::lock_guard lock(mutex_);
   if (!hosts_[kind]) makeHost(kind);
-  // T4.5: taps for this schedule's probes, and the cost meter (tagged with the generation this play() makes).
+  // T4.5: taps for this schedule's probes, and the cost meter (tagged with the generation this play() makes). Retired
+  // images are freed first, so their taps' leases are released (M4 review L4).
+  for (auto& h : hosts_)
+    if (h) h->collect();
   const uint64_t gen = generation_.load(std::memory_order_relaxed) + 1;
   bindProbes(schedule);
-  bind(**image, gen);
+  std::vector<std::shared_ptr<const void>> leases = bind(**image, gen);
   engine::SwapPolicy policy;
   // Starting (or switching between a global and a voice patch): at once; an edit of what plays: hot swap.
   policy.mode = fresh_ || kind != currentKind_ ? engine::SwapMode::Instant : engine::SwapMode::Auto;
-  auto published = hosts_[kind]->publish(std::move(*image), policy, slots);
+  auto published = hosts_[kind]->publish(std::move(*image), policy, slots, std::move(leases));
   if (!published) {
     ++stats_.failures;
     return std::move(published).error();
@@ -151,12 +150,13 @@ void PatchPreview::deliver(void* self, const engine::BackgroundJob& job,
     ++p.stats_.staleJit;
     return;
   }
-  p.bind(**image, p.generation_.load(std::memory_order_relaxed));  // T4.5: the same taps as the interpreter's image
+  // T4.5: the same taps as the interpreter's image (and their leases, M4 review L4).
+  std::vector<std::shared_ptr<const void>> leases = p.bind(**image, p.generation_.load(std::memory_order_relaxed));
   engine::SwapPolicy policy;
   policy.mode = engine::SwapMode::Instant;  // bit-identical to the interpreter's image: full state transfer, no fade
   // A full ring (a burst of edits the audio thread has not taken yet) drops this image: the interpreter's keeps
   // playing, and the next edit compiles again.
-  if (p.hosts_[p.jitKind_]->publish(std::move(*image), policy, p.slots_)) ++p.stats_.jitPublished;
+  if (p.hosts_[p.jitKind_]->publish(std::move(*image), policy, p.slots_, std::move(leases))) ++p.stats_.jitPublished;
   else ++p.stats_.failures;
 }
 
@@ -195,10 +195,12 @@ void PatchPreview::setProbeSignals(std::span<const uint32_t> ids) {
   wantSignals_.assign(ids.begin(), ids.end());
 }
 
-// Under mutex_. Frees the slots of probes that are gone (they rest kProbeTapRest seconds before reuse: an image that
-// still writes them may run until its crossfade ends) and binds a slot per probe of `schedule`.
+// Under mutex_. Frees the slots of probes that are gone and binds a slot per probe of `schedule`. A freed slot is
+// reused only once no image that was bound to it is alive (M4 review L4, as DeviceInspector): each image holds the
+// leases of the slots it writes (the host's keepAlive, released after the audio thread has let go of the image), so a
+// lease count back at 1 (ours) means nothing writes the slot any more. When every ring is still leased the pool grows,
+// up to kMaxProbeRings (a probe beyond that gets no ring: its signal is not shown); the levels' pool does not need to.
 void PatchPreview::bindProbes(const graph::Schedule& schedule) {
-  const double now = nowSeconds();
   auto has = [](const auto& v, uint32_t id) { return std::find(v.begin(), v.end(), id) != v.end(); };
   std::vector<uint32_t> ids;
   for (const graph::ProbeRef& p : schedule.probes) ids.push_back(p.id);
@@ -206,24 +208,23 @@ void PatchPreview::bindProbes(const graph::Schedule& schedule) {
     TapSlot& sl = ringSlots_[i];
     if (sl.bound && (!has(ids, sl.id) || !has(wantSignals_, sl.id))) {
       sl.bound = false;
-      sl.freedAt = now;
       rings_[i]->removeReader();
     }
   }
   for (TapSlot& sl : levelSlots_)
-    if (sl.bound && !has(ids, sl.id)) {
-      sl.bound = false;
-      sl.freedAt = now;
-    }
-  auto slotFor = [&](std::vector<TapSlot>& slots, uint32_t id, bool& fresh) -> int {
+    if (sl.bound && !has(ids, sl.id)) sl.bound = false;
+  auto slotFor = [&](std::vector<TapSlot>& slots, uint32_t id, bool& fresh, bool rings) -> int {
     fresh = false;
     for (uint32_t i = 0; i < slots.size(); ++i)
       if (slots[i].bound && slots[i].id == id) return static_cast<int>(i);
     int best = -1;
-    for (uint32_t i = 0; i < slots.size(); ++i)  // the slot freed longest ago, if it has rested
-      if (!slots[i].bound && now - slots[i].freedAt >= kProbeTapRest &&
-          (best < 0 || slots[i].freedAt < slots[static_cast<uint32_t>(best)].freedAt))
-        best = static_cast<int>(i);
+    for (uint32_t i = 0; i < slots.size() && best < 0; ++i)
+      if (!slots[i].bound && slots[i].lease.use_count() == 1) best = static_cast<int>(i);  // no image holds it
+    if (best < 0 && rings && slots.size() < kMaxProbeRings) {  // all leased: one more ring (allocates; not RT)
+      rings_.push_back(std::make_unique<TapRing>(1, kProbeRingFrames, std::max<uint32_t>(cfg_.maxBlockFrames, 1024)));
+      slots.emplace_back();
+      best = static_cast<int>(slots.size() - 1);
+    }
     if (best >= 0) {
       slots[static_cast<uint32_t>(best)].bound = true;
       slots[static_cast<uint32_t>(best)].id = id;
@@ -232,26 +233,32 @@ void PatchPreview::bindProbes(const graph::Schedule& schedule) {
     return best;
   };
   binding_.clear();
+  bindingLeases_.clear();
   for (const uint32_t id : ids) {
     engine::ProbeTap t;
     t.id = id;
     bool fresh = false;
-    if (const int l = slotFor(levelSlots_, id, fresh); l >= 0) t.level = &levels_[static_cast<uint32_t>(l)];
+    if (const int l = slotFor(levelSlots_, id, fresh, false); l >= 0) {
+      t.level = &levels_[static_cast<uint32_t>(l)];
+      bindingLeases_.push_back(levelSlots_[static_cast<uint32_t>(l)].lease);
+    }
     if (has(wantSignals_, id))
-      if (const int r = slotFor(ringSlots_, id, fresh); r >= 0) {
+      if (const int r = slotFor(ringSlots_, id, fresh, true); r >= 0) {
         t.ring = rings_[static_cast<uint32_t>(r)].get();
+        bindingLeases_.push_back(ringSlots_[static_cast<uint32_t>(r)].lease);
         if (fresh) t.ring->addReader();
       }
     binding_.push_back(t);
   }
 }
 
-void PatchPreview::bind(engine::ProgramImage& image, uint64_t gen) {
+std::vector<std::shared_ptr<const void>> PatchPreview::bind(engine::ProgramImage& image, uint64_t gen) {
   meter_.setTag(gen);
   engine::InspectBinding b;
   b.probes = binding_;
   b.meter = &meter_;
-  (void)image.bindInspect(b);  // an image that cannot be inspected plays without probes
+  if (!image.bindInspect(b)) return {};  // an image that cannot be inspected plays without probes (writes nothing)
+  return bindingLeases_;
 }
 
 TapRing* PatchPreview::probeSignal(uint32_t id) noexcept {

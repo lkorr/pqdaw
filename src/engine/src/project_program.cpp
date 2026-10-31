@@ -40,6 +40,8 @@ struct ProjectProgram::Packet {
   // Idle units (see the header).
   uint32_t idleAfter = 0;                                 // UnitImage::idleAfterBlocks
   std::vector<float> linked;                              // the linked params' values in the last block
+  uint64_t linkedGen = ~uint64_t{0};                      // the param generation `linked` was read at (L1)
+  uint32_t paramsNeeded = 0;                              // 1 + the highest project param it links (M4)
   std::vector<const BusStore*> inStores;                  // the distinct buses it reads
   std::vector<uint32_t> clipSlots;                        // T5.4: the clip slots it reads (io().clipSlots)
   // Silence (T1.x-silence): ProcessContext::inSilent / outSilent and the buses behind them.
@@ -197,7 +199,15 @@ ProjectProgram::ProjectProgram(const ProjectConfig& config, ProjectLayout layout
   cfg_.maxBlockFrames = std::max(cfg_.maxBlockFrames, 1u);
   stride_ = (cfg_.maxBlockFrames + 15u) & ~15u;
   zeros_ = AlignedBuffer<float>(stride_);
-  projectParams_.assign(cfg_.numProjectParams, 0.0f);
+  {
+    auto b = std::make_unique<ParamBlock>();
+    b->size = cfg_.numProjectParams;
+    b->data = std::make_unique<float[]>(std::max<size_t>(b->size, 1));  // zeros
+    params_ = b->data.get();
+    numParams_ = b->size;
+    reservedParams_ = b->size;
+    paramBlocks_.push_back(std::move(b));
+  }
   reader_ = *reclaimer_.registerReader();
   silence_ = static_cast<float>(std::pow(10.0, static_cast<double>(cfg_.silenceDb) / 20.0));
   for (size_t b = 0; b < layout_.busWidth.size(); ++b)
@@ -287,8 +297,9 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
   if (std::find(written.begin(), written.end(), uint8_t{0}) != written.end())
     return projectError(ErrorCode::InvalidArgument, who + "the image leaves a channel of a bus it produces unwritten");
   for (const auto& [slot, param] : ui.paramLinks)
-    if (slot >= io.params.size() || param >= cfg_.numProjectParams)
+    if (slot >= io.params.size() || param >= reservedParams_)
       return projectError(ErrorCode::InvalidArgument, who + "a param link is out of range");
+  for (const auto& [slot, param] : ui.paramLinks) p->paramsNeeded = std::max(p->paramsNeeded, param + 1);
   p->paramLinks = std::move(ui.paramLinks);
   p->keepAlive = std::move(ui.keepAlive);
   p->idleAfter = ui.idleAfterBlocks;
@@ -657,6 +668,33 @@ bool ProjectProgram::computeQuiet() const noexcept {
   return true;
 }
 
+void ProjectProgram::reserveProjectParams(uint32_t count) {
+  std::lock_guard lock(mutex_);
+  if (count <= reservedParams_) return;
+  auto b = std::make_unique<ParamBlock>();
+  b->size = count;
+  b->data = std::make_unique<float[]>(count);  // zeros; the current values are copied over when it is adopted
+  ParamBlock* raw = b.get();
+  paramBlocks_.push_back(std::move(b));
+  reservedParams_ = count;
+  // A block reserved earlier and not taken yet is superseded (it stays owned by paramBlocks_ until destruction).
+  pendingParams_.exchange(raw, std::memory_order_acq_rel);
+}
+
+uint32_t ProjectProgram::projectParamCapacity() const {
+  std::lock_guard lock(mutex_);
+  return reservedParams_;
+}
+
+void ProjectProgram::adoptProjectParams() noexcept {  // RT-safe
+  ParamBlock* b = pendingParams_.exchange(nullptr, std::memory_order_acq_rel);
+  if (b == nullptr || b->size <= numParams_) return;
+  std::memcpy(b->data.get(), params_, sizeof(float) * numParams_);
+  params_ = b->data.get();
+  numParams_ = b->size;
+  ++paramGen_;
+}
+
 bool ProjectProgram::canPublish(uint32_t unit) const {
   std::lock_guard lock(mutex_);
   if (!topoInflight_.empty() && topoInflight_.back()->seq > topoCurrent_.load(std::memory_order_acquire)) return false;
@@ -767,6 +805,7 @@ float ProjectProgram::unitPeak(const Slot& s) const noexcept {  // RT-safe
 }
 
 void ProjectProgram::install(Unit& U, const Slot& s, Packet* p) noexcept {  // RT-safe
+  if (p->paramsNeeded > numParams_) adoptProjectParams();  // M4: links reserved after this block's adoption check
   ++U.stats.swaps;
   U.quietBlocks = 0;  // a new image runs (idle units)
   U.idle = false;
@@ -845,10 +884,14 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     bool quiet = old == nullptr && (!U.voices || (U.voices->liveVoices() == 0 && U.eventBuf.list().count == 0));
     for (const BusStore* b : p->inStores) quiet = quiet && b->silent;
     for (uint32_t k : p->clipSlots) quiet = quiet && cfg_.clipActive[k] == 0;  // T5.4: no audio from its clips
-    for (size_t i = 0; i < p->paramLinks.size(); ++i) {
-      const float v = projectParams_[p->paramLinks[i].second];
-      quiet = quiet && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(p->linked[i]);
-      p->linked[i] = v;
+    // M4 review L1: the links are compared only when a param may have changed since they were last read.
+    if (p->linkedGen != blockGen_) {
+      p->linkedGen = blockGen_;
+      for (size_t i = 0; i < p->paramLinks.size(); ++i) {
+        const float v = params_[p->paramLinks[i].second];
+        quiet = quiet && std::bit_cast<uint32_t>(v) == std::bit_cast<uint32_t>(p->linked[i]);
+        p->linked[i] = v;
+      }
     }
     U.quietBlocks = quiet ? U.quietBlocks + 1 : 0;
     if ((p->idleAfter != 0 && U.quietBlocks > p->idleAfter) || (U.dormant && quiet)) {
@@ -871,7 +914,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
       for (float* ch : s.own)
         if (ch >= b->data.data() && ch < b->data.data() + b->data.size()) b->silent = false;
   }
-  for (const auto& [slot, param] : p->paramLinks) p->params[slot] = projectParams_[param];
+  for (const auto& [slot, param] : p->paramLinks) p->params[slot] = params_[param];
   for (size_t k = 0; k < p->inStoreOf.size(); ++k) p->inSilent[k] = p->inStoreOf[k] == nullptr || p->inStoreOf[k]->silent;
   ProcessContext ctx;
   ctx.frames = frames;
@@ -890,7 +933,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
   ProcessContext fctx;
   if (old != nullptr) {
-    for (const auto& [slot, param] : old->paramLinks) old->params[slot] = projectParams_[param];
+    for (const auto& [slot, param] : old->paramLinks) old->params[slot] = params_[param];
     fctx = ctx;
     fctx.in = old->inPtrs.data();
     fctx.numIn = static_cast<uint32_t>(old->inPtrs.size());
@@ -929,12 +972,17 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
 }
 
 void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
+  if (pendingParams_.load(std::memory_order_relaxed) != nullptr) adoptProjectParams();  // M4: a grown param block
   const uint32_t maxBlock = cfg_.maxBlockFrames;
   const uint32_t numOut = std::min(cfg_.numOut, block.numOut);
   for (uint32_t off = 0; off < block.frames; off += maxBlock) {
     const uint32_t n = std::min(maxBlock, block.frames - off);
     const int64_t time = block.frameTime + off;
-    if (cfg_.hook.fn != nullptr) cfg_.hook.fn(cfg_.hook.user, time, n, transport_, projectParams_);
+    if (cfg_.hook.fn != nullptr) cfg_.hook.fn(cfg_.hook.user, time, n, transport_, std::span<float>(params_, numParams_));
+    // L1: this block's param generation (a hook without a counter may have written anything: a new generation).
+    const uint64_t hookWrites =
+        cfg_.hook.fn == nullptr ? 0 : cfg_.hook.paramWrites != nullptr ? *cfg_.hook.paramWrites : ++hookGen_;
+    blockGen_ = paramGen_ + hookWrites;
     maybeSwitchTopology();
     Topology& t = *topo_;
     uint32_t fading = 0;

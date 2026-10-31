@@ -40,6 +40,10 @@ struct BlockHook {
   void (*fn)(void* user, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
              std::span<float> params) noexcept = nullptr;
   void* user = nullptr;
+  // Optional (M4 review L1): a counter the hook bumps whenever it changes a value in `params` (read on the audio thread
+  // after each call), so a runner can tell that no param changed without comparing them. Null: unknown (every call may
+  // have changed any param).
+  const uint64_t* paramWrites = nullptr;
 };
 
 // The device channel map ImageRunner and ProgramHost share (one rule): channel c plays played[c] (the global `out`

@@ -93,6 +93,11 @@ public:
   // The pushes are wait-free SPSC; each then calls wake() (and so the wake hook, which may take a lock): UI thread.
   bool post(const TransportCommand& c) noexcept;            // transport (wakes the engine)
   bool setParam(uint32_t index, float value) noexcept;      // project param write
+  // M4 review M4: the param ring holds at least `capacity` writes from now on (a larger ring is chained behind the
+  // current one: the audio thread drains the old ring first, so the writes stay in order). Allocates. The program's
+  // param block itself grows with ProjectProgram::reserveProjectParams (any non-RT thread).
+  void growParamRing(uint32_t capacity);
+  uint32_t paramRingCapacity() const noexcept;
   // A note on instrument slot `slot` for durationFrames frames (velocity 0..127).
   bool audition(uint32_t slot, float hz, float velocity, uint32_t durationFrames) noexcept;
   // After a publish (and inside post / setParam / audition). Calls the wake hook, if any: never call it from the
@@ -162,7 +167,17 @@ private:
   EngineConfig cfg_;
   std::unique_ptr<Timeline> timeline_;
   std::unique_ptr<ProjectProgram> program_;
-  SpscRing<ParamWrite> params_;
+  // Param writes (UI → audio). M4: a chain of rings; the producer pushes to the newest, the audio thread drains each
+  // ring before following its `next`. collect() frees the rings the audio thread has left.
+  struct ParamRing {
+    explicit ParamRing(uint32_t capacity) : ring(capacity) {}
+    SpscRing<ParamWrite> ring;
+    std::atomic<ParamRing*> next{nullptr};
+  };
+  std::vector<std::unique_ptr<ParamRing>> paramRings_;  // UI thread (oldest first)
+  ParamRing* paramProducer_ = nullptr;                  // UI thread
+  ParamRing* paramConsumer_ = nullptr;                  // audio thread
+  std::atomic<ParamRing*> paramConsumed_{nullptr};      // the ring the audio thread reads (for collect)
   SpscRing<AuditionRequest> auditionIn_;
   std::vector<SlotSource> slots_;
   std::atomic<uint32_t> wake_{0};

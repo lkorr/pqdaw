@@ -39,7 +39,10 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr uint32_t kNone = 0xFFFFFFFFu;
-constexpr uint32_t kProjectParams = 16384;
+// M4 review M4: the engine's project param block starts at this many slots and doubles whenever they are all in use
+// (ProjectProgram::reserveProjectParams, Engine::growParamRing), up to kMaxProjectParams (64 MB of floats).
+constexpr uint32_t kInitialParams = 16384;
+constexpr uint32_t kMaxProjectParams = 1u << 24;
 constexpr uint32_t kEventSlots = ProjectLink::kEventSlots;
 
 double nowSeconds() {
@@ -287,8 +290,10 @@ bool ProjectLink::updateTuningTables(const doc::Project& p, bool fresh) {
     const uint64_t shapeKey = (static_cast<uint64_t>(form.value().kind) << 32) | static_cast<uint32_t>(form.value().n);
     std::unique_lock lock(mutex_);
     uint32_t free = kTuningTables;
+    // L18: not a slot whose live inputs the last published automation drives (an older image's taps are cleared by
+    // the timeline when it takes a newer one, before any unit of that block runs).
     for (uint32_t i = 0; i < kTuningTables && free == kTuningTables; ++i)
-      if (slots_[i].expired()) free = i;
+      if (slots_[i].expired() && tapped_[i] == 0) free = i;
     if (free == kTuningTables) {  // every slot in use: this tuning plays static pitches
       ++exhausted;
       continue;
@@ -388,9 +393,10 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
     pool_->startDiskThread();
     loader_ = std::thread([this] { loaderMain(); });
   }
+  paramCapacity_ = kInitialParams;
   if (Status s = makeEngine(); !s.ok()) return s;
-  written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
-  automated_.assign(kProjectParams, 0);
+  written_.assign(kInitialParams, std::numeric_limits<float>::quiet_NaN());
+  automated_.assign(kInitialParams, 0);
   if (cfg_.jit) {  // T1b.5: before the first compile, which already wants JIT images
     engine::BackgroundCompilerConfig bc;
     bc.backend = cfg_.jitBackend.fn != nullptr ? cfg_.jitBackend : compile::jitUnitBackend(true);
@@ -421,11 +427,14 @@ Status ProjectLink::makeEngine() {
   ec.sampleRate = cfg_.sampleRate;
   ec.blockFrames = cfg_.blockFrames;
   ec.numOut = 2;
-  ec.numProjectParams = kProjectParams;
+  {
+    std::lock_guard lock(mutex_);
+    ec.numProjectParams = paramCapacity_;  // M4: the current capacity (it grows; a new engine starts there)
+  }
   // T4.1: every device param is a project param now (BasicSynth alone adds 6 per MIDI track), so writing the whole
   // param set at once (a Reset, applyParams(forceAll)) can exceed the default 4096-write ring; a dropped first write
-  // would leave a param at 0 until its next change. The ring holds every slot (16384 × 8 B).
-  ec.paramRing = kProjectParams;
+  // would leave a param at 0 until its next change. The ring holds every slot (16384 × 8 B), and grows with them (M4).
+  ec.paramRing = ec.numProjectParams;
   ec.maxSlots = kEventSlots;
   // T3.17-fix3: 512 slots at 128 events per block and 128 sounding notes per track (≈ 25 KB per slot) instead of
   // 128 slots at 512 / 256 (≈ 61 KB): more than enough for a 64-frame block, and room for 512 MIDI tracks.
@@ -537,6 +546,7 @@ Status ProjectLink::setSampleRate(double rate) {
     jitLive_.clear();
     jitHeld_.clear();
     deferred_.clear();  // results for the old program (the new one is compiled from scratch below)
+    parked_.clear();
     anyDeferred_.store(false, std::memory_order_release);
   }
   {
@@ -546,7 +556,7 @@ Status ProjectLink::setSampleRate(double rate) {
     ++layoutSerial_;
   }
   meters_.clear();
-  written_.assign(kProjectParams, std::numeric_limits<float>::quiet_NaN());
+  written_.assign(written_.size(), std::numeric_limits<float>::quiet_NaN());
   tempoTimeline_ = nullptr;
   report_ = engine::TransportReport{};
   commandsPosted_ = 0;
@@ -622,13 +632,26 @@ uint32_t ProjectLink::slotForParam(const std::string& key) {
   std::lock_guard lock(mutex_);
   if (auto it = paramSlots_.find(key); it != paramSlots_.end()) return it->second;
   uint32_t s = kNone;
-  if (nextParam_ < kProjectParams) {
+  if (nextParam_ < paramCapacity_) {
     s = nextParam_++;
-  } else if (!freeParams_.empty()) {
+  } else if (!freeParams_.empty()) {  // a removed key's slot (the least recently freed)
     s = freeParams_.front();
     freeParams_.erase(freeParams_.begin());
+  } else if (paramCapacity_ < kMaxProjectParams) {
+    // M4 review M4: every slot in use: double the engine's param block (the audio thread adopts it, values copied;
+    // a unit linking the new slots is published after this, so it never reads past the block).
+    paramCapacity_ = std::min(paramCapacity_ * 2, kMaxProjectParams);
+    if (engine::ProjectProgram* program = engine_ ? engine_->program() : nullptr) program->reserveProjectParams(paramCapacity_);
+    s = nextParam_++;
   }
-  if (s != kNone) paramSlots_.emplace(key, s);
+  if (s != kNone) {
+    paramSlots_.emplace(key, s);
+  } else if (!paramsExhausted_) {
+    paramsExhausted_ = true;  // reported by the UI thread (applyParams)
+    setError("Playback: more than " + std::to_string(kMaxProjectParams) + " params; the rest play their defaults");
+  }
+  stats_.paramSlots = static_cast<uint32_t>(paramSlots_.size());
+  stats_.paramCapacity = paramCapacity_;
   return s;
 }
 
@@ -660,10 +683,46 @@ uint32_t ProjectLink::eventSlot(doc::TrackId track) const {
 
 // ---- Document changes (UI thread) -------------------------------------------------------------------------------
 
+void ProjectLink::coverSlot(uint32_t s) {  // UI thread
+  if (s < written_.size()) return;
+  uint32_t capacity = 0;
+  {
+    std::lock_guard lock(mutex_);
+    capacity = std::max(paramCapacity_, s + 1);
+  }
+  written_.resize(capacity, std::numeric_limits<float>::quiet_NaN());
+  automated_.resize(capacity, 0);
+  // M4: a burst of every slot's value (applyParams(forceAll)) must fit the ring, as at 16384.
+  if (engine_->paramRingCapacity() < capacity) engine_->growParamRing(capacity);
+}
+
+bool ProjectLink::writeParam(uint32_t s, float value) {  // UI thread
+  coverSlot(s);
+  if (automated_[s] || written_[s] == value) return true;
+  if (engine_->setParam(s, value)) {
+    written_[s] = value;
+    ++stats_.paramWrites;
+    return true;
+  }
+  written_[s] = std::numeric_limits<float>::quiet_NaN();  // ring full: retried at the next change
+  return false;
+}
+
 void ProjectLink::applyParams(const doc::Project& p, bool forceAll) {
-  for (const doc::LoweredParam& lp : doc::lowerParams(p, true, *devices_)) {
+  if (paramsExhausted_ && !paramsReported_ && ctx_ != nullptr) {  // M4: the hard limit (2^24 params)
+    paramsReported_ = true;
+    ctx_->setStatus(lastError());
+  }
+  const std::vector<doc::LoweredParam> params = doc::lowerParams(p, true, *devices_);
+  // M4: a burst of every value (a Reset, a new engine) must fit the ring before the audio thread drains it (at init it
+  // does not run at all), duplicate keys included: room for this whole pass and some.
+  if (forceAll && engine_->paramRingCapacity() < params.size() + 1024)
+    engine_->growParamRing(static_cast<uint32_t>(params.size() + 1024));
+  for (const doc::LoweredParam& lp : params) {
     const uint32_t s = slotForParam(lp.key);
-    if (s == kNone || automated_[s]) continue;  // automation owns an automated param
+    if (s == kNone) continue;
+    coverSlot(s);
+    if (automated_[s]) continue;  // automation owns an automated param
     if (!forceAll && written_[s] == lp.value) continue;
     if (engine_->setParam(s, lp.value)) {
       written_[s] = lp.value;
@@ -681,13 +740,7 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
       if (w == nullptr) continue;
       const auto value = static_cast<float>(w->amount);
       const uint32_t s = slotForParam("wire" + std::to_string(ref.owner) + ":amount");
-      if (s == kNone || automated_[s] || written_[s] == value) continue;
-      if (engine_->setParam(s, value)) {
-        written_[s] = value;
-        ++stats_.paramWrites;
-      } else {
-        written_[s] = std::numeric_limits<float>::quiet_NaN();
-      }
+      if (s != kNone) (void)writeParam(s, value);
       continue;
     }
     // T4.8: a rack chain's mixer or zone: the derived params of that chain (only those the lowered patch has).
@@ -716,13 +769,7 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
       const doc::DeviceValue* set = d.device->param(name);
       const auto value = static_cast<float>(set != nullptr ? set->value : callee->paramDecl(v).defaultValue.value());
       const uint32_t s = slotForParam("dev" + std::to_string(ref.owner) + ":" + name);
-      if (s == kNone || automated_[s] || written_[s] == value) break;
-      if (engine_->setParam(s, value)) {
-        written_[s] = value;
-        ++stats_.paramWrites;
-      } else {
-        written_[s] = std::numeric_limits<float>::quiet_NaN();
-      }
+      if (s != kNone) (void)writeParam(s, value);
       break;
     }
   }
@@ -730,13 +777,7 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
 
 void ProjectLink::writeLinked(const std::string& key, float value) {
   const uint32_t s = paramSlot(key);  // never allocates: a param the lowered patches do not declare has no slot
-  if (s == kNone || automated_[s] || written_[s] == value) return;
-  if (engine_->setParam(s, value)) {
-    written_[s] = value;
-    ++stats_.paramWrites;
-  } else {
-    written_[s] = std::numeric_limits<float>::quiet_NaN();
-  }
+  if (s != kNone) (void)writeParam(s, value);
 }
 
 void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
@@ -795,7 +836,8 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
 
 void ProjectLink::publishAutomation(const doc::Project& p) {
   std::vector<engine::AutomationLaneDesc> lanes;
-  std::vector<uint8_t> automated(kProjectParams, 0);
+  std::vector<uint32_t> automatedSlots;
+  std::array<uint8_t, kTuningTables> tapped{};  // L18
   std::string inert;  // lanes on a tuning without a signal: nothing follows them (T3.17-fix3, M3 review M3)
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::LanePtr& lane : t.lanes) {
@@ -812,28 +854,37 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
       if (s == kNone) continue;
       engine::AutomationLaneDesc d;
       d.target = s;
-      d.tap = liveTap(p, lane->param);  // T2.6-fix2: a tuning param drives its node per sample
+      uint32_t table = kTuningTables;
+      d.tap = liveTap(p, lane->param, &table);  // T2.6-fix2: a tuning param drives its node per sample
+      if (d.tap != nullptr && table < kTuningTables) tapped[table] = 1;
       d.perSample = false;              // every other consumer reads the param (one value per block)
       for (const doc::Breakpoint& b : lane->points) d.points.push_back({b.tick, b.value, b.curve});
       lanes.push_back(std::move(d));
-      automated[s] = 1;
+      automatedSlots.push_back(s);
     }
   });
+  for (uint32_t s : automatedSlots) coverSlot(s);
+  std::vector<uint8_t> automated(automated_.size(), 0);
+  for (uint32_t s : automatedSlots) automated[s] = 1;
   if (!inert.empty() && inert != inertReported_ && ctx_ != nullptr)
     ctx_->setStatus("Automation of tuning '" + inert + "' has no effect: it is not an EDO or MOS tuning (no signal)");
   inertReported_ = inert;
   bool released = false;  // a param that lost its lane gets its document value again
-  for (uint32_t s = 0; s < kProjectParams; ++s) released |= automated_[s] && !automated[s];
+  for (size_t s = 0; s < automated_.size(); ++s) released |= automated_[s] && !automated[s];
   automated_ = std::move(automated);
   auto img = engine::AutomationImage::build(lanes);
-  if (img.ok() && engine_->timeline().publishAutomation(std::move(img.value())).ok()) ++stats_.automationPublishes;
+  if (img.ok() && engine_->timeline().publishAutomation(std::move(img.value())).ok()) {
+    ++stats_.automationPublishes;
+    std::lock_guard lock(mutex_);
+    tapped_ = tapped;  // L18: the slots the image now published drives
+  }
   if (released) applyParams(p, true);
   engine_->wake();
 }
 
 // The tuning node input an automation lane on `ref` drives per sample (T2.6-fix2): the live input of the current
 // table of its tuning, or null (not a tuning param, or the tuning has no table).
-const float** ProjectLink::liveTap(const doc::Project& p, const doc::ParamRef& ref) {
+const float** ProjectLink::liveTap(const doc::Project& p, const doc::ParamRef& ref, uint32_t* slotOut) {
   if (doc::isTrackParam(ref.kind)) return nullptr;
   const doc::TuningSlot* slot = doc::findTuning(p, doc::TuningId{ref.owner});
   if (slot == nullptr) return nullptr;
@@ -841,6 +892,7 @@ const float** ProjectLink::liveTap(const doc::Project& p, const doc::ParamRef& r
   const EntryPtr* found = tuningEntry(slot->id, slot->def);
   if (found == nullptr) return nullptr;
   dsp::TuningLiveInputs& live = live_[(*found)->slot];  // the slot's, stable for the link's life (T2.6-fix4)
+  if (slotOut != nullptr) *slotOut = (*found)->slot;
   switch (ref.kind) {
     case doc::ParamKind::MosGenerator: return &live.generator;
     case doc::ParamKind::MosPeriod:
@@ -1087,8 +1139,10 @@ void ProjectLink::workerMain() {
         continue;
       }
     }
-    cv_.wait(lock, [&] { return quit_ || pending_; });
+    // M4 review M1: a parked JIT image (or a held topology whose image arrived) wakes the worker too.
+    cv_.wait(lock, [&] { return quit_ || pending_ || anyDeferred_.load(std::memory_order_acquire); });
     if (quit_) return;
+    if (!pending_) continue;  // deferred work only: the branch above publishes it
     // Debounce: compile once nothing structural happened for debounceMs (flush() skips the wait).
     while (!quit_ && !flushNow_) {
       const double due = pendingSince_ + cfg_.debounceMs * 1e-3;
@@ -1199,6 +1253,10 @@ Status ProjectLink::drainDeferred(bool& drained) {
   while (!deferred_.empty()) {
     Deferred& d = deferred_.front();
     if (d.topology) {
+      if (!d.waiting.empty()) {  // M4 review M3: a continued heavy unit's JIT image is on its way (deliverJit)
+        anyDeferred_.store(true, std::memory_order_release);
+        return Ok{};
+      }
       if (!waitFor([&] { return !program->topologyPending(); })) {
         anyDeferred_.store(true, std::memory_order_release);
         return Ok{};
@@ -1225,8 +1283,23 @@ Status ProjectLink::drainDeferred(bool& drained) {
     }
     deferred_.pop_front();
   }
-  anyDeferred_.store(false, std::memory_order_release);
-  drained = true;
+  // M4 review M1: parked JIT images, now that the program's units are the compiler's again (never waits: one that still
+  // has no room stays parked for the next drain).
+  for (size_t i = 0; i < parked_.size();) {
+    ParkedJit& pj = parked_[i];
+    const JitPublish r = publishJit(pj.schedule, pj.first, pj.refine, pj.image);
+    if (r == JitPublish::NoRoom) {
+      ++i;
+      continue;
+    }
+    if (r == JitPublish::Stale) {
+      std::lock_guard lock(jitStatsMutex_);
+      ++(pj.refine ? jitStats_.refineStale : jitStats_.stale);
+    }
+    parked_.erase(parked_.begin() + static_cast<std::ptrdiff_t>(i));
+  }
+  anyDeferred_.store(!parked_.empty(), std::memory_order_release);
+  drained = true;  // every compile result is in (parked JIT images are optional: the interpreted ones play)
   engine_->wake();
   return Ok{};
 }
@@ -1332,6 +1405,10 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     metered(b.value().layout);
     auto prog = engine::ProjectProgram::create(engine_->projectConfig(), b.value().layout);
     if (!prog.ok()) return fail(prog.error());
+    {
+      std::lock_guard lock(mutex_);  // M4: slots allocated before the program existed (init's applyParams)
+      prog.value()->reserveProjectParams(paramCapacity_);
+    }
     for (uint32_t u = 0; u < b.value().images.size(); ++u)
       if (auto pub = prog.value()->publish(u, std::move(b.value().images[u])); !pub.ok()) return fail(pub.error());
     compiledUnits = static_cast<uint32_t>(b.value().images.size());
@@ -1345,7 +1422,11 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   } else {
     Deferred d;
     std::vector<std::shared_ptr<const graph::Schedule>> before;  // each unit's schedule before this compile
-    for (uint32_t u = 0; u < compiler_->numUnits(); ++u) before.push_back(compiler_->unit(u).schedule);
+    std::vector<std::vector<uint32_t>> beforeMembers;            // … and its member tracks (M3: rebuilds)
+    for (uint32_t u = 0; u < compiler_->numUnits(); ++u) {
+      before.push_back(compiler_->unit(u).schedule);
+      beforeMembers.push_back(compiler_->unit(u).memberIds);
+    }
     auto upd = compiler_->update(lp.graph, dirty);
     if (!upd.ok() && upd.error().code == ErrorCode::Unsupported) {  // a topology change
       auto tb = compiler_->rebuild(lp.graph, dirty);
@@ -1356,6 +1437,18 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
       d.meterMap = meterMap(tb.value().layout);
       d.tapMap = tapMap(tb.value().layout);
       d.topo = std::move(tb.value());
+      // M4 review M3: a rebuilt unit that continues an earlier one (the same member tracks) which plays a JIT image
+      // waits for its own JIT image, like a unit update (holdForJit), instead of publishing an interpreted image that
+      // would cost more than interpretBudget (Operator's `voices` setting at 64 voices: about a core).
+      for (uint32_t u = 0; u < d.topo.units.size() && u < compiler_->numUnits(); ++u) {
+        if (!d.topo.units[u].hasImage) continue;
+        const std::vector<uint32_t>& members = compiler_->unit(u).memberIds;
+        std::shared_ptr<const graph::Schedule> previous;
+        for (size_t o = 0; o < beforeMembers.size() && !previous; ++o)
+          if (beforeMembers[o] == members) previous = before[o];
+        if (holdForJit(u, previous)) d.waiting.push_back(compiler_->unit(u).schedule);
+      }
+      if (!d.waiting.empty()) ++stats_.heldTopologies;
     } else if (!upd.ok()) {
       return fail(upd.error());
     } else {
@@ -1368,6 +1461,12 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     }
     if (d.topology || !d.units.empty()) {
       const bool queued = !deferred_.empty();
+      // M3: a topology still waiting for JIT images is published interpreted now: this result supersedes it (its
+      // schedules may no longer be the compiler's, so their JIT images might never come).
+      for (Deferred& q : deferred_) {
+        for (const auto& sc : q.waiting) std::erase(jitHeld_, sc);
+        q.waiting.clear();
+      }
       deferred_.push_back(std::move(d));
       bool drained = true;
       if (Status st = drainDeferred(drained); !st.ok()) return st;
@@ -1447,63 +1546,125 @@ void ProjectLink::beforeJit(void* self, const engine::BackgroundJob&) {
   link.cfg_.jitBeforeCompile(link.cfg_.jitUser);
 }
 
+// compileMutex_ held. Never waits: NoRoom when the unit cannot take an image now (deferred results first, a pending
+// topology, a full queue — and T3.17-fix2: only while the queue keeps room for the compile path's next image).
+ProjectLink::JitPublish ProjectLink::publishJit(const std::shared_ptr<const graph::Schedule>& sc, bool first, bool refine,
+                                                std::unique_ptr<engine::ProgramImage>& image) {
+  auto count = [&](auto&& f) {
+    std::lock_guard lock(jitStatsMutex_);
+    f(jitStats_);
+  };
+  engine::ProjectProgram* program = engine_->program();
+  const uint32_t u = program != nullptr ? compiler_->unitOf(sc.get()) : engine::kNoUnit;
+  if (u == engine::kNoUnit) return JitPublish::Stale;  // the unit was recompiled or removed meanwhile
+  if (!deferred_.empty() || !program->canPublish(u) || program->queued(u) > 1) return JitPublish::NoRoom;
+  auto bound = compiler_->bind(u, std::move(image));
+  // Bit-identical to the interpreted image (no contraction, T1b.1-fix1), and a first JIT image to its final one
+  // (Q111 C: voice groups and pairs compute the same bits): an instant swap is sample-exact. A held edit
+  // (interpretBudget) replaces an earlier schedule's image: the default policy (crossfaded while audible).
+  const bool held = std::find(jitHeld_.begin(), jitHeld_.end(), sc) != jitHeld_.end();
+  const engine::SwapPolicy policy = held ? engine::SwapPolicy{} : engine::SwapPolicy{engine::SwapMode::Instant};
+  if (!bound.ok() || !program->publish(u, std::move(bound.value()), policy).ok()) {
+    count([&](JitStats& st) { ++(refine ? st.refineErrors : st.errors); });
+    return JitPublish::Failed;
+  }
+  std::erase(jitHeld_, sc);
+  if (std::find(jitLive_.begin(), jitLive_.end(), sc) == jitLive_.end()) jitLive_.push_back(sc);
+  std::erase(jitFirst_, sc);
+  (first ? jitFirst_ : jitDone_).push_back(sc);
+  count([&](JitStats& st) {
+    if (refine) ++st.refined;
+    else ++st.published, st.firstImages += first ? 1 : 0;
+  });
+  return JitPublish::Published;
+}
+
+void ProjectLink::park(ParkedJit p) {  // compileMutex_ held
+  for (ParkedJit& q : parked_)
+    if (q.schedule == p.schedule) {  // a newer image of the same schedule (the refined one) replaces it
+      q = std::move(p);
+      return;
+    }
+  parked_.push_back(std::move(p));
+  ++stats_.parkedJit;
+  anyDeferred_.store(true, std::memory_order_release);
+  notifyWorker();
+}
+
+void ProjectLink::notifyWorker() {
+  { std::lock_guard lock(mutex_); }  // the worker reads anyDeferred_ under mutex_ before it waits: no lost wake-up
+  cv_.notify_all();
+}
+
 void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Result<std::unique_ptr<engine::ProgramImage>> img) {
   ProjectLink& link = *static_cast<ProjectLink*>(self);
   auto count = [&](auto&& f) {
     std::lock_guard lock(link.jitStatsMutex_);
     f(link.jitStats_);
   };
-  auto forget = [&](std::vector<std::shared_ptr<const graph::Schedule>>& list) {  // compileMutex_ held
-    list.erase(std::remove(list.begin(), list.end(), job.schedule), list.end());
+  // M4 review M3: the held topology change whose continued unit runs this schedule (compileMutex_ held). A waiting
+  // topology is always the last deferred result (a later compile releases it).
+  auto waitingTopology = [&]() -> Deferred* {
+    if (link.deferred_.empty()) return nullptr;
+    Deferred& d = link.deferred_.back();
+    return d.topology && std::find(d.waiting.begin(), d.waiting.end(), job.schedule) != d.waiting.end() ? &d : nullptr;
   };
   if (!img.ok()) {
     std::fprintf(stderr, "pqdaw: JIT: %s (the unit stays %s)\n", img.error().message.c_str(),
                  job.refine ? "on its first JIT image" : "interpreted");
     count([&](JitStats& st) { ++(job.refine ? st.refineErrors : st.errors); });
     std::lock_guard lock(link.compileMutex_);
-    forget(link.jitFirst_);
+    std::erase(link.jitFirst_, job.schedule);
     link.jitDone_.push_back(job.schedule);  // not retried
+    if (Deferred* d = waitingTopology()) {  // M3: the topology goes out with the interpreted image
+      std::erase(d->waiting, job.schedule);
+      std::erase(link.jitHeld_, job.schedule);
+      link.anyDeferred_.store(true, std::memory_order_release);
+      link.notifyWorker();
+      return;
+    }
     if (std::find(link.jitHeld_.begin(), link.jitHeld_.end(), job.schedule) == link.jitHeld_.end()) return;
-    // A held edit (interpretBudget) whose JIT failed: play it interpreted after all, as an ordinary edit would.
-    forget(link.jitHeld_);
-    engine::ProjectProgram* program = link.engine_->program();
-    const uint32_t u = program != nullptr ? link.compiler_->unitOf(job.schedule.get()) : engine::kNoUnit;
-    if (u == engine::kNoUnit) return;
+    // A held edit (interpretBudget) whose JIT failed: play it interpreted after all, as an ordinary edit would. M4
+    // review M2: through deferred_ (in order with every other compile result, published once the unit has room, the
+    // result checked there: a refused publish is a compile error), never dropped.
+    std::erase(link.jitHeld_, job.schedule);
+    const uint32_t u = link.engine_->program() != nullptr ? link.compiler_->unitOf(job.schedule.get()) : engine::kNoUnit;
+    if (u == engine::kNoUnit) return;  // recompiled meanwhile: the newer image is on its way
     engine::InterpretOptions io;
     io.maxBlockFrames = job.maxBlockFrames;
     io.maxVoiceGroups = job.maxVoiceGroups;
     io.resources = job.resources;
     auto interp = engine::buildInterpreted(*job.schedule, io);
-    if (!interp.ok()) return;
-    auto bound = link.compiler_->bind(u, std::move(interp.value()));
-    if (bound.ok() && program->canPublish(u)) (void)program->publish(u, std::move(bound.value()), engine::SwapPolicy{});
+    Result<engine::UnitImage> bound = interp.ok() ? link.compiler_->bind(u, std::move(interp.value()))
+                                                  : Result<engine::UnitImage>(interp.error());
+    if (!bound.ok()) {
+      ++link.stats_.compileErrors;
+      link.setError(bound.error().message);
+      std::fprintf(stderr, "pqdaw: %s\n", bound.error().message.c_str());
+      return;
+    }
+    Deferred d;
+    engine::UnitUpdate upd;
+    upd.unit = u;
+    upd.image = std::move(bound.value());
+    d.units.push_back(std::move(upd));
+    link.deferred_.push_back(std::move(d));
+    link.anyDeferred_.store(true, std::memory_order_release);
+    link.notifyWorker();
     return;
   }
   if (!job.refine) count([&](JitStats& st) { ++st.built; });
-  // Publish into the unit that still runs this schedule. A full unit queue or a pending topology means the audio
-  // thread has not taken earlier images yet: retry without holding the lock (the compile path may need it, and on a
-  // test's own thread the engine only runs once that path returns), for at most 5 s.
-  for (int attempt = 0; attempt < 5000; ++attempt) {
-    {
-      std::lock_guard lock(link.compileMutex_);
-      engine::ProjectProgram* program = link.engine_->program();
-      const uint32_t u = program != nullptr ? link.compiler_->unitOf(job.schedule.get()) : engine::kNoUnit;
-      if (u == engine::kNoUnit) break;  // stale: the unit was recompiled or removed meanwhile
-      // Deferred publishes first: until they are in, the program's units are not yet the compiler's.
-      // … and only while the queue keeps room for the compile path's next image (T3.17-fix2: the JIT image is optional; a
-      // JIT image filling the queue made the next compile wait for an audio thread that might not run).
-      if (link.deferred_.empty() && program->canPublish(u) && program->queued(u) <= 1) {
+  {
+    std::lock_guard lock(link.compileMutex_);
+    if (Deferred* d = waitingTopology()) {  // M3: into the held topology, which is published with it
+      const uint32_t u = link.compiler_->unitOf(job.schedule.get());
+      if (u < d->topo.units.size() && d->topo.units[u].hasImage) {
         auto bound = link.compiler_->bind(u, std::move(img.value()));
-        // Bit-identical to the interpreted image (no contraction, T1b.1-fix1), and a first JIT image to its final one
-        // (Q111 C: voice groups and pairs compute the same bits): an instant swap is sample-exact. A held edit
-        // (interpretBudget) replaces an earlier schedule's image: the default policy (crossfaded while audible).
-        const bool held = std::find(link.jitHeld_.begin(), link.jitHeld_.end(), job.schedule) != link.jitHeld_.end();
-        const engine::SwapPolicy policy = held ? engine::SwapPolicy{} : engine::SwapPolicy{engine::SwapMode::Instant};
-        if (bound.ok() && program->publish(u, std::move(bound.value()), policy).ok()) {
-          forget(link.jitHeld_);
-          if (std::find(link.jitLive_.begin(), link.jitLive_.end(), job.schedule) == link.jitLive_.end())
-            link.jitLive_.push_back(job.schedule);
-          forget(link.jitFirst_);
+        if (bound.ok()) {
+          d->topo.units[u].image = std::move(bound.value());
+          std::erase(link.jitHeld_, job.schedule);
+          link.jitLive_.push_back(job.schedule);
+          std::erase(link.jitFirst_, job.schedule);
           (job.first ? link.jitFirst_ : link.jitDone_).push_back(job.schedule);
           count([&](JitStats& st) {
             if (job.refine) ++st.refined;
@@ -1512,10 +1673,28 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
         } else {
           count([&](JitStats& st) { ++(job.refine ? st.refineErrors : st.errors); });
         }
+      }
+      std::erase(d->waiting, job.schedule);
+      link.anyDeferred_.store(true, std::memory_order_release);
+      link.notifyWorker();
+      return;
+    }
+  }
+  // Publish into the unit that still runs this schedule. While the audio thread runs, a full unit queue soon has room
+  // again: retry without holding the lock (the compile path may need it, and on a test's own thread the engine only
+  // runs once that path returns), for at most 5 s. M4 review M1: when the output is stopped or earlier compile results
+  // wait (and after the 5 s), the image is parked for drainDeferred instead of dropped.
+  for (int attempt = 0; attempt < 5000; ++attempt) {
+    {
+      std::lock_guard lock(link.compileMutex_);
+      const JitPublish r = link.publishJit(job.schedule, job.first, job.refine, img.value());
+      if (r == JitPublish::Published || r == JitPublish::Failed) return;
+      if (r == JitPublish::Stale || link.jitWorker_->stopping()) break;
+      if (!link.deferred_.empty() || link.engine_->audioStopped() || attempt + 1 == 5000) {
+        link.park(ParkedJit{job.schedule, job.first, job.refine, std::move(img.value())});
         return;
       }
     }
-    if (link.jitWorker_->stopping()) break;  // ~ProjectLink: the compiler object lives until its worker has joined
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   count([&](JitStats& st) { ++(job.refine ? st.refineStale : st.stale); });
@@ -1523,7 +1702,13 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
 
 bool ProjectLink::waitForJit(double timeoutSeconds) {
   flush();
-  return jit_ == nullptr || jit_->waitIdle(timeoutSeconds);
+  const bool idle = jit_ == nullptr || jit_->waitIdle(timeoutSeconds);
+  if (anyDeferred_.load(std::memory_order_acquire)) {  // M4 review M1, M3: parked images, a held topology
+    std::lock_guard compileLock(compileMutex_);
+    bool drained = true;
+    (void)drainDeferred(drained);
+  }
+  return idle;
 }
 
 JitStats ProjectLink::jitStats() const {

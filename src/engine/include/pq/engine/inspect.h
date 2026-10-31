@@ -56,9 +56,15 @@ public:
   uint32_t maxRegions() const noexcept { return maxRegions_; }
 
   // Off the audio thread (ProgramImage::bindInspect calls it): registers an image's timing units — per schedule region,
-  // the first region of the unit its time is counted in (itself, or a fused chain's first region) — and makes that
-  // image the metered one (another image bound earlier stops adding). Returns the image's key.
+  // the first region of the unit its time is counted in (itself, or a fused chain's first region). Returns the image's
+  // key (increasing). The image becomes the metered one when it first runs (activate(): M4 review L5, so an image that
+  // was bound but waits for its publish, or never plays, does not take the meter from the one playing).
   uint32_t attach(std::span<const uint32_t> units);
+  // Audio thread, from an image's first block: makes `key` the metered image unless a later-attached image already
+  // runs (another image bound earlier stops adding). RT-safe.
+  void activate(uint32_t key) noexcept {
+    if (active_.load(std::memory_order_relaxed) < key) active_.store(key, std::memory_order_release);
+  }
   // Off the audio thread: the tag attach() gives the images it registers from now on (Reading::tag), e.g. which
   // schedule they run, so a reader can match a reading with the schedule its regions belong to.
   void setTag(uint64_t tag) {
@@ -104,7 +110,13 @@ private:
   std::atomic<uint64_t> frames_{0};
   // attach / read
   std::mutex mutex_;
-  std::vector<uint32_t> units_;        // of the active key
+  struct Attached {
+    uint32_t key = 0;
+    uint64_t tag = 0;
+    std::vector<uint32_t> units;
+  };
+  std::vector<Attached> attached_;     // attached and not superseded by a running later key (oldest first)
+  std::vector<uint32_t> units_;        // of the active key (as of the last read)
   uint32_t unitsKey_ = 0;
   uint64_t nextTag_ = 0, unitsTag_ = 0;
   // the reader's baseline

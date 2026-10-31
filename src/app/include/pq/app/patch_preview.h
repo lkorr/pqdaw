@@ -64,9 +64,11 @@ public:
   // wants it).
   bool setParam(std::string_view name, float value) override;
   TapRing* outputTap() noexcept override { return &tap_; }
-  // T4.5: probe taps from fixed pools (kProbeRings rings of kProbeRingFrames frames, kProbeLevels levels), bound by
-  // probe id to every image published (the interpreter's and the JIT's); a tap freed by a probe that went away is
-  // reused only after kProbeTapRest seconds, by when no image that wrote it still runs. One CostMeter for every image.
+  // T4.5: probe taps from pools (kProbeRings rings of kProbeRingFrames frames, kProbeLevels levels), bound by probe id
+  // to every image published (the interpreter's and the JIT's); a tap freed by a probe that went away is reused only
+  // once no image bound to it is alive (M4 review L4: each image holds its slots' leases through the host's keepAlive,
+  // released after the audio thread has let go of the image; the rings grow to kMaxProbeRings while older images hold
+  // them). One CostMeter for every image.
   void setProbeSignals(std::span<const uint32_t> ids) override;
   TapRing* probeSignal(uint32_t id) noexcept override;
   const ProbeLevel* probeLevel(uint32_t id) const noexcept override;
@@ -76,7 +78,7 @@ public:
   static constexpr uint32_t kProbeRings = 8;
   static constexpr uint32_t kProbeRingFrames = 16384;
   static constexpr uint32_t kProbeLevels = 256;
-  static constexpr double kProbeTapRest = 1.0;
+  static constexpr uint32_t kMaxProbeRings = 4 * kProbeRings;
 
   // Audio thread: adds the preview into b.out (RT-safe). Nothing while stopped.
   void process(const engine::AudioBlock& b) noexcept;
@@ -135,17 +137,20 @@ private:
   struct TapSlot {
     uint32_t id = 0;
     bool bound = false;
-    double freedAt = -1e9;  // seconds (steady clock)
+    // Held by every image bound to this slot (via bindingLeases_); reusable when unbound and use_count() == 1.
+    std::shared_ptr<const int> lease = std::make_shared<const int>(0);
   };
   std::vector<std::unique_ptr<TapRing>> rings_;
   std::unique_ptr<ProbeLevel[]> levels_;
   std::vector<TapSlot> ringSlots_, levelSlots_;
   std::vector<uint32_t> wantSignals_;
   std::vector<engine::ProbeTap> binding_;  // the last published schedule's taps (the JIT image gets the same)
+  std::vector<std::shared_ptr<const void>> bindingLeases_;  // the slots binding_ writes
   engine::CostMeter meter_;
   std::atomic<uint64_t> generation_{0};
   void bindProbes(const graph::Schedule& schedule);
-  void bind(engine::ProgramImage& image, uint64_t generation);
+  // Binds the taps and the meter; returns what the image must keep alive (its slots' leases).
+  std::vector<std::shared_ptr<const void>> bind(engine::ProgramImage& image, uint64_t generation);
 };
 
 }  // namespace pq::app

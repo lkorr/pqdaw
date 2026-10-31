@@ -27,8 +27,9 @@
 //
 // ---- Parameters and the timeline --------------------------------------------------------------------------------
 // Each image has its own param block (io().params; defaults, carried over by key at a swap). The project param block
-// (ProjectConfig::numProjectParams floats) is what the BlockHook writes (T3.16 Timeline::blockHook: transport and
-// automation targets); UnitImage::paramLinks copy project params into unit slots at every block (O(links)). Note
+// (ProjectConfig::numProjectParams floats; M4 review M4: reserveProjectParams() grows it while the program runs) is
+// what the BlockHook writes (T3.16 Timeline::blockHook: transport and automation targets); UnitImage::paramLinks copy
+// project params into unit slots at every block (O(links)). Note
 // events come from ProjectConfig::eventSources[UnitLayout::eventSlot] (Timeline::eventSource(k)) into the unit's
 // VoiceEngine.
 //
@@ -70,6 +71,9 @@
 // silent, nothing else in it keeping state). Every run marks the buses the unit produces silent or not from its
 // image's outSilent report, and each image gets its input buses' flags as ProcessContext::inSilent. quiet() is false
 // while any unit reported a tail in progress (tailsDone false).
+// M4 review L1: the linked params are compared only in blocks after a project param may have changed (a write through
+// projectParams(), an adopted larger block, or a BlockHook whose paramWrites counter moved): a silent project with
+// no param activity costs one compare of a generation per unit instead of one per link.
 // Unit indices in every accessor are those of the last PUBLISHED layout.
 
 #include <atomic>
@@ -228,6 +232,14 @@ public:
   bool canPublish(uint32_t unit) const;
   // Non-RT: images published to the unit that the audio thread has not taken yet (approximate).
   uint32_t queued(uint32_t unit) const;
+  // Non-RT (serialised with publish; M4 review M4): the project param block holds at least `count` params from now on
+  // (publish() accepts links below it). The audio thread adopts the larger block at its next block (or at once when an
+  // image or a param write needs it), copying the current values over: RT-safe, one memcpy per growth. Blocks are
+  // kept until the program is destroyed (doubling growth: at most twice the final size). Errors: none (allocation).
+  void reserveProjectParams(uint32_t count);
+  uint32_t projectParamCapacity() const;  // non-RT: what reserveProjectParams() guarantees so far
+  // RT-safe (audio thread, or while it does not run): takes a block reserveProjectParams() made, if any.
+  void adoptProjectParams() noexcept;
   // Non-RT (one reader thread): the levels of buses of the last published layout since the previous call, then a reset
   // request (the audio thread restarts the accumulation at its next block).
   void readMeters(std::span<const uint32_t> buses, std::span<BusLevel> out);
@@ -247,8 +259,12 @@ public:
   void process(const AudioBlock& block) noexcept;
   AudioCallback callback() noexcept { return {&ProjectProgram::onBlock, this}; }
 
-  // Audio thread (or while it is not running). RT-safe.
-  std::span<float> projectParams() noexcept { return projectParams_; }
+  // Audio thread (or while it is not running). RT-safe. A write through it must be followed by a block (the idle-unit
+  // scan sees it: each call counts as a param change, M4 review L1).
+  std::span<float> projectParams() noexcept {
+    ++paramGen_;
+    return {params_, numParams_};
+  }
   std::span<float> params(uint32_t unit) noexcept;           // the unit's current image's param block
   TransportSnapshot& transport() noexcept { return transport_; }
   // The last block's values (frames floats) of a bus of the topology the audio thread runs.
@@ -298,7 +314,20 @@ private:
   std::vector<std::pair<uint64_t, std::unique_ptr<Unit>>> zombies_;  // removed units (topology sequence that removed them)
   uint32_t stride_ = 0;
   AlignedBuffer<float> zeros_;                      // one block of zeros, never written
-  std::vector<float> projectParams_;
+  // The project param block (M4 review M4: grows). params_ / numParams_ are the audio thread's; blocks are owned by
+  // paramBlocks_ (non-RT side, mutex_) until destruction; a reserved block waits in pendingParams_.
+  struct ParamBlock {
+    std::unique_ptr<float[]> data;
+    uint32_t size = 0;
+  };
+  float* params_ = nullptr;
+  uint32_t numParams_ = 0;
+  std::vector<std::unique_ptr<ParamBlock>> paramBlocks_;
+  std::atomic<ParamBlock*> pendingParams_{nullptr};
+  uint32_t reservedParams_ = 0;                     // mutex_
+  uint64_t paramGen_ = 0;                           // audio thread: bumped by every possible project param write
+  uint64_t blockGen_ = 0;                           // audio thread: paramGen_ + the hook's paramWrites, this block
+  uint64_t hookGen_ = 0;                            // audio thread: a hook without a paramWrites counter
   // Non-RT side.
   mutable std::mutex mutex_;
   std::atomic<uint64_t> freed_{0};

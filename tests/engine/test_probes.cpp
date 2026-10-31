@@ -280,6 +280,67 @@ TEST_CASE("cost meter: regions are timed only while the meter is enabled, and ad
   }
 }
 
+// M4 review L5: the meter follows the image that RUNS. An image bound to it but not playing yet (a deferred publish, a
+// JIT image waiting for room) used to take the meter at bind time, so the playing image stopped being measured.
+TEST_CASE("cost meter: a bound image takes the meter when it first runs, not when it is bound (L5)") {
+  std::vector<std::string> skipped;
+  const fs::path sat = fs::path(PQ_TEST_DATA_DIR).parent_path() / "stdlib" / "devices" / "saturator.pqp";
+  std::vector<Pair> pairs = compileFilePairs(sat, 48000.0, skipped);
+  REQUIRE(!pairs.empty());
+  const interp_test::Compiled& comp = pairs.front().plain;
+  eng::CostMeter meter;
+  meter.setEnabled(true);
+  auto inner = interp_test::rigImageBuilder();
+  eng::InterpretOptions io;
+  io.maxBlockFrames = 1024;
+  io.maxVoiceGroups = 1;
+  io.resources = &interp_test::tables().resources;
+  auto make = [&] {
+    auto img = inner ? inner(comp.sched, io) : eng::buildInterpreted(comp.sched, io);
+    REQUIRE(img.ok());
+    eng::InspectBinding b;
+    b.meter = &meter;
+    REQUIRE((*img)->bindInspect(b));
+    return std::move(img.value());
+  };
+  std::vector<std::vector<float>> in, out;
+  std::vector<const float*> inP;
+  std::vector<float*> outP;
+  auto block = [&](eng::ProgramImage& img) {
+    if (in.empty()) {
+      in.assign(img.io().globalIn.size(), std::vector<float>(64, 0.25f));
+      out.assign(img.io().globalOut.size(), std::vector<float>(64));
+      for (auto& v : in) inP.push_back(v.data());
+      for (auto& v : out) outP.push_back(v.data());
+    }
+    eng::ProcessContext ctx;
+    ctx.frames = 64;
+    ctx.sampleRate = 48000.0;
+    ctx.in = inP.data();
+    ctx.numIn = static_cast<uint32_t>(inP.size());
+    ctx.out = outP.data();
+    ctx.numOut = static_cast<uint32_t>(outP.size());
+    pq::DenormalGuard dg;
+    CHECK(pq::alloc_trap::countRtViolations([&] { img.process(ctx); }) == 0);
+  };
+  std::unique_ptr<eng::ProgramImage> a = make();
+  block(*a);
+  eng::CostMeter::Reading rd;
+  CHECK_FALSE(meter.read(rd));  // a's baseline
+  std::unique_ptr<eng::ProgramImage> b = make();  // bound, not running yet
+  for (int i = 0; i < 20; ++i) block(*a);
+  REQUIRE(meter.read(rd));  // still a's readings (the old code had switched to b's key: a baseline, nothing measured)
+  CHECK(rd.frames == 20 * 64);
+  const uint32_t keyA = rd.key;
+  block(*b);  // b runs: from now on it is the metered image
+  for (int i = 0; i < 5; ++i) block(*a);  // a, still running (a crossfade), no longer adds
+  CHECK_FALSE(meter.read(rd));  // b's baseline
+  for (int i = 0; i < 10; ++i) block(*b);
+  REQUIRE(meter.read(rd));
+  CHECK(rd.key != keyA);
+  CHECK(rd.frames == 10 * 64);
+}
+
 TEST_CASE("probes: the interpreter's and the JIT's probe streams are bit-identical, voice pairs included (T4.5)") {
   if (!interp_test::rigImageBuilder()) return;  // pq_tests_jit only
   const char* text = R"(

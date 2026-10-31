@@ -8,6 +8,7 @@
 //     the last echo has died away.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -329,4 +330,85 @@ TEST_CASE("engine silence: the idle gate waits for every tail (M3 review M15a; T
   CHECK(a1);                                           // and it still sleeps once every tail is done
   CHECK(s1 > 0);
   CHECK_FALSE(a2);
+}
+
+// M4 review M4: the project param block and the param ring grow while the engine runs (a project with more params
+// than the engine was made for plays every stored value), and the writes stay in order across a ring change. L1: an
+// idle unit no longer compares its linked params every block, so the generation it skips by must move with every
+// write: a write to a sleeping unit's linked param wakes it in the next block.
+TEST_CASE("engine: the project param block and the param ring grow while running; idle units still wake on a write (M4, L1)") {
+  eng::EngineConfig ec;
+  ec.sampleRate = kSr;
+  ec.blockFrames = kBlock;
+  ec.numOut = 1;
+  ec.maxSlots = 4;
+  ec.sleepAfterMs = 0.0f;
+  ec.numProjectParams = 4;
+  ec.paramRing = 4;
+  auto engine = eng::Engine::create(ec);
+  REQUIRE(engine.ok());
+  eng::Engine& e = *engine.value();
+  auto proj = makeProject(1, false);
+  eng::ProjectCompileOptions co = compileOptions(true);
+  co.paramLinks = {{0, "vol", 2}};
+  eng::ProjectCompiler compiler(co);
+  auto b = compiler.build(proj->graph);
+  REQUIRE(b.ok());
+  auto prog = eng::ProjectProgram::create(e.projectConfig(), b.value().layout);
+  REQUIRE(prog.ok());
+  for (uint32_t u = 0; u < b.value().images.size(); ++u) REQUIRE(prog.value()->publish(u, std::move(b.value().images[u])).ok());
+  e.setProgram(std::move(prog.value()));
+  eng::ProjectProgram& program = *e.program();
+  std::vector<float> l(kBlock);
+  float* outs[1] = {l.data()};
+  auto run = [&](int blocks) {
+    for (int i = 0; i < blocks; ++i) {
+      eng::AudioBlock ab;
+      ab.out = outs;
+      ab.numOut = 1;
+      ab.frames = kBlock;
+      pq::DenormalGuard dg;
+      e.process(ab);
+    }
+  };
+  CHECK(e.setParam(2, 0.25f));
+  run(4);
+  CHECK(program.projectParams()[2] == 0.25f);
+  // More writes than the ring holds would be dropped: grow it (and the block) first, as ProjectLink does.
+  CHECK(e.setParam(1, 1.0f));  // into the old ring
+  program.reserveProjectParams(1000);
+  e.growParamRing(1024);
+  CHECK(e.paramRingCapacity() >= 1024);
+  CHECK(program.projectParamCapacity() == 1000);
+  bool all = true;
+  for (uint32_t s = 3; s < 1000; ++s) all = all && e.setParam(s, static_cast<float>(s));
+  CHECK(all);
+  CHECK(e.setParam(1, 2.0f));  // into the new ring: after the old ring's write
+  run(1);
+  REQUIRE(program.projectParams().size() == 1000);
+  CHECK(program.projectParams()[1] == 2.0f);
+  CHECK(program.projectParams()[2] == 0.25f);  // copied over from the old block
+  CHECK(program.projectParams()[999] == 999.0f);
+  e.collect();  // frees the old ring
+  // A unit linked past the old block size (a new link after the growth: a rebuild, as ProjectLink's) reads its value.
+  compiler.setParamLinks({{0, "vol", 900}});
+  auto tb = compiler.rebuild(proj->graph, {});
+  REQUIRE(tb.ok());
+  CHECK(tb.value().compiled == 1);  // T0's unit (its links changed)
+  REQUIRE(program.publishTopology(tb.value().layout, std::move(tb.value().units)).ok());
+  CHECK(e.setParam(900, 0.125f));
+  run(1000);  // the swap, then nothing sounds or changes: the units go idle
+  uint32_t t0 = 0;
+  while (t0 < program.numUnits() && program.layout().units[t0].name != "T0") ++t0;
+  REQUIRE(t0 < program.numUnits());
+  const auto vols = program.params(t0);
+  CHECK(std::find(vols.begin(), vols.end(), 0.125f) != vols.end());
+  const uint64_t idle0 = program.unitStats(t0).idleBlocks;
+  run(10);
+  REQUIRE(program.unitStats(t0).idleBlocks == idle0 + 10);  // asleep, skipping the link scan
+  CHECK(e.setParam(900, 0.5f));
+  run(1);
+  CHECK(program.unitStats(t0).idleBlocks == idle0 + 10);  // the write woke it (its param changed)
+  const auto vols2 = program.params(t0);
+  CHECK(std::find(vols2.begin(), vols2.end(), 0.5f) != vols2.end());
 }

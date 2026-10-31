@@ -1,6 +1,7 @@
 // T4.5: live probes and cost meters through the circuit editor's document and the app's preview (PatchPreview): the
 // editor's probes reach the preview's taps (interpreter and JIT image alike, bit for bit), the played audio is the same
-// with and without probes, taps are reused only after they rest, and the cost meter reports the program the editor
+// with and without probes, taps are reused only once no image bound to them is alive (M4 review L4; was: after 1 s of
+// rest), and the cost meter reports the program the editor
 // played (its generation, its regions), RtScope-clean on the audio side.
 
 #include <doctest/doctest.h>
@@ -119,7 +120,9 @@ TEST_CASE("probe preview: the editor's probes reach the preview's taps, the audi
   CHECK(lv->blocks.load() > 0);
   CHECK(lv->hi.load() == 1.0f);  // 256 frames of a 220 Hz phasor: above 0.5 somewhere
   CHECK(lv->lo.load() == 0.0f);
-  // Another probe set: the old ids' taps are freed (not reused for a second), the new one gets a fresh tap.
+  // Another probe set: the old ids' taps are freed but still held by the image that writes them (it plays until the new
+  // one is current): the new probe gets a fresh tap.
+  TapRing* const ring7 = probed.probeSignal(7);
   ed.setProbes({target(ed, "s")}, {11});
   const uint32_t signals2[] = {11};
   probed.setProbeSignals(signals2);
@@ -131,6 +134,16 @@ TEST_CASE("probe preview: the editor's probes reach the preview's taps, the audi
   const std::vector<float> s = tail(probed.probeSignal(11), 128);
   REQUIRE(s.size() == 128);
   for (float v : s) CHECK(std::fabs(v) <= 1.0f);
+  CHECK(probed.probeSignal(11) != ring7);
+  // M4 review L4: once that image has been let go of (the swap's fade is over), its taps are free at once, with no rest
+  // period: the next probe gets probe 7's ring back.
+  render(probed, 8, ya);
+  ed.setProbes({target(ed, "ph"), target(ed, "s")}, {13, 11});
+  const uint32_t signals3[] = {13, 11};
+  probed.setProbeSignals(signals3);
+  REQUIRE(ed.check().ok());
+  render(probed, 4, ya);
+  CHECK(probed.probeSignal(13) == ring7);
   ed.stop();
   (*eb)->stop();
 }

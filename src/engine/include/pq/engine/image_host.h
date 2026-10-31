@@ -420,6 +420,7 @@ private:
   std::vector<uint32_t> meterUnits_;
   CostMeter* meter_ = nullptr;
   uint32_t meterKey_ = 0;
+  bool meterActivated_ = false;  // activate() done for meterKey_ (first block after the bind)
   bool metering_ = false;
   uint64_t meterT0_ = 0;
   uint32_t* meterFlag_ = nullptr;          // in aux

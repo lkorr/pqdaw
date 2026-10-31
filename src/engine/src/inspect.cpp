@@ -58,10 +58,10 @@ const CostMeter::TimerCost& CostMeter::timerCost() {
 uint32_t CostMeter::attach(std::span<const uint32_t> units) {
   std::lock_guard lock(mutex_);
   const uint32_t key = nextKey_++;
-  units_.assign(units.begin(), units.end());
-  unitsKey_ = key;
-  unitsTag_ = nextTag_;
-  active_.store(key, std::memory_order_relaxed);
+  // Keys below the running one can never run again as the metered image (activate only moves forward).
+  const uint32_t running = active_.load(std::memory_order_acquire);
+  std::erase_if(attached_, [&](const Attached& a) { return a.key < running; });
+  attached_.push_back(Attached{key, nextTag_, std::vector<uint32_t>(units.begin(), units.end())});
   return key;
 }
 
@@ -79,7 +79,15 @@ void CostMeter::add(const uint64_t* regionCycles, uint32_t n, uint64_t totalCycl
 
 bool CostMeter::read(Reading& out) {
   std::lock_guard lock(mutex_);
-  const uint32_t key = unitsKey_;
+  const uint32_t key = active_.load(std::memory_order_acquire);  // the image that runs (L5: not the last bound)
+  if (key != unitsKey_) {
+    const auto it = std::find_if(attached_.begin(), attached_.end(), [&](const Attached& a) { return a.key == key; });
+    if (it == attached_.end()) return false;  // nothing has run yet
+    units_ = it->units;
+    unitsKey_ = key;
+    unitsTag_ = it->tag;
+    std::erase_if(attached_, [&](const Attached& a) { return a.key < key; });
+  }
   const uint64_t frames = frames_.load(std::memory_order_acquire);
   const uint64_t total = total_.load(std::memory_order_relaxed);
   const uint32_t n = std::min<uint32_t>(static_cast<uint32_t>(units_.size()), maxRegions_);

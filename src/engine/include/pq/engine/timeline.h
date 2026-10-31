@@ -205,7 +205,7 @@ public:
   // Applies a command now (audio thread, or any thread while process() is not running: tests, offline). It acts at
   // frame 0 of the next block. RT-safe.
   void apply(const TransportCommand& command) noexcept;
-  BlockHook blockHook() noexcept { return {&Timeline::onBlockHook, this}; }
+  BlockHook blockHook() noexcept { return {&Timeline::onBlockHook, this, &paramWrites_}; }
   EventSource eventSource(uint32_t track) noexcept { return {&Timeline::onEventSource, &sources_[track]}; }
   // Lets collect() free images while the audio thread is not running (device stopped). RT-safe. The images the
   // audio thread holds (the ones its last block used: it keeps them across a stop) are never freed while they are
@@ -227,7 +227,7 @@ public:
   const TransportSnapshot& snapshot() const noexcept { return snapshot_; }
   const AutomationRenderer& automation() const noexcept { return automation_; }
   // params[target] = frame-0 value, for every lane whose target < params.size(). RT-safe.
-  void writeAutomatedParams(std::span<float> params) const noexcept;
+  void writeAutomatedParams(std::span<float> params) noexcept;
 
   // Audio-thread state (tests, inspection). RT-safe.
   bool playing() const noexcept { return playing_; }
@@ -349,6 +349,7 @@ private:
   bool snapshotDirty_ = true;
   bool reportPending_ = true;
   bool holdValid_ = false;       // stopped: the automation buffers hold the values at the playhead
+  uint64_t paramWrites_ = 0;      // bumped by writeAutomatedParams when it changed a param (BlockHook::paramWrites)
   bool loopEnabled_ = false, loopOn_ = false;
   Ticks loopStart_ = 0, loopEnd_ = 0;
   SampleTime loopStartSample_ = 0, loopEndSample_ = 0;

@@ -838,14 +838,20 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
   if (sampleReclaimer_ != nullptr) sampleReclaimer_->quiescent(sampleReader_);
 }
 
-void Timeline::writeAutomatedParams(std::span<float> params) const noexcept {  // RT-safe
+void Timeline::writeAutomatedParams(std::span<float> params) noexcept {  // RT-safe
   const uint32_t n = automation_.numLanes();
   const auto lanes = n != 0 ? automation_.image()->lanes() : std::span<const AutomationImage::Lane>{};
+  bool changed = false;
   for (uint32_t l = 0; l < n; ++l) {
     const uint32_t t = automation_.target(l);
-    if (t < params.size()) params[t] = automation_.buffer(l)[0];
+    if (t < params.size()) {  // M4 review L1: only a changed value counts as a write (a held lane changes nothing)
+      const float v = automation_.buffer(l)[0];
+      changed |= std::bit_cast<uint32_t>(params[t]) != std::bit_cast<uint32_t>(v);
+      params[t] = v;
+    }
     if (lanes[l].tap != nullptr) *lanes[l].tap = automation_.constant(l) ? nullptr : automation_.buffer(l);
   }
+  if (changed) ++paramWrites_;
 }
 
 void Timeline::onBlockHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
