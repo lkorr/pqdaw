@@ -14,7 +14,11 @@
 // the document, not undoable, Q15; a lane's height is the document's LaneView when the lane exists). The chooser
 // offers the track's mixer parameters (volume, pan, activator, sends) and every main tuning's continuous parameters
 // (reference, EDO equave, MOS generator / period / stretch); a tuning parameter has at most one lane in the project
-// (the document's rule), so a tuning automated on another track is shown, and edited, where it lives.
+// (the document's rule), so a tuning automated on another track is shown, and edited, where it lives. T4.18: then a
+// section per device of the track's chain (racks included, in chain order): its params (a rack: its visible macros and
+// the chain selector), a section per rack chain (volume, pan) and one for the wires into the track's devices (their
+// amounts). A device lane is drawn like the others in the knob's own scale (exponential, dB, linear) and labelled
+// "<device>: <param>"; it lives on the device's track and follows the device (the document's rule).
 //
 // Editing (each gesture is one pq::doc::ops edit = one undo step; on an existing lane the ChangeSet is
 // Automation-only, never Structural):
@@ -65,6 +69,10 @@
 #include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 
+namespace pq::doc {
+class DeviceLibrary;  // pq/document/devices.h
+}
+
 namespace pq::views {
 
 class ArrangementView;
@@ -94,37 +102,50 @@ struct ParamDisplay {
     Fader,     // volume / sends: the mixer's fader position (volumeToFader), as Live draws volume envelopes
     Log,       // Hz: log2 between lo and hi
     Inverted,  // the activator: TrackMute 0 (on) at the top, 1 (off) at the bottom
+    Db,        // T4.18: a device's dB param (a linear gain): linear in dB between the gains lo and hi (its knob)
   };
   Scale scale = Scale::Linear;
   double lo = 0.0, hi = 1.0;
 };
-ParamDisplay paramDisplay(const doc::Project& p, const doc::ParamRef& r) noexcept;
+// T4.18: `lib` (the device library; null: none) gives a device param its patch's range, unit and label; the
+// functions below take it for the same reason. Without it a device param shows 0 … 1 linear and its name.
+ParamDisplay paramDisplay(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib = nullptr) noexcept;
 // Display position of a value (clamped to [0, 1]) and back (to a value inside the parameter's range).
 double displayNorm(const ParamDisplay& d, double value) noexcept;
 double displayValue(const ParamDisplay& d, double norm) noexcept;
 
 // "Volume", "Pan", "Track Activator", "Send A", "31-EDO: Equave", "5L 2s: Generator" (tuning slot name first).
-std::string paramName(const doc::Project& p, const doc::ParamRef& r);
-// Short form for the track header's chooser: "Volume", "Pan", "Activator", "Send A", "5L 2s Generator".
-std::string paramShortName(const doc::Project& p, const doc::ParamRef& r);
+// T4.18: "Auto Filter: Frequency", "Audio Effect Rack: Macro 1", "Chain 1: Volume", "LFO > Frequency: Amount".
+std::string paramName(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib = nullptr);
+// Short form for the track header's chooser: "Volume", "Pan", "Activator", "Send A", "5L 2s Generator"; T4.18: the
+// device param's label ("Frequency", "Macro 1", "Chain 1 Volume", "LFO Amount").
+std::string paramShortName(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib = nullptr);
 // The value as Live shows it: "-3.0 dB" / "-inf dB", "25L" / "C", "On" / "Off", "702.0 ¢", "440.0 Hz".
 std::string formatParamValue(const doc::ParamRef& r, double v);
-// The parameter's value without automation (the mixer setting, the tuning definition's number).
-double currentParamValue(const doc::Project& p, const doc::ParamRef& r) noexcept;
+// T4.18: the same for any param, a device param as its knob shows it ("1.20 kHz", "-6.0 dB", "50 %").
+std::string formatParamValue(const doc::Project& p, const doc::ParamRef& r, double v, const doc::DeviceLibrary* lib);
+// The parameter's value without automation (the mixer setting, the tuning definition's number; T4.18: the device's
+// set value or its patch's default, the macro, the chain's volume / pan, the wire's amount).
+double currentParamValue(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib = nullptr) noexcept;
 // Whether `r` names something that exists in `p` and can be automated (a removed return or tuning: false).
 bool paramValid(const doc::Project& p, const doc::ParamRef& r) noexcept;
+// T4.18: the range a lane's values are clamped to while editing: the display range for device params (the document
+// leaves theirs open), else doc::paramRange.
+doc::ParamRange editRange(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib = nullptr) noexcept;
 
 // One entry of a track's parameter chooser.
 struct ParamChoice {
   doc::ParamRef param;
-  std::string group;         // "Mixer" or the tuning slot's name
+  std::string group;         // "Mixer", the tuning slot's name; T4.18: the device's, "<chain>" or "Modulation"
   std::string label;         // "Volume", "Generator", …
   bool automated = false;    // a lane exists (anywhere in the project)
   bool elsewhere = false;    // a tuning parameter automated on another track (shown and edited there)
 };
 // Mixer parameters of `t` (volume, pan, activator unless the master, a send per return for tracks with sends),
-// then each main tuning's continuous parameters.
-std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t);
+// then each main tuning's continuous parameters; T4.18: then each device of t's chain (racks included, in chain
+// order: a rack's visible macros and selector, then its chains' volume and pan, then the devices inside), and the
+// amounts of the wires into t's devices.
+std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t, const doc::DeviceLibrary* lib = nullptr);
 
 // The lane automating `r` anywhere in the project and the track holding it (nullptr: not automated).
 struct LaneLookup {
@@ -220,6 +241,9 @@ public:
   void setLaneParam(doc::TrackId t, size_t index, const doc::ParamRef& p);
   // "+": a new lane with the next parameter not shown yet (automated ones first). False when every one is shown.
   bool addLane(doc::TrackId t);
+  // T4.18 ("Show Automation" on a knob): shows `p`'s lane under `t` (added after the shown ones when it is not shown)
+  // and makes it the parameter drawn over t's clips in automation mode. A return / master (no lanes): only the latter.
+  void showParam(doc::TrackId t, const doc::ParamRef& p);
   // "−": hides lane `index` (LaneView::visible = false when it is automated); the last one hides the lanes.
   void hideLane(doc::TrackId t, size_t index);
   // The same at the view's next frame: for the lane header's own "−" (hiding removes that header widget, which must

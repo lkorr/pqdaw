@@ -837,6 +837,20 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
   engine_->wake();
 }
 
+// T4.18: the range of a device-kind lane's param: a device param's from the patch the device plays (a rack's macros
+// and selector 0 … 127), else the document's.
+doc::ParamRange ProjectLink::laneRange(const doc::Project& p, const doc::AutomationLane& lane) const {
+  if (lane.param.kind != doc::ParamKind::DeviceParam) return doc::paramRange(lane.param);
+  const doc::Device* d = doc::findDevice(p, doc::DeviceId{lane.param.owner}).device;
+  if (d == nullptr) return doc::paramRange(lane.param);
+  if (d->rack) return {0.0, doc::kMacroMax};
+  std::shared_ptr<const doc::ResolvedDevice> hold;
+  if (const doc::DeviceInfo* info = devices_->infoOf(*d, hold))
+    if (const doc::DeviceParamInfo* pi = info->param(lane.paramName); pi != nullptr && pi->hasRange)
+      return {std::min(pi->min, pi->max), std::max(pi->min, pi->max)};
+  return doc::paramRange(lane.param);
+}
+
 void ProjectLink::publishAutomation(const doc::Project& p) {
   std::vector<engine::AutomationLaneDesc> lanes;
   std::vector<uint32_t> automatedSlots;
@@ -845,11 +859,12 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::LanePtr& lane : t.lanes) {
       if (lane->points.empty()) continue;
-      const std::string key = doc::paramKey(lane->param);
+      const std::string key = doc::paramKey(*lane);  // T4.18: a device param's key carries its name
       if (key.empty()) continue;  // not lowered (solo is derived into the gates)
       // Overridden by hand (T3.15's "Re-enable Automation"): the document value plays until re-enabled (M4).
       if (ctx_ != nullptr && ctx_->automationOverridden(lane->param)) continue;
-      if (!doc::isTrackParam(lane->param.kind))
+      const bool deviceKind = doc::isDeviceParamKind(lane->param.kind);
+      if (!doc::isTrackParam(lane->param.kind) && !deviceKind)
         if (const doc::TuningSlot* ts = doc::findTuning(p, doc::TuningId{lane->param.owner});
             ts != nullptr && !doc::hasTuningSignal(ts->def) && inert.empty())
           inert = ts->name;
@@ -861,7 +876,12 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
       d.tap = liveTap(p, lane->param, &table);  // T2.6-fix2: a tuning param drives its node per sample
       if (d.tap != nullptr && table < kTuningTables) tapped[table] = 1;
       d.perSample = false;              // every other consumer reads the param (one value per block)
-      for (const doc::Breakpoint& b : lane->points) d.points.push_back({b.tick, b.value, b.curve});
+      // T4.18: device params, macros, chain volumes / pans and wire amounts are read at block rate like the mixer's
+      // (their consumers smooth what moves: `gain` stages, the patches' own smoothing). Values are clamped to the
+      // param's range (a device's from its patch: the document does not know it).
+      const doc::ParamRange range = deviceKind ? laneRange(p, *lane) : doc::paramRange(lane->param);
+      for (const doc::Breakpoint& b : lane->points)
+        d.points.push_back({b.tick, static_cast<float>(std::clamp(static_cast<double>(b.value), range.min, range.max)), b.curve});
       lanes.push_back(std::move(d));
       automatedSlots.push_back(s);
     }
@@ -888,7 +908,7 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
 // The tuning node input an automation lane on `ref` drives per sample (T2.6-fix2): the live input of the current
 // table of its tuning, or null (not a tuning param, or the tuning has no table).
 const float** ProjectLink::liveTap(const doc::Project& p, const doc::ParamRef& ref, uint32_t* slotOut) {
-  if (doc::isTrackParam(ref.kind)) return nullptr;
+  if (doc::isTrackParam(ref.kind) || doc::isDeviceParamKind(ref.kind)) return nullptr;
   const doc::TuningSlot* slot = doc::findTuning(p, doc::TuningId{ref.owner});
   if (slot == nullptr) return nullptr;
   std::lock_guard lock(mutex_);

@@ -81,6 +81,13 @@ private:
 double deviceParamValue(const Device& d, const DeviceParamInfo& p) noexcept;
 double deviceSettingValue(const Device& d, const DeviceSettingInfo& s) noexcept;
 
+class DeviceLibrary;
+// T4.18: the name of the device param `r` names (r.kind DeviceParam: owner = a device of `p`, target = the hash of the
+// name): a rack's macro or selector, else a `param` of the patch the device plays (`lib`: stock or its user patch;
+// null: only the device's set values are looked at). "" when there is none (the device is gone, the patch has no such
+// param). An automation lane carries it (AutomationLane::paramName).
+std::string deviceParamNameOf(const Project& p, const DeviceLibrary* lib, const ParamRef& r);
+
 // A stock device: its file (relative to stdlib/), patch and display name.
 struct StockDevice {
   std::string_view file;

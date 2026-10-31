@@ -136,10 +136,10 @@ Status checkFundamental(const ClipFundamental& f) {
 
 Status checkVolume(float db) { return checkParamValue(ParamKind::TrackVolume, db); }
 
-Status checkPoints(ParamKind k, const std::vector<Breakpoint>& pts) {
+Status checkPoints(const ParamRef& ref, const std::vector<Breakpoint>& pts) {
   std::vector<uint32_t> ids;
   ids.reserve(pts.size());
-  const ParamRange r = paramRange(k);
+  const ParamRange r = paramRange(ref);
   for (const Breakpoint& b : pts) {
     if (!b.id.valid()) return invalid("breakpoint has no id");
     PQ_DOC_TRY(checkTick(b.tick, "breakpoint"));
@@ -173,8 +173,59 @@ bool trackHasSends(TrackKind k) {
 }
 
 // Whether `host` may carry a lane for `r` (see AddAutomationLane).
-Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r) {
-  if (!isAutomatable(r.kind)) return invalid("parameter is not automatable");
+namespace {
+// T4.18: whether device `id` / chain `chain` is in `list`'s tree (racks included).
+bool treeHasDevice(const std::vector<DevicePtr>& list, DeviceId id, const Device** out = nullptr) {
+  bool found = false;
+  forEachDeviceIn(list, [&](const Device& d) {
+    if (found || d.id != id) return;
+    found = true;
+    if (out != nullptr) *out = &d;
+  });
+  return found;
+}
+bool treeHasChain(const std::vector<DevicePtr>& list, ChainId chain) {
+  bool found = false;
+  forEachDeviceIn(list, [&](const Device& d) {
+    if (!found && d.rack) found = d.rack->findChain(chain) != nullptr;
+  });
+  return found;
+}
+bool identifier(std::string_view name) {
+  if (name.empty() || (name[0] >= '0' && name[0] <= '9')) return false;
+  for (const char c : name)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return false;
+  return true;
+}
+}  // namespace
+
+Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r, std::string_view name) {
+  if (!isAutomatable(r)) return invalid("parameter is not automatable");
+  if (r.kind != ParamKind::DeviceParam && !name.empty()) return invalid("only device parameter lanes carry a name");
+  if (isDeviceParamKind(r.kind)) {  // T4.18
+    switch (r.kind) {
+      case ParamKind::DeviceParam: {
+        const Device* d = nullptr;
+        if (!treeHasDevice(host.devices, DeviceId{r.owner}, &d))
+          return invalid("a device parameter can only be automated on the device's own track");
+        if (!identifier(name)) return invalid("a device parameter lane needs the parameter's name");
+        if (deviceParamHash(name) != r.target) return invalid("the lane's parameter name does not match its target");
+        if (d->rack && !isRackParam(name)) return invalid("a rack's automatable parameters are its macros and selector");
+        return ok();
+      }
+      case ParamKind::ChainMixer:
+        if (!treeHasChain(host.devices, ChainId{r.owner}))
+          return invalid("a chain's mixer can only be automated on the rack's own track");
+        return ok();
+      default: {  // WireAmount
+        if (r.target != 0) return invalid("a wire amount has no target");
+        const Wire* w = findWire(p, WireId{r.owner});
+        if (w == nullptr) return notFound("automated wire not found");
+        if (!treeHasDevice(host.devices, w->to)) return invalid("a wire amount can only be automated on its target's track");
+        return ok();
+      }
+    }
+  }
   if (isTrackParam(r.kind)) {
     if (r.owner != host.id.value) return invalid("a track parameter can only be automated on its own track");
     if (r.kind == ParamKind::TrackMute && host.kind == TrackKind::Master) return invalid("the master has no mute");

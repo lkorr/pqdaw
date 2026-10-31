@@ -117,7 +117,10 @@ struct SetNoteProperty { ClipRef clip; std::vector<NoteKey> notes; NoteProperty 
 
 // ---- Automation ------------------------------------------------------------------------------------------------
 // Structural (the parameter becomes an audio-rate automation signal, T3.16). At most one lane per ParamRef in the
-// project. Track params may only be automated on their own track; tuning params on any track.
+// project. Track params may only be automated on their own track; tuning params on any track. T4.18: device params
+// (with AutomationLane::paramName), rack macros / selector, chain volume / pan (ParamRef::chain(c, kChainVolume /
+// kChainPan)) and wire amounts only on the track holding the device (laneHome). After every command a lane of those
+// kinds follows its device: removed with it, moved with it to another track (apply's final pass, one undo step).
 struct AddAutomationLane { TrackId track; LanePtr lane; };
 struct RemoveAutomationLane { TrackId track; LaneId lane; };      // Structural
 struct AddBreakpoints { TrackId track; LaneId lane; std::vector<Breakpoint> points; };     // Automation

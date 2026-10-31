@@ -1128,6 +1128,9 @@ enum ChainK : uint32_t {
   kCGl, kCGr, kCGlSel, kCGrSel, kCPack, kCGain, kCSum, kCInGain, kCVoiceSum, kCVoiceGain, kCZoneMul, kCOuterMul, kCDone,
   kCZoneSelect = 13, kCZoneVelocity = 23, kCZoneKey = 33,  // 10 slots each: a1, b1, a2, b2 params, then the math
 };
+// T4.18: an automated chain mixer's law: its volume / pan params take kCGl / kCGr; the math nodes are keyed by the
+// chain's lowest automation lane id (an entity id like a chain's, so its three role spaces are free: chainMixerLane).
+enum ChainLawK : uint32_t { kLVolLe, kLVolDb, kLVolGain, kLPanA, kLPanB, kLPanL, kLPanR, kLVolL, kLVolR };
 // Mapping node slots (NodeRole::Mapping, k < 48).
 enum MapK : uint32_t {
   kMX, kMInv127, kMKx, kMK, kMExp, kMOne, kMSub, kMInvE, kMShape, kMRange, kMScaled, kMMin, kMPos,
@@ -1145,6 +1148,7 @@ struct Build {
   PortRef c0() { return ir.konst(0.0, kC0); }
   PortRef c1() { return ir.konst(1.0, kC1); }
   PortRef time() { return ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime); }
+  const Track* track = nullptr;  // T4.18: the track whose patch this is (its lanes decide chain mixers); null: none
 };
 
 std::string chainParamName(ChainId c, std::string_view what) { return "c" + std::to_string(c.value) + "_" + std::string(what); }
@@ -1171,8 +1175,23 @@ PortRef zoneGain(Build& b, ChainId chain, char tag, uint32_t base, PortRef v, st
 // multiply per sample per channel. The result is stereo.
 PortRef chainMixer(Build& b, ChainId chain, PortRef y, PortRef select) {
   auto id = [&](uint32_t k) { return nodeIdFor(NodeRole::Chain, chain.value, k); };
-  PortRef gl = b.ir.param(chainParamName(chain, "gl"), 1.0, 0.0, 4.0, id(kCGl));
-  PortRef gr = b.ir.param(chainParamName(chain, "gr"), 1.0, 0.0, 4.0, id(kCGr));
+  PortRef gl, gr;
+  if (const LaneId lane = b.track != nullptr ? chainMixerLane(*b.track, chain) : LaneId{}; lane.valid()) {
+    // T4.18: automated: the chain's volume (dB) and pan as params, the law of chainParams in the graph (block rate).
+    auto law = [&](uint32_t k) { return nodeIdFor(NodeRole::Chain, lane.value, k); };
+    const PortRef vol = b.ir.param(chainParamName(chain, "volume"), 0.0, kMinVolumeDb, kMaxVolumeDb, id(kCGl));
+    const PortRef pan = b.ir.param(chainParamName(chain, "pan"), 0.0, -1.0, 1.0, id(kCGr));
+    const PortRef vg = b.ir.atom("select", {b.ir.atom("le", {vol, b.ir.konst(kMinVolumeDb, kCFloor)}, law(kLVolLe)),
+                                            b.c0(), b.ir.atom("db_to_gain", {vol}, law(kLVolDb))},
+                                 law(kLVolGain));
+    const PortRef pl = b.ir.atom("min", {b.c1(), b.ir.atom("sub", {b.c1(), pan}, law(kLPanA))}, law(kLPanL));
+    const PortRef pr = b.ir.atom("min", {b.c1(), b.ir.atom("add", {b.c1(), pan}, law(kLPanB))}, law(kLPanR));
+    gl = b.ir.atom("mul", {vg, pl}, law(kLVolL));
+    gr = b.ir.atom("mul", {vg, pr}, law(kLVolR));
+  } else {
+    gl = b.ir.param(chainParamName(chain, "gl"), 1.0, 0.0, 4.0, id(kCGl));
+    gr = b.ir.param(chainParamName(chain, "gr"), 1.0, 0.0, 4.0, id(kCGr));
+  }
   if (select.node != graph::kNone) {
     gl = b.ir.atom("mul", {gl, select}, id(kCGlSel));
     gr = b.ir.atom("mul", {gr, select}, id(kCGrSel));
@@ -1646,6 +1665,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
+  b.track = n.track;  // T4.18
   PortRef x;
   const bool instrument = n.kind == Kind::Midi && devs.voices;
   voices = instrument;
@@ -1777,16 +1797,23 @@ std::array<double, 4> zoneCoefficients(double lo, double fadeLo, double fadeHi, 
 }
 
 // The derived params of one lowered chain: its mixer (gl, gr) and its zones that are on (as zoneGain names them).
-void chainParams(const Rack& rack, const Chain& c, bool instrumentRack, uint32_t index, std::vector<LoweredParam>& out) {
+// `track`: the rack's track (its lanes decide whether the mixer lowers as volume / pan params: chainMixerLane).
+void chainParams(const Rack& rack, const Chain& c, bool instrumentRack, uint32_t index, const Track* track,
+                 std::vector<LoweredParam>& out) {
   const std::string key = "chain" + std::to_string(c.id.value) + ":";
   auto add = [&](std::string_view what, double v, uint32_t ref) {
     out.push_back(LoweredParam{key + std::string(what), index, chainParamName(c.id, what), static_cast<float>(v),
                                ParamRef::chain(c.id, ref)});
   };
-  const double vg = c.volumeDb <= kMinVolumeDb ? 0.0 : std::pow(10.0, static_cast<double>(c.volumeDb) / 20.0);
   const double pan = std::clamp(static_cast<double>(c.pan), -1.0, 1.0);
-  add("gl", vg * std::min(1.0, 1.0 - pan), 0);
-  add("gr", vg * std::min(1.0, 1.0 + pan), 0);
+  if (track != nullptr && chainMixerLane(*track, c.id).valid()) {  // T4.18: the graph derives the gains
+    add("volume", std::clamp(c.volumeDb, kMinVolumeDb, kMaxVolumeDb), kChainVolume);
+    add("pan", pan, kChainPan);
+  } else {
+    const double vg = c.volumeDb <= kMinVolumeDb ? 0.0 : std::pow(10.0, static_cast<double>(c.volumeDb) / 20.0);
+    add("gl", vg * std::min(1.0, 1.0 - pan), 0);
+    add("gr", vg * std::min(1.0, 1.0 + pan), 0);
+  }
   auto zone = [&](ZoneKind k, char tag) {
     const Zone& z = c.zone(k);
     if (zoneOff(z, k, rack.keyUnit)) return;
@@ -1840,7 +1867,7 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
         const Rack& rack = *d.device->rack;
         const bool instrument = d.device->kind == DeviceKind::Instrument;
         for (const LChain& c : td.racks[static_cast<size_t>(d.rack)].chains)
-          chainParams(rack, *c.chain, instrument, index, out);
+          chainParams(rack, *c.chain, instrument, index, &t, out);
         continue;
       }
       for (graph::NodeIndex v = 0; v < d.callee->nodeCount(); ++v) {
@@ -2041,8 +2068,28 @@ std::string paramKey(const ParamRef& ref) {
     case ParamKind::MosGenerator: return "tuning:" + std::to_string(ref.owner) + ":generator";
     case ParamKind::MosPeriod: return "tuning:" + std::to_string(ref.owner) + ":period";
     case ParamKind::MosStretch: return "tuning:" + std::to_string(ref.owner) + ":stretch";
-    default: return {};  // solo is derived into the gates
+    // T4.18
+    case ParamKind::WireAmount: return "wire" + std::to_string(ref.owner) + ":amount";
+    case ParamKind::ChainMixer:
+      if (ref.target == kChainVolume) return "chain" + std::to_string(ref.owner) + ":volume";
+      if (ref.target == kChainPan) return "chain" + std::to_string(ref.owner) + ":pan";
+      return {};
+    default: return {};  // solo is derived into the gates; a device param needs its name
   }
+}
+
+std::string paramKey(const AutomationLane& lane) {
+  if (lane.param.kind == ParamKind::DeviceParam)
+    return lane.paramName.empty() ? std::string() : "dev" + std::to_string(lane.param.owner) + ":" + lane.paramName;
+  return paramKey(lane.param);
+}
+
+LaneId chainMixerLane(const Track& t, ChainId chain) noexcept {
+  LaneId out;
+  for (const LanePtr& l : t.lanes)
+    if (l->param.kind == ParamKind::ChainMixer && l->param.owner == chain.value && (!out.valid() || l->id < out))
+      out = l->id;
+  return out;
 }
 
 TuningId trackTuningSignal(const Project& p, const TrackPath& path) noexcept {
@@ -2227,7 +2274,7 @@ std::vector<LoweredParam> chainParamValues(const Project& p, ChainId chain) {
   if (!c.chain) return out;
   const Rack& rack = *c.rack->rack;
   const bool instrument = c.rack->kind == DeviceKind::Instrument;
-  chainParams(rack, *c.chain, instrument, 0, out);
+  chainParams(rack, *c.chain, instrument, 0, c.track, out);
   return out;
 }
 

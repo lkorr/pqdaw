@@ -25,7 +25,7 @@ Result<LaneFound> lookupLane(const Project& p, TrackId track, LaneId lane) {
   return LaneFound{t, l};
 }
 
-float clampValue(ParamKind k, double v) {
+float clampValue(const ParamRef& k, double v) {
   const ParamRange r = paramRange(k);
   return static_cast<float>(std::clamp(v, r.min, r.max));
 }
@@ -44,7 +44,7 @@ std::vector<BreakpointId> distinct(std::span<const BreakpointId> ids) {
 }
 
 // The shape's breakpoints over [start, end] (fresh ids, increasing, so points on one tick keep their order).
-Points shapePoints(const ShapeParams& s, ParamKind k, Ticks start, Ticks end, IdSource& ids) {
+Points shapePoints(const ShapeParams& s, const ParamRef& k, Ticks start, Ticks end, IdSource& ids) {
   const float lo = clampValue(k, s.low);
   const float hi = clampValue(k, s.high);
   const double len = static_cast<double>(end - start);
@@ -108,7 +108,7 @@ EditResult addBreakpoint(const Project& p, IdSource& ids, TrackId track, LaneId 
   if (!f) return std::move(f).error();
   PQ_DOC_TRY(checkTick(tick, "breakpoint"));
   if (!std::isfinite(value) || !std::isfinite(curve)) return invalid("value must be finite");
-  const Breakpoint b{tick, clampValue(f->lane->param.kind, value), std::clamp(curve, -1.0f, 1.0f), ids.breakpoint()};
+  const Breakpoint b{tick, clampValue(f->lane->param, value), std::clamp(curve, -1.0f, 1.0f), ids.breakpoint()};
   Edit e = makeEdit("Add Breakpoint");
   e.points.push_back(b.id);
   batchOf(e).commands.push_back(AddBreakpoints{track, lane, {b}});
@@ -128,7 +128,7 @@ EditResult moveBreakpoints(const Project& p, TrackId track, LaneId lane, std::sp
     Breakpoint m = *b;
     m.tick += dt;
     PQ_DOC_TRY(checkTick(m.tick, "breakpoint"));
-    m.value = clampValue(f->lane->param.kind, static_cast<double>(m.value) + dv);
+    m.value = clampValue(f->lane->param, static_cast<double>(m.value) + dv);
     if (!(m == *b)) u.points.push_back(m);
     e.points.push_back(id);
   }
@@ -175,7 +175,7 @@ EditResult insertShape(const Project& p, IdSource& ids, TrackId track, LaneId la
   const Points& pts = f->lane->points;
   Points r = envBefore(pts, start, ids, true);
   const uint32_t shapeLo = ids.peek();
-  append(r, shapePoints(shape, f->lane->param.kind, start, end, ids));
+  append(r, shapePoints(shape, f->lane->param, start, end, ids));
   const uint32_t shapeHi = ids.peek();
   append(r, envFrom(pts, end, ids));
   simplify(r, firstNew, ids, shapeLo, shapeHi);

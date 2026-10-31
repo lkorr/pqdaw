@@ -49,7 +49,11 @@
 //                       effects before voice_sum) → gain(·, pack(gl_c · zs_c, gr_c · zs_c)) → summed; `done` = and of
 //                       every chain's `done` (all of them must have one, else none).
 //   gl_c, gr_c          runtime params c<chain>_gl / _gr ("chain<id>:gl"): balance pan · volume, derived by the
-//                       document (a chain mixer drag is two param writes; the `gain` stage smooths it).
+//                       document (a chain mixer drag is two param writes; the `gain` stage smooths it). T4.18: while
+//                       the chain's volume or pan has an automation lane (on the rack's track), the chain lowers
+//                       c<chain>_volume (dB, "chain<id>:volume") and c<chain>_pan ("chain<id>:pan") instead and the
+//                       same law in the graph (−∞ at kMinVolumeDb, db_to_gain, balance min(1, 1 ∓ pan)), at block rate:
+//                       each lane drives one param.
 //   zone gain           clip(min(v·a1 + b1, v·a2 + b2), 0, 1), linear ramps lo → fadeLo and fadeHi → hi with ε-inclusive
 //                       edges; a1 … b2 runtime params c<chain>_s0 … s3 / v0 … / k0 … the document derives from the zone
 //                       (a zone drag is a param write; Degree key zones are in degrees, Hz key zones in ln Hz). A zone
@@ -345,8 +349,18 @@ std::vector<uint64_t> conditionalSendsKey(const Project& project);
 // The sends lower() gives an automatic 1-sample delay (LoweredProject::delayedSends), without lowering the graph.
 std::vector<DelayedSend> delayedSends(const Project& project);
 
-// The key of a document param, or "" for params that are not lowered (solo: derived into the gates).
+// The key of a document param, or "" for params that are not lowered (solo: derived into the gates; a device param,
+// whose key needs its name: the lane form below; a chain's mixer as a whole or a zone, several derived params).
+// T4.18: a chain's volume / pan "chain<id>:volume" / ":pan" (lowered while automated), a wire's "wire<id>:amount".
 std::string paramKey(const ParamRef& ref);
+// T4.18: the key an automation lane drives: paramKey(lane.param), and a device param's "dev<id>:<paramName>" (a key the
+// lowered patch declares only while the param is a runtime param of its own: not macro-mapped, a rack param only while
+// the rack reads it).
+std::string paramKey(const AutomationLane& lane);
+// T4.18: the lowest id of the automation lanes of chain `chain`'s volume / pan on `t` (the rack's track), or invalid:
+// with one, the chain lowers its volume and pan as params of their own (see "Racks" above), the law's nodes keyed by
+// that lane id (nodeIdFor(NodeRole::Chain, lane id, k): a lane id is no other entity's id, like a chain's).
+LaneId chainMixerLane(const Track& t, ChainId chain) noexcept;
 
 // The main tuning of a MIDI track's track-level effective tuning (effectiveTuningRef without a clip) when that is a
 // main tuning with a linear form (hasTuningSignal); invalid otherwise.
