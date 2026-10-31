@@ -831,3 +831,17 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a.
 - Notes: M5 started (T5.1/T5.2, T5.3/T5.8 workers running).
 
+## 2026-10-31 · T5.3 · worker / task/T5.3-audio-document
+- Did: audio tracks (Ctrl+T, effects-only chain, sends / routing / solo as MIDI) and audio clips in the document, schema 7 (+ no-op 6→7 migration, fixtures/schema6): project sample table, AudioClip (gain, transpose cents/steps/ratio, detune, reverse, fades, centred crossfades with the drop rule, warp Off = seconds / Re-Pitch = content ticks), ClipSlot holding either kind; generic edits on both through one ClipEditor; lowering clipPlayer(clip: slot) → chain → gain stages; doc::lowerAudioTrack → AudioTrackDesc + sourceFrameAt for T5.4; arrangement draws audio clips as plain blocks (T5.6 edits them). ARCHITECTURE, HOTKEYS, Q145.
+- Verified: worker -Full dev affected set (document, project, views, app, playback, timeline, ui, audio, pqdaw_*) 0 warnings 29/29; release 28/29 + pq_tests_views SIGSEGV in the circuit symbol-sheet render golden (GPU driver suspected), passed on re-run. Orchestrator: fast-forward (based on main tip fedef33).
+- Perf: 10k audio clips save + load median 45–47 ms (2 of 5 runs 50.8 / 56.1 ms: disk flush; target ≤ 50 ms borderline); load alone ~22 ms.
+- CPU-efficiency check: clip edits are Sequence changes (no compile); Off lengths re-derived only on tempo / start / duration changes.
+- Notes/blockers: playback silent until T5.4 (clipPlayer bound to silence; ProjectLink publishes no audio sequences yet); consolidate refuses audio clips.
+
+## 2026-10-31 · T5.8 · worker / task/T5.3-audio-document
+- Did: samples referenced by default (user 2026-10-30); fileIdentity (size + 3×64 KiB FNV), resolve on open (stored path, then search by name + size + hash), missing-sample status line, File → Relink Missing Samples…, File → Collect All and Save (worker thread, .part + rename, project.pqd last, " (2)" collisions, incremental); sample relocation is not an undo step (rewrites every history snapshot).
+- Verified: in the T5.3 runs; tests: moved project resolves, missing → relink, collision rules, incremental collect, mid-copy failure leaves project.pqd byte-identical; 64 MB collect: UI worst frame 2.8 ms.
+- Perf: n/a (I/O on a worker).
+- CPU-efficiency check: resolution only when the table or directory changes; hashing ≤ 192 KiB per file.
+- Notes/blockers: not built: per-project always-collect, full-file hash, NTFS-file-ID relink (Q145 item 10); media's content hash must match the document's (Q145 item 8, T5.1 worker told).
+
