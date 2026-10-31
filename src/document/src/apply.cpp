@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "pq/document/audio_clip.h"
@@ -215,8 +216,8 @@ Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids
   }
   for (const LanePtr& l : t.lanes) {
     if (!l || !l->id.valid()) return invalid("lane has no id");
-    PQ_DOC_TRY(checkLaneParam(p, t, l->param));
-    PQ_DOC_TRY(checkPoints(l->param.kind, l->points));
+    PQ_DOC_TRY(checkLaneParam(p, t, l->param, l->paramName));
+    PQ_DOC_TRY(checkPoints(l->param, l->points));
     if (!std::is_sorted(l->points.begin(), l->points.end(), pointLess)) return invalid("breakpoints must be sorted");
   }
   PQ_DOC_TRY(checkChain(t.kind, t.devices));
@@ -1036,14 +1037,15 @@ Res apply_(const Snapshot& s, const AddAutomationLane& c, ChangeSet& cs) {
   if (!c.lane || !c.lane->id.valid()) return invalid("lane has no id");
   Result<Loc> loc = locate(*s, c.track);
   if (!loc) return std::move(loc).error();
-  PQ_DOC_TRY(checkLaneParam(*s, *loc->track, c.lane->param));
+  PQ_DOC_TRY(checkLaneParam(*s, *loc->track, c.lane->param, c.lane->paramName));
+  const bool tuningLane = !isTrackParam(c.lane->param.kind) && !isDeviceParamKind(c.lane->param.kind);
   // T3.17-fix3 (M3 review M3): a tuning without a signal (Scala, MODMOS, out-of-range values) has no node for a lane
   // to drive; a new lane on it would play nothing. (A file may still hold one: it loads, and playback says it is
   // inert.)
-  if (!isTrackParam(c.lane->param.kind))
+  if (tuningLane)
     if (const TuningSlot* t = findTuning(*s, TuningId{c.lane->param.owner}); t != nullptr && !hasTuningSignal(t->def))
       return invalid("this tuning has no signal (not an EDO or MOS): its parameters cannot be automated");
-  PQ_DOC_TRY(checkPoints(c.lane->param.kind, c.lane->points));
+  PQ_DOC_TRY(checkPoints(c.lane->param, c.lane->points));
   if (!std::is_sorted(c.lane->points.begin(), c.lane->points.end(), pointLess))
     return invalid("breakpoints must be sorted");
   if (laneExists(*s, c.lane->param, c.lane->id)) return invalid("this parameter already has a lane");
@@ -1053,7 +1055,7 @@ Res apply_(const Snapshot& s, const AddAutomationLane& c, ChangeSet& cs) {
   });
   if (r) {
     cs.lanes.push_back(c.lane->id);
-    if (!isTrackParam(c.lane->param.kind)) cs.tunings.push_back(TuningId{c.lane->param.owner});
+    if (tuningLane) cs.tunings.push_back(TuningId{c.lane->param.owner});
   }
   return r;
 }
@@ -1085,7 +1087,7 @@ Res editLane(const Snapshot& s, TrackId track, LaneId lane, ChangeSet& cs, F&& f
   PQ_DOC_TRY(f(nl.points));
   std::sort(nl.points.begin(), nl.points.end(), pointLess);
   if (nl.points == (*it)->points) return s;
-  PQ_DOC_TRY(checkPoints(nl.param.kind, nl.points));
+  PQ_DOC_TRY(checkPoints(nl.param, nl.points));
   const auto i = static_cast<size_t>(it - lanes.begin());
   Res r = editTrack(s, loc->path, cs, kChangeAutomation, [&](Track& t) {
     t.lanes[i] = std::make_shared<const AutomationLane>(std::move(nl));
@@ -1226,7 +1228,8 @@ template <class Keep>
 void dropTuningLanes(Project& np, TuningId id, Keep keep, ChangeSet& cs) {
   rewriteAll(np, [&](const Track& t) -> std::optional<Track> {
     auto doomed = [&](const LanePtr& l) {
-      return !isTrackParam(l->param.kind) && l->param.owner == id.value && !keep(l->param.kind);
+      return !isTrackParam(l->param.kind) && !isDeviceParamKind(l->param.kind) && l->param.owner == id.value &&
+             !keep(l->param.kind);
     };
     if (std::none_of(t.lanes.begin(), t.lanes.end(), doomed)) return std::nullopt;
     Track c = t;
@@ -1930,7 +1933,10 @@ Res apply_(const Snapshot& s, const SetChainMixer& c, ChangeSet& cs) {
   const ChainLoc loc = findChain(*s, c.chain);
   if (!loc.chain) return notFound("chain not found");
   if (loc.chain->volumeDb == c.volumeDb && loc.chain->pan == c.pan) return s;
-  cs.params.push_back(ParamRef::chain(c.chain, 0));
+  // T4.18: the value that changed as its automation ParamRef (a hand edit of an automated chain volume / pan overrides
+  // its lane); the link re-derives the whole chain from either.
+  if (loc.chain->volumeDb != c.volumeDb) cs.params.push_back(ParamRef::chain(c.chain, kChainVolume));
+  if (loc.chain->pan != c.pan) cs.params.push_back(ParamRef::chain(c.chain, kChainPan));
   return editChain(s, c.chain, cs, kChangeParam, [&](Rack&, Chain& ch) {
     ch.volumeDb = c.volumeDb;
     ch.pan = c.pan;
@@ -2217,6 +2223,68 @@ std::string_view label(const Command& c) noexcept {
 }
 
 namespace {
+// T4.18: after the whole command, every lane of a device-kind param (isDeviceParamKind) lives on its laneHome: a lane
+// whose device, chain or wire is gone is removed, one whose device moved to another track (with its rack, or a wire's
+// target) moves there. After the whole command, so a Batch that takes devices out and puts them back with their ids
+// (Group / Ungroup Devices, Hot-Swap) keeps their lanes where they are. Only lanes of those kinds are looked at; a
+// project without any costs one walk over its tracks' lane lists.
+Snapshot finishDeviceLanes(const Snapshot& s, ChangeSet& cs) {
+  struct Seen {
+    TrackId track;
+    LaneId lane;
+    ParamRef param;
+  };
+  std::vector<Seen> seen;
+  forEachTrack(*s, [&](const Track& t, const Track*) {
+    for (const LanePtr& l : t.lanes)
+      if (isDeviceParamKind(l->param.kind)) seen.push_back({t.id, l->id, l->param});
+  });
+  if (seen.empty()) return s;
+  // Where each device and chain lives now (one walk).
+  std::unordered_map<uint32_t, TrackId> deviceTrack, chainTrack;
+  forEachDevice(*s, [&](const Device& d, const Track& t) {
+    deviceTrack.emplace(d.id.value, t.id);
+    if (d.rack)
+      for (const ChainPtr& c : d.rack->chains) chainTrack.emplace(c->id.value, t.id);
+  });
+  auto home = [&](const ParamRef& r) -> TrackId {
+    const std::unordered_map<uint32_t, TrackId>* m = &deviceTrack;
+    uint32_t key = r.owner;
+    if (r.kind == ParamKind::ChainMixer) {
+      m = &chainTrack;
+    } else if (r.kind == ParamKind::WireAmount) {
+      const Wire* w = findWire(*s, WireId{r.owner});
+      if (w == nullptr) return {};
+      key = w->to.value;
+    }
+    const auto it = m->find(key);
+    return it == m->end() ? TrackId{} : it->second;
+  };
+  std::shared_ptr<Project> np;
+  for (const Seen& x : seen) {
+    const TrackId h = home(x.param);
+    if (h == x.track) continue;
+    if (!np) np = copyOf(s);
+    // Each step re-resolves its track (no Track& is held across a mutableTrack call: M4 review H1).
+    LanePtr moved;
+    {
+      Track& from = mutableTrack(*np, *findTrack(*np, x.track));
+      const auto it = std::find_if(from.lanes.begin(), from.lanes.end(), [&](const LanePtr& l) { return l->id == x.lane; });
+      moved = *it;
+      from.lanes.erase(it);
+    }
+    cs.lanes.push_back(x.lane);
+    cs.tracks.push_back(x.track);
+    if (h.valid()) {
+      mutableTrack(*np, *findTrack(*np, h)).lanes.push_back(std::move(moved));
+      cs.tracks.push_back(h);
+    }
+  }
+  if (!np) return s;
+  cs.mark(kChangeStructural);
+  return Snapshot(std::move(np));
+}
+
 // T5.3: after the whole command (a Batch's steps may separate two clips and join them again), the crossfades whose
 // clips are no longer adjacent are dropped, on the audio tracks the command touched.
 Snapshot finishCrossfades(const Snapshot& s, ChangeSet& cs) {
@@ -2243,12 +2311,16 @@ Result<Snapshot> apply(const Snapshot& s, const Command& c, ChangeSet& changes) 
   Res r = applyAny(s, c, changes);
   if (!r) return r;
   changes.normalize();
-  if (*r != s && changes.has(kChangeSequence)) {
-    Snapshot done = finishCrossfades(*r, changes);
+  Snapshot cur = std::move(r).value();
+  if (cur != s && changes.structural()) {  // T4.18: device lanes follow their devices (after the whole command)
+    cur = finishDeviceLanes(cur, changes);
     changes.normalize();
-    return done;
   }
-  return r;
+  if (cur != s && changes.has(kChangeSequence)) {
+    cur = finishCrossfades(cur, changes);
+    changes.normalize();
+  }
+  return cur;
 }
 
 }  // namespace pq::doc

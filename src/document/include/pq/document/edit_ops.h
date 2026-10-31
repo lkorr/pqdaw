@@ -335,10 +335,11 @@ EditResult insertShape(const Project& p, IdSource& ids, TrackId track, LaneId la
 // Rack's chain, replacing the chain's instrument). `patch` kAudioEffectRack / kInstrumentRack adds an empty rack.
 EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string patch, DeviceKind kind,
                      uint32_t index = kAppend, ChainId chain = {});
-// Removes the devices (any tracks; a device inside another removed rack goes with it).
+// Removes the devices (any tracks; a device inside another removed rack goes with it). T4.18: their automation lanes
+// (and those of their chains and of the wires that go with them) go in the same step.
 EditResult deleteDevices(const Project& p, std::span<const DeviceId> devices);
 // Moves a device to `toTrack` (invalid: its own track) at `index` (the destination chain after removal). T4.8: with
-// `toChain` valid, into that rack chain.
+// `toChain` valid, into that rack chain. T4.18: its automation lanes (and those of what it holds) move with it.
 EditResult moveDevice(const Project& p, DeviceId device, TrackId toTrack, uint32_t index, ChainId toChain = {});
 EditResult setDevicesActive(const Project& p, std::span<const DeviceId> devices, bool active);
 // Deactivates the devices if any is active, else activates them all (Live's device activator on a selection).
@@ -374,8 +375,8 @@ EditResult renameDevice(const Project& p, DeviceId device, std::string name);
 // Hot-swap: `with` (a preset's device) replaces `device` in place: the same position and id (so wires, mappings and the
 // engine's state key follow it); everything inside `with` (a rack's chains, mappings, inner devices) gets fresh ids.
 // Wires into params the new device still has (`params`: its patch's params; a rack's macros and selector) and every
-// wire out of it are kept, as are the mappings of the racks around it onto those params; the rest go. The kinds must
-// match. One undo step ("Hot-Swap Preset").
+// wire out of it are kept, as are the mappings of the racks around it onto those params and (T4.18) the automation
+// lanes of those params; the rest go. The kinds must match. One undo step ("Hot-Swap Preset").
 EditResult replaceDevice(const Project& p, IdSource& ids, DeviceId device, const Device& with,
                          std::span<const std::string> params);
 // A library clip placed at `start` on `track` (note clips on MIDI tracks, audio clips on audio tracks) with fresh ids,
@@ -402,12 +403,13 @@ std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_vie
 // One Batch = one undo step each.
 // Ctrl+G: wraps the devices (one list: a track's chain or one rack chain) into a new rack with one chain holding them in
 // their order, placed where the first of them was. With the list's instrument among them: an Instrument Rack (the
-// instrument first in its chain), else an Audio Effect Rack. The devices keep their ids (state, wires, mappings).
+// instrument first in its chain), else an Audio Effect Rack. The devices keep their ids (state, wires, mappings,
+// automation lanes).
 EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
 // T4.17 (Live: Ctrl+Shift+G): the inverse of groupDevices for a rack with one chain — its devices take the rack's place
 // in its list, in their order, keeping their ids (state, values, wires between them and to the outside, mappings of
-// outer racks onto them). What belonged to the rack itself goes: its macro mappings and macro values, its chain's mixer
-// and zones, wires into or out of the rack's own params. A rack without chains is removed (it passed its input). A rack
+// outer racks onto them, automation lanes). What belonged to the rack itself goes: its macro mappings and macro
+// values, its chain's mixer and zones, wires into or out of the rack's own params, the lanes of all of those. A rack without chains is removed (it passed its input). A rack
 // with several chains is refused (InvalidArgument; the view says so in the status line).
 EditResult ungroupDevices(const Project& p, DeviceId rack);
 // Adds an empty chain ("Chain <n>") to the rack at `index` (kAppend: the end).

@@ -339,11 +339,11 @@ TEST_CASE("racks: the project file (schema 6) round-trips racks; broken racks ar
   CHECK_FALSE(broken("\"patch\": \"AudioEffectRack\"", "\"patch\": \"InstrumentRack\"").ok());
   CHECK_FALSE(broken("\"id\": " + std::to_string(c2.value), "\"id\": " + std::to_string(c1.value)).ok());  // duplicate
 
-  // fixtures/schema4 / schema5 / schema6 / schema7 are fixtures/full as the schema-4 build (main at 9619d7a), the
-  // schema-5 build (main at d2daf37: user devices), the schema-6 build (main at 70ce131: racks) and the schema-7 build
-  // (main at bd44882: audio) wrote it: schemas 6, 7 and 8 only add racks, audio (T5.3) and device names (T4.17), so all
-  // four re-save as fixtures/full.
-  for (const int32_t v : {4, 5, 6, 7}) {
+  // fixtures/schema4 … schema8 are fixtures/full as the schema-4 build (main at 9619d7a), the schema-5 build (main at
+  // d2daf37: user devices), the schema-6 build (main at 70ce131: racks), the schema-7 build (main at bd44882: audio) and
+  // the schema-8 build (main at 455b3f6: device names) wrote it: schemas 6 to 9 only add racks, audio (T5.3), device
+  // names (T4.17) and device automation lanes (T4.18), so all five re-save as fixtures/full.
+  for (const int32_t v : {4, 5, 6, 7, 8}) {
     CAPTURE(v);
     const std::string dir = "schema" + std::to_string(v);
     const std::string oldText = readFile(fixturePath(dir + "/project.pqd"));

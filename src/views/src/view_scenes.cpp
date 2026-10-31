@@ -1225,6 +1225,90 @@ Status setupAudioRack(Shell& shell) {
   return Ok{};
 }
 
+// T4.18: device automation. Track "Keys": BasicSynth -> Auto Filter -> an Audio Effect Rack holding a Utility, with a
+// held chord. Lanes under Keys: the filter's frequency (a sweep 200 Hz -> 6 kHz over bars 2-4, back to 800 Hz: the
+// knob's exponential scale), the rack's first macro ("Drive", a ramp; overridden by hand: grey), its chain's volume (a
+// step to -12 dB) and the Utility's width (curved). The Device view below shows the rack: the automated controls with
+// their LEDs and the envelopes' values at the playhead (bar 3).
+Status setupDeviceAutomation(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-automation: no device library", {}};
+  ArrangementView* a = arrangementOf(shell);
+  if (a == nullptr) return Error{ErrorCode::NotFound, "device-automation: arrangement view not installed", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) { return runEdit(store, e); };
+  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
+  if (!t) return Error{ErrorCode::Unknown, "device-automation: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
+  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  if (!af || !util) return Error{ErrorCode::Unknown, "device-automation: addDevice failed", {}};
+  const auto rack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{util->devices[0]}));
+  if (!rack) return Error{ErrorCode::Unknown, "device-automation: group failed", {}};
+  const doc::DeviceId filter = af->devices[0], r = rack->devices[0];
+  const doc::ChainId chain = doc::findDevice(*store.current(), r).device->rack->chains.at(0)->id;
+  if (!run(doc::ops::renameMacro(*store.current(), r, 0, "Drive")) ||
+      !run(doc::ops::mapMacro(*store.current(), store.ids(), r, 0, util->devices[0], "gain", 64.0)))
+    return Error{ErrorCode::Unknown, "device-automation: rack edits failed", {}};
+  const Ticks bar = kTicksPerWhole;
+  doc::Batch b{"scene", {}};
+  {
+    doc::NoteClip c;
+    c.id = store.ids().clip();
+    c.name = "Chords";
+    c.start = 0;
+    c.length = 4 * bar;
+    std::vector<doc::Note> notes;
+    for (const int32_t d : {0, 4, 7}) {
+      doc::Note n;
+      n.id = store.ids().note();
+      n.start = 0;
+      n.length = 4 * bar;
+      n.pitch = tuning::PitchId::fromDegree(d, 0);
+      n.velocity = 100.0f;
+      notes.push_back(n);
+    }
+    auto seq = doc::NoteSeq::fromNotes(std::move(notes));
+    if (!seq.ok()) return std::move(seq).error();
+    c.notes = std::move(seq).value();
+    b.commands.push_back(doc::AddClip{track, std::make_shared<const doc::NoteClip>(std::move(c)), nullptr});
+  }
+  auto lane = [&](doc::ParamRef ref, std::string name, std::vector<std::pair<double, float>> pts, float curve) {
+    auto l = std::make_shared<doc::AutomationLane>();
+    l->id = store.ids().lane();
+    l->param = ref;
+    l->paramName = std::move(name);
+    for (const auto& [bars, v] : pts)
+      l->points.push_back({static_cast<Ticks>(bars * static_cast<double>(bar)), v, curve, store.ids().breakpoint()});
+    b.commands.push_back(doc::AddAutomationLane{track, l});
+  };
+  lane(doc::ParamRef::device(filter, "freq"), "freq", {{0.0, 200.0f}, {1.0, 200.0f}, {3.0, 6000.0f}, {4.0, 800.0f}}, 0.0f);
+  lane(doc::ParamRef::device(r, "macro1"), "macro1", {{0.5, 20.0f}, {3.5, 120.0f}}, 0.0f);
+  lane(doc::ParamRef::chain(chain, doc::kChainVolume), "", {{0.0, 0.0f}, {2.0, 0.0f}, {2.0, -12.0f}, {4.0, -12.0f}}, 0.0f);
+  lane(doc::ParamRef::device(util->devices[0], "width"), "width", {{0.0, 1.0f}, {3.0, 3.0f}, {4.0, 0.5f}}, -0.4f);
+  if (!store.dispatch(b).ok()) return Error{ErrorCode::Unknown, "device-automation: lanes failed", {}};
+  ctx.overrideAutomation(doc::ParamRef::device(r, "macro1"));
+  ctx.transport().locate(2 * bar);
+  ctx.setSelectedTrack(track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(330.0f);
+  shell.tree().layoutNow();
+  a->automation().showLanes(track, true);
+  const float sc = shell.tree().scale();
+  a->setTimeView(0.0, static_cast<double>(a->lanesViewport().w) / sc / (4.5 * static_cast<double>(bar)));
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-automation: the Device view is not installed", {}};
+  v->refreshAutomation();
+  shell.tree().layoutNow();
+  // Basic Synth folded, so the filter's frequency knob and the rack (its Drive macro, its chain's volume) show together.
+  if (devices::DevicePanel* synth = v->panelOf(doc::findTrackPtr(*store.current(), track)->devices.at(0)->id)) synth->setFolded(true);
+  shell.tree().layoutNow();
+  v->revealDevice(r);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 Status setupInstrumentRack(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "instrument-rack: no device library", {}};
@@ -1322,6 +1406,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
+    {"device-automation", 1280, 800, setupDeviceAutomation},  // T4.18
     {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp
     {"circuit-inactive-shown", 1280, 800, nullptr, setupCircuitInactiveShown},
     {"circuit-tooltip", 1280, 800, nullptr, setupCircuitTooltip},

@@ -162,9 +162,14 @@ public:
   // T4.16c: rename the chain in place (double-click its name, or its menu's Rename): Enter commits, Esc cancels.
   void beginRename();
   bool renaming() const noexcept { return rename_ != nullptr && !renameDone_; }
+  void paintOver(ui::PaintContext& ctx) override;
+  // T4.18: 0 none, 1 automated, 2 overridden by hand (the volume / pan boxes' LEDs; tests).
+  uint8_t volumeAutomation() const noexcept { return volAuto_; }
+  uint8_t panAutomation() const noexcept { return panAuto_; }
 
 private:
   void endRename(bool commit);
+  uint8_t volAuto_ = 0, panAuto_ = 0;
   RackFrame& rack_;
   DeviceChainView::Impl& impl_;
   doc::ChainId chain_;
@@ -525,6 +530,10 @@ public:
     if (const ui::Theme* th = ctx.res.theme) paint::box(ctx.dl, rect(), 0.0f, 0, th->device.border);
     FrameBase::paintOver(ctx);
   }
+  void automationChanged() override {  // T4.18: the chain rows' volume / pan
+    if (rack_ == nullptr || list_ == nullptr || list_->rows.size() != rack_->chains.size()) return;
+    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
+  }
 
   bool inTitle(ui::Vec2 p) const override {
     // The title band right of the macro panel's activator (the panel's own title bar handles its activator and fold).
@@ -793,8 +802,38 @@ void ChainRow::set(const doc::Chain& c, bool shown) {
   shown_ = shown;
   on_->setOn(c.active);
   solo_->setOn(c.solo);
-  if (!vol_->inGesture()) vol_->setValue(c.volumeDb);
-  if (!pan_->inGesture()) pan_->setValue(c.pan);
+  // T4.18: an automated volume / pan shows its envelope at the playhead (its own value once overridden by hand).
+  double vol = c.volumeDb, pan = c.pan;
+  uint8_t va = 0, pa = 0;
+  if (const doc::Track* t = impl_.track()) {
+    const Ticks tick = impl_.ctx().transport().playhead().tick;
+    for (const doc::LanePtr& l : t->lanes) {
+      if (l->param.kind != doc::ParamKind::ChainMixer || l->param.owner != c.id.value || l->points.empty()) continue;
+      const bool over = impl_.ctx().automationOverridden(l->param);
+      const bool isVol = l->param.target == doc::kChainVolume;
+      (isVol ? va : pa) = over ? 2 : 1;
+      if (!over)
+        (isVol ? vol : pan) = evalAutomation(std::span<const doc::Breakpoint>(l->points), static_cast<double>(tick), isVol ? vol : pan);
+    }
+  }
+  if (va != volAuto_ || pa != panAuto_) markDirty();
+  volAuto_ = va;
+  panAuto_ = pa;
+  if (!vol_->inGesture()) vol_->setValue(vol);
+  if (!pan_->inGesture()) pan_->setValue(pan);
+}
+
+void ChainRow::paintOver(ui::PaintContext& ctx) {
+  if ((volAuto_ == 0 && panAuto_ == 0) || !ctx.res.theme) return;
+  const auto& at = ctx.res.theme->automation;
+  const float size = static_cast<float>(std::max(2, ctx.scale.px(3.0f)));
+  auto led = [&](const ui::Widget* w, uint8_t state) {
+    if (state == 0 || w == nullptr) return;
+    const float x = static_cast<float>(w->rect().x + 1), y = static_cast<float>(w->rect().y + 1);
+    ctx.dl.addRectFilled({x, y, x + size, y + size}, state == 2 ? at.ledOverridden : at.led);
+  };
+  led(vol_, volAuto_);
+  led(pan_, panAuto_);
 }
 
 void ChainRow::arrange(ui::LayoutPass& pass) {

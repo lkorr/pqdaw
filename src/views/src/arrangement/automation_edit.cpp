@@ -13,6 +13,7 @@
 #include "../common/drag.h"
 #include "internal.h"
 #include "pq/document/commands.h"
+#include "pq/document/devices.h"
 #include "pq/views/arrangement/automation.h"
 
 namespace pq::views {
@@ -130,13 +131,26 @@ void ArrangementAutomation::setLaneParam(doc::TrackId t, size_t index, const doc
   view_.rowsChanged();
 }
 
+void ArrangementAutomation::showParam(doc::TrackId t, const doc::ParamRef& p) {
+  const doc::Track* tr = doc::findTrackPtr(*ctx_.doc(), t);
+  if (!tr || !paramValid(*ctx_.doc(), p)) return;
+  choose(t, p);
+  if (tr->kind == doc::TrackKind::Return || tr->kind == doc::TrackKind::Master) return;  // pinned rows: A mode only
+  TrackState& s = state(t);
+  initLanes(s, t);
+  if (std::find(s.lanes.begin(), s.lanes.end(), p) == s.lanes.end()) s.lanes.push_back(p);
+  s.shown = true;
+  if (const LaneLookup l = view_.model().lane(p); l.lane) setLaneVisible(l.lane->id, true);
+  view_.rowsChanged();
+}
+
 bool ArrangementAutomation::addLane(doc::TrackId t) {
   const doc::Project& p = *ctx_.doc();
   const doc::Track* tr = doc::findTrackPtr(p, t);
   if (!tr) return false;
   TrackState& s = state(t);
   initLanes(s, t);
-  const std::vector<ParamChoice> choices = paramChoices(p, *tr);
+  const std::vector<ParamChoice> choices = paramChoices(p, *tr, ctx_.deviceLibrary());
   const ParamChoice* pick = nullptr;
   for (int pass = 0; pass < 2 && !pick; ++pass)  // automated parameters first (Live adds the next automated one)
     for (const ParamChoice& c : choices)
@@ -321,13 +335,13 @@ std::optional<AutomationBand> ArrangementAutomation::bandAt(Vec2 p) const {
 }
 
 float ArrangementAutomation::yOfValue(const AutomationBand& b, double v) const {
-  const double n = displayNorm(paramDisplay(*view_.shown(), b.param), v);
+  const double n = displayNorm(paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary()), v);
   return static_cast<float>(static_cast<double>(b.bottom) - n * static_cast<double>(b.bottom - b.top));
 }
 
 double ArrangementAutomation::valueAtY(const AutomationBand& b, float y) const {
   const double span = std::max(1.0, static_cast<double>(b.bottom - b.top));
-  return displayValue(paramDisplay(*view_.shown(), b.param), (static_cast<double>(b.bottom) - static_cast<double>(y)) / span);
+  return displayValue(paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary()), (static_cast<double>(b.bottom) - static_cast<double>(y)) / span);
 }
 
 std::span<const doc::Breakpoint> ArrangementAutomation::pointsOf(const AutomationBand& b) const noexcept {
@@ -518,7 +532,7 @@ bool ArrangementAutomation::segmentAt(std::span<const doc::Breakpoint> pts, doub
 bool ArrangementAutomation::onLine(const AutomationBand& b, std::span<const doc::Breakpoint> pts, Vec2 p) const {
   const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
   const double tick = std::max(0.0, view_.tickAtX(p.x));
-  const double fallback = currentParamValue(*view_.shown(), b.param);
+  const double fallback = currentParamValue(*view_.shown(), b.param, ctx_.deviceLibrary());
   const double lineValue = pts.empty() ? fallback : pq::evalAutomation(pts, tick, fallback);
   return std::fabs(yOfValue(b, lineValue) - p.y) <= static_cast<float>(s.px(au::kLineGrab));
 }
@@ -614,7 +628,7 @@ void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b
   drag_.band = b;
   drag_.press = e.pos;
   const double tick = std::max(0.0, view_.tickAtX(e.pos.x));
-  const double fallback = currentParamValue(*view_.shown(), b.param);
+  const double fallback = currentParamValue(*view_.shown(), b.param, ctx_.deviceLibrary());
 
   // Alt+drag on a segment: its curvature.
   if (alt && pts.size() >= 2) {
@@ -627,7 +641,7 @@ void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b
         drag_.orig.assign(pts.begin(), pts.end());
         drag_.segment = a.id;
         drag_.curve0 = drag_.curve = a.curve;
-        const ParamDisplay d = paramDisplay(*view_.shown(), b.param);
+        const ParamDisplay d = paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary());
         // Up bulges the segment upwards: a rising segment then starts fast (curve < 0), a falling one slow (> 0).
         drag_.curveSign = displayNorm(d, z.value) > displayNorm(d, a.value) ? -1.0 : 1.0;
         return;
@@ -724,7 +738,7 @@ void ArrangementAutomation::dragTo(const PointerEvent& e) {
       const Grid g = grid();
       const Ticks dt = std::clamp(g.snapping() ? g.snapDelta(drag_.pressed.tick, raw) : raw, drag_.minDt, drag_.maxDt);
       // The value moves in the lane's display scale (Live drags volume in fader positions).
-      const ParamDisplay d = paramDisplay(*view_.shown(), b.param);
+      const ParamDisplay d = paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary());
       const double span = std::max(1.0, static_cast<double>(b.bottom - b.top));
       const double n = displayNorm(d, drag_.pressed.value) + static_cast<double>(drag_.press.y - e.pos.y) / span;
       const double dv = displayValue(d, n) - static_cast<double>(drag_.pressed.value);
@@ -759,14 +773,14 @@ void ArrangementAutomation::dragTo(const PointerEvent& e) {
 
 void ArrangementAutomation::updatePreview() {
   drag_.preview = drag_.orig;
-  const doc::ParamRange range = doc::paramRange(drag_.band.param.kind);
+  const doc::ParamRange range = editRange(*view_.shown(), drag_.band.param, ctx_.deviceLibrary());
   readoutText_.clear();
   if (drag_.kind == DragKind::Points) {
     for (doc::Breakpoint& p : drag_.preview) {
       if (!containsId(drag_.moving, p.id.value)) continue;
       p.tick += drag_.dt;
       p.value = static_cast<float>(std::clamp(static_cast<double>(p.value) + drag_.dv, range.min, range.max));
-      if (p.id == drag_.pressed.id) readoutText_ = formatParamValue(drag_.band.param, p.value);
+      if (p.id == drag_.pressed.id) readoutText_ = formatParamValue(*view_.shown(), drag_.band.param, p.value, ctx_.deviceLibrary());
     }
     // The moves are clamped between unmoved neighbours and shift together, so the order holds except for ties on a
     // neighbour's tick (ordered by id): one insertion pass, O(n) on sorted input (no n log n sort per frame).
@@ -791,7 +805,7 @@ void ArrangementAutomation::release() {
   switch (d.kind) {
     case DragKind::Points: {
       if (d.created) {
-        const doc::ParamRange range = doc::paramRange(b.param.kind);
+        const doc::ParamRange range = editRange(*view_.shown(), b.param, ctx_.deviceLibrary());
         const Ticks at = d.pressed.tick + d.dt;
         const double v = std::clamp(static_cast<double>(d.pressed.value) + d.dv, range.min, range.max);
         doc::ops::Edit made;
@@ -849,6 +863,7 @@ bool ArrangementAutomation::editLane(const AutomationBand& b, std::string_view w
   auto lane = std::make_shared<doc::AutomationLane>();
   lane->id = ctx_.store().ids().lane();
   lane->param = b.param;
+  lane->paramName = doc::deviceParamNameOf(*snap, ctx_.deviceLibrary(), b.param);  // T4.18: a device param's name
   const doc::Command add = doc::AddAutomationLane{b.track, lane};
   doc::ChangeSet scratch;
   Result<doc::Snapshot> s1 = doc::apply(snap, add, scratch);
@@ -910,7 +925,7 @@ bool ArrangementAutomation::nudgeSelected(int32_t cells, double steps) {
   }
   double dv = 0.0;
   if (steps != 0.0) {  // a step of the display range, measured at the earliest point (as a drag measures at its press)
-    const auto disp = paramDisplay(*view_.shown(), selParam_);
+    const auto disp = paramDisplay(*view_.shown(), selParam_, ctx_.deviceLibrary());
     dv = displayValue(disp, std::clamp(displayNorm(disp, v0) + 0.01 * steps, 0.0, 1.0)) - v0;
   }
   if (dt == 0 && dv == 0.0) return false;
@@ -937,7 +952,7 @@ bool ArrangementAutomation::insertShape(doc::ops::ShapeKind kind) {
   b.param = selParam_;
   b.owner = l.owner;
   b.lane = l.lane;
-  const ParamDisplay d = paramDisplay(*view_.shown(), selParam_);
+  const ParamDisplay d = paramDisplay(*view_.shown(), selParam_, ctx_.deviceLibrary());
   doc::ops::ShapeParams sp;
   sp.kind = kind;
   sp.low = displayValue(d, 0.0);
@@ -989,9 +1004,9 @@ void ArrangementAutomation::afterDocumentChange(const doc::StoreEvent& e) {
 namespace {
 
 std::vector<MenuItem> chooserItems(const doc::Project& p, const doc::Track& t, const doc::ParamRef& current,
-                                   std::function<void(doc::ParamRef)> pick) {
+                                   const doc::DeviceLibrary* lib, std::function<void(doc::ParamRef)> pick) {
   std::vector<MenuItem> items;
-  std::vector<ParamChoice> choices = paramChoices(p, t);
+  std::vector<ParamChoice> choices = paramChoices(p, t, lib);
   std::string group;
   std::vector<MenuItem>* into = &items;
   for (const ParamChoice& c : choices) {
@@ -1021,7 +1036,7 @@ Menu* ArrangementAutomation::openChooser(Widget& from, doc::TrackId t, int32_t l
     if (static_cast<size_t>(laneIndex) < lanes.size()) current = lanes[static_cast<size_t>(laneIndex)].param;
   }
   const uint32_t index = laneIndex >= 0 ? view_.laneRows()[static_cast<size_t>(laneIndex)].index : 0;
-  std::vector<MenuItem> items = chooserItems(p, *tr, current, [this, t, laneIndex, index](doc::ParamRef r) {
+  std::vector<MenuItem> items = chooserItems(p, *tr, current, ctx_.deviceLibrary(), [this, t, laneIndex, index](doc::ParamRef r) {
     if (laneIndex >= 0) setLaneParam(t, index, r);
     else choose(t, r);
   });
@@ -1058,7 +1073,7 @@ Menu* ArrangementAutomation::openMenu(Vec2 at, const AutomationBand& b) {
     const doc::TrackId t = b.track;
     const bool over = b.overClips;
     const uint32_t index = b.laneIndex >= 0 ? view_.laneRows()[static_cast<size_t>(b.laneIndex)].index : 0;
-    items.push_back(MenuItem::sub("Parameter", chooserItems(p, *tr, b.param, [this, t, over, index](doc::ParamRef r) {
+    items.push_back(MenuItem::sub("Parameter", chooserItems(p, *tr, b.param, ctx_.deviceLibrary(), [this, t, over, index](doc::ParamRef r) {
       if (over) choose(t, r);
       else setLaneParam(t, index, r);
     })));

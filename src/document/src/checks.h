@@ -38,12 +38,15 @@ Status checkAudioClip(const Project& p, const AudioClip& c);
 // T5.3: a sample table entry's own fields (id, non-empty path, frames >= 1, rate in (0, 10 MHz], 1 to 1024 channels).
 Status checkSampleRef(const SampleRef& r);
 // Breakpoint ids valid and unique, ticks bounded, values in the parameter's range, curves in [-1, 1].
-Status checkPoints(ParamKind k, const std::vector<Breakpoint>& pts);
+Status checkPoints(const ParamRef& r, const std::vector<Breakpoint>& pts);  // T4.18: paramRange(r)
 bool pointLess(const Breakpoint& a, const Breakpoint& b);  // (tick, id)
 bool tuningParamApplies(const TuningDef& d, ParamKind k);
 bool trackHasSends(TrackKind k);
-// Whether `host` may carry a lane for `r` (see AddAutomationLane).
-Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r);
+// Whether `host` may carry a lane for `r` (see AddAutomationLane). T4.18: a device-kind param (isDeviceParamKind) only
+// on the track holding its device / chain / wire target (looked up in host's own device tree, so a track being inserted
+// with its devices checks against itself); `name` = AutomationLane::paramName (a DeviceParam's: an identifier whose
+// hash is r.target, a rack's macro or selector on a rack; "" for every other kind).
+Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r, std::string_view name);
 // T4.1: a track's device chain: devices present with valid ids, unique in the chain; the chain rule (a MIDI track holds
 // at most one instrument, at index 0, then audio effects; other tracks audio effects only); each device's patch name
 // non-empty and its params / settings sorted by name, unique, named and finite.

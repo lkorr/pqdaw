@@ -139,11 +139,17 @@ bool isTrackParam(ParamKind k) noexcept {
   }
 }
 
-// T4.1: device params are not automatable yet (their lanes arrive with device automation).
-// T4.7: nor are wire amounts.
-bool isAutomatable(ParamKind k) noexcept {
-  return k != ParamKind::TrackSolo && k != ParamKind::DeviceParam && k != ParamKind::WireAmount &&
-         k != ParamKind::ChainMixer;
+// T4.18: device params, wire amounts and chain volumes / pans are automatable too (lanes on the device's track).
+bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo; }
+
+bool isAutomatable(const ParamRef& r) noexcept {
+  if (!isAutomatable(r.kind)) return false;
+  if (r.kind == ParamKind::ChainMixer) return r.target == kChainVolume || r.target == kChainPan;
+  return true;
+}
+
+bool isDeviceParamKind(ParamKind k) noexcept {
+  return k == ParamKind::DeviceParam || k == ParamKind::WireAmount || k == ParamKind::ChainMixer;
 }
 
 uint32_t deviceParamHash(std::string_view name) noexcept {
@@ -389,8 +395,16 @@ ParamRange paramRange(ParamKind k) noexcept {
   return {};
 }
 
+ParamRange paramRange(const ParamRef& r) noexcept {
+  if (r.kind == ParamKind::ChainMixer) {
+    if (r.target == kChainVolume) return {kMinVolumeDb, kMaxVolumeDb};
+    if (r.target == kChainPan) return {-1.0, 1.0};
+  }
+  return paramRange(r.kind);
+}
+
 bool operator==(const AutomationLane& a, const AutomationLane& b) noexcept {
-  return a.id == b.id && a.param == b.param && a.points == b.points;
+  return a.id == b.id && a.param == b.param && a.points == b.points && a.paramName == b.paramName;
 }
 
 bool operator==(const NoteClip& a, const NoteClip& b) noexcept {
@@ -513,6 +527,18 @@ const Wire* findWire(const Project& p, WireId id) noexcept {
   const WireList& w = wiresOf(p);
   const auto it = std::lower_bound(w.begin(), w.end(), id, [](const Wire& a, WireId b) { return a.id < b; });
   return it != w.end() && it->id == id ? &*it : nullptr;
+}
+
+const Track* laneHome(const Project& p, const ParamRef& r) noexcept {
+  switch (r.kind) {
+    case ParamKind::DeviceParam: return findDevice(p, DeviceId{r.owner}).track;
+    case ParamKind::ChainMixer: return findChain(p, ChainId{r.owner}).track;
+    case ParamKind::WireAmount: {
+      const Wire* w = findWire(p, WireId{r.owner});
+      return w != nullptr ? findDevice(p, w->to).track : nullptr;
+    }
+    default: return nullptr;
+  }
 }
 
 Snapshot makeDefaultProject(IdSource& ids) {

@@ -118,14 +118,19 @@ enum class ParamKind : uint8_t {
   MosPeriod,        // owner = MOS tuning, cents
   MosStretch,       // owner = MOS tuning, cents added to the 1200-cent octave
   // T4.1: a param of a device (owner = device id, target = deviceParamHash(name)). Its range, unit and default are
-  // the device patch's (DeviceCatalog, devices.h); not automatable yet (device automation arrives with M4's panels).
+  // the device patch's (DeviceCatalog, devices.h); a rack's macros and selector are its params too (T4.8). T4.18:
+  // automatable (its lane carries the name: AutomationLane::paramName).
   DeviceParam,
-  // T4.7: the amount of a modulation wire (owner = wire id), in [−1, 1]; a runtime param, not automatable yet.
+  // T4.7: the amount of a modulation wire (owner = wire id), in [−1, 1]; a runtime param. T4.18: automatable.
   WireAmount,
   // T4.8: a rack chain's runtime values (owner = chain id; target = what: 0 mixer (volume, pan), 1 + ZoneKind a zone).
-  // The lowering derives the chain's param values from them (lower.h "Racks"); not automatable yet.
+  // The lowering derives the chain's param values from them (lower.h "Racks"). T4.18: the chain's volume (target
+  // kChainVolume, dB) and pan (kChainPan) are automatable one by one.
   ChainMixer,
 };
+// T4.18: the `target` of a chain's volume / pan as an automation lane's ParamRef (ParamRef::chain(c, kChainVolume)).
+inline constexpr uint32_t kChainVolume = 16;
+inline constexpr uint32_t kChainPan = 17;
 
 struct ParamRef {
   ParamKind kind = ParamKind::TrackVolume;
@@ -142,12 +147,20 @@ struct ParamRef {
 // FNV-1a 32 of a device param's name: the ParamRef target of a device param (QUESTIONS Q129, item 2).
 uint32_t deviceParamHash(std::string_view name) noexcept;
 bool isTrackParam(ParamKind k) noexcept;
+// Whether a param of kind `k` can have an automation lane (every kind but solo; T4.18: device params, wire amounts and
+// chain volumes / pans too). The ParamRef form is exact: of a chain's values only kChainVolume / kChainPan.
 bool isAutomatable(ParamKind k) noexcept;
+bool isAutomatable(const ParamRef& r) noexcept;
+// T4.18: a device, chain or wire param (its lane lives on the track holding that device: laneHome, model.h).
+bool isDeviceParamKind(ParamKind k) noexcept;
 struct ParamRange {
   double min = 0.0;
   double max = 1.0;
 };
 ParamRange paramRange(ParamKind k) noexcept;
+// T4.18: as the kind's, but a chain's volume (dB) / pan ([−1, 1]) for ParamRef::chain(c, kChainVolume / kChainPan).
+// A device param's range is its patch's (the document does not know it: any finite value).
+ParamRange paramRange(const ParamRef& r) noexcept;
 
 // Volume/send floor: the fader bottom, treated as −∞ (silence) by the lowering. A finite floor keeps every stored
 // value finite (JSON, T3.5) and matches Ableton's fader (−∞ below −70 dB).
@@ -166,6 +179,9 @@ struct AutomationLane {
   LaneId id;
   ParamRef param;
   std::vector<Breakpoint> points;  // sorted by (tick, id)
+  // T4.18: a DeviceParam lane's param name (deviceParamHash(paramName) == param.target), else "". The project file
+  // stores it, and the link's param key ("dev<id>:<name>") is built from it.
+  std::string paramName;
 };
 bool operator==(const AutomationLane& a, const AutomationLane& b) noexcept;
 using LanePtr = std::shared_ptr<const AutomationLane>;
@@ -724,6 +740,11 @@ bool deviceContains(const Device& outer, DeviceId inner) noexcept;
 // T4.7: the project's wires (an empty list when it has none) and one by id (nullptr: none).
 const WireList& wiresOf(const Project& p) noexcept;
 const Wire* findWire(const Project& p, WireId id) noexcept;
+// T4.18: the track an automation lane of a device-kind param lives on (isDeviceParamKind): the track holding the
+// device (DeviceParam), the chain's rack (ChainMixer) or the wire's target device (WireAmount: its amount is a param of
+// the target's track patch); nullptr when that entity is gone. Lanes follow it: a command that moves or removes a
+// device, chain or wire moves the lanes to the new home track or removes them in the same step (apply.cpp).
+const Track* laneHome(const Project& p, const ParamRef& r) noexcept;
 // T5.3: the project's sample table (an empty list when it has none) and one entry by id (nullptr: none).
 const SampleList& samplesOf(const Project& p) noexcept;
 const SampleRef* findSample(const Project& p, SampleId id) noexcept;

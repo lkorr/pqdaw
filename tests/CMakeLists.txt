@@ -123,6 +123,7 @@ pq_add_test(pq_tests_playback PERF  # T5.12: the 60-s clip render (perf)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
+    app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -171,6 +172,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_file_drop.cpp  # T5.7: files / browser items dropped on the arrangement (rules, ghosts, one undo step, 100 files)
     views/test_browser.cpp  # T5.10: the browser panel (tree, search, keys, preview strip, drag out, goldens, 200k rows)
     views/test_user_library.cpp  # T5.11 / T5.12: user library, hot-swap, chips, width, clips dragged to the browser
+    views/test_device_automation.cpp  # T4.18: device lanes (chooser sections, Show Automation, automated knobs, golden)
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
@@ -347,6 +349,7 @@ pq_add_test(pq_tests_document
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
     document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
     document/test_library_files.cpp  # T5.11: user-library files, hot-swap, library clips
+    document/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes (rules, following, file, lowering)
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

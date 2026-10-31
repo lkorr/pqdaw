@@ -107,7 +107,7 @@ TEST_CASE("devices: commands keep the chain rule and classify their changes") {
     REQUIRE(cs.params.size() == 1);
     CHECK(cs.params[0] == ParamRef::device(c.inst, "level"));
     CHECK(cs.params[0].kind == ParamKind::DeviceParam);
-    CHECK_FALSE(isAutomatable(ParamKind::DeviceParam));
+    CHECK(isAutomatable(ParamKind::DeviceParam));  // T4.18: device automation
     const Device& d = *findDevice(**r, c.inst).device;
     REQUIRE(d.param("level") != nullptr);
     CHECK(d.param("level")->value == 0.5);

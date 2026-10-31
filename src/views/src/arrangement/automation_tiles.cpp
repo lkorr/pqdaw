@@ -99,7 +99,7 @@ ArrangementAutomation::EnvTileKey ArrangementAutomation::envTileKey(const Automa
   key.h = b.rect.h;
   key.top = b.top - static_cast<float>(b.rect.y);
   key.bottom = b.bottom - static_cast<float>(b.rect.y);
-  key.disp = paramDisplay(*view_.shown(), b.param);
+  key.disp = paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary());
   key.dense = dense;
   return key;
 }
@@ -128,7 +128,7 @@ bool ArrangementAutomation::paintEnvelopeTiles(PaintContext& ctx, const Automati
   const int64_t c0 = floorDiv(static_cast<int64_t>(vis.x) - off, kEnvTileWidth);
   const int64_t c1 = floorDiv(static_cast<int64_t>(vis.right()) - 1 - off, kEnvTileWidth);
   const float inv = tiles->uvScale();
-  const double fallback = currentParamValue(*view_.shown(), b.param);
+  const double fallback = currentParamValue(*view_.shown(), b.param, ctx_.deviceLibrary());
   for (int64_t chunk = c0; chunk <= c1; ++chunk) {
     const EnvTileKey key = envTileKey(b, chunk, dense, lineW);
     const auto x0 = static_cast<int32_t>(chunk * kEnvTileWidth + off);
@@ -173,7 +173,7 @@ bool ArrangementAutomation::rasteriseEnvTile(TileAtlas& tiles, const AutomationB
   const int32_t W = kEnvTileWidth, H = key.h;
   const double k = key.k;
   const auto G0 = static_cast<double>(key.chunk * kEnvTileWidth);
-  const double fallback = currentParamValue(*view_.shown(), b.param);
+  const double fallback = currentParamValue(*view_.shown(), b.param, ctx_.deviceLibrary());
   const auto yOf = [&](double v) {
     return static_cast<float>(static_cast<double>(key.bottom) - displayNorm(key.disp, v) * static_cast<double>(key.bottom - key.top));
   };

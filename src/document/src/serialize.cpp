@@ -35,9 +35,12 @@ using json::Writer;
 // ---- Names -------------------------------------------------------------------------------------------------------
 
 constexpr std::array<std::string_view, 5> kTrackKindNames = {"midi", "group", "return", "master", "audio"};
-constexpr std::array<std::string_view, 12> kParamKindNames = {
+constexpr std::array<std::string_view, 13> kParamKindNames = {
     "trackVolume", "trackPan", "trackMute", "trackSolo", "trackSend",
-    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch", "deviceParam", "wireAmount"};
+    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch", "deviceParam", "wireAmount",
+    "chainMixer"};
+// T4.18: a chain lane's "name" (ParamRef::chain(c, kChainVolume / kChainPan)).
+constexpr std::array<std::string_view, 2> kChainLaneNames = {"volume", "pan"};
 constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "highest", "lowest", "loudest"};
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
@@ -832,7 +835,13 @@ private:
     w_.string(at, kParamKindNames[static_cast<size_t>(l.param.kind)]);
     w_.key("owner");
     w_.integer(l.param.owner);
-    if (l.param.kind == ParamKind::TrackSend || l.param.target != 0) {
+    if (l.param.kind == ParamKind::DeviceParam) {  // T4.18: the param's name (its hash is the target)
+      w_.key("name");
+      w_.string(at, l.paramName);
+    } else if (l.param.kind == ParamKind::ChainMixer) {
+      w_.key("name");
+      w_.string(at, kChainLaneNames[l.param.target == kChainPan ? 1 : 0]);
+    } else if (l.param.kind == ParamKind::TrackSend || l.param.target != 0) {
       w_.key("target");
       w_.integer(l.param.target);
     }
@@ -2318,7 +2327,7 @@ private:
       for (int k; (k = m.next()) >= 0;) {
         const PathSeg f(&el, K[static_cast<size_t>(k)]);
         if (k == 0) l->id = LaneId{defineId(f)};
-        if (k == 1) l->param = param(f);
+        if (k == 1) l->param = param(f, l->paramName);
         if (k == 2) l->points = points(f, l->param, m.has(1));
       }
       m.require({0, 1, 2});
@@ -2327,11 +2336,13 @@ private:
     return v;
   }
 
-  ParamRef param(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"kind", "owner", "target"};
+  // T4.18: "name" for a deviceParam (the param's name; target = its hash) and a chainMixer ("volume" / "pan").
+  ParamRef param(const PathSeg& at, std::string& paramName) {
+    static constexpr std::string_view K[] = {"kind", "owner", "target", "name"};
     ParamRef r;
     Members m(r_, at, K);
-    size_t targetPos = 0;
+    size_t targetPos = 0, namePos = 0;
+    std::string text;
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
       if (k == 0) r.kind = static_cast<ParamKind>(name(f, kParamKindNames, "parameter kind"));
@@ -2340,18 +2351,34 @@ private:
         r.target = ref(f);
         targetPos = r_.valueStart();
       }
+      if (k == 3) {
+        text = str(f);
+        namePos = r_.valueStart();
+      }
     }
     m.require({0, 1});
     if (r.kind == ParamKind::TrackSend) m.require({2});
     else if (m.has(2))
       json::fail(PathSeg(&at, "target"), "only sends have a target", ErrorCode::InvalidArgument, targetPos);
+    if (r.kind == ParamKind::DeviceParam) {
+      m.require({3});
+      r.target = deviceParamHash(text);
+      paramName = std::move(text);
+    } else if (r.kind == ParamKind::ChainMixer) {
+      m.require({3});
+      if (text == kChainLaneNames[0]) r.target = kChainVolume;
+      else if (text == kChainLaneNames[1]) r.target = kChainPan;
+      else json::fail(PathSeg(&at, "name"), "must be \"volume\" or \"pan\"", ErrorCode::InvalidArgument, namePos);
+    } else if (m.has(3)) {
+      json::fail(PathSeg(&at, "name"), "only device and chain parameters have a name", ErrorCode::InvalidArgument, namePos);
+    }
     return r;
   }
 
   // Breakpoints are validated against the lane's parameter range, so "param" must come before "points".
   std::vector<Breakpoint> points(const PathSeg& at, const ParamRef& param, bool haveParam) {
     if (!haveParam) r_.failHere(at, "\"param\" must come before \"points\"", ErrorCode::InvalidArgument);
-    const ParamRange range = paramRange(param.kind);
+    const ParamRange range = paramRange(param);
     std::vector<Breakpoint> v;
     r_.beginArray(at);
     for (size_t i = 0; r_.nextElement(at); ++i) {
@@ -2722,7 +2749,7 @@ private:
     for (size_t i = 0; i < t.lanes.size(); ++i) {
       const PathSeg la(&lanes, i);
       const AutomationLane& l = *t.lanes[i];
-      if (Status s = detail::checkLaneParam(p, t, l.param); !s) json::fail(PathSeg(&la, "param"), s.error().message);
+      if (Status s = detail::checkLaneParam(p, t, l.param, l.paramName); !s) json::fail(PathSeg(&la, "param"), s.error().message);
       if (!automated.insert(l.param).second)
         json::fail(PathSeg(&la, "param"), "this parameter already has an automation lane");
     }
@@ -3159,6 +3186,15 @@ Status migrateAddDeviceNames(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 8 → 9 (T4.18): schema 9 lets an automation lane's "param" be a device parameter ({"kind": "deviceParam", "owner",
+// "name"}), a chain's volume / pan ({"kind": "chainMixer", "owner", "name": "volume" | "pan"}) or a wire amount
+// ({"kind": "wireAmount", "owner"}); a schema-8 file has none, so nothing changes. Self-contained (renumber, do not
+// merge, if another schema step lands first).
+Status migrateAddDeviceAutomation(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3167,6 +3203,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {5, migrateAddRacks},
     {6, migrateAddAudio},
     {7, migrateAddDeviceNames},
+    {8, migrateAddDeviceAutomation},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

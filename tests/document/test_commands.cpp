@@ -645,7 +645,7 @@ std::vector<Case> cases() {
                  withRack(f);
                  return SetChainMixer{rk.c1, -6.0f, 0.5f};
                }, P, [rackOf](Fixture& f, const ChangeSet& cs) {
-                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::chain(rk.c1, 0)});
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::chain(rk.c1, kChainVolume), ParamRef::chain(rk.c1, kChainPan)});  // T4.18
                  CHECK(rackOf(f).chains[0]->volumeDb == -6.0f);
                }});
   c.push_back({"SetChainActive", [withRack](Fixture& f) -> Command {

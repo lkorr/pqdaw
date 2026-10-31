@@ -40,6 +40,12 @@ EditResult replaceDevice(const Project& p, IdSource& ids, DeviceId device, const
     for (const MacroMapping& m : r.rack->mappings)
       if (m.device == device && keepsParam(m.param)) b.commands.push_back(AddMacroMapping{r.id, m});
   });
+  // T4.18: its automation lanes stay on the params the new device still has (the device keeps its id: apply keeps
+  // those lanes where they are); the lanes of the others go. Lanes inside it (a rack's chains, inner devices: fresh ids)
+  // go with them (apply's lane pass).
+  for (const LanePtr& l : loc.track->lanes)
+    if (l->param.kind == ParamKind::DeviceParam && l->param.owner == device.value && !keepsParam(l->paramName))
+      b.commands.push_back(RemoveAutomationLane{loc.track->id, l->id});
   return e;
 }
 

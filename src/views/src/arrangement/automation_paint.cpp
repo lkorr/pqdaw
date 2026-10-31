@@ -95,7 +95,7 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
   DrawList& dl = ctx.dl;
   ++stats_.bandsPainted;
   const doc::Project& p = *view_.shown();
-  const ParamDisplay disp = paramDisplay(p, b.param);
+  const ParamDisplay disp = paramDisplay(p, b.param, ctx_.deviceLibrary());
   const auto yOf = [&](double v) {
     return static_cast<float>(static_cast<double>(b.bottom) - displayNorm(disp, v) * static_cast<double>(b.bottom - b.top));
   };
@@ -115,7 +115,7 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
   const bool overridden = ctx_.automationOverridden(b.param);
   const Rgba lineCol = overridden ? at.lineOverridden : at.line;
   const std::span<const doc::Breakpoint> pts = pointsOf(b);
-  const double fallback = currentParamValue(p, b.param);
+  const double fallback = currentParamValue(p, b.param, ctx_.deviceLibrary());
   if (pts.empty()) {
     // Not automated: a dashed line at the parameter's value (Live). The dash phase is fixed to the device x, so a
     // partial repaint draws exactly the dashes a full one would.
@@ -198,7 +198,7 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
 void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const AutomationBand& b, std::span<const doc::Breakpoint> pts,
                                                 double fallback, const IRect& vis, bool dense, Rgba lineCol, float lineW) {
   DrawList& dl = ctx.dl;
-  const ParamDisplay disp = paramDisplay(*view_.shown(), b.param);
+  const ParamDisplay disp = paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary());
   const auto yOf = [&](double v) {
     return static_cast<float>(static_cast<double>(b.bottom) - displayNorm(disp, v) * static_cast<double>(b.bottom - b.top));
   };
@@ -335,7 +335,7 @@ LaneHeader::LaneHeader(std::string name, ArrangementView& view) : Control(std::m
 
 void LaneHeader::bind(const AutomationLaneRow& lane, uint16_t depth) {
   const doc::Project& p = *view_.shown();
-  std::string label = paramName(p, lane.param);
+  std::string label = paramName(p, lane.param, view_.context().deviceLibrary());
   const bool automated = lane.lane != nullptr;
   const bool overridden = view_.context().automationOverridden(lane.param);
   const bool changed = label != label_ || automated != automated_ || overridden != overridden_ || depth != depth_ ||

@@ -76,6 +76,7 @@ inline constexpr uint32_t kModulation = 1u << 12;    // the modulation source ch
 inline constexpr uint32_t kSamples = 1u << 13;       // the samples were resolved again (T5.4: the playback link)
 inline constexpr uint32_t kWaveforms = 1u << 14;     // a waveform overview arrived or grew (T5.5: views drawing audio)
 inline constexpr uint32_t kLibrary = 1u << 15;       // the browser's places, index or tags changed (T5.10)
+inline constexpr uint32_t kShowAutomation = 1u << 16; // T4.18: a view asked to show a parameter's automation lane
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -305,6 +306,14 @@ public:
   std::span<const doc::ParamRef> automationOverrides() const noexcept { return overrides_; }
   void overrideAutomation(const doc::ParamRef& p);
   void reenableAutomation();
+  // T4.18: "Show Automation" (a knob's context menu): asks the arrangement to show `p`'s lane under `track` (the
+  // device's track). Notifies kShowAutomation; the arrangement takes the request (takeShowAutomation) and shows it.
+  struct ShowAutomationRequest {
+    doc::TrackId track;
+    doc::ParamRef param;
+  };
+  void showAutomation(doc::TrackId track, const doc::ParamRef& p);
+  std::optional<ShowAutomationRequest> takeShowAutomation() noexcept;
 
   // --- layout state ---
   bool detailVisible() const noexcept { return detailVisible_; }
@@ -482,6 +491,7 @@ private:
   doc::ClipRef detailClip_{};
   std::optional<TuningPreview> preview_;
   std::vector<doc::ParamRef> overrides_;  // sorted (T3.15)
+  std::optional<ShowAutomationRequest> showAutomation_;  // T4.18
   std::string status_;
   TransportLoop loopSent_{};
   bool loopSentValid_ = false;

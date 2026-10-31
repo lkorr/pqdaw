@@ -93,7 +93,7 @@ void TrackHeader::bind(const ArrangementRow& row, std::span<const ArrangementRow
     const doc::ParamRef r = au.chosen(id_);
     const doc::Project& p = *view_.shown();
     const bool automated = view_.model().lane(r).lane != nullptr;
-    static_cast<arrangement::ParamChooser*>(chooser_)->set(id_, paramShortName(p, r), automated, view_.context().automationOverridden(r));
+    static_cast<arrangement::ParamChooser*>(chooser_)->set(id_, paramShortName(p, r, view_.context().deviceLibrary()), automated, view_.context().automationOverridden(r));
   }
   if (changed) {
     invalidateArrange();

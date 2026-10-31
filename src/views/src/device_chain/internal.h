@@ -113,6 +113,17 @@ struct DeviceChainView::Impl {
   std::vector<ModSweep> ringSweeps;
   uint32_t ringTimer = 0;
   bool ringsLit = false;
+  // T4.18: the automated params of the shown devices (a lane with points, on the shown track) and the 30 Hz timer
+  // that moves their knobs to the envelope at the playhead while the transport plays.
+  struct AutoTarget {
+    doc::DeviceId device;
+    std::string param;
+    doc::LanePtr lane;
+    bool overridden = false;
+  };
+  std::vector<AutoTarget> autoTargets;
+  bool chainAuto = false;  // a rack chain's volume / pan lane on the shown track
+  uint32_t autoTimer = 0;
 };
 
 namespace device_chain {
@@ -143,6 +154,14 @@ public:
   virtual void appendShown(std::vector<FrameBase*>& out) { out.push_back(this); }
   // T4.16c: items the right-click menu at `p` adds first (a rack: Rename Macro over a macro knob).
   virtual void contextItems(ui::Vec2 /*p*/, std::vector<ui::MenuItem>& /*items*/) {}
+  // T4.18: the automation lanes of the shown track or the playhead changed: a rack re-shows its chains' volume / pan
+  // (an automated one: the envelope at the playhead and an LED).
+  virtual void automationChanged() {}
+  // T4.18: the param of panel() whose control is under `p` ("" none: no panel, or not over a param's control).
+  std::string paramAt(ui::Vec2 p) const;
+  // T4.18: the params with an automation lane (second: overridden): their controls get Live's LED (paintOver).
+  void setAutomated(std::vector<std::pair<std::string, bool>> params);
+  const std::vector<std::pair<std::string, bool>>& automated() const noexcept { return automated_; }
   // T4.8: a drop for a dragged device at `p` inside this frame (racks: their chain list and shown chain).
   virtual bool dropAt(ui::Vec2 /*p*/, DropTarget& /*out*/) { return false; }
   // The title-bar band a reorder drag starts from.
@@ -164,6 +183,7 @@ protected:
   ViewContext& ctx_;
   doc::DeviceId id_;
   bool selected_ = false;
+  std::vector<std::pair<std::string, bool>> automated_;  // T4.18
 };
 
 // A frame for `d` (a rack or a device).

@@ -428,6 +428,7 @@ private:
   // UI thread (T2.6-fix2). *slot: the table slot whose live inputs it drives (L18).
   const float** liveTap(const doc::Project& p, const doc::ParamRef& ref, uint32_t* slot = nullptr);
   void publishAutomation(const doc::Project& p);
+  doc::ParamRange laneRange(const doc::Project& p, const doc::AutomationLane& lane) const;  // T4.18
   void reportDelayedSends(const doc::Project& p);
   void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
   void reportWires(const doc::Project& p);  // UI thread (T4.7): a newly delayed or refused wire, in the status line

@@ -527,9 +527,40 @@ void FrameBase::setSelected(bool s) {
 }
 
 void FrameBase::paintOver(ui::PaintContext& ctx) {
-  if (!selected_ || !ctx.res.theme) return;
+  if (!ctx.res.theme) return;
+  // T4.18: an automated param's control carries Live's LED in its corner (grey while overridden by hand).
+  if (!automated_.empty())
+    if (devices::DevicePanel* panel = this->panel(); panel != nullptr && !panel->folded()) {
+      const auto& at = ctx.res.theme->automation;
+      const float size = static_cast<float>(std::max(2, ctx.scale.px(4.0f)));
+      for (const auto& [name, overridden] : automated_) {
+        const ui::Widget* w = panel->controlFor(name);
+        if (w == nullptr || !w->visible()) continue;
+        const ui::IRect r = ui::intersect(w->rect(), rect());
+        if (r.w < 2 * static_cast<int32_t>(size) || r.h < 2 * static_cast<int32_t>(size)) continue;
+        const float x = static_cast<float>(r.x + 1), y = static_cast<float>(r.y + 1);
+        ctx.dl.addRectFilled({x, y, x + size, y + size}, overridden ? at.ledOverridden : at.led);
+      }
+    }
+  if (!selected_) return;
   // The selected device: an outline in the focus colour (Live highlights the selected device).
   paint::box(ctx.dl, rect(), 0.0f, 0, ctx.res.theme->accent.focus);
+}
+
+std::string FrameBase::paramAt(ui::Vec2 p) const {
+  const devices::DevicePanel* panel = this->panel();
+  if (panel == nullptr || panel->folded()) return {};
+  for (const devices::ParamInfo& info : panel->signature().params) {
+    const ui::Widget* w = panel->controlFor(info.name);
+    if (w != nullptr && w->visible() && w->rect().contains(p)) return info.name;
+  }
+  return {};
+}
+
+void FrameBase::setAutomated(std::vector<std::pair<std::string, bool>> params) {
+  if (params == automated_) return;
+  automated_ = std::move(params);
+  markDirty();
 }
 
 ui::Cursor FrameBase::cursorAt(ui::Vec2 p) const {
@@ -555,6 +586,15 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // T4.4-fix1 (SPEC §15 2026-10-26): the circuit editor on this device; a user device back to the stock patch.
       // T4.8: a rack opens its lowered subcircuit (read-only) instead.
       const doc::DeviceId id = id_;
+      // T4.18: over a param's control (a knob, a box, a toggle, a macro): its automation lane in the arrangement.
+      if (const std::string param = paramAt(e.pos); !param.empty() && loc.track != nullptr) {
+        ViewContext* c = &ctx_;
+        const doc::TrackId t = loc.track->id;
+        items.push_back(ui::MenuItem::item("Show Automation", [c, t, id, param] {
+          c->showAutomation(t, doc::ParamRef::device(id, param));
+        }));
+        items.push_back(ui::MenuItem::sep());
+      }
       contextItems(e.pos, items);  // T4.16c
       if (loc.device != nullptr && loc.device->rack) {
         items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openRackCircuit(id); }));
@@ -667,6 +707,8 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
         if (devices::DevicePanel* panel = f->panel(); panel != nullptr && !f->isRack())
           panel->setPresetName(ctx_.library().presetName(doc::DeviceId{id}));
     if (bits & view_change::kModulation) refreshRings();
+    if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
+    else if ((bits & view_change::kTransport) && !impl_->autoTargets.empty()) applyAutomation();
   });
   sync(true);
 }
@@ -733,6 +775,7 @@ void DeviceChainView::sync(bool force) {
     slot->setHint(t == nullptr ? std::string() : chain.empty() ? "Add Device" : "Add");
   }
   refreshRings();  // T4.7
+  refreshAutomation();  // T4.18
 }
 
 void DeviceChainView::onStore(const doc::StoreEvent& e) {
@@ -755,6 +798,7 @@ void DeviceChainView::onStore(const doc::StoreEvent& e) {
     // A modulated knob's ring follows it; T4.8: a macro moves its mapped knobs' rings.
     if (!doc::wiresOf(*e.after).empty() || std::any_of(m.all.begin(), m.all.end(), [](const auto& f) { return f.second->isRack(); }))
       refreshRings();
+    if (!m.autoTargets.empty()) refreshAutomation();  // T4.18: an automated knob shows its envelope, not the new value
     return;
   }
   sync(e.kind == doc::StoreEventKind::Reset);
@@ -1360,9 +1404,73 @@ void DeviceChainView::refreshRings() {
 }
 
 void DeviceChainView::onTimer(uint32_t id) {
+  if (id == impl_->autoTimer) {  // T4.18
+    impl_->autoTimer = 0;
+    applyAutomation();
+    return;
+  }
   if (id != impl_->ringTimer) return;
   impl_->ringTimer = 0;
   pollRings();
+}
+
+// ---- T4.18: automated knobs ----------------------------------------------------------------------------------------
+
+bool DeviceChainView::automationPolling() const noexcept { return impl_->autoTimer != 0; }
+
+void DeviceChainView::refreshAutomation() {
+  Impl& m = *impl_;
+  m.autoTargets.clear();
+  m.chainAuto = false;
+  std::map<uint32_t, std::vector<std::pair<std::string, bool>>> marks;
+  if (const doc::Track* t = m.track())
+    for (const doc::LanePtr& l : t->lanes) {  // a device's lanes live on its track (the shown one)
+      m.chainAuto = m.chainAuto || (l->param.kind == doc::ParamKind::ChainMixer && !l->points.empty());
+      if (l->param.kind != doc::ParamKind::DeviceParam || l->points.empty() || m.frameOf(doc::DeviceId{l->param.owner}) == nullptr)
+        continue;
+      const bool overridden = ctx_.automationOverridden(l->param);
+      m.autoTargets.push_back({doc::DeviceId{l->param.owner}, l->paramName, l, overridden});
+      marks[l->param.owner].emplace_back(l->paramName, overridden);
+    }
+  for (auto& [id, f] : m.all) {
+    auto it = marks.find(id);
+    f->setAutomated(it != marks.end() ? std::move(it->second) : std::vector<std::pair<std::string, bool>>{});
+    if (f->isRack()) f->automationChanged();
+  }
+  applyAutomation();
+}
+
+void DeviceChainView::applyAutomation() {
+  Impl& m = *impl_;
+  const PlayheadSnapshot ph = ctx_.transport().playhead();
+  bool live = false;
+  for (const Impl::AutoTarget& a : m.autoTargets) {
+    FrameBase* f = m.frameOf(a.device);
+    devices::DevicePanel* panel = f != nullptr ? f->panel() : nullptr;
+    const devices::ParamInfo* info = panel != nullptr ? panel->signature().findParam(a.param) : nullptr;
+    if (info == nullptr) continue;
+    if (a.overridden) {  // overridden by hand: the knob shows (and plays) its own value until re-enabled
+      const doc::Device* d = doc::findDevice(*ctx_.doc(), a.device).device;
+      if (d == nullptr) continue;
+      const double own = d->rack ? doc::rackParamValue(*d, a.param) : d->param(a.param) ? d->param(a.param)->value : info->def;
+      if (panel->paramValue(a.param) != own) panel->setParamValue(a.param, own);
+      continue;
+    }
+    live = true;
+    // The envelope at the playhead (Live: an automated knob follows its automation, moving while it plays).
+    const double v = evalAutomation(std::span<const doc::Breakpoint>(a.lane->points), static_cast<double>(ph.tick),
+                                    panel->paramValue(a.param));
+    if (panel->paramValue(a.param) != v) panel->setParamValue(a.param, v);  // repaints the bound control only
+  }
+  if (m.chainAuto || live)  // racks: their chains' volume / pan (refreshAutomation also clears them)
+    for (auto& [id, f] : m.all)
+      if (f->isRack()) f->automationChanged();
+  const bool want = (live || m.chainAuto) && ph.playing;
+  if (want && m.autoTimer == 0) m.autoTimer = requestTimer(1.0 / 30.0);
+  if (!want && m.autoTimer != 0) {
+    cancelTimer(m.autoTimer);
+    m.autoTimer = 0;
+  }
 }
 
 void DeviceChainView::pollRings() {

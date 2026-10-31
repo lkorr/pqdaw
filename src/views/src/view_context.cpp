@@ -133,9 +133,9 @@ namespace {
 
 // Whether any lane automates `r` (a track parameter's lane lives on its own track).
 bool automated(const doc::Project& p, const doc::ParamRef& r) {
-  if (!doc::isAutomatable(r.kind)) return false;  // T4.1: device params (a knob drag walks no lanes)
-  if (doc::isTrackParam(r.kind)) {
-    const doc::Track* t = doc::findTrackPtr(p, doc::TrackId{r.owner});
+  if (!doc::isAutomatable(r)) return false;
+  if (doc::isTrackParam(r.kind) || doc::isDeviceParamKind(r.kind)) {  // T4.18: a device's lane on its track
+    const doc::Track* t = doc::isTrackParam(r.kind) ? doc::findTrackPtr(p, doc::TrackId{r.owner}) : doc::laneHome(p, r);
     return t && std::any_of(t->lanes.begin(), t->lanes.end(), [&](const doc::LanePtr& l) { return l->param == r; });
   }
   bool found = false;
@@ -702,6 +702,17 @@ void ViewContext::reenableAutomation() {
   if (overrides_.empty()) return;
   overrides_.clear();
   notify(view_change::kAutomation);
+}
+
+void ViewContext::showAutomation(doc::TrackId track, const doc::ParamRef& p) {
+  showAutomation_ = ShowAutomationRequest{track, p};
+  notify(view_change::kShowAutomation);
+}
+
+std::optional<ViewContext::ShowAutomationRequest> ViewContext::takeShowAutomation() noexcept {
+  std::optional<ShowAutomationRequest> r = showAutomation_;
+  showAutomation_.reset();
+  return r;
 }
 
 // --- actions --------------------------------------------------------------------------------------------

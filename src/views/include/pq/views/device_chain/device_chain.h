@@ -157,6 +157,13 @@ public:
   bool ringsPolling() const noexcept;
   // Reads the sweeps once and updates the rings (the 30 Hz timer's work; tests and scenes call it directly).
   void pollRings();
+  // T4.18: automated params (Live): their knobs show the envelope's value at the playhead (moving with it while the
+  // transport plays: a 30 Hz timer, on only then) and an LED (red; grey while overridden by hand, which also leaves the
+  // knob at its own value). refreshAutomation re-reads which params are automated (document / override changes);
+  // applyAutomation moves the knobs (the timer's work; tests call it directly).
+  void refreshAutomation();
+  void applyAutomation();
+  bool automationPolling() const noexcept;
 
   // M4 review M9: rack frames show their chain's devices inline down to this many nested racks; a deeper rack shows its
   // strip, macros and chain list but not its chain's devices, so the widget tree stays shallow however deep racks nest.
