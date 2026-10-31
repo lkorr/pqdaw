@@ -220,6 +220,21 @@ T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — 
 | drag a band's title strip, `Ctrl`+drag a device block | canvas | nudge the layout (view state, saved with the project, not undoable); band menu: Reset Layout |
 | right-click a band / a block / a wire | canvas | Add Device ▸, Zoom to Band / Project, Reset Layout; Delete, Activate, Open to Atoms, Open in Circuit View, Output ▸; Delete Wire / Send to −inf / Sends Only |
 
+## Drops and the browser (T5.7, T5.10; handled by the widgets, not the keymap)
+
+| Where | Input | Does |
+|---|---|---|
+| Arrangement lanes | drop files (Explorer) or browser items | onto an audio track: the first file there at the snapped tick, one new audio track per further file; onto a MIDI / group track: new audio tracks after it; below the tracks: new tracks at the end; one undo step |
+| Arrangement lanes | hold `Ctrl` while dropping | every file on one track, one after another |
+| Arrangement / browser | drop a folder | adds it to the browser's Places |
+| Browser (focus inside) | `Up` / `Down` | select the previous / next item (a sample previews while Preview is on) |
+| Browser | `Right` / `Left` | unfold a folder or enter it / fold it or go to its folder |
+| Browser | `Enter`, double-click | load: a sample becomes a clip at the start marker on the selected audio track (else a new one); a folder folds |
+| Browser | `Esc` | stops the preview |
+| Browser | a printable key | goes to the search field |
+| Browser list | drag | carries the item (drop it on the arrangement) |
+| Browser preview | click in the waveform | plays from there (scrub) |
+
 ## Not bound yet
 
 - Wiring (T4.7): `view.cycleCables` and `wire.delete` have no default chord (Live has none); the View menu and the badge run them.

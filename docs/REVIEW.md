@@ -347,3 +347,22 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What was matched against: Live 12 from memory (audio clips: dark waveform on the clip colour, fade handles at the top corners, crossfades as an X); the user said exact Live parity is not required.
 - To judge (QUESTIONS Q155): handle sizes and where they sit (top of the body; shown on hover / selection only); the gain handle having no visible level (the value shows as a badge in the title strip: "−6.0 dB"); badges' text ("+7 st", "RP 100", "Rev", gain); the fade shading (a dark wash above the curve) and the white curve / X lines; the missing overlay (red wash + "Missing" badge); the clip view's layout (no zoom on the sample display; fades in ms).
 - Known gaps: no warp markers (M6); the waveform of a warp-Off clip under a tempo ramp is drawn in 32-px linear pieces (exact at their ends); no loop-seam marks in Re-Pitch clips (the waveform restarts visibly); the sample display in the Clip View cannot zoom (it always shows the whole file); T4.17's clip keys (Up / Down to the next track, Home / End) were not done (T4.17 paused).
+
+## T5.7 Drag in: files from Explorer and the browser · 2026-10-31 (👁)
+- What to look at (live; a hand check of a real Explorer drop is part of this task):
+  - `pqdaw`, then drag one WAV from Explorer over the arrangement: a ghost clip at its real length follows the pointer on the track under it (snapped to the grid); release on an audio track: the clip lands there (Ctrl+Z takes it back in one step). Over a MIDI track or a group: an orange insertion line under it and the ghost on a new track below; release: a new audio track named after the file.
+  - Drag several files (stems): the first lands on the audio track you aim at, each other one on a new track below it; hold Ctrl while dragging: they line up one after another on one track.
+  - Over the returns / master at the bottom, or with a .mid file: Explorer's "no" cursor; the status line says why. A folder: released anywhere on the arrangement or the browser it becomes a Place in the browser (which opens).
+  - Press Play right after a drop: the sample sounds at once (it was loaded while you hovered).
+  - Near the lanes' edges the view scrolls while you hold the drag there (left/right: time; top/bottom: tracks).
+- What was matched against: Live 12 from memory; the user said exact parity is not required.
+- To judge (Q?-T5.7-a): the first file on the aimed-at track vs every file on a new track; folders added at once vs a confirmation; the ghost look (accent-coloured clip with its name, the insertion line).
+- Known gaps: clip and device drags (T5.11 / T5.12); presets on a device chain (T5.11); MIDI import (M11).
+
+## T5.10 Browser panel + preview · 2026-10-31 (👁)
+- What to look at:
+  - Goldens: `tests/views/golden/browser-panel.png` (the audio fixture's samples as the User Library: the Drums folder open, vox.wav selected with its waveform in the preview strip, the sidebar's Collections / Categories / Places) and `tests/views/golden/browser-search.png` ("vo" typed: vox.wav and Vocal Chop.wav, best first). `audio-prefs.png` / `audio-prefs-wasapi.png` were re-recorded: the new "Cue Out" row.
+  - Live: `pqdaw`, Ctrl+Alt+B (or View > Browser). Add a folder of samples (drop it on the browser). Click a sample: it plays (Prev on); Up / Down walk and preview; Left / Right fold folders; Enter puts the sample on the selected audio track at the start marker; drag one onto the arrangement. Type to search (Ctrl+F jumps to the field). Click in the waveform: the preview jumps there. Sync: a file with a BPM (acid chunk or "120bpm" in its name) follows the project tempo (re-pitched). Right-click: Collections, Show in Explorer, Rename / Delete (User Library only). Preferences > Cue Out: put the preview on outputs 3/4 (open 4 Output Channels first).
+- What was matched against: Live 12's browser from memory (sidebar sections, preview strip with Raw / Sync, colour collections); the user said exact parity is not required.
+- To judge (Q?-T5.10-a): the panel width (440 px, fixed) and its density; the list columns; the chips (collections only); auto-preview on by default at −6 dB; Delete without a confirmation (Recycle Bin).
+- Known gaps: free-tag and filter chips (duration, BPM, rate) are not on the panel; no tag editing; no hot-swap mode (T5.11); the browser width cannot be dragged.
