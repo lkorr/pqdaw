@@ -9,6 +9,7 @@
 
 #include "../common/paint.h"
 #include "pq/ui/theme.h"
+#include "pq/views/browser/library.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 
@@ -96,21 +97,93 @@ constexpr float kRowHeight = 22.0f;
 constexpr uint32_t kCommonRates[] = {44100, 48000, 88200, 96000, 176400, 192000};
 constexpr uint32_t kCommonBuffers[] = {32, 64, 128, 256, 512, 1024, 2048};
 
-// The tab column at the left (Live's Preferences tabs; only Audio exists so far): a sunken strip with the selected
-// tab highlighted.
+// The tab column at the left (Live's Preferences tabs: Audio, and Library with a context): a sunken strip with the
+// selected tab highlighted.
 class TabColumn : public Widget {
 public:
   TabColumn() : Widget("tabs") {
     setLayout(LayoutKind::Column);
     setWidth(Length::fixed(96));
   }
+  const Widget* selected = nullptr;
   void paint(PaintContext& ctx) override {
     const Theme* th = ctx.res.theme;
     if (!th) return;
     ctx.dl.addRectFilled(rect().toRect(), th->surface.sunken);
-    const IRect sel{rect().x, rect().y, rect().w, ctx.scale.px(kRowHeight + 4.0f)};
+    const int32_t pad = ctx.scale.px(2.0f);
+    const IRect sel = selected ? IRect{rect().x, selected->rect().y - pad, rect().w, selected->rect().h + 2 * pad}
+                               : IRect{rect().x, rect().y, rect().w, ctx.scale.px(kRowHeight + 4.0f)};
     ctx.dl.addRectFilled(sel.toRect(), th->surface.highlight);
   }
+};
+
+// A tab's name in the tab column: a click shows its page.
+class TabLabel : public Label {
+public:
+  TabLabel(std::string name, std::string text)
+      : Label(std::move(name), std::move(text), FontRoleId::BodyStrong, TextTone::Primary) {
+    setHeight(Length::fixed(kRowHeight));
+    setCursor(Cursor::Pointer);
+  }
+  std::function<void()> onSelect;
+  bool onPointer(const PointerEvent& e) override {
+    if (e.type != PointerType::Down || e.button != PointerButton::Left) return false;
+    if (onSelect) onSelect();
+    return true;
+  }
+};
+
+// The Library tab's Places list: the browser's added folders, one per row; a click selects one (for Remove).
+class FolderList : public Control {
+public:
+  static constexpr float kRow = 20.0f;
+  static constexpr int32_t kRows = 9;
+  explicit FolderList(Library& lib) : Control("places"), lib_(lib) {
+    setHeight(Length::fixed(kRow * kRows + 2.0f));
+    setInfo("Places", "Folders the browser shows under Places and indexes (samples, presets, clips). Select one to "
+                      "remove it; the files stay where they are.");
+  }
+  int32_t selected = -1;
+  std::function<void()> onSelect;
+
+  void paint(PaintContext& ctx) override {
+    const Theme* th = ctx.res.theme;
+    const ThemeFonts* f = ctx.res.uiFonts;
+    if (!th) return;
+    paint::box(ctx.dl, rect(), 0.0f, th->surface.sunken, th->surface.divider);
+    if (!f) return;
+    const int32_t pad = ctx.scale.px(6.0f);
+    const auto& folders = lib_.folders();
+    if (folders.empty()) {
+      paint::text(ctx, f->small, rowRect(0, ctx.scale.factor),
+                  "No folders yet: Add Folder\xE2\x80\xA6, or drop a folder on the browser.", th->text.disabled,
+                  TextAlign::Left, pad, pad);
+      return;
+    }
+    for (size_t i = 0; i < folders.size(); ++i) {
+      const IRect r = rowRect(i, ctx.scale.factor);
+      if (r.bottom() > rect().bottom()) break;
+      const bool sel = static_cast<int32_t>(i) == selected;
+      if (sel) ctx.dl.addRectFilled(r.toRect(), th->selection.fill);
+      paint::text(ctx, f->small, r, folders[i], sel ? th->selection.text : th->text.primary, TextAlign::Left, pad, pad);
+    }
+  }
+  bool onPointer(const PointerEvent& e) override {
+    if (e.type != PointerType::Down) return false;
+    const float s = tree() ? tree()->scale() : 1.0f;
+    const auto row = static_cast<int32_t>(std::floor((e.pos.y - static_cast<float>(rect().y) - 1.0f) / (kRow * s)));
+    selected = row >= 0 && static_cast<size_t>(row) < lib_.folders().size() ? row : -1;
+    markDirty();
+    if (onSelect) onSelect();
+    return true;
+  }
+
+private:
+  IRect rowRect(size_t i, float scale) const noexcept {
+    const auto h = static_cast<int32_t>(std::lround(kRow * scale));
+    return {rect().x + 1, rect().y + 1 + static_cast<int32_t>(i) * h, rect().w - 2, h};
+  }
+  Library& lib_;
 };
 
 // A 1-device-px line under a section title.
@@ -173,7 +246,8 @@ int32_t indexOf(const std::vector<uint32_t>& v, uint32_t x) {
 
 }  // namespace
 
-PreferencesWindow::PreferencesWindow(AudioPrefsPort& port) : Popover("preferences"), port_(port) {
+PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
+    : Popover("preferences"), port_(port), ctx_(ctx) {
   setSize(Length::fixed(kWidth), Length::fixed(kHeight));
   shown_ = port_.settings();
 
@@ -192,12 +266,23 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port) : Popover("preference
   body.setLayout(LayoutKind::Row);
   body.setGap(12);
   auto& tabs = body.add<TabColumn>();
+  tabs_ = &tabs;
   tabs.setPadding({8, 4, 4, 4});
-  auto& audioTab = tabs.add<Label>("audio", "Audio", FontRoleId::BodyStrong, TextTone::Primary);
-  audioTab.setHeight(Length::fixed(kRowHeight));
+  tabs.setGap(4);
+  auto& audioTab = tabs.add<TabLabel>("audio", "Audio");
+  audioTab_ = &audioTab;
   audioTab.setInfo("Audio", "Audio device, sample rate, buffer size, latency and the test tone.");
+  audioTab.onSelect = [this] { showTab(Tab::Audio); };
+  if (ctx_) {
+    auto& libTab = tabs.add<TabLabel>("library", "Library");
+    libraryTab_ = &libTab;
+    libTab.setInfo("Library", "Where the User Library is, and the folders the browser shows under Places.");
+    libTab.onSelect = [this] { showTab(Tab::Library); };
+  }
+  tabs.selected = &audioTab;
 
   auto& page = body.add<Widget>("audio");
+  audioPage_ = &page;
   page.setLayout(LayoutKind::Column);
   page.setGap(5);
 
@@ -381,10 +466,123 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port) : Popover("preference
     statusLabel_ = &r.add<Label>("value", "", FontRoleId::Small, TextTone::Secondary);
   }
 
+  if (ctx_) buildLibraryTab(body);
+
   port_.setListener([alive = alive_, this] {
     if (*alive) refresh();
   });
   refresh();
+}
+
+void PreferencesWindow::buildLibraryTab(Widget& body) {
+  Library& lib = ctx_->library();
+  auto& page = body.add<Widget>("library");
+  libraryPage_ = &page;
+  page.setLayout(LayoutKind::Column);
+  page.setGap(5);
+  page.setVisible(false);
+
+  section(page, "user-library-section", "User Library");
+  {
+    auto& r = page.add<Widget>("location");
+    r.setLayout(LayoutKind::Row);
+    r.setHeight(Length::fixed(kRowHeight));
+    userLibrary_ = &r.add<Label>("path", "", FontRoleId::Small, TextTone::Primary);
+    userLibrary_->setInfo("User Library", "Where presets, racks, user devices, tunings and clips you save go. The "
+                                          "browser shows it as the first of its Places.");
+  }
+  {
+    auto& r = page.add<Widget>("browse-row");
+    r.setLayout(LayoutKind::Row);
+    r.setHeight(Length::fixed(kRowHeight));
+    r.setGap(8);
+    browse_ = &r.add<Button>("browse", "Browse\xE2\x80\xA6");
+    browse_->setWidth(Length::fixed(88));
+    browse_->setInfo("Browse", "Chooses another folder as the User Library. It applies at once: the browser indexes "
+                               "it and later saves go there. Files in the old one stay where they are.");
+    browse_->onClick = [this] {
+      if (FileDialogs* d = ctx_->fileDialogs())
+        d->chooseFolder([&l = ctx_->library()](std::string folder) {
+          if (!folder.empty()) (void)l.changeUserLibrary(folder);
+        });
+    };
+    r.add<Label>("note", "Saved presets, racks, devices, tunings and clips go here.", FontRoleId::Small,
+                 TextTone::Secondary);
+  }
+
+  section(page, "places-section", "Places");
+  {
+    auto& list = page.add<FolderList>(lib);
+    folderList_ = &list;
+    list.onSelect = [this] { updateLibrary(); };
+  }
+  {
+    auto& r = page.add<Widget>("places-buttons");
+    r.setLayout(LayoutKind::Row);
+    r.setHeight(Length::fixed(kRowHeight));
+    r.setGap(8);
+    addFolder_ = &r.add<Button>("add", "Add Folder\xE2\x80\xA6");
+    addFolder_->setWidth(Length::fixed(104));
+    addFolder_->setInfo("Add Folder", "Adds a folder to the browser's Places (sample libraries, other drives). Dropping "
+                                      "a folder on the browser does the same.");
+    addFolder_->onClick = [this] {
+      if (FileDialogs* d = ctx_->fileDialogs())
+        d->chooseFolder([c = ctx_](std::string folder) {
+          if (!folder.empty() && !c->library().addPlace(folder)) c->setStatus("That folder is already one of the Places.");
+        });
+    };
+    removeFolder_ = &r.add<Button>("remove", "Remove");
+    removeFolder_->setWidth(Length::fixed(72));
+    removeFolder_->setInfo("Remove", "Removes the selected folder from Places (its files stay on disk).");
+    removeFolder_->onClick = [this] {
+      const int32_t sel = selectedFolder();
+      Library& l = ctx_->library();
+      if (sel < 0 || static_cast<size_t>(sel) >= l.folders().size()) return;
+      const std::string root = l.folders()[static_cast<size_t>(sel)];
+      (void)l.removePlace(root);
+    };
+  }
+
+  librarySub_ = ctx_->observe([this](uint32_t bits) {
+    if (bits & view_change::kLibrary) updateLibrary();
+  });
+  updateLibrary();
+}
+
+void PreferencesWindow::updateLibrary() {
+  if (!ctx_ || !folderList_) return;
+  const Library& lib = ctx_->library();
+  const std::string path = lib.userLibrary().empty() ? std::string("No User Library") : lib.userLibrary();
+  if (userLibrary_->text() != path) userLibrary_->setText(path);
+  auto* list = static_cast<FolderList*>(folderList_);
+  if (list->selected >= static_cast<int32_t>(lib.folders().size())) list->selected = -1;
+  removeFolder_->setEnabled(list->selected >= 0);
+  list->markDirty();
+}
+
+void PreferencesWindow::showTab(Tab t) {
+  if (t == Tab::Library && !libraryPage_) return;
+  tab_ = t;
+  audioPage_->setVisible(t == Tab::Audio);
+  if (libraryPage_) libraryPage_->setVisible(t == Tab::Library);
+  auto* tabs = static_cast<TabColumn*>(tabs_);
+  tabs->selected = t == Tab::Audio ? static_cast<const Widget*>(audioTab_) : static_cast<const Widget*>(libraryTab_);
+  tabs->markDirty();
+}
+
+const std::string& PreferencesWindow::userLibraryText() const {
+  static const std::string kNone;
+  return userLibrary_ ? userLibrary_->text() : kNone;
+}
+
+int32_t PreferencesWindow::selectedFolder() const noexcept {
+  return folderList_ ? static_cast<const FolderList*>(folderList_)->selected : -1;
+}
+
+void PreferencesWindow::selectFolder(int32_t row) {
+  if (!folderList_) return;
+  static_cast<FolderList*>(folderList_)->selected = row;
+  updateLibrary();
 }
 
 PreferencesWindow::~PreferencesWindow() {
@@ -556,8 +754,8 @@ const std::string& PreferencesWindow::cpuText() const { return cpu_->text(); }
 bool PreferencesWindow::onKey(const KeyEvent& e) { return Popover::onKey(e); }
 
 InfoText PreferencesWindow::info() const {
-  return {"Preferences", "Audio device, sample rate, buffer size and latency. Changes apply at once and are kept for "
-                         "the next start. Esc closes."};
+  return {"Preferences", "Audio: device, sample rate, buffer size and latency. Library: the User Library's location "
+                         "and the browser's Places. Changes apply at once and are kept for the next start. Esc closes."};
 }
 
 PreferencesWindow* openPreferencesWindow(const Widget& w) {
@@ -568,11 +766,11 @@ PreferencesWindow* openPreferencesWindow(const Widget& w) {
   return nullptr;
 }
 
-PreferencesWindow* openPreferences(Widget& from, AudioPrefsPort& port) {
+PreferencesWindow* openPreferences(Widget& from, AudioPrefsPort& port, ViewContext* ctx) {
   OverlayLayer* layer = OverlayLayer::of(from);
   if (!layer) return nullptr;
   if (PreferencesWindow* open = openPreferencesWindow(from)) return open;
-  auto win = std::make_unique<PreferencesWindow>(port);
+  auto win = std::make_unique<PreferencesWindow>(port, ctx);
   PreferencesWindow* raw = win.get();
   UiTree* tree = layer->tree();
   const UiScale s(tree ? tree->scale() : 1.0f);
@@ -600,7 +798,7 @@ public:
             layer->close(*open);
             return;
           }
-          if (AudioPrefsPort* port = ctx_.audioPrefs()) (void)openPreferences(*layer, *port);
+          if (AudioPrefsPort* port = ctx_.audioPrefs()) (void)openPreferences(*layer, *port, &ctx_);
         },
         [this] { return ctx_.audioPrefs() != nullptr; });
   }

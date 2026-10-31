@@ -28,6 +28,20 @@
 //   │        │ status: Running · Focusrite USB ASIO · 48000 Hz · 64 samples      │
 //   └────────┴──────────────────────────────────────────────────────────────────┘
 //
+// T5.x-library-prefs: with a ViewContext (the app, the scenes) a second tab, Library (Live's Library tab):
+//
+//   │ Audio   │ User Library                                                     │
+//   │ Library │   Location        D:\Music\pqdaw User Library        [Browse…]   │
+//   │         │ Places                                                           │
+//   │         │   ┌ C:\Samples\Drums ───────────────────────────────┐            │
+//   │         │   │ D:\Splice                                       │            │
+//   │         │   └─────────────────────────────────────────────────┘            │
+//   │         │   [Add Folder…] [Remove]                                         │
+//
+// Browse… and Add Folder… open the folder picker (FileDialogs::chooseFolder). The location applies at once
+// (Library::changeUserLibrary: the browser's User Library place re-points and re-indexes; saves go there) and the app
+// keeps it in the settings file; the Places list is the browser's added folders (Library::addPlace / removePlace).
+//
 // Every choice applies at once (as in Live): the port reopens the stream (stop → reopen → resume with the Program
 // kept) and persists the settings. The window is a popover in the shell's overlay layer: closed, it does not exist
 // (no widgets, no timers, no polling). Open, it polls the port's status and CPU load at 2 Hz on a timer, damaging
@@ -46,11 +60,11 @@
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
+#include "pq/views/view_context.h"
 
 namespace pq::views {
 
 class Shell;
-class ViewContext;
 
 enum class AudioDriverType : uint8_t { Asio, WasapiShared, WasapiExclusive };
 // "ASIO", "WASAPI (shared)", "WASAPI (exclusive)".
@@ -214,7 +228,8 @@ public:
 class PreferencesWindow : public ui::Popover {
 public:
   static constexpr float kWidth = 640.0f, kHeight = 460.0f;  // logical px
-  explicit PreferencesWindow(AudioPrefsPort& port);
+  // `ctx` null: the Audio tab only (no Library tab).
+  explicit PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx = nullptr);
   ~PreferencesWindow() override;
   // Starts the 2 Hz readout timer (openPreferences calls it once the window is in a tree).
   void startPolling();
@@ -246,6 +261,18 @@ public:
   ui::DragBox* toneFrequency() const noexcept { return toneHz_; }
   ui::Button* hardwareSetup() const noexcept { return panel_; }
 
+  // T5.x-library-prefs: the tabs (0 Audio, 1 Library) and the Library tab's controls (null without a context).
+  enum class Tab : uint8_t { Audio, Library };
+  void showTab(Tab t);
+  Tab tab() const noexcept { return tab_; }
+  ui::Button* browseUserLibrary() const noexcept { return browse_; }
+  ui::Button* addFolder() const noexcept { return addFolder_; }
+  ui::Button* removeFolder() const noexcept { return removeFolder_; }
+  const std::string& userLibraryText() const;
+  // The selected row of the Places list (-1 none).
+  int32_t selectedFolder() const noexcept;
+  void selectFolder(int32_t row);
+
   static constexpr uint32_t kPollTimer = 1;
   static constexpr double kPollSeconds = 0.5;
 
@@ -254,6 +281,8 @@ private:
   void updateReadouts(bool force);
   void choose(AudioSettings s);
   void sendTone();
+  void buildLibraryTab(ui::Widget& body);
+  void updateLibrary();
 
   AudioPrefsPort& port_;
   AudioSettings shown_;
@@ -269,13 +298,20 @@ private:
   ui::Button* panel_ = nullptr;
   ui::Toggle* tone_ = nullptr;
   ui::DragBox *toneDb_ = nullptr, *toneHz_ = nullptr;
+  ViewContext* ctx_ = nullptr;
+  Tab tab_ = Tab::Audio;
+  ui::Widget *tabs_ = nullptr, *audioPage_ = nullptr, *libraryPage_ = nullptr;
+  ui::Label *audioTab_ = nullptr, *libraryTab_ = nullptr, *userLibrary_ = nullptr;
+  ui::Button *browse_ = nullptr, *addFolder_ = nullptr, *removeFolder_ = nullptr;
+  ui::Widget* folderList_ = nullptr;
+  ViewContext::Subscription librarySub_;
   uint32_t timer_ = 0;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 
 // Opens the window centred in `from`'s overlay layer (one at a time: an open one is returned as it is). nullptr
 // without an overlay layer.
-PreferencesWindow* openPreferences(ui::Widget& from, AudioPrefsPort& port);
+PreferencesWindow* openPreferences(ui::Widget& from, AudioPrefsPort& port, ViewContext* ctx = nullptr);
 PreferencesWindow* openPreferencesWindow(const ui::Widget& w);  // the open one, if any
 // Installs the app.preferences action handler (Ctrl+,): opens the window over ctx.audioPrefs() (disabled while the
 // context has no port). One line in installDefaultContent.

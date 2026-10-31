@@ -251,8 +251,8 @@ bool WidthHandle::onPointer(const PointerEvent& e) {
 
 Sidebar::Sidebar(BrowserPanel& panel) : Control("sidebar"), panel_(panel) {
   setInfo("Browser Sidebar", "Collections (your colour labels), Categories (every place's files by kind) and Places "
-                             "(the User Library, this project's folder, folders you added: drop a folder here). A click "
-                             "shows it in the list.");
+                             "(the User Library, this project's folder, folders you added: drop a folder here, or "
+                             "right-click Places for Add Folder\xE2\x80\xA6). A click shows it in the list.");
   setClipChildren(true);
 }
 
@@ -314,21 +314,37 @@ void Sidebar::paint(PaintContext& ctx) {
 
 bool Sidebar::onPointer(const PointerEvent& e) {
   if (e.type != PointerType::Down) return false;
-  for (size_t i = 0; i < items_.size(); ++i)
-    if (!items_[i].header && itemRect(i).contains(e.pos)) {
-      panel_.setSource(items_[i].source);
-      if (e.button == PointerButton::Right && items_[i].source.kind == BrowserSource::Kind::Place) {
-        Library& lib = panel_.context().library();
-        const uint32_t p = items_[i].source.index;
-        const library::Index* ix = panel_.index();
-        const auto& places = ix ? ix->places : lib.places();
-        if (p < places.size() && places[p].kind == library::PlaceKind::Folder) {
-          const std::string root = places[p].root;
-          (void)ui::openContextMenu(*this, e.pos, {MenuItem::item("Remove from Places", [&lib, root] { (void)lib.removePlace(root); })});
-        }
-      }
+  ViewContext& ctx = panel_.context();
+  // "Add Folder…" (the Places header's and every place's context menu): the folder picker, then Library::addPlace.
+  const auto addFolder = [&ctx] {
+    return MenuItem::item("Add Folder\xE2\x80\xA6", [&ctx] {
+      if (FileDialogs* d = ctx.fileDialogs())
+        d->chooseFolder([&ctx](std::string folder) {
+          if (!folder.empty() && !ctx.library().addPlace(folder)) ctx.setStatus("That folder is already one of the Places.");
+        });
+    });
+  };
+  for (size_t i = 0; i < items_.size(); ++i) {
+    if (!itemRect(i).contains(e.pos)) continue;
+    if (items_[i].header) {
+      if (e.button == PointerButton::Right && items_[i].label == "PLACES") (void)ui::openContextMenu(*this, e.pos, {addFolder()});
       return true;
     }
+    panel_.setSource(items_[i].source);
+    if (e.button == PointerButton::Right && items_[i].source.kind == BrowserSource::Kind::Place) {
+      Library& lib = ctx.library();
+      const uint32_t p = items_[i].source.index;
+      const library::Index* ix = panel_.index();
+      const auto& places = ix ? ix->places : lib.places();
+      std::vector<MenuItem> menu{addFolder()};
+      if (p < places.size() && places[p].kind == library::PlaceKind::Folder) {
+        const std::string root = places[p].root;
+        menu.push_back(MenuItem::item("Remove from Places", [&lib, root] { (void)lib.removePlace(root); }));
+      }
+      (void)ui::openContextMenu(*this, e.pos, std::move(menu));
+    }
+    return true;
+  }
   return true;
 }
 

@@ -62,6 +62,10 @@ public:
   // In sidebar order: the User Library (if set), the project (if titled), then the added folders.
   const std::vector<library::PlaceSpec>& places() const noexcept { return places_; }
   void setUserLibrary(std::string rootUtf8);  // the app: Documents\pqdaw\User Library ("" = none)
+  // Preferences → Library: moves the User Library place to another folder (the indexer re-indexes it; later saves go
+  // there) and calls the user library listener (the app saves the choice). False when it is already there.
+  bool changeUserLibrary(std::string_view rootUtf8);
+  void setUserLibraryListener(std::function<void(const std::string&)> fn) { userLibraryListener_ = std::move(fn); }
   // The added folders, as the app loaded them (no listener call).
   void setFolders(std::vector<std::string> rootsUtf8);
   const std::vector<std::string>& folders() const noexcept { return folders_; }
@@ -172,6 +176,7 @@ private:
   std::vector<std::string> folders_;
   std::vector<library::PlaceSpec> places_;
   std::function<void(const std::vector<std::string>&)> foldersListener_;
+  std::function<void(const std::string&)> userLibraryListener_;
   library::Indexer* indexer_ = nullptr;
   std::shared_ptr<const library::Index> fixed_;
   uint64_t generation_ = 0;

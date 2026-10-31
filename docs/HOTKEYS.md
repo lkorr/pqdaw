@@ -38,7 +38,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `track.newAudio` | `Ctrl+T` | global | Commands for Tracks | implemented (T5.3; after the last selected track, empty chain; also in the track context menu and Create menu) |
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
 | `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the first main tuning; pressed again: closes it, keeping the change) |
-| `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window, Audio tab; pressed again: closes it) |
+| `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window: Audio tab, and the Library tab (T5.x-library-prefs); pressed again: closes it) |
 | `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | M8 (Q15) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
 | `mapping.toggleKeyMap` | `Ctrl+K` | global | Key/MIDI Map Commands | M8 |
@@ -237,6 +237,7 @@ T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — 
 | Arrangement lanes | drop files (Explorer) or browser items | onto an audio track: the first file there at the snapped tick, one new audio track per further file; onto a MIDI / group track: new audio tracks after it; below the tracks: new tracks at the end; one undo step |
 | Arrangement lanes | hold `Ctrl` while dropping | every file on one track, one after another |
 | Arrangement / browser | drop a folder | adds it to the browser's Places |
+| Browser sidebar | right-click the PLACES header or a place → Add Folder… | the folder picker; the folder becomes a place (an added folder's menu also has Remove from Places). Preferences (`Ctrl+,`) → Library lists the same folders (Add Folder… / Remove) and moves the User Library (Browse…) |
 | Browser (focus inside) | `Up` / `Down` | select the previous / next item (a sample previews while Preview is on) |
 | Browser | `Right` / `Left` | unfold a folder or enter it / fold it or go to its folder |
 | Browser | `Enter`, double-click | load: a sample becomes a clip at the start marker on the selected audio track (else a new one); a folder folds. T5.11: a device (Instruments / Audio Effects), preset or user device goes at the end of the selected track's chain (a new device with its default preset); a tuning becomes a new main tuning; a clip lands at the start marker on the selected track (or a new track of its kind); in hot-swap mode Enter loads in place and leaves the mode |

@@ -9,11 +9,13 @@
 #include <memory>
 #include <ostream>
 #include <string>
+#include <vector>
 
 #include "../ui/golden_check.h"
 #include "pq/ui/image.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
+#include "pq/views/browser/library.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/shell/shell.h"
@@ -212,8 +214,51 @@ void checkGolden(const char* scene) {
   MESSAGE(std::string(scene) << ": " << pq::ui::test::describe(d));
 }
 
+// The folder picker answers with `next` at once.
+struct PickFolder final : FileDialogs {
+  std::string next;
+  void chooseProjectToOpen(PathCallback done) override { done(std::string()); }
+  void chooseProjectToSave(std::string_view, PathCallback done) override { done(std::string()); }
+  SaveChoice askSaveChanges(std::string_view) override { return SaveChoice::Cancel; }
+  void chooseFolder(PathCallback done) override { done(next); }
+};
+
 }  // namespace
+
+TEST_CASE("prefs: the Library tab moves the User Library and adds / removes Places") {
+  Prefs p;
+  PickFolder dialogs;
+  p.ctx.setFileDialogs(&dialogs);
+  Library& lib = p.ctx.library();
+  lib.setUserLibrary("C:\\Old Library");
+  std::string saved;
+  lib.setUserLibraryListener([&](const std::string& root) { saved = root; });
+  PreferencesWindow& w = p.open();
+  w.showTab(PreferencesWindow::Tab::Library);
+  CHECK(w.tab() == PreferencesWindow::Tab::Library);
+  CHECK(w.userLibraryText() == "C:\\Old Library");
+  dialogs.next = "D:/Music/User Library/";
+  w.browseUserLibrary()->onClick();
+  CHECK(lib.userLibrary() == "D:\\Music\\User Library");
+  CHECK(saved == "D:\\Music\\User Library");
+  CHECK(lib.places().front().root == "D:\\Music\\User Library");
+  CHECK(w.userLibraryText() == "D:\\Music\\User Library");
+  dialogs.next = "E:\\Samples";
+  w.addFolder()->onClick();
+  CHECK(lib.folders() == std::vector<std::string>{"E:\\Samples"});
+  CHECK_FALSE(w.removeFolder()->enabled());
+  w.selectFolder(0);
+  CHECK(w.removeFolder()->enabled());
+  w.removeFolder()->onClick();
+  CHECK(lib.folders().empty());
+  CHECK(w.selectedFolder() == -1);
+  p.ctx.setFileDialogs(nullptr);
+}
 
 TEST_CASE("render: audio-prefs (ASIO, Focusrite-like device list) matches the golden image") { checkGolden("audio-prefs"); }
 
 TEST_CASE("render: audio-prefs-wasapi (WASAPI exclusive, idle stream) matches the golden image") { checkGolden("audio-prefs-wasapi"); }
+
+TEST_CASE("render: library-prefs (the Library tab: location, three Places, one selected) matches the golden image") {
+  checkGolden("library-prefs");
+}

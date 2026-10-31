@@ -55,6 +55,14 @@ void Library::setUserLibrary(std::string root) {
   rebuildPlaces();
 }
 
+bool Library::changeUserLibrary(std::string_view root) {
+  const std::string n = nativePath(root);
+  if (n.empty() || placeKey(n) == placeKey(userLibrary_)) return false;
+  setUserLibrary(n);
+  if (userLibraryListener_) userLibraryListener_(userLibrary_);
+  return true;
+}
+
 void Library::setFolders(std::vector<std::string> roots) {
   folders_.clear();
   for (std::string& r : roots) {

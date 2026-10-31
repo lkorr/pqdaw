@@ -205,3 +205,29 @@ TEST_CASE("user settings: Cue Out and the browser's folders round-trip; the libr
   _putenv_s("PQ_SETTINGS_DIR", "");
   fs::remove_all(dir, ec);
 }
+
+TEST_CASE("user settings: the User Library location round-trips next to the folders; $PQ_USER_LIBRARY wins over it") {
+  const fs::path dir = fs::temp_directory_path() / "pq_settings_userlib";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  const std::string path = (dir / "settings.json").string();
+  CHECK(loadUserLibrarySetting(path).empty());
+  const std::string chosen = (dir / "Chosen Library").string(), env = (dir / "Env Library").string();
+  REQUIRE(saveLibraryFolders(path, {"C:\\Samples"}).ok());
+  REQUIRE(saveUserLibrarySetting(path, chosen).ok());
+  REQUIRE(saveLibraryFolders(path, {"C:\\Samples", "D:\\Kits"}).ok());  // keeps the location
+  CHECK(loadUserLibrarySetting(path) == chosen);
+  CHECK(loadLibraryFolders(path) == std::vector<std::string>{"C:\\Samples", "D:\\Kits"});
+  // Precedence: $PQ_USER_LIBRARY, then the setting (made when missing), then the default (none under $PQ_SETTINGS_DIR).
+  _putenv_s("PQ_SETTINGS_DIR", dir.string().c_str());
+  CHECK(userLibraryDir() == chosen);
+  CHECK(fs::is_directory(chosen));
+  _putenv_s("PQ_USER_LIBRARY", env.c_str());
+  CHECK(userLibraryDir() == env);
+  _putenv_s("PQ_USER_LIBRARY", "");
+  REQUIRE(saveUserLibrarySetting(path, "").ok());
+  CHECK(userLibraryDir().empty());
+  _putenv_s("PQ_SETTINGS_DIR", "");
+  fs::remove_all(dir, ec);
+}

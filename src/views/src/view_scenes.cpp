@@ -450,11 +450,24 @@ Status openAudioPrefs(Shell& shell, bool wasapi) {
     port.load = 0.0;
   }
   shell.context().setAudioPrefs(&port);
-  if (!openPreferences(shell.overlay(), port)) return Error{ErrorCode::NotFound, "audio-prefs: no overlay layer", {}};
+  if (!openPreferences(shell.overlay(), port, &shell.context())) return Error{ErrorCode::NotFound, "audio-prefs: no overlay layer", {}};
   return Ok{};
 }
 Status setupAudioPrefs(Shell& shell) { return openAudioPrefs(shell, false); }
 Status setupAudioPrefsWasapi(Shell& shell) { return openAudioPrefs(shell, true); }
+
+// T5.x-library-prefs: the Library tab (a moved User Library, three added folders, the second selected).
+Status setupLibraryPrefs(Shell& shell) {
+  Library& lib = shell.context().library();
+  lib.setUserLibrary("D:\\Music\\pqdaw User Library");
+  lib.setFolders({"C:\\Samples\\Drums", "D:\\Splice\\sounds", "E:\\Field Recordings\\2026"});
+  if (Status s = openAudioPrefs(shell, false); !s) return s;
+  PreferencesWindow* w = openPreferencesWindow(shell.overlay());
+  if (!w) return Error{ErrorCode::NotFound, "library-prefs: no window", {}};
+  w->showTab(PreferencesWindow::Tab::Library);
+  w->selectFolder(1);
+  return Ok{};
+}
 
 // ---- T3.19: menu bar, Tunings panel, ratio notes ------------------------------------------------------------------
 
@@ -1297,6 +1310,7 @@ constexpr SceneEntry kScenes[] = {
     {"automation-mode-over-clips", 1280, 800, setupAutomationMode},
     {"audio-prefs", 1280, 800, setupAudioPrefs},
     {"audio-prefs-wasapi", 1280, 800, setupAudioPrefsWasapi},
+    {"library-prefs", 1280, 800, setupLibraryPrefs},
     {"menu-bar", 1280, 800, setupMenuBar},
     {"tunings-panel", 1280, 800, setupTuningsPanel},
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},

@@ -284,6 +284,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       if (Status s = saveLibraryFolders(userSettingsPath(), folders); !s)
         std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
     });
+    lib.setUserLibraryListener([](const std::string& root) {  // Preferences → Library
+      if (Status s = saveUserLibrarySetting(userSettingsPath(), root); !s)
+        std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
+    });
     library::IndexerConfig ic;
     if (const std::string data = libraryDataDir(); !data.empty()) {
       ic.dataDir = std::filesystem::path(std::u8string(data.begin(), data.end()));

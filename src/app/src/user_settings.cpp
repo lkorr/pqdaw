@@ -102,8 +102,9 @@ Result<LoadedAudioSettings> loadAudioSettings(const std::string& path) {
 
 namespace {
 
-// Replaces one top-level section of the settings file (the others are kept), atomically.
-Status saveSection(const std::string& path, const char* key, json section) {
+// Replaces one top-level section of the settings file (the others are kept), atomically. With `field`, replaces only
+// that field of the section (its other fields are kept).
+Status saveSection(const std::string& path, const char* key, json section, const char* field = nullptr) {
   const fs::path p = utf8Path(path);
   json root = json::object();
   {
@@ -116,7 +117,12 @@ Status saveSection(const std::string& path, const char* key, json section) {
     }
   }
   root["schemaVersion"] = 1;
-  root[key] = std::move(section);
+  if (field) {
+    if (!root[key].is_object()) root[key] = json::object();
+    root[key][field] = std::move(section);
+  } else {
+    root[key] = std::move(section);
+  }
   std::error_code ec;
   fs::create_directories(p.parent_path(), ec);
   const fs::path tmp = fs::path(p).concat(L".tmp");
@@ -169,27 +175,42 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   return saveSection(path, "views", std::move(v));
 }
 
-std::vector<std::string> loadLibraryFolders(const std::string& path) {
-  std::vector<std::string> out;
+namespace {
+// The "library" section's `field` (null when the file, the section or the field is missing).
+json libraryField(const std::string& path, const char* field) {
   std::ifstream in(utf8Path(path), std::ios::binary);
-  if (!in) return out;
+  if (!in) return nullptr;
   std::ostringstream ss;
   ss << in.rdbuf();
   const json root = json::parse(ss.str(), nullptr, false);
-  if (root.is_discarded() || !root.is_object()) return out;
+  if (root.is_discarded() || !root.is_object()) return nullptr;
   const auto it = root.find("library");
-  if (it == root.end() || !it->is_object()) return out;
-  const auto f = it->find("folders");
-  if (f == it->end() || !f->is_array()) return out;
-  for (const json& v : *f)
+  if (it == root.end() || !it->is_object()) return nullptr;
+  const auto f = it->find(field);
+  return f == it->end() ? json(nullptr) : *f;
+}
+}  // namespace
+
+std::vector<std::string> loadLibraryFolders(const std::string& path) {
+  std::vector<std::string> out;
+  const json f = libraryField(path, "folders");
+  if (!f.is_array()) return out;
+  for (const json& v : f)
     if (v.is_string()) out.push_back(v.get<std::string>());
   return out;
 }
 
 Status saveLibraryFolders(const std::string& path, const std::vector<std::string>& folders) {
-  json v = json::object();
-  v["folders"] = folders;
-  return saveSection(path, "library", std::move(v));
+  return saveSection(path, "library", json(folders), "folders");
+}
+
+std::string loadUserLibrarySetting(const std::string& path) {
+  const json f = libraryField(path, "userLibrary");
+  return f.is_string() ? f.get<std::string>() : std::string();
+}
+
+Status saveUserLibrarySetting(const std::string& path, const std::string& rootUtf8) {
+  return saveSection(path, "library", json(rootUtf8), "userLibrary");
 }
 
 namespace {
@@ -216,6 +237,8 @@ std::string libraryDataDir() {
 
 std::string userLibraryDir() {
   if (std::string d = envUtf8(L"PQ_USER_LIBRARY"); !d.empty()) return ensureDir(utf8Path(d));
+  if (const std::string set = loadUserLibrarySetting(userSettingsPath()); !set.empty())
+    if (std::string d = ensureDir(utf8Path(set)); !d.empty()) return d;  // unreachable (a drive gone): the default
   if (!envUtf8(L"PQ_SETTINGS_DIR").empty()) return {};
   PWSTR docs = nullptr;
   if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) || !docs) return {};

@@ -11,7 +11,8 @@
 //       "inputDevice": "",                      "inputName": "",
 //       "sampleRate": 48000, "bufferFrames": 64, "inputChannels": 2, "outputChannels": 2
 //     },
-//     "views": { "circuitShowInactive": false }          (T4.15: views::ViewPrefs)
+//     "views": { "circuitShowInactive": false },         (T4.15: views::ViewPrefs)
+//     "library": { "folders": ["C:\\Samples"], "userLibrary": "D:\\pqdaw User Library" }   (T5.10, T5.x-library-prefs)
 //   }
 //
 // Saving keeps every other top-level key (later settings sections), writes a temporary file, flushes it and
@@ -51,16 +52,21 @@ views::ViewPrefs loadViewPrefs(const std::string& path);
 Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs);
 
 // T5.10: the "library" section: the folders the user added to the browser's Places ({"folders": ["C:\\…", …]}).
-// Lenient like the others (a missing file or section: none).
+// Lenient like the others (a missing file or section: none). Each save keeps the section's other fields.
 std::vector<std::string> loadLibraryFolders(const std::string& path);
 Status saveLibraryFolders(const std::string& path, const std::vector<std::string>& folders);
+// T5.x-library-prefs: the User Library location chosen in Preferences → Library ({"userLibrary": "D:\\…"} in the same
+// section); "" = none chosen.
+std::string loadUserLibrarySetting(const std::string& path);
+Status saveUserLibrarySetting(const std::string& path, const std::string& rootUtf8);
 
 // T5.10: where the browser keeps its index and tags.json: $PQ_LIBRARY_DIR, else <settings dir>/library when
 // $PQ_SETTINGS_DIR is set (test runs of the exe never touch the user's %LOCALAPPDATA%), else
 // %LOCALAPPDATA%\pqdaw\library. Empty when none can be made.
 std::string libraryDataDir();
-// The User Library (Documents\pqdaw\User Library, QUESTIONS Q4 / plan answer 4; created when missing). Empty under
-// $PQ_SETTINGS_DIR (test runs) unless $PQ_USER_LIBRARY names one.
+// The User Library (created when missing): $PQ_USER_LIBRARY, else the location saved in the settings file
+// (loadUserLibrarySetting; skipped when it cannot be created), else Documents\pqdaw\User Library (QUESTIONS Q4 / plan
+// answer 4). Under $PQ_SETTINGS_DIR (test runs) there is no default: empty unless one of the first two names one.
 std::string userLibraryDir();
 
 }  // namespace pq::app
