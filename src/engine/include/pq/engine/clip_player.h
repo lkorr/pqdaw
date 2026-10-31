@@ -170,10 +170,12 @@ private:
     Reader reader;
   };
   // One contiguous piece of source positions for a run of output frames.
+  // Trivial (no member initialisers): a run's Piece array lives on the audio thread's stack and must not be zeroed
+  // per call (kMaxPieces of them; pieces() writes every field it hands out).
   struct Piece {
-    uint32_t at = 0, frames = 0;  // output frames [at, at + frames) of the run
-    int64_t pos = 0, step = 0;    // 32.32 source position of the first frame, per frame
-    bool wrap = false;            // RePitch: the piece starts at a loop wrap
+    uint32_t at, frames;  // output frames [at, at + frames) of the run
+    int64_t pos, step;    // 32.32 source position of the first frame, per frame
+    bool wrap;            // RePitch: the piece starts at a loop wrap
   };
 
   bool hasVoice(uint32_t slot, const AudioSequenceImage::Clip* c) const noexcept;
