@@ -68,9 +68,11 @@
 // macro (and so everything it drives).
 //
 // ---- Meta modules (TMM.3; model.h "Meta modules", pq/meta/type.h, pq/document/meta.h) --------------------------------
-// A chain meta device (Device::patch "meta:<type>") calls its own expansion, `meta_<type>__d<id>__<key>` (Form
-// ChainInstrument for an instrument — no audio in, per-voice out, done = !voice.gate — or ChainEffect), built from its
-// own settings (Device::settings) and the static-ness of its params (an automation lane, a modulation wire or a macro
+// A chain meta device (Device::patch "meta:<type>") calls its own expansion, `meta_<type>__d<id>__<key>`, its form from
+// what reaches its chain input (TMM.10-fix1, pq/document/meta.h chainStages; never from its type or kind: ChainNotes at
+// the note source — the input reads the note's signal of its meaning, per-voice out, done —, ChainVoice after a voiced
+// stage, ChainAudio after audio or unplugged), built from its own settings (Device::settings), its chain input
+// (Device::chainInput) and the static-ness of its params (an automation lane, a modulation wire or a macro
 // mapping on one makes it modulated); its params are the device's own (d<id>__<name>, dev<id>:<name>), so automation,
 // macros and wires work as for any device. A device whose circuit (stock or user text) has NAMED meta calls
 // `name = meta_<type>(…)` calls a specialised copy of its root, `<root>__m<id>_<hash>`, in which every such call (and
@@ -83,15 +85,18 @@
 // shared, its unit not recompiled); data never enters an expansion (MetaData edits never lower). An unnamed meta call
 // plays the prelude's default state (pq/meta/registry.h). Resource slots (frame tables, voice taps) come from
 // LowerOptions::metaSlotOf and are listed with the instance's data in LoweredProject::metaResources.
-// TMM.10 (docs/plans/MM.md "Voice continuity"): a MIDI track whose first active device is a chain meta instrument
-// plays a META VOICE RUN (pq/document/meta.h metaVoiceRun): the active chain meta devices right after it (audio-effect
-// kind, Form::ChainVoice: their voice input is an `in` fed by the previous device's per-voice output) stay per voice,
-// so "Phase accumulator → Wavetable" is a polyphonic oscillator. At the run's end the voices get a linear release after
-// note-off (kMetaReleaseSeconds, 5 ms: env = gate ? 1 : max(z1(env) − 1/(0.005·sr), 0)), the track's `done` is
-// !gate && env ≤ 0, and they are summed; the devices after the run are audio effects as usual. TMM.11: when the run's
-// last device is of a type that decides its voices' end (meta::Type::voiceEnd: the Envelope, a VCA on the run's
-// signal), its `done` output is the track's `done` and there is no declick ramp (the Envelope's release is the end). A meta audio effect of
-// a type without an effect form (the Wavetable until Shape mode) outside a run is bypassed with a device error.
+// TMM.10 / TMM.10-fix1 (docs/plans/MM.md "Voice continuity"; SPEC §15 2026-11-01 "notes are a signal"): a MIDI track
+// whose first active device is a chain meta device taking the note source plays a VOICE RUN: it and the active chain
+// meta devices right after it that the per-voice signal reaches (Form::ChainVoice: their chain input is an `in` fed by
+// the previous stage's per-voice output) stay per voice, so "Phase accumulator → Wavetable" is a polyphonic
+// oscillator. At the run's end the voices get a linear release after note-off (kMetaReleaseSeconds, 5 ms: env = gate ?
+// 1 : max(z1(env) − 1/(0.005·sr), 0)), the track's `done` is !gate && env ≤ 0, and they are summed; the devices after
+// the run receive audio (a meta device there: ChainAudio). TMM.11: when the run's last stage is of a type that decides
+// its voices' end (meta::Type::voiceEnd: the Envelope, a VCA on the run's signal; fix1: also as the only stage), its
+// `done` output is the track's `done` and there is no declick ramp (the Envelope's release is the end). A stock
+// instrument's voices are summed at its output, so a meta device after one receives audio (the pre-fix1 behaviour;
+// QUESTIONS Q?-TMM.10-fix1-a item 2). Inside a rack chain only the first stage takes the note source; the later ones
+// receive audio (item 5). Every type plays everywhere (no device errors for a type "in the wrong place").
 //
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,

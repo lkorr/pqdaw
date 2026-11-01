@@ -179,6 +179,9 @@ struct SetDeviceSetting { DeviceId device; std::string setting; std::optional<do
 struct SetDevicePatch { DeviceId device; UserPatchPtr source; };
 // T4.17: Meta. The device's own name ("" = the patch's default name, Device::name).
 struct RenameDevice { DeviceId device; std::string name; };
+// TMM.10-fix1: Structural. A chain meta device's chain input (Device::chainInput: "" the type's own, "-" unplugged, or
+// an input of its type by name): which input the previous stage's signal (or the note source) is wired into.
+struct SetDeviceChainInput { DeviceId device; std::string input; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
 // Structural. Adds `wire` (its id pre-allocated). Both devices must exist; the amount must be in [−1, 1]; a wire with
@@ -272,7 +275,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    AddWire, RemoveWire, SetWireAmount, SetWireReducer,
+    SetDeviceChainInput, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

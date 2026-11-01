@@ -119,7 +119,7 @@ TEST_CASE("meta link: a nested Phase accumulator's freq drag compiles nothing an
   d.run(50);
   // Fork the synth with a Phase accumulator as its oscillator phase (one structural compile of its unit).
   const std::string text = replaced(link->devices().stockText("BasicSynth"), "ph  = phasor(voice.hz)",
-                                    "acc1 = meta_phase_acc()\n  ph  = acc1");
+                                    "acc1 = meta_phase_acc(voice.hz)\n  ph  = acc1");  // TMM.10-fix1: the note wired
   app::LinkStats s0 = link->stats();
   k.edit(ops::addMetaCall(*k.store.current(), k.inst, text, "acc1", "phase_acc"));
   link->flush();
@@ -209,13 +209,54 @@ TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaDa
   CHECK(link->stats().paramWrites == s0.paramWrites);
 }
 
+TEST_CASE("meta link (TMM.10-fix1): an unplugged Phase accumulator plays its bar's phase once, whatever notes play") {
+  Keys k;  // a held three-note chord
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
+  const DeviceId acc = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
+  k.edit(ops::setMetaParam(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
+  k.edit(ops::setDeviceChainInput(*k.store.current(), acc, std::string(kChainUnplugged)));
+  auto link = makeLink(k.store.current());
+  CHECK(link->lastError().empty());
+  Driver d{*link};
+  link->play(0);
+  d.run(10);
+  const auto tap = link->metaVoiceTap(acc, "", 0);
+  REQUIRE(tap != nullptr);
+  VoiceTapReader reader(tap);
+  const size_t mark = d.out.size();
+  for (int i = 0; i < 10; ++i) {
+    d.run(75);  // 750 blocks of 64 = 1 s
+    reader.poll(1.0);
+  }
+  // No voices anywhere: the notes are not wired into it.
+  engine::ProjectProgram& program = *link->engine().program();
+  for (uint32_t u = 0; u < program.numUnits(); ++u) CHECK_FALSE(program.layout().units[u].voices);
+  // One ramp at the bar's 100 Hz (each wrap a drop), through the mixer's constant gain.
+  uint32_t wraps = 0;
+  float peak = 0.0f;
+  for (size_t i = mark + 1; i < d.out.size(); ++i) {
+    wraps += d.out[i] < d.out[i - 1] - 0.3f ? 1u : 0u;
+    peak = std::max(peak, d.out[i]);
+  }
+  CHECK(wraps >= 99);
+  CHECK(wraps <= 101);
+  CHECK(peak > 0.6f);   // a single ramp 0 … 1 at −3 dB (three voices would sum past 1)
+  CHECK(peak < 0.75f);
+  // The face shows one dot (a global module taps one voice).
+  uint32_t active = 0;
+  for (uint32_t s = 0; s < reader.voiceSlots(); ++s) active += reader.voice(s).active ? 1u : 0u;
+  CHECK(active == 1);
+}
+
 // ---- TMM.2: the link's meta-module resource slots (frame tables, voice taps) -----------------------------------------
 
 namespace {
 
 // A test-only meta type that reads both resource kinds: out = wavetable_pos(phasor(hz), 0, slot 0), and a voice_tap of
 // the phase into slot 1.
-constexpr std::array<meta::InputSpec, 1> kWtInputs = {{{"hz", "Hz", meta::InputDefault::VoiceHz}}};
+// TMM.10-fix1: no default reads the note; the call wires voice.hz in.
+constexpr std::array<meta::InputSpec, 1> kWtInputs = {
+    {{"hz", "Hz", meta::InputDefault::Zero, graph::Kind::Real, meta::Reads::Frequency}}};
 constexpr std::array<meta::OutputSpec, 1> kWtOutputs = {{{"out", graph::kWidthMono}}};
 
 const meta::Type& registerWtType() {
@@ -265,7 +306,8 @@ TEST_CASE("meta link: frame-table and voice-tap slots — stable ids, taps per v
   link->play(0);
   d.run(20);
   const std::string base = link->devices().stockText("BasicSynth");
-  const std::string text = replaced(base, "  out = osc * env * vel * level", "  wt1 = meta_tmm2_wt()\n  out = wt1 * env * vel * level");
+  const std::string text =
+      replaced(base, "  out = osc * env * vel * level", "  wt1 = meta_tmm2_wt(voice.hz)\n  out = wt1 * env * vel * level");
   k.edit(ops::addMetaCall(*k.store.current(), k.inst, text, "wt1", "tmm2_wt"));
   link->flush();
   CHECK(link->lastError().empty());
@@ -392,7 +434,7 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Auto Filter plays an 8-v
   const DeviceId wt = edit(ops::addMetaDevice(*store.current(), ids, track, "wavetable")).devices.at(0);
   edit(ops::addDevice(*store.current(), ids, track, "auto_filter", DeviceKind::AudioEffect));
   CHECK(findDevice(*store.current(), wt).device->kind == DeviceKind::AudioEffect);
-  REQUIRE(metaVoiceRun(*findTrackPtr(*store.current(), track)).size() == 1);
+  REQUIRE(chainStages(findTrackPtr(*store.current(), track)->devices, true).at(1).in == ChainSignal::Voices);
   auto link = makeLink(store.current());
   CHECK(link->lastError().empty());
   Driver d{*link};
@@ -448,7 +490,12 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelop
   const DeviceId env = e->devices.at(0);
   k.edit(std::move(e));
   CHECK(findDevice(*k.store.current(), env).device->kind == DeviceKind::AudioEffect);
-  REQUIRE(metaVoiceRun(*findTrackPtr(*k.store.current(), k.track)).size() == 2);
+  {
+    const std::vector<ChainStage> st = chainStages(findTrackPtr(*k.store.current(), k.track)->devices, true);
+    REQUIRE(st.size() == 3);
+    CHECK(st[1].in == ChainSignal::Voices);
+    CHECK(st[2].in == ChainSignal::Voices);
+  }
   // A slow attack (100 ms), sustain 0.5, a 200 ms release (−80 dB at 200 ms).
   for (auto [name, v] : {std::pair{"attack", 0.1}, std::pair{"decay", 0.05}, std::pair{"sustain", 0.5},
                          std::pair{"release", 0.2}})

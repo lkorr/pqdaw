@@ -157,50 +157,54 @@ MetaInstance defaultMetaInstance(const meta::Type& t) {
   return m;
 }
 
-namespace {
-
-// A chain meta device that can continue a voice run (audio-effect kind, a type with a voice input).
-bool voiceContinuer(const Device& d) {
-  if (!isMetaDevice(d) || d.kind != DeviceKind::AudioEffect) return false;
-  const meta::Type* t = meta::findType(metaDeviceType(d));
-  return t != nullptr && t->chainVoiceInput >= 0;
+int32_t metaChainInput(const Device& d, const meta::Type& t) {
+  if (d.chainInput.empty())
+    return t.chainInput >= 0 && static_cast<size_t>(t.chainInput) < t.inputs.size() ? t.chainInput : -1;
+  if (d.chainInput == kChainUnplugged) return -1;
+  return t.inputIndex(d.chainInput);
 }
 
-// The index of `t`'s run instrument (the first active device, a chain meta instrument of a known type), or −1.
-int32_t runInstrument(const Track& t) {
-  if (t.kind != TrackKind::Midi) return -1;
-  for (size_t i = 0; i < t.devices.size(); ++i) {
-    const Device& d = *t.devices[i];
+std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices) {
+  std::vector<ChainStage> out;
+  out.reserve(list.size());
+  ChainSignal s = notes ? ChainSignal::Notes : ChainSignal::Audio;
+  for (const DevicePtr& dp : list) {
+    const Device& d = *dp;
     if (!d.active) continue;
-    if (!isMetaDevice(d) || d.kind != DeviceKind::Instrument) return -1;
-    const meta::Type* type = meta::findType(metaDeviceType(d));
-    return type != nullptr && type->chainInstrument ? static_cast<int32_t>(i) : -1;
-  }
-  return -1;
-}
-
-}  // namespace
-
-std::vector<const Device*> metaVoiceRun(const Track& t) {
-  std::vector<const Device*> out;
-  const int32_t first = runInstrument(t);
-  if (first < 0) return out;
-  for (size_t i = static_cast<size_t>(first) + 1; i < t.devices.size(); ++i) {
-    const Device& d = *t.devices[i];
-    if (!d.active) continue;
-    if (!voiceContinuer(d)) break;
-    out.push_back(&d);
+    ChainStage st;
+    st.device = &d;
+    const meta::Type* t = isMetaDevice(d) ? meta::findType(metaDeviceType(d)) : nullptr;
+    if (t != nullptr) {
+      st.input = metaChainInput(d, *t);
+      st.in = st.input < 0 ? ChainSignal::None : s;
+      st.out = st.in == ChainSignal::Notes || st.in == ChainSignal::Voices ? ChainSignal::Voices : ChainSignal::Audio;
+      if (!voices && st.out == ChainSignal::Voices && st.in == ChainSignal::Voices) st.in = st.out = ChainSignal::Audio;
+    } else {
+      st.in = s;
+      st.out = ChainSignal::Audio;  // a stock instrument's voices are summed at its output; an effect's input is global
+    }
+    s = st.out;
+    out.push_back(st);
   }
   return out;
 }
 
-bool continuesMetaVoiceRun(const Track& t, uint32_t index) {
-  const int32_t first = runInstrument(t);
-  const size_t at = std::min<size_t>(index, t.devices.size());
-  if (first < 0 || static_cast<size_t>(first) >= at) return false;
-  for (size_t i = static_cast<size_t>(first) + 1; i < at; ++i)
-    if (t.devices[i]->active && !voiceContinuer(*t.devices[i])) return false;
-  return true;
+meta::Form chainForm(const ChainStage& s) {
+  if (s.device == nullptr || !isMetaDevice(*s.device)) return meta::Form::Nested;
+  switch (s.in) {
+    case ChainSignal::Notes: return meta::Form::ChainNotes;
+    case ChainSignal::Voices: return meta::Form::ChainVoice;
+    case ChainSignal::None:
+    case ChainSignal::Audio: break;
+  }
+  return meta::Form::ChainAudio;
+}
+
+ChainSignal chainSignalAt(const std::vector<DevicePtr>& list, bool notes, uint32_t index) {
+  const size_t at = std::min<size_t>(index, list.size());
+  const std::vector<DevicePtr> before(list.begin(), list.begin() + static_cast<std::ptrdiff_t>(at));
+  const std::vector<ChainStage> st = chainStages(before, notes);
+  return st.empty() ? (notes ? ChainSignal::Notes : ChainSignal::Audio) : st.back().out;
 }
 
 std::vector<MetaRename> metaRenames(const graph::PatchFile& before, const graph::PatchFile& after, std::string_view root) {

@@ -798,6 +798,13 @@ std::vector<Case> cases() {
                  CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
                  CHECK(metaAt(f, chain.fx, "ts")->data->field("values")->floats.size() == 2);
                }});
+  c.push_back({"SetDeviceChainInput (TMM.10-fix1: unplugged)", [withMeta](Fixture& f) -> Command {
+                 withMeta(f);
+                 return SetDeviceChainInput{mt.dev, "-"};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{mt.dev});
+                 CHECK(findDevice(f.doc(), mt.dev).device->chainInput == "-");
+               }});
   // ---- compound
   c.push_back({"Batch (param + sequence)", [](Fixture& f) -> Command {
                  return Batch{"Mixed", {SetTrackVolume{f.lead, -1.0f},

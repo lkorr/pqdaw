@@ -350,11 +350,13 @@ Status checkDeviceMeta(const Device& d) {
   if (isMetaDevice(d)) {
     const meta::Type* t = meta::findType(metaDeviceType(d));
     if (t == nullptr) return unsupported("unknown meta module type '" + std::string(metaDeviceType(d)) + "'");
-    if (d.kind == DeviceKind::Instrument && !t->chainInstrument)
-      return invalid("a " + std::string(t->name) + " cannot be an instrument");
-    if (d.kind == DeviceKind::AudioEffect && t->chainEffectInput < 0 && t->chainVoiceInput < 0)
-      return invalid("a " + std::string(t->name) + " cannot be an audio effect");
+    // TMM.10-fix1: any type in either kind (its kind is its position: model.h "Meta modules"); the chain input is
+    // the type's, none, or one of its inputs.
+    if (!d.chainInput.empty() && d.chainInput != kChainUnplugged && t->inputIndex(d.chainInput) < 0)
+      return invalid("a " + std::string(t->name) + " has no input '" + d.chainInput + "' to wire the chain into");
     if (d.source) return invalid("a meta device has no patch text");
+  } else if (!d.chainInput.empty()) {
+    return invalid("only a chain meta device chooses its chain input");
   }
   if (!d.meta) return ok();
   if (d.meta->empty()) return invalid("an empty meta map is stored as none");

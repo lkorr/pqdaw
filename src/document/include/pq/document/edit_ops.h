@@ -374,14 +374,18 @@ EditResult renameDevice(const Project& p, DeviceId device, std::string name);
 
 // ---- Meta modules (TMM.3; model.h "Meta modules", commands.h) ------------------------------------------------------
 // Each builder is one Batch = one undo step (a drag: several inside one store gesture, which commits as one).
-// A chain meta device of type `type` ("phase_acc") into `track` (or rack chain `chain`) at `index`: an instrument at the
-// instrument position (replacing the instrument there) when the type may be one and the list may hold one, else an
-// audio effect when the type may be one. Its "" instance holds the type's version and default data.
-// TMM.10: the kind follows metaDeviceKindAt: after the track's meta instrument (and the meta devices that continue its
-// voices) a type that continues voices (meta::Type::chainVoiceInput) is an audio effect of the run (pq/document/meta.h
-// metaVoiceRun); a type that is only an instrument elsewhere replaces the instrument.
+// A chain meta device of type `type` ("phase_acc") into `track` (or rack chain `chain`) at `index`. Its "" instance
+// holds the type's version and default data. TMM.10-fix1 ("a chain is wires"): any type, any position, any track. It
+// lands at `index` with the kind its position says (metaDeviceKindAt; model.h "Meta modules"): first where instruments
+// go it takes the note source — a stock instrument or Instrument Rack there is replaced (it takes no chain signal, so
+// it could not follow), a chain meta device there moves on as an audio effect (AddDevice normalises the kinds) —;
+// anywhere else its chain input takes the previous device's signal. A Wavetable that would receive audio starts in
+// Shape mode.
 Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& type, TrackId track, uint32_t index = kAppend,
                                     ChainId chain = {});
+// TMM.10-fix1: which input of chain meta device `device` its chain feeds ("" the type's own, "-" unplugged, or an
+// input name; SetDeviceChainInput). One Structural step; an unchanged value is an empty edit.
+EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string input);
 EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index = kAppend,
                          ChainId chain = {});
 // A param / setting / data of the instance (device, path; "" = the chain device itself). A nested call without state

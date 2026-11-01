@@ -438,6 +438,10 @@ struct DeviceValue {
 //   data           meta::DataValue (null: none): never part of the expansion; an edit is the MetaData change class
 // A nested call without an entry plays the type's default state. Editing the state of a module inside a STOCK device
 // does not fork the device (only its patch text does).
+// TMM.10-fix1: a chain meta device's KIND says where it sits, not what it is: Instrument exactly when it is the first
+// device of a list where instruments go (its chain input takes the note source), else AudioEffect. Every command that
+// changes a list keeps this (normaliseMetaKinds), and loading a file normalises it; what the device plays follows
+// from the signal reaching it (pq/document/meta.h chainStages), never from the kind.
 inline constexpr std::string_view kMetaDevicePrefix = "meta:";
 struct MetaInstance {
   std::string type;
@@ -487,6 +491,10 @@ struct Device {
   // TMM.3: meta-module state by name path (see "Meta modules" above); null: none. Shared, so a param edit copies the
   // Device but never the map (nor the data in it).
   MetaMapPtr meta;
+  // TMM.10-fix1 ("a chain is wires", pq/document/meta.h chainStages): a chain meta device's choice of the input its
+  // chain feeds — "" the type's own (meta::Type::chainInput), "-" none (unplugged: the module runs once, freely), else
+  // an input of its type by name. Other devices: always "".
+  std::string chainInput;
   bool edited() const noexcept { return source != nullptr; }
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry
   const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
@@ -498,6 +506,10 @@ using DevicePtr = std::shared_ptr<const Device>;
 // TMM.3: a chain-level meta device (patch "meta:<type>") and its type id ("" for any other device).
 bool isMetaDevice(const Device& d) noexcept;
 std::string_view metaDeviceType(const Device& d) noexcept;
+// TMM.10-fix1: gives the chain meta devices of `list` (this level only) the kind their position says ("Meta modules"
+// above; `instrumentsGo`: a MIDI track's own list, an Instrument Rack chain), copying the ones that change; their ids
+// are appended to `changed` when given. False: nothing changed.
+bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed = nullptr);
 
 // ---- Racks (T4.8, SPEC §8.2; QUESTIONS Q129 item 6, Q?-T4.8-a) -------------------------------------------------------
 // An Audio Effect Rack (kind AudioEffect) or an Instrument Rack (kind Instrument) holds parallel CHAINS, each a device

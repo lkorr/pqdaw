@@ -1634,6 +1634,9 @@ std::vector<DeviceId> deviceIdsIn(const Device& d) {
   return out;
 }
 
+// TMM.10-fix1: a list whose first device takes the note source (normaliseMetaKinds).
+bool instrumentsGo(ListKind k) noexcept { return k == ListKind::MidiTrack || k == ListKind::InstrumentRackChain; }
+
 // T4.8: the list a device goes into: a track's own chain, or a rack chain.
 struct ListAt {
   TrackPath path;
@@ -1703,12 +1706,15 @@ Res apply_(const Snapshot& s, const AddDevice& c, ChangeSet& cs) {
   std::vector<DevicePtr> chain = *at->list;
   const size_t index = std::min<size_t>(c.index, chain.size());
   chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(index), c.device);
+  std::vector<DeviceId> rekinded;
+  normaliseMetaKinds(chain, instrumentsGo(at->kind), &rekinded);  // TMM.10-fix1
   PQ_DOC_TRY(checkList(at->kind, chain));
   Res r = editTrack(s, at->path, cs, kChangeStructural, [&](Track& t) {
     *listIn(t, *at) = std::move(chain);
     return ok();
   });
   if (r) forEachDeviceIn(*c.device, [&](const Device& d) { cs.devices.push_back(d.id); });
+  if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
   return r;
 }
 
@@ -1716,14 +1722,21 @@ Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
   Result<DevLoc> loc = locateDevice(*s, c.device);
   if (!loc) return std::move(loc).error();
   const std::vector<DeviceId> gone = deviceIdsIn(*loc->device);  // T4.8: a rack with everything inside it
+  const DeviceLoc src = findDevice(*s, c.device);
+  Result<ListAt> from = locateList(*s, loc->track->id, src.chain != nullptr ? src.chain->id : ChainId{});
+  if (!from) return std::move(from).error();
   std::vector<MappingId> pruned;
+  std::vector<DeviceId> rekinded;
   Res r = editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) {
     (void)takeFromTree(t.devices, c.device);
+    if (std::vector<DevicePtr>* l = listIn(t, *from))  // TMM.10-fix1: the next device may now take the note source
+      normaliseMetaKinds(*l, instrumentsGo(from->kind), &rekinded);
     pruneMappings(t.devices, pruned);  // outer racks' mappings onto what was removed
     return ok();
   });
   if (!r) return r;
   cs.devices.insert(cs.devices.end(), gone.begin(), gone.end());
+  cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
   const WireList& wires = wiresOf(**r);
   const auto touches = [&](const Wire& w) {
     return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to);
@@ -1750,19 +1763,25 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
     const size_t at = std::min<size_t>(c.index, chain.size());
     if (at == src.index) return s;  // where it is
     chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(at), dev);
+    std::vector<DeviceId> rekinded;
+    normaliseMetaKinds(chain, instrumentsGo(to->kind), &rekinded);  // TMM.10-fix1
     PQ_DOC_TRY(checkList(to->kind, chain));
     Res r = editTrack(s, to->path, cs, kChangeStructural, [&](Track& t) {
       *listIn(t, *to) = std::move(chain);
       return ok();
     });
     if (r) cs.devices.push_back(c.device);
+    if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
     return r;
   }
   {  // the destination list with the device in it must hold
     std::vector<DevicePtr> dst = *to->list;
     dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst.size())), dev);
+    normaliseMetaKinds(dst, instrumentsGo(to->kind));
     PQ_DOC_TRY(checkList(to->kind, dst));
   }
+  Result<ListAt> fromList = locateList(*s, from->track->id, src.chain != nullptr ? src.chain->id : ChainId{});
+  if (!fromList) return std::move(fromList).error();
   auto np = copyOf(s);
   std::vector<MappingId> pruned;
   // No Track& is held across a mutableTrack call (M4 review H1): mutableTrack re-copies every ancestor on its path, so
@@ -1774,11 +1793,16 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
   std::vector<DevicePtr>* dst = listIn(mutableTrack(*np, to->path), *to);
   if (dst == nullptr) return invalid("the destination chain is inside the moved device");
   dst->insert(dst->begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst->size())), dev);
+  std::vector<DeviceId> rekinded;  // TMM.10-fix1: both lists' meta devices take the kind their position says
+  normaliseMetaKinds(*dst, instrumentsGo(to->kind), &rekinded);
+  if (std::vector<DevicePtr>* left = listIn(mutableTrack(*np, from->path), *fromList))
+    normaliseMetaKinds(*left, instrumentsGo(fromList->kind), &rekinded);
   pruneMappings(mutableTrack(*np, from->path).devices, pruned);  // mappings of the racks it left
   cs.mark(kChangeStructural);
   cs.tracks.push_back(from->track->id);
   cs.tracks.push_back(to->track->id);
   forEachDeviceIn(*dev, [&](const Device& d) { cs.devices.push_back(d.id); });
+  cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
   return Snapshot(std::move(np));
 }
 
@@ -2094,6 +2118,16 @@ Res apply_(const Snapshot& s, const RenameDevice& c, ChangeSet& cs) {
   });
 }
 
+Res apply_(const Snapshot& s, const SetDeviceChainInput& c, ChangeSet& cs) {  // TMM.10-fix1
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  if (loc.device->chainInput == c.input) return s;
+  return editDeviceAt(s, c.device, cs, kChangeStructural, [&](Device& d) {
+    d.chainInput = c.input;
+    return checkDeviceMeta(d);
+  });
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 // np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
@@ -2363,7 +2397,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch", "Rename Device",
+    "Edit Device Patch", "Rename Device", "Chain Input",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",

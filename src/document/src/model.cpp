@@ -195,6 +195,21 @@ std::string_view metaDeviceType(const Device& d) noexcept {
   return isMetaDevice(d) ? std::string_view(d.patch).substr(kMetaDevicePrefix.size()) : std::string_view();
 }
 
+bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed) {
+  bool any = false;
+  for (size_t i = 0; i < list.size(); ++i) {
+    if (!list[i] || !isMetaDevice(*list[i])) continue;
+    const DeviceKind want = i == 0 && instrumentsGo ? DeviceKind::Instrument : DeviceKind::AudioEffect;
+    if (list[i]->kind == want) continue;
+    auto c = std::make_shared<Device>(*list[i]);
+    c->kind = want;
+    if (changed != nullptr) changed->push_back(c->id);
+    list[i] = std::move(c);
+    any = true;
+  }
+  return any;
+}
+
 ParamRef ParamRef::metaParam(DeviceId d, std::string_view path, std::string_view param) {
   std::string key(path);
   key += '.';
@@ -271,7 +286,8 @@ namespace {
 bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
   return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
          a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name &&
-         deepEq(a.meta, b.meta);  // TMM.3 (an empty map is always null: the commands keep it so)
+         deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
+         a.chainInput == b.chainInput;  // TMM.10-fix1
 }
 
 bool shallowChainEq(const Chain& a, const Chain& b) noexcept {

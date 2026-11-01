@@ -65,7 +65,11 @@ namespace pq::doc {
 // "params"?, "settings"?, "data"?}} ("" = a chain meta device itself, whose "patch" is "meta:<type>"); data values are
 // numbers, strings, arrays, objects and {"$f32": "<base64 float32 LE>"} sample arrays (pq/meta/data.h); an older state
 // version is upgraded by its type on load, a newer one is refused (Unsupported); migration 9 → 10 changes nothing).
-inline constexpr int32_t kSchemaVersion = 10;
+// 11 = a chain is wires (TMM.10-fix1, pq/document/meta.h chainStages): a chain meta device may carry "chainInput" ("-"
+// unplugged, or an input of its type; written only when not the type's own); a meta device's "kind" is its position's.
+// Migration 10 → 11 unplugs a meta "audioEffect" that was the first active device where the note source arrives (it
+// heard no note in schema 10) and sets every meta device's kind from its position.
+inline constexpr int32_t kSchemaVersion = 11;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

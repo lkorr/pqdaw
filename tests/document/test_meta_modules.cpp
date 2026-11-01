@@ -70,10 +70,11 @@ std::string replaced(std::string s, const std::string& from, const std::string& 
   return s;
 }
 
-// BasicSynth with its phasor replaced by a Phase accumulator named `name`.
+// BasicSynth with its phasor replaced by a Phase accumulator named `name` (TMM.10-fix1: the note's frequency wired into
+// its hz — unwired it would run at 0 Hz).
 std::string synthWithAcc(const std::string& name) {
   return replaced(library().stockText("BasicSynth"), "ph  = phasor(voice.hz)",
-                  name + " = meta_phase_acc()\n  ph  = " + name);
+                  name + " = meta_phase_acc(voice.hz)\n  ph  = " + name);
 }
 
 // A MIDI track "Synth" (BasicSynth), a MIDI track "Acc" whose instrument is a chain Phase accumulator, an audio track
@@ -87,7 +88,8 @@ struct Song {
     synthTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     accTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     synth = findTrackPtr(doc(), synthTrack)->devices.at(0)->id;
-    acc = edit(ops::addMetaDevice(doc(), store.ids(), accTrack, "phase_acc")).devices.at(0);
+    // At slot 0: it takes the note source, replacing the default instrument (TMM.10-fix1: appended it would follow it).
+    acc = edit(ops::addMetaDevice(doc(), store.ids(), accTrack, "phase_acc", 0)).devices.at(0);
   }
   const Project& doc() const { return *store.current(); }
   const Device& dev(DeviceId d) const { return *findDevice(doc(), d).device; }
@@ -156,7 +158,7 @@ TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level 
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray(cycle)}}))));
   Result<std::string> text = serializeProject(s.doc(), s.store.view());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 10,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 11,", 0) == 0);
   CHECK(text->find("\"patch\": \"meta:phase_acc\"") != std::string::npos);
   CHECK(text->find("\"$f32\"") != std::string::npos);
   Result<LoadedProject> back = parseProject(*text);
@@ -214,33 +216,28 @@ TEST_CASE("meta modules: the reader is strict, with JSON paths") {
   fails("\"acc1\": {", "\"a..b\": {", "not a meta module path");
   fails("\"acc1\": {", "\"\": {", "only a 'meta:phase_acc' device");
   fails("\"params\": {\"freq\": 10.0}", "\"params\": {\"freq\": 10.0}, \"data\": 1.0", "keeps no data");
-  // The chain device's kind must be one the type allows. TMM.10: a Phase accumulator may be an audio effect (it
-  // continues a meta voice run: pm), so the refusal is checked with an instrument-only copy of its type.
+  // TMM.10-fix1 (SPEC §15 2026-11-01 "no instrument special cases"): a chain meta device's kind is never refused for
+  // its type (it is its position; what it plays follows from its chain input's signal); its chain input must be the
+  // type's, "-" or one of its inputs.
   {
-    static const meta::Type instOnly = [] {
-      meta::Type x = meta::phaseAccType();
-      x.id = "tmm10_inst_only";
-      x.chainVoiceInput = -1;
-      return x;
-    }();
-    if (meta::findType(instOnly.id) == nullptr) (void)meta::registerType(instOnly);
-    auto asEffect = [&](const std::string& type) {
+    auto edited = [&](bool asEffect, const std::string& chainInput) {
       std::string t = good;
       const size_t dev = t.find("\"meta:phase_acc\"");
       REQUIRE(dev != std::string::npos);
-      t.replace(dev, 16, "\"meta:" + type + "\"");
-      const size_t kind = t.find("\"instrument\"", dev);
-      REQUIRE(kind != std::string::npos);
-      t.replace(kind, 12, "\"audioEffect\"");
-      const size_t inst = t.find("\"type\": \"phase_acc\"", dev);
-      REQUIRE(inst != std::string::npos);
-      t.replace(inst, 19, "\"type\": \"" + type + "\"");
+      if (asEffect) {
+        const size_t kind = t.find("\"instrument\"", dev);
+        REQUIRE(kind != std::string::npos);
+        t.replace(kind, 12, "\"audioEffect\"");
+      }
+      if (!chainInput.empty()) t.insert(dev + 16, ", \"chainInput\": \"" + chainInput + "\"");
       return parseProject(t);
     };
-    CHECK(asEffect("phase_acc").ok());
-    Result<LoadedProject> r = asEffect(std::string(instOnly.id));
+    CHECK(edited(true, "").ok());
+    CHECK(edited(false, "-").ok());
+    CHECK(edited(false, "pm").ok());
+    Result<LoadedProject> r = edited(false, "nope");
     REQUIRE_FALSE(r.ok());
-    CHECK(r.error().message.find("cannot be an audio effect") != std::string::npos);
+    CHECK(r.error().message.find("has no input 'nope'") != std::string::npos);
   }
 }
 

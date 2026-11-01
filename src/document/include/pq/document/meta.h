@@ -56,15 +56,40 @@ std::string metaParamBakedOnly(const Device& d, std::string_view param);
 // A new instance of `t`: its version and default data, no values set.
 MetaInstance defaultMetaInstance(const meta::Type& t);
 
-// ---- TMM.10: voice continuity in a chain (docs/plans/MM.md "Chain and devices") ----
-// A MIDI track's META VOICE RUN: its first active device is a chain meta instrument, and the active chain meta devices
-// right after it (audio-effect kind, of a type that continues voices: meta::Type::chainVoiceInput) stay per voice —
-// each one's voice input is the previous one's voice signal — until the first other device or the chain end, where
-// the lowering sums the voices (lower.h "Meta modules"). Inactive devices are skipped (they do not break the run).
-// The devices of `t`'s run after its instrument, in chain order (empty: no run, or a run of the instrument alone).
-std::vector<const Device*> metaVoiceRun(const Track& t);
-// Whether a device inserted at `index` of `t`'s own chain (kAppend: the end) would continue `t`'s meta voice run.
-bool continuesMetaVoiceRun(const Track& t, uint32_t index);
+// ---- TMM.10-fix1: a chain is wires (SPEC §15 2026-11-01 "notes are a signal"; lower.h "Meta modules") ----
+// Each device's chain input takes the previous active stage's output; the first stage of a MIDI track's own chain (and
+// of an Instrument Rack chain) takes the NOTE SOURCE. What a meta module does follows from what reaches it, never from
+// its type: there are no instrument-only or effect-only types. Polyphony follows the wires: a meta module fed by the
+// note source or by a per-voice signal runs per voice; a per-voice signal reaching any other device is summed there
+// (a stock device's audio input is global), and a stock instrument's voices are summed at its output (Live's
+// instrument: QUESTIONS Q?-TMM.10-fix1-a item 2).
+enum class ChainSignal : uint8_t {
+  None,    // nothing: an unplugged chain input (Device::chainInput "-"), a type without one
+  Notes,   // the note source (its signal of the input's meaning: meta::Reads)
+  Voices,  // a per-voice signal
+  Audio,   // global audio
+};
+struct ChainStage {
+  const Device* device = nullptr;
+  ChainSignal in = ChainSignal::None;    // what reaches its chain input (a meta device: None when unplugged)
+  ChainSignal out = ChainSignal::Audio;  // what it gives the next stage
+  int32_t input = -1;                    // a meta device: the input its chain feeds (−1: none); else −1
+};
+// The ACTIVE devices of `list`, in order, with what flows between them. `notes`: the list starts at the note source (a
+// MIDI track's own chain, an Instrument Rack chain); else at audio. A meta device (of a known type): Notes in → Voices
+// out (meta::Form::ChainNotes), Voices → Voices (ChainVoice), Audio → Audio (ChainAudio), unplugged → Audio
+// (ChainAudio with nothing in: it runs once, freely). `voices` false (a rack chain, whose devices after its first the
+// lowering keeps global) delivers Audio where Voices would arrive. Any other device gives Audio.
+std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices = true);
+// The meta form of a stage (Nested for a device that is not a chain meta device or has no known type).
+meta::Form chainForm(const ChainStage& s);
+// The input `d`'s chain feeds: Device::chainInput ("" the type's meta::Type::chainInput, "-" none, else that input by
+// name); −1: none (or not an input of the type).
+int32_t metaChainInput(const Device& d, const meta::Type& t);
+// What would reach the chain input of a device inserted at `index` of `list` (kAppend: the end).
+ChainSignal chainSignalAt(const std::vector<DevicePtr>& list, bool notes, uint32_t index);
+// TMM.10-fix1: Device::chainInput's value for an unplugged chain.
+inline constexpr std::string_view kChainUnplugged = "-";
 
 // The renames between two parses of a device text, `after` parsed with ParseOptions::previous = `before`: every NAMED
 // subcircuit call reachable from patch `root` (through calls into patches of the same file) whose NodeId path is the

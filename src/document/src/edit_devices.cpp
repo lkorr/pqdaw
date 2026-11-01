@@ -50,12 +50,26 @@ Result<Slot> slotFor(const ListView& l, DeviceKind kind, uint32_t index) {
   if (kind == DeviceKind::Instrument) {
     if (!l.instrumentAllowed)
       return invalid(l.chain.valid() ? "an Audio Effect Rack's chains hold audio effects only" : "instruments go on MIDI tracks");
-    return Slot{0, hasInstrument};
+    // TMM.10-fix1: a chain meta device first is not replaced: it follows the instrument (its chain input then takes
+    // the instrument's signal; AddDevice makes it an audio effect).
+    return Slot{0, hasInstrument && !isMetaDevice(*d.front())};
   }
   const auto n = static_cast<uint32_t>(d.size());
   uint32_t at = std::min(index, n);
   if (hasInstrument && at == 0) at = 1;
   return Slot{at, false};
+}
+
+// TMM.10-fix1: where a chain meta device lands for `index`: exactly there. First where instruments go it takes the note
+// source; a stock instrument or Instrument Rack there takes no chain signal (it could not follow it), so it is
+// replaced; a chain meta device there moves on (AddDevice re-kinds it).
+uint32_t metaSlotAt(const ListView& l, uint32_t index) {
+  return std::min(index, static_cast<uint32_t>(l.devices->size()));
+}
+bool metaReplacesInstrument(const ListView& l, uint32_t at) {
+  const std::vector<DevicePtr>& d = *l.devices;
+  return at == 0 && l.instrumentAllowed && !d.empty() && d.front()->kind == DeviceKind::Instrument &&
+         !isMetaDevice(*d.front());
 }
 
 }  // namespace
@@ -150,18 +164,10 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
 Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& t, TrackId track, uint32_t index, ChainId chain) {
   Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
-  // An instrument where one goes (first, or the list has none yet); TMM.10: an audio effect that continues the track's
-  // meta voice run (a Wavetable after a Phase accumulator), or a chain audio effect; else (a type that is only an
-  // instrument, after another device) the instrument it replaces, as any instrument added after one does.
-  const bool hasInstrument = !l->devices->empty() && l->devices->front()->kind == DeviceKind::Instrument;
-  const size_t at = std::min<size_t>(index, l->devices->size());
-  const Track* tr = chain.valid() ? nullptr : findTrackPtr(p, l->track);
-  if (t.chainInstrument && l->instrumentAllowed && (at == 0 || !hasInstrument)) return DeviceKind::Instrument;
-  if (t.chainVoiceInput >= 0 && tr != nullptr && continuesMetaVoiceRun(*tr, static_cast<uint32_t>(at)))
-    return DeviceKind::AudioEffect;
-  if (t.chainEffectInput >= 0) return DeviceKind::AudioEffect;
-  if (t.chainInstrument && l->instrumentAllowed) return DeviceKind::Instrument;
-  return invalid("a " + std::string(t.name) + " cannot be a device here");
+  // TMM.10-fix1: any type goes anywhere; its kind is its position (model.h "Meta modules"): the instrument when it lands
+  // first where instruments go (it takes the note source), else an audio effect. Nothing is replaced.
+  (void)t;
+  return metaSlotAt(*l, index) == 0 && l->instrumentAllowed ? DeviceKind::Instrument : DeviceKind::AudioEffect;
 }
 
 EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index,
@@ -170,25 +176,22 @@ EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::st
   if (t == nullptr) return invalid("unknown meta module type '" + std::string(type) + "'");
   Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
-  Result<DeviceKind> k = metaDeviceKindAt(p, *t, track, index, chain);
-  if (!k) return std::move(k).error();
-  const DeviceKind kind = *k;
-  Result<Slot> slot = slotFor(*l, kind, index);
-  if (!slot) return std::move(slot).error();
+  // TMM.10-fix1: inserted where asked, with the kind its position says (metaSlotAt): first, it takes the note source
+  // (a stock instrument there is replaced: it takes no chain signal; a meta device there becomes an audio effect).
+  const uint32_t at = metaSlotAt(*l, index);
+  const DeviceKind kind = at == 0 && l->instrumentAllowed ? DeviceKind::Instrument : DeviceKind::AudioEffect;
   Edit e = makeEdit("Add Device");
-  if (slot->replacesInstrument) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
+  if (metaReplacesInstrument(*l, at)) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
   auto d = std::make_shared<Device>(*makeDevice(ids.device(), std::string(kMetaDevicePrefix) + std::string(t->id), kind));
   d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
-  // TMM.8 (docs/plans/MM.md): a Wavetable after an audio-producing device starts in Shape mode (a waveshaper); one that
-  // continues a meta voice run (after a Phase accumulator: TMM.10) reads that phase in Phase mode.
-  const Track* tr = chain.valid() ? nullptr : findTrackPtr(p, l->track);
-  const bool continuesRun = tr != nullptr && t->chainVoiceInput >= 0 &&
-                            continuesMetaVoiceRun(*tr, static_cast<uint32_t>(std::min<size_t>(index, l->devices->size())));
-  if (kind == DeviceKind::AudioEffect && !continuesRun && t->id == "wavetable" && t->settingIndex("mode") >= 0)
+  // TMM.8 (docs/plans/MM.md): a Wavetable that receives audio starts in Shape mode (a waveshaper); one that receives the
+  // note's phase or a voice signal (after a Phase accumulator: TMM.10) reads it as a phase in Phase mode.
+  if (chainSignalAt(*l->devices, l->instrumentAllowed, at) == ChainSignal::Audio && t->id == "wavetable" &&
+      t->settingIndex("mode") >= 0)
     d->settings.push_back(DeviceValue{"mode", 1.0});
   e.devices.push_back(d->id);
   e.tracks.push_back(l->track);
-  batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), slot->index, chain});
+  batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at, chain});
   return e;
 }
 
@@ -377,6 +380,22 @@ EditResult renameDevice(const Project& p, DeviceId device, std::string name) {
   Edit e = makeEdit("Rename Device");
   e.devices.push_back(device);
   if (l.device->name != name) batchOf(e).commands.push_back(RenameDevice{device, std::move(name)});
+  return e;
+}
+
+EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string input) {  // TMM.10-fix1
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  if (!isMetaDevice(*l.device)) return invalid("only a chain meta device chooses its chain input");
+  const meta::Type* t = meta::findType(metaDeviceType(*l.device));
+  if (t == nullptr) return invalid("unknown meta module type");
+  if (!input.empty() && input != kChainUnplugged && t->inputIndex(input) < 0)
+    return invalid("a " + std::string(t->name) + " has no input '" + input + "'");
+  if (!input.empty() && input != kChainUnplugged && t->inputIndex(input) == t->chainInput) input.clear();  // the default
+  Edit e = makeEdit("Chain Input");
+  e.devices.push_back(device);
+  e.tracks.push_back(l.track->id);
+  if (l.device->chainInput != input) batchOf(e).commands.push_back(SetDeviceChainInput{device, std::move(input)});
   return e;
 }
 

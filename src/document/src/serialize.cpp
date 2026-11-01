@@ -22,6 +22,7 @@
 #include "checks.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/library_files.h"
+#include "pq/document/meta.h"
 #include "json_io.h"
 #include "pq/meta/registry.h"
 
@@ -722,6 +723,10 @@ private:
     if (!d.name.empty()) {  // T4.17 (schema 8): the device's own name
       w_.key("name");
       w_.string(PathSeg(&at, "name"), d.name);
+    }
+    if (!d.chainInput.empty()) {  // TMM.10-fix1 (schema 11): a chain meta device's chain input
+      w_.key("chainInput");
+      w_.string(PathSeg(&at, "chainInput"), d.chainInput);
     }
     if (!d.active) {
       w_.key("active");
@@ -1909,7 +1914,8 @@ private:
   // the heap, their path segments in a deque (stable addresses for the Members readers and the inner levels' paths) —
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
-                                                     "settings", "source", "crlf", "rack", "name", "meta"};
+                                                     "settings", "source", "crlf", "rack", "name", "meta",
+                                                     "chainInput"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2086,6 +2092,10 @@ private:
       case 7: crlf = r_.readBool(f); break;
       case 9: d.name = str(f); break;  // T4.17 (schema 8)
       case 10: d.meta = metaMap(f); break;  // TMM.3 (schema 10)
+      case 11:  // TMM.10-fix1 (schema 11)
+        d.chainInput = str(f);
+        if (d.chainInput.empty()) r_.failValue(f, "must not be empty (omit it for the type's own chain input)");
+        break;
     }
   }
 
@@ -2216,7 +2226,7 @@ private:
     }
     if (d.rack && d.source) r_.failValue(el, "a rack has no \"source\"");
     // TMM.3: meta state checked as the commands check it (type, version, names, data; a chain meta device's kind).
-    if (d.meta || isMetaDevice(d)) {
+    if (d.meta || isMetaDevice(d) || !d.chainInput.empty()) {
       const PathSeg mat(&el, d.meta ? "meta" : "patch");
       if (d.meta)
         for (const MetaEntry& e : *d.meta) check(PathSeg(&mat, e.path), detail::checkMetaInstance(d, e.path, e.instance));
@@ -3388,6 +3398,69 @@ Status migrateAddMetaModules(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 10 → 11 (TMM.10-fix1, SPEC §15 2026-11-01 "notes are a signal"): schema 11 lets a chain meta device carry
+// "chainInput", and what a meta device plays follows from the signal reaching it (pq/document/meta.h chainStages),
+// never from its kind. Two rewrites keep a schema-10 file's meaning:
+//   1. a list the note source reaches (a MIDI track's own list, an Instrument Rack's chains) whose first ACTIVE device
+//      is a meta device of kind "audioEffect" played nothing there (no voice run started: it heard silence, or its
+//      rack chain did not play); it gets "chainInput": "-" (unplugged), so it still hears no note;
+//   2. every meta device takes its position's kind ("instrument" first where instruments go, else "audioEffect").
+// Not kept: a Phase accumulator continuing a voice run read the run's signal as phase modulation and the note's
+// frequency implicitly; that implicit note is gone (its chain input is its frequency: QUESTIONS Q?-TMM.10-fix1-a).
+// Self-contained (renumber, do not merge, if another schema step lands first).
+class MetaChainMigrator {
+public:
+  Status run(nlohmann::json& doc) {
+    if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+    for (const char* list : {"tracks", "returns"})
+      if (auto it = doc.find(list); it != doc.end() && it->is_array())
+        for (nlohmann::json& t : *it) track(t);
+    if (auto it = doc.find("master"); it != doc.end()) track(*it);
+    return Ok{};
+  }
+
+private:
+  static bool isMeta(const nlohmann::json& d) {
+    if (!d.is_object() || d.contains("rack")) return false;
+    const auto p = d.find("patch");
+    return p != d.end() && p->is_string() && p->get<std::string>().starts_with(kMetaDevicePrefix);
+  }
+  static bool kindIs(const nlohmann::json& d, std::string_view k) {
+    const auto it = d.find("kind");
+    return it != d.end() && it->is_string() && it->get<std::string>() == k;
+  }
+  void list(nlohmann::json& l, bool notes) {
+    if (!l.is_array()) return;
+    if (notes)
+      for (nlohmann::json& d : l) {
+        if (!d.is_object()) continue;
+        if (const auto a = d.find("active"); a != d.end() && a->is_boolean() && !a->get<bool>()) continue;
+        if (isMeta(d) && !kindIs(d, "instrument")) d["chainInput"] = std::string(kChainUnplugged);
+        break;
+      }
+    for (size_t i = 0; i < l.size(); ++i) {
+      nlohmann::json& d = l[i];
+      if (isMeta(d)) d["kind"] = i == 0 && notes ? "instrument" : "audioEffect";
+      if (!d.is_object()) continue;
+      const auto r = d.find("rack");
+      if (r == d.end() || !r->is_object()) continue;
+      const bool instrumentRack = kindIs(d, "instrument");
+      if (auto c = r->find("chains"); c != r->end() && c->is_array())
+        for (nlohmann::json& ch : *c)
+          if (ch.is_object())
+            if (auto dl = ch.find("devices"); dl != ch.end()) list(*dl, instrumentRack);
+    }
+  }
+  void track(nlohmann::json& t) {
+    if (!t.is_object()) return;
+    if (auto d = t.find("devices"); d != t.end()) list(*d, kindIs(t, "midi"));
+    if (auto c = t.find("children"); c != t.end() && c->is_array())
+      for (nlohmann::json& child : *c) track(child);
+  }
+};
+
+Status migrateMetaChainSignals(nlohmann::json& doc) { return MetaChainMigrator().run(doc); }
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3398,6 +3471,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {7, migrateAddDeviceNames},
     {8, migrateAddDeviceAutomation},
     {9, migrateAddMetaModules},
+    {10, migrateMetaChainSignals},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");
