@@ -1699,7 +1699,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   9. **State transfer**: `StateTag::factor` makes a node's state transfer only at the same factor (a phasor's increment scale depends on it); converters are keyed by their source's state key and the region (instance call path + the region's index in its patch), so they keep their state across unrelated edits.
 - Status: open (orchestrator / user: 4's "no latency report", 6, 7, 8).
 
-## Q?-TMM.7-a · 2026-11-01 · TMM.7 · The Wavetable face: choices made while building it
+## Q173 · 2026-11-01 · TMM.7 · The Wavetable face: choices made while building it
 - Context: docs/plans/MM.md "Wavetable face", "Per-voice dots", TMM.7; the user's sketch (IMG_4990) and Live's display. Tested in tests/views/test_meta_wavetable_face.cpp and tests/app/test_meta_wavetable.cpp. All reversible.
 - Choices (provisional):
   1. **The face derives its own display frames** from the instance's data and baked values (`src/views/src/meta/wavetable_model.h`): keyframe spectra (cached by cycle hash: moving a keyframe re-transforms nothing), dense frames by the builder's rules (spectral / crossfade per gap, u_d = d / (F − 1), one keyframe = one frame), the first 192 harmonics with Lanczos σ factors (no Gibbs ringing in the picture), the bake through `dsp/wave_warp.h` at 256 phases per frame. It does not wait for or read the engine's table (10–65 ms off-thread, mip levels it has no use for). Measured (check): a data change 3.4 ms (3 keyframes, 64 frames), a baked knob step 0.19 ms.

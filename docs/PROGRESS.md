@@ -1063,3 +1063,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf (ship): per ×2 stage per lane ≤ 0.59 ns (target ≤ 1.5). JIT tanh region ×2/×4/×8/×16: 8.1/16.8/30.7/52.8 ns/sample (1×: 1.6). Aliasing full-scale 5 kHz: −141 dBFS @4×, −146 @8×.
 - CPU-efficiency check: only the region pays; params and constants never converted; converters fully unrolled, state in registers; vectorised over voice lanes.
 - Notes: Q172 items 4 (no latency report), 6 (bools held), 7 (never asleep/probed), 8 (wash, not box).
+
+## 2026-11-01 · TMM.7 · task/TMM.7-wavetable-face
+- Did: Wavetable face (display model computed face-side from the same keyframes, stacked frames like Live's, per-voice glowing dot + dotted bar + read-density glow on each voice's own frame, 80 ms voice fades, position slider with keyframe markers and gap toggles, phase slider, fold/warp/sync knobs + warp-mode switch, Phase/Shape switch, basic shapes chooser, read-only harmonic rows); face interface reads/edits settings and data, status messages; per-instance static layers, keys, animation; faces kept across scene rebuilds (fixes a heap corruption when a setting click rebuilt the view mid-click); dashed-line float hang fix; goldens meta-wavetable-*, project-meta-wavetable; REVIEW.
+- Verified: build.ps1 -Affected (EVERYTHING): 78/79; the 16-face paint bound failed under suite load → moved to perf; pq_tests_views re-run passed. Ship pq_bench_project_patch linked. Orchestrator looked at meta-wavetable-poly-z2-1x and project-meta-wavetable.
+- Perf: live layer 0.06 ms per face, 16 faces 0.94 ms (check); ship 10 animating faces 0.74 ms full paint; 32 Far faces +0.9 ms per pan frame (indicative).
+- CPU-efficiency check: stacked frames and harmonic bars cached as tiles per instance and data; spectra cached by cycle hash; curves thinned to ~1 point per 1.5 px; nothing runs when silent.
+- Notes: Q173 (output jack on the right edge; warp mode stays a setting; knob drags → preview builds, assigned to TMM.9).
