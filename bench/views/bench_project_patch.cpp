@@ -155,7 +155,7 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
     }
     c.setFacesShown(true);
   }
-  // 16 faces in view (mid level), 8 animated voices each.
+  // 16 faces in view (far level), 8 animated voices each.
   std::vector<std::unique_ptr<SyntheticVoices>> voices;
   view->faceVoices = [&](doc::DeviceId, std::string_view path) -> VoiceTapReader* {
     if (!path.empty()) return nullptr;
@@ -170,7 +170,7 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
   {
     const Band& b0 = view->patch().bands.at(1);
     circuit::CircuitCanvas::View v;
-    v.zoom = 0.31;
+    v.zoom = 0.21;  // 16+ faces in view (the far level: faces are still drawn in full)
     v.x = b0.x0 - 8.0;
     v.y = b0.y - 8.0;
     c.setView(v);
@@ -181,7 +181,7 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
   fullPaint();
   std::printf("animated: zoom %.3f, %u faces painted, %u face primitives\n", c.view().zoom, c.stats().facesPainted, c.stats().facePrimitives);
   const uint32_t painted = c.stats().facesPainted;
-  pq::bench::reportStats("meta_faces.paint(full, 16 faces x 8 animated voices, mid) 2x 2560x1440", pq::bench::measure(fullPaint, 1), "ns/frame");
+  pq::bench::reportStats("meta_faces.paint(full, 16 faces x 8 animated voices, far) 2x 2560x1440", pq::bench::measure(fullPaint, 1), "ns/frame");
   std::vector<double> anim;
   for (int i = 0; i < 300; ++i)
     anim.push_back(timed([&] {
