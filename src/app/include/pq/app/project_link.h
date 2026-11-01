@@ -117,6 +117,7 @@
 #include "pq/engine/project_compile.h"
 #include "pq/engine/sequence.h"
 #include "pq/media/sample_pool.h"
+#include "pq/meta/table_builder.h"
 #include "pq/tuning/tuning.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
@@ -345,6 +346,16 @@ public:
   Status publishFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
                            std::shared_ptr<const dsp::FrameTable> table);
   uint32_t metaSlotsInUse() const;
+  // TMM.5: the instances' own tables. For every frame-table slot whose type builds one (meta::Type::frameTable), the
+  // link derives a TableJob from the instance's state in the newest snapshot (its data, its baked params' values, its
+  // settings, the link's rate) and, when the job's key differs from the one last requested for the slot, hands it to
+  // its TableBuilder (one worker thread, below normal priority, newest wins per slot, identical specs share one
+  // table). A finished table is published into the slot (a 64-sample crossfade, never a compile) if the slot still
+  // wants that key. Triggers: a MetaData change, a param change (a baked knob: fold / warp / sync go to the builder,
+  // their runtime params are never read), every compile (a new instance, a setting such as the warp mode, a rate).
+  // Offline renders wait for pending builds (renderOffline). Any thread but the audio thread.
+  bool waitForMetaTables(double timeoutSeconds = 60.0);
+  meta::TableBuilder::Stats metaTableStats() const;
 
   // What a tuning node table depends on besides the tuning's continuous values (T2.6-fix2): the shape (kind, n),
   // periods per equave, the mode as the root's chain position, the region hint.
@@ -610,12 +621,24 @@ private:
     std::shared_ptr<dsp::FrameTableSlot> table;
     std::shared_ptr<VoiceTap> tap;  // the VoiceTap, or the frame-table slot's own tap
     bool live = false;              // an instance holds the id (else it is free; the objects wait for its reuse)
+    // TMM.5: what the slot's table is built from (frame-table slots of a type with Type::frameTable).
+    const meta::Type* type = nullptr;
+    doc::DeviceId device;
+    std::string path;
+    uint32_t index = 0;
+    uint64_t wanted = 0;     // the key of the job last submitted (0: none); a delivered table with another is dropped
+    meta::DataPtr data;      // the data last hashed, and its hash (data values are immutable: hashed once each)
+    uint64_t dataHash = 0;
   };
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
   void syncMetaSlots(const std::vector<doc::LoweredProject::MetaResource>& resources);  // compile path, after lower
   std::shared_ptr<const dsp::FrameTable> metaDefaultTable();                            // mutex_ held
   VoiceTapConfig metaTapConfig() const;
+  // TMM.5: submits a build for every frame-table slot whose job key changed (metaDoc_; takes mutex_).
+  void refreshMetaTables();
+  void deliverMetaTable(uint32_t id, uint64_t key, std::shared_ptr<const dsp::FrameTable> table);  // builder thread
+  doc::Snapshot metaDoc_;  // the newest snapshot the link was given (mutex_): what tables are built from
   std::map<MetaKey, uint32_t, std::less<>> metaIds_;
   std::vector<MetaSlot> metaSlots_ = std::vector<MetaSlot>(kMetaSlots);
   std::vector<uint32_t> metaTouched_;  // ids this lowering named (compile path)
@@ -626,6 +649,8 @@ private:
   std::array<const dsp::FrameTableSlot*, kMetaSlots> frameTableViews_{};
   std::array<VoiceTap*, kMetaSlots> voiceTapViews_{};
   engine::Resources resources_;
+  // TMM.5: the frame-table builder (its worker publishes into metaSlots_; stopped first in the destructor).
+  std::unique_ptr<meta::TableBuilder> tables_;
 
   // UI thread state.
   std::vector<float> written_;                   // per param slot: the value last written (NaN: never)

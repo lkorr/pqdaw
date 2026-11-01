@@ -311,6 +311,9 @@ public:
   // The app binds TMM.2's voice taps here; scenes and tests bind synthetic voices. Changing it: rebindFaces().
   std::function<VoiceTapReader*(doc::DeviceId device, std::string_view path)> faceVoices;
   void rebindFaces();
+  // TMM.5: a reader may have become live (the host saw new voice records: a note while nothing animated). The view
+  // also wakes its faces while the transport plays (each playhead refresh, when no face timer runs).
+  void wakeFaces();
 
   // The hovered wire's readout (what the overlay draws; tests).
   struct Readout {

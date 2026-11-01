@@ -48,6 +48,10 @@ std::string metaParamFlatName(DeviceId device, std::string_view path, std::strin
 double metaParamValue(const Device& d, std::string_view path, const meta::Type& t, size_t i);
 // The resolved settings of the instance at `path` (spec order; path "": the device's own settings), defaults filled in.
 std::vector<double> metaSettings(const Device& d, std::string_view path, const meta::Type& t);
+// TMM.5: why chain meta device `d`'s param `param` cannot be modulated (an automation lane, a modulation wire, a macro
+// mapping), or "" when it can: a `bakeable` param of a type without a live path (meta::Type::liveBakeable false: the
+// Wavetable's fold / warp / sync until TMM.8) is baked into the module's table and only changes with its value.
+std::string metaParamBakedOnly(const Device& d, std::string_view param);
 // A new instance of `t`: its version and default data, no values set.
 MetaInstance defaultMetaInstance(const meta::Type& t);
 

@@ -123,6 +123,16 @@ double metaParamValue(const Device& d, std::string_view path, const meta::Type& 
   return v != nullptr ? v->value : s.def;
 }
 
+std::string metaParamBakedOnly(const Device& d, std::string_view param) {
+  if (!isMetaDevice(d)) return {};
+  const meta::Type* t = meta::findType(metaDeviceType(d));
+  if (t == nullptr || t->liveBakeable) return {};
+  const int32_t i = t->paramIndex(param);
+  if (i < 0 || !t->params[static_cast<size_t>(i)].bakeable) return {};
+  return "the " + std::string(t->name) + "'s " + std::string(t->params[static_cast<size_t>(i)].label) +
+         " is baked into its table: it cannot be automated, wired or mapped to a macro yet";
+}
+
 std::vector<double> metaSettings(const Device& d, std::string_view path, const meta::Type& t) {
   std::vector<double> out(t.settings.size());
   const MetaInstance* inst = path.empty() ? nullptr : d.metaAt(path);

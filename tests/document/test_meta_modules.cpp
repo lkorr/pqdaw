@@ -133,6 +133,14 @@ std::string calleeOf(const LoweredProject& lp, TrackId t, DeviceId d) {
   return p.subcircuit(*n).patch;
 }
 
+// The resources of one type (TMM.5: the Song's chain Phase accumulator lists its voice tap too).
+std::vector<LoweredProject::MetaResource> resourcesOf(const LoweredProject& lp, std::string_view type) {
+  std::vector<LoweredProject::MetaResource> out;
+  for (const LoweredProject::MetaResource& r : lp.metaResources)
+    if (r.type == type) out.push_back(r);
+  return out;
+}
+
 }  // namespace
 
 TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level instances (schema 10)") {
@@ -367,8 +375,9 @@ TEST_CASE("meta modules: settings, wired pins and automation make other expansio
   };
   const LoweredProject a = lowered(s.doc(), &o);
   const std::string calleeA = calleeOf(a, s.synthTrack, s.synth);
-  REQUIRE(a.metaResources.size() == 1);
-  const LoweredProject::MetaResource& r = a.metaResources[0];
+  const std::vector<LoweredProject::MetaResource> ra = resourcesOf(a, "test_shape");
+  REQUIRE(ra.size() == 1);
+  const LoweredProject::MetaResource& r = ra[0];
   CHECK(r.device == s.synth);
   CHECK(r.path == "ts");
   CHECK(r.type == "test_shape");
@@ -389,8 +398,8 @@ TEST_CASE("meta modules: settings, wired pins and automation make other expansio
   CHECK(s.store.lastChanges().metaDataOnly());
   const LoweredProject c = lowered(s.doc(), &o, &b);
   CHECK(c.patches[trackIndex(c, s.synthTrack)] == b.patches[trackIndex(b, s.synthTrack)]);
-  REQUIRE(c.metaResources.size() == 1);
-  CHECK(c.metaResources[0].data->field("values")->floats == std::vector<float>{0.5f});
+  REQUIRE(resourcesOf(c, "test_shape").size() == 1);
+  CHECK(resourcesOf(c, "test_shape")[0].data->field("values")->floats == std::vector<float>{0.5f});
   // A wired param pin is not static: `meta_test_shape(osc, gain: …)` expands to the modulated (clipped) form, and the
   // wired param is no runtime param.
   const std::string wired = replaced(base, "meta_test_shape(osc)", "meta_test_shape(osc, gain: env)");
@@ -430,8 +439,8 @@ TEST_CASE("meta modules: a chain device's static-ness follows its automation lan
   REQUIRE(s.store.dispatch(AddAutomationLane{s.synthTrack, lane}).ok());
   const LoweredProject b = lowered(s.doc());
   CHECK(calleeOf(b, s.synthTrack, ts) != before);  // modulated: the live form
-  REQUIRE(b.metaResources.size() == 1);
-  CHECK(b.metaResources[0].path.empty());
+  REQUIRE(resourcesOf(b, "test_shape").size() == 1);
+  CHECK(resourcesOf(b, "test_shape")[0].path.empty());
 }
 
 TEST_CASE("meta modules: renaming a nested instance keeps its state (the patch editor's rename and a hand edit)") {

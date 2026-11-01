@@ -5,6 +5,7 @@
 
 #include "pq/graph/patch_file.h"
 #include "pq/meta/phase_acc.h"
+#include "pq/meta/wavetable.h"
 
 namespace pq::meta {
 
@@ -21,7 +22,10 @@ struct Registry {
   std::mutex mutex;
   std::vector<const Type*> types;
   std::shared_ptr<const Prelude> prelude;  // null: rebuild on next use
-  Registry() { types.push_back(&phaseAccType()); }
+  Registry() {
+    types.push_back(&phaseAccType());
+    types.push_back(&wavetableType());  // TMM.5
+  }
 };
 
 Registry& registry() {

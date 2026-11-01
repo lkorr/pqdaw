@@ -143,6 +143,11 @@ PortRef Builder::konst(double v, uint32_t k) {
   return PortRef{take(p_.addConst(graph::Constant::real(v)), kBodyIdBase + k), 0};
 }
 
+void Builder::bind(PortRef value, std::string_view name) {
+  if (value.node == graph::kNone || value.node >= p_.nodeCount()) return;
+  p_.setNodeName(value.node, std::string(name));
+}
+
 void Builder::output(size_t i, PortRef value) {
   if (i >= outputs_.size() || value.node == graph::kNone) {
     failed_ = true;
@@ -185,9 +190,13 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
       continue;
     }
     NodeIndex def;
-    if (in.def == InputDefault::VoiceHz && ctx.voice)
+    if (in.def == InputDefault::VoiceHz && ctx.voice) {
       def = b.take(p.addAtom(graph::atomId("voice.hz")), kDefaultIdBase + static_cast<uint32_t>(i));
-    else
+    } else if (in.def == InputDefault::VoicePhase && ctx.voice) {  // TMM.5: phasor(voice.hz)
+      const NodeIndex hz = b.take(p.addAtom(graph::atomId("voice.hz")), kFixedIdBase + 32 + static_cast<uint32_t>(i));
+      def = b.take(p.addAtom(graph::atomId("phasor")), kDefaultIdBase + static_cast<uint32_t>(i));
+      p.connect(hz, def, 0);
+    } else
       def = b.take(p.addConst(graph::Constant::real(-0.0)), kDefaultIdBase + static_cast<uint32_t>(i));
     if (ctx.form != Form::Nested) {
       b.inputs_[i] = PortRef{def, 0};

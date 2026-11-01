@@ -456,6 +456,7 @@ Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t 
                                                         uint32_t blockFrames) {
   flush();
   (void)waitForSamples();
+  (void)waitForMetaTables();  // TMM.5: meta modules' tables still building (deterministic, like block-filled streams)
   engine::ClipPlayer& clips = engine_->timeline().clipPlayer();
   clips.setStreamFill(&waitFill, pool_.get());  // the audio thread is not running: offline renders own the engine
   const bool wasEngaged = engaged_;

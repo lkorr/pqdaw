@@ -64,7 +64,9 @@ TEST_CASE("meta expansion: deterministic, fixed ids, prints and parses back") {
   CHECK(a.patch == b.patch);
   CHECK(idsOf(a.patch) == idsOf(b.patch));
   CHECK(a.key == b.key);
-  CHECK(a.resources.empty());
+  // TMM.5: its voice tap (the face's dots).
+  REQUIRE(a.resources.size() == 1);
+  CHECK(a.resources[0].kind == ResourceKind::VoiceTap);
   // Ports at their fixed ids: inputs, params, outputs.
   CHECK(a.patch.node(*a.patch.findByName("hz")).id.value == kInputIdBase);
   CHECK(a.patch.node(*a.patch.findByName("pm")).id.value == kInputIdBase + 1);

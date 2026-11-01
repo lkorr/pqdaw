@@ -6,6 +6,7 @@
 #include <cmath>
 #include <string>
 
+#include "pq/document/meta.h"
 #include "pq/meta/registry.h"
 
 namespace pq::doc::detail {
@@ -213,6 +214,7 @@ Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r, st
         if (!identifier(name)) return invalid("a device parameter lane needs the parameter's name");
         if (deviceParamHash(name) != r.target) return invalid("the lane's parameter name does not match its target");
         if (d->rack && !isRackParam(name)) return invalid("a rack's automatable parameters are its macros and selector");
+        if (std::string why = metaParamBakedOnly(*d, name); !why.empty()) return invalid(why);  // TMM.5
         return ok();
       }
       case ParamKind::ChainMixer:

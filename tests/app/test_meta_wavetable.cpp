@@ -1,0 +1,654 @@
+// TMM.5: the Wavetable meta module through the playback link — keyframe edits and baked knobs reach the engine as new
+// tables built off-thread (no compile), the swap is click-free end to end, offline renders wait for pending builds,
+// identical specs share one table, a rate change rebuilds, the golden `wavetable-morph`, the alias suite on the
+// module's own output, and (the TMM.2 / TMM.4 join) faces read the real voice taps: a played note is a dot.
+#include <doctest/doctest.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "../golden/golden_audio.h"
+#include "../support/alias_meter.h"
+#include "playback_fixture.h"
+#include "pq/app/face_voices.h"
+#include "pq/app/project_link.h"
+#include "pq/core/denormal_guard.h"
+#include "pq/core/rt_scope.h"
+#include "pq/document/edit_ops.h"
+#include "pq/document/meta.h"
+#include "pq/dsp/frame_table_build.h"
+#include "pq/engine/offline_render.h"
+#include "pq/engine/project_program.h"
+#include "pq/engine/wav_file.h"
+#include "pq/meta/phase_acc.h"
+#include "pq/meta/table_builder.h"
+#include "pq/meta/wavetable.h"
+#include "pq/views/meta/meta_face.h"
+#include "pq/views/meta/tap_voices.h"
+
+using namespace pq;
+using namespace pq::doc;
+using pq::app::LinkConfig;
+using pq::app::ProjectLink;
+namespace fs = std::filesystem;
+
+namespace {
+
+constexpr uint32_t kBlock = 64;
+
+std::unique_ptr<ProjectLink> makeLink(const Snapshot& s, double rate = 48000.0) {
+  LinkConfig c;
+  c.compileThread = false;
+  c.sleepAfterMs = 0.0f;
+  c.jit = false;
+  c.sampleRate = rate;
+  auto l = ProjectLink::create(c, s);
+  REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
+  return std::move(l.value());
+}
+
+struct Driver {
+  ProjectLink& link;
+  int64_t time = 0;
+  std::vector<float> l = std::vector<float>(kBlock), r = std::vector<float>(kBlock);
+  std::vector<float> out;  // left channel
+  void run(uint32_t blocks) {
+    for (uint32_t b = 0; b < blocks; ++b) {
+      float* ch[2] = {l.data(), r.data()};
+      {
+        RtScope rt;  // RT safety of every block, also while tables are built and published
+        DenormalGuard dg;
+        link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+      }
+      time += kBlock;
+      out.insert(out.end(), l.begin(), l.end());
+    }
+  }
+};
+
+std::vector<float> cycleOf(dsp::BasicCycle c) {
+  const AlignedBuffer<float> b = dsp::basicCycle(c);
+  return {b.span().begin(), b.span().end()};
+}
+
+meta::DataPtr oneCycle(dsp::BasicCycle c) {
+  meta::WavetableData d;
+  d.keyframes.push_back({0.0f, cycleOf(c)});
+  return meta::wavetableData(d);
+}
+
+meta::DataPtr sawToSquare(dsp::GapMode gap = dsp::GapMode::Spectral) {
+  meta::WavetableData d;
+  d.keyframes.push_back({0.0f, cycleOf(dsp::BasicCycle::Saw)});
+  d.keyframes.push_back({1.0f, cycleOf(dsp::BasicCycle::Square)});
+  d.gaps = {gap};
+  return meta::wavetableData(d);
+}
+
+// MIDI tracks whose instrument is a chain Wavetable, each holding notes.
+struct WtSong {
+  DocumentStore store;
+  std::vector<TrackId> tracks;
+  std::vector<DeviceId> wts;
+  WtSong() { must(SetTempoMap{{{0, 120.0, TempoCurve::Step}}}); }
+  void must(Command c) {
+    const Status st = store.dispatch(std::move(c));
+    REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+  }
+  void edit(Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    must(e->command);
+  }
+  const Project& doc() const { return *store.current(); }
+  // A track with a chain Wavetable and one note per (start, length, degree).
+  DeviceId track(std::vector<std::array<Ticks, 3>> notes) {
+    auto t = ops::createTrack(doc(), store.ids(), TrackKind::Midi);
+    REQUIRE(t.ok());
+    must(t->command);
+    const TrackId id = t->tracks.at(0);
+    auto w = ops::addMetaDevice(doc(), store.ids(), id, "wavetable", 0);
+    REQUIRE(w.ok());
+    must(w->command);
+    std::vector<Note> ns;
+    Ticks end = 0;
+    for (const auto& n : notes) {
+      ns.push_back(playback_fixture::note(store.ids(), n[0], n[1], static_cast<int32_t>(n[2])));
+      end = std::max(end, n[0] + n[1]);
+    }
+    if (!ns.empty()) must(AddClip{id, playback_fixture::clip(store.ids(), 0, end, ns, "notes")});
+    tracks.push_back(id);
+    wts.push_back(w->devices.at(0));
+    return w->devices.at(0);
+  }
+  void data(DeviceId d, const meta::DataPtr& v) { edit(ops::setMetaData(doc(), d, "", "wavetable", v)); }
+  void param(DeviceId d, const char* name, double v) { edit(ops::setMetaParam(doc(), d, "", "wavetable", name, v)); }
+  void setting(DeviceId d, const char* name, double v) { edit(ops::setMetaSetting(doc(), d, "", "wavetable", name, v)); }
+  void lane(size_t track, DeviceId d, const char* name, std::vector<Breakpoint> points) {
+    auto l = std::make_shared<AutomationLane>();
+    l->id = store.ids().lane();
+    l->param = ParamRef::device(d, name);
+    l->paramName = name;
+    for (Breakpoint& p : points) p.id = store.ids().breakpoint();
+    l->points = std::move(points);
+    must(AddAutomationLane{tracks.at(track), l});
+  }
+};
+
+double maxStep(const std::vector<float>& x, size_t from, size_t to) {
+  double m = 0.0;
+  for (size_t i = std::max<size_t>(from, 1); i < to; ++i) m = std::max(m, std::fabs(double(x[i]) - x[i - 1]));
+  return m;
+}
+double peakOf(const std::vector<float>& x, size_t from, size_t to) {
+  double m = 0.0;
+  for (size_t i = from; i < to; ++i) m = std::max(m, std::fabs(double(x[i])));
+  return m;
+}
+// Σ(Δx)² / Σx²: (2πf/sr)² for a sine; a saw's harmonics raise it many times.
+double brightness(const std::vector<float>& x, size_t from, size_t to) {
+  double e = 0, de = 0;
+  for (size_t i = from + 1; i < to; ++i) {
+    e += double(x[i]) * x[i];
+    de += (double(x[i]) - x[i - 1]) * (double(x[i]) - x[i - 1]);
+  }
+  return de / std::max(e, 1e-30);
+}
+
+// The table a direct build of the instance's current state gives (what the link must have published).
+std::shared_ptr<const dsp::FrameTable> directTable(const Project& p, DeviceId dev, std::string_view path, double rate) {
+  const Device& d = *findDevice(p, dev).device;
+  const meta::Type& t = meta::wavetableType();
+  const MetaInstance* inst = d.metaAt(path);
+  meta::TableSource src;
+  src.data = inst != nullptr && inst->data ? inst->data : meta::wavetableDefaultData();
+  src.dataHash = meta::dataHash(*src.data);
+  std::vector<double> params(t.params.size());
+  for (size_t i = 0; i < params.size(); ++i) params[i] = metaParamValue(d, path, t, i);
+  const std::vector<double> settings = metaSettings(d, path, t);
+  src.params = params;
+  src.settings = settings;
+  src.sampleRate = rate;
+  meta::TableJob job;
+  REQUIRE(t.frameTable(src, 0, job).ok());
+  dsp::FrameTableBuilder b;
+  auto built = b.build(job.spec);
+  REQUIRE(built.ok());
+  return std::make_shared<const dsp::FrameTable>(std::move(built.value()));
+}
+
+bool sameTable(const dsp::FrameTable& a, const dsp::FrameTable& b) {
+  if (a.frames() != b.frames() || a.layout().levels != b.layout().levels) return false;
+  for (uint32_t f = 0; f < a.frames(); ++f)
+    for (uint32_t j = 0; j < a.layout().levels; ++j) {
+      const auto ra = a.row(f, j), rb = b.row(f, j);
+      if (ra.size() != rb.size() || !std::equal(ra.begin(), ra.end(), rb.begin())) return false;
+    }
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("meta wavetable: a keyframe edit is audible without a compile; the swap is click-free; RT-safe while playing") {
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  CHECK(slot->generation() == 2);  // the default sine, then the instance's own (one keyframe: one frame)
+  CHECK(slot->table()->frames() == 1);
+  Driver d{*link};
+  link->play(0);
+  d.run(200);
+  engine::ProjectProgram& program = *link->engine().program();
+  const engine::ProgramImage* image = nullptr;
+  for (uint32_t u = 0; u < program.numUnits(); ++u)
+    if (program.layout().units[u].voices) image = program.current(u);
+  REQUIRE(image != nullptr);
+  const app::LinkStats s0 = link->stats();
+  const uint64_t gen = slot->generation();
+  // The edit: saw → square, 64 dense frames. Blocks keep running while the table builds (as a device would).
+  const size_t mark = d.out.size();
+  const auto t0 = std::chrono::steady_clock::now();
+  s.data(wt, sawToSquare());
+  CHECK(s.store.lastChanges().metaDataOnly());
+  uint32_t blocks = 0;
+  while (slot->generation() == gen && blocks < 48000) {
+    d.run(1);
+    ++blocks;
+  }
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  REQUIRE(slot->generation() == gen + 1);
+  MESSAGE("keyframe edit (64 frames) to the table published: " << ms << " ms (" << blocks << " blocks)");
+  const size_t swap = d.out.size();
+  d.run(400);
+  CHECK(link->stats().compiles == s0.compiles);
+  CHECK(link->stats().unitCompiles == s0.unitCompiles);
+  CHECK(program.current(0) != nullptr);
+  bool same = false;
+  for (uint32_t u = 0; u < program.numUnits(); ++u) same = same || program.current(u) == image;
+  CHECK(same);  // the unit kept its image
+  CHECK(slot->table()->frames() == meta::kWtDefaultFrames);
+  CHECK(sameTable(*slot->table(), *directTable(s.doc(), wt, "", 48000.0)));
+  // Click-free (TMM.2's bound end to end, QUESTIONS Q170 1): around the swap no step exceeds the larger of the two
+  // tables' own steps plus the fade's share of their difference (≤ (peak_a + peak_b) / 64).
+  const size_t w = 4096;
+  const double stepA = maxStep(d.out, mark - w, mark), stepB = maxStep(d.out, swap + 4 * kBlock, swap + 4 * kBlock + w);
+  const double peakA = peakOf(d.out, mark - w, mark), peakB = peakOf(d.out, swap + 4 * kBlock, swap + 4 * kBlock + w);
+  const double stepSwap = maxStep(d.out, swap - 2 * kBlock, swap + 3 * kBlock);
+  MESSAGE("steps: sine " << stepA << ", saw " << stepB << ", around the swap " << stepSwap);
+  CHECK(stepSwap <= std::max(stepA, stepB) + (peakA + peakB) / dsp::kFrameTableFadeFrames + 1e-6);
+  // Audible: sine → saw.
+  CHECK(brightness(d.out, swap + 8 * kBlock, d.out.size()) > 5.0 * brightness(d.out, mark - w, mark));
+}
+
+TEST_CASE("meta wavetable: a baked fold drag compiles nothing, is one undo step, and the audio follows") {
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  s.data(wt, oneCycle(dsp::BasicCycle::Saw));
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  Driver d{*link};
+  link->play(0);
+  d.run(100);
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  const auto plain = slot->table();
+  const app::LinkStats s0 = link->stats();
+  const size_t undo = s.store.history().cursor();
+  const size_t before = d.out.size();
+  REQUIRE(s.store.beginGesture("fold").ok());
+  for (int i = 1; i <= 8; ++i) {
+    s.param(wt, "fold", 0.1 * i);
+    d.run(4);
+  }
+  REQUIRE(s.store.commitGesture().ok());
+  REQUIRE(link->waitForMetaTables());
+  d.run(20);
+  CHECK(link->stats().compiles == s0.compiles);
+  CHECK(link->stats().unitCompiles == s0.unitCompiles);
+  CHECK(s.store.history().cursor() == undo + 1);
+  CHECK(metaParamValue(*findDevice(s.doc(), wt).device, "", meta::wavetableType(), meta::kWtFold) ==
+        doctest::Approx(0.8));
+  // The slot plays the table of fold 0.8 (bit for bit what a direct build gives), and it sounds different.
+  REQUIRE(slot->table() != plain);
+  CHECK(sameTable(*slot->table(), *directTable(s.doc(), wt, "", 48000.0)));
+  const size_t after = d.out.size();
+  d.run(100);
+  bool differs = false;
+  for (size_t i = 0; i < 4096 && !differs; ++i) differs = std::fabs(d.out[before - 4096 + i]) != std::fabs(d.out[after + i]);
+  CHECK(differs);
+  const meta::TableBuilder::Stats st = link->metaTableStats();
+  MESSAGE("fold drag of 8 values: built " << st.built << ", replaced " << st.replaced << ", shared " << st.shared
+                                          << "; last build " << st.lastBuildMs << " ms (max " << st.maxBuildMs << ")");
+  // Undo restores fold 0: the plain table again (the cache still holds it: no build).
+  const uint64_t built = st.built;
+  REQUIRE(s.store.undo());
+  REQUIRE(link->waitForMetaTables());
+  CHECK(slot->table() == plain);
+  CHECK(link->metaTableStats().built == built);
+}
+
+TEST_CASE("meta wavetable: offline renders wait for pending builds; identical specs share one table; a rate change rebuilds") {
+  WtSong s;
+  const DeviceId a = s.track({{0, 4 * kPpq, 0}});
+  const DeviceId b = s.track({{0, 4 * kPpq, 7}});
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  s.data(a, sawToSquare());
+  s.data(b, sawToSquare());
+  s.param(a, "position", 0.4);
+  engine::BufferSink first;
+  REQUIRE(link->renderOffline(0, 9600, first).ok());  // without waiting: the render must
+  const auto sa = link->metaFrameTable(a, "", 0), sb = link->metaFrameTable(b, "", 0);
+  REQUIRE(sa != nullptr);
+  REQUIRE(sb != nullptr);
+  CHECK(sa->table() == sb->table());  // one table for both instances
+  CHECK(sa->table()->frames() == meta::kWtDefaultFrames);
+  auto fresh = makeLink(s.store.current());
+  engine::BufferSink second;
+  REQUIRE(fresh->renderOffline(0, 9600, second).ok());
+  REQUIRE(first.channels.size() == 2);
+  CHECK(first.channels == second.channels);  // deterministic: the render did not start on the default tables
+  CHECK(peakOf(first.channels[0], 0, 9600) > 0.1);
+  // Another rate: the defaults are republished and every instance's table rebuilt at the new rate.
+  REQUIRE(link->setSampleRate(96000.0).ok());
+  REQUIRE(link->waitForMetaTables());
+  const auto sa2 = link->metaFrameTable(a, "", 0);
+  REQUIRE(sa2 != nullptr);
+  CHECK(sa2->table()->layout().sampleRate == 96000.0);
+  CHECK(sa2->table()->frames() == meta::kWtDefaultFrames);
+}
+
+TEST_CASE("meta wavetable: golden wavetable-morph (saw -> square spectral sweep, crossfade gap, baked warp per mode)") {
+  WtSong s;
+  constexpr Ticks q = kPpq;  // 0.5 s at 120 BPM
+  const DeviceId spectral = s.track({{0, q, 0}});
+  const DeviceId cross = s.track({{q, q, 0}});
+  s.data(spectral, sawToSquare(dsp::GapMode::Spectral));
+  s.data(cross, sawToSquare(dsp::GapMode::Crossfade));
+  s.lane(0, spectral, "position", {{0, 0.0f, 0.0f, {}}, {q, 1.0f, 0.0f, {}}});
+  s.lane(1, cross, "position", {{q, 0.0f, 0.0f, {}}, {2 * q, 1.0f, 0.0f, {}}});
+  for (int mode = 0; mode < 3; ++mode) {
+    const DeviceId w = s.track({{2 * q + mode * (q / 2), q / 2, 0}});
+    s.data(w, oneCycle(dsp::BasicCycle::Saw));
+    s.param(w, "warp", 0.6);
+    s.setting(w, "warpMode", mode);
+  }
+  const DeviceId fs1 = s.track({{2 * q + 3 * (q / 2), q / 2, 0}});
+  s.data(fs1, oneCycle(dsp::BasicCycle::Saw));
+  s.param(fs1, "fold", 0.4);
+  s.param(fs1, "sync", 0.3);
+  constexpr double kSeconds = 2.0, kRate = 48000.0;
+  auto link = makeLink(s.store.current());
+  engine::BufferSink sink;
+  REQUIRE(link->renderOffline(0, static_cast<uint64_t>(kSeconds * kRate), sink).ok());
+  CHECK(link->lastError().empty());
+  const golden::Channels& out = sink.channels;
+  REQUIRE(out.size() == 2);
+  CHECK(peakOf(out[0], 0, out[0].size()) > 0.2);
+  const fs::path wav = golden::goldenDir() / "audio" / "wavetable_morph.wav";
+  const char* up = std::getenv("PQ_UPDATE_GOLDENS");
+  if (up != nullptr && *up != '\0' && *up != '0') {
+    REQUIRE(engine::writeWav(wav, out, static_cast<uint32_t>(kRate)).ok());
+    MESSAGE("updated " << wav.string());
+  }
+  auto gold = engine::readWav(wav);
+  REQUIRE_MESSAGE(gold.ok(), (gold.ok() ? std::string() : gold.error().message + " (PQ_UPDATE_GOLDENS=1)"));
+  const golden::Comparison cmp = golden::compare(*gold, out, static_cast<uint32_t>(kRate));
+  CHECK_MESSAGE(cmp.ok, cmp.message);
+  // Each warp mode bakes a different table (the segments differ).
+  const size_t seg = static_cast<size_t>(0.25 * kRate), at = static_cast<size_t>(1.0 * kRate) + 2400;
+  CHECK(std::fabs(brightness(out[0], at, at + 4800) - brightness(out[0], at + seg, at + seg + 4800)) > 1e-6);
+}
+
+namespace {
+
+// The alias suite on the module's output (TMM.1's method, tests/support/alias_meter.h): BasicSynth forked so its voice
+// is a nested Wavetable read by a float phase ramp acc = frac(z1(acc) + d), d = k / 2^16 a device param: bin-exact
+// pitches k·sr / 2^16 whose phases are exact multiples of 2^-16 at every rate (a phasor(f) would need f within
+// 0.5·sr / 2^32 Hz of the bin, which float cannot hold above ~1 kHz at 44.1 kHz). The table: saw → square (spectral), read at position 0.5 (a blend of two dense frames), with each baked
+// control at its values. Everything non-harmonic below 20 kHz must be ≤ −100 dBFS.
+struct AliasRig {
+  DocumentStore store;
+  TrackId track;
+  DeviceId inst;
+  std::unique_ptr<ProjectLink> link;
+  ListenerId sub{};
+  double rate;
+  explicit AliasRig(double sr) : rate(sr) {
+    IdSource& ids = store.ids();
+    track = ids.track();
+    inst = ids.device();
+    Batch b{"alias rig", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "WT", inst), {}, kAppend});
+    std::vector<Note> notes{playback_fixture::note(ids, 0, 256 * kTicksPerWhole, 0)};
+    b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 256 * kTicksPerWhole, notes, "held")});
+    REQUIRE(store.dispatch(b).ok());
+    link = makeLink(store.current(), sr);
+    std::string text = link->devices().stockText("BasicSynth");
+    auto swap = [&](const std::string& from, const std::string& to) {
+      const size_t at = text.find(from);
+      REQUIRE_MESSAGE(at != std::string::npos, from);
+      text.replace(at, from.size(), to);
+    };
+    swap("  out   out  : audio voice mono", "  param d = 0.01 [0..0.5]\n  out   out  : audio voice mono");
+    swap("  out = osc * env * vel * level", "  acc = frac(z1(acc) + d)\n  wt1 = meta_wavetable(x: acc)\n  out = wt1");
+    sub = store.subscribe([this](const StoreEvent& e) { link->onDocumentChange(e); });
+    edit(ops::addMetaCall(*store.current(), inst, text, "wt1", "wavetable"));
+    edit(ops::setMetaData(*store.current(), inst, "wt1", "wavetable", sawToSquare()));
+    edit(ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", "position", 0.5));
+    link->flush();
+    REQUIRE(link->lastError().empty());
+    REQUIRE(link->waitForMetaTables());
+    link->play(0);
+  }
+  ~AliasRig() { store.unsubscribe(sub); }
+  void edit(Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+  }
+  void bake(const char* param, double v) {
+    edit(ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", param, v));
+    REQUIRE(link->waitForMetaTables());
+  }
+  void warpMode(int m) {
+    edit(ops::setMetaSetting(*store.current(), inst, "wt1", "wavetable", "warpMode", m));
+    link->flush();  // a setting: one compile (the table follows it)
+    REQUIRE(link->waitForMetaTables());
+  }
+  // N frames of the left channel after the phase increment `inc` (cycles per sample) has played `lead` frames.
+  std::vector<float> capture(double inc, uint32_t n, uint32_t lead = 4096) {
+    REQUIRE(store.dispatch(SetDeviceParam{inst, "d", inc}).ok());
+    std::vector<float> l(kBlock), r(kBlock), out;
+    out.reserve(n);
+    uint32_t done = 0;
+    while (out.size() < n) {
+      float* ch[2] = {l.data(), r.data()};
+      {
+        DenormalGuard dg;
+        link->engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+      }
+      time += kBlock;
+      if (done >= lead) out.insert(out.end(), l.begin(), l.end());
+      done += kBlock;
+    }
+    out.resize(n);
+    for (float& x : out) x *= static_cast<float>(std::sqrt(2.0));  // the centre pan's −3 dB
+    return out;
+  }
+  int64_t time = 0;
+};
+
+struct AliasCase {
+  const char* control;  // nullptr: the plain table
+  double value;
+  int mode;
+};
+
+void runAliasSuite(double rate, const std::vector<AliasCase>& cases, uint32_t pitches) {
+  constexpr uint32_t kN = 1u << 16;
+  AliasRig rig(rate);
+  test::AliasMeter meter(kN);
+  std::vector<uint32_t> ks;
+  for (uint32_t i = 0; i < pitches; ++i) {
+    const double f = 20.0 * std::pow(12000.0 / 20.0, pitches > 1 ? double(i) / (pitches - 1) : 0.0);
+    const uint32_t k = std::max(1u, static_cast<uint32_t>(std::lround(f * kN / rate)));
+    if (ks.empty() || ks.back() != k) ks.push_back(k);
+  }
+  double worst = -400.0;
+  std::string worstWhere;
+  int curMode = 0;
+  for (const AliasCase& c : cases) {
+    if (c.control != nullptr) {
+      if (std::string(c.control) == "warp" && c.mode != curMode) {
+        rig.warpMode(c.mode);
+        curMode = c.mode;
+      }
+      rig.bake(c.control, c.value);
+    }
+    for (const uint32_t k : ks) {
+      const double f = k * rate / kN;
+      const std::vector<float> x = rig.capture(static_cast<double>(k) / kN, kN);
+      const test::AliasReport rep = meter.measure(x, k, rate, [](uint32_t) { return -1.0; });
+      if (rep.worstAliasDb > worst) {
+        worst = rep.worstAliasDb;
+        worstWhere = std::string(c.control ? c.control : "plain") + " " + std::to_string(c.value) + " mode " +
+                     std::to_string(c.mode) + " at " + std::to_string(f) + " Hz (alias at " +
+                     std::to_string(rep.worstAliasHz) + " Hz)";
+      }
+      CAPTURE(rate);
+      CAPTURE(f);
+      CAPTURE(c.control ? c.control : "plain");
+      CAPTURE(c.value);
+      CAPTURE(c.mode);
+      CHECK(rep.worstAliasDb <= -100.0);
+      // Not silent: the fundamental is there (a baked sync moves the energy up; high notes keep little of it).
+      if (c.control == nullptr) CHECK(peakOf(x, 0, x.size()) > 0.5);
+    }
+    if (c.control != nullptr) rig.bake(c.control, 0.0);
+  }
+  MESSAGE("alias suite at " << rate << " Hz: " << ks.size() << " pitches x " << cases.size()
+                            << " tables, worst alias " << worst << " dBFS (" << worstWhere << ")");
+}
+
+std::vector<AliasCase> fullCases() {
+  std::vector<AliasCase> c{{nullptr, 0.0, 0}};
+  for (const double v : {0.1, 0.3, 0.5, 0.75, 1.0}) c.push_back({"fold", v, 0});
+  for (const double v : {0.1, 0.3, 0.5, 0.75, 1.0}) c.push_back({"sync", v, 0});
+  for (int m = 0; m < 3; ++m)
+    for (const double v : {-1.0, -0.4, 0.2, 0.6, 1.0}) c.push_back({"warp", v, m});
+  return c;
+}
+
+}  // namespace
+
+TEST_CASE("meta wavetable: the alias suite on the module output (48 kHz, one value per control, 9 pitches)") {
+  runAliasSuite(48000.0,
+                {{nullptr, 0.0, 0}, {"fold", 0.5, 0}, {"sync", 0.5, 0}, {"warp", 0.6, 0}, {"warp", 0.6, 1}, {"warp", -0.6, 2}},
+                9);
+}
+
+TEST_CASE("meta wavetable: the alias suite on the module output (44.1 / 48 / 96 kHz, 5 values per control, 25 pitches)" *
+          doctest::test_suite("slow")) {
+  for (const double rate : {44100.0, 48000.0, 96000.0}) runAliasSuite(rate, fullCases(), 25);
+}
+
+TEST_CASE("meta wavetable: a keyframe edit reaches the engine within 30 ms (64 frames), 160 ms with a bake" *
+          doctest::test_suite("perf")) {
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  auto latency = [&](auto&& edit) {
+    const uint64_t gen = slot->generation();
+    const auto t0 = std::chrono::steady_clock::now();
+    edit();
+    while (slot->generation() == gen) std::this_thread::yield();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  };
+  double plain = 1e9, baked = 1e9;
+  for (int i = 0; i < 3; ++i) {  // best of 3 (fresh data each time: no cache hit)
+    plain = std::min(plain, latency([&] { s.data(wt, sawToSquare(i % 2 ? dsp::GapMode::Crossfade : dsp::GapMode::Spectral)); }));
+    baked = std::min(baked, latency([&] { s.param(wt, "fold", 0.2 + 0.1 * i); }));
+  }
+  MESSAGE("keyframe edit -> audible table: 64 frames " << plain << " ms, with a baked fold " << baked << " ms");
+#if PQ_OPTIMIZED
+  CHECK(plain <= 30.0);
+  CHECK(baked <= 160.0);
+#endif
+}
+
+// ---- The TMM.2 / TMM.4 join: faces read the real voice taps ------------------------------------------------------
+
+TEST_CASE("meta faces: a played note is a dot — the face reads the engine's voice tap through the app's hub") {
+  WtSong s;
+  // A chain Phase accumulator playing a three-note chord, and a chain Wavetable playing one note.
+  auto t = ops::createTrack(s.doc(), s.store.ids(), TrackKind::Midi);
+  REQUIRE(t.ok());
+  s.must(t->command);
+  const TrackId accTrack = t->tracks.at(0);
+  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), accTrack, "phase_acc", 0);
+  REQUIRE(a.ok());
+  s.must(a->command);
+  const DeviceId acc = a->devices.at(0);
+  std::vector<Note> chord;
+  for (int32_t deg : {0, 4, 7}) chord.push_back(playback_fixture::note(s.store.ids(), 0, 64 * kPpq, deg));
+  s.must(AddClip{accTrack, playback_fixture::clip(s.store.ids(), 0, 64 * kPpq, chord, "chord")});
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  app::FaceVoiceHub hub(*link);
+  views::VoiceTapReader* accVoices = hub.voices(acc, "");
+  views::VoiceTapReader* wtVoices = hub.voices(wt, "");
+  CHECK(hub.voices(acc, "") == accVoices);  // stable
+  // A face bound to the reader, as the project patch view binds it.
+  std::unique_ptr<views::MetaFace> face = views::makeFace(meta::phaseAccType());
+  REQUIRE(face != nullptr);
+  face->bind(nullptr, accVoices);
+  CHECK_FALSE(accVoices->live());  // silent: the host's timer does not run
+  CHECK_FALSE(hub.anyFresh());
+  CHECK(face->sounding().empty());
+  Driver d{*link};
+  link->play(0);
+  d.run(20);
+  CHECK(hub.anyFresh());  // records arrived: the host wakes its faces
+  CHECK(accVoices->live());
+  CHECK(face->pollVoices());
+  REQUIRE(face->sounding().size() == 3);  // three dots
+  const auto tap = link->metaVoiceTap(acc, "", 0);
+  REQUIRE(tap != nullptr);
+  // The dots are the phases the voices read: each in [0, 1), each voice's samples rising (a ramp, wrapping).
+  for (const views::FaceVoice& v : face->sounding()) {
+    CHECK(v.phase >= 0.0f);
+    CHECK(v.phase < 1.0f);
+    CHECK(v.sampleCount > 0);
+    CHECK(v.sampleCount <= views::FaceVoice::kMaxSamples);
+  }
+  // The same voice slots as the engine's reader, at the same newest phase.
+  VoiceTapReader check(tap);
+  d.run(2);
+  (void)face->pollVoices();
+  (void)check.poll(0.0);
+  for (const views::FaceVoice& v : face->sounding()) {
+    CHECK(check.voice(v.slot).active);
+    CHECK(check.voice(v.slot).value == v.phase);
+  }
+  CHECK_FALSE(static_cast<views::TapVoices*>(accVoices)->fresh());  // read: nothing new until the next block
+  // The Wavetable's dots come from its table slot's tap (wavetable_pos writes the phase it read).
+  std::array<views::FaceVoice, 8> buf{};
+  d.run(4);
+  CHECK(wtVoices->read(buf) == 1);
+  CHECK(buf[0].phase >= 0.0f);
+  CHECK(buf[0].phase < 1.0f);
+  // Stopped: the voices end, the readers fall silent (the face timer stops).
+  link->stop();
+  d.run(static_cast<uint32_t>(0.3 * 48000 / kBlock));
+  // The first read after the stop takes the last records; once they are older than the staleness window (0.1 s) the
+  // reader's serial moves and the next read finds no voice.
+  (void)face->pollVoices();
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  (void)face->pollVoices();
+  CHECK(face->sounding().empty());
+  CHECK_FALSE(accVoices->live());
+}
+
+TEST_CASE("meta faces: a face bound before its instance compiled follows the tap that appears later") {
+  WtSong s;
+  auto t = ops::createTrack(s.doc(), s.store.ids(), TrackKind::Midi);
+  REQUIRE(t.ok());
+  s.must(t->command);
+  const TrackId track = t->tracks.at(0);
+  std::vector<Note> one{playback_fixture::note(s.store.ids(), 0, 64 * kPpq, 0)};
+  s.must(AddClip{track, playback_fixture::clip(s.store.ids(), 0, 64 * kPpq, one, "one")});
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  app::FaceVoiceHub hub(*link);
+  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), track, "phase_acc", 0);
+  REQUIRE(a.ok());
+  const DeviceId acc = a->devices.at(0);
+  views::VoiceTapReader* r = hub.voices(acc, "");  // no such instance yet: no tap
+  CHECK_FALSE(r->live());
+  s.must(a->command);
+  link->flush();
+  (void)r->serial();  // the host's next poll finds the new tap and registers with it
+  Driver d{*link};
+  link->play(0);
+  d.run(20);
+  CHECK(r->live());
+  std::array<views::FaceVoice, 8> buf{};
+  CHECK(r->read(buf) == 1);
+}

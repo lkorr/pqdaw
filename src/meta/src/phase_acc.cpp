@@ -19,7 +19,7 @@ constexpr std::array<ParamSpec, 3> kParams = {{
 constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
 
 // Body node ids (stable: the phasor's state key is the call path plus kPhasor).
-enum : uint32_t { kHzSum, kPhasor, kAddPhase, kAddPm, kFrac, kAmp };
+enum : uint32_t { kHzSum, kPhasor, kAddPhase, kAddPm, kFrac, kAmp, kTap };
 
 Status body(Builder& b) {
   const auto hz = b.atom("add", {b.input(0), b.param(0)}, kHzSum);
@@ -28,8 +28,14 @@ Status body(Builder& b) {
   const auto p2 = b.atom("add", {p1, b.input(1)}, kAddPm);
   const auto wrapped = b.atom("frac", {p2}, kFrac);
   b.output(0, b.atom("mul", {b.param(2), wrapped}, kAmp));
+  // TMM.5: the face's dots — the phase each voice reads, into the instance's voice tap (one relaxed load per block
+  // while no face watches it).
+  b.bind(wrapped, "ph");
+  b.bind(b.atom("voice_tap", {wrapped, b.slot(0)}, kTap), "tap");
   return Ok{};
 }
+
+std::vector<ResourceRequest> resources(std::span<const double>) { return {ResourceRequest{ResourceKind::VoiceTap, 0}}; }
 
 Type makeType() {
   Type t;
@@ -40,6 +46,7 @@ Type makeType() {
   t.params = kParams;
   t.outputs = kOutputs;
   t.chainInstrument = true;
+  t.resources = &resources;
   t.body = &body;
   return t;
 }

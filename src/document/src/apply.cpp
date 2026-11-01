@@ -16,6 +16,7 @@
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/document/meta.h"
 #include "pq/meta/registry.h"
 #include "checks.h"
 
@@ -2000,6 +2001,7 @@ Res apply_(const Snapshot& s, const AddMacroMapping& c, ChangeSet& cs) {
   const DeviceLoc target = findDevice(*s, c.mapping.device);
   if (!target.device) return notFound("mapping target device not found");
   if (target.device->rack && !isRackParam(c.mapping.param)) return invalid("a rack's params are its macros and selector");
+  if (std::string why = metaParamBakedOnly(*target.device, c.mapping.param); !why.empty()) return invalid(why);  // TMM.5
   Res r = editDeviceAt(s, c.rack, cs, kChangeStructural, [&](Device& rack) {
     Rack& rr = mutableRack(rack);
     rr.mappings.insert(std::upper_bound(rr.mappings.begin(), rr.mappings.end(), c.mapping.id,
@@ -2120,7 +2122,10 @@ Res withWires(const Snapshot& s, WireList list, ChangeSet& cs, ChangeFlag flag, 
 Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
   PQ_DOC_TRY(checkWire(c.wire));
   if (!findDevice(*s, c.wire.from).track) return notFound("wire source device not found");
-  if (!findDevice(*s, c.wire.to).track) return notFound("wire target device not found");
+  const DeviceLoc to = findDevice(*s, c.wire.to);
+  if (!to.track) return notFound("wire target device not found");
+  if (!c.wire.param.empty())  // TMM.5: a baked meta param is not a modulation target
+    if (std::string why = metaParamBakedOnly(*to.device, c.wire.param); !why.empty()) return invalid(why);
   const WireList& cur = wiresOf(*s);
   for (const Wire& w : cur) {
     if (w.id == c.wire.id) return invalid("wire id already in use");

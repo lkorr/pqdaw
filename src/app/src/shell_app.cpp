@@ -238,6 +238,12 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     if (auto* patch = views::findProjectPatch(*app->shell_)) {  // T4.13: wire readouts and the CPU cost labels
       patch->setMeterSource(app->link_.get());
       patch->setCostSource(app->link_.get());
+      // TMM.5: the faces' voice dots read the link's voice taps.
+      app->faceVoices_ = std::make_unique<FaceVoiceHub>(*app->link_);
+      FaceVoiceHub* hub = app->faceVoices_.get();
+      patch->faceVoices = [hub](doc::DeviceId d, std::string_view path) { return hub->voices(d, path); };
+      patch->rebindFaces();
+      app->faceView_ = patch;
     }
     app->audio_ = std::make_unique<AudioDeviceManager>(*app->link_, audio, ManagerHooks{}, o.device);
     // The output notifies from its threads: post to the UI thread, which polls the manager (follows a device rate
@@ -645,6 +651,8 @@ void ShellApp::drainOsDrags() {
 
 void ShellApp::onFramePresented() {
   ++frames_;
+  // TMM.5: voices that started while no face animated (an audition, a note while stopped) wake the faces.
+  if (faceView_ != nullptr && faceVoices_->anyFresh()) faceView_->wakeFaces();
   if (frames_ != 1) return;
   std::printf("pqdaw: %s\n", firstFrameReport().c_str());
   if (startupLogEnabled()) std::printf("%s", startupPhaseReport().c_str());

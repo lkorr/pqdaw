@@ -916,6 +916,7 @@ void ProjectPatchView::refreshTransport() {
     ph = ctx_.transport().playhead();
   }
   if (on && ph.playing) {
+    wakeFaces();  // TMM.5: voices start with the transport (cheap while a face timer already runs: nothing)
     if (!playhead_ || *playhead_ != ph.tick) {
       if (playhead_) damageLaneColumn(*playhead_);
       playhead_ = ph.tick;
@@ -1041,6 +1042,10 @@ bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, u
 }
 
 void ProjectPatchView::rebindFaces() { canvas_->rebindFaces(); }
+
+void ProjectPatchView::wakeFaces() {
+  if (shown() && !canvas_->animatingFaces()) canvas_->wakeFaces();
+}
 
 bool ProjectPatchView::editDeviceCircuit(doc::DeviceId device) {
   return circuit::openDeviceInCircuitView(*canvas_, ctx_, device) != nullptr;

@@ -10,8 +10,10 @@
 //            amp    0 … 4, default 1: multiplies the output (SPEC: "a multiplier on the output"; QUESTIONS MM-1)
 //   output   out = amp · frac(phasor(hz + freq) + phase + pm)   (the phasor's uint32 accumulator, SPEC §3.1)
 //   chain    a chain device at the instrument position (its voices end at note-off); not an audio effect.
+//   tap      (TMM.5) voice_tap(frac(…), slot) into its VoiceTap request 0: the face's per-voice dots.
 //
-// Cost: phasor + 4 ops (hz + freq, + phase, frac, · amp); an unwired pm is folded away (x + (−0) → x).
+// Cost: phasor + 4 ops (hz + freq, + phase, frac, · amp); an unwired pm is folded away (x + (−0) → x); the tap is one
+// relaxed load per block while no face reads it.
 
 #include "pq/meta/type.h"
 

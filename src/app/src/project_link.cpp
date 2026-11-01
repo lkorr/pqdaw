@@ -414,6 +414,13 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
     jitWorker_ = jit_.get();
   }
   current_ = initial;
+  {
+    std::lock_guard lock(mutex_);
+    metaDoc_ = initial;
+  }
+  // TMM.5: the meta modules' table builder (before the first compile, which already asks for tables).
+  tables_ = std::make_unique<meta::TableBuilder>(
+      [this](uint32_t id, uint64_t key, std::shared_ptr<const dsp::FrameTable> t) { deliverMetaTable(id, key, std::move(t)); });
   conditionalSends_ = doc::conditionalSendsKey(*current_);
   reportDelayedSends(*current_);
   reportWires(*current_);
@@ -572,8 +579,10 @@ Status ProjectLink::setSampleRate(double rate) {
     ++layoutSerial_;
     // TMM.2: a frame table's levels depend on the rate: every slot gets the default at the new one (TMM.5's builder
     // rebuilds the instances' own tables).
-    for (MetaSlot& m : metaSlots_)
+    for (MetaSlot& m : metaSlots_) {
       if (m.table) m.table->publish(metaDefaultTable(), sampleReclaimer_);
+      m.wanted = 0;  // TMM.5: rebuilt at the new rate by the compile below
+    }
   }
   meters_.clear();
   written_.assign(written_.size(), std::numeric_limits<float>::quiet_NaN());
@@ -603,6 +612,7 @@ ProjectLink::~ProjectLink() {
   }
   cv_.notify_all();
   if (worker_.joinable()) worker_.join();  // no compile path (and so no wantJit) after this
+  tables_.reset();  // TMM.5: no table delivery after this (a running build finishes first)
   jit_.reset();  // then no JIT delivery (a running JIT compile finishes first; a waiting delivery gives up)
   {  // T5.4: no sample load after this
     std::lock_guard lock(loadMutex_);
@@ -975,6 +985,16 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   const bool structural = reset || c.structural();
   current_ = next;
   const doc::Project& p = *current_;
+  {
+    std::lock_guard lock(mutex_);
+    metaDoc_ = next;
+  }
+  // TMM.5: a MetaData edit, or a param (a baked knob), may change a meta module's table: rebuilt off-thread, no compile.
+  // A structural change rebuilds after its compile (compileNow).
+  if (!structural && (!c.metaData.empty() || std::any_of(c.params.begin(), c.params.end(), [](const doc::ParamRef& r) {
+        return r.kind == doc::ParamKind::DeviceParam || r.kind == doc::ParamKind::MetaParam;
+      })))
+    refreshMetaTables();
   if (structural) {  // free the slots of tracks that are gone (FIFO reuse: much later)
     std::vector<uint32_t> alive;
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { alive.push_back(t.id.value); });
@@ -1420,6 +1440,10 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
       }
       m.live = true;
     }
+    m.type = meta::findType(r.type);  // TMM.5: what its table is built from
+    m.device = r.device;
+    m.path = r.path;
+    m.index = r.request.index;
     frameTableViews_[r.slot] = m.table.get();
     voiceTapViews_[r.slot] = m.kind == meta::ResourceKind::VoiceTap ? m.tap.get() : nullptr;
   }
@@ -1469,6 +1493,70 @@ Status ProjectLink::publishFrameTable(doc::DeviceId device, std::string_view pat
   return Ok{};
 }
 
+void ProjectLink::refreshMetaTables() {
+  if (!tables_) return;
+  struct Pending {
+    uint32_t id;
+    meta::TableJob job;
+  };
+  std::vector<Pending> jobs;
+  {
+    std::lock_guard lock(mutex_);
+    if (!metaDoc_) return;
+    const doc::Project& p = *metaDoc_;
+    std::vector<double> params;
+    for (const auto& [key, id] : metaIds_) {
+      MetaSlot& m = metaSlots_[id];
+      if (!m.live || m.kind != meta::ResourceKind::FrameTable || !m.table || m.type == nullptr ||
+          m.type->frameTable == nullptr)
+        continue;
+      const doc::Device* d = doc::findDevice(p, m.device).device;
+      if (d == nullptr) continue;  // gone in the newest snapshot; the next compile frees the slot
+      const doc::MetaInstance* inst = d->metaAt(m.path);
+      const bool own = inst != nullptr && inst->type == m.type->id && inst->data != nullptr;
+      meta::DataPtr data = own ? inst->data : m.type->defaultData != nullptr ? m.type->defaultData() : nullptr;
+      if (data != m.data) {  // immutable values: hash each one once
+        m.dataHash = data != nullptr ? meta::dataHash(*data) : 0;
+        m.data = data;
+      }
+      params.resize(m.type->params.size());
+      for (size_t i = 0; i < params.size(); ++i) params[i] = doc::metaParamValue(*d, m.path, *m.type, i);
+      const std::vector<double> settings = doc::metaSettings(*d, m.path, *m.type);
+      meta::TableSource src;
+      src.data = std::move(data);
+      src.dataHash = m.dataHash;
+      src.params = params;
+      src.settings = settings;
+      src.sampleRate = cfg_.sampleRate;
+      meta::TableJob job;
+      if (!m.type->frameTable(src, m.index, job).ok() || job.key == m.wanted) continue;
+      m.wanted = job.key;
+      jobs.push_back({id, std::move(job)});
+    }
+  }
+  for (Pending& j : jobs) tables_->submit(j.id, std::move(j.job));
+}
+
+void ProjectLink::deliverMetaTable(uint32_t id, uint64_t key, std::shared_ptr<const dsp::FrameTable> table) {
+  std::shared_ptr<dsp::FrameTableSlot> slot;
+  {
+    std::lock_guard lock(mutex_);
+    if (id == 0 || id >= kMetaSlots) return;
+    const MetaSlot& m = metaSlots_[id];
+    // A table the slot no longer wants (a newer state, an id given to another instance, another rate) is dropped.
+    if (!m.live || !m.table || m.wanted != key || table->layout().sampleRate != cfg_.sampleRate) return;
+    slot = m.table;
+  }
+  slot->publish(std::move(table), sampleReclaimer_);
+  sampleReclaimer_.collect();
+}
+
+bool ProjectLink::waitForMetaTables(double timeoutSeconds) { return tables_ == nullptr || tables_->waitIdle(timeoutSeconds); }
+
+meta::TableBuilder::Stats ProjectLink::metaTableStats() const {
+  return tables_ != nullptr ? tables_->stats() : meta::TableBuilder::Stats{};
+}
+
 uint32_t ProjectLink::metaSlotsInUse() const {
   std::lock_guard lock(mutex_);
   return static_cast<uint32_t>(metaIds_.size());
@@ -1515,6 +1603,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   if (!lowered.ok()) return fail(lowered.error());
   doc::LoweredProject& lp = lowered.value();
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
+  refreshMetaTables();              // TMM.5: new instances, settings (the warp mode), the rate: their tables
   std::vector<engine::ProjectParamLink> links;
   for (const doc::LoweredParam& p : lp.params) {
     const uint32_t slot = slotForParam(p.key);

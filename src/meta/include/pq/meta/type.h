@@ -69,6 +69,8 @@ struct SettingSpec {
 enum class InputDefault : uint8_t {
   Zero,     // −0.0: an added zero the optimiser removes (x + (−0) → x), so an unwired modulation input costs nothing
   VoiceHz,  // voice.hz in a voice context, else −0.0
+  VoicePhase,  // TMM.5: phasor(voice.hz) in a voice context (a per-voice phase that restarts at note-on: a lone
+               // Wavetable is an oscillator), else −0.0. A wired input leaves the phasor unused (removed).
 };
 struct InputSpec {
   std::string_view name;
@@ -109,6 +111,8 @@ struct ExpandContext {
 
 class Builder;
 struct Expansion;
+struct TableSource;  // pq/meta/table_builder.h (TMM.5)
+struct TableJob;
 struct Type {
   std::string_view id;    // "phase_acc": an identifier without "__" (the call is `meta_<id>`)
   std::string_view name;  // "Phase Accumulator"
@@ -128,6 +132,14 @@ struct Type {
   DataPtr (*defaultData)() = nullptr;
   std::string (*dataProblem)(const DataValue& data) = nullptr;
   Result<DataPtr> (*upgradeData)(const DataPtr& data, uint32_t fromVersion) = nullptr;
+  // TMM.5: the table a FrameTable request reads, built off the audio thread from the instance's data, params and
+  // settings (pq/meta/table_builder.h). Null: the type builds no table (its slot keeps the link's default). An error
+  // leaves the slot's table as it is.
+  Status (*frameTable)(const TableSource& source, uint32_t index, TableJob& out) = nullptr;
+  // Whether a `bakeable` param may be modulated (an automation lane, a wire, a macro): the expansion then has a live
+  // path for it. false (the Wavetable until TMM.8): such params are baked only, and the document refuses to modulate
+  // them (doc::metaParamBakedOnly).
+  bool liveBakeable = true;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none
@@ -139,7 +151,8 @@ inline constexpr uint32_t kInputIdBase = 1;      // input i's `in`
 inline constexpr uint32_t kDefaultIdBase = 64;   // input i's default value
 inline constexpr uint32_t kParamIdBase = 128;    // param i
 inline constexpr uint32_t kOutputIdBase = 256;   // output i (kOutputIdBase + outputs: `done`)
-inline constexpr uint32_t kFixedIdBase = 384;    // the framework's own nodes (voice.gate, not)
+inline constexpr uint32_t kFixedIdBase = 384;    // the framework's own nodes (voice.gate, not; input i's VoicePhase
+                                                 // voice.hz: kFixedIdBase + 32 + i)
 inline constexpr uint32_t kSlotIdBase = 512;     // resource slot constant i
 inline constexpr uint32_t kBodyIdBase = 1024;    // body node k: kBodyIdBase + k
 inline constexpr uint32_t kMaxBodyIds = 1u << 20;
@@ -158,6 +171,9 @@ public:
   PortRef slot(uint32_t index);                                          // the slot id as a constant
   PortRef atom(std::string_view atomName, std::initializer_list<PortRef> ins, uint32_t k, uint16_t repeat = 0);
   PortRef konst(double v, uint32_t k);
+  // Names a body node (a binding in the text form). A value read twice, and a sink, need one for the printed
+  // expansion to parse back to the same graph; the name must not be a port's. Names do not change node ids.
+  void bind(PortRef value, std::string_view name);
   void output(size_t i, PortRef value);
   graph::Patch& patch() noexcept { return p_; }
 

@@ -126,6 +126,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
     app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
+    app/test_meta_wavetable.cpp  # TMM.5: the Wavetable through the link (off-thread tables, click-free, alias suite, golden; taps → face dots)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -339,11 +340,13 @@ pq_add_test(pq_tests_dsp
   DEPS pq_dsp)
 
 # meta (TMM.3): the meta-module framework (registry, expansion, prelude, data) and the Phase accumulator through pqc
-# (standalone check + render, bit-identity with frac(phasor(voice.hz)), pitch over 10 s, both backends).
+# (standalone check + render, bit-identity with frac(phasor(voice.hz)), pitch over 10 s, both backends); TMM.5: the
+# Wavetable type (data codec, expansion, table jobs, the off-thread TableBuilder, pqc render).
 pq_add_test(pq_tests_meta
   SOURCES
     meta/test_meta.cpp
     meta/test_phase_acc.cpp
+    meta/test_wavetable.cpp
   DEPS pq_meta pq_pqc)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.
@@ -369,6 +372,7 @@ pq_add_test(pq_tests_document
     document/test_library_files.cpp  # T5.11: user-library files, hot-swap, library clips
     document/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes (rules, following, file, lowering)
     document/test_meta_modules.cpp  # TMM.3: meta-module state (file, builders, lowering goldens, renames)
+    document/test_meta_wavetable.cpp  # TMM.5: the Wavetable's data in the file, its baked-only controls
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

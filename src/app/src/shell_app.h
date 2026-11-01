@@ -15,6 +15,7 @@
 #include <string>
 
 #include "pq/app/bug_reporter.h"
+#include "pq/app/face_voices.h"
 #include "pq/app/cli.h"
 #include "pq/app/os_drop.h"
 #include "pq/app/patch_preview.h"
@@ -27,6 +28,10 @@
 #include "pq/ui/widget.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
+
+namespace pq::views::project_patch {
+class ProjectPatchView;
+}
 
 namespace pq::app {
 
@@ -72,6 +77,9 @@ private:
   // Declared before ctx_ (the context holds a reference to the port); audio_ after link_ (it calls the engine).
   std::unique_ptr<SimulatedTransport> transport_;
   std::unique_ptr<ProjectLink> link_;
+  // TMM.5: the meta faces' voice readers over the link's taps (after link_; before the views that bind them).
+  std::unique_ptr<FaceVoiceHub> faceVoices_;
+  views::project_patch::ProjectPatchView* faceView_ = nullptr;  // the view whose faces it feeds (owned by shell_)
   // T4.4: the circuit editor's patch preview, added into the device after the engine (declared before audio_: the
   // output stops calling it first).
   std::unique_ptr<PatchPreview> preview_;
