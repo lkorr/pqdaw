@@ -13,6 +13,10 @@
 //             record for longer than the reader's staleness window), so the face reads them gone.
 //   live()    a voice was sounding at the last read, or records arrived since: the host keeps polling while true.
 //   fresh()   records arrived since the last read (the host's cheap check whether to wake its faces).
+// TMM.16: with a table resolver (an instance that reads a frame table: the Wavetable), heardTable() is the table its
+// slot plays now, and a newly published table counts as news like a record: serial() changes, fresh() is true until
+// the next read, and live() stays true for kTableLinger seconds after the last table (a preview's full table follows
+// a pause in a drag by ≈ 0.1 s + its build: the host keeps polling until it has been drawn).
 // UI thread only.
 
 #include <cstdint>
@@ -22,6 +26,7 @@
 #include <vector>
 
 #include "pq/core/voice_tap.h"
+#include "pq/dsp/frame_table_slot.h"
 #include "pq/views/meta/meta_face.h"
 
 namespace pq::views {
@@ -29,13 +34,21 @@ namespace pq::views {
 class TapVoices final : public VoiceTapReader {
 public:
   using Resolve = std::function<std::shared_ptr<pq::VoiceTap>()>;  // the instance's tap now (null: none)
-  explicit TapVoices(Resolve resolve);
+  // TMM.16: the instance's frame-table slot now and the params its live path applies (null slot: none).
+  struct TableSlotRef {
+    std::shared_ptr<dsp::FrameTableSlot> slot;
+    std::vector<uint8_t> modulated;
+  };
+  using TableResolve = std::function<TableSlotRef()>;
+  static constexpr double kTableLinger = 2.0;
+  explicit TapVoices(Resolve resolve, TableResolve table = {});
   ~TapVoices() override;
 
   uint32_t read(std::span<FaceVoice> out) override;
   uint64_t serial() const noexcept override;
   bool live() const noexcept override;
   bool fresh() const noexcept;
+  HeardTable heardTable() const override;
 
   // The tap read now (tests).
   const pq::VoiceTap* tap() const noexcept { return tap_.get(); }
@@ -45,7 +58,13 @@ private:
   // Re-resolves the tap (an instance compiled after the face was bound gets its tap; a recompile may give a new one);
   // a new tap gets a new reader. serial() and fresh() follow too, so a tap that appears later is seen.
   void follow() const noexcept;
+  uint64_t tableGeneration() const noexcept;  // the slot's publishes (0 without one); notes when it changed
   Resolve resolve_;
+  TableResolve tableResolve_;
+  mutable TableSlotRef table_;
+  mutable uint64_t readGen_ = 0;            // tableGeneration() at the last read
+  mutable uint64_t seenGen_ = 0;            // ... when last looked at
+  mutable double lastTableChange_ = -1e300;
   mutable std::shared_ptr<pq::VoiceTap> tap_;
   mutable std::unique_ptr<pq::VoiceTapReader> reader_;
   mutable uint64_t tapSerial_ = 0;     // bumped when the tap object changes (serial() changes with it)

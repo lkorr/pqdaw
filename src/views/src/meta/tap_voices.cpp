@@ -16,7 +16,11 @@ double nowSeconds() {
 
 }  // namespace
 
-TapVoices::TapVoices(Resolve resolve) : resolve_(std::move(resolve)) { follow(); }
+TapVoices::TapVoices(Resolve resolve, TableResolve table) : resolve_(std::move(resolve)), tableResolve_(std::move(table)) {
+  follow();
+  readGen_ = seenGen_ = table_.slot ? tableGeneration() : 0;  // the table there now is not news (a face reads it)
+  lastTableChange_ = -1e300;
+}
 
 TapVoices::~TapVoices() = default;
 
@@ -26,6 +30,12 @@ void TapVoices::follow() const noexcept {
     t = resolve_ ? resolve_() : nullptr;
   } catch (...) {  // the host's lookup failed to allocate: keep the tap we have
     return;
+  }
+  if (tableResolve_) {
+    try {
+      table_ = tableResolve_();
+    } catch (...) {  // keep the slot we have
+    }
   }
   if (t == tap_) return;
   reader_.reset();
@@ -51,24 +61,47 @@ uint64_t TapVoices::written() const noexcept {
 // The voices shown count as gone this long after the last record (the core reader's window, plus a margin).
 constexpr double kStaleSeconds = 0.12;
 
+uint64_t TapVoices::tableGeneration() const noexcept {
+  // The slot's publish count, made distinct per slot object (a recompile may give the instance a new slot).
+  const uint64_t g = table_.slot ? table_.slot->generation() ^ (reinterpret_cast<uintptr_t>(table_.slot.get()) * 0xD6E8FEB86659FD93ull)
+                                 : 0;
+  if (g != seenGen_) {
+    seenGen_ = g;
+    lastTableChange_ = nowSeconds();
+  }
+  return g;
+}
+
 uint64_t TapVoices::serial() const noexcept {
   follow();
   const bool stale = active_ && nowSeconds() - lastRecord_ > kStaleSeconds;
-  return (tapSerial_ << 48) ^ written() ^ (stale ? 1ull << 47 : 0ull);
+  return (tapSerial_ << 48) ^ written() ^ (stale ? 1ull << 47 : 0ull) ^ (tableGeneration() * 0x9E3779B97F4A7C15ull);
 }
 
 bool TapVoices::fresh() const noexcept {
   follow();
-  return written() != readWritten_;
+  return written() != readWritten_ || tableGeneration() != readGen_;
 }
 
 bool TapVoices::live() const noexcept {
   follow();
-  return active_ || written() != readWritten_;
+  const uint64_t g = tableGeneration();
+  return active_ || written() != readWritten_ || g != readGen_ || nowSeconds() - lastTableChange_ < kTableLinger;
+}
+
+HeardTable TapVoices::heardTable() const {
+  follow();
+  HeardTable h;
+  if (!table_.slot) return h;
+  h.generation = tableGeneration();
+  h.table = table_.slot->table();
+  h.modulated = table_.modulated;
+  return h;
 }
 
 uint32_t TapVoices::read(std::span<FaceVoice> out) {
   follow();
+  readGen_ = tableGeneration();
   if (!reader_) return 0;
   const double now = nowSeconds();
   const uint64_t w = written();
@@ -87,6 +120,7 @@ uint32_t TapVoices::read(std::span<FaceVoice> out) {
     f.slot = s;
     f.phase = v.value - std::floor(v.value);
     f.position = v.position;
+    f.increment = v.increment;
     // The samples since this slot's last read: kVoiceTapSamples per record (at most one displayed frame's worth).
     const uint64_t records = seen_[s] != 0 && v.serial > seen_[s] ? v.serial - seen_[s] : 1;
     seen_[s] = v.serial;

@@ -45,7 +45,52 @@ double wrapPi(double a) noexcept {
 
 }  // namespace
 
-std::span<const float> Model::frame(uint32_t f) const noexcept {
+void smoothFrame(std::span<const double> x, uint32_t top, std::span<float> out, std::vector<double>& re,
+                 std::vector<double>& im) {
+  const auto n = static_cast<uint32_t>(x.size());
+  const auto m = static_cast<uint32_t>(out.size() - 1);
+  re.assign(x.begin(), x.end());
+  im.assign(n, 0.0);
+  dsp::fftInPlace(re, im, false);  // X_h = Σ x_i e^(−2πihi/n); c_h = X_h / n
+  const uint32_t k = std::min({top, m / 2 - 1, n / 2 - 1});
+  std::vector<double>& r2 = re;  // reuse: the m-point spectrum is built in the first m bins after saving c_0 … c_k
+  std::vector<std::complex<double>> c(k + 1);
+  for (uint32_t h = 0; h <= k; ++h) c[h] = {re[h] / n, im[h] / n};
+  r2.assign(m, 0.0);
+  im.assign(m, 0.0);
+  r2[0] = c[0].real();
+  for (uint32_t h = 1; h <= k; ++h) {
+    const double a = kPi * h / (k + 1);
+    const std::complex<double> v = c[h] * (std::sin(a) / a);  // Lanczos σ: the truncated series without its ringing
+    r2[h] = v.real();
+    im[h] = v.imag();
+    r2[m - h] = v.real();
+    im[m - h] = -v.imag();
+  }
+  dsp::fftInPlace(r2, im, true);  // unscaled inverse: the value at phase i / m
+  for (uint32_t i = 0; i < m; ++i) out[i] = static_cast<float>(r2[i]);
+  out[m] = out[0];
+}
+
+void Model::ensure() const {
+  if (denseDirty_) {
+    rebuildDense();
+    denseDirty_ = false;
+    bakeDirty_ = true;
+  }
+  if (bakeDirty_) {
+    rebake();
+    bakeDirty_ = false;
+  }
+}
+
+float Model::gain() const {
+  ensure();
+  return gain_;
+}
+
+std::span<const float> Model::frame(uint32_t f) const {
+  ensure();
   if (bakedFrames_.empty()) return {};
   f = std::min(f, frames_ - 1);
   return {bakedFrames_.data() + static_cast<size_t>(f) * (kPoints + 1), kPoints + 1};
@@ -105,7 +150,7 @@ void Model::morph(double u, uint32_t count, std::complex<double>* out) const {
     else if (B.mag[h] == 0.0) ph = A.arg[h];
     else {
       double d = wrapPi(B.arg[h] - A.arg[h]);
-      if (d == -kPi) d = kPi;  // exactly opposite: counter-clockwise, as the builder
+      if (std::fabs(d) >= kPi - dsp::kOppositePhaseTol) d = kPi;  // exactly opposite: counter-clockwise, as the builder
       ph = A.arg[h] + t * d;
     }
     out[h] = std::polar(m, ph);
@@ -161,13 +206,15 @@ bool Model::update(const meta::DataPtr& data, const Bake& bake) {
           break;
         }
     frames_ = data_.keyframes.size() == 1 ? 1u : std::clamp<uint32_t>(data_.frames, 1u, 256u);
-    rebuildDense();
+    denseDirty_ = true;  // TMM.16: rendered when first drawn (a face drawing the published table never needs them)
     changed = true;
   }
-  if (changed || !(bake == bake_) || bakedFrames_.empty()) {
+  if (changed || !(bake == bake_)) {
     bake_ = bake;
-    rebake();
+    bakeDirty_ = true;
     changed = true;
+    for (auto& f : sound_) f.clear();  // TMM.16: computed again when asked for
+    sound_.resize(frames_);
   }
   if (changed) {
     uint64_t h = mix(1469598103934665603ull, dataHash_);
@@ -182,7 +229,7 @@ bool Model::update(const meta::DataPtr& data, const Bake& bake) {
   return changed;
 }
 
-void Model::rebuildDense() {
+void Model::rebuildDense() const {
   dense_.assign(static_cast<size_t>(frames_) * kDisplayCycle, 0.0f);
   std::vector<std::complex<double>> c(kDisplayHarmonics);
   for (uint32_t d = 0; d < frames_; ++d) {
@@ -206,7 +253,7 @@ void Model::rebuildDense() {
   }
 }
 
-void Model::rebake() {
+void Model::rebake() const {
   bakedFrames_.assign(static_cast<size_t>(frames_) * (kPoints + 1), 0.0f);
   const auto mode = static_cast<dsp::WarpMode>(std::min<uint32_t>(bake_.warpMode, dsp::kWarpModeCount - 1));
   float peak = 0.0f;
@@ -241,7 +288,8 @@ void Model::rebake() {
   gain_ = 1.0f / std::max(peak, 1.0f);
 }
 
-void Model::blended(float u, std::span<float> out) const noexcept {
+void Model::blended(float u, std::span<float> out) const {
+  ensure();
   if (out.size() < kPoints + 1 || bakedFrames_.empty()) return;
   if (frames_ == 1) {
     std::copy_n(bakedFrames_.data(), kPoints + 1, out.data());
@@ -255,7 +303,8 @@ void Model::blended(float u, std::span<float> out) const noexcept {
   for (uint32_t i = 0; i <= kPoints; ++i) out[i] = a[i] + w * (b[i] - a[i]);
 }
 
-float Model::valueAt(float u, float phase) const noexcept {
+float Model::valueAt(float u, float phase) const {
+  ensure();
   if (bakedFrames_.empty()) return 0.0f;
   const float ph = phase - std::floor(phase);
   const float p = ph * kPoints;
@@ -270,6 +319,90 @@ float Model::valueAt(float u, float phase) const noexcept {
   const uint32_t k = std::min(static_cast<uint32_t>(x), frames_ - 2);
   const float w = x - static_cast<float>(k);
   return at(k) + w * (at(k + 1) - at(k));
+}
+
+std::span<const float> Model::soundFrame(uint32_t d) {
+  if (sound_.size() != frames_) sound_.assign(frames_, {});
+  d = std::min(d, frames_ - 1);
+  std::vector<float>& out = sound_[d];
+  if (!out.empty()) return out;
+  // The dense frame with every harmonic (the builder's morph; the keyframes' spectra are already normalised).
+  const double u = frames_ > 1 ? static_cast<double>(d) / (frames_ - 1) : 0.0;
+  soundSpec_.resize(kHarmonics);
+  morph(u, kHarmonics, soundSpec_.data());
+  sre_.assign(kCycle, 0.0);
+  sim_.assign(kCycle, 0.0);
+  sre_[0] = soundSpec_[0].real();
+  for (uint32_t h = 1; h < kHarmonics; ++h) {
+    sre_[h] = soundSpec_[h].real();
+    sim_[h] = soundSpec_[h].imag();
+    sre_[kCycle - h] = soundSpec_[h].real();
+    sim_[kCycle - h] = -soundSpec_[h].imag();
+  }
+  dsp::fftInPlace(sre_, sim_, true);  // unscaled inverse: the cycle's 2048 samples
+  // Baked through the shared formulas (the table's own read: φ → sync → warp → x → fold), then removeDc.
+  const auto mode = static_cast<dsp::WarpMode>(std::min<uint32_t>(bake_.warpMode, dsp::kWarpModeCount - 1));
+  const double* x = sre_.data();
+  auto read = [&](double t) {
+    t -= std::floor(t);
+    const double p = t * kCycle;
+    const auto i = static_cast<uint32_t>(p) % kCycle;
+    const double f = p - std::floor(p);
+    return x[i] + f * (x[(i + 1) % kCycle] - x[i]);
+  };
+  bakeBuf_.resize(kCycle);
+  double mean = 0.0;
+  for (uint32_t i = 0; i < kCycle; ++i) {
+    const double phi = static_cast<double>(i) / kCycle;
+    const dsp::WarpTaps<double> t = dsp::warpPhase(mode, dsp::syncPhase(phi, bake_.sync), bake_.warp);
+    double v = read(t.a);
+    if (t.mixB != 0.0) v = (1.0 - t.mixB) * v + t.mixB * read(t.b);
+    v = dsp::foldValue(v, bake_.fold);
+    bakeBuf_[i] = v;
+    mean += v;
+  }
+  if (data_.removeDc)
+    for (double& v : bakeBuf_) v -= mean / kCycle;
+  out.resize(kSoundPoints + 1);
+  smoothFrame(bakeBuf_, kHarmonics - 1, out, sre_, sim_);
+  return out;
+}
+
+void Model::sounding(float u, std::span<float> out) {
+  if (out.size() < kSoundPoints + 1) return;
+  if (frames_ == 1) {
+    const auto f = soundFrame(0);
+    std::copy(f.begin(), f.end(), out.begin());
+    return;
+  }
+  // The reader's frame pair and weight, from float u as it computes them (frame_table.h "Reading").
+  const float x = std::clamp(std::isfinite(u) ? u : 0.0f, 0.0f, 1.0f) * static_cast<float>(frames_ - 1);
+  const uint32_t k = std::min(static_cast<uint32_t>(x), frames_ - 2);
+  const float w = x - static_cast<float>(k);
+  const auto a = soundFrame(k);
+  if (w == 0.0f) {
+    std::copy(a.begin(), a.end(), out.begin());
+    return;
+  }
+  const auto b = soundFrame(k + 1);
+  for (uint32_t i = 0; i <= kSoundPoints; ++i) out[i] = a[i] + w * (b[i] - a[i]);
+}
+
+float Model::soundAt(float u, float phase) {
+  const float ph = phase - std::floor(phase);
+  const float p = (std::isfinite(ph) ? ph : 0.0f) * kSoundPoints;
+  const uint32_t i = std::min(static_cast<uint32_t>(p), kSoundPoints - 1);
+  const float f = p - static_cast<float>(i);
+  auto at = [&](uint32_t frame) {
+    const auto r = soundFrame(frame);
+    return r[i] + f * (r[i + 1] - r[i]);
+  };
+  if (frames_ == 1) return at(0);
+  const float x = std::clamp(std::isfinite(u) ? u : 0.0f, 0.0f, 1.0f) * static_cast<float>(frames_ - 1);
+  const uint32_t k = std::min(static_cast<uint32_t>(x), frames_ - 2);
+  const float w = x - static_cast<float>(k);
+  const float va = at(k);
+  return w == 0.0f ? va : va + w * (at(k + 1) - va);
 }
 
 void Model::harmonics(uint32_t k, std::span<float> amp, std::span<float> phase) const noexcept {
@@ -315,6 +448,153 @@ std::vector<float> Model::sourceCycle(float u) const {
   std::vector<float> out(kCycle);
   for (uint32_t i = 0; i < kCycle; ++i) out[i] = static_cast<float>(acc[i]);
   return out;
+}
+
+// ---- Heard (TMM.16) -------------------------------------------------------------------------------------------------
+
+bool Heard::update(std::shared_ptr<const dsp::FrameTable> table, uint32_t level, const Bake& live) {
+  if (table == table_ && level == level_ && live == live_) return false;
+  table_ = std::move(table);
+  level_ = level;
+  live_ = live;
+  thumbs_.clear();
+  sharp_.clear();
+  liveCurve_.clear();
+  if (!table_) {
+    key_ = 0;
+    return true;
+  }
+  frames_ = std::max<uint32_t>(table_->frames(), 1);
+  level_ = std::min(level_, table_->layout().levels - 1);
+  thumbs_.assign(static_cast<size_t>(frames_) * (kPoints + 1), 0.0f);
+  thumbDone_.assign(frames_, 0);
+  sharp_.assign(frames_, {});
+  gain_ = -1.0f;  // computed when first asked for (draw mode never asks)
+  uint64_t h = mix(0x51ED270B27C2D1A5ull, reinterpret_cast<uintptr_t>(table_.get()));
+  h = mix(h, level_);
+  h = fnv(h, &live_, sizeof live_);
+  key_ = h | 1u;
+  return true;
+}
+
+// The live path reads the table (the frames blended at u) and applies its controls to that read.
+double Heard::readAt(double u, double phase, uint32_t level) const noexcept {
+  const dsp::FrameTableView& v = table_->view();
+  if (!liveActive()) return dsp::readFrameTableReference(v, phase, u, level);
+  const auto mode = static_cast<dsp::WarpMode>(std::min<uint32_t>(live_.warpMode, dsp::kWarpModeCount - 1));
+  const dsp::WarpTaps<double> t = dsp::warpPhase(mode, dsp::syncPhase(phase, live_.sync), live_.warp);
+  double x = dsp::readFrameTableReference(v, t.a, u, level);
+  if (t.mixB != 0.0) x = (1.0 - t.mixB) * x + t.mixB * dsp::readFrameTableReference(v, t.b, u, level);
+  return dsp::foldValue(x, live_.fold);
+}
+
+std::span<const float> Heard::frame(uint32_t f) const {
+  if (thumbs_.empty()) return {};
+  f = std::min(f, frames_ - 1);
+  float* row = thumbs_.data() + static_cast<size_t>(f) * (kPoints + 1);
+  if (!thumbDone_[f]) {  // read when first drawn (the stacked display; draw mode shows none)
+    // 512 reads at the shown level (with a bake every level is its own rendering: the main curve's level), smoothed
+    // to the thumbnail's 256 points (harmonics ≤ 127). A level's harmonics near 512 fold back by their own size (a
+    // saw's: < 1e-3; a baked sync or pulse width: up to ≈ 2 % of full scale, measured): faint lines, a quarter of
+    // the reads a full frame needs.
+    buf_.resize(2 * kPoints);
+    const double u = frames_ > 1 ? static_cast<double>(f) / (frames_ - 1) : 0.0;
+    for (uint32_t i = 0; i < 2 * kPoints; ++i) buf_[i] = readAt(u, static_cast<double>(i) / (2 * kPoints), level_);
+    smoothFrame(buf_, table_->layout().top[level_], std::span<float>(row, kPoints + 1), re_, im_);
+    thumbDone_[f] = 1;
+  }
+  return {row, kPoints + 1};
+}
+
+float Heard::gain() const {
+  if (gain_ < 0.0f) {
+    float peak = 0.0f;
+    for (uint32_t d = 0; d < frames_; ++d)
+      for (const float v : frame(d)) peak = std::max(peak, std::fabs(v));
+    gain_ = 1.0f / std::max(peak, 1.0f);
+  }
+  return gain_;
+}
+
+void Heard::blended(float u, std::span<float> out) const {
+  if (out.size() < kPoints + 1 || thumbs_.empty()) return;
+  if (frames_ == 1) {
+    const auto f = frame(0);
+    std::copy(f.begin(), f.end(), out.begin());
+    return;
+  }
+  const float x = std::clamp(std::isfinite(u) ? u : 0.0f, 0.0f, 1.0f) * static_cast<float>(frames_ - 1);
+  const uint32_t k = std::min(static_cast<uint32_t>(x), frames_ - 2);
+  const float w = x - static_cast<float>(k);
+  const float* a = frame(k).data();
+  const float* b = frame(k + 1).data();
+  for (uint32_t i = 0; i <= kPoints; ++i) out[i] = a[i] + w * (b[i] - a[i]);
+}
+
+void Heard::curveAt(double u, std::span<float> out) const {
+  buf_.resize(kCycle);  // 2048 reads hold every harmonic a level keeps (≤ 1023)
+  for (uint32_t i = 0; i < kCycle; ++i) buf_[i] = readAt(u, static_cast<double>(i) / kCycle, level_);
+  smoothFrame(buf_, table_->layout().top[level_], out, re_, im_);
+}
+
+std::span<const float> Heard::sharp(uint32_t frame) {
+  frame = std::min(frame, frames_ - 1);
+  std::vector<float>& out = sharp_[frame];
+  if (out.empty()) {
+    out.resize(kSoundPoints + 1);
+    curveAt(frames_ > 1 ? static_cast<double>(frame) / (frames_ - 1) : 0.0, out);
+  }
+  return out;
+}
+
+void Heard::sounding(float u, std::span<float> out) {
+  if (out.size() < kSoundPoints + 1 || !table_) return;
+  if (liveActive() && frames_ > 1) {  // the controls act on the blended read: per position, not per frame
+    if (u != liveU_ || liveCurve_.empty()) {
+      liveU_ = u;
+      liveCurve_.resize(kSoundPoints + 1);
+      curveAt(std::clamp(std::isfinite(u) ? static_cast<double>(u) : 0.0, 0.0, 1.0), liveCurve_);
+    }
+    std::copy(liveCurve_.begin(), liveCurve_.end(), out.begin());
+    return;
+  }
+  if (frames_ == 1) {
+    const auto f = sharp(0);
+    std::copy(f.begin(), f.end(), out.begin());
+    return;
+  }
+  const float x = std::clamp(std::isfinite(u) ? u : 0.0f, 0.0f, 1.0f) * static_cast<float>(frames_ - 1);
+  const uint32_t k = std::min(static_cast<uint32_t>(x), frames_ - 2);
+  const float w = x - static_cast<float>(k);
+  const auto a = sharp(k);
+  if (w == 0.0f) {
+    std::copy(a.begin(), a.end(), out.begin());
+    return;
+  }
+  const auto b = sharp(k + 1);
+  for (uint32_t i = 0; i <= kSoundPoints; ++i) out[i] = a[i] + w * (b[i] - a[i]);
+}
+
+float Heard::soundAt(float u, float phase) {
+  if (!table_) return 0.0f;
+  if (liveActive() && frames_ > 1) {
+    const double uu = std::clamp(std::isfinite(u) ? static_cast<double>(u) : 0.0, 0.0, 1.0);
+    return static_cast<float>(readAt(uu, std::isfinite(phase) ? phase - std::floor(phase) : 0.0, level_));
+  }
+  const float ph = phase - std::floor(phase);
+  const float p = (std::isfinite(ph) ? ph : 0.0f) * kSoundPoints;
+  const uint32_t i = std::min(static_cast<uint32_t>(p), kSoundPoints - 1);
+  const float f = p - static_cast<float>(i);
+  auto at = [&](uint32_t frame) {
+    const auto r = sharp(frame);
+    return r[i] + f * (r[i + 1] - r[i]);
+  };
+  if (frames_ == 1) return at(0);
+  const float x = std::clamp(std::isfinite(u) ? u : 0.0f, 0.0f, 1.0f) * static_cast<float>(frames_ - 1);
+  const uint32_t k = std::min(static_cast<uint32_t>(x), frames_ - 2);
+  const float w = x - static_cast<float>(k);
+  const float va = at(k);
+  return w == 0.0f ? va : va + w * (at(k + 1) - va);
 }
 
 }  // namespace pq::views::wt

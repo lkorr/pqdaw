@@ -8,7 +8,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <filesystem>
+#include <numbers>
 #include <memory>
 #include <string>
 #include <thread>
@@ -39,6 +41,9 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/meta/tap_voices.h"
+#include "pq/dsp/wave_warp.h"
+#include "pq/ui/theme.h"
+#include "../../src/views/src/meta/faces.h"  // TMM.16: the Wavetable face's drawn curve (tests)
 
 using namespace pq;
 using namespace pq::doc;
@@ -724,8 +729,12 @@ TEST_CASE("meta wavetable: a baked drag is heard at >= 30 Hz through preview tab
                                                  << latency[latency.size() / 2] << " ms, max " << latency.back()
                                                  << " ms; preview " << st.lastPreviewMs << " ms (max " << st.maxPreviewMs
                                                  << "), full " << st.lastBuildMs << " ms; tables during the drag: "
-                                                 << previewFrames << " frames");
-  CHECK(previewFrames == meta::TableBuilder::kPreviewFrames);
+                                                 << previewFrames << " frames; submitted " << st.submitted
+                                                 << ", previews " << st.previews << " (" << st.focused << " focused), replaced "
+                                                 << st.replaced << ", built " << st.built);
+  // TMM.16: the previews are focused (the full table's frames, the ones read rebuilt): as many frames as the table.
+  CHECK(previewFrames == meta::kWtDefaultFrames);
+  CHECK(st.focused > 0u);
   // A drawn stroke on that baked table (a keyframe's cycle changed, as the face writes it): the preview is heard.
   auto stroke = [&](float level) {
     auto d = meta::parseWavetableData(*sawToSquare());
@@ -885,6 +894,46 @@ private:
 
 }  // namespace
 
+TEST_CASE("meta faces: the hub's reader knows the Wavetable's table — a publish is news (the face repaints), heardTable is the slot's") {
+  // TMM.16: the face draws the published table; a table published while nothing sounds must still reach it.
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  s.data(wt, sawToSquare());
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  app::FaceVoiceHub hub(*link);
+  auto* r = static_cast<views::TapVoices*>(hub.voices(wt, ""));
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  std::unique_ptr<views::MetaFace> face = views::makeFace(meta::wavetableType());
+  face->bind(std::make_unique<SongTarget>(s.store, wt), r);
+  (void)face->pollVoices();
+  CHECK(r->heardTable().table == slot->table());
+  CHECK(r->heardTable().modulated.size() == meta::wavetableType().params.size());
+  CHECK_FALSE(r->fresh());
+  const uint64_t serial = r->serial();
+  CHECK_FALSE(face->pollVoices());  // nothing new
+  s.data(wt, oneCycle(dsp::BasicCycle::Square));  // a new table, no voice sounding
+  REQUIRE(link->waitForMetaTables());
+  CHECK(r->fresh());           // the shell wakes its faces
+  CHECK(r->live());            // the host keeps polling (kTableLinger)
+  CHECK(r->serial() != serial);
+  CHECK(face->pollVoices());   // ... and the face repaints with the new table
+  CHECK(r->heardTable().table == slot->table());
+  CHECK_FALSE(r->fresh());
+  CHECK(r->live());            // still within the linger: a full table may follow a preview
+  // A Phase accumulator's reader has no table.
+  auto t = ops::createTrack(s.doc(), s.store.ids(), TrackKind::Midi);
+  REQUIRE(t.ok());
+  s.must(t->command);
+  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), t->tracks.at(0), "phase_acc", 0);
+  REQUIRE(a.ok());
+  s.must(a->command);
+  link->flush();
+  CHECK(hub.voices(a->devices.at(0), "")->heardTable().table == nullptr);
+}
+
 TEST_CASE("meta faces: golden meta-wavetable-voices — eight engine voices, each dot at the phase its voice read") {
   WtSong s;
   // An eight-note chord on a chain Wavetable (saw → square → vocal, position 0.3); NullDevice-style blocks.
@@ -963,4 +1012,428 @@ TEST_CASE("meta faces: golden meta-wavetable-voices — eight engine voices, eac
   ui::ImageDiff diff;
   CHECK(pq::ui::test::matchesGolden("meta-wavetable-voices", *img, *ref, true, &diff));
   MESSAGE("meta-wavetable-voices: " << pq::ui::test::describe(diff));
+}
+
+// ---- TMM.16: the picture always matches the sound -------------------------------------------------------------------
+
+namespace {
+
+// The face edits the song's document as DocTarget edits the app's (one undo step per gesture; data inside a gesture
+// joins it), so the link builds tables exactly as it does under the real face.
+class StoreTarget final : public views::MetaTarget {
+public:
+  StoreTarget(WtSong& s, DeviceId d) : s_(s), dev_(d) {}
+  ~StoreTarget() override {
+    if (gesture_) (void)s_.store.commitGesture();
+  }
+  const meta::Type* targetType() const noexcept override { return &meta::wavetableType(); }
+  double value(size_t p) const override { return metaParamValue(dev(), "", meta::wavetableType(), p); }
+  void begin(const char* label) override {
+    if (!gesture_) gesture_ = s_.store.beginGesture(label).ok();
+  }
+  void set(size_t p, double v) override { s_.param(dev_, std::string(meta::wavetableType().params[p].name).c_str(), v); }
+  void end() override {
+    if (gesture_) (void)s_.store.commitGesture();
+    gesture_ = false;
+  }
+  void cancel() override {
+    if (gesture_) (void)s_.store.cancelGesture();
+    gesture_ = false;
+  }
+  void reset(size_t p) override {
+    s_.edit(ops::setMetaParam(s_.doc(), dev_, "", "wavetable", std::string(meta::wavetableType().params[p].name),
+                              std::nullopt));
+  }
+  double setting(size_t i) const override { return metaSettings(dev(), "", meta::wavetableType())[i]; }
+  void setSetting(size_t i, double v) override {
+    s_.setting(dev_, std::string(meta::wavetableType().settings[i].name).c_str(), v);
+  }
+  meta::DataPtr data() const override {
+    const MetaInstance* inst = dev().metaAt("");
+    return inst != nullptr && inst->data ? inst->data : meta::wavetableDefaultData();
+  }
+  void setData(meta::DataPtr d) override { s_.data(dev_, d); }
+
+private:
+  const Device& dev() const { return *findDevice(s_.doc(), dev_).device; }
+  WtSong& s_;
+  DeviceId dev_;
+  bool gesture_ = false;
+};
+
+// Face-local geometry (wavetable_face.cpp's layout, world units).
+ui::Vec2 toolAt(int i) { return {57.5f + 14.5f * static_cast<float>(i), 24.0f}; }
+ui::Vec2 modeAt(int i) { return {21.0f + 15.5f * static_cast<float>(i), 24.0f}; }
+ui::Vec2 shapeAt(int i) {
+  return {188.0f - 13.0f * static_cast<float>(6 - i) - 1.5f * static_cast<float>(5 - i) + 6.5f, 24.0f};
+}
+ui::Vec2 warpModeAt(int i) { return {74.5f + 14.5f * static_cast<float>(i), 233.0f}; }
+ui::Vec2 optAt(int i) { return {25.0f + 13.5f * static_cast<float>(i), 85.5f}; }
+ui::Vec2 drawAt(float x, float v) { return {20.0f + 138.0f * x, 129.0f - 35.0f * v}; }
+ui::Vec2 barAt(uint32_t h, float amp) { return {16.0f + 5.375f * (static_cast<float>(h) - 0.5f), 57.5f - 21.0f * amp}; }
+ui::Vec2 phaseBarAt(uint32_t h, float ph) {
+  return {16.0f + 5.375f * (static_cast<float>(h) - 0.5f), 66.0f - ph / std::numbers::pi_v<float> * 5.0f};
+}
+float wtPosY(float u) { return 172.0f - 94.0f * u; }
+constexpr float kWtKnobX[3] = {38.0f, 89.0f, 140.0f};
+constexpr float kPx = 4.0f;  // device px per world unit (zoom 2 at 2x)
+
+}  // namespace
+
+namespace {
+
+// sweep: every gesture (slow tier); else the reported ones — the line and the curve in draw mode, a harmonic drag and
+// a baked knob drag — in the default tier.
+void pictureMatchesSound(bool sweep) {
+  // TMM.16 (bug reports 2026-11-01_12-12-09, 12-13-10). At every step of every gesture, with the face bound as the app
+  // binds it (the hub's reader, which knows the instance's slot):
+  //   1. the face draws from the table the slot plays now (draw mode's curve, the stack's highlighted frame, the
+  //      thumbnails behind), at the level it says (level 0 while nothing sounds), with the live path's controls
+  //      applied on top: its curve equals that table read through the readers' interpolator (≤ 1e-5);
+  //   2. that table — the focused preview while the mouse is held, the full table after — equals a direct build of the
+  //      document's state at that step where the face says it is heard (the position, or the edited keyframe's own
+  //      position), at level 0 and at the shown level (≤ 1e-5): the audio follows every step, not only the release.
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  meta::WavetableData d;  // the reports' setup: several keyframes, a drawn one, a baked fold and a Mirror warp
+  const dsp::BasicCycle shapes[5] = {dsp::BasicCycle::Saw, dsp::BasicCycle::Square, dsp::BasicCycle::Triangle,
+                                     dsp::BasicCycle::Pulse25, dsp::BasicCycle::Sine};
+  for (int i = 0; i < 5; ++i) d.keyframes.push_back({0.25f * static_cast<float>(i), cycleOf(shapes[i])});
+  for (uint32_t i = 0; i < 2048; ++i)
+    d.keyframes[2].cycle[i] = (i % 512 < 180 ? 0.7f : -0.3f) + 0.2f * std::sin(0.01f * static_cast<float>(i));
+  d.frames = 16;  // (a bake of 16 dense frames builds in tens of ms in the check preset; previews still apply)
+  s.data(wt, meta::wavetableData(d));
+  s.param(wt, "position", 0.6);
+  s.param(wt, "fold", 0.55);
+  s.param(wt, "warp", -0.45);
+  s.setting(wt, "warpMode", 1.0);
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->lastError().empty());
+  REQUIRE(link->waitForMetaTables());
+
+  app::FaceVoiceHub hub(*link);
+  Driver audio{*link};  // the audio thread takes each recompiled image (a compile waits for it otherwise)
+  std::unique_ptr<views::MetaFace> face = views::makeFace(meta::wavetableType());
+  REQUIRE(face != nullptr);
+  face->bind(std::make_unique<StoreTarget>(s, wt), hub.voices(wt, ""));
+  auto theme = ui::loadTheme(ui::defaultThemePath());
+  REQUIRE(theme.ok());
+  views::FaceEnv env;
+  env.theme = &theme.value();
+  env.uiScale = 2.0f;
+  auto paint = [&] {
+    ui::DrawList dl;
+    dl.reset(1000, 1100);
+    ui::FacePainter p(dl, {{0.0f, 0.0f}, kPx});
+    (void)face->pollVoices();  // as the host does before painting
+    face->paintLive(p, env);
+  };
+  using K = views::FacePointer::Kind;
+  auto pointer = [&](K kind, ui::Vec2 l) {
+    views::FacePointer e;
+    e.kind = kind;
+    e.local = l;
+    e.device = {l.x * kPx, l.y * kPx};
+    e.pxPerUnit = kPx;
+    e.uiScale = 2.0f;
+    (void)face->onPointer(e);
+  };
+  // The job the link builds for the document's state now (with the params its live path applies).
+  auto stateJob = [&] {
+    const Device& dv = *findDevice(s.doc(), wt).device;
+    const meta::Type& t = meta::wavetableType();
+    const MetaInstance* inst = dv.metaAt("");
+    meta::TableSource src;
+    src.data = inst != nullptr && inst->data ? inst->data : meta::wavetableDefaultData();
+    src.dataHash = meta::dataHash(*src.data);
+    std::vector<double> params(t.params.size());
+    for (size_t i = 0; i < params.size(); ++i) params[i] = metaParamValue(dv, "", t, i);
+    const std::vector<double> settings = metaSettings(dv, "", t);
+    std::vector<uint8_t> modulated;
+    (void)link->metaFrameTable(wt, "", 0, modulated);
+    src.params = params;
+    src.settings = settings;
+    src.sampleRate = 48000.0;
+    src.modulated = modulated;
+    meta::TableJob job;
+    REQUIRE(t.frameTable(src, 0, job).ok());
+    return job;
+  };
+  struct Worst {
+    double face = 0.0, state = 0.0, thumb = 0.0;
+    std::string where;
+  } worst;
+  double liveFold = -1.0;  // ≥ 0: fold runs on the live path at this value (the table does not bake it)
+  uint32_t checks = 0, previewChecks = 0;
+  uint64_t lastKey = 0;
+  float lastU = -1.0f;
+  dsp::FrameTableBuilder direct;
+  std::vector<double> paintNew, paintSame;  // ms: a paint that takes a new table (reads its frames), one that does not
+  const dsp::FrameTable* lastPainted = nullptr;
+  auto median = [](std::vector<double> v) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2];
+  };
+  auto check = [&](const std::string& what, bool full) {
+    CAPTURE(what);
+    const auto slot = link->metaFrameTable(wt, "", 0);
+    REQUIRE(slot != nullptr);
+    views::WavetableShown sh;
+    std::shared_ptr<const dsp::FrameTable> table;
+    for (int attempt = 0; attempt < 5; ++attempt) {  // a newer table published while checking: look again
+      table = slot->table();
+      const bool fresh = table.get() != lastPainted;
+      const auto t0 = std::chrono::steady_clock::now();
+      paint();
+      (fresh ? paintNew : paintSame).push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+      lastPainted = table.get();
+      REQUIRE(views::wavetableShown(*face, sh));
+      if (sh.table == table.get()) break;
+    }
+    CAPTURE(sh.position);
+    CAPTURE(sh.drawMode);
+    REQUIRE(sh.heard);
+    CHECK(sh.table == table.get());  // 1. the face holds the table the slot plays
+    const auto n = static_cast<uint32_t>(sh.values.size() - 1);
+    REQUIRE(n == 1024u);
+    auto heard = [&](const dsp::FrameTable& t, double phase, double u, uint32_t level) {
+      const double v = dsp::readFrameTableReference(t.view(), phase, u, level);
+      return liveFold >= 0.0 ? dsp::foldValue(v, liveFold) : v;
+    };
+    // The face shows the heard harmonics with Lanczos σ weights (no Gibbs ripples in the picture): its curve's
+    // harmonics 0 … 32 are the table's (from 2048 reads at its level) times σ_h, K = min(H_level, 511).
+    auto harmonic = [](const auto& x, uint32_t count, uint32_t h) {
+      std::complex<double> c{};
+      for (uint32_t i = 0; i < count; ++i) c += static_cast<double>(x[i]) * std::polar(1.0, -2.0 * std::numbers::pi * h * i / count);
+      return c / static_cast<double>(count);
+    };
+    auto sigma = [](uint32_t h, uint32_t k) {
+      if (h == 0) return 1.0;
+      if (h > k) return 0.0;
+      const double a = std::numbers::pi * h / (k + 1);
+      return std::sin(a) / a;
+    };
+    auto tableHarmonics = [&](double u, uint32_t level) {
+      std::vector<double> x(2048);
+      for (uint32_t i = 0; i < 2048; ++i) x[i] = heard(*table, i / 2048.0, u, level);
+      return x;
+    };
+    const auto& tl0 = table->layout();
+    double eFace = 0.0;
+    {
+      const std::vector<double> x = tableHarmonics(sh.position, sh.level);
+      const uint32_t k = std::min<uint32_t>(tl0.top[sh.level], 511);
+      for (uint32_t h = 0; h <= 32; ++h)
+        eFace = std::max(eFace, std::abs(harmonic(sh.values, n, h) - harmonic(x, 2048, h) * sigma(h, k)));
+    }
+    // ... and its thumbnails are that table's dense frames (harmonics 0 … 8 at the shown level, σ up to 127; read at
+    // 512 phases, so a level's harmonics near 512 fold back a little)
+    double eThumb = 0.0;
+    if (sh.stack.size() == table->frames()) {
+      const uint32_t k = std::min<uint32_t>(tl0.top[sh.level], 127);
+      for (size_t f = 0; f < sh.stack.size(); f += 3) {
+        const double u = sh.stack.size() > 1 ? static_cast<double>(f) / static_cast<double>(sh.stack.size() - 1) : 0.0;
+        const std::vector<double> x = tableHarmonics(u, sh.level);
+        const auto m = static_cast<uint32_t>(sh.stack[f].size() - 1);
+        for (uint32_t h = 0; h <= 8; ++h)
+          eThumb = std::max(eThumb, std::abs(harmonic(sh.stack[f], m, h) - harmonic(x, 2048, h) * sigma(h, k)));
+      }
+    } else {
+      CHECK(sh.stack.size() == table->frames());
+    }
+    CHECK(eThumb <= 2e-2);  // ≤ 2 % of full scale (a baked sync / pulse width puts strong harmonics near 512)
+    worst.thumb = std::max(worst.thumb, eThumb);
+    CHECK(eFace <= 1e-5);
+    // 2. the table is the document's state where the face says it is heard: a direct build of the frames read there.
+    meta::TableJob job = stateJob();
+    double eState = 0.0;
+    if (job.key != lastKey || sh.position != lastU || full) {
+      lastKey = job.key;
+      lastU = sh.position;
+      const uint32_t frames = job.spec.denseFrames;
+      CHECK(table->frames() == frames);
+      auto layout = dsp::frameTableLayout(48000.0);
+      REQUIRE(layout.ok());
+      auto t = dsp::FrameTable::allocate(layout.value(), frames, job.spec.antiderivative);
+      REQUIRE(t.ok());
+      const float x = std::clamp(sh.position, 0.0f, 1.0f) * static_cast<float>(frames - 1);
+      const uint32_t k = frames > 1 ? std::min(static_cast<uint32_t>(x), frames - 2) : 0u;
+      std::vector<uint32_t> pair{k};
+      if (frames > 1) pair.push_back(k + 1);
+      REQUIRE(direct.buildFramesInto(job.spec, t.value(), pair).ok());
+      for (const uint32_t level : {0u, sh.level})
+        for (uint32_t i = 0; i < n; i += 3) {
+          const double ph = static_cast<double>(i) / n;
+          eState = std::max(eState, std::fabs(heard(*table, ph, sh.position, level) - heard(t.value(), ph, sh.position, level)));
+        }
+      CHECK(eState <= 1e-5);
+    }
+    ++checks;
+    if (!full) ++previewChecks;
+    if (std::max(eFace, eState) > std::max(worst.face, worst.state)) worst.where = what;
+    worst.face = std::max(worst.face, eFace);
+    worst.state = std::max(worst.state, eState);
+  };
+  // Whether the slot's table now is the document's state where the face shows it (the frames read there, built
+  // directly).
+  auto isState = [&] {
+    const auto slot = link->metaFrameTable(wt, "", 0);
+    paint();
+    views::WavetableShown sh;
+    if (!views::wavetableShown(*face, sh)) return false;
+    const auto table = slot->table();
+    meta::TableJob job = stateJob();
+    const uint32_t frames = job.spec.denseFrames;
+    if (table->frames() != frames) return false;
+    auto layout = dsp::frameTableLayout(48000.0);
+    auto t = dsp::FrameTable::allocate(layout.value(), frames, job.spec.antiderivative);
+    const float x = std::clamp(sh.position, 0.0f, 1.0f) * static_cast<float>(frames - 1);
+    const uint32_t k = frames > 1 ? std::min(static_cast<uint32_t>(x), frames - 2) : 0u;
+    std::vector<uint32_t> pair{k};
+    if (frames > 1) pair.push_back(k + 1);
+    if (!direct.buildFramesInto(job.spec, t.value(), pair).ok()) return false;
+    for (uint32_t i = 0; i < 1024; i += 5) {
+      const double ph = i / 1024.0;
+      const double a = dsp::readFrameTableReference(table->view(), ph, sh.position, 0);
+      const double b = dsp::readFrameTableReference(t.value().view(), ph, sh.position, 0);
+      if (std::fabs(a - b) > 1e-5) return false;
+    }
+    return true;
+  };
+  // One gesture step: the event, then (when it changed what the table is built from) the tables the link publishes
+  // — previews while a drag runs; one for the previous step may still arrive first — until one is this step's state,
+  // then the check. A step whose state never reaches the audio side times out.
+  auto step = [&](const std::string& what, auto&& event) {
+    const auto slot = link->metaFrameTable(wt, "", 0);
+    REQUIRE(slot != nullptr);
+    uint64_t gen = slot->generation();
+    const uint64_t key = stateJob().key;
+    event();
+    if (stateJob().key != key) {
+      const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      bool reached = false;
+      while (!reached && std::chrono::steady_clock::now() < until) {
+        if (slot->generation() != gen) {
+          gen = slot->generation();
+          reached = isState();
+        } else {
+          std::this_thread::yield();
+        }
+      }
+      CAPTURE(what);
+      REQUIRE(reached);
+    }
+    check(what, false);
+  };
+  auto settled = [&](const std::string& what) {
+    REQUIRE(link->waitForMetaTables());
+    check(what + " (full table)", true);
+  };
+  auto drag = [&](const std::string& what, const std::vector<ui::Vec2>& path) {
+    step(what + " down", [&] { pointer(K::Down, path.front()); });
+    for (size_t i = 1; i < path.size(); ++i) step(what + " move " + std::to_string(i), [&] { pointer(K::Move, path[i]); });
+    step(what + " up", [&] { pointer(K::Up, path.back()); });
+    settled(what);
+  };
+  auto click = [&](const std::string& what, ui::Vec2 at) {
+    step(what, [&] {
+      pointer(K::Down, at);
+      pointer(K::Up, at);
+    });
+    settled(what);
+  };
+  auto settingClick = [&](const std::string& what, ui::Vec2 at) {
+    pointer(K::Down, at);
+    pointer(K::Up, at);
+    link->flush();
+    REQUIRE(link->lastError().empty());
+    audio.run(4);
+    settled(what);
+  };
+
+  check("stack at rest", true);
+  if (sweep) {
+    // Draw mode on the selected keyframe (0, at position 0: away from the position): the pencil.
+    click("pencil tool", toolAt(0));
+    drag("pencil", {drawAt(0.1f, 0.2f), drawAt(0.2f, 0.9f), drawAt(0.3f, -0.4f), drawAt(0.45f, 0.6f), drawAt(0.6f, -0.9f)});
+    click("leave draw mode", toolAt(0));
+  }
+  // A position drag: the stack's highlighted frame follows, and from now on edits follow the position (0.6 → ≈ 0.4:
+  // between keyframes, so the first stroke makes a keyframe there).
+  drag("position", {{178.0f, wtPosY(0.6f)}, {178.0f, wtPosY(0.55f)}, {178.0f, wtPosY(0.47f)}, {178.0f, wtPosY(0.4f)}});
+  // The line (the reported gesture) and the smooth curve, in draw mode at the position.
+  click("line tool", toolAt(1));
+  drag("line", {drawAt(0.15f, -0.8f), drawAt(0.3f, -0.2f), drawAt(0.5f, 0.5f), drawAt(0.7f, 0.9f), drawAt(0.85f, 0.1f)});
+  click("curve tool", toolAt(2));
+  drag("curve", {drawAt(0.05f, 0.0f), drawAt(0.2f, 0.7f), drawAt(0.35f, 0.1f), drawAt(0.5f, -0.6f), drawAt(0.7f, 0.4f),
+                 drawAt(0.9f, -0.2f)});
+  if (sweep) {
+    // Normalise and remove DC (the table's flags), from draw mode's corner.
+    click("normalise", optAt(1));
+    click("remove DC", optAt(2));
+  }
+  click("leave draw mode", toolAt(2));
+  // The harmonic rows: amplitudes painted across bars, then phases.
+  drag("harmonic amplitudes", {barAt(2, 0.6f), barAt(3, 0.3f), barAt(5, 0.8f), barAt(7, 0.1f)});
+  if (!sweep) {
+    drag("fold knob", {{kWtKnobX[0], 212.0f}, {kWtKnobX[0], 208.0f}, {kWtKnobX[0], 203.0f}});
+    const meta::TableBuilder::Stats st = link->metaTableStats();
+    MESSAGE(checks << " checks (" << previewChecks << " during gestures); face vs its table " << worst.face
+                   << " (thumbnails " << worst.thumb << "), table vs the state " << worst.state << "; previews " << st.previews << " (" << st.focused
+                   << " focused), last " << st.lastPreviewMs << " ms (max " << st.maxPreviewMs << "), full "
+                   << st.lastBuildMs << " ms; face paint (check, 2x zoom, 16 frames) with a new table median "
+                   << median(paintNew) << " ms, otherwise " << median(paintSame) << " ms");
+    CHECK(st.focused > 0u);
+    return;
+  }
+  drag("harmonic phases", {phaseBarAt(1, 1.0f), phaseBarAt(2, -2.0f), phaseBarAt(4, 0.5f)});
+  // A basic shape replaces the edited keyframe's cycle.
+  click("basic shape (triangle)", shapeAt(1));
+  // A keyframe marker moved (keyframe 3 at 0.75 → ≈ 0.68).
+  drag("keyframe move", {{171.5f, wtPosY(0.75f)}, {171.5f, wtPosY(0.72f)}, {171.5f, wtPosY(0.68f)}});
+  // The knobs (baked: a new table every step).
+  for (int k = 0; k < 3; ++k) {
+    const std::string name = k == 0 ? "fold knob" : (k == 1 ? "warp knob" : "sync knob");
+    drag(name, {{kWtKnobX[k], 212.0f}, {kWtKnobX[k], 208.0f}, {kWtKnobX[k], 203.0f}, {kWtKnobX[k], 199.0f}});
+  }
+  // Mode switches: settings (one compile each), then the new image's table.
+  settingClick("warp mode Bend", warpModeAt(0));
+  settingClick("warp mode Pulse width", warpModeAt(2));
+  settingClick("os x2", {164.0f, 233.0f});
+  settingClick("Shape mode", modeAt(1));
+  drag("fold knob (Shape mode)", {{kWtKnobX[0], 212.0f}, {kWtKnobX[0], 216.0f}, {kWtKnobX[0], 220.0f}});
+  click("pencil tool (Shape mode)", toolAt(0));
+  drag("pencil (Shape mode)", {drawAt(0.3f, 0.5f), drawAt(0.4f, -0.5f), drawAt(0.5f, 0.2f)});
+  click("leave draw mode (Shape mode)", toolAt(0));
+  settingClick("Phase mode", modeAt(0));
+  // The live path: fold automated (a lane holding the knob's value): the table bakes no fold, the kernel applies it.
+  const double fold = metaParamValue(*findDevice(s.doc(), wt).device, "", meta::wavetableType(), meta::kWtFold);
+  s.lane(0, wt, "fold",
+         {Breakpoint{0, static_cast<float>(fold), 0.0f, {}}, Breakpoint{64 * kPpq, static_cast<float>(fold), 0.0f, {}}});
+  link->flush();
+  REQUIRE(link->lastError().empty());
+  audio.run(4);
+  liveFold = static_cast<double>(static_cast<float>(fold));
+  settled("live fold");
+  click("line tool (live path)", toolAt(1));
+  drag("line (live path)", {drawAt(0.2f, 0.9f), drawAt(0.5f, -0.7f), drawAt(0.8f, 0.3f)});
+  const meta::TableBuilder::Stats st = link->metaTableStats();
+  MESSAGE(checks << " checks (" << previewChecks << " during gestures); face vs its table " << worst.face
+                 << " (thumbnails " << worst.thumb << "), table vs the state " << worst.state << " (worst: " << worst.where << "); previews " << st.previews
+                 << " (" << st.focused << " focused)");
+  CHECK(st.focused > 0u);
+}
+
+}  // namespace
+
+TEST_CASE("meta wavetable: the picture matches the sound — the reported gestures, step by step: the face draws the "
+          "published table, which is the state") {
+  pictureMatchesSound(false);
+}
+
+TEST_CASE("meta wavetable: the picture matches the sound — every face gesture and mode, step by step" *
+          doctest::test_suite("slow")) {
+  pictureMatchesSound(true);
 }

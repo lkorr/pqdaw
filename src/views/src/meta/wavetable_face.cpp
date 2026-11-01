@@ -10,8 +10,11 @@
 //              shows where the view is. Dragging paints across the bars (Shift: a straight line from the press),
 //              right-click / right-drag or a double-click resets bars (amplitude 0, phase 0). Bars too thin for the
 //              screen are drawn as columns of the loudest bar they cover.
-//   display    (a draw tool chosen: the edited keyframe's cycle, large, on a grid, with the snap grid / normalise /
-//              remove-DC options in its corner; drag to draw — see wavetable_edit.h; click the lit tool or Esc to leave)
+//   display    (a draw tool chosen: the edited keyframe's cycle, large, on a grid, AS IT SOUNDS — TMM.16: the table's
+//              frame where it is heard (the position when edits follow it, else the keyframe's own position), fold /
+//              warp / sync, normalise, remove DC and the band limit included — over the raw drawing as a faint guide,
+//              with the snap grid / normalise / remove-DC options in its corner; drag to draw — see wavetable_edit.h;
+//              click the lit tool or Esc to leave)
 //              the table's dense frames as offset lines receding up-right (a static layer keyed by the instance's
 //              data and baked values), the frame at the position highlighted in the accent with a fill; with no voice,
 //              a dashed line at the phase slider's read phase; per sounding voice a glowing dot on its own frame at
@@ -29,6 +32,11 @@
 // keyframes, a hollow marker shows where the first edit creates one from the blended frame (the plan: "the first
 // stroke creates one there"). Drawing and the harmonic rows are two views of the same 2048 samples: viewing writes
 // nothing, a harmonic edit changes only the harmonics edited (wavetable_edit.h).
+//
+// TMM.16 — THE PICTURE IS THE SOUND: bound by the app (a reader that knows the instance's slot), every curve that
+// stands for the table (the stacked frames, the highlighted frame, the dots, draw mode's cycle) is read from the table
+// the audio side plays now (wavetable_model.h wt::Heard), at the level the lowest sounding voice reads, so previews
+// during a drag are drawn as they are heard; without an engine the face's own model renders them from the state.
 //
 // Every drag and click is one undo step and never a compile: params are runtime values, fold / warp / sync are baked by
 // the link off the audio thread, data edits are the MetaData class. The warp mode is a setting (one compile, as every
@@ -307,7 +315,7 @@ public:
     refresh();
     const uint64_t view = (static_cast<uint64_t>(hFirst_) << 20) ^ (static_cast<uint64_t>(hCount_) << 8);
     switch (layer) {
-      case 3: return tool_ != wt::Tool::None ? (0xC2B2AE3D27D4EB4Full ^ (static_cast<uint64_t>(grid_) + 1)) | 1u : model_.key();
+      case 3: return tool_ != wt::Tool::None ? (0xC2B2AE3D27D4EB4Full ^ (static_cast<uint64_t>(grid_) + 1)) | 1u : dispKey();
       case 4: return (view * 0x2545F4914F6CDD1Dull) | 1u;
       case 5: return (targetKey_ ^ view ^ (alt_ ? 0x9E3779B97F4A7C15ull : 0u)) | 1u;
       default: return (targetKey_ ^ view ^ 0x5851F42D4C957F2Dull) | 1u;
@@ -332,6 +340,7 @@ public:
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
     refresh();
+    followHeard();  // TMM.16 (also on every voice poll: a new table wakes the face like a record)
     const ui::Theme& th = *env.theme;
     const double now = clockNow();
     paintCells(p, th);
@@ -542,6 +551,56 @@ private:
   }
   static uint64_t mix(uint64_t h, uint64_t v) noexcept { return (h ^ v) * 0x100000001B3ull ^ (v >> 29); }
 
+  // ---- what is displayed as the table (TMM.16) ----
+  // With an engine (the app binds a reader that knows the instance's slot), the frames come from the table the audio
+  // side plays (wt::Heard): the level the lowest sounding voice reads (level 0 when none sounds), the live path's
+  // controls applied on top. Without one (the circuit viewer, a standalone file, tests without a link), the face's own
+  // Model renders them from the state.
+  void followHeard() const {
+    VoiceTapReader* rd = voices();
+    if (rd == nullptr) {
+      if (heard_.active()) (void)heard_.update(nullptr, 0, {});
+      return;
+    }
+    HeardTable h = rd->heardTable();
+    if (!h.table) {
+      if (heard_.active()) (void)heard_.update(nullptr, 0, {});
+      return;
+    }
+    uint32_t level = 0;
+    {
+      float inc = 0.0f;  // the lowest sounding voice's increment (the richest level heard)
+      for (uint32_t i = 0; i < voiceCount_; ++i)
+        if (voiceBuf_[i].increment > 0.0f && (inc == 0.0f || voiceBuf_[i].increment < inc)) inc = voiceBuf_[i].increment;
+      level = inc > 0.0f ? dsp::frameTableLevel(h.table->view(), inc) : 0u;
+    }
+    wt::Bake live;
+    uint8_t liveBits = 0;
+    if (std::any_of(h.modulated.begin(), h.modulated.end(), [](uint8_t m) { return m != 0; })) {
+      std::array<double, 3> settings{};
+      for (size_t i = 0; i < settings.size() && i < type().settings.size(); ++i) settings[i] = target().setting(i);
+      liveBits = meta::wavetableLiveControls(settings, h.modulated);
+    }
+    if (liveBits & meta::kWtLiveFold) live.fold = static_cast<float>(param(meta::kWtFold));
+    if (liveBits & meta::kWtLiveWarp) live.warp = static_cast<float>(param(meta::kWtWarp));
+    if (liveBits & meta::kWtLiveSync) live.sync = static_cast<float>(param(meta::kWtSync));
+    live.warpMode = live.warp != 0.0f ? static_cast<uint32_t>(std::clamp(std::round(target().setting(meta::kWtWarpMode)), 0.0, 2.0)) : 0u;
+    (void)heard_.update(std::move(h.table), level, live);
+  }
+  uint32_t dispFrames() const noexcept { return heard_.active() ? heard_.frames() : model_.frames(); }
+  std::span<const float> dispFrame(uint32_t d) const { return heard_.active() ? heard_.frame(d) : model_.frame(d); }
+  float dispGain() const { return heard_.active() ? heard_.gain() : model_.gain(); }
+  uint64_t dispKey() const noexcept { return heard_.active() ? heard_.key() : model_.key(); }
+  void dispSounding(float u, std::span<float> out) const {
+    if (heard_.active()) heard_.sounding(u, out);
+    else model_.sounding(u, out);
+  }
+  float dispSoundAt(float u, float ph) const { return heard_.active() ? heard_.soundAt(u, ph) : model_.soundAt(u, ph); }
+  void dispBlended(float u, std::span<float> out) const {
+    if (heard_.active()) heard_.blended(u, out);
+    else model_.blended(u, out);
+  }
+
   // ---- the harmonic view ----
   float barPitch() const noexcept { return (kHarmX1 - kHarmX0) / static_cast<float>(hCount_); }
   float barX(uint32_t h) const noexcept { return kHarmX0 + barPitch() * static_cast<float>(h - hFirst_); }
@@ -591,7 +650,7 @@ private:
   }
 
   FrameGeom geom(float u) const noexcept {
-    if (model_.frames() <= 1) {
+    if (dispFrames() <= 1) {
       return {kDisp.x0 + 4.0f, kDisp.x1 - kDisp.x0 - 8.0f, (kDisp.y0 + kDisp.y1) * 0.5f, 40.0f};
     }
     constexpr float ox = 26.0f, oy = 30.0f, a = 29.0f;
@@ -607,18 +666,62 @@ private:
     while (step < 64 && width * static_cast<float>(step) < 1.5f * wt::kPoints) step *= 2;
     return step;
   }
+  // v: a closed frame of n + 1 values (kPoints + 1 thumbnails, kSoundPoints + 1 sounding frames). Every `step`-th
+  // value; a sounding frame's points are the mean of the `step` values around each (detail finer than the screen's
+  // points is averaged, not aliased into false jaggies).
   void place(std::span<const float> v, float u, uint32_t step) const {
     curve_.clear();
     const FrameGeom g = geom(u);
-    const float k = g.a * model_.gain();
-    for (uint32_t i = 0; i <= wt::kPoints; i += step)
-      curve_.push_back({g.x0 + g.w * static_cast<float>(i) / wt::kPoints, g.cy - k * v[i]});
+    const float k = g.a * dispGain();
+    const auto n = static_cast<uint32_t>(v.size() - 1);
+    for (uint32_t i = 0; i <= n; i += step) {
+      const float y = n == wt::kSoundPoints ? meanAround(v, i, step) : v[i];
+      curve_.push_back({g.x0 + g.w * static_cast<float>(i) / static_cast<float>(n), g.cy - k * y});
+    }
   }
-  Vec2 pointAt(float u, float phase) const {
+  // The mean of the `step` values of the closed frame v (n + 1 values) centred on i (wrapping).
+  static float meanAround(std::span<const float> v, uint32_t i, uint32_t step) noexcept {
+    if (step <= 1) return v[i];
+    const auto n = static_cast<int32_t>(v.size() - 1);
+    const int32_t j0 = static_cast<int32_t>(i) - static_cast<int32_t>(step / 2);
+    float acc = 0.0f;
+    for (int32_t j = j0; j < j0 + static_cast<int32_t>(step); ++j)
+      acc += v[static_cast<size_t>(j < 0 ? j + n : (j >= n ? j - n : j))];  // |j − i| < n: one wrap at most
+    return acc / static_cast<float>(step);
+  }
+  Vec2 pointAt(float u, float phase) const {  // on the sounding frame (TMM.16)
     const FrameGeom g = geom(u);
     const float ph = phase - std::floor(phase);
-    return {g.x0 + g.w * ph, g.cy - g.a * model_.gain() * model_.valueAt(u, ph)};
+    return {g.x0 + g.w * ph, g.cy - g.a * dispGain() * dispSoundAt(u, ph)};
   }
+  // Draw mode's position (TMM.16): where the edited cycle is heard — the position when edits follow it (or none is
+  // there yet), else the selected keyframe's own position.
+  float drawPosition() const {
+    const auto& k = model_.data().keyframes;
+    if (atPosition_ || virtual_ || model_.frames() <= 1 || k.empty())
+      return std::clamp(static_cast<float>(param(meta::kWtPosition)), 0.0f, 1.0f);
+    return k[static_cast<size_t>(std::clamp<int32_t>(selected_, 0, static_cast<int32_t>(k.size()) - 1))].position;
+  }
+  void recordShown(float u, bool drawMode) {
+    shown_u_ = u;
+    shownDraw_ = drawMode;
+    shownValid_ = true;
+  }
+
+public:
+  // Tests (faces.h wavetableShown): the main curve the last paint drew — the sounding frame at shownU(), in draw
+  // mode or as the highlighted frame.
+  std::span<const float> shownCurve() const noexcept { return sound_; }
+  float shownU() const noexcept { return shown_u_; }
+  bool shownDrawMode() const noexcept { return shownDraw_; }
+  bool shownValid() const noexcept { return shownValid_; }
+  uint32_t stackFrames() const noexcept { return dispFrames(); }
+  std::span<const float> stackFrame(uint32_t d) const { return dispFrame(d); }
+  uint32_t shownLevel() const noexcept { return heard_.active() ? heard_.level() : 0u; }
+  bool shownHeard() const noexcept { return heard_.active(); }
+  const dsp::FrameTable* shownTable() const noexcept { return heard_.table(); }
+
+private:
 
   bool gapShown(size_t g) const noexcept {
     const auto& k = model_.data().keyframes;
@@ -683,7 +786,7 @@ private:
   // The dense frames, back to front, every frame up to 64 lines (more: every k-th, the last always), fainter behind.
   void paintStack(ui::FacePainter& p) const {
     refresh();
-    const uint32_t f = model_.frames();
+    const uint32_t f = dispFrames();
     const uint32_t step = std::max(1u, (f + 63) / 64);
     std::array<uint32_t, 72> idx{};
     uint32_t n = 0;
@@ -692,7 +795,7 @@ private:
     for (uint32_t i = n; i-- > 0;) {
       const uint32_t d = idx[i];
       const float u = f > 1 ? static_cast<float>(d) / static_cast<float>(f - 1) : 0.0f;
-      place(model_.frame(d), u, stepFor(p.transform().scale, f > 1 ? 2u : 1u));
+      place(dispFrame(d), u, stepFor(p.transform().scale, f > 1 ? 2u : 1u));
       const float alpha = f > 1 ? 0.95f - 0.6f * u : 0.55f;
       p.polyline(curve_, f > 1 ? 0.75f : 1.0f, ui::mulAlpha(ui::rgba(255, 255, 255), alpha));
     }
@@ -855,16 +958,30 @@ private:
                   kScrollHalfH + (hot ? 0.4f : 0.0f), hot ? th.face.handle : ui::mulAlpha(th.face.tick, 0.9f));
   }
 
-  // Draw mode's live layer: the edited cycle (dashed and faint while it is still the blended frame between
-  // keyframes), the option cells over the display's corner, and where the pointer would draw.
+  // Draw mode's live layer: the edited cycle AS IT SOUNDS (TMM.16: normalise, fold / warp / sync, remove DC, the
+  // band limit — the table's frame where it is heard; dashed and faint while it is still the blended frame between
+  // keyframes) over the raw drawing as a faint guide (what the pointer edits), the option cells over the display's
+  // corner, and where the pointer would draw.
   void paintDrawMode(ui::FacePainter& p, const ui::Theme& th) {
-    curve_.clear();
     // About one point per device px (a drawn cycle has detail the frames' 256 points would alias), 64 … 1024.
     uint32_t n = 64;
     while (n < 1024 && static_cast<float>(n) < kDrawW * p.transform().scale) n *= 2;
+    // The raw drawing: a faint guide.
+    curve_.clear();
     for (uint32_t i = 0; i <= n; ++i) {
       const float x = static_cast<float>(i) / static_cast<float>(n);
       const float v = std::clamp(targetCycle_[(static_cast<size_t>(i) * wt::kCycleLen / n) % wt::kCycleLen], -1.15f, 1.15f);
+      curve_.push_back(drawPoint(x, v));
+    }
+    p.polyline(curve_, 0.8f, ui::mulAlpha(th.face.handle, 0.35f));
+    // The sounding cycle at the position it is heard at.
+    const float u = drawPosition();
+    dispSounding(u, sound_);
+    recordShown(u, true);
+    curve_.clear();
+    for (uint32_t i = 0; i <= n; ++i) {
+      const float x = static_cast<float>(i) / static_cast<float>(n);
+      const float v = std::clamp(meanAround(sound_, i * (wt::kSoundPoints / n), wt::kSoundPoints / n), -1.15f, 1.15f);
       curve_.push_back(drawPoint(x, v));
     }
     const float k = virtual_ ? 0.5f : 1.0f;
@@ -984,8 +1101,10 @@ private:
     const ui::Theme& th = *env.theme;
     // The highlighted frame: a fill to its centre line and the curve, in the accent.
     const float u = std::clamp(shownPosition(env), 0.0f, 1.0f);
-    model_.blended(u, blend_);
-    place(blend_, u, stepFor(p.transform().scale, 1));
+    // TMM.16: the frame as it sounds there (full resolution), not the σ-smoothed thumbnail.
+    dispSounding(u, sound_);
+    recordShown(u, false);
+    place(sound_, u, stepFor(p.transform().scale, 1) * (wt::kSoundPoints / wt::kPoints));
     const FrameGeom g = geom(u);
     p.fillUnder(curve_, g.cy, ui::mulAlpha(th.face.value, 0.22f), ui::mulAlpha(th.face.value, 0.02f));
     p.polyline(curve_, 1.5f, th.face.value);
@@ -1003,14 +1122,14 @@ private:
     if (shown_.empty()) return;
     const ui::Theme& th = *env.theme;
     const float hiU = std::clamp(shownPosition(env), 0.0f, 1.0f);
-    const float frameStep = model_.frames() > 1 ? 0.5f / static_cast<float>(model_.frames() - 1) : 2.0f;
+    const float frameStep = dispFrames() > 1 ? 0.5f / static_cast<float>(dispFrames() - 1) : 2.0f;
     const bool wired = driven(env, "x");
     // A voice whose frame is not the highlighted one (the pos input modulated): its own frame, faint.
     for (const Shown& s : shown_) {
       const float a = alphaOf(s, now);
       const float vu = std::clamp(s.v.position, 0.0f, 1.0f);
       if (std::fabs(vu - hiU) <= frameStep) continue;
-      model_.blended(vu, blend_);
+      dispBlended(vu, blend_);
       place(blend_, vu, stepFor(p.transform().scale, 2));
       p.polyline(curve_, 1.0f, ui::mulAlpha(th.face.signal, 0.28f * a));
     }
@@ -1121,6 +1240,7 @@ private:
 
   // State read from the target (mutable: refreshed from const paths such as the static layers and the tile key).
   mutable wt::Model model_;
+  mutable wt::Heard heard_;  // TMM.16: the published table, when the host knows it
   mutable int32_t selected_ = 0;
   mutable bool atPosition_ = false;  // the edited keyframe follows the position (set by a position drag)
   mutable bool virtual_ = false;     // ... and none sits there: the blended frame, until the first edit
@@ -1130,6 +1250,9 @@ private:
   mutable std::vector<Vec2> curve_;
   mutable Glyphs glyphs_;
   std::vector<float> blend_;
+  std::vector<float> sound_ = std::vector<float>(wt::kSoundPoints + 1, 0.0f);  // TMM.16: the sounding frame drawn
+  float shown_u_ = 0.0f;
+  bool shownDraw_ = false, shownValid_ = false;
   std::vector<Shown> shown_;
   // the harmonic view and draw mode (view state, not document state)
   mutable uint32_t hFirst_ = 1, hCount_ = kDefaultBars;
@@ -1195,7 +1318,10 @@ bool WavetableFace::voicesPolled(bool changed) {
   bool fading = shown_.size() != before;
   for (const Shown& s : shown_) fading = fading || s.dying || now - s.born < kFade;
   if (shown_.size() > 2 * kMaxVoices) shown_.erase(shown_.begin(), shown_.end() - 2 * kMaxVoices);
-  return changed || fading;
+  // TMM.16: a new table published (a preview while a drag runs, the full table after), or another level heard.
+  const uint64_t heardBefore = heard_.key();
+  followHeard();
+  return changed || fading || heard_.key() != heardBefore;
 }
 
 bool WavetableFace::down(const FacePointer& e) {
@@ -1599,5 +1725,26 @@ void WavetableFace::describe(int32_t part, std::string& title, std::string& body
 }  // namespace
 
 std::unique_ptr<MetaFace> makeWavetableFace(const meta::Type& t) { return std::make_unique<WavetableFace>(t); }
+
+}  // namespace pq::views
+
+namespace pq::views {
+
+bool wavetableShown(const MetaFace& f, WavetableShown& out) {
+  const auto* w = dynamic_cast<const WavetableFace*>(&f);
+  if (w == nullptr || !w->shownValid()) return false;
+  out.values.assign(w->shownCurve().begin(), w->shownCurve().end());
+  out.position = w->shownU();
+  out.drawMode = w->shownDrawMode();
+  out.level = w->shownLevel();
+  out.heard = w->shownHeard();
+  out.table = w->shownTable();
+  out.stack.clear();
+  for (uint32_t d = 0; d < w->stackFrames(); ++d) {
+    const auto fr = w->stackFrame(d);
+    out.stack.emplace_back(fr.begin(), fr.end());
+  }
+  return true;
+}
 
 }  // namespace pq::views

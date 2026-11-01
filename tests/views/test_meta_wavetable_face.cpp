@@ -289,6 +289,7 @@ TEST_CASE("wavetable face model: a data change and a baked knob step cost little
   wt::Model m;
   const auto t0 = std::chrono::steady_clock::now();
   REQUIRE(m.update(project_patch::demoWavetableData(), {}));
+  (void)m.gain();  // TMM.16: the frames are rendered when first needed
   const auto t1 = std::chrono::steady_clock::now();
   double bakeMs = 0.0;
   for (int i = 1; i <= 10; ++i) {
@@ -296,6 +297,7 @@ TEST_CASE("wavetable face model: a data change and a baked knob step cost little
     b.fold = 0.05f * static_cast<float>(i);
     const auto a = std::chrono::steady_clock::now();
     REQUIRE(m.update(m.dataPtr(), b));
+    (void)m.gain();
     bakeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
   }
   const double dataMs = std::chrono::duration<double, std::milli>(t1 - t0).count();

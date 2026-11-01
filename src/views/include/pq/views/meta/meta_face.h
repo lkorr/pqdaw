@@ -37,6 +37,10 @@
 #include "pq/ui/input.h"
 #include "pq/ui/theme.h"
 
+namespace pq::dsp {
+class FrameTable;
+}
+
 namespace pq::views {
 
 // What a face reads and edits: one instance's params (in meta::Type::params order).
@@ -89,13 +93,26 @@ struct FaceVoice {
   uint32_t slot = 0;     // the voice slot (stable while the voice sounds)
   float phase = 0.0f;    // the newest sampled phase, 0..1
   float position = 0.0f; // TMM.7: the position the writer reported with it (a wavetable's frame position, 0..1)
+  float increment = 0.0f; // TMM.16: the read's increment the writer reported (cycles per sample: its mip level)
   uint32_t sampleCount = 0;
   std::array<float, kMaxSamples> samples{};  // the phases sampled since the last read, oldest first
+};
+
+// TMM.16: the table the audio side plays for an instance that reads one (the Wavetable), so its face draws what is
+// heard: the table published to the instance's slot now (null: none known, e.g. no engine), its slot's publish count
+// (changes with every table, preview or full) and the params the instance's live path applies on top of it (per
+// meta::Type::params, from the last lowering).
+struct HeardTable {
+  std::shared_ptr<const dsp::FrameTable> table;
+  uint64_t generation = 0;
+  std::vector<uint8_t> modulated;
 };
 
 class VoiceTapReader {
 public:
   virtual ~VoiceTapReader() = default;
+  // TMM.16: the instance's published table (see HeardTable); none by default.
+  virtual HeardTable heardTable() const { return {}; }
   // The voices sounding now (at most out.size()), newest record per voice slot; returns the count.
   virtual uint32_t read(std::span<FaceVoice> out) = 0;
   // Changes whenever new records arrived.
