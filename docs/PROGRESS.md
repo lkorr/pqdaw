@@ -1093,3 +1093,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Alias: static ≤ −134 dBFS; LFO 0.7–20 Hz / 50 ms envelope full depth ≤ −106.6 dBFS; audio-rate 2 kHz full depth at ×8: bend −89.7, mirror −110.1, PW −86.6, fold −91.4, sync −67.4 (accepted: the modulated signal's own bandwidth; the 64× reference folds as much). Shape amplitude 1 ×2: −75.5 / −90.1 / −94.2 (saw / square / drawn).
 - CPU-efficiency check: static controls baked (zero cost); only modulated controls pay; only the region runs at n×; corrections only on event frames. Open: float event evaluation (≈5× cheaper).
 - Notes: Q176 decided (a accept, b live-band bake, c keep unreported delay); bake latency now above TMM.5's 160 ms perf criterion.
+
+## 2026-11-01 · TMM.11 · task/TMM.11-envelope
+- Did: meta::envelopeType (stdlib msenv mode None as atoms, a bend per segment, bit-identical to msenv with every curve 0; `in` = VCA, `gate`, `done`, voice_tap of level + release state); InputSpec::kind, InputDefault One / VoiceGate, Type::voiceEnd + Builder::done; lowering: a meta voice run ending in an Envelope ends its voices by its done (no 5 ms ramp); Envelope face (draggable breakpoints, plateau, bend rings, amount, per-voice dots with trails, log-per-segment time fitted to the width); scenes device-meta-envelope / project-meta-envelope; docs, REVIEW, Q177, bench rows. Rebased onto 29930cc (TMM.8).
+- Verified: first -Affected killed for low memory (two suites at once); after the rebase build.ps1 -Affected (EVERYTHING, check, default + slow): 0 warnings; 87/88, pq_tests_views 460/462 (two scene goldens showed TMM.8's Wavetable "os" cell; regenerated); re-run pq_tests_views + _slow + _perf: 3/3. Orchestrator looked at meta-envelope-z2-1x.
+- Perf: meta_envelope 0.86 ns/voice-sample vs msenv 0.55 (JIT, 16 voices, check, indicative); face 0.031 ms, 16 × 8 voices 0.49 ms.
+- CPU-efficiency check: everything except the per-sample recursion at param rate; no branches; FMAs keep msenv's rounding; tap 0.09 ns.
+- Notes: Q177 (curve law, time axis, bending, ranges).

@@ -1773,7 +1773,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   - The pq_tests_views arrangement-golden SIGSEGV did not reproduce after the rebase (whole pq_tests_views default tier: no crash).
 - Status: decided (orchestrator, TMM.8-fix: a accept, b live-band bake, c keep); open: the float event evaluation (follow-up).
 
-## Q?-TMM.11-a · 2026-11-01 · TMM.11 · The Envelope meta module: the curve law, the voice's end, the face — choices made while building it
+## Q177 · 2026-11-01 · TMM.11 · The Envelope meta module: the curve law, the voice's end, the face — choices made while building it
 - Context: docs/plans/MM.md TMM.11 ("params attack, decay, sustain, release, a curve per segment, amount; inputs gate and in (a VCA); expansion through msenv (no new DSP); renders equal msenv (bit-identical)"), Q175 2 (the run's 5 ms release until an Envelope's done replaces it). Tested in tests/meta/test_envelope.cpp, tests/app/test_meta_link.cpp, tests/views/test_meta_envelope_face.cpp. All reversible.
 - Choices (provisional):
   1. **"Through msenv" = msenv's arithmetic as atoms, not a call of stdlib/envelopes/msenv.pqp.** A meta expansion is built in C++ (pq_meta) and must expand without the stdlib on disk (pqc, the prelude); and msenv has no curves, so a call could not bend its segments without changing msenv (and the Live-parity Operator's six envelopes with it). The expansion is msenv mode None / soft start with Initial 0, Peak 1, End 0, generalised so that with every curve 0 it is the same arithmetic: verified bit-identical on the interpreter and the JIT for three settings (instant attack, released in attack / decay / after sustaining, overlapping voices).
