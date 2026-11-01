@@ -407,14 +407,21 @@ std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t
         // T3.17-fix3: only a tuning with a signal (EDO, MOS) has a node a lane can drive (the model refuses others).
         if (doc::hasTuningSignal(s->def) && tuningParamFits(s->def, k)) add(doc::ParamRef::tuning(k, s->id), s->name, tuningParamLabel(k));
   // T4.18: the track's devices (racks: macros and selector, then their chains, then what is inside), in chain order.
+  // A param an outer rack's macro maps plays the macro (lower.h "Racks"): it is offered only while it already has a
+  // lane (to be seen and deleted); the macro is what to automate.
+  auto addDevice = [&](const doc::Device& d, const std::string& name, const std::string& group, std::string label) {
+    const doc::ParamRef r = doc::ParamRef::device(d.id, name);
+    if (doc::mappingOf(p, d.id, name).mapping != nullptr && findAutomationLane(p, r).lane == nullptr) return;
+    add(r, group, std::move(label));
+  };
   std::vector<doc::DeviceId> mine;
   doc::forEachDeviceIn(t.devices, [&](const doc::Device& d) {
     mine.push_back(d.id);
     const std::string title = deviceTitle(d, lib);
     if (d.rack) {
       for (uint32_t i = 0; i < std::min<uint32_t>(d.rack->visibleMacros, doc::kMacroCount); ++i)
-        add(doc::ParamRef::device(d.id, doc::macroParamName(i)), title, doc::macroDisplayName(*d.rack, i));
-      add(doc::ParamRef::device(d.id, doc::kSelectParam), title, "Chain Selector");
+        addDevice(d, doc::macroParamName(i), title, doc::macroDisplayName(*d.rack, i));
+      addDevice(d, std::string(doc::kSelectParam), title, "Chain Selector");
       for (const doc::ChainPtr& c : d.rack->chains) {
         add(doc::ParamRef::chain(c->id, doc::kChainVolume), title + " | " + c->name, "Volume");
         add(doc::ParamRef::chain(c->id, doc::kChainPan), title + " | " + c->name, "Pan");
@@ -426,7 +433,7 @@ std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t
     const graph::Patch* patch = lib->patchOf(d, hold);
     if (patch == nullptr) return;
     for (const devices::ParamInfo& pi : devices::signatureOf(*patch).params)
-      if (!pi.hidden) add(doc::ParamRef::device(d.id, pi.name), title, pi.label);
+      if (!pi.hidden) addDevice(d, pi.name, title, pi.label);
   });
   std::sort(mine.begin(), mine.end());
   for (const doc::Wire& w : doc::wiresOf(p))

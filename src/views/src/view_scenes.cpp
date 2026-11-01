@@ -1304,11 +1304,11 @@ Status setupAudioRack(Shell& shell) {
   return Ok{};
 }
 
-// T4.18: device automation. Track "Keys": BasicSynth -> Auto Filter -> an Audio Effect Rack holding a Utility, with a
+// T4.18: device automation. Track "Keys": BasicSynth -> an Audio Effect Rack holding a Utility -> Auto Filter, with a
 // held chord. Lanes under Keys: the filter's frequency (a sweep 200 Hz -> 6 kHz over bars 2-4, back to 800 Hz: the
 // knob's exponential scale), the rack's first macro ("Drive", a ramp; overridden by hand: grey), its chain's volume (a
-// step to -12 dB) and the Utility's width (curved). The Device view below shows the rack: the automated controls with
-// their LEDs and the envelopes' values at the playhead (bar 3).
+// step to -12 dB) and the Utility's width (curved). The Device view below shows the rack and the filter's frequency
+// section: the automated controls with their LEDs and the envelopes' values at the playhead (bar 3).
 Status setupDeviceAutomation(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-automation: no device library", {}};
@@ -1319,11 +1319,12 @@ Status setupDeviceAutomation(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "device-automation: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
-  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
   const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
-  if (!af || !util) return Error{ErrorCode::Unknown, "device-automation: addDevice failed", {}};
+  if (!util) return Error{ErrorCode::Unknown, "device-automation: addDevice failed", {}};
   const auto rack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{util->devices[0]}));
   if (!rack) return Error{ErrorCode::Unknown, "device-automation: group failed", {}};
+  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
+  if (!af) return Error{ErrorCode::Unknown, "device-automation: addDevice failed", {}};
   const doc::DeviceId filter = af->devices[0], r = rack->devices[0];
   const doc::ChainId chain = doc::findDevice(*store.current(), r).device->rack->chains.at(0)->id;
   if (!run(doc::ops::renameMacro(*store.current(), r, 0, "Drive")) ||
@@ -1489,7 +1490,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
-    {"device-automation", 1280, 800, setupDeviceAutomation},  // T4.18
+    {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)
     {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp
     {"circuit-inactive-shown", 1280, 800, nullptr, setupCircuitInactiveShown},
     {"circuit-tooltip", 1280, 800, nullptr, setupCircuitTooltip},

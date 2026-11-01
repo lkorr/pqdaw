@@ -144,7 +144,7 @@ struct ParamChoice {
 // Mixer parameters of `t` (volume, pan, activator unless the master, a send per return for tracks with sends),
 // then each main tuning's continuous parameters; T4.18: then each device of t's chain (racks included, in chain
 // order: a rack's visible macros and selector, then its chains' volume and pan, then the devices inside), and the
-// amounts of the wires into t's devices.
+// amounts of the wires into t's devices. A macro-mapped param (it plays its macro) only while it has a lane.
 std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t, const doc::DeviceLibrary* lib = nullptr);
 
 // The lane automating `r` anywhere in the project and the track holding it (nullptr: not automated).

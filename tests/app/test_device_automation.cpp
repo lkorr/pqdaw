@@ -29,11 +29,11 @@ constexpr uint32_t kBlock = 64;
 constexpr double kRate = 48000.0;
 constexpr Ticks kBar = kTicksPerWhole;  // 120 BPM 4/4: 2 s
 
-std::unique_ptr<ProjectLink> makeLink(const Snapshot& s, float sleepAfterMs = 0.0f) {
+std::unique_ptr<ProjectLink> makeLink(const Snapshot& s, float sleepAfterMs = 0.0f, bool jit = false) {
   LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = sleepAfterMs;
-  c.jit = false;
+  c.jit = jit;
   auto l = ProjectLink::create(c, s);
   REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
   return std::move(l.value());
@@ -126,9 +126,26 @@ double maxDiff(const golden::Channels& a, const golden::Channels& b, size_t from
       m = std::max(m, std::fabs(static_cast<double>(a[c][i]) - b[c][i]));
   return m;
 }
-golden::Channels play(Song& s, double seconds) {
-  auto link = makeLink(s.store.current());
+// Renders `seconds` from the start after 0.25 s stopped (the devices' smoothers settle on their settings first).
+// `jit`: every unit on its JIT image before that (the images become current in the first stopped block).
+golden::Channels play(Song& s, double seconds, bool jit = false) {
+  auto link = makeLink(s.store.current(), 0.0f, jit);
   Driver d{*link};
+  if (jit) {
+    REQUIRE(link->waitForJit(120.0));
+    const app::JitStats js = link->jitStats();
+    CHECK(js.errors == 0);
+    CHECK(js.published == link->engine().program()->numUnits());
+  }
+  d.run(d.blocksFor(0.25));
+  if (jit) {
+    engine::ProjectProgram* p = link->engine().program();
+    uint32_t onJit = 0;
+    for (uint32_t u = 0; u < p->numUnits(); ++u)
+      onJit += p->current(u) != nullptr && p->current(u)->io().backend == engine::ImageBackend::Jit ? 1u : 0u;
+    CHECK(onJit == p->numUnits());
+  }
+  d.out = golden::Channels(2);
   link->play(0);
   d.run(d.blocksFor(seconds));
   CHECK(link->lastError().empty());
@@ -168,6 +185,11 @@ TEST_CASE("device automation: a filter-cutoff sweep reaches Auto Filter; where t
   const double d12 = maxDiff(out, st12, at(4.5), at(5.5));
   MESSAGE("held at 12 kHz vs set to 12 kHz: max diff " << d12);
   CHECK(d12 <= 1e-4);
+  // The JIT images follow the same lane.
+  const golden::Channels jit = play(s, 6.0, true);
+  const double dj = maxDiff(out, jit, 0, at(6.0));
+  MESSAGE("interpreter vs JIT: max diff " << dj);
+  CHECK(dj <= 1e-4);
 }
 
 TEST_CASE("device automation: a macro lane drives what the macro maps; a chain volume lane its chain (rack law in the graph)") {
@@ -181,8 +203,8 @@ TEST_CASE("device automation: a macro lane drives what the macro maps; a chain v
   auto m = ops::mapMacro(*s.store.current(), s.store.ids(), rack, 0, u, "gain");
   REQUIRE(m.ok());
   s.must(m->command);
-  // Macro 1: 127 (full gain travel: +35 dB… clipped by min/max 0 … 1 → the Utility's −70 … +35 dB travel) for a bar,
-  // then 64, then 0 (−70 dB: silence).
+  // Macro 1 (mapped onto the Utility's gain over its whole −70 … +35 dB travel): 64 for a bar, then 0 (−70 dB:
+  // silence).
   s.lane(ParamRef::device(rack, "macro1"), "macro1",
          {{0, 64.0f, 0.0f, {}}, {kBar, 64.0f, 0.0f, {}}, {kBar, 0.0f, 0.0f, {}}});
   // The chain's volume: 0 dB, then −12 dB from bar 0.5.
@@ -194,6 +216,11 @@ TEST_CASE("device automation: a macro lane drives what the macro maps; a chain v
   CHECK(a > 1e-3);
   CHECK(b / a == doctest::Approx(std::pow(10.0, -12.0 / 20.0)).epsilon(0.02));  // the chain volume lane: −12 dB
   CHECK(c < 1e-3 * a);                                                          // macro 0: the mapped gain at −70 dB
+  // The JIT images play the same lanes (the chain's volume law and the macro's mapping compiled).
+  const golden::Channels jit = play(s, 3.0, true);
+  const double dj = maxDiff(out, jit, 0, at(3.0));
+  MESSAGE("interpreter vs JIT: max diff " << dj);
+  CHECK(dj <= 1e-5);
   // Static: the same macro value and chain volume set by hand render the same as the lanes holding them.
   Song ref(false);
   const DeviceId u2 = ref.add("utility");

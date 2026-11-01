@@ -14,6 +14,12 @@
 //   audio/64 no clip yet   every clip starts 10 min in: nothing under the playhead (plan: the cost of 64 empty tracks)
 //   audio/64 empty         64 audio tracks without clips (the reference for the row above)
 // The transport loops over the first 30 s (a wrap every 30 s fades the clips over: negligible).
+// T4.18: device automation, 16 MIDI tracks (BasicSynth with a held note -> Auto Filter -> Utility), JIT images:
+//   device automation/16x0 moving   no lanes (the reference)
+//   device automation/16xN moving   N device params per track automated (filter freq, res, Utility gain, width), a
+//                                   breakpoint every half bar: every lane's value changes every block
+//   device automation/16x4 held     the same four lanes, each constant: rendered, but no param changes
+// (moving − reference) / (16 · N) is the cost of one automated device param per block, devices' reaction included.
 // Release / ship build. Usage: pq_bench_playback [runner options]
 #include <cmath>
 #include <cstdio>
@@ -187,6 +193,80 @@ struct AudioRig {
   }
 };
 
+// T4.18: T MIDI tracks, each BasicSynth (one held note) -> Auto Filter -> Utility, JIT images. `lanes` per track (0 … 4)
+// of {filter freq, filter res, utility gain, utility width} automated: a triangle with a breakpoint every half bar, so
+// every lane moves every block; the unautomated params keep their values. `held`: the same lanes, each one constant
+// (the automation renders, but no param changes: what a lane costs while it holds a value).
+struct DeviceAutoRig {
+  DocumentStore store;
+  std::unique_ptr<app::ProjectLink> link;
+  std::vector<float> l = std::vector<float>(kBlock), r = std::vector<float>(kBlock);
+  int64_t time = 0;
+  DeviceAutoRig(uint32_t tracks, uint32_t lanes, bool held) {
+    IdSource& ids = store.ids();
+    const char* params[4][2] = {{"af", "freq"}, {"af", "res"}, {"ut", "gain"}, {"ut", "width"}};
+    const float lo[4] = {200.0f, 0.1f, 0.25f, 0.5f}, hi[4] = {8000.0f, 0.9f, 1.0f, 2.0f};
+    for (uint32_t t = 0; t < tracks; ++t) {
+      auto tr = ops::createTrack(*store.current(), ids, TrackKind::Midi);
+      if (!tr.ok() || !store.dispatch(tr->command).ok()) std::exit(5);
+      const TrackId id = tr->tracks.at(0);
+      auto af = ops::addDevice(*store.current(), ids, id, "auto_filter", DeviceKind::AudioEffect);
+      if (!af.ok() || !store.dispatch(af->command).ok()) std::exit(5);
+      auto ut = ops::addDevice(*store.current(), ids, id, "utility", DeviceKind::AudioEffect);
+      if (!ut.ok() || !store.dispatch(ut->command).ok()) std::exit(5);
+      Batch b{"bench", {}};
+      NoteClip c;
+      c.id = ids.clip();
+      c.start = 0;
+      c.length = 1000 * kPpq;
+      Note n;
+      n.id = ids.note();
+      n.start = 0;
+      n.length = 1000 * kPpq;
+      n.pitch = tuning::PitchId::fromDegree(static_cast<int32_t>(t % 12), 0);
+      n.velocity = 90.0f;
+      c.notes = NoteSeq::fromNotes({n}).value();
+      b.commands.push_back(AddClip{id, std::make_shared<const NoteClip>(std::move(c))});
+      for (uint32_t k = 0; k < lanes; ++k) {
+        auto lane = std::make_shared<AutomationLane>();
+        lane->id = ids.lane();
+        const DeviceId dev = params[k][0][0] == 'a' ? af->devices.at(0) : ut->devices.at(0);
+        lane->param = ParamRef::device(dev, params[k][1]);
+        lane->paramName = params[k][1];
+        const Ticks half = kTicksPerWhole / 2;
+        for (int64_t i = 0; i <= 2000; ++i)
+          lane->points.push_back({i * half, held ? lo[k] : ((i & 1) != 0 ? hi[k] : lo[k]), 0.0f, ids.breakpoint()});
+        b.commands.push_back(AddAutomationLane{id, std::move(lane)});
+      }
+      if (!store.dispatch(b).ok()) std::exit(6);
+    }
+    app::LinkConfig c;
+    c.compileThread = false;
+    c.sleepAfterMs = 0.0f;
+    c.jit = true;
+    auto made = app::ProjectLink::create(c, store.current());
+    if (!made.ok()) {
+      std::fprintf(stderr, "%s\n", made.error().message.c_str());
+      std::exit(3);
+    }
+    link = std::move(made.value());
+    link->play(0);
+    for (int i = 0; i < 200000; ++i) {
+      const app::JitStats js = link->jitStats();
+      if (js.published + js.errors + js.stale >= js.wanted && js.refined + js.refineStale + js.refineErrors >= js.firstImages)
+        break;
+      block();
+    }
+    link->collect();
+    for (int i = 0; i < 400; ++i) block();
+  }
+  void block() {
+    float* ch[2] = {l.data(), r.data()};
+    link->engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+    time += kBlock;
+  }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -218,6 +298,20 @@ int main(int argc, char** argv) {
       std::printf("  %s: %.2f %% of a core (median); %llu clip voices started\n", name.c_str(),
                   100.0 * s.medianNs / (1e9 * kBlock / kRate),
                   static_cast<unsigned long long>(rig.link->engine().timeline().clipPlayer().stats().voicesStarted));
+    });
+  }
+  // T4.18: 16 tracks x {0 … 4} automated device params (moving), and 4 held (constant lanes).
+  struct DevCase {
+    uint32_t lanes;
+    bool held;
+  };
+  for (const DevCase k : {DevCase{0, false}, DevCase{1, false}, DevCase{2, false}, DevCase{3, false}, DevCase{4, false},
+                          DevCase{4, true}}) {
+    const std::string name = "device automation/16x" + std::to_string(k.lanes) + (k.held ? " held" : " moving") + " jit";
+    runner.add(name, [k, name](bench::Context& c) {
+      DeviceAutoRig rig(16, k.lanes, k.held);
+      const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
+      std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
     });
   }
   return runner.main(argc, argv);

@@ -168,6 +168,8 @@ public:
   void refreshAutomation();
   void applyAutomation();
   bool automationPolling() const noexcept;
+  // The LEDs of a device's frame: (param, grey: overridden or macro-mapped); empty: none or no such frame. Tests.
+  std::vector<std::pair<std::string, bool>> automationMarks(doc::DeviceId device) const;
 
   // M4 review M9: rack frames show their chain's devices inline down to this many nested racks; a deeper rack shows its
   // strip, macros and chain list but not its chain's devices, so the widget tree stays shallow however deep racks nest.

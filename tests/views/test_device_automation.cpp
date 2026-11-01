@@ -174,6 +174,19 @@ TEST_CASE("device automation (views): the chooser has a section per device, rack
   const ParamDisplay g = paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library());
   CHECK(displayNorm(g, displayValue(g, 0.37)) == doctest::Approx(0.37));
   CHECK(currentParamValue(p, doc::ParamRef::device(u.filter, "freq"), &library()) == doctest::Approx(1000.0));
+
+  // A macro-mapped param plays its macro (no runtime param of its own): not offered, unless it already has a lane.
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.util, "gain"));
+  auto offered = [&](const doc::ParamRef& r) {
+    for (const ParamChoice& c : paramChoices(*u.ctx.doc(), u.track(u.keys), &library()))
+      if (c.param == r) return true;
+    return false;
+  };
+  CHECK_FALSE(offered(doc::ParamRef::device(u.util, "gain")));
+  CHECK(offered(doc::ParamRef::device(u.util, "width")));
+  CHECK(offered(doc::ParamRef::device(u.rack, "macro1")));
+  u.addLane(doc::ParamRef::device(u.util, "gain"), "gain", {{0.0, 0.5f}, {1.0, 1.0f}});
+  CHECK(offered(doc::ParamRef::device(u.util, "gain")));
 }
 
 TEST_CASE("device automation (views): the first click on a device param's line makes its lane and a point (one undo step)") {
@@ -240,8 +253,10 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   u.port.setPlayheadTick(kBar);
   u.view().applyAutomation();
   CHECK(panel->paramValue("freq") == doctest::Approx(2600.0));
-  auto* frame = u.view().frameOf(u.filter);
-  REQUIRE(frame != nullptr);
+  const auto marks = u.view().automationMarks(u.filter);
+  REQUIRE(marks.size() == 1);
+  CHECK(marks[0].first == "freq");
+  CHECK_FALSE(marks[0].second);  // red: automated, not overridden
   CHECK_FALSE(u.view().automationPolling());  // stopped: no timer
   u.ctx.togglePlay();
   CHECK(u.view().automationPolling());
@@ -253,8 +268,75 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.filter, "freq", 300.0}).ok());
   CHECK(u.ctx.automationOverridden(doc::ParamRef::device(u.filter, "freq")));
   CHECK(panel->paramValue("freq") == doctest::Approx(300.0));
+  CHECK(u.view().automationMarks(u.filter).at(0).second);  // its LED grey
   u.ctx.reenableAutomation();
+  CHECK_FALSE(u.view().automationMarks(u.filter).at(0).second);
   CHECK(panel->paramValue("freq") == doctest::Approx(2600.0));
+}
+
+TEST_CASE("device automation (views): a chain row's Show Volume / Pan Automation; a macro-mapped knob has no lane of its own") {
+  Ui u;
+  u.view().revealDevice(u.rack);
+  u.d.tree().layoutNow();
+  auto* rackFrame = u.view().frameOf(u.rack);
+  REQUIRE(rackFrame != nullptr);
+  Widget* row = rackFrame->find("chains/chain[" + std::to_string(u.chain.value) + "]");
+  REQUIRE(row != nullptr);
+  auto choose = [&](Widget& at, Vec2 pos, const std::string& label) {
+    u.d.click(pos, mod::kNone, PointerButton::Right);
+    Menu* m = u.lastMenu();
+    REQUIRE(m != nullptr);
+    int32_t k = -1;
+    for (size_t i = 0; i < m->items().size(); ++i)
+      if (m->items()[i].label == label) k = static_cast<int32_t>(i);
+    if (k < 0) {
+      u.d.press("Escape");
+      u.d.step();
+      return false;
+    }
+    m->choose(k);
+    u.d.step();
+    (void)at;
+    return true;
+  };
+  // The row's name (left of its solo button): the chain's menu.
+  const Vec2 name{static_cast<float>(row->rect().x + 30), mid(row->rect()).y};
+  REQUIRE(choose(*row, name, "Show Pan Automation"));
+  std::vector<doc::ParamRef> shown = u.au().shownLanes(u.keys);
+  CHECK(std::find(shown.begin(), shown.end(), doc::ParamRef::chain(u.chain, doc::kChainPan)) != shown.end());
+  REQUIRE(choose(*row, name, "Show Volume Automation"));
+  shown = u.au().shownLanes(u.keys);
+  CHECK(std::find(shown.begin(), shown.end(), doc::ParamRef::chain(u.chain, doc::kChainVolume)) != shown.end());
+  // Only a chain lane on the track: the rows still follow it while playing (the timer runs), and stop with it.
+  u.addLane(doc::ParamRef::chain(u.chain, doc::kChainVolume), "", {{0.0, 0.0f}, {2.0, -12.0f}});
+  CHECK_FALSE(u.view().automationPolling());
+  u.ctx.togglePlay();
+  CHECK(u.view().automationPolling());
+  u.ctx.togglePlay();
+  u.view().applyAutomation();  // the timer's next tick
+  CHECK_FALSE(u.view().automationPolling());
+
+  // Utility's gain mapped to macro 1: its knob offers no Show Automation (the macro is what to automate) …
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.util, "gain"));
+  u.d.tree().layoutNow();
+  devices::DevicePanel* panel = u.view().panelOf(u.util);
+  REQUIRE(panel != nullptr);
+  Widget* gain = panel->controlFor("gain");
+  Widget* width = panel->controlFor("width");
+  REQUIRE(gain != nullptr);
+  REQUIRE(width != nullptr);
+  CHECK_FALSE(choose(*gain, mid(gain->rect()), "Show Automation"));
+  CHECK(choose(*width, mid(width->rect()), "Show Automation"));
+  // … and a lane it already had is inert: its LED grey (overridden-like), its knob left to the macro.
+  u.addLane(doc::ParamRef::device(u.util, "gain"), "gain", {{0.0, 0.1f}, {2.0, 0.2f}});
+  const auto marks = u.view().automationMarks(u.util);
+  REQUIRE(marks.size() == 1);
+  CHECK(marks[0].first == "gain");
+  CHECK(marks[0].second);  // grey
+  const double before = panel->paramValue("gain");
+  u.port.setPlayheadTick(kBar);
+  u.view().applyAutomation();
+  CHECK(panel->paramValue("gain") == before);
 }
 
 TEST_CASE("device automation (views): moving the device to another track takes its lane along; deleting it removes the lane") {

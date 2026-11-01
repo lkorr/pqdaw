@@ -9,6 +9,7 @@
 #include "../common/paint.h"
 #include "pq/core/automation_curve.h"
 #include "internal.h"
+#include "pq/views/arrangement/automation.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
 #include "pq/document/edit_ops.h"
@@ -538,7 +539,9 @@ void FrameBase::paintOver(ui::PaintContext& ctx) {
         if (w == nullptr || !w->visible()) continue;
         const ui::IRect r = ui::intersect(w->rect(), rect());
         if (r.w < 2 * static_cast<int32_t>(size) || r.h < 2 * static_cast<int32_t>(size)) continue;
-        const float x = static_cast<float>(r.x + 1), y = static_cast<float>(r.y + 1);
+        // Left of the control (clear of its centred label) where the frame has room, else inside its corner.
+        const int32_t outside = r.x - static_cast<int32_t>(size) - 1;
+        const float x = static_cast<float>(outside >= rect().x + 1 ? outside : r.x + 1), y = static_cast<float>(r.y + 1);
         ctx.dl.addRectFilled({x, y, x + size, y + size}, overridden ? at.ledOverridden : at.led);
       }
     }
@@ -587,7 +590,11 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // T4.8: a rack opens its lowered subcircuit (read-only) instead.
       const doc::DeviceId id = id_;
       // T4.18: over a param's control (a knob, a box, a toggle, a macro): its automation lane in the arrangement.
-      if (const std::string param = paramAt(e.pos); !param.empty() && loc.track != nullptr) {
+      // A macro-mapped param plays its macro: no lane of its own unless it already has one (the arrangement's chooser).
+      if (const std::string param = paramAt(e.pos);
+          !param.empty() && loc.track != nullptr &&
+          (doc::mappingOf(*ctx_.doc(), id, param).mapping == nullptr ||
+           findAutomationLane(*ctx_.doc(), doc::ParamRef::device(id, param)).lane != nullptr)) {
         ViewContext* c = &ctx_;
         const doc::TrackId t = loc.track->id;
         items.push_back(ui::MenuItem::item("Show Automation", [c, t, id, param] {
@@ -711,7 +718,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
           panel->setPresetName(ctx_.library().presetName(doc::DeviceId{id}));
     if (bits & view_change::kModulation) refreshRings();
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
-    else if ((bits & view_change::kTransport) && !impl_->autoTargets.empty()) applyAutomation();
+    else if ((bits & view_change::kTransport) && (!impl_->autoTargets.empty() || impl_->chainAuto)) applyAutomation();
   });
   sync(true);
 }
@@ -1425,6 +1432,11 @@ void DeviceChainView::onTimer(uint32_t id) {
 
 bool DeviceChainView::automationPolling() const noexcept { return impl_->autoTimer != 0; }
 
+std::vector<std::pair<std::string, bool>> DeviceChainView::automationMarks(doc::DeviceId device) const {
+  const FrameBase* f = impl_->frameOf(device);
+  return f != nullptr ? f->automated() : std::vector<std::pair<std::string, bool>>{};
+}
+
 void DeviceChainView::refreshAutomation() {
   Impl& m = *impl_;
   m.autoTargets.clear();
@@ -1435,6 +1447,11 @@ void DeviceChainView::refreshAutomation() {
       m.chainAuto = m.chainAuto || (l->param.kind == doc::ParamKind::ChainMixer && !l->points.empty());
       if (l->param.kind != doc::ParamKind::DeviceParam || l->points.empty() || m.frameOf(doc::DeviceId{l->param.owner}) == nullptr)
         continue;
+      // A macro-mapped param plays its macro, not its lane (lower.h): its knob is left to the macro, its LED grey.
+      if (doc::mappingOf(*ctx_.doc(), doc::DeviceId{l->param.owner}, l->paramName).mapping != nullptr) {
+        marks[l->param.owner].emplace_back(l->paramName, true);
+        continue;
+      }
       const bool overridden = ctx_.automationOverridden(l->param);
       m.autoTargets.push_back({doc::DeviceId{l->param.owner}, l->paramName, l, overridden});
       marks[l->param.owner].emplace_back(l->paramName, overridden);

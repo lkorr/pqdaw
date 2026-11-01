@@ -876,6 +876,15 @@ bool ChainRow::onPointer(const ui::PointerEvent& e) {
     const doc::ChainId c = chain_;
     const doc::DeviceId rack = loc.rack->id;
     std::vector<ui::MenuItem> items;
+    if (loc.track != nullptr) {  // T4.18: the chain's volume / pan lanes in the arrangement (on the rack's track)
+      ViewContext* vc = &impl_.ctx();
+      const doc::TrackId t = loc.track->id;
+      items.push_back(ui::MenuItem::item("Show Volume Automation",
+                                         [vc, t, c] { vc->showAutomation(t, doc::ParamRef::chain(c, doc::kChainVolume)); }));
+      items.push_back(ui::MenuItem::item("Show Pan Automation",
+                                         [vc, t, c] { vc->showAutomation(t, doc::ParamRef::chain(c, doc::kChainPan)); }));
+      items.push_back(ui::MenuItem::sep());
+    }
     items.push_back(ui::MenuItem::item(loc.chain->active ? "Deactivate Chain" : "Activate Chain",
                                        [im, c, on = loc.chain->active] { im->run(doc::ops::setChainActive(im->doc(), c, !on), false); }));
     items.push_back(ui::MenuItem::item(loc.chain->solo ? "Unsolo" : "Solo",
