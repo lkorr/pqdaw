@@ -598,7 +598,7 @@ M4 closes with the safety fixes H1/H2 (+L4), the device fixes H3/H5 (+L11) and t
 - **Safety / engine**: done in T4.x-fix-engine (merged 2026-10-31: M1–M4, M9 iterative walks at any depth, L1, L4, L5, L17, L18). Open (Q156): ≤ ~32k rack chains per track patch (16-bit ports), Device view frames 24 nested racks inline, file indent capped at 32 levels.
 - **Devices / DSP**: done in T4.x-fix-dsp (merged 2026-10-31: M10, M11, M12 levels, M13, L10, L11, Auto Filter renders; comb in tune). Open: Q150 Auto Filter OSR/SMP/PRD drive at 0 dBFS (−10/−22 dB at +12/+24 dB drive), needs the user's ear; OSR/SMP self-oscillation 24–76 ¢ flat (nonlinear, documented); voice-rate gains stay kernel calls.
 - **UI (T4.x-fix-ui)**: done 2026-10-31 except Q163 item 9 (project patch overview, circuit text soft wrap, monospace font, live mux highlight, reorder auto-scroll, title-bar circuit glyph).
-- **Features**: T4.17 done 2026-10-31; T4.18 device automation (H4) open.
+- **Features**: T4.17 done 2026-10-31; T4.18 device automation (H4) done 2026-10-31.
 - **Process / tracking**: M4-prep gate 30-track ≤ 25 % JIT (best 37 %), M17 ViewContext split; M17 (review) T4.15 optimiser change merged without a release run (covered by the boundary run); L6–L9, L16, L19.
 
 ## M5: Audio tracks, browser, user library (plan: docs/plans/M5.md, approved by the user 2026-10-30; M5b Simpler / Drum Rack skipped for now, user 2026-10-31)
