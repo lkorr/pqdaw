@@ -15,6 +15,10 @@
 //                          envelope, glide), spread (full + spread) and, T4.12-fix1, ms2 / prd (full with the MS2 /
 //                          PRD circuit model at +12 dB drive), spread-ms2 (both) at 1 / 8 / 64 held voices through a
 //                          ProgramHost; ns per frame, per voice-sample, "core" and, at 64 voices, the crossfade blocks as above
+//   operator/stock-full <backend> x64 moving | no-ramps   TX.smooth: every continuous param of the full stock
+//                          Operator jumping to a new value every block (every param ramp moving all the time: the
+//                          worst case), and the same static patch scheduled without param ramps (what the ramps cost
+//                          while nothing moves: the other rows' patch has them)
 //   operator/meta-<config> <backend> xN, operator/stock-four …   TMM.12: the Meta Operator (bench/patches/
 //                          meta_operator_calibration.pqp: sine = algorithm 1 with feedback, hq = the same ×2, add =
 //                          algorithm 11) and the stock Operator doing the same work (four sines, algorithm 1, feedback)
@@ -24,6 +28,7 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -233,8 +238,25 @@ void operatorNotes(void* user, int64_t t, uint32_t, e::EventBuffer& out) noexcep
                        0.8f));
 }
 
-// `voices` held voices of schedule `s` through a ProgramHost; crossfade rows when `fades`.
-void benchVoicePatch(bench::Context& c, const g::Schedule& s, bool jit, uint32_t voices, bool fades) {
+// TX.smooth: every continuous param (real, with a range) moves to a new value every block, inside its range.
+struct ParamMotion {
+  const g::Schedule* s = nullptr;
+  uint64_t blocks = 0;
+};
+void moveParams(void* user, int64_t, uint32_t, e::TransportSnapshot&, std::span<float> params) noexcept {
+  auto& m = *static_cast<ParamMotion*>(user);
+  ++m.blocks;
+  for (size_t i = 0; i < params.size() && i < m.s->params.size(); ++i) {
+    const g::ParamSlot& p = m.s->params[i];
+    if (p.kind != g::Kind::Real || !p.hasRange || !(p.rangeMax > p.rangeMin)) continue;
+    const double u = 0.5 + 0.25 * std::sin(0.37 * static_cast<double>(m.blocks) + static_cast<double>(i));
+    params[i] = static_cast<float>(p.rangeMin + u * (p.rangeMax - p.rangeMin));
+  }
+}
+
+// `voices` held voices of schedule `s` through a ProgramHost; crossfade rows when `fades`; every param moving every
+// block when `moving`.
+void benchVoicePatch(bench::Context& c, const g::Schedule& s, bool jit, uint32_t voices, bool fades, bool moving = false) {
   static uint32_t noteCount = 0;
   noteCount = voices;
   const uint32_t groups = e::voiceGroupsFor(std::max(voices, kOperatorVoices));
@@ -247,6 +269,9 @@ void benchVoicePatch(bench::Context& c, const g::Schedule& s, bool jit, uint32_t
   hc.voice.maxVoices = kOperatorVoices;
   hc.voice.compact = false;
   hc.events = {&operatorNotes, &noteCount};
+  static ParamMotion motion;
+  motion = ParamMotion{&s, 0};
+  if (moving) hc.hook = e::BlockHook{&moveParams, &motion, nullptr};
   e::ProgramHost host(hc);
   if (!host.publish(buildImage(s, jit, groups)).ok()) die("operator: publish failed");
   std::vector<float> o0(kBlock), o1(kBlock);
@@ -406,6 +431,28 @@ int main(int argc, char** argv) {
       for (uint32_t v : {1u, 8u, 64u})
         r.add(std::string("operator/stock-") + sc.name + " " + (jit ? "jit" : "interp") + " x" + std::to_string(v),
               [&sc, jit, v](bench::Context& c) { benchVoicePatch(c, stockSchedule(sc.patch), jit, v, v == 64); });
+  // TX.smooth: the worst case (every param moving every block) and the static cost of the ramps (the same patch without).
+  for (bool jit : {false, true}) {
+    r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 moving",
+          [jit](bench::Context& c) { benchVoicePatch(c, stockSchedule("OpFull"), jit, 64, false, true); });
+    r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 no-ramps", [jit](bench::Context& c) {
+      static const g::Schedule plain = [] {
+        auto src = pqc::SourceFile::load(std::filesystem::path(PQ_SOURCE_DIR) / "bench" / "patches" / "operator_calibration.pqp");
+        if (!src) die(src.error().message);
+        auto idx = (*src)->findPatch("OpFull");
+        if (!idx) die(idx.error().message);
+        auto compiled = pqc::compilePatch(**src, *idx);
+        if (!compiled) die(compiled.error().message);
+        g::ScheduleOptions so;
+        so.sampleRate = kRate;
+        so.paramRamps = false;
+        auto sc = g::schedule(compiled->optimised, so);
+        if (!sc) die(sc.error().message);
+        return std::move(sc.value());
+      }();
+      benchVoicePatch(c, plain, jit, 64, false);
+    });
+  }
   // TMM.12: the Meta Operator against the stock Operator doing the same work (operator/stock-four).
   static const Stock meta[] = {{"meta-sine", "MoSine"}, {"meta-hq", "MoHq"}, {"meta-add", "MoAdd"}, {"meta-nofb", "MoNoFb"}};
   for (bool jit : {false, true})

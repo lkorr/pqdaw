@@ -190,6 +190,37 @@ namespace pq::graph {
   // engine voice-output reads at a stage end, a loop's next iteration) as keeping the value past that op;
   // ScheduleOptions::shareBuffers = false gives each value its own buffer (the replay checker, sched_replay.h, compares
   // the two). Loop sub-block bounds are evaluated in float32 like the runtime.
+  // TX.smooth (schedule.h "Param ramps"; QUESTIONS Q?-TX.smooth-a): every param is smooth when it changes, in every
+  // device, by one mechanism at the param → audio boundary. After outputs() (values still virtual), insertRamps() finds
+  // each Spl input of a Kernel op in a Block / Loop region (not a solve body) whose operand is a real pattern (Param,
+  // pattern Buffer, param-rate External; never a Const) where dsp::rampableInputs(kernel) allows it (real inputs
+  // that can be audio rate, minus choices and counts: mux / demux index, counter / clockdiv n, pulse period, timer
+  // duration, tuning_hz degree / equave / select / node; minus state-init and required-Spl inputs) and the kernel
+  // exists for Blk; per (stage, factor, source) one `param_ramp` op (dsp::Atom::ParamRamp, 8 lanes in voice stages)
+  // goes into a Block region right after the stage's Control region, with a state entry (key: a structural hash of
+  // the source expression, unit-independent) and a Block buffer whose liveness runs to its last reader (uses_ entries:
+  // ordinary buffer reuse). Schedule::ramps / rampOf (parallel to operands) say which op inputs read which ramp; the ops
+  // keep their Spl operands and masks. ScheduleOptions::paramRamps = false: none (references, A/B).
+  //   The ramp (kernels_ramp.cpp): linear over dsp::kParamRampSeconds = 20 ms from where it is to a changed input
+  // (bitwise), restarted from where it is by a later change; a first call (or a voice lane after its reset) starts at
+  // its input; non-finite values jump. It writes its block only in a call where some lane moves (ParamRampState::
+  // active); dsp::paramRampHold fills it with the resting value when a reader needs the block anyway.
+  //   Run time, both backends, the same bits: an op with a moving ramp among its inputs runs with every ramped input
+  // as a block (findKernel without those Spl bits; resting ramps held), else as scheduled — the interpreter per record
+  // (InterpretedImage::prepareRamps: pool cells swapped, relocated in loops), the JIT per call (pointer / kernel /
+  // mask selects in emitCallHalf) and, for inline code, per stage: after the Control and ramp regions one branch on
+  // "any ramp an inline op (or a call in a loop) reads moved" either continues with the code as scheduled (hoisted
+  // patterns, every specialisation) or tail-calls `<stage>_ramps`, a noinline copy of the rest of the stage in ramp
+  // mode (ramped operands read per frame from their blocks; fused runs not interleaved) whose prologue holds every
+  // resting ramp of the unit. A pair function stages its voice state after that branch when the regions before it
+  // touch none (so nothing staged is live there); a stage with ramps pairs only up to chain cost 256 (the Operator's
+  // pair frame grew past 4 KiB at 320). Smoothed gains: their `g` is ramped like any input; in ramp mode an inline
+  // gain runs the kernel's audio-rate path (gainAudioPrologue; per frame g + residual), whose target is stored before
+  // the frames (a later op of the run may take the ramp's buffer). A held ramp gives the param path's bits, so the
+  // JIT's per-stage choice and the interpreter's per-record choice agree.
+  //   Host: validateRamps; dormant only once every global ramp has settled; idleAfterBlocks covers the longest global
+  // ramp (project_compile.h globalRampFrames). The sleep plan ignores param_ramp state for dormantCapable; ramp
+  // regions never sleep (one compare per ramp and block).
   ScheduleResult scheduleDetailed(const TypedPatch&, const ScheduleOptions& = {});  // + warnings in the Schedule
   Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
 }
@@ -225,7 +256,8 @@ namespace pq::graph {
 // then one branch per block: every residual 0 → the loop with each gain as fma(x, target, acc) (a target of 0: acc /
 // 0), else the loop with the kernel's per-frame definition (kernels_gain.cpp). The 1-lane kernel computes the same
 // frame by frame, so interpreter == JIT bit for bit however the frames are split. Voice gains and audio-rate targets
-// stay kernel calls.
+// stay kernel calls. TX.smooth: a gain's target is ramped like any param-rate input (see "Param ramps" above); in a
+// stage's ramp-mode function its inline form is the kernel's audio-rate path; settled it is unchanged.
 // T1b.x-perf (Q126): a global Control region of param / constant math only (the interpreter's memo rule) runs
 // behind a flag JitImage::process sets when the params equal the previous block's (ImageHost::paramsChanged, the
 // host's param pass, which the interpreter reads too; HostLayout::memoOff), so a
