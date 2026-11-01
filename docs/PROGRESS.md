@@ -1013,3 +1013,11 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Notes/blockers: buildTrackCircuit kept as the chain model (tests, bench) though no view draws it now; an opened Operator dwarfs the other bands when zoomed out (REVIEW).
 - Orchestrator: merged ff at 1e9c7d1 (based on 76013ed, no rebase needed).
 
+## 2026-10-31 · T4.18 · worker / task/T4.18-device-automation (4482c10)
+- Did: finished the stopped WIP (f8cc3c0): device params, rack macros / selector, chain volume / pan and wire amounts get automation lanes (schema 9; lanes on the device's track, following moves, removed with the device / chain / wire in the same undo step; block rate through the existing slots; an automated chain lowers volume / pan params + its gain law in the graph). Review fixes: macro-mapped params not offered (an existing lane inert, grey LED, knob left to the macro); chain-only lanes now followed while playing (transport handler bug); chain-row Show Volume / Pan Automation; LED left of the control; golden at 1600x900; JIT render checks (bit-identical to the interpreter); Rename Macro kept first in a macro's menu; ARCHITECTURE section, REVIEW entry, Q166.
+- Verified: build.ps1 -Affected (check, plan = EVERYTHING via tests/CMakeLists.txt): 0 warnings, 76/77 entries; the failure (test_device_affordances: "Rename Macro" no longer the first menu item) fixed in code, pq_tests_views re-run 3/3. device-automation golden regenerated and inspected.
+- Perf: pq_bench_playback ship, 16 tracks: 0 lanes 36.5 µs/block (2.71 %), 4 moving device lanes per track 54.3 µs (4.05 %), 4 held 36.9 µs. Automation itself ≈ 5 ns/lane-block; moving Auto Filter freq/res ≈ 80 ns/track-block; moving Utility gain/width ≈ 1.0 µs/Utility-block (gain atom's scalar moving path). Load 22–31 %: indicative.
+- CPU-efficiency check: lanes at block rate, engine cursor per lane, held lanes write nothing, stopped = engine sleeps (tested); lane-following only on Structural commands with device lanes; Device-view 30 Hz timer only while playing with an applied lane.
+- Notes/blockers: Q166 (lane placement, mapped params, ranges, rate, Utility smoothing cost follow-up). No Show Automation on modulation rings; no zone / chain mute automation; no automation recording.
+- Orchestrator: merged ff at 4482c10 (based on 4d970c2).
+

@@ -1610,7 +1610,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   9. **Double-click on a clip** opens it as a double-click in the arrangement does (selected there too, the detail view in Clip mode, its editor focused); on the window's empty lane: nothing.
 - Status: open (user to judge with REVIEW's T5.x-one-circuit entry; in particular 1, 3, 5 and the opened band's size in context — Operator's atoms dwarf the other bands, see `project-circuit-device.png`).
 
-## Q?-T4.18-a · 2026-10-31 · T4.18 · Device automation: where lanes live, how they play, what is offered
+## Q166 · 2026-10-31 · T4.18 · Device automation: where lanes live, how they play, what is offered
 - Context: M4 review H4 (no device param, macro, chain mixer value or wire amount could be automated). The WIP branch (f8cc3c0, stopped by the user) was reviewed, finished and tested; these are its choices, all reversible.
 - Choices (provisional):
   1. **Where a lane lives**: on the track holding the device (`laneHome`): a device param's on its device's track, a chain's volume / pan on the rack's track, a wire amount on its *target's* track (the amount is a param of that track's patch). After every Structural command the document moves lanes whose device changed track and removes those whose device, chain or wire is gone, inside the same command (one undo step). Group / Ungroup / Hot-Swap keep the lanes of devices that keep their ids; Ungroup removes the rack's own lanes (macros, chains); Hot-Swap removes lanes of params the new patch lacks.
