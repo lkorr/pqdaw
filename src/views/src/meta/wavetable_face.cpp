@@ -32,7 +32,9 @@
 //
 // Every drag and click is one undo step and never a compile: params are runtime values, fold / warp / sync are baked by
 // the link off the audio thread, data edits are the MetaData class. The warp mode is a setting (one compile, as every
-// setting; TMM.8's live path reads it). Shape mode is refused until TMM.8 (Q171): its switch says so.
+// setting; TMM.8's live path reads it). TMM.8-fix: the Phase / Shape switch sets the mode (a setting: one compile);
+// in Shape mode the display's x axis is the input's table position u = (x + 1)/2 and the dots sit at it (the kernel's
+// voice tap). The small cell right of the sync glyph cycles the `os` setting (auto, ×2, ×4, ×8, ×16).
 //
 // World units (204 × 248): see the layout constants below.
 
@@ -119,6 +121,7 @@ enum Part : int32_t {
   kGridPart = 61,
   kNormPart = 62,
   kDcPart = 63,
+  kOsPart = 64,     // TMM.8-fix: the oversampling setting
   kKeyBase = 1000,  // + keyframe
   kGapBase = 3000,  // + gap
 };
@@ -145,6 +148,9 @@ Rect warpCell(uint32_t i) noexcept {
   const float x0 = kKnobX[1] - total * 0.5f + static_cast<float>(i) * (kWarpCellW + kCellGap);
   return {x0, kWarpCellY0, x0 + kWarpCellW, kWarpCellY1};
 }
+// TMM.8-fix: the oversampling cell, right of the sync knob's glyph.
+constexpr Rect kOsCell{156.0f, 227.0f, 172.0f, 239.0f};
+
 bool inside(const Rect& r, Vec2 p, float slack = 0.0f) noexcept {
   return p.x >= r.x0 - slack && p.x <= r.x1 + slack && p.y >= r.y0 - slack && p.y <= r.y1 + slack;
 }
@@ -389,6 +395,7 @@ public:
       if (inside(warpCell(i), l, slack * 0.5f)) return kWarpMode0 + static_cast<int32_t>(i);
     for (uint32_t i = 0; i < 2; ++i)
       if (inside(modeCell(i), l, slack * 0.5f)) return kModePhase + static_cast<int32_t>(i);
+    if (inside(kOsCell, l, slack * 0.5f)) return kOsPart;
     for (uint32_t i = 0; i < kShapeCount; ++i)
       if (inside(shapeCell(i), l, slack * 0.5f)) return kShape0 + static_cast<int32_t>(i);
     for (uint32_t i = 0; i < kToolCount; ++i)
@@ -708,6 +715,13 @@ private:
     static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve};
     for (uint32_t i = 0; i < kToolCount; ++i)
       cell(toolCell(i), static_cast<uint32_t>(tool_) == i + 1, kTool0 + static_cast<int32_t>(i), kTools[i], 4.0f, 3.6f);
+    {  // TMM.8-fix: the oversampling setting as text ("os" = auto, else the factor)
+      const auto os = static_cast<int32_t>(std::round(target().setting(meta::kWtOversampling)));
+      const bool hov = hovered_ == kOsPart;
+      p.roundedRect(kOsCell, 3.0f, hov ? th.face.hover : 0);
+      static constexpr const char* kOsText[5] = {"os", "x2", "x4", "x8", "x16"};
+      p.text(centreOf(kOsCell), kOsText[std::clamp(os, 0, 4)], 6.5f, os > 0 ? th.face.value : th.face.handle);
+    }
     static constexpr Glyph kWarps[3] = {Glyph::Bend, Glyph::Mirror, Glyph::PulseWidth};
     const auto wm = static_cast<int32_t>(std::round(target().setting(meta::kWtWarpMode)));
     for (uint32_t i = 0; i < 3; ++i)
@@ -1261,9 +1275,22 @@ bool WavetableFace::down(const FacePointer& e) {
     }
     return true;
   }
-  if (part == kModePhase) return true;
-  if (part == kModeShape) {
-    tg.notice("Shape mode is not available yet: the Wavetable reads its table by phase");
+  if (part == kModePhase || part == kModeShape) {  // TMM.8-fix: Shape mode is live
+    const double m = part == kModeShape ? 1.0 : 0.0;
+    if (tg.editable() && tg.setting(meta::kWtMode) != m) {
+      tg.begin(m != 0.0 ? "Shape Mode" : "Phase Mode");
+      tg.setSetting(meta::kWtMode, m);
+      tg.end();
+    }
+    return true;
+  }
+  if (part == kOsPart) {  // TMM.8-fix: cycle auto → ×2 → ×4 → ×8 → ×16 → auto (one undo step, one compile)
+    if (tg.editable()) {
+      const double v = std::fmod(std::round(tg.setting(meta::kWtOversampling)) + 1.0, 5.0);
+      tg.begin("Set Oversampling");
+      tg.setSetting(meta::kWtOversampling, v);
+      tg.end();
+    }
     return true;
   }
   if (part >= kTool0 && part < kTool0 + static_cast<int32_t>(kToolCount)) {
@@ -1487,14 +1514,14 @@ void WavetableFace::describe(int32_t part, std::string& title, std::string& body
                   value(meta::kWtPosition));
   } else if (part == kFoldPart) {
     title = "Fold";
-    std::snprintf(buf, sizeof buf, "%.3f: a sine wavefolder, baked into the table. Drag up / down; double-click resets.", value(meta::kWtFold));
+    std::snprintf(buf, sizeof buf, "%.3f: a sine wavefolder, baked into the table (live when modulated). Drag up / down; double-click resets.", value(meta::kWtFold));
   } else if (part == kWarpPart) {
     title = "Warp";
-    std::snprintf(buf, sizeof buf, "%+.3f, baked into the table (the switch below picks bend / mirror / pulse width). Double-click resets.",
+    std::snprintf(buf, sizeof buf, "%+.3f, baked into the table, live when modulated (the switch below picks bend / mirror / pulse width). Double-click resets.",
                   value(meta::kWtWarp));
   } else if (part == kSyncPart) {
     title = "Sync";
-    std::snprintf(buf, sizeof buf, "%.3f: the cycle read %.2fx per period (hard sync), baked into the table. Double-click resets.",
+    std::snprintf(buf, sizeof buf, "%.3f: the cycle read %.2fx per period (hard sync), baked into the table (live when modulated). Double-click resets.",
                   value(meta::kWtSync), 1.0 + 15.0 * value(meta::kWtSync));
   } else if (part >= kWarpMode0 && part < kWarpMode0 + 3) {
     static constexpr const char* kNames[] = {"Bend", "Mirror", "Pulse width"};
@@ -1505,7 +1532,14 @@ void WavetableFace::describe(int32_t part, std::string& title, std::string& body
     std::snprintf(buf, sizeof buf, "The input is a phase: the table is read through one cycle per period.");
   } else if (part == kModeShape) {
     title = "Shape mode";
-    std::snprintf(buf, sizeof buf, "The input as a signal through the table (a waveshaper). Not available yet.");
+    std::snprintf(buf, sizeof buf, "The input as a signal through the table (a waveshaper, anti-aliased): x from -1 to 1 "
+                                   "reads the curve left to right.");
+  } else if (part == kOsPart) {
+    title = "Oversampling";
+    std::snprintf(buf, sizeof buf, "%s. Modulated fold / warp / sync and Shape mode run oversampled. Click to change.",
+                  std::round(target().setting(meta::kWtOversampling)) == 0.0
+                      ? "auto (x8 when fold is modulated, x16 with warp or sync, x2 in Shape mode)"
+                      : "fixed");
   } else if (part >= kShape0 && part < kShape0 + static_cast<int32_t>(kShapeCount)) {
     static constexpr const char* kNames[] = {"Sine", "Triangle", "Saw", "Square", "Pulse 25 %", "Noise"};
     title = std::string("Basic shape: ") + kNames[part - kShape0];

@@ -10,6 +10,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <tuple>
 
@@ -386,6 +387,123 @@ TEST_CASE("wavetable_live / wavetable_shape: swaps crossfade, taps are written, 
   CHECK(slot.tap()->written(0) > 0);
   slot.tap()->removeReader();
 }
+
+// ---- TMM.8-fix (3): the common case, LFO- and envelope-rate modulation at the auto factor ------------------------
+
+namespace {
+
+// The control a Spl input plays: the function's values at the block ends, joined linearly (the kernel's ramp).
+Ctl blockRamp(Ctl f, uint32_t block) {
+  return [f, block](double t) {
+    const double b = static_cast<double>(block);
+    const double k = std::floor((t + 1.0) / b);  // the block whose end is at or after t: ends at k·b − 1 … (k+1)·b − 1
+    const double t0 = k * b - 1.0, t1 = t0 + b;
+    const double w = (t - t0) / b;
+    return f(t0) + w * (f(t1) - f(t0));
+  };
+}
+
+// A periodic envelope: 50 ms raised-cosine rise from lo to hi at t = 0, held, 50 ms fall at half the period.
+Ctl envelope(double lo, double hi, double period, double sr) {
+  return [=](double t) {
+    double x = std::fmod(t, period);
+    if (x < 0) x += period;
+    const double ramp = 0.05 * sr;
+    double g;
+    if (x < ramp) g = 0.5 - 0.5 * std::cos(std::numbers::pi * x / ramp);
+    else if (x < period / 2) g = 1.0;
+    else if (x < period / 2 + ramp) g = 0.5 + 0.5 * std::cos(std::numbers::pi * (x - period / 2) / ramp);
+    else g = 0.0;
+    return lo + (hi - lo) * g;
+  };
+}
+
+double runSlowCase(const AliasCase& c, uint32_t os, uint32_t k0, uint32_t N, bool spl) {
+  const TablePtr t = build({ftfix::basic(BasicCycle::Saw)}, kSr);
+  FrameTableSlot slot(t);
+  LiveRegion r(os, kSr, c.mode, c.corr, c.warp, c.fold, c.sync);
+  r.splControls = spl;
+  const std::vector<double> live = amplitudes(renderLive(r, slot, k0, N, 16384));
+  Reference ref;
+  ref.os = os;
+  ref.sampleRate = kSr;
+  const auto ctl = [&](const Ctl& f) { return spl ? blockRamp(f, 64) : f; };
+  const std::vector<double> want = ref.amplitudes(t->view(), c.mode, ctl(c.warp), ctl(c.fold), ctl(c.sync), k0, N);
+  return compare(live, want, kSr, N).worstDb;
+}
+
+struct SlowMod {
+  const char* name;
+  std::function<Ctl(double lo, double hi)> make;
+};
+
+void slowModSuite(const std::vector<uint32_t>& pitches, const std::vector<SlowMod>& mods, bool spl, double bound,
+                  const std::vector<std::string>& only = {}) {
+  constexpr uint32_t N = 1u << 16;  // bins of 0.73 Hz: the slowest bin-exact LFO
+  for (const SlowMod& m : mods) {
+    const std::vector<AliasCase> cases = {
+        {"bend", WarpMode::Bend, m.make(-1.0, 1.0), constant(0), constant(0), true},
+        {"mirror", WarpMode::Mirror, m.make(-1.0, 1.0), constant(0), constant(0), true},
+        {"pulse width", WarpMode::PulseWidth, m.make(-1.0, 1.0), constant(0), constant(0), true},
+        {"fold", WarpMode::Bend, constant(0), m.make(0.0, 1.0), constant(0), false},
+        {"sync", WarpMode::Bend, constant(0), constant(0), m.make(0.0, 1.0), true},
+    };
+    for (const AliasCase& c : cases) {
+      if (!only.empty() && std::find(only.begin(), only.end(), c.name) == only.end()) continue;
+      const uint32_t os = c.name == "fold" ? 8u : 16u;  // the auto factors (wavetableOversampling)
+      double worst = -400, at = 0;
+      for (const uint32_t k0 : pitches) {
+        const double w = runSlowCase(c, os, k0, N, spl);
+        if (w > worst) {
+          worst = w;
+          at = k0 * kSr / N;
+        }
+      }
+      MESSAGE("slow modulation (" << (spl ? "automation, block ramps" : "audio-rate wire") << "): " << std::string(m.name)
+                                  << ", " << c.name << " at x" << os << ": worst " << worst << " dBFS (f0 " << at << " Hz)");
+      CAPTURE(m.name);
+      CAPTURE(c.name);
+      CHECK(worst <= bound);
+    }
+  }
+}
+
+// km: the LFO's bin (0.73 Hz each); 0: the 50 ms envelope.
+std::vector<SlowMod> slowMods(std::vector<uint32_t> kms) {
+  constexpr double N = 1u << 16;
+  std::vector<SlowMod> v;
+  for (const uint32_t km : kms) {
+    if (km == 0) {
+      v.push_back({"50 ms envelope", [N](double lo, double hi) { return envelope(lo, hi, N, kSr); }});
+      continue;
+    }
+    const char* label = km == 1 ? "0.73 Hz LFO" : km == 3 ? "2.2 Hz LFO" : km == 7 ? "5.1 Hz LFO" : "19.8 Hz LFO";
+    v.push_back({label, [km, N](double lo, double hi) { return sine(0.5 * (hi - lo), 0.5 * (hi + lo), km / N, 0.3); }});
+  }
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("wavetable_live: LFO / envelope-rate modulation at the auto factor (48 kHz, 1760 Hz; bend and sync)") {
+  slowModSuite({2405u}, slowMods({27u, 0u}), false, -100.0, {"bend", "sync"});
+}
+
+// The slow tier: every control, 0.73 / 2.2 / 5.1 / 19.8 Hz LFOs and the envelope, an audio-rate wire and automation
+// (block ramps), 109 Hz and 4.4 kHz; one case per modulation and rate (each ≈ 30 s; the shards run them in parallel).
+#define PQ_SLOW_MOD(km, spl, label)                                                                                    \
+  TEST_CASE("wavetable_live: slow modulation " label " at the auto factor, 109 Hz / 4.4 kHz" *                         \
+            doctest::test_suite("slow")) {                                                                           \
+    slowModSuite({149u, 6005u}, slowMods({km}), spl, -100.0);                                                        \
+  }
+PQ_SLOW_MOD(1u, false, "(0.73 Hz LFO, audio rate)")
+PQ_SLOW_MOD(3u, false, "(2.2 Hz LFO, audio rate)")
+PQ_SLOW_MOD(7u, false, "(5.1 Hz LFO, audio rate)")
+PQ_SLOW_MOD(27u, false, "(19.8 Hz LFO, audio rate)")
+PQ_SLOW_MOD(0u, false, "(50 ms envelope, audio rate)")
+PQ_SLOW_MOD(1u, true, "(0.73 Hz LFO, automation)")
+PQ_SLOW_MOD(27u, true, "(19.8 Hz LFO, automation)")
+PQ_SLOW_MOD(0u, true, "(50 ms envelope, automation)")
 
 // ---- Shape mode ---------------------------------------------------------------------------------------------------
 

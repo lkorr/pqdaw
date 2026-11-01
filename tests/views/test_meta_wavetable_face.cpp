@@ -3,7 +3,7 @@
 // 1 / 2 and 1x / 2x (and with eight synthetic voices spread over the frames), the same primitives at every zoom, tiles
 // equal to direct drawing, voice fades, taps → dots within one displayed frame, every gesture through the project patch
 // view as one undo step (position, phase, knobs, warp mode, keyframe select / move / snap / add / delete, gap mode,
-// basic shapes, the refused Shape mode), and the live layer's paint cost.
+// basic shapes, the Phase / Shape switch and the oversampling cell), and the live layer's paint cost.
 
 #include <doctest/doctest.h>
 
@@ -643,11 +643,20 @@ TEST_CASE("wavetable face: warp mode, keyframe select / move / snap / add / dele
   CHECK(u.d.keyDown(key::kDelete));
   CHECK(u.history() == h0);
   CHECK(u.ctx.status().find("at least one keyframe") != std::string::npos);
-  // Shape mode is refused (TMM.8), with the reason.
+  // TMM.8-fix: the switch sets Shape mode and back (one undo step each).
+  h0 = u.history();
   u.d.click(u.at(14.0f + 14.0f + 1.5f + 7.0f, 24.0f));
-  CHECK(u.history() == h0);
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.setting("mode") == 1.0);
+  u.d.click(u.at(14.0f + 7.0f, 24.0f));
+  CHECK(u.history() == h0 + 2);
   CHECK(u.setting("mode") == 0.0);
-  CHECK(u.ctx.status().find("Shape mode") != std::string::npos);
+  // The oversampling cell cycles auto → x2 → … (one undo step per click).
+  u.d.click(u.at(164.0f, 233.0f));
+  CHECK(u.history() == h0 + 3);
+  CHECK(u.setting("os") == 1.0);
+  for (int i = 0; i < 4; ++i) u.d.click(u.at(164.0f, 233.0f));
+  CHECK(u.setting("os") == 0.0);
 }
 
 TEST_CASE("wavetable face: Esc during a knob drag undoes it; the stacked frames are drawn directly while it runs") {

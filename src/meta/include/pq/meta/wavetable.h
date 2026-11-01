@@ -52,8 +52,8 @@ enum WavetableInput : uint32_t { kWtInX = 0, kWtInPos = 1 };
 enum WavetableParam : uint32_t { kWtPhase = 0, kWtPosition = 1, kWtFold = 2, kWtWarp = 3, kWtSync = 4 };
 enum WavetableSetting : uint32_t { kWtMode = 0, kWtWarpMode = 1, kWtOversampling = 2 };
 // TMM.8: the factor of the live path's / Shape mode's oversample region for these settings and modulated params:
-// the `os` setting (1 … 4 = ×2 … ×16), or auto (0): Shape mode ×2; Phase mode ×8, ×16 with a modulated sync
-// (measured: tests/dsp/test_wave_live.cpp, QUESTIONS TMM.8).
+// the `os` setting (1 … 4 = ×2 … ×16), or auto (0): Shape mode ×2; Phase mode ×16 with a modulated warp or sync, ×8
+// for fold alone (measured: tests/dsp/test_wave_live.cpp, QUESTIONS TMM.8).
 uint32_t wavetableOversampling(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept;
 inline constexpr uint32_t kWtDefaultFrames = 64;
 

@@ -326,7 +326,7 @@ pq_add_test(pq_tests_stdlib SHARDS 4 SLOW_SHARDS 4
     stdlib/test_auto_filter.cpp  # T4.11: Auto Filter vs device_reference.h, analytic responses, modulation
   DEPS pq_jit)
 
-pq_add_test(pq_tests_dsp SLOW_SHARDS 6  # TMM.8: the live path's slow alias proof (9 cases of ≈ 20 s)
+pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias proof and slow-modulation cases (≈ 20 – 30 s each)
   SOURCES
     dsp/test_atoms_math_logic.cpp
     dsp/test_atoms_memory_gen.cpp

@@ -142,7 +142,8 @@ TEST_CASE("wavetable: expansion — own phasor when x is unwired in a voice cont
   CHECK_FALSE(has(g->patch, "phasor"));
   CHECK(g->key != e->key);
   // TMM.8: Shape mode expands to wavetable_shape in an oversample(2) region (auto); a modulated fold / warp / sync in
-  // Phase mode expands onto the live path (wavetable_live in an oversample region, ×8 auto, ×16 with sync), and is
+  // Phase mode expands onto the live path (wavetable_live in an oversample region, ×8 auto for fold, ×16 with a moving
+  // read phase: warp or sync), and is
   // refused in Shape mode with a reason.
   auto regionFactor = [&](const graph::Patch& p) -> uint32_t { return p.regions().empty() ? 0u : p.regions()[0].factor; };
   c.voice = true;
@@ -161,7 +162,7 @@ TEST_CASE("wavetable: expansion — own phasor when x is unwired in a voice cont
     REQUIRE_MESSAGE(m.ok(), (m.ok() ? std::string() : m.error().message));
     CHECK(has(m->patch, "wavetable_live"));
     CHECK_FALSE(has(m->patch, "wavetable_pos"));
-    CHECK(regionFactor(m->patch) == (i == kWtSync ? 16u : 8u));
+    CHECK(regionFactor(m->patch) == (i == kWtFold ? 8u : 16u));
     CHECK(m->key != e->key);
     c.settings = shape;
     auto ms = expand(t, c, "wt");

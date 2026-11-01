@@ -59,7 +59,9 @@ uint32_t wavetableOversampling(std::span<const double> settings, std::span<const
   if (choice > 0) return 1u << choice;
   const bool shape = kWtMode < settings.size() && settings[kWtMode] >= 0.5;
   if (shape) return 2;
-  return liveSet(modulated).sync && kWtSync < modulated.size() && modulated[kWtSync] != 0 ? 16u : 8u;
+  // TMM.8-fix (measured, QUESTIONS TMM.8): ×16 whenever the read phase moves (a live warp or sync: their kinks and
+  // steps at 4.4 kHz alias −89 … −94 dBFS at ×8 with an envelope at full depth, −105 at ×16); ×8 for fold alone.
+  return liveSet(modulated).sync ? 16u : 8u;
 }
 
 namespace {
