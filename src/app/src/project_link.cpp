@@ -1433,6 +1433,7 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
       m = MetaSlot{};                           // images that hold it)
       m.kind = r.request.kind;
       if (m.kind == meta::ResourceKind::FrameTable) {
+        metaFresh_ = true;  // TMM.8-fix: its table is built before the image that reads it is published
         m.table = std::make_shared<dsp::FrameTableSlot>(metaDefaultTable(), metaTapConfig());
         m.tap = m.table->sharedTap();
       } else {
@@ -1463,23 +1464,31 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
   }
 }
 
+// TMM.8-fix: an instance's slot whatever its table variant (the index's upper bits): the one the newest lowering named.
+uint32_t ProjectLink::metaIdLocked(doc::DeviceId device, std::string_view path, uint32_t index) const {
+  for (const auto& [key, id] : metaIds_)
+    if (std::get<0>(key) == device.value && std::get<1>(key) == path && (std::get<2>(key) & 0xFFFFu) == index &&
+        metaSlots_[id].live)
+      return id;
+  return 0;
+}
+
 uint32_t ProjectLink::metaSlot(doc::DeviceId device, std::string_view path, uint32_t index) const {
   std::lock_guard lock(mutex_);
-  const auto it = metaIds_.find(std::make_tuple(device.value, std::string(path), index));
-  return it != metaIds_.end() ? it->second : 0;
+  return metaIdLocked(device, path, index);
 }
 
 std::shared_ptr<dsp::FrameTableSlot> ProjectLink::metaFrameTable(doc::DeviceId device, std::string_view path,
                                                                 uint32_t index) const {
   std::lock_guard lock(mutex_);
-  const auto it = metaIds_.find(std::make_tuple(device.value, std::string(path), index));
-  return it != metaIds_.end() ? metaSlots_[it->second].table : nullptr;
+  const uint32_t id = metaIdLocked(device, path, index);
+  return id != 0 ? metaSlots_[id].table : nullptr;
 }
 
 std::shared_ptr<VoiceTap> ProjectLink::metaVoiceTap(doc::DeviceId device, std::string_view path, uint32_t index) const {
   std::lock_guard lock(mutex_);
-  const auto it = metaIds_.find(std::make_tuple(device.value, std::string(path), index));
-  return it != metaIds_.end() ? metaSlots_[it->second].tap : nullptr;
+  const uint32_t id = metaIdLocked(device, path, index);
+  return id != 0 ? metaSlots_[id].tap : nullptr;
 }
 
 Status ProjectLink::publishFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
@@ -1605,8 +1614,14 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   };
   if (!lowered.ok()) return fail(lowered.error());
   doc::LoweredProject& lp = lowered.value();
+  metaFresh_ = false;
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
   refreshMetaTables();              // TMM.5: new instances, settings (the warp mode), the rate: their tables
+  // TMM.8-fix: a new frame-table slot (a new instance, or a table variant: a control switching between the baked and
+  // the live path, Shape mode) gets its table before the image that reads it plays, so the switch never plays the
+  // other path's table (the old image keeps its own slot until the swap). The compile path waits (≤ 2 s; the builds
+  // are 10 – 300 ms), never the audio thread.
+  if (metaFresh_) waitForMetaTables(2.0);
   std::vector<engine::ProjectParamLink> links;
   for (const doc::LoweredParam& p : lp.params) {
     const uint32_t slot = slotForParam(p.key);

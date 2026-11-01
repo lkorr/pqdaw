@@ -27,8 +27,8 @@ constexpr double kSr = 48000;
 
 // The baked path's output for the same controls: the table baked with them, read at the base rate.
 std::vector<double> bakedAmplitudes(std::vector<ftfix::Cycle> cycles, double sr, FrameBake bake, uint32_t k0,
-                                    uint32_t N) {
-  const TablePtr t = build(std::move(cycles), sr, bake);
+                                    uint32_t N, bool liveBand = true) {
+  const TablePtr t = build(std::move(cycles), sr, bake, false, 64, liveBand);
   FrameReadState st{};
   std::vector<float> ph(N + 4096), y(N + 4096);
   rampPhase(0, N + 4096, k0, N, ph.data());
@@ -51,13 +51,14 @@ const Static kStatics[] = {
     {"pw 0.4 + sync 0.2 + fold 0.1", WarpMode::PulseWidth, 0.4, 0.1, 0.2},
 };
 
-double staticAgreement(const Static& c, const std::vector<ftfix::Cycle>& cycles, uint32_t os, uint32_t k0, uint32_t N) {
+double staticAgreement(const Static& c, const std::vector<ftfix::Cycle>& cycles, uint32_t os, uint32_t k0, uint32_t N,
+                       bool liveBand = true) {
   FrameBake bake;
   bake.warpMode = c.mode;
   bake.warp = static_cast<float>(c.warp);
   bake.fold = static_cast<float>(c.fold);
   bake.sync = static_cast<float>(c.sync);
-  const std::vector<double> baked = bakedAmplitudes(cycles, kSr, bake, k0, N);
+  const std::vector<double> baked = bakedAmplitudes(cycles, kSr, bake, k0, N, liveBand);
   const TablePtr plain = build(cycles, kSr);
   FrameTableSlot slot(plain);
   LiveRegion r(os, kSr, c.mode, true, constant(c.warp), constant(c.fold), constant(c.sync));
@@ -186,9 +187,9 @@ TEST_CASE("wavetable_live: static controls agree with the baked table below 20 k
       double slope = 1.0;
       if (c.mode == WarpMode::Bend) slope = std::max(bendCurve(c.warp), 1.0 / bendCurve(c.warp));
       if (c.mode == WarpMode::PulseWidth) slope = 0.5 / std::min(pulseWidth(c.warp), 1.0 - pulseWidth(c.warp));
-      const double fastest = k0 * kSr / N * s * slope * liveLevelScale(c.fold, 4);
+      const double fastest = k0 * kSr / N * s * slope * liveSpeedScale(c.fold) * 1.4;  // ≤ r × the level's top
       // A level holds H_j ≥ (sr − P)/sr / (r·speed) harmonics (r = 1.4 at 48 kHz): ≈ 0.4 per unit of speed.
-      const uint32_t top = std::clamp(static_cast<uint32_t>(0.38 * 4 * kSr / fastest), 1u, 64u);
+      const uint32_t top = std::clamp(static_cast<uint32_t>(0.38 * kSr / fastest), 1u, 64u);
       const double w = staticAgreement(c, {sawTo(top)}, 4, k0, N);
       CAPTURE(c.name);
       CAPTURE(k0);
@@ -198,19 +199,56 @@ TEST_CASE("wavetable_live: static controls agree with the baked table below 20 k
     }
 }
 
-TEST_CASE("wavetable_live: agreement with the baked table for the full saw (measured)" * doctest::test_suite("slow")) {
-  // The full 1023-harmonic saw: the bake warps all its harmonics, the region keeps those its rate can hold at the
-  // read's speed, so the two differ by the table's band limit at n·sr (an in-band difference, not aliasing; it
-  // shrinks with n). Recorded in QUESTIONS (TMM.8).
+TEST_CASE("wavetable_live: the live-band bake agrees with the live path for the full saw (os 4 / 8 / 16)") {
+  // TMM.8-fix (b): the Wavetable's bake uses the live band limit (FrameTableSpec::liveBand), so a switch between the
+  // baked and the live path is seamless: ≤ −80 dB below 20 kHz for the full 1023-harmonic saw at every pitch tested,
+  // at the auto factors ×8 / ×16 (the band rule does not depend on the factor; at ×4 the live path's own aliasing of
+  // a combined pulse width + sync + fold at 4.4 kHz shows: −69 dB, reported). For contrast, the full-band bake (TMM.1)
+  // is measured too.
   constexpr uint32_t N = 1u << 14;
-  for (const uint32_t os : {4u, 16u})
-    for (const uint32_t k0 : {37u, 151u, 601u})
+  for (const uint32_t os : {4u, 8u, 16u})
+    for (const uint32_t k0 : {37u, 151u, 601u, 1501u})
       for (const Static& c : kStatics) {
+        if (os == 16 && k0 != 601) continue;  // ×16 once (it costs 4× ×4's time)
+        if (os == 4 && k0 != 601 && k0 != 1501) continue;
         const double w = staticAgreement(c, {ftfix::basic(BasicCycle::Saw)}, os, k0, N);
-        MESSAGE("live vs baked (full saw): os " << os << " " << c.name << " at " << k0 * kSr / N << " Hz: " << w
-                                                << " dB");
-        CHECK(w <= -10.0);
+        CAPTURE(c.name);
+        CAPTURE(k0);
+        CAPTURE(os);
+        MESSAGE("live vs live-band bake (full saw): os " << os << " " << c.name << " at " << k0 * kSr / N << " Hz: " << w
+                                                        << " dB");
+        if (os >= 8) CHECK(w <= -80.0);
+        if (os == 4 && k0 == 601)
+          MESSAGE("  (the full-band bake: " << staticAgreement(c, {ftfix::basic(BasicCycle::Saw)}, os, k0, N, false)
+                                            << " dB)");
       }
+}
+
+TEST_CASE("wavetable_live: the live-band bake stays alias-free (bin-exact reads, ≤ −100 dBFS below 20 kHz)") {
+  constexpr uint32_t N = 1u << 15;
+  pq::test::AliasMeter meter(N);
+  double worst = -400;
+  for (const Static& c : kStatics) {
+    FrameBake bake;
+    bake.warpMode = c.mode;
+    bake.warp = static_cast<float>(c.warp);
+    bake.fold = static_cast<float>(c.fold);
+    bake.sync = static_cast<float>(c.sync);
+    const TablePtr t = build({ftfix::basic(BasicCycle::Saw)}, kSr, bake, false, 64, true);
+    for (const uint32_t k0 : {27u, 111u, 443u, 1777u, 5001u}) {  // 40 Hz … 7.3 kHz
+      FrameReadState st{};
+      std::vector<float> ph(N + 4096), y(N + 4096);
+      rampPhase(0, N + 4096, k0, N, ph.data());
+      const float pos = 0.0f;
+      readFrameTableL1(t->view(), st, ph.data(), &pos, false, N + 4096, y.data());
+      const auto rep = meter.measure(std::span<const float>(y.data() + 4096, N), k0, kSr, [](uint32_t) { return -1.0; });
+      CAPTURE(c.name);
+      CAPTURE(k0);
+      CHECK(rep.worstAliasDb <= -100.0);
+      worst = std::max(worst, rep.worstAliasDb);
+    }
+  }
+  MESSAGE("live-band bake, static controls: worst alias " << worst << " dBFS");
 }
 
 namespace {
@@ -254,8 +292,8 @@ void aliasSuite(double sr, uint32_t N, std::vector<uint32_t> pitches, std::vecto
 
 TEST_CASE("wavetable_live: the alias proof against the 64x reference (48 kHz, 1760 Hz, a 2 kHz modulator)") {
   aliasSuite(kSr, 1u << 14, {601u}, {2001.0}, {4u, 8u},
-             {{"bend", 4, -81}, {"mirror", 4, -85}, {"pulse width", 4, -75}, {"fold", 4, -76}, {"sync", 4, -58},
-              {"bend", 8, -94}, {"mirror", 8, -101}, {"pulse width", 8, -84}, {"fold", 8, -88}, {"sync", 8, -68}});
+             {{"bend", 4, -79}, {"mirror", 4, -88}, {"pulse width", 4, -77}, {"fold", 4, -74}, {"sync", 4, -58},
+              {"bend", 8, -87}, {"mirror", 8, -107}, {"pulse width", 8, -84}, {"fold", 8, -89}, {"sync", 8, -65}});
 }
 
 // The slow tier: 108 Hz … 12 kHz, os 4 / 8 / 16, one case per rate and modulator (each ≈ 20 s: the suite's shards

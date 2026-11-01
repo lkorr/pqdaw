@@ -179,8 +179,12 @@ EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::st
   if (slot->replacesInstrument) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
   auto d = std::make_shared<Device>(*makeDevice(ids.device(), std::string(kMetaDevicePrefix) + std::string(t->id), kind));
   d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
-  // TMM.8 (docs/plans/MM.md): a Wavetable after an audio-producing device starts in Shape mode (a waveshaper).
-  if (kind == DeviceKind::AudioEffect && t->id == "wavetable" && t->settingIndex("mode") >= 0)
+  // TMM.8 (docs/plans/MM.md): a Wavetable after an audio-producing device starts in Shape mode (a waveshaper); one that
+  // continues a meta voice run (after a Phase accumulator: TMM.10) reads that phase in Phase mode.
+  const Track* tr = chain.valid() ? nullptr : findTrackPtr(p, l->track);
+  const bool continuesRun = tr != nullptr && t->chainVoiceInput >= 0 &&
+                            continuesMetaVoiceRun(*tr, static_cast<uint32_t>(std::min<size_t>(index, l->devices->size())));
+  if (kind == DeviceKind::AudioEffect && !continuesRun && t->id == "wavetable" && t->settingIndex("mode") >= 0)
     d->settings.push_back(DeviceValue{"mode", 1.0});
   e.devices.push_back(d->id);
   e.tracks.push_back(l->track);

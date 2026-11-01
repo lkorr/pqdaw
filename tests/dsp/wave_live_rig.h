@@ -31,11 +31,12 @@ using TablePtr = std::shared_ptr<const FrameTable>;
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
 
 inline TablePtr build(std::vector<ftfix::Cycle> cycles, double sr, FrameBake bake = {}, bool antiderivative = false,
-                      uint32_t dense = 64) {
+                      uint32_t dense = 64, bool liveBand = false) {
   FrameTableBuilder b;
   ftfix::SpecHolder s(std::move(cycles), sr, dense);
   s.spec.bake = bake;
   s.spec.antiderivative = antiderivative;
+  s.spec.liveBand = liveBand;
   auto t = b.build(s.spec);
   REQUIRE_MESSAGE(t.ok(), (t.ok() ? "" : t.error().message));
   return std::make_shared<const FrameTable>(std::move(t.value()));
@@ -247,7 +248,8 @@ struct Reference {
     const size_t M = static_cast<size_t>(N) * R;
     std::vector<double> y(M), im(M, 0.0);
     const double inc = static_cast<double>(k0) / N / R;  // φ per reference sample
-    const double toOs = static_cast<double>(R) / os;      // reference samples per oversampled sample
+    const double incBase = inc * R;                       // φ per base sample
+    const double incRep = liveRepIncrement(t, static_cast<float>(incBase));  // the base level's representative
     auto phiAt = [&](size_t i) {
       const double p = static_cast<double>((static_cast<uint64_t>(i) * k0) % (static_cast<uint64_t>(N) * R));
       return p / (static_cast<double>(N) * R);
@@ -282,21 +284,23 @@ struct Reference {
       q.sub = std::floor(prod);
       q.psi = prod - q.sub;
       q.psiRate = inc * q.s + q.phi * ds;  // ψ per reference sample
-      q.scale = liveLevelScale(q.c.fold, os);
+      q.scale = liveSpeedScale(q.c.fold);
       return q;
     };
     // The taps' level speeds at ψ (side: the branch at a breakpoint), per oversampled sample, scaled.
     auto speedAt = [&](const Sample& q, double psi, int side, double& sa, double& sb) {
       const LiveTaps tp = liveTaps(mode, psi, q.c.warp, side);
-      sa = std::fabs(tp.da * q.psiRate + tp.dadw * q.dwRate) * toOs * q.scale;
-      sb = std::fabs(q.psiRate) * toOs * q.scale;
+      // Base-rate speeds (wave_live.h "Level choice"): ψ′ = e·s + φ·Δs per base sample.
+      const double rateRep = incRep * q.s + (q.psiRate - inc * q.s) * R;
+      sa = std::fabs(tp.da * rateRep + tp.dadw * q.dwRate * R) * q.scale;
+      sb = std::fabs(rateRep) * q.scale;
     };
     Sample prev = sampleAt(M - 1);
     for (size_t i = 0; i < M; ++i) {
       const Sample q = sampleAt(i);
       double sa = 0, sb = 0;
       speedAt(q, q.psi, 0, sa, sb);
-      y[i] += liveValueAtPsi(t, 0.0f, q.c, q.psi, inc * toOs, 0, nullptr, sa, sb);
+      y[i] += liveValueAtPsi(t, 0.0f, q.c, q.psi, incBase, 0, nullptr, sa, sb);
       if (corrections && q.psiRate > 0.0) {
         const double rate = q.psiRate;
         // One-sided values and slopes (per reference sample) at a breakpoint, each with its side's level speeds.
@@ -304,8 +308,8 @@ struct Reference {
           double gl = 0, gr = 0, la = 0, lb = 0, ra = 0, rb = 0;
           speedAt(q, l, -1, la, lb);
           speedAt(q, r, +1, ra, rb);
-          const double yl = liveValueAtPsi(t, 0.0f, q.c, l, inc * toOs, -1, &gl, la, lb);
-          const double yr = liveValueAtPsi(t, 0.0f, q.c, r, inc * toOs, +1, &gr, ra, rb);
+          const double yl = liveValueAtPsi(t, 0.0f, q.c, l, incBase, -1, &gl, la, lb);
+          const double yr = liveValueAtPsi(t, 0.0f, q.c, r, incBase, +1, &gr, ra, rb);
           j = yr - yl;
           return (gr - gl) * rate;
         };

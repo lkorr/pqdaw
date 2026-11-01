@@ -73,6 +73,14 @@ struct FrameTableSpec {
   // allocated with them). Step 5 writes, per level, the rows of P (harmonics c_h / (2πih), pre-emphasised like the
   // value rows), the frame's DC and the level's value at phase 0.
   bool antiderivative = false;
+  // TMM.8-fix: bake with the LIVE band limit (the Wavetable's Phase mode, so a switch between baked and live is
+  // seamless). Instead of step 3's full-band bake, each mip level j of each frame is the live read itself
+  // (pq/dsp/wave_live.h liveRenderStatic) at the level's representative increment e_j, over the unbaked frame's own
+  // levels: sampled at 2·len_j points, its jumps and kinks (warpBreakpoints; one-sided values and slopes in double,
+  // each side at its own level speeds) subtracted as periodic Bernoulli terms and added back exactly, the harmonics up
+  // to H_j kept. Below 20 kHz the table then equals what wavetable_live plays at these static values (a pitch inside
+  // level j reads the same source levels in both). No effect without a bake or with `antiderivative`.
+  bool liveBand = false;
 };
 
 // The bake resolution actually used: spec.bakeResolution, doubled (up to kMaxAutoBakeResolution, never above what

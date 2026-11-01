@@ -12,6 +12,7 @@
 
 #include "fft_mixed.h"
 #include "frame_table_ops.h"
+#include "pq/dsp/wave_live.h"
 
 namespace pq::dsp {
 
@@ -111,6 +112,16 @@ struct FrameTableBuilder::Impl {
   void jumps(const FrameBake& b, const Cd* c);
   void levels(FrameTable& out, bool antiderivative);
   void edges(FrameTable& out);
+  // TMM.8-fix: the live-band bake (FrameTableSpec::liveBand).
+  Status ensureLive(const FrameTableSpec& spec);
+  void liveBandLevels(const FrameTableSpec& spec, FrameTable& out);
+  FrameTable liveSrc;                    // the unbaked frames' own levels (the source the live read reads)
+  std::vector<MixedFft> fftLive;         // per distinct level: 2·len_j
+  std::vector<uint32_t> fftLiveOf;       // level → fftLive index
+  std::vector<float> livePhase, liveY;   // 2·len_0
+  std::vector<Cd> liveIn, liveOut;       // 2·len_0
+  std::vector<Cd> liveSpec;              // kBins: one level's harmonics
+  std::vector<float> levelTop;           // per level: its representative increment e_j
 };
 
 Status FrameTableBuilder::Impl::ensure(const FrameTableSpec& spec) {
@@ -145,6 +156,8 @@ Status FrameTableBuilder::Impl::ensure(const FrameTableSpec& spec) {
       bufOut.resize(maxLen);
     }
   }
+  if (spec.liveBand && spec.bake.active() && !spec.antiderivative)
+    if (auto s = ensureLive(spec); !s) return s;
   const uint32_t keys = static_cast<uint32_t>(spec.keyframes.size());
   if (keys > capKeys) {
     capKeys = keys;
@@ -252,14 +265,136 @@ void FrameTableBuilder::Impl::denseFrames(const FrameTableSpec& spec) {
       out[h] = std::polar(m0 + t * (m1 - m0), p0 + t * dp);
     }
   }
-  if (spec.bake.active()) {
+  if (spec.bake.active() && !(spec.liveBand && !spec.antiderivative)) {
     for (uint32_t d = 0; d < frames; d += 2) {
       Cd* fa = dense.data() + static_cast<std::size_t>(d) * kBins;
       bakePair(spec.bake, fa, d + 1 < frames ? fa + kBins : nullptr);
     }
   }
-  if (spec.removeDc)
+  if (spec.removeDc && !(spec.bake.active() && spec.liveBand && !spec.antiderivative))
     for (uint32_t d = 0; d < frames; ++d) dense[static_cast<std::size_t>(d) * kBins] = 0.0;
+}
+
+Status FrameTableBuilder::Impl::ensureLive(const FrameTableSpec& spec) {
+  // The FFT plans and buffers (sized once per rate) and the source table (per frame count).
+  if (fftLiveOf.size() != layout.levels || fftLive.empty() || liveSrc.layout().sampleRate != layout.sampleRate) {
+    fftLive.clear();
+    fftLiveOf.assign(layout.levels, 0);
+    uint32_t maxM = 0;
+    for (uint32_t j = 0; j < layout.levels; ++j) {
+      const uint32_t m = 2 * layout.length[j];
+      maxM = std::max(maxM, m);
+      if (j == 0 || layout.length[j] != layout.length[j - 1]) {
+        fftLive.emplace_back();
+        if (!fftLive.back().init(m)) return Error{ErrorCode::Unknown, "live-band bake length not 7-smooth", {}};
+      }
+      fftLiveOf[j] = static_cast<uint32_t>(fftLive.size() - 1);
+    }
+    livePhase.resize(maxM);
+    liveY.resize(maxM);
+    liveIn.resize(maxM);
+    liveOut.resize(maxM);
+    liveSpec.resize(kBins);
+    liveSrc = FrameTable{};
+  }
+  if (liveSrc.frames() != spec.denseFrames || liveSrc.layout().sampleRate != layout.sampleRate) {
+    auto t = FrameTable::allocate(layout, spec.denseFrames);
+    if (!t) return std::move(t).error();
+    liveSrc = std::move(t.value());
+    // e_j: the top of the last increment bucket holding level j (as the kernels' bucketTop).
+    levelTop.assign(layout.levels, 0.0f);
+    const FrameTableView& v = liveSrc.view();
+    for (uint32_t b = 0; b < kFrameLevelBuckets; ++b) levelTop[v.bucketLevel[b]] = v.bucketTop[b];
+  }
+  return Ok{};
+}
+
+// Each level of each frame: the live read at the level's representative increment over the source levels.
+void FrameTableBuilder::Impl::liveBandLevels(const FrameTableSpec& spec, FrameTable& out) {
+  const FrameBake& b = spec.bake;
+  const LiveControls c{b.warpMode, b.warp, b.fold, b.sync};
+  const double s = 1.0 + (kSyncMaxRatio - 1.0) * static_cast<double>(b.sync);
+  const double scale = liveSpeedScale(b.fold);
+  double liveBp[kMaxBreakpoints];
+  const uint32_t numLiveBp = warpBreakpoints(b.warpMode, b.warp, b.sync, liveBp, kMaxBreakpoints);
+  const FrameTableView& src = liveSrc.view();
+  const uint32_t g = kFrameTableGuard;
+  for (uint32_t d = 0; d < out.frames(); ++d) {
+    for (uint32_t j = 0; j < layout.levels; ++j) {
+      if (j > 0 && layout.offset[j] == layout.offset[j - 1]) continue;
+      const uint32_t len = layout.length[j], top = layout.top[j], m = 2 * len;
+      const float e = levelTop[j];
+      for (uint32_t i = 0; i < m; ++i) livePhase[i] = static_cast<float>((i + 0.5) / m);
+      liveRenderStatic(src, d, c, e, livePhase.data(), m, liveY.data());
+      // The breakpoints' value and slope jumps (per unit φ), each side read at its own level speeds.
+      double jv[kMaxBreakpoints], kv[kMaxBreakpoints];
+      for (uint32_t q = 0; q < numLiveBp; ++q) {
+        const double phiB = liveBp[q] * s;
+        const bool start = std::fabs(phiB - std::round(phiB)) < 1e-9;  // a sub-period start (ψ wraps)
+        double left = start ? 1.0 : phiB - std::floor(phiB), right = start ? 0.0 : left;
+        if (start && liveBp[q] == 0.0) {  // φ = 0: the cycle's end reads ψ = frac(s) (a sync reset)
+          left = s - std::floor(s);
+          if (left == 0.0) left = 1.0;
+        }
+        double gl = 0, gr = 0;
+        // liveValueAtPsi reads frame 0 of a view: point it at frame d.
+        FrameTableView fv = src;
+        fv.data = src.data + static_cast<std::size_t>(d) * src.frameStride;
+        fv.frames = 1;
+        auto sideF = [&](double psi, int sd, double& slope) {
+          const LiveTaps tp = liveTaps(b.warpMode, psi, b.warp, sd);
+          return liveValueAtPsi(fv, 0.0f, c, psi, e, sd, &slope, e * s * std::fabs(tp.da) * scale, e * s * scale);
+        };
+        const double yl = sideF(left, -1, gl), yr = sideF(right, +1, gr);
+        jv[q] = yr - yl;
+        kv[q] = (gr - gl) * s;
+      }
+      // The remainder (C1 at every breakpoint), transformed.
+      for (uint32_t i = 0; i < m; ++i) {
+        const double phi = (i + 0.5) / m;
+        double r = liveY[i];
+        for (uint32_t q = 0; q < numLiveBp; ++q) {
+          double x = phi - liveBp[q];
+          x -= std::floor(x);
+          r -= jv[q] * (0.5 - x) - kv[q] * 0.5 * (x * x - x + 1.0 / 6.0);
+        }
+        liveIn[i] = Cd(r, 0.0);
+      }
+      fftLive[fftLiveOf[j]].forward(liveIn.data(), liveOut.data());
+      for (uint32_t h = 0; h <= top; ++h) {
+        Cd ch = liveOut[h] * std::polar(1.0 / m, -std::numbers::pi * h / m);
+        if (h > 0) {
+          const double w = 1.0 / (kTwoPi * h);  // 1/(2πih) = −i·w, 1/(2πih)² = −w²
+          for (uint32_t q = 0; q < numLiveBp; ++q) {
+            const Cd ph = std::polar(1.0, -kTwoPi * h * liveBp[q]);
+            ch += ph * Cd(-kv[q] * w * w, -jv[q] * w);
+          }
+        } else {
+          ch = Cd(spec.removeDc ? 0.0 : ch.real(), 0.0);
+        }
+        liveSpec[h] = ch;
+      }
+      if (j == 0) {  // frameSpectrum(): the frame after the bake (at the full band)
+        Cd* dd = dense.data() + static_cast<std::size_t>(d) * kBins;
+        for (uint32_t h = 0; h < kBins; ++h) dd[h] = h <= top ? liveSpec[h] : Cd(0.0);
+      }
+      // The row: harmonics pre-emphasised, one inverse transform of len_j.
+      const double* em = preEmph[j].data();
+      std::fill(bufIn.begin(), bufIn.begin() + len, Cd(0.0));
+      bufIn[0] = liveSpec[0];
+      for (uint32_t h = 1; h <= top; ++h) {
+        bufIn[h] = liveSpec[h] * em[h];
+        bufIn[len - h] = std::conj(bufIn[h]);
+      }
+      fftLevel[fftOfLevel[j]].inverse(bufIn.data(), bufOut.data());
+      float* row = out.mutableRow(d, j);
+      for (uint32_t n = 0; n < len; ++n) row[n] = static_cast<float>(bufOut[n].real());
+      for (uint32_t q = 0; q < g; ++q) {
+        row[-static_cast<int32_t>(g) + static_cast<int32_t>(q)] = row[len - g + q];
+        row[len + q] = row[q];
+      }
+    }
+  }
 }
 
 // Frame-independent part of a bake: the breakpoints, the read phases' jets beside them, and every sample's taps.
@@ -548,7 +683,13 @@ Status FrameTableBuilder::buildInto(const FrameTableSpec& spec, FrameTable& out)
   if (auto s = impl_->ensure(spec); !s) return s;
   impl_->keyframeSpectra(spec);
   impl_->denseFrames(spec);
-  impl_->levels(out, spec.antiderivative);
+  if (spec.liveBand && spec.bake.active() && !spec.antiderivative) {
+    // TMM.8-fix: the unbaked frames' levels are the live read's source; each output level is the live read.
+    impl_->levels(impl_->liveSrc, false);
+    impl_->liveBandLevels(spec, out);
+  } else {
+    impl_->levels(out, spec.antiderivative);
+  }
   if (spec.antiderivative) impl_->edges(out);
   impl_->lastFrames = spec.denseFrames;
   return Ok{};
@@ -582,7 +723,7 @@ uint64_t frameTableSpecHash(const FrameTableSpec& spec) noexcept {
   mix(std::bit_cast<uint64_t>(spec.sampleRate));
   mix(spec.denseFrames | (static_cast<uint64_t>(spec.bakeResolution) << 32));
   mix(static_cast<uint64_t>(spec.removeDc) | static_cast<uint64_t>(spec.normalise) << 1 |
-      static_cast<uint64_t>(spec.antiderivative) << 2 |
+      static_cast<uint64_t>(spec.antiderivative) << 2 | static_cast<uint64_t>(spec.liveBand) << 3 |
       static_cast<uint64_t>(spec.bake.warpMode) << 8);
   mix(bits(spec.bake.warp) | bits(spec.bake.fold) << 32);
   mix(bits(spec.bake.sync));

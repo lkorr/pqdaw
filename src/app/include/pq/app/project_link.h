@@ -633,6 +633,8 @@ private:
   };
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
+  uint32_t metaIdLocked(doc::DeviceId device, std::string_view path, uint32_t index) const;  // mutex_ held
+  bool metaFresh_ = false;  // TMM.8-fix: the last syncMetaSlots made a new frame-table slot (compile path)
   void syncMetaSlots(const std::vector<doc::LoweredProject::MetaResource>& resources);  // compile path, after lower
   std::shared_ptr<const dsp::FrameTable> metaDefaultTable();                            // mutex_ held
   VoiceTapConfig metaTapConfig() const;

@@ -309,8 +309,10 @@ LiveTaps liveTaps(WarpMode mode, double psi, double warp, int side) noexcept {
   return tapsAt(mode, psi, clampD(warp, -1.0, 1.0), side);
 }
 
-double liveLevelScale(double fold, uint32_t factor) noexcept {
-  return liveHeadroom(factor) * (1.0 + kFoldMaxTheta * clampD(fold, 0.0, 1.0));
+double liveSpeedScale(double fold) noexcept { return kLiveBandScale * (1.0 + kFoldMaxTheta * clampD(fold, 0.0, 1.0)); }
+
+float liveRepIncrement(const FrameTableView& t, float baseInc) noexcept {
+  return _mm_cvtss_f32(S1::gather(t.bucketTop, detail::ft::levelBucket<S1>(_mm_set_ss(baseInc))));
 }
 
 double liveValueAtPsi(const FrameTableView& t, float position, const LiveControls& c, double psi, double inc,
@@ -320,7 +322,7 @@ double liveValueAtPsi(const FrameTableView& t, float position, const LiveControl
   const Taps tp = tapsAt(c.mode, psi, warp, side);
   const PickD pk = pickD(t, position);
   double xa = 0, xb = 0;
-  const double lvInc = inc * liveLevelScale(fold, 1);
+  const double lvInc = liveRepIncrement(t, static_cast<float>(inc)) * liveSpeedScale(fold);
   if (speedA < 0.0) speedA = lvInc * s * std::fabs(tp.da);
   if (speedB < 0.0) speedB = lvInc * s;
   const double va = readPairD(t.data, pk, liveLevels(t, static_cast<float>(speedA)), tp.a, &xa);
@@ -384,6 +386,75 @@ double shapeCurve(const FrameTableView& t, float position, const LiveLevels& lv,
   return readPairD(t.data, pickD(t, position), lv, clampD(u, 0.0, 1.0), nullptr);
 }
 
+namespace {
+
+// The static live read for the bake (wave_live.h liveRenderStatic): the kernel's steps without state, 8 phases at a
+// time, frame `frame` of `t`, levels from the representative base increment.
+template <WarpMode M>
+void renderStaticT(const FrameTableView& t, uint32_t frame, const LiveControls& c, float incRep, const float* phase,
+                   uint32_t n, float* out) noexcept {
+  using S = S8;
+  using F = S::F;
+  const Pick<S> pk{S::seti(static_cast<int32_t>(frame * t.frameStride)), S::seti(0), S::zero(), false};
+  const F half = S::set(0.5f);
+  const F warp = S::set(static_cast<float>(clampD(c.warp, -1.0, 1.0)));
+  const float foldV = static_cast<float>(clampD(c.fold, 0.0, 1.0));
+  const F s = S::set(static_cast<float>(1.0 + (kSyncMaxRatio - 1.0) * clampD(c.sync, 0.0, 1.0)));
+  const F theta = S::set(foldV * static_cast<float>(kFoldMaxTheta));
+  const F scale = S::set(static_cast<float>(liveSpeedScale(foldV)));
+  const F rate = S::mul(S::set(incRep), s);
+  for (uint32_t i = 0; i < n; i += 8) {
+    alignas(32) float ph[8];
+    for (uint32_t l = 0; l < 8; ++l) ph[l] = phase[i + l < n ? i + l : n - 1];
+    const F phi = S::load(ph);
+    const F prod = S::mul(phi, s);
+    const F err = S::fma(phi, s, S::neg(prod));
+    F psi = S::add(S::sub(prod, S::floor(prod)), err);
+    psi = S::sub(psi, S::floor(psi));
+    F ta = psi, tb = psi, mix = S::zero(), slopeA = S::set(1.0f);
+    if constexpr (M == WarpMode::Bend) {
+      const F cc = S::exactExp(S::mul(warp, S::set(static_cast<float>(-2.0 * std::numbers::ln2))));
+      const F den = S::fma(S::sub(S::set(1.0f), cc), psi, cc);
+      ta = S::div(psi, den);
+      slopeA = S::mul(cc, S::div(S::set(1.0f), S::mul(den, den)));
+    } else if constexpr (M == WarpMode::Mirror) {
+      const F fwd = S::bnot(S::bxor(S::lt(psi, half), S::gt(warp, S::zero())));
+      tb = S::select(fwd, psi, S::sub(S::set(1.0f), psi));
+      mix = S::abs(warp);
+    } else {
+      const F pw = S::fma(warp, S::set(static_cast<float>(-(0.5 - kPulseMinWidth))), half);
+      const F lo = S::lt(psi, pw);
+      slopeA = S::select(lo, S::div(half, pw), S::div(half, S::sub(S::set(1.0f), pw)));
+      ta = S::select(lo, S::mul(psi, slopeA), S::fma(S::sub(psi, pw), slopeA, half));
+    }
+    F v = readPair<S>(t.data, levelsFor<S>(t, S::mul(S::mul(rate, slopeA), scale)), ta, pk);
+    if constexpr (M == WarpMode::Mirror)
+      if (S::any(S::ne(mix, S::zero()))) {
+        const F vb = readPair<S>(t.data, levelsFor<S>(t, S::mul(rate, scale)), tb, pk);
+        v = S::fma(mix, S::sub(vb, v), v);
+      }
+    F y = v;
+    if (foldV != 0.0f) {
+      const F norm = foldV * kFoldMaxTheta < 0.5 * kPi ? S::div(S::set(1.0f), S::exactSin(theta)) : S::set(1.0f);
+      y = S::mul(S::exactSin(S::mul(theta, v)), norm);
+    }
+    alignas(32) float res[8];
+    S::store(res, y);
+    for (uint32_t l = 0; l < 8 && i + l < n; ++l) out[i + l] = res[l];
+  }
+}
+
+}  // namespace
+
+void liveRenderStatic(const FrameTableView& t, uint32_t frame, const LiveControls& c, float incRep,
+                      const float* phase, uint32_t n, float* out) noexcept {  // RT-safe
+  switch (c.warp == 0.0 ? WarpMode::Bend : c.mode) {
+    case WarpMode::Bend: renderStaticT<WarpMode::Bend>(t, frame, c, incRep, phase, n, out); break;
+    case WarpMode::Mirror: renderStaticT<WarpMode::Mirror>(t, frame, c, incRep, phase, n, out); break;
+    default: renderStaticT<WarpMode::PulseWidth>(t, frame, c, incRep, phase, n, out); break;
+  }
+}
+
 namespace detail {
 namespace {
 
@@ -398,7 +469,7 @@ struct LiveArgs {
   uint32_t total;      // the block's frames (the param ramps' length)
   bool last;           // the run ends the block: the controls' block values become the previous ones
   bool foldOn;         // fold may be non-zero this block
-  float headroom;      // liveHeadroom of the region's factor
+  float os;            // the region's factor (the base increment = os × the increment here)
 };
 
 // Stamps one event's residuals around the current slot. RT-safe.
@@ -554,22 +625,26 @@ void liveRun(const FrameTableView& t, WavetableLiveState& st, const LiveArgs& a,
     S::store(st.prevW, warp);
     const F rate = S::fma(phi, dS, S::mul(inc, s));
     F fold = S::zero(), theta = S::zero();
-    // The read's band: the speed scaled by the headroom and by the fold's spread (1 + θ).
-    F lvScale = S::set(a.headroom);
+    // The read's band (wave_live.h "Level choice"): base-rate speeds from the representative increment of the base
+    // level, scaled by kLiveBandScale and the fold's spread (1 + θ).
+    F lvScale = S::set(static_cast<float>(kLiveBandScale));
     if (a.foldOn) {
       fold = control<S>(a.in[3], splBit(a.spl, 3), st.prevCtl[1], primed, f, rampT, 0.0f, 1.0f);
       theta = S::mul(fold, S::set(static_cast<float>(kFoldMaxTheta)));
       lvScale = S::mul(lvScale, S::add(S::set(1.0f), theta));
     }
+    const F osF = S::set(a.os);
+    const F incRep = S::gather(t.bucketTop, detail::ft::levelBucket<S>(S::mul(inc, osF)));
+    const F rateRep = S::fma(S::mul(phi, dS), osF, S::mul(incRep, s));  // base-rate ψ per sample
     // A tap's level speed: |a′·ψ′ + ∂a/∂w·Δw| (analytic: smooth except where a′ jumps, which the corrections
     // handle), scaled by the band headroom and the fold's spread.
-    const F speedA = S::mul(S::abs(S::fma(dadw, dW, S::mul(rate, slopeA))), lvScale);
+    const F speedA = S::mul(S::abs(S::fma(S::mul(dadw, dW), osF, S::mul(rateRep, slopeA))), lvScale);
     const Lv<S> lvA = levelsFor<S>(t, speedA);
     const Pick<S> pk = posSpl ? pkSpl : pickFrames<S>(t, S::load(a.in[1] + o));
     F v = readPair<S>(t.data, lvA, ta, pk);
     F speedB = S::zero();
     if constexpr (M == WarpMode::Mirror) {
-      speedB = S::mul(S::abs(rate), lvScale);
+      speedB = S::mul(S::abs(rateRep), lvScale);
       if (S::any(S::ne(mix, S::zero()))) {
         const F vb = readPair<S>(t.data, levelsFor<S>(t, speedB), tb, pk);
         v = S::fma(mix, S::sub(vb, v), v);
@@ -707,7 +782,7 @@ void wavetableLiveK(const KernelArgs& k) noexcept {  // RT-safe
   // Fold costs two sines per sample: skipped while it is a param that is 0 now and was 0 before.
   a.foldOn = !(splBit(k.splMask, 3) && allZero(k.in[3], L) && allZero(s.prevCtl[1], L));
   const uint32_t os = liveFactor(s.sampleRate, e.view);
-  a.headroom = liveHeadroom(os);
+  a.os = static_cast<float>(os);
   const float modeF = k.in[5][0];
   const uint32_t mode = modeF >= 1.5f ? 2u : modeF >= 0.5f ? 1u : 0u;
   const bool corr = k.in[6][0] != 0.0f;

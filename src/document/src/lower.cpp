@@ -185,9 +185,11 @@ private:
     const std::vector<meta::ResourceRequest> requests =
         type.resources != nullptr ? type.resources(resolved) : std::vector<meta::ResourceRequest>{};
     std::vector<uint32_t> slots;
+    // TMM.8-fix: the table's structural variant rides in the index's upper bits (meta::Type::tableVariant).
+    const uint32_t variant = type.tableVariant != nullptr ? type.tableVariant(resolved, modulated) & 0xFFFFu : 0u;
     for (const meta::ResourceRequest& r : requests) {
       if (slots.size() <= r.index) slots.resize(r.index + 1, 0);
-      slots[r.index] = slotOf_ != nullptr && *slotOf_ ? (*slotOf_)(d.id, path, r.index) : 0;
+      slots[r.index] = slotOf_ != nullptr && *slotOf_ ? (*slotOf_)(d.id, path, r.index | (variant << 16)) : 0;
     }
     c.slots = slots;
     const uint64_t key = meta::expansionKey(type, c);

@@ -13,12 +13,14 @@
 // lane's first block starts at the value), so automation and macros never step the waveform; an audio-rate one is
 // used per sample.
 //
-// Level choice: per sample from each tap's instantaneous speed, |a′·ψ′ + ∂a/∂warp·Δwarp| (ψ′ = inc·s + φ·Δs, inc =
-// the phase increment, the smaller of the last two |Δφ| as the readers estimate it; Mirror's second tap: |ψ′|), at
-// the rate the atom runs at, times liveLevelScale (the region factor's headroom log2 n, times the fold's spread
-// 1 + θ). Inside an `oversample(n)` region that rate is n·sr, so a level's harmonics stay below (sr − P)/sr·n·sr
-// divided by the headroom: far above 20 kHz and far below n·sr − 20 kHz, where the warp's and fold's spread would fold
-// back. Each read crossfades the bucket's level j with the next richer level j − 1 by a weight linear in the speed,
+// Level choice (TMM.8-fix: the same rule as the live-band bake, so baked and live agree): per sample from each tap's
+// instantaneous BASE-RATE speed |a′·ψ′ + ∂a/∂warp·Δwarp| with ψ′ = e·s + φ·Δs, where e is the representative
+// increment of the base level the phase increment falls in (FrameTableView::bucketTop of n × the region-rate
+// increment, the smaller of the last two |Δφ|; e is constant over a mip level, so within a level the band depends
+// only on the controls), the deltas taken per base sample (Mirror's second tap: |ψ′|), times liveSpeedScale (½ ·
+// the fold's spread 1 + θ). A level then keeps harmonics whose instantaneous frequency stays below 2·(sr − P)/sr·sr
+// (56 kHz at 48 kHz) at any factor n ≥ 2: far above 20 kHz and far below n·sr − 20 kHz, where the warp's and fold's
+// spread would fold back. Each read crossfades the bucket's level j with the next richer level j − 1 by a weight linear in the speed,
 // 1 where the buckets switch to level j and 0 where they switch to j + 1 (FrameTableView::bucketRich / bucketTop /
 // bucketInvSpan), so a speed that changes inside a cycle (bend, pulse width, a modulated control) changes the harmonic
 // content continuously instead of in steps.
@@ -47,7 +49,7 @@
 // followed |Δu| through every cycle of a sine would step its content twice per cycle). Cost: four P reads (two
 // levels × two endpoints) + one value read when a lane falls back.
 //
-// Both kernels choose levels from speed × liveLevelScale (wavetable_shape: × liveHeadroom; no fold).
+// wavetable_live chooses levels from base-rate speeds × liveSpeedScale; wavetable_shape from its held speed × liveHeadroom.
 // RT: both kernels are RT-safe (no allocation; the residual tables are built at static initialisation).
 
 #include <cstdint>
@@ -89,8 +91,8 @@ double liveValue(const FrameTableView& t, float position, const LiveControls& c,
                  int side = 0, double* dydphi = nullptr) noexcept;
 // The same from ψ (after sync) instead of φ, with s given: what the corrections use at a reset (ψ = frac(s) from the
 // left, 0 from the right). dydpsi: dy/dψ.
-// speedA / speedB ≥ 0: the taps' level speeds as given (what the kernel chose for the sample; already scaled by
-// liveLevelScale), instead of the analytic ones.
+// `inc` is the BASE-rate phase increment (the default speeds use its representative liveRepIncrement); speedA /
+// speedB ≥ 0: the taps' level speeds as given (what the kernel chose for the sample, scaled by liveSpeedScale).
 double liveValueAtPsi(const FrameTableView& t, float position, const LiveControls& c, double psi, double inc,
                       int side, double* dydpsi, double speedA = -1, double speedB = -1) noexcept;
 
@@ -100,14 +102,17 @@ struct LiveTaps {
   double dadw = 0;  // ∂a/∂warp (a modulated warp moves the read: part of its speed)
 };
 LiveTaps liveTaps(WarpMode mode, double psi, double warp, int side) noexcept;
-// The factor a tap's speed is multiplied by before its level is chosen: the band headroom for the region's factor
-// (liveHeadroom) times the fold's spread 1 + θ (a sine folder widens its input's band about that much).
-double liveLevelScale(double fold, uint32_t factor) noexcept;
-// The band headroom at an oversampling factor: log2(n) (1 at n ≤ 2). The crossfaded band then sits at
-// (sr − P)/sr·n·sr / headroom (between 0.58 and 0.82 of that at 48 kHz): at n = 4, 56 … 78 kHz, far from both 20 kHz
-// (the audible band a moving weight would modulate) and n·sr − 20 kHz (where the warp's and fold's spread would fold
-// back). Measured (tests/dsp/test_wave_live.cpp): at n = 4 a headroom of 1 aliases ≈ 15 dB more, 3 or 4 dulls the
-// band and moves the error below 20 kHz.
+// The factor a tap's base-rate speed is multiplied by before its level is chosen: kLiveBandScale times the fold's
+// spread 1 + θ (a sine folder widens its input's band about that much).
+inline constexpr double kLiveBandScale = 0.5;
+double liveSpeedScale(double fold) noexcept;
+// The representative increment of the base mip level `baseInc` falls in (the top of its last bucket). RT-safe.
+float liveRepIncrement(const FrameTableView& t, float baseInc) noexcept;
+// The live read of frame `frame` at static controls with the levels of representative increment incRep, at n phases
+// (float, 8 at a time): what the live-band bake (FrameTableSpec::liveBand) samples. RT-safe.
+void liveRenderStatic(const FrameTableView& t, uint32_t frame, const LiveControls& c, float incRep,
+                      const float* phase, uint32_t n, float* out) noexcept;
+// Shape mode's band headroom at an oversampling factor: log2(n) (1 at n ≤ 2), on its region-rate held speed.
 float liveHeadroom(uint32_t factor) noexcept;
 // The oversampling factor a kernel runs at: its state's rate over the table's (1, 2, 4, 8, 16).
 uint32_t liveFactor(float stateRate, const FrameTableView& t) noexcept;

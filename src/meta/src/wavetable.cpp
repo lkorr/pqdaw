@@ -105,6 +105,13 @@ Status body(Builder& b) {
   return Ok{};
 }
 
+// TMM.8-fix: the table depends on which controls the live path applies and on Shape mode (Type::tableVariant).
+uint32_t tableVariant(std::span<const double> settings, std::span<const uint8_t> modulated) {
+  if (kWtMode < settings.size() && settings[kWtMode] >= 0.5) return 8u;
+  const LiveSet l = liveSet(modulated);
+  return (l.warp ? 1u : 0u) | (l.fold ? 2u : 0u) | (l.sync ? 4u : 0u);
+}
+
 std::string bakedOnly(std::span<const double> settings, uint32_t param) {
   if (kWtMode < settings.size() && settings[kWtMode] >= 0.5)
     return "the Wavetable's " + std::string(kParams[param].label) +
@@ -212,6 +219,7 @@ Status frameTable(const TableSource& src, uint32_t index, TableJob& out) {
   s.bake.warp = live.warp ? 0.0f : param(kWtWarp);
   s.bake.sync = live.sync ? 0.0f : param(kWtSync);
   s.antiderivative = shape;
+  s.liveBand = !shape;  // TMM.8-fix: baked with the live band limit, so baked <-> live switching is seamless
   const double wm = kWtWarpMode < src.settings.size() ? src.settings[kWtWarpMode] : kSettings[kWtWarpMode].def;
   const auto mode = static_cast<uint32_t>(std::clamp(std::isfinite(wm) ? std::round(wm) : 0.0, 0.0, 2.0));
   // The warp mode matters only with a warp: an unwarped table is the same in every mode (shared).
@@ -254,6 +262,7 @@ Type makeType() {
   t.frameTable = &frameTable;
   t.liveBakeable = true;  // TMM.8: the live path
   t.bakedOnly = &bakedOnly;
+  t.tableVariant = &tableVariant;
   return t;
 }
 

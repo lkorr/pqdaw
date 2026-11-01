@@ -147,7 +147,7 @@ TEST_CASE("wavetable document: fold / warp / sync are automated, wired and mappe
   o.library = &library().library();
   o.devices = &library();
   o.slotOf = [](TrackId) { return 0u; };
-  o.metaSlotOf = [](DeviceId, std::string_view, uint32_t index) { return 40u + index; };
+  o.metaSlotOf = [](DeviceId, std::string_view, uint32_t index) { return 40u + (index & 0xFFFFu); };
   // Static: the baked expansion.
   Result<LoweredProject> lp0 = lower(s.doc(), o);
   REQUIRE(lp0.ok());

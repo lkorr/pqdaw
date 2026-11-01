@@ -339,6 +339,8 @@ struct LoweredProject {
     uint32_t slot = 0;
     meta::DataPtr data;  // the instance's (or the type's default)
     std::vector<uint8_t> modulated;  // TMM.8: per param of the type, 1 = modulated (its table must not bake it)
+    // (TMM.8-fix: LowerOptions::metaSlotOf is asked for index | variant << 16, meta::Type::tableVariant; `request.index`
+    // is the plain index.)
   };
   std::vector<MetaResource> metaResources;
   std::shared_ptr<const MetaPatches> metaPatches;

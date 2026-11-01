@@ -149,6 +149,11 @@ struct Type {
   // TMM.8 (optional): with these (resolved) settings, why bakeable param `param` cannot be modulated ("" = it can):
   // a type whose live path depends on a setting (the Wavetable's Shape mode bakes fold / warp / sync).
   std::string (*bakedOnly)(std::span<const double> settings, uint32_t param) = nullptr;
+  // TMM.8-fix (optional): a number for what of the instance's structural state its TABLE depends on (which params the
+  // live path applies, the Wavetable's Shape mode). The lowering asks the link for the slot of (device, path,
+  // index | variant << 16), so a change gives the recompiled image a slot of its own, built before the image plays,
+  // while the old image keeps reading the table it was made for: baked and live never mix (null: 0).
+  uint32_t (*tableVariant)(std::span<const double> settings, std::span<const uint8_t> modulated) = nullptr;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none

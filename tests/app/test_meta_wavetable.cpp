@@ -23,6 +23,7 @@
 #include "pq/core/rt_scope.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
+#include "pq/dsp/fft.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/engine/offline_render.h"
 #include "pq/engine/project_program.h"
@@ -304,58 +305,94 @@ TEST_CASE("meta wavetable: a baked fold drag compiles nothing, is one undo step,
   CHECK(link->metaTableStats().built == built);
 }
 
-TEST_CASE("meta wavetable: automating fold switches to the live path (one compile) and back; the live table is unbaked") {
+namespace {
+
+// Amplitude spectrum (dB re full scale) of n samples from `from`, Blackman-Harris windowed.
+std::vector<double> spectrumDb(const std::vector<float>& x, size_t from, uint32_t n) {
+  std::vector<double> re(n), im(n, 0.0);
+  for (uint32_t i = 0; i < n; ++i) {
+    const double t = 2.0 * 3.14159265358979 * i / (n - 1);
+    const double w = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2 * t) - 0.01168 * std::cos(3 * t);
+    re[i] = x[from + i] * w;
+  }
+  dsp::fftInPlace(re, im, false);
+  std::vector<double> db(n / 2);
+  for (uint32_t b = 0; b < n / 2; ++b) db[b] = 20.0 * std::log10(std::max(std::hypot(re[b], im[b]) / (0.35875 * n / 2), 1e-12));
+  return db;
+}
+
+// The largest difference (dB) between two spectra over bins whose level is above −60 dBFS in either, below 18 kHz.
+double spectrumDiff(const std::vector<double>& a, const std::vector<double>& b, double sr) {
+  double worst = 0;
+  const size_t n = a.size() * 2;
+  for (size_t k = 1; k < a.size() && k * sr / n < 18000.0; ++k)
+    if (std::max(a[k], b[k]) > -60.0) worst = std::max(worst, std::fabs(a[k] - b[k]));
+  return worst;
+}
+
+}  // namespace
+
+TEST_CASE("meta wavetable: automating fold switches to the live path and back (one compile each), seamlessly") {
+  // TMM.10's Accept (Q175 10) with TMM.8-fix's criteria: the live path's table is built before the recompiled image
+  // plays (its own slot: baked and live never mix), and the live-band bake makes the two paths sound the same, so a
+  // lane holding the knob's value changes nothing audible in either direction.
   WtSong s;
   const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
   s.data(wt, oneCycle(dsp::BasicCycle::Saw));
   auto link = makeLink(s.store.current());
   [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   REQUIRE(link->waitForMetaTables());
-  const auto slot = link->metaFrameTable(wt, "", 0);
-  REQUIRE(slot != nullptr);
-  const auto plain = slot->table();
   // A static fold: baked (no compile).
-  s.param(wt, "fold", 0.5);
+  s.param(wt, "fold", 0.4);
   link->flush();
   REQUIRE(link->waitForMetaTables());
-  const auto baked = slot->table();
-  REQUIRE(baked != plain);
+  const auto bakedSlot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(bakedSlot != nullptr);
+  const auto baked = bakedSlot->table();
   Driver d{*link};
   link->play(0);
-  d.run(50);
-  // A lane on fold: one structural compile onto the live path, whose table bakes no fold (the plain table again).
+  d.run(200);
+  const double stepBaked = maxStep(d.out, d.out.size() - 8192, d.out.size());
+  const std::vector<double> before = spectrumDb(d.out, d.out.size() - 8192, 8192);
+  // A lane holding 0.4: one structural compile onto the live path, in a new slot whose table bakes no fold.
   const app::LinkStats s0 = link->stats();
-  s.lane(0, wt, "fold", {Breakpoint{0, 0.0f, 0.0f, {}}, Breakpoint{4 * kPpq, 1.0f, 0.0f, {}}});
+  s.lane(0, wt, "fold", {Breakpoint{0, 0.4f, 0.0f, {}}, Breakpoint{64 * kPpq, 0.4f, 0.0f, {}}});
+  const size_t at1 = d.out.size();
   link->flush();
   REQUIRE(link->lastError().empty());
-  REQUIRE(link->waitForMetaTables());
   CHECK(link->stats().compiles == s0.compiles + 1);
-  const auto live = link->metaFrameTable(wt, "", 0);
-  REQUIRE(live != nullptr);
-  CHECK(sameTable(*live->table(), *plain));
-  const size_t from = d.out.size();
-  d.run(800);  // ~1 s: the lane sweeps fold 0 → 1 (RtScope around every block)
-  double peak = 0;
-  bool finite = true;
-  for (size_t i = from; i < d.out.size(); ++i) {
-    finite &= std::isfinite(d.out[i]);
-    peak = std::max(peak, std::fabs(static_cast<double>(d.out[i])));
-  }
-  CHECK(finite);
-  CHECK(peak > 0.2);
-  // The fold sweep brightens the saw (the folder adds harmonics): later blocks are brighter than the first ones.
-  CHECK(brightness(d.out, from + 48000 - 4096, from + 48000) > brightness(d.out, from + 512, from + 4608));
-  // Deleting the lane: one compile back to the baked path, which bakes the knob's value again.
+  const auto liveSlot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(liveSlot != nullptr);
+  CHECK(liveSlot != bakedSlot);           // its own slot
+  CHECK(liveSlot->table() != baked);      // already built when the image was published (no wait here)
+  CHECK(bakedSlot->table() == baked);     // the old image's table is untouched
+  d.run(200);
+  const double stepSwitch1 = maxStep(d.out, at1, at1 + 4096);
+  const std::vector<double> live = spectrumDb(d.out, d.out.size() - 8192, 8192);
+  // Back: the lane deleted, one compile to the baked path again.
   const app::LinkStats s1 = link->stats();
   const LaneId laneId = findTrackPtr(s.doc(), s.tracks.at(0))->lanes.at(0)->id;
   s.must(RemoveAutomationLane{s.tracks.at(0), laneId});
+  const size_t at2 = d.out.size();
   link->flush();
-  REQUIRE(link->waitForMetaTables());
   CHECK(link->stats().compiles == s1.compiles + 1);
   const auto back = link->metaFrameTable(wt, "", 0);
   REQUIRE(back != nullptr);
+  CHECK(back->table() != nullptr);
   CHECK(sameTable(*back->table(), *baked));
-  d.run(50);
+  d.run(200);
+  const double stepSwitch2 = maxStep(d.out, at2, at2 + 4096);
+  const std::vector<double> after = spectrumDb(d.out, d.out.size() - 8192, 8192);
+  const double dLive = spectrumDiff(before, live, 48000.0), dBack = spectrumDiff(before, after, 48000.0);
+  MESSAGE("fold 0.4, baked -> live -> baked: largest step " << stepBaked << " / " << stepSwitch1 << " / " << stepSwitch2
+                                                           << "; spectrum difference live " << dLive << " dB, back "
+                                                           << dBack << " dB");
+  // No click: the switches' largest sample step stays within 5 % of the steady signal's own (the saw's edge); the
+  // spectra of the three steady stretches agree within 0.1 dB over every bin above −60 dBFS.
+  CHECK(stepSwitch1 <= 1.05 * stepBaked + 1e-3);
+  CHECK(stepSwitch2 <= 1.05 * stepBaked + 1e-3);
+  CHECK(dLive <= 0.1);
+  CHECK(dBack <= 0.1);
 }
 
 TEST_CASE("meta wavetable: a Wavetable effect in Shape mode shapes the track's audio (ADAA, oversampled)") {

@@ -109,12 +109,12 @@ TEST_CASE("meta devices: addMetaDevice picks the kind — a run continues per vo
   CHECK(c.dev(c.wt).kind == DeviceKind::AudioEffect);  // continues the Phase accumulator's voices
   REQUIRE(metaVoiceRun(c.tr()).size() == 1);
   CHECK(metaVoiceRun(c.tr())[0] == &c.dev(c.wt));
-  // Before the Auto Filter: the run goes on; after it: nothing continues, a Wavetable (no effect form until Shape mode)
-  // takes the instrument position instead.
+  // Before the Auto Filter: the run goes on; after it: nothing continues, and (TMM.8) a Wavetable is an audio effect
+  // there (its Shape mode: ops::addMetaDevice starts it in Shape mode).
   CHECK(continuesMetaVoiceRun(c.tr(), 2));
   CHECK_FALSE(continuesMetaVoiceRun(c.tr(), 3));
   CHECK(*ops::metaDeviceKindAt(c.doc(), meta::wavetableType(), c.track, 2) == DeviceKind::AudioEffect);
-  CHECK(*ops::metaDeviceKindAt(c.doc(), meta::wavetableType(), c.track, kAppend) == DeviceKind::Instrument);
+  CHECK(*ops::metaDeviceKindAt(c.doc(), meta::wavetableType(), c.track, kAppend) == DeviceKind::AudioEffect);
   CHECK(*ops::metaDeviceKindAt(c.doc(), meta::wavetableType(), c.track, 0) == DeviceKind::Instrument);
   // A second Phase accumulator after the first continues too (its voice input is pm).
   const DeviceId acc2 = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), c.track, "phase_acc", 1)).devices.at(0);
@@ -182,18 +182,16 @@ TEST_CASE("meta devices: a lone meta instrument ends its voices with the release
   CHECK(text.find(".done") == std::string::npos);     // the instrument form's own done (= !gate) is not used
 }
 
-TEST_CASE("meta devices: a Wavetable moved out of its run is bypassed with a reason; moved back, it plays") {
+TEST_CASE("meta devices: a Wavetable moved out of its run becomes a chain audio effect; moved back, it continues the run") {
   MetaChain c;
-  // After the Auto Filter: no run (and no effect form until Shape mode).
+  // After the Auto Filter: no run. TMM.8: the Wavetable has an effect form (the chain's audio is its x: in Phase mode
+  // the signal is read as a phase; Shape mode shapes it), so it plays as an effect instead of being bypassed.
   c.edit(ops::moveDevice(c.doc(), c.wt, c.track, 2));
   CHECK(metaVoiceRun(c.tr()).empty());
   Result<LoweredProject> lp = lowerIt(c.doc());
   REQUIRE(lp.ok());
-  bool reported = false;
-  for (const LoweredProject::DeviceError& e : lp->deviceErrors)
-    reported = reported || (e.device == c.wt && e.message.find("only after a meta instrument") != std::string::npos);
-  CHECK(reported);
-  CHECK_FALSE(trackPatch(*lp, c.track).findByName("d" + std::to_string(c.wt.value)).has_value());
+  CHECK(lp->deviceErrors.empty());
+  CHECK(trackPatch(*lp, c.track).findByName("d" + std::to_string(c.wt.value)).has_value());
   c.edit(ops::moveDevice(c.doc(), c.wt, c.track, 1));
   Result<LoweredProject> back = lowerIt(c.doc());
   REQUIRE(back.ok());
