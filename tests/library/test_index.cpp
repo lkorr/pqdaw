@@ -126,6 +126,14 @@ TEST_CASE("library: kinds, categories, folding") {
   CHECK(sniffDeviceCategory(R"({"patch":"eq","kind":"audioEffect"})") == Category::AudioEffects);
   CHECK(sniffDeviceCategory(R"({"patch":"rack","kind":"audioEffect","rack": {"chains": []}})") == Category::Racks);
   CHECK(sniffDeviceCategory("not json") == Category::None);
+  // TMM.10: a chain meta device's preset (whatever its kind: it follows its slot) and the layout by its type's name.
+  CHECK(sniffDeviceCategory(R"({"id": 4, "patch": "meta:wavetable", "kind": "audioEffect"})") == Category::MetaModules);
+  CHECK(categorize(ItemKind::Preset, PlaceKind::UserLibrary, "Presets\\Wavetable", "a.pqpreset", Category::None) ==
+        Category::MetaModules);
+  CHECK(categorize(ItemKind::Preset, PlaceKind::UserLibrary, "Defaults", "Phase Accumulator.pqpreset", Category::None) ==
+        Category::MetaModules);
+  CHECK(categoryName(Category::MetaModules) == "Meta Modules");
+  CHECK(std::size(kCategoryOrder) == static_cast<size_t>(Category::Count) - 1);  // every category once, None aside
 
   bool sawInstrument = false, sawEffect = false;
   for (const StockItem& s : stockItems()) {
