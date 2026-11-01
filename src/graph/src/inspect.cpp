@@ -59,7 +59,7 @@ float opCostWeight(const Schedule& s, uint32_t op) noexcept {
     case Atom::Phasor: return 3.0f;
     case Atom::Noise: return 4.0f;
     case Atom::VoiceTap: return 1.0f;      // one relaxed load unwatched
-    case Atom::ParamRamp: return 0.0f;     // TX.smooth: a compare per block at rest (per sample only while a param moves)
+    case Atom::ParamRamp: return 0.001f;   // TX.smooth: a compare per block at rest (per sample only while a param moves)
     case Atom::WavetablePos: return 12.0f;  // TMM.1's read (≈ 2–3 ns/sample, a level gather + 6 points)
     case Atom::WavetableLive: return 40.0f;   // TMM.8: two reads per tap, the warp, the fold's sines
     case Atom::WavetableShape: return 40.0f;  // TMM.8: four antiderivative reads, the ADAA division
