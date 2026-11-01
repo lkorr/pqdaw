@@ -85,6 +85,12 @@ int32_t Type::settingIndex(std::string_view n) const noexcept {
     if (settings[i].name == n) return static_cast<int32_t>(i);
   return -1;
 }
+int32_t chainInputOf(const Type& type, const ExpandContext& context) noexcept {
+  if (context.form == Form::Nested) return -1;
+  const int32_t i = context.chainInput == kTypeChainInput ? type.chainInput : context.chainInput;
+  return i >= 0 && static_cast<size_t>(i) < type.inputs.size() ? i : -1;
+}
+
 int32_t Type::inputIndex(std::string_view n) const noexcept {
   for (size_t i = 0; i < inputs.size(); ++i)
     if (inputs[i].name == n) return static_cast<int32_t>(i);
@@ -185,14 +191,12 @@ void Builder::output(size_t i, PortRef value) {
 Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string name) {
   if (type.body == nullptr) return expandError(type, "the type has no body");
   if (type.outputs.empty()) return expandError(type, "the type has no output");
-  if (ctx.form == Form::ChainInstrument && !type.chainInstrument)
-    return expandError(type, "it cannot be an instrument");
-  if (ctx.form == Form::ChainEffect &&
-      (type.chainEffectInput < 0 || static_cast<size_t>(type.chainEffectInput) >= type.inputs.size()))
-    return expandError(type, "it cannot be an audio effect");
-  if (ctx.form == Form::ChainVoice &&
-      (type.chainVoiceInput < 0 || static_cast<size_t>(type.chainVoiceInput) >= type.inputs.size()))
-    return expandError(type, "it cannot continue a voice");
+  // TMM.10-fix1: every type has every chain form; only the chain input must exist (a voice continuation needs one).
+  if (ctx.form != Form::Nested && ctx.chainInput != kTypeChainInput && ctx.chainInput != -1 &&
+      (ctx.chainInput < 0 || static_cast<size_t>(ctx.chainInput) >= type.inputs.size()))
+    return expandError(type, "it has no input " + std::to_string(ctx.chainInput) + " to wire the chain into");
+  const int32_t chainIn = chainInputOf(type, ctx);
+  if (ctx.form == Form::ChainVoice && chainIn < 0) return expandError(type, "a voice continuation needs a chain input");
   Builder b(type, ctx, std::move(name));
   graph::Patch& p = b.p_;
   b.settings_.resize(type.settings.size());
@@ -201,12 +205,14 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
     const double v = i < ctx.settings.size() && std::isfinite(ctx.settings[i]) ? ctx.settings[i] : s.def;
     b.settings_[i] = std::clamp(v, std::min(s.min, s.max), std::max(s.min, s.max));
   }
-  // Inputs: an `in` with its default (Nested), or the default alone (chain forms), the effect's audio `in`.
+  // Inputs: an `in` with its default (Nested); in the chain forms the chain input — an audio `in` (ChainAudio,
+  // ChainVoice) or the note's signal of its meaning (ChainNotes) — and every other input's default alone.
   b.inputs_.resize(type.inputs.size());
   for (size_t i = 0; i < type.inputs.size(); ++i) {
     const InputSpec& in = type.inputs[i];
-    const bool audioIn = ctx.form == Form::ChainEffect && static_cast<int32_t>(i) == type.chainEffectInput;
-    const bool voiceIn = ctx.form == Form::ChainVoice && static_cast<int32_t>(i) == type.chainVoiceInput;
+    const bool chain = static_cast<int32_t>(i) == chainIn;
+    const bool audioIn = chain && ctx.form == Form::ChainAudio;
+    const bool voiceIn = chain && ctx.form == Form::ChainVoice;
     if (audioIn || voiceIn) {
       const NodeIndex n = b.take(p.addInput(std::string(in.name), graph::portType(graph::Kind::Real, graph::Rate::Audio,
                                                                                   voiceIn ? graph::Poly::Voice
@@ -216,17 +222,20 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
       continue;
     }
     NodeIndex def;
-    if (in.def == InputDefault::VoiceGate) {  // TMM.11
+    const Reads notes = chain && ctx.form == Form::ChainNotes ? in.reads : Reads::Signal;  // the note source's wire
+    if (notes == Reads::Frequency) {
+      def = b.take(p.addAtom(graph::atomId("voice.hz")), kDefaultIdBase + static_cast<uint32_t>(i));
+    } else if (notes == Reads::Phase) {  // the note's frequency integrated: phasor(voice.hz), 0 at note-on
+      const NodeIndex hz = b.take(p.addAtom(graph::atomId("voice.hz")), kFixedIdBase + 32 + static_cast<uint32_t>(i));
+      def = b.take(p.addAtom(graph::atomId("phasor")), kDefaultIdBase + static_cast<uint32_t>(i));
+      p.connect(hz, def, 0);
+    } else if (notes == Reads::Gate) {
+      def = b.take(p.addAtom(graph::atomId("voice.gate")), kDefaultIdBase + static_cast<uint32_t>(i));
+    } else if (in.def == InputDefault::VoiceGate) {  // TMM.11
       def = ctx.voice ? b.take(p.addAtom(graph::atomId("voice.gate")), kDefaultIdBase + static_cast<uint32_t>(i))
                       : b.take(p.addConst(graph::Constant::boolean(false)), kDefaultIdBase + static_cast<uint32_t>(i));
     } else if (in.def == InputDefault::One) {  // TMM.11
       def = b.take(p.addConst(graph::Constant::real(1.0)), kDefaultIdBase + static_cast<uint32_t>(i));
-    } else if (in.def == InputDefault::VoiceHz && ctx.voice) {
-      def = b.take(p.addAtom(graph::atomId("voice.hz")), kDefaultIdBase + static_cast<uint32_t>(i));
-    } else if (in.def == InputDefault::VoicePhase && ctx.voice) {  // TMM.5: phasor(voice.hz)
-      const NodeIndex hz = b.take(p.addAtom(graph::atomId("voice.hz")), kFixedIdBase + 32 + static_cast<uint32_t>(i));
-      def = b.take(p.addAtom(graph::atomId("phasor")), kDefaultIdBase + static_cast<uint32_t>(i));
-      p.connect(hz, def, 0);
     } else
       def = b.take(p.addConst(graph::Constant::real(-0.0)), kDefaultIdBase + static_cast<uint32_t>(i));
     if (ctx.form != Form::Nested) {
@@ -249,9 +258,9 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
   b.outputSet_.assign(type.outputs.size(), 0);
   if (Status s = type.body(b); !s) return expandError(type, s.error().message);
   if (b.failed_) return expandError(type, b.error_);
-  const graph::Poly poly = ctx.form == Form::ChainInstrument || ctx.form == Form::ChainVoice ? graph::Poly::Voice
-                           : ctx.form == Form::ChainEffect   ? graph::Poly::Global
-                                                             : graph::Poly::Infer;
+  const graph::Poly poly = ctx.form == Form::ChainNotes || ctx.form == Form::ChainVoice ? graph::Poly::Voice
+                           : ctx.form == Form::ChainAudio                              ? graph::Poly::Global
+                                                                                       : graph::Poly::Infer;
   for (size_t i = 0; i < type.outputs.size(); ++i) {
     if (!b.outputSet_[i]) return expandError(type, "output '" + std::string(type.outputs[i].name) + "' is not set");
     const NodeIndex o = b.take(p.addOutput(std::string(type.outputs[i].name),
@@ -261,7 +270,7 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
     p.connect(PortRef{b.outputs_[i], b.outPorts_[i]}, PortRef{o, 0});
   }
   if (type.voiceEnd && b.done_.node == graph::kNone) return expandError(type, "the voice's end (done) is not set");
-  if (ctx.form == Form::ChainInstrument) {  // the voice ends at note-off, or where the type says (TMM.11)
+  if (ctx.form == Form::ChainNotes) {  // the voice ends at note-off, or where the type says (TMM.11)
     PortRef end = b.done_;
     if (!type.voiceEnd) {
       const NodeIndex gate = b.take(p.addAtom(graph::atomId("voice.gate")), kFixedIdBase);
@@ -273,7 +282,7 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
                                                                       graph::Poly::Voice, graph::kWidthMono)),
                                   kOutputIdBase + static_cast<uint32_t>(type.outputs.size()));
     p.connect(end, PortRef{done, 0});
-  } else if (type.voiceEnd && ctx.form != Form::ChainEffect) {  // TMM.11: the voice's end as an output
+  } else if (type.voiceEnd && ctx.form != Form::ChainAudio) {  // TMM.11: the voice's end as an output
     const NodeIndex done = b.take(p.addOutput("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer,
                                                                       ctx.form == Form::ChainVoice ? graph::Poly::Voice
                                                                                                    : graph::Poly::Infer,
@@ -303,6 +312,9 @@ uint64_t expansionKey(const Type& type, const ExpandContext& ctx) noexcept {
   mix(type.version);
   mix(static_cast<uint64_t>(ctx.form));
   mix(ctx.voice ? 1 : 0);
+  // TMM.10-fix1: the chain input only when it is not the type's own (so a default chain keeps its pre-fix1 key).
+  if (ctx.form != Form::Nested && chainInputOf(type, ctx) != type.chainInput)
+    mix(0x100000000ull + static_cast<uint64_t>(static_cast<uint32_t>(chainInputOf(type, ctx))));
   for (size_t i = 0; i < type.settings.size(); ++i) {
     const SettingSpec& s = type.settings[i];
     const double v = i < ctx.settings.size() && std::isfinite(ctx.settings[i]) ? ctx.settings[i] : s.def;

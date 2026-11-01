@@ -5,15 +5,17 @@
 //
 //   inputs   in    (default 1): out = env · amount · in — wired, a VCA (a chain voice run's signal, the Meta Operator's
 //                  oscillator); unwired, the envelope itself
-//            gate  (Bool, default voice.gate; false outside a voice context)
+//            gate  (Bool, default voice.gate when it runs per voice — its voice's gate —; false otherwise)
+//   chain    any position (TMM.10-fix1): the chain feeds `in`; at a chain's note source `in` has no signal (the note
+//            source carries none for a Signal input), so it plays its envelope per note.
 //   params   attack  0 … 60 s, default 5 ms      the rise 0 → 1 (log travel: `@curve(exp0, k)`, k = log2(60001), so a
 //            decay   1 ms … 60 s, default 400 ms  face's travel t is (60001^t − 1) ms: equal steps per decade)
 //            sustain 0 … 1, default 0.6
 //            release 1 ms … 60 s, default 250 ms
 //            acurve, dcurve, rcurve  −1 … 1, default 0: each segment's bend (below)
 //            amount  0 … 1, default 1: multiplies the output
-//   outputs  out; done (Bool: released and below −80 dB, 1e-4 — Type::voiceEnd: an instrument chain's voices end there,
-//            a meta voice run whose last device is an Envelope ends its voices there instead of the fixed release)
+//   outputs  out; done (Bool: released and below −80 dB, 1e-4 — Type::voiceEnd: a voiced chain run whose last stage is an
+//            Envelope ends its voices there instead of the fixed release)
 //   tap      voice_tap(0.4 · level + (gate ? 0 : 0.5)) into its VoiceTap request 0: the face's dots (EnvelopeTap
 //            decodes it: the level and whether the note is released).
 //

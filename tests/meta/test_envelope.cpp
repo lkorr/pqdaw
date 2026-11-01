@@ -90,8 +90,7 @@ TEST_CASE("envelope: expansion — forms, done, ids, the text form parses back, 
   const Type& t = envelopeType();
   CHECK(findType("envelope") == &t);
   CHECK(t.voiceEnd);
-  CHECK_FALSE(t.chainInstrument);
-  CHECK(t.chainVoiceInput == t.inputIndex("in"));
+  CHECK(t.chainInput == t.inputIndex("in"));  // TMM.10-fix1: the chain feeds `in`, in every form
   ExpandContext c;
   const Expansion a = mustExpand(c), b = mustExpand(c);
   CHECK(a.patch == b.patch);
@@ -110,21 +109,26 @@ TEST_CASE("envelope: expansion — forms, done, ids, the text form parses back, 
   REQUIRE_MESSAGE(parsed.ok(), (parsed.ok() ? std::string() : parsed.error().message));
   REQUIRE(parsed->patches.size() == 1);
   CHECK(parsed->patches[0] == a.patch);
-  // The chain voice form: `in` is the run's voice signal, done an output; no instrument form.
+  // The chain voice form: `in` is the run's voice signal, done an output.
   ExpandContext v;
   v.form = Form::ChainVoice;
   const Expansion cv = mustExpand(v);
   CHECK(cv.patch.findByName("done").has_value());
   CHECK_FALSE(cv.patch.findByName("gate").has_value());  // reads its default (voice.gate)
+  // TMM.10-fix1: at the note source too (no exclusion): `in` has no note signal (Reads::Signal) and reads its default
+  // 1 — the envelope per note —, the gate is the voice's, `done` its own end.
   ExpandContext ins;
-  ins.form = Form::ChainInstrument;
-  CHECK_FALSE(expand(t, ins, "x").ok());
-  // The prelude has the nested and the voice forms.
+  ins.form = Form::ChainNotes;
+  const Expansion cn = mustExpand(ins);
+  CHECK_FALSE(cn.patch.findByName("in").has_value());
+  REQUIRE(cn.patch.findByName("done").has_value());
+  // The prelude has every form.
   const auto pre = prelude();
   const Prelude::Entry* e = pre->find("envelope");
   REQUIRE(e != nullptr);
   CHECK(e->voice.has_value());
-  CHECK_FALSE(e->instrument.has_value());
+  CHECK(e->notes.has_value());
+  CHECK(e->audio.has_value());
   // The tap's encoding.
   for (const double lvl : {0.0, 0.25, 0.6, 1.0})
     for (const bool rel : {false, true}) {

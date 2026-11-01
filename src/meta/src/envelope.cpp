@@ -12,7 +12,7 @@ namespace {
 
 constexpr std::array<InputSpec, 2> kInputs = {{
     {"in", "Signal in (a VCA)", InputDefault::One, graph::Kind::Real},
-    {"gate", "Gate", InputDefault::VoiceGate, graph::Kind::Bool},
+    {"gate", "Gate", InputDefault::VoiceGate, graph::Kind::Bool, Reads::Gate},
 }};
 constexpr std::array<ParamSpec, kEnvParams> kParams = {{
     {"attack", "Attack", 0.005, 0.0, kEnvMaxSeconds, graph::Unit::s, Curve::Exp0, kEnvCurveK, false, false},
@@ -158,8 +158,9 @@ Type makeType() {
   t.inputs = kInputs;
   t.params = kParams;
   t.outputs = kOutputs;
-  t.chainInstrument = false;  // alone it would play its level as DC; it shapes a voice run (VCA) instead
-  t.chainVoiceInput = 0;      // after a meta instrument in a chain: the run's voice signal is its `in` (a VCA)
+  // TMM.10-fix1: the chain feeds `in` (a VCA on the previous stage's signal). At the note source it has no signal for
+  // `in` (Reads::Signal): it plays its envelope per note (its level, a DC). No exclusion: what it does follows the wire.
+  t.chainInput = 0;
   t.voiceEnd = true;
   t.resources = &resources;
   t.body = &body;

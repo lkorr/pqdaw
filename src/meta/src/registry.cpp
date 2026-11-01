@@ -51,16 +51,13 @@ std::shared_ptr<const Prelude> buildPrelude(const std::vector<const Type*>& type
     auto nested = expand(*t, c, callName(*t));
     if (!nested) continue;  // a broken type has no prelude entry (its calls are unknown); its tests report why
     e.nested = std::move(nested->patch);
-    if (t->chainInstrument) {
-      c.form = Form::ChainInstrument;
-      if (auto x = expand(*t, c, callName(*t) + "__instrument")) e.instrument = std::move(x->patch);
-    }
-    if (t->chainEffectInput >= 0) {
-      c.form = Form::ChainEffect;
-      c.voice = false;
-      if (auto x = expand(*t, c, callName(*t) + "__effect")) e.effect = std::move(x->patch);
-    }
-    if (t->chainVoiceInput >= 0) {  // TMM.10
+    // TMM.10-fix1: every chain form (the names keep the pre-fix1 suffixes).
+    c.form = Form::ChainNotes;
+    if (auto x = expand(*t, c, callName(*t) + "__instrument")) e.notes = std::move(x->patch);
+    c.form = Form::ChainAudio;
+    c.voice = false;
+    if (auto x = expand(*t, c, callName(*t) + "__effect")) e.audio = std::move(x->patch);
+    if (t->chainInput >= 0) {  // TMM.10
       c.form = Form::ChainVoice;
       c.voice = true;
       if (auto x = expand(*t, c, callName(*t) + "__voice")) e.voice = std::move(x->patch);

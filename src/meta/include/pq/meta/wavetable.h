@@ -4,8 +4,9 @@
 // multi-frame table, read by a phase, with keyframes interpolated through a position, and fold / warp / sync baked
 // into the table off the audio thread.
 //
-//   inputs   x    the phase read (Phase mode). Unwired in a voice context: the module's own phasor(voice.hz), so a
-//                 lone Wavetable is an oscillator whose phase restarts at note-on; elsewhere 0.
+//   inputs   x    the phase read (Phase mode; Reads::Phase; the chain input). TMM.10-fix1: unwired it is 0 (no
+//                 implicit note); at a chain's note source it reads the note's phase phasor(voice.hz) (restarting at
+//                 note-on), so a Wavetable first on a MIDI track is an oscillator because the note is wired into it.
 //            pos  added to the position (modulation; default 0)
 //   params   phase     0 … 1, wraps: the phase slider, added to x (the face's horizontal slider)
 //            position  0 … 1: where between the keyframes the table is read (the vertical slider)
@@ -26,8 +27,8 @@
 //            (Type::bakedOnly says why). The atoms write the slot's voice tap (the face's dots)
 //   data     WavetableData (below): 1 … 256 keyframes (position + a 2048-sample cycle), a gap mode per gap, the dense
 //            frame count, removeDc, normalise. Default: one sine keyframe.
-//   chain    a chain device at the instrument position (an oscillator per voice), or (TMM.8) an audio effect whose
-//            signal is x; ops::addMetaDevice starts an effect Wavetable in Shape mode.
+//   chain    any position: the chain's signal is x (the note's phase, a voice signal, audio); ops::addMetaDevice
+//            starts one that receives audio in Shape mode (TMM.8).
 //
 // Cost (static knobs): phasor + add + frac + the wavetable_pos read (position is param rate: clip(position) once per
 // block). One keyframe builds one dense frame (the readers' single-frame path; 64 identical frames would cost 64×

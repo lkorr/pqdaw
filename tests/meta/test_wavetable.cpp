@@ -72,8 +72,8 @@ TEST_CASE("wavetable: registered; controls, inputs, settings as planned") {
   CHECK(t.settingIndex("mode") == kWtMode);
   CHECK(t.settingIndex("warpMode") == kWtWarpMode);
   CHECK(t.settingIndex("os") == kWtOversampling);
-  CHECK(t.chainInstrument);
-  CHECK(t.chainEffectInput == static_cast<int32_t>(kWtInX));  // TMM.8: an audio effect in Shape mode
+  CHECK(t.chainInput == static_cast<int32_t>(kWtInX));  // TMM.10-fix1: the chain feeds x in every form
+  CHECK(t.inputs[kWtInX].reads == Reads::Phase);           // the note source gives it the note's phase
   CHECK(prelude()->find("wavetable") != nullptr);
 }
 
@@ -118,7 +118,7 @@ TEST_CASE("wavetable: data round trip, validation, the default") {
   CHECK(wavetableType().dataProblem(*def).empty());
 }
 
-TEST_CASE("wavetable: expansion — own phasor when x is unwired in a voice context; refusals") {
+TEST_CASE("wavetable: expansion — x unwired is phase 0 (no implicit note); refusals") {
   const Type& t = wavetableType();
   ExpandContext c;
   const std::vector<uint32_t> slots{7};
@@ -132,10 +132,11 @@ TEST_CASE("wavetable: expansion — own phasor when x is unwired in a voice cont
       if (p.node(n).kind == graph::NodeKind::Atom && p.node(n).atom == graph::atomId(atom)) return true;
     return false;
   };
-  CHECK(has(e->patch, "phasor"));
+  // TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): x unwired is phase 0 in a voice context too — no phasor of
+  // its own, no implicit note (the note's phase arrives by a wire: phasor(voice.hz), or the chain's note source).
+  CHECK_FALSE(has(e->patch, "phasor"));
   CHECK(has(e->patch, "wavetable_pos"));
-  CHECK(has(e->patch, "voice.hz"));
-  // Outside a voice context x defaults to 0: no phasor.
+  CHECK_FALSE(has(e->patch, "voice.hz"));
   c.voice = false;
   auto g = expand(t, c, "wt");
   REQUIRE(g.ok());
@@ -188,9 +189,11 @@ TEST_CASE("wavetable: expansion — own phasor when x is unwired in a voice cont
   mod[kWtPhase] = mod[kWtPosition] = 1;
   c.modulated = mod;
   CHECK(expand(t, c, "wt").ok());
-  // The chain instrument form plays its own phasor per voice.
+  // At the note source the chain wire gives x the note's phase: phasor(voice.hz) per voice. TMM.10-fix1: nested and
+  // unwired, x is 0 — no phasor, no implicit note.
   c.modulated = {};
-  c.form = Form::ChainInstrument;
+  CHECK_FALSE(has(expand(t, c, "wt_nested")->patch, "phasor"));
+  c.form = Form::ChainNotes;
   auto chain = expand(t, c, "wt_chain");
   REQUIRE(chain.ok());
   CHECK(has(chain->patch, "phasor"));
@@ -393,7 +396,9 @@ std::vector<float> render(const fs::path& file) {
 }  // namespace
 
 TEST_CASE("wavetable: a standalone .pqp renders in pqc, bit-identical to the hand-written atoms") {
-  const fs::path wt = writeTemp("wt.pqp", "patch W {\n  out out : audio voice mono\n  wt1 = meta_wavetable()\n  out = wt1\n}\n");
+  // TMM.10-fix1: the note's phase is wired in (an unwired x is phase 0: no implicit note).
+  const fs::path wt = writeTemp("wt.pqp",
+                                "patch W {\n  out out : audio voice mono\n  wt1 = meta_wavetable(phasor(voice.hz))\n  out = wt1\n}\n");
   const fs::path ref = writeTemp("ref.pqp",
                                  "patch R {\n  out out : audio voice mono\n  out = wavetable_pos(phasor(voice.hz), 0)\n}\n");
   const std::vector<float> a = render(wt), b = render(ref);

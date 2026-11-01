@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "meta_test_type.h"
+#include "pq/graph/atoms.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/phase_acc.h"
@@ -81,12 +82,18 @@ TEST_CASE("meta expansion: deterministic, fixed ids, prints and parses back") {
   REQUIRE(parsed->patches.size() == 1);
   CHECK(parsed->patches[0] == a.patch);
   CHECK(text.find("@curve(exp0, 14)") != std::string::npos);
-  // Outside a voice context hz defaults to 0; the key differs.
+  // TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): hz defaults to 0 Hz in a voice context too (no implicit
+  // note: the module plays a note only when one is wired into hz), so the voice context changes nothing but the key.
   ExpandContext g;
   g.voice = false;
   const Expansion global = mustExpand(acc, g);
   CHECK(global.key != a.key);
-  CHECK_FALSE(global.patch == a.patch);
+  CHECK(global.patch == a.patch);
+  bool voiceAtom = false;
+  for (graph::NodeIndex n = 0; n < a.patch.nodeCount(); ++n)
+    voiceAtom = voiceAtom || (a.patch.node(n).kind == graph::NodeKind::Atom &&
+                              a.patch.node(n).atom == graph::atomId("voice.hz"));
+  CHECK_FALSE(voiceAtom);
 }
 
 TEST_CASE("meta expansion: one signature for every state; settings, static-ness and slots change the body") {
@@ -127,27 +134,48 @@ TEST_CASE("meta expansion: one signature for every state; settings, static-ness 
 TEST_CASE("meta expansion: chain forms are devices") {
   const Type& t = testing::registerTestType();
   ExpandContext inst;
-  inst.form = Form::ChainInstrument;
+  inst.form = Form::ChainNotes;
   const Expansion i = mustExpand(t, inst);
-  // An instrument: no audio input, a per-voice first output and `done`.
+  // At the note source: no audio input, a per-voice first output and `done`.
   for (graph::NodeIndex n = 0; n < i.patch.nodeCount(); ++n) CHECK(i.patch.node(n).kind != graph::NodeKind::Input);
   const auto out = i.patch.findByName("out");
   REQUIRE(out);
   CHECK(i.patch.inputType(*out, 0).poly == graph::Poly::Voice);
   CHECK(i.patch.findByName("done").has_value());
   ExpandContext fx;
-  fx.form = Form::ChainEffect;
+  fx.form = Form::ChainAudio;
   fx.voice = false;
   const Expansion e = mustExpand(t, fx);
   const auto in = e.patch.findByName("x");
   REQUIRE(in);
   CHECK(e.patch.node(*in).kind == graph::NodeKind::Input);
   CHECK(e.patch.outputType(*in, 0).poly == graph::Poly::Global);
-  // The Phase accumulator is an instrument only.
-  CHECK_FALSE(expand(phaseAccType(), fx, "y").ok());
+  // TMM.10-fix1: no type is limited to some forms — the Phase accumulator receives audio on its frequency (FM), the
+  // note's frequency at the note source, or nothing when unplugged.
+  const Expansion pa = mustExpand(phaseAccType(), fx);
+  const auto hz = pa.patch.findByName("hz");
+  REQUIRE(hz);
+  CHECK(pa.patch.node(*hz).kind == graph::NodeKind::Input);
+  CHECK(pa.patch.outputType(*hz, 0).poly == graph::Poly::Global);
   ExpandContext ai;
-  ai.form = Form::ChainInstrument;
-  CHECK(expand(phaseAccType(), ai, "y").ok());
+  ai.form = Form::ChainNotes;
+  const Expansion pn = mustExpand(phaseAccType(), ai);
+  CHECK_FALSE(pn.patch.findByName("hz").has_value());  // the chain wire reads the note: voice.hz at its default's id
+  bool readsHz = false;
+  for (graph::NodeIndex n = 0; n < pn.patch.nodeCount(); ++n)
+    if (pn.patch.node(n).id.value == kDefaultIdBase) readsHz = pn.patch.node(n).kind == graph::NodeKind::Atom;
+  CHECK(readsHz);
+  ExpandContext un = fx;
+  un.chainInput = -1;  // unplugged: no input at all, outputs global
+  const Expansion pu = mustExpand(phaseAccType(), un);
+  for (graph::NodeIndex n = 0; n < pu.patch.nodeCount(); ++n) CHECK(pu.patch.node(n).kind != graph::NodeKind::Input);
+  CHECK(expansionKey(phaseAccType(), un) != expansionKey(phaseAccType(), fx));
+  ExpandContext bad = fx;
+  bad.chainInput = 7;
+  CHECK_FALSE(expand(phaseAccType(), bad, "y").ok());
+  ExpandContext noVoice = un;
+  noVoice.form = Form::ChainVoice;  // a voice continuation needs a chain input
+  CHECK_FALSE(expand(phaseAccType(), noVoice, "y").ok());
 }
 
 TEST_CASE("meta prelude: one default expansion and signature per type") {
@@ -156,11 +184,14 @@ TEST_CASE("meta prelude: one default expansion and signature per type") {
   const Prelude::Entry* acc = p->find("phase_acc");
   REQUIRE(acc != nullptr);
   CHECK(acc->nested.name() == "meta_phase_acc");
-  CHECK(acc->instrument.has_value());
-  CHECK_FALSE(acc->effect.has_value());
+  // TMM.10-fix1: every type has every chain form.
+  CHECK(acc->notes.has_value());
+  CHECK(acc->audio.has_value());
+  CHECK(acc->voice.has_value());
   const Prelude::Entry* t = p->find("test_shape");
   REQUIRE(t != nullptr);
-  CHECK(t->effect.has_value());
+  CHECK(t->audio.has_value());
+  CHECK(t->notes.has_value());
   REQUIRE(p->signatures.size() == p->entries.size());
   // The params of every form are the same (the document's param lookups read any of them).
   auto params = [](const graph::Patch& x) {
@@ -169,7 +200,9 @@ TEST_CASE("meta prelude: one default expansion and signature per type") {
       if (x.node(n).kind == graph::NodeKind::Param) v.push_back(x.nodeName(n));
     return v;
   };
-  CHECK(params(acc->nested) == params(*acc->instrument));
+  CHECK(params(acc->nested) == params(*acc->notes));
+  CHECK(params(acc->nested) == params(*acc->audio));
+  CHECK(params(acc->nested) == params(*acc->voice));
   // A call parses against the prelude's signatures.
   graph::ParseOptions po;
   po.externals = p->signatures;

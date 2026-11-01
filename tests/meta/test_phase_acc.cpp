@@ -54,9 +54,28 @@ double rampHz(const std::vector<float>& y, double sr, size_t skip) {
   return static_cast<double>(wraps) * sr / (last - first);
 }
 
+// TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): the note plays because its frequency is wired into hz.
 const char* kAcc = R"(patch Acc {
   out out : audio voice mono
-  acc1 = meta_phase_acc()
+  acc1 = meta_phase_acc(voice.hz)
+  out = acc1
+}
+)";
+// Nothing wired: it runs once, freely, at its frequency bar.
+const char* kFree = R"(patch Free {
+  out out : audio mono
+  acc1 = meta_phase_acc(freq: 100Hz)
+  out = acc1
+}
+)";
+const char* kFreeRef = R"(patch FreeRef {
+  out out : audio mono
+  out = frac(phasor(100Hz))
+}
+)";
+const char* kDc = R"(patch Dc {
+  out out : audio voice mono
+  acc1 = meta_phase_acc(phase: 0.25)
   out = acc1
 }
 )";
@@ -104,6 +123,27 @@ TEST_CASE("phase_acc: freq 0 is bit-identical to frac(phasor(voice.hz)) on both 
   fs::remove(ref);
 }
 
+TEST_CASE("phase_acc: with no note wired it runs freely — exactly its bar's phase; at 0 Hz a DC offset (fix1)") {
+  const fs::path free = writeTemp("accfree.pqp", kFree), ref = writeTemp("accfreeref.pqp", kFreeRef);
+  const fs::path dc = writeTemp("accdc.pqp", kDc);
+  for (const pqc::Backend b : {pqc::Backend::Interpreter, pqc::Backend::Jit}) {
+    CAPTURE(compile::backendLabel(b));
+    const std::vector<float> a = render(free, "", 2.0, {}, b), r = render(ref, "", 2.0, {}, b);
+    REQUIRE(a.size() == r.size());
+    size_t diff = 0;
+    for (size_t i = 0; i < a.size(); ++i) diff += std::bit_cast<uint32_t>(a[i]) != std::bit_cast<uint32_t>(r[i]) ? 1u : 0u;
+    CHECK(diff == 0);
+    CHECK(rampHz(a, 48000.0, 0) == doctest::Approx(100.0).epsilon(1e-6));
+    // Inside a voice with nothing wired into hz: 0 Hz — its phase, a DC offset, whatever note plays.
+    const std::vector<float> d = render(dc, "69@0:0.3 57@0.1:0.2", 0.3, {}, b);
+    REQUIRE(d.size() > 4800);
+    for (size_t i = 0; i < 4800; ++i) CHECK(d[i] == 0.25f);
+  }
+  fs::remove(free);
+  fs::remove(ref);
+  fs::remove(dc);
+}
+
 TEST_CASE("phase_acc: at freq 100 Hz the cycles run at note + 100 Hz (<= 1e-4 cents over 10 s)") {
   const fs::path acc = writeTemp("acc100.pqp", kAcc);
   for (const char* note : {"69", "60"}) {
@@ -140,7 +180,7 @@ TEST_CASE("phase_acc: phase is the start phase, amp multiplies the output, pm ad
   // pm: a wired phase modulation adds to the phase (a constant pm of 0.5 = phase 0.5).
   const fs::path pm = writeTemp("accpm.pqp", R"(patch Pm {
   out out : audio voice mono
-  acc1 = meta_phase_acc(pm: 0.5)
+  acc1 = meta_phase_acc(voice.hz, pm: 0.5)
   out = acc1
 }
 )");

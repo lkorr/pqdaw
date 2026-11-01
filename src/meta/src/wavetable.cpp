@@ -14,7 +14,8 @@ namespace pq::meta {
 namespace {
 
 constexpr std::array<InputSpec, 2> kInputs = {{
-    {"x", "Phase in", InputDefault::VoicePhase},
+    // TMM.10-fix1: x unwired is phase 0; at the note source the chain gives it the note's phase (Reads::Phase).
+    {"x", "Phase in", InputDefault::Zero, graph::Kind::Real, Reads::Phase},
     {"pos", "Position in", InputDefault::Zero},
 }};
 constexpr std::array<ParamSpec, 5> kParams = {{
@@ -253,10 +254,9 @@ Type makeType() {
   t.params = kParams;
   t.settings = kSettings;
   t.outputs = kOutputs;
-  t.chainInstrument = true;
-  // TMM.10: after a meta device in a chain (a Phase accumulator), its voice signal is the phase read.
-  t.chainVoiceInput = static_cast<int32_t>(kWtInX);
-  t.chainEffectInput = static_cast<int32_t>(kWtInX);  // TMM.8: an audio effect (Shape mode: the chain's signal is x)
+  // TMM.10-fix1: the chain feeds x — the note's phase at the note source, a Phase accumulator's phase after one, audio
+  // after an audio stage (TMM.8: Shape mode shapes it).
+  t.chainInput = static_cast<int32_t>(kWtInX);
   t.resources = &resources;
   t.body = &body;
   t.defaultData = &wavetableDefaultData;

@@ -65,20 +65,29 @@ struct SettingSpec {
   uint32_t steps = 0;  // n discrete values min … max (0: any value; settings are usually choices)
 };
 
-// What an unwired input reads.
+// What an unwired input reads. TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): no default reads the note's
+// pitch (the old VoiceHz / VoicePhase): a module hears a note only through a wire — in a circuit `voice.hz`, in a
+// chain the wire from the note source (Form::ChainNotes).
 enum class InputDefault : uint8_t {
-  Zero,     // −0.0: an added zero the optimiser removes (x + (−0) → x), so an unwired modulation input costs nothing
-  VoiceHz,  // voice.hz in a voice context, else −0.0
-  VoicePhase,  // TMM.5: phasor(voice.hz) in a voice context (a per-voice phase that restarts at note-on: a lone
-               // Wavetable is an oscillator), else −0.0. A wired input leaves the phasor unused (removed).
-  One,         // TMM.11: 1.0 (a multiplier: the Envelope's `in` unwired, out = the envelope; the optimiser removes x·1)
-  VoiceGate,   // TMM.11: voice.gate in a voice context, else false (a Bool input)
+  Zero,       // −0.0: an added zero the optimiser removes (x + (−0) → x), so an unwired modulation input costs nothing
+  One,        // TMM.11: 1.0 (a multiplier: the Envelope's `in` unwired, out = the envelope; the optimiser removes x·1)
+  VoiceGate,  // TMM.11: voice.gate when the module runs per voice (ExpandContext::voice), else false (a Bool input):
+              // the gate of the voice the module belongs to (QUESTIONS Q?-TMM.10-fix1-a item 3)
+};
+// TMM.10-fix1: what an input means — how the note source feeds it when it is a chain device's chain input
+// (Form::ChainNotes).
+enum class Reads : uint8_t {
+  Signal,     // audio or a control value: the note source has none (the input reads its default)
+  Frequency,  // Hz: the note's frequency (voice.hz)
+  Phase,      // a phase in [0, 1): the note's phase (phasor(voice.hz), from 0 at note-on: its frequency integrated)
+  Gate,       // a Bool gate: the note's gate (voice.gate)
 };
 struct InputSpec {
   std::string_view name;
   std::string_view label;
   InputDefault def = InputDefault::Zero;
   graph::Kind kind = graph::Kind::Real;  // TMM.11: Bool for a gate (kinds never convert implicitly: infer.h)
+  Reads reads = Reads::Signal;           // TMM.10-fix1
 };
 struct OutputSpec {
   std::string_view name;
@@ -95,22 +104,29 @@ struct ResourceRequest {
   friend bool operator==(const ResourceRequest&, const ResourceRequest&) = default;
 };
 
-// Where an expansion is called from.
+// Where an expansion is called from. TMM.10-fix1 ("a chain is wires"): a chain device's form follows from what reaches
+// its chain input (Type::chainInput, or the device's own choice: ExpandContext::chainInput), never from its type: every
+// type has every form (pq/document/meta.h chainStages decides which one a device plays).
 enum class Form : uint8_t {
-  Nested,           // a call `name = meta_<type>(…)` in a circuit: every input is an `in` (with its default)
-  ChainInstrument,  // a chain device at a MIDI track's instrument position: no `in`s (each input reads its default),
-                    // its outputs per voice, plus `done` = !voice.gate (the voice ends at note-off)
-  ChainEffect,      // a chain audio effect: Type::chainEffectInput is the device's audio `in` (global), the other
-                    // inputs read their defaults, outputs global
-  ChainVoice,       // TMM.10: a chain device that continues a meta instrument PER VOICE (docs/plans/MM.md "Voice
-                    // continuity"): Type::chainVoiceInput is an `in` fed by the previous meta device's voice signal,
-                    // the other inputs read their defaults (voice context), outputs per voice, no `done` (the
-                    // lowering ends the run's voices: pq/document/lower.h "Meta modules")
+  Nested,      // a call `name = meta_<type>(…)` in a circuit: every input is an `in` (with its default)
+  ChainNotes,  // the chain input is wired to the NOTE SOURCE (the first stage of a MIDI track or Instrument Rack chain):
+               // it reads the note's signal of its meaning (Reads: Frequency voice.hz, Phase phasor(voice.hz), Gate
+               // voice.gate; Signal: its default), the other inputs their defaults; outputs per voice, plus `done`
+               // (the type's voice end, else !voice.gate)
+  ChainAudio,  // the chain input is an `in` of global audio (the previous stage's signal), outputs global; with no chain
+               // input (ExpandContext::chainInput −1: unplugged) every input reads its default: the module runs once,
+               // freely (a Phase accumulator: the phase of its frequency bar)
+  ChainVoice,  // TMM.10: the chain input is a per-voice `in` (the previous stage's voice signal: docs/plans/MM.md "Voice
+               // continuity"), the other inputs read their defaults (voice context), outputs per voice, no `done` (the
+               // lowering ends the voices: pq/document/lower.h "Meta modules")
 };
 
+// ExpandContext::chainInput: the type's own chain input (Type::chainInput).
+inline constexpr int32_t kTypeChainInput = -2;
 struct ExpandContext {
   Form form = Form::Nested;
-  bool voice = true;                   // voice.* exists (an instrument's circuit): VoiceHz defaults to voice.hz
+  bool voice = true;                      // voice.* exists (the module runs per voice): VoiceGate reads voice.gate
+  int32_t chainInput = kTypeChainInput;   // chain forms: the input the chain feeds (−1: none; kTypeChainInput: the type's)
   std::span<const double> settings;    // per SettingSpec; empty: every default; a value is clamped to its range
   std::span<const uint8_t> modulated;  // per ParamSpec: 1 = automated, wired or macro-mapped (not static)
   std::span<const uint32_t> slots;     // per resource request index; missing: 0
@@ -128,10 +144,10 @@ struct Type {
   std::span<const ParamSpec> params;
   std::span<const SettingSpec> settings;
   std::span<const OutputSpec> outputs;  // at least one; the first is the call's value
-  bool chainInstrument = false;  // may be a chain device at the instrument position (Form::ChainInstrument)
-  int32_t chainEffectInput = -1; // ≥ 0: may be a chain audio effect, the chain's signal into this input
-  int32_t chainVoiceInput = -1;  // TMM.10: ≥ 0: may continue a meta instrument per voice (Form::ChainVoice), the
-                                 // previous meta device's voice signal into this input
+  // TMM.10-fix1: the input a chain wires the previous stage's signal into (−1: none), like a device's audio `in`. Any
+  // type may sit anywhere in any chain; what arrives there decides the form (Form). A device may plug the chain into
+  // another of its inputs, or none (doc::Device::chainInput).
+  int32_t chainInput = -1;
   // The resources an expansion with these (resolved) settings reads; null: none.
   std::vector<ResourceRequest> (*resources)(std::span<const double> settings) = nullptr;
   // The expansion's nodes between the ports (Builder: inputs, params, settings, slots → outputs). Required.
@@ -159,25 +175,27 @@ struct Type {
   uint32_t (*tableVariant)(std::span<const double> settings, std::span<const uint8_t> modulated) = nullptr;
   // TMM.11: the type decides when a voice ends (the Envelope: released and below −80 dB). Its body calls
   // Builder::done(x) with a Bool; the framework then
-  //   ChainInstrument  uses it for the `done` output (instead of !voice.gate)
+  //   ChainNotes       uses it for the `done` output (instead of !voice.gate)
   //   ChainVoice       adds an output `done` (Bool, voice) after the outputs: the lowering ends the run's voices by the
   //                    run's last device's `done` instead of its fixed release (pq/document/lower.h "Meta modules")
   //   Nested           adds an output `done` (Bool) after the outputs (an instrument circuit wires it to its `done`)
-  //   ChainEffect      ignores it
+  //   ChainAudio       ignores it
   bool voiceEnd = false;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none
   int32_t inputIndex(std::string_view n) const noexcept;    // −1: none
 };
+// TMM.10-fix1: the input a chain feeds in `context` (ExpandContext::chainInput resolved against the type; −1: none).
+int32_t chainInputOf(const Type& type, const ExpandContext& context) noexcept;
 
 // Ids of an expansion's nodes (graph::NodeId values): fixed per port, so a re-expansion keeps every state key.
 inline constexpr uint32_t kInputIdBase = 1;      // input i's `in`
 inline constexpr uint32_t kDefaultIdBase = 64;   // input i's default value
 inline constexpr uint32_t kParamIdBase = 128;    // param i
 inline constexpr uint32_t kOutputIdBase = 256;   // output i (kOutputIdBase + outputs: `done`)
-inline constexpr uint32_t kFixedIdBase = 384;    // the framework's own nodes (voice.gate, not; input i's VoicePhase
-                                                 // voice.hz: kFixedIdBase + 32 + i)
+inline constexpr uint32_t kFixedIdBase = 384;    // the framework's own nodes (voice.gate, not; a Phase chain input
+                                                 // i's voice.hz under ChainNotes: kFixedIdBase + 32 + i)
 inline constexpr uint32_t kSlotIdBase = 512;     // resource slot constant i
 inline constexpr uint32_t kBodyIdBase = 1024;    // body node k: kBodyIdBase + k
 inline constexpr uint32_t kMaxBodyIds = 1u << 20;
@@ -235,8 +253,8 @@ struct Expansion {
 // The type's expansion in `context`, named `name`. Errors: an invalid body (a node id twice or out of range, an
 // output left unset, a patch that does not validate) or a body's own error.
 Result<Expansion> expand(const Type& type, const ExpandContext& context, std::string name);
-// A hash of everything an expansion depends on (type id and version, form, voice, resolved settings, modulated
-// params, slots): equal keys give equal patches.
+// A hash of everything an expansion depends on (type id and version, form, voice, a chain input other than the
+// type's, resolved settings, modulated params, slots): equal keys give equal patches.
 uint64_t expansionKey(const Type& type, const ExpandContext& context) noexcept;
 
 }  // namespace pq::meta

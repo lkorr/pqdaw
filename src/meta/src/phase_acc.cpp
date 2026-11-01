@@ -8,8 +8,8 @@ namespace pq::meta {
 namespace {
 
 constexpr std::array<InputSpec, 2> kInputs = {{
-    {"hz", "Frequency in", InputDefault::VoiceHz},
-    {"pm", "Phase modulation", InputDefault::Zero},
+    {"hz", "Frequency in", InputDefault::Zero, graph::Kind::Real, Reads::Frequency},  // TMM.10-fix1: 0 Hz unwired
+    {"pm", "Phase modulation", InputDefault::Zero, graph::Kind::Real, Reads::Phase},
 }};
 constexpr std::array<ParamSpec, 3> kParams = {{
     {"freq", "Frequency", 0.0, 0.0, kPhaseAccMaxHz, graph::Unit::Hz, Curve::Exp0, kPhaseAccCurveK, false, false},
@@ -45,8 +45,7 @@ Type makeType() {
   t.inputs = kInputs;
   t.params = kParams;
   t.outputs = kOutputs;
-  t.chainInstrument = true;
-  t.chainVoiceInput = 1;  // TMM.10: after another meta device in a chain, its voice signal modulates the phase (pm)
+  t.chainInput = 0;  // TMM.10-fix1: the chain feeds the frequency (the note source's Hz; a signal before it: FM)
   t.resources = &resources;
   t.body = &body;
   return t;

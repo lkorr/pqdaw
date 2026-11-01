@@ -50,14 +50,13 @@ struct Prelude {
   struct Entry {
     const Type* type = nullptr;
     graph::Patch nested;                    // named meta_<id>
-    std::optional<graph::Patch> instrument;  // Form::ChainInstrument (Type::chainInstrument)
-    std::optional<graph::Patch> effect;      // Form::ChainEffect (Type::chainEffectInput ≥ 0)
-    std::optional<graph::Patch> voice;       // TMM.10: Form::ChainVoice (Type::chainVoiceInput ≥ 0)
-    // The form an audio-effect chain device of the type is described by (params, signature for panels): its effect
-    // form, else its voice form (the same params); null when it has neither.
-    const graph::Patch* effectOrVoice() const noexcept {
-      return effect ? &*effect : voice ? &*voice : nullptr;
-    }
+    // TMM.10-fix1: every type has every chain form (its type's chain input; the same params in each).
+    std::optional<graph::Patch> notes;  // Form::ChainNotes
+    std::optional<graph::Patch> audio;  // Form::ChainAudio
+    std::optional<graph::Patch> voice;  // TMM.10: Form::ChainVoice (a type with a chain input)
+    // The form a chain device of the type is described by (params, signature for panels) when what reaches it is not
+    // known: its audio form; null when the type's expansion failed.
+    const graph::Patch* chain() const noexcept { return audio ? &*audio : notes ? &*notes : nullptr; }
   };
   std::vector<Entry> entries;                  // per type, in types() order; never resized after the build
   std::vector<graph::SubcircuitRef> signatures; // of each `nested` (parse externals)

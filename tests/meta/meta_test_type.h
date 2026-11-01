@@ -1,7 +1,7 @@
 #pragma once
 
 // A test-only meta-module type (TMM.3): exercises what the Phase accumulator does not — settings that change the
-// circuit, state data, a resource slot, both chain forms.
+// circuit, state data, a resource slot, the chain forms.
 //
 //   input    x (default 0; the effect form's audio input)
 //   setting  stages 1 … 4 (default 1): tanh applied `stages` times
@@ -59,8 +59,7 @@ inline const Type& testType() {
     x.params = kTestParams;
     x.settings = kTestSettings;
     x.outputs = kTestOutputs;
-    x.chainInstrument = true;
-    x.chainEffectInput = 0;
+    x.chainInput = 0;  // TMM.10-fix1: the chain feeds x (every chain form)
     x.resources = &testResources;
     x.body = &testBody;
     x.defaultData = &testDefaultData;
