@@ -1050,6 +1050,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Status: open
 - User answer (2026-10-25) to #3: keep it as built — an EDO automates its Equave and Reference; no separate "generator"/step parameter (step = equave ÷ n, so a step knob would only be another view of the equave).
 
+
 ## Q118 · 2026-10-24 · T1b.6 · pqdaw.exe is 47 MB, 82 % of it LLVM; pruning gets 37 MB; the asmjit option
 - Measured (pqdaw.exe on this branch; release = /O2 + /OPT:REF, which implies /OPT:ICF without /DEBUG; ship = /GL + /LTCG /OPT:REF /OPT:ICF): **release 47.59 MB, ship 47.37 MB** (gzip -9: 20.9 MB). Link variants of the release objects: no /OPT:REF and no ICF 67.08 MB; /OPT:REF without ICF 51.27 MB; adding /OPT:ICF explicitly changes nothing (already on). LTCG only touches pqdaw's own code (−0.2 MB): the prebuilt LLVM libraries are not /GL objects.
 - Where it goes (release link map, `tools/size/exe_size_by_lib.py`; 44.6 MiB attributed): **LLVM 36.4 MiB (81.7 %)** — X86CodeGen 4.9, CodeGen 4.1, SelectionDAG 3.5, Analysis 3.0, X86Desc 2.75, Core 2.7, Vectorize 2.3, ipo 1.8, ScalarOpts 1.75, TransformUtils 1.5, InstCombine 1.4, Support 0.8, GlobalISel 0.7, MC 0.6, JITLink 0.5, AsmPrinter 0.5, Passes 0.4, Instrumentation 0.4, ORC 0.4, Object 0.4 —; pqdaw's own code 4.2 MiB; SDL3 1.3; harfbuzz 0.85; CRT/STL 0.8; freetype 0.56; zstd 0.37 (LLVM's); RtAudio, zlib < 0.1.
@@ -1648,6 +1649,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   6. **The alias suite** uses bin-exact pitches (k·sr / 2^16), whose phases are exact in float (as a phasor produces them at those pitches), so it measures the table and the reader, not the float phase's precision floor (the plan's a_h·h·1.1e-7 term, which the 64-keyframe fixture's a_h·h ≤ 0.09 cap bounds at −100 dBFS for other pitches).
 - Status: open (user / orchestrator to decide 5; the rest informational).
 
+
 ## Q169 · 2026-11-01 · TMM.4 · Faces: details decided while building them
 - Context: TMM.4 built the face toolkit, hosting and the Phase accumulator face to docs/plans/MM.md. Choices the plan left open, all reversible:
   1. **Drags are relative, measured in device px**: a full travel is the control's on-screen extent, never less than 150 logical px (Shift: a tenth). So a far-zoomed face (6 px wide at 0.05) drags exactly like a 150-px slider, and a near one follows the pointer along its arc. Absolute "click to jump" was rejected: at far zooms it would be unusable, and it makes accidental edits from a click.
@@ -1683,7 +1685,6 @@ Agents: add questions here instead of guessing on anything important. Use this f
   7. **Faces wake** (Q169 4): the project patch view calls `wakeFaces` on each playhead refresh while the transport plays, and the shell after a presented frame when any reader got records (`FaceVoiceHub::anyFresh`: an audition or a note while stopped). A face's reader stays registered with its tap while the hub exists (the audio thread then samples one record per block per tap: a few hundred bytes copied); the hub keeps one reader per (device, path) bound so far.
   8. **The module alias suite reads with a float ramp**, `acc = frac(z1(acc) + d)`, d = k / 2^16, instead of `phasor(f)`: a phasor's increment is round(f · 2^32 / sr), which is a multiple of 2^16 (bin-exact) only when f is within 0.5 · sr / 2^32 Hz of the bin — float cannot hold that above ≈ 1 kHz at 44.1 kHz. The ramp's phases are exact multiples of 2^-16 at every rate, which is what the bin-exact meter needs; the module's own expansion is unchanged. Result: worst alias −126.1 dBFS (44.1 kHz, sync 1), −128.5 (48 kHz), −131.2 (96 kHz) over 26 tables × 25 pitches.
 - Status: open (orchestrator / user: 1 and 3 with TMM.8; the rest informational).
-
 ## Q172 · 2026-11-01 · TMM.6 · The oversample(n) region: details decided while building it
 - Context: SPEC §15 2026-10-26 deferred SPEC §7.2's `oversample { … }` region (Q14 #9, Q121: Saturator / EQ Eight unroll their oversampled paths by hand with `stdlib/util/oversample.pqp`). The 2026-11-01 meta-modules decision needs audio-rate warp / fold / sync oversampled (docs/plans/MM.md "Live path"), so TMM.6 builds the region in its smallest general form (PATCH_LANGUAGE §2.3). The SPEC §7.2 line stays as written (2× / 4× / 8×, polyphase); the language takes 1 / 2 / 4 / 8 / 16. Saturator and EQ Eight are untouched (their goldens unchanged); moving them onto the region is a separate decision (it would change their phase response slightly: other half-bands).
 - Choices (provisional, all reversible):
