@@ -1149,3 +1149,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a (no RT code; a voice terminal (+ reducer) per note wire; existing lowerings identical).
 - CPU-efficiency check: no new nodes unless a note wire exists; the stereo downmix only where the compile failed before.
 - Notes/blockers: Hz under the knob-travel law saturates (value-unit wire mode proposed, Q182 2); Q181 rule 3 kept (gate is an input, not a param); Device view cables / chain circuit don't draw note wires.
+
+## 2026-11-01 · TMM.14 · task/TMM.14-vca (merged; Q183)
+- Did: meta::vcaType (out = gain(in, value, 2 ms, start 1); value = knob position through a Log curve (linear −1…1 over zone·travel, C1-joined log-spaced outers, pure exp one-sided) or Bend curve (setting); min/max/zone/bend runtime params; tap = knob position); vcaLaw/vcaValue/vcaPosition; VCA face (✕, pie-wedge knob on a 300° track, fine-zone band + decade ticks, readout, min—max, curve box, 4 presets, typed entry, voice dots); scenes device-meta-vca / project-meta-vca; docs, REVIEW, bench rows.
+- Verified: worker: build.ps1 -Affected (EVERYTHING) on c6bf289: 0 warnings, 88/88. Orchestrator: rebased onto 8a6a4fa (doc conflicts with TMM.10-fix2 resolved by keeping both), build.ps1 -Affected (EVERYTHING, check, default + slow): 0 warnings, 88/88. Goldens meta-vca-z2-1x and device-meta-vca looked at.
+- Perf: ship, JIT: static 2.08 vs by-hand 1.85 ns/sample (+0.22), audio-rate knob 4.52; per voice 0.854 vs 0.725 ns/voice-sample (load 51–82 %, indicative).
+- CPU-efficiency check: curve is a memoised param-rate region (skipped while params unchanged); curve kind is a setting so each expansion holds only its own arithmetic; one exp per sample only when value is audio-rate; settled cost is one multiply.
+- Notes/blockers: value stores the knob position (automation lanes show 0…1); knob-space modulation; audio-rate ring-mod aliasing not handled; typed entry uses key codes; no wheel on the knob. Q183.
