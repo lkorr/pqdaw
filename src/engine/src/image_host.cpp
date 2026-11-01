@@ -430,7 +430,7 @@ bool ImageHost::validateFactors(const g::Schedule& s, const g::Region& reg, cons
                     op.kernel == dsp::Atom::OversampleHold;
     const bool down = op.kernel == dsp::Atom::OversampleDown || op.kernel == dsp::Atom::OversampleAny;
     if (up || down) {
-      if (F < 2 || op.numIn != 2 || ins[1].kind != g::Operand::Kind::Const ||
+      if (F < 2 || op.numIn != 2 || ins[1].kind != g::Operand::Kind::Const || ins[1].index >= s.constants.size() ||
           dsp::os::sanitizeFactor(s.constants[ins[1].index].value) != F)
         return false;
       (up ? inF : outF) = 1;
@@ -438,10 +438,12 @@ bool ImageHost::validateFactors(const g::Schedule& s, const g::Region& reg, cons
   } else if (F != 1 && op.kind != g::OpKind::Broadcast) {
     return false;
   }
+  // An invalid operand is skipped here: validate() rejects it with its own message (and these lookups would read
+  // out of range).
   for (const g::Operand& x : ins)
-    if (!isPatternOperand(s, x) && factorOfOperand(s, x) != inF) return false;
+    if (validOperand(s, x) && !isPatternOperand(s, x) && factorOfOperand(s, x) != inF) return false;
   for (const g::Operand& x : outs)
-    if (!isPatternOperand(s, x) && factorOfOperand(s, x) != outF) return false;
+    if (validOperand(s, x) && !isPatternOperand(s, x) && factorOfOperand(s, x) != outF) return false;
   return true;
 }
 
