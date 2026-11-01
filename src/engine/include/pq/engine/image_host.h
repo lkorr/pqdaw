@@ -112,9 +112,10 @@ bool isPatternOperand(const graph::Schedule& s, const graph::Operand& o) noexcep
 uint32_t lanesOfOperand(const graph::Schedule& s, const graph::Operand& o) noexcept;  // floats per frame of a block operand
 bool validOperand(const graph::Schedule& s, const graph::Operand& o) noexcept;
 
-// The table a wavetable / shaper / sample / tuning_hz op reads: Resources by index, else the built-in default (none
-// for tuning). Not RT-safe (the defaults are built on first use).
-const void* resourceFor(const Resources* resources, dsp::Resource kind, uint32_t index);
+// The table a wavetable / shaper / sample / tuning_hz / wavetable_pos / voice_tap op reads: Resources by index, else
+// the built-in default (none for tuning and voice taps; for a frame table the one-frame sine table built for
+// `sampleRate`). Not RT-safe (the defaults are built on first use).
+const void* resourceFor(const Resources* resources, dsp::Resource kind, uint32_t index, double sampleRate = 48000.0);
 
 // ---- The host ---------------------------------------------------------------------------------------------------
 
@@ -171,7 +172,9 @@ public:
   // A buffer / param / const operand's pointer for voice group `group` (externals: zeros(); they are resolved per
   // block through extPtr()).
   float* resolve(const graph::Operand& o, uint32_t group) noexcept;
-  const void* resource(dsp::Resource kind, uint32_t index) const { return resourceFor(resources_, kind, index); }
+  const void* resource(dsp::Resource kind, uint32_t index) const {
+    return resourceFor(resources_, kind, index, io_.sampleRate);
+  }
   const ReduceInfo* reduceInfo(uint32_t op) const noexcept;  // null unless op is a Reduce
   const SendInfo* sendInfo(uint32_t op) const noexcept;      // null unless op is a Send
   // Pairs (T1b.2; build time, not RT-safe): pairableStages[k] marks voice stages run(…, pair) may pair (stages with
@@ -369,6 +372,10 @@ private:
   void probeWrite(ProbeRun& p, const float* data, uint32_t frames) noexcept;
   void meterEnd(uint32_t frames) noexcept;
   bool probeLayout(const graph::Schedule& s);
+  // TMM.2: the voice taps this image's voice ops write (wavetable_pos slots' taps, voice_tap resources) get the
+  // block's lane masks, while someone reads them.
+  void tapLayout(const graph::Schedule& s);
+  void tapMasks(const VoiceTable* vt) noexcept;
 
   std::string who_ = "image";
   Error err_;
@@ -428,6 +435,7 @@ private:
   bool metering_ = false;
   uint64_t meterT0_ = 0;
   uint32_t* meterFlag_ = nullptr;          // in aux
+  std::vector<VoiceTap*> voiceTaps_;       // TMM.2 (tapLayout)
 };
 
 inline void ImageHost::setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept {  // RT-safe
@@ -460,6 +468,7 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
   const uint32_t frames = ctx.frames;
   const VoiceTable* vt = voices_;
   bool anyVoice = false;
+  if (!voiceTaps_.empty()) tapMasks(vt);
   for (uint32_t k = 0; k < stages_.size(); ++k) {
     const StageRun& st = stages_[k];
     if (!st.voice) {

@@ -122,5 +122,6 @@ KernelFn findTableKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 KernelFn findGainKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // gain, gain_add (kernels_gain.cpp)
 // tuning_hz (kernels_tuning.cpp): one function per lane count, any Spl mask.
 KernelFn findTuningKernel(uint32_t lanes) noexcept;
+KernelFn findFrameTableKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // TMM.2 (kernels_frame_table.cpp)
 
 }  // namespace pq::dsp::detail

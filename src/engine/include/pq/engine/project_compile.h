@@ -109,7 +109,8 @@ struct ProjectCompileOptions {
   bool sleep = true;                    // T1.x-silence: sleep plans (graph::ScheduleOptions::sleep; false: never sleep)
   UnitBackend backend;
   std::vector<ProjectParamLink> paramLinks;
-  // T2.6-fix4 (optional): the owner of resource `index` of `kind` (only Tuning is asked), kept alive by every image
+  // T2.6-fix4 (optional): the owner of resource `index` of `kind` (Tuning, and TMM.2's FrameTable / VoiceTap slots are
+  // asked), kept alive by every image
   // that reads it (UnitImage::keepAlive), so a table can be freed once no image uses it. Called by bind() (every
   // image goes through it), on whichever thread binds: the compile thread, or a background image's (T1b.5), so the
   // owner must still know the resources of every schedule that may be bound.

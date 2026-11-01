@@ -25,6 +25,7 @@
 #include "pq/document/audibility.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/meta.h"
+#include "pq/dsp/frame_table_build.h"
 #include "pq/meta/registry.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/engine/tuning_signal.h"
@@ -462,9 +463,19 @@ Status ProjectLink::makeEngine() {
   co.voice.maxVoices = std::max(cfg_.maxVoices, 1u);
   co.visualMode = true;
   resources_.tunings = tuningViews_;  // fixed array: entries are filled in as tables are built
+  resources_.frameTables = frameTableViews_;  // TMM.2: likewise (meta-module slots)
+  resources_.voiceTaps = voiceTapViews_;
   co.resources = &resources_;
-  // T2.6-fix4: every image holds the tuning tables it reads (the ones its compile named: compileHeld_).
+  // T2.6-fix4: every image holds the tuning tables it reads (the ones its compile named: compileHeld_). TMM.2: and the
+  // meta-module slots it reads.
   co.keepAlive = [this](dsp::Resource kind, uint32_t index) -> std::shared_ptr<const void> {
+    if (kind == dsp::Resource::FrameTable || kind == dsp::Resource::VoiceTap) {
+      std::lock_guard lock(mutex_);
+      if (index >= kMetaSlots) return nullptr;
+      const MetaSlot& m = metaSlots_[index];
+      if (kind == dsp::Resource::FrameTable) return m.table;
+      return m.tap;
+    }
     if (kind != dsp::Resource::Tuning) return nullptr;
     std::lock_guard lock(mutex_);
     const auto it = compileHeld_.find(index);
@@ -559,6 +570,10 @@ Status ProjectLink::setSampleRate(double rate) {
     meterBus_.clear();  // the new program's layout is published by compileNow
     tapBus_.clear();
     ++layoutSerial_;
+    // TMM.2: a frame table's levels depend on the rate: every slot gets the default at the new one (TMM.5's builder
+    // rebuilds the instances' own tables).
+    for (MetaSlot& m : metaSlots_)
+      if (m.table) m.table->publish(metaDefaultTable(), sampleReclaimer_);
   }
   meters_.clear();
   written_.assign(written_.size(), std::numeric_limits<float>::quiet_NaN());
@@ -1344,6 +1359,121 @@ Status ProjectLink::drainDeferred(bool& drained) {
   return Ok{};
 }
 
+// ---- Meta-module resources (TMM.2) -------------------------------------------------------------------------------
+
+VoiceTapConfig ProjectLink::metaTapConfig() const {
+  VoiceTapConfig c;
+  c.groups = engine::voiceGroupsFor(std::max(cfg_.maxVoices, 1u));
+  c.depth = 64;
+  c.stride = std::max(cfg_.blockFrames / kVoiceTapSamples, 1u);  // one record per engine block
+  return c;
+}
+
+std::shared_ptr<const dsp::FrameTable> ProjectLink::metaDefaultTable() {  // mutex_ held
+  if (metaDefault_ && metaDefaultRate_ == cfg_.sampleRate) return metaDefault_;
+  const AlignedBuffer<float> cycle = dsp::basicCycle(dsp::BasicCycle::Sine);
+  const dsp::Keyframe key{0.0f, cycle.span()};
+  dsp::FrameTableSpec spec;
+  spec.keyframes = std::span<const dsp::Keyframe>(&key, 1);
+  spec.denseFrames = 1;
+  spec.sampleRate = cfg_.sampleRate;
+  dsp::FrameTableBuilder b;
+  auto t = b.build(spec);
+  if (!t.ok()) return metaDefault_;  // cannot happen at a valid rate
+  metaDefault_ = std::make_shared<const dsp::FrameTable>(std::move(t.value()));
+  metaDefaultRate_ = cfg_.sampleRate;
+  return metaDefault_;
+}
+
+uint32_t ProjectLink::metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index) {
+  std::lock_guard lock(mutex_);
+  MetaKey key{device.value, std::string(path), index};
+  auto it = metaIds_.find(key);
+  if (it == metaIds_.end()) {
+    uint32_t id = 0;
+    if (!metaFree_.empty()) {
+      id = metaFree_.front();
+      metaFree_.pop_front();
+    } else if (metaNext_ < kMetaSlots) {
+      id = metaNext_++;
+    }
+    if (id == 0) return 0;  // every slot in use: the expansion reads the engine's default (and writes no tap)
+    it = metaIds_.emplace(std::move(key), id).first;
+  }
+  metaTouched_.push_back(it->second);
+  return it->second;
+}
+
+void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResource>& resources) {
+  std::lock_guard lock(mutex_);
+  for (const doc::LoweredProject::MetaResource& r : resources) {
+    if (r.slot == 0 || r.slot >= kMetaSlots) continue;
+    MetaSlot& m = metaSlots_[r.slot];
+    if (!m.live || m.kind != r.request.kind) {  // a new id, or a reused one: a new object (the old one lives on in the
+      m = MetaSlot{};                           // images that hold it)
+      m.kind = r.request.kind;
+      if (m.kind == meta::ResourceKind::FrameTable) {
+        m.table = std::make_shared<dsp::FrameTableSlot>(metaDefaultTable(), metaTapConfig());
+        m.tap = m.table->sharedTap();
+      } else {
+        m.tap = std::make_shared<VoiceTap>(metaTapConfig());
+      }
+      m.live = true;
+    }
+    frameTableViews_[r.slot] = m.table.get();
+    voiceTapViews_[r.slot] = m.kind == meta::ResourceKind::VoiceTap ? m.tap.get() : nullptr;
+  }
+  // Ids this lowering did not name are free again. Their objects (and view entries) stay until the id is given out
+  // again: an image built later from an older schedule (a background JIT compile) may still name the id, and it holds
+  // what it reads through keepAlive.
+  std::sort(metaTouched_.begin(), metaTouched_.end());
+  for (auto it = metaIds_.begin(); it != metaIds_.end();) {
+    if (std::binary_search(metaTouched_.begin(), metaTouched_.end(), it->second)) {
+      ++it;
+      continue;
+    }
+    metaSlots_[it->second].live = false;
+    metaFree_.push_back(it->second);
+    it = metaIds_.erase(it);
+  }
+}
+
+uint32_t ProjectLink::metaSlot(doc::DeviceId device, std::string_view path, uint32_t index) const {
+  std::lock_guard lock(mutex_);
+  const auto it = metaIds_.find(std::make_tuple(device.value, std::string(path), index));
+  return it != metaIds_.end() ? it->second : 0;
+}
+
+std::shared_ptr<dsp::FrameTableSlot> ProjectLink::metaFrameTable(doc::DeviceId device, std::string_view path,
+                                                                uint32_t index) const {
+  std::lock_guard lock(mutex_);
+  const auto it = metaIds_.find(std::make_tuple(device.value, std::string(path), index));
+  return it != metaIds_.end() ? metaSlots_[it->second].table : nullptr;
+}
+
+std::shared_ptr<VoiceTap> ProjectLink::metaVoiceTap(doc::DeviceId device, std::string_view path, uint32_t index) const {
+  std::lock_guard lock(mutex_);
+  const auto it = metaIds_.find(std::make_tuple(device.value, std::string(path), index));
+  return it != metaIds_.end() ? metaSlots_[it->second].tap : nullptr;
+}
+
+Status ProjectLink::publishFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
+                                      std::shared_ptr<const dsp::FrameTable> table) {
+  if (table == nullptr) return linkError(ErrorCode::InvalidArgument, "publishFrameTable: no table");
+  const std::shared_ptr<dsp::FrameTableSlot> slot = metaFrameTable(device, path, index);
+  if (slot == nullptr) return linkError(ErrorCode::NotFound, "publishFrameTable: no frame-table slot for that instance");
+  if (table->layout().sampleRate != cfg_.sampleRate)
+    return linkError(ErrorCode::InvalidArgument, "publishFrameTable: the table was built for another sample rate");
+  slot->publish(std::move(table), sampleReclaimer_);
+  sampleReclaimer_.collect();
+  return Ok{};
+}
+
+uint32_t ProjectLink::metaSlotsInUse() const {
+  std::lock_guard lock(mutex_);
+  return static_cast<uint32_t>(metaIds_.size());
+}
+
 Status ProjectLink::compileNow(const doc::Snapshot& s) {
   std::lock_guard compileLock(compileMutex_);  // vs the JIT worker's deliveries (compiler_, program publishes)
   {
@@ -1372,6 +1502,9 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   // publishAudio fills that slot of the engine's audio sequence image.
   lo.clipSlotOf = lo.slotOf;
   lo.tuningTableOf = [this](doc::TuningId id, const doc::TuningDef& def) { return tuningTable(id, def); };
+  // TMM.2: the meta-module resource slots (created / kept / released by syncMetaSlots below).
+  metaTouched_.clear();
+  lo.metaSlotOf = [this](doc::DeviceId d, std::string_view path, uint32_t index) { return metaSlotFor(d, path, index); };
   auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);
   auto fail = [&](const Error& e) {
     ++stats_.compileErrors;
@@ -1381,6 +1514,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   };
   if (!lowered.ok()) return fail(lowered.error());
   doc::LoweredProject& lp = lowered.value();
+  syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
   std::vector<engine::ProjectParamLink> links;
   for (const doc::LoweredParam& p : lp.params) {
     const uint32_t slot = slotForParam(p.key);

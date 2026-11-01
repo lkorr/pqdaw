@@ -8,6 +8,7 @@
 
 #include "pq/dsp/atom_state.h"
 #include "pq/graph/atoms.h"
+#include "pq/graph/kernel_map.h"
 
 using namespace pq::graph;
 
@@ -50,6 +51,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "voice.noteHz", "voice.noteDegree",
       // T3.17-fix2 (the mixer): smoothed gains.
       "gain", "gain_add",
+      // TMM.2 (meta modules): the live frame-table read and the voice-tap sink.
+      "wavetable_pos", "voice_tap",
   };
   for (const char* n : names) {
     CAPTURE(n);
@@ -179,4 +182,20 @@ TEST_CASE("atoms: selected signatures (data the compiler relies on)") {
   CHECK(sig("send").has(atom_flags::kSideEffect));
   CHECK(sig("channel").inputs[1].type.rate == Rate::Const);
   CHECK(sig("channel").outputs[0].type.width == kWidthMono);
+}
+
+TEST_CASE("atoms: wavetable_pos and voice_tap (TMM.2) — ports, a kernel sink, the slot a resource") {
+  const auto& wp = sig("wavetable_pos");
+  REQUIRE(wp.inputs.size() == 3);
+  CHECK(wp.inputs[1].name == "position");
+  CHECK(wp.inputs[1].optional);
+  CHECK(wp.inputs[2].name == "table");
+  CHECK(wp.has(pq::graph::atom_flags::kStateful));
+  const auto& vt = sig("voice_tap");
+  CHECK(vt.outputs.empty());
+  CHECK(vt.has(pq::graph::atom_flags::kSideEffect));  // never dead-code eliminated
+  const auto& m = pq::graph::kernelMapping(*reg().find("voice_tap"));
+  CHECK(m.lowering == pq::graph::Lowering::Kernel);  // not a voice_ reducer
+  CHECK(m.kernel == pq::dsp::Atom::VoiceTap);
+  CHECK(pq::graph::kernelMapping(*reg().find("wavetable_pos")).kernel == pq::dsp::Atom::WavetablePos);
 }

@@ -325,15 +325,15 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
       }
     if (!found) return compileError(ErrorCode::NotFound, "bind: no param '" + name + "' (a linked param must exist)");
   }
-  if (opt_.keepAlive) {  // T2.6-fix4: the owners of the tuning tables this unit's ops read
-    std::vector<uint32_t> seen;
+  if (opt_.keepAlive) {  // T2.6-fix4: the owners of the tuning tables this unit's ops read; TMM.2: frame-table slots, taps
+    std::vector<std::pair<dsp::Resource, uint32_t>> seen;
     for (const graph::Op& op : cu.schedule->ops) {
       if (op.kind != graph::OpKind::Kernel || op.resource == graph::kNone) continue;
-      if (dsp::kernelInfo(op.kernel).resource != dsp::Resource::Tuning) continue;
-      if (std::find(seen.begin(), seen.end(), op.resource) != seen.end()) continue;
-      seen.push_back(op.resource);
-      if (std::shared_ptr<const void> owner = opt_.keepAlive(dsp::Resource::Tuning, op.resource))
-        ui.keepAlive.push_back(std::move(owner));
+      const dsp::Resource kind = dsp::kernelInfo(op.kernel).resource;
+      if (kind != dsp::Resource::Tuning && kind != dsp::Resource::FrameTable && kind != dsp::Resource::VoiceTap) continue;
+      if (std::find(seen.begin(), seen.end(), std::pair(kind, op.resource)) != seen.end()) continue;
+      seen.emplace_back(kind, op.resource);
+      if (std::shared_ptr<const void> owner = opt_.keepAlive(kind, op.resource)) ui.keepAlive.push_back(std::move(owner));
     }
   }
   if (opt_.onBind)  // T4.4-fix1: probe taps / cost meter; their owner lives as long as the image (M4 review H2, L4)

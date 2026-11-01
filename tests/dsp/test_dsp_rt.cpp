@@ -9,6 +9,9 @@
 #include "pq/core/aligned_buffer.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/dsp/atoms.h"
+#include "pq/core/voice_tap.h"
+#include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/frame_table_slot.h"
 #include "pq/dsp/tables.h"
 #include "pq/dsp/tuning_table.h"
 
@@ -41,6 +44,20 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
   auto tt = pq::dsp::TuningTable::build(shape.value(), tdef);
   REQUIRE(tt.ok());
 
+  // TMM.2: a frame-table slot and a voice tap, both read (so the kernels write their taps).
+  const auto sine = pq::dsp::basicCycle(pq::dsp::BasicCycle::Sine);
+  const pq::dsp::Keyframe key{0.0f, sine.span()};
+  pq::dsp::FrameTableSpec fspec;
+  fspec.keyframes = std::span<const pq::dsp::Keyframe>(&key, 1);
+  fspec.denseFrames = 2;
+  pq::dsp::FrameTableBuilder fb;
+  auto ft = fb.build(fspec);
+  REQUIRE(ft.ok());
+  pq::dsp::FrameTableSlot slot(std::make_shared<const pq::dsp::FrameTable>(std::move(ft.value())));
+  slot.tap()->addReader();
+  pq::VoiceTap tap(pq::VoiceTapConfig{});
+  tap.addReader();
+
   std::vector<pq::AlignedBuffer<float>> in, out;
   for (uint32_t i = 0; i < kMaxIn; ++i) in.emplace_back(static_cast<size_t>(kFrames) * 8);
   for (uint32_t o = 0; o < kMaxOut; ++o) out.emplace_back(static_cast<size_t>(kFrames) * 8);
@@ -65,7 +82,9 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
                            : info.resource == pq::dsp::Resource::Shaper  ? static_cast<const void*>(&sh->view())
                            : info.resource == pq::dsp::Resource::Sample  ? static_cast<const void*>(&sd->view())
                            : info.resource == pq::dsp::Resource::Tuning  ? static_cast<const void*>(&tt->view())
-                                                                         : nullptr;
+                           : info.resource == pq::dsp::Resource::FrameTable ? static_cast<const void*>(&slot)
+                           : info.resource == pq::dsp::Resource::VoiceTap   ? static_cast<const void*>(&tap)
+                                                                            : nullptr;
     const uint32_t specMax = info.variadicIn ? 15u : info.splSpecMask;
     for (uint32_t lanes : {1u, 8u}) {
       pq::dsp::StateInit init;
@@ -97,4 +116,8 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
     }
   }
   CHECK(kernelsRun > 400);
+  CHECK(slot.tap()->written(0) > 0);
+  CHECK(tap.written(0) > 0);
+  slot.tap()->removeReader();
+  tap.removeReader();
 }

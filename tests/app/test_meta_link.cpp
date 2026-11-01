@@ -3,6 +3,7 @@
 // `meta:phase_acc` instrument plays its voices; a MetaData edit compiles nothing.
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -13,6 +14,10 @@
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
+#include "pq/core/voice_tap.h"
+#include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/frame_table_slot.h"
+#include "pq/meta/registry.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/engine/project_program.h"
@@ -196,4 +201,129 @@ TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaDa
   link->flush();
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().paramWrites == s0.paramWrites);
+}
+
+// ---- TMM.2: the link's meta-module resource slots (frame tables, voice taps) -----------------------------------------
+
+namespace {
+
+// A test-only meta type that reads both resource kinds: out = wavetable_pos(phasor(hz), 0, slot 0), and a voice_tap of
+// the phase into slot 1.
+constexpr std::array<meta::InputSpec, 1> kWtInputs = {{{"hz", "Hz", meta::InputDefault::VoiceHz}}};
+constexpr std::array<meta::OutputSpec, 1> kWtOutputs = {{{"out", graph::kWidthMono}}};
+
+const meta::Type& registerWtType() {
+  static const meta::Type t = [] {
+    meta::Type x;
+    x.id = "tmm2_wt";
+    x.name = "TMM.2 test wavetable";
+    x.inputs = kWtInputs;
+    x.outputs = kWtOutputs;
+    x.resources = [](std::span<const double>) {
+      return std::vector<meta::ResourceRequest>{{meta::ResourceKind::FrameTable, 0}, {meta::ResourceKind::VoiceTap, 1}};
+    };
+    x.body = [](meta::Builder& b) -> Status {
+      const graph::PortRef ph = b.atom("phasor", {b.input(0)}, 0);
+      const graph::PortRef y = b.atom("wavetable_pos", {ph, b.konst(0.0, 1), b.slot(0)}, 2);
+      b.atom("voice_tap", {ph, b.slot(1)}, 3);
+      b.output(0, y);
+      return Ok{};
+    };
+    return x;
+  }();
+  if (meta::findType(t.id) == nullptr) (void)meta::registerType(t);
+  return t;
+}
+
+std::shared_ptr<const dsp::FrameTable> sawTable(double sr) {
+  const AlignedBuffer<float> saw = dsp::basicCycle(dsp::BasicCycle::Saw);
+  const dsp::Keyframe key{0.0f, saw.span()};
+  dsp::FrameTableSpec spec;
+  spec.keyframes = std::span<const dsp::Keyframe>(&key, 1);
+  spec.denseFrames = 1;
+  spec.sampleRate = sr;
+  dsp::FrameTableBuilder b;
+  auto t = b.build(spec);
+  REQUIRE(t.ok());
+  return std::make_shared<const dsp::FrameTable>(std::move(t.value()));
+}
+
+}  // namespace
+
+TEST_CASE("meta link: frame-table and voice-tap slots — stable ids, taps per voice, a table swap without a compile") {
+  registerWtType();
+  Keys k;
+  auto link = makeLink(k.store.current());
+  [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  Driver d{*link};
+  link->play(0);
+  d.run(20);
+  const std::string base = link->devices().stockText("BasicSynth");
+  const std::string text = replaced(base, "  out = osc * env * vel * level", "  wt1 = meta_tmm2_wt()\n  out = wt1 * env * vel * level");
+  k.edit(ops::addMetaCall(*k.store.current(), k.inst, text, "wt1", "tmm2_wt"));
+  link->flush();
+  CHECK(link->lastError().empty());
+  const uint32_t tableId = link->metaSlot(k.inst, "wt1", 0), tapId = link->metaSlot(k.inst, "wt1", 1);
+  CHECK(tableId != 0);
+  CHECK(tapId != 0);
+  CHECK(tableId != tapId);
+  CHECK(link->metaSlotsInUse() == 2);
+  const auto slot = link->metaFrameTable(k.inst, "wt1", 0);
+  REQUIRE(slot != nullptr);
+  CHECK(link->metaFrameTable(k.inst, "wt1", 1) == nullptr);  // a tap, not a table
+  const auto tap = link->metaVoiceTap(k.inst, "wt1", 1);
+  REQUIRE(tap != nullptr);
+  CHECK(link->metaVoiceTap(k.inst, "wt1", 0) == slot->sharedTap());
+  CHECK(tap->stride() == 8);  // 64-frame blocks: one record per block
+  // Readers: three voices (the held chord) in both taps, a record per block.
+  VoiceTapReader phases(tap), reads(slot->sharedTap());
+  for (int i = 0; i < 10; ++i) {  // a reader polls more often than the ring's 64 blocks
+    d.run(10);
+    phases.poll(1.0);
+    reads.poll(1.0);
+  }
+  CHECK(phases.received() == 100);
+  CHECK(reads.received() == 100);
+  CHECK(phases.lost() == 0);
+  uint32_t active = 0;
+  for (uint32_t s = 0; s < phases.voiceSlots(); ++s) {
+    active += phases.voice(s).active ? 1u : 0u;
+    if (phases.voice(s).active) CHECK(reads.voice(s).active);
+    if (phases.voice(s).active) CHECK(phases.voice(s).value == reads.voice(s).value);  // the phase read, sampled
+  }
+  CHECK(active == 3);
+  // A table swap: no compile, the unit keeps its image, the sound changes (sine → saw).
+  engine::ProjectProgram& program = *link->engine().program();
+  const uint32_t u = voiceUnit(program);
+  const engine::ProgramImage* image = program.current(u);
+  const size_t mark = d.out.size();
+  d.run(50);
+  app::LinkStats s0 = link->stats();
+  CHECK_FALSE(link->publishFrameTable(k.inst, "wt1", 0, sawTable(96000.0)).ok());  // another rate: refused
+  REQUIRE(link->publishFrameTable(k.inst, "wt1", 0, sawTable(48000.0)).ok());
+  CHECK(slot->generation() == 2);
+  d.run(50);
+  CHECK(link->stats().compiles == s0.compiles);
+  CHECK(program.current(u) == image);
+  // Brightness: Σ(Δx)² / Σx² is (2πf/sr)² for sines; the saw's harmonics raise it many times.
+  auto brightness = [&](size_t from, size_t to) {
+    double e = 0, de = 0;
+    for (size_t i = from + 1; i < to; ++i) {
+      e += double(d.out[i]) * d.out[i];
+      de += (double(d.out[i]) - d.out[i - 1]) * (double(d.out[i]) - d.out[i - 1]);
+    }
+    return de / std::max(e, 1e-30);
+  };
+  const double sine = brightness(mark, mark + 64 * 50), saw = brightness(mark + 64 * 55, mark + 64 * 100);
+  MESSAGE("brightness: sine table " << sine << ", saw table " << saw);
+  CHECK(saw > 5.0 * sine);
+  CHECK(link->metaSlot(k.inst, "wt1", 0) == tableId);  // stable
+  // Removing the call frees both ids; the slot objects live on in the images that held them.
+  k.edit(ops::editDevicePatch(*k.store.current(), k.inst, base));
+  link->flush();
+  CHECK(link->lastError().empty());
+  CHECK(link->metaSlotsInUse() == 0);
+  CHECK(link->metaSlot(k.inst, "wt1", 0) == 0);
+  d.run(20);
+  CHECK(slot->generation() == 2);  // our reference still works
 }

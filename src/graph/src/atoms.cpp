@@ -54,6 +54,10 @@ constexpr PortSpec pSine[] = {{"phase", kR}};
 // The kernel picks the mipmap from the phase increment (T1.6), so wavetable has no `hz` input.
 constexpr PortSpec pWavetable[] = {{"phase", kR}, {"table", kRConst, true, 0.0f}};
 constexpr PortSpec pNoise[] = {{"seed", kRConst, true, 0.0f}};
+// TMM.2: a live frame table (the slot `table`, a resource id the link owns) read at a frame position in [0, 1];
+// voice_tap samples x into the voice tap `slot` for a meta module's face (a sink: no outputs).
+constexpr PortSpec pWavetablePos[] = {{"phase", kR}, {"position", kR, true, 0.0f}, {"table", kRConst, true, 0.0f}};
+constexpr PortSpec pVoiceTap[] = {{"x", kR}, {"slot", kRConst, true, 0.0f}};
 
 constexpr PortSpec pClip[] = {{"x", kR}, {"lo", kR}, {"hi", kR}};
 constexpr PortSpec pLerp[] = {{"a", kR}, {"b", kR}, {"t", kR}};
@@ -156,6 +160,8 @@ const AtomSignature kAtoms[] = {
     {"sine_hz", C::Generator, pPhasor, pOutRAudio, kPhasorState, kStateful, 0, {}, "sine oscillator at hz (= sine(phasor(hz)))"},
     {"wavetable", C::Generator, pWavetable, pOutR, sizeof(dsp::WavetableState), kStateful | kBroadcast, 0, {},
      "band-limited table read by phase; mipmap chosen from the phase increment"},
+    {"wavetable_pos", C::Generator, pWavetablePos, pOutR, sizeof(dsp::WavetablePosState), kStateful | kBroadcast, 0, {},
+     "live frame table read by phase at a frame position 0..1; swaps crossfade over 64 samples"},
     {"noise", C::Generator, pNoise, pOutRAudio, sizeof(dsp::NoiseState), kStateful, 0, {}, "white noise in −1..1 (uint32 generator state)"},
 
     // Math (exact). Operators: + − * / % unary − map to add sub mul div mod neg.
@@ -318,6 +324,8 @@ const AtomSignature kAtoms[] = {
     {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input"},
     {"sidechain.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the device's sidechain input"},
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},
+    {"voice_tap", C::Io, pVoiceTap, kNoPorts, sizeof(dsp::VoiceTapState), kStateful | kSideEffect, 0, {},
+     "samples x per voice into a meta module's voice tap (its face's dots); costs nothing unwatched"},
     {"clipPlayer", C::Io, pClipPlayer, pGlobalAudioN, 0, kStateful | kVariableState | kNeedsTransport, 0, {},
      "native warp-engine playback of clip (SPEC §9.4)"},
 };

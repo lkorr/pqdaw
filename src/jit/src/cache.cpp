@@ -133,8 +133,10 @@ static_assert(sizeof(g::ConstValue) == 8, "graph::ConstValue changed: update cod
 static_assert(sizeof(g::ParamSlot) == 40, "graph::ParamSlot changed: update codegenDigest");
 static_assert(sizeof(g::OutputRef) == 24, "graph::OutputRef changed: update codegenDigest");
 static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegenDigest");
-static_assert(sizeof(dsp::StateInit) == 24, "dsp::StateInit changed: update codegenDigest");
-static_assert(sizeof(g::StateEntry) == 64, "graph::StateEntry changed: update codegenDigest");
+// TMM.2: StateInit::voiceGroup is not hashed: schedules always hold 0, the host sets it per voice group when it
+// initialises the state, and the generated code never reads it (the kernels that do are called).
+static_assert(sizeof(dsp::StateInit) == 32, "dsp::StateInit changed: update codegenDigest");
+static_assert(sizeof(g::StateEntry) == 72, "graph::StateEntry changed: update codegenDigest");
 static_assert(sizeof(g::StateLayout) == 40, "graph::StateLayout changed: update codegenDigest");
 static_assert(sizeof(g::Schedule) == 424 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
 static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");

@@ -26,6 +26,8 @@
 #include <span>
 
 #include "pq/core/result.h"
+#include "pq/core/voice_tap.h"
+#include "pq/dsp/frame_table_slot.h"
 #include "pq/dsp/tables.h"
 #include "pq/dsp/tuning_table.h"
 #include "pq/engine/program_image.h"
@@ -37,11 +39,16 @@ namespace pq::engine {
 // They must outlive the image. An index without a table reads the built-in default: a 2048-point sine wavetable (a
 // wavetable index ≥ dsp::kBuiltinWavetableBase: that built-in waveform, T4.12), the identity shaper on [−1, 1], a
 // silent one-frame sample; a tuning_hz without a table passes its fallback hz / cents through (T2.6).
+// TMM.2: frame-table slots (wavetable_pos; a missing one reads the built-in one-frame sine table for the image's
+// sample rate, which has a voice tap nobody reads) and voice taps (voice_tap; a missing one: nothing is written). Slot
+// ids come from the document lowering (LowerOptions::metaSlotOf); the playback link owns the objects.
 struct Resources {
   std::span<const dsp::WavetableView* const> wavetables;
   std::span<const dsp::ShaperView* const> shapers;
   std::span<const dsp::SampleView* const> samples;
   std::span<const dsp::TuningTableView* const> tunings;  // T2.6
+  std::span<const dsp::FrameTableSlot* const> frameTables;  // TMM.2
+  std::span<VoiceTap* const> voiceTaps;                     // TMM.2
 };
 
 struct InterpretOptions {

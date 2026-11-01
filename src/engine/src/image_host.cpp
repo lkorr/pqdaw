@@ -10,9 +10,13 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string_view>
 
 #include "pq/dsp/atoms.h"
+#include "pq/dsp/frame_table_build.h"
 #include "pq/graph/atoms.h"
 
 namespace pq::engine::host {
@@ -103,6 +107,31 @@ const dsp::SampleView& defaultSample() {
     return t ? std::move(t.value()) : dsp::SampleData{};
   }();
   return table.view();
+}
+
+// TMM.2: the frame-table slot a wavetable_pos without one reads: one frame of a sine, built once per sample rate (the
+// mip levels depend on it). Its tap is never read.
+const dsp::FrameTableSlot* defaultFrameTableSlot(double sampleRate) {
+  static std::mutex m;
+  static std::map<double, std::unique_ptr<dsp::FrameTableSlot>> slots;
+  std::lock_guard lock(m);
+  auto& slot = slots[sampleRate];
+  if (!slot) {
+    const AlignedBuffer<float> cycle = dsp::basicCycle(dsp::BasicCycle::Sine);
+    const dsp::Keyframe k{0.0f, cycle.span()};
+    dsp::FrameTableSpec spec;
+    spec.keyframes = std::span<const dsp::Keyframe>(&k, 1);
+    spec.denseFrames = 1;
+    spec.sampleRate = std::clamp(sampleRate, 8000.0, 768000.0);
+    dsp::FrameTableBuilder b;
+    auto t = b.build(spec);
+    if (!t.ok()) return nullptr;  // cannot happen for a valid rate
+    VoiceTapConfig tc;
+    tc.groups = 1;
+    tc.depth = 2;
+    slot = std::make_unique<dsp::FrameTableSlot>(std::make_shared<const dsp::FrameTable>(std::move(t.value())), tc);
+  }
+  return slot.get();
 }
 
 }  // namespace
@@ -214,7 +243,7 @@ bool validOperand(const g::Schedule& s, const g::Operand& o) noexcept {
   }
 }
 
-const void* resourceFor(const Resources* r, dsp::Resource kind, uint32_t index) {
+const void* resourceFor(const Resources* r, dsp::Resource kind, uint32_t index, double sampleRate) {
   switch (kind) {
     case dsp::Resource::Wavetable:
       if (r && index < r->wavetables.size() && r->wavetables[index]) return r->wavetables[index];
@@ -229,6 +258,11 @@ const void* resourceFor(const Resources* r, dsp::Resource kind, uint32_t index) 
       return &defaultSample();
     case dsp::Resource::Tuning:  // T2.6: no default, the kernel passes its fallback through
       return r && index < r->tunings.size() ? r->tunings[index] : nullptr;
+    case dsp::Resource::FrameTable:  // TMM.2
+      if (r && index < r->frameTables.size() && r->frameTables[index]) return r->frameTables[index];
+      return defaultFrameTableSlot(sampleRate);
+    case dsp::Resource::VoiceTap:  // TMM.2: no default (the kernel writes nothing)
+      return r && index < r->voiceTaps.size() ? r->voiceTaps[index] : nullptr;
     default: return nullptr;
   }
 }
@@ -261,6 +295,7 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
   if (!validate(s) || !layoutMemory(s, o.extraBufFloats) || !externals(s)) return err_;
   specialOps(s);
   if (!stages(s) || !sleepLayout(s, o.sleep) || !probeLayout(s)) return err_;
+  tapLayout(s);
   meterFlag_ = reinterpret_cast<uint32_t*>(auxMem_.data() + L_.meterFlagOff);
   *meterFlag_ = 0;
   meterUnits_.resize(numRegions_);
@@ -442,6 +477,7 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
       dsp::StateInit init = e.init;
       // Voice groups get distinct noise: the group index is mixed into the seed (lanes are mixed by dsp).
       if (atom == dsp::Atom::Noise) init.seed += gi * 0x9E3779B9u;
+      init.voiceGroup = gi;  // TMM.2: wavetable_pos / voice_tap write their group's tap record
       dsp::initState(atom, voiceState(gi) + e.offset, init);
     }
   }
@@ -1230,6 +1266,29 @@ void ImageHost::initReducers(const StageRun& st, uint32_t frames, bool zero) noe
     const uint32_t count = ri.pattern ? 8u : frames;
     const float v = zero ? 0.0f : ri.value;
     for (uint32_t f = 0; f < count; ++f) ri.out[f] = v;
+  }
+}
+
+void ImageHost::tapLayout(const g::Schedule& s) {
+  voiceTaps_.clear();
+  for (const g::Op& op : s.ops) {
+    if (op.kind != g::OpKind::Kernel || op.lanes != 8) continue;
+    const dsp::Resource kind = dsp::kernelInfo(op.kernel).resource;
+    VoiceTap* tap = nullptr;
+    if (kind == dsp::Resource::FrameTable) {
+      if (const auto* slot = static_cast<const dsp::FrameTableSlot*>(resource(kind, op.resource))) tap = slot->tap();
+    } else if (kind == dsp::Resource::VoiceTap) {
+      tap = const_cast<VoiceTap*>(static_cast<const VoiceTap*>(resource(kind, op.resource)));
+    }
+    if (tap != nullptr && std::find(voiceTaps_.begin(), voiceTaps_.end(), tap) == voiceTaps_.end()) voiceTaps_.push_back(tap);
+  }
+}
+
+void ImageHost::tapMasks(const VoiceTable* vt) noexcept {  // RT-safe: only for taps someone reads
+  for (VoiceTap* tap : voiceTaps_) {
+    if (!tap->wanted()) continue;
+    const uint32_t n = std::min(groups_, tap->groups());
+    for (uint32_t gi = 0; gi < n; ++gi) tap->setLaneMask(gi, vt->groups[gi].laneMask);  // groups_ > 0: vt is valid
   }
 }
 

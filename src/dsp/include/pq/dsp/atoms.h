@@ -134,6 +134,20 @@
 //   gain_add (acc, x, g, time, start) acc + x · y, y as in gain. Settled at g = 0 it is a copy of acc: nothing at
 //                                     all when the output took the accumulator's buffer (in place), so a chain of
 //                                     gain_adds (a return's sends) costs nothing for its closed inputs.
+// Frame tables and voice taps (TMM.2; kernels_frame_table.cpp; resources frame_table_slot.h, pq/core/voice_tap.h):
+//   wavetable_pos (phase, position)   the slot's frame table read by phase (frame_table.h: the level per lane and
+//                                     sample from |Δphase|, frames blended at `position` ∈ [0, 1], 6-point read):
+//                                     readFrameTableL1 / L8 exactly. One acquire load of the slot per call; when its
+//                                     generation changed since the state's, the next 64 samples of this state's
+//                                     frame count crossfade linearly from the previous table (out = old + g·(new −
+//                                     old), g = (k + 1)/64, exactly new at g = 1; both read on the same phase history)
+//                                     in a separate loop, taken only then. A fresh state (generation 0) does not
+//                                     fade. Writes the slot's voice tap (the phases read, wrapped to [0, 1), the
+//                                     position and |Δphase| per lane) only while a reader is registered. A Spl phase
+//                                     is expanded in 64-frame chunks. Any split of a block into calls gives the same
+//                                     bits.
+//   voice_tap (x) → (nothing)         a sink: samples x into the VoiceTap resource (null: nothing) while a reader is
+//                                     registered; the record's increment is x's last difference, position 0.
 
 #include <cstddef>
 #include <cstdint>
@@ -167,11 +181,14 @@ enum class Atom : uint16_t {
   TuningHz,
   // smoothed gains (T3.17-fix2: the mixer)
   Gain, GainAdd,
+  // frame tables and voice taps (TMM.2: meta modules)
+  WavetablePos, VoiceTap,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);
 
-enum class Resource : uint8_t { None, Wavetable, Shaper, Sample, Tuning };
+// TMM.2: FrameTable = a dsp::FrameTableSlot (frame_table_slot.h), VoiceTap = a pq::VoiceTap (pq/core/voice_tap.h).
+enum class Resource : uint8_t { None, Wavetable, Shaper, Sample, Tuning, FrameTable, VoiceTap };
 
 // Static description of an atom kernel (for the T1.1 registry and the interpreter).
 struct KernelInfo {
@@ -210,6 +227,8 @@ struct StateInit {
   uint32_t seed = 0;             // noise: per-node seed (e.g. the NodeId), mixed with the lane index
   float z1Init = 0.0f;           // z1, z1:read, z1:write: the output before the first input (the language's `init`
                                  // input, a const; for a bool z1 pass boolMask(true) or 0)
+  uint32_t voiceGroup = 0;       // TMM.2: the voice group a voice-arena state block belongs to (the image host sets
+                                 // it per group; 0 in schedules): wavetable_pos / voice_tap write their tap record there
 };
 
 // Largest delay-line ring a state block may hold: 1 GiB. Keeps every ring float index (frame · lanes) far inside

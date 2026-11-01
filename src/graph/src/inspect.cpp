@@ -58,6 +58,8 @@ float opCostWeight(const Schedule& s, uint32_t op) noexcept {
     case Atom::Timer: case Atom::Z1: case Atom::Z1Read: case Atom::Z1Write: case Atom::SampleHold: case Atom::Latch:
     case Atom::Phasor: return 3.0f;
     case Atom::Noise: return 4.0f;
+    case Atom::VoiceTap: return 1.0f;      // one relaxed load unwatched
+    case Atom::WavetablePos: return 12.0f;  // TMM.1's read (≈ 2–3 ns/sample, a level gather + 6 points)
     case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass: case Atom::DelayReadLinear:
     case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite: case Atom::SineHz:
     case Atom::Wavetable: case Atom::SampleReadLinear: case Atom::SampleReadCubic: case Atom::SamplePosLinear:

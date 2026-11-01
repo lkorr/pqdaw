@@ -100,6 +100,25 @@ struct alignas(32) WavetableState {
   float prevDelta[8];
 };
 
+// wavetable_pos (TMM.2): the frame-table reader's state (FrameReadState's layout: previous phase and |Δphase| per
+// lane), then the table generation last read (0 = fresh: no fade), the crossfade frames still to run and the voice
+// group (StateInit::voiceGroup) its tap record goes to.
+struct alignas(32) WavetablePosState {
+  float prevPhase[8];
+  float prevDelta[8];
+  uint64_t generation;
+  uint32_t fadeLeft;
+  uint32_t group;
+  uint32_t pad_[4];
+};
+
+// voice_tap (TMM.2): the previous input per lane (the record's increment), the voice group.
+struct alignas(32) VoiceTapState {
+  float prev[8];
+  uint32_t group;
+  uint32_t pad_[7];
+};
+
 // delayline: header, then `capacity * lanes` floats of ring buffer (frame-major, lanes interleaved).
 struct alignas(32) DelayState {
   uint32_t capacity;  // frames, power of two ≥ maxDelay + 10
@@ -140,6 +159,8 @@ static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 64);
 static_assert(sizeof(DelayState) == 96);
+static_assert(sizeof(WavetablePosState) == 96);
+static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(SampleReadState) == 96);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);
 

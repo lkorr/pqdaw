@@ -196,9 +196,12 @@ int main(int argc, char** argv) {
                  rows.push_back(benchAtom(c, fx, a, splMask, suffix));
                });
   };
-  for (uint32_t ai = 0; ai < pq::dsp::kAtomCount; ++ai)
-    if (static_cast<Atom>(ai) != Atom::TuningHz)  // T2.6: needs a tuning table; pq_bench_tuning_signal measures it
-      add(static_cast<Atom>(ai), 0, "");
+  for (uint32_t ai = 0; ai < pq::dsp::kAtomCount; ++ai) {
+    const auto a = static_cast<Atom>(ai);
+    // T2.6: tuning_hz needs a tuning table (pq_bench_tuning_signal measures it); TMM.2: wavetable_pos / voice_tap need
+    // a slot / tap (bench_frame_table.cpp measures them, watched and unwatched).
+    if (a != Atom::TuningHz && a != Atom::WavetablePos && a != Atom::VoiceTap) add(a, 0, "");
+  }
   // Buffer ⊗ param: the second input is a Spl pattern (one vector load per block).
   for (Atom a : {Atom::Add, Atom::Mul, Atom::Div, Atom::Gt, Atom::CentsToHzFast}) add(a, 0b10, " (blk,spl)");
   add(Atom::MulAdd, 0b110, " (blk,spl,spl)");

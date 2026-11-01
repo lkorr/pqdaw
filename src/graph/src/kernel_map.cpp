@@ -24,6 +24,8 @@ constexpr ArgMap kZ1[] = {{U::Input, 0}, {U::InitZ1, 0}};                       
 constexpr ArgMap kDelay[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0}};  // x, time, max
 constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};                      // phase, table
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table
+constexpr ArgMap kWavetablePos[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};    // phase, position, table
+constexpr ArgMap kVoiceTap[] = {{U::Input, 0}, {U::Resource, 0}};                       // x, slot
 constexpr ArgMap kNoise[] = {{U::InitSeed, 0}};                                         // seed
 constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1},       // sample, rate, reset,
                                   {U::Input, 2},    {U::Input, 3}, {U::Input, 4}};      // start, loopStart, loopEnd
@@ -50,6 +52,8 @@ constexpr Special kSpecial[] = {
     {"delay_allpass", kDelay},
     {"wavetable", kWavetable},
     {"shaper", kShaper},
+    {"wavetable_pos", kWavetablePos},
+    {"voice_tap", kVoiceTap},
     {"noise", kNoise},
     {"sample_read_linear", kSampleRead},
     {"sample_read_cubic", kSampleRead},
@@ -100,7 +104,8 @@ Table build() {
     const AtomSignature& sig = reg.get(id);
     KernelMapping& m = t.byAtom[id];
     bool handled = false;
-    for (const NoKernel& nk : kNoKernel) {
+    // TMM.2: voice_tap is a kernel sink, not a voice reducer (the "voice_" prefix below).
+    for (const NoKernel& nk : sig.name == "voice_tap" ? std::span<const NoKernel>{} : std::span<const NoKernel>(kNoKernel)) {
       if (matches(sig.name, nk.atom)) {
         m.lowering = nk.lowering;
         m.note = nk.note;

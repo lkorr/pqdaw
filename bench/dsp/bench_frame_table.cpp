@@ -9,6 +9,12 @@
 //   frametable/build 64 frames + bake   the same with one baked control (fold 0.5; 16×); ms per build
 //   frametable/build 64 frames + bake3  Mirror 0.5, fold 0.3 and sync 0.3 together (the builder raises it to 32×)
 // Builds run on one thread (the caller's), into a preallocated table (the builder's arenas sized by a first build).
+// TMM.2: the atoms over a live slot, through findKernel as the interpreter calls them (64-frame blocks):
+//   atom/wavetable_pos L1 | L8           the reads above plus the slot's acquire load, the state copy and the tap test;
+//                                        L1: per-sample position (blend), L8: per-voice positions (a Spl pattern)
+//   atom/wavetable_pos … (tap read)      the same with a registered tap reader (8 samples per block written)
+//   atom/wavetable_pos … (crossfade)     every block inside a swap's 64-sample fade (two reads + the mix)
+//   atom/voice_tap L1 | L8 (…)           unwatched (one relaxed load) and watched
 #include <chrono>
 #include <cmath>
 #include <random>
@@ -17,6 +23,10 @@
 #include "pq/core/aligned_buffer.h"
 #include "pq/dsp/frame_table.h"
 #include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/atoms.h"
+#include "pq/dsp/frame_table_slot.h"
+#include "pq/core/voice_tap.h"
+#include <memory>
 #include "pq_bench.h"
 
 namespace {
@@ -138,6 +148,93 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
       std::printf("frame table: %.2f MiB for 64 frames at 48 kHz\n", t.bytes() / (1024.0 * 1024.0));
     };
   };
+  // TMM.2: wavetable_pos over a slot (the morph table), and voice_tap.
+  static pq::dsp::FrameTableSlot* slot = [] {
+    pq::dsp::FrameTableBuilder b;
+    const auto saw = pq::dsp::basicCycle(pq::dsp::BasicCycle::Saw);
+    const auto sq = pq::dsp::basicCycle(pq::dsp::BasicCycle::Square);
+    const pq::dsp::Keyframe keys[] = {{0.0f, saw.span()}, {1.0f, sq.span()}};
+    pq::dsp::FrameTableSpec spec;
+    spec.keyframes = keys;
+    spec.sampleRate = kRate;
+    return new pq::dsp::FrameTableSlot(std::make_shared<const pq::dsp::FrameTable>(b.build(spec).value()));
+  }();
+  enum class Mode { Plain, TapRead, Crossfade };
+  auto wavetablePos = [](uint32_t lanes, Mode mode) {
+    return [lanes, mode](pq::bench::Context& c) {
+      constexpr uint32_t kBlocks = 16;
+      const uint32_t L = lanes;
+      pq::AlignedBuffer<float> phase(kBlocks * kFrames * L), pos(kBlocks * kFrames * L + 8), out(kFrames * L);
+      double acc[8];
+      for (uint32_t l = 0; l < 8; ++l) acc[l] = 0.1 * l;
+      for (uint32_t n = 0; n < kBlocks * kFrames; ++n)
+        for (uint32_t l = 0; l < L; ++l) {
+          acc[l] += 624.0 * (1.0 + 0.1 * l) / kRate;
+          acc[l] -= std::floor(acc[l]);
+          phase[n * L + l] = static_cast<float>(acc[l]);
+          pos[n * L + l] = L == 1 ? 0.1f + 0.8f * static_cast<float>(n) / (kBlocks * kFrames) : 0.0f;
+        }
+      if (L == 8)
+        for (uint32_t l = 0; l < 8; ++l) pos[l] = 0.13f + 0.097f * l;
+      const uint32_t mask = L == 1 ? 0u : 2u;  // L1: per-sample position; L8: a Spl pattern
+      const pq::dsp::KernelFn fn = pq::dsp::findKernel(pq::dsp::Atom::WavetablePos, L, mask);
+      pq::AlignedBuffer<float> state(32);
+      pq::dsp::StateInit si;
+      si.lanes = L;
+      pq::dsp::initState(pq::dsp::Atom::WavetablePos, state.data(), si);
+      auto& st = *reinterpret_cast<pq::dsp::WavetablePosState*>(state.data());
+      if (mode == Mode::Crossfade) {  // a swap to the same table: the fade path runs (the cost does not depend on it)
+        static pq::EpochReclaimer rec;
+        slot->publish(slot->table(), rec);
+      }
+      if (mode == Mode::TapRead) slot->tap()->addReader();
+      const float* in[2] = {nullptr, nullptr};
+      float* o[1] = {out.data()};
+      uint32_t blk = 0;
+      c.measure(
+          [&] {
+            in[0] = phase.data() + static_cast<std::size_t>(blk) * kFrames * L;
+            in[1] = L == 1 ? pos.data() + static_cast<std::size_t>(blk) * kFrames : pos.data();
+            if (mode == Mode::Crossfade) {
+              st.generation = slot->generation() - 1;  // as if the swap had just happened: a full 64-frame fade
+              st.fadeLeft = 0;
+            }
+            const pq::dsp::KernelArgs a{in, o, state.data(), slot, kFrames, 2, 1, mask};
+            fn(a);
+            blk = (blk + 1) % kBlocks;
+            pq::bench::doNotOptimize(out[kFrames * L - 1]);
+          },
+          kFrames, L == 1 ? "ns/sample" : "ns/frame(8 voices)");
+      if (mode == Mode::TapRead) slot->tap()->removeReader();
+    };
+  };
+  runner.add("atom/wavetable_pos L1", wavetablePos(1, Mode::Plain));
+  runner.add("atom/wavetable_pos L8", wavetablePos(8, Mode::Plain));
+  runner.add("atom/wavetable_pos L1 (tap read)", wavetablePos(1, Mode::TapRead));
+  runner.add("atom/wavetable_pos L8 (tap read)", wavetablePos(8, Mode::TapRead));
+  runner.add("atom/wavetable_pos L1 (crossfade)", wavetablePos(1, Mode::Crossfade));
+  runner.add("atom/wavetable_pos L8 (crossfade)", wavetablePos(8, Mode::Crossfade));
+  auto voiceTap = [](uint32_t lanes, bool watched) {
+    return [lanes, watched](pq::bench::Context& c) {
+      static pq::VoiceTap tap(pq::VoiceTapConfig{});
+      pq::AlignedBuffer<float> x(kFrames * 8), state(16);
+      for (std::size_t i = 0; i < x.size(); ++i) x[i] = std::fmod(0.013f * static_cast<float>(i), 1.0f);
+      pq::dsp::StateInit si;
+      si.lanes = lanes;
+      pq::dsp::initState(pq::dsp::Atom::VoiceTap, state.data(), si);
+      const pq::dsp::KernelFn fn = pq::dsp::findKernel(pq::dsp::Atom::VoiceTap, lanes, 0);
+      if (watched) tap.addReader();
+      const float* in[1] = {x.data()};
+      const pq::dsp::KernelArgs a{in, nullptr, state.data(), &tap, kFrames, 1, 0, 0};
+      c.measure([&] { fn(a); pq::bench::doNotOptimize(state[0]); }, kFrames, lanes == 1 ? "ns/sample" : "ns/frame(8 voices)");
+      if (watched) tap.removeReader();
+    };
+  };
+  runner.add("atom/voice_tap L1 (unwatched)", voiceTap(1, false));
+  runner.add("atom/voice_tap L8 (unwatched)", voiceTap(8, false));
+  runner.add("atom/voice_tap L1 (watched)", voiceTap(1, true));
+  runner.add("atom/voice_tap L8 (watched)", voiceTap(8, true));
+
   runner.add("frametable/build 64 frames", build(0));
   runner.add("frametable/build 64 frames + bake", build(1));
   runner.add("frametable/build 64 frames + bake3", build(3));

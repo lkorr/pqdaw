@@ -97,6 +97,8 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <map>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -107,6 +109,8 @@
 #include "pq/document/model.h"
 #include "pq/document/samples.h"
 #include "pq/document/store.h"
+#include "pq/core/voice_tap.h"
+#include "pq/dsp/frame_table_slot.h"
 #include "pq/dsp/tuning_table.h"
 #include "pq/engine/background_compile.h"
 #include "pq/engine/engine.h"
@@ -321,6 +325,26 @@ public:
   uint32_t tuningShapesAlive() const;
   // The table main tuning `id` in `def`'s shape plays through, or null (tests, tools).
   const dsp::TuningTableView* tuningView(doc::TuningId id, const doc::TuningDef& def) const;
+
+  // ---- Meta-module resources (TMM.2; docs/plans/MM.md "Table slots", "Voice taps") ----
+  // The link owns every slot a meta instance's expansion reads: LowerOptions::metaSlotOf gives each (device, name
+  // path, request index) a stable id (from 1; 0 = none, the engine's built-in default) for as long as the lowering
+  // lists it in LoweredProject::metaResources, and the link creates the object the request asks for: a
+  // dsp::FrameTableSlot (holding a one-frame sine at the link's rate until a table is published) or a VoiceTap. Both
+  // are Resources entries (frameTables / voiceTaps), kept alive by every image that reads them
+  // (ProjectCompileOptions::keepAlive). A freed id is reused last (FIFO). Taps: one group per voice group of a MIDI
+  // track's polyphony, a record per engine block. Any thread (mutex_).
+  static constexpr uint32_t kMetaSlots = 4096;
+  uint32_t metaSlot(doc::DeviceId device, std::string_view path, uint32_t index) const;  // 0: none
+  std::shared_ptr<dsp::FrameTableSlot> metaFrameTable(doc::DeviceId device, std::string_view path, uint32_t index) const;
+  // The tap of a VoiceTap request, or the tap of a FrameTable request's slot (what its wavetable_pos writes); null.
+  std::shared_ptr<VoiceTap> metaVoiceTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
+  // Publishes `table` (built for the link's sample rate) into the instance's frame-table slot: its readers crossfade
+  // to it within 64 samples, no compile. The replaced table is retired through the link's reclaimer (the engine
+  // timeline's audio thread is its reader). Errors: no such slot, a null table, another sample rate.
+  Status publishFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
+                           std::shared_ptr<const dsp::FrameTable> table);
+  uint32_t metaSlotsInUse() const;
 
   // What a tuning node table depends on besides the tuning's continuous values (T2.6-fix2): the shape (kind, n),
   // periods per equave, the mode as the root's chain position, the region hint.
@@ -579,6 +603,28 @@ private:
   // M4 review L18: the table slots whose live inputs the last published automation image drives (UI thread); a slot is
   // not given to a new table while it is in here.
   std::array<uint8_t, kTuningTables> tapped_{};
+  // TMM.2: meta-module resource slots (mutex_; see "Meta-module resources"). Ids index metaSlots_ and the two view
+  // arrays the Resources span (fixed arrays: an entry is written before any lowering can name its id).
+  struct MetaSlot {
+    meta::ResourceKind kind = meta::ResourceKind::FrameTable;
+    std::shared_ptr<dsp::FrameTableSlot> table;
+    std::shared_ptr<VoiceTap> tap;  // the VoiceTap, or the frame-table slot's own tap
+    bool live = false;              // an instance holds the id (else it is free; the objects wait for its reuse)
+  };
+  using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
+  uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
+  void syncMetaSlots(const std::vector<doc::LoweredProject::MetaResource>& resources);  // compile path, after lower
+  std::shared_ptr<const dsp::FrameTable> metaDefaultTable();                            // mutex_ held
+  VoiceTapConfig metaTapConfig() const;
+  std::map<MetaKey, uint32_t, std::less<>> metaIds_;
+  std::vector<MetaSlot> metaSlots_ = std::vector<MetaSlot>(kMetaSlots);
+  std::vector<uint32_t> metaTouched_;  // ids this lowering named (compile path)
+  std::deque<uint32_t> metaFree_;
+  uint32_t metaNext_ = 1;
+  std::shared_ptr<const dsp::FrameTable> metaDefault_;  // a one-frame sine at metaDefaultRate_
+  double metaDefaultRate_ = 0;
+  std::array<const dsp::FrameTableSlot*, kMetaSlots> frameTableViews_{};
+  std::array<VoiceTap*, kMetaSlots> voiceTapViews_{};
   engine::Resources resources_;
 
   // UI thread state.

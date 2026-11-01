@@ -84,6 +84,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // T4.x-fix-dsp: a fourth (fifth) input, `start` (a const).
     {"gain", 4, 1, false, false, 0, 0, kB0 | kB1, kB2 | kB3, sizeof(GainState), Resource::None, true},
     {"gain_add", 5, 1, false, false, 0, 0, kB0 | kB1 | kB2, kB3 | kB4, sizeof(GainState), Resource::None, true},
+    // TMM.2 (kernels_frame_table.cpp): the live frame-table read and the voice-tap sink.
+    {"wavetable_pos", 2, 1, false, false, 0, 0, kB0 | kB1, 0, sizeof(WavetablePosState), Resource::FrameTable, false},
+    {"voice_tap", 1, 0, false, false, 0, 0, kB0, 0, sizeof(VoiceTapState), Resource::VoiceTap, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -141,6 +144,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findMemoryKernel(a, lanes, spec)) return f;
   if (KernelFn f = findGeneratorKernel(a, lanes, spec)) return f;
   if (KernelFn f = findGainKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findFrameTableKernel(a, lanes, spec)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
@@ -169,6 +173,10 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};
+    // TMM.2: the reader's previous phase / delta (voice_tap: previous input) per lane; generation, fade and group are
+    // the group's.
+    case Atom::WavetablePos: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(WavetablePosState, generation))};
+    case Atom::VoiceTap: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(VoiceTapState::prev))};
     // gain / gain_add: target, d, tau, r, started are [8] arrays; rpow / r8 cache lane 0's powers for the 1-lane path
     // only.
     case Atom::Gain:
@@ -322,6 +330,8 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
       for (float& m : s.active) m = boolMask(true);
       break;
     }
+    case Atom::WavetablePos: static_cast<WavetablePosState*>(state)->group = init.voiceGroup; break;
+    case Atom::VoiceTap: static_cast<VoiceTapState*>(state)->group = init.voiceGroup; break;
     default:
       break;
   }

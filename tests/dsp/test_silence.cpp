@@ -246,8 +246,11 @@ TEST_CASE("dsp silence: tails (T1.x-silence)") {
   CHECK(pq::dsp::silenceTail(Atom::DelayWrite, init) == 4803);
   CHECK(pq::dsp::silenceTail(Atom::Add, init) == 0);
   CHECK(pq::dsp::silenceTail(Atom::Gain, init) == 0);
-  // Generators and held values make no promise.
+  // Generators and held values make no promise. TMM.2: wavetable_pos reads a table (silent phase → table(0) ≠ 0); the
+  // voice_tap sink has no output (and must never let its region sleep away the samples a face shows).
   for (Atom a : {Atom::Phasor, Atom::Noise, Atom::SampleHold, Atom::Latch, Atom::Exp, Atom::DbToGain, Atom::Ge,
-                 Atom::Not, Atom::Counter, Atom::Shaper, Atom::Wavetable})
+                 Atom::Not, Atom::Counter, Atom::Shaper, Atom::Wavetable, Atom::WavetablePos, Atom::VoiceTap})
     CHECK(pq::dsp::silenceInfo(a).rule == SilenceRule::None);
+  CHECK(pq::dsp::silenceTail(Atom::WavetablePos, init) == 0);
+  CHECK(pq::dsp::silenceTail(Atom::VoiceTap, init) == 0);
 }

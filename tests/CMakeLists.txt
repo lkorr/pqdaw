@@ -25,6 +25,7 @@ pq_add_test(pq_tests_core
     core/test_stable_id.cpp
     core/test_rt_log.cpp
     core/test_tap_ring.cpp
+    core/test_voice_tap.cpp  # TMM.2: voice taps (records, stride sampling, lossy reads, the reader)
   DEPS pq_core)
 
 pq_add_test(pq_tests_tuning
@@ -305,6 +306,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
     engine/test_silence.cpp  # T1.x-silence: the sleep suite again, on JIT images
     jit/test_jit_silence.cpp  # T1.x-silence: interpreter and JIT sleep identically
     engine/test_probes.cpp  # T4.5: probes and cost meters again, on JIT images (and interpreter == JIT probe streams)
+    jit/test_jit_frame_table.cpp  # TMM.2: wavetable_pos / voice_tap on both backends (swaps, taps, hot swap, reference)
   DEPS pq_jit pq_compile)
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
@@ -332,6 +334,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_resample.cpp
     dsp/test_frame_table.cpp
     dsp/test_frame_table_alias.cpp
+    dsp/test_wavetable_pos.cpp  # TMM.2: wavetable_pos (slots, crossfade, taps, swap stress), voice_tap
     support/alias_meter.h  # TMM.1: the reusable alias meter (listed so tests/support maps to its users)
   DEPS pq_dsp)
 
