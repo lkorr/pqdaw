@@ -352,7 +352,7 @@ Status checkDeviceMeta(const Device& d) {
     if (t == nullptr) return unsupported("unknown meta module type '" + std::string(metaDeviceType(d)) + "'");
     if (d.kind == DeviceKind::Instrument && !t->chainInstrument)
       return invalid("a " + std::string(t->name) + " cannot be an instrument");
-    if (d.kind == DeviceKind::AudioEffect && t->chainEffectInput < 0)
+    if (d.kind == DeviceKind::AudioEffect && t->chainEffectInput < 0 && t->chainVoiceInput < 0)
       return invalid("a " + std::string(t->name) + " cannot be an audio effect");
     if (d.source) return invalid("a meta device has no patch text");
   }

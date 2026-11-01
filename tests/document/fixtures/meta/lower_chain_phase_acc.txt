@@ -8,22 +8,25 @@ patch Midi5 {
   out out : real audio global stereo
 
   d7 = meta_phase_acc__d7__5b1ac80cf1ff3558()
-  _n1 = voice_sum(d7)
-  _n5 = 0
-  _n7 = 0.002
-  _n11 = volume <= -70 ? _n5 : db_to_gain(volume)
-  _n14 = (pan + 1) * 0.7853981633974483
-  _n17 = sin(_n14 + 1.5707963267948966)
-  _n18 = sin(_n14)
-  _n23 = mute < 0.5
-  _n25 = _n23 ? sendGate : _n5
-  _n26 = _n11 * (_n23 ? gate : _n5)
-  _n32 = _n11 * _n25
-  done = d7.done
-  out = gain(_n1, (_n17 * _n26, _n18 * _n26), _n7)
+  _n1 = voice.gate
+  _n7 = 0
+  _n9 = 1
+  _n10 = _n1 ? _n9 : max(z1(_n10) - 200 / sr, _n7)
+  _n12 = voice_sum(d7 * _n10)
+  _n19 = 0.002
+  _n23 = volume <= -70 ? _n7 : db_to_gain(volume)
+  _n26 = (pan + _n9) * 0.7853981633974483
+  _n29 = sin(_n26 + 1.5707963267948966)
+  _n30 = sin(_n26)
+  _n35 = mute < 0.5
+  _n37 = _n35 ? sendGate : _n7
+  _n38 = _n23 * (_n35 ? gate : _n7)
+  _n44 = _n23 * _n37
+  done = !_n1 && _n10 <= _n7
+  out = gain(_n12, (_n29 * _n38, _n30 * _n38), _n19)
 
-  export post = gain(_n1, (_n17 * _n32, _n18 * _n32), _n7)
-  export pre = gain(_n1, (_n17 * _n25, _n18 * _n25), _n7)
+  export post = gain(_n12, (_n29 * _n44, _n30 * _n44), _n19)
+  export pre = gain(_n12, (_n29 * _n37, _n30 * _n37), _n19)
 
 }
 

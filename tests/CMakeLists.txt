@@ -378,6 +378,7 @@ pq_add_test(pq_tests_document
     document/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes (rules, following, file, lowering)
     document/test_meta_modules.cpp  # TMM.3: meta-module state (file, builders, lowering goldens, renames)
     document/test_meta_wavetable.cpp  # TMM.5: the Wavetable's data in the file, its baked-only controls
+    document/test_meta_devices.cpp  # TMM.10: meta devices in chains (voice runs, kinds, copy / presets keep state)
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

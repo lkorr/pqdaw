@@ -153,6 +153,52 @@ MetaInstance defaultMetaInstance(const meta::Type& t) {
   return m;
 }
 
+namespace {
+
+// A chain meta device that can continue a voice run (audio-effect kind, a type with a voice input).
+bool voiceContinuer(const Device& d) {
+  if (!isMetaDevice(d) || d.kind != DeviceKind::AudioEffect) return false;
+  const meta::Type* t = meta::findType(metaDeviceType(d));
+  return t != nullptr && t->chainVoiceInput >= 0;
+}
+
+// The index of `t`'s run instrument (the first active device, a chain meta instrument of a known type), or −1.
+int32_t runInstrument(const Track& t) {
+  if (t.kind != TrackKind::Midi) return -1;
+  for (size_t i = 0; i < t.devices.size(); ++i) {
+    const Device& d = *t.devices[i];
+    if (!d.active) continue;
+    if (!isMetaDevice(d) || d.kind != DeviceKind::Instrument) return -1;
+    const meta::Type* type = meta::findType(metaDeviceType(d));
+    return type != nullptr && type->chainInstrument ? static_cast<int32_t>(i) : -1;
+  }
+  return -1;
+}
+
+}  // namespace
+
+std::vector<const Device*> metaVoiceRun(const Track& t) {
+  std::vector<const Device*> out;
+  const int32_t first = runInstrument(t);
+  if (first < 0) return out;
+  for (size_t i = static_cast<size_t>(first) + 1; i < t.devices.size(); ++i) {
+    const Device& d = *t.devices[i];
+    if (!d.active) continue;
+    if (!voiceContinuer(d)) break;
+    out.push_back(&d);
+  }
+  return out;
+}
+
+bool continuesMetaVoiceRun(const Track& t, uint32_t index) {
+  const int32_t first = runInstrument(t);
+  const size_t at = std::min<size_t>(index, t.devices.size());
+  if (first < 0 || static_cast<size_t>(first) >= at) return false;
+  for (size_t i = static_cast<size_t>(first) + 1; i < at; ++i)
+    if (t.devices[i]->active && !voiceContinuer(*t.devices[i])) return false;
+  return true;
+}
+
 std::vector<MetaRename> metaRenames(const graph::PatchFile& before, const graph::PatchFile& after, std::string_view root) {
   std::vector<MetaRename> out;
   const graph::Patch* rb = before.find(root);

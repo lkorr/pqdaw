@@ -55,6 +55,16 @@ std::string metaParamBakedOnly(const Device& d, std::string_view param);
 // A new instance of `t`: its version and default data, no values set.
 MetaInstance defaultMetaInstance(const meta::Type& t);
 
+// ---- TMM.10: voice continuity in a chain (docs/plans/MM.md "Chain and devices") ----
+// A MIDI track's META VOICE RUN: its first active device is a chain meta instrument, and the active chain meta devices
+// right after it (audio-effect kind, of a type that continues voices: meta::Type::chainVoiceInput) stay per voice —
+// each one's voice input is the previous one's voice signal — until the first other device or the chain end, where
+// the lowering sums the voices (lower.h "Meta modules"). Inactive devices are skipped (they do not break the run).
+// The devices of `t`'s run after its instrument, in chain order (empty: no run, or a run of the instrument alone).
+std::vector<const Device*> metaVoiceRun(const Track& t);
+// Whether a device inserted at `index` of `t`'s own chain (kAppend: the end) would continue `t`'s meta voice run.
+bool continuesMetaVoiceRun(const Track& t, uint32_t index);
+
 // The renames between two parses of a device text, `after` parsed with ParseOptions::previous = `before`: every NAMED
 // subcircuit call reachable from patch `root` (through calls into patches of the same file) whose NodeId path is the
 // same in both but whose name path differs, outermost first (a rename of `opA` covers everything below it). The edit

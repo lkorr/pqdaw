@@ -177,6 +177,8 @@ Type makeType() {
   t.settings = kSettings;
   t.outputs = kOutputs;
   t.chainInstrument = true;
+  // TMM.10: after a meta device in a chain (a Phase accumulator), its voice signal is the phase read.
+  t.chainVoiceInput = static_cast<int32_t>(kWtInX);
   t.resources = &resources;
   t.body = &body;
   t.defaultData = &wavetableDefaultData;

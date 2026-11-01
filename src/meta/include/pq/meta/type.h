@@ -99,6 +99,10 @@ enum class Form : uint8_t {
                     // its outputs per voice, plus `done` = !voice.gate (the voice ends at note-off)
   ChainEffect,      // a chain audio effect: Type::chainEffectInput is the device's audio `in` (global), the other
                     // inputs read their defaults, outputs global
+  ChainVoice,       // TMM.10: a chain device that continues a meta instrument PER VOICE (docs/plans/MM.md "Voice
+                    // continuity"): Type::chainVoiceInput is an `in` fed by the previous meta device's voice signal,
+                    // the other inputs read their defaults (voice context), outputs per voice, no `done` (the
+                    // lowering ends the run's voices: pq/document/lower.h "Meta modules")
 };
 
 struct ExpandContext {
@@ -123,6 +127,8 @@ struct Type {
   std::span<const OutputSpec> outputs;  // at least one; the first is the call's value
   bool chainInstrument = false;  // may be a chain device at the instrument position (Form::ChainInstrument)
   int32_t chainEffectInput = -1; // ≥ 0: may be a chain audio effect, the chain's signal into this input
+  int32_t chainVoiceInput = -1;  // TMM.10: ≥ 0: may continue a meta instrument per voice (Form::ChainVoice), the
+                                 // previous meta device's voice signal into this input
   // The resources an expansion with these (resolved) settings reads; null: none.
   std::vector<ResourceRequest> (*resources)(std::span<const double> settings) = nullptr;
   // The expansion's nodes between the ports (Builder: inputs, params, settings, slots → outputs). Required.

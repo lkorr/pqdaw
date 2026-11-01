@@ -169,6 +169,9 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
   if (ctx.form == Form::ChainEffect &&
       (type.chainEffectInput < 0 || static_cast<size_t>(type.chainEffectInput) >= type.inputs.size()))
     return expandError(type, "it cannot be an audio effect");
+  if (ctx.form == Form::ChainVoice &&
+      (type.chainVoiceInput < 0 || static_cast<size_t>(type.chainVoiceInput) >= type.inputs.size()))
+    return expandError(type, "it cannot continue a voice");
   Builder b(type, ctx, std::move(name));
   graph::Patch& p = b.p_;
   b.settings_.resize(type.settings.size());
@@ -182,9 +185,11 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
   for (size_t i = 0; i < type.inputs.size(); ++i) {
     const InputSpec& in = type.inputs[i];
     const bool audioIn = ctx.form == Form::ChainEffect && static_cast<int32_t>(i) == type.chainEffectInput;
-    if (audioIn) {
+    const bool voiceIn = ctx.form == Form::ChainVoice && static_cast<int32_t>(i) == type.chainVoiceInput;
+    if (audioIn || voiceIn) {
       const NodeIndex n = b.take(p.addInput(std::string(in.name), graph::portType(graph::Kind::Real, graph::Rate::Audio,
-                                                                                  graph::Poly::Global)),
+                                                                                  voiceIn ? graph::Poly::Voice
+                                                                                          : graph::Poly::Global)),
                                  kInputIdBase + static_cast<uint32_t>(i));
       b.inputs_[i] = PortRef{n, 0};
       continue;
@@ -216,7 +221,7 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
   b.outputSet_.assign(type.outputs.size(), 0);
   if (Status s = type.body(b); !s) return expandError(type, s.error().message);
   if (b.failed_) return expandError(type, b.error_);
-  const graph::Poly poly = ctx.form == Form::ChainInstrument ? graph::Poly::Voice
+  const graph::Poly poly = ctx.form == Form::ChainInstrument || ctx.form == Form::ChainVoice ? graph::Poly::Voice
                            : ctx.form == Form::ChainEffect   ? graph::Poly::Global
                                                              : graph::Poly::Infer;
   for (size_t i = 0; i < type.outputs.size(); ++i) {

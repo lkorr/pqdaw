@@ -122,17 +122,24 @@ public:
     return *u_.meta;
   }
 
-  // A chain meta device's expansion (its form from its kind), or null when its type is unknown.
-  const graph::Patch* chainDevice(const Device& d, const Track& t) {
+  // A chain meta device's expansion (its form from its kind; TMM.10: `voiceRun`, a device of its track's meta voice
+  // run, continues the voices: Form::ChainVoice), or null when its type is unknown or it cannot play there.
+  const graph::Patch* chainDevice(const Device& d, const Track& t, bool voiceRun) {
     const meta::Type* type = meta::findType(metaDeviceType(d));
     if (type == nullptr) return nullptr;
     const bool instrument = d.kind == DeviceKind::Instrument;
+    if (!instrument && !voiceRun && type->chainEffectInput < 0) {
+      u_.errors.push_back({d.id, "a " + std::string(type->name) + " plays here only after a meta instrument (a Phase "
+                                 "Accumulator or another meta module first in the chain, with only meta modules between)",
+                           false});
+      return nullptr;
+    }
     const std::vector<double> settings = metaSettings(d, "", *type);
     std::vector<uint8_t> modulated(type->params.size(), 0);
     for (size_t i = 0; i < type->params.size(); ++i) modulated[i] = modulatedParam(d, t, type->params[i].name) ? 1 : 0;
     meta::ExpandContext c;
-    c.form = instrument ? meta::Form::ChainInstrument : meta::Form::ChainEffect;
-    c.voice = instrument;
+    c.form = instrument ? meta::Form::ChainInstrument : voiceRun ? meta::Form::ChainVoice : meta::Form::ChainEffect;
+    c.voice = instrument || voiceRun;
     return expandInstance(d, t, "", *type, c, settings, modulated);
   }
 
@@ -291,20 +298,27 @@ UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const
   // TMM.3: meta modules — chain meta devices and the nested calls of every device's circuit.
   MetaExpander ex(p, u, metaSlotOf);
   std::shared_ptr<const meta::Prelude> prelude;
+  std::unordered_map<const Track*, std::vector<const Device*>> runs;  // TMM.10: each track's meta voice run
   forEachDevice(p, [&](const Device& d, const Track& t) {
     if (d.rack) return;
     if (isMetaDevice(d)) {
       if (combined) {
-        u.callees.userRoot[d.id.value] = ex.chainDevice(d, t);
+        bool voiceRun = false;
+        if (d.kind == DeviceKind::AudioEffect && t.kind == TrackKind::Midi) {
+          auto it = runs.find(&t);
+          if (it == runs.end()) it = runs.emplace(&t, metaVoiceRun(t)).first;
+          voiceRun = std::find(it->second.begin(), it->second.end(), &d) != it->second.end();
+        }
+        u.callees.userRoot[d.id.value] = ex.chainDevice(d, t, voiceRun);
         return;
       }
       // The param fast path reads only the root's params: the prelude's form of the type has the same ones.
       if (!prelude) prelude = meta::prelude();
       const meta::Prelude::Entry* e = prelude->find(metaDeviceType(d));
-      const std::optional<graph::Patch>* form = e == nullptr ? nullptr
-                                                : d.kind == DeviceKind::Instrument ? &e->instrument
-                                                                                   : &e->effect;
-      u.callees.userRoot[d.id.value] = form != nullptr && form->has_value() ? &**form : nullptr;
+      u.callees.userRoot[d.id.value] = e == nullptr                         ? nullptr
+                                       : d.kind != DeviceKind::Instrument ? e->effectOrVoice()
+                                       : e->instrument                    ? &*e->instrument
+                                                                          : nullptr;
       return;
     }
     const graph::Patch* root = u.callees.find(d);
@@ -482,6 +496,8 @@ enum Fixed : uint32_t {
   kZoneHz = 76, kZoneLnHz, kZoneVelocity,  // T4.8: the voice values key / velocity zones read (one each per patch)
   kClipPlayer = 80, kClipSlot,             // T5.3: an audio track's source and its slot constant
   kZoneDegree = 82, kZoneDegreeOk, kZoneDegreeSafe,  // T4.17: voice.noteDegree, not NaN, NaN → 0 (Degree key zones)
+  // TMM.10: a meta voice run's release (the declick ramp after note-off and the voice's end)
+  kRelGate = 86, kRelNot, kRelRate, kRelSr, kRelStep, kRelPrev, kRelSub, kRelMax, kRelEnv, kRelMul, kRelLe, kRelDone,
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -686,6 +702,7 @@ struct LDev {
   const graph::Patch* callee = nullptr;  // a leaf device's patch (null for a rack)
   int32_t rack = -1;                     // T4.8: index into TrackDevs::racks for a rack
   bool voice = false;                    // its signal is per voice (an instrument; an effect of a per-voice chain)
+  bool metaVoice = false;                // TMM.10: a chain meta device continuing the track's meta voice run
 };
 struct LChain {
   const Chain* chain = nullptr;
@@ -903,6 +920,16 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
   TrackDevs td;
   lowerList(td, n.track->devices, n.kind == Kind::Midi, lib, missing, td.top);
   td.voices = n.kind == Kind::Midi && !td.top.empty() && td.devs[td.top.front()].device->kind == DeviceKind::Instrument;
+  // TMM.10: the meta devices continuing a meta instrument per voice (the run's devices that lowered, in chain order).
+  if (td.voices && td.devs[td.top.front()].rack < 0 && isMetaDevice(*td.devs[td.top.front()].device)) {
+    const std::vector<const Device*> run = metaVoiceRun(*n.track);
+    for (size_t i = 1, r = 0; i < td.top.size(); ++i) {
+      LDev& d = td.devs[td.top[i]];
+      while (r < run.size() && run[r] != d.device) ++r;
+      if (r == run.size() || d.rack >= 0) break;
+      d.voice = d.metaVoice = true;
+    }
+  }
   return td;
 }
 
@@ -1336,6 +1363,10 @@ uint32_t devicePolyphony(const LDev& d) {
 }
 
 // ---- Building a track patch's devices (T4.1; racks T4.8: lower.h "Racks") ------------------------------------------
+
+// TMM.10: a meta voice run's release after note-off (lower.h "Meta modules"): long enough not to click, short enough
+// to read as the note's end (an Envelope meta module in the run shapes the real release, TMM.11).
+constexpr double kMetaReleaseSeconds = 0.005;
 
 constexpr PortRef kPending{graph::kNone, 0};
 
@@ -1978,14 +2009,42 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
       // The instrument (T4.1: the chain's first device; its first `out` is the voice signal, `done` ends voices).
       const NodeIndex syn = callDevice(ir, devs[first]);
       b.calls[first] = syn;
-      x = ir.atom("voice_sum", {PortRef{syn, 0}}, kVoiceSum);
-      if (const auto done = ir.patch().findOutput(syn, "done"))
-        ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
-                  PortRef{syn, static_cast<uint16_t>(*done)}, kDone);
-      width = graph::kWidthMono;
-      if (outWidth(*devs[first].callee) == graph::kWidthStereo) width = graph::kWidthStereo;
+      firstEffect = 1;
+      if (isMetaDevice(*devs[first].device)) {
+        // TMM.10: a meta voice run — each following meta device continues the voices (its voice input = the voice
+        // signal so far); the voices end with a short linear release after note-off, then sum.
+        PortRef v{syn, 0};
+        const graph::Patch* last = devs[first].callee;
+        for (; firstEffect < devs.top.size() && devs[devs.top[firstEffect]].metaVoice; ++firstEffect) {
+          const uint32_t k = devs.top[firstEffect];
+          const NodeIndex c = callDevice(ir, devs[k]);
+          b.calls[k] = c;
+          ir.patch().connect(v, PortRef{c, 0});  // the voice form's only `in` (pq/meta/type.h Form::ChainVoice)
+          v = PortRef{c, 0};
+          last = devs[k].callee;
+        }
+        const PortRef gate = ir.atom("voice.gate", {}, kRelGate);
+        const PortRef step = ir.atom("div", {ir.konst(1.0 / kMetaReleaseSeconds, kRelRate), ir.atom("sr", {}, kRelSr)},
+                                     kRelStep);
+        const PortRef prev = ir.atom("z1", {kPending}, kRelPrev);
+        const PortRef down = ir.atom("max", {ir.atom("sub", {prev, step}, kRelSub), ir.konst(0.0, kC0)}, kRelMax);
+        const PortRef env = ir.atom("select", {gate, ir.konst(1.0, kC1), down}, kRelEnv);
+        ir.patch().connect(env, PortRef{prev.node, 0});
+        x = ir.atom("voice_sum", {ir.atom("mul", {v, env}, kRelMul)}, kVoiceSum);
+        const PortRef done = ir.atom("and", {ir.atom("not", {gate}, kRelNot), ir.atom("le", {env, ir.konst(0.0, kC0)}, kRelLe)},
+                                     kRelDone);
+        ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1), done, kDone);
+        width = outWidth(*last) == graph::kWidthStereo ? graph::kWidthStereo : graph::kWidthMono;
+      } else {
+        x = ir.atom("voice_sum", {PortRef{syn, 0}}, kVoiceSum);
+        if (const auto done = ir.patch().findOutput(syn, "done"))
+          ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
+                    PortRef{syn, static_cast<uint16_t>(*done)}, kDone);
+        width = graph::kWidthMono;
+        if (outWidth(*devs[first].callee) == graph::kWidthStereo) width = graph::kWidthStereo;
+      }
     }
-    firstEffect = 1;
+    if (firstEffect == 0) firstEffect = 1;
   } else if (n.kind == Kind::Return) {
     // The sum of the sends into it (T3.17-fix2): one input and one gain_add per sender, ids from the sender.
     const PortRef c0 = ir.konst(0.0, kC0);

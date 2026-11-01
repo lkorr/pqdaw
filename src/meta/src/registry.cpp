@@ -58,6 +58,11 @@ std::shared_ptr<const Prelude> buildPrelude(const std::vector<const Type*>& type
       c.voice = false;
       if (auto x = expand(*t, c, callName(*t) + "__effect")) e.effect = std::move(x->patch);
     }
+    if (t->chainVoiceInput >= 0) {  // TMM.10
+      c.form = Form::ChainVoice;
+      c.voice = true;
+      if (auto x = expand(*t, c, callName(*t) + "__voice")) e.voice = std::move(x->patch);
+    }
     p->signatures.push_back(graph::subcircuitSignature(e.nested));
     p->entries.push_back(std::move(e));
   }

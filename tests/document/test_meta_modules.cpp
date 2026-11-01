@@ -22,6 +22,7 @@
 #include "pq/document/store.h"
 #include "pq/graph/parse.h"
 #include "pq/meta/phase_acc.h"
+#include "pq/meta/registry.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -213,15 +214,31 @@ TEST_CASE("meta modules: the reader is strict, with JSON paths") {
   fails("\"acc1\": {", "\"a..b\": {", "not a meta module path");
   fails("\"acc1\": {", "\"\": {", "only a 'meta:phase_acc' device");
   fails("\"params\": {\"freq\": 10.0}", "\"params\": {\"freq\": 10.0}, \"data\": 1.0", "keeps no data");
-  // The chain device's kind must be one the type allows (a Phase accumulator is an instrument only).
+  // The chain device's kind must be one the type allows. TMM.10: a Phase accumulator may be an audio effect (it
+  // continues a meta voice run: pm), so the refusal is checked with an instrument-only copy of its type.
   {
-    std::string t = good;
-    const size_t dev = t.find("\"meta:phase_acc\"");
-    REQUIRE(dev != std::string::npos);
-    const size_t kind = t.find("\"instrument\"", dev);
-    REQUIRE(kind != std::string::npos);
-    t.replace(kind, 12, "\"audioEffect\"");
-    Result<LoadedProject> r = parseProject(t);
+    static const meta::Type instOnly = [] {
+      meta::Type x = meta::phaseAccType();
+      x.id = "tmm10_inst_only";
+      x.chainVoiceInput = -1;
+      return x;
+    }();
+    if (meta::findType(instOnly.id) == nullptr) (void)meta::registerType(instOnly);
+    auto asEffect = [&](const std::string& type) {
+      std::string t = good;
+      const size_t dev = t.find("\"meta:phase_acc\"");
+      REQUIRE(dev != std::string::npos);
+      t.replace(dev, 16, "\"meta:" + type + "\"");
+      const size_t kind = t.find("\"instrument\"", dev);
+      REQUIRE(kind != std::string::npos);
+      t.replace(kind, 12, "\"audioEffect\"");
+      const size_t inst = t.find("\"type\": \"phase_acc\"", dev);
+      REQUIRE(inst != std::string::npos);
+      t.replace(inst, 19, "\"type\": \"" + type + "\"");
+      return parseProject(t);
+    };
+    CHECK(asEffect("phase_acc").ok());
+    Result<LoadedProject> r = asEffect(std::string(instOnly.id));
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.find("cannot be an audio effect") != std::string::npos);
   }

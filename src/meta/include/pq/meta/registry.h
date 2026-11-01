@@ -52,6 +52,12 @@ struct Prelude {
     graph::Patch nested;                    // named meta_<id>
     std::optional<graph::Patch> instrument;  // Form::ChainInstrument (Type::chainInstrument)
     std::optional<graph::Patch> effect;      // Form::ChainEffect (Type::chainEffectInput ≥ 0)
+    std::optional<graph::Patch> voice;       // TMM.10: Form::ChainVoice (Type::chainVoiceInput ≥ 0)
+    // The form an audio-effect chain device of the type is described by (params, signature for panels): its effect
+    // form, else its voice form (the same params); null when it has neither.
+    const graph::Patch* effectOrVoice() const noexcept {
+      return effect ? &*effect : voice ? &*voice : nullptr;
+    }
   };
   std::vector<Entry> entries;                  // per type, in types() order; never resized after the build
   std::vector<graph::SubcircuitRef> signatures; // of each `nested` (parse externals)

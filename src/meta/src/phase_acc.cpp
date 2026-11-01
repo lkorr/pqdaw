@@ -46,6 +46,7 @@ Type makeType() {
   t.params = kParams;
   t.outputs = kOutputs;
   t.chainInstrument = true;
+  t.chainVoiceInput = 1;  // TMM.10: after another meta device in a chain, its voice signal modulates the phase (pm)
   t.resources = &resources;
   t.body = &body;
   return t;

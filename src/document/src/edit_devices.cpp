@@ -147,22 +147,32 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
 }
 
 // TMM.3.
+Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& t, TrackId track, uint32_t index, ChainId chain) {
+  Result<ListView> l = listOf(p, track, chain);
+  if (!l) return std::move(l).error();
+  // An instrument where one goes (first, or the list has none yet); TMM.10: an audio effect that continues the track's
+  // meta voice run (a Wavetable after a Phase accumulator), or a chain audio effect; else (a type that is only an
+  // instrument, after another device) the instrument it replaces, as any instrument added after one does.
+  const bool hasInstrument = !l->devices->empty() && l->devices->front()->kind == DeviceKind::Instrument;
+  const size_t at = std::min<size_t>(index, l->devices->size());
+  const Track* tr = chain.valid() ? nullptr : findTrackPtr(p, l->track);
+  if (t.chainInstrument && l->instrumentAllowed && (at == 0 || !hasInstrument)) return DeviceKind::Instrument;
+  if (t.chainVoiceInput >= 0 && tr != nullptr && continuesMetaVoiceRun(*tr, static_cast<uint32_t>(at)))
+    return DeviceKind::AudioEffect;
+  if (t.chainEffectInput >= 0) return DeviceKind::AudioEffect;
+  if (t.chainInstrument && l->instrumentAllowed) return DeviceKind::Instrument;
+  return invalid("a " + std::string(t.name) + " cannot be a device here");
+}
+
 EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index,
                          ChainId chain) {
   const meta::Type* t = meta::findType(type);
   if (t == nullptr) return invalid("unknown meta module type '" + std::string(type) + "'");
   Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
-  // An instrument where one goes (the list may hold one, and the type is no effect or it goes first / the list has no
-  // instrument yet), else an audio effect.
-  const bool hasInstrument = !l->devices->empty() && l->devices->front()->kind == DeviceKind::Instrument;
-  DeviceKind kind;
-  if (t->chainInstrument && l->instrumentAllowed && (t->chainEffectInput < 0 || index == 0 || !hasInstrument))
-    kind = DeviceKind::Instrument;
-  else if (t->chainEffectInput >= 0)
-    kind = DeviceKind::AudioEffect;
-  else
-    return invalid("a " + std::string(t->name) + " cannot be a device here");
+  Result<DeviceKind> k = metaDeviceKindAt(p, *t, track, index, chain);
+  if (!k) return std::move(k).error();
+  const DeviceKind kind = *k;
   Result<Slot> slot = slotFor(*l, kind, index);
   if (!slot) return std::move(slot).error();
   Edit e = makeEdit("Add Device");

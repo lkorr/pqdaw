@@ -298,7 +298,9 @@ DeviceLibrary::DeviceLibrary()
 DeviceLibrary::~DeviceLibrary() = default;
 
 std::optional<DeviceInfo> metaDeviceInfo(const meta::Type& t, DeviceKind kind) {
-  if (kind == DeviceKind::Instrument ? !t.chainInstrument : t.chainEffectInput < 0) return std::nullopt;
+  // TMM.10: an audio effect of a type that only continues voices (the Wavetable until Shape mode) is described too.
+  if (kind == DeviceKind::Instrument ? !t.chainInstrument : t.chainEffectInput < 0 && t.chainVoiceInput < 0)
+    return std::nullopt;
   DeviceInfo info;
   info.patch = std::string(kMetaDevicePrefix) + std::string(t.id);
   info.name = std::string(t.name);
@@ -531,8 +533,8 @@ const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<cons
   if (isMetaDevice(d)) {  // TMM.3
     const meta::Prelude::Entry* e = prelude_->find(metaDeviceType(d));
     if (e == nullptr) return nullptr;
-    const std::optional<graph::Patch>& form = d.kind == DeviceKind::Instrument ? e->instrument : e->effect;
-    return form ? &*form : nullptr;
+    if (d.kind == DeviceKind::Instrument) return e->instrument ? &*e->instrument : nullptr;
+    return e->effectOrVoice();  // TMM.10: a voice-continuing device has the same params
   }
   if (!d.source) return library_.find(d.patch);
   hold = resolve(d);
