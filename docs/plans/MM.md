@@ -108,7 +108,8 @@ Nothing blocks: per-track units, hot swap, sleep, the tile atlas, the lane-windo
 
 **Chain and devices**
 - **Voice continuity in a chain.** Consecutive meta devices after the instrument position (the first device of a MIDI track) stay **per voice** until the first non-meta device or the chain end, where voices are summed. So "Phase accumulator → Wavetable" in a chain plays a polyphonic oscillator. After an audio-producing device, a new Wavetable defaults to Shape mode.
-- **The Phase accumulator has no ratio control** (the user's design: frequency added in Hz). Its `hz` input (default `voice.hz`) takes `voice.hz * 3/2` where ratios are wanted. The Meta Operator does exactly this with exact n/d ratio params on its panel.
+- **TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal")** replaces the type flags behind the two items above with one rule: each chain device's chain input takes the previous stage's output (the first stage of a MIDI track: the note source), and polyphony follows the wires (`doc::chainStages`; ARCHITECTURE "Meta devices in chains"). No type is instrument-only or effect-only; the Phase accumulator's `hz` defaults to 0.
+- **The Phase accumulator has no ratio control** (the user's design: frequency added in Hz). Its `hz` input (TMM.10-fix1: default 0; wired `voice.hz` plays the note) takes `voice.hz * 3/2` where ratios are wanted. The Meta Operator does exactly this with exact n/d ratio params on its panel.
 - **The Meta Operator's algorithm** is a structural setting (1–11, Live's), switching which `pm` wires exist. Switched-off wires are hidden by T4.15's dead-branch hiding, so the circuit shows only the live algorithm.
 - **Name**: "Meta Operator" (catalog, Instruments).
 
