@@ -198,6 +198,62 @@ TEST_CASE("oversample: tanh(x·8) at 4× / 8× matches the double reference; bot
   }
 }
 
+TEST_CASE("oversample: feedback inside a region (a comb in sub-blocks, a one-pole per sample) runs at the region's rate") {
+  const char* src = R"(
+patch F {
+  in x : audio
+  out y : audio
+  oversample(4) {
+    c = x + 0.5 * delay(c, 1ms, 5ms)
+    lp = z1(lp) + 0.05 * (c - z1(lp))
+    y = lp
+  }
+}
+)";
+  const Compiled c = compileText(src, kSr);
+  bool subBlocked = false, perSample = false;
+  for (const Region& r : c.sched.regions) {
+    if (r.factor != 4 || r.kind != RegionKind::Loop) continue;
+    subBlocked |= r.subBlock == 192;  // 1 ms at 192 kHz
+    perSample |= r.subBlock == 1;
+  }
+  CHECK(subBlocked);
+  CHECK(perSample);
+  constexpr uint32_t kFrames = 3000;
+  std::vector<float> x(kFrames);
+  for (uint32_t t = 0; t < kFrames; ++t) x[t] = static_cast<float>(0.6 * std::sin(0.07 * t) + (t % 700 == 0 ? 0.4 : 0.0));
+  uint64_t rt = 0;
+  const std::vector<float> ref = render(c, Backend::Interp, x, kFrames, kMaxBlock, &rt);
+  for (uint32_t block : {1u, 37u, 64u, kMaxBlock}) {
+    CAPTURE(block);
+    CHECK(sameBits(render(c, Backend::Interp, x, kFrames, block, &rt), ref));
+    CHECK(sameBits(render(c, Backend::Jit, x, kFrames, block, &rt), ref));
+  }
+  CHECK(rt == 0);
+  // The double reference at 192 kHz: the same delay (the kernel's float delay time, linear taps) and one-pole.
+  const float d = 0.001f * 192000.0f;
+  const auto whole = static_cast<uint32_t>(std::floor(d));
+  const double fr = d - std::floor(d);
+  RefCascade up, down;
+  std::vector<double> u, ring(1 << 16, 0.0);
+  uint64_t w = 0;
+  double lp = 0, worst = 0;
+  for (uint32_t t = 0; t < kFrames; ++t) {
+    up.up(x[t], 4, u);
+    for (double& v : u) {
+      const double x0 = w >= whole ? ring[(w - whole) & 0xFFFF] : 0.0;
+      const double x1 = w >= whole + 1 ? ring[(w - whole - 1) & 0xFFFF] : 0.0;
+      const double cv = v + 0.5 * (x0 + fr * (x1 - x0));
+      ring[w++ & 0xFFFF] = cv;
+      lp = lp + 0.05 * (cv - lp);
+      v = lp;
+    }
+    worst = std::max(worst, std::abs(down.down(u) - ref[t]));
+  }
+  MESSAGE("feedback inside ×4: max |error| vs the double reference " << worst);
+  CHECK(worst <= 1e-5);
+}
+
 TEST_CASE("oversample: a full-scale 5 kHz sine through tanh(x·8): nothing folds below 20 kHz beyond the half-band spec") {
   // Coherent analysis: N = 8192 at 48 kHz, f0 = bin 853 (4998.6 Hz, odd: no harmonic coincides with another's fold).
   constexpr uint32_t N = 8192, k0 = 853;

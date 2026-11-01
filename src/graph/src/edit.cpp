@@ -249,7 +249,8 @@ Result<NodeIndex> addNode(Patch& p, std::string_view specIn, std::span<const Sub
     return p.addConst(s.constant(0));
   }
   // Atoms, then callees.
-  if (auto id = AtomRegistry::builtin().find(spec)) return p.addAtom(*id);
+  if (auto id = AtomRegistry::builtin().find(spec); id && !atomSignature(*id).has(atom_flags::kInternal))  // TMM.6
+    return p.addAtom(*id);
   for (const SubcircuitRef& r : callees)
     if (r.patch == spec) return p.addSubcircuit(r);
   return refuse("no atom or patch named '" + std::string(spec) + "'");

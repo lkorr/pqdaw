@@ -556,8 +556,8 @@ private:
           // Builder computes ceil(max · sr): give it seconds. Unknown sample rate: left in samples (see header).
           if (smp && opt_.sampleRate > 0.0) {
             const double frames = consts_[nodes_[owner(d)].payload].value();
-            drv_[p] = literal(Constant::real(frames / (opt_.sampleRate * tp_.factorOf(nodes_[n].origin.region)), Unit::s), hashMix(nodes_[n].key, 0xD1A0 + i),
-                              nodes_[n].origin);
+            const double rate = opt_.sampleRate * tp_.factorOf(nodes_[n].origin.region);  // TMM.6: a region's samples
+            drv_[p] = literal(Constant::real(frames / rate, Unit::s), hashMix(nodes_[n].key, 0xD1A0 + i), nodes_[n].origin);
             ++st_.durations;
           }
           continue;
