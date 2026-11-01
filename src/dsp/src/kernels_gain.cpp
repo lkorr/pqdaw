@@ -20,6 +20,7 @@
 // there from the first sample). Either way one compare per block and lane.
 
 #include <cmath>
+#include <limits>
 #include <cstring>
 
 #include "kernels_common.h"
@@ -31,12 +32,13 @@ namespace {
 constexpr float kSettled = kGainSettled;
 
 // r = e^(−1/τ) for τ samples (0: no smoothing), and its powers for the 1-lane closed form, cached per τ.
-inline void prepare(GainState& st, uint32_t lane, float tau) noexcept {
+// oneLane: also lane 0's powers (the 1-lane path's; an 8-lane call leaves them to the 1-lane kernels' state).
+inline void prepare(GainState& st, uint32_t lane, float tau, bool oneLane = true) noexcept {
   if (st.tau[lane] == tau) return;
   st.tau[lane] = tau;
   const double r = tau > 0.0f && std::isfinite(tau) ? std::exp(-1.0 / static_cast<double>(tau)) : 0.0;
   st.r[lane] = static_cast<float>(r);
-  if (lane == 0) {
+  if (oneLane && lane == 0) {
     double p = 1.0;
     for (uint32_t k = 0; k < 8; ++k, p *= r) st.rpow[k] = static_cast<float>(p);
     st.r8 = static_cast<float>(p);
@@ -103,7 +105,12 @@ struct Gain {
   }
 
   // ---- 1 lane (global) ----
-  // An audio-rate gain is used as it is (smoothing is for stepwise param changes).
+  // An audio-rate gain (TX.smooth: also a param ramp, pq/graph/schedule.h "Param ramps") is used as it is, frame by
+  // frame, plus whatever residual a param block left (gain = g[i] + d, d decaying as in the param path; 0 once
+  // settled), so a gain switching between a param target and a ramp never jumps, and a ramp holding a constant g
+  // gives the param path's bits: per frame y = g + d; out = (d == 0 && g == 0) ? (acc or 0) : fma(x, y, acc or 0);
+  // d = d·r snapped. The call starts like a param call without retargeting (gainAudioPrologue); at its end the target
+  // is the last g.
   template <bool accSpl, bool xSpl>
   static void audio1(const KernelArgs& a) noexcept {  // RT-safe
     auto& st = *static_cast<GainState*>(a.state);
@@ -112,14 +119,43 @@ struct Gain {
     const float* x = a.in[kA];
     const float* g = a.in[kA + 1];
     float* out = a.out[0];
-    for (uint32_t i = 0; i < vecEnd; i += 8) {
-      const __m256 s = kAdd ? load8<accSpl>(acc, i) : _mm256_setzero_ps();
-      _mm256_storeu_ps(out + i, _mm256_fmadd_ps(load8<xSpl>(x, i), _mm256_loadu_ps(g + i), s));
+    float d = audioPrologue(st, 0, finiteOr0(g[0]), a.in[kA + 2][0], startAt(a, 0), true);
+    if (d == 0.0f) {  // settled: (g == 0) ? acc : fma(x, g, acc), vectorised
+      const __m256 zero = _mm256_setzero_ps(), inf = _mm256_set1_ps(std::numeric_limits<float>::infinity());
+      for (uint32_t i = 0; i < vecEnd; i += 8) {
+        const __m256 s = kAdd ? load8<accSpl>(acc, i) : zero;
+        __m256 gv = _mm256_loadu_ps(g + i);
+        gv = _mm256_and_ps(gv, _mm256_cmp_ps(_mm256_andnot_ps(_mm256_set1_ps(-0.0f), gv), inf, _CMP_LT_OQ));  // finiteOr0
+        const __m256 y = _mm256_fmadd_ps(load8<xSpl>(x, i), gv, s);
+        _mm256_storeu_ps(out + i, _mm256_blendv_ps(y, s, _mm256_cmp_ps(gv, zero, _CMP_EQ_OQ)));
+      }
+      for (uint32_t i = vecEnd; i < n; ++i) {
+        const float s = kAdd ? load1<accSpl>(acc, i) : 0.0f;
+        const float gv = finiteOr0(g[i]);
+        out[i] = gv == 0.0f ? s : std::fma(load1<xSpl>(x, i), gv, s);
+      }
+    } else {
+      const float r = st.r[0];
+      for (uint32_t i = 0; i < n; ++i) {
+        const float s = kAdd ? load1<accSpl>(acc, i) : 0.0f;
+        const float gv = finiteOr0(g[i]);
+        const float y = std::fma(load1<xSpl>(x, i), gv + d, s);
+        out[i] = d == 0.0f && gv == 0.0f ? s : y;
+        d *= r;
+        d = std::fabs(d) < kSettled ? 0.0f : d;
+      }
     }
-    for (uint32_t i = vecEnd; i < n; ++i) out[i] = std::fma(load1<xSpl>(x, i), g[i], kAdd ? load1<accSpl>(acc, i) : 0.0f);
     st.target[0] = finiteOr0(g[n - 1]);
-    st.d[0] = 0.0f;
-    st.started[0] = 1.0f;
+    st.d[0] = d;
+  }
+
+  // The start of an audio-rate call for lane l (TX.smooth): prepare the coefficient; a lane's first call honours
+  // `start` towards its first g (as retarget does); a started lane keeps its residual (no retarget: the target moves
+  // with g). Returns the residual.
+  static float audioPrologue(GainState& st, uint32_t lane, float g0, float tau, bool startAtTarget, bool oneLane) noexcept {  // RT-safe
+    prepare(st, lane, tau, oneLane);
+    if (st.started[lane] == 0.0f) return retarget(st, lane, g0, startAtTarget);
+    return st.d[lane];
   }
 
   // A param gain (the frame-by-frame definition in the header comment).
@@ -187,6 +223,8 @@ struct Gain {
     else return _mm256_loadu_ps(x + 8 * f);
   }
 
+  // Audio-rate g, 8 lanes (TX.smooth: as audio1): per lane gain = g + d with the param path's residual, snapped at the
+  // call's end as param8 does; a ramp holding a constant g gives param8's bits.
   template <bool accSpl, bool xSpl>
   static void audio8(const KernelArgs& a) noexcept {  // RT-safe
     auto& st = *static_cast<GainState*>(a.state);
@@ -194,15 +232,30 @@ struct Gain {
     const float* acc = kAdd ? a.in[0] : nullptr;
     const float* x = a.in[kA];
     const float* g = a.in[kA + 1];
+    const float* t = a.in[kA + 2];
     float* out = a.out[0];
-    for (uint32_t f = 0; f < n; ++f)
-      _mm256_storeu_ps(out + 8 * f,
-                       _mm256_fmadd_ps(xAt<xSpl>(x, f), _mm256_loadu_ps(g + 8 * f), accAt<accSpl, xSpl>(acc, f)));
-    for (uint32_t l = 0; l < 8; ++l) {
-      st.target[l] = finiteOr0(g[8 * (n - 1) + l]);
-      st.d[l] = 0.0f;
-      st.started[l] = 1.0f;
+    if (n == 0) return;
+    bool moving = false;
+    for (uint32_t l = 0; l < 8; ++l) moving = audioPrologue(st, l, finiteOr0(g[l]), t[l], startAt(a, l), false) != 0.0f || moving;
+    const __m256 inf = _mm256_set1_ps(std::numeric_limits<float>::infinity());
+    auto gAt = [&](uint32_t f) noexcept {
+      const __m256 gv = _mm256_loadu_ps(g + 8 * f);
+      return _mm256_and_ps(gv, _mm256_cmp_ps(_mm256_andnot_ps(_mm256_set1_ps(-0.0f), gv), inf, _CMP_LT_OQ));
+    };
+    if (!moving) {
+      for (uint32_t f = 0; f < n; ++f)
+        _mm256_storeu_ps(out + 8 * f, _mm256_fmadd_ps(xAt<xSpl>(x, f), gAt(f), accAt<accSpl, xSpl>(acc, f)));
+    } else {
+      __m256 d = _mm256_load_ps(st.d);
+      const __m256 r = _mm256_load_ps(st.r);
+      for (uint32_t f = 0; f < n; ++f) {
+        _mm256_storeu_ps(out + 8 * f, _mm256_fmadd_ps(xAt<xSpl>(x, f), _mm256_add_ps(gAt(f), d), accAt<accSpl, xSpl>(acc, f)));
+        d = _mm256_mul_ps(d, r);
+      }
+      const __m256 far = _mm256_cmp_ps(_mm256_andnot_ps(_mm256_set1_ps(-0.0f), d), _mm256_set1_ps(kSettled), _CMP_GE_OQ);
+      _mm256_store_ps(st.d, _mm256_and_ps(d, far));  // 0 where settled
     }
+    _mm256_store_ps(st.target, gAt(n - 1));
   }
 
   template <bool accSpl, bool xSpl>
@@ -216,7 +269,7 @@ struct Gain {
     float* out = a.out[0];
     bool moving = false;
     for (uint32_t l = 0; l < 8; ++l) {
-      prepare(st, l, t[l]);
+      prepare(st, l, t[l], false);
       moving = retarget(st, l, finiteOr0(g[l]), startAt(a, l)) != 0.0f || moving;
     }
     const __m256 gv = _mm256_load_ps(st.target);
@@ -252,6 +305,11 @@ namespace pq::dsp {
 
 void gainPrologue(void* state, float g, float tau, float start) noexcept {  // RT-safe
   (void)detail::Gain<false>::prologue1(*static_cast<GainState*>(state), std::isfinite(g) ? g : 0.0f, tau, start >= 0.5f);
+}
+
+void gainAudioPrologue(void* state, float g0, float tau, float start) noexcept {  // RT-safe
+  (void)detail::Gain<false>::audioPrologue(*static_cast<GainState*>(state), 0, std::isfinite(g0) ? g0 : 0.0f, tau,
+                                           start >= 0.5f, true);
 }
 
 }  // namespace pq::dsp

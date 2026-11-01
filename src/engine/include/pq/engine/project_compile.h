@@ -174,8 +174,12 @@ struct UnitUpdate {
 // gain_add with a constant time, and every global out / export is zero by propagation (root inputs and voice_sum are
 // zero; mul / gain zero if their signal input is; add, sub, neg, abs, pack, channel, select, min, max, gain_add zero if
 // all their signal inputs are; a constant 0). Returns the blocks of unchanged params after which every such gain has
-// snapped onto its target (ceil(20 · time / maxBlockFrames) + 1), or 0 when the unit does not qualify.
-uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames);
+// snapped onto its target (ceil(20 · time / maxBlockFrames) + 1), or 0 when the unit does not qualify. TX.smooth:
+// `rampFrames` = the longest global param ramp of its schedule (graph::Schedule::ramps, 0 without any): the blocks
+// cover that too (a ramp moves for rampFrames after its last change).
+uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames, uint32_t rampFrames = 0);
+// TX.smooth: the frames of the longest param ramp in a global stage of `s` (its param_ramp's `frames`), or 0.
+uint32_t globalRampFrames(const graph::Schedule& s);
 
 class ProjectCompiler {
 public:

@@ -76,8 +76,11 @@ const Schedule& ok(const Compiled& c) {
   return c.sched.schedule;
 }
 
-std::string dumpOf(std::string_view src, ScheduleOptions so = {}) {
+// The T1.5 schedule (no TX.smooth param ramps: the dumps below are the scheduler's structure; "schedule: param
+// ramps" checks what the ramp pass adds).
+std::string dumpOf(std::string_view src, ScheduleOptions so = {}, bool ramps = false) {
   Compiled c;
+  so.paramRamps = so.paramRamps && ramps;
   compile(c, src, so);
   return dump(ok(c), c.typed);
 }
@@ -369,6 +372,7 @@ state global (524416 B):
   // Without trusting param ranges the echo loop runs per sample.
   ScheduleOptions so;
   so.trustParamRanges = false;
+  so.paramRamps = false;
   Compiled c;
   compile(c, kFeedback, so);
   CHECK(ok(c).regions[1].subBlock == 1);
@@ -1707,4 +1711,112 @@ TEST_CASE("schedule: invalid options and inputs") {
   const ScheduleResult r = scheduleDetailed(inf.typed);
   REQUIRE_FALSE(r.ok());
   CHECK(r.diagnostics[0].message.find("run optimise() before schedule()") != std::string::npos);
+}
+
+// TX.smooth (schedule.h "Param ramps"): which param-rate reads get a param_ramp, where it goes, what it owns.
+TEST_CASE("schedule: param ramps: one param_ramp per (stage, factor, source) right after the Control region") {
+  auto rampedInputs = [](const Schedule& s) {
+    uint32_t n = 0;
+    for (uint32_t r : s.rampOf) n += r != kNone;
+    return n;
+  };
+  {  // a param and a param expression into audio-rate ops, and a smoothed gain's target (ramped like any input)
+    Compiled c;
+    compile(c, R"(patch P {
+  in x : audio
+  param g = 0.5 [0..1]
+  param db = 0dB [-24dB..24dB]
+  out y : audio
+  out z : audio
+  y = x * g + x * (g * g)
+  z = gain(x, db)
+}
+)");
+    const Schedule& s = ok(c);
+    CHECK(s.ramps.size() == 3);  // g, g·g, db
+    CHECK(rampedInputs(s) == 3);
+    REQUIRE(s.regions.size() >= 3);
+    CHECK(s.regions[0].kind == RegionKind::Control);  // g·g
+    const Region& rr = s.regions[1];
+    CHECK(rr.kind == RegionKind::Block);
+    REQUIRE(rr.numOps == 3);
+    for (uint32_t i = rr.firstOp; i < rr.firstOp + rr.numOps; ++i) {
+      const Op& op = s.ops[i];
+      CHECK(op.kernel == dsp::Atom::ParamRamp);
+      CHECK(op.lanes == 1);
+      CHECK(op.splMask == 3u);
+      REQUIRE(op.state != kNone);
+      CHECK(s.state.entries[op.state].tag.kernel == static_cast<uint16_t>(dsp::Atom::ParamRamp));
+      CHECK(s.state.entries[op.state].arena == Poly::Global);
+      const Operand fr = s.inputs(op)[1];
+      REQUIRE(fr.kind == Operand::Kind::Const);
+      CHECK(s.constants[fr.index].value == 960.0f);  // 20 ms at 48 kHz
+      const Operand out = s.outputsOf(op)[0];
+      REQUIRE(out.kind == Operand::Kind::Buffer);
+      CHECK(s.buffers[out.index].cls == Buffer::Class::Block);
+    }
+    for (const Ramp& r : s.ramps) CHECK(s.ops[r.op].kernel == dsp::Atom::ParamRamp);
+    // Every ramped input is a Spl input of an audio-rate op; the op keeps its Spl mask.
+    for (uint32_t i = 0; i < s.ops.size(); ++i)
+      for (uint32_t j = 0; j < s.ops[i].numIn; ++j)
+        if (s.rampOf[s.ops[i].firstOperand + j] != kNone) CHECK(((s.ops[i].splMask >> j) & 1u) == 1u);
+    ScheduleOptions so;
+    so.paramRamps = false;
+    Compiled plain;
+    compile(plain, c.text, so);
+    CHECK(ok(plain).ramps.empty());
+    CHECK(ok(plain).rampOf.empty());
+    CHECK(ok(plain).ops.size() + 3 == s.ops.size());
+  }
+  {  // choices and bools are never ramped: a mux index; a threshold (a real input of a comparison) is
+    Compiled c;
+    compile(c, R"(patch Q {
+  in x : audio
+  param k = 0 [0..2]
+  param t = 0.5 [0..1]
+  out y : audio
+  y = mux(k, x, x * 2, x * 3) + select(x > t, x, 0)
+}
+)");
+    const Schedule& s = ok(c);
+    CHECK(s.ramps.size() == 1);
+    for (uint32_t i = 0; i < s.ops.size(); ++i)
+      if (s.ops[i].kernel == dsp::Atom::Mux) CHECK(s.rampOf[s.ops[i].firstOperand] == kNone);
+  }
+  {  // a voice stage: a global × per-voice param-rate value gets an 8-lane ramp in the voice stage (voice arena)
+    Compiled c;
+    compile(c, R"(patch V {
+  param lvl = 0.5 [0..1]
+  out y : audio voice
+  y = sine(phasor(voice.hz)) * (lvl * voice.velocity)
+}
+)");
+    const Schedule& s = ok(c);
+    REQUIRE(s.ramps.size() == 1);
+    const Op& op = s.ops[s.ramps[0].op];
+    CHECK(op.lanes == 8);
+    CHECK(s.state.entries[op.state].arena == Poly::Voice);
+    CHECK(s.buffers[s.ramps[0].out.index].lanes == 8);
+    CHECK_FALSE(s.buffers[s.ramps[0].out.index].perGroup);
+  }
+  {  // liveness: a ramp's buffer outlives its readers, through a per-sample loop (replay, shared vs unshared buffers)
+    const TypedPatch tp = typedOf(R"(patch L {
+  in x : audio
+  param c = 0.3 [0..0.9]
+  param m = 0.5 [0..1]
+  out y : audio
+  lp = z1(lp + (x - lp) * c)
+  y = lp * m + x * (1 - m)
+}
+)");
+    ScheduleOptions so;
+    so.shareBuffers = false;
+    const ScheduleResult unique = scheduleDetailed(tp, so);
+    REQUIRE(unique.ok());
+    so.shareBuffers = true;
+    const ScheduleResult shared = scheduleDetailed(tp, so);
+    REQUIRE(shared.ok());
+    CHECK(shared.schedule.ramps.size() >= 2);
+    CHECK(sched_replay::Replay(shared.schedule, unique.schedule, {}).run().empty());
+  }
 }

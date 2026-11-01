@@ -225,6 +225,9 @@ struct Setup {
   const Compiled* c = nullptr;
   uint32_t voices = 0;
   int paramSet = 0;  // 0: defaults; 1: near the range minimum
+  // TX.smooth: when set, the value of param slot `slot` for the block starting at t0 (runInterp only; the reference
+  // evaluator has no param motion), given the param set's value.
+  std::function<float(uint32_t slot, const ParamSlot& p, uint64_t t0, float base)> paramAt;
   // Per root input ordinal: bool kind, param rate.
   std::map<uint32_t, bool> inBool, inParam;
 
@@ -442,8 +445,11 @@ inline InterpRun runInterp(const Setup& st, uint32_t frames, uint32_t block, uin
   for (size_t i = 0; i < params.size(); ++i) params[i] = static_cast<float>(st.param(face.params[i].node));
   const eng::TransportSnapshot tr0 = Setup::transport();
 
+  const std::vector<float> baseParams = params;
   for (uint32_t t0 = 0; t0 < frames; t0 += block) {
     const uint32_t n = std::min(block, frames - t0);
+    if (st.paramAt)
+      for (uint32_t i = 0; i < params.size(); ++i) params[i] = st.paramAt(i, face.params[i], t0, baseParams[i]);
     for (uint32_t s = 0; s < face.globalIn.size(); ++s) {
       const eng::IoSlot& sl = face.globalIn[s];
       const bool b = st.inBool.count(sl.ordinal) && st.inBool.at(sl.ordinal);

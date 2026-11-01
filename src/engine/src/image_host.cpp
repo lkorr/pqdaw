@@ -304,6 +304,14 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
   specialOps(s);
   if (!stages(s) || !sleepLayout(s, o.sleep) || !probeLayout(s)) return err_;
   tapLayout(s);
+  // TX.smooth: the image is dormant only once its global param ramps have settled (a moving one changes its state).
+  globalRampRem_.clear();
+  for (const g::Ramp& rp : s.ramps) {
+    const g::Op& op = s.ops[rp.op];
+    if (op.lanes != 1 || op.state >= s.state.entries.size()) continue;
+    const auto* st = reinterpret_cast<const dsp::ParamRampState*>(statePtr(s.state.entries[op.state], 0));
+    globalRampRem_.push_back(&st->rem[0]);
+  }
   meterFlag_ = reinterpret_cast<uint32_t*>(auxMem_.data() + L_.meterFlagOff);
   *meterFlag_ = 0;
   meterUnits_.resize(numRegions_);
@@ -410,10 +418,58 @@ bool ImageHost::validate(const g::Schedule& s) {
       }
     }
   }
+  if (!validateRamps(s)) return false;
   for (const g::OutputRef& x : s.outputs)
     if (!validOperand(s, x.value) || factorOfOperand(s, x.value) != 1) return fail("output with an invalid operand");
   for (const g::ProbeRef& p : s.probes)
     if (validOperand(s, p.value) && factorOfOperand(s, p.value) != 1) return fail("probe of an oversampled value");
+  return true;
+}
+
+// TX.smooth (pq/graph/schedule.h "Param ramps"): each ramp is a param_ramp op reading its source and writing its
+// Block output; each ramped op input reads that source as a pattern, in an op of the ramp's stage with the ramp's
+// lanes and factor, whose kernel exists without the ramped inputs' Spl bits.
+bool ImageHost::validateRamps(const g::Schedule& s) {
+  if (s.ramps.empty() && s.rampOf.empty()) return true;
+  if (s.rampOf.size() != s.operands.size()) return fail("ramp table does not match the operands");
+  std::vector<uint32_t> regionOf(s.ops.size(), g::kNone), stageOf(s.regions.size(), g::kNone);
+  for (uint32_t k = 0; k < s.stages.size(); ++k)
+    for (uint32_t r = s.stages[k].firstRegion; r < s.stages[k].firstRegion + s.stages[k].numRegions; ++r) stageOf[r] = k;
+  for (uint32_t r = 0; r < s.regions.size(); ++r)
+    for (uint32_t i = s.regions[r].firstOp; i < s.regions[r].firstOp + s.regions[r].numOps; ++i) regionOf[i] = r;
+  for (const g::Ramp& rp : s.ramps) {
+    if (rp.op >= s.ops.size() || regionOf[rp.op] == g::kNone) return fail("ramp op out of range");
+    const g::Op& op = s.ops[rp.op];
+    if (op.kind != g::OpKind::Kernel || op.kernel != dsp::Atom::ParamRamp || op.numIn != 2 || op.numOut != 1)
+      return fail("ramp op is not a param_ramp");
+    if (!(s.inputs(op)[0] == rp.source) || !(s.outputsOf(op)[0] == rp.out) || rp.out.kind != g::Operand::Kind::Buffer)
+      return fail("ramp operands disagree with its op");
+    if (s.regions[regionOf[rp.op]].kind == g::RegionKind::Control) return fail("ramp op in a Control region");
+  }
+  for (uint32_t i = 0; i < s.ops.size(); ++i) {
+    const g::Op& op = s.ops[i];
+    uint32_t ramped = 0;
+    for (uint32_t j = 0; j < op.numIn; ++j) {
+      const uint32_t q = op.firstOperand + j;
+      if (s.rampOf[q] == g::kNone) continue;
+      if (s.rampOf[q] >= s.ramps.size()) return fail("ramp index out of range");
+      const g::Ramp& rp = s.ramps[s.rampOf[q]];
+      const g::Op& rop = s.ops[rp.op];
+      if (op.kind != g::OpKind::Kernel || j >= 32 || ((op.splMask >> j) & 1u) == 0 || !(s.operands[q] == rp.source) ||
+          regionOf[i] == g::kNone || s.regions[regionOf[i]].kind == g::RegionKind::Control || rop.lanes != op.lanes ||
+          stageOf[regionOf[i]] != stageOf[regionOf[rp.op]] || rp.op >= i ||
+          factorOfOperand(s, rp.out) != s.regions[regionOf[i]].factor)
+        return fail("op " + std::to_string(i) + " input " + std::to_string(j) + ": invalid ramp");
+      ramped |= 1u << j;
+    }
+    // Ramps in solve bodies are not supported (the solver evaluates the body per frame on its own pointers).
+    if (ramped != 0) {
+      for (const g::SolveBlock& sb : s.solves)
+        if (i >= sb.firstOp && i < sb.firstOp + sb.numOps) return fail("op " + std::to_string(i) + ": ramp in a solve body");
+      if (dsp::findKernel(op.kernel, op.lanes, op.splMask & ~ramped) == nullptr)
+        return fail("op " + std::to_string(i) + ": no kernel for its ramped inputs");
+    }
+  }
   return true;
 }
 
@@ -1200,7 +1256,9 @@ void ImageHost::sleepReports(ProcessContext& ctx, bool anyVoice, bool outsSilent
   bool asleep = sleepMode_ != SleepMode::Off || !planSegments_;  // Off: tails are never known to be done
   for (const SegRun& g : segs_) asleep = asleep && g.asleep;
   ctx.tailsDone = asleep;
-  ctx.dormant = asleep && outsSilent && !anyVoice && dormantCapable_ && sleepMode_ != SleepMode::Off;
+  bool settled = true;
+  for (const float* rem : globalRampRem_) settled = settled && *rem == 0.0f;
+  ctx.dormant = asleep && outsSilent && !anyVoice && dormantCapable_ && settled && sleepMode_ != SleepMode::Off;
   firstBlock_ = false;
 }
 

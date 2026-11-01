@@ -13,6 +13,8 @@
 //   sites_    the pointer cells that read engine data (root inputs, voice.*, track/sidechain input), rewritten once
 //             per block from the host's engine-source table
 //   regions_  per (stage, group) region: the record range (and, with solve blocks, an item list)
+//   swaps_    TX.smooth: per record with ramped inputs (pq/graph/schedule.h "Param ramps"), the pool cells that read
+//             the ramp's buffer instead of the param-rate pattern in a block where one of the record's ramps moves
 
 #include "pq/engine/interpreter.h"
 
@@ -44,6 +46,20 @@ struct Rec {
   dsp::KernelArgs args;
   uint32_t inBase = 0, outBase = 0;      // into pool_
   uint32_t firstReloc = 0, numReloc = 0;
+  // TX.smooth: the ramped inputs (swaps_), and the kernel / Spl mask as scheduled and with them as blocks.
+  uint32_t firstSwap = 0, numSwaps = 0;
+  dsp::KernelFn fnBase = nullptr, fnRamp = nullptr;
+  uint32_t maskBase = 0, maskRamp = 0;
+  bool rampMode = false;                 // this block reads the ramp buffers
+};
+
+// TX.smooth: one ramped input of a record (the param_ramp state says whether it moves this block).
+struct Swap {
+  uint32_t cell = 0;                     // pool_ index of the input
+  float* ramp = nullptr;                 // the ramp's buffer (this group's)
+  float* saved = nullptr;                // the cell's pattern pointer while it reads the ramp
+  const dsp::ParamRampState* state = nullptr;
+  uint32_t stride = 1;                   // floats per frame (the op's lanes)
 };
 
 struct Reloc {
@@ -63,6 +79,7 @@ struct RegionRun {
   uint32_t factor = 1;  // TMM.6: an oversample region runs its ops on frames · factor samples
   uint32_t firstRec = 0, numRec = 0;
   uint32_t firstItem = 0, numItems = 0;  // with solve blocks: rec index, or kSolveItem | solve index
+  uint32_t firstRampRec = 0, numRampRec = 0;  // TX.smooth: its records with ramped inputs (into rampRecs_)
 };
 
 struct OperandRef {  // element (frame t, lane l) = base[t·stride + l]; stride 0 = a pattern
@@ -132,6 +149,8 @@ public:
   std::vector<float*> pool_;
   std::vector<Rec> recs_;
   std::vector<Reloc> relocs_;
+  std::vector<Swap> swaps_;          // TX.smooth
+  std::vector<uint32_t> rampRecs_;   // TX.smooth: record indices, per region
   std::vector<uint32_t> items_;
   std::vector<RegionRun> regions_;
   std::vector<StageRegions> stages_;
@@ -150,6 +169,13 @@ public:
 
 private:
   void runRegion(const RegionRun& r, uint32_t frames) noexcept;
+  void prepareRamps(const RegionRun& r, uint32_t frames) noexcept;
+  // In a Loop region, a record in ramp mode reads its ramps from frame t (after relocate()).
+  void relocateRamps(const Rec& rec, uint32_t t) noexcept {  // RT-safe
+    if (!rec.rampMode) return;
+    for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k)
+      pool_[swaps_[k].cell] = swaps_[k].ramp + static_cast<size_t>(t) * swaps_[k].stride;
+  }
   void runMetered(ProcessContext& ctx) noexcept;
   void relocate(const Rec& rec, uint32_t t) noexcept {  // RT-safe
     for (uint32_t k = rec.firstReloc; k < rec.firstReloc + rec.numReloc; ++k) {
@@ -172,8 +198,40 @@ private:
   void finiteDifferenceJacobian(const SolveRun& s, uint32_t t, const float* r0, float* J) noexcept;
 };
 
+// TX.smooth: once per block before a region's records run. A record whose ramps all rest runs as scheduled (Spl
+// inputs); one with a moving ramp reads every ramp of it as a block (a resting one's buffer filled with its value).
+void InterpretedImage::prepareRamps(const RegionRun& r, uint32_t frames) noexcept {  // RT-safe
+  for (uint32_t q = r.firstRampRec; q < r.firstRampRec + r.numRampRec; ++q) {
+    Rec& rec = recs_[rampRecs_[q]];
+    bool any = false;
+    for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k) any = any || swaps_[k].state->active != 0;
+    if (any) {
+      for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k) {
+        Swap& sw = swaps_[k];
+        if (sw.state->active == 0) dsp::paramRampHold(sw.state, sw.ramp, frames, sw.stride);
+        if (pool_[sw.cell] != sw.ramp) {
+          sw.saved = pool_[sw.cell];  // the pattern (an engine source's is rewritten every block)
+          pool_[sw.cell] = sw.ramp;
+        }
+      }
+      rec.fn = rec.fnRamp;
+      rec.args.splMask = rec.maskRamp;
+      rec.rampMode = true;
+    } else if (rec.rampMode) {
+      for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k) {
+        Swap& sw = swaps_[k];
+        if (pool_[sw.cell] == sw.ramp) pool_[sw.cell] = sw.saved;
+      }
+      rec.fn = rec.fnBase;
+      rec.args.splMask = rec.maskBase;
+      rec.rampMode = false;
+    }
+  }
+}
+
 void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {  // RT-safe
   frames *= r.factor;  // TMM.6 (Control regions have factor 1)
+  if (r.numRampRec != 0) prepareRamps(r, frames);
   switch (r.kind) {
     case g::RegionKind::Control:
       if (r.memo && paramsSame_) return;  // its buffers still hold this block's values
@@ -202,6 +260,7 @@ void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {
           for (uint32_t i = r.firstRec; i < r.firstRec + r.numRec; ++i) {
             Rec& rec = recs_[i];
             relocate(rec, t);
+            relocateRamps(rec, t);
             rec.args.frames = n;
             rec.fn(rec.args);
           }
@@ -214,11 +273,14 @@ void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {
             }
             Rec& rec = recs_[it];
             relocate(rec, t);
+            relocateRamps(rec, t);
             rec.args.frames = n;
             rec.fn(rec.args);
           }
         }
       }
+      // Ramp-mode cells back at frame 0 (prepareRamps compares them with the ramp's buffer).
+      for (uint32_t q = r.firstRampRec; q < r.firstRampRec + r.numRampRec; ++q) relocateRamps(recs_[rampRecs_[q]], 0);
       return;
     }
   }
@@ -522,6 +584,30 @@ private:
         if (!rec.fn)
           return fail(std::string("no ") + dsp::kernelInfo(op.kernel).name + " kernel for " + std::to_string(op.lanes) +
                       " lanes with Spl mask " + std::to_string(op.splMask));
+        rec.fnBase = rec.fn;
+        rec.maskBase = op.splMask;
+        if (!control && !s_.rampOf.empty()) {  // TX.smooth (validated by the host)
+          uint32_t ramped = 0;
+          rec.firstSwap = static_cast<uint32_t>(im.swaps_.size());
+          for (uint32_t j = 0; j < op.numIn; ++j) {
+            const uint32_t r = s_.rampOf[op.firstOperand + j];
+            if (r == g::kNone) continue;
+            const g::Ramp& rp = s_.ramps[r];
+            Swap sw;
+            sw.cell = rec.inBase + j;
+            sw.ramp = host().resolve(rp.out, gi);
+            sw.state = reinterpret_cast<const dsp::ParamRampState*>(host().statePtr(s_.state.entries[s_.ops[rp.op].state], gi));
+            sw.stride = op.lanes;
+            im.swaps_.push_back(sw);
+            ramped |= 1u << j;
+          }
+          rec.numSwaps = static_cast<uint32_t>(im.swaps_.size()) - rec.firstSwap;
+          if (ramped != 0) {
+            rec.maskRamp = op.splMask & ~ramped;
+            rec.fnRamp = dsp::findKernel(op.kernel, op.lanes, rec.maskRamp);
+            if (!rec.fnRamp) return fail(std::string("no ") + dsp::kernelInfo(op.kernel).name + " kernel for its ramps");
+          }
+        }
         if (op.state != g::kNone) rec.args.state = host().statePtr(s_.state.entries[op.state], gi);
         const dsp::Resource res = dsp::kernelInfo(op.kernel).resource;
         if (res != dsp::Resource::None) rec.args.resource = host().resource(res, op.resource);
@@ -658,6 +744,10 @@ private:
           for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
             if (!makeRec(i, gi, loop, control)) return false;
           rr.numRec = static_cast<uint32_t>(im.recs_.size()) - rr.firstRec;
+          rr.firstRampRec = static_cast<uint32_t>(im.rampRecs_.size());
+          for (uint32_t q = rr.firstRec; q < rr.firstRec + rr.numRec; ++q)
+            if (im.recs_[q].numSwaps != 0) im.rampRecs_.push_back(q);
+          rr.numRampRec = static_cast<uint32_t>(im.rampRecs_.size()) - rr.firstRampRec;
           rr.memo = control && !voice && reg.numSolves == 0 && memoizable(reg);
           if (reg.numSolves > 0) {
             rr.firstItem = static_cast<uint32_t>(im.items_.size());

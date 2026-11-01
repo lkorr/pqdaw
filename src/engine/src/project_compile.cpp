@@ -54,7 +54,19 @@ VoiceConfig voiceConfigOf(const ProjectCompileOptions& o, const CompiledUnit& cu
 
 }  // namespace
 
-uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames) {
+uint32_t globalRampFrames(const graph::Schedule& s) {
+  uint32_t frames = 0;
+  for (const graph::Ramp& r : s.ramps) {
+    const graph::Op& op = s.ops[r.op];
+    if (op.lanes != 1) continue;  // voice ramps: no voice sounds in an idle unit (lane resets start them afresh)
+    const graph::Operand& f = s.operands[op.firstOperand + 1];
+    if (f.kind == graph::Operand::Kind::Const && f.index < s.constants.size())
+      frames = std::max(frames, static_cast<uint32_t>(std::max(0.0f, s.constants[f.index].value)));
+  }
+  return frames;
+}
+
+uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames, uint32_t rampFrames) {
   using namespace graph;
   const Patch& p = typed.patch;
   const Adjacency adj = p.adjacency();
@@ -177,7 +189,7 @@ uint32_t idleAfterBlocks(const graph::TypedPatch& typed, uint32_t maxBlockFrames
     if (!isInputZero(n, 0)) return 0;
   }
   // |residual| ≤ a few units decays below the 3e-8 snap threshold within 20 time constants (e^-20 ≈ 2e-9).
-  const double frames = std::ceil(20.0 * std::max(maxTime, 1.0));
+  const double frames = std::max(std::ceil(20.0 * std::max(maxTime, 1.0)), static_cast<double>(rampFrames));
   return static_cast<uint32_t>(std::min(1e6, std::ceil(frames / std::max(maxBlockFrames, 1u)))) + 1;
 }
 
@@ -276,7 +288,7 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   }
   std::sort(cu.readKeys.begin(), cu.readKeys.end());
   std::sort(cu.writeKeys.begin(), cu.writeKeys.end());
-  cu.idleAfterBlocks = idleAfterBlocks(opt.value(), opt_.maxBlockFrames);
+  cu.idleAfterBlocks = idleAfterBlocks(opt.value(), opt_.maxBlockFrames, globalRampFrames(sr.schedule));
   uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
                   (uint64_t{voiceGroupsOf(cu)} << 33) ^ (uint64_t{cu.maxVoices} << 45);
   if (cu.inspect) {  // T4.4-fix1: an inspected unit is another program (probe copies, bound taps): another key

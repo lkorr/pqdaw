@@ -241,6 +241,15 @@ TEST_CASE("interpreter: missing engine inputs read silence; an image's interface
   (*img)->process(ctx);
   float* yy = exportFirst ? e.data() : y.data();
   float* ee = exportFirst ? y.data() : e.data();
+  // TX.smooth: the param-rate input moved from 0 (missing) to 0.25, so `a + k` ramps there over 20 ms (pq/graph/
+  // schedule.h "Param ramps"), from just above 0.5; k[3] stays unread.
+  CHECK(yy[0] > 0.5f);
+  for (int i = 0; i < 16; ++i) {
+    if (i > 0) CHECK(yy[i] > yy[i - 1]);
+    CHECK(yy[i] < 0.51f);
+    CHECK(ee[i] == 1.0f);
+  }
+  for (int b = 0; b < 60; ++b) (*img)->process(ctx);  // 960 more frames: the ramp has arrived
   for (int i = 0; i < 16; ++i) {
     CHECK(yy[i] == 0.75f);
     CHECK(ee[i] == 1.0f);

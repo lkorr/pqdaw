@@ -127,7 +127,10 @@
 //                                     (≈ −150 dB) y snaps onto g; a settled gain costs one multiply per sample (g = 0:
 //                                     a zero fill).
 //                                     `g` is normally a param (Spl): a block-rate target. A Blk (audio-rate) g is
-//                                     used as it is, unsmoothed. Non-finite g counts as 0. With `start` 0, y starts
+//                                     used as it is plus the residual a param block left, decaying as above (TX.smooth:
+//                                     a param ramp feeds g as a block while it moves; a ramp holding a constant g gives
+//                                     the param path's bits; at g = 0 without residual the 1-lane output is exactly
+//                                     acc or 0). Non-finite g counts as 0. With `start` 0, y starts
 //                                     at 0, so a new instance (a voice lane after its reset) fades in from silence;
 //                                     with `start` 1 (T4.x-fix-dsp: device params) its first block starts at g.
 //                                     `time` and `start` must be Spl (start may be omitted: numIn 3 reads it as 0).
@@ -166,6 +169,17 @@
 //   oversample_hold / _any (x, factor)  bool up (each mask repeated) / down (any sub-sample high)
 //                                     frames = the oversampled count: up-type kernels read frames / factor samples
 //                                     and write frames, down-type read frames and write frames / factor.
+// Param smoothing (TX.smooth; kernels_ramp.cpp; inserted by the compiler, pq/graph/schedule.h "Param ramps"):
+//   param_ramp (x, frames) → out     x a param-rate value (Spl), frames the ramp length (Spl, a const ≥ 1). Per lane:
+//                                     its first call starts at x; when x changes (bitwise) the lane ramps linearly
+//                                     from where it is to x over `frames` samples (a later change restarts the ramp
+//                                     from where it is then); a non-finite x or position jumps. The output (a block)
+//                                     is written ONLY in a call where some lane ramps (ParamRampState::active), with
+//                                     every lane's per-frame value: target − inc·(rem − k − 1) while frames remain,
+//                                     then the target. A call where no lane ramps writes nothing (its consumers read
+//                                     x as the pattern it is); paramRampHold fills the output with the lanes' values
+//                                     (= x) when a consumer needs it as a block anyway. Any split of a block into
+//                                     calls gives the same bits.
 
 #include <cstddef>
 #include <cstdint>
@@ -205,6 +219,8 @@ enum class Atom : uint16_t {
   OversampleUp, OversampleDown, OversamplePhase, OversampleHold, OversampleAny,
   // the Wavetable's live path and Shape mode (TMM.8, pq/dsp/wave_live.h)
   WavetableLive, WavetableShape,
+  // TX.smooth: the compiler's param smoothing (inserted by schedule(), not callable; see ParamRamp below)
+  ParamRamp,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);
@@ -241,6 +257,9 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept;
 // d = d·r, snapped to 0 below kGainSettled). Idempotent within a block (same g, tau, start). RT-safe.
 inline constexpr float kGainSettled = 3e-8f;  // |residual| below this (≈ −150 dB): settled (exactly the target)
 void gainPrologue(void* state, float g, float tau, float start) noexcept;
+// TX.smooth: the same for a call whose g is a block (a param ramp, or audio rate): prepare; a first call honours
+// `start` towards g0 (its first frame's g); a started gain keeps its residual (no retarget). RT-safe.
+void gainAudioPrologue(void* state, float g0, float tau, float start) noexcept;
 
 struct StateInit {
   double sampleRate = 48000.0;
@@ -314,5 +333,18 @@ uint32_t silenceTail(Atom a, const StateInit& init) noexcept;  // RT-safe
 // can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines; the
 // VoiceEngine resets one lane of an 8-lane delay line in O(1) through DelayState::start instead).
 void initState(Atom a, void* state, const StateInit& init) noexcept;  // RT-safe
+
+// ---- Param smoothing (TX.smooth) ---------------------------------------------------------------------------------
+// How long a param-rate value takes to ramp to a new value at an audio-rate input (pq/graph/schedule.h "Param
+// ramps"; chosen by measurement, bench/RESULTS.md TX.smooth and QUESTIONS Q?-TX.smooth-a): 20 ms, linear.
+inline constexpr double kParamRampSeconds = 0.020;
+// The inputs of atom `a` (numIn inputs, for mux the actual count) that the compiler may feed a ramp instead of a
+// param-rate value: every real input that can be audio rate, except the ones whose value is a choice or a count
+// (mux / demux index, counter / clockdiv n, pulse period, timer duration, tuning_hz degree / equave / select / node),
+// state-init or required-Spl inputs (times, factors, modes). Bit i = input i. RT-safe.
+uint32_t rampableInputs(Atom a, uint32_t numIn) noexcept;
+// Fills `out` (frames · lanes floats, lanes 1 or 8) with each lane's current value of a param_ramp state that did not
+// ramp in this block (its target, i.e. its input): what a consumer reading the ramp as a block sees then. RT-safe.
+void paramRampHold(const void* state, float* out, uint32_t frames, uint32_t lanes) noexcept;
 
 }  // namespace pq::dsp

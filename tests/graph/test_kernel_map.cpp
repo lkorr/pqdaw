@@ -84,7 +84,7 @@ TEST_CASE("kernel map: every registry atom is lowered to a matching kernel or ex
     CHECK(dsp::findKernel(m.kernel, 8, info.splRequired) != nullptr);
   }
   CHECK(kernels + elsewhere == reg.size());
-  CHECK(kernels == dsp::kAtomCount - 7);  // every kernel but the 6 split feedback kernels and the block fill
+  CHECK(kernels == dsp::kAtomCount - 8);  // every kernel but the 6 split feedback kernels, the block fill and param_ramp
 }
 
 TEST_CASE("kernel map: the atoms without a kernel are exactly the structural, engine and const ones") {
@@ -107,10 +107,11 @@ TEST_CASE("kernel map: the atoms without a kernel are exactly the structural, en
   CHECK(kernelMapping(*reg.find("voice_sum")).lowering == Lowering::Engine);
 }
 
-TEST_CASE("kernel map: every dsp kernel except the split feedback kernels and block fill comes from an atom") {
+TEST_CASE("kernel map: every dsp kernel except the split feedback kernels, block fill and param ramp comes from an atom") {
+  // TX.smooth: param_ramp is inserted by schedule() (pq/graph/schedule.h "Param ramps"), never written in a patch.
   const std::set<dsp::Atom> internal = {dsp::Atom::Const,           dsp::Atom::Z1Read,          dsp::Atom::Z1Write,
                                         dsp::Atom::DelayReadLinear, dsp::Atom::DelayReadCubic, dsp::Atom::DelayReadAllpass,
-                                        dsp::Atom::DelayWrite};
+                                        dsp::Atom::DelayWrite,      dsp::Atom::ParamRamp};
   for (uint32_t k = 0; k < dsp::kAtomCount; ++k) {
     const auto a = static_cast<dsp::Atom>(k);
     CAPTURE(dsp::kernelInfo(a).name);

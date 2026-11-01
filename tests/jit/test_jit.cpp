@@ -177,6 +177,21 @@ CorpusStats runCorpus(const jit::CompileOptions& jo, bool requireBitIdentical, c
 
 // A chain of n nodes mixing what real patches have: element-wise math (exact and fast), param-rate math, a z1
 // outside any loop, and a one-pole feedback loop every 10 nodes.
+// TX.smooth: the same patch scheduled without param ramps (ScheduleOptions::paramRamps = false).
+Compiled withoutRamps(const Compiled& c) {
+  Compiled r;
+  r.file = c.file;
+  r.name = c.name;
+  r.typed = c.typed;
+  ScheduleOptions so;
+  so.sampleRate = c.sched.sampleRate;
+  so.paramRamps = false;
+  auto s = schedule(r.typed, so);
+  REQUIRE(s.ok());
+  r.sched = std::move(s.value());
+  return r;
+}
+
 std::string mixedChain(int n) {
   std::string t = "patch Chain {\n  in x : audio\n  param p = 0.5 [0..1]\n  out y : audio\n  a0 = x\n";
   int i = 1;
@@ -373,8 +388,9 @@ TEST_CASE("jit: every simple stateful atom inside a per-sample loop (inline per-
     REQUIRE(compiler().compile(c.sched, {}, &st).ok());
     const uint32_t voices = voicesFor(c);
     // Nothing in the loops is a call; the voice patch calls the voice_sum helper (its oscillator's phasor in the
-    // block region outside the loop is inline too since T1b.2).
-    CHECK(st.calledOps == (voices ? 1u : 0u));
+    // block region outside the loop is inline too since T1b.2). TX.smooth: plus one param_ramp call per ramp (block-
+    // wise, in its own region before the loops).
+    CHECK(st.calledOps == (voices ? 1u : 0u) + c.sched.ramps.size());
     CorpusStats cs;
     for (int paramSet = 0; paramSet < 2; ++paramSet) checkPatch(c, voices, paramSet, {}, cs, false, kBlocks, std::size(kBlocks));
     jit::CompileOptions exact;
@@ -414,8 +430,12 @@ static void voiceCodeCorpus(jit::VoiceCode vc, const uint32_t* blocks, size_t nu
   uint32_t patches = 0, paired = 0, scalarRefused = 0;
   std::vector<std::string> skipped;
   for (const fs::path& path : allPatchFiles())
-    for (const Compiled& c : compileFile(path, 48000.0, skipped)) {
-      if (voicesFor(c) == 0) continue;
+    for (const Compiled& compiled : compileFile(path, 48000.0, skipped)) {
+      if (voicesFor(compiled) == 0) continue;
+      // TX.smooth: the scalar-lane baseline cannot run param_ramp calls (one voice lane per call); it is measured on
+      // the schedules without ramps.
+      const Compiled plain = vc == jit::VoiceCode::ScalarLanes ? withoutRamps(compiled) : Compiled{};
+      const Compiled& c = vc == jit::VoiceCode::ScalarLanes ? plain : compiled;
       jit::CompileOptions jo;
       jo.voiceCode = vc;
       jo.maxVoiceGroups = 3;
@@ -474,19 +494,25 @@ TEST_CASE("jit: the scalar-lane baseline refuses a voice that calls kernels; a p
 })");
   jit::CompileStats st;
   REQUIRE(compiler().compile(osc.sched, {}, &st).ok());
-  CHECK(st.calledOps == 0);
+  CHECK(osc.sched.ramps.size() == 1);  // TX.smooth: g / (1 + g) into the voices' loop, one param_ramp per group
+  CHECK(st.calledOps == osc.sched.ramps.size());
   CHECK(st.pairedStages == 1);
   jit::CompileOptions one;
   one.maxVoiceGroups = 1;
   REQUIRE(compiler().compile(osc.sched, one, &st).ok());
   CHECK(st.pairedStages == 0);
-  REQUIRE(compiler().compile(osc.sched, scalar, &st).ok());
+  // The scalar-lane baseline runs one voice lane per call, so it cannot run a param_ramp (a call per group): it
+  // refuses the ramped schedule like any voice kernel call and runs the same patch scheduled without ramps.
+  CHECK_FALSE(compiler().compile(osc.sched, scalar, &st).ok());
+  const Compiled oscPlain = withoutRamps(osc);
+  REQUIRE(compiler().compile(oscPlain.sched, scalar, &st).ok());
   CHECK(st.pairedStages == 0);
   CorpusStats cs;
   for (jit::VoiceCode vc : {jit::VoiceCode::Auto, jit::VoiceCode::ScalarLanes}) {
     jit::CompileOptions jo;
     jo.voiceCode = vc;
-    for (uint32_t voices : {1u, 8u, 19u, 64u}) checkPatch(osc, voices, 0, jo, cs, true, kBlocks, std::size(kBlocks));
+    const Compiled& c = vc == jit::VoiceCode::ScalarLanes ? oscPlain : osc;
+    for (uint32_t voices : {1u, 8u, 19u, 64u}) checkPatch(c, voices, 0, jo, cs, true, kBlocks, std::size(kBlocks));
   }
   CHECK(cs.maxVsInterp == 0.0);
 }
@@ -745,6 +771,15 @@ TEST_CASE("jit: missing engine inputs read silence; an image's interface lists i
   (*img)->process(ctx);
   float* yy = exportFirst ? e.data() : y.data();
   float* ee = exportFirst ? y.data() : e.data();
+  // TX.smooth: the param-rate input moved from 0 (missing) to 0.25, so `a + k` ramps there over 20 ms (pq/graph/
+  // schedule.h "Param ramps"), from just above 0.5; k[3] stays unread.
+  CHECK(yy[0] > 0.5f);
+  for (int i = 0; i < 16; ++i) {
+    if (i > 0) CHECK(yy[i] > yy[i - 1]);
+    CHECK(yy[i] < 0.51f);
+    CHECK(ee[i] == 1.0f);
+  }
+  for (int b = 0; b < 60; ++b) (*img)->process(ctx);  // 960 more frames: the ramp has arrived
   for (int i = 0; i < 16; ++i) {
     CHECK(yy[i] == 0.75f);
     CHECK(ee[i] == 1.0f);
@@ -984,15 +1019,23 @@ TEST_CASE("jit: compile-size proxy for compile time: IR and machine code of the 
   // which depends on machine load. Compile time follows the amount of IR and machine code, which does not: the
   // regression M14 found (an 8x interleave duplicating every select of the mux into one huge block) multiplied both.
   // Bounds = about 1.5x what T1.11-fix1 measured (printed below), so a real blow-up fails here in every tier.
+  // TX.smooth: the chain reads its param `p` in its per-sample loop, so with param ramps the loop is generated twice
+  // (the ramp-mode copy for blocks in which p moves, codegen.cpp emitRampBranch): the bounds hold for the schedule
+  // without ramps, and the ramped one is at most one more copy of it.
   const Compiled chain = compileText(mixedChain(100));
+  const Compiled chainPlain = withoutRamps(chain);
   const Compiled mux = compileText(bigMux(1200));
-  jit::CompileStats a, b;
-  REQUIRE(compiler().compile(chain.sched, {}, &a).ok());
+  jit::CompileStats a, a2, b;
+  REQUIRE(compiler().compile(chainPlain.sched, {}, &a).ok());
+  REQUIRE(compiler().compile(chain.sched, {}, &a2).ok());
   REQUIRE(compiler().compile(mux.sched, {}, &b).ok());
-  MESSAGE("100-step chain: " << a.irInstructions << " IR instructions, " << a.objectBytes << " B of code; 1200-input mux: "
-                             << b.irInstructions << " IR instructions, " << b.objectBytes << " B of code");
+  MESSAGE("100-step chain: " << a.irInstructions << " IR instructions, " << a.objectBytes << " B of code (with its param ramp: "
+                             << a2.irInstructions << ", " << a2.objectBytes << " B); 1200-input mux: " << b.irInstructions
+                             << " IR instructions, " << b.objectBytes << " B of code");
   CHECK(a.irInstructions <= kChainIrBound);
   CHECK(a.objectBytes <= kChainCodeBound);
+  CHECK(a2.irInstructions <= 2 * kChainIrBound);
+  CHECK(a2.objectBytes <= 2 * kChainCodeBound);
   CHECK(b.irInstructions <= kMuxIrBound);
   CHECK(b.objectBytes <= kMuxCodeBound);
 }

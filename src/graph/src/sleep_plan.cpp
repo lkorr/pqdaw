@@ -629,7 +629,9 @@ private:
       const Op& op = s_.ops[i];
       if (cand_[regionOf_[i]]) continue;
       if (op.kind == OpKind::Send) dormant = false;
-      if (op.kind == OpKind::Kernel && dsp::kernelInfo(op.kernel).stateSize != 0) dormant = false;
+      // TX.smooth: a param ramp's state only settles (the host checks it is settled before it reports dormant).
+      if (op.kind == OpKind::Kernel && dsp::kernelInfo(op.kernel).stateSize != 0 && op.kernel != dsp::Atom::ParamRamp)
+        dormant = false;
     }
     for (const SolveBlock& sb : s_.solves)
       if (sb.region < s_.regions.size() && global_[sb.region]) dormant = false;

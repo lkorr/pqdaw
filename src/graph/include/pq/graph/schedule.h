@@ -81,6 +81,30 @@
 //   patterns for param rate, per group for voice externals). An op input is Spl (bit set in Op::splMask) when its
 //   operand is a pattern; kernel inputs that cannot be Spl get a Fill op (the dsp `const` kernel) in front of them.
 //   Outputs/exports: global ones are read after the last stage; voice ones at the end of OutputRef::stage, per group.
+//
+// ---- Param ramps (TX.smooth: every param is smooth when it changes, in every device, by one mechanism) ---------
+// A param-rate value (a param, a value a Control region computes from params, a param-rate engine signal such as
+// voice.velocity) changes in steps: at most once per block, by whatever a knob drag, an automation step or a macro
+// moved. Read by an audio-rate op, each step is a discontinuity (a click). So every such read is smoothed, at the one
+// place every device's params pass through: the boundary between a stage's Control region and its audio regions.
+//   - Which reads: an input j of a Kernel op in a Block / Loop region (not in a solve body) whose operand is a real
+//     pattern (Param, a pattern Buffer, a param-rate External; never a Const), where dsp::rampableInputs(kernel)
+//     allows it (real inputs that can be audio rate, except choices and counts: mux / demux index, counter n, …;
+//     state-init and required-Spl inputs) and the kernel exists for Blk there. Nothing is declared per device: a new
+//     device, meta module or user patch is smooth by default. A smoothed gain's target is ramped like any input (its
+//     audio-rate path keeps the residual of its own one-pole, which now only shapes a new instance's fade-in).
+//   - Each distinct (stage, oversample factor, source) gets one param_ramp op (dsp::Atom::ParamRamp: in a Block
+//     region of its own, right after the stage's Control region; 8 lanes in voice stages, per voice group, so a voice
+//     lane reset at note-on starts it at its value) with its state entry and a Block buffer, Schedule::ramps.
+//     Schedule::rampOf maps each such op input to its ramp. The ops themselves keep their Spl operands and masks.
+//   - At run time (both backends, the same values): a ramp that is moving writes its buffer (`active`); an op with a
+//     moving ramp among its inputs runs as if every ramped input were Blk (the kernel for splMask without those bits,
+//     the ramp buffers as the operands; a not-moving ramp's buffer is filled with its value, dsp::paramRampHold),
+//     otherwise as scheduled. A block in which nothing moves costs one compare per ramp: every Spl specialisation
+//     (and the JIT's hoisted invariants) stays.
+//   - The ramp: linear over kParamRampSeconds (20 ms) from where it is to the new value, restarted from where it is
+//     by a later change. Its state is global or per voice group like any state (hot swap by key).
+// ScheduleOptions::paramRamps = false schedules no ramps (references, A/B measurements).
 
 #include <cstdint>
 #include <memory>
@@ -332,6 +356,13 @@ struct InsertedDelay {
   uint16_t input = 0;
 };
 
+// TX.smooth (see "Param ramps" above): one param_ramp op and the value it smooths.
+struct Ramp {
+  uint32_t op = kNone;   // its param_ramp op (Schedule::ops)
+  Operand source;        // the pattern it follows (Param, pattern Buffer or param-rate External)
+  Operand out;           // its Block buffer (lanes and factor of the ops reading it)
+};
+
 struct Schedule {
   std::vector<Stage> stages;
   std::vector<Region> regions;
@@ -355,6 +386,10 @@ struct Schedule {
   std::shared_ptr<const TypedPatch> rewritten;
   SleepPlan sleep;                           // T1.x-silence (see "Sleep plan" above)
   std::vector<ProbeRef> probes;              // T4.5: ScheduleOptions::probes that have a value (in request order)
+  std::vector<Ramp> ramps;                   // TX.smooth (see "Param ramps" above)
+  // Parallel to `operands` (empty when there are no ramps): for an op input that reads a ramp while it moves, the
+  // index into `ramps`; kNone otherwise.
+  std::vector<uint32_t> rampOf;
 
   std::span<const Operand> inputs(const Op& op) const noexcept { return {operands.data() + op.firstOperand, op.numIn}; }
   std::span<const Operand> outputsOf(const Op& op) const noexcept {
@@ -382,6 +417,8 @@ struct ScheduleOptions {
   // T4.5: values to keep readable for live probes (Schedule::probes). A point without a value (node kNone, a sink, an
   // output that is never computed) is left out, not an error.
   std::span<const ProbePoint> probes;
+  // TX.smooth: smooth param-rate values at audio-rate inputs (Schedule::ramps). false: none (the T1.5 schedule).
+  bool paramRamps = true;
 };
 
 struct ScheduleResult {

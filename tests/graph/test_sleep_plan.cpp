@@ -86,7 +86,9 @@ patch Echo {
   // Every Block / Loop region sleeps; the one read by the output fills its buffer.
   uint32_t fills = 0;
   for (uint32_t r = 0; r < s.regions.size(); ++r) {
-    if (s.regions[r].kind == RegionKind::Control) {
+    // TX.smooth: the param ramps' region (fb's ramp) stays awake: one compare per ramp and block.
+    const bool ramps = s.regions[r].numOps > 0 && s.ops[s.regions[r].firstOp].kernel == pq::dsp::Atom::ParamRamp;
+    if (s.regions[r].kind == RegionKind::Control || ramps) {
       CHECK(s.sleep.regions[r].segment == kNone);
       continue;
     }

@@ -56,6 +56,10 @@ constexpr size_t kMaxRunInvariants = 16;       // distinct pattern operands (par
 // state overflowed the 4 KiB frame that needs no stack probes (Operator with every section on: chains of 372–740,
 // pair frames of 4.4 KiB; the corpus's chains are ≤ 232); such a stage runs group by group.
 constexpr uint32_t kMaxPairChainCost = 320;
+// TX.smooth: ... and a lower bound for a stage that runs param_ramp calls: a stage with calls holds the call scratch
+// and the pointers its calls and ramp dispatch reuse (measured: the Operator's "full sines" pair frame went from 3.7 to
+// 4.2 KiB with its 11 ramps at a chain cost inside (256, 320]; the corpus's chains, ≤ 232, keep their pairs).
+constexpr uint32_t kMaxPairChainCostWithRamps = 256;
 // T1b.x-perf (Q122): a Block region of a GLOBAL stage joins a chain only up to this cost. In a chain its ops run one
 // frame at a time (scalar) instead of 8 frames per vector, which is free while they fill the recursions' idle issue
 // slots and a loss once they outweigh them (measured: bench_devices, Saturator / EQ Eight).
@@ -200,7 +204,12 @@ private:
   bool wantsPair(uint32_t k) const {
     const g::Stage& st = s_.stages[k];
     return st.poly == g::Poly::Voice && !o_.scalarLanes && o_.pairs && k < L_.pairable.size() && L_.pairable[k] &&
-           !frameCalls(st) && chainCost_[k] <= kMaxPairChainCost;
+           !frameCalls(st) && chainCost_[k] <= (stageHasRamps(st) ? kMaxPairChainCostWithRamps : kMaxPairChainCost);
+  }
+  bool stageHasRamps(const g::Stage& st) const noexcept {
+    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r)
+      if (s_.regions[r].numOps > 0 && s_.ops[s_.regions[r].firstOp].kernel == Atom::ParamRamp) return true;
+    return false;
   }
 
   // ================================================================================================================
@@ -479,9 +488,63 @@ private:
             stage(s_.unknowns[u].state);
       }
     }
+    const uint32_t end = st.firstRegion + st.numRegions;
+    // TX.smooth: the regions after the Control region and the param_ramp regions read the ramps; when inline code
+    // there reads one, a block in which one of them moves runs those regions in a function of their own (emitted
+    // below, in ramp mode), entered as the stage function's last act (nothing is live across the call, so the
+    // stage function's frame does not grow: the Operator's pair function sits close to the 4 KiB probe limit).
+    uint32_t split = st.firstRegion;
+    while (split < end && (s_.regions[split].kind == g::RegionKind::Control || isRampRegion(split))) ++split;
+    const std::vector<uint32_t> ramps = split < end ? unitRamps(split, end - 1) : std::vector<uint32_t>{};
+    // A pair function stages its voice state after the dispatch when the regions before it touch none of it (their
+    // param_ramp calls never do): nothing staged is live at the dispatch then.
+    bool lateStage = vw == 16 && !ramps.empty();
+    for (uint32_t r = st.firstRegion; r < split && lateStage; ++r) {
+      const g::Region& reg = s_.regions[r];
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
+        if (inline_[i] && s_.ops[i].state != g::kNone && staged_[s_.ops[i].state]) lateStage = false;
+      for (uint32_t q = reg.firstSolve; q < reg.firstSolve + reg.numSolves; ++q)
+        for (uint32_t u = s_.solves[q].firstUnknown; u < s_.solves[q].firstUnknown + s_.solves[q].numUnknowns; ++u)
+          if (s_.unknowns[u].state != g::kNone && staged_[s_.unknowns[u].state]) lateStage = false;
+    }
     beginFunction(name, llvm::Function::ExternalLinkage, maxOperands);
-    if (vw == 16) stagePairState(true);
-    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+    if (vw == 16 && !lateStage) stagePairState(true);
+    emitRegions(st.firstRegion, split);
+    llvm::Function* rampFn = nullptr;
+    if (!ramps.empty()) rampFn = emitRampDispatch(ramps, name + "_ramps", lateStage);
+    if (lateStage) stagePairState(true);
+    emitRegions(split, end);
+    if (vw == 16) stagePairState(false);
+    B_.CreateRetVoid();
+    if (rampFn) {  // the same regions in ramp mode
+      llvm::Function* decl = rampFn;
+      decl->setName(name + "_ramps_decl");
+      beginFunction(name + "_ramps", llvm::Function::InternalLinkage, maxOperands);
+      F_->addFnAttr(llvm::Attribute::NoInline);
+      decl->replaceAllUsesWith(F_);
+      decl->eraseFromParent();
+      gainTarget_.clear();
+      if (vw == 16) stagePairState(true);
+      const unsigned halves = vw == 16 ? 2u : 1u;
+      unitHeld_.assign(s_.ramps.size(), 0);
+      for (const uint32_t r : ramps) {
+        for (unsigned h = 0; h < halves; ++h) emitRampHold(r, h);
+        unitHeld_[r] = 1;
+      }
+      rampMode_ = true;
+      emitRegions(split, end);
+      rampMode_ = false;
+      unitHeld_.assign(s_.ramps.size(), 0);
+      if (vw == 16) stagePairState(false);
+      B_.CreateRetVoid();
+    }
+    voice_ = false;
+    vw_ = 8;
+  }
+
+  // Regions [from, to) of the current stage: memo regions, chains, sleeping segments, the cost meter.
+  void emitRegions(uint32_t from, uint32_t to) {
+    for (uint32_t r = from; r < to; ++r) {
       Value* t0 = meterStart();  // T4.5: the region's (or chain's) time while a cost meter is shown
       const uint32_t first = r;
       if (!voice_ && memo_[r]) {
@@ -499,10 +562,10 @@ private:
       r = last;
       meterStop(first, t0);
     }
-    if (vw == 16) stagePairState(false);
-    B_.CreateRetVoid();
-    voice_ = false;
-    vw_ = 8;
+  }
+  bool isRampRegion(uint32_t r) const noexcept {
+    const g::Region& reg = s_.regions[r];
+    return reg.numOps > 0 && s_.ops[reg.firstOp].kernel == Atom::ParamRamp;
   }
 
   llvm::Function* beginFunction(const std::string& name, llvm::Function::LinkageTypes linkage, uint32_t maxOperands) {
@@ -667,6 +730,15 @@ private:
     return p;
   }
   bool voiceArena(uint32_t entry) const noexcept { return s_.state.entries[entry].arena == g::Poly::Voice; }
+  // TX.smooth: a state entry's address computed where it is used (a constant offset from the arena argument, folded
+  // into the addressing mode), not cached in the entry block: a stage reads ~80 param ramps' states (the Operator), and
+  // as entry-block values their pointers were live across the stage, spilled, and pushed the pair frame past 4 KiB.
+  Value* statePtrHere(uint32_t entry, unsigned h) {
+    const g::StateEntry& e = s_.state.entries[entry];
+    if (e.arena != g::Poly::Voice) h = 0;
+    return B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), e.arena == g::Poly::Voice ? (h ? vstate1_ : vstate_) : gstate_,
+                                         e.offset);
+  }
 
   // ---- voice-stage operands (T1b.2): the 8 floats of operand o at frame t for half h; plus the lane in the
   // scalar baseline. Patterns are not offset by t.
@@ -844,6 +916,87 @@ private:
   // ================================================================================================================
   // Operand access.
   // ================================================================================================================
+  // TX.smooth (pq/graph/schedule.h "Param ramps"): the ramp of op input operand `o` (a reference into
+  // s_.operands), or nullptr.
+  uint32_t rampIndexOf(const g::Operand& o) const noexcept {
+    if (s_.rampOf.empty() || &o < s_.operands.data() || &o >= s_.operands.data() + s_.operands.size()) return g::kNone;
+    return s_.rampOf[static_cast<size_t>(&o - s_.operands.data())];
+  }
+  // In a ramp-mode copy, the block a ramped input reads instead of its pattern.
+  const g::Operand* rampedOperand(const g::Operand& o) const noexcept {
+    if (!rampMode_) return nullptr;
+    const uint32_t r = rampIndexOf(o);
+    return r == g::kNone ? nullptr : &s_.ramps[r].out;
+  }
+  // i1: ramp r wrote its block this block (ParamRampState::active), for half h.
+  Value* rampActive(uint32_t r, unsigned h) {
+    Value* q = B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtrHere(s_.ops[s_.ramps[r].op].state, h),
+                                             offsetof(dsp::ParamRampState, active));
+    return B_.CreateICmpNE(B_.CreateAlignedLoad(i32_, q, llvm::Align(4)), c32(0));
+  }
+  // Unless ramp r moved this block (half h): fill its block with its value (dsp::paramRampHold).
+  void emitRampHold(uint32_t r, unsigned h) {
+    const g::Ramp& rp = s_.ramps[r];
+    const g::Buffer& buf = s_.buffers[rp.out.index];
+    llvm::BasicBlock* hold = llvm::BasicBlock::Create(C_, "ramp_hold", F_);
+    llvm::BasicBlock* next = llvm::BasicBlock::Create(C_, "ramp_held", F_);
+    B_.CreateCondBr(rampActive(r, h), next, hold);
+    B_.SetInsertPoint(hold);
+    Value* n = B_.CreateTrunc(B_.CreateMul(frames64_, c64(buf.factor), "", true, true), i32_);
+    Value* out = voice_ ? voicePtr(rp.out, c64(0), h, B_) : framePtr(rp.out, c64(0));
+    llvm::FunctionType* holdTy = llvm::FunctionType::get(void_, {ptr_, ptr_, i32_, i32_}, false);
+    callPtr(holdTy, tabLoad(reinterpret_cast<const void*>(&dsp::paramRampHold)),
+            {statePtrHere(s_.ops[rp.op].state, h), out, n, c32(buf.lanes)});
+    B_.CreateBr(next);
+    B_.SetInsertPoint(next);
+  }
+  // The ramps that inline code or calls in loops of regions r0..r1 read (block-wise calls choose for themselves,
+  // emitCallHalf).
+  std::vector<uint32_t> unitRamps(uint32_t r0, uint32_t r1) const {
+    std::vector<uint32_t> out;
+    if (s_.rampOf.empty()) return out;
+    for (uint32_t r = r0; r <= r1; ++r)
+      for (uint32_t i = s_.regions[r].firstOp; i < s_.regions[r].firstOp + s_.regions[r].numOps; ++i) {
+        // Inline code reads ramps in place; calls in a loop run per frame or sub-block, so their holds go to the unit.
+        if (!inline_[i] && s_.regions[r].kind != g::RegionKind::Loop) continue;
+        const g::Op& op = s_.ops[i];
+        for (uint32_t j = 0; j < op.numIn; ++j) {
+          const uint32_t k = s_.rampOf[op.firstOperand + j];
+          if (k != g::kNone && std::find(out.begin(), out.end(), k) == out.end()) out.push_back(k);
+        }
+      }
+    return out;
+  }
+  // A unit (a region or chain) that reads ramps, behind one branch per block: no ramp moves → `body` as scheduled
+  // (every Spl input a hoisted pattern); one moves → `body` again in ramp mode, where every ramped input is read from
+  // its ramp's block (a resting ramp's block filled with its value first, dsp::paramRampHold) and each kernel call
+  // with ramped inputs picks, by its own ramps, the kernel for its Spl mask without them (what the interpreter does).
+  // TX.smooth: one branch per block on whether any of `ramps` moved (either half of a pair); if so, the rest of
+  // the stage runs in the ramp-mode function (declared here, defined by stageFunction) and the stage function returns
+  // (a pair function writes its staged voice state back first: the callee stages its own).
+  llvm::Function* emitRampDispatch(const std::vector<uint32_t>& ramps, const std::string& name, bool unstaged) {
+    const unsigned halves = voice_ && vw_ == 16 ? 2u : 1u;
+    Value* any = nullptr;
+    for (const uint32_t r : ramps)
+      for (unsigned h = 0; h < halves; ++h) {
+        Value* a = rampActive(r, h);
+        any = any ? B_.CreateOr(any, a) : a;
+      }
+    llvm::BasicBlock* moving = llvm::BasicBlock::Create(C_, "ramps_moving", F_);
+    llvm::BasicBlock* steady = llvm::BasicBlock::Create(C_, "ramps_steady", F_);
+    llvm::MDBuilder md(C_);
+    B_.CreateCondBr(any, moving, steady, md.createBranchWeights(1, 63));
+    B_.SetInsertPoint(moving);
+    llvm::Function* fn = llvm::Function::Create(F_->getFunctionType(), llvm::Function::ExternalLinkage, name, M_);
+    std::vector<Value*> args;
+    for (llvm::Argument& a : F_->args()) args.push_back(&a);
+    if (voice_ && vw_ == 16 && !unstaged) stagePairState(false);
+    llvm::CallInst* call = B_.CreateCall(fn, args);
+    call->setDoesNotThrow();
+    B_.CreateRetVoid();
+    B_.SetInsertPoint(steady);
+    return fn;
+  }
   Value* loadPattern(const g::Operand& o, unsigned w, bool hoist) {
     const auto key = std::make_tuple(static_cast<int>(o.kind), o.index, w);
     if (hoist && hoistIP_) {
@@ -859,6 +1012,7 @@ private:
   }
 
   Value* read(const g::Operand& o, const Frame& fr) {
+    if (const g::Operand* ro = rampedOperand(o)) return read(*ro, fr);  // TX.smooth: the ramp's block
     Vx v(B_, fr.w);
     switch (o.kind) {
       case g::Operand::Kind::Const: return v.cbits(std::bit_cast<uint32_t>(s_.constants[o.index].value));
@@ -931,7 +1085,7 @@ private:
       case g::OpKind::Kernel: {
         const bool control = s_.regions[regionOf(i)].kind == g::RegionKind::Control;
         fn = reinterpret_cast<const void*>(dsp::findKernel(op.kernel, control ? 8u : op.lanes, op.splMask));
-        if (op.state != g::kNone) state = statePtr(op.state, h);
+        if (op.state != g::kNone) state = op.kernel == Atom::ParamRamp ? statePtrHere(op.state, h) : statePtr(op.state, h);
         if (L_.opInfo[i] != g::kNone) resource = tabSlot(L_.opInfo[i]);
         break;
       }
@@ -949,6 +1103,33 @@ private:
         break;
     }
     auto ptrOf = [&](const g::Operand& o) { return voice_ ? voicePtr(o, t0, h, B_) : framePtr(o, t0); };
+    // TX.smooth: a call whose own ramps move reads every one of them as a block (a resting one's block filled with its
+    // value first; in a unit's ramp-mode copy that was done for the unit), else its patterns: chosen per call, as the
+    // interpreter chooses per record, so a unit whose ramps only calls read needs no ramp-mode copy.
+    Value* opActive = nullptr;
+    uint32_t ramped = 0;
+    if (op.kind == g::OpKind::Kernel)
+      for (uint32_t j = 0; j < ins.size() && j < 32; ++j) {
+        const uint32_t r = rampIndexOf(ins[j]);
+        if (r == g::kNone) continue;
+        ramped |= 1u << j;
+        Value* a = rampActive(r, h);
+        opActive = opActive ? B_.CreateOr(opActive, a) : a;
+      }
+    uint32_t toHold = 0;  // ramps of this call the unit has not filled
+    for (uint32_t j = 0; j < ins.size() && j < 32; ++j)
+      if (((ramped >> j) & 1u) != 0 && !(rampMode_ && unitHeld_[rampIndexOf(ins[j])])) toHold |= 1u << j;
+    if (toHold != 0) {
+      llvm::BasicBlock* holds = llvm::BasicBlock::Create(C_, "call_ramp_holds", F_);
+      llvm::BasicBlock* after = llvm::BasicBlock::Create(C_, "call_ramp_ready", F_);
+      llvm::MDBuilder md(C_);
+      B_.CreateCondBr(opActive, holds, after, md.createBranchWeights(1, 63));
+      B_.SetInsertPoint(holds);
+      for (uint32_t j = 0; j < ins.size() && j < 32; ++j)
+        if (((toHold >> j) & 1u) != 0) emitRampHold(rampIndexOf(ins[j]), h);
+      B_.CreateBr(after);
+      B_.SetInsertPoint(after);
+    }
     // Pointer arrays: on the stack, or for a wide call in buf (jit_image.h kStackCallOperands).
     Value* inArr = inArr_;
     Value* outArr = outArr_;
@@ -956,7 +1137,11 @@ private:
       inArr = B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.callOff);
       outArr = B_.CreateConstInBoundsGEP1_64(ptr_, inArr, ins.size());
     }
-    for (uint32_t j = 0; j < ins.size(); ++j) B_.CreateStore(ptrOf(ins[j]), B_.CreateConstInBoundsGEP1_64(ptr_, inArr, j));
+    for (uint32_t j = 0; j < ins.size(); ++j) {
+      Value* p = ptrOf(ins[j]);
+      if (j < 32 && ((ramped >> j) & 1u) != 0) p = B_.CreateSelect(opActive, ptrOf(s_.ramps[rampIndexOf(ins[j])].out), p);
+      B_.CreateStore(p, B_.CreateConstInBoundsGEP1_64(ptr_, inArr, j));
+    }
     for (uint32_t k = 0; k < outs.size(); ++k) B_.CreateStore(ptrOf(outs[k]), B_.CreateConstInBoundsGEP1_64(ptr_, outArr, k));
     B_.CreateStore(inArr, B_.CreateStructGEP(kargsTy_, kargs_, 0));
     B_.CreateStore(outArr, B_.CreateStructGEP(kargsTy_, kargs_, 1));
@@ -965,9 +1150,16 @@ private:
     B_.CreateStore(n32, B_.CreateStructGEP(kargsTy_, kargs_, 4));
     B_.CreateStore(llvm::ConstantInt::get(i16_, op.numIn), B_.CreateStructGEP(kargsTy_, kargs_, 5));
     B_.CreateStore(llvm::ConstantInt::get(i16_, op.numOut), B_.CreateStructGEP(kargsTy_, kargs_, 6));
-    B_.CreateStore(c32(spl), B_.CreateStructGEP(kargsTy_, kargs_, 7));
+    Value* splV = c32(spl);
+    Value* fnV = tabLoad(fn);
+    if (ramped != 0) {
+      const void* fnRamp = reinterpret_cast<const void*>(dsp::findKernel(op.kernel, op.lanes, op.splMask & ~ramped));
+      splV = B_.CreateSelect(opActive, c32(op.splMask & ~ramped), splV);
+      fnV = B_.CreateSelect(opActive, tabLoad(fnRamp), fnV);
+    }
+    B_.CreateStore(splV, B_.CreateStructGEP(kargsTy_, kargs_, 7));
     llvm::FunctionType* ty = llvm::FunctionType::get(void_, {ptr_}, false);
-    callPtr(ty, tabLoad(fn), {kargs_});
+    callPtr(ty, fnV, {kargs_});
   }
 
   uint32_t regionOf(uint32_t op) const { return opRegion_[op]; }
@@ -1116,6 +1308,22 @@ private:
         Value* x = a[add ? 1 : 0];
         Value* acc = add ? a[0] : v.zero();
         Vx s1(B_, 1);
+        if (rampedGain(i)) {  // TX.smooth: the kernel's audio-rate path with g the ramp's frames (kernels_gain.cpp audio1)
+          Value* gv = a[add ? 2 : 1];
+          gv = v.select(v.lt(v.abs(gv), v.cf(std::numeric_limits<float>::infinity())), gv, v.zero());
+          if (fr.w == 1 && !gainsSettled_) {
+            Value* d = ldF(sp, static_cast<uint32_t>(offsetof(dsp::GainState, d)), s1);
+            Value* r = ldF(sp, static_cast<uint32_t>(offsetof(dsp::GainState, r)), s1);
+            Value* y = v.fma(x, v.add(gv, d), acc);
+            out(v.select(v.band(v.eq(d, v.zero()), v.eq(gv, v.zero())), acc, y));
+            Value* dn = v.mul(d, r);
+            st(sp, static_cast<uint32_t>(offsetof(dsp::GainState, d)),
+               v.select(v.lt(v.abs(dn), v.cf(dsp::kGainSettled)), v.zero(), dn), s1);
+            return;
+          }
+          out(v.select(v.eq(gv, v.zero()), acc, v.fma(x, gv, acc)));
+          return;
+        }
         const auto pre = gainTarget_.find(i);  // loaded after the prologue, before the loop (the settled form's)
         Value* tgt = pre != gainTarget_.end() && (fr.w != 1 || gainsSettled_)
                          ? pre->second
@@ -1273,7 +1481,7 @@ private:
       emitInline(i, fr);
       return;
     }
-    if (sineInline(i, voice_, vw_)) {
+    if (sineInline(i, voice_, vw_) && !(rampMode_ && opReadsRamps(i))) {
       emitWavetableSine(i, fr);
       return;
     }
@@ -1291,6 +1499,13 @@ private:
   // else call the kernel. The inline step is the readers' sine path with the same operations (the same bits as the
   // interpreter) and updates the reader state as they do. Not in solve bodies, Control regions or the scalar-lane
   // voice baseline (calls there).
+  bool opReadsRamps(uint32_t i) const noexcept {
+    if (s_.rampOf.empty()) return false;
+    const g::Op& op = s_.ops[i];
+    for (uint32_t j = 0; j < op.numIn; ++j)
+      if (s_.rampOf[op.firstOperand + j] != g::kNone) return true;
+    return false;
+  }
   bool sineInline(uint32_t i, bool voice, unsigned vw) const {
     const g::Op& op = s_.ops[i];
     if (op.kind != g::OpKind::Kernel || op.kernel != Atom::WavetablePos) return false;
@@ -1602,7 +1817,7 @@ private:
   // tail does: results stay bit-identical.
   // The prologues of the inline gains among ops [a, b) (dsp::gainPrologue: prepare, retarget, start), at the insert
   // point; returns whether all of them are settled (their residual is 0), or nullptr if there are none.
-  Value* emitGainPrologues(uint32_t a, uint32_t b) {
+  Value* emitGainPrologues(uint32_t a, uint32_t b, Value* t0 = nullptr, Value* tLast = nullptr) {
     Value* settled = nullptr;
     for (uint32_t i = a; i < b; ++i) {
       if (!inline_[i] || (s_.ops[i].kernel != Atom::Gain && s_.ops[i].kernel != Atom::GainAdd)) continue;
@@ -1610,9 +1825,33 @@ private:
       const auto ins = s_.inputs(op);
       const uint32_t kA = op.kernel == Atom::GainAdd ? 1u : 0u;
       const Frame f0{c64(0), 1, nullptr, false};
-      Value* g = read(ins[kA + 1], f0);
       Value* tau = read(ins[kA + 2], f0);
       Value* start = ins.size() > kA + 3 ? read(ins[kA + 3], f0) : static_cast<Value*>(llvm::ConstantFP::get(f32_, 0.0));
+      if (rampedGain(i)) {
+        // TX.smooth, a ramp-mode copy: g is the ramp's block, the kernel's audio-rate start (gainAudioPrologue: prepare,
+        // a first call's `start`, no retarget) with g at the slice's first frame. The target the kernel leaves at the
+        // call's end, its last g (finite or 0), is stored here, before the frames run: the audio-rate path never reads
+        // it, and later ops of the run may take the ramp's buffer for their own values once its last frame is read.
+        Value* g0 = read(ins[kA + 1], Frame{t0 ? t0 : c64(0), 1, nullptr, false});
+        llvm::FunctionType* ty = llvm::FunctionType::get(llvm::Type::getVoidTy(C_), {ptr_, f32_, f32_, f32_}, false);
+        callPtr(ty, tabLoad(reinterpret_cast<const void*>(&dsp::gainAudioPrologue)), {statePtr(op.state), g0, tau, start});
+        {
+          Vx v(B_, 1);
+          Value* gl = read(ins[kA + 1], Frame{tLast ? tLast : B_.CreateSub(frames64_, c64(1)), 1, nullptr, false});
+          gl = v.select(v.lt(v.abs(gl), v.cf(std::numeric_limits<float>::infinity())), gl, v.zero());
+          B_.CreateAlignedStore(gl, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtr(op.state),
+                                                                  offsetof(dsp::GainState, target)),
+                                llvm::Align(4));
+        }
+        Value* d = B_.CreateAlignedLoad(
+            f32_, B_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(C_), statePtr(op.state), offsetof(dsp::GainState, d)),
+            llvm::Align(4));
+        Value* z = B_.CreateFCmpOEQ(d, llvm::ConstantFP::get(f32_, 0.0));
+        settled = settled ? B_.CreateAnd(settled, z) : z;
+        gainTarget_.erase(i);
+        continue;
+      }
+      Value* g = read(ins[kA + 1], f0);
       // The steady case needs no call: started, the same target and the same time constant leave the state as it is
       // (retarget and prepare change nothing then).
       auto field = [&](size_t off) {
@@ -1641,11 +1880,20 @@ private:
     }
     return settled;
   }
+  // TX.smooth: an inline gain whose g reads a ramp, in a ramp-mode copy (the kernel's audio-rate path, frame by frame).
+  bool rampedGain(uint32_t i) const {
+    if (!rampMode_ || i >= inline_.size() || !inline_[i]) return false;
+    const g::Op& op = s_.ops[i];
+    if (op.kernel != Atom::Gain && op.kernel != Atom::GainAdd) return false;
+    return rampIndexOf(s_.inputs(op)[op.kernel == Atom::GainAdd ? 2u : 1u]) != g::kNone;
+  }
   // ... of the inline gains of regions [r0, r1] (a chain or a per-sample loop: before its frame loop).
   Value* emitRegionGainPrologues(uint32_t r0, uint32_t r1) {
     Value* settled = nullptr;
+    Value* tLast = nullptr;
     for (uint32_t r = r0; r <= r1; ++r)
-      if (Value* s = emitGainPrologues(s_.regions[r].firstOp, s_.regions[r].firstOp + s_.regions[r].numOps))
+      if (Value* s = emitGainPrologues(s_.regions[r].firstOp, s_.regions[r].firstOp + s_.regions[r].numOps, nullptr,
+                                       tLast ? tLast : (tLast = B_.CreateSub(regionFrames(r0), c64(1)))))
         settled = settled ? B_.CreateAnd(settled, s) : s;
     return settled;
   }
@@ -1673,7 +1921,7 @@ private:
   }
 
   void emitFused(uint32_t a, uint32_t b, Value* t0, Value* n) {
-    if (Value* settled = emitGainPrologues(a, b)) {
+    if (Value* settled = emitGainPrologues(a, b, t0, B_.CreateSub(B_.CreateAdd(t0, n, "", true, true), c64(1)))) {
       // A gain is moving (rare: ~20 time constants after a change): the run frame by frame, every gain per its
       // definition; else the vectorised run with the gains' settled form.
       llvm::BasicBlock* fast = llvm::BasicBlock::Create(C_, "gains_settled", F_);
@@ -1703,7 +1951,8 @@ private:
     // reach 1.4×, 8 chunks 2× the interpreter on a 36-op fast_ chain; bench/RESULTS.md). Short runs are not
     // latency-bound (the out-of-order window overlaps their iterations) and stay at one chunk: less code. Wide
     // runs get fewer chunks (interleaveFor): one chunk of them already holds enough independent work.
-    const unsigned u = interleaveFor(runCost(a, b), runDepth(a, b));
+    // TX.smooth: a unit's ramp-mode copy (blocks in which a param moves) is not interleaved: less code for the rare case.
+    const unsigned u = rampMode_ ? 1u : interleaveFor(runCost(a, b), runDepth(a, b));
     const unsigned w = lanes == 8 ? vw_ : 8u;  // a voice run: one frame of the group's (pair's, lane's) voices
     auto bodyAt = [&](Value* t, unsigned chunks, Value* mask) {
       std::vector<Map> maps(chunks);
@@ -2027,6 +2276,8 @@ private:
   std::vector<uint32_t> chainCost_;  // per stage: the cost of its largest chain (T4.12: pair functions)
   std::vector<uint8_t> memo_;        // per region: a memo Control region (Q126)
   // current function
+  bool rampMode_ = false;          // TX.smooth: emitting a unit's copy for a block in which one of its ramps moves
+  std::vector<uint8_t> unitHeld_;  // TX.smooth: per ramp, filled by the ramp-mode function's prologue (stageFunction)
   bool voice_ = false;             // a voice stage's function
   unsigned vw_ = 8;                // its voice width: 1 (scalar lanes), 8 (a group), 16 (a pair)
   std::vector<uint8_t> local_;     // pair functions: per buffer, a value of this stage kept per group (altOff)

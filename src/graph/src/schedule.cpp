@@ -186,6 +186,8 @@ public:
     if (!res_.ok()) return std::move(res_);
     finishStructure();
     outputs();
+    insertRamps();
+    if (!res_.ok()) return std::move(res_);
     allocateBuffers();
     layoutState();
     if (work_) S().rewritten = work_;
@@ -2198,6 +2200,266 @@ private:
     }
     for (OutputRef& o : s.outputs) fix(o.value);
     for (ProbeRef& p : s.probes) fix(p.value);
+    for (Ramp& r : s.ramps) {
+      fix(r.source);
+      fix(r.out);
+    }
+  }
+
+  // ---- param ramps (TX.smooth; schedule.h "Param ramps") --------------------------------------------------------
+  // Whether a pattern operand holds a real value (bools are lane masks: never interpolated). Unknown: false.
+  bool patternIsReal(const Operand& o) const {
+    const Schedule& s = S_const();
+    const auto nodes = tp_->patch.nodeCount();
+    switch (o.kind) {
+      case Operand::Kind::Param: return s.params[o.index].kind == Kind::Real;
+      case Operand::Kind::External: {
+        const External& e = s.externals[o.index];
+        if (e.rate == Rate::Audio || e.node == kNone || e.node >= nodes || tp_->patch.node(e.node).numOutputs == 0)
+          return false;
+        return tp_->outputType(e.node, 0).kind == Kind::Real;
+      }
+      case Operand::Kind::Buffer: {
+        const Val& v = vals_[o.index];
+        if (!v.pattern || v.def == kNone || v.def >= s.ops.size()) return false;
+        const Op& op = s.ops[v.def];
+        for (uint32_t k = 0; k < op.numOut; ++k) {
+          const Operand& out = s.operands[op.firstOperand + op.numIn + k];
+          if (out.kind != Operand::Kind::Buffer || out.index != o.index) continue;
+          if (op.kind == OpKind::Reduce) return op.valueKind == Kind::Real;
+          if (op.kind != OpKind::Kernel || op.node == kNone || op.node >= nodes || k >= tp_->patch.node(op.node).numOutputs)
+            return false;
+          if (((dsp::kernelInfo(op.kernel).boolOut >> k) & 1u) != 0) return false;
+          return tp_->outputType(op.node, k).kind == Kind::Real;
+        }
+        return false;
+      }
+      default: return false;
+    }
+  }
+
+  // A stable identity of a ramp's source (with the arena and factor: its param_ramp's state key): a structural hash
+  // of the param-rate expression (params by key, constants by value, engine sources by atom and channel, kernels by
+  // atom, channel and output), so reordering the text or another choice of CSE representative keeps the key.
+  uint64_t rampSourceKey(const Operand& o, std::unordered_map<uint32_t, uint64_t>& memo, uint32_t depth = 0) const {
+    const Schedule& s = S_const();
+    switch (o.kind) {
+      case Operand::Kind::Param: return mix64(s.params[o.index].key ^ 0x50u);
+      case Operand::Kind::Const: return mix64(std::bit_cast<uint32_t>(s.constants[o.index].value) ^ 0xC0000000ull);
+      case Operand::Kind::External: {
+        const External& e = s.externals[o.index];
+        if (e.source == External::Source::RootInput && e.node != kNone && e.node < tp_->stateKey.size())
+          return mix64(tp_->stateKey[e.node] ^ (uint64_t{e.channel} << 16) ^ 0x49u);
+        return mix64((uint64_t{e.atom} << 32) ^ (uint64_t{e.channel} << 16) ^ 0x45u);
+      }
+      case Operand::Kind::Buffer: {
+        if (auto it = memo.find(o.index); it != memo.end()) return it->second;
+        const Val& v = vals_[o.index];
+        uint64_t h = mix64(0x42000000ull + o.index);
+        if (v.def != kNone && v.def < s.ops.size() && depth < 64) {
+          const Op& op = s.ops[v.def];
+          uint32_t k = 0;
+          while (k < op.numOut && s.operands[op.firstOperand + op.numIn + k].index != o.index) ++k;
+          if (op.kind == OpKind::Kernel && op.state == kNone) {
+            h = mix64((static_cast<uint64_t>(op.kernel) << 40) ^ (uint64_t{op.channel} << 20) ^ k ^ 0x4Bu);
+            for (uint32_t j = 0; j < op.numIn; ++j)
+              h = mix64(h ^ rampSourceKey(s.operands[op.firstOperand + j], memo, depth + 1) * (j + 1));
+          } else if (op.node != kNone && op.node < tp_->stateKey.size()) {
+            h = mix64(tp_->stateKey[op.node] ^ mix64((uint64_t{op.channel} << 16) | k));
+          }
+        }
+        memo.emplace(o.index, h);
+        return h;
+      }
+      default: return mix64(o.index);
+    }
+  }
+
+  // After outputs() (values are still virtual; positions are op indices): finds the reads that get a ramp, puts one
+  // param_ramp op per (stage, factor, source) into a Block region right after its stage's Control region, renumbers
+  // everything that holds op or region positions, and records each ramp's output as read by its readers (so
+  // allocateBuffers keeps a ramp's buffer alive until its last reader, through loops as for any value).
+  void insertRamps() {
+    Schedule& s = S();
+    if (!opt_.paramRamps) return;
+    const auto numOps = static_cast<uint32_t>(s.ops.size());
+    std::vector<uint8_t> inBody(numOps, 0);
+    for (const SolveBlock& b : s.solves)
+      for (uint32_t i = b.firstOp; i < b.firstOp + b.numOps && i < numOps; ++i) inBody[i] = 1;
+    struct Want {
+      uint32_t stage;   // Schedule::stages position
+      uint16_t factor;
+      Operand src;
+      std::vector<std::pair<uint32_t, uint32_t>> readers;  // (operand index, op)
+      uint64_t key = 0;  // its source's structural key (before positions change)
+    };
+    std::unordered_map<uint32_t, uint64_t> keyMemo;
+    std::vector<Want> wants;
+    std::unordered_map<uint64_t, uint32_t> wantOf;
+    std::vector<uint32_t> regionOfOp(numOps, kNone);
+    for (uint32_t r = 0; r < s.regions.size(); ++r)
+      for (uint32_t i = s.regions[r].firstOp; i < s.regions[r].firstOp + s.regions[r].numOps && i < numOps; ++i)
+        regionOfOp[i] = r;
+    for (uint32_t k = 0; k < s.stages.size(); ++k) {
+      const Stage& st = s.stages[k];
+      for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+        const Region& reg = s.regions[r];
+        if (reg.kind == RegionKind::Control) continue;
+        for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+          const Op& op = s.ops[i];
+          if (op.kind != OpKind::Kernel || inBody[i]) continue;
+          const uint32_t mask = dsp::rampableInputs(op.kernel, op.numIn) & op.splMask;
+          if (mask == 0) continue;
+          uint32_t take = 0;
+          for (uint32_t j = 0; j < op.numIn && j < 32; ++j) {
+            if (((mask >> j) & 1u) == 0) continue;
+            const Operand& o = s.operands[op.firstOperand + j];
+            if (o.kind == Operand::Kind::Const || o.kind == Operand::Kind::None || !isPatternLike(o)) continue;
+            if (!patternIsReal(o)) continue;
+            take |= 1u << j;
+          }
+          if (take == 0 || dsp::findKernel(op.kernel, op.lanes, op.splMask & ~take) == nullptr) continue;
+          for (uint32_t j = 0; j < op.numIn && j < 32; ++j) {
+            if (((take >> j) & 1u) == 0) continue;
+            const Operand& o = s.operands[op.firstOperand + j];
+            const uint64_t key = (uint64_t{k} << 48) | (uint64_t{reg.factor} << 40) |
+                                 (static_cast<uint64_t>(o.kind) << 32) | o.index;
+            auto [it, fresh] = wantOf.try_emplace(key, static_cast<uint32_t>(wants.size()));
+            if (fresh) wants.push_back({k, reg.factor, o, {}, rampSourceKey(o, keyMemo)});
+            wants[it->second].readers.push_back({op.firstOperand + j, i});
+          }
+        }
+      }
+    }
+    if (wants.empty()) return;
+    // The new op and region order.
+    std::vector<Op> ops;
+    std::vector<Region> regions;
+    std::vector<uint32_t> regStage;
+    ops.reserve(numOps + wants.size());
+    regions.reserve(s.regions.size() + wants.size());
+    std::vector<uint32_t> opMap(numOps + 2, 0), regMap(s.regions.size(), kNone);
+    std::vector<uint32_t> rampPos(wants.size(), kNone), rampRegion(wants.size(), kNone);
+    uint32_t solvesSoFar = 0;
+    auto copyRegion = [&](uint32_t r, uint32_t k) {
+      Region reg = s.regions[r];
+      regMap[r] = static_cast<uint32_t>(regions.size());
+      const auto first = static_cast<uint32_t>(ops.size());
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+        opMap[i] = static_cast<uint32_t>(ops.size());
+        ops.push_back(s.ops[i]);
+      }
+      reg.firstOp = first;
+      solvesSoFar = std::max(solvesSoFar, reg.firstSolve + reg.numSolves);
+      regions.push_back(reg);
+      regStage.push_back(k);
+    };
+    for (uint32_t k = 0; k < s.stages.size(); ++k) {
+      Stage& st = s.stages[k];
+      const auto newFirstRegion = static_cast<uint32_t>(regions.size());
+      const auto newFirstOp = static_cast<uint32_t>(ops.size());
+      uint32_t r = st.firstRegion;
+      const uint32_t end = st.firstRegion + st.numRegions;
+      if (r < end && s.regions[r].kind == RegionKind::Control) copyRegion(r++, k);
+      std::vector<uint16_t> factors;
+      for (const Want& w : wants)
+        if (w.stage == k && std::find(factors.begin(), factors.end(), w.factor) == factors.end()) factors.push_back(w.factor);
+      std::sort(factors.begin(), factors.end());
+      for (const uint16_t f : factors) {
+        Region rr;
+        rr.kind = RegionKind::Block;
+        rr.poly = st.poly;
+        rr.stage = st.index;
+        rr.factor = f;
+        rr.firstOp = static_cast<uint32_t>(ops.size());
+        rr.firstSolve = solvesSoFar;
+        const auto ri = static_cast<uint32_t>(regions.size());
+        for (uint32_t w = 0; w < wants.size(); ++w) {
+          if (wants[w].stage != k || wants[w].factor != f) continue;
+          rampPos[w] = static_cast<uint32_t>(ops.size());
+          rampRegion[w] = ri;
+          Op op;
+          op.kind = OpKind::Kernel;
+          op.kernel = dsp::Atom::ParamRamp;
+          op.lanes = st.poly == Poly::Voice ? 8 : 1;
+          ops.push_back(op);  // operands, state and node below
+        }
+        rr.numOps = static_cast<uint32_t>(ops.size()) - rr.firstOp;
+        regions.push_back(rr);
+        regStage.push_back(k);
+      }
+      for (; r < end; ++r) copyRegion(r, k);
+      st.firstRegion = newFirstRegion;
+      st.numRegions = static_cast<uint32_t>(regions.size()) - newFirstRegion;
+      st.firstOp = newFirstOp;
+      st.numOps = static_cast<uint32_t>(ops.size()) - newFirstOp;
+    }
+    if (ops.size() != numOps + wants.size()) {
+      reportPlain(ErrorCode::Unknown, "scheduler: an op outside every region (param ramps)");
+      return;
+    }
+    // Positions at or past the end (an empty solve body there; a value defined at numOps).
+    opMap[numOps] = static_cast<uint32_t>(ops.size());
+    opMap[numOps + 1] = static_cast<uint32_t>(ops.size()) + 1;
+    auto mapPos = [&](uint32_t p) { return p == kNone ? kNone : opMap[std::min(p, numOps + 1)]; };
+    for (SolveBlock& b : s.solves) {
+      b.firstOp = mapPos(b.firstOp);
+      if (b.region < regMap.size()) b.region = regMap[b.region];
+    }
+    for (Val& v : vals_) v.def = mapPos(v.def);
+    for (Use& u : uses_) {
+      u.pos = mapPos(u.pos);
+      if (u.region < regMap.size()) u.region = regMap[u.region];
+    }
+    for (ProbeRef& p : s.probes)
+      if (p.region != kNone && p.region < regMap.size()) p.region = regMap[p.region];
+    // The ramp ops: operands (source, frames, out), state, and the out buffer read by the ramp's readers.
+    s.ramps.resize(wants.size());
+    for (uint32_t w = 0; w < wants.size(); ++w) {
+      const Want& want = wants[w];
+      const Stage& st = s.stages[want.stage];
+      Op& op = ops[rampPos[w]];
+      const bool voice = st.poly == Poly::Voice;
+      const double frames = std::max(1.0, std::round(dsp::kParamRampSeconds * opt_.sampleRate * want.factor));
+      const Operand fr = constOperand(static_cast<float>(std::min(frames, 16777216.0)), Kind::Real);
+      const Operand out = newVal(false, op.lanes, voice ? Poly::Voice : Poly::Global, want.factor);
+      Val& ov = vals_[out.index];
+      ov.def = rampPos[w];
+      ov.defStage = st.index;
+      if (want.src.kind == Operand::Kind::Buffer) ov.node = vals_[want.src.index].node;
+      else if (want.src.kind == Operand::Kind::Param) ov.node = s.params[want.src.index].node;
+      else if (want.src.kind == Operand::Kind::External) ov.node = s.externals[want.src.index].node;
+      op.node = ov.node;
+      op.firstOperand = static_cast<uint32_t>(s.operands.size());
+      op.numIn = 2;
+      op.numOut = 1;
+      op.splMask = 3;
+      s.operands.push_back(want.src);
+      s.operands.push_back(fr);
+      s.operands.push_back(out);
+      if (want.src.kind == Operand::Kind::Buffer) uses_.push_back({want.src.index, rampPos[w], rampRegion[w], kNone, false});
+      for (const auto& rd : want.readers)
+        uses_.push_back({out.index, opMap[rd.second], regMap[regionOfOp[rd.second]], kNone, false});
+      dsp::StateInit init;
+      init.sampleRate = opt_.sampleRate * want.factor;
+      init.lanes = op.lanes;
+      StateTag tag;
+      tag.kernel = static_cast<uint16_t>(dsp::Atom::ParamRamp);
+      tag.lanes = op.lanes;
+      tag.factor = static_cast<uint8_t>(want.factor);
+      // Not the stage: a track's state keys must not depend on its unit (the arena and factor are in the tag/slot).
+      const uint64_t key = mix64(want.key ^ mix64(0x52A0000ull | (uint64_t{voice} << 8) | want.factor));
+      pending_.push_back(PendingState{key, 0, voice ? Poly::Voice : Poly::Global, tag,
+                                      static_cast<uint32_t>(dsp::stateBytes(dsp::Atom::ParamRamp, init)), init, op.node});
+      op.state = static_cast<uint32_t>(pending_.size() - 1);
+      s.ramps[w] = Ramp{rampPos[w], want.src, out};
+    }
+    s.ops = std::move(ops);
+    s.regions = std::move(regions);
+    regionStage_ = std::move(regStage);
+    s.rampOf.assign(s.operands.size(), kNone);
+    for (uint32_t w = 0; w < wants.size(); ++w)
+      for (const auto& rd : wants[w].readers) s.rampOf[rd.first] = w;
   }
 
   // ---- state layout -------------------------------------------------------------------------------------------

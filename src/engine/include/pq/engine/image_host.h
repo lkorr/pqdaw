@@ -350,6 +350,7 @@ private:
   bool fail(std::string msg);
   bool validate(const graph::Schedule& s);
   bool validateFactors(const graph::Schedule& s, const graph::Region& reg, const graph::Op& op) const;  // TMM.6
+  bool validateRamps(const graph::Schedule& s);  // TX.smooth
   bool layoutMemory(const graph::Schedule& s, uint32_t extraBufFloats);
   bool externals(const graph::Schedule& s);
   void specialOps(const graph::Schedule& s);
@@ -422,6 +423,7 @@ private:
   bool firstBlock_ = true;
   bool paramsChanged_ = true;
   bool dormantCapable_ = false;
+  std::vector<const float*> globalRampRem_;  // TX.smooth: lane 0's frames left of each global param ramp
   bool planSegments_ = false;              // the schedule has sleep segments (whatever the mode)
   SleepStats sleepStats_;
   // Inspection (T4.5).

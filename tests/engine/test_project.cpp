@@ -8,11 +8,13 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/dsp/atoms.h"
 #include "pq/engine/interpreter.h"
 #include "pq/engine/note_list.h"
 #include "pq/engine/project_compile.h"
@@ -255,16 +257,25 @@ TEST_CASE("project composition: a track's state keys do not depend on its unit")
   CHECK(perUnit.numUnits() == 6);  // track 2 merged with group B
   // Every state entry of every unit exists, with the same key and tag, in the whole-project program.
   const graph::StateLayout& all = whole.unit(0).schedule->state;
-  uint32_t entries = 0;
+  // TX.smooth: a param ramp is one per (stage, source): a source read in two units is one ramp where the units share
+  // a stage, so ramps are compared as key sets (the same keys either way); every other entry one to one.
+  auto isRamp = [](const graph::StateEntry& e) { return e.tag.kernel == static_cast<uint16_t>(pq::dsp::Atom::ParamRamp); };
+  uint32_t entries = 0, wholeEntries = 0;
+  std::set<uint64_t> unitRamps, wholeRamps;
   for (uint32_t u = 0; u < perUnit.numUnits(); ++u)
     for (const graph::StateEntry& e : perUnit.unit(u).schedule->state.entries) {
       const graph::StateEntry* w = all.find(e.key, e.channel, e.arena);
       REQUIRE(w != nullptr);
       CHECK(w->tag == e.tag);
       CHECK(w->size == e.size);
-      ++entries;
+      if (isRamp(e)) unitRamps.insert(e.key);
+      else ++entries;
     }
-  CHECK(entries == all.entries.size());
+  for (const graph::StateEntry& e : all.entries)
+    if (isRamp(e)) wholeRamps.insert(e.key);
+    else ++wholeEntries;
+  CHECK(entries == wholeEntries);
+  CHECK(unitRamps == wholeRamps);
   // Flattened names carry the track id.
   const graph::Patch& tp = perUnit.unit(perUnit.partition().unitOf[0]).typed->patch;
   bool found = false;

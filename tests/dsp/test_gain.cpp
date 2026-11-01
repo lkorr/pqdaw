@@ -91,12 +91,28 @@ TEST_CASE("gain: a one-pole in closed form, any block size; settles exactly onto
 }
 
 TEST_CASE("gain: Spl x, audio-rate g (unsmoothed), and 8 lanes against the per-lane one-pole") {
-  {  // Spl x · a settled g
-    Rig r(Atom::Gain, 1);
+  {  // Spl x · an audio-rate g: used as it is (from its first block with `start` 1)
+    Rig r(Atom::Gain, 1, 1.0f);
     const float x[8] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
     std::vector<float> g(64, 0.25f), out(64);
     r.run(nullptr, false, x, true, g.data(), false, out.data(), 64);
     for (float v : out) CHECK(v == 0.125f);
+    for (int i = 0; i < 64; ++i) g[i] = 0.01f * static_cast<float>(i);
+    r.run(nullptr, false, x, true, g.data(), false, out.data(), 64);
+    for (int i = 0; i < 64; ++i) CHECK(out[i] == (i == 0 ? 0.0f : 0.5f * g[i]));
+  }
+  {  // TX.smooth: a new instance with `start` 0 fades in from 0 whatever the rate of g (the param path's one-pole), so a
+     // voice whose gain runs at audio rate in its first block (a param ramp of its group moving) fades in as well
+    Rig r(Atom::Gain, 1);
+    const float x[8] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    std::vector<float> g(64, 0.25f), out(64), outP(64);
+    Rig p(Atom::Gain, 1);  // the same as a param (Spl) gain
+    for (int b = 0; b < 40; ++b) {
+      r.run(nullptr, false, x, true, g.data(), false, out.data(), 64);
+      p.run(nullptr, false, x, true, g.data(), true, outP.data(), 64);
+      for (int i = 0; i < 64; ++i) CHECK(out[i] == outP[i]);
+    }
+    for (float v : out) CHECK(v == 0.125f);  // settled exactly
   }
   {  // 8 lanes: each lane its own target
     Rig r(Atom::Gain, 8);

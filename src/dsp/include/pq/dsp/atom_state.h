@@ -85,6 +85,19 @@ struct alignas(32) GainState {
   float pad_[7];
 };
 
+// param_ramp (TX.smooth, the compiler's param smoothing; kernels_ramp.cpp): per lane the value it heads for, the
+// step per frame and the frames left of the ramp (the value at frame k of the remaining ramp is target − inc·(rem −
+// k − 1)), whether the lane has run (0 after initState and a voice's lane reset: its first block starts at its
+// input); for the whole block whether this block's call wrote the output (some lane ramps).
+struct alignas(32) ParamRampState {
+  float target[8];
+  float inc[8];
+  float rem[8];      // frames left (an exact integer in float: ≤ 2^24)
+  float started[8];
+  uint32_t active;   // the last call wrote its output buffer (else the output holds nothing of this block)
+  uint32_t pad_[7];
+};
+
 // noise: counter-based generator (out[t] = hash(counter_t + seed[lane])), so the output does not depend on how
 // the timeline is split into blocks.
 struct alignas(32) NoiseState {
@@ -225,6 +238,7 @@ static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(WavetableLiveState) == 672);
 static_assert(sizeof(WavetableShapeState) == 160);
 static_assert(sizeof(SampleReadState) == 96);
+static_assert(sizeof(ParamRampState) == 160);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);
 
 }  // namespace pq::dsp

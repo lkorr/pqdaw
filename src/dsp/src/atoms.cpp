@@ -100,6 +100,8 @@ constexpr KernelInfo kInfo[kAtomCount] = {
      Resource::FrameTable, false},
     {"wavetable_shape", 2, 1, false, false, 0, 0, kB0 | kB1, 0, sizeof(WavetableShapeState), Resource::FrameTable,
      false},
+    // TX.smooth (kernels_ramp.cpp): the compiler's param smoothing; x and frames are patterns, the output a block.
+    {"param_ramp", 2, 1, false, false, 0, 0, 0, kB0 | kB1, sizeof(ParamRampState), Resource::None, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -160,6 +162,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findFrameTableKernel(a, lanes, spec)) return f;
   if (KernelFn f = findWaveLiveKernel(a, lanes, spec)) return f;
   if (KernelFn f = findOversampleKernel(a, lanes)) return f;
+  if (KernelFn f = findRampKernel(a, lanes)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
@@ -200,6 +203,8 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     // only.
     case Atom::Gain:
     case Atom::GainAdd: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(GainState, rpow))};
+    // TX.smooth: target, inc, rem, started per lane; `active` is the group's (this block's call wrote the output).
+    case Atom::ParamRamp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(ParamRampState, active))};
     case Atom::OversampleUp:
     case Atom::OversampleDown:
     case Atom::OversamplePhase: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
@@ -299,6 +304,25 @@ size_t stateBytes(Atom a, const StateInit& init) noexcept {
   const uint32_t maxDelay = clampMaxDelay(init.maxDelayFrames, lanes);
   // size_t throughout (M1 review H3: the uint32 product wrapped to 0 bytes for a 2^30-frame mono ring).
   return base + static_cast<size_t>(delayCapacity(maxDelay)) * lanes * sizeof(float);
+}
+
+uint32_t rampableInputs(Atom a, uint32_t numIn) noexcept {  // RT-safe
+  const KernelInfo& ki = kernelInfo(a);
+  const uint32_t all = numIn >= 32 ? 0xFFFFFFFFu : (1u << numIn) - 1u;
+  uint32_t no = ki.boolIn | ki.splRequired;
+  switch (a) {
+    case Atom::Mux: no |= kB0; break;                 // the index
+    case Atom::Demux: no |= kB0; break;               // the index
+    case Atom::Counter: no |= kB3; break;             // n
+    case Atom::ClockDiv: no |= kB1; break;            // n
+    case Atom::Pulse: no |= kB0; break;               // the period (a count of samples)
+    case Atom::Timer: no |= kB1; break;               // the duration (a count of samples)
+    case Atom::TuningHz: no |= kB0 | kB1 | (1u << 8) | (1u << 9); break;  // degree, equave, select, node
+    case Atom::Const: break;                          // a fill: its input is the value
+    case Atom::ParamRamp: return 0;
+    default: break;
+  }
+  return all & ~no;
 }
 
 void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-safe

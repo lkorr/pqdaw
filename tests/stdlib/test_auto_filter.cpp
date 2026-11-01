@@ -948,8 +948,12 @@ double toneAmp(const std::vector<float>& y, size_t from, size_t n, double hz, do
 }
 
 // As test_devices.cpp's stepClick: the largest sample-to-sample step of the output in the 10 ms after a param step
-// over the steady one before / after (a sine 1.3 rad into its cycle at the step).
-double stepClick(const Program& prog, const std::string& param, double from, double to, double hz, const Params& p) {
+// over the steady one before / after (a sine 1.3 rad into its cycle at the step). TX.smooth: and the same for the
+// second difference (`kink`), which a discontinuity raises and a level swell does not.
+struct Click {
+  double step = 0.0, kink = 0.0;
+};
+Click stepClick(const Program& prog, const std::string& param, double from, double to, double hz, const Params& p) {
   constexpr uint64_t kStep = 9600, kLen = 19200;
   Stimulus st = afStimulus(static_cast<uint32_t>(kLen), 64, [hz](uint32_t, uint64_t t) {
     return 0.5 * std::sin(2.0 * kPi * hz * (static_cast<double>(t) - static_cast<double>(kStep)) / kSr + 1.3);
@@ -960,11 +964,12 @@ double stepClick(const Program& prog, const std::string& param, double from, dou
   const Outputs o = runBoth(prog, st, "step " + param);
   const auto& y = o.at("y")[0];
   auto d1 = [&](uint64_t t) { return std::fabs(static_cast<double>(y[t]) - y[t - 1]); };
-  double steady = 0.0, click = 0.0;
-  for (uint64_t t = kStep - 4800; t < kStep; ++t) steady = std::max(steady, d1(t));
-  for (uint64_t t = kStep + 4800; t < kLen; ++t) steady = std::max(steady, d1(t));
-  for (uint64_t t = kStep; t < kStep + 480; ++t) click = std::max(click, d1(t));
-  return click / steady;
+  auto d2 = [&](uint64_t t) { return std::fabs(static_cast<double>(y[t]) - 2.0 * y[t - 1] + y[t - 2]); };
+  double steady = 0.0, click = 0.0, steady2 = 0.0, click2 = 0.0;
+  for (uint64_t t = kStep - 4800; t < kStep; ++t) steady = std::max(steady, d1(t)), steady2 = std::max(steady2, d2(t));
+  for (uint64_t t = kStep + 4800; t < kLen; ++t) steady = std::max(steady, d1(t)), steady2 = std::max(steady2, d2(t));
+  for (uint64_t t = kStep; t < kStep + 480; ++t) click = std::max(click, d1(t)), click2 = std::max(click2, d2(t));
+  return {click / steady, click2 / steady2};
 }
 
 }  // namespace
@@ -1032,6 +1037,7 @@ TEST_CASE("Auto Filter: param jumps glide or keep the output continuous (M4 revi
     const char* param;
     double from, to, hz;
     Params p;
+    double maxStep = 2.0;
   };
   Params base;
   Params morph;
@@ -1041,15 +1047,21 @@ TEST_CASE("Auto Filter: param jumps glide or keep the output continuous (M4 revi
       {"LP 12 Clean freq 1 -> 4 kHz", conf(0, 0, 0), "a__freq", 1000.0, 4000.0, 300.0, base},
       {"HP 12 Clean res 30 -> 90 %", conf(1, 0, 0), "a__res", 0.3, 0.9, 2000.0, base},
       {"BP 24 MS2 res 30 -> 90 %", conf(2, 2, 1), "a__res", 0.3, 0.9, 1000.0, base},
-      {"LP 24 PRD res 60 -> 10 %", conf(0, 4, 1), "a__res", 0.6, 0.1, 300.0, prd},
+      // TX.smooth: since every param glides over 20 ms (pq/graph/schedule.h "Param ramps") the ladder's feedback falls
+      // over 20 ms instead of at once, and the energy its resonance held comes out as a swell of the output (2.1× the
+      // steady step; 1.56× with the instant feedback jump of before), not a discontinuity: its kink ratio is lower than
+      // before (2.6 vs 4.0). The swell is the ladder's own response to a resonance glide.
+      {"LP 24 PRD res 60 -> 10 %", conf(0, 4, 1), "a__res", 0.6, 0.1, 300.0, prd, 2.5},
       {"Morph 12 Clean morph 0 -> 60 %", conf(4, 0, 0), "a__morph", 0.0, 0.6, 700.0, morph},
       {"LP 12 Clean output 0 -> -12 dB", conf(0, 0, 0), "a__output", 1.0, 0.251, 220.0, base},
       {"LP 12 OSR dry/wet 100 -> 20 %", conf(0, 1, 0), "a__dryWet", 1.0, 0.2, 2500.0, base},
   };
   for (const Case& k : cases) {
-    const double r = stepClick(afProgram(k.c), k.param, k.from, k.to, k.hz, k.p);
-    MESSAGE(std::string(k.what) << ": click " << r << " x the steady sample-to-sample step");
-    CHECK_MESSAGE(r < 2.0, k.what << ": " << r);
+    const Click r = stepClick(afProgram(k.c), k.param, k.from, k.to, k.hz, k.p);
+    MESSAGE(std::string(k.what) << ": click " << r.step << " x the steady sample-to-sample step, kink " << r.kink
+                                << " x the steady second difference");
+    CHECK_MESSAGE(r.step < k.maxStep, k.what << ": " << r.step);
+    CHECK_MESSAGE(r.kink < 3.0, k.what << ": kink " << r.kink);
   }
 }
 

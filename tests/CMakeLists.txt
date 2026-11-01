@@ -318,6 +318,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
     engine/test_probes.cpp  # T4.5: probes and cost meters again, on JIT images (and interpreter == JIT probe streams)
     jit/test_jit_frame_table.cpp  # TMM.2: wavetable_pos / voice_tap on both backends (swaps, taps, hot swap, reference)
     jit/test_jit_wave_live.cpp  # TMM.8: wavetable_live / wavetable_shape in oversample regions on both backends
+    jit/test_param_ramps.cpp  # TX.smooth: param ramps, interpreter == JIT under param motion, the ramp's shape
   DEPS pq_jit pq_compile)
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
@@ -329,6 +330,7 @@ pq_add_test(pq_tests_stdlib SHARDS 4 SLOW_SHARDS 4
     stdlib/test_operator.cpp  # T4.12: Operator + msenv vs operator_reference.h, tuned playback
     stdlib/test_auto_filter.cpp  # T4.11: Auto Filter vs device_reference.h, analytic responses, modulation
     stdlib/test_meta_operator.cpp  # TMM.12: the Meta Operator vs meta_operator_reference.h, pitch, hq
+    stdlib/test_smooth.cpp  # TX.smooth: every continuous param of every stock device and meta module jumps click-free
   DEPS pq_jit pq_pqc pq_tuning)
 
 pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias proof and slow-modulation cases (≈ 20 – 30 s each)
@@ -341,6 +343,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_exact_lanes.cpp
     dsp/test_lane_state.cpp
     dsp/test_gain.cpp
+    dsp/test_param_ramp.cpp  # TX.smooth: the param_ramp kernel
     dsp/test_spectrum.cpp
     dsp/test_silence.cpp
     dsp/test_resample.cpp

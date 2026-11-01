@@ -343,9 +343,19 @@ TEST_CASE("oversample: the schedule runs the region at n× (regions, buffers, st
   const ScheduleResult s = scheduleDetailed(f.typed, ScheduleOptions{});
   REQUIRE(s.ok());
   const Schedule& sc = s.schedule;
-  uint32_t oversampled = 0;
+  uint32_t oversampled = 0, rampRegions = 0;
   for (const Region& r : sc.regions) {
     if (r.factor == 1) continue;
+    // TX.smooth: a param read inside the region gets its param_ramp at the region's rate (its own region first).
+    if (r.numOps > 0 && sc.ops[r.firstOp].kernel == pq::dsp::Atom::ParamRamp) {
+      ++rampRegions;
+      CHECK(r.factor == 4);
+      for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) {
+        CHECK(sc.ops[i].kernel == pq::dsp::Atom::ParamRamp);
+        CHECK(sc.buffers[sc.outputsOf(sc.ops[i])[0].index].factor == 4);
+      }
+      continue;
+    }
     ++oversampled;
     CHECK(r.factor == 4);
     CHECK(r.kind != RegionKind::Control);
@@ -361,6 +371,7 @@ TEST_CASE("oversample: the schedule runs the region at n× (regions, buffers, st
     }
   }
   CHECK(oversampled == 1);  // up, the region's ops and down stay together
+  CHECK(rampRegions == 1);  // drive's
   for (const StateEntry& e : sc.state.entries)
     if (e.tag.kernel == static_cast<uint16_t>(pq::dsp::Atom::OversampleUp)) CHECK(e.tag.factor == 4);
   for (const OutputRef& o : sc.outputs)
