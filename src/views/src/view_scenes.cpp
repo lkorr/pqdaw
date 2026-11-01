@@ -1680,6 +1680,99 @@ Status setupProjectMetaEnvelope(Shell& shell) {
   return Ok{};
 }
 
+// TMM.12: still voices for the Meta Operator's twelve faces — four voices of a chord, each operator's accumulator and
+// wavetable dots at its own ratio's phases, its envelope in a stage of its own (the modulators decaying faster).
+struct MetaOperatorSceneVoices {
+  SyntheticVoices acc[4], wt[4];
+  std::unique_ptr<EnvelopeSceneVoices> env[4];
+  MetaOperatorSceneVoices() {
+    static constexpr double kRatio[4] = {1.0, 2.0, 1.5, 1.75};
+    static constexpr double kPos[4] = {0.0, 0.4, 0.0, 0.0};
+    for (uint32_t o = 0; o < 4; ++o) {
+      std::vector<SyntheticVoices::Voice> a, w;
+      for (uint32_t v = 0; v < 4; ++v) {
+        const double hz = (3.0 + v) * kRatio[o];
+        const double ph = std::fmod(0.11 + 0.23 * v + 0.37 * o * kRatio[o], 1.0);
+        a.push_back({v, hz, ph, 0.0});
+        w.push_back({v, hz, ph, kPos[o]});
+      }
+      acc[o].setVoices(a);
+      wt[o].setVoices(w);
+      for (SyntheticVoices* sv : {&acc[o], &wt[o]}) {
+        sv->advance(1.0 / 60.0);
+        sv->freeze();
+      }
+    }
+    // A, the carrier, sustains; B and C decay toward their sustains; D, the fast one, is nearly done.
+    env[0] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
+        {0, 0.92, 0.88, false}, {1, 0.74, 0.70, false}, {2, 0.56, 0.55, false}, {3, 0.40, 0.33, true}});
+    env[1] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
+        {0, 0.70, 0.62, false}, {1, 0.45, 0.41, false}, {2, 0.30, 0.30, false}, {3, 0.22, 0.12, true}});
+    env[2] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
+        {0, 0.40, 0.62, false}, {1, 0.85, 0.80, false}, {2, 0.55, 0.52, false}, {3, 0.50, 0.50, false}});
+    env[3] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
+        {0, 0.42, 0.30, false}, {1, 0.16, 0.11, false}, {2, 0.05, 0.03, false}, {3, 0.02, 0.01, true}});
+  }
+  VoiceTapReader* of(std::string_view path) {
+    if (path.size() < 2) return nullptr;
+    const char letter = path.back();
+    if (letter < 'A' || letter > 'D') return nullptr;
+    const uint32_t o = static_cast<uint32_t>(letter - 'A');
+    const std::string_view stem = path.substr(0, path.size() - 1);
+    if (stem == "acc") return &acc[o];
+    if (stem == "wt") return &wt[o];
+    if (stem == "env") return env[o].get();
+    return nullptr;
+  }
+};
+
+// TMM.12: the Meta Operator (project_patch::buildMetaOperatorProject) in the Device view: its panel of twelve faces
+// with the algorithm picker, the dots of a four-note chord.
+Status setupDeviceMetaOperator(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "meta-operator-device: no device library", {}};
+  project_patch::MetaOperatorIds ids;
+  if (Status s = project_patch::buildMetaOperatorProject(ctx.store(), &ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "meta-operator-device: the Device view is not installed", {}};
+  static MetaOperatorSceneVoices voices;
+  const doc::DeviceId op = ids.op;
+  v->faceVoices = [op](doc::DeviceId d, std::string_view path) -> VoiceTapReader* { return d == op ? voices.of(path) : nullptr; };
+  ctx.setSelectedTrack(ids.keys);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(270.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  const doc::DeviceId one[1] = {op};
+  v->select(one);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// TMM.12: the same project in the project patch view, the band of "FM Keys" opened: the Meta Operator's circuit at
+// algorithm 1 — twelve faces, the ratios, the algorithm's wires and the output.
+Status setupMetaOperatorCircuit(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "meta-operator-circuit: no device library", {}};
+  project_patch::MetaOperatorIds ids;
+  if (Status s = project_patch::buildMetaOperatorProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "meta-operator-circuit: the view is not installed", {}};
+  static MetaOperatorSceneVoices voices;
+  const doc::DeviceId op = ids.op;
+  v->faceVoices = [op](doc::DeviceId d, std::string_view path) -> VoiceTapReader* { return d == op ? voices.of(path) : nullptr; };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setDeviceExpanded(op, true);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.keys, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
     {"arrangement-basic", 1280, 800, setupArrangementBasic},
@@ -1737,6 +1830,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-chain", 1280, 800, setupProjectMetaChain},          // TMM.10
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
+    {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)
+    {"meta-operator-circuit", 1600, 900, setupMetaOperatorCircuit},    // TMM.12
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

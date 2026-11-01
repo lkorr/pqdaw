@@ -455,13 +455,15 @@ void ProjectPatchView::rebuild() {
     std::shared_ptr<const doc::ResolvedDevice> hold;
     const graph::Patch* callee = devlib != nullptr ? devlib->patchOf(*loc.device, hold) : nullptr;
     if (callee == nullptr) continue;
-    const std::string key = hold && hold->graph ? hold->graph->root : loc.device->patch;
+    // T4.15 / TMM.12: as it plays (what its settings switch off hidden), cached per patch and settings.
+    const std::string key =
+        circuit::deviceSceneKey(hold && hold->graph ? hold->graph->root : loc.device->patch, loc.device->settings);
     std::shared_ptr<const circuit::CircuitScene> sc;
     for (const auto& [name, s] : innerCache_)
       if (name == key) sc = s;
     if (!sc) {
       if (innerCache_.size() >= kInnerCacheMax) innerCache_.erase(innerCache_.begin());  // oldest first
-      sc = circuit::buildScene(*callee);
+      sc = circuit::buildDeviceScene(*callee, loc.device->settings);
       innerCache_.emplace_back(key, sc);
     }
     sizes.push_back({d, sc->x1 - sc->x0, sc->y1 - sc->y0});

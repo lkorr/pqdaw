@@ -239,3 +239,37 @@ TEST_CASE("meta devices: copy / paste, duplicate and a preset keep the state (pa
   REQUIRE(back->device->meta);
   CHECK(*back->device->meta == *src.meta);
 }
+
+TEST_CASE("meta devices: the Meta Operator (TMM.12) lowers each nested instance to its own expansion, with its slots") {
+  DocumentStore store;
+  auto run = [&](Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    return *e;
+  };
+  const TrackId t = run(ops::createTrack(*store.current(), store.ids(), TrackKind::Midi)).tracks.at(0);
+  const DeviceId op = run(ops::addDevice(*store.current(), store.ids(), t, "meta_operator", DeviceKind::Instrument)).devices.at(0);
+  REQUIRE(library().catalog().find("meta_operator") != nullptr);
+  CHECK(library().catalog().find("meta_operator")->name == "Meta Operator");
+  run(ops::setMetaParam(*store.current(), op, "envB", "envelope", "amount", 0.25));
+  run(ops::setDeviceSetting(*store.current(), op, "algorithm", 5.0));
+  run(ops::setDeviceSetting(*store.current(), op, "hq", 2.0));
+  run(ops::setDeviceSetting(*store.current(), op, "fbOn", 1.0));
+  CHECK_FALSE(findDevice(*store.current(), op).device->edited());  // a nested state edit never forks the stock device
+  Result<LoweredProject> lp = lowerIt(*store.current());
+  REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
+  for (const LoweredProject::DeviceError& e : lp->deviceErrors) FAIL_CHECK(e.message);
+  // Twelve instances with resources (every one a voice tap; the Wavetables a table too).
+  std::vector<std::string> paths;
+  for (const LoweredProject::MetaResource& r : lp->metaResources)
+    if (r.device == op && std::find(paths.begin(), paths.end(), r.path) == paths.end()) paths.push_back(r.path);
+  CHECK(paths.size() == 12);
+  for (const char* p : {"accA", "wtA", "envA", "accD", "wtD", "envD"})
+    CHECK_MESSAGE(std::find(paths.begin(), paths.end(), std::string(p)) != paths.end(), p);
+  // The device's patch is a specialised copy whose meta calls are the instances' expansions.
+  const pq::graph::Patch* dp = lp->graph.library->find(calleeOf(*lp, t, op));
+  REQUIRE(dp != nullptr);
+  const auto acc = dp->findByName("accA");
+  REQUIRE(acc.has_value());
+  CHECK(dp->subcircuit(*acc).patch.starts_with("meta_phase_acc__d" + std::to_string(op.value) + "_accA_"));
+}

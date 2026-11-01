@@ -369,4 +369,42 @@ Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids)
   return r.status;
 }
 
+Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids) {
+  Runner r{store};
+  const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "FM Keys", 0x3FA9F5);
+  if (!r.status) return r.status;
+  const doc::DeviceId op = r.device(keys, "meta_operator", doc::DeviceKind::Instrument);
+  if (!r.status) return r.status;
+  if (!op.valid()) return Error{ErrorCode::NotFound, "meta operator project: no Meta Operator", {}};
+  // Exact ratios: A 1, B 2, C 3/2, D 7/4.
+  const std::pair<const char*, double> ratios[] = {{"nB", 2}, {"nC", 3}, {"dC", 2}, {"nD", 7}, {"dD", 4}};
+  for (const auto& [name, v] : ratios) (void)r.run(doc::ops::setDeviceParam(*store.current(), op, name, v));
+  // The modulators: shorter, quieter envelopes (their amount is the depth); B reads the demo table, D a saw.
+  struct EnvSet {
+    const char* path;
+    std::vector<std::pair<const char*, double>> values;
+  };
+  const EnvSet envs[] = {
+      {"envA", {{"attack", 0.004}, {"decay", 1.4}, {"sustain", 0.55}, {"release", 0.8}, {"dcurve", -0.2}}},
+      {"envB", {{"attack", 0.002}, {"decay", 0.5}, {"sustain", 0.3}, {"release", 0.4}, {"amount", 0.35}}},
+      {"envC", {{"attack", 0.03}, {"decay", 0.9}, {"sustain", 0.5}, {"release", 0.6}, {"acurve", 0.4}, {"amount", 0.25}}},
+      {"envD", {{"attack", 0.001}, {"decay", 0.25}, {"sustain", 0.0}, {"release", 0.2}, {"dcurve", 0.35}, {"amount", 0.15}}},
+  };
+  for (const EnvSet& e : envs)
+    for (const auto& [name, v] : e.values)
+      (void)r.run(doc::ops::setMetaParam(*store.current(), op, e.path, "envelope", name, v));
+  (void)r.run(doc::ops::setMetaData(*store.current(), op, "wtB", "wavetable", demoWavetableData()));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), op, "wtB", "wavetable", "position", 0.4));
+  {
+    meta::WavetableData d;
+    const AlignedBuffer<float> saw = dsp::basicCycle(dsp::BasicCycle::Saw);
+    d.keyframes.push_back({0.0f, std::vector<float>(saw.span().begin(), saw.span().end())});
+    (void)r.run(doc::ops::setMetaData(*store.current(), op, "wtD", "wavetable", meta::wavetableData(d)));
+  }
+  (void)r.run(doc::ops::setMetaParam(*store.current(), op, "accD", "phase_acc", "freq", 1.5));
+  r.clip(keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7, 11});
+  if (ids != nullptr) *ids = MetaOperatorIds{keys, op};
+  return r.status;
+}
+
 }  // namespace pq::views::project_patch

@@ -100,12 +100,21 @@ struct ChainCircuit {
   uint32_t deviceBoxAt(float x, float y) const noexcept;  // … that is a Device or a Rack (a chain's padding: its rack)
 };
 
+// T4.15 / TMM.12: the scene of a device's patch as it plays — what its structural settings switch off hidden and the
+// visible rest laid out on its own (unless the patch's stored layout places it), as the Device-level editor shows it,
+// so a device opened in the one circuit shows only what plays (Operator's operators that are off, the Meta Operator's
+// other algorithms; an `oversample(hq)` region only while hq > 1).
+std::shared_ptr<const CircuitScene> buildDeviceScene(const graph::Patch& callee, const std::vector<doc::DeviceValue>& settings);
+// The key a device's scene is cached under: what it plays (`what`) and its settings.
+std::string deviceSceneKey(const std::string& what, const std::vector<doc::DeviceValue>& settings);
+
 // The scenes of device patches, by what they play. Bounded (oldest dropped first); UI thread.
 class ChainSceneCache {
 public:
   static constexpr size_t kMax = 48;
-  // The scene of `callee` stored under `key` (built on first use).
-  std::shared_ptr<const CircuitScene> sceneOf(const std::string& key, const graph::Patch& callee);
+  // The scene of `callee` with these settings (buildDeviceScene) stored under `key` (built on first use).
+  std::shared_ptr<const CircuitScene> sceneOf(const std::string& key, const graph::Patch& callee,
+                                              const std::vector<doc::DeviceValue>& settings = {});
   void clear() noexcept { entries_.clear(); }
   size_t size() const noexcept { return entries_.size(); }
   uint64_t builds() const noexcept { return builds_; }

@@ -276,6 +276,34 @@ private:
     return P.info->adj.driver[P.patch->flatInput(I.callNode, k)] != kNone;
   }
 
+  // TMM.12: the compile-time value of `real const` input `n` of instance `inst` — the literal its call passes (followed
+  // through the caller's own const inputs), else the input's literal default. False when it is not a literal.
+  bool constInputValue(uint32_t inst, NodeIndex n, double& out, uint32_t depth = 0) const {
+    const Inst& I = insts_[inst];
+    const Patch& P = *I.patch;
+    if (inst != 0 && depth <= kMaxSubcircuitDepth && I.info->portOf[n] != kNone) {
+      const Inst& C = insts_[I.parent];
+      const WireIndex w = C.info->adj.driver[C.patch->flatInput(I.callNode, I.info->portOf[n])];
+      if (w != kNone) {
+        const PortRef from = C.patch->wire(w).from;
+        const NodeKind k = C.patch->node(from.node).kind;
+        if (k == NodeKind::Const) {
+          out = C.patch->constant(from.node).value();
+          return true;
+        }
+        if (k == NodeKind::Input && C.patch->outputType(from.node, 0).rate == Rate::Const)
+          return constInputValue(I.parent, from.node, out, depth + 1);
+        return false;
+      }
+    }
+    const WireIndex w = I.info->adj.driver[P.flatInput(n, 0)];
+    if (w == kNone) return false;
+    const PortRef from = P.wire(w).from;
+    if (P.node(from.node).kind != NodeKind::Const) return false;
+    out = P.constant(from.node).value();
+    return true;
+  }
+
   void flatten() {
     Inst root;
     root.patch = &root_;
@@ -339,9 +367,21 @@ private:
     const uint16_t inherited = insts_[ii].region;
     std::vector<uint16_t> localRegion(P.regions().size() + 1, 0);
     for (uint32_t r = 0; r < P.regions().size(); ++r) {
-      if (P.regions()[r].factor <= 1) continue;
+      uint32_t factor = P.regions()[r].factor;
+      if (const std::string& from = P.regions()[r].factorFrom; !from.empty()) {  // TMM.12: a setting names it
+        const std::optional<NodeIndex> in = P.findByName(from);
+        double v = 0.0;
+        if (!in || !constInputValue(ii, *in, v) || !(v == 1 || v == 2 || v == 4 || v == 8 || v == 16)) {
+          report(ii, in ? *in : NodeIndex{0}, ErrorCode::InvalidArgument,
+                 "the oversampling factor '" + from + "' of '" + P.name() +
+                     "' must be a literal 1, 2, 4, 8 or 16" + (in && constInputValue(ii, *in, v) ? " (found " + std::to_string(v) + ")" : std::string()));
+          continue;
+        }
+        factor = static_cast<uint32_t>(v);
+      }
+      if (factor <= 1) continue;
       FlatRegion fr;
-      fr.factor = P.regions()[r].factor;
+      fr.factor = factor;
       fr.key = hashMix(insts_[ii].key, 0x05A3D1E000ull + r);
       regions_.push_back(std::move(fr));
       localRegion[r + 1] = static_cast<uint16_t>(regions_.size());

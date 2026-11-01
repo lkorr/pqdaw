@@ -7,6 +7,8 @@
 //   OpMs2      OpFull with the MS2 circuit model (T4.12-fix1: a per-voice Newton solve, 2 iterations) at +12 dB drive
 //   OpPrd      OpFull with the PRD circuit model (the transistor ladder, 1 iteration) at +12 dB drive
 //   OpSpreadMs2  OpMs2 with spread (two filters per voice: the most expensive filter configuration)
+//   OpFour     TMM.12: four sine operators (algorithm 1, ratios 1 / 2 / 3:2 / 7:4), feedback, envelopes; nothing else
+//              (the Meta Operator's work: meta_operator_calibration.pqp's MoSine)
 import "../../stdlib/devices/operator.pqp"
 
 patch OpDefault {
@@ -66,6 +68,15 @@ patch OpSpreadMs2 {
                   filterCircuit: 2, glideOn: 1, spreadOn: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB, feedback: 30%,
                   penvAmount: 200c, lfoFilter: 1200c, fenvAmount: 2400c, sustainA: -6dB, sustainB: -12dB,
                   filterRes: 60%, filterDrive: 12dB, spread: 50%)
+  out  = o
+  done = o.done
+}
+
+patch OpFour {
+  out out  : audio voice stereo
+  out done : bool voice
+  o    = operator(algorithm: 1, onA: 1, onB: 1, onC: 1, onD: 1, levelB: -6dB, levelC: -12dB, levelD: -18dB,
+                  feedback: 30%, coarseB: 2, coarseC: 3, denC: 2, coarseD: 7, denD: 4, sustainA: -6dB, sustainB: -12dB)
   out  = o
   done = o.done
 }

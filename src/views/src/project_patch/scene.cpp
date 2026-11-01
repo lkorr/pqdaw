@@ -208,8 +208,9 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sw.style = style;
     sw.net = net;
     sw.wire = static_cast<graph::WireIndex>(sc.wires.size());
-    sw.x0 = sw.x1 = pts[0].x;
-    sw.y0 = sw.y1 = pts[0].y;
+    sw.hidden = pts.empty();  // T4.15: a hidden wire of an opened device (no points, no segments)
+    sw.x0 = sw.x1 = pts.empty() ? 0.0f : pts[0].x;
+    sw.y0 = sw.y1 = pts.empty() ? 0.0f : pts[0].y;
     for (const Point2& q : pts) {
       sw.x0 = std::min(sw.x0, q.x), sw.x1 = std::max(sw.x1, q.x);
       sw.y0 = std::min(sw.y0, q.y), sw.y1 = std::max(sw.y1, q.y);
@@ -282,12 +283,27 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     for (const SceneWire& s : in->wires) {
       pts.assign(in->points.begin() + s.firstPoint, in->points.begin() + s.firstPoint + s.pointCount);
       for (Point2& q : pts) q = {q.x + ox, q.y + oy};
+      if (s.hidden) pts.clear();
       addWire(pts, s.style, netBase + s.net, kNone);
       sc.wires.back().fromPin = s.fromPin + pinBase;
       sc.wires.back().toPin = s.toPin + pinBase;
+      sc.wires.back().inactive = s.inactive;
       maxNet = std::max(maxNet, s.net);
     }
     for (uint32_t q = 0; q <= maxNet; ++q) netOf((1u << 31) | (netBase + q));  // keep later nets unique
+    // TMM.12: its oversample regions' washes (an `oversample(hq)` region while hq > 1).
+    for (const circuit::SceneRegion& r : in->regions) {
+      circuit::SceneRegion d = r;
+      d.x0 += ox, d.x1 += ox, d.y0 += oy, d.y1 += oy;
+      d.text += stringBase;
+      d.firstRect = static_cast<uint32_t>(sc.regionRects.size());
+      for (uint32_t k = r.firstRect; k < r.firstRect + r.rectCount; ++k) {
+        circuit::SceneRect q = in->regionRects[k];
+        q.x0 += ox, q.x1 += ox, q.y0 += oy, q.y1 += oy;
+        sc.regionRects.push_back(q);
+      }
+      sc.regions.push_back(d);
+    }
     // Connectors: frame pin → the terminal of that name (inputs: `in`, params; outputs: `out`, exports).
     // Searched from the end: a patch declares each name once; a rack's circuit (T5.x-circuit-chain) appends its own
     // terminals after its devices' scenes, whose `in` / `out` must not be taken for the rack's.
@@ -296,7 +312,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         const SymbolSpec& s = in->specs[in->nodes[v].spec];
         const bool isIn = s.symbol == Symbol::Input || s.symbol == Symbol::Param;
         const bool isOut = s.symbol == Symbol::Output || s.symbol == Symbol::Export;
-        if (s.title == name && (input ? isIn : isOut)) return nodeBase + v;
+        if (s.title == name && (input ? isIn : isOut)) return in->nodes[v].hidden ? kNone : nodeBase + v;
       }
       return kNone;
     };

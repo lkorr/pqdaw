@@ -96,6 +96,10 @@ struct OversampleRegion {
   uint32_t factor = 2;             // 1, 2, 4, 8 or 16 (validate)
   std::vector<std::string> phase;  // outer values read inside by phase interpolation: "name" or "name.output", as the
                                    // parser resolved them (aliases followed to the named node)
+  // TMM.12: `oversample(hq) { … }` — the factor is the value of this `real const` input of the patch (a device
+  // setting), resolved per instance by infer() from the constant its call passes (else the input's literal default);
+  // `factor` is then 1 and unused. A value of 1 is no region.
+  std::string factorFrom;
   friend bool operator==(const OversampleRegion&, const OversampleRegion&) = default;
 };
 

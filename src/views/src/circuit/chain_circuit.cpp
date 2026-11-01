@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "pq/graph/patch_file.h"
 
@@ -32,12 +33,42 @@ uint32_t ChainCircuit::deviceBoxAt(float x, float y) const noexcept {
   return b;
 }
 
-std::shared_ptr<const CircuitScene> ChainSceneCache::sceneOf(const std::string& key, const graph::Patch& callee) {
+std::shared_ptr<const CircuitScene> buildDeviceScene(const graph::Patch& callee, const std::vector<doc::DeviceValue>& settings) {
+  std::vector<graph::ConstArg> args;
+  args.reserve(settings.size());
+  for (const doc::DeviceValue& v : settings) args.push_back({v.name, v.value});
+  const graph::StructuralInfo info = graph::analyseStructure(callee, args);
+  SceneOptions so;
+  so.inactiveNodes = info.nodeInactive;
+  so.inactiveWires = info.wireInactive;
+  so.hideInactive = true;
+  bool placed = false;
+  for (graph::NodeIndex v = 0; v < callee.nodeCount() && !placed; ++v)
+    placed = !info.nodeInactive[v] && callee.layout(v).placed;
+  so.relayoutVisible = info.inactiveNodes > 0 && !placed;
+  so.structure = &info;
+  return buildScene(callee, so);
+}
+
+std::string deviceSceneKey(const std::string& what, const std::vector<doc::DeviceValue>& settings) {
+  std::string k = what;
+  for (const doc::DeviceValue& v : settings) {
+    char b[48];
+    std::snprintf(b, sizeof b, "=%.17g", v.value);
+    k += '|';
+    k += v.name;
+    k += b;
+  }
+  return k;
+}
+
+std::shared_ptr<const CircuitScene> ChainSceneCache::sceneOf(const std::string& key, const graph::Patch& callee,
+                                                            const std::vector<doc::DeviceValue>& settings) {
   for (const auto& [k, s] : entries_)
     if (k == key) return s;
   if (entries_.size() >= kMax) entries_.erase(entries_.begin());  // oldest first
   ++builds_;
-  std::shared_ptr<const CircuitScene> s = buildScene(callee);
+  std::shared_ptr<const CircuitScene> s = buildDeviceScene(callee, settings);
   entries_.emplace_back(key, s);
   return s;
 }
@@ -128,8 +159,8 @@ public:
     if (b.edited) b.title += " (edited)";
     Inner in;
     if (callee != nullptr) {
-      const std::string key = hold && hold->graph ? hold->graph->root : d.patch;
-      in.scene = o_.cache != nullptr ? o_.cache->sceneOf(key, *callee) : buildScene(*callee);
+      const std::string key = deviceSceneKey(hold && hold->graph ? hold->graph->root : d.patch, d.settings);
+      in.scene = o_.cache != nullptr ? o_.cache->sceneOf(key, *callee, d.settings) : buildDeviceScene(*callee, d.settings);
       const graph::SubcircuitRef sig = graph::subcircuitSignature(*callee);
       if (!b.instrument)
         for (const graph::SubcircuitPort& sp : sig.inputs)
@@ -278,6 +309,19 @@ public:
       sc.junctionWire.push_back(in.junctionWire[j] + wireBase);
     }
     if (!in.wires.empty()) nextNet_ += maxNet + 1;
+    // TMM.12: the part's oversample washes (an `oversample(hq)` region while hq > 1), translated.
+    for (const SceneRegion& r : in.regions) {
+      SceneRegion d = r;
+      d.x0 += ox, d.x1 += ox, d.y0 += oy, d.y1 += oy;
+      d.text += stringBase;
+      d.firstRect = static_cast<uint32_t>(sc.regionRects.size());
+      for (uint32_t k = r.firstRect; k < r.firstRect + r.rectCount; ++k) {
+        SceneRect q = in.regionRects[k];
+        q.x0 += ox, q.x1 += ox, q.y0 += oy, q.y1 += oy;
+        sc.regionRects.push_back(q);
+      }
+      sc.regions.push_back(d);
+    }
     return nodeBase;
   }
 

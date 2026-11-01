@@ -77,6 +77,11 @@ private:
       const std::string what = "oversample region #" + std::to_string(r + 1);
       if (reg.factor != 1 && reg.factor != 2 && reg.factor != 4 && reg.factor != 8 && reg.factor != 16)
         fail(ErrorCode::InvalidArgument, what + ": factor " + std::to_string(reg.factor) + " is not 1, 2, 4, 8 or 16");
+      if (!reg.factorFrom.empty()) {  // TMM.12: a setting names the factor
+        const std::optional<NodeIndex> n = p_.findByName(reg.factorFrom);
+        if (!n || p_.node(*n).kind != NodeKind::Input || p_.outputType(*n, 0).rate != Rate::Const)
+          fail(ErrorCode::InvalidArgument, what + ": its factor '" + reg.factorFrom + "' is not a `real const` input of the patch");
+      }
       for (const std::string& ph : reg.phase) {
         const size_t dot = ph.find('.');
         const std::string_view name = std::string_view(ph).substr(0, dot);

@@ -89,6 +89,7 @@ fs::path utf8Path(std::string_view utf8) {
 constexpr StockDevice kStock[] = {
     {"instruments/basic_synth.pqp", "BasicSynth", "Basic Synth", DeviceKind::Instrument},
     {"devices/operator.pqp", "operator", "Operator", DeviceKind::Instrument},  // T4.12
+    {"devices/meta_operator.pqp", "meta_operator", "Meta Operator", DeviceKind::Instrument},  // TMM.12: from meta modules
     {"devices/utility.pqp", "utility", "Utility"},
     {"devices/saturator.pqp", "saturator", "Saturator"},
     {"devices/eq_eight.pqp", "eq_eight", "EQ Eight"},

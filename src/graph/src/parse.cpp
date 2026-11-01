@@ -99,6 +99,7 @@ struct SolveSyn {
 // TMM.6: `oversample(n, phase: a, b.out) { bindings }`.
 struct RegionSyn {
   uint32_t factor = 2;
+  uint32_t factorTok = kNone;                         // TMM.12: `oversample(hq)`: the setting naming the factor
   uint32_t tok = 0;                                   // 'oversample'
   std::vector<std::pair<uint32_t, uint32_t>> phase;  // name token, field token (kNone: none)
 };
@@ -363,19 +364,25 @@ private:
     }
   }
 
-  // TMM.6 (PATCH_LANGUAGE §2.3): oversample "(" Int [ "," "phase" ":" ref { "," ref } ] ")" "{" { binding } "}".
+  // TMM.6 (PATCH_LANGUAGE §2.3): oversample "(" ( Int | name ) [ "," "phase" ":" ref { "," ref } ] ")" "{" { binding }
+  // "}". TMM.12: a name is a `real const` input of the patch (a setting) whose value is the factor, per instance.
   void parseRegion(PatchSyn& p) {
     RegionSyn r;
     r.tok = advance();  // oversample
     expect(Tok::LParen, "after 'oversample' (oversample(4) { … })");
     const uint32_t n = pos_;
-    if (kind() != Tok::Number || !peek().integer() || toks_[n].unit != Unit::None)
-      fail(pos_, "expected the oversampling factor (1, 2, 4, 8 or 16), found " + describe(pos_));
-    advance();
-    const double f = toks_[n].number;
-    if (f != 1 && f != 2 && f != 4 && f != 8 && f != 16)
-      fail(n, "the oversampling factor must be 1, 2, 4, 8 or 16 (found " + std::string(text(n)) + ")");
-    r.factor = static_cast<uint32_t>(f);
+    if (nameTok(kind())) {
+      r.factorTok = advance();
+      r.factor = 1;
+    } else {
+      if (kind() != Tok::Number || !peek().integer() || toks_[n].unit != Unit::None)
+        fail(pos_, "expected the oversampling factor (1, 2, 4, 8 or 16, or a `real const` input), found " + describe(pos_));
+      advance();
+      const double f = toks_[n].number;
+      if (f != 1 && f != 2 && f != 4 && f != 8 && f != 16)
+        fail(n, "the oversampling factor must be 1, 2, 4, 8 or 16 (found " + std::string(text(n)) + ")");
+      r.factor = static_cast<uint32_t>(f);
+    }
     if (accept(Tok::Comma)) {
       expectWord("phase", "after the factor (oversample(4, phase: p) { … })");
       expect(Tok::Colon, "after 'phase'");
@@ -1204,7 +1211,8 @@ public:
     names_.reset(syn.members.size());
 
     for (const SolveSyn& s : syn.solves) p_->addSolve(s.iterations);
-    for (const RegionSyn& r : syn.regions) p_->addRegion(OversampleRegion{r.factor, {}});  // phase: step 6b
+    for (const RegionSyn& r : syn.regions)  // phase: step 6b; a factor input: step 6c
+      p_->addRegion(OversampleRegion{r.factor, {}, r.factorTok == kNone ? std::string() : std::string(text(r.factorTok))});
     curRegion_ = 0;
 
     // 1. Declarations.
@@ -1330,6 +1338,16 @@ public:
     // 6b. TMM.6: each region's phase inputs, resolved to the value they name (aliases followed) and stored as that
     // node's name (+ ".output" when it is not the output the name stands for).
     for (size_t r = 0; r < syn.regions.size(); ++r) lowerPhaseInputs(syn.regions[r], static_cast<uint16_t>(r + 1));
+    // 6c. TMM.12: a factor named by a setting must be a `real const` input of this patch.
+    for (const RegionSyn& r : syn.regions) {
+      if (r.factorTok == kNone) continue;
+      const std::optional<NodeIndex> in = p_->findByName(text(r.factorTok));
+      if (!in || p_->node(*in).kind != NodeKind::Input || p_->outputType(*in, 0).rate != Rate::Const ||
+          p_->outputType(*in, 0).kind != Kind::Real)
+        errorTok(r.factorTok, "the oversampling factor '" + std::string(text(r.factorTok)) +
+                                  "' must be a `real const` input of the patch (in " + std::string(text(r.factorTok)) +
+                                  " : real const = 1)");
+    }
     // 7. Layout.
     lowerLayout(syn);
   }

@@ -640,6 +640,7 @@ void CircuitEditor::rebuildScene(bool fit) {
   so.hideInactive = !showInactive_;
   const bool hiding = so.hideInactive && structure_.inactiveNodes > 0;
   so.relayoutVisible = hiding && !storedPlacesVisible();
+  so.structure = &structure_;  // TMM.12: `oversample(hq)` regions as the instance sets them
   graph::Patch laid;
   canvas_->setScene(buildScene(*p, so, &laid), fit, true);
   viewOverride_ = so.relayoutVisible && shownIndex() != graph::kNone;

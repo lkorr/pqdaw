@@ -598,6 +598,18 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
   float include[4] = {0, 0, 0, 0};
   bool anyRegion = false;
   for (uint32_t g = 1; g <= p.regions().size(); ++g) {
+    // TMM.12: a factor named by a setting (`oversample(hq)`) as the instance's structure gives it: 1 is no region.
+    const graph::OversampleRegion& def = p.regions()[g - 1];
+    std::string factorText = std::to_string(def.factor);
+    if (!def.factorFrom.empty()) {
+      factorText = def.factorFrom;
+      double v = 0.0;
+      const std::optional<graph::NodeIndex> in = p.findByName(def.factorFrom);
+      if (options.structure != nullptr && in && options.structure->constantAt(p, *in, 0, v)) {
+        if (v <= 1.0) continue;
+        factorText = std::to_string(static_cast<int>(v));
+      }
+    }
     SceneRegion reg;
     reg.region = static_cast<uint16_t>(g);
     reg.firstRect = static_cast<uint32_t>(sc.regionRects.size());
@@ -636,8 +648,7 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
       reg.x1 = firstOne ? q.x1 : std::max(reg.x1, q.x1);
       reg.y1 = firstOne ? q.y1 : std::max(reg.y1, q.y1);
     }
-    const graph::OversampleRegion& def = p.regions()[g - 1];
-    std::string title = "\xC3\x97" + std::to_string(def.factor);  // ×n
+    std::string title = "\xC3\x97" + factorText;  // ×n
     for (size_t k = 0; k < def.phase.size(); ++k) title += (k == 0 ? " \xC2\xB7 phase: " : ", ") + def.phase[k];
     reg.text = static_cast<uint32_t>(sc.strings.size());
     sc.strings.push_back(std::move(title));

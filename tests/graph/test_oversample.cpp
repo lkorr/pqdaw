@@ -371,3 +371,70 @@ TEST_CASE("oversample: the schedule runs the region at n× (regions, buffers, st
   for (uint32_t r = 0; r < sc.regions.size() && r < sc.sleep.regions.size(); ++r)
     if (sc.regions[r].factor > 1) CHECK(sc.sleep.regions[r].segment == kNone);
 }
+
+TEST_CASE("oversample: a setting names the factor (TMM.12) — per instance, round trip, 1 = no region, errors") {
+  const std::string src = R"(
+patch P {
+  in    x  : audio
+  in    hq : real const = 1
+  out   y  : audio
+  oversample(hq) {
+    y = tanh(x * 4)
+  }
+}
+
+patch Twice {
+  in  x : audio
+  out y : audio
+  out z : audio
+  a = P(x, hq: 2)
+  b = P(x)
+  y = a
+  z = b
+}
+
+patch Forward {
+  in  x : audio
+  in  q : real const = 4
+  out y : audio
+  y = P(x, hq: q)
+}
+)";
+  const ParseResult first = parseOk(src);
+  const Patch& p = first.file.patches[0];
+  REQUIRE(p.regions().size() == 1);
+  CHECK(p.regions()[0].factorFrom == "hq");
+  const std::string printed = print(first.file);
+  CAPTURE(printed);
+  CHECK(printed.find("  oversample(hq) {\n") != std::string::npos);
+  const ParseResult second = parseOk(printed);
+  CHECK(second.file.patches[0] == p);
+  CHECK(print(second.file) == printed);
+  // Alone: the default 1 is the plain nodes.
+  Front alone;
+  front(alone, src);
+  CHECK(alone.typed.oversample.empty());
+  // Two instances: hq 2 gets a region of factor 2, the default none.
+  PatchLibrary lib;
+  lib.add(first.file);
+  InferOptions io;
+  io.library = &lib;
+  InferResult two = inferDetailed(first.file.patches[1], io);
+  REQUIRE_MESSAGE(two.ok(), diagText(two.diagnostics, src));
+  REQUIRE(two.typed.oversample.size() == 1);
+  CHECK(two.typed.oversample[0].factor == 2);
+  auto m = atomCounts(two.typed);
+  CHECK(m["oversample_up"] == 1);
+  CHECK(m["oversample_down"] == 1);
+  CHECK(m["tanh"] == 2);
+  // Through the caller's own setting.
+  InferResult fwd = inferDetailed(first.file.patches[2], io);
+  REQUIRE_MESSAGE(fwd.ok(), diagText(fwd.diagnostics, src));
+  REQUIRE(fwd.typed.oversample.size() == 1);
+  CHECK(fwd.typed.oversample[0].factor == 4);
+  // Errors: not a const input; a value that is no factor.
+  CHECK(parseErrors("patch P {\n  in x : audio\n  out y : audio\n  oversample(x) {\n    y = x\n  }\n}\n")
+            .find("must be a `real const` input of the patch") != std::string::npos);
+  CHECK(inferErrors("patch P {\n  in x : audio\n  in hq : real const = 3\n  out y : audio\n  oversample(hq) {\n    y = x\n  }\n}\n")
+            .find("must be a literal 1, 2, 4, 8 or 16") != std::string::npos);
+}

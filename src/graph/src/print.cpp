@@ -159,7 +159,7 @@ public:
     for (uint32_t g = 1; g <= p_.regions().size(); ++g) {
       const OversampleRegion& reg = p_.regions()[g - 1];
       out_ += "  oversample(";
-      out_ += std::to_string(reg.factor);
+      out_ += reg.factorFrom.empty() ? std::to_string(reg.factor) : reg.factorFrom;
       for (size_t k = 0; k < reg.phase.size(); ++k) {
         out_ += k == 0 ? ", phase: " : ", ";
         out_ += reg.phase[k];

@@ -32,6 +32,7 @@
 #include "pq/core/result.h"
 #include "pq/graph/layout.h"
 #include "pq/graph/patch.h"
+#include "pq/graph/structure.h"
 #include "pq/views/circuit/symbols.h"
 
 namespace pq::views::circuit {
@@ -158,6 +159,9 @@ struct SceneOptions {
   std::span<const uint8_t> inactiveNodes, inactiveWires;
   bool hideInactive = true;
   bool relayoutVisible = false;  // with hideInactive: lay out the visible nodes on their own
+  // TMM.12: the instance's structural constants (optional): an `oversample(hq)` region whose setting is 1 is no
+  // region (no wash), else its title shows the value; without it the title shows the setting's name.
+  const graph::StructuralInfo* structure = nullptr;
 };
 
 // The scene of `patch` as stored, completing a missing or partial layout (see above). `laidOut` (optional) receives the

@@ -494,6 +494,14 @@ struct MetaEnvelopeIds {
   doc::DeviceId shapeInst;
 };
 Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids = nullptr);
+// TMM.12: the Meta Operator — "FM Keys" plays it at algorithm 1 (D → C → B → A) with exact ratios A 1, B 2, C 3/2,
+// D 7/4 (+1.5 Hz on D's accumulator), modulator envelopes shorter and quieter (amounts 0.35 / 0.25 / 0.15), B reading
+// demoWavetableData at position 0.4 and D a saw; a four-note chord. The ids.
+struct MetaOperatorIds {
+  doc::TrackId keys;
+  doc::DeviceId op;
+};
+Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids = nullptr);
 
 }  // namespace project_patch
 

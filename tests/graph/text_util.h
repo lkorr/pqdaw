@@ -4,6 +4,7 @@
 // round-trip corpus (tests/graph/cases/ and stdlib/).
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -28,13 +29,31 @@ inline std::string readFile(const fs::path& path) {
 inline fs::path casesDir() { return fs::path(PQ_TEST_DATA_DIR) / "graph" / "cases"; }
 inline fs::path stdlibDir() { return fs::path(PQ_TEST_DATA_DIR) / ".." / "stdlib"; }
 
-// Every .pqp file under `dir` (recursively), sorted; empty if the directory does not exist.
-inline std::vector<fs::path> pqpFiles(const fs::path& dir) {
+// TMM.12: does the file call meta modules (`meta_<type>(…)`)? Those parse only with the meta prelude (pq_meta's
+// signatures, ParseOptions::externals) and infer only with its patches in the library: the corpus sweeps of the
+// language-level tests leave them out; the meta, device and stdlib tests cover them.
+inline bool usesMetaModules(const fs::path& path) {
+  const std::string t = readFile(path);
+  auto word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+  for (size_t at = t.find("meta_"); at != std::string::npos; at = t.find("meta_", at + 5)) {
+    if (at > 0 && word(t[at - 1])) continue;
+    size_t e = at + 5;
+    while (e < t.size() && word(t[e])) ++e;
+    while (e < t.size() && t[e] == ' ') ++e;
+    if (e < t.size() && t[e] == '(') return true;
+  }
+  return false;
+}
+
+// Every .pqp file under `dir` (recursively), sorted; empty if the directory does not exist. Files that call meta
+// modules are left out unless `withMeta` (usesMetaModules).
+inline std::vector<fs::path> pqpFiles(const fs::path& dir, bool withMeta = false) {
   std::vector<fs::path> files;
   std::error_code ec;
   if (!fs::is_directory(dir, ec)) return files;
   for (const auto& e : fs::recursive_directory_iterator(dir))
-    if (e.is_regular_file() && e.path().extension() == ".pqp") files.push_back(e.path());
+    if (e.is_regular_file() && e.path().extension() == ".pqp" && (withMeta || !usesMetaModules(e.path())))
+      files.push_back(e.path());
   std::sort(files.begin(), files.end());
   return files;
 }
