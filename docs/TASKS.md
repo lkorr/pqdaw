@@ -639,6 +639,8 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 - [ ] **TMM.10 Meta modules as chain devices (Device-view panels)** 👁 (docs/plans/MM.md)
 - [ ] **TMM.11 Envelope meta module** 👁 (docs/plans/MM.md)
 - [~] **TMM.12 Meta Operator (new instrument from meta modules; the Live-parity Operator stays)** 👁 *(merged as partial 4285248: node budget 41 vs ≤ 20 and cost 2.23× (1.55× with feedback off) vs ≤ 1.2× not met; decisions in Q178)* (docs/plans/MM.md)
+- [~] **TMM.12-fix1 Wavetable one-frame fast path** (`dsp`/`jit`/`meta`, wavetable_pos). A frame table with one frame (or a position input that is constant per block and lands on one frame) reads without the frame blend; a pure-sine table reads like `sine`. Accept: output bit-identical or ≤ −120 dBFS vs the general path on one-frame tables, no alias regression in the TMM.1/TMM.8 sweeps; Meta Operator cost re-benched (ship) toward ≤ 1.2× stock Operator (Q178 4); the RESULTS rows updated. Depends on: TMM.12.
+- [~] **TMM.12-fix2 Odd-coordinate layout hang** (`views`/`graph` layout). A `layout { … }` node at a coordinate not a multiple of 4 (e.g. y = 61) makes circuit `buildScene` never return (Q178 8). Accept: root cause fixed (snap or handle off-grid coordinates); a regression test with odd coordinates for node and wire endpoints returns in bounded time; no golden changes for on-grid layouts. Depends on: TMM.12.
 - [ ] **TMM.13 MM review** (docs/plans/MM.md)
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
