@@ -1156,3 +1156,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: ship, JIT: static 2.08 vs by-hand 1.85 ns/sample (+0.22), audio-rate knob 4.52; per voice 0.854 vs 0.725 ns/voice-sample (load 51–82 %, indicative).
 - CPU-efficiency check: curve is a memoised param-rate region (skipped while params unchanged); curve kind is a setting so each expansion holds only its own arithmetic; one exp per sample only when value is audio-rate; settled cost is one multiply.
 - Notes/blockers: value stores the knob position (automation lanes show 0…1); knob-space modulation; audio-rate ring-mod aliasing not handled; typed entry uses key codes; no wheel on the knob. Q183.
+
+## 2026-11-01 · TMM.15 · task/TMM.15-pitch-slider (merged; Q184)
+- Did: phase_acc `pitch` param (cents, ±4800, default 0, last in the signature): (hz + freq) · cents_to_hz(pitch, 1), ratio at param rate; face: pitch on the right arc (0 at 3 o'clock, octave ticks, fill from 0), amplitude moved to the top arc, output lead via the amp/pitch gap; semitone drags keeping a cents offset (Ctrl cents, Shift fine), Up/Down ±1 st, Shift ±12, Ctrl ±1 ¢, typed entry (cents; s/st semitones), double-click reset, semitones+cents readout while transposed/hovered/dragged/typed; docs.
+- Verified: build.ps1 -Affected (check, default + slow; app/audio/document/jit/library/media/meta/playback/render/stdlib/timeline/views/pqdaw): 0 warnings, 59/59. Lowering goldens (3): only the new param and the ratio multiply. 18 image goldens regenerated (worker looked at all; orchestrator at meta-phase-acc-z3-1x). Orchestrator: rebased onto afbc979 (SPEC/TASKS only; not re-run).
+- Perf: check preset JIT, 16 voices: 0.74 → 0.77 ns/voice-sample (load ≈ 50 %, indicative; no ship row).
+- CPU-efficiency check: exp2 only in the memoised param-rate region; one multiply per sample; exact octaves and exact ×1 at 0, so existing renders are bit-identical.
+- Notes/blockers: no smoothing (TX.smooth); typed entry uses key codes; keys act on pitch only after a press on its arc. Also fixes the earlier review note "the phase_acc output lead goes through the top gap".
