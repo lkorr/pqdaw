@@ -1070,3 +1070,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: live layer 0.06 ms per face, 16 faces 0.94 ms (check); ship 10 animating faces 0.74 ms full paint; 32 Far faces +0.9 ms per pan frame (indicative).
 - CPU-efficiency check: stacked frames and harmonic bars cached as tiles per instance and data; spectra cached by cycle hash; curves thinned to ~1 point per 1.5 px; nothing runs when silent.
 - Notes: Q173 (output jack on the right edge; warp mode stays a setting; knob drags → preview builds, assigned to TMM.9).
+
+## 2026-11-01 · TMM.9 · task/TMM.9-harmonics-draw
+- Did: Wavetable harmonic editor (amp/phase rows, √2 zoom ladder to 1024 + DC, scroll, paint/line/reset, Alt dB view), draw tools (pencil/line/Catmull-Rom curve, snap grid, normalise/remove-DC flags), edit target follows position after a position drag (first edit between keyframes creates one); FacePointer::button + hover forwarding; TableBuilder preview builds (8 frames, full after 0.1 s pause; orchestrator item from Q173 item 9). Goldens meta-wavetable-harmonics/draw; TMM.7 goldens regenerated.
+- Verified: build.ps1 -Affected (EVERYTHING, check, default+slow): 0 warnings, 79/79; perf tests run directly (views wavetable 23/23, playback meta wavetable 8/8). Orchestrator looked at the harmonics and draw goldens.
+- Perf: drag 60 Hz, median 12.2 ms/step; stroke→audible 12.3–12.5 ms; 512 bars 0.091 ms (check, indicative).
+- CPU-efficiency check: bars in per-instance static tiles keyed by data+view; dense bars merged to ≥1.6 px columns; harmonic writes only the edited harmonics' change; previews skip 56 of 64 bakes during drags.
+- Notes: Q174 (items 1, 2, 4, 8 for review).
