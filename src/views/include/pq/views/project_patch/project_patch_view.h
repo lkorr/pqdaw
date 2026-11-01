@@ -507,6 +507,15 @@ struct MetaOperatorIds {
   doc::DeviceId op;
 };
 Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids = nullptr);
+// TMM.14: the VCA — "Keys" (the default synth, then a chain VCA at ×0.60 on the default bipolar-log curve) and "Trem"
+// (the synth forked: acc1 → wt1 → vca1 = meta_vca(wt1 · env) on a Bend curve 0 … 2, bend 0.5, knob at 0.75). The ids.
+struct MetaVcaIds {
+  doc::TrackId keys;
+  doc::DeviceId vca;
+  doc::TrackId trem;
+  doc::DeviceId tremInst;
+};
+Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids = nullptr);
 
 }  // namespace project_patch
 

@@ -181,6 +181,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_meta_faces.cpp  # TMM.4: meta-module faces (toolkit, hosting at every zoom, drags, expand, editor, goldens)
     views/test_meta_wavetable_face.cpp  # TMM.7: the Wavetable face (display model, goldens, voices, gestures, paint cost)
     views/test_meta_envelope_face.cpp  # TMM.11: the Envelope face (goldens with voices, gestures, scenes, paint cost)
+    views/test_meta_vca_face.cpp  # TMM.14: the VCA face (goldens with voices, gestures, typing, presets, scenes, paint cost)
     views/test_meta_wavetable_edit.cpp  # TMM.9: its harmonic editor and draw tools (math, gestures, goldens, paint cost)
     views/test_meta_devices.cpp  # TMM.10: chain meta devices in the Device view (face panels, menus, presets, goldens)
     views/test_meta_operator.cpp  # TMM.12: the Meta Operator (face panel, algorithm, circuit hiding and counts, presets, goldens)
@@ -360,6 +361,7 @@ pq_add_test(pq_tests_meta
     meta/test_phase_acc.cpp
     meta/test_wavetable.cpp
     meta/test_envelope.cpp  # TMM.11: the Envelope (expansion, bit-identity with msenv, curves, VCA)
+    meta/test_vca.cpp  # TMM.14: the VCA (expansion, the curve law, DSP == law on both backends, audio-rate value, cost)
   DEPS pq_meta pq_pqc)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

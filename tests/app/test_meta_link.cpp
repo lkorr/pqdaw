@@ -23,6 +23,7 @@
 #include "pq/dsp/frame_table_slot.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/vca.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/engine/project_program.h"
@@ -546,4 +547,69 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelop
   d.run(static_cast<uint32_t>(0.15 * 48000.0 / kBlock));
   CHECK(program.voices(u)->liveVoices() == 0);
   CHECK(std::fabs(d.out.back()) < 1e-6f);
+}
+
+// ---- TMM.14: the VCA through the link ------------------------------------------------------------------------------
+
+TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 2 ms (no click) and compile nothing; min/max too") {
+  Keys k;
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "vca", 0));
+  const DeviceId vca = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
+  // Unplugged: `in` reads 1, so the track plays the value itself (a DC through the mixer's constant gain).
+  k.edit(ops::setDeviceChainInput(*k.store.current(), vca, std::string(kChainUnplugged)));
+  const meta::VcaLaw law = meta::vcaLaw(meta::VcaCurve::Log, -meta::kVcaRange, meta::kVcaRange, 0.4, 0.0);
+  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(law, 0.5)));
+  auto link = makeLink(k.store.current());
+  [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  CHECK(link->lastError().empty());
+  Driver d{*link};
+  link->play(0);
+  d.run(20);
+  const float g = d.out.back() / 0.5f;  // the mixer's gain
+  CHECK(g > 0.6f);
+  CHECK(g < 0.8f);
+  float spread = 0.0f;  // settled: a DC
+  for (size_t i = d.out.size() - 64; i < d.out.size(); ++i) spread = std::max(spread, std::fabs(d.out[i] - d.out.back()));
+  CHECK(spread <= 1e-5f);  // (the mixer's own float rounding)
+  // Steps: up to 20 (a knob jump across the fine zone into the log part), down to −3, then min moved under a held knob.
+  const app::LinkStats s0 = link->stats();
+  struct Step {
+    const char* param;
+    double value;
+    double want;  // the value the knob then plays
+  };
+  const meta::VcaLaw narrow = meta::vcaLaw(meta::VcaCurve::Log, -100.0, meta::kVcaRange, 0.4, 0.0);
+  const double p3 = meta::vcaPosition(law, -3.0);
+  const Step steps[] = {{"value", meta::vcaPosition(law, 20.0), 20.0},
+                        {"value", p3, -3.0},
+                        {"min", -100.0, meta::vcaValue(narrow, p3)}};
+  float from = 0.5f;
+  for (const Step& s : steps) {
+    CAPTURE(s.param);
+    k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", s.param, s.value));
+    link->flush();
+    const size_t mark = d.out.size();
+    d.run(15);  // 20 ms: ten time constants
+    const float to = static_cast<float>(s.want);
+    CHECK(d.out.back() / g == doctest::Approx(to).epsilon(1e-3));
+    // A one-pole glide from the old value to the new: monotonic, no sample-to-sample step above a 2 ms one-pole's
+    // first step (1 − e^(−1/96) of the distance), never past the target.
+    const float dist = std::fabs(to - from) * g, maxStep = dist * (1.0f - std::exp(-1.0f / 96.0f)) * 1.02f + 1e-6f;
+    float worst = 0.0f;
+    bool monotonic = true, beyond = false;
+    for (size_t i = mark; i < d.out.size(); ++i) {
+      const float prev = i == mark ? from * g : d.out[i - 1];
+      worst = std::max(worst, std::fabs(d.out[i] - prev));
+      monotonic = monotonic && (to > from ? d.out[i] >= prev - 1e-6f : d.out[i] <= prev + 1e-6f);
+      beyond = beyond || (to > from ? d.out[i] > to * g * 1.0001f + 1e-6f : d.out[i] < to * g * 1.0001f - 1e-6f);
+    }
+    CHECK(worst <= maxStep);
+    CHECK(worst > 0.5f * maxStep);  // it moved at once (smoothed, not delayed)
+    CHECK(monotonic);
+    CHECK_FALSE(beyond);
+    from = to;
+  }
+  CHECK(link->stats().compiles == s0.compiles);
+  CHECK(link->stats().unitCompiles == s0.unitCompiles);
+  CHECK(link->stats().paramWrites >= s0.paramWrites + 3);
 }

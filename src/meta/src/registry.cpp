@@ -6,6 +6,7 @@
 #include "pq/graph/patch_file.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/phase_acc.h"
+#include "pq/meta/vca.h"
 #include "pq/meta/wavetable.h"
 
 namespace pq::meta {
@@ -27,6 +28,7 @@ struct Registry {
     types.push_back(&phaseAccType());
     types.push_back(&wavetableType());  // TMM.5
     types.push_back(&envelopeType());   // TMM.11
+    types.push_back(&vcaType());        // TMM.14
   }
 };
 

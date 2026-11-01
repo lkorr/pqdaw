@@ -407,4 +407,52 @@ Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids)
   return r.status;
 }
 
+namespace {
+
+// The Trem instrument (TMM.14): an envelope around a Phase accumulator into a Wavetable, through a VCA whose value an
+// LFO-like sine moves (the face shows the knob's dots), at a narrow range.
+constexpr const char* kVcaSynth =
+    "patch BasicSynth {\n"  // a fork keeps its root patch's name
+    "  param attack  = 5ms   [0.5ms..5s]\n"
+    "  param release = 250ms [1ms..10s]\n"
+    "  param level   = 0.2   [0..1]\n"
+    "  out   out  : audio voice mono\n"
+    "  out   done : bool voice mono\n"
+    "\n"
+    "  gate = voice.gate\n"
+    "  coef = 1 - exp(-5 / max((gate ? attack : release) * sr, 1))\n"
+    "  env  = z1(env + ((gate ? 1.0 : 0.0) - env) * coef)\n"
+    "  acc1 = meta_phase_acc(voice.hz)\n"
+    "  wt1  = meta_wavetable(acc1)\n"
+    "  vca1 = meta_vca(wt1 * env)\n"
+    "  out  = vca1 * (0.25 + 0.75 * voice.velocity) * level\n"
+    "  done = !gate && env < 0.00003\n"
+    "}\n";
+
+}  // namespace
+
+Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids) {
+  Runner r{store};
+  const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "Keys", 0x3FA9F5);
+  const doc::TrackId trem = r.track(doc::TrackKind::Midi, keys, "Trem", 0xF6A23B);
+  if (!r.status) return r.status;
+  // Keys: the default synth, then a chain VCA at ×0.60 on the default bipolar-log curve.
+  auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), keys, "vca"));
+  const doc::DeviceId vca = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  if (!vca.valid()) return Error{ErrorCode::Unknown, "vca project: no VCA", {}};
+  (void)r.run(doc::ops::setMetaParam(*store.current(), vca, "", "vca", "value", 0.62));
+  // Trem: the synth forked with vca1 on a Bend curve from 0 to 2 (bent toward exponential), at the three-quarter mark.
+  const doc::Track* t = doc::findTrackPtr(*store.current(), trem);
+  if (t == nullptr || t->devices.empty()) return Error{ErrorCode::NotFound, "vca project: Trem has no instrument", {}};
+  const doc::DeviceId inst = t->devices[0]->id;
+  (void)r.run(doc::ops::editDevicePatch(*store.current(), inst, kVcaSynth));
+  (void)r.run(doc::ops::setMetaSetting(*store.current(), inst, "vca1", "vca", "curve", 1.0));
+  const std::pair<const char*, double> tremVca[] = {{"min", 0.0}, {"max", 2.0}, {"bend", 0.5}, {"value", 0.75}};
+  for (const auto& [name, v] : tremVca) (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "vca1", "vca", name, v));
+  r.clip(keys, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
+  r.clip(trem, 0, 4 * kTicksPerWhole, "Pad", {0, 3, 7});
+  if (ids != nullptr) *ids = MetaVcaIds{keys, vca, trem, inst};
+  return r.status;
+}
+
 }  // namespace pq::views::project_patch

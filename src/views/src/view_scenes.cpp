@@ -1729,6 +1729,78 @@ Status setupProjectMetaEnvelope(Shell& shell) {
   return Ok{};
 }
 
+// TMM.14: the VCA (project_patch::buildMetaVcaProject). Still voices: each one's knob position (the tap), a little
+// apart as a per-voice modulation would put them, with the positions sampled during the last frame.
+void setVcaVoices(SyntheticVoices& v, std::initializer_list<double> positions) {
+  std::vector<SyntheticVoices::Voice> list;
+  uint32_t slot = 0;
+  for (const double p : positions) list.push_back({slot++, 0.0, p, 0.0});
+  v.setVoices(std::move(list));
+}
+
+// The Device view of "Keys": the default synth, then the VCA's face as its panel.
+Status setupDeviceMetaVca(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-meta-vca: no device library", {}};
+  project_patch::MetaVcaIds ids;
+  if (Status s = project_patch::buildMetaVcaProject(ctx.store(), &ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-vca: the Device view is not installed", {}};
+  static SyntheticVoices voices;
+  setVcaVoices(voices, {0.62});  // after a stock synth the voices are summed: one global dot at the knob
+  const doc::DeviceId vca = ids.vca;
+  v->faceVoices = [vca](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    return d == vca && path.empty() ? &voices : nullptr;
+  };
+  ctx.setSelectedTrack(ids.keys);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  const doc::DeviceId one[1] = {vca};
+  v->select(one);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The same project in the project patch view, "Trem" opened in place: acc1 → wt1 → vca1 (Bend 0 … 2), four voices
+// whose knob positions a modulation spreads.
+Status setupProjectMetaVca(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-meta-vca: no device library", {}};
+  project_patch::MetaVcaIds ids;
+  if (Status s = project_patch::buildMetaVcaProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-vca: the view is not installed", {}};
+  static SyntheticVoices accVoices, wtVoices, vcaVoices;
+  accVoices.setVoices({{0, 4.0, 0.08}, {1, 5.0, 0.4}, {2, 6.0, 0.66}, {3, 7.0, 0.9}});
+  wtVoices.setVoices({{0, 4.0, 0.08, 0.0}, {1, 5.0, 0.4, 0.0}, {2, 6.0, 0.66, 0.0}, {3, 7.0, 0.9, 0.0}});
+  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  setVcaVoices(vcaVoices, {0.58, 0.69, 0.75, 0.86});
+  const doc::DeviceId inst = ids.tremInst, vca = ids.vca;
+  v->faceVoices = [inst, vca](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (d == vca && path.empty()) return nullptr;
+    if (d != inst) return nullptr;
+    if (path == "acc1") return &accVoices;
+    if (path == "wt1") return &wtVoices;
+    if (path == "vca1") return &vcaVoices;
+    return nullptr;
+  };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setDeviceExpanded(inst, true);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.trem, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TMM.12: still voices for the Meta Operator's twelve faces — four voices of a chord, each operator's accumulator and
 // wavetable dots at its own ratio's phases, its envelope in a stage of its own (the modulators decaying faster).
 struct MetaOperatorSceneVoices {
@@ -1880,6 +1952,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
+    {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14
+    {"project-meta-vca", 1280, 800, setupProjectMetaVca},              // TMM.14
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)
     {"meta-operator-circuit", 1600, 900, setupMetaOperatorCircuit},    // TMM.12
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
