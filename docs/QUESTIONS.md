@@ -1865,7 +1865,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Smoothing**: not added. A frequency step keeps the phase continuous, so a pitch jump does not click; a glide is a different feature, and TX.smooth's general param smoothing will cover the param (no one-off here).
 - Status: open (user: the layout reading, typed units, the readout's placement).
 
-## Q?-TMM.16-a · 2026-11-01 · TMM.16 · The picture is the sound: what was wrong, what the face now draws, and the choices behind it
+## Q185 · 2026-11-01 · TMM.16 · The picture is the sound: what was wrong, what the face now draws, and the choices behind it
 - Context: TASKS TMM.16; bug reports 2026-11-01_12-12-09 (first half) and 12-13-10; Q173 1, Q174 8, Q176 (live-band bake). Tested in tests/app/test_meta_wavetable.cpp ("the picture matches the sound", default tier: the reported gestures; slow tier: every gesture and mode), tests/meta/test_wavetable.cpp (focused previews), tests/dsp/test_frame_table.cpp (buildFramesInto, opposite phases). All reversible.
 - What was wrong (found by the new test and by measuring):
   1. **The line stroke was not heard until release** — not the face: every stroke step was published to the document. The link dropped every delivered table whose key was not the newest job's, and since TMM.8's live-band bake a preview takes ≈ 15–40 ms (release ≈ 12–25), longer than the pointer's steps: every preview was dropped, so nothing was heard until the drag stopped and the full table arrived (the TMM.9 perf test, 60 Hz steps, check preset under load: 1 publish in 30 steps with the old delivery rule, 27 with the new one). The pencil and harmonic drags had the same problem.
