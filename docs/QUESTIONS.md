@@ -1660,6 +1660,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   6. **Static layers are shared per face type** (keyed by type and layer, one scale at a time), so 32 Phase accumulators cost 3 tiles; text in faces is quantised to a few sizes above 16 px so a zoom creates few fonts (fonts are created on first use, ≈ 1–2 ms each, once).
   7. **A chain meta device's opened frame is read-only**: a double-click inside it says so in the status line instead of opening the circuit editor (its atoms are generated from its state).
 - Status: open (user review with TMM.4's REVIEW entry).
+
 ## Q?-TMM.2-a · 2026-11-01 · TMM.2 · Live frame-table slots and voice taps: the click criterion, and the choices the code made
 - Context: docs/plans/MM.md TMM.2 (Decisions → DSP "Table slots", "Per-voice dots without probes"). Measured in tests/dsp/test_wavetable_pos.cpp, tests/core/test_voice_tap.cpp, tests/jit/test_jit_frame_table.cpp, tests/app/test_meta_link.cpp.
 - Choices (provisional):
