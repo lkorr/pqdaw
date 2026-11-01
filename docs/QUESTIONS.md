@@ -1596,7 +1596,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   10. **Not changed**: the shell keeps painting under the full-window overlay (≈ 0.13 ms per frame at 2560 × 1440 with one track, the same for the circuit editor); skipping covered widgets is a ui-wide change.
 - Status: open (user to judge 1, 2, 7 with REVIEW's T5.x-circuit-chain entry).
 
-## Q?-T5.x-one-circuit-a · 2026-10-31 · T5.x-one-circuit · One circuit view and lane windows: the details decided
+## Q165 · 2026-10-31 · T5.x-one-circuit · One circuit view and lane windows: the details decided
 - Context: SPEC §15 2026-10-31 ("merge the circuit views, the whole project is just one big circuit"; source nodes as windows onto the lanes, ~4 bars, zoom out widens them, double-click a MIDI clip opens its piano roll). Decisions (a) and (b) of the task were given; these are the remaining details (all reversible; Live parity loose).
 - Choices (provisional):
   1. **Opening from another view** (the Device view, the device editor's Track button, Ctrl+Alt+C) switches to the project patch view **at once, without the morph**, already framed on the device (the morph and the framing animation would race). From inside the view, Open in Circuit View animates the framing.
