@@ -8,6 +8,7 @@
 #include <set>
 #include <sstream>
 
+#include "pq/meta/registry.h"
 #include "pq/ui/controls.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/device_circuit.h"
@@ -56,6 +57,7 @@ public:
     imports_ = &doc->imports;
     graph::ParseOptions o;
     o.imports = this;
+    o.externals = prelude_->signatures;  // TMM.4: meta calls (the default state)
     doc->parsed = graph::parseDetailed(doc->source, doc->path, o);
     imports_ = outer;
     active_.erase(doc->path);
@@ -84,6 +86,7 @@ public:
   }
 
 private:
+  std::shared_ptr<const meta::Prelude> prelude_ = meta::prelude();
   std::map<std::string, std::shared_ptr<PatchDocument>> done_;
   std::set<std::string> active_;
   std::vector<std::shared_ptr<const PatchDocument>>* imports_ = nullptr;

@@ -6,6 +6,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/views/meta/face_targets.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views::circuit {
@@ -43,6 +44,12 @@ public:
   bool undo() override { return ctx_.undo(); }
   bool redo() override { return ctx_.redo(); }
   std::string title() const override { return deviceEditorTitle(ctx_, device_); }
+  // TMM.4: a meta call in the device's root patch edits the device's state at its name path.
+  std::unique_ptr<MetaTarget> metaTarget(std::string_view shownPatch, std::string_view path, const meta::Type& type) override {
+    const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+    if (d == nullptr || path.empty() || shownPatch != d->patch) return nullptr;
+    return std::make_unique<DocTarget>(ctx_, device_, std::string(path), type);
+  }
 
 private:
   void commit(const std::string& text, const graph::ParseResult& parsed) {
@@ -69,7 +76,10 @@ private:
         return;
       }
     }
-    auto e = doc::ops::editDevicePatch(*ctx_.doc(), device_, text, std::move(ids));
+    // TMM.4: a hand edit that renames a meta call keeps its state (the ids carried from the text it replaces).
+    const graph::PatchFile* previous = d->source && d->source->ids ? d->source->ids.get() : (lib ? lib->stockFile(d->patch) : nullptr);
+    auto e = previous != nullptr ? doc::ops::editDevicePatchKeepingMeta(*ctx_.doc(), device_, text, std::move(ids), *previous)
+                                 : doc::ops::editDevicePatch(*ctx_.doc(), device_, text, std::move(ids));
     if (!e) {
       ctx_.setStatus(e.error().message);
       return;

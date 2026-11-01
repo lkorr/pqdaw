@@ -464,6 +464,10 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
     const SceneNode& sn = sc.nodes[v];
     if (sn.hidden) continue;
     std::string title = spec.title;
+    if (spec.face != nullptr) {  // TMM.4: the face is the block (label-free); the binding name stays above it
+      sc.faces.push_back({v, spec.face, p.nodeName(v), 0});
+      title.clear();
+    }
     float tx0 = sn.x + 8, tx1 = sn.x + sn.w - 8, ty = sn.y + sn.h * 0.5f;
     switch (spec.symbol) {
       case Symbol::Box:
@@ -523,7 +527,7 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
     // Pin labels inside labelled symbols.
     for (uint32_t k = 0; k < sn.pinCount; ++k) {
       const ScenePin& pin = sc.pins[sn.firstPin + k];
-      if (pin.label == UINT32_MAX) continue;
+      if (pin.label == UINT32_MAX || spec.face != nullptr) continue;
       SceneLabel lb;
       const float half = (sn.w - 16) * 0.5f;
       lb.x0 = pin.input ? sn.x + 11 : sn.x + sn.w - 8 - half;

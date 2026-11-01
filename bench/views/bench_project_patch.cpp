@@ -8,6 +8,8 @@
 //   - the morph from the arrangement and back: every frame at 144 Hz
 //   - T5.x-circuit-chain: the track circuit view over Operator -> Auto Filter -> EQ Eight -> Saturator (the chain's
 //     layout + scene, cold and from cached device scenes; full paints and pan frames fitted (far) and at zoom 1 (near))
+//   - TMM.4: the project plus 32 Phase accumulator faces at 2x: pan frames with faces vs plain blocks (far, near); 16
+//     faces x 8 animated voices (animation frames, a full paint); idle after the voices stop
 // Acceptance (T4.13): zoomed-out full-project paint < 2 ms; the morph at 144 Hz with 64 tracks (a frame < 6.9 ms).
 // Run from the ship build (bench target only); results → bench/RESULTS.md.
 
@@ -33,6 +35,7 @@
 #include "pq/ui/widget.h"
 #include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/meta/face_targets.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq_bench.h"
@@ -58,6 +61,144 @@ double tscNsPerCycle() {
   }
   const uint64_t c1 = __rdtsc();
   return std::chrono::duration<double, std::nano>(clock::now() - t0).count() / static_cast<double>(c1 - c0);
+}
+
+// ---- TMM.4: meta-module faces ----------------------------------------------------------------------------------
+// The 64-track project with 32 Phase accumulator faces (instead of the first 32 instruments), at 2x UI scale, 2560x1440
+// device px: pan frames with the faces drawn vs the same project with the face nodes drawn as plain blocks
+// (CircuitCanvas::setFacesShown(false), an exact A/B of the faces' cost), fitted (far) and one band (near); then 16 faces
+// in view at the mid level with 8 animated voices each (synthetic taps, advanced 1/60 s per frame): the frames the
+// face timer drives (only the live rects repaint) and a full paint; idle: frames and timers after the voices stop.
+int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
+  FakeTransport port;
+  ViewContext ctx(port);
+  ctx.setDeviceLibrary(&lib);
+  if (Status s = buildWideProject(ctx.store(), 64); !s) return 1;
+  if (Status s = addPhaseAccFaces(ctx.store(), 32); !s) {
+    std::printf("faces: %s\n", s.error().message.c_str());
+    return 1;
+  }
+  auto tex = createSceneText(std::make_shared<Atlas>(), UiScale(2.0f));
+  if (!tex) return 1;
+  auto tiles = std::make_shared<TileAtlas>();
+  PaintResources res = paintResources(*tex);
+  res.tiles = tiles.get();
+  std::vector<uint8_t> staging;
+  auto stageTiles = [&] {
+    const auto b = tiles->uploadBytes();
+    if (staging.size() < b.size()) staging.resize(b.size());
+    if (!b.empty()) std::memcpy(staging.data(), b.data(), b.size());
+    tiles->clearUploads();
+    tiles->beginFrame();
+  };
+  const uint32_t w = 2560, h = 1440;
+  UiTree tree;
+  tree.setViewport(w, h, UiScale(2.0f));
+  tree.setResources(&res);
+  auto shell = Shell::create(tree, ctx);
+  if (!shell) return 1;
+  ProjectPatchView* view = findProjectPatch(**shell);
+  if (view == nullptr) return 1;
+  DrawList dl;
+  double now = 1.0;
+  auto frame = [&] {
+    now += 1.0 / 144.0;
+    tree.update(now);
+    tex->text->beginFrame();
+    dl.reset(w, h);
+    if (tree.needsPaint()) tree.paint(dl, res, now);
+    stageTiles();
+  };
+  auto timed = [&](auto&& input) {
+    const uint64_t c0 = threadCycles();
+    input();
+    frame();
+    return static_cast<double>(threadCycles() - c0) * nsPerCycle;
+  };
+  auto settle = [&] {
+    for (int i = 0; i < 2000 && (tree.needsFrame() || tree.nextWakeTime() <= now + 1.0); ++i) {
+      now = std::max(now, std::min(tree.nextWakeTime(), now + 1.0)) - 1.0 / 144.0;
+      frame();
+    }
+  };
+  auto fullPaint = [&] {
+    tex->text->beginFrame();
+    dl.reset(w, h);
+    tree.paint(dl, res, now);
+    stageTiles();
+  };
+  tree.layoutNow();
+  view->setShown(true, false);
+  settle();
+  circuit::CircuitCanvas& c = view->canvas();
+  std::printf("faces: %zu faces hosted\n", c.faceCount());
+  char name[200];
+  const doc::Snapshot snap = ctx.doc();
+  for (int level = 0; level < 2; ++level) {
+    if (level == 0) view->fitAll(false);
+    else view->focusBand(snap->tracks[0]->children.at(3)->id, false);
+    settle();
+    const char* lod = c.lod() == circuit::CircuitCanvas::Lod::Far ? "far" : (c.lod() == circuit::CircuitCanvas::Lod::Mid ? "mid" : "near");
+    for (int shown = 1; shown >= 0; --shown) {
+      c.setFacesShown(shown != 0);
+      settle();
+      fullPaint();
+      std::printf("faces %s: %s zoom %.3f: %u faces painted (%u layers from tiles), %u nodes painted, %u vertices\n",
+                  shown ? "on" : "off", lod, c.view().zoom, c.stats().facesPainted, c.stats().faceLayersFromTiles, c.stats().nodesPainted,
+                  static_cast<unsigned>(dl.vertices().size()));
+      std::vector<double> pan;
+      for (int i = 0; i < 300; ++i)
+        pan.push_back(timed([&] { c.panBy((i / 50) % 2 ? -37.0f : 37.0f, (i / 75) % 2 ? -11.0f : 11.0f); }));
+      std::snprintf(name, sizeof name, "meta_faces.pan frame (%s, %s, %s) 64 tracks + 32 faces 2x %ux%u", level == 0 ? "whole project" : "one band",
+                    lod, shown ? "faces" : "plain blocks", w, h);
+      pq::bench::reportStats(name, pq::bench::summarize(pan), "ns CPU/frame");
+    }
+    c.setFacesShown(true);
+  }
+  // 16 faces in view (mid level), 8 animated voices each.
+  std::vector<std::unique_ptr<SyntheticVoices>> voices;
+  view->faceVoices = [&](doc::DeviceId, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    auto v = std::make_unique<SyntheticVoices>();
+    std::vector<SyntheticVoices::Voice> vs;
+    for (uint32_t k = 0; k < 8; ++k) vs.push_back({k, 1.5 + 0.7 * k + 0.1 * static_cast<double>(voices.size()), 0.125 * k});
+    v->setVoices(std::move(vs));
+    voices.push_back(std::move(v));
+    return voices.back().get();
+  };
+  view->rebindFaces();
+  {
+    const Band& b0 = view->patch().bands.at(1);
+    circuit::CircuitCanvas::View v;
+    v.zoom = 0.31;
+    v.x = b0.x0 - 8.0;
+    v.y = b0.y - 8.0;
+    c.setView(v);
+  }
+  settle();
+  for (auto& v : voices) v->advance(1.0 / 60.0);
+  c.wakeFaces();
+  fullPaint();
+  std::printf("animated: zoom %.3f, %u faces painted, %u face primitives\n", c.view().zoom, c.stats().facesPainted, c.stats().facePrimitives);
+  const uint32_t painted = c.stats().facesPainted;
+  pq::bench::reportStats("meta_faces.paint(full, 16 faces x 8 animated voices, mid) 2x 2560x1440", pq::bench::measure(fullPaint, 1), "ns/frame");
+  std::vector<double> anim;
+  for (int i = 0; i < 300; ++i)
+    anim.push_back(timed([&] {
+      for (auto& v : voices) v->advance(1.0 / 60.0);
+      c.wakeFaces();  // what the face timer does at 60 Hz: poll, damage the live rects
+    }));
+  std::snprintf(name, sizeof name, "meta_faces.animation frame (%u faces x 8 voices: poll + live rects repainted) 2x %ux%u", painted, w, h);
+  pq::bench::reportStats(name, pq::bench::summarize(anim), "ns CPU/frame");
+  // Silent again: no frames, no timers.
+  for (auto& v : voices) v->setVoices({});
+  c.wakeFaces();
+  settle();
+  const bool idle = !tree.needsFrame() && std::isinf(tree.nextWakeTime());
+  std::printf("meta_faces idle after the voices stop: %s (animating %d)\n", idle ? "yes (no frames, no timers)" : "NO", c.animatingFaces() ? 1 : 0);
+  view->faceVoices = nullptr;
+  view->rebindFaces();
+  return idle ? 0 : 1;
 }
 
 }  // namespace
@@ -326,5 +467,5 @@ int main() {
       pq::bench::reportStats(name, pq::bench::summarize(pan), "ns CPU/frame");
     }
   }
-  return 0;
+  return facesBench(**lib, nsPerCycle);  // TMM.4
 }

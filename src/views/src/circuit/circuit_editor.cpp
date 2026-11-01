@@ -167,6 +167,7 @@ bool EditCanvas::onPointer(const ui::PointerEvent& e) {
     pointer_ = e.pos;
     if (overlay_ && overlay_->readout) markDirty();  // the readout follows the pointer
   }
+  if (drag_ == Drag::None && scene() && facePointer(e)) return true;  // TMM.4: a meta face's control
   if (!scene() || !editable_ || stale_) {
     if (e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && e.clickCount >= 2 && scene()) {
       const CanvasHit hit = hitTest(e.pos);
@@ -466,6 +467,13 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   };
   doc_->onChange = [this](const EditorChange& c) { documentChanged(c); };
   canvas_->onOpen = [this](uint32_t node) { (void)openNode(node); };
+  // TMM.4: a meta call's face edits the instance the host addresses (a project device: its document state), only in
+  // the patch the editor opened on (its root: the name path is the call's binding name there).
+  canvas_->faceBinder = [this](const SceneFace& f) {
+    CircuitCanvas::FaceBinding b;
+    if (host_ != nullptr && f.type != nullptr && backStack_.empty() && !readOnly()) b.target = host_->metaTarget(shown_, f.path, *f.type);
+    return b;
+  };
   canvas_->onMove = [this](std::vector<uint32_t> nodes, float dx, float dy) {
     const size_t idx = shownIndex();
     if (idx == graph::kNone) return;
@@ -847,6 +855,7 @@ void CircuitEditor::setHost(std::unique_ptr<Host> host) {
   if (save_) save_->setVisible(!device);
   if (play_) play_->setVisible(!device);
   updateTitle();
+  canvas_->rebindFaces();  // TMM.4: the host addresses the faces' state
 }
 
 void CircuitEditor::setTrackAction(std::function<void()> action) {

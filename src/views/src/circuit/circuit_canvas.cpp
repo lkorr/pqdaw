@@ -12,6 +12,7 @@
 #include "../common/drag.h"
 #include "../common/paint.h"
 #include "pq/graph/atoms.h"
+#include "pq/ui/face_painter.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/raster.h"
 #include "pq/ui/text.h"
@@ -122,6 +123,7 @@ struct CircuitCanvas::Impl {
       ++stats.segmentsPainted;
     }
     for (const uint32_t v : visNodes) {
+      if (faced(v)) continue;  // TMM.4: faces are drawn over the chunks at every level
       const SceneNode& n = s.nodes[v];
       const ui::Rect rr{static_cast<float>(std::round(ox + n.x * sc)), static_cast<float>(std::round(oy + n.y * sc)),
                         static_cast<float>(std::round(ox + (n.x + n.w) * sc)), static_cast<float>(std::round(oy + (n.y + n.h) * sc))};
@@ -301,6 +303,206 @@ struct CircuitCanvas::Impl {
 
   // info text
   mutable std::string infoTitle, infoBody;
+
+  // ---- TMM.4: meta-module faces ----
+  struct Hosted {
+    uint32_t node = 0;   // scene node
+    uint32_t entry = 0;  // index into scene->faces
+    std::unique_ptr<MetaFace> face;
+    std::vector<FaceJack> jacks;
+  };
+  std::vector<Hosted> faces;
+  std::vector<int32_t> faceOf;  // per scene node: index into faces, or -1
+  std::unordered_map<uint64_t, ui::LayerTile> faceTiles;  // static layers by (type, layer), at one scale each
+  bool facesShown = true;
+  int32_t faceCapture = -1;  // the face a press went to (its drag runs until Up)
+  int32_t faceHover = -1;
+  uint32_t faceTimer = 0;
+  std::vector<ui::Rect> faceRects;
+  mutable std::string faceTitle, faceBody;
+
+  bool faced(uint32_t v) const noexcept { return facesShown && v < faceOf.size() && faceOf[v] >= 0; }
+  static uint64_t faceKey(const meta::Type& t, uint32_t layer) noexcept {
+    return (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&t)) << 3) ^ layer;
+  }
+
+  void buildFaces() {
+    faces.clear();
+    faceCapture = faceHover = -1;
+    faceOf.assign(scene ? scene->nodes.size() : 0, -1);
+    if (!scene) return;
+    for (uint32_t e = 0; e < scene->faces.size(); ++e) {
+      const SceneFace& f = scene->faces[e];
+      if (f.node >= scene->nodes.size() || f.type == nullptr) continue;
+      std::unique_ptr<MetaFace> face = makeFace(*f.type);
+      if (!face) continue;
+      Hosted h;
+      h.node = f.node;
+      h.entry = e;
+      h.face = std::move(face);
+      const SceneNode& n = scene->nodes[f.node];
+      for (uint32_t k = 0; k < n.pinCount; ++k) {
+        const ScenePin& pin = scene->pins[n.firstPin + k];
+        FaceJack j;
+        j.at = {pin.x - n.x, pin.y - n.y};
+        j.input = pin.input;
+        j.connected = pin.connected;
+        j.visible = pin.visible;
+        if (pin.label != UINT32_MAX) j.name = scene->strings[pin.label];
+        h.jacks.push_back(j);
+      }
+      faceOf[f.node] = static_cast<int32_t>(faces.size());
+      faces.push_back(std::move(h));
+    }
+    bindFaces();
+  }
+
+  void bindFaces() {
+    for (Hosted& h : faces) {
+      CircuitCanvas::FaceBinding b;
+      if (self.faceBinder) b = self.faceBinder(scene->faces[h.entry]);
+      h.face->bind(std::move(b.target), b.voices);
+    }
+  }
+
+  // The face whose block is under a device point (-1: none).
+  int32_t faceUnder(Vec2 d) const noexcept {
+    if (!facesShown || !scene || !self.rect().contains(d)) return -1;
+    const Point2 w = self.toWorld(d);
+    for (size_t i = faces.size(); i-- > 0;) {
+      const SceneNode& n = scene->nodes[faces[i].node];
+      if (!n.hidden && w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) return static_cast<int32_t>(i);
+    }
+    return -1;
+  }
+
+  FacePointer pointerOf(int32_t i, const ui::PointerEvent& e, FacePointer::Kind kind) const {
+    const SceneNode& n = scene->nodes[faces[static_cast<size_t>(i)].node];
+    const Point2 w = self.toWorld(e.pos);
+    FacePointer fp;
+    fp.kind = kind;
+    fp.local = {w.x - n.x, w.y - n.y};
+    fp.device = e.pos;
+    fp.pxPerUnit = s();
+    fp.uiScale = uiScale();
+    fp.mods = e.mods;
+    fp.clicks = e.clickCount;
+    fp.wheel = e.wheel;
+    return fp;
+  }
+
+  bool faceVisible(const Hosted& h) const noexcept {
+    const SceneNode& n = scene->nodes[h.node];
+    const ui::IRect r = self.rect();
+    return !n.hidden && devX(n.x + n.w) >= static_cast<float>(r.x) && devX(n.x) <= static_cast<float>(r.right()) &&
+           devY(n.y + n.h) >= static_cast<float>(r.y) && devY(n.y) <= static_cast<float>(r.bottom());
+  }
+
+  // At most 60 Hz while a visible face's reader is live: new voice records damage that face's live rects only.
+  void pollFaces() {
+    if (!facesShown || !scene) return;
+    bool live = false;
+    ui::UiTree* tr = self.tree();
+    const ui::IRect cr = self.rect();
+    for (Hosted& h : faces) {
+      VoiceTapReader* rd = h.face->voices();
+      if (rd == nullptr || !faceVisible(h)) continue;
+      if (h.face->pollVoices() && tr != nullptr) {
+        const SceneNode& n = scene->nodes[h.node];
+        faceRects.clear();
+        h.face->liveRects(faceRects);
+        for (const ui::Rect& lr : faceRects) {
+          const ui::Rect d{devX(n.x + lr.x0) - 2.0f, devY(n.y + lr.y0) - 2.0f, devX(n.x + lr.x1) + 2.0f, devY(n.y + lr.y1) + 2.0f};
+          const ui::Rect c{std::max(d.x0, static_cast<float>(cr.x)), std::max(d.y0, static_cast<float>(cr.y)),
+                           std::min(d.x1, static_cast<float>(cr.right())), std::min(d.y1, static_cast<float>(cr.bottom()))};
+          tr->damage().add(c);
+        }
+      }
+      live = live || rd->live() || h.face->animating();
+    }
+    if (live && faceTimer == 0 && tr != nullptr) faceTimer = self.requestTimer(kFaceFrameSeconds);
+  }
+
+  // Draws every visible face: static layers from tiles (or directly), then jacks and the live layer.
+  void paintFaces(ui::PaintContext& ctx, const ui::IRect& clip, ui::TileAtlas* atlas, bool& missing) {
+    if (!facesShown || faces.empty()) return;
+    const ui::Theme& th = *ctx.res.theme;
+    const float sc = s();
+    bool wantTimer = false;
+    for (Hosted& h : faces) {
+      const SceneNode& n = scene->nodes[h.node];
+      if (n.hidden) continue;
+      const float x0 = devX(n.x), y0 = devY(n.y), x1 = devX(n.x + n.w), y1 = devY(n.y + n.h);
+      if (x1 < static_cast<float>(clip.x) - 2.0f || x0 > static_cast<float>(clip.right()) + 2.0f ||
+          y1 < static_cast<float>(clip.y) - 2.0f || y0 > static_cast<float>(clip.bottom()) + 2.0f)
+        continue;
+      MetaFace& f = *h.face;
+      const Vec2 o{std::round(x0), std::round(y0)};
+      for (uint32_t layer = 0; layer < f.staticLayerCount(); ++layer) {
+        const Rgba col = f.staticLayerColour(th, layer);
+        bool drawn = false;
+        if (atlas) {
+          auto it = faceTiles.find(faceKey(f.type(), layer));
+          if (it != faceTiles.end() && ui::layerReady(*atlas, it->second)) {
+            ui::drawLayer(ctx.dl, *atlas, it->second, o, sc, col);
+            drawn = true;
+            if (it->second.scale == sc) {
+              ++stats.faceLayersFromTiles;
+            } else {
+              ++stats.faceLayersStretched;
+              missing = true;
+            }
+          } else if (!(it != faceTiles.end() && it->second.failed && it->second.scale == sc)) {
+            missing = true;
+          }
+        }
+        if (!drawn) {
+          ui::FacePainter p(ctx.dl, {o, sc});
+          p.setTint(col);
+          f.paintStatic(p, layer);
+          ++stats.faceLayersDirect;
+        }
+      }
+      FaceEnv env;
+      env.theme = &th;
+      env.uiScale = ctx.scale.factor;
+      env.selected = h.node < nodeSel.size() && nodeSel[h.node] != 0;
+      env.hovered = hover.kind == CanvasHit::Kind::Node && hover.index == h.node;
+      env.jacks = h.jacks;
+      ui::FacePainter p(ctx.dl, {o, sc});
+      p.setText(ctx.res.text);
+      f.paintJacks(p, env);
+      f.paintLive(p, env);
+      stats.facePrimitives += p.primitives();
+      ++stats.facesPainted;
+      wantTimer = wantTimer || (f.voices() != nullptr && (f.voices()->live() || f.animating()));
+    }
+    if (wantTimer && faceTimer == 0) faceTimer = self.requestTimer(kFaceFrameSeconds);
+  }
+
+  // Builds the visible faces' missing static-layer tiles at the current scale. True when it built any.
+  bool buildFaceTiles(ui::TileAtlas& atlas) {
+    if (!facesShown) return false;
+    const float sc = s();
+    bool built = false;
+    for (const Hosted& h : faces) {
+      if (!faceVisible(h)) continue;
+      const MetaFace& f = *h.face;
+      for (uint32_t layer = 0; layer < f.staticLayerCount(); ++layer) {
+        ui::LayerTile& t = faceTiles[faceKey(f.type(), layer)];
+        if (t.scale == sc && (ui::layerReady(atlas, t) || t.failed)) continue;
+        const ui::Vec2 ws = f.worldSize();
+        ui::LayerTile fresh;
+        if (ui::recordLayer(atlas, scratch, ws.x, ws.y, sc, [&](ui::FacePainter& p) { f.paintStatic(p, layer); }, fresh))
+          ++stats.tilesBuilt;
+        else
+          ++stats.tileFailures;
+        t = fresh;
+        built = true;
+      }
+    }
+    return built;
+  }
 
   explicit Impl(CircuitCanvas& c) : self(c) {}
 
@@ -509,6 +711,7 @@ void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit
   impl_->chunkScale = 0.0f;
   impl_->wireLit.clear();
   impl_->resetSelectionFlags();
+  impl_->buildFaces();  // TMM.4
   if (fit) {
     impl_->fitReadable = true;
     impl_->fit();
@@ -578,6 +781,7 @@ bool CircuitCanvas::zooming() const noexcept { return impl_->zooming; }
 bool CircuitCanvas::tilesPending() const noexcept { return impl_->tilesWanted; }
 void CircuitCanvas::dropTiles() {
   impl_->tiles.clear();
+  impl_->faceTiles.clear();
   impl_->chunks.clear();
   impl_->chunkScale = 0.0f;
   markDirty();
@@ -744,6 +948,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   st.nodesPainted = st.nodesFromTiles = st.nodesStretched = st.nodesDirect = 0;
   st.wiresPainted = st.segmentsPainted = st.junctionsPainted = st.labelsPainted = 0;
   st.chunksFromTiles = st.chunksStretched = st.chunksDirect = 0;
+  st.facesPainted = st.faceLayersFromTiles = st.faceLayersStretched = st.faceLayersDirect = st.facePrimitives = 0;
   if (!m.scene) {
     dl.popClip();
     return;
@@ -862,6 +1067,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     // The selection and the hovered node over the cached picture (the chunks hold the unselected look).
     const double ox = std::round(r.x - m.view.x * s), oy = std::round(r.y - m.view.y * s);
     auto outline = [&](uint32_t v, Rgba col) {
+      if (m.faced(v)) return;  // TMM.4: a face shows its own selection / hover
       const SceneNode& n = sc.nodes[v];
       const ui::Rect rr{static_cast<float>(std::round(ox + n.x * s)), static_cast<float>(std::round(oy + n.y * s)),
                         static_cast<float>(std::round(ox + (n.x + n.w) * s)), static_cast<float>(std::round(oy + (n.y + n.h) * s))};
@@ -877,6 +1083,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     // Pin stubs (crisp, snapped like the wires); T5.x-circuit-chain: only from Near when the view asks.
     for (const uint32_t v : m.visNodes) {
       if (m.stubsNearOnly && lod != Lod::Near) break;
+      if (m.faced(v)) continue;  // TMM.4: the face draws its jacks
       const SceneNode& n = sc.nodes[v];
       const Rgba col = strokeOf(v);
       for (uint32_t k = 0; k < n.pinCount; ++k) {
@@ -907,6 +1114,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     thread_local std::vector<Quad> quads;
     quads.clear();
     for (const uint32_t v : m.visNodes) {
+      if (m.faced(v)) continue;  // TMM.4: drawn as its face (below)
       const SceneNode& n = sc.nodes[v];
       const SymbolSpec& spec = sc.specs[n.spec];
       const Vec2 o{std::round(m.devX(n.x)), std::round(m.devY(n.y))};
@@ -952,7 +1160,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     // Subcircuit title bands, over the bodies (a third colour the two tile layers do not carry).
     for (const uint32_t v : m.visNodes) {
       const SceneNode& n = sc.nodes[v];
-      if (sc.specs[n.spec].symbol != Symbol::Subcircuit) continue;
+      if (sc.specs[n.spec].symbol != Symbol::Subcircuit || m.faced(v)) continue;
       const Vec2 o{std::round(m.devX(n.x)), std::round(m.devY(n.y))};
       const float bw = std::max(1.0f, std::round(strokeWidth(s)));
       const float x0 = o.x + std::round(8.0f * s) + bw, x1 = o.x + std::round((n.w - 8.0f) * s) - bw;
@@ -960,6 +1168,9 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       if (x1 > x0 && y1 > y0) dl.addRectFilled({x0, y0, x1, y1}, dimIf(v, C.subcircuitTitle));
     }
   }
+
+  // ---- TMM.4: faces, at every level of detail ----
+  m.paintFaces(ctx, clip, atlas, missing);
 
   // ---- labels ----
   if (lod == Lod::Near && ctx.res.text && ctx.res.uiFonts) {
@@ -970,6 +1181,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     const bool pins = m.view.zoom >= kPinLabelZoom;
     for (const SceneLabel& lb : sc.labels) {
       if (lb.role == SceneLabel::Role::Pin && !pins) continue;
+      if (lb.node != UINT32_MAX && lb.role != SceneLabel::Role::Caption && m.faced(lb.node)) continue;  // TMM.4: label-free
       if (lb.node != UINT32_MAX && lb.node < m.nodeStamp.size()) {
         const SceneNode& n = sc.nodes[lb.node];
         if (n.x > w1.x + pad || n.x + n.w < w0.x - pad || n.y - 12 > w1.y + pad || n.y + n.h < w0.y - pad) continue;
@@ -1050,13 +1262,19 @@ void CircuitCanvas::onFrame(double /*now*/) {
   if (!m.scene || m.zooming || !m.tilesWanted || !tree() || !tree()->resources() || !tree()->resources()->tiles) return;
   m.tilesWanted = false;
   ui::TileAtlas& atlas = *tree()->resources()->tiles;
-  const bool built = m.lod() == Lod::Far ? m.buildFarChunks(atlas) : m.buildVisibleTiles(atlas);
+  bool built = m.lod() == Lod::Far ? m.buildFarChunks(atlas) : m.buildVisibleTiles(atlas);
+  built = m.buildFaceTiles(atlas) || built;  // TMM.4: a few tiles per face type (all at once: they are small)
   if (built) markDirty();
   if (m.tilesWanted) requestFrame();
 }
 
 void CircuitCanvas::onTimer(uint32_t id) {
   Impl& m = *impl_;
+  if (id == m.faceTimer && id != 0) {  // TMM.4: the faces' <= 60 Hz poll
+    m.faceTimer = 0;
+    m.pollFaces();
+    return;
+  }
   if (id != m.settleTimer) return;
   m.settleTimer = 0;
   m.zooming = false;
@@ -1068,6 +1286,7 @@ void CircuitCanvas::onTimer(uint32_t id) {
 bool CircuitCanvas::onPointer(const ui::PointerEvent& e) {
   Impl& m = *impl_;
   const float us = m.uiScale();
+  if (facePointer(e)) return true;  // TMM.4
   switch (e.type) {
     case ui::PointerType::Wheel: {
       if (e.mods & ui::mod::kCtrl) {
@@ -1199,6 +1418,10 @@ bool CircuitCanvas::onPointer(const ui::PointerEvent& e) {
 bool CircuitCanvas::onKey(const ui::KeyEvent& e) {
   if (!e.down) return false;
   const ui::Mods mods = e.mods & ui::mod::kChordMask;
+  if (e.key == ui::key::kEscape && faceDragging()) {  // TMM.4: Esc undoes a face's drag
+    onInteractionCancelled();
+    return true;
+  }
   const Vec2 centre{static_cast<float>(rect().x) + static_cast<float>(rect().w) * 0.5f,
                     static_cast<float>(rect().y) + static_cast<float>(rect().h) * 0.5f};
   if (mods == ui::mod::kNone && e.key == 'f') {
@@ -1222,6 +1445,11 @@ bool CircuitCanvas::onKey(const ui::KeyEvent& e) {
 
 void CircuitCanvas::onCaptureLost() {
   Impl& m = *impl_;
+  if (m.faceCapture >= 0 && static_cast<size_t>(m.faceCapture) < m.faces.size()) {  // TMM.4: the drag is undone
+    m.faces[static_cast<size_t>(m.faceCapture)].face->cancelDrag();
+    m.faceCapture = -1;
+    markDirty();
+  }
   if (m.mode == Impl::DragMode::Band) markDirty();
   m.mode = Impl::DragMode::None;
   m.tracker.end();
@@ -1229,6 +1457,11 @@ void CircuitCanvas::onCaptureLost() {
 
 void CircuitCanvas::onInteractionCancelled() {
   Impl& m = *impl_;
+  if (m.faceCapture >= 0 && static_cast<size_t>(m.faceCapture) < m.faces.size()) {  // TMM.4
+    m.faces[static_cast<size_t>(m.faceCapture)].face->cancelDrag();
+    m.faceCapture = -1;
+    markDirty();
+  }
   if (m.mode == Impl::DragMode::Band) {  // the selection from before the band comes back
     m.selection = m.bandBase;
     m.selectionChanged();
@@ -1242,10 +1475,14 @@ bool CircuitCanvas::panning() const noexcept { return impl_->mode == Impl::DragM
 
 bool CircuitCanvas::altHeld() const noexcept { return tree() && (tree()->mods() & ui::mod::kAlt) != 0; }
 
-ui::Cursor CircuitCanvas::cursorAt(ui::Vec2 /*pos*/) const { return panning() || altHeld() ? ui::Cursor::Move : ui::Cursor::Inherit; }
+ui::Cursor CircuitCanvas::cursorAt(ui::Vec2 pos) const {
+  if (panning() || altHeld()) return ui::Cursor::Move;
+  return faceCursor(pos);  // TMM.4 (Inherit elsewhere)
+}
 
 ui::InfoText CircuitCanvas::info() const {
   const Impl& m = *impl_;
+  if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   if (!m.scene || m.hover.kind == CanvasHit::Kind::None) return {"Circuit", "Ctrl+wheel zooms, the wheel scrolls, F fits the whole patch."};
   const CircuitScene& sc = *m.scene;
   m.infoBody.clear();
@@ -1267,6 +1504,117 @@ ui::InfoText CircuitCanvas::info() const {
     m.infoBody = std::string(pin.input ? "Input " : "Output ") + (pin.label != UINT32_MAX ? sc.strings[pin.label] : std::to_string(pin.port));
   }
   return {m.infoTitle, m.infoBody};
+}
+
+// ---- TMM.4: faces --------------------------------------------------------------------------------------------------
+
+void CircuitCanvas::rebindFaces() {
+  impl_->bindFaces();
+  impl_->pollFaces();
+  markDirty();
+}
+
+MetaFace* CircuitCanvas::faceOn(uint32_t node) const noexcept {
+  const Impl& m = *impl_;
+  return node < m.faceOf.size() && m.faceOf[node] >= 0 ? m.faces[static_cast<size_t>(m.faceOf[node])].face.get() : nullptr;
+}
+size_t CircuitCanvas::faceCount() const noexcept { return impl_->faces.size(); }
+MetaFace& CircuitCanvas::faceAt(size_t i) const noexcept { return *impl_->faces[i].face; }
+uint32_t CircuitCanvas::faceNode(size_t i) const noexcept { return impl_->faces[i].node; }
+void CircuitCanvas::wakeFaces() { impl_->pollFaces(); }
+bool CircuitCanvas::animatingFaces() const noexcept { return impl_->faceTimer != 0; }
+void CircuitCanvas::setFacesShown(bool on) {
+  Impl& m = *impl_;
+  if (m.facesShown == on) return;
+  m.facesShown = on;
+  m.chunks.clear();  // the Far chunks hold face nodes as boxes when faces are off
+  m.chunkScale = 0.0f;
+  markDirty();
+}
+bool CircuitCanvas::facesShown() const noexcept { return impl_->facesShown; }
+bool CircuitCanvas::faceDragging() const noexcept { return impl_->faceCapture >= 0; }
+
+bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
+  Impl& m = *impl_;
+  if (!m.facesShown || m.faces.empty() || !m.scene) return false;
+  using K = FacePointer::Kind;
+  switch (e.type) {
+    case ui::PointerType::Down: {
+      if (e.button != ui::PointerButton::Left || (e.mods & ui::mod::kAlt)) return false;
+      const int32_t i = m.faceUnder(e.pos);
+      if (i < 0) return false;
+      MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
+      const FacePointer fp = m.pointerOf(i, e, K::Down);
+      if (f.hitTest(fp.local, fp.pxPerUnit) < 0 || !f.onPointer(fp)) return false;
+      if (tree()) tree()->setFocus(this);
+      m.faceCapture = f.dragging() ? i : -1;
+      markDirty();
+      return true;
+    }
+    case ui::PointerType::Move: {
+      if (m.faceCapture >= 0) {
+        (void)m.faces[static_cast<size_t>(m.faceCapture)].face->onPointer(m.pointerOf(m.faceCapture, e, K::Move));
+        markDirty();
+        return true;
+      }
+      const int32_t i = m.faceUnder(e.pos);
+      if (m.faceHover >= 0 && m.faceHover != i && static_cast<size_t>(m.faceHover) < m.faces.size() &&
+          m.faces[static_cast<size_t>(m.faceHover)].face->setHoveredPart(MetaFace::kNone))
+        markDirty();
+      m.faceHover = i;
+      if (i >= 0) {
+        MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
+        const FacePointer fp = m.pointerOf(i, e, K::Move);
+        if (f.setHoveredPart(f.hitTest(fp.local, fp.pxPerUnit))) markDirty();
+      }
+      return false;
+    }
+    case ui::PointerType::Up: {
+      if (m.faceCapture < 0) return false;
+      const int32_t i = m.faceCapture;
+      m.faceCapture = -1;
+      (void)m.faces[static_cast<size_t>(i)].face->onPointer(m.pointerOf(i, e, K::Up));
+      markDirty();
+      return true;
+    }
+    case ui::PointerType::Wheel: {
+      const int32_t i = m.faceUnder(e.pos);
+      return i >= 0 && m.faces[static_cast<size_t>(i)].face->onPointer(m.pointerOf(i, e, K::Wheel));
+    }
+    case ui::PointerType::Leave: {
+      if (m.faceHover >= 0 && static_cast<size_t>(m.faceHover) < m.faces.size() &&
+          m.faces[static_cast<size_t>(m.faceHover)].face->setHoveredPart(MetaFace::kNone))
+        markDirty();
+      m.faceHover = -1;
+      return false;
+    }
+  }
+  return false;
+}
+
+ui::Cursor CircuitCanvas::faceCursor(ui::Vec2 pos) const {
+  const Impl& m = *impl_;
+  if (m.faceCapture >= 0) {
+    const MetaFace& f = *m.faces[static_cast<size_t>(m.faceCapture)].face;
+    return f.cursor(f.hoveredPart() >= 0 ? f.hoveredPart() : 0);
+  }
+  const int32_t i = m.faceUnder(pos);
+  if (i < 0) return ui::Cursor::Inherit;
+  const SceneNode& n = m.scene->nodes[m.faces[static_cast<size_t>(i)].node];
+  const Point2 w = toWorld(pos);
+  const MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
+  return f.cursor(f.hitTest({w.x - n.x, w.y - n.y}, m.s()));
+}
+
+bool CircuitCanvas::faceInfo(ui::InfoText& out) const {
+  const Impl& m = *impl_;
+  const int32_t i = m.faceCapture >= 0 ? m.faceCapture : m.faceHover;
+  if (i < 0 || static_cast<size_t>(i) >= m.faces.size()) return false;
+  const MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
+  if (f.hoveredPart() == MetaFace::kNone) return false;
+  f.describe(f.hoveredPart(), m.faceTitle, m.faceBody);
+  out = {m.faceTitle, m.faceBody};
+  return true;
 }
 
 }  // namespace pq::views::circuit

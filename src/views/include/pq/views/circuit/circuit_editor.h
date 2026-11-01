@@ -171,6 +171,12 @@ public:
     virtual bool undo() = 0;
     virtual bool redo() = 0;
     virtual std::string title() const = 0;  // in place of the file name
+    // TMM.4: what a meta call's face at `path` (call names from the device's root) edits; null: the defaults,
+    // read-only.
+    virtual std::unique_ptr<MetaTarget> metaTarget(std::string_view /*shownPatch*/, std::string_view /*path*/,
+                                                   const meta::Type& /*type*/) {
+      return nullptr;
+    }
   };
   void setHost(std::unique_ptr<Host> host);
   Host* host() const noexcept { return host_.get(); }

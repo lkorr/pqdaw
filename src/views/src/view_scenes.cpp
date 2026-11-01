@@ -26,6 +26,7 @@
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/meta/face_targets.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/mos_wheel/mos_chart.h"
@@ -1437,6 +1438,40 @@ Status setupInstrumentRack(Shell& shell) {
 }
 
 // One entry per scene. T3.8+ append theirs (arrangement-basic, pianoroll-31edo, mos-chart-default, …).
+// TMM.4: Phase accumulator faces in the project patch view (project_patch::buildMetaFacesProject), the whole project
+// fitted: three bands start with a face, one with Operator's plain block. The Lead and Bell faces show still voices
+// (synthetic: what TMM.2's voice taps will feed), each dot with the trail of the phases read during one frame.
+Status setupProjectMetaFaces(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-meta-faces: no device library", {}};
+  if (Status s = project_patch::buildMetaFacesProject(ctx.store()); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-faces: the view is not installed", {}};
+  const doc::Track* lead = namedTrack(*ctx.doc(), "Lead");
+  const doc::Track* bell = namedTrack(*ctx.doc(), "Bell");
+  if (lead == nullptr || bell == nullptr || lead->devices.empty() || bell->devices.empty())
+    return Error{ErrorCode::NotFound, "project-meta-faces: no Lead / Bell face", {}};
+  static SyntheticVoices leadVoices, bellVoices;
+  leadVoices.setVoices({{0, 7.0, 0.04}, {1, 5.0, 0.31}, {2, 9.0, 0.57}, {3, 6.0, 0.83}});
+  bellVoices.setVoices({{0, 4.0, 0.12}, {1, 11.0, 0.46}, {2, 3.0, 0.71}});
+  for (SyntheticVoices* sv : {&leadVoices, &bellVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId leadDev = lead->devices[0]->id, bellDev = bell->devices[0]->id;
+  v->faceVoices = [leadDev, bellDev](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    return d == leadDev ? &leadVoices : (d == bellDev ? &bellVoices : nullptr);
+  };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->fitAll(false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
     {"arrangement-basic", 1280, 800, setupArrangementBasic},
@@ -1488,6 +1523,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
+    {"project-meta-faces", 1280, 800, setupProjectMetaFaces},          // TMM.4
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

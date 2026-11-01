@@ -48,6 +48,7 @@
 #include "pq/document/store.h"
 #include "pq/graph/patch.h"
 #include "pq/graph/project.h"
+#include "pq/meta/type.h"
 
 namespace pq::views::project_patch {
 
@@ -71,6 +72,10 @@ struct Node {
   bool edited = false;         // Device: a user device (its own patch text, T4.4-fix1); the title says "(edited)"
   bool instrument = false;     // Device: an instrument
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
+  // TMM.4: a chain meta device ("meta:<type>") whose type has a face: drawn as its face (the block's size), unless
+  // opened to its atoms; `meta` is set for every chain meta device (its atoms are generated: opened, read-only).
+  const meta::Type* face = nullptr;
+  bool meta = false;
   // T4.8: a rack is drawn as one plain block. Its devices (at any depth) have no blocks of their own: `inner` lists
   // them, their calls are in the track patch (racks lower inline) and a wire to / from one of them ends on the rack's
   // block at a port named "<port>@<device id>" (labelled with the port's name). `lowered`: some device inside plays

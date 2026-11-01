@@ -2,6 +2,9 @@
 
 #include "pq/views/circuit/symbols.h"
 
+#include "pq/meta/registry.h"
+#include "pq/views/meta/meta_face.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -321,6 +324,27 @@ SymbolSpec describe(const graph::Patch& p, NodeIndex n, const std::vector<uint8_
       setStubs(s.outputs, 4);
       break;
   }
+  // TMM.4: a meta call with a face: the face's size and pin rows (no stubs: the face draws its jacks).
+  if (nd.kind == NodeKind::Subcircuit)
+    if (const meta::Type* t = meta::typeOfCall(p.subcircuit(n).patch); t != nullptr && hasFace(*t)) {
+      const ui::Vec2 fs = faceSize(*t);
+      if (const std::unique_ptr<MetaFace> f = makeFace(*t)) {
+        s.face = t;
+        s.title = std::string(t->name);
+        s.w = fs.x;
+        s.h = fs.y;
+        for (size_t i = 0; i < s.inputs.size(); ++i) {
+          s.inputs[i].y = f->inputY(i, s.inputs.size());
+          s.inputs[i].stub = 0.0f;
+          s.inputs[i].label = std::string(p.inputName(n, static_cast<uint32_t>(i)));  // the info view's, not drawn
+        }
+        for (size_t j = 0; j < s.outputs.size(); ++j) {
+          s.outputs[j].y = f->outputY(j, s.outputs.size());
+          s.outputs[j].stub = 0.0f;
+          s.outputs[j].label = std::string(p.outputName(n, static_cast<uint32_t>(j)));
+        }
+      }
+    }
   s.bodyKey = static_cast<uint64_t>(s.symbol) | (static_cast<uint64_t>(s.glyph) << 8) |
               (static_cast<uint64_t>(s.w / 4.0f) << 16) | (static_cast<uint64_t>(s.h / 4.0f) << 36);
   return s;

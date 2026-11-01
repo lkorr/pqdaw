@@ -56,6 +56,10 @@ SymbolSpec specOf(const Node& n) {
       inStub = 4.0f;
       break;
   }
+  if (n.face != nullptr) {  // TMM.4: the face draws its jacks (no stubs)
+    s.face = n.face;
+    inStub = outStub = 0.0f;
+  }
   for (size_t i = 0; i < n.inputs.size(); ++i) {
     PinSpec p;
     p.y = pinYOf(n, i);
@@ -154,6 +158,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     }
     sn.pinCount = static_cast<uint32_t>(sc.pins.size()) - sn.firstPin;
     sc.nodes.push_back(sn);
+    if (n.face != nullptr) sc.faces.push_back({v, n.face, std::string(), n.device.value});  // TMM.4: the device itself
     // Labels: titles as buildScene places them; pin labels inside blocks.
     SceneLabel title;
     title.node = v;
@@ -260,6 +265,8 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       if (d.label != UINT32_MAX) d.label += stringBase;
       sc.pins.push_back(d);
     }
+    for (const circuit::SceneFace& f : in->faces)  // TMM.4: meta calls inside the opened device: its state
+      sc.faces.push_back({nodeBase + f.node, f.type, f.path, n.device.value});
     for (const SceneLabel& s : in->labels) {
       SceneLabel d = s;
       d.x0 += ox;

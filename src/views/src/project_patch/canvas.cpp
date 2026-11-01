@@ -14,6 +14,7 @@
 #include "pq/views/circuit/chain_paint.h"
 #include "pq/views/circuit/probes.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/meta/face_targets.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
 namespace pq::views::project_patch {
@@ -56,6 +57,15 @@ Rect openedBandPill(const ProjectCanvas& c, const ProjectPatchView& v, const ui:
 ProjectCanvas::ProjectCanvas(ProjectPatchView& view) : CircuitCanvas("patch-canvas"), view_(view) {
   setPinStubsNearOnly(true);  // M4 review L13: the overview reads as blocks and wires
   setTerminalPillMinZoom(kFarZoom);  // T5.x-circuit-chain: opened devices' terminals named from Mid up
+  // TMM.4: faces edit their instance in the document: a chain meta device's own params (path ""), or a meta call's
+  // inside an opened device (its name path); one undo step per drag.
+  faceBinder = [this](const circuit::SceneFace& f) {
+    FaceBinding b;
+    if (f.type == nullptr || f.owner == 0) return b;
+    b.target = std::make_unique<DocTarget>(view_.context(), doc::DeviceId{f.owner}, f.path, *f.type);
+    if (view_.faceVoices) b.voices = view_.faceVoices(doc::DeviceId{f.owner}, f.path);
+    return b;
+  };
   onHoverChanged = [this](const circuit::CanvasHit& hit) {
     uint32_t edge = kNone;
     const ProjectScene& ps = view_.scene();
@@ -349,6 +359,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output) continue;  // the symbol / the canvas's pill says it
+        if (n.face != nullptr) continue;  // TMM.4: a face is label-free (its name is in the info view)
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
         if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
         const ui::TextRun run = ts.shape(font, n.title);
@@ -477,6 +488,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
     pointer_ = e.pos;
   }
   if (!scene()) return CircuitCanvas::onPointer(e);
+  if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
     case ui::PointerType::Wheel: {
       // T5.x-one-circuit: over a lane window the wheel scrolls its time, Ctrl+wheel zooms it (about the pointer).
@@ -530,6 +542,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           const graph::Point2 w = toWorld(e.pos);
           if (w.y < n.y + 16.0f) {
             v.setDeviceExpanded(n.device, false);
+            return true;
+          }
+          if (n.meta) {  // TMM.4: a meta module's atoms are its generated expansion
+            v.context().setStatus("A meta module's atoms are generated from its face: read-only. Its title strip closes it.");
             return true;
           }
           doc::DeviceId target = n.rack ? doc::DeviceId{} : n.device;
@@ -754,6 +770,7 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
 }
 
 ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
+  if (faceDragging()) return faceCursor(pos);  // TMM.4
   switch (drag_) {
     case Drag::Wire: return wireCursor_;
     case Drag::MoveDevice: return bandAt(pos) == kNone ? ui::Cursor::NotAllowed : ui::Cursor::Move;
@@ -770,6 +787,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
 
 ui::Cursor ProjectCanvas::pressCursor(Vec2 pos) const {
   // The order of onPointer's left press (Alt and the middle button pan: the canvas's).
+  if (const ui::Cursor c = faceCursor(pos); c != ui::Cursor::Inherit) return c;  // TMM.4: a face's control
   const ProjectPatch& pp = view_.patch();
   const uint32_t node = nodeAt(pos);
   if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
@@ -853,7 +871,7 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
 bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   if (!e.down) return false;
   const ui::Mods mods = e.mods & ui::mod::kChordMask;
-  if (e.key == ui::key::kEscape && drag_ != Drag::None) {
+  if (e.key == ui::key::kEscape && (drag_ != Drag::None || faceDragging())) {  // TMM.4: a face's drag too
     onInteractionCancelled();
     return true;
   }
@@ -895,6 +913,7 @@ void ProjectCanvas::onInteractionCancelled() {
 }
 
 ui::InfoText ProjectCanvas::info() const {
+  if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone) return {ro.title, ro.value};
   return {"Project Patch",

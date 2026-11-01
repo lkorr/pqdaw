@@ -22,6 +22,7 @@ pq_add_module(pq_ui
     src/controls.cpp
     src/drag.cpp
     src/draw_list.cpp
+    src/face_painter.cpp
     src/frame_pacer.cpp
     src/gpu.cpp
     src/image.cpp

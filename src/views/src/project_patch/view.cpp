@@ -1040,6 +1040,8 @@ bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, u
   return apply(doc::ops::addDevice(*ctx_.doc(), ctx_.store().ids(), track, patch, kind, index), "Add Device");
 }
 
+void ProjectPatchView::rebindFaces() { canvas_->rebindFaces(); }
+
 bool ProjectPatchView::editDeviceCircuit(doc::DeviceId device) {
   return circuit::openDeviceInCircuitView(*canvas_, ctx_, device) != nullptr;
 }

@@ -13,6 +13,7 @@
 //   IC rectangle    flip-flops, counter, clockdiv, timer, pulse, edge detectors, sample & hold, latch: labelled pins
 //   terminals       const (the literal), param (its name), voice.* / transport.* / sr sources, in / out / export flags
 //   block           subcircuit instances: the callee's name, labelled pins
+//   face            (TMM.4) a meta-module call `name = meta_<type>(…)` whose type has a face: sized and pinned by it
 //
 // Pins: inputs on the left edge (x = 0), outputs on the right edge (x = w), like graph::LayoutGeometry. Each pin has a
 // stub length: the canvas draws the pin stub (from the edge to the body) with the wire layer, crisp and snapped like
@@ -31,6 +32,10 @@
 #include "pq/graph/patch.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/theme.h"
+
+namespace pq::meta {
+struct Type;
+}
 
 namespace pq::views::circuit {
 
@@ -74,6 +79,10 @@ struct SymbolSpec {
   std::string caption;  // the node's binding name, shown above the body ("" when anonymous)
   // Identifies the body's pixels for tile caching: equal keys paint identical bodies at equal zoom.
   uint64_t bodyKey = 0;
+  // TMM.4: a call of a meta module with a face (pq/views/meta/meta_face.h): the block is the face — its size is the
+  // face's, its pins sit where the face puts them (MetaFace::inputY / outputY) and the canvas draws the face instead of
+  // the body (CircuitScene::faces).
+  const meta::Type* face = nullptr;
 };
 
 // The symbol for node n of p. `wired[i]` tells whether input i is connected (unconnected optional inputs get no pin).

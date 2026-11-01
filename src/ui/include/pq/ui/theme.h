@@ -148,6 +148,11 @@ struct Theme {
         value, knob, display, displayGrid, displayGridMajor, displayText, curve, curveFill, band, bandOff, bandText, bandSelected;
     bool operator==(const Device&) const = default;
   } device{};
+  struct Face {  // meta-module faces (TMM.4, docs/plans/MM.md "UI"): label-free vector faces on the circuit canvas —
+                 // a dark body, quiet tracks and frame, values in the accent, the signal (voice dots) in neon blue
+    Rgba body, frame, track, tick, value, valueDriven, handle, hover, hub, signal, glow, jack, jackRing;
+    bool operator==(const Face&) const = default;
+  } face{};
 
   struct Fonts {  // SPEC §11: 12 / 13 / 14 px roles
     ThemeFont small, body, bodyStrong, title, numeric;

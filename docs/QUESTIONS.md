@@ -1649,3 +1649,14 @@ Agents: add questions here instead of guessing on anything important. Use this f
   6. **The alias suite** uses bin-exact pitches (k·sr / 2^16), whose phases are exact in float (as a phasor produces them at those pitches), so it measures the table and the reader, not the float phase's precision floor (the plan's a_h·h·1.1e-7 term, which the 64-keyframe fixture's a_h·h ≤ 0.09 cap bounds at −100 dBFS for other pitches).
 - Status: open (user / orchestrator to decide 5; the rest informational).
 
+
+## Q?-TMM.4-a · 2026-11-01 · TMM.4 · Faces: details decided while building them
+- Context: TMM.4 built the face toolkit, hosting and the Phase accumulator face to docs/plans/MM.md. Choices the plan left open, all reversible:
+  1. **Drags are relative, measured in device px**: a full travel is the control's on-screen extent, never less than 150 logical px (Shift: a tenth). So a far-zoomed face (6 px wide at 0.05) drags exactly like a 150-px slider, and a near one follows the pointer along its arc. Absolute "click to jump" was rejected: at far zooms it would be unusable, and it makes accidental edits from a click.
+  2. **Double-click on an arc resets it; on the frame (the hub, the top gap, the corners) it opens the module to its atoms.** The plan's "double-click the face frame" read literally: controls take their own double-click (reset), as knobs do elsewhere.
+  3. **The output leaves through the top gap** to the jack on the right edge at the band's pin row (y 24): the plan puts the output jack in the centre, but wires in the circuit are orthogonal and end on node edges; the hub is the output's display and the lead joins them. The inputs (`hz`, `pm`, and any wired param pin) are sockets on the left edge with faint leads into the body.
+  4. **Voice dots are polled, not pushed**: `VoiceTapReader::live()` keeps a ≤ 60 Hz timer running only while a visible face's reader may receive records; the host (TMM.2 / the app) calls `CircuitCanvas::wakeFaces()` when a reader becomes live (a note, the transport). Silent: no timer, no frames.
+  5. **The views-side reader interface** (`pq/views/meta/meta_face.h` `VoiceTapReader`, `FaceVoice`: newest phase + up to 96 sampled phases per read) is what TMM.2's `pq/core/voice_tap.h` reader adapts to; the Phase accumulator's expansion gets its `voice_tap` sink when TMM.2 merges (or in TMM.10), as planned.
+  6. **Static layers are shared per face type** (keyed by type and layer, one scale at a time), so 32 Phase accumulators cost 3 tiles; text in faces is quantised to a few sizes above 16 px so a zoom creates few fonts (fonts are created on first use, ≈ 1–2 ms each, once).
+  7. **A chain meta device's opened frame is read-only**: a double-click inside it says so in the status line instead of opening the circuit editor (its atoms are generated from its state).
+- Status: open (user review with TMM.4's REVIEW entry).

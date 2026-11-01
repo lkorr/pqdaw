@@ -94,6 +94,9 @@ const ColorToken kColors[] = {
     PQ_COLOR(device, activatorOff), PQ_COLOR(device, label), PQ_COLOR(device, value), PQ_COLOR(device, knob), PQ_COLOR(device, display),
     PQ_COLOR(device, displayGrid), PQ_COLOR(device, displayGridMajor), PQ_COLOR(device, displayText), PQ_COLOR(device, curve), PQ_COLOR(device, curveFill),
     PQ_COLOR(device, band), PQ_COLOR(device, bandOff), PQ_COLOR(device, bandText), PQ_COLOR(device, bandSelected),
+    PQ_COLOR(face, body), PQ_COLOR(face, frame), PQ_COLOR(face, track), PQ_COLOR(face, tick), PQ_COLOR(face, value),
+    PQ_COLOR(face, valueDriven), PQ_COLOR(face, handle), PQ_COLOR(face, hover), PQ_COLOR(face, hub), PQ_COLOR(face, signal),
+    PQ_COLOR(face, glow), PQ_COLOR(face, jack), PQ_COLOR(face, jackRing),
 };
 #undef PQ_COLOR
 

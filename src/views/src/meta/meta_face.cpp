@@ -1,0 +1,125 @@
+// Meta-module faces: the base class's shared parts (jacks, pins, hover) and the registry by type id (TMM.4). See
+// pq/views/meta/meta_face.h.
+
+#include "pq/views/meta/meta_face.h"
+
+#include <algorithm>
+#include <mutex>
+#include <string>
+#include <utility>
+
+#include "faces.h"
+
+namespace pq::views {
+
+namespace {
+
+struct Registry {
+  std::mutex m;
+  std::vector<std::pair<std::string, FaceFactory>> factories{{"phase_acc", &makePhaseAccFace}};
+  // worldSize per type id, filled on first ask (a face's size never changes).
+  std::vector<std::pair<std::string, ui::Vec2>> sizes;
+};
+
+Registry& registry() {
+  static Registry r;
+  return r;
+}
+
+FaceFactory factoryOf(std::string_view id) {
+  Registry& r = registry();
+  std::lock_guard<std::mutex> lock(r.m);
+  for (const auto& [name, f] : r.factories)
+    if (name == id) return f;
+  return nullptr;
+}
+
+}  // namespace
+
+void MetaFace::bind(std::unique_ptr<MetaTarget> target, VoiceTapReader* voices) {
+  target_ = target ? std::move(target) : std::make_unique<DefaultTarget>(*type_);
+  voices_ = voices;
+  voiceCount_ = 0;
+  voiceSerial_ = 0;
+  (void)pollVoices();
+}
+
+float MetaFace::inputY(size_t i, size_t /*n*/) const noexcept { return 24.0f + 16.0f * static_cast<float>(i); }
+float MetaFace::outputY(size_t j, size_t /*n*/) const noexcept { return 24.0f + 16.0f * static_cast<float>(j); }
+
+void MetaFace::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
+  const ui::Theme& th = *env.theme;
+  const float w = worldSize().x;
+  for (const FaceJack& j : env.jacks) {
+    if (!j.visible) continue;
+    // A short lead from the edge into a socket ring; a connected socket carries a dot.
+    const float edge = j.input ? 0.0f : w, sx = j.input ? 5.0f : w - 5.0f;
+    p.line({edge, j.at.y}, {j.input ? sx - 2.75f : sx + 2.75f, j.at.y}, 1.25f, th.face.jackRing);
+    p.disc({sx, j.at.y}, 3.4f, th.face.jack);
+    p.ring({sx, j.at.y}, 2.75f, 1.1f, th.face.jackRing);
+    p.disc({sx, j.at.y}, 1.25f, j.connected ? th.face.signal : ui::mulAlpha(th.face.jackRing, 0.35f));
+  }
+}
+
+ui::Cursor MetaFace::cursor(int32_t part) const noexcept { return part >= 0 ? ui::Cursor::ResizeNS : ui::Cursor::Inherit; }
+
+void MetaFace::describe(int32_t /*part*/, std::string& title, std::string& body) const {
+  title = std::string(type_->name);
+  body = "Double-click the frame to open it to its atoms.";
+}
+
+bool MetaFace::pollVoices() {
+  if (voices_ == nullptr) {
+    const bool had = voiceCount_ != 0;
+    voiceCount_ = 0;
+    return had;
+  }
+  const uint64_t serial = voices_->serial();
+  if (serial == voiceSerial_) return false;
+  voiceSerial_ = serial;
+  const uint32_t before = voiceCount_;
+  voiceCount_ = voices_->read(voiceBuf_);
+  return voiceCount_ != 0 || before != 0;
+}
+
+bool MetaFace::setHoveredPart(int32_t part) noexcept {
+  if (hovered_ == part) return false;
+  hovered_ = part;
+  return true;
+}
+
+std::unique_ptr<MetaFace> makeFace(const meta::Type& t) {
+  const FaceFactory f = factoryOf(t.id);
+  if (f == nullptr) return nullptr;
+  std::unique_ptr<MetaFace> face = f(t);
+  if (face) face->bind(nullptr, nullptr);
+  return face;
+}
+
+bool hasFace(const meta::Type& t) noexcept { return factoryOf(t.id) != nullptr; }
+
+ui::Vec2 faceSize(const meta::Type& t) noexcept {
+  Registry& r = registry();
+  {
+    std::lock_guard<std::mutex> lock(r.m);
+    for (const auto& [name, s] : r.sizes)
+      if (name == t.id) return s;
+  }
+  const std::unique_ptr<MetaFace> f = makeFace(t);
+  const ui::Vec2 s = f ? f->worldSize() : ui::Vec2{0.0f, 0.0f};
+  std::lock_guard<std::mutex> lock(r.m);
+  r.sizes.emplace_back(std::string(t.id), s);
+  return s;
+}
+
+bool registerFace(std::string_view typeId, FaceFactory factory) {
+  if (factory == nullptr || typeId.empty()) return false;
+  Registry& r = registry();
+  std::lock_guard<std::mutex> lock(r.m);
+  for (const auto& [name, f] : r.factories)
+    if (name == typeId) return false;
+  r.factories.emplace_back(std::string(typeId), factory);
+  return true;
+}
+
+}  // namespace pq::views

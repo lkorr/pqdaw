@@ -103,6 +103,16 @@ struct SceneSegment {
   uint32_t point = 0;  // index of its first point in CircuitScene::points
 };
 
+// TMM.4: a node drawn as a meta-module face (SymbolSpec::face): its type and the instance's name path relative to the
+// scene's patch (the call's binding name; "" for a chain meta device in the project patch view). `owner`: whose state
+// it is — 0 for the scene's own patch, else the host's id (the project patch view: the device id).
+struct SceneFace {
+  uint32_t node = 0;  // scene node
+  const meta::Type* type = nullptr;
+  std::string path;
+  uint32_t owner = 0;
+};
+
 struct CircuitScene {
   std::string patchName;
   std::vector<SymbolSpec> specs;  // one per node, in graph node order
@@ -115,6 +125,7 @@ struct CircuitScene {
   std::vector<uint32_t> junctionWire;    // … a wire of that net (its style colours the dot)
   std::vector<SceneLabel> labels;
   std::vector<std::string> strings;
+  std::vector<SceneFace> faces;  // TMM.4, in node order
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // bounds of everything
   SpatialGrid grid;
   uint32_t autoPlaced = 0;  // nodes completeLayout placed

@@ -240,7 +240,20 @@
     "device.band": "#FFC658",
     "device.bandOff": "#5E7176",
     "device.bandText": "#0F2026",
-    "device.bandSelected": "#F2EDD8"
+    "device.bandSelected": "#F2EDD8",
+    "face.body": "#0C1A1F",
+    "face.frame": "#4A5D63",
+    "face.track": "#22353B",
+    "face.tick": "#5E7176",
+    "face.value": "#FFC658",
+    "face.valueDriven": "#FFC65866",
+    "face.handle": "#FFF1CC",
+    "face.hover": "#33494F",
+    "face.hub": "#16282E",
+    "face.signal": "#7CD4FF",
+    "face.glow": "#3FA9FF",
+    "face.jack": "#08191F",
+    "face.jackRing": "#8E9C98"
   },
   "fonts": {
     "small": {"face": "regular", "px": 11, "tabular": false},

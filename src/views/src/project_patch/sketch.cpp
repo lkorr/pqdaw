@@ -130,4 +130,56 @@ Status buildWideProject(doc::DocumentStore& store, uint32_t tracks) {
   return r.status;
 }
 
+namespace {
+
+// The instrument of MIDI track `t` replaced by a chain Phase accumulator (TMM.4), with param values.
+doc::DeviceId phaseAccOn(Runner& r, doc::TrackId t, double freq, double phase, double amp) {
+  auto e = r.run(doc::ops::addMetaDevice(*r.store.current(), r.store.ids(), t, "phase_acc", 0));
+  if (!e || e->devices.empty()) return {};
+  const doc::DeviceId d = e->devices[0];
+  if (freq != 0.0) (void)r.run(doc::ops::setMetaParam(*r.store.current(), d, "", "phase_acc", "freq", freq));
+  if (phase != 0.0) (void)r.run(doc::ops::setMetaParam(*r.store.current(), d, "", "phase_acc", "phase", phase));
+  if (amp != 1.0) (void)r.run(doc::ops::setMetaParam(*r.store.current(), d, "", "phase_acc", "amp", amp));
+  return d;
+}
+
+}  // namespace
+
+Status buildMetaFacesProject(doc::DocumentStore& store) {
+  Runner r{store};
+  using K = doc::DeviceKind;
+  const doc::TrackId lead = r.track(doc::TrackKind::Midi, {}, "Lead", 0xF6A23B);
+  const doc::TrackId bell = r.track(doc::TrackKind::Midi, lead, "Bell", 0x3FA9F5);
+  const doc::TrackId sub = r.track(doc::TrackKind::Midi, bell, "Sub", 0x8ED36C);
+  const doc::TrackId keys = r.track(doc::TrackKind::Midi, sub, "Keys", 0xB38BEA);
+  if (!r.status) return r.status;
+  (void)phaseAccOn(r, lead, 0.0, 0.0, 1.0);
+  (void)r.device(lead, "saturator", K::AudioEffect);
+  (void)phaseAccOn(r, bell, 220.0, 0.25, 2.0);
+  (void)r.device(bell, "auto_filter", K::AudioEffect);
+  (void)phaseAccOn(r, sub, 4.5, 0.5, 0.5);
+  (void)r.device(sub, "eq_eight", K::AudioEffect);
+  (void)r.device(keys, "operator", K::Instrument);
+  (void)r.device(keys, "saturator", K::AudioEffect);
+  r.clip(lead, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
+  r.clip(bell, 2 * kTicksPerWhole, 6 * kTicksPerWhole, "Chime", {0, 7});
+  r.clip(keys, 0, 8 * kTicksPerWhole, "Chords", {0, 3, 7});
+  return r.status;
+}
+
+Status addPhaseAccFaces(doc::DocumentStore& store, uint32_t count) {
+  Runner r{store};
+  uint32_t made = 0;
+  std::vector<doc::TrackId> midi;
+  doc::forEachTrack(*store.current(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.kind == doc::TrackKind::Midi) midi.push_back(t.id);
+  });
+  for (const doc::TrackId t : midi) {
+    if (made >= count || !r.status) break;
+    if (phaseAccOn(r, t, 25.0 * made, 0.125 * (made % 8), 1.0 + (made % 4)).valid()) ++made;
+  }
+  if (r.status && made < count) return Error{ErrorCode::NotFound, "addPhaseAccFaces: fewer MIDI tracks than faces", {}};
+  return r.status;
+}
+
 }  // namespace pq::views::project_patch

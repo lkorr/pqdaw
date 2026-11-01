@@ -16,6 +16,7 @@
 #include "pq/graph/layout.h"
 #include "pq/graph/optimise.h"
 #include "pq/graph/schedule.h"
+#include "pq/meta/registry.h"
 #include "pq/views/circuit/circuit_scene.h"
 #include "pq/views/circuit/symbols.h"
 
@@ -138,6 +139,8 @@ struct PatchEditor::Impl {
   PatchEditor* self = nullptr;
   std::string path, text, fileText;
   ImportCache loader;
+  // TMM.4: `name = meta_<type>(…)` calls parse and check with the default state (the compiler's prelude).
+  std::shared_ptr<const meta::Prelude> prelude = meta::prelude();
   std::vector<std::shared_ptr<const PatchDocument>> imports;
   graph::ParseResult good;  // the last parse that lowered
   bool lowered = false;
@@ -165,6 +168,7 @@ struct PatchEditor::Impl {
     o.previous = idsFrom ? idsFrom : (good.file.patches.empty() ? nullptr : &good.file);
     o.lenientLayout = true;
     o.deferMissingInputs = true;
+    o.externals = prelude->signatures;
     loader.beginParse();
     graph::ParseResult r = graph::parseDetailed(text, path, o);
     parseDiags = r.diagnostics;
@@ -412,6 +416,7 @@ struct PatchEditor::Impl {
       graph::PatchLibrary lib;
       lib.add(good.file);
       for (const auto& d : imports) collectLibrary(lib, *d);
+      for (const meta::Prelude::Entry& e : prelude->entries) lib.add(e.nested);  // TMM.4
       const graph::SourceText source{text, path, idx < good.nodeSpans.size() ? std::span<const graph::SourceSpan>(good.nodeSpans[idx])
                                                                              : std::span<const graph::SourceSpan>()};
       const bool live = player && !playingName.empty() && playingName == good.file.patches[idx].name();

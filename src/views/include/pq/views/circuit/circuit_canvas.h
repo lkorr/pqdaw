@@ -24,6 +24,14 @@
 // Culling goes through the scene's spatial grid. Pan and zoom repaint the canvas; a selection or hover change repaints
 // only the canvas too. Idle: no frames, no timers.
 //
+// Meta-module faces (TMM.4, pq/views/meta/meta_face.h): a node of CircuitScene::faces is drawn as its face instead of a
+// symbol, at EVERY level of detail (Far included: faces are left out of the Far chunks and drawn over them, so zooming
+// out removes nothing). A face's static layers are coverage tiles per exact zoom shared by every face of its type (built
+// with the symbol tiles after a zoom settles, stretched meanwhile); its jacks and live layer are geometry each frame.
+// Pointer events over a face's control go to the face in face-local world units (a drag at zoom 0.05 works as at 3);
+// over its frame they select / move / open the node as for any block. While a bound VoiceTapReader is live and its face
+// visible, a ≤ 60 Hz timer polls the readers and damages only the faces' live rects; otherwise nothing runs.
+//
 // UI thread only.
 
 #include <cstdint>
@@ -36,6 +44,7 @@
 #include "pq/graph/patch.h"
 #include "pq/ui/widget.h"
 #include "pq/views/circuit/circuit_scene.h"
+#include "pq/views/meta/meta_face.h"
 
 namespace pq::views::circuit {
 
@@ -116,8 +125,32 @@ public:
   // terminals would bury its boundary's title.
   void setTerminalPillMinZoom(double zoom);
 
+  // ---- TMM.4: meta-module faces ----
+  // What a face of the scene edits and shows (the host's document target and voice reader). Unset, or a null target:
+  // the type's defaults, read-only. setScene calls it for every face; rebindFaces() again (the host's state moved).
+  struct FaceBinding {
+    std::unique_ptr<MetaTarget> target;
+    VoiceTapReader* voices = nullptr;
+  };
+  std::function<FaceBinding(const SceneFace&)> faceBinder;
+  void rebindFaces();
+  // The face on scene node `node` (null: none), the faces in scene order.
+  MetaFace* faceOn(uint32_t node) const noexcept;
+  size_t faceCount() const noexcept;
+  MetaFace& faceAt(size_t i) const noexcept;
+  uint32_t faceNode(size_t i) const noexcept;
+  // A reader may have become live (a note, the transport): poll the faces now and keep animating while one is live.
+  void wakeFaces();
+  bool animatingFaces() const noexcept;  // the ≤ 60 Hz face timer is armed
+  // Benchmarks (A/B): off draws face nodes as plain blocks and routes nothing to them.
+  void setFacesShown(bool on);
+  bool facesShown() const noexcept;
+  static constexpr double kFaceFrameSeconds = 1.0 / 60.0;
+
   struct Stats {
     uint32_t nodesPainted = 0, nodesFromTiles = 0, nodesStretched = 0, nodesDirect = 0;
+    // TMM.4: faces painted, their static layers from tiles / stretched / drawn directly, face primitives emitted.
+    uint32_t facesPainted = 0, faceLayersFromTiles = 0, faceLayersStretched = 0, faceLayersDirect = 0, facePrimitives = 0;
     uint32_t wiresPainted = 0, segmentsPainted = 0, junctionsPainted = 0, labelsPainted = 0;
     // Far level: chunks drawn from their tiles, from the previous zoom level's tiles (stretched), or directly.
     uint32_t chunksFromTiles = 0, chunksStretched = 0, chunksDirect = 0;
@@ -142,6 +175,14 @@ public:
   ui::Cursor cursorAt(ui::Vec2 pos) const override;
 
 protected:
+  // TMM.4: a pointer event for the faces (subclasses call it first in onPointer; the canvas's own onPointer does): a
+  // press on a face's control and the drag it starts, the hover of controls, a wheel a face uses. True: consumed.
+  bool facePointer(const ui::PointerEvent& e);
+  // The cursor over a face's control (Inherit: none there) and its info-view text (false: no face part under the
+  // pointer).
+  ui::Cursor faceCursor(ui::Vec2 pos) const;
+  bool faceInfo(ui::InfoText& out) const;
+  bool faceDragging() const noexcept;
   // Drawn over the scene, inside the canvas (editing previews, probes).
   virtual void paintOverlay(ui::PaintContext& /*ctx*/) {}
   // T4.13: drawn under the scene (after the background, before wires and symbols; at every level of detail, so not

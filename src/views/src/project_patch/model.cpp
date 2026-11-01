@@ -10,6 +10,8 @@
 #include <unordered_set>
 
 #include "pq/graph/patch_file.h"
+#include "pq/meta/registry.h"
+#include "pq/views/meta/meta_face.h"
 
 namespace pq::views::project_patch {
 
@@ -248,6 +250,17 @@ struct Builder {
     }
     if (n.outputs.empty()) n.outputs.push_back({"out", ""});
     sizeBlock(n, 96.0f);
+    // TMM.4: a chain meta device is drawn as its face (its size; the pins on the face's edges at the band's rows).
+    if (std::string_view(d.patch).starts_with(doc::kMetaDevicePrefix)) {
+      n.meta = true;
+      const meta::Type* t = meta::findType(std::string_view(d.patch).substr(doc::kMetaDevicePrefix.size()));
+      if (t != nullptr && hasFace(*t) && !n.expanded) {
+        const ui::Vec2 fs = faceSize(*t);
+        n.face = t;
+        n.w = roundUp4(fs.x);
+        n.h = roundUp4(std::max(n.h, fs.y));
+      }
+    }
     if (n.expanded)
       for (const ExpandedSize& e : opt.expanded)
         if (e.device == d.id) {

@@ -307,6 +307,11 @@ public:
   std::function<void()> hideOthers;
   // T4.8 hook: racks are devices whose block will open to their chains; until then a rack is a block like any device.
 
+  // TMM.4: the voice reader of a meta instance's face ((device, path); "" = a chain meta device), or null (no dots).
+  // The app binds TMM.2's voice taps here; scenes and tests bind synthetic voices. Changing it: rebindFaces().
+  std::function<VoiceTapReader*(doc::DeviceId device, std::string_view path)> faceVoices;
+  void rebindFaces();
+
   // The hovered wire's readout (what the overlay draws; tests).
   struct Readout {
     uint32_t edge = kNone;
@@ -452,6 +457,11 @@ private:
 // Both need the stock device library for the lowering to draw the devices (the document does not).
 Status buildSketchProject(doc::DocumentStore& store);
 Status buildWideProject(doc::DocumentStore& store, uint32_t tracks);
+// TMM.4: Phase accumulator faces in chains — "Lead" (a face → Saturator), "Bell" (220 Hz, phase 0.25, amp 2 → Auto
+// Filter), "Sub" (4.5 Hz, phase 0.5, amp 0.5 → EQ Eight) and "Keys" (Operator → Saturator: plain blocks beside them).
+Status buildMetaFacesProject(doc::DocumentStore& store);
+// The instrument of the first `count` MIDI tracks replaced by a chain Phase accumulator (benchmarks: a project plus faces).
+Status addPhaseAccFaces(doc::DocumentStore& store, uint32_t count);
 
 }  // namespace project_patch
 
