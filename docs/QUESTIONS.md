@@ -1650,7 +1650,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Status: open (user / orchestrator to decide 5; the rest informational).
 
 
-## Q?-TMM.4-a · 2026-11-01 · TMM.4 · Faces: details decided while building them
+## Q169 · 2026-11-01 · TMM.4 · Faces: details decided while building them
 - Context: TMM.4 built the face toolkit, hosting and the Phase accumulator face to docs/plans/MM.md. Choices the plan left open, all reversible:
   1. **Drags are relative, measured in device px**: a full travel is the control's on-screen extent, never less than 150 logical px (Shift: a tenth). So a far-zoomed face (6 px wide at 0.05) drags exactly like a 150-px slider, and a near one follows the pointer along its arc. Absolute "click to jump" was rejected: at far zooms it would be unusable, and it makes accidental edits from a click.
   2. **Double-click on an arc resets it; on the frame (the hub, the top gap, the corners) it opens the module to its atoms.** The plan's "double-click the face frame" read literally: controls take their own double-click (reset), as knobs do elsewhere.

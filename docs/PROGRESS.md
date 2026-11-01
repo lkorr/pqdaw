@@ -1035,3 +1035,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: L1 2.94 / 2.25 ns/sample (blend / single), L8 18.8 / 15.6 ns/frame; build 9.8 / 63.5 / 137 ms; 7.06 MiB @48k. Alias suite worst −127.4 / −126.9 / −130.4 dBFS (44.1 / 48 / 96 kHz).
 - CPU-efficiency check: one level per lane and no level crossfade; level by table lookup (a computed log2 was 34 vs 23 ns/frame); loads + transpose instead of gathers, indices through memory to spare port 5; frame choice once per block for a fixed position; blend skipped when no lane needs it; builder SIMD across 8 frames, arenas reused (no allocation once sized; tested).
 - Notes/blockers: bake of sync 1 + pulse width 1 stays −80 dB vs 128× (Q168 #5): a static error in baked harmonics, the table stays band-limited; orchestrator accepts it (inaudible, not aliasing). 44.1 kHz tables 11.9 MiB.
+
+## 2026-11-01 · TMM.4 · task/TMM.4-faces
+- Did: FacePainter + per-zoom static-layer cache; MetaFace/registry, DocTarget, VoiceTapReader + SyntheticVoices; CircuitCanvas hosting (every zoom, kept out of the zoomed-out cache, pointer routing, ≤ 60 Hz voice poll); chain meta devices as faces in the project view (expand/close); prelude-aware editor parsing, face targets in the editor, text edits keep state on renames; Phase accumulator face; `face.*` theme tokens; scene `project-meta-faces`; bench rows; ARCHITECTURE, REVIEW, QUESTIONS.
+- Verified: build.ps1 -Affected (EVERYTHING, check, default + slow): 78/79; the failure was pq_tests_ui's theme token count (+13 face.* tokens, a correct update); re-ran pq_tests_ui 1/1. Orchestrator looked at goldens meta-phase-acc-z3-1x and project-meta-faces.
+- Perf: ship 2×, 64 tracks + 32 faces: Far pan +0.16 ms median / +0.18 p99; band zoom +0.012 ms; 16 faces × 8 voices full paint 0.35 ms; idle no frames (indicative, other worker building).
+- CPU-efficiency check: static layers rendered once per zoom and shared per type; live layer only; voices polled only while live, dot rects damaged; drags write a param, never recompile.
+- Notes: TMM.2's reader adapts to views::VoiceTapReader; host calls CircuitCanvas::wakeFaces() on voice start. Q169.
