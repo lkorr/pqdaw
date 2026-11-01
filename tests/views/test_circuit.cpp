@@ -19,6 +19,7 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/ui/test_driver.h"
 #include "pq/ui/tile_atlas.h"
+#include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/fake_transport.h"
@@ -78,15 +79,18 @@ void checkScene(const CircuitScene& sc, const std::string& what) {
   for (size_t a = 0; a < n; ++a)
     for (size_t b = a + 1; b < n; ++b) {
       const SceneNode &A = sc.nodes[a], &B = sc.nodes[b];
+      if (A.hidden || B.hidden) continue;  // T4.15: not drawn
       const bool overlap = A.x < B.x + B.w && B.x < A.x + A.w && A.y < B.y + B.h && B.y < A.y + A.h;
       CHECK_MESSAGE(!overlap, "nodes " << a << " (" << sc.specs[a].title << ") and " << b << " (" << sc.specs[b].title << ") overlap");
     }
   for (const SceneWire& w : sc.wires) {
+    if (w.hidden) continue;
     REQUIRE(w.pointCount >= 2);
     for (uint32_t i = 0; i + 1 < w.pointCount; ++i) {
       const graph::Point2 p = sc.points[w.firstPoint + i], q = sc.points[w.firstPoint + i + 1];
       CHECK_MESSAGE((p.x == q.x || p.y == q.y), "wire " << w.wire << " is not orthogonal");
       for (const SceneNode& v : sc.nodes) {
+        if (v.hidden) continue;
         const float x0 = v.x + 0.5f, x1 = v.x + v.w - 0.5f, y0 = v.y + 0.5f, y1 = v.y + v.h - 0.5f;
         const bool hits = std::min(p.x, q.x) < x1 && std::max(p.x, q.x) > x0 && std::min(p.y, q.y) < y1 && std::max(p.y, q.y) > y0;
         CHECK_MESSAGE(!hits, "wire " << w.wire << " crosses node " << v.node << " (" << sc.specs[v.spec].title << ")");
@@ -185,8 +189,17 @@ TEST_CASE("circuit: every stdlib patch opens laid out without overlaps, wires or
       graph::Patch laid;
       const auto scene = buildScene(p, {}, &laid);
       CHECK(graph::fullyPlaced(laid));
-      CHECK(scene->autoPlaced == p.nodeCount());  // stdlib files store no layout: everything auto-placed
-      checkScene(*scene, fs::path(file).filename().string() + ":" + p.name());
+      bool stored = false;
+      for (graph::NodeIndex v = 0; v < p.nodeCount() && !stored; ++v) stored = p.layout(v).placed;
+      if (!stored) {
+        CHECK(scene->autoPlaced == p.nodeCount());  // stdlib files store no layout: everything auto-placed
+        checkScene(*scene, fs::path(file).filename().string() + ":" + p.name());
+      } else {
+        // TMM.12: the Meta Operator stores a hand-made layout for what its settings show (the algorithms' other arms
+        // share places: one is visible at a time): its visible scene at the defaults is checked.
+        CHECK(p.name() == "meta_operator");
+        checkScene(*buildDeviceScene(p, {}), fs::path(file).filename().string() + ":" + p.name());
+      }
       ++patches;
     }
   }

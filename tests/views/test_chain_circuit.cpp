@@ -138,6 +138,7 @@ TEST_CASE("chain circuit: one boundary per device, in chain order, each holding 
     for (uint32_t v = b.firstNode; v < b.firstNode + b.nodeCount; ++v) {
       const SceneNode& n = c.scene->nodes[v];
       CHECK(c.boxOfNode[v] == c.roots[i]);
+      if (n.hidden) continue;  // T4.15 / TMM.12: switched off by the device's settings (not drawn, no bounds)
       CHECK((n.x >= b.x0 && n.x + n.w <= b.x1 && n.y >= b.y0 + chain_metrics::kTitle && n.y + n.h <= b.y1));
     }
     // The hit tests: a point inside the boundary (its title strip) is this box.

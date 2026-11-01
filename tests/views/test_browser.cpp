@@ -111,10 +111,10 @@ TEST_CASE("browser: categories, search (best first), collections, sorting") {
   // T5.11: Instruments lists the devices (no device library here: the stock list) with their presets under them; the
   // demo's presets lie in Presets/Operator (the User Library's layout names their device).
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Instruments)});
-  CHECK(f.names() == std::vector<std::string>{"Basic Synth", "Operator", "Instrument Rack"});
+  CHECK(f.names() == std::vector<std::string>{"Basic Synth", "Operator", "Meta Operator", "Instrument Rack"});  // TMM.12
   f.b->setRowOpen(f.b->rows()[1], true);
   CHECK(f.names() == std::vector<std::string>{"Basic Synth", "Operator", "Bright Pad.pqpreset", "Glass Bell.pqpreset",
-                                              "Sub Pluck.pqpreset", "Warm Keys.pqpreset", "Instrument Rack"});
+                                              "Sub Pluck.pqpreset", "Warm Keys.pqpreset", "Meta Operator", "Instrument Rack"});
   // A search text lists matching files flat, as before.
   f.b->setQuery("bright");
   CHECK(f.names() == std::vector<std::string>{"Bright Pad.pqpreset"});
