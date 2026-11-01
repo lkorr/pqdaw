@@ -136,6 +136,14 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
       spec.sampleRate = kRate;
       if (bake == 1) spec.bake = {pq::dsp::WarpMode::Bend, 0.0f, 0.5f, 0.0f};
       if (bake == 3) spec.bake = {pq::dsp::WarpMode::Mirror, 0.5f, 0.3f, 0.3f};
+      if (bake == 4) {  // TMM.8-fix: the live-band bake the Wavetable uses (one control)
+        spec.bake = {pq::dsp::WarpMode::Bend, 0.0f, 0.5f, 0.0f};
+        spec.liveBand = true;
+      }
+      if (bake == 5) {  // the live-band bake, three controls
+        spec.bake = {pq::dsp::WarpMode::Mirror, 0.5f, 0.3f, 0.3f};
+        spec.liveBand = true;
+      }
       pq::dsp::FrameTableBuilder b;
       auto t = b.build(spec).value();  // sizes the arenas
       std::vector<double> ms;
@@ -238,4 +246,6 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
   runner.add("frametable/build 64 frames", build(0));
   runner.add("frametable/build 64 frames + bake", build(1));
   runner.add("frametable/build 64 frames + bake3", build(3));
+  runner.add("frametable/build 64 frames + live-band bake", build(4));
+  runner.add("frametable/build 64 frames + live-band bake3", build(5));
 }
