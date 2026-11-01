@@ -205,12 +205,19 @@ TEST_CASE("meta devices (views): face drags in the Device view are one undo step
   u.d.drag(a, {a.x, a.y - 40.0f}, 6);
   CHECK(u.history() == h0 + 1);
   CHECK(u.wtValue("position") > pos0);
-  // Phase accumulator amplitude arc (right side): up 20 px.
+  // Phase accumulator amplitude arc (TMM.15: on top): up 20 px.
   h0 = u.history();
-  a = u.acc(60.0f + 43.0f, 64.0f);
+  a = u.acc(60.0f, 64.0f - 43.0f);
   u.d.drag(a, {a.x, a.y - 20.0f}, 6);
   CHECK(u.history() == h0 + 1);
   CHECK(u.accValue("amp") > 1.0);
+  // Its pitch arc (the right side): up 40 px, whole semitones.
+  h0 = u.history();
+  a = u.acc(60.0f + 43.0f, 64.0f);
+  u.d.drag(a, {a.x, a.y - 40.0f}, 8);
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.accValue("pitch") > 0.0);
+  CHECK(std::fmod(u.accValue("pitch"), 100.0) == 0.0);
   // The panel follows (the face reads the document): nothing was rebuilt, the frames are the same widgets.
   devices::DevicePanel* before = u.view().panelOf(u.ids.wt);
   // Double-click the fold knob: reset, one step; undo brings it back.

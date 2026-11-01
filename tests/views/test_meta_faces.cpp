@@ -59,13 +59,13 @@ const doc::DeviceLibrary& library() {
 const meta::Type& phaseAcc() { return meta::phaseAccType(); }
 size_t paramOf(const char* name) { return static_cast<size_t>(phaseAcc().paramIndex(name)); }
 
-// Fixed values (the goldens): 440 Hz, phase 0.3, amplitude 2.
+// Fixed values (the goldens): 440 Hz, phase 0.3, amplitude 2, pitch +7 semitones (TMM.15: the readout shows).
 class FixedTarget final : public MetaTarget {
 public:
-  double v[3] = {440.0, 0.3, 2.0};
+  double v[4] = {440.0, 0.3, 2.0, 700.0};
   double value(size_t p) const override {
     const std::string_view n = phaseAcc().params[p].name;
-    return n == "freq" ? v[0] : (n == "phase" ? v[1] : v[2]);
+    return n == "freq" ? v[0] : (n == "phase" ? v[1] : (n == "amp" ? v[2] : v[3]));
   }
   void begin(const char*) override {}
   void set(size_t, double) override {}
@@ -264,7 +264,7 @@ TEST_CASE("faces: the registry knows the Phase accumulator; a nested call's symb
     if (lb.node == sf.node) CHECK(lb.role == circuit::SceneLabel::Role::Caption);
 }
 
-TEST_CASE("faces: hit test maps the arcs to frequency, phase and amplitude, the rest to the frame") {
+TEST_CASE("faces: hit test maps the arcs to frequency, phase, amplitude and pitch, the rest to the frame") {
   std::unique_ptr<MetaFace> f = makeFace(phaseAcc());
   auto at = [](float deg, float r) {
     const float a = deg * kPiF / 180.0f;
@@ -274,9 +274,12 @@ TEST_CASE("faces: hit test maps the arcs to frequency, phase and amplitude, the 
     CAPTURE(s);
     CHECK(f->hitTest(at(200.0f, 39.0f), s) == 0);    // left: frequency
     CHECK(f->hitTest(at(90.0f, 39.0f), s) == 1);     // bottom: phase
-    CHECK(f->hitTest(at(-20.0f, 39.0f), s) == 2);    // right: amplitude
+    // TMM.15: the pitch took the right side, the amplitude moved above it (the top).
+    CHECK(f->hitTest(at(-20.0f, 39.0f), s) == 3);    // right: pitch
+    CHECK(f->hitTest(at(20.0f, 39.0f), s) == 3);
+    CHECK(f->hitTest(at(270.0f, 39.0f), s) == 2);    // top: amplitude
     CHECK(f->hitTest({60.0f, 64.0f}, s) == MetaFace::kFrame);  // the hub
-    CHECK(f->hitTest(at(270.0f, 39.0f), s) == MetaFace::kFrame);  // the top gap (the output's lead)
+    CHECK(f->hitTest(at(307.0f, 39.0f), s) == MetaFace::kFrame);  // the gap the output's lead leaves through
     CHECK(f->hitTest({-1.0f, 10.0f}, s) == MetaFace::kNone);
   }
 }
@@ -493,19 +496,25 @@ TEST_CASE("faces: frequency, phase and amplitude drags at zoom 0.05 and 3 — on
     u.d.drag(a, {a.x + 30.0f, a.y}, 6);
     CHECK(u.history() == h0 + 1);
     CHECK(u.value("phase") == doctest::Approx(30.0 / span(50.0f)).epsilon(1e-4));
-    // Amplitude: up the right arc from 1 (travel 0.25), 30 px up.
+    // Amplitude (TMM.15: over the top, left to right): from 1 (travel 0.25), 30 px right.
     h0 = u.history();
-    a = u.facePoint(-20.0f, 39.0f);
-    u.d.drag(a, {a.x, a.y - 30.0f}, 6);
+    a = u.facePoint(270.0f, 39.0f);
+    u.d.drag(a, {a.x + 30.0f, a.y}, 6);
     CHECK(u.history() == h0 + 1);
-    CHECK(u.value("amp") == doctest::Approx(4.0 * (0.25 + 30.0 / span(56.0f))).epsilon(1e-4));
+    CHECK(u.value("amp") == doctest::Approx(4.0 * (0.25 + 30.0 / span(40.0f))).epsilon(1e-4));
+    // Up drags it too (the top arc takes either direction).
+    h0 = u.history();
+    double amp0 = u.value("amp");
+    u.d.drag(a, {a.x, a.y - 10.0f}, 4);
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.value("amp") == doctest::Approx(amp0 + 4.0 * 10.0 / span(40.0f)).epsilon(1e-4));
     // Shift: a tenth of the travel; Ctrl on the amplitude: whole numbers.
     h0 = u.history();
-    const double amp0 = u.value("amp");
-    u.d.drag(a, {a.x, a.y - 30.0f}, 6, mod::kShift);
+    amp0 = u.value("amp");
+    u.d.drag(a, {a.x + 30.0f, a.y}, 6, mod::kShift);
     CHECK(u.history() == h0 + 1);
-    CHECK(u.value("amp") == doctest::Approx(amp0 + 4.0 * 3.0 / span(56.0f)).epsilon(1e-4));
-    u.d.drag(a, {a.x, a.y - 2.0f}, 2, mod::kCtrl);
+    CHECK(u.value("amp") == doctest::Approx(amp0 + 4.0 * 3.0 / span(40.0f)).epsilon(1e-4));
+    u.d.drag(a, {a.x + 2.0f, a.y}, 2, mod::kCtrl);
     CHECK(u.value("amp") == std::round(u.value("amp")));
     // Undo takes back one drag at a time.
     const double before = u.value("amp");
@@ -513,7 +522,7 @@ TEST_CASE("faces: frequency, phase and amplitude drags at zoom 0.05 and 3 — on
     CHECK(u.value("amp") != before);
     // Double-click on a control resets it (one step).
     h0 = u.history();
-    u.d.doubleClick(u.facePoint(-20.0f, 39.0f));
+    u.d.doubleClick(u.facePoint(270.0f, 39.0f));
     CHECK(u.history() == h0 + 1);
     CHECK(u.value("amp") == 1.0);
     u.d.doubleClick(u.facePoint(200.0f, 39.0f));
@@ -572,8 +581,116 @@ TEST_CASE("faces: the info view describes the hovered control; cursors follow th
   u.d.move(u.facePoint(90.0f, 39.0f));
   CHECK(std::string(c.info().title) == "Phase");
   CHECK(c.cursorAt(u.facePoint(90.0f, 39.0f)) == Cursor::ResizeEW);
-  u.d.move(u.facePoint(-20.0f, 39.0f));
+  u.d.move(u.facePoint(270.0f, 39.0f));
   CHECK(std::string(c.info().title) == "Amplitude");
+  CHECK(c.cursorAt(u.facePoint(270.0f, 39.0f)) == Cursor::ResizeEW);
+  u.d.move(u.facePoint(-20.0f, 39.0f));
+  CHECK(std::string(c.info().title) == "Pitch");
+  CHECK(c.cursorAt(u.facePoint(-20.0f, 39.0f)) == Cursor::ResizeNS);
+}
+
+TEST_CASE("faces: pitch drags in semitones (Ctrl: cents, Shift: fine), keys step it, typing enters it (TMM.15)") {
+  for (const double zoom : {0.05, 3.0}) {
+    CAPTURE(zoom);
+    Ui u;
+    u.frame(zoom);
+    const double us = u.d.tree().scale();
+    const double span = std::max(46.0 * zoom * us, 300.0 * us);  // device px for the whole ±4800-cent range
+    const auto travelCents = [&](double px) { return px / span * 9600.0; };
+    // A plain drag up: whole semitones.
+    size_t h0 = u.history();
+    const Vec2 a = u.facePoint(0.0f, 39.0f);
+    u.d.drag(a, {a.x, a.y - 40.0f}, 8);
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.value("pitch") == 100.0 * std::round(travelCents(40.0) / 100.0));
+    CHECK(u.value("pitch") > 0.0);
+    // Ctrl: single cents (an offset from the semitone grid).
+    u.d.doubleClick(a);
+    REQUIRE(u.value("pitch") == 0.0);
+    h0 = u.history();
+    u.d.drag(a, {a.x, a.y - 3.0f}, 3, mod::kCtrl);
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.value("pitch") == std::round(travelCents(3.0)));
+    // Then a plain drag down keeps that offset, moving in whole semitones.
+    const double offset = u.value("pitch");
+    u.d.drag(a, {a.x, a.y + 40.0f}, 8);
+    CHECK(std::fmod(u.value("pitch") - offset, 100.0) == 0.0);
+    CHECK(u.value("pitch") < offset);
+    // Shift: a tenth of the travel.
+    u.d.doubleClick(a);
+    u.d.drag(a, {a.x, a.y - 60.0f}, 8, mod::kShift);
+    CHECK(u.value("pitch") == 100.0 * std::round(travelCents(6.0) / 100.0));
+    // Keys (after a press on the pitch arc): Up / Down a semitone, Shift an octave, Ctrl a cent; each one undo step.
+    u.d.doubleClick(a);
+    REQUIRE(u.value("pitch") == 0.0);
+    h0 = u.history();
+    CHECK(u.d.keyDown(key::kUp) == KeyResult::Widget);
+    CHECK(u.value("pitch") == 100.0);
+    CHECK(u.d.keyDown(key::kUp, mod::kShift) == KeyResult::Widget);
+    CHECK(u.value("pitch") == 1300.0);
+    CHECK(u.d.keyDown(key::kDown, mod::kCtrl) == KeyResult::Widget);
+    CHECK(u.value("pitch") == 1299.0);
+    CHECK(u.d.keyDown(key::kDown, mod::kShift) == KeyResult::Widget);
+    CHECK(u.d.keyDown(key::kDown, mod::kShift) == KeyResult::Widget);
+    CHECK(u.value("pitch") == -1101.0);
+    CHECK(u.history() == h0 + 5);
+    REQUIRE(u.ctx.undo());
+    CHECK(u.value("pitch") == 99.0);
+    // Clamped at ±4800 (4 octaves).
+    for (int i = 0; i < 6; ++i) (void)u.d.keyDown(key::kUp, mod::kShift);
+    CHECK(u.value("pitch") == 4800.0);
+    // Typing: cents, or semitones with an `st` suffix; Enter commits (one step), Esc cancels.
+    h0 = u.history();
+    for (const Key k : {Key('-'), Key('7'), Key('0'), Key('2'), Key('.'), Key('5')}) CHECK(u.d.keyDown(k) == KeyResult::Widget);
+    CHECK(u.value("pitch") == 4800.0);  // nothing until Enter
+    CHECK(u.d.keyDown(key::kReturn) == KeyResult::Widget);
+    CHECK(u.value("pitch") == -702.5);
+    CHECK(u.history() == h0 + 1);
+    for (const Key k : {Key('1'), Key('2'), Key('s'), Key('t')}) CHECK(u.d.keyDown(k) == KeyResult::Widget);
+    CHECK(u.d.keyDown(key::kReturn) == KeyResult::Widget);
+    CHECK(u.value("pitch") == 1200.0);
+    for (const Key k : {Key('5'), Key('0')}) CHECK(u.d.keyDown(k) == KeyResult::Widget);
+    CHECK(u.d.keyDown(key::kEscape) == KeyResult::Widget);
+    CHECK(u.value("pitch") == 1200.0);
+    // Arrow keys after a press on another control do nothing to the pitch.
+    u.d.click(u.facePoint(200.0f, 39.0f));
+    const double before = u.value("pitch");
+    (void)u.d.keyDown(key::kUp, mod::kShift);
+    CHECK(u.value("pitch") == before);
+  }
+}
+
+TEST_CASE("faces: the pitch readout is semitones + cents") {
+  // The readout's text leads the info view's description (the same formatter).
+  std::unique_ptr<MetaFace> f = makeFace(phaseAcc());
+  auto fixed = std::make_unique<FixedTarget>();
+  FixedTarget* ft = fixed.get();
+  f->bind(std::move(fixed), nullptr);
+  const std::string minus = "\xE2\x88\x92", cent = "\xC2\xA2";
+  const std::pair<double, std::string> cases[] = {
+      {0.0, "0 st"},
+      {700.0, "+7 st"},
+      {-1200.0, minus + "12 st"},
+      {-1186.0, minus + "12 st +14 " + cent},
+      {714.0, "+7 st +14 " + cent},
+      {3.5, "+3.5 " + cent},
+      {-49.0, minus + "49 " + cent},
+      {750.0, "+8 st " + minus + "50 " + cent},
+      {701.96, "+7 st +1.96 " + cent},
+  };
+  for (const auto& [cents, text] : cases) {
+    CAPTURE(cents);
+    ft->v[3] = cents;
+    std::string title, body;
+    f->describe(3, title, body);
+    CHECK(title == "Pitch");
+    CHECK(body.starts_with(text + " ("));
+  }
+  ft->v[3] = 700.0;
+  std::string title, body;
+  f->describe(3, title, body);
+  CHECK(body.find("+700.00 cents") != std::string::npos);
+  CHECK(body.find("x1.49831") != std::string::npos);
 }
 
 TEST_CASE("faces: the Device-level editor shows a typed meta call as a face that edits the device's state") {
