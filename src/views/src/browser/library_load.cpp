@@ -7,10 +7,13 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/meta.h"
+#include "pq/meta/registry.h"
 #include "pq/library/index.h"
 #include "pq/tuning/scala.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/devices/panel_desc.h"
+#include "pq/views/meta/meta_face.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 
 namespace pq::views {
@@ -78,8 +81,17 @@ LibraryItem libraryItemOf(std::string_view path) noexcept {
   return LibraryItem::None;
 }
 
+std::vector<const meta::Type*> metaModuleTypes() {
+  std::vector<const meta::Type*> out;
+  for (const meta::Type* t : meta::types())
+    if (hasFace(*t) && (t->chainInstrument || t->chainEffectInput >= 0 || t->chainVoiceInput >= 0)) out.push_back(t);
+  return out;
+}
+
 std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch) {
   if (patch == doc::kAudioEffectRack) return "Audio Effect Rack";
+  if (patch.starts_with(doc::kMetaDevicePrefix))  // TMM.10: a chain meta device: its type's name
+    if (const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()))) return std::string(t->name);
   if (patch == doc::kInstrumentRack) return "Instrument Rack";
   if (const doc::DeviceLibrary* lib = ctx.deviceLibrary())
     if (const doc::DeviceInfo* i = lib->catalog().find(patch)) return i->name;
@@ -107,6 +119,21 @@ std::vector<std::string> deviceParamNames(const ViewContext& ctx, const doc::Dev
 
 Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch, doc::DeviceKind kind, DeviceSlot at) {
   const doc::Project& p = *ctx.doc();
+  if (patch.starts_with(doc::kMetaDevicePrefix)) {  // TMM.10: a chain meta device, its kind from the slot
+    const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()));
+    if (t == nullptr) return Error{ErrorCode::NotFound, "unknown meta module '" + std::string(patch) + "'", {}};
+    auto k = doc::ops::metaDeviceKindAt(p, *t, at.track, at.index, at.chain);
+    if (!k) return std::move(k).error();
+    if (doc::DevicePtr def = ctx.library().defaultPreset(deviceDisplayName(ctx, patch), patch); def && def->patch == patch) {
+      auto d = std::make_shared<doc::Device>(*def);
+      d->kind = *k;
+      const doc::DevicePtr one = d;
+      return firstDevice(ctx, doc::ops::pasteDevices(p, ctx.store().ids(), at.track, std::span<const doc::DevicePtr>(&one, 1),
+                                                     at.index, at.chain));
+    }
+    return firstDevice(ctx, doc::ops::addMetaDevice(p, ctx.store().ids(), at.track, std::string(patch.substr(doc::kMetaDevicePrefix.size())),
+                                                    at.index, at.chain));
+  }
   if (doc::DevicePtr def = ctx.library().defaultPreset(deviceDisplayName(ctx, patch), patch); def && def->kind == kind)
     return firstDevice(ctx, doc::ops::pasteDevices(p, ctx.store().ids(), at.track, std::span<const doc::DevicePtr>(&def, 1),
                                                    at.index, at.chain));
@@ -126,6 +153,14 @@ Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, De
   }
   auto d = deviceOfFile(path);
   if (!d) return std::move(d).error();
+  if (doc::isMetaDevice(**d))  // TMM.10: a meta device's preset takes the kind its slot gives (an instrument, a voice)
+    if (const meta::Type* t = meta::findType(doc::metaDeviceType(**d))) {
+      auto k = doc::ops::metaDeviceKindAt(*ctx.doc(), *t, at.track, at.index, at.chain);
+      if (!k) return std::move(k).error();
+      auto c = std::make_shared<doc::Device>(**d);
+      c->kind = *k;
+      *d = std::move(c);
+    }
   auto id = firstDevice(ctx, doc::ops::pasteDevices(*ctx.doc(), ctx.store().ids(), at.track,
                                                     std::span<const doc::DevicePtr>(&*d, 1), at.index, at.chain));
   if (id && libraryItemOf(path) == LibraryItem::Preset) ctx.library().setPresetName(*id, stemOf(path));
@@ -138,6 +173,13 @@ Status hotSwapDevice(ViewContext& ctx, doc::DeviceId target, std::string_view pa
     const doc::Device* cur = doc::findDevice(*ctx.doc(), target).device;
     if (cur == nullptr) return Error{ErrorCode::NotFound, "the device is gone", {}};
     with = ctx.library().defaultPreset(deviceDisplayName(ctx, patch), patch);
+    if (!with && patch.starts_with(doc::kMetaDevicePrefix)) {  // TMM.10: a fresh meta device: the type's default state
+      const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()));
+      if (t == nullptr) return Error{ErrorCode::NotFound, "unknown meta module '" + std::string(patch) + "'", {}};
+      auto m = std::make_shared<doc::Device>(*doc::makeDevice(doc::DeviceId{1}, std::string(patch), cur->kind));
+      m->meta = std::make_shared<const doc::MetaMap>(doc::MetaMap{doc::MetaEntry{"", doc::defaultMetaInstance(*t)}});
+      with = std::move(m);
+    }
     if (!with) with = doc::makeDevice(doc::DeviceId{1}, std::string(patch), cur->kind);
   } else {
     auto d = deviceOfFile(path);

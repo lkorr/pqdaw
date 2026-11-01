@@ -215,6 +215,23 @@ public:
     return part >= 0 ? ui::Cursor::ResizeNS : ui::Cursor::Inherit;
   }
 
+  // TMM.10: each arc's band (the bounding box of the arc's sweep between the orbit and the body's edge).
+  std::optional<ui::Rect> paramRect(size_t param) const noexcept override {
+    for (int32_t part = 0; part < kParts; ++part) {
+      if (param_[part] != static_cast<int32_t>(param)) continue;
+      ui::Rect r{1e9f, 1e9f, -1e9f, -1e9f};
+      for (int i = 0; i <= 16; ++i) {
+        const float a = arcAngle(part, static_cast<float>(i) / 16.0f);
+        for (const float rad : {kOrbitR + 6.0f, kBodyR + 2.0f}) {
+          const Vec2 v = polar(rad, a);
+          r = {std::min(r.x0, v.x), std::min(r.y0, v.y), std::max(r.x1, v.x), std::max(r.y1, v.y)};
+        }
+      }
+      return r;
+    }
+    return std::nullopt;
+  }
+
   void describe(int32_t part, std::string& title, std::string& body) const override {
     char buf[160];
     if (part < 0 || param_[part] < 0) {

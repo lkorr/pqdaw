@@ -277,7 +277,8 @@ bool BrowserPanel::searching() const noexcept {
 bool BrowserPanel::deviceTreeMode() const noexcept {
   if (source_.kind != BrowserSource::Kind::Category || !query_.empty() || collections_ != 0 || filters_.any()) return false;
   return source_.index == static_cast<uint32_t>(library::Category::Instruments) ||
-         source_.index == static_cast<uint32_t>(library::Category::AudioEffects);
+         source_.index == static_cast<uint32_t>(library::Category::AudioEffects) ||
+         source_.index == static_cast<uint32_t>(library::Category::MetaModules);  // TMM.10
 }
 
 void BrowserPanel::setFilters(BrowserFilters f) {
@@ -507,15 +508,21 @@ void BrowserPanel::buildDeviceTree() {
   const library::Index& ix = *index_;
   const bool instruments = source_.index == static_cast<uint32_t>(library::Category::Instruments);
   const doc::DeviceKind kind = instruments ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
-  if (const doc::DeviceLibrary* dl = ctx_.deviceLibrary()) {
+  const bool metaModules = source_.index == static_cast<uint32_t>(library::Category::MetaModules);
+  if (metaModules) {  // TMM.10: the meta modules (a chain meta device: the kind follows where it lands)
+    for (const meta::Type* t : metaModuleTypes())
+      deviceRows_.push_back({std::string(t->name), std::string(doc::kMetaDevicePrefix) + std::string(t->id),
+                             doc::DeviceKind::Instrument});
+  } else if (const doc::DeviceLibrary* dl = ctx_.deviceLibrary()) {
     for (const doc::DeviceInfo& d : dl->catalog().devices())
       if (d.kind == kind) deviceRows_.push_back({d.name, d.patch, d.kind});
   } else {
     for (const doc::StockDevice& d : doc::stockDevices())
       if (d.kind == kind) deviceRows_.push_back({std::string(d.name), std::string(d.patch), d.kind});
   }
-  deviceRows_.push_back({instruments ? "Instrument Rack" : "Audio Effect Rack",
-                         std::string(instruments ? doc::kInstrumentRack : doc::kAudioEffectRack), kind});
+  if (!metaModules)
+    deviceRows_.push_back({instruments ? "Instrument Rack" : "Audio Effect Rack",
+                           std::string(instruments ? doc::kInstrumentRack : doc::kAudioEffectRack), kind});
   // Presets by the patch they are for; user devices and presets of unknown devices after the devices.
   std::vector<std::vector<BrowserRow>> presets(deviceRows_.size());
   std::vector<BrowserRow> rest;

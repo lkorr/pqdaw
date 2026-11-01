@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "pq/document/devices.h"
+#include "pq/meta/registry.h"
 
 namespace pq::library {
 
@@ -37,6 +38,11 @@ Category stockDeviceCategory(std::string_view nameOrPatch) noexcept {
   for (const doc::StockDevice& d : doc::stockDevices())
     if (equalsFolded(d.name, nameOrPatch) || equalsFolded(d.patch, nameOrPatch))
       return d.kind == doc::DeviceKind::Instrument ? Category::Instruments : Category::AudioEffects;
+  for (const meta::Type* t : meta::types())  // TMM.10: a meta module's presets (by its name or "meta:<id>")
+    if (equalsFolded(t->name, nameOrPatch) ||
+        (nameOrPatch.size() > doc::kMetaDevicePrefix.size() && equalsFolded(doc::kMetaDevicePrefix, nameOrPatch.substr(0, doc::kMetaDevicePrefix.size())) &&
+         equalsFolded(t->id, nameOrPatch.substr(doc::kMetaDevicePrefix.size()))))
+      return Category::MetaModules;
   return Category::None;
 }
 
@@ -88,6 +94,7 @@ std::string_view categoryName(Category c) noexcept {
     case Category::Tunings: return "Tunings";
     case Category::Patches: return "Patches/Subcircuits";
     case Category::Grooves: return "Grooves";
+    case Category::MetaModules: return "Meta Modules";  // TMM.10
     case Category::Count: break;
   }
   return "?";
@@ -289,6 +296,10 @@ Category sniffDeviceCategory(std::string_view head) noexcept {
   };
   std::size_t at = 0;
   if (valueAfterKey("\"rack\"", 0, &at)) return Category::Racks;
+  if (valueAfterKey("\"patch\"", 0, &at)) {  // TMM.10: a chain meta device's preset
+    while (at < head.size() && (head[at] == ' ' || head[at] == '\t' || head[at] == '\r' || head[at] == '\n')) ++at;
+    if (head.substr(at).starts_with("\"meta:")) return Category::MetaModules;
+  }
   if (valueAfterKey("\"kind\"", 0, &at)) {
     while (at < head.size() && (head[at] == ' ' || head[at] == '\t' || head[at] == '\r' || head[at] == '\n')) ++at;
     if (at < head.size() && head[at] == '"') {

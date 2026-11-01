@@ -22,6 +22,7 @@
 
 #include <functional>
 #include <map>
+#include <optional>
 #include <span>
 #include <memory>
 #include <string>
@@ -32,6 +33,7 @@
 #include "pq/ui/widget.h"
 #include "pq/views/devices/device_model.h"
 #include "pq/views/devices/panel_desc.h"
+#include "pq/views/meta/meta_face.h"
 
 namespace pq::views::devices {
 
@@ -52,6 +54,12 @@ public:
   virtual SpectrumFeed* outputSpectrum() { return nullptr; }
   // The rate the device runs at (displays that show a digital response: EQ Eight's bilinear curves).
   virtual double sampleRate() const { return 48000.0; }
+  // TMM.10: a face control's meta instance at name path `path` ("" = this chain meta device itself): its type (null:
+  // the panel falls back to the type its patch is an expansion of, for ""), the target its face edits (null: the
+  // type's defaults, read-only) and its voice reader (null: no dots).
+  virtual const meta::Type* metaType(std::string_view /*path*/) const { return nullptr; }
+  virtual std::unique_ptr<MetaTarget> metaTarget(std::string_view /*path*/, const meta::Type& /*type*/);
+  virtual VoiceTapReader* metaVoices(std::string_view /*path*/) { return nullptr; }
 };
 
 class DevicePanel : public ui::Widget {
@@ -82,6 +90,16 @@ public:
   // Logical size of the whole panel as laid out now (folded: the title bar only).
   float logicalWidth() const noexcept;
   float logicalHeight() const noexcept;
+  // TMM.10: the width when the panel is `panelHeight` logical px tall: a face panel (PanelDesc::fitFace) scales its
+  // face to the height (within kFaceMinScale … kFaceMaxScale), any other panel is logicalWidth().
+  float logicalWidthFor(float panelHeight) const noexcept;
+  static constexpr float kFaceMinScale = 0.5f, kFaceMaxScale = 1.5f;
+  static constexpr float kFaceMinWidth = 212.0f;  // the title bar keeps room for a meta module's name
+  // TMM.10: the device-px rect of the control showing `param`: its widget's (visible), or the part of a face that
+  // edits it; nullopt when nothing shows it now. (controlFor answers for widgets only.)
+  std::optional<ui::IRect> controlRect(std::string_view param) const;
+  // TMM.10: the face controls' voice readers may have become live (a note while nothing animates): they poll again.
+  void wakeFaces();
   // The source started playing: displays that show the output spectrum start drawing it (if shown).
   void wakeDisplays();
   // T4.4-fix1: a user device (it plays its own patch, edited in the circuit editor): the title bar shows an "edited"

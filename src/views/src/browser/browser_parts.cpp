@@ -291,9 +291,8 @@ void Sidebar::rebuild() {
   for (uint32_t c = 0; c < library::kCollectionCount; ++c)
     v.push_back({names[c], false, {BrowserSource::Kind::Collection, c}, collectionColour(c)});
   v.push_back({"CATEGORIES", true, {}, 0});
-  for (uint32_t c = 1; c < static_cast<uint32_t>(library::Category::Count); ++c)
-    v.push_back({std::string(library::categoryName(static_cast<library::Category>(c))), false,
-                 {BrowserSource::Kind::Category, c}, 0});
+  for (const library::Category c : library::kCategoryOrder)  // TMM.10: Meta Modules after Audio Effects
+    v.push_back({std::string(library::categoryName(c)), false, {BrowserSource::Kind::Category, static_cast<uint32_t>(c)}, 0});
   v.push_back({"PLACES", true, {}, 0});
   const library::Index* ix = panel_.index();
   const auto& places = ix ? ix->places : lib.places();

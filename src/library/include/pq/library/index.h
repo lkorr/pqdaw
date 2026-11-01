@@ -63,8 +63,14 @@ enum class Category : uint8_t {
   Tunings,
   Patches,  // "Patches/Subcircuits"
   Grooves,
+  MetaModules,  // TMM.10: chain meta devices (their presets); listed after Audio Effects (categoryOrder)
   Count
 };
+// TMM.10: the categories in the order the browser lists them (Meta Modules after Audio Effects; the enum keeps its
+// values for the index file).
+inline constexpr Category kCategoryOrder[] = {Category::Instruments, Category::AudioEffects, Category::MetaModules,
+                                              Category::Racks,       Category::Samples,      Category::Clips,
+                                              Category::Tunings,     Category::Patches,      Category::Grooves};
 std::string_view categoryName(Category c) noexcept;
 
 // Entry flags.
@@ -210,15 +216,15 @@ struct Index {
 std::string foldedPathKey(std::string_view path);
 
 // Category of an entry from its kind, its place and relative directory, and (presets / user devices) the kind its
-// file declares (`sniffed`: Instruments, AudioEffects, Racks or None). User Library layout (T5.11): Racks/… → Racks;
-// Presets/<Device>/… and Defaults/<Device>.pqpreset → the stock device's kind (doc::stockDevices(), by display or
-// patch name).
+// file declares (`sniffed`: Instruments, AudioEffects, Racks, MetaModules or None). User Library layout (T5.11):
+// Racks/… → Racks; Presets/<Device>/… and Defaults/<Device>.pqpreset → the stock device's kind (doc::stockDevices(), by
+// display or patch name), TMM.10: MetaModules for a meta module's name.
 Category categorize(ItemKind kind, PlaceKind place, std::string_view relDir, std::string_view fileName,
                     Category sniffed) noexcept;
 
 // The kind a preset or user device file declares, from its first bytes (`head`, up to 4 KiB): a "rack" key → Racks;
-// else the first "kind" value: "instrument" → Instruments, "audioEffect" → AudioEffects; else None. Provisional until
-// T5.11 fixes the preset format (QUESTIONS Q153).
+// else (TMM.10) a "patch" value "meta:…" → MetaModules; else the first "kind" value: "instrument" → Instruments,
+// "audioEffect" → AudioEffects; else None. Provisional until T5.11 fixes the preset format (QUESTIONS Q153).
 Category sniffDeviceCategory(std::string_view head) noexcept;
 
 // A stock device as a category item (Instruments / Audio Effects list the stock devices themselves, as in Live).

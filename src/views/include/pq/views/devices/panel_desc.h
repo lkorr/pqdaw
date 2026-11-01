@@ -39,6 +39,8 @@
 //                                           // response with a frequency / resonance dot) reads freq, res, morph, dj,
 //                                           // type, circuit, slope; "lfo" (its LFO shape) reads shape, offset, phase,
 //                                           // spin, on
+//       {"type": "face", "meta": "opA.wt", "rect": […]},   // TMM.10: a meta module's face (the nested instance at
+//                                           // that name path; "" = the chain meta device itself), fitted to the rect
 //       {"repeat": {"var": "i", "values": ["1", …], "step": [dx, dy]}, "control": {… "{i}" …}}
 //     ]
 //   }
@@ -60,7 +62,7 @@
 
 namespace pq::views::devices {
 
-enum class ControlKind : uint8_t { Knob, Box, Toggle, Chooser, Label, Tabs, Visual };
+enum class ControlKind : uint8_t { Knob, Box, Toggle, Chooser, Label, Tabs, Visual, Face };
 
 struct Condition {
   enum class Source : uint8_t { Param, Const, Selector };
@@ -81,6 +83,8 @@ struct ControlDesc {
   std::string style;           // Chooser: "filter" draws EQ filter-shape glyphs instead of the item text (Live's EQ row)
   std::string selector;        // Tabs
   std::string visual;          // Visual
+  std::string meta;            // TMM.10 Face: the meta instance's name path ("" = a chain meta device itself)
+  bool hasMeta = false;
   std::map<std::string, std::string> bind;  // Visual: role → param / const name (templated)
   float x = 0, y = 0, w = 0, h = 0;          // logical px in the body
   std::vector<Condition> when;
@@ -97,7 +101,11 @@ struct PanelDesc {
   float width = 0, height = 0;
   std::vector<SelectorDesc> selectors;
   std::vector<ControlDesc> controls;
-  bool generated = false;  // autoPanel()
+  bool generated = false;  // autoPanel(), facePanel()
+  // TMM.10: a chain meta device's panel (facePanel): its face fills the body and scales to the panel's height (the
+  // Device view's), keeping the face's aspect: the body is faceW x faceH at scale 1 (DevicePanel::logicalWidthFor).
+  bool fitFace = false;
+  float faceW = 0, faceH = 0;
   const SelectorDesc* findSelector(std::string_view name) const noexcept;
 };
 
@@ -107,6 +115,9 @@ Result<PanelDesc> loadPanelDesc(const std::string& path, const DeviceSignature& 
 // The generic panel of a device without a description: one control per visible param (knobs; bools as toggles;
 // stepped params as number boxes) and per structural const (number boxes), flowed into columns.
 PanelDesc autoPanel(const DeviceSignature& sig, std::string title = {});
+// TMM.10: the panel of a chain meta device: its title bar over one face control (meta path "") of world size
+// faceW x faceH, fitted to the panel's height (fitFace).
+PanelDesc facePanel(const DeviceSignature& sig, std::string title, float faceW, float faceH);
 // `<dir>/<stem>.panel.json` for a device file `<dir>/<stem>.pqp`.
 std::string panelPathFor(const std::string& devicePath);
 

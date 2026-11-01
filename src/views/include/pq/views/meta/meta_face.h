@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -193,6 +194,9 @@ public:
   virtual ui::Cursor cursor(int32_t part) const noexcept;
   // The info view's text for a part (title, body).
   virtual void describe(int32_t part, std::string& title, std::string& body) const;
+  // TMM.10: the face-local rect of the control that edits param `param` (meta::Type::params index), where a host
+  // marks it (the Device view's automation LEDs, cable drops, Show Automation); nullopt: no such control.
+  virtual std::optional<ui::Rect> paramRect(size_t /*param*/) const noexcept { return std::nullopt; }
   int32_t hoveredPart() const noexcept { return hovered_; }
   // Returns whether it changed (the host repaints the face).
   bool setHoveredPart(int32_t part) noexcept;

@@ -19,6 +19,7 @@
 #include "pq/document/commands.h"
 #include "pq/document/library_files.h"
 #include "pq/document/model.h"
+#include "pq/meta/type.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -43,8 +44,13 @@ struct DeviceSlot {
 std::string deviceDisplayName(const ViewContext& ctx, const doc::Device& d);
 std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch);
 
+// TMM.10: the meta-module types offered as chain devices (those with a face that may be a chain device), in
+// registration order: the "Meta Modules" of the device menus and the browser.
+std::vector<const meta::Type*> metaModuleTypes();
+
 // A new device of the catalog with its default preset (Library::defaultPreset) when the User Library has one. Returns
-// the new device's id.
+// the new device's id. TMM.10: a "meta:<type>" patch is a chain meta device (doc::ops::addMetaDevice; its kind follows
+// the slot, `kind` is ignored), its default preset applied with that kind.
 Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch, doc::DeviceKind kind, DeviceSlot at);
 // Loads a catalog device, a preset or a user device into a chain. Returns the new device's id.
 Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, DeviceSlot at);

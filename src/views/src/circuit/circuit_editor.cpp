@@ -937,7 +937,7 @@ void CircuitEditor::beginAdd(graph::Point2 world, ui::Vec2 device) {
   ui::OverlayLayer* layer = ui::OverlayLayer::of(*this);
   if (!layer) return;
   auto pop = std::make_unique<TypeIn>("Add", "");
-  pop->field->setPlaceholder("tanh, 0.5, 440Hz, *, svf, param x = 1, out y");
+  pop->field->setPlaceholder("tanh, 0.5, 440Hz, *, svf, meta_wavetable, param x = 1, out y");
   TypeIn* raw = pop.get();
   std::weak_ptr<bool> alive = alive_;
   raw->field->onCommit = [this, alive, raw, layer, world](const std::string& spec) {

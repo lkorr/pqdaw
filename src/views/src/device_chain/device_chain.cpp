@@ -18,7 +18,10 @@
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/circuit/device_circuit.h"
 #include "pq/views/devices/panel_desc.h"
+#include "pq/views/meta/face_targets.h"
 #include "pq/views/shell/shell.h"
+#include "pq/document/meta.h"
+#include "pq/meta/registry.h"
 
 namespace pq::views {
 
@@ -63,6 +66,8 @@ void DeviceChainView::Impl::reindex() {
 }
 
 std::string DeviceChainView::Impl::templateKey(const doc::DeviceLibrary* lib, const doc::Device& d) {
+  // TMM.10: a chain meta device's form follows its kind (an instrument, or a device continuing the voices).
+  if (doc::isMetaDevice(d)) return d.patch + (d.kind == doc::DeviceKind::Instrument ? "#instrument" : "#effect");
   if (!d.source) return d.patch;
   const auto r = lib != nullptr ? lib->resolve(d) : nullptr;
   return r && r->graph ? r->graph->root : std::string();
@@ -79,6 +84,12 @@ const PanelTemplate* DeviceChainView::Impl::templateFor(const doc::Device& d) {
   if (callee != nullptr) {
     t = std::make_unique<PanelTemplate>();
     t->sig = devices::signatureOf(*callee);
+    // TMM.10: a chain meta device's panel is its face (SPEC §15 2026-11-01), scaled to the Device view's height.
+    if (const meta::Type* type = meta::findType(doc::metaDeviceType(d)); type != nullptr && hasFace(*type)) {
+      const ui::Vec2 ws = faceSize(*type);
+      t->desc = devices::facePanel(t->sig, std::string(type->name), ws.x, ws.y);
+      return (templates[key] = std::move(t)).get();
+    }
     // The stock panel while its bindings hold for the (edited) signature, else the generic one.
     const std::string file = lib->pathOf(d.patch);
     auto desc = file.empty() ? Result<devices::PanelDesc>(Error{ErrorCode::NotFound, "", {}})
@@ -128,6 +139,23 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
                                            });
     rack.enabled = !instrumentRack || instruments;
     items.push_back(std::move(rack));
+  }
+  // TMM.10: the meta modules — a chain meta device (its panel is its face). Its kind follows where it lands: an
+  // instrument first, a device continuing the voices after a meta instrument (ops::metaDeviceKindAt).
+  {
+    items.push_back(ui::MenuItem::sep());
+    ui::MenuItem head = ui::MenuItem::item("Meta Modules");
+    head.enabled = false;
+    items.push_back(std::move(head));
+    for (const meta::Type* t : metaModuleTypes()) {
+      const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
+      auto kind = doc::ops::metaDeviceKindAt(doc(), *t, trackId, index, chain);
+      ui::MenuItem it = ui::MenuItem::item("   " + std::string(t->name), [add, patch, k = kind ? *kind : doc::DeviceKind::Instrument] {
+        add(patch, k);
+      });
+      it.enabled = kind.ok() && (*kind == doc::DeviceKind::AudioEffect || instruments);
+      items.push_back(std::move(it));
+    }
   }
   // T5.11: the user devices of the library ("Save as New Device"), for every project.
   const auto& users = view.ctx_.library().userDevices();
@@ -255,9 +283,9 @@ namespace {
 
 // ---- A device panel's target: the document's device instance ---------------------------------------------------
 
-class DocTarget final : public devices::DeviceTarget {
+class ChainTarget final : public devices::DeviceTarget {
 public:
-  DocTarget(DeviceChainView::Impl& impl, ViewContext& ctx, doc::DeviceId id) : impl_(impl), ctx_(ctx), id_(id) {}
+  ChainTarget(DeviceChainView::Impl& impl, ViewContext& ctx, doc::DeviceId id) : impl_(impl), ctx_(ctx), id_(id) {}
   void paramGestureBegin(std::string_view) override {
     if (!ctx_.store().inGesture()) {
       (void)ctx_.store().beginGesture("Device Parameter");
@@ -290,6 +318,34 @@ public:
   }
   void setActive(bool on) override {
     impl_.run(doc::ops::setDevicesActive(*ctx_.doc(), std::vector<doc::DeviceId>{id_}, on), false);
+  }
+  // TMM.10: a face control's instance — "" is this chain meta device; a nested path is a meta call in its circuit.
+  const meta::Type* metaType(std::string_view path) const override {
+    const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
+    if (d == nullptr) return nullptr;
+    if (path.empty()) return meta::findType(doc::metaDeviceType(*d));
+    if (const doc::MetaInstance* inst = d->metaAt(path)) return meta::findType(inst->type);
+    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+    if (lib == nullptr) return nullptr;
+    std::shared_ptr<const doc::ResolvedDevice> hold;
+    const graph::Patch* root = lib->patchOf(*d, hold);
+    if (root == nullptr) return nullptr;
+    const graph::PatchLibrary* l = &lib->library();
+    const doc::ResolvedDevice* user = hold.get();
+    const doc::PatchLookup lookup = [l, user](std::string_view name) -> const graph::Patch* {
+      if (user != nullptr && user->graph)
+        if (const graph::Patch* x = user->graph->library.find(name)) return x;
+      return l->find(name);
+    };
+    for (const doc::MetaSite& site : doc::metaSites(*root, lookup))
+      if (site.path == path) return site.type;
+    return nullptr;
+  }
+  std::unique_ptr<MetaTarget> metaTarget(std::string_view path, const meta::Type& type) override {
+    return std::make_unique<DocTarget>(ctx_, id_, std::string(path), type);
+  }
+  VoiceTapReader* metaVoices(std::string_view path) override {
+    return impl_.view.faceVoices ? impl_.view.faceVoices(id_, path) : nullptr;
   }
 
 private:
@@ -379,6 +435,10 @@ public:
     }
   }
   float logicalWidth() const override { return panel_ ? panel_->logicalWidth() : 160.0f; }
+  // TMM.10: a face panel scales with the Device view's height.
+  float logicalWidthFor(float available) const override {
+    return panel_ ? panel_->logicalWidthFor(logicalHeight(available)) : 160.0f;
+  }
   // M4 review UI item 3: an open panel fills the Device view's height (its background continues below its controls, as
   // Live's devices do); folded, the title bar only.
   float logicalHeight(float available) const override {
@@ -416,7 +476,7 @@ public:
   }
 
 private:
-  DocTarget target_;
+  ChainTarget target_;
   std::string key_;           // the template it was built from (Impl::templateKey)
   doc::UserPatchPtr source_;  // the patch text it shows (T4.4-fix1)
   devices::DevicePanel* panel_ = nullptr;
@@ -475,15 +535,15 @@ public:
   explicit ChainContent(DeviceChainView::Impl& impl) : Widget("chain"), impl_(impl) { setLayout(ui::LayoutKind::Custom); }
 
   // Device px the chain needs (frames, gaps, the add slot).
-  int32_t totalWidthPx(float scale) const {
+  int32_t totalWidthPx(float scale, float hLogical) const {
     float x = kChainPad;
-    for (const FrameBase* f : impl_.frames) x += f->logicalWidth() + kFrameGap;
+    for (const FrameBase* f : impl_.frames) x += f->logicalWidthFor(hLogical - 2.0f * kChainPad) + kFrameGap;
     x += kAddW + kChainPad;
     return static_cast<int32_t>(std::lround(x * scale));
   }
   ui::ISize contentExtent(ui::ISize viewport) const override {
     const float s = tree() ? tree()->scale() : 1.0f;
-    return {std::max(viewport.w, totalWidthPx(s)), viewport.h};
+    return {std::max(viewport.w, totalWidthPx(s, static_cast<float>(viewport.h) / s)), viewport.h};
   }
   void arrange(ui::LayoutPass& pass) override {
     const ui::IRect r = rect();
@@ -492,7 +552,7 @@ public:
     int32_t x = r.x + pad;
     const int32_t h = std::max(0, r.h - 2 * pad);
     for (FrameBase* f : impl_.frames) {
-      const int32_t w = pass.px(f->logicalWidth());
+      const int32_t w = pass.px(f->logicalWidthFor(hLogical - 2.0f * kChainPad));
       pass.place(*f, {x, r.y + pad, w, std::min(h, pass.px(f->logicalHeight(hLogical - 2.0f * kChainPad)))});
       x += w + gap;
     }
@@ -535,9 +595,9 @@ void FrameBase::paintOver(ui::PaintContext& ctx) {
       const auto& at = ctx.res.theme->automation;
       const float size = static_cast<float>(std::max(2, ctx.scale.px(4.0f)));
       for (const auto& [name, overridden] : automated_) {
-        const ui::Widget* w = panel->controlFor(name);
-        if (w == nullptr || !w->visible()) continue;
-        const ui::IRect r = ui::intersect(w->rect(), rect());
+        const std::optional<ui::IRect> cr = panel->controlRect(name);  // TMM.10: a face's control too
+        if (!cr) continue;
+        const ui::IRect r = ui::intersect(*cr, rect());
         if (r.w < 2 * static_cast<int32_t>(size) || r.h < 2 * static_cast<int32_t>(size)) continue;
         // Left of the control (clear of its centred label) where the frame has room, else inside its corner.
         const int32_t outside = r.x - static_cast<int32_t>(size) - 1;
@@ -554,8 +614,8 @@ std::string FrameBase::paramAt(ui::Vec2 p) const {
   const devices::DevicePanel* panel = this->panel();
   if (panel == nullptr || panel->folded()) return {};
   for (const devices::ParamInfo& info : panel->signature().params) {
-    const ui::Widget* w = panel->controlFor(info.name);
-    if (w != nullptr && w->visible() && w->rect().contains(p)) return info.name;
+    const std::optional<ui::IRect> r = panel->controlRect(info.name);  // TMM.10: a face's control too
+    if (r && r->contains(p)) return info.name;
   }
   return {};
 }
@@ -964,6 +1024,11 @@ std::vector<ui::MenuItem> DeviceChainView::deviceMenu() {
   return impl_->deviceMenu(track_, {}, index, t->kind == doc::TrackKind::Midi);
 }
 
+void DeviceChainView::wakeFaces() {
+  for (const auto& [id, f] : impl_->all)
+    if (devices::DevicePanel* p = f->panel()) p->wakeFaces();
+}
+
 bool DeviceChainView::addDevice(const doc::DeviceInfo& info) {
   const doc::Track* t = impl_->track();
   if (t == nullptr) return false;
@@ -1298,9 +1363,9 @@ std::vector<DeviceChainView::ParamControl> DeviceChainView::paramControls() cons
     if (panel == nullptr || panel->folded() || !shownNow(*panel)) continue;
     for (const devices::ParamInfo& p : panel->signature().params) {
       if (p.isBool) continue;
-      const ui::Widget* w = panel->controlFor(p.name);
-      if (w == nullptr || !shownNow(*w)) continue;
-      const ui::IRect r = ui::intersect(w->rect(), vp);
+      const std::optional<ui::IRect> cr = panel->controlRect(p.name);  // TMM.10: a face's control too
+      if (!cr) continue;
+      const ui::IRect r = ui::intersect(*cr, vp);
       if (r.empty()) continue;
       out.push_back({f->id(), p.name, r});
     }
@@ -1324,11 +1389,11 @@ std::optional<ui::Vec2> DeviceChainView::jackPoint(doc::DeviceId device, std::st
 std::optional<ui::Vec2> DeviceChainView::paramPoint(doc::DeviceId device, std::string_view param, bool* docked) const {
   const devices::DevicePanel* panel = panelOf(device);
   if (panel == nullptr) return std::nullopt;
-  const ui::Widget* w = panel->folded() ? nullptr : panel->controlFor(param);
-  bool ok = w != nullptr && shownNow(*w);
+  const std::optional<ui::IRect> cr = panel->controlRect(param);  // TMM.10: a face's control too
+  bool ok = cr.has_value() && shownNow(*panel);
   ui::Vec2 p;
   if (ok) {
-    const ui::IRect r = w->rect();
+    const ui::IRect r = *cr;
     p = {static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.25f * static_cast<float>(r.h)};
   } else {  // the title bar's right end
     const ui::IRect r = panel->rect();

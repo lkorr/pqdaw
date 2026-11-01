@@ -16,6 +16,7 @@
 #include "pq/app/startup.h"
 #include "pq/compile/compile.h"
 #include "pq/views/circuit/circuit_editor.h"
+#include "pq/views/device_chain/device_chain.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -244,6 +245,12 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       patch->faceVoices = [hub](doc::DeviceId d, std::string_view path) { return hub->voices(d, path); };
       patch->rebindFaces();
       app->faceView_ = patch;
+      // TMM.10: chain meta devices' faces in the Device view read the same readers.
+      if (views::DeviceChainView* chain = views::findDeviceChain(*app->shell_)) {
+        chain->faceVoices = [hub](doc::DeviceId d, std::string_view path) { return hub->voices(d, path); };
+        chain->rebuild();
+        app->faceChain_ = chain;
+      }
     }
     app->audio_ = std::make_unique<AudioDeviceManager>(*app->link_, audio, ManagerHooks{}, o.device);
     // The output notifies from its threads: post to the UI thread, which polls the manager (follows a device rate
@@ -652,7 +659,10 @@ void ShellApp::drainOsDrags() {
 void ShellApp::onFramePresented() {
   ++frames_;
   // TMM.5: voices that started while no face animated (an audition, a note while stopped) wake the faces.
-  if (faceView_ != nullptr && faceVoices_->anyFresh()) faceView_->wakeFaces();
+  if (faceView_ != nullptr && faceVoices_->anyFresh()) {
+    faceView_->wakeFaces();
+    if (faceChain_ != nullptr) faceChain_->wakeFaces();  // TMM.10
+  }
   if (frames_ != 1) return;
   std::printf("pqdaw: %s\n", firstFrameReport().c_str());
   if (startupLogEnabled()) std::printf("%s", startupPhaseReport().c_str());

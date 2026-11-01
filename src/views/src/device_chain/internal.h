@@ -136,6 +136,8 @@ public:
   doc::DeviceId id() const noexcept { return id_; }
   virtual float logicalWidth() const = 0;
   virtual float logicalHeight(float available) const = 0;
+  // TMM.10: the width in a chain `available` logical px tall (a face panel scales with the height).
+  virtual float logicalWidthFor(float /*available*/) const { return logicalWidth(); }
   // The device (or something inside it) changed in the document: show it (values, settings, activation, structure).
   virtual void update(const doc::Device& d) = 0;
   // Whether update(d) can show `d` (else the frame is rebuilt). T4.4-fix1: a device whose patch text now plays another

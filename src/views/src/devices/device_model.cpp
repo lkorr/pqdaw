@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <numbers>
 #include <cstdio>
 
 namespace pq::views::devices {
@@ -86,7 +87,13 @@ DeviceSignature signatureOf(const graph::Patch& patch) {
         }
         if (const graph::Attr* a = findAttr(d, "label"); a && !a->args.empty() && !a->args[0].value.text.empty())
           p.label = a->args[0].value.text;
-        if (const graph::Attr* a = findAttr(d, "curve"); a && !a->args.empty()) p.exp = a->args[0].value.text == "exp";
+        if (const graph::Attr* a = findAttr(d, "curve"); a && !a->args.empty()) {
+          p.exp = a->args[0].value.text == "exp";
+          // TMM.10 (Q167 8): exp0 with its k (a positive number), else linear.
+          if (a->args[0].value.text == "exp0" && a->args.size() > 1 &&
+              a->args[1].value.type == graph::AttrValue::Type::Number && a->args[1].value.number.value() > 0.0)
+            p.exp0 = a->args[1].value.number.value();
+        }
         if (const graph::Attr* a = findAttr(d, "steps"); a && !a->args.empty())
           p.steps = static_cast<int32_t>(std::lround(a->args[0].value.number.value()));
         p.hidden = findAttr(d, "hidden") != nullptr;
@@ -140,6 +147,10 @@ double toPosition(const ParamInfo& p, double v) noexcept {
   v = clampV(p, v);
   if (p.isBool) return v >= 0.5 ? 1.0 : 0.0;
   if (p.exp) return std::log(v / p.min) / std::log(p.max / p.min);
+  if (p.exp0 > 0.0 && p.max > p.min) {
+    const double k = p.exp0 * std::numbers::ln2;
+    return std::clamp(std::log1p((v - p.min) / (p.max - p.min) * std::expm1(k)) / k, 0.0, 1.0);
+  }
   if (p.unit == DisplayUnit::Db && p.min > 0.0) {
     const double a = toDisplay(p, p.min), b = toDisplay(p, p.max);
     return b > a ? (toDisplay(p, v) - a) / (b - a) : 0.0;
@@ -152,6 +163,7 @@ double fromPosition(const ParamInfo& p, double t) noexcept {
   double v;
   if (p.isBool) return t >= 0.5 ? 1.0 : 0.0;
   if (p.exp) v = p.min * std::pow(p.max / p.min, t);
+  else if (p.exp0 > 0.0) v = p.min + (p.max - p.min) * std::expm1(t * p.exp0 * std::numbers::ln2) / std::expm1(p.exp0 * std::numbers::ln2);
   else if (p.unit == DisplayUnit::Db && p.min > 0.0) {
     const double a = toDisplay(p, p.min), b = toDisplay(p, p.max);
     v = fromDisplay(p, a + t * (b - a));

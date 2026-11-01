@@ -271,6 +271,37 @@ Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair)
   return r.status;
 }
 
+Status buildMetaChainProject(doc::DocumentStore& store, MetaChainIds* ids) {
+  Runner r{store};
+  using K = doc::DeviceKind;
+  const doc::TrackId lead = r.track(doc::TrackKind::Midi, {}, "Meta Lead", 0x3FA9F5);
+  const doc::TrackId bass = r.track(doc::TrackKind::Midi, lead, "Meta Bass", 0x8ED36C);
+  if (!r.status) return r.status;
+  // Lead: Phase accumulator → Wavetable → Auto Filter (a meta voice run, then the voices summed into the filter).
+  const doc::DeviceId acc = phaseAccOn(r, lead, 0.0, 0.0, 1.0);
+  auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), lead, "wavetable"));
+  const doc::DeviceId wt = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  if (!wt.valid()) return Error{ErrorCode::Unknown, "meta chain project: no Wavetable", {}};
+  (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "warp", 0.3));
+  (void)r.device(lead, "auto_filter", K::AudioEffect);
+  // Bass: a detuned Phase accumulator (+1.5 Hz) → a saw Wavetable, nothing after it (the voices sum at the chain end).
+  const doc::DeviceId bacc = phaseAccOn(r, bass, 1.5, 0.0, 1.0);
+  e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), bass, "wavetable"));
+  const doc::DeviceId bwt = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  if (bwt.valid()) {
+    meta::WavetableData d;
+    const AlignedBuffer<float> saw = dsp::basicCycle(dsp::BasicCycle::Saw);
+    d.keyframes.push_back({0.0f, std::vector<float>(saw.span().begin(), saw.span().end())});
+    (void)r.run(doc::ops::setMetaData(*store.current(), bwt, "", "wavetable", meta::wavetableData(d)));
+  }
+  r.clip(lead, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7, 11});
+  r.clip(bass, 0, 4 * kTicksPerWhole, "Root", {0, 7});
+  if (ids != nullptr) *ids = MetaChainIds{lead, acc, wt, bass, bacc, bwt};
+  return r.status;
+}
+
 Status addWavetableFaces(doc::DocumentStore& store, uint32_t count, const meta::DataPtr& data) {
   Runner r{store};
   uint32_t made = 0;

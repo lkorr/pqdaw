@@ -28,6 +28,8 @@ struct ParamInfo {
   DisplayUnit unit = DisplayUnit::None;
   double min = 0.0, max = 1.0, def = 0.0;  // internal units
   bool exp = false;         // @curve(exp): knob position is logarithmic in the value
+  double exp0 = 0.0;        // TMM.10: @curve(exp0, k): k > 0, value = min + (max − min)·(2^(k·t) − 1)/(2^k − 1)
+                            // (exponential from exactly min: the Phase accumulator's frequency; Q167 8)
   int32_t steps = 0;        // @steps(n): n integer positions (0 = continuous)
   bool isBool = false;
   bool hidden = false;      // @hidden
@@ -54,7 +56,8 @@ struct DeviceSignature {
 DeviceSignature signatureOf(const graph::Patch& patch);
 
 // ---- value mapping (UI thread, cheap: once per change) ---------------------------------------------------------------
-// Knob / slider position in [0, 1]: linear in the display value (dB for gains), logarithmic for @curve(exp).
+// Knob / slider position in [0, 1]: linear in the display value (dB for gains), logarithmic for @curve(exp), the
+// exp0 law for @curve(exp0, k) (doc::paramTravel follows the same laws).
 double toPosition(const ParamInfo& p, double value) noexcept;
 double fromPosition(const ParamInfo& p, double position) noexcept;
 // The value shown (dB for a gain, % for a fraction, Hz).

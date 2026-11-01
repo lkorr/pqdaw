@@ -471,6 +471,20 @@ public:
   }
 
   void describe(int32_t part, std::string& title, std::string& body) const override;
+  // TMM.10: where each param's control sits (the parts kPhasePart … kSyncPart are the params' indices).
+  std::optional<Rect> paramRect(size_t param) const noexcept override {
+    switch (static_cast<int32_t>(param)) {
+      case kPhasePart: return Rect{kDisp.x0, kPhaseY - 5.0f, kDisp.x1, kPhaseY + 5.0f};
+      case kPositionPart: return Rect{kPosX - 5.0f, kDisp.y0, kPosX + 5.0f, kDisp.y1};
+      case kFoldPart:
+      case kWarpPart:
+      case kSyncPart: {
+        const float x = kKnobX[param - kFoldPart];
+        return Rect{x - kKnobR - 2.0f, kKnobY - kKnobR - 2.0f, x + kKnobR + 2.0f, kKnobY + kKnobR + 2.0f};
+      }
+      default: return std::nullopt;
+    }
+  }
 
 protected:
   bool voicesPolled(bool changed) override;

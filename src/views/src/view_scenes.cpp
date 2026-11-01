@@ -1512,6 +1512,70 @@ Status setupProjectMetaWavetable(Shell& shell) {
   return Ok{};
 }
 
+// TMM.10: meta modules as chain devices (project_patch::buildMetaChainProject). The Device view of "Meta Lead": the
+// Phase accumulator's and the Wavetable's faces ARE their panels (scaled to the view's height), then Auto Filter's
+// panel; still synthetic voices on both faces (a four-note chord).
+Status setupDeviceMetaChain(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-meta-chain: no device library", {}};
+  project_patch::MetaChainIds ids;
+  if (Status s = project_patch::buildMetaChainProject(ctx.store(), &ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-chain: the Device view is not installed", {}};
+  static SyntheticVoices accVoices, wtVoices;
+  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
+  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId acc = ids.acc, wt = ids.wt;
+  v->faceVoices = [acc, wt](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    return d == acc ? &accVoices : (d == wt ? &wtVoices : nullptr);
+  };
+  ctx.setSelectedTrack(ids.lead);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  const doc::DeviceId one[1] = {wt};
+  v->select(one);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// TMM.10: the same project in the project patch view, the Meta Lead band focused: Phase accumulator → Wavetable as
+// faces wired per voice, then Auto Filter; the same still voices.
+Status setupProjectMetaChain(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-meta-chain: no device library", {}};
+  project_patch::MetaChainIds ids;
+  if (Status s = project_patch::buildMetaChainProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-chain: the view is not installed", {}};
+  static SyntheticVoices accVoices, wtVoices;
+  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
+  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId acc = ids.acc, wt = ids.wt;
+  v->faceVoices = [acc, wt](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    return d == acc ? &accVoices : (d == wt ? &wtVoices : nullptr);
+  };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.lead, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
     {"arrangement-basic", 1280, 800, setupArrangementBasic},
@@ -1565,6 +1629,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
     {"project-meta-faces", 1280, 800, setupProjectMetaFaces},          // TMM.4
     {"project-meta-wavetable", 1280, 800, setupProjectMetaWavetable},  // TMM.7
+    {"device-meta-chain", 1280, 800, setupDeviceMetaChain},            // TMM.10
+    {"project-meta-chain", 1280, 800, setupProjectMetaChain},          // TMM.10
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

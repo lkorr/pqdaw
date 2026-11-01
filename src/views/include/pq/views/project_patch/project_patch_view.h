@@ -472,6 +472,16 @@ meta::DataPtr demoWavetableData();
 // and "Pair" (the default synth forked: `acc1 = meta_phase_acc()` wired into `wt1 = meta_wavetable(acc1)` under an
 // envelope; wt1 holds demoWavetableData at position 0.7). Returns the Pair instrument in `pair` when given.
 Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair = nullptr);
+// TMM.10: meta modules as chain devices — "Meta Lead" (Phase accumulator → Wavetable with demoWavetableData at
+// position 0.35, warp 0.3 → Auto Filter: a meta voice run) and "Meta Bass" (Phase accumulator +1.5 Hz → a saw
+// Wavetable, nothing after it). The ids, when given.
+struct MetaChainIds {
+  doc::TrackId lead;
+  doc::DeviceId acc, wt;
+  doc::TrackId bass;
+  doc::DeviceId bassAcc, bassWt;
+};
+Status buildMetaChainProject(doc::DocumentStore& store, MetaChainIds* ids = nullptr);
 // The instrument of the first `count` MIDI tracks replaced by a chain Wavetable holding `data` (benchmarks).
 Status addWavetableFaces(doc::DocumentStore& store, uint32_t count, const meta::DataPtr& data);
 

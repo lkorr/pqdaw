@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -60,6 +61,7 @@ struct DevicePanel::Impl {
   bool conditionsHold(const ControlDesc& d) const;
   SpectrumFeed* spectrum() const { return panel.target_ ? panel.target_->outputSpectrum() : nullptr; }
   double sampleRate() const { return panel.target_ ? panel.target_->sampleRate() : 48000.0; }
+  DeviceTarget* target() const noexcept { return panel.target_; }  // TMM.10
 };
 
 // A display in the panel body.
@@ -71,6 +73,10 @@ public:
   // `name` (resolved; consts as "#name") changed.
   virtual bool dependsOn(std::string_view name) const = 0;
   virtual void valuesChanged() { markDirty(); }
+  // TMM.10: the device-px rect of the part that edits `param` (a face's control), or nullopt.
+  virtual std::optional<ui::IRect> paramRect(std::string_view /*param*/) const { return std::nullopt; }
+  // TMM.10: a face's voices may have become live.
+  virtual void wake() {}
 
 protected:
   DevicePanel::Impl& impl_;
@@ -80,6 +86,9 @@ protected:
 std::unique_ptr<PanelDisplay> makeDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
 // Operator's displays (T4.12, operator_displays.cpp): "envelope", "algorithm", "partials"; null for another visual.
 std::unique_ptr<PanelDisplay> makeOperatorDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
+
+// TMM.10 (face_display.cpp): a meta module's face in the panel ("face" controls; a chain meta device's whole body).
+std::unique_ptr<PanelDisplay> makeFaceDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
 
 // True when `w` and every ancestor are visible and it is in a tree.
 bool shownInTree(const ui::Widget& w) noexcept;

@@ -29,6 +29,9 @@
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 
+namespace pq::views {
+class DeviceChainView;
+}
 namespace pq::views::project_patch {
 class ProjectPatchView;
 }
@@ -80,6 +83,7 @@ private:
   // TMM.5: the meta faces' voice readers over the link's taps (after link_; before the views that bind them).
   std::unique_ptr<FaceVoiceHub> faceVoices_;
   views::project_patch::ProjectPatchView* faceView_ = nullptr;  // the view whose faces it feeds (owned by shell_)
+  views::DeviceChainView* faceChain_ = nullptr;  // TMM.10: the Device view (chain meta devices' faces; owned by shell_)
   // T4.4: the circuit editor's patch preview, added into the device after the engine (declared before audio_: the
   // output stops calling it first).
   std::unique_ptr<PatchPreview> preview_;

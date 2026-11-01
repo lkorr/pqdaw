@@ -1417,9 +1417,9 @@ public:
       if (panel == nullptr || panel->folded()) continue;
       for (const devices::ParamInfo& p : panel->signature().params) {
         if (p.isBool) continue;
-        const ui::Widget* w = panel->controlFor(p.name);
-        if (w == nullptr || !w->visible() || w->rect().empty()) continue;
-        Target t{dev, p.name, w->rect(), -1};
+        const std::optional<ui::IRect> cr = panel->controlRect(p.name);  // TMM.10: a face's control too
+        if (!cr || cr->empty()) continue;
+        Target t{dev, p.name, *cr, -1};
         if (self) {
           const std::optional<uint32_t> m = doc::macroIndex(p.name);
           if (m) t.macro = static_cast<int32_t>(*m);

@@ -39,6 +39,7 @@
 namespace pq::views {
 
 class Shell;
+class VoiceTapReader;
 
 class DeviceChainView : public ui::Widget {
 public:
@@ -126,8 +127,14 @@ public:
   std::optional<doc::ZoneKind> zonesShown(doc::DeviceId rack) const;
   bool onKey(const ui::KeyEvent& e) override;
 
-  // The device menu (the + slot, a right-click on empty space): the catalog's instruments and audio effects.
+  // The device menu (the + slot, a right-click on empty space): the catalog's instruments and audio effects, TMM.10:
+  // the Meta Modules (a chain meta device: its panel is its face).
   std::vector<ui::MenuItem> deviceMenu();
+  // TMM.10: the voice reader of a chain meta device's face ((device, path); "" = the device itself), or null (no
+  // dots). The app binds the playback link's voice taps; set before the panels are built (rebuild() after a change).
+  std::function<VoiceTapReader*(doc::DeviceId device, std::string_view path)> faceVoices;
+  // TMM.10: a face's reader may have become live (a note while nothing animated): the faces shown poll again.
+  void wakeFaces();
   // A device's frame, its panel and the panel's target (tests).
   ui::Widget* frameOf(doc::DeviceId device) const noexcept;
   devices::DevicePanel* panelOf(doc::DeviceId device) const noexcept;

@@ -12,6 +12,7 @@
 #include "internal.h"
 #include <cstdio>
 #include <unordered_map>
+#include "pq/views/browser/library_load.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
@@ -1035,6 +1036,9 @@ bool ProjectPatchView::routeTo(doc::TrackId track, doc::TrackId target) {
 }
 
 bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, uint32_t index) {
+  if (patch.starts_with(doc::kMetaDevicePrefix))  // TMM.10: a chain meta device (its kind follows the slot)
+    return apply(doc::ops::addMetaDevice(*ctx_.doc(), ctx_.store().ids(), track, patch.substr(doc::kMetaDevicePrefix.size()), index),
+                 "Add Device");
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
   const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(patch) : nullptr;
   const doc::DeviceKind kind = info != nullptr ? info->kind : doc::DeviceKind::AudioEffect;
@@ -1186,6 +1190,20 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
       const std::string patch = d.patch;
       add.push_back(ui::MenuItem::item(d.name, [this, track, patch] { (void)addDevice(track, patch); }));
     }
+  // TMM.10: the meta modules, as chain devices of the band (at its end: a run continues, else the instrument).
+  if (!add.empty()) {
+    add.push_back(ui::MenuItem::sep());
+    ui::MenuItem head = ui::MenuItem::item("Meta Modules");
+    head.enabled = false;
+    add.push_back(std::move(head));
+    for (const meta::Type* t : metaModuleTypes()) {
+      const doc::TrackId track = b.track;
+      const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
+      ui::MenuItem it = ui::MenuItem::item("   " + std::string(t->name), [this, track, patch] { (void)addDevice(track, patch); });
+      it.enabled = doc::ops::metaDeviceKindAt(*ctx_.doc(), *t, track).ok();
+      add.push_back(std::move(it));
+    }
+  }
   ui::MenuItem sub = ui::MenuItem::sub("Add Device", std::move(add));
   sub.enabled = !sub.submenu.empty();
   items.push_back(std::move(sub));

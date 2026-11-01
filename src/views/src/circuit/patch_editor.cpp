@@ -619,6 +619,18 @@ Result<graph::NodeId> PatchEditor::addNode(size_t patch, std::string_view spec, 
     if (r.patch != p.name()) usable.push_back(r);  // a patch cannot call itself
   auto n = graph::edit::addNode(p, spec, usable);
   if (!n) return std::move(n).error();
+  // TMM.10: a meta module added in the editor is a named instance (its state is keyed by the name path): acc1, wt1, …
+  if (p.node(*n).kind == graph::NodeKind::Subcircuit)
+    if (const meta::Type* t = meta::typeOfCall(p.subcircuit(*n).patch)) {
+      const std::string stem = t->id == "phase_acc" ? "acc" : t->id == "wavetable" ? "wt" : std::string(t->id);
+      for (uint32_t k = 1;; ++k) {
+        const std::string name = stem + std::to_string(k);
+        if (!p.findByName(name)) {
+          p.setNodeName(*n, name);
+          break;
+        }
+      }
+    }
   graph::NodeLayout l;
   l.placed = true;
   l.x = std::round(at.x / 4.0f) * 4.0f;

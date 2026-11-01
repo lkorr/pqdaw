@@ -493,6 +493,10 @@ public:
     const int32_t pad = pass.px(kPad);
     for (const Placed& p : placed_) {
       if (!p.widget->visible()) continue;
+      if (panel_.desc().fitFace && p.desc->kind == ControlKind::Face) {  // TMM.10: the face fills the body
+        pass.place(*p.widget, {r.x + pad, r.y + pad, std::max(0, r.w - 2 * pad), std::max(0, r.h - 2 * pad)});
+        continue;
+      }
       const int32_t x0 = pass.px(p.desc->x), y0 = pass.px(p.desc->y);
       const int32_t x1 = pass.px(p.desc->x + p.desc->w), y1 = pass.px(p.desc->y + p.desc->h);
       pass.place(*p.widget, {r.x + pad + x0, r.y + pad + y0, x1 - x0, y1 - y0});
@@ -715,6 +719,7 @@ void DevicePanel::Impl::bindOne(Bound& b) {
       break;
     }
     case ControlKind::Visual:
+    case ControlKind::Face:
       if (b.display) {
         b.display->rebind();
         b.display->valuesChanged();
@@ -762,7 +767,8 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
   title_ = &add<TitleBar>(*this, im, desc_.title);
   title_->setHeight(ui::Length::fixed(kTitleH));
   auto& body = add<PanelBody>(*this);
-  body.setHeight(ui::Length::fixed(desc_.height + 2 * kPad));
+  // TMM.10: a face panel's body takes the panel's height (the face scales to it); others are their described size.
+  body.setHeight(desc_.fitFace ? ui::Length::flex() : ui::Length::fixed(desc_.height + 2 * kPad));
   body_ = &body;
 
   for (const ControlDesc& d : desc_.controls) {
@@ -879,6 +885,12 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
         b.widget = &body.addChild(std::move(disp));
         break;
       }
+      case ControlKind::Face: {  // TMM.10
+        std::unique_ptr<PanelDisplay> disp = makeFaceDisplay(im, d);
+        b.display = disp.get();
+        b.widget = &body.addChild(std::move(disp));
+        break;
+      }
     }
     body.place(*b.widget, d);
     im.bound.push_back(std::move(b));
@@ -933,7 +945,8 @@ void DevicePanel::select(std::string_view selector, int32_t index) {
   for (Impl::Bound& b : impl_->bound) {
     const ControlDesc& d = *b.desc;
     bool uses = d.param.find(key) != std::string::npos || d.constName.find(key) != std::string::npos ||
-                (d.kind == ControlKind::Tabs && d.selector == s->name) || d.kind == ControlKind::Visual;
+                (d.kind == ControlKind::Tabs && d.selector == s->name) || d.kind == ControlKind::Visual ||
+                d.kind == ControlKind::Face;
     for (const Condition& c : d.when) uses = uses || c.name == s->name || c.name.find(key) != std::string::npos;
     if (uses) impl_->bindOne(b);
   }
@@ -986,11 +999,41 @@ void DevicePanel::setFolded(bool f) {
   if (onSizeChanged) onSizeChanged();
 }
 
-float DevicePanel::logicalWidth() const noexcept { return folded_ ? kFoldedW : desc_.width + 2 * kPad; }
+float DevicePanel::logicalWidth() const noexcept {
+  if (folded_) return kFoldedW;
+  return desc_.fitFace ? std::max(kFaceMinWidth, desc_.width + 2 * kPad) : desc_.width + 2 * kPad;
+}
 
 float DevicePanel::logicalHeight() const noexcept {
   return (sig_.exports.empty() ? 0.0f : kJackStripH) + kTitleH + desc_.height + 2 * kPad;
 }
+
+float DevicePanel::logicalWidthFor(float panelHeight) const noexcept {
+  if (folded_ || !desc_.fitFace || !(desc_.faceH > 0.0f)) return logicalWidth();
+  const float body = panelHeight - (sig_.exports.empty() ? 0.0f : kJackStripH) - kTitleH - 2 * kPad;
+  const float s = std::clamp(body / desc_.faceH, kFaceMinScale, kFaceMaxScale);
+  return std::max(kFaceMinWidth, std::round(desc_.faceW * s) + 2 * kPad);
+}
+
+std::optional<ui::IRect> DevicePanel::controlRect(std::string_view param) const {
+  if (folded_) return std::nullopt;
+  for (const Impl::Bound& b : impl_->bound) {
+    if (!b.widget->visible()) continue;
+    if (b.display) {
+      if (auto r = b.display->paramRect(param)) return r;
+    } else if (b.param == param) {
+      return b.widget->rect();
+    }
+  }
+  return std::nullopt;
+}
+
+void DevicePanel::wakeFaces() {
+  for (Impl::Bound& b : impl_->bound)
+    if (b.display) b.display->wake();
+}
+
+std::unique_ptr<MetaTarget> DeviceTarget::metaTarget(std::string_view, const meta::Type&) { return nullptr; }
 
 void DevicePanel::wakeDisplays() {
   for (Impl::Bound& b : impl_->bound)

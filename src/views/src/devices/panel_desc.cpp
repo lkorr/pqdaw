@@ -2,6 +2,8 @@
 
 #include "pq/views/devices/panel_desc.h"
 
+#include "pq/meta/registry.h"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -50,6 +52,7 @@ ControlKind kindOf(const std::string& t, const std::string& where) {
   if (t == "label") return ControlKind::Label;
   if (t == "tabs") return ControlKind::Tabs;
   if (t == "visual") return ControlKind::Visual;
+  if (t == "face") return ControlKind::Face;  // TMM.10
   throw std::runtime_error(where + ": unknown control type \"" + t + "\"");
 }
 
@@ -84,7 +87,8 @@ json substituteJson(const json& j, const std::string& var, const std::string& va
 }
 
 ControlDesc readControl(const json& c, const std::string& where) {
-  checkKeys(c, {"type", "id", "param", "const", "label", "text", "info", "items", "values", "style", "selector", "visual", "bind", "rect", "when"},
+  checkKeys(c, {"type", "id", "param", "const", "label", "text", "info", "items", "values", "style", "selector", "visual", "bind", "rect", "when",
+                "meta"},
             where);
   ControlDesc d;
   d.kind = kindOf(c.at("type").get<std::string>(), where);
@@ -99,6 +103,10 @@ ControlDesc readControl(const json& c, const std::string& where) {
   if (c.contains("selector")) d.selector = c["selector"].get<std::string>();
   if (c.contains("style")) d.style = c["style"].get<std::string>();
   if (c.contains("visual")) d.visual = c["visual"].get<std::string>();
+  if (c.contains("meta")) {
+    d.meta = c["meta"].get<std::string>();
+    d.hasMeta = true;
+  }
   if (c.contains("bind"))
     for (auto it = c["bind"].begin(); it != c["bind"].end(); ++it) d.bind[it.key()] = it.value().get<std::string>();
   const auto r = c.at("rect").get<std::vector<float>>();
@@ -156,8 +164,13 @@ ControlDesc readControl(const json& c, const std::string& where) {
           d.visual != "filter" && d.visual != "lfo")
         throw std::runtime_error(where + ": unknown visual \"" + d.visual + "\"");
       break;
+    case ControlKind::Face:
+      if (!d.hasMeta) throw std::runtime_error(where + ": a face needs \"meta\" (the instance's name path; \"\" = the device)");
+      if (!meta::validPath(d.meta)) throw std::runtime_error(where + ": \"" + d.meta + "\" is not a name path");
+      break;
     case ControlKind::Label: break;
   }
+  if (d.hasMeta && d.kind != ControlKind::Face) throw std::runtime_error(where + ": only a face has \"meta\"");
   return d;
 }
 
@@ -287,7 +300,11 @@ Result<PanelDesc> parsePanelDesc(std::string_view text, const DeviceSignature& s
       }
       if (d.kind == ControlKind::Tabs && !p.findSelector(d.selector)) return panelError(where, "unknown selector \"" + d.selector + "\"");
       if (d.id.empty()) {  // the binding (or visual) name; "#<index>" when that is taken
-        const std::string base = !d.param.empty() ? d.param : !d.constName.empty() ? d.constName : d.kind == ControlKind::Visual ? d.visual : "label";
+        const std::string base = !d.param.empty()                ? d.param
+                                 : !d.constName.empty()          ? d.constName
+                                 : d.kind == ControlKind::Visual ? d.visual
+                                 : d.kind == ControlKind::Face   ? "face" + std::string(d.meta.empty() ? "" : ":") + d.meta
+                                                                 : "label";
         d.id = ids.count(base) ? base + "#" + std::to_string(i) : base;
       }
       if (!ids.insert(d.id).second) return panelError(where, "duplicate id \"" + d.id + "\"");
@@ -333,6 +350,26 @@ std::string titleCase(std::string_view s) {
 }
 
 }  // namespace
+
+PanelDesc facePanel(const DeviceSignature& sig, std::string title, float faceW, float faceH) {
+  PanelDesc p;
+  p.patch = sig.patch;
+  p.title = std::move(title);
+  p.generated = true;
+  p.fitFace = true;
+  p.faceW = faceW;
+  p.faceH = faceH;
+  p.width = faceW;
+  p.height = faceH;
+  ControlDesc d;
+  d.kind = ControlKind::Face;
+  d.id = "face";
+  d.hasMeta = true;
+  d.w = faceW;
+  d.h = faceH;
+  p.controls.push_back(std::move(d));
+  return p;
+}
 
 PanelDesc autoPanel(const DeviceSignature& sig, std::string title) {
   PanelDesc p;
