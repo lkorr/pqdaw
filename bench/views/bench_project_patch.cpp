@@ -69,12 +69,14 @@ double tscNsPerCycle() {
 // (CircuitCanvas::setFacesShown(false), an exact A/B of the faces' cost), fitted (far) and one band (near); then 16 faces
 // in view at the mid level with 8 animated voices each (synthetic taps, advanced 1/60 s per frame): the frames the
 // face timer drives (only the live rects repaint) and a full paint; idle: frames and timers after the voices stop.
-int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
+// TMM.7: the same with 32 Wavetable faces (the demo table: 64 dense frames; `wavetable`), voices spread over positions.
+int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle, bool wavetable) {
+  const char* tag = wavetable ? "wavetable_faces" : "meta_faces";
   FakeTransport port;
   ViewContext ctx(port);
   ctx.setDeviceLibrary(&lib);
   if (Status s = buildWideProject(ctx.store(), 64); !s) return 1;
-  if (Status s = addPhaseAccFaces(ctx.store(), 32); !s) {
+  if (Status s = wavetable ? addWavetableFaces(ctx.store(), 32, demoWavetableData()) : addPhaseAccFaces(ctx.store(), 32); !s) {
     std::printf("faces: %s\n", s.error().message.c_str());
     return 1;
   }
@@ -149,7 +151,7 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
       std::vector<double> pan;
       for (int i = 0; i < 300; ++i)
         pan.push_back(timed([&] { c.panBy((i / 50) % 2 ? -37.0f : 37.0f, (i / 75) % 2 ? -11.0f : 11.0f); }));
-      std::snprintf(name, sizeof name, "meta_faces.pan frame (%s, %s, %s) 64 tracks + 32 faces 2x %ux%u", level == 0 ? "whole project" : "one band",
+      std::snprintf(name, sizeof name, "%s.pan frame (%s, %s, %s) 64 tracks + 32 faces 2x %ux%u", tag, level == 0 ? "whole project" : "one band",
                     lod, shown ? "faces" : "plain blocks", w, h);
       pq::bench::reportStats(name, pq::bench::summarize(pan), "ns CPU/frame");
     }
@@ -161,7 +163,8 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
     if (!path.empty()) return nullptr;
     auto v = std::make_unique<SyntheticVoices>();
     std::vector<SyntheticVoices::Voice> vs;
-    for (uint32_t k = 0; k < 8; ++k) vs.push_back({k, 1.5 + 0.7 * k + 0.1 * static_cast<double>(voices.size()), 0.125 * k});
+    for (uint32_t k = 0; k < 8; ++k)
+      vs.push_back({k, 1.5 + 0.7 * k + 0.1 * static_cast<double>(voices.size()), 0.125 * k, wavetable ? 0.1 * k : 0.0});
     v->setVoices(std::move(vs));
     voices.push_back(std::move(v));
     return voices.back().get();
@@ -181,21 +184,22 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle) {
   fullPaint();
   std::printf("animated: zoom %.3f, %u faces painted, %u face primitives\n", c.view().zoom, c.stats().facesPainted, c.stats().facePrimitives);
   const uint32_t painted = c.stats().facesPainted;
-  pq::bench::reportStats("meta_faces.paint(full, 16 faces x 8 animated voices, far) 2x 2560x1440", pq::bench::measure(fullPaint, 1), "ns/frame");
+  std::snprintf(name, sizeof name, "%s.paint(full, %u faces x 8 animated voices, zoom %.2f) 2x 2560x1440", tag, c.stats().facesPainted, c.view().zoom);
+  pq::bench::reportStats(name, pq::bench::measure(fullPaint, 1), "ns/frame");
   std::vector<double> anim;
   for (int i = 0; i < 300; ++i)
     anim.push_back(timed([&] {
       for (auto& v : voices) v->advance(1.0 / 60.0);
       c.wakeFaces();  // what the face timer does at 60 Hz: poll, damage the live rects
     }));
-  std::snprintf(name, sizeof name, "meta_faces.animation frame (%u faces x 8 voices: poll + live rects repainted) 2x %ux%u", painted, w, h);
+  std::snprintf(name, sizeof name, "%s.animation frame (%u faces x 8 voices: poll + live rects repainted) 2x %ux%u", tag, painted, w, h);
   pq::bench::reportStats(name, pq::bench::summarize(anim), "ns CPU/frame");
   // Silent again: no frames, no timers.
   for (auto& v : voices) v->setVoices({});
   c.wakeFaces();
   settle();
   const bool idle = !tree.needsFrame() && std::isinf(tree.nextWakeTime());
-  std::printf("meta_faces idle after the voices stop: %s (animating %d)\n", idle ? "yes (no frames, no timers)" : "NO", c.animatingFaces() ? 1 : 0);
+  std::printf("%s idle after the voices stop: %s (animating %d)\n", tag, idle ? "yes (no frames, no timers)" : "NO", c.animatingFaces() ? 1 : 0);
   view->faceVoices = nullptr;
   view->rebindFaces();
   return idle ? 0 : 1;
@@ -467,5 +471,7 @@ int main() {
       pq::bench::reportStats(name, pq::bench::summarize(pan), "ns CPU/frame");
     }
   }
-  return facesBench(**lib, nsPerCycle);  // TMM.4
+  const int a = facesBench(**lib, nsPerCycle, false);  // TMM.4
+  const int b = facesBench(**lib, nsPerCycle, true);   // TMM.7
+  return a | b;
 }

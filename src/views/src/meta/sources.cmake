@@ -3,4 +3,6 @@ set(PQ_VIEWS_META_SOURCES
   src/meta/meta_face.cpp
   src/meta/face_targets.cpp
   src/meta/phase_acc_face.cpp
-  src/meta/tap_voices.cpp)  # TMM.5: the faces' reader over the engine's voice taps
+  src/meta/tap_voices.cpp       # TMM.5: the faces' reader over the engine's voice taps
+  src/meta/wavetable_face.cpp   # TMM.7: the Wavetable face
+  src/meta/wavetable_model.cpp) # TMM.7: its display frames (keyframe spectra, dense frames, the bake at display resolution)

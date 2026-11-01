@@ -4,6 +4,8 @@
 #include "pq/views/meta/meta_face.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -16,7 +18,8 @@ namespace {
 
 struct Registry {
   std::mutex m;
-  std::vector<std::pair<std::string, FaceFactory>> factories{{"phase_acc", &makePhaseAccFace}};
+  std::vector<std::pair<std::string, FaceFactory>> factories{{"phase_acc", &makePhaseAccFace},
+                                                                     {"wavetable", &makeWavetableFace}};
   // worldSize per type id, filled on first ask (a face's size never changes).
   std::vector<std::pair<std::string, ui::Vec2>> sizes;
 };
@@ -34,13 +37,53 @@ FaceFactory factoryOf(std::string_view id) {
   return nullptr;
 }
 
+double steadySeconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+std::atomic<double (*)()> gClock{nullptr};
+
 }  // namespace
+
+double MetaTarget::setting(size_t i) const {
+  const meta::Type* t = targetType();
+  return t != nullptr && i < t->settings.size() ? t->settings[i].def : 0.0;
+}
+
+meta::DataPtr MetaTarget::data() const {
+  // The type's default data, made once per type (a stable pointer: faces cache by it).
+  const meta::Type* t = targetType();
+  if (t == nullptr || t->defaultData == nullptr) return nullptr;
+  static std::mutex m;
+  static std::vector<std::pair<const meta::Type*, meta::DataPtr>> made;
+  std::lock_guard<std::mutex> lock(m);
+  for (const auto& [type, d] : made)
+    if (type == t) return d;
+  made.emplace_back(t, t->defaultData());
+  return made.back().second;
+}
+
+void MetaFace::setClock(double (*clock)()) { gClock.store(clock, std::memory_order_relaxed); }
+double MetaFace::clockNow() {
+  double (*c)() = gClock.load(std::memory_order_relaxed);
+  return c != nullptr ? c() : steadySeconds();
+}
+
+void paintFace(MetaFace& f, ui::FacePainter& p, const FaceEnv& env) {
+  for (uint32_t layer = 0; layer < f.staticLayerCount(); ++layer) {
+    ui::FacePainter s(p.drawList(), p.transform());
+    s.setTint(f.staticLayerColour(*env.theme, layer));
+    f.paintStatic(s, layer);
+  }
+  f.paintJacks(p, env);
+  f.paintLive(p, env);
+}
 
 void MetaFace::bind(std::unique_ptr<MetaTarget> target, VoiceTapReader* voices) {
   target_ = target ? std::move(target) : std::make_unique<DefaultTarget>(*type_);
   voices_ = voices;
   voiceCount_ = 0;
   voiceSerial_ = 0;
+  justBound_ = true;
   (void)pollVoices();
 }
 
@@ -72,14 +115,14 @@ bool MetaFace::pollVoices() {
   if (voices_ == nullptr) {
     const bool had = voiceCount_ != 0;
     voiceCount_ = 0;
-    return had;
+    return voicesPolled(had);
   }
   const uint64_t serial = voices_->serial();
-  if (serial == voiceSerial_) return false;
+  if (serial == voiceSerial_) return voicesPolled(false);
   voiceSerial_ = serial;
   const uint32_t before = voiceCount_;
   voiceCount_ = voices_->read(voiceBuf_);
-  return voiceCount_ != 0 || before != 0;
+  return voicesPolled(voiceCount_ != 0 || before != 0);
 }
 
 bool MetaFace::setHoveredPart(int32_t part) noexcept {

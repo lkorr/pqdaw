@@ -1472,6 +1472,46 @@ Status setupProjectMetaFaces(Shell& shell) {
   return Ok{};
 }
 
+// TMM.7: Wavetable faces in the project patch view (project_patch::buildMetaWavetableProject): "Wave" (a chain
+// Wavetable → Saturator) and "Pair" opened in place — a Phase accumulator wired into a Wavetable — with still synthetic
+// voices on both faces (a three-note chord: dots on the Wavetable's highlighted frame, the accumulator's orbit).
+Status setupProjectMetaWavetable(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-meta-wavetable: no device library", {}};
+  doc::DeviceId pair;
+  if (Status s = project_patch::buildMetaWavetableProject(ctx.store(), &pair); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-wavetable: the view is not installed", {}};
+  const doc::Track* wave = namedTrack(*ctx.doc(), "Wave");
+  const doc::Track* two = namedTrack(*ctx.doc(), "Pair");
+  if (wave == nullptr || two == nullptr || wave->devices.empty())
+    return Error{ErrorCode::NotFound, "project-meta-wavetable: no Wave / Pair track", {}};
+  static SyntheticVoices waveVoices, accVoices, wtVoices;
+  waveVoices.setVoices({{0, 6.0, 0.12, 0.35}, {1, 7.5, 0.44, 0.35}, {2, 9.0, 0.71, 0.35}, {3, 12.0, 0.9, 0.35}});
+  accVoices.setVoices({{0, 4.0, 0.08}, {1, 5.0, 0.4}, {2, 6.0, 0.66}});
+  wtVoices.setVoices({{0, 4.0, 0.08, 0.7}, {1, 5.0, 0.4, 0.7}, {2, 6.0, 0.66, 0.7}});
+  for (SyntheticVoices* sv : {&waveVoices, &accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId waveDev = wave->devices[0]->id;
+  v->faceVoices = [waveDev, pair](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (d == waveDev && path.empty()) return &waveVoices;
+    if (d == pair && path == "acc1") return &accVoices;
+    if (d == pair && path == "wt1") return &wtVoices;
+    return nullptr;
+  };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setDeviceExpanded(pair, true);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(two->id, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
     {"arrangement-basic", 1280, 800, setupArrangementBasic},
@@ -1524,6 +1564,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
     {"project-meta-faces", 1280, 800, setupProjectMetaFaces},          // TMM.4
+    {"project-meta-wavetable", 1280, 800, setupProjectMetaWavetable},  // TMM.7
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

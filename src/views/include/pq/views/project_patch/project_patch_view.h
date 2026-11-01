@@ -465,6 +465,15 @@ Status buildWideProject(doc::DocumentStore& store, uint32_t tracks);
 Status buildMetaFacesProject(doc::DocumentStore& store);
 // The instrument of the first `count` MIDI tracks replaced by a chain Phase accumulator (benchmarks: a project plus faces).
 Status addPhaseAccFaces(doc::DocumentStore& store, uint32_t count);
+// TMM.7: a three-keyframe table for scenes, tests and benchmarks: a saw at 0, a square at 0.5 (spectral morph between
+// them), a bright vocal-like cycle (odd and formant partials) at 1 (crossfade gap), 64 dense frames.
+meta::DataPtr demoWavetableData();
+// TMM.7: Wavetable faces — "Wave" (a chain Wavetable with demoWavetableData, warp 0.3 bend, position 0.35 → Saturator)
+// and "Pair" (the default synth forked: `acc1 = meta_phase_acc()` wired into `wt1 = meta_wavetable(acc1)` under an
+// envelope; wt1 holds demoWavetableData at position 0.7). Returns the Pair instrument in `pair` when given.
+Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair = nullptr);
+// The instrument of the first `count` MIDI tracks replaced by a chain Wavetable holding `data` (benchmarks).
+Status addWavetableFaces(doc::DocumentStore& store, uint32_t count, const meta::DataPtr& data);
 
 }  // namespace project_patch
 

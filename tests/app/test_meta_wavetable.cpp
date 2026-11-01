@@ -30,6 +30,12 @@
 #include "pq/meta/phase_acc.h"
 #include "pq/meta/table_builder.h"
 #include "pq/meta/wavetable.h"
+#include "../ui/golden_check.h"
+#include "pq/ui/face_painter.h"
+#include "pq/ui/image.h"
+#include "pq/ui/offscreen.h"
+#include "pq/ui/renderer.h"
+#include "pq/ui/scene_textures.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/meta/tap_voices.h"
 
@@ -651,4 +657,114 @@ TEST_CASE("meta faces: a face bound before its instance compiled follows the tap
   CHECK(r->live());
   std::array<views::FaceVoice, 8> buf{};
   CHECK(r->read(buf) == 1);
+}
+
+// ---- TMM.7: the Wavetable face over the engine's taps --------------------------------------------------------------
+
+namespace {
+
+// A chain Wavetable's state read from the document (the face's values and data), read-only.
+class SongTarget final : public views::MetaTarget {
+public:
+  SongTarget(const DocumentStore& s, DeviceId d) : store_(s), dev_(d) {}
+  double value(size_t p) const override {
+    return metaParamValue(*findDevice(*store_.current(), dev_).device, "", meta::wavetableType(), p);
+  }
+  bool editable() const noexcept override { return false; }
+  void begin(const char*) override {}
+  void set(size_t, double) override {}
+  void end() override {}
+  void cancel() override {}
+  void reset(size_t) override {}
+  double setting(size_t i) const override {
+    return metaSettings(*findDevice(*store_.current(), dev_).device, "", meta::wavetableType())[i];
+  }
+  meta::DataPtr data() const override { return findDevice(*store_.current(), dev_).device->metaAt("")->data; }
+  const meta::Type* targetType() const noexcept override { return &meta::wavetableType(); }
+
+private:
+  const DocumentStore& store_;
+  DeviceId dev_;
+};
+
+}  // namespace
+
+TEST_CASE("meta faces: golden meta-wavetable-voices — eight engine voices, each dot at the phase its voice read") {
+  WtSong s;
+  // An eight-note chord on a chain Wavetable (saw → square → vocal, position 0.3); NullDevice-style blocks.
+  std::vector<std::array<Ticks, 3>> notes;
+  for (const int deg : {0, 3, 7, 10, 12, 15, 19, 22}) notes.push_back({0, 64 * kPpq, static_cast<Ticks>(deg)});
+  const DeviceId wt = s.track(notes);
+  meta::WavetableData d;
+  d.keyframes.push_back({0.0f, cycleOf(dsp::BasicCycle::Saw)});
+  d.keyframes.push_back({0.5f, cycleOf(dsp::BasicCycle::Square)});
+  d.keyframes.push_back({1.0f, cycleOf(dsp::BasicCycle::Triangle)});
+  s.data(wt, meta::wavetableData(d));
+  s.param(wt, "position", 0.3);
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  app::FaceVoiceHub hub(*link);
+  views::VoiceTapReader* voices = hub.voices(wt, "");
+  (void)voices->serial();
+  const auto tap = link->metaVoiceTap(wt, "", 0);
+  REQUIRE(tap != nullptr);
+  VoiceTapReader check(tap);  // the engine-side reader the dots must agree with
+  Driver drv{*link};
+  link->play(0);
+  drv.run(40);
+  // The face appears now (voices already sounding: shown at once) and reads the tap.
+  std::unique_ptr<views::MetaFace> face = views::makeFace(meta::wavetableType());
+  REQUIRE(face != nullptr);
+  face->bind(std::make_unique<SongTarget>(s.store, wt), voices);
+  REQUIRE(face->sounding().size() == 8u);
+  // Each dot is the newest phase its voice read, at the position played.
+  (void)check.poll(0.0);
+  for (const views::FaceVoice& v : face->sounding()) {
+    CHECK(check.voice(v.slot).active);
+    CHECK(v.phase == check.voice(v.slot).value - std::floor(check.voice(v.slot).value));
+    CHECK(v.position == doctest::Approx(0.3));
+    CHECK(v.sampleCount > 0u);
+  }
+  // One displayed frame later (1/60 s of blocks): each voice brings the phases it read in that frame (the glow).
+  drv.run(13);
+  CHECK(face->pollVoices());
+  REQUIRE(face->sounding().size() == 8u);
+  for (const views::FaceVoice& v : face->sounding()) CHECK(v.sampleCount >= 13u * kVoiceTapSamples - 8u);
+  // Rendered offscreen at 2x, zoom 1.5, as the canvas paints a face (static layers directly, jacks, live layer).
+  ui::GpuOptions o;
+  o.validation = true;
+  auto g = ui::GpuContext::create(o);
+  REQUIRE_MESSAGE(g.ok(), (g.ok() ? "" : g.error().message));
+  auto r = ui::Renderer::create(**g, ui::OffscreenTarget::kFormat, 1);
+  REQUIRE(r.ok());
+  auto tex = ui::createSceneTextures(**r, ui::UiScale(2.0f));
+  REQUIRE(tex.ok());
+  const ui::PaintResources res = ui::paintResources(*tex);
+  constexpr float kScale = 3.0f;  // zoom 1.5 at 2x
+  const auto w = static_cast<uint32_t>(std::ceil(204.0f * kScale + 32.0f)), h = static_cast<uint32_t>(std::ceil(248.0f * kScale + 32.0f));
+  ui::DrawList dl;
+  dl.reset(w, h);
+  dl.addRectFilled({0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)}, res.theme->circuit.background);
+  views::FaceJack jack{{204.0f, 125.0f}, false, true, true, "out"};
+  views::FaceEnv env;
+  env.theme = res.theme;
+  env.uiScale = 2.0f;
+  env.jacks = std::span<const views::FaceJack>(&jack, 1);
+  ui::FacePainter p(dl, {{16.0f, 16.0f}, kScale});
+  views::paintFace(*face, p, env);
+  auto target = ui::OffscreenTarget::create(**g, w, h, 1);
+  REQUIRE(target.ok());
+  REQUIRE((*target)->draw(**r, dl, ui::kSceneClearColor).ok());
+  auto img = (*target)->read();
+  REQUIRE(img.ok());
+  auto ref = ui::readPng(std::string(PQ_TEST_DATA_DIR) + "/views/golden/meta-wavetable-voices.png");
+  if (!ref) {
+    (void)ui::writePng("meta-wavetable-voices.actual.png", *img);
+    FAIL_CHECK("no golden meta-wavetable-voices: wrote meta-wavetable-voices.actual.png");
+    return;
+  }
+  ui::ImageDiff diff;
+  CHECK(pq::ui::test::matchesGolden("meta-wavetable-voices", *img, *ref, true, &diff));
+  MESSAGE("meta-wavetable-voices: " << pq::ui::test::describe(diff));
 }

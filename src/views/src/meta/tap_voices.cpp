@@ -86,6 +86,7 @@ uint32_t TapVoices::read(std::span<FaceVoice> out) {
     FaceVoice& f = out[n++];
     f.slot = s;
     f.phase = v.value - std::floor(v.value);
+    f.position = v.position;
     // The samples since this slot's last read: kVoiceTapSamples per record (at most one displayed frame's worth).
     const uint64_t records = seen_[s] != 0 && v.serial > seen_[s] ? v.serial - seen_[s] : 1;
     seen_[s] = v.serial;

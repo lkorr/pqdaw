@@ -60,6 +60,42 @@ void DocTarget::reset(size_t param) {
   if (Status s = ctx_.store().dispatch(e->command); !s) ctx_.setStatus(s.error().message);
 }
 
+double DocTarget::setting(size_t i) const {
+  if (i >= type_.settings.size()) return 0.0;
+  const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+  if (d == nullptr) return type_.settings[i].def;
+  const std::vector<double> s = doc::metaSettings(*d, path_, type_);
+  return i < s.size() ? s[i] : type_.settings[i].def;
+}
+
+void DocTarget::setSetting(size_t i, double value) {
+  if (i >= type_.settings.size()) return;
+  auto e = doc::ops::setMetaSetting(*ctx_.doc(), device_, path_, type_.id, std::string(type_.settings[i].name), value);
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return;
+  }
+  if (Status s = ctx_.store().dispatch(e->command); !s) ctx_.setStatus(s.error().message);
+}
+
+meta::DataPtr DocTarget::data() const {
+  const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+  const doc::MetaInstance* inst = d != nullptr ? d->metaAt(path_) : nullptr;
+  if (inst != nullptr && inst->data) return inst->data;
+  return MetaTarget::data();  // the type's default (one pointer per type)
+}
+
+void DocTarget::setData(meta::DataPtr data) {
+  auto e = doc::ops::setMetaData(*ctx_.doc(), device_, path_, type_.id, std::move(data));
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return;
+  }
+  if (Status s = ctx_.store().dispatch(e->command); !s) ctx_.setStatus(s.error().message);
+}
+
+void DocTarget::notice(std::string_view message) { ctx_.setStatus(std::string(message)); }
+
 // ---- synthetic voices -------------------------------------------------------------------------------------------
 
 void SyntheticVoices::setVoices(std::vector<Voice> v) {
@@ -102,6 +138,7 @@ uint32_t SyntheticVoices::read(std::span<FaceVoice> out) {
     FaceVoice& f = out[i];
     f.slot = voices_[i].slot;
     f.phase = static_cast<float>(voices_[i].phase);
+    f.position = static_cast<float>(voices_[i].position);
     f.sampleCount = static_cast<uint32_t>(std::min<size_t>(pending_[i].size(), FaceVoice::kMaxSamples));
     std::copy_n(pending_[i].end() - f.sampleCount, f.sampleCount, f.samples.begin());
     pending_[i].clear();

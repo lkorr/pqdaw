@@ -51,12 +51,25 @@ public:
   virtual void cancel() = 0;
   // Back to the type's default (one undo step).
   virtual void reset(size_t param) = 0;
+  // TMM.7: settings and data. A setting change is one undo step (structural: it may recompile its unit). data() is the
+  // instance's state data (never null for a type with data: the type's default otherwise; the same pointer while the
+  // data is unchanged, so a face can cache by it); setData inside begin / end joins that gesture (one undo step for a
+  // drag), outside one is its own step. Data never recompiles (the document's MetaData class).
+  virtual double setting(size_t i) const;
+  virtual void setSetting(size_t /*i*/, double /*value*/) {}
+  virtual meta::DataPtr data() const;
+  virtual void setData(meta::DataPtr /*data*/) {}
+  // A message for the status line (a refused gesture says why).
+  virtual void notice(std::string_view /*message*/) {}
+  // The type this target edits (null: unknown; the defaults above then read nothing).
+  virtual const meta::Type* targetType() const noexcept { return nullptr; }
 };
 
 // The type's defaults, read-only (a standalone file in the viewer, an instance the host cannot address).
 class DefaultTarget final : public MetaTarget {
 public:
   explicit DefaultTarget(const meta::Type& t) : type_(&t) {}
+  const meta::Type* targetType() const noexcept override { return type_; }
   double value(size_t param) const override { return param < type_->params.size() ? type_->params[param].def : 0.0; }
   bool editable() const noexcept override { return false; }
   void begin(const char*) override {}
@@ -74,6 +87,7 @@ struct FaceVoice {
   static constexpr uint32_t kMaxSamples = 96;  // ≈ 12 blocks of 8 sampled phases: one displayed frame's reads
   uint32_t slot = 0;     // the voice slot (stable while the voice sounds)
   float phase = 0.0f;    // the newest sampled phase, 0..1
+  float position = 0.0f; // TMM.7: the position the writer reported with it (a wavetable's frame position, 0..1)
   uint32_t sampleCount = 0;
   std::array<float, kMaxSamples> samples{};  // the phases sampled since the last read, oldest first
 };
@@ -153,16 +167,25 @@ public:
   // Whether the live layer moves now (a voice sounds): the host keeps its ≤ 60 Hz repaint going.
   virtual bool animating() const noexcept { return voiceCount_ > 0; }
   // Reads the voice reader into the face (the host calls it at most once per displayed frame, never from paint, so a
-  // partial repaint of several rects draws one state); true when what the face shows changed.
+  // partial repaint of several rects draws one state); true when what the face shows changed (new records, or a face's
+  // own animation still running: voicesPolled).
   bool pollVoices();
   static constexpr uint32_t kMaxVoices = 16;
   std::span<const FaceVoice> sounding() const noexcept { return {voiceBuf_.data(), voiceCount_}; }
+
+  // TMM.7: a per-instance key of static layer `layer` (0: value-independent for the whole type, the tile shared by
+  // every face of the type). A face whose static content depends on its instance's data (the Wavetable's stacked
+  // frames) returns a hash of that content: the host keys the layer's tile by (type, layer, key), and draws the layer
+  // directly while the face is dragging (a knob that re-bakes it changes the key every step).
+  virtual uint64_t staticKey(uint32_t /*layer*/) const { return 0; }
 
   // ---- interaction ----
   virtual int32_t hitTest(ui::Vec2 local, float pxPerUnit) const noexcept = 0;
   // true: consumed (a press on a control captures until Up). Down / Move / Up / Wheel / Leave.
   virtual bool onPointer(const FacePointer& e) = 0;
   virtual bool dragging() const noexcept = 0;
+  // TMM.7: a key while this face holds the canvas's key focus (the last press went to it); true: consumed.
+  virtual bool onKey(const ui::KeyEvent& /*e*/) { return false; }
   virtual void cancelDrag() = 0;  // capture lost / Esc: the drag's edits are undone
   virtual ui::Cursor cursor(int32_t part) const noexcept;
   // The info view's text for a part (title, body).
@@ -171,8 +194,16 @@ public:
   // Returns whether it changed (the host repaints the face).
   bool setHoveredPart(int32_t part) noexcept;
 
+  // The clock faces animate by (seconds; steady). Tests replace it (null: the steady clock again).
+  static void setClock(double (*clock)());
+  static double clockNow();
+
 protected:
+  // Called by pollVoices after each poll (`changed`: what it read changed what is shown); returns whether the face must
+  // repaint (a face with its own animation, such as voice fades, returns true while it runs).
+  virtual bool voicesPolled(bool changed) { return changed; }
   int32_t hovered_ = kNone;
+  bool justBound_ = true;  // set by bind(): the next poll is the first one (voices sounding already appear, unfaded)
   std::array<FaceVoice, kMaxVoices> voiceBuf_{};
   uint32_t voiceCount_ = 0;
   uint64_t voiceSerial_ = 0;
@@ -182,6 +213,10 @@ private:
   std::unique_ptr<MetaTarget> target_;
   VoiceTapReader* voices_ = nullptr;
 };
+
+// Paints a whole face without a host's tiles (static layers drawn directly in their colours, then jacks and the live
+// layer): goldens and benchmarks outside a canvas.
+void paintFace(MetaFace& f, ui::FacePainter& p, const FaceEnv& env);
 
 // ---- registry ----
 // The face of type `t` (null: the type has no face; it is drawn as a plain subcircuit block).

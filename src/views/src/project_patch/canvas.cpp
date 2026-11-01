@@ -869,6 +869,7 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
 }
 
 bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
+  if (faceKey(e)) return true;  // TMM.7: the focused face first (a keyframe's Delete before the selection's)
   if (!e.down) return false;
   const ui::Mods mods = e.mods & ui::mod::kChordMask;
   if (e.key == ui::key::kEscape && (drag_ != Drag::None || faceDragging())) {  // TMM.4: a face's drag too

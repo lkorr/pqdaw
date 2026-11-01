@@ -34,6 +34,14 @@ public:
   void end() override;
   void cancel() override;
   void reset(size_t param) override;
+  // TMM.7: settings (one step each), data (doc::ops::setMetaData: inside a drag's gesture, else its own step), the
+  // status line.
+  double setting(size_t i) const override;
+  void setSetting(size_t i, double value) override;
+  meta::DataPtr data() const override;
+  void setData(meta::DataPtr data) override;
+  void notice(std::string_view message) override;
+  const meta::Type* targetType() const noexcept override { return &type_; }
   doc::DeviceId device() const noexcept { return device_; }
   const std::string& path() const noexcept { return path_; }
 
@@ -51,6 +59,7 @@ public:
     uint32_t slot = 0;
     double hz = 0.0;     // phase increment per second (0: fixed)
     double phase = 0.0;  // the current phase, 0..1
+    double position = 0.0;  // TMM.7: the position reported with it (a wavetable's frame position)
   };
   void setVoices(std::vector<Voice> v);
   const std::vector<Voice>& voicesNow() const noexcept { return voices_; }

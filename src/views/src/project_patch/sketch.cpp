@@ -2,11 +2,16 @@
 // track and a pad track with the group's own processing, a return fed by sends, a mastering chain, modulation across
 // tracks) and a wide project of many tracks. Built through the edit operations, like a user would.
 
+#include <algorithm>
+#include <cmath>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "pq/document/edit_ops.h"
+#include "pq/dsp/frame_table_build.h"
+#include "pq/meta/wavetable.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
 namespace pq::views::project_patch {
@@ -179,6 +184,105 @@ Status addPhaseAccFaces(doc::DocumentStore& store, uint32_t count) {
     if (phaseAccOn(r, t, 25.0 * made, 0.125 * (made % 8), 1.0 + (made % 4)).valid()) ++made;
   }
   if (r.status && made < count) return Error{ErrorCode::NotFound, "addPhaseAccFaces: fewer MIDI tracks than faces", {}};
+  return r.status;
+}
+
+namespace {
+
+doc::DeviceId wavetableOn(Runner& r, doc::TrackId t, const meta::DataPtr& data) {
+  auto e = r.run(doc::ops::addMetaDevice(*r.store.current(), r.store.ids(), t, "wavetable", 0));
+  if (!e || e->devices.empty()) return {};
+  const doc::DeviceId d = e->devices[0];
+  if (data) (void)r.run(doc::ops::setMetaData(*r.store.current(), d, "", "wavetable", data));
+  return d;
+}
+
+// The Pair instrument: an envelope around a Phase accumulator wired into a Wavetable.
+constexpr const char* kWaveSynth =
+    "patch BasicSynth {\n"  // a fork keeps its root patch's name
+    "  param attack  = 5ms   [0.5ms..5s]\n"
+    "  param release = 250ms [1ms..10s]\n"
+    "  param level   = 0.2   [0..1]\n"
+    "  out   out  : audio voice mono\n"
+    "  out   done : bool voice mono\n"
+    "\n"
+    "  gate = voice.gate\n"
+    "  coef = 1 - exp(-5 / max((gate ? attack : release) * sr, 1))\n"
+    "  env  = z1(env + ((gate ? 1.0 : 0.0) - env) * coef)\n"
+    "  acc1 = meta_phase_acc()\n"
+    "  wt1  = meta_wavetable(acc1)\n"
+    "  out  = wt1 * env * (0.25 + 0.75 * voice.velocity) * level\n"
+    "  done = !gate && env < 0.00003\n"
+    "}\n";
+
+}  // namespace
+
+meta::DataPtr demoWavetableData() {
+  static const meta::DataPtr data = [] {
+    auto cycle = [](dsp::BasicCycle c) {
+      const AlignedBuffer<float> b = dsp::basicCycle(c);
+      return std::vector<float>(b.span().begin(), b.span().end());
+    };
+    // A bright cycle: odd partials under two formant bumps, phases spread (a drawn-looking, non-basic shape).
+    std::vector<float> vocal(dsp::kKeyframeCycle);
+    for (uint32_t i = 0; i < dsp::kKeyframeCycle; ++i) {
+      const double ph = static_cast<double>(i) / dsp::kKeyframeCycle;
+      double v = 0.0;
+      for (int h = 1; h <= 24; ++h) {
+        const double f1 = std::exp(-0.5 * std::pow((h - 3.0) / 1.2, 2.0));
+        const double f2 = 0.6 * std::exp(-0.5 * std::pow((h - 9.0) / 2.0, 2.0));
+        const double a = (h % 2 == 1 ? 1.0 : 0.35) * (f1 + f2 + 0.08 / h);
+        v += a * std::sin(2.0 * std::numbers::pi * h * ph + 0.7 * h);
+      }
+      vocal[i] = static_cast<float>(v);
+    }
+    float peak = 0.0f;
+    for (const float v : vocal) peak = std::max(peak, std::fabs(v));
+    for (float& v : vocal) v /= peak;
+    meta::WavetableData d;
+    d.keyframes.push_back({0.0f, cycle(dsp::BasicCycle::Saw)});
+    d.keyframes.push_back({0.5f, cycle(dsp::BasicCycle::Square)});
+    d.keyframes.push_back({1.0f, std::move(vocal)});
+    d.gaps = {dsp::GapMode::Spectral, dsp::GapMode::Crossfade};
+    return meta::wavetableData(d);
+  }();
+  return data;
+}
+
+Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair) {
+  Runner r{store};
+  using K = doc::DeviceKind;
+  const doc::TrackId wave = r.track(doc::TrackKind::Midi, {}, "Wave", 0x3FA9F5);
+  const doc::TrackId two = r.track(doc::TrackKind::Midi, wave, "Pair", 0xF6A23B);
+  if (!r.status) return r.status;
+  const doc::DeviceId wt = wavetableOn(r, wave, demoWavetableData());
+  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "warp", 0.3));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.device(wave, "saturator", K::AudioEffect);
+  const doc::Track* t = doc::findTrackPtr(*store.current(), two);
+  if (t == nullptr || t->devices.empty()) return Error{ErrorCode::NotFound, "wavetable project: Pair has no instrument", {}};
+  const doc::DeviceId inst = t->devices[0]->id;
+  (void)r.run(doc::ops::editDevicePatch(*store.current(), inst, kWaveSynth));
+  (void)r.run(doc::ops::setMetaData(*store.current(), inst, "wt1", "wavetable", demoWavetableData()));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", "position", 0.7));
+  r.clip(wave, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
+  r.clip(two, 0, 4 * kTicksPerWhole, "Chord", {0, 3, 7});
+  if (pair != nullptr) *pair = inst;
+  return r.status;
+}
+
+Status addWavetableFaces(doc::DocumentStore& store, uint32_t count, const meta::DataPtr& data) {
+  Runner r{store};
+  uint32_t made = 0;
+  std::vector<doc::TrackId> midi;
+  doc::forEachTrack(*store.current(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.kind == doc::TrackKind::Midi) midi.push_back(t.id);
+  });
+  for (const doc::TrackId t : midi) {
+    if (made >= count || !r.status) break;
+    if (wavetableOn(r, t, data).valid()) ++made;
+  }
+  if (r.status && made < count) return Error{ErrorCode::NotFound, "addWavetableFaces: fewer MIDI tracks than faces", {}};
   return r.status;
 }
 

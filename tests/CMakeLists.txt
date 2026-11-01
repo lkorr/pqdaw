@@ -179,6 +179,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_user_library.cpp  # T5.11 / T5.12: user library, hot-swap, chips, width, clips dragged to the browser
     views/test_device_automation.cpp  # T4.18: device lanes (chooser sections, Show Automation, automated knobs, golden)
     views/test_meta_faces.cpp  # TMM.4: meta-module faces (toolkit, hosting at every zoom, drags, expand, editor, goldens)
+    views/test_meta_wavetable_face.cpp  # TMM.7: the Wavetable face (display model, goldens, voices, gestures, paint cost)
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell

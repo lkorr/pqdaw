@@ -142,6 +142,9 @@ public:
   // A reader may have become live (a note, the transport): poll the faces now and keep animating while one is live.
   void wakeFaces();
   bool animatingFaces() const noexcept;  // the ≤ 60 Hz face timer is armed
+  // TMM.7: a key for the face the last press went to (a keyframe's Delete); true: consumed. onKey calls it first;
+  // hosts that handle keys before CircuitCanvas::onKey (the project view's Delete) call it before theirs.
+  bool faceKey(const ui::KeyEvent& e);
   // Benchmarks (A/B): off draws face nodes as plain blocks and routes nothing to them.
   void setFacesShown(bool on);
   bool facesShown() const noexcept;

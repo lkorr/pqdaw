@@ -84,9 +84,12 @@ void FacePainter::dashed(std::span<const Vec2> pts, float thickness, float on, f
     if (len <= 0.0f) continue;
     float pos = 0.0f;
     while (pos < len) {
-      const float in = std::fmod(phase, period);
+      float in = std::fmod(phase, period);
+      if (period - in < 1e-4f * period) in = 0.0f;  // TMM.7: at a period's end in float: the next period (no zero runs)
+      if (period > on && in < on && on - in < 1e-4f * period) in = on;  // ... at a dash's end: the gap
       const bool drawing = in < on;
       const float run = std::min(len - pos, drawing ? on - in : period - in);
+      if (pos + run <= pos) break;  // below float resolution: the rest is shorter than a rounding step
       if (drawing && run > 0.0f) {
         const float u0 = pos / len, u1 = (pos + run) / len;
         const Vec2 seg[2] = {t_.map({a.x + dx * u0, a.y + dy * u0}), t_.map({a.x + dx * u1, a.y + dy * u1})};

@@ -9,5 +9,6 @@
 namespace pq::views {
 
 std::unique_ptr<MetaFace> makePhaseAccFace(const meta::Type& t);
+std::unique_ptr<MetaFace> makeWavetableFace(const meta::Type& t);  // TMM.7
 
 }  // namespace pq::views
