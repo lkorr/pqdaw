@@ -17,6 +17,9 @@
 //               device chains, device activation and device settings; T4.7: wires added / removed, a wire's
 //               reducer; a wire's amount is a Param):
 //               debounced recompile + hot swap.
+//   MetaData    (TMM.3) a meta module's state data (keyframes, harmonics, a drawing; model.h "Meta modules"): never
+//               part of an expansion, so never a compile; the link hands the instances listed in `metaData` to the
+//               off-thread table builder (TMM.5).
 
 #include <cstdint>
 #include <vector>
@@ -33,6 +36,15 @@ enum ChangeFlag : uint8_t {
   kChangeAutomation = 1u << 3,
   kChangeTimeline = 1u << 4,
   kChangeStructural = 1u << 5,
+  kChangeMetaData = 1u << 6,  // TMM.3
+};
+
+// TMM.3: a meta-module instance (model.h "Meta modules"): its device and name path ("" = the chain device itself).
+struct MetaRef {
+  DeviceId device;
+  std::string path;
+  friend auto operator<=>(const MetaRef&, const MetaRef&) = default;
+  friend bool operator==(const MetaRef&, const MetaRef&) = default;
 };
 
 struct ChangeSet {
@@ -48,6 +60,7 @@ struct ChangeSet {
   std::vector<WireId> wires;      // T4.7: wires added, removed or edited (a removed device's wires too)
   std::vector<SampleId> samples;  // T5.3: sample table entries added, removed or replaced
   std::vector<ParamRef> params;  // params whose value changed (Param class)
+  std::vector<MetaRef> metaData; // TMM.3: instances whose data changed (MetaData class)
 
   bool empty() const noexcept { return flags == 0; }
   bool has(ChangeFlag f) const noexcept { return (flags & f) != 0; }
@@ -58,6 +71,7 @@ struct ChangeSet {
   bool automationOnly() const noexcept { return (flags & ~kChangeMeta) == kChangeAutomation; }
   bool timelineOnly() const noexcept { return (flags & ~kChangeMeta) == kChangeTimeline; }
   bool metaOnly() const noexcept { return flags == kChangeMeta; }
+  bool metaDataOnly() const noexcept { return (flags & ~kChangeMeta) == kChangeMetaData; }  // TMM.3
 
   void mark(ChangeFlag f) noexcept { flags = static_cast<uint8_t>(flags | f); }
   // Union (for batches and gestures). Call normalize() when done.

@@ -4,4 +4,4 @@ pq_add_module(pq_compile
   SOURCES
     src/compile.cpp
     src/image.cpp
-  DEPS pq_core pq_graph pq_engine pq_jit)
+  DEPS pq_core pq_graph pq_meta pq_engine pq_jit)  # pq_meta (TMM.3): the meta-module prelude

@@ -231,6 +231,28 @@ struct RackOptions {
 RackOptions rackOptions(const Rack& r);
 struct SetRackOptions { DeviceId rack; RackOptions options; };
 
+// ---- Meta modules (TMM.3; model.h "Meta modules") -----------------------------------------------------------------
+// An instance is addressed by (device, path); "" is a chain-level meta device itself (Device::patch "meta:<type>"). The
+// type must be registered (pq/meta/registry.h), the instance at the type's version, names the type's, values finite,
+// data valid for the type. Classes follow what the lowering reads: params are runtime values, settings change the
+// expansion, data never reaches it.
+// Adds the state of a nested instance at `path` (none there yet; a chain device's "" entry only on a meta device of that
+// type, without params / settings). Structural when it sets a setting; else Param (the params it sets, as MetaParams)
+// and MetaData (when it has data): a call's default state plays already, so adding it alone compiles nothing.
+struct AddMetaInstance { DeviceId device; std::string path; MetaInstance instance; };
+// The inverse (the instance plays its default state again): classified as AddMetaInstance of what it removes.
+struct RemoveMetaInstance { DeviceId device; std::string path; };
+// Structural. Moves the state at `from` and every entry below it ("from.…") to `to` (the call was renamed: the state
+// key follows the name). `to` and the entries below it must be free; neither may be "".
+struct RenameMetaInstance { DeviceId device; std::string from; std::string to; };
+// Param. A param of the instance (nullopt: back to the type's default). Path "": the chain device's own param (a
+// SetDeviceParam: ParamRef::device); else ParamRef::metaParam. The nested instance must exist (ops::setMetaParam adds it).
+struct SetMetaParam { DeviceId device; std::string path; std::string param; std::optional<double> value; };
+// Structural. A setting of the instance (path "": the chain device's own setting).
+struct SetMetaSetting { DeviceId device; std::string path; std::string setting; std::optional<double> value; };
+// MetaData (never a compile; ChangeSet::metaData lists the instance). The instance must exist; equal data is a no-op.
+struct SetMetaData { DeviceId device; std::string path; meta::DataPtr data; };
+
 // ---- Compound --------------------------------------------------------------------------------------------------
 struct Command;
 // Several commands as one undo step, applied in order; fails as a whole if any fails. ChangeSet = union.
@@ -253,6 +275,7 @@ using CommandVariant = std::variant<
     AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
+    AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,
     Batch>;
 
 struct Command {

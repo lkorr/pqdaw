@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include "pq/compile/compile.h"
+#include "pq/meta/registry.h"
 
 namespace pq::compile {
 
@@ -34,6 +35,8 @@ std::string joinDiagnostics(std::string_view text, const std::vector<graph::Diag
 // (pqc and `pqdaw --play` share it: QUESTIONS Q73 option B, T1.x-arch2.)
 class FileLoader final : public graph::ImportLoader {
 public:
+  // TMM.3: the meta-module prelude's signatures (`meta_<type>` calls), callable from every file.
+  std::span<const graph::SubcircuitRef> externals;
   Result<std::vector<graph::SubcircuitRef>> load(std::string_view path, std::string_view importer) override {
     const fs::path full = fs::weakly_canonical(fs::path(importer).parent_path() / pathFromUtf8(path));
     const std::string key = full.string();
@@ -45,6 +48,7 @@ public:
     texts_.push_back(std::move(*text));
     graph::ParseOptions po;
     po.imports = this;
+    po.externals = externals;
     auto parsed = std::make_unique<graph::ParseResult>(graph::parseDetailed(texts_.back(), key, po));
     active_.erase(key);
     if (!parsed->ok()) return Error{ErrorCode::Parse, joinDiagnostics(texts_.back(), parsed->diagnostics), {}};
@@ -76,6 +80,8 @@ struct SourceFile::Impl {
   FileLoader loader;
   graph::ParseResult parsed;
   graph::PatchLibrary library;
+  // TMM.3: `meta_<type>(…)` calls expand with the default state (pq/meta/registry.h); kept alive for the library.
+  std::shared_ptr<const meta::Prelude> prelude = meta::prelude();
 };
 
 SourceFile::SourceFile(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -89,8 +95,10 @@ Result<std::unique_ptr<SourceFile>> SourceFile::load(const fs::path& path) {
   auto text = readText(ec ? path : full);
   if (!text) return text.error();
   impl->text = std::move(*text);
+  impl->loader.externals = impl->prelude->signatures;
   graph::ParseOptions po;
   po.imports = &impl->loader;
+  po.externals = impl->prelude->signatures;
   impl->parsed = graph::parseDetailed(impl->text, impl->fileName, po);
   if (!impl->parsed.ok()) {
     const graph::Diagnostic& first = impl->parsed.diagnostics.front();
@@ -98,6 +106,7 @@ Result<std::unique_ptr<SourceFile>> SourceFile::load(const fs::path& path) {
   }
   impl->library.add(impl->parsed.file);
   impl->loader.addTo(impl->library);
+  for (const meta::Prelude::Entry& e : impl->prelude->entries) impl->library.add(e.nested);
   return std::unique_ptr<SourceFile>(new SourceFile(std::move(impl)));
 }
 

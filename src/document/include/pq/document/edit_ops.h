@@ -371,6 +371,36 @@ EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devi
 // name is an empty edit.
 EditResult renameDevice(const Project& p, DeviceId device, std::string name);
 
+// ---- Meta modules (TMM.3; model.h "Meta modules", commands.h) ------------------------------------------------------
+// Each builder is one Batch = one undo step (a drag: several inside one store gesture, which commits as one).
+// A chain meta device of type `type` ("phase_acc") into `track` (or rack chain `chain`) at `index`: an instrument at the
+// instrument position (replacing the instrument there) when the type may be one and the list may hold one, else an
+// audio effect when the type may be one. Its "" instance holds the type's version and default data.
+EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index = kAppend,
+                         ChainId chain = {});
+// A param / setting / data of the instance (device, path; "" = the chain device itself). A nested call without state
+// gets its default state in the same step (AddMetaInstance: no compile), so a drag on a fresh call is a param write;
+// `type` is the call's type (used only then).
+EditResult setMetaParam(const Project& p, DeviceId device, std::string path, std::string_view type, std::string param,
+                        std::optional<double> value);
+EditResult setMetaSetting(const Project& p, DeviceId device, std::string path, std::string_view type, std::string setting,
+                          std::optional<double> value);
+EditResult setMetaData(const Project& p, DeviceId device, std::string path, std::string_view type, meta::DataPtr data);
+// The patch editor's meta-call edits, each the device's new `text` (forking a stock device, editDevicePatch) plus the
+// state change: a new call `path = meta_<type>(…)` with its default state; a call renamed `from` → `to` (the state
+// follows the name, everything below it too); a call deleted (its state goes).
+EditResult addMetaCall(const Project& p, DeviceId device, std::string text, std::string path, std::string_view type,
+                       std::shared_ptr<const graph::PatchFile> ids = nullptr);
+EditResult renameMetaCall(const Project& p, DeviceId device, std::string text, std::string from, std::string to,
+                          std::shared_ptr<const graph::PatchFile> ids = nullptr);
+EditResult removeMetaCall(const Project& p, DeviceId device, std::string text, std::string path,
+                          std::shared_ptr<const graph::PatchFile> ids = nullptr);
+// Any text edit of a device (the text pane, a circuit edit): editDevicePatch plus a RenameMetaInstance for every call
+// path that `ids` (the new parse, made with ParseOptions::previous = `previous`) renamed and that holds state
+// (meta.h metaRenames): a hand edit that renames a meta binding keeps its state.
+EditResult editDevicePatchKeepingMeta(const Project& p, DeviceId device, std::string text,
+                                      std::shared_ptr<const graph::PatchFile> ids, const graph::PatchFile& previous);
+
 // ---- User library (T5.11; pq/document/library_files.h) -----------------------------------------------------------
 // Hot-swap: `with` (a preset's device) replaces `device` in place: the same position and id (so wires, mappings and the
 // engine's state key follow it); everything inside `with` (a rack's chains, mappings, inner devices) gets fresh ids.

@@ -16,13 +16,16 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/document/meta.h"
 #include "pq/document/model.h"
+#include "pq/meta/registry.h"
 #include "pq/graph/infer.h"
 #include "pq/graph/patch.h"
 #include "pq/graph/patch_file.h"
@@ -87,6 +90,10 @@ class DeviceLibrary;
 // null: only the device's set values are looked at). "" when there is none (the device is gone, the patch has no such
 // param). An automation lane carries it (AutomationLane::paramName).
 std::string deviceParamNameOf(const Project& p, const DeviceLibrary* lib, const ParamRef& r);
+
+// TMM.3: the description of a chain meta device of type `t` and `kind` (patch "meta:<id>", the type's name, params and
+// settings from its specs); nullopt when the type does not allow that kind.
+std::optional<DeviceInfo> metaDeviceInfo(const meta::Type& t, DeviceKind kind);
 
 // A stock device: its file (relative to stdlib/), patch and display name.
 struct StockDevice {
@@ -159,8 +166,22 @@ public:
   const graph::PatchFile* stockFile(std::string_view patch) const;
   // The patch `d` plays (the library's, or a user device's own root; `hold` keeps that alive) and its description.
   // Null: nothing plays (a patch not in the library, a user text without a good version).
+  // TMM.3: a chain meta device ("meta:<type>") plays its type's expansion: patchOf gives the prelude's chain form of the
+  // type (the same params as every expansion of it) and infoOf its description (metaDeviceInfo), null for an unknown
+  // type or a kind the type does not allow.
   const graph::Patch* patchOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const;
   const DeviceInfo* infoOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const;
+
+  // ---- TMM.3: meta modules (pq/document/meta.h) ----
+  // The meta-module prelude the library was loaded with: its `meta_<type>` patches are in library(), their signatures in
+  // signatures(), so stock files and user texts may call them.
+  const std::shared_ptr<const meta::Prelude>& metaPrelude() const noexcept { return prelude_; }
+  // The nested meta calls of `d`'s circuit (metaSites of `root`, the patch d plays; `user` its resolution when it is a
+  // user device), cached per stock patch / per user graph (the cache holds the graph, so a key is never reused). Null:
+  // none. Thread-safe.
+  std::shared_ptr<const std::vector<MetaSite>> metaSitesOf(const Device& d, const graph::Patch& root,
+                                                          const ResolvedDevice* user, const PatchLookup& lookup) const;
+  struct MetaCache;
 
   struct Files;
   struct UserCache;
@@ -169,6 +190,9 @@ private:
   friend Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlibDirUtf8);
   std::unique_ptr<Files> files_;
   std::unique_ptr<UserCache> users_;
+  std::unique_ptr<MetaCache> metaCache_;           // TMM.3
+  std::shared_ptr<const meta::Prelude> prelude_;   // TMM.3
+  std::vector<DeviceInfo> metaInfos_;              // TMM.3: per prelude entry: instrument, effect (kind order)
   graph::PatchLibrary library_;
   DeviceCatalog catalog_;
   std::vector<graph::SubcircuitRef> signatures_;

@@ -24,6 +24,8 @@
 #include "pq/compile/compile.h"
 #include "pq/document/audibility.h"
 #include "pq/document/clip_time.h"
+#include "pq/document/meta.h"
+#include "pq/meta/registry.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/engine/tuning_signal.h"
 #include "pq/tuning/tuning.h"
@@ -746,6 +748,20 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
       if (s != kNone) (void)writeParam(s, value);
       continue;
     }
+    // TMM.3: a param of a nested meta module ("dev<id>:<path>.<name>"): one write.
+    if (ref.kind == doc::ParamKind::MetaParam) {
+      const doc::DeviceLoc d = doc::findDevice(p, doc::DeviceId{ref.owner});
+      if (d.device == nullptr || !d.device->meta) continue;
+      for (const doc::MetaEntry& e : *d.device->meta) {
+        const meta::Type* t = meta::findType(e.instance.type);
+        if (t == nullptr || e.path.empty()) continue;
+        for (size_t i = 0; i < t->params.size(); ++i)
+          if (doc::ParamRef::metaParam(d.device->id, e.path, t->params[i].name).target == ref.target)
+            writeLinked(doc::metaParamKey(d.device->id, e.path, t->params[i].name),
+                        static_cast<float>(doc::metaParamValue(*d.device, e.path, *t, i)));
+      }
+      continue;
+    }
     // T4.8: a rack chain's mixer or zone: the derived params of that chain (only those the lowered patch has).
     if (ref.kind == doc::ParamKind::ChainMixer) {
       for (const doc::LoweredParam& lp : doc::chainParamValues(p, doc::ChainId{ref.owner})) writeLinked(lp.key, lp.value);
@@ -1005,7 +1021,8 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
       !reset && !structural && c.paramOnly() && !c.params.empty() &&
       std::all_of(c.params.begin(), c.params.end(), [](const doc::ParamRef& r) {
         return r.kind == doc::ParamKind::DeviceParam || r.kind == doc::ParamKind::WireAmount ||
-               r.kind == doc::ParamKind::ChainMixer;  // T4.8
+               r.kind == doc::ParamKind::ChainMixer ||  // T4.8
+               r.kind == doc::ParamKind::MetaParam;     // TMM.3
       });
   if (deviceParamsOnly) {
     applyDeviceParams(p, c.params);

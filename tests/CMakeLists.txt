@@ -124,6 +124,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
+    app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -330,6 +331,14 @@ pq_add_test(pq_tests_dsp
     dsp/test_resample.cpp
   DEPS pq_dsp)
 
+# meta (TMM.3): the meta-module framework (registry, expansion, prelude, data) and the Phase accumulator through pqc
+# (standalone check + render, bit-identity with frac(phasor(voice.hz)), pitch over 10 s, both backends).
+pq_add_test(pq_tests_meta
+  SOURCES
+    meta/test_meta.cpp
+    meta/test_phase_acc.cpp
+  DEPS pq_meta pq_pqc)
+
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.
 pq_add_test(pq_tests_document
   SOURCES
@@ -352,6 +361,7 @@ pq_add_test(pq_tests_document
     document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
     document/test_library_files.cpp  # T5.11: user-library files, hot-swap, library clips
     document/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes (rules, following, file, lowering)
+    document/test_meta_modules.cpp  # TMM.3: meta-module state (file, builders, lowering goldens, renames)
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

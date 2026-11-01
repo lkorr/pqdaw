@@ -4,6 +4,8 @@
 #include <unordered_map>
 
 #include "edit_common.h"
+#include "pq/document/meta.h"
+#include "pq/meta/registry.h"
 
 namespace pq::doc::ops {
 
@@ -138,6 +140,35 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
   const bool rack = patch == kAudioEffectRack || patch == kInstrumentRack;
   if (rack && (patch == kInstrumentRack) != (kind == DeviceKind::Instrument)) return invalid("rack kind mismatch");
   DevicePtr d = rack ? makeRack(ids.device(), kind) : makeDevice(ids.device(), std::move(patch), kind);
+  e.devices.push_back(d->id);
+  e.tracks.push_back(l->track);
+  batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), slot->index, chain});
+  return e;
+}
+
+// TMM.3.
+EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index,
+                         ChainId chain) {
+  const meta::Type* t = meta::findType(type);
+  if (t == nullptr) return invalid("unknown meta module type '" + std::string(type) + "'");
+  Result<ListView> l = listOf(p, track, chain);
+  if (!l) return std::move(l).error();
+  // An instrument where one goes (the list may hold one, and the type is no effect or it goes first / the list has no
+  // instrument yet), else an audio effect.
+  const bool hasInstrument = !l->devices->empty() && l->devices->front()->kind == DeviceKind::Instrument;
+  DeviceKind kind;
+  if (t->chainInstrument && l->instrumentAllowed && (t->chainEffectInput < 0 || index == 0 || !hasInstrument))
+    kind = DeviceKind::Instrument;
+  else if (t->chainEffectInput >= 0)
+    kind = DeviceKind::AudioEffect;
+  else
+    return invalid("a " + std::string(t->name) + " cannot be a device here");
+  Result<Slot> slot = slotFor(*l, kind, index);
+  if (!slot) return std::move(slot).error();
+  Edit e = makeEdit("Add Device");
+  if (slot->replacesInstrument) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
+  auto d = std::make_shared<Device>(*makeDevice(ids.device(), std::string(kMetaDevicePrefix) + std::string(t->id), kind));
+  d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
   e.devices.push_back(d->id);
   e.tracks.push_back(l->track);
   batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), slot->index, chain});

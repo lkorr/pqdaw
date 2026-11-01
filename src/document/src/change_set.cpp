@@ -32,6 +32,7 @@ void ChangeSet::merge(const ChangeSet& o) {
   append(wires, o.wires);
   append(samples, o.samples);
   append(params, o.params);
+  append(metaData, o.metaData);
 }
 
 void ChangeSet::normalize() {
@@ -45,6 +46,7 @@ void ChangeSet::normalize() {
   sortUnique(wires);
   sortUnique(samples);
   sortUnique(params);
+  sortUnique(metaData);
 }
 
 void ChangeSet::clear() noexcept {
@@ -59,6 +61,7 @@ void ChangeSet::clear() noexcept {
   wires.clear();
   samples.clear();
   params.clear();
+  metaData.clear();
 }
 
 }  // namespace pq::doc

@@ -67,6 +67,13 @@ Status checkRackOwn(const Device& rack);
 Status checkMapping(const MacroMapping& m);  // its own fields
 // A device param / setting name (non-empty) and value (finite, when set).
 Status checkDeviceValue(const std::string& name, const std::optional<double>& value);
+// TMM.3 (model.h "Meta modules"): one instance of `d` at `path` — a valid path ("" only on a chain meta device of that
+// type, without params / settings), a registered type at its current version, the type's param / setting names
+// (sorted, unique, finite), data the type accepts (none when it keeps none).
+Status checkMetaInstance(const Device& d, std::string_view path, const MetaInstance& inst);
+// A device's meta map (sorted by path, unique, non-empty when set, each instance as above) and, for a chain meta device
+// ("meta:<type>"), its type registered and its kind one the type allows (instrument / audio effect).
+Status checkDeviceMeta(const Device& d);
 // T4.7: a wire's own fields (valid ids, non-empty port and param names, amount in [−1, 1], a known reducer).
 Status checkWire(const Wire& w);
 // Rejects routing cycles (outputs followed from every track must end at the master or a track with no output).

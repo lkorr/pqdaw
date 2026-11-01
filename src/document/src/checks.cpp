@@ -6,6 +6,8 @@
 #include <cmath>
 #include <string>
 
+#include "pq/meta/registry.h"
+
 namespace pq::doc::detail {
 
 Error invalid(std::string m) { return Error{ErrorCode::InvalidArgument, std::move(m), {}}; }
@@ -301,6 +303,7 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
       }
       PQ_DOC_TRY(checkValues(d->params, "params"));
       PQ_DOC_TRY(checkValues(d->settings, "settings"));
+      PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
       if (d->rack) {
         PQ_DOC_TRY(checkRackOwn(*d));
         for (size_t c = d->rack->chains.size(); c-- > 0;) work.emplace_back(chainListKind(*d), &d->rack->chains[c]->devices);
@@ -308,6 +311,55 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
         return invalid("'" + d->patch + "' is a rack and needs its chains");
       }
     }
+  }
+  return ok();
+}
+
+// ---- Meta modules (TMM.3) --------------------------------------------------------------------------------------------
+
+Status checkMetaInstance(const Device& d, std::string_view path, const MetaInstance& inst) {
+  const std::string at = path.empty() ? std::string("the device's meta module") : "meta module '" + std::string(path) + "'";
+  if (!meta::validPath(path)) return invalid("'" + std::string(path) + "' is not a meta module path");
+  if (d.rack) return invalid("a rack holds no meta modules");
+  const meta::Type* t = meta::findType(inst.type);
+  if (t == nullptr) return unsupported(at + ": unknown meta module type '" + inst.type + "'");
+  if (inst.version != t->version)
+    return invalid(at + ": version " + std::to_string(inst.version) + " is not the type's (" + std::to_string(t->version) + ")");
+  if (path.empty()) {
+    if (metaDeviceType(d) != inst.type) return invalid(at + ": only a '" + std::string(kMetaDevicePrefix) + inst.type + "' device has it");
+    if (!inst.params.empty() || !inst.settings.empty())
+      return invalid(at + ": a chain meta device keeps its params and settings as the device's own");
+  }
+  PQ_DOC_TRY(checkValues(inst.params, "params"));
+  PQ_DOC_TRY(checkValues(inst.settings, "settings"));
+  for (const DeviceValue& v : inst.params)
+    if (t->paramIndex(v.name) < 0) return invalid(at + ": '" + v.name + "' is not a param of " + inst.type);
+  for (const DeviceValue& v : inst.settings)
+    if (t->settingIndex(v.name) < 0) return invalid(at + ": '" + v.name + "' is not a setting of " + inst.type);
+  if (inst.data) {
+    if (std::string p = meta::dataProblem(*inst.data); !p.empty()) return invalid(at + ": data: " + p);
+    if (t->dataProblem == nullptr) return invalid(at + ": " + inst.type + " keeps no data");
+    if (std::string p = t->dataProblem(*inst.data); !p.empty()) return invalid(at + ": data: " + p);
+  }
+  return ok();
+}
+
+Status checkDeviceMeta(const Device& d) {
+  if (isMetaDevice(d)) {
+    const meta::Type* t = meta::findType(metaDeviceType(d));
+    if (t == nullptr) return unsupported("unknown meta module type '" + std::string(metaDeviceType(d)) + "'");
+    if (d.kind == DeviceKind::Instrument && !t->chainInstrument)
+      return invalid("a " + std::string(t->name) + " cannot be an instrument");
+    if (d.kind == DeviceKind::AudioEffect && t->chainEffectInput < 0)
+      return invalid("a " + std::string(t->name) + " cannot be an audio effect");
+    if (d.source) return invalid("a meta device has no patch text");
+  }
+  if (!d.meta) return ok();
+  if (d.meta->empty()) return invalid("an empty meta map is stored as none");
+  for (size_t i = 0; i < d.meta->size(); ++i) {
+    const MetaEntry& e = (*d.meta)[i];
+    if (i > 0 && !((*d.meta)[i - 1].path < e.path)) return invalid("meta modules must be sorted by path, one per path");
+    PQ_DOC_TRY(checkMetaInstance(d, e.path, e.instance));
   }
   return ok();
 }

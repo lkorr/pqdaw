@@ -25,12 +25,15 @@ pq_add_module(pq_doc
     src/edit_devices.cpp
     src/edit_racks.cpp
     src/edit_library.cpp
+    src/edit_meta.cpp
     src/devices.cpp
+    src/meta.cpp
     src/audibility.cpp
     src/lower.cpp
     src/pitch_resolve.cpp
   # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
   # nlohmann::json in MigrationFn.
   # pq_graph: project → graph lowering (lower.h, T3.17).
-  DEPS pq_tuning pq_core pq_graph nlohmann_json::nlohmann_json
+  # pq_meta (TMM.3): meta-module state in the model, their expansions in the lowering.
+  DEPS pq_tuning pq_core pq_graph pq_meta nlohmann_json::nlohmann_json
 )

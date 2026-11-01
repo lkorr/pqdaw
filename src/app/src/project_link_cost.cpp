@@ -80,6 +80,9 @@ void ProjectLink::readDeviceCosts(std::span<const doc::DeviceId> devices, std::s
     std::unordered_set<const graph::Patch*> library;
     for (const graph::SubcircuitRef& r : devices_->signatures())
       if (const graph::Patch* p = devices_->library().find(r.patch)) library.insert(p);
+    // TMM.3: the meta-module expansions and specialised device roots, held alive by the lowering.
+    if (lowered_->metaPatches)
+      for (const graph::Patch& p : lowered_->metaPatches->patches) library.insert(&p);
     // T4.4-fix1: user devices' patches (and the stdlib files their imports loaded), held alive by the lowering.
     for (const auto& rd : lowered_->userDevices) {
       if (!rd || !rd->graph) continue;

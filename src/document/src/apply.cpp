@@ -16,6 +16,7 @@
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/meta/registry.h"
 #include "checks.h"
 
 namespace pq::doc {
@@ -2164,6 +2165,161 @@ Res apply_(const Snapshot& s, const SetWireReducer& c, ChangeSet& cs) {
   return editWire(s, c.wire, cs, kChangeStructural, [&](Wire& w) { w.reducer = c.reducer; });
 }
 
+// ---- Meta modules (TMM.3) ------------------------------------------------------------------------------------------
+
+// The device's meta map with `f` applied to a copy of it (an empty result is stored as none).
+template <class F>
+Res editMeta(const Snapshot& s, DeviceId id, ChangeSet& cs, ChangeFlag flag, F&& f) {
+  return editDeviceAt(s, id, cs, flag, [&](Device& d) -> Status {
+    MetaMap m = d.meta ? *d.meta : MetaMap{};
+    PQ_DOC_TRY(f(m));
+    d.meta = m.empty() ? nullptr : std::make_shared<const MetaMap>(std::move(m));
+    return checkDeviceMeta(d);
+  });
+}
+
+MetaMap::iterator metaEntry(MetaMap& m, std::string_view path) {
+  const auto it = std::lower_bound(m.begin(), m.end(), path, [](const MetaEntry& e, std::string_view p) { return e.path < p; });
+  return it != m.end() && it->path == path ? it : m.end();
+}
+
+// What adding / removing `inst` at `path` changes (AddMetaInstance's classification): settings → Structural; params →
+// Param (their refs); data → MetaData. Meta always (a view may show the state).
+ChangeFlag classifyInstance(const DeviceId dev, std::string_view path, const MetaInstance& inst, ChangeSet& cs) {
+  cs.mark(kChangeMeta);
+  for (const DeviceValue& v : inst.params) cs.params.push_back(ParamRef::metaParam(dev, path, v.name));
+  if (inst.data) {
+    cs.mark(kChangeMetaData);
+    cs.metaData.push_back(MetaRef{dev, std::string(path)});
+  }
+  if (!inst.settings.empty()) return kChangeStructural;
+  return inst.params.empty() ? kChangeMeta : kChangeParam;
+}
+
+Res apply_(const Snapshot& s, const AddMetaInstance& c, ChangeSet& cs) {
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  PQ_DOC_TRY(checkMetaInstance(*loc.device, c.path, c.instance));
+  if (loc.device->metaAt(c.path) != nullptr) return invalid("meta module '" + c.path + "' already has a state");
+  ChangeSet local;
+  const ChangeFlag flag = classifyInstance(c.device, c.path, c.instance, local);
+  Res r = editMeta(s, c.device, cs, flag, [&](MetaMap& m) -> Status {
+    m.insert(std::upper_bound(m.begin(), m.end(), c.path, [](std::string_view p, const MetaEntry& e) { return p < e.path; }),
+             MetaEntry{c.path, c.instance});
+    return ok();
+  });
+  if (r) cs.merge(local);
+  return r;
+}
+
+Res apply_(const Snapshot& s, const RemoveMetaInstance& c, ChangeSet& cs) {
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  const MetaInstance* old = loc.device->metaAt(c.path);
+  if (old == nullptr) return notFound("meta module '" + c.path + "' has no state");
+  ChangeSet local;
+  const ChangeFlag flag = classifyInstance(c.device, c.path, *old, local);
+  Res r = editMeta(s, c.device, cs, flag, [&](MetaMap& m) -> Status {
+    m.erase(metaEntry(m, c.path));
+    return ok();
+  });
+  if (r) cs.merge(local);
+  return r;
+}
+
+Res apply_(const Snapshot& s, const RenameMetaInstance& c, ChangeSet& cs) {
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  if (c.from.empty() || c.to.empty() || !meta::validPath(c.from) || !meta::validPath(c.to))
+    return invalid("a nested meta module path is a call name (or names joined by '.')");
+  if (c.from == c.to) return s;
+  auto under = [](std::string_view path, std::string_view root) {
+    return path == root || (path.size() > root.size() && path.starts_with(root) && path[root.size()] == '.');
+  };
+  if (under(c.to, c.from)) return invalid("a meta module cannot be renamed into itself");
+  bool any = false;
+  if (loc.device->meta)
+    for (const MetaEntry& e : *loc.device->meta) {
+      if (under(e.path, c.to)) return invalid("meta module '" + c.to + "' already has a state");
+      any = any || under(e.path, c.from);
+    }
+  if (!any) return notFound("meta module '" + c.from + "' has no state");
+  return editMeta(s, c.device, cs, kChangeStructural, [&](MetaMap& m) -> Status {
+    for (MetaEntry& e : m)
+      if (under(e.path, c.from)) e.path = c.to + e.path.substr(c.from.size());
+    std::sort(m.begin(), m.end(), [](const MetaEntry& a, const MetaEntry& b) { return a.path < b.path; });
+    return ok();
+  });
+}
+
+// The nested instance at `path` and its type, or an error.
+Result<std::pair<const MetaInstance*, const meta::Type*>> nestedInstance(const Device& d, const std::string& path) {
+  const MetaInstance* inst = d.metaAt(path);
+  if (inst == nullptr) return notFound("meta module '" + path + "' has no state");
+  const meta::Type* t = meta::findType(inst->type);
+  if (t == nullptr) return unsupported("unknown meta module type '" + inst->type + "'");
+  return std::pair{inst, t};
+}
+
+Res apply_(const Snapshot& s, const SetMetaParam& c, ChangeSet& cs) {
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  PQ_DOC_TRY(checkDeviceValue(c.param, c.value));
+  if (c.path.empty()) {  // the chain device's own param
+    const meta::Type* t = meta::findType(metaDeviceType(*loc.device));
+    if (t == nullptr) return invalid("not a meta device");
+    if (t->paramIndex(c.param) < 0) return invalid("'" + c.param + "' is not a param of " + std::string(t->id));
+    return apply_(s, SetDeviceParam{c.device, c.param, c.value}, cs);
+  }
+  auto found = nestedInstance(*loc.device, c.path);
+  if (!found) return std::move(found).error();
+  if (found->second->paramIndex(c.param) < 0)
+    return invalid("'" + c.param + "' is not a param of " + std::string(found->second->id));
+  MetaInstance inst = *found->first;
+  if (!setValue(inst.params, c.param, c.value)) return s;
+  cs.params.push_back(ParamRef::metaParam(c.device, c.path, c.param));
+  return editMeta(s, c.device, cs, kChangeParam, [&](MetaMap& m) -> Status {
+    metaEntry(m, c.path)->instance = std::move(inst);
+    return ok();
+  });
+}
+
+Res apply_(const Snapshot& s, const SetMetaSetting& c, ChangeSet& cs) {
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  PQ_DOC_TRY(checkDeviceValue(c.setting, c.value));
+  if (c.path.empty()) {
+    const meta::Type* t = meta::findType(metaDeviceType(*loc.device));
+    if (t == nullptr) return invalid("not a meta device");
+    if (t->settingIndex(c.setting) < 0) return invalid("'" + c.setting + "' is not a setting of " + std::string(t->id));
+    return apply_(s, SetDeviceSetting{c.device, c.setting, c.value}, cs);
+  }
+  auto found = nestedInstance(*loc.device, c.path);
+  if (!found) return std::move(found).error();
+  if (found->second->settingIndex(c.setting) < 0)
+    return invalid("'" + c.setting + "' is not a setting of " + std::string(found->second->id));
+  MetaInstance inst = *found->first;
+  if (!setValue(inst.settings, c.setting, c.value)) return s;
+  return editMeta(s, c.device, cs, kChangeStructural, [&](MetaMap& m) -> Status {
+    metaEntry(m, c.path)->instance = std::move(inst);
+    return ok();
+  });
+}
+
+Res apply_(const Snapshot& s, const SetMetaData& c, ChangeSet& cs) {
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  const MetaInstance* inst = loc.device->metaAt(c.path);
+  if (inst == nullptr) return notFound("meta module '" + c.path + "' has no state");
+  if (meta::dataEqual(inst->data, c.data)) return s;
+  Res r = editMeta(s, c.device, cs, kChangeMetaData, [&](MetaMap& m) -> Status {
+    metaEntry(m, c.path)->instance.data = c.data;
+    return ok();
+  });
+  if (r) cs.metaData.push_back(MetaRef{c.device, c.path});
+  return r;
+}
+
 // ---- Batch ---------------------------------------------------------------------------------------------------------
 
 Res applyAny(const Snapshot& s, const Command& c, ChangeSet& cs);
@@ -2206,6 +2362,8 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",
+    "Add Meta Module", "Delete Meta Module", "Rename Meta Module", "Meta Module Parameter", "Meta Module Setting",
+    "Edit Meta Module Data",
     "Batch"};
 
 }  // namespace

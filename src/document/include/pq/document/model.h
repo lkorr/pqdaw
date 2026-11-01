@@ -25,6 +25,7 @@
 #include "pq/core/time.h"
 #include "pq/document/ids.h"
 #include "pq/document/note_seq.h"
+#include "pq/meta/data.h"
 #include "pq/tuning/edo.h"
 #include "pq/tuning/mos.h"
 #include "pq/tuning/tuning.h"
@@ -127,6 +128,10 @@ enum class ParamKind : uint8_t {
   // The lowering derives the chain's param values from them (lower.h "Racks"). T4.18: the chain's volume (target
   // kChainVolume, dB) and pan (kChainPan) are automatable one by one.
   ChainMixer,
+  // TMM.3: a param of a NESTED meta-module instance (owner = device id, target = deviceParamHash("<path>.<name>"));
+  // a runtime param "dev<id>:<path>.<name>". Not automatable or macro-mappable in MM (docs/plans/MM.md). A chain-level
+  // meta device's params are its DeviceParams.
+  MetaParam,
 };
 // T4.18: the `target` of a chain's volume / pan as an automation lane's ParamRef (ParamRef::chain(c, kChainVolume)).
 inline constexpr uint32_t kChainVolume = 16;
@@ -143,6 +148,8 @@ struct ParamRef {
   static ParamRef device(DeviceId d, std::string_view param);  // {DeviceParam, d, deviceParamHash(param)}
   static ParamRef wireAmount(WireId w) { return {ParamKind::WireAmount, w.value, 0}; }
   static ParamRef chain(ChainId c, uint32_t what = 0) { return {ParamKind::ChainMixer, c.value, what}; }
+  // TMM.3: {MetaParam, d, deviceParamHash(path + "." + param)}.
+  static ParamRef metaParam(DeviceId d, std::string_view path, std::string_view param);
 };
 // FNV-1a 32 of a device param's name: the ParamRef target of a device param (QUESTIONS Q129, item 2).
 uint32_t deviceParamHash(std::string_view name) noexcept;
@@ -418,6 +425,38 @@ struct DeviceValue {
 // NodeIds from it (ParseOptions::previous), so the project plays the very ids the editor shows (probes, cost) and keeps
 // every state the editor kept. Without it (a loaded project) the library parses `text` with the ids of the device's
 // previous text, else of the stock file (devices.h DeviceLibrary::resolve).
+// ---- Meta modules (TMM.3; docs/plans/MM.md "Architecture"; pq/meta/type.h) -------------------------------------------
+// A meta module's state lives in its device, keyed by its NAME PATH (pq/meta/registry.h validPath): the call binding
+// names from the device's root patch to the instance ("acc1", "opA.acc"; the editor names calls acc1, wt1, …), or ""
+// for a chain-level meta device itself (Device::patch = "meta:<type>": the device IS the module).
+//   type, version  the meta::Type (registered by id) and the state version it was written with (== the type's in a
+//                  snapshot; older files are upgraded on load)
+//   params         a nested instance's param values (runtime params "dev<id>:<path>.<name>": a face drag never
+//                  recompiles); a chain device keeps its params / settings in Device::params / settings instead (so
+//                  automation, macros and wires work as for any device), and its "" instance holds none
+//   settings       a nested instance's structural values (a change recompiles its track's unit)
+//   data           meta::DataValue (null: none): never part of the expansion; an edit is the MetaData change class
+// A nested call without an entry plays the type's default state. Editing the state of a module inside a STOCK device
+// does not fork the device (only its patch text does).
+inline constexpr std::string_view kMetaDevicePrefix = "meta:";
+struct MetaInstance {
+  std::string type;
+  uint32_t version = 0;
+  std::vector<DeviceValue> params;    // sorted by name, unique
+  std::vector<DeviceValue> settings;  // sorted by name, unique
+  meta::DataPtr data;
+  const DeviceValue* param(std::string_view name) const noexcept;
+  const DeviceValue* setting(std::string_view name) const noexcept;
+};
+bool operator==(const MetaInstance& a, const MetaInstance& b) noexcept;  // data deep
+struct MetaEntry {
+  std::string path;
+  MetaInstance instance;
+  friend bool operator==(const MetaEntry&, const MetaEntry&) = default;
+};
+using MetaMap = std::vector<MetaEntry>;  // sorted by path, unique
+using MetaMapPtr = std::shared_ptr<const MetaMap>;
+
 struct UserPatch {
   std::string text;
   std::shared_ptr<const graph::PatchFile> ids;
@@ -445,13 +484,20 @@ struct Device {
   // T4.17: the instance's own name (Live: Ctrl+R renames a device), shown in its title bar; "" = the patch's default
   // name (the catalog's / the panel description's title). Meta.
   std::string name;
+  // TMM.3: meta-module state by name path (see "Meta modules" above); null: none. Shared, so a param edit copies the
+  // Device but never the map (nor the data in it).
+  MetaMapPtr meta;
   bool edited() const noexcept { return source != nullptr; }
+  const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry
   const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
   const DeviceValue* setting(std::string_view key) const noexcept;  // nullptr: the patch's default
   bool isRack() const noexcept { return rack != nullptr; }
 };
 bool operator==(const Device& a, const Device& b) noexcept;  // deep (racks by content, user texts by text)
 using DevicePtr = std::shared_ptr<const Device>;
+// TMM.3: a chain-level meta device (patch "meta:<type>") and its type id ("" for any other device).
+bool isMetaDevice(const Device& d) noexcept;
+std::string_view metaDeviceType(const Device& d) noexcept;
 
 // ---- Racks (T4.8, SPEC §8.2; QUESTIONS Q129 item 6, Q?-T4.8-a) -------------------------------------------------------
 // An Audio Effect Rack (kind AudioEffect) or an Instrument Rack (kind Instrument) holds parallel CHAINS, each a device

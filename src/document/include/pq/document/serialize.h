@@ -61,7 +61,11 @@ namespace pq::doc {
 // 9 = device automation (T4.18: a lane's "param" may be {"kind": "deviceParam", "owner", "name"} (a device param, a
 // rack's macro or selector), {"kind": "chainMixer", "owner", "name": "volume" | "pan"} or {"kind": "wireAmount",
 // "owner"}, on the track holding the device; migration 8 → 9 changes nothing).
-inline constexpr int32_t kSchemaVersion = 9;
+// 10 = meta modules (TMM.3, model.h "Meta modules"): a device may carry "meta": {"<path>": {"type", "version",
+// "params"?, "settings"?, "data"?}} ("" = a chain meta device itself, whose "patch" is "meta:<type>"); data values are
+// numbers, strings, arrays, objects and {"$f32": "<base64 float32 LE>"} sample arrays (pq/meta/data.h); an older state
+// version is upgraded by its type on load, a newer one is refused (Unsupported); migration 9 → 10 changes nothing).
+inline constexpr int32_t kSchemaVersion = 10;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader
@@ -74,7 +78,7 @@ struct Migration {
 // The built-in table: one step per schema version (1 → 2: ticks × 8; 2 → 3: the default instrument as a device;
 // 3 → 4: none, wires are new; 4 → 5: none, user device texts are new; 5 → 6: none, racks are new; 6 → 7: none, audio
 // tracks, audio clips and the sample table are new; 7 → 8: none, device names are new; 8 → 9: none, device lanes are
-// new).
+// new; 9 → 10: none, meta modules are new).
 std::span<const Migration> builtinMigrations() noexcept;
 
 struct LoadOptions {

@@ -140,7 +140,7 @@ bool isTrackParam(ParamKind k) noexcept {
 }
 
 // T4.18: device params, wire amounts and chain volumes / pans are automatable too (lanes on the device's track).
-bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo; }
+bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo && k != ParamKind::MetaParam; }  // TMM.3: not MetaParam (MM)
 
 bool isAutomatable(const ParamRef& r) noexcept {
   if (!isAutomatable(r.kind)) return false;
@@ -172,6 +172,35 @@ const DeviceValue* findValue(const std::vector<DeviceValue>& v, std::string_view
 
 const DeviceValue* Device::param(std::string_view key) const noexcept { return findValue(params, key); }
 const DeviceValue* Device::setting(std::string_view key) const noexcept { return findValue(settings, key); }
+
+// ---- Meta modules (TMM.3) --------------------------------------------------------------------------------------------
+const DeviceValue* MetaInstance::param(std::string_view key) const noexcept { return findValue(params, key); }
+const DeviceValue* MetaInstance::setting(std::string_view key) const noexcept { return findValue(settings, key); }
+
+bool operator==(const MetaInstance& a, const MetaInstance& b) noexcept {
+  return a.type == b.type && a.version == b.version && a.params == b.params && a.settings == b.settings &&
+         meta::dataEqual(a.data, b.data);
+}
+
+const MetaInstance* Device::metaAt(std::string_view path) const noexcept {
+  if (!meta) return nullptr;
+  const auto it = std::lower_bound(meta->begin(), meta->end(), path,
+                                   [](const MetaEntry& e, std::string_view p) { return e.path < p; });
+  return it != meta->end() && it->path == path ? &it->instance : nullptr;
+}
+
+bool isMetaDevice(const Device& d) noexcept { return !d.rack && d.patch.starts_with(kMetaDevicePrefix); }
+
+std::string_view metaDeviceType(const Device& d) noexcept {
+  return isMetaDevice(d) ? std::string_view(d.patch).substr(kMetaDevicePrefix.size()) : std::string_view();
+}
+
+ParamRef ParamRef::metaParam(DeviceId d, std::string_view path, std::string_view param) {
+  std::string key(path);
+  key += '.';
+  key += param;
+  return {ParamKind::MetaParam, d.value, deviceParamHash(key)};
+}
 
 DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
   auto d = std::make_shared<Device>();
@@ -241,7 +270,8 @@ namespace {
 
 bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
   return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
-         a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name;
+         a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name &&
+         deepEq(a.meta, b.meta);  // TMM.3 (an empty map is always null: the commands keep it so)
 }
 
 bool shallowChainEq(const Chain& a, const Chain& b) noexcept {
@@ -391,6 +421,7 @@ ParamRange paramRange(ParamKind k) noexcept {
     case ParamKind::DeviceParam: return {-1e30, 1e30};  // the device patch's own range applies (DeviceCatalog)
     case ParamKind::WireAmount: return {-1.0, 1.0};
     case ParamKind::ChainMixer: return {-1e30, 1e30};  // a chain's mixer / zones (each value its own range)
+    case ParamKind::MetaParam: return {-1e30, 1e30};  // TMM.3: the meta type's own range applies
   }
   return {};
 }

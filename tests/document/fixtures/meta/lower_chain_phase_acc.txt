@@ -1,0 +1,40 @@
+patch Midi5 {
+  param volume = 0 [-70..6]
+  param pan = 0 [-1..1]
+  param gate = 1 [0..1]
+  param sendGate = 1 [0..1]
+  param mute = 0 [0..1]
+  out done : bool voice mono
+  out out : real audio global stereo
+
+  d7 = meta_phase_acc__d7__ede1cb509eeebb99()
+  _n1 = voice_sum(d7)
+  _n5 = 0
+  _n7 = 0.002
+  _n11 = volume <= -70 ? _n5 : db_to_gain(volume)
+  _n14 = (pan + 1) * 0.7853981633974483
+  _n17 = sin(_n14 + 1.5707963267948966)
+  _n18 = sin(_n14)
+  _n23 = mute < 0.5
+  _n25 = _n23 ? sendGate : _n5
+  _n26 = _n11 * (_n23 ? gate : _n5)
+  _n32 = _n11 * _n25
+  done = d7.done
+  out = gain(_n1, (_n17 * _n26, _n18 * _n26), _n7)
+
+  export post = gain(_n1, (_n17 * _n32, _n18 * _n32), _n7)
+  export pre = gain(_n1, (_n17 * _n25, _n18 * _n25), _n7)
+
+}
+
+patch meta_phase_acc__d7__ede1cb509eeebb99 {
+  param freq = 0Hz [0Hz..20000Hz] @label("Frequency") @curve(exp0, 14)
+  param phase = 0 [0..1] @label("Phase")
+  param amp = 1 [0..4] @label("Amplitude")
+  out out : audio voice mono
+  out done : bool voice mono
+
+  out = amp * frac(phasor(voice.hz + freq) + phase + -0)
+  done = !voice.gate
+
+}

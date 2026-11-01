@@ -23,6 +23,7 @@
 #include "pq/document/audio_clip.h"
 #include "pq/document/library_files.h"
 #include "json_io.h"
+#include "pq/meta/registry.h"
 
 namespace pq::doc {
 
@@ -654,8 +655,64 @@ private:
     }
   }
 
+  // TMM.3 (schema 10): a meta-module data value (pq/meta/data.h: Floats as {"$f32": base64}). Data trees are shallow
+  // (the types define them), so this recursion is bounded by them; the reader caps the depth.
+  void dataValue(const PathSeg& at, const meta::DataValue& v) {
+    using K = meta::DataValue::Kind;
+    switch (v.kind) {
+      case K::Null: w_.null(); break;
+      case K::Number: w_.number(at, v.number); break;
+      case K::String: w_.string(at, v.text); break;
+      case K::Floats:
+        w_.beginObject(false);
+        w_.key("$f32");
+        w_.string(at, meta::encodeFloats(v.floats));
+        w_.endObject();
+        break;
+      case K::List:
+        w_.beginArray(false);
+        for (size_t i = 0; i < v.items.size(); ++i) dataValue(PathSeg(&at, i), v.items[i]);
+        w_.endArray();
+        break;
+      case K::Record:
+        w_.beginObject(false);
+        for (const auto& [name, value] : v.fields) {
+          w_.key(name);
+          dataValue(PathSeg(&at, name), value);
+        }
+        w_.endObject();
+        break;
+    }
+  }
+
+  void metaInstance(const PathSeg& at, const MetaInstance& m) {
+    w_.beginObject(false);
+    w_.key("type");
+    w_.string(PathSeg(&at, "type"), m.type);
+    w_.key("version");
+    w_.integer(m.version);
+    auto values = [&](const char* key, const std::vector<DeviceValue>& v) {
+      if (v.empty()) return;
+      const PathSeg vat(&at, key);
+      w_.key(key);
+      w_.beginObject(false);
+      for (const DeviceValue& x : v) {
+        w_.key(x.name);
+        w_.number(PathSeg(&vat, x.name), x.value);
+      }
+      w_.endObject();
+    };
+    values("params", m.params);
+    values("settings", m.settings);
+    if (m.data) {
+      w_.key("data");
+      dataValue(PathSeg(&at, "data"), *m.data);
+    }
+    w_.endObject();
+  }
+
   void deviceHead(const PathSeg& at, const Device& d) {
-    w_.beginObject(d.source != nullptr || d.rack != nullptr);
+    w_.beginObject(d.source != nullptr || d.rack != nullptr || d.meta != nullptr);
     w_.key("id");
     w_.integer(d.id.value);
     w_.key("patch");
@@ -683,6 +740,16 @@ private:
     };
     values("params", d.params);
     values("settings", d.settings);
+    if (d.meta) {  // TMM.3 (schema 10): one line per instance, by path
+      const PathSeg mat(&at, "meta");
+      w_.key("meta");
+      w_.beginObject(true);
+      for (const MetaEntry& e : *d.meta) {
+        w_.key(e.path);
+        metaInstance(PathSeg(&mat, e.path), e.instance);
+      }
+      w_.endObject();
+    }
     if (d.source) {
       // Lines end in "\r\n" throughout (a Windows checkout of the stdlib): written without the '\r', "crlf": true.
       const std::string_view text = d.source->text;
@@ -1842,7 +1909,7 @@ private:
   // the heap, their path segments in a deque (stable addresses for the Members readers and the inner levels' paths) —
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
-                                                     "settings", "source", "crlf", "rack", "name"};
+                                                     "settings", "source", "crlf", "rack", "name", "meta"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2018,6 +2085,117 @@ private:
       }
       case 7: crlf = r_.readBool(f); break;
       case 9: d.name = str(f); break;  // T4.17 (schema 8)
+      case 10: d.meta = metaMap(f); break;  // TMM.3 (schema 10)
+    }
+  }
+
+  // ---- Meta modules (TMM.3, schema 10) ----
+  MetaMapPtr metaMap(const PathSeg& at) {
+    MetaMap m;
+    r_.beginObject(at);
+    std::string_view key;
+    std::string path;  // outlives the PathSeg that names it
+    while (r_.nextKey(at, key)) {
+      path.assign(key);
+      const PathSeg f(&at, path);
+      if (!meta::validPath(path)) r_.failValue(f, "'" + path + "' is not a meta module path");
+      MetaEntry e;
+      e.path = path;
+      e.instance = metaInstance(f);
+      m.push_back(std::move(e));
+    }
+    if (m.empty()) r_.failValue(at, "must not be empty");
+    std::sort(m.begin(), m.end(), [](const MetaEntry& a, const MetaEntry& b) { return a.path < b.path; });
+    for (size_t i = 1; i < m.size(); ++i)
+      if (m[i - 1].path == m[i].path) r_.failValue(at, "meta module '" + m[i].path + "' twice");
+    return std::make_shared<const MetaMap>(std::move(m));
+  }
+
+  MetaInstance metaInstance(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"type", "version", "params", "settings", "data"};
+    Members mm(r_, at, K);
+    MetaInstance inst;
+    for (int k; (k = mm.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: inst.type = str(f); break;
+        case 1: inst.version = u32(f); break;
+        case 2: inst.params = deviceValues(f); break;
+        case 3: inst.settings = deviceValues(f); break;
+        case 4: inst.data = std::make_shared<const meta::DataValue>(dataValue(f, 0)); break;
+      }
+    }
+    mm.require({0, 1});
+    const PathSeg tat(&at, "type"), vat(&at, "version");
+    const meta::Type* t = meta::findType(inst.type);
+    if (t == nullptr) r_.failValue(tat, "unknown meta module type '" + inst.type + "'", ErrorCode::Unsupported);
+    if (inst.version == 0) r_.failValue(vat, "must be at least 1");
+    if (inst.version > t->version)
+      r_.failValue(vat, "the state was saved by a newer pqdaw (" + inst.type + " version " + std::to_string(inst.version) +
+                            "; this build reads up to " + std::to_string(t->version) + ")",
+                   ErrorCode::Unsupported);
+    if (inst.version < t->version) {  // the type upgrades older state
+      if (t->upgradeData != nullptr) {
+        Result<meta::DataPtr> up = t->upgradeData(inst.data, inst.version);
+        if (!up) r_.failValue(vat, "cannot upgrade " + inst.type + " version " + std::to_string(inst.version) + ": " +
+                                       up.error().message);
+        inst.data = std::move(up.value());
+      }
+      inst.version = t->version;
+    }
+    return inst;
+  }
+
+  meta::DataValue dataValue(const PathSeg& at, int depth) {
+    using RK = json::Reader::Kind;
+    if (depth > 64) r_.failHere(at, "meta data nests deeper than 64 levels", ErrorCode::InvalidArgument);
+    switch (r_.peek()) {
+      case RK::Number: {
+        const double v = r_.readDouble(at);
+        if (!std::isfinite(v)) r_.failValue(at, "must be finite");
+        return meta::DataValue::num(v);
+      }
+      case RK::String: return meta::DataValue::str(str(at));
+      case RK::Null: r_.readNull(at); return {};
+      case RK::Array: {
+        std::vector<meta::DataValue> items;
+        r_.beginArray(at);
+        for (size_t i = 0; r_.nextElement(at); ++i) items.push_back(dataValue(PathSeg(&at, i), depth + 1));
+        return meta::DataValue::list(std::move(items));
+      }
+      case RK::Object: {
+        r_.beginObject(at);
+        std::string_view k;
+        std::vector<std::pair<std::string, meta::DataValue>> fields;
+        bool floats = false;
+        meta::DataValue out;
+        std::string name;
+        while (r_.nextKey(at, k)) {
+          name.assign(k);
+          const PathSeg f(&at, name);
+          if (name == "$f32") {
+            if (!fields.empty() || floats) r_.failValue(f, "\"$f32\" is a sample array's only key");
+            floats = true;
+            out.kind = meta::DataValue::Kind::Floats;
+            if (!meta::decodeFloats(str(f), out.floats)) r_.failValue(f, "not base64 float32 samples");
+            for (const float x : out.floats)
+              if (!std::isfinite(x)) r_.failValue(f, "a sample is not finite");
+            continue;
+          }
+          if (floats) r_.failValue(f, "\"$f32\" is a sample array's only key");
+          fields.emplace_back(name, dataValue(f, depth + 1));
+        }
+        if (floats) return out;
+        std::vector<std::string_view> names;
+        for (const auto& fl : fields) names.push_back(fl.first);
+        std::sort(names.begin(), names.end());
+        for (size_t i = 1; i < names.size(); ++i)
+          if (names[i - 1] == names[i]) r_.failValue(at, "field '" + std::string(names[i]) + "' twice");
+        meta::DataValue rec = meta::DataValue::record(std::move(fields));
+        if (std::string p = meta::dataProblem(rec); !p.empty()) r_.failValue(at, p);
+        return rec;
+      }
+      default: r_.failHere(at, "a meta data value is a number, string, array, object or {\"$f32\": …}", ErrorCode::InvalidArgument);
     }
   }
 
@@ -2037,6 +2215,13 @@ private:
       r_.failValue(el, "\"crlf\" without a \"source\"");
     }
     if (d.rack && d.source) r_.failValue(el, "a rack has no \"source\"");
+    // TMM.3: meta state checked as the commands check it (type, version, names, data; a chain meta device's kind).
+    if (d.meta || isMetaDevice(d)) {
+      const PathSeg mat(&el, d.meta ? "meta" : "patch");
+      if (d.meta)
+        for (const MetaEntry& e : *d.meta) check(PathSeg(&mat, e.path), detail::checkMetaInstance(d, e.path, e.instance));
+      check(mat, detail::checkDeviceMeta(d));
+    }
   }
 
   void chainKey(int ck, const PathSeg& cf, Chain& c, ChainZones& z) {
@@ -3195,6 +3380,14 @@ Status migrateAddDeviceAutomation(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 9 → 10 (TMM.3): schema 10 lets a device carry "meta" (meta-module state by name path) and a device's patch be
+// "meta:<type>"; a schema-9 file has neither, so nothing changes. Self-contained (renumber, do not merge, if another
+// schema step lands first).
+Status migrateAddMetaModules(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3204,6 +3397,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {6, migrateAddAudio},
     {7, migrateAddDeviceNames},
     {8, migrateAddDeviceAutomation},
+    {9, migrateAddMetaModules},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

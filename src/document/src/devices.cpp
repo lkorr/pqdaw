@@ -112,6 +112,7 @@ struct DeviceLibrary::Files final : graph::ImportLoader {
   };
   std::vector<Stock> stock;
   std::map<const graph::ParseResult*, std::pair<std::string, const std::string*>> origin;  // parse → (key, text)
+  std::span<const graph::SubcircuitRef> externals;  // TMM.3: the meta-module prelude (`meta_<type>` calls)
   const Stock* stockOf(std::string_view patch) const {
     for (const Stock& s : stock)
       if (s.patch == patch) return &s;
@@ -131,6 +132,7 @@ struct DeviceLibrary::Files final : graph::ImportLoader {
     const std::string* mine = &texts.back();  // a deque: stays valid while imports push their texts
     graph::ParseOptions po;
     po.imports = this;
+    po.externals = externals;
     auto r = std::make_unique<graph::ParseResult>(graph::parseDetailed(*mine, key, po));
     active.erase(key);
     if (!r->ok()) return Error{ErrorCode::Parse, joinDiagnostics(*mine, r->diagnostics), {}};
@@ -280,11 +282,65 @@ std::string DeviceLibrary::pathOf(std::string_view patch) const {
   return {};
 }
 
-DeviceLibrary::DeviceLibrary() : files_(std::make_unique<Files>()), users_(std::make_unique<UserCache>()) {}
+// TMM.3: nested meta-call sites per stock patch / per user graph (DeviceLibrary::metaSitesOf).
+struct DeviceLibrary::MetaCache {
+  std::mutex mutex;
+  struct Entry {
+    std::shared_ptr<const void> hold;  // a user graph: keeps the key's address from being reused
+    std::shared_ptr<const std::vector<MetaSite>> sites;
+  };
+  std::unordered_map<const void*, Entry> byKey;
+};
+
+DeviceLibrary::DeviceLibrary()
+    : files_(std::make_unique<Files>()), users_(std::make_unique<UserCache>()), metaCache_(std::make_unique<MetaCache>()),
+      prelude_(meta::prelude()) {}
 DeviceLibrary::~DeviceLibrary() = default;
+
+std::optional<DeviceInfo> metaDeviceInfo(const meta::Type& t, DeviceKind kind) {
+  if (kind == DeviceKind::Instrument ? !t.chainInstrument : t.chainEffectInput < 0) return std::nullopt;
+  DeviceInfo info;
+  info.patch = std::string(kMetaDevicePrefix) + std::string(t.id);
+  info.name = std::string(t.name);
+  info.kind = kind;
+  info.outWidth = t.outputs.empty() ? 0 : t.outputs.front().width;
+  for (const meta::ParamSpec& s : t.params) {
+    DeviceParamInfo p;
+    p.name = std::string(s.name);
+    p.label = s.label.empty() ? p.name : std::string(s.label);
+    p.defaultValue = s.def;
+    p.hasRange = true;
+    p.min = s.min;
+    p.max = s.max;
+    p.unit = s.unit;
+    p.exponential = s.curve == meta::Curve::Exp;
+    info.params.push_back(std::move(p));
+  }
+  for (const meta::SettingSpec& s : t.settings) info.settings.push_back(DeviceSettingInfo{std::string(s.name), s.def, true});
+  return info;
+}
+
+std::shared_ptr<const std::vector<MetaSite>> DeviceLibrary::metaSitesOf(const Device& d, const graph::Patch& root,
+                                                                       const ResolvedDevice* user,
+                                                                       const PatchLookup& lookup) const {
+  (void)d;
+  const void* key = user != nullptr && user->graph ? static_cast<const void*>(user->graph.get()) : &root;
+  MetaCache& c = *metaCache_;
+  {
+    std::lock_guard lock(c.mutex);
+    if (const auto it = c.byKey.find(key); it != c.byKey.end()) return it->second.sites;
+  }
+  std::vector<MetaSite> s = metaSites(root, lookup);
+  auto sites = s.empty() ? nullptr : std::make_shared<const std::vector<MetaSite>>(std::move(s));
+  std::lock_guard lock(c.mutex);
+  if (c.byKey.size() > 4096) c.byKey.clear();  // user graphs of a long session: recomputed on demand
+  c.byKey[key] = MetaCache::Entry{user != nullptr ? std::shared_ptr<const void>(user->graph) : nullptr, sites};
+  return sites;
+}
 
 Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlibDirUtf8) {
   std::unique_ptr<DeviceLibrary> lib(new DeviceLibrary());
+  lib->files_->externals = lib->prelude_->signatures;  // TMM.3: stock files may call meta modules
   const fs::path root = utf8Path(stdlibDirUtf8);
   std::vector<std::pair<const graph::Patch*, const StockDevice*>> found;
   for (const StockDevice& sd : kStock) {
@@ -311,6 +367,14 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
     lib->library_.add(r->file);
     for (graph::SubcircuitRef& s : graph::signatures(r->file)) lib->signatures_.push_back(std::move(s));
   }
+  // TMM.3: the meta-module prelude (default expansions `meta_<type>`), callable like any library patch.
+  for (const meta::Prelude::Entry& e : lib->prelude_->entries) lib->library_.add(e.nested);
+  for (const graph::SubcircuitRef& s : lib->prelude_->signatures) lib->signatures_.push_back(s);
+  for (const meta::Prelude::Entry& e : lib->prelude_->entries)
+    for (const DeviceKind k : {DeviceKind::Instrument, DeviceKind::AudioEffect}) {
+      std::optional<DeviceInfo> info = metaDeviceInfo(*e.type, k);
+      lib->metaInfos_.push_back(info ? std::move(*info) : DeviceInfo{});
+    }
   if (found.empty()) return Error{ErrorCode::NotFound, "no stock device under " + root.string(), {}};
   for (const auto& [patch, sd] : found) {
     auto info = describeDevice(*patch, std::string(sd->name));
@@ -405,6 +469,7 @@ std::shared_ptr<const ResolvedDevice> DeviceLibrary::resolve(const Device& d) co
   } else {
     graph::ParseOptions po;
     po.imports = files_.get();
+    po.externals = prelude_->signatures;  // TMM.3: meta_<type> calls
     po.previous = previous;
     po.lenientLayout = true;  // as the circuit editor parses (the same ids for the same text)
     po.deferMissingInputs = true;
@@ -463,12 +528,26 @@ const graph::PatchFile* DeviceLibrary::stockFile(std::string_view patch) const {
 }
 
 const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
+  if (isMetaDevice(d)) {  // TMM.3
+    const meta::Prelude::Entry* e = prelude_->find(metaDeviceType(d));
+    if (e == nullptr) return nullptr;
+    const std::optional<graph::Patch>& form = d.kind == DeviceKind::Instrument ? e->instrument : e->effect;
+    return form ? &*form : nullptr;
+  }
   if (!d.source) return library_.find(d.patch);
   hold = resolve(d);
   return hold ? hold->root() : nullptr;
 }
 
 const DeviceInfo* DeviceLibrary::infoOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
+  if (isMetaDevice(d)) {  // TMM.3
+    for (size_t i = 0; i < prelude_->entries.size(); ++i)
+      if (prelude_->entries[i].type->id == metaDeviceType(d)) {
+        const DeviceInfo& info = metaInfos_[2 * i + (d.kind == DeviceKind::Instrument ? 0 : 1)];
+        return info.patch.empty() ? nullptr : &info;
+      }
+    return nullptr;
+  }
   if (!d.source) return catalog_.find(d.patch);
   hold = resolve(d);
   return hold && hold->graph ? &hold->info : nullptr;

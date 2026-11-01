@@ -11,3 +11,5 @@ tests/tuning/fixtures/scl/*.scl -text
 tests/document/fixtures/**/*.pqd -text
 # T5.3: the golden lowering text is compared byte for byte
 tests/app/fixtures/lowering/*.pqp -text
+# TMM.3: the golden meta-module lowering texts are compared byte for byte
+tests/document/fixtures/meta/*.txt -text

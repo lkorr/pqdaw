@@ -67,6 +67,23 @@
 // mapped param add to the mapped position (Q135's law with the mapping as the centre); wires into a macro modulate the
 // macro (and so everything it drives).
 //
+// ---- Meta modules (TMM.3; model.h "Meta modules", pq/meta/type.h, pq/document/meta.h) --------------------------------
+// A chain meta device (Device::patch "meta:<type>") calls its own expansion, `meta_<type>__d<id>__<key>` (Form
+// ChainInstrument for an instrument — no audio in, per-voice out, done = !voice.gate — or ChainEffect), built from its
+// own settings (Device::settings) and the static-ness of its params (an automation lane, a modulation wire or a macro
+// mapping on one makes it modulated); its params are the device's own (d<id>__<name>, dev<id>:<name>), so automation,
+// macros and wires work as for any device. A device whose circuit (stock or user text) has NAMED meta calls
+// `name = meta_<type>(…)` calls a specialised copy of its root, `<root>__m<id>_<hash>`, in which every such call (and
+// every named helper call on the way to one, copied and renamed the same way) calls the instance's expansion
+// `meta_<type>__d<id>_<path>_<key>`, built from the instance's settings (MetaInstance; the type's defaults without
+// one), the call's wired param pins (not static) and the voice context (the device is an instrument). The instance's
+// params stay unconnected runtime params, flattened d<id>__<path>__<name> (path dots as "__"), linked as
+// "dev<id>:<path>.<name>" (ParamRef::metaParam): a face drag is one param write and the unit hash does not change.
+// Names carry hashes of everything they depend on, so an unchanged state lowers to the same IR (the track patch is
+// shared, its unit not recompiled); data never enters an expansion (MetaData edits never lower). An unnamed meta call
+// plays the prelude's default state (pq/meta/registry.h). Resource slots (frame tables, voice taps) come from
+// LowerOptions::metaSlotOf and are listed with the instance's data in LoweredProject::metaResources.
+//
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
 //                 stdlib/instruments/basic_synth.pqp; QUESTIONS Q15 A) → voice_sum → its audio effects = x (mono, or
@@ -137,6 +154,7 @@
 // Not RT code.
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -149,6 +167,8 @@
 #include "pq/graph/infer.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/project.h"
+#include "pq/meta/registry.h"
+#include "pq/meta/type.h"
 
 namespace pq::doc {
 
@@ -157,6 +177,12 @@ inline constexpr uint32_t kMaxPolyphony = 128;
 
 class DeviceLibrary;
 struct ResolvedDevice;
+// TMM.3: the meta-module expansions (and specialised device roots) a lowering calls ("Meta modules" below), kept alive
+// with it (LoweredProject::metaPatches).
+struct MetaPatches {
+  std::deque<graph::Patch> patches;              // stable addresses (the callee library points into them)
+  std::shared_ptr<const meta::Prelude> prelude;  // its `meta_<type>` patches are in the callee library too
+};
 
 struct LowerOptions {
   // The device library (devices.h: every patch a device may name, and what those import). Required.
@@ -178,6 +204,9 @@ struct LowerOptions {
   // `def` (always one with a signal). An index whose entry is null is allowed (the node then passes the static
   // pitches through). Unset: no tuning nodes (every note plays its static Hz, as before T2.6-fix1).
   std::function<uint32_t(TuningId, const TuningDef&)> tuningTableOf;
+  // TMM.3: the slot id of resource `index` (meta::ResourceRequest::index) of the meta instance (device, path) — stable
+  // while the instance exists (the link owns the slots, TMM.2 / TMM.5). Unset: 0.
+  std::function<uint32_t(DeviceId, std::string_view path, uint32_t index)> metaSlotOf;
 };
 
 // One track's patch (immutable once made; shared between lowerings while its IR is equal, so the link sees which
@@ -292,6 +321,19 @@ struct LoweredProject {
     bool stale = false;
   };
   std::vector<DeviceError> deviceErrors;
+  // TMM.3 ("Meta modules" above): every resource the project's meta instances read (per track, device and path: the
+  // slots the link must create or keep, and the data to build them from), and the expansions the graph calls.
+  struct MetaResource {
+    TrackId track;
+    DeviceId device;
+    std::string path;
+    std::string type;
+    meta::ResourceRequest request;
+    uint32_t slot = 0;
+    meta::DataPtr data;  // the instance's (or the type's default)
+  };
+  std::vector<MetaResource> metaResources;
+  std::shared_ptr<const MetaPatches> metaPatches;
 };
 
 // T4.7: how every wire of `project` is lowered with `library` (the same answer lower() gives, without building the
@@ -303,10 +345,13 @@ std::vector<WireState> wireStates(const Project& project, const DeviceLibrary& d
 // T4.7: the knob travel of a device param — what its panel knob shows (pq/views/devices/device_model.h toPosition /
 // fromPosition follow the same rule) and what modulation adds to: Log for @curve(exp) with positive ends and for dB
 // gains with a positive floor (linear in dB), else Linear; @steps (and integer ranges with them) round the value.
+// TMM.3: `@curve(exp0, k)` (the Phase accumulator's frequency) is exponential from exactly lo: value =
+// lo + (hi − lo)·(2^(k·p) − 1)/(2^k − 1) (exp0 = k; 0 for the other laws).
 struct ParamTravel {
   bool log = false;
   double lo = 0.0, hi = 1.0;
   bool round = false;
+  double exp0 = 0.0;
 };
 ParamTravel paramTravel(const graph::ParamDecl& decl) noexcept;
 double travelPosition(const ParamTravel& t, double value) noexcept;  // [0, 1]
