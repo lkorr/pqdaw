@@ -633,3 +633,6 @@ No open questions remain for draft 1.
   - Only the table itself (built off-thread from drawings/harmonics/keyframes) is not expressible as atoms: expanded, it is one wavetable node with a position input.
   - **A new Operator built from meta modules**, separate from the existing (Live-parity) Operator, which stays. Goal: massively simpler visual circuit; sounding different from Live's Operator is fine. Harmonic drawing comes from the wavetable module.
   - UI quality is the priority ("ui is everything here"): clean, simple, fun to interact with. This is the first of many meta modules, so the framework must generalise. Plan: docs/plans/MM.md.
+
+- 2026-11-01 (user): **the Phase accumulator is a general device, not an instrument.** "It doesn't have to be an instrument-only thing, it's just a general effect; it works like an instrument only when a piano roll out/in is plugged into it." Without a note source wired to its frequency input it free-runs at its frequency bar (one voice); with a piano roll / MIDI source plugged in it runs one voice per note (the note's Hz added to the bar), as before. It can sit anywhere in a chain (audio tracks, after instruments and effects) and in any circuit. Provisional (orchestrator): in an effect position the incoming audio drives its phase-modulation input.
+
