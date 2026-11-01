@@ -1673,7 +1673,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   7. While a hot-swap crossfade runs both images, both write the same tap: their samples interleave for those ≤ 20 ms (display only).
 - Status: open (user / orchestrator: 1; the rest informational).
 
-## Q?-TMM.5-a · 2026-11-01 · TMM.5 · The Wavetable module and its table builder: choices the plan left open
+## Q171 · 2026-11-01 · TMM.5 · The Wavetable module and its table builder: choices the plan left open
 - Context: docs/plans/MM.md TMM.5 (the `wavetable` type, the app's MetaResources) and the TMM.2 / TMM.4 join (faces read the real taps). Measured in tests/meta/test_wavetable.cpp, tests/document/test_meta_wavetable.cpp, tests/app/test_meta_wavetable.cpp. All reversible.
 - Choices (provisional):
   1. **Modulated baked controls are refused, not approximated.** Until the live path (TMM.8), fold / warp / sync of a chain Wavetable cannot get an automation lane, a modulation wire or a macro mapping: the commands (and the file reader) refuse them with the reason ("… is baked into its table: it cannot be automated, wired or mapped to a macro yet"; `doc::metaParamBakedOnly`, `meta::Type::liveBakeable`). A nested Wavetable whose fold / warp / sync pin is wired in the circuit text expands to an error, so its device reports that reason (and is bypassed, like any device error). Alternative: bake the param's stored value and ignore the wire (silently wrong), or a non-oversampled audio-rate path (aliases: against the 2026-11-01 decision).

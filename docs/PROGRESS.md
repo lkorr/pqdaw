@@ -1049,3 +1049,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf (ship, 8 % load, indicative): wavetable_pos L1 3.19 ns/sample (raw read 2.91), L8 19.7 ns/frame (raw 18.9); with a tap reader 3.59 / 20.1; inside the crossfade 6.59 / 38.8; voice_tap unwatched 0.02, watched 0.40 / 0.55.
 - CPU-efficiency check: one acquire load per call; fade in its own loop, free in steady state; tap writes only with a reader; lane-mask writes only for read taps.
 - Notes: Q170 item 1: the plan's swap click bound (+1e-3) is unreachable for a 64-sample linear fade; the test checks own step + max|b−a|/64; orchestrator keeps 64-sample linear. The views-side VoiceTapReader (TMM.4) needs an adapter to pq::VoiceTapReader (assigned to TMM.5).
+
+## 2026-11-01 · TMM.5 · task/TMM.5-wavetable-module
+- Did: meta `wavetable` type (data codec, VoicePhase default, expansion; Shape mode / modulated baked controls refused until TMM.8), meta::TableBuilder, link table builds + publish, renderOffline waits; doc metaParamBakedOnly; join: views::TapVoices, app::FaceVoiceHub, phase_acc voice_tap, faces woken on playhead refresh / fresh records.
+- Verified: build.ps1 -Affected (EVERYTHING, check, default+slow): 78/79; pq_tests_views SIGSEGV in the mixer golden render (known GPU-driver class), re-run alone: passed.
+- Perf: ship pqc 16 voices: meta_wavetable() 2.41 ns/voice-sample vs hand-written atom + phasor 2.30. Keyframe edit → audible 9.7 ms (64 frames), 63 ms with a bake; module alias worst −126.1 / −128.5 / −131.2 dBFS (44.1 / 48 / 96 kHz).
+- CPU-efficiency check: data and baked-knob edits never recompile; builds off the audio thread at below-normal priority, newest wins; identical specs share one table; arenas reused; unwatched taps one load per block.
+- Notes: Q171 (inputs named x / pos; items 1 and 3 resolved by TMM.8).
