@@ -249,6 +249,18 @@ TEST_CASE("frame table builder: spectral morph interpolates magnitude and phase 
   const auto mid = b.frameSpectrum(1)[2];
   CHECK(std::fabs(std::fabs(std::arg(mid)) - kPi) < 1e-8);
   CHECK(std::fabs(2.0 * std::abs(mid) - 1.0) < 1e-8);
+  // TMM.16: opposite phases up to the float cycles' rounding turn the same way, every harmonic: a saw's odd harmonics
+  // and a square's are exactly opposite (both sampled cycles' phases are π/2 ∓ π/2 + πh/N), so halfway each is the
+  // saw's phase + π/2 (counter-clockwise), not − π/2 for those whose rounding fell the other way.
+  FrameTableBuilder b2;
+  ftfix::SpecHolder s2({ftfix::basic(BasicCycle::Saw), ftfix::basic(BasicCycle::Square)}, 48000, 3);
+  (void)buildOrFail(b2, s2.spec);
+  const std::vector<std::complex<double>> saw(b2.frameSpectrum(0).begin(), b2.frameSpectrum(0).end());
+  const auto m2 = b2.frameSpectrum(1);
+  uint32_t turnedOtherWay = 0;
+  for (uint32_t h = 1; h < 1024; h += 2)
+    if (std::abs(std::remainder(std::arg(m2[h]) - std::arg(saw[h]) - kPi / 2, 2 * kPi)) > 1e-6) ++turnedOtherWay;
+  CHECK(turnedOtherWay == 0u);
 }
 
 TEST_CASE("frame table builder: normalise, removeDc, holds before the first and after the last keyframe") {
@@ -451,6 +463,84 @@ TEST_CASE("frame table builder: buildInto allocates nothing once sized; readers 
           readFrameTableL1(t.view(), st, phase.data(), pos.data(), true, 61, out.data());
           readFrameTableL8(t.view(), st, phase.data(), pos.data(), false, 64, out.data());
         }) == 0);
+}
+
+TEST_CASE("frame table builder: buildFramesInto rebuilds only the frames listed over a clone (TMM.16 focused previews)") {
+  // An earlier table A (one set of cycles) and the full build B of a later spec (one keyframe redrawn): rebuilding a
+  // few frames of a clone of A from B's spec gives B's rows there (float rounding of the frame grouping) and A's
+  // rows elsewhere, bit for bit. Every path: plain, the live-band bake, the full-band bake, Shape mode's arrays.
+  auto fixture = ftfix::drawnFixture(5);
+  struct Mode {
+    const char* name;
+    FrameBake bake;
+    bool liveBand, antiderivative;
+  };
+  const Mode modes[] = {{"plain", {}, false, false},
+                        {"live-band bake", {WarpMode::Mirror, -0.4f, 0.5f, 0.0f}, true, false},
+                        {"full-band bake", {WarpMode::Bend, 0.3f, 0.2f, 0.1f}, false, false},
+                        {"shape (antiderivative)", {WarpMode::Bend, 0.0f, 0.3f, 0.0f}, false, true}};
+  for (const Mode& m : modes) {
+    const std::string name = m.name;
+    CAPTURE(name);
+    ftfix::SpecHolder a(fixture, 48000, 16), b(fixture, 48000, 16);
+    for (float& v : b.cycles[3]) v = -0.5f * v + 0.1f;  // keyframe 3 (at 0.75) redrawn
+    b.keys[3].cycle = b.cycles[3];
+    for (ftfix::SpecHolder* h : {&a, &b}) {
+      h->spec.bake = m.bake;
+      h->spec.liveBand = m.liveBand;
+      h->spec.antiderivative = m.antiderivative;
+    }
+    FrameTableBuilder builder;
+    const FrameTable ta = buildOrFail(builder, a.spec);
+    const FrameTable tb = buildOrFail(builder, b.spec);
+    auto c = ta.clone();
+    REQUIRE(c.ok());
+    FrameTable& tc = c.value();
+    const std::vector<uint32_t> frames{2, 10, 11, 12};
+    REQUIRE(builder.buildFramesInto(b.spec, tc, frames).ok());
+    CHECK_FALSE(tc.isSine());
+    double rebuilt = 0.0;
+    bool keptExact = true, changed = false;
+    for (uint32_t f = 0; f < 16; ++f) {
+      const bool listed = std::find(frames.begin(), frames.end(), f) != frames.end();
+      for (uint32_t j = 0; j < ta.layout().levels; ++j) {
+        const auto rc = tc.row(f, j), ra = ta.row(f, j), rb = tb.row(f, j);
+        for (size_t i = 0; i < rc.size(); ++i) {
+          if (listed) {
+            rebuilt = std::max(rebuilt, std::fabs(double(rc[i]) - rb[i]));
+            changed = changed || ra[i] != rb[i];
+          } else {
+            keptExact = keptExact && rc[i] == ra[i];
+          }
+        }
+        if (m.antiderivative) {
+          const auto pc = tc.adRow(f, j), pa = ta.adRow(f, j), pb = tb.adRow(f, j);
+          for (size_t i = 0; i < pc.size(); ++i) {
+            if (listed) rebuilt = std::max(rebuilt, std::fabs(double(pc[i]) - pb[i]));
+            else keptExact = keptExact && pc[i] == pa[i];
+          }
+        }
+      }
+    }
+    MESSAGE(name << ": rebuilt frames vs a full build " << rebuilt);
+    CHECK(changed);  // frames 10–12 lie in keyframe 3's gaps
+    CHECK(rebuilt <= 1e-6);
+    CHECK(keptExact);
+    // The clone itself is an exact copy.
+    auto c2 = tb.clone();
+    REQUIRE(c2.ok());
+    for (uint32_t f = 0; f < 16; ++f)
+      for (uint32_t j = 0; j < tb.layout().levels; ++j) {
+        const auto r1 = tb.row(f, j), r2 = c2.value().row(f, j);
+        CHECK(std::equal(r1.begin(), r1.end(), r2.begin()));
+      }
+    CHECK(c2.value().isSine() == tb.isSine());
+    // Allocation-free once sized; listing errors are refused.
+    CHECK(pq::alloc_trap::countRtViolations([&] { CHECK(builder.buildFramesInto(b.spec, tc, frames).ok()); }) == 0);
+    const std::vector<uint32_t> bad1{3, 3}, bad2{16};
+    CHECK_FALSE(builder.buildFramesInto(b.spec, tc, bad1).ok());
+    CHECK_FALSE(builder.buildFramesInto(b.spec, tc, bad2).ok());
+  }
 }
 
 TEST_CASE("frame table builder: spec validation, hashing, basic cycles") {

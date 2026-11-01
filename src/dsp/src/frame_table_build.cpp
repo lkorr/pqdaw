@@ -82,6 +82,9 @@ struct FrameTableBuilder::Impl {
   std::vector<double> keyMag, keyArg;
   std::vector<Cd> dense;                 // capFrames × kBins
   uint32_t lastFrames = 0;
+  // TMM.16: the dense frames this build computes, ascending (all of them for buildInto; a subset for buildFramesInto).
+  std::vector<uint32_t> sel;             // capacity capFrames
+  uint32_t selCount = 0;
   std::vector<Cd> bufIn, bufOut;         // max transform length
   std::vector<detail::Cd4> buf4In, buf4Out;  // the longest level
 
@@ -113,6 +116,7 @@ struct FrameTableBuilder::Impl {
   void levels(FrameTable& out, bool antiderivative);
   void edges(FrameTable& out);
   void sines(FrameTable& out);
+  Status run(const FrameTableSpec& spec, FrameTable& out, bool all);  // TMM.16: the steps over `sel`
   // TMM.8-fix: the live-band bake (FrameTableSpec::liveBand).
   Status ensureLive(const FrameTableSpec& spec);
   void liveBandLevels(const FrameTableSpec& spec, FrameTable& out);
@@ -169,6 +173,7 @@ Status FrameTableBuilder::Impl::ensure(const FrameTableSpec& spec) {
   if (spec.denseFrames > capFrames) {
     capFrames = spec.denseFrames;
     dense.resize(static_cast<std::size_t>(capFrames) * kBins);
+    sel.resize(capFrames);
   }
   if (spec.bake.active()) {
     const uint32_t r = frameBakeResolution(spec);
@@ -230,7 +235,8 @@ void FrameTableBuilder::Impl::keyframeSpectra(const FrameTableSpec& spec) {
 void FrameTableBuilder::Impl::denseFrames(const FrameTableSpec& spec) {
   const uint32_t keys = static_cast<uint32_t>(spec.keyframes.size());
   const uint32_t frames = spec.denseFrames;
-  for (uint32_t d = 0; d < frames; ++d) {
+  for (uint32_t si = 0; si < selCount; ++si) {
+    const uint32_t d = sel[si];
     const double u = frames > 1 ? static_cast<double>(d) / (frames - 1) : 0.0;
     Cd* out = dense.data() + static_cast<std::size_t>(d) * kBins;
     // The gap: the last keyframe at or before u whose successor is after u.
@@ -262,18 +268,21 @@ void FrameTableBuilder::Impl::denseFrames(const FrameTableSpec& spec) {
       if (m0 == 0.0) p0 = p1;
       if (m1 == 0.0) p1 = p0;
       double dp = std::remainder(p1 - p0, kTwoPi);  // [−π, π]
-      if (dp <= -std::numbers::pi) dp = std::numbers::pi;
+      // Exactly opposite (within kOppositePhaseTol: the keyframes' float samples put rounding noise on every phase,
+      // which must not pick the direction harmonic by harmonic) turns counter-clockwise (TMM.16: a saw → square
+      // morph turned each odd harmonic whichever way its rounding said, an incoherent wave).
+      if (std::fabs(dp) >= std::numbers::pi - kOppositePhaseTol) dp = std::numbers::pi;
       out[h] = std::polar(m0 + t * (m1 - m0), p0 + t * dp);
     }
   }
   if (spec.bake.active() && !(spec.liveBand && !spec.antiderivative)) {
-    for (uint32_t d = 0; d < frames; d += 2) {
-      Cd* fa = dense.data() + static_cast<std::size_t>(d) * kBins;
-      bakePair(spec.bake, fa, d + 1 < frames ? fa + kBins : nullptr);
+    for (uint32_t si = 0; si < selCount; si += 2) {  // a full build pairs (0, 1), (2, 3), ... as before
+      Cd* fa = dense.data() + static_cast<std::size_t>(sel[si]) * kBins;
+      bakePair(spec.bake, fa, si + 1 < selCount ? dense.data() + static_cast<std::size_t>(sel[si + 1]) * kBins : nullptr);
     }
   }
   if (spec.removeDc && !(spec.bake.active() && spec.liveBand && !spec.antiderivative))
-    for (uint32_t d = 0; d < frames; ++d) dense[static_cast<std::size_t>(d) * kBins] = 0.0;
+    for (uint32_t si = 0; si < selCount; ++si) dense[static_cast<std::size_t>(sel[si]) * kBins] = 0.0;
 }
 
 Status FrameTableBuilder::Impl::ensureLive(const FrameTableSpec& spec) {
@@ -320,7 +329,8 @@ void FrameTableBuilder::Impl::liveBandLevels(const FrameTableSpec& spec, FrameTa
   const uint32_t numLiveBp = warpBreakpoints(b.warpMode, b.warp, b.sync, liveBp, kMaxBreakpoints);
   const FrameTableView& src = liveSrc.view();
   const uint32_t g = kFrameTableGuard;
-  for (uint32_t d = 0; d < out.frames(); ++d) {
+  for (uint32_t si = 0; si < selCount; ++si) {
+    const uint32_t d = sel[si];
     for (uint32_t j = 0; j < layout.levels; ++j) {
       if (j > 0 && layout.offset[j] == layout.offset[j - 1]) continue;
       const uint32_t len = layout.length[j], top = layout.top[j], m = 2 * len;
@@ -564,13 +574,13 @@ void FrameTableBuilder::Impl::bakePair(const FrameBake& b, Cd* fa, Cd* fb) {
 
 // Eight frames per transform: four lanes of Cd4, each a complex signal carrying two frames (real and imaginary).
 void FrameTableBuilder::Impl::levels(FrameTable& out, bool antiderivative) {
-  const uint32_t frames = out.frames();
   const uint32_t g = kFrameTableGuard;
   // Pass 0: the value rows; pass 1 (Shape mode): the antiderivative's periodic part, c_h / (2πih), DC 0.
   for (int pass = 0; pass < (antiderivative ? 2 : 1); ++pass)
-  for (uint32_t d0 = 0; d0 < frames; d0 += 8) {
+  for (uint32_t s0 = 0; s0 < selCount; s0 += 8) {
     const Cd* c[8];
-    for (uint32_t f = 0; f < 8; ++f) c[f] = d0 + f < frames ? dense.data() + static_cast<std::size_t>(d0 + f) * kBins : nullptr;
+    for (uint32_t f = 0; f < 8; ++f)
+      c[f] = s0 + f < selCount ? dense.data() + static_cast<std::size_t>(sel[s0 + f]) * kBins : nullptr;
     for (uint32_t j = 0; j < layout.levels; ++j) {
       if (j > 0 && layout.offset[j] == layout.offset[j - 1]) continue;
       const uint32_t len = layout.length[j], top = layout.top[j];
@@ -598,7 +608,7 @@ void FrameTableBuilder::Impl::levels(FrameTable& out, bool antiderivative) {
       }
       fftLevel[fftOfLevel[j]].inverse(buf4In.data(), buf4Out.data());
       for (uint32_t f = 0; f < 8 && c[f]; ++f) {
-        float* row = pass == 0 ? out.mutableRow(d0 + f, j) : out.mutableAdRow(d0 + f, j);
+        float* row = pass == 0 ? out.mutableRow(sel[s0 + f], j) : out.mutableAdRow(sel[s0 + f], j);
         const uint32_t k = (f / 2) + (f % 2 ? 4 : 0);  // lane, then real (even f) or imaginary (odd f)
         for (uint32_t n = 0; n < len; ++n) row[n] = static_cast<float>(reinterpret_cast<const double*>(&buf4Out[n])[k]);
         for (uint32_t q = 0; q < g; ++q) {
@@ -618,7 +628,8 @@ void FrameTableBuilder::Impl::edges(FrameTable& out) {
   const uint32_t levels = out.view().levels;
   double w[6];
   interpWeights(0.0, w);
-  for (uint32_t d = 0; d < out.frames(); ++d) {
+  for (uint32_t si = 0; si < selCount; ++si) {
+    const uint32_t d = sel[si];
     dc[d] = static_cast<float>(dense[static_cast<std::size_t>(d) * kBins].real());
     for (uint32_t j = 0; j < levels; ++j) {
       const float* row = out.mutableRow(d, j);
@@ -687,7 +698,7 @@ uint32_t frameBakeResolution(const FrameTableSpec& spec) noexcept {
 FrameTableBuilder::FrameTableBuilder() : impl_(std::make_unique<Impl>()) {}
 FrameTableBuilder::~FrameTableBuilder() = default;
 
-Status FrameTableBuilder::buildInto(const FrameTableSpec& spec, FrameTable& out) {
+Status FrameTableBuilder::validate(const FrameTableSpec& spec, const FrameTable& out) {
   const auto keys = spec.keyframes.size();
   if (keys < 1 || keys > kMaxKeyframes) return invalid("frame table needs 1 to 256 keyframes");
   if (!spec.gaps.empty() && spec.gaps.size() != keys - 1) return invalid("frame table gaps must be keyframes − 1");
@@ -713,20 +724,45 @@ Status FrameTableBuilder::buildInto(const FrameTableSpec& spec, FrameTable& out)
   if (out.frames() != spec.denseFrames || out.layout().sampleRate != spec.sampleRate ||
       out.hasAntiderivative() != spec.antiderivative)
     return invalid("frame table was allocated for another frame count, sample rate or mode");
+  return Ok{};
+}
+
+Status FrameTableBuilder::buildInto(const FrameTableSpec& spec, FrameTable& out) {
+  if (auto s = validate(spec, out); !s) return s;
   if (auto s = impl_->ensure(spec); !s) return s;
-  impl_->keyframeSpectra(spec);
-  impl_->denseFrames(spec);
+  for (uint32_t d = 0; d < spec.denseFrames; ++d) impl_->sel[d] = d;
+  impl_->selCount = spec.denseFrames;
+  return impl_->run(spec, out, true);
+}
+
+Status FrameTableBuilder::buildFramesInto(const FrameTableSpec& spec, FrameTable& out, std::span<const uint32_t> frames) {
+  if (auto s = validate(spec, out); !s) return s;
+  for (size_t i = 0; i < frames.size(); ++i) {
+    if (frames[i] >= spec.denseFrames) return invalid("buildFramesInto: frame index out of range");
+    if (i > 0 && frames[i] <= frames[i - 1]) return invalid("buildFramesInto: frames must be ascending and distinct");
+  }
+  if (frames.empty()) return Ok{};
+  if (auto s = impl_->ensure(spec); !s) return s;
+  std::copy(frames.begin(), frames.end(), impl_->sel.begin());
+  impl_->selCount = static_cast<uint32_t>(frames.size());
+  return impl_->run(spec, out, frames.size() == spec.denseFrames);
+}
+
+Status FrameTableBuilder::Impl::run(const FrameTableSpec& spec, FrameTable& out, bool all) {
+  keyframeSpectra(spec);
+  denseFrames(spec);
   if (spec.liveBand && spec.bake.active() && !spec.antiderivative) {
     // TMM.8-fix: the unbaked frames' levels are the live read's source; each output level is the live read.
-    impl_->levels(impl_->liveSrc, false);
-    impl_->liveBandLevels(spec, out);
+    levels(liveSrc, false);
+    liveBandLevels(spec, out);
     out.setSine(false);  // the rows are the live read, not the dense spectra
   } else {
-    impl_->levels(out, spec.antiderivative);
-    impl_->sines(out);
+    levels(out, spec.antiderivative);
+    if (all) sines(out);
+    else out.setSine(false);  // TMM.16: the other frames' spectra are not known here (their rows are right: read them)
   }
-  if (spec.antiderivative) impl_->edges(out);
-  impl_->lastFrames = spec.denseFrames;
+  if (spec.antiderivative) edges(out);
+  lastFrames = spec.denseFrames;
   return Ok{};
 }
 

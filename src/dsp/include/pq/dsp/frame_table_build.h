@@ -13,7 +13,8 @@
 //    given; a band-limited cycle may overshoot it slightly, as any band-limited edge does).
 // 2. Dense frame d sits at u_d = d / (F − 1) (u = 0 for F = 1). Between keyframes a and b (u_a ≤ u ≤ u_b, t = the
 //    position in the gap): Spectral (default) interpolates each harmonic's magnitude linearly and its phase along the
-//    shorter arc (a zero magnitude takes the other side's phase; exactly opposite phases turn counter-clockwise);
+//    shorter arc (a zero magnitude takes the other side's phase; exactly opposite phases — within
+//    kOppositePhaseTol, the float cycles' rounding — turn counter-clockwise);
 //    DC is interpolated linearly. Crossfade interpolates the complex coefficients (= the samples) linearly. Before
 //    the first and after the last keyframe the frames hold that keyframe.
 // 3. Bake (when any of warp / fold / sync is non-zero): each dense frame's cycle is sampled through the shared
@@ -45,6 +46,8 @@
 namespace pq::dsp {
 
 inline constexpr uint32_t kKeyframeCycle = 2048;
+// TMM.16: two keyframes' phases of a harmonic this close to opposite (radians) count as exactly opposite (step 2).
+inline constexpr double kOppositePhaseTol = 1e-3;
 inline constexpr uint32_t kMaxKeyframes = 256;
 
 enum class GapMode : uint8_t { Spectral, Crossfade };
@@ -110,12 +113,20 @@ public:
   Status buildInto(const FrameTableSpec& spec, FrameTable& out);
   // Allocates the table (one allocation of its storage) and builds it.
   Result<FrameTable> build(const FrameTableSpec& spec);
+  // TMM.16 (focused preview builds, pq/meta/table_builder.h): builds only the dense frames listed (ascending,
+  // distinct, < spec.denseFrames) into `out`, which must be allocated for the spec as above; every other frame of
+  // `out` is left as it was (a copy of an earlier table: FrameTable::clone). The listed frames equal a full build's
+  // (to float rounding: the transforms pack frames in other groups). The sine path is switched off (the other frames'
+  // spectra are unknown; their rows stay valid). Allocation-free once the arenas are sized, as buildInto.
+  Status buildFramesInto(const FrameTableSpec& spec, FrameTable& out, std::span<const uint32_t> frames);
 
-  // The last successful build's dense-frame spectra (after bake and removeDc): c_h, h = 0 … 1023.
+  // The last successful build's dense-frame spectra (after bake and removeDc): c_h, h = 0 … 1023 (after
+  // buildFramesInto: only the frames it built).
   std::span<const std::complex<double>> frameSpectrum(uint32_t frame) const noexcept;
   uint32_t frames() const noexcept;
 
 private:
+  Status validate(const FrameTableSpec& spec, const FrameTable& out);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

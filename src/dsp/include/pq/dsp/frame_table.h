@@ -131,6 +131,8 @@ public:
   // Zeroed storage for `frames` frames at the layout's rate (frames in [1, 256]); with `antiderivative` also the
   // Shape-mode arrays (TMM.8: twice the row memory). Not RT-safe.
   static Result<FrameTable> allocate(const FrameTableLayout& layout, uint32_t frames, bool antiderivative = false);
+  // TMM.16: a copy (same layout, frames, mode; every row, the Shape-mode arrays and the sine data). Not RT-safe.
+  Result<FrameTable> clone() const;
 
   const FrameTableView& view() const noexcept { return view_; }  // RT-safe
   const FrameTableLayout& layout() const noexcept { return layout_; }

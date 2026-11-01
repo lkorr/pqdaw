@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstring>
 #include <cmath>
 #include <complex>
 #include <numbers>
@@ -132,6 +133,22 @@ Result<FrameTable> FrameTable::allocate(const FrameTableLayout& layout, uint32_t
     t.view_.frameDc = t.extra_.data() + t.dcOffset_;
     t.view_.levelEdge = t.extra_.data() + t.edgeOffset_;
   }
+  return t;
+}
+
+Result<FrameTable> FrameTable::clone() const {
+  if (view_.frames == 0) return Error{ErrorCode::InvalidArgument, "clone: an empty frame table", {}};
+  auto t = allocate(layout_, view_.frames, hasAntiderivative());
+  if (!t) return t;
+  FrameTable& c = t.value();
+  auto copy = [](const auto& from, auto& to) {
+    if (from.size() > 0) std::memcpy(to.data(), from.data(), from.size() * sizeof(*from.data()));
+  };
+  copy(data_, c.data_);
+  copy(ad_, c.ad_);
+  copy(extra_, c.extra_);
+  copy(sine_, c.sine_);
+  c.setSine(isSine());
   return t;
 }
 
