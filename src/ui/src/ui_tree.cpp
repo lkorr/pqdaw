@@ -487,6 +487,14 @@ void UiTree::updateHover(Vec2 p) {
   for (TreeObserver* o : observers_) o->onHoverChanged(hovered_);
 }
 
+void UiTree::infoChanged(const Widget* w) {
+  for (const Widget* h = hovered_; h; h = h->parent())
+    if (h == w) {
+      for (TreeObserver* o : observers_) o->onInfoChanged(hovered_);
+      return;
+    }
+}
+
 Cursor UiTree::cursor() const {
   if (drag_) {
     if (drag_->feedback.effect == DropEffect::None) return Cursor::NotAllowed;

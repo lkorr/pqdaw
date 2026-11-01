@@ -1121,3 +1121,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a (two string_views per symbol spec; text built only when the info view asks).
 - CPU-efficiency check: no allocation per node; the strings point into the static atom table.
 - Notes/blockers: none.
+
+## 2026-11-01 · circuit-hover-info-fix1 · main (orchestrator; user report: "it just says Project Patch the whole time")
+- Did: the previous commit's info text was right but never shown: the info view re-reads only when the hovered *widget* changes, and moving between nodes inside one canvas is not a widget change. New `Widget::infoChanged()` → `UiTree::infoChanged` → `TreeObserver::onInfoChanged(hovered)` (only when the widget is or contains the hovered one; tooltips are not restarted); the shell's InfoView re-reads on it. CircuitCanvas calls it when its hovered node / pin / wire changes, when the hovered face changes, and when a face's hovered control or own hover changes (TMM.4/TMM.9 face info had the same staleness). The project-patch test now checks the shell's InfoView text (it failed with "Project Patch" with the canvas call removed; my first test read canvas.info() directly and missed it).
+- Verified: build.ps1 -Affected (check, default + slow; pq_tests_app, audio, playback, pqmeter_diff, ui, views, pqdaw): 0 warnings; 25/28 on the run, pq_tests_playback_s0/_s1 and pq_tests_views failed under load (two workers building at once), each passed on its own rerun (logs overwritten by the reruns; not diagnosed further).
+- Perf: n/a (a parent walk from the hovered widget per hover change).
+- CPU-efficiency check: notification only on a hover change, not every move; InfoView repaints only when the text differs.
+- Notes/blockers: none.

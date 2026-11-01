@@ -144,6 +144,9 @@ class TreeObserver {
 public:
   virtual ~TreeObserver() = default;
   virtual void onHoverChanged(Widget* /*hovered*/) {}
+  // The hovered widget's info() text changed while the pointer stayed on it (Widget::infoChanged: a canvas whose
+  // hovered item changed). The info view re-reads it; tooltips are not restarted.
+  virtual void onInfoChanged(Widget* /*hovered*/) {}
   virtual void onPointerDown(Vec2 /*pos*/) {}
   // T4.7: a layout pass ran (rects may have moved: a scroll, a splitter, a fold); called before the frame is painted,
   // so an observer that draws over other widgets (the cable layer) can damage what it must repaint.
@@ -301,6 +304,9 @@ public:
   virtual void arrange(LayoutPass& /*pass*/) {}
   // Info-view text for this widget (empty: ask the parent, see infoFor()).
   virtual InfoText info() const { return {}; }
+  // Tells the tree that info() changed in place (e.g. another item inside the widget is under the pointer); the
+  // tree's observers re-read it when this widget or a child of it is hovered. Cheap when it is not.
+  void infoChanged() noexcept;
   // Tooltip text shown after a hover delay by the OverlayLayer (pq/ui/overlay.h). Empty: none.
   virtual std::string_view tooltip() const { return {}; }
   // --- drag and drop (T5.7, pq/ui/drag.h) ---
@@ -589,6 +595,8 @@ public:
   void setClipboard(Clipboard* c) noexcept { clipboard_ = c; }
   Clipboard& clipboard();
   void addObserver(TreeObserver* o);
+  // Widget::infoChanged: observers' onInfoChanged when `w` is hovered or contains the hovered widget.
+  void infoChanged(const Widget* w);
   void removeObserver(TreeObserver* o) noexcept;
 
   struct Stats {

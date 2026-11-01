@@ -29,6 +29,7 @@ void InfoView::attachTo(UiTree& tree) {
 }
 
 void InfoView::onHoverChanged(Widget* hovered) { show(infoFor(hovered)); }
+void InfoView::onInfoChanged(Widget* hovered) { show(infoFor(hovered)); }
 
 // Copies the text (the hovered widget owns the views and may go away); repaints only when it changed.
 void InfoView::show(const InfoText& t) {

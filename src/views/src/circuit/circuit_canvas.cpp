@@ -1490,6 +1490,7 @@ bool CircuitCanvas::onPointer(const ui::PointerEvent& e) {
         m.hover = hit;
         markDirty();
         if (onHoverChanged) onHoverChanged(hit);
+        infoChanged();  // the info view names the node, pin or wire now under the pointer
       }
       return false;
     }
@@ -1688,12 +1689,19 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
       if (m.faceHover >= 0 && m.faceHover != i && static_cast<size_t>(m.faceHover) < m.faces.size() &&
           m.faces[static_cast<size_t>(m.faceHover)].face->setHoveredPart(MetaFace::kNone))
         markDirty();
+      if (m.faceHover != i) infoChanged();
       m.faceHover = i;
       if (i >= 0) {
         MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
         const FacePointer fp = m.pointerOf(i, e, K::Move);
-        if (f.setHoveredPart(f.hitTest(fp.local, fp.pxPerUnit))) markDirty();
-        if (f.onPointer(fp)) markDirty();  // TMM.9: the face's own hover (a bar, a draw cursor, Alt)
+        if (f.setHoveredPart(f.hitTest(fp.local, fp.pxPerUnit))) {
+          markDirty();
+          infoChanged();  // the face's info names the control under the pointer
+        }
+        if (f.onPointer(fp)) {  // TMM.9: the face's own hover (a bar, a draw cursor, Alt)
+          markDirty();
+          infoChanged();
+        }
       }
       return false;
     }

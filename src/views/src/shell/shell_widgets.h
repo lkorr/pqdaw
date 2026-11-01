@@ -183,6 +183,7 @@ public:
 
 private:
   void onHoverChanged(ui::Widget* hovered) override;
+  void onInfoChanged(ui::Widget* hovered) override;
   ViewContext::Subscription sub_;
   std::string title_, body_;
   // Word-wrap cache: line starts in body_ for (font, width).

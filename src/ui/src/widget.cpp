@@ -202,6 +202,10 @@ void Widget::setVisualOverflow(Insets logicalPx) noexcept {
   if (tree_) tree_->noteOverflow(logicalPx);
 }
 
+void Widget::infoChanged() noexcept {
+  if (tree_) tree_->infoChanged(this);
+}
+
 void Widget::markDirty() noexcept {
   if (tree_) tree_->damageWidget(*this);
 }

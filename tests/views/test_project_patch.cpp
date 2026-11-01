@@ -27,6 +27,7 @@
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
+#include "../../src/views/src/shell/shell_widgets.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
 
@@ -840,8 +841,11 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   CHECK(v.scene().sceneNode[v.patch().nodeOf(sat)] == kNone);
   CHECK(v.scene().scene->nodes.size() > nodes + 10);
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");  // the model is the same graph
-  // Hovering one of its atoms names it in the info view (the atom and what it does), not the view's general help.
+  // Hovering one of its atoms names it in the info view (the atom and what it does), not the view's general help:
+  // the shell's info view itself, which re-reads when the hovered item inside the canvas changes.
   {
+    auto* infoView = dynamic_cast<shell::InfoView*>(u.d.tree().find("main/body/bottom/info"));
+    REQUIRE(infoView != nullptr);
     const circuit::CircuitScene& sc = *v.scene().scene;
     const IRect cr = v.canvas().rect();
     uint32_t named = 0;
@@ -853,11 +857,10 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
       if (c.x <= cr.x || c.y <= cr.y || c.x >= cr.right() || c.y >= cr.y + cr.h) continue;
       if (v.canvas().hitTest(c) != circuit::CanvasHit{circuit::CanvasHit::Kind::Node, i}) continue;
       u.d.move(c);
-      const ui::InfoText t = v.canvas().info();
       CAPTURE(spec.kind);
-      CHECK(std::string(t.title) != "Project Patch");
-      CHECK(std::string(t.title).find(spec.kind) != std::string::npos);
-      CHECK(std::string(t.body).find(spec.help) != std::string::npos);
+      CHECK(infoView->title() != "Project Patch");
+      CHECK(infoView->title().find(spec.kind) != std::string::npos);
+      CHECK(infoView->body().find(spec.help) != std::string::npos);
       ++named;
     }
     CHECK(named > 0);
