@@ -96,6 +96,8 @@ private:
   uint32_t count_ = 0;
   Rgba tint_ = 0;
   bool tinted_ = false;
+  // A colour that draws nothing (alpha 0 after the tint): the primitive is counted but emits no vertices.
+  bool invisible(Rgba col) const noexcept { return alphaOf(c(col)) == 0; }
   Rgba c(Rgba col) const noexcept {
     return tinted_ ? withAlpha(tint_, (alphaOf(tint_) * alphaOf(col) + 127u) / 255u) : col;
   }

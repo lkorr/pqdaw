@@ -191,20 +191,24 @@ public:
   // The output leaves the display's row at the right edge, past the position slider.
   float outputY(size_t, size_t) const noexcept override { return (kDisp.y0 + kDisp.y1) * 0.5f; }
 
-  // ---- static layers: body, tracks, frame + glyphs (shared by the type), the stacked frames (this instance's) ----
-  uint32_t staticLayerCount() const noexcept override { return 4; }
+  // ---- static layers: body, tracks, frame + glyphs (shared by the type); this instance's stacked frames, and the
+  // selected keyframe's harmonic bars (amplitude, phase) — data, not values: drawn once into tiles, not per frame ----
+  uint32_t staticLayerCount() const noexcept override { return 6; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
     switch (layer) {
       case 0: return th.face.body;
       case 1: return th.face.track;
       case 2: return th.face.frame;
-      default: return th.face.tick;
+      case 3: return th.face.tick;
+      case 4: return th.face.value;
+      default: return th.face.handle;
     }
   }
   uint64_t staticKey(uint32_t layer) const override {
-    if (layer != 3) return 0;
+    if (layer < 3) return 0;
     refresh();
-    return model_.key();
+    if (layer == 3) return model_.key();
+    return (model_.key() ^ (static_cast<uint64_t>(selected_ + 1) * 0xD6E8FEB86659FD93ull)) | 1u;  // the selected's bars
   }
 
   void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
@@ -213,7 +217,8 @@ public:
       case 0: p.roundedRect({1.0f, 1.0f, kW - 1.0f, kH - 1.0f}, kRadius, w); return;
       case 1: paintTracks(p, w); return;
       case 2: paintFrame(p, w); return;
-      default: paintStack(p); return;
+      case 3: paintStack(p); return;
+      default: paintHarmonics(p, layer == 4); return;
     }
   }
 
@@ -222,7 +227,6 @@ public:
     const ui::Theme& th = *env.theme;
     const double now = clockNow();
     paintCells(p, th);
-    paintHarmonics(p, th);
     paintSliders(p, env);
     paintKnobs(p, env);
     paintDisplay(p, env, now);
@@ -389,6 +393,14 @@ private:
     return {kDisp.x0 + 2.0f + ox * s, kDisp.x1 - kDisp.x0 - ox - 4.0f, kDisp.y1 - 3.0f - a - oy * s, a};
   }
   // Fills curve_ with frame values (kPoints + 1, every `step`-th) placed at depth u.
+  // The point step for a frame drawn at `pxPerUnit` (`minStep` at full size): about one point per 1.5 device px, so a
+  // far-zoomed face draws its curves with a few points (the same primitives, far fewer vertices).
+  static uint32_t stepFor(float pxPerUnit, uint32_t minStep) noexcept {
+    uint32_t step = minStep;
+    const float width = (kDisp.x1 - kDisp.x0) * pxPerUnit;
+    while (step < 64 && width * static_cast<float>(step) < 1.5f * wt::kPoints) step *= 2;
+    return step;
+  }
   void place(std::span<const float> v, float u, uint32_t step) const {
     curve_.clear();
     const FrameGeom g = geom(u);
@@ -478,7 +490,7 @@ private:
     for (uint32_t i = n; i-- > 0;) {
       const uint32_t d = idx[i];
       const float u = f > 1 ? static_cast<float>(d) / static_cast<float>(f - 1) : 0.0f;
-      place(model_.frame(d), u, f > 1 ? 2u : 1u);
+      place(model_.frame(d), u, stepFor(p.transform().scale, f > 1 ? 2u : 1u));
       const float alpha = f > 1 ? 0.95f - 0.6f * u : 0.55f;
       p.polyline(curve_, f > 1 ? 0.75f : 1.0f, ui::mulAlpha(ui::rgba(255, 255, 255), alpha));
     }
@@ -504,24 +516,28 @@ private:
       cell(warpCell(i), wm == static_cast<int32_t>(i), kWarpMode0 + static_cast<int32_t>(i), kWarps[i], 3.8f, 3.2f);
   }
 
-  void paintHarmonics(ui::FacePainter& p, const ui::Theme& th) {
-    model_.harmonics(static_cast<uint32_t>(selected_), amp_, phase_);
+  // The selected keyframe's harmonic bars, in white for a static layer: the amplitude row (`amplitude`) or the phase
+  // row (a faint bar from the centre line and a bright tick at the value).
+  void paintHarmonics(ui::FacePainter& p, bool amplitude) const {
+    refresh();
+    std::array<float, wt::kBars> amp{}, phase{};
+    model_.harmonics(static_cast<uint32_t>(selected_), amp, phase);
+    const Rgba w = ui::rgba(255, 255, 255);
     const float pitch = (kHarmX1 - kHarmX0) / wt::kBars;
     const float mid = (kPhY0 + kPhY1) * 0.5f, half = (kPhY1 - kPhY0) * 0.5f - 0.5f;
-    const Rgba ampCol = ui::mulAlpha(th.face.value, hovered_ == kHarmPart ? 0.9f : 0.7f);
-    const Rgba phCol = ui::mulAlpha(th.face.handle, hovered_ == kHarmPart ? 0.95f : 0.75f);
     for (uint32_t h = 0; h < wt::kBars; ++h) {
       const float x0 = kHarmX0 + pitch * static_cast<float>(h) + 1.0f, x1 = x0 + pitch - 2.0f;
-      const float a = std::clamp(amp_[h], 0.0f, 1.0f);
-      // A bar never vanishes below a hairline while the harmonic is present (−60 dB still reads as "there").
-      const float hgt = a > 1e-3f ? std::max(1.0f, a * (kAmpY1 - kAmpY0 - 1.0f)) : 0.0f;
-      p.roundedRect({x0, kAmpY1 - 0.5f - hgt, x1, kAmpY1 - 0.5f}, 0.8f, hgt > 0.0f ? ampCol : 0);
-      // Phase: a faint bar from the centre line and a bright tick at the value.
-      const float ph = a > 1e-3f ? phase_[h] / kPi : 0.0f;  // −1 … 1
-      const float yv = mid - ph * half;
-      const float y0 = std::min(mid, yv), y1 = std::max(mid, yv);
-      p.roundedRect({x0, y0, x1, y1}, 0.5f, a > 1e-3f ? ui::mulAlpha(phCol, 0.35f) : 0);
-      p.roundedRect({x0, yv - 0.7f, x1, yv + 0.7f}, 0.5f, a > 1e-3f ? phCol : 0);
+      const float a = std::clamp(amp[h], 0.0f, 1.0f);
+      if (a <= 1e-3f) continue;
+      if (amplitude) {
+        // A bar never vanishes below a hairline while the harmonic is present (−60 dB still reads as "there").
+        const float hgt = std::max(1.0f, a * (kAmpY1 - kAmpY0 - 1.0f));
+        p.roundedRect({x0, kAmpY1 - 0.5f - hgt, x1, kAmpY1 - 0.5f}, 0.8f, ui::mulAlpha(w, 0.75f));
+      } else {
+        const float yv = mid - phase[h] / kPi * half;
+        p.roundedRect({x0, std::min(mid, yv), x1, std::max(mid, yv)}, 0.5f, ui::mulAlpha(w, 0.28f));
+        p.roundedRect({x0, yv - 0.7f, x1, yv + 0.7f}, 0.5f, ui::mulAlpha(w, 0.8f));
+      }
     }
   }
 
@@ -600,7 +616,7 @@ private:
     // The highlighted frame: a fill to its centre line and the curve, in the accent.
     const float u = std::clamp(shownPosition(env), 0.0f, 1.0f);
     model_.blended(u, blend_);
-    place(blend_, u, 1);
+    place(blend_, u, stepFor(p.transform().scale, 1));
     const FrameGeom g = geom(u);
     p.fillUnder(curve_, g.cy, ui::mulAlpha(th.face.value, 0.22f), ui::mulAlpha(th.face.value, 0.02f));
     p.polyline(curve_, 1.5f, th.face.value);
@@ -626,7 +642,7 @@ private:
       const float vu = std::clamp(s.v.position, 0.0f, 1.0f);
       if (std::fabs(vu - hiU) <= frameStep) continue;
       model_.blended(vu, blend_);
-      place(blend_, vu, 2);
+      place(blend_, vu, stepFor(p.transform().scale, 2));
       p.polyline(curve_, 1.0f, ui::mulAlpha(th.face.signal, 0.28f * a));
     }
     p.beginGlow();
@@ -695,7 +711,6 @@ private:
   mutable std::vector<Vec2> curve_;
   mutable Glyphs glyphs_;
   std::vector<float> blend_;
-  std::array<float, wt::kBars> amp_{}, phase_{};
   std::vector<Shown> shown_;
   // drags
   int32_t drag_ = kNone;

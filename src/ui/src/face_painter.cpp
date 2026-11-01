@@ -34,22 +34,26 @@ uint32_t quantisePx(float px) noexcept {
 
 void FacePainter::disc(Vec2 c, float r, Rgba col) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   dl_.addCircleFilled(t_.map(c), t_.len(r), this->c(col));
 }
 
 void FacePainter::ring(Vec2 c, float r, float thickness, Rgba col) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   dl_.addCircleStroke(t_.map(c), t_.len(r), this->c(col), t_.len(thickness));
 }
 
 void FacePainter::arc(Vec2 c, float r, float a0, float a1, float thickness, Rgba col, LineCap cap) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   if (a0 == a1) return;
   dl_.addArcStroke(t_.map(c), t_.len(r), a0, a1, this->c(col), t_.len(thickness), cap);
 }
 
 void FacePainter::line(Vec2 a, Vec2 b, float thickness, Rgba col0) {
   ++count_;
+  if (invisible(col0)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   const Rgba col = c(col0);
   const Vec2 pts[2] = {t_.map(a), t_.map(b)};
   const float w = t_.len(thickness);
@@ -60,6 +64,7 @@ void FacePainter::line(Vec2 a, Vec2 b, float thickness, Rgba col0) {
 
 void FacePainter::polyline(std::span<const Vec2> pts, float thickness, Rgba col0) {
   ++count_;
+  if (invisible(col0)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   const Rgba col = c(col0);
   if (pts.size() < 2) return;
   std::vector<Vec2>& d = scratchPoints();
@@ -72,6 +77,7 @@ void FacePainter::polyline(std::span<const Vec2> pts, float thickness, Rgba col0
 
 void FacePainter::dashed(std::span<const Vec2> pts, float thickness, float on, float off, Rgba col) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   if (pts.size() < 2 || on <= 0.0f) return;
   const float period = on + std::max(off, 0.0f);
   const float w = t_.len(thickness);
@@ -103,6 +109,7 @@ void FacePainter::dashed(std::span<const Vec2> pts, float thickness, float on, f
 
 void FacePainter::fillUnder(std::span<const Vec2> curve, float baseY, Rgba top, Rgba bottom) {
   ++count_;
+  if (invisible(top) && invisible(bottom)) return;  // TMM.7: counted, nothing emitted
   if (curve.size() < 2) return;
   const auto n = static_cast<uint32_t>(curve.size());
   DrawList::PrimSpan s = dl_.primReserveSpan(6 * (n - 1), 2 * n);
@@ -123,6 +130,7 @@ void FacePainter::fillUnder(std::span<const Vec2> curve, float baseY, Rgba top, 
 
 void FacePainter::convex(std::span<const Vec2> pts, Rgba col) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   if (pts.size() < 3) return;
   std::vector<Vec2>& d = scratchPoints();
   d.resize(pts.size());
@@ -132,17 +140,20 @@ void FacePainter::convex(std::span<const Vec2> pts, Rgba col) {
 
 void FacePainter::triangle(Vec2 a, Vec2 b, Vec2 cc, Rgba col) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   dl_.addTriangleFilled(t_.map(a), t_.map(b), t_.map(cc), this->c(col));
 }
 
 void FacePainter::roundedRect(const Rect& r, float radius, Rgba col) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   const Vec2 a = t_.map({r.x0, r.y0}), b = t_.map({r.x1, r.y1});
   dl_.addRoundedRectFilled({a.x, a.y, b.x, b.y}, t_.len(radius), c(col));
 }
 
 void FacePainter::glow(Vec2 c, float r, Rgba col) {
   ++count_;
+  if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   dl_.addBlob(t_.map(c), t_.len(r), this->c(col));
 }
 
@@ -154,6 +165,7 @@ uint32_t FacePainter::textPixels(float px) const noexcept {
 
 void FacePainter::text(Vec2 centre, std::string_view utf8, float px, Rgba col0) {
   ++count_;
+  if (invisible(col0)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   const Rgba col = c(col0);
   if (utf8.empty()) return;
   const uint32_t dpx = textPixels(px);

@@ -316,7 +316,7 @@ TEST_CASE("wavetable face: golden at zoom 0.1 / 0.5 / 1 / 2, 1x and 2x") {
       const std::string name = "meta-wavetable-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(rig.canvas->stats().facesPainted == 1u);
-      CHECK(rig.canvas->stats().faceLayersFromTiles == 4u);  // settled: body, tracks, frame and the stacked frames
+      CHECK(rig.canvas->stats().faceLayersFromTiles == 6u);  // settled: body, tracks, frame, the stacked frames, the harmonic bars (2)
       checkImage(name, rig.draw(rig.res));
     }
 }
@@ -346,16 +346,16 @@ TEST_CASE("wavetable face: the same primitives at every zoom; tiles equal direct
   CHECK(prims[0] == prims[1]);
   CHECK(prims[1] == prims[2]);
   CHECK(prims[2] == prims[3]);
-  CHECK(prims[0] > 300u);  // cells, bars, sliders, markers, knobs, the frame, 8 voices with their reads
+  CHECK(prims[0] > 150u);  // cells, sliders, markers, knobs, the highlighted frame, 8 voices with their reads
   for (const float scale : {1.0f, 2.0f})
     for (const double zoom : {0.5, 1.0, 2.0}) {
       WtRig r(rigW(zoom), rigH(zoom), scale, false);
       r.centre(zoom);
       r.settle();
       const Image tiled = r.draw(r.res);
-      CHECK(r.canvas->stats().faceLayersFromTiles == 4u);
+      CHECK(r.canvas->stats().faceLayersFromTiles == 6u);
       const Image direct = r.draw(r.resNoTiles);
-      CHECK(r.canvas->stats().faceLayersDirect == 4u);
+      CHECK(r.canvas->stats().faceLayersDirect == 6u);
       const std::string name = "meta-wavetable-tiles-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(pq::ui::test::matchesGolden(name, tiled, direct));
