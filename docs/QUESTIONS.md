@@ -1800,7 +1800,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   9. **Panel**: the four operators side by side, A → D (Live's order), each its Wavetable face beside its Phase accumulator over its Envelope at ≈ 0.77 scale with the ratio boxes; the algorithm picker (Operator's display), Feedback (toggle + amount) and Quality on the left. 1502 px wide: wider than Operator's 980 (the Device view scrolls).
 - Status: open (user / orchestrator: 1, 4, 5; the rest informational).
 
-## Q?-TMM.12-fix2-a · 2026-11-01 · TMM.12-fix2 · Off-grid layout coordinates: handled, not normalised
+## Q179 · 2026-11-01 · TMM.12-fix2 · Off-grid layout coordinates: handled, not normalised
 - Context: Q178 8 (a node at y 61 hung the circuit). Root cause: `graph::completeLayout` pushes an unplaced node below each hand-placed node it comes near, snapping to the nearest 4-unit grid line; when the placed node's bottom + gap is off the grid with remainder < 2 (or exactly 2 below zero) the snap rounds back inside the gap, so the same node pushes again, forever. Tested in tests/graph/test_layout.cpp and tests/views/test_circuit.cpp (TMM.12-fix2 cases).
 - Choice (provisional): **off-grid coordinates are kept as written** (the push snaps up instead, never below the box; the loop is bounded with a below-everything fallback). The alternative, snapping every `node … at` to the grid at load, would move a hand-written or imported layout's nodes and rewrite its text on the next splice; nothing else in the layout or scene code needs grid coordinates. Auto-placed nodes stay on the grid. Reversible: normalising at load could be added to the parser later.
 - Status: informational.

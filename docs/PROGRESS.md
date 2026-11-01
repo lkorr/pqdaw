@@ -1107,3 +1107,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: ship, JIT, x64: meta-sine 19.10, meta-nofb 13.23, meta-hq 44.0, stock-four 8.56 ns/voice-sample. Criterion ≤ 1.2× not met.
 - CPU-efficiency check: profiled with A/B patches; wavetable reads ≈ 58 %, feedback loop ≈ 27 % → fbOn (structural, default off) removes the loop (−31 %); n/d at param rate; unused algorithm arms compiled away. The rest needs a one-frame fast path in wavetable_pos (other module).
 - Notes/blockers: node budget not met (41 visible vs 466 for the old Operator; the plan's ≤ 20 left out 18 terminals). Odd-coordinate layout hang found (a layout node at y = 61 hangs scene building; multiples of 4 work), not fixed. voices/glide/spread dropped. Q178.
+
+## 2026-11-01 · TMM.12-fix2 · task/TMM.12-fix2-layout-hang (merged; Q179)
+- Did: Root cause of the off-grid layout hang (Q178 8): graph::completeLayout pushed an unplaced node below each nearby hand-placed node with snapTo (round to nearest 4); for a placed node whose bottom + gap is off the grid (remainder < 2, or exactly 2 below zero) the snap fell back inside the gap and the loop repeated forever. Now snapUp (ceil, never below the target): each fixed node pushes at most once, y only grows, loop bounded at fixed.size() + 1 passes with a below-all fallback. Off-grid coordinates are kept as written (not normalised at load); auto-placed nodes stay on the grid. Regression tests bounded by a worker thread + timeout in tests/graph/test_layout.cpp and tests/views/test_circuit.cpp; all three timed out before the fix.
+- Verified: build.ps1 -Affected (check, default + slow; graph dependents, not EVERYTHING): 0 warnings, 65/65 tests passed. On-grid goldens unchanged.
+- Perf: n/a (one ceil instead of one round per push).
+- CPU-efficiency check: no extra passes or allocations; the bound proves termination instead of adding work.
+- Notes/blockers: Q179 (handled, not normalised).
