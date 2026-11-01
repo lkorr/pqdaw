@@ -1077,3 +1077,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: drag 60 Hz, median 12.2 ms/step; stroke→audible 12.3–12.5 ms; 512 bars 0.091 ms (check, indicative).
 - CPU-efficiency check: bars in per-instance static tiles keyed by data+view; dense bars merged to ≥1.6 px columns; harmonic writes only the edited harmonics' change; previews skip 56 of 64 bakes during drags.
 - Notes: Q174 (items 1, 2, 4, 8 for review).
+
+## 2026-11-01 · TMM.10 · task/TMM.10-meta-devices
+- Did: meta voice runs (meta::Form::ChainVoice, Type::chainVoiceInput; lowering wires runs, 5 ms release + done, voice_sum at run end), metaVoiceRun / continuesMetaVoiceRun / ops::metaDeviceKindAt; Device-view face panels (facePanel, FaceDisplay, fitFace, controlRect, MetaFace::paramRect, sockets, voices via DeviceChainView::faceVoices/wakeFaces); Meta Modules in the + menu, project Add Device and the browser (Category::MetaModules, index v3); meta presets / default presets / hot-swap; generic knob exp0; named meta calls in the editor's Add; scenes device-meta-chain, project-meta-chain.
+- Verified: worker's -Affected was killed for low memory at build step 98/311; orchestrator re-ran build.ps1 -Affected (EVERYTHING, check, default+slow, parallel 6): 0 warnings, 79/79. 31edo 8-voice chord worst 8.58e-5 ¢ (≤ 1e-4). Orchestrator looked at device-meta-chain.
+- Perf: n/a; release costs z1+sub+max+select+mul per voice-sample only at the end of a meta run.
+- CPU-efficiency check: runs add no per-device glue (direct wires, one voice_sum); static face layers tiled at exact scale; voices polled ≤ 60 Hz only while live.
+- Notes: fold-automation → live path criterion waits for TMM.8 (Q175 item 10, assigned to TMM.8-fix); Q175.
