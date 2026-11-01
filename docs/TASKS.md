@@ -628,7 +628,7 @@ Each task's full description and acceptance criteria are in docs/plans/M5.md und
 Each task's full description and acceptance criteria are in docs/plans/MM.md under the same id. Parallel pairs: 1∥3, 2∥4, 5∥6, 7∥8, 9∥10; TMM.6 can take any free slot.
 
 - [x] **TMM.1 Frame tables: multi-frame band-limited wavetables + the off-thread builder** *(merged 2026-11-01; worst alias −126.9 dBFS @48k; bake of sync 1 + pulse width 1 is −80 dB vs 128× (static harmonic error, not aliasing; accepted by the orchestrator, Q168 #5); 44.1 kHz tables 11.9 MiB)* (docs/plans/MM.md)
-- [ ] **TMM.2 `wavetable_pos` atom, live table slots, voice taps** (docs/plans/MM.md)
+- [x] **TMM.2 `wavetable_pos` atom, live table slots, voice taps** *(merged 2026-11-01; swap click bound reformulated to own step + max|b−a|/64 (the plan's +1e-3 is unreachable for any 64-sample linear fade; orchestrator keeps the 64-sample linear fade, Q170 item 1); views::VoiceTapReader ↔ pq::VoiceTapReader adapter goes to TMM.5)* (docs/plans/MM.md)
 - [x] **TMM.3 Meta-module framework: types, document state, lowering, text form; the Phase accumulator type** *(merged 2026-11-01; Q167: chain phase_acc ends at note-off until TMM.10/11; Device-view knob linear until TMM.10)* (docs/plans/MM.md)
 - [ ] **TMM.4 Meta faces in the circuit view; Phase accumulator face** 👁 (docs/plans/MM.md)
 - [ ] **TMM.5 The Wavetable module type: keyframe data, baked path, table builder in the app** (docs/plans/MM.md)

@@ -1042,3 +1042,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: ship 2×, 64 tracks + 32 faces: Far pan +0.16 ms median / +0.18 p99; band zoom +0.012 ms; 16 faces × 8 voices full paint 0.35 ms; idle no frames (indicative, other worker building).
 - CPU-efficiency check: static layers rendered once per zoom and shared per type; live layer only; voices polled only while live, dot rects damaged; drags write a param, never recompile.
 - Notes: TMM.2's reader adapts to views::VoiceTapReader; host calls CircuitCanvas::wakeFaces() on voice start. Q169.
+
+## 2026-11-01 · TMM.2 · task/TMM.2-wavetable-pos
+- Did: `wavetable_pos` atom on live `FrameTableSlot`s (64-sample crossfade in a separate loop, entry retired through the reclaimer); `pq/core/voice_tap.h` (`VoiceTap`, `VoiceTapReader`) and the `voice_tap` sink; image host lane masks and `StateInit::voiceGroup`; Resources `frameTables` / `voiceTaps` with keep-alive; ProjectLink meta slots via TMM.3's `metaSlotOf`; tests in dsp, core, jit, app, graph; benches; docs. Golden lowering text regenerated (atom ids shift the user-device name hash).
+- Verified: build.ps1 -Affected (EVERYTHING): 78/79, then pq_tests_document golden regenerated and passing 2/2. ship pq_bench_dsp linked.
+- Perf (ship, 8 % load, indicative): wavetable_pos L1 3.19 ns/sample (raw read 2.91), L8 19.7 ns/frame (raw 18.9); with a tap reader 3.59 / 20.1; inside the crossfade 6.59 / 38.8; voice_tap unwatched 0.02, watched 0.40 / 0.55.
+- CPU-efficiency check: one acquire load per call; fade in its own loop, free in steady state; tap writes only with a reader; lane-mask writes only for read taps.
+- Notes: Q170 item 1: the plan's swap click bound (+1e-3) is unreachable for a 64-sample linear fade; the test checks own step + max|b−a|/64; orchestrator keeps 64-sample linear. The views-side VoiceTapReader (TMM.4) needs an adapter to pq::VoiceTapReader (assigned to TMM.5).
