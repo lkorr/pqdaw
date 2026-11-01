@@ -7,7 +7,7 @@ patch Midi3 {
   out done : bool voice mono
   out out : real audio global stereo
 
-  d4 = BasicSynth__u4_b86a348ae19a2dc4__m4_057fbed8a5ec8ebc()
+  d4 = BasicSynth__u4_94ceb2549155281c__m4_057fbed8a5ec8ebc()
   _n1 = voice_sum(d4)
   _n5 = 0
   _n7 = 0.002
@@ -27,7 +27,7 @@ patch Midi3 {
 
 }
 
-patch BasicSynth__u4_b86a348ae19a2dc4__m4_057fbed8a5ec8ebc {
+patch BasicSynth__u4_94ceb2549155281c__m4_057fbed8a5ec8ebc {
   param attack = 5ms [0.5ms..5s]
   param decay = 400ms [1ms..10s]
   param sustain = 0.5 [0..1]
