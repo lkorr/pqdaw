@@ -461,6 +461,25 @@ int main(int argc, char** argv) {
       runBench("loop_z1", kLoopZ1, 0, level);
       runBench("zdf_tanh", kZdf, 0, level);
     }
+    // TMM.6: the oversample(n) region: a shaper at 1× and inside regions of 2… 16×, mono and 8 voices (the region's
+    // ops run on n·frames; the cost is the converters plus n times the shaper).
+    {
+      auto mono = [](uint32_t n) {
+        const std::string body = "y = tanh(x * 8)";
+        if (n == 1) return "patch S {\n  in x : audio\n  out y : audio\n  " + body + "\n}\n";
+        return "patch S {\n  in x : audio\n  out y : audio\n  oversample(" + std::to_string(n) + ") {\n    " + body +
+               "\n  }\n}\n";
+      };
+      auto voice = [](uint32_t n) {
+        const std::string body = "y = tanh(sine(phasor(voice.hz)) * 4)";
+        if (n == 1) return "patch V {\n  out y : audio voice\n  " + body + "\n}\n";
+        return "patch V {\n  out y : audio voice\n  oversample(" + std::to_string(n) + ") {\n    " + body + "\n  }\n}\n";
+      };
+      for (uint32_t n : {1u, 2u, 4u, 8u, 16u}) {
+        runBench(("oversample x" + std::to_string(n) + " tanh(x*8)").c_str(), mono(n), 0, 1);
+        runBench(("oversample x" + std::to_string(n) + " voice osc+tanh x8").c_str(), voice(n), 8, 1);
+      }
+    }
     // T1b.2: the voice codes.
     for (uint32_t voices : {8u, 64u}) {
       runVoiceCodes("osc_filter", kOscFilter, voices);

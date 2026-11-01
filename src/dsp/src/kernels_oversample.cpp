@@ -57,57 +57,77 @@ struct Lane1 {
   static V blend(V a, V b, V mask) noexcept { return _mm_blendv_ps(a, b, mask); }
 };
 
-template <class F, size_t... I>
-inline void unrollImpl(F&& f, std::index_sequence<I...>) noexcept {
-  (f(std::integral_constant<uint32_t, static_cast<uint32_t>(I)>{}), ...);
-}
-template <uint32_t N, class F>
-inline void unroll(F&& f) noexcept {
-  unrollImpl(f, std::make_index_sequence<N>{});
-}
+// Everything per sample is unrolled at compile time through __forceinline templates over integer sequences (a lambda
+// in a fold expression is not reliably inlined by MSVC: called per allpass, the memories went through the stack and
+// the cascade ran 2-3x slower). The memories are locals of the run function, so they live in registers.
+#define PQ_OS_INLINE __forceinline
+
+template <uint32_t... I>
+using Seq = std::integer_sequence<uint32_t, I...>;
 
 constexpr uint32_t factorStages(uint32_t n) noexcept { return os::stagesOf(n); }
 
-// The allpass memories of one call, in registers (loaded at the start of the block, stored at its end).
+// The allpass memories of one call (loaded at the start of the block, stored at its end).
 template <class L, uint32_t S>
 struct Chains {
   using V = typename L::V;
   static constexpr uint32_t kSlots = S == 0 ? 1 : os::kStageFirst[S - 1] + os::kStageSize[S - 1];
   V y1[kSlots];
   V xin[2 * (S == 0 ? 1 : S)];
-
-  void load(const OversampleState& st, uint32_t lane0) noexcept {
-    for (uint32_t k = 0; k < kSlots; ++k) y1[k] = L::load(st.y1[k] + lane0);
-    for (uint32_t k = 0; k < 2 * S; ++k) xin[k] = L::load(st.xin[k] + lane0);
-  }
-  void store(OversampleState& st, uint32_t lane0) const noexcept {
-    for (uint32_t k = 0; k < kSlots; ++k) L::store(st.y1[k] + lane0, y1[k]);
-    for (uint32_t k = 0; k < 2 * S; ++k) L::store(st.xin[k] + lane0, xin[k]);
-  }
-
-  // Path P (0: A0 = even coefficients, 1: A1 = odd) of stage Sg (0-based) on one low-rate sample.
-  template <uint32_t Sg, uint32_t P>
-  V path(V x) noexcept {
-    constexpr uint32_t first = os::kStageFirst[Sg], size = os::kStageSize[Sg];
-    constexpr uint32_t count = (size + 1 - P) / 2;
-    V prevIn = xin[2 * Sg + P];
-    xin[2 * Sg + P] = x;
-    unroll<count>([&](auto k) {
-      constexpr uint32_t idx = first + P + 2 * decltype(k)::value;
-      const V c = L::set(static_cast<float>(os::kCoefs[idx]));
-      const V y = L::fnma(c, y1[idx], L::fma(c, x, prevIn));  // c·x + x[n−1] − c·y[n−1]
-      prevIn = y1[idx];
-      y1[idx] = y;
-      x = y;
-    });
-    return x;
-  }
 };
 
-template <class L>
-inline float factorOf(const KernelArgs& a) noexcept { return a.in[1][0]; }
+template <class L, uint32_t S>
+PQ_OS_INLINE void loadChains(Chains<L, S>& c, const OversampleState& st) noexcept {
+  for (uint32_t k = 0; k < Chains<L, S>::kSlots; ++k) c.y1[k] = L::load(st.y1[k]);
+  for (uint32_t k = 0; k < 2 * S; ++k) c.xin[k] = L::load(st.xin[k]);
+}
+template <class L, uint32_t S>
+PQ_OS_INLINE void storeChains(const Chains<L, S>& c, OversampleState& st) noexcept {
+  for (uint32_t k = 0; k < Chains<L, S>::kSlots; ++k) L::store(st.y1[k], c.y1[k]);
+  for (uint32_t k = 0; k < 2 * S; ++k) L::store(st.xin[k], c.xin[k]);
+}
+
+// One allpass (c + z⁻¹)/(1 + c·z⁻¹): c·x + x[n−1] − c·y[n−1]; prevIn carries x[n−1] down the chain (an allpass's
+// previous input is the previous allpass's previous output).
+template <class L, uint32_t I, uint32_t S>
+PQ_OS_INLINE typename L::V allpass(Chains<L, S>& c, typename L::V x, typename L::V& prevIn) noexcept {
+  const typename L::V cf = L::set(static_cast<float>(os::kCoefs[I]));
+  const typename L::V y = L::fnma(cf, c.y1[I], L::fma(cf, x, prevIn));
+  prevIn = c.y1[I];
+  c.y1[I] = y;
+  return y;
+}
+
+// Path P (0: A0 = even coefficients, 1: A1 = odd) of stage Sg (0-based) on one low-rate sample.
+template <class L, uint32_t Sg, uint32_t P, uint32_t S, uint32_t... K>
+PQ_OS_INLINE typename L::V pathK(Chains<L, S>& c, typename L::V x, Seq<K...>) noexcept {
+  typename L::V prevIn = c.xin[2 * Sg + P];
+  c.xin[2 * Sg + P] = x;
+  ((x = allpass<L, os::kStageFirst[Sg] + P + 2 * K>(c, x, prevIn)), ...);
+  return x;
+}
+template <class L, uint32_t Sg, uint32_t P, uint32_t S>
+PQ_OS_INLINE typename L::V path(Chains<L, S>& c, typename L::V x) noexcept {
+  return pathK<L, Sg, P>(c, x, std::make_integer_sequence<uint32_t, (os::kStageSize[Sg] + 1 - P) / 2>{});
+}
 
 // ---- up ------------------------------------------------------------------------------------------------------------
+// Stage Sg turns buf[0 … 2^Sg) into buf[0 … 2^(Sg+1)), in time order.
+template <class L, uint32_t Sg, uint32_t S, uint32_t... J>
+PQ_OS_INLINE void upStage(Chains<L, S>& c, typename L::V* buf, Seq<J...>) noexcept {
+  typename L::V next[2 * sizeof...(J)];
+  ((next[2 * J] = path<L, Sg, 0>(c, buf[J]), next[2 * J + 1] = path<L, Sg, 1>(c, buf[J])), ...);
+  ((buf[2 * J] = next[2 * J], buf[2 * J + 1] = next[2 * J + 1]), ...);
+}
+template <class L, uint32_t S, uint32_t... Sg>
+PQ_OS_INLINE void upAll(Chains<L, S>& c, typename L::V* buf, Seq<Sg...>) noexcept {
+  (upStage<L, Sg>(c, buf, std::make_integer_sequence<uint32_t, (1u << Sg)>{}), ...);
+}
+template <class L, uint32_t... J>
+PQ_OS_INLINE void storeAll(float* o, const typename L::V* buf, Seq<J...>) noexcept {
+  (L::store(o + J * L::W, buf[J]), ...);
+}
+
 template <class L, uint32_t N>
 void upRun(const KernelArgs& a, uint32_t base) noexcept {  // RT-safe
   using V = typename L::V;
@@ -115,30 +135,34 @@ void upRun(const KernelArgs& a, uint32_t base) noexcept {  // RT-safe
   constexpr uint32_t W = L::W;
   auto& st = *static_cast<OversampleState*>(a.state);
   Chains<L, S> ch;
-  ch.load(st, 0);
+  loadChains(ch, st);
   const float* x = a.in[0];
   float* out = a.out[0];
   for (uint32_t k = 0; k < base; ++k) {
     V buf[N];
     buf[0] = L::load(x + static_cast<size_t>(k) * W);
-    unroll<S>([&](auto s) {
-      constexpr uint32_t sg = decltype(s)::value;
-      constexpr uint32_t count = 1u << sg;
-      V next[2 * count];
-      unroll<count>([&](auto j) {
-        constexpr uint32_t jj = decltype(j)::value;
-        next[2 * jj] = ch.template path<sg, 0>(buf[jj]);
-        next[2 * jj + 1] = ch.template path<sg, 1>(buf[jj]);
-      });
-      unroll<2 * count>([&](auto j) { buf[decltype(j)::value] = next[decltype(j)::value]; });
-    });
-    float* o = out + static_cast<size_t>(k) * N * W;
-    unroll<N>([&](auto j) { L::store(o + decltype(j)::value * W, buf[decltype(j)::value]); });
+    upAll<L>(ch, buf, std::make_integer_sequence<uint32_t, S>{});
+    storeAll<L>(out + static_cast<size_t>(k) * N * W, buf, std::make_integer_sequence<uint32_t, N>{});
   }
-  ch.store(st, 0);
+  storeChains(ch, st);
 }
 
 // ---- down ----------------------------------------------------------------------------------------------------------
+// Stage Sg halves buf[0 … 2^(Sg+1)) into buf[0 … 2^Sg): (e, o) → ½·(A0(o) + A1(e)).
+template <class L, uint32_t Sg, uint32_t S, uint32_t... J>
+PQ_OS_INLINE void downStage(Chains<L, S>& c, typename L::V* buf, typename L::V half, Seq<J...>) noexcept {
+  ((buf[J] = L::mul(L::add(path<L, Sg, 0>(c, buf[2 * J + 1]), path<L, Sg, 1>(c, buf[2 * J])), half)), ...);
+}
+template <class L, uint32_t S, uint32_t... R>
+PQ_OS_INLINE void downAll(Chains<L, S>& c, typename L::V* buf, typename L::V half, Seq<R...>) noexcept {
+  // From the highest rate down (R = 0 is stage S − 1).
+  (downStage<L, S - 1 - R>(c, buf, half, std::make_integer_sequence<uint32_t, (1u << (S - 1 - R))>{}), ...);
+}
+template <class L, uint32_t... J>
+PQ_OS_INLINE void loadAll(typename L::V* buf, const float* in, Seq<J...>) noexcept {
+  ((buf[J] = L::load(in + J * L::W)), ...);
+}
+
 template <class L, uint32_t N>
 void downRun(const KernelArgs& a, uint32_t base) noexcept {  // RT-safe
   using V = typename L::V;
@@ -146,34 +170,22 @@ void downRun(const KernelArgs& a, uint32_t base) noexcept {  // RT-safe
   constexpr uint32_t W = L::W;
   auto& st = *static_cast<OversampleState*>(a.state);
   Chains<L, S> ch;
-  ch.load(st, 0);
+  loadChains(ch, st);
   const float* x = a.in[0];
   float* out = a.out[0];
   const V half = L::set(0.5f);
   for (uint32_t k = 0; k < base; ++k) {
     V buf[N];
-    const float* in = x + static_cast<size_t>(k) * N * W;
-    unroll<N>([&](auto j) { buf[decltype(j)::value] = L::load(in + decltype(j)::value * W); });
-    // Stages from the highest rate down: stage sg halves 2^(sg+1) samples into 2^sg.
-    unroll<S>([&](auto r) {
-      constexpr uint32_t sg = S - 1 - decltype(r)::value;
-      constexpr uint32_t count = 1u << sg;
-      unroll<count>([&](auto j) {
-        constexpr uint32_t jj = decltype(j)::value;
-        const V e = buf[2 * jj], o = buf[2 * jj + 1];
-        const V pa = ch.template path<sg, 0>(o);
-        const V pb = ch.template path<sg, 1>(e);
-        buf[jj] = L::mul(L::add(pa, pb), half);
-      });
-    });
+    loadAll<L>(buf, x + static_cast<size_t>(k) * N * W, std::make_integer_sequence<uint32_t, N>{});
+    downAll<L>(ch, buf, half, std::make_integer_sequence<uint32_t, S>{});
     L::store(out + static_cast<size_t>(k) * W, buf[0]);
   }
-  ch.store(st, 0);
+  storeChains(ch, st);
 }
 
 template <class L, bool kUp>
 void halfBandKernel(const KernelArgs& a) noexcept {  // RT-safe
-  const uint32_t n = os::sanitizeFactor(factorOf<L>(a));
+  const uint32_t n = os::sanitizeFactor(a.in[1][0]);
   const uint32_t base = a.frames / n;
   constexpr uint32_t W = L::W;
   if (n == 1) {
@@ -194,6 +206,16 @@ void halfBandKernel(const KernelArgs& a) noexcept {  // RT-safe
 }
 
 // ---- phase ---------------------------------------------------------------------------------------------------------
+// Sub-sample j of a frame: floor(x) + frac(x − d·(N − 1 − j)/N).
+template <class L, uint32_t N, uint32_t... J>
+PQ_OS_INLINE void phaseSubs(float* o, typename L::V v, typename L::V d, typename L::V fl, typename L::V belowOne,
+                            Seq<J...>) noexcept {
+  ((L::store(o + J * L::W,
+             L::add(fl, L::min(L::sub(L::fnma(d, L::set(static_cast<float>(N - 1 - J) / static_cast<float>(N)), v),
+                                      L::floor(L::fnma(d, L::set(static_cast<float>(N - 1 - J) / static_cast<float>(N)), v))),
+                               belowOne)))),
+   ...);
+}
 template <class L, uint32_t N>
 void phaseRun(const KernelArgs& a, uint32_t base) noexcept {  // RT-safe
   using V = typename L::V;
@@ -211,12 +233,7 @@ void phaseRun(const KernelArgs& a, uint32_t base) noexcept {  // RT-safe
     d = L::sub(d, L::roundNearest(d));  // the shortest way round: [−½, ½]
     const V fl = L::floor(v);
     float* o = out + static_cast<size_t>(k) * N * W;
-    unroll<N>([&](auto j) {
-      constexpr float t = static_cast<float>(N - 1 - decltype(j)::value) / static_cast<float>(N);
-      const V u = L::fnma(d, L::set(t), v);  // v − d·t
-      const V fr = L::min(L::sub(u, L::floor(u)), belowOne);
-      L::store(o + decltype(j)::value * W, L::add(fl, fr));
-    });
+    phaseSubs<L, N>(o, v, d, fl, belowOne, std::make_integer_sequence<uint32_t, N>{});
     prev = v;
     primed = allOnes;
   }
@@ -228,7 +245,7 @@ void phaseRun(const KernelArgs& a, uint32_t base) noexcept {  // RT-safe
 
 template <class L>
 void phaseKernel(const KernelArgs& a) noexcept {  // RT-safe
-  const uint32_t n = os::sanitizeFactor(factorOf<L>(a));
+  const uint32_t n = os::sanitizeFactor(a.in[1][0]);
   const uint32_t base = a.frames / n;
   constexpr uint32_t W = L::W;
   switch (n) {

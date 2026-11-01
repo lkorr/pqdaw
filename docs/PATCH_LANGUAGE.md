@@ -29,7 +29,7 @@ file        = { import | patch } ;
 import      = "import" string [ ";" ] ;
 patch       = "patch" Ident "{" { member } [ layout ] "}" ;
 
-member      = param | input | output | export | binding | solve ;
+member      = param | input | output | export | binding | solve | region ;
 param       = "param" Ident [ ":" valueKind ] "=" expr [ range ] { attr } ;
 range       = "[" expr ".." expr "]" ;
 attr        = "@" Ident [ "(" [ argList ] ")" ] ;          (* @unit(Hz) @curve(exp) @label("Cutoff") @steps(4) @hidden *)
@@ -46,6 +46,8 @@ poly        = "global" | "voice" ;
 width       = "mono" | "stereo" | "ch" "(" Int ")" ;
 
 solve       = "solve" "(" "iterations" ":" Int ")" "{" { unknown | equation } "}" ;
+region      = "oversample" "(" Int [ "," "phase" ":" valueRef { "," valueRef } ] ")" "{" { binding } "}" ;  (* §2.3 *)
+valueRef    = Ident [ "." Ident ] ;                        (* a named value: `ph`, `filt.hp` *)
 unknown     = "unknown" Ident [ "=" expr ] ;               (* initial guess, default: previous sample's solution *)
 equation    = expr "==" expr ;
 
@@ -75,7 +77,7 @@ point       = "(" coord "," coord ")" ;
 coord       = [ "-" ] Number ;                             (* no unit; read as float32 *)
 ```
 
-`unknown` (in solve blocks) and the layout words `node at rot flip wire via comment` are contextual: they are only special in those positions. So are the port-type words (`real bool audio const global voice mono stereo ch`).
+`unknown` (in solve blocks) and the layout words `node at rot flip wire via comment` are contextual: they are only special in those positions. So are the port-type words (`real bool audio const global voice mono stereo ch`), and `oversample` / `phase` (TMM.6: `oversample(` at the start of a member opens a region; `oversample = …` is an ordinary binding).
 
 ### 2.1 Clarifications (v0, implemented by the T1.2 parser)
 Decided while implementing the parser; the open ones are tracked in [QUESTIONS.md](QUESTIONS.md) (Q7–Q10, Q18–Q22).
@@ -101,6 +103,16 @@ The circuit diagram's layout (SPEC §7.3 "Layout is stored") is the `layout { �
 - **Stale keys**: a key that names nothing is an error, or with `ParseOptions::lenientLayout` dropped and counted (a text pane edit must not fail on a layout line whose expression moved, T4.4); `graph::carryLayout` then gives nodes that kept their NodeId (T1.x-text-ids) their previous position.
 - **Hand-written files**: `graph::spliceLayout(source, parse, laidOut)` replaces only each patch's layout block in the original text (inserting one before the closing `}` where there was none), so the author's comments and formatting stay.
 
+### 2.3 Oversample regions (TMM.6; docs/plans/MM.md, SPEC §7.2 "Structure")
+`oversample(n) { … }` computes the bindings inside it at n times the sample rate (n ∈ {1, 2, 4, 8, 16}); the rest of the patch is unchanged. Example: `oversample(4, phase: ph) { y = fold(wavetable_pos(warp(ph), pos)) }`.
+- **What is inside**: every node the region's bindings create — the right-hand sides, the anonymous expressions in them, the calls (a subcircuit called inside runs inside, all of it). Names bound inside are ordinary names of the patch: readable outside, `out = …` may be written inside. Declarations (`param`, `in`, `out`, `export`), solve blocks and other regions cannot be inside one (a subcircuit with a solve block can be called inside; a subcircuit holding a region cannot: **regions do not nest**). An alias (`y = x`) inside has no node and so changes nothing.
+- **Crossing the boundary** (infer() inserts the converters, pq/graph/infer.h, pq/dsp/oversample.h): an outer **audio-rate** value read inside is upsampled — through polyphase IIR half-band filters (one stage per ×2, ≥ 116 dB stopband over everything that would fold below 20 kHz at 44.1 kHz and above, passband flat within 1e−11 dB to 20 kHz); a value named in `phase:` by unwrapped linear interpolation (the shortest way round each wrap, exact for ramps: a phasor stays a phasor); a **bool** by holding it (a gate stays a level; a trigger becomes high for its whole frame, which `rise()` inside turns back into one pulse). A value computed inside and read outside is decimated through the same half-bands (a bool: high when any sub-sample is). `param` and constant values pass as they are (they are the same at every rate). Engine inputs (`voice.*`, `transport.*`, `track.in`, `sidechain.in`, clip players) are base-rate values, and sends and voice reducers (`voice_sum` …, including the implicit ones) always run at the base rate: written inside, they are computed outside with converters around them. One converter per value and region, shared by its readers.
+- **Inside**: `sr` is n·sr, and durations (delay times, `max`, `timer`, `pulse`, smoothing times) count the region's samples, so stateful atoms and filters behave exactly as they would at that rate (a `phasor(440)` inside sounds 440 Hz; an `smp` literal inside is a sub-sample).
+- **Latency**: the half-bands' group delay (up + down, base-rate samples, DC / 10 kHz / 20 kHz at 48 kHz): ×2 3.62 / 4.58 / 12.5, ×4 4.74 / 5.76 / 13.9, ×8 5.17 / 6.19 / 14.3, ×16 5.31 / 6.33 / 14.5 (44.1 kHz: ×2 3.62 / 4.80 / 19.2 … ×16 5.31 / 6.56 / 21.2). It is part of the sound, not reported as latency (no PDC), like Saturator's HQ half-bands. A phase input arrives (n − 1)/n base samples late (its last sub-sample is the current value).
+- **Limits**: a feedback loop must be entirely inside a region or entirely outside (a loop through the boundary is an error). `oversample(1)` is the plain nodes. A value inside a region is not offered to live probes, and a region never sleeps (SPEC §7.7: its filters ring on; the patch around it still does).
+- **Printing**: each region is printed after the patch's other bindings, with its bindings (and the outputs whose expression is computed inside) in a block: `oversample(8, phase: ph, filt.hp) {` … `}`. A phase input is printed as the named node it resolves to (an alias is followed). An expression is written in its consumer's region; a node in another region than its consumer gets a statement (a generated `_n` name) in its own.
+- **CPU**: the region's ops run block-wise on n·frames (both backends: a region is a Block / Loop region with a factor, pq/graph/schedule.h); converters are native AVX2 kernels over the 8 voice lanes; nothing outside the region pays. Costs in bench/RESULTS.md (TMM.6).
+
 ## 3. Semantics
 - **Bindings are a dataflow graph, not statements.** Order doesn't matter, and a name may be used before it is bound. Each binding is one node (or a subgraph of nodes).
 - **Cycles**:
@@ -118,7 +130,7 @@ The circuit diagram's layout (SPEC §7.3 "Layout is stored") is the `layout { �
 - **Built-in namespaces** (read-only inputs, available in any patch that is instantiated in a voice or transport context):
   - `voice.hz`, `voice.cents`, `voice.gate`, `voice.trigger`, `voice.velocity`, `voice.release`, `voice.ratio`, `voice.harmonic`, `voice.unisonCount`, `voice.index`, `voice.degree`, `voice.equave` (T2.6: a Degree note's degree and equave in its tuning signal — for a Ratio note anchored to a Degree note, its root's —, NaN for other notes), `voice.tuning` (T2.6-fix3: which of the track patch's tuning nodes the note follows, 1, 2, …; 0 for a static pitch), `voice.noteHz` (T4.17: the note's Hz at its note-on, param rate — glides, pitch events and retunes do not move it, and `tune_voices` does not rebind it; an Instrument Rack's Hz key zones read it, so a zone is decided at note-on), `voice.noteDegree` (T4.17, M4 review M7: the note's absolute degree, equave · size + degree, in its own tuning — a clip's tuning included — at its note-on, param rate; between two degrees, fractional in log frequency, for a Ratio / Cents pitch; NaN when unknown; an Instrument Rack's Degree key zones read it)
   - `transport.bpm`, `transport.beat`, `transport.barPhase`, `transport.playing`
-  - `sr` (sample rate as a `const` after specialisation)
+  - `sr` (sample rate as a `const` after specialisation; n·sr inside an `oversample(n)` region, §2.3)
 - **Tuning as a signal** (T2.6, SPEC §3.3): `tuning_hz(degree, equave, hz, cents, generator, period, stretch, reference, table: k)` is the pitch of a degree in tuning table `k` (an EDO or MOS; `period` is an EDO's equave) at modulatable generator / period / stretch / reference, with outputs `.hz` and `.cents`; lanes without a degree pass `hz` / `cents` through. T2.6-fix3 adds `select:` and `node:` (both default 0): with `node: i` ≥ 1 the node takes only the lanes whose `select` (normally `voice.tuning`) is i, and a lane of it without a degree follows the reference (`hz · reference / reference₀`: a Ratio on the reference or a Cents note); a Degree lane's `hz` over its static degree pitch (a note's ratio to its root Degree note, a glide) multiplies the computed pitch, and `.cents` is the input `cents` moved by what the tuning did (so it includes the note's own ratio and glides). A track patch chains one node per tuning signal its notes follow (`tun2` takes `tun1.hz` / `tun1.cents` as its fallback). `tv = tune_voices(t.hz, t.cents)` (no outputs; `cents` optional) makes `voice.hz` (and `voice.cents`) read those values in every subcircuit the patch instantiates, recursively; the patch's own `voice.hz` stays the engine's (that is the fallback input), and an inner `tune_voices` wins over an outer one. One per patch.
 - **Smoothed gains** (T3.17-fix2, the mixer): `gain(x, g, time: 2ms)` is `x · g` with `g` smoothed by a one-pole of time constant `time` when it changes (a param gain is applied at block rate and smoothed per sample only while it moves; settled, it costs one multiply per sample); `gain_add(acc, x, g, time: 2ms)` is `acc + x · g` the same way (settled at 0 it is `acc`: a chain of them sums sends that cost nothing while closed). A new instance fades in from 0, unless its `start` input (a const, default 0) is 1: then its first block starts at the target (T4.x-fix-dsp: the stock devices' gain-like params, so a device is at its knob values from the first sample and a jump of a knob or an automation step glides over 2 ms instead of clicking); `gain(x, c, start: 1)` with a literal `c` compiles to `x · c` (a mix coefficient a structural constant fixes costs nothing extra). An audio-rate `g` is used as it is. `time` is a duration (seconds, `smp` literals at the input).
 - **Exports** become wire sources visible outside the device. Anything can be exported: an oscillator output, an envelope, a bool.

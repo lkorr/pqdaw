@@ -24,6 +24,8 @@ using pq::dsp::Atom;
 
 void addResampleBenches(pq::bench::Runner& runner);  // bench_resample.cpp (T5.4)
 void addFrameTableBenches(pq::bench::Runner& runner);  // bench_frame_table.cpp (TMM.1)
+void addOversampleBenches(pq::bench::Runner& runner);  // bench_oversample.cpp (TMM.6)
+void printOversampleTable();
 
 namespace {
 
@@ -199,8 +201,10 @@ int main(int argc, char** argv) {
   for (uint32_t ai = 0; ai < pq::dsp::kAtomCount; ++ai) {
     const auto a = static_cast<Atom>(ai);
     // T2.6: tuning_hz needs a tuning table (pq_bench_tuning_signal measures it); TMM.2: wavetable_pos / voice_tap need
-    // a slot / tap (bench_frame_table.cpp measures them, watched and unwatched).
-    if (a != Atom::TuningHz && a != Atom::WavetablePos && a != Atom::VoiceTap) add(a, 0, "");
+    // a slot / tap (bench_frame_table.cpp measures them, watched and unwatched); TMM.6: the oversample converters need
+    // their factor (bench_oversample.cpp).
+    const bool converter = ai >= static_cast<uint32_t>(Atom::OversampleUp) && ai <= static_cast<uint32_t>(Atom::OversampleAny);
+    if (a != Atom::TuningHz && a != Atom::WavetablePos && a != Atom::VoiceTap && !converter) add(a, 0, "");
   }
   // Buffer ⊗ param: the second input is a Spl pattern (one vector load per block).
   for (Atom a : {Atom::Add, Atom::Mul, Atom::Div, Atom::Gt, Atom::CentsToHzFast}) add(a, 0b10, " (blk,spl)");
@@ -224,7 +228,9 @@ int main(int argc, char** argv) {
                [&fx, a](pq::bench::Context& c) { benchScalarTail(c, fx, a); });
   addResampleBenches(runner);
   addFrameTableBenches(runner);
+  addOversampleBenches(runner);
   const int code = runner.main(static_cast<int>(args.size()), args.data());
+  printOversampleTable();
   if (code != 0 || rows.empty()) return code;
 
   std::printf("\n| Atom | L1 ns/sample | L8 ns/frame | L8 ns/voice-sample |\n|---|---|---|---|\n");
