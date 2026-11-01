@@ -589,6 +589,7 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // T4.4-fix1 (SPEC §15 2026-10-26): the circuit editor on this device; a user device back to the stock patch.
       // T4.8: a rack opens its lowered subcircuit (read-only) instead.
       const doc::DeviceId id = id_;
+      contextItems(e.pos, items);  // T4.16c (a macro's Rename Macro first)
       // T4.18: over a param's control (a knob, a box, a toggle, a macro): its automation lane in the arrangement.
       // A macro-mapped param plays its macro: no lane of its own unless it already has one (the arrangement's chooser).
       if (const std::string param = paramAt(e.pos);
@@ -602,7 +603,6 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
         }));
         items.push_back(ui::MenuItem::sep());
       }
-      contextItems(e.pos, items);  // T4.16c
       // T5.x-circuit-chain: Open in Circuit View shows the whole track's chain as one circuit focused on this device
       // (the Track level); Edit Device Circuit goes straight to the device's own editor (the Device level).
       items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openInCircuitView(id); }));
