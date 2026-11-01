@@ -179,7 +179,7 @@ void TableBuilder::run() {
       TableJob before;
       bool haveBefore = false;
       if (const auto it = last_.find(target); it != last_.end()) {
-        base = it->second.table;
+        base = it->second.table.lock();  // gone (nobody plays it): TMM.9's preview
         copyJob(it->second.job, before);
         haveBefore = true;
       }

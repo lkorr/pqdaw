@@ -142,7 +142,7 @@ private:
   // What a focused preview builds over: the last table delivered for a target and the job that described it (its
   // data kept alive by `data`; `spec`'s spans point into `keys` / `gaps`).
   struct Last {
-    std::shared_ptr<const dsp::FrameTable> table;
+    std::weak_ptr<const dsp::FrameTable> table;  // weak: the builder keeps no table alive (its slot does)
     TableJob job;
   };
   static void copyJob(const TableJob& from, TableJob& to);

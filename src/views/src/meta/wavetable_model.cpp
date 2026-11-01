@@ -497,9 +497,11 @@ std::span<const float> Heard::frame(uint32_t f) const {
     // to the thumbnail's 256 points (harmonics ≤ 127). A level's harmonics near 512 fold back by their own size (a
     // saw's: < 1e-3; a baked sync or pulse width: up to ≈ 2 % of full scale, measured): faint lines, a quarter of
     // the reads a full frame needs.
-    buf_.resize(2 * kPoints);
+    // (Live controls on top spread the read's band (a live fold): twice the reads then.)
+    const uint32_t reads = liveActive() ? 4 * kPoints : 2 * kPoints;
+    buf_.resize(reads);
     const double u = frames_ > 1 ? static_cast<double>(f) / (frames_ - 1) : 0.0;
-    for (uint32_t i = 0; i < 2 * kPoints; ++i) buf_[i] = readAt(u, static_cast<double>(i) / (2 * kPoints), level_);
+    for (uint32_t i = 0; i < reads; ++i) buf_[i] = readAt(u, static_cast<double>(i) / reads, level_);
     smoothFrame(buf_, table_->layout().top[level_], std::span<float>(row, kPoints + 1), re_, im_);
     thumbDone_[f] = 1;
   }
