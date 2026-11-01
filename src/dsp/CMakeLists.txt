@@ -17,6 +17,7 @@ pq_add_module(pq_dsp
     src/frame_table_build.cpp
     src/frame_table_slot.cpp
     src/kernels_frame_table.cpp
+    src/kernels_wave_live.cpp
     src/fft_mixed.cpp
   DEPS pq_core
 )

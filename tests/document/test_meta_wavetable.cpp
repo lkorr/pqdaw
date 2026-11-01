@@ -1,6 +1,7 @@
 // TMM.5: the Wavetable meta module in the document — keyframe cycles save and load bit-exact (64 keyframes within
-// 20 ms), its baked controls (fold / warp / sync) cannot be automated, wired or macro-mapped (position can), a wired
-// baked pin in a circuit is refused with a reason, and its data reaches the lowering's resources for the link.
+// 20 ms), and its data reaches the lowering's resources for the link. TMM.8: fold / warp / sync take lanes, wires and
+// macros in Phase mode (the live path; the lowering says which params the table must not bake), Shape mode refuses
+// them with a reason, an effect Wavetable starts in Shape mode, a wired nested fold pin runs live.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
+#include "pq/graph/atoms.h"
 #include "pq/meta/wavetable.h"
 
 using namespace pq::doc;
@@ -120,59 +122,82 @@ TEST_CASE("wavetable document: keyframe cycles save -> load bit-exact; 64 keyfra
   CHECK(rb.error().message.find("frames") != std::string::npos);
 }
 
-TEST_CASE("wavetable document: fold / warp / sync cannot be automated, wired or mapped; position can") {
+// TMM.8 (was TMM.5's "cannot be automated"): the live path lifts the refusal. In Phase mode fold / warp / sync take
+// lanes, wires and macros, and the lowering expands the instance onto its live path (wavetable_live in an oversample
+// region) and tells the link which params its table must not bake; Shape mode still bakes them, and refuses.
+bool expansionHas(const LoweredProject& lp, std::string_view atom) {
+  if (!lp.metaPatches) return false;
+  for (const pq::graph::Patch& p : lp.metaPatches->patches)
+    for (pq::graph::NodeIndex n = 0; n < p.nodeCount(); ++n)
+      if (p.node(n).kind == pq::graph::NodeKind::Atom && p.node(n).atom == pq::graph::atomId(atom)) return true;
+  return false;
+}
+
+TEST_CASE("wavetable document: fold / warp / sync are automated, wired and mapped in Phase mode (the live path); "
+          "Shape mode refuses with a reason") {
   Song s;
-  auto laneFor = [&](const char* param) {
+  auto laneFor = [&](DeviceId dev, TrackId track, const char* param) {
     auto lane = std::make_shared<AutomationLane>();
     lane->id = s.store.ids().lane();
-    lane->param = ParamRef::device(s.wt, param);
+    lane->param = ParamRef::device(dev, param);
     lane->paramName = param;
-    return s.store.dispatch(AddAutomationLane{s.wtTrack, lane});
+    return s.store.dispatch(AddAutomationLane{track, lane});
   };
-  for (const char* p : {"fold", "warp", "sync"}) {
-    const auto r = laneFor(p);
-    REQUIRE_FALSE(r.ok());
-    CHECK(r.error().message.find("baked") != std::string::npos);
-  }
-  CHECK(laneFor("position").ok());
-  CHECK(laneFor("phase").ok());
-  // A modulation wire from the synth's export to fold: refused; to position: accepted.
-  const std::vector<std::string> exports = {"out"};
-  Wire w;
-  w.id = s.store.ids().wire();
-  w.from = s.synth;
-  w.port = "out";
-  w.to = s.wt;
-  w.param = "fold";
-  const auto rw = s.store.dispatch(AddWire{w});
-  REQUIRE_FALSE(rw.ok());
-  CHECK(rw.error().message.find("baked") != std::string::npos);
-  w.param = "position";
-  CHECK(s.store.dispatch(AddWire{w}).ok());
-  // A macro mapping: refused for sync, accepted for position.
-  const DeviceId rack = s.edit(ops::groupDevices(s.doc(), s.store.ids(), std::vector<DeviceId>{s.wt})).devices.at(0);
-  auto m = ops::mapMacro(s.doc(), s.store.ids(), rack, 0, s.wt, "sync");
-  REQUIRE(m.ok());
-  const auto rm = s.store.dispatch(m->command);
-  REQUIRE_FALSE(rm.ok());
-  CHECK(rm.error().message.find("baked") != std::string::npos);
-  s.edit(ops::mapMacro(s.doc(), s.store.ids(), rack, 1, s.wt, "position"));
-  // So the chain device's baked params are always static: its expansion stays the baked one.
   LowerOptions o;
   o.library = &library().library();
   o.devices = &library();
   o.slotOf = [](TrackId) { return 0u; };
   o.metaSlotOf = [](DeviceId, std::string_view, uint32_t index) { return 40u + index; };
+  // Static: the baked expansion.
+  Result<LoweredProject> lp0 = lower(s.doc(), o);
+  REQUIRE(lp0.ok());
+  CHECK(expansionHas(*lp0, "wavetable_pos"));
+  CHECK_FALSE(expansionHas(*lp0, "wavetable_live"));
+  // A lane on fold: the live path, fold not baked.
+  REQUIRE(laneFor(s.wt, s.wtTrack, "fold").ok());
   Result<LoweredProject> lp = lower(s.doc(), o);
   REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
   CHECK(lp->deviceErrors.empty());
+  CHECK(expansionHas(*lp, "wavetable_live"));
   REQUIRE(lp->metaResources.size() == 1);
   CHECK(lp->metaResources[0].type == "wavetable");
   CHECK(lp->metaResources[0].slot == 40u);
-  CHECK(lp->metaResources[0].request.kind == meta::ResourceKind::FrameTable);
+  REQUIRE(lp->metaResources[0].modulated.size() == meta::wavetableType().params.size());
+  CHECK(lp->metaResources[0].modulated[meta::kWtFold] == 1);
+  CHECK(lp->metaResources[0].modulated[meta::kWtWarp] == 0);
+  // Lanes on warp and sync, a wire to warp, a macro on sync: all accepted.
+  CHECK(laneFor(s.wt, s.wtTrack, "warp").ok());
+  CHECK(laneFor(s.wt, s.wtTrack, "sync").ok());
+  Wire w;
+  w.id = s.store.ids().wire();
+  w.from = s.synth;
+  w.port = "out";
+  w.to = s.wt;
+  w.param = "warp";
+  CHECK(s.store.dispatch(AddWire{w}).ok());
+  const DeviceId rack = s.edit(ops::groupDevices(s.doc(), s.store.ids(), std::vector<DeviceId>{s.wt})).devices.at(0);
+  s.edit(ops::mapMacro(s.doc(), s.store.ids(), rack, 0, s.wt, "sync"));
+  Result<LoweredProject> lm = lower(s.doc(), o);
+  REQUIRE_MESSAGE(lm.ok(), (lm.ok() ? std::string() : lm.error().message));
+  CHECK(lm->deviceErrors.empty());
+  CHECK(expansionHas(*lm, "wavetable_live"));
+  // Shape mode: a Wavetable as an audio effect starts in Shape mode, and its fold cannot take a lane.
+  const DeviceId fx = s.edit(ops::addMetaDevice(s.doc(), s.store.ids(), s.synthTrack, "wavetable", 1)).devices.at(0);
+  const Device& fd = *findDevice(s.doc(), fx).device;
+  CHECK(fd.kind == DeviceKind::AudioEffect);
+  REQUIRE(fd.setting("mode") != nullptr);
+  CHECK(fd.setting("mode")->value == 1.0);
+  const auto r = laneFor(fx, s.synthTrack, "fold");
+  REQUIRE_FALSE(r.ok());
+  CHECK(r.error().message.find("Shape mode") != std::string::npos);
+  CHECK(laneFor(fx, s.synthTrack, "position").ok());
+  Result<LoweredProject> ls = lower(s.doc(), o);
+  REQUIRE(ls.ok());
+  CHECK(ls->deviceErrors.empty());
+  CHECK(expansionHas(*ls, "wavetable_shape"));
 }
 
-TEST_CASE("wavetable document: a nested Wavetable lowers with its data; a wired baked pin is refused with a reason") {
+TEST_CASE("wavetable document: a nested Wavetable lowers with its data; a wired fold pin runs on the live path") {
   Song s;
   const std::string base = library().stockText("BasicSynth");
   const std::string text = replaced(base, "  out = osc * env * vel * level", "  wt1 = meta_wavetable()\n  out = wt1 * env * vel * level");
@@ -193,13 +218,15 @@ TEST_CASE("wavetable document: a nested Wavetable lowers with its data; a wired 
   REQUIRE(nested != lp->metaResources.end());
   CHECK(nested->path == "wt1");
   CHECK(meta::dataEqual(nested->data, data));
-  // A wired fold pin: the device reports why (its expansion is refused), nothing crashes.
+  // A wired fold pin (TMM.8): the nested instance expands onto its live path; fold is not baked.
   const std::string wired = replaced(text, "meta_wavetable()", "meta_wavetable(fold: env)");
   s.edit(ops::editDevicePatch(s.doc(), s.synth, wired));
   Result<LoweredProject> lw = lower(s.doc(), o);
   REQUIRE(lw.ok());
-  REQUIRE(lw->deviceErrors.size() == 1);
-  CHECK(lw->deviceErrors[0].device == s.synth);
-  CHECK(lw->deviceErrors[0].message.find("fold") != std::string::npos);
-  CHECK(lw->deviceErrors[0].message.find("baked") != std::string::npos);
+  CHECK(lw->deviceErrors.empty());
+  CHECK(expansionHas(*lw, "wavetable_live"));
+  const auto wn = std::find_if(lw->metaResources.begin(), lw->metaResources.end(),
+                               [&](const LoweredProject::MetaResource& r) { return r.device == s.synth; });
+  REQUIRE(wn != lw->metaResources.end());
+  CHECK(wn->modulated.at(meta::kWtFold) == 1);
 }

@@ -629,6 +629,7 @@ private:
     uint64_t wanted = 0;     // the key of the job last submitted (0: none); a delivered table with another is dropped
     meta::DataPtr data;      // the data last hashed, and its hash (data values are immutable: hashed once each)
     uint64_t dataHash = 0;
+    std::vector<uint8_t> modulated;  // TMM.8: the params its live path applies (not baked), from the last lowering
   };
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)

@@ -53,6 +53,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "gain", "gain_add",
       // TMM.2 (meta modules): the live frame-table read and the voice-tap sink.
       "wavetable_pos", "voice_tap",
+      // TMM.8: the Wavetable's live warp / fold / sync read and Shape mode's ADAA read.
+      "wavetable_live", "wavetable_shape",
       // TMM.6: the oversample region's rate converters (compiler-inserted: atom_flags::kInternal).
       "oversample_up", "oversample_down", "oversample_phase", "oversample_hold", "oversample_any",
   };
@@ -200,4 +202,19 @@ TEST_CASE("atoms: wavetable_pos and voice_tap (TMM.2) — ports, a kernel sink, 
   CHECK(m.lowering == pq::graph::Lowering::Kernel);  // not a voice_ reducer
   CHECK(m.kernel == pq::dsp::Atom::VoiceTap);
   CHECK(pq::graph::kernelMapping(*reg().find("wavetable_pos")).kernel == pq::dsp::Atom::WavetablePos);
+}
+
+TEST_CASE("atoms: wavetable_live and wavetable_shape (TMM.8) — ports, kernels, the slot a resource") {
+  const auto& wl = sig("wavetable_live");
+  REQUIRE(wl.inputs.size() == 8);
+  CHECK(wl.inputs[2].name == "warp");
+  CHECK(wl.inputs[5].name == "table");
+  CHECK(wl.inputs[6].name == "mode");
+  CHECK(wl.inputs[7].name == "corr");
+  CHECK(wl.has(pq::graph::atom_flags::kStateful));
+  CHECK(pq::graph::kernelMapping(*reg().find("wavetable_live")).kernel == pq::dsp::Atom::WavetableLive);
+  const auto& ws = sig("wavetable_shape");
+  REQUIRE(ws.inputs.size() == 3);
+  CHECK(ws.inputs[0].name == "x");
+  CHECK(pq::graph::kernelMapping(*reg().find("wavetable_shape")).kernel == pq::dsp::Atom::WavetableShape);
 }

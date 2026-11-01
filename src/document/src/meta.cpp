@@ -126,9 +126,13 @@ double metaParamValue(const Device& d, std::string_view path, const meta::Type& 
 std::string metaParamBakedOnly(const Device& d, std::string_view param) {
   if (!isMetaDevice(d)) return {};
   const meta::Type* t = meta::findType(metaDeviceType(d));
-  if (t == nullptr || t->liveBakeable) return {};
+  if (t == nullptr) return {};
   const int32_t i = t->paramIndex(param);
   if (i < 0 || !t->params[static_cast<size_t>(i)].bakeable) return {};
+  if (t->liveBakeable) {  // TMM.8: live, unless the type's settings say otherwise (the Wavetable's Shape mode)
+    if (t->bakedOnly == nullptr) return {};
+    return t->bakedOnly(metaSettings(d, "", *t), static_cast<uint32_t>(i));
+  }
   return "the " + std::string(t->name) + "'s " + std::string(t->params[static_cast<size_t>(i)].label) +
          " is baked into its table: it cannot be automated, wired or mapped to a macro yet";
 }

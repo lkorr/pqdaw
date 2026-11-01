@@ -26,6 +26,10 @@ constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};              
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table
 constexpr ArgMap kWavetablePos[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};    // phase, position, table
 constexpr ArgMap kVoiceTap[] = {{U::Input, 0}, {U::Resource, 0}};                       // x, slot
+constexpr ArgMap kWavetableLive[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // phase, position,
+                                     {U::Input, 4}, {U::Resource, 0}, {U::Input, 5}, {U::Input, 6}};  // warp, fold,
+                                                                                        // sync, table, mode, corr
+constexpr ArgMap kWavetableShape[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};  // x, position, table
 constexpr ArgMap kNoise[] = {{U::InitSeed, 0}};                                         // seed
 constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1},       // sample, rate, reset,
                                   {U::Input, 2},    {U::Input, 3}, {U::Input, 4}};      // start, loopStart, loopEnd
@@ -54,6 +58,8 @@ constexpr Special kSpecial[] = {
     {"shaper", kShaper},
     {"wavetable_pos", kWavetablePos},
     {"voice_tap", kVoiceTap},
+    {"wavetable_live", kWavetableLive},
+    {"wavetable_shape", kWavetableShape},
     {"noise", kNoise},
     {"sample_read_linear", kSampleRead},
     {"sample_read_cubic", kSampleRead},

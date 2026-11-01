@@ -90,26 +90,53 @@ struct FrameTableView {
   uint32_t levels = 0;                  // L ≥ 1
   uint32_t frameStride = 0;
   float framesMinus1 = 0;               // float(F − 1)
+  float sampleRate = 0;                 // the layout's (TMM.8: a kernel inside an oversample region reads its factor)
+  // TMM.8, the live path's level crossfade (wave_live.h): per increment bucket the packed info of the next richer
+  // level (level j − 1; level 0: itself), the effective top e_j of the bucket's level (the top of the last bucket
+  // holding level j) and 1 / (e_j − e_{j−1}) (0 for level 0).
+  const uint32_t* bucketRich = nullptr;
+  const uint32_t* bucketLevelIndex = nullptr;  // the bucket's level j (bucketLevel as 32-bit words, for gathers)
+  const float* bucketTop = nullptr;
+  const float* bucketInvSpan = nullptr;
+  // TMM.8, Shape mode (wave_live.h "wavetable_shape"): present only in a table built with
+  // FrameTableSpec::antiderivative. adData: the periodic part P of each frame's antiderivative, stored like `data`
+  // (the same rows, guards and pre-emphasis; harmonics c_h / (2πih), DC 0); frameDc: per frame its DC c_0 (so
+  // G(u) = c_0·u + P(u)); levelEdge: per frame and level (frame·levels + level) the level's value at phase 0, as the
+  // reader interpolates it (the clamp's constant, T(0) = T(1)). Null otherwise.
+  const float* adData = nullptr;
+  const float* frameDc = nullptr;
+  const float* levelEdge = nullptr;
 };
 
 class FrameTable {
 public:
   FrameTable() = default;
-  // Zeroed storage for `frames` frames at the layout's rate (frames in [1, 256]). Not RT-safe.
-  static Result<FrameTable> allocate(const FrameTableLayout& layout, uint32_t frames);
+  // Zeroed storage for `frames` frames at the layout's rate (frames in [1, 256]); with `antiderivative` also the
+  // Shape-mode arrays (TMM.8: twice the row memory). Not RT-safe.
+  static Result<FrameTable> allocate(const FrameTableLayout& layout, uint32_t frames, bool antiderivative = false);
 
   const FrameTableView& view() const noexcept { return view_; }  // RT-safe
   const FrameTableLayout& layout() const noexcept { return layout_; }
   uint32_t frames() const noexcept { return view_.frames; }
+  bool hasAntiderivative() const noexcept { return view_.adData != nullptr; }
   std::size_t bytes() const noexcept {
-    return data_.size() * sizeof(float) + info_.size() * sizeof(uint32_t) + layout_.bucketLevel.size();
+    return (data_.size() + ad_.size() + extra_.size()) * sizeof(float) + info_.size() * sizeof(uint32_t) +
+           layout_.bucketLevel.size();
   }
   // Level j of frame k: len_j samples (the guards sit at [−4, 0) and [len, len + 4)).
   std::span<const float> row(uint32_t frame, uint32_t level) const noexcept;
   float* mutableRow(uint32_t frame, uint32_t level) noexcept;  // for the builder
+  // TMM.8 (antiderivative tables only; null / empty otherwise): the P row, the DC, the edge values (builder).
+  std::span<const float> adRow(uint32_t frame, uint32_t level) const noexcept;
+  float* mutableAdRow(uint32_t frame, uint32_t level) noexcept;
+  float* mutableFrameDc() noexcept { return view_.adData ? extra_.data() + dcOffset_ : nullptr; }
+  float* mutableLevelEdge() noexcept { return view_.adData ? extra_.data() + edgeOffset_ : nullptr; }
 
 private:
   AlignedBuffer<float> data_;
+  AlignedBuffer<float> ad_;     // TMM.8: antiderivative rows (Shape mode)
+  AlignedBuffer<float> extra_;  // TMM.8: bucketTop, bucketInvSpan, then frameDc, levelEdge (Shape mode)
+  std::size_t dcOffset_ = 0, edgeOffset_ = 0;
   AlignedBuffer<uint32_t> info_;
   FrameTableLayout layout_;
   FrameTableView view_{};

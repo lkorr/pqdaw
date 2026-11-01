@@ -9,6 +9,7 @@
 #include <complex>
 #include <numbers>
 #include <string>
+#include <vector>
 
 #include "frame_table_ops.h"
 
@@ -75,7 +76,7 @@ Result<FrameTableLayout> frameTableLayout(double sampleRate) {
   return l;
 }
 
-Result<FrameTable> FrameTable::allocate(const FrameTableLayout& layout, uint32_t frames) {
+Result<FrameTable> FrameTable::allocate(const FrameTableLayout& layout, uint32_t frames, bool antiderivative) {
   if (frames < 1 || frames > kFrameTableMaxFrames)
     return Error{ErrorCode::InvalidArgument, "frame table needs 1 to 256 frames, got " + std::to_string(frames), {}};
   if (layout.levels == 0 || layout.frameStride == 0)
@@ -84,9 +85,34 @@ Result<FrameTable> FrameTable::allocate(const FrameTableLayout& layout, uint32_t
   t.layout_ = layout;
   // + 8: a reader loads 8 floats from 2 before its index, which may reach past the last row's back guard.
   t.data_ = AlignedBuffer<float>(static_cast<std::size_t>(frames) * layout.frameStride + 8);
-  t.info_ = AlignedBuffer<uint32_t>(layout.levels + kFrameLevelBuckets);
+  t.info_ = AlignedBuffer<uint32_t>(layout.levels + 3 * kFrameLevelBuckets);
   for (uint32_t j = 0; j < layout.levels; ++j) t.info_[j] = layout.offset[j] | (layout.length[j] << kOffsetBits);
   for (uint32_t b = 0; b < kFrameLevelBuckets; ++b) t.info_[layout.levels + b] = t.info_[layout.bucketLevel[b]];
+  // TMM.8: the live path's level crossfade. e_j = the top increment of the last bucket holding level j (the float
+  // just above the bucket's last value), so the weight (e_j − inc)·invSpan of the richer level j − 1 reaches 0 where
+  // the buckets switch to level j + 1 and 1 where they switched to j: continuous in the increment.
+  std::vector<double> top(layout.levels, 0.0);
+  for (uint32_t b = 0; b < kFrameLevelBuckets; ++b)
+    top[layout.bucketLevel[b]] =
+        std::bit_cast<float>(static_cast<uint32_t>(kFrameLevelBucketBase + static_cast<int32_t>(b) + 1) << 16);
+  for (uint32_t j = 1; j < layout.levels; ++j)
+    if (top[j] == 0.0) top[j] = top[j - 1];  // a level no bucket holds (not expected): no span
+  const std::size_t extra = 2 * static_cast<std::size_t>(kFrameLevelBuckets) +
+                            (antiderivative ? frames + static_cast<std::size_t>(frames) * layout.levels : 0);
+  t.extra_ = AlignedBuffer<float>(extra);
+  for (uint32_t b = 0; b < kFrameLevelBuckets; ++b) {
+    const uint32_t j = layout.bucketLevel[b];
+    t.info_[layout.levels + kFrameLevelBuckets + b] = t.info_[j > 0 ? j - 1 : 0];
+    t.info_[layout.levels + 2 * kFrameLevelBuckets + b] = j;
+    t.extra_[b] = static_cast<float>(top[j]);
+    const double span = j > 0 ? top[j] - top[j - 1] : 0.0;
+    t.extra_[kFrameLevelBuckets + b] = span > 0.0 ? static_cast<float>(1.0 / span) : 0.0f;
+  }
+  if (antiderivative) {
+    t.ad_ = AlignedBuffer<float>(static_cast<std::size_t>(frames) * layout.frameStride + 8);
+    t.dcOffset_ = 2 * static_cast<std::size_t>(kFrameLevelBuckets);
+    t.edgeOffset_ = t.dcOffset_ + frames;
+  }
   t.view_.data = t.data_.data();
   t.view_.levelInfo = t.info_.data();
   t.view_.bucketInfo = t.info_.data() + layout.levels;
@@ -95,6 +121,16 @@ Result<FrameTable> FrameTable::allocate(const FrameTableLayout& layout, uint32_t
   t.view_.levels = layout.levels;
   t.view_.frameStride = layout.frameStride;
   t.view_.framesMinus1 = static_cast<float>(frames - 1);
+  t.view_.sampleRate = static_cast<float>(layout.sampleRate);
+  t.view_.bucketRich = t.info_.data() + layout.levels + kFrameLevelBuckets;
+  t.view_.bucketLevelIndex = t.info_.data() + layout.levels + 2 * kFrameLevelBuckets;
+  t.view_.bucketTop = t.extra_.data();
+  t.view_.bucketInvSpan = t.extra_.data() + kFrameLevelBuckets;
+  if (antiderivative) {
+    t.view_.adData = t.ad_.data();
+    t.view_.frameDc = t.extra_.data() + t.dcOffset_;
+    t.view_.levelEdge = t.extra_.data() + t.edgeOffset_;
+  }
   return t;
 }
 
@@ -107,6 +143,17 @@ std::span<const float> FrameTable::row(uint32_t frame, uint32_t level) const noe
 float* FrameTable::mutableRow(uint32_t frame, uint32_t level) noexcept {
   if (frame >= view_.frames || level >= view_.levels) return nullptr;
   return data_.data() + static_cast<std::size_t>(frame) * view_.frameStride + layout_.offset[level];
+}
+
+std::span<const float> FrameTable::adRow(uint32_t frame, uint32_t level) const noexcept {
+  if (!view_.adData || frame >= view_.frames || level >= view_.levels) return {};
+  return {ad_.data() + static_cast<std::size_t>(frame) * view_.frameStride + layout_.offset[level],
+          layout_.length[level]};
+}
+
+float* FrameTable::mutableAdRow(uint32_t frame, uint32_t level) noexcept {
+  if (!view_.adData || frame >= view_.frames || level >= view_.levels) return nullptr;
+  return ad_.data() + static_cast<std::size_t>(frame) * view_.frameStride + layout_.offset[level];
 }
 
 double frameInterpResponse(double f) noexcept {

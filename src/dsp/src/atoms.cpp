@@ -12,7 +12,8 @@
 namespace pq::dsp {
 namespace {
 
-constexpr uint32_t kB0 = 1u << 0, kB1 = 1u << 1, kB2 = 1u << 2, kB3 = 1u << 3, kB4 = 1u << 4;
+constexpr uint32_t kB0 = 1u << 0, kB1 = 1u << 1, kB2 = 1u << 2, kB3 = 1u << 3, kB4 = 1u << 4, kB5 = 1u << 5,
+                   kB6 = 1u << 6;
 
 // name, numIn, numOut, variadicIn, variadicOut, boolIn, boolOut, splSpecMask, splRequired, stateSize, resource,
 // inPlaceOk
@@ -93,6 +94,12 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     {"oversample_phase", 2, 1, false, false, 0, 0, 0, kB1, sizeof(OversamplePhaseState), Resource::None, false},
     {"oversample_hold", 2, 1, false, false, kB0, kB0, 0, kB1, 0, Resource::None, false},
     {"oversample_any", 2, 1, false, false, kB0, kB0, 0, kB1, 0, Resource::None, false},
+    // TMM.8 (kernels_wave_live.cpp): every signal input may be Spl or Blk (the kernel reads splMask); mode, corr are
+    // consts.
+    {"wavetable_live", 7, 1, false, false, 0, 0, kB0 | kB1 | kB2 | kB3 | kB4, kB5 | kB6, sizeof(WavetableLiveState),
+     Resource::FrameTable, false},
+    {"wavetable_shape", 2, 1, false, false, 0, 0, kB0 | kB1, 0, sizeof(WavetableShapeState), Resource::FrameTable,
+     false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -151,6 +158,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findGeneratorKernel(a, lanes, spec)) return f;
   if (KernelFn f = findGainKernel(a, lanes, spec)) return f;
   if (KernelFn f = findFrameTableKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findWaveLiveKernel(a, lanes, spec)) return f;
   if (KernelFn f = findOversampleKernel(a, lanes)) return f;
   return findTableKernel(a, lanes, spec);
 }
@@ -184,6 +192,10 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     // the group's.
     case Atom::WavetablePos: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(WavetablePosState, generation))};
     case Atom::VoiceTap: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(VoiceTapState::prev))};
+    // TMM.8: everything before the generation is [8] arrays (the ring is [slot][lane]).
+    case Atom::WavetableLive: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(WavetableLiveState, generation))};
+    case Atom::WavetableShape:
+      return {LaneState::PerLane, static_cast<uint32_t>(offsetof(WavetableShapeState, generation))};
     // gain / gain_add: target, d, tau, r, started are [8] arrays; rpow / r8 cache lane 0's powers for the 1-lane path
     // only.
     case Atom::Gain:
@@ -342,6 +354,18 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     }
     case Atom::WavetablePos: static_cast<WavetablePosState*>(state)->group = init.voiceGroup; break;
     case Atom::VoiceTap: static_cast<VoiceTapState*>(state)->group = init.voiceGroup; break;
+    case Atom::WavetableLive: {
+      auto& s = *static_cast<WavetableLiveState*>(state);
+      s.group = init.voiceGroup;
+      s.sampleRate = static_cast<float>(init.sampleRate);
+      break;
+    }
+    case Atom::WavetableShape: {
+      auto& s = *static_cast<WavetableShapeState*>(state);
+      s.group = init.voiceGroup;
+      s.sampleRate = static_cast<float>(init.sampleRate);
+      break;
+    }
     default:
       break;
   }

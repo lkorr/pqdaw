@@ -51,6 +51,7 @@ struct TableSource {
   std::span<const double> params;  // per ParamSpec: the values the instance plays (static: what is baked)
   std::span<const double> settings;  // per SettingSpec, resolved
   double sampleRate = 48000.0;
+  std::span<const uint8_t> modulated;  // TMM.8: per ParamSpec, 1 = modulated (its live path applies it: not baked)
 };
 
 // An owned build request. Move-only: `spec`'s spans point into `keys`, `gaps` and `data` (moving the vectors keeps

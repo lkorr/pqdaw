@@ -109,7 +109,8 @@ struct FrameTableBuilder::Impl {
   void prepareTaps(const FrameBake& b);
   void bakePair(const FrameBake& b, Cd* fa, Cd* fb);
   void jumps(const FrameBake& b, const Cd* c);
-  void levels(FrameTable& out);
+  void levels(FrameTable& out, bool antiderivative);
+  void edges(FrameTable& out);
 };
 
 Status FrameTableBuilder::Impl::ensure(const FrameTableSpec& spec) {
@@ -426,9 +427,11 @@ void FrameTableBuilder::Impl::bakePair(const FrameBake& b, Cd* fa, Cd* fb) {
 }
 
 // Eight frames per transform: four lanes of Cd4, each a complex signal carrying two frames (real and imaginary).
-void FrameTableBuilder::Impl::levels(FrameTable& out) {
+void FrameTableBuilder::Impl::levels(FrameTable& out, bool antiderivative) {
   const uint32_t frames = out.frames();
   const uint32_t g = kFrameTableGuard;
+  // Pass 0: the value rows; pass 1 (Shape mode): the antiderivative's periodic part, c_h / (2πih), DC 0.
+  for (int pass = 0; pass < (antiderivative ? 2 : 1); ++pass)
   for (uint32_t d0 = 0; d0 < frames; d0 += 8) {
     const Cd* c[8];
     for (uint32_t f = 0; f < 8; ++f) c[f] = d0 + f < frames ? dense.data() + static_cast<std::size_t>(d0 + f) * kBins : nullptr;
@@ -443,10 +446,12 @@ void FrameTableBuilder::Impl::levels(FrameTable& out) {
         if (!ca) break;
         // Bin h of lane L: A + iB; bin len − h: conj(A) + i·conj(B) (A, B: the two frames' pre-emphasised c_h).
         double* z0 = reinterpret_cast<double*>(&buf4In[0]);
-        z0[lane] = ca[0].real();
-        z0[4 + lane] = cb ? cb[0].real() : 0.0;
+        z0[lane] = pass == 0 ? ca[0].real() : 0.0;
+        z0[4 + lane] = cb && pass == 0 ? cb[0].real() : 0.0;
         for (uint32_t h = 1; h <= top; ++h) {
-          const Cd A = ca[h] * e[h], B = cb ? cb[h] * e[h] : Cd(0.0);
+          // The antiderivative of c_h·e^(2πihφ) is c_h / (2πih)·e^(2πihφ).
+          const Cd s = pass == 0 ? Cd(e[h]) : Cd(0.0, -e[h] / (kTwoPi * h));  // 1 / (i·a) = −i / a
+          const Cd A = ca[h] * s, B = cb ? cb[h] * s : Cd(0.0);
           double* zp = reinterpret_cast<double*>(&buf4In[h]);
           double* zn = reinterpret_cast<double*>(&buf4In[len - h]);
           zp[lane] = A.real() - B.imag();
@@ -457,7 +462,7 @@ void FrameTableBuilder::Impl::levels(FrameTable& out) {
       }
       fftLevel[fftOfLevel[j]].inverse(buf4In.data(), buf4Out.data());
       for (uint32_t f = 0; f < 8 && c[f]; ++f) {
-        float* row = out.mutableRow(d0 + f, j);
+        float* row = pass == 0 ? out.mutableRow(d0 + f, j) : out.mutableAdRow(d0 + f, j);
         const uint32_t k = (f / 2) + (f % 2 ? 4 : 0);  // lane, then real (even f) or imaginary (odd f)
         for (uint32_t n = 0; n < len; ++n) row[n] = static_cast<float>(reinterpret_cast<const double*>(&buf4Out[n])[k]);
         for (uint32_t q = 0; q < g; ++q) {
@@ -465,6 +470,25 @@ void FrameTableBuilder::Impl::levels(FrameTable& out) {
           row[len + q] = row[q];
         }
       }
+    }
+  }
+}
+
+// TMM.8 (Shape mode): each frame's DC and each level's value at phase 0, as the readers interpolate it (z = −½ at
+// index 0; the polynomial is not interpolating, so this is not row[0]).
+void FrameTableBuilder::Impl::edges(FrameTable& out) {
+  float* dc = out.mutableFrameDc();
+  float* edge = out.mutableLevelEdge();
+  const uint32_t levels = out.view().levels;
+  double w[6];
+  interpWeights(0.0, w);
+  for (uint32_t d = 0; d < out.frames(); ++d) {
+    dc[d] = static_cast<float>(dense[static_cast<std::size_t>(d) * kBins].real());
+    for (uint32_t j = 0; j < levels; ++j) {
+      const float* row = out.mutableRow(d, j);
+      double v = 0.0;
+      for (int q = 0; q < 6; ++q) v += w[q] * row[q - 2];
+      edge[static_cast<std::size_t>(d) * levels + j] = static_cast<float>(v);
     }
   }
 }
@@ -518,12 +542,14 @@ Status FrameTableBuilder::buildInto(const FrameTableSpec& spec, FrameTable& out)
     return invalid("bake values out of range (warp [−1, 1], fold and sync [0, 1])");
   if (spec.bakeResolution < 4 || spec.bakeResolution > 128 || !std::has_single_bit(spec.bakeResolution))
     return invalid("bake resolution must be a power of two in [4, 128]");
-  if (out.frames() != spec.denseFrames || out.layout().sampleRate != spec.sampleRate)
-    return invalid("frame table was allocated for another frame count or sample rate");
+  if (out.frames() != spec.denseFrames || out.layout().sampleRate != spec.sampleRate ||
+      out.hasAntiderivative() != spec.antiderivative)
+    return invalid("frame table was allocated for another frame count, sample rate or mode");
   if (auto s = impl_->ensure(spec); !s) return s;
   impl_->keyframeSpectra(spec);
   impl_->denseFrames(spec);
-  impl_->levels(out);
+  impl_->levels(out, spec.antiderivative);
+  if (spec.antiderivative) impl_->edges(out);
   impl_->lastFrames = spec.denseFrames;
   return Ok{};
 }
@@ -532,7 +558,7 @@ Result<FrameTable> FrameTableBuilder::build(const FrameTableSpec& spec) {
   auto layout = frameTableLayout(spec.sampleRate);
   if (!layout) return std::move(layout).error();
   if (spec.denseFrames < 1 || spec.denseFrames > kFrameTableMaxFrames) return invalid("dense frames must be 1 to 256");
-  auto t = FrameTable::allocate(layout.value(), spec.denseFrames);
+  auto t = FrameTable::allocate(layout.value(), spec.denseFrames, spec.antiderivative);
   if (!t) return std::move(t).error();
   if (auto s = buildInto(spec, t.value()); !s) return std::move(s).error();
   return t;
@@ -556,6 +582,7 @@ uint64_t frameTableSpecHash(const FrameTableSpec& spec) noexcept {
   mix(std::bit_cast<uint64_t>(spec.sampleRate));
   mix(spec.denseFrames | (static_cast<uint64_t>(spec.bakeResolution) << 32));
   mix(static_cast<uint64_t>(spec.removeDc) | static_cast<uint64_t>(spec.normalise) << 1 |
+      static_cast<uint64_t>(spec.antiderivative) << 2 |
       static_cast<uint64_t>(spec.bake.warpMode) << 8);
   mix(bits(spec.bake.warp) | bits(spec.bake.fold) << 32);
   mix(bits(spec.bake.sync));

@@ -24,30 +24,92 @@ constexpr std::array<ParamSpec, 5> kParams = {{
     {"warp", "Warp", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, true},
     {"sync", "Sync", 0.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, true},
 }};
-constexpr std::array<SettingSpec, 2> kSettings = {{
+constexpr std::array<SettingSpec, 3> kSettings = {{
     {"mode", "Mode", 0.0, 0.0, 1.0, 2},
     {"warpMode", "Warp mode", 0.0, 0.0, 2.0, 3},
+    {"os", "Oversampling", 0.0, 0.0, 4.0, 5},  // TMM.8: 0 auto, 1 … 4 = ×2 / ×4 / ×8 / ×16
 }};
 constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
 
-// Body node ids (stable: the wavetable_pos state key is the call path plus kRead).
-enum : uint32_t { kAddPhase, kFrac, kAddPos, kLo, kHi, kClip, kRead };
+// Body node ids (stable: the reading atom's state key is the call path plus its id).
+enum : uint32_t { kAddPhase, kFrac, kAddPos, kLo, kHi, kClip, kRead, kLive, kZero, kModeK, kCorrK, kShape, kAddX };
 
 Error wtError(std::string m) { return Error{ErrorCode::Unsupported, std::move(m), {}}; }
 
+// Which controls the live path applies (wavetable.h "Live path"): sync comes before warp, so a live warp takes sync
+// along (a baked sync would be applied after the warp).
+struct LiveSet {
+  bool warp = false, fold = false, sync = false;
+  bool any() const noexcept { return warp || fold || sync; }
+};
+LiveSet liveSet(std::span<const uint8_t> modulated) {
+  auto mod = [&](uint32_t i) { return i < modulated.size() && modulated[i] != 0; };
+  LiveSet s;
+  s.warp = mod(kWtWarp);
+  s.fold = mod(kWtFold);
+  s.sync = mod(kWtSync) || s.warp;
+  return s;
+}
+
+}  // namespace
+
+uint32_t wavetableOversampling(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept {
+  const double v = kWtOversampling < settings.size() && std::isfinite(settings[kWtOversampling]) ? settings[kWtOversampling] : 0.0;
+  const auto choice = static_cast<uint32_t>(std::clamp(std::round(v), 0.0, 4.0));
+  if (choice > 0) return 1u << choice;
+  const bool shape = kWtMode < settings.size() && settings[kWtMode] >= 0.5;
+  if (shape) return 2;
+  return liveSet(modulated).sync && kWtSync < modulated.size() && modulated[kWtSync] != 0 ? 16u : 8u;
+}
+
+namespace {
+
 Status body(Builder& b) {
-  if (b.setting(kWtMode) != 0.0) return wtError("Shape mode arrives with the live path (TMM.8); the Wavetable plays Phase mode");
-  for (const uint32_t i : {kWtFold, kWtWarp, kWtSync})
-    if (b.modulated(i))
-      return wtError("'" + std::string(kParams[i].name) +
-                     "' is baked into the Wavetable's table: modulating it (a wire, a lane, a macro) needs the live "
-                     "path, which is not built yet");
-  const auto ph = b.atom("frac", {b.atom("add", {b.input(kWtInX), b.param(kWtPhase)}, kAddPhase)}, kFrac);
+  const bool shape = b.setting(kWtMode) >= 0.5;
+  const std::span<const uint8_t> modulated = b.context().modulated;
+  std::vector<double> settings(kSettings.size());
+  for (size_t i = 0; i < settings.size(); ++i) settings[i] = b.setting(i);
+  const uint32_t os = wavetableOversampling(settings, modulated);
   const auto pos = b.atom("clip", {b.atom("add", {b.param(kWtPosition), b.input(kWtInPos)}, kAddPos), b.konst(0.0, kLo),
                                    b.konst(1.0, kHi)},
                           kClip);
-  b.output(0, b.atom("wavetable_pos", {ph, pos, b.slot(0)}, kRead));
+  if (shape) {
+    // Shape mode: x (plus the phase slider as a bias) through the table as a curve, ADAA, in its own region.
+    for (const uint32_t i : {kWtFold, kWtWarp, kWtSync})
+      if (b.modulated(i))
+        return wtError("'" + std::string(kParams[i].name) +
+                       "' is baked into the Wavetable's curve in Shape mode: switch to Phase mode to modulate it");
+    const auto x = b.atom("add", {b.input(kWtInX), b.param(kWtPhase)}, kAddX);
+    const auto y = b.atom("wavetable_shape", {x, pos, b.slot(0)}, kShape);
+    b.inRegion(y, b.region(os, {}));
+    b.output(0, y);
+    return Ok{};
+  }
+  const auto ph = b.atom("frac", {b.atom("add", {b.input(kWtInX), b.param(kWtPhase)}, kAddPhase)}, kFrac);
+  const LiveSet live = liveSet(modulated);
+  if (!live.any()) {
+    b.output(0, b.atom("wavetable_pos", {ph, pos, b.slot(0)}, kRead));
+    return Ok{};
+  }
+  // The live path: an oversample region around one wavetable_live read; the phase enters by interpolation.
+  b.bind(ph, "ph");
+  const auto zero = b.konst(0.0, kZero);
+  const double wm = live.warp ? b.setting(kWtWarpMode) : 0.0;
+  const auto y = b.atom("wavetable_live",
+                        {ph, pos, live.warp ? b.param(kWtWarp) : zero, live.fold ? b.param(kWtFold) : zero,
+                         live.sync ? b.param(kWtSync) : zero, b.slot(0), b.konst(wm, kModeK),
+                         b.konst(live.warp || live.sync ? 1.0 : 0.0, kCorrK)},
+                        kLive);
+  b.inRegion(y, b.region(os, {"ph"}));
+  b.output(0, y);
   return Ok{};
+}
+
+std::string bakedOnly(std::span<const double> settings, uint32_t param) {
+  if (kWtMode < settings.size() && settings[kWtMode] >= 0.5)
+    return "the Wavetable's " + std::string(kParams[param].label) +
+           " is baked into its curve in Shape mode: switch to Phase mode to automate, wire or map it";
+  return {};
 }
 
 std::vector<ResourceRequest> resources(std::span<const double>) { return {ResourceRequest{ResourceKind::FrameTable, 0}}; }
@@ -142,9 +204,14 @@ Status frameTable(const TableSource& src, uint32_t index, TableJob& out) {
   s = dsp::FrameTableSpec{};
   // One keyframe: every dense frame would be the same, so build one (the readers' single-frame path).
   s.denseFrames = out.keys.size() == 1 ? 1u : refs.frames;
-  s.bake.fold = param(kWtFold);
-  s.bake.warp = param(kWtWarp);
-  s.bake.sync = param(kWtSync);
+  // TMM.8: Phase mode bakes only the controls its live path does not apply; Shape mode bakes all three into the curve
+  // and builds the antiderivative arrays its ADAA reads.
+  const bool shape = kWtMode < src.settings.size() && src.settings[kWtMode] >= 0.5;
+  const LiveSet live = shape ? LiveSet{} : liveSet(src.modulated);
+  s.bake.fold = live.fold ? 0.0f : param(kWtFold);
+  s.bake.warp = live.warp ? 0.0f : param(kWtWarp);
+  s.bake.sync = live.sync ? 0.0f : param(kWtSync);
+  s.antiderivative = shape;
   const double wm = kWtWarpMode < src.settings.size() ? src.settings[kWtWarpMode] : kSettings[kWtWarpMode].def;
   const auto mode = static_cast<uint32_t>(std::clamp(std::isfinite(wm) ? std::round(wm) : 0.0, 0.0, 2.0));
   // The warp mode matters only with a warp: an unwarped table is the same in every mode (shared).
@@ -161,7 +228,7 @@ Status frameTable(const TableSource& src, uint32_t index, TableJob& out) {
   h = mix(h, std::bit_cast<uint32_t>(s.bake.warp + 0.0f));
   h = mix(h, std::bit_cast<uint32_t>(s.bake.sync + 0.0f));
   h = mix(h, static_cast<uint64_t>(s.bake.warpMode));
-  h = mix(h, (s.removeDc ? 1u : 0u) | (s.normalise ? 2u : 0u));
+  h = mix(h, (s.removeDc ? 1u : 0u) | (s.normalise ? 2u : 0u) | (s.antiderivative ? 4u : 0u));
   h = mix(h, std::bit_cast<uint64_t>(s.sampleRate));
   out.key = h;
   return Ok{};
@@ -179,12 +246,14 @@ Type makeType() {
   t.chainInstrument = true;
   // TMM.10: after a meta device in a chain (a Phase accumulator), its voice signal is the phase read.
   t.chainVoiceInput = static_cast<int32_t>(kWtInX);
+  t.chainEffectInput = static_cast<int32_t>(kWtInX);  // TMM.8: an audio effect (Shape mode: the chain's signal is x)
   t.resources = &resources;
   t.body = &body;
   t.defaultData = &wavetableDefaultData;
   t.dataProblem = &dataProblemHook;
   t.frameTable = &frameTable;
-  t.liveBakeable = false;
+  t.liveBakeable = true;  // TMM.8: the live path
+  t.bakedOnly = &bakedOnly;
   return t;
 }
 

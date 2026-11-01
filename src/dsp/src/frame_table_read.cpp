@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "frame_table_ops.h"
+#include "frame_table_simd.h"
 #include "pq/dsp/frame_table.h"
 
 namespace pq::dsp {
@@ -24,7 +25,6 @@ namespace pq::dsp {
 namespace {
 
 using simd::S8;
-using detail::ft::kInterp;
 
 // Frame k's row offset (k·frameStride), the extra offset of frame k + 1 (frameStride where w ≠ 0, else 0: a lane
 // resting on the last frame has no k + 1), the weight, and whether any lane blends.
@@ -46,35 +46,7 @@ __forceinline FramePick pickFrames(const FrameTableView& t, __m256 u) noexcept {
           _mm256_movemask_ps(moving) != 0};
 }
 
-// Rows y_{−2} … y_3 (r[0..5]) of the 8 lanes whose sample i − 2 sits at d + ix[l].
-__forceinline void rows6(const float* d, __m256i idx, __m256 (&r)[6]) noexcept {
-  // The 8 indices through memory (one store, 8 scalar loads on the load ports) rather than 8 extracts, which would
-  // compete with the transpose for port 5.
-  int32_t ix[8];
-  _mm256_storeu_si256(reinterpret_cast<__m256i*>(ix), idx);
-  __m256 a[4], b[4];
-  for (int m = 0; m < 4; ++m) {
-    const float* lo = d + ix[m];
-    const float* hi = d + ix[m + 4];
-    a[m] = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(lo)), _mm_loadu_ps(hi), 1);
-    b[m] = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(lo + 4)), _mm_loadu_ps(hi + 4), 1);
-  }
-  // a[m] = [lane m: y−2 y−1 y0 y1 | lane m+4: …]; transpose 4×4 inside each half.
-  const __m256 t0 = _mm256_unpacklo_ps(a[0], a[1]), t1 = _mm256_unpacklo_ps(a[2], a[3]);
-  const __m256 t2 = _mm256_unpackhi_ps(a[0], a[1]), t3 = _mm256_unpackhi_ps(a[2], a[3]);
-  r[0] = _mm256_shuffle_ps(t0, t1, _MM_SHUFFLE(1, 0, 1, 0));
-  r[1] = _mm256_shuffle_ps(t0, t1, _MM_SHUFFLE(3, 2, 3, 2));
-  r[2] = _mm256_shuffle_ps(t2, t3, _MM_SHUFFLE(1, 0, 1, 0));
-  r[3] = _mm256_shuffle_ps(t2, t3, _MM_SHUFFLE(3, 2, 3, 2));
-  const __m256 u0 = _mm256_unpacklo_ps(b[0], b[1]), u1 = _mm256_unpacklo_ps(b[2], b[3]);
-  r[4] = _mm256_shuffle_ps(u0, u1, _MM_SHUFFLE(1, 0, 1, 0));
-  r[5] = _mm256_shuffle_ps(u0, u1, _MM_SHUFFLE(3, 2, 3, 2));
-}
-
-__forceinline __m256 coef(int n, __m256 a0, __m256 a1, __m256 a2) noexcept {
-  return _mm256_fmadd_ps(_mm256_set1_ps(kInterp[2][n]), a2,
-                         _mm256_fmadd_ps(_mm256_set1_ps(kInterp[1][n]), a1, _mm256_mul_ps(_mm256_set1_ps(kInterp[0][n]), a0)));
-}
+using detail::ft::rows6;
 
 // A step's addresses: per lane the index of sample i − 2 in frame k, the fraction, and the frame choice.
 struct Addr {
@@ -89,15 +61,9 @@ struct Addr {
 __forceinline Addr address8(const FrameTableView& t, __m256 p, __m256 inc, const FramePick& fp) noexcept {
   const __m256i info = _mm256_i32gather_epi32(reinterpret_cast<const int*>(t.bucketInfo),
                                               detail::ft::levelBucket<S8>(inc), 4);
-  const __m256i off = _mm256_and_si256(info, _mm256_set1_epi32((1 << 17) - 1));
-  const __m256 len = _mm256_cvtepi32_ps(_mm256_srli_epi32(info, 17));
-  // frac(p); ±inf / NaN give NaN, which max turns into 0 (it returns its second operand for NaN).
-  const __m256 f = _mm256_max_ps(_mm256_sub_ps(p, _mm256_floor_ps(p)), _mm256_setzero_ps());
-  const __m256 pos = _mm256_mul_ps(f, len);
-  const __m256 err = _mm256_fmsub_ps(f, len, pos);  // f·len − pos, exact
-  const __m256i fi = _mm256_cvttps_epi32(pos);      // pos ≥ 0: truncation is the floor
-  const __m256 x = _mm256_add_ps(_mm256_sub_ps(pos, _mm256_cvtepi32_ps(fi)), err);
-  const __m256i idx = _mm256_add_epi32(_mm256_add_epi32(off, fp.off), _mm256_sub_epi32(fi, _mm256_set1_epi32(2)));
+  __m256i idx;
+  __m256 x;
+  detail::ft::splitPhase<S8>(info, p, fp.off, idx, x);
   return {idx, x, fp.step, fp.w, fp.blend};
 }
 
@@ -111,17 +77,7 @@ __forceinline __m256 finish8(const FrameTableView& t, const Addr& a, __m256i ste
     rows6(t.data, _mm256_add_epi32(a.idx, step), s);
     for (int q = 0; q < 6; ++q) r[q] = _mm256_fmadd_ps(w, _mm256_sub_ps(s[q], r[q]), r[q]);
   }
-  // r[q] = y_{q−2}
-  const __m256 e0 = _mm256_add_ps(r[2], r[3]), o0 = _mm256_sub_ps(r[2], r[3]);
-  const __m256 e1 = _mm256_add_ps(r[1], r[4]), o1 = _mm256_sub_ps(r[1], r[4]);
-  const __m256 e2 = _mm256_add_ps(r[0], r[5]), o2 = _mm256_sub_ps(r[0], r[5]);
-  const __m256 z = _mm256_sub_ps(a.x, _mm256_set1_ps(0.5f));
-  __m256 acc = coef(5, o0, o1, o2);
-  acc = _mm256_fmadd_ps(acc, z, coef(4, e0, e1, e2));
-  acc = _mm256_fmadd_ps(acc, z, coef(3, o0, o1, o2));
-  acc = _mm256_fmadd_ps(acc, z, coef(2, e0, e1, e2));
-  acc = _mm256_fmadd_ps(acc, z, coef(1, o0, o1, o2));
-  return _mm256_fmadd_ps(acc, z, coef(0, e0, e1, e2));
+  return detail::ft::poly6(r, a.x);
 }
 
 // kMode: 0 = one frame (Spl position, no lane blends), 1 = blend (Spl), 2 = per-sample position (decided per step).

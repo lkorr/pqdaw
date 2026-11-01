@@ -179,6 +179,9 @@ EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::st
   if (slot->replacesInstrument) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
   auto d = std::make_shared<Device>(*makeDevice(ids.device(), std::string(kMetaDevicePrefix) + std::string(t->id), kind));
   d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
+  // TMM.8 (docs/plans/MM.md): a Wavetable after an audio-producing device starts in Shape mode (a waveshaper).
+  if (kind == DeviceKind::AudioEffect && t->id == "wavetable" && t->settingIndex("mode") >= 0)
+    d->settings.push_back(DeviceValue{"mode", 1.0});
   e.devices.push_back(d->id);
   e.tracks.push_back(l->track);
   batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), slot->index, chain});

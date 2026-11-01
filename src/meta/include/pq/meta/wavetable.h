@@ -9,16 +9,25 @@
 //            pos  added to the position (modulation; default 0)
 //   params   phase     0 … 1, wraps: the phase slider, added to x (the face's horizontal slider)
 //            position  0 … 1: where between the keyframes the table is read (the vertical slider)
-//            fold      0 … 1   ┐ bakeable: their values are baked into the table (dsp/wave_warp.h formulas); a drag
-//            warp     −1 … 1   │ rebuilds the table off-thread and crossfades it in, never a compile. Until the live
-//            sync      0 … 1   ┘ path (TMM.8) they cannot be modulated (Type::liveBakeable false)
-//   settings mode      0 = Phase (1 = Shape arrives with TMM.8: refused here)
+//            fold      0 … 1   ┐ bakeable: a static value is baked into the table (dsp/wave_warp.h formulas); a drag
+//            warp     −1 … 1   │ rebuilds the table off-thread and crossfades it in, never a compile. TMM.8: a
+//            sync      0 … 1   ┘ modulated one (a lane, a wire, a macro) runs on the live path (Phase mode only)
+//   settings mode      0 Phase, 1 Shape (TMM.8)
 //            warpMode  0 Bend, 1 Mirror, 2 Pulse width (dsp::WarpMode)
-//   output   out = wavetable_pos(frac(x + phase), clip(position + pos, 0, 1), table: <its slot>); the atom writes
-//            the slot's voice tap (the face's dots)
+//            os        TMM.8: the live path's / Shape mode's oversampling: 0 auto, 1 … 4 = ×2 / ×4 / ×8 / ×16
+//   output   Phase mode, static controls: out = wavetable_pos(frac(x + phase), clip(position + pos, 0, 1), table:
+//            <its slot>).
+//            TMM.8, the LIVE PATH (any of fold / warp / sync modulated): ph = frac(x + phase);
+//              oversample(n, phase: ph) { out = wavetable_live(ph, pos, warp?, fold?, sync?, table, mode, corr) }
+//            with the modulated controls wired (sync also whenever warp is: it comes first) and 0 for the others,
+//            which stay baked (fold always bakes; warp unless live; sync unless live). corr = warp or sync live.
+//            TMM.8, SHAPE MODE: oversample(n) { out = wavetable_shape(x + phase, pos, table) } over a table with its
+//            antiderivative arrays; fold / warp / sync are baked into the curve and cannot be modulated
+//            (Type::bakedOnly says why). The atoms write the slot's voice tap (the face's dots)
 //   data     WavetableData (below): 1 … 256 keyframes (position + a 2048-sample cycle), a gap mode per gap, the dense
 //            frame count, removeDc, normalise. Default: one sine keyframe.
-//   chain    a chain device at the instrument position (an oscillator per voice); not yet an audio effect (Shape mode).
+//   chain    a chain device at the instrument position (an oscillator per voice), or (TMM.8) an audio effect whose
+//            signal is x; ops::addMetaDevice starts an effect Wavetable in Shape mode.
 //
 // Cost (static knobs): phasor + add + frac + the wavetable_pos read (position is param rate: clip(position) once per
 // block). One keyframe builds one dense frame (the readers' single-frame path; 64 identical frames would cost 64×
@@ -41,7 +50,11 @@ const Type& wavetableType() noexcept;
 // Indices into the type's specs.
 enum WavetableInput : uint32_t { kWtInX = 0, kWtInPos = 1 };
 enum WavetableParam : uint32_t { kWtPhase = 0, kWtPosition = 1, kWtFold = 2, kWtWarp = 3, kWtSync = 4 };
-enum WavetableSetting : uint32_t { kWtMode = 0, kWtWarpMode = 1 };
+enum WavetableSetting : uint32_t { kWtMode = 0, kWtWarpMode = 1, kWtOversampling = 2 };
+// TMM.8: the factor of the live path's / Shape mode's oversample region for these settings and modulated params:
+// the `os` setting (1 … 4 = ×2 … ×16), or auto (0): Shape mode ×2; Phase mode ×8, ×16 with a modulated sync
+// (measured: tests/dsp/test_wave_live.cpp, QUESTIONS TMM.8).
+uint32_t wavetableOversampling(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept;
 inline constexpr uint32_t kWtDefaultFrames = 64;
 
 // The data in C++ form (the face's editing tools build it; the file keeps it as a DataValue record):

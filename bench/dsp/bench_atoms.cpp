@@ -25,6 +25,7 @@ using pq::dsp::Atom;
 void addResampleBenches(pq::bench::Runner& runner);  // bench_resample.cpp (T5.4)
 void addFrameTableBenches(pq::bench::Runner& runner);  // bench_frame_table.cpp (TMM.1)
 void addOversampleBenches(pq::bench::Runner& runner);  // bench_oversample.cpp (TMM.6)
+void addWaveLiveBenches(pq::bench::Runner& runner);    // bench_wave_live.cpp (TMM.8)
 void printOversampleTable();
 
 namespace {
@@ -229,6 +230,7 @@ int main(int argc, char** argv) {
   addResampleBenches(runner);
   addFrameTableBenches(runner);
   addOversampleBenches(runner);
+  addWaveLiveBenches(runner);
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   printOversampleTable();
   if (code != 0 || rows.empty()) return code;

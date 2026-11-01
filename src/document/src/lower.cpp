@@ -206,6 +206,7 @@ private:
       m.request = r;
       m.slot = r.index < slots.size() ? slots[r.index] : 0;
       m.data = inst != nullptr ? inst->data : type.defaultData != nullptr ? type.defaultData() : nullptr;
+      m.modulated = modulated;
       u_.metaResources.push_back(std::move(m));
     }
     return &patches().patches.emplace_back(std::move(e->patch));

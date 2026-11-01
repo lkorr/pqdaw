@@ -124,5 +124,6 @@ KernelFn findOversampleKernel(Atom a, uint32_t lanes) noexcept;  // TMM.6 conver
 // tuning_hz (kernels_tuning.cpp): one function per lane count, any Spl mask.
 KernelFn findTuningKernel(uint32_t lanes) noexcept;
 KernelFn findFrameTableKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // TMM.2 (kernels_frame_table.cpp)
+KernelFn findWaveLiveKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;    // TMM.8 (kernels_wave_live.cpp)
 
 }  // namespace pq::dsp::detail

@@ -112,6 +112,42 @@ struct alignas(32) WavetablePosState {
   uint32_t pad_[4];
 };
 
+// wavetable_live (TMM.8, pq/dsp/wave_live.h): per lane the previous phase, |Δphase|, synced phase ψ and its
+// sub-period count, the controls of the previous block (a param-rate control ramps from it), whether the lane has a
+// previous sample, and the correction ring (2·kLiveCorrHalf slots of the delayed output, residuals stamped ahead);
+// then the group's table generation, crossfade, tap group, ring position and the state's sample rate.
+struct alignas(32) WavetableLiveState {
+  float prevPhase[8];
+  float prevDelta[8];
+  float prevPsi[8];
+  float prevSub[8];
+  float prevCtl[3][8];  // warp, fold, sync
+  float primed[8];      // mask: the lane has a previous sample
+  float ring[8][8];     // [slot][lane]
+  float prevW[8], prevS[8];        // the previous sample's warp and sync ratio (their per-sample change)
+  float prevSpA[8], prevSpB[8];    // the previous sample's level speeds (the left side of an event)
+  uint64_t generation;
+  uint32_t fadeLeft;
+  uint32_t group;
+  uint32_t ringPos;
+  float sampleRate;
+  uint32_t pad_[2];
+};
+
+// wavetable_shape (TMM.8): per lane the previous input position u (unclamped), the held |Δu| that picks the level,
+// whether the lane has a previous sample; then as wavetable_live.
+struct alignas(32) WavetableShapeState {
+  float prevU[8];
+  float hold[8];
+  float primed[8];
+  float pad0_[8];
+  uint64_t generation;
+  uint32_t fadeLeft;
+  uint32_t group;
+  float sampleRate;
+  uint32_t pad_[3];
+};
+
 // voice_tap (TMM.2): the previous input per lane (the record's increment), the voice group.
 struct alignas(32) VoiceTapState {
   float prev[8];
@@ -178,6 +214,8 @@ static_assert(sizeof(WavetableState) == 64);
 static_assert(sizeof(DelayState) == 96);
 static_assert(sizeof(WavetablePosState) == 96);
 static_assert(sizeof(VoiceTapState) == 64);
+static_assert(sizeof(WavetableLiveState) == 672);
+static_assert(sizeof(WavetableShapeState) == 160);
 static_assert(sizeof(SampleReadState) == 96);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);
 

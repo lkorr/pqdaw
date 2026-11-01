@@ -143,9 +143,12 @@ struct Type {
   // leaves the slot's table as it is.
   Status (*frameTable)(const TableSource& source, uint32_t index, TableJob& out) = nullptr;
   // Whether a `bakeable` param may be modulated (an automation lane, a wire, a macro): the expansion then has a live
-  // path for it. false (the Wavetable until TMM.8): such params are baked only, and the document refuses to modulate
-  // them (doc::metaParamBakedOnly).
+  // path for it. false: such params are baked only, and the document refuses to modulate them
+  // (doc::metaParamBakedOnly). TMM.8: the Wavetable's are live in Phase mode.
   bool liveBakeable = true;
+  // TMM.8 (optional): with these (resolved) settings, why bakeable param `param` cannot be modulated ("" = it can):
+  // a type whose live path depends on a setting (the Wavetable's Shape mode bakes fold / warp / sync).
+  std::string (*bakedOnly)(std::span<const double> settings, uint32_t param) = nullptr;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none
@@ -180,6 +183,10 @@ public:
   // Names a body node (a binding in the text form). A value read twice, and a sink, need one for the printed
   // expansion to parse back to the same graph; the name must not be a port's. Names do not change node ids.
   void bind(PortRef value, std::string_view name);
+  // TMM.8: a new `oversample(factor, phase: …)` region (its id) — `phase` names outer values bound with bind() — and
+  // a body node computed inside one (PATCH_LANGUAGE §2.3).
+  uint16_t region(uint32_t factor, std::initializer_list<std::string_view> phase);
+  void inRegion(PortRef node, uint16_t region);
   void output(size_t i, PortRef value);
   graph::Patch& patch() noexcept { return p_; }
 

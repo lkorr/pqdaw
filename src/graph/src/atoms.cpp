@@ -58,6 +58,17 @@ constexpr PortSpec pNoise[] = {{"seed", kRConst, true, 0.0f}};
 // voice_tap samples x into the voice tap `slot` for a meta module's face (a sink: no outputs).
 constexpr PortSpec pWavetablePos[] = {{"phase", kR}, {"position", kR, true, 0.0f}, {"table", kRConst, true, 0.0f}};
 constexpr PortSpec pVoiceTap[] = {{"x", kR}, {"slot", kRConst, true, 0.0f}};
+// TMM.8 (pq/dsp/wave_live.h): the Wavetable's live warp / fold / sync read (mode: 0 Bend, 1 Mirror, 2 Pulse width;
+// corr 1: band-limited corrections of its jumps and kinks, output delayed 4 samples) and Shape mode's ADAA read.
+constexpr PortSpec pWavetableLive[] = {{"phase", kR},
+                                       {"position", kR, true, 0.0f},
+                                       {"warp", kR, true, 0.0f},
+                                       {"fold", kR, true, 0.0f},
+                                       {"sync", kR, true, 0.0f},
+                                       {"table", kRConst, true, 0.0f},
+                                       {"mode", kRConst, true, 0.0f},
+                                       {"corr", kRConst, true, 0.0f}};
+constexpr PortSpec pWavetableShape[] = {{"x", kR}, {"position", kR, true, 0.0f}, {"table", kRConst, true, 0.0f}};
 
 constexpr PortSpec pClip[] = {{"x", kR}, {"lo", kR}, {"hi", kR}};
 constexpr PortSpec pLerp[] = {{"a", kR}, {"b", kR}, {"t", kR}};
@@ -167,6 +178,10 @@ const AtomSignature kAtoms[] = {
      "band-limited table read by phase; mipmap chosen from the phase increment"},
     {"wavetable_pos", C::Generator, pWavetablePos, pOutR, sizeof(dsp::WavetablePosState), kStateful | kBroadcast, 0, {},
      "live frame table read by phase at a frame position 0..1; swaps crossfade over 64 samples"},
+    {"wavetable_live", C::Generator, pWavetableLive, pOutR, sizeof(dsp::WavetableLiveState), kStateful | kBroadcast, 0,
+     {}, "live frame table read through sync, warp (mode) and fold per sample; for an oversample region"},
+    {"wavetable_shape", C::Shaping, pWavetableShape, pOutR, sizeof(dsp::WavetableShapeState), kStateful | kBroadcast, 0,
+     {}, "live frame table as a transfer curve of x in -1..1 (clamped), antiderivative anti-aliased"},
     {"noise", C::Generator, pNoise, pOutRAudio, sizeof(dsp::NoiseState), kStateful, 0, {}, "white noise in −1..1 (uint32 generator state)"},
 
     // Math (exact). Operators: + − * / % unary − map to add sub mul div mod neg.

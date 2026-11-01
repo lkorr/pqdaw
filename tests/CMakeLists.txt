@@ -313,6 +313,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
     jit/test_oversample.cpp  # TMM.6: the oversample(n) region on both backends (reference, aliasing, pitch, voices, swap)
     engine/test_probes.cpp  # T4.5: probes and cost meters again, on JIT images (and interpreter == JIT probe streams)
     jit/test_jit_frame_table.cpp  # TMM.2: wavetable_pos / voice_tap on both backends (swaps, taps, hot swap, reference)
+    jit/test_jit_wave_live.cpp  # TMM.8: wavetable_live / wavetable_shape in oversample regions on both backends
   DEPS pq_jit pq_compile)
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++
@@ -325,7 +326,7 @@ pq_add_test(pq_tests_stdlib SHARDS 4 SLOW_SHARDS 4
     stdlib/test_auto_filter.cpp  # T4.11: Auto Filter vs device_reference.h, analytic responses, modulation
   DEPS pq_jit)
 
-pq_add_test(pq_tests_dsp
+pq_add_test(pq_tests_dsp SLOW_SHARDS 6  # TMM.8: the live path's slow alias proof (9 cases of ≈ 20 s)
   SOURCES
     dsp/test_atoms_math_logic.cpp
     dsp/test_atoms_memory_gen.cpp
@@ -342,6 +343,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_frame_table_alias.cpp
     dsp/test_wavetable_pos.cpp  # TMM.2: wavetable_pos (slots, crossfade, taps, swap stress), voice_tap
     dsp/test_oversample.cpp  # TMM.6: the oversample region's rate converters
+    dsp/test_wave_live.cpp  # TMM.8: wavetable_live / wavetable_shape (baked agreement, the alias proof, ADAA)
     support/alias_meter.h  # TMM.1: the reusable alias meter (listed so tests/support maps to its users)
   DEPS pq_dsp)
 

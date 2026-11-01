@@ -1444,6 +1444,7 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
     m.device = r.device;
     m.path = r.path;
     m.index = r.request.index;
+    m.modulated = r.modulated;
     frameTableViews_[r.slot] = m.table.get();
     voiceTapViews_[r.slot] = m.kind == meta::ResourceKind::VoiceTap ? m.tap.get() : nullptr;
   }
@@ -1528,6 +1529,7 @@ void ProjectLink::refreshMetaTables() {
       src.params = params;
       src.settings = settings;
       src.sampleRate = cfg_.sampleRate;
+      src.modulated = m.modulated;
       meta::TableJob job;
       if (!m.type->frameTable(src, m.index, job).ok() || job.key == m.wanted) continue;
       m.wanted = job.key;

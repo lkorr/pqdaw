@@ -148,6 +148,17 @@
 //                                     bits.
 //   voice_tap (x) → (nothing)         a sink: samples x into the VoiceTap resource (null: nothing) while a reader is
 //                                     registered; the record's increment is x's last difference, position 0.
+// The Wavetable's live path and Shape mode (TMM.8; kernels_wave_live.cpp; pq/dsp/wave_live.h has the formulas):
+//   wavetable_live (phase, position, warp, fold, sync, mode, corr)
+//                                     the slot's frame table read through sync → warp → fold applied per sample
+//                                     (wave_warp.h), each tap at the level pair for its instantaneous speed
+//                                     (crossfaded), param-rate controls ramped over the block, jumps and kinks
+//                                     corrected with band-limited residuals when corr ≠ 0 (output delayed by
+//                                     kLiveCorrHalf samples); mode and corr are consts. Every signal input may be
+//                                     Spl or Blk (the kernel reads KernelArgs::splMask). Swaps and taps as
+//                                     wavetable_pos (the tap at the base rate inside an oversample region).
+//   wavetable_shape (x, position)     Shape mode: the table as a transfer curve of x ∈ [−1, 1] (clamped), first-order
+//                                     ADAA from the table's antiderivative arrays (a table without them: silence).
 // Oversample region converters (TMM.6; pq/dsp/oversample.h has the filters, the conventions and the numbers):
 //   oversample_up / _down (x, factor)   polyphase IIR half-band cascade, ×factor up / down (factor Spl: 2, 4, 8, 16)
 //   oversample_phase (x, factor)        a phase up by unwrapped linear interpolation (exact for ramps, keeps wraps)
@@ -191,6 +202,8 @@ enum class Atom : uint16_t {
   WavetablePos, VoiceTap,
   // oversample region rate converters (TMM.6, pq/dsp/oversample.h; inserted by the compiler, not callable)
   OversampleUp, OversampleDown, OversamplePhase, OversampleHold, OversampleAny,
+  // the Wavetable's live path and Shape mode (TMM.8, pq/dsp/wave_live.h)
+  WavetableLive, WavetableShape,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

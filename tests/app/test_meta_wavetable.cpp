@@ -304,6 +304,90 @@ TEST_CASE("meta wavetable: a baked fold drag compiles nothing, is one undo step,
   CHECK(link->metaTableStats().built == built);
 }
 
+TEST_CASE("meta wavetable: automating fold switches to the live path (one compile) and back; the live table is unbaked") {
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  s.data(wt, oneCycle(dsp::BasicCycle::Saw));
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  const auto plain = slot->table();
+  // A static fold: baked (no compile).
+  s.param(wt, "fold", 0.5);
+  link->flush();
+  REQUIRE(link->waitForMetaTables());
+  const auto baked = slot->table();
+  REQUIRE(baked != plain);
+  Driver d{*link};
+  link->play(0);
+  d.run(50);
+  // A lane on fold: one structural compile onto the live path, whose table bakes no fold (the plain table again).
+  const app::LinkStats s0 = link->stats();
+  s.lane(0, wt, "fold", {Breakpoint{0, 0.0f, 0.0f, {}}, Breakpoint{4 * kPpq, 1.0f, 0.0f, {}}});
+  link->flush();
+  REQUIRE(link->lastError().empty());
+  REQUIRE(link->waitForMetaTables());
+  CHECK(link->stats().compiles == s0.compiles + 1);
+  const auto live = link->metaFrameTable(wt, "", 0);
+  REQUIRE(live != nullptr);
+  CHECK(sameTable(*live->table(), *plain));
+  const size_t from = d.out.size();
+  d.run(800);  // ~1 s: the lane sweeps fold 0 → 1 (RtScope around every block)
+  double peak = 0;
+  bool finite = true;
+  for (size_t i = from; i < d.out.size(); ++i) {
+    finite &= std::isfinite(d.out[i]);
+    peak = std::max(peak, std::fabs(static_cast<double>(d.out[i])));
+  }
+  CHECK(finite);
+  CHECK(peak > 0.2);
+  // The fold sweep brightens the saw (the folder adds harmonics): later blocks are brighter than the first ones.
+  CHECK(brightness(d.out, from + 48000 - 4096, from + 48000) > brightness(d.out, from + 512, from + 4608));
+  // Deleting the lane: one compile back to the baked path, which bakes the knob's value again.
+  const app::LinkStats s1 = link->stats();
+  const LaneId laneId = findTrackPtr(s.doc(), s.tracks.at(0))->lanes.at(0)->id;
+  s.must(RemoveAutomationLane{s.tracks.at(0), laneId});
+  link->flush();
+  REQUIRE(link->waitForMetaTables());
+  CHECK(link->stats().compiles == s1.compiles + 1);
+  const auto back = link->metaFrameTable(wt, "", 0);
+  REQUIRE(back != nullptr);
+  CHECK(sameTable(*back->table(), *baked));
+  d.run(50);
+}
+
+TEST_CASE("meta wavetable: a Wavetable effect in Shape mode shapes the track's audio (ADAA, oversampled)") {
+  WtSong s;
+  // A MIDI track with BasicSynth and a Wavetable effect after it: Shape mode by default.
+  auto t = ops::createTrack(s.doc(), s.store.ids(), TrackKind::Midi);
+  REQUIRE(t.ok());
+  s.must(t->command);
+  const TrackId id = t->tracks.at(0);
+  auto w = ops::addMetaDevice(s.doc(), s.store.ids(), id, "wavetable", 1);
+  REQUIRE(w.ok());
+  s.must(w->command);
+  const DeviceId fx = w->devices.at(0);
+  REQUIRE(findDevice(s.doc(), fx).device->kind == DeviceKind::AudioEffect);
+  s.must(AddClip{id, playback_fixture::clip(s.store.ids(), 0, 8 * kPpq,
+                                            {playback_fixture::note(s.store.ids(), 0, 8 * kPpq, 0)}, "notes")});
+  s.data(fx, oneCycle(dsp::BasicCycle::Square));
+  auto link = makeLink(s.store.current());
+  REQUIRE(link->lastError().empty());
+  REQUIRE(link->waitForMetaTables());
+  const auto slot = link->metaFrameTable(fx, "", 0);
+  REQUIRE(slot != nullptr);
+  CHECK(slot->table()->hasAntiderivative());
+  Driver d{*link};
+  link->play(0);
+  d.run(400);
+  double peak = 0;
+  for (const float v : d.out) peak = std::max(peak, std::fabs(static_cast<double>(v)));
+  CHECK(peak > 0.05);
+  CHECK(std::all_of(d.out.begin(), d.out.end(), [](float v) { return std::isfinite(v); }));
+}
+
 TEST_CASE("meta wavetable: offline renders wait for pending builds; identical specs share one table; a rate change rebuilds") {
   WtSong s;
   const DeviceId a = s.track({{0, 4 * kPpq, 0}});

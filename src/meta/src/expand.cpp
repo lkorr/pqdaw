@@ -148,6 +148,18 @@ void Builder::bind(PortRef value, std::string_view name) {
   p_.setNodeName(value.node, std::string(name));
 }
 
+uint16_t Builder::region(uint32_t factor, std::initializer_list<std::string_view> phase) {
+  graph::OversampleRegion r;
+  r.factor = factor;
+  for (const std::string_view n : phase) r.phase.emplace_back(n);
+  return p_.addRegion(std::move(r));
+}
+
+void Builder::inRegion(PortRef node, uint16_t region) {
+  if (node.node == graph::kNone || node.node >= p_.nodeCount() || region == 0) return;
+  p_.setNodeRegion(node.node, region);
+}
+
 void Builder::output(size_t i, PortRef value) {
   if (i >= outputs_.size() || value.node == graph::kNone) {
     failed_ = true;

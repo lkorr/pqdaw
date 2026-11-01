@@ -25,7 +25,9 @@
 //    single control (≤ −126 dB from a 64× bake over sweeps of every control), raised for combinations.
 // 4. `removeDc` zeroes every dense frame's DC (after the bake, which can create DC).
 // 5. Levels: harmonic h of level j is c_h / H(h / len_j) (frameInterpResponse) for h ≤ H_j; an inverse FFT of
-//    len_j points gives the row; eight frames share one transform (four AVX2 lanes × real and imaginary).
+//    len_j points gives the row; eight frames share one transform (four AVX2 lanes × real and imaginary). With
+//    `antiderivative` (TMM.8, Shape mode) the same again for P (c_h / (2πih), no DC), plus each frame's DC and each
+//    level's value at phase 0.
 // Build time (bench/RESULTS.md): 64 frames ≈ 10 ms, with a single baked control ≈ 65 ms (one thread).
 
 #include <complex>
@@ -67,6 +69,10 @@ struct FrameTableSpec {
   bool normalise = false;
   double sampleRate = 48000;
   uint32_t bakeResolution = 16;         // minimum bake samples per keyframe-cycle sample: a power of two in [4, 128]
+  // TMM.8: also build the Shape-mode antiderivative arrays (frame_table.h FrameTableView::adData; the table must be
+  // allocated with them). Step 5 writes, per level, the rows of P (harmonics c_h / (2πih), pre-emphasised like the
+  // value rows), the frame's DC and the level's value at phase 0.
+  bool antiderivative = false;
 };
 
 // The bake resolution actually used: spec.bakeResolution, doubled (up to kMaxAutoBakeResolution, never above what
@@ -88,8 +94,8 @@ public:
   FrameTableBuilder(const FrameTableBuilder&) = delete;
   FrameTableBuilder& operator=(const FrameTableBuilder&) = delete;
 
-  // Builds into `out`, which must have been allocated for spec.sampleRate and spec.denseFrames (FrameTable::allocate
-  // with frameTableLayout(spec.sampleRate)). Sizes the arenas on first use of a larger spec (allocates then only).
+  // Builds into `out`, which must have been allocated for spec.sampleRate, spec.denseFrames and
+  // spec.antiderivative (FrameTable::allocate with frameTableLayout(spec.sampleRate)). Sizes the arenas on first use of a larger spec (allocates then only).
   Status buildInto(const FrameTableSpec& spec, FrameTable& out);
   // Allocates the table (one allocation of its storage) and builds it.
   Result<FrameTable> build(const FrameTableSpec& spec);
