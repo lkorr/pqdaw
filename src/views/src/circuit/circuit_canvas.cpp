@@ -442,6 +442,7 @@ struct CircuitCanvas::Impl {
     fp.mods = e.mods;
     fp.clicks = e.clickCount;
     fp.wheel = e.wheel;
+    if (e.button != ui::PointerButton::None) fp.button = e.button;
     return fp;
   }
 
@@ -1645,7 +1646,9 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
   switch (e.type) {
     case ui::PointerType::Down: {
       m.faceFocus = -1;  // any press moves the key focus; a face's control takes it below
-      if (e.button != ui::PointerButton::Left || (e.mods & ui::mod::kAlt)) return false;
+      // Left presses, and right presses a face uses (TMM.9: resetting harmonic bars); Alt+Left pans.
+      if ((e.button != ui::PointerButton::Left && e.button != ui::PointerButton::Right) || (e.mods & ui::mod::kAlt))
+        return false;
       const int32_t i = m.faceUnder(e.pos);
       if (i < 0) return false;
       MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
@@ -1674,6 +1677,7 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
         MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
         const FacePointer fp = m.pointerOf(i, e, K::Move);
         if (f.setHoveredPart(f.hitTest(fp.local, fp.pxPerUnit))) markDirty();
+        if (f.onPointer(fp)) markDirty();  // TMM.9: the face's own hover (a bar, a draw cursor, Alt)
       }
       return false;
     }

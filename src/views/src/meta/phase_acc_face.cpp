@@ -155,6 +155,7 @@ public:
     using K = FacePointer::Kind;
     switch (e.kind) {
       case K::Down: {
+        if (e.button != ui::PointerButton::Left) return false;  // no right-click use: the host's menu
         const int32_t part = hitTest(e.local, e.pxPerUnit);
         if (part < 0 || param_[part] < 0) return false;
         if (e.clicks >= 2) {

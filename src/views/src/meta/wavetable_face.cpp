@@ -2,10 +2,17 @@
 // the display after Live's Wavetable). Label-free, in the Phase accumulator's language (the same theme tokens: a dark
 // body, quiet tracks and frame, values in the accent, voices as neon-blue glowing dots).
 //
-//   top        the Phase / Shape mode switch by the input jack; the Basic Shapes chooser (replaces the selected
-//              keyframe's cycle); the harmonic rows of the selected keyframe — amplitude, and phase about a centre line
-//              (read-only here: TMM.9 edits them and adds the draw tools in the gap left of the chooser)
-//   display    the table's dense frames as offset lines receding up-right (a static layer keyed by the instance's
+//   top        the Phase / Shape mode switch by the input jack; the draw tools (pencil, line, smooth curve: TMM.9);
+//              the Basic Shapes chooser (replaces the edited keyframe's cycle)
+//   harmonics  TMM.9, Serum-like: the edited keyframe's harmonics as two rows of bars — amplitude (linear, 1 = full
+//              height; Alt shows dB, −60 … 0) and phase about a centre line (relative to a sine) —, 32 visible at first;
+//              the wheel scrolls, Ctrl+wheel zooms (8 … all 1024: DC and harmonics 1 … 1023), a thin scrollbar below
+//              shows where the view is. Dragging paints across the bars (Shift: a straight line from the press),
+//              right-click / right-drag or a double-click resets bars (amplitude 0, phase 0). Bars too thin for the
+//              screen are drawn as columns of the loudest bar they cover.
+//   display    (a draw tool chosen: the edited keyframe's cycle, large, on a grid, with the snap grid / normalise /
+//              remove-DC options in its corner; drag to draw — see wavetable_edit.h; click the lit tool or Esc to leave)
+//              the table's dense frames as offset lines receding up-right (a static layer keyed by the instance's
 //              data and baked values), the frame at the position highlighted in the accent with a fill; with no voice,
 //              a dashed line at the phase slider's read phase; per sounding voice a glowing dot on its own frame at
 //              the newest sampled read phase, a dotted vertical bar, and the faint glow density of the phases sampled
@@ -17,6 +24,12 @@
 //   below      the phase slider (the phase input's base value; per-voice ticks when the input is wired)
 //   bottom     fold / warp / sync knobs, the warp mode as a 3-glyph switch under the warp knob
 //
+// The EDITED KEYFRAME (harmonics, drawing, basic shapes) is the selected one (a marker click selects). Once the
+// position slider has been dragged, it is the keyframe at the position instead — and with the position between
+// keyframes, a hollow marker shows where the first edit creates one from the blended frame (the plan: "the first
+// stroke creates one there"). Drawing and the harmonic rows are two views of the same 2048 samples: viewing writes
+// nothing, a harmonic edit changes only the harmonics edited (wavetable_edit.h).
+//
 // Every drag and click is one undo step and never a compile: params are runtime values, fold / warp / sync are baked by
 // the link off the audio thread, data edits are the MetaData class. The warp mode is a setting (one compile, as every
 // setting; TMM.8's live path reads it). Shape mode is refused until TMM.8 (Q171): its switch says so.
@@ -25,7 +38,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <numbers>
 #include <string>
@@ -34,6 +49,7 @@
 #include "faces.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/wavetable.h"
+#include "wavetable_edit.h"
 #include "wavetable_model.h"
 
 namespace pq::views {
@@ -50,15 +66,23 @@ constexpr float deg(float d) noexcept { return d * kPi / 180.0f; }
 // ---- layout (world units) ----
 constexpr float kW = 204.0f, kH = 248.0f;
 constexpr float kRadius = 12.0f;
-// top row: the mode switch by the input jack, the Basic Shapes chooser at the right
+// top row: the mode switch by the input jack, the draw tools, the Basic Shapes chooser at the right
 constexpr float kRowY0 = 17.0f, kRowY1 = 31.0f;
 constexpr float kModeX0 = 14.0f, kCell = 14.0f, kCellGap = 1.5f;
+constexpr float kSmallCell = 13.0f;  // tools and shapes
+constexpr float kToolX0 = 51.0f;
+constexpr uint32_t kToolCount = 3;
 constexpr float kShapeX1 = 188.0f;
 constexpr uint32_t kShapeCount = 6;
-// harmonic rows
+// harmonic rows and their scrollbar
 constexpr float kHarmX0 = 16.0f, kHarmX1 = 188.0f;
-constexpr float kAmpY0 = 37.0f, kAmpY1 = 57.0f;
-constexpr float kPhY0 = 60.0f, kPhY1 = 72.0f;
+constexpr float kAmpY0 = 36.0f, kAmpY1 = 58.0f;
+constexpr float kPhY0 = 60.5f, kPhY1 = 71.5f;
+constexpr float kScrollY = 73.7f, kScrollHalfH = 0.75f;
+constexpr uint32_t kMinBars = 8, kDefaultBars = 32;
+// draw mode: the cycle's place in the display, the option cells in its corner
+constexpr float kDrawX0 = 20.0f, kDrawW = 138.0f, kDrawCy = 129.0f, kDrawA = 35.0f;
+constexpr float kOptX0 = 19.0f, kOptW = 12.0f, kOptY0 = 80.5f, kOptY1 = 90.5f;
 // display
 constexpr Rect kDisp{16.0f, 78.0f, 162.0f, 172.0f};
 // position slider (right of the display), its markers and gap glyphs
@@ -87,7 +111,14 @@ enum Part : int32_t {
   kModePhase = 20,
   kModeShape = 21,
   kShape0 = 30,  // + dsp::BasicCycle
-  kHarmPart = 40,
+  kHarmAmp = 40,     // the amplitude row
+  kHarmPhase = 41,   // the phase row
+  kHarmScroll = 42,  // the harmonic view's scrollbar
+  kTool0 = 50,       // + tool − 1 (pencil, line, curve)
+  kDrawPart = 60,    // the display in draw mode
+  kGridPart = 61,
+  kNormPart = 62,
+  kDcPart = 63,
   kKeyBase = 1000,  // + keyframe
   kGapBase = 3000,  // + gap
 };
@@ -97,8 +128,17 @@ Rect modeCell(uint32_t i) noexcept {
   return {x0, kRowY0, x0 + kCell, kRowY1};
 }
 Rect shapeCell(uint32_t i) noexcept {
-  const float x0 = kShapeX1 - static_cast<float>(kShapeCount - i) * kCell - static_cast<float>(kShapeCount - 1 - i) * kCellGap;
-  return {x0, kRowY0, x0 + kCell, kRowY1};
+  const float x0 =
+      kShapeX1 - static_cast<float>(kShapeCount - i) * kSmallCell - static_cast<float>(kShapeCount - 1 - i) * kCellGap;
+  return {x0, kRowY0, x0 + kSmallCell, kRowY1};
+}
+Rect toolCell(uint32_t i) noexcept {
+  const float x0 = kToolX0 + static_cast<float>(i) * (kSmallCell + kCellGap);
+  return {x0, kRowY0, x0 + kSmallCell, kRowY1};
+}
+Rect optCell(uint32_t i) noexcept {
+  const float x0 = kOptX0 + static_cast<float>(i) * (kOptW + kCellGap);
+  return {x0, kOptY0, x0 + kOptW, kOptY1};
 }
 Rect warpCell(uint32_t i) noexcept {
   const float total = 3.0f * kWarpCellW + 2.0f * kCellGap;
@@ -121,7 +161,10 @@ struct FrameGeom {
 };
 
 // ---- glyphs (drawn into a cell: centre c, half-width hw, half-height hh) ----
-enum class Glyph : uint8_t { Sine, Triangle, Saw, Square, Pulse, Noise, PhaseMode, ShapeMode, Bend, Mirror, PulseWidth, Fold, Sync };
+enum class Glyph : uint8_t {
+  Sine, Triangle, Saw, Square, Pulse, Noise, PhaseMode, ShapeMode, Bend, Mirror, PulseWidth, Fold, Sync,
+  Pencil, Line, Curve, Normalise, RemoveDc  // TMM.9 (the grid glyph: gridGlyph)
+};
 
 class Glyphs {
 public:
@@ -163,8 +206,55 @@ public:
         }
         break;
       case Glyph::Sync: at(0, -1), at(0.4f, 0.6f), at(0.4f, -1), at(0.8f, 0.6f), at(0.8f, -1), at(1, -0.2f); break;
+      case Glyph::Pencil: {  // a freehand scribble ending in a dot
+        static constexpr float kP[][2] = {{0, -0.2f}, {0.12f, 0.5f}, {0.22f, 0.7f}, {0.32f, 0.1f}, {0.42f, -0.7f},
+                                         {0.55f, -0.5f}, {0.66f, 0.4f}, {0.78f, 0.75f}, {0.9f, 0.2f}};
+        for (const auto& q : kP) at(q[0], q[1]);
+        p.polyline(pts_, th, col);
+        p.disc(pts_.back(), th * 1.1f, col);
+        return;
+      }
+      case Glyph::Line:  // two points joined
+        at(0.08f, -0.7f), at(0.92f, 0.7f);
+        p.polyline(pts_, th, col);
+        p.disc(pts_[0], th * 1.25f, col);
+        p.disc(pts_[1], th * 1.25f, col);
+        return;
+      case Glyph::Curve: {  // a smooth S through three points
+        for (int i = 0; i <= 16; ++i) {
+          const float x = i / 16.0f;
+          at(0.06f + 0.88f * x, -0.75f * std::cos(kPi * x));
+        }
+        p.polyline(pts_, th, col);
+        p.disc(pts_[0], th * 1.1f, col);
+        p.disc(pts_[8], th * 1.1f, col);
+        p.disc(pts_[16], th * 1.1f, col);
+        return;
+      }
+      case Glyph::Normalise:  // a wave touching both rails
+        p.line({c.x - hw, c.y - hh}, {c.x + hw, c.y - hh}, th * 0.8f, col);
+        p.line({c.x - hw, c.y + hh}, {c.x + hw, c.y + hh}, th * 0.8f, col);
+        for (int i = 0; i <= 16; ++i) at(i / 16.0f, 0.9f * std::sin(2.0f * kPi * i / 16.0f));
+        break;
+      case Glyph::RemoveDc: {  // a wave centred on its (dashed) centre line
+        const Vec2 mid[2] = {{c.x - hw, c.y}, {c.x + hw, c.y}};
+        p.dashed(mid, th * 0.8f, 1.2f, 1.0f, col);
+        for (int i = 0; i <= 16; ++i) at(i / 16.0f, 0.75f * std::sin(2.0f * kPi * i / 16.0f));
+        break;
+      }
     }
     p.polyline(pts_, th, col);
+  }
+  // The snap grid's glyph: a box with 1 / 2 / 3 / 4 inner lines each way (off: a plain box with one).
+  static void gridGlyph(ui::FacePainter& p, Vec2 c, float hw, float hh, float th, uint32_t grid, Rgba col) {
+    const int n = grid == 0 ? 1 : (grid <= 8 ? 2 : (grid <= 16 ? 3 : 4));
+    const float x0 = c.x - hw, x1 = c.x + hw, y0 = c.y - hh, y1 = c.y + hh;
+    for (int i = 0; i <= n + 1; ++i) {
+      const float t = static_cast<float>(i) / static_cast<float>(n + 1);
+      const float w = (i == 0 || i == n + 1) ? th : th * 0.7f;
+      p.line({x0 + t * (x1 - x0), y0}, {x0 + t * (x1 - x0), y1}, w, col);
+      p.line({x0, y0 + t * (y1 - y0)}, {x1, y0 + t * (y1 - y0)}, w, col);
+    }
   }
 
 private:
@@ -191,24 +281,31 @@ public:
   // The output leaves the display's row at the right edge, past the position slider.
   float outputY(size_t, size_t) const noexcept override { return (kDisp.y0 + kDisp.y1) * 0.5f; }
 
-  // ---- static layers: body, tracks, frame + glyphs (shared by the type); this instance's stacked frames, and the
-  // selected keyframe's harmonic bars (amplitude, phase) — data, not values: drawn once into tiles, not per frame ----
-  uint32_t staticLayerCount() const noexcept override { return 6; }
+  // ---- static layers: body, tracks, frame + glyphs (shared by the type); this instance's stacked frames (or, in
+  // draw mode, the drawing grid), the edited keyframe's harmonic bars (amplitude, phase) and the harmonic view's slots
+  // — data and view state, not values: drawn once into tiles, not per frame ----
+  uint32_t staticLayerCount() const noexcept override { return 7; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
     switch (layer) {
       case 0: return th.face.body;
       case 1: return th.face.track;
       case 2: return th.face.frame;
       case 3: return th.face.tick;
-      case 4: return th.face.value;
+      case 4: return th.face.track;  // the harmonic slots (under the bars)
+      case 5: return th.face.value;
       default: return th.face.handle;
     }
   }
   uint64_t staticKey(uint32_t layer) const override {
     if (layer < 3) return 0;
     refresh();
-    if (layer == 3) return model_.key();
-    return (model_.key() ^ (static_cast<uint64_t>(selected_ + 1) * 0xD6E8FEB86659FD93ull)) | 1u;  // the selected's bars
+    const uint64_t view = (static_cast<uint64_t>(hFirst_) << 20) ^ (static_cast<uint64_t>(hCount_) << 8);
+    switch (layer) {
+      case 3: return tool_ != wt::Tool::None ? (0xC2B2AE3D27D4EB4Full ^ (static_cast<uint64_t>(grid_) + 1)) | 1u : model_.key();
+      case 4: return (view * 0x2545F4914F6CDD1Dull) | 1u;
+      case 5: return (targetKey_ ^ view ^ (alt_ ? 0x9E3779B97F4A7C15ull : 0u)) | 1u;
+      default: return (targetKey_ ^ view ^ 0x5851F42D4C957F2Dull) | 1u;
+    }
   }
 
   void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
@@ -217,8 +314,13 @@ public:
       case 0: p.roundedRect({1.0f, 1.0f, kW - 1.0f, kH - 1.0f}, kRadius, w); return;
       case 1: paintTracks(p, w); return;
       case 2: paintFrame(p, w); return;
-      case 3: paintStack(p); return;
-      default: paintHarmonics(p, layer == 4); return;
+      case 3:
+        if (tool_ != wt::Tool::None) paintGrid(p);
+        else paintStack(p);
+        return;
+      case 4: paintSlots(p); return;
+      case 5:
+      default: paintHarmonics(p, layer == 5); return;
     }
   }
 
@@ -227,9 +329,11 @@ public:
     const ui::Theme& th = *env.theme;
     const double now = clockNow();
     paintCells(p, th);
+    paintHarmonicLive(p, th);
     paintSliders(p, env);
     paintKnobs(p, env);
-    paintDisplay(p, env, now);
+    if (tool_ != wt::Tool::None) paintDrawMode(p, th);
+    else paintDisplay(p, env, now);
     paintOutputLead(p, env);
     // The selection / hover ring.
     const Rgba ring = env.selected ? th.circuit.selected : (env.hovered && hovered_ == kFrame ? th.circuit.hover : 0);
@@ -287,7 +391,18 @@ public:
       if (inside(modeCell(i), l, slack * 0.5f)) return kModePhase + static_cast<int32_t>(i);
     for (uint32_t i = 0; i < kShapeCount; ++i)
       if (inside(shapeCell(i), l, slack * 0.5f)) return kShape0 + static_cast<int32_t>(i);
-    if (l.x >= kHarmX0 && l.x <= kHarmX1 && l.y >= kAmpY0 - 1.0f && l.y <= kPhY1 + 1.0f) return kHarmPart;
+    for (uint32_t i = 0; i < kToolCount; ++i)
+      if (inside(toolCell(i), l, slack * 0.5f)) return kTool0 + static_cast<int32_t>(i);
+    if (l.x >= kHarmX0 - 1.0f && l.x <= kHarmX1 + 1.0f) {
+      if (l.y >= kAmpY0 - 1.5f && l.y <= 0.5f * (kAmpY1 + kPhY0)) return kHarmAmp;
+      if (l.y > 0.5f * (kAmpY1 + kPhY0) && l.y <= kPhY1 + 0.9f) return kHarmPhase;
+      if (l.y > kPhY1 + 0.9f && l.y <= kScrollY + 1.8f) return kHarmScroll;
+    }
+    if (tool_ != wt::Tool::None) {
+      for (uint32_t i = 0; i < 3; ++i)
+        if (inside(optCell(i), l, slack * 0.5f)) return kGridPart + static_cast<int32_t>(i);
+      if (inside(kDisp, l, 2.0f)) return kDrawPart;
+    }
     return kFrame;
   }
 
@@ -303,7 +418,7 @@ public:
         begun_ = false;
         return true;
       }
-      case K::Wheel:
+      case K::Wheel: return wheel(e);
       case K::Leave: return false;
     }
     return false;
@@ -319,7 +434,11 @@ public:
   bool onKey(const ui::KeyEvent& e) override {
     if (!e.down || !keyFocus_) return false;
     if ((e.mods & ui::mod::kChordMask) != ui::mod::kNone) return false;
-    if (e.key != ui::key::kDelete && e.key != ui::key::kBackspace) return false;
+    if (e.key == ui::key::kEscape && tool_ != wt::Tool::None && drag_ == kNone) {  // leave draw mode
+      tool_ = wt::Tool::None;
+      return true;
+    }
+    if (!markerFocus_ || (e.key != ui::key::kDelete && e.key != ui::key::kBackspace)) return false;
     refresh();
     const meta::WavetableData& d = model_.data();
     if (!model_.ok() || !target().editable()) return false;
@@ -345,7 +464,9 @@ public:
     if (part == kPhasePart) return ui::Cursor::ResizeEW;
     if (part == kPositionPart || (part >= kKeyBase && part < kGapBase) || (part >= kFoldPart && part <= kSyncPart))
       return ui::Cursor::ResizeNS;
-    if (part >= kWarpMode0 && part != kHarmPart) return ui::Cursor::Pointer;  // switches, shapes, gap glyphs
+    if (part == kHarmAmp || part == kHarmPhase || part == kDrawPart) return ui::Cursor::Crosshair;
+    if (part == kHarmScroll) return ui::Cursor::ResizeEW;
+    if (part >= kWarpMode0) return ui::Cursor::Pointer;  // switches, shapes, tools, options, gap glyphs
     return ui::Cursor::Inherit;
   }
 
@@ -364,8 +485,72 @@ private:
     b.sync = static_cast<float>(param(meta::kWtSync));
     b.warpMode = static_cast<uint32_t>(std::clamp(std::round(target().setting(meta::kWtWarpMode)), 0.0, 2.0));
     (void)model_.update(target().data(), b);
-    const auto n = static_cast<int32_t>(model_.data().keyframes.size());
+    const meta::WavetableData& d = model_.data();
+    const auto n = static_cast<int32_t>(d.keyframes.size());
     selected_ = std::clamp(selected_, 0, std::max(n - 1, 0));
+    // The edited keyframe: the selected one, or (after a position drag) the one at the position — none there: the
+    // blended frame at the position, which the first edit turns into a keyframe.
+    virtual_ = false;
+    if (atPosition_ && model_.ok() && n > 1) {
+      const float u = std::clamp(static_cast<float>(param(meta::kWtPosition)), 0.0f, 1.0f);
+      const float tol = 0.5f / static_cast<float>(std::max<uint32_t>(model_.frames(), 2) - 1);
+      int32_t best = -1;
+      float bestD = tol;
+      for (int32_t k = 0; k < n; ++k) {
+        const float dk = std::fabs(d.keyframes[static_cast<size_t>(k)].position - u);
+        if (dk <= bestD) {
+          bestD = dk;
+          best = k;
+        }
+      }
+      if (best >= 0) selected_ = best;
+      else virtual_ = true;
+    }
+    // Its cycle and spectrum (recomputed only when it changed: a data edit, another keyframe, another position).
+    uint64_t key = mix(0x84222325CBF29CE4ull, reinterpret_cast<uintptr_t>(model_.dataPtr().get()));
+    key = mix(key, static_cast<uint64_t>(selected_) + (virtual_ ? 1ull << 40 : 0ull));
+    if (virtual_) key = mix(key, std::bit_cast<uint32_t>(static_cast<float>(param(meta::kWtPosition))));
+    key |= 1u;
+    if (key != targetKey_) {
+      targetKey_ = key;
+      if (virtual_) targetCycle_ = model_.sourceCycle(std::clamp(static_cast<float>(param(meta::kWtPosition)), 0.0f, 1.0f));
+      else targetCycle_ = d.keyframes[static_cast<size_t>(selected_)].cycle;
+      targetCycle_.resize(wt::kCycleLen, 0.0f);
+      wt::cycleSpectrum(targetCycle_, targetSpec_);
+    }
+  }
+  static uint64_t mix(uint64_t h, uint64_t v) noexcept { return (h ^ v) * 0x100000001B3ull ^ (v >> 29); }
+
+  // ---- the harmonic view ----
+  float barPitch() const noexcept { return (kHarmX1 - kHarmX0) / static_cast<float>(hCount_); }
+  float barX(uint32_t h) const noexcept { return kHarmX0 + barPitch() * static_cast<float>(h - hFirst_); }
+  uint32_t barAt(float x) const noexcept {
+    const float f = std::floor((x - kHarmX0) / barPitch());
+    const auto i = static_cast<int64_t>(std::clamp(f, 0.0f, static_cast<float>(hCount_ - 1)));
+    return std::min<uint32_t>(hFirst_ + static_cast<uint32_t>(i), wt::kHarmonicCount - 1);
+  }
+  void setView(int64_t first, int64_t count) const noexcept {
+    hCount_ = static_cast<uint32_t>(std::clamp<int64_t>(count, kMinBars, wt::kHarmonicCount));
+    hFirst_ = static_cast<uint32_t>(std::clamp<int64_t>(first, 0, wt::kHarmonicCount - hCount_));
+  }
+  // A row value at local y: amplitude 0 … 1 (bar height), or phase −π … π.
+  static float ampAt(float y) noexcept { return std::clamp((kAmpY1 - 0.5f - y) / (kAmpY1 - kAmpY0 - 1.0f), 0.0f, 1.0f); }
+  static float phaseAt(float y) noexcept {
+    const float mid = (kPhY0 + kPhY1) * 0.5f, half = (kPhY1 - kPhY0) * 0.5f - 0.5f;
+    return std::clamp((mid - y) / half, -1.0f, 1.0f) * kPi;
+  }
+  // The displayed bar height (0 … 1) of an amplitude: linear, or with Alt in dB (−60 … 0).
+  float barHeight(float amp) const noexcept {
+    if (!alt_) return std::min(amp, 1.0f);
+    if (amp <= 1e-3f) return 0.0f;
+    return std::clamp((20.0f * std::log10(amp) + 60.0f) / 60.0f, 0.0f, 1.0f);
+  }
+
+  // ---- draw mode ----
+  static Vec2 drawPoint(float x, float v) noexcept { return {kDrawX0 + kDrawW * x, kDrawCy - kDrawA * v}; }
+  static void drawCoords(Vec2 l, float& x, float& v) noexcept {
+    x = (l.x - kDrawX0) / kDrawW;
+    v = (kDrawCy - l.y) / kDrawA;
   }
   float travel(int32_t part) const {
     const meta::ParamSpec& s = type().params[static_cast<size_t>(part)];
@@ -440,14 +625,8 @@ private:
     for (uint32_t i = 0; i < 2; ++i) p.roundedRect(modeCell(i), 3.0f, ui::mulAlpha(w, 0.8f));
     for (uint32_t i = 0; i < kShapeCount; ++i) p.roundedRect(shapeCell(i), 3.0f, ui::mulAlpha(w, 0.8f));
     for (uint32_t i = 0; i < 3; ++i) p.roundedRect(warpCell(i), 3.0f, ui::mulAlpha(w, 0.8f));
-    // The harmonic rows: one slot per bar, the phase row's centre line.
-    const float pitch = (kHarmX1 - kHarmX0) / wt::kBars;
-    for (uint32_t h = 0; h < wt::kBars; ++h) {
-      const float x0 = kHarmX0 + pitch * static_cast<float>(h) + 0.6f;
-      p.roundedRect({x0, kAmpY0, x0 + pitch - 1.2f, kAmpY1}, 1.0f, ui::mulAlpha(w, 0.45f));
-      p.roundedRect({x0, kPhY0, x0 + pitch - 1.2f, kPhY1}, 1.0f, ui::mulAlpha(w, 0.45f));
-    }
-    // The display's well, the sliders' tracks, the knobs' arcs.
+    for (uint32_t i = 0; i < kToolCount; ++i) p.roundedRect(toolCell(i), 3.0f, ui::mulAlpha(w, 0.8f));
+    // (The harmonic rows' slots follow the harmonic view: paintSlots.) The display's well, the sliders' tracks, the knobs' arcs.
     p.roundedRect({kDisp.x0 - 2.0f, kDisp.y0 - 2.0f, kDisp.x1 + 2.0f, kDisp.y1 + 2.0f}, 5.0f, ui::mulAlpha(w, 0.28f));
     p.roundedRect({kPosX - kPosHalfW, kDisp.y0, kPosX + kPosHalfW, kDisp.y1}, kPosHalfW, w);
     p.roundedRect({kDisp.x0, kPhaseY - kPhaseHalfH, kDisp.x1, kPhaseY + kPhaseHalfH}, kPhaseHalfH, w);
@@ -460,7 +639,9 @@ private:
     static constexpr Glyph kShapes[kShapeCount] = {Glyph::Sine, Glyph::Triangle, Glyph::Saw, Glyph::Square, Glyph::Pulse, Glyph::Noise};
     glyphs_.draw(p, Glyph::PhaseMode, centreOf(modeCell(0)), 4.0f, 3.5f, 1.0f, w);
     glyphs_.draw(p, Glyph::ShapeMode, centreOf(modeCell(1)), 4.0f, 3.5f, 1.0f, w);
-    for (uint32_t i = 0; i < kShapeCount; ++i) glyphs_.draw(p, kShapes[i], centreOf(shapeCell(i)), 4.2f, 3.5f, 1.0f, w);
+    for (uint32_t i = 0; i < kShapeCount; ++i) glyphs_.draw(p, kShapes[i], centreOf(shapeCell(i)), 3.9f, 3.5f, 1.0f, w);
+    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve};
+    for (uint32_t i = 0; i < kToolCount; ++i) glyphs_.draw(p, kTools[i], centreOf(toolCell(i)), 4.0f, 3.6f, 1.0f, w);
     static constexpr Glyph kWarps[3] = {Glyph::Bend, Glyph::Mirror, Glyph::PulseWidth};
     for (uint32_t i = 0; i < 3; ++i) glyphs_.draw(p, kWarps[i], centreOf(warpCell(i)), 3.8f, 3.2f, 1.0f, w);
     glyphs_.draw(p, Glyph::Fold, {kKnobX[0], kGlyphY}, 5.0f, 3.2f, 1.0f, w);
@@ -507,40 +688,191 @@ private:
     cell(modeCell(0), !shape, kModePhase, Glyph::PhaseMode, 4.0f, 3.5f);
     cell(modeCell(1), shape, kModeShape, Glyph::ShapeMode, 4.0f, 3.5f);
     static constexpr Glyph kShapes[kShapeCount] = {Glyph::Sine, Glyph::Triangle, Glyph::Saw, Glyph::Square, Glyph::Pulse, Glyph::Noise};
-    const int32_t sh = model_.shapeOf(static_cast<uint32_t>(selected_));
+    const int32_t sh = virtual_ ? -1 : model_.shapeOf(static_cast<uint32_t>(selected_));
     for (uint32_t i = 0; i < kShapeCount; ++i)
-      cell(shapeCell(i), sh == static_cast<int32_t>(i), kShape0 + static_cast<int32_t>(i), kShapes[i], 4.2f, 3.5f);
+      cell(shapeCell(i), sh == static_cast<int32_t>(i), kShape0 + static_cast<int32_t>(i), kShapes[i], 3.9f, 3.5f);
+    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve};
+    for (uint32_t i = 0; i < kToolCount; ++i)
+      cell(toolCell(i), static_cast<uint32_t>(tool_) == i + 1, kTool0 + static_cast<int32_t>(i), kTools[i], 4.0f, 3.6f);
     static constexpr Glyph kWarps[3] = {Glyph::Bend, Glyph::Mirror, Glyph::PulseWidth};
     const auto wm = static_cast<int32_t>(std::round(target().setting(meta::kWtWarpMode)));
     for (uint32_t i = 0; i < 3; ++i)
       cell(warpCell(i), wm == static_cast<int32_t>(i), kWarpMode0 + static_cast<int32_t>(i), kWarps[i], 3.8f, 3.2f);
   }
 
-  // The selected keyframe's harmonic bars, in white for a static layer: the amplitude row (`amplitude`) or the phase
-  // row (a faint bar from the centre line and a bright tick at the value).
+  // The harmonic view's columns at this scale: `group` bars per drawn column (bars thinner than ≈ 1.6 device px are
+  // merged into columns of the loudest bar they cover), `inset` the gap inside a slot.
+  struct Columns {
+    uint32_t group = 1;
+    float inset = 0.0f;
+  };
+  Columns columns(float scale) const noexcept {
+    Columns c;
+    const float devPitch = barPitch() * scale;
+    c.group = devPitch >= 1.6f ? 1u : static_cast<uint32_t>(std::ceil(1.6f / std::max(devPitch, 1e-4f)));
+    c.inset = c.group > 1 ? 0.0f : std::clamp(barPitch() * 0.16f, 0.0f, 0.9f);
+    return c;
+  }
+
+  // The edited keyframe's harmonic bars in white for a static layer: the amplitude row (`amplitude`: a bar from the
+  // bottom; a bar over full scale gets a cap) or the phase row (a faint bar from the centre line and a bright tick at
+  // the value). DC (harmonic 0) is drawn as an outline: it is an offset, not a partial.
   void paintHarmonics(ui::FacePainter& p, bool amplitude) const {
     refresh();
-    std::array<float, wt::kBars> amp{}, phase{};
-    model_.harmonics(static_cast<uint32_t>(selected_), amp, phase);
     const Rgba w = ui::rgba(255, 255, 255);
-    const float pitch = (kHarmX1 - kHarmX0) / wt::kBars;
+    const Columns col = columns(p.transform().scale);
+    const float pitch = barPitch();
     const float mid = (kPhY0 + kPhY1) * 0.5f, half = (kPhY1 - kPhY0) * 0.5f - 0.5f;
-    for (uint32_t h = 0; h < wt::kBars; ++h) {
-      const float x0 = kHarmX0 + pitch * static_cast<float>(h) + 1.0f, x1 = x0 + pitch - 2.0f;
-      const float a = std::clamp(amp[h], 0.0f, 1.0f);
-      if (a <= 1e-3f) continue;
+    const float rowH = kAmpY1 - kAmpY0 - 1.0f;
+    const uint32_t end = hFirst_ + hCount_;
+    for (uint32_t h0 = hFirst_; h0 < end; h0 += col.group) {
+      const uint32_t h1 = std::min(end, h0 + col.group);
+      // The loudest bar of the column (its phase is the column's).
+      uint32_t loud = h0;
+      float a = 0.0f;
+      for (uint32_t h = h0; h < h1; ++h) {
+        const float ah = wt::harmonicAmp(targetSpec_, h);
+        if (ah > a) {
+          a = ah;
+          loud = h;
+        }
+      }
+      if (a <= 1e-4f) continue;  // absent (−80 dB): no bar
+      const float x0 = barX(h0) + col.inset, x1 = barX(h1) - col.inset;
+      const bool dc = loud == 0;
       if (amplitude) {
         // A bar never vanishes below a hairline while the harmonic is present (−60 dB still reads as "there").
-        const float hgt = std::max(1.0f, a * (kAmpY1 - kAmpY0 - 1.0f));
-        p.roundedRect({x0, kAmpY1 - 0.5f - hgt, x1, kAmpY1 - 0.5f}, 0.8f, ui::mulAlpha(w, 0.75f));
+        const float hgt = std::max(std::min(1.0f, pitch), barHeight(a) * rowH);
+        const Rect r{x0, kAmpY1 - 0.5f - hgt, x1, kAmpY1 - 0.5f};
+        if (dc) {
+          outlineRect(p, r, 0.6f, ui::mulAlpha(w, 0.8f));
+        } else {
+          p.roundedRect(r, std::min(0.8f, (x1 - x0) * 0.3f), ui::mulAlpha(w, 0.95f));
+          if (a > 1.0f) p.roundedRect({x0, r.y0 - 0.2f, x1, r.y0 + 1.0f}, 0.3f, w);  // over full scale
+        }
       } else {
-        const float yv = mid - phase[h] / kPi * half;
-        p.roundedRect({x0, std::min(mid, yv), x1, std::max(mid, yv)}, 0.5f, ui::mulAlpha(w, 0.28f));
-        p.roundedRect({x0, yv - 0.7f, x1, yv + 0.7f}, 0.5f, ui::mulAlpha(w, 0.8f));
+        // A quiet harmonic's phase matters less: its tick is fainter (full from amplitude 0.25 up). Dense columns
+        // show ticks only.
+        const float k = 0.3f + 0.7f * std::sqrt(std::min(1.0f, a / 0.25f));
+        const float yv = mid - wt::harmonicPhase(targetSpec_, loud) / kPi * half;
+        if (!dc && col.group == 1) p.roundedRect({x0, std::min(mid, yv), x1, std::max(mid, yv)}, 0.3f, ui::mulAlpha(w, 0.2f * k));
+        p.roundedRect({x0, yv - 0.65f, x1, yv + 0.65f}, 0.3f, ui::mulAlpha(w, (dc ? 0.55f : 0.95f) * k));
       }
     }
   }
+  static void outlineRect(ui::FacePainter& p, const Rect& r, float th, Rgba col) {
+    p.line({r.x0, r.y0}, {r.x1, r.y0}, th, col);
+    p.line({r.x1, r.y0}, {r.x1, r.y1}, th, col);
+    p.line({r.x1, r.y1}, {r.x0, r.y1}, th, col);
+    p.line({r.x0, r.y1}, {r.x0, r.y0}, th, col);
+  }
 
+  // The harmonic rows' slots (one per bar while bars are wide enough on screen, else one well per row; DC's slot is
+  // narrower) and the scrollbar's track, in white for a static layer.
+  void paintSlots(ui::FacePainter& p) const {
+    const Rgba w = ui::rgba(255, 255, 255);
+    const Columns col = columns(p.transform().scale);
+    if (col.group == 1 && barPitch() * p.transform().scale >= 3.0f) {
+      for (uint32_t h = hFirst_; h < hFirst_ + hCount_; ++h) {
+        float x0 = barX(h) + col.inset * 0.6f, x1 = barX(h + 1) - col.inset * 0.6f;
+        if (h == 0) x1 = x0 + (x1 - x0) * 0.6f;
+        const float r = std::min(1.0f, (x1 - x0) * 0.3f);
+        p.roundedRect({x0, kAmpY0, x1, kAmpY1}, r, ui::mulAlpha(w, 0.45f));
+        p.roundedRect({x0, kPhY0, x1, kPhY1}, r, ui::mulAlpha(w, 0.45f));
+      }
+    } else {
+      p.roundedRect({kHarmX0, kAmpY0, kHarmX1, kAmpY1}, 1.0f, ui::mulAlpha(w, 0.45f));
+      p.roundedRect({kHarmX0, kPhY0, kHarmX1, kPhY1}, 1.0f, ui::mulAlpha(w, 0.45f));
+    }
+    p.roundedRect({kHarmX0, kScrollY - kScrollHalfH, kHarmX1, kScrollY + kScrollHalfH}, kScrollHalfH, ui::mulAlpha(w, 0.7f));
+  }
+
+  // Draw mode's grid in white for a static layer: the centre line, ±½ and ±1, the snap columns (every 4th brighter;
+  // without a grid, quarters).
+  void paintGrid(ui::FacePainter& p) const {
+    const Rgba w = ui::rgba(255, 255, 255);
+    const float x0 = kDrawX0, x1 = kDrawX0 + kDrawW;
+    for (const float v : {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f}) {
+      const float a = v == 0.0f ? 0.55f : (std::fabs(v) == 1.0f ? 0.35f : 0.18f);
+      p.line({x0, kDrawCy - kDrawA * v}, {x1, kDrawCy - kDrawA * v}, v == 0.0f ? 0.8f : 0.6f, ui::mulAlpha(w, a));
+    }
+    if (grid_ > 0) {  // the value steps, faint
+      const float steps = static_cast<float>(grid_) * 0.5f;
+      for (uint32_t k = 1; k < grid_; ++k) {
+        const float v = -1.0f + static_cast<float>(k) / steps;
+        if (std::fabs(v) < 1e-4f || std::fabs(std::fabs(v) - 0.5f) < 1e-4f) continue;
+        p.line({x0, kDrawCy - kDrawA * v}, {x1, kDrawCy - kDrawA * v}, 0.4f, ui::mulAlpha(w, 0.1f));
+      }
+    }
+    const uint32_t cols = grid_ > 0 ? grid_ : 4u;
+    for (uint32_t c = 0; c <= cols; ++c) {
+      const float x = x0 + kDrawW * static_cast<float>(c) / static_cast<float>(cols);
+      const bool major = c % 4 == 0 || c == cols;
+      p.line({x, kDrawCy - kDrawA - 3.0f}, {x, kDrawCy + kDrawA + 3.0f}, major ? 0.6f : 0.45f,
+             ui::mulAlpha(w, grid_ > 0 ? (major ? 0.35f : 0.18f) : 0.15f));
+    }
+  }
+
+  // The live part of the harmonic rows: the hovered column (both rows), the scrollbar's thumb.
+  void paintHarmonicLive(ui::FacePainter& p, const ui::Theme& th) {
+    const bool overRows = hovered_ == kHarmAmp || hovered_ == kHarmPhase || drag_ == kHarmAmp || drag_ == kHarmPhase;
+    const uint32_t h = std::clamp(hoverBar_, hFirst_, hFirst_ + hCount_ - 1);
+    const float x0 = barX(h), x1 = barX(h + 1);
+    p.roundedRect({x0, kAmpY0, x1, kAmpY1}, std::min(1.0f, (x1 - x0) * 0.3f), overRows ? th.face.hover : 0);
+    p.roundedRect({x0, kPhY0, x1, kPhY1}, std::min(1.0f, (x1 - x0) * 0.3f), overRows ? th.face.hover : 0);
+    const float t0 = static_cast<float>(hFirst_) / wt::kHarmonicCount, t1 = static_cast<float>(hFirst_ + hCount_) / wt::kHarmonicCount;
+    const float tx0 = kHarmX0 + (kHarmX1 - kHarmX0) * t0, tx1 = std::max(tx0 + 3.0f, kHarmX0 + (kHarmX1 - kHarmX0) * t1);
+    const bool hot = hovered_ == kHarmScroll || drag_ == kHarmScroll;
+    p.roundedRect({tx0, kScrollY - kScrollHalfH - (hot ? 0.4f : 0.0f), tx1, kScrollY + kScrollHalfH + (hot ? 0.4f : 0.0f)},
+                  kScrollHalfH + (hot ? 0.4f : 0.0f), hot ? th.face.handle : ui::mulAlpha(th.face.tick, 0.9f));
+  }
+
+  // Draw mode's live layer: the edited cycle (dashed and faint while it is still the blended frame between
+  // keyframes), the option cells over the display's corner, and where the pointer would draw.
+  void paintDrawMode(ui::FacePainter& p, const ui::Theme& th) {
+    curve_.clear();
+    // About one point per device px (a drawn cycle has detail the frames' 256 points would alias), 64 … 1024.
+    uint32_t n = 64;
+    while (n < 1024 && static_cast<float>(n) < kDrawW * p.transform().scale) n *= 2;
+    for (uint32_t i = 0; i <= n; ++i) {
+      const float x = static_cast<float>(i) / static_cast<float>(n);
+      const float v = std::clamp(targetCycle_[(static_cast<size_t>(i) * wt::kCycleLen / n) % wt::kCycleLen], -1.15f, 1.15f);
+      curve_.push_back(drawPoint(x, v));
+    }
+    const float k = virtual_ ? 0.5f : 1.0f;
+    p.fillUnder(curve_, kDrawCy, ui::mulAlpha(th.face.value, 0.24f * k), ui::mulAlpha(th.face.value, 0.03f * k));
+    if (virtual_) {
+      p.polyline(curve_, 1.5f, 0);
+      p.dashed(curve_, 1.3f, 3.0f, 2.0f, ui::mulAlpha(th.face.value, 0.8f));
+    } else {
+      p.polyline(curve_, 1.5f, th.face.value);
+      p.dashed(curve_, 1.3f, 3.0f, 2.0f, 0);
+    }
+    // The options: snap grid (off / 8 / 16 / 32), normalise, remove DC (table flags), on a body-coloured backing.
+    const meta::WavetableData& d = model_.data();
+    const bool on[3] = {grid_ > 0, d.normalise, d.removeDc};
+    for (uint32_t i = 0; i < 3; ++i) {
+      const Rect r = optCell(i);
+      const int32_t part = kGridPart + static_cast<int32_t>(i);
+      const bool hov = hovered_ == part;
+      p.roundedRect({r.x0 - 0.5f, r.y0 - 0.5f, r.x1 + 0.5f, r.y1 + 0.5f}, 3.0f, th.face.body);
+      p.roundedRect(r, 2.5f, on[i] ? ui::mulAlpha(th.face.value, 0.22f) : (hov ? th.face.hover : th.face.track));
+      const Rgba gc = on[i] ? th.face.value : (hov ? th.face.handle : th.face.frame);
+      const Vec2 c = centreOf(r);
+      if (i == 0) Glyphs::gridGlyph(p, c, 3.4f, 3.0f, 0.8f, grid_, gc);
+      else glyphs_.draw(p, i == 1 ? Glyph::Normalise : Glyph::RemoveDc, c, 3.6f, 3.0f, 0.9f, gc);
+    }
+    // Where the pointer draws (snapped): a ring and faint cross hairs.
+    const bool show = hovered_ == kDrawPart && drag_ == kNone;
+    float x = 0.0f, v = 0.0f;
+    drawCoords(hoverLocal_, x, v);
+    wt::Stroke::snap(tool_, grid_, x, v);
+    const Vec2 at = drawPoint(x, v);
+    const Rgba hair = show ? ui::mulAlpha(th.face.handle, 0.3f) : 0;
+    p.line({at.x, kDrawCy - kDrawA - 3.0f}, {at.x, kDrawCy + kDrawA + 3.0f}, 0.6f, hair);
+    p.line({kDrawX0, at.y}, {kDrawX0 + kDrawW, at.y}, 0.6f, hair);
+    p.ring(at, 2.2f, 0.9f, show ? th.face.handle : 0);
+  }
   void paintSliders(ui::FacePainter& p, const FaceEnv& env) {
     const ui::Theme& th = *env.theme;
     const meta::WavetableData& d = model_.data();
@@ -552,9 +884,18 @@ private:
                   posDriven ? th.face.valueDriven : th.face.value);
     p.line({kPosX - 5.0f, posY(pos)}, {kPosX + 5.0f, posY(pos)}, drag_ == kPositionPart ? 2.5f : 2.0f,
            posDriven ? th.face.valueDriven : th.face.handle);
+    // Between keyframes (the edited keyframe follows the position): a hollow marker where the first edit makes one.
+    {
+      const float y = posY(std::clamp(static_cast<float>(param(meta::kWtPosition)), 0.0f, 1.0f));
+      const Rgba gc = virtual_ ? th.face.handle : 0;
+      const Vec2 tip{kMarkTipX, y}, a{kMarkBaseX - 1.0f, y - kMarkHalfH - 0.6f}, b{kMarkBaseX - 1.0f, y + kMarkHalfH + 0.6f};
+      p.line(tip, a, 0.8f, gc);
+      p.line(a, b, 0.8f, gc);
+      p.line(b, tip, 0.8f, gc);
+    }
     for (size_t k = 0; k < d.keyframes.size(); ++k) {
       const float y = posY(d.keyframes[k].position);
-      const bool sel = static_cast<int32_t>(k) == selected_;
+      const bool sel = static_cast<int32_t>(k) == selected_ && !virtual_;
       const bool hov = hovered_ == kKeyBase + static_cast<int32_t>(k);
       const float hh = sel ? kMarkHalfH + 0.6f : kMarkHalfH;
       p.triangle({kMarkTipX, y}, {kMarkBaseX - (sel ? 1.0f : 0.0f), y - hh}, {kMarkBaseX - (sel ? 1.0f : 0.0f), y + hh},
@@ -698,27 +1039,98 @@ private:
   // ---- gestures ----
   bool down(const FacePointer& e);
   bool move(const FacePointer& e);
+  bool hover(const FacePointer& e);
+  bool wheel(const FacePointer& e);
+  bool harmonicDown(const FacePointer& e, int32_t part);
+  void harmonicMove(Vec2 l);
+  bool drawDown(const FacePointer& e);
   void commitData(const char* label, const meta::WavetableData& d) {
     if (!target().editable()) return;
     target().begin(label);
     target().setData(meta::wavetableData(d));
     target().end();
   }
+  // A keyframe at u from `cycle` into n (the gap it splits keeps its mode on both sides); returns its index.
+  static size_t insertKeyframe(meta::WavetableData& n, float u, std::vector<float> cycle) {
+    const size_t before = n.keyframes.size();
+    size_t at = 0;
+    while (at < n.keyframes.size() && n.keyframes[at].position <= u) ++at;
+    const dsp::GapMode mode = at > 0 && at - 1 < n.gaps.size() ? n.gaps[at - 1] : dsp::GapMode::Spectral;
+    n.keyframes.insert(n.keyframes.begin() + static_cast<std::ptrdiff_t>(at), {u, std::move(cycle)});
+    if (!n.gaps.empty() || mode != dsp::GapMode::Spectral) {
+      n.gaps.resize(before - 1, dsp::GapMode::Spectral);
+      n.gaps.insert(n.gaps.begin() + static_cast<std::ptrdiff_t>(std::min(at, n.gaps.size())), mode);
+      n.gaps.resize(n.keyframes.size() - 1, mode);
+    }
+    return at;
+  }
+  // Starts an edit of the edited keyframe's cycle (one undo step until Up): dragData_ holds the data, editK_ the
+  // keyframe (made from the blended frame first when the position lies between keyframes), editBase_ its cycle.
+  bool beginEdit(const char* label) {
+    refresh();
+    MetaTarget& tg = target();
+    if (!model_.ok() || !tg.editable()) return false;
+    dragData_ = model_.data();
+    if (virtual_) {
+      if (dragData_.keyframes.size() >= dsp::kMaxKeyframes) {
+        tg.notice("A wavetable holds at most 256 keyframes");
+        return false;
+      }
+      const float u = std::clamp(static_cast<float>(param(meta::kWtPosition)), 0.0f, 1.0f);
+      editK_ = insertKeyframe(dragData_, u, targetCycle_);
+    } else {
+      editK_ = static_cast<size_t>(selected_);
+    }
+    selected_ = static_cast<int32_t>(editK_);
+    editBase_ = dragData_.keyframes[editK_].cycle;
+    editBase_.resize(wt::kCycleLen, 0.0f);
+    dragData_.keyframes[editK_].cycle = editBase_;
+    tg.begin(label);
+    begun_ = true;
+    return true;
+  }
+  void publishEdit() { target().setData(meta::wavetableData(dragData_)); }
 
   // State read from the target (mutable: refreshed from const paths such as the static layers and the tile key).
   mutable wt::Model model_;
   mutable int32_t selected_ = 0;
+  mutable bool atPosition_ = false;  // the edited keyframe follows the position (set by a position drag)
+  mutable bool virtual_ = false;     // ... and none sits there: the blended frame, until the first edit
+  mutable uint64_t targetKey_ = 0;
+  mutable std::vector<float> targetCycle_;
+  mutable wt::Spectrum1 targetSpec_;
   mutable std::vector<Vec2> curve_;
   mutable Glyphs glyphs_;
   std::vector<float> blend_;
   std::vector<Shown> shown_;
+  // the harmonic view and draw mode (view state, not document state)
+  mutable uint32_t hFirst_ = 1, hCount_ = kDefaultBars;
+  bool alt_ = false;          // Alt held over the face (the amplitude row in dB)
+  uint32_t hoverBar_ = 1;     // the bar under the pointer
+  Vec2 hoverLocal_{0.0f, 0.0f};
+  wt::Tool tool_ = wt::Tool::None;
+  uint32_t grid_ = 0;         // snap columns: 0 / 8 / 16 / 32
   // drags
   int32_t drag_ = kNone;
   bool begun_ = false;
-  bool keyFocus_ = false;  // the last press was on the position slider or a marker: Delete removes the selected keyframe
+  bool keyFocus_ = false;     // the last press was on the face's position slider, markers or draw controls: it takes keys
+  bool markerFocus_ = false;  // ... on the position slider or a marker: Delete removes the selected keyframe
   float dragT_ = 0.0f;
   Vec2 last_{0.0f, 0.0f};
-  meta::WavetableData dragData_;  // a marker drag edits a copy of the data it began with
+  meta::WavetableData dragData_;  // a marker drag (and every cycle edit) edits a copy of the data it began with
+  // a cycle edit: the keyframe, its cycle when the edit began, its spectrum, the harmonics wanted and which are edited
+  size_t editK_ = 0;
+  std::vector<float> editBase_;
+  wt::Spectrum1 editSpec_;
+  std::vector<std::complex<double>> want_;
+  std::vector<uint8_t> edited_;
+  bool resetting_ = false;   // a right-button drag: bars go back to 0
+  bool lineMode_ = false;    // Shift at the press: a straight line from the press
+  uint32_t anchorBar_ = 0, lastBar_ = 0;
+  float anchorVal_ = 0.0f, lastVal_ = 0.0f;
+  wt::HarmonicWriter writer_;
+  wt::Stroke stroke_;
+  float scrollGrab_ = 0.0f;  // the scrollbar drag: where on the thumb it was taken (in harmonics)
 };
 
 bool WavetableFace::voicesPolled(bool changed) {
@@ -761,7 +1173,11 @@ bool WavetableFace::voicesPolled(bool changed) {
 bool WavetableFace::down(const FacePointer& e) {
   refresh();
   const int32_t part = hitTest(e.local, e.pxPerUnit);
-  keyFocus_ = part == kPositionPart || (part >= kKeyBase && part < kGapBase);
+  const bool right = e.button == ui::PointerButton::Right;
+  if (right && part != kHarmAmp && part != kHarmPhase) return false;  // the host's menu
+  markerFocus_ = part == kPositionPart || (part >= kKeyBase && part < kGapBase);
+  keyFocus_ = markerFocus_ || part == kDrawPart || (part >= kTool0 && part < kTool0 + static_cast<int32_t>(kToolCount)) ||
+              (part >= kGridPart && part <= kDcPart);
   if (part < 0) return false;
   MetaTarget& tg = target();
   const meta::WavetableData& d = model_.data();
@@ -776,16 +1192,8 @@ bool WavetableFace::down(const FacePointer& e) {
         }
         const float u = std::clamp((kDisp.y1 - e.local.y) / (kDisp.y1 - kDisp.y0), 0.0f, 1.0f);
         meta::WavetableData n = d;
-        size_t at = 0;
-        while (at < n.keyframes.size() && n.keyframes[at].position <= u) ++at;
-        const dsp::GapMode mode = at > 0 && at - 1 < n.gaps.size() ? n.gaps[at - 1] : dsp::GapMode::Spectral;
-        n.keyframes.insert(n.keyframes.begin() + static_cast<std::ptrdiff_t>(at), {u, model_.sourceCycle(u)});
-        if (!n.gaps.empty() || mode != dsp::GapMode::Spectral) {
-          n.gaps.resize(d.keyframes.size() - 1, dsp::GapMode::Spectral);
-          n.gaps.insert(n.gaps.begin() + static_cast<std::ptrdiff_t>(std::min(at, n.gaps.size())), mode);
-          n.gaps.resize(n.keyframes.size() - 1, mode);
-        }
-        selected_ = static_cast<int32_t>(at);
+        selected_ = static_cast<int32_t>(insertKeyframe(n, u, model_.sourceCycle(u)));
+        atPosition_ = false;
         commitData("Add Keyframe", n);
         drag_ = kNone;
         return true;
@@ -794,6 +1202,7 @@ bool WavetableFace::down(const FacePointer& e) {
       drag_ = kNone;
       return true;
     }
+    if (part == kPositionPart) atPosition_ = true;  // edits follow the position from now on
     drag_ = part;
     dragT_ = travel(part);
     last_ = e.device;
@@ -802,6 +1211,7 @@ bool WavetableFace::down(const FacePointer& e) {
   }
   if (part >= kKeyBase && part < kGapBase) {
     selected_ = part - kKeyBase;
+    atPosition_ = false;
     if (!model_.ok()) return true;
     drag_ = part;
     dragData_ = d;
@@ -820,11 +1230,12 @@ bool WavetableFace::down(const FacePointer& e) {
     return true;
   }
   if (part >= kShape0 && part < kShape0 + static_cast<int32_t>(kShapeCount)) {
-    if (!model_.ok()) return true;
-    meta::WavetableData n = d;
+    if (!beginEdit("Basic Shape")) return true;
     const AlignedBuffer<float> c = dsp::basicCycle(static_cast<dsp::BasicCycle>(part - kShape0));
-    n.keyframes[static_cast<size_t>(selected_)].cycle.assign(c.span().begin(), c.span().end());
-    commitData("Basic Shape", n);
+    dragData_.keyframes[editK_].cycle.assign(c.span().begin(), c.span().end());
+    publishEdit();
+    tg.end();
+    begun_ = false;
     return true;
   }
   if (part >= kWarpMode0 && part < kWarpMode0 + 3) {
@@ -841,12 +1252,171 @@ bool WavetableFace::down(const FacePointer& e) {
     tg.notice("Shape mode is not available yet: the Wavetable reads its table by phase");
     return true;
   }
-  return false;  // the harmonic rows (read-only here) and the frame: the host's (select, move, open)
+  if (part >= kTool0 && part < kTool0 + static_cast<int32_t>(kToolCount)) {
+    // A tool: draw mode with it (the lit one again: back to the stacked frames). View state: no undo step.
+    const auto t = static_cast<wt::Tool>(part - kTool0 + 1);
+    tool_ = tool_ == t ? wt::Tool::None : t;
+    return true;
+  }
+  if (part == kGridPart) {
+    grid_ = grid_ == 0 ? 8u : (grid_ >= 32 ? 0u : grid_ * 2);
+    return true;
+  }
+  if (part == kNormPart || part == kDcPart) {
+    if (!model_.ok()) return true;
+    meta::WavetableData n = d;
+    bool& flag = part == kNormPart ? n.normalise : n.removeDc;
+    flag = !flag;
+    commitData(part == kNormPart ? (flag ? "Normalise" : "Don't Normalise") : (flag ? "Remove DC" : "Keep DC"), n);
+    return true;
+  }
+  if (part == kHarmAmp || part == kHarmPhase) return harmonicDown(e, part);
+  if (part == kHarmScroll) {
+    const float span = kHarmX1 - kHarmX0;
+    const float at = (e.local.x - kHarmX0) / span * wt::kHarmonicCount;  // in harmonics
+    if (at < static_cast<float>(hFirst_) || at > static_cast<float>(hFirst_ + hCount_))  // off the thumb: centre it there
+      setView(static_cast<int64_t>(std::lround(at - 0.5f * static_cast<float>(hCount_))), hCount_);
+    scrollGrab_ = at - static_cast<float>(hFirst_);
+    drag_ = kHarmScroll;
+    begun_ = false;
+    return true;
+  }
+  if (part == kDrawPart) return drawDown(e);
+  return false;  // the frame: the host's (select, move, open)
+}
+
+bool WavetableFace::harmonicDown(const FacePointer& e, int32_t part) {
+  const bool right = e.button == ui::PointerButton::Right;
+  const bool amp = part == kHarmAmp;
+  const bool reset = right || e.clicks >= 2;
+  const char* label = reset ? "Reset Harmonics" : (amp ? "Edit Harmonics" : "Edit Phases");
+  if (!beginEdit(label)) return true;
+  wt::cycleSpectrum(editBase_, editSpec_);
+  want_ = editSpec_.c;
+  edited_.assign(wt::kHarmonicCount, 0);
+  resetting_ = reset;
+  lineMode_ = !reset && (e.mods & ui::mod::kShift) != 0;
+  anchorBar_ = lastBar_ = barAt(e.local.x);
+  anchorVal_ = lastVal_ = amp ? ampAt(e.local.y) : phaseAt(e.local.y);
+  drag_ = part;
+  harmonicMove(e.local);
+  if (e.clicks >= 2) {  // a double-click resets one bar: done
+    target().end();
+    begun_ = false;
+    drag_ = kNone;
+  }
+  return true;
+}
+
+// The harmonic edit at local point l: the bars from the last point (or, Shift, the press) to here get their values,
+// and the keyframe's cycle is written from the cycle the edit began with.
+void WavetableFace::harmonicMove(Vec2 l) {
+  const bool amp = drag_ == kHarmAmp;
+  const uint32_t bar = barAt(l.x);
+  const float val = amp ? ampAt(l.y) : phaseAt(l.y);
+  hoverBar_ = bar;
+  auto setBar = [&](uint32_t h, float v) {
+    const std::complex<double> base = editSpec_.c[h];
+    if (resetting_) want_[h] = amp ? wt::withAmp(base, h, 0.0) : wt::withPhase(base, h, 0.0);
+    else want_[h] = amp ? wt::withAmp(base, h, v) : wt::withPhase(base, h, v);
+    edited_[h] = 1;
+  };
+  auto span = [&](uint32_t ha, float va, uint32_t hb, float vb) {
+    const uint32_t lo = std::min(ha, hb), hi = std::max(ha, hb);
+    for (uint32_t h = lo; h <= hi; ++h) {
+      const float t = ha == hb ? 1.0f : static_cast<float>(static_cast<int64_t>(h) - ha) / static_cast<float>(static_cast<int64_t>(hb) - ha);
+      setBar(h, va + t * (vb - va));
+    }
+  };
+  if (lineMode_) {
+    want_ = editSpec_.c;
+    std::fill(edited_.begin(), edited_.end(), uint8_t{0});
+    span(anchorBar_, anchorVal_, bar, val);
+  } else {
+    span(lastBar_, lastVal_, bar, val);
+  }
+  lastBar_ = bar;
+  lastVal_ = val;
+  writer_.write(editBase_, editSpec_, want_, edited_, dragData_.keyframes[editK_].cycle);
+  publishEdit();
+}
+
+bool WavetableFace::drawDown(const FacePointer& e) {
+  static constexpr const char* kLabels[] = {"Draw", "Draw", "Draw Line", "Draw Curve"};
+  if (!beginEdit(kLabels[static_cast<size_t>(tool_)])) return true;
+  float x = 0.0f, v = 0.0f;
+  drawCoords(e.local, x, v);
+  stroke_.begin(editBase_, tool_, grid_, x, v);
+  const auto c = stroke_.cycle();
+  dragData_.keyframes[editK_].cycle.assign(c.begin(), c.end());
+  publishEdit();
+  drag_ = kDrawPart;
+  return true;
+}
+
+bool WavetableFace::hover(const FacePointer& e) {
+  // The pointer over the face without a drag: Alt (the dB view), the bar under it, where a stroke would land.
+  const bool alt = (e.mods & ui::mod::kAlt) != 0;
+  const uint32_t bar = barAt(e.local.x);
+  const bool overRows = hovered_ == kHarmAmp || hovered_ == kHarmPhase;
+  bool changed = alt != alt_ || (overRows && bar != hoverBar_);
+  if (tool_ != wt::Tool::None && (hovered_ == kDrawPart || e.local.x != hoverLocal_.x || e.local.y != hoverLocal_.y))
+    changed = changed || hovered_ == kDrawPart;
+  alt_ = alt;
+  if (overRows) hoverBar_ = bar;
+  hoverLocal_ = e.local;
+  return changed;
+}
+
+bool WavetableFace::wheel(const FacePointer& e) {
+  const bool over = e.local.x >= kHarmX0 - 1.0f && e.local.x <= kHarmX1 + 1.0f && e.local.y >= kAmpY0 - 1.5f &&
+                    e.local.y <= kScrollY + 1.8f;
+  if (!over) return false;  // the canvas pans or zooms
+  const float notches = std::fabs(e.wheel.y) >= std::fabs(e.wheel.x) ? e.wheel.y : -e.wheel.x;
+  if (notches == 0.0f) return true;
+  if (e.mods & ui::mod::kCtrl) {
+    // Zoom about the bar under the pointer: wheel up = fewer, wider bars (√2 per notch).
+    const float u = std::clamp((e.local.x - kHarmX0) / (kHarmX1 - kHarmX0), 0.0f, 1.0f);
+    const float pivot = static_cast<float>(hFirst_) + u * static_cast<float>(hCount_);
+    // On the √2 ladder (8, 11, 16, 23, 32, 45, 64, … 724, 1024), so the powers of two come back exactly.
+    double steps = std::round(static_cast<double>(notches));
+    if (steps == 0.0) steps = notches > 0.0f ? 1.0 : -1.0;  // a fine (trackpad) notch still moves one rung
+    const double level = std::round(2.0 * std::log2(static_cast<double>(hCount_))) - steps;
+    const double count = std::round(std::pow(2.0, 0.5 * level));
+    const auto n = std::clamp<int64_t>(static_cast<int64_t>(count), kMinBars, wt::kHarmonicCount);
+    setView(static_cast<int64_t>(std::lround(pivot - u * static_cast<float>(n))), n);
+  } else {
+    // Scroll: an eighth of the view per notch (at least one bar); wheel up = towards the low harmonics.
+    const int64_t step = std::max<int64_t>(1, hCount_ / 8);
+    setView(static_cast<int64_t>(hFirst_) - static_cast<int64_t>(std::lround(notches * static_cast<float>(step))), hCount_);
+  }
+  hoverBar_ = barAt(e.local.x);
+  return true;
 }
 
 bool WavetableFace::move(const FacePointer& e) {
-  if (drag_ == kNone) return false;
+  if (drag_ == kNone) return hover(e);
   MetaTarget& tg = target();
+  if (drag_ == kHarmAmp || drag_ == kHarmPhase) {
+    if (begun_) harmonicMove(e.local);
+    return true;
+  }
+  if (drag_ == kDrawPart) {
+    if (!begun_) return true;
+    float x = 0.0f, v = 0.0f;
+    drawCoords(e.local, x, v);
+    stroke_.to(x, v);
+    const auto c = stroke_.cycle();
+    dragData_.keyframes[editK_].cycle.assign(c.begin(), c.end());
+    publishEdit();
+    hoverLocal_ = e.local;
+    return true;
+  }
+  if (drag_ == kHarmScroll) {
+    const float at = (e.local.x - kHarmX0) / (kHarmX1 - kHarmX0) * wt::kHarmonicCount;
+    setView(static_cast<int64_t>(std::lround(at - scrollGrab_)), hCount_);
+    return true;
+  }
   const bool horizontal = drag_ == kPhasePart;
   const float dpx = horizontal ? e.device.x - last_.x : -(e.device.y - last_.y);
   last_ = e.device;
@@ -890,7 +1460,7 @@ bool WavetableFace::move(const FacePointer& e) {
 }
 
 void WavetableFace::describe(int32_t part, std::string& title, std::string& body) const {
-  char buf[200];
+  char buf[360];
   auto value = [&](uint32_t i) { return param(i); };
   if (part == kPhasePart) {
     title = "Phase";
@@ -926,9 +1496,38 @@ void WavetableFace::describe(int32_t part, std::string& title, std::string& body
     static constexpr const char* kNames[] = {"Sine", "Triangle", "Saw", "Square", "Pulse 25 %", "Noise"};
     title = std::string("Basic shape: ") + kNames[part - kShape0];
     std::snprintf(buf, sizeof buf, "Replaces keyframe %d's cycle.", selected_ + 1);
-  } else if (part == kHarmPart) {
-    title = "Harmonics";
-    std::snprintf(buf, sizeof buf, "Keyframe %d's first %u harmonics: amplitude, and phase relative to a sine.", selected_ + 1, wt::kBars);
+  } else if (part == kHarmAmp || part == kHarmPhase || part == kHarmScroll) {
+    const uint32_t h = hoverBar_;
+    const float a = wt::harmonicAmp(targetSpec_, h);
+    const float ph = wt::harmonicPhase(targetSpec_, h) / kPi;
+    title = part == kHarmScroll ? std::string("Harmonic view") : (h == 0 ? std::string("DC") : "Harmonic " + std::to_string(h));
+    char amp[48];
+    if (a > 1e-6f) std::snprintf(amp, sizeof amp, "%.3f (%.1f dB)", a, 20.0 * std::log10(a));
+    else std::snprintf(amp, sizeof amp, "0 (absent)");
+    std::snprintf(buf, sizeof buf,
+                  "%s %s, phase %+.2fpi. Drag paints (Shift: a line); right-click or double-click resets. Wheel scrolls, "
+                  "Ctrl+wheel zooms; showing %u-%u of 0-1023.",
+                  virtual_ ? "Blended frame:" : (std::string("Keyframe ") + std::to_string(selected_ + 1) + ":").c_str(), amp,
+                  ph, hFirst_, hFirst_ + hCount_ - 1);
+  } else if (part >= kTool0 && part < kTool0 + static_cast<int32_t>(kToolCount)) {
+    static constexpr const char* kNames[] = {"Pencil", "Line", "Smooth curve"};
+    title = std::string("Draw: ") + kNames[part - kTool0];
+    std::snprintf(buf, sizeof buf, "Draws the edited keyframe's cycle in the display. Click again (or Esc) for the frames.");
+  } else if (part == kDrawPart) {
+    title = virtual_ ? "Draw (a new keyframe)" : "Draw keyframe " + std::to_string(selected_ + 1);
+    std::snprintf(buf, sizeof buf, "Drag to draw; each stroke is one undo step.%s",
+                  virtual_ ? " The first stroke makes a keyframe here from the blended frame." : "");
+  } else if (part == kGridPart) {
+    title = "Snap grid";
+    if (grid_ == 0) std::snprintf(buf, sizeof buf, "Off. Click: 8, 16, 32 columns (values in steps of 2/n), off.");
+    else std::snprintf(buf, sizeof buf, "%u columns, values in steps of 2/%u. Click for the next.", grid_, grid_);
+  } else if (part == kNormPart) {
+    title = "Normalise";
+    std::snprintf(buf, sizeof buf, "%s: every keyframe scaled to a peak of 1 in the table (the drawing is kept).",
+                  model_.data().normalise ? "On" : "Off");
+  } else if (part == kDcPart) {
+    title = "Remove DC";
+    std::snprintf(buf, sizeof buf, "%s: the table's frames centred on 0 (the drawing is kept).", model_.data().removeDc ? "On" : "Off");
   } else if (part >= kKeyBase && part < kGapBase) {
     const size_t k = static_cast<size_t>(part - kKeyBase);
     title = "Keyframe " + std::to_string(k + 1);

@@ -130,6 +130,9 @@ struct FacePointer {
   ui::Mods mods = ui::mod::kNone;
   uint8_t clicks = 1;
   ui::Vec2 wheel{0.0f, 0.0f};
+  // TMM.9: Down / Up: the button (a face gets right presses only where it uses them: onPointer returns false
+  // otherwise and the host opens its menu). Move without a drag: the hover (a face may track it; true = repaint).
+  ui::PointerButton button = ui::PointerButton::Left;
 };
 
 class MetaFace {

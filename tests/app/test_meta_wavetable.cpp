@@ -557,6 +557,81 @@ TEST_CASE("meta wavetable: a keyframe edit reaches the engine within 30 ms (64 f
 #endif
 }
 
+TEST_CASE("meta wavetable: a baked drag is heard at >= 30 Hz through preview tables; the full table when it stops; "
+          "a drawn stroke is audible within 30 ms" * doctest::test_suite("perf")) {  // TMM.9 (Q173 9): wall-clock
+  using Clock = std::chrono::steady_clock;
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  s.data(wt, sawToSquare());
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  // A fold drag: 30 steps at 60 Hz (one gesture). Every table publish is timed.
+  std::vector<double> latency;  // per step: its edit → the next publish
+  uint32_t publishes = 0;
+  const auto t0 = Clock::now();
+  REQUIRE(s.store.beginGesture("fold").ok());
+  for (int i = 1; i <= 30; ++i) {
+    const uint64_t gen = slot->generation();
+    const auto at = Clock::now();
+    s.param(wt, "fold", 0.02 * i);
+    bool heard = false;
+    const auto until = t0 + std::chrono::microseconds(16667 * i);
+    while (Clock::now() < until || (i == 30 && !heard && Clock::now() < until + std::chrono::milliseconds(200))) {
+      if (slot->generation() != gen && !heard) {
+        heard = true;
+        latency.push_back(std::chrono::duration<double, std::milli>(Clock::now() - at).count());
+      }
+      std::this_thread::yield();
+    }
+    publishes += slot->generation() != gen ? 1u : 0u;
+  }
+  const double dragS = std::chrono::duration<double>(Clock::now() - t0).count();
+  const auto previewFrames = slot->table()->frames();
+  REQUIRE(s.store.commitGesture().ok());
+  REQUIRE(link->waitForMetaTables());
+  // The drag's end: the full table (64 frames), bit for bit a direct build.
+  CHECK(slot->table()->frames() == meta::kWtDefaultFrames);
+  CHECK(sameTable(*slot->table(), *directTable(s.doc(), wt, "", 48000.0)));
+  std::sort(latency.begin(), latency.end());
+  REQUIRE(!latency.empty());
+  const meta::TableBuilder::Stats st = link->metaTableStats();
+  MESSAGE("baked fold drag, 30 steps at 60 Hz: " << latency.size() << " steps heard, " << publishes << " publishes in "
+                                                 << dragS << " s (" << publishes / dragS << " Hz); latency median "
+                                                 << latency[latency.size() / 2] << " ms, max " << latency.back()
+                                                 << " ms; preview " << st.lastPreviewMs << " ms (max " << st.maxPreviewMs
+                                                 << "), full " << st.lastBuildMs << " ms; tables during the drag: "
+                                                 << previewFrames << " frames");
+  CHECK(previewFrames == meta::TableBuilder::kPreviewFrames);
+  // A drawn stroke on that baked table (a keyframe's cycle changed, as the face writes it): the preview is heard.
+  auto stroke = [&](float level) {
+    auto d = meta::parseWavetableData(*sawToSquare());
+    REQUIRE(d.ok());
+    for (uint32_t i = 200; i < 900; ++i) d->keyframes[0].cycle[i] = level;
+    const uint64_t gen = slot->generation();
+    const auto at = Clock::now();
+    s.data(wt, meta::wavetableData(*d));
+    while (slot->generation() == gen) std::this_thread::yield();
+    return std::chrono::duration<double, std::milli>(Clock::now() - at).count();
+  };
+  double baked = 1e9;
+  for (int i = 0; i < 3; ++i) baked = std::min(baked, stroke(0.2f + 0.1f * static_cast<float>(i)));
+  REQUIRE(link->waitForMetaTables());
+  s.param(wt, "fold", 0.0);
+  REQUIRE(link->waitForMetaTables());
+  double plain = 1e9;
+  for (int i = 0; i < 3; ++i) plain = std::min(plain, stroke(-0.2f - 0.1f * static_cast<float>(i)));
+  MESSAGE("drawn stroke -> audible table: unbaked 64 frames " << plain << " ms, baked (fold 0.6, preview) " << baked << " ms");
+#if PQ_OPTIMIZED
+  CHECK(latency[latency.size() / 2] <= 33.0);  // ≥ 30 Hz
+  CHECK(publishes / dragS >= 30.0);
+  CHECK(plain <= 30.0);
+  CHECK(baked <= 30.0);
+#endif
+}
+
 // ---- The TMM.2 / TMM.4 join: faces read the real voice taps ------------------------------------------------------
 
 TEST_CASE("meta faces: a played note is a dot — the face reads the engine's voice tap through the app's hub") {

@@ -4,7 +4,10 @@
 // a standalone .pqp through pqc, bit-identical to the hand-written atoms.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -245,6 +248,70 @@ TEST_CASE("wavetable: TableBuilder — builds off-thread, newest wins per target
   tb.submit(1, jobFor(two, {}));
   REQUIRE(tb.waitIdle());
   CHECK(tb.stats().built == st.built + 1);
+}
+
+TEST_CASE("wavetable: TableBuilder previews — a slow (baked) job is heard first as an 8-frame preview, the full table once the drag pauses") {
+  using Clock = std::chrono::steady_clock;
+  std::mutex m;
+  struct Got {
+    uint64_t key;
+    uint32_t frames;
+    Clock::time_point at;
+  };
+  std::vector<Got> got;
+  std::vector<std::shared_ptr<const dsp::FrameTable>> keep;
+  TableBuilder tb([&](uint32_t, uint64_t key, std::shared_ptr<const dsp::FrameTable> t) {
+    std::lock_guard lock(m);
+    got.push_back({key, t->frames(), Clock::now()});
+    keep.push_back(std::move(t));
+  });
+  const DataPtr two = wavetableData(sawToSquare());
+  // Policy: unbaked 64 frames is fast enough (≈ 10 ms) to build in full; a bake is previewed; one keyframe never.
+  CHECK_FALSE(TableBuilder::wantsPreview(jobFor(two, {}).spec));
+  CHECK(TableBuilder::wantsPreview(jobFor(two, {0.0, 0.0, 0.3, 0.0, 0.0}).spec));
+  // A fold drag at 60 Hz for ≈ 0.5 s: each step's preview arrives quickly; the full table follows the last step.
+  std::vector<std::pair<uint64_t, Clock::time_point>> sent;
+  const auto t0 = Clock::now();
+  for (int i = 1; i <= 30; ++i) {
+    TableJob j = jobFor(two, {0.0, 0.0, 0.02 * i, 0.0, 0.0});
+    sent.emplace_back(j.key, Clock::now());
+    tb.submit(7, std::move(j));
+    std::this_thread::sleep_until(t0 + std::chrono::microseconds(16667 * i));
+  }
+  const uint64_t last = sent.back().first;
+  // The full build waits for the pause (kPreviewSettle) and then arrives on its own (no waitIdle).
+  for (int i = 0; i < 400; ++i) {
+    {
+      std::lock_guard lock(m);
+      if (!got.empty() && got.back().key == last && got.back().frames == kWtDefaultFrames) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  std::lock_guard lock(m);
+  REQUIRE(!got.empty());
+  CHECK(got.back().key == last);
+  CHECK(got.back().frames == kWtDefaultFrames);  // the full table last
+  CHECK(tb.cached(last) == keep.back());         // only full tables are cached
+  // Latency per step: submit → first delivery of that key (a preview, or the full table).
+  std::vector<double> lat;
+  size_t previews = 0;
+  for (const auto& [key, at] : sent)
+    for (const Got& g : got)
+      if (g.key == key) {
+        lat.push_back(std::chrono::duration<double, std::milli>(g.at - at).count());
+        break;
+      }
+  for (const Got& g : got) previews += g.frames == TableBuilder::kPreviewFrames ? 1u : 0u;
+  std::sort(lat.begin(), lat.end());
+  REQUIRE(!lat.empty());
+  const TableBuilder::Stats st = tb.stats();
+  MESSAGE("fold drag, 30 steps at 60 Hz: " << lat.size() << " steps heard (" << previews << " previews, " << st.built
+                                           << " full builds), latency median " << lat[lat.size() / 2] << " ms, max "
+                                           << lat.back() << " ms; preview build " << st.lastPreviewMs << " ms (max "
+                                           << st.maxPreviewMs << "), full " << st.lastBuildMs << " ms");
+  CHECK(st.built == 1);             // one full table: when the drag stopped
+  CHECK(previews >= 5);             // (load-tolerant here; the rate is measured above and in the app test)
+  CHECK(st.built + st.shared + st.replaced == st.submitted);
 }
 
 namespace {
