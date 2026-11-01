@@ -16,6 +16,9 @@ namespace {
 
 float snapTo(float v, float grid) noexcept { return grid > 0.0f ? std::round(v / grid) * grid : v; }
 
+// The first grid line at or above v, never below v (where float rounding of a huge v could put it).
+float snapUp(float v, float grid) noexcept { return grid > 0.0f ? std::max(std::ceil(v / grid) * grid, v) : v; }
+
 // One element of a layer: a node, or a dummy (a wire passing through the layer, zero height).
 struct Item {
   NodeIndex node = kNone;
@@ -891,17 +894,27 @@ uint32_t completeLayout(Patch& p, const LayoutGeometry& g, const AutoLayoutOptio
   for (NodeIndex v = 0; v < n; ++v) {
     if (p.layout(v).placed) continue;
     NodeLayout l = tidy.layout(v);
-    for (bool moved = true; moved;) {
-      moved = false;
+    // Pushed down below every fixed node it comes near. The push snaps *up* (TMM.12-fix2: snapping to the nearest grid
+    // line put it back inside a node whose bottom is off the grid, e.g. a hand-placed y = 61, and looped forever), so
+    // each fixed node pushes at most once and y only grows: clear within fixed.size() + 1 passes. The bound and the
+    // fallback (below all of them) only matter for non-finite coordinates.
+    bool clear = false;
+    for (size_t pass = 0; pass <= fixed.size() && !clear; ++pass) {
+      clear = true;
       for (const NodeIndex f : fixed) {
         const Box b = boxOf(p, g, f);
         const float x1 = l.x + g.shape[v].w, y1 = l.y + g.shape[v].h;
         if (l.x < b.x1 + options.nodeGap && b.x0 < x1 + options.nodeGap && l.y < b.y1 + options.nodeGap &&
             b.y0 < y1 + options.nodeGap) {
-          l.y = snapTo(b.y1 + options.nodeGap, options.grid);
-          moved = true;
+          l.y = snapUp(b.y1 + options.nodeGap, options.grid);
+          clear = false;
         }
       }
+    }
+    if (!clear) {
+      float bottom = l.y;
+      for (const NodeIndex f : fixed) bottom = std::max(bottom, boxOf(p, g, f).y1 + options.nodeGap);
+      l.y = snapUp(bottom, options.grid);
     }
     p.setLayout(v, l);
     fixed.push_back(v);

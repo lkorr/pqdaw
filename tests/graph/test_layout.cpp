@@ -8,8 +8,11 @@
 
 #include <chrono>
 #include <cmath>
+#include <future>
+#include <memory>
 #include <random>
 #include <string>
+#include <thread>
 
 #include "pq/graph/layout.h"
 #include "pq/graph/parse.h"
@@ -383,6 +386,123 @@ TEST_CASE("completeLayout keeps placed nodes and places the rest without overlap
     }
   for (WireIndex w = 0; w < p.wireCount(); ++w) {
     const auto pts = routeOf(p, g, w);
+    for (size_t i = 1; i < pts.size(); ++i) CHECK((pts[i - 1].x == pts[i].x || pts[i - 1].y == pts[i].y));
+  }
+}
+
+// TMM.12-fix2: runs `work` on its own thread and waits at most `limit`, so a layout that never returns fails the case
+// instead of stalling ctest. `work` owns everything it touches (a timed-out thread is left running on its own copies).
+template <class F>
+bool finishesWithin(std::chrono::seconds limit, F work) {
+  auto done = std::make_shared<std::promise<void>>();
+  std::future<void> f = done->get_future();
+  std::thread([done, w = std::move(work)]() mutable {
+    w();
+    done->set_value();
+  }).detach();
+  return f.wait_for(limit) == std::future_status::ready;
+}
+
+TEST_CASE("completeLayout: placed nodes off the grid (odd, fractional, negative, either axis) terminate; TMM.12-fix2") {
+  // A hand-placed node off the 4-unit grid, overlapping where the automatic layout puts an unplaced node: pushing that
+  // node below it snapped to the nearest grid line, which could round back up into the box (bottom + gap = 101 -> 100)
+  // and so looped forever. Every offset here puts the placed node on the unplaced node's automatic place, so the push
+  // always happens.
+  const std::string src = R"(patch Part {
+  in x : audio
+  param g = 0.5
+  out y : audio
+  m = x * g
+  t = tanh(m)
+  u = t * g
+  y = u
+  layout {
+    node m at (0, 0)
+  }
+}
+)";
+  const ParseResult r0 = parseOk(src);
+  Patch ref = r0.file.patches[0];
+  const LayoutGeometry g = defaultGeometry(ref);
+  for (NodeIndex v = 0; v < ref.nodeCount(); ++v) ref.setLayout(v, NodeLayout{});
+  autoLayout(ref, g);  // where the unplaced nodes go
+  const NodeIndex m = *ref.findByName("m"), t = *ref.findByName("t");
+  const float yOffsets[] = {1.0f, 2.0f, 3.0f, -1.0f, -2.0f, -3.0f, 0.5f, -0.25f, 5.0f, -21.0f, -62.0f, -63.0f};
+  const float xOffsets[] = {0.0f, 1.0f, -3.0f};
+  size_t pushed = 0;
+  for (const float dx : xOffsets)
+    for (const float dy : yOffsets) {
+      Patch p = r0.file.patches[0];
+      NodeLayout at;
+      at.placed = true;
+      at.x = ref.layout(t).x + dx;
+      at.y = ref.layout(t).y + dy;
+      p.setLayout(m, at);
+      CAPTURE(at.x);
+      CAPTURE(at.y);
+      auto out = std::make_shared<Patch>(p);
+      const bool done = finishesWithin(std::chrono::seconds(20), [out, g] { (void)completeLayout(*out, g); });
+      REQUIRE_MESSAGE(done, "completeLayout did not return");
+      const Patch& q = *out;
+      CHECK(q.layout(m) == at);  // the hand-placed node keeps its exact (off-grid) place
+      REQUIRE(fullyPlaced(q));
+      for (NodeIndex a = 0; a < q.nodeCount(); ++a)  // (routeUnrouted's simple routes may cross nodes: not checked)
+        for (NodeIndex b = a + 1; b < q.nodeCount(); ++b) {
+          const NodeLayout &la = q.layout(a), &lb = q.layout(b);
+          CHECK_FALSE((la.x < lb.x + g.shape[b].w && lb.x < la.x + g.shape[a].w && la.y < lb.y + g.shape[b].h &&
+                       lb.y < la.y + g.shape[a].h));
+        }
+      for (WireIndex w = 0; w < q.wireCount(); ++w) {
+        const auto pts = routeOf(q, g, w);
+        for (size_t i = 1; i < pts.size(); ++i) CHECK((pts[i - 1].x == pts[i].x || pts[i - 1].y == pts[i].y));
+      }
+      for (NodeIndex v = 0; v < q.nodeCount(); ++v) {
+        if (v == m) continue;
+        CHECK(std::fmod(q.layout(v).x, 4.0f) == 0.0f);  // auto-placed nodes stay on the grid
+        CHECK(std::fmod(q.layout(v).y, 4.0f) == 0.0f);
+      }
+      pushed += q.layout(t).y != ref.layout(t).y ? 1u : 0u;
+    }
+  CHECK(pushed >= 30);  // (the large negative offsets may clear t's place without a push)
+}
+
+TEST_CASE("completeLayout / routeUnrouted: odd pin positions and odd routing points; TMM.12-fix2") {
+  // Every node at odd coordinates on both axes (some negative) and one wire with odd stored routing points: the wires
+  // without points are routed orthogonally, the stored points and the positions are kept as written.
+  ParseResult r = parseOk(R"(patch Odd {
+  in x : audio
+  param g = 0.5
+  out y : audio
+  m = x * g
+  t = tanh(m)
+  y = t
+  layout {
+    node x at (-61, -37)
+    node g at (-63, 33)
+    node m at (61, 1)
+    node t at (199, -3)
+    node y at (341, 61)
+    wire m.out -> t.x via ((137, 13), (137, 9))
+  }
+}
+)");
+  auto p = std::make_shared<Patch>(r.file.patches[0]);
+  const LayoutGeometry g = defaultGeometry(*p);
+  REQUIRE(fullyPlaced(*p));
+  const NodeIndex t = *p->findByName("t");
+  const bool done = finishesWithin(std::chrono::seconds(20), [p, g] { (void)completeLayout(*p, g); });
+  REQUIRE_MESSAGE(done, "completeLayout did not return");
+  CHECK(p->layout(*p->findByName("x")).x == -61.0f);
+  CHECK(p->layout(*p->findByName("y")).y == 61.0f);
+  for (WireIndex w = 0; w < p->wireCount(); ++w) {
+    CAPTURE(w);
+    if (p->wire(w).to.node == t) {
+      REQUIRE(p->wireVia(w).size() == 2);
+      CHECK(p->wireVia(w)[0] == Point2{137, 13});
+      CHECK(p->wireVia(w)[1] == Point2{137, 9});
+      continue;
+    }
+    const std::vector<Point2> pts = routeOf(*p, g, w);
     for (size_t i = 1; i < pts.size(); ++i) CHECK((pts[i - 1].x == pts[i].x || pts[i - 1].y == pts[i].y));
   }
 }

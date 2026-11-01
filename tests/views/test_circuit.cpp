@@ -5,11 +5,15 @@
 
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <future>
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "../ui/golden_check.h"
 #include "pq/graph/parse.h"
@@ -205,6 +209,123 @@ TEST_CASE("circuit: every stdlib patch opens laid out without overlaps, wires or
   }
   MESSAGE(patches << " stdlib patches");
   CHECK(patches >= 20);
+}
+
+namespace {
+
+// TMM.12-fix2: runs `work` on its own thread and waits at most `limit`, so a scene build that never returns fails the
+// case instead of stalling ctest. `work` owns everything it touches (a timed-out thread keeps running on its copies).
+template <class F>
+bool finishesWithin(std::chrono::seconds limit, F work) {
+  auto done = std::make_shared<std::promise<void>>();
+  std::future<void> f = done->get_future();
+  std::thread([done, w = std::move(work)]() mutable {
+    w();
+    done->set_value();
+  }).detach();
+  return f.wait_for(limit) == std::future_status::ready;
+}
+
+}  // namespace
+
+TEST_CASE("circuit: hand-placed nodes and routing points off the 4-unit grid open in bounded time (TMM.12-fix2)") {
+  // A partial layout whose placed node sits off the grid (odd, fractional, negative; either axis) where an unplaced
+  // node would go: completing the layout used to loop forever when that node's bottom was off the grid.
+  const auto doc = fromText(R"(patch Odd {
+  in x : audio
+  param g = 0.5
+  out y : audio
+  m = x * g
+  t = tanh(m)
+  u = t * g
+  y = u
+}
+)");
+  const graph::Patch& base = *doc->find("Odd");
+  graph::Patch tidy;
+  (void)buildScene(base, {}, &tidy);  // where the unplaced nodes go, with the symbols' geometry
+  const graph::NodeIndex m = *base.findByName("m"), t = *base.findByName("t"), u = *base.findByName("u");
+  const float yOffsets[] = {1.0f, 2.0f, 3.0f, -1.0f, -2.0f, -3.0f, 0.5f, -61.0f, -63.0f};
+  const float xOffsets[] = {0.0f, 1.0f, -3.0f};
+  for (const float dx : xOffsets)
+    for (const float dy : yOffsets) {
+      auto p = std::make_shared<graph::Patch>(base);
+      graph::NodeLayout at;
+      at.placed = true;
+      at.x = tidy.layout(t).x + dx;
+      at.y = tidy.layout(t).y + dy;
+      p->setLayout(m, at);
+      // A placed `u` with odd routing points into it (wire endpoints off the grid).
+      graph::NodeLayout atU;
+      atU.placed = true;
+      atU.x = tidy.layout(u).x + 41.0f;
+      atU.y = tidy.layout(u).y - 37.0f;
+      p->setLayout(u, atU);
+      for (graph::WireIndex w = 0; w < p->wireCount(); ++w)
+        if (p->wire(w).to.node == u && p->wire(w).to.port == 0) p->setWireVia(w, {{atU.x - 13.0f, at.y + 7.0f}, {atU.x - 13.0f, atU.y - 3.0f}});
+      CAPTURE(at.x);
+      CAPTURE(at.y);
+      auto out = std::make_shared<std::shared_ptr<CircuitScene>>();
+      auto laid = std::make_shared<graph::Patch>();
+      const bool done = finishesWithin(std::chrono::seconds(30), [p, out, laid] { *out = buildScene(*p, {}, laid.get()); });
+      REQUIRE_MESSAGE(done, "buildScene did not return");
+      const CircuitScene& sc = **out;
+      CHECK(graph::fullyPlaced(*laid));
+      CHECK(sc.nodes[m].x == at.x);  // the hand-placed nodes keep their exact places
+      CHECK(sc.nodes[m].y == at.y);
+      CHECK(sc.nodes[u].x == atU.x);
+      CHECK(sc.nodes[u].y == atU.y);
+      for (const SceneWire& sw : sc.wires)
+        for (uint32_t i = 0; i + 1 < sw.pointCount; ++i) {
+          const graph::Point2 a = sc.points[sw.firstPoint + i], b = sc.points[sw.firstPoint + i + 1];
+          CHECK((a.x == b.x || a.y == b.y));
+        }
+      for (size_t a = 0; a < sc.nodes.size(); ++a)  // no auto-placed node on top of a placed one
+        for (size_t b = a + 1; b < sc.nodes.size(); ++b) {
+          const SceneNode &na = sc.nodes[a], &nb = sc.nodes[b];
+          CHECK_FALSE((na.x < nb.x + nb.w && nb.x < na.x + na.w && na.y < nb.y + nb.h && nb.y < na.y + na.h));
+        }
+    }
+}
+
+TEST_CASE("circuit: the Meta Operator with a node moved off the grid (env at y 61) opens in bounded time (TMM.12-fix2)") {
+  const auto doc = load(stdlibPath("devices/meta_operator.pqp"));
+  const graph::Patch* stock = doc->parsed.file.find("meta_operator");
+  REQUIRE(stock != nullptr);
+  const graph::NodeIndex envD = *stock->findByName("envD");
+  REQUIRE(stock->layout(envD).placed);
+  // The stored layout places every node. As during its development (Q178 8), some nodes are left unplaced (the D row's
+  // `nD`, `accD`, `wtD`) and envD sits off the grid: at its own place and on each unplaced node's automatic place, so
+  // that node is pushed below it.
+  const char* unplacedNames[] = {"nD", "accD", "wtD"};
+  std::vector<graph::NodeIndex> unplaced;
+  for (const char* name : unplacedNames) unplaced.push_back(*stock->findByName(name));
+  graph::Patch bare = *stock;  // the automatic places (completeLayout's own automatic layout of the whole patch)
+  for (graph::NodeIndex v = 0; v < bare.nodeCount(); ++v) bare.setLayout(v, graph::NodeLayout{});
+  graph::Patch laid;
+  (void)buildScene(bare, {}, &laid);
+  std::vector<graph::Point2> places = {{608, 61}, {608, 62}, {609, 63}, {-611, -61}};
+  for (const graph::NodeIndex v : unplaced) {
+    places.push_back({laid.layout(v).x + 1.0f, laid.layout(v).y + 1.0f});
+    places.push_back({laid.layout(v).x, laid.layout(v).y - 3.0f});
+  }
+  for (const graph::Point2& place : places) {
+    const float x = place.x, y = place.y;
+    auto p = std::make_shared<graph::Patch>(*stock);
+    for (const graph::NodeIndex v : unplaced) p->setLayout(v, graph::NodeLayout{});
+    graph::NodeLayout l = p->layout(envD);
+    l.x = x;
+    l.y = y;
+    p->setLayout(envD, l);
+    CAPTURE(x);
+    CAPTURE(y);
+    auto out = std::make_shared<std::shared_ptr<const CircuitScene>>();
+    const bool done = finishesWithin(std::chrono::seconds(30), [p, out] { *out = buildDeviceScene(*p, {}); });
+    REQUIRE_MESSAGE(done, "buildDeviceScene did not return");
+    REQUIRE(*out != nullptr);
+    CHECK((*out)->nodes[envD].x == x);
+    CHECK((*out)->nodes[envD].y == y);
+  }
 }
 
 TEST_CASE("circuit: tidy, then the layout spliced into the file text reads back identically (byte-stable)") {
