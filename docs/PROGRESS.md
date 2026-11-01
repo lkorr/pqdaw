@@ -1100,3 +1100,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: meta_envelope 0.86 ns/voice-sample vs msenv 0.55 (JIT, 16 voices, check, indicative); face 0.031 ms, 16 × 8 voices 0.49 ms.
 - CPU-efficiency check: everything except the per-sample recursion at param rate; no branches; FMAs keep msenv's rounding; tap 0.09 ns.
 - Notes: Q177 (curve law, time axis, bending, ranges).
+
+## 2026-11-01 · TMM.12 · task/TMM.12-meta-operator (merged as partial; Q178)
+- Did: Meta Operator (stdlib/devices/meta_operator.pqp + panel; catalog). Language: oversample(<real const input>). Views: the one circuit hides what device settings switch off (buildDeviceScene; hidden wires and oversample washes in composed scenes). Scenes meta-operator-device / meta-operator-circuit. Reference, pitch, hq, lowering, panel, preset and node-count tests; bench operator/meta-* and operator/stock-four.
+- Verified: build.ps1 -Affected (EVERYTHING): first run killed for low memory; rerun at parallelism 4: build 0 warnings; ctest default+slow 90/90 after fixes (browser list, circuit sweeps skip hidden nodes, project-patch-zoom golden). Wavetable-face perf check flaked under load, passed alone (0.95 ms). Ship pq_bench_render linked. Orchestrator: goldens inspected; two stray test outputs (project-patch-zoom.actual/diff.png at the repo root) removed at merge.
+- Perf: ship, JIT, x64: meta-sine 19.10, meta-nofb 13.23, meta-hq 44.0, stock-four 8.56 ns/voice-sample. Criterion ≤ 1.2× not met.
+- CPU-efficiency check: profiled with A/B patches; wavetable reads ≈ 58 %, feedback loop ≈ 27 % → fbOn (structural, default off) removes the loop (−31 %); n/d at param rate; unused algorithm arms compiled away. The rest needs a one-frame fast path in wavetable_pos (other module).
+- Notes/blockers: node budget not met (41 visible vs 466 for the old Operator; the plan's ≤ 20 left out 18 terminals). Odd-coordinate layout hang found (a layout node at y = 61 hangs scene building; multiples of 4 work), not fixed. voices/glide/spread dropped. Q178.

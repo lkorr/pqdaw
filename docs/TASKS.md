@@ -638,7 +638,7 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 - [ ] **TMM.9 Wavetable face II: harmonic editor + draw tools** 👁 (docs/plans/MM.md)
 - [ ] **TMM.10 Meta modules as chain devices (Device-view panels)** 👁 (docs/plans/MM.md)
 - [ ] **TMM.11 Envelope meta module** 👁 (docs/plans/MM.md)
-- [ ] **TMM.12 Meta Operator (new instrument from meta modules; the Live-parity Operator stays)** 👁 (docs/plans/MM.md)
+- [~] **TMM.12 Meta Operator (new instrument from meta modules; the Live-parity Operator stays)** 👁 *(merged as partial 4285248: node budget 41 vs ≤ 20 and cost 2.23× (1.55× with feedback off) vs ≤ 1.2× not met; decisions in Q178)* (docs/plans/MM.md)
 - [ ] **TMM.13 MM review** (docs/plans/MM.md)
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
