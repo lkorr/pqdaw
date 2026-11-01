@@ -1544,7 +1544,8 @@ void ProjectLink::deliverMetaTable(uint32_t id, uint64_t key, std::shared_ptr<co
     if (id == 0 || id >= kMetaSlots) return;
     const MetaSlot& m = metaSlots_[id];
     // A table the slot no longer wants (a newer state, an id given to another instance, another rate) is dropped.
-    if (!m.live || !m.table || m.wanted != key || table->layout().sampleRate != cfg_.sampleRate) return;
+    // (The rate is compared with the defaults' rate, which setSampleRate updates under mutex_; cfg_ is the UI's.)
+    if (!m.live || !m.table || m.wanted != key || table->layout().sampleRate != metaDefaultRate_) return;
     slot = m.table;
   }
   slot->publish(std::move(table), sampleReclaimer_);
