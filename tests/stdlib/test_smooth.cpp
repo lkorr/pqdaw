@@ -76,9 +76,9 @@ std::vector<Device> devices() {
                      "import \"" + stdlibPath("devices/meta_operator.pqp") + "\"\npatch T {\n  out y : audio voice mono\n"
                      "  out done : bool voice mono\n  o = meta_operator(algorithm: 1, hq: 1, fbOn: 1)\n  y = o\n  done = o.done\n}\n",
                      true});
-  d.push_back(Device{"meta modules (phase_acc → wavetable → envelope)",
+  d.push_back(Device{"meta modules (phase_acc → wavetable → envelope → vca)",
                      "patch T {\n  out y : audio voice mono\n  a = meta_phase_acc(voice.hz)\n  w = meta_wavetable(a)\n"
-                     "  y = meta_envelope(w)\n}\n",
+                     "  e = meta_envelope(w)\n  y = meta_vca(e, min: 0, max: 1)\n}\n",
                      true});
   return d;
 }
