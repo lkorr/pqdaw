@@ -489,16 +489,24 @@ private:
       }
     }
     const uint32_t end = st.firstRegion + st.numRegions;
-    // TX.smooth: the regions after the Control region and the param_ramp regions read the ramps; when inline code
-    // there reads one, a block in which one of them moves runs those regions in a function of their own (emitted
-    // below, in ramp mode), entered as the stage function's last act (nothing is live across the call, so the
-    // stage function's frame does not grow: the Operator's pair function sits close to the 4 KiB probe limit).
-    uint32_t split = st.firstRegion;
-    while (split < end && (s_.regions[split].kind == g::RegionKind::Control || isRampRegion(split))) ++split;
+    // TX.smooth: after the Control region, every param ramp of the stage is checked inline (at rest: its `active`
+    // cleared, as its kernel would). All at rest: the stage goes on as scheduled, without the param_ramp calls and
+    // without any ramp handling (no ramp moves). Else the stage function's last act is a tail call of `<name>_ramps`,
+    // which runs the param_ramp regions and the rest of the stage in ramp mode. So a stage at rest has no call and no
+    // ramp state live in its code (the Operator's pair function sits close to the 4 KiB probe limit).
+    uint32_t ctrlEnd = st.firstRegion;
+    while (ctrlEnd < end && s_.regions[ctrlEnd].kind == g::RegionKind::Control) ++ctrlEnd;
+    uint32_t split = ctrlEnd;
+    while (split < end && isRampRegion(split)) ++split;
+    std::vector<uint32_t> stageRamps;  // every ramp whose op is in this stage
+    if (split > ctrlEnd) {
+      const uint32_t a = s_.regions[ctrlEnd].firstOp, b = s_.regions[split - 1].firstOp + s_.regions[split - 1].numOps;
+      for (uint32_t q = 0; q < s_.ramps.size(); ++q)
+        if (s_.ramps[q].op >= a && s_.ramps[q].op < b) stageRamps.push_back(q);
+    }
     const std::vector<uint32_t> ramps = split < end ? unitRamps(split, end - 1) : std::vector<uint32_t>{};
-    // A pair function stages its voice state after the dispatch when the regions before it touch none of it (their
-    // param_ramp calls never do): nothing staged is live at the dispatch then.
-    bool lateStage = vw == 16 && !ramps.empty();
+    // A pair function stages its voice state after the dispatch when the Control region touches none of it.
+    bool lateStage = vw == 16 && !stageRamps.empty();
     for (uint32_t r = st.firstRegion; r < split && lateStage; ++r) {
       const g::Region& reg = s_.regions[r];
       for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
@@ -509,11 +517,13 @@ private:
     }
     beginFunction(name, llvm::Function::ExternalLinkage, maxOperands);
     if (vw == 16 && !lateStage) stagePairState(true);
-    emitRegions(st.firstRegion, split);
+    emitRegions(st.firstRegion, ctrlEnd);
     llvm::Function* rampFn = nullptr;
-    if (!ramps.empty()) rampFn = emitRampDispatch(ramps, name + "_ramps", lateStage);
+    if (!stageRamps.empty()) rampFn = emitRampDispatch(stageRamps, name + "_ramps", lateStage);
     if (lateStage) stagePairState(true);
+    steady_ = !stageRamps.empty();  // every ramp of the stage at rest: no ramp handling in the code below
     emitRegions(split, end);
+    steady_ = false;
     if (vw == 16) stagePairState(false);
     B_.CreateRetVoid();
     if (rampFn) {  // the same regions in ramp mode
@@ -525,6 +535,7 @@ private:
       decl->eraseFromParent();
       gainTarget_.clear();
       if (vw == 16) stagePairState(true);
+      emitRegions(ctrlEnd, split);  // the param_ramp ops
       const unsigned halves = vw == 16 ? 2u : 1u;
       unitHeld_.assign(s_.ramps.size(), 0);
       for (const uint32_t r : ramps) {
@@ -979,7 +990,7 @@ private:
     Value* any = nullptr;
     for (const uint32_t r : ramps)
       for (unsigned h = 0; h < halves; ++h) {
-        Value* a = rampActive(r, h);
+        Value* a = B_.CreateNot(rampAtRest(r, h));
         any = any ? B_.CreateOr(any, a) : a;
       }
     llvm::BasicBlock* moving = llvm::BasicBlock::Create(C_, "ramps_moving", F_);
@@ -1075,6 +1086,70 @@ private:
   }
   void emitCallHalf(uint32_t i, Value* t0, Value* n32, unsigned h) {
     const g::Op& op = s_.ops[i];
+    if (op.kind == g::OpKind::Kernel && op.kernel == Atom::ParamRamp && op.state != g::kNone) {
+      emitRampOp(i, t0, n32, h);
+      return;
+    }
+    emitCallHalfBody(i, t0, n32, h);
+  }
+  // TX.smooth: a param_ramp at rest (every lane started, its input bitwise its target, no frames left) only clears its
+  // `active` word; checked inline, so a block in which nothing moves costs no call (kernels_ramp.cpp: the call would
+  // do exactly that).
+  // i1: ramp r (half h) at rest; clears its `active` word either way (a ramp that is not at rest gets its kernel).
+  Value* rampAtRest(uint32_t r, unsigned h) {
+    const g::Op& op = s_.ops[s_.ramps[r].op];
+    const unsigned L = op.lanes == 8 ? 8u : 1u;
+    llvm::Type* i8 = llvm::Type::getInt8Ty(C_);
+    Value* st = statePtrHere(op.state, h);
+    llvm::Type* fv = L == 1 ? static_cast<llvm::Type*>(f32_) : llvm::FixedVectorType::get(f32_, L);
+    llvm::Type* iv = L == 1 ? static_cast<llvm::Type*>(i32_) : llvm::FixedVectorType::get(i32_, L);
+    const g::Operand& src = s_.inputs(op)[0];
+    Value* xp = voice_ ? voicePtr(src, c64(0), h, B_) : basePtr(src);
+    Value* x = B_.CreateAlignedLoad(iv, xp, llvm::Align(4));
+    auto field = [&](size_t off, llvm::Type* t) {
+      return B_.CreateAlignedLoad(t, B_.CreateConstInBoundsGEP1_64(i8, st, off), llvm::Align(4));
+    };
+    Value* same = B_.CreateICmpEQ(x, field(offsetof(dsp::ParamRampState, target), iv));
+    Value* rest = B_.CreateFCmpOEQ(field(offsetof(dsp::ParamRampState, rem), fv), llvm::Constant::getNullValue(fv));
+    Value* started = B_.CreateFCmpUNE(field(offsetof(dsp::ParamRampState, started), fv), llvm::Constant::getNullValue(fv));
+    Value* ok = B_.CreateAnd(B_.CreateAnd(same, rest), started);
+    if (L > 1) ok = B_.CreateAndReduce(ok);
+    B_.CreateAlignedStore(c32(0), B_.CreateConstInBoundsGEP1_64(i8, st, offsetof(dsp::ParamRampState, active)), llvm::Align(4));
+    return ok;
+  }
+  void emitRampOp(uint32_t i, Value* t0, Value* n32, unsigned h) {
+    const g::Op& op = s_.ops[i];
+    const unsigned L = op.lanes == 8 ? 8u : 1u;
+    llvm::Type* i8 = llvm::Type::getInt8Ty(C_);
+    Value* st = statePtrHere(op.state, h);
+    llvm::Type* fv = L == 1 ? static_cast<llvm::Type*>(f32_) : llvm::FixedVectorType::get(f32_, L);
+    llvm::Type* iv = L == 1 ? static_cast<llvm::Type*>(i32_) : llvm::FixedVectorType::get(i32_, L);
+    const g::Operand& src = s_.inputs(op)[0];
+    Value* xp = voice_ ? voicePtr(src, c64(0), h, B_) : basePtr(src);
+    Value* x = B_.CreateAlignedLoad(iv, xp, llvm::Align(4));
+    auto field = [&](size_t off, llvm::Type* t) {
+      return B_.CreateAlignedLoad(t, B_.CreateConstInBoundsGEP1_64(i8, st, off), llvm::Align(4));
+    };
+    Value* same = B_.CreateICmpEQ(x, field(offsetof(dsp::ParamRampState, target), iv));
+    Value* rest = B_.CreateFCmpOEQ(field(offsetof(dsp::ParamRampState, rem), fv), llvm::Constant::getNullValue(fv));
+    Value* started = B_.CreateFCmpUNE(field(offsetof(dsp::ParamRampState, started), fv), llvm::Constant::getNullValue(fv));
+    Value* ok = B_.CreateAnd(B_.CreateAnd(same, rest), started);
+    if (L > 1) ok = B_.CreateAndReduce(ok);
+    llvm::BasicBlock* call = llvm::BasicBlock::Create(C_, "ramp_call", F_);
+    llvm::BasicBlock* idle = llvm::BasicBlock::Create(C_, "ramp_rest", F_);
+    llvm::BasicBlock* after = llvm::BasicBlock::Create(C_, "ramp_after", F_);
+    llvm::MDBuilder md(C_);
+    B_.CreateCondBr(ok, idle, call, md.createBranchWeights(63, 1));
+    B_.SetInsertPoint(idle);
+    B_.CreateAlignedStore(c32(0), B_.CreateConstInBoundsGEP1_64(i8, st, offsetof(dsp::ParamRampState, active)), llvm::Align(4));
+    B_.CreateBr(after);
+    B_.SetInsertPoint(call);
+    emitCallHalfBody(i, t0, n32, h);
+    B_.CreateBr(after);
+    B_.SetInsertPoint(after);
+  }
+  void emitCallHalfBody(uint32_t i, Value* t0, Value* n32, unsigned h) {
+    const g::Op& op = s_.ops[i];
     const auto ins = s_.inputs(op);
     const auto outs = s_.outputsOf(op);
     const void* fn = nullptr;
@@ -1108,7 +1183,7 @@ private:
     // interpreter chooses per record, so a unit whose ramps only calls read needs no ramp-mode copy.
     Value* opActive = nullptr;
     uint32_t ramped = 0;
-    if (op.kind == g::OpKind::Kernel)
+    if (op.kind == g::OpKind::Kernel && !steady_)
       for (uint32_t j = 0; j < ins.size() && j < 32; ++j) {
         const uint32_t r = rampIndexOf(ins[j]);
         if (r == g::kNone) continue;
@@ -2277,6 +2352,7 @@ private:
   std::vector<uint8_t> memo_;        // per region: a memo Control region (Q126)
   // current function
   bool rampMode_ = false;          // TX.smooth: emitting a unit's copy for a block in which one of its ramps moves
+  bool steady_ = false;            // TX.smooth: emitting a stage's code for a block in which every ramp rests
   std::vector<uint8_t> unitHeld_;  // TX.smooth: per ramp, filled by the ramp-mode function's prologue (stageFunction)
   bool voice_ = false;             // a voice stage's function
   unsigned vw_ = 8;                // its voice width: 1 (scalar lanes), 8 (a group), 16 (a pair)
