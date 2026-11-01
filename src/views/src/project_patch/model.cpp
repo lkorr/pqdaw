@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "pq/document/meta.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
 #include "pq/views/meta/meta_face.h"
@@ -83,6 +84,8 @@ struct Builder {
   std::unordered_map<uint32_t, uint32_t> modGraphWire;  // doc wire id → graph wire index (cross-track)
   std::unordered_map<uint32_t, const doc::Track*> trackById;
   std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>> paramsOf;
+  // TMM.10-fix1: the band's chain stages (doc::chainStages): which chain meta device the note source reaches.
+  std::vector<doc::ChainStage> bandStages;
 
   const graph::PatchLibrary* library() const noexcept { return low.graph.library; }
   const doc::ResolvedDevice* userDevice(doc::DeviceId id) const noexcept {
@@ -197,6 +200,11 @@ struct Builder {
     n.device = d.id;
     n.active = d.active;
     n.instrument = d.kind == doc::DeviceKind::Instrument;
+    // TMM.10-fix1: a chain meta device takes notes exactly when the note source reaches its chain input (its stage;
+    // unplugged, or after another device, it does not, whatever its kind): the note wire is drawn to it, or not.
+    if (doc::isMetaDevice(d))
+      for (const doc::ChainStage& s : bandStages)
+        if (s.device == &d) n.instrument = s.in == doc::ChainSignal::Notes;
     // A user device (T4.4-fix1: the instance's own patch text) plays its resolution's renamed root: its callee and its
     // description come from the resolution the lowering made; a stock device's from the library and the catalog.
     const doc::ResolvedDevice* user = d.edited() ? userDevice(d.id) : nullptr;
@@ -348,6 +356,7 @@ struct Builder {
       s.h = m::kSumH;
       out.bands[bi].source = addNode(std::move(s));
     }
+    bandStages = doc::chainStages(t.devices, t.kind == doc::TrackKind::Midi);
     for (const doc::DevicePtr& d : t.devices) {
       const uint32_t n = addNode(d->rack ? rackNode(bi, *d, tp) : deviceNode(bi, *d, tp));
       out.bands[bi].devices.push_back(n);
@@ -395,7 +404,14 @@ struct Builder {
     if (b.graphTrack == kNone) return;
     std::vector<uint32_t> chain;
     if (b.kind == doc::TrackKind::Midi) {
-      const uint32_t inst = b.devices.empty() ? kNone : b.devices[0];
+      // The first lowered device takes the notes when it is the instrument (TMM.10-fix1: a chain meta device whose
+      // chain input the note source reaches, after an inactive first device too).
+      uint32_t inst = kNone;
+      for (const uint32_t d : b.devices)
+        if (out.nodes[d].lowered) {
+          inst = d;
+          break;
+        }
       if (inst != kNone && out.nodes[inst].instrument && out.nodes[inst].lowered && b.role == graph::TrackRole::Instrument) {
         Edge e;
         e.voice = true;

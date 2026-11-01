@@ -66,8 +66,11 @@ void DeviceChainView::Impl::reindex() {
 }
 
 std::string DeviceChainView::Impl::templateKey(const doc::DeviceLibrary* lib, const doc::Device& d) {
-  // TMM.10: a chain meta device's form follows its kind (an instrument, or a device continuing the voices).
-  if (doc::isMetaDevice(d)) return d.patch + (d.kind == doc::DeviceKind::Instrument ? "#instrument" : "#effect");
+  // TMM.10: a chain meta device's form follows its position (first: the note source reaches it) and (TMM.10-fix1) the
+  // input its chain feeds (its face's input socket, none when unplugged).
+  if (doc::isMetaDevice(d))
+    return d.patch + (d.kind == doc::DeviceKind::Instrument ? "#instrument" : "#effect") +
+           (d.chainInput.empty() ? std::string() : "#in:" + d.chainInput);
   if (!d.source) return d.patch;
   const auto r = lib != nullptr ? lib->resolve(d) : nullptr;
   return r && r->graph ? r->graph->root : std::string();
@@ -86,6 +89,10 @@ const PanelTemplate* DeviceChainView::Impl::templateFor(const doc::Device& d) {
     t->sig = devices::signatureOf(*callee);
     // TMM.10: a chain meta device's panel is its face (SPEC §15 2026-11-01), scaled to the Device view's height.
     if (const meta::Type* type = meta::findType(doc::metaDeviceType(d)); type != nullptr && hasFace(*type)) {
+      // TMM.10-fix1: the socket shows where the chain is wired (another input when the device chose one; none when
+      // it is unplugged: the absence of the wire).
+      if (d.chainInput == doc::kChainUnplugged) t->sig.audioIn.clear();
+      else if (!d.chainInput.empty() && !t->sig.audioIn.empty()) t->sig.audioIn = d.chainInput;
       const ui::Vec2 ws = faceSize(*type);
       t->desc = devices::facePanel(t->sig, std::string(type->name), ws.x, ws.y);
       return (templates[key] = std::move(t)).get();
@@ -140,8 +147,9 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
     rack.enabled = !instrumentRack || instruments;
     items.push_back(std::move(rack));
   }
-  // TMM.10: the meta modules — a chain meta device (its panel is its face). Its kind follows where it lands: an
-  // instrument first, a device continuing the voices after a meta instrument (ops::metaDeviceKindAt).
+  // TMM.10: the meta modules — a chain meta device (its panel is its face). TMM.10-fix1: every one fits every slot of
+  // every track; what it plays follows from what its chain input receives there (the note source first on a MIDI track,
+  // else the previous device's signal); it replaces nothing (ops::addMetaDevice).
   {
     items.push_back(ui::MenuItem::sep());
     ui::MenuItem head = ui::MenuItem::item("Meta Modules");
@@ -153,7 +161,7 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
       ui::MenuItem it = ui::MenuItem::item("   " + std::string(t->name), [add, patch, k = kind ? *kind : doc::DeviceKind::Instrument] {
         add(patch, k);
       });
-      it.enabled = kind.ok() && (*kind == doc::DeviceKind::AudioEffect || instruments);
+      it.enabled = kind.ok();
       items.push_back(std::move(it));
     }
   }
@@ -207,9 +215,11 @@ void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
         break;
       }
     }
-    // An effect never goes before the instrument; the instrument stays first.
+    // An effect never goes before the instrument; the instrument stays first. TMM.10-fix1: a chain meta device first is
+    // a stage like any other (it takes the note source because it is first), so only a stock instrument pins the start.
     const doc::Track* t = track();
-    const bool hasInstrument = t && !t->devices.empty() && t->devices.front()->kind == doc::DeviceKind::Instrument;
+    const bool hasInstrument = t && !t->devices.empty() && t->devices.front()->kind == doc::DeviceKind::Instrument &&
+                               !doc::isMetaDevice(*t->devices.front());
     const int32_t from = frameIndex(dragging);
     if (hasInstrument) slot = from == 0 ? 0u : std::max(slot, 1u);
     d.index = slot;
@@ -229,7 +239,8 @@ void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
     const doc::Device* into = d.kind == DropTarget::Kind::NewChain ? doc::findDevice(p, d.rack).device : doc::findChain(p, d.chain).rack;
     if (moving.device != nullptr && into != nullptr) {
       if (into == moving.device || doc::deviceContains(*moving.device, into->id)) d.refused = "A rack cannot go inside itself";
-      else if (moving.device->kind == doc::DeviceKind::Instrument && into->kind != doc::DeviceKind::Instrument)
+      else if (moving.device->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*moving.device) &&
+               into->kind != doc::DeviceKind::Instrument)
         d.refused = "An instrument goes into an Instrument Rack, not an Audio Effect Rack";
     }
   }
@@ -401,7 +412,10 @@ public:
   }
 
   bool keeps(const doc::Device& d) const override {
-    return d.source == source_ || DeviceChainView::Impl::templateKey(ctx_.deviceLibrary(), d) == key_;
+    // The same user text keeps its frame without a resolve; anything else compares its template key (TMM.10-fix1: a
+    // chain meta device's key carries its position and chain input, so its face's socket follows them).
+    if (d.source != nullptr && d.source == source_) return true;
+    return DeviceChainView::Impl::templateKey(ctx_.deviceLibrary(), d) == key_;
   }
 
   devices::DevicePanel* panel() const noexcept override { return panel_; }
@@ -674,6 +688,26 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
         revert.enabled = loc.device != nullptr && loc.device->edited();
         items.push_back(std::move(revert));
       }
+      // TMM.10-fix1 ("a chain is wires"): which input of a chain meta device the chain (the note source when it is
+      // first on a MIDI track, else the previous device) is wired into; None unplugs it (it runs freely, one voice).
+      if (loc.device != nullptr && doc::isMetaDevice(*loc.device))
+        if (const meta::Type* type = meta::findType(doc::metaDeviceType(*loc.device))) {
+          const int32_t cur = doc::metaChainInput(*loc.device, *type);
+          std::vector<ui::MenuItem> ins;
+          for (size_t i = 0; i < type->inputs.size(); ++i) {
+            const meta::InputSpec& in = type->inputs[i];
+            ui::MenuItem it = ui::MenuItem::item(std::string(in.label.empty() ? in.name : in.label),
+                                                 [v, id, name = std::string(in.name)] { v->setChainInput(id, name); });
+            it.checked = cur == static_cast<int32_t>(i);
+            ins.push_back(std::move(it));
+          }
+          ui::MenuItem none = ui::MenuItem::item("None (runs freely)", [v, id] {
+            v->setChainInput(id, std::string(doc::kChainUnplugged));
+          });
+          none.checked = cur < 0;
+          ins.push_back(std::move(none));
+          items.push_back(ui::MenuItem::sub("Chain Input", std::move(ins)));
+        }
       // T5.11: the user library.
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item("Save Preset", [v, id] { v->savePreset(id, false); }));
@@ -979,7 +1013,8 @@ bool DeviceChainView::moveSelected(int32_t dir) {
   const int64_t to = static_cast<int64_t>(l.index) + dir;
   if (to < 0 || to >= static_cast<int64_t>(list.size())) return false;
   // The instrument stays first (the track's chain, an Instrument Rack's chain): neither it nor an effect passes it.
-  if (list.front()->kind == doc::DeviceKind::Instrument && (l.index == 0 || to == 0)) {
+  // TMM.10-fix1: a chain meta device first is a stage like any other (only a stock instrument pins the start).
+  if (list.front()->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*list.front()) && (l.index == 0 || to == 0)) {
     ctx_.setStatus("The instrument stays first in the chain");
     return false;
   }
@@ -1182,6 +1217,13 @@ bool DeviceChainView::toggleSelectedActive() {
   const std::vector<doc::DeviceId> keep = selection_;
   const bool r = impl_->run(doc::ops::toggleDevicesActive(*ctx_.doc(), keep));
   select(keep);
+  return r;
+}
+
+bool DeviceChainView::setChainInput(doc::DeviceId device, std::string input) {
+  const bool r = impl_->run(doc::ops::setDeviceChainInput(*ctx_.doc(), device, std::move(input)));
+  const doc::DeviceId one[1] = {device};
+  select(one);
   return r;
 }
 

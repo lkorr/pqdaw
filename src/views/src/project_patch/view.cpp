@@ -1192,7 +1192,8 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
       const std::string patch = d.patch;
       add.push_back(ui::MenuItem::item(d.name, [this, track, patch] { (void)addDevice(track, patch); }));
     }
-  // TMM.10: the meta modules, as chain devices of the band (at its end: a run continues, else the instrument).
+  // TMM.10: the meta modules, as chain devices of the band, at its end (TMM.10-fix1: any type on any band; its chain
+  // input takes the last device's signal; it replaces nothing).
   if (!add.empty()) {
     add.push_back(ui::MenuItem::sep());
     ui::MenuItem head = ui::MenuItem::item("Meta Modules");

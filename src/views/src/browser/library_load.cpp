@@ -84,7 +84,7 @@ LibraryItem libraryItemOf(std::string_view path) noexcept {
 std::vector<const meta::Type*> metaModuleTypes() {
   std::vector<const meta::Type*> out;
   for (const meta::Type* t : meta::types())
-    if (hasFace(*t) && (t->chainInstrument || t->chainEffectInput >= 0 || t->chainVoiceInput >= 0)) out.push_back(t);
+    if (hasFace(*t)) out.push_back(t);  // TMM.10-fix1: every type is a chain device anywhere
   return out;
 }
 

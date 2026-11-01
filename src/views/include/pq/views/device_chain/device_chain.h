@@ -62,6 +62,9 @@ public:
   bool paste();  // after the selected device, else at the end
   bool duplicateSelected();
   bool toggleSelectedActive();
+  // TMM.10-fix1: a chain meta device's chain input (the context menu's "Chain Input": an input of its type, or "-" =
+  // none: the module runs freely; ops::setDeviceChainInput). One undo step.
+  bool setChainInput(doc::DeviceId device, std::string input);
   bool moveDevice(doc::DeviceId device, uint32_t index);  // index in the chain after removal
   // T4.4-fix1 (SPEC §15 2026-10-26): the device's context menu "Open in Circuit View" (also a double-click on its
   // title: pq/views/circuit/device_circuit.h) and "Revert to Stock" (the selected user devices back to their stock

@@ -209,7 +209,7 @@ constexpr const char* kWaveSynth =
     "  gate = voice.gate\n"
     "  coef = 1 - exp(-5 / max((gate ? attack : release) * sr, 1))\n"
     "  env  = z1(env + ((gate ? 1.0 : 0.0) - env) * coef)\n"
-    "  acc1 = meta_phase_acc()\n"
+    "  acc1 = meta_phase_acc(voice.hz)\n"  // TMM.10-fix1: the note plays because its frequency is wired in
     "  wt1  = meta_wavetable(acc1)\n"
     "  out  = wt1 * env * (0.25 + 0.75 * voice.velocity) * level\n"
     "  done = !gate && env < 0.00003\n"
@@ -327,7 +327,7 @@ constexpr const char* kEnvelopeSynth =
     "  out   out  : audio voice mono\n"
     "  out   done : bool voice mono\n"
     "\n"
-    "  acc1 = meta_phase_acc()\n"
+    "  acc1 = meta_phase_acc(voice.hz)\n"  // TMM.10-fix1: the note wired into its frequency
     "  wt1  = meta_wavetable(acc1)\n"
     "  env1 = meta_envelope(wt1)\n"
     "  out  = env1 * (0.25 + 0.75 * voice.velocity) * level\n"

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "pq/document/edit_ops.h"
+#include "pq/document/meta.h"
 #include "pq/document/serialize.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -318,6 +319,46 @@ TEST_CASE("project patch: deactivated tracks and devices, missing devices, neste
   CHECK(pre);
   // No route edge out of the group (sends only).
   for (const Edge& e : pp.edges) CHECK_FALSE((e.kind == EdgeKind::Route && pp.nodes[e.from].band == pp.bandOf(grp)));
+}
+
+// TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): the note wire is drawn to the chain meta device the note
+// source reaches — and only there: unplugged, or after another device, it has none.
+TEST_CASE("project patch: the note wire goes to the meta device the note source reaches, or nowhere") {
+  doc::DocumentStore store;
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::TrackId t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi)).tracks.at(0);
+  const doc::DeviceId acc = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "phase_acc", 0)).devices.at(0);
+  const doc::DeviceId wt = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "wavetable")).devices.at(0);
+  auto notesTo = [&](const ProjectPatch& pp, doc::DeviceId d) {
+    for (const Edge& e : pp.edges)
+      if (e.kind == EdgeKind::Notes && e.to == pp.nodeOf(d)) return true;
+    return false;
+  };
+  {
+    const doc::LoweredProject low = lowerOf(*store.current());
+    const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library().catalog());
+    CHECK(checkAgainstGraph(pp, *store.current(), low) == "");
+    CHECK(pp.nodes[pp.nodeOf(acc)].instrument);
+    CHECK(notesTo(pp, acc));
+    CHECK_FALSE(notesTo(pp, wt));
+  }
+  // Unplugged: no note wire; it runs freely (one voice) and still feeds the Wavetable.
+  run(doc::ops::setDeviceChainInput(*store.current(), acc, std::string(doc::kChainUnplugged)));
+  {
+    const doc::LoweredProject low = lowerOf(*store.current());
+    const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library().catalog());
+    CHECK(checkAgainstGraph(pp, *store.current(), low) == "");
+    CHECK_FALSE(pp.nodes[pp.nodeOf(acc)].instrument);
+    CHECK_FALSE(notesTo(pp, acc));
+    CHECK_FALSE(notesTo(pp, wt));
+    bool chained = false;
+    for (const Edge& e : pp.edges) chained = chained || (e.kind == EdgeKind::Chain && e.from == pp.nodeOf(acc) && e.to == pp.nodeOf(wt));
+    CHECK(chained);
+  }
 }
 
 // T4.8: racks are drawn as plain blocks; the devices inside them (racks lower inline) belong to the rack's block, and

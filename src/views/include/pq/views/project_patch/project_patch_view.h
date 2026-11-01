@@ -469,8 +469,8 @@ Status addPhaseAccFaces(doc::DocumentStore& store, uint32_t count);
 // them), a bright vocal-like cycle (odd and formant partials) at 1 (crossfade gap), 64 dense frames.
 meta::DataPtr demoWavetableData();
 // TMM.7: Wavetable faces — "Wave" (a chain Wavetable with demoWavetableData, warp 0.3 bend, position 0.35 → Saturator)
-// and "Pair" (the default synth forked: `acc1 = meta_phase_acc()` wired into `wt1 = meta_wavetable(acc1)` under an
-// envelope; wt1 holds demoWavetableData at position 0.7). Returns the Pair instrument in `pair` when given.
+// and "Pair" (the default synth forked: `acc1 = meta_phase_acc(voice.hz)` wired into `wt1 = meta_wavetable(acc1)`
+// under an envelope; wt1 holds demoWavetableData at position 0.7). Returns the Pair instrument in `pair` when given.
 Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair = nullptr);
 // TMM.10: meta modules as chain devices — "Meta Lead" (Phase accumulator → Wavetable with demoWavetableData at
 // position 0.35, warp 0.3 → Auto Filter: a meta voice run) and "Meta Bass" (Phase accumulator +1.5 Hz → a saw

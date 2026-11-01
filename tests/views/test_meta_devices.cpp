@@ -173,6 +173,21 @@ TEST_CASE("meta devices (views): a chain meta device's panel is its face, fitted
   CHECK(static_cast<float>(u.panel(u.ids.acc).rect().w) >= devices::DevicePanel::kFaceMinWidth * s - 1.0f);
 }
 
+TEST_CASE("meta devices (views): the face's input socket shows where the chain is wired (TMM.10-fix1)") {
+  Ui u;
+  CHECK(u.panel(u.ids.wt).signature().audioIn == "x");  // the Phase accumulator's voices into its phase
+  CHECK(u.panel(u.ids.acc).signature().audioIn.empty());  // first: the note source, read inside (no audio socket)
+  REQUIRE(u.view().setChainInput(u.ids.wt, "pos"));
+  CHECK(u.dev(u.ids.wt).chainInput == "pos");
+  CHECK(u.panel(u.ids.wt).signature().audioIn == "pos");
+  const size_t h0 = u.history();
+  REQUIRE(u.view().setChainInput(u.ids.wt, std::string(doc::kChainUnplugged)));
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.panel(u.ids.wt).signature().audioIn.empty());  // unplugged: no socket, no wire
+  REQUIRE(u.view().setChainInput(u.ids.wt, "x"));
+  CHECK(u.dev(u.ids.wt).chainInput.empty());  // the type's own input: the default
+}
+
 TEST_CASE("meta devices (views): face drags in the Device view are one undo step each; double-click resets") {
   Ui u;
   const double s = u.d.tree().scale();
@@ -266,7 +281,16 @@ TEST_CASE("meta devices (views): the device menu's Meta Modules — the kind fol
   REQUIRE(t.devices.size() == 4);
   CHECK(t.devices[1]->patch == "meta:wavetable");
   CHECK(t.devices[1]->kind == doc::DeviceKind::AudioEffect);
-  CHECK(doc::metaVoiceRun(t).size() == 2);
+  {  // TMM.10-fix1: the Phase accumulator's voice signal reaches both Wavetables (doc::chainStages)
+    const std::vector<doc::ChainStage> st = doc::chainStages(t.devices, true);
+    REQUIRE(st.size() >= 3);
+    CHECK(st[1].in == doc::ChainSignal::Voices);
+    CHECK(st[2].in == doc::ChainSignal::Voices);
+  }
+  // Every meta module fits every slot (no instrument-only or effect-only types).
+  for (const MenuItem& m : menu)
+    for (const meta::Type* x : metaModuleTypes())
+      if (m.label == "   " + std::string(x->name)) CHECK(m.enabled);
   // Its panel is a face too.
   CHECK(u.panel(t.devices[1]->id).desc().fitFace);
   // The browser and the menus name it by its type.
@@ -317,8 +341,8 @@ TEST_CASE("meta devices (views): the generic knob follows exp0 (Q167 8); a panel
   auto pre = meta::prelude();
   const meta::Prelude::Entry* e = pre->find(&t);
   REQUIRE(e != nullptr);
-  REQUIRE(e->instrument.has_value());
-  const devices::DeviceSignature sig = devices::signatureOf(*e->instrument);
+  REQUIRE(e->notes.has_value());
+  const devices::DeviceSignature sig = devices::signatureOf(*e->notes);
   const devices::ParamInfo* f = sig.findParam("freq");
   REQUIRE(f != nullptr);
   CHECK(f->exp0 == doctest::Approx(meta::kPhaseAccCurveK));
