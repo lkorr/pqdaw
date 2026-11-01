@@ -1021,3 +1021,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Notes/blockers: Q166 (lane placement, mapped params, ranges, rate, Utility smoothing cost follow-up). No Show Automation on modulation rings; no zone / chain mute automation; no automation recording.
 - Orchestrator: merged ff at 4482c10 (based on 4d970c2).
 
+
+## 2026-11-01 · TMM.3 · task/TMM.3-meta-framework
+- Did: new module pq_meta (types, registry, expansion with fixed NodeIds, prelude, DataValue; Phase accumulator); document Device::meta/MetaInstance, schema 10 (+9→10 no-op, schema9 fixture), commands Add/Remove/RenameMetaInstance, SetMetaParam/Setting/Data, change class MetaData, ParamKind::MetaParam, ops builders; lowering of meta:<type> chain devices and nested meta_<type> calls (specialised roots, runtime params dev<id>:<path>.<name>, static-ness, metaResources/metaSlotOf), @curve(exp0,k) in paramTravel; DeviceLibrary prelude + site cache; pqc prelude; link MetaParam fast path; ARCHITECTURE/PATCH_LANGUAGE §3.2.
+- Verified: build.ps1 -Affected (EVERYTHING, check preset, default+slow): 0 warnings, 79/79 passed.
+- Perf: ship pqc render, 16 voices: meta_phase_acc 0.491 ns/voice-sample = hand-written 0.490; bare frac(phasor) 0.414 (bench/RESULTS.md; indicative, load 6 %).
+- CPU-efficiency check: param values and data never enter an expansion, so face drags and data edits never recompile (tested via the link's compile counters and a shared IR/hash); an unwired pm defaults to −0, which the optimiser folds; meta call sites are cached per stock patch / user graph so the param fast path doesn't re-walk circuits.
+- Notes: Q167 (11 provisional choices); the views' generic knob doesn't know exp0 yet (TMM.10).

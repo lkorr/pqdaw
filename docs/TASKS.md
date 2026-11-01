@@ -629,7 +629,7 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 
 - [ ] **TMM.1 Frame tables: multi-frame band-limited wavetables + the off-thread builder** (docs/plans/MM.md)
 - [ ] **TMM.2 `wavetable_pos` atom, live table slots, voice taps** (docs/plans/MM.md)
-- [ ] **TMM.3 Meta-module framework: types, document state, lowering, text form; the Phase accumulator type** (docs/plans/MM.md)
+- [x] **TMM.3 Meta-module framework: types, document state, lowering, text form; the Phase accumulator type** *(merged 2026-11-01; Q167: chain phase_acc ends at note-off until TMM.10/11; Device-view knob linear until TMM.10)* (docs/plans/MM.md)
 - [ ] **TMM.4 Meta faces in the circuit view; Phase accumulator face** 👁 (docs/plans/MM.md)
 - [ ] **TMM.5 The Wavetable module type: keyframe data, baked path, table builder in the app** (docs/plans/MM.md)
 - [ ] **TMM.6 Minimal `oversample(n) { … }` region** (docs/plans/MM.md)

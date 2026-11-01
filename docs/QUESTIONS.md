@@ -1622,7 +1622,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   7. **Cost (bench/RESULTS.md, ship, 16 tracks)**: the automation itself is ≈ 5 ns per lane per block (four held lanes per track: +0.35 µs per block for 64 lanes). What a *moving* lane costs is the device's reaction: Auto Filter frequency / resonance +40–90 ns per track-block, a Utility gain or width ≈ +1.0 µs per Utility per block, because its four smoothed matrix gains then run the `gain` atom's moving path, a scalar per-frame recurrence (T4.x-fix-dsp: defined frame by frame so the JIT can inline it). A vectorised moving path (closed form: d·rⁿ, the rpow table the kernel already has) would cut that; it is a dsp-kernel / JIT-codegen change, not done here. Should it be a follow-up task?
 - Status: open (user to judge 3 and 6 with REVIEW's T4.18 entry; 7 for the orchestrator).
 
-## Q?-TMM.3-a · 2026-11-01 · TMM.3 · The meta-module framework: details decided while building it
+## Q167 · 2026-11-01 · TMM.3 · The meta-module framework: details decided while building it
 - Context: TMM.3 built the `meta` module, the document state, the lowering and the Phase accumulator to docs/plans/MM.md. These are the choices the plan left open (or that the code made necessary), all reversible.
 - Choices (provisional):
   1. **Params declare the TYPE's default in every expansion**; an instance's value reaches the engine only as its runtime param. So a value never changes an expansion's name, hash or IR (a drag is one param write, the unit keeps its image: tested through the link), and a standalone `.pqp` (pqc) plays the defaults (`--param acc1__freq=100` sets one).
