@@ -640,3 +640,5 @@ No open questions remain for draft 1.
 
 - 2026-11-01 (user): **a VCA meta module** (inspiration: SeptaBee's "Pomegranate", a general-purpose VCA: one input, one output, one knob). out = in × value. The knob goes from −20 kHz to +20 kHz with logarithmic spacing on both ends; its top arc (about 10 o'clock to 2 o'clock) spans only −1 … +1, so small values get fine detail. Below the knob the **min and max** can be declared, and a small **curve box** defines the shape of how the knob moves from min to max (the user's sketch: a ✕ above a circular knob with a pie-slice indicator, "−20 —— 20" under it, a curve in a box at the bottom). Minimal, circular, nice visual UI, consistent with the other meta faces.
 
+- 2026-11-01 (user): **Phase accumulator pitch slider.** A pitch slider in cents goes on the face's right side, where amplitude is now; amplitude moves above it. It transposes by octaves and semitones (below or above); Shift + Up steps +12 semitones (an octave), and so on.
+
