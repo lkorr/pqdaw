@@ -582,6 +582,7 @@ Status ProjectLink::setSampleRate(double rate) {
     for (MetaSlot& m : metaSlots_) {
       if (m.table) m.table->publish(metaDefaultTable(), sampleReclaimer_);
       m.wanted = 0;  // TMM.5: rebuilt at the new rate by the compile below
+      m.recent.clear();
     }
   }
   meters_.clear();
@@ -1466,6 +1467,7 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
     }
     metaSlots_[it->second].live = false;
     metaFree_.push_back(it->second);
+    if (tables_) tables_->forget(it->second);  // TMM.16: a later instance on this id never previews over its table
     it = metaIds_.erase(it);
   }
 }
@@ -1488,6 +1490,14 @@ std::shared_ptr<dsp::FrameTableSlot> ProjectLink::metaFrameTable(doc::DeviceId d
                                                                 uint32_t index) const {
   std::lock_guard lock(mutex_);
   const uint32_t id = metaIdLocked(device, path, index);
+  return id != 0 ? metaSlots_[id].table : nullptr;
+}
+
+std::shared_ptr<dsp::FrameTableSlot> ProjectLink::metaFrameTable(doc::DeviceId device, std::string_view path,
+                                                                uint32_t index, std::vector<uint8_t>& modulated) const {
+  std::lock_guard lock(mutex_);
+  const uint32_t id = metaIdLocked(device, path, index);
+  modulated = id != 0 ? metaSlots_[id].modulated : std::vector<uint8_t>{};
   return id != 0 ? metaSlots_[id].table : nullptr;
 }
 
@@ -1548,6 +1558,8 @@ void ProjectLink::refreshMetaTables() {
       meta::TableJob job;
       if (!m.type->frameTable(src, m.index, job).ok() || job.key == m.wanted) continue;
       m.wanted = job.key;
+      if (m.recent.size() < MetaSlot::kRecentKeys) m.recent.push_back(job.key);
+      else m.recent[m.recentHead++ % MetaSlot::kRecentKeys] = job.key;
       jobs.push_back({id, std::move(job)});
     }
   }
@@ -1560,9 +1572,11 @@ void ProjectLink::deliverMetaTable(uint32_t id, uint64_t key, std::shared_ptr<co
     std::lock_guard lock(mutex_);
     if (id == 0 || id >= kMetaSlots) return;
     const MetaSlot& m = metaSlots_[id];
-    // A table the slot no longer wants (a newer state, an id given to another instance, another rate) is dropped.
+    // A table built for another instance (a reused id) or another rate is dropped; one for an earlier state of this
+    // slot is published (TMM.16, MetaSlot::recent: tables arrive in submission order, so it is the newest built).
     // (The rate is compared with the defaults' rate, which setSampleRate updates under mutex_; cfg_ is the UI's.)
-    if (!m.live || !m.table || m.wanted != key || table->layout().sampleRate != metaDefaultRate_) return;
+    if (!m.live || !m.table || table->layout().sampleRate != metaDefaultRate_) return;
+    if (key != m.wanted && std::find(m.recent.begin(), m.recent.end(), key) == m.recent.end()) return;
     slot = m.table;
   }
   slot->publish(std::move(table), sampleReclaimer_);

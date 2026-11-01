@@ -372,6 +372,93 @@ TEST_CASE("wavetable: TableBuilder previews — a slow (baked) job is heard firs
   CHECK(st.built + st.shared + st.replaced == st.submitted);
 }
 
+TEST_CASE("wavetable: focused previews (TMM.16) — over the last table, the frames read and the keyframe redrawn equal the full table") {
+  using Clock = std::chrono::steady_clock;
+  std::mutex m;
+  struct Got {
+    uint64_t key;
+    std::shared_ptr<const dsp::FrameTable> table;
+  };
+  std::vector<Got> got;
+  TableBuilder tb([&](uint32_t, uint64_t key, std::shared_ptr<const dsp::FrameTable> t) {
+    std::lock_guard lock(m);
+    got.push_back({key, std::move(t)});
+  });
+  // Five keyframes, a baked fold and a Mirror warp (the bug report's setup), read at position 0.6.
+  WavetableData d;
+  const dsp::BasicCycle shapes[5] = {dsp::BasicCycle::Saw, dsp::BasicCycle::Square, dsp::BasicCycle::Triangle,
+                                     dsp::BasicCycle::Pulse25, dsp::BasicCycle::Sine};
+  for (int i = 0; i < 5; ++i) d.keyframes.push_back({0.25f * static_cast<float>(i), cycleOf(shapes[i])});
+  const std::vector<double> params{0.0, 0.6, 0.55, -0.45, 0.0};
+  const std::vector<double> settings{0.0, 1.0, 0.0};  // Phase mode, Mirror
+  TableJob j0 = jobFor(wavetableData(d), params, settings);
+  CHECK(j0.focus == doctest::Approx(0.6f));
+  REQUIRE(TableBuilder::wantsPreview(j0.spec));
+  tb.submit(1, std::move(j0));
+  REQUIRE(tb.waitIdle());  // the full table: what the next preview builds over
+  // A stroke on keyframe 2 (at 0.5): the job's preview rebuilds the frames around 0.6 and around 0.5.
+  WavetableData e = d;
+  for (uint32_t i = 300; i < 1400; ++i) e.keyframes[2].cycle[i] = 0.8f - 0.001f * static_cast<float>(i - 300);
+  const DataPtr de = wavetableData(e);
+  TableJob j1 = jobFor(de, params, settings);
+  TableJob j0again = jobFor(wavetableData(d), params, settings);
+  std::vector<uint32_t> focus;
+  TableBuilder::focusFrames(j1, &j0again, focus);
+  // 0.6·63 = 37.8: the reader's pair 37, 38; keyframe 2 at 0.5: 31, 32; one each side of the position: 36, 39.
+  CHECK(focus == std::vector<uint32_t>{31, 32, 36, 37, 38, 39});
+  const uint64_t key1 = j1.key;
+  tb.submit(1, std::move(j1));
+  std::shared_ptr<const dsp::FrameTable> preview;
+  for (const auto until = Clock::now() + std::chrono::seconds(20); Clock::now() < until && !preview;) {
+    {
+      std::lock_guard lock(m);
+      for (const Got& g : got)
+        if (g.key == key1) preview = g.table;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE(preview != nullptr);
+  CHECK(tb.stats().focused == 1u);
+  CHECK(preview->frames() == kWtDefaultFrames);
+  // The full table of the new state, built directly.
+  TableJob direct = jobFor(de, params, settings);
+  dsp::FrameTableBuilder b;
+  auto full = b.build(direct.spec);
+  REQUIRE(full.ok());
+  // Read where the voices read (0.6) and on the redrawn keyframe (0.5): the preview is the full table there.
+  double worst = 0.0;
+  for (const double u : {0.6, 0.5, 0.59, 0.61})
+    for (uint32_t level : {0u, 5u})
+      for (int i = 0; i < 64; ++i) {
+        const double ph = (i + 0.37) / 64.0;
+        worst = std::max(worst, std::fabs(dsp::readFrameTableReference(preview->view(), ph, u, level) -
+                                          dsp::readFrameTableReference(full.value().view(), ph, u, level)));
+      }
+  MESSAGE("focused preview vs the full table where it is read: " << worst);
+  CHECK(worst <= 1e-6);
+  // The rest keeps the previous table until the full build (which follows once the drag pauses).
+  REQUIRE(tb.waitIdle());
+  {
+    std::lock_guard lock(m);
+    REQUIRE(!got.empty());
+    CHECK(got.back().key == key1);
+    CHECK(got.back().table->frames() == kWtDefaultFrames);
+    got.clear();
+  }
+  // forget(): a later preview for the target never builds over an earlier instance's table (none to build over:
+  // TMM.9's 8-frame preview first).
+  tb.forget(1);
+  WavetableData f = e;
+  f.keyframes[2].cycle[5] = 0.25f;
+  tb.submit(1, jobFor(wavetableData(f), params, settings));
+  REQUIRE(tb.waitIdle());
+  std::lock_guard lock(m);
+  REQUIRE(got.size() == 2u);
+  CHECK(got[0].table->frames() == TableBuilder::kPreviewFrames);
+  CHECK(got[1].table->frames() == kWtDefaultFrames);
+  CHECK(tb.stats().focused == 1u);
+}
+
 namespace {
 
 namespace fs = std::filesystem;

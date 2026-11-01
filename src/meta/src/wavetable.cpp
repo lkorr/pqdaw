@@ -54,6 +54,12 @@ LiveSet liveSet(std::span<const uint8_t> modulated) {
 
 }  // namespace
 
+uint8_t wavetableLiveControls(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept {
+  if (kWtMode < settings.size() && settings[kWtMode] >= 0.5) return 0;  // Shape mode bakes all three
+  const LiveSet l = liveSet(modulated);
+  return static_cast<uint8_t>((l.fold ? kWtLiveFold : 0) | (l.warp ? kWtLiveWarp : 0) | (l.sync ? kWtLiveSync : 0));
+}
+
 uint32_t wavetableOversampling(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept {
   const double v = kWtOversampling < settings.size() && std::isfinite(settings[kWtOversampling]) ? settings[kWtOversampling] : 0.0;
   const auto choice = static_cast<uint32_t>(std::clamp(std::round(v), 0.0, 4.0));
@@ -230,6 +236,7 @@ Status frameTable(const TableSource& src, uint32_t index, TableJob& out) {
   s.removeDc = refs.removeDc;
   s.normalise = refs.normalise;
   s.sampleRate = src.sampleRate;
+  out.focus = param(kWtPosition);  // TMM.16: where the voices read (a focused preview rebuilds the frames there first)
   out.finish();
   uint64_t h = 1469598103934665603ull;
   for (const char c : std::string_view("wavetable/1")) h = mix(h, static_cast<unsigned char>(c));

@@ -11,7 +11,13 @@ views::VoiceTapReader* FaceVoiceHub::voices(doc::DeviceId device, std::string_vi
   if (it == readers_.end()) {
     ProjectLink* link = &link_;
     const std::string p(path);
-    auto r = std::make_unique<views::TapVoices>([link, device, p] { return link->metaVoiceTap(device, p, 0); });
+    // TMM.16: and the table its slot plays (the Wavetable face draws what is heard), with its live params.
+    auto r = std::make_unique<views::TapVoices>([link, device, p] { return link->metaVoiceTap(device, p, 0); },
+                                                [link, device, p] {
+                                                  views::TapVoices::TableSlotRef t;
+                                                  t.slot = link->metaFrameTable(device, p, 0, t.modulated);
+                                                  return t;
+                                                });
     it = readers_.emplace(std::move(key), std::move(r)).first;
   }
   return it->second.get();

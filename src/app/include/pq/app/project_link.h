@@ -340,6 +340,10 @@ public:
   std::shared_ptr<dsp::FrameTableSlot> metaFrameTable(doc::DeviceId device, std::string_view path, uint32_t index) const;
   // The tap of a VoiceTap request, or the tap of a FrameTable request's slot (what its wavetable_pos writes); null.
   std::shared_ptr<VoiceTap> metaVoiceTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
+  // TMM.16: the instance's frame-table slot together with the params its live path applies (from the last lowering),
+  // read under one lock (the Wavetable face draws the published table with those applied). Null slot: none.
+  std::shared_ptr<dsp::FrameTableSlot> metaFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
+                                                      std::vector<uint8_t>& modulated) const;
   // Publishes `table` (built for the link's sample rate) into the instance's frame-table slot: its readers crossfade
   // to it within 64 samples, no compile. The replaced table is retired through the link's reclaimer (the engine
   // timeline's audio thread is its reader). Errors: no such slot, a null table, another sample rate.
@@ -626,7 +630,15 @@ private:
     doc::DeviceId device;
     std::string path;
     uint32_t index = 0;
-    uint64_t wanted = 0;     // the key of the job last submitted (0: none); a delivered table with another is dropped
+    uint64_t wanted = 0;     // the key of the job last submitted (0: none)
+    // TMM.16: the keys of the jobs submitted most recently for this slot (a ring). A delivered table is published when
+    // its key is one of them: the builder delivers per slot in submission order, so a table for an older state that
+    // arrives while a newer job is pending (a drag whose steps come faster than its previews build) is still closer to
+    // the newest state than what plays — dropping it left the audio unchanged until the drag stopped. A table whose
+    // key is not among them (an id given to another instance, a rate change) is dropped.
+    static constexpr uint32_t kRecentKeys = 256;
+    std::vector<uint64_t> recent;
+    uint32_t recentHead = 0;
     meta::DataPtr data;      // the data last hashed, and its hash (data values are immutable: hashed once each)
     uint64_t dataHash = 0;
     std::vector<uint8_t> modulated;  // TMM.8: the params its live path applies (not baked), from the last lowering

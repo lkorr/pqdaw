@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -76,6 +78,57 @@ TableBuilder::Stats TableBuilder::stats() const {
   return stats_;
 }
 
+void TableBuilder::forget(uint32_t target) {
+  std::lock_guard lock(mutex_);
+  last_.erase(target);
+  ++epoch_[target];
+}
+
+void TableBuilder::copyJob(const TableJob& from, TableJob& to) {
+  to.data = from.data;
+  to.keys = from.keys;
+  to.gaps = from.gaps;
+  to.spec = from.spec;
+  to.key = from.key;
+  to.focus = from.focus;
+  to.finish();
+}
+
+void TableBuilder::focusFrames(const TableJob& job, const TableJob* before, std::vector<uint32_t>& out) {
+  out.clear();
+  const uint32_t frames = job.spec.denseFrames;
+  if (frames < 2) return;
+  auto add = [&](int64_t d) {
+    if (d < 0 || d >= static_cast<int64_t>(frames) || out.size() >= kPreviewFocusFrames) return;
+    const auto f = static_cast<uint32_t>(d);
+    if (std::find(out.begin(), out.end(), f) == out.end()) out.push_back(f);
+  };
+  // The reader's pair at u: k = ⌊u·(F − 1)⌋ (≤ F − 2) and k + 1 (frame_table.h "Reading").
+  auto pairAt = [&](float u) -> int64_t {
+    const double x = std::clamp(static_cast<double>(u), 0.0, 1.0) * (frames - 1);
+    return std::min<int64_t>(static_cast<int64_t>(std::floor(x)), frames - 2);
+  };
+  const bool focused = job.focus >= 0.0f && std::isfinite(job.focus);
+  const int64_t k = focused ? pairAt(job.focus) : 0;
+  if (focused) add(k), add(k + 1);
+  // Keyframes whose cycle changed since `before` (the same keyframes at the same positions): the pair at each.
+  if (before != nullptr && before->spec.denseFrames == frames && before->keys.size() == job.keys.size()) {
+    bool same = true;
+    for (size_t i = 0; i < job.keys.size() && same; ++i) same = before->keys[i].position == job.keys[i].position;
+    if (same)
+      for (size_t i = 0; i < job.keys.size(); ++i) {
+        const auto a = before->keys[i].cycle, b = job.keys[i].cycle;
+        if (a.data() == b.data() ||
+            (a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0))
+          continue;
+        const int64_t kk = pairAt(job.keys[i].position);
+        add(kk), add(kk + 1);
+      }
+  }
+  if (focused) add(k - 1), add(k + 2);  // one each side: a position moving a little stays exact
+  std::sort(out.begin(), out.end());
+}
+
 std::shared_ptr<const dsp::FrameTable> TableBuilder::cached(uint64_t key) const {
   std::lock_guard lock(mutex_);
   const auto it = cache_.find(key);
@@ -114,23 +167,51 @@ void TableBuilder::run() {
     running_ = true;
     std::shared_ptr<const dsp::FrameTable> table;
     bool deferFull = false;
+    const uint64_t epoch = epoch_[target];
     if (const auto it = cache_.find(job.key); it != cache_.end()) table = it->second.lock();
     if (table) {
       ++stats_.shared;
     } else if (q.preview) {
-      // A preview: the same spec with fewer dense frames, delivered under the job's key, never cached; the full
-      // build is queued again behind it, deferred until the target's jobs pause.
+      // A preview, delivered under the job's key, never cached; the full build is queued again behind it, deferred
+      // until the target's jobs pause. Focused (TMM.16) over the last table delivered for the target when it has
+      // the same frame count, rate and mode; else the spec with fewer dense frames (TMM.9).
+      std::shared_ptr<const dsp::FrameTable> base;
+      TableJob before;
+      bool haveBefore = false;
+      if (const auto it = last_.find(target); it != last_.end()) {
+        base = it->second.table;
+        copyJob(it->second.job, before);
+        haveBefore = true;
+      }
       lock.unlock();
       const auto t0 = Clock::now();
       job.finish();
-      dsp::FrameTableSpec spec = job.spec;
-      spec.denseFrames = kPreviewFrames;
-      Result<dsp::FrameTable> built = builder_.build(spec);
+      bool focused = false;
+      Result<dsp::FrameTable> built = Error{ErrorCode::Unknown, "", {}};
+      if (base && base->frames() == job.spec.denseFrames && base->layout().sampleRate == job.spec.sampleRate &&
+          base->hasAntiderivative() == job.spec.antiderivative) {
+        focusFrames(job, haveBefore ? &before : nullptr, focus_);
+        if (!focus_.empty()) {
+          built = base->clone();
+          if (built.ok()) {
+            if (Status st = builder_.buildFramesInto(job.spec, built.value(), focus_); !st) built = std::move(st).error();
+            else focused = true;
+          }
+        }
+      }
+      if (!focused) {
+        dsp::FrameTableSpec spec = job.spec;
+        spec.denseFrames = kPreviewFrames;
+        built = builder_.build(spec);
+      }
       const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      before = TableJob{};  // release the old data outside the lock
+      base.reset();
       lock.lock();
       if (built.ok()) {
         table = std::make_shared<const dsp::FrameTable>(std::move(built.value()));
         ++stats_.previews;
+        stats_.focused += focused ? 1u : 0u;
         stats_.lastPreviewMs = ms;
         stats_.maxPreviewMs = std::max(stats_.maxPreviewMs, ms);
       }
@@ -156,6 +237,12 @@ void TableBuilder::run() {
       }
     }
     if (table && !quit_) {
+      // TMM.16: what the next focused preview for this target builds over (unless forgotten meanwhile).
+      if (epoch_[target] == epoch) {
+        Last& l = last_[target];
+        l.table = table;
+        copyJob(job, l.job);
+      }
       lock.unlock();
       done_(target, job.key, std::move(table));
       lock.lock();

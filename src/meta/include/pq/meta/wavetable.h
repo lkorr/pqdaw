@@ -57,6 +57,11 @@ enum WavetableSetting : uint32_t { kWtMode = 0, kWtWarpMode = 1, kWtOversampling
 // for fold alone (measured: tests/dsp/test_wave_live.cpp, QUESTIONS TMM.8).
 uint32_t wavetableOversampling(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept;
 inline constexpr uint32_t kWtDefaultFrames = 64;
+// TMM.16: which of fold / warp / sync the live path applies on top of the table (not baked into it) for these
+// settings and modulated params: bits kWtLiveFold | kWtLiveWarp | kWtLiveSync (sync whenever warp: it comes first);
+// 0 in Shape mode (everything baked). The face draws the table with these applied.
+inline constexpr uint8_t kWtLiveFold = 1, kWtLiveWarp = 2, kWtLiveSync = 4;
+uint8_t wavetableLiveControls(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept;
 
 // The data in C++ form (the face's editing tools build it; the file keeps it as a DataValue record):
 //   {"keyframes": [{"pos": 0.0, "cycle": {"$f32": …}}, …], "gaps": ["spectral" | "crossfade", …], "frames": 64,
