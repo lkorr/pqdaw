@@ -180,6 +180,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_device_automation.cpp  # T4.18: device lanes (chooser sections, Show Automation, automated knobs, golden)
     views/test_meta_faces.cpp  # TMM.4: meta-module faces (toolkit, hosting at every zoom, drags, expand, editor, goldens)
     views/test_meta_wavetable_face.cpp  # TMM.7: the Wavetable face (display model, goldens, voices, gestures, paint cost)
+    views/test_meta_envelope_face.cpp  # TMM.11: the Envelope face (goldens with voices, gestures, scenes, paint cost)
     views/test_meta_wavetable_edit.cpp  # TMM.9: its harmonic editor and draw tools (math, gestures, goldens, paint cost)
     views/test_meta_devices.cpp  # TMM.10: chain meta devices in the Device view (face panels, menus, presets, goldens)
   DEPS pq_views nlohmann_json::nlohmann_json)
@@ -355,6 +356,7 @@ pq_add_test(pq_tests_meta
     meta/test_meta.cpp
     meta/test_phase_acc.cpp
     meta/test_wavetable.cpp
+    meta/test_envelope.cpp  # TMM.11: the Envelope (expansion, bit-identity with msenv, curves, VCA)
   DEPS pq_meta pq_pqc)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

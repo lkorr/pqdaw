@@ -21,6 +21,7 @@
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/dsp/frame_table_slot.h"
+#include "pq/meta/envelope.h"
 #include "pq/meta/registry.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
@@ -433,5 +434,69 @@ TEST_CASE("meta link: a meta voice run's voices end 5 ms after note-off (no clic
   for (size_t i = mark; i + 1 < d.out.size(); ++i) worstStep = std::max(worstStep, std::fabs(d.out[i + 1] - d.out[i]));
   for (size_t i = mark - 2000; i + 1 < mark; ++i) steady = std::max(steady, std::fabs(d.out[i + 1] - d.out[i]));
   CHECK(worstStep <= steady * 1.05f + 1e-6f);  // the fade adds no step beyond the tones' own
+  CHECK(std::fabs(d.out.back()) < 1e-6f);
+}
+
+// ---- TMM.11: the Envelope in a voice run --------------------------------------------------------------------------
+
+TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelope shapes each voice and ends it") {
+  Keys k;
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "wavetable"));
+  auto e = ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "envelope");
+  REQUIRE(e.ok());
+  const DeviceId env = e->devices.at(0);
+  k.edit(std::move(e));
+  CHECK(findDevice(*k.store.current(), env).device->kind == DeviceKind::AudioEffect);
+  REQUIRE(metaVoiceRun(*findTrackPtr(*k.store.current(), k.track)).size() == 2);
+  // A slow attack (100 ms), sustain 0.5, a 200 ms release (−80 dB at 200 ms).
+  for (auto [name, v] : {std::pair{"attack", 0.1}, std::pair{"decay", 0.05}, std::pair{"sustain", 0.5},
+                         std::pair{"release", 0.2}})
+    k.edit(ops::setMetaParam(*k.store.current(), env, "", "envelope", name, v));
+  auto link = makeLink(k.store.current());
+  CHECK(link->lastError().empty());
+  const auto tap = link->metaVoiceTap(env, "", 0);
+  REQUIRE(tap != nullptr);
+  VoiceTapReader levels(tap);
+  Driver d{*link};
+  link->play(0);
+  d.run(static_cast<uint32_t>(0.5 * 48000.0 / kBlock));
+  engine::ProjectProgram& program = *link->engine().program();
+  const uint32_t u = voiceUnit(program);
+  CHECK(program.voices(u)->liveVoices() == 3);
+  // A VCA on the run's signal: the same run without the Envelope, times the envelope — the linear attack i / 4800, then
+  // (the decay settled) the sustain 0.5.
+  Keys plainKeys;
+  plainKeys.edit(ops::addMetaDevice(*plainKeys.store.current(), plainKeys.store.ids(), plainKeys.track, "phase_acc", 0));
+  plainKeys.edit(ops::addMetaDevice(*plainKeys.store.current(), plainKeys.store.ids(), plainKeys.track, "wavetable"));
+  auto plainLink = makeLink(plainKeys.store.current());
+  Driver plain{*plainLink};
+  plainLink->play(0);
+  plain.run(static_cast<uint32_t>(0.5 * 48000.0 / kBlock));
+  REQUIRE(plain.out.size() == d.out.size());
+  float attackErr = 0.0f, heldErr = 0.0f;
+  for (size_t i = 0; i < 4800; ++i)
+    attackErr = std::max(attackErr, std::fabs(d.out[i] - plain.out[i] * static_cast<float>(i + 1) / 4800.0f));
+  for (size_t i = 14400; i < d.out.size(); ++i) heldErr = std::max(heldErr, std::fabs(d.out[i] - 0.5f * plain.out[i]));
+  MESSAGE("VCA: attack error " << attackErr << ", sustain error " << heldErr);
+  CHECK(attackErr <= 1e-4f);
+  CHECK(heldErr <= 1e-4f);
+  // The tap carries each voice's level (held: 0.4 · 0.5).
+  levels.poll(1.0);
+  uint32_t active = 0;
+  for (uint32_t s = 0; s < levels.voiceSlots(); ++s) {
+    if (!levels.voice(s).active) continue;
+    ++active;
+    const meta::EnvelopeTap t = meta::decodeEnvelopeTap(levels.voice(s).value);
+    CHECK_FALSE(t.released);
+    CHECK(t.level == doctest::Approx(0.5).epsilon(1e-4));
+  }
+  CHECK(active == 3);
+  // Note-off: the voices sound on through the release (not the run's 5 ms ramp), then end by the envelope's done.
+  link->stop();
+  d.run(static_cast<uint32_t>(0.1 * 48000.0 / kBlock));
+  CHECK(program.voices(u)->liveVoices() == 3);
+  d.run(static_cast<uint32_t>(0.15 * 48000.0 / kBlock));
+  CHECK(program.voices(u)->liveVoices() == 0);
   CHECK(std::fabs(d.out.back()) < 1e-6f);
 }

@@ -88,7 +88,9 @@
 // kind, Form::ChainVoice: their voice input is an `in` fed by the previous device's per-voice output) stay per voice,
 // so "Phase accumulator → Wavetable" is a polyphonic oscillator. At the run's end the voices get a linear release after
 // note-off (kMetaReleaseSeconds, 5 ms: env = gate ? 1 : max(z1(env) − 1/(0.005·sr), 0)), the track's `done` is
-// !gate && env ≤ 0, and they are summed; the devices after the run are audio effects as usual. A meta audio effect of
+// !gate && env ≤ 0, and they are summed; the devices after the run are audio effects as usual. TMM.11: when the run's
+// last device is of a type that decides its voices' end (meta::Type::voiceEnd: the Envelope, a VCA on the run's
+// signal), its `done` output is the track's `done` and there is no declick ramp (the Envelope's release is the end). A meta audio effect of
 // a type without an effect form (the Wavetable until Shape mode) outside a run is bypassed with a device error.
 //
 // ---- Signal flow --------------------------------------------------------------------------------------------------

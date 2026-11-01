@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include "pq/graph/patch_file.h"
+#include "pq/meta/envelope.h"
 #include "pq/meta/phase_acc.h"
 #include "pq/meta/wavetable.h"
 
@@ -25,6 +26,7 @@ struct Registry {
   Registry() {
     types.push_back(&phaseAccType());
     types.push_back(&wavetableType());  // TMM.5
+    types.push_back(&envelopeType());   // TMM.11
   }
 };
 

@@ -71,11 +71,14 @@ enum class InputDefault : uint8_t {
   VoiceHz,  // voice.hz in a voice context, else −0.0
   VoicePhase,  // TMM.5: phasor(voice.hz) in a voice context (a per-voice phase that restarts at note-on: a lone
                // Wavetable is an oscillator), else −0.0. A wired input leaves the phasor unused (removed).
+  One,         // TMM.11: 1.0 (a multiplier: the Envelope's `in` unwired, out = the envelope; the optimiser removes x·1)
+  VoiceGate,   // TMM.11: voice.gate in a voice context, else false (a Bool input)
 };
 struct InputSpec {
   std::string_view name;
   std::string_view label;
   InputDefault def = InputDefault::Zero;
+  graph::Kind kind = graph::Kind::Real;  // TMM.11: Bool for a gate (kinds never convert implicitly: infer.h)
 };
 struct OutputSpec {
   std::string_view name;
@@ -154,6 +157,14 @@ struct Type {
   // index | variant << 16), so a change gives the recompiled image a slot of its own, built before the image plays,
   // while the old image keeps reading the table it was made for: baked and live never mix (null: 0).
   uint32_t (*tableVariant)(std::span<const double> settings, std::span<const uint8_t> modulated) = nullptr;
+  // TMM.11: the type decides when a voice ends (the Envelope: released and below −80 dB). Its body calls
+  // Builder::done(x) with a Bool; the framework then
+  //   ChainInstrument  uses it for the `done` output (instead of !voice.gate)
+  //   ChainVoice       adds an output `done` (Bool, voice) after the outputs: the lowering ends the run's voices by the
+  //                    run's last device's `done` instead of its fixed release (pq/document/lower.h "Meta modules")
+  //   Nested           adds an output `done` (Bool) after the outputs (an instrument circuit wires it to its `done`)
+  //   ChainEffect      ignores it
+  bool voiceEnd = false;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none
@@ -193,6 +204,8 @@ public:
   uint16_t region(uint32_t factor, std::initializer_list<std::string_view> phase);
   void inRegion(PortRef node, uint16_t region);
   void output(size_t i, PortRef value);
+  // TMM.11: the voice's end (a Bool; Type::voiceEnd types only, required for them).
+  void done(PortRef value);
   graph::Patch& patch() noexcept { return p_; }
 
 private:
@@ -207,6 +220,7 @@ private:
   std::vector<graph::NodeIndex> outputs_;
   std::vector<uint16_t> outPorts_;
   std::vector<uint8_t> outputSet_;
+  PortRef done_{graph::kNone, 0};
   std::vector<uint32_t> ids_;
   bool failed_ = false;
   std::string error_;

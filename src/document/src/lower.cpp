@@ -2026,17 +2026,27 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
           v = PortRef{c, 0};
           last = devs[k].callee;
         }
-        const PortRef gate = ir.atom("voice.gate", {}, kRelGate);
-        const PortRef step = ir.atom("div", {ir.konst(1.0 / kMetaReleaseSeconds, kRelRate), ir.atom("sr", {}, kRelSr)},
-                                     kRelStep);
-        const PortRef prev = ir.atom("z1", {kPending}, kRelPrev);
-        const PortRef down = ir.atom("max", {ir.atom("sub", {prev, step}, kRelSub), ir.konst(0.0, kC0)}, kRelMax);
-        const PortRef env = ir.atom("select", {gate, ir.konst(1.0, kC1), down}, kRelEnv);
-        ir.patch().connect(env, PortRef{prev.node, 0});
-        x = ir.atom("voice_sum", {ir.atom("mul", {v, env}, kRelMul)}, kVoiceSum);
-        const PortRef done = ir.atom("and", {ir.atom("not", {gate}, kRelNot), ir.atom("le", {env, ir.konst(0.0, kC0)}, kRelLe)},
-                                     kRelDone);
-        ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1), done, kDone);
+        // TMM.11: a run ending in a type that decides its voices' end (the Envelope: a VCA on the run's signal) ends
+        // them by its `done`; no declick ramp (its release is the voice's end).
+        const NodeIndex lastCall = firstEffect > 1 ? b.calls[devs.top[firstEffect - 1]] : syn;
+        const auto own = firstEffect > 1 ? ir.patch().findOutput(lastCall, "done") : std::nullopt;
+        if (own) {
+          x = ir.atom("voice_sum", {v}, kVoiceSum);
+          ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
+                    PortRef{lastCall, static_cast<uint16_t>(*own)}, kDone);
+        } else {
+          const PortRef gate = ir.atom("voice.gate", {}, kRelGate);
+          const PortRef step = ir.atom("div", {ir.konst(1.0 / kMetaReleaseSeconds, kRelRate), ir.atom("sr", {}, kRelSr)},
+                                       kRelStep);
+          const PortRef prev = ir.atom("z1", {kPending}, kRelPrev);
+          const PortRef down = ir.atom("max", {ir.atom("sub", {prev, step}, kRelSub), ir.konst(0.0, kC0)}, kRelMax);
+          const PortRef env = ir.atom("select", {gate, ir.konst(1.0, kC1), down}, kRelEnv);
+          ir.patch().connect(env, PortRef{prev.node, 0});
+          x = ir.atom("voice_sum", {ir.atom("mul", {v, env}, kRelMul)}, kVoiceSum);
+          const PortRef done = ir.atom("and", {ir.atom("not", {gate}, kRelNot), ir.atom("le", {env, ir.konst(0.0, kC0)}, kRelLe)},
+                                       kRelDone);
+          ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1), done, kDone);
+        }
         width = outWidth(*last) == graph::kWidthStereo ? graph::kWidthStereo : graph::kWidthMono;
       } else {
         x = ir.atom("voice_sum", {PortRef{syn, 0}}, kVoiceSum);

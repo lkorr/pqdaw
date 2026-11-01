@@ -160,6 +160,15 @@ void Builder::inRegion(PortRef node, uint16_t region) {
   p_.setNodeRegion(node.node, region);
 }
 
+void Builder::done(PortRef value) {
+  if (!type_->voiceEnd || value.node == graph::kNone) {
+    failed_ = true;
+    error_ = "done() needs a type that ends its voices (Type::voiceEnd)";
+    return;
+  }
+  done_ = value;
+}
+
 void Builder::output(size_t i, PortRef value) {
   if (i >= outputs_.size() || value.node == graph::kNone) {
     failed_ = true;
@@ -207,7 +216,12 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
       continue;
     }
     NodeIndex def;
-    if (in.def == InputDefault::VoiceHz && ctx.voice) {
+    if (in.def == InputDefault::VoiceGate) {  // TMM.11
+      def = ctx.voice ? b.take(p.addAtom(graph::atomId("voice.gate")), kDefaultIdBase + static_cast<uint32_t>(i))
+                      : b.take(p.addConst(graph::Constant::boolean(false)), kDefaultIdBase + static_cast<uint32_t>(i));
+    } else if (in.def == InputDefault::One) {  // TMM.11
+      def = b.take(p.addConst(graph::Constant::real(1.0)), kDefaultIdBase + static_cast<uint32_t>(i));
+    } else if (in.def == InputDefault::VoiceHz && ctx.voice) {
       def = b.take(p.addAtom(graph::atomId("voice.hz")), kDefaultIdBase + static_cast<uint32_t>(i));
     } else if (in.def == InputDefault::VoicePhase && ctx.voice) {  // TMM.5: phasor(voice.hz)
       const NodeIndex hz = b.take(p.addAtom(graph::atomId("voice.hz")), kFixedIdBase + 32 + static_cast<uint32_t>(i));
@@ -219,7 +233,9 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
       b.inputs_[i] = PortRef{def, 0};
       continue;
     }
-    const NodeIndex n = b.take(p.addInput(std::string(in.name), kAudio), kInputIdBase + static_cast<uint32_t>(i));
+    const graph::PortType inType = in.kind == graph::Kind::Bool ? graph::portType(graph::Kind::Bool, graph::Rate::Infer)
+                                                                : kAudio;
+    const NodeIndex n = b.take(p.addInput(std::string(in.name), inType), kInputIdBase + static_cast<uint32_t>(i));
     p.connect(PortRef{def, 0}, PortRef{n, 0});
     b.inputs_[i] = PortRef{n, 0};
   }
@@ -244,14 +260,26 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
                                kOutputIdBase + static_cast<uint32_t>(i));
     p.connect(PortRef{b.outputs_[i], b.outPorts_[i]}, PortRef{o, 0});
   }
-  if (ctx.form == Form::ChainInstrument) {  // the voice ends at note-off
-    const NodeIndex gate = b.take(p.addAtom(graph::atomId("voice.gate")), kFixedIdBase);
-    const NodeIndex inv = b.take(p.addAtom(graph::atomId("not")), kFixedIdBase + 1);
-    p.connect(gate, inv, 0);
+  if (type.voiceEnd && b.done_.node == graph::kNone) return expandError(type, "the voice's end (done) is not set");
+  if (ctx.form == Form::ChainInstrument) {  // the voice ends at note-off, or where the type says (TMM.11)
+    PortRef end = b.done_;
+    if (!type.voiceEnd) {
+      const NodeIndex gate = b.take(p.addAtom(graph::atomId("voice.gate")), kFixedIdBase);
+      const NodeIndex inv = b.take(p.addAtom(graph::atomId("not")), kFixedIdBase + 1);
+      p.connect(gate, inv, 0);
+      end = PortRef{inv, 0};
+    }
     const NodeIndex done = b.take(p.addOutput("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer,
                                                                       graph::Poly::Voice, graph::kWidthMono)),
                                   kOutputIdBase + static_cast<uint32_t>(type.outputs.size()));
-    p.connect(inv, done, 0);
+    p.connect(end, PortRef{done, 0});
+  } else if (type.voiceEnd && ctx.form != Form::ChainEffect) {  // TMM.11: the voice's end as an output
+    const NodeIndex done = b.take(p.addOutput("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer,
+                                                                      ctx.form == Form::ChainVoice ? graph::Poly::Voice
+                                                                                                   : graph::Poly::Infer,
+                                                                      graph::kWidthMono)),
+                                  kOutputIdBase + static_cast<uint32_t>(type.outputs.size()));
+    p.connect(b.done_, PortRef{done, 0});
   }
   std::vector<graph::NodeId> ids;
   ids.reserve(b.ids_.size());
