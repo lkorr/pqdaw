@@ -317,7 +317,9 @@ uint32_t rampableInputs(Atom a, uint32_t numIn) noexcept {  // RT-safe
     case Atom::ClockDiv: no |= kB1; break;            // n
     case Atom::Pulse: no |= kB0; break;               // the period (a count of samples)
     case Atom::Timer: no |= kB1; break;               // the duration (a count of samples)
-    case Atom::TuningHz: no |= kB0 | kB1 | (1u << 8) | (1u << 9); break;  // degree, equave, select, node
+    // tuning_hz: none. Its inputs are pitch identities (degree, equave, the tuning node) and the tuning's values, which
+    // automation already drives per sample (TuningTableView::live) and whose region crossings fall on exact samples.
+    case Atom::TuningHz: return 0;
     case Atom::Const: break;                          // a fill: its input is the value
     case Atom::ParamRamp: return 0;
     default: break;

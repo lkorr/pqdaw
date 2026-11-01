@@ -340,7 +340,7 @@ void initState(Atom a, void* state, const StateInit& init) noexcept;  // RT-safe
 inline constexpr double kParamRampSeconds = 0.020;
 // The inputs of atom `a` (numIn inputs, for mux the actual count) that the compiler may feed a ramp instead of a
 // param-rate value: every real input that can be audio rate, except the ones whose value is a choice or a count
-// (mux / demux index, counter / clockdiv n, pulse period, timer duration, tuning_hz degree / equave / select / node),
+// (mux / demux index, counter / clockdiv n, pulse period, timer duration, tuning_hz entirely (pitch identities, and tuning automation is already per sample)),
 // state-init or required-Spl inputs (times, factors, modes). Bit i = input i. RT-safe.
 uint32_t rampableInputs(Atom a, uint32_t numIn) noexcept;
 // Fills `out` (frames · lanes floats, lanes 1 or 8) with each lane's current value of a param_ramp state that did not

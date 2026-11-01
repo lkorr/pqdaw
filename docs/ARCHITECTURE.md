@@ -195,7 +195,7 @@ namespace pq::graph {
   // each Spl input of a Kernel op in a Block / Loop region (not a solve body) whose operand is a real pattern (Param,
   // pattern Buffer, param-rate External; never a Const) where dsp::rampableInputs(kernel) allows it (real inputs
   // that can be audio rate, minus choices and counts: mux / demux index, counter / clockdiv n, pulse period, timer
-  // duration, tuning_hz degree / equave / select / node; minus state-init and required-Spl inputs) and the kernel
+  // duration, tuning_hz entirely (pitch identities, and tuning automation is already per sample); minus state-init and required-Spl inputs) and the kernel
   // exists for Blk; per (stage, factor, source) one `param_ramp` op (dsp::Atom::ParamRamp, 8 lanes in voice stages)
   // goes into a Block region right after the stage's Control region, with a state entry (key: a structural hash of
   // the source expression, unit-independent) and a Block buffer whose liveness runs to its last reader (uses_ entries:

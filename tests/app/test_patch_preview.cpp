@@ -250,7 +250,8 @@ TEST_CASE("patch preview: param writes by name reach the playing program (RT-saf
   tap.addReader();
   const size_t mark = y.size();
   render(preview, 20, y, t);  // under RtScope (render): the param write and the tap copy allocate nothing
-  CHECK(peakFrom(mark) == doctest::Approx(0.25f).epsilon(0.01));
+  // TX.smooth: the level glides to 0.25 over 20 ms (960 frames, under 4 blocks); the blocks after it play it.
+  CHECK(peakFrom(mark + 4 * kBlock) == doctest::Approx(0.25f).epsilon(0.01));
   CHECK(tap.written() == 20u * kBlock);
   std::vector<float> got(kBlock);
   REQUIRE(tap.read(0, tap.written() - kBlock, kBlock, got.data()) == kBlock);

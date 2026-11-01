@@ -551,7 +551,7 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelop
 
 // ---- TMM.14: the VCA through the link ------------------------------------------------------------------------------
 
-TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 2 ms (no click) and compile nothing; min/max too") {
+TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click; TX.smooth) and compile nothing; min/max too") {
   Keys k;
   k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "vca", 0));
   const DeviceId vca = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
@@ -589,19 +589,23 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 2 ms (no click) 
     k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", s.param, s.value));
     link->flush();
     const size_t mark = d.out.size();
-    d.run(15);  // 20 ms: ten time constants
+    d.run(16);  // TX.smooth: every param glides over 20 ms (960 frames: 15 blocks), then one more block at rest
     const float to = static_cast<float>(s.want);
     CHECK(d.out.back() / g == doctest::Approx(to).epsilon(1e-3));
-    // A one-pole glide from the old value to the new: monotonic, no sample-to-sample step above a 2 ms one-pole's
-    // first step (1 − e^(−1/96) of the distance), never past the target.
-    const float dist = std::fabs(to - from) * g, maxStep = dist * (1.0f - std::exp(-1.0f / 96.0f)) * 1.02f + 1e-6f;
+    // TX.smooth (pq/graph/schedule.h "Param ramps"): a linear glide from the old value to the new over 20 ms (it was the
+    // gain's 2 ms one-pole before): monotonic, no sample-to-sample step above the glide's (1/960 of the distance),
+    // never past the target.
+    const float dist = std::fabs(to - from) * g, maxStep = dist / 960.0f * 1.02f + 1e-6f;
     float worst = 0.0f;
     bool monotonic = true, beyond = false;
     for (size_t i = mark; i < d.out.size(); ++i) {
       const float prev = i == mark ? from * g : d.out[i - 1];
       worst = std::max(worst, std::fabs(d.out[i] - prev));
       monotonic = monotonic && (to > from ? d.out[i] >= prev - 1e-6f : d.out[i] <= prev + 1e-6f);
-      beyond = beyond || (to > from ? d.out[i] > to * g * 1.0001f + 1e-6f : d.out[i] < to * g * 1.0001f - 1e-6f);
+      // (TX.smooth: the tolerance on the far side of the target whatever its sign; the glide now arrives exactly, and a
+      // downward move to a positive target sat inside the old `to·g·1.0001` band.)
+      const float tol = std::fabs(to * g) * 1e-4f + 1e-6f;
+      beyond = beyond || (to > from ? d.out[i] > to * g + tol : d.out[i] < to * g - tol);
     }
     CHECK(worst <= maxStep);
     CHECK(worst > 0.5f * maxStep);  // it moved at once (smoothed, not delayed)
