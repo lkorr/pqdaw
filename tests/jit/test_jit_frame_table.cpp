@@ -203,7 +203,8 @@ TEST_CASE("wavetable_pos (global): interpreter and JIT bit-identical through swa
                                         want.data() + b * kBlock);
     double worst = 0;
     for (uint32_t n = 0; n < 40 * kBlock; ++n) worst = std::max(worst, std::fabs(outs[1][perSample ? 1 : 0][n] - want[n]));
-    MESSAGE(std::string(perSample ? "per-sample" : "param") + " position: JIT vs reference " + std::to_string(worst));
+    const std::string what = std::string(perSample ? "per-sample" : "param") + " position: JIT vs reference " + std::to_string(worst);
+    MESSAGE(what);
     CHECK(worst <= 1e-6);
   }
 }
