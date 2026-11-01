@@ -1028,3 +1028,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: ship pqc render, 16 voices: meta_phase_acc 0.491 ns/voice-sample = hand-written 0.490; bare frac(phasor) 0.414 (bench/RESULTS.md; indicative, load 6 %).
 - CPU-efficiency check: param values and data never enter an expansion, so face drags and data edits never recompile (tested via the link's compile counters and a shared IR/hash); an unwired pm defaults to −0, which the optimiser folds; meta call sites are cached per stock patch / user graph so the param fast path doesn't re-walk circuits.
 - Notes: Q167 (11 provisional choices); the views' generic knob doesn't know exp0 yet (TMM.10).
+
+## 2026-11-01 · TMM.1 · task/TMM.1-frame-tables
+- Did: dsp::FrameTable (sr−20 kHz levels, bucket level lookup, 8·7-smooth rows, LP-designed 6-pt interpolator + pre-emphasis), AVX2 L1/L8 readers + double reference, FrameTableBuilder (morph/crossfade, bake with Bernoulli jump corrections, auto bake resolution, Cd4 mixed-radix FFT), wave_warp.h formula set, basicCycle, spec hash, alias meter, tests, bench rows, ARCHITECTURE dsp row.
+- Verified: build.ps1 -Affected (EVERYTHING): 79/79, 0 warnings; ship pq_bench_dsp linked and run.
+- Perf: L1 2.94 / 2.25 ns/sample (blend / single), L8 18.8 / 15.6 ns/frame; build 9.8 / 63.5 / 137 ms; 7.06 MiB @48k. Alias suite worst −127.4 / −126.9 / −130.4 dBFS (44.1 / 48 / 96 kHz).
+- CPU-efficiency check: one level per lane and no level crossfade; level by table lookup (a computed log2 was 34 vs 23 ns/frame); loads + transpose instead of gathers, indices through memory to spare port 5; frame choice once per block for a fixed position; blend skipped when no lane needs it; builder SIMD across 8 frames, arenas reused (no allocation once sized; tested).
+- Notes/blockers: bake of sync 1 + pulse width 1 stays −80 dB vs 128× (Q168 #5): a static error in baked harmonics, the table stays band-limited; orchestrator accepts it (inaudible, not aliasing). 44.1 kHz tables 11.9 MiB.

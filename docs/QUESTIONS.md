@@ -1638,7 +1638,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   11. **Expansion names include the device id** (`meta_<type>__d<id>_<path>_<key>`), so two devices with equal state compile as two patches (their tracks' units differ anyway). Identical-spec table sharing (TMM.5) is by data hash, not by patch name.
 - Status: open (orchestrator / user: 6 and 8 decide with TMM.10's review).
 
-## Q?-TMM.1-a · 2026-11-01 · TMM.1 · Frame tables: what the measurements changed in the plan's numbers and formulas
+## Q168 · 2026-11-01 · TMM.1 · Frame tables: what the measurements changed in the plan's numbers and formulas
 - Context: docs/plans/MM.md Decisions → DSP and TMM.1's Accept. Everything below was measured (tests/dsp/test_frame_table*.cpp, bench/RESULTS.md); the choices are reversible.
 - Choices (provisional):
   1. **Interpolator**: a 6-point 5th-order polynomial designed here by a minimax LP (tools/fit/frame_interp_coeffs.py), not Niemitalo's table: C0, ≤ 1 % passband droop, which the builder removes by pre-dividing every harmonic by the response. Worst image −130.8 dB (target ≥ 105). 3× oversampling would still give −115 dB at 25 % less memory; kept 4× as planned.
