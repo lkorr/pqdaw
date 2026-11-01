@@ -1084,3 +1084,12 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a; release costs z1+sub+max+select+mul per voice-sample only at the end of a meta run.
 - CPU-efficiency check: runs add no per-device glue (direct wires, one voice_sum); static face layers tiled at exact scale; voices polled ≤ 60 Hz only while live.
 - Notes: fold-automation → live path criterion waits for TMM.8 (Q175 item 10, assigned to TMM.8-fix); Q175.
+
+## 2026-11-01 · TMM.8 (+fix) · task/TMM.8-live-dsp
+- Did: wavetable_live / wavetable_shape (dsp, graph, both backends); Wavetable live path in an oversample region (auto ×8 fold, ×16 warp/sync), Shape mode (×2, effect form), refusals lifted; fix (orchestrator decisions on Q176): live-band bake (FrameTableSpec::liveBand) with the kernel on the same factor-independent band rule; table variants get their own slots built before the recompiled image plays (no baked/live mixing on switching); face Phase/Shape switch + os cell; LFO/envelope modulation suite; alias proof; Q175 item 10 (fold automation → live path and back) tested.
+- Tests changed by design: TMM.5 refusal tests (now the live path / Shape-mode refusal); TMM.10 meta_devices (a Wavetable after a non-meta device is a Shape-mode effect); goldens: lowering texts, wavetable-morph audio (live-band bake), 18 face images (os cell).
+- Verified: build.ps1 -Affected (EVERYTHING): build done; test phase killed for low memory, re-run as ctest -LE perf (default+slow) in two halves: 88/88; ship pq_bench_dsp linked. First pass: -Affected 83/84 (views SIGSEGV in the arrangement golden, not reproduced after rebase).
+- Perf (ship, indicative): live region ×2/×4/×8/×16 = 562/720/1005/1537 ns per 8-voice frame; Shape ×2 205 ns; live-band bake 178/298 ms (full-band 67); static knobs 19 ns.
+- Alias: static ≤ −134 dBFS; LFO 0.7–20 Hz / 50 ms envelope full depth ≤ −106.6 dBFS; audio-rate 2 kHz full depth at ×8: bend −89.7, mirror −110.1, PW −86.6, fold −91.4, sync −67.4 (accepted: the modulated signal's own bandwidth; the 64× reference folds as much). Shape amplitude 1 ×2: −75.5 / −90.1 / −94.2 (saw / square / drawn).
+- CPU-efficiency check: static controls baked (zero cost); only modulated controls pay; only the region runs at n×; corrections only on event frames. Open: float event evaluation (≈5× cheaper).
+- Notes: Q176 decided (a accept, b live-band bake, c keep unreported delay); bake latency now above TMM.5's 160 ms perf criterion.

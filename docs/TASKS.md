@@ -634,7 +634,7 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 - [x] **TMM.5 The Wavetable module type: keyframe data, baked path, table builder in the app** *(merged 2026-11-01; module alias worst −126.1 dBFS; modulated fold/warp/sync and Shape mode refused until TMM.8 (Q171 items 1, 3); voice taps joined to faces)* (docs/plans/MM.md)
 - [x] **TMM.6 Minimal `oversample(n) { … }` region** *(merged 2026-11-01; aliasing −141 dBFS @4×; converters not reported as latency, regions never sleep / not probed, no "Oversample ×n" editor command, auto-layout does not group regions (Q172))* (docs/plans/MM.md)
 - [ ] **TMM.7 Wavetable face I: display, per-voice dots, position/phase sliders, knobs, basic shapes** 👁 (docs/plans/MM.md)
-- [ ] **TMM.8 Live oversampled warp/fold/sync; Shape mode with ADAA** (docs/plans/MM.md)
+- [x] **TMM.8 Live oversampled warp/fold/sync; Shape mode with ADAA** *(merged 2026-11-01 with TMM.8-fix; static ≤ −134 dBFS, LFO/envelope-rate modulation ≤ −106.6 dBFS; audio-rate (2 kHz full depth) modulation misses −100 (bend −89.7, PW −86.6, fold −91.4, sync −67.4 at ×8; accepted, Q176 (a)); auto ×16 for modulated warp/sync; live-band bake 178–298 ms (TMM.5 160 ms bake-latency perf criterion likely misses); float event evaluation open)* (docs/plans/MM.md)
 - [ ] **TMM.9 Wavetable face II: harmonic editor + draw tools** 👁 (docs/plans/MM.md)
 - [ ] **TMM.10 Meta modules as chain devices (Device-view panels)** 👁 (docs/plans/MM.md)
 - [ ] **TMM.11 Envelope meta module** 👁 (docs/plans/MM.md)
