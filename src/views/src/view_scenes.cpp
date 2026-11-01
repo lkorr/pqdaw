@@ -1577,6 +1577,55 @@ Status setupProjectMetaChain(Shell& shell) {
   return Ok{};
 }
 
+// TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): the same project in the project patch view
+// with wires from the note sources' outputs: Meta Lead's velocity into its Wavetable's position (per voice: the run's
+// stage), its Hz into the Auto Filter's frequency (the global filter: through the wire's reducer, highest), its gate
+// into the filter's drive; Meta Bass's velocity across tracks into the Lead filter's resonance. The Lead band framed.
+Status setupProjectPatchNotes(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-notes: no device library", {}};
+  project_patch::MetaChainIds ids;
+  if (Status s = project_patch::buildMetaChainProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-notes: the view is not installed", {}};
+  const doc::Track* lead = doc::findTrackPtr(*ctx.doc(), ids.lead);
+  if (lead == nullptr || lead->devices.size() < 3) return Error{ErrorCode::NotFound, "project-patch-notes: no Lead chain", {}};
+  const doc::DeviceId filter = lead->devices[2]->id;
+  struct W {
+    doc::TrackId track;
+    const char* port;
+    doc::DeviceId to;
+    const char* param;
+  };
+  for (const W& w : {W{ids.lead, "velocity", ids.wt, "position"}, W{ids.lead, "hz", filter, "freq"},
+                     W{ids.lead, "gate", filter, "drive"}, W{ids.bass, "velocity", filter, "res"}}) {
+    auto e = doc::ops::connectNoteWire(*ctx.doc(), ctx.store().ids(), w.track, w.port, w.to, w.param, 0.25);
+    if (!e) return std::move(e).error();
+    if (Status s = ctx.store().dispatch(e->command); !s) return s;
+  }
+  const doc::WireId hz = doc::wiresOf(*ctx.doc()).at(1).id;
+  if (Status s = ctx.store().dispatch(doc::ops::setWireReducer(*ctx.doc(), hz, doc::WireReducer::Highest)->command); !s) return s;
+  static SyntheticVoices accVoices, wtVoices;
+  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
+  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId acc = ids.acc, wt = ids.wt;
+  v->faceVoices = [acc, wt](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    return d == acc ? &accVoices : (d == wt ? &wtVoices : nullptr);
+  };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.lead, false);  // near enough for the outputs' names; Bass's wire arrives from below
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TMM.11: still voices for the Envelope faces — six voices in every stage (rising, at the peak, decaying, sustained,
 // released early, near the end of the release), each with the levels its tap sampled during the last frame.
 class EnvelopeSceneVoices final : public VoiceTapReader {
@@ -1828,6 +1877,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-wavetable", 1280, 800, setupProjectMetaWavetable},  // TMM.7
     {"device-meta-chain", 1280, 800, setupDeviceMetaChain},            // TMM.10
     {"project-meta-chain", 1280, 800, setupProjectMetaChain},          // TMM.10
+    {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)

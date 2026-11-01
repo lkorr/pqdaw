@@ -28,13 +28,7 @@ uint64_t bodyKeyOf(const SymbolSpec& s) noexcept {
          (static_cast<uint64_t>(s.h / 4.0f) << 36);
 }
 
-float pinYOf(const Node& n, size_t i) noexcept {
-  switch (n.kind) {
-    case NodeKind::Sum: return 16.0f;
-    case NodeKind::Output: return 8.0f;
-    default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
-  }
-}
+float pinYOf(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
 
 SymbolSpec specOf(const Node& n) {
   SymbolSpec s;
@@ -71,7 +65,9 @@ SymbolSpec specOf(const Node& n) {
     PinSpec p;
     p.y = pinYOf(n, i);
     p.stub = outStub;
-    p.label = n.kind == NodeKind::Device || n.kind == NodeKind::Mixer ? n.outputs[i].label : std::string();
+    // TMM.10-fix2: a lane window's note outputs are named too (outside it: the window's body holds the lane).
+    p.label = n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || n.kind == NodeKind::Source ? n.outputs[i].label
+                                                                                                    : std::string();
     s.outputs.push_back(std::move(p));
   }
   s.bodyKey = bodyKeyOf(s);
@@ -169,7 +165,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     switch (n.kind) {
       case NodeKind::Source:  // the window's title at the left of its title row (bar numbers follow it)
         title.y = n.y + 8.0f;
-        title.x1 = n.x + 44.0f;
+        title.x1 = n.x + metrics::kLaneTitleW;  // TMM.10-fix2: room for "Notes" before the bar numbers
         title.align = SceneLabel::Align::Left;
         break;
       case NodeKind::Device:
@@ -192,6 +188,10 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       lb.y = pin.y;
       lb.text = pin.label;
       lb.align = pin.input ? SceneLabel::Align::Left : SceneLabel::Align::Right;
+      if (n.kind == NodeKind::Source) {  // in the window's right column, beside the lane (laneBody leaves it free)
+        lb.x0 = n.x + n.w - metrics::kNoteNamesW + 2.0f;
+        lb.x1 = n.x + n.w - 10.0f;
+      }
       lb.role = SceneLabel::Role::Pin;
       lb.node = v;
       sc.labels.push_back(lb);

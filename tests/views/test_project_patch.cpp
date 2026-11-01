@@ -65,11 +65,7 @@ const doc::Track* named(const doc::Project& p, std::string_view name) {
   return found;
 }
 
-float pinY(const Node& n, size_t i) {
-  if (n.kind == NodeKind::Sum) return 16.0f;
-  if (n.kind == NodeKind::Output) return 8.0f;
-  return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
-}
+float pinY(const Node& n, size_t i) { return pinOffset(n, i); }
 
 bool orthogonal(const std::vector<graph::Point2>& pts) {
   for (size_t i = 0; i + 1 < pts.size(); ++i)
@@ -958,6 +954,155 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   CHECK(v.canvas().view().zoom == doctest::Approx(whole));
 }
 
+// TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): a MIDI track's lane window is its note source
+// ("Notes"); its note outputs (Hz, gate, velocity) are wire sources like exports: Crosshair on them, a drop on a device a
+// param menu (one undo step), a drop on a param pin a wire already drives that param, the wire drawn from the window
+// (per voice) and read on hover, the chain's own `notes` pin and a drop off the devices refused (NotAllowed, status).
+TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wires it — menu, undo, drawn, readable, refusals") {
+  Ui u;
+  u.show();
+  const doc::Snapshot start = u.ctx.doc();
+  const size_t h0 = u.history();
+  const doc::TrackId keys = u.track("Keys").id;
+  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  u.zoomTo("Keys");
+  const uint32_t src = u.pp().bands[u.pp().bandOf(keys)].source;
+  const Node& sn = u.pp().nodes[src];
+  CHECK(sn.title == "Notes");
+  for (const char* port : {"notes", "hz", "gate", "velocity"}) CHECK(sn.output(port) >= 0);
+  auto at = [&](Vec2 p) {
+    u.d.move(p);
+    return u.d.tree().cursor();
+  };
+  CHECK(at(u.outPin(src, "velocity")) == Cursor::Crosshair);
+  // Hovering a note output names it in the shell's info view.
+  {
+    auto* infoView = dynamic_cast<shell::InfoView*>(u.d.tree().find("main/body/bottom/info"));
+    REQUIRE(infoView != nullptr);
+    u.d.move(u.outPin(src, "hz"));
+    CHECK(infoView->title() == "Keys notes: Hz");
+    CHECK(infoView->body().find("piano roll") != std::string::npos);
+  }
+  // velocity → the Saturator: its param menu, one step.
+  u.d.drag(u.outPin(src, "velocity"), u.centre(u.deviceNode(sat)), 6);
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  m->choose(0);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == 3);  // the sketch's two LFO wires and this one
+  const doc::Wire w = doc::wiresOf(*u.ctx.doc()).back();
+  CHECK(w.noteSource == keys);
+  CHECK(w.port == "velocity");
+  CHECK(w.to == sat);
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // Drawn from the window's velocity pin into the Saturator's param pin, per voice, lowered.
+  uint32_t edge = kNone;
+  for (uint32_t k = 0; k < u.pp().edges.size(); ++k)
+    if (u.pp().edges[k].kind == EdgeKind::Modulation && u.pp().edges[k].wire == w.id) edge = k;
+  REQUIRE(edge != kNone);
+  const Edge& e = u.pp().edges[edge];
+  CHECK(e.from == src);
+  CHECK(u.pp().nodes[src].outputs[e.fromPort].name == "velocity");
+  CHECK(e.to == u.deviceNode(sat));
+  CHECK(u.pp().nodes[e.to].inputs[e.toPort].param);
+  CHECK(e.voice);
+  CHECK(e.status == doc::WireStatus::Lowered);
+  CHECK(orthogonal(e.points));
+  u.view().updateReadout(edge);
+  CHECK(u.view().readout().title.find("Keys notes: velocity") != std::string::npos);
+  CHECK(u.view().readout().value.find("amount +50 %") != std::string::npos);
+  u.view().updateReadout(kNone);
+  // Hz onto the param pin the first wire made: that param directly (no menu), one step.
+  {
+    const Node& tn = u.pp().nodes[e.to];
+    const Vec2 pin = u.dev(tn.x, tn.y + pinY(tn, e.toPort));
+    const size_t into = doc::ops::wiresInto(*u.ctx.doc(), sat, w.param).size();  // the sketch's LFO may drive it too
+    u.d.drag(u.outPin(src, "hz"), pin, 6);
+    CHECK(u.openMenu() == nullptr);
+    CHECK(u.history() == h0 + 2);
+    CHECK(doc::ops::wiresInto(*u.ctx.doc(), sat, w.param).size() == into + 1);
+    CHECK(doc::wiresOf(*u.ctx.doc()).back().port == "hz");
+  }
+  // Refused: the chain's own `notes` pin (NotAllowed over a device), a note output onto a mixer.
+  u.d.down(u.outPin(src, "notes"));
+  u.d.move(u.centre(u.deviceNode(sat)));
+  CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+  u.d.up(u.centre(u.deviceNode(sat)));
+  CHECK(u.history() == h0 + 2);
+  CHECK(u.ctx.status().find("note output") != std::string::npos);
+  const uint32_t mixer = u.pp().bands[u.pp().bandOf(keys)].mixer;
+  u.d.down(u.outPin(src, "gate"));
+  u.d.move(u.centre(mixer));
+  CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+  u.d.up(u.centre(mixer));
+  CHECK(u.history() == h0 + 2);
+  // Undo, twice: the project as it was.
+  REQUIRE(u.ctx.undo());
+  REQUIRE(u.ctx.undo());
+  CHECK(u.ctx.doc() == start);
+}
+
+TEST_CASE("project patch (TMM.10-fix2): note-source wires on the band and across tracks match the graph; saved and loaded") {
+  doc::DocumentStore store;
+  MetaChainIds ids;
+  REQUIRE(buildMetaChainProject(store, &ids).ok());
+  const doc::DeviceId filter = doc::findTrackPtr(*store.current(), ids.lead)->devices.at(2)->id;
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+  };
+  run(doc::ops::connectNoteWire(*store.current(), store.ids(), ids.lead, "velocity", ids.wt, "position"));  // per voice
+  run(doc::ops::connectNoteWire(*store.current(), store.ids(), ids.lead, "hz", filter, "freq"));           // reduced
+  run(doc::ops::connectNoteWire(*store.current(), store.ids(), ids.bass, "gate", filter, "res"));          // across tracks
+  // Saved and loaded: the same project (the wires' note sources included).
+  Result<std::string> text = doc::serializeProject(*store.current(), store.view());
+  REQUIRE(text.ok());
+  Result<doc::LoadedProject> back = doc::parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == *store.current());
+  const doc::Project& p = *back->project;
+  const doc::LoweredProject low = lowerOf(p);
+  for (const doc::WireState& s : low.wires) CHECK(s.status == doc::WireStatus::Lowered);
+  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  CHECK(checkAgainstGraph(pp, p, low) == "");
+  size_t fromWindows = 0, across = 0;
+  for (const Edge& e : pp.edges) {
+    if (e.kind != EdgeKind::Modulation || pp.nodes[e.from].kind != NodeKind::Source) continue;
+    ++fromWindows;
+    CHECK(e.voice);
+    CHECK(orthogonal(e.points));
+    across += e.graphWire != kNone ? 1u : 0u;
+  }
+  CHECK(fromWindows == 3);
+  CHECK(across == 1);  // Bass → Lead: a graph wire m<id> (reduced in Bass's patch)
+}
+
+// A chain meta device has no patch text: "Edit Device Circuit" is not offered (its atoms are generated from its face),
+// and asked directly the status says so — not "'meta:wavetable' is not in the device library" (coordinator report).
+TEST_CASE("project patch: a chain meta device's circuit is not edited as a library device") {
+  Ui u(false);
+  MetaChainIds ids;
+  REQUIRE(buildMetaChainProject(u.ctx.store(), &ids).ok());
+  u.show();
+  u.view().fitAll(false);
+  u.d.tree().layoutNow();
+  CHECK_FALSE(u.view().editDeviceCircuit(ids.wt));
+  CHECK(u.ctx.status().find("not in the device library") == std::string::npos);
+  CHECK(u.ctx.status().find("generated") != std::string::npos);
+  CHECK(u.editor() == nullptr);
+  REQUIRE(u.view().openNodeMenu(u.deviceNode(ids.wt), u.centre(u.deviceNode(ids.wt))) != nullptr);
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  bool found = false;
+  for (const MenuItem& it : m->items())
+    if (it.label == "Edit Device Circuit") {
+      found = true;
+      CHECK_FALSE(it.enabled);
+    }
+  CHECK(found);
+}
+
 TEST_CASE("project patch: hovering a wire reads its signal (meters, modulation sweeps)") {
   Ui u;
   FixedMeterSource meters;
@@ -1378,3 +1523,6 @@ TEST_CASE("render: project-patch-band matches the golden image") { golden("proje
 // windows (MIDI notes, audio waveforms) over the audio fixture.
 TEST_CASE("render: project-circuit-device matches the golden image") { golden("project-circuit-device"); }
 TEST_CASE("render: project-patch-lanes matches the golden image") { golden("project-patch-lanes", views::test::fixtureDir("audio")); }
+// TMM.10-fix2: wires from the note sources' outputs (per voice into a voice run's Wavetable, reduced into the Auto
+// Filter, across tracks).
+TEST_CASE("render: project-patch-notes matches the golden image") { golden("project-patch-notes"); }

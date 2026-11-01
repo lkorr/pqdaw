@@ -124,7 +124,7 @@ Status checkNewDeviceIds(const Project& p, const std::vector<DevicePtr>& list, s
 }
 
 // T4.7: drops the wires touching a removed device (defined with the wire commands below).
-void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs);
+void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs, const std::vector<TrackId>& goneTracks = {});
 
 // Rebuilds every track for which fn returns a modified copy (and the ancestors of those), sharing the rest.
 // fn: std::optional<Track>(const Track&). Modified tracks are recorded in cs.tracks.
@@ -346,7 +346,7 @@ Res apply_(const Snapshot& s, const RemoveTrack& c, ChangeSet& cs) {
   cleanupAfterRemoval(*np, ids, cs);
   std::vector<DeviceId> devs = removed.devices;
   std::sort(devs.begin(), devs.end());
-  dropWiresOf(*np, devs, cs);  // T4.7: the removed devices' wires go with them
+  dropWiresOf(*np, devs, cs, ids);  // T4.7: the removed devices' wires go with them (TMM.10-fix2: and their note sources')
   cs.mark(kChangeStructural);
   cs.merge(removed);
   if (const Track* parent = parentOf(*s, loc->path)) cs.tracks.push_back(parent->id);
@@ -2131,10 +2131,12 @@ Res apply_(const Snapshot& s, const SetDeviceChainInput& c, ChangeSet& cs) {  //
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 // np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
-void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs) {
-  if (!np.wires || gone.empty()) return;
+// TMM.10-fix2: and the wires from the note source of a track of `goneTracks` (sorted).
+void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs, const std::vector<TrackId>& goneTracks) {
+  if (!np.wires || (gone.empty() && goneTracks.empty())) return;
   auto touches = [&](const Wire& w) {
-    return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to);
+    return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to) ||
+           (w.fromNoteSource() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.noteSource));
   };
   if (std::none_of(np.wires->begin(), np.wires->end(), touches)) return;
   WireList keep;
@@ -2155,7 +2157,13 @@ Res withWires(const Snapshot& s, WireList list, ChangeSet& cs, ChangeFlag flag, 
 
 Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
   PQ_DOC_TRY(checkWire(c.wire));
-  if (!findDevice(*s, c.wire.from).track) return notFound("wire source device not found");
+  if (c.wire.fromNoteSource()) {  // TMM.10-fix2: a MIDI track's note source
+    const Track* t = findTrackPtr(*s, c.wire.noteSource);
+    if (t == nullptr) return notFound("wire source track not found");
+    if (t->kind != TrackKind::Midi) return invalid("only a MIDI track has a note source");
+  } else if (!findDevice(*s, c.wire.from).track) {
+    return notFound("wire source device not found");
+  }
   const DeviceLoc to = findDevice(*s, c.wire.to);
   if (!to.track) return notFound("wire target device not found");
   if (!c.wire.param.empty())  // TMM.5: a baked meta param is not a modulation target
@@ -2163,8 +2171,7 @@ Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
   const WireList& cur = wiresOf(*s);
   for (const Wire& w : cur) {
     if (w.id == c.wire.id) return invalid("wire id already in use");
-    if (w.from == c.wire.from && w.port == c.wire.port && w.to == c.wire.to && w.param == c.wire.param)
-      return invalid("these two ports are already wired");
+    if (w.sameEnds(c.wire)) return invalid("these two ports are already wired");
   }
   WireList list = cur;
   list.insert(std::upper_bound(list.begin(), list.end(), c.wire.id, [](WireId a, const Wire& b) { return a < b.id; }),

@@ -146,7 +146,7 @@ def main():
          "tuning": "inherit", "active": True, "notes": notes}], [{"id": 13, "patch": "BasicSynth", "kind": "instrument"}])
     lost = track(14, "audio", "Lost", grey, [audio_clip(24, "missing", grey, WHOLE, 5, seconds=1.0, length=SEC)])
     project = {
-        "schemaVersion": 11,
+        "schemaVersion": 12,
         "timeline": {"tempo": [{"tick": 0, "bpm": 120.0, "curve": "step"}],
                      "signatures": [{"bar": 0, "numerator": 4, "denominator": 4}]},
         "loop": {"start": 0, "end": 4 * WHOLE, "enabled": False},

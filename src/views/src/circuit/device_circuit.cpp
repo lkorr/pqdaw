@@ -158,6 +158,12 @@ CircuitEditor* openDeviceInCircuitView(ui::Widget& from, ViewContext& ctx, doc::
     ctx.setStatus(d == nullptr ? "No such device" : "No device library: the device cannot be opened");
     return nullptr;
   }
+  // A chain meta device ("meta:<type>") has no patch text to edit: its atoms are generated from its face (TMM.4). Its
+  // menus no longer offer this; a direct call says where its atoms are instead of "not in the device library".
+  if (doc::isMetaDevice(*d)) {
+    ctx.setStatus("A meta module's atoms are generated from its face (read-only): Open in Circuit View shows them, opened");
+    return nullptr;
+  }
   const std::string path = lib->pathOf(d->patch);
   if (path.empty()) {
     ctx.setStatus("'" + d->patch + "' is not in the device library: it cannot be opened");

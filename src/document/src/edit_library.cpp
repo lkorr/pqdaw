@@ -29,7 +29,7 @@ EditResult replaceDevice(const Project& p, IdSource& ids, DeviceId device, const
     if (w.from != device && w.to != device) continue;
     if (w.to == device && !keepsParam(w.param)) continue;
     // A wire between the replaced device and something inside it (a rack's own inner devices) is gone with them.
-    if (w.from != device && !findDevice(p, w.from).track) continue;
+    if (w.from != device && !w.fromNoteSource() && !findDevice(p, w.from).track) continue;  // TMM.10-fix2: notes stay
     if (w.from != device && deviceContains(*loc.device, w.from)) continue;
     if (w.to != device && deviceContains(*loc.device, w.to)) continue;
     b.commands.push_back(AddWire{w});

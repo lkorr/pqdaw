@@ -564,8 +564,13 @@ private:
       w_.beginObject(false);
       w_.key("id");
       w_.integer(wr.id.value);
-      w_.key("from");
-      w_.integer(wr.from.value);
+      if (wr.fromNoteSource()) {  // TMM.10-fix2 (schema 12): the note source of a track, instead of a device
+        w_.key("notes");
+        w_.integer(wr.noteSource.value);
+      } else {
+        w_.key("from");
+        w_.integer(wr.from.value);
+      }
       w_.key("port");
       w_.string(PathSeg(&el, "port"), wr.port);
       w_.key("to");
@@ -2399,7 +2404,8 @@ private:
     r_.beginArray(at);
     for (size_t i = 0; r_.nextElement(at); ++i) {
       const PathSeg el(&at, i);
-      static constexpr std::string_view K[] = {"id", "from", "port", "to", "param", "amount", "reducer"};
+      // TMM.10-fix2 (schema 12): "notes" (a track's note source) instead of "from".
+      static constexpr std::string_view K[] = {"id", "from", "port", "to", "param", "amount", "reducer", "notes"};
       Wire w;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
@@ -2412,9 +2418,12 @@ private:
           case 4: w.param = str(f); break;
           case 5: w.amount = r_.readDouble(f); break;
           case 6: w.reducer = static_cast<WireReducer>(name(f, kWireReducerNames, "wire reducer")); break;
+          case 7: w.noteSource = TrackId{ref(f)}; break;
         }
       }
-      m.require({0, 1, 2, 3, 4, 5});
+      if (m.has(1) && m.has(7)) json::fail(el, "a wire has either \"from\" (a device) or \"notes\" (a note source)");
+      m.require({0, 2, 3, 4, 5});
+      if (!m.has(7)) m.require({1});
       check(el, detail::checkWire(w));
       if (!v.empty() && !(v.back().id < w.id)) r_.failValue(PathSeg(&el, "id"), "wires must be sorted by id");
       v.push_back(std::move(w));
@@ -2904,10 +2913,16 @@ private:
     const WireList& wl = wiresOf(p);
     for (size_t i = 0; i < wl.size(); ++i) {
       const PathSeg el(&wiresAt, i);
-      if (!findDevice(p, wl[i].from).track) json::fail(PathSeg(&el, "from"), "no device with this id");
+      if (wl[i].fromNoteSource()) {  // TMM.10-fix2
+        const Track* t = findTrackPtr(p, wl[i].noteSource);
+        if (t == nullptr) json::fail(PathSeg(&el, "notes"), "no track with this id");
+        if (t->kind != TrackKind::Midi) json::fail(PathSeg(&el, "notes"), "only a MIDI track has a note source");
+      } else if (!findDevice(p, wl[i].from).track) {
+        json::fail(PathSeg(&el, "from"), "no device with this id");
+      }
       if (!findDevice(p, wl[i].to).track) json::fail(PathSeg(&el, "to"), "no device with this id");
       for (size_t j = 0; j < i; ++j)
-        if (wl[j].from == wl[i].from && wl[j].port == wl[i].port && wl[j].to == wl[i].to && wl[j].param == wl[i].param)
+        if (wl[j].sameEnds(wl[i]))
           json::fail(el, "these two ports are already wired (wire " + std::to_string(wl[j].id.value) + ")");
     }
     // T4.8: a param has at most one macro mapping in the project.
@@ -3461,6 +3476,13 @@ private:
 
 Status migrateMetaChainSignals(nlohmann::json& doc) { return MetaChainMigrator().run(doc); }
 
+// 11 → 12 (TMM.10-fix2): a wire may carry "notes" (a MIDI track's note source) instead of "from". Every schema-11 wire
+// has "from": nothing to rewrite. Self-contained (renumber, do not merge, if another schema step lands first).
+Status migrateAddNoteWires(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3472,6 +3494,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {8, migrateAddDeviceAutomation},
     {9, migrateAddMetaModules},
     {10, migrateMetaChainSignals},
+    {11, migrateAddNoteWires},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

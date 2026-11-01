@@ -50,13 +50,7 @@ float roundUp4(float v) noexcept { return std::ceil(v / 4.0f) * 4.0f; }
 float textW(std::string_view s) noexcept { return 6.0f * static_cast<float>(s.size()); }  // ≈ the 11-px UI font
 
 // The y offset of a node's pin: the main one (index 0) at the spine, the rest below it.
-float pinY(const Node& n, size_t i) noexcept {
-  switch (n.kind) {
-    case NodeKind::Sum: return 16.0f;
-    case NodeKind::Output: return 8.0f;
-    default: return m::kPinTop + m::kPinPitch * static_cast<float>(i);
-  }
-}
+float pinY(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
 // Where the spine (pin 0) sits from the node's top.
 float spineOf(const Node& n) noexcept { return pinY(n, 0); }
 
@@ -145,7 +139,7 @@ struct Builder {
     auto mods = [&](doc::DeviceId dev) {
       const auto it = modulatedParams.find(dev.value);
       if (it == modulatedParams.end()) return;
-      for (const std::string& prm : it->second) n.inputs.push_back({portKey(n, dev, prm), prm});
+      for (const std::string& prm : it->second) n.inputs.push_back({portKey(n, dev, prm), prm, true});
     };
     mods(d.id);  // its macros
     for (const doc::DeviceId x : n.inner) mods(x);
@@ -249,7 +243,7 @@ struct Builder {
     if (modIt != modulatedParams.end())
       for (const std::string& prm : modIt->second) {
         const doc::DeviceParamInfo* pi = info ? info->param(prm) : nullptr;
-        n.inputs.push_back({prm, pi && !pi->label.empty() ? pi->label : prm});
+        n.inputs.push_back({prm, pi && !pi->label.empty() ? pi->label : prm, true});
       }
     bool firstOut = true;
     for (const graph::SubcircuitPort& sp : sig.outputs) {
@@ -331,8 +325,10 @@ struct Builder {
       Node s;
       s.kind = NodeKind::Source;
       s.band = bi;
-      s.title = "MIDI";
+      s.title = "Notes";  // the track's note source: its Hz piano roll (SPEC §15 2026-11-01)
       s.outputs.push_back({"notes", ""});
+      // TMM.10-fix2: its note outputs, each a wire source (as a device's export) onto any device param.
+      for (const doc::NoteOutput& o : doc::kNoteOutputs) s.outputs.push_back({std::string(o.port), std::string(o.pin)});
       s.w = roundUp4(std::clamp(opt.sourceW, m::kSourceW, m::kSourceMaxW));
       s.h = m::kSourceH;
       band.source = addNode(std::move(s));
@@ -464,16 +460,24 @@ struct Builder {
     for (const doc::Wire& w : doc::wiresOf(p)) {
       const doc::WireStatus st = statusOf(w.id);
       if (st == doc::WireStatus::Invalid) continue;
-      const uint32_t a = out.nodeOf(w.from), b = out.nodeOf(w.to);
+      // TMM.10-fix2: a wire from a track's note source starts at its band's lane window, at that note output.
+      uint32_t a = kNone;
+      if (w.fromNoteSource()) {
+        const uint32_t sb = out.bandOf(w.noteSource);
+        if (sb != kNone && out.bands[sb].kind == doc::TrackKind::Midi) a = out.bands[sb].source;
+      } else {
+        a = out.nodeOf(w.from);
+      }
+      const uint32_t b = out.nodeOf(w.to);
       if (a == kNone || b == kNone) continue;
       Edge e;
       e.wire = w.id;
       e.status = st;
       e.delayed = st == doc::WireStatus::Delayed;
-      e.voice = out.nodes[a].instrument;
+      e.voice = w.fromNoteSource() || out.nodes[a].instrument;
       if (const auto it = modGraphWire.find(w.id.value); it != modGraphWire.end()) e.graphWire = it->second;
-      addEdge(EdgeKind::Modulation, a, out.nodes[a].output(portKey(out.nodes[a], w.from, w.port)), b,
-              out.nodes[b].input(portKey(out.nodes[b], w.to, w.param)), e);
+      const int32_t fromPort = w.fromNoteSource() ? out.nodes[a].output(w.port) : out.nodes[a].output(portKey(out.nodes[a], w.from, w.port));
+      addEdge(EdgeKind::Modulation, a, fromPort, b, out.nodes[b].input(portKey(out.nodes[b], w.to, w.param)), e);
     }
   }
 
@@ -715,14 +719,18 @@ struct Builder {
           const float o = static_cast<float>(off);
           // T5.x-one-circuit: between opened devices (their atoms fill their frames) the wire takes the gutter above them,
           // the band's title strip, as the Track-level view routed its modulation.
-          if (a.band == b.band && t.x > s.x + 24.0f && !a.expanded && !b.expanded) {
+          // TMM.10-fix2: a note output's wire always takes the title strip (straight across it would run under the
+          // instrument's face), turning up in the gap beside the chain's note wire.
+          const bool fromNotes = a.kind == NodeKind::Source;
+          if (a.band == b.band && t.x > s.x + 24.0f && !a.expanded && !b.expanded && !fromNotes) {
             const float mx = std::round((s.x + t.x) * 0.5f) + o;
             pts.push_back({mx, s.y});
             pts.push_back({mx, t.y});
           } else {
             const float gy = tb.y + 4.0f + o;  // the target band's title strip (above its nodes)
-            pts.push_back({s.x + 10.0f + o, s.y});
-            pts.push_back({s.x + 10.0f + o, gy});
+            const float ux = s.x + (fromNotes ? 22.0f : 10.0f) + o;
+            pts.push_back({ux, s.y});
+            pts.push_back({ux, gy});
             pts.push_back({t.x - 10.0f - o, gy});
             pts.push_back({t.x - 10.0f - o, t.y});
           }

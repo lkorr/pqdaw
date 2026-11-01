@@ -701,7 +701,7 @@ private:
 
 const char* trackInputName(doc::TrackKind k) noexcept {
   switch (k) {
-    case doc::TrackKind::Midi: return "MIDI";
+    case doc::TrackKind::Midi: return "Notes";  // the note source (its Hz piano roll), SPEC §15 2026-11-01
     case doc::TrackKind::Audio: return "Audio In";
     default: return "\xCE\xA3 In";  // Σ In: every track routed into it
   }

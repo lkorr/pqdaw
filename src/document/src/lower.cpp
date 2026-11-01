@@ -1149,6 +1149,8 @@ struct LWire {
   NodeIndex paramNode = graph::kNone;  // the target param's declaration in its callee (kNone: a rack param, T4.8)
   bool delayed = false;
   bool reduce = false;                 // a voice source into a global target
+  // TMM.10-fix2: a wire from track fromNode's note source (fromDev / fromPort unused): the voice terminal it reads.
+  const NoteOutput* notes = nullptr;
 };
 
 struct WirePlan {
@@ -1310,25 +1312,45 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
         }
     }
   };
+  // TMM.10-fix2: the plan node of each track (a note source's wires start at their track's node).
+  std::unordered_map<uint32_t, uint32_t> nodeOfTrack;
+  for (uint32_t n = 0; n < nodes; ++n)
+    if (pl.nodes[n].track != nullptr) nodeOfTrack.emplace(pl.nodes[n].track->id.value, n);
   std::vector<uint8_t> fwd, back;
   for (const Wire& w : wires) {
     WireState st{w.id, WireStatus::Lowered};
-    const auto a = where.find(w.from.value), b = where.find(w.to.value);
-    if (a == where.end() || b == where.end()) {
-      st.status = WireStatus::Inactive;
-      wp.states.push_back(st);
-      continue;
-    }
+    const auto b = where.find(w.to.value);
     LWire lw;
     lw.wire = &w;
-    std::tie(lw.fromNode, lw.fromDev) = a->second;
+    if (w.fromNoteSource()) {
+      // TMM.10-fix2: the source is a MIDI track's note source: it plays only while the track has voices (its chain
+      // starts with a lowered instrument: voice terminals exist only in a voice context).
+      const auto a = nodeOfTrack.find(w.noteSource.value);
+      if (a == nodeOfTrack.end() || b == where.end() || pl.nodes[a->second].kind != Kind::Midi || !devs[a->second].voices) {
+        st.status = WireStatus::Inactive;
+        wp.states.push_back(st);
+        continue;
+      }
+      lw.fromNode = a->second;
+      lw.fromDev = graph::kNone;
+      lw.notes = findNoteOutput(w.port);
+    } else {
+      const auto a = where.find(w.from.value);
+      if (a == where.end() || b == where.end()) {
+        st.status = WireStatus::Inactive;
+        wp.states.push_back(st);
+        continue;
+      }
+      std::tie(lw.fromNode, lw.fromDev) = a->second;
+    }
     std::tie(lw.toNode, lw.toDev) = b->second;
-    const LDev& sd = devs[lw.fromNode][lw.fromDev];
     const LDev& dd = devs[lw.toNode][lw.toDev];
-    // The source: an export (its signature index: outs first; a rack has none); the target: a real param (a rack: a
-    // macro or its selector).
+    // The source: an export (its signature index: outs first; a rack has none) or a note output; the target: a real
+    // param (a rack: a macro or its selector).
     uint32_t outs = 0, exportIndex = graph::kNone, ordinal = 0;
-    if (sd.rack < 0)
+    if (w.fromNoteSource()) {
+      if (lw.notes != nullptr) exportIndex = 0;  // an unknown note output: Invalid
+    } else if (const LDev& sd = devs[lw.fromNode][lw.fromDev]; sd.rack < 0) {
       for (NodeIndex v = 0; v < sd.callee->nodeCount(); ++v) {
         if (sd.callee->node(v).kind == graph::NodeKind::Output) ++outs;
         if (sd.callee->node(v).kind == graph::NodeKind::Export) {
@@ -1336,6 +1358,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
           ++ordinal;
         }
       }
+    }
     uint32_t pin = graph::kNone, point = graph::kNone;
     if (dd.rack >= 0) {
       pin = rackParamIndex(w.param);
@@ -1352,7 +1375,10 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     }
     lw.fromPort = static_cast<uint16_t>(outs + exportIndex);
     lw.toPin = static_cast<uint16_t>(pin);
-    lw.reduce = sd.voice && !(lw.toNode == lw.fromNode && dd.voice);
+    // A voice source (an instrument's export; TMM.10-fix2: a note output, always per voice) stays per voice only into a
+    // device of its own track that runs per voice; anything else reads it through the wire's reducer.
+    const bool voiceSource = lw.notes != nullptr || devs[lw.fromNode][lw.fromDev].voice;
+    lw.reduce = voiceSource && !(lw.toNode == lw.fromNode && dd.voice);
     if (lw.fromNode != lw.toNode) {
       reach(tadj, lw.toNode, fwd);
       if (fwd[lw.fromNode]) {  // a track cycle forms: count its instruments
@@ -1370,6 +1396,12 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
         }
       }
       tadj[lw.fromNode].push_back(lw.toNode);
+    }
+    // TMM.10-fix2: a note source depends on nothing in the graph: no cycle can pass through it (no signal point).
+    if (lw.notes != nullptr) {
+      wp.states.push_back(st);
+      wp.wires.push_back(lw);
+      continue;
     }
     // A delay-free cycle: the target reaches the source.
     const uint32_t from = devOut(lw.fromNode, lw.fromDev, lw.fromPort), to = devIn(lw.toNode, lw.toDev, point);
@@ -1450,6 +1482,8 @@ struct Build {
   std::vector<NodeIndex> calls;  // per lowered device: its call node (kNone: a rack)
   std::map<std::pair<uint32_t, uint32_t>, std::vector<PortRef>> rackPins;  // (rack dev, param) → the inputs reading it
   PortRef vel = kPending, lnHz = kPending, degree = kPending;  // shared voice values the zones read (made on first use)
+  // TMM.10-fix2: the pitch the devices hear (the last tuning node's hz; kPending without tuning nodes: voice.hz is it).
+  PortRef tunedHz = kPending;
   PortRef c0() { return ir.konst(0.0, kC0); }
   PortRef c1() { return ir.konst(1.0, kC1); }
   PortRef time() { return ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime); }
@@ -1534,6 +1568,17 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   const uint32_t id = d.device->id.value;
   if (width == graph::kWidthMono && inWidth == graph::kWidthStereo)  // a mono signal into a stereo input
     x = b.ir.atom("pack", {x, x}, nodeIdFor(NodeRole::Device, id, 1), 2);
+  // A stereo signal into a chain meta device (ChainAudio: its chain input takes any width, its outputs are mono — a
+  // stereo signal would reach a mono `out` inside its expansion, which the compiler refuses: bug report
+  // 2026-11-01_12-15-15, a Wavetable after Utility): the mid, (l + r) / 2. Mono signals pass as before.
+  if (haveIn && width == graph::kWidthStereo && inWidth == graph::kWidthInfer && outW == graph::kWidthMono &&
+      isMetaDevice(*d.device)) {
+    const PortRef l = b.ir.atom("channel", {x, b.c0()}, nodeIdFor(NodeRole::Device, id, 2));
+    const PortRef r = b.ir.atom("channel", {x, b.c1()}, nodeIdFor(NodeRole::Device, id, 3));
+    x = b.ir.atom("mul", {b.ir.atom("add", {l, r}, nodeIdFor(NodeRole::Device, id, 4)), b.ir.konst(0.5, kCHalf)},
+                  nodeIdFor(NodeRole::Device, id, 5));
+    width = graph::kWidthMono;
+  }
   const graph::NodeIndex c = callDevice(b.ir, d);
   b.calls[k] = c;
   // TMM.10-fix1: a device without an audio `in` (an unplugged chain meta device) takes nothing: the signal so far ends
@@ -1748,7 +1793,11 @@ Voices instrumentRack(Build& b, uint32_t k0, PortRef outer0) {
 // ---- Modulation wires and macro mappings in a track patch (T4.7, T4.8; lower.h "Modulation wires", "Racks") ---------
 
 // NodeRole::Wire slots: a wire's own nodes, then (from kWTarget) the nodes of the param it modulates.
-enum WireK : uint32_t { kWAmount, kWIn, kWExport, kWChannel, kWReduce, kWDelay, kWTerm, kWSum, kWTarget = 16 };
+enum WireK : uint32_t {
+  kWAmount, kWIn, kWExport, kWChannel, kWReduce, kWDelay, kWTerm, kWSum,
+  kWNote, kWNoteReal,  // TMM.10-fix2: a note source's voice terminal, its bool → real
+  kWTarget = 16,
+};
 enum TargetK : uint32_t {
   kTKnob, kTPosA, kTPosB, kTPosC, kTAdd, kTClip, kTMapA, kTMapB, kTMapC, kTRoundAdd, kTFloor,
   kTUpSub, kTUpMax, kTDownSub, kTDownMax, kTPack, kTExport,
@@ -1790,9 +1839,17 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   Ir& ir = b.ir;
   const TrackDevs& td = b.td;
   auto wid = [](const LWire& w, uint32_t k) { return nodeIdFor(NodeRole::Wire, w.wire->id.value, k); };
-  // The source of a wire in this patch: its export's first channel, reduced over the voices when it leaves them.
+  // The source of a wire in this patch: its export's first channel (TMM.10-fix2: or the note output's voice terminal:
+  // "hz" the tuned pitch, a bool as 0 / 1), reduced over the voices when it leaves them.
   auto source = [&](const LWire& w) {
-    PortRef s = ir.atom("channel", {PortRef{b.calls[w.fromDev], w.fromPort}, b.c0()}, wid(w, kWChannel));
+    PortRef s;
+    if (w.notes != nullptr) {
+      if (w.notes->port == "hz" && b.tunedHz.node != graph::kNone) s = b.tunedHz;
+      else s = ir.atom(w.notes->atom, {}, wid(w, kWNote));
+      if (w.notes->boolean) s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
+    } else {
+      s = ir.atom("channel", {PortRef{b.calls[w.fromDev], w.fromPort}, b.c0()}, wid(w, kWChannel));
+    }
     if (w.reduce) s = ir.atom(reducerAtom(w.wire->reducer), {s}, wid(w, kWReduce));
     return s;
   };
@@ -2055,6 +2112,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
         cents = PortRef{node.node, 1};
       }
       ir.atom("tune_voices", {hz, cents}, kTuneVoices);
+      b.tunedHz = hz;  // TMM.10-fix2: what a note source's "hz" output reads (the root's own voice.hz is the engine's)
     }
     const uint32_t first = devs.top.front();
     if (devs[first].rack >= 0) {

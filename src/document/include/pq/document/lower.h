@@ -284,6 +284,14 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //   tap  = export tap_d<id>_<name> = (max(p − pk, 0), max(pk − p, 0)): how far the modulation moved the param up and
 //          down; a metered bus (LoweredProject::taps) the views read for the knob's live ring. Zero exactly when the
 //          modulation is, so a silent modulation keeps its unit idle.
+// TMM.10-fix2: a wire from a MIDI track's NOTE SOURCE (Wire::noteSource; its port a model.h kNoteOutputs entry) is the
+// same math with src = that track's voice terminal (NodeRole::Wire slot kWNote): "hz" the pitch the devices hear (the
+// last tuning node's `hz` when the patch has tuning nodes, else voice.hz), "gate" gate_to_real(voice.gate) (kWNoteReal),
+// "velocity" voice.velocity. Per voice into a device of its own track that runs per voice (the instrument, a meta voice
+// run's stage, a per-voice rack chain's effect); through the wire's reducer into any other device (a global one of the
+// track, or across tracks: `export m<wire>` as for an export's wire). Inactive while the track plays no voices (no
+// lowered instrument at the start of its chain: voice terminals exist only in a voice context). It never closes a
+// cycle (the note source depends on nothing); across tracks the cycle-through-two-instruments rule applies as above.
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
 struct WireState {
   WireId id;

@@ -401,24 +401,44 @@ EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string in
 
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
-EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,
-                       double amount) {
-  if (!findDevice(p, from).track) return notFound("wire source device not found");
-  if (!findDevice(p, to).track) return notFound("wire target device not found");
-  for (const Wire& w : wiresOf(p))
-    if (w.from == from && w.port == port && w.to == to && w.param == param) return invalid("these two ports are already wired");
-  Wire w;
+namespace {
+// The "Add Wire" edit of `w` (its ends set; the source checked by the caller): a fresh id, the amount clamped.
+EditResult addWire(const Project& p, IdSource& ids, Wire w, double amount) {
+  if (!findDevice(p, w.to).track) return notFound("wire target device not found");
+  for (const Wire& x : wiresOf(p))
+    if (x.sameEnds(w)) return invalid("these two ports are already wired");
   w.id = ids.wire();
-  w.from = from;
-  w.port = std::move(port);
-  w.to = to;
-  w.param = std::move(param);
   w.amount = std::isfinite(amount) ? std::clamp(amount, -1.0, 1.0) : kDefaultWireAmount;
   PQ_DOC_TRY(checkWire(w));
   Edit e = makeEdit("Add Wire");
   e.wires.push_back(w.id);
   batchOf(e).commands.push_back(AddWire{std::move(w)});
   return e;
+}
+}  // namespace
+
+EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,
+                       double amount) {
+  if (!findDevice(p, from).track) return notFound("wire source device not found");
+  Wire w;
+  w.from = from;
+  w.port = std::move(port);
+  w.to = to;
+  w.param = std::move(param);
+  return addWire(p, ids, std::move(w), amount);
+}
+
+EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param,
+                           double amount) {
+  const Track* t = findTrackPtr(p, track);
+  if (t == nullptr) return notFound("wire source track not found");
+  if (t->kind != TrackKind::Midi) return invalid("only a MIDI track has a note source");
+  Wire w;
+  w.noteSource = track;
+  w.port = std::move(port);
+  w.to = to;
+  w.param = std::move(param);
+  return addWire(p, ids, std::move(w), amount);
 }
 
 EditResult deleteWires(const Project& p, std::span<const WireId> wires) {

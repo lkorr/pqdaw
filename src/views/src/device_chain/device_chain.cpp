@@ -683,7 +683,9 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       if (loc.device != nullptr && loc.device->rack) {
         items.push_back(ui::MenuItem::item("Open Lowered Rack Patch", [v, id] { v->openRackCircuit(id); }));
       } else {
-        items.push_back(ui::MenuItem::item("Edit Device Circuit", [v, id] { v->editDeviceCircuit(id); }));
+        ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [v, id] { v->editDeviceCircuit(id); });
+        edit.enabled = loc.device != nullptr && !doc::isMetaDevice(*loc.device);  // a meta module's atoms are generated
+        items.push_back(std::move(edit));
         ui::MenuItem revert = ui::MenuItem::item("Revert to Stock", [v] { v->revertSelectedToStock(); });
         revert.enabled = loc.device != nullptr && loc.device->edited();
         items.push_back(std::move(revert));

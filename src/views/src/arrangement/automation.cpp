@@ -152,7 +152,10 @@ std::string deviceKindName(const doc::Project& p, const doc::ParamRef& r, const 
       const doc::Wire* w = doc::findWire(p, doc::WireId{r.owner});
       if (w == nullptr) return "Modulation Amount";
       const doc::Device* from = doc::findDevice(p, w->from).device;
-      const std::string src = from != nullptr ? deviceTitle(*from, lib) : std::string("Modulation");
+      const doc::Track* notes = w->fromNoteSource() ? doc::findTrackPtr(p, w->noteSource) : nullptr;  // TMM.10-fix2
+      const std::string src = from != nullptr    ? deviceTitle(*from, lib)
+                              : notes != nullptr ? notes->name + " Notes " + w->port
+                                                 : std::string("Modulation");
       if (!full) return src + " Amount";
       DevParam d;
       const bool known = deviceParam(p, doc::ParamRef::device(w->to, w->param), lib, d);

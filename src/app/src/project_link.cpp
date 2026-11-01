@@ -1154,7 +1154,13 @@ void ProjectLink::reportWires(const doc::Project& p) {
     return (info != nullptr ? info->name : std::string("device")) + (l.device != nullptr && l.device->edited() ? " (edited)" : "") +
            (l.track != nullptr ? " (" + l.track->name + ")" : "");
   };
-  const std::string what = w != nullptr ? name(w->from) + " " + w->port + " \xE2\x86\x92 " + name(w->to) + " " + w->param : "a wire";
+  // TMM.10-fix2: a note source is named by its track.
+  auto source = [&](const doc::Wire& x) {
+    if (!x.fromNoteSource()) return name(x.from);
+    const doc::Track* t = doc::findTrackPtr(p, x.noteSource);
+    return (t != nullptr ? t->name : std::string("track")) + " notes";
+  };
+  const std::string what = w != nullptr ? source(*w) + " " + w->port + " \xE2\x86\x92 " + name(w->to) + " " + w->param : "a wire";
   switch (first->status) {
     case doc::WireStatus::Delayed:
       ctx_->setStatus("Feedback: the wire " + what + " closes a loop and is delayed by 1 sample (z-1)");

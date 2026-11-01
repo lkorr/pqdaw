@@ -522,3 +522,158 @@ TEST_CASE("meta devices (fix1): a schema-10 file keeps its meaning (migration 10
   REQUIRE(back.ok());
   CHECK(*back->project == p);
 }
+
+// ---- TMM.10-fix2: wires from the note source (SPEC §15 2026-11-01 "the note source is a Hz piano roll") -------------
+
+namespace {
+
+// The inferred type of what drives call `d<device>`'s input `pin` in track `t`'s patch (the modulated value: found in
+// the typed patch by its NodeId, the calls being flattened there).
+pq::graph::PortType pinType(const LoweredProject& lp, TrackId t, DeviceId device, std::string_view pin) {
+  const pq::graph::Patch& tp = trackPatch(lp, t);
+  const auto call = tp.findByName("d" + std::to_string(device.value));
+  REQUIRE(call.has_value());
+  const auto in = tp.findInput(*call, pin);
+  REQUIRE(in.has_value());
+  const pq::graph::WireIndex w = tp.adjacency().driver[tp.flatInput(*call, *in)];
+  REQUIRE(w != pq::graph::kNone);
+  const pq::graph::PortRef from = tp.wire(w).from;
+  pq::graph::InferOptions io;
+  io.library = lp.graph.library;
+  auto typed = pq::graph::infer(tp, io);
+  REQUIRE_MESSAGE(typed.ok(), (typed.ok() ? std::string() : typed.error().message));
+  for (pq::graph::NodeIndex n = 0; n < typed->patch.nodeCount(); ++n) {
+    const pq::graph::NodeOrigin& o = typed->origin[n];
+    if (o.instance == 0 && o.what == pq::graph::NodeOrigin::What::Node && o.node == from.node) return typed->outputType(n, from.port);
+  }
+  FAIL("the driver is not in the typed patch");
+  return {};
+}
+
+WireStatus statusOf(const LoweredProject& lp, WireId w) {
+  for (const WireState& s : lp.wires)
+    if (s.id == w) return s.status;
+  FAIL("no wire state");
+  return WireStatus::Invalid;
+}
+
+}  // namespace
+
+TEST_CASE("meta devices (fix2): the note source's Hz wired to a meta param of its voice run modulates it per voice") {
+  MetaChain c;  // Phase accumulator (at the note source) → Wavetable (its voice run) → Auto Filter
+  const WireId w = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "hz", c.wt, "position")).wires.at(0);
+  Result<LoweredProject> lp = lowerIt(c.doc());
+  REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
+  CHECK(lp->deviceErrors.empty());
+  CHECK(statusOf(*lp, w) == WireStatus::Lowered);
+  const std::string text = patchText(*lp->patches[trackIndex(*lp, c.track)]);
+  CAPTURE(text);
+  // No reducer anywhere: the Wavetable runs per voice, so the param the note drives is per voice.
+  for (const char* r : {"voice_last(", "voice_highest(", "voice_lowest(", "voice_loudest("}) CHECK(text.find(r) == std::string::npos);
+  CHECK(pinType(*lp, c.track, c.wt, "position").poly == pq::graph::Poly::Voice);
+  // The wire's amount is a param (an amount drag never recompiles); the modulated param has its tap (the live ring).
+  const std::string amount = "wire" + std::to_string(w.value) + ":amount";
+  CHECK(std::any_of(lp->params.begin(), lp->params.end(), [&](const LoweredParam& p) { return p.key == amount; }));
+  CHECK(std::any_of(lp->taps.begin(), lp->taps.end(), [&](const ModulationTap& t) { return t.device == c.wt && t.param == "position"; }));
+}
+
+TEST_CASE("meta devices (fix2): the note source into a stock (global) device param goes through the wire's reducer") {
+  MetaChain c;
+  const WireId hz = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "hz", c.filter, "freq")).wires.at(0);
+  const WireId vel = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "velocity", c.filter, "res")).wires.at(0);
+  const WireId gate = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "gate", c.filter, "drive")).wires.at(0);
+  c.edit(ops::setWireReducer(c.doc(), vel, WireReducer::Highest));
+  Result<LoweredProject> lp = lowerIt(c.doc());
+  REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
+  for (const WireId w : {hz, vel, gate}) CHECK(statusOf(*lp, w) == WireStatus::Lowered);
+  const std::string text = patchText(*lp->patches[trackIndex(*lp, c.track)]);
+  CAPTURE(text);
+  CHECK(text.find("voice_highest(voice.velocity") != std::string::npos);       // the wire's own reducer
+  CHECK(text.find("voice_sum(gate_to_real(voice.gate") != std::string::npos);  // a gate reads 0 / 1, summed
+  for (const char* pin : {"freq", "res", "drive"}) CHECK(pinType(*lp, c.track, c.filter, pin).poly == pq::graph::Poly::Global);
+  CHECK(text.find("voice_sum(voice.hz") != std::string::npos);  // no tuning node: voice.hz is what the devices hear
+  // With tuning nodes (the app's lowering) "hz" is the last node's hz, as the devices hear it (tune_voices), not the
+  // root's own voice.hz (the engine's).
+  LowerOptions o;
+  o.library = &library().library();
+  o.devices = &library();
+  o.slotOf = [](TrackId) { return 0u; };
+  o.metaSlotOf = [](DeviceId d, std::string_view, uint32_t i) { return d.value * 4 + i + 1; };
+  o.tuningTableOf = [](TuningId, const TuningDef&) { return 0u; };
+  Result<LoweredProject> tuned = lower(c.doc(), o);
+  REQUIRE_MESSAGE(tuned.ok(), (tuned.ok() ? std::string() : tuned.error().message));
+  const std::string tt = patchText(*tuned->patches[trackIndex(*tuned, c.track)]);
+  CAPTURE(tt);
+  REQUIRE(tt.find("tune_voices(") != std::string::npos);
+  CHECK(tt.find("voice_sum(voice.hz") == std::string::npos);
+  CHECK(pinType(*tuned, c.track, c.filter, "freq").poly == pq::graph::Poly::Global);
+}
+
+TEST_CASE("meta devices (fix2): a note-source wire plays only while its track has voices; across tracks it leaves reduced") {
+  Doc d;
+  const TrackId a = d.track(TrackKind::Midi);  // BasicSynth: voices
+  const TrackId b = d.track(TrackKind::Audio);
+  const DeviceId fx = d.edit(ops::addDevice(d.doc(), d.store.ids(), b, "auto_filter", DeviceKind::AudioEffect)).devices.at(0);
+  const WireId w = d.edit(ops::connectNoteWire(d.doc(), d.store.ids(), a, "velocity", fx, "freq")).wires.at(0);
+  {
+    Result<LoweredProject> lp = d.lowered();
+    CHECK(statusOf(*lp, w) == WireStatus::Lowered);
+    const std::string m = "m" + std::to_string(w.value);
+    bool modWire = false;
+    for (const pq::graph::ProjectWire& gw : lp->graph.wires)
+      modWire = modWire || (gw.kind == pq::graph::WireKind::Modulation && gw.from.port == m && gw.to.port == m);
+    CHECK(modWire);
+    const std::string src = patchText(*lp->patches[trackIndex(*lp, a)]);
+    CAPTURE(src);
+    CHECK(src.find("voice_sum(voice.velocity") != std::string::npos);  // reduced in the source track's patch
+    CHECK(trackPatch(*lp, a).findByName(m).has_value());                 // and leaves it as export m<wire>
+  }
+  // Without an instrument the MIDI track plays no voices: the wire is Inactive (left out), the target plays its knob.
+  const DeviceId synth[1] = {findTrackPtr(d.doc(), a)->devices.at(0)->id};
+  d.edit(ops::deleteDevices(d.doc(), synth));
+  {
+    Result<LoweredProject> lp = d.lowered();
+    CHECK(statusOf(*lp, w) == WireStatus::Inactive);
+  }
+  // A note-source wire comes only from a MIDI track, from one of its note outputs.
+  CHECK_FALSE(ops::connectNoteWire(d.doc(), d.store.ids(), b, "hz", fx, "freq").ok());
+  CHECK_FALSE(ops::connectNoteWire(d.doc(), d.store.ids(), a, "pitch", fx, "freq").ok());
+}
+
+// Regression (bug report 2026-11-01_12-15-15, after TMM.10-fix1): meta → meta → … → stock chains lower to patches the
+// compiler accepts — every track patch infers (no width mismatch inside an expansion), two Wavetables in a row included.
+TEST_CASE("meta devices: meta → meta → stock chains (two Wavetables in a row) lower and infer") {
+  const std::vector<std::vector<std::string>> chains = {
+      {"phase_acc", "wavetable", "wavetable", "utility"},      // the report's chain
+      {"phase_acc", "wavetable", "wavetable"},
+      {"phase_acc", "wavetable", "utility"},
+      {"phase_acc", "wavetable", "envelope", "wavetable", "utility"},
+      {"wavetable", "wavetable", "utility"},
+      {"phase_acc", "phase_acc", "wavetable", "auto_filter"},
+      // A meta device after a stereo stock effect (ChainAudio): the stereo signal reaches a module whose outputs are
+      // mono — the report's state (a Wavetable after a stock device, deleted before the shot). Lowered as the mid.
+      {"phase_acc", "wavetable", "utility", "wavetable"},
+      {"phase_acc", "wavetable", "auto_filter", "wavetable", "utility"},
+      {"phase_acc", "wavetable", "utility", "phase_acc", "utility"},
+      {"phase_acc", "wavetable", "utility", "envelope"},
+  };
+  for (const std::vector<std::string>& chain : chains) {
+    std::string name;
+    for (const std::string& s : chain) name += s + " ";
+    CAPTURE(name);
+    Doc d;
+    const TrackId t = d.track(TrackKind::Midi);
+    bool first = true;
+    for (const std::string& s : chain) {
+      if (s == "utility" || s == "auto_filter") d.edit(ops::addDevice(d.doc(), d.store.ids(), t, s, DeviceKind::AudioEffect));
+      else (void)d.meta(t, s.c_str(), first ? 0u : kAppend);
+      first = false;
+    }
+    Result<LoweredProject> lp = d.lowered();
+    CHECK(lp->missingDevices.empty());
+    pq::graph::InferOptions io;
+    io.library = lp->graph.library;
+    auto typed = pq::graph::infer(trackPatch(*lp, t), io);
+    CHECK_MESSAGE(typed.ok(), (typed.ok() ? std::string() : typed.error().message));
+  }
+}

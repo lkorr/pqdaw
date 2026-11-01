@@ -597,3 +597,59 @@ TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it 
   link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
   CHECK(sw.up + sw.down > 1e-3f);
 }
+
+// TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): wires from a MIDI track's note source. Its
+// velocity into the instrument's brightness is per voice (each of three notes of velocities 0.8 / 0.6 / 0.9 brighter
+// by its own); into a stock effect's param (Utility's balance) through the wire's reducer (sum vs last differ). Every
+// block runs under the allocation trap (renderGraph); the JIT renders it bit for bit like the interpreter.
+TEST_CASE("wires (TMM.10-fix2): the note source's outputs wired per voice and through a reducer; interpreter == JIT") {
+  auto lib = app::loadDeviceLibrary();
+  REQUIRE(lib.ok());
+  auto render = [&](bool velocityWire, WireReducer reducer, engine::UnitBackend backend, std::vector<WireStatus>* states) {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId t = ids.track();
+    const DeviceId inst = ids.device(), util = ids.device();
+    Batch b{"notes", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T", inst), {}, kAppend});
+    b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
+    REQUIRE(store.dispatch(b).ok());
+    if (velocityWire) {
+      auto e = ops::connectNoteWire(*store.current(), ids, t, "velocity", inst, "bright", 0.6);
+      REQUIRE(e.ok());
+      REQUIRE(store.dispatch(e->command).ok());
+    }
+    auto e = ops::connectNoteWire(*store.current(), ids, t, "velocity", util, "balance", 0.8);
+    REQUIRE(e.ok());
+    REQUIRE(store.dispatch(e->command).ok());
+    REQUIRE(store.dispatch(ops::setWireReducer(*store.current(), e->wires.at(0), reducer)->command).ok());
+    LowerOptions lo;
+    lo.library = &(*lib)->library();
+    lo.slotOf = [](TrackId) { return 0u; };
+    auto low = lower(*store.current(), lo);
+    REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
+    for (const WireState& s : low->wires) states->push_back(s.status);
+    std::vector<engine::ProjectParamLink> links;
+    std::vector<float> values;
+    for (const LoweredParam& p : low->params) {
+      links.push_back({p.track, p.name, static_cast<uint32_t>(values.size())});
+      values.push_back(p.value);
+    }
+    return renderGraph(low->graph, links, values, 24000, backend);
+  };
+  std::vector<WireStatus> st;
+  const golden::Channels sum = render(true, WireReducer::Sum, {}, &st);
+  const golden::Channels last = render(true, WireReducer::Last, {}, &st);
+  const golden::Channels plain = render(false, WireReducer::Sum, {}, &st);
+  const golden::Channels jit = render(true, WireReducer::Sum, compile::jitUnitBackend(), &st);
+  for (const WireStatus s : st) CHECK(s == WireStatus::Lowered);
+  float peak = 0.0f;
+  for (const auto& c : sum)
+    for (float v : c) peak = std::max(peak, std::fabs(v));
+  CHECK(peak > 0.02f);
+  CHECK(maxDiff(sum, last) > 1e-3);   // the reducer decides what the global balance hears
+  CHECK(maxDiff(sum, plain) > 1e-3);  // the per-voice velocity wire into the instrument is heard
+  const double dj = maxDiff(sum, jit);
+  MESSAGE("note-source wires, interpreter vs JIT: max |diff| = " << dj);
+  CHECK(dj == 0.0);
+}

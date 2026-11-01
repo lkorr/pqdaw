@@ -191,7 +191,7 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
         }
       if (header && bt >= start) {  // the bar number in the title row, right of the window's title
         const float x = std::round(X(bt)) + 2.0f * us;
-        const Rect title = canvas.deviceRect(n.x, n.y, 48.0f, metrics::kLaneTop);
+        const Rect title = canvas.deviceRect(n.x, n.y, metrics::kLaneTitleW, metrics::kLaneTop);
         if (x > title.x1 && x + 2.0f * px < nr.x1) {
           const std::string num = std::to_string(bar + 1);
           paint::text(ctx, font, toIRect({x, nr.y0 + 1.0f, std::min(nr.x1 - 2.0f, x + 4.0f * px), body.y0}), num, th.circuit.pinText,

@@ -8,8 +8,10 @@
 //   band       one per track, in lane order (the main tree depth-first, then the returns, then the master): a strip
 //              holding the track's chain left → right. Deactivated tracks keep a band (dim, no nodes: they are not in
 //              the graph), so every lane of the arrangement has its band.
-//   source     MIDI track: a "MIDI" node playing the lane's clips, its output wired to the instrument when one is
-//              lowered (a "notes" wire, per voice); an audio track: an "Audio" node (its clip player). Both are LANE
+//   source     MIDI track: a "Notes" node (the track's note source: its Hz piano roll, SPEC §15 2026-11-01) playing the
+//              lane's clips, its output `notes` wired to the instrument when one is lowered (a "notes" wire, per voice),
+//              and below it the note outputs (doc::kNoteOutputs: Hz, gate, velocity; TMM.10-fix2), each a wire source
+//              like a device's export; an audio track: an "Audio" node (its clip player). Both are LANE
 //              WINDOWS (T5.x-one-circuit): the view draws the lane itself inside them over a time window it keeps
 //              (LayoutOptions::sourceW is the windows' width), and every lane window of the project sits in one column
 //              (the same x whatever the group depth), so the windows read as a narrow arrangement. Group, return, master:
@@ -25,7 +27,7 @@
 // Edges: notes (source → instrument), chain (left → right through the lowered devices into the mixer), route (a
 // track's `out` → the summing input of its group or the master: graph wire out → in), send (a mixer's send pin → a
 // return's summing input: graph wire post / pre → s<id>; a send at −∞ is in the graph too and drawn dim), modulation
-// (a device export → a device param: T4.7's wires; across tracks also a graph wire m<id> → m<id>).
+// (a device export or a note output → a device param: T4.7's wires; across tracks also a graph wire m<id> → m<id>).
 //
 // Layout (world units = logical px at zoom 1, multiples of 4): bands stacked in lane order, a group's members indented
 // under it; signal left → right; a group's own chain starts right of its members' mixers; returns start right of every
@@ -57,15 +59,16 @@ inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 enum class NodeKind : uint8_t { Source, Sum, Device, Mixer, Output };
 
 struct Port {
-  std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a send's return id as "s<id>")
+  std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a note output, "s<id>" for a send)
   std::string label;  // drawn next to the pin ("" = none)
+  bool param = false;  // Device input: a param a modulation wire drives (a wire dropped on it targets that param)
 };
 
 struct Node {
   NodeKind kind = NodeKind::Device;
   uint32_t band = kNone;
   doc::DeviceId device;        // Device
-  std::string title;           // device display name, "MIDI", "Σ", "Mixer", "Out"
+  std::string title;           // device display name, "Notes", "Audio", "Σ", "Mixer", "Out"
   bool lowered = true;         // Device: its call is in the track patch (active, in the library, of its kind)
   bool active = true;          // Device: its activator
   bool missing = false;        // Device: its patch is not in the library
@@ -147,11 +150,14 @@ inline constexpr float kNodeGap = 40.0f;    // between chain nodes
 inline constexpr float kBusGap = 56.0f;     // before a summing node (room for its bus)
 inline constexpr float kPinTop = 24.0f;     // the main pin's offset from a node's top (the band's spine)
 inline constexpr float kPinPitch = 12.0f;   // further pins
+inline constexpr float kNotePitch = 8.0f;   // TMM.10-fix2: a lane window's note outputs (Hz, gate, velocity)
 // Lane windows (MIDI / audio sources, T5.x-one-circuit): the default width (4 bars), the widest a time zoom-out makes
 // them, and the body the lane is drawn in (inset from the node's rect; the title row above it).
 inline constexpr float kSourceW = 192.0f, kSourceH = 60.0f;
 inline constexpr float kSourceMaxW = 768.0f;
 inline constexpr float kLaneInset = 11.0f, kLaneTop = 18.0f, kLaneBottom = 3.0f;  // the frame is drawn 8 in (pin stubs)
+inline constexpr float kLaneTitleW = 48.0f;  // the window's title ("Notes", "Audio") before the bar numbers
+inline constexpr float kNoteNamesW = 36.0f;  // TMM.10-fix2: a MIDI window's right column (its note outputs' names)
 inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
 inline constexpr float kMixerW = 88.0f, kMixerH = 60.0f;     // compact (M / S, pan, volume, values); expanded: wider
 inline constexpr float kExpandedPad = 16.0f;                // around an expanded device's atoms
@@ -174,11 +180,27 @@ struct LayoutOptions {
 struct LaneRect {
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
+// TMM.10-fix2: a MIDI track's window keeps a column on its right for its note outputs' names (Hz, gate, vel).
 inline LaneRect laneBody(const Node& n) noexcept {
-  return {n.x + metrics::kLaneInset, n.y + metrics::kLaneTop, n.x + n.w - metrics::kLaneInset, n.y + n.h - metrics::kLaneBottom};
+  const float right = n.kind == NodeKind::Source && n.outputs.size() > 1 ? metrics::kNoteNamesW : metrics::kLaneInset;
+  return {n.x + metrics::kLaneInset, n.y + metrics::kLaneTop, n.x + n.w - right, n.y + n.h - metrics::kLaneBottom};
 }
 // Whether a band's source is a lane window (a MIDI or an audio track).
 inline bool hasLaneWindow(const Band& b) noexcept { return b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Audio; }
+
+// The y offset of pin `i` (an input, or an output) from its node's top: the main pin (0) at the band's spine, the rest
+// a row below each; a Σ's and Out's at their middle. TMM.10-fix2: a lane window's note outputs (1 …) in its lower
+// right corner, 8 apart (the window keeps its height).
+inline float pinOffset(const Node& n, size_t i) noexcept {
+  switch (n.kind) {
+    case NodeKind::Sum: return 16.0f;
+    case NodeKind::Output: return 8.0f;
+    case NodeKind::Source:
+      if (i > 0) return metrics::kPinTop + 4.0f + metrics::kNotePitch * static_cast<float>(i);
+      return metrics::kPinTop;
+    default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
+  }
+}
 
 // The project patch of `project` as lowered into `lowered` (doc::lower with the same project; its library for device
 // ports), described with `catalog` (display names; may be null). Never fails: what is not lowered is drawn dim.

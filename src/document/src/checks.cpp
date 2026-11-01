@@ -429,7 +429,13 @@ Status checkRackOwn(const Device& d) {
 
 Status checkWire(const Wire& w) {
   if (!w.id.valid()) return invalid("wire has no id");
-  if (!w.from.valid() || !w.to.valid()) return invalid("wire end has no device");
+  if (!w.to.valid()) return invalid("wire end has no device");
+  if (w.fromNoteSource()) {  // TMM.10-fix2: a track's note source (no device), one of its note outputs
+    if (w.from.valid()) return invalid("a wire from a note source has no source device");
+    if (findNoteOutput(w.port) == nullptr) return invalid("the note source has no output '" + w.port + "'");
+  } else if (!w.from.valid()) {
+    return invalid("wire end has no device");
+  }
   PQ_DOC_TRY(checkDeviceValue(w.port, std::nullopt));
   PQ_DOC_TRY(checkDeviceValue(w.param, std::nullopt));
   if (!finiteIn(w.amount, -1.0, 1.0)) return invalid("wire amount must be in [-1, 1]");

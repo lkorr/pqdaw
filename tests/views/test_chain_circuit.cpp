@@ -145,10 +145,10 @@ TEST_CASE("chain circuit: one boundary per device, in chain order, each holding 
     CHECK(c.deviceBoxAt(b.x0 + 4.0f, b.y0 + 4.0f) == c.roots[i]);
   }
   CHECK(c.deviceBoxAt(c.boxes[c.roots[0]].x1 + 4.0f, c.boxes[c.roots[0]].y0 + 4.0f) == kNoBox);  // the gap
-  // The terminals: the track's MIDI left of everything, its mixer right of everything.
+  // The terminals: the track's note source left of everything, its mixer right of everything.
   REQUIRE(c.inputNode != kNoBox);
   REQUIRE(c.outputNode != kNoBox);
-  CHECK(c.scene->specs[c.scene->nodes[c.inputNode].spec].title == "MIDI");
+  CHECK(c.scene->specs[c.scene->nodes[c.inputNode].spec].title == "Notes");
   CHECK(c.scene->specs[c.scene->nodes[c.outputNode].spec].title == "Mixer");
   CHECK(c.scene->nodes[c.inputNode].x + c.scene->nodes[c.inputNode].w <= c.boxes[c.roots[0]].x0);
   CHECK(c.scene->nodes[c.outputNode].x >= c.boxes[c.roots[3]].x1);

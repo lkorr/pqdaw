@@ -308,7 +308,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
                              builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
-                             builtinMigrations()[9]};
+                             builtinMigrations()[9], builtinMigrations()[10]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -335,14 +335,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 11");
+    const size_t at = newer.find("\"schemaVersion\": 12");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 19, "\"schemaVersion\": 12");
+    newer.replace(at, 19, "\"schemaVersion\": 13");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 12; this build reads up to 11)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 13; this build reads up to 12)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -354,7 +354,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                 builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
                                 builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
-                             builtinMigrations()[9]};
+                             builtinMigrations()[9], builtinMigrations()[10]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -444,7 +444,7 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 11);
+  static_assert(kSchemaVersion == 12);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -453,7 +453,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 11,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 12,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
@@ -564,6 +564,86 @@ TEST_CASE("serialize: modulation wires round-trip and are validated") {
   CHECK_FALSE(broken("\"amount\": 1.0", "\"amount\": 1.5").ok());         // out of [-1, 1]
   CHECK_FALSE(broken("\"reducer\": \"loudest\"", "\"reducer\": \"loud\"").ok());
   CHECK_FALSE(broken("\"id\": " + std::to_string(c.id.value), "\"id\": " + std::to_string(a.id.value)).ok());  // duplicate id
+}
+
+// TMM.10-fix2 (schema 12): a wire from a MIDI track's note source is written with "notes" instead of "from", round-trips,
+// and is validated (a MIDI track, a note output, not both ends kinds at once). A schema-11 file (every wire has "from")
+// loads unchanged.
+TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are validated; schema 11 loads unchanged") {
+  RichProject f;
+  IdSource& ids = f.store.ids();
+  std::vector<DeviceId> devs;
+  TrackId midi, other;
+  forEachTrack(f.doc(), [&](const Track& t, const Track*) {
+    if (t.kind == TrackKind::Midi && !midi.valid()) midi = t.id;
+    if (t.kind != TrackKind::Midi && !other.valid()) other = t.id;
+    for (const DevicePtr& d : t.devices) devs.push_back(d->id);
+  });
+  REQUIRE(midi.valid());
+  REQUIRE(other.valid());
+  REQUIRE(devs.size() >= 2);
+  // Schema 11: the project as it is (device wires only) — the same text with the old version loads to the same project.
+  {
+    Batch b{"wire", {}};
+    b.commands.push_back(AddWire{Wire{ids.wire(), devs[0], "lfo", devs[1], "cutoff", 0.25, WireReducer::Sum}});
+    REQUIRE(f.store.dispatch(b).ok());
+    Result<std::string> text = serializeProject(f.doc(), f.store.view());
+    REQUIRE(text.ok());
+    std::string old = *text;
+    old.replace(old.find("\"schemaVersion\": 12"), 19, "\"schemaVersion\": 11");
+    Result<LoadedProject> r = parseProject(old);
+    REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+    CHECK(r->fileSchemaVersion == 11);
+    CHECK(*r->project == f.doc());
+  }
+  Wire n;
+  n.id = ids.wire();
+  n.noteSource = midi;
+  n.port = "hz";
+  n.to = devs[1];
+  n.param = "cutoff";
+  n.amount = 0.125;
+  n.reducer = WireReducer::Highest;
+  Batch b{"notes", {}};
+  b.commands.push_back(AddWire{n});
+  REQUIRE(f.store.dispatch(b).ok());
+  // The same ends again is refused; a device wire with the same port names is a different wire.
+  Wire twice = n;
+  twice.id = ids.wire();
+  CHECK_FALSE(f.store.dispatch(Batch{"again", {AddWire{twice}}}).ok());
+  Wire bad = n;
+  bad.id = ids.wire();
+  bad.noteSource = other;  // not a MIDI track
+  CHECK_FALSE(f.store.dispatch(Batch{"other", {AddWire{bad}}}).ok());
+  bad.noteSource = midi;
+  bad.port = "pitch";  // not a note output
+  CHECK_FALSE(f.store.dispatch(Batch{"port", {AddWire{bad}}}).ok());
+
+  const LoadedProject back = roundTrip(f.doc(), f.store.view());
+  CHECK(*back.project == f.doc());
+  const Wire* nb = findWire(*back.project, n.id);
+  REQUIRE(nb != nullptr);
+  CHECK(*nb == n);
+  CHECK(nb->fromNoteSource());
+  CHECK_FALSE(nb->from.valid());
+  Result<std::string> text = serializeProject(f.doc(), f.store.view());
+  REQUIRE(text.ok());
+  const std::string notes = "\"notes\": " + std::to_string(midi.value);
+  CHECK(text->find(notes) != std::string::npos);
+  auto broken = [&](const std::string& from, const std::string& to) {
+    std::string t = *text;
+    const size_t at = t.find(from);
+    REQUIRE(at != std::string::npos);
+    t.replace(at, from.size(), to);
+    return parseProject(t);
+  };
+  CHECK_FALSE(broken(notes, "\"notes\": " + std::to_string(other.value)).ok());  // not a MIDI track
+  CHECK_FALSE(broken(notes, "\"notes\": 999999").ok());                           // no such track
+  CHECK_FALSE(broken(notes, notes + ", \"from\": " + std::to_string(devs[0].value)).ok());  // both kinds of source
+  CHECK_FALSE(broken(notes + ", \"port\": \"hz\"", notes + ", \"port\": \"pitch\"").ok());  // no such note output
+  // Removing the track removes the wires from its note source in the same command (one undo step).
+  REQUIRE(f.store.dispatch(RemoveTrack{midi}).ok());
+  CHECK(findWire(f.doc(), n.id) == nullptr);
 }
 
 // ---- Schema 2 -> 3 (T4.1: device chains) ---------------------------------------------------------------------------

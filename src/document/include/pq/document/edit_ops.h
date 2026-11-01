@@ -431,6 +431,9 @@ EditResult placeClip(const Project& p, IdSource& ids, TrackId track, const ClipS
 // Wires `from`.`port` (an export) to `to`.`param`; a second wire between the same two ports is refused.
 EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,
                        double amount = kDefaultWireAmount);
+// TMM.10-fix2: wires the note source of MIDI track `track` (its note output `port`: kNoteOutputs) to `to`.`param`.
+EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param,
+                           double amount = kDefaultWireAmount);
 EditResult deleteWires(const Project& p, std::span<const WireId> wires);
 // One amount ([−1, 1], clamped). A drag is several of these inside one store gesture (Param: no compile).
 EditResult setWireAmount(const Project& p, WireId wire, double amount);

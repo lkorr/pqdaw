@@ -4,7 +4,7 @@
 // every device's own circuit (its patch's scene, circuit::buildScene) laid out left → right in chain order, each inside a
 // labelled BOUNDARY, with real wires between them:
 //
-//   terminals   track mode: the track's input on the left (MIDI: a "MIDI" source, poly notes into the instrument; an
+//   terminals   track mode: the track's input on the left (MIDI: a "Notes" source, poly notes into the instrument; an
 //               audio track: "Audio In"; a group / return / master: "Σ In") and its mixer on the right ("Mixer"). Rack
 //               mode (a rack's circuit on its own, drawn inside its block by the project patch view): "in" (an Audio
 //               Effect Rack) or "notes" (an Instrument Rack) and "out", named as the block's ports so the block's

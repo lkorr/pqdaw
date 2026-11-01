@@ -69,7 +69,10 @@ namespace pq::doc {
 // unplugged, or an input of its type; written only when not the type's own); a meta device's "kind" is its position's.
 // Migration 10 → 11 unplugs a meta "audioEffect" that was the first active device where the note source arrives (it
 // heard no note in schema 10) and sets every meta device's kind from its position.
-inline constexpr int32_t kSchemaVersion = 11;
+// 12 = wires from the note source (TMM.10-fix2, model.h "Modulation wires"): a wire may carry "notes": <MIDI track id>
+// (its source is that track's note source, its "port" a note output: "hz", "gate", "velocity") instead of "from";
+// migration 11 → 12 changes nothing.
+inline constexpr int32_t kSchemaVersion = 12;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

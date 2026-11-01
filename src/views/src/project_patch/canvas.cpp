@@ -25,12 +25,15 @@ using ui::Vec2;
 
 namespace {
 
-float pinY(const Node& n, size_t i) noexcept {
-  switch (n.kind) {
-    case NodeKind::Sum: return 16.0f;
-    case NodeKind::Output: return 8.0f;
-    default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
-  }
+float pinY(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
+
+// TMM.10-fix2: a MIDI track's lane window (its note source), whose outputs start wires.
+bool isNoteSource(const ProjectPatch& pp, const Node& n) noexcept {
+  return n.kind == NodeKind::Source && n.band < pp.bands.size() && pp.bands[n.band].kind == doc::TrackKind::Midi;
+}
+// Whether a press on output pin `pin` starts a wire: a device's (its exports), a mixer's (route, sends), a note source's.
+bool wireSource(const ProjectPatch& pp, const Node& n) noexcept {
+  return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || isNoteSource(pp, n);
 }
 
 bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x < r.x1 && p.y >= r.y0 && p.y < r.y1; }
@@ -609,10 +612,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             return true;
           }
       }
-      // An output pin: a new wire (a device's export → a param; a mixer's out / send → a Σ).
+      // An output pin: a new wire (a device's export or a note output → a param; a mixer's out / send → a Σ).
       if (const PinHit pin = pinAt(e.pos); pin.valid() && !pin.input) {
         const Node& n = pp.nodes[pin.node];
-        if (n.kind == NodeKind::Device || n.kind == NodeKind::Mixer) {
+        if (wireSource(pp, n)) {
           drag_ = Drag::Wire;
           from_ = pin;
           wireCursor_ = ui::Cursor::Crosshair;
@@ -755,6 +758,12 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   const Node& a = pp.nodes[from_.node];
   if (a.kind == NodeKind::Device)
     return from_.port == 0 ? "Wire: drag an export (the device's jacks under its output) onto a parameter" : nullptr;
+  if (isNoteSource(pp, a)) {  // TMM.10-fix2: `notes` is the chain's own note wire; the note outputs go onto params
+    if (from_.port == 0) return "Wire: drag a note output (Hz, gate, velocity: the pins under the notes) onto a parameter";
+    const uint32_t to = nodeAt(pos);
+    if (to != kNone && pp.nodes[to].kind != NodeKind::Device) return "Wire: a note output goes onto a device's parameter";
+    return nullptr;
+  }
   if (a.kind != NodeKind::Mixer) return nullptr;
   const uint32_t to = nodeAt(pos);
   const uint32_t band = to != kNone ? pp.nodes[to].band : bandAt(pos);
@@ -798,9 +807,7 @@ ui::Cursor ProjectCanvas::pressCursor(Vec2 pos) const {
     for (const Rect& r : a.sends)
       if (tr != nullptr && inside(r, pos)) return ui::Cursor::ResizeEW;
   }
-  if (const PinHit pin = pinAt(pos); pin.valid() && !pin.input &&
-                                     (pp.nodes[pin.node].kind == NodeKind::Device || pp.nodes[pin.node].kind == NodeKind::Mixer))
-    return ui::Cursor::Crosshair;
+  if (const PinHit pin = pinAt(pos); pin.valid() && !pin.input && wireSource(pp, pp.nodes[pin.node])) return ui::Cursor::Crosshair;
   if (node == kNone) {
     if (const uint32_t b = bandAt(pos); b != kNone && toWorld(pos).y <= pp.bands[b].y + metrics::kTitle) return ui::Cursor::Move;
     return ui::Cursor::Arrow;
@@ -818,21 +825,27 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   }
   const Node& a = pp.nodes[from_.node];
   const Band& fromBand = pp.bands[a.band];
-  if (a.kind == NodeKind::Device) {
+  // A device's export or (TMM.10-fix2) a note output: onto a param pin a wire already drives, that param; onto a
+  // device anywhere else, a menu of its params.
+  if (a.kind == NodeKind::Device || isNoteSource(pp, a)) {
     const std::string port = a.outputs[from_.port].name;
+    const doc::DeviceId from = a.kind == NodeKind::Device ? a.device : doc::DeviceId{};
+    const doc::TrackId notes = a.kind == NodeKind::Device ? doc::TrackId{} : fromBand.track;
     const PinHit target = pinAt(pos);
     if (target.valid() && target.input && pp.nodes[target.node].kind == NodeKind::Device && target.port > 0 &&
-        !pp.nodes[target.node].instrument) {
-      (void)v.connect(a.device, port, pp.nodes[target.node].device, pp.nodes[target.node].inputs[target.port].name);
-      return;
-    }
-    if (target.valid() && target.input && pp.nodes[target.node].kind == NodeKind::Device && pp.nodes[target.node].instrument &&
-        target.port > 0) {
-      (void)v.connect(a.device, port, pp.nodes[target.node].device, pp.nodes[target.node].inputs[target.port].name);
+        pp.nodes[target.node].inputs[target.port].param) {
+      const Node& t = pp.nodes[target.node];
+      std::string param = t.inputs[target.port].name;
+      doc::DeviceId to = t.device;
+      if (const size_t at = param.rfind('@'); t.rack && at != std::string::npos) {  // T4.8: a device inside the rack
+        to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
+        param.resize(at);
+      }
+      (void)(notes.valid() ? v.connectNotes(notes, port, to, param) : v.connect(from, port, to, param));
       return;
     }
     const uint32_t to = nodeAt(pos);
-    if (to != kNone && pp.nodes[to].kind == NodeKind::Device) (void)v.openParamMenu(a.device, port, to, pos);
+    if (to != kNone && pp.nodes[to].kind == NodeKind::Device) (void)v.openParamMenu(from, port, to, pos, notes);
     return;
   }
   if (a.kind == NodeKind::Mixer) {
@@ -917,9 +930,29 @@ ui::InfoText ProjectCanvas::info() const {
   if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone) return {ro.title, ro.value};
+  // TMM.10-fix2: a MIDI track's lane window is its note source (its Hz piano roll), not a subcircuit.
+  if (const circuit::CanvasHit& h = hovered(); (h.kind == circuit::CanvasHit::Kind::Node || h.kind == circuit::CanvasHit::Kind::Pin) && scene()) {
+    const circuit::CircuitScene& sc = *scene();
+    const uint32_t v = h.kind == circuit::CanvasHit::Kind::Pin ? (h.index < sc.pins.size() ? sc.pins[h.index].node : kNone) : h.index;
+    const ProjectScene& ps = view_.scene();
+    const ProjectPatch& pp = view_.patch();
+    if (v < ps.modelNode.size() && ps.modelNode[v] < pp.nodes.size() && isNoteSource(pp, pp.nodes[ps.modelNode[v]])) {
+      const Node& n = pp.nodes[ps.modelNode[v]];
+      infoTitle_ = pp.bands[n.band].name + " notes";
+      if (h.kind == circuit::CanvasHit::Kind::Pin && !sc.pins[h.index].input && sc.pins[h.index].port > 0 &&
+          sc.pins[h.index].port < n.outputs.size())
+        if (const doc::NoteOutput* o = doc::findNoteOutput(n.outputs[sc.pins[h.index].port].name))
+          infoTitle_ += ": " + std::string(o->label);
+      return {infoTitle_,
+              "The track's note source: its piano roll, in Hz. Its notes play the chain; its note outputs (Hz, gate, velocity) "
+              "are per voice: drag one onto a device to wire it into a parameter (per voice into a device that runs per "
+              "voice, through the wire's reducer into any other)."};
+    }
+  }
   if (hovered().kind != circuit::CanvasHit::Kind::None) return CircuitCanvas::info();  // the node, pin or wire under the pointer
   return {"Project Patch",
-          "The whole project as one circuit. Drag an export onto a device to wire it, a mixer's output onto a group, return "
+          "The whole project as one circuit. Drag an export, or a note output of a track's Notes (Hz, gate, velocity), onto a "
+          "device to wire it into a parameter, a mixer's output onto a group, return "
           "or the master to route it; double-click a band to open it (its devices opened to their atoms), a device to open it "
           "alone, inside an opened device to edit its circuit. Over a lane window the wheel scrolls time, Ctrl+wheel zooms it; "
           "double-click a clip to edit it. Ctrl+Alt+P returns to the arrangement."};

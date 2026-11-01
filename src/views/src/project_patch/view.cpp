@@ -386,7 +386,9 @@ void ProjectPatchView::paint(ui::PaintContext& ctx) {
     const float dx = now[c.band].x0 - br.x0, dy = now[c.band].y0 - br.y0;
     const Rect sr = morph_.nodes[band.source].end;
     const float k = (sr.x1 - sr.x0) / std::max(1.0f, src.w);
-    const Rect strip{sr.x0 + metrics::kLaneInset * k + dx, sr.y0 + metrics::kLaneTop * k + dy, sr.x1 - metrics::kLaneInset * k + dx,
+    const LaneRect lb = laneBody(src);  // its insets (TMM.10-fix2: a MIDI window's names column on the right)
+    const float right = src.x + src.w - lb.x1;
+    const Rect strip{sr.x0 + metrics::kLaneInset * k + dx, sr.y0 + metrics::kLaneTop * k + dy, sr.x1 - right * k + dx,
                      sr.y1 - metrics::kLaneBottom * k + dy};
     const float sw = strip.x1 - strip.x0;
     const Rect end{strip.x0 + c.u0 * sw, strip.y0, std::max(strip.x0 + c.u1 * sw, strip.x0 + c.u0 * sw + 1.0f), strip.y1};
@@ -1010,6 +1012,10 @@ bool ProjectPatchView::connect(doc::DeviceId from, const std::string& port, doc:
   return apply(doc::ops::connectWire(*ctx_.doc(), ctx_.store().ids(), from, port, to, param), "Wire");
 }
 
+bool ProjectPatchView::connectNotes(doc::TrackId track, const std::string& port, doc::DeviceId to, const std::string& param) {
+  return apply(doc::ops::connectNoteWire(*ctx_.doc(), ctx_.store().ids(), track, port, to, param), "Wire");
+}
+
 bool ProjectPatchView::sendOn(doc::TrackId track, doc::TrackId ret) {
   return dispatch(doc::Batch{"Send On", {doc::SetSendLevel{track, ret, 0.0f}}}, "Send");
 }
@@ -1250,7 +1256,7 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
     items.push_back(std::move(circuit));
     if (!n.rack) {
       ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [this, d] { (void)editDeviceCircuit(d); });
-      edit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing;
+      edit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing && !n.meta;  // a meta module's atoms are generated
       items.push_back(std::move(edit));
     }
     if (n.edited)
@@ -1327,7 +1333,8 @@ ui::Menu* ProjectPatchView::openWireMenu(uint32_t edge, Vec2 at) {
   return ui::openContextMenu(*canvas_, at, std::move(items));
 }
 
-ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string& port, uint32_t toNode, Vec2 at) {
+ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string& port, uint32_t toNode, Vec2 at,
+                                          doc::TrackId notes) {
   if (toNode >= patch_.nodes.size() || patch_.nodes[toNode].kind != NodeKind::Device) return nullptr;
   const Node& n = patch_.nodes[toNode];
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
@@ -1344,8 +1351,8 @@ ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string&
   for (const doc::DeviceParamInfo& prm : info->params) {
     if (prm.kind == graph::Kind::Bool) continue;  // bool params are not modulation targets (T4.7)
     const std::string name = prm.name;
-    items.push_back(ui::MenuItem::item(prm.label.empty() ? prm.name : prm.label, [this, from, port, to, name] {
-      (void)connect(from, port, to, name);
+    items.push_back(ui::MenuItem::item(prm.label.empty() ? prm.name : prm.label, [this, from, port, to, name, notes] {
+      (void)(notes.valid() ? connectNotes(notes, port, to, name) : connect(from, port, to, name));  // TMM.10-fix2
     }));
   }
   if (items.empty()) return nullptr;
@@ -1483,11 +1490,18 @@ void ProjectPatchView::pollReadout() {
     case EdgeKind::Modulation: {
       const doc::Wire* w = doc::findWire(p, e.wire);
       const Node& tn = patch_.nodes[e.to];
-      readout_.title = patch_.nodes[e.from].title + "." + patch_.nodes[e.from].outputs[e.fromPort].name + " \xE2\x86\x92 " + tn.title + "." +
-                       tn.inputs[e.toPort].label;
+      const doc::NoteOutput* no = w != nullptr && w->fromNoteSource() ? doc::findNoteOutput(w->port) : nullptr;
+      // TMM.10-fix2: a note output reads as "<track> notes: Hz → …" (the note source has no device name).
+      const std::string source = no != nullptr ? from.name + " notes: " + std::string(no->label)
+                                               : patch_.nodes[e.from].title + "." + patch_.nodes[e.from].outputs[e.fromPort].name;
+      readout_.title = source + " \xE2\x86\x92 " + tn.title + "." + tn.inputs[e.toPort].label;
       char buf[96];
       std::snprintf(buf, sizeof buf, "amount %+.0f %%", w != nullptr ? w->amount * 100.0 : 0.0);
       readout_.value = buf;
+      if (no != nullptr) {
+        static constexpr const char* kReducers[] = {"sum", "last", "highest", "lowest", "loudest"};
+        readout_.value += std::string(" \xC2\xB7 per voice (into a global param: ") + kReducers[static_cast<size_t>(w->reducer)] + ")";
+      }
       if (e.delayed) readout_.value += ", z\xE2\x81\xBB\xC2\xB9";
       if (e.status == doc::WireStatus::Inactive) readout_.value += ", inactive";
       if (e.status == doc::WireStatus::Refused) readout_.value += ", refused (two instruments)";

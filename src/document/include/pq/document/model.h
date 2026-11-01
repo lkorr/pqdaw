@@ -642,20 +642,49 @@ DevicePtr makeDefaultInstrument(DeviceId id);  // makeDevice(id, kDefaultInstrum
 // modulation never writes the document). A voice source into a global target is reduced per wire (`reducer`, SPEC
 // §7.4: sum by default). Wires add no delay; a wire that would close a delay-free cycle gets an automatic 1-sample
 // delay (SPEC §15 2026-10-24; decided by the lowering, lower.h).
+//
+// TMM.10-fix2 (SPEC §15 2026-11-01 "notes are a signal", "the note source is a Hz piano roll"): a wire's source may
+// instead be a MIDI track's NOTE SOURCE (its piano roll, in Hz): `noteSource` names the track, `from` stays invalid and
+// `port` is one of its note outputs (kNoteOutputs: "hz", "gate", "velocity"). The lowering reads that track's voice
+// terminals: per voice into a device that runs per voice on the same track, through the wire's reducer into any other
+// (a global device of the track, or a device on another track, as an export's wire). Removing the track removes them.
 enum class WireReducer : uint8_t { Sum, Last, Highest, Lowest, Loudest };
 inline constexpr double kDefaultWireAmount = 0.5;
 
 struct Wire {
   WireId id;
-  DeviceId from;      // the source device
-  std::string port;   // its export
+  DeviceId from;      // the source device (invalid for a note-source wire)
+  std::string port;   // its export (a note-source wire: its note output)
   DeviceId to;        // the target device (may be `from` itself)
   std::string param;  // its param
   double amount = kDefaultWireAmount;  // [−1, 1]: knob travel per unit of source
   WireReducer reducer = WireReducer::Sum;
+  TrackId noteSource;  // TMM.10-fix2: valid: the source is this (MIDI) track's note source
+  bool fromNoteSource() const noexcept { return noteSource.valid(); }
+  // Whether two wires join the same two ports (a second such wire is refused).
+  bool sameEnds(const Wire& o) const noexcept {
+    return from == o.from && noteSource == o.noteSource && port == o.port && to == o.to && param == o.param;
+  }
   friend bool operator==(const Wire&, const Wire&) = default;
 };
 using WireList = std::vector<Wire>;  // sorted by id
+
+// TMM.10-fix2: the outputs of a track's note source (its Hz piano roll), in the order the views draw them: the
+// voice terminal each reads (pq/graph atoms `voice.*`; "hz" is the tuned pitch, as devices hear it), its label, and
+// whether the terminal is a bool (gate: read as 0 / 1). Per voice; a wire into a global target reduces it.
+struct NoteOutput {
+  std::string_view port;   // the Wire::port
+  std::string_view label;  // its name in readouts and menus
+  std::string_view pin;    // drawn next to its pin (short)
+  std::string_view atom;   // the voice terminal
+  bool boolean = false;
+};
+inline constexpr NoteOutput kNoteOutputs[] = {
+    {"hz", "Hz", "Hz", "voice.hz", false},
+    {"gate", "gate", "gate", "voice.gate", true},
+    {"velocity", "velocity", "vel", "voice.velocity", false},
+};
+const NoteOutput* findNoteOutput(std::string_view port) noexcept;
 
 struct Track;
 using TrackPtr = std::shared_ptr<const Track>;

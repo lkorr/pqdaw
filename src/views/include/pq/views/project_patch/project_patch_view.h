@@ -164,6 +164,7 @@ private:
   bool gesture_ = false;
   ui::Cursor hoverCursor_ = ui::Cursor::Arrow;     // T4.16c: pressCursor at the last move
   ui::Cursor wireCursor_ = ui::Cursor::Crosshair;  // T4.16c: during a wire drag
+  mutable std::string infoTitle_;                  // TMM.10-fix2: a hovered note source's info (info() returns views)
 };
 
 class ProjectPatchView : public ui::Widget {
@@ -254,6 +255,8 @@ public:
   // ---- edits (each one undo step through pq::doc::ops / commands; false and the reason in the status line when it
   // could not be done) ---------------------------------------------------------------------------------------------
   bool connect(doc::DeviceId from, const std::string& port, doc::DeviceId to, const std::string& param);
+  // TMM.10-fix2: MIDI track `track`'s note source, its note output `port` (doc::kNoteOutputs), into `to`.`param`.
+  bool connectNotes(doc::TrackId track, const std::string& port, doc::DeviceId to, const std::string& param);
   // `track`'s output into `target`: a group or the master (its output), a return (its send to 0 dB).
   bool routeTo(doc::TrackId track, doc::TrackId target);
   bool sendOn(doc::TrackId track, doc::TrackId ret);
@@ -282,7 +285,9 @@ public:
   ui::Menu* openBandMenu(uint32_t band, ui::Vec2 at);
   ui::Menu* openNodeMenu(uint32_t node, ui::Vec2 at);
   ui::Menu* openWireMenu(uint32_t edge, ui::Vec2 at);
-  ui::Menu* openParamMenu(doc::DeviceId from, const std::string& port, uint32_t toNode, ui::Vec2 at);
+  // The params of block `toNode` a wire from `from`.`port` (or, `notes` valid, from that track's note output `port`)
+  // can drive; choosing one connects it.
+  ui::Menu* openParamMenu(doc::DeviceId from, const std::string& port, uint32_t toNode, ui::Vec2 at, doc::TrackId notes = {});
 
   // ---- sources and hooks --------------------------------------------------------------------------------------
   void setMeterSource(MeterSource* source);

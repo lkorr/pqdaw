@@ -570,6 +570,12 @@ const WireList& wiresOf(const Project& p) noexcept {
   return p.wires ? *p.wires : kNone;
 }
 
+const NoteOutput* findNoteOutput(std::string_view port) noexcept {
+  for (const NoteOutput& o : kNoteOutputs)
+    if (o.port == port) return &o;
+  return nullptr;
+}
+
 const Wire* findWire(const Project& p, WireId id) noexcept {
   const WireList& w = wiresOf(p);
   const auto it = std::lower_bound(w.begin(), w.end(), id, [](const Wire& a, WireId b) { return a.id < b; });
