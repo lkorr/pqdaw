@@ -92,7 +92,7 @@ Nothing blocks: per-track units, hot swap, sleep, the tile atlas, the lane-windo
   - Damage covers only a face's live rects, at ≤ 60 Hz while any of its voices sound; the idle cost is zero.
 - **Interactive at every zoom.** Hit-testing and drags run in face-local world units, so a knob at zoom 0.05 still drags (Shift = fine). Wheel over a face goes to the face only where the face uses it (harmonic scroll, position); elsewhere it pans or zooms the canvas.
 - **Phase accumulator face** (SeptaBee-like, our own): a circle, label-free.
-  - The left arc is **frequency** (log, 0 at the bottom); the right arc is **amplitude**; the bottom arc is **phase offset**.
+  - The left arc is **frequency** (log, 0 at the bottom); the right arc is **amplitude**; the bottom arc is **phase offset**. (TMM.15: the right arc is now **pitch** and amplitude moved to the top.)
   - The centre is the output jack, ringed by per-voice phase dots.
   - The input jacks (`hz`, `pm`) are at the left.
   - The frequency law is f = 20 kHz · (2^(14t) − 1)/(2^14 − 1), so t = 0 gives exactly 0 Hz and t = 1 gives 20 kHz.
@@ -337,6 +337,8 @@ Nothing blocks: per-track units, hot swap, sleep, the tile atlas, the lane-windo
   - Presets save and load; REVIEW entry.
 
 **TMM.14 VCA meta module** 👁 (`meta`, `views/meta`; SPEC §15 2026-11-01 "a VCA meta module"; added after TMM.12). `vca`: out = in × value, the knob position mapped through a curve between min and max (default bipolar log: −1 … 1 linear over 10 → 2 o'clock, log to ±20 k, C1 joins; or Bend), modulated in knob space; a circular face after the user's sketch (✕, pie-wedge knob, readout, min —— max, curve box, presets). Decisions: QUESTIONS Q?-TMM.14-a.
+
+**TMM.15 Phase accumulator pitch slider** 👁 (`meta` phase_acc, `views/meta` phase_acc face; SPEC §15 2026-11-01 "Phase accumulator pitch slider"). A `pitch` param in cents (±4800, default 0, last in the signature) transposes the whole frequency: (hz + freq) · 2^(pitch/1200), the ratio `cents_to_hz(pitch, 1)` at param rate (double, exact at whole octaves, exactly 1 at 0: existing renders bit-identical). Face: pitch on the right arc (0 at 3 o'clock, a tick per octave), amplitude moved to the top arc, the output's lead through the gap between them; semitone drags (Ctrl: cents), Up / Down ±1 st, Shift ±12, Ctrl ±1 ¢, typed entry, a semitones + cents readout while transposed. Decisions: QUESTIONS Q?-TMM.15-a.
 
 **TMM.13 MM review** (an independent agent, as for M0–M5). Includes a whole-suite `-Full`, ship benches for the frame-table reads / live path / Meta Operator, a re-run of the alias suite, and a UI critique against "ui is everything here".
 
