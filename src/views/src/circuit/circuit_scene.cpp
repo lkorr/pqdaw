@@ -594,7 +594,62 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
     sc.points.insert(sc.points.end(), pts.begin(), pts.end());
   }
 
-  indexScene(sc);
+  // TMM.6: each oversample region as a wash behind its visible members (see SceneRegion).
+  float include[4] = {0, 0, 0, 0};
+  bool anyRegion = false;
+  for (uint32_t g = 1; g <= p.regions().size(); ++g) {
+    SceneRegion reg;
+    reg.region = static_cast<uint16_t>(g);
+    reg.firstRect = static_cast<uint32_t>(sc.regionRects.size());
+    sc.regionRects.push_back({});  // the title band, set below
+    graph::NodeIndex first = graph::kNone;
+    for (graph::NodeIndex v = 0; v < n; ++v) {
+      const SceneNode& sn = sc.nodes[v];
+      if (p.node(v).region != g || sn.hidden) continue;
+      sc.regionRects.push_back({sn.x - kRegionPad, sn.y - kRegionPad, sn.x + sn.w + kRegionPad, sn.y + sn.h + kRegionPad});
+      if (first == graph::kNone || sn.y < sc.nodes[first].y || (sn.y == sc.nodes[first].y && sn.x < sc.nodes[first].x))
+        first = v;
+    }
+    if (first == graph::kNone) {
+      sc.regionRects.pop_back();
+      continue;
+    }
+    for (const SceneWire& sw : sc.wires) {
+      if (sw.hidden || sw.wire == graph::kNone) continue;
+      const graph::Wire& wr = p.wire(sw.wire);
+      if (p.node(wr.from.node).region != g || p.node(wr.to.node).region != g) continue;
+      for (uint32_t i = 0; i + 1 < sw.pointCount; ++i) {
+        const Point2 a = sc.points[sw.firstPoint + i], b = sc.points[sw.firstPoint + i + 1];
+        sc.regionRects.push_back({std::min(a.x, b.x) - kRegionBand, std::min(a.y, b.y) - kRegionBand,
+                                  std::max(a.x, b.x) + kRegionBand, std::max(a.y, b.y) + kRegionBand});
+      }
+    }
+    const SceneNode& fn = sc.nodes[first];
+    sc.regionRects[reg.firstRect] = {fn.x - kRegionPad, fn.y - kRegionPad - kRegionTitle, fn.x + fn.w + kRegionPad,
+                                     fn.y - kRegionPad};
+    reg.rectCount = static_cast<uint32_t>(sc.regionRects.size()) - reg.firstRect;
+    for (uint32_t k = reg.firstRect; k < reg.firstRect + reg.rectCount; ++k) {
+      const SceneRect& q = sc.regionRects[k];
+      const bool firstOne = k == reg.firstRect;
+      reg.x0 = firstOne ? q.x0 : std::min(reg.x0, q.x0);
+      reg.y0 = firstOne ? q.y0 : std::min(reg.y0, q.y0);
+      reg.x1 = firstOne ? q.x1 : std::max(reg.x1, q.x1);
+      reg.y1 = firstOne ? q.y1 : std::max(reg.y1, q.y1);
+    }
+    const graph::OversampleRegion& def = p.regions()[g - 1];
+    std::string title = "\xC3\x97" + std::to_string(def.factor);  // ×n
+    for (size_t k = 0; k < def.phase.size(); ++k) title += (k == 0 ? " \xC2\xB7 phase: " : ", ") + def.phase[k];
+    reg.text = static_cast<uint32_t>(sc.strings.size());
+    sc.strings.push_back(std::move(title));
+    include[0] = anyRegion ? std::min(include[0], reg.x0) : reg.x0;
+    include[1] = anyRegion ? std::min(include[1], reg.y0) : reg.y0;
+    include[2] = anyRegion ? std::max(include[2], reg.x1) : reg.x1;
+    include[3] = anyRegion ? std::max(include[3], reg.y1) : reg.y1;
+    anyRegion = true;
+    sc.regions.push_back(reg);
+  }
+
+  indexScene(sc, anyRegion ? include : nullptr);
   if (laidOut) *laidOut = std::move(p);
   return scene;
 }

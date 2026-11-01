@@ -59,7 +59,8 @@ public:
     cand_.assign(s_.regions.size(), 0);
     for (uint32_t r = 0; r < s_.regions.size(); ++r) {
       const Region& reg = s_.regions[r];
-      if (reg.kind == RegionKind::Control || reg.numSolves > 0 || !global_[r] || reg.numOps == 0) continue;
+      // TMM.6: an oversample region never sleeps (its buffers hold n samples per frame; its converters ring on).
+      if (reg.kind == RegionKind::Control || reg.numSolves > 0 || !global_[r] || reg.numOps == 0 || reg.factor > 1) continue;
       bool ok = true;
       for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps && ok; ++i) ok = s_.ops[i].kind != OpKind::Reduce;
       cand_[r] = ok ? 1 : 0;
@@ -283,7 +284,7 @@ private:
   bool eligible(uint32_t i) const noexcept {
     if (!global(i)) return false;
     const Region& reg = s_.regions[regionOf_[i]];
-    if (reg.kind == RegionKind::Control || reg.numSolves > 0) return false;
+    if (reg.kind == RegionKind::Control || reg.numSolves > 0 || reg.factor > 1) return false;
     const Op& op = s_.ops[i];
     if (op.kind == OpKind::Reduce) return false;
     if (op.kind == OpKind::Kernel && dsp::kernelInfo(op.kernel).stateSize != 0) return cand_[regionOf_[i]] != 0;

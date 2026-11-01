@@ -43,6 +43,8 @@ inline constexpr uint32_t kNeedsTransport = 1u << 6;  // reads the transport sna
 inline constexpr uint32_t kSideEffect = 1u << 7;      // writes outside the patch (send): never dead-code eliminated
 inline constexpr uint32_t kFastApprox = 1u << 8;      // the fast_ approximation of an exact atom (exactVariant)
 inline constexpr uint32_t kBroadcast = 1u << 9;       // real inputs broadcast mono over N channels (§3 Width)
+inline constexpr uint32_t kInternal = 1u << 10;       // inserted by the compiler only (TMM.6: oversample_*): text and
+                                                      // the circuit editor cannot call it
 }  // namespace atom_flags
 
 struct PortSpec {

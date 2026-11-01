@@ -17,6 +17,7 @@
 
 #include "pq/dsp/atoms.h"
 #include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/oversample.h"
 #include "pq/graph/atoms.h"
 
 namespace pq::engine::host {
@@ -233,6 +234,13 @@ uint32_t lanesOfOperand(const g::Schedule& s, const g::Operand& o) noexcept {
   return 8u;
 }
 
+// TMM.6: samples per frame of a block operand (an oversample region's buffers hold factor; externals the base rate).
+uint32_t factorOfOperand(const g::Schedule& s, const g::Operand& o) noexcept {
+  if (o.kind == g::Operand::Kind::Buffer && s.buffers[o.index].cls == g::Buffer::Class::Block)
+    return s.buffers[o.index].factor;
+  return 1u;
+}
+
 bool validOperand(const g::Schedule& s, const g::Operand& o) noexcept {
   switch (o.kind) {
     case g::Operand::Kind::Buffer: return o.index < s.buffers.size();
@@ -306,17 +314,22 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
 // The checks every backend relies on, once per op (the generated code and the records assume them).
 bool ImageHost::validate(const g::Schedule& s) {
   auto opName = [](uint32_t i) { return "op " + std::to_string(i); };
-  for (const g::Buffer& b : s.buffers)
+  for (const g::Buffer& b : s.buffers) {
     if (b.cls == g::Buffer::Class::Block && b.lanes != 1 && b.lanes != 8) return fail("buffer lanes must be 1 or 8");
+    if (!dsp::os::validFactor(b.factor) || (b.cls == g::Buffer::Class::Pattern && b.factor != 1))
+      return fail("invalid buffer oversample factor");
+  }
   for (const g::Stage& st : s.stages) {
     if (st.firstRegion + st.numRegions > s.regions.size()) return fail("stage regions out of range");
     for (uint32_t ri = st.firstRegion; ri < st.firstRegion + st.numRegions; ++ri) {
       const g::Region& reg = s.regions[ri];
       if (reg.firstOp + reg.numOps > s.ops.size()) return fail("region ops out of range");
       const bool control = reg.kind == g::RegionKind::Control;
+      if (!dsp::os::validFactor(reg.factor) || (control && reg.factor != 1)) return fail("invalid region oversample factor");
       for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
         const g::Op& op = s.ops[i];
         if (op.firstOperand + op.numIn + op.numOut > s.operands.size()) return fail(opName(i) + ": operands out of range");
+        if (!control && !validateFactors(s, reg, op)) return fail(opName(i) + ": oversample factors disagree with its region");
         if (st.poly == g::Poly::Voice && op.kind == g::OpKind::Kernel && op.lanes != 8) return fail("a 1-lane op in a voice stage");
         if (op.kind == g::OpKind::Kernel && op.lanes != 1 && op.lanes != 8) return fail("op lanes must be 1 or 8");
         const auto ins = s.inputs(op);
@@ -398,7 +411,37 @@ bool ImageHost::validate(const g::Schedule& s) {
     }
   }
   for (const g::OutputRef& x : s.outputs)
-    if (!validOperand(s, x.value)) return fail("output with an invalid operand");
+    if (!validOperand(s, x.value) || factorOfOperand(s, x.value) != 1) return fail("output with an invalid operand");
+  for (const g::ProbeRef& p : s.probes)
+    if (validOperand(s, p.value) && factorOfOperand(s, p.value) != 1) return fail("probe of an oversampled value");
+  return true;
+}
+
+// TMM.6: every block operand of an op in a region of factor F holds F samples per frame, except a rate converter's
+// base-rate side (up / phase / hold read the base rate, down / any write it), whose factor input is F. Reducers and
+// sends run at the base rate only.
+bool ImageHost::validateFactors(const g::Schedule& s, const g::Region& reg, const g::Op& op) const {
+  const uint32_t F = reg.factor;
+  const auto ins = s.inputs(op);
+  const auto outs = s.outputsOf(op);
+  uint32_t inF = F, outF = F;
+  if (op.kind == g::OpKind::Kernel) {
+    const bool up = op.kernel == dsp::Atom::OversampleUp || op.kernel == dsp::Atom::OversamplePhase ||
+                    op.kernel == dsp::Atom::OversampleHold;
+    const bool down = op.kernel == dsp::Atom::OversampleDown || op.kernel == dsp::Atom::OversampleAny;
+    if (up || down) {
+      if (F < 2 || op.numIn != 2 || ins[1].kind != g::Operand::Kind::Const ||
+          dsp::os::sanitizeFactor(s.constants[ins[1].index].value) != F)
+        return false;
+      (up ? inF : outF) = 1;
+    }
+  } else if (F != 1 && op.kind != g::OpKind::Broadcast) {
+    return false;
+  }
+  for (const g::Operand& x : ins)
+    if (!isPatternOperand(s, x) && factorOfOperand(s, x) != inF) return false;
+  for (const g::Operand& x : outs)
+    if (!isPatternOperand(s, x) && factorOfOperand(s, x) != outF) return false;
   return true;
 }
 
@@ -411,7 +454,7 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   for (size_t i = 0; i < s.buffers.size(); ++i) {
     const g::Buffer& b = s.buffers[i];
     bufPerGroup_[i] = b.perGroup ? 1 : 0;
-    const uint32_t size = roundUp(b.cls == g::Buffer::Class::Pattern ? 8u : B * b.lanes, kFloatAlign);
+    const uint32_t size = roundUp(b.cls == g::Buffer::Class::Pattern ? 8u : B * b.lanes * b.factor, kFloatAlign);
     L_.bufOff[i] = off;
     L_.bufSize[i] = size;
     off += size * (b.perGroup ? G : 1u);

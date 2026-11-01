@@ -242,6 +242,7 @@ pq_add_test(pq_tests_graph PERF
     graph/test_edit.cpp
     graph/test_probe.cpp
     graph/test_structure.cpp  # T4.15: structural constants, switched-off branches
+    graph/test_oversample.cpp  # TMM.6: the oversample(n) region: text, checks, converters, schedule
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
@@ -306,6 +307,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
     jit/test_jit_cache.cpp  # T1b.4: the compile cache (memory, disk, read-only AOT directories)
     engine/test_silence.cpp  # T1.x-silence: the sleep suite again, on JIT images
     jit/test_jit_silence.cpp  # T1.x-silence: interpreter and JIT sleep identically
+    jit/test_oversample.cpp  # TMM.6: the oversample(n) region on both backends (reference, aliasing, pitch, voices, swap)
     engine/test_probes.cpp  # T4.5: probes and cost meters again, on JIT images (and interpreter == JIT probe streams)
     jit/test_jit_frame_table.cpp  # TMM.2: wavetable_pos / voice_tap on both backends (swaps, taps, hot swap, reference)
   DEPS pq_jit pq_compile)
@@ -336,6 +338,7 @@ pq_add_test(pq_tests_dsp
     dsp/test_frame_table.cpp
     dsp/test_frame_table_alias.cpp
     dsp/test_wavetable_pos.cpp  # TMM.2: wavetable_pos (slots, crossfade, taps, swap stress), voice_tap
+    dsp/test_oversample.cpp  # TMM.6: the oversample region's rate converters
     support/alias_meter.h  # TMM.1: the reusable alias meter (listed so tests/support maps to its users)
   DEPS pq_dsp)
 

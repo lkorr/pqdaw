@@ -27,6 +27,9 @@
 //    inputs, and subcircuit inputs the callee gives no default.
 // Solve blocks
 //  - 1..kMaxSolveIterations iterations, at least one unknown, as many equations as unknowns.
+// Oversample regions (TMM.6)
+//  - factor 1, 2, 4, 8 or 16; phase entries are "name" or "name.output" of a named node outside the region.
+//  - Node::region names an existing region; only atoms, constants and calls are inside one (no declarations).
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +53,7 @@ public:
     checkNames();
     checkWires();
     checkSolves();
+    checkRegions();
     checkComments();
     return std::move(errors_);
   }
@@ -64,6 +68,40 @@ private:
   }
   std::string outPort(NodeIndex n, uint32_t i) const {
     return "output '" + std::string(p_.outputName(n, i)) + "' of " + p_.describe(n);
+  }
+
+  void checkRegions() {
+    const auto count = static_cast<uint32_t>(p_.regions().size());
+    for (uint32_t r = 0; r < count; ++r) {
+      const OversampleRegion& reg = p_.regions()[r];
+      const std::string what = "oversample region #" + std::to_string(r + 1);
+      if (reg.factor != 1 && reg.factor != 2 && reg.factor != 4 && reg.factor != 8 && reg.factor != 16)
+        fail(ErrorCode::InvalidArgument, what + ": factor " + std::to_string(reg.factor) + " is not 1, 2, 4, 8 or 16");
+      for (const std::string& ph : reg.phase) {
+        const size_t dot = ph.find('.');
+        const std::string_view name = std::string_view(ph).substr(0, dot);
+        const std::optional<NodeIndex> n = p_.findByName(name);
+        if (!n) {
+          fail(ErrorCode::NotFound, what + ": phase input '" + ph + "' names no node");
+          continue;
+        }
+        if (p_.node(*n).region == r + 1)
+          fail(ErrorCode::InvalidArgument, what + ": phase input '" + ph + "' is computed inside the region");
+        if (dot != std::string::npos && !p_.findOutput(*n, std::string_view(ph).substr(dot + 1)))
+          fail(ErrorCode::NotFound, what + ": phase input '" + ph + "': " + p_.describe(*n) + " has no such output");
+      }
+    }
+    for (NodeIndex n = 0; n < p_.nodeCount(); ++n) {
+      const Node& nd = p_.node(n);
+      if (nd.region == 0) continue;
+      if (nd.region > count) {
+        fail(ErrorCode::InvalidArgument,
+             p_.describe(n) + " is in oversample region #" + std::to_string(nd.region) + ", which does not exist");
+        continue;
+      }
+      if (nd.kind != NodeKind::Atom && nd.kind != NodeKind::Const && nd.kind != NodeKind::Subcircuit)
+        fail(ErrorCode::InvalidArgument, p_.describe(n) + ": a declaration cannot be inside an oversample region");
+    }
   }
 
   void checkPatchName() {

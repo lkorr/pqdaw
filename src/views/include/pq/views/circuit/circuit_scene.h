@@ -113,6 +113,23 @@ struct SceneFace {
   uint32_t owner = 0;
 };
 
+// TMM.6: an `oversample(n) { … }` region, drawn as one wash in the signal colour behind exactly its members: each
+// visible member node padded by kRegionPad, every wire between two members as a band, and above the first member (top,
+// then left) a title band holding "×n" (and its phase inputs). The layout does not group a region's nodes, so a box
+// around them would also frame outer nodes placed between them; the wash marks membership wherever they are.
+struct SceneRect {
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+};
+struct SceneRegion {
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // bounds of its rects (culling, the scene's bounds)
+  uint16_t region = 0;                              // graph::Node::region
+  uint32_t text = 0;                                // into strings: "×4" or "×4 · phase: ph"
+  uint32_t firstRect = 0, rectCount = 0;            // into CircuitScene::regionRects; the first is the title band
+};
+inline constexpr float kRegionPad = 14.0f;    // world units around a member node (its caption fits inside)
+inline constexpr float kRegionBand = 6.0f;    // half the width of a wire band
+inline constexpr float kRegionTitle = 16.0f;  // the title band above the first member
+
 struct CircuitScene {
   std::string patchName;
   std::vector<SymbolSpec> specs;  // one per node, in graph node order
@@ -126,6 +143,8 @@ struct CircuitScene {
   std::vector<SceneLabel> labels;
   std::vector<std::string> strings;
   std::vector<SceneFace> faces;  // TMM.4, in node order
+  std::vector<SceneRegion> regions;  // TMM.6, in region order (regions without a visible node are left out)
+  std::vector<SceneRect> regionRects;
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // bounds of everything
   SpatialGrid grid;
   uint32_t autoPlaced = 0;  // nodes completeLayout placed

@@ -60,6 +60,7 @@ struct RegionRun {
   // block whose params equal the previous block's (a settled mixer's gain math costs nothing).
   bool memo = false;
   uint32_t subBlock = 0;
+  uint32_t factor = 1;  // TMM.6: an oversample region runs its ops on frames · factor samples
   uint32_t firstRec = 0, numRec = 0;
   uint32_t firstItem = 0, numItems = 0;  // with solve blocks: rec index, or kSolveItem | solve index
 };
@@ -172,6 +173,7 @@ private:
 };
 
 void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {  // RT-safe
+  frames *= r.factor;  // TMM.6 (Control regions have factor 1)
   switch (r.kind) {
     case g::RegionKind::Control:
       if (r.memo && paramsSame_) return;  // its buffers still hold this block's values
@@ -651,6 +653,7 @@ private:
           rr.kind = reg.kind;
           rr.schedRegion = ri;
           rr.subBlock = reg.subBlock;
+          rr.factor = reg.factor;
           rr.firstRec = static_cast<uint32_t>(im.recs_.size());
           for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
             if (!makeRec(i, gi, loop, control)) return false;

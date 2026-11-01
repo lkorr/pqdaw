@@ -349,6 +349,7 @@ private:
 
   bool fail(std::string msg);
   bool validate(const graph::Schedule& s);
+  bool validateFactors(const graph::Schedule& s, const graph::Region& reg, const graph::Op& op) const;  // TMM.6
   bool layoutMemory(const graph::Schedule& s, uint32_t extraBufFloats);
   bool externals(const graph::Schedule& s);
   void specialOps(const graph::Schedule& s);

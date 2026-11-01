@@ -978,6 +978,41 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   // Visible world rect (+ the margin of captions and AA).
   const Point2 w0 = toWorld({static_cast<float>(clip.x), static_cast<float>(clip.y)});
   const Point2 w1 = toWorld({static_cast<float>(clip.right()), static_cast<float>(clip.bottom())});
+
+  // TMM.6: oversample regions under everything else: one opaque wash (mixed from the background and the signal colour,
+  // so overlapping pieces read as one shape) behind exactly the region's members and their wires, and "×n" in the
+  // title band above its first member, at every zoom where it fits.
+  const Rgba wash = ui::lerp(C.background, C.wireAudio, 0.16f);
+  for (const SceneRegion& rg : sc.regions) {
+    if (rg.x1 < w0.x || rg.x0 > w1.x || rg.y1 < w0.y || rg.y0 > w1.y) continue;
+    const float radius = std::max(1.0f, std::round(5.0f * s));
+    for (uint32_t k = rg.firstRect; k < rg.firstRect + rg.rectCount; ++k) {
+      const SceneRect& q = sc.regionRects[k];
+      if (q.x1 < w0.x || q.x0 > w1.x || q.y1 < w0.y || q.y0 > w1.y) continue;
+      const ui::Rect rr{std::round(m.devX(q.x0)), std::round(m.devY(q.y0)), std::round(m.devX(q.x1)), std::round(m.devY(q.y1))};
+      if (rr.x1 - rr.x0 >= 1.0f && rr.y1 - rr.y0 >= 1.0f) dl.addRoundedRectFilled(rr, radius, wash);
+    }
+    const SceneRect& band = sc.regionRects[rg.firstRect];
+    if (ctx.res.text && ctx.res.uiFonts) {
+      ui::TextSystem& ts = *ctx.res.text;
+      const ui::FontId font = ctx.res.uiFonts->small;
+      const float px = static_cast<float>(ts.metrics(font).pixelSize);
+      const float h = kRegionTitle * s;
+      if (h >= px) {
+        const float x0 = std::round(m.devX(band.x0)), y0 = std::round(m.devY(band.y0));
+        const float padX = std::round(5.0f * us);
+        // The title may run past the band to the right (a phase list): up to 4× the band's width.
+        const int32_t avail = static_cast<int32_t>(4.0f * (m.devX(band.x1) - x0) - 2.0f * padX);
+        const ui::TextRun run = ts.shapeTruncated(font, sc.strings[rg.text], avail);
+        if (run.advance > 0) {
+          const ui::Rect pillR{x0, y0, x0 + static_cast<float>(run.advance) + 2.0f * padX, y0 + h};
+          dl.addRoundedRectFilled(pillR, radius, wash);
+          const float baseline = std::round(y0 + h * 0.5f + 0.727f * px * 0.5f);
+          ui::TextSystem::drawRun(dl, run, {x0 + padX, baseline}, C.wireAudio);
+        }
+      }
+    }
+  }
   const float pad = 4.0f / s + 2.0f;
   ui::TileAtlas* atlas = ctx.res.tiles;
   bool missing = false;

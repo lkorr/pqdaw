@@ -145,6 +145,23 @@ struct alignas(32) SampleReadState {
   float active[8];
 };
 
+// TMM.6: oversample_up / oversample_down (pq/dsp/oversample.h): per allpass of the half-band cascade its previous
+// output, per stage and path the path's previous input (18 allpasses over 4 stages; a lower factor uses the first
+// stages). Every field is per lane.
+struct alignas(32) OversampleState {
+  float y1[18][8];
+  float xin[8][8];  // [stage · 2 + path]
+};
+
+// TMM.6: oversample_phase: the previous base-rate phase and whether there is one (0 after a reset: the first frame
+// holds its value).
+struct alignas(32) OversamplePhaseState {
+  float prev[8];
+  float primed[8];
+};
+
+static_assert(sizeof(OversampleState) == 26 * 32);
+static_assert(sizeof(OversamplePhaseState) == 64);
 static_assert(sizeof(Z1State) == 32);
 static_assert(sizeof(EdgeState) == 32);
 static_assert(sizeof(SampleHoldState) == 64);

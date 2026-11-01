@@ -66,6 +66,11 @@ struct Node {
   // sources that feed voice processing only through this node keep ONE global instance instead of one per voice.
   // An attribute of the node, not a node of its own, so adding it changes no NodeId (state keys, noise seeds).
   bool shared = false;
+  // TMM.6 (PATCH_LANGUAGE §2.3): the `oversample(n) { … }` region the node is computed in, as its index + 1 into
+  // Patch::regions() (0: none). Set for the nodes a region's bindings create (atoms, constants, calls); declarations
+  // are never inside one. infer() turns it into NodeOrigin::region of the flattened nodes (a flattened patch keeps
+  // every Node::region 0).
+  uint16_t region = 0;
 };
 
 struct PortRef {
@@ -84,6 +89,14 @@ struct Wire {
 struct Solve {
   uint32_t iterations = 1;
   friend bool operator==(const Solve&, const Solve&) = default;
+};
+
+// TMM.6: an `oversample(n, phase: a, b) { … }` region of a patch (PATCH_LANGUAGE §2.3): its nodes run at n·sr.
+struct OversampleRegion {
+  uint32_t factor = 2;             // 1, 2, 4, 8 or 16 (validate)
+  std::vector<std::string> phase;  // outer values read inside by phase interpolation: "name" or "name.output", as the
+                                   // parser resolved them (aliases followed to the named node)
+  friend bool operator==(const OversampleRegion&, const OversampleRegion&) = default;
 };
 
 struct SubcircuitPort {
@@ -139,6 +152,10 @@ public:
 
   void setNodeName(NodeIndex n, std::string name, uint16_t nameOutput = kWholeNode);
   void setShared(NodeIndex n, bool shared) { nodes_[n].shared = shared; }  // Node::shared (Atom nodes)
+  // TMM.6: a new region (its id = index + 1, what Node::region holds) and a node's region (0: none).
+  uint16_t addRegion(OversampleRegion r);
+  void setNodeRegion(NodeIndex n, uint16_t region) { nodes_[n].region = region; }
+  OversampleRegion& region(uint16_t id) { return regions_[id - 1u]; }
   // Nodes added from now on get NodeIds > `id` (T1.x-arch1: a project unit gives each track's call node the track's
   // own id, so state keys do not depend on which unit the track is in).
   void reserveIdsThrough(NodeId id) noexcept { ids_.reserveThrough(id); }
@@ -179,6 +196,8 @@ public:
   std::span<const PortType> portTypes() const noexcept { return ports_; }
   std::span<const Solve> solves() const noexcept { return solves_; }
   std::span<const LayoutComment> comments() const noexcept { return comments_; }
+  std::span<const OversampleRegion> regions() const noexcept { return regions_; }  // TMM.6; region id k is [k − 1]
+  const OversampleRegion& region(uint16_t id) const noexcept { return regions_[id - 1u]; }
 
   uint32_t flatInput(NodeIndex n, uint32_t i) const noexcept { return nodes_[n].firstPort + i; }
   uint32_t flatOutput(NodeIndex n, uint32_t i) const noexcept { return nodes_[n].firstPort + nodes_[n].numInputs + i; }
@@ -237,6 +256,7 @@ private:
   std::vector<ParamDecl> params_;
   std::vector<SubcircuitRef> subcircuits_;
   std::vector<Solve> solves_;
+  std::vector<OversampleRegion> regions_;  // TMM.6
   std::vector<LayoutComment> comments_;
   StableIdAllocator<NodeTag> ids_;
   // Empty while ids increase with the dense index (always, unless setNodeIds() made them unsorted); otherwise

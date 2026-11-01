@@ -85,7 +85,8 @@ bool sameGraph(const graph::Patch& a, const graph::Patch& b) {
   for (NodeIndex v = 0; v < a.nodeCount(); ++v) {
     const graph::Node &x = a.node(v), &y = b.node(v);
     if (x.id != y.id || x.kind != y.kind || x.atom != y.atom || x.numInputs != y.numInputs || x.numOutputs != y.numOutputs ||
-        x.nameOutput != y.nameOutput || x.shared != y.shared || a.nodeName(v) != b.nodeName(v) || !(a.layout(v) == b.layout(v)))
+        x.nameOutput != y.nameOutput || x.shared != y.shared || x.region != y.region || a.nodeName(v) != b.nodeName(v) ||
+        !(a.layout(v) == b.layout(v)))
       return false;
     switch (x.kind) {
       case graph::NodeKind::Const:
@@ -113,7 +114,9 @@ bool sameGraph(const graph::Patch& a, const graph::Patch& b) {
   }
   const auto sa = a.solves(), sb = b.solves();
   const auto ca = a.comments(), cb = b.comments();
-  return std::equal(sa.begin(), sa.end(), sb.begin(), sb.end()) && std::equal(ca.begin(), ca.end(), cb.begin(), cb.end());
+  const auto ra = a.regions(), rb = b.regions();  // TMM.6
+  return std::equal(sa.begin(), sa.end(), sb.begin(), sb.end()) && std::equal(ca.begin(), ca.end(), cb.begin(), cb.end()) &&
+         std::equal(ra.begin(), ra.end(), rb.begin(), rb.end());
 }
 
 bool sameGraph(const PatchFile& a, const PatchFile& b) {

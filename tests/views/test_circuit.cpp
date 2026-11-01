@@ -294,6 +294,58 @@ TEST_CASE("circuit: a fan-out has junction dots where it branches; a crossing ha
   }
 }
 
+TEST_CASE("circuit: an oversample region is a framed group labelled ×n around its nodes (TMM.6)") {
+  const auto doc = fromText(R"(patch Os {
+  in x : audio
+  in hz : audio
+  out y : audio
+  ph = phasor(hz)
+  oversample(4, phase: ph) {
+    a = tanh(x * 8)
+    y = a + sine(ph)
+  }
+}
+)");
+  const graph::Patch& p = *doc->find("Os");
+  const auto sc = buildScene(p);
+  REQUIRE(sc->regions.size() == 1);
+  const SceneRegion& rg = sc->regions[0];
+  CHECK(sc->strings[rg.text] == "\xC3\x97" "4 \xC2\xB7 phase: ph");
+  for (graph::NodeIndex v = 0; v < p.nodeCount(); ++v) {
+    if (p.node(v).region != 1) continue;
+    const SceneNode& n = sc->nodes[v];
+    CHECK(n.x >= rg.x0 + kRegionPad - 0.01f);
+    CHECK(n.x + n.w <= rg.x1 - kRegionPad + 0.01f);
+    CHECK(n.y >= rg.y0 + kRegionPad + kRegionTitle - 0.01f);
+    CHECK(n.y + n.h <= rg.y1 - kRegionPad + 0.01f);
+  }
+  CHECK(sc->x0 <= rg.x0);  // the wash is part of the scene's bounds (fit, culling)
+  CHECK(sc->y0 <= rg.y0);
+  // The wash covers the members, never an outer node (the phasor feeding the phase input sits among them).
+  auto covered = [&](float x, float y) {
+    for (uint32_t k = rg.firstRect; k < rg.firstRect + rg.rectCount; ++k) {
+      const SceneRect& q = sc->regionRects[k];
+      if (x >= q.x0 && x <= q.x1 && y >= q.y0 && y <= q.y1) return true;
+    }
+    return false;
+  };
+  for (graph::NodeIndex v = 0; v < p.nodeCount(); ++v) {
+    const SceneNode& n = sc->nodes[v];
+    CHECK(covered(n.x + n.w * 0.5f, n.y + n.h * 0.5f) == (p.node(v).region == 1));
+  }
+  // Painted at every level of detail (validation layers on).
+  Rig rig(700, 450, 1.0f);
+  rig.canvas->setScene(sc);
+  for (double zoom : {1.6, 1.0, 0.5, 0.2}) {
+    rig.canvas->fitAll();
+    CircuitCanvas::View v = rig.canvas->view();
+    v.zoom = zoom;
+    rig.canvas->setView(v);
+    rig.settle();
+    (void)rig.draw(rig.res);
+  }
+}
+
 // ---- canvas: tiles, LOD, idle ---------------------------------------------------------------------------------------
 
 TEST_CASE("circuit: symbol tiles draw what the direct path draws (1x, 1.5x, 2x; near and mid zoom)") {

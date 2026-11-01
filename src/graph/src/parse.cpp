@@ -88,11 +88,19 @@ struct Member {
   uint32_t expr2 = kNone;     // equation rhs
   uint32_t index = kNone;     // Param: index into PatchSyn::params; Unknown/Equation: solve block
   PortType type;              // Input/Output
+  uint16_t region = 0;        // Binding/PortBinding inside `oversample(n) { … }`: PatchSyn::regions index + 1 (TMM.6)
 };
 
 struct SolveSyn {
   uint32_t iterations = 1;
   uint32_t tok = 0;  // 'solve'
+};
+
+// TMM.6: `oversample(n, phase: a, b.out) { bindings }`.
+struct RegionSyn {
+  uint32_t factor = 2;
+  uint32_t tok = 0;                                   // 'oversample'
+  std::vector<std::pair<uint32_t, uint32_t>> phase;  // name token, field token (kNone: none)
 };
 
 // A layout key (T4.3): a node name, then `.input` steps through anonymous nodes (`out.in.a`: the node driving input
@@ -120,6 +128,7 @@ struct PatchSyn {
   std::vector<Member> members;
   std::vector<ParamDecl> params;
   std::vector<SolveSyn> solves;
+  std::vector<RegionSyn> regions;  // TMM.6
   std::vector<LayoutNodeSyn> layoutNodes;
   std::vector<LayoutWireSyn> layoutWires;
   std::vector<LayoutComment> comments;
@@ -314,6 +323,11 @@ private:
 
   // ---- members ----
   void parseMember(PatchSyn& p) {
+    // TMM.6: `oversample(` at the start of a member opens a region (contextual: `oversample = …` is a binding).
+    if (isWord(0, "oversample") && kind(1) == Tok::LParen) {
+      parseRegion(p);
+      return;
+    }
     switch (kind()) {
       case Tok::KwParam: parseParam(p); return;
       case Tok::KwIn:
@@ -345,6 +359,57 @@ private:
                           describe(pos_);
         if (kind() == Tok::KwPatch) msg += " (missing '}' before it?)";
         fail(pos_, std::move(msg));
+      }
+    }
+  }
+
+  // TMM.6 (PATCH_LANGUAGE §2.3): oversample "(" Int [ "," "phase" ":" ref { "," ref } ] ")" "{" { binding } "}".
+  void parseRegion(PatchSyn& p) {
+    RegionSyn r;
+    r.tok = advance();  // oversample
+    expect(Tok::LParen, "after 'oversample' (oversample(4) { … })");
+    const uint32_t n = pos_;
+    if (kind() != Tok::Number || !peek().integer() || toks_[n].unit != Unit::None)
+      fail(pos_, "expected the oversampling factor (1, 2, 4, 8 or 16), found " + describe(pos_));
+    advance();
+    const double f = toks_[n].number;
+    if (f != 1 && f != 2 && f != 4 && f != 8 && f != 16)
+      fail(n, "the oversampling factor must be 1, 2, 4, 8 or 16 (found " + std::string(text(n)) + ")");
+    r.factor = static_cast<uint32_t>(f);
+    if (accept(Tok::Comma)) {
+      expectWord("phase", "after the factor (oversample(4, phase: p) { … })");
+      expect(Tok::Colon, "after 'phase'");
+      do {
+        const uint32_t name = expectName("a phase input (a name)");
+        uint32_t field = kNone;
+        if (accept(Tok::Dot)) field = expectField();
+        r.phase.emplace_back(name, field);
+      } while (accept(Tok::Comma));
+    }
+    expect(Tok::RParen, "to close oversample(…)");
+    const uint32_t open = expect(Tok::LBrace, "to start the oversample region");
+    p.regions.push_back(std::move(r));
+    const auto region = static_cast<uint16_t>(p.regions.size());
+    for (;;) {
+      if (diags_.full()) throw SyntaxError{};
+      if (kind() == Tok::RBrace) {
+        advance();
+        return;
+      }
+      if (kind() == Tok::End) fail(open, "'{' of the oversample region is never closed");
+      const uint32_t start = pos_;
+      try {
+        if (isWord(0, "oversample") && kind(1) == Tok::LParen)
+          fail(pos_, "oversample regions cannot be nested");
+        const bool binding = nameTok(kind()) && (kind(1) == Tok::Assign || kind(1) == Tok::Dot);
+        if (!binding)
+          fail(pos_, "only bindings (name = …) can be inside an oversample region; found " + describe(pos_) +
+                         " (declarations and solve blocks go outside it)");
+        parseBinding(p);
+        p.members.back().region = region;
+      } catch (SyntaxError) {
+        if (kind() == Tok::End) fail(open, "'{' of the oversample region is never closed");
+        syncMember(start);
       }
     }
   }
@@ -1139,6 +1204,8 @@ public:
     names_.reset(syn.members.size());
 
     for (const SolveSyn& s : syn.solves) p_->addSolve(s.iterations);
+    for (const RegionSyn& r : syn.regions) p_->addRegion(OversampleRegion{r.factor, {}});  // phase: step 6b
+    curRegion_ = 0;
 
     // 1. Declarations.
     for (const Member& m : syn.members) {
@@ -1192,7 +1259,9 @@ public:
             errorTok(m.nameTok, "output '" + std::string(name) + "' is bound twice (first at " + where(sym.boundTok) + ")");
           else {
             sym.boundTok = m.nameTok;
+            curRegion_ = m.region;  // `out = …` inside a region: its expression is computed there
             bind(m.expr, {sym.value.node, 0});
+            curRegion_ = 0;
           }
           continue;
         }
@@ -1201,7 +1270,10 @@ public:
       }
       if (!checkNewName(m.nameTok)) continue;
       const uint32_t s = declare(m.nameTok, Sym::Pending, {});
-      if (s != kNone) syms_[s].rhs = m.expr;
+      if (s != kNone) {
+        syms_[s].rhs = m.expr;
+        syms_[s].region = m.region;
+      }
     }
     // 2b. Heads of bindings (alias or a fresh, named node).
     for (uint32_t s = 0; s < syms_.size(); ++s) {
@@ -1211,7 +1283,9 @@ public:
         syms_[s].st = Sym::Alias;
         continue;
       }
+      curRegion_ = syms_[s].region;
       const PortRef v = materialize(rhs);
+      curRegion_ = 0;
       if (v.node == kNone) {
         syms_[s].st = Sym::Error;
         continue;
@@ -1226,12 +1300,18 @@ public:
     resolveAliases();
     // 4. `node.input = rhs`.
     for (const Member& m : syn.members)
-      if (m.kind == MemberKind::PortBinding) bindPort(m);
-    // 5. Everything else.
+      if (m.kind == MemberKind::PortBinding) {
+        curRegion_ = m.region;
+        bindPort(m);
+        curRegion_ = 0;
+      }
+    // 5. Everything else. A sub-expression is computed in the region of the binding it was written in.
     while (!work_.empty()) {
       const Work w = work_.back();
       work_.pop_back();
+      curRegion_ = w.region;
       const PortRef v = materialize(w.ast);
+      curRegion_ = 0;
       if (v.node == kNone) continue;
       if (v.port >= p_->node(v.node).numOutputs) {
         errorAst(w.ast, describeValue(w.ast) + " has no output to use as a value");
@@ -1247,8 +1327,50 @@ public:
             errorTok(tok, "missing argument '" + portTextName(*p_, node, k, true) + "' in the call to '" +
                               std::string(text(tok)) + "'");
     }
+    // 6b. TMM.6: each region's phase inputs, resolved to the value they name (aliases followed) and stored as that
+    // node's name (+ ".output" when it is not the output the name stands for).
+    for (size_t r = 0; r < syn.regions.size(); ++r) lowerPhaseInputs(syn.regions[r], static_cast<uint16_t>(r + 1));
     // 7. Layout.
     lowerLayout(syn);
+  }
+
+  void lowerPhaseInputs(const RegionSyn& syn, uint16_t region) {
+    OversampleRegion& reg = p_->region(region);
+    for (const auto& [nameT, fieldT] : syn.phase) {
+      const std::string_view name = text(nameT);
+      const uint32_t* s = names_.find(name);
+      if (!s) {
+        errorTok(nameT, "unknown phase input '" + std::string(name) + "' (bind the value to a name outside the region)");
+        continue;
+      }
+      const Sym& sym = syms_[*s];
+      if (sym.st == Sym::Unreadable) {
+        errorTok(nameT, unreadable(sym));
+        continue;
+      }
+      if (sym.st != Sym::Value || sym.value.node == kNone) continue;  // already reported
+      PortRef v = sym.value;
+      if (fieldT != kNone) {
+        const auto port = findPortByText(*p_, v.node, text(fieldT), false);
+        if (!port) {
+          errorTok(fieldT, describeNode(v.node) + " has no output '" + std::string(text(fieldT)) + "'");
+          continue;
+        }
+        v.port = static_cast<uint16_t>(*port);
+      }
+      if (p_->node(v.node).region == region) {
+        errorTok(nameT, "phase input '" + std::string(name) +
+                            "' is computed inside its oversample region; a phase input is an outer value read inside");
+        continue;
+      }
+      const std::string& own = p_->nodeName(v.node);
+      if (own.empty()) continue;  // (a symbol always names a node)
+      const uint16_t no = p_->node(v.node).nameOutput;
+      const uint32_t standsFor = no == kWholeNode ? 0u : no;
+      std::string ref = own;
+      if (v.port != standsFor) ref += "." + portTextName(*p_, v.node, v.port, false);
+      if (std::find(reg.phase.begin(), reg.phase.end(), ref) == reg.phase.end()) reg.phase.push_back(std::move(ref));
+    }
   }
 
 private:
@@ -1260,10 +1382,12 @@ private:
     uint32_t tok = 0;          // defining token
     uint32_t rhs = kNone;      // Pending/Alias: the binding's rhs
     uint32_t boundTok = kNone; // outputs: the binding that drives it
+    uint16_t region = 0;       // Pending: the binding's oversample region (TMM.6)
   };
   struct Work {
     uint32_t ast;
     PortRef to;
+    uint16_t region;  // the oversample region the expression is computed in (TMM.6)
   };
 
   std::string_view text(uint32_t tok) const noexcept { return src_.substr(toks_[tok].offset, toks_[tok].length); }
@@ -1300,6 +1424,9 @@ private:
   NodeIndex track(NodeIndex n, Span span) {
     if (nodeSpan_->size() <= n) nodeSpan_->resize(n + 1);
     (*nodeSpan_)[n] = span;
+    const NodeKind k = p_->node(n).kind;
+    if (curRegion_ != 0 && (k == NodeKind::Atom || k == NodeKind::Const || k == NodeKind::Subcircuit))
+      p_->setNodeRegion(n, curRegion_);
     if (claimed_.size() < p_->portCount()) claimed_.resize(p_->portCount(), 0);
     return n;
   }
@@ -1307,7 +1434,7 @@ private:
   bool claimed(PortRef in) const { return claimed_[p_->flatInput(in.node, in.port)] != 0; }
   void bind(uint32_t ast, PortRef to) {
     claimed_[p_->flatInput(to.node, to.port)] = 1;
-    work_.push_back({ast, to});
+    work_.push_back({ast, to, curRegion_});
   }
 
   bool checkNewName(uint32_t tok) {
@@ -1611,7 +1738,8 @@ private:
         return {};
       }
       callNode = track(p_->addSubcircuit(*ref), n.tok);
-    } else if (const auto id = AtomRegistry::builtin().find(name)) {
+    } else if (const auto id = AtomRegistry::builtin().find(name);
+               id && !atomSignature(*id).has(atom_flags::kInternal)) {
       const AtomSignature& sig = atomSignature(*id);
       uint16_t repeat = 0;
       if (sig.has(atom_flags::kVariadicInputs)) {
@@ -1798,6 +1926,7 @@ private:
 
   bool lenientLayout_ = false;
   bool deferMissingInputs_ = false;
+  uint16_t curRegion_ = 0;  // TMM.6: the oversample region new nodes are computed in (track)
   uint32_t layoutDropped_ = 0;
   std::vector<WireIndex> byInput_;  // lowerLayout: per flat input, its wire
 

@@ -120,6 +120,7 @@ KernelFn findMemoryKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 KernelFn findGeneratorKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 KernelFn findTableKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 KernelFn findGainKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // gain, gain_add (kernels_gain.cpp)
+KernelFn findOversampleKernel(Atom a, uint32_t lanes) noexcept;  // TMM.6 converters (kernels_oversample.cpp)
 // tuning_hz (kernels_tuning.cpp): one function per lane count, any Spl mask.
 KernelFn findTuningKernel(uint32_t lanes) noexcept;
 KernelFn findFrameTableKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // TMM.2 (kernels_frame_table.cpp)

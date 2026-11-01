@@ -69,7 +69,8 @@
 //   loop, every Reduce op's output is initialised (sum: 0, highest: −inf …); each group's run combines into it.
 //   Region: Control → each op with frames = 1, lanes = 8; Block → each op with the block's frames; Loop → slices of
 //   subBlock frames (Blk operands offset by t · lanes floats, Spl operands not offset); split writes come last in a
-//   loop's op list. A SolveBlock inside a region: per frame (Loop) or once (Control) run Newton `iterations` times
+//   loop's op list. TMM.6: a Block / Loop region with factor n runs everything above on frames · n (an oversample
+//   region's ops at n·sr; its rate converters read or write the base-rate side, pq/dsp/oversample.h). A SolveBlock inside a region: per frame (Loop) or once (Control) run Newton `iterations` times
 //   on its unknowns: write the guess into each unknown's value, run the body ops, residual_i = lhs_i − rhs_i, solve
 //   J·Δ = residual (J by finite differences or forward AD: a backend choice) and update; then run the body once more
 //   with the final values (body values read after the solve must match the solution) and, for unknowns without an
@@ -130,6 +131,10 @@ enum class RegionKind : uint8_t { Control, Block, Loop };
 struct Region {
   RegionKind kind = RegionKind::Block;
   Poly poly = Poly::Global;
+  // TMM.6: the oversample factor its ops run at (Block / Loop): every op runs on frames · factor samples (a Loop's
+  // sub-blocks count those), its Blk operands are factor-times-longer buffers (Buffer::factor), except a rate
+  // converter's base-rate side. 1 for Control regions and everything outside `oversample(n) { … }`.
+  uint16_t factor = 1;
   uint32_t stage = 0;
   uint32_t firstOp = 0, numOps = 0;
   uint32_t subBlock = 0;                 // Loop: frames per iteration (≥ 1); 0 for Control/Block
@@ -170,8 +175,9 @@ struct SolveEquation {
 struct Buffer {
   enum class Class : uint8_t { Pattern, Block };
   Class cls = Class::Block;
-  uint8_t lanes = 1;      // Block: 1 or 8 (frames · lanes floats); Pattern: always 8 floats
+  uint8_t lanes = 1;      // Block: 1 or 8 (frames · factor · lanes floats); Pattern: always 8 floats
   bool perGroup = false;  // a voice value read in a later voice stage: one copy per voice group
+  uint8_t factor = 1;     // Block: TMM.6, a value of an oversample(n) region holds n samples per frame
 };
 
 struct External {
@@ -214,6 +220,7 @@ struct StateTag {
   static constexpr uint16_t kSolveGuess = 0xFFFE;  // `kernel` of an unknown's previous-solution block
   uint16_t kernel = 0;    // dsp::Atom of the fused kernel (split pairs use the fused atom's tag), or kSolveGuess
   uint8_t lanes = 1;
+  uint8_t factor = 1;     // TMM.6: the oversample factor it runs at (a phasor's increment scale depends on it)
   uint32_t extra = 0;     // delay lines: StateInit::maxDelayFrames (the ring size); 0 otherwise
   friend bool operator==(const StateTag&, const StateTag&) = default;
 };

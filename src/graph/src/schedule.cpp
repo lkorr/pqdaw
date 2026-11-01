@@ -68,6 +68,7 @@ struct SolveInfo {
 struct Val {
   bool pattern = false;
   uint8_t lanes = 1;
+  uint8_t factor = 1;     // TMM.6: samples per frame (an oversample region's values hold n)
   Poly poly = Poly::Global;
   bool perGroup = false;
   uint32_t defStage = 0;
@@ -315,6 +316,8 @@ private:
     width_.assign(N, 1);
     reducer_.assign(N, 0);
     stateful_.assign(N, 0);
+    factor_.assign(N, 1);
+    conv_.assign(N, 0);
     solves_.assign(p.solveCount(), {});
     bool eventReported = false;
     for (const PortType& t : tp_->types) {
@@ -344,6 +347,8 @@ private:
         }
       }
       NK k = NK::Free;
+      // TMM.6: the oversample factor the node runs at (its region's), and whether it is a rate converter.
+      if (n < tp_->origin.size()) factor_[n] = static_cast<uint16_t>(tp_->factorOf(tp_->origin[n].region));
       switch (nd.kind) {
         case NodeKind::Const:
         case NodeKind::Param: k = NK::Free; break;
@@ -369,6 +374,17 @@ private:
             case Lowering::Kernel:
               k = NK::Op;
               stateful_[n] = dsp::kernelInfo(m.kernel).stateSize > 0 ? 1 : 0;
+              if (sig.has(atom_flags::kInternal)) {
+                conv_[n] = m.kernel == dsp::Atom::OversampleDown || m.kernel == dsp::Atom::OversampleAny ? kConvDown
+                                                                                                         : kConvUp;
+                // A converter of a value that is not audio rate (the optimiser normally removes it): the value
+                // itself, which reads the same at every rate.
+                if (nd.numInputs == 0 || tp_->inputType(n, 0).rate != Rate::Audio) {
+                  k = NK::Alias;
+                  stateful_[n] = 0;
+                  conv_[n] = 0;
+                }
+              }
               if (!tp_->durationsInSamples && !secondsReported) {
                 for (const ArgMap& a : m.args) {
                   if (a.use == ArgUse::InputSeconds) {
@@ -580,6 +596,16 @@ private:
         report(first, ErrorCode::Unsupported,
                "feedback loop through " + label(first) +
                    " crosses the voice/global boundary (a voice reducer inside a loop); reduce outside the loop");
+        continue;
+      }
+      // TMM.6: a loop runs at one rate; one through a rate converter would alternate rates within a sample.
+      bool rates = false;
+      for (NodeIndex m : members(c))
+        if (conv_[m] || (nk_[m] == NK::Op && factor_[m] != factor_[first])) rates = true;
+      if (rates) {
+        report(first, ErrorCode::Unsupported,
+               "feedback loop through " + label(first) +
+                   " crosses the boundary of an oversample region; keep the whole loop inside the region or outside it");
         continue;
       }
       std::vector<CycleEdge> cyc = findCycle(c, false);
@@ -895,7 +921,7 @@ private:
       default: return kUnknown;
     }
     const std::string_view name = atomSignature(nd.atom).name;
-    if (name == "sr") return static_cast<float>(opt_.sampleRate);
+    if (name == "sr") return static_cast<float>(opt_.sampleRate * factor_[n]);
     auto driver = [&](uint32_t i) -> NodeIndex {
       const WireIndex w = adj_.driver[P().flatInput(n, i)];
       return w == kNone ? kNone : P().wire(w).from.node;
@@ -984,16 +1010,22 @@ private:
   struct Ready {
     int32_t stage;
     uint32_t cls;
+    uint32_t factor;  // TMM.6: higher first, so an oversample region's ops stay together (one region, few boundaries)
     uint32_t seq;
     uint32_t scc;
   };
-  struct ReadyLess {  // priority_queue keeps the "largest" on top: invert for (stage, cls) min, seq max
+  struct ReadyLess {  // priority_queue keeps the "largest" on top: invert for (stage, cls) min, factor max, seq max
     bool operator()(const Ready& a, const Ready& b) const noexcept {
       if (a.stage != b.stage) return a.stage > b.stage;
       if (a.cls != b.cls) return a.cls > b.cls;
+      if (a.factor != b.factor) return a.factor < b.factor;
       return a.seq < b.seq;
     }
   };
+  uint16_t sccFactor(uint32_t c) const noexcept {
+    if (sccClass_[c] == kItemControl || sccClass_[c] == kItemFree) return 1;
+    return factor_[members(c).front()];
+  }
 
   void order() {
     const uint32_t N = P().nodeCount();
@@ -1004,7 +1036,9 @@ private:
         if (sccOf_[succ_[e].to] != sccOf_[u]) ++indeg[sccOf_[succ_[e].to]];
     std::priority_queue<Ready, std::vector<Ready>, ReadyLess> ready;
     uint32_t seq = 0;
-    auto push = [&](uint32_t c) { ready.push({sccStage_[c], std::min(sccClass_[c], kItemBlock), seq++, c}); };
+    auto push = [&](uint32_t c) {
+      ready.push({sccStage_[c], std::min(sccClass_[c], kItemBlock), sccFactor(c), seq++, c});
+    };
     for (uint32_t c = numScc; c-- > 0;)
       if (indeg[c] == 0) push(c);
     sccOrder_.clear();
@@ -1198,10 +1232,11 @@ private:
     return constOperand(static_cast<float>(v), Kind::Real);
   }
 
-  Operand newVal(bool pattern, uint8_t lanes, Poly poly) {
+  Operand newVal(bool pattern, uint8_t lanes, Poly poly, uint16_t factor = 1) {
     Val v;
     v.pattern = pattern;
     v.lanes = pattern ? uint8_t{8} : lanes;
+    v.factor = pattern ? uint8_t{1} : static_cast<uint8_t>(factor);
     v.poly = poly;
     vals_.push_back(v);
     return {Operand::Kind::Buffer, static_cast<uint32_t>(vals_.size() - 1)};
@@ -1263,7 +1298,7 @@ private:
       return true;
     }
     if (dn.kind == NodeKind::Atom && kernelMapping(dn.atom).lowering == Lowering::Constant) {
-      v = opt_.sampleRate;
+      v = opt_.sampleRate * factor_[d];
       return true;
     }
     report(n, ErrorCode::Type,
@@ -1288,7 +1323,7 @@ private:
         case NK::Unknown: {
           tmp.clear();
           for (uint32_t ch = 0; ch < w; ++ch)
-            tmp.push_back(newVal(ctl_[n] != 0, poly_[n] == Poly::Voice ? 8 : 1, poly_[n]));
+            tmp.push_back(newVal(ctl_[n] != 0, poly_[n] == Poly::Voice ? 8 : 1, poly_[n], factor_[n]));
           setOut(n, 0, tmp);
           break;
         }
@@ -1317,7 +1352,7 @@ private:
                 }
                 default: {  // engine source or sr
                   if (kernelMapping(nd.atom).lowering == Lowering::Constant) {
-                    tmp.push_back(constOperandOf(opt_.sampleRate, Kind::Real));
+                    tmp.push_back(constOperandOf(opt_.sampleRate * factor_[n], Kind::Real));  // TMM.6: n·sr inside
                     break;
                   }
                   External e;
@@ -1378,7 +1413,7 @@ private:
             tmp.clear();
             const uint16_t ow = std::max<uint16_t>(1, tp_->outputType(n, o).width);
             for (uint32_t c = 0; c < ow; ++c)
-              tmp.push_back(newVal(ctl_[n] != 0, poly_[n] == Poly::Voice ? 8 : 1, poly_[n]));
+              tmp.push_back(newVal(ctl_[n] != 0, poly_[n] == Poly::Voice ? 8 : 1, poly_[n], outFactor(n)));
             setOut(n, o, tmp);
           }
           break;
@@ -1386,6 +1421,13 @@ private:
       }
       if (!res_.ok()) return;
     }
+  }
+
+  // TMM.6: samples per frame of node n's output values: its region's factor, but the base rate out of a down
+  // converter (an up converter's output is its region's).
+  uint16_t outFactor(NodeIndex n) const noexcept { return conv_[n] == kConvDown ? uint16_t{1} : factor_[n]; }
+  uint16_t valFactor(const Operand& o) const noexcept {
+    return o.kind == Operand::Kind::Buffer && !vals_[o.index].pattern ? vals_[o.index].factor : uint16_t{1};
   }
 
   // ---- broadcasts (global audio → voice ops) -------------------------------------------------------------
@@ -1432,11 +1474,12 @@ private:
   }
 
   // ---- emission -----------------------------------------------------------------------------------------------
-  void openRegion(uint32_t stage, RegionKind kind, uint32_t sub) {
+  void openRegion(uint32_t stage, RegionKind kind, uint32_t sub, uint16_t factor = 1) {
     Schedule& s = S();
+    if (kind == RegionKind::Control) factor = 1;
     if (!s.regions.empty()) {
       const Region& r = s.regions.back();
-      if (r.stage == stage && r.kind == kind && r.subBlock == sub) return;
+      if (r.stage == stage && r.kind == kind && r.subBlock == sub && r.factor == factor) return;
     }
     if (s.stages.empty() || s.stages.back().index != stage) {
       if ((stage & 1) && !broadcastDone_.count(stage)) {
@@ -1444,7 +1487,7 @@ private:
         emitBroadcasts(stage);
         if (!s.regions.empty()) {
           const Region& r = s.regions.back();
-          if (r.stage == stage && r.kind == kind && r.subBlock == sub) return;
+          if (r.stage == stage && r.kind == kind && r.subBlock == sub && r.factor == factor) return;
         }
       }
       if (s.stages.empty() || s.stages.back().index != stage) {
@@ -1462,6 +1505,7 @@ private:
     r.stage = stage;
     r.firstOp = static_cast<uint32_t>(s.ops.size());
     r.subBlock = sub;
+    r.factor = factor;
     r.firstSolve = static_cast<uint32_t>(s.solves.size());
     s.regions.push_back(r);
     regionStage_.push_back(static_cast<uint32_t>(s.stages.size() - 1));
@@ -1470,18 +1514,25 @@ private:
   void emitBroadcasts(uint32_t voiceStage) {
     auto it = needs_.find(voiceStage);
     if (it == needs_.end() || it->second.empty()) return;
-    openRegion(voiceStage - 1, RegionKind::Block, 0);
-    for (const Operand& o : it->second) {
-      if (broadcastOf_.count(operandKey(o))) continue;
-      const Operand out = newVal(false, 8, Poly::Global);
-      Op op;
-      op.kind = OpKind::Broadcast;
-      op.lanes = 8;
-      op.node = o.kind == Operand::Kind::External ? S().externals[o.index].node
-                : o.kind == Operand::Kind::Buffer   ? vals_[o.index].node
-                                                    : kNone;
-      pushOp(op, {&o, 1}, {&out, 1});
-      broadcastOf_[operandKey(o)] = out;
+    // One region per factor: a broadcast copies frames · factor samples (TMM.6: a global value of an oversample
+    // region read by its voice ops).
+    std::vector<uint16_t> factors;
+    for (const Operand& o : it->second)
+      if (std::find(factors.begin(), factors.end(), valFactor(o)) == factors.end()) factors.push_back(valFactor(o));
+    for (const uint16_t f : factors) {
+      openRegion(voiceStage - 1, RegionKind::Block, 0, f);
+      for (const Operand& o : it->second) {
+        if (valFactor(o) != f || broadcastOf_.count(operandKey(o))) continue;
+        const Operand out = newVal(false, 8, Poly::Global, f);
+        Op op;
+        op.kind = OpKind::Broadcast;
+        op.lanes = 8;
+        op.node = o.kind == Operand::Kind::External ? S().externals[o.index].node
+                  : o.kind == Operand::Kind::Buffer   ? vals_[o.index].node
+                                                      : kNone;
+        pushOp(op, {&o, 1}, {&out, 1});
+        broadcastOf_[operandKey(o)] = out;
+      }
     }
   }
 
@@ -1520,7 +1571,7 @@ private:
         spl = true;
         return o;
       }
-      const Operand out = newVal(false, lanes, lanes == 8 ? Poly::Voice : Poly::Global);
+      const Operand out = newVal(false, lanes, lanes == 8 ? Poly::Voice : Poly::Global, S().regions.back().factor);
       Op f;
       f.kind = OpKind::Kernel;
       f.kernel = dsp::Atom::Const;
@@ -1594,7 +1645,7 @@ private:
       uint32_t stateIdx = kNone;
       if (info.stateSize > 0) {
         dsp::StateInit init;
-        init.sampleRate = opt_.sampleRate;
+        init.sampleRate = opt_.sampleRate * factor_[n];  // TMM.6: an oversample region's rate
         init.lanes = lanes;
         if (m.kernel == dsp::Atom::DelayLinear || m.kernel == dsp::Atom::DelayCubic ||
             m.kernel == dsp::Atom::DelayAllpass) {
@@ -1621,6 +1672,7 @@ private:
         StateTag tag;
         tag.kernel = static_cast<uint16_t>(m.kernel);
         tag.lanes = lanes;
+        tag.factor = static_cast<uint8_t>(factor_[n]);
         tag.extra = init.maxDelayFrames;
         // ≤ sizeof(DelayState) + kMaxDelayRingBytes after the check above, so it fits the uint32 entry size.
         stateIdx = stateEntry(n, static_cast<uint16_t>(ch), tag, static_cast<uint32_t>(dsp::stateBytes(m.kernel, init)), init,
@@ -1684,7 +1736,7 @@ private:
     Unit u = Unit::None;
     const uint32_t maxInput = 2;
     if (!constInputQuiet(n, maxInput, v, u)) return 0;
-    const double frames = u == Unit::smp ? std::ceil(v) : std::ceil(v * opt_.sampleRate);
+    const double frames = u == Unit::smp ? std::ceil(v) : std::ceil(v * opt_.sampleRate * factor_[n]);
     if (!(frames >= 0) || frames > static_cast<double>(1u << 30)) return kNone;
     return static_cast<uint32_t>(frames);
   }
@@ -1704,7 +1756,7 @@ private:
       return true;
     }
     if (P().node(d).kind == NodeKind::Atom && kernelMapping(P().node(d).atom).lowering == Lowering::Constant) {
-      v = opt_.sampleRate;
+      v = opt_.sampleRate * factor_[d];
       return true;
     }
     return false;
@@ -1713,6 +1765,10 @@ private:
   void emitNode(NodeIndex n, bool control) {
     if (nk_[n] != NK::Op) return;
     const Node& nd = P().node(n);
+    if (factor_[n] > 1 && !control && (reducer_[n] || kernelMapping(nd.atom).lowering == Lowering::Engine)) {
+      report(n, ErrorCode::Unsupported, label(n) + " cannot run inside an oversample region (infer() keeps it outside)");
+      return;
+    }
     if (reducer_[n]) {
       for (uint32_t ch = 0; ch < width_[n]; ++ch) {
         const Operand in = inputOperand(n, 0, ch);
@@ -1783,7 +1839,7 @@ private:
           tag.kernel = StateTag::kSolveGuess;
           tag.lanes = poly_[u] == Poly::Voice ? 8 : 1;
           dsp::StateInit init;
-          init.sampleRate = opt_.sampleRate;
+          init.sampleRate = opt_.sampleRate * factor_[u];
           init.lanes = tag.lanes;
           su.state = stateEntry(u, static_cast<uint16_t>(ch), tag, dsp::kStateAlign, init,
                                 tag.lanes == 8 ? Poly::Voice : Poly::Global);
@@ -1840,7 +1896,7 @@ private:
       const RegionKind kind = cls == kItemControl ? RegionKind::Control
                               : cls == kItemLoop  ? RegionKind::Loop
                                                   : RegionKind::Block;
-      openRegion(stage, kind, kind == RegionKind::Loop ? sccSub_[c] : 0);
+      openRegion(stage, kind, kind == RegionKind::Loop ? sccSub_[c] : 0, sccFactor(c));
       const bool control = kind == RegionKind::Control;
       for (size_t k = i; k < j; ++k) {
         const NodeIndex n = steps_[k].node;
@@ -1898,6 +1954,7 @@ private:
         o.isExport = nd.kind == NodeKind::Export;
         o.channel = static_cast<uint16_t>(ch);
         o.value = inputOperand(n, 0, ch);
+        if (valFactor(o.value) != 1) report(n, ErrorCode::Unknown, "scheduler: " + label(n) + " reads an oversampled value");
         o.poly = tp_->inputType(n, 0).poly;
         if (o.poly == Poly::Voice) {
           if (o.value.kind == Operand::Kind::Buffer && (vals_[o.value.index].defStage & 1)) {
@@ -1924,6 +1981,7 @@ private:
       r.voiceSum = pp.voiceSum;
       r.kind = tp_->types[fo].kind == Kind::Bool ? Kind::Bool : Kind::Real;
       r.value = outOperand(pp.node, pp.output, pp.channel);
+      if (valFactor(r.value) != 1) continue;  // TMM.6: a value inside an oversample region is not probed
       switch (r.value.kind) {
         case Operand::Kind::Buffer: {
           const Val& v = vals_[r.value.index];
@@ -2062,14 +2120,20 @@ private:
         byLast[fl[deathOf(vals_[v])]++] = v;
       }
     }
-    std::vector<uint32_t> freeList[3];
+    // Classes: pattern; block × 1 lane; block × 8 lanes; and both again per oversample factor (TMM.6).
+    std::vector<uint32_t> freeList[11];
     std::vector<uint8_t> handed(numVals, 0);
-    auto cls = [](const Val& v) { return v.pattern ? 0 : v.lanes == 8 ? 2 : 1; };
+    auto cls = [](const Val& v) {
+      if (v.pattern) return 0;
+      const int f = v.factor >= 16 ? 4 : v.factor >= 8 ? 3 : v.factor >= 4 ? 2 : v.factor >= 2 ? 1 : 0;
+      return 1 + (v.lanes == 8 ? 1 : 0) + 2 * f;
+    };
     auto fresh = [&](const Val& v) {
       Buffer b;
       b.cls = v.pattern ? Buffer::Class::Pattern : Buffer::Class::Block;
       b.lanes = v.lanes;
       b.perGroup = v.perGroup;
+      b.factor = v.pattern ? uint8_t{1} : v.factor;
       s.buffers.push_back(b);
       return static_cast<uint32_t>(s.buffers.size() - 1);
     };
@@ -2302,6 +2366,11 @@ private:
   std::vector<Rate> rate_;
   std::vector<uint16_t> width_;
   std::vector<uint8_t> reducer_, stateful_, split_, color_, ctl_;
+  // TMM.6: per node the oversample factor it runs at, and whether it is a rate converter (kConvUp: oversample_up /
+  // _phase / _hold, output at its region's rate; kConvDown: oversample_down / _any, output at the base rate).
+  std::vector<uint16_t> factor_;
+  std::vector<uint8_t> conv_;
+  static constexpr uint8_t kConvUp = 1, kConvDown = 2;
   std::vector<uint32_t> succBegin_;
   std::vector<Edge> succ_;
   std::vector<uint32_t> sccOf_, sccBegin_, sccNodes_;

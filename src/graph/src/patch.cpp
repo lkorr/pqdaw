@@ -108,6 +108,11 @@ NodeIndex Patch::addSubcircuit(SubcircuitRef ref) {
   return n;
 }
 
+uint16_t Patch::addRegion(OversampleRegion r) {
+  regions_.push_back(std::move(r));
+  return static_cast<uint16_t>(regions_.size());
+}
+
 SolveIndex Patch::addSolve(uint32_t iterations) {
   solves_.push_back(Solve{iterations});
   return static_cast<SolveIndex>(solves_.size() - 1);

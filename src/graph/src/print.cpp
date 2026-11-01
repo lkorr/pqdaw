@@ -139,28 +139,46 @@ public:
     gap();
 
     for (NodeIndex v = 0; v < n; ++v) {
-      if (!isExprNode(p_.node(v).kind) || inline_[v]) continue;
+      if (!isExprNode(p_.node(v).kind) || inline_[v] || p_.node(v).region != 0) continue;
       line();
-      out_ += nameOf(v);
-      out_ += " = ";
-      const uint16_t no = p_.node(v).nameOutput;
-      if (no != kWholeNode && !p_.nodeName(v).empty()) {
-        expr(v, kPrecPostfix);
-        out_ += '.';
-        out_ += portTextName(p_, v, no, false);
-      } else {
-        expr(v, kPrecTernary);
-      }
-      out_ += '\n';
+      binding(v);
       section = true;
     }
     for (NodeIndex v = 0; v < n; ++v) {
-      if (p_.node(v).kind != NodeKind::Output || !driven(v, 0)) continue;
+      if (p_.node(v).kind != NodeKind::Output || !driven(v, 0) || outputRegion(v) != 0) continue;
       line();
       out_ += nameOf(v);
       out_ += " = ";
       ref(driver(v, 0), kPrecTernary);
       out_ += '\n';
+      section = true;
+    }
+    gap();
+
+    // TMM.6: oversample regions, in order, with their statements (and the outputs whose expression is inside).
+    for (uint32_t g = 1; g <= p_.regions().size(); ++g) {
+      const OversampleRegion& reg = p_.regions()[g - 1];
+      out_ += "  oversample(";
+      out_ += std::to_string(reg.factor);
+      for (size_t k = 0; k < reg.phase.size(); ++k) {
+        out_ += k == 0 ? ", phase: " : ", ";
+        out_ += reg.phase[k];
+      }
+      out_ += ") {\n";
+      for (NodeIndex v = 0; v < n; ++v) {
+        if (!isExprNode(p_.node(v).kind) || inline_[v] || p_.node(v).region != g) continue;
+        out_ += "    ";
+        binding(v);
+      }
+      for (NodeIndex v = 0; v < n; ++v) {
+        if (p_.node(v).kind != NodeKind::Output || !driven(v, 0) || outputRegion(v) != g) continue;
+        out_ += "    ";
+        out_ += nameOf(v);
+        out_ += " = ";
+        ref(driver(v, 0), kPrecTernary);
+        out_ += '\n';
+      }
+      out_ += "  }\n";
       section = true;
     }
     gap();
@@ -234,6 +252,15 @@ private:
     // Layout never changes what is inlined (T4.3): placed and routed anonymous nodes are named by their layout key.
     for (NodeIndex v = 0; v < n; ++v)
       if (isExprNode(p_.node(v).kind) && p_.nodeName(v).empty() && adj_.outgoing(v).size() == 1) inline_[v] = 1;
+    // TMM.6: an expression is written in its consumer's oversample region (an output's statement goes where its
+    // expression is computed); a node of another region than its consumer is a statement of its own region.
+    for (NodeIndex v = 0; v < n; ++v) {
+      if (!inline_[v]) continue;
+      const NodeIndex c = p_.wire(adj_.outgoing(v)[0]).to.node;
+      const NodeKind ck = p_.node(c).kind;
+      const uint16_t consumerRegion = isExprNode(ck) ? p_.node(c).region : ck == NodeKind::Output ? p_.node(v).region : 0;
+      if (consumerRegion != p_.node(v).region) inline_[v] = 0;
+    }
     breakInlineCycles();
     limitDepth();
 
@@ -275,10 +302,35 @@ private:
       for (NodeKind k : {NodeKind::Unknown, NodeKind::Equation})
         for (NodeIndex v = 0; v < n; ++v)
           if (p_.node(v).kind == k && p_.node(v).payload == s) rank_[v] = r++;
+    // Named computed nodes outside regions, then each region's (TMM.6: the printed order of the statements).
+    for (uint32_t g = 0; g <= p_.regions().size(); ++g)
+      for (NodeIndex v = 0; v < n; ++v)
+        if (rank_[v] == kNone && !inline_[v] && p_.node(v).region == g) rank_[v] = r++;
     for (NodeIndex v = 0; v < n; ++v)
-      if (rank_[v] == kNone && !inline_[v]) rank_[v] = r++;
+      if (rank_[v] == kNone && !inline_[v]) rank_[v] = r++;  // a region id out of range (an invalid patch)
     for (NodeIndex v = 0; v < n; ++v)
       if (rank_[v] == kNone) rank_[v] = r++;
+  }
+
+  // An output's statement belongs to the region of its expression when that is written inline (TMM.6).
+  uint16_t outputRegion(NodeIndex v) const {
+    if (!driven(v, 0)) return 0;
+    const NodeIndex d = driver(v, 0).node;
+    return inline_[d] ? p_.node(d).region : 0;
+  }
+
+  void binding(NodeIndex v) {
+    out_ += nameOf(v);
+    out_ += " = ";
+    const uint16_t no = p_.node(v).nameOutput;
+    if (no != kWholeNode && !p_.nodeName(v).empty()) {
+      expr(v, kPrecPostfix);
+      out_ += '.';
+      out_ += portTextName(p_, v, no, false);
+    } else {
+      expr(v, kPrecTernary);
+    }
+    out_ += '\n';
   }
 
   // An inlined node has one consumer; following consumers from inlined node to inlined node must reach a printed

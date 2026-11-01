@@ -135,6 +135,11 @@ constexpr PortSpec pGainIn[] = {{"x", kR}, {"g", kR}, {"time", kRConst, true, 0.
 constexpr PortSpec pGainAddIn[] = {{"acc", kR}, {"x", kR}, {"g", kR}, {"time", kRConst, true, 0.002f},
                                    {"start", kRConst, true, 0.0f}};
 
+// TMM.6: the oversample region's rate converters, inserted by infer() on every audio-rate wire that crosses a region's
+// boundary (pq/dsp/oversample.h). `factor` is the region's n (a const the compiler writes).
+constexpr PortSpec pOversampleR[] = {{"x", kR}, {"factor", kRConst}};
+constexpr PortSpec pOversampleB[] = {{"x", kB}, {"factor", kRConst}};
+
 constexpr std::span<const PortSpec> kNoPorts{};
 
 // ---- signatures -------------------------------------------------------------------------------------------------
@@ -328,6 +333,18 @@ const AtomSignature kAtoms[] = {
      "samples x per voice into a meta module's voice tap (its face's dots); costs nothing unwatched"},
     {"clipPlayer", C::Io, pClipPlayer, pGlobalAudioN, 0, kStateful | kVariableState | kNeedsTransport, 0, {},
      "native warp-engine playback of clip (SPEC §9.4)"},
+
+    // Oversample region converters (TMM.6; compiler-inserted, never written in text).
+    {"oversample_up", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversampleState), kStateful | kInternal, 0, {},
+     "×factor upsampling into an oversample region (polyphase IIR half-bands)"},
+    {"oversample_down", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversampleState), kStateful | kInternal, 0,
+     {}, "×factor decimation out of an oversample region (polyphase IIR half-bands)"},
+    {"oversample_phase", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversamplePhaseState),
+     kStateful | kInternal, 0, {}, "×factor phase upsampling (unwrapped linear interpolation)"},
+    {"oversample_hold", C::Structure, pOversampleB, pOutBAudio, 0, kInternal, 0, {},
+     "×factor bool upsampling (each value held)"},
+    {"oversample_any", C::Structure, pOversampleB, pOutBAudio, 0, kInternal, 0, {},
+     "×factor bool decimation (high when any sub-sample is)"},
 };
 
 constexpr uint32_t kAtomCount = static_cast<uint32_t>(std::size(kAtoms));

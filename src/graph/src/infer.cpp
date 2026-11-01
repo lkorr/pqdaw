@@ -18,6 +18,8 @@
 
 #include "pq/graph/infer.h"
 
+#include "pq/graph/kernel_map.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -103,6 +105,7 @@ struct FNode {
   uint32_t firstIn = 0, firstOut = 0;
   uint32_t solve = kNone;             // flat solve block (Unknown/Equation)
   bool shared = false;                // Atom: Node::shared (`shared(…)`, T1.3-fix1)
+  uint16_t region = 0;                // TMM.6: flat oversample region (Inferrer::regions_ index + 1; 0: none)
 };
 
 struct CalleeInfo {
@@ -123,6 +126,16 @@ struct Inst {
   uint32_t depth = 0;
   std::string prefix;       // name prefix of its nodes ("" for the root)
   NodeIndex binder = kNone; // its tune_voices node (T2.6), if any
+  uint16_t region = 0;      // TMM.6: the flat region its call is in (every node of the instance is then in it)
+  bool nestReported = false;
+};
+
+// TMM.6: a flattened oversample region.
+struct FlatRegion {
+  uint32_t factor = 2;
+  uint64_t key = 0;
+  std::vector<std::pair<uint32_t, uint16_t>> phase;  // phase inputs: (global node id, output)
+  std::vector<PortRef> phaseFlat;                     // … resolved in the flat patch (emit)
 };
 
 class Inferrer {
@@ -320,6 +333,34 @@ private:
     gF_.resize(base + P.nodeCount(), kNone);
     gChild_.resize(base + P.nodeCount(), kNone);
 
+    // TMM.6: this instance's oversample regions (factor 1 is no region); a node of one is computed in it, every
+    // other node in the region the instance's call is in. Regions may not nest (a region inside a callee that is
+    // called inside a region).
+    const uint16_t inherited = insts_[ii].region;
+    std::vector<uint16_t> localRegion(P.regions().size() + 1, 0);
+    for (uint32_t r = 0; r < P.regions().size(); ++r) {
+      if (P.regions()[r].factor <= 1) continue;
+      FlatRegion fr;
+      fr.factor = P.regions()[r].factor;
+      fr.key = hashMix(insts_[ii].key, 0x05A3D1E000ull + r);
+      regions_.push_back(std::move(fr));
+      localRegion[r + 1] = static_cast<uint16_t>(regions_.size());
+    }
+    auto regionOf = [&](NodeIndex n) -> uint16_t {
+      const uint16_t l = P.node(n).region;
+      if (l == 0 || l >= localRegion.size() || localRegion[l] == 0) return inherited;
+      if (inherited != 0) {
+        if (!insts_[ii].nestReported) {
+          insts_[ii].nestReported = true;
+          report(ii, n, ErrorCode::InvalidArgument,
+                 "oversample regions cannot be nested: '" + P.name() + "' has an oversample region and is called inside "
+                 "one: " + describe(ii, n));
+        }
+        return inherited;
+      }
+      return localRegion[l];
+    };
+
     uint32_t rootInputIndex = 0;
     for (NodeIndex n = 0; n < P.nodeCount(); ++n) {
       const Node& nd = P.node(n);
@@ -337,6 +378,7 @@ private:
           FNode& fn = fnodes_[f];
           fn.atom = nd.atom;
           fn.shared = k == FKind::Atom && nd.shared;
+          fn.region = regionOf(n);
           if (k == FKind::Atom && !isRoot && (nd.atom == atomVoiceHz_ || nd.atom == atomVoiceCents_))
             voiceReads_.emplace_back(f, nd.atom == atomVoiceCents_);
           if (k == FKind::Atom && nd.atom == atomTuneVoices_) {
@@ -390,10 +432,28 @@ private:
           else f = newIdentity(ii, n, NodeKind::Export, PortType{});
           break;
         case NodeKind::Subcircuit:
-          gChild_[base + n] = instantiateCall(ii, n);
+          gChild_[base + n] = instantiateCall(ii, n, regionOf(n));
           break;
       }
       gF_[base + n] = f;
+    }
+
+    // TMM.6: each region's phase inputs (validated names: "name" or "name.output").
+    for (uint32_t r = 0; r < P.regions().size(); ++r) {
+      if (localRegion[r + 1] == 0 || inherited != 0) continue;
+      FlatRegion& fr = regions_[localRegion[r + 1] - 1u];
+      for (const std::string& ph : P.regions()[r].phase) {
+        const size_t dot = ph.find('.');
+        const std::optional<NodeIndex> pn = P.findByName(std::string_view(ph).substr(0, dot));
+        if (!pn) continue;
+        uint32_t port = P.node(*pn).nameOutput == kWholeNode ? 0u : P.node(*pn).nameOutput;
+        if (dot != std::string::npos) {
+          const std::optional<uint32_t> o = P.findOutput(*pn, std::string_view(ph).substr(dot + 1));
+          if (!o) continue;
+          port = *o;
+        }
+        fr.phase.emplace_back(base + *pn, static_cast<uint16_t>(port));
+      }
     }
 
     // Wires. Children are complete, so a wire into a call reaches the callee's boundary node directly, and a wire
@@ -456,7 +516,7 @@ private:
     return t;
   }
 
-  uint32_t instantiateCall(uint32_t parent, NodeIndex n) {
+  uint32_t instantiateCall(uint32_t parent, NodeIndex n, uint16_t region) {
     const Patch& P = *insts_[parent].patch;
     const SubcircuitRef& ref = P.subcircuit(n);
     const Patch* callee = opt_.library ? opt_.library->find(ref.patch) : nullptr;
@@ -493,6 +553,7 @@ private:
     c.callNode = n;
     c.key = hashMix(insts_[parent].key, P.node(n).id.value);
     c.depth = insts_[parent].depth + 1;
+    c.region = region;
     const std::string& callName = P.nodeName(n);
     std::string local = callName.empty() ? callee->name() + "_" + std::to_string(n) : callName;
     c.prefix = insts_[parent].prefix.empty() ? std::move(local) : insts_[parent].prefix + "__" + local;
@@ -943,7 +1004,8 @@ private:
     for (uint32_t f = 0; f < nf; ++f) {
       const FNode& fn = fnodes_[f];
       const Patch& P = *insts_[fn.inst].patch;
-      const NodeOrigin org{fn.inst, fn.src, NodeOrigin::What::Node};
+      const uint16_t region = flatRegion(fn);
+      const NodeOrigin org{fn.inst, fn.src, NodeOrigin::What::Node, region};
       const uint64_t key = nodeKey(fn.inst, fn.src);
       NodeIndex n = kNone;
       switch (fn.kind) {
@@ -961,12 +1023,12 @@ private:
               outT_[inDrv_[fn.firstIn]].kind == Kind::Bool) {
             // Bool equality: ne = xor, eq = not(xor). The dsp comparators are real-only (kernel_map.h).
             const NodeIndex x = addFlat(tp, out.addAtom(atomXor), fn.atom == atomEq ? hashMix(key, 1) : key,
-                                        fn.atom == atomEq ? NodeOrigin{fn.inst, fn.src, NodeOrigin::What::Rewrite} : org);
+                                        fn.atom == atomEq ? NodeOrigin{fn.inst, fn.src, NodeOrigin::What::Rewrite, region} : org);
             inTarget_[fn.firstIn] = {x, 0};
             inTarget_[fn.firstIn + 1] = {x, 1};
             NodeIndex last = x;
             if (fn.atom == atomEq) {
-              last = addFlat(tp, out.addAtom(atomNot), key, {fn.inst, fn.src, NodeOrigin::What::Rewrite});
+              last = addFlat(tp, out.addAtom(atomNot), key, {fn.inst, fn.src, NodeOrigin::What::Rewrite, region});
               out.connect(x, last, 0);
               extraOut_.emplace_back(x, outT_[fn.firstOut]);
             }
@@ -1019,7 +1081,7 @@ private:
           out.connect(PortRef{trig, 0}, PortRef{n, 1});
         } else {
           const NodeIndex any = addFlat(tp, out.addAtom(atomOr_), hashMix(key, 0x7121661u),
-                                        {fn.inst, fn.src, NodeOrigin::What::Rewrite});
+                                        {fn.inst, fn.src, NodeOrigin::What::Rewrite, region});
           extraOut_.emplace_back(any, trigType);
           inTarget_[p] = {any, 0};
           out.connect(PortRef{trig, 0}, PortRef{any, 1});
@@ -1053,6 +1115,89 @@ private:
           t = portType(out.inputType(n, i).kind == Kind::Bool ? Kind::Bool : Kind::Real, Rate::Const, Poly::Global,
                        kWidthMono);
       }
+    insertConverters(tp);
+  }
+
+  // TMM.6: the region a flat node of FNode fn is computed in. Engine sources and sinks (voice.*, transport.*,
+  // track / sidechain inputs, clip players, sends, voice reducers) always run at the base rate.
+  uint16_t flatRegion(const FNode& fn) const {
+    if (fn.region == 0) return 0;
+    if (fn.kind == FKind::Atom && kernelMapping(fn.atom).lowering == Lowering::Engine) return 0;
+    if (fn.kind != FKind::Atom && fn.kind != FKind::Const && fn.kind != FKind::Unknown && fn.kind != FKind::Equation)
+      return 0;
+    return fn.region;
+  }
+
+  // TMM.6: rate converters on every audio-rate wire between nodes of different regions. Out of a region: down (bool:
+  // any) at the region's factor; into one: up (a listed phase input: phase; bool: hold). One converter per value
+  // and region, shared by every consumer there.
+  void insertConverters(TypedPatch& tp) {
+    for (const FlatRegion& fr : regions_) tp.oversample.push_back(OversampleInfo{fr.factor, fr.key});
+    if (regions_.empty()) return;
+    Patch& out = tp.patch;
+    for (FlatRegion& fr : regions_) {
+      fr.phaseFlat.clear();
+      for (const auto& [g, port] : fr.phase) {
+        const uint32_t o = sourceOf(g, port);
+        if (o == kNone) continue;
+        const PortRef src = flatSource(o);
+        if (src.node != kNone) fr.phaseFlat.push_back(src);
+      }
+    }
+    auto regionOfNode = [&](NodeIndex n) -> uint16_t { return n < tp.origin.size() ? tp.origin[n].region : 0; };
+    std::vector<WireIndex> crossing;
+    for (WireIndex w = 0; w < out.wireCount(); ++w) {
+      const Wire& wr = out.wire(w);
+      if (regionOfNode(wr.from.node) == regionOfNode(wr.to.node)) continue;
+      if (tp.types[out.flatOutput(wr.from.node, wr.from.port)].rate != Rate::Audio) continue;  // params pass as they are
+      crossing.push_back(w);
+    }
+    struct Made {
+      PortRef from;
+      uint16_t region;
+      AtomId atom;
+      PortRef out;
+    };
+    std::vector<Made> made;
+    auto converter = [&](AtomId atom, PortRef from, uint16_t region, NodeIndex originNode) -> PortRef {
+      for (const Made& m : made)
+        if (m.from == from && m.region == region && m.atom == atom) return m.out;
+      const PortType t = tp.types[out.flatOutput(from.node, from.port)];
+      const NodeIndex c = out.addAtom(atom);
+      const NodeIndex f = out.addConst(Constant::real(static_cast<double>(regions_[region - 1u].factor)));
+      const uint64_t key = hashMix(hashMix(tp.stateKey[from.node], 0x05C0000ull + from.port),
+                                   hashMix(regions_[region - 1u].key, atom));
+      NodeOrigin o = tp.origin[originNode];
+      o.what = NodeOrigin::What::Rewrite;
+      o.region = region;
+      addFlat(tp, c, key, o);
+      o.region = 0;
+      addFlat(tp, f, hashMix(key, 1), o);
+      out.connect(from, PortRef{c, 0});
+      out.connect(PortRef{f, 0}, PortRef{c, 1});
+      tp.types.resize(out.portCount());
+      tp.types[out.flatInput(c, 0)] = t;
+      tp.types[out.flatInput(c, 1)] = portType(Kind::Real, Rate::Const, Poly::Global, kWidthMono);
+      tp.types[out.flatOutput(c, 0)] = t;
+      tp.types[out.flatOutput(f, 0)] = portType(Kind::Real, Rate::Const, Poly::Global, kWidthMono);
+      made.push_back({from, region, atom, PortRef{c, 0}});
+      return PortRef{c, 0};
+    };
+    // Highest index first: Patch::disconnect moves the last wire into the hole, and every wire still to do is below.
+    for (auto it = crossing.rbegin(); it != crossing.rend(); ++it) {
+      const Wire wr = out.wire(*it);
+      const uint16_t rs = regionOfNode(wr.from.node), rt = regionOfNode(wr.to.node);
+      const bool isBool = tp.types[out.flatOutput(wr.from.node, wr.from.port)].kind == Kind::Bool;
+      out.disconnect(*it);
+      PortRef cur = wr.from;
+      if (rs != 0) cur = converter(isBool ? atomOsAny_ : atomOsDown_, cur, rs, wr.from.node);
+      if (rt != 0) {
+        const std::vector<PortRef>& ph = regions_[rt - 1u].phaseFlat;
+        const bool phase = !isBool && std::find(ph.begin(), ph.end(), wr.from) != ph.end();
+        cur = converter(isBool ? atomOsHold_ : phase ? atomOsPhase_ : atomOsUp_, cur, rt, wr.from.node);
+      }
+      out.connect(cur, wr.to);
+    }
   }
 
   // T4.5: each probe target's value in the flattened patch: the instance by its call path, then the out-port of the
@@ -1121,6 +1266,13 @@ private:
   const AtomId atomSineHz_ = atomId("sine_hz");
   const AtomId atomVoiceTrigger_ = atomId("voice.trigger");
   const AtomId atomOr_ = atomId("or");
+  // TMM.6: the oversample regions and their rate converters.
+  std::vector<FlatRegion> regions_;
+  const AtomId atomOsUp_ = atomId("oversample_up");
+  const AtomId atomOsDown_ = atomId("oversample_down");
+  const AtomId atomOsPhase_ = atomId("oversample_phase");
+  const AtomId atomOsHold_ = atomId("oversample_hold");
+  const AtomId atomOsAny_ = atomId("oversample_any");
   std::vector<std::pair<uint32_t, bool>> voiceReads_;  // (FNode, is voice.cents) of non-root voice.hz/cents reads
 
   std::vector<PortRef> flatOut_;    // emit: per out-port

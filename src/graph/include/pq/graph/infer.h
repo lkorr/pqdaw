@@ -115,6 +115,16 @@ struct NodeOrigin {
   uint32_t instance = 0;
   NodeIndex node = kNone;
   What what = What::Node;
+  // TMM.6: the oversample region the node is computed in (TypedPatch::oversample index + 1; 0: none, base rate).
+  // Every pass that makes a node for another one copies its origin, so a node the optimiser creates in a region
+  // stays in it. A rate converter (oversample_*) carries the region it converts into (up) or out of (down).
+  uint16_t region = 0;
+};
+
+// TMM.6: one flattened `oversample(n)` region (a region of a callee instantiated twice is two regions).
+struct OversampleInfo {
+  uint32_t factor = 2;  // 2, 4, 8 or 16 (factor-1 regions are dropped by infer())
+  uint64_t key = 0;     // hash of the instance's call path and the region's index in its patch (converter state keys)
 };
 
 // The flattened, typed patch that the optimiser (T1.4) and scheduler (T1.5) work on.
@@ -133,6 +143,15 @@ struct TypedPatch {
   std::vector<uint64_t> stateKey;
   std::vector<NodeOrigin> origin;     // per node
   std::vector<InstanceInfo> instances;
+  // TMM.6 (PATCH_LANGUAGE §2.3): the oversample regions; NodeOrigin::region k is oversample[k − 1]. Every audio-rate
+  // wire between nodes of different regions (or a region and the base rate) runs through rate converters that
+  // infer() inserts (oversample_up / _phase / _hold into a region, oversample_down / _any out of it, both for a
+  // wire between two regions); engine sources, sends, voice reducers, outputs and exports are always at the base
+  // rate. Their `factor` input is the region's n.
+  std::vector<OversampleInfo> oversample;
+  uint32_t factorOf(uint16_t region) const noexcept {
+    return region == 0 || region > oversample.size() ? 1u : oversample[region - 1u].factor;
+  }
   // false (as inferred): duration inputs (kernel_map.h ArgUse::InputSeconds) carry seconds. optimise() inserts the
   // `· sr` conversions and sets this: those inputs then carry samples, exactly what the kernels take.
   bool durationsInSamples = false;

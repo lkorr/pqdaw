@@ -124,7 +124,7 @@ static_assert(sizeof(g::Operand) == 8, "graph::Operand changed: update codegenDi
 static_assert(sizeof(g::SolveBlock) == 36, "graph::SolveBlock changed: update codegenDigest");
 static_assert(sizeof(g::SolveUnknown) == 28, "graph::SolveUnknown changed: update codegenDigest");
 static_assert(sizeof(g::SolveEquation) == 24, "graph::SolveEquation changed: update codegenDigest");
-static_assert(sizeof(g::Buffer) == 3, "graph::Buffer changed: update codegenDigest");
+static_assert(sizeof(g::Buffer) == 4, "graph::Buffer changed: update codegenDigest");
 // T5.4: External::clip is not hashed: the generated code reads every external through the host's pointer table, which
 // the host builds from the requesting schedule (the slot never reaches the code), so units differing only in their clip
 // slot share their JIT code.
@@ -154,6 +154,7 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   h.put(s.regions.size());
   for (const g::Region& x : s.regions) {
     h.put(x.kind), h.put(x.poly), h.put(x.stage), h.put(x.firstOp), h.put(x.numOps), h.put(x.subBlock);
+    h.put(x.factor);  // TMM.6: the loops run frames · factor
     h.put(x.firstSolve), h.put(x.numSolves);
   }
   h.put(s.ops.size());
@@ -182,7 +183,7 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
     putOperand(h, x.rhs);
   }
   h.put(s.buffers.size());
-  for (const g::Buffer& x : s.buffers) h.put(x.cls), h.put(x.lanes), h.put(x.perGroup);
+  for (const g::Buffer& x : s.buffers) h.put(x.cls), h.put(x.lanes), h.put(x.perGroup), h.put(x.factor);
   h.put(s.externals.size());
   for (const g::External& x : s.externals) {
     h.put(x.source), h.put(x.index), h.put(x.atom), h.put(x.channel), h.put(x.rate), h.put(x.poly);
@@ -225,7 +226,7 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   // and the noise seed, which is mixed with it): the host builds those from the image's own schedule.
   h.put(s.state.entries.size());
   for (const g::StateEntry& x : s.state.entries) {
-    h.put(x.channel), h.put(x.arena), h.put(x.tag.kernel), h.put(x.tag.lanes), h.put(x.tag.extra), h.put(x.offset);
+    h.put(x.channel), h.put(x.arena), h.put(x.tag.kernel), h.put(x.tag.lanes), h.put(x.tag.factor), h.put(x.tag.extra), h.put(x.offset);
     h.put(x.size), h.put(x.init.sampleRate), h.put(x.init.lanes), h.put(x.init.maxDelayFrames), h.put(x.init.z1Init);
   }
   h.put(s.state.globalBytes), h.put(s.state.voiceBytes), h.put(s.sampleRate);

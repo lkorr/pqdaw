@@ -87,6 +87,12 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // TMM.2 (kernels_frame_table.cpp): the live frame-table read and the voice-tap sink.
     {"wavetable_pos", 2, 1, false, false, 0, 0, kB0 | kB1, 0, sizeof(WavetablePosState), Resource::FrameTable, false},
     {"voice_tap", 1, 0, false, false, 0, 0, kB0, 0, sizeof(VoiceTapState), Resource::VoiceTap, false},
+    // TMM.6 (kernels_oversample.cpp): x is a block, the factor a splat; the output has another frame count.
+    {"oversample_up", 2, 1, false, false, 0, 0, 0, kB1, sizeof(OversampleState), Resource::None, false},
+    {"oversample_down", 2, 1, false, false, 0, 0, 0, kB1, sizeof(OversampleState), Resource::None, false},
+    {"oversample_phase", 2, 1, false, false, 0, 0, 0, kB1, sizeof(OversamplePhaseState), Resource::None, false},
+    {"oversample_hold", 2, 1, false, false, kB0, kB0, 0, kB1, 0, Resource::None, false},
+    {"oversample_any", 2, 1, false, false, kB0, kB0, 0, kB1, 0, Resource::None, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -145,6 +151,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findGeneratorKernel(a, lanes, spec)) return f;
   if (KernelFn f = findGainKernel(a, lanes, spec)) return f;
   if (KernelFn f = findFrameTableKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findOversampleKernel(a, lanes)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
@@ -181,6 +188,9 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     // only.
     case Atom::Gain:
     case Atom::GainAdd: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(GainState, rpow))};
+    case Atom::OversampleUp:
+    case Atom::OversampleDown:
+    case Atom::OversamplePhase: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
     case Atom::DelayLinear:
     case Atom::DelayCubic:
     case Atom::DelayAllpass:

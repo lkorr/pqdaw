@@ -148,6 +148,12 @@
 //                                     bits.
 //   voice_tap (x) → (nothing)         a sink: samples x into the VoiceTap resource (null: nothing) while a reader is
 //                                     registered; the record's increment is x's last difference, position 0.
+// Oversample region converters (TMM.6; pq/dsp/oversample.h has the filters, the conventions and the numbers):
+//   oversample_up / _down (x, factor)   polyphase IIR half-band cascade, ×factor up / down (factor Spl: 2, 4, 8, 16)
+//   oversample_phase (x, factor)        a phase up by unwrapped linear interpolation (exact for ramps, keeps wraps)
+//   oversample_hold / _any (x, factor)  bool up (each mask repeated) / down (any sub-sample high)
+//                                     frames = the oversampled count: up-type kernels read frames / factor samples
+//                                     and write frames, down-type read frames and write frames / factor.
 
 #include <cstddef>
 #include <cstdint>
@@ -183,6 +189,8 @@ enum class Atom : uint16_t {
   Gain, GainAdd,
   // frame tables and voice taps (TMM.2: meta modules)
   WavetablePos, VoiceTap,
+  // oversample region rate converters (TMM.6, pq/dsp/oversample.h; inserted by the compiler, not callable)
+  OversampleUp, OversampleDown, OversamplePhase, OversampleHold, OversampleAny,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

@@ -53,6 +53,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "gain", "gain_add",
       // TMM.2 (meta modules): the live frame-table read and the voice-tap sink.
       "wavetable_pos", "voice_tap",
+      // TMM.6: the oversample region's rate converters (compiler-inserted: atom_flags::kInternal).
+      "oversample_up", "oversample_down", "oversample_phase", "oversample_hold", "oversample_any",
   };
   for (const char* n : names) {
     CAPTURE(n);

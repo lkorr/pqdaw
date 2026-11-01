@@ -69,6 +69,7 @@ public:
         const Buffer& b = s_.buffers[i];
         t += " b" + std::to_string(i) + "=" + (b.cls == Buffer::Class::Pattern ? "pat" : "blk" + std::to_string(b.lanes));
         if (b.perGroup) t += "/group";
+        if (b.factor > 1) t += "x" + std::to_string(b.factor);
       }
       line(t);
     }
@@ -140,6 +141,7 @@ private:
     std::string t = "  region " + std::to_string(r) + " ";
     t += rg.kind == RegionKind::Control ? "control" : rg.kind == RegionKind::Block ? "block" : "loop";
     if (rg.kind == RegionKind::Loop) t += ", sub-block " + std::to_string(rg.subBlock);
+    if (rg.factor > 1) t += ", oversampled x" + std::to_string(rg.factor);
     line(t);
     uint32_t nextSolve = rg.firstSolve;
     for (uint32_t i = rg.firstOp; i < rg.firstOp + rg.numOps; ++i) {
@@ -211,6 +213,7 @@ private:
       std::string t = "  s" + std::to_string(i) + " @" + std::to_string(e.offset) + " +" + std::to_string(e.size) + " " +
                       kind + "/" + std::to_string(e.tag.lanes);
       if (e.tag.extra) t += " frames " + std::to_string(e.tag.extra);
+      if (e.tag.factor > 1) t += " x" + std::to_string(e.tag.factor);
       t += " " + label(e.node) + " ch" + std::to_string(e.channel);
       if (keys_) t += " key " + hex(e.key);
       line(t);

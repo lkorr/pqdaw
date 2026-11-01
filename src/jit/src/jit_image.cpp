@@ -129,7 +129,10 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
       for (uint32_t b = 0; b < s.buffers.size(); ++b) {
         if (!local[b] || altOff[b] != g::kNone) continue;
         altOff[b] = altFloats;  // relative to the pair block for now
-        altFloats += roundUp(s.buffers[b].cls == g::Buffer::Class::Pattern ? 8u : maxBlockFrames * s.buffers[b].lanes, kFloatAlign);
+        altFloats += roundUp(s.buffers[b].cls == g::Buffer::Class::Pattern
+                                 ? 8u
+                                 : maxBlockFrames * s.buffers[b].lanes * s.buffers[b].factor,  // TMM.6: n per frame
+                             kFloatAlign);
       }
     }
   }

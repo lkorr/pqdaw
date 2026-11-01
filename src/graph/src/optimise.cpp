@@ -528,13 +528,15 @@ private:
     return Ok{};
   }
 
+  // The `sr` a duration of a node with this origin is multiplied by: one per oversample region (TMM.6: n·sr there).
   uint32_t srPort(const NodeOrigin& origin) {
-    if (srPort_ == kNone) {
+    if (srPort_.size() <= origin.region) srPort_.resize(origin.region + 1u, kNone);
+    if (srPort_[origin.region] == kNone) {
       const uint32_t n = addNode(NodeKind::Atom, a_.sr, {}, 1, portType(Kind::Real, Rate::Const, Poly::Global, kWidthMono),
-                                 hashMix(0x5352ull, 0), origin);
-      srPort_ = out(n);
+                                 hashMix(0x5352ull, origin.region), origin);
+      srPort_[origin.region] = out(n);
     }
-    return srPort_;
+    return srPort_[origin.region];
   }
 
   void lowerDurations() {
@@ -554,7 +556,7 @@ private:
           // Builder computes ceil(max · sr): give it seconds. Unknown sample rate: left in samples (see header).
           if (smp && opt_.sampleRate > 0.0) {
             const double frames = consts_[nodes_[owner(d)].payload].value();
-            drv_[p] = literal(Constant::real(frames / opt_.sampleRate, Unit::s), hashMix(nodes_[n].key, 0xD1A0 + i),
+            drv_[p] = literal(Constant::real(frames / (opt_.sampleRate * tp_.factorOf(nodes_[n].origin.region)), Unit::s), hashMix(nodes_[n].key, 0xD1A0 + i),
                               nodes_[n].origin);
             ++st_.durations;
           }
@@ -664,6 +666,13 @@ private:
   void visitAtom(uint32_t n) {
     const AtomSignature& sig = sigOf(nodes_[n].atom);
     for (uint32_t i = 0; i < nodes_[n].nIn; ++i) in(n, i);  // resolve
+    // TMM.6: a rate converter (infer() inserts them, never folded or merged) of a value that is no longer audio rate
+    // is that value: a param or constant reads the same at every rate.
+    if (sig.has(kInternal)) {
+      const uint32_t x = in(n, 0);
+      if (x != kNone && outT_[x].rate != Rate::Audio && replaceNode(n, x)) ++st_.simplified;
+      return;
+    }
     if (!isPure(sig)) {
       // A smoothed gain that starts at a literal target is that (pure) multiply (T4.x-fix-dsp): rewritten here, it
       // goes on as the pure atom it became.
@@ -688,7 +697,9 @@ private:
     const WNode& w = nodes_[n];
     if (w.atom == a_.sr) {
       if (opt_.sampleRate <= 0.0) return false;
-      if (!replaceNode(n, literal(Constant::real(opt_.sampleRate), hashMix(w.key, 0xF01D), w.origin))) return false;
+      // TMM.6: inside an oversample(n) region sr is n·sr.
+      const double sr = opt_.sampleRate * tp_.factorOf(w.origin.region);
+      if (!replaceNode(n, literal(Constant::real(sr), hashMix(w.key, 0xF01D), w.origin))) return false;
       ++st_.folded;
       return true;
     }
@@ -1024,6 +1035,15 @@ private:
     return false;
   }
 
+  uint16_t cseRegion(uint32_t n) const {
+    const WNode& w = nodes_[n];
+    if (w.origin.region == 0) return 0;
+    if (w.atom == a_.sr) return w.origin.region;
+    for (uint32_t j = 0; j < w.nOut; ++j)
+      if (outT_[w.firstOut + j].rate == Rate::Audio) return w.origin.region;
+    return 0;
+  }
+
   void cse(uint32_t n) {
     const WNode& w = nodes_[n];
     if (w.nOut == 0) return;
@@ -1035,10 +1055,14 @@ private:
     h = hashMix(h, d0);
     h = hashMix(h, d1);
     for (uint32_t i = 2; i < w.nIn; ++i) h = hashMix(h, in(n, i));
+    // TMM.6: an audio-rate value (and `sr`) of one oversample region is not the same value as another region's.
+    const uint16_t region = cseRegion(n);
+    h = hashMix(h, region);
     const uint32_t m = cse_.findOrInsert(h, n);
     if (m == kNone) return;
     const WNode& v = nodes_[m];
-    if (!v.alive || v.replaced || v.kind != NodeKind::Atom || v.atom != w.atom || v.nIn != w.nIn || v.nOut != w.nOut)
+    if (!v.alive || v.replaced || v.kind != NodeKind::Atom || v.atom != w.atom || v.nIn != w.nIn || v.nOut != w.nOut ||
+        cseRegion(m) != region)
       return;
     uint32_t e0 = v.nIn > 0 ? in(m, 0) : kNone, e1 = v.nIn > 1 ? in(m, 1) : kNone;
     if (swap && e1 < e0) std::swap(e0, e1);
@@ -1133,6 +1157,7 @@ private:
         if (m == kNone || c == kNone || uses[m] != 1) continue;
         const uint32_t mn = owner(m);
         if (nodes_[mn].kind != NodeKind::Atom || nodes_[mn].atom != a_.mul || nodes_[mn].replaced) continue;
+        if (nodes_[mn].origin.region != nodes_[v].origin.region) continue;  // TMM.6: each stays at its own rate
         if (!(outT_[m] == outT_[o])) continue;  // a hoisted (lower-rate) product stays a separate op
         const uint32_t x = in(mn, 0), y = in(mn, 1);
         if (x == kNone || y == kNone) continue;
@@ -1269,6 +1294,7 @@ private:
         }
     }
     r.instances = std::move(tp_.instances);
+    r.oversample = tp_.oversample;
     r.durationsInSamples = tp_.durationsInSamples;
     return r;
   }
@@ -1299,7 +1325,7 @@ private:
   std::vector<uint32_t> fwd_;       // per out-port: replacement or kNone
   std::vector<Facts> facts_;        // per out-port, valid during a sweep
   std::vector<std::vector<uint32_t>> solveMembers_;
-  uint32_t srPort_ = kNone;
+  std::vector<uint32_t> srPort_;  // per oversample region (0: none)
 
   std::vector<uint32_t> order_, indeg_, consBegin_, cons_, fill_, stack_;
   std::vector<uint8_t> cyclic_, live_;

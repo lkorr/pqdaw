@@ -7,6 +7,7 @@ pq_add_module(pq_dsp
     src/kernels_gen.cpp
     src/kernels_tuning.cpp
     src/kernels_gain.cpp
+    src/kernels_oversample.cpp
     src/tables.cpp
     src/fft.cpp
     src/spectrum.cpp

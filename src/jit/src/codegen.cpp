@@ -353,7 +353,10 @@ private:
         }
         uint32_t last = r, cost = 0, loops = 0, lastLoop = r;
         std::set<std::pair<int, uint32_t>> live;  // global chains: values held across the loop (kMaxGlobalChainLive)
-        for (uint32_t q = r; q < end && chainable(q) && segmentOf(q) == segmentOf(r); ++q) {
+        // TMM.6: a chain runs one frame count (an oversample region's regions chain only with each other).
+        for (uint32_t q = r; q < end && chainable(q) && segmentOf(q) == segmentOf(r) &&
+                             s_.regions[q].factor == s_.regions[r].factor;
+             ++q) {
           const g::Region& reg = s_.regions[q];
           const uint32_t c = runCost(reg.firstOp, reg.firstOp + reg.numOps);
           if (q > r && cost + c > kMaxRunCost) break;
@@ -546,6 +549,7 @@ private:
     B_.SetInsertPoint(start);
     B_.setFastMathFlags(fmf_);
     bufBase_.clear();
+    framesF_.clear();
     extPtr_.clear();
     tabLoad_.clear();
     statePtr_.clear();
@@ -1295,6 +1299,19 @@ private:
     B_.SetInsertPoint(exit);
   }
 
+  // TMM.6: the frames a region's ops run on: the block's frames times its oversample factor (computed once per
+  // function, in the entry block).
+  Value* regionFrames(uint32_t ri) {
+    const uint32_t f = s_.regions[ri].factor;
+    if (f <= 1) return frames64_;
+    auto it = framesF_.find(f);
+    if (it != framesF_.end()) return it->second;
+    llvm::IRBuilder<> eb(entryTerm_);
+    Value* v = eb.CreateMul(frames64_, c64(f), "", true, true);
+    framesF_.emplace(f, v);
+    return v;
+  }
+
   void emitRegion(uint32_t ri) {
     const g::Region& reg = s_.regions[ri];
     if (reg.kind == g::RegionKind::Control) {
@@ -1309,18 +1326,18 @@ private:
     B_.SetInsertPoint(body);
     const unsigned lanes = voice_ ? vw_ : 1u;
     if (reg.kind == g::RegionKind::Block) {
-      emitSlice(reg.firstOp, reg.firstOp + reg.numOps, c64(0), frames64_);
+      emitSlice(reg.firstOp, reg.firstOp + reg.numOps, c64(0), regionFrames(ri));
     } else if (perFrame(reg)) {
       emitGainBranch(voice_ ? nullptr : emitRegionGainPrologues(ri, ri), [&] {
-        forLoop(c64(0), frames64_, 1, [&](Value* t) {
+        forLoop(c64(0), regionFrames(ri), 1, [&](Value* t) {
           Map m;
           emitPerFrame(reg, t, lanes, m, true);
         });
       });
     } else {
       const uint32_t sub = reg.subBlock;
-      forLoop(c64(0), frames64_, sub, [&](Value* t) {
-        Value* n = B_.CreateBinaryIntrinsic(llvm::Intrinsic::smin, c64(sub), B_.CreateSub(frames64_, t));
+      forLoop(c64(0), regionFrames(ri), sub, [&](Value* t) {
+        Value* n = B_.CreateBinaryIntrinsic(llvm::Intrinsic::smin, c64(sub), B_.CreateSub(regionFrames(ri), t));
         emitSlice(reg.firstOp, reg.firstOp + reg.numOps, t, n);
       });
     }
@@ -1347,7 +1364,7 @@ private:
       // Whole 8-float chunks: a buffer is sized in 16-float units (image_host.cpp layoutMemory), so the rounded-up
       // tail stays inside it.
       Value* n = buf.cls == g::Buffer::Class::Pattern ? static_cast<Value*>(c64(8))
-                                                      : B_.CreateMul(frames64_, c64(buf.lanes), "", true, true);
+                                                      : B_.CreateMul(frames64_, c64(uint64_t{buf.lanes} * buf.factor), "", true, true);
       n = B_.CreateAnd(B_.CreateAdd(n, c64(7)), c64(~uint64_t{7}));
       forLoop(c64(0), n, 8, [&](Value* i) {
         Value* p = B_.CreateInBoundsGEP(f32_, buf_, B_.CreateAdd(i, c64(L_.bufOff[b]), "", true, true));
@@ -1426,7 +1443,7 @@ private:
     inv_.clear();
     B_.SetInsertPoint(body);
     emitGainBranch(voice_ ? nullptr : emitRegionGainPrologues(r0, r1), [&] {
-      forLoop(c64(0), frames64_, 1, [&](Value* t) {
+      forLoop(c64(0), regionFrames(r0), 1, [&](Value* t) {
         Map m;
         for (uint32_t r = r0; r <= r1; ++r) {
           const g::Region& reg = s_.regions[r];
@@ -1951,6 +1968,7 @@ private:
   Value *buf_ = nullptr, *aux_ = nullptr, *gstate_ = nullptr, *vstate_ = nullptr, *vstate1_ = nullptr, *ext_ = nullptr,
         *tabArg_ = nullptr;
   Value *group32_ = nullptr, *frames64_ = nullptr, *group64_ = nullptr, *group1_64_ = nullptr, *lane64_ = nullptr;
+  std::map<uint32_t, Value*> framesF_;  // TMM.6: regionFrames(), per oversample factor
   Value* meterOn_ = nullptr;  // i1: this block is metered (T4.5)
   llvm::AllocaInst *kargs_ = nullptr, *inArr_ = nullptr, *outArr_ = nullptr, *slot_ = nullptr;
   std::unordered_map<uint32_t, Value*> bufBase_, extPtr_, tabLoad_, statePtr_;
