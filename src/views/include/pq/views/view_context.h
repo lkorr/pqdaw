@@ -222,6 +222,14 @@ public:
   using DevicePlayerFactory = std::function<std::unique_ptr<circuit::PatchPlayer>(doc::DeviceId)>;
   void setDevicePlayers(DevicePlayerFactory f) { devicePlayers_ = std::move(f); }
   const DevicePlayerFactory& devicePlayers() const noexcept { return devicePlayers_; }
+  // T5.x-one-circuit (SPEC §15 2026-10-31: the whole project is one circuit): every "Open in Circuit View" (a device's
+  // menu and title double-click, view.trackCircuit, the device editor's Track button) opens the project patch view
+  // with `track`'s band opened, framed on `device` when one is given (a device inside a rack: its box in the rack's
+  // frame). installProjectPatch sets the opener; `track` invalid: the device's track. False (and a status line) when
+  // no opener is installed or there is nothing to open.
+  using CircuitOpener = std::function<bool(doc::TrackId track, doc::DeviceId device)>;
+  void setCircuitOpener(CircuitOpener f) { circuitOpener_ = std::move(f); }
+  bool openProjectCircuit(doc::TrackId track, doc::DeviceId device = {});
   // T4.15: view preferences the app keeps in its user settings (the "views" section, pq/app/user_settings.h). A change
   // calls the listener (the app saves them); tests and scenes have none.
   const ViewPrefs& viewPrefs() const noexcept { return viewPrefs_; }
@@ -415,8 +423,7 @@ public:
   // T3.19: Create > New Main Tuning (installTuningsPanel sets the handler: it shows the panel with the new tuning).
   static constexpr std::string_view kTuningsActions[] = {"tuning.newMain"};
   // T4.2: View > Open Patch in Circuit View… (installCircuitViewer sets the handler: file dialog → circuit viewer).
-  // T5.x-circuit-chain: View > Track Circuit (Ctrl+Alt+C): the selected track's chain as one circuit (the same host).
-  static constexpr std::string_view kCircuitActions[] = {"view.openPatch", "view.trackCircuit"};
+  static constexpr std::string_view kCircuitActions[] = {"view.openPatch"};
   // T4.6: View > Open Device… (installDeviceView sets the handler: a menu of the stock devices → the Device tab).
   static constexpr std::string_view kDeviceActions[] = {"view.openDevice"};
   // T4.1: the Device view's edits (installDeviceChain sets the handlers; scope "devices").
@@ -430,7 +437,9 @@ public:
   // T4.7: View > Cables (Show / Fade / Hide) and deleting the selected wire (installWiring sets the handlers).
   static constexpr std::string_view kWiringActions[] = {"view.cycleCables", "wire.delete"};
   // T4.13: View > Project Patch (Ctrl+Alt+P): the project patch view in the track area (installProjectPatch sets it).
-  static constexpr std::string_view kPatchActions[] = {"view.togglePatch"};
+  // T5.x-one-circuit: View > Track Circuit (Ctrl+Alt+C): the project patch view on the selected track's band, opened
+  // (it was T5.x-circuit-chain's separate Track-level view).
+  static constexpr std::string_view kPatchActions[] = {"view.togglePatch", "view.trackCircuit"};
   // T5.10: Ctrl+F: shows the browser and focuses its search field (installBrowser sets the handler).
   static constexpr std::string_view kBrowserActions[] = {"browser.search"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
@@ -468,6 +477,7 @@ private:
   const doc::DeviceLibrary* devices_ = nullptr;
   ModulationSource* modulation_ = nullptr;
   DevicePlayerFactory devicePlayers_;
+  CircuitOpener circuitOpener_;
   ViewPrefs viewPrefs_;
   std::function<void(const ViewPrefs&)> viewPrefsListener_;
   Ticks startMarker_ = 0;

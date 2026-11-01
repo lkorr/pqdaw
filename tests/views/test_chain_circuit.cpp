@@ -4,7 +4,9 @@
 // and wired through split / Σ buses, modulation wires between devices), the Track-level view (opened focused on a
 // device, read-only, a double-click in a boundary opens the Device level and the editor's Track button comes back,
 // rebuilt on structure changes from cached device scenes), and the project patch view's opened band (every device of
-// the band opened in place, racks to nested frames). Goldens: circuit-track-chain, project-patch-zoom.
+// the band opened in place, racks to nested frames). T5.x-one-circuit: the Track-level view merged into the project
+// patch view (one circuit view: Open in Circuit View, Ctrl+Alt+C and the editor's Track button open the band there);
+// the chain model stays (opened racks are drawn with it). Golden: project-patch-zoom.
 
 #include <doctest/doctest.h>
 
@@ -22,7 +24,6 @@
 #include "pq/ui/test_driver.h"
 #include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/circuit/circuit_editor.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
@@ -87,7 +88,6 @@ struct Ui {
       if (auto* w = dynamic_cast<T*>(&shell->overlay().child(i))) return w;
     return nullptr;
   }
-  TrackCircuitView* chainView() const { return overlayOf<TrackCircuitView>(); }
   CircuitEditor* editor() const { return overlayOf<CircuitEditor>(); }
 };
 
@@ -327,97 +327,81 @@ TEST_CASE("chain circuit: racks are nested boundaries with their chains stacked,
   CHECK(rc.scene->specs[rc.scene->nodes[rc.outputNode].spec].title == "out");
 }
 
-TEST_CASE("track circuit view: opened from a device, focused and centred on it; read-only; follows the document") {
+TEST_CASE("one circuit: Open in Circuit View opens the project patch view on the band, framed on the device; no second window") {
   Ui u;
-  // "Open in Circuit View" on the EQ Eight (as its menu does): the whole track's chain, framed on the EQ Eight.
-  TrackCircuitView* v = openDeviceChainCircuit(u.shell->overlay(), u.ctx, u.chain[2]);
-  REQUIRE(v != nullptr);
+  // "Open in Circuit View" on the EQ Eight (the Device view's menu and title double-click call this).
+  REQUIRE(u.ctx.openProjectCircuit({}, u.chain[2]));
   u.d.tree().layoutNow();
   u.d.step();
-  CHECK(u.chainView() == v);
-  CHECK(v->focused() == u.chain[2]);
-  CHECK(v->circuit().boxes.size() == 4);
-  CHECK(v->title().find("Keys") == 0);
-  CHECK(v->title().find("EQ Eight") != std::string::npos);
-  const ChainBox& eq = v->circuit().boxes[v->circuit().boxOf(u.chain[2])];
-  const Vec2 a = v->canvas().toDevice({eq.x0, eq.y0}), b = v->canvas().toDevice({eq.x1, eq.y1});
+  project_patch::ProjectPatchView* v = findProjectPatch(*u.shell);
+  REQUIRE(v != nullptr);
+  CHECK(v->shown());
+  CHECK(v->openedBand() == u.keys);
+  CHECK(v->focusedDevice() == u.chain[2]);
+  for (const doc::DeviceId d : u.chain) CHECK(v->deviceExpanded(d));  // the band opened: every device to its atoms
+  CHECK(u.shell->overlay().childCount() == 0);  // no second circuit window: the project's own view
+  // Framed and centred on the EQ Eight's frame.
+  project_patch::LaneRect r;
+  REQUIRE(v->deviceWorldRect(u.chain[2], r));
+  const Vec2 a = v->canvas().toDevice({r.x0, r.y0}), b = v->canvas().toDevice({r.x1, r.y1});
   const IRect cr = v->canvas().rect();
-  // Centred: the box's centre is the canvas's centre (within a pixel), and the box fits inside it.
   CHECK(std::fabs((a.x + b.x) * 0.5f - (static_cast<float>(cr.x) + static_cast<float>(cr.w) * 0.5f)) <= 1.0f);
   CHECK(std::fabs((a.y + b.y) * 0.5f - (static_cast<float>(cr.y) + static_cast<float>(cr.h) * 0.5f)) <= 1.0f);
   CHECK(a.x >= static_cast<float>(cr.x));
   CHECK(b.x <= static_cast<float>(cr.right()));
-  CHECK(a.y >= static_cast<float>(cr.y));
-  CHECK(b.y <= static_cast<float>(cr.bottom()));
-  // Read-only: a drag on a node moves nothing (the document is untouched), the history does not grow.
-  const size_t h0 = u.ctx.store().history().cursor();
-  const doc::Snapshot before = u.ctx.doc();
-  const SceneNode& n = v->circuit().scene->nodes[eq.firstNode];
-  const Vec2 p = v->canvas().toDevice({n.x + n.w * 0.5f, n.y + n.h * 0.5f});
-  u.d.drag(p, {p.x + 40.0f, p.y + 30.0f});
-  CHECK((u.ctx.doc() == before));
-  CHECK(u.ctx.store().history().cursor() == h0);
-  // A rename (meta) rebuilds from the cached device scenes (no scene of a device is built again), keeping the view.
-  const uint64_t builds = v->sceneCache().builds(), rebuilds = v->rebuilds();
-  const CircuitCanvas::View view = v->canvas().view();
-  (void)run(u.ctx.store(), doc::ops::renameDevice(*u.ctx.doc(), u.chain[2], "Tone"));
-  CHECK(v->rebuilds() == rebuilds + 1);
-  CHECK(v->sceneCache().builds() == builds);
-  CHECK(v->canvas().view() == view);
-  CHECK(v->circuit().boxes[v->circuit().boxOf(u.chain[2])].title == "Tone");
-  // A param change does not rebuild.
+  // The project is still editable from here: a device dragged off… is not tested here; a param edit does not rebuild.
+  const uint64_t rebuilds = v->stats().rebuilds;
   (void)run(u.ctx.store(), doc::ops::setDeviceParam(*u.ctx.doc(), u.chain[3], "drive", 0.3));
-  CHECK(v->rebuilds() == rebuilds + 1);
-  // A device removed: the chain closes up (three boundaries); the track removed: the view closes.
-  const doc::DeviceId one[1] = {u.chain[1]};
-  (void)run(u.ctx.store(), doc::ops::deleteDevices(*u.ctx.doc(), one));
-  CHECK(v->circuit().boxes.size() == 3);
-  CHECK(linkBetween(v->circuit(), ChainLink::Kind::Audio, v->circuit().roots[0], v->circuit().roots[1]) != nullptr);
-  const doc::TrackId gone[1] = {u.keys};
-  (void)run(u.ctx.store(), doc::ops::deleteTracks(*u.ctx.doc(), gone));
-  u.d.step();
-  u.d.step();
-  CHECK(u.chainView() == nullptr);
-}
-
-TEST_CASE("track circuit view: a double-click in a boundary opens that device's editor; Track comes back") {
-  Ui u;
-  TrackCircuitView* v = openTrackCircuit(u.shell->overlay(), u.ctx, u.keys);
-  REQUIRE(v != nullptr);
-  u.d.tree().layoutNow();
-  u.d.step();
-  // Double-click in the Auto Filter's title strip (inside its boundary, on no node of its circuit).
-  const ChainBox& af = v->circuit().boxes[v->circuit().boxOf(u.chain[1])];
-  const Vec2 p = v->canvas().toDevice({af.x0 + 8.0f, af.y0 + chain_metrics::kTitle * 0.5f});
-  CHECK(v->canvas().deviceBoxAt(p) == v->circuit().boxOf(u.chain[1]));
-  u.d.doubleClick(p);
+  CHECK(v->stats().rebuilds == rebuilds);
+  // A double-click inside an opened device (below its title strip) edits its circuit: the Device level.
+  REQUIRE(v->deviceWorldRect(u.chain[1], r));
+  v->canvas().setView([&] {
+    circuit::CircuitCanvas::View vw = v->canvas().view();
+    vw.zoom = 1.0;
+    vw.x = r.x0 - 20.0;
+    vw.y = r.y0 - 20.0;
+    return vw;
+  }());
+  u.d.doubleClick(v->canvas().toDevice({r.x0 + 6.0f, r.y0 + 40.0f}));
   u.d.step();
   u.d.step();
   CircuitEditor* ed = u.editor();
   REQUIRE(ed != nullptr);
   CHECK(ed->shownPatch() == "auto_filter");
   CHECK(ed->host() != nullptr);  // the project-device editor: edits are document commands
-  CHECK(u.chainView() == nullptr);  // the Track level closed
-  // The editor's breadcrumb goes back to the Track level, focused on the Auto Filter.
+  // Its breadcrumb's Track goes back to the project view, the Auto Filter framed and focused.
   REQUIRE(ed->hasTrackAction());
   auto* track = dynamic_cast<Button*>(ed->find("bar/track"));
   REQUIRE(track != nullptr);
-  CHECK(track->visible());
   u.d.tree().layoutNow();
   u.d.click({static_cast<float>(track->rect().x + 4), static_cast<float>(track->rect().y + 4)});
   u.d.step();
   u.d.step();
   CHECK(u.editor() == nullptr);
-  TrackCircuitView* back = u.chainView();
-  REQUIRE(back != nullptr);
-  CHECK(back->focused() == u.chain[1]);
-  // Enter with nothing selected edits the focused device; a rack is not a device to edit.
-  CHECK(back->currentDevice() == u.chain[1]);
-  CHECK(back->editDevice(u.chain[1]));
-  u.d.step();
-  u.d.step();
-  REQUIRE(u.editor() != nullptr);
-  CHECK(u.editor()->shownPatch() == "auto_filter");
+  CHECK(v->shown());
+  CHECK(v->openedBand() == u.keys);
+  CHECK(v->focusedDevice() == u.chain[1]);
+  // A double-click on an opened device's title strip closes it; F closes the band and the focus.
+  REQUIRE(v->deviceWorldRect(u.chain[3], r));
+  v->canvas().setView([&] {
+    circuit::CircuitCanvas::View vw = v->canvas().view();
+    vw.zoom = 1.0;
+    vw.x = r.x0 - 20.0;
+    vw.y = r.y0 - 20.0;
+    return vw;
+  }());
+  u.d.doubleClick(v->canvas().toDevice({r.x0 + 30.0f, r.y0 + 6.0f}));
+  u.d.advance(0.5);
+  CHECK_FALSE(v->deviceExpanded(u.chain[3]));
+  v->fitAll(false);
+  CHECK_FALSE(v->openedBand().valid());
+  CHECK_FALSE(v->focusedDevice().valid());
+  // View > Track Circuit (Ctrl+Alt+C): the selected track's band opened, no device focused.
+  CHECK(u.d.press("Ctrl+Alt+C") == KeyResult::Action);
+  u.d.advance(0.5);
+  CHECK(v->openedBand() == u.keys);
+  CHECK_FALSE(v->focusedDevice().valid());
+  CHECK(u.shell->overlay().childCount() == 0);
 }
 
 TEST_CASE("project patch view: opening a band opens its devices in place (racks to nested frames); F closes them") {
@@ -499,5 +483,4 @@ void golden(const char* name) {
 }
 }  // namespace
 
-TEST_CASE("render: circuit-track-chain matches the golden image") { golden("circuit-track-chain"); }
 TEST_CASE("render: project-patch-zoom matches the golden image") { golden("project-patch-zoom"); }

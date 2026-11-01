@@ -20,7 +20,6 @@
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_editor.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/fake_transport.h"
@@ -208,7 +207,7 @@ TEST_CASE("project patch: an audio track's source is its clip player (T5.3), the
   CHECK(band->kind == doc::TrackKind::Audio);
   REQUIRE(band->source != kNone);
   CHECK(pp.nodes[band->source].kind == NodeKind::Source);
-  CHECK(pp.nodes[band->source].title == "Clips");
+  CHECK(pp.nodes[band->source].title == "Audio");  // T5.x-one-circuit: was "Clips" (the lane window says what it plays)
   REQUIRE(band->devices.size() == 1);
 }
 
@@ -848,19 +847,18 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   v.setDeviceExpanded(sat, false);
   u.d.advance(0.5);
   CHECK(v.scene().scene->nodes.size() == nodes);
-  // Its menu's Open in Circuit View opens its track's chain as one circuit focused on it (T5.x-circuit-chain); Edit
-  // Device Circuit the project-device circuit editor on it (T4.4-fix1; the next case edits).
+  // Its menu's Open in Circuit View opens its band here, framed on it and focused (T5.x-one-circuit: one circuit view);
+  // Edit Device Circuit the project-device circuit editor on it (T4.4-fix1; the next case edits).
   REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
   Menu* m = u.openMenu();
   REQUIRE(m != nullptr);
   u.choose(*m, "Open in Circuit View");
-  circuit::TrackCircuitView* chain = nullptr;
-  for (size_t i = 0; i < u.shell->overlay().childCount(); ++i)
-    if (auto* t = dynamic_cast<circuit::TrackCircuitView*>(&u.shell->overlay().child(i))) chain = t;
-  REQUIRE(chain != nullptr);
-  CHECK(chain->focused() == sat);
-  chain->closeSoon();
-  u.d.step();
+  u.d.advance(0.5);
+  CHECK(v.focusedDevice() == sat);
+  CHECK(v.openedBand() == u.track("Keys").id);
+  CHECK(u.shell->overlay().childCount() == 0);
+  v.fitAll(false);
+  u.d.tree().layoutNow();
   REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
   m = u.openMenu();
   REQUIRE(m != nullptr);
@@ -972,6 +970,250 @@ TEST_CASE("project patch: 64 tracks build, lay out and match their graph" * doct
   CHECK(pp.bands.size() == 64 + 8 + 2 + 1);
 }
 
+
+// ---- T5.x-one-circuit: one circuit view, lane windows ---------------------------------------------------------------
+
+TEST_CASE("one circuit: from a device's opened band, zooming out alone reaches every lane, group, return, the master and Out") {
+  Ui u;
+  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  REQUIRE(u.ctx.openProjectCircuit({}, sat));  // Open in Circuit View from the arrangement: the view comes up on it
+  u.d.tree().layoutNow();
+  ProjectPatchView& v = u.view();
+  CHECK(v.shown());
+  CHECK(v.focusedDevice() == sat);
+  CHECK(v.openedBand() == u.track("Keys").id);
+  // Ctrl+wheel out at the canvas centre (on the device, not on a lane window) until the zoom stops changing; no pan.
+  const IRect cr = v.canvas().rect();
+  const Vec2 c{cr.x + cr.w * 0.5f, cr.y + cr.h * 0.5f};
+  REQUIRE(v.laneAt(c) == kNone);
+  for (int i = 0; i < 80; ++i) (void)u.d.wheel(c, -1.0f, 0.0f, mod::kCtrl);
+  u.d.step();
+  const graph::Point2 w0 = v.canvas().toWorld({static_cast<float>(cr.x), static_cast<float>(cr.y)});
+  const graph::Point2 w1 = v.canvas().toWorld({static_cast<float>(cr.right()), static_cast<float>(cr.bottom())});
+  const ProjectPatch& pp = v.patch();
+  size_t kinds[5] = {};
+  for (const Band& b : pp.bands) {
+    const float x0 = b.kind == doc::TrackKind::Group ? b.cx0 : b.x0, x1 = b.kind == doc::TrackKind::Group ? b.cx1 : b.x1;
+    CHECK_MESSAGE((x0 >= w0.x && x1 <= w1.x && b.y >= w0.y && b.y + b.h <= w1.y), "band " << b.name << " out of view");
+    ++kinds[static_cast<size_t>(b.kind)];
+  }
+  CHECK(kinds[static_cast<size_t>(doc::TrackKind::Midi)] == 3);
+  CHECK(kinds[static_cast<size_t>(doc::TrackKind::Group)] == 1);
+  CHECK(kinds[static_cast<size_t>(doc::TrackKind::Return)] == 1);
+  CHECK(kinds[static_cast<size_t>(doc::TrackKind::Master)] == 1);
+  REQUIRE(pp.master != kNone);
+  const Node& out = pp.nodes[pp.bands[pp.master].output];
+  CHECK((out.x >= w0.x && out.x + out.w <= w1.x));
+  // The opened band stays open while zooming out (the focus too): the circuit is one continuous view.
+  CHECK(v.openedBand() == u.track("Keys").id);
+}
+
+TEST_CASE("lane windows: what each window shows is its lane's clips over the shown time window (4 bars by default)") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  const doc::Project& p = *u.ctx.doc();
+  const Ticks bar = ticksPerBar(p.timeline->sigMap.signatureAt(0));
+  CHECK(v.laneStart() == 0);
+  CHECK(v.laneSpan() == ProjectPatchView::kLaneBars * bar);
+  CHECK(v.laneWidth() == metrics::kSourceW);
+  // Every lane window lines up in one column (whatever the group depth) and is as wide as the view says.
+  float x = -1.0f;
+  for (const Band& b : v.patch().bands) {
+    if (!hasLaneWindow(b)) continue;
+    const Node& n = v.patch().nodes[b.source];
+    if (x < 0.0f) x = n.x;
+    CHECK(n.x == x);
+    CHECK(n.w == metrics::kSourceW);
+  }
+  auto check = [&] {
+    const doc::Project& q = *u.ctx.doc();
+    const Ticks a = v.laneStart(), e = v.laneStart() + v.laneSpan();
+    for (uint32_t bi = 0; bi < v.patch().bands.size(); ++bi) {
+      const Band& b = v.patch().bands[bi];
+      if (!hasLaneWindow(b)) continue;
+      const doc::Track* t = doc::findTrackPtr(q, b.track);
+      REQUIRE(t != nullptr);
+      const LaneRect r = laneBody(v.patch().nodes[b.source]);
+      const double k = static_cast<double>(r.x1 - r.x0) / static_cast<double>(v.laneSpan());
+      std::vector<ProjectPatchView::LaneClip> want;
+      for (const doc::ClipSlot& c : t->clips)
+        if (c.end() > a && c.start() < e)
+          want.push_back({c.id, r.x0 + static_cast<float>(static_cast<double>(std::max(c.start(), a) - a) * k),
+                          r.x0 + static_cast<float>(static_cast<double>(std::min(c.end(), e) - a) * k), c.isAudio()});
+      const std::vector<ProjectPatchView::LaneClip> got = v.laneClips(bi);
+      REQUIRE(got.size() == want.size());
+      for (size_t i = 0; i < got.size(); ++i) {
+        CHECK(got[i].clip == want[i].clip);
+        CHECK(got[i].x0 == doctest::Approx(want[i].x0));
+        CHECK(got[i].x1 == doctest::Approx(want[i].x1));
+        CHECK(got[i].x0 >= r.x0);
+        CHECK(got[i].x1 <= r.x1 + 0.01f);
+      }
+    }
+  };
+  check();
+  // Keys' Riff (bars 1–4) fills its window; Riff 2 (from bar 7) is not in it; Pad starts at bar 3.
+  const uint32_t keys = v.patch().bandOf(u.track("Keys").id), pad = v.patch().bandOf(u.track("Pad").id);
+  CHECK(v.laneClips(keys).size() == 1);
+  CHECK(v.laneClips(pad).size() == 1);
+  // Wheel over a window scrolls time (an eighth of the span per notch); no re-layout, the windows repaint.
+  const uint64_t relayouts = v.stats().relayouts;
+  const Node& kn = v.patch().nodes[v.patch().bands[keys].source];
+  u.zoomTo("Keys");
+  const Vec2 over = u.dev(kn.x + kn.w * 0.5f, kn.y + kn.h * 0.5f);
+  REQUIRE(v.laneAt(over) == keys);
+  const circuit::CircuitCanvas::View before = v.canvas().view();
+  (void)u.d.wheel(over, -8.0f);  // eight notches towards the end: one span later
+  CHECK(v.laneStart() == v.laneSpan());
+  CHECK(v.canvas().view() == before);  // the canvas did not pan
+  CHECK(v.stats().relayouts == relayouts);
+  check();
+  CHECK(v.laneClips(keys).size() == 1);  // Riff 2 (bars 7–10) now
+  CHECK(v.laneClips(keys)[0].clip == u.track("Keys").clips[1].id);
+  // Ctrl+wheel out: a longer span, a wider window, the bands re-laid out (the chain moved right), still the lanes.
+  const float devX = v.patch().nodes[u.deviceNode(u.track("Keys").devices[0]->id)].x;
+  (void)u.d.wheel(u.dev(kn.x + 8.0f, kn.y + kn.h * 0.5f), -3.0f, 0.0f, mod::kCtrl);
+  CHECK(v.laneSpan() > ProjectPatchView::kLaneBars * bar);
+  CHECK(v.laneWidth() > metrics::kSourceW);
+  CHECK(v.stats().relayouts == relayouts + 1);
+  CHECK(v.patch().nodes[v.patch().bands[keys].source].w == v.laneWidth());
+  CHECK(v.patch().nodes[u.deviceNode(u.track("Keys").devices[0]->id)].x > devX);
+  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
+  check();
+  // Far out: clamped to the widest window, the span keeps growing to its limit.
+  v.zoomLanes(-60.0);
+  CHECK(v.laneWidth() == metrics::kSourceMaxW);
+  CHECK(v.laneSpan() == ProjectPatchView::kLaneMaxBars * bar);
+  check();
+  // Zoomed in below the default: the default width, a span down to one beat.
+  v.zoomLanes(60.0);
+  CHECK(v.laneWidth() == metrics::kSourceW);
+  CHECK(v.laneSpan() == ticksPerBeat(p.timeline->sigMap.signatureAt(v.laneStart())));
+  check();
+}
+
+TEST_CASE("lane windows: shown again, they start at the arrangement's visible bar (or the playhead's while playing)") {
+  Ui u;
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  u.arrangement().setTimeView(static_cast<double>(5 * bar + bar / 3), u.arrangement().pxPerTick());
+  u.show();
+  CHECK(u.view().laneStart() == 5 * bar);
+  u.view().setShown(false, false);
+  u.port.play(9 * bar + 7);
+  u.show();
+  CHECK(u.view().laneStart() == 9 * bar);
+}
+
+TEST_CASE("lane windows: idle costs nothing; the playhead repaints only the windows' columns and pages them") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  u.zoomTo("Pad");
+  u.d.advance(0.5);
+  const uint64_t frames0 = u.d.framesDrawn();
+  u.d.advance(5.0);  // stopped: no frames, no timers
+  CHECK(u.d.framesDrawn() == frames0);
+  CHECK(std::isinf(u.d.tree().nextWakeTime()));
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  u.ctx.setStartMarker(bar);
+  u.ctx.togglePlay();  // plays from the start marker through the fake port, notifies kTransport
+  u.d.advance(0.2);
+  REQUIRE(v.lanePlayhead().has_value());
+  u.d.step();
+  // A move: the damage is the old and new playhead columns of the windows (and the control bar's readout).
+  u.port.setPlayheadTick(*v.lanePlayhead() + bar / 2);
+  u.d.tree().update(u.d.now() + 0.15);
+  const IRect bar0 = u.d.rect("main/control-bar");
+  std::vector<Rect> windows;
+  for (const Band& b : v.patch().bands)
+    if (hasLaneWindow(b)) {
+      const Node& n = v.patch().nodes[b.source];
+      windows.push_back(v.canvas().deviceRect(n.x, n.y, n.w, n.h));
+    }
+  size_t columns = 0;
+  for (const ClipRect& r : u.d.tree().damage().rects()) {
+    if (r.y1 <= bar0.bottom()) continue;  // the control bar's position readout
+    bool inWindow = false;
+    for (const Rect& w : windows)
+      inWindow = inWindow || (static_cast<float>(r.x0) >= std::floor(w.x0) - 1.0f && static_cast<float>(r.x1) <= std::ceil(w.x1) + 1.0f &&
+                              static_cast<float>(r.y0) >= std::floor(w.y0) - 1.0f && static_cast<float>(r.y1) <= std::ceil(w.y1) + 1.0f);
+    CHECK_MESSAGE(inWindow, r.x0 << "," << r.y0 << " to " << r.x1 << "," << r.y1);
+    CHECK(r.x1 - r.x0 <= 8);
+    ++columns;
+  }
+  CHECK(columns > 0);
+  u.d.step();
+  // Running out of the window pages it on (follow).
+  u.port.setPlayheadTick(v.laneStart() + v.laneSpan() + bar);
+  u.d.advance(0.3);
+  CHECK(v.laneStart() == v.laneSpan());
+  // Stopped: no playhead, idle again.
+  u.ctx.togglePlay();
+  u.d.advance(0.5);
+  CHECK_FALSE(v.lanePlayhead().has_value());
+  const uint64_t frames1 = u.d.framesDrawn(), reads = v.stats().playheadReads;
+  u.d.advance(5.0);
+  CHECK(u.d.framesDrawn() == frames1);
+  CHECK(v.stats().playheadReads == reads);
+}
+
+TEST_CASE("lane windows: a double-click on a MIDI clip opens its piano roll; on an audio clip its Clip View") {
+  Ui u;
+  // An audio track with an audio clip next to the sketch's MIDI tracks.
+  doc::DocumentStore& st = u.ctx.store();
+  auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, u.track("Mod").id, "Loop");
+  REQUIRE(t.ok());
+  REQUIRE(st.dispatch(t->command).ok());
+  const doc::TrackId loop = t->tracks.at(0);
+  doc::SampleRef sr;
+  sr.id = st.ids().sample();
+  sr.path = "loop.wav";  // missing on disk: the clip draws its body (no waveform) and still opens
+  sr.rate = 48000.0;
+  sr.frames = 4 * 48000;
+  sr.channels = 2;
+  const doc::ops::NewAudioClip nc{loop, 0, sr.id, {}};
+  auto a = doc::ops::addAudioClips(*st.current(), st.ids(), std::span<const doc::SampleRef>(&sr, 1), std::span<const doc::ops::NewAudioClip>(&nc, 1));
+  REQUIRE_MESSAGE(a.ok(), (a.ok() ? "" : a.error().message));
+  REQUIRE(st.dispatch(a->command).ok());
+  u.show();
+  ProjectPatchView& v = u.view();
+  u.zoomTo("Keys");
+  // MIDI: Keys' Riff.
+  const uint32_t keys = v.patch().bandOf(u.track("Keys").id);
+  REQUIRE(v.laneClips(keys).size() == 1);
+  const ProjectPatchView::LaneClip riff = v.laneClips(keys)[0];
+  const Node& kn = v.patch().nodes[v.patch().bands[keys].source];
+  const LaneRect kr = laneBody(kn);
+  u.d.doubleClick(u.dev((riff.x0 + riff.x1) * 0.5f, (kr.y0 + kr.y1) * 0.5f));
+  u.d.step();
+  CHECK(u.ctx.detailClip().clip == riff.clip);
+  CHECK(u.ctx.detailClip().track == u.track("Keys").id);
+  CHECK(u.ctx.detailVisible());
+  CHECK(u.ctx.detailMode() == DetailMode::Clip);
+  CHECK(u.ctx.store().history().cursor() == u.history());  // display only: nothing changed
+  // Audio: the Loop's clip.
+  u.zoomTo("Loop");
+  const uint32_t lb = v.patch().bandOf(loop);
+  REQUIRE(v.laneClips(lb).size() == 1);
+  CHECK(v.laneClips(lb)[0].audio);
+  const ProjectPatchView::LaneClip ac = v.laneClips(lb)[0];
+  const LaneRect lr = laneBody(v.patch().nodes[v.patch().bands[lb].source]);
+  u.d.doubleClick(u.dev((ac.x0 + ac.x1) * 0.5f, (lr.y0 + lr.y1) * 0.5f));
+  u.d.step();
+  CHECK(u.ctx.detailClip().clip == ac.clip);
+  CHECK(u.ctx.detailClip().track == loop);
+  CHECK(u.ctx.detailMode() == DetailMode::Clip);
+  // Outside any clip (Keys' window past bar 4 when scrolled): nothing opens, nothing changes.
+  const doc::ClipRef before = u.ctx.detailClip();
+  u.zoomTo("Pad");
+  const uint32_t pad = v.patch().bandOf(u.track("Pad").id);
+  const LaneRect pr = laneBody(v.patch().nodes[v.patch().bands[pad].source]);
+  u.d.doubleClick(u.dev(pr.x0 + 2.0f, (pr.y0 + pr.y1) * 0.5f));  // bar 1: Pad starts at bar 3
+  u.d.step();
+  CHECK(u.ctx.detailClip().clip == before.clip);
+}
+
 // ---- wall clock (perf suite: load-sensitive) --------------------------------------------------------------------------
 
 TEST_CASE("project patch: 64 tracks — full-project paint < 2 ms from tiles, a morph frame within 144 Hz" * doctest::test_suite("perf")) {
@@ -1012,15 +1254,47 @@ TEST_CASE("project patch: 64 tracks — full-project paint < 2 ms from tiles, a 
   CHECK(mf[mf.size() * 9 / 10] < 1000.0 / 144.0);
 }
 
+
+TEST_CASE("lane windows: 64 tracks — a time-zoom re-layout ≤ 2 ms, a full paint of the windows" * doctest::test_suite("perf")) {
+  Ui u(false);
+  REQUIRE(buildWideProject(u.ctx.store(), 64).ok());
+  REQUIRE(u.d.enableGpu().ok());
+  u.show();
+  ProjectPatchView& v = u.view();
+  v.fitAll(false);
+  u.d.advance(1.0);
+  std::vector<double> ms;
+  for (int i = 0; i < 20; ++i) {
+    v.zoomLanes(i % 2 == 0 ? -4.0 : 4.0);  // 4 bars ↔ ~10 bars: the width changes every time
+    ms.push_back(v.stats().lastRelayoutMs);
+  }
+  std::sort(ms.begin(), ms.end());
+  MESSAGE("64 tracks: lane re-layout median " << ms[ms.size() / 2] << " ms, max " << ms.back() << " ms (" << v.stats().relayouts << " re-layouts)");
+  CHECK(v.stats().relayouts >= 20);
+  CHECK(ms[ms.size() / 2] <= 2.0);
+  // Zoomed onto the windows (Mid / Near): repaint them all.
+  u.zoomTo("Track 1");
+  u.d.advance(0.5);
+  std::vector<double> pm;
+  for (int i = 0; i < 20; ++i) {
+    v.canvas().markDirty();
+    const auto t0 = std::chrono::steady_clock::now();
+    u.d.step();
+    pm.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
+  std::sort(pm.begin(), pm.end());
+  MESSAGE("64 tracks, a band framed: median full frame " << pm[pm.size() / 2] << " ms");
+}
+
 // ---- goldens --------------------------------------------------------------------------------------------------------
 
 namespace {
-void golden(const char* name) {
+void golden(const char* name, const std::string& project = {}) {
   uint32_t w = 0, h = 0;
   viewSceneDefaultSize(name, w, h);
   GpuOptions o;
   o.validation = true;
-  auto img = renderViewScene(name, {}, w, h, {}, o, &library());
+  auto img = renderViewScene(name, project, w, h, {}, o, &library());
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
   const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + name + ".png";
   auto ref = readPng(path);
@@ -1034,3 +1308,7 @@ void golden(const char* name) {
 
 TEST_CASE("render: project-patch-overview matches the golden image") { golden("project-patch-overview"); }
 TEST_CASE("render: project-patch-band matches the golden image") { golden("project-patch-band"); }
+// T5.x-one-circuit: Open in Circuit View on a device, zoomed out around it (the opened band in context); the lane
+// windows (MIDI notes, audio waveforms) over the audio fixture.
+TEST_CASE("render: project-circuit-device matches the golden image") { golden("project-circuit-device"); }
+TEST_CASE("render: project-patch-lanes matches the golden image") { golden("project-patch-lanes", views::test::fixtureDir("audio")); }

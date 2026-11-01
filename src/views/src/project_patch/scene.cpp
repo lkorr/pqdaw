@@ -43,7 +43,7 @@ SymbolSpec specOf(const Node& n) {
   s.title = n.title;
   float inStub = 8.0f, outStub = 8.0f;
   switch (n.kind) {
-    case NodeKind::Source: s.symbol = Symbol::Ic; break;
+    case NodeKind::Source: s.symbol = Symbol::Subcircuit; break;  // T5.x-one-circuit: a lane window (title row, body)
     case NodeKind::Sum:
       s.symbol = Symbol::Summer;
       s.glyph = Glyph::Plus;
@@ -162,7 +162,11 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     title.x0 = n.x + 8.0f;
     title.x1 = n.x + n.w - 8.0f;
     switch (n.kind) {
-      case NodeKind::Source: title.y = n.y + 10.0f; break;
+      case NodeKind::Source:  // the window's title at the left of its title row (bar numbers follow it)
+        title.y = n.y + 8.0f;
+        title.x1 = n.x + 44.0f;
+        title.align = SceneLabel::Align::Left;
+        break;
       case NodeKind::Device:
       case NodeKind::Mixer: title.y = n.y + 8.0f; break;
       case NodeKind::Output:

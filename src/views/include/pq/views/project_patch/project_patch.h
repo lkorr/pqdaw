@@ -8,8 +8,11 @@
 //   band       one per track, in lane order (the main tree depth-first, then the returns, then the master): a strip
 //              holding the track's chain left → right. Deactivated tracks keep a band (dim, no nodes: they are not in
 //              the graph), so every lane of the arrangement has its band.
-//   source     MIDI track: a "MIDI" node playing the lane's clips (the view draws a strip of them inside it), its
-//              output wired to the instrument when one is lowered (a "notes" wire, per voice). Group, return, master:
+//   source     MIDI track: a "MIDI" node playing the lane's clips, its output wired to the instrument when one is
+//              lowered (a "notes" wire, per voice); an audio track: an "Audio" node (its clip player). Both are LANE
+//              WINDOWS (T5.x-one-circuit): the view draws the lane itself inside them over a time window it keeps
+//              (LayoutOptions::sourceW is the windows' width), and every lane window of the project sits in one column
+//              (the same x whatever the group depth), so the windows read as a narrow arrangement. Group, return, master:
 //              a summing node (Σ) whose one input is every Audio wire routed into the track (several wires into one
 //              port sum, graph::ProjectWire).
 //   device     one block per device of the chain (the call `d<id>` of the track patch, NodeId nodeIdFor(Device, id, 0));
@@ -139,7 +142,11 @@ inline constexpr float kNodeGap = 40.0f;    // between chain nodes
 inline constexpr float kBusGap = 56.0f;     // before a summing node (room for its bus)
 inline constexpr float kPinTop = 24.0f;     // the main pin's offset from a node's top (the band's spine)
 inline constexpr float kPinPitch = 12.0f;   // further pins
-inline constexpr float kSourceW = 128.0f, kSourceH = 48.0f;  // MIDI node (the clip strip inside)
+// Lane windows (MIDI / audio sources, T5.x-one-circuit): the default width (4 bars), the widest a time zoom-out makes
+// them, and the body the lane is drawn in (inset from the node's rect; the title row above it).
+inline constexpr float kSourceW = 192.0f, kSourceH = 60.0f;
+inline constexpr float kSourceMaxW = 768.0f;
+inline constexpr float kLaneInset = 11.0f, kLaneTop = 18.0f, kLaneBottom = 3.0f;  // the frame is drawn 8 in (pin stubs)
 inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
 inline constexpr float kMixerW = 88.0f, kMixerH = 60.0f;     // compact (M / S, pan, volume, values); expanded: wider
 inline constexpr float kExpandedPad = 16.0f;                // around an expanded device's atoms
@@ -152,10 +159,21 @@ struct ExpandedSize {
 };
 
 struct LayoutOptions {
+  float sourceW = metrics::kSourceW;  // the lane windows' width (T5.x-one-circuit: the view's time zoom)
   std::span<const ExpandedSize> expanded;
   std::span<const doc::TrackId> expandedMixers;  // mixer strips shown expanded (one row per send)
   const std::unordered_map<uint32_t, doc::PatchNudge>* nudges = nullptr;  // ViewState::patchNudges
 };
+
+// A lane window's body (world units): where the lane's clips are drawn (`n` is a MIDI / audio source node).
+struct LaneRect {
+  float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+inline LaneRect laneBody(const Node& n) noexcept {
+  return {n.x + metrics::kLaneInset, n.y + metrics::kLaneTop, n.x + n.w - metrics::kLaneInset, n.y + n.h - metrics::kLaneBottom};
+}
+// Whether a band's source is a lane window (a MIDI or an audio track).
+inline bool hasLaneWindow(const Band& b) noexcept { return b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Audio; }
 
 // The project patch of `project` as lowered into `lowered` (doc::lower with the same project; its library for device
 // ports), described with `catalog` (display names; may be null). Never fails: what is not lowered is drawn dim.

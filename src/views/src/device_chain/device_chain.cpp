@@ -16,7 +16,6 @@
 #include "pq/ui/theme.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/circuit/device_circuit.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/devices/panel_desc.h"
 #include "pq/views/shell/shell.h"
 
@@ -1075,7 +1074,7 @@ bool DeviceChainView::moveDevice(doc::DeviceId device, uint32_t index) {
 }
 
 bool DeviceChainView::openInCircuitView(doc::DeviceId device) {
-  return circuit::openDeviceChainCircuit(*this, ctx_, device) != nullptr;
+  return ctx_.openProjectCircuit({}, device);  // T5.x-one-circuit: the project patch view, framed on it
 }
 
 bool DeviceChainView::editDeviceCircuit(doc::DeviceId device) {

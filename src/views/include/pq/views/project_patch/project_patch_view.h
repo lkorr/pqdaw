@@ -6,18 +6,26 @@
 // detail, symbol tiles, the cached far-level chunks), edited through the same document commands as the Ableton view.
 //
 //   bands      one per track in lane order, tinted in the track colour, its name in the title strip; a group is a
-//              container around its members; the MIDI source node shows the lane's clips as a strip (song time left →
-//              right); a mixer strip node ends every chain (volume bar, pan, mute and solo buttons; double-click opens
-//              it to show each send's level beside its pin).
+//              container around its members; a mixer strip node ends every chain (volume bar, pan, mute and solo
+//              buttons; double-click opens it to show each send's level beside its pin).
+//   lanes      (T5.x-one-circuit) a MIDI or audio track's source node is a LANE WINDOW: the lane itself, display only —
+//              its clips (colours, names, MIDI notes, audio waveforms from the overview cache), bar and beat lines,
+//              the playhead — over one time window all windows share (4 bars by default; see laneStart). Wheel over
+//              a window scrolls time, Ctrl+wheel zooms it (zoomed out, the windows widen and the chains move right);
+//              double-click a clip opens its editor (a MIDI clip's piano roll, an audio clip's Clip View).
+//   one view   (T5.x-one-circuit, SPEC §15 2026-10-31: the whole project is one circuit) every "Open in Circuit View"
+//              comes here (ViewContext::openProjectCircuit: openCircuit): the device's band opened, framed on the
+//              device and focused; zooming out shows the other bands, groups with their chains, returns, the master
+//              chain and Out. Double-click inside an opened device edits its circuit (the Device level: the circuit
+//              editor, whose Track button comes back here); its title strip closes it again.
 //   zoom       Ctrl+wheel / = / − / F (fit), the wheel pans, middle or Alt drag pans (the canvas's). Semantic zoom:
 //              zoomed out, boxes and the bands' names; in, symbols, then titles and pin labels; double-click a band's
 //              empty space (or its name) to OPEN the band (T5.x-circuit-chain): zoomed onto it with every device of
 //              its chain opened to its atoms in place, each in its labelled frame (racks as nested frames with their
 //              chains stacked: circuit::buildRackCircuit) — project → track → devices → atoms; Esc / F back to the
-//              whole project (the band's devices close again). Double-click one device to open it alone (and again
-//              on its frame to close it); what is drawn is what plays, read-only here: editing a device's patch is the
-//              circuit editor's ("Open in Circuit View" in its menu: the track's chain as one circuit; "Edit Device
-//              Circuit": the device's editor).
+//              whole project (the band's devices close again). Double-click a closed device to open it alone; what is
+//              drawn is what plays: a device's patch is edited in the circuit editor (a double-click inside its
+//              opened frame, or "Edit Device Circuit" in its menu).
 //   edits      (each one undo step, shown at once in the arrangement, mixer and Device view: one document)
 //                wire        drag a device's export pin (right side) onto a device → its params (a menu), or onto a
 //                            param pin: T4.7's modulation wire (ops::connectWire)
@@ -39,6 +47,10 @@
 //
 // CPU: idle = no frames, no timers. The model, lowering and scene are rebuilt only while shown, after a document change
 // that can change them (structural, names, colours, a send turned on / off); a mixer drag or a clip edit only repaints.
+// A lane-window time zoom that changes their width re-lays out (model + scene, the lowering kept); a scroll, a waveform
+// arriving, a clip edit repaint the windows' rects only. While playing, a timer wakes when the playhead has moved about
+// one device px in the windows and damages the old and new playhead columns of the visible windows only. The windows'
+// MIDI notes come from the arrangement's clip previews (one cache for both views), audio from the waveform overviews.
 // Painting is the canvas's (tiles; the whole project at a far zoom is ≈ 2 quads per 256-px chunk) plus one pass over
 // the visible bands. UI thread only.
 
@@ -51,6 +63,7 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/core/time.h"
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/overlay.h"
@@ -66,6 +79,7 @@ namespace pq::views {
 
 class Shell;
 class MeterSource;
+class ArrangementView;
 
 namespace project_patch {
 
@@ -196,6 +210,47 @@ public:
   bool mixerExpanded(doc::TrackId track) const noexcept;
   bool animatingView() const noexcept { return viewAnim_.active; }
 
+  // ---- the whole project as one circuit (T5.x-one-circuit) ------------------------------------------------------
+  // "Open in Circuit View" (ViewContext::openProjectCircuit): the view shown (at once, without the morph, when it was
+  // hidden), `track`'s band opened and framed on `device` (its frame; a device inside an opened rack: its box), or on
+  // the band without one. The device is FOCUSED (its frame outlined) until the band closes or another opens.
+  bool openCircuit(doc::TrackId track, doc::DeviceId device, bool animate = true);
+  doc::DeviceId focusedDevice() const noexcept { return focus_; }
+  // Where a device is drawn (world units): its block or opened frame, inside an opened rack its box. False: not drawn.
+  bool deviceWorldRect(doc::DeviceId device, LaneRect& out) const;
+
+  // ---- lane windows (T5.x-one-circuit) --------------------------------------------------------------------------
+  // Every lane window shows [laneStart, laneStart + laneSpan). When the view is shown the window starts at the bar of
+  // the playhead (playing) or of the arrangement's left edge, kLaneBars bars long by default (pq::kPpq and the time
+  // signature there); while playing it pages on when the playhead runs out of it. The windows' width follows the span:
+  // kSourceW up to the default span, wider in proportion up to kSourceMaxW (4 × the default span), denser beyond.
+  static constexpr int64_t kLaneBars = 4, kLaneMaxBars = 64;
+  static constexpr double kLaneZoomStep = 1.25;   // span factor per Ctrl+wheel notch
+  static constexpr double kLaneScrollStep = 0.125;  // span fraction per wheel notch
+  Ticks laneStart() const noexcept { return laneStart_; }
+  Ticks laneSpan() const noexcept { return laneSpan_; }
+  Ticks laneDefaultSpan() const noexcept { return laneUnit_; }
+  float laneWidth() const noexcept;
+  // Clamped: start ≥ 0, one beat ≤ span ≤ kLaneMaxBars bars. A width change re-lays out; otherwise the windows repaint.
+  void setLaneTime(Ticks start, Ticks span);
+  void scrollLanes(double notches);                  // + = later
+  void zoomLanes(double notches, float anchor = 0.0f);  // + = zoom in (a shorter span); anchor: 0..1 across the window
+  // What band `b`'s window shows: its clips meeting the time window, each with its world x span inside the window.
+  struct LaneClip {
+    doc::ClipId clip;
+    float x0 = 0, x1 = 0;
+    bool audio = false;
+  };
+  std::vector<LaneClip> laneClips(uint32_t band) const;
+  uint32_t laneAt(ui::Vec2 device) const;            // the band whose window is under a device point (kNone: none)
+  doc::ClipRef laneClipAt(ui::Vec2 device) const;    // the clip under a device point in a window (invalid: none)
+  // A clip's editor: the detail view shown in Clip mode on it (a MIDI clip: the piano roll; audio: the Clip View), the
+  // clip selected in the arrangement, then onOpenClip (installProjectPatch: the editor takes the keyboard).
+  void openClip(const doc::ClipRef& clip);
+  std::function<void(const doc::ClipRef&)> onOpenClip;
+  // The playhead the windows draw (read while playing; empty when stopped).
+  const std::optional<Ticks>& lanePlayhead() const noexcept { return playhead_; }
+
   // ---- edits (each one undo step through pq::doc::ops / commands; false and the reason in the status line when it
   // could not be done) ---------------------------------------------------------------------------------------------
   bool connect(doc::DeviceId from, const std::string& port, doc::DeviceId to, const std::string& param);
@@ -243,15 +298,11 @@ public:
   // The label of model node n (its ns per sample, smoothed), or < 0 for none.
   float deviceCost(uint32_t node) const noexcept { return node < costs_.size() ? costs_[node] : -1.0f; }
   void pollCosts();
-  // "Open in Circuit View" on a device block: the project-device circuit editor (T4.4-fix1,
+  // A device block's "Edit Device Circuit": the project-device circuit editor (T4.4-fix1,
   // circuit::openDeviceInCircuitView; SPEC §15 2026-10-26): its edits are document commands, editing a stock device
   // forks it into a user device. False: no device library, or the device is gone.
-  bool openInCircuitView(doc::DeviceId device);
-  // T5.x-circuit-chain: Open in Circuit View is the track's whole chain as one circuit focused on the device
-  // (circuit::openDeviceChainCircuit); Edit Device Circuit the device's own editor (above); the band menu's Track
-  // Circuit View the track's chain.
+  // Edit Device Circuit: the device's own editor (above). T5.x-one-circuit: Open in Circuit View is openCircuit here.
   bool editDeviceCircuit(doc::DeviceId device);
-  bool openTrackCircuitView(doc::TrackId track);
   // Set by installProjectPatch: hides the other views of the track area (the mixer) when this one is shown.
   std::function<void()> hideOthers;
   // T4.8 hook: racks are devices whose block will open to their chains; until then a rack is a block like any device.
@@ -269,6 +320,12 @@ public:
     double lastRebuildMs = 0.0;  // the last rebuild's wall time (lower + model + scene)
     uint64_t morphFrames = 0;
     double lastMorphPaintMs = 0.0;
+    // T5.x-one-circuit: lane-window time zooms that re-laid out (model + scene, no lowering) and the last one's wall
+    // time; playhead reads while playing; lane windows painted (with their clips).
+    uint64_t relayouts = 0;
+    double lastRelayoutMs = 0.0;
+    uint64_t playheadReads = 0;
+    uint64_t lanesPainted = 0;
   };
   const Stats& stats() const noexcept { return stats_; }
 
@@ -282,14 +339,28 @@ public:
   // The track of band `b` in the current document (null: gone). O(1) after the first call per document version (a
   // per-snapshot table: painting never walks the track tree per band).
   const doc::Track* bandTrack(uint32_t b) const noexcept;
+  // T5.x-one-circuit: the tuning band `b`'s track plays in (Inherit resolved; the same table as bandTrack), for its
+  // lane window's note previews; and the arrangement next to this view (its clip previews and audio layouts), or null.
+  const doc::TuningDef* bandTuning(uint32_t b) const noexcept;
+  ArrangementView* arrangement() const noexcept;
   doc::Snapshot shownSnapshot() const noexcept { return built_; }
   Ticks songEnd() const noexcept { return songEnd_; }
+  Stats& mutableStats() noexcept { return stats_; }  // the canvas counts what it paints
   void updateReadout(uint32_t edge);
   void animateViewTo(const circuit::CircuitCanvas::View& v);
 
 private:
   void onDocument(const doc::StoreEvent& e);
   void rebuild();
+  void relayout();  // T5.x-one-circuit: the lane windows' width changed: model + scene again, the lowering kept
+  void initLaneTime();
+  void refreshTransport();
+  void readPlayhead();
+  void schedulePlayhead();
+  void damageLaneColumn(Ticks t);
+  void damageLanes();
+  void frameDevice(doc::DeviceId device, bool animate);
+  void expandBand(doc::TrackId track);  // opens the band's devices (closing another opened band), without zooming
   bool apply(const doc::ops::EditResult& e, const char* what);
   bool dispatch(const doc::Command& c, const char* what);
   void beginMorph(bool in);
@@ -300,6 +371,7 @@ private:
 
   ViewContext& ctx_;
   ViewContext::Subscription docSub_;
+  ViewContext::Subscription viewSub_;
   ProjectCanvas* canvas_ = nullptr;
   MeterSource* meters_ = nullptr;
   doc::Snapshot built_;               // the snapshot the model was built from
@@ -321,12 +393,19 @@ private:
   circuit::ChainSceneCache chainCache_;
   doc::TrackId openBand_;
   std::vector<doc::DeviceId> bandExpanded_;
+  doc::DeviceId focus_;           // T5.x-one-circuit: the device "Open in Circuit View" framed
+  // T5.x-one-circuit: the lane windows' time window, its default span, the playhead the windows show.
+  Ticks laneStart_ = 0, laneSpan_ = 0, laneUnit_ = 0;
+  bool laneInit_ = false;
+  std::optional<Ticks> playhead_;
+  uint32_t playheadTimer_ = 0;
   bool valueGesture_ = false;
   Stats stats_;
   Readout readout_;
   uint32_t readoutTimer_ = 0;
   mutable doc::Snapshot tracksOf_;                  // the snapshot bandTracks_ was filled from
   mutable std::vector<const doc::Track*> bandTracks_;  // per band
+  mutable std::vector<const doc::TuningDef*> bandTunings_;  // per band (T5.x-one-circuit)
   DeviceCostSource* costSource_ = nullptr;
   bool showCosts_ = false;
   std::vector<float> costs_;  // per model node (devices; < 0: none)

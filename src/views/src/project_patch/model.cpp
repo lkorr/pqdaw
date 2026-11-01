@@ -312,16 +312,16 @@ struct Builder {
       s.band = bi;
       s.title = "MIDI";
       s.outputs.push_back({"notes", ""});
-      s.w = m::kSourceW;
+      s.w = roundUp4(std::clamp(opt.sourceW, m::kSourceW, m::kSourceMaxW));
       s.h = m::kSourceH;
       band.source = addNode(std::move(s));
     } else if (t.kind == doc::TrackKind::Audio) {  // T5.3: the clip player (graph: clipPlayer → its chain)
       Node s;
       s.kind = NodeKind::Source;
       s.band = bi;
-      s.title = "Clips";
+      s.title = "Audio";
       s.outputs.push_back({"out", ""});
-      s.w = m::kSourceW;
+      s.w = roundUp4(std::clamp(opt.sourceW, m::kSourceW, m::kSourceMaxW));
       s.h = m::kSourceH;
       band.source = addNode(std::move(s));
     } else {
@@ -469,6 +469,7 @@ struct Builder {
     Band& b = out.bands[bi];
     b.x0 = m::kLeft + m::kIndent * static_cast<float>(b.depth);
     float start = b.x0 + 8.0f;
+    if (hasLaneWindow(b)) start = std::max(start, laneX);  // T5.x-one-circuit: the lane windows in one column
     if (b.kind == doc::TrackKind::Group && b.lastMember != kNone) {
       float membersEnd = start;
       for (uint32_t c = bi + 1; c <= b.lastMember; ++c)
@@ -482,8 +483,14 @@ struct Builder {
     return end;
   }
 
+  float laneX = 0.0f;  // the lane windows' column (right of the deepest lane's indent)
+
   void layout() {
     // x
+    uint16_t deepest = 0;
+    for (const Band& b : out.bands)
+      if (hasLaneWindow(b)) deepest = std::max(deepest, b.depth);
+    laneX = m::kLeft + m::kIndent * static_cast<float>(deepest) + 8.0f;
     float mainEnd = m::kLeft;
     for (uint32_t i = 0; i < out.bands.size(); ++i)
       if (out.bands[i].depth == 0 && (out.bands[i].kind == doc::TrackKind::Midi || out.bands[i].kind == doc::TrackKind::Audio ||
@@ -677,7 +684,9 @@ struct Builder {
         case EdgeKind::Modulation: {
           const Band& tb = out.bands[b.band];
           const float o = static_cast<float>(off);
-          if (a.band == b.band && t.x > s.x + 24.0f) {
+          // T5.x-one-circuit: between opened devices (their atoms fill their frames) the wire takes the gutter above them,
+          // the band's title strip, as the Track-level view routed its modulation.
+          if (a.band == b.band && t.x > s.x + 24.0f && !a.expanded && !b.expanded) {
             const float mx = std::round((s.x + t.x) * 0.5f) + o;
             pts.push_back({mx, s.y});
             pts.push_back({mx, t.y});

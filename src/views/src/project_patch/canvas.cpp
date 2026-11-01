@@ -10,8 +10,9 @@
 #include "../common/paint.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/theme.h"
+#include "internal.h"
+#include "pq/views/circuit/chain_paint.h"
 #include "pq/views/circuit/probes.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
@@ -30,18 +31,6 @@ float pinY(const Node& n, size_t i) noexcept {
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
   }
 }
-
-bool overlaps(const Rect& r, const ui::IRect& clip) noexcept {
-  return r.x1 >= static_cast<float>(clip.x) && r.x0 <= static_cast<float>(clip.right()) && r.y1 >= static_cast<float>(clip.y) &&
-         r.y0 <= static_cast<float>(clip.bottom());
-}
-
-ui::IRect toIRect(const Rect& r) noexcept {
-  const auto x0 = static_cast<int32_t>(std::floor(r.x0)), y0 = static_cast<int32_t>(std::floor(r.y0));
-  return {x0, y0, static_cast<int32_t>(std::ceil(r.x1)) - x0, static_cast<int32_t>(std::ceil(r.y1)) - y0};
-}
-
-Rect snapRect(Rect r) noexcept { return {std::round(r.x0), std::round(r.y0), std::round(r.x1), std::round(r.y1)}; }
 
 bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x < r.x1 && p.y >= r.y0 && p.y < r.y1; }
 
@@ -215,7 +204,13 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
       if (stripH >= px + 2.0f) {
         const ui::IRect box{static_cast<int32_t>(r.x0 + bar + 6.0f), static_cast<int32_t>(r.y0), static_cast<int32_t>(r.x1 - r.x0 - bar - 12.0f),
                             static_cast<int32_t>(stripH)};
-        paint::text(ctx, font, box, n.title + "  (read-only)", th.circuit.symbolText, ui::TextAlign::Left);
+        // T5.x-one-circuit: the kind after the name (as the Track-level view's boundaries had it).
+        const int32_t adv = paint::text(ctx, font, box, n.title, th.circuit.symbolText, ui::TextAlign::Left);
+        const int32_t gap = static_cast<int32_t>(std::round(10.0f * us));
+        if (adv > 0 && adv + gap + 12 < box.w) {
+          const char* kind = n.rack ? (n.instrument ? "Instrument Rack" : "Audio Effect Rack") : (n.instrument ? "Instrument" : "Audio Effect");
+          paint::text(ctx, font, {box.x + adv + gap, box.y, box.w - adv - gap, box.h}, kind, th.circuit.pinText, ui::TextAlign::Left);
+        }
       } else if (r.x1 - r.x0 >= 28.0f * us) {  // zoomed out: the name in a pill at the frame's corner
         const float pad = std::round(3.0f * us), lh = std::round(px + 4.0f * us);
         float x0 = r.x0 + bar + 1.0f;
@@ -235,6 +230,17 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   }
 }
 
+// T5.x-one-circuit: the device "Open in Circuit View" framed, outlined (its frame or block; inside a rack its box).
+static void paintFocus(ui::PaintContext& ctx, const ProjectCanvas& c, const ProjectPatchView& v) {
+  LaneRect r;
+  if (!v.focusedDevice().valid() || !v.deviceWorldRect(v.focusedDevice(), r)) return;
+  const float us = ctx.scale.factor;
+  const float t = std::max(2.0f, std::round(2.0f * us));
+  const Rect d = snapRect(c.deviceRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0));
+  if (!overlaps(d, ui::intersect(ctx.clip, c.rect()))) return;
+  ctx.dl.addRectStroke({d.x0 - t, d.y0 - t, d.x1 + t, d.y1 + t}, ctx.res.theme->circuit.selected, t);
+}
+
 void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   const ui::Theme& th = *ctx.res.theme;
   const ProjectPatch& pp = view_.patch();
@@ -245,7 +251,6 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   const float us = ctx.scale.factor;
   const Lod level = lod();
   const bool text = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
-  const double end = static_cast<double>(std::max<Ticks>(view_.songEnd(), 1));
   // T5.x-circuit-chain: opened racks' deactivated chains and devices veiled.
   for (const Node& n : pp.nodes)
     if (n.rack && n.expanded)
@@ -264,6 +269,9 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
                             th.circuit.symbolText);
   }
 
+  // T5.x-one-circuit: the MIDI / audio sources are windows onto their lanes (every level of detail).
+  paintLaneWindows(ctx, *this, view_);
+  paintFocus(ctx, *this, view_);
   if (level != Lod::Far) {
     for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
       const Node& n = pp.nodes[i];
@@ -272,19 +280,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       if (!overlaps(nr, clip)) continue;
       const Band& band = pp.bands[n.band];
       if (n.kind == NodeKind::Source) {
-        // The lane's clips as a strip: song time left → right.
-        const Rect strip = snapRect(deviceRect(n.x + 12.0f, n.y + 20.0f, n.w - 24.0f, n.h - 28.0f));
-        dl.addRectFilled(strip, th.arrangement.lane);
-        if (const doc::Track* t = view_.bandTrack(n.band)) {
-          const float w = strip.x1 - strip.x0;
-          for (const doc::ClipSlot& c : t->clips) {  // T5.3: note and audio clips alike
-            const float x0 = strip.x0 + static_cast<float>(static_cast<double>(c.start()) / end) * w;
-            const float x1 = strip.x0 + static_cast<float>(static_cast<double>(c.end()) / end) * w;
-            if (x0 >= strip.x1) break;
-            const Rgba col = c.active() && !t->mixer.mute ? ui::hex(c.colour().rgb) : th.circuit.pinText;
-            dl.addRectFilled({std::round(x0), strip.y0 + 1.0f, std::max(std::round(x0) + 1.0f, std::round(std::min(x1, strip.x1))), strip.y1 - 1.0f}, col);
-          }
-        }
+        continue;  // a lane window (above) or a Σ (the symbol)
       } else if (n.kind == NodeKind::Mixer) {
         const doc::Track* t = view_.bandTrack(n.band);
         if (t == nullptr) continue;
@@ -482,6 +478,20 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
   }
   if (!scene()) return CircuitCanvas::onPointer(e);
   switch (e.type) {
+    case ui::PointerType::Wheel: {
+      // T5.x-one-circuit: over a lane window the wheel scrolls its time, Ctrl+wheel zooms it (about the pointer).
+      const uint32_t lb = v.laneAt(e.pos);
+      if (lb == kNone) return CircuitCanvas::onPointer(e);
+      if (e.mods & ui::mod::kCtrl) {
+        const LaneRect r = laneBody(pp.nodes[pp.bands[lb].source]);
+        const float u = (toWorld(e.pos).x - r.x0) / std::max(1.0f, r.x1 - r.x0);
+        v.zoomLanes(static_cast<double>(e.wheel.y), u);
+      } else {
+        const float notches = std::fabs(e.wheel.x) > std::fabs(e.wheel.y) ? e.wheel.x : -e.wheel.y;
+        v.scrollLanes(static_cast<double>(notches));
+      }
+      return true;
+    }
     case ui::PointerType::Down: {
       if (e.button == ui::PointerButton::Right) {
         if (tree()) tree()->setFocus(this);
@@ -503,11 +513,34 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       if (tree()) tree()->setFocus(this);
       const uint32_t node = nodeAt(e.pos);
       if (e.clickCount >= 2) {
+        // T5.x-one-circuit: a clip in a lane window opens its editor (the piano roll, an audio clip's Clip View).
+        if (const doc::ClipRef ref = v.laneClipAt(e.pos); ref.clip.valid()) {
+          v.openClip(ref);
+          return true;
+        }
+        if (node != kNone && pp.nodes[node].kind == NodeKind::Source) return true;  // a window's empty lane: nothing
         if (node != kNone && pp.nodes[node].kind == NodeKind::Device && !pp.nodes[node].missing) {
           const Node& n = pp.nodes[node];
-          // An opened device closes on a double-click on its frame (not on its atoms).
-          const bool onAtoms = n.expanded && hitTest(e.pos).kind == circuit::CanvasHit::Kind::Node;
-          if (!onAtoms) v.setDeviceExpanded(n.device, !n.expanded);
+          if (!n.expanded) {
+            v.setDeviceExpanded(n.device, true);  // a closed block opens to its atoms
+            return true;
+          }
+          // Opened (T5.x-one-circuit): its title strip closes it; anywhere else inside edits its circuit (the Device
+          // level: the circuit editor) — in an opened rack, the device whose box is under the pointer.
+          const graph::Point2 w = toWorld(e.pos);
+          if (w.y < n.y + 16.0f) {
+            v.setDeviceExpanded(n.device, false);
+            return true;
+          }
+          doc::DeviceId target = n.rack ? doc::DeviceId{} : n.device;
+          if (n.rack)
+            if (const circuit::ChainCircuit* cc = v.rackCircuit(n.device)) {
+              const float dx = n.x + metrics::kExpandedPad - cc->scene->x0, dy = n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0;
+              const uint32_t b = cc->deviceBoxAt(w.x - dx, w.y - dy);
+              if (b != circuit::kNoBox && cc->boxes[b].kind == circuit::ChainBoxKind::Device && !cc->boxes[b].missing) target = cc->boxes[b].device;
+            }
+          if (target.valid()) (void)v.editDeviceCircuit(target);
+          else v.context().setStatus("A rack has no circuit of its own: double-click a device inside it to edit its circuit");
           return true;
         }
         if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
@@ -866,8 +899,9 @@ ui::InfoText ProjectCanvas::info() const {
   if (ro.edge != kNone) return {ro.title, ro.value};
   return {"Project Patch",
           "The whole project as one circuit. Drag an export onto a device to wire it, a mixer's output onto a group, return "
-          "or the master to route it; double-click a band to open it (zoomed onto it, its devices opened to their atoms), a device to open it alone. Ctrl+Alt+P "
-          "returns to the arrangement."};
+          "or the master to route it; double-click a band to open it (its devices opened to their atoms), a device to open it "
+          "alone, inside an opened device to edit its circuit. Over a lane window the wheel scrolls time, Ctrl+wheel zooms it; "
+          "double-click a clip to edit it. Ctrl+Alt+P returns to the arrangement."};
 }
 
 }  // namespace pq::views::project_patch

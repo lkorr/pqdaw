@@ -590,6 +590,22 @@ void ViewContext::setDetailClip(const doc::ClipRef& clip) {
   notify(view_change::kDetailClip);
 }
 
+bool ViewContext::openProjectCircuit(doc::TrackId track, doc::DeviceId device) {
+  if (!track.valid() && device.valid()) {
+    const doc::DeviceLoc loc = doc::findDevice(*doc(), device);
+    if (loc.track != nullptr) track = loc.track->id;
+  }
+  if (!track.valid() || doc::findTrackPtr(*doc(), track) == nullptr) {
+    setStatus(device.valid() ? "No such device" : "No track to show in the circuit view (select one first)");
+    return false;
+  }
+  if (!circuitOpener_) {
+    setStatus("The project circuit view is not available here");
+    return false;
+  }
+  return circuitOpener_(track, device);
+}
+
 void ViewContext::setSelectedTrack(doc::TrackId t) {
   if (t == selectedTrack_) return;
   selectedTrack_ = t;

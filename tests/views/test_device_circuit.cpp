@@ -22,10 +22,10 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/devices/device_panel.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/project_patch/project_patch_view.h"
 #include "../../src/views/src/shell/shell_widgets.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
@@ -234,15 +234,15 @@ TEST_CASE("device circuit view: a double-click on the device's title opens it") 
   const IRect r = title->rect();
   u.d.doubleClick({static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)});
   u.d.step();
-  // T5.x-circuit-chain: the circuit view opens at the Track level, focused on the device; its Device level is the
-  // editor (Enter, a double-click in the device's boundary, the title bar's Device).
-  circuit::TrackCircuitView* chain = nullptr;
-  for (size_t i = 0; i < u.shell->overlay().childCount(); ++i)
-    if (auto* t = dynamic_cast<circuit::TrackCircuitView*>(&u.shell->overlay().child(i))) chain = t;
-  REQUIRE(chain != nullptr);
-  CHECK(chain->focused() == u.inst);
+  // T5.x-one-circuit: the project patch view opens on the device's band, framed on and focused on the device; its
+  // Device level is the editor (a double-click inside the device's frame, Edit Device Circuit).
+  project_patch::ProjectPatchView* pv = findProjectPatch(*u.shell);
+  REQUIRE(pv != nullptr);
+  CHECK(pv->shown());
+  CHECK(pv->focusedDevice() == u.inst);
+  CHECK(u.shell->overlay().childCount() == 0);
   CHECK_FALSE(panel->folded());  // a double-click no longer folds a chain device (the triangle does)
-  CHECK(u.d.press("Enter") != KeyResult::Unhandled);
+  CHECK(pv->editDeviceCircuit(u.inst));
   u.d.advance(0.1);
   circuit::CircuitEditor* ed = u.editor();
   REQUIRE(ed != nullptr);

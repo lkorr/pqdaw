@@ -11,4 +11,4 @@ set(PQ_VIEWS_CIRCUIT_SOURCES
   src/circuit/device_circuit.cpp  # T4.4-fix1: the editor on a device of the project
   src/circuit/node_info.cpp  # T4.15: node tooltips, recognised constant forms
   src/circuit/chain_circuit.cpp  # T5.x-circuit-chain: a track's chain as one circuit (model, layout, scene)
-  src/circuit/track_circuit.cpp)  # T5.x-circuit-chain: the Track level of the circuit view
+  src/circuit/chain_paint.cpp)  # T5.x-circuit-chain: painting chain boundaries (opened racks in the project patch view)

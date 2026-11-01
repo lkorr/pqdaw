@@ -22,7 +22,6 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
@@ -1200,23 +1199,52 @@ Status setupProjectPatchZoom(Shell& shell) {
   shell.tree().layoutNow();
   return Ok{};
 }
-// T5.x-circuit-chain: the circuit view at the Track level — Keys = Operator → Auto Filter, the whole chain as one
-// circuit (each device in its labelled boundary, Operator's output wired into the Auto Filter's input, through to the
-// track's mixer), fitted as View > Track Circuit opens it.
-Status setupCircuitTrackChain(Shell& shell) {
+// T5.x-one-circuit: "Open in Circuit View" on the Keys band's Saturator (the sketch project): the project patch view
+// with the band opened, framed on the Saturator (outlined: the focus), then zoomed out to the whole project with the
+// band still open: one circuit from the device's atoms to the master's Out.
+Status setupProjectCircuitDevice(Shell& shell) {
   ViewContext& ctx = shell.context();
-  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "circuit-track-chain: no device library", {}};
-  doc::DocumentStore& store = ctx.store();
-  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys", doc::Colour{0xF6A23B}));
-  if (!t) return Error{ErrorCode::Unknown, "circuit-track-chain: createTrack failed", {}};
-  const doc::TrackId track = t->tracks[0];
-  if (!runEdit(store, doc::ops::addDevice(*store.current(), store.ids(), track, "operator", doc::DeviceKind::Instrument)) ||
-      !runEdit(store, doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect)))
-    return Error{ErrorCode::Unknown, "circuit-track-chain: addDevice failed", {}};
-  ctx.setSelectedTrack(track);
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-circuit-device: no device library", {}};
+  if (Status s = project_patch::buildSketchProject(ctx.store()); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-circuit-device: the view is not installed", {}};
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  if (keys == nullptr || keys->devices.size() < 2) return Error{ErrorCode::NotFound, "project-circuit-device: no Keys chain", {}};
   shell.tree().layoutNow();
-  if (circuit::openTrackCircuit(shell.overlay(), ctx, track) == nullptr)
-    return Error{ErrorCode::Unknown, "circuit-track-chain: the view did not open", {}};
+  if (!ctx.openProjectCircuit({}, keys->devices[1]->id)) return Error{ErrorCode::Unknown, "project-circuit-device: did not open", {}};
+  shell.tree().layoutNow();
+  v->canvas().fitAll();  // the canvas's fit (the view's F would close the band): the whole project, the band open
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// T5.x-one-circuit: the lane windows (--project tests/views/fixtures/audio: audio tracks with stereo, mono, reversed,
+// Re-Pitch and missing clips and a MIDI row): the windows' column at a readable zoom, 8 bars (twice the default span,
+// so twice the default width), the bar lines, clip names, waveforms and the MIDI row's notes.
+Status setupProjectPatchLanes(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-lanes: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setLaneTime(0, 2 * v->laneDefaultSpan());
+  const project_patch::ProjectPatch& pp = v->patch();
+  float x = 0.0f, y = 0.0f;
+  bool found = false;
+  for (const project_patch::Band& b : pp.bands)
+    if (project_patch::hasLaneWindow(b) && !found) {
+      x = pp.nodes[b.source].x;
+      y = b.y;
+      found = true;
+    }
+  if (!found) return Error{ErrorCode::NotFound, "project-patch-lanes: no lane window (needs the audio fixture)", {}};
+  circuit::CircuitCanvas::View view;
+  view.zoom = 1.5;
+  view.x = static_cast<double>(x) - 24.0;
+  view.y = static_cast<double>(y) - 8.0;
+  v->canvas().setView(view);
+  (void)ctx;
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -1373,7 +1401,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
-    {"circuit-track-chain", 1280, 800, setupCircuitTrackChain},  // T5.x-circuit-chain
+    {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
+    {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp

@@ -177,8 +177,9 @@ public:
   // Closes the editor at its next timer tick (safe from inside a callback the editor owns).
   void closeSoon();
   void refreshTitle() { updateTitle(); }
-  // T5.x-circuit-chain: the breadcrumb's Track level (pq/views/circuit/track_circuit.h: the device's whole chain,
-  // read-only): a "Track" button before the title while an action is set (the project-device editor sets it).
+  // T5.x-circuit-chain: the breadcrumb's Track level (T5.x-one-circuit: the project patch view on the device's band,
+  // ViewContext::openProjectCircuit): a "Track" button before the title while an action is set (the project-device
+  // editor sets it).
   void setTrackAction(std::function<void()> action);
   bool hasTrackAction() const noexcept { return static_cast<bool>(trackAction_); }
   void showStatus(std::string s) { setStatus(std::move(s)); }  // the host's notes (e.g. the fork)

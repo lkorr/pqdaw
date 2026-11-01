@@ -32,7 +32,6 @@
 #include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 #include "pq/views/circuit/chain_circuit.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
@@ -211,6 +210,33 @@ int main() {
   std::printf("morph: %zu frames over 6 morphs\n", morph.size());
   pq::bench::reportStats("project_patch.morph frame (arrangement <-> patch) 64 tracks 2560x1440", pq::bench::summarize(morph), "ns CPU/frame");
 
+  // ---- T5.x-one-circuit: lane windows, 64 tracks ----
+  {
+    view->setShown(true, false);
+    settle();
+    view->fitAll(false);
+    settle();
+    std::vector<double> rl;
+    for (int i = 0; i < 40; ++i) {
+      view->zoomLanes(i % 2 == 0 ? -4.0 : 4.0);  // 4 bars <-> ~10 bars: the windows' width changes every time
+      rl.push_back(view->stats().lastRelayoutMs * 1e6);
+    }
+    pq::bench::reportStats("one_circuit.lane time zoom re-layout (model + scene + canvas, no lowering) 64 tracks", pq::bench::summarize(rl), "ns/relayout");
+    std::vector<double> sc;
+    for (int i = 0; i < 300; ++i) sc.push_back(timed([&] { view->scrollLanes(i % 2 == 0 ? 1.0 : -1.0); }));
+    pq::bench::reportStats("one_circuit.lane scroll frame (windows repainted, fitted far) 64 tracks 2560x1440", pq::bench::summarize(sc), "ns CPU/frame");
+    view->focusBand(snap->tracks[0]->children.at(3)->id, false);  // a band framed: its window and its neighbours' at near zoom
+    settle();
+    fullPaint();
+    std::snprintf(name, sizeof name, "one_circuit.paint(full, settled, one band, lane windows with notes) 64 tracks %ux%u", w, h);
+    pq::bench::reportStats(name, pq::bench::measure(fullPaint, 1), "ns/frame");
+    std::vector<double> ls;
+    for (int i = 0; i < 300; ++i) ls.push_back(timed([&] { view->scrollLanes(i % 2 == 0 ? 1.0 : -1.0); }));
+    pq::bench::reportStats("one_circuit.lane scroll frame (one band framed, near) 64 tracks 2560x1440", pq::bench::summarize(ls), "ns CPU/frame");
+    view->setShown(false, false);
+    settle();
+  }
+
   // ---- T5.x-circuit-chain: a track's chain as one circuit ----
   {
     doc::DocumentStore& st = ctx.store();
@@ -273,36 +299,30 @@ int main() {
     std::printf("chain: the shell under the view alone: %u vertices, %u commands\n", static_cast<unsigned>(dl.vertices().size()),
                 static_cast<unsigned>(dl.commands().size()));
     pq::bench::reportStats("chain_circuit.baseline: the shell without the view (one track) 2560x1440", pq::bench::measure(fullPaint, 1), "ns/frame");
-    circuit::TrackCircuitView* cv = circuit::openTrackCircuit((*shell)->overlay(), ctx, track);
-    if (cv == nullptr) return 1;
+    // T5.x-one-circuit: Open in Circuit View on the Auto Filter: the project patch view, the band opened, framed on it.
+    const doc::DeviceId af = doc::findTrackPtr(*ctx.doc(), track)->devices.at(1)->id;
+    if (!ctx.openProjectCircuit(track, af)) return 1;
     tree.layoutNow();
     settle();
     for (int level = 0; level < 2; ++level) {
-      if (level == 0) {
-        cv->canvas().fitAll();
-      } else {  // the Operator -> Auto Filter seam at zoom 1
-        const IRect r = cv->canvas().rect();
-        const circuit::ChainBox& af = cv->circuit().boxes[cv->circuit().roots.at(1)];
-        circuit::CircuitCanvas::View v;
-        v.zoom = 1.0;
-        v.x = static_cast<double>(af.x0) - r.w * 0.25;
-        v.y = static_cast<double>(af.y0);
-        cv->canvas().setView(v);
+      if (level == 1) {  // zoomed out around it (Ctrl+wheel steps): the band in context
+        const IRect r = view->canvas().rect();
+        for (int i = 0; i < 6; ++i) view->canvas().zoomAt({r.x + r.w * 0.5f, r.y + r.h * 0.5f}, 1.0 / 1.15);
       }
       settle();
       fullPaint();
-      const circuit::CircuitCanvas& c = cv->canvas();
+      const circuit::CircuitCanvas& c = view->canvas();
       const char* lod = c.lod() == circuit::CircuitCanvas::Lod::Far ? "far" : (c.lod() == circuit::CircuitCanvas::Lod::Mid ? "mid" : "near");
-      std::printf("chain %s: zoom %.3f (%s): chunks %u from tiles / %u direct, %u nodes painted (%u from tiles), %u vertices, %u commands\n",
-                  level == 0 ? "fitted" : "near", c.view().zoom, lod, c.stats().chunksFromTiles, c.stats().chunksDirect, c.stats().nodesPainted,
+      std::printf("one circuit %s: zoom %.3f (%s): chunks %u from tiles / %u direct, %u nodes painted (%u from tiles), %u vertices, %u commands\n",
+                  level == 0 ? "framed" : "out", c.view().zoom, lod, c.stats().chunksFromTiles, c.stats().chunksDirect, c.stats().nodesPainted,
                   c.stats().nodesFromTiles, static_cast<unsigned>(dl.vertices().size()), static_cast<unsigned>(dl.commands().size()));
-      std::snprintf(name, sizeof name, "chain_circuit.paint(full, settled, %s, zoom %.2f %s) Operator>AutoFilter>EQ8>Saturator %ux%u",
-                    level == 0 ? "fitted" : "near", c.view().zoom, lod, w, h);
+      std::snprintf(name, sizeof name, "one_circuit.paint(full, settled, %s, zoom %.2f %s) band Operator>AutoFilter>EQ8>Saturator opened %ux%u",
+                    level == 0 ? "framed on Auto Filter" : "zoomed out", c.view().zoom, lod, w, h);
       pq::bench::reportStats(name, pq::bench::measure(fullPaint, 1), "ns/frame");
       std::vector<double> pan;
       for (int i = 0; i < 300; ++i)
-        pan.push_back(timed([&] { cv->canvas().panBy((i / 50) % 2 ? -37.0f : 37.0f, (i / 75) % 2 ? -11.0f : 11.0f); }));
-      std::snprintf(name, sizeof name, "chain_circuit.pan frame (%s, %s) Operator>AutoFilter>EQ8>Saturator %ux%u", level == 0 ? "fitted" : "near", lod, w, h);
+        pan.push_back(timed([&] { view->canvas().panBy((i / 50) % 2 ? -37.0f : 37.0f, (i / 75) % 2 ? -11.0f : 11.0f); }));
+      std::snprintf(name, sizeof name, "one_circuit.pan frame (%s, %s) band opened %ux%u", level == 0 ? "framed" : "zoomed out", lod, w, h);
       pq::bench::reportStats(name, pq::bench::summarize(pan), "ns CPU/frame");
     }
   }

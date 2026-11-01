@@ -17,7 +17,6 @@
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
-#include "pq/views/circuit/track_circuit.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -174,8 +173,7 @@ std::string describeShot(Shell& shell, ui::Vec2 pointer, bool pointerInside) {
       Widget& w = layer->child(i);
       if (!w.visible() || !layer->isOpen(w)) continue;
       std::string what = "popup " + typeName(w) + (w.name().empty() ? std::string() : " '" + w.name() + "'");
-      if (auto* tc = dynamic_cast<circuit::TrackCircuitView*>(&w)) what = "circuit (Track level): " + tc->title();
-      else if (auto* ce = dynamic_cast<circuit::CircuitEditor*>(&w)) what = "circuit (Device level, editor): " + ce->title();
+      if (auto* ce = dynamic_cast<circuit::CircuitEditor*>(&w)) what = "circuit (Device level, editor): " + ce->title();
       else if (auto* cv = dynamic_cast<circuit::CircuitViewer*>(&w)) what = "circuit (patch viewer): " + cv->title();
       else if (dynamic_cast<PreferencesWindow*>(&w)) what = "preferences";
       add(what);
