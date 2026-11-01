@@ -1,9 +1,13 @@
 // TMM.3: meta modules through the playback link — a nested Phase accumulator's freq drag is param writes only (no
 // compile job, no unit compile, the unit keeps its image: the unit hash is unchanged) and audible; a chain-level
 // `meta:phase_acc` instrument plays its voices; a MetaData edit compiles nothing.
+// TMM.10: Phase accumulator -> Wavetable -> Auto Filter as a chain (a meta voice run) plays exact pitches in 31edo;
+// its voices end with the run's release.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
+#include <complex>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -21,6 +25,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/engine/project_program.h"
+#include "pq/tuning/edo.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -326,4 +331,107 @@ TEST_CASE("meta link: frame-table and voice-tap slots — stable ids, taps per v
   CHECK(link->metaSlot(k.inst, "wt1", 0) == 0);
   d.run(20);
   CHECK(slot->generation() == 2);  // our reference still works
+}
+
+// ---- TMM.10: meta devices in a chain — voice continuity ---------------------------------------------------------------
+
+namespace {
+
+// The frequency a component near `f` really has, from the phase advance of the signal demodulated at `f` between two
+// Blackman-Harris windows `gap` samples apart (|error| far below 1e-6 Hz for a clean tone whose neighbours are at
+// least 4 bins away).
+double measuredHz(const std::vector<float>& x, size_t from, size_t window, size_t gap, double f, double sr) {
+  constexpr long double kTwoPi = 6.283185307179586476925L;
+  auto demod = [&](size_t at) {
+    double re = 0.0, im = 0.0;
+    for (size_t n = 0; n < window; ++n) {
+      const double u = 6.283185307179586 * static_cast<double>(n) / static_cast<double>(window - 1);
+      const double w = 0.35875 - 0.48829 * std::cos(u) + 0.14128 * std::cos(2 * u) - 0.01168 * std::cos(3 * u);
+      // The absolute sample index in the phase, reduced exactly enough over seconds.
+      const long double cyc = static_cast<long double>(f) * static_cast<long double>(at + n) / static_cast<long double>(sr);
+      const double ph = static_cast<double>(-kTwoPi * (cyc - std::floor(cyc)));
+      re += w * x[at + n] * std::cos(ph);
+      im += w * x[at + n] * std::sin(ph);
+    }
+    return std::complex<double>(re, im);
+  };
+  const std::complex<double> a = demod(from), b = demod(from + gap);
+  return f + std::arg(b / a) * sr / (6.283185307179586 * static_cast<double>(gap));
+}
+
+}  // namespace
+
+TEST_CASE("meta link: Phase accumulator -> Wavetable -> Auto Filter plays an 8-voice 31edo chord, every pitch exact") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId track = ids.track();
+  const TuningId t31 = ids.tuning();
+  const std::vector<int32_t> degrees{-13, -5, 0, 8, 13, 18, 26, 31};  // neighbours at least 4 Hz apart
+  {
+    Batch b{"meta chain", {}};
+    TuningSlot s{t31, "31edo", Colour{0x2266AA}, {}};
+    s.def.system = tuning::Edo::make(31).value();
+    b.commands.push_back(AddTuning{s});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Meta"), {}, kAppend});
+    b.commands.push_back(SetTrackTuning{track, TuningAssignment::mainTuning(t31)});
+    std::vector<Note> notes;
+    for (const int32_t deg : degrees) {
+      const int32_t e = deg >= 0 ? deg / 31 : -((-deg + 30) / 31);
+      notes.push_back(playback_fixture::note(ids, 0, 14 * kPpq, deg - e * 31, e, 80.0f));
+    }
+    b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "chord")});
+    REQUIRE(store.dispatch(b).ok());
+  }
+  auto edit = [&](Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    return *e;
+  };
+  edit(ops::addMetaDevice(*store.current(), ids, track, "phase_acc", 0));
+  const DeviceId wt = edit(ops::addMetaDevice(*store.current(), ids, track, "wavetable")).devices.at(0);
+  edit(ops::addDevice(*store.current(), ids, track, "auto_filter", DeviceKind::AudioEffect));
+  CHECK(findDevice(*store.current(), wt).device->kind == DeviceKind::AudioEffect);
+  REQUIRE(metaVoiceRun(*findTrackPtr(*store.current(), track)).size() == 1);
+  auto link = makeLink(store.current());
+  CHECK(link->lastError().empty());
+  Driver d{*link};
+  link->play(0);
+  link->flush();
+  d.run(static_cast<uint32_t>(4.5 * 48000.0 / kBlock));
+  engine::ProjectProgram& program = *link->engine().program();
+  CHECK(program.voices(voiceUnit(program))->liveVoices() == 8);
+  const double sr = link->engine().config().sampleRate;
+  REQUIRE(sr == 48000.0);
+  double worst = 0.0;
+  for (const int32_t deg : degrees) {
+    const double want = tuning::kDefaultReferenceHz * std::exp2(static_cast<double>(deg) / 31.0);
+    const double got =
+        measuredHz(d.out, static_cast<size_t>(0.5 * sr), static_cast<size_t>(sr), static_cast<size_t>(2.5 * sr), want, sr);
+    worst = std::max(worst, std::fabs(1200.0 * std::log2(got / want)));
+  }
+  MESSAGE("meta chain in 31edo, 8 voices: max pitch error " << worst << " cents");
+  CHECK(worst <= 1e-4);
+}
+
+TEST_CASE("meta link: a meta voice run's voices end 5 ms after note-off (no click, no stuck voice)") {
+  Keys k;
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "wavetable"));
+  auto link = makeLink(k.store.current());
+  Driver d{*link};
+  link->play(0);
+  d.run(200);
+  engine::ProjectProgram& program = *link->engine().program();
+  const uint32_t u = voiceUnit(program);
+  CHECK(program.voices(u)->liveVoices() == 3);
+  // Stop: note-offs. The voices ramp down over 5 ms (240 samples), then end.
+  link->stop();
+  const size_t mark = d.out.size();
+  d.run(12);
+  CHECK(program.voices(u)->liveVoices() == 0);
+  float worstStep = 0.0f, steady = 0.0f;
+  for (size_t i = mark; i + 1 < d.out.size(); ++i) worstStep = std::max(worstStep, std::fabs(d.out[i + 1] - d.out[i]));
+  for (size_t i = mark - 2000; i + 1 < mark; ++i) steady = std::max(steady, std::fabs(d.out[i + 1] - d.out[i]));
+  CHECK(worstStep <= steady * 1.05f + 1e-6f);  // the fade adds no step beyond the tones' own
+  CHECK(std::fabs(d.out.back()) < 1e-6f);
 }
