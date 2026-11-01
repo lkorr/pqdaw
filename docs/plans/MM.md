@@ -336,6 +336,8 @@ Nothing blocks: per-track units, hot swap, sleep, the tile atlas, the lane-windo
   - Goldens `meta-operator-device` and `meta-operator-circuit` (band opened in the project view).
   - Presets save and load; REVIEW entry.
 
+**TMM.14 VCA meta module** 👁 (`meta`, `views/meta`; SPEC §15 2026-11-01 "a VCA meta module"; added after TMM.12). `vca`: out = in × value, the knob position mapped through a curve between min and max (default bipolar log: −1 … 1 linear over 10 → 2 o'clock, log to ±20 k, C1 joins; or Bend), modulated in knob space; a circular face after the user's sketch (✕, pie-wedge knob, readout, min —— max, curve box, presets). Decisions: QUESTIONS Q?-TMM.14-a.
+
 **TMM.13 MM review** (an independent agent, as for M0–M5). Includes a whole-suite `-Full`, ship benches for the frame-table reads / live path / Meta Operator, a re-run of the alias suite, and a UI critique against "ui is everything here".
 
 ## Parallel pairing (≤ 2 workers)
