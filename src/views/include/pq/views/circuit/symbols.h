@@ -77,6 +77,10 @@ struct SymbolSpec {
   std::vector<PinSpec> inputs, outputs;  // one per port of the node (hidden ones keep a y for layout)
   std::string title;    // text inside the body (function name, value, callee, IC name); "" for pure symbols
   std::string caption;  // the node's binding name, shown above the body ("" when anonymous)
+  // For the info view on hover: what the node is ("add", "parameter", "constant", …) and one line on what it does
+  // (an atom's summary). Static strings: no allocation per node.
+  std::string_view kind;
+  std::string_view help;
   // Identifies the body's pixels for tile caching: equal keys paint identical bodies at equal zoom.
   uint64_t bodyKey = 0;
   // TMM.4: a call of a meta module with a face (pq/views/meta/meta_face.h): the block is the face — its size is the

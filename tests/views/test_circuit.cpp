@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../ui/golden_check.h"
+#include "pq/graph/atoms.h"
 #include "pq/graph/parse.h"
 #include "pq/ui/image.h"
 #include "pq/ui/offscreen.h"
@@ -603,6 +604,43 @@ TEST_CASE("circuit: hit testing, click / Shift / Ctrl selection, rubber band, Es
   CHECK(canvas.selection().nodes.size() == sc.nodes.size());
   d.press("Escape");
   CHECK(canvas.selection().nodes.empty());
+}
+
+TEST_CASE("circuit: hovering a node names it in the info view (atom name and summary, kinds of terminals, pins)") {
+  TestDriver d(800, 600);
+  auto& canvas = d.setRoot<CircuitCanvas>("circuit");
+  const auto doc = load(stdlibPath("filters/svf.pqp"));
+  const graph::Patch& patch = *doc->find("svf_core");
+  canvas.setScene(buildScene(patch));
+  d.tree().layoutNow();
+  const CircuitScene& sc = *canvas.scene();
+  uint32_t atoms = 0;
+  for (uint32_t v = 0; v < sc.nodes.size(); ++v) {
+    const SceneNode& n = sc.nodes[v];
+    if (n.hidden) continue;
+    const Vec2 c = canvas.toDevice({n.x + n.w * 0.5f, n.y + n.h * 0.5f});
+    if (c.x < 0 || c.y < 0 || c.x >= 800 || c.y >= 600 || canvas.hitTest(c) != CanvasHit{CanvasHit::Kind::Node, v}) continue;
+    d.move(c);
+    const ui::InfoText t = canvas.info();
+    CAPTURE(v);
+    CHECK(std::string(t.title) != "node");
+    CHECK(!t.title.empty());
+    CHECK(!t.body.empty());
+    const graph::Node& gn = patch.node(n.node);
+    if (gn.kind == graph::NodeKind::Atom) {
+      const graph::AtomSignature& sig = graph::atomSignature(gn.atom);
+      CHECK(std::string(t.title).find(sig.name) != std::string::npos);
+      if (!sig.summary.empty()) CHECK(std::string(t.body).find(sig.summary) == 0);
+      ++atoms;
+    }
+  }
+  CHECK(atoms > 0);
+  // A pin adds which one it is.
+  const uint32_t b = 7;
+  const ScenePin& pin = sc.pins[sc.nodes[b].firstPin];
+  const Vec2 pp = canvas.toDevice({pin.x, pin.y});
+  d.move({pp.x + 3, pp.y});
+  CHECK(std::string(canvas.info().body).find(pin.input ? "Input " : "Output ") != std::string::npos);
 }
 
 TEST_CASE("circuit: Ctrl+wheel zooms at the pointer, the wheel pans, middle-drag pans, F fits") {

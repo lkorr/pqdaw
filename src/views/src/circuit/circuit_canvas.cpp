@@ -1602,11 +1602,27 @@ ui::InfoText CircuitCanvas::info() const {
   }
   const uint32_t v = m.hover.kind == CanvasHit::Kind::Pin ? sc.pins[m.hover.index].node : m.hover.index;
   const SymbolSpec& spec = sc.specs[sc.nodes[v].spec];
-  m.infoTitle = spec.caption.empty() ? (spec.title.empty() ? std::string("node") : spec.title) : spec.caption + " = " + spec.title;
-  if (spec.symbol == Symbol::Subcircuit || spec.symbol == Symbol::Filter) m.infoBody = "Subcircuit " + spec.title + ". Double-click to open it.";
+  // Title: what the node is ("add", "parameter cutoff", "mix = lerp"); body: what it does, then the hovered pin.
+  const bool atomLike = spec.symbol != Symbol::Subcircuit && spec.symbol != Symbol::Filter && spec.symbol != Symbol::Const &&
+                        spec.symbol != Symbol::Param && spec.symbol != Symbol::Input && spec.symbol != Symbol::Output &&
+                        spec.symbol != Symbol::Export && spec.symbol != Symbol::Unknown;
+  const std::string what = atomLike && !spec.kind.empty() ? std::string(spec.kind)
+                           : spec.title.empty()            ? std::string(spec.kind.empty() ? "node" : spec.kind)
+                           : spec.kind.empty() || spec.kind == "subcircuit" || spec.kind == "constant"
+                               ? spec.title
+                               : std::string(spec.kind) + " " + spec.title;
+  m.infoTitle = spec.caption.empty() ? what : spec.caption + " = " + what;
+  if (spec.symbol == Symbol::Subcircuit || spec.symbol == Symbol::Filter)
+    m.infoBody = "Subcircuit " + spec.title + ". Double-click to open it.";
+  else if (spec.symbol == Symbol::Const)
+    m.infoBody = "Constant: a fixed value.";
+  else
+    m.infoBody = std::string(spec.help);
   if (m.hover.kind == CanvasHit::Kind::Pin) {
     const ScenePin& pin = sc.pins[m.hover.index];
-    m.infoBody = std::string(pin.input ? "Input " : "Output ") + (pin.label != UINT32_MAX ? sc.strings[pin.label] : std::to_string(pin.port));
+    if (!m.infoBody.empty()) m.infoBody += " ";
+    m.infoBody += std::string(pin.input ? "Input " : "Output ") +
+                  (pin.label != UINT32_MAX ? sc.strings[pin.label] : std::to_string(pin.port)) + ".";
   }
   return {m.infoTitle, m.infoBody};
 }

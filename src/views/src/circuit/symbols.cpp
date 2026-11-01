@@ -165,27 +165,60 @@ SymbolSpec describe(const graph::Patch& p, NodeIndex n, const std::vector<uint8_
       s.symbol = c.symbol;
       s.glyph = c.glyph;
       s.title = std::string(c.title);
+      s.kind = sig.name;
+      s.help = sig.summary;
       break;
     }
     case NodeKind::Const:
       s.symbol = Symbol::Const;
       s.title = constantText(p.constant(n));
       s.caption.clear();
+      s.kind = "constant";
+      s.help = "A fixed value.";
       break;
-    case NodeKind::Param: s.symbol = Symbol::Param; s.title = p.nodeName(n); break;
-    case NodeKind::Input: s.symbol = Symbol::Input; s.title = p.nodeName(n); break;
-    case NodeKind::Output: s.symbol = Symbol::Output; s.title = p.nodeName(n); break;
-    case NodeKind::Export: s.symbol = Symbol::Export; s.title = p.nodeName(n); break;
+    case NodeKind::Param:
+      s.symbol = Symbol::Param;
+      s.title = p.nodeName(n);
+      s.kind = "parameter";
+      s.help = "A control of the device: its knob, automation and modulation arrive here.";
+      break;
+    case NodeKind::Input:
+      s.symbol = Symbol::Input;
+      s.title = p.nodeName(n);
+      s.kind = "input";
+      s.help = "A signal coming into this circuit.";
+      break;
+    case NodeKind::Output:
+      s.symbol = Symbol::Output;
+      s.title = p.nodeName(n);
+      s.kind = "output";
+      s.help = "A signal leaving this circuit.";
+      break;
+    case NodeKind::Export:
+      s.symbol = Symbol::Export;
+      s.title = p.nodeName(n);
+      s.kind = "export";
+      s.help = "A signal offered to other devices: drag it onto one to wire it.";
+      break;
     case NodeKind::Subcircuit: {
       const graph::SubcircuitRef& r = p.subcircuit(n);
       const Glyph fg = filterGlyph(r.patch);
       s.symbol = fg != Glyph::None ? Symbol::Filter : Symbol::Subcircuit;
       s.glyph = fg;
       s.title = r.patch;
+      s.kind = "subcircuit";
       break;
     }
-    case NodeKind::Unknown: s.symbol = Symbol::Unknown; s.title = p.nodeName(n); break;
-    case NodeKind::Equation: s.symbol = Symbol::Equation; break;
+    case NodeKind::Unknown:
+      s.symbol = Symbol::Unknown;
+      s.title = p.nodeName(n);
+      s.kind = "unknown";
+      s.help = "Not a known atom or subcircuit: check its name.";
+      break;
+    case NodeKind::Equation:
+      s.symbol = Symbol::Equation;
+      s.kind = "equation";
+      break;
   }
   // Pin labels of the labelled symbols.
   const bool labelled = s.symbol == Symbol::Ic || s.symbol == Symbol::Subcircuit || s.symbol == Symbol::Filter;

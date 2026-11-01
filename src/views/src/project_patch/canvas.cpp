@@ -917,6 +917,7 @@ ui::InfoText ProjectCanvas::info() const {
   if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone) return {ro.title, ro.value};
+  if (hovered().kind != circuit::CanvasHit::Kind::None) return CircuitCanvas::info();  // the node, pin or wire under the pointer
   return {"Project Patch",
           "The whole project as one circuit. Drag an export onto a device to wire it, a mixer's output onto a group, return "
           "or the master to route it; double-click a band to open it (its devices opened to their atoms), a device to open it "

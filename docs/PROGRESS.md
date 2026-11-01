@@ -1114,3 +1114,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a (one ceil instead of one round per push).
 - CPU-efficiency check: no extra passes or allocations; the bound proves termination instead of adding work.
 - Notes/blockers: Q179 (handled, not normalised).
+
+## 2026-11-01 · circuit-hover-info · main (orchestrator; user report)
+- Did: hovering a circuit node now names it in the info view. The project patch view (the one circuit) returned its general help for every hover; it now falls back to the circuit canvas's info for a hovered node, pin or wire. SymbolSpec carries `kind` (the atom's name, "parameter", "constant", "input", …) and `help` (the atom's one-line summary from the atom table; a sentence for terminals), as static string_views. The canvas info reads "add" / "mix = lerp" / "parameter cutoff" with the summary ("a + b") and the hovered pin.
+- Verified: build.ps1 -Affected (check, default + slow; pq_tests_app, pq_tests_audio, pq_tests_playback, pq_tests_views, pqdaw): 0 warnings, 24/24. New cases in tests/views/test_circuit.cpp (every visible svf_core node named, atoms by name + summary, pins) and tests/views/test_project_patch.cpp (an opened Saturator's atoms named in the project view).
+- Perf: n/a (two string_views per symbol spec; text built only when the info view asks).
+- CPU-efficiency check: no allocation per node; the strings point into the static atom table.
+- Notes/blockers: none.

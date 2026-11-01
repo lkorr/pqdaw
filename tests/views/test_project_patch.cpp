@@ -840,6 +840,28 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   CHECK(v.scene().sceneNode[v.patch().nodeOf(sat)] == kNone);
   CHECK(v.scene().scene->nodes.size() > nodes + 10);
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");  // the model is the same graph
+  // Hovering one of its atoms names it in the info view (the atom and what it does), not the view's general help.
+  {
+    const circuit::CircuitScene& sc = *v.scene().scene;
+    const IRect cr = v.canvas().rect();
+    uint32_t named = 0;
+    for (uint32_t i = 0; i < sc.nodes.size() && named < 4; ++i) {
+      const circuit::SceneNode& n = sc.nodes[i];
+      const circuit::SymbolSpec& spec = sc.specs[n.spec];
+      if (n.hidden || spec.face != nullptr || spec.help.empty() || spec.symbol == circuit::Symbol::Param) continue;
+      const Vec2 c = v.canvas().toDevice({n.x + n.w * 0.5f, n.y + n.h * 0.5f});
+      if (c.x <= cr.x || c.y <= cr.y || c.x >= cr.right() || c.y >= cr.y + cr.h) continue;
+      if (v.canvas().hitTest(c) != circuit::CanvasHit{circuit::CanvasHit::Kind::Node, i}) continue;
+      u.d.move(c);
+      const ui::InfoText t = v.canvas().info();
+      CAPTURE(spec.kind);
+      CHECK(std::string(t.title) != "Project Patch");
+      CHECK(std::string(t.title).find(spec.kind) != std::string::npos);
+      CHECK(std::string(t.body).find(spec.help) != std::string::npos);
+      ++named;
+    }
+    CHECK(named > 0);
+  }
   // The chain still reaches the device: the wires into and out of its frame.
   const graph::Patch* callee = library().library().find("saturator");
   REQUIRE(callee != nullptr);
