@@ -1,6 +1,7 @@
 // TMM.2: the wavetable_pos kernel (live frame-table slots) and the voice_tap sink — the kernel against TMM.1's readers
 // (bit for bit) and the double reference (≤ 1e-6), independence of the call partition, the swap crossfade (formula,
 // no click), slot generations, the taps' samples, RT safety, and a two-thread swap stress with poisoned retirements.
+// TMM.12-fix1: sine tables through the kernel (vs the rows' read, the JIT's sineOn, swaps between the two paths).
 
 #include <doctest/doctest.h>
 
@@ -48,7 +49,7 @@ TablePtr drawn() { return makeTable(ftfix::drawnFixture(8)); }
 // One wavetable_pos instance: its state block and the kernel for (lanes, Spl mask: bit 0 phase, bit 1 position).
 struct Wp {
   uint32_t lanes, mask;
-  AlignedBuffer<float> state = AlignedBuffer<float>(32);
+  AlignedBuffer<float> state = AlignedBuffer<float>(sizeof(WavetablePosState) / sizeof(float));
   KernelFn fn;
   Wp(uint32_t l, uint32_t m, uint32_t group = 0) : lanes(l), mask(m), fn(findKernel(Atom::WavetablePos, l, m)) {
     REQUIRE(fn != nullptr);
@@ -304,6 +305,181 @@ TEST_CASE("wavetable_pos: a swap between two different tables mid-note does not 
                   << " (largest fade ramp max|b − a|/64 = " << worstRamp << "); over the plan's +1e-3: " << overPlan);
 }
 
+// ---- TMM.12-fix1: sine tables (frame_table.h "Sine tables") ------------------------------------------------------
+
+namespace {
+
+// The same table without its sine coefficients: the kernel then reads the rows (the general path).
+TablePtr rowsTable(std::vector<ftfix::Cycle> cycles, uint32_t dense = 1) {
+  FrameTableBuilder b;
+  ftfix::SpecHolder s(std::move(cycles), 48000, dense);
+  auto t = b.build(s.spec);
+  REQUIRE(t.ok());
+  FrameTable table = std::move(t.value());
+  table.setSine(false);
+  return std::make_shared<const FrameTable>(std::move(table));
+}
+
+ftfix::Cycle shiftedSine() { return ftfix::fromHarmonics({{1, {0.6, 1.3}}}); }
+
+}  // namespace
+
+TEST_CASE("wavetable_pos: on a sine table the kernel is the rows' read within −120 dBFS RMS, with the same reader state") {
+  const TablePtr sine = makeTable({shiftedSine()}, 48000, 1), rows = rowsTable({shiftedSine()});
+  REQUIRE(sine->isSine());
+  REQUIRE_FALSE(rows->isSine());
+  for (const uint32_t lanes : {1u, 8u})
+    for (const uint32_t mask : {0u, 1u, 2u, 3u}) {
+      FrameTableSlot ss(sine), sr(rows);
+      Wp a(lanes, mask), b(lanes, mask);
+      Inputs in(lanes);
+      std::vector<float> phase, pos, ya, yb;
+      double worst = 0, sq = 0;
+      std::size_t count = 0;
+      bool sameState = true;
+      for (uint32_t blk = 0; blk < 60; ++blk) {
+        const uint32_t n = 1 + (blk * 37) % 97;  // 1-frame calls (a feedback loop) to whole blocks
+        in.repitch();
+        in.fill(phase, pos, n, (mask & 2u) != 0);
+        ya.assign(phase.size(), 0.0f);
+        yb.assign(phase.size(), 0.0f);
+        a.run(ss, phase.data(), pos.data(), n, ya.data());
+        b.run(sr, phase.data(), pos.data(), n, yb.data());
+        for (std::size_t i = 0; i < ya.size(); ++i) {
+          const double d = double(ya[i]) - yb[i];
+          worst = std::max(worst, std::fabs(d));
+          sq += d * d;
+          ++count;
+        }
+        sameState = sameState && std::memcmp(a.state.data(), b.state.data(), sizeof(FrameReadState)) == 0;
+      }
+      CAPTURE(lanes);
+      CAPTURE(mask);
+      // Within the rows' own deviation from the exact sine (1.6e-6 peak; test_frame_table_sine.cpp).
+      CHECK(std::sqrt(sq / static_cast<double>(count)) <= 1e-6);
+      CHECK(worst <= 2e-6);
+      CHECK(sameState);
+    }
+}
+
+TEST_CASE("wavetable_pos: sineOn and the lanes' coefficients (the JIT's inline frames) only while the next frames may be inline") {
+  const TablePtr sine = makeTable({shiftedSine()}, 48000, 1);
+  const TablePtr other = makeTable({ftfix::basic(BasicCycle::Sine)}, 48000, 1);
+  const TablePtr morph = makeTable({ftfix::basic(BasicCycle::Sine), shiftedSine()}, 48000, 5);
+  REQUIRE(morph->isSine());
+  std::vector<float> phase(64 * 8), pos(64 * 8, 0.0f), out(64 * 8);
+  for (size_t i = 0; i < phase.size(); ++i) phase[i] = std::fmod(0.0123f * static_cast<float>(i), 1.0f);
+  pq::EpochReclaimer rec;
+  FrameTableSlot slot(sine);
+  Wp k(8, 2);
+  k.run(slot, phase.data(), pos.data(), 1, out.data());
+  REQUIRE(k.st().sineOn == 1u);
+  for (uint32_t l = 0; l < 8; ++l) {
+    CHECK(k.st().sineDc[l] == sine->view().sine[0]);
+    CHECK(k.st().sineAmp[l] == sine->view().sine[1]);
+    CHECK(k.st().sineTh[l] == sine->view().sine[2]);
+  }
+  // A tap reader: the kernel writes the tap, so every frame must call it.
+  slot.tap()->addReader();
+  k.run(slot, phase.data(), pos.data(), 1, out.data());
+  CHECK(k.st().sineOn == 0u);
+  slot.tap()->removeReader();
+  k.run(slot, phase.data(), pos.data(), 1, out.data());
+  CHECK(k.st().sineOn == 1u);
+  // A swap: off while the crossfade runs (the kernel mixes two tables), on again after its 64 frames.
+  slot.publish(other, rec);
+  k.run(slot, phase.data(), pos.data(), 16, out.data());
+  CHECK(k.st().fadeLeft == 48u);
+  CHECK(k.st().sineOn == 0u);
+  k.run(slot, phase.data(), pos.data(), 47, out.data());
+  CHECK(k.st().sineOn == 0u);
+  k.run(slot, phase.data(), pos.data(), 1, out.data());
+  CHECK(k.st().fadeLeft == 0u);
+  CHECK(k.st().sineOn == 1u);
+  CHECK(k.st().sineTh[3] == other->view().sine[2]);
+  // Not a sine table: off.
+  slot.publish(sawSquare(), rec);
+  for (uint32_t f = 0; f < 70; ++f) k.run(slot, phase.data(), pos.data(), 1, out.data());
+  CHECK(k.st().sineOn == 0u);
+  // Many sine frames: on with every lane on a frame (each its frame's coefficients), off between frames and with a
+  // per-sample position.
+  FrameTableSlot ms(morph);
+  Wp spl(8, 2), per(8, 0);
+  const float onFrames[8] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f, 0.0f, 0.5f, 1.0f};
+  std::copy_n(onFrames, 8, pos.begin());
+  spl.run(ms, phase.data(), pos.data(), 3, out.data());
+  REQUIRE(spl.st().sineOn == 1u);
+  for (uint32_t l = 0; l < 8; ++l)
+    CHECK(spl.st().sineAmp[l] == morph->view().sine[4 * static_cast<uint32_t>(onFrames[l] * 4) + 1]);
+  pos[2] = 0.6f;
+  spl.run(ms, phase.data(), pos.data(), 3, out.data());
+  CHECK(spl.st().sineOn == 0u);
+  per.run(ms, phase.data(), pos.data(), 3, out.data());
+  CHECK(per.st().sineOn == 0u);
+  // One frame: any position, per sample too.
+  Wp perOne(1, 0);
+  perOne.run(slot, phase.data(), pos.data(), 3, out.data());  // the slot holds the saw → square table now
+  CHECK(perOne.st().sineOn == 0u);
+  FrameTableSlot one(sine);
+  perOne.run(one, phase.data(), pos.data(), 3, out.data());
+  CHECK(perOne.st().sineOn == 1u);
+}
+
+TEST_CASE("wavetable_pos: a one-frame sine table swapped to many frames (preview builds, keyframe edits) and back does not click") {
+  // As the swap test above: outside the 64-sample fade the render is exactly one table or the other, and inside it
+  // the largest step is at most the larger table's own plus the fade's ramp. Here the tables switch the readers
+  // between the sine path and the rows: a one-frame sine, an 8-frame preview of sine → saw (frame 0 a sine, the table
+  // not: the rows), a 64-frame saw → square, a 9-frame morph of sines (the sine path with gathered coefficients).
+  const TablePtr sine = makeTable({ftfix::basic(BasicCycle::Sine)}, 48000, 1);
+  const TablePtr preview = makeTable({ftfix::basic(BasicCycle::Sine), ftfix::basic(BasicCycle::Saw)}, 48000, 8);
+  const TablePtr morph = makeTable({ftfix::basic(BasicCycle::Sine), shiftedSine()}, 48000, 9);
+  const TablePtr big = sawSquare();
+  REQUIRE(sine->isSine());
+  REQUIRE_FALSE(preview->isSine());
+  REQUIRE(morph->isSine());
+  const std::pair<TablePtr, TablePtr> pairs[] = {{sine, preview}, {preview, sine}, {sine, big}, {big, sine},
+                                                 {sine, morph},   {morph, preview}};
+  uint32_t renders = 0;
+  for (const auto& [from, to] : pairs)
+    for (const float u : {0.0f, 0.5f})
+      for (const double hz : {55.0, 440.0, 5000.0})
+        for (const uint32_t swapAt : {1000u, 1037u}) {
+          constexpr uint32_t kN = 2048;
+          std::vector<float> phase(kN), pos(8, u), y(kN), ya(kN), yb(kN);
+          double acc = 0.37;
+          for (uint32_t n = 0; n < kN; ++n) {
+            phase[n] = static_cast<float>(acc);
+            acc += hz / 48000.0;
+            acc -= std::floor(acc);
+          }
+          pq::EpochReclaimer rec;
+          FrameTableSlot slot(from), sa(from), sb(to);
+          Wp k(1, 2), ka(1, 2), kb(1, 2);
+          // In 1-frame calls up to the swap (a feedback loop's shape), then whole blocks.
+          for (uint32_t n = 0; n < swapAt; ++n) k.run(slot, phase.data() + n, pos.data(), 1, y.data() + n);
+          slot.publish(to, rec);
+          k.run(slot, phase.data() + swapAt, pos.data(), kN - swapAt, y.data() + swapAt);
+          ka.run(sa, phase.data(), pos.data(), kN, ya.data());
+          kb.run(sb, phase.data(), pos.data(), kN, yb.data());
+          double step = 0, stepA = 0, stepB = 0, diff = 0;
+          for (uint32_t n = 257; n < kN; ++n) {
+            step = std::max(step, std::fabs(double(y[n]) - y[n - 1]));
+            stepA = std::max(stepA, std::fabs(double(ya[n]) - ya[n - 1]));
+            stepB = std::max(stepB, std::fabs(double(yb[n]) - yb[n - 1]));
+          }
+          for (uint32_t n = swapAt; n < swapAt + 64; ++n) diff = std::max(diff, std::fabs(double(ya[n]) - yb[n]));
+          bool exactOutside = true;
+          for (uint32_t n = 0; n < kN; ++n)
+            if (n < swapAt || n >= swapAt + 63) exactOutside = exactOutside && y[n] == (n < swapAt ? ya[n] : yb[n]);
+          CHECK(exactOutside);
+          CHECK_MESSAGE(step <= std::max(stepA, stepB) + diff / 64.0 + 1e-6,
+                        hz << " Hz, position " << u << ", swap at " << swapAt << ": step " << step << " vs " << stepA
+                           << " / " << stepB << ", ramp " << diff / 64.0);
+          ++renders;
+        }
+  MESSAGE(renders << " swaps between the sine path and the rows");
+}
+
 TEST_CASE("wavetable_pos: the voice tap gets the phases read (exact), the position and increment, only with a reader") {
   const TablePtr table = drawn();
   pq::VoiceTapConfig tc;
@@ -462,6 +638,7 @@ void stress(uint32_t swaps, bool freshTables) {
     auto t = b.build(s.spec);
     REQUIRE(t.ok());
     FrameTable nan = std::move(t.value());
+    nan.setSine(false);  // TMM.12-fix1: a sine table's readers would not read the poisoned rows
     const FrameTableView& v = nan.view();
     std::fill(const_cast<float*>(v.data), const_cast<float*>(v.data) + static_cast<size_t>(v.frameStride) * v.frames,
               std::numeric_limits<float>::quiet_NaN());

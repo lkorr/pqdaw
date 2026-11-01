@@ -113,6 +113,7 @@ Result<FrameTable> FrameTable::allocate(const FrameTableLayout& layout, uint32_t
     t.dcOffset_ = 2 * static_cast<std::size_t>(kFrameLevelBuckets);
     t.edgeOffset_ = t.dcOffset_ + frames;
   }
+  t.sine_ = AlignedBuffer<float>(4 * static_cast<std::size_t>(frames));  // TMM.12-fix1: unused until setSine
   t.view_.data = t.data_.data();
   t.view_.levelInfo = t.info_.data();
   t.view_.bucketInfo = t.info_.data() + layout.levels;

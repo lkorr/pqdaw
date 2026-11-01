@@ -103,13 +103,21 @@ struct alignas(32) WavetableState {
 // wavetable_pos (TMM.2): the frame-table reader's state (FrameReadState's layout: previous phase and |Δphase| per
 // lane), then the table generation last read (0 = fresh: no fade), the crossfade frames still to run and the voice
 // group (StateInit::voiceGroup) its tap record goes to.
+// TMM.12-fix1: then the JIT's inline sine path (jit/src/codegen.cpp, a wavetable_pos in a per-sample loop): every
+// call leaves sineOn = 1 when the frames after it in this block may be computed inline as the readers' sine path
+// (frame_table.h "Sine tables": a sine table, no crossfade running, no tap reader, every lane on one frame), with the
+// lanes' coefficients; else 0. The generated code calls the kernel at a block's first frame and whenever sineOn = 0.
 struct alignas(32) WavetablePosState {
   float prevPhase[8];
   float prevDelta[8];
   uint64_t generation;
   uint32_t fadeLeft;
   uint32_t group;
-  uint32_t pad_[4];
+  uint32_t sineOn;
+  uint32_t pad_[3];
+  float sineDc[8];
+  float sineAmp[8];
+  float sineTh[8];
 };
 
 // wavetable_live (TMM.8, pq/dsp/wave_live.h): per lane the previous phase, |Δphase|, synced phase ψ and its
@@ -212,7 +220,7 @@ static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 64);
 static_assert(sizeof(DelayState) == 96);
-static_assert(sizeof(WavetablePosState) == 96);
+static_assert(sizeof(WavetablePosState) == 192);
 static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(WavetableLiveState) == 672);
 static_assert(sizeof(WavetableShapeState) == 160);

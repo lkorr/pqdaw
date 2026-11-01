@@ -10,6 +10,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/ModRef.h>
 #include <llvm/Support/raw_ostream.h>
@@ -206,7 +207,8 @@ private:
   // Analysis: how each op is emitted, and which op outputs must reach memory.
   // ================================================================================================================
   // Whether a stage calls a function once per frame (a kernel call in a per-sample loop, an exact transcendental
-  // there, Newton's n > 1 update). Such a stage gets no pair function: a call clobbers every vector register, so the
+  // there, Newton's n > 1 update; not a wavetable_pos computed inline after its block's first frame, whose call is
+  // off the frame path). Such a stage gets no pair function: a call clobbers every vector register, so the
   // loop spills and reloads all its live values around it, and twice the values per pair overflow the 4 KiB frame
   // (stack probes; tests/jit stateful_loops.pqp) for no gain, since the calls dominate.
   bool frameCalls(const g::Stage& st) const {
@@ -214,7 +216,7 @@ private:
       const g::Region& reg = s_.regions[r];
       if (!perFrame(reg) || reg.kind == g::RegionKind::Control) continue;
       for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
-        if (!inline_[i] || exactOf(s_.ops[i].kernel) >= 0) return true;
+        if ((!inline_[i] && !sineInline(i, true, 16)) || exactOf(s_.ops[i].kernel) >= 0) return true;
       for (uint32_t k = reg.firstSolve; k < reg.firstSolve + reg.numSolves; ++k)
         if (s_.solves[k].numUnknowns > 1) return true;
     }
@@ -1271,10 +1273,77 @@ private:
       emitInline(i, fr);
       return;
     }
+    if (sineInline(i, voice_, vw_)) {
+      emitWavetableSine(i, fr);
+      return;
+    }
     emitCall(i, fr.t, c32(1));
     const g::Op& op = s_.ops[i];
     if (fr.map)
       for (const g::Operand& o : s_.outputsOf(op)) fr.map->erase(o.index);
+  }
+
+  // TMM.12-fix1: wavetable_pos in a per-sample loop (a feedback loop through a Wavetable: the Meta Operator's
+  // operator D). A kernel call per frame costs the call and the spills of every live vector around it, so frames
+  // whose read the readers would do as a sine (frame_table.h "Sine tables") are computed inline instead: the kernel
+  // runs at the block's first frame (swaps, crossfades, taps, the frame choice: everything the slot decides) and
+  // leaves WavetablePosState::sineOn with the lanes' coefficients; the following frames run inline while it is set,
+  // else call the kernel. The inline step is the readers' sine path with the same operations (the same bits as the
+  // interpreter) and updates the reader state as they do. Not in solve bodies, Control regions or the scalar-lane
+  // voice baseline (calls there).
+  bool sineInline(uint32_t i, bool voice, unsigned vw) const {
+    const g::Op& op = s_.ops[i];
+    if (op.kind != g::OpKind::Kernel || op.kernel != Atom::WavetablePos) return false;
+    if (op.state == g::kNone || body_[i]) return false;
+    if (s_.regions[regionOf(i)].kind != g::RegionKind::Loop) return false;
+    return voice ? (vw == 8 || vw == 16) && op.lanes == 8 : op.lanes == 1;
+  }
+  void emitWavetableSine(uint32_t i, const Frame& fr) {
+    const g::Op& op = s_.ops[i];
+    const uint32_t sp = op.state;
+    llvm::Type* i8 = llvm::Type::getInt8Ty(C_);
+    Vx v(B_, fr.w);
+    IrScope scope(v);
+    Value* p = read(s_.inputs(op)[0], fr);  // before the branch: both paths' frames see it
+    auto flag = [&](unsigned h) {
+      Value* q = B_.CreateConstInBoundsGEP1_64(i8, statePtr(sp, h), offsetof(dsp::WavetablePosState, sineOn));
+      return B_.CreateICmpNE(B_.CreateAlignedLoad(i32_, q, llvm::Align(4)), c32(0));
+    };
+    Value* on = B_.CreateAnd(B_.CreateICmpNE(fr.t, c64(0)), flag(0));
+    if (voice_ && vw_ == 16) on = B_.CreateAnd(on, flag(1));
+    llvm::BasicBlock* fast = llvm::BasicBlock::Create(C_, "wt_sine", F_);
+    llvm::BasicBlock* slow = llvm::BasicBlock::Create(C_, "wt_call", F_);
+    llvm::BasicBlock* join = llvm::BasicBlock::Create(C_, "wt_join", F_);
+    llvm::MDBuilder md(C_);
+    B_.CreateCondBr(on, fast, slow, md.createBranchWeights(63, 1));
+    // Inline: dc + amp·sin(2π(r + θ)), r = p − round(p), NaN → 0 (frame_table_read.cpp sineStep).
+    B_.SetInsertPoint(fast);
+    using S = dsp::WavetablePosState;
+    auto off = [](std::size_t o) { return static_cast<uint32_t>(o); };
+    Value* r = v.sub(p, v.round(p));
+    r = v.band(r, v.eq(r, r));
+    Value* x = v.mul(v.add(r, ldF(sp, off(offsetof(S, sineTh)), v)), v.cf(kTwoPi));
+    Value* yFast =
+        v.fma(ldF(sp, off(offsetof(S, sineAmp)), v), pq::detail::fm::sin<IrS>(x), ldF(sp, off(offsetof(S, sineDc)), v));
+    // The reader state (frame_table_ops.h phaseDelta): |Δphase| wrapped to [0, ½], NaN → 0; then the phase.
+    Value* d = v.sub(p, ldF(sp, off(offsetof(S, prevPhase)), v));
+    d = v.max(v.abs(v.sub(d, v.round(d))), v.zero());
+    st(sp, off(offsetof(S, prevDelta)), d, v);
+    st(sp, off(offsetof(S, prevPhase)), p, v);
+    llvm::BasicBlock* fastEnd = B_.GetInsertBlock();
+    B_.CreateBr(join);
+    // The kernel for this frame (it writes the output buffer and decides sineOn for the next frames).
+    B_.SetInsertPoint(slow);
+    emitCall(i, fr.t, c32(1));
+    const Frame plain{fr.t, fr.w, nullptr, fr.hoist, fr.mask};
+    Value* ySlow = loadBlk(s_.outputsOf(op)[0], plain);
+    llvm::BasicBlock* slowEnd = B_.GetInsertBlock();
+    B_.CreateBr(join);
+    B_.SetInsertPoint(join);
+    llvm::PHINode* y = B_.CreatePHI(v.fT(), 2);
+    y->addIncoming(yFast, fastEnd);
+    y->addIncoming(ySlow, slowEnd);
+    write(i, 0, y, fr);
   }
 
   // ================================================================================================================

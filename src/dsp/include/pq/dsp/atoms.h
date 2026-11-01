@@ -145,7 +145,8 @@
 //                                     fade. Writes the slot's voice tap (the phases read, wrapped to [0, 1), the
 //                                     position and |Δphase| per lane) only while a reader is registered. A Spl phase
 //                                     is expanded in 64-frame chunks. Any split of a block into calls gives the same
-//                                     bits.
+//                                     bits. TMM.12-fix1: a sine table reads as a sine (frame_table.h "Sine tables"); each
+//                                     call leaves WavetablePosState::sineOn for the JIT's inline frames.
 //   voice_tap (x) → (nothing)         a sink: samples x into the VoiceTap resource (null: nothing) while a reader is
 //                                     registered; the record's increment is x's last difference, position 0.
 // The Wavetable's live path and Shape mode (TMM.8; kernels_wave_live.cpp; pq/dsp/wave_live.h has the formulas):

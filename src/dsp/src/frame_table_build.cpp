@@ -112,6 +112,7 @@ struct FrameTableBuilder::Impl {
   void jumps(const FrameBake& b, const Cd* c);
   void levels(FrameTable& out, bool antiderivative);
   void edges(FrameTable& out);
+  void sines(FrameTable& out);
   // TMM.8-fix: the live-band bake (FrameTableSpec::liveBand).
   Status ensureLive(const FrameTableSpec& spec);
   void liveBandLevels(const FrameTableSpec& spec, FrameTable& out);
@@ -628,6 +629,38 @@ void FrameTableBuilder::Impl::edges(FrameTable& out) {
   }
 }
 
+// TMM.12-fix1 (step 6): when every dense frame is DC + harmonic 1 (the RMS of harmonics 2 … 1023 at most
+// kFrameSineTol of the frame's peak |c_0| + 2|c_1|, at least 1: a float-rounded sine keyframe holds ≈ 1e-8), its
+// coefficients for the readers' sine path: x(φ) = c_0 + 2|c_1|·cos(2πφ + arg c_1) = dc + a·sin(2π(φ + θ)),
+// θ = arg c_1 / 2π + ¼ wrapped to [−½, ½) (snapped to 0 within 2^−30: a sine keyframe's float noise).
+void FrameTableBuilder::Impl::sines(FrameTable& out) {
+  constexpr double kFrameSineTol = 1e-7;
+  const uint32_t frames = out.frames();
+  for (uint32_t d = 0; d < frames; ++d) {
+    const Cd* c = dense.data() + static_cast<std::size_t>(d) * kBins;
+    double rest = 0.0;
+    for (uint32_t h = 2; h < kBins; ++h) rest += std::norm(c[h]);
+    const double peak = std::max(1.0, std::abs(c[0].real()) + 2.0 * std::abs(c[1]));
+    if (!(std::sqrt(2.0 * rest) <= kFrameSineTol * peak)) {
+      out.setSine(false);
+      return;
+    }
+  }
+  float* q = out.mutableSine();
+  for (uint32_t d = 0; d < frames; ++d) {
+    const Cd* c = dense.data() + static_cast<std::size_t>(d) * kBins;
+    const double a = 2.0 * std::abs(c[1]);
+    double th = a > 0.0 ? std::arg(c[1]) / kTwoPi + 0.25 : 0.0;
+    th -= std::floor(th + 0.5);  // [−½, ½)
+    if (std::abs(th) < 0x1p-30) th = 0.0;
+    q[4 * d + 0] = static_cast<float>(c[0].real());
+    q[4 * d + 1] = static_cast<float>(a);
+    q[4 * d + 2] = static_cast<float>(th);
+    q[4 * d + 3] = 0.0f;
+  }
+  out.setSine(true);
+}
+
 uint32_t frameBakeResolution(const FrameTableSpec& spec) noexcept {
   const FrameBake& b = spec.bake;
   if (!b.active()) return spec.bakeResolution;
@@ -687,8 +720,10 @@ Status FrameTableBuilder::buildInto(const FrameTableSpec& spec, FrameTable& out)
     // TMM.8-fix: the unbaked frames' levels are the live read's source; each output level is the live read.
     impl_->levels(impl_->liveSrc, false);
     impl_->liveBandLevels(spec, out);
+    out.setSine(false);  // the rows are the live read, not the dense spectra
   } else {
     impl_->levels(out, spec.antiderivative);
+    impl_->sines(out);
   }
   if (spec.antiderivative) impl_->edges(out);
   impl_->lastFrames = spec.denseFrames;

@@ -344,6 +344,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_resample.cpp
     dsp/test_frame_table.cpp
     dsp/test_frame_table_alias.cpp
+    dsp/test_frame_table_sine.cpp  # TMM.12-fix1: sine tables (detection, the readers' sine path vs the rows)
     dsp/test_wavetable_pos.cpp  # TMM.2: wavetable_pos (slots, crossfade, taps, swap stress), voice_tap
     dsp/test_oversample.cpp  # TMM.6: the oversample region's rate converters
     dsp/test_wave_live.cpp  # TMM.8: wavetable_live / wavetable_shape (baked agreement, the alias proof, ADAA)

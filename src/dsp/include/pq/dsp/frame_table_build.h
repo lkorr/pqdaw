@@ -28,6 +28,9 @@
 //    len_j points gives the row; eight frames share one transform (four AVX2 lanes × real and imaginary). With
 //    `antiderivative` (TMM.8, Shape mode) the same again for P (c_h / (2πih), no DC), plus each frame's DC and each
 //    level's value at phase 0.
+// 6. Sine tables (TMM.12-fix1; frame_table.h "Sine tables"): when every dense frame is DC + harmonic 1 (the RMS of
+//    harmonics 2 … 1023 ≤ 1e-7 of the frame's peak), each frame's {dc, amplitude, θ} for the readers' sine path.
+//    Not with the live-band bake (its rows are the live read, not the spectra).
 // Build time (bench/RESULTS.md): 64 frames ≈ 10 ms, with a single baked control ≈ 65 ms (one thread).
 
 #include <complex>

@@ -1,7 +1,8 @@
 // TMM.2: wavetable_pos and voice_tap through whole images — interpreter and JIT bit-identical (global and voice
 // patches, through table swaps), both within 1e-6 of TMM.1's double reference, voice taps through a VoiceEngine (lane
 // masks from the image host, the phases read equal to the phases sampled), RtScope on every process() with swaps and
-// taps, and the reader state + table generation carried across a hot swap.
+// taps, and the reader state + table generation carried across a hot swap. TMM.12-fix1: wavetable_pos in per-sample
+// loops, whose frames after a block's first the JIT computes inline on sine tables (codegen.cpp emitWavetableSine).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -70,12 +71,12 @@ struct Rig {
   std::vector<const dsp::FrameTableSlot*> slots;
   std::vector<pq::VoiceTap*> taps;
   eng::Resources res;
-  explicit Rig(uint32_t groups = 1, bool read = true) {
+  explicit Rig(uint32_t groups = 1, bool read = true, TablePtr initial = nullptr) {
     reader = *rec.registerReader();
     pq::VoiceTapConfig tc;
     tc.groups = groups;
     tc.stride = 8;
-    slot = std::make_unique<dsp::FrameTableSlot>(tableA(), tc);
+    slot = std::make_unique<dsp::FrameTableSlot>(initial ? initial : tableA(), tc);
     tap = std::make_shared<pq::VoiceTap>(tc);
     slots = {nullptr, slot.get()};
     taps = {nullptr, nullptr, tap.get()};
@@ -94,7 +95,9 @@ struct Rig {
 };
 
 pq::Result<std::unique_ptr<eng::ProgramImage>> buildImage(int backend, const Schedule& s, const eng::Resources& res,
-                                                          uint32_t maxBlock, uint32_t groups) {
+                                                          uint32_t maxBlock, uint32_t groups,
+                                                          jit::VoiceCode vc = jit::VoiceCode::Auto,
+                                                          jit::CompileStats* stats = nullptr) {
   if (backend == 0) {
     eng::InterpretOptions io;
     io.maxBlockFrames = maxBlock;
@@ -106,7 +109,8 @@ pq::Result<std::unique_ptr<eng::ProgramImage>> buildImage(int backend, const Sch
   o.maxBlockFrames = maxBlock;
   o.maxVoiceGroups = groups;
   o.resources = &res;
-  return compiler().compile(s, o);
+  o.voiceCode = vc;
+  return compiler().compile(s, o, stats);
 }
 
 bool sameBits(const std::vector<float>& a, const std::vector<float>& b) {
@@ -397,4 +401,152 @@ patch H {
     }
     CHECK(sameBits(outs[0], outs[1]));
   }
+}
+
+// ---- TMM.12-fix1: wavetable_pos in per-sample loops (the frames after a block's first, inline on sine tables) ------
+
+namespace {
+
+const TablePtr& sineOne() {
+  static const TablePtr t = build({ftfix::basic(dsp::BasicCycle::Sine)}, 1);
+  return t;
+}
+const TablePtr& sineMorph() {  // 9 frames, every one a sine: the coefficients per lane (frame 0 at position 0)
+  static const TablePtr t = build({ftfix::basic(dsp::BasicCycle::Sine), ftfix::fromHarmonics({{1, {0.6, 1.3}}})}, 9);
+  return t;
+}
+// sineOne without its sine coefficients: every read is the rows' (the general path).
+const TablePtr& sineRows() {
+  static const TablePtr t = [] {
+    dsp::FrameTableBuilder b;
+    ftfix::SpecHolder s({ftfix::basic(dsp::BasicCycle::Sine)}, 48000, 1);
+    auto r = b.build(s.spec);
+    REQUIRE(r.ok());
+    dsp::FrameTable table = std::move(r.value());
+    table.setSine(false);
+    return std::make_shared<const dsp::FrameTable>(std::move(table));
+  }();
+  return t;
+}
+
+// The Meta Operator's operator D: the read inside its own feedback loop (z1 of its output), so a per-sample loop.
+const char* kFeedbackVoice = R"(
+patch F {
+  param fb = 0.6 [0..1]
+  param pos = 0 [0..1]
+  out y : audio voice
+  ph = phasor(voice.hz)
+  d = wavetable_pos(frac(ph + z1(d) * fb), pos, 1)
+  y = d * gate_to_real(voice.gate) * 0.2
+}
+)";
+
+std::vector<float> renderFeedback(int backend, jit::VoiceCode vc, const Schedule& s, uint64_t& violations,
+                                  jit::CompileStats* stats) {
+  constexpr uint32_t kBlock = 64, kBlocks = 240, kGroups = 2;
+  Rig rig(kGroups, false, sineOne());
+  auto img = buildImage(backend, s, rig.res, kBlock, kGroups, vc, stats);
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  eng::VoiceEngine ve;
+  eng::VoiceConfig cfg;
+  cfg.maxVoices = 16;
+  REQUIRE(ve.prepare(img->get(), cfg).ok());
+  eng::EventBuffer buf(64);
+  std::vector<float> mix;
+  for (uint32_t b = 0; b < kBlocks; ++b) {
+    if (b == 40) rig.swap(sineMorph());               // many sine frames: still inline
+    if (b == 80) rig.swap(tableB());                  // the rows (saw → square): the kernel every frame
+    if (b == 81) rig.swap(sineOne());                 // inside that fade: it restarts; inline again after it
+    if (b == 120) rig.slot->tap()->addReader();       // the kernel writes the tap: every frame calls it
+    if (b == 160) rig.slot->tap()->removeReader();
+    if (b == 200) rig.swap(sineMorph());
+    buf.clear();
+    if (b == 0)
+      for (uint32_t v = 0; v < 12; ++v)  // two groups
+        buf.push(eng::noteOn(v % 7, v + 1, 110.0f * std::exp2(static_cast<float>(v) / 5.0f), 0.7f));
+    if (b == 100) buf.push(eng::noteOn(17, 13, 1234.5f, 0.7f));
+    eng::ProcessContext ctx;
+    ctx.frames = kBlock;
+    ctx.sampleRate = 48000.0;
+    ctx.sampleTime = static_cast<int64_t>(b) * kBlock;
+    ctx.events = &buf.list();
+    violations += pq::alloc_trap::countRtViolations([&] {
+      pq::DenormalGuard dg;
+      ve.process(ctx);
+    });
+    rig.rec.quiescent(rig.reader);
+    mix.insert(mix.end(), ve.mix(0), ve.mix(0) + kBlock);
+  }
+  return mix;
+}
+
+}  // namespace
+
+TEST_CASE("wavetable_pos in a per-sample loop: inline sine frames — interpreter == JIT (groups, pairs) through swaps and a tap reader; RtScope") {
+  const Compiled c = compileText(kFeedbackVoice);
+  uint64_t violations = 0;
+  jit::CompileStats groups, pairs;
+  const std::vector<float> yi = renderFeedback(0, jit::VoiceCode::Auto, c.sched, violations, nullptr);
+  const std::vector<float> yg = renderFeedback(1, jit::VoiceCode::Groups, c.sched, violations, &groups);
+  const std::vector<float> yp = renderFeedback(1, jit::VoiceCode::Auto, c.sched, violations, &pairs);
+  CHECK(violations == 0);
+  double energy = 0;
+  for (float x : yi) energy += double(x) * x;
+  CHECK(energy > 1.0);
+  CHECK(sameBits(yi, yg));
+  CHECK(sameBits(yi, yp));
+  // The loop's stage gets a pair function now (its kernel call is off the frame path), without stack probes.
+  CHECK(groups.pairedStages == 0);
+  CHECK(pairs.pairedStages == 1);
+  CHECK_FALSE(groups.stackProbes);
+  CHECK_FALSE(pairs.stackProbes);
+}
+
+TEST_CASE("wavetable_pos in a global per-sample loop: interpreter == JIT through swaps; the sine path ≈ the rows (≤ −120 dBFS RMS)") {
+  const Compiled c = compileText(R"(
+patch G {
+  param fb = 0 [0..1]
+  param pos = 0 [0..1]
+  out y : audio
+  d = wavetable_pos(frac(phasor(220.5) + z1(d) * fb), pos, 1)
+  y = d
+}
+)");
+  constexpr uint32_t kBlock = 64, kBlocks = 160;
+  auto render = [&](int backend, const TablePtr& initial, bool swaps) {
+    Rig rig(1, false, initial);
+    auto img = buildImage(backend, c.sched, rig.res, kBlock, 1);
+    REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+    std::vector<float> out(kBlock), all;
+    float* o[1] = {out.data()};
+    for (uint32_t b = 0; b < kBlocks; ++b) {
+      if (swaps && b == 40) rig.swap(tableB());
+      if (swaps && b == 80) rig.swap(sineMorph());
+      if (swaps && b == 120) rig.swap(sineOne());
+      eng::ProcessContext ctx;
+      ctx.frames = kBlock;
+      ctx.sampleRate = 48000.0;
+      ctx.sampleTime = static_cast<int64_t>(b) * kBlock;
+      ctx.out = o;
+      ctx.numOut = 1;
+      (*img)->process(ctx);
+      rig.rec.quiescent(rig.reader);
+      all.insert(all.end(), out.begin(), out.end());
+    }
+    return all;
+  };
+  CHECK(sameBits(render(0, sineOne(), true), render(1, sineOne(), true)));
+  // fb = 0: the loop runs, its read is a plain sine of the phasor; inline sine frames vs the rows' read.
+  const std::vector<float> fast = render(1, sineOne(), false), rows = render(0, sineRows(), false);
+  REQUIRE(fast.size() == rows.size());
+  double worst = 0, sq = 0;
+  for (std::size_t n = 0; n < fast.size(); ++n) {
+    const double d = double(fast[n]) - rows[n];
+    worst = std::max(worst, std::fabs(d));
+    sq += d * d;
+  }
+  const double rms = std::sqrt(sq / static_cast<double>(fast.size()));
+  MESSAGE("inline sine frames vs the rows' read: peak " << worst << ", RMS " << rms);
+  CHECK(rms <= 1e-6);
+  CHECK(worst <= 2e-6);  // the rows' own deviation from the exact sine (tests/dsp/test_frame_table_sine.cpp)
 }

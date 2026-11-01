@@ -15,7 +15,15 @@
 //   atom/wavetable_pos … (tap read)      the same with a registered tap reader (8 samples per block written)
 //   atom/wavetable_pos … (crossfade)     every block inside a swap's 64-sample fade (two reads + the mix)
 //   atom/voice_tap L1 | L8 (…)           unwatched (one relaxed load) and watched
+// TMM.12-fix1: the sine fast path (a table of DC + harmonic 1 reads as a sine; frame_table.h "Sine tables"):
+//   frametable/read L1 | L8 (sine table)        a one-frame sine table, the voices as above (single frame)
+//   atom/wavetable_pos L8 (sine table)          the atom over a slot holding it, 64-frame calls
+//   atom/wavetable_pos L8 (sine, 1-frame calls) the same in 64 calls of one frame (a per-sample feedback loop's
+//                                               shape: the Meta Operator's operator D); ns per frame
+//   atom/wavetable_pos L8 (saw, 1-frame calls)  the general one-frame read in 1-frame calls, for comparison
 #include <chrono>
+#include <map>
+#include <span>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -53,7 +61,19 @@ std::vector<std::vector<float>> drawn(uint32_t count) {
 
 struct Tables {
   pq::dsp::FrameTable morph;
-  Tables() {
+  pq::dsp::FrameTable sine;  // TMM.12-fix1: one frame of a sine (the sine fast path)
+  pq::dsp::FrameTable sawOne;  // one frame of a saw (the general one-frame read)
+  static pq::dsp::FrameTable one(pq::dsp::BasicCycle shape) {
+    const auto c = pq::dsp::basicCycle(shape);
+    const pq::dsp::Keyframe k{0.0f, c.span()};
+    pq::dsp::FrameTableSpec spec;
+    spec.keyframes = std::span<const pq::dsp::Keyframe>(&k, 1);
+    spec.denseFrames = 1;
+    spec.sampleRate = kRate;
+    pq::dsp::FrameTableBuilder b;
+    return b.build(spec).value();
+  }
+  Tables() : sine(one(pq::dsp::BasicCycle::Sine)), sawOne(one(pq::dsp::BasicCycle::Saw)) {
     const auto saw = pq::dsp::basicCycle(pq::dsp::BasicCycle::Saw);
     const auto sq = pq::dsp::basicCycle(pq::dsp::BasicCycle::Square);
     const pq::dsp::Keyframe keys[] = {{0.0f, saw.span()}, {1.0f, sq.span()}};
@@ -69,8 +89,8 @@ struct Tables {
 
 void addFrameTableBenches(pq::bench::Runner& runner) {
   static Tables tables;
-  auto readL1 = [](bool blend) {
-    return [blend](pq::bench::Context& c) {
+  auto readL1 = [](bool blend, const pq::dsp::FrameTable* table = &tables.morph) {
+    return [blend, table](pq::bench::Context& c) {
       // Precomputed phases and positions (a ring of 16 blocks), so the timed call is the read alone.
       constexpr uint32_t kBlocks = 16;
       pq::AlignedBuffer<float> phase(kBlocks * kFrames), pos(kBlocks * kFrames), out(kFrames);
@@ -86,7 +106,7 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
       c.measure(
           [&] {
             const std::size_t o = static_cast<std::size_t>(blk) * kFrames;
-            pq::dsp::readFrameTableL1(tables.morph.view(), st, phase.data() + o, pos.data() + o, true, kFrames,
+            pq::dsp::readFrameTableL1(table->view(), st, phase.data() + o, pos.data() + o, true, kFrames,
                                       out.data());
             blk = (blk + 1) % kBlocks;
             pq::bench::doNotOptimize(out[kFrames - 1]);
@@ -96,8 +116,9 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
   };
   runner.add("frametable/read L1 (blend)", readL1(true));
   runner.add("frametable/read L1 (single frame)", readL1(false));
-  auto readL8 = [](bool blend) {
-    return [blend](pq::bench::Context& c) {
+  runner.add("frametable/read L1 (sine table)", readL1(false, &tables.sine));
+  auto readL8 = [](bool blend, const pq::dsp::FrameTable* table = &tables.morph) {
+    return [blend, table](pq::bench::Context& c) {
       // Precomputed phases (a ring of 16 blocks), so the timed call is the read alone.
       constexpr uint32_t kBlocks = 16;
       pq::AlignedBuffer<float> phase(kBlocks * kFrames * 8), out(kFrames * 8);
@@ -115,7 +136,7 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
       uint32_t blk = 0;
       c.measure(
           [&] {
-            pq::dsp::readFrameTableL8(tables.morph.view(), st, phase.data() + blk * kFrames * 8, pos, false, kFrames,
+            pq::dsp::readFrameTableL8(table->view(), st, phase.data() + blk * kFrames * 8, pos, false, kFrames,
                                       out.data());
             blk = (blk + 1) % kBlocks;
             pq::bench::doNotOptimize(out[kFrames * 8 - 1]);
@@ -125,6 +146,7 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
   };
   runner.add("frametable/read L8 (blend)", readL8(true));
   runner.add("frametable/read L8 (single frame)", readL8(false));
+  runner.add("frametable/read L8 (sine table)", readL8(false, &tables.sine));
 
   auto build = [](int bake) {
     return [bake](pq::bench::Context& c) {
@@ -186,7 +208,7 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
         for (uint32_t l = 0; l < 8; ++l) pos[l] = 0.13f + 0.097f * l;
       const uint32_t mask = L == 1 ? 0u : 2u;  // L1: per-sample position; L8: a Spl pattern
       const pq::dsp::KernelFn fn = pq::dsp::findKernel(pq::dsp::Atom::WavetablePos, L, mask);
-      pq::AlignedBuffer<float> state(32);
+      pq::AlignedBuffer<float> state(sizeof(pq::dsp::WavetablePosState) / sizeof(float));
       pq::dsp::StateInit si;
       si.lanes = L;
       pq::dsp::initState(pq::dsp::Atom::WavetablePos, state.data(), si);
@@ -222,6 +244,53 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
   runner.add("atom/wavetable_pos L8 (tap read)", wavetablePos(8, Mode::TapRead));
   runner.add("atom/wavetable_pos L1 (crossfade)", wavetablePos(1, Mode::Crossfade));
   runner.add("atom/wavetable_pos L8 (crossfade)", wavetablePos(8, Mode::Crossfade));
+  // TMM.12-fix1: one-frame tables through the atom, 64-frame calls or 64 calls of one frame (a feedback loop).
+  auto onePos = [](const pq::dsp::FrameTable* table, uint32_t callFrames) {
+    return [table, callFrames](pq::bench::Context& c) {
+      static std::map<const pq::dsp::FrameTable*, std::unique_ptr<pq::dsp::FrameTableSlot>> slots;
+      auto& sl = slots[table];
+      if (!sl) {  // a copy of the table the slot owns
+        pq::dsp::FrameTableBuilder b;
+        const auto sh = table == &tables.sine ? pq::dsp::BasicCycle::Sine : pq::dsp::BasicCycle::Saw;
+        sl = std::make_unique<pq::dsp::FrameTableSlot>(std::make_shared<const pq::dsp::FrameTable>(Tables::one(sh)));
+      }
+      constexpr uint32_t kBlocks = 16;
+      pq::AlignedBuffer<float> phase(kBlocks * kFrames * 8), out(kFrames * 8);
+      alignas(32) float pos[8] = {};
+      double acc[8];
+      for (uint32_t l = 0; l < 8; ++l) acc[l] = 0.1 * l;
+      for (uint32_t n = 0; n < kBlocks * kFrames; ++n)
+        for (uint32_t l = 0; l < 8; ++l) {
+          acc[l] += 624.0 * (1.0 + 0.1 * l) / kRate;
+          acc[l] -= std::floor(acc[l]);
+          phase[n * 8 + l] = static_cast<float>(acc[l]);
+        }
+      const uint32_t mask = 2u;  // a Spl position
+      const pq::dsp::KernelFn fn = pq::dsp::findKernel(pq::dsp::Atom::WavetablePos, 8, mask);
+      pq::AlignedBuffer<float> state(sizeof(pq::dsp::WavetablePosState) / sizeof(float));
+      pq::dsp::StateInit si;
+      si.lanes = 8;
+      pq::dsp::initState(pq::dsp::Atom::WavetablePos, state.data(), si);
+      const pq::dsp::FrameTableSlot* oneSlot = sl.get();
+      uint32_t blk = 0;
+      c.measure(
+          [&] {
+            const float* blockPhase = phase.data() + static_cast<std::size_t>(blk) * kFrames * 8;
+            for (uint32_t f = 0; f < kFrames; f += callFrames) {
+              const float* in[2] = {blockPhase + static_cast<std::size_t>(f) * 8, pos};
+              float* o[1] = {out.data() + static_cast<std::size_t>(f) * 8};
+              const pq::dsp::KernelArgs a{in, o, state.data(), oneSlot, callFrames, 2, 1, mask};
+              fn(a);
+            }
+            blk = (blk + 1) % kBlocks;
+            pq::bench::doNotOptimize(out[kFrames * 8 - 1]);
+          },
+          kFrames, "ns/frame(8 voices)");
+    };
+  };
+  runner.add("atom/wavetable_pos L8 (sine table)", onePos(&tables.sine, kFrames));
+  runner.add("atom/wavetable_pos L8 (sine, 1-frame calls)", onePos(&tables.sine, 1));
+  runner.add("atom/wavetable_pos L8 (saw, 1-frame calls)", onePos(&tables.sawOne, 1));
   auto voiceTap = [](uint32_t lanes, bool watched) {
     return [lanes, watched](pq::bench::Context& c) {
       static pq::VoiceTap tap(pq::VoiceTapConfig{});

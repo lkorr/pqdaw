@@ -96,7 +96,11 @@ void wavetablePosK(const KernelArgs& a) noexcept {  // RT-safe
   }
   std::memcpy(&s, &rs, sizeof(rs));
   VoiceTap* tap = slot.tap();
-  if (!tap->wanted()) return;
+  const bool watched = tap->wanted();
+  // TMM.12-fix1: whether the JIT may compute this block's next frames inline (atom_state.h WavetablePosState).
+  s.sineOn = !watched && s.fadeLeft == 0 &&
+             frameTableSineCoefs(e.view, kPosSpl ? pos : nullptr, L, s.sineDc, s.sineAmp, s.sineTh);
+  if (!watched) return;
   float position[8];
   const float* lastPos = kPosSpl ? pos : pos + static_cast<size_t>(a.frames - 1) * L;
   for (uint32_t l = 0; l < L; ++l) position[l] = lastPos[l];

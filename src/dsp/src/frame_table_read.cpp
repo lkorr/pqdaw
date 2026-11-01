@@ -10,6 +10,10 @@
 //
 // The frame pair and weight depend only on the position: with a Spl position they are computed once per block, and
 // a block whose lanes all rest on a frame (w = 0, always when F = 1) takes the one-frame path throughout.
+//
+// TMM.12-fix1: a sine table (FrameTableView::sine) whose lanes all rest on a frame for the block takes the sine path
+// instead: per lane the frame's {dc, amplitude, θ} once per block, per step the `sine` atom's evaluation (no level,
+// no rows). The reader state is written as the rows' path writes it.
 
 #include <immintrin.h>
 
@@ -18,6 +22,7 @@
 
 #include "frame_table_ops.h"
 #include "frame_table_simd.h"
+#include "pq/core/fast_math.h"
 #include "pq/dsp/frame_table.h"
 
 namespace pq::dsp {
@@ -185,11 +190,77 @@ void runL8(const FrameTableView& t, FrameReadState& st, const float* phase, cons
   _mm256_store_ps(st.prevDelta, prevDelta);
 }
 
+// ---- TMM.12-fix1: the sine path --------------------------------------------------------------------------------
+
+constexpr float kTwoPi = 6.28318530717958648f;  // as the sine atom (kernels_math.cpp)
+
+struct SineCoef {
+  __m256 dc, amp, th;
+};
+
+// The lanes' frame coefficients for a Spl position u (per lane); false when a lane blends two frames.
+__forceinline bool sinePick(const FrameTableView& t, __m256 u, SineCoef& c) noexcept {
+  if (t.frames <= 1) {
+    c = {_mm256_set1_ps(t.sine[0]), _mm256_set1_ps(t.sine[1]), _mm256_set1_ps(t.sine[2])};
+    return true;
+  }
+  __m256i k;
+  __m256 w;
+  detail::ft::framePosition<S8>(t, u, k, w);
+  if (_mm256_movemask_ps(_mm256_cmp_ps(w, _mm256_setzero_ps(), _CMP_NEQ_UQ)) != 0) return false;
+  const __m256i i = _mm256_slli_epi32(k, 2);
+  c = {_mm256_i32gather_ps(t.sine, i, 4), _mm256_i32gather_ps(t.sine + 1, i, 4), _mm256_i32gather_ps(t.sine + 2, i, 4)};
+  return true;
+}
+
+// dc + a·sin(2π(r + θ)), r = p − round(p) ∈ [−½, ½] (exact; ±inf / NaN → 0, phase 0 as splitPhase reads them). In a
+// feedback loop this is on the loop's latency path: no separate frac. RT-safe.
+__forceinline __m256 sineStep(__m256 p, const SineCoef& c) noexcept {
+  __m256 r = _mm256_sub_ps(p, _mm256_round_ps(p, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+  r = _mm256_and_ps(r, _mm256_cmp_ps(r, r, _CMP_ORD_Q));
+  return _mm256_fmadd_ps(c.amp, fastSin(_mm256_mul_ps(_mm256_add_ps(r, c.th), _mm256_set1_ps(kTwoPi))), c.dc);
+}
+
+void sineL1(FrameReadState& st, const float* phase, uint32_t frames, float* out,
+            const SineCoef& c) noexcept {  // RT-safe
+  const uint32_t vecEnd = frames & ~7u;
+  for (uint32_t n = 0; n < vecEnd; n += 8) _mm256_storeu_ps(out + n, sineStep(_mm256_loadu_ps(phase + n), c));
+  if (vecEnd < frames) {
+    float tp[8] = {}, res[8];
+    std::memcpy(tp, phase + vecEnd, (frames - vecEnd) * sizeof(float));
+    _mm256_storeu_ps(res, sineStep(_mm256_loadu_ps(tp), c));
+    std::memcpy(out + vecEnd, res, (frames - vecEnd) * sizeof(float));
+  }
+  // The state as runL1 leaves it: the last phase and its |Δphase|.
+  const float before = frames > 1 ? phase[frames - 2] : st.prevPhase[0];
+  st.prevDelta[0] =
+      _mm256_cvtss_f32(detail::ft::phaseDelta<S8>(_mm256_set1_ps(phase[frames - 1]), _mm256_set1_ps(before)));
+  st.prevPhase[0] = phase[frames - 1];
+}
+
+void sineL8(FrameReadState& st, const float* phase, uint32_t frames, float* out,
+            const SineCoef& c) noexcept {  // RT-safe
+  for (uint32_t f = 0; f < frames; ++f) {
+    const std::size_t o = static_cast<std::size_t>(f) * 8;
+    _mm256_storeu_ps(out + o, sineStep(_mm256_loadu_ps(phase + o), c));
+  }
+  // The state as runL8 leaves it.
+  const __m256 last = _mm256_loadu_ps(phase + static_cast<std::size_t>(frames - 1) * 8);
+  const __m256 before = frames > 1 ? _mm256_loadu_ps(phase + static_cast<std::size_t>(frames - 2) * 8)
+                                   : _mm256_load_ps(st.prevPhase);
+  _mm256_store_ps(st.prevDelta, detail::ft::phaseDelta<S8>(last, before));
+  _mm256_store_ps(st.prevPhase, last);
+}
+
 }  // namespace
 
 void readFrameTableL1(const FrameTableView& t, FrameReadState& st, const float* phase, const float* position,
                       bool positionPerSample, uint32_t frames, float* out) noexcept {  // RT-safe
   if (frames == 0) return;
+  if (t.sine != nullptr && (t.frames <= 1 || !positionPerSample)) {
+    SineCoef c;
+    if (sinePick(t, _mm256_set1_ps(position[0]), c)) return sineL1(st, phase, frames, out, c);
+  }
   const FramePick spl = pickFrames(t, _mm256_set1_ps(position[0]));
   if (positionPerSample) runL1<2>(t, st, phase, position, frames, out, spl);
   else if (spl.blend) runL1<1>(t, st, phase, position, frames, out, spl);
@@ -199,10 +270,28 @@ void readFrameTableL1(const FrameTableView& t, FrameReadState& st, const float* 
 void readFrameTableL8(const FrameTableView& t, FrameReadState& st, const float* phase, const float* position,
                       bool positionPerSample, uint32_t frames, float* out) noexcept {  // RT-safe
   if (frames == 0) return;
+  if (t.sine != nullptr && (t.frames <= 1 || !positionPerSample)) {
+    SineCoef c;
+    if (sinePick(t, _mm256_loadu_ps(position), c)) return sineL8(st, phase, frames, out, c);
+  }
   const FramePick spl = pickFrames(t, _mm256_loadu_ps(position));
   if (positionPerSample) runL8<2>(t, st, phase, position, frames, out, spl);
   else if (spl.blend) runL8<1>(t, st, phase, position, frames, out, spl);
   else runL8<0>(t, st, phase, position, frames, out, spl);
+}
+
+bool frameTableSineCoefs(const FrameTableView& t, const float* position, uint32_t lanes, float* dc, float* amp,
+                         float* th) noexcept {  // RT-safe
+  if (t.sine == nullptr || (t.frames > 1 && position == nullptr)) return false;
+  const __m256 u = position == nullptr ? _mm256_setzero_ps()
+                   : lanes == 8        ? _mm256_loadu_ps(position)
+                                       : _mm256_set1_ps(position[0]);
+  SineCoef c;
+  if (!sinePick(t, u, c)) return false;
+  _mm256_storeu_ps(dc, c.dc);
+  _mm256_storeu_ps(amp, c.amp);
+  _mm256_storeu_ps(th, c.th);
+  return true;
 }
 
 }  // namespace pq::dsp

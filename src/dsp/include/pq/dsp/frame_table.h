@@ -35,6 +35,20 @@
 // in the level, frac·len, is split into index and fraction with an exact product (two-product), so no precision is
 // lost beyond the float phase itself.
 //
+// ---- Sine tables (TMM.12-fix1) -------------------------------------------------------------------------------------
+// A table whose every frame holds only DC and harmonic 1 (the builder's step 6: the other harmonics' RMS ≤ 1e-7 of
+// the frame's peak, i.e. a float-rounded sine) carries per frame {dc, amplitude a, phase offset θ ∈ [−½, ½)}, its
+// continuous wave dc + a·sin(2π(φ + θ)). When every lane reads one frame (F = 1, or a Spl position with no lane
+// blending) the readers then compute r = phase − round(phase) (exact; ±inf / NaN → 0: phase 0 as above),
+// dc + a·fastSin(2π(r + θ)) instead of the level lookup and the rows: the `sine` atom's evaluation (exactly it for
+// θ = 0, dc = 0, a = 1: a sine keyframe; a phase at exactly k + ½ may read sin(−π) for sin(π), 1.7e-7 apart).
+// Accuracy (tests/dsp/test_frame_table_sine.cpp): within 3.4e-7 of the exact sine (fastSin's 1.5e-7, r + θ's rounding
+// ≤ 2^−25 cycles); the rows' read itself deviates from it by up to 1.6e-6 (−116 dBFS peak: the interpolator's gain
+// ripple over the fraction, which the pre-emphasis corrects only on average), so the two paths differ by ≤ 1.6e-6 peak,
+// ≈ 3e-7 RMS (−130 dBFS): a switch between them (a blend starting, a table swap) is inaudible. The reader state is
+// updated exactly as by the rows' read (the previous phase and |Δphase|), so a later general read chooses the same
+// levels.
+//
 // ---- Memory -----------------------------------------------------------------------------------------------------
 // Floats per frame: 28 864 at 48 kHz (64 frames: 7.05 MiB), 48 704 at 44.1 kHz (11.9 MiB: the closer level spacing
 // there needs 38 levels), 16 408 at ≥ 88.2 kHz (4.0 MiB). Rows carry 4 guard samples on each side (the wrapped
@@ -42,7 +56,8 @@
 //
 // ---- Cost (bench/RESULTS.md, ship) ------------------------------------------------------------------------------
 // Per step: one 8-lane gather (the level), 16 four-float loads, 12 shuffles, the polynomial; a blend doubles the
-// loads and shuffles. The frame choice is made once per block when the position is a Spl pattern.
+// loads and shuffles. The frame choice is made once per block when the position is a Spl pattern. A sine table's
+// step: the phase split, fastSin (a degree-3 polynomial after a two-constant reduction) and one FMA.
 
 #include <cstdint>
 #include <span>
@@ -106,6 +121,8 @@ struct FrameTableView {
   const float* adData = nullptr;
   const float* frameDc = nullptr;
   const float* levelEdge = nullptr;
+  // TMM.12-fix1 ("Sine tables" above): per frame {dc, amplitude, θ, 0} when every frame is a sine; null otherwise.
+  const float* sine = nullptr;
 };
 
 class FrameTable {
@@ -120,8 +137,8 @@ public:
   uint32_t frames() const noexcept { return view_.frames; }
   bool hasAntiderivative() const noexcept { return view_.adData != nullptr; }
   std::size_t bytes() const noexcept {
-    return (data_.size() + ad_.size() + extra_.size()) * sizeof(float) + info_.size() * sizeof(uint32_t) +
-           layout_.bucketLevel.size();
+    return (data_.size() + ad_.size() + extra_.size() + sine_.size()) * sizeof(float) +
+           info_.size() * sizeof(uint32_t) + layout_.bucketLevel.size();
   }
   // Level j of frame k: len_j samples (the guards sit at [−4, 0) and [len, len + 4)).
   std::span<const float> row(uint32_t frame, uint32_t level) const noexcept;
@@ -131,11 +148,16 @@ public:
   float* mutableAdRow(uint32_t frame, uint32_t level) noexcept;
   float* mutableFrameDc() noexcept { return view_.adData ? extra_.data() + dcOffset_ : nullptr; }
   float* mutableLevelEdge() noexcept { return view_.adData ? extra_.data() + edgeOffset_ : nullptr; }
+  // TMM.12-fix1 (builder): the sine coefficients (4 floats per frame) and whether the readers use them.
+  float* mutableSine() noexcept { return sine_.data(); }
+  void setSine(bool on) noexcept { view_.sine = on ? sine_.data() : nullptr; }
+  bool isSine() const noexcept { return view_.sine != nullptr; }
 
 private:
   AlignedBuffer<float> data_;
   AlignedBuffer<float> ad_;     // TMM.8: antiderivative rows (Shape mode)
   AlignedBuffer<float> extra_;  // TMM.8: bucketTop, bucketInvSpan, then frameDc, levelEdge (Shape mode)
+  AlignedBuffer<float> sine_;   // TMM.12-fix1: {dc, amplitude, θ, 0} per frame
   std::size_t dcOffset_ = 0, edgeOffset_ = 0;
   AlignedBuffer<uint32_t> info_;
   FrameTableLayout layout_;
@@ -167,6 +189,13 @@ void readFrameTableL1(const FrameTableView& t, FrameReadState& st, const float* 
 // floats when positionPerSample, else 8 per-voice floats for the block. RT-safe.
 void readFrameTableL8(const FrameTableView& t, FrameReadState& st, const float* phase, const float* position,
                       bool positionPerSample, uint32_t frames, float* out) noexcept;
+
+// TMM.12-fix1: the sine path's per-lane coefficients for a block, as the readers take them ("Sine tables"): lanes 1
+// or 8; position = `lanes` floats (a Spl pattern), or null for a per-sample position. Writes 8 floats each to dc, amp,
+// th (one lane: replicated). False when the readers would not take the sine path (not a sine table; F > 1 with a
+// per-sample position or a lane between two frames). RT-safe.
+bool frameTableSineCoefs(const FrameTableView& t, const float* position, uint32_t lanes, float* dc, float* amp,
+                         float* th) noexcept;
 
 // ---- Double reference (tests) ----------------------------------------------------------------------------------
 // One read at a given level, in double: frac(phase)·len exactly, the same 6-point polynomial (its float coefficients,
