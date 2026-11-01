@@ -632,7 +632,7 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 - [x] **TMM.3 Meta-module framework: types, document state, lowering, text form; the Phase accumulator type** *(merged 2026-11-01; Q167: chain phase_acc ends at note-off until TMM.10/11; Device-view knob linear until TMM.10)* (docs/plans/MM.md)
 - [ ] **TMM.4 Meta faces in the circuit view; Phase accumulator face** 👁 (docs/plans/MM.md)
 - [x] **TMM.5 The Wavetable module type: keyframe data, baked path, table builder in the app** *(merged 2026-11-01; module alias worst −126.1 dBFS; modulated fold/warp/sync and Shape mode refused until TMM.8 (Q171 items 1, 3); voice taps joined to faces)* (docs/plans/MM.md)
-- [ ] **TMM.6 Minimal `oversample(n) { … }` region** (docs/plans/MM.md)
+- [x] **TMM.6 Minimal `oversample(n) { … }` region** *(merged 2026-11-01; aliasing −141 dBFS @4×; converters not reported as latency, regions never sleep / not probed, no "Oversample ×n" editor command, auto-layout does not group regions (Q172))* (docs/plans/MM.md)
 - [ ] **TMM.7 Wavetable face I: display, per-voice dots, position/phase sliders, knobs, basic shapes** 👁 (docs/plans/MM.md)
 - [ ] **TMM.8 Live oversampled warp/fold/sync; Shape mode with ADAA** (docs/plans/MM.md)
 - [ ] **TMM.9 Wavetable face II: harmonic editor + draw tools** 👁 (docs/plans/MM.md)
