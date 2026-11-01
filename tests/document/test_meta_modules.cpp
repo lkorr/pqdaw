@@ -376,6 +376,39 @@ TEST_CASE("meta modules: a freq drag lowers to the same IR (shared patch, same h
   CHECK(paramOf(c, "dev" + std::to_string(s.acc.value) + ":freq")->value == 7.0f);
 }
 
+TEST_CASE("meta modules: TMM.15's pitch — a file without it reads 0; a pitch edit is a param write (same IR)") {
+  Song s;
+  s.addAccCall("acc1");
+  s.edit(ops::setMetaParam(s.doc(), s.acc, "", "phase_acc", "amp", 2.0));
+  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 3.0));
+  // Instances store only the values that were set: a file from before the pitch param looks exactly like this one.
+  const Result<std::string> text = serializeProject(s.doc(), s.store.view());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"pitch\"") == std::string::npos);
+  Result<LoadedProject> back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  const meta::Type& t = meta::phaseAccType();
+  CHECK(metaParamValue(*findDevice(*back->project, s.acc).device, "", t, meta::kPhaseAccPitch) == 0.0);
+  CHECK(metaParamValue(*findDevice(*back->project, s.synth).device, "acc1", t, meta::kPhaseAccPitch) == 0.0);
+  const LoweredProject a = lowered(*back->project);
+  const LoweredParam* chainPitch = paramOf(a, "dev" + std::to_string(s.acc.value) + ":pitch");
+  REQUIRE(chainPitch != nullptr);
+  CHECK(chainPitch->value == 0.0f);
+  REQUIRE(paramOf(a, metaParamKey(s.synth, "acc1", "pitch")) != nullptr);
+  CHECK(paramOf(a, metaParamKey(s.synth, "acc1", "pitch"))->value == 0.0f);
+  // Transposing is a param write: the units keep their IR (no recompile), the value reaches the runtime param.
+  const LoweredProject before = lowered(s.doc());
+  s.edit(ops::setMetaParam(s.doc(), s.acc, "", "phase_acc", "pitch", -1200.0));
+  CHECK(s.store.lastChanges().paramOnly());
+  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "pitch", 702.0));
+  CHECK(s.store.lastChanges().paramOnly());
+  const LoweredProject after = lowered(s.doc(), nullptr, &before);
+  CHECK(after.patches[trackIndex(after, s.accTrack)] == before.patches[trackIndex(before, s.accTrack)]);
+  CHECK(after.patches[trackIndex(after, s.synthTrack)] == before.patches[trackIndex(before, s.synthTrack)]);
+  CHECK(paramOf(after, "dev" + std::to_string(s.acc.value) + ":pitch")->value == -1200.0f);
+  CHECK(paramOf(after, metaParamKey(s.synth, "acc1", "pitch"))->value == 702.0f);
+}
+
 TEST_CASE("meta modules: settings, wired pins and automation make other expansions; resources get their slots") {
   meta::testing::registerTestType();
   Song s;

@@ -7,7 +7,7 @@ patch Midi3 {
   out done : bool voice mono
   out out : real audio global stereo
 
-  d5 = meta_phase_acc__d5__87c346a079b704ad()
+  d5 = meta_phase_acc__d5__36c865d0742f6e2d()
   d6 = meta_wavetable__d6__3e40a23d87984209(d5)
   _n2 = voice.gate
   _n8 = 0

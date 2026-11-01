@@ -2,6 +2,7 @@
 #include "pq/meta/phase_acc.h"
 
 #include <array>
+#include <cmath>
 
 namespace pq::meta {
 
@@ -11,18 +12,27 @@ constexpr std::array<InputSpec, 2> kInputs = {{
     {"hz", "Frequency in", InputDefault::Zero, graph::Kind::Real, Reads::Frequency},  // TMM.10-fix1: 0 Hz unwired
     {"pm", "Phase modulation", InputDefault::Zero, graph::Kind::Real, Reads::Phase},
 }};
-constexpr std::array<ParamSpec, 3> kParams = {{
+constexpr std::array<ParamSpec, 4> kParams = {{
     {"freq", "Frequency", 0.0, 0.0, kPhaseAccMaxHz, graph::Unit::Hz, Curve::Exp0, kPhaseAccCurveK, false, false},
     {"phase", "Phase", 0.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, true, false},
     {"amp", "Amplitude", 1.0, 0.0, 4.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
+    // TMM.15: last, so the earlier params keep their positions in the call signature (older texts and files: 0).
+    {"pitch", "Pitch", 0.0, -kPhaseAccPitchRange, kPhaseAccPitchRange, graph::Unit::cents, Curve::Linear, 0.0, false, false},
 }};
+static_assert(kParams[kPhaseAccPitch].name == "pitch");
 constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
 
-// Body node ids (stable: the phasor's state key is the call path plus kPhasor).
-enum : uint32_t { kHzSum, kPhasor, kAddPhase, kAddPm, kFrac, kAmp, kTap };
+// Body node ids (stable: the phasor's state key is the call path plus kPhasor; TMM.15's nodes are appended).
+enum : uint32_t { kHzSum, kPhasor, kAddPhase, kAddPm, kFrac, kAmp, kTap, kOne, kRatio, kPitched };
 
 Status body(Builder& b) {
-  const auto hz = b.atom("add", {b.input(0), b.param(0)}, kHzSum);
+  const auto sum = b.atom("add", {b.input(0), b.param(0)}, kHzSum);
+  // TMM.15: the pitch transposes the whole frequency, (hz + freq) · 2^(pitch/1200). The ratio reads only a param, so it
+  // is param rate (the scheduler's memoised control region: one exp2 in double per block, only while pitch changes);
+  // per sample it costs one multiply. cents_to_hz evaluates in double and rounds once, so whole octaves are exactly
+  // 2^n and pitch 0 is exactly 1 (x · 1 = x: the same output bits as before the param existed).
+  const auto ratio = b.atom("cents_to_hz", {b.param(kPhaseAccPitch), b.konst(1.0, kOne)}, kRatio);
+  const auto hz = b.atom("mul", {sum, ratio}, kPitched);
   const auto ph = b.atom("phasor", {hz}, kPhasor);
   const auto p1 = b.atom("add", {ph, b.param(1)}, kAddPhase);
   const auto p2 = b.atom("add", {p1, b.input(1)}, kAddPm);
@@ -61,5 +71,6 @@ const Type& phaseAccType() noexcept {
 
 double phaseAccFreqFromTravel(double t) noexcept { return travelToValue(kParams[0], t); }
 double phaseAccTravelFromFreq(double hz) noexcept { return valueToTravel(kParams[0], hz); }
+double phaseAccPitchRatio(double cents) noexcept { return std::exp2(cents / 1200.0); }
 
 }  // namespace pq::meta

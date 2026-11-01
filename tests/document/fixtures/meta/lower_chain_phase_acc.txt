@@ -7,7 +7,7 @@ patch Midi5 {
   out done : bool voice mono
   out out : real audio global stereo
 
-  d7 = meta_phase_acc__d7__5b1ac80cf1ff3558()
+  d7 = meta_phase_acc__d7__ca0ff6bcec569ed8()
   _n1 = voice.gate
   _n7 = 0
   _n9 = 1
@@ -30,14 +30,15 @@ patch Midi5 {
 
 }
 
-patch meta_phase_acc__d7__5b1ac80cf1ff3558 {
+patch meta_phase_acc__d7__ca0ff6bcec569ed8 {
   param freq = 0Hz [0Hz..20000Hz] @label("Frequency") @curve(exp0, 14)
   param phase = 0 [0..1] @label("Phase")
   param amp = 1 [0..4] @label("Amplitude")
+  param pitch = 0c [-4800c..4800c] @label("Pitch")
   out out : audio voice mono
   out done : bool voice mono
 
-  ph = frac(phasor(voice.hz + freq) + phase + -0)
+  ph = frac(phasor((voice.hz + freq) * cents_to_hz(pitch, 1)) + phase + -0)
   tap = voice_tap(ph, 0)
   out = amp * ph
   done = !voice.gate
