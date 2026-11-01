@@ -317,4 +317,56 @@ Status addWavetableFaces(doc::DocumentStore& store, uint32_t count, const meta::
   return r.status;
 }
 
+namespace {
+
+// The Shape instrument: a Phase accumulator into a Wavetable through an Envelope used as a VCA, whose `done` ends the
+// voice (TMM.11).
+constexpr const char* kEnvelopeSynth =
+    "patch BasicSynth {\n"  // a fork keeps its root patch's name
+    "  param level = 0.2 [0..1]\n"
+    "  out   out  : audio voice mono\n"
+    "  out   done : bool voice mono\n"
+    "\n"
+    "  acc1 = meta_phase_acc()\n"
+    "  wt1  = meta_wavetable(acc1)\n"
+    "  env1 = meta_envelope(wt1)\n"
+    "  out  = env1 * (0.25 + 0.75 * voice.velocity) * level\n"
+    "  done = env1.done\n"
+    "}\n";
+
+}  // namespace
+
+Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids) {
+  Runner r{store};
+  const doc::TrackId pluck = r.track(doc::TrackKind::Midi, {}, "Pluck", 0x3FA9F5);
+  const doc::TrackId shape = r.track(doc::TrackKind::Midi, pluck, "Shape", 0xF6A23B);
+  if (!r.status) return r.status;
+  // Pluck: Phase accumulator → Wavetable → Envelope (a meta voice run whose release is the envelope's).
+  const doc::DeviceId acc = phaseAccOn(r, pluck, 0.0, 0.0, 1.0);
+  auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), pluck, "wavetable"));
+  const doc::DeviceId wt = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), pluck, "envelope"));
+  const doc::DeviceId env = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  if (!wt.valid() || !env.valid()) return Error{ErrorCode::Unknown, "envelope project: no Wavetable / Envelope", {}};
+  (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
+  const std::pair<const char*, double> pluckEnv[] = {{"attack", 0.012}, {"decay", 0.9}, {"sustain", 0.35}, {"release", 1.2},
+                                                     {"acurve", 0.45},  {"dcurve", -0.25}, {"rcurve", 0.3}};
+  for (const auto& [name, v] : pluckEnv) (void)r.run(doc::ops::setMetaParam(*store.current(), env, "", "envelope", name, v));
+  // Shape: the default synth forked into acc1 → wt1 → env1 (nested faces), a slower envelope.
+  const doc::Track* t = doc::findTrackPtr(*store.current(), shape);
+  if (t == nullptr || t->devices.empty()) return Error{ErrorCode::NotFound, "envelope project: Shape has no instrument", {}};
+  const doc::DeviceId inst = t->devices[0]->id;
+  (void)r.run(doc::ops::editDevicePatch(*store.current(), inst, kEnvelopeSynth));
+  (void)r.run(doc::ops::setMetaData(*store.current(), inst, "wt1", "wavetable", demoWavetableData()));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", "position", 0.7));
+  const std::pair<const char*, double> shapeEnv[] = {
+      {"attack", 0.4}, {"decay", 2.0}, {"sustain", 0.7}, {"release", 3.0}, {"acurve", -0.4}};
+  for (const auto& [name, v] : shapeEnv) (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "env1", "envelope", name, v));
+  r.clip(pluck, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
+  r.clip(shape, 0, 4 * kTicksPerWhole, "Pad", {0, 3, 7});
+  if (ids != nullptr) *ids = MetaEnvelopeIds{pluck, acc, wt, env, shape, inst};
+  return r.status;
+}
+
 }  // namespace pq::views::project_patch

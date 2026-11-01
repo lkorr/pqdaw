@@ -484,6 +484,16 @@ struct MetaChainIds {
 Status buildMetaChainProject(doc::DocumentStore& store, MetaChainIds* ids = nullptr);
 // The instrument of the first `count` MIDI tracks replaced by a chain Wavetable holding `data` (benchmarks).
 Status addWavetableFaces(doc::DocumentStore& store, uint32_t count, const meta::DataPtr& data);
+// TMM.11: the Envelope — "Pluck" (Phase accumulator → Wavetable → Envelope: a meta voice run whose voices end by the
+// envelope; attack 12 ms bent up, decay 0.9 s bent down, sustain 0.35, release 1.2 s bent toward a line) and "Shape"
+// (the default synth forked: acc1 → wt1 → env1 = meta_envelope(wt1) as a VCA whose `done` ends the voice). The ids.
+struct MetaEnvelopeIds {
+  doc::TrackId pluck;
+  doc::DeviceId acc, wt, env;
+  doc::TrackId shape;
+  doc::DeviceId shapeInst;
+};
+Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids = nullptr);
 
 }  // namespace project_patch
 

@@ -15,6 +15,7 @@
 #include "pq/ui/renderer.h"
 #include "pq/ui/scene_textures.h"
 #include "pq/media/probe.h"
+#include "pq/meta/envelope.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/browser/browser_panel.h"
 #include "pq/views/browser/demo_index.h"
@@ -1576,6 +1577,109 @@ Status setupProjectMetaChain(Shell& shell) {
   return Ok{};
 }
 
+// TMM.11: still voices for the Envelope faces — six voices in every stage (rising, at the peak, decaying, sustained,
+// released early, near the end of the release), each with the levels its tap sampled during the last frame.
+class EnvelopeSceneVoices final : public VoiceTapReader {
+public:
+  struct V {
+    uint32_t slot;
+    double from, to;  // the level sampled over the last frame, oldest to newest
+    bool released;
+  };
+  explicit EnvelopeSceneVoices(std::vector<V> v) : v_(std::move(v)) {}
+  uint32_t read(std::span<FaceVoice> out) override {
+    uint32_t n = 0;
+    for (const V& v : v_) {
+      if (n >= out.size()) break;
+      FaceVoice& f = out[n++];
+      f.slot = v.slot;
+      f.sampleCount = 12;
+      for (uint32_t k = 0; k < f.sampleCount; ++k)
+        f.samples[k] = static_cast<float>(meta::encodeEnvelopeTap(v.from + (v.to - v.from) * k / 11.0, v.released));
+      f.phase = f.samples[f.sampleCount - 1];
+    }
+    return n;
+  }
+  uint64_t serial() const noexcept override { return 1; }
+  bool live() const noexcept override { return false; }
+
+private:
+  std::vector<V> v_;
+};
+
+// TMM.11: the Envelope (project_patch::buildMetaEnvelopeProject). The Device view of "Pluck": Phase accumulator →
+// Wavetable → Envelope, each face its panel, the Envelope's dots in every stage.
+Status setupDeviceMetaEnvelope(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-meta-envelope: no device library", {}};
+  project_patch::MetaEnvelopeIds ids;
+  if (Status s = project_patch::buildMetaEnvelopeProject(ctx.store(), &ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-envelope: the Device view is not installed", {}};
+  static SyntheticVoices accVoices, wtVoices;
+  static EnvelopeSceneVoices envVoices({{0, 0.30, 0.52, false}, {1, 0.96, 0.995, false}, {2, 0.62, 0.55, false},
+                                        {3, 0.35, 0.35, false}, {4, 0.33, 0.21, true}, {5, 0.05, 0.03, true}});
+  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}, {4, 3.0, 0.2}, {5, 9.0, 0.7}});
+  wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35},
+                      {4, 3.0, 0.2, 0.35}, {5, 9.0, 0.7, 0.35}});
+  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId acc = ids.acc, wt = ids.wt, env = ids.env;
+  v->faceVoices = [acc, wt, env](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    return d == acc ? &accVoices : (d == wt ? &wtVoices : (d == env ? static_cast<VoiceTapReader*>(&envVoices) : nullptr));
+  };
+  ctx.setSelectedTrack(ids.pluck);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  const doc::DeviceId one[1] = {env};
+  v->select(one);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// TMM.11: the same project in the project patch view, "Shape" opened in place: acc1 → wt1 → env1 (the Envelope as a
+// VCA, its done wired to the instrument's), the Envelope's dots in every stage.
+Status setupProjectMetaEnvelope(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-meta-envelope: no device library", {}};
+  project_patch::MetaEnvelopeIds ids;
+  if (Status s = project_patch::buildMetaEnvelopeProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-envelope: the view is not installed", {}};
+  static SyntheticVoices accVoices, wtVoices;
+  static EnvelopeSceneVoices envVoices({{0, 0.20, 0.31, false}, {1, 0.86, 0.80, false}, {2, 0.70, 0.70, false},
+                                        {3, 0.55, 0.47, true}});
+  accVoices.setVoices({{0, 4.0, 0.08}, {1, 5.0, 0.4}, {2, 6.0, 0.66}, {3, 7.0, 0.9}});
+  wtVoices.setVoices({{0, 4.0, 0.08, 0.7}, {1, 5.0, 0.4, 0.7}, {2, 6.0, 0.66, 0.7}, {3, 7.0, 0.9, 0.7}});
+  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId inst = ids.shapeInst;
+  v->faceVoices = [inst](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (d != inst) return nullptr;
+    if (path == "acc1") return &accVoices;
+    if (path == "wt1") return &wtVoices;
+    if (path == "env1") return &envVoices;
+    return nullptr;
+  };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setDeviceExpanded(inst, true);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.shape, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 constexpr SceneEntry kScenes[] = {
     {"shell", 1280, 800, nullptr},
     {"arrangement-basic", 1280, 800, setupArrangementBasic},
@@ -1631,6 +1735,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-wavetable", 1280, 800, setupProjectMetaWavetable},  // TMM.7
     {"device-meta-chain", 1280, 800, setupDeviceMetaChain},            // TMM.10
     {"project-meta-chain", 1280, 800, setupProjectMetaChain},          // TMM.10
+    {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
+    {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)
