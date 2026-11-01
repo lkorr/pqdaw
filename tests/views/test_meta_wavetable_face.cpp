@@ -284,7 +284,8 @@ TEST_CASE("wavetable face model: the source cycle at a keyframe is that keyframe
   for (size_t i = 0; i < s.size(); i += 64) CHECK(c[i] == doctest::Approx(0.5 * (c0[i] + c1[i])).epsilon(1e-4).scale(1.0));
 }
 
-TEST_CASE("wavetable face model: a data change and a baked knob step cost little (UI thread)") {
+TEST_CASE("wavetable face model: a data change and a baked knob step cost little (UI thread)" *
+          doctest::test_suite("perf")) {  // wall-clock bounds: load-sensitive
   wt::Model m;
   const auto t0 = std::chrono::steady_clock::now();
   REQUIRE(m.update(project_patch::demoWavetableData(), {}));
@@ -697,7 +698,8 @@ TEST_CASE("render: project-meta-wavetable matches the golden image") {
   checkImage("project-meta-wavetable", *img);
 }
 
-TEST_CASE("wavetable face: the live layer's paint cost (2x, 64 frames, 8 voices) and 16 animating faces") {
+TEST_CASE("wavetable face: the live layer's paint cost (2x, 64 frames, 8 voices) and 16 animating faces" *
+          doctest::test_suite("perf")) {  // wall-clock bounds: load-sensitive
   auto theme = loadTheme(defaultThemePath());
   REQUIRE(theme.ok());
   std::unique_ptr<MetaFace> face = makeFace(wtType());
