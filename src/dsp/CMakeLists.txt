@@ -11,5 +11,9 @@ pq_add_module(pq_dsp
     src/fft.cpp
     src/spectrum.cpp
     src/resample.cpp
+    src/frame_table.cpp
+    src/frame_table_read.cpp
+    src/frame_table_build.cpp
+    src/fft_mixed.cpp
   DEPS pq_core
 )

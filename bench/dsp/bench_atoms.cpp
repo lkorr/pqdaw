@@ -23,6 +23,7 @@
 using pq::dsp::Atom;
 
 void addResampleBenches(pq::bench::Runner& runner);  // bench_resample.cpp (T5.4)
+void addFrameTableBenches(pq::bench::Runner& runner);  // bench_frame_table.cpp (TMM.1)
 
 namespace {
 
@@ -219,6 +220,7 @@ int main(int argc, char** argv) {
     runner.add(std::string("atom/") + pq::dsp::kernelInfo(a).name + " (1-lane tail)",
                [&fx, a](pq::bench::Context& c) { benchScalarTail(c, fx, a); });
   addResampleBenches(runner);
+  addFrameTableBenches(runner);
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   if (code != 0 || rows.empty()) return code;
 

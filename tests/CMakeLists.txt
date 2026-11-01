@@ -329,6 +329,9 @@ pq_add_test(pq_tests_dsp
     dsp/test_spectrum.cpp
     dsp/test_silence.cpp
     dsp/test_resample.cpp
+    dsp/test_frame_table.cpp
+    dsp/test_frame_table_alias.cpp
+    support/alias_meter.h  # TMM.1: the reusable alias meter (listed so tests/support maps to its users)
   DEPS pq_dsp)
 
 # meta (TMM.3): the meta-module framework (registry, expansion, prelude, data) and the Phase accumulator through pqc
