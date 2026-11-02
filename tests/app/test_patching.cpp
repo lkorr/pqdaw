@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -84,6 +85,33 @@ golden::Channels renderGraph(const graph::ProjectGraph& g, const std::vector<eng
     out[1].insert(out[1].end(), r.begin(), r.end());
   }
   return out;
+}
+
+// TX.smooth: the param ramps of a graph's per-unit programs by source: a param by name, a computed param-rate value
+// by its ramp's state key (structural: the same in any unit). Every ramp's source is param rate.
+std::set<std::string> rampKeys(const graph::ProjectGraph& g, const std::vector<engine::ProjectParamLink>& links) {
+  engine::ProjectCompileOptions co;
+  co.sampleRate = kRate;
+  co.maxBlockFrames = kBlock;
+  co.voice.maxVoices = 8;
+  co.paramLinks = links;
+  engine::ProjectCompiler compiler(co);
+  REQUIRE(compiler.build(g).ok());
+  std::set<std::string> keys;
+  for (uint32_t u = 0; u < compiler.numUnits(); ++u) {
+    const graph::Schedule& sc = *compiler.unit(u).schedule;
+    for (const graph::Ramp& r : sc.ramps) {
+      const bool paramRate =
+          r.source.kind != graph::Operand::Kind::Buffer || sc.buffers[r.source.index].cls == graph::Buffer::Class::Pattern;
+      CHECK(paramRate);
+      // A param by its name (its ramp's key also depends on the stage reading it); a computed pattern by its key.
+      if (r.source.kind == graph::Operand::Kind::Param)
+        keys.insert("param " + std::string(compiler.unit(u).typed->patch.nodeName(sc.params[r.source.index].node)));
+      else
+        keys.insert("key " + std::to_string(sc.state.entries[sc.ops[r.op].state].key));
+    }
+  }
+  return keys;
 }
 
 double maxDiff(const golden::Channels& a, const golden::Channels& b) {
@@ -321,6 +349,8 @@ TEST_CASE("patching: a free Phase accumulator into another's phase is per-voice 
   CHECK(low2.low.wires[0].status == WireStatus::Lowered);
   const golden::Channels viaPm = renderGraph(low2.low.graph, low2.links, low2.values, 24000);
   CHECK(maxDiff(viaPhase, viaPm) == 0.0);
+  // TX.smooth: the audio-rate wire gets no param ramp (only the knobs do): the same ramps either way.
+  CHECK(rampKeys(low.low.graph, low.links) == rampKeys(low2.low.graph, low2.links));
   (void)keys2;
   (void)pa1b;
   (void)pa2b;
@@ -431,6 +461,7 @@ TEST_CASE("patching: a wire into a VCA's value adds to the multiplier (value spa
   // Phase accumulator alone in the series. A − B is C: the wire adds the accumulator's samples to the multiplier.
   const meta::VcaLaw law = meta::vcaLaw(meta::VcaCurve::Log, -meta::kVcaRange, meta::kVcaRange, 0.4, 0.0);
   const double pos = meta::vcaPosition(law, 0.25);
+  std::set<std::string> ramps[3];
   auto render = [&](int which, double max) {
     DocumentStore store;
     IdSource& ids = store.ids();
@@ -467,6 +498,7 @@ TEST_CASE("patching: a wire into a VCA's value adds to the multiplier (value spa
       REQUIRE(value.has_value());
       CHECK(tp.adjacency().driver[tp.flatInput(*call, *value)] == graph::kNone);
     }
+    ramps[which] = rampKeys(low.low.graph, low.links);
     const golden::Channels a = renderGraph(low.low.graph, low.links, low.values, 9600);
     const golden::Channels j = renderGraph(low.low.graph, low.links, low.values, 9600, compile::jitUnitBackend());
     CHECK(maxDiff(a, j) == 0.0);
@@ -474,6 +506,22 @@ TEST_CASE("patching: a wire into a VCA's value adds to the multiplier (value spa
   };
   const golden::Channels a = render(0, meta::kVcaRange), b = render(1, meta::kVcaRange), c = render(2, 0.0);
   CHECK(peakOf(c) > 0.3f);
+  // TX.smooth: the wire into value_add (audio rate) gets no ramp (rampKeys checks every source is param rate). The
+  // wired track has the VCA track's ramps (its knobs, the mixer) and the accumulator's, plus the VCA's clamp bounds:
+  // `min` and one value computed from the knobs, which only the clamp of value + value_add reads (live once wired).
+  std::set<std::string> both = ramps[1];
+  both.insert(ramps[2].begin(), ramps[2].end());
+  CHECK(!ramps[1].empty());
+  std::vector<std::string> extra;
+  for (const std::string& k : ramps[0])
+    if (!both.count(k)) extra.push_back(k);
+  for (const std::string& k : both) CHECK(ramps[0].count(k) == 1);
+  CHECK(extra.size() <= 2);
+  auto endsWith = [](const std::string& k, std::string_view e) { return k.size() >= e.size() && k.compare(k.size() - e.size(), e.size(), e) == 0; };
+  for (const std::string& k : extra) {
+    const bool bound = k.rfind("key ", 0) == 0 || (k.rfind("param ", 0) == 0 && (endsWith(k, "__min") || endsWith(k, "__max")));
+    CHECK_MESSAGE(bound, k);
+  }
   double worst = 0.0;
   for (size_t i = 0; i < a[0].size(); ++i) worst = std::max(worst, std::fabs(static_cast<double>(a[0][i] - b[0][i] - c[0][i])));
   MESSAGE("VCA value + PA − VCA value − PA: max |diff| = " << worst);
