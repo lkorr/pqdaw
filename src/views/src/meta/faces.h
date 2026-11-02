@@ -13,6 +13,7 @@ std::unique_ptr<MetaFace> makePhaseAccFace(const meta::Type& t);
 std::unique_ptr<MetaFace> makeWavetableFace(const meta::Type& t);  // TMM.7
 std::unique_ptr<MetaFace> makeEnvelopeFace(const meta::Type& t);   // TMM.11
 std::unique_ptr<MetaFace> makeVcaFace(const meta::Type& t);        // TMM.14
+std::unique_ptr<MetaFace> makeSpectrumFace(const meta::Type& t);   // TX.spectrum
 
 // TMM.16 (tests): the Wavetable face's main curve as its last paint drew it — the frame as it sounds at `position`
 // (kSoundPoints + 1 values, phases i / kSoundPoints), in draw mode or as the highlighted frame of the stack. False:

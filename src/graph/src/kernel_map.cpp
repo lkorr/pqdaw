@@ -26,6 +26,8 @@ constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};              
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table
 constexpr ArgMap kWavetablePos[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};    // phase, position, table
 constexpr ArgMap kVoiceTap[] = {{U::Input, 0}, {U::Resource, 0}};                       // x, slot
+constexpr ArgMap kSignalTap[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // inL, inR, outL, outR,
+                                 {U::Resource, 0}};                                            // slot (TX.spectrum)
 constexpr ArgMap kWavetableLive[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // phase, position,
                                      {U::Input, 4}, {U::Resource, 0}, {U::Input, 5}, {U::Input, 6}};  // warp, fold,
                                                                                         // sync, table, mode, corr
@@ -58,6 +60,7 @@ constexpr Special kSpecial[] = {
     {"shaper", kShaper},
     {"wavetable_pos", kWavetablePos},
     {"voice_tap", kVoiceTap},
+    {"signal_tap", kSignalTap},
     {"wavetable_live", kWavetableLive},
     {"wavetable_shape", kWavetableShape},
     {"noise", kNoise},

@@ -85,6 +85,11 @@
 // shared, its unit not recompiled); data never enters an expansion (MetaData edits never lower). An unnamed meta call
 // plays the prelude's default state (pq/meta/registry.h). Resource slots (frame tables, voice taps) come from
 // LowerOptions::metaSlotOf and are listed with the instance's data in LoweredProject::metaResources.
+// ANALYSIS TAPS (TX.spectrum): an active analysed stock device in a chain (doc::analysedDevice: EQ Eight, Auto Filter;
+// an edited fork too) gets a sink signal_tap(in[0], in[1], out[0], out[1], slot) next to its call (node ids
+// nodeIdFor(Device, id, 8 … 13)), its slot from LowerOptions::metaSlotOf(device, kAnalysisTapPath, 0), listed in
+// LoweredProject::metaResources (type "", kind SignalTap): the panel's spectrum and measured response read it. Without
+// metaSlotOf (tools, tests), or with slot 0, no tap. Unwatched it costs one relaxed load per block (pq/dsp/atoms.h).
 // TMM.10 / TMM.10-fix1 (docs/plans/MM.md "Voice continuity"; SPEC §15 2026-11-01 "notes are a signal"): a MIDI track
 // whose first active device is a chain meta device taking the note source plays a VOICE RUN: it and the active chain
 // meta devices right after it that the per-voice signal reaches (Form::ChainVoice: their chain input is an `in` fed by

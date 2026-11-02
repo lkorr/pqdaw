@@ -346,7 +346,9 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
     for (const graph::Op& op : cu.schedule->ops) {
       if (op.kind != graph::OpKind::Kernel || op.resource == graph::kNone) continue;
       const dsp::Resource kind = dsp::kernelInfo(op.kernel).resource;
-      if (kind != dsp::Resource::Tuning && kind != dsp::Resource::FrameTable && kind != dsp::Resource::VoiceTap) continue;
+      if (kind != dsp::Resource::Tuning && kind != dsp::Resource::FrameTable && kind != dsp::Resource::VoiceTap &&
+          kind != dsp::Resource::SignalTap)  // TX.spectrum
+        continue;
       if (std::find(seen.begin(), seen.end(), std::pair(kind, op.resource)) != seen.end()) continue;
       seen.emplace_back(kind, op.resource);
       if (std::shared_ptr<const void> owner = opt_.keepAlive(kind, op.resource)) ui.keepAlive.push_back(std::move(owner));

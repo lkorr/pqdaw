@@ -61,6 +61,7 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
   viewSub_ = ctx_.observe([this](uint32_t bits) {
     if (bits & view_change::kTransport) refreshTransport();
     if ((bits & view_change::kWaveforms) && shown()) damageLanes();  // an overview arrived or grew: the windows only
+    if (bits & view_change::kAnalysis) wakeFaces();  // TX.spectrum: a Spectrum face's tap appeared
   });
 }
 

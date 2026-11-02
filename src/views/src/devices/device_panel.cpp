@@ -1162,6 +1162,17 @@ std::optional<DevicePanel::Anchor> DevicePanel::controlHome(std::string_view par
   return best ? best : display;
 }
 
+void DevicePanel::showMeasuredResponse(bool on) {
+  for (Impl::Bound& b : impl_->bound)
+    if (b.display) b.display->setMeasured(on);
+}
+
+bool DevicePanel::measuredResponseShown() const {
+  for (const Impl::Bound& b : impl_->bound)
+    if (b.display && b.display->measured()) return true;
+  return false;
+}
+
 void DevicePanel::wakeFaces() {
   for (Impl::Bound& b : impl_->bound)
     if (b.display) b.display->wake();

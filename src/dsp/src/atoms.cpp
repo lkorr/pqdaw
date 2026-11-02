@@ -102,6 +102,8 @@ constexpr KernelInfo kInfo[kAtomCount] = {
      false},
     // TX.smooth (kernels_ramp.cpp): the compiler's param smoothing; x and frames are patterns, the output a block.
     {"param_ramp", 2, 1, false, false, 0, 0, 0, kB0 | kB1, sizeof(ParamRampState), Resource::None, false},
+    // TX.spectrum (kernels_signal_tap.cpp): the analysis-tap sink; any input Spl or Blk.
+    {"signal_tap", 4, 0, false, false, 0, 0, kB0 | kB1 | kB2 | kB3, 0, 0, Resource::SignalTap, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -163,6 +165,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findWaveLiveKernel(a, lanes, spec)) return f;
   if (KernelFn f = findOversampleKernel(a, lanes)) return f;
   if (KernelFn f = findRampKernel(a, lanes)) return f;
+  if (KernelFn f = findSignalTapKernel(a, lanes, spec)) return f;
   return findTableKernel(a, lanes, spec);
 }
 

@@ -472,15 +472,17 @@ Status ProjectLink::makeEngine() {
   resources_.tunings = tuningViews_;  // fixed array: entries are filled in as tables are built
   resources_.frameTables = frameTableViews_;  // TMM.2: likewise (meta-module slots)
   resources_.voiceTaps = voiceTapViews_;
+  resources_.signalTaps = signalTapViews_;  // TX.spectrum
   co.resources = &resources_;
   // T2.6-fix4: every image holds the tuning tables it reads (the ones its compile named: compileHeld_). TMM.2: and the
   // meta-module slots it reads.
   co.keepAlive = [this](dsp::Resource kind, uint32_t index) -> std::shared_ptr<const void> {
-    if (kind == dsp::Resource::FrameTable || kind == dsp::Resource::VoiceTap) {
+    if (kind == dsp::Resource::FrameTable || kind == dsp::Resource::VoiceTap || kind == dsp::Resource::SignalTap) {
       std::lock_guard lock(mutex_);
       if (index >= kMetaSlots) return nullptr;
       const MetaSlot& m = metaSlots_[index];
       if (kind == dsp::Resource::FrameTable) return m.table;
+      if (kind == dsp::Resource::SignalTap) return m.ring;
       return m.tap;
     }
     if (kind != dsp::Resource::Tuning) return nullptr;
@@ -1445,6 +1447,10 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
         metaFresh_ = true;  // TMM.8-fix: its table is built before the image that reads it is published
         m.table = std::make_shared<dsp::FrameTableSlot>(metaDefaultTable(), metaTapConfig());
         m.tap = m.table->sharedTap();
+      } else if (m.kind == meta::ResourceKind::SignalTap) {  // TX.spectrum: written per engine block
+        m.ring = std::make_shared<TapRing>(dsp::kSignalTapChannels, kAnalysisTapFrames,
+                                           std::clamp<uint32_t>(cfg_.blockFrames, 1u, kAnalysisTapFrames / 4));
+        tapsFresh_ = true;
       } else {
         m.tap = std::make_shared<VoiceTap>(metaTapConfig());
       }
@@ -1457,6 +1463,7 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
     m.modulated = r.modulated;
     frameTableViews_[r.slot] = m.table.get();
     voiceTapViews_[r.slot] = m.kind == meta::ResourceKind::VoiceTap ? m.tap.get() : nullptr;
+    signalTapViews_[r.slot] = m.kind == meta::ResourceKind::SignalTap ? m.ring.get() : nullptr;
   }
   // Ids this lowering did not name are free again. Their objects (and view entries) stay until the id is given out
   // again: an image built later from an older schedule (a background JIT compile) may still name the id, and it holds
@@ -1507,6 +1514,19 @@ std::shared_ptr<VoiceTap> ProjectLink::metaVoiceTap(doc::DeviceId device, std::s
   std::lock_guard lock(mutex_);
   const uint32_t id = metaIdLocked(device, path, index);
   return id != 0 ? metaSlots_[id].tap : nullptr;
+}
+
+std::shared_ptr<TapRing> ProjectLink::metaSignalTap(doc::DeviceId device, std::string_view path, uint32_t index) const {
+  std::lock_guard lock(mutex_);
+  // A tap has no variants: its key is exact (one map lookup; the displays ask every frame).
+  const auto it = metaIds_.find(MetaKey{device.value, std::string(path), index});
+  if (it == metaIds_.end() || !metaSlots_[it->second].live) return nullptr;
+  return metaSlots_[it->second].ring;
+}
+
+std::shared_ptr<TapRing> ProjectLink::deviceAnalysisTap(doc::DeviceId device) const {
+  if (std::shared_ptr<TapRing> t = metaSignalTap(device, doc::kAnalysisTapPath, 0)) return t;
+  return metaSignalTap(device, "", 0);  // a chain Spectrum meta device: its own request 0
 }
 
 Status ProjectLink::publishFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
@@ -1638,6 +1658,14 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   doc::LoweredProject& lp = lowered.value();
   metaFresh_ = false;
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
+  if (std::exchange(tapsFresh_, false) && onAnalysisTaps) {  // TX.spectrum: displays waiting for a tap look again
+    std::function<void(std::function<void()>)> post;
+    {
+      std::lock_guard lock(loadMutex_);
+      post = post_;
+    }
+    if (post) post(onAnalysisTaps);
+  }
   refreshMetaTables();              // TMM.5: new instances, settings (the warp mode), the rate: their tables
   // TMM.8-fix: a new frame-table slot (a new instance, or a table variant: a control switching between the baked and
   // the live path, Shape mode) gets its table before the image that reads it plays, so the switch never plays the

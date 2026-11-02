@@ -77,6 +77,9 @@ public:
   virtual std::optional<ui::IRect> paramRect(std::string_view /*param*/) const { return std::nullopt; }
   // TMM.10: a face's voices may have become live.
   virtual void wake() {}
+  // TX.spectrum: the measured-response overlay of a display with an exact curve (DevicePanel::showMeasuredResponse).
+  virtual void setMeasured(bool /*on*/) {}
+  virtual bool measured() const noexcept { return false; }
 
 protected:
   DevicePanel::Impl& impl_;

@@ -134,6 +134,8 @@ public:
   struct FaceBinding {
     std::unique_ptr<MetaTarget> target;
     VoiceTapReader* voices = nullptr;
+    // TX.spectrum: where a face that shows its signal's analysis finds its feed (Face::setAnalysis; empty: none).
+    std::function<devices::SpectrumFeed*()> analysis;
   };
   std::function<FaceBinding(const SceneFace&)> faceBinder;
   void rebindFaces();

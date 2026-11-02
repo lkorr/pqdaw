@@ -46,6 +46,10 @@ public:
     std::unique_ptr<MetaTarget> target = t != nullptr ? t->metaTarget(desc.meta, *type_) : nullptr;
     if (!target) target = std::make_unique<DefaultTarget>(*type_);
     face_->bind(std::move(target), t != nullptr ? t->metaVoices(desc.meta) : nullptr);
+    // TX.spectrum: a chain device's own face that shows its signal's analysis reads the device's feed.
+    if (desc.meta.empty() && face_->wantsAnalysis())
+      face_->setAnalysis([this]() -> SpectrumFeed* { return impl_.target() != nullptr ? impl_.target()->outputSpectrum() : nullptr; },
+                         [this] { wake(); });
     // A chain meta device's own face shows where its signal goes: the output socket on the right edge, and the voice
     // input on the left when it continues a run (its patch has an audio `in`). Nested faces show no sockets here.
     if (desc.meta.empty()) {
@@ -282,6 +286,7 @@ private:
   ui::DrawList scratch_;
   bool tilesWanted_ = false;
   uint32_t timer_ = 0;
+
   mutable std::string title_, body_;
 };
 

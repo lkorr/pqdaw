@@ -455,4 +455,23 @@ Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids) {
   return r.status;
 }
 
+Status buildSpectrumProject(doc::DocumentStore& store, MetaSpectrumIds* ids) {
+  Runner r{store};
+  // An audio track (no instrument: the two displays side by side fit the Device view).
+  const doc::TrackId keys = r.track(doc::TrackKind::Audio, {}, "Mix", 0x3FA9F5);
+  if (!r.status) return r.status;
+  // EQ Eight: a cut at 250 Hz, a boost at 1 kHz, a cut at 6 kHz (bells; the other bands at 0 dB).
+  const doc::DeviceId eq = r.device(keys, "eq_eight", doc::DeviceKind::AudioEffect);
+  if (!eq.valid()) return r.status ? Status{Error{ErrorCode::NotFound, "spectrum project: no EQ Eight", {}}} : r.status;
+  const std::pair<const char*, double> bands[] = {{"freq3", 250.0},  {"gain3", 0.6309573}, {"q3", 1.2},      // −4 dB
+                                                  {"freq4", 1000.0}, {"gain4", 1.9952623}, {"q4", 2.0},      // +6 dB
+                                                  {"freq6", 6000.0}, {"gain6", 0.5623413}, {"q6", 0.7071}};  // −5 dB
+  for (const auto& [name, v] : bands) (void)r.run(doc::ops::setDeviceParam(*store.current(), eq, name, v));
+  auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), keys, "spectrum"));
+  const doc::DeviceId spec = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  if (!spec.valid()) return r.status ? Status{Error{ErrorCode::NotFound, "spectrum project: no Spectrum", {}}} : r.status;
+  if (ids != nullptr) *ids = MetaSpectrumIds{keys, eq, spec};
+  return r.status;
+}
+
 }  // namespace pq::views::project_patch

@@ -58,6 +58,9 @@ constexpr PortSpec pNoise[] = {{"seed", kRConst, true, 0.0f}};
 // voice_tap samples x into the voice tap `slot` for a meta module's face (a sink: no outputs).
 constexpr PortSpec pWavetablePos[] = {{"phase", kR}, {"position", kR, true, 0.0f}, {"table", kRConst, true, 0.0f}};
 constexpr PortSpec pVoiceTap[] = {{"x", kR}, {"slot", kRConst, true, 0.0f}};
+// TX.spectrum: signal_tap copies a device's input (inL, inR) and output (outL, outR) into the analysis tap `slot`.
+constexpr PortSpec pSignalTap[] = {{"inL", kGlobalRA},  {"inR", kGlobalRA, true, 0.0f}, {"outL", kGlobalRA, true, 0.0f},
+                                   {"outR", kGlobalRA, true, 0.0f}, {"slot", kRConst, true, 0.0f}};
 // TMM.8 (pq/dsp/wave_live.h): the Wavetable's live warp / fold / sync read (mode: 0 Bend, 1 Mirror, 2 Pulse width;
 // corr 1: band-limited corrections of its jumps and kinks, output delayed 4 samples) and Shape mode's ADAA read.
 constexpr PortSpec pWavetableLive[] = {{"phase", kR},
@@ -346,6 +349,8 @@ const AtomSignature kAtoms[] = {
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},
     {"voice_tap", C::Io, pVoiceTap, kNoPorts, sizeof(dsp::VoiceTapState), kStateful | kSideEffect, 0, {},
      "samples x per voice into a meta module's voice tap (its face's dots); costs nothing unwatched"},
+    {"signal_tap", C::Io, pSignalTap, kNoPorts, 0, kSideEffect, 0, {},
+     "copies a device's input and output into an analysis tap (spectrum, response); costs nothing unwatched"},
     {"clipPlayer", C::Io, pClipPlayer, pGlobalAudioN, 0, kStateful | kVariableState | kNeedsTransport, 0, {},
      "native warp-engine playback of clip (SPEC §9.4)"},
 

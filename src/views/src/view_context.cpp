@@ -10,6 +10,7 @@
 
 #include "pq/document/serialize.h"
 #include "pq/views/browser/library.h"
+#include "pq/views/devices/analysis.h"
 #include "pq/views/file_probes.h"
 #include "pq/views/waveforms.h"
 
@@ -157,6 +158,20 @@ void ViewContext::setModulationSource(ModulationSource* source) {
   if (modulation_ == source) return;
   modulation_ = source;
   notify(view_change::kModulation);
+}
+
+void ViewContext::setAnalysisSource(std::function<std::shared_ptr<TapRing>(doc::DeviceId)> tapOf, double sampleRate) {
+  // A new source (another rate): the hub keeps the feeds displays still hold until they let go (their targets ask for
+  // the new ones at their next frame).
+  if (analysis_) analysis_->setSource(std::move(tapOf), sampleRate);
+  else  // the poster is looked up when a wake is posted (the app may set it later)
+    analysis_ = std::make_unique<devices::AnalysisHub>(std::move(tapOf), sampleRate, [this](std::function<void()> f) {
+      if (post_) post_(std::move(f));
+    });
+}
+
+devices::SpectrumFeed* ViewContext::analysisFeed(doc::DeviceId device) {
+  return analysis_ ? analysis_->feed(device) : nullptr;
 }
 
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {

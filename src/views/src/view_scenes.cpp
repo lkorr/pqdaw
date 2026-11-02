@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,6 +24,8 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "devices/device_math.h"
+#include "pq/views/devices/analysis.h"
 #include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
@@ -1844,6 +1847,83 @@ Status setupDeviceMetaVca(Shell& shell) {
   return Ok{};
 }
 
+// TX.spectrum: the spectrum project's analysis (project_patch::buildSpectrumProject), as the playback link's taps would
+// carry it: EQ Eight's (the test signal in; out through its three bells, its exact curve) with the measured response,
+// and the Spectrum device's (the EQ's output), analysed now and held (deterministic).
+Status adoptSpectrumFeeds(ViewContext& ctx, const project_patch::MetaSpectrumIds& ids) {
+  struct Bell {
+    double f, db, q;
+  };
+  static constexpr Bell kBells[] = {{250.0, -4.0, 1.2}, {1000.0, 6.0, 2.0}, {6000.0, -5.0, 0.7071}};
+  auto eqMag = [](double hz) {
+    std::complex<double> h = 1.0;
+    for (const Bell& b : kBells) {
+      devices::math::EqBand band;
+      band.on = true;
+      band.type = devices::math::kBell;
+      band.freq = b.f;
+      band.gain = std::pow(10.0, b.db / 20.0);
+      band.q = b.q;
+      h *= devices::math::eqBandResponse(band, devices::math::eqCoef(band, false, 1.0, 48000.0, 1.0), hz, 48000.0, 1.0);
+    }
+    return std::abs(h);
+  };
+  devices::AnalysedFeed eq = devices::makeAnalysedFeed(eqMag, true), sp = devices::makeAnalysedFeed(eqMag, false);
+  std::shared_ptr<TapRing> eqTap(std::move(eq.tap)), spTap(std::move(sp.tap));
+  const doc::DeviceId eqId = ids.eq, spId = ids.spectrum;
+  ctx.setAnalysisSource(
+      [eqId, spId, eqTap, spTap](doc::DeviceId d) -> std::shared_ptr<TapRing> {
+        return d == eqId ? eqTap : d == spId ? spTap : nullptr;
+      },
+      48000.0);
+  if (ctx.analysisHub() == nullptr) return Error{ErrorCode::Unknown, "spectrum scene: no analysis hub", {}};
+  ctx.analysisHub()->adopt(eqId, eqTap, std::shared_ptr<devices::SpectrumFeed>(std::move(eq.feed)));
+  ctx.analysisHub()->adopt(spId, spTap, std::shared_ptr<devices::SpectrumFeed>(std::move(sp.feed)));
+  return Ok{};
+}
+
+// The Device view of "Mix" (an audio track): EQ Eight over its output spectrum with the measured response (violet,
+// on the exact curve), the Spectrum module's face.
+Status setupDeviceMetaSpectrum(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-meta-spectrum: no device library", {}};
+  project_patch::MetaSpectrumIds ids;
+  if (Status s = project_patch::buildSpectrumProject(ctx.store(), &ids); !s) return s;
+  if (Status s = adoptSpectrumFeeds(ctx, ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-spectrum: the Device view is not installed", {}};
+  ctx.setSelectedTrack(ids.keys);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  shell.tree().layoutNow();
+  if (devices::DevicePanel* eq = v->panelOf(ids.eq)) eq->showMeasuredResponse(true);
+  const doc::DeviceId one[1] = {ids.spectrum};
+  v->select(one);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The same project in the project patch view: the band of "Mix", EQ Eight's panel and the Spectrum face as blocks.
+Status setupProjectMetaSpectrum(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-meta-spectrum: no device library", {}};
+  project_patch::MetaSpectrumIds ids;
+  if (Status s = project_patch::buildSpectrumProject(ctx.store(), &ids); !s) return s;
+  if (Status s = adoptSpectrumFeeds(ctx, ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-spectrum: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.keys, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // The same project in the project patch view, "Trem" opened in place: acc1 → wt1 → vca1 (Bend 0 … 2), four voices
 // whose knob positions a modulation spreads.
 Status setupProjectMetaVca(Shell& shell) {
@@ -2036,6 +2116,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14
     {"project-meta-vca", 1280, 800, setupProjectMetaVca},              // TMM.14
+    {"device-meta-spectrum", 1280, 800, setupDeviceMetaSpectrum},      // TX.spectrum
+    {"project-meta-spectrum", 1280, 800, setupProjectMetaSpectrum},    // TX.spectrum
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)
     {"meta-operator-circuit", 1600, 900, setupMetaOperatorCircuit},    // TMM.12
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8

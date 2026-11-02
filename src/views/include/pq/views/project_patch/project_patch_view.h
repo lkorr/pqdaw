@@ -563,6 +563,13 @@ struct MetaVcaIds {
   doc::DeviceId tremInst;
 };
 Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids = nullptr);
+// TX.spectrum: the analysis displays — "Mix" (an audio track: EQ Eight with three bands moved, then a Spectrum meta
+// device). The ids.
+struct MetaSpectrumIds {
+  doc::TrackId keys;
+  doc::DeviceId eq, spectrum;
+};
+Status buildSpectrumProject(doc::DocumentStore& store, MetaSpectrumIds* ids = nullptr);
 
 }  // namespace project_patch
 

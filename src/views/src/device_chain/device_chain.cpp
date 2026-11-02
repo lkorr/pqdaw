@@ -17,6 +17,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "pq/views/devices/analysis.h"
 #include "pq/views/devices/panel_desc.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/shell/shell.h"
@@ -315,6 +316,10 @@ public:
   VoiceTapReader* metaVoices(std::string_view path) override {
     return impl_.view.faceVoices ? impl_.view.faceVoices(id_, path) : nullptr;
   }
+  // TX.spectrum: the device's analysis (its panel's spectrum and measured response; a Spectrum meta device's face) and
+  // the engine's rate (EQ Eight's exact curve).
+  devices::SpectrumFeed* outputSpectrum() override { return ctx_.analysisFeed(id_); }
+  double sampleRate() const override { return ctx_.analysisHub() ? ctx_.analysisHub()->sampleRate() : 48000.0; }
 
 private:
   DeviceChainView::Impl& impl_;
@@ -778,6 +783,12 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
         if (devices::DevicePanel* panel = f->panel(); panel != nullptr && !f->isRack())
           panel->setPresetName(ctx_.library().presetName(doc::DeviceId{id}));
     if (bits & view_change::kModulation) refreshRings();
+    if (bits & view_change::kAnalysis)  // TX.spectrum: a device's analysis tap appeared: its displays and face look again
+      for (auto& [id, f] : impl_->all)
+        if (devices::DevicePanel* panel = f->panel()) {
+          panel->wakeDisplays();
+          panel->wakeFaces();
+        }
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
     else if ((bits & view_change::kTransport) && (!impl_->autoTargets.empty() || impl_->chainAuto)) applyAutomation();
   });

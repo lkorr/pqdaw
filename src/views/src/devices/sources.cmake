@@ -9,5 +9,6 @@ set(PQ_VIEWS_DEVICES_SOURCES
   src/devices/face_display.cpp  # TMM.10: a meta module's face as a panel control (a chain meta device's panel)
   src/devices/panel_face.cpp  # TX.panel-faces: a device's panel as a circuit block's face (the project patch view)
   src/devices/analysis.cpp
+  src/devices/spectrum_plot.cpp  # TX.spectrum: the reusable spectrum + response display
   src/devices/device_view.cpp
   src/devices/device_scenes.cpp)

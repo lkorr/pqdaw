@@ -22,6 +22,9 @@
 #include "pq/core/tap_ring.h"
 #include "pq/dsp/fft.h"
 #include "pq/dsp/spectrum.h"
+#include "pq/dsp/atoms.h"
+#include "pq/dsp/transfer.h"
+#include "pq/views/devices/spectrum_plot.h"
 #include "pq/ui/atlas.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/overlay.h"
@@ -316,6 +319,79 @@ int main() {
     tap.addReader();
     stats = pq::bench::measure([&] { tap.write(ch, 2, 128); }, 1);
     pq::bench::report("device.tap write, 128-frame stereo block, a reader", stats, "ns/block");
+  }
+
+  // ---- TX.spectrum: the analysis tap kernel, the transfer estimate, 8 displays ----
+  {
+    TapRing tap(dsp::kSignalTapChannels, 16384, 1024);
+    std::vector<float> a(128, 0.5f), b(128, -0.5f), c(128, 0.25f), d(128, -0.25f);
+    const float* in[4] = {a.data(), b.data(), c.data(), d.data()};
+    dsp::KernelArgs args;
+    args.in = in;
+    args.resource = &tap;
+    args.frames = 128;
+    const dsp::KernelFn k = dsp::findKernel(dsp::Atom::SignalTap, 1, 0);
+    auto stats = pq::bench::measure([&] { k(args); }, 1);
+    pq::bench::report("device.signal_tap kernel, 128-frame block, 4 channels, no reader (hidden display)", stats, "ns/block");
+    tap.addReader();
+    stats = pq::bench::measure([&] { k(args); }, 1);
+    pq::bench::report("device.signal_tap kernel, 128-frame block, 4 channels, a reader", stats, "ns/block");
+  }
+  {
+    std::vector<float> axis(1024);
+    for (uint32_t i = 0; i < 1024; ++i) axis[i] = 10.0f * std::pow(2200.0f, static_cast<float>(i) / 1023.0f);
+    dsp::TransferAnalyzer t(dsp::TransferConfig{}, axis);
+    const std::vector<float> sig = testSignal(48000 * 4);
+    std::vector<float> y(sig.size());
+    for (size_t i = 0; i < sig.size(); ++i) y[i] = 0.7f * sig[i] + (i > 0 ? 0.2f * sig[i - 1] : 0.0f);
+    t.push(sig.data(), y.data(), 40000);  // fill the long window
+    size_t pos = 40000;
+    std::vector<double> ns;
+    for (int i = 0; i < 1000; ++i) {
+      if (pos + 1024 > sig.size()) pos = 40000;
+      const uint64_t c0 = threadCycles();
+      t.push(sig.data() + pos, y.data() + pos, 1024);
+      ns.push_back(static_cast<double>(threadCycles() - c0) * nsPerCycle);
+      pos += 1024;
+    }
+    pq::bench::reportStats("device.transfer estimate per hop (1024 samples: 2 FFTs 4096 + every 4th hop 2 FFTs 32768, 1024 points)",
+                           pq::bench::summarize(ns), "ns CPU/hop");
+  }
+  {
+    const uint32_t P = 1024;
+    SpectrumSnapshot s;
+    s.out.resize(P);
+    s.peaks.resize(P);
+    s.response.resize(P);
+    s.confidence.assign(P, 1.0f);
+    for (uint32_t p = 0; p < P; ++p) {
+      s.out[p] = -20.0f - 30.0f * static_cast<float>(p) / P + 6.0f * std::sin(0.05f * static_cast<float>(p));
+      s.peaks[p] = s.out[p] + 4.0f;
+      s.response[p] = 6.0f * std::sin(0.01f * static_cast<float>(p));
+    }
+    std::vector<std::unique_ptr<SpectrumPlot>> plots;
+    for (int i = 0; i < 8; ++i) {
+      auto pl = std::make_unique<SpectrumPlot>();
+      SpectrumPlotStyle st;
+      st.peaks = true;
+      st.response = true;
+      pl->setStyle(st);
+      pl->setShownForTest(s, static_cast<float>(P));
+      plots.push_back(std::move(pl));
+    }
+    ui::DrawList dl;
+    PlotText text;
+    auto stats = pq::bench::measure(
+        [&] {
+          dl.reset(2560, 1440);
+          for (int i = 0; i < 8; ++i) {
+            const float x = 20.0f + 620.0f * static_cast<float>(i % 4), y = 20.0f + 360.0f * static_cast<float>(i / 4);
+            plots[i]->paintAll(dl, {x, y, x + 600.0f, y + 220.0f}, *res.theme, 2.0f, text);
+          }
+        },
+        1);
+    pq::bench::report("device.8 spectrum displays, every layer (spectrum, peaks, measured response, grid), 300 x 110 at 2x",
+                      stats, "ns/frame");
   }
   return 0;
 }

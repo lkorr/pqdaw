@@ -101,9 +101,17 @@ struct StockDevice {
   std::string_view patch;
   std::string_view name;
   DeviceKind kind = DeviceKind::AudioEffect;  // what describeDevice finds (the AOT seed's stock chains use it)
+  // TX.spectrum: its panel shows the spectrum through it and its measured response (EQ Eight, Auto Filter): the
+  // lowering gives it an analysis tap (lower.h "Analysis taps").
+  bool analysed = false;
 };
 // The stock devices in menu order (instruments first).
 std::span<const StockDevice> stockDevices() noexcept;
+// TX.spectrum: whether a device playing `patch` (Device::patch: a stock name, also for an edited fork) is analysed.
+bool analysedDevice(std::string_view patch) noexcept;
+// The name path its tap is requested under (LowerOptions::metaSlotOf(device, kAnalysisTapPath, 0)): no meta instance
+// path starts with '#'.
+inline constexpr std::string_view kAnalysisTapPath = "#analysis";
 
 // ---- User devices (T4.4-fix1; SPEC §15 2026-10-26; model.h UserPatch) ---------------------------------------------
 // What a user device (Device::source) plays. Its text is parsed as the circuit editor parses it (lenient layout,

@@ -22,7 +22,8 @@ struct Registry {
   std::vector<std::pair<std::string, FaceFactory>> factories{{"phase_acc", &makePhaseAccFace},
                                                                      {"wavetable", &makeWavetableFace},
                                                                      {"envelope", &makeEnvelopeFace},
-                                                                     {"vca", &makeVcaFace}};
+                                                                     {"vca", &makeVcaFace},
+                                                                     {"spectrum", &makeSpectrumFace}};  // TX.spectrum
   // worldSize per type id, filled on first ask (a face's size never changes).
   std::vector<std::pair<std::string, ui::Vec2>> sizes;
 };

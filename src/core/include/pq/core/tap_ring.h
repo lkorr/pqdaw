@@ -47,7 +47,9 @@ public:
   // ---- writer (audio thread) ----
   // Copies `frames` frames of `numCh` planar channels (tap channels beyond numCh repeat the last one). Nothing when no
   // reader is interested. RT-safe: no allocation, no locks, bounded (frames · channels copies).
-  void write(const float* const* ch, uint32_t numCh, uint32_t frames) noexcept {
+  // TX.spectrum: a channel whose bit is set in `constMask` holds one value for the whole call (ch[c][0]: a kernel's
+  // param-rate input), repeated.
+  void write(const float* const* ch, uint32_t numCh, uint32_t frames, uint32_t constMask = 0) noexcept {
     if (!wanted() || numCh == 0) return;
     uint32_t done = 0;
     uint64_t w = w_.written.load(std::memory_order_relaxed);
@@ -56,8 +58,15 @@ public:
       const uint32_t pos = static_cast<uint32_t>(w) & mask_;
       const uint32_t first = std::min(n, capacity_ - pos);
       for (uint32_t c = 0; c < channels_; ++c) {
-        const float* src = ch[std::min(c, numCh - 1)] + done;
+        const uint32_t from = std::min(c, numCh - 1);
         float* dst = buf_.data() + static_cast<size_t>(c) * capacity_;
+        if ((constMask >> from) & 1u) {
+          const float v = ch[from][0];
+          std::fill(dst + pos, dst + pos + first, v);
+          if (first < n) std::fill(dst, dst + (n - first), v);
+          continue;
+        }
+        const float* src = ch[from] + done;
         std::memcpy(dst + pos, src, first * sizeof(float));
         if (first < n) std::memcpy(dst, src + first, (n - first) * sizeof(float));
       }

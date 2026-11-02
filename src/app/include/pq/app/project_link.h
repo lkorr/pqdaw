@@ -109,6 +109,7 @@
 #include "pq/document/model.h"
 #include "pq/document/samples.h"
 #include "pq/document/store.h"
+#include "pq/core/tap_ring.h"
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/frame_table_slot.h"
 #include "pq/dsp/tuning_table.h"
@@ -340,6 +341,15 @@ public:
   std::shared_ptr<dsp::FrameTableSlot> metaFrameTable(doc::DeviceId device, std::string_view path, uint32_t index) const;
   // The tap of a VoiceTap request, or the tap of a FrameTable request's slot (what its wavetable_pos writes); null.
   std::shared_ptr<VoiceTap> metaVoiceTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
+  // TX.spectrum: the analysis tap of a SignalTap request (a Spectrum meta module's, or an analysed stock device's at
+  // path doc::kAnalysisTapPath): kAnalysisTapChannels × kAnalysisTapFrames, written per engine block; null: none.
+  std::shared_ptr<TapRing> metaSignalTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
+  // The device's analysis tap: its own (an analysed stock device) or, for a chain Spectrum meta device, its face's.
+  std::shared_ptr<TapRing> deviceAnalysisTap(doc::DeviceId device) const;
+  static constexpr uint32_t kAnalysisTapFrames = 16384;
+  // Posted to the UI thread (setUiPoster) after a compile that made new analysis taps (the views look again). Set once,
+  // before the first compile.
+  std::function<void()> onAnalysisTaps;
   // TMM.16: the instance's frame-table slot together with the params its live path applies (from the last lowering),
   // read under one lock (the Wavetable face draws the published table with those applied). Null slot: none.
   std::shared_ptr<dsp::FrameTableSlot> metaFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
@@ -624,6 +634,7 @@ private:
     meta::ResourceKind kind = meta::ResourceKind::FrameTable;
     std::shared_ptr<dsp::FrameTableSlot> table;
     std::shared_ptr<VoiceTap> tap;  // the VoiceTap, or the frame-table slot's own tap
+    std::shared_ptr<TapRing> ring;  // TX.spectrum: a SignalTap request's analysis tap
     bool live = false;              // an instance holds the id (else it is free; the objects wait for its reuse)
     // TMM.5: what the slot's table is built from (frame-table slots of a type with Type::frameTable).
     const meta::Type* type = nullptr;
@@ -647,6 +658,7 @@ private:
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
   uint32_t metaIdLocked(doc::DeviceId device, std::string_view path, uint32_t index) const;  // mutex_ held
   bool metaFresh_ = false;  // TMM.8-fix: the last syncMetaSlots made a new frame-table slot (compile path)
+  bool tapsFresh_ = false;  // TX.spectrum: the last syncMetaSlots made a new analysis tap (compile path)
   void syncMetaSlots(const std::vector<doc::LoweredProject::MetaResource>& resources);  // compile path, after lower
   std::shared_ptr<const dsp::FrameTable> metaDefaultTable();                            // mutex_ held
   VoiceTapConfig metaTapConfig() const;
@@ -663,6 +675,7 @@ private:
   double metaDefaultRate_ = 0;
   std::array<const dsp::FrameTableSlot*, kMetaSlots> frameTableViews_{};
   std::array<VoiceTap*, kMetaSlots> voiceTapViews_{};
+  std::array<TapRing*, kMetaSlots> signalTapViews_{};  // TX.spectrum
   engine::Resources resources_;
   // TMM.5: the frame-table builder (its worker publishes into metaSlots_; stopped first in the destructor).
   std::unique_ptr<meta::TableBuilder> tables_;

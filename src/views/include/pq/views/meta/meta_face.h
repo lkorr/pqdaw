@@ -23,6 +23,7 @@
 // UI thread only.
 
 #include <array>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -37,6 +38,10 @@
 #include "pq/ui/input.h"
 #include "pq/ui/theme.h"
 #include "pq/ui/widget.h"
+
+namespace pq::views::devices {
+class SpectrumFeed;  // pq/views/devices/analysis.h (TX.spectrum)
+}
 
 namespace pq::dsp {
 class FrameTable;
@@ -229,6 +234,11 @@ public:
   // The voice reader the face shows (null: none) and its poll (true: what the face shows changed).
   virtual VoiceTapReader* voices() const noexcept { return nullptr; }
   virtual bool pollVoices() { return false; }
+  // TX.spectrum: where the face finds the analysis of its instance's signal (a Spectrum module's face: asked at every poll
+  // and paint, since the tap appears once the unit is compiled; null: none) and how it asks its host to poll it again
+  // (sound arrived while it rested). Faces that show no analysis ignore it (wantsAnalysis false).
+  virtual void setAnalysis(std::function<devices::SpectrumFeed*()> /*feedOf*/, std::function<void()> /*wakeHost*/) {}
+  virtual bool wantsAnalysis() const noexcept { return false; }
 
   // ---- interaction ----
   virtual int32_t hitTest(ui::Vec2 local, float pxPerUnit) const noexcept = 0;

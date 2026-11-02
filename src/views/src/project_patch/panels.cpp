@@ -11,6 +11,7 @@
 #include "pq/core/automation_curve.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/browser/library.h"
+#include "pq/views/devices/analysis.h"
 #include "pq/views/devices/panel_face.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -59,6 +60,9 @@ public:
     return std::make_unique<DocTarget>(ctx_, id_, std::string(path), type);
   }
   VoiceTapReader* metaVoices(std::string_view path) override { return view_.faceVoices ? view_.faceVoices(id_, path) : nullptr; }
+  // TX.spectrum: the device's analysis (its panel's spectrum and measured response) and the engine's rate.
+  devices::SpectrumFeed* outputSpectrum() override { return ctx_.analysisFeed(id_); }
+  double sampleRate() const override { return ctx_.analysisHub() ? ctx_.analysisHub()->sampleRate() : 48000.0; }
 
 private:
   // Inside a gesture each change applies at once (live param writes); outside it is one undo step of its own.

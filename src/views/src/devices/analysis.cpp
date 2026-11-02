@@ -1,9 +1,10 @@
-// SpectrumFeed (pq/views/devices/analysis.h, T4.6).
+// SpectrumFeed and AnalysisHub (pq/views/devices/analysis.h; T4.6, TX.spectrum).
 
 #include "pq/views/devices/analysis.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace pq::views::devices {
 
@@ -11,27 +12,51 @@ namespace {
 constexpr uint32_t kChunk = 4096;          // frames read from the tap per pass
 constexpr double kNoDataSeconds = 0.15;    // then the levels fall as for silence (PQ Meter: 150 ms)
 constexpr double kFrameSeconds = 1.0 / 60.0;
+constexpr double kWatchSeconds = 0.1;      // a settled watched feed looks at its tap this often
 constexpr float kSettledDb = -100.0f;      // below the display floor (−78 dB) with margin
+constexpr float kSilent = 1e-7f;           // |x| below this (−140 dBFS): a chunk counts as silence
 
 double clockNow() {
   using namespace std::chrono;
   return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
+
+dsp::SpectrumConfig axisOnly(dsp::SpectrumConfig c) {
+  c.sharpLows = false;  // the axis only
+  return c;
+}
+
+bool silent(const float* x, uint32_t n) noexcept {
+  float m = 0.0f;
+  for (uint32_t i = 0; i < n; ++i) m = std::max(m, std::fabs(x[i]));
+  return m < kSilent;
+}
 }  // namespace
 
 SpectrumFeed::SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual)
-    : tap_(tap), cfg_(config), analyzer_(config), axis_([&] {
-        dsp::SpectrumConfig c = config;
-        c.sharpLows = false;  // the axis only
-        return c;
-      }()) {
-  l_.resize(kChunk);
-  r_.resize(kChunk);
+    : tap_(tap), cfg_(config), out_(config), in_(tap.channels() >= 4 ? config : axisOnly(config)), axis_(axisOnly(config)) {
+  const uint32_t nch = std::min<uint32_t>(4, tap_.channels());
+  for (uint32_t c = 0; c < nch; ++c) ch_[c].resize(kChunk);
   mono_.resize(std::max<uint32_t>(kChunk, cfg_.hop * 32));
-  snapshot_.assign(cfg_.points, cfg_.floorDb);
+  if (tap_.channels() >= 4) {
+    monoIn_.resize(mono_.size());
+    dsp::TransferConfig tc;
+    tc.sampleRate = cfg_.sampleRate;
+    std::vector<float> hz(cfg_.points);
+    for (uint32_t p = 0; p < cfg_.points; ++p) hz[p] = std::max(axis_.pointHz(p), 1.0f);
+    transfer_ = std::make_unique<dsp::TransferAnalyzer>(tc, hz);
+  }
+  snap_.out.assign(cfg_.points, cfg_.floorDb);
+  snap_.peaks.assign(cfg_.points, cfg_.floorDb);
 }
 
 SpectrumFeed::SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config) : SpectrumFeed(tap, config, Manual{}) {
+  thread_ = std::thread([this] { run(); });
+}
+
+SpectrumFeed::SpectrumFeed(std::shared_ptr<TapRing> owner, const dsp::SpectrumConfig& config)
+    : SpectrumFeed(*owner, config, Manual{}) {
+  owner_ = std::move(owner);
   thread_ = std::thread([this] { run(); });
 }
 
@@ -45,22 +70,35 @@ SpectrumFeed::~SpectrumFeed() {
   for (uint32_t c = consumers_.load(); c > 0; --c) tap_.removeReader();
 }
 
-void SpectrumFeed::acquire() {
+void SpectrumFeed::acquire(uint32_t wants) {
+  if (wants & kWantInput) wantIn_.fetch_add(1, std::memory_order_relaxed);
+  if (wants & kWantResponse) wantResp_.fetch_add(1, std::memory_order_relaxed);
   if (consumers_.fetch_add(1, std::memory_order_relaxed) == 0) {
     tap_.addReader();
     {
       std::lock_guard lock(mutex_);
       settled_ = false;
     }
-    cv_.notify_all();
   }
+  cv_.notify_all();
 }
 
-void SpectrumFeed::release() {
+void SpectrumFeed::release(uint32_t wants) {
+  if (wants & kWantInput) wantIn_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants & kWantResponse) wantResp_.fetch_sub(1, std::memory_order_relaxed);
   if (consumers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
     tap_.removeReader();
     cv_.notify_all();
   }
+}
+
+uint32_t SpectrumFeed::wants() const noexcept {
+  uint32_t w = kWantOutput;
+  if (tap_.channels() >= 4) {
+    if (wantIn_.load(std::memory_order_relaxed) > 0) w |= kWantInput;
+    if (wantResp_.load(std::memory_order_relaxed) > 0) w |= kWantResponse;
+  }
+  return w;
 }
 
 void SpectrumFeed::setSourceLive(bool live) {
@@ -72,10 +110,33 @@ void SpectrumFeed::setSourceLive(bool live) {
   cv_.notify_all();
 }
 
+void SpectrumFeed::addWaker(const void* key, std::function<void()> wake) { wakers_[key] = std::move(wake); }
+void SpectrumFeed::removeWaker(const void* key) { wakers_.erase(key); }
+void SpectrumFeed::runWakers() {
+  // A waker may remove itself (a display that is gone from the tree lets go): run copies.
+  std::vector<std::function<void()>> w;
+  w.reserve(wakers_.size());
+  for (const auto& [k, f] : wakers_) w.push_back(f);
+  for (const auto& f : w) f();
+}
+
 uint64_t SpectrumFeed::snapshot(uint64_t seq, std::vector<float>& levels, bool& settled) const {
   std::lock_guard lock(mutex_);
   settled = settled_;
-  if (seq != seq_) levels.assign(snapshot_.begin(), snapshot_.end());
+  if (seq != seq_) levels.assign(snap_.out.begin(), snap_.out.end());
+  return seq_;
+}
+
+uint64_t SpectrumFeed::snapshot(uint64_t seq, SpectrumSnapshot& out, bool& settled) const {
+  std::lock_guard lock(mutex_);
+  settled = settled_;
+  if (seq != seq_) {
+    out.out = snap_.out;
+    out.peaks = snap_.peaks;
+    out.in = snap_.in;
+    out.response = snap_.response;
+    out.confidence = snap_.confidence;
+  }
   return seq_;
 }
 
@@ -84,38 +145,55 @@ void SpectrumFeed::hold() {
   settled_ = true;
 }
 
-uint32_t SpectrumFeed::step(double now) {
-  const uint32_t ran = work(now);
-  return ran;
-}
+uint32_t SpectrumFeed::step(double now) { return work(now); }
 
 uint32_t SpectrumFeed::work(double now) {
+  const uint32_t want = wants();
+  // A newly wanted analysis starts from silence (what it held is stale).
+  if ((want & kWantInput) && !(ranWants_ & kWantInput)) in_.reset();
+  if ((want & kWantResponse) && !(ranWants_ & kWantResponse) && transfer_) transfer_->reset();
+  ranWants_ = want;
+  const bool four = tap_.channels() >= 4;
+  const uint32_t oL = four ? 2 : 0, oR = four ? 3 : (tap_.channels() > 1 ? 1 : 0);
+  const bool readIn = four && (want & (kWantInput | kWantResponse)) != 0;
+  bool wasSettled;
+  {
+    std::lock_guard lock(mutex_);
+    wasSettled = settled_;
+  }
   uint32_t ran = 0;
-  bool data = false;
+  bool data = false, sound = false;
   for (int guard = 0; guard < 64; ++guard) {
     const uint64_t w = tap_.written();
     const uint64_t oldest = tap_.oldestReadable();
     if (pos_ < oldest || pos_ > w) pos_ = std::max(oldest, w > cfg_.fftSize * 4u ? w - cfg_.fftSize * 4u : 0);  // resync
     if (pos_ >= w) break;
     const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(w - pos_, kChunk));
-    const uint32_t gl = tap_.read(0, pos_, n, l_.data());
-    const uint32_t gr = tap_.channels() > 1 ? tap_.read(1, pos_, n, r_.data()) : gl;
-    const uint32_t k = std::min(gl, gr);
+    uint32_t k = tap_.read(oL, pos_, n, ch_[oL].data());
+    if (oR != oL) k = std::min(k, tap_.read(oR, pos_, n, ch_[oR].data()));
+    if (readIn) k = std::min({k, tap_.read(0, pos_, n, ch_[0].data()), tap_.read(1, pos_, n, ch_[1].data())});
     if (k == 0) {  // overwritten while reading: start again from what is still there
       pos_ = tap_.oldestReadable();
       continue;
     }
-    const float* r = tap_.channels() > 1 ? r_.data() : l_.data();
-    for (uint32_t i = 0; i < k; ++i) mono_[i] = 0.5f * (l_[i] + r[i]);
-    ran += analyzer_.push(mono_.data(), k);
+    for (uint32_t i = 0; i < k; ++i) mono_[i] = 0.5f * (ch_[oL][i] + ch_[oR][i]);
+    if (readIn)
+      for (uint32_t i = 0; i < k; ++i) monoIn_[i] = 0.5f * (ch_[0][i] + ch_[1][i]);
+    const bool quiet = silent(mono_.data(), k) && (!readIn || silent(monoIn_.data(), k));
     pos_ += k;
     data = true;
+    sound = sound || !quiet;
+    // Settled and silent: nothing to show, nothing to compute (the analysers already rest at the floor).
+    if (quiet && wasSettled && !sound) continue;
+    ran += out_.push(mono_.data(), k);
+    if (want & kWantInput) in_.push(monoIn_.data(), k);
+    if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
   }
   if (data) {
     lastData_ = now;
     lastSilence_ = now;
     decaying_ = false;
-  } else if (now - lastData_ > kNoDataSeconds && !analyzer_.allBelow(kSettledDb)) {
+  } else if (now - lastData_ > kNoDataSeconds && !out_.allBelow(kSettledDb)) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
     if (!decaying_) {
       decaying_ = true;
@@ -125,20 +203,49 @@ uint32_t SpectrumFeed::work(double now) {
     const uint32_t frames = static_cast<uint32_t>(std::min<double>(due, static_cast<double>(mono_.size())));
     if (frames >= cfg_.hop) {
       std::fill(mono_.begin(), mono_.begin() + frames, 0.0f);
-      ran += analyzer_.push(mono_.data(), frames);
+      ran += out_.push(mono_.data(), frames);
+      if (want & kWantInput) in_.push(mono_.data(), frames);
+      if ((want & kWantResponse) && transfer_) {
+        if (monoIn_.size() >= frames) std::fill(monoIn_.begin(), monoIn_.begin() + frames, 0.0f);
+        transfer_->push(mono_.data(), mono_.data(), frames);
+      }
       lastSilence_ += static_cast<double>(frames) / cfg_.sampleRate;
     }
   }
-  const bool settledNow = !data && now - lastData_ > kNoDataSeconds && analyzer_.allBelow(kSettledDb);
-  if (ran > 0 || settledNow) {
+  // Settled: everything shown rests at the floor and nothing that sounds arrived (silent data may still flow).
+  const bool rest = out_.allBelow(kSettledDb) && (!(want & kWantInput) || in_.allBelow(kSettledDb)) &&
+                    (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident());
+  const bool settledNow = !sound && rest && (data || now - lastData_ > kNoDataSeconds);
+  bool post = false;
+  if (ran > 0 || settledNow != wasSettled) {
     hops_.fetch_add(ran, std::memory_order_relaxed);
     std::lock_guard lock(mutex_);
     if (ran > 0) {
-      const auto lv = analyzer_.levelsDb();
-      snapshot_.assign(lv.begin(), lv.end());
+      const auto lv = out_.levelsDb();
+      snap_.out.assign(lv.begin(), lv.end());
+      const auto pk = out_.peaksDb();
+      snap_.peaks.assign(pk.begin(), pk.end());
+      if (want & kWantInput) {
+        const auto li = in_.levelsDb();
+        snap_.in.assign(li.begin(), li.end());
+      } else {
+        snap_.in.clear();
+      }
+      if ((want & kWantResponse) && transfer_) {
+        snap_.response.assign(transfer_->magnitudeDb().begin(), transfer_->magnitudeDb().end());
+        snap_.confidence.assign(transfer_->confidence().begin(), transfer_->confidence().end());
+      } else {
+        snap_.response.clear();
+        snap_.confidence.clear();
+      }
       ++seq_;
     }
     settled_ = settledNow;
+    post = wasSettled && !settledNow && sound;
+  }
+  if (post && watch_.load(std::memory_order_relaxed) && wakePost_) {
+    posts_.fetch_add(1, std::memory_order_relaxed);
+    wakePost_();
   }
   return ran;
 }
@@ -146,9 +253,10 @@ uint32_t SpectrumFeed::work(double now) {
 void SpectrumFeed::run() {
   std::unique_lock lock(mutex_);
   while (!quit_) {
-    // Hidden, or nothing more to show: block (no periodic work at all).
+    // Hidden, or nothing more to show: block (no periodic work at all). A watched feed keeps looking (slowly).
     cv_.wait(lock, [&] {
-      return quit_ || (consumers_.load(std::memory_order_relaxed) > 0 && (!settled_ || live_.load(std::memory_order_relaxed)));
+      return quit_ || (consumers_.load(std::memory_order_relaxed) > 0 &&
+                       (!settled_ || live_.load(std::memory_order_relaxed) || watch_.load(std::memory_order_relaxed)));
     });
     if (quit_) break;
     wakeups_.fetch_add(1, std::memory_order_relaxed);
@@ -157,8 +265,60 @@ void SpectrumFeed::run() {
     if (lastData_ == 0.0) lastData_ = now;
     work(now);
     lock.lock();
-    cv_.wait_for(lock, std::chrono::duration<double>(kFrameSeconds), [&] { return quit_; });
+    const bool slow = settled_ && !live_.load(std::memory_order_relaxed);
+    cv_.wait_for(lock, std::chrono::duration<double>(slow ? kWatchSeconds : kFrameSeconds), [&] { return quit_; });
   }
+}
+
+// ---- AnalysisHub ------------------------------------------------------------------------------------------------------
+
+AnalysisHub::AnalysisHub(TapOf tapOf, double sampleRate, Poster post)
+    : tapOf_(std::move(tapOf)), rate_(sampleRate), post_(std::move(post)) {}
+
+AnalysisHub::~AnalysisHub() = default;
+
+void AnalysisHub::adopt(doc::DeviceId device, std::shared_ptr<TapRing> tap, std::shared_ptr<SpectrumFeed> feed) {
+  feeds_[device.value] = Entry{std::move(tap), std::move(feed)};
+}
+
+void AnalysisHub::setSource(TapOf tapOf, double sampleRate) {
+  tapOf_ = std::move(tapOf);
+  rate_ = sampleRate;
+  for (auto& [id, e] : feeds_)
+    if (e.feed && e.feed->consumers() > 0) retired_.push_back(std::move(e.feed));
+  feeds_.clear();
+}
+
+dsp::SpectrumConfig AnalysisHub::config(double sampleRate) {
+  dsp::SpectrumConfig c;
+  c.sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
+  c.peakHold = true;  // the displays draw it when asked; computing it is a compare per point per hop
+  return c;
+}
+
+SpectrumFeed* AnalysisHub::feed(doc::DeviceId device) {
+  std::shared_ptr<TapRing> tap = tapOf_ ? tapOf_(device) : nullptr;
+  auto it = feeds_.find(device.value);
+  if (it != feeds_.end() && it->second.tap == tap) return it->second.feed.get();
+  // Superseded (or gone): keep the old feed until no display holds it.
+  if (it != feeds_.end()) {
+    if (it->second.feed && it->second.feed->consumers() > 0) retired_.push_back(std::move(it->second.feed));
+    feeds_.erase(it);
+  }
+  std::erase_if(retired_, [](const std::shared_ptr<SpectrumFeed>& f) { return f->consumers() == 0; });
+  if (!tap) return nullptr;
+  auto f = std::make_shared<SpectrumFeed>(tap, config(rate_));
+  f->setWatch(true);
+  std::weak_ptr<SpectrumFeed> weak = f;
+  if (post_)
+    f->setWakePost([post = post_, weak] {
+      post([weak] {
+        if (std::shared_ptr<SpectrumFeed> s = weak.lock()) s->runWakers();
+      });
+    });
+  SpectrumFeed* raw = f.get();
+  feeds_[device.value] = Entry{std::move(tap), std::move(f)};
+  return raw;
 }
 
 }  // namespace pq::views::devices

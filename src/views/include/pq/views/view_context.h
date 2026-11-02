@@ -42,6 +42,10 @@
 #include "pq/ui/keymap_file.h"
 #include "pq/views/transport_port.h"
 
+namespace pq {
+class TapRing;  // pq/core/tap_ring.h (TX.spectrum: the analysis taps)
+}
+
 namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
@@ -49,6 +53,10 @@ class Waveforms;       // pq/views/waveforms.h (T5.5)
 class FileProbes;      // pq/views/file_probes.h (T5.7)
 class Library;         // pq/views/browser/library.h (T5.10)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
+namespace devices {
+class AnalysisHub;  // pq/views/devices/analysis.h (TX.spectrum)
+class SpectrumFeed;
+}  // namespace devices
 }  // namespace pq::views
 namespace pq::views::circuit {
 class PatchPlayer;  // pq/views/circuit/patch_player.h (T4.4-fix1: ViewContext::devicePlayers)
@@ -77,6 +85,7 @@ inline constexpr uint32_t kSamples = 1u << 13;       // the samples were resolve
 inline constexpr uint32_t kWaveforms = 1u << 14;     // a waveform overview arrived or grew (T5.5: views drawing audio)
 inline constexpr uint32_t kLibrary = 1u << 15;       // the browser's places, index or tags changed (T5.10)
 inline constexpr uint32_t kShowAutomation = 1u << 16; // T4.18: a view asked to show a parameter's automation lane
+inline constexpr uint32_t kAnalysis = 1u << 17;      // TX.spectrum: new analysis taps exist (displays without a feed look again)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -217,6 +226,14 @@ public:
   // outlive its use. Notifies kModulation.
   void setModulationSource(ModulationSource* source);
   ModulationSource* modulationSource() const noexcept { return modulation_; }
+  // TX.spectrum: the project's analysis feeds (devices::AnalysisHub: one per device with an analysis tap). The app gives
+  // the source of the taps (the playback link's, at its sample rate); without one there are no feeds (the displays show
+  // their grid). analysisFeed: the device's feed, or null.
+  void setAnalysisSource(std::function<std::shared_ptr<TapRing>(doc::DeviceId)> tapOf, double sampleRate);
+  devices::SpectrumFeed* analysisFeed(doc::DeviceId device);
+  devices::AnalysisHub* analysisHub() noexcept { return analysis_.get(); }
+  // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
+  void analysisTapsChanged() { notify(view_change::kAnalysis); }
   // T4.4-fix1: the circuit editor's player for a device of the project — probes and cost through the project unit
   // that plays it (the app's ProjectLink: app::DevicePlayer). Unset in tests and scenes without one: the editor then
   // edits only. A player made here lives as long as the editor that asked for it.
@@ -485,6 +502,7 @@ private:
   AudioPrefsPort* audioPrefs_ = nullptr;
   const doc::DeviceLibrary* devices_ = nullptr;
   ModulationSource* modulation_ = nullptr;
+  std::unique_ptr<devices::AnalysisHub> analysis_;  // TX.spectrum
   DevicePlayerFactory devicePlayers_;
   CircuitOpener circuitOpener_;
   ViewPrefs viewPrefs_;

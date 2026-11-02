@@ -107,7 +107,7 @@ struct OutputSpec {
 // An off-thread resource an expansion reads through a slot id (a frame table, a voice tap; TMM.2 builds them). The
 // document lowering allocates the slots (LowerOptions::metaSlotOf) and lists each instance's requests with its data
 // for the link (LoweredProject::metaResources).
-enum class ResourceKind : uint8_t { FrameTable, VoiceTap };
+enum class ResourceKind : uint8_t { FrameTable, VoiceTap, SignalTap };  // SignalTap: TX.spectrum (a pq::TapRing)
 struct ResourceRequest {
   ResourceKind kind = ResourceKind::FrameTable;
   uint32_t index = 0;  // the type's own numbering (ExpandContext::slot(index))

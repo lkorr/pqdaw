@@ -229,6 +229,13 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     app->link_->attach(*app->ctx_);
     app->ctx_->setDeviceLibrary(&app->link_->devices());  // T4.1: the device view's catalog (one load per process)
     app->ctx_->setModulationSource(app->link_.get());  // T4.7: the modulated knobs' live rings
+    {  // TX.spectrum: the device displays' spectra and measured responses read the link's analysis taps
+      ProjectLink* lk = app->link_.get();
+      app->ctx_->setAnalysisSource([lk](doc::DeviceId d) { return lk->deviceAnalysisTap(d); },
+                                   lk->engine().config().sampleRate);
+      views::ViewContext* vc = app->ctx_.get();
+      lk->onAnalysisTaps = [vc] { vc->analysisTapsChanged(); };
+    }
     // T4.4-fix1: the circuit editor on a project device probes and measures it in the project's own unit.
     ProjectLink* link = app->link_.get();
     app->ctx_->setDevicePlayers([link](doc::DeviceId d) -> std::unique_ptr<views::circuit::PatchPlayer> {
@@ -452,6 +459,10 @@ void ShellApp::syncPreviewRate() {
   if (!preview_ || !link_ || !audio_) return;
   const double rate = link_->engine().config().sampleRate;
   if (browserPreview_) browserPreview_->setSampleRate(rate);  // T5.10
+  if (const views::devices::AnalysisHub* hub = ctx_->analysisHub(); hub != nullptr && hub->sampleRate() != rate) {
+    ProjectLink* link = link_.get();  // TX.spectrum: the analysers follow the engine's rate
+    ctx_->setAnalysisSource([link](doc::DeviceId d) { return link->deviceAnalysisTap(d); }, rate);
+  }
   if (rate == preview_->sampleRate()) return;
   audio_->output().setExtraSource(nullptr);
   preview_->setSampleRate(rate);

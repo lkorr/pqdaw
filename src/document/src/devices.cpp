@@ -92,8 +92,8 @@ constexpr StockDevice kStock[] = {
     {"devices/meta_operator.pqp", "meta_operator", "Meta Operator", DeviceKind::Instrument},  // TMM.12: from meta modules
     {"devices/utility.pqp", "utility", "Utility"},
     {"devices/saturator.pqp", "saturator", "Saturator"},
-    {"devices/eq_eight.pqp", "eq_eight", "EQ Eight"},
-    {"devices/auto_filter.pqp", "auto_filter", "Auto Filter"},  // T4.11 (M4 review H5); its `sc` input is the sidechain
+    {"devices/eq_eight.pqp", "eq_eight", "EQ Eight", DeviceKind::AudioEffect, true},
+    {"devices/auto_filter.pqp", "auto_filter", "Auto Filter", DeviceKind::AudioEffect, true},  // T4.11 (M4 review H5); its `sc` input is the sidechain
     {"devices/lfo_device.pqp", "lfo_device", "LFO"},  // T4.7: a modulation source (its `lfo` jack)
 };
 
@@ -276,6 +276,12 @@ std::string deviceParamNameOf(const Project& p, const DeviceLibrary* lib, const 
 }
 
 std::span<const StockDevice> stockDevices() noexcept { return kStock; }
+
+bool analysedDevice(std::string_view patch) noexcept {
+  for (const StockDevice& s : kStock)
+    if (s.patch == patch) return s.analysed;
+  return false;
+}
 
 std::string DeviceLibrary::pathOf(std::string_view patch) const {
   for (const auto& [p, file] : paths_)

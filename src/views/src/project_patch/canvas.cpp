@@ -78,6 +78,8 @@ ProjectCanvas::ProjectCanvas(ProjectPatchView& view) : CircuitCanvas("patch-canv
     if (f.type == nullptr || f.owner == 0) return b;
     b.target = std::make_unique<DocTarget>(view_.context(), doc::DeviceId{f.owner}, f.path, *f.type);
     if (view_.faceVoices) b.voices = view_.faceVoices(doc::DeviceId{f.owner}, f.path);
+    // TX.spectrum: a chain Spectrum device's face reads the device's analysis tap.
+    if (f.path.empty()) b.analysis = [ctx = &view_.context(), id = f.owner] { return ctx->analysisFeed(doc::DeviceId{id}); };
     return b;
   };
   // TX.panel-faces: a closed stock device's block is its Device-view panel (bound to the document by the view).

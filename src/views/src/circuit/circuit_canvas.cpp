@@ -437,6 +437,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       CircuitCanvas::FaceBinding b;
       if (self.faceBinder) b = self.faceBinder(scene->faces[h.entry]);
       h.meta()->bind(std::move(b.target), b.voices);
+      if (h.meta()->wantsAnalysis()) h.meta()->setAnalysis(std::move(b.analysis), [this] { self.wakeFaces(); });  // TX.spectrum
       h.bound = true;
     }
   }

@@ -1627,6 +1627,7 @@ struct Build {
   PortRef c1() { return ir.konst(1.0, kC1); }
   PortRef time() { return ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime); }
   const Track* track = nullptr;  // T4.18: the track whose patch this is (its lanes decide chain mixers); null: none
+  std::vector<LoweredProject::MetaResource>* resources = nullptr;  // TX.spectrum: the analysis taps' slots
 };
 
 std::string chainParamName(ChainId c, std::string_view what) { return "c" + std::to_string(c.value) + "_" + std::string(what); }
@@ -1723,6 +1724,22 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   // TMM.10-fix1: a device without an audio `in` (an unplugged chain meta device) takes nothing: the signal so far ends
   // there (its first pin is a param).
   if (haveIn) b.ir.patch().connect(x, PortRef{c, static_cast<uint16_t>(inPort)});
+  // TX.spectrum (lower.h "Analysis taps"): an analysed stock device's input and output go to its analysis tap.
+  if (haveIn && b.resources != nullptr && b.o.metaSlotOf && analysedDevice(d.device->patch))
+    if (const uint32_t slot = b.o.metaSlotOf(d.device->id, kAnalysisTapPath, 0); slot != 0) {
+      auto nid = [&](uint32_t s) { return nodeIdFor(NodeRole::Device, id, s); };
+      const PortRef y{c, 0};
+      const PortRef il = b.ir.atom("channel", {x, b.c0()}, nid(8)), inr = b.ir.atom("channel", {x, b.c1()}, nid(9));
+      const PortRef ol = b.ir.atom("channel", {y, b.c0()}, nid(10)), orr = b.ir.atom("channel", {y, b.c1()}, nid(11));
+      b.ir.atom("signal_tap", {il, inr, ol, orr, b.ir.konst(static_cast<double>(slot), nid(12))}, nid(13));
+      LoweredProject::MetaResource m;
+      m.track = b.track != nullptr ? b.track->id : TrackId{};
+      m.device = d.device->id;
+      m.path = std::string(kAnalysisTapPath);
+      m.request = meta::ResourceRequest{meta::ResourceKind::SignalTap, 0};
+      m.slot = slot;
+      b.resources->push_back(std::move(m));
+    }
   x = PortRef{c, 0};
   if (outW != graph::kWidthInfer) width = outW;
   else if (inWidth == graph::kWidthStereo) width = graph::kWidthStereo;
@@ -2272,11 +2289,13 @@ bool declaresParam(const TrackDevs& td, uint32_t dev, std::string_view name, con
 
 Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const TrackDevs& devs,
                                 const WirePlan& wp, bool& voices, uint32_t& polyphony, uint32_t track,
-                                std::vector<ModulationTap>* taps, uint32_t clipSlot) {
+                                std::vector<ModulationTap>* taps, uint32_t clipSlot,
+                                std::vector<LoweredProject::MetaResource>* resources) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
   b.track = n.track;  // T4.18
+  b.resources = resources;  // TX.spectrum
   PortRef x;
   const bool instrument = n.kind == Kind::Midi && devs.voices;
   voices = instrument;
@@ -2832,7 +2851,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     // T5.3: an audio track's clip slot (the engine's audio sequence it plays; LowerOptions::clipSlotOf).
     const uint32_t clipSlot = n.kind == Kind::Audio && o.clipSlotOf ? o.clipSlotOf(n.track->id) : graph::kNone;
     if (n.kind == Kind::Audio && clipSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
-    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, i, &out.taps, clipSlot);
+    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, i, &out.taps, clipSlot, &out.metaResources);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());

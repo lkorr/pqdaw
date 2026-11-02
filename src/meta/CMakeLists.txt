@@ -9,6 +9,7 @@ pq_add_module(pq_meta
     src/registry.cpp
     src/phase_acc.cpp
     src/table_builder.cpp
+    src/spectrum.cpp
     src/vca.cpp
     src/wavetable.cpp
   DEPS pq_core pq_graph pq_dsp)

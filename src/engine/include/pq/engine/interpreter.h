@@ -26,6 +26,7 @@
 #include <span>
 
 #include "pq/core/result.h"
+#include "pq/core/tap_ring.h"
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/frame_table_slot.h"
 #include "pq/dsp/tables.h"
@@ -49,6 +50,7 @@ struct Resources {
   std::span<const dsp::TuningTableView* const> tunings;  // T2.6
   std::span<const dsp::FrameTableSlot* const> frameTables;  // TMM.2
   std::span<VoiceTap* const> voiceTaps;                     // TMM.2
+  std::span<TapRing* const> signalTaps;                     // TX.spectrum (signal_tap: analysis taps)
 };
 
 struct InterpretOptions {

@@ -127,6 +127,10 @@ public:
   void wakeFaces();
   // The source started playing: displays that show the output spectrum start drawing it (if shown).
   void wakeDisplays();
+  // TX.spectrum: the displays with an exact curve of their own (EQ Eight, Auto Filter) overlay the response measured
+  // from the device's input and output (their "Measured" chip; offered where the device's feed carries its input).
+  void showMeasuredResponse(bool on);
+  bool measuredResponseShown() const;
   // T4.4-fix1: a user device (it plays its own patch, edited in the circuit editor): the title bar shows an "edited"
   // marker after the title. A double-click on the title runs onTitleDoubleClick when set (the Device view: Open in
   // Circuit View), else folds the panel as the triangle does.

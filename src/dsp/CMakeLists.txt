@@ -12,6 +12,7 @@ pq_add_module(pq_dsp
     src/tables.cpp
     src/fft.cpp
     src/spectrum.cpp
+    src/transfer.cpp
     src/resample.cpp
     src/frame_table.cpp
     src/frame_table_read.cpp
@@ -19,6 +20,7 @@ pq_add_module(pq_dsp
     src/frame_table_slot.cpp
     src/kernels_frame_table.cpp
     src/kernels_wave_live.cpp
+    src/kernels_signal_tap.cpp
     src/fft_mixed.cpp
   DEPS pq_core
 )

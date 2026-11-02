@@ -271,6 +271,8 @@ const void* resourceFor(const Resources* r, dsp::Resource kind, uint32_t index, 
       return defaultFrameTableSlot(sampleRate);
     case dsp::Resource::VoiceTap:  // TMM.2: no default (the kernel writes nothing)
       return r && index < r->voiceTaps.size() ? r->voiceTaps[index] : nullptr;
+    case dsp::Resource::SignalTap:  // TX.spectrum: no default (the kernel writes nothing)
+      return r && index < r->signalTaps.size() ? r->signalTaps[index] : nullptr;
     default: return nullptr;
   }
 }

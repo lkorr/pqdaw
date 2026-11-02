@@ -11,6 +11,8 @@
 #include "../common/paint.h"
 #include "device_math.h"
 #include "panel_internal.h"
+#include "pq/ui/text.h"
+#include "pq/views/devices/spectrum_plot.h"
 #include "pq/ui/colormap.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
@@ -19,153 +21,105 @@ namespace pq::views::devices {
 
 namespace {
 
-constexpr float kSpecFloorDb = -78.0f, kSpecCeilDb = 0.0f;  // SPEC §11.1
-constexpr double kEaseSeconds = 0.045;
-
-// ---- the spectrum layer: snapshots → eased levels → PQ Meter's curve ---------------------------------------------------
-class SpectrumLayer {
-public:
-  explicit SpectrumLayer(SpectrumFeed* feed) : feed_(feed) {}
-  // The feed the panel's target offers now (it may arrive or change after the display was made).
-  void setFeed(SpectrumFeed* f) {
-    if (f == feed_) return;
-    release();
-    feed_ = f;
-    seq_ = 0;
-    target_.clear();
-    shown_.clear();
-  }
-  ~SpectrumLayer() { release(); }
-  SpectrumLayer(const SpectrumLayer&) = delete;
-  SpectrumLayer& operator=(const SpectrumLayer&) = delete;
-
-  SpectrumFeed* feed() const noexcept { return feed_; }
-  bool acquired() const noexcept { return acquired_; }
-
-  // From the owner's paint (only reached while shown): start the feed if there is something to show.
-  void wake(ui::Widget& owner) {
-    if (!feed_ || acquired_) return;
-    acquire();
-    owner.requestFrame();
-  }
-  // From the owner's onFrame. Returns true when the drawing changed; keeps the owner's frames going while there is
-  // something to animate, else releases the feed (the worker blocks, the tap loses its reader).
-  bool frame(ui::Widget& owner, double now) {
-    if (!feed_) return false;
-    if (!shownInTree(owner)) {
-      release();
-      return false;
-    }
-    if (!acquired_) acquire();
-    bool settled = false;
-    const uint64_t s = feed_->snapshot(seq_, target_, settled);
-    const bool fresh = s != seq_;
-    seq_ = s;
-    if (shown_.size() != target_.size()) shown_ = target_;
-    const double dt = std::clamp(last_ > 0.0 ? now - last_ : 0.0, 0.0, 0.1);
-    last_ = now;
-    const float a = static_cast<float>(1.0 - std::exp(-dt / kEaseSeconds));
-    float moved = 0.0f;
-    for (size_t i = 0; i < shown_.size(); ++i) {
-      const float d = (target_[i] - shown_[i]) * a;
-      shown_[i] += d;
-      moved = std::max(moved, std::fabs(d));
-    }
-    const bool changed = fresh || moved > 0.01f;
-    const bool animate = changed || !settled || feed_->live();
-    if (animate) owner.requestFrame();
-    else release();
-    return changed;
-  }
-  // Draws the curve into r: x through hzToX, y from the dB range.
-  template <class HzToX>
-  void paint(ui::PaintContext& ctx, const ui::Rect& r, HzToX hzToX, float glow, float fillAlpha) {
-    if (!feed_ || shown_.empty()) return;
-    const uint32_t P = static_cast<uint32_t>(shown_.size());
-    const uint32_t steps = std::clamp<uint32_t>(static_cast<uint32_t>(r.width()), 32, 1024);
-    poly_.resize(steps);
-    cols_.resize(steps);
-    lvl_.resize(steps);
-    const ui::ColorLut& lut = ui::colormapLut(ui::Colormap::Ice);
-    const float range = kSpecCeilDb - kSpecFloorDb;
-    const float h = r.height() - ctx.scale.exact(4.0f);
-    bool any = false;
-    for (uint32_t s = 0; s < steps; ++s) {
-      const float x = r.x0 + r.width() * static_cast<float>(s) / static_cast<float>(steps - 1);
-      // The analyser point under this column (its axis may differ from the display's).
-      const float hz = hzAt(x, hzToX);
-      const float t = std::clamp(feed_->axisT(hz), 0.0f, 1.0f) * static_cast<float>(P - 1);
-      const uint32_t i0 = std::min(P - 2, static_cast<uint32_t>(t));
-      const float f = t - static_cast<float>(i0);
-      const float db = shown_[i0] + (shown_[i0 + 1] - shown_[i0]) * f;
-      const float lt = std::clamp((db - kSpecFloorDb) / range, 0.0f, 1.0f);
-      const float vis = std::clamp((db - kSpecFloorDb) / std::max(1.0f, 0.04f * range), 0.0f, 1.0f);
-      any = any || vis > 0.0f;
-      poly_[s] = {x, r.y1 - lt * h};
-      lvl_[s] = lt;
-      cols_[s] = ui::mulAlpha(ui::lutAt(lut, 0.25f + 0.75f * lt), vis);
-    }
-    if (!any) return;
-    ui::SpectrumCurveStyle st;
-    st.glowAmount = glow;
-    st.fillAlpha = fillAlpha;
-    ui::spectrumCurve(ctx.dl, poly_.data(), cols_.data(), lvl_.data(), steps, r.y1, st);
-  }
-
-private:
-  template <class HzToX>
-  static float hzAt(float x, HzToX hzToX) {
-    // hzToX is monotonic and logarithmic: invert from its two ends.
-    const float lo = 10.0f, hi = 22000.0f;
-    const float x0 = hzToX(lo), x1 = hzToX(hi);
-    const float u = x1 > x0 ? (x - x0) / (x1 - x0) : 0.0f;
-    return lo * std::pow(hi / lo, u);
-  }
-  void acquire() {
-    if (acquired_ || !feed_) return;
-    feed_->acquire();
-    acquired_ = true;
-    last_ = 0.0;
-  }
-  void release() {
-    if (!acquired_) return;
-    feed_->release();
-    acquired_ = false;
-  }
-  SpectrumFeed* feed_;
-  bool acquired_ = false;
-  uint64_t seq_ = 0;
-  double last_ = 0.0;
-  std::vector<float> target_, shown_;
-  std::vector<ui::Vec2> poly_;
-  std::vector<ui::Rgba> cols_;
-  std::vector<float> lvl_;
-};
-
-// Log frequency axis of a display, 10 Hz … 22 kHz (the analyser's axis in EQ Eight's panel).
-struct FreqAxis {
-  float x0 = 0, x1 = 1;
-  float x(float hz) const noexcept { return x0 + (x1 - x0) * std::log(std::max(hz, 1.0f) / 10.0f) / std::log(2200.0f); }
-  float hz(float px) const noexcept { return 10.0f * std::pow(2200.0f, std::clamp((px - x0) / (x1 - x0), 0.0f, 1.0f)); }
-};
-
-void drawFreqGrid(ui::PaintContext& ctx, const ui::Theme& th, const ui::Rect& r, const FreqAxis& ax, bool labels) {
-  for (float f : {20.0f, 30.0f, 50.0f, 100.0f, 200.0f, 300.0f, 500.0f, 1000.0f, 2000.0f, 3000.0f, 5000.0f, 10000.0f, 20000.0f}) {
-    const float x = std::round(ax.x(f));
-    const bool major = f == 100.0f || f == 1000.0f || f == 10000.0f;
-    ctx.dl.addRectFilled({x, r.y0, x + 1.0f, r.y1}, major ? th.device.displayGridMajor : th.device.displayGrid);
-  }
-  if (!labels || !ctx.res.uiFonts) return;
-  const int32_t lh = ctx.scale.px(12.0f);
-  for (float f : {100.0f, 1000.0f, 10000.0f}) {
-    const float x = std::round(ax.x(f));
-    const char* t = f == 100.0f ? "100" : f == 1000.0f ? "1k" : "10k";
-    const ui::IRect box{static_cast<int32_t>(x) + ctx.scale.px(3.0f), static_cast<int32_t>(r.y1) - lh - ctx.scale.px(1.0f), ctx.scale.px(28.0f), lh};
-    paint::text(ctx, ctx.res.uiFonts->small, box, t, th.device.displayText, ui::TextAlign::Left);
-  }
-}
+using FreqAxis = SpectrumAxis;  // 10 Hz … 22 kHz, log (the analyser's axis)
 
 ui::IRect insetRect(const ui::IRect& r, int32_t d) { return paint::inset(r, d); }
+
+// The plot's text through the tree's small font (PQ Meter's grid labels).
+PlotText panelText(ui::PaintContext& ctx) {
+  PlotText t;
+  t.lineHeight = static_cast<float>(ctx.scale.px(12.0f));
+  if (!ctx.res.uiFonts || !ctx.res.text) return t;
+  const ui::FontId font = ctx.res.uiFonts->small;
+  ui::TextSystem* ts = ctx.res.text;
+  t.width = [ts, font](std::string_view s) { return static_cast<float>(ts->shape(font, s).advance); };
+  t.draw = [&ctx, ts, font, lh = ctx.scale.px(12.0f)](ui::Vec2 at, std::string_view s, ui::Rgba col) {
+    const int32_t w = ts->shape(font, s).advance + 2;
+    const ui::IRect box{static_cast<int32_t>(std::lround(at.x)), static_cast<int32_t>(std::lround(at.y)), w, lh};
+    paint::text(ctx, font, box, s, col, ui::TextAlign::Left);
+  };
+  return t;
+}
+
+// ---- a display over the analysis of the device's signal (TX.spectrum) ------------------------------------------------
+// The reusable plot (pq/views/devices/spectrum_plot.h) bound to the panel target's feed, the pointer readout, and —
+// where the feed carries the device's input (a project device's analysis tap) and the display has an exact curve of
+// its own — the "Measured" chip that overlays the response measured from the input and output (QUESTIONS
+// Q?-TX.spectrum-a: the exact curve is drawn, the measured one on demand).
+class AnalysedDisplay : public PanelDisplay {
+public:
+  AnalysedDisplay(std::string name, DevicePanel::Impl& impl, const ControlDesc& d) : PanelDisplay(std::move(name), impl, d) {}
+
+  void onFrame(double now) override {
+    sync();
+    if (spec_.frame(now, shownInTree(*this))) markDirty();
+  }
+  void onHoverChanged(bool h) override {
+    if (!h && hoverX_ >= 0.0f) {
+      hoverX_ = -1.0f;
+      markDirty();
+    }
+  }
+  // Tests and scenes: the measured overlay (the chip's state).
+  bool measured() const noexcept override { return measured_; }
+  void setMeasured(bool on) override {
+    if (on == measured_ || !withChip_) return;  // only a display with an exact curve of its own has the overlay
+    measured_ = on;
+    SpectrumPlotStyle s = spec_.style();
+    s.response = on;
+    spec_.setStyle(s);
+    markDirty();
+  }
+  SpectrumPlot& spectrumPlot() noexcept { return spec_; }
+  // Whether the chip is offered (the feed has the device's input).
+  bool measurable() const noexcept { return withChip_ && spec_.feed() != nullptr && spec_.feed()->hasInput(); }
+  ui::Rect chipRect() const noexcept { return chip_; }
+
+protected:
+  void sync() {
+    spec_.setFeed(impl_.spectrum(), [this] { requestFrame(); });
+  }
+  // The chip (when offered) at the plot's top left; returns its rect.
+  void paintChip(ui::PaintContext& ctx, const ui::Theme& th, const ui::Rect& plot) {
+    chip_ = {};
+    if (!measurable() || !ctx.res.uiFonts || !ctx.res.text) return;
+    const float s = ctx.scale.factor;
+    const char* label = "Measured";
+    const float w = static_cast<float>(ctx.res.text->shape(ctx.res.uiFonts->small, label).advance) + std::round(10.0f * s);
+    const float h = static_cast<float>(ctx.scale.px(12.0f)) + std::round(4.0f * s);
+    chip_ = {std::round(plot.x0 + 4.0f * s), std::round(plot.y0 + 4.0f * s), 0, 0};
+    chip_.x1 = chip_.x0 + w;
+    chip_.y1 = chip_.y0 + h;
+    const ui::Rgba violet = ui::hex(0xAC8EFF);
+    ctx.dl.addRoundedRectFilled(chip_, 3.0f * s, measured_ ? ui::setAlpha(violet, 0.22f) : ui::rgba(8, 8, 12, 150));
+    ctx.dl.addRoundedRectStroke(chip_, 3.0f * s, measured_ ? violet : th.device.displayGrid, 1.0f);
+    const ui::IRect box{static_cast<int32_t>(chip_.x0), static_cast<int32_t>(chip_.y0), static_cast<int32_t>(w),
+                        static_cast<int32_t>(h)};
+    paint::text(ctx, ctx.res.uiFonts->small, box, label, measured_ ? violet : th.device.displayText, ui::TextAlign::Center);
+  }
+  bool chipAt(ui::Vec2 p) const noexcept { return chip_.x1 > chip_.x0 && p.x >= chip_.x0 && p.x < chip_.x1 && p.y >= chip_.y0 && p.y < chip_.y1; }
+  // Pointer: the chip toggles the overlay; a move tracks the readout. True when consumed.
+  bool chipPointer(const ui::PointerEvent& e) {
+    if (e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && chipAt(e.pos)) {
+      setMeasured(!measured_);
+      return true;
+    }
+    return false;
+  }
+  void trackHover(ui::Vec2 p, bool on) {
+    const float x = on && !chipAt(p) ? p.x : -1.0f;
+    if (x != hoverX_) {
+      hoverX_ = x;
+      markDirty();
+    }
+  }
+
+  SpectrumPlot spec_;
+  bool withChip_ = false;
+  bool measured_ = false;
+  float hoverX_ = -1.0f;
+  ui::Rect chip_{};
+};
 
 // ---- Saturator: the transfer curve ------------------------------------------------------------------------------------
 class TransferDisplay final : public PanelDisplay {
@@ -251,42 +205,41 @@ private:
 };
 
 // ---- a plain spectrum (the "spectrum" visual) -------------------------------------------------------------------------
-class SpectrumDisplay final : public PanelDisplay {
+class SpectrumDisplay final : public AnalysedDisplay {
 public:
-  SpectrumDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : PanelDisplay(d.id, impl, d), layer_(impl.spectrum()) {}
-  bool dependsOn(std::string_view) const override { return false; }
-  void onFrame(double now) override {
-    layer_.setFeed(impl_.spectrum());
-    if (layer_.frame(*this, now)) markDirty();
+  SpectrumDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : AnalysedDisplay(d.id, impl, d) {
+    SpectrumPlotStyle s;
+    s.peaks = true;
+    spec_.setStyle(s);
   }
+  bool dependsOn(std::string_view) const override { return false; }
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     if (!th) return;
-    layer_.setFeed(impl_.spectrum());
+    sync();
+    spec_.wake();  // shown: hold the feed (and show what it has at once)
     const ui::IRect r = rect();
     paint::box(ctx.dl, r, ctx.scale.exact(2.0f), th->device.display, th->device.border);
     const ui::Rect f = insetRect(r, 1).toRect();
-    FreqAxis ax{f.x0, f.x1};
     ctx.dl.pushClip(f);
-    for (float db = -12.0f; db > kSpecFloorDb; db -= 12.0f) {
-      const float y = std::round(f.y1 - (db - kSpecFloorDb) / (kSpecCeilDb - kSpecFloorDb) * f.height());
-      ctx.dl.addRectFilled({f.x0, y, f.x1, y + 1.0f}, th->device.displayGrid);
-    }
-    drawFreqGrid(ctx, *th, f, ax, true);
-    layer_.paint(ctx, f, [&](float hz) { return ax.x(hz); }, 1.0f, 0.5f);
+    spec_.paintAll(ctx.dl, f, *th, ctx.scale.factor, panelText(ctx), hoverX_);
     ctx.dl.popClip();
-    layer_.wake(*this);
   }
-  ui::InfoText info() const override { return {"Spectrum", "The device's output spectrum (PQ Meter's analyser)."}; }
-
-private:
-  SpectrumLayer layer_;
+  bool onPointer(const ui::PointerEvent& e) override {
+    if (e.type == ui::PointerType::Move) trackHover(e.pos, true);
+    return false;
+  }
+  ui::InfoText info() const override {
+    return {"Spectrum", "The spectrum of the device's output (PQ Meter's analyser: fill, glow, peak hold). Point at it for the "
+                        "frequency, its nearest note and the level there."};
+  }
 };
 
 // ---- EQ Eight: response, band dots, spectrum ------------------------------------------------------------------------------
-class EqDisplay final : public PanelDisplay {
+class EqDisplay final : public AnalysedDisplay {
 public:
-  EqDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : PanelDisplay(d.id, impl, d), layer_(impl.spectrum()) {
+  EqDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : AnalysedDisplay(d.id, impl, d) {
+    withChip_ = true;
     if (const auto it = d.bind.find("@bands"); it != d.bind.end()) bandSel_ = it->second;
     if (const auto it = d.bind.find("@range"); it != d.bind.end()) rangeDb_ = std::max(1.0f, std::stof(it->second));
     rebind();
@@ -325,18 +278,26 @@ public:
   }
   ui::InfoText info() const override {
     return {"EQ Display", "Drag a band's dot to change its frequency and gain (Shift: fine; Alt or the wheel: Q). Click selects a "
-                          "band; a double-click switches it on or off. The output spectrum is drawn behind the curve."};
-  }
-
-  void onFrame(double now) override {
-    layer_.setFeed(impl_.spectrum());
-    if (layer_.frame(*this, now)) markDirty();
+                          "band; a double-click switches it on or off. The output spectrum is drawn behind the curve; "
+                          "\"Measured\" overlays the response measured from the device's input and output (violet)."};
   }
 
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     if (!th) return;
-    layer_.setFeed(impl_.spectrum());
+    sync();
+    spec_.wake();  // shown: hold the feed (and show what it has at once)
+    {  // the measured response on this display's gain axis
+      SpectrumPlotStyle s = spec_.style();
+      s.glow = 0.6f;
+      s.fill = 0.35f;
+      s.bands = false;
+      s.dbLabels = false;
+      s.respTopDb = rangeDb_;
+      s.respBottomDb = -rangeDb_;
+      s.respInset = 6.0f;
+      spec_.setStyle(s);
+    }
     const ui::IRect r = rect();
     paint::box(ctx.dl, r, ctx.scale.exact(2.0f), th->device.display, th->device.border);
     const ui::Rect f = insetRect(r, 1).toRect();
@@ -344,7 +305,7 @@ public:
     plot_ = f;
     ctx.dl.pushClip(f);
     // Grid: frequencies, then gain lines (0 dB stronger).
-    drawFreqGrid(ctx, *th, f, axis_, true);
+    spec_.paintGrid(ctx.dl, f, axis_, *th, ctx.scale.factor, false);
     for (float db : {-12.0f, -6.0f, 6.0f, 12.0f}) {
       if (std::fabs(db) > rangeDb_) continue;
       const float y = std::round(yOf(db));
@@ -352,7 +313,9 @@ public:
     }
     ctx.dl.addRectFilled({f.x0, std::round(yOf(0.0f)), f.x1, std::round(yOf(0.0f)) + 1.0f}, th->device.displayGridMajor);
     // Spectrum behind everything else (subdued: the curve is the point of this display).
-    layer_.paint(ctx, f, [&](float hz) { return axis_.x(hz); }, 0.6f, 0.35f);
+    spec_.paintSpectrum(ctx.dl, f, axis_, ctx.scale.factor);
+    const PlotText text = panelText(ctx);
+    spec_.paintLabels(ctx.dl, f, axis_, *th, ctx.scale.factor, text);
     // Response.
     const uint32_t n = static_cast<uint32_t>(std::max(16.0f, f.width() / ctx.scale.exact(1.5f)));
     if (dirty_ || resp_.size() != n) compute(n);
@@ -373,6 +336,8 @@ public:
       }
     }
     ui::smoothPolyline(ctx.dl, pts_.data(), n, th->device.curve, ctx.scale.exact(1.6f));
+    // The measured response over the exact one (on demand: the chip).
+    spec_.paintResponse(ctx.dl, f, axis_, ctx.scale.factor);
     // Band dots.
     const float rad = ctx.scale.exact(kDotRadius);
     for (size_t b = 0; b < bands_.size(); ++b) {
@@ -388,11 +353,13 @@ public:
         paint::text(ctx, ctx.res.uiFonts->small, box, bands_[b].label, th->device.bandText, ui::TextAlign::Center);
       }
     }
+    paintChip(ctx, *th, f);
+    if (hover_ < 0 && drag_ < 0) spec_.paintHover(ctx.dl, f, axis_, hoverX_, ctx.scale.factor, text);
     ctx.dl.popClip();
-    layer_.wake(*this);
   }
 
   bool onPointer(const ui::PointerEvent& e) override {
+    if (drag_ < 0 && chipPointer(e)) return true;
     switch (e.type) {
       case ui::PointerType::Move: {
         if (drag_ >= 0) {
@@ -404,6 +371,7 @@ public:
           hover_ = h;
           markDirty();
         }
+        trackHover(e.pos, h < 0);
         return false;
       }
       case ui::PointerType::Down: {
@@ -452,6 +420,7 @@ public:
   // T4.16c: a band's dot moves (frequency sideways, gain up / down).
   ui::Cursor cursorAt(ui::Vec2) const override { return drag_ >= 0 || hover_ >= 0 ? ui::Cursor::Move : ui::Cursor::Inherit; }
   void onHoverChanged(bool h) override {
+    AnalysedDisplay::onHoverChanged(h);
     if (!h && hover_ >= 0) {
       hover_ = -1;
       markDirty();
@@ -578,7 +547,7 @@ private:
     dirty_ = false;
   }
 
-  SpectrumLayer layer_;
+
   std::string bandSel_ = "band";
   float rangeDb_ = 15.0f;
   std::vector<Band> bands_;
@@ -626,9 +595,12 @@ private:
   std::set<std::string, std::less<>> deps_;
 };
 
-class FilterDisplay final : public PanelDisplay {
+class FilterDisplay final : public AnalysedDisplay {
 public:
-  FilterDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : PanelDisplay(d.id, impl, d), roles_(impl, d) { rebind(); }
+  FilterDisplay(DevicePanel::Impl& impl, const ControlDesc& d) : AnalysedDisplay(d.id, impl, d), roles_(impl, d) {
+    withChip_ = true;
+    rebind();
+  }
   void rebind() override {
     roles_.rebind();
     dirty_ = true;
@@ -639,8 +611,10 @@ public:
     markDirty();
   }
   ui::InfoText info() const override {
-    return {"Filter Display", "The filter's response at the current settings (without the LFO and envelope). Drag the dot: left / right "
-                              "sets the frequency (DJ: the DJ knob), up / down the resonance. Shift: fine."};
+    return {"Filter Display", "The filter's response at the current settings (without the LFO and envelope), over the output "
+                              "spectrum. Drag the dot: left / right sets the frequency (DJ: the DJ knob), up / down the "
+                              "resonance. Shift: fine. \"Measured\" overlays the response measured from the device's input and "
+                              "output (violet): with the LFO or envelope moving the cutoff, what it does now."};
   }
 
   math::AutoFilterState state() const {
@@ -665,18 +639,35 @@ public:
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     if (!th) return;
+    sync();
+    spec_.wake();  // shown: hold the feed (and show what it has at once)
+    {  // the spectrum behind, subdued; the measured response on this display's dB axis
+      SpectrumPlotStyle s = spec_.style();
+      s.glow = 0.6f;
+      s.fill = 0.3f;
+      s.bands = false;
+      s.dbLabels = false;
+      s.respTopDb = kTopDb;
+      s.respBottomDb = kBottomDb;
+      s.respInset = 2.0f;
+      spec_.setStyle(s);
+    }
     const ui::IRect r = rect();
     paint::box(ctx.dl, r, ctx.scale.exact(2.0f), th->device.display, th->device.border);
     const ui::Rect f = insetRect(r, 1).toRect();
     axis_ = {f.x0, f.x1};
     plot_ = f;
     ctx.dl.pushClip(f);
-    drawFreqGrid(ctx, *th, f, axis_, true);
+    spec_.paintGrid(ctx.dl, f, axis_, *th, ctx.scale.factor, false);
     for (float db : {kTopDb - 12.0f, -12.0f, -24.0f}) {
       const float y = std::round(yOf(db));
       ctx.dl.addRectFilled({f.x0, y, f.x1, y + 1.0f}, th->device.displayGrid);
     }
     ctx.dl.addRectFilled({f.x0, std::round(yOf(0.0f)), f.x1, std::round(yOf(0.0f)) + 1.0f}, th->device.displayGridMajor);
+    // TX.spectrum: the output spectrum behind the curve (as EQ Eight's).
+    spec_.paintSpectrum(ctx.dl, f, axis_, ctx.scale.factor);
+    const PlotText text = panelText(ctx);
+    spec_.paintLabels(ctx.dl, f, axis_, *th, ctx.scale.factor, text);
     const uint32_t n = static_cast<uint32_t>(std::max(16.0f, f.width() / ctx.scale.exact(1.5f)));
     if (dirty_ || resp_.size() != n) compute(n);
     pts_.resize(n);
@@ -690,15 +681,20 @@ public:
       ctx.dl.addConvexPolyFilled(q, th->device.curveFill);
     }
     ui::smoothPolyline(ctx.dl, pts_.data(), n, th->device.curve, ctx.scale.exact(1.6f));
+    // The measured response (on demand): with the LFO or the envelope moving the cutoff, what it does now.
+    spec_.paintResponse(ctx.dl, f, axis_, ctx.scale.factor);
     // The frequency / resonance dot.
     const ui::Vec2 c = dotPos();
     const float rad = ctx.scale.exact(kDotRadius);
     if (hover_ || drag_) ctx.dl.addCircleFilled(c, rad + ctx.scale.exact(1.5f), th->device.bandSelected);
     ctx.dl.addCircleFilled(c, rad, th->device.band);
+    paintChip(ctx, *th, f);
+    if (!hover_ && !drag_) spec_.paintHover(ctx.dl, f, axis_, hoverX_, ctx.scale.factor, text);
     ctx.dl.popClip();
   }
 
   bool onPointer(const ui::PointerEvent& e) override {
+    if (!drag_ && chipPointer(e)) return true;
     switch (e.type) {
       case ui::PointerType::Move: {
         if (drag_) {
@@ -710,6 +706,7 @@ public:
           hover_ = h;
           markDirty();
         }
+        trackHover(e.pos, !h);
         return false;
       }
       case ui::PointerType::Down: {
@@ -737,6 +734,7 @@ public:
   // T4.16c: the dot moves (cutoff sideways, resonance up / down).
   ui::Cursor cursorAt(ui::Vec2) const override { return drag_ || hover_ ? ui::Cursor::Move : ui::Cursor::Inherit; }
   void onHoverChanged(bool h) override {
+    AnalysedDisplay::onHoverChanged(h);
     if (!h && hover_) {
       hover_ = false;
       markDirty();

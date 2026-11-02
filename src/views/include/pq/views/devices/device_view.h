@@ -123,4 +123,14 @@ Status setupDeviceScene(Shell& shell, std::string_view file);
 // with the MS2 circuit model, drive and the filter envelope.
 Status setupOperatorFilterScene(Shell& shell, std::string_view file);
 
+// TX.spectrum (scenes, tests): a device's analysis as a project device's tap carries it (input L/R, output L/R) — a
+// fixed music-like test signal in, the same through a linear filter of magnitude `mag` (Hz → |H|) out, 2 s — analysed
+// now by a manual feed (the output spectrum with peak hold, and with `response` the measured response), then held:
+// deterministic.
+struct AnalysedFeed {
+  std::unique_ptr<TapRing> tap;
+  std::unique_ptr<SpectrumFeed> feed;
+};
+AnalysedFeed makeAnalysedFeed(const std::function<double(double)>& mag, bool response);
+
 }  // namespace pq::views::devices
