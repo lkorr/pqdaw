@@ -835,6 +835,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
 }
 
 DeviceChainView::~DeviceChainView() {
+  impl_->retiredFrames.clear();  // before the rest of Impl (templates, maps) a frame may still reach
   for (std::string_view id : ViewContext::kDeviceChainActions) ctx_.clearViewAction(id);
 }
 
@@ -871,8 +872,9 @@ void DeviceChainView::sync(bool force) {
       if (chain[i] != m.shown[i]) m.frames[i]->update(*chain[i]);
   } else {
     if (m.drag.active) m.endDrag(false);
-    for (FrameBase* f : m.frames) (void)m.content->removeChild(*f);
+    for (FrameBase* f : m.frames) m.retiredFrames.push_back(m.content->removeChild(*f));  // H1: not destroyed here
     m.frames.clear();
+    if (!m.retiredFrames.empty()) requestFrame();
     for (const doc::DevicePtr& d : chain) {
       auto f = makeFrame(m, ctx_, *d);
       FrameBase* raw = f.get();
@@ -1865,6 +1867,8 @@ void DeviceChainView::refreshRings() {
     m.ringTimer = 0;
   }
 }
+
+void DeviceChainView::onFrame(double) { impl_->retiredFrames.clear(); }  // no handler of a retired frame runs now
 
 void DeviceChainView::onTimer(uint32_t id) {
   if (id == impl_->autoTimer) {  // T4.18

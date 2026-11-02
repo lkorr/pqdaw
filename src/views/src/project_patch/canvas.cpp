@@ -1264,24 +1264,19 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   }
   // TX.lane-edit: after a press in a window, the arrangement's edit chords act there (Ctrl+Shift+M, Delete, Ctrl+D …).
   if (laneFocus_ && view_.laneKey(e)) return true;
-  if (mods == ui::mod::kNone && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace)) {
-    (void)view_.deleteSelection();
-    return true;
-  }
+  // TMM.13-fix2 (MM review M5): an embedded canvas (a group's panel, the free rack) reports these handled only when
+  // they did something, so the Device view around it still gets Delete, Ctrl+G and Ctrl+Shift+G. The main view keeps
+  // them (a Delete there must never fall through to the arrangement's selection behind it).
+  const bool swallow = !view_.embedded();
+  if (mods == ui::mod::kNone && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace))
+    return view_.deleteSelection() || swallow;
   // TX.groups: Ctrl+G groups the selection, Ctrl+Shift+G ungroups (before the keymap: the Device view's Ctrl+G makes a
   // rack there).
-  if (e.key == 'g' && mods == ui::mod::kCtrl) {
-    (void)view_.groupSelection();
-    return true;
-  }
-  if (e.key == 'g' && mods == (ui::mod::kCtrl | ui::mod::kShift)) {
-    (void)view_.ungroupSelection();
-    return true;
-  }
+  if (e.key == 'g' && mods == ui::mod::kCtrl) return view_.groupSelection() || swallow;
+  if (e.key == 'g' && mods == (ui::mod::kCtrl | ui::mod::kShift)) return view_.ungroupSelection() || swallow;
   if (mods == ui::mod::kNone && e.key == '0') {
     const std::vector<doc::DeviceId> d = view_.selectedDevices();
-    if (!d.empty()) (void)view_.toggleDevicesActive(d);
-    return true;
+    return (!d.empty() && view_.toggleDevicesActive(d)) || swallow;
   }
   if (mods == ui::mod::kNone && e.key == 'f') {
     view_.fitAll();

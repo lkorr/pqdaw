@@ -57,6 +57,10 @@ struct DeviceChainView::Impl {
   ui::ScrollView* scroll = nullptr;
   ui::Widget* content = nullptr;
   std::vector<device_chain::FrameBase*> frames;       // the track's chain (top level)
+  // TMM.13-fix2 (MM review H1): frames a sync replaced, kept alive until the next frame. A sync runs from a store
+  // listener, i.e. inside whatever dispatched the edit, and that can be a key handler of the frame's own embedded
+  // ProjectPatchView (Delete / Ctrl+Shift+G in a group's panel): destroying the frame there returned into freed memory.
+  std::vector<std::unique_ptr<ui::Widget>> retiredFrames;
   std::vector<doc::DevicePtr> shown;                  // what each top-level frame shows (pointer-equal while unchanged)
   doc::Snapshot shownFrom;                            // keeps `shown` alive
   std::map<uint32_t, device_chain::FrameBase*> all;   // T4.8: every frame shown (rack contents too), by device id

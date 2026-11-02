@@ -1055,12 +1055,15 @@ bool ProjectPatchView::apply(const doc::ops::EditResult& e, const char* what) {
 }
 
 bool ProjectPatchView::dispatch(const doc::Command& c, const char* what) {
-  const doc::Snapshot before = ctx_.doc();
-  if (Status s = ctx_.store().dispatch(c); !s) {
-    ctx_.setStatus(std::string(what) + ": " + s.error().message);
+  // TMM.13-fix2 (H1): nothing of `this` is read after the store call (its listeners may have replaced this view's
+  // host; DeviceChainView now retires frames until the next frame, and this keeps the function safe regardless).
+  ViewContext& ctx = ctx_;
+  const doc::Snapshot before = ctx.doc();
+  if (Status s = ctx.store().dispatch(c); !s) {
+    ctx.setStatus(std::string(what) + ": " + s.error().message);
     return false;
   }
-  return ctx_.doc() != before;
+  return ctx.doc() != before;
 }
 
 bool ProjectPatchView::connect(doc::DeviceId from, const std::string& port, doc::DeviceId to, const std::string& param) {
@@ -1372,7 +1375,10 @@ bool ProjectPatchView::ungroup(doc::DeviceId group) {
 
 bool ProjectPatchView::groupSelection() {
   std::vector<doc::DeviceId> d = selectedDevices();
+  // TMM.13-fix2 (M5): a group's own panel never offers the group itself (its capsule frame selects it there).
+  if (scope_.valid()) std::erase(d, scope_);
   if (d.empty()) {
+    if (scope_.valid()) return false;  // unhandled: the Device view's Ctrl+G acts on its own selection
     ctx_.setStatus("Group: select the devices first (click, Ctrl+click or drag a box around them)");
     return false;
   }

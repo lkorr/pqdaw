@@ -152,6 +152,7 @@ public:
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onTimer(uint32_t id) override;
+  void onFrame(double now) override;  // TMM.13-fix2 (H1): drops the frames the last sync replaced
 
   // ---- T4.7: cross-device wiring (pq/views/device_chain/wiring.h) --------------------------------------------------
   // A jack press (Down) and the pointer events of the drag that follows (Move, Up); installWiring sets it.

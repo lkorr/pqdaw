@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "pq/core/alloc_trap.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -276,6 +277,77 @@ TEST_CASE("groups view: the Device view shows the group as one device; its panel
   embedded.clear();
   scopedViews(*chain, embedded);
   CHECK(embedded.empty());
+}
+
+// TMM.13-fix2 (MM review H1, probe E of docs/reviews/MM/views/probe_views.cpp): Delete / Ctrl+Shift+G pressed inside a
+// group's own embedded panel removes that panel's frame from the store listener while the canvas's key handler is still
+// on the stack. Freed memory is poisoned (PoisonFrees) while the key is handled, so a read of the destroyed view faults.
+// M5: keys that did nothing in the embedded canvas are not reported handled (the Device view gets them).
+TEST_CASE("groups view: Delete and Ctrl+Shift+G inside a group's own panel (poisoned frees); unhandled keys reach the Device view") {
+  Ui u;
+  const doc::DeviceId sel[3] = {u.ids.pa1, u.ids.wt, u.ids.pa2};
+  REQUIRE(u.view().groupDevices(sel));
+  const doc::DeviceId g = u.groupOf(u.ids.wt);
+  u.ctx.setSelectedTrack(u.ids.keys);
+  u.ctx.setDetailVisible(true);
+  u.ctx.setDetailMode(DetailMode::Device);
+  u.d.tree().layoutNow();
+  u.d.advance(0.3);
+  DeviceChainView* chain = findDeviceChain(*u.shell);
+  REQUIRE(chain != nullptr);
+  auto embedded = [&]() -> ProjectPatchView* {
+    std::vector<ProjectPatchView*> e;
+    scopedViews(*chain, e);
+    return e.empty() ? nullptr : e.front();
+  };
+  ProjectPatchView* pv = embedded();
+  REQUIRE(pv != nullptr);
+  // M5: nothing selected inside, Ctrl+G: not the embedded canvas's ("groups do not nest" was its answer), no edit.
+  u.d.tree().setFocus(&pv->canvas());
+  pv->canvas().clearSelection();
+  size_t h0 = u.history();
+  u.ctx.setStatus("");
+  (void)u.d.press("Ctrl+G");
+  CHECK(u.history() == h0);
+  CHECK(u.ctx.status().find("do not nest") == std::string::npos);
+  CHECK(u.d.press("Delete") != KeyResult::Widget);  // nothing selected inside: unhandled there
+  CHECK(u.history() == h0);
+  // H1 a: the capsule (the group itself) selected by its frame inside its own panel, Delete.
+  const Node& cap = pv->patch().nodes[0];
+  u.d.click(pv->canvas().toDevice({cap.x + 4.0f, cap.y + cap.h - 4.0f}));
+  u.d.tree().setFocus(&pv->canvas());
+  REQUIRE(std::find(pv->selectedDevices().begin(), pv->selectedDevices().end(), g) != pv->selectedDevices().end());
+  h0 = u.history();
+  {
+    alloc_trap::PoisonFrees poison;
+    CHECK(u.d.keyDown(key::kDelete) == KeyResult::Widget);
+  }
+  u.d.keyUp(key::kDelete);
+  CHECK(u.history() == h0 + 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), g).device == nullptr);
+  u.d.advance(0.3);  // the retired frame goes at the next frame
+  CHECK(embedded() == nullptr);
+  // H1 b: undo; a member selected inside the panel, Ctrl+Shift+G ungroups the group the panel shows.
+  REQUIRE(u.ctx.undo());
+  u.d.tree().layoutNow();
+  u.d.advance(0.3);
+  pv = embedded();
+  REQUIRE(pv != nullptr);
+  const uint32_t n = pv->patch().nodeOf(u.ids.wt);
+  REQUIRE(n != kNone);
+  const uint32_t sn[1] = {pv->scene().sceneNode[n]};
+  pv->canvas().select(sn, {});
+  u.d.tree().setFocus(&pv->canvas());
+  h0 = u.history();
+  {
+    alloc_trap::PoisonFrees poison;
+    CHECK(u.d.keyDown('g', static_cast<Mods>(mod::kCtrl | mod::kShift)) == KeyResult::Widget);
+  }
+  u.d.keyUp('g', static_cast<Mods>(mod::kCtrl | mod::kShift));
+  CHECK(u.history() == h0 + 1);
+  CHECK_FALSE(u.groupOf(u.ids.wt).valid());
+  u.d.advance(0.3);
+  CHECK(embedded() == nullptr);
 }
 
 TEST_CASE("groups view: a group panel's frame — an idle frame costs nothing, a full repaint of the embedded circuit" * doctest::test_suite("perf")) {
