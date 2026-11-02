@@ -183,7 +183,8 @@ struct ProjectPatch {
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // bounds of the bands and nodes
   uint32_t master = kNone;               // band
   // TX.groups: the model holds only one group's contents (LayoutOptions::scope: the Device view's group panel): one band
-  // (its track) without source, mixer or strip, the capsule and what is inside it.
+  // (its track) without source, mixer or strip, the capsule and what is inside it. TX.free-rack: or one track's free
+  // devices (LayoutOptions::freeTrack: the Device view's free-device rack).
   bool scoped = false;
   uint32_t bandOf(doc::TrackId t) const noexcept;
   uint32_t nodeOf(doc::DeviceId d) const noexcept;  // T4.8: a device inside a rack: the rack's block
@@ -240,6 +241,9 @@ struct LayoutOptions {
   std::span<const doc::DeviceId> closedGroups;
   // TX.groups: only this group (opened) and its contents (ProjectPatch::scoped; the Device view's group panel).
   doc::DeviceId scope;
+  // TX.free-rack: only this track's free devices — free blocks that are not group members (a free group with its
+  // contents), and the wires among them (ProjectPatch::scoped; the Device view's free-device rack). Ignored with `scope`.
+  doc::TrackId freeTrack;
 };
 
 // TX.mod-all: which edge of its block an anchored param's wire enters by (the one nearest the control; never the

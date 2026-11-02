@@ -121,6 +121,11 @@ struct Ui {
 
 float dist(Vec2 a, Vec2 b) { return std::hypot(a.x - b.x, a.y - b.y); }
 
+// TX.free-rack: the cables of document wires (the layer also draws the chain's own signal path: CableLayer::Kind::Chain).
+size_t wireCables(const CableLayer& l) {
+  return static_cast<size_t>(std::count_if(l.cables().begin(), l.cables().end(), [](const CableLayer::Cable& c) { return c.kind == CableLayer::Kind::Wire; }));
+}
+
 }  // namespace
 
 TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a cable between them") {
@@ -282,7 +287,7 @@ TEST_CASE("wiring: show / fade / hide (hidden: no cables, no work); the rings sh
   u.d.step();
   CableLayer& l = u.layer();
   CHECK(l.mode() == CableMode::Show);
-  CHECK(l.cables().size() == 1);
+  CHECK(wireCables(l) == 1);
   REQUIRE(u.ctx.actions().invoke(u.ctx.actions().find("view.cycleCables")));
   CHECK(l.mode() == CableMode::Fade);
   REQUIRE(u.ctx.actions().invoke(u.ctx.actions().find("view.cycleCables")));
@@ -293,7 +298,7 @@ TEST_CASE("wiring: show / fade / hide (hidden: no cables, no work); the rings sh
   CHECK_FALSE(l.refresh());  // hidden: nothing computed
   l.setMode(CableMode::Show);
   u.d.step();
-  CHECK(l.cables().size() == 1);
+  CHECK(wireCables(l) == 1);
   // The ring: knob ± Σ|amount| (faint), and the polled sweep (bright).
   devices::DevicePanel* panel = u.view().panelOf(u.util);
   REQUIRE(panel != nullptr);

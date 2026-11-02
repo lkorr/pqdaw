@@ -22,7 +22,9 @@
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/shell/shell.h"
 #include "pq/document/meta.h"
+#include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
+#include "pq/views/project_patch/project_patch_view.h"
 
 namespace pq::views {
 
@@ -181,35 +183,16 @@ void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
     if (best == nullptr || (f->rect().w <= best->rect().w && f->rect().h <= best->rect().h)) best = f;
   }
   bool inRack = false;
-  if (best != nullptr && best->id() != dragging) inRack = best->dropAt(e.pos, d);
-  if (!inRack) {
-    // The track's chain: the gap nearest the pointer (before the first frame whose centre is right of it).
-    d.kind = DropTarget::Kind::Track;
-    auto slot = static_cast<uint32_t>(frames.size());
-    for (size_t i = 0; i < frames.size(); ++i) {
-      const ui::IRect r = frames[i]->rect();
-      if (e.pos.x < static_cast<float>(r.x) + static_cast<float>(r.w) * 0.5f) {
-        slot = static_cast<uint32_t>(i);
-        break;
-      }
-    }
-    // An effect never goes before the instrument; the instrument stays first. TMM.10-fix1: a chain meta device first is
-    // a stage like any other (it takes the note source because it is first), so only a stock instrument pins the start.
-    const doc::Track* t = track();
-    const bool hasInstrument = t && !t->devices.empty() && t->devices.front()->kind == doc::DeviceKind::Instrument &&
-                               !doc::isMetaDevice(*t->devices.front());
-    const int32_t from = frameIndex(dragging);
-    if (hasInstrument) slot = from == 0 ? 0u : std::max(slot, 1u);
-    d.index = slot;
-    int32_t x = 0;
-    const auto n = static_cast<uint32_t>(frames.size());
-    if (slot < n) x = frames[slot]->rect().x - static_cast<int32_t>(std::lround(kFrameGap * s)) / 2;
-    else if (n > 0) x = frames.back()->rect().right() + static_cast<int32_t>(std::lround(kFrameGap * s)) / 2;
-    const ui::IRect r = content->rect();
-    const int32_t w = std::max(2, static_cast<int32_t>(std::lround(2.0f * s)));
-    const int32_t pad = static_cast<int32_t>(std::lround(kChainPad * s));
-    d.marker = {x - w / 2, r.y + pad, w, r.h - 2 * pad};
+  // TX.free-rack: over the free-device rack (its tab or its canvas): out of the chain (a device of the track's own chain).
+  const bool overFree = freeRack != nullptr && freeRack->visible() && freeRack->rect().contains(e.pos) && frameIndex(dragging) >= 0;
+  if (overFree) {
+    d.kind = DropTarget::Kind::Free;
+    inRack = true;
+  } else if (best != nullptr && best->id() != dragging) {
+    inRack = best->dropAt(e.pos, d);
   }
+  if (freeRack != nullptr) freeRack->setDropHighlight(overFree);
+  if (!inRack) d = trackSlot(e.pos, dragging);
   // T4.16c: a drop the document would refuse shows NotAllowed instead of a marker.
   if (d.kind == DropTarget::Kind::Chain || d.kind == DropTarget::Kind::NewChain) {
     const doc::Project& p = doc();
@@ -228,12 +211,46 @@ void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
   }
 }
 
+DropTarget DeviceChainView::Impl::trackSlot(ui::Vec2 pos, doc::DeviceId dragged) const {
+  DropTarget d;
+  const float s = view.tree() ? view.tree()->scale() : 1.0f;
+  // The track's chain: the gap nearest the pointer (before the first frame whose centre is right of it).
+  d.kind = DropTarget::Kind::Track;
+  auto slot = static_cast<uint32_t>(frames.size());
+  for (size_t i = 0; i < frames.size(); ++i) {
+    const ui::IRect r = frames[i]->rect();
+    if (pos.x < static_cast<float>(r.x) + static_cast<float>(r.w) * 0.5f) {
+      slot = static_cast<uint32_t>(i);
+      break;
+    }
+  }
+  // An effect never goes before the instrument; the instrument stays first. TMM.10-fix1: a chain meta device first is
+  // a stage like any other (it takes the note source because it is first), so only a stock instrument pins the start.
+  const doc::Track* t = track();
+  const bool hasInstrument = t && !t->devices.empty() && t->devices.front()->kind == doc::DeviceKind::Instrument &&
+                             !doc::isMetaDevice(*t->devices.front());
+  const int32_t from = dragged.valid() ? frameIndex(dragged) : -1;
+  if (hasInstrument) slot = from == 0 ? 0u : std::max(slot, 1u);
+  d.index = slot;
+  int32_t x = 0;
+  const auto n = static_cast<uint32_t>(frames.size());
+  if (slot < n) x = frames[slot]->rect().x - static_cast<int32_t>(std::lround(kFrameGap * s)) / 2;
+  else if (n > 0) x = frames.back()->rect().right() + static_cast<int32_t>(std::lround(kFrameGap * s)) / 2;
+  else x = content->rect().x + static_cast<int32_t>(std::lround(kChainPad * s));
+  const ui::IRect r = content->rect();
+  const int32_t w = std::max(2, static_cast<int32_t>(std::lround(2.0f * s)));
+  const int32_t pad = static_cast<int32_t>(std::lround(kChainPad * s));
+  d.marker = {x - w / 2, r.y + pad, w, r.h - 2 * pad};
+  return d;
+}
+
 void DeviceChainView::Impl::endDrag(bool commit) {
   const DropTarget d = drop;
   const bool moved = drag.moved;
   const doc::DeviceId id = dragging;
   drag.end();
   dragging = {};
+  if (freeRack != nullptr) freeRack->setDropHighlight(false);
   if (drop.kind != DropTarget::Kind::None) {
     drop = DropTarget{};
     content->markDirty();
@@ -264,6 +281,7 @@ void DeviceChainView::Impl::endDrag(bool commit) {
     case DropTarget::Kind::NewChain:
       run(doc::ops::moveDeviceToNewChain(doc(), view.ctx_.store().ids(), id, d.rack));
       break;
+    case DropTarget::Kind::Free: (void)view.takeIntoRack(id); break;  // TX.free-rack
     case DropTarget::Kind::None: break;
   }
 }
@@ -756,8 +774,7 @@ std::vector<doc::DevicePtr> device_chain::shownDevices(const std::vector<doc::De
   std::vector<doc::DevicePtr> out;
   out.reserve(list.size());
   for (const doc::DevicePtr& d : list) {
-    if (d->group.valid() && std::any_of(list.begin(), list.end(), [&](const doc::DevicePtr& g) { return g->id == d->group; }))
-      continue;  // TX.groups: inside its group's panel
+    if (d->free) continue;  // TX.free-rack: in the free-device rack (a group member is free too: in its group's panel)
     out.push_back(d);
   }
   return out;
@@ -776,6 +793,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
   setLayout(ui::LayoutKind::Column);
   setFocusable(true);
   setKeyScope(ctx.scope("devices"));
+  impl_->freeRack = &add<FreeRackPanel>(*impl_, ctx);  // TX.free-rack: over the chain
   auto& scroll = add<ui::ScrollView>("scroll", true, false);
   impl_->scroll = &scroll;
   auto& content = scroll.add<ChainContent>(*impl_);
@@ -822,7 +840,13 @@ void DeviceChainView::follow() {
   if (wantedTrack() != track_) sync(false);
 }
 
-void DeviceChainView::rebuild() { sync(true); }
+void DeviceChainView::rebuild() {
+  if (impl_->freeRack != nullptr) {  // TX.free-rack: the rack's faces read the same voice taps as the chain's
+    impl_->freeRack->view().faceVoices = faceVoices;
+    impl_->freeRack->view().rebindFaces();
+  }
+  sync(true);
+}
 
 void DeviceChainView::sync(bool force) {
   Impl& m = *impl_;
@@ -858,8 +882,14 @@ void DeviceChainView::sync(bool force) {
   track_ = want;
   m.shown = chain;
   m.shownFrom = ctx_.doc();
+  // TX.free-rack: the rack shows the track's free devices (hidden with no track); the frames' ports for the cables.
+  if (m.freeRack != nullptr) {
+    m.freeRack->setVisible(t != nullptr);
+    m.freeRack->follow(want);
+  }
   // The selection keeps only devices shown (any level).
   m.reindex();
+  m.refreshPorts();
   std::erase_if(selection_, [&](doc::DeviceId id) { return m.frameOf(id) == nullptr; });
   for (auto& [id, f] : m.all)
     f->setSelected(std::find(selection_.begin(), selection_.end(), doc::DeviceId{id}) != selection_.end());
@@ -1363,7 +1393,285 @@ DeviceChainView& installDeviceChain(Shell& shell) {
   ctx.setViewAction("device.moveRight", [p] { p->moveSelected(1); }, has);
   ctx.setViewAction("device.chainUp", [p] { p->showNeighbourChain(-1); }, has);
   ctx.setViewAction("device.chainDown", [p] { p->showNeighbourChain(1); }, has);
+  // TX.free-rack: the expanded rack grows the detail area (the body splitter's lower pane): the arrangement moves up,
+  // the chain keeps its height.
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) {
+    p->onRackHeight = [body](float dy) { body->setPosition(body->position() + dy); };
+    if (p->freeRackOpen()) body->setPosition(body->position() + p->freeRackHeight() + DeviceChainView::kRackHandleH);
+  }
   return v;
+}
+
+// ---- TX.free-rack: the rack, and the ends of the cables of the signal path --------------------------------------------
+
+bool DeviceChainView::freeRackOpen() const noexcept { return impl_->freeRack != nullptr && impl_->freeRack->open(); }
+void DeviceChainView::setFreeRackOpen(bool open) {
+  if (impl_->freeRack != nullptr) impl_->freeRack->setOpen(open);
+}
+float DeviceChainView::freeRackHeight() const noexcept { return impl_->freeRack != nullptr ? impl_->freeRack->bodyHeight() : 0.0f; }
+void DeviceChainView::setFreeRackHeight(float logicalPx) {
+  if (impl_->freeRack != nullptr) impl_->freeRack->setBodyHeight(logicalPx);
+}
+project_patch::ProjectPatchView* DeviceChainView::freeRackView() const noexcept {
+  return impl_->freeRack != nullptr && impl_->freeRack->visible() ? &impl_->freeRack->view() : nullptr;
+}
+ui::IRect DeviceChainView::freeRackRect() const noexcept {
+  return impl_->freeRack != nullptr && impl_->freeRack->visible() ? impl_->freeRack->rect() : ui::IRect{};
+}
+
+bool DeviceChainView::addFreeDevice(const std::string& patch) {
+  if (!track_.valid() || impl_->freeRack == nullptr) return false;
+  setFreeRackOpen(true);  // the new device is shown where it went
+  return impl_->freeRack->view().addFreeDevice(track_, patch);
+}
+
+bool DeviceChainView::takeIntoRack(doc::DeviceId device) {
+  const doc::DeviceId one[1] = {device};
+  if (!impl_->run(doc::ops::setDevicesFree(*ctx_.doc(), one, true), false)) return false;
+  selection_.clear();
+  return true;
+}
+
+bool DeviceChainView::putIntoChainAt(doc::DeviceId device, uint32_t slot) {
+  const doc::Track* t = impl_->track();
+  if (t == nullptr || impl_->freeRack == nullptr) return false;
+  // The slot is among the frames (the chain's devices); the move's index is in the track's list without the device.
+  uint32_t index = 0;
+  const doc::DeviceId before = slot < impl_->frames.size() ? impl_->frames[slot]->id() : doc::DeviceId{};
+  for (const doc::DevicePtr& d : t->devices) {
+    if (d->id == before) break;
+    if (d->id != device) ++index;
+  }
+  if (!impl_->freeRack->view().putIntoChain(device, index)) return false;
+  const doc::DeviceId one[1] = {device};
+  select(one);
+  return true;
+}
+
+std::optional<uint32_t> DeviceChainView::chainSlotAt(ui::Vec2 pos) const {
+  if (!track_.valid() || !chainViewport().contains(pos)) return std::nullopt;
+  return impl_->trackSlot(pos, {}).index;
+}
+
+void DeviceChainView::Impl::refreshPorts() {
+  ports.clear();
+  const doc::DeviceLibrary* lib = view.ctx_.deviceLibrary();
+  const doc::Project& p = doc();
+  for (const auto& [id, f] : all) {
+    const doc::Device* d = doc::findDevice(p, doc::DeviceId{id}).device;
+    if (d == nullptr) continue;
+    Ports& out = ports[id];
+    std::shared_ptr<const doc::ResolvedDevice> hold;
+    const graph::Patch* patch = lib != nullptr && !d->rack ? lib->patchOf(*d, hold) : nullptr;
+    if (patch == nullptr) {  // a rack, a missing patch: its chain's ports
+      if (d->kind != doc::DeviceKind::Instrument) out.inputs.push_back("in");
+      out.outputs.push_back("out");
+      continue;
+    }
+    std::vector<std::string_view> params;
+    for (graph::NodeIndex k = 0; k < patch->nodeCount(); ++k)
+      if (patch->node(k).kind == graph::NodeKind::Param) params.push_back(patch->nodeName(k));
+    auto isParam = [&](std::string_view n) { return std::find(params.begin(), params.end(), n) != params.end(); };
+    const graph::SubcircuitRef sig = graph::subcircuitSignature(*patch);
+    const bool group = doc::isGroupDevice(*d);
+    for (const graph::SubcircuitPort& sp : sig.inputs) {
+      if (sp.type.rate == graph::Rate::Const || isParam(sp.name)) continue;
+      if (sp.name.size() > 4 && sp.name.ends_with("_add") && isParam(std::string_view(sp.name).substr(0, sp.name.size() - 4))) continue;
+      if (group && sp.name == doc::kGroupOutPort) continue;  // TX.groups: the Out terminal is inside the panel
+      out.inputs.push_back(sp.name);
+    }
+    for (const graph::SubcircuitPort& sp : sig.outputs) {
+      if (group && sp.name == doc::kGroupInPort) continue;
+      out.outputs.push_back(sp.name);
+    }
+    if (out.outputs.empty()) out.outputs.push_back("out");
+  }
+}
+
+namespace {
+constexpr float kSocketRow = 12.0f, kSocketPitch = 14.0f, kSocketR = 5.0f;  // logical px
+bool shownNow(const ui::Widget& w) noexcept;                    // below (the T4.7 hooks)
+ui::Vec2 clampInto(ui::Vec2 p, const ui::IRect& r, bool& inside);
+}  // namespace
+
+bool DeviceChainView::isInput(doc::DeviceId device, std::string_view port) const {
+  const Impl::Ports* ps = impl_->portsOf(device);
+  return ps != nullptr && std::find(ps->inputs.begin(), ps->inputs.end(), port) != ps->inputs.end();
+}
+
+namespace {
+// A socket on a frame's edge (left: inputs, right: outputs), `row` rows up from its bottom (never above its title bar).
+ui::Vec2 socketAt(const ui::IRect& r, bool right, size_t row, float us) {
+  const float x = right ? static_cast<float>(r.right()) : static_cast<float>(r.x);
+  const float y = std::max(static_cast<float>(r.y) + 10.0f * us,
+                           static_cast<float>(r.bottom()) - (kSocketRow + kSocketPitch * static_cast<float>(row)) * us);
+  return {x, std::round(y)};
+}
+}  // namespace
+
+bool DeviceChainView::inFreeRack(doc::DeviceId device) const {
+  const doc::Track* t = impl_->track();
+  if (t == nullptr || impl_->freeRack == nullptr || !impl_->freeRack->visible()) return false;
+  const int32_t i = t->deviceIndex(device);
+  if (i < 0) return false;
+  const doc::Device& d = *t->devices[static_cast<size_t>(i)];
+  if (!d.free) return false;
+  if (!d.group.valid()) return true;
+  const int32_t g = t->deviceIndex(d.group);  // a member: in the rack with its group when the group is free
+  return g >= 0 && t->devices[static_cast<size_t>(g)]->free;
+}
+
+ui::Vec2 DeviceChainView::tabPoint(doc::DeviceId device) const {
+  const float us = tree() ? tree()->scale() : 1.0f;
+  const ui::IRect r = impl_->freeRack != nullptr ? impl_->freeRack->rect() : ui::IRect{};
+  uint32_t k = 0;
+  if (const doc::Track* t = impl_->track())
+    for (const doc::DevicePtr& d : t->devices) {
+      if (d->id == device) break;
+      k += d->free ? 1u : 0u;
+    }
+  const float x = std::min(static_cast<float>(r.x) + (36.0f + 10.0f * static_cast<float>(k % 12)) * us, static_cast<float>(r.right()) - 4.0f);
+  return {std::round(x), static_cast<float>(r.y) + kRackTabH * us};
+}
+
+std::optional<DeviceChainView::CableEnd> DeviceChainView::sourceEnd(doc::DeviceId device, std::string_view port) const {
+  const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device);
+  if (l.device == nullptr) return std::nullopt;
+  const float us = tree() ? tree()->scale() : 1.0f;
+  // A free device of the shown track: its pin in the rack (collapsed: the rack's tab).
+  if (inFreeRack(device)) {
+    if (impl_->freeRack->open())
+      if (bool docked = false; auto q = impl_->freeRack->view().outputPoint(device, port, &docked))
+        return CableEnd{*q, docked, EndDir::Right};
+    return CableEnd{tabPoint(device), false, EndDir::Down};
+  }
+  const devices::DevicePanel* panel = panelOf(device);
+  if (panel != nullptr)
+    for (const devices::DevicePanel::Jack& j : panel->jacks())
+      if (j.name == port) {  // an export's jack on the panel's top strip
+        bool docked = false;
+        const auto q = jackPoint(device, port, &docked);
+        return CableEnd{*q, docked, EndDir::Up};
+      }
+  if (const FrameBase* f = impl_->frameOf(device); f != nullptr && shownNow(*f)) {
+    const Impl::Ports* ps = impl_->portsOf(device);
+    size_t row = 0;
+    if (ps != nullptr)
+      for (size_t i = 0; i < ps->outputs.size(); ++i)
+        if (ps->outputs[i] == port) row = i;
+    bool inside = false;
+    const ui::Vec2 q = clampInto(socketAt(f->rect(), true, row, us), chainViewport(), inside);
+    return CableEnd{q, inside, EndDir::Right};
+  }
+  bool docked = false;
+  if (auto q = groupPoint(device, true, &docked)) return CableEnd{*q, docked, EndDir::Up};
+  return std::nullopt;
+}
+
+std::optional<DeviceChainView::CableEnd> DeviceChainView::targetEnd(doc::DeviceId device, std::string_view port) const {
+  const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device);
+  if (l.device == nullptr) return std::nullopt;
+  const float us = tree() ? tree()->scale() : 1.0f;
+  if (inFreeRack(device)) {
+    if (impl_->freeRack->open()) {
+      bool docked = false;
+      if (auto q = impl_->freeRack->view().inputPoint(device, port, &docked)) return CableEnd{*q, docked, EndDir::Left};
+    }
+    return CableEnd{tabPoint(device), false, EndDir::Down};
+  }
+  if (isInput(device, port))
+    if (const FrameBase* f = impl_->frameOf(device); f != nullptr && shownNow(*f)) {
+      const Impl::Ports* ps = impl_->portsOf(device);
+      size_t row = 0;
+      for (size_t i = 0; i < ps->inputs.size(); ++i)
+        if (ps->inputs[i] == port) row = i;
+      bool inside = false;
+      const ui::Vec2 q = clampInto(socketAt(f->rect(), false, row, us), chainViewport(), inside);
+      return CableEnd{q, inside, EndDir::Left};
+    }
+  bool docked = false;
+  if (auto q = paramPoint(device, port, &docked)) return CableEnd{*q, docked, EndDir::Up};
+  return std::nullopt;
+}
+
+std::optional<DeviceChainView::CableEnd> DeviceChainView::notesEnd() const {
+  const doc::Track* t = impl_->track();
+  if (t == nullptr || t->kind == doc::TrackKind::Master || t->kind == doc::TrackKind::Return) return std::nullopt;
+  const float us = tree() ? tree()->scale() : 1.0f;
+  const ui::IRect vp = chainViewport();
+  const float y = static_cast<float>(vp.bottom()) - (kChainPad + kSocketRow) * us;
+  return CableEnd{{static_cast<float>(vp.x) + 1.0f, std::round(y)}, true, EndDir::Right};
+}
+
+std::vector<DeviceChainView::ChainLink> DeviceChainView::chainLinks() const {
+  std::vector<ChainLink> out;
+  const doc::Track* t = impl_->track();
+  if (t == nullptr) return out;
+  const bool midi = t->kind == doc::TrackKind::Midi;
+  const std::vector<doc::ChainStage> stages = doc::chainStages(t->devices, midi);
+  const doc::Device* prev = nullptr;
+  bool fromSource = t->kind == doc::TrackKind::Midi || t->kind == doc::TrackKind::Audio;  // the clips reach the first one
+  for (const doc::ChainStage& s : stages) {
+    if (s.free || s.device == nullptr) continue;
+    if (impl_->frameOf(s.device->id) == nullptr) continue;
+    if (s.in == doc::ChainSignal::None) {  // unplugged: nothing goes in; the next stage hears it
+      prev = s.device;
+      fromSource = false;
+      continue;
+    }
+    ChainLink k;
+    k.to = s.device->id;
+    k.rate = s.in == doc::ChainSignal::Audio ? 1 : 2;
+    if (doc::isMetaDevice(*s.device) && s.input >= 0)
+      if (const meta::Type* type = meta::findType(doc::metaDeviceType(*s.device)); type != nullptr && static_cast<size_t>(s.input) < type->inputs.size())
+        k.input = std::string(type->inputs[static_cast<size_t>(s.input)].name);
+    const Impl::Ports* ps = impl_->portsOf(k.to);
+    if (k.input.empty()) k.input = ps != nullptr && !ps->inputs.empty() ? ps->inputs.front() : std::string("notes");
+    std::optional<CableEnd> a, b;
+    if (prev != nullptr) {
+      k.from = prev->id;
+      const Impl::Ports* pp = impl_->portsOf(prev->id);
+      a = sourceEnd(prev->id, pp != nullptr && !pp->outputs.empty() ? pp->outputs.front() : std::string("out"));
+    } else if (fromSource) {
+      a = notesEnd();
+    }
+    if (const FrameBase* f = impl_->frameOf(k.to); f != nullptr && shownNow(*f)) {
+      size_t row = 0;
+      if (ps != nullptr)
+        for (size_t i = 0; i < ps->inputs.size(); ++i)
+          if (ps->inputs[i] == k.input) row = i;
+      bool inside = false;
+      const float us = tree() ? tree()->scale() : 1.0f;
+      b = CableEnd{clampInto(socketAt(f->rect(), false, row, us), chainViewport(), inside), inside, EndDir::Left};
+      b->docked = inside;
+    }
+    prev = s.device;
+    fromSource = false;
+    if (!a || !b) continue;
+    k.a = *a;
+    k.b = *b;
+    out.push_back(std::move(k));
+  }
+  return out;
+}
+
+std::vector<DeviceChainView::InputSocket> DeviceChainView::inputSockets() const {
+  std::vector<InputSocket> out;
+  const ui::IRect vp = chainViewport();
+  const float us = tree() ? tree()->scale() : 1.0f;
+  const auto half = static_cast<int32_t>(std::lround(kSocketR * us)) + 1;
+  for (const auto& [id, f] : impl_->all) {
+    if (!shownNow(*f)) continue;
+    const Impl::Ports* ps = impl_->portsOf(doc::DeviceId{id});
+    if (ps == nullptr) continue;
+    for (size_t i = 0; i < ps->inputs.size(); ++i) {
+      const ui::Vec2 c = socketAt(f->rect(), false, i, us);
+      const ui::IRect r{static_cast<int32_t>(std::lround(c.x)) - half, static_cast<int32_t>(std::lround(c.y)) - half, 2 * half, 2 * half};
+      if (ui::intersect(r, vp).empty()) continue;
+      out.push_back({doc::DeviceId{id}, ps->inputs[i], r});
+    }
+  }
+  return out;
 }
 
 // ---- T4.7: wiring hooks and the modulation rings ---------------------------------------------------------------------

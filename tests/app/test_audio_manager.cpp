@@ -283,6 +283,8 @@ TEST_CASE("settings: the view prefs section (T4.15) round-trips next to the audi
   CHECK(loadViewPrefs(path) == views::ViewPrefs{});  // no section
   views::ViewPrefs v;
   v.circuitShowInactive = true;
+  v.freeRackOpen = true;  // TX.free-rack: the Device view's free-device rack, expanded and its height
+  v.freeRackHeight = 260.0f;
   REQUIRE(saveViewPrefs(path, v).ok());
   CHECK(loadViewPrefs(path) == v);
   REQUIRE(loadAudioSettings(path).ok());

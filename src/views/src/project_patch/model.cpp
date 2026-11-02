@@ -1049,6 +1049,70 @@ struct Builder {
     layout();
     route();
     if (opt.scope.valid()) prune();
+    else if (opt.freeTrack.valid()) pruneFree();
+  }
+
+  // TX.free-rack (LayoutOptions::freeTrack): only the track's free blocks (not group members; a free group's capsule
+  // with its terminals and members) and the wires among them; one band without source, mixer or strip, around them.
+  void pruneFree() {
+    ProjectPatch keep;
+    keep.scoped = true;
+    const uint32_t b = out.bandOf(opt.freeTrack);
+    if (b == kNone) {
+      out = std::move(keep);
+      return;
+    }
+    std::vector<uint32_t> order;
+    for (uint32_t i = 0; i < out.nodes.size(); ++i) {
+      const Node& n = out.nodes[i];
+      if (n.band != b || n.kind != NodeKind::Device || !n.free || n.capsule != kNone) continue;
+      order.push_back(i);
+      if (n.group && n.groupOpen) {
+        if (n.groupIn != kNone) order.push_back(n.groupIn);
+        order.insert(order.end(), n.members.begin(), n.members.end());
+        if (n.groupOut != kNone) order.push_back(n.groupOut);
+      }
+    }
+    std::sort(order.begin(), order.end());  // model order (a capsule before its contents)
+    order.erase(std::unique(order.begin(), order.end()), order.end());
+    Band band = out.bands[b];
+    band.source = band.mixer = band.output = kNone;
+    band.devices.clear();
+    band.parent = -1;
+    band.lastMember = kNone;
+    band.depth = 0;
+    std::vector<uint32_t> map(out.nodes.size(), kNone);
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    for (const uint32_t i : order) {
+      map[i] = static_cast<uint32_t>(keep.nodes.size());
+      const Node& n = out.nodes[i];
+      if (keep.nodes.empty()) x0 = n.x, y0 = n.y, x1 = n.x + n.w, y1 = n.y + n.h;
+      x0 = std::min(x0, n.x), y0 = std::min(y0, n.y), x1 = std::max(x1, n.x + n.w), y1 = std::max(y1, n.y + n.h);
+      keep.nodes.push_back(n);
+      keep.nodes.back().band = 0;
+    }
+    for (Node& n : keep.nodes) {
+      if (n.capsule != kNone) n.capsule = map[n.capsule];
+      if (n.groupIn != kNone) n.groupIn = map[n.groupIn];
+      if (n.groupOut != kNone) n.groupOut = map[n.groupOut];
+      for (uint32_t& k : n.members) k = map[k];
+    }
+    for (const uint32_t i : order)
+      if (out.nodes[i].capsule == kNone) band.devices.push_back(map[i]);
+    // The band holds its blocks with a margin (a press on empty space between them is still the rack's band).
+    constexpr float kMargin = 24.0f;
+    band.x0 = x0 - kMargin, band.x1 = x1 + kMargin, band.y = y0 - kMargin, band.h = (y1 - y0) + 2.0f * kMargin;
+    keep.bands.push_back(std::move(band));
+    for (const Edge& e : out.edges) {
+      if (map[e.from] == kNone || map[e.to] == kNone) continue;
+      Edge x = e;
+      x.from = map[e.from];
+      x.to = map[e.to];
+      x.graphWire = kNone;
+      keep.edges.push_back(std::move(x));
+    }
+    keep.x0 = x0 - 8.0f, keep.y0 = y0 - 12.0f, keep.x1 = x1 + 8.0f, keep.y1 = y1 + 8.0f;
+    out = std::move(keep);
   }
 
   // TX.groups (LayoutOptions::scope): only the scope group's capsule, its contents and the wires among them; one band

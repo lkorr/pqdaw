@@ -88,7 +88,7 @@ struct Ui {
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
-    dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(300.0f);
+    dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(320.0f);
     ctx.setSelectedTrack(ids.lead);
     ctx.setDetailVisible(true);
     ctx.setDetailMode(DetailMode::Device);

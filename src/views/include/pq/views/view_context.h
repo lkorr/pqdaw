@@ -148,6 +148,10 @@ struct ViewPrefs {
   bool circuitShowInactive = false;  // the circuit editor's Inactive toggle: draw switched-off branches (dimmed)
   float browserWidth = 440.0f;       // T5.11: the browser's width (logical px; its right edge is a resize handle)
   bool dragOut24Bit = false;         // T5.12: clips dragged out to Explorer render as 24-bit WAV (else 32-bit float)
+  // TX.free-rack: the Device view's free-device rack — expanded, and its canvas's height (logical px; its bottom edge
+  // is a resize handle).
+  bool freeRackOpen = false;
+  float freeRackHeight = 200.0f;
   bool operator==(const ViewPrefs&) const = default;
 };
 

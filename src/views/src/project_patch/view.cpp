@@ -69,9 +69,22 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx, doc::DeviceId scope) : Proj
   scope_ = scope;  // TX.groups: the Device view's group panel (the constructor above bound nothing global)
 }
 
+ProjectPatchView::ProjectPatchView(ViewContext& ctx, FreeRack) : ProjectPatchView(ctx) {
+  freeRack_ = true;  // TX.free-rack: the Device view's free-device rack (setRackTrack picks the track)
+}
+
+void ProjectPatchView::setRackTrack(doc::TrackId track) {
+  if (!freeRack_ || track == rackTrack_) return;
+  rackTrack_ = track;
+  stale_ = true;
+  fitted_ = false;  // another track's devices: fit them
+  invalidateArrange();
+  markDirty();
+}
+
 ProjectPatchView::~ProjectPatchView() {
   if (valueGesture_ && ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
-  if (scope_.valid()) return;  // TX.groups: an embedded view bound no actions of the main one
+  if (embedded()) return;  // TX.groups / TX.free-rack: an embedded view bound no actions of the main one
   ctx_.clearViewAction("view.togglePatch");
   ctx_.clearViewAction("view.trackCircuit");
   ctx_.setCircuitOpener({});
@@ -80,6 +93,11 @@ ProjectPatchView::~ProjectPatchView() {
 // ---- shown and the morph --------------------------------------------------------------------------------------------
 
 bool ProjectPatchView::shown() const noexcept {
+  if (embedded()) {  // TX.free-rack: an embedded view is shown while every ancestor is (the detail area, its mode)
+    for (const Widget* w = this; w != nullptr; w = w->parent())
+      if (!w->visible()) return false;
+    return tree() != nullptr;
+  }
   const Widget* slot = parent();
   return slot && slot->visible() && visible();
 }
@@ -338,7 +356,12 @@ void ProjectPatchView::onFrame(double now) {
 void ProjectPatchView::arrange(ui::LayoutPass& pass) {
   pass.place(*canvas_, rect());
   // TX.groups: an embedded view (a group's panel) builds itself once it has a size (it fits the capsule then).
-  if (scope_.valid() && rect().w > 0 && rect().h > 0 && (stale_ || built_ != ctx_.doc())) sync();
+  if (embedded() && rect().w > 0 && rect().h > 0 && (stale_ || built_ != ctx_.doc())) sync();
+  // TX.free-rack: the rack's height was dragged: its contents fit again, unless the user moved the view since.
+  if (freeRack_ && fitted_ && rect().w > 0 && rect().h > 0 && !(rect() == fitRect_)) {
+    const circuit::CircuitCanvas::View v = canvas_->view();
+    if (v.x == fitView_.x && v.y == fitView_.y && v.zoom == fitView_.zoom) fitEmbedded();
+  }
 }
 
 void ProjectPatchView::paint(ui::PaintContext& ctx) {
@@ -490,6 +513,7 @@ void ProjectPatchView::rebuild() {
   std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   opt.closedGroups = closedGroups_;  // TX.groups
   opt.scope = scope_;
+  if (freeRack_) opt.freeTrack = rackTrack_.valid() ? rackTrack_ : doc::TrackId{0xFFFFFFFFu};  // TX.free-rack (none: empty)
   if (selectedGroup_.valid() && doc::findDevice(*snap, selectedGroup_).device == nullptr) selectedGroup_ = {};
   if (panelsShown_) opt.panelSize = [this](const doc::Device& d) { return panelSize(d); };  // TX.panel-faces
   // TX.mod-all: wires into a face's or panel's params end on their controls (no made-up pins).
@@ -508,8 +532,8 @@ void ProjectPatchView::rebuild() {
   tracksOf_ = nullptr;  // bandTrack's table follows the new bands
   scene_ = buildProjectScene(patch_, inner);
   const circuit::CircuitCanvas::View keep = canvas_->view();
-  canvas_->setScene(scene_.scene, !fitted_ && !scope_.valid(), true);
-  if (!fitted_ && scope_.valid()) canvas_->fitAll();  // TX.groups: a group panel shows all of its contents
+  canvas_->setScene(scene_.scene, !fitted_ && !embedded(), true);
+  if (!fitted_ && embedded()) fitEmbedded();  // TX.groups / TX.free-rack: a panel shows all of its contents
   if (fitted_) canvas_->setView(keep);
   fitted_ = true;
   syncPanels();  // TX.panel-faces: kept panels show the new document and their blocks' sizes
@@ -624,6 +648,11 @@ circuit::CircuitCanvas::View fitRect(const ui::IRect& r, float us, float x0, flo
 }  // namespace
 
 void ProjectPatchView::fitAll(bool animate) {
+  if (embedded()) {  // TX.groups / TX.free-rack: an embedded view fits its own contents (and refits with its size)
+    sync();
+    if (canvas_->scene()) fitEmbedded();
+    return;
+  }
   closeBand();  // T5.x-circuit-chain: the whole project again (an opened band's devices close)
   sync();
   if (!canvas_->scene()) return;
@@ -1125,6 +1154,105 @@ bool ProjectPatchView::putIntoChain(doc::DeviceId device, uint32_t index) {
   return dispatch(doc::Batch{"Put Into Chain", {back->command, move->command}}, "Put Into Chain");
 }
 
+// ---- TX.free-rack ---------------------------------------------------------------------------------------------------
+
+void ProjectPatchView::fitEmbedded() {
+  canvas_->fitAll();
+  fitRect_ = canvas_->rect();
+  fitView_ = canvas_->view();
+}
+
+namespace {
+std::optional<Vec2> clampedPoint(Vec2 p, const ui::IRect& r, bool* docked) {
+  const float x = std::clamp(p.x, static_cast<float>(r.x), static_cast<float>(r.right()));
+  const float y = std::clamp(p.y, static_cast<float>(r.y), static_cast<float>(r.bottom()));
+  if (docked != nullptr) *docked = x == p.x && y == p.y;
+  return Vec2{x, y};
+}
+}  // namespace
+
+std::optional<Vec2> ProjectPatchView::outputPoint(doc::DeviceId device, std::string_view port, bool* docked) const {
+  if (!canvas_->scene() || !shown()) return std::nullopt;
+  const uint32_t n = patch_.nodeOf(device);
+  if (n == kNone) return std::nullopt;
+  const Node& nd = patch_.nodes[n];
+  int32_t k = nd.output(port);
+  if (k < 0) k = nd.output(std::string(port) + "@" + std::to_string(device.value));  // a closed group's member
+  if (k < 0) k = 0;
+  if (nd.outputs.empty()) return std::nullopt;
+  return clampedPoint(canvas_->toDevice({nd.x + nd.w, nd.y + pinOffset(nd, static_cast<size_t>(k))}), canvas_->rect(), docked);
+}
+
+std::optional<Vec2> ProjectPatchView::inputPoint(doc::DeviceId device, std::string_view port, bool* docked) const {
+  if (!canvas_->scene() || !shown()) return std::nullopt;
+  const uint32_t n = patch_.nodeOf(device);
+  if (n == kNone) return std::nullopt;
+  const Node& nd = patch_.nodes[n];
+  int32_t k = nd.input(port);
+  if (k < 0) k = nd.input(std::string(port) + "@" + std::to_string(device.value));
+  graph::Point2 w{nd.x, nd.y + pinOffset(nd, 0)};
+  if (k >= 0) w = inputEntry(nd, static_cast<size_t>(k));
+  return clampedPoint(canvas_->toDevice(w), canvas_->rect(), docked);
+}
+
+ProjectPatchView::WireTarget ProjectPatchView::wireTargetAt(Vec2 pos) const {
+  if (!canvas_->scene() || !shown() || !canvas_->rect().contains(pos)) return {};
+  const ProjectCanvas::PinHit pin = canvas_->pinAt(pos);
+  if (pin.valid() && pin.input && pin.node < patch_.nodes.size()) {
+    const Node& t = patch_.nodes[pin.node];
+    if ((t.kind == NodeKind::Device || (t.kind == NodeKind::Terminal && !t.inputs.empty())) && pin.port < t.inputs.size()) {
+      const Port& q = t.inputs[pin.port];
+      if (q.name != "notes" && !(t.rack && !q.param)) {
+        std::string param = q.name;
+        doc::DeviceId to = t.device;
+        if (const size_t at = param.rfind('@'); at != std::string::npos && (t.rack || t.group)) {
+          to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
+          param.resize(at);
+        }
+        return {to, param};
+      }
+    }
+  }
+  const circuit::CircuitCanvas::FaceParamHit fh = canvas_->faceParamAt(pos);
+  if (!fh.param.empty() && fh.node < scene_.modelNode.size()) {
+    const uint32_t mn = scene_.modelNode[fh.node];
+    if (mn < patch_.nodes.size() && patch_.nodes[mn].kind == NodeKind::Device) return {patch_.nodes[mn].device, fh.param};
+  }
+  return {};
+}
+
+std::vector<ui::MenuItem> ProjectPatchView::addFreeDeviceItems(doc::TrackId track, std::function<void(const std::string&)> pick) {
+  if (!pick) pick = [this, track](const std::string& patch) { (void)addFreeDevice(track, patch); };
+  std::vector<ui::MenuItem> addFree;
+  if (const doc::DeviceLibrary* lib = ctx_.deviceLibrary())
+    for (const doc::DeviceInfo& d : lib->catalog().devices()) {
+      if (d.kind == doc::DeviceKind::Instrument) continue;  // a stock instrument stays first in its chain
+      const std::string patch = d.patch;
+      addFree.push_back(ui::MenuItem::item(d.name, [pick, patch] { pick(patch); }));
+    }
+  if (!addFree.empty()) {
+    addFree.push_back(ui::MenuItem::sep());
+    ui::MenuItem head = ui::MenuItem::item("Meta Modules");
+    head.enabled = false;
+    addFree.push_back(std::move(head));
+    for (const meta::Type* t : metaModuleTypes()) {
+      const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
+      addFree.push_back(ui::MenuItem::item("   " + std::string(t->name), [pick, patch] { pick(patch); }));
+    }
+  }
+  return addFree;
+}
+
+ui::Menu* ProjectPatchView::openRackMenu(Vec2 at) {
+  std::vector<ui::MenuItem> items;
+  ui::MenuItem add = ui::MenuItem::sub("Add Free Device", addFreeDeviceItems(rackTrack_));
+  add.enabled = rackTrack_.valid() && !add.submenu.empty();
+  items.push_back(std::move(add));
+  items.push_back(ui::MenuItem::sep());
+  items.push_back(ui::MenuItem::item("Zoom to Fit", [this] { fitEmbedded(); }, "F"));
+  return ui::openContextMenu(*canvas_, at, std::move(items));
+}
+
 void ProjectPatchView::rebindFaces() { canvas_->rebindFaces(); }
 
 void ProjectPatchView::wakeFaces() {
@@ -1414,25 +1542,7 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   items.push_back(std::move(sub));
   // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): a device placed in the band unconnected (out of
   // its series, under the chain): it plays only through the wires drawn to and from it.
-  std::vector<ui::MenuItem> addFree;
-  if (const doc::DeviceLibrary* lib = ctx_.deviceLibrary())
-    for (const doc::DeviceInfo& d : lib->catalog().devices()) {
-      if (d.kind == doc::DeviceKind::Instrument) continue;  // a stock instrument stays first in its chain
-      const doc::TrackId track = b.track;
-      const std::string patch = d.patch;
-      addFree.push_back(ui::MenuItem::item(d.name, [this, track, patch] { (void)addFreeDevice(track, patch); }));
-    }
-  if (!addFree.empty()) {
-    addFree.push_back(ui::MenuItem::sep());
-    ui::MenuItem head = ui::MenuItem::item("Meta Modules");
-    head.enabled = false;
-    addFree.push_back(std::move(head));
-    for (const meta::Type* t : metaModuleTypes()) {
-      const doc::TrackId track = b.track;
-      const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
-      addFree.push_back(ui::MenuItem::item("   " + std::string(t->name), [this, track, patch] { (void)addFreeDevice(track, patch); }));
-    }
-  }
+  std::vector<ui::MenuItem> addFree = addFreeDeviceItems(b.track);
   ui::MenuItem freeSub = ui::MenuItem::sub("Add Free Device", std::move(addFree));
   freeSub.enabled = !freeSub.submenu.empty();
   items.push_back(std::move(freeSub));

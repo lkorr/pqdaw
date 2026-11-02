@@ -1801,6 +1801,27 @@ Status setupDeviceGroupPanel(Shell& shell) {
   return Ok{};
 }
 
+// TX.free-rack: "Lead" in the Device view (the synth → Saturator → Auto Filter → Utility) with its free devices — three
+// LFOs, each wired onto a knob of the chain, and a Phase accumulator feeding the Auto Filter's sidechain — in the rack
+// over the chain, expanded (`open`) or collapsed; the cables of the signal path and of every wire.
+Status setupDeviceFreeRack(Shell& shell, bool open) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-free-rack: no device library", {}};
+  project_patch::FreeRackIds ids;
+  if (Status s = project_patch::buildFreeRackProject(ctx.store(), 3, &ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-free-rack: the Device view is not installed", {}};
+  ctx.setSelectedTrack(ids.lead);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  v->setFreeRackOpen(open);
+  shell.tree().layoutNow();
+  shell.tree().layoutNow();
+  if (CableLayer* l = findCableLayer(shell)) (void)l->refresh();
+  return Ok{};
+}
+
 // TMM.11: still voices for the Envelope faces — six voices in every stage (rising, at the peak, decaying, sustained,
 // released early, near the end of the release), each with the levels its tap sampled during the last frame.
 class EnvelopeSceneVoices final : public VoiceTapReader {
@@ -2511,6 +2532,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize
     {"project-patch-group", 1600, 900, setupProjectPatchGroup},        // TX.groups
     {"device-group-panel", 1600, 900, setupDeviceGroupPanel},          // TX.groups
+    {"device-free-rack", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, true); }},              // TX.free-rack
+    {"device-free-rack-collapsed", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, false); }},   // TX.free-rack
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14

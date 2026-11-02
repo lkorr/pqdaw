@@ -164,6 +164,9 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
   if (const auto f = it->find("circuitShowInactive"); f != it->end() && f->is_boolean()) prefs.circuitShowInactive = f->get<bool>();
   if (const auto f = it->find("browserWidth"); f != it->end() && f->is_number()) prefs.browserWidth = f->get<float>();
   if (const auto f = it->find("dragOut24Bit"); f != it->end() && f->is_boolean()) prefs.dragOut24Bit = f->get<bool>();
+  // TX.free-rack: the Device view's free-device rack.
+  if (const auto f = it->find("freeRackOpen"); f != it->end() && f->is_boolean()) prefs.freeRackOpen = f->get<bool>();
+  if (const auto f = it->find("freeRackHeight"); f != it->end() && f->is_number()) prefs.freeRackHeight = f->get<float>();
   return prefs;
 }
 
@@ -172,6 +175,8 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["circuitShowInactive"] = prefs.circuitShowInactive;
   v["browserWidth"] = prefs.browserWidth;
   v["dragOut24Bit"] = prefs.dragOut24Bit;
+  v["freeRackOpen"] = prefs.freeRackOpen;  // TX.free-rack
+  v["freeRackHeight"] = prefs.freeRackHeight;
   return saveSection(path, "views", std::move(v));
 }
 

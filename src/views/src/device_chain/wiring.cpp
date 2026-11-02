@@ -12,6 +12,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/device_chain/device_chain.h"
+#include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 
 namespace pq::views {
@@ -42,6 +43,7 @@ void FixedModulationSource::readModulation(std::span<const ModTarget> targets, s
 namespace {
 
 constexpr float kBadge = 15.0f;      // logical px: the badge's diameter
+constexpr float kLinkBadge = 9.0f;   // TX.free-rack: a chain link's joint
 constexpr float kCable = 2.0f;       // logical px: cable thickness
 constexpr int kSamples = 40;         // points per cable
 constexpr uint32_t kSpringTicks = 21;   // drag ticks (1/60 s) hovering a track row before its chain shows (0.35 s)
@@ -57,10 +59,26 @@ ui::Rgba rateColour(uint8_t rate) noexcept {
   }
 }
 
-// A cubic bezier that leaves the jack upwards and drops into the knob from above (a sagging patch cable).
-void cablePoints(ui::Vec2 a, ui::Vec2 b, float scale, ui::Vec2 (&pts)[kSamples]) {
-  const float lift = (28.0f + 0.2f * std::fabs(b.x - a.x)) * scale;
-  const ui::Vec2 c1{a.x, a.y - lift}, c2{b.x, b.y - lift};
+// A cubic bezier that leaves the jack upwards and drops into the knob from above (a sagging patch cable). TX.free-rack:
+// an end on a socket leaves sideways instead (an output to the right, into an input from the left), so a chain link
+// between neighbouring frames is a short straight run along their bottom row.
+void cablePoints(ui::Vec2 a, uint8_t da, ui::Vec2 b, uint8_t db, float scale, ui::Vec2 (&pts)[kSamples]) {
+  using Dir = DeviceChainView::EndDir;
+  const float dx = b.x - a.x;
+  const float lift = (28.0f + 0.2f * std::fabs(dx)) * scale;
+  const float side = dx > 0.0f ? std::clamp(0.45f * dx, 2.0f * scale, 90.0f * scale) : std::clamp(0.3f * -dx, 40.0f * scale, 120.0f * scale);
+  // From the collapsed rack's tab the cable drops down onto the chain (not up into the arrangement).
+  const float drop = std::max(20.0f * scale, 0.5f * std::fabs(b.y - a.y));
+  auto ctrl = [&](ui::Vec2 p, uint8_t d) -> ui::Vec2 {
+    switch (static_cast<Dir>(d)) {
+      case Dir::Right: return {p.x + side, p.y};
+      case Dir::Left: return {p.x - side, p.y};
+      case Dir::Down: return {p.x, p.y + drop};
+      case Dir::Up: break;
+    }
+    return {p.x, p.y - (da == static_cast<uint8_t>(Dir::Down) ? std::min(lift, drop) : lift)};
+  };
+  const ui::Vec2 c1 = ctrl(a, da), c2 = ctrl(b, db);
   for (int i = 0; i < kSamples; ++i) {
     const float t = static_cast<float>(i) / (kSamples - 1), u = 1.0f - t;
     const float w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
@@ -133,6 +151,11 @@ std::string deviceName(const ViewContext& ctx, const doc::Project& p, doc::Devic
   return info != nullptr ? info->name : l.device->patch;
 }
 
+std::string trackName(const doc::Project& p, doc::TrackId id) {
+  const doc::Track* t = doc::findTrackPtr(p, id);
+  return t != nullptr ? t->name : std::string("?");
+}
+
 std::string paramLabel(const ViewContext& ctx, const doc::Project& p, doc::DeviceId id, const std::string& param) {
   const doc::DeviceLoc l = doc::findDevice(p, id);
   std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: an edited device's own labels
@@ -146,11 +169,14 @@ std::string paramLabel(const ViewContext& ctx, const doc::Project& p, doc::Devic
 
 class Badge final : public ui::Widget {
 public:
-  Badge(CableLayer& layer, ViewContext& ctx, doc::WireId wire)
-      : Widget("wire[" + std::to_string(wire.value) + "]"), layer_(layer), ctx_(ctx), wire_(wire) {
-    setFocusable(true);
+  // TX.free-rack: `wire` invalid: a chain link's badge (a small joint that reads the link; nothing to select or delete).
+  Badge(CableLayer& layer, ViewContext& ctx, uint64_t key, doc::WireId wire)
+      : Widget(wire.valid() ? "wire[" + std::to_string(wire.value) + "]" : "link[" + std::to_string(key) + "]"), layer_(layer),
+        ctx_(ctx), wire_(wire), key_(key) {
+    setFocusable(wire.valid());
   }
   doc::WireId wire() const noexcept { return wire_; }
+  uint64_t key() const noexcept { return key_; }
   void setLook(uint8_t rate, doc::WireStatus status, bool selected) {
     if (rate == rate_ && status == status_ && selected == selected_) return;
     rate_ = rate;
@@ -163,6 +189,16 @@ public:
   void paint(ui::PaintContext& ctx) override {
     const ui::Theme* th = ctx.res.theme;
     if (!th) return;
+    if (!wire_.valid()) {  // a chain link: a joint in the cable's colour, lit while hovered
+      const ui::IRect r = rect();
+      const ui::Vec2 c{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
+      const float rad = 0.5f * static_cast<float>(std::min(r.w, r.h)) - ctx.scale.exact(0.5f);
+      const float alpha = layer_.mode() == CableMode::Fade ? 0.4f : 1.0f;
+      const ui::Rgba col = rateColour(rate_);
+      ctx.dl.addCircleFilled(c, rad, ui::withAlpha(ui::lerp(th->surface.raised, col, hovered() ? 0.6f : 0.3f), static_cast<uint32_t>(240 * alpha)));
+      ctx.dl.addCircleStroke(c, rad, ui::withAlpha(hovered() ? th->accent.focus : col, static_cast<uint32_t>(230 * alpha)), ctx.scale.exact(1.0f));
+      return;
+    }
     const doc::Wire* w = doc::findWire(*ctx_.doc(), wire_);
     if (w == nullptr) return;
     const ui::IRect r = rect();
@@ -190,13 +226,23 @@ public:
                            ctx.scale.exact(selected_ || hovered() ? 1.6f : 1.0f));
   }
   // T4.16c: drag up / down sets the amount (TX.patching: a Travel wire's; an added wire has none).
-  ui::Cursor cursorAt(ui::Vec2) const override { return travels() ? ui::Cursor::ResizeNS : ui::Cursor::Pointer; }
+  ui::Cursor cursorAt(ui::Vec2) const override {
+    if (!wire_.valid()) return ui::Cursor::Arrow;  // TX.free-rack: a chain link only reads
+    return travels() ? ui::Cursor::ResizeNS : ui::Cursor::Pointer;
+  }
   void onHoverChanged(bool h) override {
     markDirty();
-    layer_.hoverBadge(wire_, h);
+    layer_.hoverBadge(key_, h);
   }
 
   bool onPointer(const ui::PointerEvent& e) override {
+    if (layer_.dragging()) return false;  // TX.free-rack: a cable dropped over a badge is the layer's (an input socket under it)
+    if (!wire_.valid()) {  // TX.free-rack: a chain link: what it is, in the status line
+      if (e.type == ui::PointerType::Down)
+        ctx_.setStatus("The chain's own signal path: drag a device's title bar onto the free-device rack to take it out of "
+                       "the chain, or switch it off to pass it by");
+      return e.type == ui::PointerType::Down || e.type == ui::PointerType::Up;
+    }
     switch (e.type) {
       case ui::PointerType::Down:
         if (tree()) tree()->setFocus(this);
@@ -259,12 +305,20 @@ public:
   }
   std::string_view tooltip() const override {
     tip_.clear();
+    if (!wire_.valid()) {  // TX.free-rack: a chain link
+      if (const CableLayer::Cable* c = layer_.cableOf(key_)) tip_ = c->label;
+      return tip_;
+    }
     const doc::Project& p = *ctx_.doc();
     if (const doc::Wire* w = doc::findWire(p, wire_)) {
       char amount[32];
       std::snprintf(amount, sizeof amount, "%+.0f %%", 100.0 * w->amount);
-      tip_ = deviceName(ctx_, p, w->from) + " " + w->port + " \xE2\x86\x92 " + deviceName(ctx_, p, w->to) + " " +
-             paramLabel(ctx_, p, w->to, w->param) + "  " + (w->travels() ? std::string(amount) : std::string("(adds)"));
+      // TMM.10-fix2: a note-source wire's source is its track's notes.
+      const std::string src = w->fromNoteSource() ? trackName(p, w->noteSource) + " notes" : deviceName(ctx_, p, w->from);
+      const CableLayer::Cable* c = layer_.cableOf(key_);
+      tip_ = src + " " + w->port + " \xE2\x86\x92 " + deviceName(ctx_, p, w->to) + " " + paramLabel(ctx_, p, w->to, w->param) + "  " +
+             (c != nullptr && c->input ? std::string("(into the input: a signal path)")
+                                       : (w->travels() ? std::string(amount) : std::string("(adds)")));
       switch (status_) {
         case doc::WireStatus::Delayed: tip_ += "  (closes a loop: delayed by 1 sample)"; break;
         case doc::WireStatus::Inactive: tip_ += "  (an end is switched off)"; break;
@@ -276,6 +330,9 @@ public:
     return tip_;
   }
   ui::InfoText info() const override {
+    if (!wire_.valid())
+      return {"Signal Path", "The chain's own signal: what each device passes to the next (green: audio, amber: notes or "
+                             "voices). A switched-off device is passed by; free devices (the rack above) take no part."};
     if (!travels())
       return {"Modulation Wire", "Adds its signal to the parameter in the parameter's own units (Hz to a frequency, "
                                  "0 to 1 to a 0 to 1 knob), clamped to its range; scale it with a VCA. Delete removes it; "
@@ -334,6 +391,7 @@ private:
   CableLayer& layer_;
   ViewContext& ctx_;
   doc::WireId wire_;
+  uint64_t key_ = 0;
   uint8_t rate_ = 1;
   doc::WireStatus status_ = doc::WireStatus::Lowered;
   bool selected_ = false;
@@ -481,50 +539,92 @@ bool CableLayer::refresh() {
     return doc::WireStatus::Lowered;
   };
   std::vector<Cable> next;
+  auto place = [&](Cable& c, float badge) {
+    ui::Vec2 pts[kSamples];
+    cablePoints(c.a, c.da, c.b, c.db, s, pts);
+    c.bounds = boundsOf(pts, kSamples, 3.0f * s + 2.0f);
+    const ui::Vec2 mid = pts[kSamples / 2];
+    const int32_t bd = static_cast<int32_t>(std::lround(badge * s));
+    c.badge = {static_cast<int32_t>(std::lround(mid.x)) - bd / 2, static_cast<int32_t>(std::lround(mid.y)) - bd / 2, bd, bd};
+    c.bounds = unite(c.bounds, ui::IRect{c.badge.x, c.badge.y, c.badge.w + static_cast<int32_t>(std::lround(32.0f * s)), c.badge.h});
+  };
+  // TX.free-rack: the chain's own signal path first (series audio, the notes into the first device), under the wires.
+  const doc::TrackId shown = chain != nullptr ? chain->track() : doc::TrackId{};
+  if (chain != nullptr)
+    for (const DeviceChainView::ChainLink& k : chain->chainLinks()) {
+      Cable c;
+      c.kind = Kind::Chain;
+      c.key = (1ull << 63) | (static_cast<uint64_t>(k.from.value & 0x7FFFFFFFu) << 32) | k.to.value;
+      c.a = k.a.at;
+      c.b = k.b.at;
+      c.aDocked = k.a.docked;
+      c.bDocked = k.b.docked;
+      c.da = static_cast<uint8_t>(k.a.dir);
+      c.db = static_cast<uint8_t>(k.b.dir);
+      c.rate = k.rate;
+      c.input = true;
+      const std::string src = k.from.valid() ? deviceName(ctx_, p, k.from) : (k.rate == 2 ? std::string("Notes") : std::string("Audio clips"));
+      c.label = src + " \xE2\x86\x92 " + deviceName(ctx_, p, k.to) + (k.input.empty() || k.input == "in" ? std::string() : " " + k.input) +
+                (k.rate == 2 ? "  \xC2\xB7  notes / voices (the chain)" : "  \xC2\xB7  audio (the chain)");
+      place(c, kLinkBadge);
+      next.push_back(std::move(c));
+    }
   for (const doc::Wire& w : doc::wiresOf(p)) {
-    const doc::DeviceLoc from = doc::findDevice(p, w.from), to = doc::findDevice(p, w.to);
-    if (from.device == nullptr || to.device == nullptr) continue;
+    const doc::DeviceLoc from = w.fromNoteSource() ? doc::DeviceLoc{} : doc::findDevice(p, w.from), to = doc::findDevice(p, w.to);
+    if ((!w.fromNoteSource() && from.device == nullptr) || to.device == nullptr) continue;
     // TX.groups: a wire inside a group (between its members and terminals) is drawn by the group's panel.
-    const doc::DeviceId ga = doc::isGroupDevice(*from.device) ? from.device->id : from.device->group;
-    const doc::DeviceId gb = doc::isGroupDevice(*to.device) ? to.device->id : to.device->group;
-    if (ga.valid() && ga == gb) continue;
+    if (from.device != nullptr) {
+      const doc::DeviceId ga = doc::isGroupDevice(*from.device) ? from.device->id : from.device->group;
+      const doc::DeviceId gb = doc::isGroupDevice(*to.device) ? to.device->id : to.device->group;
+      if (ga.valid() && ga == gb) continue;
+      // TX.free-rack: between two devices of the free-device rack: drawn by the rack's canvas.
+      if (chain != nullptr && chain->inFreeRack(w.from) && chain->inFreeRack(w.to)) continue;
+    }
     Cable c;
     c.wire = w.id;
-    std::optional<ui::Vec2> a = chain != nullptr ? chain->jackPoint(w.from, w.port, &c.aDocked) : std::nullopt;
-    std::optional<ui::Vec2> b = chain != nullptr ? chain->paramPoint(w.to, w.param, &c.bDocked) : std::nullopt;
-    if (!a && !b) continue;  // neither end in the shown chain: not drawn (the project patch view shows every wire, T4.13)
-    if (!a) a = trackAnchor(from.track->id);
-    if (!b) b = trackAnchor(to.track->id);
+    c.key = w.id.value;
+    std::optional<DeviceChainView::CableEnd> ea, eb;
+    if (chain != nullptr) {
+      if (w.fromNoteSource()) {  // TMM.10-fix2: the shown track's note source is the chain's left end
+        if (w.noteSource == shown) ea = chain->notesEnd();
+      } else {
+        ea = chain->sourceEnd(w.from, w.port);
+      }
+      eb = chain->targetEnd(w.to, w.param);
+      c.input = chain->isInput(w.to, w.param);
+    }
+    if (!ea && !eb) continue;  // neither end in the shown chain: not drawn (the project patch view shows every wire, T4.13)
+    std::optional<ui::Vec2> a = ea ? std::optional<ui::Vec2>(ea->at) : trackAnchor(w.fromNoteSource() ? w.noteSource : from.track->id);
+    std::optional<ui::Vec2> b = eb ? std::optional<ui::Vec2>(eb->at) : trackAnchor(to.track->id);
     if (!a || !b) continue;
     c.a = *a;
     c.b = *b;
+    c.aDocked = ea && ea->docked;
+    c.bDocked = eb && eb->docked;
+    c.da = ea ? static_cast<uint8_t>(ea->dir) : 0;
+    c.db = eb ? static_cast<uint8_t>(eb->dir) : 0;
     c.status = statusOf(w.id);
-    c.rate = exportRate(*from.device, ctx_.deviceLibrary(), w.port);
-    ui::Vec2 pts[kSamples];
-    cablePoints(c.a, c.b, s, pts);
-    c.bounds = boundsOf(pts, kSamples, 3.0f * s + 2.0f);
-    const ui::Vec2 mid = pts[kSamples / 2];
-    const int32_t bd = static_cast<int32_t>(std::lround(kBadge * s));
-    c.badge = {static_cast<int32_t>(std::lround(mid.x)) - bd / 2, static_cast<int32_t>(std::lround(mid.y)) - bd / 2, bd, bd};
-    c.bounds = unite(c.bounds, ui::IRect{c.badge.x, c.badge.y, c.badge.w + static_cast<int32_t>(std::lround(32.0f * s)), c.badge.h});
-    next.push_back(c);
+    c.rate = from.device != nullptr ? exportRate(*from.device, ctx_.deviceLibrary(), w.port) : 2;
+    if (c.input && c.rate == 0) c.rate = 1;  // TX.free-rack: into an input it is a signal path (heard as audio)
+    place(c, kBadge);
+    next.push_back(std::move(c));
   }
   // Damage what moved: per wire the old and the new cable (a cable that did not move costs nothing).
   bool moved = false;
   ui::Damage& dmg = tree()->damage();
   auto same = [](const Cable& x, const Cable& y) {
     return x.a.x == y.a.x && x.a.y == y.a.y && x.b.x == y.b.x && x.b.y == y.b.y && x.status == y.status && x.rate == y.rate &&
-           x.aDocked == y.aDocked && x.bDocked == y.bDocked;
+           x.aDocked == y.aDocked && x.bDocked == y.bDocked && x.da == y.da && x.db == y.db;
   };
   for (const Cable& n : next) {
-    const auto o = std::find_if(cables_.begin(), cables_.end(), [&](const Cable& c) { return c.wire == n.wire; });
+    const auto o = std::find_if(cables_.begin(), cables_.end(), [&](const Cable& c) { return c.key == n.key; });
     if (o != cables_.end() && same(*o, n)) continue;
     moved = true;
     if (o != cables_.end()) dmg.add(o->bounds.toRect());
     dmg.add(n.bounds.toRect());
   }
   for (const Cable& o : cables_)
-    if (std::none_of(next.begin(), next.end(), [&](const Cable& c) { return c.wire == o.wire; })) {
+    if (std::none_of(next.begin(), next.end(), [&](const Cable& c) { return c.key == o.key; })) {
       moved = true;
       dmg.add(o.bounds.toRect());
     }
@@ -533,7 +633,8 @@ bool CableLayer::refresh() {
   bool badgesChanged = false;
   for (size_t i = 0; i < impl_->badges.size();) {
     Badge* b = impl_->badges[i];
-    if (std::none_of(cables_.begin(), cables_.end(), [&](const Cable& c) { return c.wire == b->wire(); })) {
+    if (std::none_of(cables_.begin(), cables_.end(), [&](const Cable& c) { return c.key == b->key(); })) {
+      if (hoverKey_ == b->key()) hoverKey_ = 0;
       (void)removeChild(*b);
       impl_->badges.erase(impl_->badges.begin() + static_cast<std::ptrdiff_t>(i));
       badgesChanged = true;
@@ -544,23 +645,34 @@ bool CableLayer::refresh() {
   for (const Cable& c : cables_) {
     Badge* b = nullptr;
     for (Badge* x : impl_->badges)
-      if (x->wire() == c.wire) b = x;
+      if (x->key() == c.key) b = x;
     if (b == nullptr) {
-      b = &add<Badge>(*this, ctx_, c.wire);
+      b = &add<Badge>(*this, ctx_, c.key, c.wire);
       impl_->badges.push_back(b);
       badgesChanged = true;
     }
-    b->setLook(c.rate, c.status, c.wire == selected_);
+    b->setLook(c.rate, c.status, c.wire.valid() && c.wire == selected_);
     if (!(b->rect() == c.badge)) badgesChanged = true;
   }
   if (badgesChanged) invalidateArrange();
   return moved || badgesChanged;
 }
 
+const CableLayer::Cable* CableLayer::cableOf(uint64_t key) const noexcept {
+  for (const Cable& c : cables_)
+    if (c.key == key) return &c;
+  return nullptr;
+}
+
+doc::WireId CableLayer::hoveredWire() const noexcept {
+  const Cable* c = hoverKey_ != 0 ? cableOf(hoverKey_) : nullptr;
+  return c != nullptr ? c->wire : doc::WireId{};
+}
+
 void CableLayer::arrange(ui::LayoutPass& pass) {
   for (Badge* b : impl_->badges)
     for (const Cable& c : cables_)
-      if (c.wire == b->wire()) pass.place(*b, c.badge);
+      if (c.key == b->key()) pass.place(*b, c.badge);
 }
 
 void CableLayer::paint(ui::PaintContext& ctx) {
@@ -571,14 +683,17 @@ void CableLayer::paint(ui::PaintContext& ctx) {
   ui::Vec2 pts[kSamples];
   for (const Cable& c : cables_) {
     if (ui::intersect(c.bounds, ctx.clip).empty()) continue;
-    cablePoints(c.a, c.b, s, pts);
+    cablePoints(c.a, c.da, c.b, c.db, s, pts);
     const bool off = c.status == doc::WireStatus::Inactive || c.status == doc::WireStatus::Invalid ||
                      c.status == doc::WireStatus::Refused;
     ui::Rgba col = off ? th->text.disabled : rateColour(c.rate);
-    const bool hot = c.wire == hoverWire_;  // T4.16c: its badge is hovered
-    if (c.wire == selected_ || hot) col = ui::lerp(col, ui::rgba(255, 255, 255), c.wire == selected_ ? 0.35f : 0.25f);
+    const bool hot = c.key == hoverKey_;  // T4.16c: its badge is hovered
+    const bool sel = c.wire.valid() && c.wire == selected_;
+    if (sel || hot) col = ui::lerp(col, ui::rgba(255, 255, 255), sel ? 0.35f : 0.25f);
     col = ui::withAlpha(col, static_cast<uint32_t>((off ? 150.0f : 230.0f) * (hot ? 1.0f : alpha)));
-    const float w = ctx.scale.exact(c.wire == selected_ || hot ? kCable + 1.0f : kCable);
+    // TX.free-rack: a signal path (the chain's links, a wire into an input) is drawn a little heavier than modulation.
+    const float base = c.input ? kCable + 0.5f : kCable;
+    const float w = ctx.scale.exact(sel || hot ? base + 1.0f : base);
     if (off) {  // dashed: every other run of 4 points
       for (int i = 0; i + 1 < kSamples; i += 8) ui::smoothPolyline(ctx.dl, pts + i, static_cast<uint32_t>(std::min(5, kSamples - i)), col, w);
     } else {
@@ -600,7 +715,7 @@ void CableLayer::paint(ui::PaintContext& ctx) {
     }
   }
   if (!drag_.active) return;
-  // The cable being dragged, and the knobs it can be dropped on.
+  // The cable being dragged, and the knobs and inputs it can be dropped on.
   if (DeviceChainView* chain = impl_->chain()) {
     const Target hit = targetAt(drag_.pos);
     for (const DeviceChainView::ParamControl& pc : chain->paramControls()) {
@@ -608,8 +723,20 @@ void CableLayer::paint(ui::PaintContext& ctx) {
       paint::box(ctx.dl, pc.rect, ctx.scale.exact(3.0f), on ? ui::withAlpha(ui::signal_theme::kAccent, 60) : 0,
                  ui::withAlpha(ui::signal_theme::kAccent, on ? 255 : 120));
     }
-    if (const auto a = chain->jackPoint(drag_.from, drag_.port)) {
-      cablePoints(*a, drag_.pos, s, pts);
+    // TX.free-rack: the input sockets on the frames' left edges (an audio input, a meta module's inputs).
+    for (const DeviceChainView::InputSocket& is : chain->inputSockets()) {
+      if (is.device == drag_.from) continue;
+      const bool on = is.device == hit.device && is.input == hit.param;
+      const ui::Vec2 c{static_cast<float>(is.rect.x) + 0.5f * static_cast<float>(is.rect.w),
+                       static_cast<float>(is.rect.y) + 0.5f * static_cast<float>(is.rect.h)};
+      const float r = 0.5f * static_cast<float>(is.rect.w) - 1.0f;
+      ctx.dl.addCircleFilled(c, r, on ? ui::withAlpha(rateColour(1), 200) : ui::withAlpha(th->surface.sunken, 230));
+      ctx.dl.addCircleStroke(c, r, ui::withAlpha(rateColour(1), on ? 255 : 160), ctx.scale.exact(on ? 1.6f : 1.0f));
+    }
+    if (const auto a = chain->sourceEnd(drag_.from, drag_.port)) {
+      const uint8_t db = hit.device.valid() && chain->isInput(hit.device, hit.param) ? static_cast<uint8_t>(DeviceChainView::EndDir::Left)
+                                                                                     : static_cast<uint8_t>(DeviceChainView::EndDir::Up);
+      cablePoints(a->at, static_cast<uint8_t>(a->dir), drag_.pos, db, s, pts);
       ui::smoothPolyline(ctx.dl, pts, kSamples, ui::withAlpha(rateColour(1), 230), ctx.scale.exact(kCable));
       ctx.dl.addCircleFilled(drag_.pos, ctx.scale.exact(3.0f), rateColour(1));
     }
@@ -617,9 +744,15 @@ void CableLayer::paint(ui::PaintContext& ctx) {
 }
 
 CableLayer::Target CableLayer::targetAt(ui::Vec2 pos) const {
-  if (DeviceChainView* chain = impl_->chain())
+  if (DeviceChainView* chain = impl_->chain()) {
     for (const DeviceChainView::ParamControl& pc : chain->paramControls())
       if (pc.rect.contains(pos)) return {pc.device, pc.param};
+    // TX.free-rack: an input socket (not the dragged device's own), or a block's input / control in the rack.
+    for (const DeviceChainView::InputSocket& is : chain->inputSockets())
+      if (is.device != drag_.from && is.rect.contains(pos)) return {is.device, is.input};
+    if (project_patch::ProjectPatchView* rack = chain->freeRackView(); rack != nullptr && chain->freeRackOpen())
+      if (const project_patch::ProjectPatchView::WireTarget t = rack->wireTargetAt(pos); t.device.valid()) return {t.device, t.param};
+  }
   return {};
 }
 
@@ -633,7 +766,7 @@ void CableLayer::beginDrag(doc::DeviceId from, std::string port, ui::Vec2 pos) {
   drag_.hoverTicks = 0;
   drag_.cursor = ui::Cursor::Crosshair;  // over the jack it starts from
   // M4 review UI item 6: what a jack drag does, in the status line.
-  ctx_.setStatus("Drop the cable on any knob to modulate it (another track's: hover its row first); Esc cancels.");
+  ctx_.setStatus("Drop the cable on a knob to modulate it, or on an input socket (a frame's left edge) to feed it (another track's: hover its row first); Esc cancels.");
   setHittable(true);  // from the first move on, the layer takes the pointer (the jack strip may be rebuilt meanwhile)
   setFocusable(true);
   if (tree()) tree()->setFocus(this);  // Esc cancels
@@ -660,13 +793,13 @@ void CableLayer::endDrag(bool commit, ui::Vec2 pos) {
   if (ctx_.store().dispatch(e->command).ok() && !e->wires.empty()) select(e->wires.front());
 }
 
-void CableLayer::hoverBadge(doc::WireId w, bool on) {
-  const doc::WireId next = on ? w : (hoverWire_ == w ? doc::WireId{} : hoverWire_);
-  if (next == hoverWire_ || !tree()) return;
+void CableLayer::hoverBadge(uint64_t key, bool on) {
+  const uint64_t next = on ? key : (hoverKey_ == key ? 0 : hoverKey_);
+  if (next == hoverKey_ || !tree()) return;
   // Only the two cables repaint.
   for (const Cable& c : cables_)
-    if (c.wire == hoverWire_ || c.wire == next) tree()->damage().add(c.bounds.toRect());
-  hoverWire_ = next;
+    if (c.key == hoverKey_ || c.key == next) tree()->damage().add(c.bounds.toRect());
+  hoverKey_ = next;
 }
 
 ui::Cursor CableLayer::cursorAt(ui::Vec2) const {

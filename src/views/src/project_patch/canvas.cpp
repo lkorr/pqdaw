@@ -516,7 +516,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     const Rect r = deviceRect(n.x, n.y, n.w, n.h);
     const float dx = last_.x - press_.x, dy = last_.y - press_.y;
     dl.addRectStroke(snapRect({r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy}), th.circuit.selected, std::max(1.0f, std::round(us)));
-    const uint32_t b = bandAt(last_);
+    const uint32_t b = view_.freeRack() ? kNone : bandAt(last_);  // TX.free-rack: blocks move freely (no chain slot)
     if (b != kNone) {
       const Band& band = pp.bands[b];
       const graph::Point2 w = toWorld(last_);
@@ -637,6 +637,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           (void)v.openNodeMenu(n, e.pos);
           return true;
         }
+        if (v.freeRack()) {  // TX.free-rack: empty space is the rack's (Add Free Device, Zoom to Fit)
+          (void)v.openRackMenu(e.pos);
+          return true;
+        }
         if (const uint32_t b = bandAt(e.pos); b != kNone) {
           (void)v.openBandMenu(b, e.pos);
           return true;
@@ -708,7 +712,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           return true;
         }
         if (node == kNone) {
-          if (const uint32_t b = bandAt(e.pos); b != kNone) v.openBand(pp.bands[b].track);  // T5.x-circuit-chain
+          if (v.embedded()) v.fitAll();  // TX.groups / TX.free-rack: an embedded canvas has no band to open
+          else if (const uint32_t b = bandAt(e.pos); b != kNone) v.openBand(pp.bands[b].track);  // T5.x-circuit-chain
           else v.fitAll();
           return true;
         }
@@ -763,8 +768,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           return true;
         }
       }
-      // A band's title strip: nudge the band.
-      if (node == kNone) {
+      // A band's title strip: nudge the band (TX.free-rack: the rack's band is only the space around its blocks).
+      if (node == kNone && !v.freeRack()) {
         if (const uint32_t b = bandAt(e.pos); b != kNone) {
           const graph::Point2 w = toWorld(e.pos);
           if (w.y <= pp.bands[b].y + metrics::kTitle) {
@@ -800,10 +805,37 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       last_ = e.pos;
       switch (drag_) {
         case Drag::Wire:
+          // TX.free-rack: a wire from a block of the rack leaves the canvas: the host (the Device view's cable layer)
+          // takes the drag over, onto the chain's knobs and inputs.
+          if (v.freeRack() && v.onWireOutside && !rect().contains(e.pos) && from_.valid() && from_.node < pp.nodes.size() &&
+              pp.nodes[from_.node].kind == NodeKind::Device && from_.port < pp.nodes[from_.node].outputs.size()) {
+            doc::DeviceId from = pp.nodes[from_.node].device;
+            std::string port = pp.nodes[from_.node].outputs[from_.port].name;
+            if (const size_t at = port.rfind('@'); at != std::string::npos) {  // a closed group's (a rack's) member
+              from = doc::DeviceId{static_cast<uint32_t>(std::stoul(port.substr(at + 1)))};
+              port.resize(at);
+            }
+            drag_ = Drag::None;
+            from_ = {};
+            markDirty();
+            v.onWireOutside(from, port, e.pos);
+            return true;
+          }
           wireCursor_ = wireRefusal(e.pos) != nullptr ? ui::Cursor::NotAllowed : ui::Cursor::Crosshair;
           markDirty();
           break;
         case Drag::MoveDevice:
+          // TX.free-rack: dragged out of the rack, the host shows where the block would land (the chain).
+          if (v.freeRack() && v.onBlockOutside && dragNode_ < pp.nodes.size()) {
+            if (!rect().contains(e.pos)) {
+              outside_ = true;
+              (void)v.onBlockOutside(pp.nodes[dragNode_].device, e.pos, false);
+            } else if (outside_) {
+              leaveOutside(e.pos);
+            }
+          }
+          markDirty();
+          break;
         case Drag::Nudge: markDirty(); break;
         case Drag::Resize: {
           // The bottom-right corner follows the pointer along the block's diagonal (its top-left stays): the press-time
@@ -957,7 +989,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     return ui::Cursor::ResizeNWSE;
   switch (drag_) {
     case Drag::Wire: return wireCursor_;
-    case Drag::MoveDevice: return bandAt(pos) == kNone ? ui::Cursor::NotAllowed : ui::Cursor::Move;
+    case Drag::MoveDevice: return bandAt(pos) == kNone && !view_.freeRack() ? ui::Cursor::NotAllowed : ui::Cursor::Move;
     case Drag::MaybeMoveDevice:
     case Drag::Nudge: return ui::Cursor::Move;
     case Drag::Volume:
@@ -1050,10 +1082,44 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   }
 }
 
+void ProjectCanvas::leaveOutside(Vec2 pos) {
+  if (!outside_) return;
+  outside_ = false;
+  if (view_.onBlockOutside) (void)view_.onBlockOutside({}, pos, false);
+}
+
 void ProjectCanvas::finishDeviceMove(Vec2 pos) {
   ProjectPatchView& v = view_;
   const ProjectPatch& pp = v.patch();
   if (dragNode_ == kNone) return;
+  // TX.free-rack: released outside the rack: the host's (into the chain); inside, the block moves where it is dropped
+  // (or joins the opened capsule it is dropped into, or leaves its own).
+  if (v.freeRack()) {
+    const doc::DeviceId device = pp.nodes[dragNode_].device;
+    if (!rect().contains(pos)) {
+      outside_ = false;
+      if (v.onBlockOutside) (void)v.onBlockOutside(device, pos, true);
+      return;
+    }
+    leaveOutside(pos);
+    const Node& moved = pp.nodes[dragNode_];
+    const graph::Point2 w = toWorld(pos), start = toWorld(press_);
+    uint32_t into = kNone;
+    for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
+      const Node& c = pp.nodes[i];
+      if (i != dragNode_ && c.group && c.groupOpen && w.x >= c.x && w.x <= c.x + c.w && w.y >= c.y && w.y <= c.y + c.h) into = i;
+    }
+    if (moved.capsule != kNone && into != moved.capsule) {
+      (void)v.setDeviceGroup(device, into != kNone ? pp.nodes[into].device : doc::DeviceId{});
+      return;
+    }
+    if (moved.capsule == kNone && into != kNone && !moved.group) {
+      (void)v.setDeviceGroup(device, pp.nodes[into].device);
+      return;
+    }
+    v.nudge(device.value, w.x - start.x, w.y - start.y);
+    return;
+  }
   const uint32_t b = bandAt(pos);
   if (b == kNone) return;
   const Band& band = pp.bands[b];
@@ -1154,6 +1220,7 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
 
 void ProjectCanvas::onCaptureLost() {
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.endValueGesture();
+  leaveOutside(last_);  // TX.free-rack
   if (drag_ != Drag::None) markDirty();
   drag_ = Drag::None;
   dragNode_ = dragBand_ = kNone;
@@ -1162,6 +1229,7 @@ void ProjectCanvas::onCaptureLost() {
 
 void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
+  leaveOutside(last_);  // TX.free-rack
   if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
     drag_ = Drag::None;
     (void)view_.setBlockScale(resizeDevice_, resizeK0_);

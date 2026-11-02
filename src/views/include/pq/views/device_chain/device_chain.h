@@ -10,6 +10,8 @@
 //   remove         Delete (device.delete) or the context menu
 //   deactivate     the panel's activator, `0` (device.toggleActive) or the context menu
 //   copy / paste   Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+D (device.copy, .cut, .paste, .duplicate; an in-process clipboard)
+//   free devices   (TX.free-rack) in the free-device rack over the chain, not in the chain: drag a title bar onto the
+//                  rack to take a device out of the chain, a block of the rack onto the chain to put it in
 //
 // Each panel's DeviceTarget is the document's device instance: a param gesture (drag, type-in, reset) is one store
 // gesture = one undo step of Param changes (the playback link writes params; no compile); a structural const is a
@@ -40,6 +42,9 @@ namespace pq::views {
 
 class Shell;
 class VoiceTapReader;
+namespace project_patch {
+class ProjectPatchView;
+}
 
 class DeviceChainView : public ui::Widget {
 public:
@@ -166,6 +171,73 @@ public:
   // TX.groups: a group member's cable end on its group's panel (outputs: the title bar's left end; params: its right
   // end), or nullopt (not a member, or its group not shown). Never docked.
   std::optional<ui::Vec2> groupPoint(doc::DeviceId device, bool output, bool* docked = nullptr) const;
+
+  // ---- TX.free-rack (SPEC §15 2026-11-01 "resize, groups, and the free-device rack") -------------------------------
+  // The free-device rack: a collapsible panel over the chain (its tab: "Free devices · N", a + that adds one) whose
+  // body is the circuit of the shown track's free devices (project_patch::ProjectPatchView(ctx, FreeRack): zoom, pan,
+  // wire, faces and panels edited in place, S-resize, Delete), the same set as the circuit's free row. Free devices are
+  // not frames of the chain. Expanding it grows the detail area by the rack's height (onRackHeight: the shell's
+  // splitter, so the arrangement moves up and the chain keeps its height); its bottom edge drags its height. Both are
+  // remembered in the view prefs. A chain device's title bar dragged onto the rack takes it out of the chain; a block of
+  // the rack dragged onto the chain puts it in there; a wire dragged out of the rack lands on the chain's knobs and
+  // inputs (the cable layer takes the drag over). Each edit one undo step.
+  static constexpr float kRackTabH = 20.0f, kRackHandleH = 5.0f;
+  static constexpr float kRackMinH = 80.0f, kRackMaxH = 640.0f;
+  bool freeRackOpen() const noexcept;
+  void setFreeRackOpen(bool open);
+  float freeRackHeight() const noexcept;  // the canvas's height (logical px) while open
+  void setFreeRackHeight(float logicalPx);
+  // The rack's canvas (null: no track shown) and its whole rect (tab included; device px).
+  project_patch::ProjectPatchView* freeRackView() const noexcept;
+  ui::IRect freeRackRect() const noexcept;
+  // The detail area grows (+) or shrinks (−) by this many logical px (installDeviceChain: the shell's splitter).
+  std::function<void(float logicalPx)> onRackHeight;
+  // Adds a free device of `patch` to the shown track (opens the rack; one undo step).
+  bool addFreeDevice(const std::string& patch);
+  bool takeIntoRack(doc::DeviceId device);  // a chain device out of the chain (one undo step)
+  // A free device into the chain before the frame at `slot` (frames.size(): at the end; one undo step).
+  bool putIntoChainAt(doc::DeviceId device, uint32_t slot);
+  // The slot of the chain a device dropped at device point `pos` lands in (nullopt: not over the chain).
+  std::optional<uint32_t> chainSlotAt(ui::Vec2 pos) const;
+
+  // ---- TX.free-rack: the cables of the signal path -------------------------------------------------------------------
+  // A cable's end in the Device view: where it is (device px), whether it is on its port (else clamped to an edge or at a
+  // panel's title), and which way the cable leaves it: Up (a jack, a knob: from above), Right (an output socket on a
+  // frame's right edge, a rack block's output pin), Left (an input socket on a frame's left edge, a rack block's input).
+  enum class EndDir : uint8_t { Up, Right, Left, Down };  // Down: the collapsed rack's tab (cables drop from it)
+  struct CableEnd {
+    ui::Vec2 at{0.0f, 0.0f};
+    bool docked = false;
+    EndDir dir = EndDir::Up;
+  };
+  // A device's output `port` (an export's jack, an out's socket; a free device's pin in the rack) / its param or input
+  // `port` (a knob; an input socket; in the rack its pin) as a cable end. nullopt: not shown here.
+  std::optional<CableEnd> sourceEnd(doc::DeviceId device, std::string_view port) const;
+  std::optional<CableEnd> targetEnd(doc::DeviceId device, std::string_view port) const;
+  // The shown track's note source (a MIDI track): the left end of the chain, at the signal row.
+  std::optional<CableEnd> notesEnd() const;
+  // Whether `port` is an input of the device (not a param): its wires end on an input socket.
+  bool isInput(doc::DeviceId device, std::string_view port) const;
+  // Whether the device is drawn in the free-device rack (a free device of the shown track that is not a member of a
+  // group in the chain: those are inside their group's panel).
+  bool inFreeRack(doc::DeviceId device) const;
+  // The chain's own signal path, link by link (doc::chainStages: active devices in order; free devices take no part, a
+  // switched-off one is passed by): what reaches each device's chain input from the previous one (or the note source).
+  struct ChainLink {
+    doc::DeviceId from;  // invalid: the track's note source
+    doc::DeviceId to;
+    std::string input;   // the input it enters by
+    uint8_t rate = 1;    // 1 audio, 2 per voice (notes or voices)
+    CableEnd a, b;
+  };
+  std::vector<ChainLink> chainLinks() const;
+  // The input sockets a cable can be dropped on now (every non-const input of the frames shown), device px.
+  struct InputSocket {
+    doc::DeviceId device;
+    std::string input;
+    ui::IRect rect;
+  };
+  std::vector<InputSocket> inputSockets() const;
   ui::IRect chainViewport() const noexcept;  // the chain's visible area
   void scrollChainBy(int32_t dx);
   // The knobs' modulation rings: static ranges from the document's wires, live sweeps from the context's
@@ -196,6 +268,8 @@ private:
   void follow();  // the track to show changed?
   doc::TrackId wantedTrack() const;
   void sync(bool force);  // frames ↔ the shown track's chain
+  // TX.free-rack: where a free device's cables meet the collapsed rack's tab (spread along it in list order).
+  ui::Vec2 tabPoint(doc::DeviceId device) const;
 
   ViewContext& ctx_;
   std::unique_ptr<Impl> impl_;

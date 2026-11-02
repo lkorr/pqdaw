@@ -33,10 +33,12 @@ inline constexpr float kChainPad = 4.0f;   // around the chain
 inline constexpr float kAddW = 132.0f;     // the add slot at the end of the chain
 
 class FrameBase;
+class FreeRackPanel;
 
 // Where a dragged device would land (T4.8: a rack's chain list or the chain a rack shows, besides the track's chain).
 struct DropTarget {
-  enum class Kind : uint8_t { None, Track, Chain, NewChain };
+  // TX.free-rack: Free = onto the free-device rack (out of the chain).
+  enum class Kind : uint8_t { None, Track, Chain, NewChain, Free };
   Kind kind = Kind::None;
   uint32_t index = 0;   // Track / Chain: the position among the list's devices (the dragged one counted, if it is there)
   doc::ChainId chain;   // Chain
@@ -125,6 +127,24 @@ struct DeviceChainView::Impl {
   uint32_t autoTimer = 0;
   // TX.groups: a group panel's width (logical px) after its right edge was dragged, by group id (this session).
   std::map<uint32_t, float> groupWidths;
+  // TX.free-rack: the free-device rack over the chain (free_rack.cpp), and a block of it dragged over the chain (the
+  // drop marker shows where it lands; `drop` holds it).
+  device_chain::FreeRackPanel* freeRack = nullptr;
+  doc::DeviceId rackDragging;
+  // TX.free-rack: per shown device (by id), its non-const inputs (not params) and outputs (outs, then exports), from
+  // the patch it plays: where cables enter and leave its frame. Filled in sync().
+  struct Ports {
+    std::vector<std::string> inputs, outputs;
+  };
+  std::map<uint32_t, Ports> ports;
+  const Ports* portsOf(doc::DeviceId id) const noexcept {
+    const auto it = ports.find(id.value);
+    return it == ports.end() ? nullptr : &it->second;
+  }
+  void refreshPorts();
+  // The drop slot (and its marker) of the track's chain for a device dragged at `pos` (`dragged`: its frame, if it is
+  // one of the chain's).
+  device_chain::DropTarget trackSlot(ui::Vec2 pos, doc::DeviceId dragged) const;
 };
 
 namespace device_chain {
@@ -197,10 +217,50 @@ std::unique_ptr<FrameBase> makeRackFrame(DeviceChainView::Impl& impl, ViewContex
 std::unique_ptr<FrameBase> makeGroupFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
 project_patch::ProjectPatchView* groupPatchView(FrameBase& f);
 // TX.groups: the devices the Device view shows for a list: every device but a group's members (the group shows them).
+// TX.free-rack: and no free device (the free-device rack shows them; a member is always free).
 std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list);
 // Devices of a rack's chain are framed like the track's: by makeFrame.
 // T4.8: the map-mode overlay (rack_frame.cpp): over the chain while a rack's Map is on.
 std::unique_ptr<ui::Widget> makeMapOverlay(DeviceChainView::Impl& impl);
+
+// TX.free-rack (free_rack.cpp): the free-device rack over the chain — a tab strip (collapse / expand, the count, Add
+// Free Device) and, expanded, the embedded circuit of the shown track's free devices with a resize handle under it.
+class FreeRackPanel final : public ui::Widget {
+public:
+  FreeRackPanel(DeviceChainView::Impl& impl, ViewContext& ctx);
+  project_patch::ProjectPatchView& view() const noexcept { return *view_; }
+  bool open() const noexcept { return open_; }
+  void setOpen(bool open);  // grows / shrinks the detail area (DeviceChainView::onRackHeight) and saves the prefs
+  float bodyHeight() const noexcept { return height_; }
+  void setBodyHeight(float logicalPx);
+  float logicalHeight() const noexcept;  // the tab, and the body and handle while open
+  void follow(doc::TrackId track);       // the shown track (its free devices; the count in the tab)
+  void setDropHighlight(bool on);        // a chain device dragged over it
+  ui::IRect plusRect() const noexcept;   // the tab's Add Free Device button (device px)
+  ui::IRect handleRect() const noexcept; // the resize handle (empty while collapsed)
+
+  void arrange(ui::LayoutPass& pass) override;
+  void paint(ui::PaintContext& ctx) override;
+  void paintOver(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  void onCaptureLost() override;
+  ui::Cursor cursorAt(ui::Vec2 p) const override;
+  ui::InfoText info() const override;
+
+private:
+  void savePrefs();
+  void applyHeight();
+  uint32_t freeCount() const;
+
+  DeviceChainView::Impl& impl_;
+  ViewContext& ctx_;
+  project_patch::ProjectPatchView* view_ = nullptr;
+  doc::TrackId track_;
+  bool open_ = false;
+  float height_ = 200.0f;
+  bool resizing_ = false, highlight_ = false;
+  float pressY_ = 0.0f, h0_ = 0.0f;
+};
 
 }  // namespace device_chain
 

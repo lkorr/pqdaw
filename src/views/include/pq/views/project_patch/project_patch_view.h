@@ -201,6 +201,8 @@ private:
   double dragStart_ = 0.0;         // the value at the press (volume fader position, pan, send position)
   ui::Vec2 pointer_{0, 0};         // the last pointer position (the readout is drawn there)
   bool gesture_ = false;
+  bool outside_ = false;           // TX.free-rack: a block drag is out of the canvas (the host shows where it lands)
+  void leaveOutside(ui::Vec2 pos);  // … and no longer (the host's marker goes)
   ui::Cursor hoverCursor_ = ui::Cursor::Arrow;     // T4.16c: pressCursor at the last move
   ui::Cursor wireCursor_ = ui::Cursor::Crosshair;  // T4.16c: during a wire drag
   mutable std::string infoTitle_;                  // TMM.10-fix2: a hovered note source's info (info() returns views)
@@ -213,8 +215,40 @@ public:
   // gestures, scoped to the group (LayoutOptions::scope: its capsule, terminals, members and the wires among them). It is
   // shown while its parent is; it never morphs, binds no view actions and fits the capsule when it first builds.
   ProjectPatchView(ViewContext& ctx, doc::DeviceId scope);
+  // TX.free-rack: an EMBEDDED view of one track's free devices (the Device view's free-device rack,
+  // LayoutOptions::freeTrack): embedded like a group panel; setRackTrack picks the track (the Device view's), and the
+  // view fits its contents again when the track changes. Inside it a block dragged moves freely (a nudge); a block or a
+  // wire dragged out of the canvas is handed to the hooks below (the Device view: into the chain, onto a chain knob).
+  struct FreeRack {};
+  ProjectPatchView(ViewContext& ctx, FreeRack);
   ~ProjectPatchView() override;
   doc::DeviceId scope() const noexcept { return scope_; }
+  bool freeRack() const noexcept { return freeRack_; }
+  bool embedded() const noexcept { return scope_.valid() || freeRack_; }
+  void setRackTrack(doc::TrackId track);
+  doc::TrackId rackTrack() const noexcept { return rackTrack_; }
+  // TX.free-rack hooks (set by the host): a block of the canvas dragged out of it (`drop` false while moving: show
+  // where it would land, with `device` invalid when it came back in or the drag ended; true: released there — true
+  // when the host took it), and a wire dragged out of it from `from`.`port` (the host takes the drag over: the canvas
+  // forgets it).
+  std::function<bool(doc::DeviceId device, ui::Vec2 pos, bool drop)> onBlockOutside;
+  std::function<void(doc::DeviceId from, const std::string& port, ui::Vec2 pos)> onWireOutside;
+  // TX.free-rack: where a device's output `port` (its first output when there is no such port) / its input or param
+  // `port` (a pin, or a wired param's control) is drawn now (device px, clamped into the canvas; `docked` false when it
+  // was clamped). nullopt: the device has no block here.
+  std::optional<ui::Vec2> outputPoint(doc::DeviceId device, std::string_view port, bool* docked = nullptr) const;
+  std::optional<ui::Vec2> inputPoint(doc::DeviceId device, std::string_view port, bool* docked = nullptr) const;
+  // TX.free-rack: what a wire dropped at device point `pos` would drive (an input pin, a face's / panel's control): the
+  // device and its param or input; invalid: nothing there.
+  struct WireTarget {
+    doc::DeviceId device;
+    std::string param;
+  };
+  WireTarget wireTargetAt(ui::Vec2 pos) const;
+  // TX.free-rack: the rack's menu (Add Free Device ▸, Zoom to Fit) at `at`.
+  ui::Menu* openRackMenu(ui::Vec2 at);
+  // The Add Free Device items for `track` (stock effects, meta modules); a pick runs addFreeDevice, or `pick` when set.
+  std::vector<ui::MenuItem> addFreeDeviceItems(doc::TrackId track, std::function<void(const std::string& patch)> pick = {});
   ViewContext& context() const noexcept { return ctx_; }
 
   // ---- shown, and the morph ------------------------------------------------------------------------------------
@@ -524,6 +558,12 @@ private:
   uint32_t costTimer_ = 0;
   // TX.groups
   doc::DeviceId scope_;
+  // TX.free-rack
+  bool freeRack_ = false;
+  doc::TrackId rackTrack_;
+  ui::IRect fitRect_{};                    // the canvas's rect and view at the last fit (an untouched view refits)
+  circuit::CircuitCanvas::View fitView_{};
+  void fitEmbedded();
   std::vector<doc::DeviceId> closedGroups_;
   doc::DeviceId selectedGroup_;
   // TX.panel-faces
@@ -644,6 +684,17 @@ struct GroupProjectIds {
   doc::DeviceId sat, util;
 };
 Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids = nullptr);
+// TX.free-rack: "Lead" plays the default synth → Saturator → Auto Filter → Utility; `lfos` free LFOs (0.25 Hz apart) are
+// each wired onto a knob of the chain (Saturator drive, Auto Filter frequency, Utility width, Auto Filter resonance,
+// Saturator dry / wet, Utility balance, Auto Filter drive, Saturator output, then again), and a free Phase accumulator
+// (55 Hz) feeds the Auto Filter's sidechain input, its frequency moved by the first LFO. The ids.
+struct FreeRackIds {
+  doc::TrackId lead;
+  doc::DeviceId sat, filter, util;
+  std::vector<doc::DeviceId> lfos;
+  doc::DeviceId acc;
+};
+Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos = 3, FreeRackIds* ids = nullptr);
 
 }  // namespace project_patch
 

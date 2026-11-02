@@ -513,4 +513,52 @@ Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
   return r.status;
 }
 
+Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackIds* ids) {
+  Runner r{store};
+  using K = doc::DeviceKind;
+  FreeRackIds out;
+  out.lead = r.track(doc::TrackKind::Midi, {}, "Lead", 0x6CB6F0);
+  if (!r.status) return r.status;
+  // The chain: the default synth → Saturator → Auto Filter → Utility.
+  out.sat = r.device(out.lead, "saturator", K::AudioEffect);
+  out.filter = r.device(out.lead, "auto_filter", K::AudioEffect);
+  out.util = r.device(out.lead, "utility", K::AudioEffect);
+  if (!r.status) return r.status;
+  (void)r.run(doc::ops::setDeviceParam(*store.current(), out.sat, "drive", 6.0));
+  // The free devices: LFOs, each wired onto a knob of the chain (in turn through these), and a Phase accumulator whose
+  // audio feeds the Auto Filter's sidechain input (a wire into an input), its frequency moved by the first LFO.
+  static constexpr std::pair<int, const char*> kTargets[] = {{0, "drive"},  {1, "freq"},    {2, "width"},  {1, "res"},
+                                                             {0, "dryWet"}, {2, "balance"}, {1, "drive"}, {0, "output"}};
+  const doc::DeviceId chain[3] = {out.sat, out.filter, out.util};
+  for (uint32_t i = 0; i < lfos; ++i) {
+    const doc::DeviceId lfo = r.device(out.lead, "lfo_device", K::AudioEffect);
+    if (!lfo.valid()) {
+      if (r.status) return Error{ErrorCode::Unknown, "free rack project: LFO", {}};
+      return r.status;
+    }
+    const doc::DeviceId one[1] = {lfo};
+    (void)r.run(doc::ops::setDevicesFree(*store.current(), one, true));
+    (void)r.run(doc::ops::setDeviceParam(*store.current(), lfo, "rate", 0.25 * static_cast<double>(i + 1)));
+    const auto& t = kTargets[i % std::size(kTargets)];
+    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", chain[t.first], t.second));
+    out.lfos.push_back(lfo);
+  }
+  {
+    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), out.lead, "phase_acc"));
+    out.acc = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+    if (!out.acc.valid()) {
+      if (r.status) return Error{ErrorCode::Unknown, "free rack project: Phase accumulator", {}};
+      return r.status;
+    }
+    const doc::DeviceId one[1] = {out.acc};
+    (void)r.run(doc::ops::setDevicesFree(*store.current(), one, true));
+    (void)r.run(doc::ops::setMetaParam(*store.current(), out.acc, "", "phase_acc", "freq", 55.0));
+    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.acc, "out", out.filter, "sc"));
+    if (!out.lfos.empty()) (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.lfos.front(), "lfo", out.acc, "freq"));
+  }
+  r.clip(out.lead, 0, 4 * kTicksPerWhole, "Riff", {0, 3, 7});
+  if (ids != nullptr) *ids = std::move(out);
+  return r.status;
+}
+
 }  // namespace pq::views::project_patch
