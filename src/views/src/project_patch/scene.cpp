@@ -54,6 +54,7 @@ SymbolSpec specOf(const Node& n) {
     s.face = n.face;
     inStub = outStub = 0.0f;
   }
+  if (n.panel) inStub = outStub = 0.0f;  // TX.panel-faces: the panel face draws its sockets on the edges
   for (size_t i = 0; i < n.inputs.size(); ++i) {
     PinSpec p;
     p.y = pinYOf(n, i);
@@ -155,6 +156,15 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sn.pinCount = static_cast<uint32_t>(sc.pins.size()) - sn.firstPin;
     sc.nodes.push_back(sn);
     if (n.face != nullptr) sc.faces.push_back({v, n.face, std::string(), n.device.value});  // TMM.4: the device itself
+    // TX.panel-faces: a stock device's panel (the view's panelMaker makes it; path: its patch, so a rebuild keeps it).
+    if (n.panel) {
+      circuit::SceneFace f;
+      f.node = v;
+      f.owner = n.device.value;
+      f.path = n.title;
+      f.panel = true;
+      sc.faces.push_back(std::move(f));
+    }
     // Labels: titles as buildScene places them; pin labels inside blocks.
     SceneLabel title;
     title.node = v;

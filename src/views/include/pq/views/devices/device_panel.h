@@ -86,6 +86,13 @@ public:
   void setActive(bool on);  // programmatic (no target call)
   bool folded() const noexcept { return folded_; }
   void setFolded(bool f);
+  // TX.panel-faces: whether the title bar folds the panel (default; the project patch view's blocks keep their size: no
+  // triangle, a double-click goes to the host).
+  void setFoldable(bool f);
+  bool foldable() const noexcept { return foldable_; }
+  // TX.panel-faces: the logical size of a panel for `sig` and `desc` as laid out unfolded (what logicalWidth /
+  // logicalHeight give once made), without making one.
+  static ui::Vec2 logicalSizeOf(const DeviceSignature& sig, const PanelDesc& desc) noexcept;
   std::function<void()> onSizeChanged;  // folded / unfolded (the host re-lays out its chain)
   // Logical size of the whole panel as laid out now (folded: the title bar only).
   float logicalWidth() const noexcept;
@@ -98,6 +105,12 @@ public:
   // TMM.10: the device-px rect of the control showing `param`: its widget's (visible), or the part of a face that
   // edits it; nullopt when nothing shows it now. (controlFor answers for widgets only.)
   std::optional<ui::IRect> controlRect(std::string_view param) const;
+  // T4.18 / TX.panel-faces: the param whose control is under device point `p` ("": none; a face's control too).
+  std::string paramAt(ui::Vec2 p) const;
+  // TX.panel-faces: whether a press at device point `p` goes to a part of the panel (a control, a display, the title
+  // bar's activator / fold / preset slot) rather than to the panel as a whole (its body, labels, the rest of the title
+  // bar: the host's, e.g. to select or move the device).
+  bool interactiveAt(ui::Vec2 p) const;
   // TMM.10: the face controls' voice readers may have become live (a note while nothing animates): they poll again.
   void wakeFaces();
   // The source started playing: displays that show the output spectrum start drawing it (if shown).
@@ -159,6 +172,7 @@ private:
   bool folded_ = false;
   bool edited_ = false;
   bool free_ = false;  // TX.patching
+  bool foldable_ = true;  // TX.panel-faces
   std::string presetName_;
   ui::Widget* title_ = nullptr;
 };

@@ -187,6 +187,45 @@ void DrawList::beginCmd() {
 }
 
 
+void DrawList::appendTransformed(const DrawList& src, Vec2 offset, float scale) {
+  assert(&src != this);
+  assert(vtxWrite_ == vtx_.data() + vtx_.size() && idxWrite_ == idx_.data() + idx_.size() &&
+         "previous primReserve not fully written");
+  const uint32_t nv = src.vtxCurrentIdx();
+  if (nv == 0 || src.cmd_.size() == 0) return;
+  const uint32_t base = vtxCurrentIdx();
+  Vertex* v = vtx_.grow(nv);
+  const Vertex* sv = src.vtx_.data();
+  for (uint32_t i = 0; i < nv; ++i) {
+    v[i] = sv[i];
+    v[i].pos = {offset.x + sv[i].pos.x * scale, offset.y + sv[i].pos.y * scale};
+  }
+  vtxWrite_ = vtx_.data() + vtx_.size();
+  const TextureId keepTex = texture_;
+  const BlendMode keepBlend = blend_;
+  for (uint32_t c = 0; c < src.cmd_.size(); ++c) {
+    const DrawCmd& sc = src.cmd_[c];
+    if (sc.idxCount == 0) continue;
+    const Rect clip{offset.x + static_cast<float>(sc.clip.x0) * scale, offset.y + static_cast<float>(sc.clip.y0) * scale,
+                    offset.x + static_cast<float>(sc.clip.x1) * scale, offset.y + static_cast<float>(sc.clip.y1) * scale};
+    pushClip(clip);
+    const ClipRect& cr = clipStack_[clipDepth_];
+    if (cr.x1 > cr.x0 && cr.y1 > cr.y0) {
+      texture_ = sc.texture;
+      blend_ = sc.blend;
+      beginCmd();
+      cmd_.back().idxCount += sc.idxCount;
+      uint32_t* out = idx_.grow(sc.idxCount);
+      const uint32_t* in = src.idx_.data() + sc.idxOffset;
+      for (uint32_t k = 0; k < sc.idxCount; ++k) out[k] = in[k] + base;
+      idxWrite_ = idx_.data() + idx_.size();
+    }
+    popClip();
+  }
+  texture_ = keepTex;
+  blend_ = keepBlend;
+}
+
 void DrawList::primReserve(uint32_t idxCount, uint32_t vtxCount) {
   assert(vtxWrite_ == vtx_.data() + vtx_.size() && idxWrite_ == idx_.data() + idx_.size() &&
          "previous primReserve not fully written");

@@ -57,6 +57,9 @@ public:
     tint_ = tint;
     tinted_ = true;
   }
+  // The colour a primitive drawn in `col` gets (the tint applied): for faces that write the draw list directly
+  // (TX.panel-faces: a device panel's recorded triangles as static layers).
+  Rgba colour(Rgba col) const noexcept { return c(col); }
   // Text needs a text system and a face (face 0: the UI's regular face, as FontRole's default).
   void setText(TextSystem* text, uint32_t face = 0) noexcept {
     text_ = text;

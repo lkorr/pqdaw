@@ -119,9 +119,17 @@ OverlayLayer::~OverlayLayer() {
 }
 
 OverlayLayer* OverlayLayer::of(const Widget& w) noexcept {
+  // TX.panel-faces: a tree drawn inside another tree's widget opens its popups in the outer tree's layer.
+  if (const UiTree* t = w.tree(); t != nullptr && t->host() != nullptr)
+    if (const Widget* h = t->host()->hostWidget()) return of(*h);
   const Widget* root = rootOf(w);
   if (root->childCount() == 0) return nullptr;
   return dynamic_cast<OverlayLayer*>(&root->child(root->childCount() - 1));
+}
+
+IRect OverlayLayer::anchorRect(const Widget& w, const IRect& r) noexcept {
+  const UiTree* t = w.tree();
+  return t != nullptr && t->host() != nullptr ? t->host()->toHost(r) : r;
 }
 
 std::string OverlayLayer::uniqueName(std::string_view base) const {

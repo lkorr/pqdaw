@@ -153,6 +153,23 @@ public:
   virtual void onLayout() {}
 };
 
+// TX.panel-faces: a tree drawn inside a widget of another tree (the project patch canvas hosts a device's panel in its
+// world space at the canvas's zoom: pq/views/devices/panel_face.h). The inner tree keeps its own scale, layout, hover,
+// capture and focus; the host forwards input to it and draws its paint where it shows it. What the inner tree's widgets
+// need from the outer tree goes through this link: popups open in the outer tree's overlay layer (OverlayLayer::of)
+// anchored where the host shows the rect (anchorRect), and the host hears when the inner tree wants work done.
+class TreeHost {
+public:
+  virtual ~TreeHost() = default;
+  // The outer tree's widget this tree is drawn in (its overlay layer and clipboard are the inner tree's).
+  virtual Widget* hostWidget() const noexcept = 0;
+  // A rect of the inner tree (its device px) in the outer tree's device px, where the host shows it now.
+  virtual IRect toHost(const IRect& r) const noexcept = 0;
+  // The inner tree was damaged, asked for a frame or set a timer: the host updates and repaints it soon. Called from
+  // anywhere on the UI thread (inside dispatch, layout or update); the host must not re-enter the tree from here.
+  virtual void treeNeedsUpdate() noexcept = 0;
+};
+
 struct PaintContext {
   DrawList& dl;
   const PaintResources& res;
@@ -496,6 +513,8 @@ public:
   bool needsFrame() const noexcept;
   // Earliest pending timer (s), or +infinity. The loop may sleep until then when !needsFrame().
   double nextWakeTime() const noexcept;
+  // TX.panel-faces: a widget asked for a frame or layout is pending (needsFrame without the damage).
+  bool framesRequested() const noexcept { return !frameRequests_.empty() || layoutPending_; }
   // Draws the whole tree into `dl` (already reset to width()×height()) and clears the damage.
   void paint(DrawList& dl, const PaintResources& res, double now);
   // Partial redraw (T0.7-fix1): paints only the widgets that intersect `region` (PaintContext::clip starts as
@@ -591,6 +610,11 @@ public:
   // Widgets use it to measure text outside paint.
   void setResources(const PaintResources* res) noexcept { resources_ = res; }
   const PaintResources* resources() const noexcept { return resources_; }
+  // TX.panel-faces: this tree is drawn inside a widget of another tree (see TreeHost; null: a top-level tree).
+  void setHost(TreeHost* host) noexcept { host_ = host; }
+  TreeHost* host() const noexcept { return host_; }
+  // The clock passed to the last update() (seconds): hosts that drive inner trees use one time base.
+  double now() const noexcept { return now_; }
   // The clipboard text fields use (null: an in-process clipboard).
   void setClipboard(Clipboard* c) noexcept { clipboard_ = c; }
   Clipboard& clipboard();
@@ -641,6 +665,7 @@ private:
   Widget* focus_ = nullptr;
   bool focusVisible_ = false;
   const PaintResources* resources_ = nullptr;
+  TreeHost* host_ = nullptr;  // TX.panel-faces
   Clipboard* clipboard_ = nullptr;
   std::unique_ptr<Clipboard> localClipboard_;
   std::vector<TreeObserver*> observers_;

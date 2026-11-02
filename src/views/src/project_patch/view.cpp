@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "../common/paint.h"
+#include "../common/panel_template.h"
 #include "internal.h"
 #include <cstdio>
 #include <unordered_map>
@@ -476,6 +477,7 @@ void ProjectPatchView::rebuild() {
   opt.expanded = sizes;
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
+  if (panelsShown_) opt.panelSize = [this](const doc::Device& d) { return panelSize(d); };  // TX.panel-faces
   // Keep the selection (devices, wires) across the rebuild.
   std::vector<doc::DeviceId> selDevices = selectedDevices();
   std::vector<doc::WireId> selWires;
@@ -492,6 +494,7 @@ void ProjectPatchView::rebuild() {
   canvas_->setScene(scene_.scene, !fitted_, true);
   if (fitted_) canvas_->setView(keep);
   fitted_ = true;
+  syncPanels();  // TX.panel-faces: kept panels show the new document and their blocks' sizes
   std::vector<uint32_t> nodes, wires;
   for (const doc::DeviceId d : selDevices) {
     const uint32_t n = patch_.nodeOf(d);
@@ -549,6 +552,7 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
   } else {
     ++stats_.repaints;
     built_ = ctx_.doc();  // same graph; the overlay reads the values
+    syncPanels();         // TX.panel-faces: a param value shown on a block's panel
     canvas_->markDirty();
   }
 }

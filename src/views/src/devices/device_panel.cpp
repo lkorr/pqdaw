@@ -356,8 +356,12 @@ public:
     const float cx = static_cast<float>(fr.x) + 0.5f * static_cast<float>(fr.w), cy = static_cast<float>(fr.y) + 0.5f * static_cast<float>(fr.h);
     const float s = ctx.scale.exact(3.5f);
     const ui::Rgba tc = hoverFold_ ? th->device.titleText : th->device.label;
-    if (panel_.folded()) ctx.dl.addTriangleFilled({cx - 0.6f * s, cy - s}, {cx + s, cy}, {cx - 0.6f * s, cy + s}, tc);
-    else ctx.dl.addTriangleFilled({cx - s, cy - 0.6f * s}, {cx + s, cy - 0.6f * s}, {cx, cy + s}, tc);
+    if (!panel_.foldable()) {  // TX.panel-faces: no triangle (the circuit's block keeps its size)
+    } else if (panel_.folded()) {
+      ctx.dl.addTriangleFilled({cx - 0.6f * s, cy - s}, {cx + s, cy}, {cx - 0.6f * s, cy + s}, tc);
+    } else {
+      ctx.dl.addTriangleFilled({cx - s, cy - 0.6f * s}, {cx + s, cy - 0.6f * s}, {cx, cy + s}, tc);
+    }
     // Preset slot (placeholder until the M5 browser): a sunken field on the right.
     const ui::IRect p = presetRect();
     if (f) {
@@ -406,13 +410,14 @@ public:
       impl_.userActive(!panel_.active());
       return true;
     }
-    if (foldRect().contains(e.pos)) {
+    if (panel_.foldable() && foldRect().contains(e.pos)) {
       panel_.setFolded(!panel_.folded());
       return true;
     }
     if (e.clickCount == 2) {  // T4.4-fix1: the host's action (Open in Circuit View), else fold
       if (panel_.onTitleDoubleClick) panel_.onTitleDoubleClick();
-      else panel_.setFolded(!panel_.folded());
+      else if (panel_.foldable()) panel_.setFolded(!panel_.folded());
+      else return false;
       return true;
     }
     return false;
@@ -426,10 +431,12 @@ public:
   }
   // T4.16c: the activator and the fold triangle are buttons; the rest of the bar is the host's (the Device view: a drag
   // there moves the device). T5.11: the preset slot too, when it hot-swaps.
-  ui::Cursor cursorAt(ui::Vec2 p) const override {
-    return activatorRect().contains(p) || foldRect().contains(p) || (panel_.onPresetClick && presetRect().contains(p))
-               ? ui::Cursor::Pointer
-               : ui::Cursor::Inherit;
+  ui::Cursor cursorAt(ui::Vec2 p) const override { return pressable(p) ? ui::Cursor::Pointer : ui::Cursor::Inherit; }
+  // TX.panel-faces: a press at `p` does something here (the activator, the fold triangle, a clickable preset slot);
+  // the rest of the bar is the host's (it moves the device).
+  bool pressable(ui::Vec2 p) const {
+    return activatorRect().contains(p) || (panel_.foldable() && foldRect().contains(p)) ||
+           (panel_.onPresetClick && presetRect().contains(p));
   }
   ui::IRect presetSlot() const { return presetRect(); }
   ui::InfoText info() const override {
@@ -1007,6 +1014,42 @@ void DevicePanel::setFolded(bool f) {
   invalidateLayout();
   markDirty();
   if (onSizeChanged) onSizeChanged();
+}
+
+void DevicePanel::setFoldable(bool f) {
+  if (foldable_ == f) return;
+  foldable_ = f;
+  if (!f) setFolded(false);
+  if (title_) title_->markDirty();
+}
+
+ui::Vec2 DevicePanel::logicalSizeOf(const DeviceSignature& sig, const PanelDesc& desc) noexcept {
+  const float w = desc.fitFace ? std::max(kFaceMinWidth, desc.width + 2 * kPad) : desc.width + 2 * kPad;
+  return {w, (sig.exports.empty() ? 0.0f : kJackStripH) + kTitleH + desc.height + 2 * kPad};
+}
+
+std::string DevicePanel::paramAt(ui::Vec2 p) const {
+  if (folded_) return {};
+  for (const ParamInfo& info : sig_.params) {
+    const std::optional<ui::IRect> r = controlRect(info.name);  // TMM.10: a face's control too
+    if (r && r->contains(p)) return info.name;
+  }
+  return {};
+}
+
+bool DevicePanel::interactiveAt(ui::Vec2 p) const {
+  if (title_ != nullptr && title_->rect().contains(p)) return static_cast<const TitleBar*>(title_)->pressable(p);
+  if (!jacks_.empty() && childCount() > 0 && child(0).rect().contains(p)) {
+    for (const Jack& j : jacks())
+      if (j.rect.contains(p)) return true;
+    return false;
+  }
+  if (folded_ || body_ == nullptr || !body_->visible()) return false;
+  for (const Impl::Bound& b : impl_->bound) {
+    if (b.desc->kind == ControlKind::Label || !b.widget->visible() || !b.widget->enabled()) continue;
+    if (b.widget->rect().contains(p)) return true;
+  }
+  return false;
 }
 
 float DevicePanel::logicalWidth() const noexcept {

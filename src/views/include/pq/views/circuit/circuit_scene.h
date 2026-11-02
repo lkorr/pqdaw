@@ -107,11 +107,14 @@ struct SceneSegment {
 // TMM.4: a node drawn as a meta-module face (SymbolSpec::face): its type and the instance's name path relative to the
 // scene's patch (the call's binding name; "" for a chain meta device in the project patch view). `owner`: whose state
 // it is — 0 for the scene's own patch, else the host's id (the project patch view: the device id).
+// TX.panel-faces: or a stock device's panel (`panel`; type null): the host's CircuitCanvas::panelMaker makes the face
+// (owner = the device id, path = what the panel fronts: the device's patch, so a rebuilt scene keeps the panel).
 struct SceneFace {
   uint32_t node = 0;  // scene node
   const meta::Type* type = nullptr;
   std::string path;
   uint32_t owner = 0;
+  bool panel = false;
 };
 
 // TMM.6: an `oversample(n) { … }` region, drawn as one wash in the signal colour behind exactly its members: each

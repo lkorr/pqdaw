@@ -80,6 +80,8 @@ ProjectCanvas::ProjectCanvas(ProjectPatchView& view) : CircuitCanvas("patch-canv
     if (view_.faceVoices) b.voices = view_.faceVoices(doc::DeviceId{f.owner}, f.path);
     return b;
   };
+  // TX.panel-faces: a closed stock device's block is its Device-view panel (bound to the document by the view).
+  panelMaker = [this](const circuit::SceneFace& f) { return view_.makePanel(f); };
   onHoverChanged = [this](const circuit::CanvasHit& hit) {
     uint32_t edge = kNone;
     const ProjectScene& ps = view_.scene();
@@ -346,7 +348,8 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
           paint::text(ctx, ctx.res.uiFonts->small, toIRect(a.mute), "M", th.mixer.activatorText, ui::TextAlign::Center);
           paint::text(ctx, ctx.res.uiFonts->small, toIRect(a.solo), "S", th.mixer.buttonText, ui::TextAlign::Center);
         }
-      } else if (n.kind == NodeKind::Device && (!n.lowered || !n.active || !band.active)) {
+      } else if (n.kind == NodeKind::Device && (!n.lowered || !n.active || !band.active) && !(n.panel && band.active)) {
+        // (TX.panel-faces: a panel shows its own switched-off look, as in the Device view.)
         // Bypassed (deactivated, missing, on a deactivated track): veiled; the chain wire passes under it.
         const Rect r = snapRect(nr);
         dl.addRectFilled(r, ui::mulAlpha(th.circuit.background, 0.55f));
@@ -373,7 +376,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output) continue;  // the symbol / the canvas's pill says it
-        if (n.face != nullptr) continue;  // TMM.4: a face is label-free (its name is in the info view)
+        if (n.face != nullptr || n.panel) continue;  // TMM.4: a face is label-free; TX.panel-faces: a panel has its title
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
         if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
         const ui::TextRun run = ts.shape(font, n.title);
@@ -866,11 +869,13 @@ void ProjectCanvas::finishWire(Vec2 pos) {
         return;
       }
     }
-    // TX.patching: a face's control (the Phase accumulator's frequency or phase, a VCA's knob …): that param.
-    if (const FaceParamHit fh = faceParamAt(pos); fh.param >= 0 && fh.node < v.scene().modelNode.size()) {
+    // TX.patching: a face's control (the Phase accumulator's frequency or phase, a VCA's knob …): that param;
+    // TX.panel-faces: a panel's control (a knob, a box, a toggle, a display's handle): its param.
+    if (const FaceParamHit fh = faceParamAt(pos); !fh.param.empty() && fh.node < v.scene().modelNode.size()) {
       const uint32_t mn = v.scene().modelNode[fh.node];
-      if (mn < pp.nodes.size() && pp.nodes[mn].kind == NodeKind::Device && pp.nodes[mn].face != nullptr) {
-        wire(pp.nodes[mn].device, std::string(pp.nodes[mn].face->params[static_cast<size_t>(fh.param)].name));
+      if (mn < pp.nodes.size() && pp.nodes[mn].kind == NodeKind::Device && (pp.nodes[mn].face != nullptr || pp.nodes[mn].panel) &&
+          v.scene().sceneNode[mn] == fh.node) {
+        wire(pp.nodes[mn].device, fh.param);
         return;
       }
     }

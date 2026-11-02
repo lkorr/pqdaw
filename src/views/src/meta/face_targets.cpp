@@ -5,11 +5,35 @@
 #include <algorithm>
 #include <cmath>
 
+#include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/meta/registry.h"
 #include "pq/document/meta.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
+
+const meta::Type* metaTypeAt(const ViewContext& ctx, doc::DeviceId device, std::string_view path) {
+  const doc::Device* d = doc::findDevice(*ctx.doc(), device).device;
+  if (d == nullptr) return nullptr;
+  if (path.empty()) return meta::findType(doc::metaDeviceType(*d));
+  if (const doc::MetaInstance* inst = d->metaAt(path)) return meta::findType(inst->type);
+  const doc::DeviceLibrary* lib = ctx.deviceLibrary();
+  if (lib == nullptr) return nullptr;
+  std::shared_ptr<const doc::ResolvedDevice> hold;
+  const graph::Patch* root = lib->patchOf(*d, hold);
+  if (root == nullptr) return nullptr;
+  const graph::PatchLibrary* l = &lib->library();
+  const doc::ResolvedDevice* user = hold.get();
+  const doc::PatchLookup lookup = [l, user](std::string_view name) -> const graph::Patch* {
+    if (user != nullptr && user->graph)
+      if (const graph::Patch* x = user->graph->library.find(name)) return x;
+    return l->find(name);
+  };
+  for (const doc::MetaSite& site : doc::metaSites(*root, lookup))
+    if (site.path == path) return site.type;
+  return nullptr;
+}
 
 DocTarget::~DocTarget() {
   if (gesture_) (void)ctx_.store().commitGesture();

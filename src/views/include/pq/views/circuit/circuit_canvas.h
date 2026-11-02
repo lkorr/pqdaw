@@ -134,11 +134,22 @@ public:
   };
   std::function<FaceBinding(const SceneFace&)> faceBinder;
   void rebindFaces();
-  // The face on scene node `node` (null: none), the faces in scene order.
+  // The meta face on scene node `node` (null: none), the meta faces in scene order.
   MetaFace* faceOn(uint32_t node) const noexcept;
   size_t faceCount() const noexcept;
   MetaFace& faceAt(size_t i) const noexcept;
   uint32_t faceNode(size_t i) const noexcept;
+  // ---- TX.panel-faces: stock device panels as faces ----
+  // Makes the face of a panel entry of the scene (SceneFace::panel): the host's (the project patch view: the device's
+  // Device-view panel, bound to the document). Unset or null: the node is drawn as a plain block. A new scene keeps the
+  // panel face of the same owner and path. Panels are hosted exactly like meta faces (one path: drawn at every level of
+  // detail over the Far chunks, pointer events on their controls routed to them in face-local world units, keys and
+  // text for the one the last press went to, their own timers through Face::update / nextWake).
+  std::function<std::unique_ptr<Face>(const SceneFace&)> panelMaker;
+  size_t panelCount() const noexcept;
+  Face& panelAt(size_t i) const noexcept;
+  uint32_t panelNode(size_t i) const noexcept;
+  Face* panelOn(uint32_t node) const noexcept;
   // A reader may have become live (a note, the transport): poll the faces now and keep animating while one is live.
   void wakeFaces();
   bool animatingFaces() const noexcept;  // the ≤ 60 Hz face timer is armed
@@ -154,6 +165,7 @@ public:
     uint32_t nodesPainted = 0, nodesFromTiles = 0, nodesStretched = 0, nodesDirect = 0;
     // TMM.4: faces painted, their static layers from tiles / stretched / drawn directly, face primitives emitted.
     uint32_t facesPainted = 0, faceLayersFromTiles = 0, faceLayersStretched = 0, faceLayersDirect = 0, facePrimitives = 0;
+    uint32_t panelsPainted = 0;  // TX.panel-faces: device panels painted (not counted in facesPainted)
     uint32_t wiresPainted = 0, segmentsPainted = 0, junctionsPainted = 0, labelsPainted = 0;
     // Far level: chunks drawn from their tiles, from the previous zoom level's tiles (stretched), or directly.
     uint32_t chunksFromTiles = 0, chunksStretched = 0, chunksDirect = 0;
@@ -168,6 +180,7 @@ public:
   void arrange(ui::LayoutPass& pass) override;
   bool onPointer(const ui::PointerEvent& e) override;
   bool onKey(const ui::KeyEvent& e) override;
+  bool onText(const ui::TextEvent& e) override;  // TX.panel-faces: the focused face's type-in
   void onFrame(double now) override;
   void onTimer(uint32_t id) override;
   void onCaptureLost() override;
@@ -185,11 +198,11 @@ protected:
   // pointer).
   ui::Cursor faceCursor(ui::Vec2 pos) const;
   bool faceInfo(ui::InfoText& out) const;
-  // TX.patching: the face param (meta::Type::params index) whose control is under device point `pos` (MetaFace::
-  // paramRect), with the face's scene node; {kNone-ish: node UINT32_MAX, param −1} when none (a cable drop target).
+  // TX.patching: the param whose control is under device point `pos` on a face (Face::paramAt: a meta face's control,
+  // a panel's knob), with the face's scene node; node UINT32_MAX / param "" when none (a cable drop target).
   struct FaceParamHit {
     uint32_t node = UINT32_MAX;
-    int32_t param = -1;
+    std::string param;
   };
   FaceParamHit faceParamAt(ui::Vec2 pos) const;
   bool faceDragging() const noexcept;

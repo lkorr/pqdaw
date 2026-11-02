@@ -26,6 +26,7 @@
 #include <intrin.h>
 
 #include "pq/document/devices.h"
+#include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/ui/atlas.h"
 #include "pq/ui/draw_list.h"
@@ -320,27 +321,59 @@ int main() {
     tree.paint(dl, res, now);
     stageTiles();
   };
-  // The whole project, fitted (far level), then one band (near level).
-  for (int level = 0; level < 2; ++level) {
-    if (level == 0) view->fitAll(false);
-    else view->focusBand(snap->tracks[0]->children.at(3)->id, false);
+  // TX.panel-faces: the first show with panels (the panel faces made: every closed stock device's DevicePanel).
+  {
+    view->setPanelsShown(false);
     settle();
-    fullPaint();
-    const circuit::CircuitCanvas& c = view->canvas();
-    const char* lod = c.lod() == circuit::CircuitCanvas::Lod::Far ? "far" : (c.lod() == circuit::CircuitCanvas::Lod::Mid ? "mid" : "near");
-    std::printf("%s: zoom %.3f (%s): chunks %u from tiles / %u direct, %u nodes painted (%u from tiles), %u vertices, %u commands\n",
-                level == 0 ? "whole project" : "one band", c.view().zoom, lod, c.stats().chunksFromTiles, c.stats().chunksDirect,
-                c.stats().nodesPainted, c.stats().nodesFromTiles, static_cast<unsigned>(dl.vertices().size()),
-                static_cast<unsigned>(dl.commands().size()));
-    std::snprintf(name, sizeof name, "project_patch.paint(full, settled, %s, zoom %.2f %s) 64 tracks %ux%u", level == 0 ? "whole project" : "one band",
-                  c.view().zoom, lod, w, h);
-    pq::bench::reportStats(name, pq::bench::measure(fullPaint, 1), "ns/frame");
-    std::vector<double> pan;
-    for (int i = 0; i < 300; ++i)
-      pan.push_back(timed([&] { view->canvas().panBy((i / 50) % 2 ? -37.0f : 37.0f, (i / 75) % 2 ? -11.0f : 11.0f); }));
-    std::snprintf(name, sizeof name, "project_patch.pan frame (%s, %s) 64 tracks %ux%u", level == 0 ? "whole project" : "one band", lod, w, h);
-    pq::bench::reportStats(name, pq::bench::summarize(pan), "ns CPU/frame");
+    const auto t0 = std::chrono::steady_clock::now();
+    view->setPanelsShown(true);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("panels: %zu panel faces made in %.2f ms (rebuild %.2f ms of it)\n", view->canvas().panelCount(), ms, view->stats().lastRebuildMs);
+    settle();
   }
+  // The whole project, fitted (far level), then one band (near level). TX.panel-faces: with the stock devices drawn as
+  // their panels (the default) and as plain blocks (setPanelsShown(false): the A/B of the panels' cost).
+  for (int level = 0; level < 2; ++level) {
+    for (int panels = 1; panels >= 0; --panels) {
+      view->setPanelsShown(panels != 0);
+      if (level == 0) view->fitAll(false);
+      else view->focusBand(snap->tracks[0]->children.at(3)->id, false);
+      settle();
+      fullPaint();
+      const circuit::CircuitCanvas& c = view->canvas();
+      const char* lod = c.lod() == circuit::CircuitCanvas::Lod::Far ? "far" : (c.lod() == circuit::CircuitCanvas::Lod::Mid ? "mid" : "near");
+      const char* what = panels != 0 ? "panels" : "plain blocks";
+      std::printf("%s (%s): zoom %.3f (%s): chunks %u from tiles / %u direct, %u nodes painted (%u from tiles), %u panels, %u vertices, %u commands\n",
+                  level == 0 ? "whole project" : "one band", what, c.view().zoom, lod, c.stats().chunksFromTiles, c.stats().chunksDirect,
+                  c.stats().nodesPainted, c.stats().nodesFromTiles, c.stats().panelsPainted, static_cast<unsigned>(dl.vertices().size()),
+                  static_cast<unsigned>(dl.commands().size()));
+      std::snprintf(name, sizeof name, "project_patch.paint(full, settled, %s, zoom %.2f %s, %s) 64 tracks %ux%u",
+                    level == 0 ? "whole project" : "one band", c.view().zoom, lod, what, w, h);
+      pq::bench::reportStats(name, pq::bench::measure(fullPaint, 1), "ns/frame");
+      std::vector<double> pan;
+      for (int i = 0; i < 300; ++i)
+        pan.push_back(timed([&] { view->canvas().panBy((i / 50) % 2 ? -37.0f : 37.0f, (i / 75) % 2 ? -11.0f : 11.0f); }));
+      std::snprintf(name, sizeof name, "project_patch.pan frame (%s, %s, %s) 64 tracks %ux%u", level == 0 ? "whole project" : "one band", lod,
+                    what, w, h);
+      pq::bench::reportStats(name, pq::bench::summarize(pan), "ns CPU/frame");
+      if (panels != 0) {
+        // A param edit from elsewhere (automation, the Device view; each step of a panel's own knob drag does the same):
+        // the document change, the shown panel updated and re-recorded, the frame.
+        const doc::Track& t1 = *snap->tracks[0]->children.at(3);  // Track 4: EQ Eight, Utility
+        const doc::DeviceId dev = t1.devices.back()->id;
+        std::vector<double> edit;
+        for (int i = 0; i < 100; ++i)
+          edit.push_back(timed([&] {
+            auto e = doc::ops::setDeviceParam(*ctx.doc(), dev, "gain", i % 2 == 0 ? 0.5 : 0.75);
+            if (e && !e->empty()) (void)ctx.store().dispatch(e->command);
+          }));
+        std::snprintf(name, sizeof name, "project_patch.param edit frame (a panel shows it; %s, %s) 64 tracks %ux%u",
+                      level == 0 ? "whole project" : "one band", lod, w, h);
+        pq::bench::reportStats(name, pq::bench::summarize(edit), "ns CPU/frame");
+      }
+    }
+  }
+  view->setPanelsShown(true);
   // The morph: back to the arrangement and in again, every frame timed at 144 Hz.
   view->setShown(false, false);
   settle();

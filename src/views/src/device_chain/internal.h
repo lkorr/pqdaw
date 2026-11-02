@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../common/drag.h"
+#include "../common/panel_template.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
@@ -20,12 +21,6 @@
 
 namespace pq::views {
 
-// The panel of a device patch: its signature and its description (the .panel.json next to the device file, else the
-// generated generic panel). Cached per patch by the view.
-struct PanelTemplate {
-  devices::DeviceSignature sig;
-  devices::PanelDesc desc;
-};
 
 namespace device_chain {
 

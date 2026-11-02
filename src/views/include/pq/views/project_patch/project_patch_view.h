@@ -56,8 +56,10 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <span>
 #include <string>
 #include <vector>
@@ -80,6 +82,10 @@ namespace pq::views {
 class Shell;
 class MeterSource;
 class ArrangementView;
+struct PanelTemplate;
+namespace devices {
+class PanelFace;
+}
 
 namespace project_patch {
 
@@ -326,6 +332,15 @@ public:
   // also wakes its faces while the transport plays (each playhead refresh, when no face timer runs).
   void wakeFaces();
 
+  // ---- TX.panel-faces: closed stock devices drawn as their Device-view panels ----------------------------------
+  // On (default): a closed stock device (not edited, not a rack, not a chain meta device, not missing) is drawn as the
+  // panel the Device view shows (devices::PanelFace: the same widgets at the canvas's zoom, interactive in place, one
+  // undo step per gesture); off: plain blocks (benchmarks' A/B). Rebuilds the model.
+  void setPanelsShown(bool on);
+  bool panelsShown() const noexcept { return panelsShown_; }
+  // The panel face of a device's block (null: the device is not drawn as a panel now).
+  devices::PanelFace* panelOf(doc::DeviceId device) const noexcept;
+
   // The hovered wire's readout (what the overlay draws; tests).
   struct Readout {
     uint32_t edge = kNone;
@@ -367,6 +382,8 @@ public:
   Stats& mutableStats() noexcept { return stats_; }  // the canvas counts what it paints
   void updateReadout(uint32_t edge);
   void animateViewTo(const circuit::CircuitCanvas::View& v);
+  // TX.panel-faces: the face of a panel entry of the scene (CircuitCanvas::panelMaker).
+  std::unique_ptr<Face> makePanel(const circuit::SceneFace& f);
 
 private:
   void onDocument(const doc::StoreEvent& e);
@@ -387,6 +404,11 @@ private:
   void captureArrangement();
   circuit::CircuitCanvas::View viewForArrangement() const;
   void pollReadout();
+  // TX.panel-faces: what a device's panel is (cached per patch), its size (world units; {0, 0}: none), and the shown
+  // panels brought up to date with the document (values, activation, name; the block's size after a rebuild).
+  const PanelTemplate* panelTemplate(const doc::Device& d);
+  graph::Point2 panelSize(const doc::Device& d);
+  void syncPanels();
 
   ViewContext& ctx_;
   ViewContext::Subscription docSub_;
@@ -429,6 +451,11 @@ private:
   bool showCosts_ = false;
   std::vector<float> costs_;  // per model node (devices; < 0: none)
   uint32_t costTimer_ = 0;
+  // TX.panel-faces
+  bool panelsShown_ = true;
+  std::map<std::string, std::unique_ptr<PanelTemplate>, std::less<>> panelTemplates_;  // by patch
+  const doc::DeviceLibrary* panelTemplatesFrom_ = nullptr;
+  std::unordered_map<uint32_t, doc::DevicePtr> panelSynced_;  // per device: what its panel shows (unchanged: skipped)
 
   struct Morph {
     bool active = false;

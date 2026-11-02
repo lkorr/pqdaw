@@ -969,7 +969,7 @@ void Dropdown::openMenu() {
     mi.push_back(std::move(it));
   }
   OverlayOptions o;
-  o.anchor = rect();
+  o.anchor = OverlayLayer::anchorRect(*this, rect());  // TX.panel-faces: where a host tree shows it
   o.placement = Placement::Below;
   o.onClosed = [alive] {
     if (Dropdown* d = *alive) {
@@ -977,9 +977,10 @@ void Dropdown::openMenu() {
       d->markDirty();
     }
   };
+  const int32_t minW = o.anchor.w;
   auto menu = std::make_unique<Menu>(std::move(mi), layer->uniqueName("dropdown-menu"));
   Menu& m = static_cast<Menu&>(layer->open(std::move(menu), std::move(o)));
-  m.setMinWidthPx(rect().w);
+  m.setMinWidthPx(minW);
   m.setHighlighted(index_);
   menu_ = &m;
   markDirty();

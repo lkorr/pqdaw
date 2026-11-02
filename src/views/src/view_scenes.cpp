@@ -1609,6 +1609,54 @@ Status setupProjectPatchFree(Shell& shell) {
   return Ok{};
 }
 
+// TX.panel-faces (bug report 2026-11-01_12-15-15: "the utility in the circuit should just look like the utility ui in
+// the device list below"): closed stock devices drawn as their Device-view panels in the project patch view — "Keys"
+// plays the default synth (its generic panel) into an Auto Filter (frequency 600 Hz, resonance 0.4) and a Utility
+// (width 140 %, Mute off, Bass Mono on: its conditional controls shown), "Mod" holds an LFO whose output is wired onto
+// the Utility's gain (a param pin on the panel's edge). The Keys band framed.
+Status setupProjectPatchPanels(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-panels: no device library", {}};
+  doc::DocumentStore& st = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) -> Status {
+    if (!e) return e.error();
+    return st.dispatch(e->command);
+  };
+  auto keysE = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys", doc::Colour{0xF6A23B});
+  if (!keysE) return keysE.error();
+  if (Status s = st.dispatch(keysE->command); !s) return s;
+  const doc::TrackId keys = keysE->tracks.at(0);
+  auto modE = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, keys, "Mod", doc::Colour{0xB38BEA});
+  if (!modE) return modE.error();
+  if (Status s = st.dispatch(modE->command); !s) return s;
+  const doc::TrackId mod = modE->tracks.at(0);
+  auto add = [&](doc::TrackId t, const char* patch) -> doc::DeviceId {
+    auto e = doc::ops::addDevice(*st.current(), st.ids(), t, patch, doc::DeviceKind::AudioEffect);
+    if (!e || e->devices.empty() || !st.dispatch(e->command)) return {};
+    return e->devices[0];
+  };
+  const doc::DeviceId filter = add(keys, "auto_filter"), util = add(keys, "utility");
+  if (const doc::Track* m = doc::findTrackPtr(*st.current(), mod); m != nullptr && !m->devices.empty()) {
+    const doc::DeviceId inst[1] = {m->devices[0]->id};
+    if (Status s = run(doc::ops::deleteDevices(*st.current(), inst)); !s) return s;
+  }
+  const doc::DeviceId lfo = add(mod, "lfo_device");
+  if (!filter.valid() || !util.valid() || !lfo.valid()) return Error{ErrorCode::Unknown, "project-patch-panels: adding the devices failed", {}};
+  if (Status s = run(doc::ops::setDeviceParam(*st.current(), filter, "freq", 600.0)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParam(*st.current(), filter, "res", 0.4)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParam(*st.current(), util, "width", 1.4)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceSetting(*st.current(), util, "bassMono", 1.0)); !s) return s;
+  if (Status s = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "lfo", util, "gain")); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-panels: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->focusBand(keys, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): the same project in the project patch view
 // with wires from the note sources' outputs: Meta Lead's velocity into its Wavetable's position (per voice: the run's
 // stage), its Hz into the Auto Filter's frequency (the global filter: through the wire's reducer, highest), its gate
@@ -1983,6 +2031,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-chain", 1280, 800, setupProjectMetaChain},          // TMM.10
     {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
     {"project-patch-free", 1280, 800, setupProjectPatchFree},          // TX.patching
+    {"project-patch-panels", 1600, 900, setupProjectPatchPanels},      // TX.panel-faces
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14

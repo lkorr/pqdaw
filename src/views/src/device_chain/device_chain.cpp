@@ -81,30 +81,7 @@ const PanelTemplate* DeviceChainView::Impl::templateFor(const doc::Device& d) {
   const std::string key = templateKey(lib, d);
   if (key.empty()) return nullptr;
   if (const auto it = templates.find(key); it != templates.end()) return it->second.get();
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  const graph::Patch* callee = lib != nullptr ? lib->patchOf(d, hold) : nullptr;
-  std::unique_ptr<PanelTemplate> t;
-  if (callee != nullptr) {
-    t = std::make_unique<PanelTemplate>();
-    t->sig = devices::signatureOf(*callee);
-    // TMM.10: a chain meta device's panel is its face (SPEC §15 2026-11-01), scaled to the Device view's height.
-    if (const meta::Type* type = meta::findType(doc::metaDeviceType(d)); type != nullptr && hasFace(*type)) {
-      // TMM.10-fix1: the socket shows where the chain is wired (another input when the device chose one; none when
-      // it is unplugged: the absence of the wire).
-      if (d.chainInput == doc::kChainUnplugged) t->sig.audioIn.clear();
-      else if (!d.chainInput.empty() && !t->sig.audioIn.empty()) t->sig.audioIn = d.chainInput;
-      const ui::Vec2 ws = faceSize(*type);
-      t->desc = devices::facePanel(t->sig, std::string(type->name), ws.x, ws.y);
-      return (templates[key] = std::move(t)).get();
-    }
-    // The stock panel while its bindings hold for the (edited) signature, else the generic one.
-    const std::string file = lib->pathOf(d.patch);
-    auto desc = file.empty() ? Result<devices::PanelDesc>(Error{ErrorCode::NotFound, "", {}})
-                             : devices::loadPanelDesc(devices::panelPathFor(file), t->sig);
-    const doc::DeviceInfo* info = lib->catalog().find(d.patch);
-    t->desc = desc ? std::move(*desc) : devices::autoPanel(t->sig, info != nullptr ? info->name : d.patch);
-  }
-  return (templates[key] = std::move(t)).get();
+  return (templates[key] = buildPanelTemplate(lib, d)).get();  // TX.panel-faces: shared with the project patch view
 }
 
 std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId, doc::ChainId chain, uint32_t index,
@@ -331,27 +308,7 @@ public:
     impl_.run(doc::ops::setDevicesActive(*ctx_.doc(), std::vector<doc::DeviceId>{id_}, on), false);
   }
   // TMM.10: a face control's instance — "" is this chain meta device; a nested path is a meta call in its circuit.
-  const meta::Type* metaType(std::string_view path) const override {
-    const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
-    if (d == nullptr) return nullptr;
-    if (path.empty()) return meta::findType(doc::metaDeviceType(*d));
-    if (const doc::MetaInstance* inst = d->metaAt(path)) return meta::findType(inst->type);
-    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-    if (lib == nullptr) return nullptr;
-    std::shared_ptr<const doc::ResolvedDevice> hold;
-    const graph::Patch* root = lib->patchOf(*d, hold);
-    if (root == nullptr) return nullptr;
-    const graph::PatchLibrary* l = &lib->library();
-    const doc::ResolvedDevice* user = hold.get();
-    const doc::PatchLookup lookup = [l, user](std::string_view name) -> const graph::Patch* {
-      if (user != nullptr && user->graph)
-        if (const graph::Patch* x = user->graph->library.find(name)) return x;
-      return l->find(name);
-    };
-    for (const doc::MetaSite& site : doc::metaSites(*root, lookup))
-      if (site.path == path) return site.type;
-    return nullptr;
-  }
+  const meta::Type* metaType(std::string_view path) const override { return metaTypeAt(ctx_, id_, path); }
   std::unique_ptr<MetaTarget> metaTarget(std::string_view path, const meta::Type& type) override {
     return std::make_unique<DocTarget>(ctx_, id_, std::string(path), type);
   }
@@ -628,12 +585,7 @@ void FrameBase::paintOver(ui::PaintContext& ctx) {
 
 std::string FrameBase::paramAt(ui::Vec2 p) const {
   const devices::DevicePanel* panel = this->panel();
-  if (panel == nullptr || panel->folded()) return {};
-  for (const devices::ParamInfo& info : panel->signature().params) {
-    const std::optional<ui::IRect> r = panel->controlRect(info.name);  // TMM.10: a face's control too
-    if (r && r->contains(p)) return info.name;
-  }
-  return {};
+  return panel != nullptr ? panel->paramAt(p) : std::string();
 }
 
 void FrameBase::setAutomated(std::vector<std::pair<std::string, bool>> params) {

@@ -218,6 +218,7 @@ uint32_t Widget::requestTimer(double delaySeconds) {
   if (!tree_) return 0;
   const uint32_t id = tree_->nextTimerId_++;
   tree_->timers_.push_back({tree_->now_ + std::max(0.0, delaySeconds), this, id});
+  if (tree_->host_) tree_->host_->treeNeedsUpdate();  // TX.panel-faces
   return id;
 }
 

@@ -69,6 +69,9 @@ public:
 
   // The layer of `w`'s tree: the last child of the root, if it is an OverlayLayer.
   static OverlayLayer* of(const Widget& w) noexcept;
+  // TX.panel-faces: `r` (a rect of w's tree) as an anchor in the layer's tree: itself, or for a tree drawn inside
+  // another tree's widget (UiTree::host) where that host shows it.
+  static IRect anchorRect(const Widget& w, const IRect& r) noexcept;
   // `base`, or `base-2`, `base-3`, … if a popup of that name is open (sibling names must be unique).
   std::string uniqueName(std::string_view base) const;
 

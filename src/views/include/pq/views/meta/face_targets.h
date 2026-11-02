@@ -53,6 +53,11 @@ private:
   bool gesture_ = false;
 };
 
+// TMM.10 / TX.panel-faces: the meta type of the instance at name path `path` of device `device` ("" = a chain meta
+// device itself; else a meta call in its circuit, in its stored state or found in the patch it plays), or null. What a
+// panel's face control shows (the Device view's and the project patch view's DeviceTarget::metaType).
+const meta::Type* metaTypeAt(const ViewContext& ctx, doc::DeviceId device, std::string_view path);
+
 class SyntheticVoices final : public VoiceTapReader {
 public:
   struct Voice {

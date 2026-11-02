@@ -270,6 +270,16 @@ struct Builder {
         n.h = roundUp4(std::max(n.h, fs.y));
       }
     }
+    // TX.panel-faces: a closed stock device with a panel is drawn as it (the Device view's panel at the block's size).
+    if (!n.meta && !n.expanded && !n.edited && !n.missing && opt.panelSize) {
+      const graph::Point2 ps = opt.panelSize(d);
+      if (ps.x > 0.0f && ps.y > 0.0f) {
+        const size_t rows = std::max<size_t>({n.inputs.size(), n.outputs.size(), 1});
+        n.panel = true;
+        n.w = roundUp4(ps.x);
+        n.h = roundUp4(std::max(ps.y, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
+      }
+    }
     if (n.expanded)
       for (const ExpandedSize& e : opt.expanded)
         if (e.device == d.id) {

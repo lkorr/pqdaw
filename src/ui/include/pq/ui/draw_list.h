@@ -231,6 +231,12 @@ public:
   // Textured quad. Switches to `tex` for this quad and restores the previous texture afterwards.
   void addImage(TextureId tex, const Rect& r, Vec2 uv0, Vec2 uv1, Rgba tint = rgba(255, 255, 255));
 
+  // TX.panel-faces: appends everything `src` drew (its commands with their textures, blend modes and clip rects),
+  // every point mapped to offset + p · scale, each clip rect mapped the same way and intersected with the current clip.
+  // A tree painted into a list of its own (a device panel laid out at one scale) is drawn where a host shows it: with
+  // scale 1 and a whole-pixel offset the pixels are the same as painting it here directly. `src` must not be this list.
+  void appendTransformed(const DrawList& src, Vec2 offset, float scale);
+
   // Segments per quarter circle used for a corner of the given radius (max chord error ≈ 0.2 px).
   static uint32_t cornerSegments(float radius) noexcept;
   // Points around a full circle of the given radius (4 · cornerSegments).

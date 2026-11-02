@@ -36,6 +36,7 @@
 #include "pq/ui/face_painter.h"
 #include "pq/ui/input.h"
 #include "pq/ui/theme.h"
+#include "pq/ui/widget.h"
 
 namespace pq::dsp {
 class FrameTable;
@@ -156,20 +157,36 @@ struct FacePointer {
   ui::PointerButton button = ui::PointerButton::Left;
 };
 
-class MetaFace {
+// TX.panel-faces: what a host canvas sees of anything drawn as a block's face in world units — a meta module's vector
+// face (MetaFace below) or a stock device's panel (pq/views/devices/panel_face.h: the Device view's panel, its widgets
+// laid out at the canvas's zoom). One hosting path (circuit::CircuitCanvas): culling, static-layer tiles, jacks, the
+// live layer, pointer routing in face-local world units, keys and text for the face the last press went to, cursor,
+// info text, wire drops onto a control (paramAt) and the face's own clock (update / nextWake).
+class Face;
+
+// TX.panel-faces: what a face with its own clock or popups needs from its host (the canvas).
+class FaceHost {
+public:
+  virtual ~FaceHost() = default;
+  // The widget the face is drawn in (its tree's overlay layer, clipboard and resources).
+  virtual ui::Widget* hostWidget() noexcept = 0;
+  // The face changed outside the host's own calls (a value from the document, a timer it set): the host calls
+  // update() soon and repaints it. Must not re-enter the face.
+  virtual void faceNeedsUpdate(Face& f) noexcept = 0;
+};
+
+class Face {
 public:
   static constexpr int32_t kNone = -1;   // outside the face
   static constexpr int32_t kFrame = -2;  // the face but no control: the block (select, move, double-click: expand)
 
-  explicit MetaFace(const meta::Type& t) : type_(&t) {}
-  virtual ~MetaFace() = default;
-  MetaFace(const MetaFace&) = delete;
-  MetaFace& operator=(const MetaFace&) = delete;
+  Face() = default;
+  virtual ~Face() = default;
+  Face(const Face&) = delete;
+  Face& operator=(const Face&) = delete;
 
-  const meta::Type& type() const noexcept { return *type_; }
-  void bind(std::unique_ptr<MetaTarget> target, VoiceTapReader* voices);
-  MetaTarget& target() const noexcept { return *target_; }
-  VoiceTapReader* voices() const noexcept { return voices_; }
+  // The meta type of a meta module's face (null: another kind of face, e.g. a device panel).
+  virtual const meta::Type* metaType() const noexcept { return nullptr; }
 
   // ---- geometry ----
   virtual ui::Vec2 worldSize() const noexcept = 0;
@@ -179,29 +196,29 @@ public:
   virtual float outputY(size_t j, size_t n) const noexcept;
 
   // ---- painting ----
-  virtual uint32_t staticLayerCount() const noexcept = 0;
-  virtual ui::Rgba staticLayerColour(const ui::Theme& theme, uint32_t layer) const noexcept = 0;
+  virtual uint32_t staticLayerCount() const noexcept { return 0; }
+  // TX.panel-faces: whether the static layers are drawn at `pxPerUnit` device px per world unit (a device panel draws
+  // them only far out, where its layers stand in for its widgets; the live layer then draws the rest). Default: always.
+  virtual bool staticAt(float /*pxPerUnit*/) const noexcept { return true; }
+  virtual ui::Rgba staticLayerColour(const ui::Theme& /*theme*/, uint32_t /*layer*/) const noexcept { return 0; }
   // In white (the host tints the tile); value-independent.
-  virtual void paintStatic(ui::FacePainter& p, uint32_t layer) const = 0;
-  virtual void paintLive(ui::FacePainter& p, const FaceEnv& env) = 0;
-  // The host's pins, as sockets on the face's edge (every face shares the look).
-  void paintJacks(ui::FacePainter& p, const FaceEnv& env) const;
-  // The face-local rects that change while voices sound (the host damages only these, ≤ 60 Hz).
-  virtual void liveRects(std::vector<ui::Rect>& out) const = 0;
-  // Whether the live layer moves now (a voice sounds): the host keeps its ≤ 60 Hz repaint going.
-  virtual bool animating() const noexcept { return voiceCount_ > 0; }
-  // Reads the voice reader into the face (the host calls it at most once per displayed frame, never from paint, so a
-  // partial repaint of several rects draws one state); true when what the face shows changed (new records, or a face's
-  // own animation still running: voicesPolled).
-  bool pollVoices();
-  static constexpr uint32_t kMaxVoices = 16;
-  std::span<const FaceVoice> sounding() const noexcept { return {voiceBuf_.data(), voiceCount_}; }
-
+  virtual void paintStatic(ui::FacePainter& /*p*/, uint32_t /*layer*/) const {}
   // TMM.7: a per-instance key of static layer `layer` (0: value-independent for the whole type, the tile shared by
   // every face of the type). A face whose static content depends on its instance's data (the Wavetable's stacked
   // frames) returns a hash of that content: the host keys the layer's tile by (type, layer, key), and draws the layer
   // directly while the face is dragging (a knob that re-bakes it changes the key every step).
   virtual uint64_t staticKey(uint32_t /*layer*/) const { return 0; }
+  virtual void paintLive(ui::FacePainter& p, const FaceEnv& env) = 0;
+  // The host's pins, as sockets on the face's edge (every meta face shares the look). The host calls it before
+  // paintLive.
+  virtual void paintJacks(ui::FacePainter& p, const FaceEnv& env) const;
+  // The face-local rects that change while voices sound (the host damages only these, ≤ 60 Hz).
+  virtual void liveRects(std::vector<ui::Rect>& out) const = 0;
+  // Whether the live layer moves now (a voice sounds): the host keeps its ≤ 60 Hz repaint going.
+  virtual bool animating() const noexcept { return false; }
+  // The voice reader the face shows (null: none) and its poll (true: what the face shows changed).
+  virtual VoiceTapReader* voices() const noexcept { return nullptr; }
+  virtual bool pollVoices() { return false; }
 
   // ---- interaction ----
   virtual int32_t hitTest(ui::Vec2 local, float pxPerUnit) const noexcept = 0;
@@ -210,16 +227,62 @@ public:
   virtual bool dragging() const noexcept = 0;
   // TMM.7: a key while this face holds the canvas's key focus (the last press went to it); true: consumed.
   virtual bool onKey(const ui::KeyEvent& /*e*/) { return false; }
+  // TX.panel-faces: text while it holds the key focus and wantsText() (a panel's number box being typed into).
+  virtual bool onText(const ui::TextEvent& /*e*/) { return false; }
+  virtual bool wantsText() const noexcept { return false; }
+  // The key focus went elsewhere (a press outside the face): a type-in commits.
+  virtual void focusLost() {}
   virtual void cancelDrag() = 0;  // capture lost / Esc: the drag's edits are undone
   virtual ui::Cursor cursor(int32_t part) const noexcept;
   // The info view's text for a part (title, body).
   virtual void describe(int32_t part, std::string& title, std::string& body) const;
+  // TX.patching / TX.panel-faces: the param whose control is under face-local point `local` ("": none): a wire dropped
+  // there drives that param.
+  virtual std::string paramAt(ui::Vec2 /*local*/) const { return {}; }
+  int32_t hoveredPart() const noexcept { return hovered_; }
+  // Returns whether it changed (the host repaints the face).
+  virtual bool setHoveredPart(int32_t part) noexcept;
+
+  // ---- the face's own clock (TX.panel-faces) ----
+  // The host it is drawn in (null: detached).
+  virtual void attach(FaceHost* /*host*/) {}
+  // Runs what is due at `now` (the host tree's clock); true when the face must repaint.
+  virtual bool update(double /*now*/) { return false; }
+  // When update() must run next (+inf: nothing pending; ≤ the host's now: at the next frame).
+  virtual double nextWake() const noexcept;
+  // The host's zoom settled at `pxPerUnit` device px per world unit: rebuild what depends on the scale (a panel's layout
+  // and fonts); true when the face must repaint. needsPrepare: whether prepare would rebuild (the host asks for a frame).
+  virtual bool needsPrepare(float /*pxPerUnit*/) const noexcept { return false; }
+  virtual bool prepare(float /*pxPerUnit*/) { return false; }
+
+protected:
+  int32_t hovered_ = kNone;
+};
+
+class MetaFace : public Face {
+public:
+  explicit MetaFace(const meta::Type& t) : type_(&t) {}
+
+  const meta::Type& type() const noexcept { return *type_; }
+  const meta::Type* metaType() const noexcept override { return type_; }
+  void bind(std::unique_ptr<MetaTarget> target, VoiceTapReader* voices);
+  MetaTarget& target() const noexcept { return *target_; }
+  VoiceTapReader* voices() const noexcept override { return voices_; }
+
+  bool animating() const noexcept override { return voiceCount_ > 0; }
+  // Reads the voice reader into the face (the host calls it at most once per displayed frame, never from paint, so a
+  // partial repaint of several rects draws one state); true when what the face shows changed (new records, or a face's
+  // own animation still running: voicesPolled).
+  bool pollVoices() override;
+  static constexpr uint32_t kMaxVoices = 16;
+  std::span<const FaceVoice> sounding() const noexcept { return {voiceBuf_.data(), voiceCount_}; }
+
+  void describe(int32_t part, std::string& title, std::string& body) const override;
   // TMM.10: the face-local rect of the control that edits param `param` (meta::Type::params index), where a host
   // marks it (the Device view's automation LEDs, cable drops, Show Automation); nullopt: no such control.
   virtual std::optional<ui::Rect> paramRect(size_t /*param*/) const noexcept { return std::nullopt; }
-  int32_t hoveredPart() const noexcept { return hovered_; }
-  // Returns whether it changed (the host repaints the face).
-  bool setHoveredPart(int32_t part) noexcept;
+  // TX.panel-faces: the name of the param whose paramRect holds `local`.
+  std::string paramAt(ui::Vec2 local) const override;
 
   // The clock faces animate by (seconds; steady). Tests replace it (null: the steady clock again).
   static void setClock(double (*clock)());
@@ -229,7 +292,6 @@ protected:
   // Called by pollVoices after each poll (`changed`: what it read changed what is shown); returns whether the face must
   // repaint (a face with its own animation, such as voice fades, returns true while it runs).
   virtual bool voicesPolled(bool changed) { return changed; }
-  int32_t hovered_ = kNone;
   bool justBound_ = true;  // set by bind(): the next poll is the first one (voices sounding already appear, unfaded)
   std::array<FaceVoice, kMaxVoices> voiceBuf_{};
   uint32_t voiceCount_ = 0;

@@ -110,6 +110,7 @@ void UiTree::layoutDirty(Widget& w) {
   for (Widget* p = w.parent_; p && !(p->flags_ & Widget::kDescendantDirty); p = p->parent_)
     p->flags_ |= Widget::kDescendantDirty;
   layoutPending_ = true;
+  if (host_) host_->treeNeedsUpdate();  // TX.panel-faces
 }
 
 // --- layout ---------------------------------------------------------------------------------------------
@@ -287,6 +288,7 @@ void UiTree::requestFrame(Widget& w) {
   if (w.flags_ & Widget::kFrameRequested) return;
   w.flags_ |= Widget::kFrameRequested;
   frameRequests_.push_back(&w);
+  if (host_) host_->treeNeedsUpdate();  // TX.panel-faces
 }
 
 void UiTree::update(double now) {
@@ -422,7 +424,10 @@ void UiTree::damageWidget(const Widget& w) noexcept {
     if (p->clipsChildren()) r = intersect(r, p->rect_);
   }
   r = intersect(r, {0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)});
-  if (!r.empty()) damage_.add(r.toRect());
+  if (!r.empty()) {
+    damage_.add(r.toRect());
+    if (host_) host_->treeNeedsUpdate();  // TX.panel-faces
+  }
 }
 
 // --- detach / interaction cleanup -----------------------------------------------------------------------

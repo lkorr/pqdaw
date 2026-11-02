@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -89,10 +90,16 @@ void MetaFace::bind(std::unique_ptr<MetaTarget> target, VoiceTapReader* voices) 
   (void)pollVoices();
 }
 
-float MetaFace::inputY(size_t i, size_t /*n*/) const noexcept { return 24.0f + 16.0f * static_cast<float>(i); }
-float MetaFace::outputY(size_t j, size_t /*n*/) const noexcept { return 24.0f + 16.0f * static_cast<float>(j); }
+float Face::inputY(size_t i, size_t /*n*/) const noexcept { return 24.0f + 16.0f * static_cast<float>(i); }
+float Face::outputY(size_t j, size_t /*n*/) const noexcept { return 24.0f + 16.0f * static_cast<float>(j); }
+double Face::nextWake() const noexcept { return std::numeric_limits<double>::infinity(); }
 
-void MetaFace::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
+void Face::describe(int32_t /*part*/, std::string& title, std::string& body) const {
+  title.clear();
+  body.clear();
+}
+
+void Face::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
   const ui::Theme& th = *env.theme;
   const float w = worldSize().x;
   for (const FaceJack& j : env.jacks) {
@@ -106,7 +113,7 @@ void MetaFace::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
   }
 }
 
-ui::Cursor MetaFace::cursor(int32_t part) const noexcept { return part >= 0 ? ui::Cursor::ResizeNS : ui::Cursor::Inherit; }
+ui::Cursor Face::cursor(int32_t part) const noexcept { return part >= 0 ? ui::Cursor::ResizeNS : ui::Cursor::Inherit; }
 
 void MetaFace::describe(int32_t /*part*/, std::string& title, std::string& body) const {
   title = std::string(type_->name);
@@ -127,7 +134,14 @@ bool MetaFace::pollVoices() {
   return voicesPolled(voiceCount_ != 0 || before != 0);
 }
 
-bool MetaFace::setHoveredPart(int32_t part) noexcept {
+std::string MetaFace::paramAt(ui::Vec2 local) const {
+  for (size_t k = 0; k < type_->params.size(); ++k)
+    if (const std::optional<ui::Rect> r = paramRect(k))
+      if (local.x >= r->x0 && local.x <= r->x1 && local.y >= r->y0 && local.y <= r->y1) return std::string(type_->params[k].name);
+  return {};
+}
+
+bool Face::setHoveredPart(int32_t part) noexcept {
   if (hovered_ == part) return false;
   hovered_ = part;
   return true;

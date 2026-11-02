@@ -39,6 +39,7 @@
 // (project_patch_view.h).
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -82,6 +83,9 @@ struct Node {
   // opened to its atoms; `meta` is set for every chain meta device (its atoms are generated: opened, read-only).
   const meta::Type* face = nullptr;
   bool meta = false;
+  // TX.panel-faces: a closed stock device with a panel (LayoutOptions::panelSize) is drawn as its Device-view panel: the
+  // block is the panel's size (taller when its pins need it), its pins on the edges.
+  bool panel = false;
   // T4.8: a rack is drawn as one plain block. Its devices (at any depth) have no blocks of their own: `inner` lists
   // them, their calls are in the track patch (racks lower inline) and a wire to / from one of them ends on the rack's
   // block at a port named "<port>@<device id>" (labelled with the port's name). `lowered`: some device inside plays
@@ -178,6 +182,9 @@ struct LayoutOptions {
   std::span<const ExpandedSize> expanded;
   std::span<const doc::TrackId> expandedMixers;  // mixer strips shown expanded (one row per send)
   const std::unordered_map<uint32_t, doc::PatchNudge>* nudges = nullptr;  // ViewState::patchNudges
+  // TX.panel-faces: the world size of a device's panel (a stock device that is not edited, not a rack, not a chain meta
+  // device: those keep their block / face), {0, 0} for none. Unset: every device is a plain block.
+  std::function<graph::Point2(const doc::Device&)> panelSize;
 };
 
 // A lane window's body (world units): where the lane's clips are drawn (`n` is a MIDI / audio source node).
