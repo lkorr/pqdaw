@@ -75,6 +75,9 @@ public:
 
   // External value changes (no target call): repaint the bound controls and displays only.
   void setParamValue(std::string_view param, double value);
+  // TX.knob-curves: the knob curve of `param` (doc::Device::curves; Default: the declared one): its controls re-map
+  // (the value stays) and a knob off its declared curve shows a small glyph of its curve.
+  void setParamCurve(std::string_view param, doc::KnobCurve curve);
   void setConstValue(std::string_view name, double value);
   double paramValue(std::string_view param) const;
   double constValue(std::string_view name) const;

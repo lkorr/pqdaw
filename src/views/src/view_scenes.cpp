@@ -1455,6 +1455,46 @@ Status setupDeviceAutomation(Shell& shell) {
   return Ok{};
 }
 
+// TX.knob-curves: knobs switched off their declared curves. Track "Keys": a Phase accumulator (its frequency bar on
+// Linear, its amplitude on Exponential: the face's glyphs, the bar's ticks re-placed) -> Auto Filter (frequency at 1 kHz
+// on Linear: the knob sits near its start; resonance on Exponential) -> Utility (gain on Logarithmic, in dB); the
+// unswitched knobs beside them show no glyph.
+Status setupDeviceKnobCurves(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-knob-curves: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) { return runEdit(store, e); };
+  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
+  if (!t) return Error{ErrorCode::Unknown, "device-knob-curves: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  const auto pa = run(doc::ops::addMetaDevice(*store.current(), store.ids(), track, "phase_acc", 0));
+  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
+  const auto ut = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  if (!pa || !af || !ut) return Error{ErrorCode::Unknown, "device-knob-curves: addDevice failed", {}};
+  const doc::DeviceId acc = pa->devices[0], filter = af->devices[0], util = ut->devices[0];
+  doc::Batch b{"scene", {}};
+  b.commands.push_back(doc::SetDeviceParam{acc, "freq", 220.0});
+  b.commands.push_back(doc::SetDeviceParam{acc, "amp", 1.5});
+  b.commands.push_back(doc::SetParamCurve{acc, "freq", doc::KnobCurve::Linear});
+  b.commands.push_back(doc::SetParamCurve{acc, "amp", doc::KnobCurve::Exponential});
+  b.commands.push_back(doc::SetDeviceParam{filter, "freq", 1000.0});
+  b.commands.push_back(doc::SetParamCurve{filter, "freq", doc::KnobCurve::Linear});
+  b.commands.push_back(doc::SetParamCurve{filter, "res", doc::KnobCurve::Exponential});
+  b.commands.push_back(doc::SetDeviceParam{util, "gain", std::pow(10.0, -6.0 / 20.0)});
+  b.commands.push_back(doc::SetParamCurve{util, "gain", doc::KnobCurve::Logarithmic});
+  if (!store.dispatch(b).ok()) return Error{ErrorCode::Unknown, "device-knob-curves: curves failed", {}};
+  ctx.setSelectedTrack(track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(330.0f);
+  shell.tree().layoutNow();
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-knob-curves: the Device view is not installed", {}};
+  v->rebuild();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 Status setupInstrumentRack(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "instrument-rack: no device library", {}};
@@ -2610,6 +2650,7 @@ constexpr SceneEntry kScenes[] = {
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)
+    {"device-knob-curves", 1600, 900, setupDeviceKnobCurves},  // TX.knob-curves
     {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp
     {"circuit-inactive-shown", 1280, 800, nullptr, setupCircuitInactiveShown},
     {"circuit-tooltip", 1280, 800, nullptr, setupCircuitTooltip},

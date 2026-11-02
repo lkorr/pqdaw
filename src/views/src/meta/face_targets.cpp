@@ -148,6 +148,12 @@ void DocTarget::pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out
   std::sort(out.begin(), out.end(), [](const PitchGuide& a, const PitchGuide& b) { return a.hz < b.hz; });
 }
 
+doc::KnobCurve DocTarget::curve(size_t param) const {  // TX.knob-curves
+  if (!path_.empty() || param >= type_.params.size()) return doc::KnobCurve::Default;
+  const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+  return d != nullptr ? d->curve(type_.params[param].name) : doc::KnobCurve::Default;
+}
+
 uint64_t DocTarget::guidesKey() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ctx_.doc().get())); }
 
 void DocTarget::notice(std::string_view message) { ctx_.setStatus(std::string(message)); }

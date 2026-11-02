@@ -30,6 +30,7 @@
 #include "pq/core/rt_scope.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/lower.h"
 #include "pq/document/meta.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/vca.h"
@@ -319,6 +320,7 @@ struct Config {
 struct Param {
   std::string name;
   double def = 0.0, min = 0.0, max = 1.0;
+  ParamTravel travel;  // TX.knob-curves: its declared knob curve (an Add wire adds in its input domain)
 };
 // A device under test: how its song is built (returns the device), its params, its configurations.
 struct Dut {
@@ -339,7 +341,9 @@ std::vector<Param> stockParams(const std::string& patch) {
   REQUIRE_MESSAGE(info != nullptr, patch);
   std::vector<Param> out;
   for (const DeviceParamInfo& p : info->params)
-    if (p.kind == graph::Kind::Real && p.hasRange && p.steps == 0 && p.max > p.min) out.push_back({p.name, p.defaultValue, p.min, p.max});
+    if (p.kind == graph::Kind::Real && p.hasRange && p.steps == 0 && p.max > p.min)
+      out.push_back({p.name, p.defaultValue, p.min, p.max,
+                     paramTravel(*findParamDecl(*library().library().find(info->patch.empty() ? patch : info->patch), p.name))});
   return out;
 }
 
@@ -347,7 +351,14 @@ std::vector<Param> metaParams(std::string_view type) {
   const meta::Type* t = meta::findType(type);
   REQUIRE(t != nullptr);
   std::vector<Param> out;
-  for (const meta::ParamSpec& p : t->params) out.push_back({std::string(p.name), p.def, p.min, p.max});
+  for (const meta::ParamSpec& p : t->params) {
+    ParamTravel tr;  // the expansion's declaration (pq/meta/type.h Curve → @curve)
+    tr.lo = p.min;
+    tr.hi = p.max;
+    tr.log = p.curve == meta::Curve::Exp && p.min > 0.0;
+    tr.exp0 = p.curve == meta::Curve::Exp0 ? p.curveK : 0.0;
+    out.push_back({std::string(p.name), p.def, p.min, p.max, tr});
+  }
   return out;
 }
 
@@ -544,8 +555,12 @@ void sweep(const Dut& dut, uint32_t& tested, std::vector<std::string>& silent) {
       for (const Param& p : dut.params) {
         Answer& a = best[p.name];
         if (phase != 0.0 && a.perSample > kMinResponse) continue;  // answered per sample already
-        const double span = p.max - p.min;
-        const double frac = (p.def - p.min) / span;
+        // TX.knob-curves: 35 % of the knob's input domain towards its interior — travel on a curved knob, dB on a dB
+        // gain, else the units (an Add wire adds before the curve).
+        const bool curved = !travelsInUnits(p.travel);
+        const double span = curved ? 1.0 : p.travel.db ? 20.0 * std::log10(p.max / p.min) : p.max - p.min;
+        const double frac = curved ? travelPosition(p.travel, p.def) : p.travel.db ? std::log10(p.def / p.min) * 20.0 / span
+                                                                                  : (p.def - p.min) / span;
         const double m = std::clamp((frac < 0.5 ? 0.35 : -0.35) * span, -meta::kVcaRange, meta::kVcaRange);
         Song s;
         const DeviceId d = dut.build(s, c);

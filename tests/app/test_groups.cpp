@@ -721,7 +721,7 @@ TEST_CASE("groups-fix1: a schema-14 group (its series as plain wires) loads, pla
   REQUIRE(text.ok());
   // As TX.groups wrote it: schema 14, no chain links.
   std::string old = *text;
-  old.replace(old.find("\"schemaVersion\": 15"), 19, "\"schemaVersion\": 14");
+  old.replace(old.find("\"schemaVersion\": 16"), 19, "\"schemaVersion\": 14");
   for (size_t at; (at = old.find(", \"chain\": true")) != std::string::npos;) old.erase(at, 15);
   REQUIRE(old.find("chain") == std::string::npos);
   auto r = parseProject(old);

@@ -42,7 +42,11 @@
 // in the target param's own units": reverses Q183's knob-space wires): a new wire into `value` adds to the MULTIPLIER
 // (ParamSpec::unitsInBody: the expansion gets `in value_add`, and value = clip(curve(pos) + Σ wires, min, max)), so a
 // signal of ±0.1 wobbles the gain by ±0.1 whatever the knob's position. To multiply by a signal's own value, wire it
-// into `in` (or chain two VCAs).
+// into `in` (or chain two VCAs). TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186" + clarification: a wire adds
+// before the knob's curve): that is now the law of a migrated Units wire and of an Add wire on the BEND curve (a line
+// between min and max at bend 0: the knob's units); on the LOG curve (the default) an Add wire moves the knob position,
+// in travel through the curve (Type::unitsLaw), as Q183 first had it. No param of the VCA takes a knob curve
+// (ParamSpec::noKnobCurve): its curve box is its curve.
 //
 // COST: settled, one multiply per sample (the gain atom); the curve is param-rate arithmetic (once per block) unless
 // `value` is modulated at audio rate, then per sample: Log ≈ 22 ops + one exp, Bend ≈ 8 ops + one exp. Multiplying by

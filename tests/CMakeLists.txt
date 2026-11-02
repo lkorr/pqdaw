@@ -412,6 +412,7 @@ pq_add_test(pq_tests_document
     document/test_meta_devices.cpp  # TMM.10: meta devices in chains (voice runs, kinds, copy / presets keep state)
     document/test_analysis_taps.cpp  # TX.spectrum: the lowering's analysis taps (EQ Eight, Auto Filter, Spectrum)
     document/test_wire_laws.cpp  # TX.patching: wire laws, schema 13 + migration, any output / input, free devices
+    document/test_knob_curves.cpp  # TX.knob-curves: knob curves, the wire laws they decide, schema 16 + migration
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

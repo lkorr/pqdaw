@@ -357,7 +357,7 @@ Result<std::pair<std::vector<const Device*>, std::vector<const Wire*>>> readSeri
         prev = &w;
         ++count;
       }
-    if (count != 1 || prev->law != WireLaw::Add)
+    if (count != 1 || prev->travels())  // TX.knob-curves: a migrated Units link sums into an input as an added one
       return Error{ErrorCode::InvalidArgument,
                    "Ungroup: " + displayName(*d, lib) + "'s input is not reached by exactly one wire from In or a device "
                    "of the group; a chain is one series",

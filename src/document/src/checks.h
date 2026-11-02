@@ -67,6 +67,8 @@ Status checkRackOwn(const Device& rack);
 Status checkMapping(const MacroMapping& m);  // its own fields
 // A device param / setting name (non-empty) and value (finite, when set).
 Status checkDeviceValue(const std::string& name, const std::optional<double>& value);
+// TX.knob-curves: Device::curves sorted, unique, never Default; none on a rack.
+Status checkParamCurves(const Device& d);
 // TMM.3 (model.h "Meta modules"): one instance of `d` at `path` — a valid path ("" only on a chain meta device of that
 // type, without params / settings), a registered type at its current version, the type's param / setting names
 // (sorted, unique, finite), data the type accepts (none when it keeps none).

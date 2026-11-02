@@ -15,11 +15,13 @@ constexpr std::array<InputSpec, 1> kInputs = {{
 }};
 constexpr std::array<ParamSpec, kVcaParams> kParams = {{
     // TX.patching: a position whose value (the multiplier) the body computes: added wires add to the multiplier.
-    {"value", "Value", kVcaDefaultPos, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, true},
-    {"min", "Min", -kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"max", "Max", kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"zone", "Fine zone", 0.4, kVcaZoneMin, kVcaZoneMax, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"bend", "Bend", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
+    // TX.knob-curves: none has a knob curve (the knob travels along the curve box; the range ends and the box are typed /
+    // dragged values of that curve).
+    {"value", "Value", kVcaDefaultPos, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, true, false, true},
+    {"min", "Min", -kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
+    {"max", "Max", kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
+    {"zone", "Fine zone", 0.4, kVcaZoneMin, kVcaZoneMax, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
+    {"bend", "Bend", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
 }};
 constexpr std::array<SettingSpec, 1> kSettings = {{{"curve", "Curve", 0.0, 0.0, 1.0, 2}}};
 constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
@@ -140,6 +142,14 @@ Status body(Builder& bld) {
 
 std::vector<ResourceRequest> resources(std::span<const double>) { return {ResourceRequest{ResourceKind::VoiceTap, 0}}; }
 
+// TX.knob-curves (Type::unitsLaw): an Add wire into `value` adds to the multiplier on the Bend curve (a line between min
+// and max at bend 0: the knob's units), to the knob position on the Log curve (through the curve, as a cutoff's octaves).
+bool unitsLaw(std::span<const double> settings, uint32_t param) {
+  if (param != kVcaValue) return true;
+  const double curve = kVcaCurveSetting < settings.size() ? settings[kVcaCurveSetting] : 0.0;
+  return static_cast<VcaCurve>(std::lround(curve)) == VcaCurve::Bend;
+}
+
 Type makeType() {
   Type t;
   t.id = "vca";
@@ -152,6 +162,7 @@ Type makeType() {
   t.chainInput = 0;  // the chain feeds `in` (TMM.10-fix1); at a note source `in` has no signal: a value per voice
   t.resources = &resources;
   t.body = &body;
+  t.unitsLaw = &unitsLaw;
   return t;
 }
 

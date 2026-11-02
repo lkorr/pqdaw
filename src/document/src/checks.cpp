@@ -272,6 +272,18 @@ Status checkValues(const std::vector<DeviceValue>& v, const char* what) {
 }
 }  // namespace
 
+Status checkParamCurves(const Device& d) {  // TX.knob-curves (model.h KnobCurve)
+  for (size_t i = 0; i < d.curves.size(); ++i) {
+    const ParamCurve& c = d.curves[i];
+    PQ_DOC_TRY(checkDeviceValue(c.param, std::nullopt));
+    if (c.curve == KnobCurve::Default || static_cast<uint8_t>(c.curve) > static_cast<uint8_t>(KnobCurve::Logarithmic))
+      return invalid("a knob curve must be Linear, Octave, Exponential or Logarithmic (Default is no entry)");
+    if (i > 0 && !(d.curves[i - 1].param < c.param)) return invalid("device knob curves must be sorted by param, one per param");
+  }
+  if (d.rack && !d.curves.empty()) return invalid("a rack's macros have no knob curves");
+  return ok();
+}
+
 Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices) {
   return checkList(listKindOf(kind), devices);
 }
@@ -330,6 +342,7 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
       }
       PQ_DOC_TRY(checkValues(d->params, "params"));
       PQ_DOC_TRY(checkValues(d->settings, "settings"));
+      PQ_DOC_TRY(checkParamCurves(*d));  // TX.knob-curves
       PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
       if (d->rack) {
         PQ_DOC_TRY(checkRackOwn(*d));
@@ -463,7 +476,7 @@ Status checkWire(const Wire& w) {
   }
   PQ_DOC_TRY(checkDeviceValue(w.port, std::nullopt));
   PQ_DOC_TRY(checkDeviceValue(w.param, std::nullopt));
-  if (static_cast<uint8_t>(w.law) > static_cast<uint8_t>(WireLaw::Travel)) return invalid("unknown wire law");
+  if (static_cast<uint8_t>(w.law) > static_cast<uint8_t>(WireLaw::Units)) return invalid("unknown wire law");
   if (w.travels()) {
     if (!finiteIn(w.amount, -1.0, 1.0)) return invalid("wire amount must be in [-1, 1]");
   } else if (w.amount != 1.0) {  // TX.patching: an added wire has no depth (model.h "Modulation wires")

@@ -464,6 +464,18 @@ EditResult setDevicesFree(const Project& p, std::span<const DeviceId> devices, b
   return e;
 }
 
+EditResult setParamCurve(const Project& p, DeviceId device, std::string param, KnobCurve curve) {  // TX.knob-curves
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  if (l.device->rack) return invalid("a rack's macros have no knob curve");
+  if (param.empty()) return invalid("no param");
+  Edit e = makeEdit("Knob Curve");
+  e.devices.push_back(device);
+  e.tracks.push_back(l.track->id);
+  if (l.device->curve(param) != curve) batchOf(e).commands.push_back(SetParamCurve{device, std::move(param), curve});
+  return e;
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 namespace {

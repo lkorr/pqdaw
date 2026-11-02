@@ -9,6 +9,9 @@
 //   - a free LFO's export wired into a param;
 //   - a wire that closes a loop through two inputs gets its 1-sample delay;
 //   - a VCA's value modulated in value space (the multiplier, clamped to its min / max; reverses Q183).
+// TX.knob-curves: a new (Add) wire adds BEFORE the knob's curve: the cases above that add in units run with the knob on
+// its Linear curve (or as a Units wire: TX.patching's law, what a schema-13 … 15 wire migrates to) — the same math, the
+// same hand-built graph; tests/app/test_knob_curves.cpp has the curved cases.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -16,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -257,6 +261,14 @@ std::pair<double, double> rangeOf(const char* patch, const char* param) {
   return {d.rangeMin.value(), d.rangeMax.value()};
 }
 
+// TX.knob-curves: the wires an edit adds, under TX.patching's units law (WireLaw::Units: a migrated schema-15 wire).
+void asUnits(ops::EditResult& e) {
+  REQUIRE(e.ok());
+  if (auto* b = std::get_if<Batch>(&e->command.v))
+    for (Command& c : b->commands)
+      if (auto* a = std::get_if<AddWire>(&c.v)) a->wire.law = WireLaw::Units;
+}
+
 const WireState* stateOf(const LoweredProject& low, WireId w) {
   for (const WireState& s : low.wires)
     if (s.id == w) return &s;
@@ -266,6 +278,9 @@ const WireState* stateOf(const LoweredProject& low, WireId w) {
 }  // namespace
 
 TEST_CASE("patching: the note source's Hz into a filter cutoff adds exactly its Hz (hand-built graph diff 0, JIT)") {
+  // TX.knob-curves: on the cutoff's Linear curve (an Add wire), and as a Units wire on its default octave curve.
+  for (const bool units : {false, true}) {
+  CAPTURE(units);
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId keys = ids.track();
@@ -276,12 +291,14 @@ TEST_CASE("patching: the note source's Hz into a filter cutoff adds exactly its 
   b.commands.push_back(SetDeviceSetting{eq, "on1", 1.0});
   b.commands.push_back(SetDeviceSetting{eq, "type1", 6.0});  // High Cut 12
   b.commands.push_back(SetDeviceParam{eq, "freq1", 300.0});
+  if (!units) b.commands.push_back(SetParamCurve{eq, "freq1", KnobCurve::Linear});
   REQUIRE(store.dispatch(b).ok());
   auto e = ops::connectNoteWire(*store.current(), ids, keys, "hz", eq, "freq1");
   REQUIRE(e.ok());
+  if (units) asUnits(e);
   REQUIRE(store.dispatch(e->command).ok());
   const Wire& w = wiresOf(*store.current()).front();
-  CHECK(w.law == WireLaw::Add);
+  CHECK(w.law == (units ? WireLaw::Units : WireLaw::Add));
   CHECK(w.amount == 1.0);
   const Lowered low = lowerIt(store);
   REQUIRE(low.low.wires.size() == 1);
@@ -300,7 +317,8 @@ TEST_CASE("patching: the note source's Hz into a filter cutoff adds exactly its 
                            "  done = s.done\n" + midiStages("e.out") + "}\n";
   auto h = hand(text, keys.value, store.current()->master->id.value, true);
   h->link(0, "f1", 300.0f);
-  (void)sameAsHand(low, *h, 24000, "Hz into cutoff");
+  (void)sameAsHand(low, *h, 24000, units ? "Hz into cutoff (Units wire)" : "Hz into a Linear cutoff");
+  }
 }
 
 TEST_CASE("patching: a free Phase accumulator into another's phase is per-voice phase modulation at audio rate") {
@@ -384,6 +402,8 @@ TEST_CASE("patching: an instrument's output into a later device's audio input su
 }
 
 TEST_CASE("patching: a free LFO's export wired into a param; a free device costs nothing while nothing reads it") {
+  // TX.knob-curves: the cutoff on its declared octave curve, so the wire adds in knob travel (the T4.7 travel map
+  // without an amount): value = lo·e^(L·clip(ln(knob / lo)/L + lfo, 0, 1)).
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId keys = ids.track();
@@ -415,12 +435,15 @@ TEST_CASE("patching: a free LFO's export wired into a param; a free device costs
   CHECK(tp.findByName("d" + id(lfo)).has_value());
   CHECK(tp.findByName("d" + id(idle)).has_value());
   const auto [lo, hi] = rangeOf("eq_eight", "freq1");
+  const double L = std::log(hi / lo);
   const std::string text = "patch T {\n  param f1 = 400 [" + num(lo) + ".." + num(hi) + "]\n  param r = 3\n"
                            "  out out : audio global stereo\n  out done : bool voice mono\n"
                            "  s = BasicSynth()\n  x = voice_sum(s.out)\n  l = lfo_device(-0.0, rate: r)\n"
-                           "  fv = clip(f1 + channel(l.lfo, 0), " + num(lo) + ", " + num(hi) + ")\n"
+                           "  pk = log(f1 * " + num(1.0 / lo) + ") * " + num(1.0 / L) + "\n"
+                           "  p = clip(pk + channel(l.lfo, 0), 0, 1)\n"
+                           "  fv = exp(p * " + num(L) + " + " + num(std::log(lo)) + ")\n"
                            "  e = eq_eight(pack(x, x), on1: 1, type1: 6, freq1: fv)\n"
-                           "  export tap_d" + id(eq) + "_freq1 = pack(max(fv - f1, 0), max(f1 - fv, 0))\n"
+                           "  export tap_d" + id(eq) + "_freq1 = pack(max(p - pk, 0), max(pk - p, 0))\n"
                            "  done = s.done\n" + midiStages("e.out") + "}\n";
   auto h = hand(text, keys.value, store.current()->master->id.value, true);
   h->link(0, "f1", 400.0f);
@@ -455,7 +478,9 @@ TEST_CASE("patching: a wire from a later device's output into an earlier one's i
   (void)sameAsHand(low, *h, 24000, "loop through two inputs");
 }
 
-TEST_CASE("patching: a wire into a VCA's value adds to the multiplier (value space, clamped to its min / max)") {
+TEST_CASE("patching: a Units wire into a VCA's value adds to the multiplier (value space, clamped to its min / max)") {
+  // TX.knob-curves: TX.patching's law, kept for migrated wires (a new Add wire into the Log curve's knob adds to the
+  // position: tests/app/test_knob_curves.cpp).
   // Three MIDI tracks without instruments (role Audio): a VCA unplugged (its `in` reads 1: out = its value) at the
   // position of ×0.25, with (A) and without (B) a free Phase accumulator's output wired into its value, and (C) that
   // Phase accumulator alone in the series. A − B is C: the wire adds the accumulator's samples to the multiplier.
@@ -481,7 +506,7 @@ TEST_CASE("patching: a wire into a VCA's value adds to the multiplier (value spa
     REQUIRE(store.dispatch(b).ok());
     if (which == 0) {
       auto e = ops::connectWire(*store.current(), ids, pa, "out", vca, "value");
-      REQUIRE(e.ok());
+      asUnits(e);
       REQUIRE(store.dispatch(e->command).ok());
     }
     const Lowered low = lowerIt(store);
@@ -571,7 +596,12 @@ TEST_CASE("patching (TMM.18): a negative frequency reflects — into the Phase a
   // TX.smooth are the same ramp mirrored), so the backward ramp is the forward one reversed: out(−f) + out(f) = the
   // stage gain (1 − 2^−24 where the phase's low bits are not 0), sample for sample. Before TMM.18 the freq wire was
   // clamped to [0, 20 kHz]: the accumulator stood at 0 Hz.
-  auto render = [](bool intoFreq, double hz, engine::UnitBackend backend) {
+  // TX.knob-curves: into freq on its Linear curve (an Add wire in Hz, @signed: ±20 kHz) and on its default exp0 curve
+  // (in travel: @signed mirrors the curve, value = sign(p)·curve(|p|), so −p plays exactly −f), and into hz.
+  enum Into { kFreqLinear, kFreqCurved, kHz };
+  auto render = [](Into into, double hz, engine::UnitBackend backend) {
+    const bool intoFreq = into != kHz;
+    const double v = into == kFreqCurved ? std::copysign(meta::phaseAccTravelFromFreq(std::fabs(hz)), hz) : hz;
     DocumentStore store;
     IdSource& ids = store.ids();
     const TrackId t = ids.track();
@@ -580,8 +610,9 @@ TEST_CASE("patching (TMM.18): a negative frequency reflects — into the Phase a
     b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
     b.commands.push_back(AddDevice{t, metaDevice(pa, "phase_acc", DeviceKind::AudioEffect, false, "-"), kAppend});
     b.commands.push_back(AddDevice{t, metaDevice(vca, "vca", DeviceKind::AudioEffect, true), kAppend});
-    b.commands.push_back(SetDeviceParam{vca, "min", hz});
-    b.commands.push_back(SetDeviceParam{vca, "max", hz < 0 ? hz - 60.0 : hz - 140.0});
+    b.commands.push_back(SetDeviceParam{vca, "min", v});
+    b.commands.push_back(SetDeviceParam{vca, "max", v < 0 ? v - 60.0 : v - 140.0});
+    if (into == kFreqLinear) b.commands.push_back(SetParamCurve{pa, "freq", KnobCurve::Linear});
     REQUIRE(store.dispatch(b).ok());
     auto e = ops::connectWire(*store.current(), ids, vca, "out", pa, intoFreq ? "freq" : "hz");
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
@@ -590,11 +621,12 @@ TEST_CASE("patching (TMM.18): a negative frequency reflects — into the Phase a
     for (const WireState& s : low.low.wires) CHECK(s.status == WireStatus::Lowered);
     return renderGraph(low.low.graph, low.links, low.values, 9600, backend);
   };
-  for (const bool intoFreq : {true, false}) {
-    CAPTURE(intoFreq);
-    const golden::Channels fwd = render(intoFreq, 440.0, {});
-    const golden::Channels bwd = render(intoFreq, -440.0, {});
-    CHECK(maxDiff(bwd, render(intoFreq, -440.0, compile::jitUnitBackend())) == 0.0);
+  for (const Into into : {kFreqLinear, kFreqCurved, kHz}) {
+    CAPTURE(static_cast<int>(into));
+    const bool intoFreq = into != kHz;
+    const golden::Channels fwd = render(into, 440.0, {});
+    const golden::Channels bwd = render(into, -440.0, {});
+    CHECK(maxDiff(bwd, render(into, -440.0, compile::jitUnitBackend())) == 0.0);
     float gain = 0.0f;
     for (size_t i = 0; i < fwd[0].size(); ++i) gain = std::max(gain, fwd[0][i]);
     REQUIRE(gain > 0.3f);
@@ -614,5 +646,186 @@ TEST_CASE("patching (TMM.18): a negative frequency reflects — into the Phase a
     CHECK(hi <= 1.0001 * gain / (1.0 - 440.0 / 48000.0));
     CHECK(compared > 7000);
     CHECK(worst <= 2.0 * gain * 5.9604644775390625e-08 + 1e-7);
+  }
+}
+
+
+// ---- TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186" + clarification: a wire adds before the knob's curve) ----
+
+namespace {
+
+// Keys: BasicSynth → `target` (an effect, `param` its knob at `knob`), and a FREE VCA, unplugged (its `in` reads 1), as
+// a constant `value` (min = value, max on the other side of it: a constant min) wired into `param` with an Add wire —
+// or no wire, `param`'s knob at `knob`. `curve` the knob's curve.
+Lowered constantInto(const char* target, const char* param, double knob, std::optional<double> value,
+                     KnobCurve curve = KnobCurve::Default, std::vector<Command> extra = {}) {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId keys = ids.track();
+  const DeviceId inst = ids.device(), dev = ids.device(), vca = ids.device();
+  Batch b{"keys", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(dev, target, DeviceKind::AudioEffect), kAppend});
+  for (Command& c : extra) {
+    if (auto* s = std::get_if<SetDeviceSetting>(&c.v)) s->device = dev;
+    b.commands.push_back(std::move(c));
+  }
+  b.commands.push_back(SetDeviceParam{dev, param, knob});
+  if (curve != KnobCurve::Default) b.commands.push_back(SetParamCurve{dev, param, curve});
+  if (value) {
+    b.commands.push_back(AddDevice{keys, metaDevice(vca, "vca", DeviceKind::AudioEffect, true), kAppend});
+    b.commands.push_back(SetDeviceParam{vca, "min", *value});
+    b.commands.push_back(SetDeviceParam{vca, "max", *value - 100.0});
+  }
+  REQUIRE(store.dispatch(b).ok());
+  if (value) {
+    auto e = ops::connectWire(*store.current(), ids, vca, "out", dev, param);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+  }
+  Lowered low = lowerIt(store);
+  for (const WireState& s : low.low.wires) CHECK(s.status == WireStatus::Lowered);
+  return low;
+}
+
+// The relative difference of two renders after the first 50 ms (a knob's start glide, TX.smooth, against a wired value
+// that has none): max |a − b| / peak of b.
+double relDiff(const golden::Channels& a, const golden::Channels& b) {
+  REQUIRE(a.size() == b.size());
+  double m = 0.0;
+  for (size_t c = 0; c < a.size(); ++c)
+    for (size_t i = 2400; i < a[c].size() && i < b[c].size(); ++i)
+      m = std::max(m, static_cast<double>(std::fabs(a[c][i] - b[c][i])));
+  return m / std::max(1e-9, static_cast<double>(peakOf(b)));
+}
+
+}  // namespace
+
+TEST_CASE("knob curves: the octave cutoff + a wire of ±0.5 = ± half the range in octaves (interpreter == JIT)") {
+  // EQ Eight's band 1 as a High Cut 12 at 400 Hz (10 Hz … 22 kHz, @curve(exp)): a constant ±0.5 through an Add wire
+  // plays the cutoff at 400 · (22000 / 10)^±0.5 — half the knob's travel up or down, in octaves (the user: "with the
+  // cutoff on its octave curve, a wire carrying +1 adds +1 knob travel"). The same render as the knob set there by hand
+  // (to float rounding: the wire's path computes the value per sample); far from the TX.patching law (400 ± 0.5 Hz).
+  const auto [lo, hi] = rangeOf("eq_eight", "freq1");
+  std::vector<Command> eq{SetDeviceSetting{{}, "on1", 1.0}, SetDeviceSetting{{}, "type1", 6.0}};
+  for (const double s : {0.5, -0.5}) {
+    CAPTURE(s);
+    const double expect = 400.0 * std::pow(hi / lo, s);
+    const Lowered wired = constantInto("eq_eight", "freq1", 400.0, s, KnobCurve::Default, eq);
+    const Lowered byHand = constantInto("eq_eight", "freq1", expect, std::nullopt, KnobCurve::Default, eq);
+    const Lowered unitsLaw = constantInto("eq_eight", "freq1", 400.0 + s, std::nullopt, KnobCurve::Default, eq);
+    REQUIRE(wired.low.taps.size() == 1);
+    CHECK_FALSE(wired.low.taps[0].units);  // the tap is in knob travel
+    const golden::Channels a = renderGraph(wired.low.graph, wired.links, wired.values, 9600);
+    const golden::Channels j = renderGraph(wired.low.graph, wired.links, wired.values, 9600, compile::jitUnitBackend());
+    CHECK(maxDiff(a, j) == 0.0);
+    const golden::Channels h = renderGraph(byHand.low.graph, byHand.links, byHand.values, 9600);
+    const golden::Channels u = renderGraph(unitsLaw.low.graph, unitsLaw.links, unitsLaw.values, 9600);
+    MESSAGE("cutoff 400 Hz + " << s << " travel: vs the knob at " << expect << " Hz " << relDiff(a, h)
+                               << ", vs 400 + " << s << " Hz " << relDiff(a, u));
+    CHECK(relDiff(a, h) < 1e-4);
+    CHECK(relDiff(a, u) > 0.05);
+  }
+  // The law itself, exactly: on the octave curve, +0.5 travel from any knob is × √(hi / lo).
+  const ParamTravel t = paramTravel(*findParamDecl(*library().library().find("eq_eight"), "freq1"));
+  for (const double knob : {20.0, 100.0, 400.0})  // (+0.5 stays inside the range)
+    CHECK(travelValue(t, travelPosition(t, knob) + 0.5) == doctest::Approx(knob * std::sqrt(hi / lo)).epsilon(1e-12));
+}
+
+TEST_CASE("knob curves: a dB knob + 6 = +6 dB (the param and its wires in dB; interpreter == JIT)") {
+  // Utility's gain (−70 … +35 dB, a linear gain inside): a constant 6 through an Add wire on 0 dB plays +6 dB, as the
+  // knob at +6 dB by hand; on −12 dB it plays −6 dB. TX.patching added 6 to the linear gain (×7).
+  for (const double knobDb : {0.0, -12.0}) {
+    CAPTURE(knobDb);
+    auto gain = [](double db) { return std::pow(10.0, db / 20.0); };
+    const Lowered wired = constantInto("utility", "gain", gain(knobDb), 6.0);
+    const Lowered byHand = constantInto("utility", "gain", gain(knobDb + 6.0), std::nullopt);
+    REQUIRE(wired.low.taps.size() == 1);
+    CHECK(wired.low.taps[0].units);
+    CHECK(wired.low.taps[0].db);
+    const golden::Channels a = renderGraph(wired.low.graph, wired.links, wired.values, 9600);
+    CHECK(maxDiff(a, renderGraph(wired.low.graph, wired.links, wired.values, 9600, compile::jitUnitBackend())) == 0.0);
+    const golden::Channels h = renderGraph(byHand.low.graph, byHand.links, byHand.values, 9600);
+    MESSAGE("gain " << knobDb << " dB + 6: vs the knob at " << knobDb + 6.0 << " dB by hand " << relDiff(a, h));
+    CHECK(relDiff(a, h) < 1e-5);
+  }
+  // On an Exponential curve (bent in dB) the same wire adds travel: +6 is past the end (clipped to +35 dB).
+  const Lowered bent = constantInto("utility", "gain", 1.0, 6.0, KnobCurve::Exponential);
+  const Lowered top = constantInto("utility", "gain", std::pow(10.0, 35.0 / 20.0), std::nullopt);
+  CHECK_FALSE(bent.low.taps[0].units);
+  const golden::Channels a = renderGraph(bent.low.graph, bent.links, bent.values, 9600);
+  const golden::Channels h = renderGraph(top.low.graph, top.links, top.values, 9600);
+  CHECK(relDiff(a, h) < 1e-5);
+}
+
+TEST_CASE("knob curves: the Phase accumulator's frequency bar — exp0 by default (travel), its pitch linear (cents)") {
+  // An unplugged accumulator (it runs freely at its frequency): a constant wired into freq (knob 0 Hz) plays the bar
+  // at that travel, through its curve — the same as the knob put there; into pitch (linear, cents) it adds cents.
+  auto pa = [](double freq, double pitch, std::optional<std::pair<const char*, double>> wire) {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId t = ids.track();
+    const DeviceId acc = ids.device(), vca = ids.device();
+    Batch b{"t", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+    b.commands.push_back(AddDevice{t, metaDevice(acc, "phase_acc", DeviceKind::AudioEffect, false, "-"), kAppend});
+    b.commands.push_back(SetDeviceParam{acc, "freq", freq});
+    b.commands.push_back(SetDeviceParam{acc, "pitch", pitch});
+    if (wire) {
+      b.commands.push_back(AddDevice{t, metaDevice(vca, "vca", DeviceKind::AudioEffect, true), kAppend});
+      b.commands.push_back(SetDeviceParam{vca, "min", wire->second});
+      b.commands.push_back(SetDeviceParam{vca, "max", wire->second - 100.0});
+    }
+    REQUIRE(store.dispatch(b).ok());
+    if (wire) {
+      auto e = ops::connectWire(*store.current(), ids, vca, "out", acc, wire->first);
+      REQUIRE(e.ok());
+      REQUIRE(store.dispatch(e->command).ok());
+    }
+    const Lowered low = lowerIt(store);
+    const golden::Channels a = renderGraph(low.low.graph, low.links, low.values, 9600);
+    CHECK(maxDiff(a, renderGraph(low.low.graph, low.links, low.values, 9600, compile::jitUnitBackend())) == 0.0);
+    return a;
+  };
+  const double t440 = meta::phaseAccTravelFromFreq(440.0);
+  const golden::Channels viaWire = pa(0.0, 0.0, std::make_pair("freq", t440));
+  const golden::Channels byKnob = pa(440.0, 0.0, std::nullopt);
+  MESSAGE("freq bar + " << t440 << " travel vs the knob at 440 Hz: " << relDiff(viaWire, byKnob));
+  CHECK(relDiff(viaWire, byKnob) < 1e-3);
+  const golden::Channels up = pa(440.0, 0.0, std::make_pair("pitch", 1200.0));
+  const golden::Channels octave = pa(440.0, 1200.0, std::nullopt);
+  MESSAGE("pitch + 1200 cents vs the knob at +1200: " << relDiff(up, octave));
+  CHECK(relDiff(up, octave) < 1e-3);
+}
+
+TEST_CASE("knob curves: an Add wire into the VCA's value — its Log curve in travel (the knob), its Bend curve in units") {
+  for (const bool bend : {false, true}) {
+    CAPTURE(bend);
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId t = ids.track();
+    const DeviceId vca = ids.device(), pa = ids.device();
+    Batch b{"t", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+    b.commands.push_back(AddDevice{t, metaDevice(vca, "vca", DeviceKind::AudioEffect, false, "-"), kAppend});
+    if (bend) b.commands.push_back(SetDeviceSetting{vca, "curve", 1.0});
+    b.commands.push_back(AddDevice{t, metaDevice(pa, "phase_acc", DeviceKind::AudioEffect, true), kAppend});
+    b.commands.push_back(SetDeviceParam{pa, "freq", 55.0});
+    REQUIRE(store.dispatch(b).ok());
+    auto e = ops::connectWire(*store.current(), ids, pa, "out", vca, "value");
+    REQUIRE(e.ok());
+    REQUIRE(store.dispatch(e->command).ok());
+    const Lowered low = lowerIt(store);
+    const graph::Patch& tp = *low.low.graph.tracks[0].patch;
+    const auto call = tp.findByName("d" + id(vca));
+    REQUIRE(call.has_value());
+    const auto value = tp.findInput(*call, "value");
+    REQUIRE(value.has_value());
+    const bool viaValue = tp.adjacency().driver[tp.flatInput(*call, *value)] != graph::kNone;
+    const auto add = tp.findInput(*call, "value_add");
+    CHECK(viaValue == !bend);          // Log: the wire moves the knob (through the curve)
+    CHECK(add.has_value() == bend);    // Bend: the multiplier, after the curve
+    const golden::Channels a = renderGraph(low.low.graph, low.links, low.values, 4800);
+    CHECK(maxDiff(a, renderGraph(low.low.graph, low.links, low.values, 4800, compile::jitUnitBackend())) == 0.0);
   }
 }

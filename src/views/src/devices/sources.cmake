@@ -11,4 +11,5 @@ set(PQ_VIEWS_DEVICES_SOURCES
   src/devices/analysis.cpp
   src/devices/spectrum_plot.cpp  # TX.spectrum: the reusable spectrum + response display
   src/devices/device_view.cpp
-  src/devices/device_scenes.cpp)
+  src/devices/device_scenes.cpp
+  src/devices/knob_curve_menu.cpp)  # TX.knob-curves: the Knob Curve submenu

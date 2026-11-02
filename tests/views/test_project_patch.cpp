@@ -1029,7 +1029,8 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   CHECK(orthogonal(e.points));
   u.view().updateReadout(edge);
   CHECK(u.view().readout().title.find("Keys notes: velocity") != std::string::npos);
-  CHECK(u.view().readout().value.find("adds in the target's units") != std::string::npos);
+  // TX.knob-curves: an added wire says what it adds in (knob travel, the knob's units, dB: the target knob's curve).
+  CHECK(u.view().readout().value.find("adds in ") != std::string::npos);
   u.view().updateReadout(kNone);
   // Hz onto the param the first wire made: that param directly (no menu), one step. TX.mod-all: the Saturator is drawn
   // as its panel and the param's knob is visible, so the param has no pin: the wire ends on the knob, and dropping

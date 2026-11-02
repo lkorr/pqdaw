@@ -342,6 +342,40 @@ TEST_CASE("wiring: the views' knob travel is the lowering's (every stock device 
   }
 }
 
+TEST_CASE("wiring (TX.knob-curves): on every curve a knob's travel is the lowering's; the menu offers the same curves") {
+  for (const doc::DeviceInfo& di : library().catalog().devices()) {
+    const graph::Patch* p = library().library().find(di.patch);
+    REQUIRE(p != nullptr);
+    const devices::DeviceSignature sig = devices::signatureOf(*p);
+    for (devices::ParamInfo pi : sig.params) {
+      if (pi.isBool) continue;
+      const auto n = p->findByName(pi.name);
+      REQUIRE(n.has_value());
+      const doc::ParamTravel declared = doc::paramTravel(p->paramDecl(*n));
+      CAPTURE(di.patch);
+      CAPTURE(pi.name);
+      // The curves the views offer are the ones the document accepts for this param.
+      const std::vector<doc::KnobCurve> offered = devices::knobCurves(pi);
+      for (const doc::KnobCurve c : {doc::KnobCurve::Linear, doc::KnobCurve::Octave, doc::KnobCurve::Exponential, doc::KnobCurve::Logarithmic}) {
+        const bool listed = std::find(offered.begin(), offered.end(), c) != offered.end();
+        CHECK(listed == (offered.size() >= 2 && doc::curveAvailable(declared, c)));
+      }
+      CHECK(doc::declaredCurve(devices::declaredTravel(pi)) == doc::declaredCurve(declared));
+      for (const doc::KnobCurve c : offered) {
+        CAPTURE(static_cast<int>(c));
+        pi.curve = c;
+        const doc::ParamTravel t = doc::paramTravel(p->paramDecl(*n), c);
+        for (double x : {0.0, 0.13, 0.5, 0.77, 1.0}) {
+          const double v = devices::fromPosition(pi, x);
+          CHECK(doc::travelPosition(t, v) == doctest::Approx(devices::toPosition(pi, v)).epsilon(1e-9));
+          CHECK(doc::travelValue(t, x) == doctest::Approx(v).epsilon(1e-9));
+          CHECK(devices::toPosition(pi, v) == doctest::Approx(x).epsilon(1e-9));
+        }
+      }
+    }
+  }
+}
+
 TEST_CASE("wiring cursors (T4.16c): jacks Crosshair; a dragged cable Crosshair over a knob, NotAllowed over nothing; badges ↕ and lit") {
   Ui u;
   auto at = [&](Vec2 p) {

@@ -3,6 +3,7 @@
 #include "pq/views/devices/device_panel.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "../common/paint.h"
@@ -45,7 +46,17 @@ public:
       return toPosition(info_, *v);
     };
     setSpec(s);
-    setInfo(label_, "Drag up or down to change the value (Shift: fine). Delete returns it to its default.");
+    // TX.knob-curves: the curve it is on, and where to switch it.
+    std::string body = "Drag up or down to change the value (Shift: fine). Delete returns it to its default.";
+    if (const std::vector<doc::KnobCurve> cs = knobCurves(p); !cs.empty()) {
+      const doc::KnobCurve declared = doc::declaredCurve(declaredTravel(p));
+      const doc::KnobCurve on = p.curve == doc::KnobCurve::Default ? declared : p.curve;
+      body += std::string(" Curve: ") + knobCurveLabel(on) + (on == declared ? " (its default)" : "") +
+              " (right-click: Knob Curve).";
+    }
+    setInfo(label_, body);
+    switched_ = p.curve != doc::KnobCurve::Default && !knobCurves(p).empty() &&
+                p.curve != doc::declaredCurve(declaredTravel(p));
     markDirty();
   }
   const ParamInfo& param() const noexcept { return info_; }
@@ -143,11 +154,19 @@ public:
           ctx.dl.addCircleFilled({c.x + std::cos(am) * mr, c.y + std::sin(am) * mr}, ctx.scale.exact(2.0f), ui::signal_theme::kAccent);
         }
       }
+      // TX.knob-curves: a knob switched off its declared curve shows that curve, small, in the gap under the arc.
+      if (switched_ && rad >= 8.0f) {
+        std::array<ui::Vec2, kCurveGlyphPoints> pts;
+        curveGlyphPoints(travelOn(info_, info_.curve),
+                         {c.x - 0.38f * rad, c.y + 0.5f * rad, c.x + 0.38f * rad, c.y + 0.92f * rad}, pts);
+        ui::smoothPolyline(ctx.dl, pts, ui::withAlpha(th->device.label, 200), ctx.scale.exact(1.0f));
+      }
     }
     if (v.focus) paint::box(ctx.dl, r, 0.0f, 0, th->accent.focus);
   }
 
 private:
+  bool switched_ = false;
   ParamInfo info_;
   std::string label_;
   ui::ModulationRing mod_;
@@ -656,7 +675,7 @@ void DevicePanel::Impl::bindOne(Bound& b) {
     case ControlKind::Knob: {
       auto& k = static_cast<PanelKnob&>(*b.widget);
       if (p) {
-        if (k.param().name != p->name) k.bind(*p, d.label.empty() ? p->label : d.label);
+        if (k.param().name != p->name || k.param().curve != p->curve) k.bind(*p, d.label.empty() ? p->label : d.label);
         k.setValue(toPosition(*p, v));
       }
       break;
@@ -664,10 +683,12 @@ void DevicePanel::Impl::bindOne(Bound& b) {
     case ControlKind::Box: {
       auto& pb = static_cast<PanelBox&>(*b.widget);
       ui::DragBox& box = pb.box();
-      if (p && pb.boundTo == p->name) {
+      // TX.knob-curves: the box re-specs when its param's curve changes too.
+      const std::string key = p ? p->name + "" + std::to_string(static_cast<int>(p->curve)) : std::string();
+      if (p && pb.boundTo == key) {
         box.setValue(toPosition(*p, v));
       } else if (p) {
-        pb.boundTo = p->name;
+        pb.boundTo = key;
         const ParamInfo info = *p;
         ui::ValueSpec s;
         s.min = 0.0;
@@ -916,6 +937,17 @@ void DevicePanel::setParamValue(std::string_view param, double value) {
   if (it == impl_->params.end() || it->second == value) return;
   it->second = value;
   impl_->changed(param, false, nullptr);
+}
+
+void DevicePanel::setParamCurve(std::string_view param, doc::KnobCurve curve) {  // TX.knob-curves
+  ParamInfo* info = nullptr;
+  for (ParamInfo& p : sig_.params)
+    if (p.name == param) info = &p;
+  if (info == nullptr || info->curve == curve) return;
+  info->curve = curve;
+  for (Impl::Bound& b : impl_->bound)
+    if (b.param == param) impl_->bindOne(b);
+  impl_->changed(param, false, nullptr);  // displays that draw the param re-read it
 }
 
 void DevicePanel::setConstValue(std::string_view name, double value) {

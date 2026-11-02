@@ -44,7 +44,9 @@ constexpr std::array<std::string_view, 13> kParamKindNames = {
 // T4.18: a chain lane's "name" (ParamRef::chain(c, kChainVolume / kChainPan)).
 constexpr std::array<std::string_view, 2> kChainLaneNames = {"volume", "pan"};
 constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "highest", "lowest", "loudest"};
-constexpr std::array<std::string_view, 2> kWireLawNames = {"add", "travel"};  // TX.patching (schema 13)
+constexpr std::array<std::string_view, 3> kWireLawNames = {"add", "travel", "units"};  // TX.patching (13), TX.knob-curves (16)
+// TX.knob-curves (schema 16): a device's "curves" {param: name} (model.h KnobCurve; Default is never written).
+constexpr std::array<std::string_view, 5> kKnobCurveNames = {"default", "linear", "octave", "exponential", "logarithmic"};
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
@@ -583,6 +585,9 @@ private:
         w_.string(el, kWireLawNames[static_cast<size_t>(wr.law)]);
         w_.key("amount");
         w_.number(PathSeg(&el, "amount"), wr.amount);
+      } else if (wr.law == WireLaw::Units) {  // TX.knob-curves (schema 16): TX.patching's law, migrated
+        w_.key("law");
+        w_.string(el, kWireLawNames[static_cast<size_t>(wr.law)]);
       }
       if (wr.reducer != WireReducer::Sum) {
         w_.key("reducer");
@@ -767,6 +772,16 @@ private:
     };
     values("params", d.params);
     values("settings", d.settings);
+    if (!d.curves.empty()) {  // TX.knob-curves (schema 16): the knobs off their declared curve
+      const PathSeg cat(&at, "curves");
+      w_.key("curves");
+      w_.beginObject(false);
+      for (const ParamCurve& c : d.curves) {
+        w_.key(c.param);
+        w_.string(PathSeg(&cat, c.param), kKnobCurveNames[static_cast<size_t>(c.curve)]);
+      }
+      w_.endObject();
+    }
     if (d.meta) {  // TMM.3 (schema 10): one line per instance, by path
       const PathSeg mat(&at, "meta");
       w_.key("meta");
@@ -1941,7 +1956,7 @@ private:
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
-                                                     "chainInput", "free", "group"};
+                                                     "chainInput", "free", "group", "curves"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2124,6 +2139,7 @@ private:
         break;
       case 12: d.free = r_.readBool(f); break;  // TX.patching (schema 13)
       case 13: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
+      case 14: d.curves = paramCurves(f); break;  // TX.knob-curves (schema 16)
     }
   }
 
@@ -2463,6 +2479,25 @@ private:
   }
 
   // {name: number, …}: any key order in the file; sorted in the model.
+  std::vector<ParamCurve> paramCurves(const PathSeg& at) {  // TX.knob-curves (schema 16)
+    std::vector<ParamCurve> v;
+    r_.beginObject(at);
+    std::string_view key;
+    while (r_.nextKey(at, key)) {
+      ParamCurve c;
+      c.param = std::string(key);
+      const PathSeg f(&at, c.param);
+      c.curve = static_cast<KnobCurve>(name(f, kKnobCurveNames, "knob curve"));
+      if (c.curve == KnobCurve::Default) r_.failValue(f, "omit a knob on its declared curve");
+      check(f, detail::checkDeviceValue(c.param, std::nullopt));
+      v.push_back(std::move(c));
+    }
+    std::sort(v.begin(), v.end(), [](const ParamCurve& a, const ParamCurve& b) { return a.param < b.param; });
+    for (size_t i = 1; i < v.size(); ++i)
+      if (v[i - 1].param == v[i].param) r_.failHere(PathSeg(&at, v[i].param), "duplicate key");
+    return v;
+  }
+
   std::vector<DeviceValue> deviceValues(const PathSeg& at) {
     std::vector<DeviceValue> v;
     r_.beginObject(at);
@@ -3549,6 +3584,23 @@ Status migrateAddChainLinks(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 15 → 16 (TX.knob-curves, SPEC §15 2026-11-01 "answers to Q186" + clarification): a schema-16 wire without "law"
+// adds BEFORE its target knob's curve (in travel on a curved knob — a cutoff, the Phase accumulator's frequency —, in dB
+// on a dB gain); a schema-15 one added AFTER it, in the param's normalised unit (TX.patching). Every schema-15 wire
+// without "law" except a chain link gets "law": "units" (that law, kept), so an old project sounds exactly as it did.
+// A chain link (Ctrl+G's series, always into an input, where both laws are the same sum) stays an added wire. Devices
+// may carry "curves" (none in schema 15). Self-contained (renumber, do not merge, if another schema step lands first).
+Status migrateUnitsWires(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  if (auto it = doc.find("wires"); it != doc.end() && it->is_array())
+    for (nlohmann::json& w : *it) {
+      if (!w.is_object() || w.contains("law")) continue;
+      if (auto c = w.find("chain"); c != w.end() && c->is_boolean() && c->get<bool>()) continue;
+      w["law"] = "units";
+    }
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3564,6 +3616,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {12, migrateWireLaws},
     {13, migrateAddGroups},
     {14, migrateAddChainLinks},
+    {15, migrateUnitsWires},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

@@ -18,6 +18,7 @@
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/circuit/device_circuit.h"
 #include "pq/views/devices/analysis.h"
+#include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/devices/panel_desc.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/shell/shell.h"
@@ -359,6 +360,7 @@ public:
       for (const doc::DeviceValue& v : d.params) values[v.name] = v.value;
       for (const doc::DeviceValue& v : d.settings) values[v.name] = v.value;
       panel_ = &add<devices::DevicePanel>("panel", tpl->sig, tpl->desc, &target_, values);
+      for (const doc::ParamCurve& c : d.curves) panel_->setParamCurve(c.param, c.curve);  // TX.knob-curves
       panel_->setActive(d.active);
       panel_->onSizeChanged = [this] { impl_.content->invalidateLayout(); };
       // T4.7: a jack press and the drag after it go to the cable layer (installWiring).
@@ -411,6 +413,7 @@ public:
     panel_->setFree(d.free);  // TX.patching
     panel_->setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& p : panel_->signature().params) {
+      panel_->setParamCurve(p.name, d.curve(p.name));  // TX.knob-curves
       const doc::DeviceValue* v = d.param(p.name);
       panel_->setParamValue(p.name, v != nullptr ? v->value : p.def);
     }
@@ -652,7 +655,13 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
         items.push_back(ui::MenuItem::item("Show Automation", [c, t, id, param] {
           c->showAutomation(t, doc::ParamRef::device(id, param));
         }));
+        if (std::optional<ui::MenuItem> curve = knobCurveMenu(ctx_, id, param)) items.push_back(std::move(*curve));  // TX.knob-curves
         items.push_back(ui::MenuItem::sep());
+      } else if (const std::string kp = paramAt(e.pos); !kp.empty()) {
+        if (std::optional<ui::MenuItem> curve = knobCurveMenu(ctx_, id, kp)) {  // TX.knob-curves (a mapped knob too)
+          items.push_back(std::move(*curve));
+          items.push_back(ui::MenuItem::sep());
+        }
       }
       // T5.x-circuit-chain: Open in Circuit View shows the whole track's chain as one circuit focused on this device
       // (the Track level); Edit Device Circuit goes straight to the device's own editor (the Device level).
@@ -1763,6 +1772,12 @@ std::optional<ui::Vec2> DeviceChainView::paramPoint(doc::DeviceId device, std::s
 
 bool DeviceChainView::ringsPolling() const noexcept { return impl_->ringTimer != 0; }
 
+namespace {
+// TX.knob-curves: what a site's tap is in (lower.h "Modulation wires": the last stage's): 0 knob travel (Travel wires),
+// 1 an Add wire's (travel on a curved knob, units / nepers on a linear one), 2 the param's normalised unit (Units wires).
+uint8_t ringLaw(const doc::Wire& w) noexcept { return w.travels() ? 0 : w.law == doc::WireLaw::Units ? 2 : 1; }
+}  // namespace
+
 void DeviceChainView::refreshRings() {
   Impl& m = *impl_;
   const doc::Project& p = *ctx_.doc();
@@ -1777,13 +1792,13 @@ void DeviceChainView::refreshRings() {
     for (size_t i = 0; i < m.ringTargets.size(); ++i)
       if (m.ringTargets[i].device == w.to && m.ringTargets[i].param == w.param) {
         m.ringSpan[i] += span;
-        if (!w.travels()) m.ringUnits[i] = 1;
+        m.ringUnits[i] = std::max(m.ringUnits[i], ringLaw(w));
         found = true;
       }
     if (!found) {
       m.ringTargets.push_back({w.to, w.param});
       m.ringSpan.push_back(span);
-      m.ringUnits.push_back(w.travels() ? 0 : 1);
+      m.ringUnits.push_back(ringLaw(w));
     }
   }
   m.ringSweeps.resize(m.ringTargets.size());
@@ -1825,10 +1840,12 @@ void DeviceChainView::refreshRings() {
         ring.current = -1.0f;
         const ModSweep& s = m.ringSweeps[i];
         if (s.known && (s.up > 0.0f || s.down > 0.0f)) {
-          if (m.ringUnits[i] != 0) {  // TX.patching: the sweep is in the param's units: where those values sit
+          if (m.ringUnits[i] != 0) {  // TX.patching / TX.knob-curves: an added wire's sweep (sweptPosition)
             const double v = devices::fromPosition(info, pk);
-            ring.liveLo = std::clamp(static_cast<float>(devices::toPosition(info, v - s.down)), 0.0f, 1.0f);
-            ring.liveHi = std::clamp(static_cast<float>(devices::toPosition(info, v + s.up)), 0.0f, 1.0f);
+            const bool legacy = m.ringUnits[i] == 2;
+            const bool nepers = info.unit == devices::DisplayUnit::Db && doc::travelsInUnits(devices::travelOn(info, info.curve));
+            ring.liveLo = std::clamp(static_cast<float>(devices::sweptPosition(info, v, -s.down, legacy, nepers)), 0.0f, 1.0f);
+            ring.liveHi = std::clamp(static_cast<float>(devices::sweptPosition(info, v, s.up, legacy, nepers)), 0.0f, 1.0f);
           } else {
             ring.liveLo = std::clamp(pk - s.down, 0.0f, 1.0f);
             ring.liveHi = std::clamp(pk + s.up, 0.0f, 1.0f);

@@ -32,6 +32,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/document/model.h"
 #include "pq/meta/type.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/face_painter.h"
@@ -86,7 +87,16 @@ public:
   // no track known, the default); guidesKey() changes whenever they may have (the face asks again).
   virtual void pitchGuides(float /*loHz*/, float /*hiHz*/, std::vector<PitchGuide>& out) const { out.clear(); }
   virtual uint64_t guidesKey() const { return 0; }
+  // TX.knob-curves: param i's knob curve (doc::Device::curves of a chain meta device; Default: the declared one). The
+  // face's controls travel along it (faceTravelToValue / faceValueToTravel).
+  virtual doc::KnobCurve curve(size_t /*param*/) const { return doc::KnobCurve::Default; }
 };
+
+// TX.knob-curves: a face control's travel t in [0, 1] ↔ param i's value on the target's knob curve (the declared one:
+// meta::travelToValue / valueToTravel exactly), and whether the curve is switched off the declared one.
+double faceTravelToValue(const MetaTarget& target, const meta::Type& type, size_t param, double t) noexcept;
+double faceValueToTravel(const MetaTarget& target, const meta::Type& type, size_t param, double v) noexcept;
+bool faceCurveSwitched(const MetaTarget& target, const meta::Type& type, size_t param) noexcept;
 
 // The type's defaults, read-only (a standalone file in the viewer, an instance the host cannot address).
 class DefaultTarget final : public MetaTarget {
@@ -307,6 +317,7 @@ public:
   const meta::Type* metaType() const noexcept override { return type_; }
   void bind(std::unique_ptr<MetaTarget> target, VoiceTapReader* voices);
   MetaTarget& target() const noexcept { return *target_; }
+  bool hasTarget() const noexcept { return target_ != nullptr; }  // TX.knob-curves
   VoiceTapReader* voices() const noexcept override { return voices_; }
 
   bool animating() const noexcept override { return voiceCount_ > 0; }
@@ -318,6 +329,9 @@ public:
   std::span<const FaceVoice> sounding() const noexcept { return {voiceBuf_.data(), voiceCount_}; }
 
   void describe(int32_t part, std::string& title, std::string& body) const override;
+  // TX.knob-curves: the jacks, then a small glyph of the curve beside each control whose knob curve is switched off its
+  // declared one (paramRect's top-right corner).
+  void paintJacks(ui::FacePainter& p, const FaceEnv& env) const override;
   // TMM.10: the face-local rect of the control that edits param `param` (meta::Type::params index), where a host
   // marks it (the Device view's automation LEDs, cable drops, Show Automation); nullopt: no such control.
   virtual std::optional<ui::Rect> paramRect(size_t /*param*/) const noexcept { return std::nullopt; }

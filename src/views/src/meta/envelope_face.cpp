@@ -321,10 +321,10 @@ private:
   // ---- values and the shape ----
   double value(size_t p) const { return p < type().params.size() ? target().value(p) : 0.0; }
   float travel(size_t p) const {
-    return static_cast<float>(meta::valueToTravel(type().params[p], value(p)));
+    return static_cast<float>(faceValueToTravel(target(), type(), p, value(p)));  // TX.knob-curves
   }
   float travelOfValue(size_t p, const std::array<double, meta::kEnvParams>& v) const {
-    return static_cast<float>(meta::valueToTravel(type().params[p], v[p]));
+    return static_cast<float>(faceValueToTravel(target(), type(), p, v[p]));
   }
 
   // Recomputes the breakpoints and the drawn segments when a value changed (cheap: 4 · kSteps points).
@@ -529,7 +529,7 @@ private:
         tg.begin(kLabels[drag_]);
         begun_ = true;
       }
-      tg.set(ps[i], meta::travelToValue(type().params[ps[i]], dragT_[i]));
+      tg.set(ps[i], faceTravelToValue(tg, type(), ps[i], dragT_[i]));
       changed = true;
     }
     (void)changed;

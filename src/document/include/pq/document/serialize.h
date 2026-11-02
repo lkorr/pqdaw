@@ -81,7 +81,7 @@ namespace pq::doc {
 // 15 = chain links (TX.groups-fix1, model.h "Modulation wires"): a wire may carry "chain": true (a link of a grouped
 // series: planned and summed before the other wires, as a chain's own link). Migration 14 → 15 changes nothing (a
 // schema-14 group's series wires stay plain wires and lower as they did).
-inline constexpr int32_t kSchemaVersion = 15;
+inline constexpr int32_t kSchemaVersion = 16;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

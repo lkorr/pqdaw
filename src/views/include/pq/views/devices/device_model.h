@@ -8,6 +8,7 @@
 // Values are always in the patch's internal units (PATCH_LANGUAGE §1: a dB param holds a linear gain, % a fraction,
 // Hz Hz); display units come from @unit(…) or the default's unit suffix.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -15,7 +16,9 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/document/lower.h"
 #include "pq/graph/patch.h"
+#include "pq/ui/draw_list.h"
 
 namespace pq::views::devices {
 
@@ -33,6 +36,9 @@ struct ParamInfo {
   int32_t steps = 0;        // @steps(n): n integer positions (0 = continuous)
   bool isBool = false;
   bool hidden = false;      // @hidden
+  // TX.knob-curves: the instance's knob curve (doc::Device::curves; Default: the declared one). toPosition / fromPosition
+  // follow it (doc::paramTravel(decl, curve) is the same law).
+  doc::KnobCurve curve = doc::KnobCurve::Default;
 };
 
 // One structural setting: an `in name : real const = default` input.
@@ -60,6 +66,22 @@ DeviceSignature signatureOf(const graph::Patch& patch);
 // exp0 law for @curve(exp0, k) (doc::paramTravel follows the same laws).
 double toPosition(const ParamInfo& p, double value) noexcept;
 double fromPosition(const ParamInfo& p, double position) noexcept;
+// TX.knob-curves: the param's declared travel as doc::paramTravel reads it (lo, hi, log, exp0, db, round), and its
+// travel on curve `c` (doc::withCurve). curveAvailable / declaredCurve / travelsInUnits answer on these.
+doc::ParamTravel declaredTravel(const ParamInfo& p) noexcept;
+inline doc::ParamTravel travelOn(const ParamInfo& p, doc::KnobCurve c) noexcept { return doc::withCurve(declaredTravel(p), c); }
+// TX.knob-curves: the curves the knob offers (continuous params: not bool, not @steps), in menu order, and the label of
+// each ("Octave", "Exponential", "Logarithmic", "Linear"); the one Default means is declaredCurve(declaredTravel(p)).
+std::vector<doc::KnobCurve> knobCurves(const ParamInfo& p);
+const char* knobCurveLabel(doc::KnobCurve c) noexcept;
+// TX.knob-curves: the knob's position after an Add wire's sweep `delta` (a tap's up / down) from value `value`: in travel
+// on a curved knob, in units on a linear one (nepers for a dB gain: `nepers`), Units wires (`legacyUnits`) in the param's
+// normalised unit.
+double sweptPosition(const ParamInfo& p, double value, double delta, bool legacyUnits, bool nepers) noexcept;
+// TX.knob-curves: a small drawing of travel `t`'s curve in `box` (left → right = travel 0 → 1, bottom → top = the
+// value in its units: dB for a dB gain), for a knob switched off its declared curve.
+inline constexpr size_t kCurveGlyphPoints = 9;
+void curveGlyphPoints(const doc::ParamTravel& t, ui::Rect box, std::array<ui::Vec2, kCurveGlyphPoints>& out) noexcept;
 // The value shown (dB for a gain, % for a fraction, Hz).
 double toDisplay(const ParamInfo& p, double value) noexcept;
 double fromDisplay(const ParamInfo& p, double display) noexcept;

@@ -45,6 +45,7 @@ public:
   // TX.spectrogram: the degrees of the effective tuning of the track holding the device (doc::effectiveTuning).
   void pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out) const override;
   uint64_t guidesKey() const override;
+  doc::KnobCurve curve(size_t param) const override;  // TX.knob-curves: a chain meta device's (path ""); nested: Default
   doc::DeviceId device() const noexcept { return device_; }
   const std::string& path() const noexcept { return path_; }
 

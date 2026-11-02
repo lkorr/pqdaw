@@ -2144,6 +2144,24 @@ Res apply_(const Snapshot& s, const SetDeviceChainInput& c, ChangeSet& cs) {  //
   });
 }
 
+Res apply_(const Snapshot& s, const SetParamCurve& c, ChangeSet& cs) {  // TX.knob-curves
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  if (loc.device->curve(c.param) == c.curve) return s;
+  return editDeviceAt(s, c.device, cs, kChangeStructural, [&](Device& d) {
+    auto it = std::lower_bound(d.curves.begin(), d.curves.end(), c.param,
+                               [](const ParamCurve& a, const std::string& n) { return a.param < n; });
+    if (c.curve == KnobCurve::Default) {
+      if (it != d.curves.end() && it->param == c.param) d.curves.erase(it);
+    } else if (it != d.curves.end() && it->param == c.param) {
+      it->curve = c.curve;
+    } else {
+      d.curves.insert(it, ParamCurve{c.param, c.curve});
+    }
+    return checkParamCurves(d);
+  });
+}
+
 Res apply_(const Snapshot& s, const SetDeviceFree& c, ChangeSet& cs) {  // TX.patching
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
@@ -2470,7 +2488,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch", "Rename Device", "Chain Input", "Free Device", "Device Group",
+    "Edit Device Patch", "Rename Device", "Chain Input", "Free Device", "Device Group", "Knob Curve",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",

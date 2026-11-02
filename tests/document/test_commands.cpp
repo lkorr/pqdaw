@@ -812,6 +812,13 @@ std::vector<Case> cases() {
                  CHECK(std::find(cs.devices.begin(), cs.devices.end(), chain.fx) != cs.devices.end());
                  CHECK(findDevice(f.doc(), chain.fx).device->free);
                }});
+  c.push_back({"SetParamCurve (TX.knob-curves: a knob's curve; Structural: the wire law follows it)", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return SetParamCurve{chain.fx, "gain", KnobCurve::Exponential};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
+                 CHECK(findDevice(f.doc(), chain.fx).device->curve("gain") == KnobCurve::Exponential);
+               }});
   static DeviceId groupId;
   c.push_back({"SetDeviceGroup (TX.groups: a free device into a group; Meta: no sound changes)", [withChain](Fixture& f) -> Command {
                  withChain(f);

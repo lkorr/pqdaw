@@ -161,6 +161,8 @@ std::string hex16(uint64_t v) {
   return s;
 }
 
+bool addsAfterLaw(const Wire& w, const Device& d);  // TX.knob-curves (below)
+
 // TMM.3: expanding a project's meta modules (lower.h "Meta modules").
 class MetaExpander {
 public:
@@ -210,7 +212,7 @@ public:
     std::vector<uint8_t> units(type->params.size(), 0);
     bool anyUnits = false;
     for (const Wire& w : wiresOf(p_))
-      if (w.to == d.id && !w.travels())
+      if (w.to == d.id && addsAfterLaw(w, d))  // TX.knob-curves: the VCA on its Log curve takes Add wires on the knob
         if (const int32_t i = type->paramIndex(w.param); i >= 0 && type->params[static_cast<size_t>(i)].unitsInBody) {
           units[static_cast<size_t>(i)] = 1;
           anyUnits = true;
@@ -870,6 +872,20 @@ bool paramWraps(const graph::ParamDecl& d) noexcept {
 // to −max(|lo|, |hi|); it is clamped to ±max(|lo|, |hi|) instead of [lo, hi].
 bool paramSigned(const graph::ParamDecl& d) noexcept {
   return std::any_of(d.attrs.begin(), d.attrs.end(), [](const graph::Attr& a) { return a.name == "signed"; });
+}
+// TX.knob-curves: whether wire `w` into a param whose patch takes its wires after its own law (an `in <param>_add`: the
+// VCA's value, meta::ParamSpec::unitsInBody) goes there. A Units wire (TX.patching's law) always; an Add wire when the
+// knob is linear in that law's units — a meta type's unitsLaw hook with the device's settings (the VCA: its Bend curve;
+// on its Log curve the wire adds to the knob position, i.e. in travel), any other patch with such an input always —;
+// a Travel wire never.
+bool addsAfterLaw(const Wire& w, const Device& d) {
+  if (w.travels()) return false;
+  if (w.law == WireLaw::Units || !isMetaDevice(d)) return true;
+  const meta::Type* t = meta::findType(metaDeviceType(d));
+  if (t == nullptr) return true;
+  const int32_t i = t->paramIndex(w.param);
+  if (i < 0 || !t->params[static_cast<size_t>(i)].unitsInBody || t->unitsLaw == nullptr) return true;
+  return t->unitsLaw(metaSettings(d, "", *t), static_cast<uint32_t>(i));
 }
 
 // TX.patching: the number of `out`s of a callee (its signature's outputs before its exports).
@@ -1612,7 +1628,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     if (dd.rack >= 0) {
       pin = rackParamIndex(w.param);
       if (pin != graph::kNone) point = rackParamPoint(dd, pin);
-    } else if (const uint32_t units = w.travels() ? graph::kNone : signalInput(*dd.callee, w.param + "_add");
+    } else if (const uint32_t units = !addsAfterLaw(w, *dd.device) ? graph::kNone : signalInput(*dd.callee, w.param + "_add");
                units != graph::kNone && realParamPin(*dd.callee, w.param)) {
       // TX.patching: a param whose patch adds its wires after its own law (an input `<param>_add`: the VCA's value,
       // meta::ParamSpec::unitsInBody): the wire goes there, the param stays the knob (param rate).
@@ -1766,6 +1782,7 @@ enum MapK : uint32_t {
   kMX, kMInv127, kMKx, kMK, kMExp, kMOne, kMSub, kMInvE, kMShape, kMRange, kMScaled, kMMin, kMPos,
   kML, kMMulL, kMLo, kMAddLo, kMExpV, kMRoundAdd, kMFloor,
   kMExp0C, kMExp0Mul,  // TMM.3: the exp0 law
+  kMDbExp,             // TX.knob-curves: a dB gain bent in dB
 };
 
 // What building one track patch keeps.
@@ -2110,6 +2127,7 @@ enum WireK : uint32_t {
   kWAmount, kWIn, kWExport, kWChannel, kWReduce, kWDelay, kWTerm, kWSum,
   kWNote, kWNoteReal,  // TMM.10-fix2: a note source's voice terminal, its bool → real
   kWMidL, kWMidR, kWMidAdd, kWMid,  // TX.groups: a wide signal into a meta module's input: its mid
+  kWOwn14,  // TX.knob-curves: an Add wire's own free slots (kWAmount, kWTerm, this) hold its site's @signed / dB nodes
   kWTarget = 16,
 };
 enum TargetK : uint32_t {
@@ -2118,8 +2136,9 @@ enum TargetK : uint32_t {
   kTPosD, kTPosE, kTMapD,  // TMM.3: the exp0 law's extra nodes
   // TX.patching: the Add law's nodes (keyed by the site's first added wire)
   kTUAdd, kTUClip, kTURoundAdd, kTUFloor, kTUUpSub, kTUUpMax, kTUDownSub, kTUDownMax, kTUPack, kTUExport,
+  kTMapE,  // TX.knob-curves: a dB gain bent in dB (its last exp)
 };
-static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTUExport) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
+static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTMapE) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
 
 std::string_view reducerAtom(WireReducer r) noexcept {
   switch (r) {
@@ -2278,11 +2297,19 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     const std::string name = sites[si].name;
     const graph::ParamDecl& decl = *sites[si].decl;
     const LMapping* mapping = sites[si].mapping;
-    // TX.patching: the migrated wires keep T4.7's travel law (first, in knob travel); the added ones then add in units.
-    std::vector<const LWire*> wires, added;
-    for (const LWire* w : sites[si].wires) (w->wire->travels() ? wires : added).push_back(w);
+    // TX.knob-curves (lower.h "Modulation wires"): the knob's travel is its curve (Device::curves; the declared law when
+    // none). Stage 1, in knob travel: the migrated Travel wires (amount · source) and, on a CURVED knob, the Add wires
+    // (+1 = the whole travel). Stage 2, on a LINEAR knob: the Add wires in its units (a dB gain: in dB). Stage 3: the
+    // Units wires (TX.patching's law, migrated from schema 13 … 15) in the param's normalised unit, after the curve.
+    std::vector<const LWire*> wires, added, units;
     const LDev& d = td[dev];
-    const ParamTravel tr = d.rack >= 0 ? ParamTravel{false, 0.0, kMacroMax, false} : paramTravel(decl);
+    const ParamTravel tr = d.rack >= 0 ? ParamTravel{false, 0.0, kMacroMax, false} : paramTravel(decl, d.device->curve(name));
+    const bool curved = !travelsInUnits(tr);
+    for (const LWire* w : sites[si].wires)
+      (w->wire->travels() ? wires : w->wire->law == WireLaw::Units ? units : curved ? wires : added).push_back(w);
+    const LWire* curvedAdd = nullptr;  // the first Add wire of stage 1 (its own free slots hold @signed / @wrap's nodes)
+    for (const LWire* w : wires)
+      if (curvedAdd == nullptr && !w->wire->travels()) curvedAdd = w;
     const bool travels = tr.hi > tr.lo && (!tr.log || tr.lo > 0.0);
     // The mapped position: min + (max − min) · shape(macro / 127, curve) (the automation curve law).
     PortRef pos = kPending;
@@ -2315,8 +2342,22 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       } else {
         const double L = tr.log ? std::log(tr.hi / tr.lo) : tr.hi - tr.lo;
         // TMM.3: the exp0 law (paramTravel): K = k·ln 2, value = lo + c·(e^(K·p) − 1), c = (hi − lo)/(e^K − 1).
-        const double K = tr.exp0 * std::numbers::ln2, c = tr.exp0 > 0.0 ? (tr.hi - tr.lo) / std::expm1(K) : 0.0;
-        if (mapping == nullptr && tr.exp0 > 0.0)  // p = ln(1 + (knob − lo)/c) / K
+        // TX.knob-curves: k < 0 too (Logarithmic); with `log` (a dB gain bent in dB) value = lo·(hi/lo)^g(p),
+        // g = (e^(K·p) − 1)/(e^K − 1): value = e^((ln lo − L·cg) + L·cg·e^(K·p)), cg = 1/(e^K − 1).
+        const double K = tr.exp0 * std::numbers::ln2;
+        const double c = tr.exp0 != 0.0 ? (tr.hi - tr.lo) / std::expm1(K) : 0.0;
+        const bool dbBend = tr.exp0 != 0.0 && tr.log;
+        if (mapping == nullptr && dbBend) {  // p = ln(1 + (ln knob − ln lo)·(e^K − 1)/L) / K
+          const double bb = std::expm1(K) / L, aa = 1.0 - std::log(tr.lo) * bb;
+          pk = ir.atom("mul",
+                       {ir.atom("log",
+                                {ir.atom("add", {ir.atom("mul", {ir.atom("log", {knob}, tid(kTPosA)), ir.literal(bb)}, tid(kTPosB)),
+                                                 ir.literal(aa)},
+                                         tid(kTPosD))},
+                                tid(kTPosE)),
+                        ir.literal(1.0 / K)},
+                       tid(kTPosC));
+        } else if (mapping == nullptr && tr.exp0 != 0.0)  // p = ln(1 + (knob − lo)/c) / K
           pk = ir.atom("mul",
                        {ir.atom("log",
                                 {ir.atom("add", {ir.atom("mul", {ir.atom("sub", {knob, ir.literal(tr.lo)}, tid(kTPosA)),
@@ -2335,30 +2376,53 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
         PortRef sum;
         for (size_t i = 0; i < wires.size(); ++i) {
           const LWire& w = *wires[i];
-          const std::string id = std::to_string(w.wire->id.value);
-          constexpr graph::PortType kAnyGlobal = graph::portType(graph::Kind::Real, graph::Rate::Infer, graph::Poly::Global, graph::kWidthMono);
-          PortRef src = w.fromNode == node ? source(w) : ir.input("m" + id, b.c0(), wid(w, kWIn), kAnyGlobal);
-          if (w.delayed) src = ir.atom("z1", {src}, wid(w, kWDelay));  // closes a loop: 1 sample (SPEC §15 2026-10-24)
-          const PortRef amt = ir.param("w" + id, w.wire->amount, -1.0, 1.0, wid(w, kWAmount));
-          const PortRef term = ir.atom("mul", {amt, src}, wid(w, kWTerm));
+          PortRef term;
+          if (w.wire->travels()) {
+            const std::string id = std::to_string(w.wire->id.value);
+            constexpr graph::PortType kAnyGlobal = graph::portType(graph::Kind::Real, graph::Rate::Infer, graph::Poly::Global, graph::kWidthMono);
+            PortRef src = w.fromNode == node ? source(w) : ir.input("m" + id, b.c0(), wid(w, kWIn), kAnyGlobal);
+            if (w.delayed) src = ir.atom("z1", {src}, wid(w, kWDelay));  // closes a loop: 1 sample (SPEC §15 2026-10-24)
+            const PortRef amt = ir.param("w" + id, w.wire->amount, -1.0, 1.0, wid(w, kWAmount));
+            term = ir.atom("mul", {amt, src}, wid(w, kWTerm));
+          } else {
+            term = arriving(w);  // TX.knob-curves: an Add wire into a curved knob: its signal is the travel it adds
+          }
           sum = i == 0 ? term : ir.atom("add", {sum, term}, wid(w, kWSum));
         }
-        const PortRef p = ir.atom("clip", {ir.atom("add", {pk, sum}, tid(kTAdd)), b.c0(), b.c1()}, tid(kTClip));
-        if (tr.exp0 > 0.0)
+        // TX.knob-curves: with Add wires, @wrap wraps the travel (frac: past the end comes back round) and @signed
+        // reaches −1 … 1, the curve mirrored (value = sign(p)·curve(|p|)); a Travel-only site clips as T4.7 did.
+        const bool wrapTravel = curvedAdd != nullptr && d.rack < 0 && paramWraps(decl);
+        const bool signedTravel = curvedAdd != nullptr && d.rack < 0 && !wrapTravel && paramSigned(decl);
+        const PortRef moved = ir.atom("add", {pk, sum}, tid(kTAdd));
+        const PortRef p = wrapTravel     ? ir.atom("frac", {moved}, wid(*curvedAdd, kWAmount))
+                          : signedTravel ? ir.atom("clip", {moved, ir.literal(-1.0), b.c1()}, tid(kTClip))
+                                         : ir.atom("clip", {moved, b.c0(), b.c1()}, tid(kTClip));
+        const PortRef pm = signedTravel ? ir.atom("abs", {p}, wid(*curvedAdd, kWAmount)) : p;
+        if (dbBend)
+          v = ir.atom("exp",
+                      {ir.atom("add",
+                               {ir.atom("mul", {ir.atom("exp", {ir.atom("mul", {pm, ir.literal(K)}, tid(kTMapA))}, tid(kTMapC)),
+                                                ir.literal(L / std::expm1(K))},
+                                        tid(kTMapD)),
+                                ir.literal(std::log(tr.lo) - L / std::expm1(K))},
+                               tid(kTMapB))},
+                      tid(kTMapE));
+        else if (tr.exp0 != 0.0)
           v = ir.atom("add",
-                      {ir.atom("mul", {ir.atom("exp", {ir.atom("mul", {p, ir.literal(K)}, tid(kTMapA))}, tid(kTMapC)), ir.literal(c)},
+                      {ir.atom("mul", {ir.atom("exp", {ir.atom("mul", {pm, ir.literal(K)}, tid(kTMapA))}, tid(kTMapC)), ir.literal(c)},
                                tid(kTMapD)),
                        ir.literal(tr.lo - c)},
                       tid(kTMapB));
         else
-          v = tr.log ? ir.atom("exp", {ir.atom("add", {ir.atom("mul", {p, ir.literal(L)}, tid(kTMapA)), ir.literal(std::log(tr.lo))},
+          v = tr.log ? ir.atom("exp", {ir.atom("add", {ir.atom("mul", {pm, ir.literal(L)}, tid(kTMapA)), ir.literal(std::log(tr.lo))},
                                                tid(kTMapB))},
                                tid(kTMapC))
-                     : ir.atom("add", {ir.atom("mul", {p, ir.literal(L)}, tid(kTMapA)), ir.literal(tr.lo)}, tid(kTMapB));
+                     : ir.atom("add", {ir.atom("mul", {pm, ir.literal(L)}, tid(kTMapA)), ir.literal(tr.lo)}, tid(kTMapB));
+        if (signedTravel) v = ir.atom("mul", {v, ir.atom("sign", {p}, wid(*curvedAdd, kWTerm))}, wid(*curvedAdd, kWOwn14));
         if (tr.round) v = ir.atom("floor", {ir.atom("add", {v, ir.konst(0.5, kCHalf)}, tid(kTRoundAdd))}, tid(kTFloor));
         // The tap: how far up and down the modulation moved the param (zero exactly when it does not move it). With
         // added wires too, the tap is theirs (in units, below).
-        if (added.empty()) {
+        if (added.empty() && units.empty()) {
           const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, tid(kTUpSub)), b.c0()}, tid(kTUpMax));
           const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, tid(kTDownSub)), b.c0()}, tid(kTDownMax));
           const std::string port = tapPort(d.device->id, name);
@@ -2366,9 +2430,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
           if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port});
         }
       }
-    } else if (!added.empty() && mapping == nullptr) {
+    } else if ((!added.empty() || !units.empty()) && mapping == nullptr) {
       // TX.patching: the knob is the centre the added wires add to (a runtime param, as an unmodulated param's).
-      v = ir.paramDecl("d" + std::to_string(d.device->id.value) + "__" + name, decl, wid(*added.front(), kWTarget + static_cast<uint32_t>(kTKnob)));
+      const LWire& kf = units.empty() ? *added.front() : *units.front();
+      v = ir.paramDecl("d" + std::to_string(d.device->id.value) + "__" + name, decl, wid(kf, kWTarget + static_cast<uint32_t>(kTKnob)));
     } else if (mapping != nullptr) {
       // The mapped value: the travel map of the position.
       const MacroMapping& m = *mapping->m;
@@ -2377,7 +2442,14 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
         v = ir.konst(tr.lo, mid(kMLo));
       } else {
         const double L = tr.log ? std::log(tr.hi / tr.lo) : tr.hi - tr.lo;
-        if (tr.exp0 > 0.0) {  // TMM.3: lo + c·(e^(K·pos) − 1)
+        if (tr.exp0 != 0.0 && tr.log) {  // TX.knob-curves: a dB gain bent in dB (see above)
+          const double K = tr.exp0 * std::numbers::ln2;
+          const PortRef e = ir.atom("exp", {ir.atom("mul", {pos, ir.konst(K, mid(kML))}, mid(kMMulL))}, mid(kMExpV));
+          v = ir.atom("exp", {ir.atom("add", {ir.atom("mul", {e, ir.konst(L / std::expm1(K), mid(kMExp0C))}, mid(kMExp0Mul)),
+                                              ir.konst(std::log(tr.lo) - L / std::expm1(K), mid(kMLo))},
+                                      mid(kMAddLo))},
+                      mid(kMDbExp));
+        } else if (tr.exp0 != 0.0) {  // TMM.3: lo + c·(e^(K·pos) − 1)
           const double K = tr.exp0 * std::numbers::ln2, c = (tr.hi - tr.lo) / std::expm1(K);
           const PortRef e = ir.atom("exp", {ir.atom("mul", {pos, ir.konst(K, mid(kML))}, mid(kMMulL))}, mid(kMExpV));
           v = ir.atom("add", {ir.atom("mul", {e, ir.konst(c, mid(kMExp0C))}, mid(kMExp0Mul)), ir.konst(tr.lo - c, mid(kMLo))},
@@ -2395,32 +2467,46 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       v = ir.paramDecl("d" + std::to_string(d.device->id.value) + "__" + name, decl,
                        nodeIdFor(NodeRole::Rack, d.device->id.value, pi));
     }
-    if (!added.empty()) {
-      // TX.patching (model.h "Modulation wires", the Add law): value = clamp(centre + sum of the signals, lo, hi) in the
-      // param's own units (no clamp for an @wrap param: its patch wraps it), rounded for @steps; the tap is how far up /
-      // down the wires moved it, in units (zero exactly when they do not move it).
-      auto tid = [&](uint32_t k) { return wid(*added.front(), kWTarget + k); };
-      const PortRef centre = v;
+    // Stages 2 and 3 (TX.patching's math): value = clamp(centre + Σ signals, lo, hi), no clamp for an @wrap param (its
+    // patch wraps it), ±max(|lo|, |hi|) for an @signed one, rounded for @steps; the tap is how far up / down the wires
+    // moved it, in units (zero exactly when they do not move it). Stage 2 on a dB gain works in nepers (ln gain): the
+    // signals are dB (× ln 10 / 20), the tap is in nepers (the views convert it).
+    auto addStage = [&](const std::vector<const LWire*>& list, bool inDb, bool tapIt) {
+      auto tid = [&](uint32_t k) { return wid(*list.front(), kWTarget + k); };
+      const LWire& af = *list.front();
+      const PortRef centre = inDb ? ir.atom("log", {v}, wid(af, kWAmount)) : v;
       PortRef sum = kPending;
-      for (size_t i = 0; i < added.size(); ++i) {
-        const PortRef src = arriving(*added[i]);
-        sum = i == 0 ? src : ir.atom("add", {sum, src}, wid(*added[i], kWSum));
+      for (size_t i = 0; i < list.size(); ++i) {
+        const PortRef src = arriving(*list[i]);
+        sum = i == 0 ? src : ir.atom("add", {sum, src}, wid(*list[i], kWSum));
       }
-      v = ir.atom("add", {centre, sum}, tid(kTUAdd));
+      if (inDb) sum = ir.atom("mul", {sum, ir.literal(std::numbers::ln10 / 20.0)}, wid(af, kWTerm));
+      PortRef x = ir.atom("add", {centre, sum}, tid(kTUAdd));
       double lo = 0.0, hi = kMacroMax;
       const bool ranged = d.rack >= 0 || paramRangeOf(decl, lo, hi);
-      if (ranged && d.rack < 0 && paramSigned(decl)) {
+      if (ranged && d.rack < 0 && !inDb && paramSigned(decl)) {
         hi = std::max(std::fabs(lo), std::fabs(hi));
         lo = -hi;
       }
-      if (ranged && !paramWraps(decl)) v = ir.atom("clip", {v, ir.literal(lo), ir.literal(hi)}, tid(kTUClip));
-      if (tr.round) v = ir.atom("floor", {ir.atom("add", {v, ir.konst(0.5, kCHalf)}, tid(kTURoundAdd))}, tid(kTUFloor));
-      const PortRef up = ir.atom("max", {ir.atom("sub", {v, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));
-      const PortRef down = ir.atom("max", {ir.atom("sub", {centre, v}, tid(kTUDownSub)), b.c0()}, tid(kTUDownMax));
-      const std::string port = tapPort(d.device->id, name);
-      ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTUPack), 2), tid(kTUExport));
-      if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, true});
-    }
+      if (inDb) {
+        lo = std::log(lo);
+        hi = std::log(hi);
+      }
+      if (ranged && (inDb || !paramWraps(decl))) x = ir.atom("clip", {x, ir.literal(lo), ir.literal(hi)}, tid(kTUClip));
+      PortRef out = inDb ? ir.atom("exp", {x}, wid(af, kWOwn14)) : x;
+      if (tr.round) out = ir.atom("floor", {ir.atom("add", {out, ir.konst(0.5, kCHalf)}, tid(kTURoundAdd))}, tid(kTUFloor));
+      if (tapIt) {
+        const PortRef moved = inDb ? x : out;
+        const PortRef up = ir.atom("max", {ir.atom("sub", {moved, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));
+        const PortRef down = ir.atom("max", {ir.atom("sub", {centre, moved}, tid(kTUDownSub)), b.c0()}, tid(kTUDownMax));
+        const std::string port = tapPort(d.device->id, name);
+        ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTUPack), 2), tid(kTUExport));
+        if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, true, inDb});
+      }
+      v = out;
+    };
+    if (!added.empty()) addStage(added, d.rack < 0 && tr.db && tr.log && tr.exp0 == 0.0, units.empty());
+    if (!units.empty()) addStage(units, false, true);
     sites[si].resolved = true;
     sites[si].value = v;
     return v;
@@ -2879,7 +2965,7 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept {
   return id <= 0xFFFFFFFFull && k < kEntityNodeSlots ? static_cast<uint32_t>(id) : 0u;
 }
 
-ParamTravel paramTravel(const graph::ParamDecl& d) noexcept {
+ParamTravel paramTravel(const graph::ParamDecl& d, KnobCurve curve) noexcept {
   ParamTravel t;
   graph::Unit unit = d.defaultValue.unit;
   bool exp = false;
@@ -2909,25 +2995,64 @@ ParamTravel paramTravel(const graph::ParamDecl& d) noexcept {
   }
   if (t.lo > t.hi) std::swap(t.lo, t.hi);
   t.log = t.lo > 0.0 && (exp || unit == graph::Unit::dB);
+  t.db = t.lo > 0.0 && unit == graph::Unit::dB && !exp;
   if (t.log || !(t.hi > t.lo)) t.exp0 = 0.0;
+  return withCurve(t, curve);
+}
+
+bool curveAvailable(const ParamTravel& d, KnobCurve c) noexcept {  // TX.knob-curves
+  if (c == KnobCurve::Default) return true;
+  if (!(d.hi > d.lo) || d.round || static_cast<uint8_t>(c) > static_cast<uint8_t>(KnobCurve::Logarithmic)) return false;
+  if (c == KnobCurve::Octave) return !d.db && (d.lo > 0.0 || (d.exp0 > 0.0 && !d.log));
+  return true;
+}
+
+KnobCurve declaredCurve(const ParamTravel& d) noexcept {
+  return d.db ? KnobCurve::Linear : (d.log || d.exp0 > 0.0) ? KnobCurve::Octave : KnobCurve::Linear;
+}
+
+ParamTravel withCurve(const ParamTravel& d, KnobCurve c) noexcept {
+  if (c == KnobCurve::Default || !curveAvailable(d, c) || c == declaredCurve(d)) return d;
+  ParamTravel t = d;
+  switch (c) {
+    case KnobCurve::Linear: t.log = d.db; t.exp0 = 0.0; break;
+    case KnobCurve::Octave: t.log = true; t.exp0 = 0.0; break;
+    case KnobCurve::Exponential: t.log = d.db; t.exp0 = kKnobBendK / std::numbers::ln2; break;
+    case KnobCurve::Logarithmic: t.log = d.db; t.exp0 = -kKnobBendK / std::numbers::ln2; break;
+    case KnobCurve::Default: break;
+  }
   return t;
+}
+
+bool travelsInUnits(const ParamTravel& t) noexcept { return t.exp0 == 0.0 && (!t.log || t.db); }
+
+const graph::ParamDecl* findParamDecl(const graph::Patch& patch, std::string_view param) noexcept {
+  for (NodeIndex n = 0; n < patch.nodeCount(); ++n)
+    if (patch.node(n).kind == graph::NodeKind::Param && patch.nodeName(n) == param) {
+      const graph::ParamDecl& d = patch.paramDecl(n);
+      return d.kind == graph::Kind::Real ? &d : nullptr;
+    }
+  return nullptr;
 }
 
 double travelPosition(const ParamTravel& t, double v) noexcept {
   if (!(t.hi > t.lo)) return 0.0;
   v = std::clamp(v, t.lo, t.hi);
-  if (t.exp0 > 0.0) {
+  if (t.exp0 != 0.0) {
     const double K = t.exp0 * std::numbers::ln2;
-    return std::clamp(std::log1p((v - t.lo) / (t.hi - t.lo) * std::expm1(K)) / K, 0.0, 1.0);
+    const double u = t.log ? std::log(v / t.lo) / std::log(t.hi / t.lo) : (v - t.lo) / (t.hi - t.lo);  // TX.knob-curves: in dB
+    return std::clamp(std::log1p(u * std::expm1(K)) / K, 0.0, 1.0);
   }
   return t.log ? std::log(v / t.lo) / std::log(t.hi / t.lo) : (v - t.lo) / (t.hi - t.lo);
 }
 
 double travelValue(const ParamTravel& t, double p) noexcept {
   p = std::clamp(p, 0.0, 1.0);
-  double v = t.exp0 > 0.0 ? t.lo + (t.hi - t.lo) * std::expm1(p * t.exp0 * std::numbers::ln2) / std::expm1(t.exp0 * std::numbers::ln2)
-             : t.log      ? t.lo * std::exp(p * std::log(t.hi / t.lo))
-                          : t.lo + p * (t.hi - t.lo);
+  const double g = t.exp0 != 0.0 ? std::expm1(p * t.exp0 * std::numbers::ln2) / std::expm1(t.exp0 * std::numbers::ln2) : p;
+  double v = t.exp0 != 0.0 && t.log ? t.lo * std::exp(g * std::log(t.hi / t.lo))  // TX.knob-curves: a bend in dB
+             : t.exp0 != 0.0        ? t.lo + (t.hi - t.lo) * std::expm1(p * t.exp0 * std::numbers::ln2) / std::expm1(t.exp0 * std::numbers::ln2)
+             : t.log                ? t.lo * std::exp(p * std::log(t.hi / t.lo))
+                                    : t.lo + p * (t.hi - t.lo);
   if (t.round) v = std::floor(v + 0.5);
   return std::clamp(v, t.lo, t.hi);
 }

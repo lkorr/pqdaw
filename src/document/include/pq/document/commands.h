@@ -190,6 +190,10 @@ struct SetDeviceFree { DeviceId device; bool free = true; };
 // device of a track's own list into group `group` (a group device of the same list), or takes it out (invalid). A group
 // is never a member (no nesting).
 struct SetDeviceGroup { DeviceId device; DeviceId group; };
+// TX.knob-curves: Structural (the Add wire law follows the curve: lower.h "Modulation wires"). A knob's curve
+// (model.h KnobCurve; Default removes the entry). The value stays (it is stored in units): the knob re-maps. The param is
+// not checked against the patch (the document is library-free; ops::setParamCurve checks it). Never on a rack.
+struct SetParamCurve { DeviceId device; std::string param; KnobCurve curve = KnobCurve::Default; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
 // Structural. Adds `wire` (its id pre-allocated). Both devices must exist; a Travel wire's amount must be in [−1, 1], an
@@ -285,7 +289,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    SetDeviceChainInput, SetDeviceFree, SetDeviceGroup, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
+    SetDeviceChainInput, SetDeviceFree, SetDeviceGroup, SetParamCurve, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

@@ -650,3 +650,10 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What was matched against: the user's words in the bug report ("highlight sections … make midi clips … with ctrl shift t, or rightclicking … this is basically just a window to that exact same track; should also be able to draw automation here as well. same deal with audio tracks") and the arrangement's own behaviour (it is the arrangement's editor running here).
 - To judge (Q?-TX.lane-edit-a): automation drawn OVER the clips in automation mode (the arrangement's mode, shared) rather than lanes under each window; the canvas giving its keys to the window after a press there; the parameter name in the window's title row; the windows' small size at the default zoom for editing.
 - Known gaps: see Q?-TX.lane-edit-a "Not done".
+
+## TX.knob-curves Knob curve toggle; wires add before the curve · 2026-11-02 (👁)
+- What to look at:
+  - `tests/views/golden/device-knob-curves.png` (new, 1600 × 900): "Keys" — a Phase accumulator (frequency bar on Linear: its 100 Hz / 1 kHz / 10 kHz ticks move to their linear places; amplitude on Exponential; small curve glyphs at those controls) → Auto Filter (Frequency on Linear at 1 kHz: the knob near its start, a straight glyph under it; Resonance on Exponential) → Utility (Gain on Logarithmic, −6 dB). Every other knob is unchanged (no glyph).
+  - Live: `pqdaw`, right-click a knob in the Device view (or a panel / face control in the circuit) ▸ Knob Curve. Wire an LFO into a filter cutoff: on Octave (its default) the LFO sweeps evenly in octaves (+1 = the whole range); switch the cutoff to Linear and the same wire adds Hz. A wire into a dB knob adds dB.
+- What was matched against: the user's words (SPEC §15 2026-11-01 "answers to Q186" + clarification).
+- To judge (Q?-TX.knob-curves-a): the curve shapes (Exponential / Logarithmic K = 4.8), the glyph (only when switched), the menu's place and labels, the VCA's exception.

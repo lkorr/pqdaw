@@ -4,6 +4,7 @@
 #include "pq/views/meta/meta_face.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <limits>
@@ -12,6 +13,8 @@
 #include <utility>
 
 #include "faces.h"
+#include "pq/document/lower.h"
+#include "pq/views/devices/device_model.h"
 
 namespace pq::views {
 
@@ -113,6 +116,58 @@ void Face::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
     p.disc({sx, j.at.y}, 3.4f, th.face.jack);
     p.ring({sx, j.at.y}, 2.75f, 1.1f, th.face.jackRing);
     p.disc({sx, j.at.y}, 1.25f, j.connected ? th.face.signal : ui::mulAlpha(th.face.jackRing, 0.35f));
+  }
+}
+
+// ---- TX.knob-curves ----
+namespace {
+doc::ParamTravel specTravel(const meta::ParamSpec& s) noexcept {  // the declared law, as doc::paramTravel reads the expansion's
+  doc::ParamTravel t;
+  t.lo = std::min(s.min, s.max);
+  t.hi = std::max(s.min, s.max);
+  t.log = s.curve == meta::Curve::Exp && t.lo > 0.0;
+  t.exp0 = s.curve == meta::Curve::Exp0 && s.curveK > 0.0 && t.hi > t.lo ? s.curveK : 0.0;
+  return t;
+}
+// The switched travel of param i (false: the declared law, meta::travelToValue's).
+bool switchedTravel(const MetaTarget& target, const meta::Type& type, size_t i, doc::ParamTravel& out) noexcept {
+  if (i >= type.params.size() || type.params[i].unitsInBody || type.params[i].noKnobCurve) return false;
+  const doc::KnobCurve c = target.curve(i);
+  if (c == doc::KnobCurve::Default) return false;
+  const doc::ParamTravel d = specTravel(type.params[i]);
+  if (!doc::curveAvailable(d, c) || c == doc::declaredCurve(d)) return false;
+  out = doc::withCurve(d, c);
+  return true;
+}
+}  // namespace
+
+double faceTravelToValue(const MetaTarget& target, const meta::Type& type, size_t param, double t) noexcept {
+  if (doc::ParamTravel tr; switchedTravel(target, type, param, tr)) return doc::travelValue(tr, t);
+  return meta::travelToValue(type.params[param], t);
+}
+
+double faceValueToTravel(const MetaTarget& target, const meta::Type& type, size_t param, double v) noexcept {
+  if (doc::ParamTravel tr; switchedTravel(target, type, param, tr)) return doc::travelPosition(tr, v);
+  return meta::valueToTravel(type.params[param], v);
+}
+
+bool faceCurveSwitched(const MetaTarget& target, const meta::Type& type, size_t param) noexcept {
+  doc::ParamTravel tr;
+  return switchedTravel(target, type, param, tr);
+}
+
+void MetaFace::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
+  Face::paintJacks(p, env);
+  if (target_ == nullptr || env.theme == nullptr) return;
+  for (size_t k = 0; k < type_->params.size(); ++k) {
+    doc::ParamTravel tr;
+    if (!switchedTravel(*target_, *type_, k, tr)) continue;
+    const std::optional<ui::Rect> r = paramRect(k);
+    if (!r) continue;
+    // A 6 × 4 unit glyph of the curve inside the control's top-right corner, in the face's tick colour.
+    std::array<ui::Vec2, devices::kCurveGlyphPoints> pts;
+    devices::curveGlyphPoints(tr, {r->x1 - 7.0f, r->y0 + 1.0f, r->x1 - 1.0f, r->y0 + 5.0f}, pts);
+    p.polyline(pts, 0.8f, ui::mulAlpha(env.theme->face.jackRing, 0.9f));
   }
 }
 

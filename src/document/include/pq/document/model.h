@@ -415,6 +415,25 @@ struct DeviceValue {
   friend bool operator==(const DeviceValue&, const DeviceValue&) = default;
 };
 
+// TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186" + clarification): a continuous knob's CURVE, per device instance
+// and param — how its knob travel 0 … 1 maps to the value (doc::paramTravel resolves it against the param's declaration):
+//   Default      the param's declared curve (@curve(exp) / exp0 → Octave; a dB gain → Linear in dB; else Linear)
+//   Linear       linear in the knob's units (Hz, seconds, …; dB for a dB gain)
+//   Octave       equal ratios per travel (lo·(hi / lo)^t, lo > 0; a declared exp0 law keeps it); not for dB gains
+//   Exponential  lo + (hi − lo)·(e^(K·t) − 1)/(e^K − 1), K = kKnobBendK (fine at the low end; in dB for a dB gain)
+//   Logarithmic  the same with K = −kKnobBendK (fine at the high end)
+// The value is stored in units either way, so switching the curve keeps the value (the knob's position re-maps). The
+// curve is the knob's travel for everything that acts in travel (Travel wires, macro mappings, the panels) and decides
+// the Add wire law (lower.h "Modulation wires"): a curved knob (Octave / Exponential / Logarithmic) is modulated in
+// travel, a Linear one in its units. Stepped / bool params have no curve.
+enum class KnobCurve : uint8_t { Default, Linear, Octave, Exponential, Logarithmic };
+inline constexpr double kKnobBendK = 4.8;  // the VCA's exponential / logarithmic presets (8 · ±0.6)
+struct ParamCurve {
+  std::string param;
+  KnobCurve curve = KnobCurve::Default;  // never Default in a Device (the entry is removed instead)
+  friend bool operator==(const ParamCurve&, const ParamCurve&) = default;
+};
+
 // T4.4-fix1 (SPEC §15 2026-10-26; QUESTIONS Q138): a USER DEVICE is a stock device edited in the circuit
 // editor. The first edit forks the instance: it gets its own copy of the device's patch file (`text`: the whole .pqp
 // with its imports and helper patches), stored in the project; the stock file and every other instance are unchanged.
@@ -508,6 +527,10 @@ struct Device {
   // SetDeviceGroup), it says where the circuit draws the device (inside its group's capsule) and that the Device view
   // shows only the group.
   DeviceId group;
+  // TX.knob-curves: the knobs switched off their declared curve (KnobCurve above), sorted by param, unique, never
+  // Default. Structural (SetParamCurve: the wire law may change).
+  std::vector<ParamCurve> curves;
+  KnobCurve curve(std::string_view param) const noexcept;  // Default when none is stored
   bool edited() const noexcept { return source != nullptr; }
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry
   const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
@@ -705,13 +728,20 @@ DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group devi
 // circuit"; QUESTIONS Q?-TX.patching-a): a wire's source is ANY output of its device (an `out` as well as an export: a
 // meta module's output, an effect's audio), and its target any real param or any non-const INPUT of its device
 // (`param` names either: a device's audio in, a meta module's frequency or phase-modulation input). The wire's LAW:
-//   Add      every new wire. Its signal is added to the target in the target's OWN units (Hz to a cutoff in Hz, dB to
-//            a gain in dB, a multiplier to a VCA's value, 0 … 1 to a 0 … 1 param), then clamped to the param's range
-//            (a param marked @wrap — a phase — is not clamped: its patch wraps it); into an input, added to what the
-//            input reads (the chain's signal; an unpatched input's default is what it reads only while no wire reaches
-//            it). Scaling is the patch's job (a VCA, a log, a divide): an Add wire has no amount (always 1).
+//   Add      every new wire. TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186" + clarification): it adds BEFORE
+//            the target knob's curve (Device::curves, KnobCurve), in the knob's own input domain — a CURVED knob
+//            (Octave / Exponential / Logarithmic: a cutoff by default) in knob travel (+1 = the whole range, through
+//            the curve: even octave sweeps), a LINEAR knob in its units (Hz into a linear cutoff = +Hz exactly; dB
+//            into a dB gain, +6 on 0 dB = +6 dB; a multiplier into a VCA in its Bend curve), then clamped to the range
+//            (@wrap: not clamped; @signed: ±max(|lo|, |hi|), lower.h); into an input, added to what the input reads
+//            (the chain's signal; an unpatched input's default is what it reads only while no wire reaches it).
+//            Scaling is the patch's job (a VCA, a log, a divide): an Add wire has no amount (always 1).
 //   Travel   the law above (Q135), kept only for wires migrated from schema ≤ 12 so old projects sound the same; never
-//            offered for new wires. `amount` is its depth.
+//            offered for new wires. `amount` is its depth. (Its travel is the knob's curve: the declared one unless
+//            the knob was switched.)
+//   Units    TX.knob-curves: TX.patching's law, kept for wires of schema 13 … 15 (migrated): added AFTER the curve in
+//            the param's normalised unit (Hz, seconds, a dB param's linear gain, the VCA's multiplier), clamped as Add.
+//            Old projects keep their sound; never offered for new wires. No amount.
 // TX.groups-fix1: a wire may be a CHAIN LINK (`chain`): a link of a series that Ctrl+G turned into wires (In → first,
 // device → next, last → Out). The lowering plans chain links before every other wire, as it plans a chain's own links
 // (lower.h "Modulation wires"): a feedback loop through a grouped series keeps its automatic 1-sample delay on the wire
@@ -719,7 +749,7 @@ DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group devi
 // order. Ctrl+Shift+G removes exactly the chain links of its group. Nothing else differs (the views draw them as any
 // wire; a wire the user draws is never one).
 enum class WireReducer : uint8_t { Sum, Last, Highest, Lowest, Loudest };
-enum class WireLaw : uint8_t { Add, Travel };
+enum class WireLaw : uint8_t { Add, Travel, Units };
 inline constexpr double kDefaultWireAmount = 0.5;  // a Travel wire's default depth (ops::connectTravelWire)
 
 struct Wire {
@@ -735,6 +765,7 @@ struct Wire {
   WireLaw law = WireLaw::Add;  // TX.patching
   bool chain = false;          // TX.groups-fix1: a chain link of a grouped series (planned first; see above)
   bool travels() const noexcept { return law == WireLaw::Travel; }
+  bool adds() const noexcept { return law != WireLaw::Travel; }  // Add or Units: no amount
   bool fromNoteSource() const noexcept { return noteSource.valid(); }
   // Whether two wires join the same two ports (a second such wire is refused).
   bool sameEnds(const Wire& o) const noexcept {

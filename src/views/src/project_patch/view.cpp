@@ -3,6 +3,7 @@
 // pq/views/project_patch/project_patch_view.h.
 
 #include <algorithm>
+#include <numbers>
 #include <chrono>
 #include <cmath>
 #include <string>
@@ -19,6 +20,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -1570,6 +1572,12 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
   std::vector<ui::MenuItem> items;
   if (n.kind == NodeKind::Device) {
     const doc::DeviceId d = n.device;
+    // TX.knob-curves: over a knob / slider of the block's face or panel, its curve first.
+    if (const circuit::CircuitCanvas::FaceParamHit fh = canvas_->faceParamAt(at); !fh.param.empty())
+      if (std::optional<ui::MenuItem> curve = knobCurveMenu(ctx_, d, fh.param)) {
+        items.push_back(std::move(*curve));
+        items.push_back(ui::MenuItem::sep());
+      }
     // TX.groups: Ctrl+G / Ctrl+Shift+G, and a group's capsule opened or closed.
     {
       std::vector<doc::DeviceId> sel = selectedDevices();
@@ -1877,9 +1885,33 @@ void ProjectPatchView::pollReadout() {
       const std::string& toLabel = tn.inputs[e.toPort].label.empty() ? tn.inputs[e.toPort].name : tn.inputs[e.toPort].label;
       readout_.title = source + " \xE2\x86\x92 " + tn.title + "." + toLabel;
       char buf[96];
-      // TX.patching: an added wire has no amount (it adds in the target's units); a migrated one keeps its depth.
-      if (w != nullptr && !w->travels()) std::snprintf(buf, sizeof buf, "adds in the target's units");
-      else std::snprintf(buf, sizeof buf, "amount %+.0f %%", w != nullptr ? w->amount * 100.0 : 0.0);
+      // TX.patching: an added wire has no amount; a migrated one keeps its depth. TX.knob-curves: an Add wire adds
+      // before the knob's curve (travel on a curved knob, units / dB on a linear one); a Units wire after it.
+      enum class Adds : uint8_t { Travel, KnobTravel, Units, Db, Input, Legacy } adds = Adds::Travel;
+      if (w != nullptr && w->law == doc::WireLaw::Units) {
+        adds = Adds::Legacy;
+      } else if (w != nullptr && !w->travels()) {
+        adds = Adds::Input;
+        const doc::DeviceLoc tl = doc::findDevice(p, w->to);
+        std::shared_ptr<const doc::ResolvedDevice> hold;
+        const doc::DeviceLibrary* devlib = ctx_.deviceLibrary();
+        const graph::Patch* callee =
+            tl.device != nullptr && devlib != nullptr && !tl.device->rack ? devlib->patchOf(*tl.device, hold) : nullptr;
+        if (const graph::ParamDecl* decl = callee != nullptr ? doc::findParamDecl(*callee, w->param) : nullptr) {
+          const doc::ParamTravel tr = doc::paramTravel(*decl, tl.device->curve(w->param));
+          adds = !doc::travelsInUnits(tr) ? Adds::KnobTravel : tr.db ? Adds::Db : Adds::Units;
+        } else if (tl.device != nullptr && tl.device->rack) {
+          adds = Adds::Units;
+        }
+      }
+      switch (adds) {
+        case Adds::Travel: std::snprintf(buf, sizeof buf, "amount %+.0f %%", w != nullptr ? w->amount * 100.0 : 0.0); break;
+        case Adds::KnobTravel: std::snprintf(buf, sizeof buf, "adds in knob travel (1 = the whole range, through its curve)"); break;
+        case Adds::Units: std::snprintf(buf, sizeof buf, "adds in the knob's units"); break;
+        case Adds::Db: std::snprintf(buf, sizeof buf, "adds in dB"); break;
+        case Adds::Input: std::snprintf(buf, sizeof buf, "adds to the input"); break;
+        case Adds::Legacy: std::snprintf(buf, sizeof buf, "adds in the param's units after its curve (older project)"); break;
+      }
       readout_.value = buf;
       if (no != nullptr) {
         static constexpr const char* kReducers[] = {"sum", "last", "highest", "lowest", "loudest"};
@@ -1893,7 +1925,13 @@ void ProjectPatchView::pollReadout() {
         ModSweep s[1];
         src->readModulation(t, s);
         live = src->modulationLive();
-        if (s[0].known && !w->travels()) {  // TX.patching: an added wire's tap is in the param's units
+        if (s[0].known && adds == Adds::Db) {  // TX.knob-curves: the tap is in nepers
+          constexpr double kDbPerNeper = 20.0 / std::numbers::ln10;
+          std::snprintf(buf, sizeof buf, " \xC2\xB7 moved +%.3g / -%.3g dB", static_cast<double>(s[0].up) * kDbPerNeper,
+                        static_cast<double>(s[0].down) * kDbPerNeper);
+          readout_.value += buf;
+        } else if (s[0].known && (adds == Adds::Units || adds == Adds::Legacy || adds == Adds::Input)) {
+          // TX.patching: an added wire's tap is in the param's units
           std::snprintf(buf, sizeof buf, " \xC2\xB7 moved +%.4g / -%.4g", static_cast<double>(s[0].up), static_cast<double>(s[0].down));
           readout_.value += buf;
         } else if (s[0].known) {

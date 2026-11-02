@@ -654,7 +654,7 @@ private:
     const meta::ParamSpec& s = type().params[static_cast<size_t>(part)];
     const double v = param(static_cast<uint32_t>(part));
     if (s.wraps) return static_cast<float>(v - std::floor(v));
-    return static_cast<float>(meta::valueToTravel(s, v));
+    return static_cast<float>(faceValueToTravel(target(), type(), static_cast<size_t>(part), v));  // TX.knob-curves
   }
   bool driven(const FaceEnv& env, std::string_view port) const {
     for (const FaceJack& j : env.jacks)
@@ -1640,7 +1640,8 @@ bool WavetableFace::move(const FacePointer& e) {
     tg.begin(kLabels[drag_]);
     begun_ = true;
   }
-  tg.set(static_cast<size_t>(drag_), meta::travelToValue(spec, dragT_));
+  tg.set(static_cast<size_t>(drag_), spec.wraps ? meta::travelToValue(spec, dragT_)
+                                                : faceTravelToValue(tg, type(), static_cast<size_t>(drag_), dragT_));
   return true;
 }
 

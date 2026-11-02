@@ -64,6 +64,9 @@ struct ParamSpec {
   // then clamps to ±max(|min|, |max|) instead of [min, max]). The Phase accumulator's frequency: a negative frequency
   // runs the phase backwards (the same pitch, the ramp reversed), so a VCA multiplying the frequency by −1 reflects.
   bool signedValue = false;
+  // TX.knob-curves: the face's control has a law of its own, so no knob curve is offered (doc::KnobCurve; the VCA's
+  // knob travels along its curve box, its range ends and box are values of that curve).
+  bool noKnobCurve = false;
 };
 double travelToValue(const ParamSpec& p, double t) noexcept;  // t clamped to [0, 1]
 double valueToTravel(const ParamSpec& p, double v) noexcept;  // v clamped to [min, max]
@@ -199,6 +202,11 @@ struct Type {
   //   Nested           adds an output `done` (Bool) after the outputs (an instrument circuit wires it to its `done`)
   //   ChainAudio       ignores it
   bool voiceEnd = false;
+  // TX.knob-curves (optional; SPEC §15 2026-11-01 "answers to Q186" + clarification: a wire adds before the knob's
+  // curve): with these (resolved) settings, whether an Add wire into unitsInBody param `param` adds in the param's
+  // units after the body's law (true: through `<name>_add`) or into the knob position, i.e. in travel (false). Null:
+  // true. The VCA: its Bend curve true (the multiplier), its Log curve false (the knob, through the curve).
+  bool (*unitsLaw)(std::span<const double> settings, uint32_t param) = nullptr;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none

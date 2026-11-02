@@ -201,6 +201,7 @@ void ProjectPatchView::syncPanels() {
     p.setFree(d.free);
     p.setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& pi : p.signature().params) {
+      p.setParamCurve(pi.name, d.curve(pi.name));  // TX.knob-curves
       const doc::DeviceValue* v = d.param(pi.name);
       p.setParamValue(pi.name, v != nullptr ? v->value : pi.def);
     }

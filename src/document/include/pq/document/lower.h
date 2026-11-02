@@ -319,9 +319,23 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //           the wires alone (an unpatched input's default is what it reads only while no wire reaches it). On the
 //           source's own track the source keeps every channel (a stereo output into a stereo input); across tracks
 //           its first channel (export m<wire> / in m<wire>, as for params). No tap.
+//   TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186" + clarification; model.h KnobCurve, WireLaw): the Add law
+//           above is now the UNITS law (WireLaw::Units: every TX.patching wire of a schema-13 … 15 file migrates to
+//           it, so an old project lowers to the same graph). An Add wire adds BEFORE the knob's curve
+//           (paramTravel(decl, Device::curve)): on a CURVED knob (Octave / Exponential / Logarithmic, travelsInUnits
+//           false: a cutoff, the Phase accumulator's frequency bar, an envelope time) it joins the Travel wires' sum
+//           without an amount — p = clip(pk + Σ amount·travel_src + Σ add_src, 0, 1), value = the curve at p (+1 =
+//           the whole range; an @wrap param wraps p with frac, an @signed one reaches −1 … 1 with the curve mirrored:
+//           value = sign(p)·curve(|p|)); on a LINEAR knob it adds in its units as above, and on a dB gain in dB:
+//           value = e^(clip(ln centre + Σ src · ln 10 / 20, ln lo, ln hi)) (its tap in nepers: ModulationTap::db).
+//           The stages: travel (Travel + curved Add), then linear Add, then Units, each centred on the one before;
+//           the tap is the last stage's. Travel wires and macro mappings move along the knob's curve too (the
+//           declared one unless switched: unchanged for every old project).
 //   units   a param whose patch adds its wires after its own law — an `in <param>_add` beside it (the VCA's `value`,
 //           meta::ParamSpec::unitsInBody: the knob is a position, the wire adds to the multiplier) — takes them there:
-//           the param stays the knob (param rate).
+//           the param stays the knob (param rate). TX.knob-curves: a Units wire always; an Add wire only when the
+//           knob is linear in that law (meta::Type::unitsLaw: the VCA on its Bend curve), else it adds to the knob
+//           position (the VCA on its Log curve: in travel, through the curve).
 //   meta    a chain meta device's inputs that Add wires reach become `in`s of its expansion (meta::ExpandContext::
 //           wired: an unwired chain keeps its expansion and key; under ChainNotes the chain input reads the note's
 //           signal plus the wires).
@@ -382,6 +396,8 @@ struct ModulationTap {
   // TX.patching: the tap is in the param's own units (a site with an added wire: how far the value moved), not in knob
   // travel (a site with migrated Travel wires only).
   bool units = false;
+  // TX.knob-curves: units in NEPERS (ln gain: dB × ln 10 / 20) — an Add wire into a dB gain on its linear (dB) curve.
+  bool db = false;
 };
 
 struct LoweredParam {
@@ -450,13 +466,31 @@ std::vector<WireState> wireStates(const Project& project, const DeviceLibrary& d
 // gains with a positive floor (linear in dB), else Linear; @steps (and integer ranges with them) round the value.
 // TMM.3: `@curve(exp0, k)` (the Phase accumulator's frequency) is exponential from exactly lo: value =
 // lo + (hi − lo)·(2^(k·p) − 1)/(2^k − 1) (exp0 = k; 0 for the other laws).
+// TX.knob-curves (model.h KnobCurve): the travel of a knob on curve `curve` — Default the declared law above; Linear:
+// linear in the units (a dB gain: Log, linear in dB); Octave: Log (lo > 0), a declared exp0 law kept; Exponential /
+// Logarithmic: exp0 = ±kKnobBendK / ln 2 — with `log` (a dB gain) the bend is in dB: value = lo·(hi/lo)^g(p), g the
+// bend. A curve the param cannot take (curveAvailable false) resolves to the declared law.
 struct ParamTravel {
   bool log = false;
   double lo = 0.0, hi = 1.0;
   bool round = false;
-  double exp0 = 0.0;
+  double exp0 = 0.0;  // ≠ 0: value = lo + (hi − lo)·g(p) (log: lo·(hi/lo)^g(p)), g = (2^(exp0·p) − 1)/(2^exp0 − 1)
+  bool db = false;    // TX.knob-curves: a dB gain with a positive floor (log is its declared law: linear in dB)
 };
-ParamTravel paramTravel(const graph::ParamDecl& decl) noexcept;
+ParamTravel paramTravel(const graph::ParamDecl& decl, KnobCurve curve = KnobCurve::Default) noexcept;
+// TX.knob-curves: `declared` (paramTravel(decl)) on curve `curve` (paramTravel(decl, curve) is this).
+ParamTravel withCurve(const ParamTravel& declared, KnobCurve curve) noexcept;
+// TX.knob-curves: whether the param can take the curve (a continuous range: not @steps, hi > lo; Octave needs lo > 0
+// or a declared exp0 law, and is not offered for a dB gain). Default always.
+bool curveAvailable(const ParamTravel& declared, KnobCurve curve) noexcept;
+// TX.knob-curves: the curve Default means for this param (Octave for @curve(exp) / exp0, else Linear: a dB gain's
+// declared law is linear in dB).
+KnobCurve declaredCurve(const ParamTravel& declared) noexcept;
+// TX.knob-curves: whether a knob on travel `t` is LINEAR in its units (an Add wire adds in units: dB for a dB gain);
+// false: curved (an Add wire adds in travel).
+bool travelsInUnits(const ParamTravel& t) noexcept;
+// TX.knob-curves: the declaration of real param `param` of `patch` (null: none, or a bool).
+const graph::ParamDecl* findParamDecl(const graph::Patch& patch, std::string_view param) noexcept;
 double travelPosition(const ParamTravel& t, double value) noexcept;  // [0, 1]
 double travelValue(const ParamTravel& t, double position) noexcept;  // position clamped to [0, 1]
 

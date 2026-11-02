@@ -394,6 +394,10 @@ EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string in
 // (SetDeviceFree; Device::free). One Structural step; the unchanged ones are skipped. Refused for a device in a rack
 // chain, a rack, or a stock instrument.
 EditResult setDevicesFree(const Project& p, std::span<const DeviceId> devices, bool free);
+// TX.knob-curves: knob `param` of `device` on curve `curve` (model.h KnobCurve; the declared one is stored as Default:
+// pass doc::declaredCurve's answer or Default to go back). One Structural step; an unchanged curve is an empty edit.
+// Refused for a rack (its macros are linear 0 … 127). The views offer it for continuous params only (curveAvailable).
+EditResult setParamCurve(const Project& p, DeviceId device, std::string param, KnobCurve curve);
 EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index = kAppend,
                          ChainId chain = {});
 // A param / setting / data of the instance (device, path; "" = the chain device itself). A nested call without state

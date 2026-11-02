@@ -9,7 +9,9 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,7 @@
 #include "pq/views/arrangement/automation.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/devices/device_panel.h"
+#include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
@@ -378,4 +381,75 @@ TEST_CASE("render: device-automation matches the golden image") {
   ImageDiff diff;
   CHECK(pq::ui::test::matchesGolden("device-automation", *img, *ref, true, &diff));
   MESSAGE("device-automation: " << pq::ui::test::describe(diff));
+}
+
+// ---- TX.knob-curves: the Knob Curve submenu on a knob, the knob re-mapped, one undo step; meta faces; the golden ----
+
+TEST_CASE("knob curves (views): a knob's Knob Curve submenu switches its curve, the knob re-maps, the value stays, one undo") {
+  Ui u;
+  devices::DevicePanel* panel = u.view().panelOf(u.filter);
+  REQUIRE(panel != nullptr);
+  u.view().revealDevice(u.filter);
+  u.d.tree().layoutNow();
+  auto* knob = dynamic_cast<ValueControl*>(panel->controlFor("freq"));
+  REQUIRE(knob != nullptr);
+  const double value = panel->paramValue("freq");
+  const double octavePos = knob->value();
+  u.d.click(mid(knob->rect()), mod::kNone, PointerButton::Right);
+  Menu* m = u.lastMenu();
+  REQUIRE(m != nullptr);
+  const MenuItem* curves = nullptr;
+  for (const MenuItem& it : m->items())
+    if (it.label == "Knob Curve") curves = &it;
+  REQUIRE(curves != nullptr);
+  std::vector<std::string> labels;
+  std::function<void()> chooseLinear;
+  for (const MenuItem& it : curves->submenu) {
+    labels.push_back(it.label + (it.checked ? " *" : ""));
+    if (it.label == "Linear") chooseLinear = it.onChoose;
+  }
+  CHECK(labels == std::vector<std::string>{"Octave (default) *", "Exponential", "Logarithmic", "Linear"});
+  REQUIRE(chooseLinear);
+  const size_t h0 = u.history();
+  u.d.press("Escape");
+  chooseLinear();
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") == doc::KnobCurve::Linear);
+  CHECK(panel->paramValue("freq") == value);  // the value stays
+  CHECK(knob->value() == doctest::Approx((value - 20.0) / (20000.0 - 20.0)));  // the knob re-mapped onto the line
+  CHECK(knob->value() != doctest::Approx(octavePos));
+  REQUIRE(u.ctx.undo());
+  u.d.step();
+  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") == doc::KnobCurve::Default);
+  CHECK(knob->value() == doctest::Approx(octavePos));
+  // A bool control has no curve; a rack's macro neither.
+  CHECK_FALSE(knobCurveMenu(u.ctx, u.filter, "lfoSync").has_value());
+  CHECK_FALSE(knobCurveMenu(u.ctx, u.rack, "macro0").has_value());
+  // A meta module's continuous param has one (the Phase accumulator's frequency bar: Octave by default); the VCA's knob,
+  // whose curve is its own curve box, none.
+  const doc::DeviceId pa = u.run(doc::ops::addMetaDevice(*u.ctx.doc(), u.ctx.store().ids(), u.bass, "phase_acc", 0)).devices[0];
+  const doc::DeviceId vca = u.run(doc::ops::addMetaDevice(*u.ctx.doc(), u.ctx.store().ids(), u.bass, "vca")).devices[0];
+  const std::optional<MenuItem> paMenu = knobCurveMenu(u.ctx, pa, "freq");
+  REQUIRE(paMenu.has_value());
+  CHECK(paMenu->submenu.front().label == "Octave (default)");
+  CHECK(knobCurveMenu(u.ctx, pa, "pitch").has_value());  // linear (cents) by default
+  CHECK_FALSE(knobCurveMenu(u.ctx, vca, "value").has_value());
+  CHECK_FALSE(knobCurveMenu(u.ctx, vca, "min").has_value());
+}
+
+TEST_CASE("render: device-knob-curves matches the golden image") {
+  uint32_t w = 0, h = 0;
+  viewSceneDefaultSize("device-knob-curves", w, h);
+  GpuOptions o;
+  o.validation = true;
+  auto img = renderViewScene("device-knob-curves", {}, w, h, {}, o, &library());
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/device-knob-curves.png";
+  auto ref = readPng(path);
+  if (!ref) (void)writePng("device-knob-curves.actual.png", *img);
+  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+  ImageDiff diff;
+  CHECK(pq::ui::test::matchesGolden("device-knob-curves", *img, *ref, true, &diff));
+  MESSAGE("device-knob-curves: " << pq::ui::test::describe(diff));
 }

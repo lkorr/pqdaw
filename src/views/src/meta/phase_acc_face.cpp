@@ -171,6 +171,15 @@ public:
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
 
   uint32_t staticLayerCount() const noexcept override { return 3; }
+  // TX.knob-curves: the ticks layer follows a switched knob curve (0: the type's shared tile).
+  uint64_t staticKey(uint32_t layer) const override {
+    if (layer != 2 || !hasTarget()) return 0;
+    uint64_t key = 0;
+    for (int32_t part = 0; part < kParts; ++part)
+      if (param_[part] >= 0 && faceCurveSwitched(target(), type(), static_cast<size_t>(param_[part])))
+        key = key * 31 + 1 + static_cast<uint64_t>(part) * 8 + static_cast<uint64_t>(target().curve(static_cast<size_t>(param_[part])));
+    return key == 0 ? 0 : key | 1u;
+  }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
     return layer == 0 ? th.face.body : (layer == 1 ? th.face.track : th.face.frame);
   }
@@ -194,12 +203,20 @@ public:
       const float a = arcAngle(part, t);
       p.line(polar(r0, a), polar(r0 + len, a), 1.0f, w);
     };
-    for (const double hz : {100.0, 1000.0, 10000.0}) tick(kFreq, static_cast<float>(meta::phaseAccTravelFromFreq(hz)), r1 - r0);
-    for (int i = 1; i <= 3; ++i) tick(kAmp, 0.25f * static_cast<float>(i), r1 - r0);
+    // TX.knob-curves: the ticks sit where those values are on the knob's curve (staticKey: a switched curve keys
+    // the layer per instance).
+    auto at = [&](int32_t part, double value, float declared) {
+      return hasTarget() && param_[part] >= 0 && faceCurveSwitched(target(), type(), static_cast<size_t>(param_[part]))
+                 ? static_cast<float>(faceValueToTravel(target(), type(), static_cast<size_t>(param_[part]), value))
+                 : declared;
+    };
+    for (const double hz : {100.0, 1000.0, 10000.0})
+      tick(kFreq, at(kFreq, hz, static_cast<float>(meta::phaseAccTravelFromFreq(hz))), r1 - r0);
+    for (int i = 1; i <= 3; ++i) tick(kAmp, at(kAmp, static_cast<double>(i), 0.25f * static_cast<float>(i)), r1 - r0);
     for (int i = 1; i <= 3; ++i) tick(kPhase, 0.25f * static_cast<float>(i), i == 2 ? r1 - r0 : (r1 - r0) * 0.6f);
     const float octaves = static_cast<float>(meta::kPhaseAccPitchRange / 1200.0);
     for (int i = -3; i <= 3; ++i)
-      tick(kPitch, 0.5f + 0.5f * static_cast<float>(i) / octaves, i == 0 ? (r1 - r0) * 1.4f : (r1 - r0) * 0.6f);
+      tick(kPitch, at(kPitch, 1200.0 * i, 0.5f + 0.5f * static_cast<float>(i) / octaves), i == 0 ? (r1 - r0) * 1.4f : (r1 - r0) * 0.6f);
   }
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
@@ -311,7 +328,8 @@ public:
         const meta::ParamSpec& spec = type().params[static_cast<size_t>(param_[dragPart_])];
         if (dragPart_ == kPhase) dragT_ -= std::floor(dragT_);
         else dragT_ = std::clamp(dragT_, 0.0f, 1.0f);
-        double v = meta::travelToValue(spec, dragT_);
+        double v = dragPart_ == kPhase ? meta::travelToValue(spec, dragT_)  // TX.knob-curves: along its curve
+                                       : faceTravelToValue(target(), type(), static_cast<size_t>(param_[dragPart_]), dragT_);
         if (dragPart_ == kAmp && (e.mods & ui::mod::kCtrl)) v = std::round(v);  // Ctrl: whole multiples
         if (dragPart_ == kPitch) {
           // Whole semitones from where the drag began (a cents offset stays); Ctrl: single cents.
@@ -459,7 +477,8 @@ private:
     const meta::ParamSpec& spec = type().params[static_cast<size_t>(param_[part])];
     const double v = target().value(static_cast<size_t>(param_[part]));
     if (part == kPhase) return static_cast<float>(v - std::floor(v));
-    return static_cast<float>(meta::valueToTravel(spec, v));
+    (void)spec;
+    return static_cast<float>(faceValueToTravel(target(), type(), static_cast<size_t>(param_[part]), v));  // TX.knob-curves
   }
 
   bool drivenBy(const FaceEnv& env, int32_t part) const {
