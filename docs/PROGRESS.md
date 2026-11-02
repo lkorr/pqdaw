@@ -1254,3 +1254,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: analysis 168 µs/column reassigned (≈1.6 % core per shown face), ship; 4 faces UI 0.53 ms median, 1.82 ms with analysis; uploads ≈ 95 KB/frame for 4 faces; engine block 5.44/5.56/5.73 µs none/unwatched/watched. Indicative.
 - CPU-efficiency check: analysis off the UI thread and only while shown; only new columns uploaded; gate recolours row-local and budgeted.
 - Notes/blockers: nested spectrogram in a device circuit has no tap; two displays of one instance share the larger one's analysis. Q197.
+
+## 2026-11-02 · TX.free-rack 👁 · task/TX.free-rack (merged; Q198)
+- Did: free-device rack over the Device view (tab "Free devices · N" + Add Free Device; collapse/expand grows the body splitter so the arrangement moves up; draggable height; ViewPrefs freeRackOpen/freeRackHeight); its body = ProjectPatchView(ctx, FreeRack) pruned to the track's free devices (same gestures as the circuit); free devices no longer frames of the chain; drags between chain and rack; wires out of the rack handed to the cable layer. Cable layer draws the chain's own path (doc::chainStages: notes amber, audio green, switched-off passed by, free devices none), wires into inputs (left-edge sockets, also drop targets), note-source wires, rack pins; hover badges. Goldens device-free-rack (+ collapsed) new, 13 Device-view goldens re-rendered.
+- Verified: build.ps1 -Affected (EVERYTHING, check, default + slow) on 2167ae8: 0 warnings, 88/88. Orchestrator: rebased onto 84766e8 (TASKS only; not re-run); looked at device-free-rack.
+- Perf: 8 free LFOs → chain knobs: idle 0 frames / no timers; cable refresh 0.017 ms; Device view frame 3.98 ms (collapsed 3.77); rack rebuild 2.2 ms. Indicative.
+- CPU-efficiency check: a collapsed rack builds/paints nothing; cable ends recomputed only on layout.
+- Notes/blockers: not done — cables route straight across other panels (tangly with many wires), no chain links inside rack frames or into the mixer, out sockets not drag sources, rack zoom not saved, open state global not per track, the tab takes 20 px always. Q198.
