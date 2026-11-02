@@ -163,6 +163,9 @@ public:
   // folded panel, another tab): the nearest point of its frame inside the chain's viewport.
   std::optional<ui::Vec2> jackPoint(doc::DeviceId device, std::string_view port, bool* docked = nullptr) const;
   std::optional<ui::Vec2> paramPoint(doc::DeviceId device, std::string_view param, bool* docked = nullptr) const;
+  // TX.groups: a group member's cable end on its group's panel (outputs: the title bar's left end; params: its right
+  // end), or nullopt (not a member, or its group not shown). Never docked.
+  std::optional<ui::Vec2> groupPoint(doc::DeviceId device, bool output, bool* docked = nullptr) const;
   ui::IRect chainViewport() const noexcept;  // the chain's visible area
   void scrollChainBy(int32_t dx);
   // The knobs' modulation rings: static ranges from the document's wires, live sweeps from the context's

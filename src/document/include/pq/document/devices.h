@@ -95,6 +95,11 @@ std::string deviceParamNameOf(const Project& p, const DeviceLibrary* lib, const 
 // settings from its specs); nullopt when the type does not allow that kind.
 std::optional<DeviceInfo> metaDeviceInfo(const meta::Type& t, DeviceKind kind);
 
+// TX.groups (model.h "Groups"): the patch every group device plays (groupPatchText(), parsed once; thread-safe) and its
+// description (an audio effect "Group": in x, output; out y, input). DeviceLibrary::patchOf / infoOf answer with them.
+const graph::Patch& groupPatch();
+const DeviceInfo& groupDeviceInfo();
+
 // A stock device: its file (relative to stdlib/), patch and display name.
 struct StockDevice {
   std::string_view file;

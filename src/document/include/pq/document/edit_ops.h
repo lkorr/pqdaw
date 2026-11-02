@@ -39,6 +39,10 @@
 #include "pq/meta/type.h"
 #include "pq/tuning/tuning.h"
 
+namespace pq::doc {
+class DeviceLibrary;  // devices.h (TX.groups: the group builders read port names)
+}
+
 namespace pq::doc::ops {
 
 struct Edit {
@@ -452,6 +456,28 @@ EditResult setWireReducer(const Project& p, WireId wire, WireReducer reducer);
 // The wires into `device`.`param` / out of `device`.`port` (any order of the project's list: by id).
 std::vector<WireId> wiresInto(const Project& p, DeviceId device, std::string_view param);
 std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_view port);
+
+// ---- Groups (TX.groups; model.h "Groups"; QUESTIONS Q?-TX.groups-a) ----------------------------------------------
+// Ctrl+G in the circuit (the project patch view): the selected devices of ONE track's own list become the members of a
+// new group. Chain devices (they must be next to each other in the series) are replaced by the group at the first one's
+// place and become free members, their series kept as wires: In → the first one's chain input, each main output → the
+// next one's chain input, the last one's → Out (the lowering's rule: a device's first non-const `in` / a meta module's
+// chain input, its first `out`), so the track sounds exactly the same. Selected free devices move in as they are (a
+// selection of free devices only makes a free group, wired to nothing). Every other wire stays exactly as it is: wires
+// name devices, so modulation across the capsule's boundary keeps working. Refused, with the reason, when the result
+// could sound different: devices of several tracks or inside a rack, a rack, a stock instrument, a group (no nesting), a
+// member, a gap in the series, the first device taking the notes or voices (a group is an audio effect: what reaches
+// it is audio), a switched-off or unplugged device inside the series, a wire already joining two series ports, or a
+// feedback loop through the series whose 1-sample delay would move (checked: every wire lowers as before). `lib`
+// gives the port names (and the wire states). One step; the selection after = the group.
+EditResult groupInCircuit(const Snapshot& p, IdSource& ids, const DeviceLibrary& lib, std::span<const DeviceId> devices);
+// Ctrl+Shift+G: the exact inverse. The series is read back from the wires — the one wire into Out, then along each
+// device's chain input (exactly one wire from In or a member) back to In — and returned to the chain at the group's
+// place in that order (free again: not in the series); the other members become free devices where they are; the
+// series' wires go, every other wire stays. Refused (with the reason) when the wiring is not one series from In to Out
+// (several wires into Out, In also feeding another input, a wire into or out of the group's own ports); a free group
+// must have no In / Out wires. Ungrouping what groupInCircuit made gives back the same document. One step.
+EditResult ungroupInCircuit(const Snapshot& p, const DeviceLibrary& lib, DeviceId group);
 
 // ---- Racks (T4.8; model.h "Racks") ------------------------------------------------------------------------------
 // One Batch = one undo step each.

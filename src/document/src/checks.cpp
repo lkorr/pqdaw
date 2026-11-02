@@ -313,6 +313,21 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
                                                   : "the instrument must be the first device of its chain");
       }
       if (!d->free) ++series;
+      const bool rackChain = k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain;
+      if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
+        if (rackChain) return invalid("a group sits in a track's circuit, not in a rack chain");
+        if (d->kind != DeviceKind::AudioEffect) return invalid("a group is an audio effect");
+        if (!d->params.empty() || !d->settings.empty() || d->source || d->meta)
+          return invalid("a group has no params, settings, text or meta modules of its own");
+        if (d->group.valid()) return invalid("groups do not nest (a group cannot be in a group)");
+      }
+      if (d->group.valid()) {
+        if (rackChain) return invalid("a group member sits in a track's circuit, not in a rack chain");
+        if (!d->free) return invalid("a group member is free (a group has no chain order)");
+        const auto g = std::find_if(list.begin(), list.end(), [&](const DevicePtr& x) { return x && x->id == d->group; });
+        if (g == list.end()) return invalid("a group member's group is not in its track");
+        if (!isGroupDevice(**g)) return invalid("a group member's group is not a group");
+      }
       PQ_DOC_TRY(checkValues(d->params, "params"));
       PQ_DOC_TRY(checkValues(d->settings, "settings"));
       PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3

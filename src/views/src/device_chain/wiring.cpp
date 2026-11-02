@@ -484,6 +484,10 @@ bool CableLayer::refresh() {
   for (const doc::Wire& w : doc::wiresOf(p)) {
     const doc::DeviceLoc from = doc::findDevice(p, w.from), to = doc::findDevice(p, w.to);
     if (from.device == nullptr || to.device == nullptr) continue;
+    // TX.groups: a wire inside a group (between its members and terminals) is drawn by the group's panel.
+    const doc::DeviceId ga = doc::isGroupDevice(*from.device) ? from.device->id : from.device->group;
+    const doc::DeviceId gb = doc::isGroupDevice(*to.device) ? to.device->id : to.device->group;
+    if (ga.valid() && ga == gb) continue;
     Cable c;
     c.wire = w.id;
     std::optional<ui::Vec2> a = chain != nullptr ? chain->jackPoint(w.from, w.port, &c.aDocked) : std::nullopt;

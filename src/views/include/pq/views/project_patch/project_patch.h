@@ -63,7 +63,9 @@ namespace pq::views::project_patch {
 
 inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 
-enum class NodeKind : uint8_t { Source, Sum, Device, Mixer, Output };
+// TX.groups: Terminal = a group's In (its output kGroupInPort) or Out (its input kGroupOutPort) terminal inside an opened
+// group's capsule (`device` = the group's id).
+enum class NodeKind : uint8_t { Source, Sum, Device, Mixer, Output, Terminal };
 
 struct Port {
   std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a note output, "s<id>" for a send)
@@ -112,6 +114,24 @@ struct Node {
   // TX.resize: a device block's uniform scale (doc::PatchNudge::scale; 1 for every other node and an opened device): w, h,
   // the pins' rows (pinOffset) and the anchors (Port::ax / ay) are already scaled; its face or panel is drawn at it.
   float scale = 1.0f;
+  // TX.groups (doc::Device "Groups"): a group device is a CAPSULE. Opened (`groupOpen`, the default): the block is the
+  // capsule's frame around its contents — `members` (free device blocks placed freely inside) and its two terminal nodes
+  // `groupIn` / `groupOut` (NodeKind::Terminal) — not a scene node of its own (the canvas draws the frame); its chain
+  // pins (`x` in, `y` out) on its edges at `pinTop`, level with the band's spine. Closed: one block (like a rack:
+  // `inner` = its members, wires to and from them end on it as "<port>@<device id>") showing a miniature of its contents
+  // (`mini`, in the block's unit square). A member's or terminal's `capsule` is its group's node.
+  bool group = false;
+  bool groupOpen = false;
+  uint32_t capsule = kNone;
+  std::vector<uint32_t> members;
+  uint32_t groupIn = kNone, groupOut = kNone;
+  float pinTop = 0.0f;  // Device: the main pin's offset from the top (0: metrics::kPinTop)
+  struct MiniBox {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // in the block's unit square
+    bool terminal = false;
+  };
+  std::vector<MiniBox> mini;
+  std::vector<graph::Point2> miniWires;  // pairs of points (unit square): a straight line per wire
   int32_t input(std::string_view name) const noexcept;   // −1: none
   int32_t output(std::string_view name) const noexcept;
 };
@@ -129,6 +149,9 @@ struct Edge {
   bool delayed = false;                 // an automatic 1-sample delay (a delayed send or wire)
   bool pre = false;                     // Send: pre-fader
   bool voice = false;                   // Notes / a voice source: per voice
+  // TX.groups: a Modulation edge into an INPUT (not a param: an audio input, a group's Out): a signal path, drawn solid
+  // like the chain (a grouped series reads as the audio it is).
+  bool input = false;
   std::vector<graph::Point2> points;    // route: from pin … to pin (orthogonal)
   uint32_t net = 0;                     // wires into one summing input share a net (junction dots on the bus)
 };
@@ -159,6 +182,9 @@ struct ProjectPatch {
   std::vector<Edge> edges;
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // bounds of the bands and nodes
   uint32_t master = kNone;               // band
+  // TX.groups: the model holds only one group's contents (LayoutOptions::scope: the Device view's group panel): one band
+  // (its track) without source, mixer or strip, the capsule and what is inside it.
+  bool scoped = false;
   uint32_t bandOf(doc::TrackId t) const noexcept;
   uint32_t nodeOf(doc::DeviceId d) const noexcept;  // T4.8: a device inside a rack: the rack's block
 };
@@ -186,6 +212,10 @@ inline constexpr float kNoteNamesW = 36.0f;  // TMM.10-fix2: a MIDI window's rig
 inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
 inline constexpr float kMixerW = 88.0f, kMixerH = 60.0f;     // compact (M / S, pan, volume, values); expanded: wider
 inline constexpr float kExpandedPad = 16.0f;                // around an expanded device's atoms
+inline constexpr float kCapsuleTitle = 20.0f;               // TX.groups: an opened group's title strip
+inline constexpr float kCapsulePad = 12.0f;                 // around its contents
+inline constexpr float kTerminalW = 36.0f, kTerminalH = 32.0f;  // its In / Out terminals
+inline constexpr float kClosedGroupW = 168.0f, kClosedGroupH = 96.0f;  // a closed group's block (its miniature)
 }  // namespace metrics
 
 // An expanded device (opened to its atoms in place): the size of what is drawn inside its frame, from the view.
@@ -206,6 +236,10 @@ struct LayoutOptions {
   // nullopt when none shows it (the param keeps a pin). Asked only for face and panel blocks' wired params. Unset: every
   // wired param has a pin.
   std::function<std::optional<graph::Point2>(const doc::Device&, std::string_view param)> controlAnchor;
+  // TX.groups: the groups drawn closed (a block with a miniature); every other group is opened (its capsule).
+  std::span<const doc::DeviceId> closedGroups;
+  // TX.groups: only this group (opened) and its contents (ProjectPatch::scoped; the Device view's group panel).
+  doc::DeviceId scope;
 };
 
 // TX.mod-all: which edge of its block an anchored param's wire enters by (the one nearest the control; never the
@@ -239,7 +273,9 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
     case NodeKind::Source:
       if (i > 0) return metrics::kPinTop + 4.0f + metrics::kNotePitch * static_cast<float>(i);
       return metrics::kPinTop;
-    case NodeKind::Device: return (metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i)) * n.scale;  // TX.resize
+    case NodeKind::Device:  // TX.resize; TX.groups: an opened group's chain pins at its inner spine
+      return ((n.pinTop > 0.0f ? n.pinTop : metrics::kPinTop) + metrics::kPinPitch * static_cast<float>(i)) * n.scale;
+    case NodeKind::Terminal: return metrics::kTerminalH * 0.5f;
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
   }
 }

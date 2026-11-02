@@ -50,6 +50,10 @@ SymbolSpec specOf(const Node& n) {
       s.symbol = Symbol::Output;
       inStub = 4.0f;
       break;
+    case NodeKind::Terminal:  // TX.groups: a group's In / Out terminal (the circuit's terminal symbols)
+      s.symbol = n.inputs.empty() ? Symbol::Input : Symbol::Output;
+      inStub = outStub = 4.0f;
+      break;
   }
   if (n.face != nullptr) {  // TMM.4: the face draws its jacks (no stubs)
     s.face = n.face;
@@ -87,7 +91,7 @@ WireStyle styleOf(const Edge& e) {
       if (e.silent) w.rate = WireRate::Const;  // lowered, at −∞: drawn dim
       break;
     case EdgeKind::Modulation:
-      w.modulation = true;
+      w.modulation = !e.input;  // TX.groups: into an input it is a signal path (solid)
       if (e.status == doc::WireStatus::Inactive || e.status == doc::WireStatus::Refused) w.rate = WireRate::Const;
       break;
   }
@@ -127,6 +131,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
     if (n.kind == NodeKind::Device && n.expanded && innerOf(n.device) != nullptr) continue;
+    if (n.group && n.groupOpen) continue;  // TX.groups: an opened group's capsule is its frame (the canvas draws it)
     const uint32_t v = static_cast<uint32_t>(sc.nodes.size());
     out.sceneNode[i] = v;
     out.modelNode.push_back(i);
@@ -192,6 +197,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       case NodeKind::Device:
       case NodeKind::Mixer: title.y = n.y + 8.0f; break;
       case NodeKind::Output:
+      case NodeKind::Terminal:
         title.x0 = n.x + 7.0f;
         title.x1 = n.x + n.w - 6.0f;
         title.y = n.y + n.h * 0.5f;

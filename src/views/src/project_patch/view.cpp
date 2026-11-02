@@ -65,8 +65,13 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
   });
 }
 
+ProjectPatchView::ProjectPatchView(ViewContext& ctx, doc::DeviceId scope) : ProjectPatchView(ctx) {
+  scope_ = scope;  // TX.groups: the Device view's group panel (the constructor above bound nothing global)
+}
+
 ProjectPatchView::~ProjectPatchView() {
   if (valueGesture_ && ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
+  if (scope_.valid()) return;  // TX.groups: an embedded view bound no actions of the main one
   ctx_.clearViewAction("view.togglePatch");
   ctx_.clearViewAction("view.trackCircuit");
   ctx_.setCircuitOpener({});
@@ -330,7 +335,11 @@ void ProjectPatchView::onFrame(double now) {
   }
 }
 
-void ProjectPatchView::arrange(ui::LayoutPass& pass) { pass.place(*canvas_, rect()); }
+void ProjectPatchView::arrange(ui::LayoutPass& pass) {
+  pass.place(*canvas_, rect());
+  // TX.groups: an embedded view (a group's panel) builds itself once it has a size (it fits the capsule then).
+  if (scope_.valid() && rect().w > 0 && rect().h > 0 && (stale_ || built_ != ctx_.doc())) sync();
+}
 
 void ProjectPatchView::paint(ui::PaintContext& ctx) {
   if (!morph_.active) return;  // the canvas paints the patch
@@ -478,6 +487,10 @@ void ProjectPatchView::rebuild() {
   opt.expanded = sizes;
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
+  std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
+  opt.closedGroups = closedGroups_;  // TX.groups
+  opt.scope = scope_;
+  if (selectedGroup_.valid() && doc::findDevice(*snap, selectedGroup_).device == nullptr) selectedGroup_ = {};
   if (panelsShown_) opt.panelSize = [this](const doc::Device& d) { return panelSize(d); };  // TX.panel-faces
   // TX.mod-all: wires into a face's or panel's params end on their controls (no made-up pins).
   if (canvas_->facesShown())
@@ -495,7 +508,8 @@ void ProjectPatchView::rebuild() {
   tracksOf_ = nullptr;  // bandTrack's table follows the new bands
   scene_ = buildProjectScene(patch_, inner);
   const circuit::CircuitCanvas::View keep = canvas_->view();
-  canvas_->setScene(scene_.scene, !fitted_, true);
+  canvas_->setScene(scene_.scene, !fitted_ && !scope_.valid(), true);
+  if (!fitted_ && scope_.valid()) canvas_->fitAll();  // TX.groups: a group panel shows all of its contents
   if (fitted_) canvas_->setView(keep);
   fitted_ = true;
   syncPanels();  // TX.panel-faces: kept panels show the new document and their blocks' sizes
@@ -1131,6 +1145,7 @@ bool ProjectPatchView::toggleDevicesActive(std::span<const doc::DeviceId> device
 
 std::vector<doc::DeviceId> ProjectPatchView::selectedDevices() const {
   std::vector<doc::DeviceId> out;
+  if (selectedGroup_.valid()) out.push_back(selectedGroup_);  // TX.groups: an opened capsule (no scene node)
   if (!canvas_->scene()) return out;
   for (const uint32_t v : canvas_->selection().nodes) {
     if (v >= scene_.modelNode.size()) continue;
@@ -1188,6 +1203,96 @@ bool ProjectPatchView::deleteSelection() {
   if (batch.commands.empty() || cur == start) return false;
   canvas_->clearSelection();
   return dispatch(batch, "Delete");
+}
+
+// ---- TX.groups ------------------------------------------------------------------------------------------------------
+
+bool ProjectPatchView::groupDevices(std::span<const doc::DeviceId> devices) {
+  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+  if (lib == nullptr) {
+    ctx_.setStatus("Group: no device library");
+    return false;
+  }
+  doc::ops::EditResult e = doc::ops::groupInCircuit(ctx_.doc(), ctx_.store().ids(), *lib, devices);
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return false;
+  }
+  const doc::DeviceId g = e->devices.empty() ? doc::DeviceId{} : e->devices.front();
+  if (!apply(e, "Group")) return false;
+  canvas_->clearSelection();
+  selectGroup(g);
+  ctx_.setStatus("Grouped: Ctrl+Shift+G ungroups");
+  return true;
+}
+
+bool ProjectPatchView::ungroup(doc::DeviceId group) {
+  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+  if (lib == nullptr) return false;
+  doc::ops::EditResult e = doc::ops::ungroupInCircuit(ctx_.doc(), *lib, group);
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return false;
+  }
+  if (selectedGroup_ == group) selectedGroup_ = {};
+  return apply(e, "Ungroup");
+}
+
+bool ProjectPatchView::groupSelection() {
+  std::vector<doc::DeviceId> d = selectedDevices();
+  if (d.empty()) {
+    ctx_.setStatus("Group: select the devices first (click, Ctrl+click or drag a box around them)");
+    return false;
+  }
+  return groupDevices(d);
+}
+
+bool ProjectPatchView::ungroupSelection() {
+  std::vector<doc::DeviceId> groups;
+  const doc::Project& p = *ctx_.doc();
+  for (const doc::DeviceId id : selectedDevices()) {
+    const doc::DeviceLoc l = doc::findDevice(p, id);
+    if (l.device == nullptr) continue;
+    const doc::DeviceId g = doc::isGroupDevice(*l.device) ? id : l.device->group;
+    if (g.valid() && std::find(groups.begin(), groups.end(), g) == groups.end()) groups.push_back(g);
+  }
+  if (groups.empty()) {
+    ctx_.setStatus("Ungroup: select a group (or a device inside one)");
+    return false;
+  }
+  bool any = false;
+  for (const doc::DeviceId g : groups) any = ungroup(g) || any;
+  return any;
+}
+
+bool ProjectPatchView::setDeviceGroup(doc::DeviceId device, doc::DeviceId group) {
+  const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device);
+  if (l.device == nullptr) return false;
+  if (l.device->group == group) return false;
+  doc::Batch b{group.valid() ? "Into Group" : "Out of Group", {}};
+  if (group.valid() && !l.device->free) b.commands.push_back(doc::SetDeviceFree{device, true});
+  b.commands.push_back(doc::SetDeviceGroup{device, group});
+  return dispatch(b, b.label.c_str());
+}
+
+void ProjectPatchView::setGroupOpen(doc::DeviceId group, bool open) {
+  const bool now = groupOpen(group);
+  if (now == open) return;
+  if (open) std::erase(closedGroups_, group);
+  else closedGroups_.push_back(group);
+  if (!open && selectedGroup_ == group) selectedGroup_ = {};
+  relayout();
+}
+
+bool ProjectPatchView::groupOpen(doc::DeviceId group) const noexcept {
+  return std::find(closedGroups_.begin(), closedGroups_.end(), group) == closedGroups_.end();
+}
+
+void ProjectPatchView::selectGroup(doc::DeviceId group) {
+  if (group.valid() && canvas_->scene()) canvas_->clearSelection();  // one selection: the group alone
+  if (selectedGroup_ == group) return;
+  selectedGroup_ = group;
+  canvas_->markDirty();
 }
 
 bool ProjectPatchView::toggleMute(doc::TrackId track) {
@@ -1353,6 +1458,22 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
   std::vector<ui::MenuItem> items;
   if (n.kind == NodeKind::Device) {
     const doc::DeviceId d = n.device;
+    // TX.groups: Ctrl+G / Ctrl+Shift+G, and a group's capsule opened or closed.
+    {
+      std::vector<doc::DeviceId> sel = selectedDevices();
+      if (std::find(sel.begin(), sel.end(), d) == sel.end()) sel.assign(1, d);
+      ui::MenuItem g = ui::MenuItem::item("Group", [this, sel] { (void)groupDevices(sel); }, "Ctrl+G");
+      g.enabled = !n.group && !(n.capsule != kNone);
+      items.push_back(std::move(g));
+      const doc::DeviceId grp = n.group ? d : n.capsule != kNone ? patch_.nodes[n.capsule].device : doc::DeviceId{};
+      if (grp.valid()) {
+        items.push_back(ui::MenuItem::item("Ungroup", [this, grp] { (void)ungroup(grp); }, "Ctrl+Shift+G"));
+        const bool open = groupOpen(grp);
+        items.push_back(ui::MenuItem::item(open ? "Close Group" : "Open Group", [this, grp, open] { setGroupOpen(grp, !open); }));
+      }
+      if (n.capsule != kNone)
+        items.push_back(ui::MenuItem::item("Take Out of Group", [this, d] { (void)setDeviceGroup(d, {}); }));
+    }
     items.push_back(ui::MenuItem::item("Delete", [this, d] {
       const doc::DeviceId one[1] = {d};
       (void)apply(doc::ops::deleteDevices(*ctx_.doc(), one), "Delete Device");

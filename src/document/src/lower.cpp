@@ -96,6 +96,7 @@ struct Callees {
   const graph::Patch* find(const Device& d) const noexcept {
     if (lib == nullptr) return nullptr;
     if (const auto it = userRoot.find(d.id.value); it != userRoot.end()) return it->second;
+    if (isGroupDevice(d)) return &groupPatch();  // TX.groups (lower.h "Groups"; the graph's library holds it)
     if (d.source || isMetaDevice(d)) return nullptr;
     return lib->find(d.patch);
   }
@@ -439,6 +440,19 @@ UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const
     for (const graph::Patch& x : u.meta->patches) u.combined->add(x);
     for (const meta::Prelude::Entry& e : u.meta->prelude->entries) u.combined->add(e.nested);
     u.callees.lib = u.combined.get();
+  }
+  // TX.groups: the group patch joins the callee library when a group plays (the graph calls it by name).
+  if (combined) {
+    bool groups = false;
+    forEachDevice(p, [&](const Device& d, const Track&) { groups = groups || isGroupDevice(d); });
+    if (groups) {
+      if (!u.combined) {
+        u.combined = std::make_shared<graph::PatchLibrary>();
+        u.combined->addAll(*base);
+      }
+      u.combined->add(groupPatch());
+      u.callees.lib = u.combined.get();
+    }
   }
   return u;
 }
@@ -807,6 +821,14 @@ uint32_t signalOutput(const graph::Patch& callee, std::string_view name) noexcep
     }
   }
   return graph::kNone;
+}
+// TX.groups: the declared width of a callee's output `port` (its signature index: the `out`s, then the exports; an
+// export carries its first channel's kind of signal: treated as mono).
+uint16_t declaredOutWidth(const graph::Patch& callee, uint32_t port) noexcept {
+  uint32_t o = 0;
+  for (NodeIndex v = 0; v < callee.nodeCount(); ++v)
+    if (callee.node(v).kind == graph::NodeKind::Output && o++ == port) return callee.inputType(v, 0).width;
+  return graph::kWidthMono;
 }
 // TX.patching: the signature index of a callee's non-const, non-bool `in` named `name` (a wire target), or kNone.
 uint32_t signalInput(const graph::Patch& callee, std::string_view name) noexcept {
@@ -1952,6 +1974,7 @@ Voices instrumentRack(Build& b, uint32_t k0, PortRef outer0) {
 enum WireK : uint32_t {
   kWAmount, kWIn, kWExport, kWChannel, kWReduce, kWDelay, kWTerm, kWSum,
   kWNote, kWNoteReal,  // TMM.10-fix2: a note source's voice terminal, its bool → real
+  kWMidL, kWMidR, kWMidAdd, kWMid,  // TX.groups: a wide signal into a meta module's input: its mid
   kWTarget = 16,
 };
 enum TargetK : uint32_t {
@@ -2008,6 +2031,15 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       if (w.notes->boolean) s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
     } else if (w.input && w.fromNode == w.toNode) {
       s = PortRef{b.calls[w.fromDev], w.fromPort};  // TX.patching: into an input on its own track, every channel
+      // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
+      // a group's In terminal) reaches its input as the mid (l + r) / 2 — the chain's rule (effectCall). On a mono
+      // signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
+      if (isMetaDevice(*td[w.toDev].device) && td[w.fromDev].rack < 0 &&
+          declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
+        const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
+        const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
+        s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
+      }
     } else {
       s = ir.atom("channel", {PortRef{b.calls[w.fromDev], w.fromPort}, b.c0()}, wid(w, kWChannel));
     }

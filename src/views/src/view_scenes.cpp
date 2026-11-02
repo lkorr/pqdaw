@@ -1753,6 +1753,53 @@ Status setupProjectPatchResize(Shell& shell) {
   return Ok{};
 }
 
+// TX.groups (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): project_patch::buildGroupProject with Keys'
+// Phase accumulator → Wavetable → Phase accumulator grouped by Ctrl+G's edit (basic synth → group: the capsule opened,
+// its In → … → Out wires, the free LFO outside it still wired onto the Wavetable's position across the boundary) and
+// Bass's Saturator → Utility grouped and closed (its block's miniature). The whole project fitted.
+Status buildGroupScene(Shell& shell, project_patch::GroupProjectIds& ids, project_patch::ProjectPatchView*& v) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "groups: no device library", {}};
+  if (Status s = project_patch::buildGroupProject(ctx.store(), &ids); !s) return s;
+  v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "groups: the view is not installed", {}};
+  const doc::DeviceId keys[3] = {ids.pa1, ids.wt, ids.pa2}, bass[2] = {ids.sat, ids.util};
+  if (!v->groupDevices(keys) || !v->groupDevices(bass)) return Error{ErrorCode::Unknown, "groups: grouping failed", {}};
+  return Ok{};
+}
+
+Status setupProjectPatchGroup(Shell& shell) {
+  project_patch::GroupProjectIds ids;
+  project_patch::ProjectPatchView* v = nullptr;
+  if (Status s = buildGroupScene(shell, ids, v); !s) return s;
+  const doc::Track* bass = doc::findTrackPtr(*shell.context().doc(), ids.bass);
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  for (const doc::DevicePtr& d : bass->devices)
+    if (doc::isGroupDevice(*d)) v->setGroupOpen(d->id, false);
+  v->selectGroup({});
+  v->fitAll(false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// TX.groups: the same project's Keys in the Device view — the default synth, then the group, whose panel is the circuit
+// of its contents (the embedded, scoped canvas: In, the three modules, Out, the wires between them).
+Status setupDeviceGroupPanel(Shell& shell) {
+  project_patch::GroupProjectIds ids;
+  project_patch::ProjectPatchView* v = nullptr;
+  if (Status s = buildGroupScene(shell, ids, v); !s) return s;
+  ViewContext& ctx = shell.context();
+  ctx.setSelectedTrack(ids.keys);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TMM.11: still voices for the Envelope faces — six voices in every stage (rising, at the peak, decaying, sustained,
 // released early, near the end of the release), each with the levels its tap sampled during the last frame.
 class EnvelopeSceneVoices final : public VoiceTapReader {
@@ -2295,6 +2342,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-free", 1280, 800, setupProjectPatchFree},          // TX.patching
     {"project-patch-panels", 1600, 900, setupProjectPatchPanels},      // TX.panel-faces
     {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize
+    {"project-patch-group", 1600, 900, setupProjectPatchGroup},        // TX.groups
+    {"device-group-panel", 1600, 900, setupDeviceGroupPanel},          // TX.groups
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14

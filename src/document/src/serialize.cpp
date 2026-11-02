@@ -746,6 +746,10 @@ private:
       w_.key("free");
       w_.boolean(true);
     }
+    if (d.group.valid()) {  // TX.groups (schema 14): a member of the group device with this id
+      w_.key("group");
+      w_.integer(d.group.value);
+    }
     auto values = [&](const char* key, const std::vector<DeviceValue>& v) {
       if (v.empty()) return;
       const PathSeg vat(&at, key);
@@ -1933,7 +1937,7 @@ private:
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
-                                                     "chainInput", "free"};
+                                                     "chainInput", "free", "group"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2115,6 +2119,7 @@ private:
         if (d.chainInput.empty()) r_.failValue(f, "must not be empty (omit it for the type's own chain input)");
         break;
       case 12: d.free = r_.readBool(f); break;  // TX.patching (schema 13)
+      case 13: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
     }
   }
 
@@ -3520,6 +3525,14 @@ Status migrateWireLaws(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 13 → 14 (TX.groups, model.h "Groups"): a device may carry "group" (a member of that group device; a group device's
+// "patch" is "Group"). Schema 13 has neither: nothing to rewrite. Self-contained (renumber, do not merge, if another
+// schema step lands first).
+Status migrateAddGroups(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3533,6 +3546,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {10, migrateMetaChainSignals},
     {11, migrateAddNoteWires},
     {12, migrateWireLaws},
+    {13, migrateAddGroups},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

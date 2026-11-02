@@ -186,6 +186,10 @@ struct SetDeviceChainInput { DeviceId device; std::string input; };
 // or puts it back where it is in the list (model.h Device::free). Not in a rack chain; never a rack or a stock
 // instrument; a meta device's kind follows (a free one is never where instruments go).
 struct SetDeviceFree { DeviceId device; bool free = true; };
+// TX.groups: Meta (membership changes no sound: a member is a free device either way; model.h "Groups"). Puts a free
+// device of a track's own list into group `group` (a group device of the same list), or takes it out (invalid). A group
+// is never a member (no nesting).
+struct SetDeviceGroup { DeviceId device; DeviceId group; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
 // Structural. Adds `wire` (its id pre-allocated). Both devices must exist; a Travel wire's amount must be in [−1, 1], an
@@ -281,7 +285,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    SetDeviceChainInput, SetDeviceFree, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
+    SetDeviceChainInput, SetDeviceFree, SetDeviceGroup, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

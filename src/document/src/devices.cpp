@@ -2,6 +2,7 @@
 #include "pq/document/devices.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -534,7 +535,41 @@ const graph::PatchFile* DeviceLibrary::stockFile(std::string_view patch) const {
   return s ? &s->parsed->file : nullptr;
 }
 
+// TX.groups: the one patch every group plays (model.h groupPatchText), parsed once, and its description.
+namespace {
+struct GroupPatch {
+  graph::PatchFile file;
+  const graph::Patch* patch = nullptr;
+  DeviceInfo info;
+};
+const GroupPatch& groupPatchData() {
+  static const GroupPatch g = [] {
+    GroupPatch x;
+    Result<graph::PatchFile> f = graph::parse(groupPatchText(), "group");
+    if (!f.ok()) return x;  // a broken text: groupPatch() then fails loudly in the tests (never in practice)
+    x.file = std::move(f.value());
+    x.patch = x.file.find(kGroupDevice);
+    if (x.patch != nullptr)
+      if (Result<DeviceInfo> i = describeDevice(*x.patch, "Group"); i.ok()) x.info = std::move(i.value());
+    return x;
+  }();
+  return g;
+}
+}  // namespace
+
+const graph::Patch& groupPatch() {
+  const GroupPatch& g = groupPatchData();
+  if (g.patch == nullptr) std::abort();  // the fixed text always parses (tests/document test_groups)
+  return *g.patch;
+}
+
+const DeviceInfo& groupDeviceInfo() {
+  (void)groupPatch();
+  return groupPatchData().info;
+}
+
 const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
+  if (isGroupDevice(d)) return &groupPatch();  // TX.groups
   if (isMetaDevice(d)) {  // TMM.3
     const meta::Prelude::Entry* e = prelude_->find(metaDeviceType(d));
     if (e == nullptr) return nullptr;
@@ -548,6 +583,7 @@ const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<cons
 }
 
 const DeviceInfo* DeviceLibrary::infoOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
+  if (isGroupDevice(d)) return &groupDeviceInfo();  // TX.groups
   if (isMetaDevice(d)) {  // TMM.3
     for (size_t i = 0; i < prelude_->entries.size(); ++i)
       if (prelude_->entries[i].type->id == metaDeviceType(d)) {

@@ -195,6 +195,29 @@ std::string_view metaDeviceType(const Device& d) noexcept {
   return isMetaDevice(d) ? std::string_view(d.patch).substr(kMetaDevicePrefix.size()) : std::string_view();
 }
 
+bool isGroupDevice(const Device& d) noexcept { return !d.rack && d.patch == kGroupDevice; }
+
+std::string_view groupPatchText() noexcept {
+  // TX.groups: the In terminal is an output (`input` = x), the Out terminal an input (`output` → y). y is declared stereo
+  // (an upper bound: a mono sum stays mono), so the chain after a group never packs an already stereo signal.
+  return "patch Group {\n"
+         "  in    x      : audio global\n"
+         "  in    output : audio global\n"
+         "  out   y      : audio global stereo\n"
+         "  out   input  : audio global\n"
+         "  y = output\n"
+         "  input = x\n"
+         "}\n";
+}
+
+std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, DeviceId group) {
+  std::vector<const Device*> out;
+  if (!group.valid()) return out;
+  for (const DevicePtr& d : list)
+    if (d && d->group == group) out.push_back(d.get());
+  return out;
+}
+
 bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed) {
   bool any = false;
   // TX.patching: a free device is not in the series; the first device of the series is the first one not free.
@@ -231,6 +254,8 @@ DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
 DevicePtr makeDefaultInstrument(DeviceId id) {
   return makeDevice(id, std::string(kDefaultInstrument), DeviceKind::Instrument);
 }
+
+DevicePtr makeGroup(DeviceId id) { return makeDevice(id, std::string(kGroupDevice), DeviceKind::AudioEffect); }
 
 // ---- Racks (T4.8) ----------------------------------------------------------------------------------------------
 
@@ -291,7 +316,8 @@ bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
          a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name &&
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
          a.chainInput == b.chainInput &&  // TMM.10-fix1
-         a.free == b.free;                // TX.patching
+         a.free == b.free &&              // TX.patching
+         a.group == b.group;              // TX.groups
 }
 
 bool shallowChainEq(const Chain& a, const Chain& b) noexcept {

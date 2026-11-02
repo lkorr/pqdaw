@@ -76,7 +76,9 @@ namespace pq::doc {
 // signal in its target's units and has no "amount"; "law": "travel" (with "amount") is the knob-travel law; a wire's
 // "port" may name any output of its device and its "param" any param or input. A device may carry "free": true (out of
 // its track's series). Migration 12 → 13 gives every wire "law": "travel" (old projects keep their sound).
-inline constexpr int32_t kSchemaVersion = 13;
+// 14 = groups (TX.groups, model.h "Groups"): a device whose "patch" is "Group" is a group; a device may carry "group":
+// <group device id> (a member: free, in the same track's list). Migration 13 → 14 changes nothing.
+inline constexpr int32_t kSchemaVersion = 14;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

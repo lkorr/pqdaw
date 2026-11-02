@@ -56,6 +56,15 @@
 //              main pin, the band grows). Esc cancels the drag. S + double-click or the block menu's Reset Size: its own
 //              size. View state like a nudge (saved, not undoable). S does nothing else in this view; while a text
 //              field (a face's or panel's type-in) has the focus, S types.
+//   groups     (TX.groups; doc model.h "Groups") select devices (or meta modules, free devices) of one band and press
+//              Ctrl+G: they become a group — one capsule in the chain where they were, its contents placed freely inside
+//              between its In and Out terminals, the series kept as wires (so it sounds the same); Ctrl+Shift+G (or the
+//              block menu's Ungroup) is the exact inverse. Inside a capsule everything is edited as anywhere else (wires,
+//              faces, panels, S-resize, Delete, nudges by dragging a block); a block dragged out of the capsule leaves
+//              the group, a free block dropped into one joins it. Double-click the capsule's title strip to close it (a
+//              block with a miniature of its contents), double-click the closed block to open it again (view state of
+//              this session). Delete on a selected group deletes it with its contents. The Device view shows the group
+//              as one device whose panel is this canvas, scoped to the group (ProjectPatchView(ctx, group)).
 //   morph      toggling animates between the views (kMorphSeconds): each lane keeps its vertical position and unfolds
 //              into its band, its clips collapse into the source node's strip, and back.
 //   readouts   resting on a wire shows what is known of its signal: a route / send the source track's meter level
@@ -200,7 +209,12 @@ private:
 class ProjectPatchView : public ui::Widget {
 public:
   explicit ProjectPatchView(ViewContext& ctx);
+  // TX.groups: an EMBEDDED view of one group's contents (the Device view's group panel): the same model, canvas and
+  // gestures, scoped to the group (LayoutOptions::scope: its capsule, terminals, members and the wires among them). It is
+  // shown while its parent is; it never morphs, binds no view actions and fits the capsule when it first builds.
+  ProjectPatchView(ViewContext& ctx, doc::DeviceId scope);
   ~ProjectPatchView() override;
+  doc::DeviceId scope() const noexcept { return scope_; }
   ViewContext& context() const noexcept { return ctx_; }
 
   // ---- shown, and the morph ------------------------------------------------------------------------------------
@@ -326,8 +340,24 @@ public:
   static constexpr float kBlockScaleStep = 0.25f;
   static constexpr float kBlockScaleDetent = 0.04f;
 
-  // The selected devices / tracks (from the canvas selection), for tests and the menus.
+  // The selected devices / tracks (from the canvas selection, and a selected group's capsule), for tests and the menus.
   std::vector<doc::DeviceId> selectedDevices() const;
+
+  // ---- TX.groups (doc::ops::groupInCircuit / ungroupInCircuit; one undo step each; false + the reason in the status
+  // line when refused) -----------------------------------------------------------------------------------------------
+  bool groupDevices(std::span<const doc::DeviceId> devices);
+  bool ungroup(doc::DeviceId group);
+  bool groupSelection();    // Ctrl+G: the selected devices
+  bool ungroupSelection();  // Ctrl+Shift+G: the selected groups (or the groups of the selected members)
+  // A device into a group (invalid: out of its group; a device of the series leaves it first): one undo step.
+  bool setDeviceGroup(doc::DeviceId device, doc::DeviceId group);
+  // An opened group's capsule (its contents placed inside) or a closed block (a miniature): view state of the session.
+  void setGroupOpen(doc::DeviceId group, bool open);
+  bool groupOpen(doc::DeviceId group) const noexcept;
+  // An opened capsule is no scene node (its contents are): pressing its frame selects the group here (cleared by any
+  // other press); its frame is outlined while selected.
+  void selectGroup(doc::DeviceId group);
+  doc::DeviceId selectedGroup() const noexcept { return selectedGroup_; }
 
   // Menus: the band's (add device, focus, reset layout), a block's (delete, (de)activate, open, expand), a wire's.
   ui::Menu* openBandMenu(uint32_t band, ui::Vec2 at);
@@ -492,6 +522,10 @@ private:
   bool showCosts_ = false;
   std::vector<float> costs_;  // per model node (devices; < 0: none)
   uint32_t costTimer_ = 0;
+  // TX.groups
+  doc::DeviceId scope_;
+  std::vector<doc::DeviceId> closedGroups_;
+  doc::DeviceId selectedGroup_;
   // TX.panel-faces
   bool panelsShown_ = true;
   std::map<std::string, std::unique_ptr<PanelTemplate>, std::less<>> panelTemplates_;  // by patch
@@ -600,6 +634,16 @@ struct MetaSpectrumIds {
   doc::DeviceId eq, spectrum;
 };
 Status buildSpectrumProject(doc::DocumentStore& store, MetaSpectrumIds* ids = nullptr);
+// TX.groups: the user's example — "Keys" plays the default synth → Phase accumulator (110 Hz) → Wavetable (demoWavetable
+// Data, position 0.35) → Phase accumulator (3 Hz), with a free LFO (0.5 Hz) wired onto the Wavetable's position; "Bass"
+// the default synth → Saturator → Utility. Nothing grouped yet (ops::groupInCircuit needs the device library). The ids.
+struct GroupProjectIds {
+  doc::TrackId keys;
+  doc::DeviceId pa1, wt, pa2, lfo;
+  doc::TrackId bass;
+  doc::DeviceId sat, util;
+};
+Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids = nullptr);
 
 }  // namespace project_patch
 

@@ -34,13 +34,16 @@ bool isNoteSource(const ProjectPatch& pp, const Node& n) noexcept {
 // Whether a press on output pin `pin` starts a wire: a device's (TX.patching: any output, its main one too), a mixer's
 // (route, sends), a note source's.
 bool wireSource(const ProjectPatch& pp, const Node& n) noexcept {
-  return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || isNoteSource(pp, n);
+  return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || isNoteSource(pp, n) ||
+         (n.kind == NodeKind::Terminal && !n.outputs.empty());  // TX.groups: a group's In terminal
 }
+// TX.groups: a node a wire may end on (a device, or a group's Out terminal).
+bool wireEnd(const Node& n) noexcept { return n.kind == NodeKind::Device || (n.kind == NodeKind::Terminal && !n.inputs.empty()); }
 
 // TX.patching: the port of device node `n`'s input pin `i` a wire dropped on it targets, or null: an instrument's
 // `notes` (the chain's note wire) and a rack's own input (its chain's) are not wire targets.
 const Port* wireTarget(const Node& n, uint32_t i) noexcept {
-  if (n.kind != NodeKind::Device || i >= n.inputs.size()) return nullptr;
+  if (!wireEnd(n) || i >= n.inputs.size()) return nullptr;
   const Port& q = n.inputs[i];
   if (q.name == "notes") return nullptr;
   if (n.rack && !q.param) return nullptr;
@@ -175,8 +178,10 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   const float s = deviceScale();
   const float us = ctx.scale.factor;
   const float bar = std::max(2.0f, std::round(3.0f * us));
-  // Group containers first (outer before inner), then the band strips.
+  // Group containers first (outer before inner), then the band strips. TX.groups: a scoped canvas (a group's panel)
+  // has no bands to draw.
   for (const Band& b : pp.bands) {
+    if (pp.scoped) break;
     if (b.kind != doc::TrackKind::Group) continue;
     const Rect r = snapRect(deviceRect(b.cx0, b.cy0, b.cx1 - b.cx0, b.cy1 - b.cy0));
     if (!overlaps(r, clip)) continue;
@@ -186,6 +191,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   }
   const bool names = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr;
   for (const Band& b : pp.bands) {
+    if (pp.scoped) break;
     const Rect r = snapRect(deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
     if (!overlaps(r, clip)) continue;
     const Rgba col = ui::hex(b.colour);
@@ -257,6 +263,35 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
       if (const circuit::ChainCircuit* cc = view_.rackCircuit(n.device))
         circuit::paintChainBoxes(ctx, *this, *cc, n.x + metrics::kExpandedPad - cc->scene->x0, n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0);
   }
+  // TX.groups: opened groups' capsules (a rounded frame with its title strip; its contents are scene nodes over it).
+  for (const Node& n : pp.nodes) {
+    if (!n.group || !n.groupOpen) continue;
+    const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
+    if (!overlaps(r, clip)) continue;
+    const Rgba accent = th.circuit.wireAudio;
+    const float rad = std::min(std::round(10.0f * s), (r.y1 - r.y0) * 0.5f);
+    const float stripH = std::round(metrics::kCapsuleTitle * s);
+    const float sw = std::max(1.0f, std::round(circuit::strokeWidth(s)));
+    const bool sel = view_.selectedGroup() == n.device;
+    dl.addRoundedRectFilled(r, rad, ui::lerp(th.circuit.background, th.circuit.subcircuitFill, n.active ? 0.6f : 0.3f));
+    if (stripH >= 3.0f)
+      dl.addRoundedRectFilled({r.x0, r.y0, r.x1, std::min(r.y1, r.y0 + std::max(stripH, rad))}, rad,
+                              ui::lerp(th.circuit.background, accent, n.active ? 0.18f : 0.08f));
+    dl.addRoundedRectStroke(r, rad, sel ? th.circuit.selected : ui::mulAlpha(accent, n.active ? 0.9f : 0.4f), sel ? 2.0f * sw : sw);
+    if (names && stripH >= 8.0f) {
+      const ui::FontId font = ctx.res.uiFonts->small;
+      const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
+      if (stripH >= px + 2.0f) {
+        const ui::IRect box{static_cast<int32_t>(r.x0 + rad), static_cast<int32_t>(r.y0), static_cast<int32_t>(r.x1 - r.x0 - 2.0f * rad),
+                            static_cast<int32_t>(stripH)};
+        const int32_t adv = paint::text(ctx, font, box, n.title, th.circuit.symbolText, ui::TextAlign::Left);
+        const int32_t gap = static_cast<int32_t>(std::round(10.0f * us));
+        const std::string count = std::to_string(n.members.size()) + (n.members.size() == 1 ? " device" : " devices");
+        if (adv > 0 && adv + gap + 12 < box.w)
+          paint::text(ctx, font, {box.x + adv + gap, box.y, box.w - adv - gap, box.h}, count, th.circuit.pinText, ui::TextAlign::Left);
+      }
+    }
+  }
 }
 
 // T5.x-one-circuit: the device "Open in Circuit View" framed, outlined (its frame or block; inside a rack its box).
@@ -279,6 +314,35 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   const float s = deviceScale();
   const float us = ctx.scale.factor;
   const Lod level = lod();
+  // TX.groups: a closed group's miniature of its contents (its boxes and wires in the block's body, under the title).
+  for (const Node& n : pp.nodes) {
+    if (!n.group || n.groupOpen || n.mini.empty()) continue;
+    const Rect r = deviceRect(n.x + 8.0f, n.y + 20.0f, n.w - 16.0f, n.h - 26.0f);
+    if (!overlaps(r, clip) || r.x1 - r.x0 < 12.0f || r.y1 - r.y0 < 8.0f) continue;
+    // The miniature keeps its aspect, centred in the body.
+    float mx0 = 1.0f, my0 = 1.0f, mx1 = 0.0f, my1 = 0.0f;
+    for (const Node::MiniBox& b : n.mini) mx0 = std::min(mx0, b.x0), my0 = std::min(my0, b.y0), mx1 = std::max(mx1, b.x1), my1 = std::max(my1, b.y1);
+    const float k = std::min((r.x1 - r.x0), (r.y1 - r.y0) * 3.0f);
+    const float w = k, h = std::min(r.y1 - r.y0, k / 3.0f);
+    const float ox = std::round((r.x0 + r.x1 - w) * 0.5f), oy = std::round((r.y0 + r.y1 - h) * 0.5f);
+    auto at = [&](float u, float v) { return Vec2{ox + u * w, oy + v * h}; };
+    const float lw = std::max(1.0f, std::round(us));
+    for (size_t i = 0; i + 1 < n.miniWires.size(); i += 2) {
+      const Vec2 a = at(n.miniWires[i].x, n.miniWires[i].y), b = at(n.miniWires[i + 1].x, n.miniWires[i + 1].y);
+      const ui::Rgba wc = ui::mulAlpha(th.circuit.wireAudio, 0.8f);  // orthogonal, as the circuit's wires
+      const float mx = std::round((a.x + b.x) * 0.5f);
+      dl.addHLine(std::min(a.x, mx), std::max(a.x, mx), std::round(a.y), wc, lw);
+      dl.addVLine(mx, std::min(a.y, b.y), std::max(a.y, b.y) + lw, wc, lw);
+      dl.addHLine(std::min(mx, b.x), std::max(mx, b.x), std::round(b.y), wc, lw);
+    }
+    for (const Node::MiniBox& b : n.mini) {
+      const Vec2 a = at(b.x0, b.y0), c = at(b.x1, b.y1);
+      const Rect br{a.x, a.y, std::max(a.x + 2.0f, c.x), std::max(a.y + 2.0f, c.y)};
+      dl.addRectFilled(br, b.terminal ? ui::mulAlpha(th.circuit.wireAudio, 0.5f) : th.circuit.symbolFill);
+      dl.addRectStroke(br, ui::mulAlpha(th.circuit.symbolStroke, 0.8f), lw);
+    }
+  }
+  (void)ps;
   const bool text = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
   // T5.x-circuit-chain: opened racks' deactivated chains and devices veiled.
   for (const Node& n : pp.nodes)
@@ -378,7 +442,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
-        if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output) continue;  // the symbol / the canvas's pill says it
+        if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal) continue;  // the symbol says it
         if (n.face != nullptr || n.panel) continue;  // TMM.4: a face is label-free; TX.panel-faces: a panel has its title
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
         if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
@@ -582,6 +646,27 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       if (e.button != ui::PointerButton::Left || (e.mods & ui::mod::kAlt)) return CircuitCanvas::onPointer(e);
       if (tree()) tree()->setFocus(this);
       const uint32_t node = nodeAt(e.pos);
+      // TX.groups: a group's capsule — double-click its title strip to close it, the closed block to open it again; a
+      // press on its frame selects the group (an opened capsule is no scene node) and drags or nudges it as a block.
+      if (node != kNone && pp.nodes[node].group) {
+        const Node& n = pp.nodes[node];
+        const doc::DeviceId g = n.device;
+        if (e.clickCount >= 2) {
+          if (!n.groupOpen) v.setGroupOpen(g, true);
+          else if (toWorld(e.pos).y < n.y + metrics::kCapsuleTitle) v.setGroupOpen(g, false);
+          return true;
+        }
+        if (n.groupOpen) {
+          clearSelection();
+          v.selectGroup(g);
+          press_ = last_ = e.pos;
+          drag_ = (e.mods & ui::mod::kCtrl) ? Drag::Nudge : Drag::MaybeMoveDevice;
+          dragNode_ = node;
+          dragBand_ = kNone;
+          return true;
+        }
+      }
+      v.selectGroup({});
       if (e.clickCount >= 2) {
         // T5.x-one-circuit: a clip in a lane window opens its editor (the piano roll, an audio clip's Clip View).
         if (const doc::ClipRef ref = v.laneClipAt(e.pos); ref.clip.valid()) {
@@ -825,12 +910,12 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   const Node& a = pp.nodes[from_.node];
   // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): any output of a device (its main output too) or a
   // note output goes onto any parameter or input of any device; TMM.10-fix2: `notes` is the chain's own note wire.
-  if (a.kind == NodeKind::Device || isNoteSource(pp, a)) {
-    if (a.kind != NodeKind::Device && from_.port == 0)
+  if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isNoteSource(pp, a)) {
+    if (a.kind == NodeKind::Source && from_.port == 0)
       return "Wire: drag a note output (Hz, gate, velocity: the pins under the notes) onto a parameter or an input";
     const uint32_t to = nodeAt(pos);
     if (to == kNone) return nullptr;  // empty canvas: the drop does nothing
-    if (pp.nodes[to].kind != NodeKind::Device) return "Wire: drop it on a device's parameter or input";
+    if (!wireEnd(pp.nodes[to])) return "Wire: drop it on a device's parameter or input (or a group's Out)";
     const PinHit t = pinAt(pos);
     if (t.valid() && t.input && t.node == to && wireTarget(pp.nodes[to], t.port) == nullptr)
       return pp.nodes[to].rack ? "Wire: a rack's input is its chain's; drop it on a parameter or a device inside the rack"
@@ -862,7 +947,7 @@ uint32_t ProjectCanvas::resizableAt(Vec2 pos) const {
   const uint32_t node = nodeAt(pos);
   if (node == kNone) return kNone;
   const Node& n = view_.patch().nodes[node];
-  return n.kind == NodeKind::Device && !n.expanded ? node : kNone;
+  return n.kind == NodeKind::Device && !n.expanded && !(n.group && n.groupOpen) ? node : kNone;  // TX.groups: a capsule is its contents' size
 }
 
 ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
@@ -919,15 +1004,16 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   // Any output of a device or (TMM.10-fix2) a note output: onto an input pin (an audio input, a wired input, a param a
   // wire drives), that port; TX.patching: onto a face's control, that param; onto a device anywhere else, a menu of its
   // params and inputs.
-  if (a.kind == NodeKind::Device || isNoteSource(pp, a)) {
+  if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isNoteSource(pp, a)) {
     const std::string port = a.outputs[from_.port].name;
-    const doc::DeviceId from = a.kind == NodeKind::Device ? a.device : doc::DeviceId{};
-    const doc::TrackId notes = a.kind == NodeKind::Device ? doc::TrackId{} : fromBand.track;
+    const bool device = a.kind == NodeKind::Device || a.kind == NodeKind::Terminal;  // TX.groups: In is the group's port
+    const doc::DeviceId from = device ? a.device : doc::DeviceId{};
+    const doc::TrackId notes = device ? doc::TrackId{} : fromBand.track;
     auto wire = [&](doc::DeviceId to, const std::string& param) {
       (void)(notes.valid() ? v.connectNotes(notes, port, to, param) : v.connect(from, port, to, param));
     };
     const PinHit target = pinAt(pos);
-    if (target.valid() && target.input && pp.nodes[target.node].kind == NodeKind::Device) {
+    if (target.valid() && target.input && wireEnd(pp.nodes[target.node])) {
       const Node& t = pp.nodes[target.node];
       if (const Port* q = wireTarget(t, target.port)) {
         std::string param = q->name;
@@ -980,6 +1066,24 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
     if (dn.x + dn.w * 0.5f < w.x) ++index;
   }
   const doc::Track* now = doc::findDevice(*v.context().doc(), moved.device).track;
+  // TX.groups: inside a capsule a block moves freely (a nudge); dragged out of it, it leaves the group; a block dropped
+  // into another opened capsule of its band joins that group (from the series: it leaves the series).
+  {
+    auto insideNode = [&](const Node& c) { return w.x >= c.x && w.x <= c.x + c.w && w.y >= c.y && w.y <= c.y + c.h; };
+    uint32_t into = kNone;
+    for (uint32_t i = 0; i < pp.nodes.size(); ++i)
+      if (i != dragNode_ && pp.nodes[i].group && pp.nodes[i].groupOpen && pp.nodes[i].band == b && insideNode(pp.nodes[i])) into = i;
+    const graph::Point2 start = toWorld(press_);
+    if (moved.capsule != kNone) {
+      if (into == moved.capsule) v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
+      else if (now != nullptr && now->id == band.track) (void)v.setDeviceGroup(moved.device, into != kNone ? pp.nodes[into].device : doc::DeviceId{});
+      return;
+    }
+    if (into != kNone && !moved.group && now != nullptr && now->id == band.track) {
+      (void)v.setDeviceGroup(moved.device, pp.nodes[into].device);
+      return;
+    }
+  }
   // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): in its own band, a block of the series dropped
   // below the chain's row leaves the series (free: it goes to the band's free row and keeps its wires); a free block
   // moves where it is dropped (a nudge), or back into the series when dropped on the chain's row.
@@ -1019,6 +1123,16 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   }
   if (mods == ui::mod::kNone && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace)) {
     (void)view_.deleteSelection();
+    return true;
+  }
+  // TX.groups: Ctrl+G groups the selection, Ctrl+Shift+G ungroups (before the keymap: the Device view's Ctrl+G makes a
+  // rack there).
+  if (e.key == 'g' && mods == ui::mod::kCtrl) {
+    (void)view_.groupSelection();
+    return true;
+  }
+  if (e.key == 'g' && mods == (ui::mod::kCtrl | ui::mod::kShift)) {
+    (void)view_.ungroupSelection();
     return true;
   }
   if (mods == ui::mod::kNone && e.key == '0') {

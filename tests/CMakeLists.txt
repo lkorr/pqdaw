@@ -117,6 +117,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_device_chains.cpp  # T4.1: device chains through the link (migration bit-identity, unit compiles, hand-built graph)
     app/test_wires.cpp  # T4.7: modulation wires (audible LFO wire, hand-built graph diff 0, interpreter == JIT, loops, taps)
     app/test_patching.cpp  # TX.patching: wires add in units, any output into any param / input at audio rate, free devices
+    app/test_groups.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G round trips (series = group bit for bit, interpreter == JIT, same document)
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
@@ -175,6 +176,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_wiring.cpp  # T4.7: cables (jack → knob drags, across tracks, scrolling, badge, rings), golden
     views/test_device_circuit.cpp  # T4.4-fix1: the circuit editor on a project device (fork, undo, probes), golden
     views/test_project_patch.cpp  # T4.13: the project patch view (graph match, layout, edits, morph, zoom), goldens
+    views/test_groups_view.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G in the circuit, capsules, the Device view group panel, goldens
     views/test_chain_circuit.cpp  # T5.x-circuit-chain: a track's chain as one circuit (boxes, wires, racks, view, band), goldens
     views/test_racks_view.cpp  # T4.8: racks in the Device view (chains, drops, map mode, macro / mixer / zone drags), goldens
     views/test_circuit_legibility.cpp  # T4.15: node tooltips, inactive branches, recognised constants, goldens

@@ -335,14 +335,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 13");
+    const size_t at = newer.find("\"schemaVersion\": 14");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 19, "\"schemaVersion\": 14");
+    newer.replace(at, 19, "\"schemaVersion\": 15");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 14; this build reads up to 13)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 15; this build reads up to 14)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -444,7 +444,7 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 13);
+  static_assert(kSchemaVersion == 14);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -453,7 +453,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 13,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 14,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
@@ -590,7 +590,7 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
     Result<std::string> text = serializeProject(f.doc(), f.store.view());
     REQUIRE(text.ok());
     std::string old = *text;
-    old.replace(old.find("\"schemaVersion\": 13"), 19, "\"schemaVersion\": 11");
+    old.replace(old.find("\"schemaVersion\": 14"), 19, "\"schemaVersion\": 11");
     Result<LoadedProject> r = parseProject(old);
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
     CHECK(r->fileSchemaVersion == 11);

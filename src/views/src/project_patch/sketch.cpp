@@ -474,4 +474,43 @@ Status buildSpectrumProject(doc::DocumentStore& store, MetaSpectrumIds* ids) {
   return r.status;
 }
 
+Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
+  Runner r{store};
+  using K = doc::DeviceKind;
+  const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "Keys", 0xF6A23B);
+  const doc::TrackId bass = r.track(doc::TrackKind::Midi, keys, "Bass", 0x8ED36C);
+  if (!r.status) return r.status;
+  // Keys: the default synth → Phase accumulator (110 Hz, FM by the synth) → Wavetable → Phase accumulator (3 Hz), and a
+  // free LFO (out of the series) wired onto the Wavetable's position.
+  auto meta = [&](doc::TrackId t, const char* type) -> doc::DeviceId {
+    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, type));
+    return e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  };
+  const doc::DeviceId pa1 = meta(keys, "phase_acc");
+  const doc::DeviceId wt = meta(keys, "wavetable");
+  const doc::DeviceId pa2 = meta(keys, "phase_acc");
+  if (!r.status) return r.status;
+  if (!pa1.valid() || !wt.valid() || !pa2.valid()) return Error{ErrorCode::Unknown, "group project: meta devices", {}};
+  (void)r.run(doc::ops::setMetaParam(*store.current(), pa1, "", "phase_acc", "freq", 110.0));
+  (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.run(doc::ops::setMetaParam(*store.current(), pa2, "", "phase_acc", "freq", 3.0));
+  const doc::DeviceId lfo = r.device(keys, "lfo_device", K::AudioEffect);
+  if (lfo.valid()) {
+    const doc::DeviceId one[1] = {lfo};
+    (void)r.run(doc::ops::setDevicesFree(*store.current(), one, true));
+    (void)r.run(doc::ops::setDeviceParam(*store.current(), lfo, "rate", 0.5));
+    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", wt, "position"));
+  }
+  // Bass: the default synth → Saturator → Utility.
+  const doc::DeviceId sat = r.device(bass, "saturator", K::AudioEffect);
+  const doc::DeviceId util = r.device(bass, "utility", K::AudioEffect);
+  (void)r.run(doc::ops::setDeviceParam(*store.current(), sat, "drive", 4.0));
+  (void)r.run(doc::ops::setDeviceParam(*store.current(), util, "width", 1.6));
+  r.clip(keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7});
+  r.clip(bass, 0, 4 * kTicksPerWhole, "Root", {0, 7});
+  if (ids != nullptr) *ids = GroupProjectIds{keys, pa1, wt, pa2, lfo, bass, sat, util};
+  return r.status;
+}
+
 }  // namespace pq::views::project_patch

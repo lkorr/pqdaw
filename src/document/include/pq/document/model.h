@@ -502,6 +502,12 @@ struct Device {
   // (not in a rack chain); never a rack or a stock instrument (meta devices are fine: they take no chain signal).
   // Structural (SetDeviceFree).
   bool free = false;
+  // TX.groups (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"; "Groups" below): the group this device
+  // belongs to (a group device of the same track's own list), or invalid. A member is always free (a group has no chain
+  // order inside): it plays through wires only, exactly as a free device does; membership changes no sound (Meta:
+  // SetDeviceGroup), it says where the circuit draws the device (inside its group's capsule) and that the Device view
+  // shows only the group.
+  DeviceId group;
   bool edited() const noexcept { return source != nullptr; }
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry
   const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
@@ -517,6 +523,35 @@ std::string_view metaDeviceType(const Device& d) noexcept;
 // above; `instrumentsGo`: a MIDI track's own list, an Instrument Rack chain), copying the ones that change; their ids
 // are appended to `changed` when given. False: nothing changed.
 bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed = nullptr);
+
+// ---- Groups (TX.groups; SPEC §15 2026-11-01 "resize, groups, and the free-device rack"; QUESTIONS Q?-TX.groups-a) ----
+// A GROUP is a capsule of free devices in a track's circuit (the first nested layer: a track's own list, never inside a
+// rack or a device's circuit) that is one audio-effect device of the chain: "basic synth → group" instead of "basic
+// synth → phase accumulator → wavetable → phase accumulator". It is built only from what the circuit already has — no
+// second mechanism:
+//   the group     a Device whose patch is kGroupDevice (kind AudioEffect, no params, no settings, no rack), in its
+//                 track's series at its place (or itself free). It plays the fixed patch groupPatchText(): its chain
+//                 input `x` and main output `y` are its place in the chain, and its two TERMINALS are ports of the same
+//                 device: the In terminal is its output kGroupInPort (= x: what reaches the group), the Out terminal its
+//                 input kGroupOutPort (y = the sum of the wires into it). Nothing else: zero cost of its own.
+//   the members   the devices whose Device::group names it, in the same list; each is free (no chain order inside:
+//                 everything is placed freely) and plays exactly as a free device: through wires only. Their positions
+//                 are the circuit's view state (ViewState::patchNudges by device id), as every free device's.
+//   the wires     ordinary Project::wires: In → a member's input is a wire from (group, kGroupInPort); a member's
+//                 output → Out a wire into (group, kGroupOutPort); between members, and across the capsule's boundary
+//                 (an LFO outside into a knob inside, a member's output into another track), wires work unchanged
+//                 because they name devices, not containers.
+// Audio enters and leaves through the terminals the user wires (ops::groupInCircuit wires a grouped series In → … → Out,
+// so it sounds the same). Polyphony follows the wires, as for every free device. No nesting (a group is never a member;
+// Q?-TX.groups-a): the model would allow it, the views draw one level.
+inline constexpr std::string_view kGroupDevice = "Group";
+inline constexpr std::string_view kGroupInPort = "input";    // the In terminal: an output of the group device
+inline constexpr std::string_view kGroupOutPort = "output";  // the Out terminal: an input of the group device
+bool isGroupDevice(const Device& d) noexcept;
+// The patch every group plays (lower.h "Groups"): `patch Group { in x; in output; out y = output; out input = x }`.
+std::string_view groupPatchText() noexcept;
+// The members of group `group` in `list` (list order).
+std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, DeviceId group);
 
 // ---- Racks (T4.8, SPEC §8.2; QUESTIONS Q129 item 6, Q?-T4.8-a) -------------------------------------------------------
 // An Audio Effect Rack (kind AudioEffect) or an Instrument Rack (kind Instrument) holds parallel CHAINS, each a device
@@ -635,6 +670,7 @@ double rackParamValue(const Device& rack, std::string_view param) noexcept;
 inline constexpr std::string_view kDefaultInstrument = "BasicSynth";
 DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind);
 DevicePtr makeDefaultInstrument(DeviceId id);  // makeDevice(id, kDefaultInstrument, Instrument)
+DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group device (kGroupDevice, AudioEffect)
 
 // ---- Modulation wires (T4.7, SPEC §7.1, §7.4, §9, §15 2026-10-24; QUESTIONS Q129 item 5) -------------------------
 // A wire from a device's `export` (an output jack on top of the device) to a `param` of any device in the project

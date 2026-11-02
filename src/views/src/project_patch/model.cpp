@@ -39,8 +39,8 @@ uint32_t ProjectPatch::bandOf(doc::TrackId t) const noexcept {
 uint32_t ProjectPatch::nodeOf(doc::DeviceId d) const noexcept {
   for (uint32_t i = 0; i < nodes.size(); ++i)
     if (nodes[i].kind == NodeKind::Device && nodes[i].device == d) return i;
-  for (uint32_t i = 0; i < nodes.size(); ++i)  // T4.8: inside a rack
-    if (nodes[i].rack && std::find(nodes[i].inner.begin(), nodes[i].inner.end(), d) != nodes[i].inner.end()) return i;
+  for (uint32_t i = 0; i < nodes.size(); ++i)  // T4.8: inside a rack; TX.groups: inside a closed group
+    if (!nodes[i].inner.empty() && std::find(nodes[i].inner.begin(), nodes[i].inner.end(), d) != nodes[i].inner.end()) return i;
   return kNone;
 }
 
@@ -89,6 +89,21 @@ struct Builder {
   std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>> paramsOf;
   // TMM.10-fix1: the band's chain stages (doc::chainStages): which chain meta device the note source reaches.
   std::vector<doc::ChainStage> bandStages;
+  // TX.groups: each opened group's contents, placed relative to its capsule's top-left (layout() adds the capsule's
+  // place, then the nudges).
+  struct Capsule {
+    uint32_t node = kNone;
+    std::vector<std::pair<uint32_t, graph::Point2>> rel;
+  };
+  std::vector<Capsule> capsules;
+  bool closedGroup(doc::DeviceId g) const noexcept {
+    return !opt.scope.valid() && std::find(opt.closedGroups.begin(), opt.closedGroups.end(), g) != opt.closedGroups.end();
+  }
+  graph::Point2 nudgeOf(doc::DeviceId d) const noexcept {
+    if (opt.nudges == nullptr) return {0.0f, 0.0f};
+    const auto it = opt.nudges->find(d.value);
+    return it == opt.nudges->end() ? graph::Point2{0.0f, 0.0f} : graph::Point2{it->second.dx, it->second.dy};
+  }
 
   const graph::PatchLibrary* library() const noexcept { return low.graph.library; }
   const doc::ResolvedDevice* userDevice(doc::DeviceId id) const noexcept {
@@ -176,7 +191,7 @@ struct Builder {
   // (pinOffset) and its controls' anchors all `scale` times their own (what is drawn on it follows: SceneNode::scale).
   // An opened device keeps its size (its frame holds the atoms at the canvas's zoom).
   Node scaled(Node n) const {
-    if (n.expanded || opt.nudges == nullptr || opt.nudges->empty()) return n;
+    if (n.expanded || (n.group && n.groupOpen) || opt.nudges == nullptr || opt.nudges->empty()) return n;
     const auto it = opt.nudges->find(n.device.value);
     if (it == opt.nudges->end() || it->second.scale == 1.0f || !std::isfinite(it->second.scale)) return n;
     const float k = std::clamp(it->second.scale, doc::kMinPatchScale, doc::kMaxPatchScale);
@@ -331,6 +346,133 @@ struct Builder {
     return n;
   }
 
+  // TX.groups: a group device's capsule (project_patch.h Node::group) and, opened, its terminals and members.
+  uint32_t groupNode(uint32_t band, const doc::Device& g, const doc::Track& t, const graph::Patch* tp) {
+    Node c;
+    c.kind = NodeKind::Device;
+    c.band = band;
+    c.device = g.id;
+    c.active = g.active;
+    c.free = g.free;
+    c.group = true;
+    c.groupOpen = !closedGroup(g.id);
+    c.title = g.name.empty() ? std::string("Group") : g.name;
+    const graph::NodeIndex call = callOf(tp, g.id);
+    c.lowered = call != graph::kNone;
+    if (c.lowered) c.call = tp->node(call).id;
+    c.inputs.push_back({"x", ""});
+    c.outputs.push_back({"y", ""});
+    const std::vector<const doc::Device*> members = doc::groupMembers(t.devices, g.id);
+    // The inner layout (relative to the capsule): In, the members in list order, Out, on one spine; members' nudges.
+    std::vector<Node> kids;
+    {
+      Node in;
+      in.kind = NodeKind::Terminal;
+      in.band = band;
+      in.device = g.id;
+      in.title = "In";
+      in.outputs.push_back({std::string(doc::kGroupInPort), ""});
+      in.w = m::kTerminalW;
+      in.h = m::kTerminalH;
+      in.lowered = c.lowered;
+      in.call = c.call;
+      kids.push_back(std::move(in));
+    }
+    for (const doc::Device* d : members) kids.push_back(scaled(deviceNode(band, *d, tp)));
+    {
+      Node o;
+      o.kind = NodeKind::Terminal;
+      o.band = band;
+      o.device = g.id;
+      o.title = "Out";
+      o.inputs.push_back({std::string(doc::kGroupOutPort), ""});
+      o.w = m::kTerminalW;
+      o.h = m::kTerminalH;
+      o.lowered = c.lowered;
+      o.call = c.call;
+      kids.push_back(std::move(o));
+    }
+    float spine = 0.0f;
+    for (const Node& k : kids) spine = std::max(spine, spineOf(k));
+    const float innerSpine = m::kCapsuleTitle + m::kCapsulePad + spine;
+    std::vector<graph::Point2> rel;
+    float x = m::kCapsulePad, bottom = m::kCapsuleTitle + 48.0f;
+    for (const Node& k : kids) {
+      rel.push_back({x, innerSpine - spineOf(k)});
+      bottom = std::max(bottom, rel.back().y + k.h);
+      x += k.w + m::kNodeGap * 0.75f;
+    }
+    c.w = roundUp4(x - m::kNodeGap * 0.75f + m::kCapsulePad);
+    c.h = roundUp4(bottom + m::kCapsulePad);
+    c.pinTop = innerSpine;
+    if (!c.groupOpen) {
+      // Closed: one block holding a miniature of the contents (each box and wire in its unit square).
+      float x0 = 0.0f, y0 = 0.0f, x1 = c.w, y1 = c.h;
+      for (size_t i = 0; i < kids.size(); ++i) {
+        const graph::Point2 nd = i == 0 || i + 1 == kids.size() ? graph::Point2{0.0f, 0.0f} : nudgeOf(kids[i].device);
+        rel[i].x += nd.x;
+        rel[i].y += nd.y;
+        x0 = std::min(x0, rel[i].x - m::kCapsulePad), y0 = std::min(y0, rel[i].y - m::kCapsulePad);
+        x1 = std::max(x1, rel[i].x + kids[i].w + m::kCapsulePad), y1 = std::max(y1, rel[i].y + kids[i].h + m::kCapsulePad);
+      }
+      const float sw = std::max(1.0f, x1 - x0), sh = std::max(1.0f, y1 - y0);
+      for (size_t i = 0; i < kids.size(); ++i)
+        c.mini.push_back({(rel[i].x - x0) / sw, (rel[i].y - y0) / sh, (rel[i].x + kids[i].w - x0) / sw,
+                          (rel[i].y + kids[i].h - y0) / sh, kids[i].kind == NodeKind::Terminal});
+      auto kidOf = [&](doc::DeviceId d, std::string_view port, bool source) -> int32_t {
+        if (d == g.id)
+          return port == (source ? doc::kGroupInPort : doc::kGroupOutPort) ? (source ? 0 : static_cast<int32_t>(kids.size()) - 1) : -1;
+        for (size_t i = 1; i + 1 < kids.size(); ++i)
+          if (kids[i].device == d) return static_cast<int32_t>(i);
+        return -1;
+      };
+      for (const doc::Wire& w : doc::wiresOf(p)) {
+        if (w.fromNoteSource() || statusOf(w.id) == doc::WireStatus::Invalid) continue;
+        const int32_t a = kidOf(w.from, w.port, true), b = kidOf(w.to, w.param, false);
+        if (a < 0 || b < 0) continue;
+        const Node::MiniBox& ma = c.mini[static_cast<size_t>(a)];
+        const Node::MiniBox& mb = c.mini[static_cast<size_t>(b)];
+        c.miniWires.push_back({ma.x1, (ma.y0 + ma.y1) * 0.5f});
+        c.miniWires.push_back({mb.x0, (mb.y0 + mb.y1) * 0.5f});
+      }
+      // Its members (wires to and from them end on the block, as a rack's do) and their ports that cross its edge.
+      for (const doc::Device* d : members) c.inner.push_back(d->id);
+      auto inside = [&](doc::DeviceId d) {
+        return d == g.id || std::find(c.inner.begin(), c.inner.end(), d) != c.inner.end();
+      };
+      for (const doc::Wire& w : doc::wiresOf(p)) {
+        if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
+        const bool from = !w.fromNoteSource() && inside(w.from), to = inside(w.to);
+        if (from == to) continue;  // inside (or outside) the group altogether
+        if (to && w.to != g.id) {
+          const std::string key = portKey(c, w.to, w.param);
+          if (c.input(key) < 0) c.inputs.push_back({key, w.param, true});
+        }
+        if (from && w.from != g.id) {
+          const std::string key = portKey(c, w.from, w.port);
+          if (c.output(key) < 0) c.outputs.push_back({key, w.port});
+        }
+      }
+      c.pinTop = 0.0f;
+      sizeBlock(c, m::kClosedGroupW);
+      c.h = roundUp4(std::max(c.h, m::kClosedGroupH));
+      return addNode(scaled(std::move(c)));
+    }
+    const uint32_t ci = addNode(std::move(c));
+    Capsule cap;
+    cap.node = ci;
+    for (size_t i = 0; i < kids.size(); ++i) {
+      kids[i].capsule = ci;
+      const uint32_t k = addNode(std::move(kids[i]));
+      cap.rel.push_back({k, rel[i]});
+      if (i == 0) out.nodes[ci].groupIn = k;
+      else if (i + 1 == kids.size()) out.nodes[ci].groupOut = k;
+      else out.nodes[ci].members.push_back(k);
+    }
+    capsules.push_back(std::move(cap));
+    return ci;
+  }
+
   Node mixerNode(uint32_t band, const doc::Track& t, bool lowered) {
     Node n;
     n.kind = NodeKind::Mixer;
@@ -413,6 +555,12 @@ struct Builder {
     }
     bandStages = doc::chainStages(t.devices, t.kind == doc::TrackKind::Midi);
     for (const doc::DevicePtr& d : t.devices) {
+      // TX.groups: a member is drawn inside its group's capsule (or, closed, is part of its block).
+      if (d->group.valid() && t.deviceIndex(d->group) >= 0) continue;
+      if (doc::isGroupDevice(*d)) {
+        out.bands[bi].devices.push_back(groupNode(bi, *d, t, tp));
+        continue;
+      }
       const uint32_t n = addNode(scaled(d->rack ? rackNode(bi, *d, tp) : deviceNode(bi, *d, tp)));
       out.bands[bi].devices.push_back(n);
     }
@@ -526,9 +674,15 @@ struct Builder {
         if (sb != kNone && out.bands[sb].kind == doc::TrackKind::Midi) a = out.bands[sb].source;
       } else {
         a = out.nodeOf(w.from);
+        // TX.groups: the In terminal of an opened group.
+        if (a != kNone && out.nodes[a].group && out.nodes[a].device == w.from && w.port == doc::kGroupInPort && out.nodes[a].groupOpen)
+          a = out.nodes[a].groupIn;
       }
-      const uint32_t b = out.nodeOf(w.to);
+      uint32_t b = out.nodeOf(w.to);
+      if (b != kNone && out.nodes[b].group && out.nodes[b].device == w.to && w.param == doc::kGroupOutPort && out.nodes[b].groupOpen)
+        b = out.nodes[b].groupOut;  // TX.groups: the Out terminal
       if (a == kNone || b == kNone) continue;
+      if (a == b && out.nodes[a].group) continue;  // TX.groups: inside a closed group (its miniature draws it)
       Edge e;
       e.wire = w.id;
       e.status = st;
@@ -536,7 +690,9 @@ struct Builder {
       e.voice = w.fromNoteSource() || out.nodes[a].instrument;
       if (const auto it = modGraphWire.find(w.id.value); it != modGraphWire.end()) e.graphWire = it->second;
       const int32_t fromPort = w.fromNoteSource() ? out.nodes[a].output(w.port) : out.nodes[a].output(portKey(out.nodes[a], w.from, w.port));
-      addEdge(EdgeKind::Modulation, a, fromPort, b, out.nodes[b].input(portKey(out.nodes[b], w.to, w.param)), e);
+      const int32_t toPort = out.nodes[b].input(portKey(out.nodes[b], w.to, w.param));
+      e.input = toPort >= 0 && !out.nodes[b].inputs[static_cast<size_t>(toPort)].param;
+      addEdge(EdgeKind::Modulation, a, fromPort, b, toPort, e);
     }
   }
 
@@ -642,6 +798,22 @@ struct Builder {
       b.h = roundUp4(bottom + m::kBandPad - y);
       y += b.h + m::kBandGap;
     }
+    // TX.groups: an opened group's contents where its capsule is.
+    for (const Capsule& c : capsules)
+      for (const auto& [k, r] : c.rel) {
+        out.nodes[k].x = out.nodes[c.node].x + r.x;
+        out.nodes[k].y = out.nodes[c.node].y + r.y;
+      }
+    // A capsule's contents move with it (a band nudge, the group's own nudge).
+    auto moveKids = [&](uint32_t n, float dx, float dy) {
+      if (n == kNone || !out.nodes[n].group || !out.nodes[n].groupOpen) return;
+      for (const Capsule& c : capsules)
+        if (c.node == n)
+          for (const auto& kr : c.rel) {
+            out.nodes[kr.first].x += dx;
+            out.nodes[kr.first].y += dy;
+          }
+    };
     // Nudges (view state): a band moves with its nodes, a device block alone.
     if (opt.nudges != nullptr && !opt.nudges->empty()) {
       for (Band& b : out.bands) {
@@ -655,18 +827,37 @@ struct Builder {
           if (n == kNone) return;
           out.nodes[n].x += dx;
           out.nodes[n].y += dy;
+          moveKids(n, dx, dy);  // TX.groups
         };
         move(b.source);
         for (const uint32_t d : b.devices) move(d);
         move(b.mixer);
         move(b.output);
       }
-      for (Node& n : out.nodes)
+      for (uint32_t i = 0; i < out.nodes.size(); ++i) {
+        Node& n = out.nodes[i];
         if (n.kind == NodeKind::Device)
           if (const auto it = opt.nudges->find(n.device.value); it != opt.nudges->end()) {
             n.x += it->second.dx;
             n.y += it->second.dy;
+            moveKids(i, it->second.dx, it->second.dy);  // TX.groups: its contents with it (theirs added after)
           }
+      }
+    }
+    // TX.groups: a capsule grows to hold its members wherever their nudges put them; its terminals stay at its edges and
+    // its chain pins at the height they had (pinTop follows a top edge that moved up).
+    for (const Capsule& c : capsules) {
+      Node& cn = out.nodes[c.node];
+      float x0 = cn.x, y0 = cn.y, x1 = cn.x + cn.w, y1 = cn.y + cn.h;
+      for (const uint32_t k : cn.members) {
+        const Node& mn = out.nodes[k];
+        x0 = std::min(x0, mn.x - m::kCapsulePad), x1 = std::max(x1, mn.x + mn.w + m::kCapsulePad);
+        y0 = std::min(y0, mn.y - m::kCapsulePad - m::kCapsuleTitle), y1 = std::max(y1, mn.y + mn.h + m::kCapsulePad);
+      }
+      cn.pinTop += cn.y - y0;
+      cn.x = x0, cn.y = y0, cn.w = x1 - x0, cn.h = y1 - y0;
+      if (cn.groupIn != kNone) out.nodes[cn.groupIn].x = cn.x + m::kCapsulePad;
+      if (cn.groupOut != kNone) out.nodes[cn.groupOut].x = cn.x + cn.w - m::kCapsulePad - out.nodes[cn.groupOut].w;
     }
     // Bands reach their nodes (a nudged block stays inside its band's strip horizontally).
     for (Band& b : out.bands) {
@@ -807,6 +998,9 @@ struct Builder {
         case EdgeKind::Modulation: {
           const Band& tb = out.bands[b.band];
           const float o = static_cast<float>(off);
+          // TX.groups: inside an opened group the gutter is the capsule's title strip (and under its contents).
+          const Node* cap = b.capsule != kNone ? &out.nodes[b.capsule] : nullptr;
+          const float gutterTop = cap != nullptr ? cap->y : tb.y;
           // T5.x-one-circuit: between opened devices (their atoms fill their frames) the wire takes the gutter above them,
           // the band's title strip, as the Track-level view routed its modulation.
           // TMM.10-fix2: a note output's wire always takes the title strip (straight across it would run under the
@@ -819,7 +1013,7 @@ struct Builder {
           const EntrySide side = tp != nullptr && tp->anchored ? entrySide(b, *tp) : EntrySide::Left;
           if (side != EntrySide::Left) {
             const float below = b.free ? b.y + b.h : std::max(b.y + b.h, rowBottom[b.band]);
-            const float gy = side == EntrySide::Top ? tb.y + 4.0f + o : below + 4.0f + std::round(o * 0.5f);
+            const float gy = side == EntrySide::Top ? gutterTop + 4.0f + o : below + 4.0f + std::round(o * 0.5f);
             const float ux = s.x + (fromNotes ? 22.0f : 10.0f) + o;
             pts.push_back({ux, s.y});
             pts.push_back({ux, gy});
@@ -829,7 +1023,7 @@ struct Builder {
             pts.push_back({mx, s.y});
             pts.push_back({mx, t.y});
           } else {
-            const float gy = tb.y + 4.0f + o;  // the target band's title strip (above its nodes)
+            const float gy = gutterTop + 4.0f + o;  // the target band's title strip (above its nodes); a capsule's
             const float ux = s.x + (fromNotes ? 22.0f : 10.0f) + o;
             pts.push_back({ux, s.y});
             pts.push_back({ux, gy});
@@ -854,6 +1048,58 @@ struct Builder {
     graphEdges();
     layout();
     route();
+    if (opt.scope.valid()) prune();
+  }
+
+  // TX.groups (LayoutOptions::scope): only the scope group's capsule, its contents and the wires among them; one band
+  // (the group's track) with no source, mixer or strip of its own.
+  void prune() {
+    uint32_t cap = kNone;
+    for (uint32_t i = 0; i < out.nodes.size(); ++i)
+      if (out.nodes[i].group && out.nodes[i].groupOpen && out.nodes[i].device == opt.scope) cap = i;
+    ProjectPatch keep;
+    keep.scoped = true;
+    if (cap == kNone) {
+      out = std::move(keep);
+      return;
+    }
+    std::vector<uint32_t> map(out.nodes.size(), kNone);
+    std::vector<uint32_t> order{cap};
+    const Node& c = out.nodes[cap];
+    if (c.groupIn != kNone) order.push_back(c.groupIn);
+    order.insert(order.end(), c.members.begin(), c.members.end());
+    if (c.groupOut != kNone) order.push_back(c.groupOut);
+    std::sort(order.begin(), order.end());  // model order (the capsule first: its contents are hit before it)
+    Band band = out.bands[c.band];
+    band.source = band.mixer = band.output = kNone;
+    band.devices.clear();
+    band.parent = -1;
+    band.lastMember = kNone;
+    band.depth = 0;
+    for (const uint32_t i : order) {
+      map[i] = static_cast<uint32_t>(keep.nodes.size());
+      keep.nodes.push_back(out.nodes[i]);
+      keep.nodes.back().band = 0;
+    }
+    for (Node& n : keep.nodes) {
+      if (n.capsule != kNone) n.capsule = map[n.capsule];
+      if (n.groupIn != kNone) n.groupIn = map[n.groupIn];
+      if (n.groupOut != kNone) n.groupOut = map[n.groupOut];
+      for (uint32_t& k : n.members) k = map[k];
+    }
+    band.devices.push_back(map[cap]);
+    band.x0 = c.x, band.x1 = c.x + c.w, band.y = c.y, band.h = c.h;
+    keep.bands.push_back(std::move(band));
+    for (const Edge& e : out.edges) {
+      if (map[e.from] == kNone || map[e.to] == kNone) continue;
+      Edge x = e;
+      x.from = map[e.from];
+      x.to = map[e.to];
+      x.graphWire = kNone;
+      keep.edges.push_back(std::move(x));
+    }
+    keep.x0 = c.x, keep.y0 = c.y - 12.0f, keep.x1 = c.x + c.w, keep.y1 = c.y + c.h;
+    out = std::move(keep);
   }
 };
 
@@ -887,6 +1133,10 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
   for (uint32_t t = 0; t < g.tracks.size(); ++t) {
     const graph::Patch& tp = *g.tracks[t].patch;
     const Band& b = pp.bands[bandOfGraph[t]];
+    // TX.groups: an opened group's members are blocks of the band too (inside its capsule).
+    std::vector<uint32_t> blocks = b.devices;
+    for (const uint32_t d : b.devices)
+      if (pp.nodes[d].group && pp.nodes[d].groupOpen) blocks.insert(blocks.end(), pp.nodes[d].members.begin(), pp.nodes[d].members.end());
     uint32_t calls = 0;
     for (graph::NodeIndex n = 0; n < tp.nodeCount(); ++n) {
       const std::string& name = tp.nodeName(n);
@@ -896,9 +1146,10 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       ++calls;
       const doc::DeviceId id{static_cast<uint32_t>(std::stoul(name.substr(1)))};
       bool found = false;
-      for (const uint32_t d : b.devices) {
+      for (const uint32_t d : blocks) {
         const Node& nd = pp.nodes[d];
-        if (nd.rack && std::find(nd.inner.begin(), nd.inner.end(), id) != nd.inner.end()) {  // T4.8: inside a rack
+        // T4.8: inside a rack; TX.groups: inside a closed group
+        if (!nd.inner.empty() && std::find(nd.inner.begin(), nd.inner.end(), id) != nd.inner.end()) {
           if (!nd.lowered) return "device " + name + " of " + b.name + ": inside a rack drawn as not lowered";
           if (tp.node(n).id.value != doc::nodeIdFor(doc::NodeRole::Device, id.value, 0))
             return "device " + name + " of " + b.name + ": its call is not the device's node";
@@ -913,7 +1164,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       if (!found) return "device call " + name + " of " + b.name + " has no block";
     }
     uint32_t lowered = 0;
-    for (const uint32_t d : b.devices) lowered += pp.nodes[d].lowered && !pp.nodes[d].rack ? 1u : 0u;
+    for (const uint32_t d : blocks) lowered += pp.nodes[d].lowered && !pp.nodes[d].rack ? 1u : 0u;
     if (lowered != calls) return "band " + b.name + ": " + std::to_string(lowered) + " lowered blocks, " + std::to_string(calls) + " calls";
   }
   for (const Band& b : pp.bands)
@@ -967,7 +1218,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       const graph::Patch& tp = *g.tracks[band.graphTrack].patch;
       std::string pin = b.inputs[e.toPort].name;
       graph::NodeId callId = b.call;
-      if (b.rack) {  // T4.8: "<param>@<device>" is that device's call inside the rack (no "@": the rack's own macro)
+      if (!b.inner.empty()) {  // T4.8: "<param>@<device>" is that device's call inside the rack (no "@": the rack's own macro)
         const size_t at = pin.rfind('@');
         if (at == std::string::npos) continue;  // a macro: the rack's own param, read by its mappings
         callId = graph::NodeId{doc::nodeIdFor(doc::NodeRole::Device, static_cast<uint32_t>(std::stoul(pin.substr(at + 1))), 0)};
@@ -982,6 +1233,20 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
         if (const auto units = tp.findInput(*call, pin + "_add")) in = units;
       if (tp.adjacency().driver[tp.flatInput(*call, *in)] == graph::kNone)
         return "a modulation wire into a param pin the track patch leaves unconnected";
+    }
+  }
+  // TX.groups: an opened group's capsule holds its terminals and members.
+  for (const Node& c : pp.nodes) {
+    if (!c.group || !c.groupOpen) continue;
+    std::vector<uint32_t> kids = c.members;
+    kids.push_back(c.groupIn);
+    kids.push_back(c.groupOut);
+    for (const uint32_t k : kids) {
+      if (k == kNone || k >= pp.nodes.size()) return "group " + c.title + ": a terminal or member is missing";
+      const Node& n = pp.nodes[k];
+      if (n.capsule == kNone || &pp.nodes[n.capsule] != &c) return "group " + c.title + ": " + n.title + " is not its member";
+      if (n.x < c.x || n.y < c.y || n.x + n.w > c.x + c.w + 0.01f || n.y + n.h > c.y + c.h + 0.01f)
+        return "group " + c.title + ": " + n.title + " outside its capsule";
     }
   }
   // Groups contain their members.

@@ -1721,14 +1721,21 @@ Res apply_(const Snapshot& s, const AddDevice& c, ChangeSet& cs) {
 Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
   Result<DevLoc> loc = locateDevice(*s, c.device);
   if (!loc) return std::move(loc).error();
-  const std::vector<DeviceId> gone = deviceIdsIn(*loc->device);  // T4.8: a rack with everything inside it
+  std::vector<DeviceId> gone = deviceIdsIn(*loc->device);  // T4.8: a rack with everything inside it
   const DeviceLoc src = findDevice(*s, c.device);
+  // TX.groups: a group goes with its members (model.h "Groups").
+  std::vector<DeviceId> members;
+  if (isGroupDevice(*loc->device) && src.chain == nullptr)
+    for (const Device* m : groupMembers(loc->track->devices, c.device)) members.push_back(m->id);
+  gone.insert(gone.end(), members.begin(), members.end());
+  std::sort(gone.begin(), gone.end());
   Result<ListAt> from = locateList(*s, loc->track->id, src.chain != nullptr ? src.chain->id : ChainId{});
   if (!from) return std::move(from).error();
   std::vector<MappingId> pruned;
   std::vector<DeviceId> rekinded;
   Res r = editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) {
     (void)takeFromTree(t.devices, c.device);
+    for (const DeviceId m : members) (void)takeFromTree(t.devices, m);
     if (std::vector<DevicePtr>* l = listIn(t, *from))  // TMM.10-fix1: the next device may now take the note source
       normaliseMetaKinds(*l, instrumentsGo(from->kind), &rekinded);
     pruneMappings(t.devices, pruned);  // outer racks' mappings onto what was removed
@@ -1774,9 +1781,15 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
     if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
     return r;
   }
+  // TX.groups: a group moves with its members (appended to the destination list in their order; model.h "Groups").
+  std::vector<DevicePtr> members;
+  if (isGroupDevice(*dev) && src.chain == nullptr)
+    for (const DevicePtr& m : src.list())
+      if (m->group == dev->id) members.push_back(m);
   {  // the destination list with the device in it must hold
     std::vector<DevicePtr> dst = *to->list;
     dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst.size())), dev);
+    dst.insert(dst.end(), members.begin(), members.end());
     normaliseMetaKinds(dst, instrumentsGo(to->kind));
     PQ_DOC_TRY(checkList(to->kind, dst));
   }
@@ -1790,9 +1803,12 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
   // because only device lists change. The extra Track copies cost a few hundred bytes on the UI thread.
   // The source first (removing may path-copy the racks on the way to the destination too, when both are in one track).
   (void)takeFromTree(mutableTrack(*np, from->path).devices, c.device);
+  for (const DevicePtr& m : members) (void)takeFromTree(mutableTrack(*np, from->path).devices, m->id);
   std::vector<DevicePtr>* dst = listIn(mutableTrack(*np, to->path), *to);
   if (dst == nullptr) return invalid("the destination chain is inside the moved device");
   dst->insert(dst->begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst->size())), dev);
+  dst->insert(dst->end(), members.begin(), members.end());
+  for (const DevicePtr& m : members) cs.devices.push_back(m->id);
   std::vector<DeviceId> rekinded;  // TMM.10-fix1: both lists' meta devices take the kind their position says
   normaliseMetaKinds(*dst, instrumentsGo(to->kind), &rekinded);
   if (std::vector<DevicePtr>* left = listIn(mutableTrack(*np, from->path), *fromList))
@@ -2155,6 +2171,29 @@ Res apply_(const Snapshot& s, const SetDeviceFree& c, ChangeSet& cs) {  // TX.pa
   return r;
 }
 
+Res apply_(const Snapshot& s, const SetDeviceGroup& c, ChangeSet& cs) {  // TX.groups
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  if (loc.device->group == c.group) return s;
+  if (loc.chain != nullptr) return invalid("a group member sits in a track's circuit, not in a rack chain");
+  Result<ListAt> at = locateList(*s, loc.track->id, ChainId{});
+  if (!at) return std::move(at).error();
+  std::vector<DevicePtr> list = *at->list;
+  for (DevicePtr& d : list)
+    if (d->id == c.device) {
+      auto x = std::make_shared<Device>(*d);
+      x->group = c.group;
+      d = std::move(x);
+    }
+  PQ_DOC_TRY(checkList(at->kind, list));
+  Res r = editTrack(s, at->path, cs, kChangeMeta, [&](Track& t) {
+    t.devices = std::move(list);
+    return ok();
+  });
+  if (r) cs.devices.push_back(c.device);
+  return r;
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 // np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
@@ -2431,7 +2470,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch", "Rename Device", "Chain Input", "Free Device",
+    "Edit Device Patch", "Rename Device", "Chain Input", "Free Device", "Device Group",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",

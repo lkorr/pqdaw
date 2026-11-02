@@ -21,6 +21,9 @@
 
 namespace pq::views {
 
+namespace project_patch {
+class ProjectPatchView;
+}
 
 namespace device_chain {
 
@@ -120,6 +123,8 @@ struct DeviceChainView::Impl {
   std::vector<AutoTarget> autoTargets;
   bool chainAuto = false;  // a rack chain's volume / pan lane on the shown track
   uint32_t autoTimer = 0;
+  // TX.groups: a group panel's width (logical px) after its right edge was dragged, by group id (this session).
+  std::map<uint32_t, float> groupWidths;
 };
 
 namespace device_chain {
@@ -187,6 +192,12 @@ protected:
 // A frame for `d` (a rack or a device).
 std::unique_ptr<FrameBase> makeFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
 std::unique_ptr<FrameBase> makeRackFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
+// TX.groups (group_frame.cpp): a group's frame — its panel is the circuit of its contents (an embedded, scoped project
+// patch view); groupPatchView: that view, or null for another frame.
+std::unique_ptr<FrameBase> makeGroupFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
+project_patch::ProjectPatchView* groupPatchView(FrameBase& f);
+// TX.groups: the devices the Device view shows for a list: every device but a group's members (the group shows them).
+std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list);
 // Devices of a rack's chain are framed like the track's: by makeFrame.
 // T4.8: the map-mode overlay (rack_frame.cpp): over the chain while a rack's Map is on.
 std::unique_ptr<ui::Widget> makeMapOverlay(DeviceChainView::Impl& impl);

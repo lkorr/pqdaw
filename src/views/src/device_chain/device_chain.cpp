@@ -752,8 +752,20 @@ void FrameBase::onInteractionCancelled() {
   if (impl_.dragging == id_ && impl_.drag.active) impl_.endDrag(false);
 }
 
+std::vector<doc::DevicePtr> device_chain::shownDevices(const std::vector<doc::DevicePtr>& list) {
+  std::vector<doc::DevicePtr> out;
+  out.reserve(list.size());
+  for (const doc::DevicePtr& d : list) {
+    if (d->group.valid() && std::any_of(list.begin(), list.end(), [&](const doc::DevicePtr& g) { return g->id == d->group; }))
+      continue;  // TX.groups: inside its group's panel
+    out.push_back(d);
+  }
+  return out;
+}
+
 std::unique_ptr<FrameBase> device_chain::makeFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d) {
   if (d.rack) return makeRackFrame(impl, ctx, d);
+  if (doc::isGroupDevice(d)) return makeGroupFrame(impl, ctx, d);  // TX.groups
   return std::make_unique<DeviceFrame>(impl, ctx, d, impl.templateFor(d),
                                        DeviceChainView::Impl::templateKey(ctx.deviceLibrary(), d));
 }
@@ -816,8 +828,8 @@ void DeviceChainView::sync(bool force) {
   Impl& m = *impl_;
   const doc::TrackId want = wantedTrack();
   const doc::Track* t = want.valid() ? doc::findTrackPtr(*ctx_.doc(), want) : nullptr;
-  static const std::vector<doc::DevicePtr> kNone;
-  const std::vector<doc::DevicePtr>& chain = t != nullptr ? t->devices : kNone;
+  // TX.groups: a group's members are inside its panel, not frames of the chain.
+  const std::vector<doc::DevicePtr> chain = t != nullptr ? shownDevices(t->devices) : std::vector<doc::DevicePtr>{};
   bool sameIds = !force && want == track_ && chain.size() == m.shown.size();
   for (size_t i = 0; sameIds && i < chain.size(); ++i)
     sameIds = chain[i]->id == m.shown[i]->id && chain[i]->isRack() == m.shown[i]->isRack() && m.frames[i]->keeps(*chain[i]);
@@ -870,11 +882,12 @@ void DeviceChainView::onStore(const doc::StoreEvent& e) {
   if (deviceParamsOnly && wantedTrack() == track_) {
     // Only those controls repaint (T4.6's acceptance: a param change damages only its control).
     const doc::Track* t = m.track();
-    if (t == nullptr || t->devices.size() != m.shown.size()) return sync(false);
-    for (size_t i = 0; i < t->devices.size(); ++i) {
-      if (t->devices[i] == m.shown[i]) continue;
-      m.frames[i]->paramsChanged(*t->devices[i], c.params);
-      m.shown[i] = t->devices[i];
+    const std::vector<doc::DevicePtr> now = t != nullptr ? shownDevices(t->devices) : std::vector<doc::DevicePtr>{};
+    if (t == nullptr || now.size() != m.shown.size()) return sync(false);
+    for (size_t i = 0; i < now.size(); ++i) {
+      if (now[i] == m.shown[i]) continue;
+      m.frames[i]->paramsChanged(*now[i], c.params);
+      m.shown[i] = now[i];
     }
     m.shownFrom = e.after;
     // A modulated knob's ring follows it; T4.8: a macro moves its mapped knobs' rings.
@@ -1393,9 +1406,24 @@ std::vector<DeviceChainView::ParamControl> DeviceChainView::paramControls() cons
   return out;
 }
 
+// TX.groups: a group member has no frame of its own: its cables end on its group's panel (the title bar's left end for
+// an output, its right end for a param), not docked.
+std::optional<ui::Vec2> DeviceChainView::groupPoint(doc::DeviceId device, bool output, bool* docked) const {
+  const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device);
+  if (l.device == nullptr || !l.device->group.valid()) return std::nullopt;
+  const device_chain::FrameBase* f = impl_->frameOf(l.device->group);
+  if (f == nullptr) return std::nullopt;
+  const ui::IRect r = f->rect();
+  const ui::Vec2 p{output ? static_cast<float>(r.x) + 8.0f : static_cast<float>(r.right()) - 6.0f, static_cast<float>(r.y) + 10.0f};
+  bool inside = false;
+  const ui::Vec2 q = clampInto(p, chainViewport(), inside);
+  if (docked != nullptr) *docked = false;
+  return q;
+}
+
 std::optional<ui::Vec2> DeviceChainView::jackPoint(doc::DeviceId device, std::string_view port, bool* docked) const {
   const devices::DevicePanel* panel = panelOf(device);
-  if (panel == nullptr) return std::nullopt;
+  if (panel == nullptr) return groupPoint(device, true, docked);
   ui::Vec2 p{static_cast<float>(panel->rect().x) + 8.0f, static_cast<float>(panel->rect().y)};
   for (const devices::DevicePanel::Jack& j : panel->jacks())
     if (j.name == port) p = {static_cast<float>(j.rect.x) + 0.5f * static_cast<float>(j.rect.w),
@@ -1408,7 +1436,7 @@ std::optional<ui::Vec2> DeviceChainView::jackPoint(doc::DeviceId device, std::st
 
 std::optional<ui::Vec2> DeviceChainView::paramPoint(doc::DeviceId device, std::string_view param, bool* docked) const {
   const devices::DevicePanel* panel = panelOf(device);
-  if (panel == nullptr) return std::nullopt;
+  if (panel == nullptr) return groupPoint(device, false, docked);
   const std::optional<ui::IRect> cr = panel->controlRect(param);  // TMM.10: a face's control too
   bool ok = cr.has_value() && shownNow(*panel);
   ui::Vec2 p;

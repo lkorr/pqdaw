@@ -260,6 +260,48 @@ EditResult toggleDevicesActive(const Project& p, std::span<const DeviceId> devic
   return setDevicesActive(p, devices, !anyActive);
 }
 
+namespace {
+// TX.groups (model.h "Groups"): a copy of device `src` for a paste or a duplicate. A copied member is no member (its
+// group is not copied with it): a free device. A copied group brings copies of its members (from `p`, appended to the
+// destination list after it) and of the wires among them and its terminals — the group as it is, one step.
+DevicePtr copyForPaste(const Project& p, IdSource& ids, const Device& src, TrackId track, ChainId chain, Edit& e,
+                       std::vector<Command>& after) {
+  DevicePtr d = cloneDevice(src, ids);
+  if (d->group.valid()) {
+    auto x = std::make_shared<Device>(*d);
+    x->group = {};
+    d = std::move(x);
+  }
+  if (!isGroupDevice(src) || chain.valid()) return d;
+  const DeviceLoc g = findDevice(p, src.id);
+  if (g.track == nullptr) return d;  // the group is gone: an empty one
+  std::vector<std::pair<DeviceId, DeviceId>> remap{{src.id, d->id}};
+  for (const Device* m : groupMembers(g.track->devices, src.id)) {
+    auto c = std::make_shared<Device>(*cloneDevice(*m, ids));
+    c->group = d->id;
+    remap.emplace_back(m->id, c->id);
+    e.devices.push_back(c->id);
+    after.push_back(AddDevice{track, std::move(c), kAppend, {}});
+  }
+  auto mapped = [&](DeviceId id) {
+    for (const auto& [a, b] : remap)
+      if (a == id) return b;
+    return DeviceId{};
+  };
+  for (const Wire& w : wiresOf(p)) {
+    if (w.fromNoteSource()) continue;
+    const DeviceId a = mapped(w.from), b = mapped(w.to);
+    if (!a.valid() || !b.valid()) continue;
+    Wire c = w;
+    c.id = ids.wire();
+    c.from = a;
+    c.to = b;
+    after.push_back(AddWire{c});
+  }
+  return d;
+}
+}  // namespace
+
 EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::span<const DevicePtr> devices,
                         uint32_t index, ChainId chain) {
   Result<ListView> l = listOf(p, track, chain);
@@ -271,9 +313,10 @@ EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::spa
   uint32_t at = std::min<uint32_t>(index, static_cast<uint32_t>(list.size()));
   if (hasInstrument && at == 0) at = 1;
   bool instrumentPasted = false;
+  std::vector<Command> after;  // TX.groups: a pasted group's members and wires, after the devices
   for (const DevicePtr& src : devices) {
     if (!src) continue;
-    DevicePtr d = cloneDevice(*src, ids);
+    DevicePtr d = copyForPaste(p, ids, *src, l->track, chain, e, after);
     e.devices.push_back(d->id);
     if (d->kind == DeviceKind::Instrument) {
       if (!l->instrumentAllowed) return invalid(chain.valid() ? "an Audio Effect Rack's chains hold audio effects only"
@@ -287,6 +330,7 @@ EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::spa
     }
     batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at++, chain});
   }
+  for (Command& c : after) batchOf(e).commands.push_back(std::move(c));
   return e;
 }
 
@@ -316,11 +360,13 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
     size_t j = i;
     while (j < picks.size() && picks[j].list == picks[i].list) ++j;
     uint32_t at = picks[j - 1].index + 1;
+    std::vector<Command> after;  // TX.groups: a duplicated group's members and wires
     for (size_t k = i; k < j; ++k) {
-      DevicePtr d = cloneDevice(*(*picks[k].list)[picks[k].index], ids);
+      DevicePtr d = copyForPaste(p, ids, *(*picks[k].list)[picks[k].index], picks[i].track, picks[i].chain, e, after);
       e.devices.push_back(d->id);
       batchOf(e).commands.push_back(AddDevice{picks[i].track, std::move(d), at++, picks[i].chain});
     }
+    for (Command& c : after) batchOf(e).commands.push_back(std::move(c));
     i = j;
   }
   return e;
