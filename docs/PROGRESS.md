@@ -1226,3 +1226,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: ship: tap hidden 1.14 ns/block, watched 55 ns; transfer 57 µs/hop (≈0.8 % core while shown); 8 displays 0.98 ms/frame; engine block within noise.
 - CPU-efficiency check: taps gated by one relaxed load (no recompile on show); feed computes only wanted analyses; UI idles when settled.
 - Notes/blockers: nested Spectrum calls have no tap; a project-patch EQ panel picks up a late feed only at its next re-record; display options not saved; note readout uses 12-EDO names, not the track tuning; PQ Meter extras not ported (L/R, M/S, bar styles, slope guide…). Q193.
+
+## 2026-11-02 · TX.resize 👁 · task/TX.resize (merged; Q194)
+- Did: S + drag over a project patch block (meta face, panel, plain block; not opened) scales it uniformly 0.5×–3× (top-left anchored; detent at 1×, Shift 25 % steps, Esc restores, S + double-click / Reset Size → 1×). doc::PatchNudge::scale (view state like nudges: saved as optional "scale", not undoable). ui::UiTree::keyHeld (held non-modifier keys) so S works without clicking the canvas. Layout makes room (neighbours move, band spine follows the scaled main pin, routes follow); scaled faces/panels hit-tested and tiled at their scale. Scene + golden project-patch-resize.
+- Verified: build.ps1 -Affected (check, default + slow; app/audio/document/library/media/playback/pqmeter_diff/timeline/ui/views + pqdaw): 0 warnings, 37/38; pq_tests_library (file-watcher idle wakeup under load) passed alone 5/5. Orchestrator: looked at project-patch-resize (note: its lane windows show no "Notes" title — check in TMM.13).
+- Perf: 64 tracks / 158 panels: S-drag step median 1.4–2.5 ms (re-layout 1.1–2.2 ms); existing frames unchanged. Indicative.
+- CPU-efficiency check: unscaled layouts cost nothing new; tiles rebuilt only once the scale settles.
+- Notes/blockers: plain-block labels keep UI font size; circuit-editor atoms, mixers, lane windows not resizable; a step re-lays out the whole project. Q194.
