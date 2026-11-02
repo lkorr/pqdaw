@@ -734,7 +734,9 @@ public:
     ui::DrawList& dl = p.drawList();
     const bool labels = kLabelPx * scale >= kLabelMinDevicePx * env.uiScale;
     dl.pushClip(r);
-    paintPicture(dl, r);
+    // TMM.13-fix1 L17: tex_ is a texture of pool_'s renderer; a painter without that pool (none, or another renderer's)
+    // gets the ground only, never another renderer's texture id.
+    paintPicture(dl, r, pool != nullptr && pool->attached() && pool_.get() == pool);
     dl.popClip();
     paintOverlays(p, labels && !sheet_);
     if (labels) {
@@ -1257,10 +1259,10 @@ private:
   }
 
   // ---- painting ----
-  void paintPicture(ui::DrawList& dl, const Rect& r) {
+  void paintPicture(ui::DrawList& dl, const Rect& r, bool texHere) {
     if (!pic_.sized() || !state_.running) return;
     dl.addRectFilled(r, ui::lutAt(ui::colormapLut(static_cast<ui::Colormap>(std::clamp(opts_.choice(oMap), 0, 9))), 0.0f));  // the ground: silence
-    if (tex_ == 0) return;
+    if (tex_ == 0 || !texHere) return;
     const uint32_t texCols = pic_.texCols();
     const float tw = static_cast<float>(texCols);
     if (opts_.loop()) {

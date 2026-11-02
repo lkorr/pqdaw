@@ -19,6 +19,7 @@
 #include <limits>
 #include <numbers>
 
+#include "pq/core/tap_ring.h"
 #include "pq/dsp/atoms.h"
 #include "pq/dsp/kernel.h"
 
@@ -1211,7 +1212,10 @@ void VoiceEngine::process(ProcessContext& ctx, ProcessContext* fadeCtx) noexcept
     fadeCtx->frames = frames;
     fadeCtx->events = ctx.events;
     fadeCtx->voices = &fade->table;
-    fade->image->process(*fadeCtx);
+    {
+      TapWriteMute mute;  // TMM.13-fix1 L3: only the incoming image writes analysis taps during the fade
+      fade->image->process(*fadeCtx);
+    }
     mixOutputs(*fade, frames);
   }
   std::fill(startMask_.begin(), startMask_.end(), 0u);  // TX.smooth-fix1: the images ran their ramps for them

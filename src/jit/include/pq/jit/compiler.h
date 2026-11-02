@@ -124,7 +124,8 @@ public:
   Compiler& operator=(const Compiler&) = delete;
 
   // Not RT-safe. Errors: whatever buildInterpreted() rejects (invalid options, malformed schedules, unknown engine
-  // sources), and LLVM failures (reported, never thrown).
+  // sources), and LLVM failures (reported, never thrown). TMM.13-fix1 L10: LLVM running out of memory fails the compile
+  // (ErrorCode::Overflow) instead of ending the process, and every later compile of this compiler fails at once.
   Result<std::unique_ptr<engine::ProgramImage>> compile(const graph::Schedule& schedule, const CompileOptions& options = {},
                                                         CompileStats* stats = nullptr);
 
@@ -142,6 +143,8 @@ public:
 
 private:
   explicit Compiler(std::shared_ptr<Session> s) noexcept;
+  Result<std::unique_ptr<engine::ProgramImage>> compileGuarded(const graph::Schedule& schedule, const CompileOptions& options,
+                                                               CompileStats* stats);
   // compile() without quickFirst. cacheOnly: ErrorCode::NotFound instead of an LLVM compile on a cache miss; store:
   // false keeps a compiled image off the disk cache.
   Result<std::unique_ptr<engine::ProgramImage>> compileImpl(const graph::Schedule& schedule, const CompileOptions& options,
@@ -149,5 +152,9 @@ private:
   bool pairsPlanned(const graph::Schedule& schedule, const CompileOptions& options) const;
   std::shared_ptr<Session> session_;
 };
+
+// Tests (TMM.13-fix1 L10): what LLVM does when an allocation fails (llvm::report_bad_alloc_error); call it inside a
+// compile, e.g. from CompilerConfig::beforeCompile.
+[[noreturn]] void simulateLlvmOutOfMemory();
 
 }  // namespace pq::jit

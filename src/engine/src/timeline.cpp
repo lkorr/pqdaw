@@ -113,6 +113,8 @@ Timeline::Timeline(const TimelineConfig& config)
     if (auto r = cfg_.sampleReclaimer->registerReader()) {
       sampleReclaimer_ = cfg_.sampleReclaimer;
       sampleReader_ = *r;
+    } else {
+      sampleReaderFailed_ = true;  // TMM.13-fix1 L4: Engine::create refuses this timeline
     }
   }
 }

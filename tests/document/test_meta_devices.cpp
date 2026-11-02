@@ -677,3 +677,44 @@ TEST_CASE("meta devices: meta → meta → stock chains (two Wavetables in a row
     CHECK_MESSAGE(typed.ok(), (typed.ok() ? std::string() : typed.error().message));
   }
 }
+
+// TMM.13-fix1 L6 / L8: the reader kept state nothing used — nested paths on a chain meta device (its expansion calls
+// no nested modules) — and saved it back forever; and the device's own state (path "") printed as `meta[0]` in errors.
+TEST_CASE("meta devices: a chain meta device holds only its own state; errors there name meta[\"\"] (TMM.13-fix1 L6, L8)") {
+  MetaChain c;
+  Result<std::string> text = serializeProject(c.doc(), c.store.view());
+  REQUIRE(text.ok());
+  nlohmann::json j = nlohmann::json::parse(*text);
+  nlohmann::json* wt = nullptr;
+  for (nlohmann::json& d : j["tracks"][0]["devices"])
+    if (d["id"] == c.wt.value) wt = &d;
+  REQUIRE(wt != nullptr);
+  REQUIRE(wt->contains("meta"));
+  REQUIRE((*wt)["meta"].contains(""));
+  {  // a nested path beside its own state: refused
+    nlohmann::json k = j;
+    for (nlohmann::json& d : k["tracks"][0]["devices"])
+      if (d["id"] == c.wt.value) d["meta"]["osc"] = d["meta"][""];
+    Result<LoadedProject> r = parseProject(k.dump(2));
+    REQUIRE_FALSE(r.ok());
+    MESSAGE(r.error().message);
+    CHECK(r.error().message.find("only its own state") != std::string::npos);
+  }
+  {  // its own state with params of its own (they are the device's): refused at meta[""]
+    nlohmann::json k = j;
+    for (nlohmann::json& d : k["tracks"][0]["devices"])
+      if (d["id"] == c.wt.value) d["meta"][""]["params"] = nlohmann::json::object({{"position", 0.5}});
+    Result<LoadedProject> r = parseProject(k.dump(2));
+    REQUIRE_FALSE(r.ok());
+    MESSAGE(r.error().message);
+    CHECK(r.error().message.find("meta[\"\"]") != std::string::npos);
+    CHECK(r.error().message.find("meta[0]") == std::string::npos);
+  }
+  // The store refuses the same (a command building such a device).
+  auto d = std::make_shared<Device>(c.dev(c.wt));
+  MetaMap m = *d->meta;
+  m.push_back(MetaEntry{"osc", m.front().instance});
+  d->meta = std::make_shared<const MetaMap>(std::move(m));
+  d->id = c.store.ids().device();
+  CHECK_FALSE(c.store.dispatch(AddDevice{c.track, d, kAppend}).ok());
+}

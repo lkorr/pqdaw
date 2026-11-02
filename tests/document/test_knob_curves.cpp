@@ -230,30 +230,32 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
   d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "gain3"));  // a dB gain: the laws differ
   d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", util, "balance"));  // linear: the same
   d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "gain2", 0.4));
+  // Chain links as TX.groups-fix1 wrote them (schema 15): the utility grouped (In → its input x, its out → Out).
+  // (TMM.13-fix1 L7: this test used to append a hand-made chain link from the LFO into the utility, which belongs to no
+  // group: the reader now refuses such a link, as the review asked, so the links come from a real group.)
+  const DeviceId series[1] = {util};
+  d.run(ops::groupInCircuit(d.store.current(), d.store.ids(), library(), series));
   Result<std::string> text = serializeProject(d.doc());
   REQUIRE(text.ok());
   nlohmann::json j = nlohmann::json::parse(*text);
   j["schemaVersion"] = 15;
-  // A chain link as TX.groups-fix1 wrote it (schema 15): into an input.
-  nlohmann::json link = j["wires"][0];
-  link["id"] = 9000;
-  link["param"] = "x";
-  link["to"] = util.value;
-  link["chain"] = true;
-  j["wires"].push_back(link);
   Result<LoadedProject> old = parseProject(j.dump(2));
   REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));
   CHECK(old->fileSchemaVersion == 15);
-  int units = 0;
+  int units = 0, links = 0;
   for (const Wire& w : wiresOf(*old->project)) {
-    if (w.chain) CHECK(w.law == WireLaw::Add);
-    else if (w.param == "gain2") CHECK(w.law == WireLaw::Travel);
-    else {
+    if (w.chain) {
+      CHECK(w.law == WireLaw::Add);
+      ++links;
+    } else if (w.param == "gain2") {
+      CHECK(w.law == WireLaw::Travel);
+    } else {
       CHECK(w.law == WireLaw::Units);
       ++units;
     }
   }
   CHECK(units == 3);
+  CHECK(links == 2);
   // Re-saved, a Units wire says so; it reads back the same.
   Result<std::string> again = serializeProject(*old->project);
   REQUIRE(again.ok());
@@ -286,4 +288,64 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
   for (size_t i = 0; i < lc.patches.size(); ++i) differ = differ || lc.patches[i]->hash != le.patches[i]->hash;
   CHECK(differ);
   CHECK(tapOf(le, "freq1")->units);
+}
+
+// TMM.13-fix1 L7: group invariants the reader and the store did not enforce (the review's fuzz cases 328, 357, 366,
+// 385, 442 – 444): knob curves on a group, chain links between devices of no one group or across tracks, and a free
+// group with In / Out chain links (it sounded different from the series it stood for).
+TEST_CASE("groups: a group has no knob curves; chain links join one in-series group's terminals and members") {
+  Doc d;
+  const DeviceId util = d.add("utility");
+  const DeviceId series[1] = {util};
+  auto g = ops::groupInCircuit(d.store.current(), d.store.ids(), library(), series);
+  REQUIRE_MESSAGE(g.ok(), (g.ok() ? std::string() : g.error().message));
+  REQUIRE(d.store.dispatch(g->command).ok());
+  DeviceId group;
+  for (const DevicePtr& x : findTrackPtr(d.doc(), d.keys)->devices)
+    if (isGroupDevice(*x)) group = x->id;
+  REQUIRE(group.valid());
+  // Curves: refused by the store (there is no knob) and by the reader.
+  CHECK_FALSE(d.store.dispatch(SetParamCurve{group, "gain", KnobCurve::Linear}).ok());
+  // A chain link the user never draws, between devices of no group: refused.
+  Wire stray;
+  stray.id = d.store.ids().wire();
+  stray.from = d.lfo;
+  stray.port = "lfo";
+  stray.to = util;
+  stray.param = "width";
+  stray.chain = true;
+  CHECK_FALSE(d.store.dispatch(AddWire{stray}).ok());
+  stray.chain = false;  // as an ordinary wire it is fine
+  CHECK(d.store.dispatch(AddWire{stray}).ok());
+  // In the file.
+  Result<std::string> text = serializeProject(d.doc());
+  REQUIRE(text.ok());
+  REQUIRE(parseProject(*text).ok());
+  nlohmann::json j = nlohmann::json::parse(*text);
+  {
+    nlohmann::json k = j;
+    for (nlohmann::json& w : k["wires"])
+      if (w["id"] == stray.id.value) w["chain"] = true;
+    const Result<LoadedProject> r = parseProject(k.dump(2));
+    REQUIRE_FALSE(r.ok());
+    MESSAGE(r.error().message);
+    CHECK(r.error().message.find(".chain") != std::string::npos);
+  }
+  {  // the group made free while its In / Out keep their chain links
+    nlohmann::json k = j;
+    for (nlohmann::json& x : k["tracks"][0]["devices"])
+      if (x["id"] == group.value) x["free"] = true;
+    const Result<LoadedProject> r = parseProject(k.dump(2));
+    REQUIRE_FALSE(r.ok());
+    MESSAGE(r.error().message);
+    CHECK(r.error().message.find("free group") != std::string::npos);
+  }
+  {  // knob curves on the group
+    nlohmann::json k = j;
+    for (nlohmann::json& x : k["tracks"][0]["devices"])
+      if (x["id"] == group.value) x["curves"] = nlohmann::json::object({{"gain", "linear"}});
+    const Result<LoadedProject> r = parseProject(k.dump(2));
+    REQUIRE_FALSE(r.ok());
+    MESSAGE(r.error().message);
+  }
 }

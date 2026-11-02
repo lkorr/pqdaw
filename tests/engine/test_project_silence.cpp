@@ -412,3 +412,22 @@ TEST_CASE("engine: the project param block and the param ring grow while running
   const auto vols2 = program.params(t0);
   CHECK(std::find(vols2.begin(), vols2.end(), 0.5f) != vols2.end());
 }
+
+// TMM.13-fix1 L4: a timeline that cannot register with the sample reclaimer (every reader slot taken) would read frame
+// tables and sample residencies without QSBR protection: the engine is refused instead of running unprotected.
+TEST_CASE("engine: no reader slot left on the sample reclaimer refuses the engine (TMM.13-fix1 L4)") {
+  pq::EpochReclaimer reclaimer(1);
+  eng::EngineConfig ec;
+  ec.sampleRate = kSr;
+  ec.blockFrames = kBlock;
+  ec.numOut = 1;
+  ec.maxSlots = 4;
+  ec.timeline.sampleReclaimer = &reclaimer;
+  auto first = eng::Engine::create(ec);
+  REQUIRE(first.ok());
+  auto second = eng::Engine::create(ec);  // the one slot is the first engine's
+  REQUIRE_FALSE(second.ok());
+  CHECK(second.error().message.find("reader slot") != std::string::npos);
+  first.value().reset();  // its slot is free again
+  CHECK(eng::Engine::create(ec).ok());
+}

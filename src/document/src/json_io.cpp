@@ -94,13 +94,15 @@ std::string renderPath(const PathSeg& at) {
   std::string out = "$";
   while (n > 0) {
     const PathSeg* p = segs[--n];
-    if (!p->key.empty()) {
-      out += '.';
-      out += p->key;
-    } else {
+    if (p->element) {
       out += '[';
       out += std::to_string(p->index);
       out += ']';
+    } else if (p->key.empty()) {
+      out += "[\"\"]";  // TMM.13-fix1 L8: an empty member name (it printed as an index)
+    } else {
+      out += '.';
+      out += p->key;
     }
   }
   return out;

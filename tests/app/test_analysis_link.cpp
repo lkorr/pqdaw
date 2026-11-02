@@ -149,6 +149,38 @@ TEST_CASE("analysis link: taps exist for EQ Eight and Spectrum; unwatched nothin
   spTap->removeReader();
 }
 
+TEST_CASE("analysis link: during a recompile's crossfade only the incoming image writes the tap (TMM.13-fix1 L3)") {
+  // Both images ran during the fade and both wrote the same TapRing: the scope and the spectrogram got each block twice
+  // (a time-base glitch on every recompile).
+  Keys k(true);
+  auto link = makeLink(k.store.current());
+  [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  const std::shared_ptr<TapRing> eqTap = link->deviceAnalysisTap(k.eq);
+  REQUIRE(eqTap != nullptr);
+  eqTap->addReader();
+  Driver d{*link};
+  link->play(0);
+  d.run(40);
+  auto crossfades = [&] {
+    uint64_t n = 0;
+    for (uint32_t u = 0; u < link->engine().program()->numUnits(); ++u) n += link->engine().program()->unitStats(u).crossfades;
+    return n;
+  };
+  const uint64_t fades0 = crossfades();
+  // A structural change of the track (a Utility after the Spectrum): its unit is compiled again and swapped while
+  // the chord plays (a crossfade). The EQ keeps its tap (same device, same slot).
+  k.edit(ops::addDevice(*k.store.current(), k.store.ids(), k.track, "utility", DeviceKind::AudioEffect));
+  link->flush();
+  REQUIRE(link->deviceAnalysisTap(k.eq) == eqTap);
+  const uint64_t w0 = eqTap->written();
+  for (int b = 0; b < 40; ++b) {
+    d.run(1);
+    CHECK(eqTap->written() == w0 + static_cast<uint64_t>(b + 1) * kBlock);  // one block per block, fade or not
+  }
+  CHECK(crossfades() > fades0);  // a crossfade did run
+  eqTap->removeReader();
+}
+
 TEST_CASE("analysis link: the Spectrum module is bit-exact pass-through") {
   Keys with(true), without(false);
   auto la = makeLink(with.store.current()), lb = makeLink(without.store.current());

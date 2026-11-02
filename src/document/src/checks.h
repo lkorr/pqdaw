@@ -67,6 +67,9 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
 Status checkRack(const Device& rack);
 // A rack's own fields (its chains, zones, mappings), not the devices in its chains (checkList queues those: M4 M9).
 Status checkRackOwn(const Device& rack);
+// TMM.13-fix1 L7: a chain link (Wire::chain, a grouped series' link) joins, on one track, a group's In terminal, its
+// members and its Out terminal, of one group that is in the series (not free). "" = fine (or not a chain link).
+std::string chainLinkProblem(const Project& p, const Wire& w);
 Status checkMapping(const MacroMapping& m);  // its own fields
 // A device param / setting name (non-empty) and value (finite, when set).
 Status checkDeviceValue(const std::string& name, const std::optional<double>& value);

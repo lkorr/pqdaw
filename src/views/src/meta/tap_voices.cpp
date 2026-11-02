@@ -16,8 +16,11 @@ double nowSeconds() {
 
 }  // namespace
 
-TapVoices::TapVoices(Resolve resolve, TableResolve table, RateResolve rate)
-    : resolve_(std::move(resolve)), tableResolve_(std::move(table)), rateResolve_(std::move(rate)) {
+TapVoices::TapVoices(Resolve resolve, TableResolve table, RateResolve rate, GenerationResolve generation)
+    : resolve_(std::move(resolve)),
+      tableResolve_(std::move(table)),
+      rateResolve_(std::move(rate)),
+      genResolve_(std::move(generation)) {
   follow();
   readGen_ = seenGen_ = table_.slot ? tableGeneration() : 0;  // the table there now is not news (a face reads it)
   lastTableChange_ = -1e300;
@@ -25,7 +28,25 @@ TapVoices::TapVoices(Resolve resolve, TableResolve table, RateResolve rate)
 
 TapVoices::~TapVoices() = default;
 
+void TapVoices::park() noexcept {
+  reader_.reset();
+  tap_.reset();
+  table_ = TableSlotRef{};
+  seen_.clear();
+  ++tapSerial_;
+  active_ = false;
+  readWritten_ = 0;
+  resolved_ = false;
+}
+
 void TapVoices::follow() const noexcept {
+  if (genResolve_) {  // TMM.13-fix1 M12: nothing the lookups return has changed
+    const uint64_t g = genResolve_();
+    if (resolved_ && g == gen_) return;
+    gen_ = g;
+  }
+  resolved_ = true;
+  ++resolves_;
   std::shared_ptr<pq::VoiceTap> t;
   try {
     t = resolve_ ? resolve_() : nullptr;

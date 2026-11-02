@@ -3,6 +3,7 @@
 #include "pq/views/devices/analysis.h"
 
 #include <algorithm>
+#include <optional>
 #include <chrono>
 #include <cmath>
 
@@ -221,13 +222,13 @@ void SpectrumFeed::scopeAppend(const float* const* ch, uint32_t n, bool quiet) {
 struct SpectrumFeed::GramSink final : dsp::Spectrogram::Sink {
   SpectrumFeed& f;
   explicit GramSink(SpectrumFeed& feed) : f(feed) {}
-  // Called with gramMutex_ held (gramPush, configure).
+  // The worker, without gramMutex_ (gramPush, configure): into the stage; gramPublish copies it into the ring.
   void column(const float* rows, uint64_t index, double centre) override {
-    const auto slot = static_cast<size_t>(index % kGramRing);
     float peak = 0.0f;
     for (uint32_t r = 0; r < kGramRows; ++r) peak = std::max(peak, rows[r]);
-    std::copy(rows, rows + kGramRows, f.gramRows_.begin() + static_cast<std::ptrdiff_t>(slot * kGramRows));
-    GramColumn& info = f.gramInfo_[slot];
+    f.gramStageRows_.insert(f.gramStageRows_.end(), rows, rows + kGramRows);
+    f.gramStageIndex_.push_back(index);
+    GramColumn& info = f.gramStageInfo_.emplace_back();
     info.centre = centre;
     info.peak = peak;
     // The tapped beat at the column's centre (the analysis stream is the tap's frames, in order).
@@ -269,13 +270,19 @@ void SpectrumFeed::pickGram() {
 }
 
 GramState SpectrumFeed::gramState() const {
-  GramState g;
+  bool settled;
   {
     std::lock_guard lock(mutex_);
-    g.settled = settled_;
+    settled = settled_;
   }
   std::lock_guard lock(gramMutex_);
-  if (!gram_) return g;
+  GramState g = gramPub_;
+  g.settled = settled;
+  return g;
+}
+
+void SpectrumFeed::gramPublish() {
+  GramState g;
   g.running = true;
   g.end = gram_->columns();
   g.oldest = g.end > kGramRing ? g.end - kGramRing : 0;
@@ -286,13 +293,26 @@ GramState SpectrumFeed::gramState() const {
   g.lowFft = gram_->lowFftSize();
   g.fMin = gram_->fMin();
   g.fMax = gram_->fMax();
-  return g;
+  {
+    std::lock_guard lock(gramMutex_);
+    if (!gramRows_.empty())
+      for (size_t i = 0; i < gramStageIndex_.size(); ++i) {
+        const auto slot = static_cast<size_t>(gramStageIndex_[i] % kGramRing);
+        std::copy_n(gramStageRows_.begin() + static_cast<std::ptrdiff_t>(i * kGramRows), kGramRows,
+                    gramRows_.begin() + static_cast<std::ptrdiff_t>(slot * kGramRows));
+        gramInfo_[slot] = gramStageInfo_[i];
+      }
+    gramPub_ = g;
+  }
+  gramStageRows_.clear();  // (capacity kept: no allocation per push once warm)
+  gramStageInfo_.clear();
+  gramStageIndex_.clear();
 }
 
 uint32_t SpectrumFeed::gramRead(uint64_t from, uint32_t n, float* rows, GramColumn* info) const {
   std::lock_guard lock(gramMutex_);
-  if (!gram_ || gramRows_.empty()) return 0;
-  const uint64_t end = gram_->columns(), oldest = end > kGramRing ? end - kGramRing : 0;
+  if (!gramPub_.running || gramRows_.empty()) return 0;
+  const uint64_t end = gramPub_.end, oldest = gramPub_.oldest;
   if (from < oldest || from >= end) return 0;
   const auto k = static_cast<uint32_t>(std::min<uint64_t>(n, end - from));
   for (uint32_t i = 0; i < k; ++i) {
@@ -305,7 +325,6 @@ uint32_t SpectrumFeed::gramRead(uint64_t from, uint32_t n, float* rows, GramColu
 }
 
 void SpectrumFeed::gramPush(const float* mono, const float* beat, uint32_t n) {
-  std::lock_guard lock(gramMutex_);
   if (!gram_) return;
   // The beat by analysis-stream sample, for the columns' centres (they trail the newest sample by up to a window and
   // the reach: well inside the ring).
@@ -313,7 +332,8 @@ void SpectrumFeed::gramPush(const float* mono, const float* beat, uint32_t n) {
   const size_t mask = gramBeat_.size() - 1;
   for (uint32_t i = 0; i < n; ++i) gramBeat_[(at + i) & mask] = beat != nullptr ? beat[i] : std::nanf("");
   GramSink sink(*this);
-  gram_->push(mono, n, sink);
+  gram_->push(mono, n, sink);  // (analysis: no lock)
+  gramPublish();
 }
 
 void SpectrumFeed::hold() {
@@ -344,12 +364,18 @@ uint32_t SpectrumFeed::work(double now) {
     transfer_ = std::make_unique<dsp::TransferAnalyzer>(tc, hz);
   }
   if (gram) {  // TX.spectrogram: a new request (re)configures the analyser; the column sequence continues
-    std::lock_guard lock(gramMutex_);
-    if (gramDirty_ || !gram_) {
-      gramDirty_ = false;
-      gramChannel_ = gramWant_.channel;
-      gramCols_ = std::max<uint32_t>(1, gramWant_.columns);
-      dsp::SpectrogramConfig c = gramWant_.config;
+    std::optional<SpectrogramRequest> request;
+    {
+      std::lock_guard lock(gramMutex_);
+      if (gramDirty_ || !gram_) {
+        gramDirty_ = false;
+        request = gramWant_;
+      }
+    }
+    if (request) {  // (outside the lock: the worker's analyser)
+      gramChannel_ = request->channel;
+      gramCols_ = std::max<uint32_t>(1, request->columns);
+      dsp::SpectrogramConfig c = request->config;
       c.sampleRate = cfg_.sampleRate;
       if (!gram_) {
         gram_ = std::make_unique<dsp::Spectrogram>(c);
@@ -359,6 +385,7 @@ uint32_t SpectrumFeed::work(double now) {
         GramSink sink(*this);
         gram_->configure(c, sink);
       }
+      gramPublish();
     }
   }
   bool wasSettled;

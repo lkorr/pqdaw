@@ -588,7 +588,9 @@ Menu* openContextMenu(Widget& from, Vec2 at, std::vector<MenuItem> items) {
   OverlayLayer* layer = OverlayLayer::of(from);
   if (!layer) return nullptr;
   OverlayOptions o;
-  o.anchor = {static_cast<int32_t>(std::lround(at.x)), static_cast<int32_t>(std::lround(at.y)), 0, 0};
+  // TMM.13-fix1 L16: `at` is a point of from's tree; a tree drawn inside another's widget (a hosted PanelFace) shows it
+  // where its host draws it, as Dropdown's anchor (OverlayLayer::anchorRect).
+  o.anchor = OverlayLayer::anchorRect(from, {static_cast<int32_t>(std::lround(at.x)), static_cast<int32_t>(std::lround(at.y)), 0, 0});
   o.placement = Placement::AtPoint;
   return &static_cast<Menu&>(layer->open(std::make_unique<Menu>(std::move(items), layer->uniqueName("context-menu")), std::move(o)));
 }

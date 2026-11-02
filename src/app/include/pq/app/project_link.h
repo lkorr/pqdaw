@@ -340,6 +340,17 @@ public:
   // track's polyphony, a record per engine block. Any thread (mutex_).
   static constexpr uint32_t kMetaSlots = 4096;
   uint32_t metaSlot(doc::DeviceId device, std::string_view path, uint32_t index) const;  // 0: none
+  // TMM.13-fix1 M12: bumps whenever the meta slots change (a compile's syncMetaSlots, a Reset): what metaSlot /
+  // metaVoiceTap / metaFrameTable return can only differ after it moved. Any thread.
+  uint64_t metaGeneration() const noexcept { return metaGen_.load(std::memory_order_acquire); }
+  // TMM.13-fix1 M11 (tests): table refreshes run; data values hashed outside the link's mutex and under it.
+  struct MetaRefreshStats {
+    uint64_t refreshes = 0, hashes = 0, hashesLocked = 0;
+  };
+  MetaRefreshStats metaRefreshStats() const noexcept {
+    return {metaRefreshes_.load(std::memory_order_relaxed), metaHashes_.load(std::memory_order_relaxed),
+            metaHashesLocked_.load(std::memory_order_relaxed)};
+  }
   std::shared_ptr<dsp::FrameTableSlot> metaFrameTable(doc::DeviceId device, std::string_view path, uint32_t index) const;
   // The tap of a VoiceTap request, or the tap of a FrameTable request's slot (what its wavetable_pos writes); null.
   std::shared_ptr<VoiceTap> metaVoiceTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
@@ -659,6 +670,9 @@ private:
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
   uint32_t metaIdLocked(doc::DeviceId device, std::string_view path, uint32_t index) const;  // mutex_ held
+  // TMM.13-fix1 M11 (tests): refreshMetaTables runs, data values hashed outside mutex_, and under it (a race).
+  std::atomic<uint64_t> metaRefreshes_{0}, metaHashes_{0}, metaHashesLocked_{0};
+  std::atomic<uint64_t> metaGen_{1};  // TMM.13-fix1 M12 (metaGeneration)
   bool metaReset_ = false;  // TMM.13-fix1 H2: a Reset arrived; the next compile drops every slot first (mutex_)
   void resetMetaSlotsLocked();  // mutex_ held
   // TMM.8-fix: the frame-table slots the last syncMetaSlots made (compile path). TMM.13-fix1 H4: the compile waits for

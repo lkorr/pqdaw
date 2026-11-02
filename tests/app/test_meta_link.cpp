@@ -202,11 +202,18 @@ TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaDa
   link->flush();
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().paramWrites == s0.paramWrites + 1);
-  // A data edit (a nested test module's samples) compiles nothing either.
-  k.edit(ops::setMetaSetting(*k.store.current(), acc, "x", "test_shape", "stages", 1.0));  // state only: no call
+  // A data edit (a nested test module's samples) compiles nothing either. (TMM.13-fix1 L6: the state sits on a stock
+  // device of the chain; a chain meta device now holds only its own state, path "", so it can no longer carry it.)
+  const DeviceId util = [&] {
+    auto e = ops::addDevice(*k.store.current(), k.store.ids(), k.track, "utility", DeviceKind::AudioEffect);
+    REQUIRE(e.ok());
+    REQUIRE(k.store.dispatch(e->command).ok());
+    return e->devices.at(0);
+  }();
+  k.edit(ops::setMetaSetting(*k.store.current(), util, "x", "test_shape", "stages", 1.0));  // state only: no call
   link->flush();
   s0 = link->stats();
-  k.edit(ops::setMetaData(*k.store.current(), acc, "x", "test_shape",
+  k.edit(ops::setMetaData(*k.store.current(), util, "x", "test_shape",
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray({0.25f})}}))));
   CHECK(k.store.lastChanges().metaDataOnly());
   link->flush();

@@ -8,6 +8,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <chrono>
 #include <cmath>
 #include <memory>
@@ -517,4 +519,89 @@ TEST_CASE("spectrogram displays: the UI frame of 4 spectrograms (poll + colour +
   CHECK(gated < 4.0);
   CHECK(plain < 4.0);
 #endif
+}
+
+// TMM.13-fix1 M4: the feed's worker analyses without the lock the UI reads under. It held gramMutex_ across
+// dsp::Spectrogram::push (13 – 15 ms per 4096-frame chunk), so a shown spectrogram stalled UI frames by up to 10 ms
+// (the review's probe_gram: p99 6.6 – 8.2 ms). Wall-clock: the perf tier.
+TEST_CASE("spectrogram feed: the UI's reads never wait for the worker's analysis" * doctest::test_suite("perf")) {
+  using Clock = std::chrono::steady_clock;
+  auto tap = std::make_shared<TapRing>(4, 16384, 64);
+  SpectrumFeed feed(tap, AnalysisHub::config(48000.0));
+  feed.setWatch(true);
+  const int key = 0;
+  feed.acquire(kWantSpectrogram);
+  SpectrogramRequest q;
+  q.config.fftSize = 16384;  // the face's largest window, a short hop: the costliest analysis
+  q.config.hop = 32;
+  q.columns = 1024;
+  feed.setSpectrogram(&key, q);
+  std::atomic<bool> stop{false};
+  std::thread audio([&] {  // the audio thread: real time, 64-frame blocks
+    std::vector<float> l(64), r(64), b(64, 0.0f), p(64, 0.0f);
+    const float* ch[4] = {b.data(), p.data(), l.data(), r.data()};
+    uint64_t t = 0;
+    auto next = Clock::now();
+    while (!stop.load()) {
+      for (uint32_t i = 0; i < 64; ++i, ++t)
+        l[i] = r[i] = 0.4f * static_cast<float>(std::sin(0.05 * static_cast<double>(t)) + 0.5 * std::sin(0.71 * static_cast<double>(t)));
+      tap->write(ch, 4, 64);
+      next += std::chrono::microseconds(1333);
+      std::this_thread::sleep_until(next);
+    }
+  });
+  std::vector<float> rows(16 * SpectrumFeed::kGramRows);
+  std::vector<GramColumn> info(16);
+  std::vector<double> waits;
+  uint64_t last = 0;
+  const auto t0 = Clock::now();
+  while (Clock::now() - t0 < std::chrono::seconds(3)) {  // the UI: 60 Hz, as SpectrogramFace::ingest reads
+    const auto a = Clock::now();
+    const GramState st = feed.gramState();
+    for (uint64_t from = std::max(last, st.oldest); from < st.end;) {
+      const uint32_t got = feed.gramRead(from, 16, rows.data(), info.data());
+      if (got == 0) break;
+      from += got;
+    }
+    last = st.end;
+    waits.push_back(std::chrono::duration<double, std::milli>(Clock::now() - a).count());
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  stop = true;
+  audio.join();
+  const GramState st = feed.gramState();
+  feed.clearSpectrogram(&key);
+  feed.release(kWantSpectrogram);
+  std::sort(waits.begin(), waits.end());
+  MESSAGE("UI reads: " << waits.size() << " frames, median " << waits[waits.size() / 2] << " ms, p99 "
+                       << waits[waits.size() * 99 / 100] << " ms, max " << waits.back() << " ms; " << st.end << " columns");
+  CHECK(st.end > 100u);  // the worker did analyse meanwhile
+  CHECK(waits[waits.size() * 99 / 100] <= 1.0);
+  CHECK(waits.back() <= 3.0);
+}
+
+// TMM.13-fix1 L17: a paint whose painter has no texture pool (or another renderer's) kept drawing the face's texture:
+// an id of another renderer. It now draws the ground only.
+TEST_CASE("spectrogram face: a painter without its texture pool never draws the face's texture") {
+  Gpu& g = Gpu::get();
+  TexturePool* pool = g.renderer->images().get();
+  REQUIRE(pool != nullptr);
+  FaceRig rig(nullptr, pool);
+  rig.paint();
+  GramShown s = rig.play(1.0, chord);
+  REQUIRE(s.texture);
+  auto used = [&] {
+    std::vector<TextureId> ids;
+    for (const DrawCmd& c : rig.dl.commands())
+      if (std::find(ids.begin(), ids.end(), c.texture) == ids.end()) ids.push_back(c.texture);
+    return ids;
+  };
+  const std::vector<TextureId> with = used();  // the glyph atlas and the face's ring texture
+  rig.pool = nullptr;
+  rig.paint();
+  const std::vector<TextureId> without = used();
+  uint32_t dropped = 0;
+  for (const TextureId t : with) dropped += std::find(without.begin(), without.end(), t) == without.end() ? 1u : 0u;
+  for (const TextureId t : without) CHECK(std::find(with.begin(), with.end(), t) != with.end());
+  CHECK(dropped == 1u);  // the ring texture, and nothing else
 }

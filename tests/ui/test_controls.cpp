@@ -1192,3 +1192,29 @@ void checkWidgetsGolden(float scale, const char* scaleName) {
 
 TEST_CASE("render: widgets matches the golden image") { checkWidgetsGolden(1.0f, nullptr); }
 TEST_CASE("render: widgets matches the golden image at UI scale 1.5") { checkWidgetsGolden(1.5f, "1.5"); }
+
+// TMM.13-fix1 L16: a context menu opened from a tree drawn inside another tree's widget (a hosted PanelFace) opens in
+// the outer tree's layer AT the point where the host shows it, as a Dropdown's menu does (OverlayLayer::anchorRect);
+// it used the inner tree's coordinates in the outer tree.
+TEST_CASE("context menu: from a hosted tree, placed where the host shows the point") {
+  Fixture f;
+  auto& host = f.add<Widget>(300, 200, "host");
+  struct Host final : TreeHost {
+    Widget* w = nullptr;
+    Widget* hostWidget() const noexcept override { return w; }
+    IRect toHost(const IRect& r) const noexcept override { return {r.x + 100, r.y + 40, r.w, r.h}; }
+    void treeNeedsUpdate() noexcept override {}
+  } link;
+  link.w = &host;
+  TestDriver inner(200, 100);
+  Widget& innerRoot = inner.setRoot<Widget>();
+  inner.tree().setHost(&link);
+  inner.tree().layoutNow();
+  Menu* m = openContextMenu(innerRoot, {10, 12}, {MenuItem::item("One")});
+  REQUIRE(m);
+  f.d.tree().layoutNow();
+  CHECK(f.overlay->openCount() == 1);  // the outer tree's layer
+  CHECK(m->rect().x == 110);
+  CHECK(m->rect().y == 52);
+  inner.tree().setHost(nullptr);
+}

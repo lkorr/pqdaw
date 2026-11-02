@@ -6,6 +6,10 @@
 #include <cmath>
 #include <limits>
 
+#if !defined(_M_X64) && !defined(__x86_64__)
+#error "VoiceTap's seqlock relies on x86-64 store ordering (TMM.13-fix1 L2, pq/core/tap_ring.h)"
+#endif
+
 namespace pq {
 
 namespace {
@@ -44,7 +48,9 @@ void VoiceTap::publish(uint32_t group, uint32_t lanes, const float* position, co
     r.position[l] = position != nullptr && l < lanes ? position[l] : 0.0f;
     r.increment[l] = increment != nullptr && l < lanes ? increment[l] : 0.0f;
   }
-  h.written.store(w + 1, std::memory_order_seq_cst);  // publish after the data (the reader's seqlock check)
+  // Publish after the data (the reader's seqlock check). TMM.13-fix1 L2: the NEXT record's plain stores must not become
+  // visible before this store; x86-64 (TSO) orders stores (pinned above).
+  h.written.store(w + 1, std::memory_order_seq_cst);
 }
 
 void VoiceTap::write(uint32_t group, uint32_t lanes, const float* x, uint32_t xStride, uint32_t frames, bool wrap,

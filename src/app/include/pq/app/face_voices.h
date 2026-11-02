@@ -25,13 +25,21 @@ public:
   explicit FaceVoiceHub(ProjectLink& link) : link_(link) {}
   // A stable reader for the instance (created on first use).
   views::VoiceTapReader* voices(doc::DeviceId device, std::string_view path);
-  // Whether any reader got records since its last read.
-  bool anyFresh() const;
+  // Whether any reader got records since its last read. TMM.13-fix1 M12: readers of instances the link has no slot for
+  // (deleted, or not compiled yet) are parked when the link's slots change (TapVoices::park: no tap or table kept,
+  // not polled here) and woken when their instance has a slot again. Readers are never freed (faces hold them).
+  bool anyFresh();
   size_t readers() const noexcept { return readers_.size(); }
+  size_t polled() const noexcept;  // readers anyFresh polls (not parked)
 
 private:
+  struct Entry {
+    std::unique_ptr<views::TapVoices> reader;
+    bool parked = false;
+  };
   ProjectLink& link_;
-  std::map<std::pair<uint32_t, std::string>, std::unique_ptr<views::TapVoices>, std::less<>> readers_;
+  std::map<std::pair<uint32_t, std::string>, Entry, std::less<>> readers_;
+  uint64_t prunedAt_ = ~uint64_t{0};  // the link's meta generation at the last prune
 };
 
 }  // namespace pq::app

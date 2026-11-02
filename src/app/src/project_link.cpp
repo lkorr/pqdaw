@@ -997,8 +997,12 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   }
   // TMM.5: a MetaData edit, or a param (a baked knob), may change a meta module's table: rebuilt off-thread, no compile.
   // A structural change rebuilds after its compile (compileNow).
-  if (!structural && (!c.metaData.empty() || std::any_of(c.params.begin(), c.params.end(), [](const doc::ParamRef& r) {
-        return r.kind == doc::ParamKind::DeviceParam || r.kind == doc::ParamKind::MetaParam;
+  // TMM.13-fix1 M11: a DeviceParam only of a device with meta modules (a stock device's knob builds no table).
+  if (!structural && (!c.metaData.empty() || std::any_of(c.params.begin(), c.params.end(), [&](const doc::ParamRef& r) {
+        if (r.kind == doc::ParamKind::MetaParam) return true;
+        if (r.kind != doc::ParamKind::DeviceParam) return false;
+        const doc::Device* d = doc::findDevice(p, doc::DeviceId{r.owner}).device;
+        return d != nullptr && (doc::isMetaDevice(*d) || d->meta != nullptr);
       })))
     refreshMetaTables();
   if (structural) {  // free the slots of tracks that are gone (FIFO reuse: much later)
@@ -1320,9 +1324,11 @@ Status ProjectLink::drainDeferred(bool& drained) {
   // Waits (bounded) while the audio thread runs. When the output is stopped (Engine::audioStopped) it wakes the
   // engine once (a suspended stream restarts on a wake, AudioOutput, within a few milliseconds) and gives up after
   // 30 ms: the result stays queued for the next drain.
+  // TMM.13-fix1 L19: bounded by a deadline (5 s), not 5000 × sleep_for(1 ms): with Windows' default timer resolution a
+  // 1-ms sleep lasts ≈ 15.6 ms, so the count waited ≈ 80 s.
   auto waitFor = [&](auto&& ready) -> bool {
     double stoppedSince = -1.0;
-    for (int i = 0; i < 5000; ++i) {
+    for (const double deadline = nowSeconds() + 5.0; nowSeconds() < deadline;) {
       if (ready()) return true;
       if (engine_->audioStopped()) {
         const double now = nowSeconds();
@@ -1431,6 +1437,7 @@ void ProjectLink::resetMetaSlotsLocked() {
     if (tables_) tables_->forget(id);  // and drops its queued job (L18): nothing built for A reaches B's instance
   }
   metaIds_.clear();
+  metaGen_.fetch_add(1, std::memory_order_release);
 }
 
 uint32_t ProjectLink::metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index) {
@@ -1496,6 +1503,7 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
     if (tables_) tables_->forget(it->second);  // TMM.16: a later instance on this id never previews over its table
     it = metaIds_.erase(it);
   }
+  metaGen_.fetch_add(1, std::memory_order_release);  // TMM.13-fix1 M12: after every change above
 }
 
 // TMM.8-fix: an instance's slot whatever its table variant (the index's upper bits): the one the newest lowering named.
@@ -1565,6 +1573,34 @@ void ProjectLink::refreshMetaTables() {
     meta::TableJob job;
   };
   std::vector<Pending> jobs;
+  // TMM.13-fix1 M11: data values are hashed WITHOUT mutex_ (≈ 2 ms per 256-keyframe table; the UI thread takes mutex_
+  // every frame for its taps): the first pass collects the values not hashed yet, the second builds the jobs.
+  auto dataOf = [](const MetaSlot& m, const doc::Project& p) -> meta::DataPtr {
+    const doc::Device* d = doc::findDevice(p, m.device).device;
+    if (d == nullptr) return nullptr;
+    const doc::MetaInstance* inst = d->metaAt(m.path);
+    const bool own = inst != nullptr && inst->type == m.type->id && inst->data != nullptr;
+    return own ? inst->data : m.type->defaultData != nullptr ? m.type->defaultData() : nullptr;
+  };
+  auto tableSlot = [](const MetaSlot& m) {
+    return m.live && m.kind == meta::ResourceKind::FrameTable && m.table && m.type != nullptr && m.type->frameTable != nullptr;
+  };
+  std::vector<std::pair<meta::DataPtr, uint64_t>> hashed;
+  metaRefreshes_.fetch_add(1, std::memory_order_relaxed);
+  {
+    std::lock_guard lock(mutex_);
+    if (!metaDoc_) return;
+    for (const auto& [key, id] : metaIds_) {
+      const MetaSlot& m = metaSlots_[id];
+      if (!tableSlot(m)) continue;
+      meta::DataPtr data = dataOf(m, *metaDoc_);
+      if (data != nullptr && data != m.data &&
+          std::none_of(hashed.begin(), hashed.end(), [&](const auto& h) { return h.first == data; }))
+        hashed.emplace_back(std::move(data), 0);
+    }
+  }
+  for (auto& [data, hash] : hashed) hash = meta::dataHash(*data);
+  metaHashes_.fetch_add(hashed.size(), std::memory_order_relaxed);
   {
     std::lock_guard lock(mutex_);
     if (!metaDoc_) return;
@@ -1572,16 +1608,15 @@ void ProjectLink::refreshMetaTables() {
     std::vector<double> params;
     for (const auto& [key, id] : metaIds_) {
       MetaSlot& m = metaSlots_[id];
-      if (!m.live || m.kind != meta::ResourceKind::FrameTable || !m.table || m.type == nullptr ||
-          m.type->frameTable == nullptr)
-        continue;
+      if (!tableSlot(m)) continue;
       const doc::Device* d = doc::findDevice(p, m.device).device;
       if (d == nullptr) continue;  // gone in the newest snapshot; the next compile frees the slot
-      const doc::MetaInstance* inst = d->metaAt(m.path);
-      const bool own = inst != nullptr && inst->type == m.type->id && inst->data != nullptr;
-      meta::DataPtr data = own ? inst->data : m.type->defaultData != nullptr ? m.type->defaultData() : nullptr;
+      meta::DataPtr data = dataOf(m, p);
       if (data != m.data) {  // immutable values: hash each one once
-        m.dataHash = data != nullptr ? meta::dataHash(*data) : 0;
+        const auto h = std::find_if(hashed.begin(), hashed.end(), [&](const auto& x) { return x.first == data; });
+        // (A value the first pass did not see: a newer snapshot arrived between the passes; hashed here, rarely.)
+        if (data != nullptr && h == hashed.end()) metaHashesLocked_.fetch_add(1, std::memory_order_relaxed);
+        m.dataHash = data == nullptr ? 0 : h != hashed.end() ? h->second : meta::dataHash(*data);
         m.data = data;
       }
       params.resize(m.type->params.size());
@@ -2039,13 +2074,15 @@ void ProjectLink::deliverJit(void* self, const engine::BackgroundJob& job, Resul
   // again: retry without holding the lock (the compile path may need it, and on a test's own thread the engine only
   // runs once that path returns), for at most 5 s. M4 review M1: when the output is stopped or earlier compile results
   // wait (and after the 5 s), the image is parked for drainDeferred instead of dropped.
-  for (int attempt = 0; attempt < 5000; ++attempt) {
+  // TMM.13-fix1 L19: the 5 s by a deadline (5000 × sleep_for(1 ms) is ≈ 80 s at Windows' default timer resolution).
+  const double deadline = nowSeconds() + 5.0;
+  for (;;) {
     {
       std::lock_guard lock(link.compileMutex_);
       const JitPublish r = link.publishJit(job.schedule, job.first, job.refine, img.value());
       if (r == JitPublish::Published || r == JitPublish::Failed) return;
       if (r == JitPublish::Stale || link.jitWorker_->stopping()) break;
-      if (!link.deferred_.empty() || link.engine_->audioStopped() || attempt + 1 == 5000) {
+      if (!link.deferred_.empty() || link.engine_->audioStopped() || nowSeconds() >= deadline) {
         link.park(ParkedJit{job.schedule, job.first, job.refine, std::move(img.value())});
         return;
       }

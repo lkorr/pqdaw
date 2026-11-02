@@ -11,6 +11,7 @@
 #include <unordered_set>
 
 #include "crossfade.h"
+#include "pq/core/tap_ring.h"
 
 namespace pq::engine {
 
@@ -961,7 +962,10 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     U.voices->process(ctx, old != nullptr ? &fctx : nullptr);
   } else {
     p->image->process(ctx);
-    if (old != nullptr) old->image->process(fctx);
+    if (old != nullptr) {
+      TapWriteMute mute;  // TMM.13-fix1 L3: only the incoming image writes analysis taps during the fade
+      old->image->process(fctx);
+    }
   }
   // T1.x-silence: the image's silence report. A bus is silent when every slot writing it was (never during a fade:
   // the faded bus is old + g·(new − old)).

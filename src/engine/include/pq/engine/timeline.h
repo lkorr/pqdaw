@@ -180,6 +180,9 @@ public:
   explicit Timeline(const TimelineConfig& config);
   // Non-RT, after the audio thread stopped calling process(). Frees every image.
   ~Timeline();
+  // TMM.13-fix1 L4: false when TimelineConfig::sampleReclaimer was given but had no reader slot left (the timeline
+  // would then read what it protects unprotected; Engine::create refuses it).
+  bool sampleReaderOk() const noexcept { return !sampleReaderFailed_; }
   Timeline(const Timeline&) = delete;
   Timeline& operator=(const Timeline&) = delete;
 
@@ -342,6 +345,7 @@ private:
   std::unique_ptr<ClipPlayer> clips_;
   EpochReclaimer* sampleReclaimer_ = nullptr;
   EpochReclaimer::ReaderId sampleReader_{0};
+  bool sampleReaderFailed_ = false;  // TMM.13-fix1 L4
   // Transport.
   bool playing_ = false;
   bool releasePending_ = false;  // release every sounding note at the next block's frame 0 (stop, locate, wrap)

@@ -826,7 +826,7 @@ void wavetableLiveK(const KernelArgs& k) noexcept {  // RT-safe
   const auto& slot = *static_cast<const FrameTableSlot*>(k.resource);
   const FrameTableSlot::Entry& e = *slot.acquire();
   if (e.generation != s.generation) {
-    s.fadeLeft = s.generation != 0 && e.prev != nullptr ? kFade : 0u;
+    s.fadeLeft = s.generation != 0 && e.prev != nullptr && e.prev->generation == s.generation ? kFade : 0u;  // L1 (kernels_frame_table.cpp)
     s.generation = e.generation;
   }
   LiveArgs a;
@@ -1000,7 +1000,7 @@ void wavetableShapeK(const KernelArgs& k) noexcept {  // RT-safe
   const auto& slot = *static_cast<const FrameTableSlot*>(k.resource);
   const FrameTableSlot::Entry& e = *slot.acquire();
   if (e.generation != s.generation) {
-    s.fadeLeft = s.generation != 0 && e.prev != nullptr ? kFade : 0u;
+    s.fadeLeft = s.generation != 0 && e.prev != nullptr && e.prev->generation == s.generation ? kFade : 0u;  // L1 (kernels_frame_table.cpp)
     s.generation = e.generation;
   }
   float* out = k.out[0];

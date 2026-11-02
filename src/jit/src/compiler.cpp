@@ -18,6 +18,7 @@
 #include <llvm/Transforms/Scalar/SROA.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
@@ -31,6 +32,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
+#include <new>
 #include <unordered_map>
 
 #include "cache.h"
@@ -49,9 +51,18 @@ Error llvmError(const char* what, llvm::Error e) {
   return Error{ErrorCode::Unknown, std::string("jit: ") + what + ": " + llvm::toString(std::move(e)), {}};
 }
 
+// TMM.13-fix1 L10: an allocation LLVM cannot make ("Buffer allocation failed", SmallVector growth …) killed the process
+// (exit / abort: the DAW with unsaved work). It throws std::bad_alloc instead, which Compiler::compile catches: that
+// compile fails (the previous image keeps playing) and the session is poisoned (LLVM is built without exceptions, so
+// its frames were unwound without their destructors: its state is not trusted again — later compiles fail at once,
+// its code is never released, the app keeps running on the images it has and the interpreter). The handler allocates
+// nothing.
+[[noreturn]] void onLlvmBadAlloc(void*, const char*, bool) { throw std::bad_alloc(); }
+
 void initialiseLlvmOnce() {
   static std::once_flag once;
   std::call_once(once, [] {
+    llvm::install_bad_alloc_error_handler(&onLlvmBadAlloc);
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
   });
@@ -124,6 +135,7 @@ struct Compiler::Session {
   std::vector<SharedCode*> released;       // codes whose last image is gone, waiting for `mutex`
   std::atomic<bool> pendingRelease{false};
   std::atomic<uint64_t> releasesDeferred{0};
+  std::atomic<bool> poisoned{false};  // TMM.13-fix1 L10: LLVM ran out of memory inside a compile (see onLlvmBadAlloc)
   uint64_t nextId = 0;
   // Filled by the object transform while a compile materialises its module or a cached object is linked (`mutex`).
   uint64_t objectBytes = 0;
@@ -143,6 +155,7 @@ struct Compiler::Session {
   // `mutex` held: frees one code (its JITDylib) and forgets its key unless a newer code took it.
   void freeCode(SharedCode* c) noexcept {
     if (auto it = codes.find(c->key); it != codes.end() && it->second.expired()) codes.erase(it);
+    if (poisoned.load()) c->es = nullptr;  // L10: LLVM's locks may be held: its code is leaked, never removed
     delete c;
     ++counters.codesReleased;
   }
@@ -177,8 +190,15 @@ struct Compiler::Session {
 
   ~Session() {
     codes.clear();
-    for (SharedCode* c : released) delete c;  // every image is gone (each holds the session): nothing races this
+    for (SharedCode* c : released) {  // every image is gone (each holds the session): nothing races this
+      if (poisoned.load()) c->es = nullptr;
+      delete c;
+    }
     released.clear();
+    if (poisoned.load()) {  // L10: LLJIT's state is not trusted (its locks may be held): leaked, not destroyed
+      (void)jit.release();
+      (void)tm.release();
+    }
   }
 };
 
@@ -340,6 +360,24 @@ VoiceCode resolveVoiceCode(VoiceCode vc, bool avx512) noexcept {
 
 Result<std::unique_ptr<engine::ProgramImage>> Compiler::compile(const graph::Schedule& schedule, const CompileOptions& options,
                                                                 CompileStats* stats) {
+  if (session_->poisoned.load())
+    return Error{ErrorCode::Unsupported,
+                 "jit: LLVM ran out of memory in an earlier compile; this session compiles no more (the images that play "
+                 "keep playing; save and restart pqdaw to compile again)", {}};
+  try {
+    return compileGuarded(schedule, options, stats);
+  } catch (const std::bad_alloc&) {  // TMM.13-fix1 L10 (onLlvmBadAlloc)
+    session_->poisoned.store(true);
+    return Error{ErrorCode::Overflow,
+                 "jit: out of memory while compiling (LLVM); the previous image keeps playing; save your work and restart "
+                 "pqdaw to compile again", {}};
+  }
+}
+
+void simulateLlvmOutOfMemory() { llvm::report_bad_alloc_error("simulated (tests)"); }
+
+Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileGuarded(const graph::Schedule& schedule,
+                                                                       const CompileOptions& options, CompileStats* stats) {
   if (!options.quickFirst) return compileImpl(schedule, options, stats, false, true);
   CompileOptions o = options;
   o.quickFirst = false;

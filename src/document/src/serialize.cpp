@@ -3004,6 +3004,7 @@ private:
         json::fail(PathSeg(&el, "from"), "no device with this id");
       }
       if (!findDevice(p, wl[i].to).track) json::fail(PathSeg(&el, "to"), "no device with this id");
+      if (std::string e = detail::chainLinkProblem(p, wl[i]); !e.empty()) json::fail(PathSeg(&el, "chain"), e);  // L7
       for (size_t j = 0; j < i; ++j)
         if (wl[j].sameEnds(wl[i]))
           json::fail(el, "these two ports are already wired (wire " + std::to_string(wl[j].id.value) + ")");

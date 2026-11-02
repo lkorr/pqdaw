@@ -25,12 +25,13 @@ namespace pq::doc::json {
 // One step of a JSON path. The root has parent == nullptr. A segment is either an object key or an array index.
 struct PathSeg {
   const PathSeg* parent = nullptr;
-  std::string_view key;  // empty = array index
+  std::string_view key;  // an object member (TMM.13-fix1 L8: may be empty: the chain meta device's own state, "")
   size_t index = 0;
+  bool element = false;  // an array element (index)
 
   PathSeg() = default;
   PathSeg(const PathSeg* p, std::string_view k) : parent(p), key(k) {}
-  PathSeg(const PathSeg* p, size_t i) : parent(p), index(i) {}
+  PathSeg(const PathSeg* p, size_t i) : parent(p), index(i), element(true) {}
 };
 std::string renderPath(const PathSeg& at);
 

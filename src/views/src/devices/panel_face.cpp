@@ -15,6 +15,8 @@ namespace pq::views::devices {
 PanelFace::PanelFace(DeviceSignature sig, PanelDesc desc, std::unique_ptr<DeviceTarget> target,
                      const std::map<std::string, double, std::less<>>& values, ui::Vec2 worldSize)
     : target_(std::move(target)), size_(worldSize) {
+  static uint64_t panels = 0;  // UI thread
+  serial_ = ++panels;
   sig.exports.clear();  // the host draws the exports as pins on the block's right edge
   auto p = std::make_unique<DevicePanel>("panel", std::move(sig), std::move(desc), target_.get(), values);
   panel_ = p.get();
@@ -145,8 +147,9 @@ ui::Rgba PanelFace::staticLayerColour(const ui::Theme& /*theme*/, uint32_t layer
 }
 
 uint64_t PanelFace::staticKey(uint32_t /*layer*/) const {
-  // This panel's current recording (a new one: new tiles; the canvas prunes the old).
-  return (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(this)) * 0x9E3779B97F4A7C15ull) ^ (recordings_ * 0xC2B2AE3D27D4EB4Full) ^ 1ull;
+  // This panel's current recording (a new one: new tiles; the canvas prunes the old). TMM.13-fix1 L15: by the panel's
+  // serial, not its address (a new panel at a freed one's address showed the old panel's far tiles until pruning).
+  return (serial_ * 0x9E3779B97F4A7C15ull) ^ (recordings_ * 0xC2B2AE3D27D4EB4Full) ^ 1ull;
 }
 
 void PanelFace::paintStatic(ui::FacePainter& p, uint32_t layer) const {

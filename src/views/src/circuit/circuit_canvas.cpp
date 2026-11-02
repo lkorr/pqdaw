@@ -341,10 +341,12 @@ struct CircuitCanvas::Impl final : FaceHost {
   // A static layer's tile key: the type and layer, and the face's per-instance key (TMM.7: 0 = shared by the type).
   // TX.resize: a scaled face's tiles are rasterised at its own px per unit, so they are its own (Hosted::tileSalt: by
   // instance, not by scale — while its scale changes, the tile it had is stretched, as for a zoom, until it settles).
+  // TMM.13-fix1 L15: the fields mixed, not packed (the type's pointer << 3 ^ layer collided for layer >= 8).
   static uint64_t faceKey(const Face& f, uint32_t layer, uint64_t salt) {
-    const uint64_t base = ((static_cast<uint64_t>(reinterpret_cast<uintptr_t>(f.metaType())) << 3) ^ layer) ^ (salt & ~7ull);
+    const uint64_t base = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(f.metaType())) * 0xD6E8FEB86659FD93ull) ^
+                          ((static_cast<uint64_t>(layer) + 1) * 0xC2B2AE3D27D4EB4Full) ^ (salt * 0x165667B19E3779F9ull);
     const uint64_t inst = f.staticKey(layer);
-    return inst == 0 ? base : (base ^ (inst * 0x9E3779B97F4A7C15ull)) | 1ull << 63;
+    return inst == 0 ? base & ~(1ull << 63) : (base ^ (inst * 0x9E3779B97F4A7C15ull)) | 1ull << 63;
   }
   // Drops tiles no hosted face uses any more (instance keys change with their data) once the map has grown.
   void pruneFaceTiles() {

@@ -91,6 +91,7 @@ struct Rig {
   std::vector<float*> globalPtr;
   int64_t time = 0;
   uint64_t rtViolations = 0;
+  std::vector<float> params;  // TMM.13-fix1 L5: the param block (empty: the defaults)
 
   Rig(Compiled compiled, VoiceConfig cfg, uint32_t groups, uint32_t maxBlock = 128, bool useDone = true)
       : c(std::move(compiled)) {
@@ -145,6 +146,10 @@ struct Rig {
       ctx.out = globalPtr.data();
       ctx.numOut = static_cast<uint32_t>(globalPtr.size());
       ctx.events = &buf.list();
+      if (!params.empty()) {
+        ctx.params = params.data();
+        ctx.numParams = static_cast<uint32_t>(params.size());
+      }
       rtViolations += pq::alloc_trap::countRtViolations([&] { ve.process(ctx); });
       for (uint32_t i = 0; i < ve.numMixes(); ++i) out[i].insert(out[i].end(), ve.mix(i), ve.mix(i) + n);
       if (!globalOut.empty()) out.back().insert(out.back().end(), globalOut[0].begin(), globalOut[0].begin() + n);
@@ -739,6 +744,17 @@ patch Pluck {
 }
 )";
 
+// TMM.13-fix1 L5: a gain param read at audio rate (a param ramp per voice group while it moves).
+const char* kSwell = R"(
+patch Swell {
+  param g = 0.5 [0..1]
+  out y : audio voice
+  rate = voice.gate ? 0.01 : -0.002
+  level = z1(clip(level + rate, 0, 1))
+  y = sine(phasor(voice.hz)) * level * g * 0.4
+}
+)";
+
 TEST_CASE("voices: compaction moves voices between groups without changing the sound") {
   // Random traffic: bursts of notes with random lengths, 4 s.
   std::vector<Ev> evs;
@@ -757,8 +773,11 @@ TEST_CASE("voices: compaction moves voices between groups without changing the s
   }
   for (const auto& o : offs) evs.push_back(off(o.first, o.second));
   std::stable_sort(evs.begin(), evs.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
-  for (int which = 0; which < 2; ++which) {
-    const std::string name = which == 0 ? "Pluck" : "Echo";
+  // TMM.13-fix1 L5: the same traffic while a param read at audio rate moves (Swell's gain, every 50 blocks): each move
+  // runs the voice groups' param ramps (TX.smooth), whose side-table state moveLane must carry when compaction moves a
+  // voice mid-ramp (the ramps' copy was the one RT path no test moved).
+  for (int which = 0; which < 3; ++which) {
+    const std::string name = which == 0 ? "Pluck" : which == 1 ? "Echo" : "Swell";
     INFO(name);
     std::vector<float> out[2];
     uint64_t moves[2] = {}, groupsRun[2] = {};
@@ -766,8 +785,17 @@ TEST_CASE("voices: compaction moves voices between groups without changing the s
       VoiceConfig cfg;
       cfg.compact = compact == 1;
       cfg.silenceMs = 5.0f;
-      auto r = std::make_unique<Rig>(which == 0 ? kPluck : kEcho, cfg, eng::voiceGroupsFor(64), 64);
-      out[compact] = r->run(4 * 48000 + 24000, 64, evs, [&](int64_t, uint32_t) { groupsRun[compact] += r->ve.groupsRunLastBlock(); })[0];
+      auto r = std::make_unique<Rig>(which == 0 ? kPluck : which == 1 ? kEcho : kSwell, cfg, eng::voiceGroupsFor(64), 64);
+      if (which == 2) {
+        REQUIRE(r->img->io().params.size() == 1u);
+        CHECK(!r->c.sched.ramps.empty());  // the gain's read is ramped
+        r->params.assign(1, 0.5f);
+      }
+      uint32_t block = 0;
+      out[compact] = r->run(4 * 48000 + 24000, 64, evs, [&](int64_t, uint32_t) {
+        groupsRun[compact] += r->ve.groupsRunLastBlock();
+        if (which == 2 && ++block % 50 == 0) r->params[0] = r->params[0] > 0.6f ? 0.2f + 0.001f * static_cast<float>(block % 97) : 0.9f;
+      })[0];
       moves[compact] = r->ve.stats().voiceMoves;
       CHECK(r->rtViolations == 0);
       CHECK(r->ve.stats().steals == 0);

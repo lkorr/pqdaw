@@ -9,6 +9,9 @@
 // - Interest: readers announce themselves (addReader / removeReader). With no reader the writer returns after one
 //   relaxed load, so a hidden visualiser costs nothing on the audio side (T4.6 acceptance).
 // - Exactly one writer thread and one reader thread at a time.
+// - Memory order (TMM.13-fix1 L2): the reader's check is sound when the writer's plain data stores of a chunk become
+//   visible no earlier than the counter store before them (store → store order). x86-64 (TSO) guarantees that for
+//   free; a weakly ordered target would need the data written as relaxed atomics (or a fence per chunk). Pinned below.
 // - T4.5 generalises probing (taps on any wire); this is the minimal form the device panels need.
 
 #include <algorithm>
@@ -22,6 +25,24 @@
 #include "pq/core/cache_line.h"
 
 namespace pq {
+
+#if !defined(_M_X64) && !defined(__x86_64__)
+#error "TapRing / VoiceTap rely on x86-64 store ordering (see the memory-order note above)"
+#endif
+
+// TMM.13-fix1 L3: while a hot swap crossfades, the outgoing and the incoming image both run, and both would write the
+// same tap ("exactly one writer" is per block, not per image): the displays got each block twice. The engine mutes
+// tap writes on its thread while it runs the outgoing image (TapWriteMute), so only the incoming one writes.
+namespace detail {
+inline thread_local bool tTapWritesMuted = false;
+}
+struct TapWriteMute {  // RT-safe (a thread-local flag)
+  bool prev;
+  TapWriteMute() noexcept : prev(detail::tTapWritesMuted) { detail::tTapWritesMuted = true; }
+  ~TapWriteMute() { detail::tTapWritesMuted = prev; }
+  TapWriteMute(const TapWriteMute&) = delete;
+  TapWriteMute& operator=(const TapWriteMute&) = delete;
+};
 
 class TapRing {
 public:
@@ -50,7 +71,7 @@ public:
   // TX.spectrum: a channel whose bit is set in `constMask` holds one value for the whole call (ch[c][0]: a kernel's
   // param-rate input), repeated.
   void write(const float* const* ch, uint32_t numCh, uint32_t frames, uint32_t constMask = 0) noexcept {
-    if (!wanted() || numCh == 0) return;
+    if (!wanted() || numCh == 0 || detail::tTapWritesMuted) return;
     uint32_t done = 0;
     uint64_t w = w_.written.load(std::memory_order_relaxed);
     while (done < frames) {

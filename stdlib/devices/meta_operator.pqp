@@ -39,10 +39,12 @@
 // with hz 0 into a Wavetable, wireable anywhere.
 //
 // Cost (per voice-sample, sine tables): 4 × (phasor + 4 ops, a frame-table read, the envelope's ≈ 30 ops) + the routing
-// adds. Measured (ship, JIT, 64 voices; bench/RESULTS.md TMM.12): 13.2 ns without feedback, 19.1 ns with D's loop on
-// (`fbOn`: D's phasor, table read and envelope then run sample by sample), 44.0 ns with hq; Operator doing the same work
-// 8.6 ns. Most of the difference is the band-limited frame-table read (≈ 2.5 ns per read, against Operator's direct
-// sine), the rest the curved envelopes (QUESTIONS Q?-TMM.12-a).
+// adds. Measured (ship, JIT, 64 voices; bench/RESULTS.md TMM.12-fix1): 6.86 ns without feedback (the default, `fbOn`
+// 0), 10.29 ns with D's loop on (`fbOn`: D's phasor, table read and envelope then run sample by sample; D's read
+// computed inline after each block's first frame), 22.82 ns with hq; Operator doing the same work 8.97 ns (1.15×; the
+// MM review measured 10.13 vs 10.58, 0.96×). A one-frame sine table is read as a sine (≈ 0.4 ns per read, the
+// `sine` atom and one FMA), so the band-limited row read (≈ 2.5 ns) is paid only by real wavetables; what remains is
+// the curved envelopes and D's per-sample loop (QUESTIONS Q?-TMM.12-a). (TMM.12 measured 13.2 / 19.1 / 44.0 ns.)
 
 patch meta_operator {
   in    algorithm : real const = 1   // 1 … 11 (above)

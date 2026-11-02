@@ -697,3 +697,49 @@ TEST_CASE("jit: quickFirst compiles voice groups first, the final pair image lat
   CHECK(st.source == jit::CompileStats::Source::Disk);
   CHECK(b->counters().compiles == 0);
 }
+
+// TMM.13-fix1 L10: LLVM running out of memory ("Buffer allocation failed") ended the process (0xC0000409 in the
+// review's fuzz renders under memory pressure): the DAW with unsaved work. Now that compile fails, the images built
+// before keep playing, and the compiler refuses further compiles (LLVM's state is not trusted after the unwind).
+TEST_CASE("jit: LLVM out of memory fails the compile, not the process; earlier images keep playing") {
+  jit::CompilerConfig cfg;
+  static bool failNext = false;
+  failNext = false;
+  cfg.beforeCompile = [](void*) {
+    if (failNext) jit::simulateLlvmOutOfMemory();
+  };
+  auto made = jit::Compiler::create(cfg);
+  REQUIRE(made.ok());
+  jit::Compiler& comp = *made.value();
+  const Compiled a = compileText("patch A { in x : audio\n out y : audio\n y = tanh(x * 3) }");
+  const Compiled b = compileText("patch B { in x : audio\n out y : audio\n y = sin(x * 5) + x }");
+  auto imgA = comp.compile(a.sched);
+  REQUIRE(imgA.ok());
+  failNext = true;
+  auto imgB = comp.compile(b.sched);
+  REQUIRE_FALSE(imgB.ok());
+  CHECK(imgB.error().code == pq::ErrorCode::Overflow);
+  CHECK(imgB.error().message.find("out of memory") != std::string::npos);
+  failNext = false;
+  auto again = comp.compile(b.sched);  // the session is poisoned: refused at once
+  REQUIRE_FALSE(again.ok());
+  CHECK(again.error().message.find("earlier compile") != std::string::npos);
+  // A still plays.
+  std::vector<float> x(16, 0.25f), y(16);
+  const float* ins[1] = {x.data()};
+  float* outs[1] = {y.data()};
+  eng::ProcessContext ctx;
+  ctx.frames = 16;
+  ctx.in = ins;
+  ctx.numIn = 1;
+  ctx.out = outs;
+  ctx.numOut = 1;
+  imgA.value()->process(ctx);
+  CHECK(y[15] == doctest::Approx(std::tanh(0.75)).epsilon(1e-6));
+  imgA.value().reset();  // (its code is leaked, not released through LLVM's possibly held locks)
+  // A new compiler compiles again.
+  jit::CompilerConfig fresh;
+  auto made2 = jit::Compiler::create(fresh);
+  REQUIRE(made2.ok());
+  CHECK(made2.value()->compile(b.sched).ok());
+}

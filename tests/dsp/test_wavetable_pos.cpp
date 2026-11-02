@@ -225,7 +225,7 @@ TEST_CASE("wavetable_pos: a swap crossfades linearly over 64 samples (out = old 
   }
 }
 
-TEST_CASE("wavetable_pos: generations — a fresh state does not fade, an idle state fades from the newest previous table") {
+TEST_CASE("wavetable_pos: generations — a fresh state does not fade, a state that missed publishes reads the newest at once, one behind fades") {
   const TablePtr a = drawn(), b = sawSquare(), c = makeTable({ftfix::basic(BasicCycle::Triangle)});
   pq::EpochReclaimer rec;
   FrameTableSlot slot(a);
@@ -235,17 +235,23 @@ TEST_CASE("wavetable_pos: generations — a fresh state does not fade, an idle s
   fresh.run(slot, phase.data(), pos.data(), 16, out.data());
   CHECK(fresh.st().generation == 2);
   CHECK(fresh.st().fadeLeft == 0);
-  // A state at generation 2 that misses two publishes fades (from c's predecessor) when it runs again.
+  // A state at generation 2 that misses two publishes reads the newest table at once (TMM.13-fix1 L1: it used to fade
+  // from c's predecessor, a table it never played — the spurious fade of a voice compacted into an idle group).
   slot.publish(a, rec);
   slot.publish(c, rec);
   CHECK(slot.generation() == 4);
   fresh.run(slot, phase.data(), pos.data(), 16, out.data());
   CHECK(fresh.st().generation == 4);
+  CHECK(fresh.st().fadeLeft == 0);
+  // One publish behind (it played e.prev): it fades.
+  slot.publish(a, rec);
+  fresh.run(slot, phase.data(), pos.data(), 16, out.data());
+  CHECK(fresh.st().generation == 5);
   CHECK(fresh.st().fadeLeft == 64 - 16);
   // A publish inside a fade restarts it.
   slot.publish(b, rec);
   fresh.run(slot, phase.data(), pos.data(), 16, out.data());
-  CHECK(fresh.st().generation == 5);
+  CHECK(fresh.st().generation == 6);
   CHECK(fresh.st().fadeLeft == 64 - 16);
   CHECK(slot.table() == b);
   rec.collect();

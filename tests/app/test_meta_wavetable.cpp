@@ -506,6 +506,37 @@ TEST_CASE("meta wavetable: File > Open of another project never plays the old pr
   CHECK(da.out == db.out);
 }
 
+TEST_CASE("meta wavetable: tables refresh only for meta devices' knobs; data is hashed outside the link's lock (TMM.13-fix1 M11)") {
+  // refreshMetaTables ran on any device's param change and hashed new data (≈ 2 ms per 256 keyframes) under the
+  // link's mutex, which the UI thread takes every frame (deviceAnalysisTap, TapVoices::follow).
+  WtSong s;
+  const DeviceId wt = s.track({{0, 4 * kPpq, 0}});
+  const DeviceId sat = [&] {
+    auto e = ops::addDevice(s.doc(), s.store.ids(), s.tracks.at(0), "saturator", DeviceKind::AudioEffect);
+    REQUIRE(e.ok());
+    s.must(e->command);
+    return e->devices.at(0);
+  }();
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  const ProjectLink::MetaRefreshStats r0 = link->metaRefreshStats();
+  s.edit(ops::setDeviceParam(s.doc(), sat, "drive", 12.0));  // a stock device's knob: no table can change
+  CHECK(link->metaRefreshStats().refreshes == r0.refreshes);
+  s.param(wt, "position", 0.25);  // a meta device's knob: refreshed
+  CHECK(link->metaRefreshStats().refreshes == r0.refreshes + 1);
+  s.data(wt, sawToSquare());  // new data: hashed once, outside the lock
+  const ProjectLink::MetaRefreshStats r1 = link->metaRefreshStats();
+  CHECK(r1.hashes == r0.hashes + 1);
+  CHECK(r1.hashesLocked == 0u);
+  s.param(wt, "position", 0.5);  // the same data again: not hashed again
+  CHECK(link->metaRefreshStats().hashes == r1.hashes);
+  REQUIRE(link->waitForMetaTables());
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  CHECK(sameTable(*slot->table(), *directTable(s.doc(), wt, "", 48000.0)));
+}
+
 TEST_CASE("meta wavetable: golden wavetable-morph (saw -> square spectral sweep, crossfade gap, baked warp per mode)") {
   WtSong s;
   constexpr Ticks q = kPpq;  // 0.5 s at 120 BPM
@@ -829,7 +860,7 @@ TEST_CASE("meta wavetable: a compile waits only for its new slots' tables (struc
       compileMs = ms(at);
       CHECK(link->stats().compiles > c0);
       REQUIRE(link->metaFrameTable(b, "", 0) != nullptr);
-      CHECK(link->metaFrameTable(b, "", 0)->table()->frames() > 1);  // its own table before its image plays
+      CHECK(link->metaFrameTable(b, "", 0)->generation() >= 2);  // its own table (the default sine, then its own) before its image plays
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }
@@ -1088,6 +1119,44 @@ TEST_CASE("meta faces: the hub's reader knows the Wavetable's table — a publis
   s.must(a->command);
   link->flush();
   CHECK(hub.voices(a->devices.at(0), "")->heardTable().table == nullptr);
+}
+
+TEST_CASE("meta faces: the hub looks a reader's tap up only when the link's slots change; a deleted instance's reader is parked (TMM.13-fix1 M12)") {
+  // Each reader took the link's mutex twice per presented frame (scanning the slots with string compares, copying the
+  // modulated flags), and readers of deleted instances were polled — and kept their taps and tables alive — forever.
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  app::FaceVoiceHub hub(*link);
+  auto* r = static_cast<views::TapVoices*>(hub.voices(wt, ""));
+  REQUIRE(r->tap() != nullptr);
+  REQUIRE(r->heardTable().table != nullptr);
+  const uint64_t looked = r->resolves();
+  for (int i = 0; i < 100; ++i) {  // 100 presented frames: no lookup
+    (void)hub.anyFresh();
+    (void)r->serial();
+  }
+  CHECK(r->resolves() == looked);
+  CHECK(hub.polled() == 1u);
+  // The device deleted (and compiled away): parked, nothing of it kept, not polled.
+  const DeviceId del[1] = {wt};
+  s.edit(ops::deleteDevices(s.doc(), del));
+  link->flush();
+  (void)hub.anyFresh();
+  CHECK(hub.polled() == 0u);
+  CHECK(hub.readers() == 1u);  // (faces may still hold the pointer)
+  CHECK(r->tap() == nullptr);
+  CHECK(r->heardTable().table == nullptr);  // (the link keeps a freed slot's object until its id is reused)
+  // Undo: the instance is back; the reader follows its new tap.
+  REQUIRE(s.store.undo());
+  link->flush();
+  (void)hub.anyFresh();
+  CHECK(hub.polled() == 1u);
+  (void)r->serial();
+  CHECK(r->tap() != nullptr);
+  CHECK(r->tap() == link->metaVoiceTap(wt, "", 0).get());
 }
 
 TEST_CASE("meta faces: golden meta-wavetable-voices — eight engine voices, each dot at the phase its voice read") {

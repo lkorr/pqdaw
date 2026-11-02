@@ -27,7 +27,12 @@ Result<std::unique_ptr<Engine>> Engine::create(const EngineConfig& config) {
   if (config.numOut == 0 || config.numOut > kMaxChannels)
     return Error{ErrorCode::InvalidArgument, "engine: bad channel count", {}};
   if (config.maxSlots == 0) return Error{ErrorCode::InvalidArgument, "engine: no event slots", {}};
-  return std::unique_ptr<Engine>(new Engine(config));
+  std::unique_ptr<Engine> e(new Engine(config));
+  // TMM.13-fix1 L4: a timeline that could not register with the sample reclaimer would read frame-table entries and
+  // sample residencies without QSBR protection (freed under it): refused, loudly.
+  if (!e->timeline_->sampleReaderOk())
+    return Error{ErrorCode::Overflow, "engine: the sample reclaimer has no reader slot left (too many engines share it)", {}};
+  return e;
 }
 
 Engine::Engine(const EngineConfig& config)

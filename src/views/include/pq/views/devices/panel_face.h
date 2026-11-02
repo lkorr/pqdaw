@@ -135,6 +135,7 @@ private:
   bool recTiles_ = false;                 // the recording samples tile-atlas pages (a meta face inside): re-recorded each paint
   uint64_t recEvictions_ = 0;             // the glyph atlas's eviction count when recorded
   uint64_t recordings_ = 0;
+  uint64_t serial_ = 0;  // TMM.13-fix1 L15: this panel's number (its tile key; an address can be reused)
   std::vector<uint8_t> triClass_;            // per triangle of the recording (3 indices): its colour class
   std::array<ui::Rgba, kLayers> classColour_{};  // each class's mean colour (alpha 0: the class is empty)
   bool quiet_ = false;                    // inside our own update / paint: the tree's notifications are ours

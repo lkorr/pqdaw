@@ -281,6 +281,7 @@ Status checkParamCurves(const Device& d) {  // TX.knob-curves (model.h KnobCurve
     if (i > 0 && !(d.curves[i - 1].param < c.param)) return invalid("device knob curves must be sorted by param, one per param");
   }
   if (d.rack && !d.curves.empty()) return invalid("a rack's macros have no knob curves");
+  if (isGroupDevice(d) && !d.curves.empty()) return invalid("a group has no knobs (no knob curves)");  // TMM.13-fix1 L7
   return ok();
 }
 
@@ -425,6 +426,10 @@ Status checkDeviceMeta(const Device& d) {
   for (size_t i = 0; i < d.meta->size(); ++i) {
     const MetaEntry& e = (*d.meta)[i];
     if (i > 0 && !((*d.meta)[i - 1].path < e.path)) return invalid("meta modules must be sorted by path, one per path");
+    // TMM.13-fix1 L6: a chain meta device plays its type's expansion, which calls no nested meta modules: state at
+    // any other path was never used (and was saved back forever).
+    if (isMetaDevice(d) && !e.path.empty())
+      return invalid("meta module '" + e.path + "': a chain meta device holds only its own state (path \"\")");
     PQ_DOC_TRY(checkMetaInstance(d, e.path, e.instance));
   }
   return ok();
@@ -508,6 +513,26 @@ Status checkWire(const Wire& w) {
   }
   if (static_cast<uint8_t>(w.reducer) > static_cast<uint8_t>(WireReducer::Loudest)) return invalid("unknown wire reducer");
   return ok();
+}
+
+std::string chainLinkProblem(const Project& p, const Wire& w) {
+  if (!w.chain) return {};
+  if (w.fromNoteSource()) return "a chain link starts at a device (a grouped series' link)";
+  const DeviceLoc a = findDevice(p, w.from), b = findDevice(p, w.to);
+  if (a.device == nullptr || b.device == nullptr) return {};  // (a missing end is refused on its own)
+  if (a.track != b.track) return "a chain link joins devices of one track (a grouped series)";
+  auto groupOf = [](const Device& d) { return isGroupDevice(d) ? d.id : d.group; };
+  const DeviceId g = groupOf(*a.device);
+  if (!g.valid() || groupOf(*b.device) != g)
+    return "a chain link joins a group's terminals and its members (a grouped series), here devices of no one group";
+  const bool fromIn = isGroupDevice(*a.device), toOut = isGroupDevice(*b.device);
+  if (fromIn && w.port != kGroupInPort) return "a chain link leaves a group by its In terminal";
+  if (toOut && w.param != kGroupOutPort) return "a chain link enters a group by its Out terminal";
+  if (fromIn || toOut) {
+    const Device* group = fromIn ? a.device : b.device;
+    if (group->free) return "a free group has no chain links (it is not in the series: wire its terminals as any wire)";
+  }
+  return {};
 }
 
 // Rejects routing cycles: following each track's output (Default → parent group or master) must end at the

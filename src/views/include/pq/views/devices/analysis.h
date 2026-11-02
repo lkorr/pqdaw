@@ -206,16 +206,25 @@ private:
   std::vector<float> scope_[4];
   uint64_t scopeEnd_ = 0;
   uint64_t scopeQuiet_ = 0;  // frames appended since the last non-silent one (worker)
-  // TX.spectrogram: requests (UI, under gramMutex_), the analyser and the ring (worker writes, UI reads, gramMutex_).
+  // TX.spectrogram: requests (UI, under gramMutex_), the analyser (the worker's alone) and the ring (worker writes,
+  // UI reads, gramMutex_). TMM.13-fix1 M4: the worker analyses WITHOUT the lock (a 4096-frame push is 13 – 15 ms, and
+  // the UI takes the lock every frame): its columns go to a worker-private stage, and the lock is held only to copy
+  // the finished ones into the ring and publish gramPub_.
   mutable std::mutex gramMutex_;
   std::map<const void*, SpectrogramRequest> gramRequests_;
   SpectrogramRequest gramWant_;  // the deciding request
   bool gramDirty_ = false;
-  std::unique_ptr<dsp::Spectrogram> gram_;
-  uint32_t gramChannel_ = 0, gramCols_ = 512;
-  std::vector<float> gramRows_, gramIn_, gramBeat_;  // the ring; the worker's channel buffer; the beat by stream sample
+  std::vector<float> gramRows_;      // the ring (gramMutex_)
   std::vector<GramColumn> gramInfo_;
+  GramState gramPub_;                // the ring's state as last published (gramMutex_; settled is mutex_'s)
+  std::unique_ptr<dsp::Spectrogram> gram_;  // worker
+  uint32_t gramChannel_ = 0, gramCols_ = 512;  // worker
+  std::vector<float> gramIn_, gramBeat_;       // worker: the channel buffer; the beat by stream sample
+  std::vector<float> gramStageRows_;           // worker: columns finished in this push (rows, info, index)
+  std::vector<GramColumn> gramStageInfo_;
+  std::vector<uint64_t> gramStageIndex_;
   uint64_t gramQuiet_ = 0;  // columns since the last one with anything in it (worker)
+  void gramPublish();       // the worker: the stage into the ring, gramPub_ (takes gramMutex_)
   bool quit_ = false;
   std::thread thread_;
 };

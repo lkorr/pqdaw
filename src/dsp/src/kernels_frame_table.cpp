@@ -72,7 +72,9 @@ void wavetablePosK(const KernelArgs& a) noexcept {  // RT-safe
   const auto& slot = *static_cast<const FrameTableSlot*>(a.resource);
   const FrameTableSlot::Entry& e = *slot.acquire();
   if (e.generation != s.generation) {
-    s.fadeLeft = s.generation != 0 && e.prev != nullptr ? kFade : 0u;
+    // A fade from the table this voice group played (TMM.13-fix1 L1: only when that is e.prev). A group that missed
+    // publishes while it was idle (a voice compacted into it starts there) played neither: it reads e at once.
+    s.fadeLeft = s.generation != 0 && e.prev != nullptr && e.prev->generation == s.generation ? kFade : 0u;
     s.generation = e.generation;
   }
   FrameReadState rs;

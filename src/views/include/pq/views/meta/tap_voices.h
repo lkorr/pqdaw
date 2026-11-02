@@ -43,8 +43,12 @@ public:
   // TMM.17: the engine's sample rate now (FaceVoice::rate: a voice's increment × it is its frequency; null or 0:
   // unknown). Asked once per read.
   using RateResolve = std::function<double()>;
+  // TMM.13-fix1 M12: a counter the host bumps whenever what `resolve` / `table` return may have changed (the link's
+  // meta-slot generation). With one, a read re-resolves only when it moved (the lookups take the host's lock and
+  // copy the modulated flags); without one, every read re-resolves.
+  using GenerationResolve = std::function<uint64_t()>;
   static constexpr double kTableLinger = 2.0;
-  explicit TapVoices(Resolve resolve, TableResolve table = {}, RateResolve rate = {});
+  explicit TapVoices(Resolve resolve, TableResolve table = {}, RateResolve rate = {}, GenerationResolve generation = {});
   ~TapVoices() override;
 
   uint32_t read(std::span<FaceVoice> out) override;
@@ -55,6 +59,11 @@ public:
 
   // The tap read now (tests).
   const pq::VoiceTap* tap() const noexcept { return tap_.get(); }
+  // TMM.13-fix1 M12: lets go of the tap and the table slot (the instance is gone: nothing of it stays alive here); the
+  // next read resolves again (an undo brings it back).
+  void park() noexcept;
+  // Lookups made (tests).
+  uint64_t resolves() const noexcept { return resolves_; }
 
 private:
   uint64_t written() const noexcept;  // records of the current tap (0 without one)
@@ -65,6 +74,10 @@ private:
   Resolve resolve_;
   TableResolve tableResolve_;
   RateResolve rateResolve_;
+  GenerationResolve genResolve_;
+  mutable uint64_t gen_ = 0;          // genResolve_() at the last lookup
+  mutable bool resolved_ = false;     // a lookup was made since construction / park()
+  mutable uint64_t resolves_ = 0;
   mutable TableSlotRef table_;
   mutable uint64_t readGen_ = 0;            // tableGeneration() at the last read
   mutable uint64_t seenGen_ = 0;            // ... when last looked at

@@ -2252,6 +2252,7 @@ Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
   if (!to.track) return notFound("wire target device not found");
   if (!c.wire.param.empty())  // TMM.5: a baked meta param is not a modulation target
     if (std::string why = metaParamBakedOnly(*to.device, c.wire.param); !why.empty()) return invalid(why);
+  if (std::string why = chainLinkProblem(*s, c.wire); !why.empty()) return invalid(why);  // TMM.13-fix1 L7
   const WireList& cur = wiresOf(*s);
   for (const Wire& w : cur) {
     if (w.id == c.wire.id) return invalid("wire id already in use");
