@@ -337,6 +337,48 @@ TEST_CASE("groups: refusals say why") {
   REQUIRE(store.dispatch(e->command).ok());
   refused({e->devices.front()}, "a group into a group");
   refused({c}, "already a member");
-  // The file reader refuses a member outside its group's track, a group in a rack chain is refused by the commands.
   CHECK_FALSE(store.dispatch(SetDeviceFree{c, false}).ok());  // a member is free
+}
+
+TEST_CASE("groups: the file reader refuses a broken group; duplicating a group copies its contents and wires") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId keys = ids.track();
+  const DeviceId inst = ids.device(), sat = ids.device(), util = ids.device();
+  Batch b{"keys", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
+  REQUIRE(store.dispatch(b).ok());
+  auto e = group(store, {sat, util});
+  REQUIRE(e.ok());
+  REQUIRE(store.dispatch(e->command).ok());
+  const DeviceId g = e->devices.front();
+  auto text = serializeProject(*store.current(), store.view());
+  REQUIRE(text.ok());
+  // A member naming a device that is not a group of its track: refused with the reason.
+  std::string bad = *text;
+  const std::string key = "\"group\": " + std::to_string(g.value);
+  REQUIRE(bad.find(key) != std::string::npos);
+  bad.replace(bad.find(key), key.size(), "\"group\": " + std::to_string(inst.value));
+  auto r = parseProject(bad);
+  REQUIRE_FALSE(r.ok());
+  MESSAGE(r.error().message);
+  CHECK(r.error().message.find("group") != std::string::npos);
+  // Duplicate: a second group with copies of both members and the three series wires, sounding like two in series.
+  const size_t wires = wiresOf(*store.current()).size();
+  auto d = ops::duplicateDevices(*store.current(), ids, std::vector<DeviceId>{g});
+  REQUIRE(d.ok());
+  REQUIRE(store.dispatch(d->command).ok());
+  const Track& t = *findTrackPtr(*store.current(), keys);
+  size_t groups = 0, members = 0;
+  for (const DevicePtr& x : t.devices) {
+    groups += isGroupDevice(*x) ? 1 : 0;
+    members += x->group.valid() ? 1 : 0;
+  }
+  CHECK(groups == 2);
+  CHECK(members == 4);
+  CHECK(wiresOf(*store.current()).size() == 2 * wires);
+  for (const WireState& s : wireStates(*store.current(), library())) CHECK(s.status == WireStatus::Lowered);
+  CHECK(peakOf(render(*store.current(), 6000)) > 0.01f);
 }

@@ -327,6 +327,15 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // compiler runs it per voice exactly when a per-voice signal reaches it or its output feeds voice processing (pq/graph/
 // infer.h free-running sources); wires out of it into global targets go through their reducer (a reducer of a global
 // value is the value). A free device nothing reads is dropped by the compiler (its face's voice tap keeps a meta one).
+// GROUPS (TX.groups; model.h "Groups"): nothing of their own. A group device is a call of the fixed patch
+// groupPatch() (devices.h; `in x`, `in output`, `out y = output`, `out input = x`; the callee library holds it while a
+// group plays) at its place in the chain like any audio effect (or free); its members are free devices of the track,
+// called as above. Its In terminal is the source port `input` (what reaches the group: the summed audio a stock effect
+// there would receive; nothing for a free group), its Out terminal the input `output` (the Add law: the sum of the
+// wires into it); every wire, inside the capsule or across its edge, is an ordinary wire, so a grouped series is the
+// same graph as the series with the chain's links as wires: tests/app/test_groups.cpp renders both bit for bit
+// (interpreter and JIT). A wide signal (or one whose width only inference knows: the In terminal) into a meta module's
+// input arrives as its mid (l + r) / 2, as the chain gives it (effectCall); on a mono signal that is the signal itself.
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
 struct WireState {
   WireId id;

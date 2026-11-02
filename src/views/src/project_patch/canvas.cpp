@@ -1065,6 +1065,7 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
     const Node& dn = pp.nodes[d];
     if (dn.x + dn.w * 0.5f < w.x) ++index;
   }
+  if (pp.scoped && moved.group) return;  // TX.groups: a group panel holds the group itself still (move it in its chain)
   const doc::Track* now = doc::findDevice(*v.context().doc(), moved.device).track;
   // TX.groups: inside a capsule a block moves freely (a nudge); dragged out of it, it leaves the group; a block dropped
   // into another opened capsule of its band joins that group (from the series: it leaves the series).
@@ -1205,7 +1206,8 @@ ui::InfoText ProjectCanvas::info() const {
           "device to wire it into a parameter, a mixer's output onto a group, return "
           "or the master to route it; double-click a band to open it (its devices opened to their atoms), a device to open it "
           "alone, inside an opened device to edit its circuit. Over a lane window the wheel scrolls time, Ctrl+wheel zooms it; "
-          "double-click a clip to edit it. Ctrl+Alt+P returns to the arrangement."};
+          "double-click a clip to edit it. Ctrl+G groups the selected blocks into a capsule (Ctrl+Shift+G ungroups). "
+          "Ctrl+Alt+P returns to the arrangement."};
 }
 
 }  // namespace pq::views::project_patch
