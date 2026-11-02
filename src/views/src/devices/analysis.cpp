@@ -15,6 +15,7 @@ constexpr double kFrameSeconds = 1.0 / 60.0;
 constexpr double kWatchSeconds = 0.1;      // a settled watched feed looks at its tap this often
 constexpr float kSettledDb = -100.0f;      // below the display floor (−78 dB) with margin
 constexpr float kSilent = 1e-7f;           // |x| below this (−140 dBFS): a chunk counts as silence
+constexpr double kScopeRestSeconds = 2.2;  // TX.scope: silent this long, the history's longest window is flat
 
 double clockNow() {
   using namespace std::chrono;
@@ -38,14 +39,7 @@ SpectrumFeed::SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manu
   const uint32_t nch = std::min<uint32_t>(4, tap_.channels());
   for (uint32_t c = 0; c < nch; ++c) ch_[c].resize(kChunk);
   mono_.resize(std::max<uint32_t>(kChunk, cfg_.hop * 32));
-  if (tap_.channels() >= 4) {
-    monoIn_.resize(mono_.size());
-    dsp::TransferConfig tc;
-    tc.sampleRate = cfg_.sampleRate;
-    std::vector<float> hz(cfg_.points);
-    for (uint32_t p = 0; p < cfg_.points; ++p) hz[p] = std::max(axis_.pointHz(p), 1.0f);
-    transfer_ = std::make_unique<dsp::TransferAnalyzer>(tc, hz);
-  }
+  if (tap_.channels() >= 4) monoIn_.resize(mono_.size());  // the transfer analyser: made when first wanted (work)
   snap_.out.assign(cfg_.points, cfg_.floorDb);
   snap_.peaks.assign(cfg_.points, cfg_.floorDb);
 }
@@ -71,6 +65,15 @@ SpectrumFeed::~SpectrumFeed() {
 }
 
 void SpectrumFeed::acquire(uint32_t wants) {
+  if (wants & kWantScope) {
+    {
+      std::lock_guard lock(scopeMutex_);
+      for (uint32_t c = 0; c < scopeChannels(); ++c)
+        if (scope_[c].empty()) scope_[c].assign(kScopeFrames, c < 2 && tap_.channels() >= 4 ? std::nanf("") : 0.0f);
+    }
+    wantScope_.fetch_add(1, std::memory_order_relaxed);
+    if (wants == kWantScope) scopeOnly_.fetch_add(1, std::memory_order_relaxed);
+  }
   if (wants & kWantInput) wantIn_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_add(1, std::memory_order_relaxed);
   if (consumers_.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -84,6 +87,10 @@ void SpectrumFeed::acquire(uint32_t wants) {
 }
 
 void SpectrumFeed::release(uint32_t wants) {
+  if (wants & kWantScope) {
+    wantScope_.fetch_sub(1, std::memory_order_relaxed);
+    if (wants == kWantScope) scopeOnly_.fetch_sub(1, std::memory_order_relaxed);
+  }
   if (wants & kWantInput) wantIn_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_sub(1, std::memory_order_relaxed);
   if (consumers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
@@ -93,7 +100,9 @@ void SpectrumFeed::release(uint32_t wants) {
 }
 
 uint32_t SpectrumFeed::wants() const noexcept {
-  uint32_t w = kWantOutput;
+  // The output spectrum for every consumer but a scope-only one (TX.scope).
+  uint32_t w = consumers_.load(std::memory_order_relaxed) > scopeOnly_.load(std::memory_order_relaxed) ? kWantOutput : 0u;
+  if (wantScope_.load(std::memory_order_relaxed) > 0) w |= kWantScope;
   if (tap_.channels() >= 4) {
     if (wantIn_.load(std::memory_order_relaxed) > 0) w |= kWantInput;
     if (wantResp_.load(std::memory_order_relaxed) > 0) w |= kWantResponse;
@@ -140,6 +149,60 @@ uint64_t SpectrumFeed::snapshot(uint64_t seq, SpectrumSnapshot& out, bool& settl
   return seq_;
 }
 
+uint64_t SpectrumFeed::scopeEnd(bool& settled) const {
+  {
+    std::lock_guard lock(mutex_);
+    settled = settled_;
+  }
+  std::lock_guard lock(scopeMutex_);
+  return scopeEnd_;
+}
+
+uint32_t SpectrumFeed::scopeRead(uint64_t from, uint32_t n, float* const* out) const {
+  std::lock_guard lock(scopeMutex_);
+  const uint64_t oldest = scopeEnd_ > kScopeFrames ? scopeEnd_ - kScopeFrames : 0;
+  // The held part [a, b) of the request, copied in at most two runs per channel; the rest reads "none".
+  const uint64_t a = std::clamp(from, oldest, scopeEnd_), b = std::clamp(from + n, oldest, scopeEnd_);
+  const uint32_t held = b > a ? static_cast<uint32_t>(b - a) : 0;
+  for (uint32_t c = 0; c < scopeChannels(); ++c) {
+    if (out[c] == nullptr) continue;
+    const float none = c < 2 && tap_.channels() >= 4 ? std::nanf("") : 0.0f;
+    const std::vector<float>& h = scope_[c];
+    if (h.empty() || held == 0) {
+      std::fill(out[c], out[c] + n, none);
+      continue;
+    }
+    const auto lead = static_cast<uint32_t>(a - from);
+    std::fill(out[c], out[c] + lead, none);
+    const auto pos = static_cast<uint32_t>(a & (kScopeFrames - 1));
+    const uint32_t first = std::min(held, kScopeFrames - pos);
+    std::copy(h.begin() + pos, h.begin() + pos + first, out[c] + lead);
+    std::copy(h.begin(), h.begin() + (held - first), out[c] + lead + first);
+    std::fill(out[c] + lead + held, out[c] + n, none);
+  }
+  return held;
+}
+
+void SpectrumFeed::scopeAppend(const float* const* ch, uint32_t n, bool quiet) {
+  std::lock_guard lock(scopeMutex_);
+  for (uint32_t c = 0; c < scopeChannels(); ++c) {
+    std::vector<float>& h = scope_[c];
+    if (h.empty()) return;
+    const auto pos = static_cast<uint32_t>(scopeEnd_ & (kScopeFrames - 1));
+    const uint32_t first = std::min(n, kScopeFrames - pos);
+    if (ch[c] == nullptr) {  // no data for this channel (silence appended while nothing arrives): "none"
+      const float none = c < 2 && tap_.channels() >= 4 ? std::nanf("") : 0.0f;
+      std::fill(h.begin() + pos, h.begin() + pos + first, none);
+      std::fill(h.begin(), h.begin() + (n - first), none);
+      continue;
+    }
+    std::copy(ch[c], ch[c] + first, h.begin() + pos);
+    std::copy(ch[c] + first, ch[c] + n, h.begin());
+  }
+  scopeEnd_ += n;
+  scopeQuiet_ = quiet ? scopeQuiet_ + n : 0;
+}
+
 void SpectrumFeed::hold() {
   std::lock_guard lock(mutex_);
   settled_ = true;
@@ -155,7 +218,16 @@ uint32_t SpectrumFeed::work(double now) {
   ranWants_ = want;
   const bool four = tap_.channels() >= 4;
   const uint32_t oL = four ? 2 : 0, oR = four ? 3 : (tap_.channels() > 1 ? 1 : 0);
-  const bool readIn = four && (want & (kWantInput | kWantResponse)) != 0;
+  const bool scope = (want & kWantScope) != 0;
+  const bool readMonoIn = four && (want & (kWantInput | kWantResponse)) != 0;
+  const bool readIn = readMonoIn || (four && scope);  // a scope keeps every channel of the tap
+  if ((want & kWantResponse) && four && !transfer_) {  // made when first wanted (a scope's feed never needs it)
+    dsp::TransferConfig tc;
+    tc.sampleRate = cfg_.sampleRate;
+    std::vector<float> hz(cfg_.points);
+    for (uint32_t p = 0; p < cfg_.points; ++p) hz[p] = std::max(axis_.pointHz(p), 1.0f);
+    transfer_ = std::make_unique<dsp::TransferAnalyzer>(tc, hz);
+  }
   bool wasSettled;
   {
     std::lock_guard lock(mutex_);
@@ -177,15 +249,28 @@ uint32_t SpectrumFeed::work(double now) {
       continue;
     }
     for (uint32_t i = 0; i < k; ++i) mono_[i] = 0.5f * (ch_[oL][i] + ch_[oR][i]);
-    if (readIn)
+    if (readMonoIn)
       for (uint32_t i = 0; i < k; ++i) monoIn_[i] = 0.5f * (ch_[0][i] + ch_[1][i]);
-    const bool quiet = silent(mono_.data(), k) && (!readIn || silent(monoIn_.data(), k));
+    // (A scope's channels 0 and 1 are a clock and a pitch, not a signal: they never count as sound.)
+    // A scope shows L, R and side too: silence there is both channels silent (a pure side signal's mono is 0).
+    const bool quiet = (scope ? silent(ch_[oL].data(), k) && silent(ch_[oR].data(), k) : silent(mono_.data(), k)) &&
+                       (!readMonoIn || silent(monoIn_.data(), k));
     pos_ += k;
     data = true;
     sound = sound || !quiet;
     // Settled and silent: nothing to show, nothing to compute (the analysers already rest at the floor).
     if (quiet && wasSettled && !sound) continue;
-    ran += out_.push(mono_.data(), k);
+    if (scope) {
+      const float* sc[4] = {ch_[oL].data(), ch_[oR].data(), nullptr, nullptr};
+      if (four) {
+        sc[0] = ch_[0].data();
+        sc[1] = ch_[1].data();
+        sc[2] = ch_[2].data();
+        sc[3] = ch_[3].data();
+      }
+      scopeAppend(sc, k, quiet);
+    }
+    if (want & kWantOutput) ran += out_.push(mono_.data(), k);
     if (want & kWantInput) in_.push(monoIn_.data(), k);
     if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
   }
@@ -193,7 +278,9 @@ uint32_t SpectrumFeed::work(double now) {
     lastData_ = now;
     lastSilence_ = now;
     decaying_ = false;
-  } else if (now - lastData_ > kNoDataSeconds && !out_.allBelow(kSettledDb)) {
+  } else if (now - lastData_ > kNoDataSeconds &&
+             (((want & kWantOutput) && !out_.allBelow(kSettledDb)) ||
+              (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate))) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
     if (!decaying_) {
       decaying_ = true;
@@ -203,7 +290,12 @@ uint32_t SpectrumFeed::work(double now) {
     const uint32_t frames = static_cast<uint32_t>(std::min<double>(due, static_cast<double>(mono_.size())));
     if (frames >= cfg_.hop) {
       std::fill(mono_.begin(), mono_.begin() + frames, 0.0f);
-      ran += out_.push(mono_.data(), frames);
+      if (scope) {  // the trace flattens (no clock, no note: nothing played)
+        const float* sc[4] = {mono_.data(), mono_.data(), mono_.data(), mono_.data()};
+        if (four) sc[0] = sc[1] = nullptr;
+        scopeAppend(sc, frames, true);
+      }
+      if (want & kWantOutput) ran += out_.push(mono_.data(), frames);
       if (want & kWantInput) in_.push(mono_.data(), frames);
       if ((want & kWantResponse) && transfer_) {
         if (monoIn_.size() >= frames) std::fill(monoIn_.begin(), monoIn_.begin() + frames, 0.0f);
@@ -213,8 +305,10 @@ uint32_t SpectrumFeed::work(double now) {
     }
   }
   // Settled: everything shown rests at the floor and nothing that sounds arrived (silent data may still flow).
-  const bool rest = out_.allBelow(kSettledDb) && (!(want & kWantInput) || in_.allBelow(kSettledDb)) &&
-                    (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident());
+  const bool rest = (!(want & kWantOutput) || out_.allBelow(kSettledDb)) &&
+                    (!(want & kWantInput) || in_.allBelow(kSettledDb)) &&
+                    (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident()) &&
+                    (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate);
   const bool settledNow = !sound && rest && (data || now - lastData_ > kNoDataSeconds);
   bool post = false;
   if (ran > 0 || settledNow != wasSettled) {

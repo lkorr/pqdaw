@@ -8,5 +8,6 @@ set(PQ_VIEWS_META_SOURCES
   src/meta/envelope_face.cpp    # TMM.11: the Envelope face
   src/meta/vca_face.cpp         # TMM.14: the VCA face
   src/meta/spectrum_face.cpp    # TX.spectrum: the Spectrum face (the reusable spectrum display)
+  src/meta/scope_face.cpp       # TX.scope: the Oscilloscope face (pq/dsp/scope.h; PQ Meter's oscilloscope)
   src/meta/wavetable_edit.cpp   # TMM.9: its harmonic editor and draw tools (the math)
   src/meta/wavetable_model.cpp) # TMM.7: its display frames (keyframe spectra, dense frames, the bake at display resolution)

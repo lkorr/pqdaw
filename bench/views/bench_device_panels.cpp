@@ -5,6 +5,7 @@
 //   - an EQ Eight spectrum frame while audio plays: snapshot → 45 ms ease → the display repainted (the analysis apart)
 //   - the analysis per hop (2048-point FFT, every other hop the 8192-point one, 1024 points, ballistics)
 //   - the audio side: the tap's write of a 128-frame stereo block, with a reader and without one
+//   - TX.scope: the scope tracker per frame (detected / note period), 4 Oscilloscope faces per 60 Hz frame
 // Results → bench/RESULTS.md (ship).
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include <windows.h>
@@ -23,7 +25,11 @@
 #include "pq/dsp/fft.h"
 #include "pq/dsp/spectrum.h"
 #include "pq/dsp/atoms.h"
+#include "pq/dsp/scope.h"
 #include "pq/dsp/transfer.h"
+#include "pq/meta/oscilloscope.h"
+#include "pq/ui/face_painter.h"
+#include "pq/views/meta/meta_face.h"
 #include "pq/views/devices/spectrum_plot.h"
 #include "pq/ui/atlas.h"
 #include "pq/ui/draw_list.h"
@@ -391,6 +397,79 @@ int main() {
         },
         1);
     pq::bench::report("device.8 spectrum displays, every layer (spectrum, peaks, measured response, grid), 300 x 110 at 2x",
+                      stats, "ns/frame");
+  }
+
+  // ---- TX.scope: the tracker per frame, 4 Oscilloscope faces (poll + paint) ----
+  {
+    auto bright = [](double ph) {
+      double v = 0.0;
+      for (int k = 1; k <= 8; ++k) v += std::sin(2.0 * 3.14159265358979323846 * k * ph + 0.7 * k * k) / k;
+      return static_cast<float>(0.45 * v);
+    };
+    std::vector<float> sig(48000 * 4);
+    for (size_t i = 0; i < sig.size(); ++i) sig[i] = bright(220.0 * static_cast<double>(i) / 48000.0);
+    for (const bool note : {false, true}) {
+      dsp::ScopeTracker t;
+      size_t end = 96000;
+      std::vector<double> ns;
+      for (int i = 0; i < 2000; ++i) {
+        if (end + 800 > sig.size()) end = 96000;
+        const size_t n = std::min(t.need(48000.0), end);
+        const uint64_t c0 = threadCycles();
+        (void)t.frame(std::span<const float>(sig.data() + end - n, n), 48000.0, note ? 220.0f : 0.0f, false);
+        ns.push_back(static_cast<double>(threadCycles() - c0) * nsPerCycle);
+        end += 800;
+      }
+      pq::bench::reportStats(note ? "device.scope tracker per frame, Pitch (Constant), the note's period (220 Hz bright wave)"
+                                  : "device.scope tracker per frame, Pitch (Constant), detected (220 Hz bright wave)",
+                             pq::bench::summarize(ns), "ns CPU/frame");
+    }
+    struct Rig {
+      TapRing tap{4, 32768, 4096};
+      SpectrumFeed feed{tap, AnalysisHub::config(48000.0), SpectrumFeed::Manual{}};
+      std::unique_ptr<views::MetaFace> face = views::makeFace(meta::oscilloscopeType());
+      uint64_t at = 0;
+      double now = 1.0;
+    };
+    std::vector<std::unique_ptr<Rig>> rigs;
+    auto feedRig = [&](Rig& r, uint32_t n) {
+      std::vector<float> b(n), hz(n, 0.0f), l(n), rr(n);
+      for (uint32_t i = 0; i < n; ++i) {
+        b[i] = static_cast<float>(static_cast<double>(r.at + i) * 2.0 / 48000.0);
+        l[i] = sig[(r.at + i) % sig.size()];
+        rr[i] = 0.5f * l[i];
+      }
+      const float* ch[4] = {b.data(), hz.data(), l.data(), rr.data()};
+      r.tap.write(ch, 4, n);
+      r.at += n;
+      r.feed.step(r.now += static_cast<double>(n) / 48000.0);
+    };
+    ui::DrawList faceDl;
+    const views::FaceEnv env{res.theme, 1.0f};
+    for (int i = 0; i < 4; ++i) {
+      auto r = std::make_unique<Rig>();
+      r->face->bind(nullptr, nullptr);
+      Rig* raw = r.get();
+      r->face->setAnalysis([raw] { return &raw->feed; }, [] {});
+      faceDl.reset(2560, 1440);
+      ui::FacePainter p(faceDl, {{0.0f, 0.0f}, 2.3f});
+      r->face->paintLive(p, env);  // shown: acquires the history
+      feedRig(*r, 24000);
+      rigs.push_back(std::move(r));
+    }
+    auto stats = pq::bench::measure(
+        [&] {
+          for (auto& r : rigs) feedRig(*r, 800);  // a 60 Hz frame's audio (the analysis thread's side, timed too)
+          faceDl.reset(2560, 1440);
+          for (size_t i = 0; i < rigs.size(); ++i) {
+            (void)rigs[i]->face->pollVoices();
+            ui::FacePainter p(faceDl, {{20.0f + 620.0f * static_cast<float>(i % 2), 20.0f + 400.0f * static_cast<float>(i / 2)}, 2.3f});
+            rigs[i]->face->paintLive(p, env);
+          }
+        },
+        1);
+    pq::bench::report("device.4 oscilloscope faces, a 60 Hz frame: 800 new frames each, poll (copy + pitch + align) + paint, 600 x 370 px",
                       stats, "ns/frame");
   }
   return 0;

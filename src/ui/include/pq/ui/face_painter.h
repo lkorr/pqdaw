@@ -88,6 +88,9 @@ public:
   // A run of text of nominal size `px` (world units) centred on `centre` (its cap-height centre); see the file
   // comment for sizes and the bar below 4 device px. Without a text system: the bar.
   void text(Vec2 centre, std::string_view utf8, float px, Rgba col);
+  // TX.scope: the same run placed by its measured width: `align` 0 puts its left edge at anchor.x, 0.5 centres it,
+  // 1 puts its right edge there (a column of labels or right-aligned values); anchor.y is its cap-height centre.
+  void textAligned(Vec2 anchor, std::string_view utf8, float px, Rgba col, float align);
   // The device pixel size text() uses for nominal size `px` at this scale (0: drawn as a bar).
   uint32_t textPixels(float px) const noexcept;
 

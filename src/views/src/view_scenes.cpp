@@ -1968,6 +1968,144 @@ Status setupProjectMetaSpectrum(Shell& shell) {
   return Ok{};
 }
 
+constexpr double kScenePi = 3.14159265358979323846;
+
+// ---- TX.scope ---------------------------------------------------------------------------------------------------------
+
+// An audio track "Scopes" with three Oscilloscopes, each showing another timebase: PITCH locked to the note (a bright
+// 220 Hz wave whose tap carries the voice's pitch), FIXED with an edge trigger in two lanes (L 110 Hz bright, R a
+// 165 Hz sine), BEAT over one bar (a groove: a decaying 55 Hz kick on each beat, a noise tick on the off-beats).
+struct ScopeIds {
+  doc::TrackId track;
+  doc::DeviceId pitch, fixed, beat;
+};
+
+Status buildScopeProject(doc::DocumentStore& store, ScopeIds& ids) {
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio, {}, "Scopes",
+                                                      doc::Colour{0x3FA9F5}));
+  if (!t || t->tracks.empty()) return Error{ErrorCode::Unknown, "scope scene: no track", {}};
+  ids.track = t->tracks[0];
+  auto add = [&](std::vector<std::pair<std::string, double>> opts) -> doc::DeviceId {
+    const auto e = runEdit(store, doc::ops::addMetaDevice(*store.current(), store.ids(), ids.track, "oscilloscope"));
+    if (!e || e->devices.empty()) return {};
+    std::vector<std::pair<std::string, meta::DataValue>> f;
+    for (auto& [k, v] : opts) f.emplace_back(k, meta::DataValue::num(v));
+    (void)runEdit(store, doc::ops::setMetaData(*store.current(), e->devices[0], "", "oscilloscope",
+                                               std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)))));
+    return e->devices[0];
+  };
+  ids.pitch = add({{"lock", 1.0}, {"cyc", 2.0}});                        // Pitch, Tracking, 2 cycles (the note's period)
+  ids.fixed = add({{"tb", 0.0}, {"ch", 4.0}, {"win", 12.0}});            // Fixed 12 ms, rising trigger, L / R lanes
+  ids.beat = add({{"tb", 2.0}, {"glow", 0.6}});                          // Beat, 1 bar
+  if (!ids.pitch.valid() || !ids.fixed.valid() || !ids.beat.valid()) return Error{ErrorCode::Unknown, "scope scene: no Oscilloscope", {}};
+  return Ok{};
+}
+
+// A 4-channel tap of 3 s of `gen(i, beat, hz, l, r)` at 48 kHz through a manual feed that keeps its scope history (a
+// consumer for the scene's life), then held (deterministic).
+struct ScopeSource {
+  std::shared_ptr<TapRing> tap;
+  std::shared_ptr<devices::SpectrumFeed> feed;
+};
+template <class Gen>
+ScopeSource makeScopeSource(Gen gen) {
+  ScopeSource s;
+  s.tap = std::make_shared<TapRing>(4, 32768, 4096);
+  s.feed = std::make_shared<devices::SpectrumFeed>(*s.tap, devices::AnalysisHub::config(48000.0), devices::SpectrumFeed::Manual{});
+  s.feed->acquire(devices::kWantScope);
+  constexpr uint32_t kFrames = 144000, kChunk = 4096;
+  std::vector<float> ch[4];
+  for (auto& c : ch) c.resize(kChunk);
+  for (uint32_t i = 0; i < kFrames; i += kChunk) {
+    const uint32_t n = std::min(kChunk, kFrames - i);
+    for (uint32_t k = 0; k < n; ++k) gen(i + k, ch[0][k], ch[1][k], ch[2][k], ch[3][k]);
+    const float* p[4] = {ch[0].data(), ch[1].data(), ch[2].data(), ch[3].data()};
+    s.tap->write(p, 4, n);
+    s.feed->step(1.0 + static_cast<double>(i) / 48000.0);
+  }
+  s.feed->hold();
+  return s;
+}
+
+double scopeBright(double ph) {
+  double v = 0.0;
+  for (int k = 1; k <= 8; ++k) v += std::sin(2.0 * kScenePi * k * ph + 0.7 * k * k) / k;
+  return 0.45 * v;
+}
+
+Status adoptScopeFeeds(ViewContext& ctx, const ScopeIds& ids) {
+  constexpr double kSr = 48000.0, kBeat = 2.0 / kSr;  // 120 bpm
+  ScopeSource pitch = makeScopeSource([](uint32_t i, float& b, float& hz, float& l, float& r) {
+    b = static_cast<float>(i * kBeat);
+    hz = 220.0f;
+    l = r = static_cast<float>(0.6 * scopeBright(220.0 * i / kSr));
+  });
+  ScopeSource fixed = makeScopeSource([](uint32_t i, float& b, float& hz, float& l, float& r) {
+    b = static_cast<float>(i * kBeat);
+    hz = 0.0f;
+    l = static_cast<float>(0.5 * scopeBright(110.0 * i / kSr));
+    r = static_cast<float>(0.35 * std::sin(2.0 * kScenePi * 165.0 * i / kSr));
+  });
+  ScopeSource beat = makeScopeSource([seed = uint32_t{0x2468ACEu}](uint32_t i, float& b, float& hz, float& l, float& r) mutable {
+    const double beatPos = i * kBeat;
+    b = static_cast<float>(beatPos);
+    hz = 0.0f;
+    const double inBeat = beatPos - std::floor(beatPos), sec = inBeat * 0.5;  // seconds since the beat
+    const double kick = std::exp(-sec / 0.07) * std::sin(2.0 * kScenePi * 55.0 * sec);
+    seed = seed * 1664525u + 1013904223u;
+    const double noise = (static_cast<double>(seed >> 8) / 8388608.0 - 1.0);
+    const double off = inBeat >= 0.5 ? std::exp(-(sec - 0.25) / 0.012) * noise * 0.35 : 0.0;
+    l = static_cast<float>(0.8 * kick + off);
+    r = static_cast<float>(0.8 * kick - 0.6 * off);
+  });
+  const doc::DeviceId p = ids.pitch, f = ids.fixed, bt = ids.beat;
+  ctx.setAnalysisSource(
+      [p, f, bt, pt = pitch.tap, ft = fixed.tap, btt = beat.tap](doc::DeviceId d) -> std::shared_ptr<TapRing> {
+        return d == p ? pt : d == f ? ft : d == bt ? btt : nullptr;
+      },
+      kSr);
+  if (ctx.analysisHub() == nullptr) return Error{ErrorCode::Unknown, "scope scene: no analysis hub", {}};
+  ctx.analysisHub()->adopt(p, pitch.tap, pitch.feed);
+  ctx.analysisHub()->adopt(f, fixed.tap, fixed.feed);
+  ctx.analysisHub()->adopt(bt, beat.tap, beat.feed);
+  return Ok{};
+}
+
+// The Device view of "Scopes": the three Oscilloscope faces.
+Status setupDeviceMetaScope(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  ScopeIds ids;
+  if (Status s = buildScopeProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptScopeFeeds(ctx, ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-scope: the Device view is not installed", {}};
+  ctx.setSelectedTrack(ids.track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The same project in the project patch view: the band of "Scopes", its three faces as blocks.
+Status setupProjectMetaScope(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  ScopeIds ids;
+  if (Status s = buildScopeProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptScopeFeeds(ctx, ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-scope: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.track, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // The same project in the project patch view, "Trem" opened in place: acc1 → wt1 → vca1 (Bend 0 … 2), four voices
 // whose knob positions a modulation spreads.
 Status setupProjectMetaVca(Shell& shell) {
@@ -2163,6 +2301,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-vca", 1280, 800, setupProjectMetaVca},              // TMM.14
     {"device-meta-spectrum", 1280, 800, setupDeviceMetaSpectrum},      // TX.spectrum
     {"project-meta-spectrum", 1280, 800, setupProjectMetaSpectrum},    // TX.spectrum
+    {"device-meta-scope", 1280, 800, setupDeviceMetaScope},            // TX.scope
+    {"project-meta-scope", 1280, 800, setupProjectMetaScope},          // TX.scope
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)
     {"meta-operator-circuit", 1600, 900, setupMetaOperatorCircuit},    // TMM.12
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8

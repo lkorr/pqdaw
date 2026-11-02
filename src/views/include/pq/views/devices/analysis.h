@@ -12,6 +12,11 @@
 //   Response   dsp::TransferAnalyzer from input mid to output mid (4-channel taps): |H| per point and its confidence
 //              (no curve on silence or where the output does not follow the input)
 // A consumer acquires with the analyses it draws (kWant*); the worker runs only those somebody wants.
+//   Scope      TX.scope: the tap's history, kept as it arrives (no analysis: an oscilloscope face reads windows of it
+//              with scopeRead and runs its own trigger, pq/dsp/scope.h). Channels as the tap's: a 4-channel tap's four
+//              (the Oscilloscope module taps the transport's beat, the lowest voice's pitch, its L and R; pq/meta/
+//              oscilloscope.h), a 2-channel tap's two. kScopeFrames frames (5.5 s at 48 kHz). A consumer that wants
+//              only the scope costs no spectrum analysis.
 //
 // Costs nothing while hidden: with no consumer the worker blocks on a condition variable and the tap has no reader, so
 // the audio thread's write is one relaxed load. Shown: the worker runs at the display's rate (60 Hz) while the levels
@@ -27,6 +32,7 @@
 //
 // Threads: acquire / release / snapshot / wakers on the UI thread; the worker its own; setSourceLive any.
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -46,7 +52,7 @@
 namespace pq::views::devices {
 
 // What a consumer of a feed draws (acquire's flags).
-inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u;
+inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u;
 
 // One published state of a feed (per point of the analyser's axis).
 struct SpectrumSnapshot {
@@ -97,6 +103,17 @@ public:
   uint64_t snapshot(uint64_t seq, std::vector<float>& levels, bool& settled) const;
   uint64_t snapshot(uint64_t seq, SpectrumSnapshot& out, bool& settled) const;
 
+  // ---- TX.scope: the history (kWantScope) ----
+  static constexpr uint32_t kScopeFrames = 1u << 18;
+  uint32_t scopeChannels() const noexcept { return std::min<uint32_t>(4, tap_.channels()); }
+  // UI thread: frames appended so far (free-running; the history holds the last kScopeFrames of them) and whether the
+  // worker has nothing new to show (settled: the last 2.2 s appended were silent, or nothing is wanted).
+  uint64_t scopeEnd(bool& settled) const;
+  // Copies frames [from, from + n) of the history into out[c] (c < scopeChannels(); a null out[c] is skipped); frames
+  // no longer (or not yet) held read as 0 (NaN in channels 0 and 1 of a 4-channel tap: "no clock, no note"). Returns
+  // the frames that were held.
+  uint32_t scopeRead(uint64_t from, uint32_t n, float* const* out) const;
+
   // Tests: runs the worker's step synchronously instead of the thread (the thread is not started).
   struct Manual {};
   SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual);
@@ -114,6 +131,7 @@ private:
   uint32_t work(double now);  // one iteration; the analysers are the worker's
   bool peekSound();           // a settled watched feed: anything non-silent arrived (advances pos_)
   uint32_t wants() const noexcept;
+  void scopeAppend(const float* const* ch, uint32_t n, bool quiet);  // the worker
 
   std::shared_ptr<TapRing> owner_;
   TapRing& tap_;
@@ -127,7 +145,7 @@ private:
   double lastData_ = 0.0, lastSilence_ = 0.0;
   bool decaying_ = false;
   uint32_t ranWants_ = 0;  // what the worker computed last (a new want restarts its analyser)
-  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0};
+  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, scopeOnly_{0};
   std::atomic<bool> live_{false}, watch_{false};
   std::atomic<uint64_t> hops_{0}, wakeups_{0}, posts_{0};
   std::function<void()> wakePost_;
@@ -137,6 +155,11 @@ private:
   SpectrumSnapshot snap_;
   uint64_t seq_ = 0;
   bool settled_ = true;
+  // TX.scope: the history (scopeMutex_; allocated by the first scope consumer).
+  mutable std::mutex scopeMutex_;
+  std::vector<float> scope_[4];
+  uint64_t scopeEnd_ = 0;
+  uint64_t scopeQuiet_ = 0;  // frames appended since the last non-silent one (worker)
   bool quit_ = false;
   std::thread thread_;
 };

@@ -163,7 +163,9 @@ uint32_t FacePainter::textPixels(float px) const noexcept {
   return std::clamp<uint32_t>(quantisePx(d), 4, 256);
 }
 
-void FacePainter::text(Vec2 centre, std::string_view utf8, float px, Rgba col0) {
+void FacePainter::text(Vec2 centre, std::string_view utf8, float px, Rgba col0) { textAligned(centre, utf8, px, col0, 0.5f); }
+
+void FacePainter::textAligned(Vec2 centre, std::string_view utf8, float px, Rgba col0, float align) {
   ++count_;
   if (invisible(col0)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
   const Rgba col = c(col0);
@@ -174,13 +176,13 @@ void FacePainter::text(Vec2 centre, std::string_view utf8, float px, Rgba col0) 
     if (auto f = text_->font(face_, dpx)) {
       const TextRun run = text_->shape(*f, utf8);
       const float cap = std::round(0.727f * static_cast<float>(dpx));
-      TextSystem::drawRun(dl_, run, {std::round(at.x - static_cast<float>(run.advance) * 0.5f), std::round(at.y + cap * 0.5f)}, col);
+      TextSystem::drawRun(dl_, run, {std::round(at.x - static_cast<float>(run.advance) * align), std::round(at.y + cap * 0.5f)}, col);
       return;
     }
   }
   // Too small to read (or no text system): a bar of the run's extent (≈ 0.55 em per character, 0.35 em tall).
   const float w = t_.len(px) * 0.55f * static_cast<float>(utf8.size()), h = std::max(t_.len(px) * 0.35f, 0.5f);
-  dl_.addRoundedRectFilled({at.x - w * 0.5f, at.y - h * 0.5f, at.x + w * 0.5f, at.y + h * 0.5f}, 0.0f,
+  dl_.addRoundedRectFilled({at.x - w * align, at.y - h * 0.5f, at.x + w * (1.0f - align), at.y + h * 0.5f}, 0.0f,
                            mulAlpha(col, std::min(1.0f, 0.6f * h + 0.2f)));
 }
 
