@@ -379,14 +379,14 @@ int main() {
       pl->setShownForTest(s, static_cast<float>(P));
       plots.push_back(std::move(pl));
     }
-    ui::DrawList dl;
+    ui::DrawList plotDl;
     PlotText text;
     auto stats = pq::bench::measure(
         [&] {
-          dl.reset(2560, 1440);
+          plotDl.reset(2560, 1440);
           for (int i = 0; i < 8; ++i) {
             const float x = 20.0f + 620.0f * static_cast<float>(i % 4), y = 20.0f + 360.0f * static_cast<float>(i / 4);
-            plots[i]->paintAll(dl, {x, y, x + 600.0f, y + 220.0f}, *res.theme, 2.0f, text);
+            plots[i]->paintAll(plotDl, {x, y, x + 600.0f, y + 220.0f}, *res.theme, 2.0f, text);
           }
         },
         1);
