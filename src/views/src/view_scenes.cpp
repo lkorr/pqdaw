@@ -1577,6 +1577,38 @@ Status setupProjectMetaChain(Shell& shell) {
   return Ok{};
 }
 
+// TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): the meta chain project with two FREE devices on the
+// Lead band (out of its series, on the row under the chain): a Phase accumulator at 2 Hz whose output adds to the
+// Wavetable's position (a wire onto a face's control), and a Utility whose audio input takes the Lead accumulator's main
+// output (any output into any input). The Lead band framed.
+Status setupProjectPatchFree(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-free: no device library", {}};
+  project_patch::MetaChainIds ids;
+  if (Status s = project_patch::buildMetaChainProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-free: the view is not installed", {}};
+  if (!v->addFreeDevice(ids.lead, "meta:phase_acc") || !v->addFreeDevice(ids.lead, "utility"))
+    return Error{ErrorCode::Unknown, "project-patch-free: adding the free devices failed", {}};
+  const doc::Track* lead = doc::findTrackPtr(*ctx.doc(), ids.lead);
+  if (lead == nullptr || lead->devices.size() < 5) return Error{ErrorCode::NotFound, "project-patch-free: no Lead chain", {}};
+  const doc::DeviceId lfo = lead->devices[3]->id, util = lead->devices[4]->id;
+  auto run = [&](const doc::ops::EditResult& e) -> Status {
+    if (!e) return e.error();
+    return ctx.store().dispatch(e->command);
+  };
+  if (Status s = run(doc::ops::setDeviceParam(*ctx.doc(), lfo, "freq", 2.0)); !s) return s;
+  if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), lfo, "out", ids.wt, "position")); !s) return s;
+  if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), ids.acc, "out", util, "x")); !s) return s;
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.lead, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): the same project in the project patch view
 // with wires from the note sources' outputs: Meta Lead's velocity into its Wavetable's position (per voice: the run's
 // stage), its Hz into the Auto Filter's frequency (the global filter: through the wire's reducer, highest), its gate
@@ -1950,6 +1982,7 @@ constexpr SceneEntry kScenes[] = {
     {"device-meta-chain", 1280, 800, setupDeviceMetaChain},            // TMM.10
     {"project-meta-chain", 1280, 800, setupProjectMetaChain},          // TMM.10
     {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
+    {"project-patch-free", 1280, 800, setupProjectPatchFree},          // TX.patching
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14

@@ -135,7 +135,8 @@ TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a c
   CHECK(wires[0].port == "lfo");
   CHECK(wires[0].to == u.util);
   CHECK(wires[0].param == "width");
-  CHECK(wires[0].amount == doc::kDefaultWireAmount);
+  CHECK(wires[0].law == doc::WireLaw::Add);  // TX.patching: a new wire adds in the knob's units, no amount
+  CHECK(wires[0].amount == 1.0);
   CHECK_FALSE(u.layer().dragging());
   u.d.step();
   const CableLayer::Cable* c = u.cable(wires[0].id);
@@ -357,13 +358,14 @@ TEST_CASE("wiring cursors (T4.16c): jacks Crosshair; a dragged cable Crosshair o
   REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == 1);  // the drop wired it, as the cursor said
   const doc::WireId w = doc::wiresOf(*u.ctx.doc())[0].id;
   u.d.step();
-  // The badge: a vertical drag sets the amount; hovering it lights its cable (only that cable repaints).
+  // The badge: hovering it lights its cable (only that cable repaints). TX.patching: the wire this drop made adds in
+  // the knob's units and has no amount to drag (a Pointer, not ResizeNS; a migrated Travel wire's badge still drags).
   REQUIRE(u.cable(w) != nullptr);
   const Vec2 b = mid(u.cable(w)->badge);
   u.d.move({b.x + 60.0f, b.y + 60.0f});
   u.d.step();
   CHECK_FALSE(u.layer().hoveredWire().valid());
-  CHECK(at(b) == Cursor::ResizeNS);
+  CHECK(at(b) == Cursor::Pointer);
   CHECK(u.layer().hoveredWire() == w);
   IRect rects[Damage::kMaxRects];
   int64_t area = 0;

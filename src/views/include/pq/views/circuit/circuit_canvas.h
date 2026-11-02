@@ -185,6 +185,13 @@ protected:
   // pointer).
   ui::Cursor faceCursor(ui::Vec2 pos) const;
   bool faceInfo(ui::InfoText& out) const;
+  // TX.patching: the face param (meta::Type::params index) whose control is under device point `pos` (MetaFace::
+  // paramRect), with the face's scene node; {kNone-ish: node UINT32_MAX, param −1} when none (a cable drop target).
+  struct FaceParamHit {
+    uint32_t node = UINT32_MAX;
+    int32_t param = -1;
+  };
+  FaceParamHit faceParamAt(ui::Vec2 pos) const;
   bool faceDragging() const noexcept;
   // Drawn over the scene, inside the canvas (editing previews, probes).
   virtual void paintOverlay(ui::PaintContext& /*ctx*/) {}

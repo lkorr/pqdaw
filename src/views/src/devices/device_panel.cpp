@@ -363,16 +363,20 @@ public:
     if (f) {
       ui::IRect t{fr.right() + ctx.scale.px(4), r.y, std::max(0, (p.w > 0 ? p.x : r.right()) - fr.right() - ctx.scale.px(8)), r.h};
       // T4.4-fix1: a user device — "● edited" after the title, in the accent colour (room kept for it first).
-      static constexpr std::string_view kEdited = "\xE2\x97\x8F edited";
+      // TX.patching: a free device (out of the series) — "◌ free", after "● edited" when both.
+      const std::string_view kEdited = panel_.edited() && panel_.free() ? "\xE2\x97\x8F edited  \xE2\x97\x8C free"
+                                       : panel_.free()                  ? "\xE2\x97\x8C free"
+                                                                        : "\xE2\x97\x8F edited";
       int32_t markW = 0;
-      if (panel_.edited() && ctx.res.text) markW = ctx.res.text->measure(f->small, kEdited) + ctx.scale.px(6);
+      if ((panel_.edited() || panel_.free()) && ctx.res.text) markW = ctx.res.text->measure(f->small, kEdited) + ctx.scale.px(6);
       if (markW > t.w / 2) markW = 0;  // too narrow (folded): the title alone
       t.w -= markW;
       const int32_t adv = rename_ != nullptr ? 0 :  // T4.17: the rename field draws the name
           paint::text(ctx, f->bodyStrong, t, title_, panel_.active() ? th->device.titleText : th->device.titleTextOff, ui::TextAlign::Left);
       if (markW > 0 && rename_ == nullptr)
         paint::text(ctx, f->small, {t.x + adv + ctx.scale.px(6), r.y, markW, r.h}, kEdited,
-                    panel_.active() ? th->accent.primary : th->device.titleTextOff, ui::TextAlign::Left);
+                    !panel_.active() ? th->device.titleTextOff : panel_.edited() ? th->accent.primary : th->device.label,
+                    ui::TextAlign::Left);
       if (p.w > 0) {  // T5.11: the preset name; a click hot-swaps (the host's onPresetClick)
         const bool live = static_cast<bool>(panel_.onPresetClick);
         paint::box(ctx.dl, p, 0.0f, hoverPreset_ && live ? th->surface.raised : th->field.fill, th->device.border);
@@ -975,6 +979,12 @@ bool DevicePanel::renaming() const noexcept { return static_cast<const TitleBar*
 void DevicePanel::setEdited(bool e) {
   if (edited_ == e) return;
   edited_ = e;
+  markDirty();
+}
+
+void DevicePanel::setFree(bool f) {
+  if (free_ == f) return;
+  free_ = f;
   markDirty();
 }
 

@@ -1053,6 +1053,56 @@ bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, u
   return apply(doc::ops::addDevice(*ctx_.doc(), ctx_.store().ids(), track, patch, kind, index), "Add Device");
 }
 
+bool ProjectPatchView::addFreeDevice(doc::TrackId track, const std::string& patch) {
+  const doc::Project& p = *ctx_.doc();
+  doc::ops::EditResult add = doc::ops::Edit{};
+  if (patch.starts_with(doc::kMetaDevicePrefix)) {
+    add = doc::ops::addMetaDevice(p, ctx_.store().ids(), track, patch.substr(doc::kMetaDevicePrefix.size()));
+  } else {
+    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+    const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(patch) : nullptr;
+    if (info != nullptr && info->kind == doc::DeviceKind::Instrument) {
+      ctx_.setStatus("Add Free Device: an instrument goes first in the chain (a meta module can be free)");
+      return false;
+    }
+    add = doc::ops::addDevice(p, ctx_.store().ids(), track, patch, doc::DeviceKind::AudioEffect);
+  }
+  if (!add || add->empty() || add->devices.empty()) return apply(add, "Add Free Device");
+  // The add and the take-out as one step: applied in turn on a scratch snapshot, dispatched as one Batch.
+  doc::ChangeSet cs;
+  auto mid = doc::apply(ctx_.doc(), add->command, cs);
+  if (!mid) {
+    ctx_.setStatus("Add Free Device: " + mid.error().message);
+    return false;
+  }
+  const doc::DeviceId one[1] = {add->devices.back()};
+  doc::ops::EditResult out = doc::ops::setDevicesFree(**mid, one, true);
+  if (!out) return apply(out, "Add Free Device");
+  return dispatch(doc::Batch{"Add Free Device", {add->command, out->command}}, "Add Free Device");
+}
+
+bool ProjectPatchView::setDevicesFree(std::span<const doc::DeviceId> devices, bool free) {
+  return apply(doc::ops::setDevicesFree(*ctx_.doc(), devices, free), free ? "Take Out of Chain" : "Put Into Chain");
+}
+
+bool ProjectPatchView::putIntoChain(doc::DeviceId device, uint32_t index) {
+  const doc::Track* t = doc::findDevice(*ctx_.doc(), device).track;
+  if (t == nullptr) return false;
+  const doc::DeviceId one[1] = {device};
+  doc::ops::EditResult back = doc::ops::setDevicesFree(*ctx_.doc(), one, false);
+  if (!back || back->empty()) return apply(back, "Put Into Chain");
+  doc::ChangeSet cs;
+  auto mid = doc::apply(ctx_.doc(), back->command, cs);
+  if (!mid) {
+    ctx_.setStatus("Put Into Chain: " + mid.error().message);
+    return false;
+  }
+  doc::ops::EditResult move = doc::ops::moveDevice(**mid, device, t->id, index);
+  if (!move) return apply(move, "Put Into Chain");
+  if (move->empty()) return dispatch(back->command, "Put Into Chain");
+  return dispatch(doc::Batch{"Put Into Chain", {back->command, move->command}}, "Put Into Chain");
+}
+
 void ProjectPatchView::rebindFaces() { canvas_->rebindFaces(); }
 
 void ProjectPatchView::wakeFaces() {
@@ -1216,6 +1266,30 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   ui::MenuItem sub = ui::MenuItem::sub("Add Device", std::move(add));
   sub.enabled = !sub.submenu.empty();
   items.push_back(std::move(sub));
+  // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): a device placed in the band unconnected (out of
+  // its series, under the chain): it plays only through the wires drawn to and from it.
+  std::vector<ui::MenuItem> addFree;
+  if (const doc::DeviceLibrary* lib = ctx_.deviceLibrary())
+    for (const doc::DeviceInfo& d : lib->catalog().devices()) {
+      if (d.kind == doc::DeviceKind::Instrument) continue;  // a stock instrument stays first in its chain
+      const doc::TrackId track = b.track;
+      const std::string patch = d.patch;
+      addFree.push_back(ui::MenuItem::item(d.name, [this, track, patch] { (void)addFreeDevice(track, patch); }));
+    }
+  if (!addFree.empty()) {
+    addFree.push_back(ui::MenuItem::sep());
+    ui::MenuItem head = ui::MenuItem::item("Meta Modules");
+    head.enabled = false;
+    addFree.push_back(std::move(head));
+    for (const meta::Type* t : metaModuleTypes()) {
+      const doc::TrackId track = b.track;
+      const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
+      addFree.push_back(ui::MenuItem::item("   " + std::string(t->name), [this, track, patch] { (void)addFreeDevice(track, patch); }));
+    }
+  }
+  ui::MenuItem freeSub = ui::MenuItem::sub("Add Free Device", std::move(addFree));
+  freeSub.enabled = !freeSub.submenu.empty();
+  items.push_back(std::move(freeSub));
   items.push_back(ui::MenuItem::sep());
   const doc::TrackId track = b.track;
   items.push_back(ui::MenuItem::item("Open Band", [this, track] { openBand(track); }));  // T5.x-circuit-chain
@@ -1246,6 +1320,14 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
       const doc::DeviceId one[1] = {d};
       (void)toggleDevicesActive(one);
     }, "0"));
+    // TX.patching: out of the series (it keeps its wires and plays only through them) or back into it.
+    const bool free = n.free;
+    ui::MenuItem series = ui::MenuItem::item(free ? "Put Into Chain" : "Take Out of Chain", [this, d, free] {
+      const doc::DeviceId one[1] = {d};
+      (void)setDevicesFree(one, !free);
+    });
+    series.enabled = free || (!n.rack && !(n.instrument && !n.meta));
+    items.push_back(std::move(series));
     ui::MenuItem open = ui::MenuItem::item(deviceExpanded(d) ? "Close Atoms" : "Open to Atoms", [this, d] { setDeviceExpanded(d, !deviceExpanded(d)); });
     open.enabled = !n.missing;
     items.push_back(std::move(open));
@@ -1355,6 +1437,22 @@ ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string&
       (void)(notes.valid() ? connectNotes(notes, port, to, name) : connect(from, port, to, name));  // TMM.10-fix2
     }));
   }
+  // TX.patching: its inputs too (an audio input: the signal adds to the chain's; a meta module's frequency or phase
+  // modulation input). A meta device's are its type's real inputs (the expansion has an `in` for one only once wired).
+  std::vector<std::pair<std::string, std::string>> inputs;  // (name, label)
+  if (n.face != nullptr || n.meta) {
+    if (const meta::Type* t = meta::findType(doc::metaDeviceType(*loc.device)))
+      for (const meta::InputSpec& in : t->inputs)
+        if (in.kind == graph::Kind::Real) inputs.emplace_back(std::string(in.name), in.label.empty() ? std::string(in.name) : std::string(in.label));
+  } else if (!n.rack) {
+    for (const Port& q : n.inputs)
+      if (!q.param && q.name != "notes") inputs.emplace_back(q.name, q.label.empty() ? std::string("Audio In") : q.label);
+  }
+  if (!inputs.empty() && !items.empty()) items.push_back(ui::MenuItem::sep());
+  for (const auto& [name, label] : inputs)
+    items.push_back(ui::MenuItem::item("Input: " + label, [this, from, port, to, name, notes] {
+      (void)(notes.valid() ? connectNotes(notes, port, to, name) : connect(from, port, to, name));
+    }));
   if (items.empty()) return nullptr;
   return ui::openContextMenu(*canvas_, at, std::move(items));
 }
@@ -1494,9 +1592,12 @@ void ProjectPatchView::pollReadout() {
       // TMM.10-fix2: a note output reads as "<track> notes: Hz → …" (the note source has no device name).
       const std::string source = no != nullptr ? from.name + " notes: " + std::string(no->label)
                                                : patch_.nodes[e.from].title + "." + patch_.nodes[e.from].outputs[e.fromPort].name;
-      readout_.title = source + " \xE2\x86\x92 " + tn.title + "." + tn.inputs[e.toPort].label;
+      const std::string& toLabel = tn.inputs[e.toPort].label.empty() ? tn.inputs[e.toPort].name : tn.inputs[e.toPort].label;
+      readout_.title = source + " \xE2\x86\x92 " + tn.title + "." + toLabel;
       char buf[96];
-      std::snprintf(buf, sizeof buf, "amount %+.0f %%", w != nullptr ? w->amount * 100.0 : 0.0);
+      // TX.patching: an added wire has no amount (it adds in the target's units); a migrated one keeps its depth.
+      if (w != nullptr && !w->travels()) std::snprintf(buf, sizeof buf, "adds in the target's units");
+      else std::snprintf(buf, sizeof buf, "amount %+.0f %%", w != nullptr ? w->amount * 100.0 : 0.0);
       readout_.value = buf;
       if (no != nullptr) {
         static constexpr const char* kReducers[] = {"sum", "last", "highest", "lowest", "loudest"};
@@ -1510,7 +1611,10 @@ void ProjectPatchView::pollReadout() {
         ModSweep s[1];
         src->readModulation(t, s);
         live = src->modulationLive();
-        if (s[0].known) {
+        if (s[0].known && !w->travels()) {  // TX.patching: an added wire's tap is in the param's units
+          std::snprintf(buf, sizeof buf, " \xC2\xB7 moved +%.4g / -%.4g", static_cast<double>(s[0].up), static_cast<double>(s[0].down));
+          readout_.value += buf;
+        } else if (s[0].known) {
           std::snprintf(buf, sizeof buf, " \xC2\xB7 swept +%.0f %% / -%.0f %%", static_cast<double>(s[0].up) * 100.0,
                         static_cast<double>(s[0].down) * 100.0);
           readout_.value += buf;

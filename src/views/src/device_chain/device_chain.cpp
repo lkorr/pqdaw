@@ -394,6 +394,7 @@ public:
       };
       // T4.4-fix1: a user device's "edited" marker; a double-click on the title opens the device in the circuit view.
       panel_->setEdited(d.edited());
+      panel_->setFree(d.free);  // TX.patching: out of the series
       if (!d.name.empty()) panel_->setTitle(d.name);  // T4.17
       panel_->onTitleDoubleClick = [this] { impl_.view.openInCircuitView(id_); };
       // T5.11: the preset slot names the last preset loaded here; a click hot-swaps the device's presets in the browser.
@@ -427,6 +428,7 @@ public:
     panel_->setTitle(d.name.empty() ? panel_->desc().title : d.name);  // T4.17
     panel_->setActive(d.active);
     panel_->setEdited(d.edited());
+    panel_->setFree(d.free);  // TX.patching
     panel_->setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& p : panel_->signature().params) {
       const doc::DeviceValue* v = d.param(p.name);
@@ -710,6 +712,17 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
           ins.push_back(std::move(none));
           items.push_back(ui::MenuItem::sub("Chain Input", std::move(ins)));
         }
+      // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): out of the series (it keeps its wires and
+      // plays only through them; the project patch view places it under the chain) or back into it.
+      if (loc.device != nullptr && loc.chain == nullptr && !loc.device->rack &&
+          (loc.device->free || loc.device->kind != doc::DeviceKind::Instrument || doc::isMetaDevice(*loc.device))) {
+        const bool free = loc.device->free;
+        items.push_back(ui::MenuItem::item(free ? "Put Into Chain" : "Take Out of Chain", [ctx = &ctx_, id, free] {
+          const doc::DeviceId one[1] = {id};
+          if (auto e = doc::ops::setDevicesFree(*ctx->doc(), one, !free); !e) ctx->setStatus(e.error().message);
+          else if (!e->empty()) (void)ctx->store().dispatch(e->command);
+        }));
+      }
       // T5.11: the user library.
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item("Save Preset", [v, id] { v->savePreset(id, false); }));

@@ -1011,7 +1011,7 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   CHECK(orthogonal(e.points));
   u.view().updateReadout(edge);
   CHECK(u.view().readout().title.find("Keys notes: velocity") != std::string::npos);
-  CHECK(u.view().readout().value.find("amount +50 %") != std::string::npos);
+  CHECK(u.view().readout().value.find("adds in the target's units") != std::string::npos);
   u.view().updateReadout(kNone);
   // Hz onto the param pin the first wire made: that param directly (no menu), one step.
   {
@@ -1080,6 +1080,97 @@ TEST_CASE("project patch (TMM.10-fix2): note-source wires on the band and across
 
 // A chain meta device has no patch text: "Edit Device Circuit" is not offered (its atoms are generated from its face),
 // and asked directly the status says so — not "'meta:wavetable' is not in the device library" (coordinator report).
+// TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): a device added unconnected sits under the chain;
+// any output (a device's main one too) goes onto any input or param — a face's control too —, the chain's `notes` pin
+// is refused; a block dragged out of the series below the chain becomes free. Each edit one undo step, the view still
+// the lowered graph.
+TEST_CASE("project patch (TX.patching): free devices, any output onto any input, param or face control") {
+  Ui u(false);
+  auto t = doc::ops::createTrack(*u.ctx.doc(), u.ctx.store().ids(), doc::TrackKind::Midi, {}, "Keys");
+  REQUIRE(t.ok());
+  REQUIRE(u.ctx.store().dispatch(t->command).ok());
+  const doc::TrackId keys = t->tracks.at(0);
+  auto ua = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), keys, "utility", doc::DeviceKind::AudioEffect);
+  REQUIRE(ua.ok());
+  REQUIRE(u.ctx.store().dispatch(ua->command).ok());
+  const doc::DeviceId inst = u.track("Keys").devices.at(0)->id, util = ua->devices.at(0);
+  u.show();
+  const doc::Snapshot start = u.ctx.doc();
+  const size_t h0 = u.history();
+  // Add Free Device: one step, out of the series, under the chain.
+  REQUIRE(u.view().addFreeDevice(keys, "meta:phase_acc"));
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.track("Keys").devices.size() == 3);
+  const doc::DeviceId pa = u.track("Keys").devices.back()->id;
+  CHECK(u.track("Keys").devices.back()->free);
+  CHECK(u.track("Keys").devices.at(0)->id == inst);  // the instrument still first: nothing replaced
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  u.zoomTo("Keys");
+  const Node& pn = u.pp().nodes[u.deviceNode(pa)];
+  const Node& un = u.pp().nodes[u.deviceNode(util)];
+  CHECK(pn.free);
+  CHECK(pn.y >= un.y + un.h);  // its row is under the chain's
+  for (const Edge& e : u.pp().edges) CHECK_FALSE((e.kind == EdgeKind::Chain && (e.from == u.deviceNode(pa) || e.to == u.deviceNode(pa))));
+  // The accumulator's output dropped on the Utility: its menu offers its inputs too; its audio input wires it there.
+  u.d.drag(u.outPin(u.deviceNode(pa), "out"), u.centre(u.deviceNode(util)), 6);
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  u.choose(*m, "Input: Audio In");
+  CHECK(u.history() == h0 + 2);
+  const doc::Wire w1 = doc::wiresOf(*u.ctx.doc()).back();
+  CHECK(w1.from == pa);
+  CHECK(w1.port == "out");
+  CHECK(w1.to == util);
+  CHECK(w1.param == "x");
+  CHECK(w1.law == doc::WireLaw::Add);
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // The instrument's main output onto the accumulator face's frequency control: that param, no menu.
+  {
+    const uint32_t node = u.deviceNode(pa);
+    const uint32_t sn = u.view().scene().sceneNode[node];
+    MetaFace* face = u.view().canvas().faceOn(sn);
+    REQUIRE(face != nullptr);
+    const std::optional<ui::Rect> r = face->paramRect(static_cast<size_t>(face->type().paramIndex("freq")));
+    REQUIRE(r.has_value());
+    const Node& n = u.pp().nodes[node];
+    const Vec2 on = u.dev(n.x + 0.5f * (r->x0 + r->x1), n.y + 0.5f * (r->y0 + r->y1));
+    u.d.drag(u.outPin(u.deviceNode(inst), "out"), on, 6);
+    CHECK(u.openMenu() == nullptr);
+    CHECK(u.history() == h0 + 3);
+    const doc::Wire w2 = doc::wiresOf(*u.ctx.doc()).back();
+    CHECK(w2.from == inst);
+    CHECK(w2.port == "out");
+    CHECK(w2.to == pa);
+    CHECK(w2.param == "freq");
+  }
+  // Refused: onto the instrument's own `notes` pin (the chain's note wire).
+  {
+    const Node& in = u.pp().nodes[u.deviceNode(inst)];
+    REQUIRE(in.input("notes") == 0);
+    const Vec2 notes = u.dev(in.x, in.y + pinY(in, 0));
+    u.d.down(u.outPin(u.deviceNode(util), "out"));
+    u.d.move(notes);
+    CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+    u.d.up(notes);
+    CHECK(u.history() == h0 + 3);
+  }
+  // The Utility dragged down out of the series: free, one step; its wires stay.
+  {
+    const Node& n = u.pp().nodes[u.deviceNode(util)];
+    const Vec2 from = u.centre(u.deviceNode(util));
+    const Vec2 below = u.dev(n.x + 0.5f * n.w, n.y + n.h + 3.0f * metrics::kFreeRowGap);
+    u.d.drag(from, below, 8);
+    u.d.step();
+    CHECK(u.history() == h0 + 4);
+    CHECK(doc::findDevice(*u.ctx.doc(), util).device->free);
+    CHECK(doc::wiresOf(*u.ctx.doc()).size() == 2);
+    CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  }
+  for (int i = 0; i < 4; ++i) REQUIRE(u.ctx.undo());
+  CHECK(u.ctx.doc() == start);
+}
+
 TEST_CASE("project patch: a chain meta device's circuit is not edited as a library device") {
   Ui u(false);
   MetaChainIds ids;
@@ -1526,3 +1617,5 @@ TEST_CASE("render: project-patch-lanes matches the golden image") { golden("proj
 // TMM.10-fix2: wires from the note sources' outputs (per voice into a voice run's Wavetable, reduced into the Auto
 // Filter, across tracks).
 TEST_CASE("render: project-patch-notes matches the golden image") { golden("project-patch-notes"); }
+// TX.patching: free devices under the Lead chain, a wire onto a face control, an output into an audio input.
+TEST_CASE("render: project-patch-free matches the golden image") { golden("project-patch-free"); }

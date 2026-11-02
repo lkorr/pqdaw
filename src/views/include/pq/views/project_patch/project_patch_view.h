@@ -261,6 +261,12 @@ public:
   bool routeTo(doc::TrackId track, doc::TrackId target);
   bool sendOn(doc::TrackId track, doc::TrackId ret);
   bool addDevice(doc::TrackId track, const std::string& patch, uint32_t index = doc::kAppend);
+  // TX.patching: a device added to `track` out of its series (free: placed under the chain, it plays only through
+  // wires; one undo step), and taking devices out of the series or putting them back (doc::ops::setDevicesFree).
+  bool addFreeDevice(doc::TrackId track, const std::string& patch);
+  bool setDevicesFree(std::span<const doc::DeviceId> devices, bool free);
+  // A free device back into its track's series at list position `index` (one undo step).
+  bool putIntoChain(doc::DeviceId device, uint32_t index);
   bool moveDevice(doc::DeviceId device, doc::TrackId toTrack, uint32_t index);
   bool toggleDevicesActive(std::span<const doc::DeviceId> devices);
   // The canvas selection: devices removed, modulation wires removed, sends to −∞, routes to Sends Only; one step.

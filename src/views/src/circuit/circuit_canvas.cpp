@@ -1742,6 +1742,26 @@ ui::Cursor CircuitCanvas::faceCursor(ui::Vec2 pos) const {
   return f.cursor(f.hitTest({w.x - n.x, w.y - n.y}, m.s()));
 }
 
+CircuitCanvas::FaceParamHit CircuitCanvas::faceParamAt(ui::Vec2 pos) const {
+  const Impl& m = *impl_;
+  FaceParamHit out;
+  const int32_t i = m.faceUnder(pos);
+  if (i < 0) return out;
+  const uint32_t node = m.faces[static_cast<size_t>(i)].node;
+  const SceneNode& n = m.scene->nodes[node];
+  const Point2 w = toWorld(pos);
+  const ui::Vec2 local{w.x - n.x, w.y - n.y};
+  const MetaFace& f = *m.faces[static_cast<size_t>(i)].face;
+  out.node = node;
+  for (size_t k = 0; k < f.type().params.size(); ++k)
+    if (const std::optional<ui::Rect> r = f.paramRect(k))
+      if (local.x >= r->x0 && local.x <= r->x1 && local.y >= r->y0 && local.y <= r->y1) {
+        out.param = static_cast<int32_t>(k);
+        break;
+      }
+  return out;
+}
+
 bool CircuitCanvas::faceInfo(ui::InfoText& out) const {
   const Impl& m = *impl_;
   const int32_t i = m.faceCapture >= 0 ? m.faceCapture : m.faceHover;

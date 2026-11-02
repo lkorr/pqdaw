@@ -31,9 +31,20 @@ float pinY(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
 bool isNoteSource(const ProjectPatch& pp, const Node& n) noexcept {
   return n.kind == NodeKind::Source && n.band < pp.bands.size() && pp.bands[n.band].kind == doc::TrackKind::Midi;
 }
-// Whether a press on output pin `pin` starts a wire: a device's (its exports), a mixer's (route, sends), a note source's.
+// Whether a press on output pin `pin` starts a wire: a device's (TX.patching: any output, its main one too), a mixer's
+// (route, sends), a note source's.
 bool wireSource(const ProjectPatch& pp, const Node& n) noexcept {
   return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || isNoteSource(pp, n);
+}
+
+// TX.patching: the port of device node `n`'s input pin `i` a wire dropped on it targets, or null: an instrument's
+// `notes` (the chain's note wire) and a rack's own input (its chain's) are not wire targets.
+const Port* wireTarget(const Node& n, uint32_t i) noexcept {
+  if (n.kind != NodeKind::Device || i >= n.inputs.size()) return nullptr;
+  const Port& q = n.inputs[i];
+  if (q.name == "notes") return nullptr;
+  if (n.rack && !q.param) return nullptr;
+  return &q;
 }
 
 bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x < r.x1 && p.y >= r.y0 && p.y < r.y1; }
@@ -756,12 +767,18 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   const ProjectPatch& pp = view_.patch();
   if (!from_.valid() || from_.node >= pp.nodes.size()) return nullptr;
   const Node& a = pp.nodes[from_.node];
-  if (a.kind == NodeKind::Device)
-    return from_.port == 0 ? "Wire: drag an export (the device's jacks under its output) onto a parameter" : nullptr;
-  if (isNoteSource(pp, a)) {  // TMM.10-fix2: `notes` is the chain's own note wire; the note outputs go onto params
-    if (from_.port == 0) return "Wire: drag a note output (Hz, gate, velocity: the pins under the notes) onto a parameter";
+  // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): any output of a device (its main output too) or a
+  // note output goes onto any parameter or input of any device; TMM.10-fix2: `notes` is the chain's own note wire.
+  if (a.kind == NodeKind::Device || isNoteSource(pp, a)) {
+    if (a.kind != NodeKind::Device && from_.port == 0)
+      return "Wire: drag a note output (Hz, gate, velocity: the pins under the notes) onto a parameter or an input";
     const uint32_t to = nodeAt(pos);
-    if (to != kNone && pp.nodes[to].kind != NodeKind::Device) return "Wire: a note output goes onto a device's parameter";
+    if (to == kNone) return nullptr;  // empty canvas: the drop does nothing
+    if (pp.nodes[to].kind != NodeKind::Device) return "Wire: drop it on a device's parameter or input";
+    const PinHit t = pinAt(pos);
+    if (t.valid() && t.input && t.node == to && wireTarget(pp.nodes[to], t.port) == nullptr)
+      return pp.nodes[to].rack ? "Wire: a rack's input is its chain's; drop it on a parameter or a device inside the rack"
+                               : "Wire: the notes input is the chain's own note wire; drop it on a parameter or an input";
     return nullptr;
   }
   if (a.kind != NodeKind::Mixer) return nullptr;
@@ -825,24 +842,37 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   }
   const Node& a = pp.nodes[from_.node];
   const Band& fromBand = pp.bands[a.band];
-  // A device's export or (TMM.10-fix2) a note output: onto a param pin a wire already drives, that param; onto a
-  // device anywhere else, a menu of its params.
+  // Any output of a device or (TMM.10-fix2) a note output: onto an input pin (an audio input, a wired input, a param a
+  // wire drives), that port; TX.patching: onto a face's control, that param; onto a device anywhere else, a menu of its
+  // params and inputs.
   if (a.kind == NodeKind::Device || isNoteSource(pp, a)) {
     const std::string port = a.outputs[from_.port].name;
     const doc::DeviceId from = a.kind == NodeKind::Device ? a.device : doc::DeviceId{};
     const doc::TrackId notes = a.kind == NodeKind::Device ? doc::TrackId{} : fromBand.track;
-    const PinHit target = pinAt(pos);
-    if (target.valid() && target.input && pp.nodes[target.node].kind == NodeKind::Device && target.port > 0 &&
-        pp.nodes[target.node].inputs[target.port].param) {
-      const Node& t = pp.nodes[target.node];
-      std::string param = t.inputs[target.port].name;
-      doc::DeviceId to = t.device;
-      if (const size_t at = param.rfind('@'); t.rack && at != std::string::npos) {  // T4.8: a device inside the rack
-        to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
-        param.resize(at);
-      }
+    auto wire = [&](doc::DeviceId to, const std::string& param) {
       (void)(notes.valid() ? v.connectNotes(notes, port, to, param) : v.connect(from, port, to, param));
-      return;
+    };
+    const PinHit target = pinAt(pos);
+    if (target.valid() && target.input && pp.nodes[target.node].kind == NodeKind::Device) {
+      const Node& t = pp.nodes[target.node];
+      if (const Port* q = wireTarget(t, target.port)) {
+        std::string param = q->name;
+        doc::DeviceId to = t.device;
+        if (const size_t at = param.rfind('@'); t.rack && at != std::string::npos) {  // T4.8: a device inside the rack
+          to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
+          param.resize(at);
+        }
+        wire(to, param);
+        return;
+      }
+    }
+    // TX.patching: a face's control (the Phase accumulator's frequency or phase, a VCA's knob …): that param.
+    if (const FaceParamHit fh = faceParamAt(pos); fh.param >= 0 && fh.node < v.scene().modelNode.size()) {
+      const uint32_t mn = v.scene().modelNode[fh.node];
+      if (mn < pp.nodes.size() && pp.nodes[mn].kind == NodeKind::Device && pp.nodes[mn].face != nullptr) {
+        wire(pp.nodes[mn].device, std::string(pp.nodes[mn].face->params[static_cast<size_t>(fh.param)].name));
+        return;
+      }
     }
     const uint32_t to = nodeAt(pos);
     if (to != kNone && pp.nodes[to].kind == NodeKind::Device) (void)v.openParamMenu(from, port, to, pos, notes);
@@ -874,7 +904,29 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
     if (dn.x + dn.w * 0.5f < w.x) ++index;
   }
   const doc::Track* now = doc::findDevice(*v.context().doc(), moved.device).track;
+  // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): in its own band, a block of the series dropped
+  // below the chain's row leaves the series (free: it goes to the band's free row and keeps its wires); a free block
+  // moves where it is dropped (a nudge), or back into the series when dropped on the chain's row.
   if (now != nullptr && now->id == band.track) {
+    float chainBottom = band.y + metrics::kTitle + metrics::kPinTop;
+    for (const uint32_t n : {band.source, band.mixer})
+      if (n != kNone) chainBottom = std::max(chainBottom, pp.nodes[n].y + pp.nodes[n].h);
+    for (const uint32_t d : band.devices)
+      if (!pp.nodes[d].free) chainBottom = std::max(chainBottom, pp.nodes[d].y + pp.nodes[d].h);
+    const doc::DeviceId one[1] = {moved.device};
+    if (moved.free && w.y > chainBottom) {
+      const graph::Point2 start = toWorld(press_);
+      v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
+      return;
+    }
+    if (moved.free) {
+      (void)v.putIntoChain(moved.device, index);
+      return;
+    }
+    if (w.y > chainBottom + metrics::kFreeRowGap * 0.5f) {
+      (void)v.setDevicesFree(one, true);
+      return;
+    }
     const int32_t at = now->deviceIndex(moved.device);
     if (at >= 0 && static_cast<uint32_t>(at) == index) return;  // dropped where it was
   }

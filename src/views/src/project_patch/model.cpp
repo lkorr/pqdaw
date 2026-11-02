@@ -498,14 +498,19 @@ struct Builder {
       if (!out.nodes[d].free) order.push_back(d);
     order.push_back(b.mixer);
     if (b.output != kNone) order.push_back(b.output);
-    // TX.patching: free devices (out of the series) after the band's chain, in list order (a nudge moves them anywhere).
-    for (const uint32_t d : b.devices)
-      if (out.nodes[d].free) order.push_back(d);
     for (const uint32_t n : order) {
       out.nodes[n].x = x;
       x += out.nodes[n].w + m::kNodeGap;
     }
-    return x - m::kNodeGap;
+    // TX.patching: free devices (out of the series) on a row of their own under the chain, from its first device's
+    // place, in list order (layout(): y; a nudge moves them anywhere).
+    float fx = out.nodes[b.source].x + out.nodes[b.source].w + m::kNodeGap;
+    for (const uint32_t d : b.devices)
+      if (out.nodes[d].free) {
+        out.nodes[d].x = fx;
+        fx += out.nodes[d].w + m::kNodeGap;
+      }
+    return std::max(x, fx) - m::kNodeGap;
   }
 
   // Places a main-tree track (and its members) from the left; returns the right end of its chain.
@@ -567,9 +572,17 @@ struct Builder {
         bottom = std::max(bottom, nd.y + nd.h);
       };
       place(b.source);
-      for (const uint32_t d : b.devices) place(d);
+      for (const uint32_t d : b.devices)
+        if (!out.nodes[d].free) place(d);
       place(b.mixer);
       if (b.output != kNone) place(b.output);
+      // TX.patching: the free devices' row under the chain (the band grows to hold it).
+      const float row = roundUp4(bottom + m::kFreeRowGap);
+      for (const uint32_t d : b.devices)
+        if (out.nodes[d].free) {
+          out.nodes[d].y = row;
+          bottom = std::max(bottom, row + out.nodes[d].h);
+        }
       b.h = roundUp4(bottom + m::kBandPad - y);
       y += b.h + m::kBandGap;
     }
