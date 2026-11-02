@@ -58,6 +58,7 @@ public:
 
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
   float inputY(size_t, size_t) const noexcept override { return 0.5f * kH; }
+  float jackInset() const noexcept override { return 0.0f; }  // TMM.13-fix2 (L23): on the frame's edge, off the plot
   float outputY(size_t, size_t) const noexcept override { return 0.5f * kH; }
 
   void setAnalysis(std::function<devices::SpectrumFeed*()> feedOf, std::function<void()> wakeHost) override {

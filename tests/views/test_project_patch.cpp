@@ -2015,7 +2015,8 @@ TEST_CASE("project patch (TX.mod-all): a wire into the Wavetable's warp ends on 
   REQUIRE(sw.control != UINT32_MAX);
   CHECK(sc.strings[sw.control] == "warp");
   const graph::Point2 end = sc.points[sw.firstPoint + sw.pointCount - 1];
-  CHECK(end.x == doctest::Approx(n.x + knob->at.x));
+  // TMM.13-fix2 (MM review H6): beside the knob, down its clear column (its rim + 3 units left of its centre), not through it.
+  CHECK(end.x == doctest::Approx(n.x + std::max(2.0f, knob->at.x - (std::max(knob->clear, knob->radius) + 3.0f))));
   CHECK(end.y == doctest::Approx(n.y + n.h));
   CHECK(orthogonal(std::vector<graph::Point2>(sc.points.begin() + sw.firstPoint, sc.points.begin() + sw.firstPoint + sw.pointCount)));
   // Hover: the wire's part outside the face (the middle of its next-to-last segment) is the wire.

@@ -103,7 +103,9 @@ public:
   // TMM.10: the width when the panel is `panelHeight` logical px tall: a face panel (PanelDesc::fitFace) scales its
   // face to the height (within kFaceMinScale … kFaceMaxScale), any other panel is logicalWidth().
   float logicalWidthFor(float panelHeight) const noexcept;
-  static constexpr float kFaceMinScale = 0.5f, kFaceMaxScale = 1.5f;
+  // TMM.13-fix2 (MM review "UI and aesthetic" 11): up to 2x, so a wide face (the Envelope) fills the body's height
+  // instead of leaving ~50 px of margin (1.5x capped it).
+  static constexpr float kFaceMinScale = 0.5f, kFaceMaxScale = 2.0f;
   static constexpr float kFaceMinWidth = 212.0f;  // the title bar keeps room for a meta module's name
   // TMM.10: the device-px rect of the control showing `param`: its widget's (visible), or the part of a face that
   // edits it; nullopt when nothing shows it now. (controlFor answers for widgets only.)
@@ -113,6 +115,7 @@ public:
   struct Anchor {
     ui::Vec2 at{0.0f, 0.0f};
     float radius = 0.0f;
+    float clear = 0.0f;  // TMM.13-fix2: half the control's width with its labels (meta_face.h ControlAnchor::clear)
   };
   std::optional<Anchor> controlAnchor(std::string_view param) const;
   // TX.mod-all: where the control for `param` is placed when it shows (logical px from the panel's top-left, unfolded,

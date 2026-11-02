@@ -70,6 +70,7 @@ constexpr Rgba kGrid = ui::signal_theme::kGrid, kGridLabel = ui::signal_theme::k
 constexpr Rgba kAccent = ui::signal_theme::kAccent;
 constexpr Rgba kFrozen = ui::rgba(255, 180, 90, 230);
 constexpr Rgba kPad = ui::rgba(8, 8, 12, 200);
+constexpr Rgba kReadoutText = ui::rgba(150, 162, 166);  // TMM.13-fix2: #96A2A6
 
 bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x <= r.x1 && p.y >= r.y0 && p.y <= r.y1; }
 
@@ -250,6 +251,7 @@ public:
 
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
   float inputY(size_t, size_t) const noexcept override { return 0.5f * kH; }
+  float jackInset() const noexcept override { return 0.0f; }  // TMM.13-fix2 (L23): on the frame's edge, off the plot
   float outputY(size_t, size_t) const noexcept override { return 0.5f * kH; }
 
   void setAnalysis(std::function<devices::SpectrumFeed*()> feedOf, std::function<void()> wakeHost) override {
@@ -1026,7 +1028,8 @@ private:
     } else {
       std::snprintf(info, sizeof info, "%.1f ms/div  %.2fx%s", spanMs / 10.0, gain, agc);
     }
-    if (opts_.on(oReadout) && hasFrame_) left(info, kGridLabel);
+    // TMM.13-fix2 (MM review contrast table: 2.6:1): the readout in a lifted grey (≥ 4.5:1 on the plot), not the grid's.
+    if (opts_.on(oReadout) && hasFrame_) left(info, kReadoutText);
     // The note, faded by the clarity (a marginal detection reads as marginal).
     if (opts_.timebase() == Tb::Pitch && opts_.on(oNote) && frame_.pitchHz > 0.0f && !stereo) {
       char note[32], text[48];

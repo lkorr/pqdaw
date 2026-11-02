@@ -248,7 +248,7 @@ TEST_CASE("vca face: golden at zoom 0.1 / 0.5 / 1 / 2, 1x and 2x, four voices at
       const std::string name = "meta-vca-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(rig.canvas->stats().facesPainted == 1u);
-      CHECK(rig.canvas->stats().faceLayersFromTiles == 3u);
+      CHECK(rig.canvas->stats().faceLayersFromTiles == 4u);
       checkImage(name, rig.draw(rig.res));
     }
 }
@@ -274,9 +274,9 @@ TEST_CASE("vca face: the same primitives at every zoom; tiles equal direct drawi
       r.centre(zoom);
       r.settle();
       const Image tiled = r.draw(r.res);
-      CHECK(r.canvas->stats().faceLayersFromTiles == 3u);
+      CHECK(r.canvas->stats().faceLayersFromTiles == 4u);
       const Image direct = r.draw(r.resNoTiles);
-      CHECK(r.canvas->stats().faceLayersDirect == 3u);
+      CHECK(r.canvas->stats().faceLayersDirect == 4u);
       const std::string name = "meta-vca-tiles-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(pq::ui::test::matchesGolden(name, tiled, direct));

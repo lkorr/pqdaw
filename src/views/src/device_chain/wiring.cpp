@@ -44,18 +44,21 @@ namespace {
 
 constexpr float kBadge = 15.0f;      // logical px: the badge's diameter
 constexpr float kLinkBadge = 9.0f;   // TX.free-rack: a chain link's joint
+constexpr float kTuckedBadge = 11.0f;  // TMM.13-fix2 (H6): a cable from the collapsed free rack, at its knob
 constexpr float kCable = 2.0f;       // logical px: cable thickness
 constexpr int kSamples = 40;         // points per cable
 constexpr uint32_t kSpringTicks = 21;   // drag ticks (1/60 s) hovering a track row before its chain shows (0.35 s)
 constexpr float kEdge = 24.0f;       // logical px: auto-scroll zone at a list's edge
 constexpr float kAmountDragPx = 150.0f;  // logical px of vertical drag per unit of amount
 
-// Cables are signals (PQ Meter's palette): param rate blue, audio green, voice amber.
-ui::Rgba rateColour(uint8_t rate) noexcept {
-  switch (rate) {
-    case 2: return ui::signal_theme::kBands[1];
-    case 1: return ui::signal_theme::kWaveform;
-    default: return ui::signal_theme::kAccent;
+// TMM.13-fix2 (MM review M10): cables take the circuit's palette, by what they carry — the audio path (chain links, a
+// wire into an input) blue, the note source's amber, modulation into a param mint (theme circuit.wireAudio / wireNotes /
+// wireMod). Without a theme (never in the app): the same colours.
+ui::Rgba roleColour(const ui::Theme* th, uint8_t role) noexcept {
+  switch (role) {
+    case 2: return th != nullptr ? th->circuit.wireNotes : ui::rgba(240, 165, 60);
+    case 1: return th != nullptr ? th->circuit.wireAudio : ui::signal_theme::kAccent;
+    default: return th != nullptr ? th->circuit.wireMod : ui::rgba(102, 220, 192);
   }
 }
 
@@ -194,7 +197,7 @@ public:
       const ui::Vec2 c{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
       const float rad = 0.5f * static_cast<float>(std::min(r.w, r.h)) - ctx.scale.exact(0.5f);
       const float alpha = layer_.mode() == CableMode::Fade ? 0.4f : 1.0f;
-      const ui::Rgba col = rateColour(rate_);
+      const ui::Rgba col = roleColour(th, rate_);
       ctx.dl.addCircleFilled(c, rad, ui::withAlpha(ui::lerp(th->surface.raised, col, hovered() ? 0.6f : 0.3f), static_cast<uint32_t>(240 * alpha)));
       ctx.dl.addCircleStroke(c, rad, ui::withAlpha(hovered() ? th->accent.focus : col, static_cast<uint32_t>(230 * alpha)), ctx.scale.exact(1.0f));
       return;
@@ -205,7 +208,7 @@ public:
     const ui::Vec2 c{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
     const float rad = 0.5f * static_cast<float>(std::min(r.w, r.h)) - ctx.scale.exact(1.0f);
     const bool off = status_ == doc::WireStatus::Inactive || status_ == doc::WireStatus::Invalid || status_ == doc::WireStatus::Refused;
-    const ui::Rgba col = off ? th->text.disabled : rateColour(rate_);
+    const ui::Rgba col = off ? th->text.disabled : roleColour(th, rate_);
     const float alpha = layer_.mode() == CableMode::Fade ? 0.4f : 1.0f;
     ctx.dl.addCircleFilled(c, rad, ui::withAlpha(ui::lerp(th->surface.raised, col, 0.25f), static_cast<uint32_t>(240 * alpha)));
     if (w->travels()) {
@@ -562,6 +565,7 @@ bool CableLayer::refresh() {
       c.da = static_cast<uint8_t>(k.a.dir);
       c.db = static_cast<uint8_t>(k.b.dir);
       c.rate = k.rate;
+      c.role = k.rate == 2 && !k.from.valid() ? 2 : 1;  // M10: the notes into the chain amber, the audio path blue
       c.input = true;
       const std::string src = k.from.valid() ? deviceName(ctx_, p, k.from) : (k.rate == 2 ? std::string("Notes") : std::string("Audio clips"));
       c.label = src + " \xE2\x86\x92 " + deviceName(ctx_, p, k.to) + (k.input.empty() || k.input == "in" ? std::string() : " " + k.input) +
@@ -606,15 +610,41 @@ bool CableLayer::refresh() {
     c.status = statusOf(w.id);
     c.rate = from.device != nullptr ? exportRate(*from.device, ctx_.deviceLibrary(), w.port) : 2;
     if (c.input && c.rate == 0) c.rate = 1;  // TX.free-rack: into an input it is a signal path (heard as audio)
+    c.role = w.fromNoteSource() ? 2 : (c.input ? 1 : 0);  // M10: notes amber, a signal path blue, modulation mint
     place(c, kBadge);
+    // H6: from (or into) the collapsed free rack the cables would fan out of its tab across the panels: the badge sits
+    // on the chain end instead (above-right of the knob or socket) and the cable shows while it is hovered.
+    if (chain != nullptr && !chain->freeRackOpen() && from.device != nullptr &&
+        (chain->inFreeRack(w.from) || chain->inFreeRack(w.to))) {
+      c.tucked = true;
+      const bool fromRack = chain->inFreeRack(w.from);
+      const ui::Vec2 end = fromRack ? c.b : c.a;
+      const int32_t bd = static_cast<int32_t>(std::lround(kTuckedBadge * s));
+      c.badge = {static_cast<int32_t>(std::lround(end.x + 9.0f * s)), static_cast<int32_t>(std::lround(end.y + 2.0f * s)), bd, bd};
+      c.bounds = unite(c.bounds, c.badge);
+    }
     next.push_back(std::move(c));
+  }
+  // L22: the chain's links are first, in chain order; between one's target end and the next one's source end (on one row,
+  // left to right) lies the device the audio passes through.
+  for (size_t i = 1; i < next.size() && next[i].kind == Kind::Chain; ++i) {
+    Cable& c = next[i];
+    const Cable& prev = next[i - 1];
+    if (std::fabs(prev.b.y - c.a.y) > 1.0f || c.a.x <= prev.b.x) continue;
+    c.through = true;
+    c.t0 = prev.b;
+    c.t1 = c.a;
+    const int32_t pad = static_cast<int32_t>(std::ceil(2.0f * s)) + 1;
+    c.bounds = unite(c.bounds, ui::IRect{static_cast<int32_t>(std::floor(c.t0.x)) - pad, static_cast<int32_t>(std::floor(c.t0.y)) - pad,
+                                         static_cast<int32_t>(std::ceil(c.t1.x - c.t0.x)) + 2 * pad, 2 * pad});
   }
   // Damage what moved: per wire the old and the new cable (a cable that did not move costs nothing).
   bool moved = false;
   ui::Damage& dmg = tree()->damage();
   auto same = [](const Cable& x, const Cable& y) {
-    return x.a.x == y.a.x && x.a.y == y.a.y && x.b.x == y.b.x && x.b.y == y.b.y && x.status == y.status && x.rate == y.rate &&
-           x.aDocked == y.aDocked && x.bDocked == y.bDocked && x.da == y.da && x.db == y.db;
+    return x.a.x == y.a.x && x.a.y == y.a.y && x.b.x == y.b.x && x.b.y == y.b.y && x.status == y.status && x.rate == y.rate && x.role == y.role &&
+           x.aDocked == y.aDocked && x.bDocked == y.bDocked && x.da == y.da && x.db == y.db && x.through == y.through &&
+           x.t0.x == y.t0.x && x.t0.y == y.t0.y && x.t1.x == y.t1.x && x.tucked == y.tucked;
   };
   for (const Cable& n : next) {
     const auto o = std::find_if(cables_.begin(), cables_.end(), [&](const Cable& c) { return c.key == n.key; });
@@ -651,7 +681,7 @@ bool CableLayer::refresh() {
       impl_->badges.push_back(b);
       badgesChanged = true;
     }
-    b->setLook(c.rate, c.status, c.wire.valid() && c.wire == selected_);
+    b->setLook(c.role, c.status, c.wire.valid() && c.wire == selected_);
     if (!(b->rect() == c.badge)) badgesChanged = true;
   }
   if (badgesChanged) invalidateArrange();
@@ -678,15 +708,20 @@ void CableLayer::arrange(ui::LayoutPass& pass) {
 void CableLayer::paint(ui::PaintContext& ctx) {
   const ui::Theme* th = ctx.res.theme;
   if (!th) return;
-  const float alpha = mode_ == CableMode::Fade ? 0.35f : 1.0f;
+  const float modeAlpha = mode_ == CableMode::Fade ? 0.35f : 1.0f;
   const float s = ctx.scale.factor;
   ui::Vec2 pts[kSamples];
   for (const Cable& c : cables_) {
     if (ui::intersect(c.bounds, ctx.clip).empty()) continue;
+    // TMM.13-fix2 (MM review H6): only the chain's audio path is drawn in full; a wire's cable that is not hovered (its
+    // badge) or selected is drawn at 35 % (the panels' labels read over it), one tucked into the collapsed rack not at all.
+    const bool focusCable = c.key == hoverKey_ || (c.wire.valid() && c.wire == selected_);
+    if (c.tucked && !focusCable) continue;
+    const float alpha = c.kind == Kind::Chain || focusCable ? modeAlpha : 0.35f * modeAlpha;
     cablePoints(c.a, c.da, c.b, c.db, s, pts);
     const bool off = c.status == doc::WireStatus::Inactive || c.status == doc::WireStatus::Invalid ||
                      c.status == doc::WireStatus::Refused;
-    ui::Rgba col = off ? th->text.disabled : rateColour(c.rate);
+    ui::Rgba col = off ? th->text.disabled : roleColour(th, c.role);
     const bool hot = c.key == hoverKey_;  // T4.16c: its badge is hovered
     const bool sel = c.wire.valid() && c.wire == selected_;
     if (sel || hot) col = ui::lerp(col, ui::rgba(255, 255, 255), sel ? 0.35f : 0.25f);
@@ -694,6 +729,10 @@ void CableLayer::paint(ui::PaintContext& ctx) {
     // TX.free-rack: a signal path (the chain's links, a wire into an input) is drawn a little heavier than modulation.
     const float base = c.input ? kCable + 0.5f : kCable;
     const float w = ctx.scale.exact(sel || hot ? base + 1.0f : base);
+    if (c.through) {  // L22: the audio path through the device before this link, along its foot (1.5 px, under the joints)
+      const ui::Vec2 run[2] = {c.t0, c.t1};
+      ui::smoothPolyline(ctx.dl, run, 2, ui::withAlpha(col, static_cast<uint32_t>(170.0f * alpha)), ctx.scale.exact(1.5f));
+    }
     if (off) {  // dashed: every other run of 4 points
       for (int i = 0; i + 1 < kSamples; i += 8) ui::smoothPolyline(ctx.dl, pts + i, static_cast<uint32_t>(std::min(5, kSamples - i)), col, w);
     } else {
@@ -730,15 +769,16 @@ void CableLayer::paint(ui::PaintContext& ctx) {
       const ui::Vec2 c{static_cast<float>(is.rect.x) + 0.5f * static_cast<float>(is.rect.w),
                        static_cast<float>(is.rect.y) + 0.5f * static_cast<float>(is.rect.h)};
       const float r = 0.5f * static_cast<float>(is.rect.w) - 1.0f;
-      ctx.dl.addCircleFilled(c, r, on ? ui::withAlpha(rateColour(1), 200) : ui::withAlpha(th->surface.sunken, 230));
-      ctx.dl.addCircleStroke(c, r, ui::withAlpha(rateColour(1), on ? 255 : 160), ctx.scale.exact(on ? 1.6f : 1.0f));
+      ctx.dl.addCircleFilled(c, r, on ? ui::withAlpha(roleColour(th, 1), 200) : ui::withAlpha(th->surface.sunken, 230));
+      ctx.dl.addCircleStroke(c, r, ui::withAlpha(roleColour(th, 1), on ? 255 : 160), ctx.scale.exact(on ? 1.6f : 1.0f));
     }
     if (const auto a = chain->sourceEnd(drag_.from, drag_.port)) {
       const uint8_t db = hit.device.valid() && chain->isInput(hit.device, hit.param) ? static_cast<uint8_t>(DeviceChainView::EndDir::Left)
                                                                                      : static_cast<uint8_t>(DeviceChainView::EndDir::Up);
       cablePoints(a->at, static_cast<uint8_t>(a->dir), drag_.pos, db, s, pts);
-      ui::smoothPolyline(ctx.dl, pts, kSamples, ui::withAlpha(rateColour(1), 230), ctx.scale.exact(kCable));
-      ctx.dl.addCircleFilled(drag_.pos, ctx.scale.exact(3.0f), rateColour(1));
+      const ui::Rgba dc = roleColour(th, db == static_cast<uint8_t>(DeviceChainView::EndDir::Left) ? 1 : 0);
+      ui::smoothPolyline(ctx.dl, pts, kSamples, ui::withAlpha(dc, 230), ctx.scale.exact(kCable));
+      ctx.dl.addCircleFilled(drag_.pos, ctx.scale.exact(3.0f), dc);
     }
   }
 }

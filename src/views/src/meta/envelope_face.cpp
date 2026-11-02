@@ -125,6 +125,15 @@ public:
       else if (!j.input && j.name != "done")
         p.line({kAmtX + 6.0f, j.at.y}, {kW - 8.0f, j.at.y}, 1.25f, ui::mulAlpha(th.face.signal, 0.5f));
     }
+    // TMM.13-fix2 (MM review "UI and aesthetic" 11): the gate-done output is named beside its socket (it was an unlabelled
+    // grey socket); one text primitive either way.
+    {
+      const FaceJack* done = nullptr;
+      for (const FaceJack& j : env.jacks)
+        if (!j.input && j.visible && j.name == "done") done = &j;
+      // Above its socket, right-aligned at the edge: clear of the amount slider to its left and of the socket's ring.
+      p.textAligned({kW - 0.5f, done != nullptr ? done->at.y - 7.5f : 0.0f}, "done", 6.0f, done != nullptr ? th.face.ink : 0, 1.0f);
+    }
     // The shape: fill, then the line (each segment its own polyline so a hovered or dragged one can light).
     p.fillUnder(shape_, kY0, ui::mulAlpha(th.face.value, 0.24f), ui::mulAlpha(th.face.value, 0.03f));
     const Rgba line = drivenAny(env) ? th.face.valueDriven : th.face.value;
@@ -147,14 +156,6 @@ public:
       p.disc(c, 0.9f, hot ? th.face.handle : 0);
     }
     p.disc(pt_[3], 1.6f, ui::mulAlpha(th.face.value, 0.9f));  // the release's start (follows the sustain)
-    for (int h = 0; h < 3; ++h) {
-      const int32_t part = h;
-      const Vec2 c = h == 0 ? pt_[1] : h == 1 ? pt_[2] : pt_[4];
-      const bool hot = hovered_ == part || drag_ == part;
-      p.disc(c, kHandleR + 0.8f, hot ? ui::mulAlpha(th.face.hover, 1.0f) : 0);
-      p.disc(c, kHandleR, th.face.handle);
-      p.ring(c, kHandleR - 0.6f, 1.0f, ui::mulAlpha(th.face.value, 0.9f));
-    }
     // The amount slider: the value from the bottom, its handle.
     const float at = static_cast<float>(value(meta::kEnvAmount));
     const float ay = kAmtY1 - (kAmtY1 - kAmtY0) * std::clamp(at, 0.0f, 1.0f);
@@ -167,6 +168,16 @@ public:
     outline(p, 0.75f, env.selected ? 1.75f : 1.25f,
             env.selected ? th.circuit.selected : (env.hovered && hovered_ == kFrame ? th.circuit.hover : 0));
     paintVoices(p, th, now);
+    // The breakpoints last (TMM.13-fix2, MM review "UI and aesthetic" 11): a voice's dot on one glows under it, so the
+    // handle stays a handle (drawn under the dots, the peak's turned blue and read as a voice).
+    for (int h = 0; h < 3; ++h) {
+      const int32_t part = h;
+      const Vec2 c = h == 0 ? pt_[1] : h == 1 ? pt_[2] : pt_[4];
+      const bool hot = hovered_ == part || drag_ == part;
+      p.disc(c, kHandleR + 0.8f, hot ? ui::mulAlpha(th.face.hover, 1.0f) : 0);
+      p.disc(c, kHandleR, th.face.handle);
+      p.ring(c, kHandleR - 0.6f, 1.0f, ui::mulAlpha(th.face.value, 0.9f));
+    }
   }
 
   void liveRects(std::vector<Rect>& out) const override { out.push_back({kDisp.x0, kDisp.y0, kDisp.x1, kDisp.y1}); }

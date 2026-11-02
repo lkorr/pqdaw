@@ -52,6 +52,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   bool fitReadable = false;  // M15: the pending / next fit is an open (readable), not F (the whole patch)
   bool stubsNearOnly = false;  // T5.x-circuit-chain
   double pillMinZoom = 0.0;    // T5.x-circuit-chain
+  bool fitLeft = false;        // TMM.13-fix2: setFitAlignLeft
   Stats stats;
 
   Selection selection;
@@ -726,6 +727,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     z = std::clamp(z, kMinZoom, 2.0);
     view.x = static_cast<double>(scene->x0 + scene->x1) * 0.5 - lw / z * 0.5;
     view.y = static_cast<double>(scene->y0 + scene->y1) * 0.5 - lh / z * 0.5;
+    if (fitLeft) view.x = std::min(view.x, static_cast<double>(scene->x0) - margin);
     // M4 review M15: a patch opened (not F) never opens below the zoom where names show: too large to fit, it opens
     // at the Near zoom on its outputs (the right edge, vertically on the output terminals), as a schematic is read.
     if (fitReadable && z < kNearZoom) {
@@ -990,6 +992,8 @@ void CircuitCanvas::setPinStubsNearOnly(bool on) {
   markDirty();
 }
 bool CircuitCanvas::pinStubsNearOnly() const noexcept { return impl_->stubsNearOnly; }
+void CircuitCanvas::setFitAlignLeft(bool on) noexcept { impl_->fitLeft = on; }
+
 void CircuitCanvas::setTerminalPillMinZoom(double zoom) {
   if (impl_->pillMinZoom == zoom) return;
   impl_->pillMinZoom = zoom;
@@ -1203,6 +1207,10 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     if (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w) return C.hover;
     const WireStyle& ws = sc.wires[w].style;
     if (ws.boolean) return m.wireLit[w] ? C.wireBoolLit : C.wireBool;
+    if (ws.rate != WireRate::Const) {  // TMM.13-fix2 (M10): the Device view's palette (const: an off wire stays dim)
+      if (ws.notes) return C.wireNotes;
+      if (ws.modulation) return C.wireMod;
+    }
     switch (ws.rate) {
       case WireRate::Const: return C.wireConst;
       case WireRate::Param: return C.wireParam;
@@ -1474,6 +1482,8 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       const float baseline = std::round(m.devY(lb.y) + cap * 0.5f);
       Rgba col = C.symbolText;
       if (lb.role == SceneLabel::Role::Caption || lb.role == SceneLabel::Role::Pin) col = C.pinText;
+      // TMM.13-fix2 (MM review contrast table: 4.35:1): a face's name is its only title — lifted halfway to the symbols' text.
+      if (lb.role == SceneLabel::Role::Caption && lb.node != UINT32_MAX && m.faced(lb.node)) col = ui::lerp(C.pinText, C.symbolText, 0.5f);
       if (lb.role == SceneLabel::Role::Comment) col = C.comment;
       if (lb.node != UINT32_MAX && lb.node < sc.nodes.size()) col = dimIf(lb.node, col);
       const ui::ClipRect tc{std::max(clip.x, static_cast<int32_t>(std::floor(x0))), clip.y,
@@ -1486,7 +1496,16 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
 
   // M4 review M15: below Near the terminals (inputs, params, sources, outputs, exports) keep their names, in small
   // pills over their symbols; a pill that would overlap one already placed is left out.
-  if (lod != Lod::Near && m.view.zoom >= m.pillMinZoom && ctx.res.text && ctx.res.uiFonts) {
+  // TMM.13-fix2 (MM review "UI and aesthetic" 10): not while the faces are drawn smaller than three pill rows — the
+  // names ("note", "y") then outweighed the faces they name; the faces' own sockets and the wires say it there.
+  bool facesTiny = false;
+  if (m.facesShown && !m.faces.empty()) {
+    float tallest = 0.0f;
+    for (const auto& h : m.faces)
+      if (h.face && !h.panel) tallest = std::max(tallest, h.face->worldSize().y * h.scale * s);
+    facesTiny = tallest > 0.0f && tallest < 3.0f * ctx.scale.exact(13.0f);
+  }
+  if (lod != Lod::Near && !facesTiny && m.view.zoom >= m.pillMinZoom && ctx.res.text && ctx.res.uiFonts) {
     ui::TextSystem& ts = *ctx.res.text;
     const ui::FontId font = ctx.res.uiFonts->small;
     const float pillPad = std::round(ctx.scale.exact(3.0f)), lh = std::round(ctx.scale.exact(13.0f));

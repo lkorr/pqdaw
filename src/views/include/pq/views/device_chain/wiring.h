@@ -130,6 +130,14 @@ public:
     bool input = false;         // TX.free-rack: it ends on an input (a signal path, not a param)
     doc::WireStatus status = doc::WireStatus::Lowered;
     uint8_t rate = 0;           // 0 param, 1 audio, 2 voice (the source's rate, from the device kind and export)
+    uint8_t role = 0;           // TMM.13-fix2 (M10): its colour — 0 modulation (mint), 1 the audio path (blue), 2 notes (amber)
+    // TMM.13-fix2 (MM review H6): one end is in the collapsed free-device rack: the cable is drawn only while its badge
+    // (on the chain end's control) is hovered or it is selected.
+    bool tucked = false;
+    // TMM.13-fix2 (MM review L22): a chain link also draws the audio path through the device before it, along the frame's
+    // foot from the previous link's end to its own start (the joints were isolated dots): from t0 to t1 when `through`.
+    bool through = false;
+    ui::Vec2 t0, t1;
     ui::IRect badge{};          // the badge's rect (empty: no badge)
     ui::IRect bounds{};         // what the cable paints (damage)
     std::string label;          // TX.free-rack: what its badge's tooltip says ("Saturator → Utility · audio (chain)")

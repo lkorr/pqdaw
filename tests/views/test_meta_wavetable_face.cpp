@@ -319,7 +319,7 @@ TEST_CASE("wavetable face: golden at zoom 0.1 / 0.5 / 1 / 2, 1x and 2x") {
       const std::string name = "meta-wavetable-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(rig.canvas->stats().facesPainted == 1u);
-      CHECK(rig.canvas->stats().faceLayersFromTiles == 7u);  // settled: body, tracks, frame, the stacked frames, the harmonic bars (2), their slots
+      CHECK(rig.canvas->stats().faceLayersFromTiles == 8u);  // settled: body, tracks, frame, the stacked frames, the harmonic bars (2), their slots, the glyphs (TMM.13-fix2)
       checkImage(name, rig.draw(rig.res));
     }
 }
@@ -356,9 +356,9 @@ TEST_CASE("wavetable face: the same primitives at every zoom; tiles equal direct
       r.centre(zoom);
       r.settle();
       const Image tiled = r.draw(r.res);
-      CHECK(r.canvas->stats().faceLayersFromTiles == 7u);
+      CHECK(r.canvas->stats().faceLayersFromTiles == 8u);
       const Image direct = r.draw(r.resNoTiles);
-      CHECK(r.canvas->stats().faceLayersDirect == 7u);
+      CHECK(r.canvas->stats().faceLayersDirect == 8u);
       const std::string name = "meta-wavetable-tiles-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(pq::ui::test::matchesGolden(name, tiled, direct));

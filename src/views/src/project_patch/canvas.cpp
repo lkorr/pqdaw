@@ -207,7 +207,9 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     if (names) {
       const ui::FontId font = ctx.res.uiFonts->small;
       const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
-      if (r.y1 - r.y0 >= px + 2.0f) {
+      // TMM.13-fix2 (MM review "UI and aesthetic" 3): only where the strip holds the name; thinner (zoomed out) the name
+      // is a pill drawn over the band's blocks (paintOverlay), not text running down under its lane window.
+      if ((stripH >= px + 2.0f || lod() == Lod::Near) && r.y1 - r.y0 >= px + 2.0f) {
         const float h = std::clamp(stripH, px + 2.0f, r.y1 - r.y0);
         const ui::IRect box{static_cast<int32_t>(r.x0 + bar + 6.0f), static_cast<int32_t>(r.y0),
                             static_cast<int32_t>(std::min(r.x1 - r.x0 - bar - 10.0f, 360.0f * us)), static_cast<int32_t>(h)};
@@ -269,7 +271,9 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
     if (!overlaps(r, clip)) continue;
     const Rgba accent = th.circuit.wireAudio;
-    const float rad = std::min(std::round(10.0f * s), (r.y1 - r.y0) * 0.5f);
+    // TMM.13-fix2 (MM review "UI and aesthetic" 9: "a grouped capsule", the user's word): pill-round ends — a short
+    // capsule is a true stadium, a tall one keeps a 28-unit radius so its contents stay inside the curve.
+    const float rad = std::min(std::round(28.0f * s), (r.y1 - r.y0) * 0.5f);
     const float stripH = std::round(metrics::kCapsuleTitle * s);
     const float sw = std::max(1.0f, std::round(circuit::strokeWidth(s)));
     const bool sel = view_.selectedGroup() == n.device;
@@ -288,7 +292,8 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
         const int32_t gap = static_cast<int32_t>(std::round(10.0f * us));
         const std::string count = std::to_string(n.members.size()) + (n.members.size() == 1 ? " device" : " devices");
         if (adv > 0 && adv + gap + 12 < box.w)
-          paint::text(ctx, font, {box.x + adv + gap, box.y, box.w - adv - gap, box.h}, count, th.circuit.pinText, ui::TextAlign::Left);
+          paint::text(ctx, font, {box.x + adv + gap, box.y, box.w - adv - gap, box.h}, count,
+                      ui::lerp(th.circuit.pinText, th.circuit.symbolText, 0.6f), ui::TextAlign::Left);  // TMM.13-fix2: was 2.79:1
       }
     }
   }
@@ -335,11 +340,27 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       dl.addVLine(mx, std::min(a.y, b.y), std::max(a.y, b.y) + lw, wc, lw);
       dl.addHLine(std::min(mx, b.x), std::max(mx, b.x), std::round(b.y), wc, lw);
     }
+    const bool names = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
     for (const Node::MiniBox& b : n.mini) {
       const Vec2 a = at(b.x0, b.y0), c = at(b.x1, b.y1);
       const Rect br{a.x, a.y, std::max(a.x + 2.0f, c.x), std::max(a.y + 2.0f, c.y)};
       dl.addRectFilled(br, b.terminal ? ui::mulAlpha(th.circuit.wireAudio, 0.5f) : th.circuit.symbolFill);
       dl.addRectStroke(br, ui::mulAlpha(th.circuit.symbolStroke, 0.8f), lw);
+      // TMM.13-fix2 (MM review M9): a closed group read as two empty boxes — each member's name in its box (truncated;
+      // left out where even a few letters do not fit).
+      if (names && !b.terminal && !b.name.empty()) {
+        const ui::FontId font = ctx.res.uiFonts->small;
+        const auto px = static_cast<int32_t>(ctx.res.text->metrics(font).pixelSize);
+        const auto bw = static_cast<int32_t>(br.x1 - br.x0) - static_cast<int32_t>(std::round(6.0f * us));
+        if (bw >= 3 * px / 2 && br.y1 - br.y0 >= static_cast<float>(px) + 2.0f) {
+          const ui::TextRun run = ctx.res.text->shapeTruncated(font, b.name, bw);
+          ui::TextSystem::drawRun(dl, run,
+                                  {std::round((br.x0 + br.x1 - static_cast<float>(run.advance)) * 0.5f),
+                                   static_cast<float>(paint::capCentredBaseline(static_cast<int32_t>(br.y0), static_cast<int32_t>(br.y1 - br.y0),
+                                                                                static_cast<uint32_t>(px)))},
+                                  th.circuit.symbolText);
+        }
+      }
     }
   }
   (void)ps;
@@ -439,6 +460,26 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       const auto px = static_cast<float>(ts.metrics(font).pixelSize);
       const float pad = std::round(3.0f * us), lh = std::round(px + 4.0f * us);
       std::vector<Rect> placed;
+      // TMM.13-fix2 (MM review "UI and aesthetic" 3): the bands' own titles first, so a block's pill never covers one (the
+      // lane windows' "Notes" sat on "Keys", "Pad", "Mod"): it moves into its block's top, or is left out.
+      for (const Band& b : pp.bands) {
+        if (pp.scoped) break;
+        const Rect br = snapRect(deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
+        if (!overlaps(br, clip) || br.y1 - br.y0 < px + 2.0f) continue;
+        const float bar = std::max(2.0f, std::round(3.0f * us));
+        const ui::TextRun run = ts.shape(font, b.name);
+        const float stripH = metrics::kTitle * deviceScale();
+        if (stripH >= px + 2.0f) {  // the strip holds the name (paintUnderlay): keep pills off it
+          placed.push_back({br.x0, br.y0, br.x0 + bar + 6.0f + static_cast<float>(run.advance) + 4.0f * us, br.y0 + stripH});
+          continue;
+        }
+        // The band's name as a pill at its top-left corner, over its blocks (they would hide text under them).
+        const Rect box{br.x0 + bar + 1.0f, br.y0 + 1.0f, br.x0 + bar + 1.0f + static_cast<float>(run.advance) + 2.0f * pad, br.y0 + 1.0f + lh};
+        placed.push_back(box);
+        dl.addRoundedRectFilled(box, 2.0f * us, ui::withAlpha(th.surface.sunken, 235));
+        ui::TextSystem::drawRun(dl, run, {box.x0 + pad, static_cast<float>(paint::capCentredBaseline(static_cast<int32_t>(box.y0), static_cast<int32_t>(lh), static_cast<uint32_t>(px)))},
+                                th.circuit.symbolText);
+      }
       for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
@@ -451,10 +492,17 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         const float cx = std::round((nr.x0 + nr.x1) * 0.5f);
         // Inside the block's top where it is tall enough, else just above it.
         const float y0 = nr.y1 - nr.y0 >= lh + 2.0f ? std::round(nr.y0 + 1.0f) : std::round(nr.y0 - lh - 1.0f);
-        const Rect box{std::round(cx - w * 0.5f), y0, std::round(cx - w * 0.5f) + w, y0 + lh};
-        bool free = true;
-        for (const Rect& q : placed) free = free && (box.x1 <= q.x0 || q.x1 <= box.x0 || box.y1 <= q.y0 || q.y1 <= box.y0);
-        if (!free) continue;
+        Rect box{std::round(cx - w * 0.5f), y0, std::round(cx - w * 0.5f) + w, y0 + lh};
+        auto isFree = [&](const Rect& b) {
+          bool f = true;
+          for (const Rect& q : placed) f = f && (b.x1 <= q.x0 || q.x1 <= b.x0 || b.y1 <= q.y0 || q.y1 <= b.y0);
+          return f;
+        };
+        if (!isFree(box)) {  // over a band's title (or another pill): into the block's top instead
+          box.y0 = std::round(nr.y0 + 1.0f);
+          box.y1 = box.y0 + lh;
+          if (!isFree(box)) continue;
+        }
         placed.push_back(box);
         dl.addRoundedRectFilled(box, 2.0f * us, ui::withAlpha(th.surface.sunken, 225));
         ui::TextSystem::drawRun(dl, run, {box.x0 + pad, static_cast<float>(paint::capCentredBaseline(static_cast<int32_t>(box.y0), static_cast<int32_t>(lh), static_cast<uint32_t>(px)))},

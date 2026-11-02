@@ -83,6 +83,15 @@ void FacePainter::dashed(std::span<const Vec2> pts, float thickness, float on, f
   const float w = t_.len(thickness);
   const Rgba dc = w < 1.0f ? mulAlpha(c(col), std::max(w, 0.0f)) : c(col);
   const float tw = std::max(w, 1.0f);
+  // TMM.13-fix2 (MM review H5): dashes finer than 2 device px a period are below what the AA ramp resolves: one
+  // continuous stroke at the pattern's mean coverage (on / period) is the same picture, without a ribbon per dash.
+  if (t_.len(period) < 2.0f) {
+    std::vector<Vec2>& d = scratchPoints();
+    d.resize(pts.size());
+    for (size_t i = 0; i < pts.size(); ++i) d[i] = t_.map(pts[i]);
+    smoothPolyline(dl_, d.data(), static_cast<uint32_t>(d.size()), mulAlpha(dc, on / period), tw);
+    return;
+  }
   float phase = 0.0f;  // world units into the pattern
   for (size_t i = 0; i + 1 < pts.size(); ++i) {
     const Vec2 a = pts[i], b = pts[i + 1];

@@ -127,6 +127,8 @@ public:
   // this zoom (0, the default: at every level). The overviews set kFarZoom: zoomed far out, a whole device's
   // terminals would bury its boundary's title.
   void setTerminalPillMinZoom(double zoom);
+  // TMM.13-fix2: a fit that leaves room across puts the contents at the left edge (the margin in), not centred.
+  void setFitAlignLeft(bool on) noexcept;
 
   // ---- TMM.4: meta-module faces ----
   // What a face of the scene edits and shows (the host's document target and voice reader). Unset, or a null target:

@@ -134,7 +134,10 @@ struct FaceRig {
     tree.setViewport(w, h, s);
     tree.setResources(&res);
     canvas = &tree.emplaceRoot<circuit::CircuitCanvas>("circuit");
-    voices.setVoices({{0, 7.0, 0.04}, {1, 5.0, 0.31}, {2, 9.0, 0.57}, {3, 6.0, 0.83}});
+    // TMM.13-fix2 (MM review "UI and aesthetic" 8): an A major chord at 48 kHz (each dot in its note's colour, not 0 Hz red).
+    voices.setVoices({{0, 7.0, 0.04, 0.0, 220.0 / 48000.0}, {1, 5.0, 0.31, 0.0, 277.183 / 48000.0}, {2, 9.0, 0.57, 0.0, 329.628 / 48000.0},
+                      {3, 6.0, 0.83, 0.0, 440.0 / 48000.0}});
+    voices.setRate(48000.0);
     voices.advance(1.0 / 60.0);
     voices.freeze();
     canvas->faceBinder = [this](const circuit::SceneFace&) {
@@ -602,7 +605,8 @@ TEST_CASE("faces: pitch drags in semitones (Ctrl: cents, Shift: fine), keys step
     u.frame(zoom);
     const double us = u.d.tree().scale();
     const double span = std::max(46.0 * zoom * us, 300.0 * us);  // device px for the whole ±4800-cent range
-    const auto travelCents = [&](double px) { return px / span * 9600.0; };
+    // TMM.13-fix2 (MM review L21): the arc's middle half holds +-1200 cents (these drags stay inside it).
+    const auto travelCents = [&](double px) { return px / span * 4800.0; };
     // A plain drag up: whole semitones.
     size_t h0 = u.history();
     const Vec2 a = u.facePoint(0.0f, 39.0f);

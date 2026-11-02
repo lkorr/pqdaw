@@ -79,6 +79,9 @@ struct Port {
   // controlAnchor). Such ports take no pin row.
   bool anchored = false;
   float ax = 0, ay = 0;
+  // TMM.13-fix2 (MM review H6): how far left of ax a top / bottom entry runs down (the control's clear column: beside
+  // its labels, not through them); the canvas then enters the control from its left.
+  float aclear = 0;
 };
 
 struct Node {
@@ -129,6 +132,7 @@ struct Node {
   struct MiniBox {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // in the block's unit square
     bool terminal = false;
+    std::string name;  // TMM.13-fix2 (MM review M9): the member's title, drawn in its box where it fits
   };
   std::vector<MiniBox> mini;
   std::vector<graph::Point2> miniWires;  // pairs of points (unit square): a straight line per wire
@@ -236,7 +240,11 @@ struct LayoutOptions {
   // TX.mod-all: the centre (node-local world units) of the control that shows `param` on a device's face or panel, or
   // nullopt when none shows it (the param keeps a pin). Asked only for face and panel blocks' wired params. Unset: every
   // wired param has a pin.
-  std::function<std::optional<graph::Point2>(const doc::Device&, std::string_view param)> controlAnchor;
+  // (x, y) the control's centre, z how far left of it its clear column is (Port::aclear).
+  struct Anchor {
+    float x = 0, y = 0, clear = 0;
+  };
+  std::function<std::optional<Anchor>(const doc::Device&, std::string_view param)> controlAnchor;
   // TX.groups: the groups drawn closed (a block with a miniature); every other group is opened (its capsule).
   std::span<const doc::DeviceId> closedGroups;
   // TX.groups: only this group (opened) and its contents (ProjectPatch::scoped; the Device view's group panel).
@@ -249,9 +257,11 @@ struct LayoutOptions {
 // TX.mod-all: which edge of its block an anchored param's wire enters by (the one nearest the control; never the
 // right edge, which holds the outputs), and where (world units).
 enum class EntrySide : uint8_t { Left, Top, Bottom };
+// TMM.13-fix2 (MM review H6): the left edge only for a control in the face's first column (its clear column reaches the
+// edge); any other is entered down (or up) the gap beside it, never across the controls left of it.
 inline EntrySide entrySide(const Node& n, const Port& p) noexcept {
   const float dl = p.ax, dt = p.ay, db = n.h - p.ay;
-  if (dl <= dt && dl <= db) return EntrySide::Left;
+  if (p.ax - p.aclear <= 2.0f || (p.aclear == 0.0f && dl <= dt && dl <= db)) return EntrySide::Left;
   return dt <= db ? EntrySide::Top : EntrySide::Bottom;
 }
 
@@ -291,8 +301,8 @@ inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
     const Port& p = n.inputs[i];
     switch (entrySide(n, p)) {
       case EntrySide::Left: return {n.x, n.y + p.ay};
-      case EntrySide::Top: return {n.x + p.ax, n.y};
-      case EntrySide::Bottom: return {n.x + p.ax, n.y + n.h};
+      case EntrySide::Top: return {n.x + std::max(2.0f, p.ax - p.aclear), n.y};
+      case EntrySide::Bottom: return {n.x + std::max(2.0f, p.ax - p.aclear), n.y + n.h};
     }
   }
   return {n.x, n.y + pinOffset(n, i)};

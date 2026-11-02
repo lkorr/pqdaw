@@ -103,6 +103,13 @@ public:
     const ui::FaceTransform tr = transform();
     ui::TileAtlas* atlas = ctx.res.tiles;
     bool missing = false;
+    if (!face_->ownsPlate() && desc_.meta.empty()) {
+      // TMM.13-fix2: a chain device's face without its own plate (the Phase accumulator) gets the family's rounded body.
+      const ui::Vec2 ws = face_->worldSize();
+      const ui::Vec2 a = tr.map({1.0f, 1.0f}), b = tr.map({ws.x - 1.0f, ws.y - 1.0f});
+      ctx.dl.addRoundedRectFilled({a.x, a.y, b.x, b.y}, 10.0f * tr.scale, th->face.body);
+      ctx.dl.addRoundedRectStroke({a.x, a.y, b.x, b.y}, 10.0f * tr.scale, th->face.frame, std::max(1.0f, 1.25f * tr.scale));
+    }
     for (uint32_t layer = 0; layer < face_->staticLayerCount(); ++layer) {
       const ui::Rgba col = face_->staticLayerColour(*th, layer);
       // A layer that depends on the instance's values is drawn directly while a drag changes it every step.

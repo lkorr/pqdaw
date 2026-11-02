@@ -28,11 +28,25 @@ public:
     view_->faceVoices = impl.view.faceVoices;  // the same voice taps as the main circuit and the panels
     active_ = d.active;
     members_ = countMembers();
+    view_->sync();  // TMM.13-fix2: its contents' extent sizes the panel (logicalWidth)
   }
 
-  float logicalWidth() const override {
+  // TMM.13-fix2 (MM review "UI and aesthetic" 9): by default the panel is as wide as its contents at the zoom that fills its
+  // height (at most 1: a face at its own size), so the mini circuit opens legible instead of letterboxed at ~0.35. A width
+  // dragged this session wins.
+  float logicalWidth() const override { return logicalWidthFor(0.0f); }
+  float logicalWidthFor(float available) const override {
     const auto it = impl_.groupWidths.find(id_.value);
-    return it != impl_.groupWidths.end() ? it->second : kDefaultW;
+    if (it != impl_.groupWidths.end()) return it->second;
+        const project_patch::ProjectPatch& pp = view_->patch();
+    if (pp.nodes.empty() || !(available > 0.0f)) return kDefaultW;
+    float x0 = pp.nodes[0].x, y0 = pp.nodes[0].y, x1 = x0 + pp.nodes[0].w, y1 = y0 + pp.nodes[0].h;
+    for (const project_patch::Node& n : pp.nodes)
+      x0 = std::min(x0, n.x), y0 = std::min(y0, n.y - 12.0f), x1 = std::max(x1, n.x + n.w), y1 = std::max(y1, n.y + n.h);
+    constexpr float kMargin = 24.0f;  // CircuitCanvas's fit margin (world units)
+    const float h = available - kTitleH - 1.0f;
+    const float z = std::min(1.0f, h / std::max(1.0f, (y1 - y0) + 2.0f * kMargin));
+    return std::clamp(std::ceil(((x1 - x0) + 2.0f * kMargin) * z) + 2.0f, kMinW, kMaxW);
   }
   float logicalHeight(float available) const override { return available; }
   void update(const doc::Device& d) override {
@@ -80,7 +94,7 @@ public:
     if (e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && atEdge) {
       resizing_ = true;
       pressX_ = e.pos.x;
-      w0_ = logicalWidth();
+      w0_ = static_cast<float>(rect().w) / us;  // the width shown (fitted to the contents by default)
       return true;
     }
     if (resizing_) {

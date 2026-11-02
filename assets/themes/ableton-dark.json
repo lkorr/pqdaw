@@ -193,6 +193,8 @@
     "circuit.rubberBand": "#FFC6581F",
     "circuit.rubberBandEdge": "#FFC658",
     "circuit.comment": "#BCC0AE",
+    "circuit.wireMod": "#66DCC0",
+    "circuit.wireNotes": "#F0A53C",
     "circuit.probeBg": "#0A0A0EEB",
     "circuit.probeGrid": "#FFFFFF24",
     "circuit.probeTrace": "#78BEFF",
@@ -253,7 +255,8 @@
     "face.signal": "#7CD4FF",
     "face.glow": "#3FA9FF",
     "face.jack": "#08191F",
-    "face.jackRing": "#8E9C98"
+    "face.jackRing": "#8E9C98",
+    "face.ink": "#7A8C91"
   },
   "fonts": {
     "small": {"face": "regular", "px": 11, "tabular": false},

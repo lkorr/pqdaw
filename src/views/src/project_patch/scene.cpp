@@ -5,6 +5,7 @@
 #include <cmath>
 #include <unordered_map>
 
+#include "pq/views/meta/meta_face.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
 namespace pq::views::project_patch {
@@ -84,7 +85,10 @@ WireStyle styleOf(const Edge& e) {
   WireStyle w;
   w.rate = WireRate::Audio;
   switch (e.kind) {
-    case EdgeKind::Notes: w.poly = true; break;
+    case EdgeKind::Notes:
+      w.poly = true;
+      w.notes = true;  // TMM.13-fix2 (M10): amber, as the Device view's note cables
+      break;
     case EdgeKind::Chain:
     case EdgeKind::Route: break;
     case EdgeKind::Send:
@@ -190,21 +194,42 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     title.x1 = n.x + n.w - 8.0f;
     switch (n.kind) {
       case NodeKind::Source:  // the window's title at the left of its title row (bar numbers follow it)
+        // TMM.13-fix2 (MM review L14, "UI and aesthetic" 3): 4 units in from the window's frame, and the whole title row
+        // to fit in (the bar numbers start right of the title as drawn: lane_window.cpp), so it shows at every Near zoom.
         title.y = n.y + 8.0f;
-        title.x1 = n.x + metrics::kLaneTitleW;  // TMM.10-fix2: room for "Notes" before the bar numbers
+        title.x0 = n.x + 12.0f;
+        title.x1 = n.x + n.w - (n.outputs.size() > 1 ? metrics::kNoteNamesW : metrics::kLaneInset);
         title.align = SceneLabel::Align::Left;
         break;
       case NodeKind::Device:
       case NodeKind::Mixer: title.y = n.y + 8.0f; break;
       case NodeKind::Output:
-      case NodeKind::Terminal:
         title.x0 = n.x + 7.0f;
         title.x1 = n.x + n.w - 6.0f;
         title.y = n.y + n.h * 0.5f;
         break;
+      case NodeKind::Terminal:  // TMM.13-fix2 (MM review M9): under the terminal's symbol, not clipped by its outline
+        title.x0 = n.x - 4.0f;
+        title.x1 = n.x + n.w + 4.0f;
+        title.y = n.y + n.h + 3.0f;
+        break;
       case NodeKind::Sum: title.node = UINT32_MAX; break;  // the symbol says it
     }
     if (title.node != UINT32_MAX) sc.labels.push_back(title);
+    // TMM.13-fix2 (MM review "UI and aesthetic" 8): in a scoped canvas (the free-device rack, a group's panel) a face has
+    // no chain around it to say what it is: its device's name rides on it, as a binding name does in a circuit.
+    if (pp.scoped && n.kind == NodeKind::Device && n.face != nullptr && !n.title.empty()) {
+      SceneLabel cap;
+      cap.node = v;
+      cap.text = addString(n.title.starts_with("meta:") ? std::string(n.face->name) : n.title);  // not the patch id
+      cap.role = SceneLabel::Role::Caption;
+      const ui::Vec2 at = faceCaptionAt(*n.face);
+      cap.x0 = n.x + at.x * n.scale;
+      cap.x1 = n.x + n.w;
+      cap.y = n.y + at.y * n.scale;
+      cap.align = SceneLabel::Align::Left;
+      sc.labels.push_back(cap);
+    }
     for (uint32_t k = 0; k < sn.pinCount; ++k) {
       const ScenePin& pin = sc.pins[sn.firstPin + k];
       if (pin.label == UINT32_MAX || !pin.visible) continue;
@@ -251,7 +276,10 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
   for (uint32_t k = 0; k < pp.edges.size(); ++k) {
     const Edge& e = pp.edges[k];
     if (e.points.size() < 2) continue;
-    addWire(e.points, styleOf(e), netOf(e.net), k);
+    WireStyle style = styleOf(e);
+    // TMM.13-fix2 (M10): a note output's wire (Hz, gate, velocity into a param or an input) is a note wire.
+    if (e.kind == EdgeKind::Modulation && pp.nodes[e.from].kind == NodeKind::Source) style.notes = true;
+    addWire(e.points, style, netOf(e.net), k);
     SceneWire& sw = sc.wires.back();
     const uint32_t a = out.sceneNode[e.from], b = out.sceneNode[e.to];
     sw.fromPin = a != kNone ? sc.nodes[a].firstPin + static_cast<uint32_t>(pp.nodes[e.from].inputs.size()) + e.fromPort : 0;

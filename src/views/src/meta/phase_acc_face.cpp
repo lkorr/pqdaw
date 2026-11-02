@@ -111,6 +111,24 @@ constexpr float kPhaseFrom = 43.0f, kFreqFrom = 140.0f, kAmpFrom = 246.0f, kGapF
 float arcAngle(int32_t part, float t) noexcept { return deg(kArcs[part].a0 + kArcs[part].sweep * t); }
 Vec2 polar(float r, float a) noexcept { return {kC.x + r * std::cos(a), kC.y + r * std::sin(a)}; }
 
+// TMM.13-fix2 (MM review L21): the pitch arc is not linear in cents -- its middle half holds +-12 semitones (1.5 degrees
+// a semitone, ticked), the outer quarters the rest of +-4 octaves -- so ordinary transpositions show (+7 st was a 5
+// degree sliver). Arc travel t in [0, 1] (0.5 = 0 cents) <-> cents. A switched knob curve keeps the knob's own travel.
+constexpr double kPitchZone = 1200.0;   // cents each side in the fine middle
+constexpr double kPitchZoneT = 0.25;    // the arc travel it takes each side
+double pitchArcT(double cents) noexcept {
+  const double range = meta::kPhaseAccPitchRange;
+  const double a = std::min(std::fabs(cents), range);
+  const double t = a <= kPitchZone ? kPitchZoneT * a / kPitchZone : kPitchZoneT + (0.5 - kPitchZoneT) * (a - kPitchZone) / (range - kPitchZone);
+  return cents < 0.0 ? 0.5 - t : 0.5 + t;
+}
+double pitchCentsAt(double t) noexcept {
+  const double range = meta::kPhaseAccPitchRange;
+  const double d = std::clamp(t, 0.0, 1.0) - 0.5, a = std::fabs(d);
+  const double c = a <= kPitchZoneT ? kPitchZone * a / kPitchZoneT : kPitchZone + (range - kPitchZone) * (a - kPitchZoneT) / (0.5 - kPitchZoneT);
+  return d < 0.0 ? -c : c;
+}
+
 // The pitch as semitones + cents: the nearest semitone, the rest in cents ("+7 st", "−12 st +14 ¢", "+3.5 ¢", "0 st").
 std::string minusSign(std::string s) {
   for (size_t at = s.find('-'); at != std::string::npos; at = s.find('-', at + 3)) s.replace(at, 1, "\xE2\x88\x92");
@@ -169,6 +187,9 @@ public:
   }
 
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
+  // TMM.13-fix2: the binding name in the empty top-left corner (the circle starts 16 units down), not 30 above the body.
+  Vec2 captionAt() const noexcept override { return {4.0f, 6.0f}; }
+  bool ownsPlate() const noexcept override { return false; }  // a circle: the Device view's panel adds the plate
 
   uint32_t staticLayerCount() const noexcept override { return 3; }
   // TX.knob-curves: the ticks layer follows a switched knob curve (0: the type's shared tile).
@@ -214,9 +235,17 @@ public:
       tick(kFreq, at(kFreq, hz, static_cast<float>(meta::phaseAccTravelFromFreq(hz))), r1 - r0);
     for (int i = 1; i <= 3; ++i) tick(kAmp, at(kAmp, static_cast<double>(i), 0.25f * static_cast<float>(i)), r1 - r0);
     for (int i = 1; i <= 3; ++i) tick(kPhase, 0.25f * static_cast<float>(i), i == 2 ? r1 - r0 : (r1 - r0) * 0.6f);
-    const float octaves = static_cast<float>(meta::kPhaseAccPitchRange / 1200.0);
-    for (int i = -3; i <= 3; ++i)
-      tick(kPitch, at(kPitch, 1200.0 * i, 0.5f + 0.5f * static_cast<float>(i) / octaves), i == 0 ? (r1 - r0) * 1.4f : (r1 - r0) * 0.6f);
+    // Pitch (TMM.13-fix2, L21): a semitone comb across the fine middle (+-12 st), the octaves beyond, 0 longest.
+    const bool pitchCurved = hasTarget() && param_[kPitch] >= 0 && faceCurveSwitched(target(), type(), static_cast<size_t>(param_[kPitch]));
+    auto pitchTick = [&](double cents, float len, float width) {
+      const float t = pitchCurved ? static_cast<float>(faceValueToTravel(target(), type(), static_cast<size_t>(param_[kPitch]), cents))
+                                  : static_cast<float>(pitchArcT(cents));
+      const float a = arcAngle(kPitch, t);
+      p.line(polar(r0, a), polar(r0 + len, a), width, w);
+    };
+    for (int st = -11; st <= 11; ++st)
+      if (st != 0) pitchTick(100.0 * st, (r1 - r0) * 0.45f, 0.6f);
+    for (int i = -3; i <= 3; ++i) pitchTick(1200.0 * i, i == 0 ? (r1 - r0) * 1.4f : (r1 - r0) * 0.8f, 1.0f);
   }
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
@@ -235,14 +264,27 @@ public:
       const float hr0 = kTrackR - kTrackW * 0.5f - 1.0f, hr1 = kTrackR + kTrackW * 0.5f + 1.0f;
       p.line(polar(hr0, a), polar(hr1, a), dragPart_ == k ? 2.5f : 2.0f, driven ? th.face.valueDriven : th.face.handle);
     }
-    // The inputs: a faint lead from each input jack to the body (a wired one in the signal colour).
+    // The inputs: a faint lead from each input jack (a wired one in the signal colour). TMM.13-fix2 (MM review "UI and
+    // aesthetic" 8): onto the arc it drives -- `hz` adds to the frequency (the left arc near its top), `pm` to the phase
+    // (down the left side to the bottom arc's start) -- instead of stopping on the rim; any other to the body's edge.
     for (const FaceJack& j : env.jacks) {
       if (!j.input) continue;
-      const float dy = j.at.y - kC.y;
-      const float edge = kC.x - std::sqrt(std::max(0.0f, kBodyR * kBodyR - dy * dy));
-      const bool reach = j.visible && edge > 9.0f;
-      p.line({8.0f, j.at.y}, {reach ? edge : 8.0f, j.at.y}, 1.0f,
-             reach ? (j.connected ? ui::mulAlpha(th.face.signal, 0.45f) : ui::mulAlpha(th.face.jackRing, 0.3f)) : 0);
+      const Rgba col = j.connected ? ui::mulAlpha(th.face.signal, 0.45f) : ui::mulAlpha(th.face.jackRing, 0.3f);
+      const float onTrack = kTrackR + kTrackW * 0.5f;
+      if (j.name == "hz" && j.visible) {
+        const Vec2 lead[2] = {{8.0f, j.at.y}, polar(onTrack, arcAngle(kFreq, 0.8f))};
+        p.polyline(lead, 1.0f, col);
+      } else if (j.name == "pm" && j.visible) {
+        const Vec2 end = polar(onTrack, arcAngle(kPhase, 0.0f));
+        const Vec2 lead[4] = {{8.0f, j.at.y}, {12.0f, j.at.y}, {12.0f, end.y}, end};
+        p.polyline(lead, 1.0f, col);
+      } else {
+        const float dy = j.at.y - kC.y;
+        const float edge = kC.x - std::sqrt(std::max(0.0f, kBodyR * kBodyR - dy * dy));
+        const bool reach = j.visible && edge > 9.0f;
+        const Vec2 lead[2] = {{8.0f, j.at.y}, {reach ? edge : 8.0f, j.at.y}};
+        p.polyline(lead, 1.0f, reach ? col : 0);
+      }
     }
     // The output: the lead from the hub out through the gap between amplitude and pitch to the jack's row, then to the
     // jack; the hub, its core lit by the amplitude.
@@ -330,6 +372,8 @@ public:
         else dragT_ = std::clamp(dragT_, 0.0f, 1.0f);
         double v = dragPart_ == kPhase ? meta::travelToValue(spec, dragT_)  // TX.knob-curves: along its curve
                                        : faceTravelToValue(target(), type(), static_cast<size_t>(param_[dragPart_]), dragT_);
+        if (dragPart_ == kPitch && !faceCurveSwitched(target(), type(), static_cast<size_t>(param_[kPitch])))
+          v = pitchCentsAt(dragT_);  // TMM.13-fix2 (L21): along the arc's scale (about 6 px a semitone in the middle)
         if (dragPart_ == kAmp && (e.mods & ui::mod::kCtrl)) v = std::round(v);  // Ctrl: whole multiples
         if (dragPart_ == kPitch) {
           // Whole semitones from where the drag began (a cents offset stays); Ctrl: single cents.
@@ -478,6 +522,8 @@ private:
     const double v = target().value(static_cast<size_t>(param_[part]));
     if (part == kPhase) return static_cast<float>(v - std::floor(v));
     (void)spec;
+    if (part == kPitch && !faceCurveSwitched(target(), type(), static_cast<size_t>(param_[part])))
+      return static_cast<float>(pitchArcT(v));  // TMM.13-fix2 (L21): the arc's own scale
     return static_cast<float>(faceValueToTravel(target(), type(), static_cast<size_t>(param_[part]), v));  // TX.knob-curves
   }
 

@@ -154,12 +154,19 @@ public:
           ctx.dl.addCircleFilled({c.x + std::cos(am) * mr, c.y + std::sin(am) * mr}, ctx.scale.exact(2.0f), ui::signal_theme::kAccent);
         }
       }
-      // TX.knob-curves: a knob switched off its declared curve shows that curve, small, in the gap under the arc.
+      // TX.knob-curves: a knob switched off its declared curve shows that curve. TMM.13-fix2 (MM review M9): as a small
+      // boxed icon beside the arc's lower right (inside the arc the Linear diagonal read as a second pointer).
       if (switched_ && rad >= 8.0f) {
+        const float bw = ctx.scale.exact(10.0f), bh = ctx.scale.exact(8.0f);
+        float bx = c.x + rad + 0.5f * thick + ctx.scale.exact(1.5f);
+        if (bx + bw > static_cast<float>(r.right())) bx = c.x - rad - 0.5f * thick - ctx.scale.exact(1.5f) - bw;  // no room: left
+        const ui::Rect box{std::round(bx), std::round(c.y + 0.15f * rad), std::round(bx) + std::round(bw), std::round(c.y + 0.15f * rad) + std::round(bh)};
+        ctx.dl.addRoundedRectFilled(box, ctx.scale.exact(1.5f), th->surface.sunken);
+        ctx.dl.addRoundedRectStroke(box, ctx.scale.exact(1.5f), ui::withAlpha(th->device.label, 140), 1.0f);
+        const float in = ctx.scale.exact(2.0f);
         std::array<ui::Vec2, kCurveGlyphPoints> pts;
-        curveGlyphPoints(travelOn(info_, info_.curve),
-                         {c.x - 0.38f * rad, c.y + 0.5f * rad, c.x + 0.38f * rad, c.y + 0.92f * rad}, pts);
-        ui::smoothPolyline(ctx.dl, pts, ui::withAlpha(th->device.label, 200), ctx.scale.exact(1.0f));
+        curveGlyphPoints(travelOn(info_, info_.curve), {box.x0 + in, box.y0 + in, box.x1 - in, box.y1 - in}, pts);
+        ui::smoothPolyline(ctx.dl, pts, ui::withAlpha(th->device.label, 230), ctx.scale.exact(1.0f));
       }
     }
     if (v.focus) paint::box(ctx.dl, r, 0.0f, 0, th->accent.focus);
@@ -386,20 +393,39 @@ public:
     if (f) {
       ui::IRect t{fr.right() + ctx.scale.px(4), r.y, std::max(0, (p.w > 0 ? p.x : r.right()) - fr.right() - ctx.scale.px(8)), r.h};
       // T4.4-fix1: a user device — "● edited" after the title, in the accent colour (room kept for it first).
-      // TX.patching: a free device (out of the series) — "◌ free", after "● edited" when both.
-      const std::string_view kEdited = panel_.edited() && panel_.free() ? "\xE2\x97\x8F edited  \xE2\x97\x8C free"
-                                       : panel_.free()                  ? "\xE2\x97\x8C free"
+      // TX.patching: a free device (out of the series) — a dashed ring and "free", after "● edited" when both.
+      // TMM.13-fix2 (MM review M9): the ring is drawn (the UI font has no U+25CC: it rendered as "‖").
+      const std::string_view kEdited = panel_.edited() && panel_.free() ? "\xE2\x97\x8F edited  free"
+                                       : panel_.free()                  ? "free"
                                                                         : "\xE2\x97\x8F edited";
+      const int32_t ringW = panel_.free() ? ctx.scale.px(11) : 0;
       int32_t markW = 0;
-      if ((panel_.edited() || panel_.free()) && ctx.res.text) markW = ctx.res.text->measure(f->small, kEdited) + ctx.scale.px(6);
+      if ((panel_.edited() || panel_.free()) && ctx.res.text) markW = ctx.res.text->measure(f->small, kEdited) + ringW + ctx.scale.px(6);
       if (markW > t.w / 2) markW = 0;  // too narrow (folded): the title alone
       t.w -= markW;
       const int32_t adv = rename_ != nullptr ? 0 :  // T4.17: the rename field draws the name
           paint::text(ctx, f->bodyStrong, t, title_, panel_.active() ? th->device.titleText : th->device.titleTextOff, ui::TextAlign::Left);
-      if (markW > 0 && rename_ == nullptr)
-        paint::text(ctx, f->small, {t.x + adv + ctx.scale.px(6), r.y, markW, r.h}, kEdited,
-                    !panel_.active() ? th->device.titleTextOff : panel_.edited() ? th->accent.primary : th->device.label,
-                    ui::TextAlign::Left);
+      if (markW > 0 && rename_ == nullptr) {
+        int32_t x = t.x + adv + ctx.scale.px(6);
+        if (panel_.edited()) {
+          const std::string_view ed = panel_.free() ? std::string_view("\xE2\x97\x8F edited  ") : kEdited;
+          const int32_t ew = ctx.res.text != nullptr ? ctx.res.text->measure(f->small, ed) : 0;
+          paint::text(ctx, f->small, {x, r.y, ew, r.h}, ed, !panel_.active() ? th->device.titleTextOff : th->accent.primary,
+                      ui::TextAlign::Left);
+          x += ew;
+        }
+        if (panel_.free()) {  // eight dashes round a 3.5 px ring, then "free"
+          const ui::Rgba fc = !panel_.active() ? th->device.titleTextOff : th->device.label;
+          const ui::Vec2 c{static_cast<float>(x) + ctx.scale.exact(4.0f), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
+          const float rr = ctx.scale.exact(3.5f), sw = ctx.scale.exact(1.0f);
+          for (int k = 0; k < 8; ++k) {
+            const float a0 = static_cast<float>(k) * 0.7853982f;
+            ctx.dl.addArcStroke(c, rr, a0, a0 + 0.42f, fc, sw);
+          }
+          paint::text(ctx, f->small, {x + ringW, r.y, std::max(0, t.x + adv + markW - x - ringW + ctx.scale.px(6)), r.h}, "free", fc,
+                      ui::TextAlign::Left);
+        }
+      }
       if (p.w > 0) {  // T5.11: the preset name; a click hot-swaps (the host's onPresetClick)
         const bool live = static_cast<bool>(panel_.onPresetClick);
         paint::box(ctx.dl, p, 0.0f, hoverPreset_ && live ? th->surface.raised : th->field.fill, th->device.border);
@@ -1139,9 +1165,11 @@ std::optional<DevicePanel::Anchor> DevicePanel::controlAnchor(std::string_view p
         const ui::IRect mid{r.x, r.y + lh, r.w, std::max(0, r.h - 2 * lh)};
         Anchor a = centreOf(mid);
         a.radius = std::max(0.0f, a.radius - 2.0f * s);
+        a.clear = 0.5f * static_cast<float>(r.w);  // its name and value rows are as wide as the widget
         best = a;
       } else {
         best = centreOf(r);
+        best->clear = 0.5f * static_cast<float>(r.w);
       }
     }
   }
@@ -1179,7 +1207,7 @@ std::optional<DevicePanel::Anchor> DevicePanel::controlHome(std::string_view par
       const int32_t score = (c.param == param ? 2 : 0) + (c.when.empty() ? 1 : 0);
       if (score <= bestScore) continue;
       bestScore = score;
-      Anchor a{centre, 0.5f * std::min(c.w, c.h)};
+      Anchor a{centre, 0.5f * std::min(c.w, c.h), 0.5f * c.w};
       if (c.kind == ControlKind::Knob) a.radius = std::max(0.0f, 0.5f * std::min(c.w, std::max(0.0f, c.h - 2.0f * kLabelH)) - 2.0f);
       best = a;
       continue;

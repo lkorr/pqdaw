@@ -298,7 +298,7 @@ public:
   // ---- static layers: body, tracks, frame + glyphs (shared by the type); this instance's stacked frames (or, in
   // draw mode, the drawing grid), the edited keyframe's harmonic bars (amplitude, phase) and the harmonic view's slots
   // — data and view state, not values: drawn once into tiles, not per frame ----
-  uint32_t staticLayerCount() const noexcept override { return 7; }
+  uint32_t staticLayerCount() const noexcept override { return 8; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
     switch (layer) {
       case 0: return th.face.body;
@@ -307,11 +307,12 @@ public:
       case 3: return th.face.tick;
       case 4: return th.face.track;  // the harmonic slots (under the bars)
       case 5: return th.face.value;
+      case 7: return th.face.ink;  // TMM.13-fix2: the glyphs, lifted off the frame's grey (2.57:1 -> 5.1:1)
       default: return th.face.handle;
     }
   }
   uint64_t staticKey(uint32_t layer) const override {
-    if (layer < 3) return 0;
+    if (layer < 3 || layer == 7) return 0;
     refresh();
     const uint64_t view = (static_cast<uint64_t>(hFirst_) << 20) ^ (static_cast<uint64_t>(hCount_) << 8);
     switch (layer) {
@@ -333,6 +334,7 @@ public:
         else paintStack(p);
         return;
       case 4: paintSlots(p); return;
+      case 7: paintGlyphs(p, w); return;
       case 5:
       default: paintHarmonics(p, layer == 5); return;
     }
@@ -613,6 +615,16 @@ private:
     if (heard_.active()) heard_.sounding(u, out);
     else model_.sounding(u, out);
   }
+  // TMM.13-fix2 (MM review H5): sound_ = the sounding frame at u, recomputed only when u or what is displayed changed
+  // (dispKey): a repaint that only moves the face (a pan) no longer interpolates 1025 samples per face.
+  void soundingAt(float u) {
+    const uint64_t key = dispKey();
+    if (soundValid_ && soundU_ == u && soundKey_ == key) return;
+    dispSounding(u, sound_);
+    soundValid_ = true;
+    soundU_ = u;
+    soundKey_ = key;
+  }
   float dispSoundAt(float u, float ph) const { return heard_.active() ? heard_.soundAt(u, ph) : model_.soundAt(u, ph); }
   void dispBlended(float u, std::span<float> out) const {
     if (heard_.active()) heard_.blended(u, out);
@@ -777,17 +789,6 @@ private:
 
   void paintFrame(ui::FacePainter& p, Rgba w) const {
     outline(p, 0.75f, 1.25f, w);
-    // Glyphs: the modes, the shapes, the warp modes, fold and sync.
-    static constexpr Glyph kShapes[kShapeCount] = {Glyph::Sine, Glyph::Triangle, Glyph::Saw, Glyph::Square, Glyph::Pulse, Glyph::Noise};
-    glyphs_.draw(p, Glyph::PhaseMode, centreOf(modeCell(0)), 4.0f, 3.5f, 1.0f, w);
-    glyphs_.draw(p, Glyph::ShapeMode, centreOf(modeCell(1)), 4.0f, 3.5f, 1.0f, w);
-    for (uint32_t i = 0; i < kShapeCount; ++i) glyphs_.draw(p, kShapes[i], centreOf(shapeCell(i)), 3.9f, 3.5f, 1.0f, w);
-    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve};
-    for (uint32_t i = 0; i < kToolCount; ++i) glyphs_.draw(p, kTools[i], centreOf(toolCell(i)), 4.0f, 3.6f, 1.0f, w);
-    static constexpr Glyph kWarps[3] = {Glyph::Bend, Glyph::Mirror, Glyph::PulseWidth};
-    for (uint32_t i = 0; i < 3; ++i) glyphs_.draw(p, kWarps[i], centreOf(warpCell(i)), 3.8f, 3.2f, 1.0f, w);
-    glyphs_.draw(p, Glyph::Fold, {kKnobX[0], kGlyphY}, 5.0f, 3.2f, 1.0f, w);
-    glyphs_.draw(p, Glyph::Sync, {kKnobX[2], kGlyphY}, 5.0f, 3.2f, 1.0f, w);
     // Ticks: the phase slider's quarters, the position slider's quarters, the knobs' centre (warp: 0).
     for (int i = 0; i <= 4; ++i) {
       const float x = phaseX(0.25f * static_cast<float>(i));
@@ -801,11 +802,29 @@ private:
     p.line({kHarmX0, (kPhY0 + kPhY1) * 0.5f}, {kHarmX1, (kPhY0 + kPhY1) * 0.5f}, 0.5f, ui::mulAlpha(w, 0.5f));
   }
 
+  // TMM.13-fix2 (MM review contrast table): the glyphs in their own layer, in face.ink.
+  void paintGlyphs(ui::FacePainter& p, Rgba w) const {
+    // Glyphs: the modes, the shapes, the warp modes, fold and sync.
+    static constexpr Glyph kShapes[kShapeCount] = {Glyph::Sine, Glyph::Triangle, Glyph::Saw, Glyph::Square, Glyph::Pulse, Glyph::Noise};
+    glyphs_.draw(p, Glyph::PhaseMode, centreOf(modeCell(0)), 4.0f, 3.5f, 1.0f, w);
+    glyphs_.draw(p, Glyph::ShapeMode, centreOf(modeCell(1)), 4.0f, 3.5f, 1.0f, w);
+    for (uint32_t i = 0; i < kShapeCount; ++i) glyphs_.draw(p, kShapes[i], centreOf(shapeCell(i)), 3.9f, 3.5f, 1.0f, w);
+    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve};
+    for (uint32_t i = 0; i < kToolCount; ++i) glyphs_.draw(p, kTools[i], centreOf(toolCell(i)), 4.0f, 3.6f, 1.0f, w);
+    static constexpr Glyph kWarps[3] = {Glyph::Bend, Glyph::Mirror, Glyph::PulseWidth};
+    for (uint32_t i = 0; i < 3; ++i) glyphs_.draw(p, kWarps[i], centreOf(warpCell(i)), 3.8f, 3.2f, 1.0f, w);
+    glyphs_.draw(p, Glyph::Fold, {kKnobX[0], kGlyphY}, 5.0f, 3.2f, 1.0f, w);
+    glyphs_.draw(p, Glyph::Sync, {kKnobX[2], kGlyphY}, 5.0f, 3.2f, 1.0f, w);
+  }
+
   // The dense frames, back to front, every frame up to 64 lines (more: every k-th, the last always), fainter behind.
   void paintStack(ui::FacePainter& p) const {
     refresh();
     const uint32_t f = dispFrames();
-    const uint32_t step = std::max(1u, (f + 63) / 64);
+    // TMM.13-fix2 (MM review "UI and aesthetic" 7): about one line per 4 device px of the display's height (24 at 1x,
+    // never more than 64): at small scales the 64-line stack had turned into grey texture.
+    const auto lines = static_cast<uint32_t>(std::clamp(std::round((kDisp.y1 - kDisp.y0) * p.transform().scale / 4.0f), 12.0f, 64.0f));
+    const uint32_t step = std::max(1u, (f + lines - 1) / lines);
     std::array<uint32_t, 72> idx{};
     uint32_t n = 0;
     for (uint32_t d = 0; d < f && n < idx.size(); d += step) idx[n++] = d;
@@ -994,7 +1013,7 @@ private:
     p.polyline(curve_, 0.8f, ui::mulAlpha(th.face.handle, 0.35f));
     // The sounding cycle at the position it is heard at.
     const float u = drawPosition();
-    dispSounding(u, sound_);
+    soundingAt(u);
     recordShown(u, true);
     curve_.clear();
     for (uint32_t i = 0; i <= n; ++i) {
@@ -1073,8 +1092,17 @@ private:
       if (spectral) {
         glyphs_.draw(p, Glyph::Sine, {kGapX, y}, 3.6f, 2.0f, 0.9f, col);
       } else {
-        p.line({kGapX - 2.6f, y - 2.6f}, {kGapX + 2.6f, y + 2.6f}, 0.9f, col);
-        p.line({kGapX - 2.6f, y + 2.6f}, {kGapX + 2.6f, y - 2.6f}, 0.9f, col);
+        // TMM.13-fix2 (MM review "UI and aesthetic" 7): a crossfade -- the equal-power fade-out and fade-in crossing
+        // high (the X read as "delete" and clashed with the VCA's multiply).
+        std::array<Vec2, 7> out{}, in{};
+        for (size_t i = 0; i < out.size(); ++i) {
+          const float t = static_cast<float>(i) / static_cast<float>(out.size() - 1);
+          const float x = kGapX - 3.0f + 6.0f * t;
+          out[i] = {x, y + 2.8f - 5.6f * std::cos(t * 1.5707963f)};
+          in[i] = {x, y + 2.8f - 5.6f * std::sin(t * 1.5707963f)};
+        }
+        p.polyline(out, 0.9f, col);
+        p.polyline(in, 0.9f, col);
       }
     }
     // Phase: hover, the value from the left, the handle; per-voice ticks when the phase input is wired.
@@ -1110,7 +1138,11 @@ private:
     // The output: a faint lead from the position slider to the output jack when the jack is level with the display.
     for (const FaceJack& j : env.jacks) {
       if (j.input || !j.visible) continue;
-      const bool level = j.at.y >= kDisp.y0 && j.at.y <= kDisp.y1;
+      bool level = j.at.y >= kDisp.y0 && j.at.y <= kDisp.y1;
+      // TMM.13-fix2 (MM review "UI and aesthetic" 7): not through a gap glyph on its row (the "~" sat on the lead).
+      const meta::WavetableData& d = model_.data();
+      for (size_t g = 0; g + 1 < d.keyframes.size() && level; ++g)
+        if (gapShown(g) && std::fabs(gapY(g) - j.at.y) < 5.0f) level = false;
       p.line({kPosX + 7.0f, j.at.y}, {kW - 8.0f, j.at.y}, 1.25f, level ? ui::mulAlpha(env.theme->face.signal, 0.5f) : 0);
     }
   }
@@ -1120,7 +1152,7 @@ private:
     // The highlighted frame: a fill to its centre line and the curve, in the accent.
     const float u = std::clamp(shownPosition(env), 0.0f, 1.0f);
     // TMM.16: the frame as it sounds there (full resolution), not the σ-smoothed thumbnail.
-    dispSounding(u, sound_);
+    soundingAt(u);
     recordShown(u, false);
     place(sound_, u, stepFor(p.transform().scale, 1) * (wt::kSoundPoints / wt::kPoints));
     const FrameGeom g = geom(u);
@@ -1269,6 +1301,9 @@ private:
   mutable Glyphs glyphs_;
   std::vector<float> blend_;
   std::vector<float> sound_ = std::vector<float>(wt::kSoundPoints + 1, 0.0f);  // TMM.16: the sounding frame drawn
+  bool soundValid_ = false;  // TMM.13-fix2: soundingAt's memo
+  float soundU_ = 0.0f;
+  uint64_t soundKey_ = 0;
   float shown_u_ = 0.0f;
   bool shownDraw_ = false, shownValid_ = false;
   std::vector<Shown> shown_;

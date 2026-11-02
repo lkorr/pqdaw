@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "pq/graph/atoms.h"
+#include "pq/views/meta/meta_face.h"
 
 namespace pq::views::circuit {
 
@@ -519,6 +520,13 @@ std::shared_ptr<CircuitScene> buildScene(const graph::Patch& source, const Scene
       lb.x0 = sn.x - 24;  // a caption may be a little wider than its symbol (layers are ≥ 48 apart)
       lb.x1 = sn.x + sn.w + 24;
       lb.y = sn.y - 6;
+      if (spec.face != nullptr) {  // TMM.13-fix2: attached to its face (left-aligned at the face's corner, as it places it)
+        const ui::Vec2 at = faceCaptionAt(*spec.face);
+        lb.x0 = sn.x + at.x;
+        lb.x1 = sn.x + sn.w;
+        lb.y = sn.y + at.y;
+        lb.align = Align::Left;
+      }
       lb.text = addString(std::move(caption));
       lb.role = Role::Caption;
       lb.node = v;

@@ -31,6 +31,7 @@ struct Registry {
                                                                      {"spectrogram", &makeSpectrogramFace}};  // TX.spectrogram
   // worldSize per type id, filled on first ask (a face's size never changes).
   std::vector<std::pair<std::string, ui::Vec2>> sizes;
+  std::vector<std::pair<std::string, ui::Vec2>> captions;  // TMM.13-fix2: captionAt per type id
 };
 
 Registry& registry() {
@@ -111,8 +112,9 @@ void Face::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
   for (const FaceJack& j : env.jacks) {
     if (!j.visible) continue;
     // A short lead from the edge into a socket ring; a connected socket carries a dot.
-    const float edge = j.input ? 0.0f : w, sx = j.input ? 5.0f : w - 5.0f;
-    p.line({edge, j.at.y}, {j.input ? sx - 2.75f : sx + 2.75f, j.at.y}, 1.25f, th.face.jackRing);
+    const float in = jackInset();
+    const float edge = j.input ? 0.0f : w, sx = j.input ? in : w - in;
+    if (in > 2.75f) p.line({edge, j.at.y}, {j.input ? sx - 2.75f : sx + 2.75f, j.at.y}, 1.25f, th.face.jackRing);
     p.disc({sx, j.at.y}, 3.4f, th.face.jack);
     p.ring({sx, j.at.y}, 2.75f, 1.1f, th.face.jackRing);
     p.disc({sx, j.at.y}, 1.25f, j.connected ? th.face.signal : ui::mulAlpha(th.face.jackRing, 0.35f));
@@ -235,6 +237,20 @@ ui::Vec2 faceSize(const meta::Type& t) noexcept {
   std::lock_guard<std::mutex> lock(r.m);
   r.sizes.emplace_back(std::string(t.id), s);
   return s;
+}
+
+ui::Vec2 faceCaptionAt(const meta::Type& t) noexcept {
+  Registry& r = registry();
+  {
+    std::lock_guard<std::mutex> lock(r.m);
+    for (const auto& [name, c] : r.captions)
+      if (name == t.id) return c;
+  }
+  const std::unique_ptr<MetaFace> f = makeFace(t);
+  const ui::Vec2 c = f ? f->captionAt() : ui::Vec2{2.0f, -6.0f};
+  std::lock_guard<std::mutex> lock(r.m);
+  r.captions.emplace_back(std::string(t.id), c);
+  return c;
 }
 
 bool registerFace(std::string_view typeId, FaceFactory factory) {

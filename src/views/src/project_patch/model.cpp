@@ -199,7 +199,7 @@ struct Builder {
     n.w *= k;
     n.h *= k;
     for (Port& q : n.inputs)
-      if (q.anchored) q.ax *= k, q.ay *= k;
+      if (q.anchored) q.ax *= k, q.ay *= k, q.aclear *= k;
     return n;
   }
 
@@ -318,10 +318,11 @@ struct Builder {
     if ((n.face != nullptr || (panelSize.x > 0.0f && panelSize.y > 0.0f)) && opt.controlAnchor) {
       for (Port& q : n.inputs)
         if (q.param)
-          if (const std::optional<graph::Point2> a = opt.controlAnchor(d, q.name)) {
+          if (const std::optional<LayoutOptions::Anchor> a = opt.controlAnchor(d, q.name)) {
             q.anchored = true;
             q.ax = a->x;
             q.ay = a->y;
+            q.aclear = a->clear;
           }
       if (n.face != nullptr) {
         const ui::Vec2 fs = faceSize(*n.face);
@@ -418,7 +419,7 @@ struct Builder {
       const float sw = std::max(1.0f, x1 - x0), sh = std::max(1.0f, y1 - y0);
       for (size_t i = 0; i < kids.size(); ++i)
         c.mini.push_back({(rel[i].x - x0) / sw, (rel[i].y - y0) / sh, (rel[i].x + kids[i].w - x0) / sw,
-                          (rel[i].y + kids[i].h - y0) / sh, kids[i].kind == NodeKind::Terminal});
+                          (rel[i].y + kids[i].h - y0) / sh, kids[i].kind == NodeKind::Terminal, kids[i].title});
       auto kidOf = [&](doc::DeviceId d, std::string_view port, bool source) -> int32_t {
         if (d == g.id)
           return port == (source ? doc::kGroupInPort : doc::kGroupOutPort) ? (source ? 0 : static_cast<int32_t>(kids.size()) - 1) : -1;
@@ -960,7 +961,8 @@ struct Builder {
       std::vector<graph::Point2>& pts = e.points;
       pts.clear();
       pts.push_back(s);
-      const uint32_t off = (serial++ % 4) * 3;
+      // TMM.13-fix2 (MM review M10): parallel runs 6 apart (3 channels in a 20-unit title strip), never closer.
+      const uint32_t off = (serial++ % 3) * 6;
       switch (e.kind) {
         case EdgeKind::Notes:
         case EdgeKind::Chain:
@@ -1012,12 +1014,13 @@ struct Builder {
           const Port* tp = e.toPort < b.inputs.size() ? &b.inputs[e.toPort] : nullptr;
           const EntrySide side = tp != nullptr && tp->anchored ? entrySide(b, *tp) : EntrySide::Left;
           if (side != EntrySide::Left) {
-            const float below = b.free ? b.y + b.h : std::max(b.y + b.h, rowBottom[b.band]);
-            const float gy = side == EntrySide::Top ? gutterTop + 4.0f + o : below + 4.0f + std::round(o * 0.5f);
+            // TMM.13-fix2: a capsule member's gutter is inside the capsule's pad (it ran on the capsule's outline).
+            const float below = b.free || b.capsule != kNone ? b.y + b.h : std::max(b.y + b.h, rowBottom[b.band]);
+            const float gy = side == EntrySide::Top ? gutterTop + 4.0f + o : below + 3.0f + std::min(o, 6.0f);
             const float ux = s.x + (fromNotes ? 22.0f : 10.0f) + o;
             pts.push_back({ux, s.y});
             pts.push_back({ux, gy});
-            pts.push_back({t.x, gy});
+            pts.push_back({t.x, gy});  // t: inputEntry, the clear column beside the control (H6)
           } else if (a.band == b.band && t.x > s.x + 24.0f && !a.expanded && !b.expanded && !fromNotes) {
             const float mx = std::round((s.x + t.x) * 0.5f) + o;
             pts.push_back({mx, s.y});

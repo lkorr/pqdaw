@@ -135,6 +135,9 @@ struct Theme {
     Rgba background, grid, symbolFill, symbolStroke, symbolText, pinText, terminalFill, paramFill, ioFill, subcircuitFill,
         subcircuitTitle, wireBool, wireParam, wireAudio, wireConst, wireBoolLit, selected, hover, rubberBand, rubberBandEdge,
         comment,
+        // TMM.13-fix2 (MM review M10): one wire palette in the circuit and the Device view — audio blue (wireAudio),
+        // modulation mint (wireMod: an audio-rate signal into a param), notes amber (wireNotes: the note source's).
+        wireMod, wireNotes,
         probeBg, probeGrid, probeTrace, probeText, cost, costBg;  // T4.5: probe readouts (PQ Meter's signal look), cost labels
     bool operator==(const Circuit&) const = default;
   } circuit{};
@@ -150,7 +153,8 @@ struct Theme {
   } device{};
   struct Face {  // meta-module faces (TMM.4, docs/plans/MM.md "UI"): label-free vector faces on the circuit canvas —
                  // a dark body, quiet tracks and frame, values in the accent, the signal (voice dots) in neon blue
-    Rgba body, frame, track, tick, value, valueDriven, handle, hover, hub, signal, glow, jack, jackRing;
+    Rgba body, frame, track, tick, value, valueDriven, handle, hover, hub, signal, glow, jack, jackRing,
+        ink;  // TMM.13-fix2 (MM review contrast table): unselected glyphs and marks (>= 3:1 on the body; frame was 2.57:1)
     bool operator==(const Face&) const = default;
   } face{};
 

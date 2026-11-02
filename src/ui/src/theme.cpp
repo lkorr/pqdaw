@@ -84,7 +84,7 @@ const ColorToken kColors[] = {
     PQ_COLOR(circuit, ioFill), PQ_COLOR(circuit, subcircuitFill), PQ_COLOR(circuit, subcircuitTitle),
     PQ_COLOR(circuit, wireBool), PQ_COLOR(circuit, wireParam), PQ_COLOR(circuit, wireAudio), PQ_COLOR(circuit, wireConst),
     PQ_COLOR(circuit, wireBoolLit), PQ_COLOR(circuit, selected), PQ_COLOR(circuit, hover), PQ_COLOR(circuit, rubberBand),
-    PQ_COLOR(circuit, rubberBandEdge), PQ_COLOR(circuit, comment), PQ_COLOR(circuit, probeBg), PQ_COLOR(circuit, probeGrid),
+    PQ_COLOR(circuit, rubberBandEdge), PQ_COLOR(circuit, comment), PQ_COLOR(circuit, wireMod), PQ_COLOR(circuit, wireNotes), PQ_COLOR(circuit, probeBg), PQ_COLOR(circuit, probeGrid),
     PQ_COLOR(circuit, probeTrace), PQ_COLOR(circuit, probeText), PQ_COLOR(circuit, cost), PQ_COLOR(circuit, costBg),
     PQ_COLOR(code, background), PQ_COLOR(code, gutter), PQ_COLOR(code, lineNumber), PQ_COLOR(code, lineNumberCurrent), PQ_COLOR(code, currentLine), PQ_COLOR(code, text),
     PQ_COLOR(code, keyword), PQ_COLOR(code, number), PQ_COLOR(code, string), PQ_COLOR(code, comment), PQ_COLOR(code, name), PQ_COLOR(code, punctuation),
@@ -96,7 +96,7 @@ const ColorToken kColors[] = {
     PQ_COLOR(device, band), PQ_COLOR(device, bandOff), PQ_COLOR(device, bandText), PQ_COLOR(device, bandSelected),
     PQ_COLOR(face, body), PQ_COLOR(face, frame), PQ_COLOR(face, track), PQ_COLOR(face, tick), PQ_COLOR(face, value),
     PQ_COLOR(face, valueDriven), PQ_COLOR(face, handle), PQ_COLOR(face, hover), PQ_COLOR(face, hub), PQ_COLOR(face, signal),
-    PQ_COLOR(face, glow), PQ_COLOR(face, jack), PQ_COLOR(face, jackRing),
+    PQ_COLOR(face, glow), PQ_COLOR(face, jack), PQ_COLOR(face, jackRing), PQ_COLOR(face, ink),
 };
 #undef PQ_COLOR
 

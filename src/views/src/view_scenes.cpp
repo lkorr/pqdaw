@@ -46,6 +46,11 @@
 namespace pq::views {
 
 namespace {
+// TMM.13-fix2 (MM review "UI and aesthetic" 8): synthetic Phase accumulator voices play an A major chord (A3 C#4 E4
+// A4 E3 C#5): increments at 48 kHz, so each voice is drawn in the colour of a real note (they were all 0 Hz: red).
+constexpr double kSceneRate = 48000.0;
+constexpr double kSceneNoteInc[] = {220.0 / kSceneRate, 277.183 / kSceneRate, 329.628 / kSceneRate,
+                                    440.0 / kSceneRate, 164.814 / kSceneRate, 554.365 / kSceneRate};
 
 struct SceneEntry {
   std::string_view name;
@@ -1557,8 +1562,10 @@ Status setupProjectMetaFaces(Shell& shell) {
   if (lead == nullptr || bell == nullptr || lead->devices.empty() || bell->devices.empty())
     return Error{ErrorCode::NotFound, "project-meta-faces: no Lead / Bell face", {}};
   static SyntheticVoices leadVoices, bellVoices;
-  leadVoices.setVoices({{0, 7.0, 0.04}, {1, 5.0, 0.31}, {2, 9.0, 0.57}, {3, 6.0, 0.83}});
-  bellVoices.setVoices({{0, 4.0, 0.12}, {1, 11.0, 0.46}, {2, 3.0, 0.71}});
+  leadVoices.setVoices({{0, 7.0, 0.04, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.31, 0.0, kSceneNoteInc[1]}, {2, 9.0, 0.57, 0.0, kSceneNoteInc[2]}, {3, 6.0, 0.83, 0.0, kSceneNoteInc[3]}});
+  leadVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
+  bellVoices.setVoices({{0, 4.0, 0.12, 0.0, kSceneNoteInc[0]}, {1, 11.0, 0.46, 0.0, kSceneNoteInc[1]}, {2, 3.0, 0.71, 0.0, kSceneNoteInc[2]}});
+  bellVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   for (SyntheticVoices* sv : {&leadVoices, &bellVoices}) {
     sv->advance(1.0 / 60.0);
     sv->freeze();
@@ -1593,7 +1600,8 @@ Status setupProjectMetaWavetable(Shell& shell) {
     return Error{ErrorCode::NotFound, "project-meta-wavetable: no Wave / Pair track", {}};
   static SyntheticVoices waveVoices, accVoices, wtVoices;
   waveVoices.setVoices({{0, 6.0, 0.12, 0.35}, {1, 7.5, 0.44, 0.35}, {2, 9.0, 0.71, 0.35}, {3, 12.0, 0.9, 0.35}});
-  accVoices.setVoices({{0, 4.0, 0.08}, {1, 5.0, 0.4}, {2, 6.0, 0.66}});
+  accVoices.setVoices({{0, 4.0, 0.08, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.4, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.66, 0.0, kSceneNoteInc[2]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.08, 0.7}, {1, 5.0, 0.4, 0.7}, {2, 6.0, 0.66, 0.7}});
   for (SyntheticVoices* sv : {&waveVoices, &accVoices, &wtVoices}) {
     sv->advance(1.0 / 60.0);
@@ -1628,7 +1636,8 @@ Status setupDeviceMetaChain(Shell& shell) {
   DeviceChainView* v = findDeviceChain(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-chain: the Device view is not installed", {}};
   static SyntheticVoices accVoices, wtVoices;
-  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  accVoices.setVoices({{0, 4.0, 0.06, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.31, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.58, 0.0, kSceneNoteInc[2]}, {3, 7.5, 0.82, 0.0, kSceneNoteInc[3]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
   for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
     sv->advance(1.0 / 60.0);
@@ -1661,7 +1670,8 @@ Status setupProjectMetaChain(Shell& shell) {
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-chain: the view is not installed", {}};
   static SyntheticVoices accVoices, wtVoices;
-  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  accVoices.setVoices({{0, 4.0, 0.06, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.31, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.58, 0.0, kSceneNoteInc[2]}, {3, 7.5, 0.82, 0.0, kSceneNoteInc[3]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
   for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
     sv->advance(1.0 / 60.0);
@@ -1790,7 +1800,8 @@ Status setupProjectPatchNotes(Shell& shell) {
   const doc::WireId hz = doc::wiresOf(*ctx.doc()).at(1).id;
   if (Status s = ctx.store().dispatch(doc::ops::setWireReducer(*ctx.doc(), hz, doc::WireReducer::Highest)->command); !s) return s;
   static SyntheticVoices accVoices, wtVoices;
-  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  accVoices.setVoices({{0, 4.0, 0.06, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.31, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.58, 0.0, kSceneNoteInc[2]}, {3, 7.5, 0.82, 0.0, kSceneNoteInc[3]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
   for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
     sv->advance(1.0 / 60.0);
@@ -1830,7 +1841,8 @@ Status setupProjectPatchResize(Shell& shell) {
     if (Status s = ctx.store().dispatch(e->command); !s) return s;
   }
   static SyntheticVoices accVoices, wtVoices;
-  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  accVoices.setVoices({{0, 4.0, 0.06, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.31, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.58, 0.0, kSceneNoteInc[2]}, {3, 7.5, 0.82, 0.0, kSceneNoteInc[3]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
   for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
     sv->advance(1.0 / 60.0);
@@ -1964,7 +1976,8 @@ Status setupDeviceMetaEnvelope(Shell& shell) {
   static SyntheticVoices accVoices, wtVoices;
   static EnvelopeSceneVoices envVoices({{0, 0.30, 0.52, false}, {1, 0.96, 0.995, false}, {2, 0.62, 0.55, false},
                                         {3, 0.35, 0.35, false}, {4, 0.33, 0.21, true}, {5, 0.05, 0.03, true}});
-  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}, {4, 3.0, 0.2}, {5, 9.0, 0.7}});
+  accVoices.setVoices({{0, 4.0, 0.06, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.31, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.58, 0.0, kSceneNoteInc[2]}, {3, 7.5, 0.82, 0.0, kSceneNoteInc[3]}, {4, 3.0, 0.2, 0.0, kSceneNoteInc[4]}, {5, 9.0, 0.7, 0.0, kSceneNoteInc[5]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35},
                       {4, 3.0, 0.2, 0.35}, {5, 9.0, 0.7, 0.35}});
   for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
@@ -2000,7 +2013,8 @@ Status setupProjectMetaEnvelope(Shell& shell) {
   static SyntheticVoices accVoices, wtVoices;
   static EnvelopeSceneVoices envVoices({{0, 0.20, 0.31, false}, {1, 0.86, 0.80, false}, {2, 0.70, 0.70, false},
                                         {3, 0.55, 0.47, true}});
-  accVoices.setVoices({{0, 4.0, 0.08}, {1, 5.0, 0.4}, {2, 6.0, 0.66}, {3, 7.0, 0.9}});
+  accVoices.setVoices({{0, 4.0, 0.08, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.4, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.66, 0.0, kSceneNoteInc[2]}, {3, 7.0, 0.9, 0.0, kSceneNoteInc[3]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.08, 0.7}, {1, 5.0, 0.4, 0.7}, {2, 6.0, 0.66, 0.7}, {3, 7.0, 0.9, 0.7}});
   for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
     sv->advance(1.0 / 60.0);
@@ -2451,7 +2465,8 @@ Status setupProjectMetaVca(Shell& shell) {
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-vca: the view is not installed", {}};
   static SyntheticVoices accVoices, wtVoices, vcaVoices;
-  accVoices.setVoices({{0, 4.0, 0.08}, {1, 5.0, 0.4}, {2, 6.0, 0.66}, {3, 7.0, 0.9}});
+  accVoices.setVoices({{0, 4.0, 0.08, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.4, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.66, 0.0, kSceneNoteInc[2]}, {3, 7.0, 0.9, 0.0, kSceneNoteInc[3]}});
+  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
   wtVoices.setVoices({{0, 4.0, 0.08, 0.0}, {1, 5.0, 0.4, 0.0}, {2, 6.0, 0.66, 0.0}, {3, 7.0, 0.9, 0.0}});
   for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
     sv->advance(1.0 / 60.0);

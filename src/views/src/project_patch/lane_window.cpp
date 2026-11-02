@@ -193,6 +193,7 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
     // TX.lane-edit: the arrangement's selected tracks are lighter here too (one selection).
     if (editing && ed->trackSelected(t->id)) dl.addRectFilled(body, th.arrangement.laneSelected);
 
+    const int32_t titleW = header ? ctx.res.text->shape(font, n.title).advance : 0;
     // Bar lines (and beat lines where they are at least 6 logical px apart).
     const int64_t bar0 = sig.ticksToBarBeat(start).bar;
     for (int64_t bar = bar0;; ++bar) {
@@ -209,8 +210,9 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
         }
       if (header && bt >= start) {  // the bar number in the title row, right of the window's title
         const float x = std::round(X(bt)) + 2.0f * us;
-        const Rect title = canvas.deviceRect(n.x, n.y, metrics::kLaneTitleW, metrics::kLaneTop);
-        if (x > title.x1 && x + 2.0f * px < nr.x1) {
+        // TMM.13-fix2 (L14): right of the window's title as the canvas draws it (scene.cpp: 12 units in), 6 px clear.
+        const float titleEnd = canvas.toDevice({n.x + 12.0f, n.y}).x + static_cast<float>(titleW) + 6.0f * us;
+        if (x > titleEnd && x + 2.0f * px < nr.x1) {
           const std::string num = std::to_string(bar + 1);
           paint::text(ctx, font, toIRect({x, nr.y0 + 1.0f, std::min(nr.x1 - 2.0f, x + 4.0f * px), body.y0}), num, th.circuit.pinText,
                       ui::TextAlign::Left);
@@ -338,6 +340,10 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
         const Rect body = laneBodyDevice(canvas, n);
         const std::string label = paramShortName(p, arr->automation().chosen(surf->rows()[static_cast<size_t>(r)].id), view.context().deviceLibrary());
         const float w = std::min(body.x1 - body.x0, 8.0f * px);
+        // TMM.13-fix2 (MM review contrast table: 2.70:1 on the title row): on a dark pad as wide as the name.
+        const float tw = std::min(w, static_cast<float>(ctx.res.text->shape(font, label).advance) + 6.0f * us);
+        const float padY0 = nr.y0 + 2.0f * us, padY1 = body.y0 - 1.0f * us;
+        if (padY1 > padY0) ctx.dl.addRoundedRectFilled({body.x1 - tw - 1.0f * us, padY0, body.x1 + 2.0f * us, padY1}, 2.0f * us, th.surface.sunken);
         paint::text(ctx, font, toIRect({body.x1 - w, nr.y0 + 1.0f, body.x1, body.y0}), label, th.automation.line, ui::TextAlign::Right);
       }
   }

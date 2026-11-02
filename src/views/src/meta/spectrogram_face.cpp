@@ -651,6 +651,7 @@ public:
 
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
   float inputY(size_t, size_t) const noexcept override { return 0.5f * kH; }
+  float jackInset() const noexcept override { return 0.0f; }  // TMM.13-fix2 (L23): on the frame's edge, off the plot
   float outputY(size_t, size_t) const noexcept override { return 0.5f * kH; }
 
   void setAnalysis(std::function<SpectrumFeed*()> feedOf, std::function<void()> wakeHost) override {
@@ -737,9 +738,9 @@ public:
     dl.popClip();
     paintOverlays(p, labels && !sheet_);
     if (labels) {
-      chip(p, kChChip, kChShort[std::clamp(opts_.choice(oChannel), 0, 3)], false, th);
-      chip(p, kScaleChip, kScaleShort[static_cast<int>(opts_.scale())], false, th);
-      chip(p, kMapChip, kMapShort[std::clamp(opts_.choice(oMap), 0, 9)], false, th);
+      chip(p, leftChip(kChChip), kChShort[std::clamp(opts_.choice(oChannel), 0, 3)], false, th);
+      chip(p, leftChip(kScaleChip), kScaleShort[static_cast<int>(opts_.scale())], false, th);
+      chip(p, leftChip(kMapChip), kMapShort[std::clamp(opts_.choice(oMap), 0, 9)], false, th);
       chip(p, kFreezeChip, "FREEZE", frozen_, th, frozen_ ? kFrozen : 0);
       chip(p, kSetChip, "SET", sheet_, th);
       if (sheet_) paintSheet(p, th);
@@ -756,9 +757,9 @@ public:
 
   int32_t hitTest(Vec2 l, float) const noexcept override {
     if (l.x < 0.0f || l.y < 0.0f || l.x > kW || l.y > kH) return kNone;
-    if (inside(kChChip, l)) return kChPart;
-    if (inside(kScaleChip, l)) return kScalePart;
-    if (inside(kMapChip, l)) return kMapPart;
+    if (inside(leftChip(kChChip), l)) return kChPart;
+    if (inside(leftChip(kScaleChip), l)) return kScalePart;
+    if (inside(leftChip(kMapChip), l)) return kMapPart;
     if (inside(kFreezeChip, l)) return kFreezePart;
     if (inside(kSetChip, l)) return kSetPart;
     if (sheet_) {
@@ -1560,10 +1561,18 @@ private:
     const Vec2 pts[5] = {{1.0f, 1.0f}, {kW - 1.0f, 1.0f}, {kW - 1.0f, kH - 1.0f}, {1.0f, kH - 1.0f}, {1.0f, 1.0f}};
     p.polyline(pts, 1.25f, col);
   }
+  // TMM.13-fix2 (MM review contrast table: 2.92:1, the keyboard covered "MID"): the left chips start right of a keyboard
+  // on the left, on a solid backing (the picture's streaks ran through the translucent one), their text lifted.
+  Rect leftChip(const Rect& r) const noexcept {
+    const float dx = opts_.choice(oKeys) == 1 ? kKeysW : 0.0f;
+    return {r.x0 + dx, r.y0, r.x1 + dx, r.y1};
+  }
   void chip(ui::FacePainter& p, const Rect& r, const char* label, bool on, const ui::Theme& th, Rgba onCol = 0) const {
     const Rgba c = onCol != 0 ? onCol : th.face.value;
-    p.roundedRect(r, 3.0f, on ? ui::mulAlpha(c, 0.3f) : ui::rgba(8, 8, 12, 160));
-    p.text({0.5f * (r.x0 + r.x1), 0.5f * (r.y0 + r.y1)}, label, 6.0f, on ? c : th.device.displayText);
+    p.roundedRect(r, 3.0f, ui::rgba(11, 17, 22));
+    if (on) p.roundedRect(r, 3.0f, ui::mulAlpha(c, 0.3f));
+    else p.roundedRect(r, 3.0f, 0);  // the same primitives either way
+    p.text({0.5f * (r.x0 + r.x1), 0.5f * (r.y0 + r.y1)}, label, 6.0f, on ? c : ui::rgba(255, 255, 255, 176));
   }
 
   SpectrumFeed* feed_ = nullptr;

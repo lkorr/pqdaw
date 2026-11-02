@@ -997,6 +997,7 @@ TEST_CASE("meta faces: golden meta-wavetable-voices — eight engine voices, eac
   env.uiScale = 2.0f;
   env.jacks = std::span<const views::FaceJack>(&jack, 1);
   ui::FacePainter p(dl, {{16.0f, 16.0f}, kScale});
+  p.setText(res.text);  // TMM.13-fix2 (MM review M9): with the text system, as a canvas paints (the "os" cell was a bar)
   views::paintFace(*face, p, env);
   auto target = ui::OffscreenTarget::create(**g, w, h, 1);
   REQUIRE(target.ok());

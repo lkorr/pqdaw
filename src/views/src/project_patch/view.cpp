@@ -73,6 +73,9 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx, doc::DeviceId scope) : Proj
 
 ProjectPatchView::ProjectPatchView(ViewContext& ctx, FreeRack) : ProjectPatchView(ctx) {
   freeRack_ = true;  // TX.free-rack: the Device view's free-device rack (setRackTrack picks the track)
+  // TMM.13-fix2 (MM review "UI and aesthetic" 9): it reads from the left, as the chain under it (centred, its left
+  // 300 px stayed empty).
+  canvas_->setFitAlignLeft(true);
 }
 
 void ProjectPatchView::setRackTrack(doc::TrackId track) {

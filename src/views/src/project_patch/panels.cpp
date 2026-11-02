@@ -130,10 +130,11 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
   return face;
 }
 
-std::optional<graph::Point2> ProjectPatchView::controlAnchorOf(const doc::Device& d, std::string_view param) {
-  auto point = [](const std::optional<ControlAnchor>& a) -> std::optional<graph::Point2> {
+std::optional<LayoutOptions::Anchor> ProjectPatchView::controlAnchorOf(const doc::Device& d, std::string_view param) {
+  // TMM.13-fix2 (H6): the wire runs down a gap beside the control (its labels' half width, or its rim, + 3 units).
+  auto point = [](const std::optional<ControlAnchor>& a) -> std::optional<LayoutOptions::Anchor> {
     if (!a) return std::nullopt;
-    return graph::Point2{a->at.x, a->at.y};
+    return LayoutOptions::Anchor{a->at.x, a->at.y, std::max(a->clear, a->radius) + 3.0f};
   };
   // The face shown now (the previous build's block of this device): its values (a meta face's handles), the control its
   // panel shows now (Operator's LFO amount on the oscillator tab or in the LFO section), else the control's place.

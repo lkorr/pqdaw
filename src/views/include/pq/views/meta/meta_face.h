@@ -192,6 +192,10 @@ struct FacePointer {
 struct ControlAnchor {
   ui::Vec2 at{0.0f, 0.0f};
   float radius = 0.0f;
+  // TMM.13-fix2 (MM review H6): half the width of the control's column with its labels (a panel knob's name above and
+  // value below): a wire runs down beside it, this far left of `at` plus a gap, and enters the control from its clear
+  // side. 0: the control has no labels (the radius).
+  float clear = 0.0f;
 };
 
 // TX.panel-faces: what a host canvas sees of anything drawn as a block's face in world units — a meta module's vector
@@ -227,6 +231,13 @@ public:
 
   // ---- geometry ----
   virtual ui::Vec2 worldSize() const noexcept = 0;
+  // TMM.13-fix2 (MM review "UI and aesthetic" 3): where the host's caption (a circuit's binding name, "acc1") sits,
+  // face-local, its text left-aligned at x: above the top-left corner by default; a face with an empty corner (the Phase
+  // accumulator's circle) puts it there, so the name reads as the face's, not the node's above it.
+  virtual ui::Vec2 captionAt() const noexcept { return {2.0f, -6.0f}; }
+  // TMM.13-fix2 (MM review "UI and aesthetic" 8): whether the face draws its own body plate over its whole rect. A
+  // Device-view panel draws one behind a face that does not (the Phase accumulator's circle), as the others have.
+  virtual bool ownsPlate() const noexcept { return true; }
   // Where input i of n sits on the left edge / output j of n on the right edge (face-local y), when the host lays
   // its pins out by the face (a nested call's symbol). Default: 24 + 16·i.
   virtual float inputY(size_t i, size_t n) const noexcept;
@@ -249,6 +260,9 @@ public:
   // The host's pins, as sockets on the face's edge (every meta face shares the look). The host calls it before
   // paintLive.
   virtual void paintJacks(ui::FacePainter& p, const FaceEnv& env) const;
+  // TMM.13-fix2 (MM review L23): how far in from its edge a socket's centre sits (face units; 5 by default, a short lead
+  // in); a face whose plot reaches its edges (the analysers) puts its sockets on the edge itself (0), not on the plot.
+  virtual float jackInset() const noexcept { return 5.0f; }
   // The face-local rects that change while voices sound (the host damages only these, ≤ 60 Hz).
   virtual void liveRects(std::vector<ui::Rect>& out) const = 0;
   // Whether the live layer moves now (a voice sounds): the host keeps its ≤ 60 Hz repaint going.
@@ -370,6 +384,8 @@ std::unique_ptr<MetaFace> makeFace(const meta::Type& t);
 bool hasFace(const meta::Type& t) noexcept;
 // worldSize of the type's face ({0, 0}: none), without making one.
 ui::Vec2 faceSize(const meta::Type& t) noexcept;
+// TMM.13-fix2: captionAt of the type's face ({2, −6} without one), without making one each time.
+ui::Vec2 faceCaptionAt(const meta::Type& t) noexcept;
 // Registers a face factory for a type id (built-in faces register themselves; tests may add one).
 using FaceFactory = std::unique_ptr<MetaFace> (*)(const meta::Type& t);
 bool registerFace(std::string_view typeId, FaceFactory factory);

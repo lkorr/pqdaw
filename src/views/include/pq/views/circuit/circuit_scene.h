@@ -44,6 +44,7 @@ struct WireStyle {
   WireRate rate = WireRate::Audio;
   bool poly = false;        // per voice: doubled line
   bool modulation = false;  // an audio-rate signal into a parameter: dashed
+  bool notes = false;       // TMM.13-fix2 (M10): the note source's (notes into a chain, its outputs' wires): wireNotes
   bool operator==(const WireStyle&) const = default;
 };
 

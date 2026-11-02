@@ -168,8 +168,9 @@ public:
 
   // ---- static layers: body; tracks (the knob's track and dial, the curve box, the chips); frame (outline, ✕, seam,
   // end stops, the min — max line) ----
-  uint32_t staticLayerCount() const noexcept override { return 3; }
+  uint32_t staticLayerCount() const noexcept override { return 4; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
+    if (layer == 3) return th.face.ink;  // TMM.13-fix2: the X and the min -- max rule (2.57:1 and 1.69:1 in the frame's grey)
     return layer == 0 ? th.face.body : (layer == 1 ? th.face.track : th.face.frame);
   }
   void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
@@ -185,11 +186,14 @@ public:
       for (int i = 0; i < kPresets; ++i) p.roundedRect(chipRect(i), 3.0f, ui::mulAlpha(w, 0.22f));
       return;
     }
+    if (layer == 3) {  // ink: the ✕ (multiply) and the min -- max rule
+      constexpr float x = 3.6f;
+      p.line({kTimes.x - x, kTimes.y - x}, {kTimes.x + x, kTimes.y + x}, 1.6f, w);
+      p.line({kTimes.x - x, kTimes.y + x}, {kTimes.x + x, kTimes.y - x}, 1.6f, w);
+      p.line({kMinRect.x1 + 2.0f, kRangeY}, {kMaxRect.x0 - 2.0f, kRangeY}, 1.0f, w);
+      return;
+    }
     outline(p, 0.75f, 1.25f, w);
-    // The ✕.
-    constexpr float x = 3.6f;
-    p.line({kTimes.x - x, kTimes.y - x}, {kTimes.x + x, kTimes.y + x}, 1.6f, w);
-    p.line({kTimes.x - x, kTimes.y + x}, {kTimes.x + x, kTimes.y - x}, 1.6f, w);
     // The seam: hub to 6 o'clock, where the ends meet; the end stops.
     const Vec2 seam[2] = {{kC.x, kC.y + kHubR + 3.0f}, {kC.x, kC.y + kRingR + 3.0f}};
     p.dashed(seam, 0.9f, 1.4f, 2.2f, ui::mulAlpha(w, 0.55f));
@@ -197,8 +201,6 @@ public:
       const float a = angleOf(e);
       p.line(polar(kRingR - kRingW * 0.5f - 1.0f, a), polar(kRingR + kRingW * 0.5f + 2.5f, a), 1.0f, ui::mulAlpha(w, 0.7f));
     }
-    // min —— max
-    p.line({kMinRect.x1 + 2.0f, kRangeY}, {kMaxRect.x0 - 2.0f, kRangeY}, 0.9f, ui::mulAlpha(w, 0.6f));
   }
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
