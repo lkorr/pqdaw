@@ -588,6 +588,10 @@ private:
         w_.key("reducer");
         w_.string(el, kWireReducerNames[static_cast<size_t>(wr.reducer)]);
       }
+      if (wr.chain) {  // TX.groups-fix1 (schema 15): a grouped series' chain link
+        w_.key("chain");
+        w_.boolean(true);
+      }
       w_.endObject();
     }
     w_.endArray();
@@ -2426,7 +2430,9 @@ private:
       // TMM.10-fix2 (schema 12): "notes" (a track's note source) instead of "from".
       // TX.patching (schema 13): "law": "travel" (with its "amount") for a wire migrated from schema ≤ 12; none: the wire
       // adds in its target's units and has no amount.
-      static constexpr std::string_view K[] = {"id", "from", "port", "to", "param", "amount", "reducer", "notes", "law"};
+      // TX.groups-fix1 (schema 15): "chain": true for a grouped series' chain link.
+      static constexpr std::string_view K[] = {"id",     "from",  "port",  "to",  "param",
+                                               "amount", "reducer", "notes", "law", "chain"};
       Wire w;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
@@ -2441,6 +2447,7 @@ private:
           case 6: w.reducer = static_cast<WireReducer>(name(f, kWireReducerNames, "wire reducer")); break;
           case 7: w.noteSource = TrackId{ref(f)}; break;
           case 8: w.law = static_cast<WireLaw>(name(f, kWireLawNames, "wire law")); break;
+          case 9: w.chain = r_.readBool(f); break;
         }
       }
       if (m.has(1) && m.has(7)) json::fail(el, "a wire has either \"from\" (a device) or \"notes\" (a note source)");
@@ -3533,6 +3540,15 @@ Status migrateAddGroups(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 14 → 15 (TX.groups-fix1, model.h "Modulation wires"): a wire may carry "chain": true (a grouped series' chain link,
+// planned and summed first). A schema-14 group's series wires are plain wires and keep lowering exactly as they did
+// (Ctrl+Shift+G reads such a group's series back from its wires): nothing to rewrite. Self-contained (renumber, do not
+// merge, if another schema step lands first).
+Status migrateAddChainLinks(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3547,6 +3563,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {11, migrateAddNoteWires},
     {12, migrateWireLaws},
     {13, migrateAddGroups},
+    {14, migrateAddChainLinks},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

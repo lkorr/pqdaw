@@ -544,12 +544,21 @@ bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::v
 // Audio enters and leaves through the terminals the user wires (ops::groupInCircuit wires a grouped series In → … → Out,
 // so it sounds the same). Polyphony follows the wires, as for every free device. No nesting (a group is never a member;
 // Q?-TX.groups-a): the model would allow it, the views draw one level.
+// TX.groups-fix1 (SPEC §15 2026-11-01 "notes are a signal"; QUESTIONS Q?-TX.groups-fix1-a): the In terminal carries
+// WHATEVER reaches the group's place in the series (meta.h chainStages): audio, a per-voice signal (the group continues
+// the voices: they pass In and Out per voice, and the run goes on after it), or at a MIDI track's note source the notes
+// (the group is the track's instrument: In gives each input it reaches the note's signal of that input's meaning — a
+// frequency the note's Hz, a phase the note's phase, as a chain input at the note source reads it — and the voices end
+// as a meta voice run's do, by what reaches Out). The series' wires Ctrl+G makes are chain links (Wire::chain).
 inline constexpr std::string_view kGroupDevice = "Group";
 inline constexpr std::string_view kGroupInPort = "input";    // the In terminal: an output of the group device
 inline constexpr std::string_view kGroupOutPort = "output";  // the Out terminal: an input of the group device
 bool isGroupDevice(const Device& d) noexcept;
 // The patch every group plays (lower.h "Groups"): `patch Group { in x; in output; out y = output; out input = x }`.
 std::string_view groupPatchText() noexcept;
+// TX.groups-fix1: what a group plays where voices reach it (devices.h groupVoicePatch / groupNotesPatch).
+std::string_view groupVoicePatchText() noexcept;
+std::string_view groupNotesPatchText() noexcept;
 // The members of group `group` in `list` (list order).
 std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, DeviceId group);
 
@@ -703,6 +712,12 @@ DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group devi
 //            it). Scaling is the patch's job (a VCA, a log, a divide): an Add wire has no amount (always 1).
 //   Travel   the law above (Q135), kept only for wires migrated from schema ≤ 12 so old projects sound the same; never
 //            offered for new wires. `amount` is its depth.
+// TX.groups-fix1: a wire may be a CHAIN LINK (`chain`): a link of a series that Ctrl+G turned into wires (In → first,
+// device → next, last → Out). The lowering plans chain links before every other wire, as it plans a chain's own links
+// (lower.h "Modulation wires"): a feedback loop through a grouped series keeps its automatic 1-sample delay on the wire
+// that had it; into one input, chain links are summed first (as the chain's signal is), then the other wires in id
+// order. Ctrl+Shift+G removes exactly the chain links of its group. Nothing else differs (the views draw them as any
+// wire; a wire the user draws is never one).
 enum class WireReducer : uint8_t { Sum, Last, Highest, Lowest, Loudest };
 enum class WireLaw : uint8_t { Add, Travel };
 inline constexpr double kDefaultWireAmount = 0.5;  // a Travel wire's default depth (ops::connectTravelWire)
@@ -718,6 +733,7 @@ struct Wire {
   WireReducer reducer = WireReducer::Sum;
   TrackId noteSource;  // TMM.10-fix2: valid: the source is this (MIDI) track's note source
   WireLaw law = WireLaw::Add;  // TX.patching
+  bool chain = false;          // TX.groups-fix1: a chain link of a grouped series (planned first; see above)
   bool travels() const noexcept { return law == WireLaw::Travel; }
   bool fromNoteSource() const noexcept { return noteSource.valid(); }
   // Whether two wires join the same two ports (a second such wire is refused).

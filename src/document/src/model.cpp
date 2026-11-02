@@ -210,6 +210,33 @@ std::string_view groupPatchText() noexcept {
          "}\n";
 }
 
+std::string_view groupVoicePatchText() noexcept {
+  // TX.groups-fix1: Group with no `global` bound — a per-voice signal passes both terminals per voice.
+  return "patch GroupVoice {\n"
+         "  in    x      : audio\n"
+         "  in    output : audio\n"
+         "  out   y      : audio stereo\n"
+         "  out   input  : audio\n"
+         "  y = output\n"
+         "  input = x\n"
+         "}\n";
+}
+
+std::string_view groupNotesPatchText() noexcept {
+  // TX.groups-fix1: at the note source the In terminal carries the note, read by the meaning of the input it reaches
+  // (meta::Reads, as a chain input there reads it): `input` the frequency (voice.hz: inside a subcircuit the tuned
+  // pitch), `phase` the phase (phasor(voice.hz), 0 at note-on). An unread output costs nothing (the compiler drops it).
+  return "patch GroupNotes {\n"
+         "  in    output : audio\n"
+         "  out   y      : audio stereo\n"
+         "  out   input  : audio mono\n"
+         "  out   phase  : audio mono\n"
+         "  y = output\n"
+         "  input = voice.hz\n"
+         "  phase = phasor(voice.hz)\n"
+         "}\n";
+}
+
 std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, DeviceId group) {
   std::vector<const Device*> out;
   if (!group.valid()) return out;

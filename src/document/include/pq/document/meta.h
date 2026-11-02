@@ -83,8 +83,9 @@ struct ChainStage {
 // MIDI track's own chain, an Instrument Rack chain); else at audio. A meta device (of a known type): Notes in → Voices
 // out (meta::Form::ChainNotes), Voices → Voices (ChainVoice), Audio → Audio (ChainAudio), unplugged → Audio
 // (ChainAudio with nothing in: it runs once, freely). `voices` false (a rack chain, whose devices after its first the
-// lowering keeps global) delivers Audio where Voices would arrive. Any other device gives Audio. TX.patching: free
-// devices are listed (ChainStage::free) but take no part in the flow.
+// lowering keeps global) delivers Audio where Voices would arrive. TX.groups-fix1: a group (model.h "Groups") passes on
+// what reaches it — Notes or Voices in → Voices out (its terminals carry them per voice), Audio → Audio. Any other device
+// gives Audio. TX.patching: free devices are listed (ChainStage::free) but take no part in the flow.
 std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices = true);
 // The meta form of a stage (Nested for a device that is not a chain meta device or has no known type).
 meta::Form chainForm(const ChainStage& s);

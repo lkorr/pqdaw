@@ -273,8 +273,13 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //             path is delay-free is read from the device patches (an atom's PortSpec::delayed inputs — z1, delay
 //             lines, phasor's frequency — break it; an LFO's output does not depend on its audio input, so a wire
 //             from an LFO into an earlier device of its chain is not a loop), through the chains, the routing and the
-//             sends (a delayed send breaks a loop).
+//             sends (a delayed send breaks a loop). TX.groups-fix1: CHAIN LINKS (Wire::chain, a grouped series' links)
+//             are taken first (in id order), then every other wire (in id order): a chain link stands for a link of the
+//             chain, which is in the graph before any wire, so a loop through a grouped series keeps its delay on the
+//             wire that had it in the chain.
 //   Inactive  an end's device (or track) is deactivated, or its patch is missing: left out until it plays again.
+//             TX.groups-fix1: also a wire from a group's In at the note source into an input that reads no note signal
+//             (see GROUPS below), and a wire on a port of a switched-off free device other than its pass-through's two.
 //   Invalid   the port or param is not one of the patch's (an edited patch lost it), or the param is a bool.
 //   Refused   across tracks, it would close a cycle through two instrument tracks, which the engine cannot run (one
 //             voice table per image, QUESTIONS Q84): left out, and the status line says so.
@@ -309,7 +314,8 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //           rounded for @steps; centre = the knob (the root param d<id>__<name>, param rate) or the mapped value, or the
 //           Travel wires' result when a param has both kinds. No amount param, no multiply. The tap is then in units:
 //           (max(v − centre, 0), max(centre − v, 0)) (ModulationTap::units; the views convert it to knob travel).
-//   input   the pin reads what it read before (the chain's signal) + Σ src_i in id order; an input nothing drove takes
+//   input   the pin reads what it read before (the chain's signal) + Σ src_i in id order (TX.groups-fix1: chain links
+//           first, as the chain's signal is first); an input nothing drove takes
 //           the wires alone (an unpatched input's default is what it reads only while no wire reaches it). On the
 //           source's own track the source keeps every channel (a stereo output into a stereo input); across tracks
 //           its first channel (export m<wire> / in m<wire>, as for params). No tap.
@@ -327,6 +333,12 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // compiler runs it per voice exactly when a per-voice signal reaches it or its output feeds voice processing (pq/graph/
 // infer.h free-running sources); wires out of it into global targets go through their reducer (a reducer of a global
 // value is the value). A free device nothing reads is dropped by the compiler (its face's voice tap keeps a meta one).
+// TX.groups-fix1: a SWITCHED-OFF free device passes what reaches its chain input (a meta module's chain input, else its
+// first non-const `in`) to its main output (its first `out`), as the chain passes a switched-off device by — called as
+// `pass__<in>__<out>` (in → out, any poly, up to stereo: no state, nothing computed; LDev::bypass), only while a wire
+// reads that output. Its other ports' wires are Inactive (it plays nothing else), and so is it without a chain input
+// (unplugged) or an output. Before fix1 a switched-off free device was silent: a project with a wire both into its chain
+// input and out of its main output now hears the pass-through (QUESTIONS Q?-TX.groups-fix1-a).
 // GROUPS (TX.groups; model.h "Groups"): nothing of their own. A group device is a call of the fixed patch
 // groupPatch() (devices.h; `in x`, `in output`, `out y = output`, `out input = x`; the callee library holds it while a
 // group plays) at its place in the chain like any audio effect (or free); its members are free devices of the track,
@@ -336,6 +348,25 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // same graph as the series with the chain's links as wires: tests/app/test_groups.cpp renders both bit for bit
 // (interpreter and JIT). A wide signal (or one whose width only inference knows: the In terminal) into a meta module's
 // input arrives as its mid (l + r) / 2, as the chain gives it (effectCall); on a mono signal that is the signal itself.
+// TX.groups-fix1 (SPEC §15 2026-11-01 "notes are a signal"; QUESTIONS Q?-TX.groups-fix1-a): the In terminal carries what
+// reaches the group's place — its chain stage (meta.h chainStages: a group passes Notes / Voices on as Voices) picks
+// what it plays (Callees::groupCallee):
+//   Audio    groupPatch() (`global` ports: as above, unchanged).
+//   Voices   groupVoicePatch() (the same ports without the `global` bound): In is the previous stage's per-voice signal,
+//            Out passes the voices on; the group is a stage of the meta voice run (LDev::metaVoice: its first `in` x
+//            takes the run's signal, its `y` gives it on), and the run goes on after it.
+//   Notes    groupNotesPatch() at a MIDI track's note source: the group is the track's INSTRUMENT (lowerList: it takes
+//            the notes as a meta device there does; free members then run in the voice context). A wire from its In
+//            gives the input it reaches the note's signal of that input's meaning (meta::Reads, planWires): a
+//            Frequency input the note's Hz (`input` = voice.hz inside the group's call: the tuned pitch), a Phase input
+//            the note's phase (`phase` = phasor(voice.hz), 0 at note-on), anything else nothing (Inactive: an
+//            Envelope's `in`, a param, a stock device's input) — exactly what a chain input at the note source reads.
+// A voice run ending in a group ends as the device whose output alone reaches the group's Out (one lowered wire from a
+// device of the track, not delayed) would end it: by its `done` when its type decides its voices' end (the Envelope),
+// else 5 ms after note-off (the run's release ramp on the group's `y`); its width is that device's. So a grouped stretch
+// of a voice run is the run's graph with its links as wires: rendered bit for bit equal, interpreter and JIT
+// (tests/app/test_groups.cpp, "groups-fix1"). A hand-built group there follows the same rules whatever is inside it (a
+// stock device inside sums what reaches it, as everywhere; ops::groupInCircuit only groups stretches of the run).
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
 struct WireState {
   WireId id;

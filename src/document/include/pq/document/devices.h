@@ -99,6 +99,12 @@ std::optional<DeviceInfo> metaDeviceInfo(const meta::Type& t, DeviceKind kind);
 // description (an audio effect "Group": in x, output; out y, input). DeviceLibrary::patchOf / infoOf answer with them.
 const graph::Patch& groupPatch();
 const DeviceInfo& groupDeviceInfo();
+// TX.groups-fix1 (lower.h "Groups"): what a group plays where voices reach it — `GroupVoice` (the same ports with no
+// `global` bound: a per-voice signal passes In and Out per voice) and, at the note source, `GroupNotes` (Out → y, and the
+// In terminal's note signals: `input` the note's frequency, `phase` its phase; no `x`). The lowering picks one by the
+// group's chain stage; the views and the edit builders see groupPatch() (the same terminal names).
+const graph::Patch& groupVoicePatch();
+const graph::Patch& groupNotesPatch();
 
 // A stock device: its file (relative to stdlib/), patch and display name.
 struct StockDevice {

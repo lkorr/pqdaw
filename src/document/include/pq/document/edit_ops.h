@@ -460,23 +460,34 @@ std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_vie
 // ---- Groups (TX.groups; model.h "Groups"; QUESTIONS Q?-TX.groups-a) ----------------------------------------------
 // Ctrl+G in the circuit (the project patch view): the selected devices of ONE track's own list become the members of a
 // new group. Chain devices (they must be next to each other in the series) are replaced by the group at the first one's
-// place and become free members, their series kept as wires: In → the first one's chain input, each main output → the
-// next one's chain input, the last one's → Out (the lowering's rule: a device's first non-const `in` / a meta module's
-// chain input, its first `out`), so the track sounds exactly the same. Selected free devices move in as they are (a
+// place and become free members, their series kept as CHAIN LINKS (Wire::chain; TX.groups-fix1) — the chain's flow as
+// wires: the signal so far starts at In; a device whose chain is plugged in takes it (a link into its chain input) and
+// gives its main output on, switched off too (a switched-off free device passes its chain input there, lower.h "Free
+// devices", as the chain passes it by); an unplugged device takes nothing and gives its output on; the last signal goes
+// to Out (the lowering's names: a device's first non-const `in` / a meta module's chain input, its first `out`), so the
+// track sounds exactly the same. TX.groups-fix1: what reaches the group is what reached the first one — audio, voices
+// (the group continues the run) or, at a MIDI track's note source, the notes (the group is the track's instrument; In
+// gives each input it reaches the note's signal of that input's meaning). Selected free devices move in as they are (a
 // selection of free devices only makes a free group, wired to nothing). Every other wire stays exactly as it is: wires
 // name devices, so modulation across the capsule's boundary keeps working. Refused, with the reason, when the result
-// could sound different: devices of several tracks or inside a rack, a rack, a stock instrument, a group (no nesting), a
-// member, a gap in the series, the first device taking the notes or voices (a group is an audio effect: what reaches
-// it is audio), a switched-off or unplugged device inside the series, a wire already joining two series ports, or a
-// feedback loop through the series whose 1-sample delay would move (checked: every wire lowers as before). `lib`
-// gives the port names (and the wire states). One step; the selection after = the group.
+// could sound different or could not be ungrouped: devices of several tracks or inside a rack, a rack, a stock
+// instrument (its voices are summed at its output), a group (no nesting), a member, a gap in the series; where the
+// notes or voices reach, anything but a stretch of the voice run (a stock device or an unplugged device inside: the run
+// is summed there; a switched-off device where the notes arrive; a stock effect at the note source); a switched-off
+// device that is unplugged, an unplugged device whose output the next unplugged one drops (no link would place them);
+// a wire already joining two series ports; a wire from a switched-off device's output that would start to play; or a
+// feedback loop whose 1-sample delay would move (checked: every wire lowers as before). `lib` gives the port names
+// (and the wire states). One step; the selection after = the group.
 EditResult groupInCircuit(const Snapshot& p, IdSource& ids, const DeviceLibrary& lib, std::span<const DeviceId> devices);
-// Ctrl+Shift+G: the exact inverse. The series is read back from the wires — the one wire into Out, then along each
-// device's chain input (exactly one wire from In or a member) back to In — and returned to the chain at the group's
-// place in that order (free again: not in the series); the other members become free devices where they are; the
-// series' wires go, every other wire stays. Refused (with the reason) when the wiring is not one series from In to Out
-// (several wires into Out, In also feeding another input, a wire into or out of the group's own ports); a free group
-// must have no In / Out wires. Ungrouping what groupInCircuit made gives back the same document. One step.
+// Ctrl+Shift+G: the exact inverse. TX.groups-fix1: the series is the members the group's chain links touch, in list
+// order, and its links must be exactly the ones that series makes (else refused: it was rewired); a group without chain
+// links (schema 14) is read back from its wires as before — the one wire into Out, then along each device's chain input
+// (exactly one wire from In or a member) back to In. The series goes back to the chain at the group's place in that
+// order (nothing moves when it is there already: free devices between them keep their places); the other members become
+// free devices where they are; the series' links go, every other wire stays. Refused (with the reason) when the wiring
+// is not one series from In to Out (several wires into Out, In also feeding another input, a wire into or out of the
+// group's own ports); a free group must have no In / Out wires. Ungrouping what groupInCircuit made gives back the same
+// document. One step.
 EditResult ungroupInCircuit(const Snapshot& p, const DeviceLibrary& lib, DeviceId group);
 
 // ---- Racks (T4.8; model.h "Racks") ------------------------------------------------------------------------------

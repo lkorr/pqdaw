@@ -568,6 +568,31 @@ const DeviceInfo& groupDeviceInfo() {
   return groupPatchData().info;
 }
 
+namespace {
+// TX.groups-fix1: the voice and note-source variants (model.h groupVoicePatchText / groupNotesPatchText), parsed once.
+graph::PatchFile parseGroupVariant(std::string_view text) {
+  Result<graph::PatchFile> f = graph::parse(text, "group");
+  return f.ok() ? std::move(f.value()) : graph::PatchFile{};
+}
+const graph::Patch& groupVariant(const graph::PatchFile& f, std::string_view name) {
+  const graph::Patch* p = f.find(name);
+  if (p == nullptr) std::abort();  // the fixed texts always parse (tests/app/test_groups.cpp)
+  return *p;
+}
+}  // namespace
+
+const graph::Patch& groupVoicePatch() {
+  static const graph::PatchFile f = parseGroupVariant(groupVoicePatchText());
+  static const graph::Patch& p = groupVariant(f, "GroupVoice");
+  return p;
+}
+
+const graph::Patch& groupNotesPatch() {
+  static const graph::PatchFile f = parseGroupVariant(groupNotesPatchText());
+  static const graph::Patch& p = groupVariant(f, "GroupNotes");
+  return p;
+}
+
 const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
   if (isGroupDevice(d)) return &groupPatch();  // TX.groups
   if (isMetaDevice(d)) {  // TMM.3

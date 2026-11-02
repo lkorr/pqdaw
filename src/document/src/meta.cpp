@@ -186,6 +186,12 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
       st.in = st.input < 0 ? ChainSignal::None : s;
       st.out = st.in == ChainSignal::Notes || st.in == ChainSignal::Voices ? ChainSignal::Voices : ChainSignal::Audio;
       if (!voices && st.out == ChainSignal::Voices && st.in == ChainSignal::Voices) st.in = st.out = ChainSignal::Audio;
+    } else if (isGroupDevice(d)) {
+      // TX.groups-fix1: a group passes on what reaches it — the notes or voices continue as voices through its terminals
+      // (lower.h "Groups"); audio stays audio.
+      st.in = s;
+      st.out = s == ChainSignal::Notes || s == ChainSignal::Voices ? ChainSignal::Voices : ChainSignal::Audio;
+      if (!voices && st.out == ChainSignal::Voices && st.in == ChainSignal::Voices) st.in = st.out = ChainSignal::Audio;
     } else {
       st.in = s;
       st.out = ChainSignal::Audio;  // a stock instrument's voices are summed at its output; an effect's input is global

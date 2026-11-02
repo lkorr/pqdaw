@@ -125,8 +125,12 @@ ops::EditResult group(DocumentStore& s, std::vector<DeviceId> devices) {
 }
 
 // Groups `devices`, checks the render, ungroups and checks the document and the render again. Returns the group's id.
-DeviceId roundTrip(DocumentStore& store, std::vector<DeviceId> devices, const std::string& what, uint32_t frames = 24000) {
+// TX.groups-fix1: `quietIn` — the series starts at the note source with a device whose chain input reads no note signal
+// (an Envelope's `in`): its In link carries nothing, as the chain gives that input nothing (Inactive).
+DeviceId roundTrip(DocumentStore& store, std::vector<DeviceId> devices, const std::string& what, uint32_t frames = 24000,
+                   bool quietIn = false) {
   const Snapshot before = store.current();
+  const std::vector<WireState> statesBefore = wireStates(*before, library());
   const golden::Channels a = render(*before, frames);
   CHECK(peakOf(a) > 0.01f);
   auto e = group(store, devices);
@@ -135,8 +139,29 @@ DeviceId roundTrip(DocumentStore& store, std::vector<DeviceId> devices, const st
   REQUIRE(e->devices.size() == 1);
   const DeviceId g = e->devices.front();
   const Project& grouped = *store.current();
-  // Every wire lowers as before; the series' new wires plainly.
-  for (const WireState& s : wireStates(grouped, library())) CHECK(s.status == WireStatus::Lowered);
+  // Every wire lowers as before (a loop's delay stays where it was); the series' new wires — chain links — plainly.
+  for (const WireState& s : wireStates(grouped, library())) {
+    const auto old = std::find_if(statesBefore.begin(), statesBefore.end(), [&](const WireState& x) { return x.id == s.id; });
+    if (old != statesBefore.end()) {
+      CHECK(s.status == old->status);
+      continue;
+    }
+    const Wire* w = nullptr;
+    for (const Wire& x : wiresOf(grouped))
+      if (x.id == s.id) w = &x;
+    REQUIRE(w != nullptr);
+    CHECK(w->chain);
+    const bool quiet = quietIn && w->from == g && w->port == kGroupInPort;
+    CHECK(s.status == (quiet ? WireStatus::Inactive : WireStatus::Lowered));
+  }
+  // Save / load keeps the group and its chain links (schema 15).
+  {
+    auto text = serializeProject(grouped, store.view());
+    REQUIRE(text.ok());
+    auto back = parseProject(*text);
+    REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+    CHECK(*back->project == grouped);
+  }
   const golden::Channels b = render(grouped, frames);
   const double d = maxDiff(a, b);
   MESSAGE(what << ": series vs group, max |diff| = " << d);
@@ -197,7 +222,7 @@ TEST_CASE("groups: a series of stock effects grouped sounds the same, ungrouped 
   CHECK((w[0].from == g && w[0].port == kGroupInPort && w[0].to == util && w[0].param == "x"));
   CHECK((w[1].from == util && w[1].port == "out" && w[1].to == sat && w[1].param == "x"));
   CHECK((w[2].from == sat && w[2].port == "out" && w[2].to == g && w[2].param == kGroupOutPort));
-  // Save / load keeps it (schema 14).
+  // Save / load keeps it (schema 14; TX.groups-fix1: 15, its series wires chain links).
   auto text = serializeProject(*store.current(), store.view());
   REQUIRE(text.ok());
   CHECK(text->find("\"group\": " + std::to_string(g.value)) != std::string::npos);
@@ -327,11 +352,8 @@ TEST_CASE("groups: refusals say why") {
   refused({a, x}, "two tracks");
   refused({a, d}, "a gap in the series");
   refused({inst}, "the instrument");
-  refused({pa}, "the notes reach it");
-  refused({wt}, "voices reach it");
-  REQUIRE(store.dispatch(SetDeviceActive{c, false}).ok());
-  refused({a, c, d}, "switched off");
-  REQUIRE(store.dispatch(SetDeviceActive{c, true}).ok());
+  // (TX.groups-fix1: a series the notes or voices reach, and switched-off devices inside a series, group now —
+  // tests below; the remaining refusals there have their own case.)
   auto e = group(store, {c});
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
@@ -381,4 +403,338 @@ TEST_CASE("groups: the file reader refuses a broken group; duplicating a group c
   CHECK(wiresOf(*store.current()).size() == 2 * wires);
   for (const WireState& s : wireStates(*store.current(), library())) CHECK(s.status == WireStatus::Lowered);
   CHECK(peakOf(render(*store.current(), 6000)) > 0.01f);
+}
+
+// ---- TX.groups-fix1: the cases TX.groups refused (QUESTIONS Q?-TX.groups-fix1-a) ------------------------------------
+
+namespace {
+
+// A MIDI track "Lead" without a stock instrument whose chain is the given meta devices (the first takes the notes).
+struct Lead {
+  TrackId track;
+  std::vector<DeviceId> devs;
+};
+Lead leadTrack(DocumentStore& store, std::initializer_list<std::string_view> types) {
+  IdSource& ids = store.ids();
+  Lead l;
+  l.track = ids.track();
+  Batch b{"lead", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(l.track, TrackKind::Midi, "Lead"), {}, kAppend});
+  bool first = true;
+  for (const std::string_view t : types) {
+    const DeviceId id = ids.device();
+    l.devs.push_back(id);
+    b.commands.push_back(AddDevice{l.track, metaDevice(id, t, first ? DeviceKind::Instrument : DeviceKind::AudioEffect), kAppend});
+    first = false;
+  }
+  REQUIRE(store.dispatch(b).ok());
+  return l;
+}
+
+// The lowered graph track of `t` (null: not lowered).
+const graph::ProjectTrack* loweredTrack(const LoweredProject& low, TrackId t) {
+  for (size_t i = 0; i < low.trackIds.size(); ++i)
+    if (low.trackIds[i] == t) return &low.graph.tracks[i];
+  return nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("groups-fix1: the user's patch — Phase accumulator → Wavetable → Envelope as the instrument — grouped plays the "
+          "chord the same, the group is the instrument") {
+  DocumentStore store;
+  const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+  const DeviceId pa = l.devs[0], wt = l.devs[1], env = l.devs[2];
+  Batch b{"params", {}};
+  b.commands.push_back(SetDeviceParam{pa, "freq", 1.5});  // a little beating on every note
+  b.commands.push_back(SetDeviceParam{wt, "position", 0.3});
+  b.commands.push_back(SetDeviceParam{env, "attack", 0.01});
+  b.commands.push_back(SetDeviceParam{env, "release", 0.05});
+  REQUIRE(store.dispatch(b).ok());
+  // 48000 frames: the chord's notes end at 30000 … 39000, their releases (the Envelope's `done`) inside the render.
+  const DeviceId g = roundTrip(store, {pa, wt, env}, "PA → WT → Envelope at the note source", 48000);
+  const Project& grouped = *store.current();
+  const Track& t = *findTrackPtr(grouped, l.track);
+  REQUIRE(isGroupDevice(*t.devices.front()));
+  CHECK(t.devices.front()->id == g);
+  for (size_t i = 1; i < t.devices.size(); ++i) {
+    CHECK(t.devices[i]->free);
+    CHECK(t.devices[i]->group == g);
+  }
+  // The In terminal carries the notes: its link into the Phase accumulator's frequency.
+  const WireList& w = wiresOf(grouped);
+  REQUIRE(w.size() == 4);
+  CHECK((w[0].from == g && w[0].port == kGroupInPort && w[0].to == pa && w[0].param == "hz" && w[0].chain));
+  CHECK((w[3].from == env && w[3].to == g && w[3].param == kGroupOutPort && w[3].chain));
+  // The track still plays voices, the group being its instrument.
+  LowerOptions lo;
+  lo.library = &library().library();
+  lo.devices = &library();
+  lo.slotOf = [](TrackId) { return 0u; };
+  auto low = lower(grouped, lo);
+  REQUIRE(low.ok());
+  const graph::ProjectTrack* lt = loweredTrack(*low, l.track);
+  REQUIRE(lt != nullptr);
+  CHECK(lt->role == graph::TrackRole::Instrument);
+  CHECK(lt->eventSlot == 0u);
+}
+
+TEST_CASE("groups-fix1: any stretch of a voice run groups — the head, the middle, the end, a run without an Envelope, a "
+          "Wavetable first, an Envelope alone, effects after it") {
+  SUBCASE("the Phase accumulator alone: the run goes on after the group (In = the notes, Out = voices)") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    (void)roundTrip(store, {l.devs[0]}, "[PA] → WT → Envelope", 48000);
+  }
+  SUBCASE("Wavetable → Envelope: voices reach the group (In = the accumulator's per-voice phase)") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    (void)roundTrip(store, {l.devs[1], l.devs[2]}, "PA → [WT → Envelope]", 48000);
+  }
+  SUBCASE("the Wavetable alone in the middle of the run") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    (void)roundTrip(store, {l.devs[1]}, "PA → [WT] → Envelope", 48000);
+  }
+  SUBCASE("Phase accumulator → Wavetable: the voices end 5 ms after note-off, as the run's") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"phase_acc", "wavetable"});
+    (void)roundTrip(store, {l.devs[0], l.devs[1]}, "[PA → WT] (no Envelope)", 48000);
+  }
+  SUBCASE("a Wavetable first: In gives its phase input the note's phase") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"wavetable", "envelope"});
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[1], "release", 0.05}).ok());
+    (void)roundTrip(store, {l.devs[0], l.devs[1]}, "[WT → Envelope] at the note source", 48000);
+  }
+  SUBCASE("an Envelope alone: its `in` reads no note signal (the In link carries nothing), its gate the voice's") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"envelope"});
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[0], "release", 0.05}).ok());
+    (void)roundTrip(store, {l.devs[0]}, "[Envelope] at the note source", 48000, /*quietIn=*/true);
+  }
+  SUBCASE("stock effects after the grouped run hear its sum") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+    const DeviceId sat = store.ids().device(), util = store.ids().device();
+    Batch b{"fx", {}};
+    b.commands.push_back(AddDevice{l.track, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(AddDevice{l.track, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
+    b.commands.push_back(SetDeviceParam{util, "width", 2.0});
+    b.commands.push_back(SetDeviceParam{l.devs[2], "release", 0.05});
+    REQUIRE(store.dispatch(b).ok());
+    (void)roundTrip(store, {l.devs[0], l.devs[1], l.devs[2]}, "[PA → WT → Envelope] → Saturator → Utility", 48000);
+  }
+}
+
+TEST_CASE("groups-fix1: a series the voices reach is grouped only as a stretch of the run; the rest says why") {
+  DocumentStore store;
+  const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+  const DeviceId sat = store.ids().device();
+  REQUIRE(store.dispatch(AddDevice{l.track, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend}).ok());
+  auto refused = [&](DocumentStore& s, std::vector<DeviceId> sel, const char* what) {
+    auto e = ops::groupInCircuit(s.current(), s.ids(), library(), sel);
+    CHECK_FALSE(e.ok());
+    if (!e.ok()) MESSAGE(std::string(what) << ": " << e.error().message);
+  };
+  refused(store, {l.devs[2], sat}, "the run's sum inside (Envelope → Saturator)");
+  REQUIRE(store.dispatch(SetDeviceActive{l.devs[0], false}).ok());
+  refused(store, {l.devs[0], l.devs[1]}, "switched off where the notes arrive");
+  REQUIRE(store.dispatch(SetDeviceActive{l.devs[0], true}).ok());
+  REQUIRE(store.dispatch(SetDeviceChainInput{l.devs[1], std::string(kChainUnplugged)}).ok());
+  refused(store, {l.devs[0], l.devs[1], l.devs[2]}, "an unplugged device ends the run");
+  // A stock effect where the notes arrive (a MIDI track with no instrument): nothing plays the notes there.
+  DocumentStore s2;
+  const TrackId fx = s2.ids().track();
+  const DeviceId u = s2.ids().device();
+  Batch b{"fx", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(fx, TrackKind::Midi, "Fx"), {}, kAppend});
+  b.commands.push_back(AddDevice{fx, makeDevice(u, "utility", DeviceKind::AudioEffect), kAppend});
+  REQUIRE(s2.dispatch(b).ok());
+  refused(s2, {u}, "a stock effect at the note source");
+}
+
+TEST_CASE("groups-fix1: switched-off devices inside a series pass their signal on, in a group as in the chain") {
+  SUBCASE("stock: Utility → Saturator (off) → Utility; switched on inside the group it plays as in the chain") {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId keys = ids.track();
+    const DeviceId inst = ids.device(), u1 = ids.device(), sat = ids.device(), u2 = ids.device();
+    Batch b{"keys", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+    b.commands.push_back(AddDevice{keys, makeDevice(u1, "utility", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(AddDevice{keys, makeDevice(u2, "utility", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(SetDeviceParam{u1, "width", 2.5});
+    b.commands.push_back(SetDeviceParam{sat, "drive", 18.0});
+    b.commands.push_back(SetDeviceParam{u2, "balance", -0.4});
+    b.commands.push_back(SetDeviceActive{sat, false});
+    REQUIRE(store.dispatch(b).ok());
+    const DeviceId g = roundTrip(store, {u1, sat, u2}, "Utility → Saturator (off) → Utility");
+    // Switched on inside the group, then ungrouped: the same sound as the series with it on.
+    REQUIRE(store.dispatch(SetDeviceActive{sat, true}).ok());
+    const golden::Channels on = render(*store.current(), 24000);
+    CHECK(maxDiff(on, render(*store.current(), 24000, compile::jitUnitBackend())) == 0.0);
+    auto un = ops::ungroupInCircuit(store.current(), library(), g);
+    REQUIRE_MESSAGE(un.ok(), (un.ok() ? std::string() : un.error().message));
+    REQUIRE(store.dispatch(un->command).ok());
+    CHECK(maxDiff(on, render(*store.current(), 24000)) == 0.0);
+  }
+  SUBCASE("meta, at the note source: Phase accumulator → Wavetable (off) → Envelope") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[0], "amp", 0.5}).ok());
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(SetDeviceActive{l.devs[1], false}).ok());
+    (void)roundTrip(store, {l.devs[0], l.devs[1], l.devs[2]}, "PA → WT (off) → Envelope", 48000);
+  }
+  SUBCASE("the last device off: Utility → Saturator (off); the group's Out hears the Utility") {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId keys = ids.track();
+    const DeviceId inst = ids.device(), u1 = ids.device(), sat = ids.device();
+    Batch b{"keys", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+    b.commands.push_back(AddDevice{keys, makeDevice(u1, "utility", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(SetDeviceParam{u1, "width", 2.5});
+    b.commands.push_back(SetDeviceActive{sat, false});
+    REQUIRE(store.dispatch(b).ok());
+    (void)roundTrip(store, {u1, sat}, "Utility → Saturator (off)");
+  }
+}
+
+TEST_CASE("groups-fix1: an unplugged device inside a series — the signal so far ends there, in a group as in the chain") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId keys = ids.track();
+  const DeviceId inst = ids.device(), pa1 = ids.device(), pa2 = ids.device(), wt = ids.device();
+  Batch b{"keys", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+  b.commands.push_back(AddDevice{keys, metaDevice(pa1, "phase_acc", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, metaDevice(pa2, "phase_acc", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, metaDevice(wt, "wavetable", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(SetDeviceParam{pa1, "freq", 50.0});
+  b.commands.push_back(SetDeviceParam{pa2, "freq", 220.0});
+  b.commands.push_back(SetDeviceChainInput{pa2, std::string(kChainUnplugged)});
+  REQUIRE(store.dispatch(b).ok());
+  (void)roundTrip(store, {pa1, pa2, wt}, "synth → PA → PA (unplugged) → WT");
+  REQUIRE(store.undo());  // the series again
+  // Two unplugged devices in a row: the first's output goes nowhere and it takes nothing — refused, with the reason.
+  REQUIRE(store.dispatch(SetDeviceChainInput{pa1, std::string(kChainUnplugged)}).ok());
+  auto e = group(store, {pa1, pa2, wt});
+  REQUIRE_FALSE(e.ok());
+  MESSAGE("two unplugged in a row: " << e.error().message);
+  CHECK(e.error().message.find("goes nowhere") != std::string::npos);
+  // Switched off and unplugged: the chain passes it by, no wire could — refused.
+  REQUIRE(store.dispatch(SetDeviceChainInput{pa1, std::string()}).ok());
+  REQUIRE(store.dispatch(SetDeviceActive{pa2, false}).ok());
+  e = group(store, {pa1, pa2, wt});
+  REQUIRE_FALSE(e.ok());
+  MESSAGE("switched off and unplugged: " << e.error().message);
+  CHECK(e.error().message.find("switched off and unplugged") != std::string::npos);
+}
+
+TEST_CASE("groups-fix1: a feedback loop through the grouped series keeps its 1-sample delay where it was") {
+  SUBCASE("stock: the Saturator's output back into the Utility's gain before it") {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId keys = ids.track();
+    const DeviceId inst = ids.device(), util = ids.device(), sat = ids.device();
+    Batch b{"keys", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+    b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(SetDeviceParam{sat, "drive", 9.0});
+    REQUIRE(store.dispatch(b).ok());
+    auto w = ops::connectWire(*store.current(), ids, sat, "out", util, "gain");
+    REQUIRE_MESSAGE(w.ok(), (w.ok() ? std::string() : w.error().message));
+    REQUIRE(store.dispatch(w->command).ok());
+    const std::vector<WireState> s = wireStates(*store.current(), library());
+    REQUIRE(s.size() == 1);
+    REQUIRE(s.front().status == WireStatus::Delayed);  // the loop's delay: on the feedback wire
+    (void)roundTrip(store, {util, sat}, "Utility → Saturator with Saturator → Utility.gain");
+  }
+  SUBCASE("meta, at the note source: the Envelope's output back into the accumulator's phase modulation") {
+    DocumentStore store;
+    const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
+    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    auto w = ops::connectWire(*store.current(), store.ids(), l.devs[2], "out", l.devs[0], "pm");
+    REQUIRE_MESSAGE(w.ok(), (w.ok() ? std::string() : w.error().message));
+    REQUIRE(store.dispatch(w->command).ok());
+    const std::vector<WireState> s = wireStates(*store.current(), library());
+    REQUIRE(s.size() == 1);
+    REQUIRE(s.front().status == WireStatus::Delayed);
+    (void)roundTrip(store, {l.devs[0], l.devs[1], l.devs[2]}, "PA → WT → Envelope with Envelope → PA.pm", 48000);
+  }
+}
+
+TEST_CASE("groups-fix1: ungrouping keeps a free device between the series devices where it was; a rewired series is "
+          "refused") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId keys = ids.track();
+  const DeviceId inst = ids.device(), util = ids.device(), lfo = ids.device(), sat = ids.device();
+  Batch b{"keys", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(lfo, "lfo_device", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(SetDeviceFree{lfo, true});
+  b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
+  REQUIRE(store.dispatch(b).ok());
+  const DeviceId g = roundTrip(store, {util, sat}, "Utility → (a free LFO between them in the list) → Saturator");
+  // A chain link deleted and drawn again as a plain wire: the series is no longer Ctrl+G's — Ungroup says why.
+  const WireList w = wiresOf(*store.current());
+  const auto link = std::find_if(w.begin(), w.end(), [&](const Wire& x) { return x.from == util && x.to == sat; });
+  REQUIRE(link != w.end());
+  REQUIRE(store.dispatch(RemoveWire{link->id}).ok());
+  auto again = ops::connectWire(*store.current(), ids, util, link->port, sat, link->param);
+  REQUIRE(again.ok());
+  REQUIRE(store.dispatch(again->command).ok());
+  auto un = ops::ungroupInCircuit(store.current(), library(), g);
+  CHECK_FALSE(un.ok());
+  if (!un.ok()) MESSAGE(un.error().message);
+}
+
+TEST_CASE("groups-fix1: a schema-14 group (its series as plain wires) loads, plays as before and still ungroups") {
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId keys = ids.track();
+  const DeviceId inst = ids.device(), util = ids.device(), sat = ids.device();
+  Batch b{"keys", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(SetDeviceParam{util, "width", 2.0});
+  b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
+  REQUIRE(store.dispatch(b).ok());
+  const golden::Channels series = render(*store.current(), 12000);
+  auto e = group(store, {util, sat});
+  REQUIRE(e.ok());
+  REQUIRE(store.dispatch(e->command).ok());
+  auto text = serializeProject(*store.current(), store.view());
+  REQUIRE(text.ok());
+  // As TX.groups wrote it: schema 14, no chain links.
+  std::string old = *text;
+  old.replace(old.find("\"schemaVersion\": 15"), 19, "\"schemaVersion\": 14");
+  for (size_t at; (at = old.find(", \"chain\": true")) != std::string::npos;) old.erase(at, 15);
+  REQUIRE(old.find("chain") == std::string::npos);
+  auto r = parseProject(old);
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  CHECK(r->fileSchemaVersion == 14);
+  for (const Wire& w : wiresOf(*r->project)) CHECK_FALSE(w.chain);
+  const Snapshot legacy = r->project;
+  CHECK(maxDiff(series, render(*legacy, 12000)) == 0.0);
+  auto u = ops::ungroupInCircuit(legacy, library(), e->devices.front());
+  REQUIRE_MESSAGE(u.ok(), (u.ok() ? std::string() : u.error().message));
+  ChangeSet cs;
+  auto after = apply(legacy, u->command, cs);
+  REQUIRE(after.ok());
+  CHECK(wiresOf(**after).empty());
+  CHECK(maxDiff(series, render(**after, 12000)) == 0.0);
 }

@@ -84,19 +84,30 @@ struct Callees {
   std::unordered_map<uint32_t, ChainStage> metaStage;
   // TX.patching: the free meta devices expanded in their track's voice context (MetaExpander::chainDevice).
   std::unordered_set<uint32_t> freeVoiced;
+  // TX.groups-fix1: the switched-off free devices that pass their chain input to their main output (lower.h "Free
+  // devices"): device id → its pass-through patch (in MetaPatches).
+  std::unordered_map<uint32_t, const graph::Patch*> bypass;
   const ChainStage* stageOf(const Device& d) const noexcept {
     const auto it = metaStage.find(d.id.value);
     return it != metaStage.end() ? &it->second : nullptr;
   }
-  // Whether chain meta device `d` takes the note source (its chain input is wired to it: it starts the voices).
+  // Whether chain meta device (TX.groups-fix1: or group) `d` takes the note source (its chain input is wired to it: it
+  // starts the voices).
   bool readsNotes(const Device& d) const noexcept {
     const ChainStage* s = stageOf(d);
     return s != nullptr && s->in == ChainSignal::Notes;
   }
+  // TX.groups-fix1: what a group plays — at the note source GroupNotes, where voices reach it GroupVoice, else Group.
+  const graph::Patch& groupCallee(const Device& d) const noexcept {
+    const ChainStage* s = stageOf(d);
+    if (s != nullptr && s->in == ChainSignal::Notes) return groupNotesPatch();
+    if (s != nullptr && s->in == ChainSignal::Voices) return groupVoicePatch();
+    return groupPatch();
+  }
   const graph::Patch* find(const Device& d) const noexcept {
     if (lib == nullptr) return nullptr;
     if (const auto it = userRoot.find(d.id.value); it != userRoot.end()) return it->second;
-    if (isGroupDevice(d)) return &groupPatch();  // TX.groups (lower.h "Groups"; the graph's library holds it)
+    if (isGroupDevice(d)) return &groupCallee(d);  // TX.groups (lower.h "Groups"; the graph's library holds it)
     if (d.source || isMetaDevice(d)) return nullptr;
     return lib->find(d.patch);
   }
@@ -119,7 +130,7 @@ std::unordered_map<uint32_t, ChainStage> metaStages(const Project& p) {
       const Work w = work.back();
       work.pop_back();
       for (const ChainStage& s : chainStages(*w.list, w.notes, w.voices))
-        if (isMetaDevice(*s.device)) out.emplace(s.device->id.value, s);
+        if (isMetaDevice(*s.device) || isGroupDevice(*s.device)) out.emplace(s.device->id.value, s);  // TX.groups-fix1
       for (const DevicePtr& d : *w.list)
         if (d->rack)
           for (const ChainPtr& c : d->rack->chains) work.push_back(Work{&c->devices, d->kind == DeviceKind::Instrument, false});
@@ -367,6 +378,13 @@ UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const
   MetaExpander ex(p, u, metaSlotOf);
   std::shared_ptr<const meta::Prelude> prelude;
   bool staged = false;  // TMM.10-fix1: every chain meta device's stage, computed at the first one met
+  // TX.groups-fix1: a group's stage decides what it plays (Callees::groupCallee) and whether it takes the notes.
+  bool groups = false;
+  forEachDevice(p, [&](const Device& d, const Track&) { groups = groups || isGroupDevice(d); });
+  if (groups) {
+    staged = true;
+    u.callees.metaStage = metaStages(p);
+  }
   forEachDevice(p, [&](const Device& d, const Track& t) {
     if (d.rack) return;
     if (isMetaDevice(d)) {
@@ -392,8 +410,10 @@ UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const
         if (d.free && t.kind == TrackKind::Midi)
           for (const DevicePtr& x : t.devices) {
             if (!x->active || x->free) continue;
-            const ChainStage* xs = isMetaDevice(*x) ? u.callees.stageOf(*x) : nullptr;
-            voiced = isMetaDevice(*x) ? xs != nullptr && xs->in == ChainSignal::Notes : x->kind == DeviceKind::Instrument;
+            // TX.groups-fix1: a group at the note source takes the notes as a meta device there does.
+            const bool staged1 = isMetaDevice(*x) || isGroupDevice(*x);
+            const ChainStage* xs = staged1 ? u.callees.stageOf(*x) : nullptr;
+            voiced = staged1 ? xs != nullptr && xs->in == ChainSignal::Notes : x->kind == DeviceKind::Instrument;
             break;
           }
         if (voiced) u.callees.freeVoiced.insert(d.id.value);
@@ -432,6 +452,53 @@ UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const
     u.callees.metaSites[d.id.value] = sites;
     if (combined) u.callees.userRoot[d.id.value] = ex.specialise(d, t, *root, lookup);
   });
+  // TX.groups-fix1 (lower.h "Free devices"): a switched-off free device whose main output a wire reads passes what
+  // reaches its chain input (the input a chain would feed: a meta module's chain input, else the first non-const `in`)
+  // to that output, as the chain passes a switched-off device by: a call of `pass__<in>__<out>` (one `in`, one `out`,
+  // any poly, up to stereo; nothing else).
+  if (combined && !wiresOf(p).empty()) {
+    std::unordered_map<std::string, const graph::Patch*> made;
+    forEachDevice(p, [&](const Device& d, const Track&) {
+      if (d.active || !d.free || d.rack || isGroupDevice(d)) return;
+      std::string in, out;
+      if (isMetaDevice(d)) {
+        const meta::Type* type = meta::findType(metaDeviceType(d));
+        if (type == nullptr || type->outputs.empty()) return;
+        if (const int32_t i = metaChainInput(d, *type); i >= 0) in = std::string(type->inputs[static_cast<size_t>(i)].name);
+        out = std::string(type->outputs.front().name);
+      } else if (const graph::Patch* root = u.callees.find(d)) {
+        for (NodeIndex v = 0; v < root->nodeCount(); ++v) {
+          const graph::Node& n = root->node(v);
+          if (n.kind == graph::NodeKind::Input && in.empty() && root->outputType(v, 0).rate != graph::Rate::Const)
+            in = root->nodeName(v);
+          else if (n.kind == graph::NodeKind::Output && out.empty())
+            out = root->nodeName(v);
+        }
+      }
+      if (in.empty() || out.empty()) return;
+      const bool read = std::any_of(wiresOf(p).begin(), wiresOf(p).end(),
+                                    [&](const Wire& w) { return w.from == d.id && w.port == out && !w.fromNoteSource(); });
+      if (!read) return;
+      const std::string name = "pass__" + in + "__" + out;
+      auto it = made.find(name);
+      if (it == made.end()) {
+        if (!u.meta) {
+          u.meta = std::make_shared<MetaPatches>();
+          u.meta->prelude = meta::prelude();
+        }
+        constexpr graph::PortType kPass = graph::portType(graph::Kind::Real, graph::Rate::Audio, graph::Poly::Infer,
+                                                          graph::kWidthStereo);
+        graph::Patch bp(name);
+        const NodeIndex i = bp.addInput(in, kPass);
+        const NodeIndex o = bp.addOutput(out, kPass);
+        bp.connect(PortRef{i, 0}, PortRef{o, 0});
+        const graph::NodeId passIds[] = {graph::NodeId{1}, graph::NodeId{2}};
+        if (!bp.setNodeIds(passIds) || !bp.validate()) return;
+        it = made.emplace(name, &u.meta->patches.emplace_back(std::move(bp))).first;
+      }
+      u.callees.bypass[d.id.value] = it->second;
+    });
+  }
   if (combined && u.meta) {  // the expansions (and the prelude, for unnamed calls) join the callee library
     if (!u.combined) {
       u.combined = std::make_shared<graph::PatchLibrary>();
@@ -441,18 +508,24 @@ UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const
     for (const meta::Prelude::Entry& e : u.meta->prelude->entries) u.combined->add(e.nested);
     u.callees.lib = u.combined.get();
   }
-  // TX.groups: the group patch joins the callee library when a group plays (the graph calls it by name).
-  if (combined) {
-    bool groups = false;
-    forEachDevice(p, [&](const Device& d, const Track&) { groups = groups || isGroupDevice(d); });
-    if (groups) {
-      if (!u.combined) {
-        u.combined = std::make_shared<graph::PatchLibrary>();
-        u.combined->addAll(*base);
-      }
-      u.combined->add(groupPatch());
-      u.callees.lib = u.combined.get();
+  // TX.groups: the group patch joins the callee library when a group plays (the graph calls it by name); TX.groups-fix1:
+  // and each variant a group's stage selects.
+  if (combined && groups) {
+    if (!u.combined) {
+      u.combined = std::make_shared<graph::PatchLibrary>();
+      u.combined->addAll(*base);
     }
+    bool voice = false, notes = false;
+    forEachDevice(p, [&](const Device& d, const Track&) {
+      if (!isGroupDevice(d)) return;
+      const graph::Patch& c = u.callees.groupCallee(d);
+      voice = voice || &c == &groupVoicePatch();
+      notes = notes || &c == &groupNotesPatch();
+    });
+    u.combined->add(groupPatch());
+    if (voice) u.combined->add(groupVoicePatch());
+    if (notes) u.combined->add(groupNotesPatch());
+    u.callees.lib = u.combined.get();
   }
   return u;
 }
@@ -871,6 +944,8 @@ struct LDev {
   int32_t rack = -1;                     // T4.8: index into TrackDevs::racks for a rack
   bool voice = false;                    // its signal is per voice (an instrument; an effect of a per-voice chain)
   bool metaVoice = false;                // TMM.10: a chain meta device continuing the track's meta voice run
+  // TX.groups-fix1: a switched-off free device passing its chain input to its main output (callee: its pass__ patch).
+  bool bypass = false;
 };
 struct LChain {
   const Chain* chain = nullptr;
@@ -890,7 +965,12 @@ struct TrackDevs {
   std::vector<LDev> devs;
   std::vector<uint32_t> top;  // the track's own chain
   std::vector<uint32_t> free;  // TX.patching: its free devices (Device::free: called, not in the chain), list order
-  std::vector<std::pair<const Device*, const graph::Patch*>> pendingFree;  // lowerList → lowerTree
+  struct PendingFree {
+    const Device* device = nullptr;
+    const graph::Patch* callee = nullptr;
+    bool bypass = false;  // TX.groups-fix1: switched off, passing its chain input on
+  };
+  std::vector<PendingFree> pendingFree;  // lowerList → lowerTree
   std::vector<LRack> racks;
   std::vector<LMapping> mappings;
   bool voices = false;  // the track's chain starts with a lowered instrument (a device, or a rack that plays)
@@ -933,8 +1013,8 @@ bool listLowersInstrument(const std::vector<DevicePtr>& list, const Callees* lib
     todo.pop_back();
     for (const DevicePtr& d : l) {
       if (!d->active || d->free) continue;  // TX.patching: a free device is not in the series
-      if (isMetaDevice(*d)) {  // TMM.10-fix1: it plays when its chain input takes the note source
-        if (lib->readsNotes(*d) && lib->find(*d) != nullptr) return true;
+      if (isMetaDevice(*d) || isGroupDevice(*d)) {  // TMM.10-fix1: it plays when its chain input takes the note source
+        if (lib->readsNotes(*d) && lib->find(*d) != nullptr) return true;  // TX.groups-fix1: a group there too
         break;
       }
       if (d->kind != DeviceKind::Instrument) break;
@@ -1017,19 +1097,26 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
         continue;
       }
       const DevicePtr& d = (*f.list)[f.next++];
-      if (!d->active) continue;
+      if (!d->active) {
+        // TX.groups-fix1: a switched-off free device whose output a wire reads passes its chain input there.
+        if (d->free && lib != nullptr)
+          if (const auto it = lib->bypass.find(d->id.value); it != lib->bypass.end())
+            td.pendingFree.push_back({d.get(), it->second, true});
+        continue;
+      }
       if (d->free) {  // TX.patching: out of the series (a track's own list only: checkList); called, never chained
         const graph::Patch* callee = lib != nullptr ? lib->find(*d) : nullptr;
         if (callee == nullptr || (!isMetaDevice(*d) && calleeIsInstrument(*callee)) || d->rack) {
           if (missing != nullptr) missing->push_back(d->id);
           continue;
         }
-        td.pendingFree.emplace_back(d.get(), callee);  // lowerTree adds it once it knows whether the track plays voices
+        td.pendingFree.push_back({d.get(), callee, false});  // lowerTree adds it once it knows whether the track plays voices
         continue;
       }
       // TMM.10-fix1: a chain meta device is its list's instrument exactly when it takes the note source (its stage),
-      // whatever its kind.
-      const bool instrument = isMetaDevice(*d) ? lib != nullptr && lib->readsNotes(*d) : d->kind == DeviceKind::Instrument;
+      // whatever its kind; TX.groups-fix1: a group too (a group at a MIDI track's note source is its instrument).
+      const bool staged = isMetaDevice(*d) || isGroupDevice(*d);
+      const bool instrument = staged ? lib != nullptr && lib->readsNotes(*d) : d->kind == DeviceKind::Instrument;
       if (instrument && (!f.instrumentAllowed || !f.out->empty())) {
         if (missing != nullptr) missing->push_back(d->id);
         continue;
@@ -1050,7 +1137,7 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
       const graph::Patch* callee = lib != nullptr ? lib->find(*d) : nullptr;
       // (A chain meta device is its list's instrument by its stage, not by its expansion's ports: TX.patching's wired inputs
       // give a ChainNotes expansion `in`s.)
-      if (callee == nullptr || (!isMetaDevice(*d) && calleeIsInstrument(*callee) != instrument)) {
+      if (callee == nullptr || (!staged && calleeIsInstrument(*callee) != instrument)) {
         if (missing != nullptr) missing->push_back(d->id);
         continue;
       }
@@ -1114,10 +1201,12 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
   }
   // TMM.10 / TMM.10-fix1: the chain meta devices after a meta device at the note source that a per-voice signal
   // reaches stay per voice (their stage's input is Voices: chainStages), up to the first stage that sums.
-  if (td.voices && td.devs[td.top.front()].rack < 0 && isMetaDevice(*td.devs[td.top.front()].device) && lib != nullptr) {
+  // TX.groups-fix1: a group is a stage of the run like a meta device (its terminals carry the voices).
+  auto runStage = [](const Device& d) { return isMetaDevice(d) || isGroupDevice(d); };
+  if (td.voices && td.devs[td.top.front()].rack < 0 && runStage(*td.devs[td.top.front()].device) && lib != nullptr) {
     for (size_t i = 1; i < td.top.size(); ++i) {
       LDev& d = td.devs[td.top[i]];
-      const ChainStage* s = d.rack < 0 && isMetaDevice(*d.device) ? lib->stageOf(*d.device) : nullptr;
+      const ChainStage* s = d.rack < 0 && runStage(*d.device) ? lib->stageOf(*d.device) : nullptr;
       if (s == nullptr || s->in != ChainSignal::Voices) break;
       d.voice = d.metaVoice = true;
     }
@@ -1125,14 +1214,17 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
   // TX.patching: the free devices, after every device of the series. A free meta device expanded in the track's voice
   // context (Callees::freeVoiced) is a voice device there (wires into it stay per voice: the compiler decides what runs
   // per voice); on a track that turned out to play no voices (its instrument is missing) it cannot play: bypassed.
-  for (const auto& [dev, callee] : td.pendingFree) {
-    const bool voiced = lib != nullptr && lib->freeVoiced.count(dev->id.value) != 0;
+  for (const TrackDevs::PendingFree& pf : td.pendingFree) {
+    // TX.groups-fix1: a pass-through runs in the track's voice context when there is one (what reaches it decides).
+    const bool voiced = pf.bypass ? td.voices : lib != nullptr && lib->freeVoiced.count(pf.device->id.value) != 0;
     if (voiced && !td.voices) {
-      if (missing != nullptr) missing->push_back(dev->id);
+      if (missing != nullptr) missing->push_back(pf.device->id);
       continue;
     }
     td.free.push_back(static_cast<uint32_t>(td.devs.size()));
-    td.devs.push_back(LDev{dev, callee, -1, voiced});
+    LDev ld{pf.device, pf.callee, -1, voiced};
+    ld.bypass = pf.bypass;
+    td.devs.push_back(ld);
   }
   td.pendingFree.clear();
   return td;
@@ -1468,7 +1560,18 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   for (uint32_t n = 0; n < nodes; ++n)
     if (pl.nodes[n].track != nullptr) nodeOfTrack.emplace(pl.nodes[n].track->id.value, n);
   std::vector<uint8_t> fwd, back;
-  for (const Wire& w : wires) {
+  // TX.groups-fix1: chain links (Wire::chain: a grouped series' links) are planned before every other wire, as a chain's
+  // own links are (they are in `adj` already): a loop through a grouped series keeps its delay on the wire that had it.
+  // The result is in id order again (below).
+  std::vector<const Wire*> order;
+  order.reserve(wires.size());
+  for (const Wire& w : wires)
+    if (w.chain) order.push_back(&w);
+  const bool anyChain = !order.empty();
+  for (const Wire& w : wires)
+    if (!w.chain) order.push_back(&w);
+  for (const Wire* wp0 : order) {
+    const Wire& w = *wp0;
     WireState st{w.id, WireStatus::Lowered};
     const auto b = where.find(w.to.value);
     LWire lw;
@@ -1527,6 +1630,34 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     if (w.travels() && sourcePort != graph::kNone &&
         (lw.input || (lw.notes == nullptr && sourcePort < outputCount(*devs[lw.fromNode][lw.fromDev].callee))))
       sourcePort = graph::kNone;
+    // TX.groups-fix1: a switched-off free device passing its chain input on (LDev::bypass) has only those two ports; a
+    // wire to or from any other of its ports waits until it plays again.
+    if ((dd.bypass && pin == graph::kNone) ||
+        (!w.fromNoteSource() && devs[lw.fromNode][lw.fromDev].bypass && sourcePort == graph::kNone)) {
+      st.status = WireStatus::Inactive;
+      wp.states.push_back(st);
+      continue;
+    }
+    // TX.groups-fix1: the In terminal of a group at the note source (GroupNotes) gives the input it reaches the note's
+    // signal of that input's meaning (meta::Reads, as a chain input at the note source reads it): a frequency the note's
+    // Hz (`input`), a phase its phase (`phase`). An input of no such meaning (a signal, a param, a stock device's input)
+    // gets nothing from the notes: the wire is inactive.
+    if (!w.fromNoteSource() && sourcePort != graph::kNone && w.port == kGroupInPort) {
+      const LDev& sd = devs[lw.fromNode][lw.fromDev];
+      if (sd.rack < 0 && sd.callee == &groupNotesPatch()) {
+        meta::Reads reads = meta::Reads::Signal;
+        if (lw.input && dd.rack < 0 && !dd.bypass && isMetaDevice(*dd.device))
+          if (const meta::Type* t = meta::findType(metaDeviceType(*dd.device)))
+            if (const int32_t i = t->inputIndex(w.param); i >= 0) reads = t->inputs[static_cast<size_t>(i)].reads;
+        if (reads == meta::Reads::Phase) {
+          sourcePort = signalOutput(*sd.callee, "phase");
+        } else if (reads != meta::Reads::Frequency) {
+          st.status = WireStatus::Inactive;
+          wp.states.push_back(st);
+          continue;
+        }
+      }
+    }
     if (sourcePort == graph::kNone || pin == graph::kNone) {
       st.status = WireStatus::Invalid;
       wp.states.push_back(st);
@@ -1570,6 +1701,10 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     else adj[from].push_back(to);
     wp.states.push_back(st);
     wp.wires.push_back(lw);
+  }
+  if (anyChain) {  // back to id order (lower.h: sums into one input follow it, after the chain links)
+    std::stable_sort(wp.states.begin(), wp.states.end(), [](const WireState& a, const WireState& b) { return a.id < b.id; });
+    std::stable_sort(wp.wires.begin(), wp.wires.end(), [](const LWire& a, const LWire& b) { return a.wire->id < b.wire->id; });
   }
   return wp;
 }
@@ -2034,7 +2169,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
       // a group's In terminal) reaches its input as the mid (l + r) / 2 — the chain's rule (effectCall). On a mono
       // signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
-      if (isMetaDevice(*td[w.toDev].device) && td[w.fromDev].rack < 0 &&
+      // (TX.groups-fix1: not into a switched-off device's pass-through, which passes every channel on.)
+      if (isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass && td[w.fromDev].rack < 0 &&
           declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
@@ -2078,14 +2214,18 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
           if (!(from == b.freeZero)) sum = from;
           break;
         }
+      // TX.groups-fix1: chain links first (Wire::chain: a grouped series' link is what the chain gave the input), then
+      // the other wires in id order.
       bool first = true;
-      for (size_t j = i; j < wp.wires.size(); ++j) {
-        const LWire& w = wp.wires[j];
-        if (w.toNode != node || !w.input || w.toDev != f.toDev || w.toPin != f.toPin) continue;
-        const PortRef src = arriving(w);
-        sum = sum.node == graph::kNone ? src : ir.atom("add", {sum, src}, wid(w, first ? kWTerm : kWSum));
-        first = false;
-      }
+      for (const bool chainPass : {true, false})
+        for (size_t j = i; j < wp.wires.size(); ++j) {
+          const LWire& w = wp.wires[j];
+          if (w.toNode != node || !w.input || w.toDev != f.toDev || w.toPin != f.toPin) continue;
+          if (w.wire->chain != chainPass) continue;
+          const PortRef src = arriving(w);
+          sum = sum.node == graph::kNone ? src : ir.atom("add", {sum, src}, wid(w, first ? kWTerm : kWSum));
+          first = false;
+        }
       p.connect(sum, pin);
     }
   }
@@ -2337,6 +2477,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     for (uint32_t k = 0; k < devs.size(); ++k)
       if (devs[k].rack < 0 && devs[k].device->kind == DeviceKind::Instrument) polyphony = std::max(polyphony, devicePolyphony(devs[k]));
   size_t firstEffect = 0;
+  uint32_t groupEnd = graph::kNone;  // TX.groups-fix1: the member whose `done` ends a voice run ending in a group
   uint16_t width = graph::kWidthStereo;
   if (n.kind == Kind::Audio) {
     // T5.3: the clip player of slot `clipSlot` (stereo; the player duplicates a mono source), then the chain. Without a
@@ -2397,9 +2538,12 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
       const NodeIndex syn = callDevice(ir, devs[first]);
       b.calls[first] = syn;
       firstEffect = 1;
-      if (isMetaDevice(*devs[first].device)) {
+      if (isMetaDevice(*devs[first].device) || isGroupDevice(*devs[first].device)) {
         // TMM.10: a meta voice run — each following meta device continues the voices (its voice input = the voice
-        // signal so far); the voices end with a short linear release after note-off, then sum.
+        // signal so far); the voices end with a short linear release after note-off, then sum. TX.groups-fix1: a group
+        // is a stage of the run too (GroupNotes at the note source, GroupVoice after: its first `in` is x, its first
+        // `out` y), and a run ending in a group ends as the device whose output alone reaches its Out would end it
+        // (lower.h "Groups").
         PortRef v{syn, 0};
         const graph::Patch* last = devs[first].callee;
         for (; firstEffect < devs.top.size() && devs[devs.top[firstEffect]].metaVoice; ++firstEffect) {
@@ -2413,13 +2557,44 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
         // TMM.11: a run ending in a type that decides its voices' end (the Envelope: a VCA on the run's signal) ends
         // them by its `done`; no declick ramp (its release is the voice's end). TMM.10-fix1: also when that stage is
         // the run's only one (an Envelope at the note source); a stage of any other type ends at note-off + 5 ms.
-        const NodeIndex lastCall = firstEffect > 1 ? b.calls[devs.top[firstEffect - 1]] : syn;
-        const meta::Type* lastType = meta::findType(metaDeviceType(*devs[devs.top[firstEffect - 1]].device));
-        const auto own = lastType != nullptr && lastType->voiceEnd ? ir.patch().findOutput(lastCall, "done") : std::nullopt;
+        const uint32_t lastDev = devs.top[firstEffect - 1];
+        NodeIndex lastCall = firstEffect > 1 ? b.calls[lastDev] : syn;
+        const Device* lastDevice = devs[lastDev].device;
+        if (isGroupDevice(*lastDevice)) {
+          // TX.groups-fix1: the one lowered wire into the group's Out from a device of this track (not delayed): its
+          // source is the run's last stage (its width, its voice end; its call is made with the free devices below).
+          uint32_t src = graph::kNone, count = 0;
+          for (const LWire& w : wp.wires)
+            if (w.toNode == index && w.toDev == lastDev && w.input && w.wire->param == kGroupOutPort) {
+              ++count;
+              if (w.fromNode == index && w.notes == nullptr && !w.delayed) src = w.fromDev;
+            }
+          if (count != 1) src = graph::kNone;
+          lastDevice = nullptr;
+          if (src != graph::kNone && devs[src].rack < 0 && !devs[src].bypass) {
+            last = devs[src].callee;
+            lastDevice = devs[src].device;
+            groupEnd = src;
+          }
+        }
+        const meta::Type* lastType =
+            lastDevice != nullptr && isMetaDevice(*lastDevice) ? meta::findType(metaDeviceType(*lastDevice)) : nullptr;
+        std::optional<uint32_t> own;
+        if (lastType != nullptr && lastType->voiceEnd) {
+          if (groupEnd != graph::kNone) {
+            const graph::Patch& callee = *devs[groupEnd].callee;
+            for (NodeIndex q = 0; q < callee.nodeCount(); ++q)
+              if (callee.node(q).kind == graph::NodeKind::Output && callee.nodeName(q) == "done") own = 0;
+          } else {
+            own = ir.patch().findOutput(lastCall, "done");
+          }
+        }
+        if (!own) groupEnd = graph::kNone;
         if (own) {
           x = ir.atom("voice_sum", {v}, kVoiceSum);
-          ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
-                    PortRef{lastCall, static_cast<uint16_t>(*own)}, kDone);
+          if (groupEnd == graph::kNone)  // (a group's last stage: once its call exists, below)
+            ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
+                      PortRef{lastCall, static_cast<uint16_t>(*own)}, kDone);
         } else {
           const PortRef gate = ir.atom("voice.gate", {}, kRelGate);
           const PortRef step = ir.atom("div", {ir.konst(1.0 / kMetaReleaseSeconds, kRelRate), ir.atom("sr", {}, kRelSr)},
@@ -2473,11 +2648,17 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     const NodeIndex c = callDevice(ir, devs[k]);
     b.calls[k] = c;
     // (A free meta device plays its Nested form: every input has its default already.)
-    if (const uint32_t in = isMetaDevice(*devs[k].device) ? graph::kNone : audioInIndex(*devs[k].callee); in != graph::kNone) {
+    const bool own = isMetaDevice(*devs[k].device) && !devs[k].bypass;
+    if (const uint32_t in = own ? graph::kNone : audioInIndex(*devs[k].callee); in != graph::kNone) {
       if (b.freeZero.node == graph::kNone) b.freeZero = ir.konst(-0.0, kCFreeZero);
       ir.patch().connect(b.freeZero, PortRef{c, static_cast<uint16_t>(in)});
     }
   }
+  // TX.groups-fix1: a voice run ending in a group whose Out a voice-ending member feeds ends by that member's `done`.
+  if (groupEnd != graph::kNone)
+    if (const auto d = ir.patch().findOutput(b.calls[groupEnd], "done"))
+      ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
+                PortRef{b.calls[groupEnd], static_cast<uint16_t>(*d)}, kDone);
   gainStages(ir, n.kind, x, o.smoothingMs);
   lowerSites(b, index, track, wp, taps);  // T4.7, T4.8
   if (ir.literalOverflow())
@@ -2595,7 +2776,8 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
                                    ParamRef::device(d.device->id, name)});
       }
       // TMM.3: the params of its nested meta modules (unwired at their call: runtime params of the track patch).
-      if (const auto it = lib->metaSites.find(d.device->id.value); it != lib->metaSites.end())
+      // (TX.groups-fix1: a switched-off device's pass-through has none.)
+      if (const auto it = lib->metaSites.find(d.device->id.value); !d.bypass && it != lib->metaSites.end())
         for (const MetaSite& s : *it->second)
           for (size_t i = 0; i < s.type->params.size(); ++i) {
             if (s.wired[i]) continue;
